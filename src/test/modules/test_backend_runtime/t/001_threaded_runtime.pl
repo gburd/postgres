@@ -133,7 +133,7 @@ like(slurp_file($node->logfile),
 
 SKIP:
 {
-	skip 'postmaster child counting smoke is Unix-specific', 7
+	skip 'postmaster child counting smoke is Unix-specific', 8
 	  if $^O eq 'MSWin32';
 
 	$node->poll_query_until(
@@ -159,6 +159,8 @@ SKIP:
 		'threaded runtime starts with two logical IO workers');
 	is(postmaster_child_command_count(qr/io worker|ioworker/), 0,
 		'startup IO workers were handed off to thread carriers');
+	is($children_before, 0,
+		'threaded runtime has no postmaster child processes after startup handoff');
 
 	$node->safe_psql('postgres', q{ALTER SYSTEM SET io_min_workers = 3});
 	$node->safe_psql('postgres', q{SELECT pg_reload_conf()});

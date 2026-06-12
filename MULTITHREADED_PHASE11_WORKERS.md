@@ -1304,12 +1304,13 @@ Additional Gate E hardening validation:
 - full `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed, followed by
   reinstalling `src/test/modules/test_backend_runtime` into the temp install;
 - direct `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl`
-  passed all 36 tests with the local `PERL5LIB` TAP environment. This covers
+  passed all 37 tests with the local `PERL5LIB` TAP environment. This covers
   the threaded autovacuum launcher, deterministic autovacuum worker entry,
   startup and late AIO workers, unsafe/process-model background-worker
   rejection, explicit thread-model background-worker startup/shutdown,
-  cancellation/termination, PL/pgSQL, and representative threaded SQL
-  usability checks in one fixture.
+  cancellation/termination, PL/pgSQL, representative threaded SQL usability
+  checks, and the broader invariant that the configured threaded runtime has
+  no postmaster OS child processes after startup handoff.
 
 An attempted TAP fixture that relied on ordinary autovacuum scheduling did not
 start a worker reliably within a short poll window, even with aggressive table
