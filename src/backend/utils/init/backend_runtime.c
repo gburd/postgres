@@ -46,6 +46,7 @@ static PG_GLOBAL_SESSION PgSession process_session;
 static PG_GLOBAL_CONNECTION PgConnection process_connection;
 static PG_GLOBAL_EXECUTION PgExecution process_execution;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionSocketIOState early_connection_socket_io;
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionProtocolState early_connection_protocol;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInterruptHoldoffState early_interrupt_holdoffs;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionDebugState early_execution_debug;
 
@@ -56,6 +57,7 @@ static void PgBackendInitializeIdCounter(void);
 static PgBackendId PgBackendAssignId(void);
 static void PgBackendWakeForInterrupt(PgBackend *backend);
 static void PgConnectionAdoptEarlySocketIO(PgConnection *connection);
+static void PgConnectionAdoptEarlyProtocolState(PgConnection *connection);
 static void PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend);
 static void PgExecutionAdoptEarlyDebugState(PgExecution *execution);
 static PgBackendInterruptHoldoffState *PgCurrentInterruptHoldoffs(void);
@@ -85,6 +87,15 @@ PgConnectionAdoptEarlySocketIO(PgConnection *connection)
 
 	connection->socket_io = early_connection_socket_io;
 	MemSet(&early_connection_socket_io, 0, sizeof(early_connection_socket_io));
+}
+
+static void
+PgConnectionAdoptEarlyProtocolState(PgConnection *connection)
+{
+	Assert(connection != NULL);
+
+	connection->protocol = early_connection_protocol;
+	MemSet(&early_connection_protocol, 0, sizeof(early_connection_protocol));
 }
 
 static void
@@ -158,6 +169,7 @@ InitializePgProcessRuntime(void)
 	process_connection.session = &process_session;
 	process_connection.port = MyProcPort;
 	PgConnectionAdoptEarlySocketIO(&process_connection);
+	PgConnectionAdoptEarlyProtocolState(&process_connection);
 
 	process_execution.backend = &process_backend;
 	process_execution.session = &process_session;
@@ -317,6 +329,36 @@ PgConnectionSocketIOState *
 PgCurrentConnectionSocketIORef(void)
 {
 	return PgConnectionSocketIORef(CurrentPgConnection);
+}
+
+const PQcommMethods **
+PgConnectionPqCommMethodsRef(PgConnection *connection)
+{
+	if (connection == NULL)
+		return &early_connection_protocol.comm_methods;
+
+	return &connection->protocol.comm_methods;
+}
+
+const PQcommMethods **
+PgCurrentPqCommMethodsRef(void)
+{
+	return PgConnectionPqCommMethodsRef(CurrentPgConnection);
+}
+
+WaitEventSet **
+PgConnectionFeBeWaitSetRef(PgConnection *connection)
+{
+	if (connection == NULL)
+		return &early_connection_protocol.fe_be_wait_set;
+
+	return &connection->protocol.fe_be_wait_set;
+}
+
+WaitEventSet **
+PgCurrentFeBeWaitSetRef(void)
+{
+	return PgConnectionFeBeWaitSetRef(CurrentPgConnection);
 }
 
 static PgBackendInterruptHoldoffState *

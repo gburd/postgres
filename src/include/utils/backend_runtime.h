@@ -27,6 +27,8 @@ typedef struct PgBackend PgBackend;
 typedef struct PgSession PgSession;
 typedef struct PgConnection PgConnection;
 typedef struct PgExecution PgExecution;
+typedef struct PQcommMethods PQcommMethods;
+typedef struct WaitEventSet WaitEventSet;
 typedef void (*PgBackendExitContinuation) (int code);
 typedef int (*PgSuspendCallback) (void *callback_arg);
 
@@ -151,6 +153,12 @@ typedef struct PgConnectionSocketIOState
 	bool		comm_reading_msg;
 } PgConnectionSocketIOState;
 
+typedef struct PgConnectionProtocolState
+{
+	const PQcommMethods *comm_methods;
+	WaitEventSet *fe_be_wait_set;
+} PgConnectionProtocolState;
+
 /*
  * Main-loop state owned by PgSession. Some of this state used to be volatile
  * locals in PostgresMain(); keep the loop flags volatile because they must
@@ -225,6 +233,7 @@ struct PgConnection
 	PgSession  *session;
 	struct Port *port;
 	PgConnectionSocketIOState socket_io;
+	PgConnectionProtocolState protocol;
 };
 
 struct PgExecution
@@ -270,6 +279,10 @@ extern const char **PgExecutionDebugQueryStringRef(PgExecution *execution);
 extern const char **PgCurrentDebugQueryStringRef(void);
 extern PgConnectionSocketIOState *PgConnectionSocketIORef(PgConnection *connection);
 extern PgConnectionSocketIOState *PgCurrentConnectionSocketIORef(void);
+extern const PQcommMethods **PgConnectionPqCommMethodsRef(PgConnection *connection);
+extern const PQcommMethods **PgCurrentPqCommMethodsRef(void);
+extern WaitEventSet **PgConnectionFeBeWaitSetRef(PgConnection *connection);
+extern WaitEventSet **PgCurrentFeBeWaitSetRef(void);
 extern PgBackendLaunchModel PgRuntimeGetBackendLaunchModel(BackendType backend_type);
 extern bool PgRuntimeShouldThreadBackend(BackendType backend_type);
 extern PgBackendModel PgRuntimeGetExtensionBackendModel(void);

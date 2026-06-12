@@ -15,6 +15,7 @@
 #include <errno.h>
 
 #include "fmgr.h"
+#include "libpq/libpq.h"
 #include "port/atomics.h"
 #include "port/pg_thread.h"
 #include "storage/dsm.h"
@@ -546,6 +547,68 @@ test_connection_socket_io_is_connection_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "connection socket I/O state was not connection-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_connection_protocol_state_is_connection_local);
+Datum
+test_connection_protocol_state_is_connection_local(PG_FUNCTION_ARGS)
+{
+	PgConnection *saved_connection;
+	PgConnection fake_connection1;
+	PgConnection fake_connection2;
+	const PQcommMethods *saved_comm_methods;
+	WaitEventSet *saved_wait_set;
+	const PQcommMethods methods1 = {0};
+	const PQcommMethods methods2 = {0};
+	WaitEventSet *wait_set1;
+	WaitEventSet *wait_set2;
+	bool		ok = true;
+
+	saved_connection = CurrentPgConnection;
+	saved_comm_methods = PqCommMethods;
+	saved_wait_set = FeBeWaitSet;
+	wait_set1 = (WaitEventSet *) &fake_connection1;
+	wait_set2 = (WaitEventSet *) &fake_connection2;
+	MemSet(&fake_connection1, 0, sizeof(fake_connection1));
+	MemSet(&fake_connection2, 0, sizeof(fake_connection2));
+
+	PG_TRY();
+	{
+		CurrentPgConnection = &fake_connection1;
+		PqCommMethods = &methods1;
+		FeBeWaitSet = wait_set1;
+
+		CurrentPgConnection = &fake_connection2;
+		ok = ok && PqCommMethods == NULL;
+		ok = ok && FeBeWaitSet == NULL;
+		PqCommMethods = &methods2;
+		FeBeWaitSet = wait_set2;
+
+		CurrentPgConnection = &fake_connection1;
+		ok = ok && PqCommMethods == &methods1;
+		ok = ok && FeBeWaitSet == wait_set1;
+
+		CurrentPgConnection = &fake_connection2;
+		ok = ok && PqCommMethods == &methods2;
+		ok = ok && FeBeWaitSet == wait_set2;
+
+		CurrentPgConnection = saved_connection;
+		PqCommMethods = saved_comm_methods;
+		FeBeWaitSet = saved_wait_set;
+	}
+	PG_CATCH();
+	{
+		CurrentPgConnection = saved_connection;
+		PqCommMethods = saved_comm_methods;
+		FeBeWaitSet = saved_wait_set;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "connection protocol state was not connection-local");
 
 	PG_RETURN_BOOL(true);
 }

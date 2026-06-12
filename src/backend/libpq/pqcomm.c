@@ -163,10 +163,6 @@ static const PQcommMethods PqCommSocketMethods = {
 	.putmessage_noblock = socket_putmessage_noblock
 };
 
-PG_THREAD_LOCAL PG_GLOBAL_CONNECTION const PQcommMethods *PqCommMethods = &PqCommSocketMethods;
-
-PG_THREAD_LOCAL PG_GLOBAL_CONNECTION WaitEventSet *FeBeWaitSet;
-
 static inline PgConnectionSocketIOState *
 PqSocketIO(void)
 {
@@ -284,6 +280,7 @@ pq_init(ClientSocket *client_sock)
 	}
 
 	/* initialize state variables */
+	PqCommMethods = &PqCommSocketMethods;
 	PqSendBufferSize = PQ_SEND_BUFFER_SIZE;
 	PqSendBuffer = MemoryContextAlloc(TopMemoryContext, PqSendBufferSize);
 	PqSendPointer = PqSendStart = PqRecvPointer = PqRecvLength = 0;

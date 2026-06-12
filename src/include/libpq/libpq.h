@@ -18,6 +18,7 @@
 
 #include "lib/stringinfo.h"
 #include "libpq/libpq-be.h"
+#include "utils/backend_runtime.h"
 #include "utils/global_lifetime.h"
 
 
@@ -34,7 +35,7 @@ typedef struct WaitEventSet WaitEventSet;
 #define PQ_SMALL_MESSAGE_LIMIT	10000
 #define PQ_LARGE_MESSAGE_LIMIT	(MaxAllocSize - 1)
 
-typedef struct
+struct PQcommMethods
 {
 	void		(*comm_reset) (void);
 	int			(*flush) (void);
@@ -42,9 +43,9 @@ typedef struct
 	bool		(*is_send_pending) (void);
 	int			(*putmessage) (char msgtype, const char *s, size_t len);
 	void		(*putmessage_noblock) (char msgtype, const char *s, size_t len);
-} PQcommMethods;
+};
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CONNECTION const PQcommMethods *PqCommMethods;
+#define PqCommMethods (*PgCurrentPqCommMethodsRef())
 
 #define pq_comm_reset() (PqCommMethods->comm_reset())
 #define pq_flush() (PqCommMethods->flush())
@@ -62,7 +63,7 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CONNECTION const PQcommMethods *PqC
 /*
  * prototypes for functions in pqcomm.c
  */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CONNECTION WaitEventSet *FeBeWaitSet;
+#define FeBeWaitSet (*PgCurrentFeBeWaitSetRef())
 
 #define FeBeWaitSetSocketPos 0
 #define FeBeWaitSetLatchPos 1
