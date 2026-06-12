@@ -1238,3 +1238,16 @@ not just a later guard in `InitPostgres()`.
   PostgresMain` guard for every client with no byval/opclass/crash signatures.
 - after the `PostgresMain` entry boundary slice,
   `gmake -C src/test/modules/test_backend_runtime check` passed.
+- moving the guard to the end of `PgSessionBootstrap()` establishes the
+  current boundary at completed session bootstrap, immediately before
+  `PgSessionRun()` starts the main protocol loop. This covers normal-mode
+  processing state, initial GUC reporting, optional log-disconnection callback
+  registration, `pgstat_report_connect()`, backend-key transmission,
+  `MessageContext` and row-description context allocation, login event trigger
+  dispatch, and loop-state initialization. `gmake -C src/backend/tcop
+  postgres.o`, full `gmake -C src/backend -j8`, and
+  `gmake DESTDIR="$PWD/tmp_install" install` passed; a 20-client
+  `multithreaded=on` smoke reached the `threaded backend session bootstrap
+  completed` guard for every client with no byval/opclass/crash signatures.
+- after the session-bootstrap boundary slice,
+  `gmake -C src/test/modules/test_backend_runtime check` passed.

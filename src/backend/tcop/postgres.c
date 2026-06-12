@@ -5120,13 +5120,6 @@ PgSessionBootstrap(const char *dbname, const char *username)
 		PostmasterContext = NULL;
 	}
 
-	if (threaded_backend)
-		ereport(FATAL,
-				(errmsg("threaded backend startup reached PostgresMain"),
-				 errdetail("InitPostgres returned and postmaster context "
-						   "cleanup was skipped, but main-loop session "
-						   "lifetime still needs thread-safe handling.")));
-
 	SetProcessingMode(NormalProcessing);
 
 	/*
@@ -5196,6 +5189,14 @@ PgSessionBootstrap(const char *dbname, const char *username)
 
 	Assert(CurrentPgSession != NULL);
 	PgSessionLoopStateInit(&CurrentPgSession->loop_state);
+
+	if (threaded_backend)
+		ereport(FATAL,
+				(errmsg("threaded backend session bootstrap completed"),
+				 errdetail("Session bootstrap reached the main protocol loop, "
+						   "but PgSessionRun still needs thread-safe "
+						   "lifecycle handling.")));
+
 	return CurrentPgSession;
 }
 
