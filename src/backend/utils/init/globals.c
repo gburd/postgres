@@ -26,18 +26,6 @@
 #include "storage/procnumber.h"
 #include "storage/procsignal.h"
 
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t InterruptPending = false;
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t QueryCancelPending = false;
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t ProcDiePending = false;
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t IdleInTransactionSessionTimeoutPending = false;
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t TransactionTimeoutPending = false;
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t IdleSessionTimeoutPending = false;
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t ProcSignalBarrierPending = false;
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t LogMemoryContextPending = false;
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t IdleStatsUpdateTimeoutPending = false;
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile int ProcDieSenderPid = 0;
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile int ProcDieSenderUid = 0;
-
 PG_THREAD_LOCAL PG_GLOBAL_BACKEND int MyProcPid;
 PG_THREAD_LOCAL PG_GLOBAL_BACKEND pg_time_t MyStartTime;
 PG_THREAD_LOCAL PG_GLOBAL_BACKEND TimestampTz MyStartTimestamp;

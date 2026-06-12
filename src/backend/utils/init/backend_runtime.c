@@ -51,6 +51,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionProtocolState early_conn
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionInterruptState early_connection_interrupts;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionStartupState early_connection_startup;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionClientConnectionInfoState early_client_connection_info;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendPendingInterruptState early_pending_interrupts;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInterruptHoldoffState early_interrupt_holdoffs;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionDebugState early_execution_debug;
 
@@ -66,8 +67,10 @@ static void PgConnectionAdoptEarlyProtocolState(PgConnection *connection);
 static void PgConnectionAdoptEarlyInterruptState(PgConnection *connection);
 static void PgConnectionAdoptEarlyStartupState(PgConnection *connection);
 static void PgConnectionAdoptEarlyClientConnectionInfo(PgConnection *connection);
+static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
 static void PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend);
 static void PgExecutionAdoptEarlyDebugState(PgExecution *execution);
+static PgBackendPendingInterruptState *PgCurrentPendingInterrupts(void);
 static PgBackendInterruptHoldoffState *PgCurrentInterruptHoldoffs(void);
 
 static void
@@ -143,6 +146,15 @@ PgConnectionAdoptEarlyClientConnectionInfo(PgConnection *connection)
 }
 
 static void
+PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend)
+{
+	Assert(backend != NULL);
+
+	backend->pending_interrupts = early_pending_interrupts;
+	MemSet(&early_pending_interrupts, 0, sizeof(early_pending_interrupts));
+}
+
+static void
 PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend)
 {
 	Assert(backend != NULL);
@@ -202,6 +214,7 @@ InitializePgProcessRuntime(void)
 	dlist_init(&process_backend.dsm_segment_list);
 	pg_atomic_init_u32(&process_backend.wait_state.waiting, 0);
 	PgBackendInitializeExitState(&process_backend.exit_state);
+	PgBackendAdoptEarlyPendingInterrupts(&process_backend);
 	PgBackendAdoptEarlyInterruptHoldoffs(&process_backend);
 	PgBackendAdoptEarlyExitState(&process_backend.exit_state);
 
@@ -541,6 +554,21 @@ void *
 PgCurrentClientConnectionInfoRef(void)
 {
 	return PgConnectionClientConnectionInfoRef(CurrentPgConnection);
+}
+
+static PgBackendPendingInterruptState *
+PgCurrentPendingInterrupts(void)
+{
+	if (CurrentPgBackend == NULL)
+		return &early_pending_interrupts;
+
+	return &CurrentPgBackend->pending_interrupts;
+}
+
+PgBackendPendingInterruptState *
+PgCurrentPendingInterruptStateRef(void)
+{
+	return PgCurrentPendingInterrupts();
 }
 
 static PgBackendInterruptHoldoffState *

@@ -86,19 +86,51 @@
  *
  *****************************************************************************/
 
-/* in globals.c */
 /* these are marked volatile because they are set by signal handlers: */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t InterruptPending;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t QueryCancelPending;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t ProcDiePending;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile int ProcDieSenderPid;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile int ProcDieSenderUid;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t IdleInTransactionSessionTimeoutPending;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t TransactionTimeoutPending;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t IdleSessionTimeoutPending;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t ProcSignalBarrierPending;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t LogMemoryContextPending;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t IdleStatsUpdateTimeoutPending;
+typedef struct PgBackendPendingInterruptState
+{
+	volatile sig_atomic_t interrupt_pending;
+	volatile sig_atomic_t query_cancel_pending;
+	volatile sig_atomic_t proc_die_pending;
+	volatile int proc_die_sender_pid;
+	volatile int proc_die_sender_uid;
+	volatile sig_atomic_t idle_in_transaction_session_timeout_pending;
+	volatile sig_atomic_t transaction_timeout_pending;
+	volatile sig_atomic_t idle_session_timeout_pending;
+	volatile sig_atomic_t proc_signal_barrier_pending;
+	volatile sig_atomic_t log_memory_context_pending;
+	volatile sig_atomic_t idle_stats_update_timeout_pending;
+} PgBackendPendingInterruptState;
+
+extern PgBackendPendingInterruptState *PgCurrentPendingInterruptStateRef(void);
+
+/*
+ * Compatibility lvalues for the historic pending interrupt globals. The
+ * storage now belongs to the current PgBackend object, while early startup
+ * paths before runtime installation use backend_runtime.c fallback storage.
+ */
+#define InterruptPending \
+	(PgCurrentPendingInterruptStateRef()->interrupt_pending)
+#define QueryCancelPending \
+	(PgCurrentPendingInterruptStateRef()->query_cancel_pending)
+#define ProcDiePending \
+	(PgCurrentPendingInterruptStateRef()->proc_die_pending)
+#define ProcDieSenderPid \
+	(PgCurrentPendingInterruptStateRef()->proc_die_sender_pid)
+#define ProcDieSenderUid \
+	(PgCurrentPendingInterruptStateRef()->proc_die_sender_uid)
+#define IdleInTransactionSessionTimeoutPending \
+	(PgCurrentPendingInterruptStateRef()->idle_in_transaction_session_timeout_pending)
+#define TransactionTimeoutPending \
+	(PgCurrentPendingInterruptStateRef()->transaction_timeout_pending)
+#define IdleSessionTimeoutPending \
+	(PgCurrentPendingInterruptStateRef()->idle_session_timeout_pending)
+#define ProcSignalBarrierPending \
+	(PgCurrentPendingInterruptStateRef()->proc_signal_barrier_pending)
+#define LogMemoryContextPending \
+	(PgCurrentPendingInterruptStateRef()->log_memory_context_pending)
+#define IdleStatsUpdateTimeoutPending \
+	(PgCurrentPendingInterruptStateRef()->idle_stats_update_timeout_pending)
 
 extern volatile sig_atomic_t *PgCurrentCheckClientConnectionPendingRef(void);
 extern volatile sig_atomic_t *PgCurrentClientConnectionLostRef(void);

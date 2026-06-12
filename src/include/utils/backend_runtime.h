@@ -238,6 +238,7 @@ struct PgBackend
 	PgBackendInterruptMailbox interrupts;
 	struct Latch *interrupt_latch;
 	PgBackendExitState exit_state;
+	PgBackendPendingInterruptState pending_interrupts;
 	PgBackendInterruptHoldoffState interrupt_holdoffs;
 	PgBackendWaitState wait_state;
 

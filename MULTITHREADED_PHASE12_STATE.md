@@ -430,3 +430,53 @@ Validation for this slice:
 - core process-mode `src/test/regress` `parallel_schedule` passed all 245
   tests after the clean rebuild and install;
 - `gmake -C contrib -j8` passed after the header migration.
+
+## Backend Pending Interrupt State Bridge
+
+The eleventh Phase 12 slice moves the historical backend pending-interrupt
+flags under `PgBackend`:
+
+- `PgBackend` now owns a `PgBackendPendingInterruptState`;
+- `InterruptPending`, `QueryCancelPending`, `ProcDiePending`,
+  `ProcDieSenderPid`, `ProcDieSenderUid`,
+  `IdleInTransactionSessionTimeoutPending`, `TransactionTimeoutPending`,
+  `IdleSessionTimeoutPending`, `ProcSignalBarrierPending`,
+  `LogMemoryContextPending`, and `IdleStatsUpdateTimeoutPending` remain
+  source-compatible lvalue macros in `miscadmin.h`;
+- the macros route through `PgCurrentPendingInterruptStateRef()`, which
+  returns the current logical backend's pending-interrupt bucket;
+- early startup paths before `CurrentPgBackend` is installed use fallback
+  backend-local storage in `backend_runtime.c`;
+- `InitializePgProcessRuntime()` adopts early fallback pending-interrupt
+  state into the process backend object before clearing fallback storage.
+
+This keeps the signal-era pending flags tied to the logical backend rather
+than the carrier thread. The logical interrupt mailbox still feeds these
+compatibility names in `PgCurrentBackendApplyInterrupts()`, but the final
+consumer state is now part of `PgBackend`, matching the targetable
+wait/wakeup model.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `globals.o`,
+  `postgres.o`, and `test_backend_runtime.o`;
+- because `miscadmin.h` changed widely exported backend interrupt globals into
+  compatibility macros, `gmake -C src/backend clean` plus generated-header
+  recovery was used before the clean rebuild;
+- `src/common` was cleaned and rebuilt after the first link attempt exposed a
+  stale `scram-common_srv.o` reference to the removed `InterruptPending`
+  symbol;
+- clean full `gmake -j8` passed;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed, followed by
+  rebuilding and reinstalling `src/test/modules/test_backend_runtime`,
+  PL/pgSQL, `src/test/regress`, and `libpqwalreceiver`;
+- focused `test_backend_runtime` regression passed and includes
+  `test_backend_pending_interrupts_are_backend_local()`, which switches
+  `CurrentPgBackend` between fake backends and proves all moved pending flags
+  are isolated per backend;
+- threaded runtime TAP coverage passed for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests after stale `regress.dylib` and `libpqwalreceiver.dylib` rebuilds;
+- clean `gmake -C contrib -j8` passed after the header migration.

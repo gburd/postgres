@@ -433,6 +433,150 @@ test_backend_interrupt_holdoffs_are_backend_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_backend_pending_interrupts_are_backend_local);
+Datum
+test_backend_pending_interrupts_are_backend_local(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgBackend	fake_backend1;
+	PgBackend	fake_backend2;
+	sig_atomic_t saved_interrupt_pending;
+	sig_atomic_t saved_query_cancel_pending;
+	sig_atomic_t saved_proc_die_pending;
+	int			saved_proc_die_sender_pid;
+	int			saved_proc_die_sender_uid;
+	sig_atomic_t saved_idle_in_transaction_session_timeout_pending;
+	sig_atomic_t saved_transaction_timeout_pending;
+	sig_atomic_t saved_idle_session_timeout_pending;
+	sig_atomic_t saved_proc_signal_barrier_pending;
+	sig_atomic_t saved_log_memory_context_pending;
+	sig_atomic_t saved_idle_stats_update_timeout_pending;
+	bool		ok = true;
+
+	saved_backend = CurrentPgBackend;
+	saved_interrupt_pending = InterruptPending;
+	saved_query_cancel_pending = QueryCancelPending;
+	saved_proc_die_pending = ProcDiePending;
+	saved_proc_die_sender_pid = ProcDieSenderPid;
+	saved_proc_die_sender_uid = ProcDieSenderUid;
+	saved_idle_in_transaction_session_timeout_pending =
+		IdleInTransactionSessionTimeoutPending;
+	saved_transaction_timeout_pending = TransactionTimeoutPending;
+	saved_idle_session_timeout_pending = IdleSessionTimeoutPending;
+	saved_proc_signal_barrier_pending = ProcSignalBarrierPending;
+	saved_log_memory_context_pending = LogMemoryContextPending;
+	saved_idle_stats_update_timeout_pending =
+		IdleStatsUpdateTimeoutPending;
+	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
+	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+
+	PG_TRY();
+	{
+		CurrentPgBackend = &fake_backend1;
+		InterruptPending = true;
+		QueryCancelPending = true;
+		ProcDiePending = true;
+		ProcDieSenderPid = 101;
+		ProcDieSenderUid = 202;
+		IdleInTransactionSessionTimeoutPending = true;
+		TransactionTimeoutPending = true;
+		IdleSessionTimeoutPending = true;
+		ProcSignalBarrierPending = true;
+		LogMemoryContextPending = true;
+		IdleStatsUpdateTimeoutPending = true;
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && !InterruptPending;
+		ok = ok && !QueryCancelPending;
+		ok = ok && !ProcDiePending;
+		ok = ok && ProcDieSenderPid == 0;
+		ok = ok && ProcDieSenderUid == 0;
+		ok = ok && !IdleInTransactionSessionTimeoutPending;
+		ok = ok && !TransactionTimeoutPending;
+		ok = ok && !IdleSessionTimeoutPending;
+		ok = ok && !ProcSignalBarrierPending;
+		ok = ok && !LogMemoryContextPending;
+		ok = ok && !IdleStatsUpdateTimeoutPending;
+
+		InterruptPending = false;
+		QueryCancelPending = false;
+		ProcDiePending = false;
+		ProcDieSenderPid = 303;
+		ProcDieSenderUid = 404;
+		IdleInTransactionSessionTimeoutPending = false;
+		TransactionTimeoutPending = false;
+		IdleSessionTimeoutPending = false;
+		ProcSignalBarrierPending = false;
+		LogMemoryContextPending = false;
+		IdleStatsUpdateTimeoutPending = false;
+
+		CurrentPgBackend = &fake_backend1;
+		ok = ok && InterruptPending;
+		ok = ok && QueryCancelPending;
+		ok = ok && ProcDiePending;
+		ok = ok && ProcDieSenderPid == 101;
+		ok = ok && ProcDieSenderUid == 202;
+		ok = ok && IdleInTransactionSessionTimeoutPending;
+		ok = ok && TransactionTimeoutPending;
+		ok = ok && IdleSessionTimeoutPending;
+		ok = ok && ProcSignalBarrierPending;
+		ok = ok && LogMemoryContextPending;
+		ok = ok && IdleStatsUpdateTimeoutPending;
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && !InterruptPending;
+		ok = ok && !QueryCancelPending;
+		ok = ok && !ProcDiePending;
+		ok = ok && ProcDieSenderPid == 303;
+		ok = ok && ProcDieSenderUid == 404;
+		ok = ok && !IdleInTransactionSessionTimeoutPending;
+		ok = ok && !TransactionTimeoutPending;
+		ok = ok && !IdleSessionTimeoutPending;
+		ok = ok && !ProcSignalBarrierPending;
+		ok = ok && !LogMemoryContextPending;
+		ok = ok && !IdleStatsUpdateTimeoutPending;
+
+		CurrentPgBackend = saved_backend;
+		InterruptPending = saved_interrupt_pending;
+		QueryCancelPending = saved_query_cancel_pending;
+		ProcDiePending = saved_proc_die_pending;
+		ProcDieSenderPid = saved_proc_die_sender_pid;
+		ProcDieSenderUid = saved_proc_die_sender_uid;
+		IdleInTransactionSessionTimeoutPending =
+			saved_idle_in_transaction_session_timeout_pending;
+		TransactionTimeoutPending = saved_transaction_timeout_pending;
+		IdleSessionTimeoutPending = saved_idle_session_timeout_pending;
+		ProcSignalBarrierPending = saved_proc_signal_barrier_pending;
+		LogMemoryContextPending = saved_log_memory_context_pending;
+		IdleStatsUpdateTimeoutPending =
+			saved_idle_stats_update_timeout_pending;
+	}
+	PG_CATCH();
+	{
+		CurrentPgBackend = saved_backend;
+		InterruptPending = saved_interrupt_pending;
+		QueryCancelPending = saved_query_cancel_pending;
+		ProcDiePending = saved_proc_die_pending;
+		ProcDieSenderPid = saved_proc_die_sender_pid;
+		ProcDieSenderUid = saved_proc_die_sender_uid;
+		IdleInTransactionSessionTimeoutPending =
+			saved_idle_in_transaction_session_timeout_pending;
+		TransactionTimeoutPending = saved_transaction_timeout_pending;
+		IdleSessionTimeoutPending = saved_idle_session_timeout_pending;
+		ProcSignalBarrierPending = saved_proc_signal_barrier_pending;
+		LogMemoryContextPending = saved_log_memory_context_pending;
+		IdleStatsUpdateTimeoutPending =
+			saved_idle_stats_update_timeout_pending;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "pending interrupt state was not backend-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_execution_debug_query_string_is_execution_local);
 Datum
 test_execution_debug_query_string_is_execution_local(PG_FUNCTION_ARGS)

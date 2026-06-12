@@ -163,6 +163,19 @@ Important current files:
   `auto_explain`, `tablefunc`, and several `src/test/modules` tests. Clean and
   reinstall any of those modules before testing them after PRNG TLS changes.
 
+  Pending interrupt globals such as `InterruptPending` can be referenced from
+  server-side common objects and loadable modules. After converting one of
+  these exported names to an object-backed compatibility macro, rebuild
+  `src/common`, PL/pgSQL, `src/test/regress`, and `libpqwalreceiver` before
+  trusting `initdb` or core regression results:
+
+  ```sh
+  gmake -C src/common clean all
+  gmake -C src/pl/plpgsql/src clean all DESTDIR="$PWD/tmp_install" install
+  gmake -C src/test/regress clean all
+  gmake -C src/backend/replication/libpqwalreceiver clean all DESTDIR="$PWD/tmp_install" install
+  ```
+
 - After changing a contrib/test module header to expose `PG_THREAD_LOCAL`
   declarations, clean and rebuild every object in that module before running a
   threaded smoke. Stale objects can still see the old plain-global symbol while
