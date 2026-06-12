@@ -478,6 +478,78 @@ test_execution_debug_query_string_is_execution_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_connection_socket_io_is_connection_local);
+Datum
+test_connection_socket_io_is_connection_local(PG_FUNCTION_ARGS)
+{
+	PgConnection *saved_connection;
+	PgConnection fake_connection1;
+	PgConnection fake_connection2;
+	PgConnectionSocketIOState *socket_io;
+	bool		ok = true;
+
+	saved_connection = CurrentPgConnection;
+	MemSet(&fake_connection1, 0, sizeof(fake_connection1));
+	MemSet(&fake_connection2, 0, sizeof(fake_connection2));
+
+	PG_TRY();
+	{
+		CurrentPgConnection = &fake_connection1;
+		socket_io = PgCurrentConnectionSocketIORef();
+		socket_io->send_buffer = (char *) "fake connection one";
+		socket_io->send_buffer_size = 11;
+		socket_io->send_pointer = 7;
+		socket_io->send_start = 3;
+		socket_io->recv_pointer = 5;
+		socket_io->recv_length = 9;
+		socket_io->comm_busy = true;
+		socket_io->comm_reading_msg = true;
+
+		CurrentPgConnection = &fake_connection2;
+		socket_io = PgCurrentConnectionSocketIORef();
+		ok = ok && socket_io->send_buffer == NULL;
+		ok = ok && socket_io->send_buffer_size == 0;
+		ok = ok && socket_io->send_pointer == 0;
+		ok = ok && socket_io->send_start == 0;
+		ok = ok && socket_io->recv_pointer == 0;
+		ok = ok && socket_io->recv_length == 0;
+		ok = ok && !socket_io->comm_busy;
+		ok = ok && !socket_io->comm_reading_msg;
+		socket_io->send_buffer = (char *) "fake connection two";
+		socket_io->comm_busy = true;
+
+		CurrentPgConnection = &fake_connection1;
+		socket_io = PgCurrentConnectionSocketIORef();
+		ok = ok && strcmp(socket_io->send_buffer, "fake connection one") == 0;
+		ok = ok && socket_io->send_buffer_size == 11;
+		ok = ok && socket_io->send_pointer == 7;
+		ok = ok && socket_io->send_start == 3;
+		ok = ok && socket_io->recv_pointer == 5;
+		ok = ok && socket_io->recv_length == 9;
+		ok = ok && socket_io->comm_busy;
+		ok = ok && socket_io->comm_reading_msg;
+
+		CurrentPgConnection = &fake_connection2;
+		socket_io = PgCurrentConnectionSocketIORef();
+		ok = ok && strcmp(socket_io->send_buffer, "fake connection two") == 0;
+		ok = ok && socket_io->comm_busy;
+		ok = ok && !socket_io->comm_reading_msg;
+
+		CurrentPgConnection = saved_connection;
+	}
+	PG_CATCH();
+	{
+		CurrentPgConnection = saved_connection;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "connection socket I/O state was not connection-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_backend_interrupt_wakes_target_latch);
 Datum
 test_backend_interrupt_wakes_target_latch(PG_FUNCTION_ARGS)

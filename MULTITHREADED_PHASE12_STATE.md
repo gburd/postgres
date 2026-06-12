@@ -122,3 +122,47 @@ Validation for this slice:
   `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
   `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`
   after the debug-query-string migration.
+
+## Connection Socket I/O Bridge
+
+The fourth Phase 12 slice moves the internal socket protocol buffers and
+message flags from raw connection TLS in `pqcomm.c` under `PgConnection`:
+
+- `PgConnection` now owns a `PgConnectionSocketIOState`;
+- the send buffer pointer, send buffer size, send cursor, receive buffer,
+  receive cursor, communication-busy flag, and message-read flag are part of
+  the connection object;
+- `pqcomm.c` keeps its historical local names as macros, so socket protocol
+  code remains source-local while storage is object-backed;
+- early authentication paths before `BaseInit()` installs
+  `CurrentPgConnection` use fallback connection-local storage in
+  `backend_runtime.c`;
+- `InitializePgProcessRuntime()` adopts that early fallback socket state into
+  the process connection object.
+
+This is the first bridge for frontend/backend protocol state. It does not yet
+move exported connection pointers such as `PqCommMethods` or `FeBeWaitSet`;
+those are shared with `pqmq`, WAL sender, SSL/GSS, and latch retargeting and
+should move in a separate batch.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `pqcomm.o`, and
+  `test_backend_runtime.o`;
+- an incremental full build initially left stale backend objects with old
+  `PgThreadBackendRuntimeState` layout assumptions. Threaded TAP then crashed
+  during startup before readiness. The recovery was a backend clean plus
+  generated-header recovery followed by a clean `gmake -j8`, matching the
+  local build notes for runtime/header layout changes;
+- clean full `gmake -j8` passed;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed, followed by
+  rebuilding and reinstalling `src/test/modules/test_backend_runtime`;
+- focused `test_backend_runtime` regression passed and includes
+  `test_connection_socket_io_is_connection_local()`, which switches
+  `CurrentPgConnection` between fake connections and proves socket I/O state
+  is isolated per connection;
+- threaded runtime TAP coverage passed for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests after the clean rebuild and install.

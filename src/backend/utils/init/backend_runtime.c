@@ -45,6 +45,7 @@ static PG_GLOBAL_BACKEND PgBackend process_backend;
 static PG_GLOBAL_SESSION PgSession process_session;
 static PG_GLOBAL_CONNECTION PgConnection process_connection;
 static PG_GLOBAL_EXECUTION PgExecution process_execution;
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionSocketIOState early_connection_socket_io;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInterruptHoldoffState early_interrupt_holdoffs;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionDebugState early_execution_debug;
 
@@ -54,6 +55,7 @@ StaticAssertDecl(PG_BACKEND_INTERRUPT_COUNT <= 32,
 static void PgBackendInitializeIdCounter(void);
 static PgBackendId PgBackendAssignId(void);
 static void PgBackendWakeForInterrupt(PgBackend *backend);
+static void PgConnectionAdoptEarlySocketIO(PgConnection *connection);
 static void PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend);
 static void PgExecutionAdoptEarlyDebugState(PgExecution *execution);
 static PgBackendInterruptHoldoffState *PgCurrentInterruptHoldoffs(void);
@@ -74,6 +76,15 @@ PgBackendAssignId(void)
 	PgBackendInitializeIdCounter();
 
 	return pg_atomic_add_fetch_u64(&next_backend_id, 1);
+}
+
+static void
+PgConnectionAdoptEarlySocketIO(PgConnection *connection)
+{
+	Assert(connection != NULL);
+
+	connection->socket_io = early_connection_socket_io;
+	MemSet(&early_connection_socket_io, 0, sizeof(early_connection_socket_io));
 }
 
 static void
@@ -146,6 +157,7 @@ InitializePgProcessRuntime(void)
 	process_connection.backend = &process_backend;
 	process_connection.session = &process_session;
 	process_connection.port = MyProcPort;
+	PgConnectionAdoptEarlySocketIO(&process_connection);
 
 	process_execution.backend = &process_backend;
 	process_execution.session = &process_session;
@@ -290,6 +302,21 @@ const char **
 PgCurrentDebugQueryStringRef(void)
 {
 	return PgExecutionDebugQueryStringRef(CurrentPgExecution);
+}
+
+PgConnectionSocketIOState *
+PgConnectionSocketIORef(PgConnection *connection)
+{
+	if (connection == NULL)
+		return &early_connection_socket_io;
+
+	return &connection->socket_io;
+}
+
+PgConnectionSocketIOState *
+PgCurrentConnectionSocketIORef(void)
+{
+	return PgConnectionSocketIORef(CurrentPgConnection);
 }
 
 static PgBackendInterruptHoldoffState *

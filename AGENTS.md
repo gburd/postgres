@@ -184,6 +184,15 @@ Important current files:
   `PGPROC.procLatch` size. Use the backend clean plus generated-file recovery
   above, then rebuild with `gmake -j8`.
 
+- If `src/include/utils/backend_runtime.h` changes the layout of embedded
+  runtime structs such as `PgThreadBackendRuntimeState`, do not trust a purely
+  incremental backend build. Stale objects can keep old field offsets while
+  freshly compiled runtime code zeros or writes the new, larger struct. One
+  observed failure after adding connection socket I/O state was threaded
+  startup corrupting adjacent `BackendThreadStart` timezone fields and
+  segfaulting in `StartupXLOG()` before readiness. Use the backend clean plus
+  generated-file recovery above, then rebuild with `gmake -j8`.
+
 - If `src/include/replication/worker_internal.h` changes the layout of
   `LogicalRepWorker`, clean and rebuild the whole logical replication backend
   directory before running logical replication smokes. Incremental builds in

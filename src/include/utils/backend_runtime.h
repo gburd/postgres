@@ -135,6 +135,22 @@ typedef struct PgExecutionDebugState
 	const char *debug_query_string;
 } PgExecutionDebugState;
 
+#define PG_CONNECTION_SEND_BUFFER_SIZE 8192
+#define PG_CONNECTION_RECV_BUFFER_SIZE 8192
+
+typedef struct PgConnectionSocketIOState
+{
+	char	   *send_buffer;
+	int			send_buffer_size;
+	size_t		send_pointer;
+	size_t		send_start;
+	char		recv_buffer[PG_CONNECTION_RECV_BUFFER_SIZE];
+	int			recv_pointer;
+	int			recv_length;
+	bool		comm_busy;
+	bool		comm_reading_msg;
+} PgConnectionSocketIOState;
+
 /*
  * Main-loop state owned by PgSession. Some of this state used to be volatile
  * locals in PostgresMain(); keep the loop flags volatile because they must
@@ -208,6 +224,7 @@ struct PgConnection
 	PgBackend  *backend;
 	PgSession  *session;
 	struct Port *port;
+	PgConnectionSocketIOState socket_io;
 };
 
 struct PgExecution
@@ -251,6 +268,8 @@ extern void PgSessionSetLegacySession(PgSession *session,
 extern Session *PgCurrentLegacySession(void);
 extern const char **PgExecutionDebugQueryStringRef(PgExecution *execution);
 extern const char **PgCurrentDebugQueryStringRef(void);
+extern PgConnectionSocketIOState *PgConnectionSocketIORef(PgConnection *connection);
+extern PgConnectionSocketIOState *PgCurrentConnectionSocketIORef(void);
 extern PgBackendLaunchModel PgRuntimeGetBackendLaunchModel(BackendType backend_type);
 extern bool PgRuntimeShouldThreadBackend(BackendType backend_type);
 extern PgBackendModel PgRuntimeGetExtensionBackendModel(void);

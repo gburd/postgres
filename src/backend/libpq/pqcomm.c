@@ -118,23 +118,22 @@ static PG_GLOBAL_RUNTIME List *sock_paths = NIL;
  * enlarged by pq_putmessage_noblock() if the message doesn't fit otherwise.
  */
 
-#define PQ_SEND_BUFFER_SIZE 8192
-#define PQ_RECV_BUFFER_SIZE 8192
+#define PQ_SEND_BUFFER_SIZE PG_CONNECTION_SEND_BUFFER_SIZE
+#define PQ_RECV_BUFFER_SIZE PG_CONNECTION_RECV_BUFFER_SIZE
 
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION char *PqSendBuffer;
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION int PqSendBufferSize;	/* Size send buffer */
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION size_t PqSendPointer;	/* Next index to store a byte in PqSendBuffer */
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION size_t PqSendStart;	/* Next index to send a byte in PqSendBuffer */
-
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION char PqRecvBuffer[PQ_RECV_BUFFER_SIZE];
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION int PqRecvPointer;	/* Next index to read a byte from PqRecvBuffer */
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION int PqRecvLength;	/* End of data available in PqRecvBuffer */
+#define PqSendBuffer (PqSocketIO()->send_buffer)
+#define PqSendBufferSize (PqSocketIO()->send_buffer_size)
+#define PqSendPointer (PqSocketIO()->send_pointer)
+#define PqSendStart (PqSocketIO()->send_start)
+#define PqRecvBuffer (PqSocketIO()->recv_buffer)
+#define PqRecvPointer (PqSocketIO()->recv_pointer)
+#define PqRecvLength (PqSocketIO()->recv_length)
 
 /*
  * Message status
  */
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION bool PqCommBusy;	/* busy sending data to the client */
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION bool PqCommReadingMsg;	/* in the middle of reading a message */
+#define PqCommBusy (PqSocketIO()->comm_busy)
+#define PqCommReadingMsg (PqSocketIO()->comm_reading_msg)
 
 
 /* Internal functions */
@@ -146,6 +145,7 @@ static int	socket_flush_if_writable(void);
 static bool socket_is_send_pending(void);
 static int	socket_putmessage(char msgtype, const char *s, size_t len);
 static void socket_putmessage_noblock(char msgtype, const char *s, size_t len);
+static inline PgConnectionSocketIOState *PqSocketIO(void);
 static inline int internal_putbytes(const void *b, size_t len);
 static inline int internal_flush(void);
 static pg_noinline int internal_flush_buffer(const char *buf, size_t *start,
@@ -166,6 +166,12 @@ static const PQcommMethods PqCommSocketMethods = {
 PG_THREAD_LOCAL PG_GLOBAL_CONNECTION const PQcommMethods *PqCommMethods = &PqCommSocketMethods;
 
 PG_THREAD_LOCAL PG_GLOBAL_CONNECTION WaitEventSet *FeBeWaitSet;
+
+static inline PgConnectionSocketIOState *
+PqSocketIO(void)
+{
+	return PgCurrentConnectionSocketIORef();
+}
 
 
 /* --------------------------------

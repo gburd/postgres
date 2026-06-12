@@ -10,3 +10,4 @@ SELECT test_backend_pgproc_has_logical_id();
 SELECT test_backend_thread_ids_are_logical();
 SELECT test_backend_interrupt_holdoffs_are_backend_local();
 SELECT test_execution_debug_query_string_is_execution_local();
+SELECT test_connection_socket_io_is_connection_local();

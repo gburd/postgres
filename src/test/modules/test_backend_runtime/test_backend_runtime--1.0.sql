@@ -42,3 +42,7 @@ CREATE FUNCTION test_backend_interrupt_holdoffs_are_backend_local()
 CREATE FUNCTION test_execution_debug_query_string_is_execution_local()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;
+
+CREATE FUNCTION test_connection_socket_io_is_connection_local()
+	RETURNS pg_catalog.bool
+	AS 'MODULE_PATHNAME' LANGUAGE C;
