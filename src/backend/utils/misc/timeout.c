@@ -83,6 +83,8 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile TimestampTz signal_due_at = 0;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackend *firing_timeout_target = NULL;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecution *firing_timeout_execution = NULL;
 
+static void InitializeTimeoutState(void);
+
 
 /*****************************************************************************
  * Internal helper functions
@@ -476,16 +478,10 @@ handle_sig_alarm(SIGNAL_ARGS)
  *****************************************************************************/
 
 /*
- * Initialize timeout module.
- *
- * This must be called in every process that wants to use timeouts.
- *
- * If the process was forked from another one that was also using this
- * module, be sure to call this before re-enabling signals; else handlers
- * meant to run in the parent process might get invoked in this one.
+ * Initialize backend-local timeout module state.
  */
-void
-InitializeTimeouts(void)
+static void
+InitializeTimeoutState(void)
 {
 	int			i;
 
@@ -510,9 +506,33 @@ InitializeTimeouts(void)
 	}
 
 	all_timeouts_initialized = true;
+}
+
+/*
+ * Initialize timeout state and install process SIGALRM delivery.
+ *
+ * This must be called in every process that wants to use signal-backed
+ * timeouts.  If the process was forked from another one that was also using
+ * this module, be sure to call this before re-enabling signals; else handlers
+ * meant to run in the parent process might get invoked in this one.
+ */
+void
+InitializeTimeouts(void)
+{
+	InitializeTimeoutState();
 
 	/* Now establish the signal handler */
 	pqsignal(SIGALRM, handle_sig_alarm);
+}
+
+/*
+ * Initialize timeout state for a logical backend that cannot install or share
+ * process SIGALRM delivery.
+ */
+void
+InitializeLogicalTimeouts(void)
+{
+	InitializeTimeoutState();
 }
 
 /*

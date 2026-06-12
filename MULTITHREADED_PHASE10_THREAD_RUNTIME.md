@@ -486,6 +486,32 @@ This is not yet logical procsignal delivery. `SendProcSignal()` still uses PID
 and `SIGUSR1`, so concurrent threaded backends would still need delivery by
 logical backend/proc number plus latch wakeup rather than process signal.
 
+## Timeout Registration Boundary Slice
+
+The twenty-fourth slice moves the guarded stop past backend timeout handler
+registration without installing process-global timeout delivery in the thread
+carrier:
+
+- timeout initialization is split into backend-local timeout state reset and
+  process SIGALRM handler installation;
+- process backends still use `InitializeTimeouts()`, preserving the historical
+  `SIGALRM` handler setup;
+- threaded backend carriers call `InitializeLogicalTimeouts()` from
+  `PgSessionBootstrap()`, resetting their backend-local timeout table without
+  changing the process signal handler shared with the postmaster and sibling
+  backend threads;
+- threaded startup now registers the regular backend timeout handlers in
+  `InitPostgres()` and then stops before authentication timeout arming,
+  catalog initialization, or normal session lifetime;
+- the guarded FATAL explicitly records that handler registration is safe enough
+  to cross, but timeout delivery still needs a logical backend timer path
+  before authentication and later session execution can run.
+
+The next blocker is not `RegisterTimeout()` itself. It is the first
+`enable_timeout_after()` use in authentication, plus the broader question of
+how logical backend timeouts should wake and interrupt one carrier without
+using process-wide `setitimer()`/`SIGALRM`.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
@@ -712,3 +738,19 @@ logical backend/proc number plus latch wakeup rather than process signal.
   timeout registration with the guarded "threaded backend database
   initialization is not implemented yet" FATAL, kept the postmaster running
   between connections, and completed normal fast shutdown.
+- after the timeout registration boundary slice,
+  `gmake -C src/backend/utils/misc timeout.o`,
+  `gmake -C src/backend/tcop postgres.o`, and
+  `gmake -C src/backend/utils/init postinit.o` passed;
+- after the timeout registration boundary slice, full
+  `gmake -C src/backend -j8` passed and
+  `gmake DESTDIR="$PWD/tmp_install" install` completed;
+- after the timeout registration boundary slice,
+  `gmake -C src/test/modules/test_backend_runtime check` passed;
+- a temp install smoke with `multithreaded=on` after the timeout registration
+  boundary slice read real libpq startup packets for two client connections,
+  crossed `InitPostgres()` far enough to register backend timeout handlers
+  without installing `SIGALRM`, rejected both before authentication timeout
+  arming with the guarded "threaded backend database initialization is not
+  implemented yet" FATAL, kept the postmaster running between connections, and
+  completed normal fast shutdown.

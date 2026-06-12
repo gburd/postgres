@@ -5026,6 +5026,7 @@ PgSessionBootstrap(const char *dbname, const char *username)
 		 * backends.  Threaded interrupt delivery will be routed through
 		 * logical backend state before this path can proceed further.
 		 */
+		InitializeLogicalTimeouts();
 	}
 	else if (am_walsender)
 		WalSndSignals();

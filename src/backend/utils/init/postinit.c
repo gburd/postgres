@@ -793,14 +793,6 @@ InitPostgres(const char *in_dbname, Oid dboid,
 
 	RESUME_INTERRUPTS();
 
-	if (threaded_backend)
-		ereport(FATAL,
-				(errmsg("threaded backend database initialization is not implemented yet"),
-				 errdetail("ProcSignalInit now records logical backend identity, "
-						   "but timeout registration, authentication, catalog "
-						   "initialization, and post-startup session lifetime "
-						   "still need thread-safe lifecycle handling.")));
-
 	/*
 	 * Also set up timeout handlers needed for backend operation.  We need
 	 * these in every case except bootstrap.
@@ -818,6 +810,15 @@ InitPostgres(const char *in_dbname, Oid dboid,
 		RegisterTimeout(IDLE_STATS_UPDATE_TIMEOUT,
 						IdleStatsUpdateTimeoutHandler);
 	}
+
+	if (threaded_backend)
+		ereport(FATAL,
+				(errmsg("threaded backend database initialization is not implemented yet"),
+				 errdetail("Backend timeout handlers are registered without "
+						   "installing SIGALRM, but authentication timeout "
+						   "arming, catalog initialization, and post-startup "
+						   "session lifetime still need thread-safe lifecycle "
+						   "handling.")));
 
 	/*
 	 * If this is either a bootstrap process or a standalone backend, start up

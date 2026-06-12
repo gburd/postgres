@@ -77,6 +77,7 @@ typedef struct
 
 /* timeout setup */
 extern void InitializeTimeouts(void);
+extern void InitializeLogicalTimeouts(void);
 extern TimeoutId RegisterTimeout(TimeoutId id, timeout_handler_proc handler);
 extern void reschedule_timeouts(void);
 extern PgBackend *get_firing_timeout_target_backend(void);
