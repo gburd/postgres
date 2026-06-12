@@ -163,8 +163,8 @@ PMSignalShmemInit(void *arg)
 void
 SendPostmasterSignal(PMSignalReason reason)
 {
-	/* If called in a standalone backend, do nothing */
-	if (!IsUnderPostmaster)
+	/* If called without a postmaster signaling target, do nothing. */
+	if (PMSignalState == NULL || PostmasterPid == 0)
 		return;
 	/* Atomically set the proper flag */
 	PMSignalState->PMSignalFlags[reason] = true;

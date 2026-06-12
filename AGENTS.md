@@ -182,6 +182,14 @@ Important current files:
   gmake -C src/backend -j8
   ```
 
+- If a shared enum in an installed or widely included header changes numeric
+  values, do not trust a purely incremental backend build. For example,
+  inserting a new `PMSignalReason` before existing values can leave stale
+  objects such as `checkpointer.o` signaling one numeric reason while
+  `postmaster.o` interprets another, causing shutdown hangs. Prefer appending
+  new signal reasons to preserve existing values, and force rebuild affected
+  objects or use a clean backend rebuild before testing.
+
 - This checkout is currently configured with `with_gssapi = no`. A direct
   `gmake -C src/backend/libpq be-secure-gssapi.o` can fail before reaching
   project changes because the GSSAPI types and functions are unavailable in
