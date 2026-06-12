@@ -264,6 +264,27 @@ replace the process-only startup timeout path, route startup termination through
 logical backend exit, and begin adopting/copying broader GUC-backed session
 state before the guard can move later in `BackendInitialize()`.
 
+## Startup Metadata Boundary Slice
+
+The fourteenth slice moves the threaded-startup guard to the startup-packet
+timeout boundary:
+
+- process mode still installs the historical startup SIGTERM handler,
+  initializes SIGALRM-backed timeouts, and applies the startup signal mask
+  immediately after `pq_init()`;
+- thread mode now skips those process-global signal changes and continues
+  through remote host/port resolution, `Port` metadata initialization, and
+  optional connection receipt logging;
+- the threaded guard now fires immediately before `RegisterTimeout()` and
+  `enable_timeout_after()` would arm the process-global startup packet timeout;
+- disabling the startup timeout and restoring `BlockSig` are explicitly
+  process-mode operations.
+
+This leaves a sharper next boundary: a threaded backend can perform early
+connection metadata setup, but it still cannot read the startup packet until
+startup timeout and startup termination have logical-backend equivalents that
+do not use `_exit()` or process-wide SIGALRM delivery.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
@@ -356,3 +377,11 @@ state before the guard can move later in `BackendInitialize()`.
   `BackendInitialize(..., BACKEND_STARTUP_THREAD)`; `pg_ctl status` reported
   the postmaster still running between connections, no thread-exit continuation
   ran during postmaster shutdown, and normal fast shutdown completed.
+- after the startup metadata boundary slice,
+  `gmake -C src/backend/tcop backend_startup.o` passed;
+- after the startup metadata boundary slice, full `gmake -C src/backend -j8`
+  passed;
+- a temp install smoke with `multithreaded=on` after the startup metadata
+  boundary slice still rejected two client connections with the guarded FATAL,
+  kept the postmaster running between connections, and completed normal fast
+  shutdown.

@@ -225,12 +225,7 @@ BackendInitialize(ClientSocket *client_sock, CAC_state cac,
 		sigprocmask(SIG_SETMASK, &StartupBlockSig, NULL);
 	}
 	else
-	{
-		ereport(FATAL,
-				(errmsg("threaded backend startup is not implemented yet"),
-				 errdetail("The startup packet timeout and termination paths "
-						   "still use process-level signal handling.")));
-	}
+		Assert(startup_mode == BACKEND_STARTUP_THREAD);
 
 	/*
 	 * Get the remote host name and port for logging and status display.
@@ -299,6 +294,12 @@ BackendInitialize(ClientSocket *client_sock, CAC_state cac,
 	{
 		port->remote_hostname = MemoryContextStrdup(TopMemoryContext, remote_host);
 	}
+
+	if (startup_mode == BACKEND_STARTUP_THREAD)
+		ereport(FATAL,
+				(errmsg("threaded backend startup is not implemented yet"),
+				 errdetail("The startup packet timeout and termination paths "
+						   "still use process-level signal handling.")));
 
 	/*
 	 * Ready to begin client interaction.  We will give up and _exit(1) after
@@ -384,8 +385,11 @@ BackendInitialize(ClientSocket *client_sock, CAC_state cac,
 	/*
 	 * Disable the timeout, and prevent SIGTERM again.
 	 */
-	disable_timeout(STARTUP_PACKET_TIMEOUT, false);
-	sigprocmask(SIG_SETMASK, &BlockSig, NULL);
+	if (startup_mode == BACKEND_STARTUP_PROCESS)
+	{
+		disable_timeout(STARTUP_PACKET_TIMEOUT, false);
+		sigprocmask(SIG_SETMASK, &BlockSig, NULL);
+	}
 
 	/*
 	 * As a safety check that nothing in startup has yet performed
