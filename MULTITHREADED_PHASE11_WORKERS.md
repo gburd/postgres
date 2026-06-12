@@ -66,6 +66,12 @@ thread carriers once the threaded runtime has already started:
   accounting path so `io_worker_count` and `io_worker_children[]` stay
   consistent.
 
+The thread-backed child signal bridge has been factored so each worker family
+can map postmaster signals to logical interrupts in one place. Today that
+preserves the existing backend/autovacuum behavior and the IO-worker-specific
+`SIGINT`, ignored `SIGTERM`, and `SIGUSR2` shutdown semantics; future worker
+families should extend that helper before opting into thread carriers.
+
 The local smoke for this slice starts `multithreaded=on` with
 `io_method=worker` and `io_min_workers=1`, then raises `io_min_workers` to 2
 after a threaded client backend exists. The server reported one IO worker
@@ -115,8 +121,18 @@ Additional validation for the late AIO worker slice:
   and `pg_reload_conf()`. The smoke observed `io_before=1`, `io_after=2`,
   `children_before=6`, and `children_after=6`, then stopped the server
   cleanly with fast shutdown.
+- a follow-up direct threaded AIO smoke on the committed branch reproduced the
+  same late-worker proof and fast shutdown: `io_after=2`,
+  `children_before=6`, and `children_after=6`.
 
 An attempted TAP fixture that relied on ordinary autovacuum scheduling did not
 start a worker reliably within a short poll window, even with aggressive table
 thresholds. The live worker proof should use a deterministic trigger or a
 dedicated test hook rather than depending on launcher heuristics.
+
+An attempted late WAL summarizer proof using `ALTER SYSTEM SET summarize_wal =
+on` and `pg_reload_conf()` did not start a visible `wal summarizer` backend in
+the short poll window. Do not use that reload-only path as the Phase 11
+summarizer proof without first confirming the postmaster launch condition and
+the summarizer's own startup/exit rules. Startup-time WAL summarizer threading
+still belongs with the coordinated fixed-worker startup conversion.

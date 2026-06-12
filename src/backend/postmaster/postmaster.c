@@ -447,6 +447,8 @@ static int	BackendStartup(ClientSocket *client_sock);
 static void report_fork_failure_to_client(ClientSocket *client_sock, int errnum);
 static CAC_state canAcceptConnections(BackendType backend_type);
 static void signal_child(PMChild *pmchild, int signal);
+static bool thread_child_signal_interrupt(PMChild *pmchild, int signal,
+										  PgBackendInterruptType *interrupt);
 static bool SignalChildren(int signal, BackendTypeMask targetMask);
 static void TerminateChildren(int signal);
 static int	CountChildren(BackendTypeMask targetMask);
@@ -3548,6 +3550,7 @@ signal_child(PMChild *pmchild, int signal)
 	if (PostmasterChildIsThread(pmchild))
 	{
 		PgBackend  *backend = pmchild->thread_backend;
+		PgBackendInterruptType interrupt;
 
 		ereport(DEBUG3,
 				(errmsg_internal("sending signal %d/%s to %s thread-backed logical backend",
@@ -3557,40 +3560,8 @@ signal_child(PMChild *pmchild, int signal)
 		if (backend == NULL)
 			return;
 
-		switch (signal)
-		{
-			case SIGINT:
-				if (pmchild->bkend_type == B_IO_WORKER)
-					PgBackendRaiseInterrupt(backend,
-											PG_BACKEND_INTERRUPT_PROC_DIE);
-				else
-					PgBackendRaiseInterrupt(backend,
-											PG_BACKEND_INTERRUPT_QUERY_CANCEL);
-				break;
-			case SIGTERM:
-				if (pmchild->bkend_type == B_IO_WORKER)
-					break;
-				PgBackendRaiseInterrupt(backend,
-										PG_BACKEND_INTERRUPT_PROC_DIE);
-				break;
-			case SIGUSR2:
-				if (pmchild->bkend_type == B_IO_WORKER)
-					PgBackendRaiseInterrupt(backend,
-											PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST);
-				break;
-			case SIGQUIT:
-			case SIGKILL:
-			case SIGABRT:
-				PgBackendRaiseInterrupt(backend,
-										PG_BACKEND_INTERRUPT_PROC_DIE);
-				break;
-			case SIGHUP:
-				PgBackendRaiseInterrupt(backend,
-										PG_BACKEND_INTERRUPT_CONFIG_RELOAD);
-				break;
-			default:
-				break;
-		}
+		if (thread_child_signal_interrupt(pmchild, signal, &interrupt))
+			PgBackendRaiseInterrupt(backend, interrupt);
 		return;
 	}
 
@@ -3620,6 +3591,48 @@ signal_child(PMChild *pmchild, int signal)
 			break;
 	}
 #endif
+}
+
+static bool
+thread_child_signal_interrupt(PMChild *pmchild, int signal,
+							  PgBackendInterruptType *interrupt)
+{
+	Assert(PostmasterChildIsThread(pmchild));
+	Assert(interrupt != NULL);
+
+	switch (signal)
+	{
+		case SIGINT:
+			if (pmchild->bkend_type == B_IO_WORKER)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_PROC_DIE;
+				return true;
+			}
+			*interrupt = PG_BACKEND_INTERRUPT_QUERY_CANCEL;
+			return true;
+		case SIGTERM:
+			if (pmchild->bkend_type == B_IO_WORKER)
+				return false;
+			*interrupt = PG_BACKEND_INTERRUPT_PROC_DIE;
+			return true;
+		case SIGUSR2:
+			if (pmchild->bkend_type == B_IO_WORKER)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST;
+				return true;
+			}
+			return false;
+		case SIGQUIT:
+		case SIGKILL:
+		case SIGABRT:
+			*interrupt = PG_BACKEND_INTERRUPT_PROC_DIE;
+			return true;
+		case SIGHUP:
+			*interrupt = PG_BACKEND_INTERRUPT_CONFIG_RELOAD;
+			return true;
+		default:
+			return false;
+	}
 }
 
 /*
