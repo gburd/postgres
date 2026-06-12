@@ -558,9 +558,40 @@ reason as the checkpointer/background writer slice: recovery startup still
 depends on safe startup-era process creation. Startup/recovery conversion can
 remove the temporary process logger later.
 
+## Generic ProcSignal Wakeup Follow-up
+
+An attempted online data-checksum launcher/worker conversion exposed a generic
+logical ProcSignal gap before the worker itself could be assessed: barrier
+delivery to thread-backed auxiliary ProcSignal slots only set latches for
+slots below `MaxBackends`. The checkpointer is an auxiliary slot, so a checksum
+state barrier could wait indefinitely for the thread-backed checkpointer to
+acknowledge it.
+
+`SendBackendInterrupt()`, `SendProcSignal()`, and
+`EmitProcSignalBarrier()` now wake every ProcSignal slot that owns a real
+`PGPROC` latch, including auxiliary slots and excluding prepared-transaction
+dummy slots. `EmitProcSignalBarrier()` also routes same-process threaded slots
+through the logical backend interrupt mailbox instead of sending `SIGUSR1` to
+the postmaster process.
+
+`WaitForProcSignalBarrier()` drains the current backend's logical interrupt
+mailbox while waiting, so a thread-backed backend that emits a barrier can
+absorb its own barrier before waiting for all slots to advance. Dynamic
+background-worker startup/shutdown waiters also drain logical interrupts before
+the legacy interrupt check.
+
+The online data-checksum worker is not complete yet. Once the barrier wakeup
+was fixed, the worker started on a thread carrier and then crashed in
+`GetVictimBuffer()` while scanning shared buffers. The crash report showed an
+impossible buffer descriptor state in the data-checksum worker, so that worker
+family remains in the remaining-work list until the shared-buffer access path
+is audited for threaded workers.
+
 ## Remaining Worker Families
 
 - startup/recovery worker paths that are part of normal server operation;
+- online data-checksum launcher/worker conversion after the shared-buffer
+  worker-scan crash is understood;
 - remaining in-tree generic background workers, tests, and examples that are
   not part of the already audited logical replication, core parallel worker,
   `test_backend_runtime`, and `test_shm_mq` sets. These can opt into the

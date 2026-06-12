@@ -1289,6 +1289,7 @@ WaitForBackgroundWorkerStartup(BackgroundWorkerHandle *handle, pid_t *pidp)
 	{
 		pid_t		pid;
 
+		PgCurrentBackendApplyInterrupts();
 		CHECK_FOR_INTERRUPTS();
 
 		status = GetBackgroundWorkerPid(handle, &pid);
@@ -1334,6 +1335,7 @@ WaitForBackgroundWorkerShutdown(BackgroundWorkerHandle *handle)
 	{
 		pid_t		pid;
 
+		PgCurrentBackendApplyInterrupts();
 		CHECK_FOR_INTERRUPTS();
 
 		status = GetBackgroundWorkerPid(handle, &pid);

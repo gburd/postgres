@@ -128,6 +128,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ProcSignalSlot *MyProcSignalSlot = NULL
 
 static bool ProcSignalReasonToBackendInterrupt(ProcSignalReason reason,
 											   PgBackendInterruptType *interrupt_type);
+static void WakeProcSignalSlot(int procNumber);
 static bool CheckProcSignal(ProcSignalReason reason);
 static void CleanupProcSignalState(int status, Datum arg);
 static void ResetProcSignalBarrierBits(uint32 flags);
@@ -348,9 +349,7 @@ SendBackendInterrupt(int backend_pid, PgBackendInterruptType interrupt_type,
 
 		if (found)
 		{
-			if (i < MaxBackends)
-				SetLatch(&GetPGProcByNumber(i)->procLatch);
-
+			WakeProcSignalSlot(i);
 			return 0;
 		}
 	}
@@ -436,8 +435,7 @@ SendProcSignal(pid_t pid, ProcSignalReason reason, ProcNumber procNumber)
 					pg_atomic_fetch_or_u32(&slot->pss_backendInterruptMask,
 										   interrupt_mask);
 					SpinLockRelease(&slot->pss_mutex);
-					if (procNumber < MaxBackends)
-						SetLatch(&GetPGProcByNumber(procNumber)->procLatch);
+					WakeProcSignalSlot(procNumber);
 					return 0;
 				}
 
@@ -530,6 +528,17 @@ ProcSignalReasonToBackendInterrupt(ProcSignalReason reason,
 	return false;
 }
 
+static void
+WakeProcSignalSlot(int procNumber)
+{
+	/*
+	 * Normal backend, background-worker, walsender, and auxiliary slots have
+	 * a real PGPROC latch. Prepared-transaction dummy slots do not.
+	 */
+	if (procNumber >= 0 && procNumber < FIRST_PREPARED_XACT_PROC_NUMBER)
+		SetLatch(&GetPGProcByNumber(procNumber)->procLatch);
+}
+
 /*
  * EmitProcSignalBarrier
  *		Send a signal to every Postgres process
@@ -598,9 +607,16 @@ EmitProcSignalBarrier(ProcSignalBarrierType type)
 			if (pid != 0)
 			{
 				/* see SendProcSignal for details */
-				slot->pss_signalFlags[PROCSIG_BARRIER] = true;
+				if (pid == PostmasterPid)
+					pg_atomic_fetch_or_u32(&slot->pss_backendInterruptMask,
+										   PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_PROC_SIGNAL_BARRIER));
+				else
+					slot->pss_signalFlags[PROCSIG_BARRIER] = true;
 				SpinLockRelease(&slot->pss_mutex);
-				kill(pid, SIGUSR1);
+				if (pid == PostmasterPid)
+					WakeProcSignalSlot(i);
+				else
+					kill(pid, SIGUSR1);
 			}
 			else
 				SpinLockRelease(&slot->pss_mutex);
@@ -638,12 +654,26 @@ WaitForProcSignalBarrier(uint64 generation)
 		oldval = pg_atomic_read_u64(&slot->pss_barrierGeneration);
 		while (oldval < generation)
 		{
+			/*
+			 * Thread-backed backends can receive barrier interrupts through
+			 * the logical backend mailbox rather than an OS signal.  Drain
+			 * that mailbox here so a backend that emits a barrier can absorb
+			 * its own barrier while waiting for all slots to advance.
+			 */
+			PgCurrentBackendApplyInterrupts();
+			CHECK_FOR_INTERRUPTS();
+			oldval = pg_atomic_read_u64(&slot->pss_barrierGeneration);
+			if (oldval >= generation)
+				break;
+
 			if (ConditionVariableTimedSleep(&slot->pss_barrierCV,
 											5000,
 											WAIT_EVENT_PROC_SIGNAL_BARRIER))
 				ereport(LOG,
 						(errmsg("still waiting for backend with PID %d to accept ProcSignalBarrier",
 								(int) pg_atomic_read_u32(&slot->pss_pid))));
+			PgCurrentBackendApplyInterrupts();
+			CHECK_FOR_INTERRUPTS();
 			oldval = pg_atomic_read_u64(&slot->pss_barrierGeneration);
 		}
 		ConditionVariableCancelSleep();
