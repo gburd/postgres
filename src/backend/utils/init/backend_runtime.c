@@ -24,6 +24,7 @@
 #include "replication/slotsync.h"
 #include "storage/latch.h"
 #include "storage/proc.h"
+#include "storage/procsignal.h"
 #include "storage/sinval.h"
 #include "utils/backend_runtime.h"
 
@@ -287,6 +288,30 @@ PgCurrentBackendId(void)
 	return PgBackendGetId(CurrentPgBackend);
 }
 
+int
+PgBackendGetSignalPid(PgBackend *backend)
+{
+	if (backend == NULL)
+		return MyProcPid;
+
+	if (backend->runtime != NULL &&
+		backend->runtime->kind == PG_RUNTIME_THREAD_PER_SESSION)
+	{
+		if (backend->id > PG_INT32_MAX)
+			elog(ERROR, "threaded backend identifier exceeds protocol range");
+
+		return (int) backend->id;
+	}
+
+	return MyProcPid;
+}
+
+int
+PgCurrentBackendSignalPid(void)
+{
+	return PgBackendGetSignalPid(CurrentPgBackend);
+}
+
 void
 PgBackendRaiseInterrupt(PgBackend *backend,
 						PgBackendInterruptType interrupt_type)
@@ -364,9 +389,10 @@ PgCurrentBackendHasPendingInterrupts(void)
 	PgBackend  *backend = CurrentPgBackend;
 
 	if (backend == NULL)
-		return false;
+		return ProcSignalBackendInterruptsPending();
 
-	return pg_atomic_read_u32(&backend->interrupts.pending_mask) != 0;
+	return pg_atomic_read_u32(&backend->interrupts.pending_mask) != 0 ||
+		ProcSignalBackendInterruptsPending();
 }
 
 void
@@ -394,8 +420,12 @@ void
 PgCurrentBackendApplyInterrupts(void)
 {
 	PgBackendInterruptMask pending;
+	int			proc_signal_sender_pid = 0;
+	int			proc_signal_sender_uid = 0;
 
 	pending = PgBackendConsumeInterrupts(CurrentPgBackend);
+	pending |= ConsumeBackendInterruptsFromProcSignal(&proc_signal_sender_pid,
+													  &proc_signal_sender_uid);
 	if (pending == 0)
 		return;
 
@@ -410,6 +440,11 @@ PgCurrentBackendApplyInterrupts(void)
 		ProcDiePending = true;
 		PgBackendConsumeProcDieSender(CurrentPgBackend, &sender_pid,
 									  &sender_uid);
+		if (sender_pid == 0 && proc_signal_sender_pid != 0)
+		{
+			sender_pid = proc_signal_sender_pid;
+			sender_uid = proc_signal_sender_uid;
+		}
 		if (ProcDieSenderPid == 0)
 		{
 			ProcDieSenderPid = sender_pid;

@@ -238,6 +238,8 @@ extern void PgBackendSetInterruptLatch(PgBackend *backend,
 										struct Latch *interrupt_latch);
 extern PgBackendId PgBackendGetId(PgBackend *backend);
 extern PgBackendId PgCurrentBackendId(void);
+extern int	PgBackendGetSignalPid(PgBackend *backend);
+extern int	PgCurrentBackendSignalPid(void);
 extern void PgBackendRaiseInterrupt(PgBackend *backend,
 									PgBackendInterruptType interrupt_type);
 extern void PgBackendRaiseProcDieInterrupt(PgBackend *backend, int sender_pid,

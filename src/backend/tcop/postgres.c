@@ -5150,7 +5150,7 @@ PgSessionBootstrap(const char *dbname, const char *username)
 
 		Assert(MyCancelKeyLength > 0);
 		pq_beginmessage(&buf, PqMsg_BackendKeyData);
-		pq_sendint32(&buf, (int32) MyProcPid);
+		pq_sendint32(&buf, (int32) PgCurrentBackendSignalPid());
 
 		pq_sendbytes(&buf, MyCancelKey, MyCancelKeyLength);
 		pq_endmessage(&buf);

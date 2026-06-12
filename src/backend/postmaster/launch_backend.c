@@ -360,6 +360,7 @@ backend_thread_entry(void *arg)
 	session_timezone = thread_start->session_timezone;
 	log_timezone = thread_start->log_timezone;
 
+	InitializeWaitEventSupport();
 	InitProcessLocalLatch();
 	MemoryContextInit();
 	InitializeLatchWaitSet();

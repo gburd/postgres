@@ -102,6 +102,9 @@
 #define LATCH_H
 
 #include <signal.h>
+#ifndef WIN32
+#include <pthread.h>
+#endif
 
 #include "storage/waiteventset.h"	/* for WL_* arguments to WaitLatch */
 #include "utils/wait_classes.h"  /* for backward compatibility */	/* IWYU pragma: keep */
@@ -118,6 +121,11 @@ typedef struct Latch
 	sig_atomic_t maybe_sleeping;
 	bool		is_shared;
 	int			owner_pid;
+#ifndef WIN32
+	int			owner_wakeup_fd;
+	pthread_t	owner_thread;
+	bool		owner_thread_valid;
+#endif
 #ifdef WIN32
 	HANDLE		event;
 #endif

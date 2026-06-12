@@ -161,6 +161,14 @@ Important current files:
   post-bootstrap single-user startup. Use the backend clean plus generated-file
   recovery above, then rebuild with `gmake -j8`.
 
+- If a shared-memory struct layout changes, especially `Latch`, `PGPROC`, or
+  fields embedded immediately beside semaphores/latches, do not trust a purely
+  incremental backend build. Stale objects can corrupt adjacent shared-memory
+  fields; one observed failure after changing `Latch` was a bootstrap segfault
+  in `PGSemaphoreReset()` because stale `proc.o` still used the old
+  `PGPROC.procLatch` size. Use the backend clean plus generated-file recovery
+  above, then rebuild with `gmake -j8`.
+
 - If `PMChild` layout changes in `src/include/postmaster/postmaster.h`, do not
   trust an incremental build of postmaster objects. Stale postmaster objects can
   corrupt the PMChild freelists or crash auxiliary children during temp-instance

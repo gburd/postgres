@@ -3192,6 +3192,74 @@ BackendPidGetProcWithLock(int pid)
 }
 
 /*
+ * BackendSignalPidGetProc -- get a backend's PGPROC given its SQL-visible
+ * signal target id.
+ *
+ * In process mode this is the same as the OS pid.  In thread-per-session mode
+ * the OS pid is shared with the postmaster and sibling backend threads, so the
+ * SQL-visible pid is the logical backend id published in pg_stat_activity,
+ * BackendKeyData, and pg_backend_pid().
+ */
+PGPROC *
+BackendSignalPidGetProc(int pid)
+{
+	PGPROC	   *result;
+
+	if (pid == 0)
+		return NULL;
+
+	LWLockAcquire(ProcArrayLock, LW_SHARED);
+
+	result = BackendSignalPidGetProcWithLock(pid);
+
+	LWLockRelease(ProcArrayLock);
+
+	return result;
+}
+
+/*
+ * BackendSignalPidGetProcWithLock -- get a backend's PGPROC given its
+ * SQL-visible signal target id.
+ *
+ * Same as above, except caller must be holding ProcArrayLock.
+ */
+PGPROC *
+BackendSignalPidGetProcWithLock(int pid)
+{
+	PGPROC	   *result = NULL;
+	ProcArrayStruct *arrayP = procArray;
+	int			index;
+
+	if (pid == 0)
+		return NULL;
+
+	for (index = 0; index < arrayP->numProcs; index++)
+	{
+		PGPROC	   *proc = &allProcs[arrayP->pgprocnos[index]];
+
+		if (proc->pid == PostmasterPid && proc->backendId == (PgBackendId) pid)
+		{
+			result = proc;
+			break;
+		}
+
+		if (proc->pid == pid && proc->pid != PostmasterPid)
+		{
+			result = proc;
+			break;
+		}
+	}
+
+	return result;
+}
+
+bool
+BackendSignalPidIsActive(int pid)
+{
+	return BackendSignalPidGetProc(pid) != NULL;
+}
+
+/*
  * BackendXidGetPid -- get a backend's pid given its XID
  *
  * Returns 0 if not found or it's a prepared transaction.  Note that

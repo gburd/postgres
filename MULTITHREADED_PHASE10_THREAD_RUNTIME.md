@@ -899,6 +899,59 @@ catalog/cache-heavy session bootstrap, and cancellation, termination, timeout
 delivery, PL/pgSQL execution, extension rejection, and the Gate D validation
 set still need to be proved against the unbounded session loop.
 
+## Logical Signal PID And Threaded Wake Slice
+
+The forty-first slice makes SQL-visible backend ids targetable in threaded
+mode and proves cancel/terminate delivery across sibling backend threads:
+
+- `pg_backend_pid()`, `BackendKeyData`, and `pg_stat_activity.pid` now publish
+  `PgCurrentBackendSignalPid()`, which remains `MyProcPid` in process mode and
+  becomes the logical backend id in thread-per-session mode;
+- `BackendSignalPidGetProc()` and `BackendSignalPidIsActive()` resolve either
+  a process-backed PID or a thread-backed logical backend id without changing
+  raw `BackendPidGetProc()` callers;
+- `ProcSignalSlot` now carries a logical backend interrupt mask and optional
+  proc-die sender identity for thread-backed backends;
+- `pg_cancel_backend()` and `pg_terminate_backend()` still use `kill()` for
+  process-backed targets, but route thread-backed targets through
+  `SendBackendInterrupt()`;
+- `ProcessInterrupts()` now consumes pending logical interrupts from the
+  current procsignal slot, so thread-delivered query-cancel and proc-die
+  interrupts flow through the existing backend interrupt flags;
+- Unix latches now remember the owning pthread and, where available, a direct
+  owner wake fd so `SetLatch()` can wake a sibling backend thread that shares
+  the same OS pid;
+- macOS/kqueue wait sets register a direct `EVFILT_USER` latch wake event and
+  record the owning kqueue fd on the latch, avoiding dependence on
+  process-wide SIGURG delivery to wake an idle sibling thread;
+- backend carrier threads initialize wait-event support before creating their
+  local latch, so each carrier has its own wait primitive state.
+
+Validation for this slice:
+
+- clean backend rebuild and install after the `Latch` shared-struct layout
+  change;
+- threaded smoke with `multithreaded=on`: five concurrent sessions returned
+  five distinct SQL-visible backend ids; `pg_cancel_backend()` cancelled a
+  running `pg_sleep(30)`; `pg_terminate_backend(pid, 5000)` returned `t` for an
+  idle backend and the server logged `terminating connection due to
+  administrator command`;
+- process-mode smoke with `multithreaded=off`: `select 42,
+  pg_backend_pid() > 0` returned `42|t`;
+- `gmake -C src/test/modules/test_backend_runtime check` passed.
+
+An earlier incremental build after changing `Latch` layout crashed during
+bootstrap in `PGSemaphoreReset()` because stale objects still used the old
+`PGPROC.procLatch` size and corrupted the following semaphore field. Any
+future change to shared-memory structs embedded in `PGPROC` or installed
+backend headers should use a clean backend rebuild before trusting `initdb` or
+threaded smoke results.
+
+This still does not complete Phase 10. Logical cancel/terminate delivery now
+works for regular threaded sessions, but timeout delivery, PL/pgSQL execution,
+extension rejection/acceptance behavior in a live threaded session, broader
+session cleanup stress, and Gate D remain to be proved.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;

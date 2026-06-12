@@ -22,6 +22,7 @@
 #include "storage/shmem.h"
 #include "storage/subsystems.h"
 #include "utils/ascii.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"			/* for application_name */
 #include "utils/memutils.h"
 
@@ -259,7 +260,7 @@ pgstat_bestart_initial(void)
 	 * Now fill in all the fields of lbeentry, except for strings that are
 	 * out-of-line data.  Those have to be handled separately, below.
 	 */
-	lbeentry.st_procpid = MyProcPid;
+	lbeentry.st_procpid = PgCurrentBackendSignalPid();
 	lbeentry.st_backendType = MyBackendType;
 	lbeentry.st_proc_start_timestamp = MyStartTimestamp;
 	lbeentry.st_activity_start_timestamp = 0;

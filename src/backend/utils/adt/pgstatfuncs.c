@@ -29,6 +29,7 @@
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/timestamp.h"
 #include "utils/tuplestore.h"
@@ -714,7 +715,7 @@ pg_stat_get_activity(PG_FUNCTION_ARGS)
 Datum
 pg_backend_pid(PG_FUNCTION_ARGS)
 {
-	PG_RETURN_INT32(MyProcPid);
+	PG_RETURN_INT32(PgCurrentBackendSignalPid());
 }
 
 

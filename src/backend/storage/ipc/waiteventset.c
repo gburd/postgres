@@ -198,6 +198,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_CARRIER int selfpipe_owner_pid = 0;
 /* Private function prototypes */
 static void latch_sigurg_handler(SIGNAL_ARGS);
 static void sendSelfPipeByte(void);
+static void sendSelfPipeByteToFd(int fd);
 #endif
 
 #if defined(WAIT_USE_SELF_PIPE) || defined(WAIT_USE_SIGNALFD)
@@ -628,6 +629,9 @@ AddWaitEventToSet(WaitEventSet *set, uint32 events, pgsocket fd, Latch *latch,
 		event->fd = selfpipe_readfd;
 #elif defined(WAIT_USE_SIGNALFD)
 		event->fd = signal_fd;
+#elif defined(WAIT_USE_KQUEUE)
+		latch->owner_wakeup_fd = set->kqueue_fd;
+		event->fd = PGINVALID_SOCKET;
 #else
 		event->fd = PGINVALID_SOCKET;
 #ifdef WAIT_USE_EPOLL
@@ -714,6 +718,10 @@ ModifyWaitEvent(WaitEventSet *set, int pos, uint32 events, Latch *latch)
 		if (latch && latch->owner_pid != MyProcPid)
 			elog(ERROR, "cannot wait on a latch owned by another process");
 		set->latch = latch;
+#if defined(WAIT_USE_KQUEUE)
+		if (latch)
+			latch->owner_wakeup_fd = set->kqueue_fd;
+#endif
 
 		/*
 		 * On Unix, we don't need to modify the kernel object because the
@@ -881,6 +889,23 @@ WaitEventAdjustKqueueAddLatch(struct kevent *k_ev, WaitEvent *event)
 	AccessWaitEvent(k_ev) = event;
 }
 
+static inline void
+WaitEventAdjustKqueueAddLatchWakeup(struct kevent *k_ev, WaitEvent *event)
+{
+	/*
+	 * Threaded backends in one process cannot reliably target another
+	 * thread's kqueue through the historical process-level SIGURG wakeup.
+	 * Register a user event as a direct wake channel for the wait set that
+	 * owns this latch.
+	 */
+	k_ev->ident = WL_LATCH_SET;
+	k_ev->filter = EVFILT_USER;
+	k_ev->flags = EV_ADD | EV_CLEAR;
+	k_ev->fflags = 0;
+	k_ev->data = 0;
+	AccessWaitEvent(k_ev) = event;
+}
+
 /*
  * old_events is the previous event mask, used to compute what has changed.
  */
@@ -918,6 +943,7 @@ WaitEventAdjustKqueue(WaitEventSet *set, WaitEvent *event, int old_events)
 	{
 		/* We detect latch wakeup using a signal event. */
 		WaitEventAdjustKqueueAddLatch(&k_ev[count++], event);
+		WaitEventAdjustKqueueAddLatchWakeup(&k_ev[count++], event);
 	}
 	else
 	{
@@ -1430,13 +1456,21 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 	{
 		/* kevent's udata points to the associated WaitEvent */
 		cur_event = AccessWaitEvent(cur_kqueue_event);
+		if (cur_event == NULL &&
+			cur_kqueue_event->filter == EVFILT_USER &&
+			cur_kqueue_event->ident == WL_LATCH_SET &&
+			set->latch != NULL)
+			cur_event = &set->events[set->latch_pos];
+		if (cur_event == NULL)
+			continue;
 
 		occurred_events->pos = cur_event->pos;
 		occurred_events->user_data = cur_event->user_data;
 		occurred_events->events = 0;
 
 		if (cur_event->events == WL_LATCH_SET &&
-			cur_kqueue_event->filter == EVFILT_SIGNAL)
+			(cur_kqueue_event->filter == EVFILT_SIGNAL ||
+			 cur_kqueue_event->filter == EVFILT_USER))
 		{
 			if (set->latch && set->latch->maybe_sleeping && set->latch->is_set)
 			{
@@ -1948,11 +1982,17 @@ latch_sigurg_handler(SIGNAL_ARGS)
 static void
 sendSelfPipeByte(void)
 {
+	sendSelfPipeByteToFd(selfpipe_writefd);
+}
+
+static void
+sendSelfPipeByteToFd(int fd)
+{
 	int			rc;
 	char		dummy = 0;
 
 retry:
-	rc = write(selfpipe_writefd, &dummy, 1);
+	rc = write(fd, &dummy, 1);
 	if (rc < 0)
 	{
 		/* If interrupted by signal, just retry */
@@ -2049,6 +2089,16 @@ ResOwnerReleaseWaitEventSet(Datum res)
 }
 
 #ifndef WIN32
+int
+GetWaitEventSetLatchWakeupFd(void)
+{
+#if defined(WAIT_USE_SELF_PIPE)
+	return selfpipe_writefd;
+#else
+	return -1;
+#endif
+}
+
 /*
  * Wake up my process if it's currently sleeping in WaitEventSetWaitBlock()
  *
@@ -2070,6 +2120,25 @@ WakeupMyProc(void)
 #else
 	if (waiting)
 		kill(MyProcPid, SIGURG);
+#endif
+}
+
+void
+WakeupOtherProcFd(int fd)
+{
+#if defined(WAIT_USE_SELF_PIPE)
+	if (fd >= 0)
+		sendSelfPipeByteToFd(fd);
+#elif defined(WAIT_USE_KQUEUE)
+	if (fd >= 0)
+	{
+		struct kevent k_ev;
+
+		EV_SET(&k_ev, WL_LATCH_SET, EVFILT_USER, 0, NOTE_TRIGGER, 0, NULL);
+		(void) kevent(fd, &k_ev, 1, NULL, 0, NULL);
+	}
+#else
+	(void) fd;
 #endif
 }
 

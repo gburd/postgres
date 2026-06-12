@@ -91,7 +91,9 @@ extern int	GetNumRegisteredWaitEvents(WaitEventSet *set);
 extern bool WaitEventSetCanReportClosed(void);
 
 #ifndef WIN32
+extern int	GetWaitEventSetLatchWakeupFd(void);
 extern void WakeupMyProc(void);
+extern void WakeupOtherProcFd(int fd);
 extern void WakeupOtherProc(int pid);
 #endif
 
