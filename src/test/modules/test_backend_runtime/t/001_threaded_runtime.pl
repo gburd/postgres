@@ -116,6 +116,11 @@ RETURNS int4
 AS 'test_backend_runtime_threaded',
    'test_backend_runtime_launch_thread_bgworker'
 LANGUAGE C;
+CREATE FUNCTION test_backend_runtime_restart_thread_bgworker()
+RETURNS bool
+AS 'test_backend_runtime_threaded',
+   'test_backend_runtime_restart_thread_bgworker'
+LANGUAGE C;
 SELECT test_backend_runtime_request_autovacuum_worker();
 });
 
@@ -308,6 +313,15 @@ like(
 	slurp_file($node->logfile),
 	qr/starting background worker thread carrier/,
 	'thread-model background worker used a thread carrier');
+
+is($node->safe_psql(
+		'postgres',
+		'SELECT test_backend_runtime_restart_thread_bgworker();'),
+	't', 'restartable thread-model background worker restarted and stopped');
+like(
+	slurp_file($node->logfile),
+	qr/test_backend_runtime restart bgworker run 2/,
+	'restartable thread-model background worker reached its second run');
 
 is($node->safe_psql(
 		'postgres',

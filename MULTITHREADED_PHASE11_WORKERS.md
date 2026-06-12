@@ -1060,6 +1060,11 @@ escalation:
   stopped it cleanly, SQL returned `42` afterward, fast shutdown completed,
   and the log contained no `PANIC`, crash signature, or threaded-runtime crash
   escalation message;
+- the threaded runtime TAP now also covers background-worker restart without
+  runtime escalation: a restartable thread-model test worker exits once with
+  code 1, the postmaster restarts it on a thread carrier, the second run stays
+  alive until `TerminateBackgroundWorker()`, and the fixture verifies the
+  second run appeared in the server log;
 - a direct threaded crash-escalation smoke exposed that a nonzero exit from a
   thread-backed background worker entered process-mode crash recovery and could
   wedge in `PM_WAIT_BACKENDS` waiting for in-address-space siblings. Once
@@ -1309,16 +1314,17 @@ Additional Gate E hardening validation:
   still not configured with `--enable-tap-tests`, so the recursive target
   skipped TAP;
 - direct `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl`
-  passed all 38 tests with the local `PERL5LIB` TAP environment. This covers
+  passed all 40 tests with the local `PERL5LIB` TAP environment. This covers
   the threaded autovacuum launcher, deterministic autovacuum worker entry,
   startup and late AIO workers, unsafe/process-model background-worker
   rejection, explicit thread-model background-worker startup/shutdown,
+  restartable thread-model background-worker relaunch after exit code 1,
   cancellation/termination, PL/pgSQL, representative threaded SQL usability
   checks, and the broader invariant that the configured threaded runtime has
   no postmaster OS child processes after startup handoff or after dynamic
   worker activity.
 - direct `prove` over both `test_backend_runtime` threaded TAP files passed
-  all 44 tests. The second fixture,
+  all 46 tests. The second fixture,
   `t/002_threaded_bgworker_crash.pl`, starts a separate threaded cluster,
   launches a thread-model background worker that exits with code 17, verifies
   the client connection is lost, verifies the postmaster/runtime exits with

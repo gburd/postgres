@@ -31,13 +31,16 @@ PG_MODULE_MAGIC_EXT(
 PG_FUNCTION_INFO_V1(test_backend_runtime_request_autovacuum_worker);
 PG_FUNCTION_INFO_V1(test_backend_runtime_rejects_process_bgworker);
 PG_FUNCTION_INFO_V1(test_backend_runtime_launch_thread_bgworker);
+PG_FUNCTION_INFO_V1(test_backend_runtime_restart_thread_bgworker);
 PG_FUNCTION_INFO_V1(test_backend_runtime_crash_thread_bgworker);
 
 pg_noreturn PGDLLEXPORT void test_backend_runtime_unreachable_bgworker_main(Datum main_arg);
 PGDLLEXPORT void test_backend_runtime_thread_bgworker_main(Datum main_arg);
+PGDLLEXPORT void test_backend_runtime_restart_bgworker_main(Datum main_arg);
 pg_noreturn PGDLLEXPORT void test_backend_runtime_crash_bgworker_main(Datum main_arg);
 
 static uint32 test_backend_runtime_thread_bgworker_wait_event = 0;
+static pg_atomic_uint32 test_backend_runtime_restart_count;
 static pg_atomic_uint32 test_backend_runtime_crash_count;
 
 Datum
@@ -124,6 +127,73 @@ test_backend_runtime_launch_thread_bgworker(PG_FUNCTION_ARGS)
 }
 
 Datum
+test_backend_runtime_restart_thread_bgworker(PG_FUNCTION_ARGS)
+{
+	BackgroundWorker worker;
+	BackgroundWorkerHandle *handle;
+	BgwHandleStatus status = BGWH_NOT_YET_STARTED;
+	pid_t		pid = 0;
+	bool		restarted = false;
+
+	pg_atomic_init_u32(&test_backend_runtime_restart_count, 0);
+
+	memset(&worker, 0, sizeof(worker));
+	worker.bgw_flags = BGWORKER_SHMEM_ACCESS;
+	worker.bgw_backend_model = BgWorkerBackendThreadPerSession;
+	worker.bgw_start_time = BgWorkerStart_RecoveryFinished;
+	worker.bgw_restart_time = 1;
+	snprintf(worker.bgw_library_name, MAXPGPATH, "test_backend_runtime_threaded");
+	snprintf(worker.bgw_function_name, BGW_MAXLEN,
+			 "test_backend_runtime_restart_bgworker_main");
+	snprintf(worker.bgw_name, BGW_MAXLEN,
+			 "test_backend_runtime restart bgworker");
+	snprintf(worker.bgw_type, BGW_MAXLEN,
+			 "test_backend_runtime restart bgworker");
+	worker.bgw_notify_pid = PgCurrentBackendSignalPid();
+
+	if (!RegisterDynamicBackgroundWorker(&worker, &handle))
+		elog(ERROR, "could not register restartable thread-model background worker");
+
+	status = WaitForBackgroundWorkerStartup(handle, &pid);
+	if (status != BGWH_STARTED)
+		elog(ERROR, "restartable thread-model background worker did not start: status %d",
+			 status);
+
+	for (int i = 0; i < 50; i++)
+	{
+		PgCurrentBackendApplyInterrupts();
+		CHECK_FOR_INTERRUPTS();
+
+		if (pg_atomic_read_u32(&test_backend_runtime_restart_count) >= 2)
+		{
+			restarted = true;
+			break;
+		}
+
+		(void) WaitLatch(MyLatch,
+						 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+						 100L,
+						 WAIT_EVENT_BGWORKER_STARTUP);
+		ResetLatch(MyLatch);
+	}
+
+	if (!restarted)
+	{
+		TerminateBackgroundWorker(handle);
+		(void) WaitForBackgroundWorkerShutdown(handle);
+		elog(ERROR, "restartable thread-model background worker did not restart");
+	}
+
+	TerminateBackgroundWorker(handle);
+	status = WaitForBackgroundWorkerShutdown(handle);
+	if (status != BGWH_STOPPED)
+		elog(ERROR, "restartable thread-model background worker did not stop: status %d",
+			 status);
+
+	PG_RETURN_BOOL(true);
+}
+
+Datum
 test_backend_runtime_crash_thread_bgworker(PG_FUNCTION_ARGS)
 {
 	BackgroundWorker worker;
@@ -189,6 +259,20 @@ test_backend_runtime_thread_bgworker_main(Datum main_arg)
 
 		CHECK_FOR_INTERRUPTS();
 	}
+}
+
+void
+test_backend_runtime_restart_bgworker_main(Datum main_arg)
+{
+	uint32		run_count;
+
+	run_count = pg_atomic_fetch_add_u32(&test_backend_runtime_restart_count, 1) + 1;
+	elog(LOG, "test_backend_runtime restart bgworker run %u", run_count);
+
+	if (run_count == 1)
+		proc_exit(1);
+
+	test_backend_runtime_thread_bgworker_main(main_arg);
 }
 
 void
