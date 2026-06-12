@@ -250,6 +250,7 @@ extern PgBackendId PgCurrentBackendId(void);
 extern int	PgBackendGetSignalPid(PgBackend *backend);
 extern int	PgCurrentBackendSignalPid(void);
 extern bool PgBackendUsesProcessSignals(PgBackend *backend);
+extern void PgBackendWakeup(PgBackend *backend);
 extern void PgBackendRaiseInterrupt(PgBackend *backend,
 									 PgBackendInterruptType interrupt_type);
 extern void PgBackendRaiseProcDieInterrupt(PgBackend *backend, int sender_pid,

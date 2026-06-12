@@ -115,6 +115,8 @@ extern void InitProcessGlobals(void);
 extern int	MaxLivePostmasterChildren(void);
 
 extern bool PostmasterMarkPIDForWorkerNotify(int);
+extern bool PostmasterNotifyPIDForWorker(int);
+extern bool PostmasterSignalPIDForWorker(int pid, int signal);
 extern void PostmasterSignalPMSignal(void);
 extern bool PostmasterSignalAutoVacLauncher(void);
 

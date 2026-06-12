@@ -321,7 +321,7 @@ BackgroundWorkerStateChange(bool allow_new_workers)
 			{
 				rw->rw_terminate = true;
 				if (rw->rw_pid != 0)
-					kill(rw->rw_pid, SIGTERM);
+					PostmasterSignalPIDForWorker(rw->rw_pid, SIGTERM);
 				else
 				{
 					/* Report never-started, now-terminated worker as dead. */
@@ -365,7 +365,7 @@ BackgroundWorkerStateChange(bool allow_new_workers)
 			slot->in_use = false;
 
 			if (notify_pid != 0)
-				kill(notify_pid, SIGUSR1);
+				PostmasterNotifyPIDForWorker(notify_pid);
 
 			continue;
 		}
@@ -400,12 +400,13 @@ BackgroundWorkerStateChange(bool allow_new_workers)
 		/*
 		 * Copy various fixed-size fields.
 		 *
-		 * flags, start_time, and restart_time are examined by the postmaster,
-		 * but nothing too bad will happen if they are corrupted.  The
-		 * remaining fields will only be examined by the child process.  It
-		 * might crash, but we won't.
+		 * flags, backend_model, start_time, and restart_time are examined by
+		 * the postmaster, but nothing too bad will happen if they are
+		 * corrupted.  The remaining fields will only be examined by the child
+		 * process.  It might crash, but we won't.
 		 */
 		rw->rw_worker.bgw_flags = slot->worker.bgw_flags;
+		rw->rw_worker.bgw_backend_model = slot->worker.bgw_backend_model;
 		rw->rw_worker.bgw_start_time = slot->worker.bgw_start_time;
 		rw->rw_worker.bgw_restart_time = slot->worker.bgw_restart_time;
 		rw->rw_worker.bgw_main_arg = slot->worker.bgw_main_arg;
@@ -495,7 +496,7 @@ ReportBackgroundWorkerPID(RegisteredBgWorker *rw)
 	slot->pid = rw->rw_pid;
 
 	if (rw->rw_worker.bgw_notify_pid != 0)
-		kill(rw->rw_worker.bgw_notify_pid, SIGUSR1);
+		PostmasterNotifyPIDForWorker(rw->rw_worker.bgw_notify_pid);
 }
 
 /*
@@ -530,7 +531,7 @@ ReportBackgroundWorkerExit(RegisteredBgWorker *rw)
 		ForgetBackgroundWorker(rw);
 
 	if (notify_pid != 0)
-		kill(notify_pid, SIGUSR1);
+		PostmasterNotifyPIDForWorker(notify_pid);
 }
 
 /*
@@ -588,7 +589,7 @@ ForgetUnstartedBackgroundWorkers(void)
 
 			ForgetBackgroundWorker(rw);
 			if (notify_pid != 0)
-				kill(notify_pid, SIGUSR1);
+				PostmasterNotifyPIDForWorker(notify_pid);
 		}
 	}
 }
@@ -701,6 +702,16 @@ SanityCheckBackgroundWorker(BackgroundWorker *worker, int elevel)
 		return false;
 	}
 
+	if (worker->bgw_backend_model < BgWorkerBackendProcess ||
+		worker->bgw_backend_model > BgWorkerBackendThreadPerSession)
+	{
+		ereport(elevel,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("background worker \"%s\": invalid backend model %d",
+						worker->bgw_name, worker->bgw_backend_model)));
+		return false;
+	}
+
 	if ((worker->bgw_restart_time < 0 &&
 		 worker->bgw_restart_time != BGW_NEVER_RESTART) ||
 		(worker->bgw_restart_time > USECS_PER_DAY / 1000))
@@ -742,19 +753,7 @@ BackgroundWorkerCanUseThreadCarrier(const BackgroundWorker *worker)
 	if (worker == NULL)
 		return false;
 
-	/*
-	 * Keep this allowlist deliberately narrow until each in-tree background
-	 * worker entrypoint has been audited for thread-mode signal, GUC reload,
-	 * wait, and exit behavior.
-	 */
-	if (strcmp(worker->bgw_library_name, "postgres") != 0)
-		return false;
-
-	return strcmp(worker->bgw_function_name, "ApplyLauncherMain") == 0 ||
-		strcmp(worker->bgw_function_name, "ApplyWorkerMain") == 0 ||
-		strcmp(worker->bgw_function_name, "ParallelApplyWorkerMain") == 0 ||
-		strcmp(worker->bgw_function_name, "SequenceSyncWorkerMain") == 0 ||
-		strcmp(worker->bgw_function_name, "TableSyncWorkerMain") == 0;
+	return worker->bgw_backend_model == BgWorkerBackendThreadPerSession;
 }
 
 static bool

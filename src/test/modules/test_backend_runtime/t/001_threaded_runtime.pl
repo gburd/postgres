@@ -111,6 +111,11 @@ RETURNS bool
 AS 'test_backend_runtime_threaded',
    'test_backend_runtime_rejects_process_bgworker'
 LANGUAGE C;
+CREATE FUNCTION test_backend_runtime_launch_thread_bgworker()
+RETURNS int4
+AS 'test_backend_runtime_threaded',
+   'test_backend_runtime_launch_thread_bgworker'
+LANGUAGE C;
 SELECT test_backend_runtime_request_autovacuum_worker();
 });
 
@@ -290,6 +295,17 @@ like(
 	'process-model background worker rejection is logged explicitly');
 is($node->safe_psql('postgres', 'SELECT 42;'), '42',
 	'threaded server remains usable after process-model bgworker rejection');
+
+like(
+	$node->safe_psql(
+		'postgres',
+		'SELECT test_backend_runtime_launch_thread_bgworker();'),
+	qr/^\d+$/,
+	'thread-model background worker starts and stops in threaded runtime');
+like(
+	slurp_file($node->logfile),
+	qr/starting background worker thread carrier/,
+	'thread-model background worker used a thread carrier');
 
 my $abandoned = $node->background_psql('postgres',
 	on_error_stop => 0, timeout => 20);

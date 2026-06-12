@@ -4467,7 +4467,7 @@ StartBackgroundWorker(RegisteredBgWorker *rw)
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("background worker \"%s\" is not supported in threaded mode",
 						rw->rw_worker.bgw_name),
-				 errdetail("Generic background workers do not yet have a thread-compatible registration model.")));
+				 errdetail("Background workers must set a thread-compatible backend model before they can run on thread carriers.")));
 
 		rw->rw_crashed_at = 0;
 		rw->rw_terminate = true;
@@ -4499,9 +4499,14 @@ StartBackgroundWorker(RegisteredBgWorker *rw)
 	bn->bkend_type = B_BG_WORKER;
 	bn->bgworker_notify = false;
 
-	ereport(DEBUG1,
-			(errmsg_internal("starting background worker process \"%s\"",
-							 rw->rw_worker.bgw_name)));
+	if (multithreaded && thread_compatible)
+		ereport(DEBUG1,
+				(errmsg_internal("starting background worker thread carrier \"%s\"",
+								 rw->rw_worker.bgw_name)));
+	else
+		ereport(DEBUG1,
+				(errmsg_internal("starting background worker process \"%s\"",
+								 rw->rw_worker.bgw_name)));
 
 	if (!postmaster_child_launch_carrier(bn, B_BG_WORKER, bn->child_slot,
 										 &rw->rw_worker,
@@ -4633,7 +4638,7 @@ maybe_start_bgworkers(void)
 
 				/* Report worker is gone now. */
 				if (notify_pid != 0)
-					kill(notify_pid, SIGUSR1);
+					PostmasterNotifyPIDForWorker(notify_pid);
 
 				continue;
 			}
@@ -5083,11 +5088,51 @@ PostmasterMarkPIDForWorkerNotify(int pid)
 	dlist_foreach(iter, &ActiveChildList)
 	{
 		bp = dlist_container(PMChild, elem, iter.cur);
-		if (PostmasterChildIsProcess(bp) && bp->pid == pid)
+		if (PostmasterChildSignalPid(bp) == pid)
 		{
 			bp->bgworker_notify = true;
 			return true;
 		}
+	}
+	return false;
+}
+
+bool
+PostmasterNotifyPIDForWorker(int pid)
+{
+	dlist_iter	iter;
+	PMChild    *bp;
+
+	dlist_foreach(iter, &ActiveChildList)
+	{
+		bp = dlist_container(PMChild, elem, iter.cur);
+		if (PostmasterChildSignalPid(bp) != pid)
+			continue;
+
+		if (PostmasterChildIsThread(bp))
+			PgBackendWakeup(bp->thread_backend);
+		else if (kill(pid, SIGUSR1) < 0)
+			return false;
+
+		return true;
+	}
+	return false;
+}
+
+bool
+PostmasterSignalPIDForWorker(int pid, int signal)
+{
+	dlist_iter	iter;
+	PMChild    *bp;
+
+	dlist_foreach(iter, &ActiveChildList)
+	{
+		bp = dlist_container(PMChild, elem, iter.cur);
+		if (PostmasterChildSignalPid(bp) != pid)
+			continue;
+
+		signal_child(bp, signal);
+		return true;
 	}
 	return false;
 }

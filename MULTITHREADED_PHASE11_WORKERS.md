@@ -137,27 +137,39 @@ that the two logical IO workers remain present while no postmaster child
 process is still titled as an IO worker. That proves startup-time process
 workers were signaled out and replaced by thread carriers after `PM_RUN`.
 
-## Generic Background Worker Compatibility Gate
+## Generic Background Worker Backend Model Metadata
 
-Generic background workers still expose a process-oriented registration ABI and
-do not yet have metadata for declaring thread compatibility. Once the
-postmaster has created any thread carrier, `StartBackgroundWorker()` now
-rejects generic `B_BG_WORKER` launches explicitly in threaded mode instead of
-letting them fall through to an unsafe post-thread fork attempt.
+Generic background workers now carry explicit backend-model metadata in their
+`BackgroundWorker` registration. The default zero-initialized value is
+`BgWorkerBackendProcess`, so existing third-party workers remain process-only
+and are rejected in threaded mode once a thread carrier is required. A worker
+must set `bgw_backend_model = BgWorkerBackendThreadPerSession` before the
+postmaster may place it on a thread carrier.
 
-Rejected workers are reported as stopped to their shared-memory registration
-slot, with the usual notification sent when the requester has a valid
-process-backed notification PID. This avoids the previous behavior where a
-dynamic background worker could look like a transient fork failure and be
-retried by the postmaster. Static background workers may still start as
-process-backed workers before the first thread carrier is created; converting
-or rejecting those startup-time workers remains part of the later coordinated
-worker-family conversion.
+`BackgroundWorkerCanUseThreadCarrier()` now checks the registration metadata
+instead of maintaining a hard-coded function-name allowlist. The logical
+replication launcher, apply worker, table-sync worker, sequence-sync worker,
+and parallel apply worker registrations explicitly opt into the thread-per-
+session worker model because those entrypoints have already been audited in
+earlier Phase 11 slices.
 
-The threaded runtime TAP smoke now registers a deliberately unreachable dynamic
-background worker after threaded client carriers exist and verifies that the
-worker is rejected with an explicit server-log message while the server remains
-usable.
+Dynamic background worker metadata is preserved across the shared-memory slot
+handoff into the postmaster-owned `RegisteredBgWorker`. That copy is required
+because the postmaster makes the carrier decision from its private worker
+record after accepting a dynamic registration.
+
+Rejected process-model workers are reported as stopped to their shared-memory
+registration slot, with the usual notification sent when the requester has a
+valid logical backend signal PID. Notification and termination now route
+through helpers that can wake or signal thread-backed requesters and workers by
+logical backend id, while preserving the historical Unix signal path for
+process-backed children.
+
+The threaded runtime TAP smoke now covers both sides of this contract: a
+deliberately unreachable default/process-model dynamic worker is rejected with
+an explicit server-log message, and an explicitly opted-in test worker starts
+as a background-worker thread carrier, receives a terminate request, reports
+clean shutdown to the requester, and leaves the SQL backend usable.
 
 ## WAL Summarizer Thread Slice
 
@@ -265,15 +277,15 @@ WAL receiver hardening follow-up rather than this slot sync carrier slice.
 
 ## Logical Replication Launcher Thread Slice
 
-The static logical replication launcher is now allowed onto the background
+The static logical replication launcher is now opted into the background
 worker thread-carrier path in threaded mode:
 
-- `BackgroundWorkerCanUseThreadCarrier()` provides a narrow allowlist for
-  audited in-tree `B_BG_WORKER` entrypoints. The first allowlisted entry is
-  the static `postgres`/`ApplyLauncherMain` worker;
-- `postmaster_child_launch_carrier()` routes allowlisted background workers to
-  `postmaster_backend_thread_launch()` while generic and third-party
-  background workers remain rejected after thread carriers exist;
+- the `postgres`/`ApplyLauncherMain` registration sets
+  `bgw_backend_model = BgWorkerBackendThreadPerSession`;
+- `postmaster_child_launch_carrier()` routes metadata-opted background
+  workers to `postmaster_backend_thread_launch()` while default/process-model
+  third-party background workers remain rejected when a thread carrier is
+  required;
 - `postmaster_backend_thread_launch()` copies the `BackgroundWorker` startup
   descriptor into the thread-start record and invokes `BackgroundWorkerMain()`
   with that descriptor inside the carrier thread;
@@ -303,13 +315,13 @@ arm legacy interrupt processing before `CHECK_FOR_INTERRUPTS()`.
 
 ## Logical Replication Apply And Table-Sync Thread Slice
 
-Logical replication apply workers and table-sync workers are now allowlisted
-for thread carriers in threaded mode:
+Logical replication apply workers and table-sync workers are now opted into
+thread carriers in threaded mode:
 
-- `BackgroundWorkerCanUseThreadCarrier()` accepts the in-tree
-  `postgres`/`ApplyWorkerMain` and `postgres`/`TableSyncWorkerMain`
-  entrypoints, in addition to the already audited logical replication
-  launcher;
+- the in-tree `postgres`/`ApplyWorkerMain` and
+  `postgres`/`TableSyncWorkerMain` registrations set
+  `bgw_backend_model = BgWorkerBackendThreadPerSession`, in addition to the
+  already audited logical replication launcher;
 - `LogicalRepWorker` slots now record both the historical `PGPROC *`/OS PID
   view and the SQL-visible logical signal PID used by thread-backed workers;
 - `logicalrep_worker_attach()` stores the worker's logical signal PID,
@@ -328,16 +340,16 @@ for thread carriers in threaded mode:
   thread mode but leaves config-file parsing to the postmaster-owned reload
   path for the shared address space;
 - the sequence-sync config reload site has the same guard, and the follow-on
-  sequence-sync slice allowlists `SequenceSyncWorkerMain` after validating the
-  launch and copy path.
+  sequence-sync slice opts `SequenceSyncWorkerMain` into the explicit
+  background-worker backend model after validating the launch and copy path.
 
 ## Logical Replication Sequence-Sync Thread Slice
 
-Logical replication sequence-sync workers are now allowlisted for thread
-carriers in threaded mode:
+Logical replication sequence-sync workers are now opted into thread carriers
+in threaded mode:
 
-- `BackgroundWorkerCanUseThreadCarrier()` accepts the in-tree
-  `postgres`/`SequenceSyncWorkerMain` entrypoint;
+- the in-tree `postgres`/`SequenceSyncWorkerMain` registration sets
+  `bgw_backend_model = BgWorkerBackendThreadPerSession`;
 - sequence-sync workers already use the shared `LogicalRepWorker` attach
   path, so they publish the same logical signal PID, `ProcNumber`, and
   carrier model as apply/table-sync workers;
@@ -350,11 +362,11 @@ carriers in threaded mode:
 
 ## Logical Replication Parallel Apply Thread Slice
 
-Logical replication parallel apply workers are now allowlisted for thread
-carriers in threaded mode:
+Logical replication parallel apply workers are now opted into thread carriers
+in threaded mode:
 
-- `BackgroundWorkerCanUseThreadCarrier()` accepts the in-tree
-  `postgres`/`ParallelApplyWorkerMain` entrypoint;
+- the in-tree `postgres`/`ParallelApplyWorkerMain` registration sets
+  `bgw_backend_model = BgWorkerBackendThreadPerSession`;
 - `SendProcSignal()` can deliver proc-number-targeted same-process
   notifications through the logical backend interrupt mailbox when the target
   slot belongs to a thread-backed backend sharing the postmaster PID;
@@ -496,10 +508,10 @@ remove the temporary process logger later.
 ## Remaining Worker Families
 
 - startup/recovery worker paths that are part of normal server operation;
-- a narrow allowlist path for in-tree generic background worker tests and
-  examples;
-- explicit thread-worker metadata for third-party background workers that can
-  eventually opt into threaded mode.
+- additional in-tree generic background workers, tests, and examples that are
+  not part of the already audited logical replication worker set. These can
+  opt into the explicit background-worker backend model only after a
+  per-entrypoint audit.
 
 ## Validation
 
@@ -612,6 +624,27 @@ Additional validation for the generic background worker compatibility gate:
 - direct `perl -c src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl`
   is blocked in this local Perl by the missing non-core `IPC::Run` module
   before syntax is checked.
+
+Additional validation for the explicit background-worker backend-model
+metadata slice:
+
+- touched-object builds passed for `bgworker.o`, `postmaster.o`, and the
+  `test_backend_runtime` module;
+- full `gmake -j8` passed;
+- full `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed, followed by
+  reinstalling the `test_backend_runtime` module into the temp install;
+- a direct threaded temp-cluster smoke passed with `multithreaded=on`,
+  `autovacuum=off`, `summarize_wal=off`, and `io_method=sync`. The smoke
+  observed `current_setting('multithreaded') = on`, verified that the default
+  process-model test background worker was rejected, verified that the
+  explicit thread-model test background worker launched and stopped
+  successfully, and verified the SQL backend stayed usable with `SELECT 42`;
+- the same smoke log included `starting background worker thread carrier` for
+  both the logical replication launcher and the explicit test background
+  worker;
+- `gmake -C src/test/modules/test_backend_runtime check` passed its SQL
+  regression and skipped TAP because this checkout is not configured with
+  `--enable-tap-tests`.
 
 Additional validation for the WAL summarizer thread slice:
 

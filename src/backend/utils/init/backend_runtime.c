@@ -351,6 +351,15 @@ PgBackendUsesProcessSignals(PgBackend *backend)
 }
 
 void
+PgBackendWakeup(PgBackend *backend)
+{
+	if (backend == NULL)
+		return;
+
+	PgBackendWakeForInterrupt(backend);
+}
+
+void
 PgBackendRaiseInterrupt(PgBackend *backend,
 						PgBackendInterruptType interrupt_type)
 {

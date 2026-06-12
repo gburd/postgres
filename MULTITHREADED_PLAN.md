@@ -541,10 +541,10 @@ Exit gate:
 
 Status: in progress. See `MULTITHREADED_PHASE11_WORKERS.md` for the
 completed autovacuum launcher/worker, AIO worker startup handoff and late
-launch, generic
-background-worker compatibility, WAL receiver, WAL summarizer, WAL writer,
-archiver, checkpointer/background writer handoff, syslogger handoff, slot sync worker, and
-logical replication launcher slices, plus initial logical replication
+launch, generic background-worker compatibility and explicit backend-model
+metadata, WAL receiver, WAL summarizer, WAL writer, archiver,
+checkpointer/background writer handoff, syslogger handoff, slot sync worker,
+and logical replication launcher slices, plus initial logical replication
 apply/table-sync, sequence-sync, and parallel apply slices, plus remaining
 worker families.
 
@@ -587,11 +587,15 @@ Likely changes:
     AIO method workers have an initial thread-carrier slice;
   - logical replication launcher, apply workers, table-sync workers,
     sequence-sync workers, and parallel apply workers have initial
-    thread-carrier slices.
-- Provide a narrow allowlist path for in-tree generic background worker tests
-  and examples.
-- Keep third-party background workers process-only or rejected in threaded mode
-  unless extension metadata explicitly opts them into the worker runtime.
+    thread-carrier slices through explicit background-worker backend-model
+    metadata.
+- Require generic background workers to declare
+  `BgWorkerBackendThreadPerSession` before they can run on thread carriers.
+  The zero/default registration value remains process-only, so existing
+  third-party workers are rejected in threaded mode when a thread carrier is
+  required.
+- Audit additional in-tree generic background workers, tests, and examples
+  before opting them into the explicit worker backend model.
 - Define worker exit semantics separately from user-session exit semantics:
   normal worker exit must clean up one worker, while `PANIC`, postmaster death,
   and unrecoverable runtime corruption still terminate the process or runtime.
@@ -611,7 +615,8 @@ Validation:
   workers;
 - process-mode worker behavior remains unchanged;
 - third-party background workers are rejected or kept process-only unless
-  explicitly marked thread-worker safe.
+  explicitly marked thread-worker safe through background-worker backend-model
+  metadata.
 
 Exit gate:
 
@@ -841,8 +846,8 @@ Gate E, after Phase 11:
   after runtime startup;
 - run threaded worker smoke tests for autovacuum, checkpointer, background
   writer, WAL writer, archiver, syslogger, WAL receiver, WAL summarizer,
-  logical replication workers, AIO workers, and the in-tree generic background
-  worker allowlist;
+  logical replication workers, AIO workers, and any in-tree generic background
+  workers that explicitly opt into the thread backend model;
 - verify worker cancellation, shutdown, restart, and failure escalation;
 - verify single-user, bootstrap, frontend utility, postmaster/control-plane,
   and crash-escalation paths remain documented process-lifetime exceptions;

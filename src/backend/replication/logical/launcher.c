@@ -517,6 +517,7 @@ retry:
 	memset(&bgw, 0, sizeof(bgw));
 	bgw.bgw_flags = BGWORKER_SHMEM_ACCESS |
 		BGWORKER_BACKEND_DATABASE_CONNECTION;
+	bgw.bgw_backend_model = BgWorkerBackendThreadPerSession;
 	bgw.bgw_start_time = BgWorkerStart_RecoveryFinished;
 	snprintf(bgw.bgw_library_name, MAXPGPATH, "postgres");
 
@@ -1068,6 +1069,7 @@ ApplyLauncherRegister(void)
 	memset(&bgw, 0, sizeof(bgw));
 	bgw.bgw_flags = BGWORKER_SHMEM_ACCESS |
 		BGWORKER_BACKEND_DATABASE_CONNECTION;
+	bgw.bgw_backend_model = BgWorkerBackendThreadPerSession;
 	bgw.bgw_start_time = BgWorkerStart_RecoveryFinished;
 	snprintf(bgw.bgw_library_name, MAXPGPATH, "postgres");
 	snprintf(bgw.bgw_function_name, BGW_MAXLEN, "ApplyLauncherMain");

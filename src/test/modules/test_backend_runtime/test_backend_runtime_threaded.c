@@ -15,7 +15,10 @@
 #include "fmgr.h"
 #include "miscadmin.h"
 #include "postmaster/bgworker.h"
+#include "storage/latch.h"
 #include "storage/pmsignal.h"
+#include "utils/backend_runtime.h"
+#include "utils/wait_event.h"
 
 PG_MODULE_MAGIC_EXT(
 					.name = "test_backend_runtime_threaded",
@@ -25,8 +28,12 @@ PG_MODULE_MAGIC_EXT(
 
 PG_FUNCTION_INFO_V1(test_backend_runtime_request_autovacuum_worker);
 PG_FUNCTION_INFO_V1(test_backend_runtime_rejects_process_bgworker);
+PG_FUNCTION_INFO_V1(test_backend_runtime_launch_thread_bgworker);
 
 pg_noreturn PGDLLEXPORT void test_backend_runtime_unreachable_bgworker_main(Datum main_arg);
+PGDLLEXPORT void test_backend_runtime_thread_bgworker_main(Datum main_arg);
+
+static uint32 test_backend_runtime_thread_bgworker_wait_event = 0;
 
 Datum
 test_backend_runtime_request_autovacuum_worker(PG_FUNCTION_ARGS)
@@ -41,7 +48,7 @@ test_backend_runtime_rejects_process_bgworker(PG_FUNCTION_ARGS)
 {
 	BackgroundWorker worker;
 	BackgroundWorkerHandle *handle;
-	BgwHandleStatus status = BGWH_NOT_YET_STARTED;
+	BgwHandleStatus status;
 	pid_t		pid;
 
 	memset(&worker, 0, sizeof(worker));
@@ -55,22 +62,12 @@ test_backend_runtime_rejects_process_bgworker(PG_FUNCTION_ARGS)
 			 "test_backend_runtime process bgworker");
 	snprintf(worker.bgw_type, BGW_MAXLEN,
 			 "test_backend_runtime process bgworker");
-	worker.bgw_notify_pid = 0;
+	worker.bgw_notify_pid = PgCurrentBackendSignalPid();
 
 	if (!RegisterDynamicBackgroundWorker(&worker, &handle))
 		elog(ERROR, "could not register process-model background worker");
 
-	for (int i = 0; i < 50; i++)
-	{
-		CHECK_FOR_INTERRUPTS();
-
-		status = GetBackgroundWorkerPid(handle, &pid);
-		if (status != BGWH_NOT_YET_STARTED)
-			break;
-
-		pg_usleep(100000L);
-	}
-
+	status = WaitForBackgroundWorkerStartup(handle, &pid);
 	if (status != BGWH_STOPPED)
 	{
 		if (status == BGWH_STARTED)
@@ -82,9 +79,71 @@ test_backend_runtime_rejects_process_bgworker(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+Datum
+test_backend_runtime_launch_thread_bgworker(PG_FUNCTION_ARGS)
+{
+	BackgroundWorker worker;
+	BackgroundWorkerHandle *handle;
+	BgwHandleStatus status = BGWH_NOT_YET_STARTED;
+	pid_t		pid = 0;
+
+	memset(&worker, 0, sizeof(worker));
+	worker.bgw_flags = BGWORKER_SHMEM_ACCESS;
+	worker.bgw_backend_model = BgWorkerBackendThreadPerSession;
+	worker.bgw_start_time = BgWorkerStart_RecoveryFinished;
+	worker.bgw_restart_time = BGW_NEVER_RESTART;
+	snprintf(worker.bgw_library_name, MAXPGPATH, "test_backend_runtime_threaded");
+	snprintf(worker.bgw_function_name, BGW_MAXLEN,
+			 "test_backend_runtime_thread_bgworker_main");
+	snprintf(worker.bgw_name, BGW_MAXLEN,
+			 "test_backend_runtime thread bgworker");
+	snprintf(worker.bgw_type, BGW_MAXLEN,
+			 "test_backend_runtime thread bgworker");
+	worker.bgw_notify_pid = PgCurrentBackendSignalPid();
+
+	if (!RegisterDynamicBackgroundWorker(&worker, &handle))
+		elog(ERROR, "could not register thread-model background worker");
+
+	status = WaitForBackgroundWorkerStartup(handle, &pid);
+	if (status != BGWH_STARTED)
+		elog(ERROR, "thread-model background worker did not start: status %d",
+			 status);
+
+	TerminateBackgroundWorker(handle);
+	status = WaitForBackgroundWorkerShutdown(handle);
+	if (status != BGWH_STOPPED)
+		elog(ERROR, "thread-model background worker did not stop: status %d",
+			 status);
+
+	PG_RETURN_INT32(pid);
+}
+
 void
 test_backend_runtime_unreachable_bgworker_main(Datum main_arg)
 {
 	elog(FATAL, "process-model background worker unexpectedly started");
 	pg_unreachable();
+}
+
+void
+test_backend_runtime_thread_bgworker_main(Datum main_arg)
+{
+	if (test_backend_runtime_thread_bgworker_wait_event == 0)
+		test_backend_runtime_thread_bgworker_wait_event =
+			WaitEventExtensionNew("TestBackendRuntimeThreadBgWorker");
+
+	for (;;)
+	{
+		(void) WaitLatch(MyLatch,
+						 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+						 10000L,
+						 test_backend_runtime_thread_bgworker_wait_event);
+		ResetLatch(MyLatch);
+
+		PgCurrentBackendApplyInterrupts();
+		if (ProcDiePending)
+			break;
+
+		CHECK_FOR_INTERRUPTS();
+	}
 }
