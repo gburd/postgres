@@ -778,6 +778,28 @@ failures even with the temporary startup/session gate.  That means the next
 commit boundary needs a stronger transaction-end and cache/lifetime policy,
 not just a later guard in `InitPostgres()`.
 
+## One-Step Session Boundary Slice
+
+The thirty-sixth slice moves the guarded stop into the unwrapped session
+runner after one protocol step:
+
+- threaded startup now completes `PgSessionBootstrap()` and enters
+  `PgSessionRun()`;
+- `PgSessionRun()` uses the existing single-message step budget and calls
+  `PgSessionStep()` before the threaded guard fires;
+- a simple-query client can therefore receive `ReadyForQuery`, send one
+  protocol message, execute the query, receive the result, and then see the
+  guarded FATAL;
+- the guard still prevents multi-step session lifetime, because repeated
+  protocol-loop execution, idle waits, transaction cleanup after arbitrary
+  commands, and backend-local cache teardown are not yet safe for concurrent
+  threaded carriers.
+
+This is the first boundary that proves the stepped main-loop shape with a real
+SQL command in the threaded carrier. It still relies on the temporary
+startup/session gate and is not a claim that arbitrary threaded sessions can
+remain alive across multiple frontend messages.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
@@ -1250,4 +1272,12 @@ not just a later guard in `InitPostgres()`.
   `multithreaded=on` smoke reached the `threaded backend session bootstrap
   completed` guard for every client with no byval/opclass/crash signatures.
 - after the session-bootstrap boundary slice,
+  `gmake -C src/test/modules/test_backend_runtime check` passed.
+- moving the guard into `PgSessionRun()` after one `PgSessionStep()` passed
+  `gmake -C src/backend/tcop postgres.o`, full `gmake -C src/backend -j8`,
+  and `gmake DESTDIR="$PWD/tmp_install" install`; a 20-client
+  `multithreaded=on` smoke ran `SELECT <n>` through psql for every client,
+  observed 20 guarded `threaded backend completed one protocol step` FATALs,
+  saw 20 result rows, and found no byval/opclass/crash signatures.
+- after the one-step session boundary slice,
   `gmake -C src/test/modules/test_backend_runtime check` passed.

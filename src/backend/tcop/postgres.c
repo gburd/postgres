@@ -4975,13 +4975,25 @@ pg_noreturn void
 PgSessionRun(PgSession *session)
 {
 	PgStepBudget budget;
+	bool		threaded_backend;
 
 	Assert(session != NULL);
 
+	threaded_backend = (CurrentPgRuntime != NULL &&
+						CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION);
 	budget.max_messages = 1;
 
 	for (;;)
+	{
 		(void) PgSessionStep(session, budget);
+
+		if (threaded_backend)
+			ereport(FATAL,
+					(errmsg("threaded backend completed one protocol step"),
+					 errdetail("The first main-loop step completed, but "
+							   "multi-step threaded session lifetime still "
+							   "needs thread-safe handling.")));
+	}
 }
 
 
@@ -5189,13 +5201,6 @@ PgSessionBootstrap(const char *dbname, const char *username)
 
 	Assert(CurrentPgSession != NULL);
 	PgSessionLoopStateInit(&CurrentPgSession->loop_state);
-
-	if (threaded_backend)
-		ereport(FATAL,
-				(errmsg("threaded backend session bootstrap completed"),
-				 errdetail("Session bootstrap reached the main protocol loop, "
-						   "but PgSessionRun still needs thread-safe "
-						   "lifecycle handling.")));
 
 	return CurrentPgSession;
 }
