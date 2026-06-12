@@ -49,6 +49,7 @@
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "utils/builtins.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
@@ -219,6 +220,7 @@ SwitchToSharedLatch(void)
 	Assert(MyProc != NULL);
 
 	MyLatch = &MyProc->procLatch;
+	PgBackendSetInterruptLatch(CurrentPgBackend, MyLatch);
 
 	if (FeBeWaitSet)
 		ModifyWaitEvent(FeBeWaitSet, FeBeWaitSetLatchPos, WL_LATCH_SET,
@@ -246,6 +248,7 @@ SwitchBackToLocalLatch(void)
 	Assert(MyProc != NULL && MyLatch == &MyProc->procLatch);
 
 	MyLatch = &LocalLatchData;
+	PgBackendSetInterruptLatch(CurrentPgBackend, MyLatch);
 
 	if (FeBeWaitSet)
 		ModifyWaitEvent(FeBeWaitSet, FeBeWaitSetLatchPos, WL_LATCH_SET,

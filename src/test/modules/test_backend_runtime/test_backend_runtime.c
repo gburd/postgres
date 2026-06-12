@@ -15,6 +15,7 @@
 #include "fmgr.h"
 #include "storage/dsm.h"
 #include "storage/ipc.h"
+#include "storage/latch.h"
 #include "utils/backend_runtime.h"
 
 PG_MODULE_MAGIC;
@@ -122,6 +123,44 @@ test_backend_dsm_shutdown_is_backend_local(PG_FUNCTION_ARGS)
 
 	if (!found)
 		elog(ERROR, "DSM shutdown for one backend detached another backend's mapping");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_backend_interrupt_wakes_target_latch);
+Datum
+test_backend_interrupt_wakes_target_latch(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgBackend	fake_backend;
+	Latch		fake_latch;
+	bool		latch_set;
+	bool		pending_seen;
+	PgBackendInterruptMask pending;
+
+	saved_backend = CurrentPgBackend;
+	MemSet(&fake_backend, 0, sizeof(fake_backend));
+	InitLatch(&fake_latch);
+	PgBackendInitializeInterrupts(&fake_backend);
+	PgBackendSetInterruptLatch(&fake_backend, &fake_latch);
+
+	PgBackendRaiseInterrupt(&fake_backend,
+							PG_BACKEND_INTERRUPT_QUERY_CANCEL);
+	latch_set = fake_latch.is_set;
+
+	CurrentPgBackend = &fake_backend;
+	pending_seen = PgCurrentBackendHasPendingInterrupts();
+	CurrentPgBackend = saved_backend;
+
+	ResetLatch(&fake_latch);
+	pending = PgBackendConsumeInterrupts(&fake_backend);
+
+	if (!pending_seen)
+		elog(ERROR, "current backend did not observe pending logical interrupt");
+	if ((pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_QUERY_CANCEL)) == 0)
+		elog(ERROR, "raised logical interrupt was not recorded");
+	if (!latch_set)
+		elog(ERROR, "raising interrupt did not set target backend latch");
 
 	PG_RETURN_BOOL(true);
 }

@@ -110,16 +110,17 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile uint32 CritSection
 
 /* in tcop/postgres.c */
 extern void ProcessInterrupts(void);
+extern bool PgCurrentBackendHasPendingInterrupts(void);
 
 /* Test whether an interrupt is pending */
 #ifndef WIN32
 #define INTERRUPTS_PENDING_CONDITION() \
-	(unlikely(InterruptPending))
+	(unlikely(InterruptPending || PgCurrentBackendHasPendingInterrupts()))
 #else
 #define INTERRUPTS_PENDING_CONDITION() \
 	(unlikely(UNBLOCKED_SIGNAL_QUEUE()) ? \
 	 pgwin32_dispatch_queued_signals() : (void) 0, \
-	 unlikely(InterruptPending))
+	 unlikely(InterruptPending || PgCurrentBackendHasPendingInterrupts()))
 #endif
 
 /* Service interrupt, if one is pending and it's safe to service it now */

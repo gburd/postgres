@@ -163,6 +163,7 @@ struct PgBackend
 	PgConnection *connection;
 	PgExecution *execution;
 	PgBackendInterruptMailbox interrupts;
+	struct Latch *interrupt_latch;
 	PgBackendExitState exit_state;
 	PgBackendWaitState wait_state;
 
@@ -207,6 +208,8 @@ extern void PgProcessRuntimeAttachSession(Session *session);
 extern PgBackendModel PgRuntimeGetExtensionBackendModel(void);
 extern void PgRuntimeSetExtensionBackendModel(PgBackendModel backend_model);
 extern void PgBackendInitializeInterrupts(PgBackend *backend);
+extern void PgBackendSetInterruptLatch(PgBackend *backend,
+									   struct Latch *interrupt_latch);
 extern void PgBackendRaiseInterrupt(PgBackend *backend,
 									PgBackendInterruptType interrupt_type);
 extern void PgBackendRaiseProcDieInterrupt(PgBackend *backend, int sender_pid,
@@ -217,6 +220,7 @@ extern void PgCurrentBackendRaiseProcDieInterrupt(int sender_pid,
 extern PgBackendInterruptMask PgBackendConsumeInterrupts(PgBackend *backend);
 extern void PgBackendConsumeProcDieSender(PgBackend *backend, int *sender_pid,
 										  int *sender_uid);
+extern bool PgCurrentBackendHasPendingInterrupts(void);
 extern void PgCurrentBackendApplyInterrupts(void);
 extern int	PgSuspend(const PgWaitSpec *wait_spec,
 					  PgSuspendCallback callback, void *callback_arg);

@@ -347,6 +347,13 @@ Important current files:
   Install `IPC::Run` into the Perl used for the build before treating TAP
   coverage as runnable.
 
+- In the managed Codex sandbox, PostgreSQL temp-instance tests can fail during
+  `initdb` with `could not create shared memory segment: Operation not
+  permitted` from `shmget()`. Treat that as a sandbox restriction, not a
+  PostgreSQL regression. Rerun the same test outside the sandbox/with
+  escalation, or force a POSIX DSM configuration when that is sufficient for
+  the check.
+
 - This shell is zsh. Cleanup commands with unmatched globs, such as
   `rm -rf tmp_check_*`, can fail with `no matches found` before the test command
   runs. Use a matched path, `find`, or enable null-glob behavior when cleaning

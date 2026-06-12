@@ -72,6 +72,7 @@ InitializePgProcessRuntime(void)
 	process_backend.execution = &process_execution;
 	process_backend.backend_type = MyBackendType;
 	PgBackendInitializeInterrupts(&process_backend);
+	PgBackendSetInterruptLatch(&process_backend, MyLatch);
 	dlist_init(&process_backend.dsm_segment_list);
 	pg_atomic_init_u32(&process_backend.wait_state.waiting, 0);
 	PgBackendInitializeExitState(&process_backend.exit_state);
@@ -140,6 +141,15 @@ PgBackendInitializeInterrupts(PgBackend *backend)
 }
 
 void
+PgBackendSetInterruptLatch(PgBackend *backend, struct Latch *interrupt_latch)
+{
+	if (backend == NULL)
+		return;
+
+	backend->interrupt_latch = interrupt_latch;
+}
+
+void
 PgBackendRaiseInterrupt(PgBackend *backend,
 						PgBackendInterruptType interrupt_type)
 {
@@ -160,15 +170,17 @@ PgBackendWakeForInterrupt(PgBackend *backend)
 {
 	/*
 	 * Process mode has one logical backend per address space, so waking the
-	 * current backend is still the historical InterruptPending + process latch
-	 * path. Later threaded runtimes should replace this branch with a wake of
-	 * the target backend's carrier or scheduler task.
+	 * current backend must still arm the historical fast-path flag used by
+	 * signal-era code. Non-current logical backends rely on the mailbox test in
+	 * CHECK_FOR_INTERRUPTS() after their carrier wakes.
 	 */
 	if (backend == CurrentPgBackend)
-	{
 		InterruptPending = true;
+
+	if (backend->interrupt_latch != NULL)
+		SetLatch(backend->interrupt_latch);
+	else if (backend == CurrentPgBackend && MyLatch != NULL)
 		SetLatch(MyLatch);
-	}
 }
 
 void
@@ -206,6 +218,17 @@ PgBackendConsumeInterrupts(PgBackend *backend)
 		return 0;
 
 	return pg_atomic_exchange_u32(&backend->interrupts.pending_mask, 0);
+}
+
+bool
+PgCurrentBackendHasPendingInterrupts(void)
+{
+	PgBackend  *backend = CurrentPgBackend;
+
+	if (backend == NULL)
+		return false;
+
+	return pg_atomic_read_u32(&backend->interrupts.pending_mask) != 0;
 }
 
 void

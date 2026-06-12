@@ -3357,7 +3357,8 @@ ProcessRecoveryConflictInterrupts(void)
  *
  * If an interrupt condition is pending, and it's safe to service it,
  * then clear the flag and accept the interrupt.  Called only when
- * InterruptPending is true.
+ * InterruptPending is true, or when the current logical backend has pending
+ * mailbox interrupts.
  *
  * Note: if INTERRUPTS_CAN_BE_PROCESSED() is true, then ProcessInterrupts
  * is guaranteed to clear the InterruptPending flag before returning.
