@@ -30,7 +30,8 @@
 
 PG_MODULE_MAGIC_EXT(
 					.name = "pg_prewarm",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
 );
 
 PG_FUNCTION_INFO_V1(pg_prewarm);
@@ -42,7 +43,7 @@ typedef enum
 	PREWARM_BUFFER,
 } PrewarmType;
 
-static PGIOAlignedBlock blockbuffer;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PGIOAlignedBlock blockbuffer;
 
 /*
  * pg_prewarm(regclass, mode text, fork text,

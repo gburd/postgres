@@ -599,7 +599,10 @@ Likely changes:
     metadata;
   - the in-core `REPACK (CONCURRENTLY)` decoding worker has an initial
     thread-carrier slice through explicit background-worker backend-model
-    metadata.
+    metadata;
+  - the bundled `pg_prewarm` autoprewarm leader and per-database workers have
+    an initial thread-carrier slice through explicit background-worker
+    backend-model metadata.
 - Require generic background workers to declare
   `BgWorkerBackendThreadPerSession` before they can run on thread carriers.
   The zero/default registration value remains process-only, so existing

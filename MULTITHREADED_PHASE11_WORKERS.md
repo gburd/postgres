@@ -651,14 +651,54 @@ child process matching `REPACK decoding worker` remained after completion.
 The process-mode control verified the same command still succeeds with
 `multithreaded = off`.
 
+## pg_prewarm Autoprewarm Worker Thread Slice
+
+The bundled `pg_prewarm` extension is now marked compatible with
+thread-per-session backends, and its autoprewarm workers can run on thread
+carriers in threaded mode:
+
+- the module magic block declares
+  `PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION`;
+- the SQL-callable `pg_prewarm(..., 'read')` scratch buffer is backend-local
+  TLS instead of mutable file-scope storage shared by all sessions;
+- the autoprewarm leader and per-database dynamic workers declare
+  `BgWorkerBackendThreadPerSession` and use `PgCurrentBackendSignalPid()` for
+  dynamic-worker notifications;
+- the leader and per-database worker avoid installing process-wide signal
+  handlers when running on thread carriers, relying on the background-worker
+  logical interrupt bridge;
+- normal postmaster `SIGTERM` delivery to generic thread-backed background
+  workers now maps to `PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST`, matching worker
+  main loops that watch `ShutdownRequestPending`;
+- the autoprewarm DSM state now records logical backend signal IDs for
+  ownership checks. The backend-local `apw_state` pointer is TLS;
+- the first threaded autoprewarm smoke exposed a DSM lifetime difference:
+  in process mode the per-database worker can detach the block-info DSM
+  mapping independently, but in threaded mode detaching unmaps it for the
+  leader too. Thread-backed per-database workers now use the leader's
+  in-address-space block-info pointer and leave DSM detach ownership with the
+  leader.
+
+Validation for this slice used a two-stage temp-cluster smoke. Process mode
+created a 5,000-row table, exercised `pg_prewarm(..., 'read')`,
+`pg_prewarm(..., 'buffer')`, and `autoprewarm_dump_now()`, then shut down
+cleanly. The same cluster was restarted with `multithreaded = on` and
+`shared_preload_libraries = 'pg_prewarm'`; the log showed thread-carrier
+starts for both `autoprewarm leader` and `autoprewarm worker`,
+`autoprewarm successfully prewarmed`, no `ERROR`, `FATAL`, or `PANIC`, and no
+postmaster child process matching `autoprewarm`. The smoke then verified the
+table still contained the expected 5,000 rows. Cleanup used a forced kill
+because a plain threaded temp cluster still hangs on fast stop in this
+checkout, independent of `pg_prewarm`.
+
 ## Remaining Worker Families
 
 - startup/recovery worker paths that are part of normal server operation;
 - remaining in-tree generic background workers, tests, and examples that are
   not part of the already audited logical replication, core parallel worker,
-  in-core REPACK decoding worker, `test_backend_runtime`, and `test_shm_mq`
-  sets. These can opt into the explicit background-worker backend model only
-  after a per-entrypoint audit.
+  in-core REPACK decoding worker, `pg_prewarm`, `test_backend_runtime`, and
+  `test_shm_mq` sets. These can opt into the explicit background-worker
+  backend model only after a per-entrypoint audit.
 
 ## Validation
 
