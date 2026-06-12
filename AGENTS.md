@@ -269,6 +269,13 @@ Important current files:
   `src/interfaces/ecpg/compatlib`, and patch any already-built ECPG test
   executables if rerunning `src/interfaces/ecpg/test` without rebuilding them.
 
+- Do not run temp-instance smokes that use `tmp_install` in parallel with
+  recursive check targets that recreate `tmp_install`. In particular,
+  `gmake -C src/test/modules/test_backend_runtime check` deletes and
+  reinstalls `tmp_install`; any concurrent smoke using
+  `$PWD/tmp_install/usr/local/pgsql/bin` can fail for environmental reasons
+  before it reaches the code being tested.
+
 - For focused process-mode regression checks, run the test driver directly with
   the temp install first on `PATH`, for example:
 

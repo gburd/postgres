@@ -800,6 +800,26 @@ SQL command in the threaded carrier. It still relies on the temporary
 startup/session gate and is not a claim that arbitrary threaded sessions can
 remain alive across multiple frontend messages.
 
+## Two-Step Session Boundary Slice
+
+The thirty-seventh slice lets threaded sessions reenter the main protocol loop
+once before the temporary guard fires:
+
+- `PgSessionRun()` now counts returned `PgSessionStep()` calls for threaded
+  backend carriers and guards after two completed protocol steps;
+- a normal one-shot `psql -c` connection can execute its query, receive
+  `ReadyForQuery` on the second loop iteration, send `Terminate`, and exit
+  cleanly without seeing the guard;
+- a connection that sends two SQL messages executes both messages and then
+  reaches the guarded FATAL before unbounded session lifetime begins;
+- process-mode `PgSessionRun()` remains an unbounded loop.
+
+This proves the first repeated main-loop reentry in a threaded backend carrier
+and exercises clean client-driven session termination. It still does not remove
+the temporary startup/session gate or make long-lived threaded sessions safe;
+the next blocker is unbounded idle/read lifetime plus safe backend-local
+cleanup after arbitrary command sequences.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
@@ -1281,3 +1301,17 @@ remain alive across multiple frontend messages.
   saw 20 result rows, and found no byval/opclass/crash signatures.
 - after the one-step session boundary slice,
   `gmake -C src/test/modules/test_backend_runtime check` passed.
+- after the two-step session boundary slice, `git diff --check`,
+  `gmake -C src/backend/tcop postgres.o`, full `gmake -C src/backend -j8`,
+  and `gmake DESTDIR="$PWD/tmp_install" install` passed.
+- a 20-client `multithreaded=on` smoke using one-shot `psql -c "select <n>"`
+  connections returned 20 result rows, exited with status 0, produced no
+  client stderr, produced no guarded FATALs, and found no
+  byval/opclass/crash signatures.
+- a 10-client `multithreaded=on` smoke using two SQL messages per connection
+  returned 20 result rows and reached the expected `threaded backend completed
+  two protocol steps` guard with no byval/opclass/crash signatures.
+- after the two-step session boundary slice,
+  `gmake -C src/test/modules/test_backend_runtime check` passed.
+- a process-mode temp-instance smoke with `multithreaded=off` returned
+  `select 42` successfully with no client stderr.

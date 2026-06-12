@@ -4975,6 +4975,7 @@ pg_noreturn void
 PgSessionRun(PgSession *session)
 {
 	PgStepBudget budget;
+	int			completed_steps = 0;
 	bool		threaded_backend;
 
 	Assert(session != NULL);
@@ -4988,11 +4989,17 @@ PgSessionRun(PgSession *session)
 		(void) PgSessionStep(session, budget);
 
 		if (threaded_backend)
+		{
+			completed_steps++;
+			if (completed_steps < 2)
+				continue;
+
 			ereport(FATAL,
-					(errmsg("threaded backend completed one protocol step"),
-					 errdetail("The first main-loop step completed, but "
-							   "multi-step threaded session lifetime still "
+					(errmsg("threaded backend completed two protocol steps"),
+					 errdetail("The main loop handled more than one frontend "
+							   "message, but unbounded threaded session lifetime still "
 							   "needs thread-safe handling.")));
+		}
 	}
 }
 
