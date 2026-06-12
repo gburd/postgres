@@ -465,6 +465,27 @@ initialization, performs authentication, and advertises cancellation metadata.
 Those pieces need logical-backend identity and timeout/interrupt handling
 rather than process-wide signal assumptions.
 
+## ProcSignal Logical Identity Slice
+
+The twenty-third slice moves the guarded stop into `InitPostgres()` after the
+first procsignal registration boundary:
+
+- `ProcSignalSlot` now carries `pss_backendId` beside the historical
+  `pss_pid`;
+- `ProcSignalInit()` records `PgCurrentBackendId()` in the slot while
+  preserving existing PID publication for process-mode callers;
+- `CleanupProcSignalState()` clears the logical id when the slot is released;
+- threaded startup now crosses `InitProcessPhase2()`, pgstat backend status
+  initialization, shared-invalidation backend initialization,
+  `ProcSignalInit()`, and local data-checksum state initialization before the
+  guarded stop;
+- the guarded FATAL now fires before backend timeout registration, catalog
+  initialization, authentication, and normal session startup.
+
+This is not yet logical procsignal delivery. `SendProcSignal()` still uses PID
+and `SIGUSR1`, so concurrent threaded backends would still need delivery by
+logical backend/proc number plus latch wakeup rather than process signal.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
@@ -675,3 +696,19 @@ rather than process-wide signal assumptions.
   `InitPostgres()` with the guarded "threaded backend database initialization
   is not implemented yet" FATAL, kept the postmaster running between
   connections, and completed normal fast shutdown.
+- after the ProcSignal logical identity slice,
+  `gmake -C src/backend/storage/ipc procsignal.o`,
+  `gmake -C src/backend/utils/init postinit.o`, and
+  `gmake -C src/backend/tcop postgres.o` passed;
+- after the ProcSignal logical identity slice, full
+  `gmake -C src/backend -j8` passed and
+  `gmake DESTDIR="$PWD/tmp_install" install` completed;
+- after the ProcSignal logical identity slice,
+  `gmake -C src/test/modules/test_backend_runtime check` passed;
+- a temp install smoke with `multithreaded=on` after the ProcSignal logical
+  identity slice read real libpq startup packets for two client connections,
+  crossed `InitPostgres()` far enough to register ProcArray, pgstat backend
+  status, shared-invalidation, and procsignal state, rejected both before
+  timeout registration with the guarded "threaded backend database
+  initialization is not implemented yet" FATAL, kept the postmaster running
+  between connections, and completed normal fast shutdown.

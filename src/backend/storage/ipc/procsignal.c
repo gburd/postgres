@@ -71,6 +71,7 @@
 typedef struct
 {
 	pg_atomic_uint32 pss_pid;
+	PgBackendId pss_backendId;
 	int			pss_cancel_key_len; /* 0 means no cancellation is possible */
 	uint8		pss_cancel_key[MAX_CANCEL_KEY_LENGTH];
 	volatile sig_atomic_t pss_signalFlags[NUM_PROCSIGNALS];
@@ -155,6 +156,7 @@ ProcSignalShmemInit(void *arg)
 
 		SpinLockInit(&slot->pss_mutex);
 		pg_atomic_init_u32(&slot->pss_pid, 0);
+		slot->pss_backendId = 0;
 		slot->pss_cancel_key_len = 0;
 		MemSet(slot->pss_signalFlags, 0, sizeof(slot->pss_signalFlags));
 		pg_atomic_init_u64(&slot->pss_barrierGeneration, PG_UINT64_MAX);
@@ -188,6 +190,7 @@ ProcSignalInit(const uint8 *cancel_key, int cancel_key_len)
 
 	/* Clear out any leftover signal reasons */
 	MemSet(slot->pss_signalFlags, 0, NUM_PROCSIGNALS * sizeof(sig_atomic_t));
+	slot->pss_backendId = PgCurrentBackendId();
 
 	/*
 	 * Publish the PID before reading the global barrier generation to ensure
@@ -269,6 +272,7 @@ CleanupProcSignalState(int status, Datum arg)
 
 	/* Mark the slot as unused */
 	pg_atomic_write_u32(&slot->pss_pid, 0);
+	slot->pss_backendId = 0;
 	slot->pss_cancel_key_len = 0;
 
 	/*

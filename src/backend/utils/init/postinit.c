@@ -726,12 +726,15 @@ InitPostgres(const char *in_dbname, Oid dboid,
 			 char *out_dbname)
 {
 	bool		bootstrap = IsBootstrapProcessingMode();
+	bool		threaded_backend;
 	bool		am_superuser;
 	char	   *fullpath;
 	char		dbname[NAMEDATALEN];
 	int			nfree = 0;
 
 	elog(DEBUG3, "InitPostgres");
+	threaded_backend = (CurrentPgRuntime != NULL &&
+						CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION);
 
 	/*
 	 * Add my PGPROC struct to the ProcArray.
@@ -789,6 +792,14 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	InitLocalDataChecksumState();
 
 	RESUME_INTERRUPTS();
+
+	if (threaded_backend)
+		ereport(FATAL,
+				(errmsg("threaded backend database initialization is not implemented yet"),
+				 errdetail("ProcSignalInit now records logical backend identity, "
+						   "but timeout registration, authentication, catalog "
+						   "initialization, and post-startup session lifetime "
+						   "still need thread-safe lifecycle handling.")));
 
 	/*
 	 * Also set up timeout handlers needed for backend operation.  We need

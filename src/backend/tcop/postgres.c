@@ -5095,15 +5095,6 @@ PgSessionBootstrap(const char *dbname, const char *username)
 		MyCancelKeyLength = len;
 	}
 
-	if (threaded_backend)
-		ereport(FATAL,
-				(errmsg("threaded backend database initialization is not implemented yet"),
-				 errdetail("BaseInit and cancel-key generation now preserve "
-						   "thread runtime state, but InitPostgres, "
-						   "authentication, procsignal, and post-startup "
-						   "session lifetime still need thread-safe lifecycle "
-						   "handling.")));
-
 	/*
 	 * General initialization.
 	 *
