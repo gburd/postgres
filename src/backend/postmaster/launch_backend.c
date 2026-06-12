@@ -192,6 +192,7 @@ typedef struct BackendThreadStart
 	PMChild    *pmchild;
 	BackendType child_type;
 	int			child_slot;
+	BackendStartupData startup_data;
 	ClientSocket client_sock;
 	Latch	   *postmaster_latch;
 } BackendThreadStart;
@@ -264,6 +265,11 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 		errno = ENOSYS;
 		return false;
 	}
+	if (startup_data == NULL || startup_data_len != sizeof(BackendStartupData))
+	{
+		errno = EINVAL;
+		return false;
+	}
 
 	if (IsExternalConnectionBackend(child_type))
 		((BackendStartupData *) startup_data)->fork_started = GetCurrentTimestamp();
@@ -282,6 +288,7 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 	thread_start->pmchild = pmchild;
 	thread_start->child_type = child_type;
 	thread_start->child_slot = child_slot;
+	thread_start->startup_data = *((BackendStartupData *) startup_data);
 	thread_start->client_sock = *client_sock;
 	thread_start->client_sock.sock = dup(client_sock->sock);
 	thread_start->postmaster_latch = MyLatch;
@@ -315,6 +322,15 @@ backend_thread_reject_entry(void *arg)
 {
 	BackendThreadStart *thread_start = (BackendThreadStart *) arg;
 
+	MyBackendType = thread_start->child_type;
+	MyPMChildSlot = thread_start->child_slot;
+	/* Temporary until real backend startup owns the copied ClientSocket. */
+	MyClientSocket = &thread_start->client_sock;
+
+	conn_timing.socket_create = thread_start->startup_data.socket_created;
+	conn_timing.fork_start = thread_start->startup_data.fork_started;
+	conn_timing.fork_end = GetCurrentTimestamp();
+
 	report_thread_startup_blocked_to_client(&thread_start->client_sock);
 
 	if (closesocket(thread_start->client_sock.sock) != 0)
@@ -327,6 +343,7 @@ backend_thread_reject_entry(void *arg)
 
 	PostmasterChildMarkThreadExited(thread_start->pmchild, 0,
 									thread_start->postmaster_latch);
+	MyClientSocket = NULL;
 	free(thread_start);
 }
 

@@ -149,6 +149,25 @@ the thread-safe startup timeout/termination path, backend-local initialization
 that does not mutate postmaster runtime globals, and backend exit that cannot
 call process exit from the carrier thread.
 
+## Thread Carrier Identity Slice
+
+The ninth slice starts installing backend-local identity inside the temporary
+rejecting carrier thread:
+
+- the thread start payload now carries a copied `BackendStartupData`;
+- the carrier thread initializes `MyBackendType`, `MyPMChildSlot`, and
+  `MyClientSocket` before touching the client socket;
+- connection timing state is initialized from the copied startup data, with
+  `fork_end` standing in as the carrier-thread start timestamp for now;
+- malformed thread-launch startup payloads fail before thread creation;
+- the thread still rejects the connection before entering backend startup.
+
+`MyClientSocket` currently points into the thread start payload and is cleared
+before that payload is freed. That is acceptable only for the reject stub. The
+first real `BackendMainWithStartupData(..., BACKEND_STARTUP_THREAD)` path must
+move client-socket ownership into backend-local lifetime before the start
+payload can be released.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
@@ -182,3 +201,13 @@ call process exit from the carrier thread.
   slice rejected two client connections with "threaded backend startup is not
   implemented yet"; `pg_ctl status` reported the postmaster still running, and
   normal fast shutdown completed.
+- after the thread carrier identity slice,
+  `gmake -C src/backend/postmaster launch_backend.o` passed;
+- after the thread carrier identity slice, full `gmake -C src/backend -j8`
+  passed;
+- after the thread carrier identity slice,
+  `gmake -C src/test/modules/test_backend_runtime check` passed;
+- a temp install smoke with `multithreaded=on` after the thread carrier
+  identity slice rejected two client connections with "threaded backend startup
+  is not implemented yet"; `pg_ctl status` reported the postmaster still
+  running, and normal fast shutdown completed.
