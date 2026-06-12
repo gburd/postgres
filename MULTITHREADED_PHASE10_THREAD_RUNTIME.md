@@ -346,6 +346,31 @@ This does not yet replace the many existing PID-backed fields. It creates the
 object identity that later PGPROC, procsignal, latch, cancellation, and
 monitoring work can target while preserving process-mode behavior.
 
+## PGPROC Logical Identity Slice
+
+The eighteenth slice carries the runtime-owned logical backend identity into
+shared backend registration:
+
+- `PgBackendId` now lives in a small shared header so runtime and shared-memory
+  backend structures can refer to the same type without pulling in full runtime
+  state;
+- `PGPROC` now records `backendId` alongside the historical process `pid`;
+- `InitProcess()` and `InitAuxiliaryProcess()` initialize `PGPROC.backendId`
+  when a runtime/backend object already exists;
+- process-mode `InitializePgProcessRuntime()` backfills `MyProc->backendId`
+  because process backends create their runtime object in `BaseInit()` after
+  `InitProcess()`;
+- `ProcKill()` and `AuxiliaryProcKill()` clear the logical id when the PGPROC
+  slot becomes reusable;
+- `test_backend_runtime` verifies that a normal SQL backend has a nonzero
+  `PgCurrentBackendId()` and a matching `MyProc->backendId`.
+
+This still preserves `PGPROC.pid` for process-mode callers and for the many
+subsystems that still signal or monitor by PID. The next boundary is to move
+the threaded startup guard past `InitProcess()` and prove that PGPROC
+allocation plus cleanup can run inside a backend carrier thread without
+terminating the postmaster.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
@@ -491,3 +516,13 @@ monitoring work can target while preserving process-mode behavior.
   "threaded backend shared-memory registration is not implemented yet" FATAL,
   kept the postmaster running between connections, and completed normal fast
   shutdown.
+- after the PGPROC logical identity slice,
+  `gmake -C src/backend/storage/lmgr proc.o`,
+  `gmake -C src/backend/utils/init backend_runtime.o`, and
+  `gmake -C src/test/modules/test_backend_runtime test_backend_runtime.o`
+  passed;
+- after the PGPROC logical identity slice, a backend clean, generated-header
+  recovery, and full `gmake -C src/backend -j8` rebuild passed;
+- after the PGPROC logical identity slice,
+  `gmake -C src/test/modules/test_backend_runtime check` passed, including
+  the SQL-backend `PGPROC.backendId` regression.

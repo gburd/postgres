@@ -20,6 +20,7 @@
 #include "storage/dsm.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
+#include "storage/proc.h"
 #include "utils/backend_runtime.h"
 
 PG_MODULE_MAGIC;
@@ -277,6 +278,21 @@ test_backend_thread_runtime_state(PG_FUNCTION_ARGS)
 		elog(ERROR, "thread backend runtime state was not initialized");
 
 	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_backend_pgproc_has_logical_id);
+Datum
+test_backend_pgproc_has_logical_id(PG_FUNCTION_ARGS)
+{
+	bool		ok;
+
+	ok = MyProc != NULL;
+	ok = ok && PgCurrentBackendId() != 0;
+	ok = ok && MyProc->backendId != 0;
+	ok = ok && MyProc->backendId == PgCurrentBackendId();
+	ok = ok && MyProc->pid == MyProcPid;
+
+	PG_RETURN_BOOL(ok);
 }
 
 PG_FUNCTION_INFO_V1(test_backend_thread_ids_are_logical);

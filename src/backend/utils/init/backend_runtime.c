@@ -23,6 +23,7 @@
 #include "replication/logicalworker.h"
 #include "replication/slotsync.h"
 #include "storage/latch.h"
+#include "storage/proc.h"
 #include "storage/sinval.h"
 #include "utils/backend_runtime.h"
 
@@ -121,6 +122,9 @@ InitializePgProcessRuntime(void)
 	CurrentPgSession = &process_session;
 	CurrentPgConnection = &process_connection;
 	CurrentPgExecution = &process_execution;
+
+	if (MyProc != NULL && MyProc->backendId == 0)
+		MyProc->backendId = process_backend.id;
 }
 
 void

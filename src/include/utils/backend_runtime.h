@@ -18,6 +18,7 @@
 #include "miscadmin.h"
 #include "port/atomics.h"
 #include "storage/ipc.h"
+#include "utils/backend_id.h"
 #include "utils/global_lifetime.h"
 
 typedef struct PgRuntime PgRuntime;
@@ -26,7 +27,6 @@ typedef struct PgBackend PgBackend;
 typedef struct PgSession PgSession;
 typedef struct PgConnection PgConnection;
 typedef struct PgExecution PgExecution;
-typedef uint64 PgBackendId;
 typedef void (*PgBackendExitContinuation) (int code);
 typedef int (*PgSuspendCallback) (void *callback_arg);
 

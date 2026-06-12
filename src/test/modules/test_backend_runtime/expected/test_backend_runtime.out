@@ -35,6 +35,12 @@ SELECT test_backend_thread_runtime_state();
  t
 (1 row)
 
+SELECT test_backend_pgproc_has_logical_id();
+ test_backend_pgproc_has_logical_id 
+------------------------------------
+ t
+(1 row)
+
 SELECT test_backend_thread_ids_are_logical();
  test_backend_thread_ids_are_logical 
 -------------------------------------

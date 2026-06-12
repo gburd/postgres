@@ -23,6 +23,7 @@
 #include "storage/proclist_types.h"
 #include "storage/procnumber.h"
 #include "storage/spin.h"
+#include "utils/backend_id.h"
 #include "utils/global_lifetime.h"
 
 /* Avoid including clog.h here */
@@ -202,6 +203,7 @@ typedef struct PGPROC
 	 * rarely
 	 */
 	int			pid;			/* Backend's process ID; 0 if prepared xact */
+	PgBackendId backendId;		/* logical backend ID; 0 if none assigned */
 	BackendType backendType;	/* what kind of process is this? */
 
 	/* These fields are zero while a backend is still starting up: */
