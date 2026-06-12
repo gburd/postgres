@@ -371,6 +371,29 @@ the threaded startup guard past `InitProcess()` and prove that PGPROC
 allocation plus cleanup can run inside a backend carrier thread without
 terminating the postmaster.
 
+## Threaded InitProcess Slice
+
+The nineteenth slice lets threaded startup cross the first shared-memory
+backend registration boundary:
+
+- `BACKEND_STARTUP_THREAD` now calls `InitProcess()` after startup-packet
+  parsing;
+- the thread carrier receives a regular `PGPROC` slot and shared latch before
+  the guarded stop;
+- the guarded FATAL now fires after PGPROC registration and before
+  `PostgresMain()`, authentication, `InitPostgres()`, procsignal participation,
+  or normal SQL execution;
+- thread exit therefore exercises `ProcKill()` and returns the PGPROC slot to
+  its freelist through the backend-exit path;
+- the next blockers are now post-startup session lifecycle, authentication
+  timeout/cancellation semantics, procsignal identity, and replacing PID-based
+  latch wakeups for concurrent backend threads.
+
+This is still only a boundary proof. Sequential threaded startup can register
+and clean up a backend, but true concurrent threaded sessions still need the
+remaining PID-to-logical-backend migrations before normal SQL execution can be
+enabled.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
@@ -526,3 +549,15 @@ terminating the postmaster.
 - after the PGPROC logical identity slice,
   `gmake -C src/test/modules/test_backend_runtime check` passed, including
   the SQL-backend `PGPROC.backendId` regression.
+- after the threaded InitProcess slice,
+  `gmake -C src/backend/tcop backend_startup.o` passed;
+- after the threaded InitProcess slice, full `gmake -C src/backend -j8`
+  passed;
+- after the threaded InitProcess slice,
+  `gmake -C src/test/modules/test_backend_runtime check` passed;
+- a temp install smoke with `multithreaded=on` after the threaded InitProcess
+  slice read real libpq startup packets for two client connections, entered
+  `InitProcess()`, rejected both immediately after PGPROC registration with
+  the guarded "threaded backend session execution is not implemented yet"
+  FATAL, kept the postmaster running between connections, and completed normal
+  fast shutdown.

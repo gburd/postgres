@@ -133,18 +133,18 @@ BackendMainWithStartupData(const BackendStartupData *bsdata,
 	BackendInitialize(client_sock, bsdata->canAcceptConnections,
 					  startup_mode);
 
-	if (startup_mode == BACKEND_STARTUP_THREAD)
-		ereport(FATAL,
-				(errmsg("threaded backend shared-memory registration is not implemented yet"),
-				 errdetail("InitProcess, PGPROC registration, and post-startup "
-						   "backend lifetime still need thread-safe lifecycle "
-						   "handling.")));
-
 	/*
 	 * Create a per-backend PGPROC struct in shared memory.  We must do this
 	 * before we can use LWLocks or access any shared memory.
 	 */
 	InitProcess();
+
+	if (startup_mode == BACKEND_STARTUP_THREAD)
+		ereport(FATAL,
+				(errmsg("threaded backend session execution is not implemented yet"),
+				 errdetail("PGPROC registration now completes, but PostgresMain, "
+						   "authentication, procsignal, and post-startup session "
+						   "lifetime still need thread-safe lifecycle handling.")));
 
 	/*
 	 * Make sure we aren't in PostmasterContext anymore.  (We can't delete it
