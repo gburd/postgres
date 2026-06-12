@@ -15,6 +15,7 @@
 
 #include "lib/ilist.h"
 #include "miscadmin.h"
+#include "port/pg_thread.h"
 #include "utils/global_lifetime.h"
 
 /*
@@ -48,6 +49,7 @@ typedef struct
 {
 	PMChildCarrierKind carrier_kind;	/* process, thread, or future carrier */
 	pid_t		pid;			/* process id, if process-backed */
+	PgThread	thread;			/* native thread handle, if thread-backed */
 	int			child_slot;		/* PMChildSlot for this backend, if any */
 	BackendType bkend_type;		/* child process flavor, see above */
 	struct RegisteredBgWorker *rw;	/* bgworker info, if this is a bgworker */
@@ -137,7 +139,9 @@ extern void InitPostmasterChildSlots(void);
 extern PMChild *AssignPostmasterChildSlot(BackendType btype);
 extern PMChild *AllocDeadEndChild(void);
 extern bool PostmasterChildIsProcess(const PMChild *pmchild);
+extern bool PostmasterChildIsThread(const PMChild *pmchild);
 extern void PostmasterChildSetProcess(PMChild *pmchild, pid_t pid);
+extern void PostmasterChildSetThread(PMChild *pmchild, const PgThread *thread);
 extern bool ReleasePostmasterChildSlot(PMChild *pmchild);
 extern PMChild *FindPostmasterChildByPid(int pid);
 

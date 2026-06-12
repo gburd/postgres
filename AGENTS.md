@@ -161,6 +161,16 @@ Important current files:
   post-bootstrap single-user startup. Use the backend clean plus generated-file
   recovery above, then rebuild with `gmake -j8`.
 
+- If `PMChild` layout changes in `src/include/postmaster/postmaster.h`, do not
+  trust an incremental build of postmaster objects. Stale postmaster objects can
+  corrupt the PMChild freelists or crash auxiliary children during temp-instance
+  startup. Use:
+
+  ```sh
+  gmake -C src/backend/postmaster clean
+  gmake -C src/backend -j8
+  ```
+
 - This checkout is currently configured with `with_gssapi = no`. A direct
   `gmake -C src/backend/libpq be-secure-gssapi.o` can fail before reaching
   project changes because the GSSAPI types and functions are unavailable in

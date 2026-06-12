@@ -251,6 +251,12 @@ PostmasterChildIsProcess(const PMChild *pmchild)
 	return pmchild->carrier_kind == PM_CHILD_CARRIER_PROCESS;
 }
 
+bool
+PostmasterChildIsThread(const PMChild *pmchild)
+{
+	return pmchild->carrier_kind == PM_CHILD_CARRIER_THREAD;
+}
+
 void
 PostmasterChildSetProcess(PMChild *pmchild, pid_t pid)
 {
@@ -258,6 +264,16 @@ PostmasterChildSetProcess(PMChild *pmchild, pid_t pid)
 
 	pmchild->carrier_kind = PM_CHILD_CARRIER_PROCESS;
 	pmchild->pid = pid;
+}
+
+void
+PostmasterChildSetThread(PMChild *pmchild, const PgThread *thread)
+{
+	Assert(thread != NULL);
+
+	pmchild->carrier_kind = PM_CHILD_CARRIER_THREAD;
+	pmchild->pid = 0;
+	pmchild->thread = *thread;
 }
 
 /*

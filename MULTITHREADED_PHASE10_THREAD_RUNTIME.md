@@ -96,6 +96,19 @@ This keeps current process behavior intact while making the next real thread
 launcher patch local to `launch_backend.c` and `pmchild.c` instead of forcing
 all postmaster call sites to reason about non-PID carriers.
 
+## PMChild Thread Handle Slice
+
+The sixth slice gives thread-backed children a native handle slot:
+
+- `PMChild` now stores a `PgThread` alongside the process PID;
+- `PostmasterChildIsThread()` identifies thread-backed entries;
+- `PostmasterChildSetThread()` records the native thread handle and clears the
+  process PID.
+
+No caller sets thread-backed PMChild entries yet. This makes the eventual
+thread launcher able to record its carrier without overloading `pid` or
+inventing a transient side table.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
@@ -103,6 +116,11 @@ all postmaster call sites to reason about non-PID carriers.
   PMChild carrier identity slice;
 - `gmake -C src/backend/postmaster launch_backend.o postmaster.o pmchild.o`
   passed after the carrier-aware launch API slice;
+- `gmake -C src/backend/postmaster pmchild.o postmaster.o launch_backend.o`
+  passed after the PMChild thread handle slice;
+- after the PMChild layout changed, an incremental temp-instance check exposed
+  stale postmaster objects, so `gmake -C src/backend/postmaster clean` followed
+  by `gmake -C src/backend -j8` was required and passed;
 - `gmake -C src/backend/utils/init backend_runtime.o globals.o` passed;
 - `gmake -C src/backend/utils/misc guc_tables.o` passed after regenerating
   `guc_tables.inc.c`;
