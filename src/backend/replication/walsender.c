@@ -244,6 +244,13 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t replication_activ
 
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND LogicalDecodingContext *logical_decoding_ctx = NULL;
 
+/*
+ * Working memory context for replication commands.  In process mode this used
+ * to be a function-local static, but threaded walsenders must not share it
+ * across logical backends.
+ */
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND MemoryContext replication_cmd_context = NULL;
+
 /* A sample associating a WAL location with the time it was written. */
 typedef struct
 {
@@ -2072,9 +2079,6 @@ exec_replication_command(const char *cmd_string)
 	const char *cmdtag;
 	MemoryContext old_context = CurrentMemoryContext;
 
-	/* We save and re-use the cmd_context across calls */
-	static MemoryContext cmd_context = NULL;
-
 	/*
 	 * If WAL sender has been told that shutdown is getting close, switch its
 	 * status accordingly to handle the next replication commands correctly.
@@ -2116,16 +2120,16 @@ exec_replication_command(const char *cmd_string)
 	 * might have just ended one.  Because transaction exit will revert to the
 	 * memory context that was current at transaction start, we need to be
 	 * sure that that context is still valid.  That motivates re-using the
-	 * same cmd_context rather than making a new one each time.
+	 * same replication_cmd_context rather than making a new one each time.
 	 */
-	if (cmd_context == NULL)
-		cmd_context = AllocSetContextCreate(TopMemoryContext,
-											"Replication command context",
-											ALLOCSET_DEFAULT_SIZES);
+	if (replication_cmd_context == NULL)
+		replication_cmd_context = AllocSetContextCreate(TopMemoryContext,
+														"Replication command context",
+														ALLOCSET_DEFAULT_SIZES);
 	else
-		MemoryContextReset(cmd_context);
+		MemoryContextReset(replication_cmd_context);
 
-	MemoryContextSwitchTo(cmd_context);
+	MemoryContextSwitchTo(replication_cmd_context);
 
 	replication_scanner_init(cmd_string, &scanner);
 
@@ -2138,7 +2142,7 @@ exec_replication_command(const char *cmd_string)
 		replication_scanner_finish(scanner);
 
 		MemoryContextSwitchTo(old_context);
-		MemoryContextReset(cmd_context);
+		MemoryContextReset(replication_cmd_context);
 
 		/* XXX this is a pretty random place to make this check */
 		if (MyDatabaseId == InvalidOid)
@@ -2299,11 +2303,11 @@ exec_replication_command(const char *cmd_string)
 	}
 
 	/*
-	 * Done.  Revert to caller's memory context, and clean out the cmd_context
-	 * to recover memory right away.
+	 * Done.  Revert to caller's memory context, and clean out the command
+	 * context to recover memory right away.
 	 */
 	MemoryContextSwitchTo(old_context);
-	MemoryContextReset(cmd_context);
+	MemoryContextReset(replication_cmd_context);
 
 	/*
 	 * We need not update ps display or pg_stat_activity, because PostgresMain

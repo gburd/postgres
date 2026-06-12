@@ -548,7 +548,8 @@ checkpointer/background writer handoff, syslogger handoff, slot sync worker,
 and logical replication launcher slices, plus initial logical replication
 apply/table-sync, sequence-sync, and parallel apply slices, plus core
 parallel worker thread carriers, online data-checksum launcher/workers, and
-remaining worker families.
+the remaining audited in-tree server-owned worker families. Remaining work is
+Phase 11 hardening and Gate E validation.
 
 Goal: make normal threaded server mode fully threaded for in-tree
 server-owned worker families, so the runtime does not fork subprocesses for
@@ -631,6 +632,8 @@ Validation:
 - WAL receiver, WAL summarizer, slot sync worker, logical replication
   launcher, and logical replication worker smoke tests where local test
   infrastructure supports them;
+- startup/recovery, physical basebackup, hot-standby replay, and promotion
+  smoke tests in threaded mode;
 - parallel query, parallel index build, and parallel vacuum worker smoke tests
   where local test infrastructure supports them;
 - AIO worker smoke tests;
@@ -869,8 +872,9 @@ Gate E, after Phase 11:
   after runtime startup;
 - run threaded worker smoke tests for autovacuum, checkpointer, background
   writer, WAL writer, archiver, syslogger, WAL receiver, WAL summarizer,
-  logical replication workers, AIO workers, and any in-tree generic background
-  workers that explicitly opt into the thread backend model;
+  startup/recovery, physical basebackup/hot-standby promotion, logical
+  replication workers, AIO workers, and any in-tree generic background workers
+  that explicitly opt into the thread backend model;
 - verify worker cancellation, shutdown, restart, and failure escalation;
 - verify single-user, bootstrap, frontend utility, postmaster/control-plane,
   and crash-escalation paths remain documented process-lifetime exceptions;

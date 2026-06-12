@@ -570,17 +570,18 @@ normal threaded operation begins:
   avoids a second shared-address-space `ProcessConfigFile()` in thread mode,
   while still updating the checkpointer-owned shared-memory config copies.
 
-This slice is a handoff rather than a startup-time thread launch because the
-startup process still forks during recovery. Startup/recovery conversion can
-remove the temporary startup-era processes later.
+This slice was intentionally implemented as a handoff rather than a
+startup-time thread launch because, at that point in the phase, the startup
+process still forked during recovery. The later startup/recovery thread slice
+removed that startup-era process carrier in threaded mode.
 
 ## Startup/Recovery Interrupt Boundary Prep
 
-Startup/recovery remains the remaining auxiliary carrier-conversion family.
-It is harder than the handoff workers because the startup process owns in-flight
-recovery state; in hot standby it can overlap with client backends, so a simple
-"ask the process child to exit and relaunch it as a thread" handoff is not
-equivalent.
+At this point in the phase, startup/recovery was the remaining auxiliary
+carrier-conversion family. It was harder than the handoff workers because the
+startup process owns in-flight recovery state; in hot standby it can overlap
+with client backends, so a simple "ask the process child to exit and relaunch
+it as a thread" handoff was not equivalent.
 
 The first preparatory slice makes the startup process targetable through the
 logical thread-interrupt boundary before switching its carrier:
@@ -595,10 +596,8 @@ logical thread-interrupt boundary before switching its carrier:
   ignore behavior, maps startup `SIGTERM` to the existing shutdown request,
   and maps startup `SIGUSR2` to the startup promotion interrupt.
 
-This does not yet launch `B_STARTUP` on a thread carrier. That remains a
-separate conversion step that must account for recovery crash handling and the
-process-backed startup-era children that are currently launched before normal
-threaded operation.
+This preparatory slice did not launch `B_STARTUP` on a thread carrier. The
+follow-up startup/recovery thread slice added that carrier conversion.
 
 ## Startup/Recovery Thread Slice
 
@@ -622,9 +621,10 @@ Startup/recovery now has an initial thread-carrier slice in threaded mode:
 - the exit-time macOS `pthread_is_threaded_np()` diagnostic no longer warns in
   explicit threaded mode, where postmaster-owned threads are expected.
 
-This is still an initial carrier slice. Hot-standby recovery, promotion, and
-crash/restart recovery paths need explicit stress validation before Phase 11's
-startup/recovery work should be considered hardened.
+This remains an initial carrier slice, but hot-standby recovery, physical
+basebackup, and promotion now have direct smoke coverage. Crash/restart
+recovery paths still need explicit stress validation before Phase 11's
+startup/recovery work should be considered fully hardened.
 
 ## Archiver Thread Slice
 
@@ -834,8 +834,8 @@ completes `pg_ctl -m fast stop` cleanly.
 
 No remaining in-tree server-owned worker family currently lacks an initial
 thread-carrier path in threaded mode. The remaining Phase 11 work is hardening
-and validation, especially hot-standby startup/recovery, promotion, crash
-restart, worker shutdown/restart, and Gate E coverage.
+and validation, especially crash restart, worker shutdown/restart, and Gate E
+coverage.
 
 The in-tree generic background-worker registration audit is complete for the
 current tree. A source scan of `RegisterBackgroundWorker()`,
@@ -928,6 +928,37 @@ Validation for the startup/recovery thread slice:
   `select 1`, and fast shutdown completed, the startup recovery log line used
   a separate startup child PID, and the server log contained no `WARNING`,
   `ERROR`, `PANIC`, or `postmaster became multithreaded`.
+
+Additional validation for threaded physical basebackup and hot-standby
+promotion exposed and fixed a walsender thread-safety issue:
+
+- `exec_replication_command()` used a function-local static
+  `MemoryContext` for replication commands. That storage was per-walsender in
+  process mode but shared by all walsender threads in threaded mode. A
+  threaded primary serving `pg_basebackup -X stream` could silently exit while
+  concurrent physical walsender connections processed `CREATE_REPLICATION_SLOT`
+  or `IDENTIFY_SYSTEM`. The context is now a thread-local
+  `PG_GLOBAL_BACKEND` walsender variable;
+- touched-object build passed for `walsender.o`;
+- full `gmake -j8` passed;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed;
+- `git diff --check` passed;
+- a direct threaded primary/threaded standby no-slot smoke passed after
+  patching the known macOS temp-install `libpq` references: `pg_basebackup
+  -X stream -R --no-slot --no-sync`, standby start with `hot_standby=on`,
+  initial read returned `pg_is_in_recovery()=true` and one row, replay caught
+  up to two rows, `pg_ctl promote` completed, a post-promotion insert
+  succeeded, and the promoted standby returned `f|3`;
+- a direct threaded primary/threaded standby temporary-slot smoke passed with
+  the default `pg_basebackup -X stream -R --no-sync` path. The primary and
+  standby startup/recovery log lines used the postmaster PIDs, replay caught
+  up, promotion completed, post-promotion writes succeeded, and primary plus
+  standby logs contained no `WARNING`, `ERROR`, `PANIC`, or
+  `postmaster became multithreaded`;
+- a direct process-mode primary/process-mode standby temporary-slot control
+  smoke passed for the same basebackup, replay, promotion, post-promotion
+  write, and clean shutdown sequence, with no log `WARNING`, `ERROR`,
+  `PANIC`, or `postmaster became multithreaded`.
 
 Additional validation for the logical replication sequence-sync slice:
 
