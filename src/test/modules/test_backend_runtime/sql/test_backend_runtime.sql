@@ -15,3 +15,4 @@ SELECT test_connection_protocol_state_is_connection_local();
 SELECT test_connection_identity_state_is_connection_local();
 SELECT test_connection_interrupt_state_is_connection_local();
 SELECT test_connection_frontend_protocol_is_connection_local();
+SELECT test_connection_startup_state_is_connection_local();

@@ -29,6 +29,7 @@ typedef struct PgConnection PgConnection;
 typedef struct PgExecution PgExecution;
 typedef struct PQcommMethods PQcommMethods;
 typedef struct WaitEventSet WaitEventSet;
+struct ClientSocket;
 typedef void (*PgBackendExitContinuation) (int code);
 typedef int (*PgSuspendCallback) (void *callback_arg);
 
@@ -174,6 +175,12 @@ typedef struct PgConnectionInterruptState
 	volatile sig_atomic_t client_connection_lost;
 } PgConnectionInterruptState;
 
+typedef struct PgConnectionStartupState
+{
+	bool		client_auth_in_progress;
+	struct ClientSocket *client_socket;
+} PgConnectionStartupState;
+
 /*
  * Main-loop state owned by PgSession. Some of this state used to be volatile
  * locals in PostgresMain(); keep the loop flags volatile because they must
@@ -250,6 +257,7 @@ struct PgConnection
 	PgConnectionSocketIOState socket_io;
 	PgConnectionProtocolState protocol;
 	PgConnectionInterruptState interrupts;
+	PgConnectionStartupState startup;
 };
 
 struct PgExecution
@@ -311,6 +319,10 @@ extern volatile sig_atomic_t *PgConnectionCheckClientConnectionPendingRef(PgConn
 extern volatile sig_atomic_t *PgCurrentCheckClientConnectionPendingRef(void);
 extern volatile sig_atomic_t *PgConnectionClientConnectionLostRef(PgConnection *connection);
 extern volatile sig_atomic_t *PgCurrentClientConnectionLostRef(void);
+extern bool *PgConnectionClientAuthInProgressRef(PgConnection *connection);
+extern bool *PgCurrentClientAuthInProgressRef(void);
+extern struct ClientSocket **PgConnectionClientSocketRef(PgConnection *connection);
+extern struct ClientSocket **PgCurrentClientSocketRef(void);
 extern PgBackendLaunchModel PgRuntimeGetBackendLaunchModel(BackendType backend_type);
 extern bool PgRuntimeShouldThreadBackend(BackendType backend_type);
 extern PgBackendModel PgRuntimeGetExtensionBackendModel(void);

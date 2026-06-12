@@ -660,7 +660,7 @@ backend-local interrupt holdoff bridge through `PgBackend`, plus the initial
 execution debug-state bridge through `PgExecution` and the first connection
 socket I/O, protocol dispatch, connection identity, and connection interrupt
 flag bridges through `PgConnection`, including the frontend protocol version in
-the connection protocol-state bucket.
+the connection protocol-state bucket and backend startup/authentication state.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.

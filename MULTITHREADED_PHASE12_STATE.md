@@ -339,3 +339,48 @@ Validation for this slice:
 - core process-mode `src/test/regress` `parallel_schedule` passed all 245
   tests after the clean rebuild and install;
 - `gmake -C contrib -j8` passed after the header migration.
+
+## Connection Startup State Bridge
+
+The ninth Phase 12 slice moves backend startup connection state under
+`PgConnection`:
+
+- `PgConnection` now owns a `PgConnectionStartupState`;
+- `ClientAuthInProgress` remains a source-compatible lvalue macro in
+  `postmaster.h`;
+- `MyClientSocket` remains a source-compatible lvalue macro in `postmaster.h`;
+- the macros route through `PgCurrentClientAuthInProgressRef()` and
+  `PgCurrentClientSocketRef()`, which return fields in the current connection
+  object;
+- early postmaster/backend startup paths before `CurrentPgConnection` is
+  installed use fallback connection-local storage in `backend_runtime.c`;
+- `InitializePgProcessRuntime()` adopts early fallback startup state into the
+  process connection object before clearing fallback storage.
+
+This keeps authentication-log visibility and the inherited/reconstructed
+client socket pointer tied to the logical connection rather than the carrier
+thread. It also preserves the process-mode adapter shape in `BackendMain()`
+and the temporary thread-start socket handoff in `launch_backend.c` while
+moving the backing storage out of raw TLS.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `globals.o`,
+  `postmaster.o`, `launch_backend.o`, `backend_startup.o`, `postgres.o`, and
+  `test_backend_runtime.o`;
+- because `postmaster.h` and `backend_runtime.h` changed exported connection
+  globals into compatibility macros, `gmake -C src/backend clean` plus
+  generated-header recovery was used before the clean rebuild;
+- clean full `gmake -j8` passed;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed, followed by
+  rebuilding and reinstalling `src/test/modules/test_backend_runtime`;
+- focused `test_backend_runtime` regression passed and includes
+  `test_connection_startup_state_is_connection_local()`, which switches
+  `CurrentPgConnection` between fake connections and proves
+  `ClientAuthInProgress` and `MyClientSocket` are isolated per connection;
+- threaded runtime TAP coverage passed for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests after the clean rebuild and install;
+- `gmake -C contrib -j8` passed after the header migration.

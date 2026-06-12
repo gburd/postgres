@@ -372,9 +372,6 @@ static PG_GLOBAL_RUNTIME time_t AbortStartTime = 0;
 
 static PG_GLOBAL_RUNTIME bool ReachedNormalRunning = false;	/* T if we've reached PM_RUN */
 
-/* T during new-client authentication */
-PG_THREAD_LOCAL PG_GLOBAL_CONNECTION bool ClientAuthInProgress = false;
-
 PG_GLOBAL_RUNTIME bool redirection_done = false;	/* stderr redirected for syslogger? */
 
 /* received START_AUTOVAC_LAUNCHER signal */

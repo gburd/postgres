@@ -16,6 +16,7 @@
 
 #include "fmgr.h"
 #include "libpq/libpq.h"
+#include "postmaster/postmaster.h"
 #include "port/atomics.h"
 #include "port/pg_thread.h"
 #include "storage/dsm.h"
@@ -786,6 +787,66 @@ test_connection_frontend_protocol_is_connection_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "frontend protocol state was not connection-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_connection_startup_state_is_connection_local);
+Datum
+test_connection_startup_state_is_connection_local(PG_FUNCTION_ARGS)
+{
+	PgConnection *saved_connection;
+	PgConnection fake_connection1;
+	PgConnection fake_connection2;
+	struct ClientSocket *saved_client_socket;
+	struct ClientSocket *fake_client_socket1;
+	struct ClientSocket *fake_client_socket2;
+	bool		saved_client_auth_in_progress;
+	bool		ok = true;
+
+	saved_connection = CurrentPgConnection;
+	saved_client_auth_in_progress = ClientAuthInProgress;
+	saved_client_socket = MyClientSocket;
+	fake_client_socket1 = (struct ClientSocket *) &fake_connection1;
+	fake_client_socket2 = (struct ClientSocket *) &fake_connection2;
+	MemSet(&fake_connection1, 0, sizeof(fake_connection1));
+	MemSet(&fake_connection2, 0, sizeof(fake_connection2));
+
+	PG_TRY();
+	{
+		CurrentPgConnection = &fake_connection1;
+		ClientAuthInProgress = true;
+		MyClientSocket = fake_client_socket1;
+
+		CurrentPgConnection = &fake_connection2;
+		ok = ok && !ClientAuthInProgress;
+		ok = ok && MyClientSocket == NULL;
+		ClientAuthInProgress = false;
+		MyClientSocket = fake_client_socket2;
+
+		CurrentPgConnection = &fake_connection1;
+		ok = ok && ClientAuthInProgress;
+		ok = ok && MyClientSocket == fake_client_socket1;
+
+		CurrentPgConnection = &fake_connection2;
+		ok = ok && !ClientAuthInProgress;
+		ok = ok && MyClientSocket == fake_client_socket2;
+
+		CurrentPgConnection = saved_connection;
+		ClientAuthInProgress = saved_client_auth_in_progress;
+		MyClientSocket = saved_client_socket;
+	}
+	PG_CATCH();
+	{
+		CurrentPgConnection = saved_connection;
+		ClientAuthInProgress = saved_client_auth_in_progress;
+		MyClientSocket = saved_client_socket;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "connection startup state was not connection-local");
 
 	PG_RETURN_BOOL(true);
 }

@@ -49,6 +49,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionIdentityState early_conn
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionSocketIOState early_connection_socket_io;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionProtocolState early_connection_protocol;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionInterruptState early_connection_interrupts;
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionStartupState early_connection_startup;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInterruptHoldoffState early_interrupt_holdoffs;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionDebugState early_execution_debug;
 
@@ -62,6 +63,7 @@ static void PgConnectionAdoptEarlyIdentity(PgConnection *connection);
 static void PgConnectionAdoptEarlySocketIO(PgConnection *connection);
 static void PgConnectionAdoptEarlyProtocolState(PgConnection *connection);
 static void PgConnectionAdoptEarlyInterruptState(PgConnection *connection);
+static void PgConnectionAdoptEarlyStartupState(PgConnection *connection);
 static void PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend);
 static void PgExecutionAdoptEarlyDebugState(PgExecution *execution);
 static PgBackendInterruptHoldoffState *PgCurrentInterruptHoldoffs(void);
@@ -118,6 +120,15 @@ PgConnectionAdoptEarlyInterruptState(PgConnection *connection)
 
 	connection->interrupts = early_connection_interrupts;
 	MemSet(&early_connection_interrupts, 0, sizeof(early_connection_interrupts));
+}
+
+static void
+PgConnectionAdoptEarlyStartupState(PgConnection *connection)
+{
+	Assert(connection != NULL);
+
+	connection->startup = early_connection_startup;
+	MemSet(&early_connection_startup, 0, sizeof(early_connection_startup));
 }
 
 static void
@@ -193,6 +204,7 @@ InitializePgProcessRuntime(void)
 	PgConnectionAdoptEarlySocketIO(&process_connection);
 	PgConnectionAdoptEarlyProtocolState(&process_connection);
 	PgConnectionAdoptEarlyInterruptState(&process_connection);
+	PgConnectionAdoptEarlyStartupState(&process_connection);
 
 	process_execution.backend = &process_backend;
 	process_execution.session = &process_session;
@@ -472,6 +484,36 @@ volatile sig_atomic_t *
 PgCurrentClientConnectionLostRef(void)
 {
 	return PgConnectionClientConnectionLostRef(CurrentPgConnection);
+}
+
+bool *
+PgConnectionClientAuthInProgressRef(PgConnection *connection)
+{
+	if (connection == NULL)
+		return &early_connection_startup.client_auth_in_progress;
+
+	return &connection->startup.client_auth_in_progress;
+}
+
+bool *
+PgCurrentClientAuthInProgressRef(void)
+{
+	return PgConnectionClientAuthInProgressRef(CurrentPgConnection);
+}
+
+struct ClientSocket **
+PgConnectionClientSocketRef(PgConnection *connection)
+{
+	if (connection == NULL)
+		return &early_connection_startup.client_socket;
+
+	return &connection->startup.client_socket;
+}
+
+struct ClientSocket **
+PgCurrentClientSocketRef(void)
+{
+	return PgConnectionClientSocketRef(CurrentPgConnection);
 }
 
 static PgBackendInterruptHoldoffState *
