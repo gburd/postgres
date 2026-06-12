@@ -542,7 +542,7 @@ Exit gate:
 Status: in progress. See `MULTITHREADED_PHASE11_WORKERS.md` for the
 completed autovacuum launcher/worker, late AIO worker, generic
 background-worker compatibility, WAL receiver, WAL summarizer, WAL writer,
-and archiver slices, plus remaining worker families.
+archiver, and slot sync worker slices, plus remaining worker families.
 
 Goal: make normal threaded server mode fully threaded for in-tree
 server-owned worker families, so the runtime does not fork subprocesses for
@@ -575,11 +575,12 @@ Likely changes:
   - checkpointer, background writer, and syslogger; WAL writer and archiver
     have initial thread-carrier slices;
   - startup/recovery worker paths that are part of normal server operation;
-  - WAL receiver and WAL summarizer have initial thread-carrier slices;
+  - WAL receiver, WAL summarizer, and slot sync worker have initial
+    thread-carrier slices;
   - startup-time AIO method workers; late AIO method workers have an initial
     thread-carrier slice;
-  - logical replication launcher, apply, table sync, slot sync, sync utility,
-    and parallel apply workers.
+  - logical replication launcher, apply, table sync, sync utility, and
+    parallel apply workers.
 - Provide a narrow allowlist path for in-tree generic background worker tests
   and examples.
 - Keep third-party background workers process-only or rejected in threaded mode
@@ -595,8 +596,8 @@ Validation:
 - autovacuum launcher and worker smoke tests in threaded mode;
 - checkpointer, background writer, WAL writer, archiver, and syslogger smoke
   tests in threaded mode;
-- WAL receiver, WAL summarizer, and logical replication worker smoke tests
-  where local test infrastructure supports them;
+- WAL receiver, WAL summarizer, slot sync worker, and logical replication
+  worker smoke tests where local test infrastructure supports them;
 - AIO worker smoke tests;
 - cancellation, shutdown, restart, and failure escalation for threaded
   workers;

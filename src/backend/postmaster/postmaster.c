@@ -437,6 +437,8 @@ static void CleanupBackend(PMChild *bp, int exitstatus);
 static bool cleanup_archiver_child(PMChild *child, int exitstatus);
 static bool cleanup_autovac_launcher_child(PMChild *child, int exitstatus);
 static bool cleanup_io_worker_child(PMChild *child);
+static bool cleanup_slot_sync_worker_child(PMChild *child, int exitstatus,
+										   int crash_pid);
 static bool cleanup_wal_receiver_child(PMChild *child, int exitstatus,
 									   int crash_pid);
 static bool cleanup_wal_writer_child(PMChild *child, int exitstatus);
@@ -2557,11 +2559,8 @@ process_pm_child_exit(void)
 		 */
 		if (SlotSyncWorkerPMChild && pid == SlotSyncWorkerPMChild->pid)
 		{
-			ReleasePostmasterChildSlot(SlotSyncWorkerPMChild);
-			SlotSyncWorkerPMChild = NULL;
-			if (!EXIT_STATUS_0(exitstatus) && !EXIT_STATUS_1(exitstatus))
-				HandleChildCrash(pid, exitstatus,
-								 _("slot sync worker process"));
+			(void) cleanup_slot_sync_worker_child(SlotSyncWorkerPMChild,
+												  exitstatus, pid);
 			continue;
 		}
 
@@ -2649,6 +2648,12 @@ process_pm_thread_exit(void)
 		if (pmchild->bkend_type == B_IO_WORKER)
 		{
 			(void) cleanup_io_worker_child(pmchild);
+			reaped = true;
+			continue;
+		}
+		if (pmchild->bkend_type == B_SLOTSYNC_WORKER)
+		{
+			(void) cleanup_slot_sync_worker_child(pmchild, exitstatus, 0);
 			reaped = true;
 			continue;
 		}
@@ -4678,6 +4683,22 @@ cleanup_io_worker_child(PMChild *child)
 		}
 	}
 	return false;
+}
+
+static bool
+cleanup_slot_sync_worker_child(PMChild *child, int exitstatus, int crash_pid)
+{
+	Assert(child != NULL);
+	Assert(child == SlotSyncWorkerPMChild);
+	Assert(child->bkend_type == B_SLOTSYNC_WORKER);
+
+	ReleasePostmasterChildSlot(SlotSyncWorkerPMChild);
+	SlotSyncWorkerPMChild = NULL;
+	if (!EXIT_STATUS_0(exitstatus) && !EXIT_STATUS_1(exitstatus))
+		HandleChildCrash(crash_pid, exitstatus,
+						 _("slot sync worker process"));
+
+	return true;
 }
 
 static bool

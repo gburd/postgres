@@ -126,7 +126,11 @@ void
 _PG_init(void)
 {
 	if (WalReceiverFunctions != NULL)
+	{
+		if (WalReceiverFunctions == &PQWalReceiverFunctions)
+			return;
 		elog(ERROR, "libpqwalreceiver already loaded");
+	}
 	WalReceiverFunctions = &PQWalReceiverFunctions;
 }
 

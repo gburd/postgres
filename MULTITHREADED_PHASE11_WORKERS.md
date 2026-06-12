@@ -201,6 +201,48 @@ postmaster OS child process is titled as a WAL receiver, writes a row on the
 primary, waits for standby replay to catch up, and reads the replicated row
 from the standby.
 
+## Slot Sync Worker Thread Slice
+
+The logical replication slot sync worker is now opted into the thread carrier
+path in threaded mode:
+
+- `PgRuntimeShouldThreadBackend()` selects `PG_BACKEND_LAUNCH_THREAD` for
+  `B_SLOTSYNC_WORKER` when `multithreaded=on`;
+- `postmaster_backend_thread_launch()` accepts slot sync worker launches
+  without client startup data;
+- `ReplSlotSyncWorkerMain()` skips process-wide signal handler and signal-mask
+  changes when running as a thread carrier and releases the temporary threaded
+  startup gate after `InitPostgres()` completes;
+- thread-backed slot sync workers record both the containing process PID and
+  their logical backend `ProcNumber`. Promotion shutdown wakes the worker's
+  PGPROC latch instead of signaling the shared postmaster PID;
+- slot sync wait and retry loops drain logical backend interrupts and check the
+  shared stop flag so promotion and postmaster-directed shutdown can be
+  observed without Unix process signals;
+- thread-backed config reloads observe the postmaster's shared GUC reload
+  result instead of running `ProcessConfigFile()` concurrently. A
+  backend-local config snapshot lets the worker still detect slot-sync
+  parameter changes even though the shared GUC storage has already been
+  updated by the postmaster;
+- `libpqwalreceiver` initialization is idempotent for its own function table,
+  which lets a thread-backed WAL receiver and a thread-backed slot sync worker
+  share the same in-process walreceiver transport module while still rejecting
+  a different walreceiver provider;
+- thread-backed slot sync worker exit is reaped by the postmaster thread-exit
+  path, clearing `SlotSyncWorkerPMChild` and preserving crash escalation for
+  abnormal exits.
+
+The live smoke for this slice starts a process-backed primary and a
+threaded-mode standby with `sync_replication_slots=on`, waits until the slot
+sync worker starts, verifies that `pg_stat_activity` reports one `slotsync
+worker` logical backend, verifies no postmaster OS child process is titled as a
+slot sync worker, then changes `hot_standby_feedback` to `off` and reloads
+config. The worker logs the expected parameter-change restart message and the
+logical slot sync worker count drops to zero. The focused teardown stops the
+primary before the standby; stopping the standby while the primary remains
+live exposed a separate WAL receiver shutdown wait that should be covered by a
+WAL receiver hardening follow-up rather than this slot sync carrier slice.
+
 ## WAL Writer Thread Slice
 
 The WAL writer is now opted into the thread carrier path in threaded mode:
@@ -256,8 +298,8 @@ The WAL archiver is now opted into the thread carrier path in threaded mode:
 - checkpointer, background writer, and syslogger;
 - startup/recovery worker paths that are part of normal server operation;
 - startup-time AIO method workers;
-- logical replication launcher, apply, table sync, slot sync, sync utility,
-  and parallel apply workers;
+- logical replication launcher, apply, table sync, sync utility, and parallel
+  apply workers;
 - a narrow allowlist path for in-tree generic background worker tests and
   examples;
 - explicit thread-worker metadata for third-party background workers that can
@@ -350,6 +392,18 @@ Additional validation for the WAL receiver thread slice:
   temp-install `libpq` references. The smoke observed `walreceiver_count=1`,
   `walreceiver_children=0`, `replayed=t`, and `standby_count=1`, then stopped
   both servers cleanly.
+
+Additional validation for the slot sync worker thread slice:
+
+- touched-object builds passed for `slotsync.o` and `libpqwalreceiver.o`;
+- full `gmake -j8` passed;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed;
+- direct threaded primary/standby smoke passed after patching the known macOS
+  temp-install `libpq` references. The smoke observed `slotsync_count=1`,
+  `slotsync_children=0`, `reload_seen=yes`, and `slotsync_after_reload=0`.
+  The smoke stops the primary before the standby to avoid conflating the slot
+  sync proof with the WAL receiver live-primary shutdown follow-up noted
+  above.
 
 Additional validation for the archiver thread slice:
 
