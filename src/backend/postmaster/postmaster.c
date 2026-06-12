@@ -3578,7 +3578,6 @@ static int
 BackendStartup(ClientSocket *client_sock)
 {
 	PMChild    *bn = NULL;
-	pid_t		pid;
 	BackendStartupData startup_data;
 	CAC_state	cac;
 
@@ -3626,10 +3625,9 @@ BackendStartup(ClientSocket *client_sock)
 	/* Hasn't asked to be notified about any bgworkers yet */
 	bn->bgworker_notify = false;
 
-	pid = postmaster_child_launch(bn->bkend_type, bn->child_slot,
-								  &startup_data, sizeof(startup_data),
-								  client_sock);
-	if (pid < 0)
+	if (!postmaster_child_launch_carrier(bn, bn->bkend_type, bn->child_slot,
+										 &startup_data, sizeof(startup_data),
+										 client_sock))
 	{
 		/* in parent, fork failed */
 		int			save_errno = errno;
@@ -3646,13 +3644,12 @@ BackendStartup(ClientSocket *client_sock)
 	ereport(DEBUG2,
 			(errmsg_internal("forked new %s, pid=%d socket=%d",
 							 GetBackendTypeDesc(bn->bkend_type),
-							 (int) pid, (int) client_sock->sock)));
+							 (int) bn->pid, (int) client_sock->sock)));
 
 	/*
 	 * Everything's been successful, it's safe to add this backend to our list
 	 * of backends.
 	 */
-	PostmasterChildSetProcess(bn, pid);
 	return STATUS_OK;
 }
 
@@ -4012,7 +4009,6 @@ static PMChild *
 StartChildProcess(BackendType type)
 {
 	PMChild    *pmchild;
-	pid_t		pid;
 
 	pmchild = AssignPostmasterChildSlot(type);
 	if (!pmchild)
@@ -4029,8 +4025,8 @@ StartChildProcess(BackendType type)
 		return NULL;
 	}
 
-	pid = postmaster_child_launch(type, pmchild->child_slot, NULL, 0, NULL);
-	if (pid < 0)
+	if (!postmaster_child_launch_carrier(pmchild, type, pmchild->child_slot,
+										 NULL, 0, NULL))
 	{
 		/* in parent, fork failed */
 		ReleasePostmasterChildSlot(pmchild);
@@ -4047,7 +4043,6 @@ StartChildProcess(BackendType type)
 	}
 
 	/* in parent, successful fork */
-	PostmasterChildSetProcess(pmchild, pid);
 	return pmchild;
 }
 
@@ -4180,7 +4175,6 @@ static bool
 StartBackgroundWorker(RegisteredBgWorker *rw)
 {
 	PMChild    *bn;
-	pid_t		worker_pid;
 
 	Assert(rw->rw_pid == 0);
 
@@ -4211,9 +4205,9 @@ StartBackgroundWorker(RegisteredBgWorker *rw)
 			(errmsg_internal("starting background worker process \"%s\"",
 							 rw->rw_worker.bgw_name)));
 
-	worker_pid = postmaster_child_launch(B_BG_WORKER, bn->child_slot,
-										 &rw->rw_worker, sizeof(BackgroundWorker), NULL);
-	if (worker_pid == -1)
+	if (!postmaster_child_launch_carrier(bn, B_BG_WORKER, bn->child_slot,
+										 &rw->rw_worker,
+										 sizeof(BackgroundWorker), NULL))
 	{
 		/* in postmaster, fork failed ... */
 		ereport(LOG,
@@ -4227,8 +4221,7 @@ StartBackgroundWorker(RegisteredBgWorker *rw)
 	}
 
 	/* in postmaster, fork successful ... */
-	rw->rw_pid = worker_pid;
-	PostmasterChildSetProcess(bn, rw->rw_pid);
+	rw->rw_pid = bn->pid;
 	ReportBackgroundWorkerPID(rw);
 	return true;
 }

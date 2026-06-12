@@ -193,6 +193,38 @@ PostmasterChildName(BackendType child_type)
 }
 
 /*
+ * Start a new postmaster child using the runtime-selected carrier model.
+ */
+bool
+postmaster_child_launch_carrier(PMChild *pmchild,
+								BackendType child_type, int child_slot,
+								void *startup_data, size_t startup_data_len,
+								const ClientSocket *client_sock)
+{
+	pid_t		pid;
+	PgBackendLaunchModel launch_model;
+
+	launch_model = PgRuntimeGetBackendLaunchModel(child_type);
+	if (launch_model == PG_BACKEND_LAUNCH_THREAD)
+	{
+		errno = ENOSYS;
+		ereport(LOG,
+				(errmsg("threaded backend launch is not implemented yet"),
+				 errdetail("The \"multithreaded\" setting currently only enables "
+						   "the Phase 10 carrier launch decision path.")));
+		return false;
+	}
+
+	pid = postmaster_child_launch(child_type, child_slot,
+								  startup_data, startup_data_len, client_sock);
+	if (pid < 0)
+		return false;
+
+	PostmasterChildSetProcess(pmchild, pid);
+	return true;
+}
+
+/*
  * Start a new postmaster child process.
  *
  * The child process will be restored to roughly the same state whether
@@ -210,20 +242,8 @@ postmaster_child_launch(BackendType child_type, int child_slot,
 						const ClientSocket *client_sock)
 {
 	pid_t		pid;
-	PgBackendLaunchModel launch_model;
 
 	Assert(IsPostmasterEnvironment && !IsUnderPostmaster);
-
-	launch_model = PgRuntimeGetBackendLaunchModel(child_type);
-	if (launch_model == PG_BACKEND_LAUNCH_THREAD)
-	{
-		errno = ENOSYS;
-		ereport(LOG,
-				(errmsg("threaded backend launch is not implemented yet"),
-				 errdetail("The \"multithreaded\" setting currently only enables "
-						   "the Phase 10 launch decision path.")));
-		return -1;
-	}
 
 	/* Capture time Postmaster initiates process creation for logging */
 	if (IsExternalConnectionBackend(child_type))

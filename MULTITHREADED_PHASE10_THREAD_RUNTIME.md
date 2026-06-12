@@ -78,11 +78,31 @@ postmaster child entry can be supervised only by a PID, which is a prerequisite
 for recording a future thread handle and for keeping `waitpid()` cleanup from
 accidentally consuming thread-backed logical children.
 
+## Carrier-Aware Launch API Slice
+
+The fifth slice moves the launch-model decision to a PMChild-aware API:
+
+- `postmaster_child_launch_carrier()` takes the already allocated `PMChild`;
+- process launch success records the PID in the `PMChild` before returning;
+- threaded launch remains an explicit `ENOSYS` failure, but now fails at the
+  API that can later record a thread carrier rather than at a PID-only return
+  boundary;
+- regular backends, auxiliary children, and background workers use the
+  carrier-aware API;
+- the old `postmaster_child_launch()` remains the process-only launcher for
+  process-only callers such as syslogger startup.
+
+This keeps current process behavior intact while making the next real thread
+launcher patch local to `launch_backend.c` and `pmchild.c` instead of forcing
+all postmaster call sites to reason about non-PID carriers.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
 - `gmake -C src/backend/postmaster pmchild.o postmaster.o` passed after the
   PMChild carrier identity slice;
+- `gmake -C src/backend/postmaster launch_backend.o postmaster.o pmchild.o`
+  passed after the carrier-aware launch API slice;
 - `gmake -C src/backend/utils/init backend_runtime.o globals.o` passed;
 - `gmake -C src/backend/utils/misc guc_tables.o` passed after regenerating
   `guc_tables.inc.c`;
@@ -93,6 +113,6 @@ accidentally consuming thread-backed logical children.
   `pg_thread_create()`/`pg_thread_join()` smoke;
 - temp install smoke with the default `multithreaded=off` showed `off` and ran
   `SELECT 1`;
-- temp install smoke with `multithreaded=on` rejected a client connection with
-  `Function not implemented` and logged the explicit threaded-launch stub
-  message.
+- temp install smokes with `multithreaded=on` rejected a client connection
+  with `Function not implemented` and logged the explicit threaded-launch stub
+  message, including after the carrier-aware launch API slice.
