@@ -238,7 +238,10 @@ extern void InitializePgThreadBackendRuntime(PgThreadBackendRuntimeState *state,
 											 BackendType backend_type,
 											 struct Port *port,
 											 struct Latch *interrupt_latch);
-extern void PgProcessRuntimeAttachSession(Session *session);
+extern Session *PgSessionGetLegacySession(PgSession *session);
+extern void PgSessionSetLegacySession(PgSession *session,
+									   Session *legacy_session);
+extern Session *PgCurrentLegacySession(void);
 extern PgBackendLaunchModel PgRuntimeGetBackendLaunchModel(BackendType backend_type);
 extern bool PgRuntimeShouldThreadBackend(BackendType backend_type);
 extern PgBackendModel PgRuntimeGetExtensionBackendModel(void);

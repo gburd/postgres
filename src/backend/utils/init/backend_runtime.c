@@ -218,12 +218,28 @@ InitializePgThreadBackendRuntime(PgThreadBackendRuntimeState *state,
 	InstallPgThreadBackendRuntimeState(state);
 }
 
-void
-PgProcessRuntimeAttachSession(Session *session)
+Session *
+PgSessionGetLegacySession(PgSession *session)
 {
-	Assert(CurrentPgSession != NULL);
+	if (session == NULL)
+		return NULL;
 
-	CurrentPgSession->legacy_session = session;
+	return session->legacy_session;
+}
+
+void
+PgSessionSetLegacySession(PgSession *session, Session *legacy_session)
+{
+	if (session == NULL)
+		return;
+
+	session->legacy_session = legacy_session;
+}
+
+Session *
+PgCurrentLegacySession(void)
+{
+	return PgSessionGetLegacySession(CurrentPgSession);
 }
 
 PgBackendLaunchModel

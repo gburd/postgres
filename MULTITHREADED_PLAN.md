@@ -654,6 +654,9 @@ Exit gate:
 
 ## Phase 12: State Migration From TLS To Objects
 
+Status: in progress. See `MULTITHREADED_PHASE12_STATE.md` for the initial
+`CurrentSession` compatibility bridge through `PgSession`.
+
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.
 

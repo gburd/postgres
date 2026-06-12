@@ -23,6 +23,7 @@
 #include "access/session.h"
 #include "storage/lwlock.h"
 #include "storage/shm_toc.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "utils/typcache.h"
 
@@ -53,7 +54,14 @@ PG_THREAD_LOCAL PG_GLOBAL_SESSION Session *CurrentSession = NULL;
 void
 InitializeSession(void)
 {
-	CurrentSession = MemoryContextAllocZero(TopMemoryContext, sizeof(Session));
+	CurrentSession = PgCurrentLegacySession();
+	if (CurrentSession == NULL)
+	{
+		CurrentSession = MemoryContextAllocZero(TopMemoryContext, sizeof(Session));
+		PgSessionSetLegacySession(CurrentPgSession, CurrentSession);
+	}
+	else
+		MemSet(CurrentSession, 0, sizeof(Session));
 }
 
 /*

@@ -1312,7 +1312,6 @@ InitPostgres(const char *in_dbname, Oid dboid,
 
 	/* Initialize this backend's session state. */
 	InitializeSession();
-	PgProcessRuntimeAttachSession(CurrentSession);
 
 	/*
 	 * If this is an interactive session, load any libraries that should be
