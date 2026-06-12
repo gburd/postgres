@@ -224,6 +224,37 @@ initialization bridge did not initialize `extension_control_path`, so
 searching extension control directories. `InitializeThreadedSessionGUCOptions()`
 now initializes `extension_control_path` alongside `dynamic_library_path`.
 
+## worker_spi Thread Slice
+
+The in-tree `worker_spi` background-worker example is now opted into the
+thread-carrier path in threaded mode:
+
+- the module uses `PG_MODULE_MAGIC_EXT()` with
+  `PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION`, so threaded backends can
+  load it through the Phase 7 extension backend-model gate;
+- static preload workers and SQL-launched dynamic workers set
+  `bgw_backend_model = BgWorkerBackendThreadPerSession`;
+- dynamic worker startup notifications use `PgCurrentBackendSignalPid()` so a
+  thread-backed SQL backend can wait through its logical backend identity;
+- worker entry avoids process-wide SIGHUP/SIGTERM handler changes when running
+  as a thread carrier, relying on the background-worker logical interrupt
+  bridge;
+- the main wait loop drains `ProcessMainLoopInterrupts()` after latch wakeups,
+  so config reload and shutdown requests are handled consistently by process
+  workers and thread-backed workers;
+- the custom wait-event id cache is backend-local TLS, preserving the old
+  per-process storage semantics when multiple `worker_spi` workers share one
+  threaded address space.
+
+Direct validation covered both carrier models. A threaded temp-cluster smoke
+with `multithreaded=on`, `shared_preload_libraries='worker_spi'`, one static
+worker, and one `worker_spi_launch()` dynamic worker observed logical
+`worker_spi` and `worker_spi dynamic` backends, thread-carrier start logs for
+both workers, no postmaster child process matching `worker_spi`, no log
+`ERROR`/`FATAL`/`PANIC`, and clean fast shutdown. A process-mode control smoke
+with the same static preload worker observed a postmaster child process for
+`worker_spi`, no log `ERROR`/`FATAL`/`PANIC`, and clean fast shutdown.
+
 ## WAL Summarizer Thread Slice
 
 The WAL summarizer is now opted into the thread carrier path in threaded mode:
@@ -703,9 +734,9 @@ completes `pg_ctl -m fast stop` cleanly.
 - startup/recovery worker paths that are part of normal server operation;
 - remaining in-tree generic background workers, tests, and examples that are
   not part of the already audited logical replication, core parallel worker,
-  in-core REPACK decoding worker, `pg_prewarm`, `test_backend_runtime`, and
-  `test_shm_mq` sets. These can opt into the explicit background-worker
-  backend model only after a per-entrypoint audit.
+  in-core REPACK decoding worker, `pg_prewarm`, `test_backend_runtime`,
+  `test_shm_mq`, and `worker_spi` sets. These can opt into the explicit
+  background-worker backend model only after a per-entrypoint audit.
 
 ## Validation
 

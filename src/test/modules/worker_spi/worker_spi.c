@@ -27,6 +27,7 @@
 #include "postmaster/bgworker.h"
 #include "postmaster/interrupt.h"
 #include "storage/latch.h"
+#include "utils/backend_runtime.h"
 
 /* these headers are used by this particular worker's code */
 #include "access/xact.h"
@@ -41,7 +42,11 @@
 #include "utils/snapmgr.h"
 #include "utils/wait_event.h"
 
-PG_MODULE_MAGIC;
+PG_MODULE_MAGIC_EXT(
+					.name = "worker_spi",
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
+);
 
 PG_FUNCTION_INFO_V1(worker_spi_launch);
 
@@ -54,13 +59,20 @@ static char *worker_spi_database = NULL;
 static char *worker_spi_role = NULL;
 
 /* value cached, fetched from shared memory */
-static uint32 worker_spi_wait_event_main = 0;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND uint32 worker_spi_wait_event_main = 0;
 
 typedef struct worktable
 {
 	const char *schema;
 	const char *name;
 } worktable;
+
+static bool
+worker_spi_threaded_runtime(void)
+{
+	return CurrentPgRuntime != NULL &&
+		CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION;
+}
 
 /*
  * Initialize workspace for a worker process: create the schema if it doesn't
@@ -157,8 +169,11 @@ worker_spi_main(Datum main_arg)
 	memcpy(&flags, p, sizeof(uint32));
 
 	/* Establish signal handlers before unblocking signals. */
-	pqsignal(SIGHUP, SignalHandlerForConfigReload);
-	pqsignal(SIGTERM, die);
+	if (!worker_spi_threaded_runtime())
+	{
+		pqsignal(SIGHUP, SignalHandlerForConfigReload);
+		pqsignal(SIGTERM, die);
+	}
 
 	/* We're now ready to receive signals */
 	BackgroundWorkerUnblockSignals();
@@ -224,6 +239,7 @@ worker_spi_main(Datum main_arg)
 						 worker_spi_wait_event_main);
 		ResetLatch(MyLatch);
 
+		ProcessMainLoopInterrupts();
 		CHECK_FOR_INTERRUPTS();
 
 		/*
@@ -363,6 +379,7 @@ _PG_init(void)
 	memset(&worker, 0, sizeof(worker));
 	worker.bgw_flags = BGWORKER_SHMEM_ACCESS |
 		BGWORKER_BACKEND_DATABASE_CONNECTION;
+	worker.bgw_backend_model = BgWorkerBackendThreadPerSession;
 	worker.bgw_start_time = BgWorkerStart_RecoveryFinished;
 	worker.bgw_restart_time = BGW_NEVER_RESTART;
 	sprintf(worker.bgw_library_name, "worker_spi");
@@ -410,6 +427,7 @@ worker_spi_launch(PG_FUNCTION_ARGS)
 	memset(&worker, 0, sizeof(worker));
 	worker.bgw_flags = BGWORKER_SHMEM_ACCESS |
 		BGWORKER_BACKEND_DATABASE_CONNECTION;
+	worker.bgw_backend_model = BgWorkerBackendThreadPerSession;
 
 	if (interruptible)
 		worker.bgw_flags |= BGWORKER_INTERRUPTIBLE;
@@ -422,7 +440,7 @@ worker_spi_launch(PG_FUNCTION_ARGS)
 	snprintf(worker.bgw_type, BGW_MAXLEN, "worker_spi dynamic");
 	worker.bgw_main_arg = Int32GetDatum(i);
 	/* set bgw_notify_pid so that we can use WaitForBackgroundWorkerStartup */
-	worker.bgw_notify_pid = MyProcPid;
+	worker.bgw_notify_pid = PgCurrentBackendSignalPid();
 
 	/* extract flags, if any */
 	ndim = ARR_NDIM(arr);

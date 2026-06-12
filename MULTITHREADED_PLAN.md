@@ -609,8 +609,8 @@ Likely changes:
   third-party workers are rejected in threaded mode when a thread carrier is
   required.
 - Audit additional in-tree generic background workers, tests, and examples
-  before opting them into the explicit worker backend model. `test_shm_mq` has
-  an initial audited thread-carrier slice.
+  before opting them into the explicit worker backend model. `test_shm_mq` and
+  `worker_spi` have initial audited thread-carrier slices.
 - Define worker exit semantics separately from user-session exit semantics:
   normal worker exit must clean up one worker, while `PANIC`, postmaster death,
   and unrecoverable runtime corruption still terminate the process or runtime.
