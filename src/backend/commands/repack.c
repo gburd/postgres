@@ -3485,12 +3485,13 @@ start_repack_decoding_worker(Oid relid)
 	snprintf(bgw.bgw_type, BGW_MAXLEN, "REPACK decoding worker");
 	bgw.bgw_flags = BGWORKER_SHMEM_ACCESS |
 		BGWORKER_BACKEND_DATABASE_CONNECTION;
+	bgw.bgw_backend_model = BgWorkerBackendThreadPerSession;
 	bgw.bgw_start_time = BgWorkerStart_RecoveryFinished;
 	bgw.bgw_restart_time = BGW_NEVER_RESTART;
 	snprintf(bgw.bgw_library_name, MAXPGPATH, "postgres");
 	snprintf(bgw.bgw_function_name, BGW_MAXLEN, "RepackWorkerMain");
 	bgw.bgw_main_arg = UInt32GetDatum(dsm_segment_handle(decoding_worker->seg));
-	bgw.bgw_notify_pid = MyProcPid;
+	bgw.bgw_notify_pid = PgCurrentBackendSignalPid();
 
 	if (!RegisterDynamicBackgroundWorker(&bgw, &decoding_worker->handle))
 		ereport(ERROR,

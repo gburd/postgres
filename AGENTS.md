@@ -95,6 +95,8 @@ Important current files:
 
 - Keep documentation and code commits coherent. Prefer one conceptual change
   per commit.
+- After each commit, push the current branch immediately unless the user has
+  explicitly asked not to push.
 - Before editing core code, read the surrounding implementation and current
   comments. PostgreSQL has many invariants that are documented only locally.
 - Keep process-mode behavior working after each implementation phase.

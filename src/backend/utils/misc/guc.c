@@ -1547,6 +1547,13 @@ InitializeThreadedSessionGUCOptions(void)
 	gconf = find_option("synchronous_commit", false, false, PANIC);
 	InitializeOneGUCOption(gconf);
 
+	gconf = find_option("logical_decoding_work_mem", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("debug_logical_replication_streaming", false, false,
+						PANIC);
+	InitializeOneGUCOption(gconf);
+
 	gconf = find_option("stats_fetch_consistency", false, false, PANIC);
 	InitializeOneGUCOption(gconf);
 }

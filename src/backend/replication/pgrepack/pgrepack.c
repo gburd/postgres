@@ -17,7 +17,9 @@
 #include "replication/snapbuild.h"
 #include "utils/memutils.h"
 
-PG_MODULE_MAGIC;
+PG_MODULE_MAGIC_EXT(
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
+);
 
 static void repack_startup(LogicalDecodingContext *ctx,
 						   OutputPluginOptions *opt, bool is_init);

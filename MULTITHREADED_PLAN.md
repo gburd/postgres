@@ -596,6 +596,9 @@ Likely changes:
     backend-model metadata;
   - online data-checksum launcher and per-database workers have an initial
     thread-carrier slice through explicit background-worker backend-model
+    metadata;
+  - the in-core `REPACK (CONCURRENTLY)` decoding worker has an initial
+    thread-carrier slice through explicit background-worker backend-model
     metadata.
 - Require generic background workers to declare
   `BgWorkerBackendThreadPerSession` before they can run on thread carriers.

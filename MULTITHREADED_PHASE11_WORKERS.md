@@ -611,13 +611,54 @@ rows, and checks the log for thread-carrier starts for the checksum launcher
 and per-database workers. No postmaster child process matching
 `datachecksums` remains after completion.
 
+## REPACK Decoding Worker Thread Slice
+
+The in-core `REPACK (CONCURRENTLY)` decoding worker is now opted into the
+dynamic background-worker thread-carrier path in threaded mode:
+
+- `start_repack_decoding_worker()` marks the dynamic worker registration as
+  `BgWorkerBackendThreadPerSession`;
+- the launcher uses `PgCurrentBackendSignalPid()` for dynamic-worker
+  startup/exit notification, so a thread-backed backend can wait for the
+  worker through its logical signal ID;
+- the shared `backend_pid` remains the leader PGPROC pid interlock used by
+  `BecomeLockGroupMember()` and same-process `SendProcSignal()` with
+  `backend_proc_number`. That remains correct for thread-backed leaders
+  because the ProcSignal table is still keyed by `MyProcPid` plus
+  `MyProcNumber`, while the bgworker notification path is keyed by the logical
+  signal ID;
+- `RepackWorkerMain()` already avoids process-global mutable state by keeping
+  worker flags, current WAL segment, DSM ownership, and relation locators in
+  backend-local TLS, and `PROCSIG_REPACK_MESSAGE` already has a logical
+  backend-interrupt mapping;
+- the in-tree `pgrepack` logical decoding output plugin is marked
+  `PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION`. It has no `_PG_init`
+  hook, no mutable file-scope state, and keeps per-run state in the logical
+  decoding context supplied by the REPACK worker;
+- the first threaded REPACK smoke exposed another narrow GUC-bootstrap gap:
+  `logical_decoding_work_mem` is a backend-local GUC backing variable with no
+  C initializer, so a fresh thread carrier saw zero and crashed while logical
+  decoding tried to evict reorder-buffer changes immediately. The threaded
+  session GUC bootstrap now initializes `logical_decoding_work_mem` and
+  `debug_logical_replication_streaming` before logical-decoding workers can
+  enter the reorder buffer.
+
+Validation for this slice included threaded and process-mode temp-cluster
+`REPACK (CONCURRENTLY)` smokes over a 5,000-row table. The threaded smoke
+verified the worker started as a thread carrier, table contents were preserved,
+the server log contained no `ERROR`, `FATAL`, or `PANIC`, and no postmaster
+child process matching `REPACK decoding worker` remained after completion.
+The process-mode control verified the same command still succeeds with
+`multithreaded = off`.
+
 ## Remaining Worker Families
 
 - startup/recovery worker paths that are part of normal server operation;
 - remaining in-tree generic background workers, tests, and examples that are
   not part of the already audited logical replication, core parallel worker,
-  `test_backend_runtime`, and `test_shm_mq` sets. These can opt into the
-  explicit background-worker backend model only after a per-entrypoint audit.
+  in-core REPACK decoding worker, `test_backend_runtime`, and `test_shm_mq`
+  sets. These can opt into the explicit background-worker backend model only
+  after a per-entrypoint audit.
 
 ## Validation
 
