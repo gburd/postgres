@@ -1284,14 +1284,6 @@ InitPostgres(const char *in_dbname, Oid dboid,
 						(flags & INIT_PG_OVERRIDE_ALLOW_CONNS) != 0,
 						threaded_backend);
 
-	if (threaded_backend)
-		ereport(FATAL,
-				(errmsg("threaded backend database initialization is not implemented yet"),
-				 errdetail("Database-specific GUC state and locale validation "
-						   "completed, but startup options, pg_db_role_setting "
-						   "state, and post-startup session lifetime still "
-						   "need thread-safe lifecycle handling.")));
-
 	/*
 	 * Now process any command-line switches and any additional GUC variable
 	 * settings passed in the startup packet.   We couldn't do this before
@@ -1299,6 +1291,14 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	 */
 	if (MyProcPort != NULL)
 		process_startup_options(MyProcPort, am_superuser);
+
+	if (threaded_backend)
+		ereport(FATAL,
+				(errmsg("threaded backend database initialization is not implemented yet"),
+				 errdetail("Startup packet options completed, but "
+						   "pg_db_role_setting state and post-startup session "
+						   "lifetime still need thread-safe lifecycle "
+						   "handling.")));
 
 	/* Process pg_db_role_setting options */
 	process_settings(MyDatabaseId, GetSessionUserId());

@@ -612,6 +612,24 @@ thread. A later threaded runtime needs a broader per-database locale strategy
 before it can support clusters where database LC_CTYPE differs from the
 postmaster process LC_CTYPE.
 
+## Startup Options Boundary Slice
+
+The twenty-ninth slice lets threaded startup process startup-packet GUC
+options:
+
+- `process_startup_options()` now runs for threaded backend carriers after
+  database-specific GUC and locale validation;
+- this covers command-line options embedded in the startup packet and
+  additional startup-packet GUC pairs such as `application_name`;
+- the guarded FATAL now fires after startup-packet options and before
+  `pg_db_role_setting` entries, default session state initialization, session
+  preload libraries, final pgstat startup, and transaction commit.
+
+This is still not full GUC session adoption. Startup options set concrete
+values supplied by the client, while `pg_db_role_setting` can apply arbitrary
+database/user defaults and exposes the broader reset/default semantics that
+still need a more complete per-session GUC initialization policy.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
@@ -911,6 +929,20 @@ postmaster process LC_CTYPE.
   connections, completed authentication, role identity, database identity,
   database-specific GUC setup, and locale validation, rejected both before
   startup options and `pg_db_role_setting` application with the guarded
+  "threaded backend database initialization is not implemented yet" FATAL,
+  kept the postmaster running between connections, and completed normal fast
+  shutdown.
+- after the startup options boundary slice,
+  `gmake -C src/backend/utils/init postinit.o` passed;
+- after the startup options boundary slice, full
+  `gmake -C src/backend -j8` passed and
+  `gmake DESTDIR="$PWD/tmp_install" install` completed;
+- after the startup options boundary slice,
+  `gmake -C src/test/modules/test_backend_runtime check` passed;
+- a temp install smoke with `multithreaded=on` after the startup options
+  boundary slice used psql connection strings with explicit
+  `application_name` values, completed startup-packet GUC option processing,
+  rejected both connections before `pg_db_role_setting` with the guarded
   "threaded backend database initialization is not implemented yet" FATAL,
   kept the postmaster running between connections, and completed normal fast
   shutdown.
