@@ -35,6 +35,7 @@
 #include "postmaster/autovacuum.h"
 #include "postmaster/postmaster.h"
 #include "replication/walsender.h"
+#include "storage/latch.h"
 #include "storage/pmsignal.h"
 #include "storage/proc.h"
 
@@ -153,6 +154,8 @@ InitPostmasterChildSlots(void)
 		{
 			slots[slotno].carrier_kind = PM_CHILD_CARRIER_PROCESS;
 			slots[slotno].pid = 0;
+			slots[slotno].thread_exitstatus = 0;
+			pg_atomic_init_u32(&slots[slotno].thread_exited, 0);
 			slots[slotno].child_slot = slotno + 1;
 			slots[slotno].bkend_type = B_INVALID;
 			slots[slotno].rw = NULL;
@@ -191,6 +194,8 @@ AssignPostmasterChildSlot(BackendType btype)
 	pmchild = dlist_container(PMChild, elem, dlist_pop_head_node(freelist));
 	pmchild->carrier_kind = PM_CHILD_CARRIER_PROCESS;
 	pmchild->pid = 0;
+	pmchild->thread_exitstatus = 0;
+	pg_atomic_write_u32(&pmchild->thread_exited, 0);
 	pmchild->bkend_type = btype;
 	pmchild->rw = NULL;
 	pmchild->bgworker_notify = true;
@@ -234,6 +239,8 @@ AllocDeadEndChild(void)
 	{
 		pmchild->carrier_kind = PM_CHILD_CARRIER_PROCESS;
 		pmchild->pid = 0;
+		pmchild->thread_exitstatus = 0;
+		pg_atomic_init_u32(&pmchild->thread_exited, 0);
 		pmchild->child_slot = 0;
 		pmchild->bkend_type = B_DEAD_END_BACKEND;
 		pmchild->rw = NULL;
@@ -274,6 +281,39 @@ PostmasterChildSetThread(PMChild *pmchild, const PgThread *thread)
 	pmchild->carrier_kind = PM_CHILD_CARRIER_THREAD;
 	pmchild->pid = 0;
 	pmchild->thread = *thread;
+	pmchild->thread_exitstatus = 0;
+	pg_atomic_write_u32(&pmchild->thread_exited, 0);
+}
+
+void
+PostmasterChildMarkThreadExited(PMChild *pmchild, int exitstatus,
+								Latch *postmaster_latch)
+{
+	Assert(PostmasterChildIsThread(pmchild));
+	Assert(postmaster_latch != NULL);
+
+	pmchild->thread_exitstatus = exitstatus;
+
+	/*
+	 * Publish the exit status before waking the postmaster.  The postmaster
+	 * owns PMChild list mutation and slot release.
+	 */
+	pg_memory_barrier();
+	pg_atomic_write_u32(&pmchild->thread_exited, 1);
+	SetLatch(postmaster_latch);
+}
+
+bool
+PostmasterChildHasExitedThread(PMChild *pmchild, int *exitstatus)
+{
+	if (!PostmasterChildIsThread(pmchild))
+		return false;
+
+	if (pg_atomic_exchange_u32(&pmchild->thread_exited, 0) == 0)
+		return false;
+
+	*exitstatus = pmchild->thread_exitstatus;
+	return true;
 }
 
 /*

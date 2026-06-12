@@ -430,6 +430,7 @@ static void process_pm_child_exit(void);
 static void process_pm_reload_request(void);
 static void process_pm_shutdown_request(void);
 static void dummy_handler(SIGNAL_ARGS);
+static void process_pm_thread_exit(void);
 static void CleanupBackend(PMChild *bp, int exitstatus);
 static void HandleChildCrash(int pid, int exitstatus, const char *procname);
 static void LogChildExit(int lev, const char *procname,
@@ -1719,6 +1720,7 @@ ServerLoop(void)
 				process_pm_child_exit();
 			if (pending_pm_pmsignal)
 				process_pm_pmsignal();
+			process_pm_thread_exit();
 
 			if (events[i].events & WL_SOCKET_ACCEPT)
 			{
@@ -2576,6 +2578,33 @@ process_pm_child_exit(void)
 	 * or actions to make.
 	 */
 	PostmasterStateMachine();
+}
+
+/*
+ * Cleanup after any thread-backed child reports exit.  The exiting thread only
+ * marks its PMChild entry and wakes the postmaster latch; list mutation and
+ * PMChild slot release stay in the postmaster main thread.
+ */
+static void
+process_pm_thread_exit(void)
+{
+	dlist_mutable_iter iter;
+	bool		reaped = false;
+
+	dlist_foreach_modify(iter, &ActiveChildList)
+	{
+		PMChild    *pmchild = dlist_container(PMChild, elem, iter.cur);
+		int			exitstatus;
+
+		if (!PostmasterChildHasExitedThread(pmchild, &exitstatus))
+			continue;
+
+		CleanupBackend(pmchild, exitstatus);
+		reaped = true;
+	}
+
+	if (reaped)
+		PostmasterStateMachine();
 }
 
 /*

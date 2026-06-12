@@ -109,11 +109,31 @@ No caller sets thread-backed PMChild entries yet. This makes the eventual
 thread launcher able to record its carrier without overloading `pid` or
 inventing a transient side table.
 
+## Thread Exit Reaper Slice
+
+The seventh slice adds the postmaster-owned cleanup path for thread-backed
+children:
+
+- `PMChild` now records an atomic "thread exited" flag and a waitpid-style
+  thread exit status;
+- an exiting thread can call `PostmasterChildMarkThreadExited()` to publish its
+  exit and wake the postmaster latch;
+- the postmaster main loop scans for exited thread-backed children and calls
+  `CleanupBackend()` itself;
+- thread carriers therefore do not mutate `ActiveChildList` or release PMChild
+  slots from inside the carrier thread.
+
+This is a prerequisite for the first actual backend-thread launch. Without it,
+the thread routine would either leak PMChild slots or perform postmaster-owned
+list mutation from the wrong thread.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
 - `gmake -C src/backend/postmaster pmchild.o postmaster.o` passed after the
   PMChild carrier identity slice;
+- `gmake -C src/backend/postmaster pmchild.o postmaster.o` passed after the
+  thread exit reaper slice;
 - `gmake -C src/backend/postmaster launch_backend.o postmaster.o pmchild.o`
   passed after the carrier-aware launch API slice;
 - `gmake -C src/backend/postmaster pmchild.o postmaster.o launch_backend.o`
