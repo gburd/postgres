@@ -17,6 +17,7 @@
 #include "nodes/params.h"
 #include "nodes/plannodes.h"
 #include "storage/procsignal.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
 #include "utils/global_lifetime.h"
 #include "utils/queryenvironment.h"
@@ -24,9 +25,14 @@
 typedef struct ExplainState ExplainState;	/* defined in explain_state.h */
 
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CONNECTION CommandDest whereToSendOutput;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION const char *debug_query_string;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int PostAuthDelay;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CONNECTION int client_connection_check_interval;
+
+/*
+ * Compatibility lvalue for the historical execution-local debug query string.
+ * Storage belongs to the current PgExecution object.
+ */
+#define debug_query_string (*PgCurrentDebugQueryStringRef())
 
 /* GUC-configurable parameters */
 

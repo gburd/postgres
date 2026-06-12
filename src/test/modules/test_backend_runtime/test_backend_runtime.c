@@ -21,6 +21,7 @@
 #include "storage/ipc.h"
 #include "storage/latch.h"
 #include "storage/proc.h"
+#include "tcop/tcopprot.h"
 #include "utils/backend_runtime.h"
 
 PG_MODULE_MAGIC;
@@ -425,6 +426,54 @@ test_backend_interrupt_holdoffs_are_backend_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "interrupt holdoff counters were not backend-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_execution_debug_query_string_is_execution_local);
+Datum
+test_execution_debug_query_string_is_execution_local(PG_FUNCTION_ARGS)
+{
+	PgExecution *saved_execution;
+	PgExecution fake_execution1;
+	PgExecution fake_execution2;
+	const char *saved_debug_query_string;
+	bool		ok = true;
+
+	saved_execution = CurrentPgExecution;
+	saved_debug_query_string = debug_query_string;
+	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
+	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+
+	PG_TRY();
+	{
+		CurrentPgExecution = &fake_execution1;
+		debug_query_string = "fake execution one";
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && debug_query_string == NULL;
+		debug_query_string = "fake execution two";
+
+		CurrentPgExecution = &fake_execution1;
+		ok = ok && strcmp(debug_query_string, "fake execution one") == 0;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && strcmp(debug_query_string, "fake execution two") == 0;
+		debug_query_string = NULL;
+
+		CurrentPgExecution = saved_execution;
+		debug_query_string = saved_debug_query_string;
+	}
+	PG_CATCH();
+	{
+		CurrentPgExecution = saved_execution;
+		debug_query_string = saved_debug_query_string;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "debug_query_string was not execution-local");
 
 	PG_RETURN_BOOL(true);
 }

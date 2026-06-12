@@ -85,3 +85,40 @@ Validation for this slice:
   `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
   `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`
   passed all 46 tests after the holdoff-counter migration.
+
+## Debug Query String Execution Bridge
+
+The third Phase 12 slice moves `debug_query_string` under `PgExecution`:
+
+- `PgExecution` now owns a `PgExecutionDebugState`;
+- `debug_query_string` remains a source-compatible lvalue macro in
+  `tcopprot.h`;
+- the macro routes through `PgCurrentDebugQueryStringRef()`, which returns the
+  current execution's field;
+- early paths before `CurrentPgExecution` is installed use fallback
+  execution-local storage in `backend_runtime.c`;
+- `InitializePgProcessRuntime()` adopts the early fallback value into the
+  process execution object before clearing fallback storage.
+
+This preserves existing logging, error-reporting, parallel-worker, and
+background-worker call sites while making the client statement string part of
+the logical execution object. That is a small but important step toward
+moving a session/execution between carriers without depending on raw TLS for
+diagnostic statement state.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `postgres.o`, and
+  `test_backend_runtime.o`;
+- because `tcopprot.h` changed a former exported execution global into a
+  compatibility macro, `gmake -C src/backend clean` plus generated-header
+  recovery was used before the clean rebuild;
+- clean full `gmake -j8` passed;
+- focused `test_backend_runtime` regression passed and includes
+  `test_execution_debug_query_string_is_execution_local()`, which switches
+  `CurrentPgExecution` between fake executions and proves assignments through
+  `debug_query_string` remain isolated per execution;
+- threaded runtime TAP coverage passed for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`
+  after the debug-query-string migration.

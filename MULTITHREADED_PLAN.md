@@ -656,7 +656,8 @@ Exit gate:
 
 Status: in progress. See `MULTITHREADED_PHASE12_STATE.md` for the initial
 `CurrentSession` compatibility bridge through `PgSession` and the first
-backend-local interrupt holdoff bridge through `PgBackend`.
+backend-local interrupt holdoff bridge through `PgBackend`, plus the initial
+execution debug-state bridge through `PgExecution`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.

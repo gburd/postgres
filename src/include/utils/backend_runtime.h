@@ -130,6 +130,11 @@ typedef struct PgBackendWaitState
 	pg_atomic_uint32 waiting;
 } PgBackendWaitState;
 
+typedef struct PgExecutionDebugState
+{
+	const char *debug_query_string;
+} PgExecutionDebugState;
+
 /*
  * Main-loop state owned by PgSession. Some of this state used to be volatile
  * locals in PostgresMain(); keep the loop flags volatile because they must
@@ -210,6 +215,7 @@ struct PgExecution
 	PgBackend  *backend;
 	PgSession  *session;
 	PgCarrier  *carrier;
+	PgExecutionDebugState debug;
 };
 
 typedef struct PgThreadBackendRuntimeState
@@ -243,6 +249,8 @@ extern Session *PgSessionGetLegacySession(PgSession *session);
 extern void PgSessionSetLegacySession(PgSession *session,
 									   Session *legacy_session);
 extern Session *PgCurrentLegacySession(void);
+extern const char **PgExecutionDebugQueryStringRef(PgExecution *execution);
+extern const char **PgCurrentDebugQueryStringRef(void);
 extern PgBackendLaunchModel PgRuntimeGetBackendLaunchModel(BackendType backend_type);
 extern bool PgRuntimeShouldThreadBackend(BackendType backend_type);
 extern PgBackendModel PgRuntimeGetExtensionBackendModel(void);

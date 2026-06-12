@@ -88,12 +88,6 @@
 #include "utils/timestamp.h"
 #include "utils/varlena.h"
 
-/* ----------------
- *		global variables
- * ----------------
- */
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION const char *debug_query_string; /* client-supplied query string */
-
 /* Note: whereToSendOutput is initialized for the bootstrap/standalone case */
 PG_THREAD_LOCAL PG_GLOBAL_CONNECTION CommandDest whereToSendOutput = DestDebug;
 

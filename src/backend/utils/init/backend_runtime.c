@@ -46,6 +46,7 @@ static PG_GLOBAL_SESSION PgSession process_session;
 static PG_GLOBAL_CONNECTION PgConnection process_connection;
 static PG_GLOBAL_EXECUTION PgExecution process_execution;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInterruptHoldoffState early_interrupt_holdoffs;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionDebugState early_execution_debug;
 
 StaticAssertDecl(PG_BACKEND_INTERRUPT_COUNT <= 32,
 				 "PgBackendInterruptMask must fit all backend interrupts");
@@ -54,6 +55,7 @@ static void PgBackendInitializeIdCounter(void);
 static PgBackendId PgBackendAssignId(void);
 static void PgBackendWakeForInterrupt(PgBackend *backend);
 static void PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend);
+static void PgExecutionAdoptEarlyDebugState(PgExecution *execution);
 static PgBackendInterruptHoldoffState *PgCurrentInterruptHoldoffs(void);
 
 static void
@@ -89,6 +91,17 @@ PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend)
 	early_interrupt_holdoffs.interrupt_holdoff_count = 0;
 	early_interrupt_holdoffs.query_cancel_holdoff_count = 0;
 	early_interrupt_holdoffs.crit_section_count = 0;
+}
+
+static void
+PgExecutionAdoptEarlyDebugState(PgExecution *execution)
+{
+	Assert(execution != NULL);
+
+	execution->debug.debug_query_string =
+		early_execution_debug.debug_query_string;
+
+	early_execution_debug.debug_query_string = NULL;
 }
 
 void
@@ -137,6 +150,7 @@ InitializePgProcessRuntime(void)
 	process_execution.backend = &process_backend;
 	process_execution.session = &process_session;
 	process_execution.carrier = &process_carrier;
+	PgExecutionAdoptEarlyDebugState(&process_execution);
 
 	CurrentPgRuntime = &process_runtime;
 	CurrentPgCarrier = &process_carrier;
@@ -261,6 +275,21 @@ Session *
 PgCurrentLegacySession(void)
 {
 	return PgSessionGetLegacySession(CurrentPgSession);
+}
+
+const char **
+PgExecutionDebugQueryStringRef(PgExecution *execution)
+{
+	if (execution == NULL)
+		return &early_execution_debug.debug_query_string;
+
+	return &execution->debug.debug_query_string;
+}
+
+const char **
+PgCurrentDebugQueryStringRef(void)
+{
+	return PgExecutionDebugQueryStringRef(CurrentPgExecution);
 }
 
 static PgBackendInterruptHoldoffState *
