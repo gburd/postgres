@@ -80,6 +80,28 @@ count stayed unchanged at six. That proves the second, late IO worker used a
 thread carrier instead of a forked subprocess. The same proof has been added
 to the threaded runtime TAP test for TAP-enabled environments.
 
+## Generic Background Worker Compatibility Gate
+
+Generic background workers still expose a process-oriented registration ABI and
+do not yet have metadata for declaring thread compatibility. Once the
+postmaster has created any thread carrier, `StartBackgroundWorker()` now
+rejects generic `B_BG_WORKER` launches explicitly in threaded mode instead of
+letting them fall through to an unsafe post-thread fork attempt.
+
+Rejected workers are reported as stopped to their shared-memory registration
+slot, with the usual notification sent when the requester has a valid
+process-backed notification PID. This avoids the previous behavior where a
+dynamic background worker could look like a transient fork failure and be
+retried by the postmaster. Static background workers may still start as
+process-backed workers before the first thread carrier is created; converting
+or rejecting those startup-time workers remains part of the later coordinated
+worker-family conversion.
+
+The threaded runtime TAP smoke now registers a deliberately unreachable dynamic
+background worker after threaded client carriers exist and verifies that the
+worker is rejected with an explicit server-log message while the server remains
+usable.
+
 ## Remaining Worker Families
 
 - autovacuum launcher;
@@ -91,7 +113,8 @@ to the threaded runtime TAP test for TAP-enabled environments.
   and parallel apply workers;
 - a narrow allowlist path for in-tree generic background worker tests and
   examples;
-- third-party background worker rejection or explicit thread-worker metadata.
+- explicit thread-worker metadata for third-party background workers that can
+  eventually opt into threaded mode.
 
 ## Validation
 
@@ -124,6 +147,19 @@ Additional validation for the late AIO worker slice:
 - a follow-up direct threaded AIO smoke on the committed branch reproduced the
   same late-worker proof and fast shutdown: `io_after=2`,
   `children_before=6`, and `children_after=6`.
+
+Additional validation for the generic background worker compatibility gate:
+
+- touched-object builds passed for `launch_backend.o` and `postmaster.o`;
+- `gmake -j8` passed after the postmaster helper/header change;
+- `gmake -C src/test/modules/test_backend_runtime all` passed after adding the
+  threaded bgworker rejection helper;
+- `gmake -C src/test/modules/test_backend_runtime check` passed its SQL
+  regression and skipped TAP because this checkout is not configured with
+  `--enable-tap-tests`;
+- direct `perl -c src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl`
+  is blocked in this local Perl by the missing non-core `IPC::Run` module
+  before syntax is checked.
 
 An attempted TAP fixture that relied on ordinary autovacuum scheduling did not
 start a worker reliably within a short poll window, even with aggressive table

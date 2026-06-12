@@ -244,6 +244,12 @@ PostmasterChildName(BackendType child_type)
 	return child_process_kinds[child_type].name;
 }
 
+bool
+PostmasterThreadCarriersStarted(void)
+{
+	return postmaster_thread_carriers_started;
+}
+
 /*
  * Start a new postmaster child using the runtime-selected carrier model.
  */

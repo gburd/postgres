@@ -4297,6 +4297,27 @@ StartBackgroundWorker(RegisteredBgWorker *rw)
 	Assert(rw->rw_pid == 0);
 
 	/*
+	 * Generic background workers still use the process-only bgworker ABI.
+	 * Once this postmaster has created thread carriers, another fork is not
+	 * safe.  Reject the worker explicitly and notify dynamic waiters rather
+	 * than reporting a transient fork failure and retrying indefinitely.
+	 */
+	if (multithreaded && PostmasterThreadCarriersStarted())
+	{
+		ereport(LOG,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("background worker \"%s\" is not supported in threaded mode",
+						rw->rw_worker.bgw_name),
+				 errdetail("Generic background workers do not yet have a thread-compatible registration model.")));
+
+		rw->rw_crashed_at = 0;
+		rw->rw_terminate = true;
+		rw->rw_pid = 0;
+		ReportBackgroundWorkerExit(rw);
+		return true;
+	}
+
+	/*
 	 * Allocate and assign the child slot.  Note we must do this before
 	 * forking, so that we can handle failures (out of memory or child-process
 	 * slots) cleanly.
