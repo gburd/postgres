@@ -540,7 +540,8 @@ Exit gate:
 ## Phase 11: Auxiliary Worker Thread Runtime
 
 Status: in progress. See `MULTITHREADED_PHASE11_WORKERS.md` for the
-completed autovacuum launcher/worker, late AIO worker, generic
+completed autovacuum launcher/worker, AIO worker startup handoff and late
+launch, generic
 background-worker compatibility, WAL receiver, WAL summarizer, WAL writer,
 archiver, checkpointer/background writer handoff, slot sync worker, and
 logical replication launcher slices, plus initial logical replication
@@ -580,8 +581,8 @@ Likely changes:
   - startup/recovery worker paths that are part of normal server operation;
   - WAL receiver, WAL summarizer, and slot sync worker have initial
     thread-carrier slices;
-  - startup-time AIO method workers; late AIO method workers have an initial
-    thread-carrier slice;
+  - startup-time AIO method workers are handed off after `PM_RUN`, and late
+    AIO method workers have an initial thread-carrier slice;
   - logical replication launcher, apply workers, table-sync workers,
     sequence-sync workers, and parallel apply workers have initial
     thread-carrier slices.

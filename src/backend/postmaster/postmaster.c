@@ -415,6 +415,7 @@ static PG_GLOBAL_RUNTIME DNSServiceRef bonjour_sdref = NULL;
 static PG_GLOBAL_RUNTIME TimestampTz io_worker_launch_next_time = 0;
 static PG_GLOBAL_RUNTIME int io_worker_count = 0;
 static PG_GLOBAL_RUNTIME PMChild *io_worker_children[MAX_IO_WORKERS];
+static PG_GLOBAL_RUNTIME bool io_worker_thread_handoff_pending[MAX_IO_WORKERS];
 static PG_GLOBAL_RUNTIME bool bgwriter_thread_handoff_pending = false;
 static PG_GLOBAL_RUNTIME bool checkpointer_thread_handoff_pending = false;
 
@@ -469,6 +470,7 @@ static int	CountChildren(BackendTypeMask targetMask);
 static void LaunchMissingBackgroundProcesses(void);
 static void maybe_start_bgworkers(void);
 static bool maybe_reap_io_worker(int pid);
+static void maybe_handoff_io_workers(void);
 static void maybe_start_io_workers(void);
 static TimestampTz maybe_start_io_workers_scheduled_at(void);
 static bool CreateOptsFile(int argc, char *argv[], char *fullprogname);
@@ -3430,6 +3432,7 @@ LaunchMissingBackgroundProcesses(void)
 	 * A config file change will always lead to this function being called, so
 	 * we always will process the config change in a timely manner.
 	 */
+	maybe_handoff_io_workers();
 	maybe_start_io_workers();
 
 	/*
@@ -4777,6 +4780,7 @@ cleanup_io_worker_child(PMChild *child)
 
 			--io_worker_count;
 			io_worker_children[i] = NULL;
+			io_worker_thread_handoff_pending[i] = false;
 			return true;
 		}
 	}
@@ -4842,6 +4846,33 @@ cleanup_wal_summarizer_child(PMChild *child, int exitstatus)
 		HandleChildCrash(0, exitstatus, _("WAL summarizer process"));
 
 	return true;
+}
+
+/*
+ * Initial I/O workers are started before regular backend threads can exist.
+ * In threaded mode, ask those startup-era process workers to exit after the
+ * postmaster reaches PM_RUN. maybe_start_io_workers() will then fill the
+ * minimum worker count through the normal thread-carrier launch path.
+ */
+static void
+maybe_handoff_io_workers(void)
+{
+	if (!multithreaded || pmState != PM_RUN || Shutdown != NoShutdown ||
+		!PostmasterThreadCarriersStarted())
+		return;
+
+	for (int i = 0; i < MAX_IO_WORKERS; ++i)
+	{
+		PMChild    *child = io_worker_children[i];
+
+		if (child != NULL &&
+			PostmasterChildIsProcess(child) &&
+			!io_worker_thread_handoff_pending[i])
+		{
+			io_worker_thread_handoff_pending[i] = true;
+			signal_child(child, SIGUSR2);
+		}
+	}
 }
 
 /*

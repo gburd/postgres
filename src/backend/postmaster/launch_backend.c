@@ -529,7 +529,14 @@ backend_thread_run_worker(BackendThreadStart *thread_start)
 			(errmsg_internal("starting %s thread carrier",
 							 PostmasterChildName(thread_start->child_type))));
 
-	backend_thread_enter_startup_gate(thread_start);
+	/*
+	 * AIO workers must be able to start while a regular backend is still in
+	 * the temporary serialized startup section, because backend startup can
+	 * itself need worker-backed catalog reads before releasing that gate.
+	 * They do not perform catalog/session startup of their own.
+	 */
+	if (thread_start->child_type != B_IO_WORKER)
+		backend_thread_enter_startup_gate(thread_start);
 
 	if (thread_start->child_type == B_BG_WORKER)
 		child_process_kinds[thread_start->child_type].main_fn(&thread_start->bgworker_startup_data,

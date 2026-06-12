@@ -79,14 +79,18 @@ no-entry launch-path smoke; stable `pg_stat_activity` accounting across
 launcher-created useful workers remains part of the broader real autovacuum
 coverage still needed in Phase 11.
 
-## Late AIO Worker Thread Slice
+## AIO Worker Thread Slice
 
-The next Phase 11 slice lets dynamically launched AIO method workers use
-thread carriers once the threaded runtime has already started:
+The next Phase 11 slice lets AIO method workers use thread carriers in normal
+threaded server operation:
 
-- startup-time `B_IO_WORKER` children remain process-backed for now, because
-  the postmaster still starts other process-backed worker families during
-  startup and must not fork after becoming multithreaded;
+- startup-time `B_IO_WORKER` children remain process-backed until the
+  postmaster reaches `PM_RUN`, because they can be needed before regular
+  backend thread carriers exist;
+- once `PM_RUN` has been reached and thread carriers exist, the postmaster
+  signals any startup-era process AIO workers with the existing `SIGUSR2`
+  shutdown request and lets `maybe_start_io_workers()` refill the minimum
+  worker count through the thread-carrier path;
 - after `postmaster_thread_carriers_started` is true, new
   `StartChildProcess(B_IO_WORKER)` requests are routed to the backend thread
   carrier launcher;
@@ -96,9 +100,19 @@ thread carriers once the threaded runtime has already started:
 - `IoWorkerMain()` skips process-wide signal handler and signal-mask changes
   when running as a thread carrier, relying on logical backend interrupts
   delivered through the postmaster signal bridge;
+- AIO worker thread carriers bypass the temporary serialized backend startup
+  gate, because regular backend startup can need worker-backed catalog reads
+  before it is ready to release that gate, and AIO workers do not perform
+  catalog/session startup of their own;
 - the postmaster maps IO-worker `SIGUSR2` to a logical shutdown request,
   preserves the historical ignored `SIGTERM` behavior, and treats `SIGINT`
   as the manual-restart/proc-die path;
+- `IoWorkerMain()` drains pending logical backend interrupts before checking
+  the normal interrupt flags, so latch wakeups delivered by the postmaster
+  signal bridge become visible to the worker loop;
+- thread-backed IO workers observe postmaster-owned config reload decisions
+  instead of running `ProcessConfigFile()` concurrently in the shared address
+  space;
 - thread-backed IO worker exits are reaped through the existing IO worker
   accounting path so `io_worker_count` and `io_worker_children[]` stay
   consistent.
@@ -116,6 +130,12 @@ before reload and two after reload, while the postmaster OS child-process
 count stayed unchanged at six. That proves the second, late IO worker used a
 thread carrier instead of a forked subprocess. The same proof has been added
 to the threaded runtime TAP test for TAP-enabled environments.
+
+The startup-handoff follow-up starts `multithreaded=on` with
+`io_method=worker` and `io_min_workers=2`, waits for normal running, and checks
+that the two logical IO workers remain present while no postmaster child
+process is still titled as an IO worker. That proves startup-time process
+workers were signaled out and replaced by thread carriers after `PM_RUN`.
 
 ## Generic Background Worker Compatibility Gate
 
@@ -437,7 +457,6 @@ The WAL archiver is now opted into the thread carrier path in threaded mode:
 
 - syslogger;
 - startup/recovery worker paths that are part of normal server operation;
-- startup-time AIO method workers;
 - a narrow allowlist path for in-tree generic background worker tests and
   examples;
 - explicit thread-worker metadata for third-party background workers that can
@@ -471,6 +490,28 @@ Additional validation for the late AIO worker slice:
   and `pg_reload_conf()`. The smoke observed `io_before=1`, `io_after=2`,
   `children_before=6`, and `children_after=6`, then stopped the server
   cleanly with fast shutdown.
+- the startup-handoff follow-up initially exposed a bootstrap dependency cycle:
+  regular backend authentication was waiting on worker AIO catalog reads while
+  replacement AIO threads were waiting behind the temporary backend startup
+  gate. Letting AIO worker thread carriers bypass that gate fixed the cycle;
+- after that fix, a direct threaded startup-handoff smoke passed:
+  `multithreaded=on`, `io_method=worker`, `io_min_workers=2`,
+  `io_max_workers=4`, and `io_worker_launch_interval=0`. The smoke observed
+  `io_workers=2`, no postmaster child command matching `io worker|ioworker`,
+  successful 5,000-row DDL/insert plus `CHECKPOINT`, no log
+  `ERROR`/`FATAL`/`PANIC`, and clean fast shutdown;
+- a direct process-mode control smoke passed with `io_method=worker` and
+  `io_min_workers=2`: the smoke observed `io_workers=2`, two postmaster child
+  IO worker processes, successful 1,000-row DDL/insert plus `CHECKPOINT`, no
+  log `ERROR`/`FATAL`/`PANIC`, and clean fast shutdown;
+- the threaded runtime TAP smoke now starts with two AIO workers to cover
+  startup handoff, verifies no startup IO worker remains as a postmaster child
+  process, then raises `io_min_workers` to 3 to keep the late-launch proof.
+  Direct TAP syntax/check execution remains blocked in this checkout by the
+  missing system Perl `IPC::Run` module;
+- `gmake -C src/test/modules/test_backend_runtime check` passed its SQL
+  regression and skipped TAP because this checkout is not configured with
+  `--enable-tap-tests`.
 
 Additional validation for the logical replication sequence-sync slice:
 

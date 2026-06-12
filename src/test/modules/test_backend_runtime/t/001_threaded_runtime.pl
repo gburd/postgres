@@ -87,7 +87,7 @@ multithreaded = on
 autovacuum = on
 autovacuum_naptime = '1h'
 io_method = worker
-io_min_workers = 1
+io_min_workers = 2
 io_max_workers = 4
 io_worker_launch_interval = 0
 io_worker_idle_timeout = '60s'
@@ -128,7 +128,7 @@ like(slurp_file($node->logfile),
 
 SKIP:
 {
-	skip 'postmaster child counting smoke is Unix-specific', 5
+	skip 'postmaster child counting smoke is Unix-specific', 7
 	  if $^O eq 'MSWin32';
 
 	$node->poll_query_until(
@@ -142,11 +142,20 @@ SKIP:
 	is(postmaster_child_command_count(qr/autovacuum launcher/), 0,
 		'autovacuum launcher did not fork a postmaster child process');
 
+	$node->poll_query_until(
+		'postgres',
+		q{SELECT count(*) = 2 FROM pg_stat_activity WHERE backend_type = 'io worker';},
+		't') || die "timed out waiting for startup IO workers";
 	my $io_workers_before = $node->safe_psql('postgres',
 		q{SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'io worker'});
 	my $children_before = postmaster_child_count();
 
-	$node->safe_psql('postgres', q{ALTER SYSTEM SET io_min_workers = 2});
+	is($io_workers_before, '2',
+		'threaded runtime starts with two logical IO workers');
+	is(postmaster_child_command_count(qr/io worker|ioworker/), 0,
+		'startup IO workers were handed off to thread carriers');
+
+	$node->safe_psql('postgres', q{ALTER SYSTEM SET io_min_workers = 3});
 	$node->safe_psql('postgres', q{SELECT pg_reload_conf()});
 
 	my $io_workers_after = 0;
@@ -158,8 +167,7 @@ SKIP:
 		usleep(100_000);
 	}
 
-	is($io_workers_before, '1', 'threaded runtime starts with one IO worker');
-	is($io_workers_after, '2', 'threaded runtime launched a second IO worker');
+	is($io_workers_after, '3', 'threaded runtime launched a late IO worker');
 	is(postmaster_child_count(), $children_before,
 		'late IO worker used a thread carrier, not a new process');
 }
