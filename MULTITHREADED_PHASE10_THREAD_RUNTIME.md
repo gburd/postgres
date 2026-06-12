@@ -1194,3 +1194,20 @@ not just a later guard in `InitPostgres()`.
   path; every client reached the guarded FATAL after backend stats entry
   creation, the server log contained no byval/opclass/crash failures, the
   postmaster stayed running, and normal fast shutdown completed.
+- follow-up validation found that explicit `TopMemoryContext` teardown in the
+  thread-exit continuation made the repeated-carrier boundary unstable:
+  reverting an experimental launch-gate change and rerunning the 20-client
+  smoke produced one intended guarded FATAL followed by
+  `could not find tuple for opclass 112`; holding the startup gate through
+  memory teardown changed the failure to `unsupported byval length: 0`.
+  The committed boundary now deliberately leaves carrier memory-context
+  ownership to the future thread-runtime lifecycle instead of destroying it in
+  `backend_thread_finish()`. With that teardown removed, a fresh 20-client
+  `multithreaded=on` smoke reached the intended guarded FATAL for all clients
+  and found no byval/opclass/crash signatures in text logs or client stderr.
+- after the thread-exit memory-teardown correction,
+  `gmake -C src/backend/postmaster launch_backend.o`, full
+  `gmake -C src/backend -j8`, and
+  `gmake DESTDIR="$PWD/tmp_install" install` passed.
+- after the thread-exit memory-teardown correction,
+  `gmake -C src/test/modules/test_backend_runtime check` passed.

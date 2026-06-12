@@ -446,14 +446,15 @@ backend_thread_finish(int code)
 	PostmasterChildMarkThreadExited(thread_start->pmchild, exitstatus,
 									thread_start->postmaster_latch);
 	MyClientSocket = NULL;
-	backend_thread_leave_startup_gate(thread_start);
 
-	if (TopMemoryContext != NULL)
-	{
-		MemoryContextSwitchTo(TopMemoryContext);
-		MemoryContextDeleteChildren(TopMemoryContext);
-		MemoryContextReset(TopMemoryContext);
-	}
+	/*
+	 * Do not delete the carrier's TopMemoryContext here yet.  The current
+	 * guarded Phase 10 path exits after catalog/cache-heavy startup and leaves
+	 * enough teardown coupling that explicit context destruction corrupts later
+	 * carrier startups.  Full backend/session memory ownership belongs with the
+	 * real thread-runtime lifecycle, not this temporary guard continuation.
+	 */
+	backend_thread_leave_startup_gate(thread_start);
 
 	CurrentBackendThreadStart = NULL;
 	free(thread_start);
