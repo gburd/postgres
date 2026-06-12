@@ -752,6 +752,7 @@ BackgroundWorkerCanUseThreadCarrier(const BackgroundWorker *worker)
 
 	return strcmp(worker->bgw_function_name, "ApplyLauncherMain") == 0 ||
 		strcmp(worker->bgw_function_name, "ApplyWorkerMain") == 0 ||
+		strcmp(worker->bgw_function_name, "ParallelApplyWorkerMain") == 0 ||
 		strcmp(worker->bgw_function_name, "SequenceSyncWorkerMain") == 0 ||
 		strcmp(worker->bgw_function_name, "TableSyncWorkerMain") == 0;
 }

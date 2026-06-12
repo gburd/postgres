@@ -258,6 +258,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ParallelApplyWorkerInfo *stream_apply_w
 /* A list to maintain subtransactions, if any. */
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND List *subxactlist = NIL;
 
+static bool ParallelApplyWorkerThreadedRuntime(void);
 static void pa_free_worker_info(ParallelApplyWorkerInfo *winfo);
 static ParallelTransState pa_get_xact_state(ParallelApplyWorkerShared *wshared);
 static PartialFileSetState pa_get_fileset_state(void);
@@ -716,6 +717,7 @@ pa_process_spooled_messages_if_required(void)
 static void
 ProcessParallelApplyInterrupts(void)
 {
+	PgCurrentBackendApplyInterrupts();
 	CHECK_FOR_INTERRUPTS();
 
 	if (ShutdownRequestPending)
@@ -730,8 +732,16 @@ ProcessParallelApplyInterrupts(void)
 	if (ConfigReloadPending)
 	{
 		ConfigReloadPending = false;
-		ProcessConfigFile(PGC_SIGHUP);
+		if (!ParallelApplyWorkerThreadedRuntime())
+			ProcessConfigFile(PGC_SIGHUP);
 	}
+}
+
+static bool
+ParallelApplyWorkerThreadedRuntime(void)
+{
+	return CurrentPgRuntime != NULL &&
+		CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION;
 }
 
 /* Parallel apply worker main loop. */
@@ -859,7 +869,7 @@ pa_shutdown(int code, Datum arg)
 {
 	SendProcSignal(MyLogicalRepWorker->leader_pid,
 				   PROCSIG_PARALLEL_APPLY_MESSAGE,
-				   INVALID_PROC_NUMBER);
+				   MyLogicalRepWorker->leader_procno);
 
 	dsm_detach((dsm_segment *) DatumGetPointer(arg));
 }
@@ -891,9 +901,12 @@ ParallelApplyWorkerMain(Datum main_arg)
 	 * from the case where we abort the current transaction and exit on
 	 * receiving SIGTERM.
 	 */
-	pqsignal(SIGHUP, SignalHandlerForConfigReload);
-	pqsignal(SIGUSR2, SignalHandlerForShutdownRequest);
-	BackgroundWorkerUnblockSignals();
+	if (!ParallelApplyWorkerThreadedRuntime())
+	{
+		pqsignal(SIGHUP, SignalHandlerForConfigReload);
+		pqsignal(SIGUSR2, SignalHandlerForShutdownRequest);
+		BackgroundWorkerUnblockSignals();
+	}
 
 	/*
 	 * Attach to the dynamic shared memory segment for the parallel apply, and
@@ -954,7 +967,7 @@ ParallelApplyWorkerMain(Datum main_arg)
 
 	pq_redirect_to_shm_mq(seg, error_mqh);
 	pq_set_parallel_leader(MyLogicalRepWorker->leader_pid,
-						   INVALID_PROC_NUMBER);
+						   MyLogicalRepWorker->leader_procno);
 
 	MyLogicalRepWorker->last_send_time = MyLogicalRepWorker->last_recv_time =
 		MyLogicalRepWorker->reply_time = 0;

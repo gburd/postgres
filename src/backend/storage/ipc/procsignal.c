@@ -126,6 +126,8 @@ PG_GLOBAL_SHMEM NON_EXEC_STATIC ProcSignalHeader *ProcSignal = NULL;
 
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ProcSignalSlot *MyProcSignalSlot = NULL;
 
+static bool ProcSignalReasonToBackendInterrupt(ProcSignalReason reason,
+											   PgBackendInterruptType *interrupt_type);
 static bool CheckProcSignal(ProcSignalReason reason);
 static void CleanupProcSignalState(int status, Datum arg);
 static void ResetProcSignalBarrierBits(uint32 flags);
@@ -414,6 +416,7 @@ int
 SendProcSignal(pid_t pid, ProcSignalReason reason, ProcNumber procNumber)
 {
 	volatile ProcSignalSlot *slot;
+	PgBackendInterruptType interrupt_type;
 
 	if (procNumber != INVALID_PROC_NUMBER)
 	{
@@ -423,8 +426,29 @@ SendProcSignal(pid_t pid, ProcSignalReason reason, ProcNumber procNumber)
 		SpinLockAcquire(&slot->pss_mutex);
 		if (pg_atomic_read_u32(&slot->pss_pid) == pid)
 		{
-			/* Atomically set the proper flag */
-			slot->pss_signalFlags[reason] = true;
+			if (pid == PostmasterPid)
+			{
+				if (ProcSignalReasonToBackendInterrupt(reason, &interrupt_type))
+				{
+					PgBackendInterruptMask interrupt_mask;
+
+					interrupt_mask = PG_BACKEND_INTERRUPT_MASK(interrupt_type);
+					pg_atomic_fetch_or_u32(&slot->pss_backendInterruptMask,
+										   interrupt_mask);
+					SpinLockRelease(&slot->pss_mutex);
+					if (procNumber < MaxBackends)
+						SetLatch(&GetPGProcByNumber(procNumber)->procLatch);
+					return 0;
+				}
+
+				SpinLockRelease(&slot->pss_mutex);
+				return -1;
+			}
+			else
+			{
+				/* Atomically set the proper flag */
+				slot->pss_signalFlags[reason] = true;
+			}
 			SpinLockRelease(&slot->pss_mutex);
 			/* Send signal */
 			return kill(pid, SIGUSR1);
@@ -464,6 +488,46 @@ SendProcSignal(pid_t pid, ProcSignalReason reason, ProcNumber procNumber)
 
 	errno = ESRCH;
 	return -1;
+}
+
+static bool
+ProcSignalReasonToBackendInterrupt(ProcSignalReason reason,
+								   PgBackendInterruptType *interrupt_type)
+{
+	switch (reason)
+	{
+		case PROCSIG_CATCHUP_INTERRUPT:
+			*interrupt_type = PG_BACKEND_INTERRUPT_CATCHUP;
+			return true;
+		case PROCSIG_NOTIFY_INTERRUPT:
+			*interrupt_type = PG_BACKEND_INTERRUPT_NOTIFY;
+			return true;
+		case PROCSIG_PARALLEL_MESSAGE:
+			*interrupt_type = PG_BACKEND_INTERRUPT_PARALLEL_MESSAGE;
+			return true;
+		case PROCSIG_BARRIER:
+			*interrupt_type = PG_BACKEND_INTERRUPT_PROC_SIGNAL_BARRIER;
+			return true;
+		case PROCSIG_LOG_MEMORY_CONTEXT:
+			*interrupt_type = PG_BACKEND_INTERRUPT_LOG_MEMORY_CONTEXT;
+			return true;
+		case PROCSIG_PARALLEL_APPLY_MESSAGE:
+			*interrupt_type = PG_BACKEND_INTERRUPT_PARALLEL_APPLY_MESSAGE;
+			return true;
+		case PROCSIG_SLOTSYNC_MESSAGE:
+			*interrupt_type = PG_BACKEND_INTERRUPT_SLOT_SYNC_MESSAGE;
+			return true;
+		case PROCSIG_REPACK_MESSAGE:
+			*interrupt_type = PG_BACKEND_INTERRUPT_REPACK_MESSAGE;
+			return true;
+		case PROCSIG_RECOVERY_CONFLICT:
+			*interrupt_type = PG_BACKEND_INTERRUPT_RECOVERY_CONFLICT;
+			return true;
+		case PROCSIG_WALSND_INIT_STOPPING:
+			return false;
+	}
+
+	return false;
 }
 
 /*

@@ -311,12 +311,6 @@ for thread carriers in threaded mode:
   sequence-sync slice allowlists `SequenceSyncWorkerMain` after validating the
   launch and copy path.
 
-Parallel apply remains disabled for thread carriers in this slice. It still
-uses `SendProcSignal()` through `pqmq.c` and stores leader communication in
-PID-shaped fields in places such as `applyparallelworker.c`; enabling it
-requires a separate logical-notification path for same-process parallel apply
-message delivery.
-
 ## Logical Replication Sequence-Sync Thread Slice
 
 Logical replication sequence-sync workers are now allowlisted for thread
@@ -334,10 +328,35 @@ carriers in threaded mode:
   thread mode but leaves config-file parsing to the postmaster-owned reload
   path for the shared address space.
 
-This slice deliberately keeps logical replication parallel apply disabled for
-thread carriers. Parallel apply still depends on `SendProcSignal()`/`pqmq.c`
-leader wakeups and needs a logical same-process notification path before it is
-safe to share the server address space.
+## Logical Replication Parallel Apply Thread Slice
+
+Logical replication parallel apply workers are now allowlisted for thread
+carriers in threaded mode:
+
+- `BackgroundWorkerCanUseThreadCarrier()` accepts the in-tree
+  `postgres`/`ParallelApplyWorkerMain` entrypoint;
+- `SendProcSignal()` can deliver proc-number-targeted same-process
+  notifications through the logical backend interrupt mailbox when the target
+  slot belongs to a thread-backed backend sharing the postmaster PID;
+- same-process `SendProcSignal()` calls that cannot be mapped to a logical
+  backend interrupt now fail instead of signaling the containing postmaster
+  process;
+- parallel apply worker shutdown and `pqmq.c` leader wakeups now pass the
+  leader worker's `ProcNumber`, preserving the existing process-mode PID path
+  while giving thread-backed workers a logical destination;
+- `ParallelApplyWorkerMain()` avoids installing process-wide SIGHUP/SIGUSR2
+  handlers or changing the process signal mask when running as a thread
+  carrier;
+- `ProcessParallelApplyInterrupts()` drains queued logical backend interrupts
+  before legacy interrupt checks, and consumes config reload requests in
+  threaded mode without running a second shared-address-space
+  `ProcessConfigFile()`.
+
+The current same-process `SendProcSignal()` bridge is intentionally limited to
+`ProcSignalReason` values that already have `PgBackendInterruptType`
+equivalents. Future worker conversions that need additional proc-signal
+reasons should add explicit interrupt types rather than falling back to
+process signals.
 
 ## WAL Writer Thread Slice
 
@@ -394,7 +413,6 @@ The WAL archiver is now opted into the thread carrier path in threaded mode:
 - checkpointer, background writer, and syslogger;
 - startup/recovery worker paths that are part of normal server operation;
 - startup-time AIO method workers;
-- logical replication parallel apply workers;
 - a narrow allowlist path for in-tree generic background worker tests and
   examples;
 - explicit thread-worker metadata for third-party background workers that can
@@ -428,6 +446,33 @@ Additional validation for the late AIO worker slice:
   and `pg_reload_conf()`. The smoke observed `io_before=1`, `io_after=2`,
   `children_before=6`, and `children_after=6`, then stopped the server
   cleanly with fast shutdown.
+
+Additional validation for the logical replication sequence-sync slice:
+
+- touched-object builds passed for `sequencesync.o`, `launcher.o`, and
+  `bgworker.o`;
+- full `gmake -j8` passed;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed;
+- a direct process-publisher/threaded-subscriber sequence smoke passed:
+  `multithreaded=on`, `wal_level=logical`, logical replication launcher/apply
+  workers and sequence-sync worker running as thread carriers, sequence value
+  copied to the subscriber, no logical replication child process observed, and
+  no subscriber log `ERROR`/`FATAL`/`PANIC`.
+
+Additional validation for the logical replication parallel-apply slice:
+
+- touched-object builds passed for `procsignal.o`, `applyparallelworker.o`,
+  `launcher.o`, `worker.o`, and `bgworker.o`;
+- full `gmake -j8` passed;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed;
+- a direct process-publisher/threaded-subscriber parallel streaming smoke
+  passed using the upstream `t/015_stream.pl` interleaved transaction shape:
+  `multithreaded=on`, `streaming = parallel`,
+  `max_parallel_apply_workers_per_subscription = 2`, a logical replication
+  parallel apply worker launched as a thread carrier, the subscriber reached
+  the expected final row/default counts `3334|3334|3334`, no logical
+  replication child process was observed, and the subscriber log had no
+  `ERROR`/`FATAL`/`PANIC`.
 - a follow-up direct threaded AIO smoke on the committed branch reproduced the
   same late-worker proof and fast shutdown: `io_after=2`,
   `children_before=6`, and `children_after=6`.

@@ -416,10 +416,16 @@ Important current files:
   gmake -C src/test/modules/test_oat_hooks DESTDIR="$PWD/tmp_install" install
   ```
 
-- Direct logical replication parallel-apply smokes should poll while the
-  publisher transaction is still open. The parallel worker can be transient,
-  and `pg_stat_activity.backend_type` reports it as
-  `logical replication parallel worker`.
+- Direct logical replication parallel-apply smokes should use the upstream
+  `src/test/subscription/t/015_stream.pl` interleaved transaction shape:
+  start one large transaction, run and commit a second large transaction while
+  the first remains open, then commit the first. A single large transaction
+  followed by `pg_sleep()` can replicate successfully without proving the
+  `STREAM_START`/parallel apply path. The parallel worker is pooled and can be
+  hard to catch by polling `pg_stat_activity`; use the subscriber log marker
+  for `logical replication parallel apply worker for subscription`, the final
+  replicated row/default counts, and a postmaster child-process check as the
+  primary smoke evidence.
 
 - PostgreSQL TAP tests require the non-core Perl module `IPC::Run`. The system
   Perl on this macOS checkout may not have it, in which case direct `prove`
