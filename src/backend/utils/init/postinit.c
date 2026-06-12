@@ -1292,16 +1292,16 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	if (MyProcPort != NULL)
 		process_startup_options(MyProcPort, am_superuser);
 
+	/* Process pg_db_role_setting options */
+	process_settings(MyDatabaseId, GetSessionUserId());
+
 	if (threaded_backend)
 		ereport(FATAL,
 				(errmsg("threaded backend database initialization is not implemented yet"),
-				 errdetail("Startup packet options completed, but "
-						   "pg_db_role_setting state and post-startup session "
-						   "lifetime still need thread-safe lifecycle "
-						   "handling.")));
-
-	/* Process pg_db_role_setting options */
-	process_settings(MyDatabaseId, GetSessionUserId());
+				 errdetail("Startup packet options and pg_db_role_setting "
+						   "state completed, but default session state and "
+						   "post-startup session lifetime still need "
+						   "thread-safe lifecycle handling.")));
 
 	/* Apply PostAuthDelay as soon as we've read all options */
 	if (PostAuthDelay > 0)

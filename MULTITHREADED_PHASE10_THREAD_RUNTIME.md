@@ -630,6 +630,28 @@ values supplied by the client, while `pg_db_role_setting` can apply arbitrary
 database/user defaults and exposes the broader reset/default semantics that
 still need a more complete per-session GUC initialization policy.
 
+## pg_db_role_setting Boundary Slice
+
+The thirtieth slice lets threaded startup apply database/user catalog settings:
+
+- `process_settings()` now runs for threaded backend carriers after
+  startup-packet GUC options;
+- the early threaded GUC bridge initializes the `wal_consistency_checking` GUC
+  record, because applying catalog settings can scan catalogs and dirty hint
+  bits before arbitrary SQL has started;
+- a process-mode-created `ALTER DATABASE postgres SET application_name = ...`
+  setting is applied during threaded startup before the guard fires;
+- the guarded FATAL now fires after startup-packet options and
+  `pg_db_role_setting` application, before default session state
+  initialization, `PostAuthDelay`, session preload libraries, final pgstat
+  startup, transaction commit, and normal session lifetime.
+
+An lldb smoke without the `wal_consistency_checking` bridge crashed in
+`XLogRecordAssemble()` while catalog scans inside `ApplySetting()` dirtied hint
+bits and consulted the uninitialized thread-local WAL consistency array. The
+bridge is still intentionally narrow: it initializes only the GUC records that
+the current threaded startup path can reach before the guard.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
@@ -946,3 +968,18 @@ still need a more complete per-session GUC initialization policy.
   "threaded backend database initialization is not implemented yet" FATAL,
   kept the postmaster running between connections, and completed normal fast
   shutdown.
+- after the `pg_db_role_setting` boundary slice,
+  `gmake -C src/backend/utils/misc guc.o` and
+  `gmake -C src/backend/utils/init postinit.o` passed;
+- after the `pg_db_role_setting` boundary slice, full
+  `gmake -C src/backend -j8` passed and
+  `gmake DESTDIR="$PWD/tmp_install" install` completed;
+- after the `pg_db_role_setting` boundary slice,
+  `gmake -C src/test/modules/test_backend_runtime check` passed;
+- a temp install smoke created `ALTER DATABASE postgres SET application_name`
+  in process mode, restarted with `multithreaded=on`, completed
+  startup-packet GUC option processing and `pg_db_role_setting` application for
+  two threaded client attempts, rejected both before default session state with
+  the guarded "threaded backend database initialization is not implemented
+  yet" FATAL, kept the postmaster running between connections, and completed
+  normal fast shutdown.

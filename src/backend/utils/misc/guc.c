@@ -1506,6 +1506,9 @@ InitializeThreadedSessionGUCOptions(void)
 
 	gconf = find_option("client_encoding", false, false, PANIC);
 	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("wal_consistency_checking", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
 }
 
 /*
