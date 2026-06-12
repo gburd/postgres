@@ -127,6 +127,7 @@ extern bool postmaster_child_launch_carrier(PMChild *pmchild,
 											void *startup_data,
 											size_t startup_data_len,
 											const struct ClientSocket *client_sock);
+extern void ThreadedBackendStartupComplete(void);
 extern pid_t postmaster_child_launch(BackendType child_type,
 									 int child_slot,
 									 void *startup_data,

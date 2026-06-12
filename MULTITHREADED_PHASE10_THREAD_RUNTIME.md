@@ -845,6 +845,30 @@ the intended final session policy. Removing them requires safe long-idle wait
 ownership, cancellation/timeout routing, and cleanup after arbitrary command
 sequences.
 
+## Startup-Only Gate Slice
+
+The thirty-ninth slice narrows the temporary threaded startup serialization
+gate:
+
+- `launch_backend.c` now exposes `ThreadedBackendStartupComplete()`, a no-op
+  outside backend carrier threads;
+- the threaded carrier still enters the startup gate before
+  `BackendMainWithStartupData(..., BACKEND_STARTUP_THREAD)`;
+- `PgSessionBootstrap()` releases that gate after session bootstrap and loop
+  state initialization complete, immediately before `PgSessionRun()` begins
+  processing frontend messages;
+- the backend-thread exit finalizer still calls the same release helper, so
+  FATAL exits before session bootstrap and normal exits after gate release both
+  use the same safe cleanup path;
+- post-bootstrap bounded session execution can now overlap across backend
+  carrier threads.
+
+This is the first proof that the same-address-space threaded backend path can
+run multiple regular backend sessions concurrently after startup. It does not
+remove the temporary startup gate; catalog/cache-heavy session bootstrap still
+needs serialization until the remaining shared initialization state is moved
+behind backend/session ownership.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
@@ -1355,6 +1379,25 @@ sequences.
   `Operation timed out` read boundary, the server shut down cleanly, and no
   byval/opclass/crash signatures were found.
 - after the bounded session lifetime slice,
+  `gmake -C src/test/modules/test_backend_runtime check` passed.
+- a process-mode temp-instance smoke with `multithreaded=off` returned
+  `select 42` successfully with no client stderr.
+- after the startup-only gate slice, `git diff --check`,
+  `gmake -C src/backend/postmaster launch_backend.o`,
+  `gmake -C src/backend/tcop postgres.o`, full `gmake -C src/backend -j8`,
+  and `gmake DESTDIR="$PWD/tmp_install" install` passed.
+- a 20-client `multithreaded=on` smoke using one-shot `psql -c "select <n>"`
+  connections returned 20 result rows, exited with status 0, produced no
+  client stderr, produced no bounded-session guarded FATALs, and found no
+  byval/opclass/crash signatures.
+- a five-client `multithreaded=on` smoke using ten SQL messages per connection
+  returned 40 result rows before reaching the expected bounded-session guard
+  and found no byval/opclass/crash signatures.
+- a concurrent idle-client `multithreaded=on` smoke connected five clients
+  that sent no SQL for longer than the temporary deadline; all five reached
+  the `Operation timed out` read boundary, the server shut down cleanly, and
+  no byval/opclass/crash signatures were found.
+- after the startup-only gate slice,
   `gmake -C src/test/modules/test_backend_runtime check` passed.
 - a process-mode temp-instance smoke with `multithreaded=off` returned
   `select 42` successfully with no client stderr.

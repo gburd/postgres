@@ -213,7 +213,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_CARRIER BackendThreadStart *CurrentBackendThrea
  * Temporary Phase 10 guard: the startup path now reaches catalog/cache-heavy
  * initialization, but those backend-local caches are not yet safe for
  * concurrent carriers in the same address space.  Serialize the threaded
- * session path until the cache/global migration work can remove this gate.
+ * startup path until the cache/global migration work can remove this gate.
  */
 static PG_GLOBAL_RUNTIME pthread_mutex_t ThreadedBackendStartupMutex = PTHREAD_MUTEX_INITIALIZER;
 #endif
@@ -423,6 +423,15 @@ backend_thread_leave_startup_gate(BackendThreadStart *thread_start)
 		elog(LOG, "could not leave threaded backend startup gate: %m");
 	}
 #endif
+}
+
+void
+ThreadedBackendStartupComplete(void)
+{
+	if (CurrentBackendThreadStart == NULL)
+		return;
+
+	backend_thread_leave_startup_gate(CurrentBackendThreadStart);
 }
 
 static void

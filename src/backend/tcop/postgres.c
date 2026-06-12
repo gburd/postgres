@@ -5231,6 +5231,7 @@ PgSessionBootstrap(const char *dbname, const char *username)
 
 	Assert(CurrentPgSession != NULL);
 	PgSessionLoopStateInit(&CurrentPgSession->loop_state);
+	ThreadedBackendStartupComplete();
 
 	return CurrentPgSession;
 }
