@@ -114,7 +114,6 @@ InitializePgThreadRuntime(PgBackendExitContinuation exit_backend)
 	}
 
 	thread_runtime.exit_backend = exit_backend;
-	CurrentPgRuntime = &thread_runtime;
 }
 
 void
@@ -158,6 +157,7 @@ InitializePgThreadBackendRuntime(PgThreadBackendRuntimeState *state,
 	state->execution.session = &state->session;
 	state->execution.carrier = &state->carrier;
 
+	CurrentPgRuntime = &thread_runtime;
 	CurrentPgCarrier = &state->carrier;
 	CurrentPgBackend = &state->backend;
 	CurrentPgSession = &state->session;

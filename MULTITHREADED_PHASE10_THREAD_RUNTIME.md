@@ -234,6 +234,36 @@ This still does not run `BackendInitialize(..., BACKEND_STARTUP_THREAD)`.
 Startup packet timeout/termination routing and the `PgBackendExit()` process
 identity check remain the next blockers.
 
+## Thread Startup Guard Slice
+
+The thirteenth slice routes the carrier thread into the shared backend startup
+entrypoint and stops at the explicit threaded-startup guard:
+
+- the backend carrier now calls
+  `BackendMainWithStartupData(..., BACKEND_STARTUP_THREAD)` instead of sending
+  a hand-written protocol rejection;
+- the carrier initializes `MyProcPid`, a thread-local `MyLatch`,
+  `TopMemoryContext`, `ErrorContext`, thread runtime state, backend identity,
+  connection timing, and startup timestamps before entering backend startup;
+- the thread start payload copies the postmaster's current `session_timezone`
+  and `log_timezone` pointers so early error reporting in a new TLS carrier can
+  format timestamps before full GUC session-state adoption exists;
+- `InitializePgThreadRuntime()` now prepares the shared thread runtime and
+  exit continuation without switching the current carrier's
+  `CurrentPgRuntime`; `InitializePgThreadBackendRuntime()` adopts that runtime
+  inside the backend carrier thread;
+- this keeps the postmaster supervisor in process runtime while backend
+  carriers use the thread-exit continuation;
+- the startup guard now reports the normal FATAL response through backend error
+  reporting, exits through `PgBackendExit()`, publishes PMChild thread exit,
+  wakes the postmaster latch, and lets the postmaster join/reap the carrier.
+
+This proves more of the real startup path, but it deliberately still stops
+before startup-packet timeout and termination handling. The next slices need to
+replace the process-only startup timeout path, route startup termination through
+logical backend exit, and begin adopting/copying broader GUC-backed session
+state before the guard can move later in `BackendInitialize()`.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
@@ -309,3 +339,20 @@ identity check remain the next blockers.
   context slice rejected two client connections with "threaded backend startup
   is not implemented yet"; `pg_ctl status` reported the postmaster still
   running, and normal fast shutdown completed.
+- while replacing the hand-written rejection with the startup guard, a live
+  smoke initially exposed an uninitialized thread-local latch/timezone crash in
+  `pq_init()` error reporting and a separate bug where preparing the thread
+  runtime switched the postmaster's own `CurrentPgRuntime`; both were fixed in
+  the startup guard slice.
+- after the thread startup guard slice,
+  `gmake -C src/backend/postmaster launch_backend.o` and
+  `gmake -C src/backend/utils/init backend_runtime.o` passed;
+- after the thread startup guard slice, full `gmake -C src/backend -j8`
+  passed;
+- after the thread startup guard slice,
+  `gmake -C src/test/modules/test_backend_runtime check` passed;
+- a temp install smoke with `multithreaded=on` after the thread startup guard
+  slice rejected two client connections with the guarded FATAL from
+  `BackendInitialize(..., BACKEND_STARTUP_THREAD)`; `pg_ctl status` reported
+  the postmaster still running between connections, no thread-exit continuation
+  ran during postmaster shutdown, and normal fast shutdown completed.

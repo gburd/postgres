@@ -36,6 +36,7 @@
 
 #include "libpq/libpq-be.h"
 #include "miscadmin.h"
+#include "pgtime.h"
 #include "postmaster/autovacuum.h"
 #include "postmaster/bgworker_internals.h"
 #include "postmaster/bgwriter.h"
@@ -58,6 +59,7 @@
 #include "utils/backend_runtime.h"
 #include "utils/global_lifetime.h"
 #include "utils/memutils.h"
+#include "utils/timestamp.h"
 
 #ifdef EXEC_BACKEND
 #include "nodes/queryjumble.h"
@@ -196,6 +198,8 @@ typedef struct BackendThreadStart
 	BackendStartupData startup_data;
 	ClientSocket client_sock;
 	Latch	   *postmaster_latch;
+	pg_tz	   *session_timezone;
+	pg_tz	   *log_timezone;
 } BackendThreadStart;
 
 static PG_THREAD_LOCAL PG_GLOBAL_CARRIER BackendThreadStart *CurrentBackendThreadStart = NULL;
@@ -206,11 +210,10 @@ static bool postmaster_backend_thread_launch(PMChild *pmchild,
 											 void *startup_data,
 											 size_t startup_data_len,
 											 const ClientSocket *client_sock);
-static void backend_thread_reject_entry(void *arg);
+static void backend_thread_entry(void *arg);
 pg_noreturn static void backend_thread_exit(int code);
 pg_noreturn static void backend_thread_finish(int code);
 static int	backend_thread_exitstatus(int code);
-static void report_thread_startup_blocked_to_client(ClientSocket *client_sock);
 
 const char *
 PostmasterChildName(BackendType child_type)
@@ -250,11 +253,10 @@ postmaster_child_launch_carrier(PMChild *pmchild,
 /*
  * Start a regular backend carrier thread.
  *
- * The thread is intentionally not allowed to enter BackendMain() yet.  It
- * exercises carrier creation and postmaster-owned reaping, then rejects the
- * client connection from inside the carrier thread.  Removing this rejection
- * is the next Phase 10 step once startup packet timeout, process-global
- * signal handling, and backend exit have thread-safe replacements.
+ * The thread is intentionally not allowed past BackendInitialize() yet.  It
+ * exercises carrier creation, startup error reporting, backend-exit
+ * continuation, and postmaster-owned reaping, then rejects the client from the
+ * explicit BACKEND_STARTUP_THREAD guard.
  */
 static bool
 postmaster_backend_thread_launch(PMChild *pmchild,
@@ -300,6 +302,8 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 	thread_start->client_sock = *client_sock;
 	thread_start->client_sock.sock = dup(client_sock->sock);
 	thread_start->postmaster_latch = MyLatch;
+	thread_start->session_timezone = session_timezone;
+	thread_start->log_timezone = log_timezone;
 
 	if (thread_start->client_sock.sock < 0)
 	{
@@ -311,7 +315,7 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 	}
 
 	rc = pg_thread_create(&thread, "postgres backend",
-						  backend_thread_reject_entry, thread_start);
+						  backend_thread_entry, thread_start);
 	if (rc != 0)
 	{
 		closesocket(thread_start->client_sock.sock);
@@ -326,17 +330,25 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 }
 
 static void
-backend_thread_reject_entry(void *arg)
+backend_thread_entry(void *arg)
 {
 	BackendThreadStart *thread_start = (BackendThreadStart *) arg;
 
 	CurrentBackendThreadStart = thread_start;
-	MemoryContextInit();
-	InitializePgThreadBackendRuntime(&thread_start->runtime_state,
-									 thread_start->child_type, NULL, NULL);
 
 	MyBackendType = thread_start->child_type;
 	MyPMChildSlot = thread_start->child_slot;
+	MyProcPid = (int) getpid();
+	session_timezone = thread_start->session_timezone;
+	log_timezone = thread_start->log_timezone;
+
+	InitProcessLocalLatch();
+	MemoryContextInit();
+	InitializePgThreadBackendRuntime(&thread_start->runtime_state,
+									 thread_start->child_type, NULL, MyLatch);
+
+	MyStartTimestamp = GetCurrentTimestamp();
+	MyStartTime = timestamptz_to_time_t(MyStartTimestamp);
 	/* Temporary until real backend startup owns the copied ClientSocket. */
 	MyClientSocket = &thread_start->client_sock;
 
@@ -344,17 +356,10 @@ backend_thread_reject_entry(void *arg)
 	conn_timing.fork_start = thread_start->startup_data.fork_started;
 	conn_timing.fork_end = GetCurrentTimestamp();
 
-	report_thread_startup_blocked_to_client(&thread_start->client_sock);
-
-	if (closesocket(thread_start->client_sock.sock) != 0)
-	{
-		/*
-		 * Do not ereport() here.  The thread has not initialized backend
-		 * error handling or thread-local backend state yet.
-		 */
-	}
-
-	backend_thread_finish(0);
+	BackendMainWithStartupData(&thread_start->startup_data,
+							   &thread_start->client_sock,
+							   BACKEND_STARTUP_THREAD);
+	pg_unreachable();
 }
 
 static void
@@ -378,12 +383,16 @@ backend_thread_finish(int code)
 	PostmasterChildMarkThreadExited(thread_start->pmchild, exitstatus,
 									thread_start->postmaster_latch);
 	MyClientSocket = NULL;
-	CurrentBackendThreadStart = NULL;
-	free(thread_start);
 
 	if (TopMemoryContext != NULL)
-		MemoryContextDelete(TopMemoryContext);
+	{
+		MemoryContextSwitchTo(TopMemoryContext);
+		MemoryContextDeleteChildren(TopMemoryContext);
+		MemoryContextReset(TopMemoryContext);
+	}
 
+	CurrentBackendThreadStart = NULL;
+	free(thread_start);
 	pg_thread_exit();
 }
 
@@ -398,24 +407,6 @@ backend_thread_exitstatus(int code)
 #else
 	return code << 8;
 #endif
-}
-
-static void
-report_thread_startup_blocked_to_client(ClientSocket *client_sock)
-{
-	char		buffer[1000];
-	int			rc;
-
-	snprintf(buffer, sizeof(buffer), "E%s\n",
-			 "threaded backend startup is not implemented yet");
-
-	if (!pg_set_noblock(client_sock->sock))
-		return;
-
-	do
-	{
-		rc = send(client_sock->sock, buffer, strlen(buffer) + 1, 0);
-	} while (rc < 0 && errno == EINTR);
 }
 
 /*
