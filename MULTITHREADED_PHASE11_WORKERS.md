@@ -1303,6 +1303,10 @@ Additional Gate E hardening validation:
 - full `gmake -j8` passed;
 - full `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed, followed by
   reinstalling `src/test/modules/test_backend_runtime` into the temp install;
+- `gmake -C src/test/modules/test_backend_runtime check` passed its
+  process-mode SQL regression after recreating `tmp_install`; this checkout is
+  still not configured with `--enable-tap-tests`, so the recursive target
+  skipped TAP;
 - direct `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl`
   passed all 38 tests with the local `PERL5LIB` TAP environment. This covers
   the threaded autovacuum launcher, deterministic autovacuum worker entry,
