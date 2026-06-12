@@ -2864,6 +2864,22 @@ HandleChildCrash(int pid, int exitstatus, const char *procname)
 		return;
 
 	LogChildExit(LOG, procname, pid, exitstatus);
+
+	/*
+	 * Once threaded carriers exist, a child crash means the postmaster's own
+	 * address space may be compromised.  The process-mode crash-recovery path
+	 * waits for sibling processes to exit and then reinitializes shared state,
+	 * but it cannot safely recover from a failed thread inside this process.
+	 * Terminate the runtime and let the outside supervisor/user restart a
+	 * clean postmaster.
+	 */
+	if (multithreaded && PostmasterThreadCarriersStarted())
+	{
+		ereport(LOG,
+				(errmsg("terminating threaded server runtime after child crash")));
+		ExitPostmaster(1);
+	}
+
 	ereport(LOG,
 			(errmsg("terminating any other active server processes")));
 

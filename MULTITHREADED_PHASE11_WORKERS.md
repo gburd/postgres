@@ -1042,6 +1042,41 @@ metadata slice:
   regression and skipped TAP because this checkout is not configured with
   `--enable-tap-tests`.
 
+Additional hardening for generic background-worker shutdown and crash
+escalation:
+
+- a direct threaded smoke exposed that the explicit test thread-model
+  background worker could start but then hang in
+  `WaitForBackgroundWorkerShutdown()`. The postmaster's thread signal bridge
+  maps generic background-worker `SIGTERM` to
+  `PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST`, so the test worker now treats
+  `ShutdownRequestPending` as a stop request alongside `ProcDiePending`;
+- a direct threaded smoke then passed with `multithreaded=on`,
+  `autovacuum=off`, `summarize_wal=off`, and `io_method=sync`: the explicit
+  test background worker launched as a thread carrier, `TerminateBackgroundWorker()`
+  stopped it cleanly, SQL returned `42` afterward, fast shutdown completed,
+  and the log contained no `PANIC`, crash signature, or threaded-runtime crash
+  escalation message;
+- a direct threaded crash-escalation smoke exposed that a nonzero exit from a
+  thread-backed background worker entered process-mode crash recovery and could
+  wedge in `PM_WAIT_BACKENDS` waiting for in-address-space siblings. Once
+  thread carriers have started, `HandleChildCrash()` now treats any child
+  crash as a runtime-level failure and exits the postmaster process instead of
+  attempting in-place crash recovery in the shared address space;
+- the direct crash-escalation smoke now passes: a test thread-model background
+  worker exits with code 17, `psql` loses the connection, the postmaster
+  process exits, the log contains `terminating threaded server runtime after
+  child crash`, and the previous `issuing SIGKILL to recalcitrant children`
+  wedge marker is absent;
+- touched-object builds passed for `postmaster.o` and the
+  `test_backend_runtime` module;
+- full `gmake -j8` passed;
+- full `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed, followed by
+  reinstalling the `test_backend_runtime` module into the temp install;
+- `gmake -C src/test/modules/test_backend_runtime check` passed its SQL
+  regression and skipped TAP because this checkout is not configured with
+  `--enable-tap-tests`.
+
 Additional validation for the parallel worker thread slice:
 
 - touched-object build passed for `parallel.o`;
