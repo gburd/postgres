@@ -4,10 +4,11 @@ Phase 10 is complete for the first thread-per-session target. Regular client
 backends can run as OS threads inside one server runtime while preserving the
 process launch path. Server-owned worker families remain deferred to Phase 11:
 startup-time process workers are tolerated, late fork-without-exec worker
-launches are blocked after backend threads exist, and process-backed parallel
-workers are suppressed so callers fall back to leader-only execution where
-PostgreSQL already supports that. The first Phase 11 slice later replaces the
-Phase 10 autovacuum-worker deferral with an autovacuum worker thread carrier.
+launches are blocked after backend threads exist, and at the Phase 10 gate
+process-backed parallel workers were suppressed so callers fell back to
+leader-only execution where PostgreSQL already supports that. Phase 11 later
+replaces the Phase 10 autovacuum-worker and core parallel-worker deferrals
+with thread carriers.
 
 ## Launch Selection Scaffold
 
@@ -1049,17 +1050,18 @@ blocks unsafe late process-worker launches after thread carriers exist:
   launches in threaded mode with `ENOSYS`;
 - at Phase 10 close, autovacuum workers were temporarily disabled in threaded
   mode and logged a single notice when the launcher first tried to start one;
-- `InitializeParallelDSM()` suppresses process-backed parallel workers in
-  threaded mode, so parallel query, parallel index build, and parallel vacuum
-  callers fall back to leader-only execution instead of attempting dynamic
-  background worker registration;
+- at Phase 10 close, `InitializeParallelDSM()` suppressed process-backed
+  parallel workers in threaded mode, so parallel query, parallel index build,
+  and parallel vacuum callers fell back to leader-only execution instead of
+  attempting dynamic background worker registration. Phase 11 supersedes this
+  temporary restriction with thread-backed core parallel workers;
 - backend carrier threads seed their thread-local `pg_global_prng_state`
   before normal session work can create DSM handles;
 - the narrow threaded GUC bridge now initializes `default_tablespace` and
   `temp_tablespaces`, because table creation can reach index-build temp file
   setup before full per-session GUC adoption exists.
 
-This slice deliberately does not implement threaded autovacuum, parallel
+This slice deliberately did not implement threaded autovacuum, parallel
 workers, or other server-owned worker families. Those belong to Phase 11.
 The Phase 10 policy is stricter than "workers remain processes": startup-time
 process workers that exist before regular backend threads are still tolerated,
@@ -1197,9 +1199,10 @@ The late-worker policy required by Gate D is implemented as follows:
 - at Gate D close, `do_start_worker()` disabled autovacuum worker starts in
   threaded mode and logged a single deferral notice. Phase 11 supersedes that
   deferral with an autovacuum worker thread carrier;
-- `InitializeParallelDSM()` suppresses process-backed parallel workers in
-  threaded sessions, allowing existing callers to run leader-only where
-  PostgreSQL supports that fallback;
+- at Gate D close, `InitializeParallelDSM()` suppressed process-backed
+  parallel workers in threaded sessions, allowing existing callers to run
+  leader-only where PostgreSQL supports that fallback. Phase 11 supersedes
+  this deferral with thread-backed core parallel workers;
 - all remaining in-tree server-owned worker families are explicitly Phase 11
   work, not Phase 10 regular client backend work.
 

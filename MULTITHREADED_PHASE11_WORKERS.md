@@ -171,6 +171,35 @@ an explicit server-log message, and an explicitly opted-in test worker starts
 as a background-worker thread carrier, receives a terminate request, reports
 clean shutdown to the requester, and leaves the SQL backend usable.
 
+## Parallel Worker Thread Slice
+
+Core parallel query, parallel index build, and parallel vacuum workers use the
+generic dynamic background-worker mechanism. They are now opted into the
+thread-carrier path in threaded mode:
+
+- `InitializeParallelDSM()` no longer suppresses parallel workers merely
+  because `multithreaded=on`;
+- `LaunchParallelWorkers()` sets
+  `bgw_backend_model = BgWorkerBackendThreadPerSession` for
+  `ParallelWorkerMain`, so the postmaster can route the worker through the
+  explicit background-worker backend-model gate;
+- the dynamic background-worker notification PID now uses
+  `PgCurrentBackendSignalPid()`, which lets a thread-backed leader wait for
+  worker startup through the logical backend id rather than the containing
+  process PID;
+- the leader's serialized `FixedParallelState.parallel_leader_pid` remains
+  the carrier process PID. That value is still the interlock used by
+  `BecomeLockGroupMember()` and by `SendProcSignal()` when paired with the
+  leader's `ProcNumber`; the proc-signal bridge maps same-process
+  `PROCSIG_PARALLEL_MESSAGE` delivery to a logical backend interrupt.
+
+The live smoke for this slice starts a threaded temp cluster, forces a simple
+parallel aggregate with `debug_parallel_query=on`, verifies a `Gather` plan
+with workers, verifies the aggregate result, and checks the server log for
+`starting background worker thread carrier "parallel worker ..."` entries.
+A process-mode control smoke with the same query shape still starts process
+parallel workers and returns the expected result.
+
 ## WAL Summarizer Thread Slice
 
 The WAL summarizer is now opted into the thread carrier path in threaded mode:
@@ -509,9 +538,9 @@ remove the temporary process logger later.
 
 - startup/recovery worker paths that are part of normal server operation;
 - additional in-tree generic background workers, tests, and examples that are
-  not part of the already audited logical replication worker set. These can
-  opt into the explicit background-worker backend model only after a
-  per-entrypoint audit.
+  not part of the already audited logical replication and core parallel worker
+  sets. These can opt into the explicit background-worker backend model only
+  after a per-entrypoint audit.
 
 ## Validation
 
@@ -645,6 +674,31 @@ metadata slice:
 - `gmake -C src/test/modules/test_backend_runtime check` passed its SQL
   regression and skipped TAP because this checkout is not configured with
   `--enable-tap-tests`.
+
+Additional validation for the parallel worker thread slice:
+
+- touched-object build passed for `parallel.o`;
+- full `gmake -j8` passed;
+- full `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed;
+- a direct threaded temp-cluster smoke passed with `multithreaded=on`,
+  `max_parallel_workers=8`, `max_parallel_workers_per_gather=4`,
+  `autovacuum=off`, `summarize_wal=off`, and `io_method=sync`. The smoke
+  forced a parallel aggregate with `debug_parallel_query=on`, observed a
+  `Gather` plan with `Workers Planned: 4`, returned the expected
+  `sum=200010000` and `count=20000`, and the server log showed parallel
+  workers launched as background-worker thread carriers with no
+  `ERROR`/`FATAL`/`PANIC`;
+- a direct process-mode control smoke passed with `multithreaded=off`,
+  `max_parallel_workers=8`, and `max_parallel_workers_per_gather=4`. The
+  smoke observed a `Gather` plan with `Workers Planned: 2`, returned the
+  expected `sum=50005000` and `count=10000`, and the server log showed
+  process-backed parallel workers;
+- `gmake -C src/test/modules/test_backend_runtime check` passed its SQL
+  regression and skipped TAP because this checkout is not configured with
+  `--enable-tap-tests`;
+- direct `perl -c src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl`
+  remains blocked in this local Perl by the missing non-core `IPC::Run`
+  module before syntax is checked.
 
 Additional validation for the WAL summarizer thread slice:
 

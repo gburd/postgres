@@ -307,6 +307,29 @@ like(
 	qr/starting background worker thread carrier/,
 	'thread-model background worker used a thread carrier');
 
+is($node->safe_psql(
+		'postgres',
+		q{
+SET debug_parallel_query = on;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET max_parallel_workers_per_gather = 4;
+CREATE TEMP TABLE threaded_parallel AS
+SELECT i, i % 10 AS g FROM generate_series(1, 20000) AS i;
+ALTER TABLE threaded_parallel SET (parallel_workers = 4);
+ANALYZE threaded_parallel;
+SELECT sum(i)::text || '|' || count(*)::text
+FROM threaded_parallel
+WHERE g >= 0;
+}),
+	'200010000|20000',
+	'parallel query returns expected result in threaded runtime');
+like(
+	slurp_file($node->logfile),
+	qr/starting background worker thread carrier "parallel worker/,
+	'parallel query used background worker thread carriers');
+
 my $abandoned = $node->background_psql('postgres',
 	on_error_stop => 0, timeout => 20);
 $abandoned->query_safe('BEGIN; SELECT pg_advisory_lock(987654);',

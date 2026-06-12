@@ -501,9 +501,10 @@ Conservative scope:
 - auxiliary worker families that need late launch, including autovacuum
   workers, must be disabled, gated off, or routed to a process-safe path until
   Phase 11 gives them thread carriers;
-- process-backed parallel workers must be suppressed in threaded sessions until
-  the worker runtime exists, with callers falling back to leader-only
-  execution where PostgreSQL already supports that;
+- Phase 10 suppressed process-backed parallel workers in threaded sessions
+  until the worker runtime existed, with callers falling back to leader-only
+  execution where PostgreSQL already supports that. Phase 11 supersedes that
+  temporary restriction with thread-backed core parallel workers;
 - third-party background workers can be gated off or process-only until the
   worker runtime and extension metadata are audited;
 - unsafe extensions rejected through backend model metadata.
@@ -545,8 +546,8 @@ launch, generic background-worker compatibility and explicit backend-model
 metadata, WAL receiver, WAL summarizer, WAL writer, archiver,
 checkpointer/background writer handoff, syslogger handoff, slot sync worker,
 and logical replication launcher slices, plus initial logical replication
-apply/table-sync, sequence-sync, and parallel apply slices, plus remaining
-worker families.
+apply/table-sync, sequence-sync, and parallel apply slices, plus core
+parallel worker thread carriers and remaining worker families.
 
 Goal: make normal threaded server mode fully threaded for in-tree
 server-owned worker families, so the runtime does not fork subprocesses for
@@ -588,7 +589,10 @@ Likely changes:
   - logical replication launcher, apply workers, table-sync workers,
     sequence-sync workers, and parallel apply workers have initial
     thread-carrier slices through explicit background-worker backend-model
-    metadata.
+    metadata;
+  - core parallel query, parallel index build, and parallel vacuum workers
+    have an initial thread-carrier slice through explicit background-worker
+    backend-model metadata.
 - Require generic background workers to declare
   `BgWorkerBackendThreadPerSession` before they can run on thread carriers.
   The zero/default registration value remains process-only, so existing
@@ -610,6 +614,8 @@ Validation:
 - WAL receiver, WAL summarizer, slot sync worker, logical replication
   launcher, and logical replication worker smoke tests where local test
   infrastructure supports them;
+- parallel query, parallel index build, and parallel vacuum worker smoke tests
+  where local test infrastructure supports them;
 - AIO worker smoke tests;
 - cancellation, shutdown, restart, and failure escalation for threaded
   workers;

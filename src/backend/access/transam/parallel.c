@@ -263,16 +263,6 @@ InitializeParallelDSM(ParallelContext *pcxt)
 		pcxt->nworkers = 0;
 
 	/*
-	 * Parallel workers are still dynamic background worker processes.  In
-	 * threaded server mode, regular backend thread carriers may already exist,
-	 * so fork-without-exec worker launches are unsafe until Phase 11 replaces
-	 * server-owned worker families with thread carriers.  Let callers fall
-	 * back to leader-only execution instead of reaching worker registration.
-	 */
-	if (multithreaded)
-		pcxt->nworkers = 0;
-
-	/*
 	 * Normally, the user will have requested at least one worker process, but
 	 * if by chance they have not, we can skip a bunch of things here.
 	 */
@@ -628,17 +618,18 @@ LaunchParallelWorkers(ParallelContext *pcxt)
 	/* Configure a worker. */
 	memset(&worker, 0, sizeof(worker));
 	snprintf(worker.bgw_name, BGW_MAXLEN, "parallel worker for PID %d",
-			 MyProcPid);
+			 PgCurrentBackendSignalPid());
 	snprintf(worker.bgw_type, BGW_MAXLEN, "parallel worker");
 	worker.bgw_flags =
 		BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION
 		| BGWORKER_CLASS_PARALLEL;
+	worker.bgw_backend_model = BgWorkerBackendThreadPerSession;
 	worker.bgw_start_time = BgWorkerStart_ConsistentState;
 	worker.bgw_restart_time = BGW_NEVER_RESTART;
 	sprintf(worker.bgw_library_name, "postgres");
 	sprintf(worker.bgw_function_name, "ParallelWorkerMain");
 	worker.bgw_main_arg = UInt32GetDatum(dsm_segment_handle(pcxt->seg));
-	worker.bgw_notify_pid = MyProcPid;
+	worker.bgw_notify_pid = PgCurrentBackendSignalPid();
 
 	/*
 	 * Start workers.
