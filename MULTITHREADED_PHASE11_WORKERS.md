@@ -574,6 +574,32 @@ This slice is a handoff rather than a startup-time thread launch because the
 startup process still forks during recovery. Startup/recovery conversion can
 remove the temporary startup-era processes later.
 
+## Startup/Recovery Interrupt Boundary Prep
+
+Startup/recovery remains the remaining auxiliary carrier-conversion family.
+It is harder than the handoff workers because the startup process owns in-flight
+recovery state; in hot standby it can overlap with client backends, so a simple
+"ask the process child to exit and relaunch it as a thread" handoff is not
+equivalent.
+
+The first preparatory slice makes the startup process targetable through the
+logical thread-interrupt boundary before switching its carrier:
+
+- `PG_BACKEND_INTERRUPT_STARTUP_PROMOTE` represents the startup process'
+  `SIGUSR2` promotion trigger explicitly instead of overloading a generic wake
+  or shutdown bit;
+- `ProcessStartupProcInterrupts()` consumes logical backend interrupts and maps
+  config reload, startup promotion, shutdown, proc-die, barrier, and
+  log-memory-context requests onto the existing startup-local state;
+- the postmaster's thread-child signal bridge preserves startup `SIGINT`
+  ignore behavior, maps startup `SIGTERM` to the existing shutdown request,
+  and maps startup `SIGUSR2` to the startup promotion interrupt.
+
+This does not yet launch `B_STARTUP` on a thread carrier. That remains a
+separate conversion step that must account for recovery crash handling and the
+process-backed startup-era children that are currently launched before normal
+threaded operation.
+
 ## Archiver Thread Slice
 
 The WAL archiver is now opted into the thread carrier path in threaded mode:
@@ -781,12 +807,16 @@ completes `pg_ctl -m fast stop` cleanly.
 ## Remaining Worker Families
 
 - startup/recovery worker paths that are part of normal server operation;
-- remaining in-tree generic background workers, tests, and examples that are
-  not part of the already audited logical replication, core parallel worker,
-  in-core REPACK decoding worker, `pg_prewarm`, `test_backend_runtime`,
-  `test_shm_mq`, `worker_spi`, and `pg_stash_advice` sets. These can opt into
-  the explicit background-worker backend model only after a per-entrypoint
-  audit.
+
+The in-tree generic background-worker registration audit is complete for the
+current tree. A source scan of `RegisterBackgroundWorker()`,
+`RegisterDynamicBackgroundWorker()`, and `BgWorkerBackend` under `src/`,
+`contrib/`, and `src/test/modules` finds only the audited registrations for
+logical replication, core parallel workers, online checksums, in-core
+`REPACK (CONCURRENTLY)`, `pg_prewarm`, `pg_stash_advice`, `worker_spi`,
+`test_shm_mq`, and `test_backend_runtime`. The one default/process-model
+registration in `test_backend_runtime` is intentional negative coverage for
+unsafe extension worker loading in threaded mode.
 
 ## Validation
 
@@ -838,6 +868,19 @@ Additional validation for the late AIO worker slice:
 - `gmake -C src/test/modules/test_backend_runtime check` passed its SQL
   regression and skipped TAP because this checkout is not configured with
   `--enable-tap-tests`.
+
+Validation for the startup/recovery interrupt-boundary prep:
+
+- touched-object builds passed for `startup.o` and `postmaster.o`;
+- full `gmake -j8` passed;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed;
+- `git diff --check` passed;
+- the in-tree generic background-worker audit scan used:
+  `rg -n "Register(Dynamic)?BackgroundWorker\\(|BgWorkerBackend" contrib src -g '*.[ch]'`;
+- a direct threaded temp-cluster smoke passed after patching the known macOS
+  temp-install `libpq` references: `multithreaded=on`, startup, `select
+  current_setting('multithreaded'), 1` returned `on|1`, fast shutdown
+  completed, and the server log contained no `ERROR`, `FATAL`, or `PANIC`.
 
 Additional validation for the logical replication sequence-sync slice:
 

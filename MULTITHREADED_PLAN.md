@@ -612,10 +612,11 @@ Likely changes:
   The zero/default registration value remains process-only, so existing
   third-party workers are rejected in threaded mode when a thread carrier is
   required.
-- Audit additional in-tree generic background workers, tests, and examples
-  before opting them into the explicit worker backend model. `test_shm_mq`,
-  `worker_spi`, and `pg_stash_advice` have initial audited thread-carrier
-  slices.
+- The initial in-tree generic background-worker audit is complete: all current
+  `RegisterBackgroundWorker()` and `RegisterDynamicBackgroundWorker()` call
+  sites under `src/`, `contrib/`, and `src/test/modules` are either opted into
+  `BgWorkerBackendThreadPerSession` or intentionally left process-only as
+  negative compatibility coverage.
 - Define worker exit semantics separately from user-session exit semantics:
   normal worker exit must clean up one worker, while `PANIC`, postmaster death,
   and unrecoverable runtime corruption still terminate the process or runtime.

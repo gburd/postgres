@@ -30,6 +30,7 @@
 #include "storage/pmsignal.h"
 #include "storage/procsignal.h"
 #include "storage/standby.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/timeout.h"
@@ -85,6 +86,9 @@ PG_GLOBAL_RUNTIME int log_startup_progress_interval = 10000;	/* 10 sec */
 static void StartupProcTriggerHandler(SIGNAL_ARGS);
 static void StartupProcSigHupHandler(SIGNAL_ARGS);
 
+/* Logical interrupts */
+static void StartupProcApplyLogicalInterrupts(void);
+
 /* Callbacks */
 static void StartupProcExit(int code, Datum arg);
 
@@ -119,6 +123,42 @@ StartupProcShutdownHandler(SIGNAL_ARGS)
 	else
 		shutdown_requested = true;
 	WakeupRecovery();
+}
+
+static void
+StartupProcApplyLogicalInterrupts(void)
+{
+	PgBackendInterruptMask pending;
+
+	if (CurrentPgBackend == NULL)
+		return;
+
+	pending = PgBackendConsumeInterrupts(CurrentPgBackend);
+	if (pending == 0)
+		return;
+
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_CONFIG_RELOAD))
+		got_SIGHUP = true;
+
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_STARTUP_PROMOTE))
+		promote_signaled = true;
+
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST))
+	{
+		if (in_restore_command)
+			proc_exit(1);
+		else
+			shutdown_requested = true;
+	}
+
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_PROC_DIE))
+		proc_exit(1);
+
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_PROC_SIGNAL_BARRIER))
+		ProcSignalBarrierPending = true;
+
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_LOG_MEMORY_CONTEXT))
+		LogMemoryContextPending = true;
 }
 
 /*
@@ -166,6 +206,8 @@ ProcessStartupProcInterrupts(void)
 	/*
 	 * Process any requests or signals received recently.
 	 */
+	StartupProcApplyLogicalInterrupts();
+
 	if (got_SIGHUP)
 	{
 		got_SIGHUP = false;

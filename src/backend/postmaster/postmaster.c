@@ -3694,6 +3694,8 @@ thread_child_signal_interrupt(PMChild *pmchild, int signal,
 				return false;
 			if (pmchild->bkend_type == B_LOGGER)
 				return false;
+			if (pmchild->bkend_type == B_STARTUP)
+				return false;
 			if (pmchild->bkend_type == B_AUTOVAC_LAUNCHER)
 			{
 				*interrupt = PG_BACKEND_INTERRUPT_QUERY_CANCEL;
@@ -3761,9 +3763,19 @@ thread_child_signal_interrupt(PMChild *pmchild, int signal,
 				*interrupt = PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST;
 				return true;
 			}
+			if (pmchild->bkend_type == B_STARTUP)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST;
+				return true;
+			}
 			*interrupt = PG_BACKEND_INTERRUPT_PROC_DIE;
 			return true;
 		case SIGUSR2:
+			if (pmchild->bkend_type == B_STARTUP)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_STARTUP_PROMOTE;
+				return true;
+			}
 			if (pmchild->bkend_type == B_ARCHIVER)
 			{
 				*interrupt = PG_BACKEND_INTERRUPT_WAKEUP_STOP;
