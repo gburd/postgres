@@ -309,6 +309,25 @@ remains deliberately guarded because its timeout path, `InitPostgres()`/
 `InitProcess()` side effects, and post-startup session termination paths still
 need their own thread-safe lifecycle work.
 
+## InitProcess Boundary Slice
+
+The sixteenth slice moves the guarded stop out of `BackendInitialize()` and to
+the first shared-memory backend registration boundary:
+
+- threaded startup now returns from `BackendInitialize()` after parsing a valid
+  startup packet and filling `MyProcPort` startup state;
+- `BackendMainWithStartupData()` stops immediately before `InitProcess()` when
+  running in `BACKEND_STARTUP_THREAD` mode;
+- the guarded FATAL now names the real next blocker: `InitProcess()`, PGPROC
+  registration, and post-startup backend lifetime still assume process-backed
+  backend identity;
+- process mode still enters `InitProcess()`, `PostgresMain()`, authentication,
+  and normal session execution unchanged.
+
+This establishes the next concrete work item: make PGPROC registration and
+exit cleanup safe for logical backends whose carrier is a thread and whose
+process PID is shared with the postmaster and sibling backends.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
@@ -426,3 +445,14 @@ need their own thread-safe lifecycle work.
   `authentication_timeout='1s'`; the server logged `could not receive data from
   client: Operation timed out`, the client observed EOF after the logical
   backend exited, and `pg_ctl status` confirmed the postmaster remained alive.
+- after the InitProcess boundary slice,
+  `gmake -C src/backend/tcop backend_startup.o` passed;
+- after the InitProcess boundary slice, full `gmake -C src/backend -j8` passed;
+- after the InitProcess boundary slice,
+  `gmake -C src/test/modules/test_backend_runtime check` passed;
+- a temp install smoke with `multithreaded=on` after the InitProcess boundary
+  slice read real libpq startup packets for two client connections, returned
+  from `BackendInitialize()`, rejected both immediately before `InitProcess()`
+  with the guarded "threaded backend shared-memory registration is not
+  implemented yet" FATAL, kept the postmaster running between connections, and
+  completed normal fast shutdown.

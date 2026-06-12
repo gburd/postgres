@@ -133,6 +133,13 @@ BackendMainWithStartupData(const BackendStartupData *bsdata,
 	BackendInitialize(client_sock, bsdata->canAcceptConnections,
 					  startup_mode);
 
+	if (startup_mode == BACKEND_STARTUP_THREAD)
+		ereport(FATAL,
+				(errmsg("threaded backend shared-memory registration is not implemented yet"),
+				 errdetail("InitProcess, PGPROC registration, and post-startup "
+						   "backend lifetime still need thread-safe lifecycle "
+						   "handling.")));
+
 	/*
 	 * Create a per-backend PGPROC struct in shared memory.  We must do this
 	 * before we can use LWLocks or access any shared memory.
@@ -415,13 +422,6 @@ BackendInitialize(ClientSocket *client_sock, CAC_state cac,
 	 */
 	if (status != STATUS_OK)
 		PgBackendExit(0);
-
-	if (startup_mode == BACKEND_STARTUP_THREAD)
-		ereport(FATAL,
-				(errmsg("threaded backend authentication is not implemented yet"),
-				 errdetail("The authentication, InitProcess, and post-startup "
-						   "termination paths still need thread-safe "
-						   "lifecycle handling.")));
 
 	/*
 	 * Now that we have the user and database name, we can set the process
