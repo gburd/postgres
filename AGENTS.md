@@ -27,6 +27,9 @@ the code evolves.
   records the current logical wait/suspend boundary work.
 - [MULTITHREADED_PHASE10_THREAD_RUNTIME.md](MULTITHREADED_PHASE10_THREAD_RUNTIME.md)
   records the thread-per-session runtime work.
+- [MULTITHREADED_PHASE11_WORKERS.md](MULTITHREADED_PHASE11_WORKERS.md)
+  records the auxiliary worker thread-runtime work, starting with autovacuum
+  workers.
 - [refs/REFERENCES.md](refs/REFERENCES.md) lists external references.
 - [refs/pgconf-2025-multithreading-transcript.md](refs/pgconf-2025-multithreading-transcript.md)
   is the local transcript of the PgConf.dev 2025 talk that motivates this work.

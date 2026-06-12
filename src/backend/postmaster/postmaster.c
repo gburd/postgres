@@ -119,6 +119,7 @@
 #include "tcop/backend_startup.h"
 #include "tcop/tcopprot.h"
 #include "utils/datetime.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "utils/pidfile.h"
 #include "utils/timestamp.h"
@@ -3518,9 +3519,45 @@ pm_signame(int signal)
 static void
 signal_child(PMChild *pmchild, int signal)
 {
-	pid_t		pid = pmchild->pid;
+	pid_t		pid;
+
+	if (PostmasterChildIsThread(pmchild))
+	{
+		PgBackend  *backend = pmchild->thread_backend;
+
+		ereport(DEBUG3,
+				(errmsg_internal("sending signal %d/%s to %s thread-backed logical backend",
+								 signal, pm_signame(signal),
+								 GetBackendTypeDesc(pmchild->bkend_type))));
+
+		if (backend == NULL)
+			return;
+
+		switch (signal)
+		{
+			case SIGINT:
+				PgBackendRaiseInterrupt(backend,
+										PG_BACKEND_INTERRUPT_QUERY_CANCEL);
+				break;
+			case SIGTERM:
+			case SIGQUIT:
+			case SIGKILL:
+			case SIGABRT:
+				PgBackendRaiseInterrupt(backend,
+										PG_BACKEND_INTERRUPT_PROC_DIE);
+				break;
+			case SIGHUP:
+				PgBackendRaiseInterrupt(backend,
+										PG_BACKEND_INTERRUPT_CONFIG_RELOAD);
+				break;
+			default:
+				break;
+		}
+		return;
+	}
 
 	Assert(PostmasterChildIsProcess(pmchild));
+	pid = pmchild->pid;
 
 	ereport(DEBUG3,
 			(errmsg_internal("sending signal %d/%s to %s process with pid %d",

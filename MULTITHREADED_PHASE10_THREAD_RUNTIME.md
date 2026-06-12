@@ -4,9 +4,10 @@ Phase 10 is complete for the first thread-per-session target. Regular client
 backends can run as OS threads inside one server runtime while preserving the
 process launch path. Server-owned worker families remain deferred to Phase 11:
 startup-time process workers are tolerated, late fork-without-exec worker
-launches are blocked after backend threads exist, autovacuum workers are
-disabled in threaded mode, and process-backed parallel workers are suppressed
-so callers fall back to leader-only execution.
+launches are blocked after backend threads exist, and process-backed parallel
+workers are suppressed so callers fall back to leader-only execution where
+PostgreSQL already supports that. The first Phase 11 slice later replaces the
+Phase 10 autovacuum-worker deferral with an autovacuum worker thread carrier.
 
 ## Launch Selection Scaffold
 
@@ -1046,8 +1047,8 @@ blocks unsafe late process-worker launches after thread carriers exist:
 - after the postmaster successfully creates any backend thread carrier,
   `postmaster_child_launch_carrier()` rejects later fork-without-exec process
   launches in threaded mode with `ENOSYS`;
-- autovacuum workers are temporarily disabled in threaded mode and log a single
-  notice when the launcher first tries to start one;
+- at Phase 10 close, autovacuum workers were temporarily disabled in threaded
+  mode and logged a single notice when the launcher first tried to start one;
 - `InitializeParallelDSM()` suppresses process-backed parallel workers in
   threaded mode, so parallel query, parallel index build, and parallel vacuum
   callers fall back to leader-only execution instead of attempting dynamic
@@ -1100,8 +1101,7 @@ thread-per-session runtime under `src/test/modules/test_backend_runtime`:
   cancellation, idle backend termination, SQL error recovery, PL/pgSQL
   execution, live process-only module rejection, abandoned idle-client
   advisory-lock cleanup, transaction-abort cleanup, repeated
-  connect/disconnect, final connection health, and the expected temporary
-  autovacuum-worker deferral log;
+  connect/disconnect, and final connection health;
 - the test also rejects common crash/corruption log signatures after the
   threaded smoke.
 
@@ -1194,8 +1194,9 @@ The late-worker policy required by Gate D is implemented as follows:
 - `postmaster_child_launch_carrier()` rejects late fork-without-exec process
   launches with `ENOSYS` after any backend thread carrier has started in
   threaded mode;
-- `do_start_worker()` disables autovacuum worker starts in threaded mode and
-  logs a single deferral notice;
+- at Gate D close, `do_start_worker()` disabled autovacuum worker starts in
+  threaded mode and logged a single deferral notice. Phase 11 supersedes that
+  deferral with an autovacuum worker thread carrier;
 - `InitializeParallelDSM()` suppresses process-backed parallel workers in
   threaded sessions, allowing existing callers to run leader-only where
   PostgreSQL supports that fallback;

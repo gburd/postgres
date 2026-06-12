@@ -154,6 +154,7 @@ InitPostmasterChildSlots(void)
 		{
 			slots[slotno].carrier_kind = PM_CHILD_CARRIER_PROCESS;
 			slots[slotno].pid = 0;
+			slots[slotno].thread_backend = NULL;
 			slots[slotno].thread_exitstatus = 0;
 			pg_atomic_init_u32(&slots[slotno].thread_exited, 0);
 			slots[slotno].child_slot = slotno + 1;
@@ -194,6 +195,7 @@ AssignPostmasterChildSlot(BackendType btype)
 	pmchild = dlist_container(PMChild, elem, dlist_pop_head_node(freelist));
 	pmchild->carrier_kind = PM_CHILD_CARRIER_PROCESS;
 	pmchild->pid = 0;
+	pmchild->thread_backend = NULL;
 	pmchild->thread_exitstatus = 0;
 	pg_atomic_write_u32(&pmchild->thread_exited, 0);
 	pmchild->bkend_type = btype;
@@ -271,6 +273,7 @@ PostmasterChildSetProcess(PMChild *pmchild, pid_t pid)
 
 	pmchild->carrier_kind = PM_CHILD_CARRIER_PROCESS;
 	pmchild->pid = pid;
+	pmchild->thread_backend = NULL;
 }
 
 void
@@ -283,6 +286,14 @@ PostmasterChildSetThread(PMChild *pmchild, const PgThread *thread)
 	pmchild->thread = *thread;
 	pmchild->thread_exitstatus = 0;
 	pg_atomic_write_u32(&pmchild->thread_exited, 0);
+}
+
+void
+PostmasterChildSetThreadBackend(PMChild *pmchild, struct PgBackend *backend)
+{
+	Assert(PostmasterChildIsThread(pmchild));
+
+	pmchild->thread_backend = backend;
 }
 
 void
@@ -326,6 +337,7 @@ bool
 ReleasePostmasterChildSlot(PMChild *pmchild)
 {
 	dlist_delete(&pmchild->elem);
+	pmchild->thread_backend = NULL;
 	if (pmchild->bkend_type == B_DEAD_END_BACKEND)
 	{
 		elog(DEBUG2, "releasing dead-end backend");

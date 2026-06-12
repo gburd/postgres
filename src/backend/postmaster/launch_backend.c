@@ -227,6 +227,8 @@ static bool postmaster_backend_thread_launch(PMChild *pmchild,
 											 size_t startup_data_len,
 											 const ClientSocket *client_sock);
 static void backend_thread_entry(void *arg);
+static void backend_thread_run_backend(BackendThreadStart *thread_start);
+static void backend_thread_run_worker(BackendThreadStart *thread_start);
 static void backend_thread_enter_startup_gate(BackendThreadStart *thread_start);
 static void backend_thread_leave_startup_gate(BackendThreadStart *thread_start);
 static void backend_thread_init_random_state(void);
@@ -299,12 +301,21 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 	PgThread	thread;
 	int			rc;
 
-	if (child_type != B_BACKEND || client_sock == NULL)
+	if (child_type != B_BACKEND && child_type != B_AUTOVAC_WORKER)
 	{
 		errno = ENOSYS;
 		return false;
 	}
-	if (startup_data == NULL || startup_data_len != sizeof(BackendStartupData))
+	if (child_type == B_BACKEND &&
+		(client_sock == NULL ||
+		 startup_data == NULL ||
+		 startup_data_len != sizeof(BackendStartupData)))
+	{
+		errno = EINVAL;
+		return false;
+	}
+	if (child_type == B_AUTOVAC_WORKER &&
+		(client_sock != NULL || startup_data != NULL || startup_data_len != 0))
 	{
 		errno = EINVAL;
 		return false;
@@ -329,15 +340,24 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 	thread_start->pmchild = pmchild;
 	thread_start->child_type = child_type;
 	thread_start->child_slot = child_slot;
-	thread_start->startup_data = *((BackendStartupData *) startup_data);
-	thread_start->client_sock = *client_sock;
-	thread_start->client_sock.sock = dup(client_sock->sock);
+	if (child_type == B_BACKEND)
+	{
+		thread_start->startup_data = *((BackendStartupData *) startup_data);
+		thread_start->client_sock = *client_sock;
+		thread_start->client_sock.sock = dup(client_sock->sock);
+	}
+	else
+	{
+		MemSet(&thread_start->startup_data, 0, sizeof(thread_start->startup_data));
+		MemSet(&thread_start->client_sock, 0, sizeof(thread_start->client_sock));
+		thread_start->client_sock.sock = PGINVALID_SOCKET;
+	}
 	thread_start->postmaster_latch = MyLatch;
 	thread_start->session_timezone = session_timezone;
 	thread_start->log_timezone = log_timezone;
 	thread_start->startup_gate_held = false;
 
-	if (thread_start->client_sock.sock < 0)
+	if (child_type == B_BACKEND && thread_start->client_sock.sock < 0)
 	{
 		int			save_errno = errno;
 
@@ -346,6 +366,9 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 		return false;
 	}
 
+	InitializePgThreadBackendRuntimeState(&thread_start->runtime_state,
+										  thread_start->child_type, NULL,
+										  NULL);
 	rc = pg_thread_create(&thread, "postgres backend",
 						  backend_thread_entry, thread_start);
 	if (rc != 0)
@@ -358,6 +381,7 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 
 	postmaster_thread_carriers_started = true;
 	PostmasterChildSetThread(pmchild, &thread);
+	PostmasterChildSetThreadBackend(pmchild, &thread_start->runtime_state.backend);
 	return true;
 #endif
 }
@@ -380,12 +404,22 @@ backend_thread_entry(void *arg)
 	InitProcessLocalLatch();
 	MemoryContextInit();
 	InitializeLatchWaitSet();
-	InitializePgThreadBackendRuntime(&thread_start->runtime_state,
-									 thread_start->child_type, NULL, MyLatch);
+	InstallPgThreadBackendRuntimeState(&thread_start->runtime_state);
+	PgBackendSetInterruptLatch(CurrentPgBackend, MyLatch);
 
 	MyStartTimestamp = GetCurrentTimestamp();
 	MyStartTime = timestamptz_to_time_t(MyStartTimestamp);
 	backend_thread_init_random_state();
+
+	if (thread_start->child_type == B_BACKEND)
+		backend_thread_run_backend(thread_start);
+	else
+		backend_thread_run_worker(thread_start);
+}
+
+static void
+backend_thread_run_backend(BackendThreadStart *thread_start)
+{
 	/* Temporary until real backend startup owns the copied ClientSocket. */
 	MyClientSocket = &thread_start->client_sock;
 
@@ -398,6 +432,15 @@ backend_thread_entry(void *arg)
 	BackendMainWithStartupData(&thread_start->startup_data,
 							   &thread_start->client_sock,
 							   BACKEND_STARTUP_THREAD);
+	pg_unreachable();
+}
+
+static void
+backend_thread_run_worker(BackendThreadStart *thread_start)
+{
+	backend_thread_enter_startup_gate(thread_start);
+
+	child_process_kinds[thread_start->child_type].main_fn(NULL, 0);
 	pg_unreachable();
 }
 
@@ -486,6 +529,7 @@ backend_thread_finish(int code)
 	Assert(thread_start != NULL);
 
 	exitstatus = backend_thread_exitstatus(code);
+	PostmasterChildSetThreadBackend(thread_start->pmchild, NULL);
 	PostmasterChildMarkThreadExited(thread_start->pmchild, exitstatus,
 									thread_start->postmaster_latch);
 	MyClientSocket = NULL;

@@ -43,6 +43,14 @@ $node->append_conf(
 multithreaded = on
 autovacuum = on
 autovacuum_naptime = '1s'
+autovacuum_vacuum_threshold = 0
+autovacuum_vacuum_scale_factor = 0
+autovacuum_vacuum_insert_threshold = 0
+autovacuum_vacuum_insert_scale_factor = 0
+autovacuum_analyze_threshold = 0
+autovacuum_analyze_scale_factor = 0
+log_autovacuum_min_duration = 0
+log_autoanalyze_min_duration = 0
 log_min_messages = debug1
 });
 $node->start;
@@ -55,7 +63,14 @@ $node->safe_psql(
 	q{
 CREATE TABLE threaded_runtime_stress(id int primary key, payload text);
 INSERT INTO threaded_runtime_stress
-SELECT g, repeat('x', 32) FROM generate_series(1, 5) g;
+SELECT g, repeat('x', 100) FROM generate_series(1, 2000) g;
+});
+$node->safe_psql(
+	'postgres',
+	q{
+UPDATE threaded_runtime_stress SET payload = payload || 'y';
+DELETE FROM threaded_runtime_stress WHERE id = 1;
+SELECT pg_stat_force_next_flush();
 });
 pass('threaded DDL and primary-key index build completed');
 
@@ -195,17 +210,6 @@ ok($reconnect_ok, 'repeated threaded connect/disconnect loop completed');
 is($node->safe_psql('postgres', 'SELECT 42;'), '42',
 	'threaded server remains usable after Gate D smoke');
 
-for (1 .. 50)
-{
-	last
-	  if slurp_file($node->logfile) =~
-	  qr/autovacuum workers are disabled in multithreaded mode/;
-	usleep(100_000);
-}
-
-like(slurp_file($node->logfile),
-	qr/autovacuum workers are disabled in multithreaded mode/,
-	'autovacuum worker deferral was logged in threaded mode');
 unlike(
 	slurp_file($node->logfile),
 	qr/PANIC|segmentation|unsupported byval|could not find tuple|server process .* was terminated|was terminated by signal/,

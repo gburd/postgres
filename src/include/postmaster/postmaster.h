@@ -20,6 +20,7 @@
 #include "utils/global_lifetime.h"
 
 struct Latch;
+struct PgBackend;
 
 /*
  * A struct representing an active postmaster child.  This is used mainly to
@@ -53,6 +54,7 @@ typedef struct
 	PMChildCarrierKind carrier_kind;	/* process, thread, or future carrier */
 	pid_t		pid;			/* process id, if process-backed */
 	PgThread	thread;			/* native thread handle, if thread-backed */
+	struct PgBackend *thread_backend;	/* logical backend, if thread-backed */
 	int			thread_exitstatus;	/* waitpid-style status for threads */
 	pg_atomic_uint32 thread_exited;	/* set when a thread carrier exits */
 	int			child_slot;		/* PMChildSlot for this backend, if any */
@@ -148,6 +150,8 @@ extern bool PostmasterChildIsProcess(const PMChild *pmchild);
 extern bool PostmasterChildIsThread(const PMChild *pmchild);
 extern void PostmasterChildSetProcess(PMChild *pmchild, pid_t pid);
 extern void PostmasterChildSetThread(PMChild *pmchild, const PgThread *thread);
+extern void PostmasterChildSetThreadBackend(PMChild *pmchild,
+											struct PgBackend *backend);
 extern void PostmasterChildMarkThreadExited(PMChild *pmchild, int exitstatus,
 											struct Latch *postmaster_latch);
 extern bool PostmasterChildHasExitedThread(PMChild *pmchild, int *exitstatus);

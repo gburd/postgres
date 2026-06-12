@@ -224,6 +224,11 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgExecution *CurrentPgExecu
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);
+extern void InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
+												 BackendType backend_type,
+												 struct Port *port,
+												 struct Latch *interrupt_latch);
+extern void InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state);
 extern void InitializePgThreadBackendRuntime(PgThreadBackendRuntimeState *state,
 											 BackendType backend_type,
 											 struct Port *port,

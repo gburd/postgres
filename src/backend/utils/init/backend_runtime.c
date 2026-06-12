@@ -146,10 +146,10 @@ InitializePgThreadRuntime(PgBackendExitContinuation exit_backend)
 }
 
 void
-InitializePgThreadBackendRuntime(PgThreadBackendRuntimeState *state,
-								 BackendType backend_type,
-								 struct Port *port,
-								 struct Latch *interrupt_latch)
+InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
+									  BackendType backend_type,
+									  struct Port *port,
+									  struct Latch *interrupt_latch)
 {
 	Assert(state != NULL);
 	Assert(thread_runtime_initialized);
@@ -186,7 +186,16 @@ InitializePgThreadBackendRuntime(PgThreadBackendRuntimeState *state,
 	state->execution.backend = &state->backend;
 	state->execution.session = &state->session;
 	state->execution.carrier = &state->carrier;
+}
 
+void
+InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
+{
+	Assert(state != NULL);
+
+	state->carrier.current_backend = &state->backend;
+	state->carrier.current_session = &state->session;
+	state->carrier.current_execution = &state->execution;
 	CurrentPgRuntime = &thread_runtime;
 	CurrentPgCarrier = &state->carrier;
 	CurrentPgBackend = &state->backend;
@@ -196,6 +205,17 @@ InitializePgThreadBackendRuntime(PgThreadBackendRuntimeState *state,
 
 	proc_exit_inprogress = false;
 	shmem_exit_inprogress = false;
+}
+
+void
+InitializePgThreadBackendRuntime(PgThreadBackendRuntimeState *state,
+								 BackendType backend_type,
+								 struct Port *port,
+								 struct Latch *interrupt_latch)
+{
+	InitializePgThreadBackendRuntimeState(state, backend_type, port,
+										  interrupt_latch);
+	InstallPgThreadBackendRuntimeState(state);
 }
 
 void
@@ -222,12 +242,12 @@ PgRuntimeShouldThreadBackend(BackendType backend_type)
 		return false;
 
 	/*
-	 * Phase 10 is scoped to regular client backends. WAL senders still begin
-	 * life as B_BACKEND and can be split out once the regular backend thread
-	 * launcher exists. Dead-end backends and in-tree workers remain process
-	 * launches until their dedicated phases.
+	 * Phase 10 is scoped to regular client backends.  Phase 11 starts by
+	 * allowing autovacuum workers to use the same carrier infrastructure,
+	 * while the launcher and other in-tree workers remain on their existing
+	 * process paths until they get dedicated signal/lifecycle conversion.
 	 */
-	return backend_type == B_BACKEND;
+	return backend_type == B_BACKEND || backend_type == B_AUTOVAC_WORKER;
 }
 
 PgBackendModel

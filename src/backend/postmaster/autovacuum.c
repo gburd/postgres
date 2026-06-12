@@ -103,6 +103,7 @@
 #include "tcop/tcopprot.h"
 #include "utils/fmgroids.h"
 #include "utils/fmgrprotos.h"
+#include "utils/backend_runtime.h"
 #include "utils/global_lifetime.h"
 #include "utils/guc_hooks.h"
 #include "utils/injection_point.h"
@@ -145,7 +146,6 @@ PG_GLOBAL_RUNTIME int autovacuum_vac_cost_limit;
 
 PG_GLOBAL_RUNTIME int Log_autovacuum_min_duration = 600000;
 PG_GLOBAL_RUNTIME int Log_autoanalyze_min_duration = 600000;
-static PG_GLOBAL_RUNTIME bool autovacuum_threaded_worker_notice_logged = false;
 
 /* the minimum allowed time between two awakenings of the launcher */
 #define MIN_AUTOVAC_SLEEPTIME 100.0 /* milliseconds */
@@ -1157,25 +1157,6 @@ do_start_worker(void)
 	MemoryContext tmpcxt,
 				oldcxt;
 
-	/*
-	 * Autovacuum workers still launch as subprocesses.  In multithreaded mode
-	 * the postmaster can create regular backend threads, after which
-	 * fork-without-exec workers are unsafe.  Phase 11 owns the worker-thread
-	 * runtime; until then, do not reserve worker slots or ask the postmaster
-	 * to fork workers in threaded server mode.
-	 */
-	if (multithreaded)
-	{
-		if (!autovacuum_threaded_worker_notice_logged)
-		{
-			ereport(LOG,
-					(errmsg("autovacuum workers are disabled in multithreaded mode"),
-					 errdetail("Auxiliary worker thread carriers are planned for a later phase.")));
-			autovacuum_threaded_worker_notice_logged = true;
-		}
-		return InvalidOid;
-	}
-
 	/* return quickly when there are no free workers */
 	LWLockAcquire(AutovacuumLock, LW_SHARED);
 	if (!av_worker_available())
@@ -1451,11 +1432,14 @@ AutoVacWorkerMain(const void *startup_data, size_t startup_data_len)
 {
 	sigjmp_buf	local_sigjmp_buf;
 	Oid			dbid;
+	bool		threaded_worker;
 
 	Assert(startup_data_len == 0);
+	threaded_worker = (CurrentPgRuntime != NULL &&
+					   CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION);
 
 	/* Release postmaster's working memory context */
-	if (PostmasterContext)
+	if (PostmasterContext && !threaded_worker)
 	{
 		MemoryContextDelete(PostmasterContext);
 		PostmasterContext = NULL;
@@ -1470,23 +1454,29 @@ AutoVacWorkerMain(const void *startup_data, size_t startup_data_len)
 	 * backend, so we use the same signal handling.  See equivalent code in
 	 * tcop/postgres.c.
 	 */
-	pqsignal(SIGHUP, SignalHandlerForConfigReload);
+	if (threaded_worker)
+		InitializeLogicalTimeouts();
+	else
+	{
+		pqsignal(SIGHUP, SignalHandlerForConfigReload);
 
-	/*
-	 * SIGINT is used to signal canceling the current table's vacuum; SIGTERM
-	 * means abort and exit cleanly, and SIGQUIT means abandon ship.
-	 */
-	pqsignal(SIGINT, StatementCancelHandler);
-	pqsignal(SIGTERM, die);
-	/* SIGQUIT handler was already set up by InitPostmasterChild */
+		/*
+		 * SIGINT is used to signal canceling the current table's vacuum;
+		 * SIGTERM means abort and exit cleanly, and SIGQUIT means abandon
+		 * ship.
+		 */
+		pqsignal(SIGINT, StatementCancelHandler);
+		pqsignal(SIGTERM, die);
+		/* SIGQUIT handler was already set up by InitPostmasterChild */
 
-	InitializeTimeouts();		/* establishes SIGALRM handler */
+		InitializeTimeouts();	/* establishes SIGALRM handler */
 
-	pqsignal(SIGPIPE, PG_SIG_IGN);
-	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
-	pqsignal(SIGUSR2, PG_SIG_IGN);
-	pqsignal(SIGFPE, FloatExceptionHandler);
-	pqsignal(SIGCHLD, PG_SIG_DFL);
+		pqsignal(SIGPIPE, PG_SIG_IGN);
+		pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+		pqsignal(SIGUSR2, PG_SIG_IGN);
+		pqsignal(SIGFPE, FloatExceptionHandler);
+		pqsignal(SIGCHLD, PG_SIG_DFL);
+	}
 
 	/*
 	 * Create a per-backend PGPROC struct in shared memory.  We must do this
@@ -1532,7 +1522,8 @@ AutoVacWorkerMain(const void *startup_data, size_t startup_data_len)
 	/* We can now handle ereport(ERROR) */
 	PG_exception_stack = &local_sigjmp_buf;
 
-	sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
+	if (!threaded_worker)
+		sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
 
 	/*
 	 * Set always-secure search path, so malicious users can't redirect user
@@ -1650,6 +1641,7 @@ AutoVacWorkerMain(const void *startup_data, size_t startup_data_len)
 					 INIT_PG_OVERRIDE_ALLOW_CONNS,
 					 dbname);
 		SetProcessingMode(NormalProcessing);
+		ThreadedBackendStartupComplete();
 		set_ps_display(dbname);
 		ereport(DEBUG1,
 				(errmsg_internal("autovacuum: processing database \"%s\"", dbname)));

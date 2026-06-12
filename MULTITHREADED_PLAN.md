@@ -476,7 +476,7 @@ Validation:
 
 Status: complete for the first thread-per-session target. See
 `MULTITHREADED_PHASE10_THREAD_RUNTIME.md` for the launch, cleanup, worker
-deferral, and Gate D validation record.
+handoff, and Gate D validation record.
 
 Goal: run regular client backends as OS threads inside one server runtime.
 
@@ -539,7 +539,8 @@ Exit gate:
 
 ## Phase 11: Auxiliary Worker Thread Runtime
 
-Status: not started.
+Status: in progress. See `MULTITHREADED_PHASE11_WORKERS.md` for the
+autovacuum-worker thread carrier slice and remaining worker families.
 
 Goal: make normal threaded server mode fully threaded for in-tree
 server-owned worker families, so the runtime does not fork subprocesses for
