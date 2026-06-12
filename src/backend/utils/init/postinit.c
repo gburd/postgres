@@ -1470,6 +1470,7 @@ ShutdownPostgres(int code, Datum arg)
 static void
 StatementTimeoutHandler(void)
 {
+	PgBackend  *target;
 	int			sig = SIGINT;
 
 	/*
@@ -1479,11 +1480,14 @@ StatementTimeoutHandler(void)
 	if (ClientAuthInProgress)
 		sig = SIGTERM;
 
+	target = TimeoutTargetBackend();
 	if (sig == SIGTERM)
-		PgBackendRaiseProcDieInterrupt(TimeoutTargetBackend(), 0, 0);
+		PgBackendRaiseProcDieInterrupt(target, 0, 0);
 	else
-		PgBackendRaiseInterrupt(TimeoutTargetBackend(),
-								PG_BACKEND_INTERRUPT_QUERY_CANCEL);
+		PgBackendRaiseInterrupt(target, PG_BACKEND_INTERRUPT_QUERY_CANCEL);
+
+	if (!PgBackendUsesProcessSignals(target))
+		return;
 
 #ifdef HAVE_SETSID
 	/* try to signal whole process group */
@@ -1498,8 +1502,12 @@ StatementTimeoutHandler(void)
 static void
 LockTimeoutHandler(void)
 {
-	PgBackendRaiseInterrupt(TimeoutTargetBackend(),
-							PG_BACKEND_INTERRUPT_QUERY_CANCEL);
+	PgBackend  *target = TimeoutTargetBackend();
+
+	PgBackendRaiseInterrupt(target, PG_BACKEND_INTERRUPT_QUERY_CANCEL);
+
+	if (!PgBackendUsesProcessSignals(target))
+		return;
 
 #ifdef HAVE_SETSID
 	/* try to signal whole process group */

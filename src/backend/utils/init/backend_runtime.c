@@ -312,6 +312,15 @@ PgCurrentBackendSignalPid(void)
 	return PgBackendGetSignalPid(CurrentPgBackend);
 }
 
+bool
+PgBackendUsesProcessSignals(PgBackend *backend)
+{
+	if (backend == NULL || backend->runtime == NULL)
+		return true;
+
+	return backend->runtime->kind == PG_RUNTIME_PROCESS;
+}
+
 void
 PgBackendRaiseInterrupt(PgBackend *backend,
 						PgBackendInterruptType interrupt_type)

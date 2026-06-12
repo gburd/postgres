@@ -947,8 +947,42 @@ future change to shared-memory structs embedded in `PGPROC` or installed
 backend headers should use a clean backend rebuild before trusting `initdb` or
 threaded smoke results.
 
-This still does not complete Phase 10. Logical cancel/terminate delivery now
-works for regular threaded sessions, but timeout delivery, PL/pgSQL execution,
+## Logical Timeout Wait Clamp Slice
+
+The forty-second slice makes backend-local timeouts fire in threaded backends
+without sending process signals to the postmaster:
+
+- `InitializeLogicalTimeouts()` now selects logical timeout delivery, preserving
+  the existing thread-local timeout queue while suppressing `setitimer()`;
+- `WaitEventSetWaitInternal()` clamps each kernel wait to the next logical
+  backend timeout and calls the timeout firing path when that deadline is due;
+- signal-backed and logical timeout delivery now share the same due-timeout
+  firing helper, so timeout order, indicators, target backend/execution, and
+  repeating timeout rescheduling remain identical;
+- `StatementTimeoutHandler()` and `LockTimeoutHandler()` now send Unix signals
+  only for process-backed timeout targets. Thread-backed targets use the
+  logical backend mailbox and latch wakeup, avoiding the earlier bug where
+  statement timeout sent `SIGINT` to the postmaster pid.
+
+Validation for this slice:
+
+- `gmake -C src/backend/utils/misc timeout.o`,
+  `gmake -C src/backend/storage/ipc waiteventset.o`, and
+  `gmake -C src/backend/utils/init backend_runtime.o postinit.o` passed;
+- full `gmake -j8` and `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed;
+- threaded `multithreaded=on` statement-timeout smoke cancelled
+  `pg_sleep(5)` with `canceling statement due to statement timeout` and then
+  returned `select 42` from a fresh connection, proving the postmaster stayed
+  alive;
+- threaded `multithreaded=on` idle-session and idle-in-transaction timeout
+  smokes terminated idle clients with the expected timeout log messages and
+  then returned `select 42` from a fresh connection;
+- process-mode `multithreaded=off` statement-timeout smoke still cancelled
+  `pg_sleep(5)` and left the server healthy;
+- `gmake -C src/test/modules/test_backend_runtime check` passed.
+
+This still does not complete Phase 10. Logical cancel, terminate, and timeout
+delivery now work for regular threaded sessions, but PL/pgSQL execution,
 extension rejection/acceptance behavior in a live threaded session, broader
 session cleanup stress, and Gate D remain to be proved.
 

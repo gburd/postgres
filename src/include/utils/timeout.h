@@ -82,6 +82,8 @@ extern TimeoutId RegisterTimeout(TimeoutId id, timeout_handler_proc handler);
 extern void reschedule_timeouts(void);
 extern PgBackend *get_firing_timeout_target_backend(void);
 extern PgExecution *get_firing_timeout_target_execution(void);
+extern long get_logical_timeout_delay_ms(void);
+extern bool process_due_logical_timeouts(void);
 
 /* timeout operation */
 extern void enable_timeout_after(TimeoutId id, int delay_ms);

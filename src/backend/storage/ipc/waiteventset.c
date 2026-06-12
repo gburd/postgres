@@ -78,6 +78,7 @@
 #include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
+#include "utils/timeout.h"
 #include "utils/wait_event.h"
 
 /*
@@ -1141,6 +1142,8 @@ WaitEventSetWaitInternal(void *callback_arg)
 	while (returned_events == 0)
 	{
 		int			rc;
+		long		block_timeout;
+		long		logical_timeout;
 
 		/*
 		 * Check if the latch is set already first.  If so, we either exit
@@ -1202,12 +1205,24 @@ WaitEventSetWaitInternal(void *callback_arg)
 			timeout = 0;
 		}
 
+		block_timeout = cur_timeout;
+
+		/*
+		 * Logical backends do not use process SIGALRM for timeout delivery.
+		 * Clamp the kernel sleep to the next backend-local timeout so the
+		 * normal timeout handlers can run while this backend is blocked.
+		 */
+		logical_timeout = get_logical_timeout_delay_ms();
+		if (logical_timeout >= 0 &&
+			(block_timeout < 0 || logical_timeout < block_timeout))
+			block_timeout = logical_timeout;
+
 		/*
 		 * Wait for events using the readiness primitive chosen at the top of
 		 * this file. If -1 is returned, a timeout has occurred, if 0 we have
 		 * to retry, everything >= 1 is the number of returned events.
 		 */
-		rc = WaitEventSetWaitBlock(set, cur_timeout,
+		rc = WaitEventSetWaitBlock(set, block_timeout,
 								   occurred_events, nevents - returned_events);
 
 		if (set->latch &&
@@ -1215,7 +1230,11 @@ WaitEventSetWaitInternal(void *callback_arg)
 			set->latch->maybe_sleeping = false;
 
 		if (rc == -1)
+		{
+			if (logical_timeout >= 0 && process_due_logical_timeouts())
+				continue;
 			break;				/* timeout occurred */
+		}
 		else
 			returned_events += rc;
 

@@ -14,6 +14,7 @@
  */
 #include "postgres.h"
 
+#include <limits.h>
 #include <sys/time.h>
 
 #include "miscadmin.h"
@@ -82,8 +83,10 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t signal_pending = 
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile TimestampTz signal_due_at = 0;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackend *firing_timeout_target = NULL;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecution *firing_timeout_execution = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool timeout_signal_delivery = true;
 
 static void InitializeTimeoutState(void);
+static bool fire_due_timeouts(TimestampTz now);
 
 
 /*****************************************************************************
@@ -247,6 +250,15 @@ schedule_alarm(TimestampTz now)
 		 * kernel drops a timeout request for some reason.
 		 */
 		nearest_timeout = active_timeouts[0]->fin_time;
+
+		if (!timeout_signal_delivery)
+		{
+			enable_alarm();
+			signal_due_at = nearest_timeout;
+			signal_pending = true;
+			return;
+		}
+
 		if (now > nearest_timeout)
 		{
 			signal_pending = false;
@@ -359,6 +371,81 @@ schedule_alarm(TimestampTz now)
 	}
 }
 
+/*
+ * Fire pending timeout handlers whose due time has arrived.
+ *
+ * The caller must have disabled alarm delivery before calling this.  Signal
+ * and logical timeout delivery share this path so both routes keep identical
+ * firing order, indicator, and repeating-timeout behavior.
+ */
+static bool
+fire_due_timeouts(TimestampTz now)
+{
+	bool		fired = false;
+
+	/* While the first pending timeout has been reached ... */
+	while (num_active_timeouts > 0 &&
+		   now >= active_timeouts[0]->fin_time)
+	{
+		timeout_params *this_timeout = active_timeouts[0];
+		PgBackend  *save_firing_timeout_target;
+		PgExecution *save_firing_timeout_execution;
+
+		/* Remove it from the active list */
+		remove_timeout_index(0);
+
+		/* Mark it as fired */
+		this_timeout->indicator = true;
+		fired = true;
+
+		/* And call its handler function */
+		save_firing_timeout_target = firing_timeout_target;
+		save_firing_timeout_execution = firing_timeout_execution;
+		firing_timeout_target = this_timeout->target_backend;
+		firing_timeout_execution = this_timeout->target_execution;
+		this_timeout->timeout_handler();
+		firing_timeout_target = save_firing_timeout_target;
+		firing_timeout_execution = save_firing_timeout_execution;
+
+		/* If it should fire repeatedly, re-enable it. */
+		if (this_timeout->interval_in_ms > 0)
+		{
+			TimestampTz new_fin_time;
+
+			/*
+			 * To guard against drift, schedule the next instance of the
+			 * timeout based on the intended firing time rather than the
+			 * actual firing time. But if the timeout was so late that we
+			 * missed an entire cycle, fall back to scheduling based on the
+			 * actual firing time.
+			 */
+			new_fin_time =
+				TimestampTzPlusMilliseconds(this_timeout->fin_time,
+											this_timeout->interval_in_ms);
+			if (new_fin_time < now)
+				new_fin_time =
+					TimestampTzPlusMilliseconds(now,
+												this_timeout->interval_in_ms);
+			enable_timeout(this_timeout->index, now, new_fin_time,
+						   this_timeout->interval_in_ms,
+						   this_timeout->target_backend,
+						   this_timeout->target_execution);
+		}
+
+		/*
+		 * The handler might not take negligible time (CheckDeadLock for
+		 * instance isn't too cheap), so let's update our idea of "now" after
+		 * each one.
+		 */
+		now = GetCurrentTimestamp();
+	}
+
+	/* Done firing timeouts, so reschedule next interrupt if any */
+	schedule_alarm(now);
+
+	return fired;
+}
+
 
 /*****************************************************************************
  * Signal handler
@@ -404,69 +491,8 @@ handle_sig_alarm(SIGNAL_ARGS)
 		 */
 		disable_alarm();
 
-			if (num_active_timeouts > 0)
-			{
-				TimestampTz now = GetCurrentTimestamp();
-
-				/* While the first pending timeout has been reached ... */
-				while (num_active_timeouts > 0 &&
-					   now >= active_timeouts[0]->fin_time)
-				{
-					timeout_params *this_timeout = active_timeouts[0];
-					PgBackend  *save_firing_timeout_target;
-					PgExecution *save_firing_timeout_execution;
-
-					/* Remove it from the active list */
-					remove_timeout_index(0);
-
-					/* Mark it as fired */
-					this_timeout->indicator = true;
-
-					/* And call its handler function */
-					save_firing_timeout_target = firing_timeout_target;
-					save_firing_timeout_execution = firing_timeout_execution;
-					firing_timeout_target = this_timeout->target_backend;
-					firing_timeout_execution = this_timeout->target_execution;
-					this_timeout->timeout_handler();
-					firing_timeout_target = save_firing_timeout_target;
-					firing_timeout_execution = save_firing_timeout_execution;
-
-					/* If it should fire repeatedly, re-enable it. */
-					if (this_timeout->interval_in_ms > 0)
-					{
-						TimestampTz new_fin_time;
-
-						/*
-						 * To guard against drift, schedule the next instance of
-						 * the timeout based on the intended firing time rather
-						 * than the actual firing time. But if the timeout was so
-						 * late that we missed an entire cycle, fall back to
-						 * scheduling based on the actual firing time.
-						 */
-						new_fin_time =
-							TimestampTzPlusMilliseconds(this_timeout->fin_time,
-														this_timeout->interval_in_ms);
-						if (new_fin_time < now)
-							new_fin_time =
-								TimestampTzPlusMilliseconds(now,
-															this_timeout->interval_in_ms);
-						enable_timeout(this_timeout->index, now, new_fin_time,
-									   this_timeout->interval_in_ms,
-									   this_timeout->target_backend,
-									   this_timeout->target_execution);
-					}
-
-					/*
-					 * The handler might not take negligible time (CheckDeadLock
-					 * for instance isn't too cheap), so let's update our idea of
-					 * "now" after each one.
-					 */
-					now = GetCurrentTimestamp();
-				}
-
-				/* Done firing timeouts, so reschedule next interrupt if any */
-				schedule_alarm(now);
-			}
+		if (num_active_timeouts > 0)
+			(void) fire_due_timeouts(GetCurrentTimestamp());
 	}
 
 	RESUME_INTERRUPTS();
@@ -489,6 +515,8 @@ InitializeTimeoutState(void)
 	disable_alarm();
 
 	num_active_timeouts = 0;
+	signal_pending = false;
+	signal_due_at = 0;
 	firing_timeout_target = NULL;
 	firing_timeout_execution = NULL;
 
@@ -520,6 +548,7 @@ void
 InitializeTimeouts(void)
 {
 	InitializeTimeoutState();
+	timeout_signal_delivery = true;
 
 	/* Now establish the signal handler */
 	pqsignal(SIGALRM, handle_sig_alarm);
@@ -533,6 +562,7 @@ void
 InitializeLogicalTimeouts(void)
 {
 	InitializeTimeoutState();
+	timeout_signal_delivery = false;
 }
 
 /*
@@ -603,6 +633,60 @@ PgExecution *
 get_firing_timeout_target_execution(void)
 {
 	return firing_timeout_execution;
+}
+
+long
+get_logical_timeout_delay_ms(void)
+{
+	TimestampTz now;
+	long		delay_ms;
+
+	if (!all_timeouts_initialized || timeout_signal_delivery ||
+		num_active_timeouts <= 0 || !alarm_enabled)
+		return -1;
+
+	now = GetCurrentTimestamp();
+	if (now >= active_timeouts[0]->fin_time)
+		return 0;
+
+	delay_ms = TimestampDifferenceMilliseconds(now,
+											   active_timeouts[0]->fin_time);
+	if (delay_ms < 0)
+		return 0;
+	if (delay_ms > INT_MAX)
+		return INT_MAX;
+
+	return delay_ms;
+}
+
+bool
+process_due_logical_timeouts(void)
+{
+	bool		fired;
+
+	if (!all_timeouts_initialized || timeout_signal_delivery ||
+		num_active_timeouts <= 0 || !alarm_enabled)
+		return false;
+
+	if (GetCurrentTimestamp() < active_timeouts[0]->fin_time)
+		return false;
+
+	/*
+	 * Keep the same interrupt-holdoff rule as handle_sig_alarm().  Timeout
+	 * handlers should only set state for normal interrupt processing.
+	 */
+	HOLD_INTERRUPTS();
+
+	if (MyLatch != NULL)
+		SetLatch(MyLatch);
+
+	signal_pending = false;
+	disable_alarm();
+	fired = fire_due_timeouts(GetCurrentTimestamp());
+
+	RESUME_INTERRUPTS();
+
+	return fired;
 }
 
 /*
