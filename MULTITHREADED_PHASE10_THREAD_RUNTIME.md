@@ -512,6 +512,35 @@ The next blocker is not `RegisterTimeout()` itself. It is the first
 how logical backend timeouts should wake and interrupt one carrier without
 using process-wide `setitimer()`/`SIGALRM`.
 
+## Authentication Deadline Boundary Slice
+
+The twenty-fifth slice lets threaded startup complete client authentication
+without arming process-global timeout delivery:
+
+- `IsUnderPostmaster` is now carrier-local TLS, so the postmaster can continue
+  to see itself as the supervisor while backend carrier threads see themselves
+  as postmaster-managed children;
+- backend carrier threads now initialize the same local latch wait set that
+  process children get from `InitPostmasterChild()`;
+- `PerformAuthentication()` keeps process backends on the existing
+  `STATEMENT_TIMEOUT`/`SIGALRM` authentication guard;
+- threaded backends use the connection-local `Port` read deadline already
+  checked by `secure_read()`, then clear it after authentication succeeds;
+- threaded startup now crosses relation/cache setup, starts the initial
+  transaction, runs HBA/client authentication, and stops immediately after
+  successful authentication before role identity initialization.
+
+Two lldb smokes shaped this slice. First, a backend carrier with shared
+process-wide `IsUnderPostmaster=false` incorrectly entered standalone
+`StartupXLOG()`. After making that flag carrier-local, catalog I/O during auth
+then reached `WaitLatch()` before the carrier had initialized its latch wait
+set. Both are now explicit carrier startup responsibilities.
+
+The next boundary is role/session identity and database validation:
+`InitializeSessionUserId()`, system-user initialization, `superuser()`, and
+the connection-limit/database checks all need to run with backend-local
+lifetime assumptions before the guard can move to the end of `InitPostgres()`.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
@@ -754,3 +783,18 @@ using process-wide `setitimer()`/`SIGALRM`.
   arming with the guarded "threaded backend database initialization is not
   implemented yet" FATAL, kept the postmaster running between connections, and
   completed normal fast shutdown.
+- after the authentication deadline boundary slice,
+  `gmake -C src/backend/utils/init postinit.o` and
+  `gmake -C src/backend/postmaster launch_backend.o` passed;
+- after changing exported `IsUnderPostmaster` storage to TLS, a backend clean,
+  generated-header recovery, full `gmake -C src/backend -j8`, and
+  `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- after the authentication deadline boundary slice,
+  `gmake -C src/test/modules/test_backend_runtime check` passed;
+- a temp install smoke with `multithreaded=on` after the authentication
+  deadline boundary slice read real libpq startup packets for two client
+  connections, completed catalog-backed trust authentication using the
+  connection-local deadline rather than `SIGALRM`, rejected both immediately
+  after authentication with the guarded "threaded backend database
+  initialization is not implemented yet" FATAL, kept the postmaster running
+  between connections, and completed normal fast shutdown.

@@ -119,7 +119,7 @@ PG_GLOBAL_RUNTIME pid_t PostmasterPid = 0;
  * These are initialized for the bootstrap/standalone case.
  */
 PG_GLOBAL_RUNTIME bool IsPostmasterEnvironment = false;
-PG_GLOBAL_RUNTIME bool IsUnderPostmaster = false;
+PG_THREAD_LOCAL PG_GLOBAL_CARRIER bool IsUnderPostmaster = false;
 PG_GLOBAL_RUNTIME bool IsBinaryUpgrade = false;
 
 PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool ExitOnAnyError = false;

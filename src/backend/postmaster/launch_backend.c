@@ -339,11 +339,13 @@ backend_thread_entry(void *arg)
 	MyBackendType = thread_start->child_type;
 	MyPMChildSlot = thread_start->child_slot;
 	MyProcPid = (int) getpid();
+	IsUnderPostmaster = true;
 	session_timezone = thread_start->session_timezone;
 	log_timezone = thread_start->log_timezone;
 
 	InitProcessLocalLatch();
 	MemoryContextInit();
+	InitializeLatchWaitSet();
 	InitializePgThreadBackendRuntime(&thread_start->runtime_state,
 									 thread_start->child_type, NULL, MyLatch);
 

@@ -371,6 +371,23 @@ Important current files:
   escalation, or force a POSIX DSM configuration when that is sufficient for
   the check.
 
+- Repeated crash-debugging of threaded temp clusters on macOS can leave stale
+  SysV shared-memory segments and semaphore sets even when no `postgres`
+  process remains. If `initdb` fails with `shmget(...): No space left on
+  device`, first confirm that no PostgreSQL server process is still running:
+
+  ```sh
+  ps -axo pid,ppid,stat,command | rg '[p]ostgres|[p]ostmaster|[i]nitdb' || true
+  ```
+
+  If there is no live server to preserve, clear stale IPC objects owned by the
+  current user:
+
+  ```sh
+  for id in $(ipcs -m | awk '$5 == "'$USER'" {print $2}'); do ipcrm -m "$id" || true; done
+  for id in $(ipcs -s | awk '$5 == "'$USER'" {print $2}'); do ipcrm -s "$id" || true; done
+  ```
+
 - This shell is zsh. Cleanup commands with unmatched globs, such as
   `rm -rf tmp_check_*`, can fail with `no matches found` before the test command
   runs. Use a matched path, `find`, or enable null-glob behavior when cleaning

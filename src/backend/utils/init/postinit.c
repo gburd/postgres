@@ -204,8 +204,12 @@ GetDatabaseTupleByOid(Oid dboid)
 static void
 PerformAuthentication(Port *port)
 {
+	bool		threaded_backend;
+
 	/* This should be set already, but let's make sure */
 	ClientAuthInProgress = true;	/* limit visibility of log messages */
+	threaded_backend = (CurrentPgRuntime != NULL &&
+						CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION);
 
 	/*
 	 * In EXEC_BACKEND case, we didn't inherit the contents of pg_hba.conf
@@ -253,9 +257,19 @@ PerformAuthentication(Port *port)
 	/*
 	 * Set up a timeout in case a buggy or malicious client fails to respond
 	 * during authentication.  Since we're inside a transaction and might do
-	 * database access, we have to use the statement_timeout infrastructure.
+	 * database access, process backends have to use the statement_timeout
+	 * infrastructure.  Threaded backends cannot arm process-global SIGALRM, so
+	 * they use the connection-local read deadline checked by secure_read().
 	 */
-	enable_timeout_after(STATEMENT_TIMEOUT, AuthenticationTimeout * 1000);
+	if (threaded_backend)
+	{
+		port->client_read_deadline_active = true;
+		port->client_read_deadline =
+			TimestampTzPlusMilliseconds(conn_timing.auth_start,
+										AuthenticationTimeout * 1000);
+	}
+	else
+		enable_timeout_after(STATEMENT_TIMEOUT, AuthenticationTimeout * 1000);
 
 	/*
 	 * Now perform authentication exchange.
@@ -266,7 +280,10 @@ PerformAuthentication(Port *port)
 	/*
 	 * Done with authentication.  Disable the timeout, and log if needed.
 	 */
-	disable_timeout(STATEMENT_TIMEOUT, false);
+	if (threaded_backend)
+		port->client_read_deadline_active = false;
+	else
+		disable_timeout(STATEMENT_TIMEOUT, false);
 
 	/* Capture authentication end time for logging */
 	conn_timing.auth_end = GetCurrentTimestamp();
@@ -811,15 +828,6 @@ InitPostgres(const char *in_dbname, Oid dboid,
 						IdleStatsUpdateTimeoutHandler);
 	}
 
-	if (threaded_backend)
-		ereport(FATAL,
-				(errmsg("threaded backend database initialization is not implemented yet"),
-				 errdetail("Backend timeout handlers are registered without "
-						   "installing SIGALRM, but authentication timeout "
-						   "arming, catalog initialization, and post-startup "
-						   "session lifetime still need thread-safe lifecycle "
-						   "handling.")));
-
 	/*
 	 * If this is either a bootstrap process or a standalone backend, start up
 	 * the XLOG machinery, and register to have it closed down at exit. In
@@ -959,6 +967,14 @@ InitPostgres(const char *in_dbname, Oid dboid,
 		/* normal multiuser case */
 		Assert(MyProcPort != NULL);
 		PerformAuthentication(MyProcPort);
+		if (threaded_backend)
+			ereport(FATAL,
+					(errmsg("threaded backend database initialization is not implemented yet"),
+					 errdetail("Authentication completed with a connection-local "
+							   "deadline instead of SIGALRM, but role identity "
+							   "initialization, database validation, and "
+							   "post-startup session lifetime still need "
+							   "thread-safe lifecycle handling.")));
 		InitializeSessionUserId(username, useroid, false);
 		/* ensure that auth_method is actually valid, aka authn_id is not NULL */
 		if (MyClientConnectionInfo.authn_id)
