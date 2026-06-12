@@ -1501,6 +1501,9 @@ InitializeThreadedSessionGUCOptions(void)
 	gconf = find_option("role", false, false, PANIC);
 	InitializeOneGUCOption(gconf);
 
+	gconf = find_option("search_path", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
 	gconf = find_option("server_encoding", false, false, PANIC);
 	InitializeOneGUCOption(gconf);
 

@@ -869,6 +869,36 @@ remove the temporary startup gate; catalog/cache-heavy session bootstrap still
 needs serialization until the remaining shared initialization state is moved
 behind backend/session ownership.
 
+## Unbounded Session Loop Slice
+
+The fortieth slice removes the temporary protocol-step guard and idle-read
+deadline from threaded session execution:
+
+- `PgSessionRun()` now uses the same unbounded `PgSessionStep()` loop for
+  process and threaded backends;
+- thread-per-session carriers can remain idle in the normal client read path
+  instead of being forced through the temporary one-second read deadline;
+- long idle waits therefore occupy a carrier thread, which is acceptable for
+  the Phase 10 thread-per-session target and remains a future scheduler concern
+  rather than a reason to keep the temporary guard;
+- `InitializeThreadedSessionGUCOptions()` now initializes `search_path` as
+  part of the narrow threaded GUC bridge, because error-path testing exposed
+  an uninitialized thread-local namespace search path during operator lookup;
+- repeated commands, client-driven termination, SQL ERROR recovery, and
+  transaction abort/rollback now run through the same stepped session loop in
+  threaded mode.
+
+An lldb-assisted smoke without the `search_path` bridge crashed the
+postmaster in `nsphash_lookup()` via `fetch_search_path_array()` while a
+threaded backend parsed `select 1/0`. Initializing the search-path GUC record
+for the backend carrier fixed that namespace-cache crash without broadening
+the threaded bridge to full GUC reinitialization.
+
+This still does not complete Phase 10. The startup/session gate remains around
+catalog/cache-heavy session bootstrap, and cancellation, termination, timeout
+delivery, PL/pgSQL execution, extension rejection, and the Gate D validation
+set still need to be proved against the unbounded session loop.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
@@ -1401,3 +1431,31 @@ behind backend/session ownership.
   `gmake -C src/test/modules/test_backend_runtime check` passed.
 - a process-mode temp-instance smoke with `multithreaded=off` returned
   `select 42` successfully with no client stderr.
+- after the unbounded session loop slice, `git diff --check`,
+  `gmake -C src/backend/tcop postgres.o`,
+  `gmake -C src/backend/utils/misc guc.o`, full
+  `gmake -C src/backend -j8`, and
+  `gmake DESTDIR="$PWD/tmp_install" install` passed.
+- a 20-client `multithreaded=on` smoke using one-shot `psql -c "select <n>"`
+  connections returned 20 result rows, exited with status 0, produced no
+  client stderr, produced no temporary guard messages, and found no
+  byval/opclass/crash signatures.
+- a five-client `multithreaded=on` smoke using 25 SQL messages per connection
+  returned 125 result rows, exited with status 0, produced no client stderr,
+  produced no temporary guard messages, and found no byval/opclass/crash
+  signatures.
+- a 10-client `multithreaded=on` idle-wait smoke kept clients connected for
+  two seconds before sending SQL; all clients returned their result rows with
+  no timeout messages, no temporary guard messages, no client stderr, and no
+  byval/opclass/crash signatures.
+- after adding `search_path` to the threaded GUC bridge, a five-client
+  `multithreaded=on` error-recovery smoke executed `select 1/0` outside and
+  inside an explicit transaction, observed the expected 10 division-by-zero
+  errors, returned all five post-error rows and all five post-rollback rows,
+  and found no byval/opclass/crash signatures.
+- a combined `multithreaded=on` smoke reran the one-shot, multi-command, and
+  idle client patterns together and returned 20 one-shot rows, 125
+  multi-command rows, and 10 idle rows with no temporary guard messages,
+  timeout messages, client stderr, or byval/opclass/crash signatures.
+- after the unbounded session loop slice,
+  `gmake -C src/test/modules/test_backend_runtime check` passed.

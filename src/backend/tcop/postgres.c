@@ -120,15 +120,6 @@ PG_THREAD_LOCAL PG_GLOBAL_SESSION int restrict_nonsystem_relation_kind;
 	((pid) == 0 ? 0 : \
 	 errdetail_log("Signal sent by PID %d, UID %d.", (int) (pid), (int) (uid)))
 
-/*
- * Temporary Phase 10 guardrails for the first thread-per-session backend
- * runner.  These keep carrier threads from becoming unbounded long-lived
- * sessions while backend-local cleanup and idle wait ownership are still
- * being migrated.
- */
-#define PG_THREADED_SESSION_STEP_LIMIT			8
-#define PG_THREADED_SESSION_IDLE_DEADLINE_MS	1000
-
 /* ----------------
  *		private typedefs etc
  * ----------------
@@ -4984,46 +4975,13 @@ pg_noreturn void
 PgSessionRun(PgSession *session)
 {
 	PgStepBudget budget;
-	int			completed_steps = 0;
-	bool		threaded_backend;
 
 	Assert(session != NULL);
 
-	threaded_backend = (CurrentPgRuntime != NULL &&
-						CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION);
 	budget.max_messages = 1;
 
 	for (;;)
-	{
-		if (threaded_backend && MyProcPort != NULL)
-		{
-			MyProcPort->client_read_deadline_active = true;
-			MyProcPort->client_read_deadline =
-				TimestampTzPlusMilliseconds(GetCurrentTimestamp(),
-											PG_THREADED_SESSION_IDLE_DEADLINE_MS);
-		}
-
 		(void) PgSessionStep(session, budget);
-
-		if (threaded_backend)
-		{
-			if (MyProcPort != NULL)
-				MyProcPort->client_read_deadline_active = false;
-
-			completed_steps++;
-			if (completed_steps < PG_THREADED_SESSION_STEP_LIMIT)
-				continue;
-
-			ereport(FATAL,
-					(errmsg("threaded backend completed bounded protocol steps"),
-					 errdetail("The main loop handled %d frontend messages, "
-							   "but unbounded threaded session lifetime still "
-							   "needs thread-safe handling.",
-							   completed_steps),
-					 errhint("This temporary Phase 10 guard prevents a carrier "
-							 "thread from running an unlimited session.")));
-		}
-	}
 }
 
 
