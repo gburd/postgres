@@ -376,6 +376,15 @@ ok($reconnect_ok, 'repeated threaded connect/disconnect loop completed');
 is($node->safe_psql('postgres', 'SELECT 42;'), '42',
 	'threaded server remains usable after Gate D smoke');
 
+SKIP:
+{
+	skip 'postmaster child counting smoke is Unix-specific', 1
+	  if $^O eq 'MSWin32';
+
+	is(postmaster_child_count(), 0,
+		'threaded runtime still has no postmaster child processes after worker activity');
+}
+
 unlike(
 	slurp_file($node->logfile),
 	qr/PANIC|segmentation|unsupported byval|could not find tuple|server process .* was terminated|was terminated by signal/,
