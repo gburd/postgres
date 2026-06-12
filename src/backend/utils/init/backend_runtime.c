@@ -48,6 +48,7 @@ static PG_GLOBAL_EXECUTION PgExecution process_execution;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionIdentityState early_connection_identity;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionSocketIOState early_connection_socket_io;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionProtocolState early_connection_protocol;
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionInterruptState early_connection_interrupts;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInterruptHoldoffState early_interrupt_holdoffs;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionDebugState early_execution_debug;
 
@@ -60,6 +61,7 @@ static void PgBackendWakeForInterrupt(PgBackend *backend);
 static void PgConnectionAdoptEarlyIdentity(PgConnection *connection);
 static void PgConnectionAdoptEarlySocketIO(PgConnection *connection);
 static void PgConnectionAdoptEarlyProtocolState(PgConnection *connection);
+static void PgConnectionAdoptEarlyInterruptState(PgConnection *connection);
 static void PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend);
 static void PgExecutionAdoptEarlyDebugState(PgExecution *execution);
 static PgBackendInterruptHoldoffState *PgCurrentInterruptHoldoffs(void);
@@ -107,6 +109,15 @@ PgConnectionAdoptEarlyProtocolState(PgConnection *connection)
 
 	connection->protocol = early_connection_protocol;
 	MemSet(&early_connection_protocol, 0, sizeof(early_connection_protocol));
+}
+
+static void
+PgConnectionAdoptEarlyInterruptState(PgConnection *connection)
+{
+	Assert(connection != NULL);
+
+	connection->interrupts = early_connection_interrupts;
+	MemSet(&early_connection_interrupts, 0, sizeof(early_connection_interrupts));
 }
 
 static void
@@ -181,6 +192,7 @@ InitializePgProcessRuntime(void)
 	PgConnectionAdoptEarlyIdentity(&process_connection);
 	PgConnectionAdoptEarlySocketIO(&process_connection);
 	PgConnectionAdoptEarlyProtocolState(&process_connection);
+	PgConnectionAdoptEarlyInterruptState(&process_connection);
 
 	process_execution.backend = &process_backend;
 	process_execution.session = &process_session;
@@ -415,6 +427,36 @@ WaitEventSet **
 PgCurrentFeBeWaitSetRef(void)
 {
 	return PgConnectionFeBeWaitSetRef(CurrentPgConnection);
+}
+
+volatile sig_atomic_t *
+PgConnectionCheckClientConnectionPendingRef(PgConnection *connection)
+{
+	if (connection == NULL)
+		return &early_connection_interrupts.check_client_connection_pending;
+
+	return &connection->interrupts.check_client_connection_pending;
+}
+
+volatile sig_atomic_t *
+PgCurrentCheckClientConnectionPendingRef(void)
+{
+	return PgConnectionCheckClientConnectionPendingRef(CurrentPgConnection);
+}
+
+volatile sig_atomic_t *
+PgConnectionClientConnectionLostRef(PgConnection *connection)
+{
+	if (connection == NULL)
+		return &early_connection_interrupts.client_connection_lost;
+
+	return &connection->interrupts.client_connection_lost;
+}
+
+volatile sig_atomic_t *
+PgCurrentClientConnectionLostRef(void)
+{
+	return PgConnectionClientConnectionLostRef(CurrentPgConnection);
 }
 
 static PgBackendInterruptHoldoffState *

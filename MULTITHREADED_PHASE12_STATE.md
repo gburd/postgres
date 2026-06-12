@@ -255,3 +255,46 @@ Validation for this slice:
 - core process-mode `src/test/regress` `parallel_schedule` passed all 245
   tests after the clean rebuild and install.
 - `gmake -C contrib -j8` passed after the header migration.
+
+## Connection Interrupt Flag Bridge
+
+The seventh Phase 12 slice moves the connection-loss and client-check flags
+under `PgConnection`:
+
+- `PgConnection` now owns a `PgConnectionInterruptState`;
+- `CheckClientConnectionPending` and `ClientConnectionLost` remain
+  source-compatible lvalue macros in `miscadmin.h`;
+- the macros route through `PgCurrentCheckClientConnectionPendingRef()` and
+  `PgCurrentClientConnectionLostRef()`, which return fields in the current
+  connection object;
+- early paths before `CurrentPgConnection` is installed use fallback
+  connection-local storage in `backend_runtime.c`;
+- `InitializePgProcessRuntime()` adopts any early fallback connection
+  interrupt state into the process connection object before clearing the
+  fallback storage.
+
+This removes the remaining widely visible connection interrupt TLS flags while
+keeping client connection checks, broken-pipe handling, and logical interrupt
+application source-compatible.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `globals.o`,
+  `pqcomm.o`, `postgres.o`, and `test_backend_runtime.o`;
+- because `miscadmin.h` and `backend_runtime.h` changed former exported
+  connection globals into compatibility macros, `gmake -C src/backend clean`
+  plus generated-header recovery was used before the clean rebuild;
+- clean full `gmake -j8` passed;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed, followed by
+  rebuilding and reinstalling `src/test/modules/test_backend_runtime`;
+- focused `test_backend_runtime` regression passed and includes
+  `test_connection_interrupt_state_is_connection_local()`, which switches
+  `CurrentPgConnection` between fake connections and proves
+  `CheckClientConnectionPending` and `ClientConnectionLost` are isolated per
+  connection;
+- threaded runtime TAP coverage passed for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests after the clean rebuild and install;
+- `gmake -C contrib -j8` passed after the header migration.

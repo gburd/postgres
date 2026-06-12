@@ -687,6 +687,62 @@ test_connection_identity_state_is_connection_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_connection_interrupt_state_is_connection_local);
+Datum
+test_connection_interrupt_state_is_connection_local(PG_FUNCTION_ARGS)
+{
+	PgConnection *saved_connection;
+	PgConnection fake_connection1;
+	PgConnection fake_connection2;
+	volatile sig_atomic_t saved_check_client_connection_pending;
+	volatile sig_atomic_t saved_client_connection_lost;
+	bool		ok = true;
+
+	saved_connection = CurrentPgConnection;
+	saved_check_client_connection_pending = CheckClientConnectionPending;
+	saved_client_connection_lost = ClientConnectionLost;
+	MemSet(&fake_connection1, 0, sizeof(fake_connection1));
+	MemSet(&fake_connection2, 0, sizeof(fake_connection2));
+
+	PG_TRY();
+	{
+		CurrentPgConnection = &fake_connection1;
+		CheckClientConnectionPending = true;
+		ClientConnectionLost = false;
+
+		CurrentPgConnection = &fake_connection2;
+		ok = ok && !CheckClientConnectionPending;
+		ok = ok && !ClientConnectionLost;
+		CheckClientConnectionPending = false;
+		ClientConnectionLost = true;
+
+		CurrentPgConnection = &fake_connection1;
+		ok = ok && CheckClientConnectionPending;
+		ok = ok && !ClientConnectionLost;
+
+		CurrentPgConnection = &fake_connection2;
+		ok = ok && !CheckClientConnectionPending;
+		ok = ok && ClientConnectionLost;
+
+		CurrentPgConnection = saved_connection;
+		CheckClientConnectionPending = saved_check_client_connection_pending;
+		ClientConnectionLost = saved_client_connection_lost;
+	}
+	PG_CATCH();
+	{
+		CurrentPgConnection = saved_connection;
+		CheckClientConnectionPending = saved_check_client_connection_pending;
+		ClientConnectionLost = saved_client_connection_lost;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "connection interrupt state was not connection-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_backend_interrupt_wakes_target_latch);
 Datum
 test_backend_interrupt_wakes_target_latch(PG_FUNCTION_ARGS)

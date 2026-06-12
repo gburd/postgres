@@ -32,8 +32,6 @@ PG_THREAD_LOCAL PG_GLOBAL_CONNECTION ProtocolVersion FrontendProtocol;
 PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t InterruptPending = false;
 PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t QueryCancelPending = false;
 PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t ProcDiePending = false;
-PG_THREAD_LOCAL PG_GLOBAL_CONNECTION volatile sig_atomic_t CheckClientConnectionPending = false;
-PG_THREAD_LOCAL PG_GLOBAL_CONNECTION volatile sig_atomic_t ClientConnectionLost = false;
 PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t IdleInTransactionSessionTimeoutPending = false;
 PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t TransactionTimeoutPending = false;
 PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t IdleSessionTimeoutPending = false;

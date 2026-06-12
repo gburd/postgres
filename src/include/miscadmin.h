@@ -100,8 +100,11 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t ProcS
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t LogMemoryContextPending;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t IdleStatsUpdateTimeoutPending;
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CONNECTION volatile sig_atomic_t CheckClientConnectionPending;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CONNECTION volatile sig_atomic_t ClientConnectionLost;
+extern volatile sig_atomic_t *PgCurrentCheckClientConnectionPendingRef(void);
+extern volatile sig_atomic_t *PgCurrentClientConnectionLostRef(void);
+
+#define CheckClientConnectionPending (*PgCurrentCheckClientConnectionPendingRef())
+#define ClientConnectionLost (*PgCurrentClientConnectionLostRef())
 
 /* these are marked volatile because they are examined by signal handlers: */
 typedef struct PgBackendInterruptHoldoffState
