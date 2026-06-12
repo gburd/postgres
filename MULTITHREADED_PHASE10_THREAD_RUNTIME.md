@@ -328,6 +328,24 @@ This establishes the next concrete work item: make PGPROC registration and
 exit cleanup safe for logical backends whose carrier is a thread and whose
 process PID is shared with the postmaster and sibling backends.
 
+## Logical Backend ID Slice
+
+The seventeenth slice introduces a runtime-owned logical backend identity
+before changing PGPROC registration:
+
+- `PgBackend` now carries a `PgBackendId` assigned independently of
+  `MyProcPid`;
+- process and thread runtime initialization both assign backend ids from a
+  runtime-wide atomic counter;
+- `PgBackendGetId()` and `PgCurrentBackendId()` expose the identity without
+  requiring callers to inspect runtime internals;
+- `test_backend_runtime` verifies that two thread backend runtime states in
+  one address space get nonzero, distinct logical backend ids.
+
+This does not yet replace the many existing PID-backed fields. It creates the
+object identity that later PGPROC, procsignal, latch, cancellation, and
+monitoring work can target while preserving process-mode behavior.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
@@ -456,3 +474,20 @@ process PID is shared with the postmaster and sibling backends.
   with the guarded "threaded backend shared-memory registration is not
   implemented yet" FATAL, kept the postmaster running between connections, and
   completed normal fast shutdown.
+- after the logical backend ID slice,
+  `gmake -C src/backend/utils/init backend_runtime.o` and
+  `gmake -C src/test/modules/test_backend_runtime test_backend_runtime.o`
+  passed;
+- after the logical backend ID slice, an initial temp-install regression run
+  exposed stale backend object layout from the `PgBackend` struct change; a
+  backend clean, generated-header recovery, and full `gmake -C src/backend -j8`
+  rebuild passed and removed the bootstrap crash;
+- after the logical backend ID slice,
+  `gmake -C src/test/modules/test_backend_runtime check` passed, including the
+  distinct logical backend id regression.
+- a temp install smoke with `multithreaded=on` after the logical backend ID
+  slice still read real libpq startup packets for two client connections,
+  rejected both immediately before `InitProcess()` with the guarded
+  "threaded backend shared-memory registration is not implemented yet" FATAL,
+  kept the postmaster running between connections, and completed normal fast
+  shutdown.

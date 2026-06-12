@@ -26,6 +26,7 @@ typedef struct PgBackend PgBackend;
 typedef struct PgSession PgSession;
 typedef struct PgConnection PgConnection;
 typedef struct PgExecution PgExecution;
+typedef uint64 PgBackendId;
 typedef void (*PgBackendExitContinuation) (int code);
 typedef int (*PgSuspendCallback) (void *callback_arg);
 
@@ -165,6 +166,7 @@ struct PgCarrier
 
 struct PgBackend
 {
+	PgBackendId id;
 	PgRuntime  *runtime;
 	PgCarrier  *carrier;
 	PgSession  *session;
@@ -233,7 +235,9 @@ extern PgBackendModel PgRuntimeGetExtensionBackendModel(void);
 extern void PgRuntimeSetExtensionBackendModel(PgBackendModel backend_model);
 extern void PgBackendInitializeInterrupts(PgBackend *backend);
 extern void PgBackendSetInterruptLatch(PgBackend *backend,
-									   struct Latch *interrupt_latch);
+										struct Latch *interrupt_latch);
+extern PgBackendId PgBackendGetId(PgBackend *backend);
+extern PgBackendId PgCurrentBackendId(void);
 extern void PgBackendRaiseInterrupt(PgBackend *backend,
 									PgBackendInterruptType interrupt_type);
 extern void PgBackendRaiseProcDieInterrupt(PgBackend *backend, int sender_pid,

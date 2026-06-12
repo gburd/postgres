@@ -26,3 +26,7 @@ CREATE FUNCTION test_backend_thread_exit_join()
 CREATE FUNCTION test_backend_thread_runtime_state()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;
+
+CREATE FUNCTION test_backend_thread_ids_are_logical()
+	RETURNS pg_catalog.bool
+	AS 'MODULE_PATHNAME' LANGUAGE C;

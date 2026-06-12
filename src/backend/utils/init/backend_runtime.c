@@ -36,6 +36,8 @@ PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgExecution *CurrentPgExecution = NULL;
 static PG_GLOBAL_RUNTIME PgRuntime process_runtime;
 static PG_GLOBAL_RUNTIME PgRuntime thread_runtime;
 static PG_GLOBAL_RUNTIME bool thread_runtime_initialized = false;
+static PG_GLOBAL_RUNTIME bool backend_id_counter_initialized = false;
+static PG_GLOBAL_RUNTIME pg_atomic_uint64 next_backend_id;
 static PG_GLOBAL_CARRIER PgCarrier process_carrier;
 static PG_GLOBAL_BACKEND PgBackend process_backend;
 static PG_GLOBAL_SESSION PgSession process_session;
@@ -45,7 +47,27 @@ static PG_GLOBAL_EXECUTION PgExecution process_execution;
 StaticAssertDecl(PG_BACKEND_INTERRUPT_COUNT <= 32,
 				 "PgBackendInterruptMask must fit all backend interrupts");
 
+static void PgBackendInitializeIdCounter(void);
+static PgBackendId PgBackendAssignId(void);
 static void PgBackendWakeForInterrupt(PgBackend *backend);
+
+static void
+PgBackendInitializeIdCounter(void)
+{
+	if (backend_id_counter_initialized)
+		return;
+
+	pg_atomic_init_u64(&next_backend_id, 0);
+	backend_id_counter_initialized = true;
+}
+
+static PgBackendId
+PgBackendAssignId(void)
+{
+	PgBackendInitializeIdCounter();
+
+	return pg_atomic_add_fetch_u64(&next_backend_id, 1);
+}
 
 void
 InitializePgProcessRuntime(void)
@@ -68,6 +90,7 @@ InitializePgProcessRuntime(void)
 	process_carrier.current_execution = &process_execution;
 
 	process_backend.runtime = &process_runtime;
+	process_backend.id = PgBackendAssignId();
 	process_backend.carrier = &process_carrier;
 	process_backend.session = &process_session;
 	process_backend.connection = &process_connection;
@@ -110,6 +133,7 @@ InitializePgThreadRuntime(PgBackendExitContinuation exit_backend)
 		thread_runtime.kind = PG_RUNTIME_THREAD_PER_SESSION;
 		thread_runtime.extension_backend_model =
 			PG_BACKEND_MODEL_THREAD_PER_SESSION;
+		PgBackendInitializeIdCounter();
 		thread_runtime_initialized = true;
 	}
 
@@ -134,6 +158,7 @@ InitializePgThreadBackendRuntime(PgThreadBackendRuntimeState *state,
 	state->carrier.current_execution = &state->execution;
 
 	state->backend.runtime = &thread_runtime;
+	state->backend.id = PgBackendAssignId();
 	state->backend.carrier = &state->carrier;
 	state->backend.session = &state->session;
 	state->backend.connection = &state->connection;
@@ -241,6 +266,21 @@ PgBackendSetInterruptLatch(PgBackend *backend, struct Latch *interrupt_latch)
 		return;
 
 	backend->interrupt_latch = interrupt_latch;
+}
+
+PgBackendId
+PgBackendGetId(PgBackend *backend)
+{
+	if (backend == NULL)
+		return 0;
+
+	return backend->id;
+}
+
+PgBackendId
+PgCurrentBackendId(void)
+{
+	return PgBackendGetId(CurrentPgBackend);
 }
 
 void

@@ -6,3 +6,4 @@ SELECT test_backend_interrupt_wakes_target_latch();
 SELECT test_backend_thread_create_join();
 SELECT test_backend_thread_exit_join();
 SELECT test_backend_thread_runtime_state();
+SELECT test_backend_thread_ids_are_logical();

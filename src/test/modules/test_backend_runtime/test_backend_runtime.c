@@ -279,6 +279,81 @@ test_backend_thread_runtime_state(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_backend_thread_ids_are_logical);
+Datum
+test_backend_thread_ids_are_logical(PG_FUNCTION_ARGS)
+{
+	PgRuntime  *saved_runtime;
+	PgCarrier  *saved_carrier;
+	PgBackend  *saved_backend;
+	PgSession  *saved_session;
+	PgConnection *saved_connection;
+	PgExecution *saved_execution;
+	PgThreadBackendRuntimeState state1;
+	PgThreadBackendRuntimeState state2;
+	Latch		fake_latch1;
+	Latch		fake_latch2;
+	PgBackendId current_backend_id;
+	PgBackendId thread_backend_id1;
+	PgBackendId thread_backend_id2;
+	bool		ok = true;
+
+	saved_runtime = CurrentPgRuntime;
+	saved_carrier = CurrentPgCarrier;
+	saved_backend = CurrentPgBackend;
+	saved_session = CurrentPgSession;
+	saved_connection = CurrentPgConnection;
+	saved_execution = CurrentPgExecution;
+	current_backend_id = PgCurrentBackendId();
+
+	InitLatch(&fake_latch1);
+	InitLatch(&fake_latch2);
+
+	PG_TRY();
+	{
+		InitializePgThreadRuntime(NULL);
+		InitializePgThreadBackendRuntime(&state1, B_BACKEND, NULL,
+										 &fake_latch1);
+		thread_backend_id1 = PgCurrentBackendId();
+
+		InitializePgThreadBackendRuntime(&state2, B_BACKEND, NULL,
+										 &fake_latch2);
+		thread_backend_id2 = PgCurrentBackendId();
+
+		ok = ok && current_backend_id != 0;
+		ok = ok && thread_backend_id1 != 0;
+		ok = ok && thread_backend_id2 != 0;
+		ok = ok && thread_backend_id1 != current_backend_id;
+		ok = ok && thread_backend_id2 != current_backend_id;
+		ok = ok && thread_backend_id1 != thread_backend_id2;
+		ok = ok && thread_backend_id1 == PgBackendGetId(&state1.backend);
+		ok = ok && thread_backend_id2 == PgBackendGetId(&state2.backend);
+
+		CurrentPgRuntime = saved_runtime;
+		CurrentPgCarrier = saved_carrier;
+		CurrentPgBackend = saved_backend;
+		CurrentPgSession = saved_session;
+		CurrentPgConnection = saved_connection;
+		CurrentPgExecution = saved_execution;
+	}
+	PG_CATCH();
+	{
+		CurrentPgRuntime = saved_runtime;
+		CurrentPgCarrier = saved_carrier;
+		CurrentPgBackend = saved_backend;
+		CurrentPgSession = saved_session;
+		CurrentPgConnection = saved_connection;
+		CurrentPgExecution = saved_execution;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "thread backend ids were not distinct logical ids");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_backend_interrupt_wakes_target_latch);
 Datum
 test_backend_interrupt_wakes_target_latch(PG_FUNCTION_ARGS)
