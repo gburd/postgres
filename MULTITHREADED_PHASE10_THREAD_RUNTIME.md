@@ -444,6 +444,27 @@ normal SQL execution. The next boundary is database/session initialization,
 where the remaining process signal, cancel-key, procsignal, and authentication
 timeout assumptions become visible.
 
+## Cancel Key Boundary Slice
+
+The twenty-second slice moves the guarded stop past backend cancel-key
+generation:
+
+- `PgSessionBootstrap()` still skips process-global signal-handler
+  installation for thread carriers;
+- thread carriers no longer call `sigprocmask(SIG_SETMASK, &UnBlockSig, NULL)`
+  while entering session bootstrap;
+- `MyCancelKey` and `MyCancelKeyLength` are already backend-local TLS state, so
+  threaded startup can generate a normal cancellation key without sharing it
+  with the postmaster or sibling backends;
+- the guarded FATAL now fires after cancel-key generation and before
+  `InitPostgres()`.
+
+The next boundary is still larger than the preceding ones: `InitPostgres()`
+registers the backend in procsignal state, starts database/session
+initialization, performs authentication, and advertises cancellation metadata.
+Those pieces need logical-backend identity and timeout/interrupt handling
+rather than process-wide signal assumptions.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
@@ -642,3 +663,15 @@ timeout assumptions become visible.
   `BaseInit()` with the guarded "threaded backend database initialization is
   not implemented yet" FATAL, kept the postmaster running between connections,
   and completed normal fast shutdown.
+- after the cancel key boundary slice, `gmake -C src/backend/tcop postgres.o`
+  passed;
+- after the cancel key boundary slice, full `gmake -C src/backend -j8` passed
+  and `gmake DESTDIR="$PWD/tmp_install" install` completed;
+- after the cancel key boundary slice,
+  `gmake -C src/test/modules/test_backend_runtime check` passed;
+- a temp install smoke with `multithreaded=on` after the cancel key boundary
+  slice read real libpq startup packets for two client connections, completed
+  `BaseInit()`, generated backend-local cancel keys, rejected both before
+  `InitPostgres()` with the guarded "threaded backend database initialization
+  is not implemented yet" FATAL, kept the postmaster running between
+  connections, and completed normal fast shutdown.
