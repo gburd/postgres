@@ -51,6 +51,7 @@
 #include "storage/dsm.h"
 #include "storage/io_worker.h"
 #include "storage/ipc.h"
+#include "storage/latch.h"
 #include "storage/pg_shmem.h"
 #include "storage/shmem_internal.h"
 #include "tcop/backend_startup.h"
@@ -186,6 +187,24 @@ static PG_GLOBAL_IMMUTABLE const child_process_kind child_process_kinds[] = {
 #undef PG_PROCTYPE
 };
 
+typedef struct BackendThreadStart
+{
+	PMChild    *pmchild;
+	BackendType child_type;
+	int			child_slot;
+	ClientSocket client_sock;
+	Latch	   *postmaster_latch;
+} BackendThreadStart;
+
+static bool postmaster_backend_thread_launch(PMChild *pmchild,
+											 BackendType child_type,
+											 int child_slot,
+											 void *startup_data,
+											 size_t startup_data_len,
+											 const ClientSocket *client_sock);
+static void backend_thread_reject_entry(void *arg);
+static void report_thread_startup_blocked_to_client(ClientSocket *client_sock);
+
 const char *
 PostmasterChildName(BackendType child_type)
 {
@@ -207,12 +226,9 @@ postmaster_child_launch_carrier(PMChild *pmchild,
 	launch_model = PgRuntimeGetBackendLaunchModel(child_type);
 	if (launch_model == PG_BACKEND_LAUNCH_THREAD)
 	{
-		errno = ENOSYS;
-		ereport(LOG,
-				(errmsg("threaded backend launch is not implemented yet"),
-				 errdetail("The \"multithreaded\" setting currently only enables "
-						   "the Phase 10 carrier launch decision path.")));
-		return false;
+		return postmaster_backend_thread_launch(pmchild, child_type, child_slot,
+												startup_data, startup_data_len,
+												client_sock);
 	}
 
 	pid = postmaster_child_launch(child_type, child_slot,
@@ -222,6 +238,114 @@ postmaster_child_launch_carrier(PMChild *pmchild,
 
 	PostmasterChildSetProcess(pmchild, pid);
 	return true;
+}
+
+/*
+ * Start a regular backend carrier thread.
+ *
+ * The thread is intentionally not allowed to enter BackendMain() yet.  It
+ * exercises carrier creation and postmaster-owned reaping, then rejects the
+ * client connection from inside the carrier thread.  Removing this rejection
+ * is the next Phase 10 step once startup packet timeout, process-global
+ * signal handling, and backend exit have thread-safe replacements.
+ */
+static bool
+postmaster_backend_thread_launch(PMChild *pmchild,
+								 BackendType child_type, int child_slot,
+								 void *startup_data, size_t startup_data_len,
+								 const ClientSocket *client_sock)
+{
+	BackendThreadStart *thread_start;
+	PgThread	thread;
+	int			rc;
+
+	if (child_type != B_BACKEND || client_sock == NULL)
+	{
+		errno = ENOSYS;
+		return false;
+	}
+
+	if (IsExternalConnectionBackend(child_type))
+		((BackendStartupData *) startup_data)->fork_started = GetCurrentTimestamp();
+
+#ifdef WIN32
+	errno = ENOSYS;
+	return false;
+#else
+	thread_start = malloc(sizeof(BackendThreadStart));
+	if (thread_start == NULL)
+	{
+		errno = ENOMEM;
+		return false;
+	}
+
+	thread_start->pmchild = pmchild;
+	thread_start->child_type = child_type;
+	thread_start->child_slot = child_slot;
+	thread_start->client_sock = *client_sock;
+	thread_start->client_sock.sock = dup(client_sock->sock);
+	thread_start->postmaster_latch = MyLatch;
+
+	if (thread_start->client_sock.sock < 0)
+	{
+		int			save_errno = errno;
+
+		free(thread_start);
+		errno = save_errno;
+		return false;
+	}
+
+	rc = pg_thread_create(&thread, "postgres backend",
+						  backend_thread_reject_entry, thread_start);
+	if (rc != 0)
+	{
+		closesocket(thread_start->client_sock.sock);
+		free(thread_start);
+		errno = rc;
+		return false;
+	}
+
+	PostmasterChildSetThread(pmchild, &thread);
+	return true;
+#endif
+}
+
+static void
+backend_thread_reject_entry(void *arg)
+{
+	BackendThreadStart *thread_start = (BackendThreadStart *) arg;
+
+	report_thread_startup_blocked_to_client(&thread_start->client_sock);
+
+	if (closesocket(thread_start->client_sock.sock) != 0)
+	{
+		/*
+		 * Do not ereport() here.  The thread has not initialized backend
+		 * error handling or thread-local backend state yet.
+		 */
+	}
+
+	PostmasterChildMarkThreadExited(thread_start->pmchild, 0,
+									thread_start->postmaster_latch);
+	free(thread_start);
+}
+
+static void
+report_thread_startup_blocked_to_client(ClientSocket *client_sock)
+{
+	char		buffer[1000];
+	int			rc;
+
+	snprintf(buffer, sizeof(buffer), "E%s\n",
+			 "threaded backend startup is not implemented yet");
+
+	if (!pg_set_noblock(client_sock->sock))
+		return;
+
+	do
+	{
+		rc = send(client_sock->sock, buffer, strlen(buffer) + 1, 0);
+	} while (rc < 0 && errno == EINTR);
 }
 
 /*

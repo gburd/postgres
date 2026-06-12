@@ -1758,7 +1758,7 @@ ServerLoop(void)
 		 * With assertions enabled, check regularly for appearance of
 		 * additional threads.  All builds check at start and exit.
 		 */
-		Assert(pthread_is_threaded_np() == 0);
+		Assert(multithreaded || pthread_is_threaded_np() == 0);
 #endif
 
 		/*
@@ -2599,6 +2599,7 @@ process_pm_thread_exit(void)
 		if (!PostmasterChildHasExitedThread(pmchild, &exitstatus))
 			continue;
 
+		(void) pg_thread_join(&pmchild->thread);
 		CleanupBackend(pmchild, exitstatus);
 		reaped = true;
 	}

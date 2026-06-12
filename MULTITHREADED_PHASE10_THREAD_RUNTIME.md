@@ -127,6 +127,28 @@ This is a prerequisite for the first actual backend-thread launch. Without it,
 the thread routine would either leak PMChild slots or perform postmaster-owned
 list mutation from the wrong thread.
 
+## Thread Carrier Reject Slice
+
+The eighth slice creates the first regular backend carrier thread when
+`multithreaded=on`:
+
+- the postmaster duplicates the accepted client socket for the thread carrier;
+- `pg_thread_create()` starts a backend-named carrier thread;
+- the PMChild entry is marked as `PM_CHILD_CARRIER_THREAD`;
+- the carrier thread currently sends a protocol-level rejection and closes its
+  socket instead of entering `BackendMain()`;
+- the thread reports normal exit through `PostmasterChildMarkThreadExited()`;
+- the postmaster joins the completed thread and releases the PMChild slot
+  through the thread-exit reaper.
+
+This proves the launch, socket ownership, thread handle, latch wakeup, join,
+and PMChild reaping path without yet running PostgreSQL backend startup inside
+the postmaster address space. The remaining blockers for replacing the
+rejection with `BackendMainWithStartupData(..., BACKEND_STARTUP_THREAD)` are
+the thread-safe startup timeout/termination path, backend-local initialization
+that does not mutate postmaster runtime globals, and backend exit that cannot
+call process exit from the carrier thread.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
@@ -134,6 +156,8 @@ list mutation from the wrong thread.
   PMChild carrier identity slice;
 - `gmake -C src/backend/postmaster pmchild.o postmaster.o` passed after the
   thread exit reaper slice;
+- `gmake -C src/backend/postmaster launch_backend.o postmaster.o pmchild.o`
+  passed after the thread carrier reject slice;
 - `gmake -C src/backend/postmaster launch_backend.o postmaster.o pmchild.o`
   passed after the carrier-aware launch API slice;
 - `gmake -C src/backend/postmaster pmchild.o postmaster.o launch_backend.o`
@@ -154,3 +178,7 @@ list mutation from the wrong thread.
 - temp install smokes with `multithreaded=on` rejected a client connection
   with `Function not implemented` and logged the explicit threaded-launch stub
   message, including after the carrier-aware launch API slice.
+- a temp install smoke with `multithreaded=on` after the thread carrier reject
+  slice rejected two client connections with "threaded backend startup is not
+  implemented yet"; `pg_ctl status` reported the postmaster still running, and
+  normal fast shutdown completed.
