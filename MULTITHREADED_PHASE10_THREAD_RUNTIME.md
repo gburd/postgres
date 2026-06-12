@@ -770,6 +770,14 @@ lifetime state onto thread-safe backend/session owners.  The gate must be
 removed or narrowed before normal concurrent SQL execution can be considered
 complete.
 
+An attempted follow-up boundary after `CommitTransactionCommand()` was not
+kept.  Five sequential clients could cross startup transaction commit and
+connection-warning emission, but a 20-client concurrent smoke still produced
+`could not find tuple for opclass 112` and `unsupported byval length: 0`
+failures even with the temporary startup/session gate.  That means the next
+commit boundary needs a stronger transaction-end and cache/lifetime policy,
+not just a later guard in `InitPostgres()`.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
