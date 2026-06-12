@@ -1474,6 +1474,36 @@ InitializeGUCOptions(void)
 }
 
 /*
+ * Initialize the early session GUC state needed by threaded backend startup.
+ *
+ * Process backends run InitializeGUCOptions() before shared-memory and catalog
+ * initialization, then replay the postmaster's non-default configuration.
+ * Threaded backend carriers share the postmaster address space, so they must
+ * not reset every GUC variable to its boot default while bootstrapping a
+ * session.  For now, build this carrier's GUC table and initialize only the
+ * role identity GUC records that InitializeSessionUserId() must update after
+ * authentication.
+ *
+ * Later Phase 10 work must replace this narrow bridge with full per-session
+ * GUC adoption before threaded backends can run arbitrary SQL.
+ */
+void
+InitializeThreadedSessionGUCOptions(void)
+{
+	struct config_generic *gconf;
+
+	Assert(guc_hashtab == NULL);
+
+	build_guc_variables();
+
+	gconf = find_option("session_authorization", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("role", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+}
+
+/*
  * Assign any GUC values that can come from the server's environment.
  *
  * This is called from InitializeGUCOptions, and also from ProcessConfigFile

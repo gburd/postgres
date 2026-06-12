@@ -429,6 +429,7 @@ extern void ProcessConfigFile(GucContext context);
 extern char *convert_GUC_name_for_parameter_acl(const char *name);
 extern void check_GUC_name_for_parameter_acl(const char *name);
 extern void InitializeGUCOptions(void);
+extern void InitializeThreadedSessionGUCOptions(void);
 extern bool SelectConfigFiles(const char *userDoption, const char *progname);
 extern void ResetAllOptions(void);
 extern void AtStart_GUC(void);

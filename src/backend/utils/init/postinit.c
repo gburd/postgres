@@ -62,6 +62,7 @@
 #include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
+#include "utils/guc.h"
 #include "utils/guc_hooks.h"
 #include "utils/injection_point.h"
 #include "utils/memutils.h"
@@ -968,13 +969,7 @@ InitPostgres(const char *in_dbname, Oid dboid,
 		Assert(MyProcPort != NULL);
 		PerformAuthentication(MyProcPort);
 		if (threaded_backend)
-			ereport(FATAL,
-					(errmsg("threaded backend database initialization is not implemented yet"),
-					 errdetail("Authentication completed with a connection-local "
-							   "deadline instead of SIGALRM, but role identity "
-							   "initialization, database validation, and "
-							   "post-startup session lifetime still need "
-							   "thread-safe lifecycle handling.")));
+			InitializeThreadedSessionGUCOptions();
 		InitializeSessionUserId(username, useroid, false);
 		/* ensure that auth_method is actually valid, aka authn_id is not NULL */
 		if (MyClientConnectionInfo.authn_id)
@@ -990,6 +985,14 @@ InitPostgres(const char *in_dbname, Oid dboid,
 
 		pgstat_bestart_security();
 	}
+
+	if (threaded_backend)
+		ereport(FATAL,
+				(errmsg("threaded backend database initialization is not implemented yet"),
+				 errdetail("Authentication and role identity completed with "
+						   "thread-local GUC lookup state, but database "
+						   "validation and post-startup session lifetime still "
+						   "need thread-safe lifecycle handling.")));
 
 	/*
 	 * Binary upgrades only allowed super-user connections

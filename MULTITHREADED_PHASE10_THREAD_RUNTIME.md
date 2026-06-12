@@ -541,6 +541,29 @@ The next boundary is role/session identity and database validation:
 the connection-limit/database checks all need to run with backend-local
 lifetime assumptions before the guard can move to the end of `InitPostgres()`.
 
+## Role Identity GUC Boundary Slice
+
+The twenty-sixth slice lets threaded startup initialize role/session identity
+after authentication:
+
+- threaded backend carriers now build their own GUC lookup table before
+  `InitializeSessionUserId()` calls `SetConfigOption()`;
+- the early GUC bridge initializes only `session_authorization` and `role`,
+  because running full `InitializeGUCOptions()` inside a thread would reset
+  shared postmaster/runtime GUC storage to boot defaults;
+- role lookup, `SetAuthenticatedUserId()`, session authorization assignment,
+  `SET ROLE NONE`, optional system-user initialization, `superuser()`, and
+  `pgstat_bestart_security()` now complete before the guarded stop;
+- the guarded FATAL now fires before database validation, connection-limit
+  checks, per-database/per-role setting application, and post-startup session
+  lifetime.
+
+An lldb smoke without this bridge crashed in `find_option()` because
+`guc_hashtab` is thread-local and had not been built for the backend carrier.
+The bridge is deliberately narrow: it proves the role identity boundary while
+leaving full per-session GUC state adoption as a Phase 10 blocker before
+arbitrary SQL can run.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
@@ -798,3 +821,18 @@ lifetime assumptions before the guard can move to the end of `InitPostgres()`.
   after authentication with the guarded "threaded backend database
   initialization is not implemented yet" FATAL, kept the postmaster running
   between connections, and completed normal fast shutdown.
+- after the role identity GUC boundary slice,
+  `gmake -C src/backend/utils/misc guc.o` and
+  `gmake -C src/backend/utils/init postinit.o` passed;
+- after the role identity GUC boundary slice, full
+  `gmake -C src/backend -j8` passed and
+  `gmake DESTDIR="$PWD/tmp_install" install` completed;
+- after the role identity GUC boundary slice,
+  `gmake -C src/test/modules/test_backend_runtime check` passed;
+- a temp install smoke with `multithreaded=on` after the role identity GUC
+  boundary slice read real libpq startup packets for two client connections,
+  completed catalog-backed trust authentication, initialized role/session
+  identity with thread-local GUC lookup state, rejected both before database
+  validation with the guarded "threaded backend database initialization is not
+  implemented yet" FATAL, kept the postmaster running between connections, and
+  completed normal fast shutdown.
