@@ -129,6 +129,16 @@ $$;
 is($node->safe_psql('postgres', 'SELECT threaded_plpgsql_add(20, 22);'),
 	'42', 'PL/pgSQL runs in threaded runtime');
 
+my ($load_ret, $load_stdout, $load_stderr) =
+  $node->psql('postgres', "LOAD 'test_backend_runtime';",
+	on_error_stop => 1);
+isnt($load_ret, 0,
+	'process-only test module is rejected in threaded runtime');
+like($load_stderr, qr/backend model mismatch/,
+	'process-only module rejection reports backend model mismatch');
+is($node->safe_psql('postgres', 'SELECT 42;'), '42',
+	'threaded server remains usable after process-only module rejection');
+
 my $abandoned = $node->background_psql('postgres',
 	on_error_stop => 0, timeout => 20);
 $abandoned->query_safe('BEGIN; SELECT pg_advisory_lock(987654);',

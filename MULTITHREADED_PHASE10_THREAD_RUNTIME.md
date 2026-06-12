@@ -1093,15 +1093,15 @@ thread-per-session runtime under `src/test/modules/test_backend_runtime`:
 - it verifies the threaded GUC state, DDL with a primary key, concurrent
   client sessions with distinct SQL-visible backend ids, active query
   cancellation, idle backend termination, SQL error recovery, PL/pgSQL
-  execution, abandoned idle-client advisory-lock cleanup, final connection
-  health, and the expected temporary autovacuum-worker deferral log;
+  execution, live process-only module rejection, abandoned idle-client
+  advisory-lock cleanup, final connection health, and the expected temporary
+  autovacuum-worker deferral log;
 - the test also rejects common crash/corruption log signatures after the
   threaded smoke.
 
-This TAP test is still narrower than the full Gate D manual stress. It does
-not yet cover live process-only extension rejection, and it is a compact smoke
-rather than the larger repeated connect/disconnect and killed-client stress
-recorded above.
+This TAP test is still narrower than the full Gate D manual stress. It is a
+compact smoke rather than the larger repeated connect/disconnect and
+killed-client stress recorded above.
 
 Validation for this slice:
 
@@ -1121,6 +1121,8 @@ The next slice broadened the TAP smoke's Gate D coverage:
 - idle backend termination verifies the logical backend id leaves
   `pg_stat_activity`;
 - a SQL `ERROR` is followed by a fresh successful query;
+- live process-only module rejection uses `LOAD 'test_backend_runtime'` and
+  verifies both the backend-model mismatch and subsequent server health;
 - abandoned idle-client cleanup now uses `BackgroundPsql` to hold an advisory
   lock while idle in transaction, then kills the client and verifies that the
   lock is released.
@@ -1132,7 +1134,7 @@ Validation for this broader TAP slice:
 - `gmake -C src/test/modules/test_backend_runtime check` passed its SQL
   regression and skipped TAP in this checkout because it is not configured
   with `--enable-tap-tests`;
-- direct TAP run passed with 16 tests.
+- direct TAP run passed with 19 tests.
 
 ## Validation
 

@@ -527,10 +527,10 @@ Exit gate:
   incompatible extension rejection, and repeated connect/disconnect stress.
   The in-tree `test_backend_runtime` TAP smoke is part of the Phase 10
   regression surface and should cover the compact concurrent-client,
-  cancel/terminate, SQL `ERROR`, PL/pgSQL, and abandoned-client cleanup smoke.
+  cancel/terminate, SQL `ERROR`, PL/pgSQL, incompatible module rejection, and
+  abandoned-client cleanup smoke.
   It is not a substitute for the broader repeated-connect/disconnect stress or
-  for live incompatible-extension rejection until that fixture is stable in
-  TAP.
+  full process-mode test suite.
   Verify that normal threaded server mode does not fork late server-owned
   worker subprocesses after backend thread carriers exist. Until Phase 11,
   document any worker family that is explicitly deferred or disabled in
