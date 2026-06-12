@@ -131,10 +131,36 @@ logical backend, reloads config to exercise the SIGHUP path, then sets
 the postmaster OS child-process count stays unchanged across the summarizer
 exit, proving the summarizer was a thread carrier rather than a forked child.
 
+## WAL Writer Thread Slice
+
+The WAL writer is now opted into the thread carrier path in threaded mode:
+
+- `PgRuntimeShouldThreadBackend()` selects `PG_BACKEND_LAUNCH_THREAD` for
+  `B_WAL_WRITER` when `multithreaded=on`;
+- `postmaster_backend_thread_launch()` accepts WAL writer launches without
+  client startup data;
+- `WalWriterMain()` skips process-wide signal handler and signal-mask changes
+  when running as a thread carrier;
+- `ProcessMainLoopInterrupts()` now avoids concurrent `ProcessConfigFile()`
+  calls in thread-backed workers, relying on the postmaster's shared GUC
+  reload for thread-mode config changes;
+- the postmaster maps thread-backed WAL writer `SIGTERM` to a logical
+  shutdown request and preserves the process-backed behavior that ignores
+  `SIGINT`;
+- thread-backed WAL writer exit is reaped by the postmaster thread-exit path,
+  clearing `WalWriterPMChild` and preserving crash escalation for abnormal
+  exits.
+
+This slice deliberately leaves checkpointer and background writer on their
+startup-time process paths. They are launched before the startup process, so
+converting them directly to startup-time threads would make the later startup
+process fork unsafe. They need either startup/recovery worker conversion first
+or an explicit process-to-thread handoff after recovery reaches normal running.
+
 ## Remaining Worker Families
 
 - autovacuum launcher;
-- checkpointer, background writer, WAL writer, archiver, and syslogger;
+- checkpointer, background writer, archiver, and syslogger;
 - startup/recovery worker paths that are part of normal server operation;
 - WAL receiver;
 - startup-time AIO method workers;
@@ -205,6 +231,21 @@ Additional validation for the WAL summarizer thread slice:
   after `ALTER SYSTEM SET summarize_wal = off` plus `pg_reload_conf()`.
   The postmaster OS child count remained `5` before and after the logical
   summarizer exited, and fast shutdown completed cleanly.
+
+Additional validation for the WAL writer thread slice:
+
+- touched-object builds passed for `backend_runtime.o`, `interrupt.o`,
+  `launch_backend.o`, `postmaster.o`, and `walwriter.o`;
+- full `gmake -j8` passed;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed its SQL
+  regression and skipped TAP because this checkout is not configured with
+  `--enable-tap-tests`;
+- direct threaded temp-cluster smoke passed with `multithreaded=on`,
+  `autovacuum=off`, and `summarize_wal=off`. The smoke observed
+  `walwriters=1`, `walwriters_after_work=1`, `children_with_walwriter=4`,
+  and `children_after_work=4` after `pg_reload_conf()`, a small WAL-writing
+  workload, `CHECKPOINT`, and clean fast shutdown.
 
 An attempted TAP fixture that relied on ordinary autovacuum scheduling did not
 start a worker reliably within a short poll window, even with aggressive table

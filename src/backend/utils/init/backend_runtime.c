@@ -248,6 +248,7 @@ PgRuntimeShouldThreadBackend(BackendType backend_type)
 	 */
 	return backend_type == B_BACKEND ||
 		backend_type == B_AUTOVAC_WORKER ||
+		backend_type == B_WAL_WRITER ||
 		backend_type == B_WAL_SUMMARIZER;
 }
 

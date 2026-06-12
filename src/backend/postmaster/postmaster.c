@@ -435,6 +435,7 @@ static void dummy_handler(SIGNAL_ARGS);
 static void process_pm_thread_exit(void);
 static void CleanupBackend(PMChild *bp, int exitstatus);
 static bool cleanup_io_worker_child(PMChild *child);
+static bool cleanup_wal_writer_child(PMChild *child, int exitstatus);
 static bool cleanup_wal_summarizer_child(PMChild *child, int exitstatus);
 static void HandleChildCrash(int pid, int exitstatus, const char *procname);
 static void LogChildExit(int lev, const char *procname,
@@ -2628,6 +2629,12 @@ process_pm_thread_exit(void)
 			reaped = true;
 			continue;
 		}
+		if (pmchild->bkend_type == B_WAL_WRITER)
+		{
+			(void) cleanup_wal_writer_child(pmchild, exitstatus);
+			reaped = true;
+			continue;
+		}
 		if (pmchild->bkend_type == B_WAL_SUMMARIZER)
 		{
 			(void) cleanup_wal_summarizer_child(pmchild, exitstatus);
@@ -3615,6 +3622,8 @@ thread_child_signal_interrupt(PMChild *pmchild, int signal,
 				*interrupt = PG_BACKEND_INTERRUPT_PROC_DIE;
 				return true;
 			}
+			if (pmchild->bkend_type == B_WAL_WRITER)
+				return false;
 			if (pmchild->bkend_type == B_WAL_SUMMARIZER)
 				return false;
 			*interrupt = PG_BACKEND_INTERRUPT_QUERY_CANCEL;
@@ -3622,6 +3631,11 @@ thread_child_signal_interrupt(PMChild *pmchild, int signal,
 		case SIGTERM:
 			if (pmchild->bkend_type == B_IO_WORKER)
 				return false;
+			if (pmchild->bkend_type == B_WAL_WRITER)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST;
+				return true;
+			}
 			if (pmchild->bkend_type == B_WAL_SUMMARIZER)
 			{
 				*interrupt = PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST;
@@ -4571,6 +4585,21 @@ cleanup_io_worker_child(PMChild *child)
 		}
 	}
 	return false;
+}
+
+static bool
+cleanup_wal_writer_child(PMChild *child, int exitstatus)
+{
+	Assert(child != NULL);
+	Assert(child == WalWriterPMChild);
+	Assert(child->bkend_type == B_WAL_WRITER);
+
+	ReleasePostmasterChildSlot(WalWriterPMChild);
+	WalWriterPMChild = NULL;
+	if (!EXIT_STATUS_0(exitstatus))
+		HandleChildCrash(0, exitstatus, _("WAL writer process"));
+
+	return true;
 }
 
 static bool

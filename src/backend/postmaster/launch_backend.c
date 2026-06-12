@@ -321,6 +321,7 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 	if (child_type != B_BACKEND &&
 		child_type != B_AUTOVAC_WORKER &&
 		child_type != B_IO_WORKER &&
+		child_type != B_WAL_WRITER &&
 		child_type != B_WAL_SUMMARIZER)
 	{
 		errno = ENOSYS;
@@ -336,6 +337,7 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 	}
 	if ((child_type == B_AUTOVAC_WORKER ||
 		 child_type == B_IO_WORKER ||
+		 child_type == B_WAL_WRITER ||
 		 child_type == B_WAL_SUMMARIZER) &&
 		(client_sock != NULL || startup_data != NULL || startup_data_len != 0))
 	{
