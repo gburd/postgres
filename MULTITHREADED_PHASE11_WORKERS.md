@@ -580,18 +580,40 @@ absorb its own barrier before waiting for all slots to advance. Dynamic
 background-worker startup/shutdown waiters also drain logical interrupts before
 the legacy interrupt check.
 
-The online data-checksum worker is not complete yet. Once the barrier wakeup
-was fixed, the worker started on a thread carrier and then crashed in
-`GetVictimBuffer()` while scanning shared buffers. The crash report showed an
-impossible buffer descriptor state in the data-checksum worker, so that worker
-family remains in the remaining-work list until the shared-buffer access path
-is audited for threaded workers.
+## Online Data-Checksum Worker Thread Slice
+
+The online data-checksum launcher and per-database workers are now opted into
+the dynamic background-worker thread-carrier path in threaded mode:
+
+- `StartDataChecksumsWorkerLauncher()` marks the launcher registration as
+  `BgWorkerBackendThreadPerSession` and uses `PgCurrentBackendSignalPid()` for
+  dynamic-worker startup/exit notification, so a thread-backed SQL backend can
+  wait on the launcher through its logical signal ID;
+- `ProcessDatabase()` marks each `DataChecksumsWorkerMain` registration as
+  `BgWorkerBackendThreadPerSession`, uses the launcher's logical signal ID for
+  notification, and records whether the child worker is thread-backed;
+- launcher cleanup preserves the process-mode `SIGTERM` path for process
+  workers and routes thread-backed worker termination through
+  `SendBackendInterrupt(..., PG_BACKEND_INTERRUPT_PROC_DIE, ...)`;
+- the launcher and worker entrypoints avoid installing process-wide signal
+  handlers when they are running inside thread carriers, relying on the
+  background-worker logical interrupt bridge instead;
+- `InitBufferManagerAccess()` now initializes the backend-local
+  `BackendWritebackContext`. The first threaded checksum smoke exposed this
+  generic gap: after the worker flushed a dirty victim buffer,
+  `ScheduleBufferTagForWriteback()` dereferenced the thread-local writeback
+  context before it had been initialized for that backend thread.
+
+The live threaded smoke starts a `multithreaded=on` cluster with checksums off,
+creates a 3,000-row table, calls `pg_enable_data_checksums(0, 1000)`, waits
+until `SHOW data_checksums` reports `on`, verifies the table still has 3,000
+rows, and checks the log for thread-carrier starts for the checksum launcher
+and per-database workers. No postmaster child process matching
+`datachecksums` remains after completion.
 
 ## Remaining Worker Families
 
 - startup/recovery worker paths that are part of normal server operation;
-- online data-checksum launcher/worker conversion after the shared-buffer
-  worker-scan crash is understood;
 - remaining in-tree generic background workers, tests, and examples that are
   not part of the already audited logical replication, core parallel worker,
   `test_backend_runtime`, and `test_shm_mq` sets. These can opt into the
@@ -916,6 +938,25 @@ Additional validation for the syslogger handoff slice:
   smoke observed one postmaster syslogger child process, verified the process
   logger still ignores `SIGUSR2`, found the warning marker in `pg_log`, saw no
   log `ERROR`/`FATAL`/`PANIC`, and completed a clean fast shutdown.
+
+Additional validation for the online data-checksum worker thread slice:
+
+- touched-object builds passed for `datachecksum_state.o` and `bufmgr.o`;
+- full `gmake -j8` passed;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed;
+- direct threaded temp-cluster smoke passed with `multithreaded=on`,
+  checksums initially off, `autovacuum=off`, `summarize_wal=off`, and
+  `io_method=sync`. The smoke created a 3,000-row table, called
+  `pg_enable_data_checksums(0, 1000)`, observed `data_checksums=on`,
+  verified the table still had 3,000 rows, saw thread-carrier start logs for
+  the checksum launcher and per-database workers, found no datachecksums OS
+  child process after completion, saw no log `ERROR`/`FATAL`/`PANIC`, and
+  completed a clean fast shutdown;
+- direct process-mode control smoke passed with the same checksum workload and
+  settings except `multithreaded=off`. The smoke observed
+  `data_checksums=on`, verified the table still had 3,000 rows, saw
+  process-carrier start logs for the checksum launcher and workers, saw no log
+  `ERROR`/`FATAL`/`PANIC`, and completed a clean fast shutdown.
 
 An attempted TAP fixture that relied on ordinary autovacuum scheduling did not
 start a worker reliably within a short poll window, even with aggressive table

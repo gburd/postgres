@@ -300,11 +300,14 @@ typedef struct DataChecksumsStateStruct
 	bool		launcher_running;
 
 	/*
-	 * PID of the worker process, if it's currently running, of InvalidPid if
-	 * none. This is set by the worker launcher when it starts waiting for a
-	 * worker process to finish.
+	 * SQL-visible signal PID of the worker, if it's currently running, or
+	 * InvalidPid if none.  In process mode this is the OS PID.  In threaded
+	 * mode this is the logical backend signal ID.
 	 */
-	pid_t		worker_pid;
+	int			worker_signal_pid;
+
+	/* Is worker_signal_pid a thread-backed logical backend ID? */
+	bool		worker_threaded;
 
 	/*
 	 * These fields indicate the target state that the launcher is currently
@@ -370,6 +373,7 @@ static bool ProcessAllDatabases(void);
 static bool ProcessSingleRelationFork(Relation reln, ForkNumber forkNum, BufferAccessStrategy strategy);
 static void launcher_cancel_handler(SIGNAL_ARGS);
 static void WaitForAllTransactionsToFinish(void);
+static bool DataChecksumsWorkerThreadedRuntime(void);
 
 const ShmemCallbacks DataChecksumsShmemCallbacks = {
 	.request_fn = DataChecksumsShmemRequest,
@@ -623,13 +627,14 @@ StartDataChecksumsWorkerLauncher(DataChecksumsWorkerOperation op,
 		 */
 		memset(&bgw, 0, sizeof(bgw));
 		bgw.bgw_flags = BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION;
+		bgw.bgw_backend_model = BgWorkerBackendThreadPerSession;
 		bgw.bgw_start_time = BgWorkerStart_RecoveryFinished;
 		snprintf(bgw.bgw_library_name, BGW_MAXLEN, "postgres");
 		snprintf(bgw.bgw_function_name, BGW_MAXLEN, "DataChecksumsWorkerLauncherMain");
 		snprintf(bgw.bgw_name, BGW_MAXLEN, "datachecksums launcher");
 		snprintf(bgw.bgw_type, BGW_MAXLEN, "datachecksums launcher");
 		bgw.bgw_restart_time = BGW_NEVER_RESTART;
-		bgw.bgw_notify_pid = MyProcPid;
+		bgw.bgw_notify_pid = PgCurrentBackendSignalPid();
 		bgw.bgw_main_arg = (Datum) 0;
 
 		if (!RegisterDynamicBackgroundWorker(&bgw, &bgw_handle))
@@ -807,13 +812,14 @@ ProcessDatabase(DataChecksumsWorkerDatabase *db)
 
 	memset(&bgw, 0, sizeof(bgw));
 	bgw.bgw_flags = BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION;
+	bgw.bgw_backend_model = BgWorkerBackendThreadPerSession;
 	bgw.bgw_start_time = BgWorkerStart_RecoveryFinished;
 	snprintf(bgw.bgw_library_name, BGW_MAXLEN, "postgres");
 	snprintf(bgw.bgw_function_name, BGW_MAXLEN, "%s", "DataChecksumsWorkerMain");
 	snprintf(bgw.bgw_name, BGW_MAXLEN, "datachecksums worker");
 	snprintf(bgw.bgw_type, BGW_MAXLEN, "datachecksums worker");
 	bgw.bgw_restart_time = BGW_NEVER_RESTART;
-	bgw.bgw_notify_pid = MyProcPid;
+	bgw.bgw_notify_pid = PgCurrentBackendSignalPid();
 	bgw.bgw_main_arg = ObjectIdGetDatum(db->dboid);
 
 	/*
@@ -843,7 +849,8 @@ ProcessDatabase(DataChecksumsWorkerDatabase *db)
 			LWLockRelease(DataChecksumsWorkerLock);
 			pgstat_report_activity(STATE_IDLE, NULL);
 			LWLockAcquire(DataChecksumsWorkerLock, LW_EXCLUSIVE);
-			DataChecksumState->worker_pid = InvalidPid;
+			DataChecksumState->worker_signal_pid = InvalidPid;
+			DataChecksumState->worker_threaded = false;
 			LWLockRelease(DataChecksumsWorkerLock);
 			return DataChecksumState->success;
 		}
@@ -884,7 +891,8 @@ ProcessDatabase(DataChecksumsWorkerDatabase *db)
 
 	/* Save the pid of the worker so we can signal it later */
 	LWLockAcquire(DataChecksumsWorkerLock, LW_EXCLUSIVE);
-	DataChecksumState->worker_pid = pid;
+	DataChecksumState->worker_signal_pid = pid;
+	DataChecksumState->worker_threaded = DataChecksumsWorkerThreadedRuntime();
 	LWLockRelease(DataChecksumsWorkerLock);
 
 	snprintf(activity, sizeof(activity) - 1,
@@ -908,7 +916,8 @@ ProcessDatabase(DataChecksumsWorkerDatabase *db)
 
 	pgstat_report_activity(STATE_IDLE, NULL);
 	LWLockAcquire(DataChecksumsWorkerLock, LW_EXCLUSIVE);
-	DataChecksumState->worker_pid = InvalidPid;
+	DataChecksumState->worker_signal_pid = InvalidPid;
+	DataChecksumState->worker_threaded = false;
 	LWLockRelease(DataChecksumsWorkerLock);
 
 	return DataChecksumState->success;
@@ -932,11 +941,21 @@ launcher_exit(int code, Datum arg)
 	if (launcher_running)
 	{
 		LWLockAcquire(DataChecksumsWorkerLock, LW_EXCLUSIVE);
-		if (DataChecksumState->worker_pid != InvalidPid)
+		if (DataChecksumState->worker_signal_pid != InvalidPid)
 		{
+			int			worker_signal_pid = DataChecksumState->worker_signal_pid;
+			bool		worker_threaded = DataChecksumState->worker_threaded;
+
 			ereport(LOG,
 					errmsg("data checksums launcher exiting while worker is still running, signalling worker"));
-			kill(DataChecksumState->worker_pid, SIGTERM);
+
+			if (worker_threaded)
+				(void) SendBackendInterrupt(worker_signal_pid,
+											PG_BACKEND_INTERRUPT_PROC_DIE,
+											MyProcPid,
+											getuid());
+			else
+				kill(worker_signal_pid, SIGTERM);
 		}
 		LWLockRelease(DataChecksumsWorkerLock);
 	}
@@ -1040,6 +1059,13 @@ WaitForAllTransactionsToFinish(void)
 	return;
 }
 
+static bool
+DataChecksumsWorkerThreadedRuntime(void)
+{
+	return CurrentPgRuntime != NULL &&
+		CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION;
+}
+
 /*
  * DataChecksumsWorkerLauncherMain
  *
@@ -1051,14 +1077,18 @@ WaitForAllTransactionsToFinish(void)
 void
 DataChecksumsWorkerLauncherMain(Datum arg)
 {
+	bool		threaded_launcher = DataChecksumsWorkerThreadedRuntime();
 
 	ereport(DEBUG1,
 			errmsg("background worker \"datachecksums launcher\" started"));
 
-	pqsignal(SIGTERM, die);
-	pqsignal(SIGINT, launcher_cancel_handler);
-	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
-	pqsignal(SIGUSR2, PG_SIG_IGN);
+	if (!threaded_launcher)
+	{
+		pqsignal(SIGTERM, die);
+		pqsignal(SIGINT, launcher_cancel_handler);
+		pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+		pqsignal(SIGUSR2, PG_SIG_IGN);
+	}
 
 	BackgroundWorkerUnblockSignals();
 
@@ -1512,14 +1542,18 @@ DataChecksumsWorkerMain(Datum arg)
 	BufferAccessStrategy strategy;
 	bool		aborted = false;
 	int64		rels_done;
+	bool		threaded_worker = DataChecksumsWorkerThreadedRuntime();
 #ifdef USE_INJECTION_POINTS
 	bool		retried = false;
 #endif
 
 	operation = ENABLE_DATACHECKSUMS;
 
-	pqsignal(SIGTERM, die);
-	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+	if (!threaded_worker)
+	{
+		pqsignal(SIGTERM, die);
+		pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+	}
 
 	BackgroundWorkerUnblockSignals();
 

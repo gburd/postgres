@@ -547,7 +547,8 @@ metadata, WAL receiver, WAL summarizer, WAL writer, archiver,
 checkpointer/background writer handoff, syslogger handoff, slot sync worker,
 and logical replication launcher slices, plus initial logical replication
 apply/table-sync, sequence-sync, and parallel apply slices, plus core
-parallel worker thread carriers and remaining worker families.
+parallel worker thread carriers, online data-checksum launcher/workers, and
+remaining worker families.
 
 Goal: make normal threaded server mode fully threaded for in-tree
 server-owned worker families, so the runtime does not fork subprocesses for
@@ -592,7 +593,10 @@ Likely changes:
     metadata;
   - core parallel query, parallel index build, and parallel vacuum workers
     have an initial thread-carrier slice through explicit background-worker
-    backend-model metadata.
+    backend-model metadata;
+  - online data-checksum launcher and per-database workers have an initial
+    thread-carrier slice through explicit background-worker backend-model
+    metadata.
 - Require generic background workers to declare
   `BgWorkerBackendThreadPerSession` before they can run on thread carriers.
   The zero/default registration value remains process-only, so existing

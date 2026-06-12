@@ -4239,6 +4239,15 @@ InitBufferManagerAccess(void)
 	PrivateRefCountHash = refcount_create(CurrentMemoryContext, 100, NULL);
 
 	/*
+	 * BackendWritebackContext is backend-local storage.  Process-mode
+	 * backends get an initial context while attaching to shared memory, but
+	 * thread-backed backends need their own TLS instance initialized when
+	 * they begin using shared buffers.
+	 */
+	WritebackContextInit(&BackendWritebackContext,
+						 &backend_flush_after);
+
+	/*
 	 * AtProcExit_Buffers needs LWLock access, and thereby has to be called at
 	 * the corresponding phase of backend shutdown.
 	 */
