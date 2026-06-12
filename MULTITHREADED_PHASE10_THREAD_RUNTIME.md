@@ -216,6 +216,24 @@ and `BackendInitialize(..., BACKEND_STARTUP_THREAD)` still stops before
 startup-packet handling because timeout and termination delivery are not yet
 thread-local.
 
+## Thread Carrier Memory Context Slice
+
+The twelfth slice initializes PostgreSQL memory-context roots inside the
+carrier thread:
+
+- the carrier thread calls `MemoryContextInit()` before installing backend
+  runtime state;
+- the carrier therefore has thread-local `TopMemoryContext`, `ErrorContext`,
+  and `CurrentMemoryContext` before future backend startup can allocate
+  `Port`, startup packet, or error-reporting state;
+- `backend_thread_finish()` deletes the carrier thread's `TopMemoryContext`
+  before exiting, so the temporary reject carrier does not leak the per-thread
+  memory-context tree into the long-lived postmaster process.
+
+This still does not run `BackendInitialize(..., BACKEND_STARTUP_THREAD)`.
+Startup packet timeout/termination routing and the `PgBackendExit()` process
+identity check remain the next blockers.
+
 ## Validation
 
 - `gmake -C src/backend/postmaster launch_backend.o` passed;
@@ -281,3 +299,13 @@ thread-local.
   slice rejected two client connections with "threaded backend startup is not
   implemented yet"; `pg_ctl status` reported the postmaster still running, and
   normal fast shutdown completed.
+- after the thread carrier memory context slice,
+  `gmake -C src/backend/postmaster launch_backend.o` passed;
+- after the thread carrier memory context slice, full `gmake -C src/backend -j8`
+  passed;
+- after the thread carrier memory context slice,
+  `gmake -C src/test/modules/test_backend_runtime check` passed;
+- a temp install smoke with `multithreaded=on` after the thread carrier memory
+  context slice rejected two client connections with "threaded backend startup
+  is not implemented yet"; `pg_ctl status` reported the postmaster still
+  running, and normal fast shutdown completed.

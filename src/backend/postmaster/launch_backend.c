@@ -331,6 +331,7 @@ backend_thread_reject_entry(void *arg)
 	BackendThreadStart *thread_start = (BackendThreadStart *) arg;
 
 	CurrentBackendThreadStart = thread_start;
+	MemoryContextInit();
 	InitializePgThreadBackendRuntime(&thread_start->runtime_state,
 									 thread_start->child_type, NULL, NULL);
 
@@ -379,6 +380,9 @@ backend_thread_finish(int code)
 	MyClientSocket = NULL;
 	CurrentBackendThreadStart = NULL;
 	free(thread_start);
+
+	if (TopMemoryContext != NULL)
+		MemoryContextDelete(TopMemoryContext);
 
 	pg_thread_exit();
 }
