@@ -48,6 +48,7 @@
 #include "storage/procsignal.h"
 #include "storage/shmem.h"
 #include "storage/subsystems.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/wait_event.h"
@@ -233,10 +234,13 @@ WalSummarizerMain(const void *startup_data, size_t startup_data_len)
 	bool		exact;
 	XLogRecPtr	switch_lsn = InvalidXLogRecPtr;
 	TimeLineID	switch_tli = 0;
+	bool		threaded_worker;
 
 	Assert(startup_data_len == 0);
 
 	AuxiliaryProcessMainCommon();
+	threaded_worker = (CurrentPgRuntime != NULL &&
+					   CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION);
 
 	ereport(DEBUG1,
 			(errmsg_internal("WAL summarizer started")));
@@ -244,14 +248,17 @@ WalSummarizerMain(const void *startup_data, size_t startup_data_len)
 	/*
 	 * Properly accept or ignore signals the postmaster might send us
 	 */
-	pqsignal(SIGHUP, SignalHandlerForConfigReload);
-	pqsignal(SIGINT, PG_SIG_IGN);	/* no query to cancel */
-	pqsignal(SIGTERM, SignalHandlerForShutdownRequest);
-	/* SIGQUIT handler was already set up by InitPostmasterChild */
-	pqsignal(SIGALRM, PG_SIG_IGN);
-	pqsignal(SIGPIPE, PG_SIG_IGN);
-	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
-	pqsignal(SIGUSR2, PG_SIG_IGN);	/* not used */
+	if (!threaded_worker)
+	{
+		pqsignal(SIGHUP, SignalHandlerForConfigReload);
+		pqsignal(SIGINT, PG_SIG_IGN);	/* no query to cancel */
+		pqsignal(SIGTERM, SignalHandlerForShutdownRequest);
+		/* SIGQUIT handler was already set up by InitPostmasterChild */
+		pqsignal(SIGALRM, PG_SIG_IGN);
+		pqsignal(SIGPIPE, PG_SIG_IGN);
+		pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+		pqsignal(SIGUSR2, PG_SIG_IGN);	/* not used */
+	}
 
 	/* Advertise ourselves. */
 	on_shmem_exit(WalSummarizerShutdown, (Datum) 0);
@@ -268,7 +275,8 @@ WalSummarizerMain(const void *startup_data, size_t startup_data_len)
 	/*
 	 * Reset some signals that are accepted by postmaster but not here
 	 */
-	pqsignal(SIGCHLD, PG_SIG_DFL);
+	if (!threaded_worker)
+		pqsignal(SIGCHLD, PG_SIG_DFL);
 
 	/*
 	 * If an exception is encountered, processing resumes here.
@@ -328,7 +336,8 @@ WalSummarizerMain(const void *startup_data, size_t startup_data_len)
 	/*
 	 * Unblock signals (they were blocked when the postmaster forked us)
 	 */
-	sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
+	if (!threaded_worker)
+		sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
 
 	/*
 	 * Fetch information about previous progress from shared memory, and ask
@@ -858,13 +867,24 @@ GetLatestLSN(TimeLineID *tli)
 static void
 ProcessWalSummarizerInterrupts(void)
 {
+	PgCurrentBackendApplyInterrupts();
+
 	if (ProcSignalBarrierPending)
 		ProcessProcSignalBarrier();
 
 	if (ConfigReloadPending)
 	{
 		ConfigReloadPending = false;
-		ProcessConfigFile(PGC_SIGHUP);
+
+		/*
+		 * A thread-backed WAL summarizer shares GUC storage with the
+		 * postmaster.  The postmaster performs the actual config reload; this
+		 * carrier only needs to observe updated shared values such as
+		 * summarize_wal below.
+		 */
+		if (CurrentPgRuntime == NULL ||
+			CurrentPgRuntime->kind == PG_RUNTIME_PROCESS)
+			ProcessConfigFile(PGC_SIGHUP);
 	}
 
 	if (ShutdownRequestPending || !summarize_wal)

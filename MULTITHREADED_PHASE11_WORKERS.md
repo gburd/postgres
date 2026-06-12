@@ -102,12 +102,41 @@ background worker after threaded client carriers exist and verifies that the
 worker is rejected with an explicit server-log message while the server remains
 usable.
 
+## WAL Summarizer Thread Slice
+
+The WAL summarizer is now opted into the thread carrier path in threaded mode:
+
+- `PgRuntimeShouldThreadBackend()` selects `PG_BACKEND_LAUNCH_THREAD` for
+  `B_WAL_SUMMARIZER` when `multithreaded=on`;
+- `postmaster_backend_thread_launch()` accepts WAL summarizer launches without
+  client startup data, matching the other fixed server-owned worker entries;
+- `WalSummarizerMain()` skips process-wide signal handler and signal-mask
+  changes when running as a thread carrier;
+- `ProcessWalSummarizerInterrupts()` first drains logical backend interrupts
+  with `PgCurrentBackendApplyInterrupts()`, so postmaster-directed SIGHUP and
+  shutdown requests arrive through the backend-runtime bridge;
+- thread-backed WAL summarizer SIGHUP observes the postmaster's shared GUC
+  reload result instead of calling `ProcessConfigFile()` itself. The
+  postmaster owns parsing and applying config files for the shared address
+  space; running the parser concurrently in the worker thread crashed during
+  the first reload smoke;
+- thread-backed WAL summarizer exit is reaped by the postmaster thread-exit
+  path, clearing `WalSummarizerPMChild` and preserving the existing crash
+  escalation behavior for abnormal exits.
+
+The live smoke for this slice starts a threaded temp cluster with
+`summarize_wal=on`, waits until `pg_stat_activity` reports one `walsummarizer`
+logical backend, reloads config to exercise the SIGHUP path, then sets
+`summarize_wal=off` and reloads again. The summarizer count drops to zero and
+the postmaster OS child-process count stays unchanged across the summarizer
+exit, proving the summarizer was a thread carrier rather than a forked child.
+
 ## Remaining Worker Families
 
 - autovacuum launcher;
 - checkpointer, background writer, WAL writer, archiver, and syslogger;
 - startup/recovery worker paths that are part of normal server operation;
-- WAL receiver and WAL summarizer;
+- WAL receiver;
 - startup-time AIO method workers;
 - logical replication launcher, apply, table sync, slot sync, sync utility,
   and parallel apply workers;
@@ -161,14 +190,23 @@ Additional validation for the generic background worker compatibility gate:
   is blocked in this local Perl by the missing non-core `IPC::Run` module
   before syntax is checked.
 
+Additional validation for the WAL summarizer thread slice:
+
+- touched-object builds passed for `backend_runtime.o`, `launch_backend.o`,
+  `postmaster.o`, and `walsummarizer.o`;
+- full `gmake -j8` passed after the final reload fix;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed after the reload fix;
+- `gmake -C src/test/modules/test_backend_runtime check` passed its SQL
+  regression and skipped TAP because this checkout is not configured with
+  `--enable-tap-tests`;
+- direct threaded temp-cluster smoke passed with `multithreaded=on`,
+  `autovacuum=off`, and `summarize_wal=on`. The smoke observed
+  `show_summarize=on`, `summarizers_before=1`, and `summarizers_after=0`
+  after `ALTER SYSTEM SET summarize_wal = off` plus `pg_reload_conf()`.
+  The postmaster OS child count remained `5` before and after the logical
+  summarizer exited, and fast shutdown completed cleanly.
+
 An attempted TAP fixture that relied on ordinary autovacuum scheduling did not
 start a worker reliably within a short poll window, even with aggressive table
 thresholds. The live worker proof should use a deterministic trigger or a
 dedicated test hook rather than depending on launcher heuristics.
-
-An attempted late WAL summarizer proof using `ALTER SYSTEM SET summarize_wal =
-on` and `pg_reload_conf()` did not start a visible `wal summarizer` backend in
-the short poll window. Do not use that reload-only path as the Phase 11
-summarizer proof without first confirming the postmaster launch condition and
-the summarizer's own startup/exit rules. Startup-time WAL summarizer threading
-still belongs with the coordinated fixed-worker startup conversion.

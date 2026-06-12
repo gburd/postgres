@@ -540,7 +540,8 @@ Exit gate:
 ## Phase 11: Auxiliary Worker Thread Runtime
 
 Status: in progress. See `MULTITHREADED_PHASE11_WORKERS.md` for the
-autovacuum-worker thread carrier slice and remaining worker families.
+completed autovacuum-worker, late AIO worker, generic background-worker
+compatibility, and WAL summarizer slices, plus remaining worker families.
 
 Goal: make normal threaded server mode fully threaded for in-tree
 server-owned worker families, so the runtime does not fork subprocesses for
@@ -569,11 +570,13 @@ Likely changes:
   choose process carriers or thread carriers.
 - Convert in-tree auxiliary worker families to thread carriers in threaded
   mode:
-  - autovacuum launcher and autovacuum workers;
+  - autovacuum launcher; autovacuum workers have an initial thread-carrier
+    slice;
   - checkpointer, background writer, WAL writer, archiver, and syslogger;
   - startup/recovery worker paths that are part of normal server operation;
-  - WAL receiver and WAL summarizer;
-  - AIO method workers;
+  - WAL receiver; WAL summarizer has an initial thread-carrier slice;
+  - startup-time AIO method workers; late AIO method workers have an initial
+    thread-carrier slice;
   - logical replication launcher, apply, table sync, slot sync, sync utility,
     and parallel apply workers.
 - Provide a narrow allowlist path for in-tree generic background worker tests

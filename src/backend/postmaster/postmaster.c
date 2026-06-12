@@ -435,6 +435,7 @@ static void dummy_handler(SIGNAL_ARGS);
 static void process_pm_thread_exit(void);
 static void CleanupBackend(PMChild *bp, int exitstatus);
 static bool cleanup_io_worker_child(PMChild *child);
+static bool cleanup_wal_summarizer_child(PMChild *child, int exitstatus);
 static void HandleChildCrash(int pid, int exitstatus, const char *procname);
 static void LogChildExit(int lev, const char *procname,
 						 int pid, int exitstatus);
@@ -2627,6 +2628,12 @@ process_pm_thread_exit(void)
 			reaped = true;
 			continue;
 		}
+		if (pmchild->bkend_type == B_WAL_SUMMARIZER)
+		{
+			(void) cleanup_wal_summarizer_child(pmchild, exitstatus);
+			reaped = true;
+			continue;
+		}
 		CleanupBackend(pmchild, exitstatus);
 		reaped = true;
 	}
@@ -3608,11 +3615,18 @@ thread_child_signal_interrupt(PMChild *pmchild, int signal,
 				*interrupt = PG_BACKEND_INTERRUPT_PROC_DIE;
 				return true;
 			}
+			if (pmchild->bkend_type == B_WAL_SUMMARIZER)
+				return false;
 			*interrupt = PG_BACKEND_INTERRUPT_QUERY_CANCEL;
 			return true;
 		case SIGTERM:
 			if (pmchild->bkend_type == B_IO_WORKER)
 				return false;
+			if (pmchild->bkend_type == B_WAL_SUMMARIZER)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST;
+				return true;
+			}
 			*interrupt = PG_BACKEND_INTERRUPT_PROC_DIE;
 			return true;
 		case SIGUSR2:
@@ -4557,6 +4571,21 @@ cleanup_io_worker_child(PMChild *child)
 		}
 	}
 	return false;
+}
+
+static bool
+cleanup_wal_summarizer_child(PMChild *child, int exitstatus)
+{
+	Assert(child != NULL);
+	Assert(child == WalSummarizerPMChild);
+	Assert(child->bkend_type == B_WAL_SUMMARIZER);
+
+	ReleasePostmasterChildSlot(WalSummarizerPMChild);
+	WalSummarizerPMChild = NULL;
+	if (!EXIT_STATUS_0(exitstatus))
+		HandleChildCrash(0, exitstatus, _("WAL summarizer process"));
+
+	return true;
 }
 
 /*

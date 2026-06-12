@@ -242,12 +242,13 @@ PgRuntimeShouldThreadBackend(BackendType backend_type)
 		return false;
 
 	/*
-	 * Phase 10 is scoped to regular client backends.  Phase 11 starts by
-	 * allowing autovacuum workers to use the same carrier infrastructure,
-	 * while the launcher and other in-tree workers remain on their existing
-	 * process paths until they get dedicated signal/lifecycle conversion.
+	 * Phase 10 is scoped to regular client backends.  Phase 11 incrementally
+	 * moves in-tree server-owned worker families onto the same carrier
+	 * infrastructure as they get dedicated signal and lifecycle conversion.
 	 */
-	return backend_type == B_BACKEND || backend_type == B_AUTOVAC_WORKER;
+	return backend_type == B_BACKEND ||
+		backend_type == B_AUTOVAC_WORKER ||
+		backend_type == B_WAL_SUMMARIZER;
 }
 
 PgBackendModel
