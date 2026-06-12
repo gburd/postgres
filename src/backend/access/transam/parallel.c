@@ -209,7 +209,7 @@ CreateParallelContext(const char *library_name, const char *function_name,
 	pcxt->nworkers_to_launch = nworkers;
 	pcxt->library_name = pstrdup(library_name);
 	pcxt->function_name = pstrdup(function_name);
-	pcxt->error_context_stack = error_context_stack;
+	pcxt->saved_error_context_stack = error_context_stack;
 	shm_toc_initialize_estimator(&pcxt->estimator);
 	dlist_push_head(ParallelContextList(), &pcxt->node);
 
@@ -1209,7 +1209,7 @@ ProcessParallelMessage(ParallelContext *pcxt, int i, StringInfo msg)
 				 * not the current ones.
 				 */
 				save_error_context_stack = error_context_stack;
-				error_context_stack = pcxt->error_context_stack;
+				error_context_stack = pcxt->saved_error_context_stack;
 
 				/* Rethrow error or print notice. */
 				ThrowErrorData(&edata);

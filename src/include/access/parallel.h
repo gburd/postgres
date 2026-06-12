@@ -40,7 +40,7 @@ typedef struct ParallelContext
 	int			nworkers_launched;
 	char	   *library_name;
 	char	   *function_name;
-	ErrorContextCallback *error_context_stack;
+	ErrorContextCallback *saved_error_context_stack;
 	shm_toc_estimator estimator;
 	dsm_segment *seg;
 	void	   *private_memory;

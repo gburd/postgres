@@ -152,6 +152,12 @@ typedef struct PgExecutionDebugState
 	const char *debug_query_string;
 } PgExecutionDebugState;
 
+typedef struct PgExecutionErrorState
+{
+	struct ErrorContextCallback *context_stack;
+	sigjmp_buf *exception_stack;
+} PgExecutionErrorState;
+
 #define PG_CONNECTION_SEND_BUFFER_SIZE 8192
 #define PG_CONNECTION_RECV_BUFFER_SIZE 8192
 #define PG_CONNECTION_CANCEL_KEY_LENGTH 32
@@ -289,6 +295,7 @@ struct PgExecution
 	PgSession  *session;
 	PgCarrier  *carrier;
 	PgExecutionDebugState debug;
+	PgExecutionErrorState error;
 };
 
 typedef struct PgThreadBackendRuntimeState

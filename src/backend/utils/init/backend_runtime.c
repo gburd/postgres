@@ -58,6 +58,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionClientConnectionInfoStat
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendPendingInterruptState early_pending_interrupts;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInterruptHoldoffState early_interrupt_holdoffs;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionDebugState early_execution_debug;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionErrorState early_execution_error;
 
 StaticAssertDecl(PG_BACKEND_INTERRUPT_COUNT <= 32,
 				 "PgBackendInterruptMask must fit all backend interrupts");
@@ -77,7 +78,9 @@ static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
 static void PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend);
 static BackendType *PgCurrentBackendTypeRef(void);
 static void PgExecutionAdoptEarlyDebugState(PgExecution *execution);
+static void PgExecutionAdoptEarlyErrorState(PgExecution *execution);
 static PgBackendCoreState *PgCurrentCoreState(void);
+static PgExecutionErrorState *PgCurrentExecutionErrorState(void);
 static PgBackendPendingInterruptState *PgCurrentPendingInterrupts(void);
 static PgBackendInterruptHoldoffState *PgCurrentInterruptHoldoffs(void);
 
@@ -220,6 +223,15 @@ PgExecutionAdoptEarlyDebugState(PgExecution *execution)
 	early_execution_debug.debug_query_string = NULL;
 }
 
+static void
+PgExecutionAdoptEarlyErrorState(PgExecution *execution)
+{
+	Assert(execution != NULL);
+
+	execution->error = early_execution_error;
+	MemSet(&early_execution_error, 0, sizeof(early_execution_error));
+}
+
 void
 InitializePgProcessRuntime(void)
 {
@@ -274,6 +286,7 @@ InitializePgProcessRuntime(void)
 	process_execution.session = &process_session;
 	process_execution.carrier = &process_carrier;
 	PgExecutionAdoptEarlyDebugState(&process_execution);
+	PgExecutionAdoptEarlyErrorState(&process_execution);
 
 	CurrentPgRuntime = &process_runtime;
 	CurrentPgCarrier = &process_carrier;
@@ -355,6 +368,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	state->carrier.current_session = &state->session;
 	state->carrier.current_execution = &state->execution;
 	PgBackendAdoptEarlyCoreState(&state->backend);
+	PgExecutionAdoptEarlyErrorState(&state->execution);
 	CurrentPgRuntime = &thread_runtime;
 	CurrentPgCarrier = &state->carrier;
 	CurrentPgBackend = &state->backend;
@@ -459,6 +473,27 @@ const char **
 PgCurrentDebugQueryStringRef(void)
 {
 	return PgExecutionDebugQueryStringRef(CurrentPgExecution);
+}
+
+static PgExecutionErrorState *
+PgCurrentExecutionErrorState(void)
+{
+	if (CurrentPgExecution == NULL)
+		return &early_execution_error;
+
+	return &CurrentPgExecution->error;
+}
+
+ErrorContextCallback **
+PgCurrentErrorContextStackRef(void)
+{
+	return &PgCurrentExecutionErrorState()->context_stack;
+}
+
+sigjmp_buf **
+PgCurrentExceptionStackRef(void)
+{
+	return &PgCurrentExecutionErrorState()->exception_stack;
 }
 
 PgConnectionSocketIOState *

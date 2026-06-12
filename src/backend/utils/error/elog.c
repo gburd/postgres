@@ -96,11 +96,6 @@
 #define _(x) err_gettext(x)
 
 
-/* Global variables */
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ErrorContextCallback *error_context_stack = NULL;
-
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION sigjmp_buf *PG_exception_stack = NULL;
-
 /*
  * Hook for intercepting messages before they are sent to the server log.
  * Note that the hook will not get called for messages that are suppressed

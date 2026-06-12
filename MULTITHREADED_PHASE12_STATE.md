@@ -536,3 +536,51 @@ Validation for this slice:
 - core process-mode `src/test/regress` `parallel_schedule` passed all 245
   tests after the clean rebuild and install;
 - clean `gmake -C contrib -j8` passed after the header migration.
+
+## Execution Error State Bridge
+
+The thirteenth Phase 12 slice moves the error-context and exception stacks
+under `PgExecution`:
+
+- `PgExecution` now owns a `PgExecutionErrorState`;
+- `error_context_stack` and `PG_exception_stack` remain source-compatible
+  lvalue macros in `elog.h`;
+- the macros route through `PgCurrentErrorContextStackRef()` and
+  `PgCurrentExceptionStackRef()`, which return the current logical
+  execution's fields;
+- early startup paths before `CurrentPgExecution` is installed use fallback
+  execution-local storage in `backend_runtime.c`;
+- `InitializePgProcessRuntime()` and `InstallPgThreadBackendRuntimeState()`
+  adopt any early fallback error state into the logical execution object
+  before clearing fallback storage;
+- `ParallelContext` now stores the leader's context callback chain as
+  `saved_error_context_stack`, avoiding a field-name collision with the new
+  compatibility macro while preserving parallel error reporting semantics.
+
+This removes the core `elog.c` error-recovery stacks from raw TLS while
+keeping the existing `PG_TRY()`/`PG_CATCH()` macros and error context callback
+call sites intact. Later scheduler work can therefore carry error recovery
+state with the logical execution instead of depending on carrier-local
+storage.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `elog.o`,
+  `parallel.o`, `postgres.o`, and `test_backend_runtime.o`;
+- because `elog.h` changed exported execution globals into compatibility
+  macros, `gmake -C src/backend clean` plus generated-header recovery was used
+  before the clean rebuild;
+- clean full `gmake -j8` passed;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed, followed by
+  rebuilding and reinstalling `src/test/modules/test_backend_runtime`,
+  PL/pgSQL, `src/test/regress`, and `libpqwalreceiver`;
+- focused `test_backend_runtime` regression passed and includes
+  `test_execution_error_state_is_execution_local()`, which switches
+  `CurrentPgExecution` between fake executions and proves the moved
+  compatibility lvalues are isolated per execution;
+- threaded runtime TAP coverage passed for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests after the clean rebuild and install;
+- clean `gmake -C contrib -j8` passed after the header migration.

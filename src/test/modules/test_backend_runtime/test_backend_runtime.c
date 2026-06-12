@@ -758,6 +758,61 @@ test_execution_debug_query_string_is_execution_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_execution_error_state_is_execution_local);
+Datum
+test_execution_error_state_is_execution_local(PG_FUNCTION_ARGS)
+{
+	PgExecution *saved_execution;
+	PgExecution fake_execution1;
+	PgExecution fake_execution2;
+	ErrorContextCallback *saved_error_context_stack;
+	sigjmp_buf *saved_exception_stack;
+	ErrorContextCallback fake_error_context1;
+	ErrorContextCallback fake_error_context2;
+	sigjmp_buf fake_exception_stack1;
+	sigjmp_buf fake_exception_stack2;
+	bool		ok = true;
+
+	saved_execution = CurrentPgExecution;
+	saved_error_context_stack = error_context_stack;
+	saved_exception_stack = PG_exception_stack;
+	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
+	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+	MemSet(&fake_error_context1, 0, sizeof(fake_error_context1));
+	MemSet(&fake_error_context2, 0, sizeof(fake_error_context2));
+
+	/*
+	 * Do not wrap this in PG_TRY(): this test intentionally rewires
+	 * PG_exception_stack to prove the compatibility lvalue is execution-local.
+	 */
+	CurrentPgExecution = &fake_execution1;
+	error_context_stack = &fake_error_context1;
+	PG_exception_stack = &fake_exception_stack1;
+
+	CurrentPgExecution = &fake_execution2;
+	ok = ok && error_context_stack == NULL;
+	ok = ok && PG_exception_stack == NULL;
+	error_context_stack = &fake_error_context2;
+	PG_exception_stack = &fake_exception_stack2;
+
+	CurrentPgExecution = &fake_execution1;
+	ok = ok && error_context_stack == &fake_error_context1;
+	ok = ok && PG_exception_stack == &fake_exception_stack1;
+
+	CurrentPgExecution = &fake_execution2;
+	ok = ok && error_context_stack == &fake_error_context2;
+	ok = ok && PG_exception_stack == &fake_exception_stack2;
+
+	CurrentPgExecution = saved_execution;
+	error_context_stack = saved_error_context_stack;
+	PG_exception_stack = saved_exception_stack;
+
+	if (!ok)
+		elog(ERROR, "execution error state was not execution-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_connection_socket_io_is_connection_local);
 Datum
 test_connection_socket_io_is_connection_local(PG_FUNCTION_ARGS)

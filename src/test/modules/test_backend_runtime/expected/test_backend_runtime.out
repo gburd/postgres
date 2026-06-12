@@ -71,6 +71,12 @@ SELECT test_execution_debug_query_string_is_execution_local();
  t
 (1 row)
 
+SELECT test_execution_error_state_is_execution_local();
+ test_execution_error_state_is_execution_local 
+-----------------------------------------------
+ t
+(1 row)
+
 SELECT test_connection_socket_io_is_connection_local();
  test_connection_socket_io_is_connection_local 
 -----------------------------------------------
