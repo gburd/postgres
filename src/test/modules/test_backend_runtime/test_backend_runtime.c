@@ -15,6 +15,7 @@
 #include <errno.h>
 
 #include "fmgr.h"
+#include "libpq/libpq-be.h"
 #include "libpq/libpq.h"
 #include "postmaster/postmaster.h"
 #include "port/atomics.h"
@@ -847,6 +848,63 @@ test_connection_startup_state_is_connection_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "connection startup state was not connection-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_client_connection_info_is_connection_local);
+Datum
+test_client_connection_info_is_connection_local(PG_FUNCTION_ARGS)
+{
+	PgConnection *saved_connection;
+	PgConnection fake_connection1;
+	PgConnection fake_connection2;
+	const char *saved_authn_id;
+	UserAuth	saved_auth_method;
+	bool		ok = true;
+
+	saved_connection = CurrentPgConnection;
+	saved_authn_id = MyClientConnectionInfo.authn_id;
+	saved_auth_method = MyClientConnectionInfo.auth_method;
+	MemSet(&fake_connection1, 0, sizeof(fake_connection1));
+	MemSet(&fake_connection2, 0, sizeof(fake_connection2));
+
+	PG_TRY();
+	{
+		CurrentPgConnection = &fake_connection1;
+		MyClientConnectionInfo.authn_id = "connection-one";
+		MyClientConnectionInfo.auth_method = uaTrust;
+
+		CurrentPgConnection = &fake_connection2;
+		ok = ok && MyClientConnectionInfo.authn_id == NULL;
+		MyClientConnectionInfo.authn_id = "connection-two";
+		MyClientConnectionInfo.auth_method = uaSCRAM;
+
+		CurrentPgConnection = &fake_connection1;
+		ok = ok && strcmp(MyClientConnectionInfo.authn_id,
+						  "connection-one") == 0;
+		ok = ok && MyClientConnectionInfo.auth_method == uaTrust;
+
+		CurrentPgConnection = &fake_connection2;
+		ok = ok && strcmp(MyClientConnectionInfo.authn_id,
+						  "connection-two") == 0;
+		ok = ok && MyClientConnectionInfo.auth_method == uaSCRAM;
+
+		CurrentPgConnection = saved_connection;
+		MyClientConnectionInfo.authn_id = saved_authn_id;
+		MyClientConnectionInfo.auth_method = saved_auth_method;
+	}
+	PG_CATCH();
+	{
+		CurrentPgConnection = saved_connection;
+		MyClientConnectionInfo.authn_id = saved_authn_id;
+		MyClientConnectionInfo.auth_method = saved_auth_method;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "client connection info was not connection-local");
 
 	PG_RETURN_BOOL(true);
 }

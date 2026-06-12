@@ -384,3 +384,49 @@ Validation for this slice:
 - core process-mode `src/test/regress` `parallel_schedule` passed all 245
   tests after the clean rebuild and install;
 - `gmake -C contrib -j8` passed after the header migration.
+
+## Client Connection Info Bridge
+
+The tenth Phase 12 slice moves authenticated-client connection information
+under `PgConnection`:
+
+- `PgConnection` now owns a `PgConnectionClientConnectionInfoState`;
+- `PgConnectionClientConnectionInfoState` is layout-compatible with
+  `ClientConnectionInfo`, with static assertions in `miscinit.c`;
+- `MyClientConnectionInfo` remains a source-compatible lvalue macro in
+  `libpq-be.h`;
+- the macro routes through `PgCurrentClientConnectionInfoRef()`, which returns
+  the current connection's authenticated-client information bucket;
+- early authentication paths before `CurrentPgConnection` is installed use
+  fallback connection-local storage in `backend_runtime.c`;
+- `InitializePgProcessRuntime()` adopts early fallback client-connection
+  information into the process connection object before clearing fallback
+  storage.
+
+This keeps authenticated identity and authentication-method state tied to the
+logical connection object. It also preserves the existing serialization and
+deserialization call sites for parallel workers, which continue to use the
+`MyClientConnectionInfo` compatibility name while the backing storage moves
+out of raw TLS.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `miscinit.o`,
+  `postinit.o`, `auth.o`, `auth-oauth.o`, `parallel.o`, and
+  `test_backend_runtime.o`;
+- because installed headers changed another exported connection global into a
+  compatibility macro, `gmake -C src/backend clean` plus generated-header
+  recovery was used before the clean rebuild;
+- clean full `gmake -j8` passed;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed, followed by
+  rebuilding and reinstalling `src/test/modules/test_backend_runtime`;
+- focused `test_backend_runtime` regression passed and includes
+  `test_client_connection_info_is_connection_local()`, which switches
+  `CurrentPgConnection` between fake connections and proves
+  `MyClientConnectionInfo` is isolated per connection;
+- threaded runtime TAP coverage passed for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests after the clean rebuild and install;
+- `gmake -C contrib -j8` passed after the header migration.

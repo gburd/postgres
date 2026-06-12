@@ -66,3 +66,7 @@ CREATE FUNCTION test_connection_frontend_protocol_is_connection_local()
 CREATE FUNCTION test_connection_startup_state_is_connection_local()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;
+
+CREATE FUNCTION test_client_connection_info_is_connection_local()
+	RETURNS pg_catalog.bool
+	AS 'MODULE_PATHNAME' LANGUAGE C;

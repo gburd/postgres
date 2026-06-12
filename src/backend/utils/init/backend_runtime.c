@@ -50,6 +50,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionSocketIOState early_conn
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionProtocolState early_connection_protocol;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionInterruptState early_connection_interrupts;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionStartupState early_connection_startup;
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionClientConnectionInfoState early_client_connection_info;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInterruptHoldoffState early_interrupt_holdoffs;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionDebugState early_execution_debug;
 
@@ -64,6 +65,7 @@ static void PgConnectionAdoptEarlySocketIO(PgConnection *connection);
 static void PgConnectionAdoptEarlyProtocolState(PgConnection *connection);
 static void PgConnectionAdoptEarlyInterruptState(PgConnection *connection);
 static void PgConnectionAdoptEarlyStartupState(PgConnection *connection);
+static void PgConnectionAdoptEarlyClientConnectionInfo(PgConnection *connection);
 static void PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend);
 static void PgExecutionAdoptEarlyDebugState(PgExecution *execution);
 static PgBackendInterruptHoldoffState *PgCurrentInterruptHoldoffs(void);
@@ -129,6 +131,15 @@ PgConnectionAdoptEarlyStartupState(PgConnection *connection)
 
 	connection->startup = early_connection_startup;
 	MemSet(&early_connection_startup, 0, sizeof(early_connection_startup));
+}
+
+static void
+PgConnectionAdoptEarlyClientConnectionInfo(PgConnection *connection)
+{
+	Assert(connection != NULL);
+
+	connection->client_connection_info = early_client_connection_info;
+	MemSet(&early_client_connection_info, 0, sizeof(early_client_connection_info));
 }
 
 static void
@@ -205,6 +216,7 @@ InitializePgProcessRuntime(void)
 	PgConnectionAdoptEarlyProtocolState(&process_connection);
 	PgConnectionAdoptEarlyInterruptState(&process_connection);
 	PgConnectionAdoptEarlyStartupState(&process_connection);
+	PgConnectionAdoptEarlyClientConnectionInfo(&process_connection);
 
 	process_execution.backend = &process_backend;
 	process_execution.session = &process_session;
@@ -514,6 +526,21 @@ struct ClientSocket **
 PgCurrentClientSocketRef(void)
 {
 	return PgConnectionClientSocketRef(CurrentPgConnection);
+}
+
+void *
+PgConnectionClientConnectionInfoRef(PgConnection *connection)
+{
+	if (connection == NULL)
+		return &early_client_connection_info;
+
+	return &connection->client_connection_info;
+}
+
+void *
+PgCurrentClientConnectionInfoRef(void)
+{
+	return PgConnectionClientConnectionInfoRef(CurrentPgConnection);
 }
 
 static PgBackendInterruptHoldoffState *

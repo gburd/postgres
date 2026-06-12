@@ -95,3 +95,9 @@ SELECT test_connection_startup_state_is_connection_local();
  t
 (1 row)
 
+SELECT test_client_connection_info_is_connection_local();
+ test_client_connection_info_is_connection_local 
+-------------------------------------------------
+ t
+(1 row)
+

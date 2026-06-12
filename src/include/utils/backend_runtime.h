@@ -15,6 +15,7 @@
 #include "access/session.h"
 #include "fmgr.h"
 #include "lib/ilist.h"
+#include "libpq/hba.h"
 #include "miscadmin.h"
 #include "port/atomics.h"
 #include "storage/ipc.h"
@@ -181,6 +182,12 @@ typedef struct PgConnectionStartupState
 	struct ClientSocket *client_socket;
 } PgConnectionStartupState;
 
+typedef struct PgConnectionClientConnectionInfoState
+{
+	const char *authn_id;
+	UserAuth	auth_method;
+} PgConnectionClientConnectionInfoState;
+
 /*
  * Main-loop state owned by PgSession. Some of this state used to be volatile
  * locals in PostgresMain(); keep the loop flags volatile because they must
@@ -258,6 +265,7 @@ struct PgConnection
 	PgConnectionProtocolState protocol;
 	PgConnectionInterruptState interrupts;
 	PgConnectionStartupState startup;
+	PgConnectionClientConnectionInfoState client_connection_info;
 };
 
 struct PgExecution
@@ -323,6 +331,8 @@ extern bool *PgConnectionClientAuthInProgressRef(PgConnection *connection);
 extern bool *PgCurrentClientAuthInProgressRef(void);
 extern struct ClientSocket **PgConnectionClientSocketRef(PgConnection *connection);
 extern struct ClientSocket **PgCurrentClientSocketRef(void);
+extern void *PgConnectionClientConnectionInfoRef(PgConnection *connection);
+extern void *PgCurrentClientConnectionInfoRef(void);
 extern PgBackendLaunchModel PgRuntimeGetBackendLaunchModel(BackendType backend_type);
 extern bool PgRuntimeShouldThreadBackend(BackendType backend_type);
 extern PgBackendModel PgRuntimeGetExtensionBackendModel(void);

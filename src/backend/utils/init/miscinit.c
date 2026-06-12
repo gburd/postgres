@@ -1020,7 +1020,15 @@ GetUserNameFromId(Oid roleid, bool noerr)
  *-------------------------------------------------------------------------
  */
 
-PG_THREAD_LOCAL PG_GLOBAL_CONNECTION ClientConnectionInfo MyClientConnectionInfo;
+StaticAssertDecl(sizeof(PgConnectionClientConnectionInfoState) ==
+				 sizeof(ClientConnectionInfo),
+				 "connection client info bridge must match ClientConnectionInfo");
+StaticAssertDecl(offsetof(PgConnectionClientConnectionInfoState, authn_id) ==
+				 offsetof(ClientConnectionInfo, authn_id),
+				 "authn_id offset must match ClientConnectionInfo");
+StaticAssertDecl(offsetof(PgConnectionClientConnectionInfoState, auth_method) ==
+				 offsetof(ClientConnectionInfo, auth_method),
+				 "auth_method offset must match ClientConnectionInfo");
 
 /*
  * Intermediate representation of ClientConnectionInfo for easier

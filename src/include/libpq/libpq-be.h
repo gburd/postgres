@@ -359,7 +359,8 @@ extern ssize_t be_gssapi_write(Port *port, const void *ptr, size_t len);
 
 extern uint32 *PgCurrentFrontendProtocolRef(void);
 #define FrontendProtocol (*((ProtocolVersion *) PgCurrentFrontendProtocolRef()))
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CONNECTION ClientConnectionInfo MyClientConnectionInfo;
+extern void *PgCurrentClientConnectionInfoRef(void);
+#define MyClientConnectionInfo (*((ClientConnectionInfo *) PgCurrentClientConnectionInfoRef()))
 
 /* TCP keepalives configuration. These are no-ops on an AF_UNIX socket. */
 
