@@ -212,11 +212,15 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME int transaction_buffers;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND int MyProcPid;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND pg_time_t MyStartTime;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND TimestampTz MyStartTimestamp;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CONNECTION struct Port *MyProcPort;
+extern struct Port **PgCurrentProcPortRef(void);
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND struct Latch *MyLatch;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CONNECTION uint8 MyCancelKey[];
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CONNECTION int MyCancelKeyLength;
+extern uint8 *PgCurrentCancelKey(void);
+extern int *PgCurrentCancelKeyLengthRef(void);
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND int MyPMChildSlot;
+
+#define MyProcPort (*PgCurrentProcPortRef())
+#define MyCancelKey (PgCurrentCancelKey())
+#define MyCancelKeyLength (*PgCurrentCancelKeyLengthRef())
 
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND char OutputFileName[];
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char my_exec_path[];

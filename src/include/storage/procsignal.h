@@ -65,7 +65,7 @@ typedef enum
  * incoming cancellation packets from clients, mustn't use this hardcoded
  * length.
  */
-#define MAX_CANCEL_KEY_LENGTH  32
+#define MAX_CANCEL_KEY_LENGTH  PG_CONNECTION_CANCEL_KEY_LENGTH
 
 /*
  * prototypes for functions in procsignal.c

@@ -613,6 +613,80 @@ test_connection_protocol_state_is_connection_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_connection_identity_state_is_connection_local);
+Datum
+test_connection_identity_state_is_connection_local(PG_FUNCTION_ARGS)
+{
+	PgConnection *saved_connection;
+	PgConnection fake_connection1;
+	PgConnection fake_connection2;
+	Port	   *saved_port;
+	Port		fake_port1;
+	Port		fake_port2;
+	uint8		saved_cancel_key[PG_CONNECTION_CANCEL_KEY_LENGTH];
+	int			saved_cancel_key_length;
+	bool		ok = true;
+
+	saved_connection = CurrentPgConnection;
+	saved_port = MyProcPort;
+	saved_cancel_key_length = MyCancelKeyLength;
+	memcpy(saved_cancel_key, MyCancelKey, sizeof(saved_cancel_key));
+	MemSet(&fake_connection1, 0, sizeof(fake_connection1));
+	MemSet(&fake_connection2, 0, sizeof(fake_connection2));
+	MemSet(&fake_port1, 0, sizeof(fake_port1));
+	MemSet(&fake_port2, 0, sizeof(fake_port2));
+
+	PG_TRY();
+	{
+		CurrentPgConnection = &fake_connection1;
+		MyProcPort = &fake_port1;
+		MyCancelKey[0] = 1;
+		MyCancelKey[1] = 2;
+		MyCancelKeyLength = 2;
+
+		CurrentPgConnection = &fake_connection2;
+		ok = ok && MyProcPort == NULL;
+		ok = ok && MyCancelKeyLength == 0;
+		MyProcPort = &fake_port2;
+		MyCancelKey[0] = 7;
+		MyCancelKey[1] = 8;
+		MyCancelKey[2] = 9;
+		MyCancelKeyLength = 3;
+
+		CurrentPgConnection = &fake_connection1;
+		ok = ok && MyProcPort == &fake_port1;
+		ok = ok && MyCancelKeyLength == 2;
+		ok = ok && MyCancelKey[0] == 1;
+		ok = ok && MyCancelKey[1] == 2;
+
+		CurrentPgConnection = &fake_connection2;
+		ok = ok && MyProcPort == &fake_port2;
+		ok = ok && MyCancelKeyLength == 3;
+		ok = ok && MyCancelKey[0] == 7;
+		ok = ok && MyCancelKey[1] == 8;
+		ok = ok && MyCancelKey[2] == 9;
+
+		CurrentPgConnection = saved_connection;
+		MyProcPort = saved_port;
+		memcpy(MyCancelKey, saved_cancel_key, sizeof(saved_cancel_key));
+		MyCancelKeyLength = saved_cancel_key_length;
+	}
+	PG_CATCH();
+	{
+		CurrentPgConnection = saved_connection;
+		MyProcPort = saved_port;
+		memcpy(MyCancelKey, saved_cancel_key, sizeof(saved_cancel_key));
+		MyCancelKeyLength = saved_cancel_key_length;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "connection identity state was not connection-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_backend_interrupt_wakes_target_latch);
 Datum
 test_backend_interrupt_wakes_target_latch(PG_FUNCTION_ARGS)

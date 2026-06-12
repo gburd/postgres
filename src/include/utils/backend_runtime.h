@@ -139,6 +139,14 @@ typedef struct PgExecutionDebugState
 
 #define PG_CONNECTION_SEND_BUFFER_SIZE 8192
 #define PG_CONNECTION_RECV_BUFFER_SIZE 8192
+#define PG_CONNECTION_CANCEL_KEY_LENGTH 32
+
+typedef struct PgConnectionIdentityState
+{
+	struct Port *port;
+	uint8		cancel_key[PG_CONNECTION_CANCEL_KEY_LENGTH];
+	int			cancel_key_length;
+} PgConnectionIdentityState;
 
 typedef struct PgConnectionSocketIOState
 {
@@ -231,7 +239,7 @@ struct PgConnection
 {
 	PgBackend  *backend;
 	PgSession  *session;
-	struct Port *port;
+	PgConnectionIdentityState identity;
 	PgConnectionSocketIOState socket_io;
 	PgConnectionProtocolState protocol;
 };
@@ -275,6 +283,12 @@ extern Session *PgSessionGetLegacySession(PgSession *session);
 extern void PgSessionSetLegacySession(PgSession *session,
 									   Session *legacy_session);
 extern Session *PgCurrentLegacySession(void);
+extern struct Port **PgConnectionProcPortRef(PgConnection *connection);
+extern struct Port **PgCurrentProcPortRef(void);
+extern uint8 *PgConnectionCancelKey(PgConnection *connection);
+extern uint8 *PgCurrentCancelKey(void);
+extern int *PgConnectionCancelKeyLengthRef(PgConnection *connection);
+extern int *PgCurrentCancelKeyLengthRef(void);
 extern const char **PgExecutionDebugQueryStringRef(PgExecution *execution);
 extern const char **PgCurrentDebugQueryStringRef(void);
 extern PgConnectionSocketIOState *PgConnectionSocketIORef(PgConnection *connection);

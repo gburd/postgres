@@ -5081,7 +5081,7 @@ PgSessionBootstrap(const char *dbname, const char *username)
 
 		len = (MyProcPort == NULL || MyProcPort->proto >= PG_PROTOCOL(3, 2))
 			? MAX_CANCEL_KEY_LENGTH : 4;
-		if (!pg_strong_random(&MyCancelKey, len))
+		if (!pg_strong_random(MyCancelKey, len))
 		{
 			ereport(ERROR,
 					(errcode(ERRCODE_INTERNAL_ERROR),

@@ -45,6 +45,7 @@ static PG_GLOBAL_BACKEND PgBackend process_backend;
 static PG_GLOBAL_SESSION PgSession process_session;
 static PG_GLOBAL_CONNECTION PgConnection process_connection;
 static PG_GLOBAL_EXECUTION PgExecution process_execution;
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionIdentityState early_connection_identity;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionSocketIOState early_connection_socket_io;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionProtocolState early_connection_protocol;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInterruptHoldoffState early_interrupt_holdoffs;
@@ -56,6 +57,7 @@ StaticAssertDecl(PG_BACKEND_INTERRUPT_COUNT <= 32,
 static void PgBackendInitializeIdCounter(void);
 static PgBackendId PgBackendAssignId(void);
 static void PgBackendWakeForInterrupt(PgBackend *backend);
+static void PgConnectionAdoptEarlyIdentity(PgConnection *connection);
 static void PgConnectionAdoptEarlySocketIO(PgConnection *connection);
 static void PgConnectionAdoptEarlyProtocolState(PgConnection *connection);
 static void PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend);
@@ -78,6 +80,15 @@ PgBackendAssignId(void)
 	PgBackendInitializeIdCounter();
 
 	return pg_atomic_add_fetch_u64(&next_backend_id, 1);
+}
+
+static void
+PgConnectionAdoptEarlyIdentity(PgConnection *connection)
+{
+	Assert(connection != NULL);
+
+	connection->identity = early_connection_identity;
+	MemSet(&early_connection_identity, 0, sizeof(early_connection_identity));
 }
 
 static void
@@ -167,7 +178,7 @@ InitializePgProcessRuntime(void)
 
 	process_connection.backend = &process_backend;
 	process_connection.session = &process_session;
-	process_connection.port = MyProcPort;
+	PgConnectionAdoptEarlyIdentity(&process_connection);
 	PgConnectionAdoptEarlySocketIO(&process_connection);
 	PgConnectionAdoptEarlyProtocolState(&process_connection);
 
@@ -240,7 +251,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 
 	state->connection.backend = &state->backend;
 	state->connection.session = &state->session;
-	state->connection.port = port;
+	state->connection.identity.port = port;
 
 	state->execution.backend = &state->backend;
 	state->execution.session = &state->session;
@@ -299,6 +310,51 @@ Session *
 PgCurrentLegacySession(void)
 {
 	return PgSessionGetLegacySession(CurrentPgSession);
+}
+
+struct Port **
+PgConnectionProcPortRef(PgConnection *connection)
+{
+	if (connection == NULL)
+		return &early_connection_identity.port;
+
+	return &connection->identity.port;
+}
+
+struct Port **
+PgCurrentProcPortRef(void)
+{
+	return PgConnectionProcPortRef(CurrentPgConnection);
+}
+
+uint8 *
+PgConnectionCancelKey(PgConnection *connection)
+{
+	if (connection == NULL)
+		return early_connection_identity.cancel_key;
+
+	return connection->identity.cancel_key;
+}
+
+uint8 *
+PgCurrentCancelKey(void)
+{
+	return PgConnectionCancelKey(CurrentPgConnection);
+}
+
+int *
+PgConnectionCancelKeyLengthRef(PgConnection *connection)
+{
+	if (connection == NULL)
+		return &early_connection_identity.cancel_key_length;
+
+	return &connection->identity.cancel_key_length;
+}
+
+int *
+PgCurrentCancelKeyLengthRef(void)
+{
+	return PgConnectionCancelKeyLengthRef(CurrentPgConnection);
 }
 
 const char **

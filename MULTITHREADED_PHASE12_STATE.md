@@ -208,3 +208,50 @@ Validation for this slice:
   `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`;
 - core process-mode `src/test/regress` `parallel_schedule` passed all 245
   tests after the clean rebuild and install.
+
+## Connection Identity Bridge
+
+The sixth Phase 12 slice moves the widely visible connection identity fields
+under `PgConnection`:
+
+- `PgConnection` now owns a `PgConnectionIdentityState`;
+- `MyProcPort`, `MyCancelKey`, and `MyCancelKeyLength` remain
+  source-compatible macros in `miscadmin.h`;
+- `MyProcPort` and `MyCancelKeyLength` remain assignable lvalues through
+  `PgCurrentProcPortRef()` and `PgCurrentCancelKeyLengthRef()`;
+- `MyCancelKey` now resolves to the current connection's cancel-key buffer;
+- early authentication paths before `BaseInit()` installs
+  `CurrentPgConnection` use fallback connection-local storage in
+  `backend_runtime.c`;
+- `InitializePgProcessRuntime()` adopts any early fallback port and cancel-key
+  state into the process connection object before clearing the fallback
+  storage;
+- threaded backend runtime initialization stores the supplied `Port` directly
+  in the thread's `PgConnection`.
+
+This removes another historical connection TLS bucket while keeping the
+existing call sites for logging, authentication, cancel-key publication, and
+client I/O source-compatible. It also makes the frontend connection pointer
+travel with the logical connection object instead of the carrier thread.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `globals.o`,
+  `postgres.o`, `test_backend_runtime.o`, and representative users of
+  `MyProcPort`;
+- because `miscadmin.h` and `backend_runtime.h` changed former exported
+  connection globals into compatibility macros, `gmake -C src/backend clean`
+  plus generated-header recovery was used before the clean rebuild;
+- clean full `gmake -j8` passed;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed, followed by
+  rebuilding and reinstalling `src/test/modules/test_backend_runtime`;
+- focused `test_backend_runtime` regression passed and includes
+  `test_connection_identity_state_is_connection_local()`, which switches
+  `CurrentPgConnection` between fake connections and proves `MyProcPort`,
+  `MyCancelKey`, and `MyCancelKeyLength` are isolated per connection;
+- threaded runtime TAP coverage passed for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests after the clean rebuild and install.
+- `gmake -C contrib -j8` passed after the header migration.
