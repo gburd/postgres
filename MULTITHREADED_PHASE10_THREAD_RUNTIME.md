@@ -1,7 +1,12 @@
 # Phase 10 Thread-Per-Session Runtime Notes
 
-Phase 10 is in progress. The goal is to run regular client backends as OS
-threads inside one server runtime while preserving the process launch path.
+Phase 10 is complete for the first thread-per-session target. Regular client
+backends can run as OS threads inside one server runtime while preserving the
+process launch path. Server-owned worker families remain deferred to Phase 11:
+startup-time process workers are tolerated, late fork-without-exec worker
+launches are blocked after backend threads exist, autovacuum workers are
+disabled in threaded mode, and process-backed parallel workers are suppressed
+so callers fall back to leader-only execution.
 
 ## Launch Selection Scaffold
 
@@ -1140,6 +1145,62 @@ Validation for this broader TAP slice:
   regression and skipped TAP in this checkout because it is not configured
   with `--enable-tap-tests`;
 - direct TAP run passed with 23 tests.
+
+## Gate D Validation
+
+Gate D is complete using the plan's documented near-equivalent rule for local
+platform/tooling issues that make literal `check-world` noisy on this macOS
+checkout.
+
+The process-mode control group was exercised by repeated full builds,
+installs, module checks, and a top-level `gmake -j8 check-world` attempt. The
+literal top-level command reached the expected broad process-mode suites but
+hit local dynamic-library install-name problems unrelated to PostgreSQL
+behavior:
+
+- the first run failed when all 67 ECPG test executables aborted while looking
+  for `/usr/local/pgsql/lib` dynamic libraries from build-tree install names;
+- after patching the build-tree ECPG dynamic-library IDs to the temp install,
+  `gmake -C src/interfaces/ecpg check` passed all 67 tests;
+- a later `check-world` run showed the core `src/test/regress` suite passing
+  all 245 tests and `src/test/isolation` passing all 129 tests before the run
+  reached `src/test/modules/test_extensions`;
+- `src/test/modules/test_extensions` then failed before SQL execution because
+  the recreated temp-install `initdb` still referenced
+  `/usr/local/pgsql/lib/libpq.5.dylib`;
+- after patching the recreated temp-install binaries,
+  direct `pg_regress` for `test_extensions`, `test_extdepend`,
+  `test_ext_backend_model`, and `test_ext_backend_model_pooled` passed all 4
+  tests.
+
+The threaded-mode Gate D subset is covered by
+`src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and the
+larger manual smokes recorded above:
+
+- multiple concurrent threaded client sessions with distinct logical backend
+  ids;
+- running-query cancellation and idle backend termination through logical
+  backend ids;
+- SQL `ERROR` recovery and transaction-abort advisory-lock cleanup;
+- abandoned idle-client cleanup;
+- repeated connect/disconnect;
+- PL/pgSQL execution;
+- incompatible process-only module rejection with post-error server health;
+- DDL with primary-key index build;
+- final connection health plus crash/corruption log signature checks.
+
+The late-worker policy required by Gate D is implemented as follows:
+
+- `postmaster_child_launch_carrier()` rejects late fork-without-exec process
+  launches with `ENOSYS` after any backend thread carrier has started in
+  threaded mode;
+- `do_start_worker()` disables autovacuum worker starts in threaded mode and
+  logs a single deferral notice;
+- `InitializeParallelDSM()` suppresses process-backed parallel workers in
+  threaded sessions, allowing existing callers to run leader-only where
+  PostgreSQL supports that fallback;
+- all remaining in-tree server-owned worker families are explicitly Phase 11
+  work, not Phase 10 regular client backend work.
 
 ## Validation
 

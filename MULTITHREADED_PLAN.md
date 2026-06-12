@@ -474,8 +474,9 @@ Validation:
 
 ## Phase 10: Thread-Per-Session Runtime
 
-Status: in progress. See `MULTITHREADED_PHASE10_THREAD_RUNTIME.md` for the
-current launch-selection scaffold and remaining thread launcher work.
+Status: complete for the first thread-per-session target. See
+`MULTITHREADED_PHASE10_THREAD_RUNTIME.md` for the launch, cleanup, worker
+deferral, and Gate D validation record.
 
 Goal: run regular client backends as OS threads inside one server runtime.
 
@@ -537,6 +538,8 @@ Exit gate:
   threaded mode.
 
 ## Phase 11: Auxiliary Worker Thread Runtime
+
+Status: not started.
 
 Goal: make normal threaded server mode fully threaded for in-tree
 server-owned worker families, so the runtime does not fork subprocesses for

@@ -285,10 +285,9 @@ postmaster_child_launch_carrier(PMChild *pmchild,
 /*
  * Start a regular backend carrier thread.
  *
- * The thread is intentionally not allowed past BackendInitialize() yet.  It
- * exercises carrier creation, startup error reporting, backend-exit
- * continuation, and postmaster-owned reaping, then rejects the client from the
- * explicit BACKEND_STARTUP_THREAD guard.
+ * Phase 10 supports one OS thread per regular client backend.  Server-owned
+ * worker families are still process-backed or disabled until Phase 11 provides
+ * worker thread carriers.
  */
 static bool
 postmaster_backend_thread_launch(PMChild *pmchild,
