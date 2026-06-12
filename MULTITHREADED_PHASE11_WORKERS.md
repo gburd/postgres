@@ -243,6 +243,44 @@ primary before the standby; stopping the standby while the primary remains
 live exposed a separate WAL receiver shutdown wait that should be covered by a
 WAL receiver hardening follow-up rather than this slot sync carrier slice.
 
+## Logical Replication Launcher Thread Slice
+
+The static logical replication launcher is now allowed onto the background
+worker thread-carrier path in threaded mode:
+
+- `BackgroundWorkerCanUseThreadCarrier()` provides a narrow allowlist for
+  audited in-tree `B_BG_WORKER` entrypoints. The first allowlisted entry is
+  the static `postgres`/`ApplyLauncherMain` worker;
+- `postmaster_child_launch_carrier()` routes allowlisted background workers to
+  `postmaster_backend_thread_launch()` while generic and third-party
+  background workers remain rejected after thread carriers exist;
+- `postmaster_backend_thread_launch()` copies the `BackgroundWorker` startup
+  descriptor into the thread-start record and invokes `BackgroundWorkerMain()`
+  with that descriptor inside the carrier thread;
+- `BackgroundWorkerMain()` skips process-wide signal handler and process-title
+  mutation when running as a thread carrier, keeps the postmaster memory
+  context owned by the runtime, and releases the temporary threaded startup
+  gate after common shared-memory setup and trusted entrypoint lookup;
+- `PMChild` now retains a stable visible signal/stat ID for thread-backed
+  children so background-worker registration, `pg_stat_activity`, and cleanup
+  logs can refer to the logical backend ID even after the carrier exits;
+- logical interrupt consumption now arms the legacy `InterruptPending` flag.
+  This lets workers that drain the backend-runtime mailbox immediately before
+  `CHECK_FOR_INTERRUPTS()` still run the old `ProcessInterrupts()` path for
+  shutdown and cancellation;
+- `ApplyLauncherMain()` records its logical `ProcNumber` in shared launcher
+  state, wakes via the launcher PGPROC latch in threaded mode, avoids
+  concurrent config-file parsing on SIGHUP, and drains logical backend
+  interrupts around latch waits.
+
+The live smoke for this slice starts a threaded temp cluster with
+`wal_level=logical`, waits until `pg_stat_activity` reports one `logical
+replication launcher` logical backend with a thread-style logical PID, then
+performs a fast shutdown. The first smoke exposed two useful lifecycle gaps:
+the background-worker shared slot must use the thread backend's visible ID
+rather than the containing process PID, and consumed logical interrupts must
+arm legacy interrupt processing before `CHECK_FOR_INTERRUPTS()`.
+
 ## WAL Writer Thread Slice
 
 The WAL writer is now opted into the thread carrier path in threaded mode:
@@ -298,8 +336,8 @@ The WAL archiver is now opted into the thread carrier path in threaded mode:
 - checkpointer, background writer, and syslogger;
 - startup/recovery worker paths that are part of normal server operation;
 - startup-time AIO method workers;
-- logical replication launcher, apply, table sync, sync utility, and parallel
-  apply workers;
+- logical replication apply, table sync, sync utility, and parallel apply
+  workers;
 - a narrow allowlist path for in-tree generic background worker tests and
   examples;
 - explicit thread-worker metadata for third-party background workers that can
@@ -404,6 +442,18 @@ Additional validation for the slot sync worker thread slice:
   The smoke stops the primary before the standby to avoid conflating the slot
   sync proof with the WAL receiver live-primary shutdown follow-up noted
   above.
+
+Additional validation for the logical replication launcher thread slice:
+
+- touched-object builds passed for `bgworker.o`, `launch_backend.o`,
+  `postmaster.o`, `pmchild.o`, `backend_runtime.o`, and `launcher.o`;
+- full `gmake -j8` passed;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed;
+- a direct threaded temp-cluster smoke passed: `multithreaded=on`,
+  `wal_level=logical`, `max_logical_replication_workers=4`,
+  `autovacuum=off`, `summarize_wal=off`, and `io_method=sync`. The smoke
+  verified `pg_stat_activity` contained `logical replication launcher` with a
+  logical thread PID, and `pg_ctl -m fast stop` completed without hanging.
 
 Additional validation for the archiver thread slice:
 

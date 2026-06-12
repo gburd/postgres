@@ -38,8 +38,10 @@
 #include "storage/ipc.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
+#include "storage/procnumber.h"
 #include "storage/subsystems.h"
 #include "tcop/tcopprot.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 #include "utils/pg_lsn.h"
@@ -61,6 +63,8 @@ typedef struct LogicalRepCtxStruct
 {
 	/* Supervisor process. */
 	pid_t		launcher_pid;
+	ProcNumber	launcher_procno;
+	bool		launcher_threaded;
 
 	/* Hash table holding last start times of subscriptions' apply workers. */
 	dsa_handle	last_start_dsa;
@@ -115,6 +119,7 @@ static void compute_min_nonremovable_xid(LogicalRepWorker *worker, TransactionId
 static bool acquire_conflict_slot_if_exists(void);
 static void update_conflict_slot_xmin(TransactionId new_xmin);
 static void init_conflict_slot_xmin(void);
+static bool ApplyLauncherIsThreadedRuntime(void);
 
 
 /*
@@ -869,6 +874,8 @@ static void
 logicalrep_launcher_onexit(int code, Datum arg)
 {
 	LogicalRepCtx->launcher_pid = 0;
+	LogicalRepCtx->launcher_procno = INVALID_PROC_NUMBER;
+	LogicalRepCtx->launcher_threaded = false;
 }
 
 /*
@@ -1049,6 +1056,9 @@ ApplyLauncherShmemInit(void *arg)
 
 	LogicalRepCtx->last_start_dsa = DSA_HANDLE_INVALID;
 	LogicalRepCtx->last_start_dsh = DSHASH_HANDLE_INVALID;
+	LogicalRepCtx->launcher_pid = 0;
+	LogicalRepCtx->launcher_procno = INVALID_PROC_NUMBER;
+	LogicalRepCtx->launcher_threaded = false;
 
 	/* Initialize memory and spin locks for each worker slot. */
 	for (slot = 0; slot < max_logical_replication_workers; slot++)
@@ -1194,8 +1204,21 @@ ApplyLauncherWakeupAtCommit(void)
 void
 ApplyLauncherWakeup(void)
 {
-	if (LogicalRepCtx->launcher_pid != 0)
+	if (LogicalRepCtx->launcher_threaded)
+	{
+		if (LogicalRepCtx->launcher_procno != INVALID_PROC_NUMBER)
+			SetLatch(&GetPGProcByNumber(LogicalRepCtx->launcher_procno)->
+					 procLatch);
+	}
+	else if (LogicalRepCtx->launcher_pid != 0)
 		kill(LogicalRepCtx->launcher_pid, SIGUSR1);
+}
+
+static bool
+ApplyLauncherIsThreadedRuntime(void)
+{
+	return CurrentPgRuntime != NULL &&
+		CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION;
 }
 
 /*
@@ -1204,6 +1227,10 @@ ApplyLauncherWakeup(void)
 void
 ApplyLauncherMain(Datum main_arg)
 {
+	bool		threaded_launcher;
+
+	threaded_launcher = ApplyLauncherIsThreadedRuntime();
+
 	ereport(DEBUG1,
 			(errmsg_internal("logical replication launcher started")));
 
@@ -1211,9 +1238,13 @@ ApplyLauncherMain(Datum main_arg)
 
 	Assert(LogicalRepCtx->launcher_pid == 0);
 	LogicalRepCtx->launcher_pid = MyProcPid;
+	LogicalRepCtx->launcher_procno =
+		threaded_launcher ? MyProcNumber : INVALID_PROC_NUMBER;
+	LogicalRepCtx->launcher_threaded = threaded_launcher;
 
 	/* Establish signal handlers. */
-	pqsignal(SIGHUP, SignalHandlerForConfigReload);
+	if (!threaded_launcher)
+		pqsignal(SIGHUP, SignalHandlerForConfigReload);
 	BackgroundWorkerUnblockSignals();
 
 	/*
@@ -1241,6 +1272,7 @@ ApplyLauncherMain(Datum main_arg)
 		bool		retain_dead_tuples = false;
 		TransactionId xmin = InvalidTransactionId;
 
+		PgCurrentBackendApplyInterrupts();
 		CHECK_FOR_INTERRUPTS();
 
 		/* Use temporary context to avoid leaking memory across cycles. */
@@ -1426,13 +1458,15 @@ ApplyLauncherMain(Datum main_arg)
 		if (rc & WL_LATCH_SET)
 		{
 			ResetLatch(MyLatch);
+			PgCurrentBackendApplyInterrupts();
 			CHECK_FOR_INTERRUPTS();
 		}
 
 		if (ConfigReloadPending)
 		{
 			ConfigReloadPending = false;
-			ProcessConfigFile(PGC_SIGHUP);
+			if (!threaded_launcher)
+				ProcessConfigFile(PGC_SIGHUP);
 		}
 	}
 
@@ -1587,6 +1621,9 @@ CreateConflictDetectionSlot(void)
 bool
 IsLogicalLauncher(void)
 {
+	if (LogicalRepCtx->launcher_threaded)
+		return LogicalRepCtx->launcher_procno == MyProcNumber;
+
 	return LogicalRepCtx->launcher_pid == MyProcPid;
 }
 

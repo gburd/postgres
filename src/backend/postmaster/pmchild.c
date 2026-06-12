@@ -38,6 +38,7 @@
 #include "storage/latch.h"
 #include "storage/pmsignal.h"
 #include "storage/proc.h"
+#include "utils/backend_runtime.h"
 
 /*
  * Freelists for different kinds of child processes.  We maintain separate
@@ -241,6 +242,7 @@ AllocDeadEndChild(void)
 	{
 		pmchild->carrier_kind = PM_CHILD_CARRIER_PROCESS;
 		pmchild->pid = 0;
+		pmchild->signal_pid = 0;
 		pmchild->thread_exitstatus = 0;
 		pg_atomic_init_u32(&pmchild->thread_exited, 0);
 		pmchild->child_slot = 0;
@@ -266,6 +268,17 @@ PostmasterChildIsThread(const PMChild *pmchild)
 	return pmchild->carrier_kind == PM_CHILD_CARRIER_THREAD;
 }
 
+pid_t
+PostmasterChildSignalPid(const PMChild *pmchild)
+{
+	Assert(pmchild != NULL);
+
+	if (PostmasterChildIsThread(pmchild))
+		return pmchild->signal_pid;
+
+	return pmchild->pid;
+}
+
 void
 PostmasterChildSetProcess(PMChild *pmchild, pid_t pid)
 {
@@ -273,6 +286,7 @@ PostmasterChildSetProcess(PMChild *pmchild, pid_t pid)
 
 	pmchild->carrier_kind = PM_CHILD_CARRIER_PROCESS;
 	pmchild->pid = pid;
+	pmchild->signal_pid = pid;
 	pmchild->thread_backend = NULL;
 }
 
@@ -283,6 +297,7 @@ PostmasterChildSetThread(PMChild *pmchild, const PgThread *thread)
 
 	pmchild->carrier_kind = PM_CHILD_CARRIER_THREAD;
 	pmchild->pid = 0;
+	pmchild->signal_pid = 0;
 	pmchild->thread = *thread;
 	pmchild->thread_exitstatus = 0;
 	pg_atomic_write_u32(&pmchild->thread_exited, 0);
@@ -294,6 +309,8 @@ PostmasterChildSetThreadBackend(PMChild *pmchild, struct PgBackend *backend)
 	Assert(PostmasterChildIsThread(pmchild));
 
 	pmchild->thread_backend = backend;
+	if (backend != NULL)
+		pmchild->signal_pid = PgBackendGetSignalPid(backend);
 }
 
 void

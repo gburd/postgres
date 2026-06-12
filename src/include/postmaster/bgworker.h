@@ -172,5 +172,6 @@ extern void BackgroundWorkerInitializeConnectionByOid(Oid dboid, Oid useroid, ui
 /* Block/unblock signals in a background worker process */
 extern void BackgroundWorkerBlockSignals(void);
 extern void BackgroundWorkerUnblockSignals(void);
+extern bool BackgroundWorkerCanUseThreadCarrier(const BackgroundWorker *worker);
 
 #endif							/* BGWORKER_H */

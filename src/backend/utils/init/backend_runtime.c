@@ -464,6 +464,13 @@ PgCurrentBackendApplyInterrupts(void)
 	if (pending == 0)
 		return;
 
+	/*
+	 * The logical mailbox feeds the legacy per-backend pending flags below.
+	 * Arm the legacy dispatcher as well, so callers that consume the mailbox
+	 * immediately before CHECK_FOR_INTERRUPTS() still run ProcessInterrupts().
+	 */
+	InterruptPending = true;
+
 	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_QUERY_CANCEL))
 		QueryCancelPending = true;
 

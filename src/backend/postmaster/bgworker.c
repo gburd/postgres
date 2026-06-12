@@ -34,6 +34,7 @@
 #include "storage/subsystems.h"
 #include "tcop/tcopprot.h"
 #include "utils/ascii.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
 #include "utils/timeout.h"
@@ -171,6 +172,7 @@ static const struct
 
 /* Private functions. */
 static bgworker_main_type LookupBackgroundWorkerFunction(const char *libraryname, const char *funcname);
+static bool BackgroundWorkerThreadedRuntime(void);
 
 
 /*
@@ -734,6 +736,28 @@ SanityCheckBackgroundWorker(BackgroundWorker *worker, int elevel)
 	return true;
 }
 
+bool
+BackgroundWorkerCanUseThreadCarrier(const BackgroundWorker *worker)
+{
+	if (worker == NULL)
+		return false;
+
+	/*
+	 * Keep this allowlist deliberately narrow until each in-tree background
+	 * worker entrypoint has been audited for thread-mode signal, GUC reload,
+	 * wait, and exit behavior.
+	 */
+	return strcmp(worker->bgw_library_name, "postgres") == 0 &&
+		strcmp(worker->bgw_function_name, "ApplyLauncherMain") == 0;
+}
+
+static bool
+BackgroundWorkerThreadedRuntime(void)
+{
+	return CurrentPgRuntime != NULL &&
+		CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION;
+}
+
 /*
  * Main entry point for background worker processes.
  */
@@ -743,25 +767,28 @@ BackgroundWorkerMain(const void *startup_data, size_t startup_data_len)
 	sigjmp_buf	local_sigjmp_buf;
 	BackgroundWorker *worker;
 	bgworker_main_type entrypt;
+	bool		threaded_worker;
 
 	if (startup_data == NULL)
 		elog(FATAL, "unable to find bgworker entry");
 	Assert(startup_data_len == sizeof(BackgroundWorker));
 	worker = MemoryContextAlloc(TopMemoryContext, sizeof(BackgroundWorker));
 	memcpy(worker, startup_data, sizeof(BackgroundWorker));
+	threaded_worker = BackgroundWorkerThreadedRuntime();
 
 	/*
 	 * Now that we're done reading the startup data, release postmaster's
 	 * working memory context.
 	 */
-	if (PostmasterContext)
+	if (!threaded_worker && PostmasterContext)
 	{
 		MemoryContextDelete(PostmasterContext);
 		PostmasterContext = NULL;
 	}
 
 	MyBgworkerEntry = worker;
-	init_ps_display(worker->bgw_name);
+	if (!threaded_worker)
+		init_ps_display(worker->bgw_name);
 
 	Assert(GetProcessingMode() == InitProcessing);
 
@@ -772,7 +799,8 @@ BackgroundWorkerMain(const void *startup_data, size_t startup_data_len)
 	/*
 	 * Set up signal handlers.
 	 */
-	if (worker->bgw_flags & BGWORKER_BACKEND_DATABASE_CONNECTION)
+	if (!threaded_worker &&
+		worker->bgw_flags & BGWORKER_BACKEND_DATABASE_CONNECTION)
 	{
 		/*
 		 * SIGINT is used to signal canceling the current action
@@ -783,21 +811,27 @@ BackgroundWorkerMain(const void *startup_data, size_t startup_data_len)
 
 		/* XXX Any other handlers needed here? */
 	}
-	else
+	else if (!threaded_worker)
 	{
 		pqsignal(SIGINT, PG_SIG_IGN);
 		pqsignal(SIGUSR1, PG_SIG_IGN);
 		pqsignal(SIGFPE, PG_SIG_IGN);
 	}
-	pqsignal(SIGTERM, die);
-	/* SIGQUIT handler was already set up by InitPostmasterChild */
-	pqsignal(SIGHUP, PG_SIG_IGN);
+	if (!threaded_worker)
+	{
+		pqsignal(SIGTERM, die);
+		/* SIGQUIT handler was already set up by InitPostmasterChild */
+		pqsignal(SIGHUP, PG_SIG_IGN);
+	}
 
 	InitializeTimeouts();		/* establishes SIGALRM handler */
 
-	pqsignal(SIGPIPE, PG_SIG_IGN);
-	pqsignal(SIGUSR2, PG_SIG_IGN);
-	pqsignal(SIGCHLD, PG_SIG_DFL);
+	if (!threaded_worker)
+	{
+		pqsignal(SIGPIPE, PG_SIG_IGN);
+		pqsignal(SIGUSR2, PG_SIG_IGN);
+		pqsignal(SIGCHLD, PG_SIG_DFL);
+	}
 
 	/*
 	 * If an exception is encountered, processing resumes here.
@@ -851,6 +885,9 @@ BackgroundWorkerMain(const void *startup_data, size_t startup_data_len)
 	 */
 	entrypt = LookupBackgroundWorkerFunction(worker->bgw_library_name,
 											 worker->bgw_function_name);
+
+	if (threaded_worker)
+		ThreadedBackendStartupComplete();
 
 	/*
 	 * Note that in normal processes, we would call InitPostgres here.  For a
@@ -942,12 +979,18 @@ BackgroundWorkerInitializeConnectionByOid(Oid dboid, Oid useroid, uint32 flags)
 void
 BackgroundWorkerBlockSignals(void)
 {
+	if (BackgroundWorkerThreadedRuntime())
+		return;
+
 	sigprocmask(SIG_SETMASK, &BlockSig, NULL);
 }
 
 void
 BackgroundWorkerUnblockSignals(void)
 {
+	if (BackgroundWorkerThreadedRuntime())
+		return;
+
 	sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
 }
 

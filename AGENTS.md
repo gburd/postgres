@@ -322,6 +322,20 @@ Important current files:
   too long (maximum 103 bytes)`. Use a short `mktemp -d /tmp/...` directory for
   ad hoc temp clusters that need Unix sockets.
 
+  Threaded temp clusters currently require the database locale to match the
+  postmaster process locale. In this checkout the shell commonly reports
+  `LC_CTYPE=C.UTF-8`, so direct threaded smokes should initialize clusters with
+  `initdb --locale=C.UTF-8` rather than `--no-locale`; otherwise threaded
+  client backends fail before SQL starts with
+  `database locale is incompatible with threaded backend mode`.
+
+  If killed threaded temp clusters leave SysV shared-memory IDs behind,
+  follow-up `initdb` runs can fail during bootstrap with
+  `could not create shared memory segment: No space left on device` even when
+  disk space is fine. First confirm no PostgreSQL server processes from this
+  checkout are still running, then inspect and remove stale segments with
+  `ipcs -m` and `ipcrm -m <id>`.
+
   Many individual regression tests assume fixture objects created by earlier
   `parallel_schedule` groups. If a direct focused run fails with missing tables
   such as `onek` or `tenk1`, rerun with the schedule prefix that builds the

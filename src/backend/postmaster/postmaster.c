@@ -2744,7 +2744,7 @@ CleanupBackend(PMChild *bp,
 	 * If the process attached to shared memory, this also checks that it
 	 * detached cleanly.
 	 */
-	bp_pid = bp->pid;
+	bp_pid = PostmasterChildSignalPid(bp);
 	bp_bgworker_notify = bp->bgworker_notify;
 	bp_bkend_type = bp->bkend_type;
 	rw = bp->rw;
@@ -4389,8 +4389,10 @@ static bool
 StartBackgroundWorker(RegisteredBgWorker *rw)
 {
 	PMChild    *bn;
+	bool		thread_compatible;
 
 	Assert(rw->rw_pid == 0);
+	thread_compatible = BackgroundWorkerCanUseThreadCarrier(&rw->rw_worker);
 
 	/*
 	 * Generic background workers still use the process-only bgworker ABI.
@@ -4398,7 +4400,7 @@ StartBackgroundWorker(RegisteredBgWorker *rw)
 	 * safe.  Reject the worker explicitly and notify dynamic waiters rather
 	 * than reporting a transient fork failure and retrying indefinitely.
 	 */
-	if (multithreaded && PostmasterThreadCarriersStarted())
+	if (multithreaded && PostmasterThreadCarriersStarted() && !thread_compatible)
 	{
 		ereport(LOG,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -4455,8 +4457,8 @@ StartBackgroundWorker(RegisteredBgWorker *rw)
 		return false;
 	}
 
-	/* in postmaster, fork successful ... */
-	rw->rw_pid = bn->pid;
+	/* in postmaster, carrier launch succeeded ... */
+	rw->rw_pid = PostmasterChildSignalPid(bn);
 	ReportBackgroundWorkerPID(rw);
 	return true;
 }

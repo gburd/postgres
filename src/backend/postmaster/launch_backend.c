@@ -202,6 +202,7 @@ typedef struct BackendThreadStart
 	int			child_slot;
 	PgThreadBackendRuntimeState runtime_state;
 	BackendStartupData startup_data;
+	BackgroundWorker bgworker_startup_data;
 	ClientSocket client_sock;
 	Latch	   *postmaster_latch;
 	pg_tz	   *session_timezone;
@@ -265,6 +266,17 @@ postmaster_child_launch_carrier(PMChild *pmchild,
 	PgBackendLaunchModel launch_model;
 
 	if (multithreaded &&
+		child_type == B_BG_WORKER &&
+		startup_data != NULL &&
+		startup_data_len == sizeof(BackgroundWorker) &&
+		BackgroundWorkerCanUseThreadCarrier((BackgroundWorker *) startup_data))
+	{
+		return postmaster_backend_thread_launch(pmchild, child_type, child_slot,
+												startup_data, startup_data_len,
+												client_sock);
+	}
+
+	if (multithreaded &&
 		postmaster_thread_carriers_started &&
 		child_type == B_IO_WORKER)
 	{
@@ -324,6 +336,7 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 		child_type != B_BACKEND &&
 		child_type != B_AUTOVAC_LAUNCHER &&
 		child_type != B_AUTOVAC_WORKER &&
+		child_type != B_BG_WORKER &&
 		child_type != B_IO_WORKER &&
 		child_type != B_SLOTSYNC_WORKER &&
 		child_type != B_WAL_RECEIVER &&
@@ -344,12 +357,19 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 	if ((child_type == B_ARCHIVER ||
 		 child_type == B_AUTOVAC_LAUNCHER ||
 		 child_type == B_AUTOVAC_WORKER ||
+		 child_type == B_BG_WORKER ||
 		 child_type == B_IO_WORKER ||
 		 child_type == B_SLOTSYNC_WORKER ||
 		 child_type == B_WAL_RECEIVER ||
 		 child_type == B_WAL_WRITER ||
 		 child_type == B_WAL_SUMMARIZER) &&
-		(client_sock != NULL || startup_data != NULL || startup_data_len != 0))
+		(client_sock != NULL ||
+		 (child_type != B_BG_WORKER &&
+		  (startup_data != NULL || startup_data_len != 0)) ||
+		 (child_type == B_BG_WORKER &&
+		  (startup_data == NULL ||
+		   startup_data_len != sizeof(BackgroundWorker) ||
+		   !BackgroundWorkerCanUseThreadCarrier((BackgroundWorker *) startup_data)))))
 	{
 		errno = EINVAL;
 		return false;
@@ -380,9 +400,18 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 		thread_start->client_sock = *client_sock;
 		thread_start->client_sock.sock = dup(client_sock->sock);
 	}
+	else if (child_type == B_BG_WORKER)
+	{
+		MemSet(&thread_start->startup_data, 0, sizeof(thread_start->startup_data));
+		thread_start->bgworker_startup_data = *((BackgroundWorker *) startup_data);
+		MemSet(&thread_start->client_sock, 0, sizeof(thread_start->client_sock));
+		thread_start->client_sock.sock = PGINVALID_SOCKET;
+	}
 	else
 	{
 		MemSet(&thread_start->startup_data, 0, sizeof(thread_start->startup_data));
+		MemSet(&thread_start->bgworker_startup_data, 0,
+			   sizeof(thread_start->bgworker_startup_data));
 		MemSet(&thread_start->client_sock, 0, sizeof(thread_start->client_sock));
 		thread_start->client_sock.sock = PGINVALID_SOCKET;
 	}
@@ -485,7 +514,11 @@ backend_thread_run_worker(BackendThreadStart *thread_start)
 
 	backend_thread_enter_startup_gate(thread_start);
 
-	child_process_kinds[thread_start->child_type].main_fn(NULL, 0);
+	if (thread_start->child_type == B_BG_WORKER)
+		child_process_kinds[thread_start->child_type].main_fn(&thread_start->bgworker_startup_data,
+															  sizeof(BackgroundWorker));
+	else
+		child_process_kinds[thread_start->child_type].main_fn(NULL, 0);
 	pg_unreachable();
 }
 
