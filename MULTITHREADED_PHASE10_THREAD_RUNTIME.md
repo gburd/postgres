@@ -1211,3 +1211,18 @@ not just a later guard in `InitPostgres()`.
   `gmake DESTDIR="$PWD/tmp_install" install` passed.
 - after the thread-exit memory-teardown correction,
   `gmake -C src/test/modules/test_backend_runtime check` passed.
+- after the guarded thread-exit boundary was stabilized, moving the threaded
+  guard past `CommitTransactionCommand()` passed
+  `gmake -C src/backend/utils/init postinit.o`, full
+  `gmake -C src/backend -j8`, and
+  `gmake DESTDIR="$PWD/tmp_install" install`; a 20-client
+  `multithreaded=on` smoke reached the new startup-transaction-commit guard
+  for every client with no byval/opclass/crash signatures.
+- moving the guard past `EmitConnectionWarnings()` establishes the current
+  boundary at full `InitPostgres()` completion. `gmake -C
+  src/backend/utils/init postinit.o`, full `gmake -C src/backend -j8`, and
+  `gmake DESTDIR="$PWD/tmp_install" install` passed; a 20-client
+  `multithreaded=on` smoke reached the `InitPostgres completed` guard for
+  every client with no byval/opclass/crash signatures.
+- after the full `InitPostgres()` boundary slice,
+  `gmake -C src/test/modules/test_backend_runtime check` passed.

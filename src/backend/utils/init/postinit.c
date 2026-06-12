@@ -1339,20 +1339,19 @@ InitPostgres(const char *in_dbname, Oid dboid,
 			pgstat_bestart_final();
 	}
 
-	if (threaded_backend)
-		ereport(FATAL,
-				(errmsg("threaded backend database initialization is not implemented yet"),
-				 errdetail("Final backend status startup and application_name "
-						   "reporting completed, but startup transaction "
-						   "commit and post-startup session lifetime still "
-						   "need thread-safe lifecycle handling.")));
-
 	/* close the transaction we started above */
 	if (!bootstrap)
 		CommitTransactionCommand();
 
 	/* send any WARNINGs we've accumulated during initialization */
 	EmitConnectionWarnings();
+
+	if (threaded_backend)
+		ereport(FATAL,
+				(errmsg("threaded backend database initialization is not implemented yet"),
+				 errdetail("InitPostgres completed, but post-startup session "
+						   "lifetime still needs thread-safe lifecycle "
+						   "handling.")));
 }
 
 /*
