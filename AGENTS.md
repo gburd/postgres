@@ -365,13 +365,16 @@ Important current files:
 - Always-built LWLock backend-local state now also lives in
   `PgBackendLockState`: `num_held_lwlocks`, the fixed `held_lwlocks` array,
   and `LocalNumUserDefinedTranches` are backed by runtime accessors while
-  `lwlock.c` keeps the existing local source names. `LWLOCK_STATS` debug-only
-  state remains a follow-up because its dummy stats entry uses a private debug
-  struct and that code is not built in this checkout. After changing this
-  bridge, clean and rebuild backend objects because `PgBackend` layout and
-  installed runtime headers changed; at minimum rebuild and reinstall
-  PL/pgSQL, `src/test/modules/test_backend_runtime`, and contrib before
-  validating.
+  `lwlock.c` keeps the existing local source names. Optional `LWLOCK_STATS`
+  debug state also lives in this bucket: the stats hash pointer, dummy stats
+  entry, stats memory context pointer, and exit-registration flag are routed
+  through backend-runtime accessors. Normal builds in this checkout do not
+  compile the debug-only stats block, so pair static lifetime scan coverage
+  with the backend-runtime accessor test unless using an `LWLOCK_STATS` build.
+  After changing this bridge, clean and rebuild backend objects because
+  `PgBackend` layout and installed runtime headers changed; at minimum rebuild
+  and reinstall PL/pgSQL, `src/test/modules/test_backend_runtime`, and contrib
+  before validating.
 - Predicate-lock backend-local state now also lives in `PgBackendLockState`:
   `LocalPredicateLockHash`, `MySerializableXact`, `MyXactDidWrite`, and
   `SavedSerializableXact` are backed by runtime accessors while `predicate.c`
@@ -928,6 +931,12 @@ Important current files:
   configured with injection points enabled. For injection-point-only source
   annotations in this checkout, use object compile coverage where reachable,
   static lifetime scan coverage, and a full non-injection build/install.
+
+- This checkout does not define `LWLOCK_STATS` in normal builds. Changes inside
+  the optional LWLock stats debug block in `src/backend/storage/lmgr/lwlock.c`
+  are therefore covered here by normal surrounding-object builds, runtime
+  accessor tests, and `gmake check-global-lifetimes`; direct compile coverage
+  for that debug block requires an `LWLOCK_STATS`-enabled build.
 
 - For manual temp-cluster smokes, especially threaded-mode smokes launched from
   this deep checkout path, use a short Unix socket directory under `/tmp` with

@@ -7356,6 +7356,30 @@ PgCurrentNumHeldLWLocksRef(void)
 	return &PgCurrentBackendLockState()->num_held_lwlocks;
 }
 
+HTAB **
+PgCurrentLWLockStatsHashRef(void)
+{
+	return &PgCurrentBackendLockState()->lwlock_stats_htab;
+}
+
+PgBackendLWLockStats *
+PgCurrentLWLockStatsDummy(void)
+{
+	return &PgCurrentBackendLockState()->lwlock_stats_dummy;
+}
+
+MemoryContext *
+PgCurrentLWLockStatsContextRef(void)
+{
+	return &PgCurrentBackendLockState()->lwlock_stats_context;
+}
+
+bool *
+PgCurrentLWLockStatsExitRegisteredRef(void)
+{
+	return &PgCurrentBackendLockState()->lwlock_stats_exit_registered;
+}
+
 int *
 PgCurrentLocalNumUserDefinedLWLockTranchesRef(void)
 {

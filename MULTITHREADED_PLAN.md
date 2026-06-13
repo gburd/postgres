@@ -762,7 +762,9 @@ through `PgSessionLoopState` and tcop command-timing/elog line-format state
 bridge through `PgBackendCommandState` and `PgBackendLogState`, plus the
 backend-local cumulative statistics anchor bridge through
 `PgBackendPgStatPendingState`, plus the computed-goto expression interpreter
-dispatch/reverse-lookup bridge through `PgBackendExprInterpState`.
+dispatch/reverse-lookup bridge through `PgBackendExprInterpState`, plus the
+optional LWLock debug-statistics hash, dummy entry, memory context, and
+exit-registration state bridge through `PgBackendLockState`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.
@@ -1001,12 +1003,14 @@ required global-lifetime scans with zero new unclassified mutable globals.
 The always-built LWLock state slice moved the held-LWLock count, fixed
 held-LWLock handle array, and backend-local user-defined tranche count into
 `PgBackendLockState`, preserving the existing `lwlock.c` source names behind
-runtime-backed compatibility macros. Optional `LWLOCK_STATS` debug-only state
-remains a follow-up because its dummy stats entry uses a private debug struct
-and that code is not built in this checkout. The slice passed clean full
-build/install, process-mode backend-runtime regression, direct threaded
-runtime TAP, contrib build, and the required global-lifetime scan with zero
-new unclassified mutable globals.
+runtime-backed compatibility macros. A follow-up LWLock stats slice moved the
+optional `LWLOCK_STATS` debug hash, dummy entry, memory context pointer, and
+exit-registration flag into the same backend lock-state bucket. The normal
+checkout does not compile the debug-only stats block, so validation combines
+normal object/build coverage, runtime accessor tests, and the global-lifetime
+scan. The slice passed clean full build/install, process-mode backend-runtime
+regression, direct threaded runtime TAP, contrib build, and the required
+global-lifetime scan with zero new unclassified mutable globals.
 The predicate-lock state slice extends `PgBackendLockState` again for
 `predicate.c`: local predicate-lock hash state, the current serializable
 transaction pointer, write-tracking flag, and saved serializable transaction

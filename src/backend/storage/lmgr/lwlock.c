@@ -228,24 +228,13 @@ static const char *GetLWTrancheName(uint16 trancheId);
 	GetLWTrancheName((lock)->tranche)
 
 #ifdef LWLOCK_STATS
-typedef struct lwlock_stats_key
-{
-	int			tranche;
-	void	   *instance;
-}			lwlock_stats_key;
+typedef PgBackendLWLockStatsKey lwlock_stats_key;
+typedef PgBackendLWLockStats lwlock_stats;
 
-typedef struct lwlock_stats
-{
-	lwlock_stats_key key;
-	int			sh_acquire_count;
-	int			ex_acquire_count;
-	int			block_count;
-	int			dequeue_self_count;
-	int			spin_delay_count;
-}			lwlock_stats;
-
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND HTAB *lwlock_stats_htab;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND lwlock_stats lwlock_stats_dummy;
+#define lwlock_stats_htab (*PgCurrentLWLockStatsHashRef())
+#define lwlock_stats_dummy (*PgCurrentLWLockStatsDummy())
+#define lwlock_stats_cxt (*PgCurrentLWLockStatsContextRef())
+#define lwlock_stats_exit_registered (*PgCurrentLWLockStatsExitRegisteredRef())
 #endif
 
 #ifdef LOCK_DEBUG
@@ -300,8 +289,6 @@ static void
 init_lwlock_stats(void)
 {
 	HASHCTL		ctl;
-	static MemoryContext lwlock_stats_cxt = NULL;
-	static bool exit_registered = false;
 
 	if (lwlock_stats_cxt != NULL)
 		MemoryContextDelete(lwlock_stats_cxt);
@@ -324,10 +311,10 @@ init_lwlock_stats(void)
 	ctl.hcxt = lwlock_stats_cxt;
 	lwlock_stats_htab = hash_create("lwlock stats", 16384, &ctl,
 									HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
-	if (!exit_registered)
+	if (!lwlock_stats_exit_registered)
 	{
 		on_shmem_exit(print_lwlock_stats, 0);
-		exit_registered = true;
+		lwlock_stats_exit_registered = true;
 	}
 }
 

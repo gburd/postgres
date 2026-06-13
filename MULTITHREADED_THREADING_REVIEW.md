@@ -886,6 +886,19 @@ declarations with zero new unclassified mutable globals. The runtime bucket
 uses a fixed `PG_BACKEND_EXPR_INTERP_MAX_OPS` capacity with an
 `execExprInterp.c` assertion rather than adding an executor include edge to
 `backend_runtime.h`.
+The next state-migration slice completed the optional LWLock debug-statistics
+bridge by moving `lwlock_stats_htab`, the dummy stats entry, the stats memory
+context pointer, and the exit-callback registration flag into
+`PgBackendLockState`. This also removes the hidden function-local statics in
+`init_lwlock_stats()`, so the optional debug path follows the logical backend
+rather than the shared address space. Validation included touched-object
+builds, a backend plus `src/common` clean rebuild, clean full build, install,
+`gmake check-global-lifetimes`, contrib build, PL/pgSQL rebuild/install,
+`test_backend_runtime` regression, and direct threaded TAP. The
+global-lifetime scan now reports 39 backend-local declarations with zero new
+unclassified mutable globals. The checkout's normal build does not compile
+the `LWLOCK_STATS` block itself, so direct compile coverage for that debug
+path still requires an `LWLOCK_STATS`-enabled build.
 
 ## Bottom Line
 

@@ -7636,6 +7636,42 @@ Validation for this slice:
   dispatch table pointer and first reverse-lookup entry across two fake
   logical backends.
 
+## Backend LWLock Stats State Bridge
+
+The one-hundred-sixty-third Phase 12 slice completes the optional LWLock
+debug-statistics state bridge by extending `PgBackendLockState` again:
+
+- `lwlock_stats_htab` now follows the logical backend;
+- the dummy stats entry used before the hash table exists is embedded in
+  `PgBackendLockState`;
+- the `LWLock stats` memory context pointer and exit-callback registration
+  flag were moved out of `init_lwlock_stats()` function-local statics and into
+  `PgBackendLockState`.
+
+`lwlock.c` keeps the historical local names as compatibility macros over
+runtime accessors. The stats key and entry types are now public runtime structs
+only because the backend-runtime test needs to validate the fields in normal
+builds where `LWLOCK_STATS` is not compiled.
+
+Validation for this slice:
+
+- touched-object builds passed for `lwlock.o`, `backend_runtime.o`, and
+  `test_backend_runtime.o`;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 41 to 39;
+- backend and `src/common` clean rebuild plus generated-header recovery
+  passed, followed by clean full `gmake -j8`;
+- `gmake DESTDIR="$PWD/tmp_install" install`, `gmake -C contrib -j8`, and a
+  clean PL/pgSQL rebuild/install passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
+  explicit `PG_REGRESS` environment;
+- `test_backend_lock_state_is_backend_local()` now verifies the LWLock stats
+  hash pointer, dummy entry, memory context pointer, and exit-registration flag
+  across two fake logical backends.
+
 ## Backend Parallel State Bridge
 
 The one-hundred-forty-second Phase 12 slice moves a parallel-query and

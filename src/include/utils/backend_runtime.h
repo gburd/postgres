@@ -679,11 +679,31 @@ typedef struct PgBackendLWLockHandle
 	LWLockMode	mode;
 } PgBackendLWLockHandle;
 
+typedef struct PgBackendLWLockStatsKey
+{
+	int			tranche;
+	void	   *instance;
+} PgBackendLWLockStatsKey;
+
+typedef struct PgBackendLWLockStats
+{
+	PgBackendLWLockStatsKey key;
+	int			sh_acquire_count;
+	int			ex_acquire_count;
+	int			block_count;
+	int			dequeue_self_count;
+	int			spin_delay_count;
+} PgBackendLWLockStats;
+
 typedef struct PgBackendLockState
 {
 	PgBackendLWLockHandle held_lwlocks[PG_BACKEND_MAX_SIMUL_LWLOCKS];
 	int			num_held_lwlocks;
 	int			local_num_user_defined_lwlock_tranches;
+	HTAB	   *lwlock_stats_htab;
+	PgBackendLWLockStats lwlock_stats_dummy;
+	MemoryContext lwlock_stats_context;
+	bool		lwlock_stats_exit_registered;
 	void	   *fast_path_local_use_counts;
 	bool		relation_extension_lock_held;
 	HTAB	   *lock_method_local_hash;
@@ -2003,6 +2023,10 @@ extern char *PgCurrentFormattedStartTimeBuffer(void);
 extern long *PgCurrentLogLineNumberRef(void);
 extern int *PgCurrentLogLinePidRef(void);
 extern PgBackendExprInterpState *PgCurrentExprInterpState(void);
+extern HTAB **PgCurrentLWLockStatsHashRef(void);
+extern PgBackendLWLockStats *PgCurrentLWLockStatsDummy(void);
+extern MemoryContext *PgCurrentLWLockStatsContextRef(void);
+extern bool *PgCurrentLWLockStatsExitRegisteredRef(void);
 extern PgBackendTimeoutState *PgCurrentTimeoutState(void);
 extern PgBackendWalSenderState *PgCurrentWalSenderState(void);
 extern PgBackendReplicationState *PgCurrentReplicationState(void);
