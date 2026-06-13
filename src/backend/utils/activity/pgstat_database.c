@@ -26,8 +26,6 @@
 static bool pgstat_should_report_connstat(void);
 
 
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int pgStatXactCommit = 0;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int pgStatXactRollback = 0;
 #define pgLastSessionReportTime (*PgCurrentPgStatLastSessionReportTimeRef())
 
 

@@ -31,10 +31,6 @@ static void pgstat_reset_slru_counter_internal(int index, TimestampTz ts);
  * SLRU counters are reported within critical sections so we use static memory
  * in order to avoid memory allocation.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_SLRUStats pending_SLRUStats[SLRU_NUM_ELEMENTS];
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool have_slrustats = false;
-
-
 /*
  * Reset counters for a single SLRU.
  *

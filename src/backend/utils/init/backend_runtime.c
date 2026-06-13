@@ -5756,6 +5756,54 @@ PgCurrentPendingCheckpointerStatsRef(void)
 	return &PgCurrentBackendPgStatPendingState()->pending_checkpointer;
 }
 
+PgStat_PendingIO *
+PgCurrentPendingIOStatsRef(void)
+{
+	return &PgCurrentBackendPgStatPendingState()->io_stats;
+}
+
+bool *
+PgCurrentHaveIOStatsRef(void)
+{
+	return &PgCurrentBackendPgStatPendingState()->io_stats_pending;
+}
+
+PgStat_SLRUStats *
+PgCurrentPendingSLRUStatsArray(void)
+{
+	return PgCurrentBackendPgStatPendingState()->slru_stats;
+}
+
+bool *
+PgCurrentHaveSLRUStatsRef(void)
+{
+	return &PgCurrentBackendPgStatPendingState()->slru_stats_pending;
+}
+
+PgStat_PendingLock *
+PgCurrentPendingLockStatsRef(void)
+{
+	return &PgCurrentBackendPgStatPendingState()->lock_stats;
+}
+
+bool *
+PgCurrentHaveLockStatsRef(void)
+{
+	return &PgCurrentBackendPgStatPendingState()->lock_stats_pending;
+}
+
+int *
+PgCurrentPgStatXactCommitRef(void)
+{
+	return &PgCurrentBackendPgStatPendingState()->xact_commit;
+}
+
+int *
+PgCurrentPgStatXactRollbackRef(void)
+{
+	return &PgCurrentBackendPgStatPendingState()->xact_rollback;
+}
+
 PgStat_Counter *
 PgCurrentPgStatBlockReadTimeRef(void)
 {
@@ -5778,6 +5826,18 @@ PgStat_Counter *
 PgCurrentPgStatTransactionIdleTimeRef(void)
 {
 	return &PgCurrentBackendPgStatPendingState()->transaction_idle_time;
+}
+
+instr_time *
+PgCurrentPgStatTotalFuncTimeRef(void)
+{
+	return &PgCurrentBackendPgStatPendingState()->func_total_time;
+}
+
+WalUsage *
+PgCurrentPgStatPrevWalUsageRef(void)
+{
+	return &PgCurrentBackendPgStatPendingState()->wal_prev_usage;
 }
 
 static PgBackendPendingInterruptState *

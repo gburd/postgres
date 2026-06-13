@@ -405,6 +405,9 @@ static const char *const slru_names[] = {
 
 #define SLRU_NUM_ELEMENTS	lengthof(slru_names)
 
+StaticAssertDecl(SLRU_NUM_ELEMENTS == PGSTAT_SLRU_NUM_ELEMENTS,
+				 "PGSTAT_SLRU_NUM_ELEMENTS must match slru_names");
+
 
 /* ----------
  * Types and definitions for different kinds of fixed-amount stats.

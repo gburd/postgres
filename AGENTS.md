@@ -181,14 +181,19 @@ Important current files:
   `_shmem_exit_inprogress` symbols, or miss the
   `PgCurrentBackendExitStateRef()` accessor.
 - `PendingBgWriterStats`, `PendingCheckpointerStats`,
-  `pgStatBlockReadTime`, `pgStatBlockWriteTime`, `pgStatActiveTime`, and
-  `pgStatTransactionIdleTime` are now fields in
+  `PendingIOStats`, `pending_SLRUStats`, `PendingLockStats`,
+  `pgStatXactCommit`, `pgStatXactRollback`, `pgStatBlockReadTime`,
+  `pgStatBlockWriteTime`, `pgStatActiveTime`,
+  `pgStatTransactionIdleTime`, `total_func_time`, `prevWalUsage`, and the
+  related `have_*stats` booleans are now fields in
   `PgBackendPgStatPendingState`, exposed through compatibility macros in
-  `src/include/pgstat.h`; the old exported TLS definitions were removed from
-  pgstat implementation files. After changing this bridge, clean and rebuild
-  backend objects and extension modules that include `pgstat.h`; stale objects
-  can still reference removed pgstat symbols or miss the new accessor
-  symbols. At minimum, clean and reinstall PL/pgSQL,
+  `src/include/pgstat.h`; the old exported/static TLS definitions were removed
+  from pgstat implementation files. `PGSTAT_SLRU_NUM_ELEMENTS` is public only
+  to size the runtime SLRU pending-state array and is asserted against
+  `slru_names[]` in `src/include/utils/pgstat_internal.h`. After changing this
+  bridge, clean and rebuild backend objects and extension modules that include
+  `pgstat.h`; stale objects can still reference removed pgstat symbols or miss
+  the new accessor symbols. At minimum, clean and reinstall PL/pgSQL,
   `src/test/modules/test_backend_runtime`, and contrib/test modules under
   pgstat coverage before validating.
 - Treat `PMChild.thread_backend` as private PMChild-owned publication state.

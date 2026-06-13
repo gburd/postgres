@@ -22,15 +22,6 @@
 
 
 /*
- * WAL usage counters saved from pgWalUsage at the previous call to
- * pgstat_report_wal(). This is used to calculate how much WAL usage
- * happens between pgstat_report_wal() calls, by subtracting
- * the previous counters from the current ones.
- */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND WalUsage prevWalUsage;
-
-
-/*
  * Calculate how much WAL usage counters have increased and update
  * shared WAL and IO statistics.
  *

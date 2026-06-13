@@ -6545,6 +6545,16 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 	PgStat_Counter saved_block_write_time;
 	PgStat_Counter saved_active_time;
 	PgStat_Counter saved_transaction_idle_time;
+	PgStat_PendingIO saved_io_stats;
+	bool		saved_have_iostats;
+	PgStat_SLRUStats saved_slru_stats;
+	bool		saved_have_slrustats;
+	PgStat_PendingLock saved_lock_stats;
+	bool		saved_have_lockstats;
+	int			saved_xact_commit;
+	int			saved_xact_rollback;
+	instr_time	saved_func_total_time;
+	WalUsage	saved_prev_wal_usage;
 	bool		ok = true;
 
 	saved_backend = CurrentPgBackend;
@@ -6554,6 +6564,16 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 	saved_block_write_time = pgStatBlockWriteTime;
 	saved_active_time = pgStatActiveTime;
 	saved_transaction_idle_time = pgStatTransactionIdleTime;
+	saved_io_stats = PendingIOStats;
+	saved_have_iostats = have_iostats;
+	saved_slru_stats = pending_SLRUStats[0];
+	saved_have_slrustats = have_slrustats;
+	saved_lock_stats = PendingLockStats;
+	saved_have_lockstats = have_lockstats;
+	saved_xact_commit = pgStatXactCommit;
+	saved_xact_rollback = pgStatXactRollback;
+	saved_func_total_time = total_func_time;
+	saved_prev_wal_usage = prevWalUsage;
 	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
 	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
 
@@ -6566,6 +6586,16 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		pgStatBlockWriteTime = 14;
 		pgStatActiveTime = 15;
 		pgStatTransactionIdleTime = 16;
+		PendingIOStats.counts[IOOBJECT_RELATION][IOCONTEXT_NORMAL][IOOP_READ] = 17;
+		have_iostats = true;
+		pending_SLRUStats[0].blocks_hit = 18;
+		have_slrustats = true;
+		PendingLockStats.stats[LOCKTAG_RELATION].waits = 19;
+		have_lockstats = true;
+		pgStatXactCommit = 20;
+		pgStatXactRollback = 21;
+		total_func_time.ticks = 22;
+		prevWalUsage.wal_records = 23;
 
 		CurrentPgBackend = &fake_backend2;
 		ok = ok && PendingBgWriterStats.buf_alloc == 0;
@@ -6574,6 +6604,17 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && pgStatBlockWriteTime == 0;
 		ok = ok && pgStatActiveTime == 0;
 		ok = ok && pgStatTransactionIdleTime == 0;
+		ok = ok &&
+			PendingIOStats.counts[IOOBJECT_RELATION][IOCONTEXT_NORMAL][IOOP_READ] == 0;
+		ok = ok && !have_iostats;
+		ok = ok && pending_SLRUStats[0].blocks_hit == 0;
+		ok = ok && !have_slrustats;
+		ok = ok && PendingLockStats.stats[LOCKTAG_RELATION].waits == 0;
+		ok = ok && !have_lockstats;
+		ok = ok && pgStatXactCommit == 0;
+		ok = ok && pgStatXactRollback == 0;
+		ok = ok && total_func_time.ticks == 0;
+		ok = ok && prevWalUsage.wal_records == 0;
 
 		PendingBgWriterStats.buf_alloc = 21;
 		PendingCheckpointerStats.num_requested = 22;
@@ -6581,6 +6622,16 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		pgStatBlockWriteTime = 24;
 		pgStatActiveTime = 25;
 		pgStatTransactionIdleTime = 26;
+		PendingIOStats.counts[IOOBJECT_RELATION][IOCONTEXT_NORMAL][IOOP_READ] = 27;
+		have_iostats = true;
+		pending_SLRUStats[0].blocks_hit = 28;
+		have_slrustats = true;
+		PendingLockStats.stats[LOCKTAG_RELATION].waits = 29;
+		have_lockstats = true;
+		pgStatXactCommit = 30;
+		pgStatXactRollback = 31;
+		total_func_time.ticks = 32;
+		prevWalUsage.wal_records = 33;
 
 		CurrentPgBackend = &fake_backend1;
 		ok = ok && PendingBgWriterStats.buf_alloc == 11;
@@ -6589,6 +6640,17 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && pgStatBlockWriteTime == 14;
 		ok = ok && pgStatActiveTime == 15;
 		ok = ok && pgStatTransactionIdleTime == 16;
+		ok = ok &&
+			PendingIOStats.counts[IOOBJECT_RELATION][IOCONTEXT_NORMAL][IOOP_READ] == 17;
+		ok = ok && have_iostats;
+		ok = ok && pending_SLRUStats[0].blocks_hit == 18;
+		ok = ok && have_slrustats;
+		ok = ok && PendingLockStats.stats[LOCKTAG_RELATION].waits == 19;
+		ok = ok && have_lockstats;
+		ok = ok && pgStatXactCommit == 20;
+		ok = ok && pgStatXactRollback == 21;
+		ok = ok && total_func_time.ticks == 22;
+		ok = ok && prevWalUsage.wal_records == 23;
 
 		CurrentPgBackend = &fake_backend2;
 		ok = ok && PendingBgWriterStats.buf_alloc == 21;
@@ -6597,6 +6659,17 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && pgStatBlockWriteTime == 24;
 		ok = ok && pgStatActiveTime == 25;
 		ok = ok && pgStatTransactionIdleTime == 26;
+		ok = ok &&
+			PendingIOStats.counts[IOOBJECT_RELATION][IOCONTEXT_NORMAL][IOOP_READ] == 27;
+		ok = ok && have_iostats;
+		ok = ok && pending_SLRUStats[0].blocks_hit == 28;
+		ok = ok && have_slrustats;
+		ok = ok && PendingLockStats.stats[LOCKTAG_RELATION].waits == 29;
+		ok = ok && have_lockstats;
+		ok = ok && pgStatXactCommit == 30;
+		ok = ok && pgStatXactRollback == 31;
+		ok = ok && total_func_time.ticks == 32;
+		ok = ok && prevWalUsage.wal_records == 33;
 
 		CurrentPgBackend = saved_backend;
 		PendingBgWriterStats = saved_bgwriter_stats;
@@ -6605,6 +6678,16 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		pgStatBlockWriteTime = saved_block_write_time;
 		pgStatActiveTime = saved_active_time;
 		pgStatTransactionIdleTime = saved_transaction_idle_time;
+		PendingIOStats = saved_io_stats;
+		have_iostats = saved_have_iostats;
+		pending_SLRUStats[0] = saved_slru_stats;
+		have_slrustats = saved_have_slrustats;
+		PendingLockStats = saved_lock_stats;
+		have_lockstats = saved_have_lockstats;
+		pgStatXactCommit = saved_xact_commit;
+		pgStatXactRollback = saved_xact_rollback;
+		total_func_time = saved_func_total_time;
+		prevWalUsage = saved_prev_wal_usage;
 	}
 	PG_CATCH();
 	{
@@ -6615,6 +6698,16 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		pgStatBlockWriteTime = saved_block_write_time;
 		pgStatActiveTime = saved_active_time;
 		pgStatTransactionIdleTime = saved_transaction_idle_time;
+		PendingIOStats = saved_io_stats;
+		have_iostats = saved_have_iostats;
+		pending_SLRUStats[0] = saved_slru_stats;
+		have_slrustats = saved_have_slrustats;
+		PendingLockStats = saved_lock_stats;
+		have_lockstats = saved_have_lockstats;
+		pgStatXactCommit = saved_xact_commit;
+		pgStatXactRollback = saved_xact_rollback;
+		total_func_time = saved_func_total_time;
+		prevWalUsage = saved_prev_wal_usage;
 		PG_RE_THROW();
 	}
 	PG_END_TRY();

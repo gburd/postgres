@@ -453,6 +453,11 @@ backend exit object rather than exported standalone TLS.
 `PgBackendPgStatPendingState` behind `pgstat.h` compatibility macros,
 removing another set of exported backend-local TLS definitions without
 changing the in-tree source-level API.
+`PendingIOStats`, `have_iostats`, `pending_SLRUStats`, `have_slrustats`,
+`PendingLockStats`, `have_lockstats`, `pgStatXactCommit`,
+`pgStatXactRollback`, `total_func_time`, and `prevWalUsage` now follow that
+same backend-owned pgstat pending bucket, further reducing raw backend-local
+TLS in fixed pgstat flush/accounting paths.
 PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly

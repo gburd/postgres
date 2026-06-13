@@ -24,14 +24,6 @@
 
 
 /*
- * Total time charged to functions so far in the current backend.
- * We use this to help separate "self" and "other" time charges.
- * (We assume this initializes to zero.)
- */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND instr_time total_func_time;
-
-
-/*
  * Ensure that stats are dropped if transaction aborts.
  */
 void

@@ -866,7 +866,13 @@ pgstat state-family batch now stores `PendingBgWriterStats`,
 `pgStatActiveTime`, and `pgStatTransactionIdleTime` in
 `PgBackendPgStatPendingState` behind `pgstat.h` compatibility macros, removing
 six exported backend-local TLS definitions while keeping the existing in-tree
-source names.
+source names. The next pgstat batch moved `PendingIOStats`, `have_iostats`,
+`pending_SLRUStats`, `have_slrustats`, `PendingLockStats`,
+`have_lockstats`, `pgStatXactCommit`, `pgStatXactRollback`,
+`total_func_time`, and `prevWalUsage` into the same
+`PgBackendPgStatPendingState` bucket. `PGSTAT_SLRU_NUM_ELEMENTS` now exposes
+the fixed SLRU pending-array size needed by the runtime object and is checked
+against the internal `slru_names[]` list.
 PMChild assignment and slot release now also scrub stale carrier-visible signal
 ids and thread-exit payloads before reuse. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live

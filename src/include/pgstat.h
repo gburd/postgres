@@ -28,6 +28,9 @@ typedef struct FullTransactionId FullTransactionId;
 /* avoid including utils/relcache.h */
 typedef struct RelationData *Relation;
 
+/* avoid including executor/instrument.h */
+typedef struct WalUsage WalUsage;
+
 
 /* ----------
  * Paths for the statistics files (relative to installation's $PGDATA).
@@ -439,6 +442,12 @@ typedef struct PgStat_SLRUStats
 	PgStat_Counter truncate;
 	TimestampTz stat_reset_timestamp;
 } PgStat_SLRUStats;
+
+/*
+ * Fixed number of SLRU statistics entries, including the final "other" entry.
+ * Keep this in sync with slru_names[] in pgstat_internal.h.
+ */
+#define PGSTAT_SLRU_NUM_ELEMENTS 8
 
 typedef struct PgStat_StatSubEntry
 {
@@ -868,6 +877,29 @@ extern PgStat_CheckpointerStats *PgCurrentPendingCheckpointerStatsRef(void);
 
 #define PendingCheckpointerStats (*PgCurrentPendingCheckpointerStatsRef())
 
+extern PgStat_PendingIO *PgCurrentPendingIOStatsRef(void);
+extern bool *PgCurrentHaveIOStatsRef(void);
+
+#define PendingIOStats (*PgCurrentPendingIOStatsRef())
+#define have_iostats (*PgCurrentHaveIOStatsRef())
+
+extern PgStat_SLRUStats *PgCurrentPendingSLRUStatsArray(void);
+extern bool *PgCurrentHaveSLRUStatsRef(void);
+
+#define pending_SLRUStats (PgCurrentPendingSLRUStatsArray())
+#define have_slrustats (*PgCurrentHaveSLRUStatsRef())
+
+extern PgStat_PendingLock *PgCurrentPendingLockStatsRef(void);
+extern bool *PgCurrentHaveLockStatsRef(void);
+
+#define PendingLockStats (*PgCurrentPendingLockStatsRef())
+#define have_lockstats (*PgCurrentHaveLockStatsRef())
+
+extern int *PgCurrentPgStatXactCommitRef(void);
+extern int *PgCurrentPgStatXactRollbackRef(void);
+
+#define pgStatXactCommit (*PgCurrentPgStatXactCommitRef())
+#define pgStatXactRollback (*PgCurrentPgStatXactRollbackRef())
 
 /*
  * Variables in pgstat_database.c
@@ -889,6 +921,12 @@ extern PgStat_Counter *PgCurrentPgStatTransactionIdleTimeRef(void);
 
 #define pgStatActiveTime (*PgCurrentPgStatActiveTimeRef())
 #define pgStatTransactionIdleTime (*PgCurrentPgStatTransactionIdleTimeRef())
+
+extern instr_time *PgCurrentPgStatTotalFuncTimeRef(void);
+extern WalUsage *PgCurrentPgStatPrevWalUsageRef(void);
+
+#define total_func_time (*PgCurrentPgStatTotalFuncTimeRef())
+#define prevWalUsage (*PgCurrentPgStatPrevWalUsageRef())
 
 /* updated by the traffic cop and in errfinish() */
 extern SessionEndType *PgCurrentPgStatSessionEndCauseRef(void);

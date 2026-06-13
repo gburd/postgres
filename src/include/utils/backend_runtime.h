@@ -15,6 +15,7 @@
 #include "access/session.h"
 #include "common/pg_prng.h"
 #include "common/relpath.h"
+#include "executor/instrument.h"
 #include "fmgr.h"
 #include "lib/ilist.h"
 #include "libpq/hba.h"
@@ -171,10 +172,20 @@ typedef struct PgBackendPgStatPendingState
 {
 	PgStat_BgWriterStats pending_bgwriter;
 	PgStat_CheckpointerStats pending_checkpointer;
+	PgStat_PendingIO io_stats;
+	bool		io_stats_pending;
+	PgStat_SLRUStats slru_stats[PGSTAT_SLRU_NUM_ELEMENTS];
+	bool		slru_stats_pending;
+	PgStat_PendingLock lock_stats;
+	bool		lock_stats_pending;
+	int			xact_commit;
+	int			xact_rollback;
 	PgStat_Counter block_read_time;
 	PgStat_Counter block_write_time;
 	PgStat_Counter active_time;
 	PgStat_Counter transaction_idle_time;
+	instr_time	func_total_time;
+	WalUsage	wal_prev_usage;
 } PgBackendPgStatPendingState;
 
 typedef struct PgExecutionDebugState
