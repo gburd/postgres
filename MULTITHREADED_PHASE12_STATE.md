@@ -6633,3 +6633,47 @@ Validation for this slice:
 - `gmake -C contrib -j8` passed;
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals, with backend-local declarations dropping from 321 to 312.
+
+## Backend ProcArray Visibility State Bridge
+
+The one-hundred-thirty-seventh Phase 12 slice extends
+`PgBackendTransactionState` to cover ProcArray backend-local visibility and
+XID-cache state:
+
+- the `TransactionIdIsInProgress()` negative-result cache;
+- the four `GlobalVisState` horizon caches for shared, catalog, regular data,
+  and temporary relations;
+- the `ComputeXidHorizonsResultLastXmin` recomputation throttle;
+- the optional `XIDCACHE_DEBUG` counters.
+
+The `GlobalVisState` storage definition moved from private `procarray.c` scope
+to the runtime header so the backend runtime can own the state by value while
+the existing `snapmgr.h` and `heapam.h` forward declarations remain valid.
+`procarray.c` keeps the existing local names as compatibility macros backed by
+the current logical backend's transaction-state bucket.
+
+Validation for this slice:
+
+- `gmake -C src/backend/utils/init backend_runtime.o` passed;
+- `gmake -C src/backend/storage/ipc procarray.o` passed;
+- `gmake -C src/test/modules/test_backend_runtime test_backend_runtime.o`
+  passed after expanding `test_backend_transaction_state_is_backend_local()`;
+- a static scan found no remaining raw TLS declarations for the moved
+  ProcArray visibility/cache state;
+- a full backend clean plus generated-header recovery was run after the
+  installed-header and `PgBackend` layout changes;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- PL/pgSQL and `src/test/modules/test_backend_runtime` were cleaned, rebuilt,
+  and reinstalled after the installed-header change;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression, including the expanded
+  `test_backend_transaction_state_is_backend_local()` helper, and still
+  reported TAP disabled by configure;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
+  explicit `PG_REGRESS` environment;
+- `gmake -C contrib -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 312 to 297.

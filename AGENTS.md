@@ -295,6 +295,16 @@ Important current files:
   installed runtime headers changed; at minimum rebuild and reinstall
   PL/pgSQL, `src/test/modules/test_backend_runtime`, and contrib before
   validating.
+- ProcArray backend-local visibility/cache state now also lives in
+  `PgBackendTransactionState`: the `TransactionIdIsInProgress()` negative
+  cache, `GlobalVisState` horizon caches, the
+  `ComputeXidHorizonsResultLastXmin` throttle, and `XIDCACHE_DEBUG` counters.
+  `GlobalVisState` is defined in `utils/backend_runtime.h` so the runtime can
+  store it by value while existing snapshot/heapam headers keep using forward
+  declarations. After changing this bridge, clean and rebuild backend objects
+  because `PgBackend` layout and installed runtime headers changed; at minimum
+  rebuild and reinstall PL/pgSQL, `src/test/modules/test_backend_runtime`, and
+  contrib before validating.
 - Treat `PMChild.thread_backend` as private PMChild-owned publication state.
   Postmaster code should use PMChild helper APIs for threaded backend
   interrupt, wakeup, and thread-exit publication rather than dereferencing or

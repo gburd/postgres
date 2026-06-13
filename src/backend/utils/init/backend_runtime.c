@@ -2185,6 +2185,8 @@ PgBackendInitializeTransactionState(PgBackendTransactionState *transaction)
 	MemSet(transaction, 0, sizeof(*transaction));
 	transaction->cached_fetch_xid = InvalidTransactionId;
 	transaction->two_phase_cached_fxid = InvalidFullTransactionId;
+	transaction->procarray_cached_xid_not_in_progress = InvalidTransactionId;
+	transaction->compute_xid_horizons_result_last_xmin = InvalidTransactionId;
 	dclist_init(&transaction->multixact_cache);
 }
 
@@ -6659,6 +6661,96 @@ char **
 PgCurrentMultiXactDebugStringRef(void)
 {
 	return &PgCurrentBackendTransactionState()->multixact_debug_string;
+}
+
+TransactionId *
+PgCurrentProcArrayCachedXidNotInProgressRef(void)
+{
+	return &PgCurrentBackendTransactionState()->procarray_cached_xid_not_in_progress;
+}
+
+struct GlobalVisState *
+PgCurrentGlobalVisSharedRelsRef(void)
+{
+	return &PgCurrentBackendTransactionState()->global_vis_shared_rels;
+}
+
+struct GlobalVisState *
+PgCurrentGlobalVisCatalogRelsRef(void)
+{
+	return &PgCurrentBackendTransactionState()->global_vis_catalog_rels;
+}
+
+struct GlobalVisState *
+PgCurrentGlobalVisDataRelsRef(void)
+{
+	return &PgCurrentBackendTransactionState()->global_vis_data_rels;
+}
+
+struct GlobalVisState *
+PgCurrentGlobalVisTempRelsRef(void)
+{
+	return &PgCurrentBackendTransactionState()->global_vis_temp_rels;
+}
+
+TransactionId *
+PgCurrentComputeXidHorizonsResultLastXminRef(void)
+{
+	return &PgCurrentBackendTransactionState()->compute_xid_horizons_result_last_xmin;
+}
+
+long *
+PgCurrentXidCacheByRecentXminRef(void)
+{
+	return &PgCurrentBackendTransactionState()->xidcache_by_recent_xmin;
+}
+
+long *
+PgCurrentXidCacheByKnownXactRef(void)
+{
+	return &PgCurrentBackendTransactionState()->xidcache_by_known_xact;
+}
+
+long *
+PgCurrentXidCacheByMyXactRef(void)
+{
+	return &PgCurrentBackendTransactionState()->xidcache_by_my_xact;
+}
+
+long *
+PgCurrentXidCacheByLatestXidRef(void)
+{
+	return &PgCurrentBackendTransactionState()->xidcache_by_latest_xid;
+}
+
+long *
+PgCurrentXidCacheByMainXidRef(void)
+{
+	return &PgCurrentBackendTransactionState()->xidcache_by_main_xid;
+}
+
+long *
+PgCurrentXidCacheByChildXidRef(void)
+{
+	return &PgCurrentBackendTransactionState()->xidcache_by_child_xid;
+}
+
+long *
+PgCurrentXidCacheByKnownAssignedRef(void)
+{
+	return &PgCurrentBackendTransactionState()->xidcache_by_known_assigned;
+}
+
+long *
+PgCurrentXidCacheNoOverflowRef(void)
+{
+	return &PgCurrentBackendTransactionState()->xidcache_no_overflow;
+}
+
+long *
+PgCurrentXidCacheSlowAnswerRef(void)
+{
+	return &PgCurrentBackendTransactionState()->xidcache_slow_answer;
 }
 
 static PgBackendPendingInterruptState *

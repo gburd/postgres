@@ -63,6 +63,7 @@
 #include "storage/procsignal.h"
 #include "storage/subsystems.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/injection_point.h"
 #include "utils/lsyscache.h"
@@ -181,15 +182,6 @@ const struct ShmemCallbacks ProcArrayShmemCallbacks = {
  *
  * The typedef is in the header.
  */
-struct GlobalVisState
-{
-	/* XIDs >= are considered running by some backend */
-	FullTransactionId definitely_needed;
-
-	/* XIDs < are not considered to be running by any backend */
-	FullTransactionId maybe_needed;
-};
-
 /*
  * Result of ComputeXidHorizons().
  */
@@ -287,7 +279,7 @@ static PG_GLOBAL_SHMEM PGPROC *allProcs;
 /*
  * Cache to reduce overhead of repeated calls to TransactionIdIsInProgress()
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND TransactionId cachedXidIsNotInProgress = InvalidTransactionId;
+#define cachedXidIsNotInProgress (*PgCurrentProcArrayCachedXidNotInProgressRef())
 
 /*
  * Bookkeeping for tracking emulated transactions in recovery
@@ -311,30 +303,30 @@ static PG_GLOBAL_RUNTIME TransactionId standbySnapshotPendingXmin;
  * GlobalVisState for details. As shared, catalog, normal and temporary
  * relations can have different horizons, one such state exists for each.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND GlobalVisState GlobalVisSharedRels;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND GlobalVisState GlobalVisCatalogRels;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND GlobalVisState GlobalVisDataRels;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND GlobalVisState GlobalVisTempRels;
+#define GlobalVisSharedRels (*PgCurrentGlobalVisSharedRelsRef())
+#define GlobalVisCatalogRels (*PgCurrentGlobalVisCatalogRelsRef())
+#define GlobalVisDataRels (*PgCurrentGlobalVisDataRelsRef())
+#define GlobalVisTempRels (*PgCurrentGlobalVisTempRelsRef())
 
 /*
  * This backend's RecentXmin at the last time the accurate xmin horizon was
  * recomputed, or InvalidTransactionId if it has not. Used to limit how many
  * times accurate horizons are recomputed. See GlobalVisTestShouldUpdate().
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND TransactionId ComputeXidHorizonsResultLastXmin;
+#define ComputeXidHorizonsResultLastXmin (*PgCurrentComputeXidHorizonsResultLastXminRef())
 
 #ifdef XIDCACHE_DEBUG
 
 /* counters for XidCache measurement */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND long xc_by_recent_xmin = 0;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND long xc_by_known_xact = 0;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND long xc_by_my_xact = 0;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND long xc_by_latest_xid = 0;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND long xc_by_main_xid = 0;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND long xc_by_child_xid = 0;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND long xc_by_known_assigned = 0;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND long xc_no_overflow = 0;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND long xc_slow_answer = 0;
+#define xc_by_recent_xmin (*PgCurrentXidCacheByRecentXminRef())
+#define xc_by_known_xact (*PgCurrentXidCacheByKnownXactRef())
+#define xc_by_my_xact (*PgCurrentXidCacheByMyXactRef())
+#define xc_by_latest_xid (*PgCurrentXidCacheByLatestXidRef())
+#define xc_by_main_xid (*PgCurrentXidCacheByMainXidRef())
+#define xc_by_child_xid (*PgCurrentXidCacheByChildXidRef())
+#define xc_by_known_assigned (*PgCurrentXidCacheByKnownAssignedRef())
+#define xc_no_overflow (*PgCurrentXidCacheNoOverflowRef())
+#define xc_slow_answer (*PgCurrentXidCacheSlowAnswerRef())
 
 #define xc_by_recent_xmin_inc()		(xc_by_recent_xmin++)
 #define xc_by_known_xact_inc()		(xc_by_known_xact++)

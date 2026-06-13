@@ -75,6 +75,15 @@ typedef enum PgBackendLaunchModel
 	PG_BACKEND_LAUNCH_THREAD
 } PgBackendLaunchModel;
 
+struct GlobalVisState
+{
+	/* XIDs >= are considered running by some backend */
+	FullTransactionId definitely_needed;
+
+	/* XIDs < are not considered to be running by any backend */
+	FullTransactionId maybe_needed;
+};
+
 /*
  * Budget for one invocation of PgSessionStep().  The process-mode runner uses
  * a single-message budget today; later schedulers can extend this contract
@@ -311,6 +320,21 @@ typedef struct PgBackendTransactionState
 	bool		multixact_cache_initialized;
 	MemoryContext multixact_context;
 	char	   *multixact_debug_string;
+	TransactionId procarray_cached_xid_not_in_progress;
+	struct GlobalVisState global_vis_shared_rels;
+	struct GlobalVisState global_vis_catalog_rels;
+	struct GlobalVisState global_vis_data_rels;
+	struct GlobalVisState global_vis_temp_rels;
+	TransactionId compute_xid_horizons_result_last_xmin;
+	long		xidcache_by_recent_xmin;
+	long		xidcache_by_known_xact;
+	long		xidcache_by_my_xact;
+	long		xidcache_by_latest_xid;
+	long		xidcache_by_main_xid;
+	long		xidcache_by_child_xid;
+	long		xidcache_by_known_assigned;
+	long		xidcache_no_overflow;
+	long		xidcache_slow_answer;
 } PgBackendTransactionState;
 
 typedef struct PgExecutionDebugState
@@ -1480,6 +1504,21 @@ extern dclist_head *PgCurrentMultiXactCacheRef(void);
 extern bool *PgCurrentMultiXactCacheInitializedRef(void);
 extern MemoryContext *PgCurrentMultiXactContextRef(void);
 extern char **PgCurrentMultiXactDebugStringRef(void);
+extern TransactionId *PgCurrentProcArrayCachedXidNotInProgressRef(void);
+extern struct GlobalVisState *PgCurrentGlobalVisSharedRelsRef(void);
+extern struct GlobalVisState *PgCurrentGlobalVisCatalogRelsRef(void);
+extern struct GlobalVisState *PgCurrentGlobalVisDataRelsRef(void);
+extern struct GlobalVisState *PgCurrentGlobalVisTempRelsRef(void);
+extern TransactionId *PgCurrentComputeXidHorizonsResultLastXminRef(void);
+extern long *PgCurrentXidCacheByRecentXminRef(void);
+extern long *PgCurrentXidCacheByKnownXactRef(void);
+extern long *PgCurrentXidCacheByMyXactRef(void);
+extern long *PgCurrentXidCacheByLatestXidRef(void);
+extern long *PgCurrentXidCacheByMainXidRef(void);
+extern long *PgCurrentXidCacheByChildXidRef(void);
+extern long *PgCurrentXidCacheByKnownAssignedRef(void);
+extern long *PgCurrentXidCacheNoOverflowRef(void);
+extern long *PgCurrentXidCacheSlowAnswerRef(void);
 extern void **PgCurrentVfdCacheRef(void);
 extern Size *PgCurrentSizeVfdCacheRef(void);
 extern int *PgCurrentNFileRef(void);

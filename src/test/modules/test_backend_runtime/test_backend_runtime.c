@@ -7447,6 +7447,33 @@ test_backend_transaction_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentMultiXactCacheInitializedRef() = true;
 		*PgCurrentMultiXactContextRef() = (MemoryContext) &fake_backend1;
 		*PgCurrentMultiXactDebugStringRef() = (char *) "mxact-1";
+		*PgCurrentProcArrayCachedXidNotInProgressRef() = 106;
+		PgCurrentGlobalVisSharedRelsRef()->definitely_needed =
+			FullTransactionIdFromEpochAndXid(3, 107);
+		PgCurrentGlobalVisSharedRelsRef()->maybe_needed =
+			FullTransactionIdFromEpochAndXid(3, 108);
+		PgCurrentGlobalVisCatalogRelsRef()->definitely_needed =
+			FullTransactionIdFromEpochAndXid(3, 109);
+		PgCurrentGlobalVisCatalogRelsRef()->maybe_needed =
+			FullTransactionIdFromEpochAndXid(3, 110);
+		PgCurrentGlobalVisDataRelsRef()->definitely_needed =
+			FullTransactionIdFromEpochAndXid(3, 111);
+		PgCurrentGlobalVisDataRelsRef()->maybe_needed =
+			FullTransactionIdFromEpochAndXid(3, 112);
+		PgCurrentGlobalVisTempRelsRef()->definitely_needed =
+			FullTransactionIdFromEpochAndXid(3, 113);
+		PgCurrentGlobalVisTempRelsRef()->maybe_needed =
+			FullTransactionIdFromEpochAndXid(3, 114);
+		*PgCurrentComputeXidHorizonsResultLastXminRef() = 115;
+		*PgCurrentXidCacheByRecentXminRef() = 116;
+		*PgCurrentXidCacheByKnownXactRef() = 117;
+		*PgCurrentXidCacheByMyXactRef() = 118;
+		*PgCurrentXidCacheByLatestXidRef() = 119;
+		*PgCurrentXidCacheByMainXidRef() = 120;
+		*PgCurrentXidCacheByChildXidRef() = 121;
+		*PgCurrentXidCacheByKnownAssignedRef() = 122;
+		*PgCurrentXidCacheNoOverflowRef() = 123;
+		*PgCurrentXidCacheSlowAnswerRef() = 124;
 
 		CurrentPgBackend = &fake_backend2;
 		ok = ok && *PgCurrentCachedFetchXidRef() == InvalidTransactionId;
@@ -7462,6 +7489,33 @@ test_backend_transaction_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && !*PgCurrentMultiXactCacheInitializedRef();
 		ok = ok && *PgCurrentMultiXactContextRef() == NULL;
 		ok = ok && *PgCurrentMultiXactDebugStringRef() == NULL;
+		ok = ok && *PgCurrentProcArrayCachedXidNotInProgressRef() == InvalidTransactionId;
+		ok = ok && FullTransactionIdEquals(PgCurrentGlobalVisSharedRelsRef()->definitely_needed,
+											InvalidFullTransactionId);
+		ok = ok && FullTransactionIdEquals(PgCurrentGlobalVisSharedRelsRef()->maybe_needed,
+											InvalidFullTransactionId);
+		ok = ok && FullTransactionIdEquals(PgCurrentGlobalVisCatalogRelsRef()->definitely_needed,
+											InvalidFullTransactionId);
+		ok = ok && FullTransactionIdEquals(PgCurrentGlobalVisCatalogRelsRef()->maybe_needed,
+											InvalidFullTransactionId);
+		ok = ok && FullTransactionIdEquals(PgCurrentGlobalVisDataRelsRef()->definitely_needed,
+											InvalidFullTransactionId);
+		ok = ok && FullTransactionIdEquals(PgCurrentGlobalVisDataRelsRef()->maybe_needed,
+											InvalidFullTransactionId);
+		ok = ok && FullTransactionIdEquals(PgCurrentGlobalVisTempRelsRef()->definitely_needed,
+											InvalidFullTransactionId);
+		ok = ok && FullTransactionIdEquals(PgCurrentGlobalVisTempRelsRef()->maybe_needed,
+											InvalidFullTransactionId);
+		ok = ok && *PgCurrentComputeXidHorizonsResultLastXminRef() == InvalidTransactionId;
+		ok = ok && *PgCurrentXidCacheByRecentXminRef() == 0;
+		ok = ok && *PgCurrentXidCacheByKnownXactRef() == 0;
+		ok = ok && *PgCurrentXidCacheByMyXactRef() == 0;
+		ok = ok && *PgCurrentXidCacheByLatestXidRef() == 0;
+		ok = ok && *PgCurrentXidCacheByMainXidRef() == 0;
+		ok = ok && *PgCurrentXidCacheByChildXidRef() == 0;
+		ok = ok && *PgCurrentXidCacheByKnownAssignedRef() == 0;
+		ok = ok && *PgCurrentXidCacheNoOverflowRef() == 0;
+		ok = ok && *PgCurrentXidCacheSlowAnswerRef() == 0;
 
 		*PgCurrentCachedFetchXidRef() = 201;
 		*PgCurrentCachedFetchXidStatusRef() = 202;
@@ -7476,6 +7530,33 @@ test_backend_transaction_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentMultiXactCacheInitializedRef() = true;
 		*PgCurrentMultiXactContextRef() = (MemoryContext) &fake_backend2;
 		*PgCurrentMultiXactDebugStringRef() = (char *) "mxact-2";
+		*PgCurrentProcArrayCachedXidNotInProgressRef() = 206;
+		PgCurrentGlobalVisSharedRelsRef()->definitely_needed =
+			FullTransactionIdFromEpochAndXid(4, 207);
+		PgCurrentGlobalVisSharedRelsRef()->maybe_needed =
+			FullTransactionIdFromEpochAndXid(4, 208);
+		PgCurrentGlobalVisCatalogRelsRef()->definitely_needed =
+			FullTransactionIdFromEpochAndXid(4, 209);
+		PgCurrentGlobalVisCatalogRelsRef()->maybe_needed =
+			FullTransactionIdFromEpochAndXid(4, 210);
+		PgCurrentGlobalVisDataRelsRef()->definitely_needed =
+			FullTransactionIdFromEpochAndXid(4, 211);
+		PgCurrentGlobalVisDataRelsRef()->maybe_needed =
+			FullTransactionIdFromEpochAndXid(4, 212);
+		PgCurrentGlobalVisTempRelsRef()->definitely_needed =
+			FullTransactionIdFromEpochAndXid(4, 213);
+		PgCurrentGlobalVisTempRelsRef()->maybe_needed =
+			FullTransactionIdFromEpochAndXid(4, 214);
+		*PgCurrentComputeXidHorizonsResultLastXminRef() = 215;
+		*PgCurrentXidCacheByRecentXminRef() = 216;
+		*PgCurrentXidCacheByKnownXactRef() = 217;
+		*PgCurrentXidCacheByMyXactRef() = 218;
+		*PgCurrentXidCacheByLatestXidRef() = 219;
+		*PgCurrentXidCacheByMainXidRef() = 220;
+		*PgCurrentXidCacheByChildXidRef() = 221;
+		*PgCurrentXidCacheByKnownAssignedRef() = 222;
+		*PgCurrentXidCacheNoOverflowRef() = 223;
+		*PgCurrentXidCacheSlowAnswerRef() = 224;
 
 		CurrentPgBackend = &fake_backend1;
 		ok = ok && *PgCurrentCachedFetchXidRef() == 101;
@@ -7492,6 +7573,33 @@ test_backend_transaction_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && dclist_is_empty(PgCurrentMultiXactCacheRef());
 		ok = ok && *PgCurrentMultiXactContextRef() == (MemoryContext) &fake_backend1;
 		ok = ok && strcmp(*PgCurrentMultiXactDebugStringRef(), "mxact-1") == 0;
+		ok = ok && *PgCurrentProcArrayCachedXidNotInProgressRef() == 106;
+		ok = ok && FullTransactionIdEquals(PgCurrentGlobalVisSharedRelsRef()->definitely_needed,
+											FullTransactionIdFromEpochAndXid(3, 107));
+		ok = ok && FullTransactionIdEquals(PgCurrentGlobalVisSharedRelsRef()->maybe_needed,
+											FullTransactionIdFromEpochAndXid(3, 108));
+		ok = ok && FullTransactionIdEquals(PgCurrentGlobalVisCatalogRelsRef()->definitely_needed,
+											FullTransactionIdFromEpochAndXid(3, 109));
+		ok = ok && FullTransactionIdEquals(PgCurrentGlobalVisCatalogRelsRef()->maybe_needed,
+											FullTransactionIdFromEpochAndXid(3, 110));
+		ok = ok && FullTransactionIdEquals(PgCurrentGlobalVisDataRelsRef()->definitely_needed,
+											FullTransactionIdFromEpochAndXid(3, 111));
+		ok = ok && FullTransactionIdEquals(PgCurrentGlobalVisDataRelsRef()->maybe_needed,
+											FullTransactionIdFromEpochAndXid(3, 112));
+		ok = ok && FullTransactionIdEquals(PgCurrentGlobalVisTempRelsRef()->definitely_needed,
+											FullTransactionIdFromEpochAndXid(3, 113));
+		ok = ok && FullTransactionIdEquals(PgCurrentGlobalVisTempRelsRef()->maybe_needed,
+											FullTransactionIdFromEpochAndXid(3, 114));
+		ok = ok && *PgCurrentComputeXidHorizonsResultLastXminRef() == 115;
+		ok = ok && *PgCurrentXidCacheByRecentXminRef() == 116;
+		ok = ok && *PgCurrentXidCacheByKnownXactRef() == 117;
+		ok = ok && *PgCurrentXidCacheByMyXactRef() == 118;
+		ok = ok && *PgCurrentXidCacheByLatestXidRef() == 119;
+		ok = ok && *PgCurrentXidCacheByMainXidRef() == 120;
+		ok = ok && *PgCurrentXidCacheByChildXidRef() == 121;
+		ok = ok && *PgCurrentXidCacheByKnownAssignedRef() == 122;
+		ok = ok && *PgCurrentXidCacheNoOverflowRef() == 123;
+		ok = ok && *PgCurrentXidCacheSlowAnswerRef() == 124;
 
 		CurrentPgBackend = &fake_backend2;
 		ok = ok && *PgCurrentCachedFetchXidRef() == 201;
@@ -7508,6 +7616,33 @@ test_backend_transaction_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && dclist_is_empty(PgCurrentMultiXactCacheRef());
 		ok = ok && *PgCurrentMultiXactContextRef() == (MemoryContext) &fake_backend2;
 		ok = ok && strcmp(*PgCurrentMultiXactDebugStringRef(), "mxact-2") == 0;
+		ok = ok && *PgCurrentProcArrayCachedXidNotInProgressRef() == 206;
+		ok = ok && FullTransactionIdEquals(PgCurrentGlobalVisSharedRelsRef()->definitely_needed,
+											FullTransactionIdFromEpochAndXid(4, 207));
+		ok = ok && FullTransactionIdEquals(PgCurrentGlobalVisSharedRelsRef()->maybe_needed,
+											FullTransactionIdFromEpochAndXid(4, 208));
+		ok = ok && FullTransactionIdEquals(PgCurrentGlobalVisCatalogRelsRef()->definitely_needed,
+											FullTransactionIdFromEpochAndXid(4, 209));
+		ok = ok && FullTransactionIdEquals(PgCurrentGlobalVisCatalogRelsRef()->maybe_needed,
+											FullTransactionIdFromEpochAndXid(4, 210));
+		ok = ok && FullTransactionIdEquals(PgCurrentGlobalVisDataRelsRef()->definitely_needed,
+											FullTransactionIdFromEpochAndXid(4, 211));
+		ok = ok && FullTransactionIdEquals(PgCurrentGlobalVisDataRelsRef()->maybe_needed,
+											FullTransactionIdFromEpochAndXid(4, 212));
+		ok = ok && FullTransactionIdEquals(PgCurrentGlobalVisTempRelsRef()->definitely_needed,
+											FullTransactionIdFromEpochAndXid(4, 213));
+		ok = ok && FullTransactionIdEquals(PgCurrentGlobalVisTempRelsRef()->maybe_needed,
+											FullTransactionIdFromEpochAndXid(4, 214));
+		ok = ok && *PgCurrentComputeXidHorizonsResultLastXminRef() == 215;
+		ok = ok && *PgCurrentXidCacheByRecentXminRef() == 216;
+		ok = ok && *PgCurrentXidCacheByKnownXactRef() == 217;
+		ok = ok && *PgCurrentXidCacheByMyXactRef() == 218;
+		ok = ok && *PgCurrentXidCacheByLatestXidRef() == 219;
+		ok = ok && *PgCurrentXidCacheByMainXidRef() == 220;
+		ok = ok && *PgCurrentXidCacheByChildXidRef() == 221;
+		ok = ok && *PgCurrentXidCacheByKnownAssignedRef() == 222;
+		ok = ok && *PgCurrentXidCacheNoOverflowRef() == 223;
+		ok = ok && *PgCurrentXidCacheSlowAnswerRef() == 224;
 
 		CurrentPgBackend = saved_backend;
 	}

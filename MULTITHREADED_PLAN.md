@@ -738,7 +738,11 @@ through `PgExecution`, plus the ANALYZE memory-context and buffer-access
 strategy execution-state bridge through `PgExecution`, plus the extension
 creation execution-state bridge through `PgExecution`, plus the
 materialized-view maintenance-depth execution-state bridge through
-`PgExecution`.
+`PgExecution`, plus the lock-manager backend-local state bridge through
+`PgBackendLockState`, plus the transaction/access-manager backend-local state
+bridge through `PgBackendTransactionState`, plus the ProcArray
+visibility-horizon and XID-cache state bridge through
+`PgBackendTransactionState`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.

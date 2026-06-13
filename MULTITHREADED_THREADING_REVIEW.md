@@ -530,6 +530,16 @@ that were outside the raw TLS scan but still unsafe in a shared address space.
 The slice passed clean full build/install, process-mode backend-runtime
 regression, direct threaded runtime TAP, contrib build, and the required
 global-lifetime scan with zero new unclassified mutable globals.
+ProcArray visibility and XID-cache state now also lives in
+`PgBackendTransactionState`: the negative `TransactionIdIsInProgress()` cache,
+the per-relation-class `GlobalVisState` horizon caches, the horizon
+recompute-throttle XID, and optional `XIDCACHE_DEBUG` counters now follow the
+logical backend. `GlobalVisState` moved to the runtime header so the backend
+state object can own it by value without changing existing snapshot/heapam
+forward declarations. The slice passed clean full build/install,
+process-mode backend-runtime regression, direct threaded runtime TAP, contrib
+build, and the required global-lifetime scan with zero new unclassified
+mutable globals.
 PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly
