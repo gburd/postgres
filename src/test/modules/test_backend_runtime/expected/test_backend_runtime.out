@@ -95,6 +95,12 @@ SELECT test_session_sequence_state_is_session_local();
  t
 (1 row)
 
+SELECT test_session_large_object_state_is_session_local();
+ test_session_large_object_state_is_session_local 
+--------------------------------------------------
+ t
+(1 row)
+
 SELECT test_runtime_server_guc_state_is_runtime_local();
  test_runtime_server_guc_state_is_runtime_local 
 ------------------------------------------------
@@ -414,3 +420,20 @@ SELECT 'ABC' ~ '^[[:alpha:]]+$' AS regex_alpha_cache_reuse;
  t
 (1 row)
 
+CREATE TEMP TABLE phase12_largeobject_state AS
+	SELECT lo_from_bytea(0, 'phase12 large object'::bytea) AS loid;
+SELECT encode(lo_get(loid), 'escape') AS lo_contents
+	FROM phase12_largeobject_state;
+     lo_contents      
+----------------------
+ phase12 large object
+(1 row)
+
+SELECT lo_unlink(loid) = 1 AS lo_unlinked
+	FROM phase12_largeobject_state;
+ lo_unlinked 
+-------------
+ t
+(1 row)
+
+DROP TABLE phase12_largeobject_state;

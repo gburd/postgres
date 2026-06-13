@@ -1188,6 +1188,76 @@ test_session_sequence_state_is_session_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_session_large_object_state_is_session_local);
+Datum
+test_session_large_object_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	Relation	saved_heap_relation;
+	Relation	saved_index_relation;
+	Relation	session1_heap_marker;
+	Relation	session1_index_marker;
+	Relation	session2_heap_marker;
+	Relation	session2_index_marker;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	saved_heap_relation = *PgCurrentLargeObjectHeapRelationRef();
+	saved_index_relation = *PgCurrentLargeObjectIndexRelationRef();
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	session1_heap_marker = (Relation) &fake_session1;
+	session1_index_marker = (Relation) &fake_session2;
+	session2_heap_marker = (Relation) &saved_session;
+	session2_index_marker = (Relation) &saved_heap_relation;
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && *PgCurrentLargeObjectHeapRelationRef() == NULL;
+		ok = ok && *PgCurrentLargeObjectIndexRelationRef() == NULL;
+		*PgCurrentLargeObjectHeapRelationRef() = session1_heap_marker;
+		*PgCurrentLargeObjectIndexRelationRef() = session1_index_marker;
+		ok = ok && *PgCurrentLargeObjectHeapRelationRef() == session1_heap_marker;
+		ok = ok && *PgCurrentLargeObjectIndexRelationRef() == session1_index_marker;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && *PgCurrentLargeObjectHeapRelationRef() == NULL;
+		ok = ok && *PgCurrentLargeObjectIndexRelationRef() == NULL;
+		*PgCurrentLargeObjectHeapRelationRef() = session2_heap_marker;
+		*PgCurrentLargeObjectIndexRelationRef() = session2_index_marker;
+		ok = ok && *PgCurrentLargeObjectHeapRelationRef() == session2_heap_marker;
+		ok = ok && *PgCurrentLargeObjectIndexRelationRef() == session2_index_marker;
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && *PgCurrentLargeObjectHeapRelationRef() == session1_heap_marker;
+		ok = ok && *PgCurrentLargeObjectIndexRelationRef() == session1_index_marker;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && *PgCurrentLargeObjectHeapRelationRef() == session2_heap_marker;
+		ok = ok && *PgCurrentLargeObjectIndexRelationRef() == session2_index_marker;
+
+		PgSetCurrentSession(saved_session);
+		*PgCurrentLargeObjectHeapRelationRef() = saved_heap_relation;
+		*PgCurrentLargeObjectIndexRelationRef() = saved_index_relation;
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		*PgCurrentLargeObjectHeapRelationRef() = saved_heap_relation;
+		*PgCurrentLargeObjectIndexRelationRef() = saved_index_relation;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "large-object state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_session_prepared_statement_state_is_session_local);
 Datum
 test_session_prepared_statement_state_is_session_local(PG_FUNCTION_ARGS)

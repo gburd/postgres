@@ -2527,3 +2527,50 @@ Validation for this slice:
   header migration;
 - static scans found no remaining direct session TLS definition for
   `pg_ctype_cache_list`.
+
+## Session Large-Object Relation Handle Bridge
+
+The forty-ninth Phase 12 slice moves large-object relation handle cache state
+under `PgSession`:
+
+- `PgSession` now owns a `PgSessionLargeObjectState`;
+- `PgSessionLargeObjectState` owns the cached `pg_largeobject` heap relation
+  and large-object index relation references used by `open_lo_relation()` and
+  `close_lo_relation()`;
+- `inv_api.c` keeps its existing relation-open, ownership-transfer, scan,
+  update, and close logic through compatibility macros backed by
+  `PgCurrentLargeObjectHeapRelationRef()` and
+  `PgCurrentLargeObjectIndexRelationRef()`;
+- early startup paths before `CurrentPgSession` is installed use fallback
+  session storage in `backend_runtime.c`;
+- process-mode and thread-runtime session installation adopt or initialize the
+  large-object relation-handle bucket with the rest of the logical session
+  object.
+
+PostgreSQL already treats these relation references as backend/session-local
+cache roots with cleanup at transaction end. This slice keeps transaction
+resource-owner ownership unchanged while making the cached roots explicit
+logical-session state.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o` and `inv_api.o`;
+- because `backend_runtime.h` changed, `gmake -C src/backend clean` plus
+  generated utility and node-header recovery was used before trusting
+  process-mode or threaded-mode runtime tests;
+- clean full `gmake -j8` passed after the backend clean;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- focused `test_backend_runtime` regression includes
+  `test_session_large_object_state_is_session_local()`, which switches fake
+  sessions through `PgSetCurrentSession()` and proves both relation pointers
+  follow the active session object;
+- the same regression schedule includes SQL-level `lo_from_bytea()`,
+  `lo_get()`, and `lo_unlink()` smokes;
+- direct `test_backend_runtime` regression passed after reinstalling the test
+  module into `tmp_install`;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests, including
+  the core `largeobject` test;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- static scans found no remaining direct session TLS definitions for
+  `lo_heap_r` or `lo_index_r`.

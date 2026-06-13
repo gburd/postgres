@@ -45,6 +45,7 @@
 #include "miscadmin.h"
 #include "storage/large_object.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/fmgroids.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
@@ -57,8 +58,8 @@
  * execute a slightly klugy maneuver to assign ownership of the
  * Relation reference to TopTransactionResourceOwner.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION Relation lo_heap_r = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION Relation lo_index_r = NULL;
+#define lo_heap_r (*PgCurrentLargeObjectHeapRelationRef())
+#define lo_index_r (*PgCurrentLargeObjectIndexRelationRef())
 
 
 /*

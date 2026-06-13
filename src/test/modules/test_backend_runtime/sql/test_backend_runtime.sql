@@ -16,6 +16,7 @@ SELECT test_session_text_search_state_is_session_local();
 SELECT test_session_prepared_statement_state_is_session_local();
 SELECT test_session_on_commit_state_is_session_local();
 SELECT test_session_sequence_state_is_session_local();
+SELECT test_session_large_object_state_is_session_local();
 SELECT test_runtime_server_guc_state_is_runtime_local();
 SELECT test_session_connection_guc_state_is_session_local();
 SELECT test_session_parser_state_is_session_local();
@@ -80,3 +81,10 @@ SELECT 3 OPERATOR(pg_catalog.*) 4 AS operator_lookup_product;
 SELECT 'abc' ~ '^[[:alpha:]]+$' AS regex_alpha_cache;
 SELECT '123' ~ '^[[:digit:]]+$' AS regex_digit_cache;
 SELECT 'ABC' ~ '^[[:alpha:]]+$' AS regex_alpha_cache_reuse;
+CREATE TEMP TABLE phase12_largeobject_state AS
+	SELECT lo_from_bytea(0, 'phase12 large object'::bytea) AS loid;
+SELECT encode(lo_get(loid), 'escape') AS lo_contents
+	FROM phase12_largeobject_state;
+SELECT lo_unlink(loid) = 1 AS lo_unlinked
+	FROM phase12_largeobject_state;
+DROP TABLE phase12_largeobject_state;
