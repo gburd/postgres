@@ -23,11 +23,12 @@
 
 #include "optimizer/extendplan.h"
 #include "port/pg_bitutils.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION const char **PlannerExtensionNameArray = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION int PlannerExtensionNamesAssigned = 0;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION int PlannerExtensionNamesAllocated = 0;
+#define PlannerExtensionNameArray (*PgCurrentPlannerExtensionNameArrayRef())
+#define PlannerExtensionNamesAssigned (*PgCurrentPlannerExtensionNamesAssignedRef())
+#define PlannerExtensionNamesAllocated (*PgCurrentPlannerExtensionNamesAllocatedRef())
 
 /*
  * Map the name of a planner extension to an integer ID.

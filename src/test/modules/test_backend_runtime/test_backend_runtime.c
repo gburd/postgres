@@ -37,6 +37,7 @@
 #include "miscadmin.h"
 #include "nodes/queryjumble.h"
 #include "optimizer/cost.h"
+#include "optimizer/extendplan.h"
 #include "optimizer/geqo.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/paths.h"
@@ -1640,6 +1641,68 @@ test_session_random_state_is_session_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "random state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_session_optimizer_state_is_session_local);
+Datum
+test_session_optimizer_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	HTAB	   *session1_proof_marker;
+	HTAB	   *session2_proof_marker;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	session1_proof_marker = (HTAB *) &fake_session1;
+	session2_proof_marker = (HTAB *) &fake_session2;
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && *PgCurrentPlannerExtensionNameArrayRef() == NULL;
+		ok = ok && *PgCurrentPlannerExtensionNamesAssignedRef() == 0;
+		ok = ok && *PgCurrentPlannerExtensionNamesAllocatedRef() == 0;
+		ok = ok && GetPlannerExtensionId("phase12_optimizer_a") == 0;
+		ok = ok && GetPlannerExtensionId("phase12_optimizer_b") == 1;
+		ok = ok && GetPlannerExtensionId("phase12_optimizer_a") == 0;
+		ok = ok && *PgCurrentPlannerExtensionNamesAssignedRef() == 2;
+		ok = ok && *PgCurrentOprProofCacheHashRef() == NULL;
+		*PgCurrentOprProofCacheHashRef() = session1_proof_marker;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && *PgCurrentPlannerExtensionNameArrayRef() == NULL;
+		ok = ok && *PgCurrentPlannerExtensionNamesAssignedRef() == 0;
+		ok = ok && *PgCurrentPlannerExtensionNamesAllocatedRef() == 0;
+		ok = ok && GetPlannerExtensionId("phase12_optimizer_b") == 0;
+		ok = ok && *PgCurrentPlannerExtensionNamesAssignedRef() == 1;
+		ok = ok && *PgCurrentOprProofCacheHashRef() == NULL;
+		*PgCurrentOprProofCacheHashRef() = session2_proof_marker;
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && *PgCurrentPlannerExtensionNamesAssignedRef() == 2;
+		ok = ok && *PgCurrentOprProofCacheHashRef() == session1_proof_marker;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && *PgCurrentPlannerExtensionNamesAssignedRef() == 1;
+		ok = ok && *PgCurrentOprProofCacheHashRef() == session2_proof_marker;
+
+		PgSetCurrentSession(saved_session);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "optimizer state was not session-local");
 
 	PG_RETURN_BOOL(true);
 }

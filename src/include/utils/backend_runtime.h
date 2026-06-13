@@ -639,6 +639,14 @@ typedef struct PgSessionRandomState
 	bool		prng_seed_set;
 } PgSessionRandomState;
 
+typedef struct PgSessionOptimizerState
+{
+	const char **planner_extension_names;
+	int			planner_extension_names_assigned;
+	int			planner_extension_names_allocated;
+	HTAB	   *opr_proof_cache_hash;
+} PgSessionOptimizerState;
+
 typedef struct PgRuntimeServerGUCState
 {
 	bool		initialized;
@@ -803,6 +811,7 @@ struct PgSession
 	PgSessionEncodingState encoding;
 	PgSessionTempFileState temp_file;
 	PgSessionRandomState random;
+	PgSessionOptimizerState optimizer;
 };
 
 struct PgConnection
@@ -1019,6 +1028,10 @@ extern int *PgCurrentNumTempTableSpacesRef(void);
 extern int *PgCurrentNextTempTableSpaceRef(void);
 extern pg_prng_state *PgCurrentPseudoRandomStateRef(void);
 extern bool *PgCurrentPseudoRandomSeedSetRef(void);
+extern const char ***PgCurrentPlannerExtensionNameArrayRef(void);
+extern int *PgCurrentPlannerExtensionNamesAssignedRef(void);
+extern int *PgCurrentPlannerExtensionNamesAllocatedRef(void);
+extern HTAB **PgCurrentOprProofCacheHashRef(void);
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);

@@ -2824,3 +2824,49 @@ Validation for this slice:
   header migration;
 - static scans found no remaining direct session TLS definitions for
   `pseudorandomfuncs.c`'s `prng_state` or `prng_seed_set`.
+
+## Session Optimizer Cache State Bridge
+
+The fifty-fifth Phase 12 slice moves two optimizer cache roots under the
+logical session object:
+
+- `PgSessionOptimizerState` now owns planner extension-name ID assignment
+  state, including the name array, assigned count, and allocated count;
+- `PgSessionOptimizerState` also owns the predicate-test btree proof lookup
+  hash root used by `predtest.c`;
+- `backend_runtime.c` provides accessors for those roots and carries an early
+  session-local fallback before a `PgSession` is installed;
+- process-mode session initialization and thread-runtime session installation
+  adopt or initialize the optimizer state with the rest of the logical
+  session;
+- `extendplan.c` and `predtest.c` keep their local source names as
+  source-compatible lvalue macros backed by the active `PgSession`.
+
+This keeps planner-extension IDs and predicate proof-cache contents scoped to
+the logical session instead of the carrier thread, while preserving process
+mode's existing per-backend behavior.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `extendplan.o`, and
+  `predtest.o`;
+- because `backend_runtime.h` changed, `gmake -C src/backend clean` plus
+  generated utility and node-header recovery was used before trusting
+  process-mode runtime tests;
+- clean full `gmake -j8` passed after the backend clean;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- focused `test_backend_runtime` regression includes
+  `test_session_optimizer_state_is_session_local()`, which switches fake
+  sessions through `PgSetCurrentSession()`, proves planner extension IDs are
+  assigned independently per session through `GetPlannerExtensionId()`, and
+  proves the predicate proof-cache root follows the active session object;
+- direct `test_backend_runtime` regression passed after reinstalling the test
+  module into `tmp_install`;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests, including
+  `predicate`, `planner_est`, partition-planning, and plancache coverage;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- static scans found no remaining direct session TLS definitions for
+  `PlannerExtensionNameArray`, `PlannerExtensionNamesAssigned`,
+  `PlannerExtensionNamesAllocated`, or `OprProofCacheHash`.
