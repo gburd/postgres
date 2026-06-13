@@ -817,8 +817,11 @@ successful native thread join as the boundary before PMChild cleanup and slot
 release; if `pg_thread_join()` fails, the claimed exit report is restored and
 the PMChild remains active for a later retry. Thread exit also reports retained
 carrier `TopMemoryContext` bytes to the postmaster reaper as explicit
-accounting for the currently retained top context. Threaded startup now
-initializes all built-in generated GUC records whose direct backing-variable
+accounting for the currently retained top context. PMChild assignment and slot
+release now also scrub stale carrier-visible signal ids and thread-exit
+payloads before reuse, while preserving the exited logical backend id until
+the postmaster has joined/logged the reported thread exit. Threaded startup
+now initializes all built-in generated GUC records whose direct backing-variable
 pointers are rebound onto `PgSession`/runtime state, replacing the broad
 hard-coded startup whitelist with a systematic rebind-adoption pass plus a
 small compatibility list for the remaining TLS dummy startup GUCs

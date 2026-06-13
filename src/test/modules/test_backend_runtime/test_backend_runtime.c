@@ -6373,6 +6373,7 @@ test_pmchild_thread_backend_signal_api(PG_FUNCTION_ARGS)
 	PgRuntime	fake_runtime;
 	PgBackend	fake_backend;
 	PMChild		fake_pmchild;
+	PgThread	fake_thread;
 	Latch		fake_latch;
 	PgBackendInterruptMask pending;
 	int			exitstatus;
@@ -6382,13 +6383,22 @@ test_pmchild_thread_backend_signal_api(PG_FUNCTION_ARGS)
 	MemSet(&fake_runtime, 0, sizeof(fake_runtime));
 	MemSet(&fake_backend, 0, sizeof(fake_backend));
 	MemSet(&fake_pmchild, 0, sizeof(fake_pmchild));
+	MemSet(&fake_thread, 0, sizeof(fake_thread));
 
 	fake_runtime.kind = PG_RUNTIME_THREAD_PER_SESSION;
 	fake_backend.id = 12345;
 	fake_backend.runtime = &fake_runtime;
 	PgBackendInitializeInterrupts(&fake_backend);
+	fake_pmchild.signal_pid = 54321;
+	fake_pmchild.thread_exitstatus = 99;
+	fake_pmchild.thread_exit_top_memory_allocated = 16384;
 	fake_pmchild.carrier_kind = PM_CHILD_CARRIER_THREAD;
 	InitLatch(&fake_latch);
+
+	PostmasterChildSetThread(&fake_pmchild, &fake_thread);
+	ok = ok && PostmasterChildSignalPid(&fake_pmchild) == 0;
+	ok = ok && !PostmasterChildHasExitedThread(&fake_pmchild, &exitstatus,
+											   &top_memory_allocated);
 
 	PostmasterChildSetThreadBackend(&fake_pmchild, &fake_backend);
 	ok = ok && PostmasterChildSignalPid(&fake_pmchild) == 12345;

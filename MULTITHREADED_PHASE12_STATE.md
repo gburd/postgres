@@ -4414,3 +4414,46 @@ Validation for this slice:
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals;
 - `git diff --check` passed.
+
+## PMChild Thread Slot-Reuse Scrub
+
+The ninety-first Phase 12 slice tightens the PMChild/thread-backed backend
+ownership contract for slot reuse:
+
+- PMChild slot initialization and assignment now reset the carrier-visible
+  `signal_pid` field alongside the existing PID, thread-backend pointer, and
+  thread-exit fields;
+- `ReleasePostmasterChildSlot()` now clears `pid`, `signal_pid`,
+  `thread_backend`, the waitpid-style thread-exit status, retained top-memory
+  accounting, and the thread-exited flag before returning a PMChild entry to
+  its freelist;
+- `PostmasterChildPublishThreadExit()` still preserves the exited logical
+  backend id long enough for the postmaster reaper to log and join the native
+  thread, so this does not remove the debugging value of the exit report;
+- `test_pmchild_thread_backend_signal_api()` now seeds stale signal and
+  thread-exit state, calls `PostmasterChildSetThread()`, and verifies the
+  thread carrier starts with no visible signal id or pending exit report before
+  `PostmasterChildSetThreadBackend()` publishes the logical backend.
+
+This is not full Gate E2 PMChild completion. It removes one stale-metadata
+slot-reuse hazard and strengthens unit coverage for the PMChild publication
+boundary, but broader runtime stress is still needed for concurrent
+termination, worker exit, postmaster signal routing, and slot release under
+native thread join/retry.
+
+Validation for this slice:
+
+- touched-object builds passed for `src/backend/postmaster/pmchild.o` and
+  `src/test/modules/test_backend_runtime/test_backend_runtime.o`;
+- full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- a direct SQL smoke against a fresh temp cluster returned `t` for
+  `CREATE EXTENSION test_backend_runtime; SELECT test_pmchild_thread_backend_signal_api();`;
+- direct full-module `pg_regress test_backend_runtime` remains unsuitable for
+  this narrow check in the current checkout because it aborts at the existing
+  `test_backend_thread_runtime_state()` control-path assertion before reaching
+  the PMChild function;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- `git diff --check` passed.

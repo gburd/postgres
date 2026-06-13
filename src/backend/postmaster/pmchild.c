@@ -196,6 +196,7 @@ InitPostmasterChildSlots(void)
 		{
 			slots[slotno].carrier_kind = PM_CHILD_CARRIER_PROCESS;
 			slots[slotno].pid = 0;
+			slots[slotno].signal_pid = 0;
 			slots[slotno].thread_backend = NULL;
 			slots[slotno].thread_exitstatus = 0;
 			slots[slotno].thread_exit_top_memory_allocated = 0;
@@ -238,6 +239,7 @@ AssignPostmasterChildSlot(BackendType btype)
 	pmchild = dlist_container(PMChild, elem, dlist_pop_head_node(freelist));
 	pmchild->carrier_kind = PM_CHILD_CARRIER_PROCESS;
 	pmchild->pid = 0;
+	pmchild->signal_pid = 0;
 	pmchild->thread_backend = NULL;
 	pmchild->thread_exitstatus = 0;
 	pmchild->thread_exit_top_memory_allocated = 0;
@@ -467,7 +469,12 @@ bool
 ReleasePostmasterChildSlot(PMChild *pmchild)
 {
 	dlist_delete(&pmchild->elem);
+	pmchild->pid = 0;
+	pmchild->signal_pid = 0;
 	pmchild->thread_backend = NULL;
+	pmchild->thread_exitstatus = 0;
+	pmchild->thread_exit_top_memory_allocated = 0;
+	pg_atomic_write_u32(&pmchild->thread_exited, 0);
 	if (pmchild->bkend_type == B_DEAD_END_BACKEND)
 	{
 		elog(DEBUG2, "releasing dead-end backend");

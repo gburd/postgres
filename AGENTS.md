@@ -120,6 +120,10 @@ Important current files:
   Postmaster code should use PMChild helper APIs for threaded backend
   interrupt, wakeup, and thread-exit publication rather than dereferencing or
   clearing the raw pointer outside PMChild.
+- Treat `PMChild.signal_pid` as carrier-visible routing/logging state. It may
+  remain available after a thread exit is published so the postmaster can log
+  the exited logical backend id, but assignment and slot release must scrub it
+  before a PMChild entry is reused.
 - For thread-backed PMChild reaping, successful `pg_thread_join()` is the
   boundary before child cleanup and slot release. If join fails, leave the
   PMChild active and re-publish the claimed thread-exit report for retry; do
