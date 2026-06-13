@@ -40,6 +40,7 @@
 #include "guc_internal.h"
 #include "libpq/pqformat.h"
 #include "libpq/protocol.h"
+#include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "optimizer/cost.h"
 #include "optimizer/geqo.h"
@@ -1528,6 +1529,7 @@ void
 InitializeThreadedSessionRequiredGUCOptions(void)
 {
 	static const char *const required_options[] = {
+		"client_encoding",
 		"dynamic_library_path",
 		"search_path",
 		"temp_tablespaces",
@@ -6591,7 +6593,9 @@ write_one_nondefault_variable(FILE *fp, struct config_generic *gconf)
 			{
 				struct config_string *conf = &gconf->_string;
 
-				if (*conf->variable)
+				if (strcmp(gconf->name, "client_encoding") == 0)
+					fprintf(fp, "%s", pg_get_client_encoding_name());
+				else if (*conf->variable)
 					fprintf(fp, "%s", *conf->variable);
 			}
 			break;

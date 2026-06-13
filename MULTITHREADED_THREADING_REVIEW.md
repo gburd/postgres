@@ -429,6 +429,12 @@ The threaded runtime fixture now also includes a test-extension helper that
 raises backend-local `FATAL`, captures the SQL-visible logical backend id,
 verifies the backend leaves `pg_stat_activity`, and confirms the server
 remains usable afterward.
+Making the local TAP dependency available then exposed and fixed a threaded
+SIGHUP/default-replay bug: dynamic-default `client_encoding` was being
+serialized from stale generic string storage, so a late thread-backed IO worker
+could replay garbage and terminate the threaded server. `client_encoding` is
+now required bootstrap state for threaded sessions and is serialized from
+authoritative encoding state.
 The focused `test_backend_runtime` regression is also usable again as a
 process-mode validation control after fake thread-runtime tests were changed
 to construct thread-backend state without installing it into the active SQL

@@ -5213,6 +5213,40 @@ Validation for this slice:
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals;
 - `git diff --check` passed;
-- direct `prove t/001_threaded_runtime.pl` could not start because system Perl
-  is missing `IPC::Run`; use the documented Perl setup before treating full
-  TAP as runnable locally.
+- direct `prove t/001_threaded_runtime.pl` initially could not start because
+  system Perl was missing `IPC::Run`. Installing `IPC::Run` and `IO::Tty` into
+  `/Users/samwillis/perl5` made the TAP harness runnable with an explicit
+  `PERL5LIB`.
+
+## Threaded Reload Client Encoding Serialization
+
+The one-hundred-ninth Phase 12 slice fixes a threaded GUC reload bug exposed
+after making the TAP harness runnable:
+
+- the direct threaded-runtime TAP reached its IO-worker reload smoke, then the
+  postmaster wrote garbage for dynamic-default `client_encoding` into
+  `global/config_exec_params`;
+- the late thread-backed IO worker replayed that serialized file and died with
+  `FATAL: invalid value for parameter "client_encoding"`, which shut down the
+  threaded server before the rest of the TAP could run;
+- `client_encoding` is now included in the required threaded session string
+  GUC bootstrap list, so each thread-backed backend has initialized
+  per-session string storage before nondefault replay can use it;
+- `write_one_nondefault_variable()` now serializes `client_encoding` from the
+  authoritative encoding state via `pg_get_client_encoding_name()` instead of
+  dereferencing the generic string GUC backing pointer. This keeps
+  dynamic-default reload dumps stable for late thread-backed workers.
+
+Validation for this slice:
+
+- `src/backend/utils/misc/guc.o` rebuilt successfully;
+- full `gmake -j8 DESTDIR="$PWD/tmp_install" install` passed;
+- reinstalling `src/test/modules/test_backend_runtime` into the temp install
+  passed;
+- direct threaded-runtime TAP passed all 74 tests with local
+  `/Users/samwillis/perl5` `PERL5LIB` paths;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression and still reported TAP disabled by configure;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- `git diff --check` passed.

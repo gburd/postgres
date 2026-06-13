@@ -219,10 +219,13 @@ Important current files:
   `PgSetCurrentSession()` and after installing `CurrentPgExecution`; the latter
   is required because GUC check hooks allocate through the current execution's
   memory context state. Keep this list narrow and documented; it currently
-  covers `search_path`, `dynamic_library_path`, and
-  `wal_consistency_checking`. The WAL entry is required because the generated
-  GUC variable is the string value, while the assign hook also initializes the
-  derived per-session resource-manager bool array used by `XLogInsert()`.
+  covers `client_encoding`, `search_path`, `dynamic_library_path`,
+  `temp_tablespaces`, and `wal_consistency_checking`. The
+  `client_encoding` entry is required because dynamic-default replay and late
+  worker startup need initialized per-session string storage. The WAL entry is
+  required because the generated GUC variable is the string value, while the
+  assign hook also initializes the derived per-session resource-manager bool
+  array used by `XLogInsert()`.
 - Custom extension GUCs in threaded sessions rely on per-session `_PG_init()`
   invocation for already-loaded dynamic libraries. `dfmgr.c` records loaded
   module init state in `PgSession.dynamic_library_inits`; when a second
@@ -745,31 +748,32 @@ Important current files:
   thread-backed worker that consumed logical interrupts without routing
   shutdown requests through `ProcessMainLoopInterrupts()`.
 
-- PostgreSQL TAP tests require the non-core Perl module `IPC::Run`. The system
-  Perl on this macOS checkout may not have it, in which case direct `prove`
-  invocations fail before starting PostgreSQL with `Can't locate IPC/Run.pm`.
-  Install `IPC::Run` into the Perl used for the build before treating TAP
-  coverage as runnable. To install it locally without relying on system Perl
-  paths, use:
+- PostgreSQL TAP tests require the non-core Perl module `IPC::Run`. It is
+  installed locally for this checkout under `/Users/samwillis/perl5`; direct
+  `prove` invocations with system Perl need the local `PERL5LIB` paths. To
+  reinstall or update it locally without relying on system Perl paths, use:
 
   ```sh
   PERL_MM_USE_DEFAULT=1 \
   PERL_MM_OPT="INSTALL_BASE=$HOME/perl5" \
   PERL_MB_OPT="--install_base $HOME/perl5" \
-  PERL5LIB="$HOME/perl5/lib/perl5" \
   cpan -T -i IPC::Run
   ```
 
-  Keep `PERL5LIB="$HOME/perl5/lib/perl5:$PWD/src/test/perl"` in direct TAP
-  commands. Direct `prove` runs also need the same harness environment that
-  `gmake check` supplies, especially `PG_REGRESS`, for example:
+  Keep
+  `PERL5LIB="$HOME/perl5/lib/perl5:$HOME/perl5/lib/perl5/darwin-thread-multi-2level:$PWD/src/test/perl"`
+  in direct TAP commands. This checkout is still configured without
+  `--enable-tap-tests`, so recursive `gmake ... check` targets report `TAP
+  tests not enabled`. Direct `prove` runs also need the same harness
+  environment that `gmake check` supplies, especially `PG_REGRESS`, for
+  example:
 
   ```sh
-  PERL5LIB="$HOME/perl5/lib/perl5:$PWD/src/test/perl" \
+  PERL5LIB="$HOME/perl5/lib/perl5:$HOME/perl5/lib/perl5/darwin-thread-multi-2level:$PWD/src/test/perl" \
   PATH="$PWD/tmp_install/usr/local/pgsql/bin:$PATH" \
   DYLD_LIBRARY_PATH="$PWD/tmp_install/usr/local/pgsql/lib" \
+  INITDB_TEMPLATE="$PWD/tmp_install/initdb-template" \
   PG_REGRESS="$PWD/src/test/regress/pg_regress" \
-  top_builddir="$PWD" \
   prove -I src/test/perl src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl
   ```
 

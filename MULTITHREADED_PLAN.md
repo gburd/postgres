@@ -928,6 +928,13 @@ extension-created C functions, custom-GUC initialization through `_PG_init()`,
 and `DROP EXTENSION`. Threaded teardown coverage now also includes a
 test-extension helper that raises backend-local `FATAL`, verifies the logical
 backend leaves `pg_stat_activity`, and confirms the server remains usable.
+After installing the missing local TAP Perl dependency, the threaded runtime
+TAP exposed a SIGHUP/default-replay bug where the postmaster serialized a
+garbage dynamic-default `client_encoding` value for a late thread-backed IO
+worker. Threaded startup now includes `client_encoding` in the required string
+GUC bootstrap list, and exec/thread config serialization writes
+`client_encoding` through the authoritative encoding state instead of the
+generic string backing pointer.
 Broader contrib/in-tree extension coverage, full
 lifecycle resource cleanup, and PMChild race stress remain Gate E2 blockers
 before Phase 13.
