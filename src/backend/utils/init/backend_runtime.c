@@ -137,6 +137,10 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendAutovacuumState early_backend_
 	.av_storage_param_cost_delay = -1,
 	.av_storage_param_cost_limit = -1
 };
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendRepackState early_backend_repack = {
+	.repacked_rel_locator.relNumber = InvalidOid,
+	.repacked_rel_toast_locator.relNumber = InvalidOid
+};
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendActivityState early_backend_activity;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendUtilityState early_backend_utility;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendParallelState early_backend_parallel = {
@@ -683,6 +687,8 @@ static void PgBackendInitializeMaintenanceWorkerState(PgBackendMaintenanceWorker
 static void PgBackendAdoptEarlyMaintenanceWorkerState(PgBackend *backend);
 static void PgBackendInitializeAutovacuumState(PgBackendAutovacuumState *autovacuum);
 static void PgBackendAdoptEarlyAutovacuumState(PgBackend *backend);
+static void PgBackendInitializeRepackState(PgBackendRepackState *repack);
+static void PgBackendAdoptEarlyRepackState(PgBackend *backend);
 static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
 static void PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend);
 static BackendType *PgCurrentBackendTypeRef(void);
@@ -2489,6 +2495,25 @@ PgBackendAdoptEarlyAutovacuumState(PgBackend *backend)
 }
 
 static void
+PgBackendInitializeRepackState(PgBackendRepackState *repack)
+{
+	Assert(repack != NULL);
+
+	MemSet(repack, 0, sizeof(*repack));
+	repack->repacked_rel_locator.relNumber = InvalidOid;
+	repack->repacked_rel_toast_locator.relNumber = InvalidOid;
+}
+
+static void
+PgBackendAdoptEarlyRepackState(PgBackend *backend)
+{
+	Assert(backend != NULL);
+
+	backend->repack = early_backend_repack;
+	PgBackendInitializeRepackState(&early_backend_repack);
+}
+
+static void
 PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend)
 {
 	Assert(backend != NULL);
@@ -2738,6 +2763,7 @@ InitializePgProcessRuntime(void)
 	PgBackendAdoptEarlyRecoveryState(&process_backend);
 	PgBackendAdoptEarlyMaintenanceWorkerState(&process_backend);
 	PgBackendAdoptEarlyAutovacuumState(&process_backend);
+	PgBackendAdoptEarlyRepackState(&process_backend);
 	PgBackendSetInterruptLatch(&process_backend, process_backend.core.latch);
 	dlist_init(&process_backend.dsm_segment_list);
 	pg_atomic_init_u32(&process_backend.wait_state.waiting, 0);
@@ -2894,6 +2920,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgBackendInitializeRecoveryState(&state->backend.recovery);
 	PgBackendInitializeMaintenanceWorkerState(&state->backend.maintenance_worker);
 	PgBackendInitializeAutovacuumState(&state->backend.autovacuum);
+	PgBackendInitializeRepackState(&state->backend.repack);
 	PgBackendSetInterruptLatch(&state->backend, interrupt_latch);
 	dlist_init(&state->backend.dsm_segment_list);
 	pg_atomic_init_u32(&state->backend.wait_state.waiting, 0);
@@ -7310,6 +7337,21 @@ PgCurrentAutovacuumState(void)
 		return &early_backend_autovacuum;
 
 	return &CurrentPgBackend->autovacuum;
+}
+
+PgBackendRepackState *
+PgCurrentRepackState(void)
+{
+	if (CurrentPgBackend == NULL)
+		return &early_backend_repack;
+
+	return &CurrentPgBackend->repack;
+}
+
+volatile sig_atomic_t *
+PgCurrentRepackMessagePendingRef(void)
+{
+	return &PgCurrentRepackState()->message_pending;
 }
 
 static PgBackendTransactionState *

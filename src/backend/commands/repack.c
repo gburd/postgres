@@ -144,14 +144,13 @@ typedef struct DecodingWorker
 } DecodingWorker;
 
 /* Pointer to currently running decoding worker. */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND DecodingWorker *decoding_worker = NULL;
+#define decoding_worker \
+	(PgCurrentRepackState()->decoding_worker)
 
 /*
  * Is there a message sent by a repack worker that the backend needs to
  * receive?
  */
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t RepackMessagePending = false;
-
 static LOCKMODE RepackLockLevel(bool concurrent);
 static bool cluster_rel_recheck(RepackCommand cmd, Relation OldHeap,
 								Oid indexOid, Oid userid, LOCKMODE lmode,

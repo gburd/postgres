@@ -689,6 +689,16 @@ contrib build, PL/pgSQL rebuild/install, process-mode backend-runtime
 regression, direct threaded runtime TAP, and the required global-lifetime scan
 with zero new unclassified mutable globals; backend-local declarations
 dropped from 93 to 79.
+Backend repack leader/worker state now lives in `PgBackendRepackState`: the
+leader `DecodingWorker` pointer, exported worker message-pending flag, worker
+role flag, current WAL segment, worker DSM segment pointer, and repacked
+heap/toast relfile locators now follow the logical backend. The private
+`DecodingWorker` layout remains local to `repack.c`, with the runtime header
+forward-declaring only its struct tag. The slice passed touched-object builds,
+clean full build/install, contrib build, PL/pgSQL rebuild/install,
+process-mode backend-runtime regression, direct threaded runtime TAP, and the
+required global-lifetime scan with zero new unclassified mutable globals;
+backend-local declarations dropped from 79 to 72.
 PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly

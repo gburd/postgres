@@ -91,6 +91,11 @@ Important current files:
   WAL summarizer, and data-checksum workers. Avoid object-like compatibility
   macros named `arch_files` or `operation`: those collide with struct members
   in `pgarch.c` and `datachecksum_state.c`.
+- `PgBackendRepackState` in `src/include/utils/backend_runtime.h` now owns
+  backend-local repack leader/worker state bridged from
+  `src/backend/commands/repack.c`, `src/backend/commands/repack_worker.c`,
+  and `src/include/commands/repack.h`. Keep `DecodingWorker` private to
+  `repack.c`; the runtime header should only forward-declare its struct tag.
 - `src/backend/postmaster/launch_backend.c` and
   `src/backend/postmaster/postmaster.c`: backend launch and supervision.
 - `src/backend/postmaster/autovacuum.c`,

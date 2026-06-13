@@ -7219,6 +7219,39 @@ Validation for this slice:
   `test_backend_autovacuum_state_is_backend_local()`, covering all moved
   autovacuum fields across two fake logical backends.
 
+## Backend Repack State Bridge
+
+The one-hundred-fifty-second Phase 12 slice moves backend-local repack leader
+and worker state into a dedicated `PgBackendRepackState` bucket:
+
+- the leader's current `DecodingWorker` pointer;
+- the exported repack worker message-pending flag;
+- the worker-role flag, current WAL segment, worker DSM segment pointer, and
+  repacked heap/toast relfile locators.
+
+`commands/repack.h` keeps `RepackMessagePending` as a source-compatible lvalue
+macro over `PgCurrentRepackMessagePendingRef()`. The private
+`DecodingWorker` layout remains local to `repack.c`; `backend_runtime.h`
+forward-declares the struct tag and only stores the pointer. `repack_worker.c`
+keeps its historical local names as file-local macros over
+`PgCurrentRepackState()`.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `repack.o`,
+  `repack_worker.o`, and `test_backend_runtime.o`;
+- a full `gmake -j8` and `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 79 to 72;
+- `gmake -C contrib -j8` and a clean PL/pgSQL rebuild/install passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct threaded runtime TAP passed all 87 tests with the local
+  `/Users/samwillis/perl5` `PERL5LIB` paths and an explicit `PG_REGRESS`
+  environment;
+- `src/test/modules/test_backend_runtime` now includes
+  `test_backend_repack_state_is_backend_local()`, covering all moved repack
+  fields across two fake logical backends.
+
 ## Backend Parallel State Bridge
 
 The one-hundred-forty-second Phase 12 slice moves a parallel-query and

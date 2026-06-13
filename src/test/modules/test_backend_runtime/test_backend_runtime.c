@@ -26,6 +26,7 @@
 #include "commands/async.h"
 #include "commands/event_trigger.h"
 #include "commands/extension.h"
+#include "commands/repack.h"
 #include "commands/tablespace.h"
 #include "commands/trigger.h"
 #include "commands/user.h"
@@ -9368,6 +9369,110 @@ test_backend_autovacuum_state_is_backend_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "backend autovacuum state was not backend-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_backend_repack_state_is_backend_local);
+Datum
+test_backend_repack_state_is_backend_local(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgBackend	fake_backend1;
+	PgBackend	fake_backend2;
+	PgBackendRepackState *repack1;
+	PgBackendRepackState *repack2;
+	bool		ok = true;
+
+	saved_backend = CurrentPgBackend;
+	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
+	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+	fake_backend1.repack.repacked_rel_locator.relNumber = InvalidOid;
+	fake_backend1.repack.repacked_rel_toast_locator.relNumber = InvalidOid;
+	fake_backend2.repack.repacked_rel_locator.relNumber = InvalidOid;
+	fake_backend2.repack.repacked_rel_toast_locator.relNumber = InvalidOid;
+
+	PG_TRY();
+	{
+		CurrentPgBackend = &fake_backend1;
+		repack1 = PgCurrentRepackState();
+		repack1->decoding_worker = (struct DecodingWorker *) &fake_backend1;
+		RepackMessagePending = true;
+		repack1->am_repack_worker = true;
+		repack1->current_segment = 101;
+		repack1->worker_dsm_segment = (dsm_segment *) &fake_backend1;
+		repack1->repacked_rel_locator.spcOid = 102;
+		repack1->repacked_rel_locator.dbOid = 103;
+		repack1->repacked_rel_locator.relNumber = 104;
+		repack1->repacked_rel_toast_locator.spcOid = 105;
+		repack1->repacked_rel_toast_locator.dbOid = 106;
+		repack1->repacked_rel_toast_locator.relNumber = 107;
+
+		CurrentPgBackend = &fake_backend2;
+		repack2 = PgCurrentRepackState();
+		ok = ok && repack2->decoding_worker == NULL;
+		ok = ok && !RepackMessagePending;
+		ok = ok && !repack2->am_repack_worker;
+		ok = ok && repack2->current_segment == 0;
+		ok = ok && repack2->worker_dsm_segment == NULL;
+		ok = ok && !OidIsValid(repack2->repacked_rel_locator.relNumber);
+		ok = ok && !OidIsValid(repack2->repacked_rel_toast_locator.relNumber);
+
+		repack2->decoding_worker = (struct DecodingWorker *) &fake_backend2;
+		RepackMessagePending = true;
+		repack2->am_repack_worker = true;
+		repack2->current_segment = 201;
+		repack2->worker_dsm_segment = (dsm_segment *) &fake_backend2;
+		repack2->repacked_rel_locator.spcOid = 202;
+		repack2->repacked_rel_locator.dbOid = 203;
+		repack2->repacked_rel_locator.relNumber = 204;
+		repack2->repacked_rel_toast_locator.spcOid = 205;
+		repack2->repacked_rel_toast_locator.dbOid = 206;
+		repack2->repacked_rel_toast_locator.relNumber = 207;
+
+		CurrentPgBackend = &fake_backend1;
+		repack1 = PgCurrentRepackState();
+		ok = ok && repack1->decoding_worker ==
+			(struct DecodingWorker *) &fake_backend1;
+		ok = ok && RepackMessagePending;
+		ok = ok && repack1->am_repack_worker;
+		ok = ok && repack1->current_segment == 101;
+		ok = ok && repack1->worker_dsm_segment ==
+			(dsm_segment *) &fake_backend1;
+		ok = ok && repack1->repacked_rel_locator.spcOid == 102;
+		ok = ok && repack1->repacked_rel_locator.dbOid == 103;
+		ok = ok && repack1->repacked_rel_locator.relNumber == 104;
+		ok = ok && repack1->repacked_rel_toast_locator.spcOid == 105;
+		ok = ok && repack1->repacked_rel_toast_locator.dbOid == 106;
+		ok = ok && repack1->repacked_rel_toast_locator.relNumber == 107;
+
+		CurrentPgBackend = &fake_backend2;
+		repack2 = PgCurrentRepackState();
+		ok = ok && repack2->decoding_worker ==
+			(struct DecodingWorker *) &fake_backend2;
+		ok = ok && RepackMessagePending;
+		ok = ok && repack2->am_repack_worker;
+		ok = ok && repack2->current_segment == 201;
+		ok = ok && repack2->worker_dsm_segment ==
+			(dsm_segment *) &fake_backend2;
+		ok = ok && repack2->repacked_rel_locator.spcOid == 202;
+		ok = ok && repack2->repacked_rel_locator.dbOid == 203;
+		ok = ok && repack2->repacked_rel_locator.relNumber == 204;
+		ok = ok && repack2->repacked_rel_toast_locator.spcOid == 205;
+		ok = ok && repack2->repacked_rel_toast_locator.dbOid == 206;
+		ok = ok && repack2->repacked_rel_toast_locator.relNumber == 207;
+
+		CurrentPgBackend = saved_backend;
+	}
+	PG_CATCH();
+	{
+		CurrentPgBackend = saved_backend;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "backend repack state was not backend-local");
 
 	PG_RETURN_BOOL(true);
 }

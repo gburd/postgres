@@ -36,7 +36,8 @@ typedef struct ClusterParams
 	uint32		options;		/* bitmask of CLUOPT_* */
 } ClusterParams;
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t RepackMessagePending;
+extern PGDLLIMPORT volatile sig_atomic_t *PgCurrentRepackMessagePendingRef(void);
+#define RepackMessagePending (*PgCurrentRepackMessagePendingRef())
 
 
 extern void ExecRepack(ParseState *pstate, RepackStmt *stmt, bool isTopLevel);

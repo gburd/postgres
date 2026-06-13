@@ -36,6 +36,7 @@
 #include "storage/latch.h"
 #include "storage/lwlock.h"
 #include "storage/procnumber.h"
+#include "storage/relfilelocator.h"
 #include "tcop/dest.h"
 #include "utils/backend_id.h"
 #include "utils/backend_status.h"
@@ -78,7 +79,9 @@ struct pg_ctype_cache;
 struct RelationData;
 struct avl_dbase;
 struct WorkerInfoData;
+struct DecodingWorker;
 struct ClientSocket;
+typedef struct dsm_segment dsm_segment;
 typedef void (*PgBackendExitContinuation) (int code);
 typedef int (*PgSuspendCallback) (void *callback_arg);
 
@@ -405,6 +408,17 @@ typedef struct PgBackendAutovacuumState
 	struct avl_dbase *avl_dbase_array;
 	struct WorkerInfoData *my_worker_info;
 } PgBackendAutovacuumState;
+
+typedef struct PgBackendRepackState
+{
+	struct DecodingWorker *decoding_worker;
+	volatile sig_atomic_t message_pending;
+	bool		am_repack_worker;
+	XLogSegNo	current_segment;
+	dsm_segment *worker_dsm_segment;
+	RelFileLocator repacked_rel_locator;
+	RelFileLocator repacked_rel_toast_locator;
+} PgBackendRepackState;
 
 typedef struct PgBackendPgStatPendingState
 {
@@ -1432,6 +1446,7 @@ struct PgBackend
 	PgBackendRecoveryState recovery;
 	PgBackendMaintenanceWorkerState maintenance_worker;
 	PgBackendAutovacuumState autovacuum;
+	PgBackendRepackState repack;
 	PgBackendPgStatPendingState pgstat_pending;
 	PgBackendActivityState activity;
 	PgBackendUtilityState utility;
@@ -1863,6 +1878,8 @@ extern PgBackendXLogState *PgCurrentXLogState(void);
 extern PgBackendRecoveryState *PgCurrentRecoveryState(void);
 extern PgBackendMaintenanceWorkerState *PgCurrentMaintenanceWorkerState(void);
 extern PgBackendAutovacuumState *PgCurrentAutovacuumState(void);
+extern PgBackendRepackState *PgCurrentRepackState(void);
+extern volatile sig_atomic_t *PgCurrentRepackMessagePendingRef(void);
 extern TransactionId *PgCurrentCachedFetchXidRef(void);
 extern int *PgCurrentCachedFetchXidStatusRef(void);
 extern XLogRecPtr *PgCurrentCachedCommitLSNRef(void);
