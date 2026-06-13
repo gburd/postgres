@@ -412,6 +412,10 @@ postmaster has joined/logged the thread exit. The broad threaded startup GUC
 whitelist has also been replaced for rebound built-in direct-pointer GUCs by
 a systematic generated-table adoption pass, and threaded built-in postmaster
 default replay now uses the existing serialized nondefault GUC file path.
+The focused `test_backend_runtime` regression is also usable again as a
+process-mode validation control after fake thread-runtime tests were changed
+to construct thread-backend state without installing it into the active SQL
+backend.
 Thread-backed auxiliary loops that use the logical interrupt mailbox now
 honor `ProcDiePending`, fixing the basic immediate-shutdown smoke for
 background writer, checkpointer, autovacuum launcher, and WAL writer thread

@@ -883,6 +883,11 @@ extension-created C functions, custom-GUC initialization through `_PG_init()`,
 and `DROP EXTENSION`. Broader contrib/in-tree extension coverage, full
 lifecycle resource cleanup, PMChild race stress, and startup-gate narrowing
 for the remaining gated classes remain Gate E2 blockers before Phase 13.
+The focused `test_backend_runtime` regression is runnable again as a
+process-mode validation control for runtime-state, state-migration, and
+PMChild helper coverage after fake thread-runtime tests were changed to
+construct thread backend state without installing it into the active SQL
+backend.
 
 Phase 16 still owns broader hardening such as sanitizer runs, contrib-wide
 threaded regression, crash/FATAL behavior matrices, platform coverage, and

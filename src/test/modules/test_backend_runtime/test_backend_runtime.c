@@ -337,22 +337,37 @@ test_backend_thread_runtime_state(PG_FUNCTION_ARGS)
 	PG_TRY();
 	{
 		InitializePgThreadRuntime(NULL);
-		InitializePgThreadBackendRuntime(&state, B_BACKEND, NULL,
-										 &fake_latch);
+		InitializePgThreadBackendRuntimeState(&state, B_BACKEND, NULL,
+											  &fake_latch);
 
-		ok = ok && CurrentPgRuntime != NULL;
-		ok = ok && CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION;
-		ok = ok && CurrentPgRuntime->extension_backend_model ==
+		ok = ok && state.backend.runtime != NULL;
+		ok = ok && state.backend.runtime->kind == PG_RUNTIME_THREAD_PER_SESSION;
+		ok = ok && state.backend.runtime->extension_backend_model ==
 			PG_BACKEND_MODEL_THREAD_PER_SESSION;
-		ok = ok && CurrentPgCarrier == &state.carrier;
-		ok = ok && CurrentPgBackend == &state.backend;
-		ok = ok && CurrentPgSession == &state.session;
-		ok = ok && CurrentPgConnection == &state.connection;
-		ok = ok && CurrentPgExecution == &state.execution;
 		ok = ok && state.carrier.kind == PG_CARRIER_THREAD;
+		ok = ok && state.carrier.current_backend == &state.backend;
+		ok = ok && state.carrier.current_session == &state.session;
+		ok = ok && state.carrier.current_execution == &state.execution;
 		ok = ok && state.backend.backend_type == B_BACKEND;
 		ok = ok && state.backend.interrupt_latch == &fake_latch;
 		ok = ok && dlist_is_empty(&state.backend.dsm_segment_list);
+		ok = ok && state.backend.session == &state.session;
+		ok = ok && state.backend.connection == &state.connection;
+		ok = ok && state.backend.execution == &state.execution;
+		ok = ok && state.session.backend == &state.backend;
+		ok = ok && state.session.connection == &state.connection;
+		ok = ok && state.session.execution == &state.execution;
+		ok = ok && state.connection.backend == &state.backend;
+		ok = ok && state.connection.session == &state.session;
+		ok = ok && state.execution.backend == &state.backend;
+		ok = ok && state.execution.session == &state.session;
+		ok = ok && state.execution.carrier == &state.carrier;
+		ok = ok && CurrentPgRuntime == saved_runtime;
+		ok = ok && CurrentPgCarrier == saved_carrier;
+		ok = ok && CurrentPgBackend == saved_backend;
+		ok = ok && CurrentPgSession == saved_session;
+		ok = ok && CurrentPgConnection == saved_connection;
+		ok = ok && CurrentPgExecution == saved_execution;
 
 		CurrentPgRuntime = saved_runtime;
 		CurrentPgCarrier = saved_carrier;
@@ -495,13 +510,13 @@ test_backend_thread_ids_are_logical(PG_FUNCTION_ARGS)
 	PG_TRY();
 	{
 		InitializePgThreadRuntime(NULL);
-		InitializePgThreadBackendRuntime(&state1, B_BACKEND, NULL,
-										 &fake_latch1);
-		thread_backend_id1 = PgCurrentBackendId();
+		InitializePgThreadBackendRuntimeState(&state1, B_BACKEND, NULL,
+											  &fake_latch1);
+		thread_backend_id1 = PgBackendGetId(&state1.backend);
 
-		InitializePgThreadBackendRuntime(&state2, B_BACKEND, NULL,
-										 &fake_latch2);
-		thread_backend_id2 = PgCurrentBackendId();
+		InitializePgThreadBackendRuntimeState(&state2, B_BACKEND, NULL,
+											  &fake_latch2);
+		thread_backend_id2 = PgBackendGetId(&state2.backend);
 
 		ok = ok && current_backend_id != 0;
 		ok = ok && thread_backend_id1 != 0;
@@ -511,6 +526,12 @@ test_backend_thread_ids_are_logical(PG_FUNCTION_ARGS)
 		ok = ok && thread_backend_id1 != thread_backend_id2;
 		ok = ok && thread_backend_id1 == PgBackendGetId(&state1.backend);
 		ok = ok && thread_backend_id2 == PgBackendGetId(&state2.backend);
+		ok = ok && CurrentPgRuntime == saved_runtime;
+		ok = ok && CurrentPgCarrier == saved_carrier;
+		ok = ok && CurrentPgBackend == saved_backend;
+		ok = ok && CurrentPgSession == saved_session;
+		ok = ok && CurrentPgConnection == saved_connection;
+		ok = ok && CurrentPgExecution == saved_execution;
 
 		CurrentPgRuntime = saved_runtime;
 		CurrentPgCarrier = saved_carrier;

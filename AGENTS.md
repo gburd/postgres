@@ -624,6 +624,21 @@ Important current files:
   gmake -C src/test/modules/test_backend_runtime DESTDIR="$PWD/tmp_install" install
   ```
 
+- The backend-runtime state/PMChild regression is expected to be runnable as a
+  focused process-mode control after the same module install. The fake
+  thread-runtime helper tests should construct `PgThreadBackendRuntimeState`
+  objects without installing them into the active SQL backend:
+
+  ```sh
+  cd src/test/modules/test_backend_runtime
+  PATH="$PWD/../../../../tmp_install/usr/local/pgsql/bin:$PATH" \
+  DYLD_LIBRARY_PATH="$PWD/../../../../tmp_install/usr/local/pgsql/lib" \
+  ../../../../src/test/regress/pg_regress --temp-instance=./tmp_check \
+    --inputdir=. --outputdir=output \
+    --bindir="$PWD/../../../../tmp_install/usr/local/pgsql/bin" \
+    --dlpath=. test_backend_runtime
+  ```
+
 - GUC custom-prefix smoke tests that preload `test_oat_hooks` need that module
   installed into the current temp install first:
 

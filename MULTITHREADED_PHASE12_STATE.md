@@ -4450,10 +4450,44 @@ Validation for this slice:
 - rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
 - a direct SQL smoke against a fresh temp cluster returned `t` for
   `CREATE EXTENSION test_backend_runtime; SELECT test_pmchild_thread_backend_signal_api();`;
-- direct full-module `pg_regress test_backend_runtime` remains unsuitable for
-  this narrow check in the current checkout because it aborts at the existing
-  `test_backend_thread_runtime_state()` control-path assertion before reaching
-  the PMChild function;
+- before the follow-up runtime-state test isolation fix, direct full-module
+  `pg_regress test_backend_runtime` was unsuitable for this narrow check
+  because it aborted at the existing `test_backend_thread_runtime_state()`
+  control-path assertion before reaching the PMChild function;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- `git diff --check` passed.
+
+## Thread Runtime State Test Isolation
+
+The ninety-second Phase 12 slice restores the focused backend-runtime
+regression path used by Gate E2 PMChild and state-migration checks:
+
+- `test_backend_thread_runtime_state()` now validates constructed
+  `PgThreadBackendRuntimeState` object links without installing the fake
+  thread backend into the live process-mode test backend;
+- `test_backend_thread_ids_are_logical()` now compares assigned logical
+  backend ids from two constructed thread-backend states instead of switching
+  `CurrentPgBackend` twice inside the active SQL session;
+- both helpers now assert that the current process-mode runtime, carrier,
+  backend, session, connection, and execution pointers are unchanged by the
+  fake state construction;
+- this keeps the tests aligned with their purpose, which is to verify the
+  thread-runtime object layout and logical-id assignment, while avoiding
+  accidental GUC/runtime adoption in the regression backend.
+
+This does not close the Gate E2 lifecycle blockers. It makes the ordinary
+`test_backend_runtime` regression usable again as a validation control for
+PMChild publication and state-migration unit coverage.
+
+Validation for this slice:
+
+- touched-object build passed for
+  `src/test/modules/test_backend_runtime/test_backend_runtime.o`;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- direct full-module `pg_regress test_backend_runtime` passed all 1 test
+  against the current temp install;
+- full `gmake -j8` passed;
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals;
 - `git diff --check` passed.
