@@ -636,3 +636,57 @@ Validation for this slice:
 - core process-mode `src/test/regress` `parallel_schedule` passed all 245
   tests after the clean rebuild and install;
 - clean `gmake -C contrib -j8` passed after the header migration.
+
+## Execution Resource Owner Bridge
+
+The fifteenth Phase 12 slice moves the transaction resource-owner current
+pointers under `PgExecution`:
+
+- `PgExecution` now owns a `PgExecutionResourceOwnerState`;
+- `CurrentResourceOwner`, `CurTransactionResourceOwner`, and
+  `TopTransactionResourceOwner` remain source-compatible lvalue macros in
+  `resowner.h`;
+- the macros route through `PgCurrentResourceOwnerRef()`,
+  `PgCurTransactionResourceOwnerRef()`, and
+  `PgTopTransactionResourceOwnerRef()`, which return the current logical
+  execution's resource-owner fields;
+- early startup paths before `CurrentPgExecution` is installed use fallback
+  execution-local storage in `backend_runtime.c`;
+- `InitializePgProcessRuntime()` and `InstallPgThreadBackendRuntimeState()`
+  adopt any early fallback resource-owner pointers into the logical execution
+  object before clearing fallback storage;
+- `AuxProcessResourceOwner` remains backend-local raw storage for now because
+  auxiliary process ownership is tied to backend/process lifecycle, not active
+  SQL execution/transaction ownership.
+
+This puts the core transaction resource-owner cursors on the logical
+execution object while preserving the historical names used throughout
+transaction, portal, executor, cache, and extension-facing code. Later
+scheduler work can therefore carry resource lifetime with the execution or
+transaction boundary instead of reading carrier-local TLS. A future slice can
+split longer-lived session owners from per-execution or per-transaction owners
+where the resowner graph needs finer ownership than these current pointers.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `resowner.o`, and
+  `test_backend_runtime.o`;
+- because `resowner.h` changed exported execution globals into compatibility
+  macros, `gmake -C src/backend clean` plus generated-header recovery was used
+  before the clean rebuild;
+- clean full `gmake -j8` passed;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed, followed by
+  rebuilding and reinstalling `src/test/modules/test_backend_runtime`,
+  PL/pgSQL, `src/test/regress`, `libpqwalreceiver`, and
+  `src/backend/snowball`;
+- focused `test_backend_runtime` regression passed and includes
+  `test_execution_resource_owners_are_execution_local()`, which switches
+  `CurrentPgExecution` between fake executions and proves the moved
+  compatibility lvalues are isolated per execution without treating the fake
+  pointers as real resource owners;
+- threaded runtime TAP coverage passed for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests after the clean rebuild and install;
+- clean `gmake -C contrib -j8` passed after the header migration.

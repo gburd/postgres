@@ -27,6 +27,7 @@
 #include "storage/procsignal.h"
 #include "storage/sinval.h"
 #include "utils/backend_runtime.h"
+#include "utils/resowner.h"
 
 PG_GLOBAL_RUNTIME PgRuntime *CurrentPgRuntime = NULL;
 PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgCarrier *CurrentPgCarrier = NULL;
@@ -60,6 +61,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInterruptHoldoffState early_in
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionDebugState early_execution_debug;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionErrorState early_execution_error;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionMemoryContextState early_execution_memory_contexts;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionResourceOwnerState early_execution_resource_owners;
 
 StaticAssertDecl(PG_BACKEND_INTERRUPT_COUNT <= 32,
 				 "PgBackendInterruptMask must fit all backend interrupts");
@@ -81,9 +83,11 @@ static BackendType *PgCurrentBackendTypeRef(void);
 static void PgExecutionAdoptEarlyDebugState(PgExecution *execution);
 static void PgExecutionAdoptEarlyErrorState(PgExecution *execution);
 static void PgExecutionAdoptEarlyMemoryContexts(PgExecution *execution);
+static void PgExecutionAdoptEarlyResourceOwners(PgExecution *execution);
 static PgBackendCoreState *PgCurrentCoreState(void);
 static PgExecutionErrorState *PgCurrentExecutionErrorState(void);
 static PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
+static PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
 static PgBackendPendingInterruptState *PgCurrentPendingInterrupts(void);
 static PgBackendInterruptHoldoffState *PgCurrentInterruptHoldoffs(void);
 
@@ -245,6 +249,16 @@ PgExecutionAdoptEarlyMemoryContexts(PgExecution *execution)
 		   sizeof(early_execution_memory_contexts));
 }
 
+static void
+PgExecutionAdoptEarlyResourceOwners(PgExecution *execution)
+{
+	Assert(execution != NULL);
+
+	execution->resource_owners = early_execution_resource_owners;
+	MemSet(&early_execution_resource_owners, 0,
+		   sizeof(early_execution_resource_owners));
+}
+
 void
 InitializePgProcessRuntime(void)
 {
@@ -301,6 +315,7 @@ InitializePgProcessRuntime(void)
 	PgExecutionAdoptEarlyDebugState(&process_execution);
 	PgExecutionAdoptEarlyErrorState(&process_execution);
 	PgExecutionAdoptEarlyMemoryContexts(&process_execution);
+	PgExecutionAdoptEarlyResourceOwners(&process_execution);
 
 	CurrentPgRuntime = &process_runtime;
 	CurrentPgCarrier = &process_carrier;
@@ -384,6 +399,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgBackendAdoptEarlyCoreState(&state->backend);
 	PgExecutionAdoptEarlyErrorState(&state->execution);
 	PgExecutionAdoptEarlyMemoryContexts(&state->execution);
+	PgExecutionAdoptEarlyResourceOwners(&state->execution);
 	CurrentPgRuntime = &thread_runtime;
 	CurrentPgCarrier = &state->carrier;
 	CurrentPgBackend = &state->backend;
@@ -554,6 +570,33 @@ MemoryContext *
 PgPortalContextRef(void)
 {
 	return &PgCurrentExecutionMemoryContexts()->portal_context;
+}
+
+static PgExecutionResourceOwnerState *
+PgCurrentExecutionResourceOwners(void)
+{
+	if (CurrentPgExecution == NULL)
+		return &early_execution_resource_owners;
+
+	return &CurrentPgExecution->resource_owners;
+}
+
+ResourceOwner *
+PgCurrentResourceOwnerRef(void)
+{
+	return &PgCurrentExecutionResourceOwners()->current_owner;
+}
+
+ResourceOwner *
+PgCurTransactionResourceOwnerRef(void)
+{
+	return &PgCurrentExecutionResourceOwners()->cur_transaction_owner;
+}
+
+ResourceOwner *
+PgTopTransactionResourceOwnerRef(void)
+{
+	return &PgCurrentExecutionResourceOwners()->top_transaction_owner;
 }
 
 PgConnectionSocketIOState *

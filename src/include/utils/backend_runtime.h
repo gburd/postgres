@@ -169,6 +169,13 @@ typedef struct PgExecutionMemoryContextState
 	MemoryContext portal_context;
 } PgExecutionMemoryContextState;
 
+typedef struct PgExecutionResourceOwnerState
+{
+	struct ResourceOwnerData *current_owner;
+	struct ResourceOwnerData *cur_transaction_owner;
+	struct ResourceOwnerData *top_transaction_owner;
+} PgExecutionResourceOwnerState;
+
 #define PG_CONNECTION_SEND_BUFFER_SIZE 8192
 #define PG_CONNECTION_RECV_BUFFER_SIZE 8192
 #define PG_CONNECTION_CANCEL_KEY_LENGTH 32
@@ -308,6 +315,7 @@ struct PgExecution
 	PgExecutionDebugState debug;
 	PgExecutionErrorState error;
 	PgExecutionMemoryContextState memory_contexts;
+	PgExecutionResourceOwnerState resource_owners;
 };
 
 typedef struct PgThreadBackendRuntimeState

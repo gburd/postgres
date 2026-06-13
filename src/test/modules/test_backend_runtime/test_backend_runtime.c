@@ -27,6 +27,7 @@
 #include "tcop/tcopprot.h"
 #include "utils/backend_runtime.h"
 #include "utils/memutils.h"
+#include "utils/resowner.h"
 
 PG_MODULE_MAGIC;
 
@@ -298,6 +299,74 @@ test_backend_pgproc_has_logical_id(PG_FUNCTION_ARGS)
 	ok = ok && MyProc->pid == MyProcPid;
 
 	PG_RETURN_BOOL(ok);
+}
+
+PG_FUNCTION_INFO_V1(test_execution_resource_owners_are_execution_local);
+Datum
+test_execution_resource_owners_are_execution_local(PG_FUNCTION_ARGS)
+{
+	PgExecution *saved_execution;
+	PgExecution fake_execution1;
+	PgExecution fake_execution2;
+	ResourceOwner saved_current_resource_owner;
+	ResourceOwner saved_cur_transaction_resource_owner;
+	ResourceOwner saved_top_transaction_resource_owner;
+	ResourceOwner fake_owner1 = (ResourceOwner) &fake_execution1;
+	ResourceOwner fake_owner2 = (ResourceOwner) &fake_execution2;
+	ResourceOwner fake_owner3 = (ResourceOwner) &saved_execution;
+	bool		ok = true;
+
+	saved_execution = CurrentPgExecution;
+	saved_current_resource_owner = CurrentResourceOwner;
+	saved_cur_transaction_resource_owner = CurTransactionResourceOwner;
+	saved_top_transaction_resource_owner = TopTransactionResourceOwner;
+	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
+	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+
+	PG_TRY();
+	{
+		CurrentPgExecution = &fake_execution1;
+		CurrentResourceOwner = fake_owner1;
+		CurTransactionResourceOwner = fake_owner2;
+		TopTransactionResourceOwner = fake_owner3;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && CurrentResourceOwner == NULL;
+		ok = ok && CurTransactionResourceOwner == NULL;
+		ok = ok && TopTransactionResourceOwner == NULL;
+		CurrentResourceOwner = fake_owner3;
+		CurTransactionResourceOwner = fake_owner1;
+		TopTransactionResourceOwner = fake_owner2;
+
+		CurrentPgExecution = &fake_execution1;
+		ok = ok && CurrentResourceOwner == fake_owner1;
+		ok = ok && CurTransactionResourceOwner == fake_owner2;
+		ok = ok && TopTransactionResourceOwner == fake_owner3;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && CurrentResourceOwner == fake_owner3;
+		ok = ok && CurTransactionResourceOwner == fake_owner1;
+		ok = ok && TopTransactionResourceOwner == fake_owner2;
+
+		CurrentPgExecution = saved_execution;
+		CurrentResourceOwner = saved_current_resource_owner;
+		CurTransactionResourceOwner = saved_cur_transaction_resource_owner;
+		TopTransactionResourceOwner = saved_top_transaction_resource_owner;
+	}
+	PG_CATCH();
+	{
+		CurrentPgExecution = saved_execution;
+		CurrentResourceOwner = saved_current_resource_owner;
+		CurTransactionResourceOwner = saved_cur_transaction_resource_owner;
+		TopTransactionResourceOwner = saved_top_transaction_resource_owner;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "execution resource owners were not execution-local");
+
+	PG_RETURN_BOOL(true);
 }
 
 PG_FUNCTION_INFO_V1(test_backend_thread_ids_are_logical);

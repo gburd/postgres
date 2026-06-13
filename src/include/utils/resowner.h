@@ -31,9 +31,12 @@ typedef struct ResourceOwnerData *ResourceOwner;
 /*
  * Globally known ResourceOwners
  */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ResourceOwner CurrentResourceOwner;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ResourceOwner CurTransactionResourceOwner;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ResourceOwner TopTransactionResourceOwner;
+extern ResourceOwner *PgCurrentResourceOwnerRef(void);
+#define CurrentResourceOwner (*PgCurrentResourceOwnerRef())
+extern ResourceOwner *PgCurTransactionResourceOwnerRef(void);
+#define CurTransactionResourceOwner (*PgCurTransactionResourceOwnerRef())
+extern ResourceOwner *PgTopTransactionResourceOwnerRef(void);
+#define TopTransactionResourceOwner (*PgTopTransactionResourceOwnerRef())
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND ResourceOwner AuxProcessResourceOwner;
 
 /*
