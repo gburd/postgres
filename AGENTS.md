@@ -197,6 +197,11 @@ Important current files:
   `_CheckpointerShutdownXLOGPending` symbols. At minimum, clean and reinstall
   PL/pgSQL, `src/test/modules/test_backend_runtime`, worker modules, and
   contrib modules under test before validating.
+- nbtree, GIN, GiST, and SP-GiST WAL redo `opCtx` memory contexts now live in
+  `PgBackendXLogState` through source-local compatibility macros. After
+  changing the XLog state bridge or these redo files, run touched-object
+  builds for the affected AM redo objects and `backend_runtime.o`, then clean
+  rebuild/install before trusting runtime tests.
 - `proc_exit_inprogress` and `shmem_exit_inprogress` are now fields in
   `PgBackendExitState`, exposed through compatibility macros in
   `src/include/storage/ipc.h`; the old exported TLS definitions were removed

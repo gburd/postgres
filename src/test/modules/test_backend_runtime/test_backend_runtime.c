@@ -8991,6 +8991,10 @@ test_backend_xlog_state_is_backend_local(PG_FUNCTION_ARGS)
 		xlog1->my_lock_no = 112;
 		xlog1->holding_all_locks = true;
 		xlog1->wal_debug_context = (MemoryContext) &fake_backend1;
+		xlog1->btree_xlog_op_context = (MemoryContext) &fake_backend1;
+		xlog1->gin_xlog_op_context = (MemoryContext) &fake_backend1;
+		xlog1->gist_xlog_op_context = (MemoryContext) &fake_backend1;
+		xlog1->spgist_xlog_op_context = (MemoryContext) &fake_backend1;
 
 		CurrentPgBackend = &fake_backend2;
 		xlog2 = PgCurrentXLogState();
@@ -9013,6 +9017,10 @@ test_backend_xlog_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && xlog2->my_lock_no == 0;
 		ok = ok && !xlog2->holding_all_locks;
 		ok = ok && xlog2->wal_debug_context == NULL;
+		ok = ok && xlog2->btree_xlog_op_context == NULL;
+		ok = ok && xlog2->gin_xlog_op_context == NULL;
+		ok = ok && xlog2->gist_xlog_op_context == NULL;
+		ok = ok && xlog2->spgist_xlog_op_context == NULL;
 
 		xlog2->local_recovery_in_progress = false;
 		xlog2->local_xlog_insert_allowed = 0;
@@ -9033,6 +9041,10 @@ test_backend_xlog_state_is_backend_local(PG_FUNCTION_ARGS)
 		xlog2->my_lock_no = 212;
 		xlog2->holding_all_locks = true;
 		xlog2->wal_debug_context = (MemoryContext) &fake_backend2;
+		xlog2->btree_xlog_op_context = (MemoryContext) &fake_backend2;
+		xlog2->gin_xlog_op_context = (MemoryContext) &fake_backend2;
+		xlog2->gist_xlog_op_context = (MemoryContext) &fake_backend2;
+		xlog2->spgist_xlog_op_context = (MemoryContext) &fake_backend2;
 
 		CurrentPgBackend = &fake_backend1;
 		xlog1 = PgCurrentXLogState();
@@ -9056,6 +9068,10 @@ test_backend_xlog_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && xlog1->my_lock_no == 112;
 		ok = ok && xlog1->holding_all_locks;
 		ok = ok && xlog1->wal_debug_context == (MemoryContext) &fake_backend1;
+		ok = ok && xlog1->btree_xlog_op_context == (MemoryContext) &fake_backend1;
+		ok = ok && xlog1->gin_xlog_op_context == (MemoryContext) &fake_backend1;
+		ok = ok && xlog1->gist_xlog_op_context == (MemoryContext) &fake_backend1;
+		ok = ok && xlog1->spgist_xlog_op_context == (MemoryContext) &fake_backend1;
 
 		CurrentPgBackend = &fake_backend2;
 		xlog2 = PgCurrentXLogState();
@@ -9079,6 +9095,10 @@ test_backend_xlog_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && xlog2->my_lock_no == 212;
 		ok = ok && xlog2->holding_all_locks;
 		ok = ok && xlog2->wal_debug_context == (MemoryContext) &fake_backend2;
+		ok = ok && xlog2->btree_xlog_op_context == (MemoryContext) &fake_backend2;
+		ok = ok && xlog2->gin_xlog_op_context == (MemoryContext) &fake_backend2;
+		ok = ok && xlog2->gist_xlog_op_context == (MemoryContext) &fake_backend2;
+		ok = ok && xlog2->spgist_xlog_op_context == (MemoryContext) &fake_backend2;
 
 		CurrentPgBackend = saved_backend;
 	}

@@ -379,6 +379,10 @@ typedef struct PgBackendXLogState
 	int			my_lock_no;
 	bool		holding_all_locks;
 	MemoryContext wal_debug_context;
+	MemoryContext btree_xlog_op_context;
+	MemoryContext gin_xlog_op_context;
+	MemoryContext gist_xlog_op_context;
+	MemoryContext spgist_xlog_op_context;
 } PgBackendXLogState;
 
 #define PG_BACKEND_STANDBY_INITIAL_WAIT_US 1000

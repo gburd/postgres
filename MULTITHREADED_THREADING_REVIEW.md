@@ -571,6 +571,14 @@ backend-runtime regression, a clean threaded runtime TAP rerun, contrib build,
 PL/pgSQL rebuild/install, and the required global-lifetime scan with zero new
 unclassified mutable globals; backend-local declarations dropped from 58 to
 54.
+Index-AM WAL redo operation contexts now also live in `PgBackendXLogState`:
+the nbtree, GIN, GiST, and SP-GiST redo `opCtx` memory contexts now follow the
+logical backend while their owning redo files keep source-local compatibility
+macros. The slice passed touched-object builds, backend clean/generated-header
+recovery, clean full build/install, process-mode backend-runtime regression,
+direct threaded runtime TAP, contrib build, PL/pgSQL rebuild/install, and the
+required global-lifetime scan with zero new unclassified mutable globals;
+backend-local declarations dropped from 54 to 50.
 Backend utility/support state now lives in `PgBackendUtilityState`: dynahash
 active sequential-scan tracking, the superuser one-entry cache, the
 resource-owner release callback list pointer, and optional `RESOWNER_STATS`

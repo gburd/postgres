@@ -7402,6 +7402,37 @@ Validation for this slice:
 - `test_backend_lock_state_is_backend_local()` now covers the moved
   predicate-lock fields across two fake logical backends.
 
+## Backend Index WAL Redo State Bridge
+
+The one-hundred-fifty-seventh Phase 12 slice extends `PgBackendXLogState` to
+cover the remaining index-AM WAL redo operation memory contexts:
+
+- nbtree redo operation context in `nbtxlog.c`;
+- GIN redo operation context in `ginxlog.c`;
+- GiST redo operation context in `gistxlog.c`;
+- SP-GiST redo operation context in `spgxlog.c`.
+
+Each redo file keeps the historical source-local `opCtx` name as a macro over
+its own `PgBackendXLogState` field. The contexts remain local to their owning
+redo modules while the storage now follows the logical backend instead of raw
+backend-local TLS.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, the four index WAL
+  redo objects, and `test_backend_runtime.o`;
+- backend clean plus generated-header recovery, full `gmake -j8`, and
+  `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 54 to 50;
+- `gmake -C contrib -j8` and a clean PL/pgSQL rebuild/install passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct threaded runtime TAP passed all 87 tests with the local
+  `/Users/samwillis/perl5` `PERL5LIB` paths and an explicit `PG_REGRESS`
+  environment;
+- `test_backend_xlog_state_is_backend_local()` now covers the moved index WAL
+  redo contexts across two fake logical backends.
+
 ## Backend Parallel State Bridge
 
 The one-hundred-forty-second Phase 12 slice moves a parallel-query and

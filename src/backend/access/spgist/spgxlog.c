@@ -19,11 +19,12 @@
 #include "access/spgxlog.h"
 #include "access/xlogutils.h"
 #include "storage/standby.h"
-#include "utils/global_lifetime.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 
 
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND MemoryContext opCtx;	/* working memory for operations */
+#define opCtx \
+	(PgCurrentXLogState()->spgist_xlog_op_context)
 
 
 /*
