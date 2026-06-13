@@ -337,11 +337,15 @@ also now clears the logical-backend pointer and publishes exit status through a
 single PMChild helper, and the exiting thread now reports retained
 `TopMemoryContext` bytes to the postmaster reaper. The broad threaded startup
 GUC whitelist has also been replaced for rebound built-in direct-pointer GUCs
-by a systematic generated-table adoption pass. These are partial Gate E2
-closures only: the full thread teardown, PMChild join/reaping contract,
-postmaster/runtime default and extension/custom GUC adoption, startup-gate
-narrowing, and threaded stress coverage remain blockers before Phase 13
-scheduler-aware wait work.
+by a systematic generated-table adoption pass, and threaded built-in
+postmaster default replay now uses the existing serialized nondefault GUC file
+path. Thread-backed auxiliary loops that use the logical interrupt mailbox now
+honor `ProcDiePending`, fixing the basic immediate-shutdown smoke for
+background writer, checkpointer, autovacuum launcher, and WAL writer thread
+carriers. These are partial Gate E2 closures only: the full thread teardown,
+PMChild join/reaping contract, extension/custom GUC adoption, startup-gate
+narrowing, and broader threaded stress coverage remain blockers before Phase
+13 scheduler-aware wait work.
 
 ## Bottom Line
 

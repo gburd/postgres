@@ -41,6 +41,9 @@ ProcessMainLoopInterrupts(void)
 	if (ProcSignalBarrierPending)
 		ProcessProcSignalBarrier();
 
+	if (ProcDiePending)
+		proc_exit(1);
+
 	if (ConfigReloadPending)
 	{
 		ConfigReloadPending = false;

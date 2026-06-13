@@ -124,6 +124,12 @@ Important current files:
   bytes through PMChild exit accounting. Do not remove or bypass this
   accounting until thread-exit memory/resource cleanup has a stronger
   replacement.
+- Thread-backed auxiliary workers receive postmaster `SIGQUIT`, `SIGKILL`,
+  and `SIGABRT` as logical `PG_BACKEND_INTERRUPT_PROC_DIE` mailbox events, not
+  as process signal handlers that can `_exit()`. Any custom auxiliary
+  interrupt loop that calls `PgCurrentBackendApplyInterrupts()` must explicitly
+  handle `ProcDiePending`, or immediate shutdown can leave thread carriers
+  waiting for SIGKILL escalation.
 - Prefer introducing compatibility wrappers around current globals before
   changing all call sites.
 - Be careful moving GUC backing variables behind dynamic lvalue macros. The

@@ -820,6 +820,9 @@ ProcessAutoVacLauncherInterrupts(void)
 		got_SIGUSR2 = true;
 	}
 
+	if (ProcDiePending)
+		proc_exit(1);
+
 	/* the normal shutdown case */
 	if (ShutdownRequestPending)
 		AutoVacLauncherShutdown();

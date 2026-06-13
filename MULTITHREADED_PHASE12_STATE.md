@@ -3945,3 +3945,42 @@ Validation for this slice:
   children. That is retained as part of the Gate E2 threaded teardown blocker;
 - core `src/test/regress` `parallel_schedule` passed all 245 tests;
 - focused `test_backend_runtime` regression passed.
+
+## Threaded Auxiliary ProcDie Shutdown
+
+The eightieth Phase 12 slice closes the immediate-shutdown hang found by the
+previous threaded GUC replay smoke:
+
+- in thread-backed auxiliary workers, the postmaster maps `SIGQUIT`,
+  `SIGKILL`, and `SIGABRT` to the logical `PG_BACKEND_INTERRUPT_PROC_DIE`
+  mailbox instead of delivering a process signal handler that can `_exit()`;
+- `ProcessMainLoopInterrupts()` now treats `ProcDiePending` as an immediate
+  `proc_exit(1)` request, which covers background writer and WAL writer
+  thread carriers;
+- `ProcessCheckpointerInterrupts()` and
+  `ProcessAutoVacLauncherInterrupts()` now do the same for their custom
+  interrupt dispatch loops;
+- this lets background writer, checkpointer, autovacuum launcher, and WAL
+  writer thread carriers retire through the existing thread-exit publication
+  and postmaster reaping path during immediate shutdown.
+
+This is still not full Gate E2 teardown completion. The branch still retains
+carrier `TopMemoryContext` allocations and needs broader resource accounting,
+abandoned-client coverage, repeated reconnect stress, and join/slot-release
+race testing. It does remove a concrete clean-fast-shutdown blocker for
+thread-backed in-tree auxiliary workers.
+
+Validation for this slice:
+
+- touched-object builds passed for `interrupt.o`, `checkpointer.o`, and
+  `autovacuum.o`, with `bgwriter.o` and `walwriter.o` already up to date;
+- full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- direct threaded immediate-shutdown smoke with `multithreaded = on`, one
+  client query, and thread-backed auxiliary workers passed: `pg_ctl -m
+  immediate -w -t 8 stop` reported `server stopped` and the log did not
+  contain `issuing SIGKILL to recalcitrant children`;
+- `gmake check-global-lifetimes` passed, reporting zero new unclassified
+  mutable globals against the checked baseline;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests;
+- focused `test_backend_runtime` regression passed.

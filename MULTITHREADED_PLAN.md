@@ -824,11 +824,15 @@ startup also has the full built-in serialized default replay path: threaded
 non-EXEC_BACKEND postmasters write and refresh `global/config_exec_params`,
 and threaded backends read it after building the per-thread GUC table, so
 configured built-in defaults are adopted into the early fallback
-session/runtime buckets before runtime installation. The remaining PMChild and
+session/runtime buckets before runtime installation. Thread-backed auxiliary
+loops that consume the logical interrupt mailbox now honor `ProcDiePending`,
+so immediate shutdown no longer leaves background writer, checkpointer,
+autovacuum launcher, or WAL writer thread carriers waiting for SIGKILL
+escalation in the basic threaded shutdown smoke. The remaining PMChild and
 teardown blockers are full resource cleanup or deliberate long-lived ownership,
 the broader join/reaping/slot-release ownership contract, extension/custom GUC
 behavior, database/role/startup setting coverage, startup-gate narrowing, and
-stress coverage for those races.
+broader stress coverage for teardown races.
 
 Phase 16 still owns broader hardening such as sanitizer runs, contrib-wide
 threaded regression, crash/FATAL behavior matrices, platform coverage, and
