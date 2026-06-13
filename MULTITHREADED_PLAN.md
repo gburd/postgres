@@ -819,10 +819,12 @@ the PMChild remains active for a later retry. Thread exit also reports retained
 carrier `TopMemoryContext` bytes to the postmaster reaper as explicit
 accounting for the currently retained top context. Backend libpq connection
 teardown now frees the frontend/backend wait set and dynamically sized send
-buffer in `socket_close()`, removing two connection-owned allocations from the
-retained top-memory bucket before PMChild exit accounting runs. PMChild
-assignment and slot release now also scrub stale carrier-visible signal ids and
-thread-exit payloads before reuse. PMChild thread-exit publication now
+buffer in `socket_close()`, and `Port` plus most startup packet/remote-host
+strings now live in a dedicated `PortContext` that `socket_close()` deletes
+during backend exit. This removes another concrete connection-owned allocation
+group from the retained top-memory bucket before PMChild exit accounting runs.
+PMChild assignment and slot release now also scrub stale carrier-visible signal
+ids and thread-exit payloads before reuse. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live
 `signal_pid` under the same lock as `thread_backend`, so a dead thread is no
 longer advertised as signalable while the postmaster can still log and join

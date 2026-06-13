@@ -178,12 +178,19 @@ PqSocketIO(void)
 Port *
 pq_init(ClientSocket *client_sock)
 {
+	MemoryContext oldcontext;
+	MemoryContext port_context;
 	Port	   *port;
 	int			socket_pos PG_USED_FOR_ASSERTS_ONLY;
 	int			latch_pos PG_USED_FOR_ASSERTS_ONLY;
 
 	/* allocate the Port struct and copy the ClientSocket contents to it */
+	port_context = AllocSetContextCreate(TopMemoryContext,
+										 "PortContext",
+										 ALLOCSET_DEFAULT_SIZES);
+	oldcontext = MemoryContextSwitchTo(port_context);
 	port = palloc0_object(Port);
+	MemoryContextSwitchTo(oldcontext);
 	port->sock = client_sock->sock;
 	memcpy(&port->raddr.addr, &client_sock->raddr.addr, client_sock->raddr.salen);
 	port->raddr.salen = client_sock->raddr.salen;
@@ -362,6 +369,8 @@ socket_comm_reset(void)
 static void
 socket_close(int code, Datum arg)
 {
+	MemoryContext port_context = NULL;
+
 	if (FeBeWaitSet != NULL)
 	{
 		FreeWaitEventSet(FeBeWaitSet);
@@ -379,6 +388,8 @@ socket_close(int code, Datum arg)
 	/* Nothing to do in a standalone backend, where MyProcPort is NULL. */
 	if (MyProcPort != NULL)
 	{
+		port_context = GetMemoryChunkContext(MyProcPort);
+
 #ifdef ENABLE_GSS
 		/*
 		 * Shutdown GSSAPI layer.  This section does nothing when interrupting
@@ -418,6 +429,12 @@ socket_close(int code, Datum arg)
 
 		/* Prevent any further I/O through this Port. */
 		MyProcPort->sock = PGINVALID_SOCKET;
+
+		if (port_context != NULL && port_context != TopMemoryContext)
+		{
+			MyProcPort = NULL;
+			MemoryContextDelete(port_context);
+		}
 	}
 }
 

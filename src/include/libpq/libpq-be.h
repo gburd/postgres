@@ -111,7 +111,9 @@ typedef struct ClientConnectionInfo
 /*
  * The Port structure holds state information about a client connection in a
  * backend process.  It is available in the global variable MyProcPort.  The
- * struct and all the data it points are kept in TopMemoryContext.
+ * struct and most connection-owned data it points to are kept in a
+ * TopMemoryContext child so thread-backed backends can release the connection
+ * object explicitly at backend exit.
  *
  * remote_hostname is set if we did a successful reverse lookup of the
  * client's IP address during connection setup.

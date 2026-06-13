@@ -5251,6 +5251,47 @@ Validation for this slice:
   globals;
 - `git diff --check` passed.
 
+## Backend Port Context Exit Cleanup
+
+The one-hundred-thirteenth Phase 12 slice removes another concrete
+connection-owned allocation group from the retained top-memory bucket during
+threaded backend exit:
+
+- `pq_init()` now allocates `Port` in a dedicated `PortContext` child of
+  `TopMemoryContext`;
+- backend startup allocates remote-host, remote-port, remote-hostname,
+  database, user, option, and startup GUC strings in the same `PortContext`;
+- `socket_close()` captures the `PortContext`, runs the existing socket path
+  cleanup, clears `MyProcPort`, and deletes the context before returning from
+  the backend's `on_proc_exit()` callback;
+- the callback still runs after later-registered users such as
+  `log_disconnections`, preserving the expected `Port` lifetime for normal
+  disconnect logging while releasing the connection object before PMChild
+  retained-memory accounting.
+
+This does not solve all `TopMemoryContext` reclamation. Some authentication
+and HBA-adjacent data still need separate ownership decisions, and the broader
+threaded teardown model remains a Gate E2 blocker. It does move the core
+connection object and startup packet strings out of implicit carrier lifetime
+and into an explicit connection-owned cleanup path.
+
+Validation for this slice:
+
+- `gmake -C src/backend/libpq pqcomm.o` passed;
+- `gmake -C src/backend/tcop backend_startup.o` passed;
+- full `gmake -j8` passed;
+- full `gmake -j8 DESTDIR="$PWD/tmp_install" install` passed;
+- `gmake -C src/test/modules/test_backend_runtime DESTDIR="$PWD/tmp_install" install` passed;
+- direct threaded-runtime TAP passed all 87 tests with local
+  `/Users/samwillis/perl5` `PERL5LIB` paths before and after
+  `gmake -C src/test/modules/test_backend_runtime check` recreated
+  `tmp_install`;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression and still reported TAP disabled by configure;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- `git diff --check` passed.
+
 ## Mixed Threaded Backend Teardown Stress
 
 The one-hundred-tenth Phase 12 slice strengthens Gate E2 real-server teardown

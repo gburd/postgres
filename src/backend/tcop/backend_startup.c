@@ -161,6 +161,7 @@ BackendInitialize(ClientSocket *client_sock, CAC_state cac,
 	char		remote_port[NI_MAXSERV];
 	StringInfoData ps_data;
 	MemoryContext oldcontext;
+	MemoryContext port_context;
 
 	/* Tell fd.c about the long-lived FD associated with the client_sock */
 	ReserveExternalFD();
@@ -183,13 +184,14 @@ BackendInitialize(ClientSocket *client_sock, CAC_state cac,
 	 * Must do this now because authentication uses libpq to send messages.
 	 *
 	 * The Port structure and all data structures attached to it are allocated
-	 * in TopMemoryContext, so that they survive into PostgresMain execution.
-	 * We need not worry about leaking this storage on failure, since we
-	 * aren't in the postmaster process anymore.
+	 * in a child of TopMemoryContext, so that they survive into PostgresMain
+	 * execution and can be released as one connection-owned object during
+	 * threaded backend teardown.
 	 */
 	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
 	port = MyProcPort = pq_init(client_sock);
 	MemoryContextSwitchTo(oldcontext);
+	port_context = GetMemoryChunkContext(port);
 
 	whereToSendOutput = DestRemote; /* now safe to ereport to client */
 
@@ -234,8 +236,8 @@ BackendInitialize(ClientSocket *client_sock, CAC_state cac,
 	 * Save remote_host and remote_port in port structure (after this, they
 	 * will appear in log_line_prefix data for log messages).
 	 */
-	port->remote_host = MemoryContextStrdup(TopMemoryContext, remote_host);
-	port->remote_port = MemoryContextStrdup(TopMemoryContext, remote_port);
+	port->remote_host = MemoryContextStrdup(port_context, remote_host);
+	port->remote_port = MemoryContextStrdup(port_context, remote_port);
 
 	/* And now we can log that the connection was received, if enabled */
 	if (log_connections & LOG_CONNECTION_RECEIPT)
@@ -282,7 +284,7 @@ BackendInitialize(ClientSocket *client_sock, CAC_state cac,
 		strspn(remote_host, "0123456789.") < strlen(remote_host) &&
 		strspn(remote_host, "0123456789ABCDEFabcdef:") < strlen(remote_host))
 	{
-		port->remote_hostname = MemoryContextStrdup(TopMemoryContext, remote_host);
+		port->remote_hostname = MemoryContextStrdup(port_context, remote_host);
 	}
 
 	/*
@@ -782,7 +784,7 @@ retry:
 	 * Now fetch parameters out of startup packet and save them into the Port
 	 * structure.
 	 */
-	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+	oldcontext = MemoryContextSwitchTo(GetMemoryChunkContext(port));
 
 	/* Handle protocol version 3 startup packet */
 	{
