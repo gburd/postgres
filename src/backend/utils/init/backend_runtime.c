@@ -100,7 +100,9 @@ static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionOutputState early_connec
 	.where_to_send_output = DestDebug
 };
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionInterruptState early_connection_interrupts;
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionStartupState early_connection_startup;
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionStartupState early_connection_startup = {
+	.timing.ready_for_use = TIMESTAMP_MINUS_INFINITY
+};
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionClientConnectionInfoState early_client_connection_info;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionSecurityState early_connection_security;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionDatabaseState early_session_database;
@@ -496,6 +498,7 @@ static void PgConnectionAdoptEarlySocketIO(PgConnection *connection);
 static void PgConnectionAdoptEarlyProtocolState(PgConnection *connection);
 static void PgConnectionInitializeOutputState(PgConnectionOutputState *output);
 static void PgConnectionAdoptEarlyOutputState(PgConnection *connection);
+static void PgConnectionInitializeStartupState(PgConnectionStartupState *startup);
 static void PgConnectionAdoptEarlyInterruptState(PgConnection *connection);
 static void PgConnectionAdoptEarlyStartupState(PgConnection *connection);
 static void PgConnectionAdoptEarlyClientConnectionInfo(PgConnection *connection);
@@ -740,12 +743,21 @@ PgConnectionAdoptEarlyInterruptState(PgConnection *connection)
 }
 
 static void
+PgConnectionInitializeStartupState(PgConnectionStartupState *startup)
+{
+	Assert(startup != NULL);
+
+	MemSet(startup, 0, sizeof(*startup));
+	startup->timing.ready_for_use = TIMESTAMP_MINUS_INFINITY;
+}
+
+static void
 PgConnectionAdoptEarlyStartupState(PgConnection *connection)
 {
 	Assert(connection != NULL);
 
 	connection->startup = early_connection_startup;
-	MemSet(&early_connection_startup, 0, sizeof(early_connection_startup));
+	PgConnectionInitializeStartupState(&early_connection_startup);
 }
 
 static void
@@ -2215,6 +2227,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	state->connection.session = &state->session;
 	state->connection.identity.port = port;
 	PgConnectionInitializeOutputState(&state->connection.output);
+	PgConnectionInitializeStartupState(&state->connection.startup);
 
 	state->execution.backend = &state->backend;
 	state->execution.session = &state->session;
@@ -5068,6 +5081,21 @@ struct ClientSocket **
 PgCurrentClientSocketRef(void)
 {
 	return PgConnectionClientSocketRef(CurrentPgConnection);
+}
+
+static ConnectionTiming *
+PgConnectionTimingRef(PgConnection *connection)
+{
+	if (connection == NULL)
+		return &early_connection_startup.timing;
+
+	return &connection->startup.timing;
+}
+
+ConnectionTiming *
+PgCurrentConnectionTimingRef(void)
+{
+	return PgConnectionTimingRef(CurrentPgConnection);
 }
 
 void *

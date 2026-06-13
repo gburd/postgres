@@ -3350,3 +3350,52 @@ Validation for this slice:
   `whereToSendOutput` or `client_connection_check_interval`; the only broad
   declaration-pattern match was the existing
   `check_client_connection_check_interval()` GUC hook prototype.
+
+## Connection Startup Timing Bridge
+
+The sixty-sixth Phase 12 slice moves exported backend startup timing state
+under the logical connection object:
+
+- `PgConnectionStartupState` now owns `ConnectionTiming` alongside
+  `ClientAuthInProgress` and `MyClientSocket`;
+- public `conn_timing` remains a source-compatible lvalue macro in
+  `backend_startup.h`, backed by `PgCurrentConnectionTimingRef()`;
+- the `ConnectionTiming` type now lives in `backend_runtime.h`, so
+  `PgConnectionStartupState` can embed it without depending on an incomplete
+  struct;
+- early startup paths before `CurrentPgConnection` is installed use fallback
+  connection-local startup state initialized with the historical
+  `ready_for_use = TIMESTAMP_MINUS_INFINITY` sentinel;
+- process runtime installation adopts any early startup timing into the
+  installed process connection and reinitializes the early fallback sentinel;
+- thread runtime initialization sets every connection's startup timing sentinel
+  to `TIMESTAMP_MINUS_INFINITY`;
+- the backend-runtime regression fixture now extends
+  `test_connection_startup_state_is_connection_local()` to mutate and verify
+  every `conn_timing` field while switching `CurrentPgConnection` between fake
+  connections.
+
+This removes another exported connection TLS bucket from backend startup and
+connection setup logging while preserving the existing source-level
+`conn_timing.field` API used by backend launch, authentication, and
+`PostgresMain()`.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `backend_startup.o`,
+  `postgres.o`, `launch_backend.o`, `postinit.o`, and
+  `test_backend_runtime.o`;
+- because `backend_runtime.h` and `backend_startup.h` changed exported backend
+  state, the backend clean plus generated utility and node-header recovery path
+  was used before trusting process-mode runtime tests;
+- clean full `gmake -j8` passed after the backend clean;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- focused `test_backend_runtime` regression passed and includes the extended
+  `test_connection_startup_state_is_connection_local()` coverage for
+  `conn_timing`;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  public `backend_startup.h` migration;
+- static scans found no remaining direct exported TLS declaration for
+  `conn_timing`.

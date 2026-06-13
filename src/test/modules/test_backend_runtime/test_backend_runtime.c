@@ -61,6 +61,7 @@
 #include "storage/large_object.h"
 #include "storage/lock.h"
 #include "storage/proc.h"
+#include "tcop/backend_startup.h"
 #include "tcop/pquery.h"
 #include "tcop/tcopprot.h"
 #include "tsearch/ts_cache.h"
@@ -7151,45 +7152,81 @@ test_connection_startup_state_is_connection_local(PG_FUNCTION_ARGS)
 	struct ClientSocket *fake_client_socket1;
 	struct ClientSocket *fake_client_socket2;
 	bool		saved_client_auth_in_progress;
+	ConnectionTiming saved_timing;
 	bool		ok = true;
 
 	saved_connection = CurrentPgConnection;
 	saved_client_auth_in_progress = ClientAuthInProgress;
 	saved_client_socket = MyClientSocket;
+	saved_timing = conn_timing;
 	fake_client_socket1 = (struct ClientSocket *) &fake_connection1;
 	fake_client_socket2 = (struct ClientSocket *) &fake_connection2;
 	MemSet(&fake_connection1, 0, sizeof(fake_connection1));
 	MemSet(&fake_connection2, 0, sizeof(fake_connection2));
+	fake_connection1.startup.timing.ready_for_use = TIMESTAMP_MINUS_INFINITY;
+	fake_connection2.startup.timing.ready_for_use = TIMESTAMP_MINUS_INFINITY;
 
 	PG_TRY();
 	{
 		CurrentPgConnection = &fake_connection1;
 		ClientAuthInProgress = true;
 		MyClientSocket = fake_client_socket1;
+		conn_timing.socket_create = 11;
+		conn_timing.ready_for_use = 12;
+		conn_timing.fork_start = 13;
+		conn_timing.fork_end = 14;
+		conn_timing.auth_start = 15;
+		conn_timing.auth_end = 16;
 
 		CurrentPgConnection = &fake_connection2;
 		ok = ok && !ClientAuthInProgress;
 		ok = ok && MyClientSocket == NULL;
+		ok = ok && conn_timing.socket_create == 0;
+		ok = ok && conn_timing.ready_for_use == TIMESTAMP_MINUS_INFINITY;
+		ok = ok && conn_timing.fork_start == 0;
+		ok = ok && conn_timing.fork_end == 0;
+		ok = ok && conn_timing.auth_start == 0;
+		ok = ok && conn_timing.auth_end == 0;
 		ClientAuthInProgress = false;
 		MyClientSocket = fake_client_socket2;
+		conn_timing.socket_create = 21;
+		conn_timing.ready_for_use = 22;
+		conn_timing.fork_start = 23;
+		conn_timing.fork_end = 24;
+		conn_timing.auth_start = 25;
+		conn_timing.auth_end = 26;
 
 		CurrentPgConnection = &fake_connection1;
 		ok = ok && ClientAuthInProgress;
 		ok = ok && MyClientSocket == fake_client_socket1;
+		ok = ok && conn_timing.socket_create == 11;
+		ok = ok && conn_timing.ready_for_use == 12;
+		ok = ok && conn_timing.fork_start == 13;
+		ok = ok && conn_timing.fork_end == 14;
+		ok = ok && conn_timing.auth_start == 15;
+		ok = ok && conn_timing.auth_end == 16;
 
 		CurrentPgConnection = &fake_connection2;
 		ok = ok && !ClientAuthInProgress;
 		ok = ok && MyClientSocket == fake_client_socket2;
+		ok = ok && conn_timing.socket_create == 21;
+		ok = ok && conn_timing.ready_for_use == 22;
+		ok = ok && conn_timing.fork_start == 23;
+		ok = ok && conn_timing.fork_end == 24;
+		ok = ok && conn_timing.auth_start == 25;
+		ok = ok && conn_timing.auth_end == 26;
 
 		CurrentPgConnection = saved_connection;
 		ClientAuthInProgress = saved_client_auth_in_progress;
 		MyClientSocket = saved_client_socket;
+		conn_timing = saved_timing;
 	}
 	PG_CATCH();
 	{
 		CurrentPgConnection = saved_connection;
 		ClientAuthInProgress = saved_client_auth_in_progress;
 		MyClientSocket = saved_client_socket;
+		conn_timing = saved_timing;
 		PG_RE_THROW();
 	}
 	PG_END_TRY();

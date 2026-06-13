@@ -48,17 +48,6 @@ PG_GLOBAL_RUNTIME bool Trace_connection_negotiation = false;
 PG_GLOBAL_RUNTIME uint32 log_connections = 0;
 PG_GLOBAL_RUNTIME char *log_connections_string = NULL;
 
-/* Other globals */
-
-/*
- * ConnectionTiming stores timestamps of various points in connection
- * establishment and setup.
- * ready_for_use is initialized to a special value here so we can check if
- * we've already set it before doing so in PostgresMain().
- */
-PG_THREAD_LOCAL PG_GLOBAL_CONNECTION ConnectionTiming
-conn_timing = {.ready_for_use = TIMESTAMP_MINUS_INFINITY};
-
 static void BackendInitialize(ClientSocket *client_sock, CAC_state cac,
 							  BackendStartupMode startup_mode);
 static int	ProcessSSLStartup(Port *port);

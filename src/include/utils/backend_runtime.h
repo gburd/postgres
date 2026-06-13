@@ -781,6 +781,35 @@ typedef struct PgConnectionOutputState
 	int			client_connection_check_interval;
 } PgConnectionOutputState;
 
+/*
+ * A collection of timings of various stages of connection establishment and
+ * setup for client backends and WAL senders.
+ *
+ * Used to emit the setup_durations log message for the log_connections GUC.
+ */
+typedef struct ConnectionTiming
+{
+	/*
+	 * The time at which the client socket is created and the time at which
+	 * the connection is fully set up and first ready for query. Together
+	 * these represent the total connection establishment and setup time.
+	 */
+	TimestampTz socket_create;
+	TimestampTz ready_for_use;
+
+	/* Time at which process creation was initiated */
+	TimestampTz fork_start;
+
+	/* Time at which process creation was completed */
+	TimestampTz fork_end;
+
+	/* Time at which authentication started */
+	TimestampTz auth_start;
+
+	/* Time at which authentication was finished */
+	TimestampTz auth_end;
+} ConnectionTiming;
+
 typedef struct PgConnectionInterruptState
 {
 	volatile sig_atomic_t check_client_connection_pending;
@@ -791,6 +820,7 @@ typedef struct PgConnectionStartupState
 {
 	bool		client_auth_in_progress;
 	struct ClientSocket *client_socket;
+	ConnectionTiming timing;
 } PgConnectionStartupState;
 
 typedef struct PgConnectionClientConnectionInfoState
@@ -987,6 +1017,7 @@ extern int *PgCurrentSPIConnectedRef(void);
 extern Portal *PgCurrentActivePortalRef(void);
 extern CommandDest *PgCurrentWhereToSendOutputRef(void);
 extern int *PgCurrentClientConnectionCheckIntervalRef(void);
+extern ConnectionTiming *PgCurrentConnectionTimingRef(void);
 extern int *PgCurrentDeadlockTimeoutRef(void);
 extern int *PgCurrentStatementTimeoutRef(void);
 extern int *PgCurrentLockTimeoutRef(void);

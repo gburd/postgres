@@ -728,7 +728,8 @@ through `PgConnection`, plus the PAM authentication scratch-state bridge
 through `PgConnection`, plus the backend default PRNG bridge through
 `PgBackend`, plus the SPI API/result and private connection-stack bridge
 through `PgExecution`, plus the active portal bridge through `PgExecution`,
-plus the connection output/check-interval bridge through `PgConnection`.
+plus the connection output/check-interval bridge through `PgConnection`,
+plus the connection startup timing bridge through `PgConnection`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.

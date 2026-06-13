@@ -14,6 +14,7 @@
 #ifndef BACKEND_STARTUP_H
 #define BACKEND_STARTUP_H
 
+#include "utils/backend_runtime.h"
 #include "utils/global_lifetime.h"
 #include "utils/timestamp.h"
 
@@ -22,9 +23,11 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool Trace_connection_negotiation;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME uint32 log_connections;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *log_connections_string;
 
-/* Other globals */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CONNECTION
-struct ConnectionTiming conn_timing;
+/*
+ * Connection timing state remains source-compatible, but storage belongs to
+ * PgConnection so a logical connection can move between carriers.
+ */
+#define conn_timing (*PgCurrentConnectionTimingRef())
 
 /*
  * CAC_state is passed from postmaster to the backend process, to indicate
@@ -103,35 +106,6 @@ typedef enum LogConnectionOption
 		LOG_CONNECTION_AUTHORIZATION |
 		LOG_CONNECTION_SETUP_DURATIONS,
 }			LogConnectionOption;
-
-/*
- * A collection of timings of various stages of connection establishment and
- * setup for client backends and WAL senders.
- *
- * Used to emit the setup_durations log message for the log_connections GUC.
- */
-typedef struct ConnectionTiming
-{
-	/*
-	 * The time at which the client socket is created and the time at which
-	 * the connection is fully set up and first ready for query. Together
-	 * these represent the total connection establishment and setup time.
-	 */
-	TimestampTz socket_create;
-	TimestampTz ready_for_use;
-
-	/* Time at which process creation was initiated */
-	TimestampTz fork_start;
-
-	/* Time at which process creation was completed */
-	TimestampTz fork_end;
-
-	/* Time at which authentication started */
-	TimestampTz auth_start;
-
-	/* Time at which authentication was finished */
-	TimestampTz auth_end;
-} ConnectionTiming;
 
 pg_noreturn extern void BackendMain(const void *startup_data, size_t startup_data_len);
 pg_noreturn extern void BackendMainWithStartupData(const BackendStartupData *startup_data,
