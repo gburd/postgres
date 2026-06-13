@@ -38,6 +38,8 @@ typedef struct PgConnection PgConnection;
 typedef struct PgExecution PgExecution;
 typedef struct PQcommMethods PQcommMethods;
 typedef struct WaitEventSet WaitEventSet;
+typedef struct SPITupleTable SPITupleTable;
+typedef struct _SPI_connection _SPI_connection;
 struct SeqTableData;
 struct pg_ctype_cache;
 struct RelationData;
@@ -186,6 +188,17 @@ typedef struct PgExecutionResourceOwnerState
 	struct ResourceOwnerData *cur_transaction_owner;
 	struct ResourceOwnerData *top_transaction_owner;
 } PgExecutionResourceOwnerState;
+
+typedef struct PgExecutionSPIState
+{
+	uint64		processed;
+	SPITupleTable *tuptable;
+	int			result;
+	_SPI_connection *stack;
+	_SPI_connection *current;
+	int			stack_depth;
+	int			connected;
+} PgExecutionSPIState;
 
 typedef struct PgSessionDatabaseState
 {
@@ -924,6 +937,7 @@ struct PgExecution
 	PgExecutionErrorState error;
 	PgExecutionMemoryContextState memory_contexts;
 	PgExecutionResourceOwnerState resource_owners;
+	PgExecutionSPIState spi;
 };
 
 typedef struct PgThreadBackendRuntimeState
@@ -948,6 +962,13 @@ extern MemoryContext *PgMessageContextRef(void);
 extern MemoryContext *PgTopTransactionContextRef(void);
 extern MemoryContext *PgCurTransactionContextRef(void);
 extern MemoryContext *PgPortalContextRef(void);
+extern uint64 *PgCurrentSPIProcessedRef(void);
+extern SPITupleTable **PgCurrentSPITuptableRef(void);
+extern int *PgCurrentSPIResultRef(void);
+extern _SPI_connection **PgCurrentSPIStackRef(void);
+extern _SPI_connection **PgCurrentSPICurrentRef(void);
+extern int *PgCurrentSPIStackDepthRef(void);
+extern int *PgCurrentSPIConnectedRef(void);
 extern int *PgCurrentDeadlockTimeoutRef(void);
 extern int *PgCurrentStatementTimeoutRef(void);
 extern int *PgCurrentLockTimeoutRef(void);

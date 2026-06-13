@@ -16,7 +16,6 @@
 #include "commands/trigger.h"
 #include "lib/ilist.h"
 #include "parser/parser.h"
-#include "utils/global_lifetime.h"
 #include "utils/portal.h"
 
 
@@ -102,9 +101,13 @@ typedef struct _SPI_plan *SPIPlanPtr;
 
 #define SPI_OPT_NONATOMIC		(1 << 0)
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND uint64 SPI_processed;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND SPITupleTable *SPI_tuptable;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND int SPI_result;
+extern uint64 *PgCurrentSPIProcessedRef(void);
+extern SPITupleTable **PgCurrentSPITuptableRef(void);
+extern int *PgCurrentSPIResultRef(void);
+
+#define SPI_processed (*PgCurrentSPIProcessedRef())
+#define SPI_tuptable (*PgCurrentSPITuptableRef())
+#define SPI_result (*PgCurrentSPIResultRef())
 
 extern int	SPI_connect(void);
 extern int	SPI_connect_ext(int options);

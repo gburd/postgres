@@ -726,7 +726,8 @@ the authenticated/session/outer/current user identity and security context
 bridge through `PgSession`, plus the SSL/GSS connection security-state bridge
 through `PgConnection`, plus the PAM authentication scratch-state bridge
 through `PgConnection`, plus the backend default PRNG bridge through
-`PgBackend`.
+`PgBackend`, plus the SPI API/result and private connection-stack bridge
+through `PgExecution`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.

@@ -323,6 +323,12 @@ SELECT test_execution_memory_contexts_are_execution_local();
  t
 (1 row)
 
+SELECT test_execution_spi_state_is_execution_local();
+ test_execution_spi_state_is_execution_local 
+---------------------------------------------
+ t
+(1 row)
+
 SELECT test_execution_resource_owners_are_execution_local();
  test_execution_resource_owners_are_execution_local 
 ----------------------------------------------------

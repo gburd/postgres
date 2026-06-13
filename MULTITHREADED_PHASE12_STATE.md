@@ -3211,3 +3211,55 @@ Validation for this slice:
 - static scans found no remaining direct
   `PG_THREAD_LOCAL PG_GLOBAL_BACKEND pg_prng_state pg_global_prng_state`
   declaration.
+
+## SPI Execution State Bridge
+
+The sixty-third Phase 12 slice moves exported SPI API variables and the
+private SPI connection stack under the logical execution object:
+
+- `PgExecution` now owns a `PgExecutionSPIState`;
+- public `SPI_processed`, `SPI_tuptable`, and `SPI_result` remain
+  source-compatible lvalue macros backed by `PgCurrentSPI*Ref()` accessors, so
+  PL/pgSQL and extension source can keep using the historical API shape;
+- private `_SPI_stack`, `_SPI_current`, `_SPI_stack_depth`, and
+  `_SPI_connected` are local compatibility macros inside `spi.c`;
+- `_SPI_connected` keeps its historical `-1` sentinel and is explicitly
+  initialized for process, thread, and early execution states;
+- `_SPI_connection` now has a struct tag so `backend_runtime.h` can forward
+  declare the private stack element without including `spi_priv.h`;
+- the backend-runtime regression fixture now switches `CurrentPgExecution`
+  between fake executions and verifies that assignments through the public SPI
+  API variables follow the active execution.
+
+This removes another exported backend TLS bucket from a particularly important
+extension-facing API. The bridge keeps source compatibility for in-tree and
+third-party code that reads or assigns the public SPI result globals, while
+making nested SPI state part of the execution object. PL/pgSQL needed a clean
+rebuild and reinstall after the public SPI variables became macros; a stale
+`plpgsql.dylib` still imported `_SPI_processed` and failed during `initdb`
+post-bootstrap initialization before SQL tests could start.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `spi.o`, and
+  `test_backend_runtime.o`;
+- because `spi.h` and `backend_runtime.h` changed exported backend state, the
+  backend clean plus generated utility and node-header recovery path was used
+  before trusting process-mode runtime tests;
+- clean full `gmake -j8` passed after the backend clean;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- rebuilding and reinstalling `src/pl/plpgsql/src` passed after the stale
+  `_SPI_processed` import was detected;
+- focused `test_backend_runtime` regression passed and includes
+  `test_execution_spi_state_is_execution_local()`;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests;
+- direct PL/pgSQL regression over `plpgsql_array`, `plpgsql_cache`,
+  `plpgsql_call`, `plpgsql_control`, `plpgsql_copy`, `plpgsql_domain`,
+  `plpgsql_misc`, `plpgsql_record`, `plpgsql_simple`,
+  `plpgsql_transaction`, `plpgsql_trap`, `plpgsql_trigger`, and
+  `plpgsql_varprops` passed all 13 tests;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  public SPI header migration;
+- static scans found no remaining direct TLS declarations for the migrated SPI
+  API variables or private SPI connection-stack state.

@@ -29,6 +29,7 @@
 #include "commands/trigger.h"
 #include "commands/user.h"
 #include "commands/vacuum.h"
+#include "executor/spi.h"
 #include "fmgr.h"
 #include "jit/jit.h"
 #include "libpq/libpq-be.h"
@@ -6640,6 +6641,80 @@ test_execution_memory_contexts_are_execution_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "execution memory contexts were not execution-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_execution_spi_state_is_execution_local);
+Datum
+test_execution_spi_state_is_execution_local(PG_FUNCTION_ARGS)
+{
+	PgExecution *saved_execution;
+	PgExecution fake_execution1;
+	PgExecution fake_execution2;
+	uint64		saved_spi_processed;
+	SPITupleTable *saved_spi_tuptable;
+	int			saved_spi_result;
+	SPITupleTable fake_tuptable1;
+	SPITupleTable fake_tuptable2;
+	bool		ok = true;
+
+	saved_execution = CurrentPgExecution;
+	saved_spi_processed = SPI_processed;
+	saved_spi_tuptable = SPI_tuptable;
+	saved_spi_result = SPI_result;
+	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
+	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+	fake_execution1.spi.connected = -1;
+	fake_execution2.spi.connected = -1;
+	MemSet(&fake_tuptable1, 0, sizeof(fake_tuptable1));
+	MemSet(&fake_tuptable2, 0, sizeof(fake_tuptable2));
+
+	PG_TRY();
+	{
+		CurrentPgExecution = &fake_execution1;
+		SPI_processed = 111;
+		SPI_tuptable = &fake_tuptable1;
+		SPI_result = SPI_OK_SELECT;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && SPI_processed == 0;
+		ok = ok && SPI_tuptable == NULL;
+		ok = ok && SPI_result == 0;
+		ok = ok && *PgCurrentSPIConnectedRef() == -1;
+		SPI_processed = 222;
+		SPI_tuptable = &fake_tuptable2;
+		SPI_result = SPI_OK_INSERT;
+
+		CurrentPgExecution = &fake_execution1;
+		ok = ok && SPI_processed == 111;
+		ok = ok && SPI_tuptable == &fake_tuptable1;
+		ok = ok && SPI_result == SPI_OK_SELECT;
+		ok = ok && *PgCurrentSPIConnectedRef() == -1;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && SPI_processed == 222;
+		ok = ok && SPI_tuptable == &fake_tuptable2;
+		ok = ok && SPI_result == SPI_OK_INSERT;
+		ok = ok && *PgCurrentSPIConnectedRef() == -1;
+
+		CurrentPgExecution = saved_execution;
+		SPI_processed = saved_spi_processed;
+		SPI_tuptable = saved_spi_tuptable;
+		SPI_result = saved_spi_result;
+	}
+	PG_CATCH();
+	{
+		CurrentPgExecution = saved_execution;
+		SPI_processed = saved_spi_processed;
+		SPI_tuptable = saved_spi_tuptable;
+		SPI_result = saved_spi_result;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "SPI state was not execution-local");
 
 	PG_RETURN_BOOL(true);
 }

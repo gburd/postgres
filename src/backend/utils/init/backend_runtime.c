@@ -474,6 +474,9 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionDebugState early_execution
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionErrorState early_execution_error;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionMemoryContextState early_execution_memory_contexts;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionResourceOwnerState early_execution_resource_owners;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionSPIState early_execution_spi = {
+	.connected = -1
+};
 
 StaticAssertDecl(PG_BACKEND_INTERRUPT_COUNT <= 32,
 				 "PgBackendInterruptMask must fit all backend interrupts");
@@ -580,6 +583,8 @@ static void PgExecutionAdoptEarlyDebugState(PgExecution *execution);
 static void PgExecutionAdoptEarlyErrorState(PgExecution *execution);
 static void PgExecutionAdoptEarlyMemoryContexts(PgExecution *execution);
 static void PgExecutionAdoptEarlyResourceOwners(PgExecution *execution);
+static void PgExecutionInitializeSPIState(PgExecutionSPIState *spi);
+static void PgExecutionAdoptEarlySPIState(PgExecution *execution);
 static PgBackendCoreState *PgCurrentCoreState(void);
 static PgSessionDatabaseState *PgCurrentSessionDatabaseState(void);
 static PgSessionTablespaceState *PgCurrentSessionTablespaceState(void);
@@ -624,6 +629,7 @@ static PgSessionLocaleState *PgCurrentSessionLocaleState(void);
 static PgExecutionErrorState *PgCurrentExecutionErrorState(void);
 static PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
 static PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
+static PgExecutionSPIState *PgCurrentExecutionSPIState(void);
 static PgBackendPendingInterruptState *PgCurrentPendingInterrupts(void);
 static PgBackendInterruptHoldoffState *PgCurrentInterruptHoldoffs(void);
 
@@ -1943,6 +1949,24 @@ PgExecutionAdoptEarlyResourceOwners(PgExecution *execution)
 		   sizeof(early_execution_resource_owners));
 }
 
+static void
+PgExecutionInitializeSPIState(PgExecutionSPIState *spi)
+{
+	Assert(spi != NULL);
+
+	MemSet(spi, 0, sizeof(*spi));
+	spi->connected = -1;
+}
+
+static void
+PgExecutionAdoptEarlySPIState(PgExecution *execution)
+{
+	Assert(execution != NULL);
+
+	execution->spi = early_execution_spi;
+	PgExecutionInitializeSPIState(&early_execution_spi);
+}
+
 void
 InitializePgProcessRuntime(void)
 {
@@ -2038,10 +2062,12 @@ InitializePgProcessRuntime(void)
 	process_execution.backend = &process_backend;
 	process_execution.session = &process_session;
 	process_execution.carrier = &process_carrier;
+	PgExecutionInitializeSPIState(&process_execution.spi);
 	PgExecutionAdoptEarlyDebugState(&process_execution);
 	PgExecutionAdoptEarlyErrorState(&process_execution);
 	PgExecutionAdoptEarlyMemoryContexts(&process_execution);
 	PgExecutionAdoptEarlyResourceOwners(&process_execution);
+	PgExecutionAdoptEarlySPIState(&process_execution);
 
 	CurrentPgRuntime = &process_runtime;
 	CurrentPgCarrier = &process_carrier;
@@ -2155,6 +2181,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	state->execution.backend = &state->backend;
 	state->execution.session = &state->session;
 	state->execution.carrier = &state->carrier;
+	PgExecutionInitializeSPIState(&state->execution.spi);
 }
 
 void
@@ -2209,6 +2236,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgExecutionAdoptEarlyErrorState(&state->execution);
 	PgExecutionAdoptEarlyMemoryContexts(&state->execution);
 	PgExecutionAdoptEarlyResourceOwners(&state->execution);
+	PgExecutionAdoptEarlySPIState(&state->execution);
 	CurrentPgRuntime = &thread_runtime;
 	CurrentPgCarrier = &state->carrier;
 	CurrentPgBackend = &state->backend;
@@ -4785,6 +4813,57 @@ ResourceOwner *
 PgTopTransactionResourceOwnerRef(void)
 {
 	return &PgCurrentExecutionResourceOwners()->top_transaction_owner;
+}
+
+static PgExecutionSPIState *
+PgCurrentExecutionSPIState(void)
+{
+	if (CurrentPgExecution == NULL)
+		return &early_execution_spi;
+
+	return &CurrentPgExecution->spi;
+}
+
+uint64 *
+PgCurrentSPIProcessedRef(void)
+{
+	return &PgCurrentExecutionSPIState()->processed;
+}
+
+SPITupleTable **
+PgCurrentSPITuptableRef(void)
+{
+	return &PgCurrentExecutionSPIState()->tuptable;
+}
+
+int *
+PgCurrentSPIResultRef(void)
+{
+	return &PgCurrentExecutionSPIState()->result;
+}
+
+_SPI_connection **
+PgCurrentSPIStackRef(void)
+{
+	return &PgCurrentExecutionSPIState()->stack;
+}
+
+_SPI_connection **
+PgCurrentSPICurrentRef(void)
+{
+	return &PgCurrentExecutionSPIState()->current;
+}
+
+int *
+PgCurrentSPIStackDepthRef(void)
+{
+	return &PgCurrentExecutionSPIState()->stack_depth;
+}
+
+int *
+PgCurrentSPIConnectedRef(void)
+{
+	return &PgCurrentExecutionSPIState()->connected;
 }
 
 PgConnectionSocketIOState *

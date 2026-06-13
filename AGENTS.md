@@ -170,6 +170,12 @@ Important current files:
   gmake -C src/pl/plpgsql/src DESTDIR="$PWD/tmp_install" install
   ```
 
+  A stale PL/pgSQL build after SPI exported-state changes can fail during
+  `initdb` post-bootstrap initialization with `Symbol not found:
+  _SPI_processed` while loading `plpgsql.dylib`. Treat that as a stale module
+  build, not as a SQL regression: clean, rebuild, and reinstall PL/pgSQL into
+  the current `tmp_install`.
+
   `pg_global_prng_state` is also exported through an installed common header
   and is referenced by some contrib/test modules, including `amcheck`,
   `auto_explain`, `tablefunc`, and several `src/test/modules` tests. Clean and
