@@ -5816,6 +5816,54 @@ PgCurrentHaveLockStatsRef(void)
 	return &PgCurrentBackendPgStatPendingState()->lock_stats_pending;
 }
 
+PgStat_BackendPending *
+PgCurrentPendingBackendStatsRef(void)
+{
+	return &PgCurrentBackendPgStatPendingState()->backend_stats;
+}
+
+bool *
+PgCurrentBackendHasIOStatsRef(void)
+{
+	return &PgCurrentBackendPgStatPendingState()->backend_io_stats_pending;
+}
+
+WalUsage *
+PgCurrentPgStatPrevBackendWalUsageRef(void)
+{
+	return &PgCurrentBackendPgStatPendingState()->backend_wal_prev_usage;
+}
+
+bool *
+PgCurrentPgStatReportFixedRef(void)
+{
+	return &PgCurrentBackendPgStatPendingState()->report_fixed;
+}
+
+bool *
+PgCurrentPgStatForceNextFlushRef(void)
+{
+	return &PgCurrentBackendPgStatPendingState()->force_next_flush;
+}
+
+bool *
+PgCurrentForceStatsSnapshotClearRef(void)
+{
+	return &PgCurrentBackendPgStatPendingState()->force_snapshot_clear;
+}
+
+bool *
+PgCurrentPgStatIsInitializedRef(void)
+{
+	return &PgCurrentBackendPgStatPendingState()->is_initialized;
+}
+
+bool *
+PgCurrentPgStatIsShutdownRef(void)
+{
+	return &PgCurrentBackendPgStatPendingState()->is_shutdown;
+}
+
 int *
 PgCurrentPgStatXactCommitRef(void)
 {

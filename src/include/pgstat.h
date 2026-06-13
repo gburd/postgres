@@ -895,6 +895,33 @@ extern bool *PgCurrentHaveLockStatsRef(void);
 #define PendingLockStats (*PgCurrentPendingLockStatsRef())
 #define have_lockstats (*PgCurrentHaveLockStatsRef())
 
+/*
+ * Backend statistics counts and fixed-stat flush controls.  Some of these
+ * counters may be reported within critical sections, so their storage must be
+ * statically available as part of the backend state object.
+ *
+ * pgstat_report_fixed tracks if any pending fixed-numbered statistics should
+ * be flushed to shared memory.  Statistics callbacks should never reset this
+ * flag; pgstat_report_stat() is in charge of doing that.
+ */
+extern PgStat_BackendPending *PgCurrentPendingBackendStatsRef(void);
+extern bool *PgCurrentBackendHasIOStatsRef(void);
+extern WalUsage *PgCurrentPgStatPrevBackendWalUsageRef(void);
+extern bool *PgCurrentPgStatReportFixedRef(void);
+extern bool *PgCurrentPgStatForceNextFlushRef(void);
+extern bool *PgCurrentForceStatsSnapshotClearRef(void);
+extern bool *PgCurrentPgStatIsInitializedRef(void);
+extern bool *PgCurrentPgStatIsShutdownRef(void);
+
+#define PendingBackendStats (*PgCurrentPendingBackendStatsRef())
+#define backend_has_iostats (*PgCurrentBackendHasIOStatsRef())
+#define prevBackendWalUsage (*PgCurrentPgStatPrevBackendWalUsageRef())
+#define pgstat_report_fixed (*PgCurrentPgStatReportFixedRef())
+#define pgStatForceNextFlush (*PgCurrentPgStatForceNextFlushRef())
+#define force_stats_snapshot_clear (*PgCurrentForceStatsSnapshotClearRef())
+#define pgstat_is_initialized (*PgCurrentPgStatIsInitializedRef())
+#define pgstat_is_shutdown (*PgCurrentPgStatIsShutdownRef())
+
 extern int *PgCurrentPgStatXactCommitRef(void);
 extern int *PgCurrentPgStatXactRollbackRef(void);
 

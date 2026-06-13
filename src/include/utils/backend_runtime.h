@@ -178,6 +178,13 @@ typedef struct PgBackendPgStatPendingState
 	bool		slru_stats_pending;
 	PgStat_PendingLock lock_stats;
 	bool		lock_stats_pending;
+	PgStat_BackendPending backend_stats;
+	bool		backend_io_stats_pending;
+	bool		report_fixed;
+	bool		force_next_flush;
+	bool		force_snapshot_clear;
+	bool		is_initialized;
+	bool		is_shutdown;
 	int			xact_commit;
 	int			xact_rollback;
 	PgStat_Counter block_read_time;
@@ -186,6 +193,7 @@ typedef struct PgBackendPgStatPendingState
 	PgStat_Counter transaction_idle_time;
 	instr_time	func_total_time;
 	WalUsage	wal_prev_usage;
+	WalUsage	backend_wal_prev_usage;
 } PgBackendPgStatPendingState;
 
 typedef struct PgBackendInstrumentationState

@@ -462,6 +462,14 @@ TLS in fixed pgstat flush/accounting paths.
 `save_pgWalUsage` now move as one executor instrumentation state family into
 `PgBackendInstrumentationState` behind `instrument.h` compatibility macros,
 removing another fixed backend accounting group from standalone TLS.
+`PendingBackendStats`, `backend_has_iostats`, `prevBackendWalUsage`,
+`pgstat_report_fixed`, `pgStatForceNextFlush`,
+`force_stats_snapshot_clear`, `pgstat_is_initialized`, and
+`pgstat_is_shutdown` now also live in `PgBackendPgStatPendingState` behind
+`pgstat.h` compatibility macros, moving backend/fixed pgstat flush state into
+the same logical backend bucket. The pending-entry context and list remain a
+tracked pgstat pending-state follow-up because they change pending-list
+ownership rather than just scalar flush state.
 PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly

@@ -6066,3 +6066,59 @@ Validation for this slice:
   `src/include/executor/instrument.h` and no remaining raw TLS declarations or
   exported symbol references for the moved instrumentation state;
 - `git diff --check` passed.
+
+## Backend Pgstat Backend/Fixed Flush State Bridge
+
+The one-hundred-twenty-seventh Phase 12 slice continues the larger pgstat
+state-family migration by moving backend-stat and fixed-flush state from
+standalone backend-local TLS into `PgBackendPgStatPendingState`:
+
+- backend-stat pending data: `PendingBackendStats` and
+  `backend_has_iostats`;
+- backend WAL previous-usage accounting: `prevBackendWalUsage`;
+- fixed-stat flush and snapshot control flags: `pgstat_report_fixed`,
+  `pgStatForceNextFlush`, and `force_stats_snapshot_clear`;
+- assertion-only pgstat lifecycle flags: `pgstat_is_initialized` and
+  `pgstat_is_shutdown`.
+
+Those names remain source-compatible lvalues through `pgstat.h`
+compatibility macros and runtime accessors. This keeps the remaining scalar
+pgstat flush-control state with the same backend-owned pending-state bucket as
+the bgwriter/checkpointer, I/O, SLRU, lock, transaction, timing, and WAL
+pending accounting already moved in previous slices.
+
+This slice deliberately leaves `pgStatPendingContext` and `pgStatPending` for
+a follow-up batch. They are also backend-local pgstat pending state, but moving
+the pending-entry memory context and list cleanly changes the pending-entry
+list ownership surface and deserves a separate focused proof.
+
+Validation for this slice:
+
+- `gmake -C src/backend/utils/init backend_runtime.o` passed;
+- `gmake -C src/backend/utils/activity pgstat.o pgstat_backend.o pgstat_io.o pgstat_lock.o pgstat_slru.o pgstat_wal.o`
+  passed;
+- `gmake -C src/test/modules/test_backend_runtime test_backend_runtime.o`
+  passed after expanding the pgstat backend-local helper;
+- full backend clean plus generated-header recovery was required after the
+  installed-header and `PgBackend` layout changes, because stale objects could
+  still reference the old pgstat symbols or miss the new accessor symbols;
+- full `gmake -j8` passed;
+- full `gmake -j8 DESTDIR="$PWD/tmp_install" install` passed;
+- PL/pgSQL was cleaned, rebuilt, and reinstalled after the installed-header
+  change;
+- `src/test/modules/test_backend_runtime` was cleaned, rebuilt, and
+  reinstalled after the installed-header change;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression, including the expanded
+  `test_backend_pgstat_pending_state_is_backend_local()` helper, and still
+  reported TAP disabled by configure;
+- direct threaded-runtime TAP passed all 87 tests with the local
+  `/Users/samwillis/perl5` `PERL5LIB` paths and an explicit `PG_REGRESS`
+  environment;
+- `gmake -C contrib -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 397 to 388;
+- a static scan found only the eight compatibility macros in
+  `src/include/pgstat.h` and no remaining raw TLS declarations or exported
+  symbol references for the moved backend/fixed pgstat flush state;
+- `git diff --check` passed.

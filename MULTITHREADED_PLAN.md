@@ -878,6 +878,13 @@ The executor instrumentation counters `pgBufferUsage`, `save_pgBufferUsage`,
 state family into `PgBackendInstrumentationState` behind `instrument.h`
 compatibility macros, removing another fixed accounting group from standalone
 backend-local TLS.
+The backend/fixed pgstat flush state `PendingBackendStats`,
+`backend_has_iostats`, `prevBackendWalUsage`, `pgstat_report_fixed`,
+`pgStatForceNextFlush`, `force_stats_snapshot_clear`,
+`pgstat_is_initialized`, and `pgstat_is_shutdown` now also lives in
+`PgBackendPgStatPendingState` behind `pgstat.h` compatibility macros. The
+pending-entry context and list remain as a separate pgstat pending-state
+follow-up because they change the list ownership surface.
 PMChild assignment and slot release now also scrub stale carrier-visible signal
 ids and thread-exit payloads before reuse. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live

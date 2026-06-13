@@ -182,18 +182,23 @@ Important current files:
   `PgCurrentBackendExitStateRef()` accessor.
 - `PendingBgWriterStats`, `PendingCheckpointerStats`,
   `PendingIOStats`, `pending_SLRUStats`, `PendingLockStats`,
-  `pgStatXactCommit`, `pgStatXactRollback`, `pgStatBlockReadTime`,
-  `pgStatBlockWriteTime`, `pgStatActiveTime`,
-  `pgStatTransactionIdleTime`, `total_func_time`, `prevWalUsage`, and the
-  related `have_*stats` booleans are now fields in
+  `PendingBackendStats`, `pgStatXactCommit`, `pgStatXactRollback`,
+  `pgStatBlockReadTime`, `pgStatBlockWriteTime`, `pgStatActiveTime`,
+  `pgStatTransactionIdleTime`, `total_func_time`, `prevWalUsage`,
+  `prevBackendWalUsage`, `pgstat_report_fixed`, `pgStatForceNextFlush`,
+  `force_stats_snapshot_clear`, `pgstat_is_initialized`,
+  `pgstat_is_shutdown`, and the related `have_*stats`/
+  `backend_has_iostats` booleans are now fields in
   `PgBackendPgStatPendingState`, exposed through compatibility macros in
   `src/include/pgstat.h`; the old exported/static TLS definitions were removed
   from pgstat implementation files. `PGSTAT_SLRU_NUM_ELEMENTS` is public only
   to size the runtime SLRU pending-state array and is asserted against
-  `slru_names[]` in `src/include/utils/pgstat_internal.h`. After changing this
-  bridge, clean and rebuild backend objects and extension modules that include
-  `pgstat.h`; stale objects can still reference removed pgstat symbols or miss
-  the new accessor symbols. At minimum, clean and reinstall PL/pgSQL,
+  `slru_names[]` in `src/include/utils/pgstat_internal.h`.
+  `pgStatPendingContext` and `pgStatPending` remain a separate follow-up for
+  the pending-entry list ownership surface. After changing this bridge, clean
+  and rebuild backend objects and extension modules that include `pgstat.h`;
+  stale objects can still reference removed pgstat symbols or miss the new
+  accessor symbols. At minimum, clean and reinstall PL/pgSQL,
   `src/test/modules/test_backend_runtime`, and contrib/test modules under
   pgstat coverage before validating.
 - `pgBufferUsage`, `save_pgBufferUsage`, `pgWalUsage`, and

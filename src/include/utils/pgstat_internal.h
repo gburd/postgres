@@ -869,21 +869,6 @@ extern void pgstat_create_transactional(PgStat_Kind kind, Oid dboid, uint64 obji
  * Variables in pgstat.c
  */
 
-/*
- * Track if *any* pending fixed-numbered statistics should be flushed to
- * shared memory.
- *
- * This flag can be switched to true by fixed-numbered statistics to let
- * pgstat_report_stat() know if it needs to go through one round of
- * reports, calling flush_static_cb for each fixed-numbered statistics
- * kind.  When this flag is not set, pgstat_report_stat() is able to do
- * a fast exit, knowing that there are no pending fixed-numbered statistics.
- *
- * Statistics callbacks should never reset this flag; pgstat_report_stat()
- * is in charge of doing that.
- */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool pgstat_report_fixed;
-
 /* Backend-local stats state */
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_LocalState pgStatLocal;
 

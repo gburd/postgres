@@ -204,12 +204,6 @@ static inline bool pgstat_is_kind_valid(PgStat_Kind kind);
 
 PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_LocalState pgStatLocal;
 
-/*
- * Track pending reports for fixed-numbered stats, used by
- * pgstat_report_stat().
- */
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool pgstat_report_fixed = false;
-
 /* ----------
  * Local data
  *
@@ -233,29 +227,6 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND MemoryContext pgStatPendingContext = NU
  * otherwise pgstat_flush_pending_entries() might not see them immediately.
  */
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND dlist_head pgStatPending;
-
-
-/*
- * Force the next stats flush to happen regardless of
- * PGSTAT_MIN_INTERVAL. Useful in test scripts.
- */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool pgStatForceNextFlush = false;
-
-/*
- * Force-clear existing snapshot before next use when stats_fetch_consistency
- * is changed.
- */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool force_stats_snapshot_clear = false;
-
-
-/*
- * For assertions that check pgstat is not used before initialization / after
- * shutdown.
- */
-#ifdef USE_ASSERT_CHECKING
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool pgstat_is_initialized = false;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool pgstat_is_shutdown = false;
-#endif
 
 
 /*
