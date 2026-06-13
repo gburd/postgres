@@ -943,6 +943,19 @@ new unclassified mutable globals, down from 121 before this slice. The
 private transaction-state stack, command-id state, timestamps, callback lists,
 and transaction abort context remain a documented follow-up needing a broader
 lifecycle split.
+The next GUC/error scratch-state slice moved GUC check-hook error
+code/message/detail/hint state, `pre_format_elog_string()` errno/domain
+scratch state, and config-file scanner line/fatal-jump scratch state into
+`PgExecution`. The public GUC check-hook string names remain source-compatible
+lvalue macros in `guc.h`, while `guc.c`, `elog.c`, and `guc-file.l` keep
+private names through file-local compatibility macros. Validation included
+touched-object builds, stale-symbol link/load failures that confirmed the
+installed-header clean-rebuild requirement, clean backend plus `src/common`
+rebuild, full `gmake -j8`, install, clean PL/pgSQL rebuild/install, the
+test-backend-runtime regression, contrib build, `gmake check-global-lifetimes`,
+and direct threaded runtime TAP. The global-lifetime scan now reports 97
+execution-local declarations with zero new unclassified mutable globals, down
+from 108 before this slice.
 
 ## Bottom Line
 

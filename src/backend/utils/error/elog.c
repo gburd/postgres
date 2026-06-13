@@ -1832,8 +1832,8 @@ getinternalerrposition(void)
  * The result of format_elog_string() is stored in ErrorContext, and will
  * therefore survive until FlushErrorState() is called.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int save_format_errnumber;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION const char *save_format_domain;
+#define save_format_errnumber (*PgCurrentFormatErrnumberRef())
+#define save_format_domain (*PgCurrentFormatDomainRef())
 
 void
 pre_format_elog_string(int errnumber, const char *domain)

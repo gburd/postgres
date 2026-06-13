@@ -541,9 +541,12 @@ extern TupleDesc GetPGVariableResultDesc(const char *name);
 
 /* Support for messages reported from GUC check hooks */
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION char *GUC_check_errmsg_string;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION char *GUC_check_errdetail_string;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION char *GUC_check_errhint_string;
+extern char **PgCurrentGUCCheckErrmsgStringRef(void);
+extern char **PgCurrentGUCCheckErrdetailStringRef(void);
+extern char **PgCurrentGUCCheckErrhintStringRef(void);
+#define GUC_check_errmsg_string (*PgCurrentGUCCheckErrmsgStringRef())
+#define GUC_check_errdetail_string (*PgCurrentGUCCheckErrdetailStringRef())
+#define GUC_check_errhint_string (*PgCurrentGUCCheckErrhintStringRef())
 
 extern void GUC_check_errcode(int sqlerrcode);
 

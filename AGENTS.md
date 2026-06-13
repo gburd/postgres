@@ -447,6 +447,19 @@ Important current files:
   `PgExecution` layout and installed runtime/xact headers changed; at minimum
   rebuild and reinstall `src/test/modules/test_backend_runtime`, PL/pgSQL, and
   contrib before validating.
+- GUC/error-report scratch state now lives in `PgExecution`:
+  `PgExecutionGUCErrorState` owns the GUC check-hook error code and
+  message/detail/hint strings, `pre_format_elog_string()` errno/domain state,
+  and config-file scanner line/fatal-jump state. `guc.h` keeps public
+  `GUC_check_errmsg_string`, `GUC_check_errdetail_string`, and
+  `GUC_check_errhint_string` as lvalue macros. `guc.c`, `elog.c`, and
+  `guc-file.l` keep private names through file-local compatibility macros.
+  After changing this bridge, clean and rebuild backend objects because
+  `PgExecution` layout and installed `guc.h` changed; stale backend objects
+  can fail to link against removed `_GUC_check_*` symbols and stale PL/pgSQL
+  can fail during `initdb` while loading removed `_GUC_check_*` symbols. At
+  minimum rebuild and reinstall `src/test/modules/test_backend_runtime`,
+  PL/pgSQL, and contrib before validating.
 - Backend activity snapshot state now lives in `PgBackendActivityState`:
   `localBackendStatusTable`, `localNumBackends`, and
   `backendStatusSnapContext` are backed by runtime accessors while
@@ -749,6 +762,13 @@ Important current files:
   BSD `make`. In the Codex desktop shell, Homebrew's bin directory may be
   absent from `PATH`; if `gmake` is not found, use `/opt/homebrew/bin/gmake` or
   export `PATH="/opt/homebrew/bin:$PATH"` before building.
+- Do not use parallel `gmake -B ...` as a shortcut to force touched-object
+  compiles in this checkout. It can trigger concurrent `config.status
+  --recheck` runs, which race through temporary `conftest` files and produce
+  misleading configure failures. To force coverage for edited sources, remove
+  the specific `.o` files and rebuild the ordinary targets serially, or use the
+  documented clean rebuild path below when installed headers or runtime object
+  layouts changed.
 - After cleaning under `src/backend`, generated backend-side files can be
   missing while include-side `header-stamp` files and symlinks still exist. If
   the build fails with a missing header such as `utils/errcodes.h`, regenerate

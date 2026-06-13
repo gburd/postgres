@@ -7822,6 +7822,54 @@ Validation for this slice:
   `CheckXidAlive`, `bsysscan`, and `MyXactFlags` across two fake logical
   executions.
 
+## Execution GUC Error Scratch State Bridge
+
+The one-hundred-sixty-seventh Phase 12 slice moves GUC/error-report scratch
+state into a new `PgExecutionGUCErrorState` bucket:
+
+- GUC check-hook error code and message/detail/hint strings;
+- `pre_format_elog_string()` errno and text-domain scratch state used by the
+  GUC check-hook reporting macros;
+- config-file scanner line number, fatal-flex message, and fatal-flex jump
+  target used while parsing configuration files.
+
+`guc.h` keeps the public `GUC_check_errmsg_string`,
+`GUC_check_errdetail_string`, and `GUC_check_errhint_string` names as lvalue
+macros over runtime accessors. `guc.c`, `elog.c`, and `guc-file.l` use local
+compatibility macros for their private scratch names, so existing call sites
+and lexer actions continue to read and assign the same identifiers.
+
+The lifecycle rule is whole-bucket copy/adopt plus zero reset. The moved
+fields are scalars or borrowed pointers to ErrorContext strings, static flex
+messages, text-domain strings, or stack-owned jump buffers. The bucket owns no
+lists, memory contexts, hash tables, sockets, or opaque heap allocations, so
+there is no destroy action beyond normal execution reset.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `guc.o`,
+  `guc-file.o`, `elog.o`, and `test_backend_runtime.o`;
+- stale backend objects initially failed to link against the removed exported
+  GUC check-hook variables, proving this installed-header change requires the
+  documented clean rebuild path;
+- clean backend and `src/common` rebuild passed after regenerating backend
+  utility outputs, node support, and generated header symlinks;
+- full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- clean PL/pgSQL rebuild and reinstall into `tmp_install` passed after a
+  stale `plpgsql.dylib` failed to load the removed GUC check-hook symbols;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- `gmake -C contrib -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with execution-local declarations dropping from 108 to 97;
+- direct threaded TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed
+  with 87 tests after patching local macOS `libpq.5.dylib` install names for
+  `pg_regress` and temp-install frontend binaries;
+- `test_execution_guc_error_state_is_execution_local()` now verifies all moved
+  GUC check-hook, formatting, and config-file scanner scratch fields across
+  two fake logical executions.
+
 ## Backend Parallel State Bridge
 
 The one-hundred-forty-second Phase 12 slice moves a parallel-query and

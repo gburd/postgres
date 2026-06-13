@@ -562,6 +562,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionXactState early_execution_
 	.iso_level = XACT_READ_COMMITTED,
 	.check_xid_alive = InvalidTransactionId
 };
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionGUCErrorState early_execution_guc_error;
 
 StaticAssertDecl(PG_BACKEND_INTERRUPT_COUNT <= 32,
 				 "PgBackendInterruptMask must fit all backend interrupts");
@@ -753,6 +754,8 @@ static void PgExecutionInitializeXLogInsertState(PgExecutionXLogInsertState *xlo
 static void PgExecutionAdoptEarlyXLogInsertState(PgExecution *execution);
 static void PgExecutionInitializeXactState(PgExecutionXactState *xact);
 static void PgExecutionAdoptEarlyXactState(PgExecution *execution);
+static void PgExecutionInitializeGUCErrorState(PgExecutionGUCErrorState *guc_error);
+static void PgExecutionAdoptEarlyGUCErrorState(PgExecution *execution);
 static PgBackendCoreState *PgCurrentCoreState(void);
 static PgSessionDatabaseState *PgCurrentSessionDatabaseState(void);
 static PgSessionTablespaceState *PgCurrentSessionTablespaceState(void);
@@ -809,6 +812,7 @@ static PgExecutionSnapshotState *PgCurrentExecutionSnapshotState(void);
 static PgExecutionComboCidState *PgCurrentExecutionComboCidState(void);
 static PgExecutionXLogInsertState *PgCurrentExecutionXLogInsertState(void);
 static PgExecutionXactState *PgCurrentExecutionXactState(void);
+static PgExecutionGUCErrorState *PgCurrentExecutionGUCErrorState(void);
 static PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
 static PgBackendInstrumentationState *PgCurrentBackendInstrumentationState(void);
 static PgBackendBufferState *PgCurrentBackendBufferState(void);
@@ -2981,6 +2985,23 @@ PgExecutionAdoptEarlyXactState(PgExecution *execution)
 	PgExecutionInitializeXactState(&early_execution_xact);
 }
 
+static void
+PgExecutionInitializeGUCErrorState(PgExecutionGUCErrorState *guc_error)
+{
+	Assert(guc_error != NULL);
+
+	MemSet(guc_error, 0, sizeof(*guc_error));
+}
+
+static void
+PgExecutionAdoptEarlyGUCErrorState(PgExecution *execution)
+{
+	Assert(execution != NULL);
+
+	execution->guc_error = early_execution_guc_error;
+	PgExecutionInitializeGUCErrorState(&early_execution_guc_error);
+}
+
 void
 InitializePgProcessRuntime(void)
 {
@@ -3125,6 +3146,7 @@ InitializePgProcessRuntime(void)
 	PgExecutionAdoptEarlyComboCidState(&process_execution);
 	PgExecutionAdoptEarlyXLogInsertState(&process_execution);
 	PgExecutionAdoptEarlyXactState(&process_execution);
+	PgExecutionAdoptEarlyGUCErrorState(&process_execution);
 
 	CurrentPgRuntime = &process_runtime;
 	CurrentPgCarrier = &process_carrier;
@@ -3278,6 +3300,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgExecutionInitializeComboCidState(&state->execution.combo_cid);
 	PgExecutionInitializeXLogInsertState(&state->execution.xloginsert);
 	PgExecutionInitializeXactState(&state->execution.xact);
+	PgExecutionInitializeGUCErrorState(&state->execution.guc_error);
 }
 
 void
@@ -3366,6 +3389,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgExecutionAdoptEarlyComboCidState(&state->execution);
 	PgExecutionAdoptEarlyXLogInsertState(&state->execution);
 	PgExecutionAdoptEarlyXactState(&state->execution);
+	PgExecutionAdoptEarlyGUCErrorState(&state->execution);
 	CurrentPgRuntime = &thread_runtime;
 	CurrentPgCarrier = &state->carrier;
 	CurrentPgBackend = &state->backend;
@@ -6820,6 +6844,69 @@ int *
 PgCurrentMyXactFlagsRef(void)
 {
 	return &PgCurrentExecutionXactState()->flags;
+}
+
+static PgExecutionGUCErrorState *
+PgCurrentExecutionGUCErrorState(void)
+{
+	if (CurrentPgExecution == NULL)
+		return &early_execution_guc_error;
+
+	return &CurrentPgExecution->guc_error;
+}
+
+int *
+PgCurrentGUCCheckErrcodeValueRef(void)
+{
+	return &PgCurrentExecutionGUCErrorState()->check_errcode_value;
+}
+
+char **
+PgCurrentGUCCheckErrmsgStringRef(void)
+{
+	return &PgCurrentExecutionGUCErrorState()->check_errmsg_string;
+}
+
+char **
+PgCurrentGUCCheckErrdetailStringRef(void)
+{
+	return &PgCurrentExecutionGUCErrorState()->check_errdetail_string;
+}
+
+char **
+PgCurrentGUCCheckErrhintStringRef(void)
+{
+	return &PgCurrentExecutionGUCErrorState()->check_errhint_string;
+}
+
+int *
+PgCurrentFormatErrnumberRef(void)
+{
+	return &PgCurrentExecutionGUCErrorState()->format_errnumber;
+}
+
+const char **
+PgCurrentFormatDomainRef(void)
+{
+	return &PgCurrentExecutionGUCErrorState()->format_domain;
+}
+
+unsigned int *
+PgCurrentConfigFileLinenoRef(void)
+{
+	return &PgCurrentExecutionGUCErrorState()->config_file_lineno;
+}
+
+const char **
+PgCurrentGUCFlexFatalErrmsgRef(void)
+{
+	return &PgCurrentExecutionGUCErrorState()->flex_fatal_errmsg;
+}
+
+sigjmp_buf **
+PgCurrentGUCFlexFatalJmpRef(void)
+{
+	return &PgCurrentExecutionGUCErrorState()->flex_fatal_jmp;
 }
 
 PgConnectionSocketIOState *

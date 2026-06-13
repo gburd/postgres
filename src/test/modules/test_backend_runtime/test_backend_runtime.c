@@ -11570,6 +11570,92 @@ test_execution_xact_state_is_execution_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_execution_guc_error_state_is_execution_local);
+Datum
+test_execution_guc_error_state_is_execution_local(PG_FUNCTION_ARGS)
+{
+	PgExecution *saved_execution;
+	PgExecution fake_execution1;
+	PgExecution fake_execution2;
+	bool		ok = true;
+
+	saved_execution = CurrentPgExecution;
+	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
+	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+
+	PG_TRY();
+	{
+		CurrentPgExecution = &fake_execution1;
+		*PgCurrentGUCCheckErrcodeValueRef() = 101;
+		GUC_check_errmsg_string = "message one";
+		GUC_check_errdetail_string = "detail one";
+		GUC_check_errhint_string = "hint one";
+		*PgCurrentFormatErrnumberRef() = 102;
+		*PgCurrentFormatDomainRef() = "domain one";
+		*PgCurrentConfigFileLinenoRef() = 103;
+		*PgCurrentGUCFlexFatalErrmsgRef() = "fatal one";
+		*PgCurrentGUCFlexFatalJmpRef() = (sigjmp_buf *) &fake_execution1;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && *PgCurrentGUCCheckErrcodeValueRef() == 0;
+		ok = ok && GUC_check_errmsg_string == NULL;
+		ok = ok && GUC_check_errdetail_string == NULL;
+		ok = ok && GUC_check_errhint_string == NULL;
+		ok = ok && *PgCurrentFormatErrnumberRef() == 0;
+		ok = ok && *PgCurrentFormatDomainRef() == NULL;
+		ok = ok && *PgCurrentConfigFileLinenoRef() == 0;
+		ok = ok && *PgCurrentGUCFlexFatalErrmsgRef() == NULL;
+		ok = ok && *PgCurrentGUCFlexFatalJmpRef() == NULL;
+
+		*PgCurrentGUCCheckErrcodeValueRef() = 201;
+		GUC_check_errmsg_string = "message two";
+		GUC_check_errdetail_string = "detail two";
+		GUC_check_errhint_string = "hint two";
+		*PgCurrentFormatErrnumberRef() = 202;
+		*PgCurrentFormatDomainRef() = "domain two";
+		*PgCurrentConfigFileLinenoRef() = 203;
+		*PgCurrentGUCFlexFatalErrmsgRef() = "fatal two";
+		*PgCurrentGUCFlexFatalJmpRef() = (sigjmp_buf *) &fake_execution2;
+
+		CurrentPgExecution = &fake_execution1;
+		ok = ok && *PgCurrentGUCCheckErrcodeValueRef() == 101;
+		ok = ok && strcmp(GUC_check_errmsg_string, "message one") == 0;
+		ok = ok && strcmp(GUC_check_errdetail_string, "detail one") == 0;
+		ok = ok && strcmp(GUC_check_errhint_string, "hint one") == 0;
+		ok = ok && *PgCurrentFormatErrnumberRef() == 102;
+		ok = ok && strcmp(*PgCurrentFormatDomainRef(), "domain one") == 0;
+		ok = ok && *PgCurrentConfigFileLinenoRef() == 103;
+		ok = ok && strcmp(*PgCurrentGUCFlexFatalErrmsgRef(), "fatal one") == 0;
+		ok = ok && *PgCurrentGUCFlexFatalJmpRef() ==
+			(sigjmp_buf *) &fake_execution1;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && *PgCurrentGUCCheckErrcodeValueRef() == 201;
+		ok = ok && strcmp(GUC_check_errmsg_string, "message two") == 0;
+		ok = ok && strcmp(GUC_check_errdetail_string, "detail two") == 0;
+		ok = ok && strcmp(GUC_check_errhint_string, "hint two") == 0;
+		ok = ok && *PgCurrentFormatErrnumberRef() == 202;
+		ok = ok && strcmp(*PgCurrentFormatDomainRef(), "domain two") == 0;
+		ok = ok && *PgCurrentConfigFileLinenoRef() == 203;
+		ok = ok && strcmp(*PgCurrentGUCFlexFatalErrmsgRef(), "fatal two") == 0;
+		ok = ok && *PgCurrentGUCFlexFatalJmpRef() ==
+			(sigjmp_buf *) &fake_execution2;
+
+		CurrentPgExecution = saved_execution;
+	}
+	PG_CATCH();
+	{
+		CurrentPgExecution = saved_execution;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "GUC error scratch state was not execution-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_connection_socket_io_is_connection_local);
 Datum
 test_connection_socket_io_is_connection_local(PG_FUNCTION_ARGS)

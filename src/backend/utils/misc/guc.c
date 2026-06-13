@@ -85,14 +85,9 @@
  */
 #define GUC_SAFE_SEARCH_PATH "pg_catalog, pg_temp"
 
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int GUC_check_errcode_value;
+#define GUC_check_errcode_value (*PgCurrentGUCCheckErrcodeValueRef())
 
 static PG_GLOBAL_RUNTIME List *reserved_class_prefix = NIL;
-
-/* global variables for check hook support */
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION char *GUC_check_errmsg_string;
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION char *GUC_check_errdetail_string;
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION char *GUC_check_errhint_string;
 
 
 /*

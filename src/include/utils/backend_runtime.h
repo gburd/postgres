@@ -931,6 +931,19 @@ typedef struct PgExecutionXactState
 	int			flags;
 } PgExecutionXactState;
 
+typedef struct PgExecutionGUCErrorState
+{
+	int			check_errcode_value;
+	char	   *check_errmsg_string;
+	char	   *check_errdetail_string;
+	char	   *check_errhint_string;
+	int			format_errnumber;
+	const char *format_domain;
+	unsigned int config_file_lineno;
+	const char *flex_fatal_errmsg;
+	sigjmp_buf *flex_fatal_jmp;
+} PgExecutionGUCErrorState;
+
 typedef struct PgSessionDatabaseState
 {
 	Oid			database_id;
@@ -1750,6 +1763,7 @@ struct PgExecution
 	PgExecutionComboCidState combo_cid;
 	PgExecutionXLogInsertState xloginsert;
 	PgExecutionXactState xact;
+	PgExecutionGUCErrorState guc_error;
 };
 
 typedef struct PgThreadBackendRuntimeState
@@ -2245,6 +2259,15 @@ extern bool *PgCurrentXactIsSampledRef(void);
 extern TransactionId *PgCurrentCheckXidAliveRef(void);
 extern bool *PgCurrentBSysScanRef(void);
 extern int *PgCurrentMyXactFlagsRef(void);
+extern int *PgCurrentGUCCheckErrcodeValueRef(void);
+extern char **PgCurrentGUCCheckErrmsgStringRef(void);
+extern char **PgCurrentGUCCheckErrdetailStringRef(void);
+extern char **PgCurrentGUCCheckErrhintStringRef(void);
+extern int *PgCurrentFormatErrnumberRef(void);
+extern const char **PgCurrentFormatDomainRef(void);
+extern unsigned int *PgCurrentConfigFileLinenoRef(void);
+extern const char **PgCurrentGUCFlexFatalErrmsgRef(void);
+extern sigjmp_buf **PgCurrentGUCFlexFatalJmpRef(void);
 extern PgConnectionSocketIOState *PgConnectionSocketIORef(PgConnection *connection);
 extern PgConnectionSocketIOState *PgCurrentConnectionSocketIORef(void);
 extern const PQcommMethods **PgConnectionPqCommMethodsRef(PgConnection *connection);

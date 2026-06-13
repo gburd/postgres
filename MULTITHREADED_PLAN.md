@@ -768,6 +768,7 @@ exit-registration state bridge through `PgBackendLockState`, plus the
 snapshot-manager and combo-CID transaction visibility state bridge through
 `PgExecution`, plus the WAL record-construction workspace bridge through
 `PgExecution`, plus the simple exported transaction flag/state bridge through
+`PgExecution`, plus the GUC/error-report scratch state bridge through
 `PgExecution`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
@@ -1052,6 +1053,18 @@ execution-local declarations dropped from 121 to 108. The private
 transaction-state stack, command-id state, timestamps, callback lists, and
 abort context remain a separate follow-up because they require a broader
 lifecycle split.
+The GUC/error scratch-state slice moved GUC check-hook error
+code/message/detail/hint state, `pre_format_elog_string()` errno/domain
+scratch state, and config-file scanner line/fatal-jump scratch state into
+`PgExecution`. `guc.h` keeps the public check-hook string names as lvalue
+macros over runtime accessors, while `guc.c`, `elog.c`, and `guc-file.l` use
+private compatibility macros for their internal names. Validation included
+touched-object builds, a stale-symbol link/load audit that confirmed the
+installed-header clean-rebuild requirement, clean backend plus `src/common`
+rebuild, full `gmake -j8`, install, clean PL/pgSQL rebuild/install, the
+test-backend-runtime regression, contrib build, the required global-lifetime
+scan with zero new unclassified mutable globals, and the direct threaded
+runtime TAP; execution-local declarations dropped from 108 to 97.
 The predicate-lock state slice extends `PgBackendLockState` again for
 `predicate.c`: local predicate-lock hash state, the current serializable
 transaction pointer, write-tracking flag, and saved serializable transaction
