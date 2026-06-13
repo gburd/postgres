@@ -223,6 +223,23 @@ typedef struct PgBackendActivityState
 	MemoryContext backend_status_context;
 } PgBackendActivityState;
 
+#define PG_BACKEND_MAX_SEQ_SCANS 100
+
+typedef struct PgBackendUtilityState
+{
+	HTAB	   *seq_scan_tables[PG_BACKEND_MAX_SEQ_SCANS];
+	int			seq_scan_levels[PG_BACKEND_MAX_SEQ_SCANS];
+	int			num_seq_scans;
+	Oid			superuser_last_roleid;
+	bool		superuser_last_roleid_is_super;
+	bool		superuser_roleid_callback_registered;
+	void	   *resource_release_callbacks;
+#ifdef RESOWNER_STATS
+	int			resource_owner_array_lookups;
+	int			resource_owner_hash_lookups;
+#endif
+} PgBackendUtilityState;
+
 typedef struct PgBackendInstrumentationState
 {
 	BufferUsage buffer_usage;
@@ -1145,6 +1162,7 @@ struct PgBackend
 	PgBackendCoreState core;
 	PgBackendPgStatPendingState pgstat_pending;
 	PgBackendActivityState activity;
+	PgBackendUtilityState utility;
 	PgBackendInstrumentationState instrumentation;
 	PgBackendBufferState buffers;
 	PgBackendStorageState storage;
@@ -1365,6 +1383,17 @@ extern PgStat_Counter *PgCurrentPgStatLastSessionReportTimeRef(void);
 extern LocalPgBackendStatus **PgCurrentLocalBackendStatusTableRef(void);
 extern int *PgCurrentLocalNumBackendsRef(void);
 extern MemoryContext *PgCurrentBackendStatusSnapContextRef(void);
+extern HTAB **PgCurrentSeqScanTables(void);
+extern int *PgCurrentSeqScanLevels(void);
+extern int *PgCurrentNumSeqScansRef(void);
+extern Oid *PgCurrentSuperuserLastRoleIdRef(void);
+extern bool *PgCurrentSuperuserLastRoleIdIsSuperRef(void);
+extern bool *PgCurrentSuperuserRoleIdCallbackRegisteredRef(void);
+extern void **PgCurrentResourceReleaseCallbacksRef(void);
+#ifdef RESOWNER_STATS
+extern int *PgCurrentResourceOwnerArrayLookupsRef(void);
+extern int *PgCurrentResourceOwnerHashLookupsRef(void);
+#endif
 extern int *PgCurrentComputeQueryIdRef(void);
 extern bool *PgCurrentQueryIdEnabledRef(void);
 extern bool *PgCurrentIgnoreChecksumFailureRef(void);

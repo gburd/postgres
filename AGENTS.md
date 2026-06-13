@@ -330,6 +330,17 @@ Important current files:
   rebuild backend objects because `PgBackend` layout and installed runtime
   headers changed; at minimum rebuild and reinstall PL/pgSQL,
   `src/test/modules/test_backend_runtime`, and contrib before validating.
+- Backend utility/support state now lives in `PgBackendUtilityState`:
+  dynahash active sequential-scan tracking, the superuser one-entry cache,
+  the resource-owner release callback pointer, and optional `RESOWNER_STATS`
+  counters are backed by runtime accessors while `dynahash.c`,
+  `superuser.c`, and `resowner.c` keep local source names. The private
+  `ResourceReleaseCallbackItem` type stays local to `resowner.c`; the runtime
+  stores the callback head as an opaque pointer and `resowner.c` casts it
+  through a file-local typed helper. After changing this bridge, clean and
+  rebuild backend objects because `PgBackend` layout and installed runtime
+  headers changed; at minimum rebuild and reinstall PL/pgSQL,
+  `src/test/modules/test_backend_runtime`, and contrib before validating.
 - Treat `PMChild.thread_backend` as private PMChild-owned publication state.
   Postmaster code should use PMChild helper APIs for threaded backend
   interrupt, wakeup, and thread-exit publication rather than dereferencing or

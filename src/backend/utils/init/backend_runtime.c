@@ -110,6 +110,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendLockState early_backend_locks;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendIPCState early_backend_ipc;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendTransactionState early_backend_transaction;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendActivityState early_backend_activity;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendUtilityState early_backend_utility;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionIdentityState early_connection_identity;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionSocketIOState early_connection_socket_io;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionProtocolState early_connection_protocol;
@@ -618,6 +619,8 @@ static void PgBackendInitializePgStatPendingState(PgBackendPgStatPendingState *p
 static void PgBackendAdoptEarlyPgStatPendingState(PgBackend *backend);
 static void PgBackendInitializeActivityState(PgBackendActivityState *activity);
 static void PgBackendAdoptEarlyActivityState(PgBackend *backend);
+static void PgBackendInitializeUtilityState(PgBackendUtilityState *utility);
+static void PgBackendAdoptEarlyUtilityState(PgBackend *backend);
 static void PgBackendInitializeInstrumentationState(PgBackendInstrumentationState *instrumentation);
 static void PgBackendAdoptEarlyInstrumentationState(PgBackend *backend);
 static void PgBackendInitializeBufferState(PgBackendBufferState *buffers);
@@ -2107,6 +2110,24 @@ PgBackendAdoptEarlyActivityState(PgBackend *backend)
 }
 
 static void
+PgBackendInitializeUtilityState(PgBackendUtilityState *utility)
+{
+	Assert(utility != NULL);
+
+	MemSet(utility, 0, sizeof(*utility));
+	utility->superuser_last_roleid = InvalidOid;
+}
+
+static void
+PgBackendAdoptEarlyUtilityState(PgBackend *backend)
+{
+	Assert(backend != NULL);
+
+	backend->utility = early_backend_utility;
+	PgBackendInitializeUtilityState(&early_backend_utility);
+}
+
+static void
 PgBackendInitializeInstrumentationState(PgBackendInstrumentationState *instrumentation)
 {
 	Assert(instrumentation != NULL);
@@ -2457,6 +2478,7 @@ InitializePgProcessRuntime(void)
 	PgBackendAdoptEarlyAuxProcessResourceOwner(&process_backend);
 	PgBackendAdoptEarlyPgStatPendingState(&process_backend);
 	PgBackendAdoptEarlyActivityState(&process_backend);
+	PgBackendAdoptEarlyUtilityState(&process_backend);
 	PgBackendAdoptEarlyInstrumentationState(&process_backend);
 	PgBackendAdoptEarlyBufferState(&process_backend);
 	PgBackendAdoptEarlyStorageState(&process_backend);
@@ -2603,6 +2625,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgBackendInitializeInterrupts(&state->backend);
 	PgBackendInitializePgStatPendingState(&state->backend.pgstat_pending);
 	PgBackendInitializeActivityState(&state->backend.activity);
+	PgBackendInitializeUtilityState(&state->backend.utility);
 	PgBackendInitializeInstrumentationState(&state->backend.instrumentation);
 	PgBackendInitializeBufferState(&state->backend.buffers);
 	PgBackendInitializeStorageState(&state->backend.storage);
@@ -2691,6 +2714,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgBackendAdoptEarlyAuxProcessResourceOwner(&state->backend);
 	PgBackendAdoptEarlyPgStatPendingState(&state->backend);
 	PgBackendAdoptEarlyActivityState(&state->backend);
+	PgBackendAdoptEarlyUtilityState(&state->backend);
 	PgBackendAdoptEarlyInstrumentationState(&state->backend);
 	PgBackendAdoptEarlyBufferState(&state->backend);
 	PgBackendAdoptEarlyStorageState(&state->backend);
@@ -4485,6 +4509,71 @@ PgCurrentBackendStatusSnapContextRef(void)
 {
 	return &PgCurrentBackendActivityState()->backend_status_context;
 }
+
+static PgBackendUtilityState *
+PgCurrentBackendUtilityState(void)
+{
+	if (CurrentPgBackend == NULL)
+		return &early_backend_utility;
+
+	return &CurrentPgBackend->utility;
+}
+
+HTAB **
+PgCurrentSeqScanTables(void)
+{
+	return PgCurrentBackendUtilityState()->seq_scan_tables;
+}
+
+int *
+PgCurrentSeqScanLevels(void)
+{
+	return PgCurrentBackendUtilityState()->seq_scan_levels;
+}
+
+int *
+PgCurrentNumSeqScansRef(void)
+{
+	return &PgCurrentBackendUtilityState()->num_seq_scans;
+}
+
+Oid *
+PgCurrentSuperuserLastRoleIdRef(void)
+{
+	return &PgCurrentBackendUtilityState()->superuser_last_roleid;
+}
+
+bool *
+PgCurrentSuperuserLastRoleIdIsSuperRef(void)
+{
+	return &PgCurrentBackendUtilityState()->superuser_last_roleid_is_super;
+}
+
+bool *
+PgCurrentSuperuserRoleIdCallbackRegisteredRef(void)
+{
+	return &PgCurrentBackendUtilityState()->superuser_roleid_callback_registered;
+}
+
+void **
+PgCurrentResourceReleaseCallbacksRef(void)
+{
+	return &PgCurrentBackendUtilityState()->resource_release_callbacks;
+}
+
+#ifdef RESOWNER_STATS
+int *
+PgCurrentResourceOwnerArrayLookupsRef(void)
+{
+	return &PgCurrentBackendUtilityState()->resource_owner_array_lookups;
+}
+
+int *
+PgCurrentResourceOwnerHashLookupsRef(void)
+{
+	return &PgCurrentBackendUtilityState()->resource_owner_hash_lookups;
+}
+#endif
 
 int *
 PgCurrentComputeQueryIdRef(void)

@@ -6769,3 +6769,53 @@ Validation for this slice:
 - `gmake -C contrib -j8` passed;
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals, with backend-local declarations dropping from 291 to 288.
+
+## Backend Utility State Bridge
+
+The one-hundred-fortieth Phase 12 slice moves a backend utility/support state
+group from standalone backend-local TLS into a new `PgBackendUtilityState`
+bucket:
+
+- dynahash active sequential-scan tracking: the active table array, nesting
+  level array, and active scan count used to guard unsafe hash-table
+  destruction during `hash_seq_search()`;
+- the superuser one-entry cache: last role OID, cached superuser result, and
+  syscache callback registration flag;
+- the resource-owner release callback list pointer;
+- optional `RESOWNER_STATS` lookup counters.
+
+`dynahash.c`, `superuser.c`, and `resowner.c` keep their existing local source
+names through runtime-backed compatibility macros. `ResourceReleaseCallbackItem`
+remains private to `resowner.c`; the runtime stores the callback head as an
+opaque pointer and `resowner.c` casts it through a file-local typed helper.
+The early fallback state is adopted during process/thread runtime
+installation so callback registration before runtime installation remains
+attached to the logical backend.
+
+Validation for this slice:
+
+- `gmake -C src/backend/utils/init backend_runtime.o` passed;
+- `gmake -C src/backend/utils/hash dynahash.o` passed;
+- `gmake -C src/backend/utils/misc superuser.o` passed;
+- `gmake -C src/backend/utils/resowner resowner.o` passed;
+- `gmake -C src/test/modules/test_backend_runtime test_backend_runtime.o`
+  passed after adding `test_backend_utility_state_is_backend_local()`;
+- a static scan found no remaining raw TLS declarations for the moved
+  dynahash, superuser, resource-owner callback, or optional resource-owner
+  stats state;
+- a full backend clean plus generated-header recovery was run after the
+  installed-header and `PgBackend` layout changes;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 288 to 280;
+- `gmake -C contrib -j8` passed;
+- PL/pgSQL and `src/test/modules/test_backend_runtime` were cleaned, rebuilt,
+  and reinstalled after the installed-header change;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression, including the new utility-state helper, and still
+  reported TAP disabled by configure;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
+  explicit `PG_REGRESS` environment.

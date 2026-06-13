@@ -23,6 +23,7 @@
 #include "access/htup_details.h"
 #include "catalog/pg_authid.h"
 #include "miscadmin.h"
+#include "utils/backend_runtime.h"
 #include "utils/inval.h"
 #include "utils/syscache.h"
 
@@ -33,9 +34,9 @@
  * at need by watching for cache update events on pg_authid.
  */
 /* InvalidOid == cache not valid */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND Oid last_roleid = InvalidOid;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool last_roleid_is_super = false;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool roleid_callback_registered = false;
+#define last_roleid (*PgCurrentSuperuserLastRoleIdRef())
+#define last_roleid_is_super (*PgCurrentSuperuserLastRoleIdIsSuperRef())
+#define roleid_callback_registered (*PgCurrentSuperuserRoleIdCallbackRegisteredRef())
 
 static void RoleidCallback(Datum arg, SysCacheIdentifier cacheid,
 						   uint32 hashvalue);

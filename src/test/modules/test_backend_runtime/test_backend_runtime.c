@@ -6919,6 +6919,81 @@ test_backend_activity_state_is_backend_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_backend_utility_state_is_backend_local);
+Datum
+test_backend_utility_state_is_backend_local(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgBackend	fake_backend1;
+	PgBackend	fake_backend2;
+	bool		ok = true;
+
+	saved_backend = CurrentPgBackend;
+
+	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
+	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+
+	PG_TRY();
+	{
+		CurrentPgBackend = &fake_backend1;
+		PgCurrentSeqScanTables()[0] = (HTAB *) &fake_backend1;
+		PgCurrentSeqScanLevels()[0] = 11;
+		*PgCurrentNumSeqScansRef() = 1;
+		*PgCurrentSuperuserLastRoleIdRef() = 101;
+		*PgCurrentSuperuserLastRoleIdIsSuperRef() = true;
+		*PgCurrentSuperuserRoleIdCallbackRegisteredRef() = true;
+		*PgCurrentResourceReleaseCallbacksRef() = &fake_backend1;
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && PgCurrentSeqScanTables()[0] == NULL;
+		ok = ok && PgCurrentSeqScanLevels()[0] == 0;
+		ok = ok && *PgCurrentNumSeqScansRef() == 0;
+		ok = ok && *PgCurrentSuperuserLastRoleIdRef() == InvalidOid;
+		ok = ok && !*PgCurrentSuperuserLastRoleIdIsSuperRef();
+		ok = ok && !*PgCurrentSuperuserRoleIdCallbackRegisteredRef();
+		ok = ok && *PgCurrentResourceReleaseCallbacksRef() == NULL;
+
+		PgCurrentSeqScanTables()[0] = (HTAB *) &fake_backend2;
+		PgCurrentSeqScanLevels()[0] = 22;
+		*PgCurrentNumSeqScansRef() = 1;
+		*PgCurrentSuperuserLastRoleIdRef() = 202;
+		*PgCurrentSuperuserLastRoleIdIsSuperRef() = false;
+		*PgCurrentSuperuserRoleIdCallbackRegisteredRef() = true;
+		*PgCurrentResourceReleaseCallbacksRef() = &fake_backend2;
+
+		CurrentPgBackend = &fake_backend1;
+		ok = ok && PgCurrentSeqScanTables()[0] == (HTAB *) &fake_backend1;
+		ok = ok && PgCurrentSeqScanLevels()[0] == 11;
+		ok = ok && *PgCurrentNumSeqScansRef() == 1;
+		ok = ok && *PgCurrentSuperuserLastRoleIdRef() == 101;
+		ok = ok && *PgCurrentSuperuserLastRoleIdIsSuperRef();
+		ok = ok && *PgCurrentSuperuserRoleIdCallbackRegisteredRef();
+		ok = ok && *PgCurrentResourceReleaseCallbacksRef() == &fake_backend1;
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && PgCurrentSeqScanTables()[0] == (HTAB *) &fake_backend2;
+		ok = ok && PgCurrentSeqScanLevels()[0] == 22;
+		ok = ok && *PgCurrentNumSeqScansRef() == 1;
+		ok = ok && *PgCurrentSuperuserLastRoleIdRef() == 202;
+		ok = ok && !*PgCurrentSuperuserLastRoleIdIsSuperRef();
+		ok = ok && *PgCurrentSuperuserRoleIdCallbackRegisteredRef();
+		ok = ok && *PgCurrentResourceReleaseCallbacksRef() == &fake_backend2;
+
+		CurrentPgBackend = saved_backend;
+	}
+	PG_CATCH();
+	{
+		CurrentPgBackend = saved_backend;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "backend utility state was not backend-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_backend_instrumentation_state_is_backend_local);
 Datum
 test_backend_instrumentation_state_is_backend_local(PG_FUNCTION_ARGS)

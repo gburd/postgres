@@ -560,6 +560,15 @@ stats entry uses a private debug struct and that code is not built in this
 checkout. The slice passed clean full build/install, process-mode
 backend-runtime regression, direct threaded runtime TAP, contrib build, and
 the required global-lifetime scan with zero new unclassified mutable globals.
+Backend utility/support state now lives in `PgBackendUtilityState`: dynahash
+active sequential-scan tracking, the superuser one-entry cache, the
+resource-owner release callback list pointer, and optional `RESOWNER_STATS`
+lookup counters now follow the logical backend. `ResourceReleaseCallbackItem`
+remains private to `resowner.c` through an opaque runtime pointer and
+file-local typed helper. The slice passed clean full build/install,
+process-mode backend-runtime regression, direct threaded runtime TAP, contrib
+build, and the required global-lifetime scan with zero new unclassified
+mutable globals; backend-local declarations dropped from 288 to 280.
 PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly

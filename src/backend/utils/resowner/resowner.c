@@ -52,6 +52,7 @@
 #include "storage/ipc.h"
 #include "storage/predicate.h"
 #include "storage/proc.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
 
@@ -169,8 +170,8 @@ struct ResourceOwnerData
 /* #define RESOWNER_STATS */
 
 #ifdef RESOWNER_STATS
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int narray_lookups = 0;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int nhash_lookups = 0;
+#define narray_lookups (*PgCurrentResourceOwnerArrayLookupsRef())
+#define nhash_lookups (*PgCurrentResourceOwnerHashLookupsRef())
 #endif
 
 /*
@@ -183,8 +184,9 @@ typedef struct ResourceReleaseCallbackItem
 	void	   *arg;
 } ResourceReleaseCallbackItem;
 
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ResourceReleaseCallbackItem
-		   *ResourceRelease_callbacks = NULL;
+static ResourceReleaseCallbackItem **PgCurrentResourceReleaseCallbacksTypedRef(void);
+
+#define ResourceRelease_callbacks (*PgCurrentResourceReleaseCallbacksTypedRef())
 
 
 /* Internal routines */
@@ -201,6 +203,12 @@ static void ResourceOwnerReleaseInternal(ResourceOwner owner,
 										 bool isCommit,
 										 bool isTopLevel);
 static void ReleaseAuxProcessResourcesCallback(int code, Datum arg);
+
+static ResourceReleaseCallbackItem **
+PgCurrentResourceReleaseCallbacksTypedRef(void)
+{
+	return (ResourceReleaseCallbackItem **) PgCurrentResourceReleaseCallbacksRef();
+}
 
 
 /*****************************************************************************
