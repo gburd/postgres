@@ -6728,3 +6728,44 @@ Validation for this slice:
 - `gmake -C contrib -j8` passed;
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals, with backend-local declarations dropping from 297 to 291.
+
+## Backend LWLock State Bridge
+
+The one-hundred-thirty-ninth Phase 12 slice extends `PgBackendLockState` to
+cover the always-built LWLock backend-local state:
+
+- the count of currently held LWLocks;
+- the fixed held-LWLock handle array used for error-recovery release;
+- the backend-local copy of the number of user-defined LWLock tranches.
+
+`PgBackendLockState` owns the held-lock array by value so error-recovery
+release keeps the same fixed-storage behavior. `lwlock.c` keeps its existing
+local names as compatibility macros backed by runtime accessors. The optional
+`LWLOCK_STATS` debug-only state remains a follow-up because its dummy stats
+entry uses a private debug struct and that code is not built in this checkout.
+
+Validation for this slice:
+
+- `gmake -C src/backend/utils/init backend_runtime.o` passed;
+- `gmake -C src/backend/storage/lmgr lwlock.o` passed;
+- `gmake -C src/test/modules/test_backend_runtime test_backend_runtime.o`
+  passed after expanding `test_backend_lock_state_is_backend_local()`;
+- a static scan found no remaining raw TLS declarations for the moved
+  always-built LWLock state;
+- a full backend clean plus generated-header recovery was run after the
+  installed-header and `PgBackend` layout changes;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- PL/pgSQL and `src/test/modules/test_backend_runtime` were cleaned, rebuilt,
+  and reinstalled after the installed-header change;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression, including the expanded
+  `test_backend_lock_state_is_backend_local()` helper, and still reported TAP
+  disabled by configure;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
+  explicit `PG_REGRESS` environment;
+- `gmake -C contrib -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 291 to 288.

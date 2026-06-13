@@ -85,6 +85,7 @@
 #include "storage/procnumber.h"
 #include "storage/spin.h"
 #include "storage/subsystems.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "utils/wait_event.h"
 
@@ -154,17 +155,13 @@ PG_GLOBAL_SHMEM LWLockPadded *MainLWLockArray = NULL;
  * during error recovery.  Normally, only a few will be held at once, but
  * occasionally the number can be much higher.
  */
-#define MAX_SIMUL_LWLOCKS	200
+#define MAX_SIMUL_LWLOCKS	PG_BACKEND_MAX_SIMUL_LWLOCKS
 
 /* struct representing the LWLocks we're holding */
-typedef struct LWLockHandle
-{
-	LWLock	   *lock;
-	LWLockMode	mode;
-} LWLockHandle;
+typedef PgBackendLWLockHandle LWLockHandle;
 
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int num_held_lwlocks = 0;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND LWLockHandle held_lwlocks[MAX_SIMUL_LWLOCKS];
+#define num_held_lwlocks (*PgCurrentNumHeldLWLocksRef())
+#define held_lwlocks (PgCurrentHeldLWLocks())
 
 /* Maximum number of LWLock tranches that can be assigned by extensions */
 #define MAX_USER_DEFINED_TRANCHES 256
@@ -195,7 +192,8 @@ typedef struct LWLockTrancheShmemData
 static PG_GLOBAL_SHMEM LWLockTrancheShmemData *LWLockTranches;
 
 /* backend-local copy of LWLockTranches->num_user_defined */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int LocalNumUserDefinedTranches;
+#define LocalNumUserDefinedTranches \
+	(*PgCurrentLocalNumUserDefinedLWLockTranchesRef())
 
 /*
  * NamedLWLockTrancheRequests is a list of tranches requested with

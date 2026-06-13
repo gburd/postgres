@@ -551,6 +551,15 @@ its type depends on internal pgstat snapshot state. The slice passed clean
 full build/install, process-mode backend-runtime regression, direct threaded
 runtime TAP, contrib build, and the required global-lifetime scan with zero
 new unclassified mutable globals.
+Always-built LWLock backend-local state now also lives in
+`PgBackendLockState`: the held-LWLock count, fixed held-LWLock handle array,
+and backend-local user-defined tranche count now follow the logical backend
+while `lwlock.c` keeps its existing local names through compatibility macros.
+Optional `LWLOCK_STATS` debug-only state remains a follow-up because its dummy
+stats entry uses a private debug struct and that code is not built in this
+checkout. The slice passed clean full build/install, process-mode
+backend-runtime regression, direct threaded runtime TAP, contrib build, and
+the required global-lifetime scan with zero new unclassified mutable globals.
 PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly

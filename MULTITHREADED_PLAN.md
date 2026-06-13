@@ -744,7 +744,8 @@ bridge through `PgBackendTransactionState`, plus the ProcArray
 visibility-horizon and XID-cache state bridge through
 `PgBackendTransactionState`, plus the backend-status activity snapshot bridge
 through `PgBackendActivityState`, plus the pgstat shared-entry reference-cache
-bridge through `PgBackendPgStatPendingState`.
+bridge through `PgBackendPgStatPendingState`, plus the always-built LWLock
+backend-local state bridge through `PgBackendLockState`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.
@@ -973,6 +974,15 @@ remains a dedicated follow-up because its type depends on internal pgstat
 snapshot state. Both slices passed clean full build/install, process-mode
 backend-runtime regression, direct threaded runtime TAP, contrib build, and
 required global-lifetime scans with zero new unclassified mutable globals.
+The always-built LWLock state slice moved the held-LWLock count, fixed
+held-LWLock handle array, and backend-local user-defined tranche count into
+`PgBackendLockState`, preserving the existing `lwlock.c` source names behind
+runtime-backed compatibility macros. Optional `LWLOCK_STATS` debug-only state
+remains a follow-up because its dummy stats entry uses a private debug struct
+and that code is not built in this checkout. The slice passed clean full
+build/install, process-mode backend-runtime regression, direct threaded
+runtime TAP, contrib build, and the required global-lifetime scan with zero
+new unclassified mutable globals.
 PMChild assignment and slot release now also scrub stale carrier-visible signal
 ids and thread-exit payloads before reuse. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live

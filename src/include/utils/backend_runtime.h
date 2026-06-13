@@ -28,6 +28,7 @@
 #include "port/atomics.h"
 #include "storage/buf.h"
 #include "storage/ipc.h"
+#include "storage/lwlock.h"
 #include "storage/procnumber.h"
 #include "tcop/dest.h"
 #include "utils/backend_id.h"
@@ -277,8 +278,19 @@ typedef struct PgBackendStorageState
 	MemoryContext md_context;
 } PgBackendStorageState;
 
+#define PG_BACKEND_MAX_SIMUL_LWLOCKS 200
+
+typedef struct PgBackendLWLockHandle
+{
+	LWLock	   *lock;
+	LWLockMode	mode;
+} PgBackendLWLockHandle;
+
 typedef struct PgBackendLockState
 {
+	PgBackendLWLockHandle held_lwlocks[PG_BACKEND_MAX_SIMUL_LWLOCKS];
+	int			num_held_lwlocks;
+	int			local_num_user_defined_lwlock_tranches;
 	void	   *fast_path_local_use_counts;
 	bool		relation_extension_lock_held;
 	HTAB	   *lock_method_local_hash;
@@ -1553,6 +1565,9 @@ extern HTAB **PgCurrentSMgrRelationHashRef(void);
 extern dlist_head *PgCurrentSMgrUnpinnedRelationsRef(void);
 extern MemoryContext *PgCurrentMdContextRef(void);
 extern void **PgCurrentFastPathLocalUseCountsRef(void);
+extern PgBackendLWLockHandle *PgCurrentHeldLWLocks(void);
+extern int *PgCurrentNumHeldLWLocksRef(void);
+extern int *PgCurrentLocalNumUserDefinedLWLockTranchesRef(void);
 extern bool *PgCurrentRelationExtensionLockHeldRef(void);
 extern HTAB **PgCurrentLockMethodLocalHashRef(void);
 extern void **PgCurrentStrongLockInProgressRef(void);

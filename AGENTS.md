@@ -283,6 +283,16 @@ Important current files:
   `PgBackend` layout and installed runtime headers changed; at minimum rebuild
   and reinstall PL/pgSQL, `src/test/modules/test_backend_runtime`, and contrib
   before validating.
+- Always-built LWLock backend-local state now also lives in
+  `PgBackendLockState`: `num_held_lwlocks`, the fixed `held_lwlocks` array,
+  and `LocalNumUserDefinedTranches` are backed by runtime accessors while
+  `lwlock.c` keeps the existing local source names. `LWLOCK_STATS` debug-only
+  state remains a follow-up because its dummy stats entry uses a private debug
+  struct and that code is not built in this checkout. After changing this
+  bridge, clean and rebuild backend objects because `PgBackend` layout and
+  installed runtime headers changed; at minimum rebuild and reinstall
+  PL/pgSQL, `src/test/modules/test_backend_runtime`, and contrib before
+  validating.
 - Transaction/access-manager backend-local state now lives in
   `PgBackendTransactionState`: transaction-status cache fields, two-phase
   locked-GXACT and exit-registration fields, the private `TwoPhaseGetGXact()`

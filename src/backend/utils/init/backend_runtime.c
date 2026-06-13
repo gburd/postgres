@@ -6455,6 +6455,24 @@ PgCurrentFastPathLocalUseCountsRef(void)
 	return &PgCurrentBackendLockState()->fast_path_local_use_counts;
 }
 
+PgBackendLWLockHandle *
+PgCurrentHeldLWLocks(void)
+{
+	return PgCurrentBackendLockState()->held_lwlocks;
+}
+
+int *
+PgCurrentNumHeldLWLocksRef(void)
+{
+	return &PgCurrentBackendLockState()->num_held_lwlocks;
+}
+
+int *
+PgCurrentLocalNumUserDefinedLWLockTranchesRef(void)
+{
+	return &PgCurrentBackendLockState()->local_num_user_defined_lwlock_tranches;
+}
+
 bool *
 PgCurrentRelationExtensionLockHeldRef(void)
 {

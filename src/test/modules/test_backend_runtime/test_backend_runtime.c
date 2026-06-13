@@ -7295,6 +7295,10 @@ test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
 	PG_TRY();
 	{
 		CurrentPgBackend = &fake_backend1;
+		*PgCurrentNumHeldLWLocksRef() = 1;
+		PgCurrentHeldLWLocks()[0].lock = (LWLock *) &fake_backend1;
+		PgCurrentHeldLWLocks()[0].mode = LW_EXCLUSIVE;
+		*PgCurrentLocalNumUserDefinedLWLockTranchesRef() = 11;
 		*PgCurrentFastPathLocalUseCountsRef() = fast_path_counts1;
 		fast_path_counts1[0] = 101;
 		*PgCurrentRelationExtensionLockHeldRef() = true;
@@ -7324,6 +7328,10 @@ test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentBlockingAutovacuumProcRef() = &fake_backend1;
 
 		CurrentPgBackend = &fake_backend2;
+		ok = ok && *PgCurrentNumHeldLWLocksRef() == 0;
+		ok = ok && PgCurrentHeldLWLocks()[0].lock == NULL;
+		ok = ok && PgCurrentHeldLWLocks()[0].mode == 0;
+		ok = ok && *PgCurrentLocalNumUserDefinedLWLockTranchesRef() == 0;
 		ok = ok && *PgCurrentFastPathLocalUseCountsRef() == NULL;
 		ok = ok && !*PgCurrentRelationExtensionLockHeldRef();
 		ok = ok && *PgCurrentLockMethodLocalHashRef() == NULL;
@@ -7351,6 +7359,10 @@ test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentDeadlockNDetailsRef() == 0;
 		ok = ok && *PgCurrentBlockingAutovacuumProcRef() == NULL;
 
+		*PgCurrentNumHeldLWLocksRef() = 1;
+		PgCurrentHeldLWLocks()[0].lock = (LWLock *) &fake_backend2;
+		PgCurrentHeldLWLocks()[0].mode = LW_SHARED;
+		*PgCurrentLocalNumUserDefinedLWLockTranchesRef() = 22;
 		*PgCurrentFastPathLocalUseCountsRef() = fast_path_counts2;
 		fast_path_counts2[0] = 201;
 		*PgCurrentRelationExtensionLockHeldRef() = false;
@@ -7380,6 +7392,10 @@ test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentBlockingAutovacuumProcRef() = &fake_backend2;
 
 		CurrentPgBackend = &fake_backend1;
+		ok = ok && *PgCurrentNumHeldLWLocksRef() == 1;
+		ok = ok && PgCurrentHeldLWLocks()[0].lock == (LWLock *) &fake_backend1;
+		ok = ok && PgCurrentHeldLWLocks()[0].mode == LW_EXCLUSIVE;
+		ok = ok && *PgCurrentLocalNumUserDefinedLWLockTranchesRef() == 11;
 		ok = ok && *PgCurrentFastPathLocalUseCountsRef() == fast_path_counts1;
 		ok = ok && ((int *) *PgCurrentFastPathLocalUseCountsRef())[0] == 101;
 		ok = ok && *PgCurrentRelationExtensionLockHeldRef();
@@ -7409,6 +7425,10 @@ test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentBlockingAutovacuumProcRef() == &fake_backend1;
 
 		CurrentPgBackend = &fake_backend2;
+		ok = ok && *PgCurrentNumHeldLWLocksRef() == 1;
+		ok = ok && PgCurrentHeldLWLocks()[0].lock == (LWLock *) &fake_backend2;
+		ok = ok && PgCurrentHeldLWLocks()[0].mode == LW_SHARED;
+		ok = ok && *PgCurrentLocalNumUserDefinedLWLockTranchesRef() == 22;
 		ok = ok && *PgCurrentFastPathLocalUseCountsRef() == fast_path_counts2;
 		ok = ok && ((int *) *PgCurrentFastPathLocalUseCountsRef())[0] == 201;
 		ok = ok && !*PgCurrentRelationExtensionLockHeldRef();
