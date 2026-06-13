@@ -11225,6 +11225,149 @@ test_execution_matview_state_is_execution_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_execution_snapshot_combo_state_is_execution_local);
+Datum
+test_execution_snapshot_combo_state_is_execution_local(PG_FUNCTION_ARGS)
+{
+	PgExecution *saved_execution;
+	PgExecution fake_execution1;
+	PgExecution fake_execution2;
+	bool		ok = true;
+
+	saved_execution = CurrentPgExecution;
+	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
+	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+
+	PG_TRY();
+	{
+		CurrentPgExecution = &fake_execution1;
+		PgCurrentSnapshotDataRef()->snapshot_type = SNAPSHOT_SELF;
+		PgCurrentSecondarySnapshotDataRef()->snapshot_type = SNAPSHOT_ANY;
+		PgCurrentCatalogSnapshotDataRef()->snapshot_type = SNAPSHOT_TOAST;
+		*PgCurrentSnapshotRef() = (Snapshot) &fake_execution1;
+		*PgCurrentSecondarySnapshotRef() = (Snapshot) &fake_execution1.session;
+		*PgCurrentCatalogSnapshotRef() = (Snapshot) &fake_execution1.backend;
+		*PgCurrentHistoricSnapshotRef() = (Snapshot) &fake_execution1.carrier;
+		*PgCurrentTransactionXminRef() = 101;
+		*PgCurrentRecentXminRef() = 102;
+		*PgCurrentTupleCidDataRef() = (HTAB *) &fake_execution1;
+		*PgCurrentActiveSnapshotRef() = &fake_execution1;
+		PgCurrentRegisteredSnapshotsRef()->ph_arg = &fake_execution1;
+		PgCurrentRegisteredSnapshotsRef()->ph_root =
+			(pairingheap_node *) &fake_execution1;
+		*PgCurrentFirstSnapshotSetRef() = true;
+		*PgCurrentFirstXactSnapshotRef() = (Snapshot) &fake_execution1;
+		*PgCurrentExportedSnapshotsRef() = (List *) &fake_execution1;
+		*PgCurrentComboCidHashRef() = (HTAB *) &fake_execution1;
+		*PgCurrentComboCidsRef() = &fake_execution1;
+		*PgCurrentUsedComboCidsRef() = 103;
+		*PgCurrentSizeComboCidsRef() = 104;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && PgCurrentSnapshotDataRef()->snapshot_type == SNAPSHOT_MVCC;
+		ok = ok && PgCurrentSecondarySnapshotDataRef()->snapshot_type == SNAPSHOT_MVCC;
+		ok = ok && PgCurrentCatalogSnapshotDataRef()->snapshot_type == SNAPSHOT_MVCC;
+		ok = ok && *PgCurrentSnapshotRef() == NULL;
+		ok = ok && *PgCurrentSecondarySnapshotRef() == NULL;
+		ok = ok && *PgCurrentCatalogSnapshotRef() == NULL;
+		ok = ok && *PgCurrentHistoricSnapshotRef() == NULL;
+		ok = ok && *PgCurrentTransactionXminRef() == 0;
+		ok = ok && *PgCurrentRecentXminRef() == 0;
+		ok = ok && *PgCurrentTupleCidDataRef() == NULL;
+		ok = ok && *PgCurrentActiveSnapshotRef() == NULL;
+		ok = ok && PgCurrentRegisteredSnapshotsRef()->ph_arg == NULL;
+		ok = ok && PgCurrentRegisteredSnapshotsRef()->ph_root == NULL;
+		ok = ok && !*PgCurrentFirstSnapshotSetRef();
+		ok = ok && *PgCurrentFirstXactSnapshotRef() == NULL;
+		ok = ok && *PgCurrentExportedSnapshotsRef() == NIL;
+		ok = ok && *PgCurrentComboCidHashRef() == NULL;
+		ok = ok && *PgCurrentComboCidsRef() == NULL;
+		ok = ok && *PgCurrentUsedComboCidsRef() == 0;
+		ok = ok && *PgCurrentSizeComboCidsRef() == 0;
+
+		PgCurrentSnapshotDataRef()->snapshot_type = SNAPSHOT_HISTORIC_MVCC;
+		PgCurrentSecondarySnapshotDataRef()->snapshot_type = SNAPSHOT_NON_VACUUMABLE;
+		PgCurrentCatalogSnapshotDataRef()->snapshot_type = SNAPSHOT_DIRTY;
+		*PgCurrentSnapshotRef() = (Snapshot) &fake_execution2;
+		*PgCurrentSecondarySnapshotRef() = (Snapshot) &fake_execution2.session;
+		*PgCurrentCatalogSnapshotRef() = (Snapshot) &fake_execution2.backend;
+		*PgCurrentHistoricSnapshotRef() = (Snapshot) &fake_execution2.carrier;
+		*PgCurrentTransactionXminRef() = 201;
+		*PgCurrentRecentXminRef() = 202;
+		*PgCurrentTupleCidDataRef() = (HTAB *) &fake_execution2;
+		*PgCurrentActiveSnapshotRef() = &fake_execution2;
+		PgCurrentRegisteredSnapshotsRef()->ph_arg = &fake_execution2;
+		PgCurrentRegisteredSnapshotsRef()->ph_root =
+			(pairingheap_node *) &fake_execution2;
+		*PgCurrentFirstSnapshotSetRef() = false;
+		*PgCurrentFirstXactSnapshotRef() = (Snapshot) &fake_execution2;
+		*PgCurrentExportedSnapshotsRef() = (List *) &fake_execution2;
+		*PgCurrentComboCidHashRef() = (HTAB *) &fake_execution2;
+		*PgCurrentComboCidsRef() = &fake_execution2;
+		*PgCurrentUsedComboCidsRef() = 203;
+		*PgCurrentSizeComboCidsRef() = 204;
+
+		CurrentPgExecution = &fake_execution1;
+		ok = ok && PgCurrentSnapshotDataRef()->snapshot_type == SNAPSHOT_SELF;
+		ok = ok && PgCurrentSecondarySnapshotDataRef()->snapshot_type == SNAPSHOT_ANY;
+		ok = ok && PgCurrentCatalogSnapshotDataRef()->snapshot_type == SNAPSHOT_TOAST;
+		ok = ok && *PgCurrentSnapshotRef() == (Snapshot) &fake_execution1;
+		ok = ok && *PgCurrentSecondarySnapshotRef() == (Snapshot) &fake_execution1.session;
+		ok = ok && *PgCurrentCatalogSnapshotRef() == (Snapshot) &fake_execution1.backend;
+		ok = ok && *PgCurrentHistoricSnapshotRef() == (Snapshot) &fake_execution1.carrier;
+		ok = ok && *PgCurrentTransactionXminRef() == 101;
+		ok = ok && *PgCurrentRecentXminRef() == 102;
+		ok = ok && *PgCurrentTupleCidDataRef() == (HTAB *) &fake_execution1;
+		ok = ok && *PgCurrentActiveSnapshotRef() == &fake_execution1;
+		ok = ok && PgCurrentRegisteredSnapshotsRef()->ph_arg == &fake_execution1;
+		ok = ok && PgCurrentRegisteredSnapshotsRef()->ph_root ==
+			(pairingheap_node *) &fake_execution1;
+		ok = ok && *PgCurrentFirstSnapshotSetRef();
+		ok = ok && *PgCurrentFirstXactSnapshotRef() == (Snapshot) &fake_execution1;
+		ok = ok && *PgCurrentExportedSnapshotsRef() == (List *) &fake_execution1;
+		ok = ok && *PgCurrentComboCidHashRef() == (HTAB *) &fake_execution1;
+		ok = ok && *PgCurrentComboCidsRef() == &fake_execution1;
+		ok = ok && *PgCurrentUsedComboCidsRef() == 103;
+		ok = ok && *PgCurrentSizeComboCidsRef() == 104;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && PgCurrentSnapshotDataRef()->snapshot_type == SNAPSHOT_HISTORIC_MVCC;
+		ok = ok && PgCurrentSecondarySnapshotDataRef()->snapshot_type == SNAPSHOT_NON_VACUUMABLE;
+		ok = ok && PgCurrentCatalogSnapshotDataRef()->snapshot_type == SNAPSHOT_DIRTY;
+		ok = ok && *PgCurrentSnapshotRef() == (Snapshot) &fake_execution2;
+		ok = ok && *PgCurrentSecondarySnapshotRef() == (Snapshot) &fake_execution2.session;
+		ok = ok && *PgCurrentCatalogSnapshotRef() == (Snapshot) &fake_execution2.backend;
+		ok = ok && *PgCurrentHistoricSnapshotRef() == (Snapshot) &fake_execution2.carrier;
+		ok = ok && *PgCurrentTransactionXminRef() == 201;
+		ok = ok && *PgCurrentRecentXminRef() == 202;
+		ok = ok && *PgCurrentTupleCidDataRef() == (HTAB *) &fake_execution2;
+		ok = ok && *PgCurrentActiveSnapshotRef() == &fake_execution2;
+		ok = ok && PgCurrentRegisteredSnapshotsRef()->ph_arg == &fake_execution2;
+		ok = ok && PgCurrentRegisteredSnapshotsRef()->ph_root ==
+			(pairingheap_node *) &fake_execution2;
+		ok = ok && !*PgCurrentFirstSnapshotSetRef();
+		ok = ok && *PgCurrentFirstXactSnapshotRef() == (Snapshot) &fake_execution2;
+		ok = ok && *PgCurrentExportedSnapshotsRef() == (List *) &fake_execution2;
+		ok = ok && *PgCurrentComboCidHashRef() == (HTAB *) &fake_execution2;
+		ok = ok && *PgCurrentComboCidsRef() == &fake_execution2;
+		ok = ok && *PgCurrentUsedComboCidsRef() == 203;
+		ok = ok && *PgCurrentSizeComboCidsRef() == 204;
+
+		CurrentPgExecution = saved_execution;
+	}
+	PG_CATCH();
+	{
+		CurrentPgExecution = saved_execution;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "execution snapshot/combo CID state was not execution-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_connection_socket_io_is_connection_local);
 Datum
 test_connection_socket_io_is_connection_local(PG_FUNCTION_ARGS)

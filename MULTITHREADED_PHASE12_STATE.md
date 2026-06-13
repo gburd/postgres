@@ -7672,6 +7672,56 @@ Validation for this slice:
   hash pointer, dummy entry, memory context pointer, and exit-registration flag
   across two fake logical backends.
 
+## Execution Snapshot And Combo CID State Bridge
+
+The one-hundred-sixty-fourth Phase 12 slice moves a transaction/execution
+visibility state batch into two new `PgExecution` buckets:
+
+- `PgExecutionSnapshotState` owns the current, secondary, catalog, and historic
+  snapshot pointers plus their reusable `SnapshotData` storage;
+- `TransactionXmin`, `RecentXmin`, `FirstSnapshotSet`,
+  `FirstXactSnapshot`, exported-snapshot list state, historic tuple-CID state,
+  and the active/registered snapshot tracking structures now follow the
+  logical execution;
+- `PgExecutionComboCidState` owns the combo-CID hash, array pointer, and
+  counters used while a transaction is active.
+
+`snapmgr.h` preserves the exported `FirstSnapshotSet`, `TransactionXmin`, and
+`RecentXmin` names as lvalue macros over runtime accessors. Private
+`snapmgr.c` names are source-local compatibility macros. The registered
+snapshot heap remains owned by `snapmgr.c`: the runtime bucket stores the
+heap, while `snapmgr.c` lazily installs its private `xmin_cmp` comparator.
+`combocid.c` keeps the combo-CID key/entry layouts private and stores the
+array pointer opaquely in `PgExecutionComboCidState`.
+
+The lifecycle rule for this slice is intentionally the current PostgreSQL
+rule made explicit: the runtime bucket owns the live pointers/counters, while
+transaction-allocated snapshot and combo-CID memory is still released by
+`TopTransactionContext` and existing end-of-transaction cleanup. Early
+adoption copies each bucket as a whole, then resets the early fallback bucket;
+snapshot initialization restores the `FirstNormalTransactionId` defaults for
+real runtime objects.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `snapmgr.o`,
+  `combocid.o`, and `test_backend_runtime.o`;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with execution-local declarations dropping from 154 to 134;
+- backend and `src/common` clean rebuild plus generated-header recovery
+  passed, followed by clean full `gmake -j8`;
+- `gmake DESTDIR="$PWD/tmp_install" install`, `gmake -C contrib -j8`, and a
+  clean PL/pgSQL rebuild/install passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
+  explicit `PG_REGRESS` environment;
+- `test_execution_snapshot_combo_state_is_execution_local()` now verifies the
+  snapshot pointer/data fields, active and registered snapshot handles,
+  exported-snapshot list, tuple-CID state, and combo-CID state across two fake
+  logical executions.
+
 ## Backend Parallel State Bridge
 
 The one-hundred-forty-second Phase 12 slice moves a parallel-query and

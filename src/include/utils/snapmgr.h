@@ -20,10 +20,13 @@
 #include "utils/snapshot.h"
 
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool FirstSnapshotSet;
+extern bool *PgCurrentFirstSnapshotSetRef(void);
+extern TransactionId *PgCurrentTransactionXminRef(void);
+extern TransactionId *PgCurrentRecentXminRef(void);
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION TransactionId TransactionXmin;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION TransactionId RecentXmin;
+#define FirstSnapshotSet (*PgCurrentFirstSnapshotSetRef())
+#define TransactionXmin (*PgCurrentTransactionXminRef())
+#define RecentXmin (*PgCurrentRecentXminRef())
 
 /* Variables representing various special snapshot semantics */
 extern PGDLLIMPORT PG_GLOBAL_IMMUTABLE SnapshotData SnapshotSelfData;

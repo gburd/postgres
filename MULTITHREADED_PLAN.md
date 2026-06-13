@@ -764,7 +764,9 @@ backend-local cumulative statistics anchor bridge through
 `PgBackendPgStatPendingState`, plus the computed-goto expression interpreter
 dispatch/reverse-lookup bridge through `PgBackendExprInterpState`, plus the
 optional LWLock debug-statistics hash, dummy entry, memory context, and
-exit-registration state bridge through `PgBackendLockState`.
+exit-registration state bridge through `PgBackendLockState`, plus the
+snapshot-manager and combo-CID transaction visibility state bridge through
+`PgExecution`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.
@@ -1011,6 +1013,17 @@ normal object/build coverage, runtime accessor tests, and the global-lifetime
 scan. The slice passed clean full build/install, process-mode backend-runtime
 regression, direct threaded runtime TAP, contrib build, and the required
 global-lifetime scan with zero new unclassified mutable globals.
+The snapshot/combo-CID execution-state slice moved `snapmgr.c` current,
+secondary, catalog, and historic snapshot state, active/registered snapshot
+tracking, exported-snapshot tracking, `TransactionXmin`/`RecentXmin`,
+`FirstSnapshotSet`, and combo-CID hash/array/counter state into
+`PgExecution`. The registered-snapshot heap comparator remains private to
+`snapmgr.c`, which lazily initializes the runtime-owned heap. Validation
+included touched-object builds, clean full build/install, process-mode
+backend-runtime regression, direct threaded runtime TAP, contrib build,
+PL/pgSQL rebuild/install, and the required global-lifetime scan with zero new
+unclassified mutable globals; execution-local declarations dropped from 154
+to 134.
 The predicate-lock state slice extends `PgBackendLockState` again for
 `predicate.c`: local predicate-lock hash state, the current serializable
 transaction pointer, write-tracking flag, and saved serializable transaction

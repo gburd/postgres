@@ -46,6 +46,7 @@
 #include "utils/palloc.h"
 #include "utils/pgstat_internal.h"
 #include "utils/sampling.h"
+#include "utils/snapshot.h"
 #include "utils/timeout.h"
 
 typedef struct PgRuntime PgRuntime;
@@ -873,6 +874,33 @@ typedef struct PgExecutionMatViewState
 	int			maintenance_depth;
 } PgExecutionMatViewState;
 
+typedef struct PgExecutionSnapshotState
+{
+	SnapshotData current_snapshot_data;
+	SnapshotData secondary_snapshot_data;
+	SnapshotData catalog_snapshot_data;
+	Snapshot	current_snapshot;
+	Snapshot	secondary_snapshot;
+	Snapshot	catalog_snapshot;
+	Snapshot	historic_snapshot;
+	TransactionId transaction_xmin;
+	TransactionId recent_xmin;
+	HTAB	   *tuplecid_data;
+	void	   *active_snapshot;
+	pairingheap registered_snapshots;
+	bool		first_snapshot_set;
+	Snapshot	first_xact_snapshot;
+	List	   *exported_snapshots;
+} PgExecutionSnapshotState;
+
+typedef struct PgExecutionComboCidState
+{
+	HTAB	   *hash;
+	void	   *cids;
+	int			used;
+	int			size;
+} PgExecutionComboCidState;
+
 typedef struct PgSessionDatabaseState
 {
 	Oid			database_id;
@@ -1688,6 +1716,8 @@ struct PgExecution
 	PgExecutionAnalyzeState analyze;
 	PgExecutionExtensionState extension;
 	PgExecutionMatViewState matview;
+	PgExecutionSnapshotState snapshot;
+	PgExecutionComboCidState combo_cid;
 };
 
 typedef struct PgThreadBackendRuntimeState
@@ -2143,6 +2173,25 @@ extern int *PgConnectionCancelKeyLengthRef(PgConnection *connection);
 extern int *PgCurrentCancelKeyLengthRef(void);
 extern const char **PgExecutionDebugQueryStringRef(PgExecution *execution);
 extern const char **PgCurrentDebugQueryStringRef(void);
+extern SnapshotData *PgCurrentSnapshotDataRef(void);
+extern SnapshotData *PgCurrentSecondarySnapshotDataRef(void);
+extern SnapshotData *PgCurrentCatalogSnapshotDataRef(void);
+extern Snapshot *PgCurrentSnapshotRef(void);
+extern Snapshot *PgCurrentSecondarySnapshotRef(void);
+extern Snapshot *PgCurrentCatalogSnapshotRef(void);
+extern Snapshot *PgCurrentHistoricSnapshotRef(void);
+extern TransactionId *PgCurrentTransactionXminRef(void);
+extern TransactionId *PgCurrentRecentXminRef(void);
+extern HTAB **PgCurrentTupleCidDataRef(void);
+extern void **PgCurrentActiveSnapshotRef(void);
+extern pairingheap *PgCurrentRegisteredSnapshotsRef(void);
+extern bool *PgCurrentFirstSnapshotSetRef(void);
+extern Snapshot *PgCurrentFirstXactSnapshotRef(void);
+extern List **PgCurrentExportedSnapshotsRef(void);
+extern HTAB **PgCurrentComboCidHashRef(void);
+extern void **PgCurrentComboCidsRef(void);
+extern int *PgCurrentUsedComboCidsRef(void);
+extern int *PgCurrentSizeComboCidsRef(void);
 extern PgConnectionSocketIOState *PgConnectionSocketIORef(PgConnection *connection);
 extern PgConnectionSocketIOState *PgCurrentConnectionSocketIORef(void);
 extern const PQcommMethods **PgConnectionPqCommMethodsRef(PgConnection *connection);

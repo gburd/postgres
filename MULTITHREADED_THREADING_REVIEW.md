@@ -899,6 +899,19 @@ global-lifetime scan now reports 39 backend-local declarations with zero new
 unclassified mutable globals. The checkout's normal build does not compile
 the `LWLOCK_STATS` block itself, so direct compile coverage for that debug
 path still requires an `LWLOCK_STATS`-enabled build.
+The next state-migration slice moved snapshot-manager and combo-CID
+transaction visibility state into `PgExecution`: current/secondary/catalog/
+historic snapshot pointers and reusable `SnapshotData`, active and registered
+snapshot tracking, `TransactionXmin`, `RecentXmin`, `FirstSnapshotSet`,
+exported-snapshot tracking, historic tuple-CID state, and combo-CID hash/array
+state now follow the logical execution. `snapmgr.c` keeps its active-stack
+type and registered-snapshot comparator private, lazily initializing the
+runtime-owned heap. Validation included touched-object builds, a backend plus
+`src/common` clean rebuild, clean full build, install,
+`gmake check-global-lifetimes`, contrib build, PL/pgSQL rebuild/install,
+`test_backend_runtime` regression, and direct threaded TAP. The
+global-lifetime scan now reports 134 execution-local declarations with zero
+new unclassified mutable globals, down from 154 before this slice.
 
 ## Bottom Line
 

@@ -118,6 +118,7 @@
 #include "storage/predicate.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/injection_point.h"
 #include "utils/memutils.h"
@@ -138,29 +139,26 @@
  * These SnapshotData structs are static to simplify memory allocation
  * (see the hack in GetSnapshotData to avoid repeated malloc/free).
  */
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION SnapshotData CurrentSnapshotData = {SNAPSHOT_MVCC};
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION SnapshotData SecondarySnapshotData = {SNAPSHOT_MVCC};
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION SnapshotData CatalogSnapshotData = {SNAPSHOT_MVCC};
+#define CurrentSnapshotData (*PgCurrentSnapshotDataRef())
+#define SecondarySnapshotData (*PgCurrentSecondarySnapshotDataRef())
+#define CatalogSnapshotData (*PgCurrentCatalogSnapshotDataRef())
 PG_GLOBAL_IMMUTABLE SnapshotData SnapshotSelfData = {SNAPSHOT_SELF};
 PG_GLOBAL_IMMUTABLE SnapshotData SnapshotAnyData = {SNAPSHOT_ANY};
 PG_GLOBAL_IMMUTABLE SnapshotData SnapshotToastData = {SNAPSHOT_TOAST};
 
 /* Pointers to valid snapshots */
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION Snapshot CurrentSnapshot = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION Snapshot SecondarySnapshot = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION Snapshot CatalogSnapshot = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION Snapshot HistoricSnapshot = NULL;
+#define CurrentSnapshot (*PgCurrentSnapshotRef())
+#define SecondarySnapshot (*PgCurrentSecondarySnapshotRef())
+#define CatalogSnapshot (*PgCurrentCatalogSnapshotRef())
+#define HistoricSnapshot (*PgCurrentHistoricSnapshotRef())
 
 /*
  * These are updated by GetSnapshotData.  We initialize them this way
  * for the convenience of TransactionIdIsInProgress: even in bootstrap
  * mode, we don't want it to say that BootstrapTransactionId is in progress.
  */
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION TransactionId TransactionXmin = FirstNormalTransactionId;
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION TransactionId RecentXmin = FirstNormalTransactionId;
-
 /* (table, ctid) => (cmin, cmax) mapping during timetravel */
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION HTAB *tuplecid_data = NULL;
+#define tuplecid_data (*PgCurrentTupleCidDataRef())
 
 /*
  * Elements of the active snapshot stack.
@@ -178,7 +176,7 @@ typedef struct ActiveSnapshotElt
 } ActiveSnapshotElt;
 
 /* Top of the stack of active snapshots */
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ActiveSnapshotElt *ActiveSnapshot = NULL;
+#define ActiveSnapshot (*(ActiveSnapshotElt **) PgCurrentActiveSnapshotRef())
 
 /*
  * Currently registered Snapshots.  Ordered in a heap by xmin, so that we can
@@ -186,18 +184,18 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ActiveSnapshotElt *ActiveSnapshot = N
  */
 static int	xmin_cmp(const pairingheap_node *a, const pairingheap_node *b,
 					 void *arg);
+static pairingheap *SnapshotRegisteredSnapshots(void);
 
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION pairingheap RegisteredSnapshots = {&xmin_cmp, NULL, NULL};
+#define RegisteredSnapshots (*SnapshotRegisteredSnapshots())
 
 /* first GetTransactionSnapshot call in a transaction? */
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool FirstSnapshotSet = false;
 
 /*
  * Remember the serializable transaction snapshot, if any.  We cannot trust
  * FirstSnapshotSet in combination with IsolationUsesXactSnapshot(), because
  * GUC may be reset before us, changing the value of IsolationUsesXactSnapshot.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION Snapshot FirstXactSnapshot = NULL;
+#define FirstXactSnapshot (*PgCurrentFirstXactSnapshotRef())
 
 /* Define pathname of exported-snapshot files */
 #define SNAPSHOT_EXPORT_DIR "pg_snapshots"
@@ -210,7 +208,7 @@ typedef struct ExportedSnapshot
 } ExportedSnapshot;
 
 /* Current xact's exported snapshots (a list of ExportedSnapshot structs) */
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION List *exportedSnapshots = NIL;
+#define exportedSnapshots (*PgCurrentExportedSnapshotsRef())
 
 /* Prototypes for local functions */
 static Snapshot CopySnapshot(Snapshot snapshot);
@@ -918,6 +916,17 @@ xmin_cmp(const pairingheap_node *a, const pairingheap_node *b, void *arg)
 		return -1;
 	else
 		return 0;
+}
+
+static pairingheap *
+SnapshotRegisteredSnapshots(void)
+{
+	pairingheap *heap = PgCurrentRegisteredSnapshotsRef();
+
+	if (heap->ph_compare == NULL)
+		pairingheap_initialize(heap, xmin_cmp, NULL);
+
+	return heap;
 }
 
 /*

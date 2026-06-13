@@ -409,6 +409,18 @@ Important current files:
   because `PgBackend` layout and installed runtime headers changed; at minimum
   rebuild and reinstall PL/pgSQL, `src/test/modules/test_backend_runtime`, and
   contrib before validating.
+- Snapshot-manager and combo-CID transaction visibility state now lives in
+  `PgExecution`: `PgExecutionSnapshotState` owns `snapmgr.c` snapshot pointers,
+  reusable `SnapshotData`, `TransactionXmin`, `RecentXmin`,
+  `FirstSnapshotSet`, active/registered snapshot tracking, historic tuple-CID
+  state, and exported-snapshot tracking; `PgExecutionComboCidState` owns the
+  combo-CID hash, array pointer, and counters. `snapmgr.c` keeps its
+  `ActiveSnapshotElt` type and registered-snapshot heap comparator private;
+  the runtime bucket stores the heap and `snapmgr.c` lazily initializes the
+  comparator. After changing this bridge, clean and rebuild backend objects
+  because `PgExecution` layout and installed runtime/snapshot headers changed;
+  at minimum rebuild and reinstall PL/pgSQL, `src/test/modules/test_backend_runtime`,
+  and contrib before validating.
 - Backend activity snapshot state now lives in `PgBackendActivityState`:
   `localBackendStatusTable`, `localNumBackends`, and
   `backendStatusSnapContext` are backed by runtime accessors while

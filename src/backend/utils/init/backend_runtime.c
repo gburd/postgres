@@ -552,6 +552,11 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionBaseBackupState early_exec
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionAnalyzeState early_execution_analyze;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionExtensionState early_execution_extension;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionMatViewState early_execution_matview;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionSnapshotState early_execution_snapshot = {
+	.transaction_xmin = FirstNormalTransactionId,
+	.recent_xmin = FirstNormalTransactionId
+};
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionComboCidState early_execution_combo_cid;
 
 StaticAssertDecl(PG_BACKEND_INTERRUPT_COUNT <= 32,
 				 "PgBackendInterruptMask must fit all backend interrupts");
@@ -735,6 +740,10 @@ static void PgExecutionInitializeExtensionState(PgExecutionExtensionState *exten
 static void PgExecutionAdoptEarlyExtensionState(PgExecution *execution);
 static void PgExecutionInitializeMatViewState(PgExecutionMatViewState *matview);
 static void PgExecutionAdoptEarlyMatViewState(PgExecution *execution);
+static void PgExecutionInitializeSnapshotState(PgExecutionSnapshotState *snapshot);
+static void PgExecutionAdoptEarlySnapshotState(PgExecution *execution);
+static void PgExecutionInitializeComboCidState(PgExecutionComboCidState *combo_cid);
+static void PgExecutionAdoptEarlyComboCidState(PgExecution *execution);
 static PgBackendCoreState *PgCurrentCoreState(void);
 static PgSessionDatabaseState *PgCurrentSessionDatabaseState(void);
 static PgSessionTablespaceState *PgCurrentSessionTablespaceState(void);
@@ -787,6 +796,8 @@ static PgExecutionBaseBackupState *PgCurrentExecutionBaseBackupState(void);
 static PgExecutionAnalyzeState *PgCurrentExecutionAnalyzeState(void);
 static PgExecutionExtensionState *PgCurrentExecutionExtensionState(void);
 static PgExecutionMatViewState *PgCurrentExecutionMatViewState(void);
+static PgExecutionSnapshotState *PgCurrentExecutionSnapshotState(void);
+static PgExecutionComboCidState *PgCurrentExecutionComboCidState(void);
 static PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
 static PgBackendInstrumentationState *PgCurrentBackendInstrumentationState(void);
 static PgBackendBufferState *PgCurrentBackendBufferState(void);
@@ -2881,6 +2892,42 @@ PgExecutionAdoptEarlyMatViewState(PgExecution *execution)
 	PgExecutionInitializeMatViewState(&early_execution_matview);
 }
 
+static void
+PgExecutionInitializeSnapshotState(PgExecutionSnapshotState *snapshot)
+{
+	Assert(snapshot != NULL);
+
+	MemSet(snapshot, 0, sizeof(*snapshot));
+	snapshot->transaction_xmin = FirstNormalTransactionId;
+	snapshot->recent_xmin = FirstNormalTransactionId;
+}
+
+static void
+PgExecutionAdoptEarlySnapshotState(PgExecution *execution)
+{
+	Assert(execution != NULL);
+
+	execution->snapshot = early_execution_snapshot;
+	PgExecutionInitializeSnapshotState(&early_execution_snapshot);
+}
+
+static void
+PgExecutionInitializeComboCidState(PgExecutionComboCidState *combo_cid)
+{
+	Assert(combo_cid != NULL);
+
+	MemSet(combo_cid, 0, sizeof(*combo_cid));
+}
+
+static void
+PgExecutionAdoptEarlyComboCidState(PgExecution *execution)
+{
+	Assert(execution != NULL);
+
+	execution->combo_cid = early_execution_combo_cid;
+	PgExecutionInitializeComboCidState(&early_execution_combo_cid);
+}
+
 void
 InitializePgProcessRuntime(void)
 {
@@ -3021,6 +3068,8 @@ InitializePgProcessRuntime(void)
 	PgExecutionAdoptEarlyAnalyzeState(&process_execution);
 	PgExecutionAdoptEarlyExtensionState(&process_execution);
 	PgExecutionAdoptEarlyMatViewState(&process_execution);
+	PgExecutionAdoptEarlySnapshotState(&process_execution);
+	PgExecutionAdoptEarlyComboCidState(&process_execution);
 
 	CurrentPgRuntime = &process_runtime;
 	CurrentPgCarrier = &process_carrier;
@@ -3170,6 +3219,8 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgExecutionInitializeAnalyzeState(&state->execution.analyze);
 	PgExecutionInitializeExtensionState(&state->execution.extension);
 	PgExecutionInitializeMatViewState(&state->execution.matview);
+	PgExecutionInitializeSnapshotState(&state->execution.snapshot);
+	PgExecutionInitializeComboCidState(&state->execution.combo_cid);
 }
 
 void
@@ -3254,6 +3305,8 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgExecutionAdoptEarlyAnalyzeState(&state->execution);
 	PgExecutionAdoptEarlyExtensionState(&state->execution);
 	PgExecutionAdoptEarlyMatViewState(&state->execution);
+	PgExecutionAdoptEarlySnapshotState(&state->execution);
+	PgExecutionAdoptEarlyComboCidState(&state->execution);
 	CurrentPgRuntime = &thread_runtime;
 	CurrentPgCarrier = &state->carrier;
 	CurrentPgBackend = &state->backend;
@@ -6432,6 +6485,138 @@ int *
 PgCurrentMatViewMaintenanceDepthRef(void)
 {
 	return &PgCurrentExecutionMatViewState()->maintenance_depth;
+}
+
+static PgExecutionSnapshotState *
+PgCurrentExecutionSnapshotState(void)
+{
+	if (CurrentPgExecution == NULL)
+		return &early_execution_snapshot;
+
+	return &CurrentPgExecution->snapshot;
+}
+
+SnapshotData *
+PgCurrentSnapshotDataRef(void)
+{
+	return &PgCurrentExecutionSnapshotState()->current_snapshot_data;
+}
+
+SnapshotData *
+PgCurrentSecondarySnapshotDataRef(void)
+{
+	return &PgCurrentExecutionSnapshotState()->secondary_snapshot_data;
+}
+
+SnapshotData *
+PgCurrentCatalogSnapshotDataRef(void)
+{
+	return &PgCurrentExecutionSnapshotState()->catalog_snapshot_data;
+}
+
+Snapshot *
+PgCurrentSnapshotRef(void)
+{
+	return &PgCurrentExecutionSnapshotState()->current_snapshot;
+}
+
+Snapshot *
+PgCurrentSecondarySnapshotRef(void)
+{
+	return &PgCurrentExecutionSnapshotState()->secondary_snapshot;
+}
+
+Snapshot *
+PgCurrentCatalogSnapshotRef(void)
+{
+	return &PgCurrentExecutionSnapshotState()->catalog_snapshot;
+}
+
+Snapshot *
+PgCurrentHistoricSnapshotRef(void)
+{
+	return &PgCurrentExecutionSnapshotState()->historic_snapshot;
+}
+
+TransactionId *
+PgCurrentTransactionXminRef(void)
+{
+	return &PgCurrentExecutionSnapshotState()->transaction_xmin;
+}
+
+TransactionId *
+PgCurrentRecentXminRef(void)
+{
+	return &PgCurrentExecutionSnapshotState()->recent_xmin;
+}
+
+HTAB **
+PgCurrentTupleCidDataRef(void)
+{
+	return &PgCurrentExecutionSnapshotState()->tuplecid_data;
+}
+
+void **
+PgCurrentActiveSnapshotRef(void)
+{
+	return &PgCurrentExecutionSnapshotState()->active_snapshot;
+}
+
+pairingheap *
+PgCurrentRegisteredSnapshotsRef(void)
+{
+	return &PgCurrentExecutionSnapshotState()->registered_snapshots;
+}
+
+bool *
+PgCurrentFirstSnapshotSetRef(void)
+{
+	return &PgCurrentExecutionSnapshotState()->first_snapshot_set;
+}
+
+Snapshot *
+PgCurrentFirstXactSnapshotRef(void)
+{
+	return &PgCurrentExecutionSnapshotState()->first_xact_snapshot;
+}
+
+List **
+PgCurrentExportedSnapshotsRef(void)
+{
+	return &PgCurrentExecutionSnapshotState()->exported_snapshots;
+}
+
+static PgExecutionComboCidState *
+PgCurrentExecutionComboCidState(void)
+{
+	if (CurrentPgExecution == NULL)
+		return &early_execution_combo_cid;
+
+	return &CurrentPgExecution->combo_cid;
+}
+
+HTAB **
+PgCurrentComboCidHashRef(void)
+{
+	return &PgCurrentExecutionComboCidState()->hash;
+}
+
+void **
+PgCurrentComboCidsRef(void)
+{
+	return &PgCurrentExecutionComboCidState()->cids;
+}
+
+int *
+PgCurrentUsedComboCidsRef(void)
+{
+	return &PgCurrentExecutionComboCidState()->used;
+}
+
+int *
+PgCurrentSizeComboCidsRef(void)
+{
+	return &PgCurrentExecutionComboCidState()->size;
 }
 
 PgConnectionSocketIOState *
