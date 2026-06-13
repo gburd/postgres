@@ -311,7 +311,8 @@ typedef struct FlushPosition
 	XLogRecPtr	remote_end;
 } FlushPosition;
 
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND dlist_head lsn_mapping;
+#define lsn_mapping \
+	(PgCurrentLogicalReplicationState()->lsn_mapping)
 
 typedef struct ApplyExecutionData
 {
@@ -324,19 +325,6 @@ typedef struct ApplyExecutionData
 	ModifyTableState *mtstate;	/* dummy ModifyTable state */
 	PartitionTupleRouting *proute;	/* partition routing info */
 } ApplyExecutionData;
-
-/* Struct for saving and restoring apply errcontext information */
-typedef struct ApplyErrorCallbackArg
-{
-	LogicalRepMsgType command;	/* 0 if invalid */
-	LogicalRepRelMapEntry *rel;
-
-	/* Remote node information */
-	int			remote_attnum;	/* -1 if invalid */
-	TransactionId remote_xid;
-	XLogRecPtr	finish_lsn;
-	char	   *origin_name;
-} ApplyErrorCallbackArg;
 
 /*
  * The action to be taken for the changes in the transaction.
@@ -462,15 +450,8 @@ typedef struct RetainDeadTuplesData
 #define MAX_XID_ADVANCE_INTERVAL 180000
 
 /* errcontext tracker */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ApplyErrorCallbackArg apply_error_callback_arg =
-{
-	.command = 0,
-	.rel = NULL,
-	.remote_attnum = -1,
-	.remote_xid = InvalidTransactionId,
-	.finish_lsn = InvalidXLogRecPtr,
-	.origin_name = NULL,
-};
+#define apply_error_callback_arg \
+	(PgCurrentLogicalReplicationState()->apply_error_callback_arg)
 
 PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ErrorContextCallback *apply_error_context_stack = NULL;
 
@@ -528,24 +509,9 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext LogicalStreamingContext
  */
 #define last_flushpos (PgCurrentLogicalReplicationState()->last_flushpos)
 
-typedef struct SubXactInfo
-{
-	TransactionId xid;			/* XID of the subxact */
-	int			fileno;			/* file number in the buffile */
-	pgoff_t		offset;			/* offset in the file */
-} SubXactInfo;
-
 /* Sub-transaction data for the current streaming transaction */
-typedef struct ApplySubXactData
-{
-	uint32		nsubxacts;		/* number of sub-transactions */
-	uint32		nsubxacts_max;	/* current capacity of subxacts */
-	TransactionId subxact_last; /* xid of the last sub-transaction */
-	SubXactInfo *subxacts;		/* sub-xact offset in changes file */
-} ApplySubXactData;
-
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ApplySubXactData subxact_data =
-{0, 0, InvalidTransactionId, NULL};
+#define subxact_data \
+	(PgCurrentLogicalReplicationState()->subxact_data)
 
 static inline void subxact_filename(char *path, Oid subid, TransactionId xid);
 static inline void changes_filename(char *path, Oid subid, TransactionId xid);

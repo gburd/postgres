@@ -149,10 +149,11 @@ PG_GLOBAL_RUNTIME bool sync_replication_slots = false;
  * (within a MIN/MAX range) according to slot activity. See
  * wait_for_slot_activity() for details.
  */
-#define MIN_SLOTSYNC_WORKER_NAPTIME_MS  200
+#define MIN_SLOTSYNC_WORKER_NAPTIME_MS  PG_BACKEND_SLOTSYNC_INITIAL_SLEEP_MS
 #define MAX_SLOTSYNC_WORKER_NAPTIME_MS  30000	/* 30s */
 
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND long sleep_ms = MIN_SLOTSYNC_WORKER_NAPTIME_MS;
+#define sleep_ms \
+	(PgCurrentLogicalReplicationState()->slotsync_sleep_ms)
 
 /* The restart interval for slot sync work used by postmaster */
 #define SLOTSYNC_RESTART_INTERVAL_SEC 10

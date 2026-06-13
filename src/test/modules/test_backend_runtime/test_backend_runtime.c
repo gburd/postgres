@@ -8584,19 +8584,50 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 	saved_backend = CurrentPgBackend;
 	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
 	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+	dlist_init(&fake_backend1.logical_replication.lsn_mapping);
+	dlist_init(&fake_backend2.logical_replication.lsn_mapping);
+	fake_backend1.logical_replication.apply_error_callback_arg.remote_attnum = -1;
+	fake_backend1.logical_replication.apply_error_callback_arg.remote_xid =
+		InvalidTransactionId;
+	fake_backend1.logical_replication.apply_error_callback_arg.finish_lsn =
+		InvalidXLogRecPtr;
+	fake_backend1.logical_replication.subxact_data.subxact_last =
+		InvalidTransactionId;
 	fake_backend1.logical_replication.remote_final_lsn = InvalidXLogRecPtr;
 	fake_backend1.logical_replication.stream_xid = InvalidTransactionId;
 	fake_backend1.logical_replication.skip_xact_finish_lsn = InvalidXLogRecPtr;
 	fake_backend1.logical_replication.last_flushpos = InvalidXLogRecPtr;
+	fake_backend1.logical_replication.slotsync_sleep_ms =
+		PG_BACKEND_SLOTSYNC_INITIAL_SLEEP_MS;
+	fake_backend2.logical_replication.apply_error_callback_arg.remote_attnum = -1;
+	fake_backend2.logical_replication.apply_error_callback_arg.remote_xid =
+		InvalidTransactionId;
+	fake_backend2.logical_replication.apply_error_callback_arg.finish_lsn =
+		InvalidXLogRecPtr;
+	fake_backend2.logical_replication.subxact_data.subxact_last =
+		InvalidTransactionId;
 	fake_backend2.logical_replication.remote_final_lsn = InvalidXLogRecPtr;
 	fake_backend2.logical_replication.stream_xid = InvalidTransactionId;
 	fake_backend2.logical_replication.skip_xact_finish_lsn = InvalidXLogRecPtr;
 	fake_backend2.logical_replication.last_flushpos = InvalidXLogRecPtr;
+	fake_backend2.logical_replication.slotsync_sleep_ms =
+		PG_BACKEND_SLOTSYNC_INITIAL_SLEEP_MS;
 
 	PG_TRY();
 	{
 		CurrentPgBackend = &fake_backend1;
 		logical1 = PgCurrentLogicalReplicationState();
+		logical1->apply_error_callback_arg.command = LOGICAL_REP_MSG_INSERT;
+		logical1->apply_error_callback_arg.rel =
+			(struct LogicalRepRelMapEntry *) &fake_backend1;
+		logical1->apply_error_callback_arg.remote_attnum = 11;
+		logical1->apply_error_callback_arg.remote_xid = 12;
+		logical1->apply_error_callback_arg.finish_lsn = UINT64CONST(13);
+		logical1->apply_error_callback_arg.origin_name = (char *) &fake_backend1;
+		logical1->subxact_data.nsubxacts = 14;
+		logical1->subxact_data.nsubxacts_max = 15;
+		logical1->subxact_data.subxact_last = 16;
+		logical1->subxact_data.subxacts = (SubXactInfo *) &fake_backend1;
 		logical1->apply_context = (MemoryContext) &fake_backend1;
 		logical1->my_parallel_shared =
 			(ParallelApplyWorkerShared *) &fake_backend1;
@@ -8628,6 +8659,7 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 		logical1->slotsync_observed_sync_replication_slots = true;
 		logical1->slotsync_observed_hot_standby_feedback = true;
 		logical1->slotsync_shutdown_pending = true;
+		logical1->slotsync_sleep_ms = 106;
 		logical1->launcher_last_start_times_dsa = (dsa_area *) &fake_backend1;
 		logical1->launcher_last_start_times = (dshash_table *) &fake_backend1;
 		logical1->launcher_on_commit_wakeup = true;
@@ -8639,6 +8671,19 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 
 		CurrentPgBackend = &fake_backend2;
 		logical2 = PgCurrentLogicalReplicationState();
+		ok = ok && dlist_is_empty(&logical2->lsn_mapping);
+		ok = ok && logical2->apply_error_callback_arg.command == 0;
+		ok = ok && logical2->apply_error_callback_arg.rel == NULL;
+		ok = ok && logical2->apply_error_callback_arg.remote_attnum == -1;
+		ok = ok && logical2->apply_error_callback_arg.remote_xid ==
+			InvalidTransactionId;
+		ok = ok && logical2->apply_error_callback_arg.finish_lsn ==
+			InvalidXLogRecPtr;
+		ok = ok && logical2->apply_error_callback_arg.origin_name == NULL;
+		ok = ok && logical2->subxact_data.nsubxacts == 0;
+		ok = ok && logical2->subxact_data.nsubxacts_max == 0;
+		ok = ok && logical2->subxact_data.subxact_last == InvalidTransactionId;
+		ok = ok && logical2->subxact_data.subxacts == NULL;
 		ok = ok && logical2->apply_context == NULL;
 		ok = ok && logical2->my_parallel_shared == NULL;
 		ok = ok && !logical2->parallel_apply_message_pending;
@@ -8667,6 +8712,8 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && !logical2->slotsync_observed_sync_replication_slots;
 		ok = ok && !logical2->slotsync_observed_hot_standby_feedback;
 		ok = ok && !logical2->slotsync_shutdown_pending;
+		ok = ok && logical2->slotsync_sleep_ms ==
+			PG_BACKEND_SLOTSYNC_INITIAL_SLEEP_MS;
 		ok = ok && logical2->launcher_last_start_times_dsa == NULL;
 		ok = ok && logical2->launcher_last_start_times == NULL;
 		ok = ok && !logical2->launcher_on_commit_wakeup;
@@ -8676,6 +8723,17 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && logical2->parallel_apply_subxactlist == NIL;
 
 		logical2->apply_context = (MemoryContext) &fake_backend2;
+		logical2->apply_error_callback_arg.command = LOGICAL_REP_MSG_UPDATE;
+		logical2->apply_error_callback_arg.rel =
+			(struct LogicalRepRelMapEntry *) &fake_backend2;
+		logical2->apply_error_callback_arg.remote_attnum = 21;
+		logical2->apply_error_callback_arg.remote_xid = 22;
+		logical2->apply_error_callback_arg.finish_lsn = UINT64CONST(23);
+		logical2->apply_error_callback_arg.origin_name = (char *) &fake_backend2;
+		logical2->subxact_data.nsubxacts = 24;
+		logical2->subxact_data.nsubxacts_max = 25;
+		logical2->subxact_data.subxact_last = 26;
+		logical2->subxact_data.subxacts = (SubXactInfo *) &fake_backend2;
 		logical2->my_parallel_shared =
 			(ParallelApplyWorkerShared *) &fake_backend2;
 		logical2->parallel_apply_message_pending = true;
@@ -8706,6 +8764,7 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 		logical2->slotsync_observed_sync_replication_slots = true;
 		logical2->slotsync_observed_hot_standby_feedback = true;
 		logical2->slotsync_shutdown_pending = true;
+		logical2->slotsync_sleep_ms = 206;
 		logical2->launcher_last_start_times_dsa = (dsa_area *) &fake_backend2;
 		logical2->launcher_last_start_times = (dshash_table *) &fake_backend2;
 		logical2->launcher_on_commit_wakeup = true;
@@ -8717,6 +8776,21 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 
 		CurrentPgBackend = &fake_backend1;
 		logical1 = PgCurrentLogicalReplicationState();
+		ok = ok && dlist_is_empty(&logical1->lsn_mapping);
+		ok = ok && logical1->apply_error_callback_arg.command ==
+			LOGICAL_REP_MSG_INSERT;
+		ok = ok && logical1->apply_error_callback_arg.rel ==
+			(struct LogicalRepRelMapEntry *) &fake_backend1;
+		ok = ok && logical1->apply_error_callback_arg.remote_attnum == 11;
+		ok = ok && logical1->apply_error_callback_arg.remote_xid == 12;
+		ok = ok && logical1->apply_error_callback_arg.finish_lsn == UINT64CONST(13);
+		ok = ok && logical1->apply_error_callback_arg.origin_name ==
+			(char *) &fake_backend1;
+		ok = ok && logical1->subxact_data.nsubxacts == 14;
+		ok = ok && logical1->subxact_data.nsubxacts_max == 15;
+		ok = ok && logical1->subxact_data.subxact_last == 16;
+		ok = ok && logical1->subxact_data.subxacts ==
+			(SubXactInfo *) &fake_backend1;
 		ok = ok && logical1->apply_context == (MemoryContext) &fake_backend1;
 		ok = ok && logical1->my_parallel_shared ==
 			(ParallelApplyWorkerShared *) &fake_backend1;
@@ -8751,6 +8825,7 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && logical1->slotsync_observed_sync_replication_slots;
 		ok = ok && logical1->slotsync_observed_hot_standby_feedback;
 		ok = ok && logical1->slotsync_shutdown_pending;
+		ok = ok && logical1->slotsync_sleep_ms == 106;
 		ok = ok && logical1->launcher_last_start_times_dsa ==
 			(dsa_area *) &fake_backend1;
 		ok = ok && logical1->launcher_last_start_times ==
@@ -8764,6 +8839,21 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 
 		CurrentPgBackend = &fake_backend2;
 		logical2 = PgCurrentLogicalReplicationState();
+		ok = ok && dlist_is_empty(&logical2->lsn_mapping);
+		ok = ok && logical2->apply_error_callback_arg.command ==
+			LOGICAL_REP_MSG_UPDATE;
+		ok = ok && logical2->apply_error_callback_arg.rel ==
+			(struct LogicalRepRelMapEntry *) &fake_backend2;
+		ok = ok && logical2->apply_error_callback_arg.remote_attnum == 21;
+		ok = ok && logical2->apply_error_callback_arg.remote_xid == 22;
+		ok = ok && logical2->apply_error_callback_arg.finish_lsn == UINT64CONST(23);
+		ok = ok && logical2->apply_error_callback_arg.origin_name ==
+			(char *) &fake_backend2;
+		ok = ok && logical2->subxact_data.nsubxacts == 24;
+		ok = ok && logical2->subxact_data.nsubxacts_max == 25;
+		ok = ok && logical2->subxact_data.subxact_last == 26;
+		ok = ok && logical2->subxact_data.subxacts ==
+			(SubXactInfo *) &fake_backend2;
 		ok = ok && logical2->apply_context == (MemoryContext) &fake_backend2;
 		ok = ok && logical2->my_parallel_shared ==
 			(ParallelApplyWorkerShared *) &fake_backend2;
@@ -8798,6 +8888,7 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && logical2->slotsync_observed_sync_replication_slots;
 		ok = ok && logical2->slotsync_observed_hot_standby_feedback;
 		ok = ok && logical2->slotsync_shutdown_pending;
+		ok = ok && logical2->slotsync_sleep_ms == 206;
 		ok = ok && logical2->launcher_last_start_times_dsa ==
 			(dsa_area *) &fake_backend2;
 		ok = ok && logical2->launcher_last_start_times ==

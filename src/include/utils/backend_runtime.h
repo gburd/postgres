@@ -75,6 +75,7 @@ typedef struct XLogReaderState XLogReaderState;
 typedef struct PortalData *Portal;
 typedef struct SPITupleTable SPITupleTable;
 typedef struct _SPI_connection _SPI_connection;
+struct LogicalRepRelMapEntry;
 struct SeqTableData;
 struct pg_ctype_cache;
 struct RelationData;
@@ -282,8 +283,38 @@ typedef struct PgBackendReplicationState
 	bool		walreceiver_primary_has_standby_xmin;
 } PgBackendReplicationState;
 
+#define PG_BACKEND_SLOTSYNC_INITIAL_SLEEP_MS 200
+
+typedef struct SubXactInfo
+{
+	TransactionId xid;
+	int			fileno;
+	pgoff_t		offset;
+} SubXactInfo;
+
+typedef struct ApplySubXactData
+{
+	uint32		nsubxacts;
+	uint32		nsubxacts_max;
+	TransactionId subxact_last;
+	SubXactInfo *subxacts;
+} ApplySubXactData;
+
+typedef struct ApplyErrorCallbackArg
+{
+	int			command;
+	struct LogicalRepRelMapEntry *rel;
+	int			remote_attnum;
+	TransactionId remote_xid;
+	XLogRecPtr	finish_lsn;
+	char	   *origin_name;
+} ApplyErrorCallbackArg;
+
 typedef struct PgBackendLogicalReplicationState
 {
+	dlist_head	lsn_mapping;
+	ApplyErrorCallbackArg apply_error_callback_arg;
+	ApplySubXactData subxact_data;
 	MemoryContext apply_context;
 	ParallelApplyWorkerShared *my_parallel_shared;
 	volatile sig_atomic_t parallel_apply_message_pending;
@@ -312,6 +343,7 @@ typedef struct PgBackendLogicalReplicationState
 	bool		slotsync_observed_sync_replication_slots;
 	bool		slotsync_observed_hot_standby_feedback;
 	volatile sig_atomic_t slotsync_shutdown_pending;
+	long		slotsync_sleep_ms;
 	dsa_area   *launcher_last_start_times_dsa;
 	dshash_table *launcher_last_start_times;
 	bool		launcher_on_commit_wakeup;

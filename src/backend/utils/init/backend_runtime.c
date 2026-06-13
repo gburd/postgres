@@ -2397,10 +2397,16 @@ PgBackendInitializeLogicalReplicationState(PgBackendLogicalReplicationState *log
 	Assert(logical_replication != NULL);
 
 	MemSet(logical_replication, 0, sizeof(*logical_replication));
+	dlist_init(&logical_replication->lsn_mapping);
+	logical_replication->apply_error_callback_arg.remote_attnum = -1;
+	logical_replication->apply_error_callback_arg.remote_xid = InvalidTransactionId;
+	logical_replication->apply_error_callback_arg.finish_lsn = InvalidXLogRecPtr;
+	logical_replication->subxact_data.subxact_last = InvalidTransactionId;
 	logical_replication->remote_final_lsn = InvalidXLogRecPtr;
 	logical_replication->stream_xid = InvalidTransactionId;
 	logical_replication->skip_xact_finish_lsn = InvalidXLogRecPtr;
 	logical_replication->last_flushpos = InvalidXLogRecPtr;
+	logical_replication->slotsync_sleep_ms = PG_BACKEND_SLOTSYNC_INITIAL_SLEEP_MS;
 }
 
 static void
@@ -2409,6 +2415,7 @@ PgBackendAdoptEarlyLogicalReplicationState(PgBackend *backend)
 	Assert(backend != NULL);
 
 	backend->logical_replication = early_backend_logical_replication;
+	dlist_init(&backend->logical_replication.lsn_mapping);
 	PgBackendInitializeLogicalReplicationState(&early_backend_logical_replication);
 }
 

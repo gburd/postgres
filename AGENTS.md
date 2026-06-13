@@ -466,14 +466,18 @@ Important current files:
   replication state must initialize those fields explicitly because raw
   `MemSet()` does not model `PgBackendInitializeLogicalReplicationState()`.
   The deeper logical replication internals `lsn_mapping`,
-  `apply_error_callback_arg`, and `subxact_data` still expose private layout
-  and remain standalone backend-local TLS for a later focused slice. Slot-sync
-  `sleep_ms` also remains standalone for now because it has a private non-zero
-  scheduling default. After changing this bridge, clean and rebuild backend
-  objects because `PgBackend` layout and installed runtime headers changed; at
-  minimum rebuild and reinstall PL/pgSQL,
-  `src/test/modules/test_backend_runtime`, and contrib before validating.
-  Direct threaded TAP should be run.
+  `apply_error_callback_arg`, `subxact_data`, and slot-sync `sleep_ms` are
+  also now stored in `PgBackendLogicalReplicationState`; the runtime
+  initializer sets their non-zero sentinels, including `remote_attnum = -1`,
+  invalid transaction/LSN values, invalid `subxact_last`, and
+  `PG_BACKEND_SLOTSYNC_INITIAL_SLEEP_MS`. Do not include
+  `logicalrelation.h` or `logicalproto.h` from `backend_runtime.h`; keep
+  private logical-replication layouts opaque there by using `struct
+  LogicalRepRelMapEntry *` and `int` storage for the relation pointer and
+  message type. After changing this bridge, clean and rebuild backend objects
+  because `PgBackend` layout and installed runtime headers changed; at minimum
+  rebuild and reinstall PL/pgSQL, `src/test/modules/test_backend_runtime`, and
+  contrib before validating. Direct threaded TAP should be run.
 - Treat `PMChild.thread_backend` as private PMChild-owned publication state.
   Postmaster code should use PMChild helper APIs for threaded backend
   interrupt, wakeup, and thread-exit publication rather than dereferencing or

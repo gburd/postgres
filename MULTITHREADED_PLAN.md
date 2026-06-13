@@ -1072,14 +1072,18 @@ parallel-apply hash/pool/message state, table/sequence sync scratch state,
 logical-info barrier cache, and slot-sync shutdown/observed-configuration
 state now follow the logical backend. Public logical replication headers keep
 the old names as compatibility macros over `PgCurrentLogicalReplicationState()`,
-while source-private state uses local macros in the owning files. The deeper
-logical replication internals with private layout (`lsn_mapping`,
-`apply_error_callback_arg`, and `subxact_data`) and the slot-sync `sleep_ms`
-non-zero scheduling default remain for later focused slices. The slice passed
-clean full build/install, process-mode backend-runtime regression, direct
-threaded runtime TAP, contrib build, and the required global-lifetime scan
-with zero new unclassified mutable globals; backend-local declarations dropped
-from 193 to 148.
+while source-private state uses local macros in the owning files. A follow-up
+completion slice also moved the remaining private worker/slot-sync internals
+(`lsn_mapping`, `apply_error_callback_arg`, `subxact_data`, and slot-sync
+`sleep_ms`) into the same backend-owned state bucket. The runtime header keeps
+private logical-replication layouts opaque, using `struct
+LogicalRepRelMapEntry *` and `int` storage instead of including
+`logicalrelation.h` or `logicalproto.h` from generic backend include paths.
+The slices passed clean full build/install, process-mode backend-runtime
+regression, direct threaded runtime TAP, contrib build, PL/pgSQL
+rebuild/install, and the required global-lifetime scan with zero new
+unclassified mutable globals; backend-local declarations dropped first from
+193 to 148 and then from 62 to 58 after the completion slice.
 Backend WAL/XLog state now lives in `PgBackendXLogState`: local recovery and
 insert-permission flags, exported transaction WAL pointers, local redo and
 full-page-write caches, cached write/flush result, open WAL segment tracking,

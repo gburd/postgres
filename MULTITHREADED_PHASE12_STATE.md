@@ -7023,7 +7023,8 @@ logical replication internals that still expose private layout
 (`lsn_mapping`, `apply_error_callback_arg`, and `subxact_data`) remain
 standalone backend-local TLS for a later focused slice. Slot-sync `sleep_ms`
 also remains standalone for now because it has a private non-zero default tied
-to slot-sync scheduling constants.
+to slot-sync scheduling constants. That remaining state is moved by the
+one-hundred-fifty-fifth Phase 12 completion slice below.
 
 Validation for this slice:
 
@@ -7328,6 +7329,44 @@ Validation for this slice:
 - `test_backend_utility_state_is_backend_local()` now covers the moved async,
   extension, injection-point, and sampling fields across two fake logical
   backends.
+
+## Backend Logical Replication Worker State Completion
+
+The one-hundred-fifty-fifth Phase 12 slice completes the remaining
+logical-replication worker and slot-sync backend-local bridge work:
+
+- the apply worker's `lsn_mapping` flush-position list;
+- the apply error-context callback argument;
+- the apply worker subtransaction serialization state;
+- the slot-sync worker sleep/backoff interval.
+
+`worker.c` and `slotsync.c` keep their historical source-local names as
+macros over `PgBackendLogicalReplicationState`. The runtime initializer now
+sets the former non-zero defaults for this state, including
+`remote_attnum = -1`, invalid transaction/LSN sentinels, invalid
+`subxact_last`, and `PG_BACKEND_SLOTSYNC_INITIAL_SLEEP_MS`.
+
+The runtime header deliberately avoids including private logical replication
+headers. `backend_runtime.h` stores the relation pointer as
+`struct LogicalRepRelMapEntry *` and the logical replication message enum as
+an `int`, so generic backend include paths do not have to see
+`logicalrelation.h`, `logicalproto.h`, or their private dependency graph.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, logical replication
+  `worker.o` and `slotsync.o`, and `test_backend_runtime.o`;
+- full `gmake -j8` and `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 62 to 58;
+- `gmake -C contrib -j8` and a clean PL/pgSQL rebuild/install passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct threaded runtime TAP passed all 87 tests with the local
+  `/Users/samwillis/perl5` `PERL5LIB` paths and an explicit `PG_REGRESS`
+  environment;
+- `test_backend_logical_replication_state_is_backend_local()` now covers the
+  remaining logical replication worker and slot-sync fields across two fake
+  logical backends.
 
 ## Backend Parallel State Bridge
 
