@@ -219,6 +219,16 @@ conversion in two sessions and the default value in a third. This is still not
 the complete Gate E2 GUC model: broader custom GUC reset/default behavior,
 database/role/startup settings, and stress coverage remain open.
 
+Further status update: catalog-writing table DDL exposed a derived-GUC gap
+after the custom GUC route was added. The generated
+`wal_consistency_checking` string record was rebound for the session, but the
+assign-hook-owned resource-manager bool array could remain NULL and crash
+`XLogInsert()` during threaded `CREATE TABLE`. The required threaded session
+GUC bootstrap now includes `wal_consistency_checking`, and the threaded
+runtime fixture includes a basic `CREATE TABLE`/`INSERT`/`DROP TABLE` smoke.
+This closes the immediate table-DDL WAL consistency pointer crash, but broader
+database/role/startup settings and GUC stress remain open.
+
 ### 4. Broad Threaded Startup Serialization Is Still Present
 
 Severity: High

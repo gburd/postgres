@@ -849,9 +849,13 @@ string-GUC bootstrap for `search_path` and `dynamic_library_path`, which lets
 threaded sessions use namespace lookup and `LOAD`. A manual threaded
 `LOAD`/`SHOW` smoke proved custom extension GUC placeholder conversion across
 three sessions, including reuse of an already loaded module. Catalog-writing
-DDL currently reaches WAL insertion and can still crash in `XLogInsert()`
-during threaded `CREATE TABLE`, so that remains a Gate E2 blocker before
-Phase 13.
+DDL then exposed a separate derived-GUC adoption gap: the
+`wal_consistency_checking` string GUC was rebound, but its assign-hook-owned
+per-session bool array stayed NULL and crashed `XLogInsert()` during threaded
+`CREATE TABLE`. The required bootstrap now includes
+`wal_consistency_checking`, and the threaded runtime fixture includes a basic
+`CREATE TABLE`/`INSERT`/`DROP TABLE` smoke. Broader table-DDL, extension-DDL,
+and GUC-heavy stress remain Gate E2 blockers before Phase 13.
 
 Phase 16 still owns broader hardening such as sanitizer runs, contrib-wide
 threaded regression, crash/FATAL behavior matrices, platform coverage, and

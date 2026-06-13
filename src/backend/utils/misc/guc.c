@@ -1530,6 +1530,7 @@ InitializeThreadedSessionRequiredGUCOptions(void)
 	static const char *const required_options[] = {
 		"dynamic_library_path",
 		"search_path",
+		"wal_consistency_checking",
 	};
 
 	if (guc_hashtab == NULL)

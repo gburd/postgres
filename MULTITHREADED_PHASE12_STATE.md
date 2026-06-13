@@ -4089,8 +4089,8 @@ GUC blocker:
   `PgSetCurrentSession()` and after `CurrentPgExecution` is installed. This
   initializes required string GUCs whose
   generated records can otherwise already point at fallback accessors before
-  the changed-pointer initialization pass runs. The list is intentionally
-  narrow and currently covers `search_path` and `dynamic_library_path`;
+  the changed-pointer initialization pass runs. At this point in the work, the
+  list covered `search_path` and `dynamic_library_path`;
 - the threaded runtime TAP fixture now validates custom GUC behavior through
   `LOAD` and `SHOW`, avoiding catalog-writing DDL while the remaining WAL
   insertion blocker is open.
@@ -4101,8 +4101,8 @@ placeholder conversion when a module is loaded in multiple sessions. Broader
 custom GUC reset/default semantics, database/role/startup settings,
 contrib-wide extension coverage, and GUC-heavy stress remain open. During
 validation, a threaded `CREATE TABLE` smoke got past namespace lookup and then
-crashed in `XLogInsert()` while allocating catalog/WAL state; catalog-writing
-DDL remains a separate Gate E2 blocker before scheduler-aware wait work.
+crashed in `XLogInsert()` while accessing derived WAL GUC state; the next
+slice tracks that separate Gate E2 blocker.
 
 Validation for this slice:
 
@@ -4123,3 +4123,45 @@ Validation for this slice:
   process-mode temp cluster and fails at the existing
   `test_backend_thread_runtime_state()` threaded-runtime assertion before it
   reaches the new `LOAD`/`SHOW` fixture.
+
+## Threaded Catalog-Writing DDL WAL GUC Bootstrap
+
+The eighty-fourth Phase 12 slice fixes the first catalog-writing table DDL
+crash found by the extension/custom GUC work:
+
+- a threaded `CREATE TABLE threaded_gate_e2_smoke(id int)` crashed in
+  `XLogInsert()` while executing `XLogPutNextOid()`;
+- `lldb` showed the fault in the inlined `XLogRecordAssemble()` access to
+  `wal_consistency_checking[rmid]`;
+- `wal_consistency_checking` is a derived per-session bool array populated by
+  the string GUC's assign hook, not the generated GUC table's direct string
+  backing variable itself;
+- the systematic GUC rebind pass correctly points the string record at
+  `PgSession.access_wal_guc.wal_consistency_checking_string_value`, but a
+  default NULL string value can leave the derived bool array unset until the
+  assign hook runs for the actual session;
+- `InitializeThreadedSessionRequiredGUCOptions()` now includes
+  `wal_consistency_checking` along with `search_path` and
+  `dynamic_library_path`, forcing the hook to create the per-session bool
+  array before table DDL reaches WAL insertion;
+- the threaded runtime TAP fixture now includes a basic
+  `CREATE TABLE`/`INSERT`/`DROP TABLE` smoke so table DDL covers this required
+  bootstrap path.
+
+This is still not full Gate E2 DDL or GUC completion. It closes the immediate
+`CREATE TABLE` WAL consistency pointer crash, but broader table DDL,
+extension DDL, database/role/startup setting behavior, assign-hook
+reset/default semantics, and GUC-heavy stress remain open.
+
+Validation for this slice:
+
+- `lldb` reproduced the pre-fix crash as `CREATE TABLE` ->
+  `XLogPutNextOid()` -> `XLogInsert()`;
+- touched-object builds covered `guc.o` and the threaded test module;
+- full `gmake -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- install and threaded runtime module reinstall passed;
+- a manual threaded smoke with `multithreaded = on`,
+  `dynamic_shared_memory_type = posix`, and `CREATE TABLE`/`INSERT`/
+  `DROP TABLE` passed after the fix.

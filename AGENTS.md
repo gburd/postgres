@@ -168,20 +168,24 @@ Important current files:
   `PgSetCurrentSession()` and after installing `CurrentPgExecution`; the latter
   is required because GUC check hooks allocate through the current execution's
   memory context state. Keep this list narrow and documented; it currently
-  covers `search_path` and `dynamic_library_path`, which are needed for
-  namespace lookup and `LOAD`.
+  covers `search_path`, `dynamic_library_path`, and
+  `wal_consistency_checking`. The WAL entry is required because the generated
+  GUC variable is the string value, while the assign hook also initializes the
+  derived per-session resource-manager bool array used by `XLogInsert()`.
 - Custom extension GUCs in threaded sessions rely on per-session `_PG_init()`
   invocation for already-loaded dynamic libraries. `dfmgr.c` records loaded
   module init state in `PgSession.dynamic_library_inits`; when a second
   threaded session reuses a process-loaded module, `_PG_init()` must run again
   so that session's GUC table receives the custom GUC definitions. A focused
-  smoke should use `LOAD 'test_backend_runtime_threaded'` plus `SHOW`, not
-  `CREATE FUNCTION`, until the threaded DDL/WAL insertion blocker below is
-  fixed.
-- Threaded catalog-writing DDL is still a Gate E2 blocker. A threaded
-  `CREATE TABLE` smoke now gets past namespace lookup but can crash in
-  `XLogInsert()` while allocating catalog/WAL state. Do not use DDL as a
-  prerequisite for extension-GUC validation until that WAL path is fixed.
+  custom-GUC smoke should use `LOAD 'test_backend_runtime_threaded'` plus
+  `SHOW`, so it validates module/GUC behavior without depending on catalog
+  writes.
+- Threaded catalog-writing DDL previously crashed in `XLogInsert()` during
+  `CREATE TABLE` because the derived `wal_consistency_checking` bool array was
+  NULL in the installed `PgSession`. Keep the threaded
+  `CREATE TABLE`/`INSERT`/`DROP TABLE` smoke in
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` when
+  changing required GUC bootstrap or WAL GUC state.
 - Threaded backend startup must replay postmaster nondefault GUC state after
   `InitializeThreadedSessionGUCOptions()` and before
   `InstallPgThreadBackendRuntimeState()`. That ordering lets

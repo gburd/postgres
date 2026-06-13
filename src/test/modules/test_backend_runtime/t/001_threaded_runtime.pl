@@ -282,6 +282,15 @@ $$;
 is($node->safe_psql('postgres', 'SELECT threaded_plpgsql_add(20, 22);'),
 	'42', 'PL/pgSQL runs in threaded runtime');
 
+$node->safe_psql(
+	'postgres',
+	q{
+CREATE TABLE threaded_gate_e2_smoke(id int);
+INSERT INTO threaded_gate_e2_smoke VALUES (1);
+DROP TABLE threaded_gate_e2_smoke;
+});
+pass('threaded runtime supports basic catalog-writing table DDL');
+
 is($node->safe_psql(
 		'postgres',
 		q{
