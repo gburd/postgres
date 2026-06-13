@@ -43,6 +43,7 @@
 #include "utils/global_lifetime.h"
 #include "utils/hsearch.h"
 #include "utils/palloc.h"
+#include "utils/sampling.h"
 #include "utils/timeout.h"
 
 typedef struct PgRuntime PgRuntime;
@@ -80,6 +81,7 @@ struct RelationData;
 struct avl_dbase;
 struct WorkerInfoData;
 struct DecodingWorker;
+struct ExtensionSiblingCache;
 struct PgAioBackend;
 struct PgAioUringContext;
 struct ClientSocket;
@@ -476,6 +478,12 @@ typedef struct PgBackendActivityState
 
 typedef struct PgBackendUtilityState
 {
+	volatile sig_atomic_t notify_interrupt_pending;
+	bool		async_unlisten_exit_registered;
+	struct ExtensionSiblingCache *extension_sibling_list;
+	HTAB	   *injection_point_cache;
+	ReservoirStateData sampling_old_reservoir;
+	bool		sampling_old_reservoir_initialized;
 	HTAB	   *seq_scan_tables[PG_BACKEND_MAX_SEQ_SCANS];
 	int			seq_scan_levels[PG_BACKEND_MAX_SEQ_SCANS];
 	int			num_seq_scans;
@@ -1684,6 +1692,12 @@ extern MemoryContext *PgCurrentBackendStatusSnapContextRef(void);
 extern HTAB **PgCurrentSeqScanTables(void);
 extern int *PgCurrentSeqScanLevels(void);
 extern int *PgCurrentNumSeqScansRef(void);
+extern volatile sig_atomic_t *PgCurrentNotifyInterruptPendingRef(void);
+extern bool *PgCurrentAsyncUnlistenExitRegisteredRef(void);
+extern struct ExtensionSiblingCache **PgCurrentExtensionSiblingListRef(void);
+extern HTAB **PgCurrentInjectionPointCacheRef(void);
+extern ReservoirStateData *PgCurrentSamplingOldReservoirRef(void);
+extern bool *PgCurrentSamplingOldReservoirInitializedRef(void);
 extern Oid *PgCurrentSuperuserLastRoleIdRef(void);
 extern bool *PgCurrentSuperuserLastRoleIdIsSuperRef(void);
 extern bool *PgCurrentSuperuserRoleIdCallbackRegisteredRef(void);

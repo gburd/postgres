@@ -19,7 +19,8 @@
 
 extern bool *PgCurrentTraceNotifyRef(void);
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_notify_queue_pages;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t notifyInterruptPending;
+extern volatile sig_atomic_t *PgCurrentNotifyInterruptPendingRef(void);
+#define notifyInterruptPending (*PgCurrentNotifyInterruptPendingRef())
 
 #define Trace_notify (*PgCurrentTraceNotifyRef())
 

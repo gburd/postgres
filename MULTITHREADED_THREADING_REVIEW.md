@@ -709,6 +709,15 @@ build/install, contrib build, PL/pgSQL rebuild/install, process-mode
 backend-runtime regression, direct threaded runtime TAP, and the required
 global-lifetime scan with zero new unclassified mutable globals;
 backend-local declarations dropped from 72 to 69.
+Backend utility command/cache state now also lives in
+`PgBackendUtilityState`: async notify pending and exit-registration flags, the
+extension sibling cache head, the injection-point callback cache, and the
+legacy sampling reservoir state now follow the logical backend. The slice
+passed touched-object builds, backend clean/generated-header recovery, clean
+full build/install, contrib build, PL/pgSQL rebuild/install, process-mode
+backend-runtime regression, direct threaded runtime TAP, and the required
+global-lifetime scan with zero new unclassified mutable globals;
+backend-local declarations dropped from 69 to 62.
 PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly

@@ -29,6 +29,7 @@
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
 #include "storage/subsystems.h"
+#include "utils/backend_runtime.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 
@@ -108,7 +109,7 @@ typedef struct InjectionPointCacheEntry
 	uint64		generation;
 } InjectionPointCacheEntry;
 
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND HTAB *InjectionPointCache = NULL;
+#define InjectionPointCache (*PgCurrentInjectionPointCacheRef())
 
 static void InjectionPointShmemRequest(void *arg);
 static void InjectionPointShmemInit(void *arg);

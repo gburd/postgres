@@ -550,10 +550,8 @@ typedef struct ChannelName
  * latch. ProcessNotifyInterrupt() will then be called whenever it's safe to
  * actually deal with the interrupt.
  */
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t notifyInterruptPending = false;
-
 /* True if we've registered an on_shmem_exit cleanup */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool unlistenExitRegistered = false;
+#define unlistenExitRegistered (*PgCurrentAsyncUnlistenExitRegisteredRef())
 
 /* True if we're currently registered as a listener in asyncQueueControl */
 #define amRegisteredListener (*PgCurrentAsyncRegisteredListenerRef())

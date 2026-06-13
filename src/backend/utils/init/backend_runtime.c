@@ -4853,6 +4853,42 @@ PgCurrentNumSeqScansRef(void)
 	return &PgCurrentBackendUtilityState()->num_seq_scans;
 }
 
+volatile sig_atomic_t *
+PgCurrentNotifyInterruptPendingRef(void)
+{
+	return &PgCurrentBackendUtilityState()->notify_interrupt_pending;
+}
+
+bool *
+PgCurrentAsyncUnlistenExitRegisteredRef(void)
+{
+	return &PgCurrentBackendUtilityState()->async_unlisten_exit_registered;
+}
+
+struct ExtensionSiblingCache **
+PgCurrentExtensionSiblingListRef(void)
+{
+	return &PgCurrentBackendUtilityState()->extension_sibling_list;
+}
+
+HTAB **
+PgCurrentInjectionPointCacheRef(void)
+{
+	return &PgCurrentBackendUtilityState()->injection_point_cache;
+}
+
+ReservoirStateData *
+PgCurrentSamplingOldReservoirRef(void)
+{
+	return &PgCurrentBackendUtilityState()->sampling_old_reservoir;
+}
+
+bool *
+PgCurrentSamplingOldReservoirInitializedRef(void)
+{
+	return &PgCurrentBackendUtilityState()->sampling_old_reservoir_initialized;
+}
+
 Oid *
 PgCurrentSuperuserLastRoleIdRef(void)
 {

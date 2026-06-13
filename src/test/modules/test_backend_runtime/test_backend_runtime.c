@@ -6942,6 +6942,13 @@ test_backend_utility_state_is_backend_local(PG_FUNCTION_ARGS)
 	PG_TRY();
 	{
 		CurrentPgBackend = &fake_backend1;
+		*PgCurrentNotifyInterruptPendingRef() = true;
+		*PgCurrentAsyncUnlistenExitRegisteredRef() = true;
+		*PgCurrentExtensionSiblingListRef() =
+			(struct ExtensionSiblingCache *) &fake_backend1;
+		*PgCurrentInjectionPointCacheRef() = (HTAB *) &fake_backend1;
+		PgCurrentSamplingOldReservoirRef()->W = 1.25;
+		*PgCurrentSamplingOldReservoirInitializedRef() = true;
 		PgCurrentSeqScanTables()[0] = (HTAB *) &fake_backend1;
 		PgCurrentSeqScanLevels()[0] = 11;
 		*PgCurrentNumSeqScansRef() = 1;
@@ -6969,6 +6976,12 @@ test_backend_utility_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentMissingAttrCacheRef() = (HTAB *) &fake_backend1;
 
 		CurrentPgBackend = &fake_backend2;
+		ok = ok && !*PgCurrentNotifyInterruptPendingRef();
+		ok = ok && !*PgCurrentAsyncUnlistenExitRegisteredRef();
+		ok = ok && *PgCurrentExtensionSiblingListRef() == NULL;
+		ok = ok && *PgCurrentInjectionPointCacheRef() == NULL;
+		ok = ok && PgCurrentSamplingOldReservoirRef()->W == 0.0;
+		ok = ok && !*PgCurrentSamplingOldReservoirInitializedRef();
 		ok = ok && PgCurrentSeqScanTables()[0] == NULL;
 		ok = ok && PgCurrentSeqScanLevels()[0] == 0;
 		ok = ok && *PgCurrentNumSeqScansRef() == 0;
@@ -6995,6 +7008,13 @@ test_backend_utility_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentLibxmlContextRef() == NULL;
 		ok = ok && *PgCurrentMissingAttrCacheRef() == NULL;
 
+		*PgCurrentNotifyInterruptPendingRef() = false;
+		*PgCurrentAsyncUnlistenExitRegisteredRef() = true;
+		*PgCurrentExtensionSiblingListRef() =
+			(struct ExtensionSiblingCache *) &fake_backend2;
+		*PgCurrentInjectionPointCacheRef() = (HTAB *) &fake_backend2;
+		PgCurrentSamplingOldReservoirRef()->W = 2.25;
+		*PgCurrentSamplingOldReservoirInitializedRef() = true;
 		PgCurrentSeqScanTables()[0] = (HTAB *) &fake_backend2;
 		PgCurrentSeqScanLevels()[0] = 22;
 		*PgCurrentNumSeqScansRef() = 1;
@@ -7022,6 +7042,13 @@ test_backend_utility_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentMissingAttrCacheRef() = (HTAB *) &fake_backend2;
 
 		CurrentPgBackend = &fake_backend1;
+		ok = ok && *PgCurrentNotifyInterruptPendingRef();
+		ok = ok && *PgCurrentAsyncUnlistenExitRegisteredRef();
+		ok = ok && *PgCurrentExtensionSiblingListRef() ==
+			(struct ExtensionSiblingCache *) &fake_backend1;
+		ok = ok && *PgCurrentInjectionPointCacheRef() == (HTAB *) &fake_backend1;
+		ok = ok && PgCurrentSamplingOldReservoirRef()->W == 1.25;
+		ok = ok && *PgCurrentSamplingOldReservoirInitializedRef();
 		ok = ok && PgCurrentSeqScanTables()[0] == (HTAB *) &fake_backend1;
 		ok = ok && PgCurrentSeqScanLevels()[0] == 11;
 		ok = ok && *PgCurrentNumSeqScansRef() == 1;
@@ -7049,6 +7076,13 @@ test_backend_utility_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentMissingAttrCacheRef() == (HTAB *) &fake_backend1;
 
 		CurrentPgBackend = &fake_backend2;
+		ok = ok && !*PgCurrentNotifyInterruptPendingRef();
+		ok = ok && *PgCurrentAsyncUnlistenExitRegisteredRef();
+		ok = ok && *PgCurrentExtensionSiblingListRef() ==
+			(struct ExtensionSiblingCache *) &fake_backend2;
+		ok = ok && *PgCurrentInjectionPointCacheRef() == (HTAB *) &fake_backend2;
+		ok = ok && PgCurrentSamplingOldReservoirRef()->W == 2.25;
+		ok = ok && *PgCurrentSamplingOldReservoirInitializedRef();
 		ok = ok && PgCurrentSeqScanTables()[0] == (HTAB *) &fake_backend2;
 		ok = ok && PgCurrentSeqScanLevels()[0] == 22;
 		ok = ok && *PgCurrentNumSeqScansRef() == 1;

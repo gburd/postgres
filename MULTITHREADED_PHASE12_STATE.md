@@ -7292,6 +7292,43 @@ Validation for this slice:
   `test_backend_aio_state_is_backend_local()`, covering all moved AIO fields
   across two fake logical backends.
 
+## Backend Utility Command/Cache State Bridge
+
+The one-hundred-fifty-fourth Phase 12 slice extends `PgBackendUtilityState`
+to cover another command and utility cache group:
+
+- the exported async notify interrupt-pending flag;
+- async's backend-exit UNLISTEN cleanup registration flag;
+- the extension sibling lookup cache head;
+- the injection-point callback cache;
+- the deprecated block-sampling API's shared reservoir state and initialized
+  flag.
+
+`commands/async.h` keeps `notifyInterruptPending` as a source-compatible
+lvalue macro over `PgCurrentNotifyInterruptPendingRef()`. `async.c`,
+`extension.c`, `injection_point.c`, and `sampling.c` keep their private
+historical names as local macros over `PgBackendUtilityState`. The private
+`ExtensionSiblingCache` layout remains local to `extension.c`, with
+`backend_runtime.h` forward-declaring only the struct tag.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `async.o`,
+  `extension.o`, `injection_point.o`, `sampling.o`, and
+  `test_backend_runtime.o`;
+- a backend clean, generated-header recovery, full `gmake -j8`, and
+  `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 69 to 62;
+- `gmake -C contrib -j8` and a clean PL/pgSQL rebuild/install passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct threaded runtime TAP passed all 87 tests with the local
+  `/Users/samwillis/perl5` `PERL5LIB` paths and an explicit `PG_REGRESS`
+  environment;
+- `test_backend_utility_state_is_backend_local()` now covers the moved async,
+  extension, injection-point, and sampling fields across two fake logical
+  backends.
+
 ## Backend Parallel State Bridge
 
 The one-hundred-forty-second Phase 12 slice moves a parallel-query and

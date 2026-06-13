@@ -60,6 +60,7 @@
 #include "storage/fd.h"
 #include "tcop/utility.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/conffiles.h"
 #include "utils/fmgroids.h"
@@ -164,7 +165,7 @@ typedef struct ExtensionSiblingCache
 } ExtensionSiblingCache;
 
 /* Head of linked list of ExtensionSiblingCache structs */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ExtensionSiblingCache *ext_sibling_list = NULL;
+#define ext_sibling_list (*PgCurrentExtensionSiblingListRef())
 
 /* Local functions */
 static void ext_sibling_callback(Datum arg, SysCacheIdentifier cacheid,

@@ -377,6 +377,17 @@ Important current files:
   and installed runtime headers changed; at minimum rebuild and reinstall
   PL/pgSQL, `src/test/modules/test_backend_runtime`, and contrib before
   validating.
+- Utility command/cache state in `PgBackendUtilityState` now also covers
+  async notify pending and exit-registration flags, the extension sibling cache
+  head, the injection-point callback cache, and the legacy sampling reservoir
+  state. `notifyInterruptPending` remains an exported source-compatible macro
+  in `commands/async.h`; `ExtensionSiblingCache` stays private to
+  `extension.c`; injection-point coverage requires an
+  `--enable-injection-points` build for runtime tests. After changing this
+  bridge, clean and rebuild backend objects because `PgBackend` layout and
+  installed runtime headers changed; at minimum rebuild and reinstall
+  PL/pgSQL, `src/test/modules/test_backend_runtime`, and contrib before
+  validating.
 - Parallel worker and pqmq backend-local state now lives in
   `PgBackendParallelState`: `ParallelWorkerNumber`,
   `ParallelMessagePending`, `InitializingParallelWorker`, private parallel
