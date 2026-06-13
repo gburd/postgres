@@ -24,6 +24,7 @@
 #include "storage/ipc.h"
 #include "utils/backend_id.h"
 #include "utils/global_lifetime.h"
+#include "utils/hsearch.h"
 #include "utils/palloc.h"
 
 typedef struct PgRuntime PgRuntime;
@@ -566,6 +567,11 @@ typedef struct PgSessionPlannerMethodState
 	int			join_collapse_limit_value;
 } PgSessionPlannerMethodState;
 
+typedef struct PgSessionPreparedStatementState
+{
+	HTAB	   *prepared_queries;
+} PgSessionPreparedStatementState;
+
 typedef struct PgRuntimeServerGUCState
 {
 	bool		initialized;
@@ -721,6 +727,7 @@ struct PgSession
 	PgSessionQueryMemoryState query_memory;
 	PgSessionPlannerCostState planner_cost;
 	PgSessionPlannerMethodState planner_method;
+	PgSessionPreparedStatementState prepared_statement;
 };
 
 struct PgConnection
@@ -909,6 +916,7 @@ extern int *PgCurrentLogStatementRef(void);
 extern int *PgCurrentPostAuthDelayRef(void);
 extern char **PgCurrentRestrictNonsystemRelationKindStringRef(void);
 extern int *PgCurrentRestrictNonsystemRelationKindRef(void);
+extern HTAB **PgCurrentPreparedQueriesRef(void);
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);

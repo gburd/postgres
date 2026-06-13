@@ -1061,7 +1061,61 @@ test_session_text_search_state_is_session_local(PG_FUNCTION_ARGS)
 	if (!ok)
 		elog(ERROR, "session text-search state was not session-local");
 
-PG_RETURN_BOOL(true);
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_session_prepared_statement_state_is_session_local);
+Datum
+test_session_prepared_statement_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	HTAB	   *saved_prepared_queries;
+	HTAB	   *session1_marker;
+	HTAB	   *session2_marker;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	saved_prepared_queries = *PgCurrentPreparedQueriesRef();
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	session1_marker = (HTAB *) &fake_session1;
+	session2_marker = (HTAB *) &fake_session2;
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && *PgCurrentPreparedQueriesRef() == NULL;
+		*PgCurrentPreparedQueriesRef() = session1_marker;
+		ok = ok && *PgCurrentPreparedQueriesRef() == session1_marker;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && *PgCurrentPreparedQueriesRef() == NULL;
+		*PgCurrentPreparedQueriesRef() = session2_marker;
+		ok = ok && *PgCurrentPreparedQueriesRef() == session2_marker;
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && *PgCurrentPreparedQueriesRef() == session1_marker;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && *PgCurrentPreparedQueriesRef() == session2_marker;
+
+		PgSetCurrentSession(saved_session);
+		*PgCurrentPreparedQueriesRef() = saved_prepared_queries;
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		*PgCurrentPreparedQueriesRef() = saved_prepared_queries;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "prepared statement state was not session-local");
+
+	PG_RETURN_BOOL(true);
 }
 
 PG_FUNCTION_INFO_V1(test_runtime_server_guc_state_is_runtime_local);

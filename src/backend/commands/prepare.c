@@ -33,6 +33,7 @@
 #include "parser/parse_type.h"
 #include "tcop/pquery.h"
 #include "tcop/utility.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/hsearch.h"
 #include "utils/snapmgr.h"
@@ -41,12 +42,12 @@
 
 
 /*
- * The hash table in which prepared queries are stored. This is
- * per-backend: query plans are not shared between backends.
+ * The hash table in which prepared queries are stored. This is per-session:
+ * query plans are not shared between sessions.
  * The keys for this hash table are the arguments to PREPARE and EXECUTE
  * (statement names); the entries are PreparedStatement structs.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *prepared_queries = NULL;
+#define prepared_queries (*PgCurrentPreparedQueriesRef())
 
 static void InitQueryHashTable(void);
 static ParamListInfo EvaluateParams(ParseState *pstate,

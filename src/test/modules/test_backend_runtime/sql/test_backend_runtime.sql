@@ -13,6 +13,7 @@ SELECT test_session_tablespace_state_is_session_local();
 SELECT test_session_binary_upgrade_state_is_session_local();
 SELECT test_session_datetime_state_is_session_local();
 SELECT test_session_text_search_state_is_session_local();
+SELECT test_session_prepared_statement_state_is_session_local();
 SELECT test_runtime_server_guc_state_is_runtime_local();
 SELECT test_session_connection_guc_state_is_session_local();
 SELECT test_session_parser_state_is_session_local();
@@ -49,3 +50,8 @@ SELECT test_connection_interrupt_state_is_connection_local();
 SELECT test_connection_frontend_protocol_is_connection_local();
 SELECT test_connection_startup_state_is_connection_local();
 SELECT test_client_connection_info_is_connection_local();
+PREPARE phase12_prepared_statement AS SELECT 42 AS answer;
+SELECT name, statement, from_sql FROM pg_prepared_statements
+	WHERE name = 'phase12_prepared_statement';
+EXECUTE phase12_prepared_statement;
+DEALLOCATE phase12_prepared_statement;

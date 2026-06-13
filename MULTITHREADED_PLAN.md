@@ -705,7 +705,8 @@ expression/deforming toggles, and debugging/profiling/bitcode flags through
 bridge through `PgSession`, plus the text-search and timezone session
 environment bridge through `PgSession`, plus the connection/tcop exported GUC
 bridge through `PgSession`, plus the server/config-file identity GUC bridge
-through `PgRuntime`.
+through `PgRuntime`, plus the prepared-statement storage bridge through
+`PgSession`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.

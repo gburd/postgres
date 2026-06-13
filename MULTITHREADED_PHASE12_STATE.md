@@ -2310,3 +2310,49 @@ Validation for this slice:
 - static scans found no remaining direct session TLS definitions or extern
   declarations for `cluster_name`, `ConfigFileName`, `HbaFileName`,
   `IdentFileName`, `HostsFileName`, or `external_pid_file`.
+
+## Session Prepared-Statement State Bridge
+
+The forty-fourth Phase 12 slice moves SQL/protocol prepared-statement storage
+under `PgSession`:
+
+- `PgSession` now owns a `PgSessionPreparedStatementState`;
+- `PgSessionPreparedStatementState` owns the `prepared_queries` hash table
+  pointer used by `PREPARE`, `EXECUTE`, `DEALLOCATE`, extended-protocol
+  prepared statements, and `pg_prepared_statements`;
+- `prepare.c` keeps its existing logic through a local compatibility macro
+  backed by `PgCurrentPreparedQueriesRef()`;
+- early startup paths before `CurrentPgSession` is installed use fallback
+  session storage in `backend_runtime.c`;
+- process-mode and thread-runtime session installation adopt or initialize the
+  prepared-statement bucket with the rest of the logical session object.
+
+This removes the raw per-thread prepared-statement TLS bucket and makes
+prepared statements explicitly logical-session state. The migration does not
+make cached plans portable across sessions; it preserves PostgreSQL's existing
+per-session prepared-statement behavior while making the ownership visible to
+the future scheduler.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `prepare.o`, and
+  `test_backend_runtime.o`;
+- because `backend_runtime.h` changed, `gmake -C src/backend clean` plus
+  generated utility and node-header recovery was used before the clean
+  rebuild;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed, followed by rebuilding
+  and reinstalling `src/test/modules/test_backend_runtime` against the
+  current headers;
+- focused `test_backend_runtime` regression includes
+  `test_session_prepared_statement_state_is_session_local()`, which switches
+  fake sessions through `PgSetCurrentSession()` and proves the prepared-query
+  pointer follows the active session object;
+- the same regression schedule includes a SQL-level `PREPARE`, visibility
+  check through `pg_prepared_statements`, `EXECUTE`, and `DEALLOCATE` smoke;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests, including `prepare`, `plancache`, and PL/pgSQL coverage;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- static scans found no remaining direct session TLS definition for
+  `prepared_queries`.

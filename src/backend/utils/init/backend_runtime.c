@@ -430,6 +430,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPlannerMethodState early_sessi
 	.from_collapse_limit_value = 8,
 	.join_collapse_limit_value = 8
 };
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPreparedStatementState early_session_prepared_statement;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendPendingInterruptState early_pending_interrupts;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInterruptHoldoffState early_interrupt_holdoffs;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionDebugState early_execution_debug;
@@ -503,6 +504,8 @@ static void PgSessionInitializePlannerCostState(PgSessionPlannerCostState *plann
 static void PgSessionAdoptEarlyPlannerCostState(PgSession *session);
 static void PgSessionInitializePlannerMethodState(PgSessionPlannerMethodState *planner_method);
 static void PgSessionAdoptEarlyPlannerMethodState(PgSession *session);
+static void PgSessionInitializePreparedStatementState(PgSessionPreparedStatementState *prepared_statement);
+static void PgSessionAdoptEarlyPreparedStatementState(PgSession *session);
 static void PgBackendResetCoreState(PgBackendCoreState *core);
 static void PgBackendAdoptEarlyCoreState(PgBackend *backend);
 static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
@@ -539,6 +542,7 @@ static PgSessionSortGUCState *PgCurrentSessionSortGUCState(void);
 static PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
 static PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
 static PgSessionPlannerMethodState *PgCurrentSessionPlannerMethodState(void);
+static PgSessionPreparedStatementState *PgCurrentSessionPreparedStatementState(void);
 static PgExecutionErrorState *PgCurrentExecutionErrorState(void);
 static PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
 static PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
@@ -1416,6 +1420,23 @@ PgSessionAdoptEarlyPlannerMethodState(PgSession *session)
 }
 
 static void
+PgSessionInitializePreparedStatementState(PgSessionPreparedStatementState *prepared_statement)
+{
+	Assert(prepared_statement != NULL);
+
+	prepared_statement->prepared_queries = NULL;
+}
+
+static void
+PgSessionAdoptEarlyPreparedStatementState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	session->prepared_statement = early_session_prepared_statement;
+	PgSessionInitializePreparedStatementState(&early_session_prepared_statement);
+}
+
+static void
 PgBackendResetCoreState(PgBackendCoreState *core)
 {
 	MemSet(core, 0, sizeof(*core));
@@ -1578,6 +1599,7 @@ InitializePgProcessRuntime(void)
 	PgSessionAdoptEarlyQueryMemoryState(&process_session);
 	PgSessionAdoptEarlyPlannerCostState(&process_session);
 	PgSessionAdoptEarlyPlannerMethodState(&process_session);
+	PgSessionAdoptEarlyPreparedStatementState(&process_session);
 
 	process_connection.backend = &process_backend;
 	process_connection.session = &process_session;
@@ -1686,6 +1708,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgSessionInitializeQueryMemoryState(&state->session.query_memory);
 	PgSessionInitializePlannerCostState(&state->session.planner_cost);
 	PgSessionInitializePlannerMethodState(&state->session.planner_method);
+	PgSessionInitializePreparedStatementState(&state->session.prepared_statement);
 
 	state->connection.backend = &state->backend;
 	state->connection.session = &state->session;
@@ -1731,6 +1754,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgSessionAdoptEarlyQueryMemoryState(&state->session);
 	PgSessionAdoptEarlyPlannerCostState(&state->session);
 	PgSessionAdoptEarlyPlannerMethodState(&state->session);
+	PgSessionAdoptEarlyPreparedStatementState(&state->session);
 	PgExecutionAdoptEarlyErrorState(&state->execution);
 	PgExecutionAdoptEarlyMemoryContexts(&state->execution);
 	PgExecutionAdoptEarlyResourceOwners(&state->execution);
@@ -2211,6 +2235,15 @@ PgCurrentSessionPlannerMethodState(void)
 	return planner_method;
 }
 
+static PgSessionPreparedStatementState *
+PgCurrentSessionPreparedStatementState(void)
+{
+	if (CurrentPgSession == NULL)
+		return &early_session_prepared_statement;
+
+	return &CurrentPgSession->prepared_statement;
+}
+
 Oid *
 PgCurrentMyDatabaseIdRef(void)
 {
@@ -2485,6 +2518,12 @@ int *
 PgCurrentRestrictNonsystemRelationKindRef(void)
 {
 	return &PgCurrentSessionConnectionGUCState()->restrict_nonsystem_relation_kind_value;
+}
+
+HTAB **
+PgCurrentPreparedQueriesRef(void)
+{
+	return &PgCurrentSessionPreparedStatementState()->prepared_queries;
 }
 
 bool *
