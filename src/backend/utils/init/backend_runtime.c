@@ -35,6 +35,7 @@
 #include "replication/slotsync.h"
 #include "storage/bufmgr.h"
 #include "storage/latch.h"
+#include "storage/lock.h"
 #include "storage/proc.h"
 #include "storage/procsignal.h"
 #include "storage/sinval.h"
@@ -142,6 +143,23 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionXactDefaultState early_session
 	.default_xact_deferrable = false,
 	.synchronous_commit_value = SYNCHRONOUS_COMMIT_ON
 };
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionLockWaitState early_session_lock_wait = {
+	.initialized = true,
+	.deadlock_timeout_ms = 1000,
+	.statement_timeout_ms = 0,
+	.lock_timeout_ms = 0,
+	.idle_in_transaction_session_timeout_ms = 0,
+	.transaction_timeout_ms = 0,
+	.idle_session_timeout_ms = 0,
+	.log_lock_waits_value = true,
+	.log_lock_failures_value = false,
+	.trace_lock_oidmin_value = FirstNormalObjectId,
+	.trace_locks_value = false,
+	.trace_userlocks_value = false,
+	.trace_lock_table_value = 0,
+	.debug_deadlocks_value = false,
+	.trace_lwlocks_value = false
+};
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionQueryMemoryState early_session_query_memory = {
 	.initialized = true,
 	.work_mem_kb = 4096,
@@ -242,6 +260,8 @@ static void PgSessionInitializeBufferIOState(PgSessionBufferIOState *buffer_io);
 static void PgSessionAdoptEarlyBufferIOState(PgSession *session);
 static void PgSessionInitializeXactDefaultState(PgSessionXactDefaultState *xact_defaults);
 static void PgSessionAdoptEarlyXactDefaultState(PgSession *session);
+static void PgSessionInitializeLockWaitState(PgSessionLockWaitState *lock_wait);
+static void PgSessionAdoptEarlyLockWaitState(PgSession *session);
 static void PgSessionInitializeQueryMemoryState(PgSessionQueryMemoryState *query_memory);
 static void PgSessionAdoptEarlyQueryMemoryState(PgSession *session);
 static void PgSessionInitializePlannerCostState(PgSessionPlannerCostState *planner_cost);
@@ -266,6 +286,7 @@ static PgSessionParserState *PgCurrentSessionParserState(void);
 static PgSessionVacuumState *PgCurrentSessionVacuumState(void);
 static PgSessionBufferIOState *PgCurrentSessionBufferIOState(void);
 static PgSessionXactDefaultState *PgCurrentSessionXactDefaultState(void);
+static PgSessionLockWaitState *PgCurrentSessionLockWaitState(void);
 static PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
 static PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
 static PgSessionPlannerMethodState *PgCurrentSessionPlannerMethodState(void);
@@ -551,6 +572,40 @@ PgSessionAdoptEarlyXactDefaultState(PgSession *session)
 }
 
 static void
+PgSessionInitializeLockWaitState(PgSessionLockWaitState *lock_wait)
+{
+	Assert(lock_wait != NULL);
+
+	lock_wait->initialized = true;
+	lock_wait->deadlock_timeout_ms = 1000;
+	lock_wait->statement_timeout_ms = 0;
+	lock_wait->lock_timeout_ms = 0;
+	lock_wait->idle_in_transaction_session_timeout_ms = 0;
+	lock_wait->transaction_timeout_ms = 0;
+	lock_wait->idle_session_timeout_ms = 0;
+	lock_wait->log_lock_waits_value = true;
+	lock_wait->log_lock_failures_value = false;
+	lock_wait->trace_lock_oidmin_value = FirstNormalObjectId;
+	lock_wait->trace_locks_value = false;
+	lock_wait->trace_userlocks_value = false;
+	lock_wait->trace_lock_table_value = 0;
+	lock_wait->debug_deadlocks_value = false;
+	lock_wait->trace_lwlocks_value = false;
+}
+
+static void
+PgSessionAdoptEarlyLockWaitState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (!early_session_lock_wait.initialized)
+		PgSessionInitializeLockWaitState(&early_session_lock_wait);
+
+	session->lock_wait = early_session_lock_wait;
+	PgSessionInitializeLockWaitState(&early_session_lock_wait);
+}
+
+static void
 PgSessionInitializeQueryMemoryState(PgSessionQueryMemoryState *query_memory)
 {
 	Assert(query_memory != NULL);
@@ -816,6 +871,7 @@ InitializePgProcessRuntime(void)
 	PgSessionAdoptEarlyVacuumState(&process_session);
 	PgSessionAdoptEarlyBufferIOState(&process_session);
 	PgSessionAdoptEarlyXactDefaultState(&process_session);
+	PgSessionAdoptEarlyLockWaitState(&process_session);
 	PgSessionAdoptEarlyQueryMemoryState(&process_session);
 	PgSessionAdoptEarlyPlannerCostState(&process_session);
 	PgSessionAdoptEarlyPlannerMethodState(&process_session);
@@ -905,6 +961,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgSessionInitializeVacuumState(&state->session.vacuum);
 	PgSessionInitializeBufferIOState(&state->session.buffer_io);
 	PgSessionInitializeXactDefaultState(&state->session.xact_defaults);
+	PgSessionInitializeLockWaitState(&state->session.lock_wait);
 	PgSessionInitializeQueryMemoryState(&state->session.query_memory);
 	PgSessionInitializePlannerCostState(&state->session.planner_cost);
 	PgSessionInitializePlannerMethodState(&state->session.planner_method);
@@ -935,6 +992,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgSessionAdoptEarlyVacuumState(&state->session);
 	PgSessionAdoptEarlyBufferIOState(&state->session);
 	PgSessionAdoptEarlyXactDefaultState(&state->session);
+	PgSessionAdoptEarlyLockWaitState(&state->session);
 	PgSessionAdoptEarlyQueryMemoryState(&state->session);
 	PgSessionAdoptEarlyPlannerCostState(&state->session);
 	PgSessionAdoptEarlyPlannerMethodState(&state->session);
@@ -1112,6 +1170,22 @@ PgCurrentSessionXactDefaultState(void)
 		PgSessionInitializeXactDefaultState(xact_defaults);
 
 	return xact_defaults;
+}
+
+static PgSessionLockWaitState *
+PgCurrentSessionLockWaitState(void)
+{
+	PgSessionLockWaitState *lock_wait;
+
+	if (CurrentPgSession == NULL)
+		lock_wait = &early_session_lock_wait;
+	else
+		lock_wait = &CurrentPgSession->lock_wait;
+
+	if (!lock_wait->initialized)
+		PgSessionInitializeLockWaitState(lock_wait);
+
+	return lock_wait;
 }
 
 static PgSessionQueryMemoryState *
@@ -1490,6 +1564,90 @@ int *
 PgCurrentSynchronousCommitRef(void)
 {
 	return &PgCurrentSessionXactDefaultState()->synchronous_commit_value;
+}
+
+int *
+PgCurrentDeadlockTimeoutRef(void)
+{
+	return &PgCurrentSessionLockWaitState()->deadlock_timeout_ms;
+}
+
+int *
+PgCurrentStatementTimeoutRef(void)
+{
+	return &PgCurrentSessionLockWaitState()->statement_timeout_ms;
+}
+
+int *
+PgCurrentLockTimeoutRef(void)
+{
+	return &PgCurrentSessionLockWaitState()->lock_timeout_ms;
+}
+
+int *
+PgCurrentIdleInTransactionSessionTimeoutRef(void)
+{
+	return &PgCurrentSessionLockWaitState()->idle_in_transaction_session_timeout_ms;
+}
+
+int *
+PgCurrentTransactionTimeoutRef(void)
+{
+	return &PgCurrentSessionLockWaitState()->transaction_timeout_ms;
+}
+
+int *
+PgCurrentIdleSessionTimeoutRef(void)
+{
+	return &PgCurrentSessionLockWaitState()->idle_session_timeout_ms;
+}
+
+bool *
+PgCurrentLogLockWaitsRef(void)
+{
+	return &PgCurrentSessionLockWaitState()->log_lock_waits_value;
+}
+
+bool *
+PgCurrentLogLockFailuresRef(void)
+{
+	return &PgCurrentSessionLockWaitState()->log_lock_failures_value;
+}
+
+int *
+PgCurrentTraceLockOidMinRef(void)
+{
+	return &PgCurrentSessionLockWaitState()->trace_lock_oidmin_value;
+}
+
+bool *
+PgCurrentTraceLocksRef(void)
+{
+	return &PgCurrentSessionLockWaitState()->trace_locks_value;
+}
+
+bool *
+PgCurrentTraceUserlocksRef(void)
+{
+	return &PgCurrentSessionLockWaitState()->trace_userlocks_value;
+}
+
+int *
+PgCurrentTraceLockTableRef(void)
+{
+	return &PgCurrentSessionLockWaitState()->trace_lock_table_value;
+}
+
+bool *
+PgCurrentDebugDeadlocksRef(void)
+{
+	return &PgCurrentSessionLockWaitState()->debug_deadlocks_value;
+}
+
+bool *
+PgCurrentTraceLwlocksRef(void)
+{
+	return &PgCurrentSessionLockWaitState()->trace_lwlocks_value;
 }
 
 int *

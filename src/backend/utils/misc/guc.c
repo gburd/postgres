@@ -1593,6 +1593,10 @@ RebindSessionGUCVariablePointers(void)
 	Assert(gconf->vartype == PGC_INT);
 	gconf->_int.variable = PgCurrentBackendFlushAfterRef();
 
+	gconf = find_option("deadlock_timeout", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentDeadlockTimeoutRef();
+
 	gconf = find_option("default_statistics_target", false, false, PANIC);
 	Assert(gconf->vartype == PGC_INT);
 	gconf->_int.variable = PgCurrentDefaultStatisticsTargetRef();
@@ -1613,6 +1617,15 @@ RebindSessionGUCVariablePointers(void)
 	gconf = find_option("IntervalStyle", false, false, PANIC);
 	Assert(gconf->vartype == PGC_ENUM);
 	gconf->_enum.variable = PgCurrentIntervalStyleRef();
+
+	gconf = find_option("idle_in_transaction_session_timeout", false, false,
+						PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentIdleInTransactionSessionTimeoutRef();
+
+	gconf = find_option("idle_session_timeout", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentIdleSessionTimeoutRef();
 
 	gconf = find_option("allow_in_place_tablespaces", false, false, PANIC);
 	Assert(gconf->vartype == PGC_BOOL);
@@ -1813,6 +1826,18 @@ RebindSessionGUCVariablePointers(void)
 	Assert(gconf->vartype == PGC_INT);
 	gconf->_int.variable = PgCurrentJoinCollapseLimitRef();
 
+	gconf = find_option("lock_timeout", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentLockTimeoutRef();
+
+	gconf = find_option("log_lock_failures", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentLogLockFailuresRef();
+
+	gconf = find_option("log_lock_waits", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentLogLockWaitsRef();
+
 	gconf = find_option("maintenance_io_concurrency", false, false, PANIC);
 	Assert(gconf->vartype == PGC_INT);
 	gconf->_int.variable = PgCurrentMaintenanceIOConcurrencyRef();
@@ -1820,6 +1845,40 @@ RebindSessionGUCVariablePointers(void)
 	gconf = find_option("synchronous_commit", false, false, PANIC);
 	Assert(gconf->vartype == PGC_ENUM);
 	gconf->_enum.variable = PgCurrentSynchronousCommitRef();
+
+	gconf = find_option("statement_timeout", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentStatementTimeoutRef();
+
+	gconf = find_option("transaction_timeout", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentTransactionTimeoutRef();
+
+#ifdef LOCK_DEBUG
+	gconf = find_option("debug_deadlocks", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentDebugDeadlocksRef();
+
+	gconf = find_option("trace_lock_oidmin", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentTraceLockOidMinRef();
+
+	gconf = find_option("trace_lock_table", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentTraceLockTableRef();
+
+	gconf = find_option("trace_locks", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentTraceLocksRef();
+
+	gconf = find_option("trace_lwlocks", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentTraceLwlocksRef();
+
+	gconf = find_option("trace_userlocks", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentTraceUserlocksRef();
+#endif
 
 	gconf = find_option("max_parallel_workers_per_gather", false, false,
 						PANIC);

@@ -1438,3 +1438,62 @@ Validation for this slice:
   header migration;
 - static scans found no remaining direct session TLS definitions or extern
   declarations for the moved transaction default names.
+
+## Session Lock/Wait GUC State Bridge
+
+The twenty-eighth Phase 12 slice moves lock/wait timeout and lock debug GUC
+state under `PgSession`:
+
+- `PgSession` now owns a `PgSessionLockWaitState`;
+- the exported lock/wait GUC backing variables remain source-compatible lvalue
+  macros in `storage/proc.h`, `storage/lock.h`, and `storage/lwlock.h`;
+- the macros route through `PgCurrent*Ref()` accessors that return fields in
+  the active logical session;
+- zeroed logical session objects lazily initialize the timeout, lock logging,
+  and lock debug fields to their historical defaults, including
+  `deadlock_timeout = 1000`, zero-valued statement/lock/idle/transaction
+  timeouts, `log_lock_waits = true`, and `log_lock_failures = false`;
+- early startup paths before `CurrentPgSession` is installed use fallback
+  session-local storage in `backend_runtime.c`;
+- process-mode and thread-runtime session installation adopt any early
+  fallback lock/wait state into the logical session object;
+- `RebindSessionGUCVariablePointers()` now rebinds the generated GUC records
+  for `deadlock_timeout`, `statement_timeout`, `lock_timeout`,
+  `idle_in_transaction_session_timeout`, `transaction_timeout`,
+  `idle_session_timeout`, `log_lock_waits`, and `log_lock_failures` whenever
+  the active logical session changes;
+- `LOCK_DEBUG` GUC state for `debug_deadlocks`, `trace_lock_oidmin`,
+  `trace_lock_table`, `trace_locks`, `trace_lwlocks`, and `trace_userlocks`
+  is included in `PgSessionLockWaitState` and in the GUC rebind/test path
+  under `#ifdef LOCK_DEBUG`; this checkout is a non-`LOCK_DEBUG` build, so
+  that coverage is static plus non-debug compile coverage here.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `proc.o`, `lock.o`,
+  `lwlock.o`, `guc.o`, and `test_backend_runtime.o`;
+- because exported lock/wait GUC globals changed into compatibility macros,
+  `gmake -C src/backend clean` plus generated utility and node-header recovery
+  was used before the clean rebuild;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed, followed by rebuilding
+  and reinstalling `src/test/modules/test_backend_runtime`,
+  `src/test/regress`, `libpqwalreceiver`, and `src/backend/snowball`;
+- focused `test_backend_runtime` regression passed and includes
+  `test_session_lock_wait_state_is_session_local()`, which switches sessions
+  through `PgSetCurrentSession()`, sets the lock/wait timeout and lock logging
+  values through the GUC machinery, and proves the values follow the active
+  session after GUC pointer rebinding;
+- direct threaded-runtime TAP coverage was attempted for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`,
+  but this system Perl is missing `IPC::Run`, so both tests failed before
+  starting PostgreSQL;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests, including lock, timeout-adjacent GUC, subscription, and PL/pgSQL
+  coverage;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- `git diff --check` passed;
+- static scans found no remaining direct session TLS definitions or extern
+  declarations for the moved lock/wait names.

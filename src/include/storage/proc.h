@@ -538,13 +538,20 @@ extern PGDLLIMPORT PG_GLOBAL_SHMEM PGPROC *PreparedXactProcs;
 #define FIRST_PREPARED_XACT_PROC_NUMBER	(MaxBackends + NUM_AUXILIARY_PROCS)
 
 /* configurable options */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int DeadlockTimeout;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int StatementTimeout;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int LockTimeout;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int IdleInTransactionSessionTimeout;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int TransactionTimeout;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int IdleSessionTimeout;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_lock_waits;
+extern int *PgCurrentDeadlockTimeoutRef(void);
+extern int *PgCurrentStatementTimeoutRef(void);
+extern int *PgCurrentLockTimeoutRef(void);
+extern int *PgCurrentIdleInTransactionSessionTimeoutRef(void);
+extern int *PgCurrentTransactionTimeoutRef(void);
+extern int *PgCurrentIdleSessionTimeoutRef(void);
+extern bool *PgCurrentLogLockWaitsRef(void);
+#define DeadlockTimeout (*PgCurrentDeadlockTimeoutRef())
+#define StatementTimeout (*PgCurrentStatementTimeoutRef())
+#define LockTimeout (*PgCurrentLockTimeoutRef())
+#define IdleInTransactionSessionTimeout (*PgCurrentIdleInTransactionSessionTimeoutRef())
+#define TransactionTimeout (*PgCurrentTransactionTimeoutRef())
+#define IdleSessionTimeout (*PgCurrentIdleSessionTimeoutRef())
+#define log_lock_waits (*PgCurrentLogLockWaitsRef())
 
 #ifdef EXEC_BACKEND
 extern PGDLLIMPORT PG_GLOBAL_SHMEM PGPROC *AuxiliaryProcs;

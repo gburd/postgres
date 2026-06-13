@@ -36,6 +36,7 @@
 #include "storage/dsm.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
+#include "storage/lock.h"
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"
 #include "utils/backend_runtime.h"
@@ -1442,6 +1443,277 @@ test_session_xact_defaults_are_session_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "session transaction default GUC state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_session_lock_wait_state_is_session_local);
+Datum
+test_session_lock_wait_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	char	   *saved_deadlock_timeout;
+	char	   *saved_statement_timeout;
+	char	   *saved_lock_timeout;
+	char	   *saved_idle_in_transaction_session_timeout;
+	char	   *saved_transaction_timeout;
+	char	   *saved_idle_session_timeout;
+	char	   *saved_log_lock_waits;
+	char	   *saved_log_lock_failures;
+#ifdef LOCK_DEBUG
+	char	   *saved_debug_deadlocks;
+	char	   *saved_trace_lock_oidmin;
+	char	   *saved_trace_lock_table;
+	char	   *saved_trace_locks;
+	char	   *saved_trace_lwlocks;
+	char	   *saved_trace_userlocks;
+#endif
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	saved_deadlock_timeout =
+		pstrdup(GetConfigOption("deadlock_timeout", false, false));
+	saved_statement_timeout =
+		pstrdup(GetConfigOption("statement_timeout", false, false));
+	saved_lock_timeout =
+		pstrdup(GetConfigOption("lock_timeout", false, false));
+	saved_idle_in_transaction_session_timeout =
+		pstrdup(GetConfigOption("idle_in_transaction_session_timeout",
+								false, false));
+	saved_transaction_timeout =
+		pstrdup(GetConfigOption("transaction_timeout", false, false));
+	saved_idle_session_timeout =
+		pstrdup(GetConfigOption("idle_session_timeout", false, false));
+	saved_log_lock_waits =
+		pstrdup(GetConfigOption("log_lock_waits", false, false));
+	saved_log_lock_failures =
+		pstrdup(GetConfigOption("log_lock_failures", false, false));
+#ifdef LOCK_DEBUG
+	saved_debug_deadlocks =
+		pstrdup(GetConfigOption("debug_deadlocks", false, false));
+	saved_trace_lock_oidmin =
+		pstrdup(GetConfigOption("trace_lock_oidmin", false, false));
+	saved_trace_lock_table =
+		pstrdup(GetConfigOption("trace_lock_table", false, false));
+	saved_trace_locks =
+		pstrdup(GetConfigOption("trace_locks", false, false));
+	saved_trace_lwlocks =
+		pstrdup(GetConfigOption("trace_lwlocks", false, false));
+	saved_trace_userlocks =
+		pstrdup(GetConfigOption("trace_userlocks", false, false));
+#endif
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && DeadlockTimeout == 1000;
+		ok = ok && StatementTimeout == 0;
+		ok = ok && LockTimeout == 0;
+		ok = ok && IdleInTransactionSessionTimeout == 0;
+		ok = ok && TransactionTimeout == 0;
+		ok = ok && IdleSessionTimeout == 0;
+		ok = ok && log_lock_waits;
+		ok = ok && !log_lock_failures;
+		SetConfigOption("deadlock_timeout", "2000",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("statement_timeout", "3000",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("lock_timeout", "4000",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("idle_in_transaction_session_timeout", "5000",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("transaction_timeout", "6000",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("idle_session_timeout", "7000",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("log_lock_waits", "off",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_lock_failures", "on",
+						PGC_SUSET, PGC_S_SESSION);
+#ifdef LOCK_DEBUG
+		SetConfigOption("debug_deadlocks", "on",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("trace_lock_oidmin", "20000",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("trace_lock_table", "30000",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("trace_locks", "on",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("trace_lwlocks", "on",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("trace_userlocks", "on",
+						PGC_SUSET, PGC_S_SESSION);
+#endif
+		ok = ok && DeadlockTimeout == 2000;
+		ok = ok && StatementTimeout == 3000;
+		ok = ok && LockTimeout == 4000;
+		ok = ok && IdleInTransactionSessionTimeout == 5000;
+		ok = ok && TransactionTimeout == 6000;
+		ok = ok && IdleSessionTimeout == 7000;
+		ok = ok && !log_lock_waits;
+		ok = ok && log_lock_failures;
+#ifdef LOCK_DEBUG
+		ok = ok && Debug_deadlocks;
+		ok = ok && Trace_lock_oidmin == 20000;
+		ok = ok && Trace_lock_table == 30000;
+		ok = ok && Trace_locks;
+		ok = ok && Trace_lwlocks;
+		ok = ok && Trace_userlocks;
+#endif
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && DeadlockTimeout == 1000;
+		ok = ok && StatementTimeout == 0;
+		ok = ok && LockTimeout == 0;
+		ok = ok && IdleInTransactionSessionTimeout == 0;
+		ok = ok && TransactionTimeout == 0;
+		ok = ok && IdleSessionTimeout == 0;
+		ok = ok && log_lock_waits;
+		ok = ok && !log_lock_failures;
+		SetConfigOption("deadlock_timeout", "1100",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("statement_timeout", "1200",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("lock_timeout", "1300",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("idle_in_transaction_session_timeout", "1400",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("transaction_timeout", "1500",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("idle_session_timeout", "1600",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("log_lock_waits", "on",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_lock_failures", "off",
+						PGC_SUSET, PGC_S_SESSION);
+#ifdef LOCK_DEBUG
+		SetConfigOption("debug_deadlocks", "off",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("trace_lock_oidmin", "10000",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("trace_lock_table", "0",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("trace_locks", "off",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("trace_lwlocks", "off",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("trace_userlocks", "off",
+						PGC_SUSET, PGC_S_SESSION);
+#endif
+		ok = ok && DeadlockTimeout == 1100;
+		ok = ok && StatementTimeout == 1200;
+		ok = ok && LockTimeout == 1300;
+		ok = ok && IdleInTransactionSessionTimeout == 1400;
+		ok = ok && TransactionTimeout == 1500;
+		ok = ok && IdleSessionTimeout == 1600;
+		ok = ok && log_lock_waits;
+		ok = ok && !log_lock_failures;
+#ifdef LOCK_DEBUG
+		ok = ok && !Debug_deadlocks;
+		ok = ok && Trace_lock_oidmin == 10000;
+		ok = ok && Trace_lock_table == 0;
+		ok = ok && !Trace_locks;
+		ok = ok && !Trace_lwlocks;
+		ok = ok && !Trace_userlocks;
+#endif
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && DeadlockTimeout == 2000;
+		ok = ok && StatementTimeout == 3000;
+		ok = ok && LockTimeout == 4000;
+		ok = ok && IdleInTransactionSessionTimeout == 5000;
+		ok = ok && TransactionTimeout == 6000;
+		ok = ok && IdleSessionTimeout == 7000;
+		ok = ok && !log_lock_waits;
+		ok = ok && log_lock_failures;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && DeadlockTimeout == 1100;
+		ok = ok && StatementTimeout == 1200;
+		ok = ok && LockTimeout == 1300;
+		ok = ok && IdleInTransactionSessionTimeout == 1400;
+		ok = ok && TransactionTimeout == 1500;
+		ok = ok && IdleSessionTimeout == 1600;
+		ok = ok && log_lock_waits;
+		ok = ok && !log_lock_failures;
+
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("deadlock_timeout", saved_deadlock_timeout,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("statement_timeout", saved_statement_timeout,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("lock_timeout", saved_lock_timeout,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("idle_in_transaction_session_timeout",
+						saved_idle_in_transaction_session_timeout,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("transaction_timeout", saved_transaction_timeout,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("idle_session_timeout", saved_idle_session_timeout,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("log_lock_waits", saved_log_lock_waits,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_lock_failures", saved_log_lock_failures,
+						PGC_SUSET, PGC_S_SESSION);
+#ifdef LOCK_DEBUG
+		SetConfigOption("debug_deadlocks", saved_debug_deadlocks,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("trace_lock_oidmin", saved_trace_lock_oidmin,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("trace_lock_table", saved_trace_lock_table,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("trace_locks", saved_trace_locks,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("trace_lwlocks", saved_trace_lwlocks,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("trace_userlocks", saved_trace_userlocks,
+						PGC_SUSET, PGC_S_SESSION);
+#endif
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("deadlock_timeout", saved_deadlock_timeout,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("statement_timeout", saved_statement_timeout,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("lock_timeout", saved_lock_timeout,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("idle_in_transaction_session_timeout",
+						saved_idle_in_transaction_session_timeout,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("transaction_timeout", saved_transaction_timeout,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("idle_session_timeout", saved_idle_session_timeout,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("log_lock_waits", saved_log_lock_waits,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_lock_failures", saved_log_lock_failures,
+						PGC_SUSET, PGC_S_SESSION);
+#ifdef LOCK_DEBUG
+		SetConfigOption("debug_deadlocks", saved_debug_deadlocks,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("trace_lock_oidmin", saved_trace_lock_oidmin,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("trace_lock_table", saved_trace_lock_table,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("trace_locks", saved_trace_locks,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("trace_lwlocks", saved_trace_lwlocks,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("trace_userlocks", saved_trace_userlocks,
+						PGC_SUSET, PGC_S_SESSION);
+#endif
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session lock/wait GUC state was not session-local");
 
 	PG_RETURN_BOOL(true);
 }

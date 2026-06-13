@@ -33,14 +33,20 @@ typedef struct PGPROC PGPROC;
 
 /* GUC variables */
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_locks_per_xact;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_lock_failures;
+extern bool *PgCurrentLogLockFailuresRef(void);
+#define log_lock_failures (*PgCurrentLogLockFailuresRef())
 
 #ifdef LOCK_DEBUG
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int Trace_lock_oidmin;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Trace_locks;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Trace_userlocks;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int Trace_lock_table;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_deadlocks;
+extern int *PgCurrentTraceLockOidMinRef(void);
+extern bool *PgCurrentTraceLocksRef(void);
+extern bool *PgCurrentTraceUserlocksRef(void);
+extern int *PgCurrentTraceLockTableRef(void);
+extern bool *PgCurrentDebugDeadlocksRef(void);
+#define Trace_lock_oidmin (*PgCurrentTraceLockOidMinRef())
+#define Trace_locks (*PgCurrentTraceLocksRef())
+#define Trace_userlocks (*PgCurrentTraceUserlocksRef())
+#define Trace_lock_table (*PgCurrentTraceLockTableRef())
+#define Debug_deadlocks (*PgCurrentDebugDeadlocksRef())
 #endif							/* LOCK_DEBUG */
 
 

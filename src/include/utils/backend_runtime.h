@@ -276,6 +276,25 @@ typedef struct PgSessionXactDefaultState
 	int			synchronous_commit_value;
 } PgSessionXactDefaultState;
 
+typedef struct PgSessionLockWaitState
+{
+	bool		initialized;
+	int			deadlock_timeout_ms;
+	int			statement_timeout_ms;
+	int			lock_timeout_ms;
+	int			idle_in_transaction_session_timeout_ms;
+	int			transaction_timeout_ms;
+	int			idle_session_timeout_ms;
+	bool		log_lock_waits_value;
+	bool		log_lock_failures_value;
+	int			trace_lock_oidmin_value;
+	bool		trace_locks_value;
+	bool		trace_userlocks_value;
+	int			trace_lock_table_value;
+	bool		debug_deadlocks_value;
+	bool		trace_lwlocks_value;
+} PgSessionLockWaitState;
+
 typedef struct PgSessionQueryMemoryState
 {
 	bool		initialized;
@@ -473,6 +492,7 @@ struct PgSession
 	PgSessionVacuumState vacuum;
 	PgSessionBufferIOState buffer_io;
 	PgSessionXactDefaultState xact_defaults;
+	PgSessionLockWaitState lock_wait;
 	PgSessionQueryMemoryState query_memory;
 	PgSessionPlannerCostState planner_cost;
 	PgSessionPlannerMethodState planner_method;
@@ -523,6 +543,20 @@ extern MemoryContext *PgMessageContextRef(void);
 extern MemoryContext *PgTopTransactionContextRef(void);
 extern MemoryContext *PgCurTransactionContextRef(void);
 extern MemoryContext *PgPortalContextRef(void);
+extern int *PgCurrentDeadlockTimeoutRef(void);
+extern int *PgCurrentStatementTimeoutRef(void);
+extern int *PgCurrentLockTimeoutRef(void);
+extern int *PgCurrentIdleInTransactionSessionTimeoutRef(void);
+extern int *PgCurrentTransactionTimeoutRef(void);
+extern int *PgCurrentIdleSessionTimeoutRef(void);
+extern bool *PgCurrentLogLockWaitsRef(void);
+extern bool *PgCurrentLogLockFailuresRef(void);
+extern int *PgCurrentTraceLockOidMinRef(void);
+extern bool *PgCurrentTraceLocksRef(void);
+extern bool *PgCurrentTraceUserlocksRef(void);
+extern int *PgCurrentTraceLockTableRef(void);
+extern bool *PgCurrentDebugDeadlocksRef(void);
+extern bool *PgCurrentTraceLwlocksRef(void);
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);

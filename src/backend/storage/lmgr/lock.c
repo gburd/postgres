@@ -54,7 +54,6 @@
 
 /* GUC variables */
 PG_GLOBAL_RUNTIME int max_locks_per_xact;	/* used to set the lock table size */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_lock_failures = false;
 
 #define NLOCKENTS() \
 	mul_size(max_locks_per_xact, add_size(MaxBackends, max_prepared_xacts))
@@ -358,13 +357,6 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ResourceOwner awaitedOwner;
  * Define LOCK_DEBUG at compile time to get all these enabled.
  * --------
  */
-
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int Trace_lock_oidmin = FirstNormalObjectId;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Trace_locks = false;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Trace_userlocks = false;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int Trace_lock_table = 0;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_deadlocks = false;
-
 
 inline static bool
 LOCK_DEBUG_ENABLED(const LOCKTAG *tag)
