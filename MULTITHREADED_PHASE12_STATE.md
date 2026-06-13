@@ -6819,3 +6819,48 @@ Validation for this slice:
   `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
   87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
   explicit `PG_REGRESS` environment.
+
+## Backend Utility Cache State Bridge
+
+The one-hundred-forty-first Phase 12 slice extends `PgBackendUtilityState` to
+cover a larger utility cache/scratch-state group:
+
+- date/time token lookup caches in `datetime.c`;
+- cached constants for degree-based trigonometric functions in `float.c`;
+- date/time and numeric format-picture caches in `formatting.c`;
+- the optional libxml allocation context in `xml.c`;
+- the pass-by-reference missing-attribute datum cache in `heaptuple.c`.
+
+The date/time and formatting cache entry types remain private to their owning
+source files. `PgBackendUtilityState` stores those arrays as opaque pointers,
+and the source files cast them through file-local compatibility macros. The
+runtime header defines only the fixed cache sizes and scalar fields; owning
+files assert that their local cache-size constants match the runtime storage.
+
+Validation for this slice:
+
+- `gmake -C src/backend/utils/init backend_runtime.o` passed;
+- `gmake -C src/backend/utils/adt datetime.o float.o formatting.o xml.o`
+  passed;
+- `gmake -C src/backend/access/common heaptuple.o` passed;
+- `gmake -C src/test/modules/test_backend_runtime test_backend_runtime.o`
+  passed after expanding `test_backend_utility_state_is_backend_local()`;
+- a static scan found no remaining raw TLS declarations for the moved
+  date/time, float, formatting, libxml-context, or missing-attribute cache
+  state;
+- a full backend clean plus generated-header recovery was run after the
+  installed-header and `PgBackend` layout changes;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 280 to 262;
+- `gmake -C contrib -j8` passed;
+- PL/pgSQL and `src/test/modules/test_backend_runtime` were cleaned, rebuilt,
+  and reinstalled after the installed-header change;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression, including the expanded utility-state helper, and
+  still reported TAP disabled by configure;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
+  explicit `PG_REGRESS` environment.

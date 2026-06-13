@@ -74,6 +74,7 @@
 #include "mb/pg_wchar.h"
 #include "nodes/miscnodes.h"
 #include "parser/scansup.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/date.h"
 #include "utils/datetime.h"
@@ -383,8 +384,8 @@ typedef struct
 #define NUM_CACHE_SIZE \
 	((1024 - NUM_CACHE_OVERHEAD) / (sizeof(FormatNode) + sizeof(char)) - 1)
 
-#define DCH_CACHE_ENTRIES	20
-#define NUM_CACHE_ENTRIES	20
+#define DCH_CACHE_ENTRIES	PG_BACKEND_FORMAT_CACHE_ENTRIES
+#define NUM_CACHE_ENTRIES	PG_BACKEND_FORMAT_CACHE_ENTRIES
 
 typedef struct
 {
@@ -405,14 +406,19 @@ typedef struct
 } NUMCacheEntry;
 
 /* global cache for date/time format pictures */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND DCHCacheEntry *DCHCache[DCH_CACHE_ENTRIES];
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int n_DCHCache = 0;	/* current number of entries */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int DCHCounter = 0;	/* aging-event counter */
+StaticAssertDecl(DCH_CACHE_ENTRIES == PG_BACKEND_FORMAT_CACHE_ENTRIES,
+				 "backend runtime DCH format cache size mismatch");
+StaticAssertDecl(NUM_CACHE_ENTRIES == PG_BACKEND_FORMAT_CACHE_ENTRIES,
+				 "backend runtime NUM format cache size mismatch");
+
+#define DCHCache ((DCHCacheEntry **) PgCurrentDCHCache())
+#define n_DCHCache (*PgCurrentNumDCHCacheRef()) /* current number of entries */
+#define DCHCounter (*PgCurrentDCHCounterRef())	/* aging-event counter */
 
 /* global cache for number format pictures */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND NUMCacheEntry *NUMCache[NUM_CACHE_ENTRIES];
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int n_NUMCache = 0;	/* current number of entries */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int NUMCounter = 0;	/* aging-event counter */
+#define NUMCache ((NUMCacheEntry **) PgCurrentNUMCache())
+#define n_NUMCache (*PgCurrentNumNUMCacheRef()) /* current number of entries */
+#define NUMCounter (*PgCurrentNUMCounterRef())	/* aging-event counter */
 
 /*
  * For char->date/time conversion

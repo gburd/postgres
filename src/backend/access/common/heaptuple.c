@@ -62,6 +62,7 @@
 #include "access/tupdesc_details.h"
 #include "common/hashfn.h"
 #include "utils/datum.h"
+#include "utils/backend_runtime.h"
 #include "utils/expandeddatum.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
@@ -98,7 +99,7 @@ typedef struct
 	Datum		value;
 } missing_cache_key;
 
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND HTAB *missing_cache = NULL;
+#define missing_cache (*PgCurrentMissingAttrCacheRef())
 
 static uint32
 missing_hash(const void *key, Size keysize)

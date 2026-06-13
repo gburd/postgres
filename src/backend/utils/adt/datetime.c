@@ -27,6 +27,7 @@
 #include "nodes/nodeFuncs.h"
 #include "parser/scansup.h"
 #include "utils/builtins.h"
+#include "utils/backend_runtime.h"
 #include "utils/date.h"
 #include "utils/datetime.h"
 #include "utils/guc.h"
@@ -262,9 +263,11 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION TimeZoneAbbrevTable *zoneabbrevtbl = NU
 
 /* Caches of recent lookup results in the above tables */
 
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND const datetkn *datecache[MAXDATEFIELDS] = {NULL};
+StaticAssertDecl(MAXDATEFIELDS == PG_BACKEND_MAX_DATE_FIELDS,
+				 "backend runtime date token cache size mismatch");
 
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND const datetkn *deltacache[MAXDATEFIELDS] = {NULL};
+#define datecache ((const datetkn **) PgCurrentDateTokenCache())
+#define deltacache ((const datetkn **) PgCurrentDeltaTokenCache())
 
 /* Cache for results of timezone abbreviation lookups */
 

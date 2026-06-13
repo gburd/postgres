@@ -139,7 +139,7 @@ static void appendStringInfoLineSeparator(StringInfo str);
 
 #ifdef USE_LIBXMLCONTEXT
 
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND MemoryContext LibxmlContext = NULL;
+#define LibxmlContext (*PgCurrentLibxmlContextRef())
 
 static void xml_memory_init(void);
 static void *xml_palloc(size_t size);

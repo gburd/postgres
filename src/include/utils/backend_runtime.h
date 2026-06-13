@@ -224,6 +224,8 @@ typedef struct PgBackendActivityState
 } PgBackendActivityState;
 
 #define PG_BACKEND_MAX_SEQ_SCANS 100
+#define PG_BACKEND_MAX_DATE_FIELDS 25
+#define PG_BACKEND_FORMAT_CACHE_ENTRIES 20
 
 typedef struct PgBackendUtilityState
 {
@@ -238,6 +240,24 @@ typedef struct PgBackendUtilityState
 	int			resource_owner_array_lookups;
 	int			resource_owner_hash_lookups;
 #endif
+	const void *date_cache[PG_BACKEND_MAX_DATE_FIELDS];
+	const void *delta_cache[PG_BACKEND_MAX_DATE_FIELDS];
+	bool		degree_consts_set;
+	float8		degree_sin_30;
+	float8		degree_one_minus_cos_60;
+	float8		degree_asin_0_5;
+	float8		degree_acos_0_5;
+	float8		degree_atan_1_0;
+	float8		degree_tan_45;
+	float8		degree_cot_45;
+	void	   *dch_cache[PG_BACKEND_FORMAT_CACHE_ENTRIES];
+	int			n_dch_cache;
+	int			dch_counter;
+	void	   *num_cache[PG_BACKEND_FORMAT_CACHE_ENTRIES];
+	int			n_num_cache;
+	int			num_counter;
+	MemoryContext libxml_context;
+	HTAB	   *missing_attr_cache;
 } PgBackendUtilityState;
 
 typedef struct PgBackendInstrumentationState
@@ -1394,6 +1414,24 @@ extern void **PgCurrentResourceReleaseCallbacksRef(void);
 extern int *PgCurrentResourceOwnerArrayLookupsRef(void);
 extern int *PgCurrentResourceOwnerHashLookupsRef(void);
 #endif
+extern const void **PgCurrentDateTokenCache(void);
+extern const void **PgCurrentDeltaTokenCache(void);
+extern bool *PgCurrentDegreeConstsSetRef(void);
+extern float8 *PgCurrentDegreeSin30Ref(void);
+extern float8 *PgCurrentDegreeOneMinusCos60Ref(void);
+extern float8 *PgCurrentDegreeAsin05Ref(void);
+extern float8 *PgCurrentDegreeAcos05Ref(void);
+extern float8 *PgCurrentDegreeAtan10Ref(void);
+extern float8 *PgCurrentDegreeTan45Ref(void);
+extern float8 *PgCurrentDegreeCot45Ref(void);
+extern void **PgCurrentDCHCache(void);
+extern int *PgCurrentNumDCHCacheRef(void);
+extern int *PgCurrentDCHCounterRef(void);
+extern void **PgCurrentNUMCache(void);
+extern int *PgCurrentNumNUMCacheRef(void);
+extern int *PgCurrentNUMCounterRef(void);
+extern MemoryContext *PgCurrentLibxmlContextRef(void);
+extern HTAB **PgCurrentMissingAttrCacheRef(void);
 extern int *PgCurrentComputeQueryIdRef(void);
 extern bool *PgCurrentQueryIdEnabledRef(void);
 extern bool *PgCurrentIgnoreChecksumFailureRef(void);

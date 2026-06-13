@@ -569,6 +569,16 @@ file-local typed helper. The slice passed clean full build/install,
 process-mode backend-runtime regression, direct threaded runtime TAP, contrib
 build, and the required global-lifetime scan with zero new unclassified
 mutable globals; backend-local declarations dropped from 288 to 280.
+Utility cache/scratch state now also lives in `PgBackendUtilityState`:
+date/time token caches, degree-trig cached constants, date/time and numeric
+format-picture caches, the optional libxml allocation context, and the
+missing-attribute datum cache follow the logical backend. Private cache entry
+types stay private to `datetime.c` and `formatting.c` through opaque runtime
+pointer arrays and file-local casts. The slice passed clean full
+build/install, process-mode backend-runtime regression, direct threaded
+runtime TAP, contrib build, and the required global-lifetime scan with zero
+new unclassified mutable globals; backend-local declarations dropped from 280
+to 262.
 PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly

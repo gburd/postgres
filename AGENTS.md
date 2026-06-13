@@ -341,6 +341,17 @@ Important current files:
   rebuild backend objects because `PgBackend` layout and installed runtime
   headers changed; at minimum rebuild and reinstall PL/pgSQL,
   `src/test/modules/test_backend_runtime`, and contrib before validating.
+- Utility cache/scratch state now also lives in `PgBackendUtilityState`:
+  date/time token caches, degree-trig cached constants, date/time and numeric
+  format-picture caches, the optional libxml allocation context, and the
+  missing-attribute datum cache are backed by runtime accessors while
+  `datetime.c`, `float.c`, `formatting.c`, `xml.c`, and `heaptuple.c` keep
+  local source names. Private cache entry types stay private to their owning
+  files through opaque runtime pointer arrays and local casts. After changing
+  this bridge, clean and rebuild backend objects because `PgBackend` layout
+  and installed runtime headers changed; at minimum rebuild and reinstall
+  PL/pgSQL, `src/test/modules/test_backend_runtime`, and contrib before
+  validating.
 - Treat `PMChild.thread_backend` as private PMChild-owned publication state.
   Postmaster code should use PMChild helper APIs for threaded backend
   interrupt, wakeup, and thread-exit publication rather than dereferencing or

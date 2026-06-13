@@ -747,7 +747,9 @@ through `PgBackendActivityState`, plus the pgstat shared-entry reference-cache
 bridge through `PgBackendPgStatPendingState`, plus the always-built LWLock
 backend-local state bridge through `PgBackendLockState`, plus the dynahash,
 superuser-cache, resource-owner callback, and optional resource-owner stats
-utility-state bridge through `PgBackendUtilityState`.
+utility-state bridge through `PgBackendUtilityState`, plus the date/time,
+float, formatting, libxml-context, and missing-attribute utility-cache state
+bridge through `PgBackendUtilityState`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.
@@ -994,6 +996,15 @@ The slice passed clean full build/install, process-mode backend-runtime
 regression, direct threaded runtime TAP, contrib build, and the required
 global-lifetime scan with zero new unclassified mutable globals; backend-local
 declarations dropped from 288 to 280.
+The follow-up utility-cache slice extends `PgBackendUtilityState` to cover
+date/time token caches, degree-trig cached constants, date/time and numeric
+format-picture caches, the optional libxml allocation context, and the
+missing-attribute datum cache. Private date/time and formatting cache entry
+types remain private to their owning source files through opaque runtime
+pointer arrays and local casts. The slice passed clean full build/install,
+process-mode backend-runtime regression, direct threaded runtime TAP, contrib
+build, and the required global-lifetime scan with zero new unclassified
+mutable globals; backend-local declarations dropped from 280 to 262.
 PMChild assignment and slot release now also scrub stale carrier-visible signal
 ids and thread-exit payloads before reuse. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live

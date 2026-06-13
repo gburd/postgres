@@ -24,6 +24,7 @@
 #include "common/shortest_dec.h"
 #include "libpq/pqformat.h"
 #include "utils/array.h"
+#include "utils/backend_runtime.h"
 #include "utils/float.h"
 #include "utils/fmgrprotos.h"
 #include "utils/sortsupport.h"
@@ -55,14 +56,14 @@
  * decimal rounding method.
  */
 /* Cached constants for degree-based trig functions */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool degree_consts_set = false;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND float8 sin_30 = 0;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND float8 one_minus_cos_60 = 0;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND float8 asin_0_5 = 0;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND float8 acos_0_5 = 0;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND float8 atan_1_0 = 0;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND float8 tan_45 = 0;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND float8 cot_45 = 0;
+#define degree_consts_set (*PgCurrentDegreeConstsSetRef())
+#define sin_30 (*PgCurrentDegreeSin30Ref())
+#define one_minus_cos_60 (*PgCurrentDegreeOneMinusCos60Ref())
+#define asin_0_5 (*PgCurrentDegreeAsin05Ref())
+#define acos_0_5 (*PgCurrentDegreeAcos05Ref())
+#define atan_1_0 (*PgCurrentDegreeAtan10Ref())
+#define tan_45 (*PgCurrentDegreeTan45Ref())
+#define cot_45 (*PgCurrentDegreeCot45Ref())
 
 /*
  * These are intentionally not static; don't "fix" them.  They will never

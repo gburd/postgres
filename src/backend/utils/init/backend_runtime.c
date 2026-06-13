@@ -4575,6 +4575,114 @@ PgCurrentResourceOwnerHashLookupsRef(void)
 }
 #endif
 
+const void **
+PgCurrentDateTokenCache(void)
+{
+	return PgCurrentBackendUtilityState()->date_cache;
+}
+
+const void **
+PgCurrentDeltaTokenCache(void)
+{
+	return PgCurrentBackendUtilityState()->delta_cache;
+}
+
+bool *
+PgCurrentDegreeConstsSetRef(void)
+{
+	return &PgCurrentBackendUtilityState()->degree_consts_set;
+}
+
+float8 *
+PgCurrentDegreeSin30Ref(void)
+{
+	return &PgCurrentBackendUtilityState()->degree_sin_30;
+}
+
+float8 *
+PgCurrentDegreeOneMinusCos60Ref(void)
+{
+	return &PgCurrentBackendUtilityState()->degree_one_minus_cos_60;
+}
+
+float8 *
+PgCurrentDegreeAsin05Ref(void)
+{
+	return &PgCurrentBackendUtilityState()->degree_asin_0_5;
+}
+
+float8 *
+PgCurrentDegreeAcos05Ref(void)
+{
+	return &PgCurrentBackendUtilityState()->degree_acos_0_5;
+}
+
+float8 *
+PgCurrentDegreeAtan10Ref(void)
+{
+	return &PgCurrentBackendUtilityState()->degree_atan_1_0;
+}
+
+float8 *
+PgCurrentDegreeTan45Ref(void)
+{
+	return &PgCurrentBackendUtilityState()->degree_tan_45;
+}
+
+float8 *
+PgCurrentDegreeCot45Ref(void)
+{
+	return &PgCurrentBackendUtilityState()->degree_cot_45;
+}
+
+void **
+PgCurrentDCHCache(void)
+{
+	return PgCurrentBackendUtilityState()->dch_cache;
+}
+
+int *
+PgCurrentNumDCHCacheRef(void)
+{
+	return &PgCurrentBackendUtilityState()->n_dch_cache;
+}
+
+int *
+PgCurrentDCHCounterRef(void)
+{
+	return &PgCurrentBackendUtilityState()->dch_counter;
+}
+
+void **
+PgCurrentNUMCache(void)
+{
+	return PgCurrentBackendUtilityState()->num_cache;
+}
+
+int *
+PgCurrentNumNUMCacheRef(void)
+{
+	return &PgCurrentBackendUtilityState()->n_num_cache;
+}
+
+int *
+PgCurrentNUMCounterRef(void)
+{
+	return &PgCurrentBackendUtilityState()->num_counter;
+}
+
+MemoryContext *
+PgCurrentLibxmlContextRef(void)
+{
+	return &PgCurrentBackendUtilityState()->libxml_context;
+}
+
+HTAB **
+PgCurrentMissingAttrCacheRef(void)
+{
+	return &PgCurrentBackendUtilityState()->missing_attr_cache;
+}
+
 int *
 PgCurrentComputeQueryIdRef(void)
 {
