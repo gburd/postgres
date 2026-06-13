@@ -8222,6 +8222,199 @@ test_backend_timeout_state_is_backend_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_backend_walsender_state_is_backend_local);
+Datum
+test_backend_walsender_state_is_backend_local(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgBackend	fake_backend1;
+	PgBackend	fake_backend2;
+	PgBackendWalSenderState *walsender1;
+	PgBackendWalSenderState *walsender2;
+	bool		ok = true;
+
+	saved_backend = CurrentPgBackend;
+	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
+	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+
+	PG_TRY();
+	{
+		CurrentPgBackend = &fake_backend1;
+		walsender1 = PgCurrentWalSenderState();
+		walsender1->my_wal_snd = (WalSnd *) &fake_backend1;
+		walsender1->is_walsender = true;
+		walsender1->is_cascading_walsender = true;
+		walsender1->is_db_walsender = true;
+		walsender1->wake_requested = true;
+		walsender1->xlogreader = (XLogReaderState *) &fake_backend1;
+		walsender1->uploaded_manifest = (IncrementalBackupInfo *) &fake_backend1;
+		walsender1->uploaded_manifest_mcxt = (MemoryContext) &fake_backend1;
+		walsender1->send_time_line = 101;
+		walsender1->send_time_line_next_tli = 102;
+		walsender1->send_time_line_is_historic = true;
+		walsender1->send_time_line_valid_upto = UINT64CONST(103);
+		walsender1->sent_ptr = UINT64CONST(104);
+		walsender1->output_message.maxlen = 105;
+		walsender1->reply_message.maxlen = 106;
+		walsender1->tmpbuf.maxlen = 107;
+		walsender1->last_processing = 108;
+		walsender1->last_reply_timestamp = 109;
+		walsender1->waiting_for_ping_response = true;
+		walsender1->shutdown_request_timestamp = 110;
+		walsender1->shutdown_stream_done_queued = true;
+		walsender1->streaming_done_sending = true;
+		walsender1->streaming_done_receiving = true;
+		walsender1->caught_up = true;
+		walsender1->got_sigusr2 = true;
+		walsender1->got_stopping = true;
+		walsender1->replication_active = true;
+		walsender1->logical_decoding_ctx =
+			(LogicalDecodingContext *) &fake_backend1;
+		walsender1->replication_cmd_context = (MemoryContext) &fake_backend1;
+		walsender1->lag_tracker = (LagTracker *) &fake_backend1;
+
+		CurrentPgBackend = &fake_backend2;
+		walsender2 = PgCurrentWalSenderState();
+		ok = ok && walsender2->my_wal_snd == NULL;
+		ok = ok && !walsender2->is_walsender;
+		ok = ok && !walsender2->is_cascading_walsender;
+		ok = ok && !walsender2->is_db_walsender;
+		ok = ok && !walsender2->wake_requested;
+		ok = ok && walsender2->xlogreader == NULL;
+		ok = ok && walsender2->uploaded_manifest == NULL;
+		ok = ok && walsender2->uploaded_manifest_mcxt == NULL;
+		ok = ok && walsender2->send_time_line == 0;
+		ok = ok && walsender2->send_time_line_next_tli == 0;
+		ok = ok && !walsender2->send_time_line_is_historic;
+		ok = ok && walsender2->send_time_line_valid_upto == InvalidXLogRecPtr;
+		ok = ok && walsender2->sent_ptr == InvalidXLogRecPtr;
+		ok = ok && walsender2->output_message.maxlen == 0;
+		ok = ok && walsender2->reply_message.maxlen == 0;
+		ok = ok && walsender2->tmpbuf.maxlen == 0;
+		ok = ok && walsender2->last_processing == 0;
+		ok = ok && walsender2->last_reply_timestamp == 0;
+		ok = ok && !walsender2->waiting_for_ping_response;
+		ok = ok && walsender2->shutdown_request_timestamp == 0;
+		ok = ok && !walsender2->shutdown_stream_done_queued;
+		ok = ok && !walsender2->streaming_done_sending;
+		ok = ok && !walsender2->streaming_done_receiving;
+		ok = ok && !walsender2->caught_up;
+		ok = ok && !walsender2->got_sigusr2;
+		ok = ok && !walsender2->got_stopping;
+		ok = ok && !walsender2->replication_active;
+		ok = ok && walsender2->logical_decoding_ctx == NULL;
+		ok = ok && walsender2->replication_cmd_context == NULL;
+		ok = ok && walsender2->lag_tracker == NULL;
+
+		walsender2->my_wal_snd = (WalSnd *) &fake_backend2;
+		walsender2->wake_requested = true;
+		walsender2->xlogreader = (XLogReaderState *) &fake_backend2;
+		walsender2->uploaded_manifest = (IncrementalBackupInfo *) &fake_backend2;
+		walsender2->uploaded_manifest_mcxt = (MemoryContext) &fake_backend2;
+		walsender2->send_time_line = 201;
+		walsender2->send_time_line_next_tli = 202;
+		walsender2->send_time_line_valid_upto = UINT64CONST(203);
+		walsender2->sent_ptr = UINT64CONST(204);
+		walsender2->output_message.maxlen = 205;
+		walsender2->reply_message.maxlen = 206;
+		walsender2->tmpbuf.maxlen = 207;
+		walsender2->last_processing = 208;
+		walsender2->last_reply_timestamp = 209;
+		walsender2->shutdown_request_timestamp = 210;
+		walsender2->logical_decoding_ctx =
+			(LogicalDecodingContext *) &fake_backend2;
+		walsender2->replication_cmd_context = (MemoryContext) &fake_backend2;
+		walsender2->lag_tracker = (LagTracker *) &fake_backend2;
+
+		CurrentPgBackend = &fake_backend1;
+		walsender1 = PgCurrentWalSenderState();
+		ok = ok && walsender1->my_wal_snd == (WalSnd *) &fake_backend1;
+		ok = ok && walsender1->is_walsender;
+		ok = ok && walsender1->is_cascading_walsender;
+		ok = ok && walsender1->is_db_walsender;
+		ok = ok && walsender1->wake_requested;
+		ok = ok && walsender1->xlogreader == (XLogReaderState *) &fake_backend1;
+		ok = ok && walsender1->uploaded_manifest ==
+			(IncrementalBackupInfo *) &fake_backend1;
+		ok = ok && walsender1->uploaded_manifest_mcxt ==
+			(MemoryContext) &fake_backend1;
+		ok = ok && walsender1->send_time_line == 101;
+		ok = ok && walsender1->send_time_line_next_tli == 102;
+		ok = ok && walsender1->send_time_line_is_historic;
+		ok = ok && walsender1->send_time_line_valid_upto == UINT64CONST(103);
+		ok = ok && walsender1->sent_ptr == UINT64CONST(104);
+		ok = ok && walsender1->output_message.maxlen == 105;
+		ok = ok && walsender1->reply_message.maxlen == 106;
+		ok = ok && walsender1->tmpbuf.maxlen == 107;
+		ok = ok && walsender1->last_processing == 108;
+		ok = ok && walsender1->last_reply_timestamp == 109;
+		ok = ok && walsender1->waiting_for_ping_response;
+		ok = ok && walsender1->shutdown_request_timestamp == 110;
+		ok = ok && walsender1->shutdown_stream_done_queued;
+		ok = ok && walsender1->streaming_done_sending;
+		ok = ok && walsender1->streaming_done_receiving;
+		ok = ok && walsender1->caught_up;
+		ok = ok && walsender1->got_sigusr2;
+		ok = ok && walsender1->got_stopping;
+		ok = ok && walsender1->replication_active;
+		ok = ok && walsender1->logical_decoding_ctx ==
+			(LogicalDecodingContext *) &fake_backend1;
+		ok = ok && walsender1->replication_cmd_context ==
+			(MemoryContext) &fake_backend1;
+		ok = ok && walsender1->lag_tracker == (LagTracker *) &fake_backend1;
+
+		CurrentPgBackend = &fake_backend2;
+		walsender2 = PgCurrentWalSenderState();
+		ok = ok && walsender2->my_wal_snd == (WalSnd *) &fake_backend2;
+		ok = ok && !walsender2->is_walsender;
+		ok = ok && !walsender2->is_cascading_walsender;
+		ok = ok && !walsender2->is_db_walsender;
+		ok = ok && walsender2->wake_requested;
+		ok = ok && walsender2->xlogreader == (XLogReaderState *) &fake_backend2;
+		ok = ok && walsender2->uploaded_manifest ==
+			(IncrementalBackupInfo *) &fake_backend2;
+		ok = ok && walsender2->uploaded_manifest_mcxt ==
+			(MemoryContext) &fake_backend2;
+		ok = ok && walsender2->send_time_line == 201;
+		ok = ok && walsender2->send_time_line_next_tli == 202;
+		ok = ok && !walsender2->send_time_line_is_historic;
+		ok = ok && walsender2->send_time_line_valid_upto == UINT64CONST(203);
+		ok = ok && walsender2->sent_ptr == UINT64CONST(204);
+		ok = ok && walsender2->output_message.maxlen == 205;
+		ok = ok && walsender2->reply_message.maxlen == 206;
+		ok = ok && walsender2->tmpbuf.maxlen == 207;
+		ok = ok && walsender2->last_processing == 208;
+		ok = ok && walsender2->last_reply_timestamp == 209;
+		ok = ok && !walsender2->waiting_for_ping_response;
+		ok = ok && walsender2->shutdown_request_timestamp == 210;
+		ok = ok && !walsender2->shutdown_stream_done_queued;
+		ok = ok && !walsender2->streaming_done_sending;
+		ok = ok && !walsender2->streaming_done_receiving;
+		ok = ok && !walsender2->caught_up;
+		ok = ok && !walsender2->got_sigusr2;
+		ok = ok && !walsender2->got_stopping;
+		ok = ok && !walsender2->replication_active;
+		ok = ok && walsender2->logical_decoding_ctx ==
+			(LogicalDecodingContext *) &fake_backend2;
+		ok = ok && walsender2->replication_cmd_context ==
+			(MemoryContext) &fake_backend2;
+		ok = ok && walsender2->lag_tracker == (LagTracker *) &fake_backend2;
+
+		CurrentPgBackend = saved_backend;
+	}
+	PG_CATCH();
+	{
+		CurrentPgBackend = saved_backend;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "backend WAL sender state was not backend-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_pmchild_thread_backend_signal_api);
 Datum
 test_pmchild_thread_backend_signal_api(PG_FUNCTION_ARGS)

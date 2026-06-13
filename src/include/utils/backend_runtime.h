@@ -16,11 +16,13 @@
 
 #include "access/session.h"
 #include "access/transam.h"
+#include "access/xlogdefs.h"
 #include "common/pg_prng.h"
 #include "common/relpath.h"
 #include "executor/instrument.h"
 #include "fmgr.h"
 #include "lib/ilist.h"
+#include "lib/stringinfo.h"
 #include "libpq/hba.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
@@ -46,6 +48,9 @@ typedef struct PgCarrier PgCarrier;
 typedef struct PgBackend PgBackend;
 typedef struct PgBackendStatus PgBackendStatus;
 typedef struct BackgroundWorker BackgroundWorker;
+typedef struct IncrementalBackupInfo IncrementalBackupInfo;
+typedef struct LagTracker LagTracker;
+typedef struct LogicalDecodingContext LogicalDecodingContext;
 typedef struct PgSession PgSession;
 typedef struct PgConnection PgConnection;
 typedef struct PgExecution PgExecution;
@@ -53,6 +58,8 @@ typedef struct PQcommMethods PQcommMethods;
 typedef struct WaitEventSet WaitEventSet;
 typedef struct WritebackContext WritebackContext;
 typedef struct BufferDesc BufferDesc;
+typedef struct WalSnd WalSnd;
+typedef struct XLogReaderState XLogReaderState;
 typedef struct PortalData *Portal;
 typedef struct SPITupleTable SPITupleTable;
 typedef struct _SPI_connection _SPI_connection;
@@ -199,6 +206,40 @@ typedef struct PgBackendTimeoutState
 	PgExecution *firing_timeout_execution;
 	bool		signal_delivery;
 } PgBackendTimeoutState;
+
+typedef struct PgBackendWalSenderState
+{
+	WalSnd	   *my_wal_snd;
+	bool		is_walsender;
+	bool		is_cascading_walsender;
+	bool		is_db_walsender;
+	bool		wake_requested;
+	XLogReaderState *xlogreader;
+	IncrementalBackupInfo *uploaded_manifest;
+	MemoryContext uploaded_manifest_mcxt;
+	TimeLineID	send_time_line;
+	TimeLineID	send_time_line_next_tli;
+	bool		send_time_line_is_historic;
+	XLogRecPtr	send_time_line_valid_upto;
+	XLogRecPtr	sent_ptr;
+	StringInfoData output_message;
+	StringInfoData reply_message;
+	StringInfoData tmpbuf;
+	TimestampTz last_processing;
+	TimestampTz last_reply_timestamp;
+	bool		waiting_for_ping_response;
+	TimestampTz shutdown_request_timestamp;
+	bool		shutdown_stream_done_queued;
+	bool		streaming_done_sending;
+	bool		streaming_done_receiving;
+	bool		caught_up;
+	volatile sig_atomic_t got_sigusr2;
+	volatile sig_atomic_t got_stopping;
+	volatile sig_atomic_t replication_active;
+	LogicalDecodingContext *logical_decoding_ctx;
+	MemoryContext replication_cmd_context;
+	LagTracker *lag_tracker;
+} PgBackendWalSenderState;
 
 typedef struct PgBackendPgStatPendingState
 {
@@ -1219,6 +1260,7 @@ struct PgBackend
 	PgBackendExitState exit_state;
 	PgBackendCoreState core;
 	PgBackendTimeoutState timeout;
+	PgBackendWalSenderState walsender;
 	PgBackendPgStatPendingState pgstat_pending;
 	PgBackendActivityState activity;
 	PgBackendUtilityState utility;
@@ -1643,6 +1685,7 @@ extern void **PgCurrentDsmRegistryTableRef(void);
 extern WaitEventSet **PgCurrentLatchWaitSetRef(void);
 extern Latch *PgCurrentLocalLatchData(void);
 extern PgBackendTimeoutState *PgCurrentTimeoutState(void);
+extern PgBackendWalSenderState *PgCurrentWalSenderState(void);
 extern TransactionId *PgCurrentCachedFetchXidRef(void);
 extern int *PgCurrentCachedFetchXidStatusRef(void);
 extern XLogRecPtr *PgCurrentCachedCommitLSNRef(void);

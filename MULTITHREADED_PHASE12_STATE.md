@@ -6906,6 +6906,51 @@ Validation for this slice:
   87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
   explicit `PG_REGRESS` environment.
 
+## Backend WAL Sender State Bridge
+
+The one-hundred-forty-fifth Phase 12 slice moves a coherent WAL sender
+backend-local state group into a new `PgBackendWalSenderState` bucket:
+
+- exported WAL sender identity and wakeup flags: `MyWalSnd`,
+  `am_walsender`, `am_cascading_walsender`, `am_db_walsender`, and
+  `wake_wal_senders`;
+- physical/logical streaming cursor state, including the replication
+  `XLogReaderState`, timeline fields, local sent pointer, reply-processing
+  timestamps, streaming-done flags, caught-up flag, and shutdown flags;
+- replication command scratch state: uploaded incremental-backup manifest,
+  replication command memory context, output/reply buffers, logical decoding
+  context, and lag tracker.
+
+The public WAL sender headers keep the old variable names as compatibility
+macros over `PgCurrentWalSenderState()`. `walsender.c` keeps private state
+access local to the source file through equivalent macros. The local WAL
+sender sent pointer is intentionally named `local_sent_ptr` in `walsender.c`
+so the compatibility macro cannot collide with the shared-memory
+`WalSnd.sentPtr` field.
+
+Validation for this slice:
+
+- focused object builds passed for `backend_runtime.o`, `walsender.o`,
+  `syncrep.o`, and `test_backend_runtime.o`;
+- a static scan found no remaining raw TLS declarations for the moved WAL
+  sender state;
+- a full backend clean plus generated-header recovery was run after the
+  installed-header and `PgBackend` layout changes;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 236 to 202;
+- `gmake -C contrib -j8` passed;
+- PL/pgSQL and `src/test/modules/test_backend_runtime` were cleaned, rebuilt,
+  and reinstalled after the installed-header and `PgBackend` layout changes;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression, including the new WAL sender state helper, and
+  still reported TAP disabled by configure;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
+  explicit `PG_REGRESS` environment.
+
 ## Backend Parallel State Bridge
 
 The one-hundred-forty-second Phase 12 slice moves a parallel-query and

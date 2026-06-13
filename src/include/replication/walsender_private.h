@@ -79,7 +79,9 @@ typedef struct WalSnd
 	ReplicationKind kind;
 } WalSnd;
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND WalSnd *MyWalSnd;
+#include "utils/backend_runtime.h"
+
+#define MyWalSnd (PgCurrentWalSenderState()->my_wal_snd)
 
 /* There is one WalSndCtl struct for the whole database cluster */
 typedef struct

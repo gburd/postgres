@@ -607,6 +607,18 @@ clean full build/install, process-mode backend-runtime regression, direct
 threaded runtime TAP, contrib build, and the required global-lifetime scan with
 zero new unclassified mutable globals; backend-local declarations dropped from
 244 to 236.
+WAL sender state now lives in `PgBackendWalSenderState`: exported WAL sender
+identity and wakeup flags, streaming cursor/timeline state, reply/keepalive
+timestamps, shutdown flags, replication command scratch buffers, uploaded
+manifest state, logical decoding context, replication command memory context,
+and lag tracker now follow the logical backend. Public headers retain the old
+names as compatibility macros over `PgCurrentWalSenderState()`, and
+`walsender.c` uses a distinct `local_sent_ptr` macro to avoid colliding with
+the shared-memory `WalSnd.sentPtr` field. The slice passed clean full
+build/install, process-mode backend-runtime regression, direct threaded
+runtime TAP, contrib build, and the required global-lifetime scan with zero
+new unclassified mutable globals; backend-local declarations dropped from 236
+to 202.
 PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly

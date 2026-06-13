@@ -13,6 +13,7 @@
 #define _WALSENDER_H
 
 #include "access/xlogdefs.h"
+#include "utils/backend_runtime.h"
 #include "utils/global_lifetime.h"
 
 /*
@@ -26,10 +27,11 @@ typedef enum
 } CRSSnapshotAction;
 
 /* global state */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool am_walsender;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool am_cascading_walsender;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool am_db_walsender;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool wake_wal_senders;
+#define am_walsender (PgCurrentWalSenderState()->is_walsender)
+#define am_cascading_walsender \
+	(PgCurrentWalSenderState()->is_cascading_walsender)
+#define am_db_walsender (PgCurrentWalSenderState()->is_db_walsender)
+#define wake_wal_senders (PgCurrentWalSenderState()->wake_requested)
 
 /* user-settable parameters */
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_wal_senders;

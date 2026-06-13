@@ -390,6 +390,17 @@ Important current files:
   headers changed; at minimum rebuild and reinstall PL/pgSQL,
   `src/test/modules/test_backend_runtime`, and contrib before validating.
   Direct threaded TAP exercises logical timeout delivery and should be run.
+- WAL sender backend-local state now lives in `PgBackendWalSenderState`.
+  Public WAL sender flags and `MyWalSnd` are compatibility macros over
+  `PgCurrentWalSenderState()`, while `walsender.c` uses private macros for the
+  streaming cursor, timeline state, reply buffers, logical decoding context,
+  replication command context, and lag tracker. Keep the local sent pointer
+  named distinctly from `WalSnd.sentPtr` to avoid macro expansion inside
+  shared-memory struct field references. After changing this bridge, clean and
+  rebuild backend objects because `PgBackend` layout and installed runtime
+  headers changed; at minimum rebuild and reinstall PL/pgSQL,
+  `src/test/modules/test_backend_runtime`, and contrib before validating.
+  Direct threaded TAP should be run.
 - Treat `PMChild.thread_backend` as private PMChild-owned publication state.
   Postmaster code should use PMChild helper APIs for threaded backend
   interrupt, wakeup, and thread-exit publication rather than dereferencing or
