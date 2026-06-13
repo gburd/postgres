@@ -256,6 +256,10 @@ static uint32 guc_name_hash(const void *key, Size keysize);
 static int	guc_name_match(const void *key1, const void *key2, Size keysize);
 static void InitializeGUCOptionsFromEnvironment(void);
 static void InitializeOneGUCOption(struct config_generic *gconf);
+static const void *GUCOptionVariablePointer(struct config_generic *gconf);
+static void InitializeThreadedSessionReboundGUCOptions(
+													const void **initial_variables);
+static void InitializeThreadedSessionCompatibilityGUCOptions(void);
 static void RemoveGUCFromLists(struct config_generic *gconf);
 static void set_guc_source(struct config_generic *gconf, GucSource newsource);
 static void pg_timezone_abbrev_initialize(void);
@@ -1489,312 +1493,89 @@ InitializeGUCOptions(void)
  * Process backends run InitializeGUCOptions() before shared-memory and catalog
  * initialization, then replay the postmaster's non-default configuration.
  * Threaded backend carriers share the postmaster address space, so they must
- * not reset every GUC variable to its boot default while bootstrapping a
- * session.  For now, build this carrier's GUC table and initialize only the
- * GUC records that early InitPostgres() must update after authentication.
- *
- * Later Phase 10 work must replace this narrow bridge with full per-session
- * GUC adoption before threaded backends can run arbitrary SQL.
+ * not reset every GUC variable to its boot default against process-global
+ * storage while bootstrapping a session.  Build this carrier's GUC table,
+ * rebind records whose backing variables now live in PgSession/PgExecution
+ * state, and initialize exactly those rebound records.  That keeps the
+ * per-session direct-variable state internally consistent without reapplying
+ * boot defaults to the postmaster's shared process-global variables.
  */
 void
 InitializeThreadedSessionGUCOptions(void)
 {
-	struct config_generic *gconf;
+	const void **initial_variables;
 
-	Assert(guc_hashtab == NULL);
+	/*
+	 * Thread entry initializes GUC state before runtime installation so early
+	 * fallback state can be adopted into PgSession.  InitPostgres() can reach
+	 * this path again for normal client backends.
+	 */
+	if (guc_hashtab != NULL)
+		return;
 
 	build_guc_variables();
 
-	gconf = find_option("session_authorization", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("role", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("application_name", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("cluster_name", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("config_file", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("external_pid_file", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("hba_file", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("hosts_file", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("ident_file", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("post_auth_delay", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("log_disconnections", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("log_statement", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("restrict_nonsystem_relation_kind", false, false,
-						PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("tcp_keepalives_idle", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("tcp_keepalives_interval", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("tcp_keepalives_count", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("tcp_user_timeout", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("search_path", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("default_text_search_config", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("TimeZone", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("log_timezone", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("server_encoding", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("client_encoding", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("dynamic_library_path", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("extension_control_path", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("default_tablespace", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("temp_tablespaces", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("wal_consistency_checking", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("zero_damaged_pages", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("statement_timeout", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("transaction_timeout", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("lock_timeout", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("idle_in_transaction_session_timeout", false, false,
-						PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("default_transaction_isolation", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("synchronous_commit", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("logical_decoding_work_mem", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("debug_logical_replication_streaming", false, false,
-						PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("track_counts", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("stats_fetch_consistency", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("track_activities", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("track_functions", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("compute_query_id", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("file_copy_method", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("ignore_checksum_failure", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("password_encryption", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("createrole_self_grant", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("session_replication_role", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("event_triggers", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("trace_notify", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("wal_sender_timeout", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("wal_sender_shutdown_timeout", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("log_replication_commands", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("wal_receiver_timeout", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("allow_alter_system", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("row_security", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("check_function_bodies", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("is_superuser", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("temp_file_limit", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("temp_buffers", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("role", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("lo_compat_privileges", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("extra_float_digits", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("array_nulls", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("bytea_output", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("xmlbinary", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("xmloption", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("quote_all_identifiers", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("plan_cache_mode", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("gin_fuzzy_search_limit", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("gin_pending_list_limit", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("default_table_access_method", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("synchronize_seqscans", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("default_toast_compression", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("wal_compression", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("wal_init_zero", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("wal_recycle", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("commit_delay", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("commit_siblings", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("track_wal_io_timing", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("wal_skip_threshold", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-#ifdef WAL_DEBUG
-	gconf = find_option("wal_debug", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-#endif
-
-#ifdef TRACE_SYNCSCAN
-	gconf = find_option("trace_syncscan", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-#endif
-
-	gconf = find_option("trace_sort", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-#ifdef DEBUG_BOUNDED_SORT
-	gconf = find_option("optimize_bounded_sort", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-#endif
-
-	gconf = find_option("jit", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("jit_provider", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("jit_debugging_support", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("jit_dump_bitcode", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("jit_expressions", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("jit_profiling_support", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("jit_tuple_deforming", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("jit_above_cost", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("jit_inline_above_cost", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
-
-	gconf = find_option("jit_optimize_above_cost", false, false, PANIC);
-	InitializeOneGUCOption(gconf);
+	initial_variables = palloc_array(const void *, num_guc_variables);
+	for (int i = 0; i < num_guc_variables; i++)
+		initial_variables[i] = GUCOptionVariablePointer(&guc_variables[i]);
+
+	RebindSessionGUCVariablePointers();
+	InitializeThreadedSessionReboundGUCOptions(initial_variables);
+	pfree(initial_variables);
+
+	InitializeThreadedSessionCompatibilityGUCOptions();
+}
+
+static const void *
+GUCOptionVariablePointer(struct config_generic *gconf)
+{
+	switch (gconf->vartype)
+	{
+		case PGC_BOOL:
+			return gconf->_bool.variable;
+		case PGC_INT:
+			return gconf->_int.variable;
+		case PGC_REAL:
+			return gconf->_real.variable;
+		case PGC_STRING:
+			return gconf->_string.variable;
+		case PGC_ENUM:
+			return gconf->_enum.variable;
+	}
+
+	pg_unreachable();
+}
+
+static void
+InitializeThreadedSessionReboundGUCOptions(const void **initial_variables)
+{
+	for (int i = 0; i < num_guc_variables; i++)
+	{
+		struct config_generic *gconf = &guc_variables[i];
+
+		if (GUCOptionVariablePointer(gconf) == initial_variables[i])
+			continue;
+
+		InitializeOneGUCOption(gconf);
+	}
+}
+
+static void
+InitializeThreadedSessionCompatibilityGUCOptions(void)
+{
+	static const char *const compatibility_options[] = {
+		"session_authorization",
+		"server_encoding",
+		"client_encoding",
+	};
+
+	for (int i = 0; i < lengthof(compatibility_options); i++)
+	{
+		struct config_generic *gconf;
+
+		gconf = find_option(compatibility_options[i], false, false, PANIC);
+		InitializeOneGUCOption(gconf);
+	}
 }
 
 /*

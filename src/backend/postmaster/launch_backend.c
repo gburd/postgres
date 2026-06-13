@@ -493,8 +493,7 @@ backend_thread_entry(void *arg)
 	InitProcessLocalLatch();
 	MemoryContextInit();
 	InitializeTransactionState();
-	if (thread_start->child_type != B_BACKEND)
-		InitializeThreadedSessionGUCOptions();
+	InitializeThreadedSessionGUCOptions();
 	InitializeLatchWaitSet();
 	InstallPgThreadBackendRuntimeState(&thread_start->runtime_state);
 	PgBackendSetInterruptLatch(CurrentPgBackend, MyLatch);

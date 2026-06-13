@@ -131,12 +131,18 @@ Important current files:
   `InitializeGUCVariablePointers()`. Variables written only by assign hooks,
   such as parsed `DateStyle`/`DateOrder`, can be moved independently, but
   direct-pointer GUCs need a GUC-table pointer rebind/adoption mechanism.
-  `IntervalStyle` and the query-memory GUCs are the first bridged examples;
-  extend `RebindSessionGUCVariablePointers()` when moving more direct-pointer
-  GUC backing variables under runtime/session/execution objects. When common
-  GUC names become macros, local struct fields with the same names must be
-  renamed because macro expansion also hits `object->field` expressions; this
-  was observed for the local GIN build-state `work_mem` field and the
+  Threaded startup now records the direct backing-variable pointers after
+  `InitializeGUCVariablePointers()`, runs
+  `RebindSessionGUCVariablePointers()`, and initializes every built-in GUC
+  record whose backing pointer changed. Keep extending
+  `RebindSessionGUCVariablePointers()` when moving more direct-pointer GUC
+  backing variables under runtime/session/execution objects. Only the small
+  TLS dummy startup compatibility list in
+  `InitializeThreadedSessionCompatibilityGUCOptions()` should remain
+  hand-curated until those dummy GUCs get explicit session accessors. When
+  common GUC names become macros, local struct fields with the same names must
+  be renamed because macro expansion also hits `object->field` expressions;
+  this was observed for the local GIN build-state `work_mem` field and the
   `TableSpaceOpts` `seq_page_cost`/`random_page_cost` fields.
 - Avoid broad mechanical churn unless it unlocks a specific migration step.
 - Do not remove process isolation paths merely because threaded mode exists.

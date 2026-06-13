@@ -185,6 +185,18 @@ Required resolution:
 - add tests that exercise broad GUC families in threaded sessions, not only
   GUCs needed by the current smoke.
 
+Status update: subsequent Phase 12 work replaced the broad hard-coded
+`InitializeThreadedSessionGUCOptions()` name list with a systematic pass over
+the generated built-in GUC table. The pass records each direct backing-variable
+pointer after `InitializeGUCVariablePointers()`, rebinds the table onto the
+current logical session/runtime state, and initializes every record whose
+backing pointer changed. A small compatibility list remains for TLS dummy
+startup GUCs that do not yet have `PgSession` accessors:
+`session_authorization`, `server_encoding`, and `client_encoding`. The
+remaining Gate E2 GUC work is postmaster/runtime default adoption, full
+custom/extension GUC behavior, broader assign-hook/reset/default semantics,
+and threaded stress coverage for GUC-heavy sessions.
+
 ### 4. Broad Threaded Startup Serialization Is Still Present
 
 Severity: High
@@ -313,10 +325,13 @@ Subsequent Phase 12 work has promoted global-lifetime scanning into
 PMChild-owned helper APIs for thread-backed backends. Thread exit publication
 also now clears the logical-backend pointer and publishes exit status through a
 single PMChild helper, and the exiting thread now reports retained
-`TopMemoryContext` bytes to the postmaster reaper. These are partial Gate E2
+`TopMemoryContext` bytes to the postmaster reaper. The broad threaded startup
+GUC whitelist has also been replaced for rebound built-in direct-pointer GUCs
+by a systematic generated-table adoption pass. These are partial Gate E2
 closures only: the full thread teardown, PMChild join/reaping contract,
-systematic GUC adoption, startup-gate narrowing, and threaded stress coverage
-remain blockers before Phase 13 scheduler-aware wait work.
+postmaster/runtime default and extension/custom GUC adoption, startup-gate
+narrowing, and threaded stress coverage remain blockers before Phase 13
+scheduler-aware wait work.
 
 ## Bottom Line
 

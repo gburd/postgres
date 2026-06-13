@@ -3847,3 +3847,54 @@ Validation for this slice:
   `002_threaded_bgworker_crash.pl` still did not reach PostgreSQL because the
   system Perl is missing `IPC::Run`, matching the existing local-build note in
   `AGENTS.md`.
+
+## Threaded Session GUC Rebind Adoption
+
+The seventy-eighth Phase 12 slice starts closing the Gate E2 GUC startup
+blocker by replacing the broad hard-coded GUC initialization whitelist in
+`InitializeThreadedSessionGUCOptions()`:
+
+- threaded startup now builds the per-thread generated GUC table, records each
+  direct backing-variable pointer after `InitializeGUCVariablePointers()`,
+  runs `RebindSessionGUCVariablePointers()`, and initializes every built-in GUC
+  record whose backing pointer changed;
+- this makes startup initialization follow the existing
+  `PgSession`/runtime-backed GUC migration table instead of depending on a
+  manually curated list of option names reached by the current smoke tests;
+- thread-backed client and worker startup now build the GUC table before
+  runtime installation, using the existing early fallback runtime accessors
+  during `RebindSessionGUCVariablePointers()`. The later runtime install adopts
+  that initialized early state into the logical session, and the later
+  `InitPostgres()` threaded-backend call is a no-op if the table already
+  exists;
+- the only remaining hand-curated threaded startup compatibility list is for
+  TLS dummy startup GUCs without explicit session accessors:
+  `session_authorization`, `server_encoding`, and `client_encoding`.
+
+This is not the full Gate E2 GUC closure. It covers systematic initialization
+for built-in generated GUC records whose direct backing variables have already
+been migrated to session/runtime state. Remaining work must still define and
+test postmaster/runtime default adoption, complete assign-hook/reset/default
+semantics, database/role/startup option behavior, extension/custom GUCs, and
+GUC-heavy threaded stress coverage.
+
+Validation for this slice:
+
+- touched-object builds passed for `guc.o` and `launch_backend.o`;
+- full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- focused `test_backend_runtime` regression passed;
+- `gmake check-global-lifetimes` passed, reporting zero new unclassified
+  mutable globals against the checked baseline;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests;
+- manual threaded GUC smoke with `multithreaded = on` reached server startup,
+  client connection, `SHOW multithreaded`, several `SET` paths, and
+  `RESET ALL`. It confirmed that postmaster/runtime default adoption remains
+  incomplete (`work_mem` stayed at the boot default rather than the configured
+  value) and then hit an existing broader threaded worker/WAL crash in the
+  background writer (`LogStandbySnapshot()` -> `XLogInsert()`) after the client
+  sequence;
+- threaded TAP coverage for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl` still did not reach PostgreSQL because the
+  system Perl is missing `IPC::Run`, matching the existing local-build note in
+  `AGENTS.md`.
