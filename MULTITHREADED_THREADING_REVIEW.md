@@ -306,6 +306,15 @@ work.
 5. Promote global-lifetime scanning into a required validation step.
 6. Only then continue toward scheduler-aware waits and pooled carriers.
 
+## Progress Notes
+
+Subsequent Phase 12 work has promoted global-lifetime scanning into
+`gmake check-global-lifetimes` and moved postmaster signal/wakeup routing onto
+PMChild-owned helper APIs for thread-backed backends. These are partial Gate E2
+closures only: the full thread teardown, PMChild join/reaping contract,
+systematic GUC adoption, startup-gate narrowing, and threaded stress coverage
+remain blockers before Phase 13 scheduler-aware wait work.
+
 ## Bottom Line
 
 The branch is on track only if the current debt is treated as Phase 12

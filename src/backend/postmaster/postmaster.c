@@ -3563,7 +3563,6 @@ signal_child(PMChild *pmchild, int signal)
 
 	if (PostmasterChildIsThread(pmchild))
 	{
-		PgBackend  *backend = pmchild->thread_backend;
 		PgBackendInterruptType interrupt;
 
 		ereport(DEBUG3,
@@ -3571,11 +3570,8 @@ signal_child(PMChild *pmchild, int signal)
 								 signal, pm_signame(signal),
 								 GetBackendTypeDesc(pmchild->bkend_type))));
 
-		if (backend == NULL)
-			return;
-
 		if (thread_child_signal_interrupt(pmchild, signal, &interrupt))
-			PgBackendRaiseInterrupt(backend, interrupt);
+			(void) PostmasterChildRaiseThreadInterrupt(pmchild, interrupt);
 		return;
 	}
 
@@ -5144,7 +5140,7 @@ PostmasterNotifyPIDForWorker(int pid)
 			continue;
 
 		if (PostmasterChildIsThread(bp))
-			PgBackendWakeup(bp->thread_backend);
+			return PostmasterChildWakeThreadBackend(bp);
 		else if (kill(pid, SIGUSR1) < 0)
 			return false;
 

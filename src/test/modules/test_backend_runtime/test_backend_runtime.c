@@ -6366,6 +6366,44 @@ test_backend_pending_interrupts_are_backend_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_pmchild_thread_backend_signal_api);
+Datum
+test_pmchild_thread_backend_signal_api(PG_FUNCTION_ARGS)
+{
+	PgRuntime	fake_runtime;
+	PgBackend	fake_backend;
+	PMChild		fake_pmchild;
+	PgBackendInterruptMask pending;
+	bool		ok = true;
+
+	MemSet(&fake_runtime, 0, sizeof(fake_runtime));
+	MemSet(&fake_backend, 0, sizeof(fake_backend));
+	MemSet(&fake_pmchild, 0, sizeof(fake_pmchild));
+
+	fake_runtime.kind = PG_RUNTIME_THREAD_PER_SESSION;
+	fake_backend.id = 12345;
+	fake_backend.runtime = &fake_runtime;
+	PgBackendInitializeInterrupts(&fake_backend);
+	fake_pmchild.carrier_kind = PM_CHILD_CARRIER_THREAD;
+
+	PostmasterChildSetThreadBackend(&fake_pmchild, &fake_backend);
+	ok = ok && PostmasterChildSignalPid(&fake_pmchild) == 12345;
+	ok = ok && PostmasterChildRaiseThreadInterrupt(&fake_pmchild,
+												   PG_BACKEND_INTERRUPT_QUERY_CANCEL);
+	pending = PgBackendConsumeInterrupts(&fake_backend);
+	ok = ok && (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_QUERY_CANCEL));
+
+	PostmasterChildSetThreadBackend(&fake_pmchild, NULL);
+	ok = ok && !PostmasterChildRaiseThreadInterrupt(&fake_pmchild,
+													PG_BACKEND_INTERRUPT_QUERY_CANCEL);
+	ok = ok && !PostmasterChildWakeThreadBackend(&fake_pmchild);
+
+	if (!ok)
+		elog(ERROR, "PMChild thread-backend signal API failed");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_backend_core_state_is_backend_local);
 Datum
 test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)

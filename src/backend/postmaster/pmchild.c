@@ -40,6 +40,10 @@
 #include "storage/proc.h"
 #include "utils/backend_runtime.h"
 
+#ifndef WIN32
+#include "port/pg_pthread.h"
+#endif
+
 /*
  * Freelists for different kinds of child processes.  We maintain separate
  * pools for each, so that for example launching a lot of regular backends
@@ -56,6 +60,13 @@ typedef struct PMChildPool
 static PG_GLOBAL_RUNTIME PMChildPool pmchild_pools[BACKEND_NUM_TYPES];
 PG_GLOBAL_RUNTIME NON_EXEC_STATIC int num_pmchild_slots = 0;
 
+#ifndef WIN32
+static PG_GLOBAL_RUNTIME pthread_mutex_t PMChildThreadBackendMutex = PTHREAD_MUTEX_INITIALIZER;
+#endif
+
+static void PMChildThreadBackendLock(void);
+static void PMChildThreadBackendUnlock(void);
+
 /*
  * List of active child processes.  This includes dead-end children.
  */
@@ -70,6 +81,36 @@ PG_GLOBAL_RUNTIME dlist_head ActiveChildList;
 extern PG_GLOBAL_RUNTIME PMChild *pmchild_array;
 PG_GLOBAL_RUNTIME PMChild *pmchild_array;
 #endif
+
+static void
+PMChildThreadBackendLock(void)
+{
+#ifndef WIN32
+	int			rc;
+
+	rc = pthread_mutex_lock(&PMChildThreadBackendMutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not lock PMChild thread-backend state: %m");
+	}
+#endif
+}
+
+static void
+PMChildThreadBackendUnlock(void)
+{
+#ifndef WIN32
+	int			rc;
+
+	rc = pthread_mutex_unlock(&PMChildThreadBackendMutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not unlock PMChild thread-backend state: %m");
+	}
+#endif
+}
 
 
 /*
@@ -308,9 +349,48 @@ PostmasterChildSetThreadBackend(PMChild *pmchild, struct PgBackend *backend)
 {
 	Assert(PostmasterChildIsThread(pmchild));
 
+	PMChildThreadBackendLock();
 	pmchild->thread_backend = backend;
 	if (backend != NULL)
 		pmchild->signal_pid = PgBackendGetSignalPid(backend);
+	PMChildThreadBackendUnlock();
+}
+
+bool
+PostmasterChildRaiseThreadInterrupt(PMChild *pmchild,
+									int interrupt)
+{
+	bool		raised = false;
+
+	Assert(PostmasterChildIsThread(pmchild));
+
+	PMChildThreadBackendLock();
+	if (pmchild->thread_backend != NULL)
+	{
+		PgBackendRaiseInterrupt(pmchild->thread_backend, interrupt);
+		raised = true;
+	}
+	PMChildThreadBackendUnlock();
+
+	return raised;
+}
+
+bool
+PostmasterChildWakeThreadBackend(PMChild *pmchild)
+{
+	bool		woke = false;
+
+	Assert(PostmasterChildIsThread(pmchild));
+
+	PMChildThreadBackendLock();
+	if (pmchild->thread_backend != NULL)
+	{
+		PgBackendWakeup(pmchild->thread_backend);
+		woke = true;
+	}
+	PMChildThreadBackendUnlock();
+
+	return woke;
 }
 
 void

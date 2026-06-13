@@ -808,6 +808,12 @@ Gate E2 requires:
   regression coverage and targeted tests for subsystems touched during Phase
   12 cleanup.
 
+Current Gate E2 progress: `gmake check-global-lifetimes` is now a required
+target, and postmaster signal/wakeup routing no longer dereferences a
+thread-backed `PMChild`'s raw `thread_backend` pointer directly. The remaining
+PMChild blocker is the broader thread exit, join, reaping, and slot-release
+ownership contract plus stress coverage for those races.
+
 Phase 16 still owns broader hardening such as sanitizer runs, contrib-wide
 threaded regression, crash/FATAL behavior matrices, platform coverage, and
 performance baselines. Gate E2 is narrower: it blocks further scheduler work

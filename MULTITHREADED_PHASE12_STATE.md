@@ -3732,3 +3732,45 @@ Validation for this slice:
 - touched-object builds passed for frontend and backend PRNG objects via
   `gmake -C src/common pg_prng.o pg_prng_srv.o`;
 - `git diff --check` passed.
+
+## PMChild Thread-Backend Publication Boundary
+
+The seventy-fifth Phase 12 slice starts closing the Gate E2
+PMChild/thread-backed backend ownership blocker:
+
+- `PMChild` keeps the raw `thread_backend` pointer behind PMChild-owned APIs;
+- publishing and clearing the thread-backed logical backend now happens under a
+  `PMChildThreadBackendMutex`;
+- postmaster signal routing no longer dereferences `pmchild->thread_backend`
+  directly and instead asks PMChild to raise the logical interrupt while the
+  publication lock is held;
+- background-worker notification wakeups use
+  `PostmasterChildWakeThreadBackend()` instead of directly waking the raw
+  pointer;
+- `test_backend_runtime` adds `test_pmchild_thread_backend_signal_api()` to
+  verify that a thread-backed PMChild publishes a stable logical signal id,
+  delivers a logical interrupt through the protected API, and refuses interrupt
+  or wakeup delivery after unpublishing the backend.
+
+This does not complete all PMChild Gate E2 work. It removes the most direct
+unsynchronized pointer handoff in postmaster signal and wakeup paths. Remaining
+work still needs stress coverage for shutdown and termination races plus a
+fuller ownership contract for thread exit publication, join, and PMChild slot
+release.
+
+Validation for this slice:
+
+- touched-object builds passed for `pmchild.o`, `postmaster.o`,
+  `launch_backend.o`, and `test_backend_runtime.o`;
+- full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- focused `test_backend_runtime` regression passed and includes
+  `test_pmchild_thread_backend_signal_api()`;
+- `gmake check-global-lifetimes` passed, reporting zero new unclassified
+  mutable globals against the checked baseline;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests;
+- threaded TAP coverage for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl` did not reach PostgreSQL because the system
+  Perl is missing `IPC::Run`, matching the existing local-build note in
+  `AGENTS.md`.

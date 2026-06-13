@@ -116,6 +116,9 @@ Important current files:
   `gmake check-global-lifetimes` as part of Gate E2. A new mutable global must
   be annotated with an explicit `PG_GLOBAL_*` owner or deliberately accepted in
   `src/tools/global_lifetime/global_lifetime_baseline.tsv`.
+- Treat `PMChild.thread_backend` as private PMChild-owned publication state.
+  Postmaster code should use PMChild helper APIs for threaded backend
+  interrupt and wakeup delivery rather than dereferencing the raw pointer.
 - Prefer introducing compatibility wrappers around current globals before
   changing all call sites.
 - Be careful moving GUC backing variables behind dynamic lvalue macros. The
