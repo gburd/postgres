@@ -241,6 +241,12 @@ typedef struct PgExecutionAnalyzeState
 	BufferAccessStrategy strategy;
 } PgExecutionAnalyzeState;
 
+typedef struct PgExecutionExtensionState
+{
+	bool		creating;
+	Oid			current_object;
+} PgExecutionExtensionState;
+
 typedef struct PgSessionDatabaseState
 {
 	Oid			database_id;
@@ -1022,6 +1028,7 @@ struct PgExecution
 	PgExecutionNodeIOState node_io;
 	PgExecutionBaseBackupState basebackup;
 	PgExecutionAnalyzeState analyze;
+	PgExecutionExtensionState extension;
 };
 
 typedef struct PgThreadBackendRuntimeState
@@ -1074,6 +1081,8 @@ extern long long int *PgCurrentBaseBackupTotalChecksumFailuresRef(void);
 extern bool *PgCurrentBaseBackupNoVerifyChecksumsRef(void);
 extern MemoryContext *PgCurrentAnalyzeContextRef(void);
 extern BufferAccessStrategy *PgCurrentAnalyzeStrategyRef(void);
+extern bool *PgCurrentCreatingExtensionRef(void);
+extern Oid *PgCurrentExtensionObjectRef(void);
 extern int *PgCurrentDeadlockTimeoutRef(void);
 extern int *PgCurrentStatementTimeoutRef(void);
 extern int *PgCurrentLockTimeoutRef(void);

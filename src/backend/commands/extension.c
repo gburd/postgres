@@ -79,9 +79,10 @@
  * commands/extension.h.
  */
 
-/* Globally visible state variables */
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool creating_extension = false;
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION Oid CurrentExtensionObject = InvalidOid;
+/*
+ * Extension creation state lives in PgExecution.  The public names remain
+ * available through compatibility macros in commands/extension.h.
+ */
 
 /*
  * Internal data structure to hold the results of parsing a control file

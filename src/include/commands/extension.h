@@ -31,9 +31,10 @@ extern char **PgCurrentExtensionControlPathRef(void);
  * scripts can drop member objects without having to explicitly dissociate
  * them from the extension first.
  */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool creating_extension;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION Oid
-			CurrentExtensionObject;
+extern bool *PgCurrentCreatingExtensionRef(void);
+extern Oid *PgCurrentExtensionObjectRef(void);
+#define creating_extension (*PgCurrentCreatingExtensionRef())
+#define CurrentExtensionObject (*PgCurrentExtensionObjectRef())
 
 
 extern ObjectAddress CreateExtension(ParseState *pstate, CreateExtensionStmt *stmt);

@@ -487,6 +487,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionVacuumState early_executio
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionNodeIOState early_execution_node_io;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionBaseBackupState early_execution_basebackup;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionAnalyzeState early_execution_analyze;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionExtensionState early_execution_extension;
 
 StaticAssertDecl(PG_BACKEND_INTERRUPT_COUNT <= 32,
 				 "PgBackendInterruptMask must fit all backend interrupts");
@@ -607,6 +608,8 @@ static void PgExecutionInitializeBaseBackupState(PgExecutionBaseBackupState *bas
 static void PgExecutionAdoptEarlyBaseBackupState(PgExecution *execution);
 static void PgExecutionInitializeAnalyzeState(PgExecutionAnalyzeState *analyze);
 static void PgExecutionAdoptEarlyAnalyzeState(PgExecution *execution);
+static void PgExecutionInitializeExtensionState(PgExecutionExtensionState *extension);
+static void PgExecutionAdoptEarlyExtensionState(PgExecution *execution);
 static PgBackendCoreState *PgCurrentCoreState(void);
 static PgSessionDatabaseState *PgCurrentSessionDatabaseState(void);
 static PgSessionTablespaceState *PgCurrentSessionTablespaceState(void);
@@ -657,6 +660,7 @@ static PgExecutionVacuumState *PgCurrentExecutionVacuumState(void);
 static PgExecutionNodeIOState *PgCurrentExecutionNodeIOState(void);
 static PgExecutionBaseBackupState *PgCurrentExecutionBaseBackupState(void);
 static PgExecutionAnalyzeState *PgCurrentExecutionAnalyzeState(void);
+static PgExecutionExtensionState *PgCurrentExecutionExtensionState(void);
 static PgBackendPendingInterruptState *PgCurrentPendingInterrupts(void);
 static PgBackendInterruptHoldoffState *PgCurrentInterruptHoldoffs(void);
 
@@ -2098,6 +2102,24 @@ PgExecutionAdoptEarlyAnalyzeState(PgExecution *execution)
 	PgExecutionInitializeAnalyzeState(&early_execution_analyze);
 }
 
+static void
+PgExecutionInitializeExtensionState(PgExecutionExtensionState *extension)
+{
+	Assert(extension != NULL);
+
+	extension->creating = false;
+	extension->current_object = InvalidOid;
+}
+
+static void
+PgExecutionAdoptEarlyExtensionState(PgExecution *execution)
+{
+	Assert(execution != NULL);
+
+	execution->extension = early_execution_extension;
+	PgExecutionInitializeExtensionState(&early_execution_extension);
+}
+
 void
 InitializePgProcessRuntime(void)
 {
@@ -2205,6 +2227,7 @@ InitializePgProcessRuntime(void)
 	PgExecutionAdoptEarlyNodeIOState(&process_execution);
 	PgExecutionAdoptEarlyBaseBackupState(&process_execution);
 	PgExecutionAdoptEarlyAnalyzeState(&process_execution);
+	PgExecutionAdoptEarlyExtensionState(&process_execution);
 
 	CurrentPgRuntime = &process_runtime;
 	CurrentPgCarrier = &process_carrier;
@@ -2325,6 +2348,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgExecutionInitializeNodeIOState(&state->execution.node_io);
 	PgExecutionInitializeBaseBackupState(&state->execution.basebackup);
 	PgExecutionInitializeAnalyzeState(&state->execution.analyze);
+	PgExecutionInitializeExtensionState(&state->execution.extension);
 }
 
 void
@@ -2385,6 +2409,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgExecutionAdoptEarlyNodeIOState(&state->execution);
 	PgExecutionAdoptEarlyBaseBackupState(&state->execution);
 	PgExecutionAdoptEarlyAnalyzeState(&state->execution);
+	PgExecutionAdoptEarlyExtensionState(&state->execution);
 	CurrentPgRuntime = &thread_runtime;
 	CurrentPgCarrier = &state->carrier;
 	CurrentPgBackend = &state->backend;
@@ -5165,6 +5190,27 @@ BufferAccessStrategy *
 PgCurrentAnalyzeStrategyRef(void)
 {
 	return &PgCurrentExecutionAnalyzeState()->strategy;
+}
+
+static PgExecutionExtensionState *
+PgCurrentExecutionExtensionState(void)
+{
+	if (CurrentPgExecution == NULL)
+		return &early_execution_extension;
+
+	return &CurrentPgExecution->extension;
+}
+
+bool *
+PgCurrentCreatingExtensionRef(void)
+{
+	return &PgCurrentExecutionExtensionState()->creating;
+}
+
+Oid *
+PgCurrentExtensionObjectRef(void)
+{
+	return &PgCurrentExecutionExtensionState()->current_object;
 }
 
 PgConnectionSocketIOState *

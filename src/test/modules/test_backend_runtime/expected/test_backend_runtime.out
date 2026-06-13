@@ -365,6 +365,12 @@ SELECT test_execution_analyze_state_is_execution_local();
  t
 (1 row)
 
+SELECT test_execution_extension_state_is_execution_local();
+ test_execution_extension_state_is_execution_local 
+---------------------------------------------------
+ t
+(1 row)
+
 SELECT test_execution_resource_owners_are_execution_local();
  test_execution_resource_owners_are_execution_local 
 ----------------------------------------------------

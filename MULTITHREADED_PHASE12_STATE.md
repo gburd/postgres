@@ -3615,3 +3615,51 @@ Validation for this slice:
   public header migration;
 - static scans found no remaining raw TLS declarations for the migrated
   ANALYZE execution-state fields.
+
+## Extension Creation Execution State Bridge
+
+The seventy-second Phase 12 slice moves extension creation command state under
+the logical execution object:
+
+- `PgExecution` now owns `PgExecutionExtensionState`;
+- `creating_extension` and `CurrentExtensionObject` remain source-compatible
+  lvalue macros in `commands/extension.h`, backed by the active execution;
+- `extension.c` no longer defines exported raw TLS storage for those names;
+- runtime initialization sets the current extension object to `InvalidOid` for
+  process, thread, and early execution state and adopts any early state into
+  the installed execution object;
+- the backend-runtime regression fixture adds
+  `test_execution_extension_state_is_execution_local()`, switching
+  `CurrentPgExecution` between fake executions and verifying both exported
+  extension creation lvalues follow the active execution.
+
+This state is execution-scoped because it is only valid while running one
+`CREATE EXTENSION` or `ALTER EXTENSION UPDATE` script. Dependency recording,
+ACL initialization, deletion, and event-trigger code still use the historical
+public names, but they now read the active execution instead of a raw TLS
+global.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `extension.o`, and
+  `test_backend_runtime.o`;
+- because `extension.h` and `backend_runtime.h` changed installed backend
+  headers and formerly exported execution globals became compatibility macros,
+  the backend clean plus generated utility and node-header recovery path was
+  used before trusting process-mode runtime tests;
+- clean full `gmake -j8` passed after the backend clean;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- rebuilding and reinstalling `src/test/modules/test_extensions` passed;
+- focused `test_backend_runtime` regression passed and includes
+  `test_execution_extension_state_is_execution_local()`;
+- focused `test_extensions` and `test_extdepend` regressions passed, covering
+  extension creation, update scripts, extension membership dependencies,
+  event-trigger interactions, and extension dependency deletion behavior;
+- focused `test_ext_backend_model` and `test_ext_backend_model_pooled`
+  regressions passed after the public header migration;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  public header migration;
+- static scans found no remaining raw TLS declarations for the migrated
+  extension creation execution-state fields.
