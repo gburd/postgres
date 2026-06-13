@@ -99,6 +99,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionProtocolState early_conn
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionInterruptState early_connection_interrupts;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionStartupState early_connection_startup;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionClientConnectionInfoState early_client_connection_info;
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionSecurityState early_connection_security;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionDatabaseState early_session_database;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionTablespaceState early_session_tablespace = {
 	.initialized = true,
@@ -489,6 +490,7 @@ static void PgConnectionAdoptEarlyProtocolState(PgConnection *connection);
 static void PgConnectionAdoptEarlyInterruptState(PgConnection *connection);
 static void PgConnectionAdoptEarlyStartupState(PgConnection *connection);
 static void PgConnectionAdoptEarlyClientConnectionInfo(PgConnection *connection);
+static void PgConnectionAdoptEarlySecurityState(PgConnection *connection);
 static void PgSessionAdoptEarlyDatabaseState(PgSession *session);
 static void PgSessionInitializeTablespaceState(PgSessionTablespaceState *tablespace);
 static void PgSessionAdoptEarlyTablespaceState(PgSession *session);
@@ -721,6 +723,15 @@ PgConnectionAdoptEarlyClientConnectionInfo(PgConnection *connection)
 
 	connection->client_connection_info = early_client_connection_info;
 	MemSet(&early_client_connection_info, 0, sizeof(early_client_connection_info));
+}
+
+static void
+PgConnectionAdoptEarlySecurityState(PgConnection *connection)
+{
+	Assert(connection != NULL);
+
+	connection->security = early_connection_security;
+	MemSet(&early_connection_security, 0, sizeof(early_connection_security));
 }
 
 static void
@@ -2022,6 +2033,7 @@ InitializePgProcessRuntime(void)
 	PgConnectionAdoptEarlyInterruptState(&process_connection);
 	PgConnectionAdoptEarlyStartupState(&process_connection);
 	PgConnectionAdoptEarlyClientConnectionInfo(&process_connection);
+	PgConnectionAdoptEarlySecurityState(&process_connection);
 
 	process_execution.backend = &process_backend;
 	process_execution.session = &process_session;
@@ -4908,6 +4920,21 @@ void *
 PgCurrentClientConnectionInfoRef(void)
 {
 	return PgConnectionClientConnectionInfoRef(CurrentPgConnection);
+}
+
+PgConnectionSecurityState *
+PgConnectionSecurityStateRef(PgConnection *connection)
+{
+	if (connection == NULL)
+		return &early_connection_security;
+
+	return &connection->security;
+}
+
+PgConnectionSecurityState *
+PgCurrentConnectionSecurityStateRef(void)
+{
+	return PgConnectionSecurityStateRef(CurrentPgConnection);
 }
 
 static PgBackendCoreState *

@@ -7057,6 +7057,105 @@ test_client_connection_info_is_connection_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_connection_security_state_is_connection_local);
+Datum
+test_connection_security_state_is_connection_local(PG_FUNCTION_ARGS)
+{
+	PgConnection *saved_connection;
+	PgConnection fake_connection1;
+	PgConnection fake_connection2;
+	PgConnectionSecurityState *security;
+	bool		ok = true;
+
+	saved_connection = CurrentPgConnection;
+	MemSet(&fake_connection1, 0, sizeof(fake_connection1));
+	MemSet(&fake_connection2, 0, sizeof(fake_connection2));
+
+	PG_TRY();
+	{
+		CurrentPgConnection = &fake_connection1;
+		security = PgCurrentConnectionSecurityStateRef();
+		ok = ok && !security->ssl_loaded_verify_locations;
+		ok = ok && security->gss_send_buffer == NULL;
+		ok = ok && security->gss_send_length == 0;
+		ok = ok && security->gss_recv_buffer == NULL;
+		ok = ok && security->gss_result_buffer == NULL;
+		ok = ok && security->gss_max_packet_size == 0;
+		security->ssl_loaded_verify_locations = true;
+		security->gss_send_buffer = (char *) &fake_connection1;
+		security->gss_send_length = 11;
+		security->gss_send_next = 12;
+		security->gss_send_consumed = 13;
+		security->gss_recv_buffer = (char *) &fake_connection2;
+		security->gss_recv_length = 14;
+		security->gss_result_buffer = (char *) &saved_connection;
+		security->gss_result_length = 15;
+		security->gss_result_next = 16;
+		security->gss_max_packet_size = 17;
+
+		CurrentPgConnection = &fake_connection2;
+		security = PgCurrentConnectionSecurityStateRef();
+		ok = ok && !security->ssl_loaded_verify_locations;
+		ok = ok && security->gss_send_buffer == NULL;
+		ok = ok && security->gss_send_length == 0;
+		ok = ok && security->gss_recv_buffer == NULL;
+		ok = ok && security->gss_result_buffer == NULL;
+		ok = ok && security->gss_max_packet_size == 0;
+		security->ssl_loaded_verify_locations = false;
+		security->gss_send_buffer = (char *) &fake_connection2;
+		security->gss_send_length = 21;
+		security->gss_send_next = 22;
+		security->gss_send_consumed = 23;
+		security->gss_recv_buffer = (char *) &fake_connection1;
+		security->gss_recv_length = 24;
+		security->gss_result_buffer = (char *) &fake_connection2;
+		security->gss_result_length = 25;
+		security->gss_result_next = 26;
+		security->gss_max_packet_size = 27;
+
+		CurrentPgConnection = &fake_connection1;
+		security = PgCurrentConnectionSecurityStateRef();
+		ok = ok && security->ssl_loaded_verify_locations;
+		ok = ok && security->gss_send_buffer == (char *) &fake_connection1;
+		ok = ok && security->gss_send_length == 11;
+		ok = ok && security->gss_send_next == 12;
+		ok = ok && security->gss_send_consumed == 13;
+		ok = ok && security->gss_recv_buffer == (char *) &fake_connection2;
+		ok = ok && security->gss_recv_length == 14;
+		ok = ok && security->gss_result_buffer == (char *) &saved_connection;
+		ok = ok && security->gss_result_length == 15;
+		ok = ok && security->gss_result_next == 16;
+		ok = ok && security->gss_max_packet_size == 17;
+
+		CurrentPgConnection = &fake_connection2;
+		security = PgCurrentConnectionSecurityStateRef();
+		ok = ok && !security->ssl_loaded_verify_locations;
+		ok = ok && security->gss_send_buffer == (char *) &fake_connection2;
+		ok = ok && security->gss_send_length == 21;
+		ok = ok && security->gss_send_next == 22;
+		ok = ok && security->gss_send_consumed == 23;
+		ok = ok && security->gss_recv_buffer == (char *) &fake_connection1;
+		ok = ok && security->gss_recv_length == 24;
+		ok = ok && security->gss_result_buffer == (char *) &fake_connection2;
+		ok = ok && security->gss_result_length == 25;
+		ok = ok && security->gss_result_next == 26;
+		ok = ok && security->gss_max_packet_size == 27;
+
+		CurrentPgConnection = saved_connection;
+	}
+	PG_CATCH();
+	{
+		CurrentPgConnection = saved_connection;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "connection security state was not connection-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_backend_interrupt_wakes_target_latch);
 Datum
 test_backend_interrupt_wakes_target_latch(PG_FUNCTION_ARGS)

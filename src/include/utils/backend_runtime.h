@@ -772,6 +772,21 @@ typedef struct PgConnectionClientConnectionInfoState
 	UserAuth	auth_method;
 } PgConnectionClientConnectionInfoState;
 
+typedef struct PgConnectionSecurityState
+{
+	bool		ssl_loaded_verify_locations;
+	char	   *gss_send_buffer;
+	int			gss_send_length;
+	int			gss_send_next;
+	int			gss_send_consumed;
+	char	   *gss_recv_buffer;
+	int			gss_recv_length;
+	char	   *gss_result_buffer;
+	int			gss_result_length;
+	int			gss_result_next;
+	uint32		gss_max_packet_size;
+} PgConnectionSecurityState;
+
 /*
  * Main-loop state owned by PgSession. Some of this state used to be volatile
  * locals in PostgresMain(); keep the loop flags volatile because they must
@@ -893,6 +908,7 @@ struct PgConnection
 	PgConnectionInterruptState interrupts;
 	PgConnectionStartupState startup;
 	PgConnectionClientConnectionInfoState client_connection_info;
+	PgConnectionSecurityState security;
 };
 
 struct PgExecution
@@ -1155,6 +1171,8 @@ extern struct ClientSocket **PgConnectionClientSocketRef(PgConnection *connectio
 extern struct ClientSocket **PgCurrentClientSocketRef(void);
 extern void *PgConnectionClientConnectionInfoRef(PgConnection *connection);
 extern void *PgCurrentClientConnectionInfoRef(void);
+extern PgConnectionSecurityState *PgConnectionSecurityStateRef(PgConnection *connection);
+extern PgConnectionSecurityState *PgCurrentConnectionSecurityStateRef(void);
 extern PgBackendLaunchModel PgRuntimeGetBackendLaunchModel(BackendType backend_type);
 extern bool PgRuntimeShouldThreadBackend(BackendType backend_type);
 extern PgBackendModel PgRuntimeGetExtensionBackendModel(void);

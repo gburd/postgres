@@ -67,28 +67,38 @@
  * point to buffers that are allocated once and re-used.
  */
 /* Encrypted data waiting to be sent */
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION char *PqGSSSendBuffer;
+#define PqGSSSendBuffer \
+	(PgCurrentConnectionSecurityStateRef()->gss_send_buffer)
 /* End of data available in PqGSSSendBuffer */
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION int PqGSSSendLength;
+#define PqGSSSendLength \
+	(PgCurrentConnectionSecurityStateRef()->gss_send_length)
 /* Next index to send a byte from PqGSSSendBuffer */
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION int PqGSSSendNext;
+#define PqGSSSendNext \
+	(PgCurrentConnectionSecurityStateRef()->gss_send_next)
 /* Number of source bytes encrypted but not yet reported as sent */
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION int PqGSSSendConsumed;
+#define PqGSSSendConsumed \
+	(PgCurrentConnectionSecurityStateRef()->gss_send_consumed)
 
 /* Received, encrypted data */
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION char *PqGSSRecvBuffer;
+#define PqGSSRecvBuffer \
+	(PgCurrentConnectionSecurityStateRef()->gss_recv_buffer)
 /* End of data available in PqGSSRecvBuffer */
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION int PqGSSRecvLength;
+#define PqGSSRecvLength \
+	(PgCurrentConnectionSecurityStateRef()->gss_recv_length)
 
 /* Decryption of data in gss_RecvBuffer */
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION char *PqGSSResultBuffer;
+#define PqGSSResultBuffer \
+	(PgCurrentConnectionSecurityStateRef()->gss_result_buffer)
 /* End of data available in PqGSSResultBuffer */
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION int PqGSSResultLength;
+#define PqGSSResultLength \
+	(PgCurrentConnectionSecurityStateRef()->gss_result_length)
 /* Next index to read a byte from PqGSSResultBuffer */
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION int PqGSSResultNext;
+#define PqGSSResultNext \
+	(PgCurrentConnectionSecurityStateRef()->gss_result_next)
 
 /* Maximum size we can encrypt and fit the results into our output buffer */
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION uint32 PqGSSMaxPktSize;
+#define PqGSSMaxPktSize \
+	(PgCurrentConnectionSecurityStateRef()->gss_max_packet_size)
 
 
 /*

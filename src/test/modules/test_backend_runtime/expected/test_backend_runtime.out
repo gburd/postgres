@@ -371,6 +371,12 @@ SELECT test_client_connection_info_is_connection_local();
  t
 (1 row)
 
+SELECT test_connection_security_state_is_connection_local();
+ test_connection_security_state_is_connection_local 
+----------------------------------------------------
+ t
+(1 row)
+
 PREPARE phase12_prepared_statement AS SELECT 42 AS answer;
 SELECT name, statement, from_sql FROM pg_prepared_statements
 	WHERE name = 'phase12_prepared_statement';

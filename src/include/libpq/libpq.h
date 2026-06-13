@@ -121,7 +121,8 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *SSLCipherList;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *SSLECDHCurve;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool SSLPreferServerCiphers;
 #ifdef USE_SSL
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CONNECTION bool ssl_loaded_verify_locations;
+#define ssl_loaded_verify_locations \
+	(PgCurrentConnectionSecurityStateRef()->ssl_loaded_verify_locations)
 #endif
 
 #ifdef USE_SSL

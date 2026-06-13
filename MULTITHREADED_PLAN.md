@@ -723,7 +723,8 @@ the saved-plan and cached-expression plan-cache list bridge through
 search-path cache bridge through `PgSession`, plus the locale GUC,
 localization, localeconv, and collation-cache bridge through `PgSession`, plus
 the authenticated/session/outer/current user identity and security context
-bridge through `PgSession`.
+bridge through `PgSession`, plus the SSL/GSS connection security-state bridge
+through `PgConnection`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.
