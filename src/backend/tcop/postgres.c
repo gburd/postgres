@@ -130,7 +130,7 @@ typedef struct BindParamCbData
  * Flag to keep track of whether we have started a transaction.
  * For extended query protocol this has to be remembered across messages.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool xact_started = false;
+#define xact_started (CurrentPgSession->loop_state.transaction_started)
 
 /*
  * Flag to indicate that we are doing the outer loop's read-from-client,
@@ -4265,6 +4265,7 @@ PgSessionLoopStateInit(PgSessionLoopState *state)
 	state->doing_extended_query_message = false;
 	state->ignore_till_sync = false;
 	state->step_error_boundary_active = false;
+	state->transaction_started = false;
 }
 
 static void

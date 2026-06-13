@@ -860,6 +860,7 @@ typedef struct PgSessionLoopState
 	volatile bool doing_extended_query_message;
 	volatile bool ignore_till_sync;
 	volatile bool step_error_boundary_active;
+	bool		transaction_started;
 } PgSessionLoopState;
 
 struct PgRuntime

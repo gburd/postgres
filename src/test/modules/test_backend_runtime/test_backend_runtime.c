@@ -537,6 +537,70 @@ test_backend_thread_ids_are_logical(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_session_loop_state_is_session_local);
+Datum
+test_session_loop_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	PG_TRY();
+	{
+		CurrentPgSession = &fake_session1;
+		CurrentPgSession->loop_state.send_ready_for_query = true;
+		CurrentPgSession->loop_state.idle_in_transaction_timeout_enabled = true;
+		CurrentPgSession->loop_state.doing_extended_query_message = true;
+		CurrentPgSession->loop_state.transaction_started = true;
+
+		CurrentPgSession = &fake_session2;
+		ok = ok && !CurrentPgSession->loop_state.send_ready_for_query;
+		ok = ok && !CurrentPgSession->loop_state.idle_in_transaction_timeout_enabled;
+		ok = ok && !CurrentPgSession->loop_state.doing_extended_query_message;
+		ok = ok && !CurrentPgSession->loop_state.transaction_started;
+		CurrentPgSession->loop_state.send_ready_for_query = true;
+		CurrentPgSession->loop_state.idle_session_timeout_enabled = true;
+		CurrentPgSession->loop_state.ignore_till_sync = true;
+		CurrentPgSession->loop_state.step_error_boundary_active = true;
+
+		CurrentPgSession = &fake_session1;
+		ok = ok && CurrentPgSession->loop_state.send_ready_for_query;
+		ok = ok && CurrentPgSession->loop_state.idle_in_transaction_timeout_enabled;
+		ok = ok && !CurrentPgSession->loop_state.idle_session_timeout_enabled;
+		ok = ok && CurrentPgSession->loop_state.doing_extended_query_message;
+		ok = ok && !CurrentPgSession->loop_state.ignore_till_sync;
+		ok = ok && !CurrentPgSession->loop_state.step_error_boundary_active;
+		ok = ok && CurrentPgSession->loop_state.transaction_started;
+
+		CurrentPgSession = &fake_session2;
+		ok = ok && CurrentPgSession->loop_state.send_ready_for_query;
+		ok = ok && !CurrentPgSession->loop_state.idle_in_transaction_timeout_enabled;
+		ok = ok && CurrentPgSession->loop_state.idle_session_timeout_enabled;
+		ok = ok && !CurrentPgSession->loop_state.doing_extended_query_message;
+		ok = ok && CurrentPgSession->loop_state.ignore_till_sync;
+		ok = ok && CurrentPgSession->loop_state.step_error_boundary_active;
+		ok = ok && !CurrentPgSession->loop_state.transaction_started;
+
+		CurrentPgSession = saved_session;
+	}
+	PG_CATCH();
+	{
+		CurrentPgSession = saved_session;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session loop state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_session_database_state_is_session_local);
 Datum
 test_session_database_state_is_session_local(PG_FUNCTION_ARGS)

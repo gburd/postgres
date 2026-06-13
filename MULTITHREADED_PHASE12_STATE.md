@@ -3399,3 +3399,39 @@ Validation for this slice:
   public `backend_startup.h` migration;
 - static scans found no remaining direct exported TLS declaration for
   `conn_timing`.
+
+## Extended Query Transaction-Started Loop Flag Bridge
+
+The sixty-seventh Phase 12 slice moves the extended-query protocol
+transaction-started flag under the logical session loop state:
+
+- `PgSessionLoopState` now owns `transaction_started`;
+- the private `postgres.c` `xact_started` name remains as a local
+  compatibility macro backed by
+  `CurrentPgSession->loop_state.transaction_started`;
+- `PgSessionLoopStateInit()` resets the flag alongside the other top-level
+  protocol-loop flags;
+- error recovery continues to clear the flag through the existing
+  `xact_started = false` path, but the storage now belongs to `PgSession`;
+- the backend-runtime regression fixture adds
+  `test_session_loop_state_is_session_local()`, switching `CurrentPgSession`
+  between fake sessions and verifying all loop flags, including
+  `transaction_started`, follow the active session.
+
+This removes one of the main `postgres.c` protocol-loop TLS flags and makes
+extended-query transaction state part of the logical session instead of the
+carrier thread.
+
+Validation for this slice:
+
+- touched-object builds passed for `postgres.o` and
+  `test_backend_runtime.o`;
+- incremental full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- focused `test_backend_runtime` regression passed and includes
+  `test_session_loop_state_is_session_local()`;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  public `backend_runtime.h` session-state update;
+- static scans found no remaining raw `xact_started` TLS declaration.
