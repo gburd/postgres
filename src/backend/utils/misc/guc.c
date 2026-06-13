@@ -2107,6 +2107,26 @@ RebindSessionGUCVariablePointers(void)
 	Assert(gconf->vartype == PGC_STRING);
 	gconf->_string.variable = PgCurrentNamespaceSearchPathRef();
 
+	gconf = find_option("lc_messages", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentLocaleMessagesRef();
+
+	gconf = find_option("lc_monetary", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentLocaleMonetaryRef();
+
+	gconf = find_option("lc_numeric", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentLocaleNumericRef();
+
+	gconf = find_option("lc_time", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentLocaleTimeRef();
+
+	gconf = find_option("icu_validation_level", false, false, PANIC);
+	Assert(gconf->vartype == PGC_ENUM);
+	gconf->_enum.variable = PgCurrentIcuValidationLevelRef();
+
 	gconf = find_option("gin_fuzzy_search_limit", false, false, PANIC);
 	Assert(gconf->vartype == PGC_INT);
 	gconf->_int.variable = PgCurrentGinFuzzySearchLimitRef();

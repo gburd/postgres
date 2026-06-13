@@ -451,6 +451,11 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionRandomState early_session_rand
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionOptimizerState early_session_optimizer;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPlanCacheState early_session_plan_cache;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionNamespaceState early_session_namespace;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionLocaleState early_session_locale = {
+	.initialized = true,
+	.icu_validation_level_value = WARNING,
+	.last_collation_cache_oid = InvalidOid
+};
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendPendingInterruptState early_pending_interrupts;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInterruptHoldoffState early_interrupt_holdoffs;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionDebugState early_execution_debug;
@@ -549,6 +554,8 @@ static void PgSessionInitializePlanCacheState(PgSessionPlanCacheState *plan_cach
 static void PgSessionAdoptEarlyPlanCacheState(PgSession *session);
 static void PgSessionInitializeNamespaceState(PgSessionNamespaceState *namespace_state);
 static void PgSessionAdoptEarlyNamespaceState(PgSession *session);
+static void PgSessionInitializeLocaleState(PgSessionLocaleState *locale);
+static void PgSessionAdoptEarlyLocaleState(PgSession *session);
 static void PgBackendResetCoreState(PgBackendCoreState *core);
 static void PgBackendAdoptEarlyCoreState(PgBackend *backend);
 static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
@@ -597,6 +604,7 @@ static PgSessionRandomState *PgCurrentSessionRandomState(void);
 static PgSessionOptimizerState *PgCurrentSessionOptimizerState(void);
 static PgSessionPlanCacheState *PgCurrentSessionPlanCacheState(void);
 static PgSessionNamespaceState *PgCurrentSessionNamespaceState(void);
+static PgSessionLocaleState *PgCurrentSessionLocaleState(void);
 static PgExecutionErrorState *PgCurrentExecutionErrorState(void);
 static PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
 static PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
@@ -1745,6 +1753,48 @@ PgSessionAdoptEarlyNamespaceState(PgSession *session)
 }
 
 static void
+PgSessionInitializeLocaleState(PgSessionLocaleState *locale)
+{
+	Assert(locale != NULL);
+
+	locale->locale_messages_value = NULL;
+	locale->locale_monetary_value = NULL;
+	locale->locale_numeric_value = NULL;
+	locale->locale_time_value = NULL;
+	locale->icu_validation_level_value = WARNING;
+	memset(locale->localized_abbrev_days_values, 0,
+		   sizeof(locale->localized_abbrev_days_values));
+	memset(locale->localized_full_days_values, 0,
+		   sizeof(locale->localized_full_days_values));
+	memset(locale->localized_abbrev_months_values, 0,
+		   sizeof(locale->localized_abbrev_months_values));
+	memset(locale->localized_full_months_values, 0,
+		   sizeof(locale->localized_full_months_values));
+	locale->default_locale = NULL;
+	locale->locale_conv_valid = false;
+	locale->locale_time_valid = false;
+	locale->current_locale_conv = NULL;
+	locale->current_locale_conv_allocated = false;
+	locale->collation_cache_context = NULL;
+	locale->collation_cache = NULL;
+	locale->last_collation_cache_oid = InvalidOid;
+	locale->last_collation_cache_locale = NULL;
+	locale->initialized = true;
+}
+
+static void
+PgSessionAdoptEarlyLocaleState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (!early_session_locale.initialized)
+		PgSessionInitializeLocaleState(&early_session_locale);
+
+	session->locale = early_session_locale;
+	PgSessionInitializeLocaleState(&early_session_locale);
+}
+
+static void
 PgBackendResetCoreState(PgBackendCoreState *core)
 {
 	MemSet(core, 0, sizeof(*core));
@@ -1919,6 +1969,7 @@ InitializePgProcessRuntime(void)
 	PgSessionAdoptEarlyOptimizerState(&process_session);
 	PgSessionAdoptEarlyPlanCacheState(&process_session);
 	PgSessionAdoptEarlyNamespaceState(&process_session);
+	PgSessionAdoptEarlyLocaleState(&process_session);
 
 	process_connection.backend = &process_backend;
 	process_connection.session = &process_session;
@@ -2039,6 +2090,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgSessionInitializeOptimizerState(&state->session.optimizer);
 	PgSessionInitializePlanCacheState(&state->session.plan_cache);
 	PgSessionInitializeNamespaceState(&state->session.namespace_state);
+	PgSessionInitializeLocaleState(&state->session.locale);
 
 	state->connection.backend = &state->backend;
 	state->connection.session = &state->session;
@@ -2096,6 +2148,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgSessionAdoptEarlyOptimizerState(&state->session);
 	PgSessionAdoptEarlyPlanCacheState(&state->session);
 	PgSessionAdoptEarlyNamespaceState(&state->session);
+	PgSessionAdoptEarlyLocaleState(&state->session);
 	PgExecutionAdoptEarlyErrorState(&state->execution);
 	PgExecutionAdoptEarlyMemoryContexts(&state->execution);
 	PgExecutionAdoptEarlyResourceOwners(&state->execution);
@@ -2727,6 +2780,58 @@ char **
 PgCurrentNamespaceSearchPathRef(void)
 {
 	return &PgCurrentSessionNamespaceState()->namespace_search_path_value;
+}
+
+static PgSessionLocaleState *
+PgCurrentSessionLocaleState(void)
+{
+	PgSessionLocaleState *locale;
+
+	if (CurrentPgSession == NULL)
+		locale = &early_session_locale;
+	else
+		locale = &CurrentPgSession->locale;
+
+	if (!locale->initialized)
+		PgSessionInitializeLocaleState(locale);
+
+	return locale;
+}
+
+PgSessionLocaleState *
+PgCurrentLocaleState(void)
+{
+	return PgCurrentSessionLocaleState();
+}
+
+char **
+PgCurrentLocaleMessagesRef(void)
+{
+	return &PgCurrentSessionLocaleState()->locale_messages_value;
+}
+
+char **
+PgCurrentLocaleMonetaryRef(void)
+{
+	return &PgCurrentSessionLocaleState()->locale_monetary_value;
+}
+
+char **
+PgCurrentLocaleNumericRef(void)
+{
+	return &PgCurrentSessionLocaleState()->locale_numeric_value;
+}
+
+char **
+PgCurrentLocaleTimeRef(void)
+{
+	return &PgCurrentSessionLocaleState()->locale_time_value;
+}
+
+int *
+PgCurrentIcuValidationLevelRef(void)
+{
+	return &PgCurrentSessionLocaleState()->icu_validation_level_value;
 }
 
 Oid *

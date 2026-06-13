@@ -2970,3 +2970,55 @@ Validation for this slice:
   header migration;
 - static scans found no remaining direct session TLS declarations for the
   moved namespace/search-path state.
+
+## Session Locale State Bridge
+
+The fifty-eighth Phase 12 slice moves locale/session-environment state under
+the logical session object:
+
+- `PgSessionLocaleState` now owns the `lc_messages`, `lc_monetary`,
+  `lc_numeric`, `lc_time`, and `icu_validation_level` direct-pointer GUC
+  backing variables;
+- the same state bucket owns the `lc_time` localized day/month name arrays,
+  the localeconv cache validity flag, the `lc_time` cache validity flag, the
+  per-session cached `struct lconv` pointer, the database default locale
+  pointer, and the collation-cache context/root/last-entry fast path;
+- `pg_locale.h` keeps the historical exported names as source-compatible
+  lvalue macros backed by the active `PgSession`;
+- `pg_locale.c` keeps private `pg_locale_t` and simplehash details local by
+  storing those roots as opaque pointers in `PgSessionLocaleState` and exposing
+  typed local helper macros only inside the implementation file;
+- `PGLC_localeconv()` now allocates the per-session `struct lconv` object on
+  first use instead of relying on a function-static TLS object;
+- the locale GUCs participate in `RebindSessionGUCVariablePointers()` through
+  `PgCurrentLocaleMessagesRef()`, `PgCurrentLocaleMonetaryRef()`,
+  `PgCurrentLocaleNumericRef()`, `PgCurrentLocaleTimeRef()`, and
+  `PgCurrentIcuValidationLevelRef()`.
+
+This keeps locale formatting caches, collation lookup caches, and direct
+locale GUC storage scoped to the logical session instead of the carrier
+thread, while preserving process mode's existing per-backend behavior.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `pg_locale.o`,
+  `guc.o`, and `test_backend_runtime.o`;
+- because `backend_runtime.h` and `pg_locale.h` changed, the backend clean
+  plus generated utility and node-header recovery path was used before
+  trusting process-mode runtime tests;
+- clean full `gmake -j8` passed after the backend clean;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- focused `test_backend_runtime` regression includes
+  `test_session_locale_state_is_session_local()`, which switches fake
+  sessions through `PgSetCurrentSession()`, mutates locale GUC backing values,
+  localized name arrays, localeconv flags, and opaque collation-cache pointers,
+  then verifies they follow the active `PgSession`;
+- direct `test_backend_runtime` regression passed after reinstalling the test
+  module into `tmp_install`;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests, including
+  money, formatting, locale, collation, GUC, and PL/pgSQL coverage;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- static scans found no remaining direct session TLS declarations for the
+  moved locale/session-environment state.

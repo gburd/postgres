@@ -24,6 +24,7 @@ SELECT test_session_random_state_is_session_local();
 SELECT test_session_optimizer_state_is_session_local();
 SELECT test_session_plan_cache_state_is_session_local();
 SELECT test_session_namespace_state_is_session_local();
+SELECT test_session_locale_state_is_session_local();
 SELECT test_runtime_server_guc_state_is_runtime_local();
 SELECT test_session_connection_guc_state_is_session_local();
 SELECT test_session_parser_state_is_session_local();

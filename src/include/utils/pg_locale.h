@@ -13,6 +13,7 @@
 #define _PG_LOCALE_
 
 #include "mb/pg_wchar.h"
+#include "utils/backend_runtime.h"
 #include "utils/global_lifetime.h"
 
 /* use for libc locale names */
@@ -33,25 +34,26 @@
 #define UNICODE_CASEMAP_BUFSZ	(UNICODE_CASEMAP_LEN * MAX_MULTIBYTE_CHAR_LEN)
 
 /* GUC settings */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char
-		   *locale_messages;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char
-		   *locale_monetary;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char
-		   *locale_numeric;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *locale_time;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int
-			icu_validation_level;
+#define locale_messages \
+	(PgCurrentLocaleState()->locale_messages_value)
+#define locale_monetary \
+	(PgCurrentLocaleState()->locale_monetary_value)
+#define locale_numeric \
+	(PgCurrentLocaleState()->locale_numeric_value)
+#define locale_time \
+	(PgCurrentLocaleState()->locale_time_value)
+#define icu_validation_level \
+	(PgCurrentLocaleState()->icu_validation_level_value)
 
 /* lc_time localization cache */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char
-		   *localized_abbrev_days[];
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char
-		   *localized_full_days[];
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char
-		   *localized_abbrev_months[];
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char
-		   *localized_full_months[];
+#define localized_abbrev_days \
+	(PgCurrentLocaleState()->localized_abbrev_days_values)
+#define localized_full_days \
+	(PgCurrentLocaleState()->localized_full_days_values)
+#define localized_abbrev_months \
+	(PgCurrentLocaleState()->localized_abbrev_months_values)
+#define localized_full_months \
+	(PgCurrentLocaleState()->localized_full_months_values)
 
 extern bool check_locale(int category, const char *locale, char **canonname);
 extern char *pg_perm_setlocale(int category, const char *locale);

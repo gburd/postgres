@@ -83,31 +83,26 @@ extern pg_locale_t create_pg_locale_icu(Oid collid, MemoryContext context);
 extern pg_locale_t create_pg_locale_libc(Oid collid, MemoryContext context);
 extern char *get_collation_actual_version_libc(const char *collcollate);
 
-/* GUC settings */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION char *locale_messages;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION char *locale_monetary;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION char *locale_numeric;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION char *locale_time;
+static inline pg_locale_t *
+CurrentDefaultLocaleRef(void)
+{
+	return (pg_locale_t *) &PgCurrentLocaleState()->default_locale;
+}
 
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int icu_validation_level = WARNING;
+static inline struct lconv **
+CurrentLocaleConvRef(void)
+{
+	return (struct lconv **) &PgCurrentLocaleState()->current_locale_conv;
+}
 
-/*
- * lc_time localization cache.
- *
- * We use only the first 7 or 12 entries of these arrays.  The last array
- * element is left as NULL for the convenience of outside code that wants
- * to sequentially scan these arrays.
- */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION char *localized_abbrev_days[7 + 1];
-PG_THREAD_LOCAL PG_GLOBAL_SESSION char *localized_full_days[7 + 1];
-PG_THREAD_LOCAL PG_GLOBAL_SESSION char *localized_abbrev_months[12 + 1];
-PG_THREAD_LOCAL PG_GLOBAL_SESSION char *localized_full_months[12 + 1];
-
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION pg_locale_t default_locale = NULL;
-
-/* indicates whether locale information cache is valid */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool CurrentLocaleConvValid = false;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool CurrentLCTimeValid = false;
+#define default_locale (*CurrentDefaultLocaleRef())
+#define CurrentLocaleConvValid \
+	(PgCurrentLocaleState()->locale_conv_valid)
+#define CurrentLCTimeValid \
+	(PgCurrentLocaleState()->locale_time_valid)
+#define CurrentLocaleConv (*CurrentLocaleConvRef())
+#define CurrentLocaleConvAllocated \
+	(PgCurrentLocaleState()->current_locale_conv_allocated)
 
 static PG_GLOBAL_IMMUTABLE struct pg_locale_struct c_locale = {
 	.deterministic = true,
@@ -140,19 +135,29 @@ typedef struct
 #define SH_DEFINE
 #include "lib/simplehash.h"
 
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION MemoryContext
-			CollationCacheContext = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION collation_cache_hash
-		   *CollationCache = NULL;
+static inline collation_cache_hash **
+CurrentCollationCacheRef(void)
+{
+	return (collation_cache_hash **) &PgCurrentLocaleState()->collation_cache;
+}
+
+static inline pg_locale_t *
+CurrentLastCollationCacheLocaleRef(void)
+{
+	return (pg_locale_t *) &PgCurrentLocaleState()->last_collation_cache_locale;
+}
+
+#define CollationCacheContext \
+	(PgCurrentLocaleState()->collation_cache_context)
+#define CollationCache (*CurrentCollationCacheRef())
 
 /*
  * The collation cache is often accessed repeatedly for the same collation, so
  * remember the last one used.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid
-			last_collation_cache_oid = InvalidOid;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION pg_locale_t
-			last_collation_cache_locale = NULL;
+#define last_collation_cache_oid \
+	(PgCurrentLocaleState()->last_collation_cache_oid)
+#define last_collation_cache_locale (*CurrentLastCollationCacheLocaleRef())
 
 #if defined(WIN32) && defined(LC_MESSAGES)
 static char *IsoLocaleName(const char *);
@@ -509,21 +514,22 @@ db_encoding_convert(int encoding, char **str)
 struct lconv *
 PGLC_localeconv(void)
 {
-	static PG_THREAD_LOCAL PG_GLOBAL_SESSION struct lconv CurrentLocaleConv;
-	static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool
-				CurrentLocaleConvAllocated = false;
 	struct lconv *extlconv;
 	struct lconv tmp;
 	struct lconv worklconv = {0};
 
+	if (CurrentLocaleConv == NULL)
+		CurrentLocaleConv = MemoryContextAllocZero(TopMemoryContext,
+												   sizeof(struct lconv));
+
 	/* Did we do it already? */
 	if (CurrentLocaleConvValid)
-		return &CurrentLocaleConv;
+		return CurrentLocaleConv;
 
 	/* Free any already-allocated storage */
 	if (CurrentLocaleConvAllocated)
 	{
-		free_struct_lconv(&CurrentLocaleConv);
+		free_struct_lconv(CurrentLocaleConv);
 		CurrentLocaleConvAllocated = false;
 	}
 
@@ -610,10 +616,10 @@ PGLC_localeconv(void)
 	/*
 	 * Everything is good, so save the results.
 	 */
-	CurrentLocaleConv = worklconv;
+	*CurrentLocaleConv = worklconv;
 	CurrentLocaleConvAllocated = true;
 	CurrentLocaleConvValid = true;
-	return &CurrentLocaleConv;
+	return CurrentLocaleConv;
 }
 
 #ifdef WIN32

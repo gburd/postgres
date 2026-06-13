@@ -676,6 +676,29 @@ typedef struct PgSessionNamespaceState
 	void	   *last_search_path_cache_entry;
 } PgSessionNamespaceState;
 
+typedef struct PgSessionLocaleState
+{
+	bool		initialized;
+	char	   *locale_messages_value;
+	char	   *locale_monetary_value;
+	char	   *locale_numeric_value;
+	char	   *locale_time_value;
+	int			icu_validation_level_value;
+	char	   *localized_abbrev_days_values[7 + 1];
+	char	   *localized_full_days_values[7 + 1];
+	char	   *localized_abbrev_months_values[12 + 1];
+	char	   *localized_full_months_values[12 + 1];
+	void	   *default_locale;
+	bool		locale_conv_valid;
+	bool		locale_time_valid;
+	void	   *current_locale_conv;
+	bool		current_locale_conv_allocated;
+	MemoryContext collation_cache_context;
+	void	   *collation_cache;
+	Oid			last_collation_cache_oid;
+	void	   *last_collation_cache_locale;
+} PgSessionLocaleState;
+
 typedef struct PgRuntimeServerGUCState
 {
 	bool		initialized;
@@ -843,6 +866,7 @@ struct PgSession
 	PgSessionOptimizerState optimizer;
 	PgSessionPlanCacheState plan_cache;
 	PgSessionNamespaceState namespace_state;
+	PgSessionLocaleState locale;
 };
 
 struct PgConnection
@@ -1067,6 +1091,12 @@ extern dlist_head *PgCurrentSavedPlanListRef(void);
 extern dlist_head *PgCurrentCachedExpressionListRef(void);
 extern PgSessionNamespaceState *PgCurrentNamespaceState(void);
 extern char **PgCurrentNamespaceSearchPathRef(void);
+extern PgSessionLocaleState *PgCurrentLocaleState(void);
+extern char **PgCurrentLocaleMessagesRef(void);
+extern char **PgCurrentLocaleMonetaryRef(void);
+extern char **PgCurrentLocaleNumericRef(void);
+extern char **PgCurrentLocaleTimeRef(void);
+extern int *PgCurrentIcuValidationLevelRef(void);
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);
