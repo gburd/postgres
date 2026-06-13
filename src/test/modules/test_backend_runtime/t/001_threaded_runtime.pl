@@ -257,6 +257,25 @@ is($node->safe_psql(
 		"SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted;"),
 	'0', 'threaded transaction abort released advisory locks');
 
+my $fatal_psql = start_psql_script(
+	"SELECT pg_backend_pid();\nSELECT test_backend_runtime_emit_fatal();\n",
+	30);
+ok( pump_until($fatal_psql->{run}, $fatal_psql->{timer},
+		$fatal_psql->{stdout}, qr/^\d+\s*$/m),
+	'FATAL threaded backend reported logical backend id');
+my ($fatal_pid) = ${ $fatal_psql->{stdout} } =~ /^(\d+)\s*$/m;
+ok( pump_until($fatal_psql->{run}, $fatal_psql->{timer},
+		$fatal_psql->{stderr}, qr/test_backend_runtime requested FATAL/),
+	'threaded backend reported test FATAL');
+eval { $fatal_psql->{run}->finish; };
+$node->poll_query_until(
+	'postgres',
+	"SELECT NOT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $fatal_pid);",
+	't') || die "timed out waiting for FATAL threaded backend";
+pass('FATAL threaded backend left pg_stat_activity');
+is($node->safe_psql('postgres', 'SELECT 42;'), '42',
+	'threaded server remains usable after backend FATAL');
+
 $node->safe_psql(
 	'postgres',
 	q{

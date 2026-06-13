@@ -925,7 +925,10 @@ proves advisory locks are released, terminated backends leave
 now also has a real `test_backend_runtime_threaded` extension control file and
 SQL script, and the threaded runtime fixture exercises `CREATE EXTENSION`,
 extension-created C functions, custom-GUC initialization through `_PG_init()`,
-and `DROP EXTENSION`. Broader contrib/in-tree extension coverage, full
+and `DROP EXTENSION`. Threaded teardown coverage now also includes a
+test-extension helper that raises backend-local `FATAL`, verifies the logical
+backend leaves `pg_stat_activity`, and confirms the server remains usable.
+Broader contrib/in-tree extension coverage, full
 lifecycle resource cleanup, and PMChild race stress remain Gate E2 blockers
 before Phase 13.
 The focused `test_backend_runtime` regression is runnable again as a

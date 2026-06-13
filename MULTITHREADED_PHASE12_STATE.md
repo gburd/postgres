@@ -5179,3 +5179,40 @@ Validation for this slice:
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals;
 - `git diff --check` passed.
+
+## Threaded Backend FATAL Teardown Coverage
+
+The one-hundred-eighth Phase 12 slice adds explicit backend `FATAL` teardown
+coverage for Gate E2:
+
+- `test_backend_runtime_threaded` now exposes
+  `test_backend_runtime_emit_fatal()`, which raises backend-local `FATAL` from
+  a normal SQL session;
+- `t/001_threaded_runtime.pl` calls that helper through a background `psql`,
+  captures the SQL-visible logical backend id first, waits for the expected
+  `FATAL` message, verifies the backend leaves `pg_stat_activity`, and
+  confirms the threaded server remains usable afterward.
+
+This closes the focused FATAL-client-backend fixture gap, but it does not
+close all Gate E2 teardown work. `TopMemoryContext` ownership/reclamation,
+abandoned-client and termination stress at larger scale, worker-exit races,
+and native thread join/retry coverage remain part of the Phase 12 gate.
+
+Validation for this slice:
+
+- `test_backend_runtime_threaded.o` and `test_backend_runtime_threaded.dylib`
+  rebuilt successfully;
+- reinstalling `src/test/modules/test_backend_runtime` into the temp install
+  passed;
+- direct full-module `pg_regress test_backend_runtime` passed all 1 test
+  against the current temp install;
+- a manual threaded cluster smoke created the extension, ran the FATAL helper
+  through `psql`, observed the expected `FATAL`, verified the backend id
+  disappeared from `pg_stat_activity`, verified `SELECT 42`, and found no
+  crash or join-failure markers in the server log;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- `git diff --check` passed;
+- direct `prove t/001_threaded_runtime.pl` could not start because system Perl
+  is missing `IPC::Run`; use the documented Perl setup before treating full
+  TAP as runnable locally.

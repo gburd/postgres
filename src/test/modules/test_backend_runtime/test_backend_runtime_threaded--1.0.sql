@@ -44,3 +44,9 @@ CREATE FUNCTION test_backend_runtime_custom_guc_init_count()
 	AS 'MODULE_PATHNAME',
 	   'test_backend_runtime_custom_guc_init_count'
 	LANGUAGE C;
+
+CREATE FUNCTION test_backend_runtime_emit_fatal()
+	RETURNS pg_catalog.void
+	AS 'MODULE_PATHNAME',
+	   'test_backend_runtime_emit_fatal'
+	LANGUAGE C;

@@ -37,6 +37,7 @@ PG_FUNCTION_INFO_V1(test_backend_runtime_restart_thread_bgworker);
 PG_FUNCTION_INFO_V1(test_backend_runtime_crash_thread_bgworker);
 PG_FUNCTION_INFO_V1(test_backend_runtime_custom_guc_value);
 PG_FUNCTION_INFO_V1(test_backend_runtime_custom_guc_init_count);
+PG_FUNCTION_INFO_V1(test_backend_runtime_emit_fatal);
 
 pg_noreturn PGDLLEXPORT void test_backend_runtime_unreachable_bgworker_main(Datum main_arg);
 PGDLLEXPORT void test_backend_runtime_thread_bgworker_main(Datum main_arg);
@@ -270,6 +271,14 @@ Datum
 test_backend_runtime_custom_guc_init_count(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_INT32(test_backend_runtime_custom_guc_init_counter);
+}
+
+Datum
+test_backend_runtime_emit_fatal(PG_FUNCTION_ARGS)
+{
+	ereport(FATAL,
+			(errmsg("test_backend_runtime requested FATAL")));
+	pg_unreachable();
 }
 
 void

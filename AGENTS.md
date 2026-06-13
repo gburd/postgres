@@ -147,6 +147,13 @@ Important current files:
   replacement. A direct attempt to reset the exiting carrier's top memory tree
   after `PgBackendExitCleanup()` crashed a parallel threaded reconnect smoke,
   so treat full `TopMemoryContext` reclamation as an unresolved Gate E2 blocker.
+- `test_backend_runtime_emit_fatal()` in
+  `test_backend_runtime_threaded` is the focused threaded backend `FATAL`
+  fixture. When TAP is unavailable because `IPC::Run` is missing, validate it
+  manually by creating the extension in a multithreaded temp cluster, invoking
+  the function through `psql`, checking for the expected `FATAL`, verifying
+  the backend id leaves `pg_stat_activity`, and confirming the server remains
+  usable.
 - Threaded regular backend launch duplicates the accepted client socket into
   `BackendThreadStart.client_sock`. `pq_init()` marks that launch-time socket
   copy invalid only after `Port` owns the descriptor and `socket_close()` is
