@@ -2356,3 +2356,48 @@ Validation for this slice:
   header migration;
 - static scans found no remaining direct session TLS definition for
   `prepared_queries`.
+
+## Session Temporary-Table ON COMMIT State Bridge
+
+The forty-fifth Phase 12 slice moves temporary-table `ON COMMIT` action state
+under `PgSession`:
+
+- `PgSession` now owns a `PgSessionOnCommitState`;
+- `PgSessionOnCommitState` owns the `on_commits` list used by
+  `register_on_commit_action()`, `remove_on_commit_action()`,
+  `PreCommit_on_commit_actions()`, `AtEOXact_on_commit_actions()`, and
+  `AtEOSubXact_on_commit_actions()`;
+- `tablecmds.c` keeps its existing local logic through a compatibility macro
+  backed by `PgCurrentOnCommitActionsRef()`;
+- early startup paths before `CurrentPgSession` is installed use fallback
+  session storage in `backend_runtime.c`;
+- process-mode and thread-runtime session installation adopt or initialize the
+  ON COMMIT bucket with the rest of the logical session object.
+
+This keeps PostgreSQL's existing transaction and subtransaction cleanup
+semantics intact while making temporary-table ON COMMIT registrations
+explicitly logical-session state. It removes another raw per-thread session
+bucket from table DDL.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `tablecmds.o`, and
+  `test_backend_runtime.o`;
+- because `backend_runtime.h` changed, `gmake -C src/backend clean` plus
+  generated utility and node-header recovery was used before trusting
+  process-mode or threaded-mode runtime tests;
+- clean full `gmake -j8` passed after the backend clean;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- focused `test_backend_runtime` regression includes
+  `test_session_on_commit_state_is_session_local()`, which switches fake
+  sessions through `PgSetCurrentSession()` and proves the ON COMMIT list
+  pointer follows the active session object;
+- the same regression schedule includes SQL-level `ON COMMIT DELETE ROWS` and
+  `ON COMMIT DROP` smokes for temporary tables;
+- direct `test_backend_runtime` regression passed after reinstalling the test
+  module into `tmp_install`;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- static scans found no remaining direct session TLS definition for
+  `on_commits`.

@@ -83,6 +83,12 @@ SELECT test_session_prepared_statement_state_is_session_local();
  t
 (1 row)
 
+SELECT test_session_on_commit_state_is_session_local();
+ test_session_on_commit_state_is_session_local 
+-----------------------------------------------
+ t
+(1 row)
+
 SELECT test_runtime_server_guc_state_is_runtime_local();
  test_runtime_server_guc_state_is_runtime_local 
 ------------------------------------------------
@@ -314,3 +320,23 @@ EXECUTE phase12_prepared_statement;
 (1 row)
 
 DEALLOCATE phase12_prepared_statement;
+BEGIN;
+CREATE TEMP TABLE phase12_on_commit_delete (answer int) ON COMMIT DELETE ROWS;
+INSERT INTO phase12_on_commit_delete VALUES (42);
+COMMIT;
+SELECT count(*) AS remaining_rows FROM phase12_on_commit_delete;
+ remaining_rows 
+----------------
+              0
+(1 row)
+
+DROP TABLE phase12_on_commit_delete;
+BEGIN;
+CREATE TEMP TABLE phase12_on_commit_drop (answer int) ON COMMIT DROP;
+COMMIT;
+SELECT to_regclass('pg_temp.phase12_on_commit_drop') IS NULL AS dropped;
+ dropped 
+---------
+ t
+(1 row)
+

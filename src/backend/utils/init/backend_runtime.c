@@ -431,6 +431,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPlannerMethodState early_sessi
 	.join_collapse_limit_value = 8
 };
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPreparedStatementState early_session_prepared_statement;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionOnCommitState early_session_on_commit;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendPendingInterruptState early_pending_interrupts;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInterruptHoldoffState early_interrupt_holdoffs;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionDebugState early_execution_debug;
@@ -506,6 +507,8 @@ static void PgSessionInitializePlannerMethodState(PgSessionPlannerMethodState *p
 static void PgSessionAdoptEarlyPlannerMethodState(PgSession *session);
 static void PgSessionInitializePreparedStatementState(PgSessionPreparedStatementState *prepared_statement);
 static void PgSessionAdoptEarlyPreparedStatementState(PgSession *session);
+static void PgSessionInitializeOnCommitState(PgSessionOnCommitState *on_commit);
+static void PgSessionAdoptEarlyOnCommitState(PgSession *session);
 static void PgBackendResetCoreState(PgBackendCoreState *core);
 static void PgBackendAdoptEarlyCoreState(PgBackend *backend);
 static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
@@ -543,6 +546,7 @@ static PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
 static PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
 static PgSessionPlannerMethodState *PgCurrentSessionPlannerMethodState(void);
 static PgSessionPreparedStatementState *PgCurrentSessionPreparedStatementState(void);
+static PgSessionOnCommitState *PgCurrentSessionOnCommitState(void);
 static PgExecutionErrorState *PgCurrentExecutionErrorState(void);
 static PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
 static PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
@@ -1437,6 +1441,23 @@ PgSessionAdoptEarlyPreparedStatementState(PgSession *session)
 }
 
 static void
+PgSessionInitializeOnCommitState(PgSessionOnCommitState *on_commit)
+{
+	Assert(on_commit != NULL);
+
+	on_commit->on_commits = NIL;
+}
+
+static void
+PgSessionAdoptEarlyOnCommitState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	session->on_commit = early_session_on_commit;
+	PgSessionInitializeOnCommitState(&early_session_on_commit);
+}
+
+static void
 PgBackendResetCoreState(PgBackendCoreState *core)
 {
 	MemSet(core, 0, sizeof(*core));
@@ -1600,6 +1621,7 @@ InitializePgProcessRuntime(void)
 	PgSessionAdoptEarlyPlannerCostState(&process_session);
 	PgSessionAdoptEarlyPlannerMethodState(&process_session);
 	PgSessionAdoptEarlyPreparedStatementState(&process_session);
+	PgSessionAdoptEarlyOnCommitState(&process_session);
 
 	process_connection.backend = &process_backend;
 	process_connection.session = &process_session;
@@ -1709,6 +1731,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgSessionInitializePlannerCostState(&state->session.planner_cost);
 	PgSessionInitializePlannerMethodState(&state->session.planner_method);
 	PgSessionInitializePreparedStatementState(&state->session.prepared_statement);
+	PgSessionInitializeOnCommitState(&state->session.on_commit);
 
 	state->connection.backend = &state->backend;
 	state->connection.session = &state->session;
@@ -1755,6 +1778,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgSessionAdoptEarlyPlannerCostState(&state->session);
 	PgSessionAdoptEarlyPlannerMethodState(&state->session);
 	PgSessionAdoptEarlyPreparedStatementState(&state->session);
+	PgSessionAdoptEarlyOnCommitState(&state->session);
 	PgExecutionAdoptEarlyErrorState(&state->execution);
 	PgExecutionAdoptEarlyMemoryContexts(&state->execution);
 	PgExecutionAdoptEarlyResourceOwners(&state->execution);
@@ -2244,6 +2268,15 @@ PgCurrentSessionPreparedStatementState(void)
 	return &CurrentPgSession->prepared_statement;
 }
 
+static PgSessionOnCommitState *
+PgCurrentSessionOnCommitState(void)
+{
+	if (CurrentPgSession == NULL)
+		return &early_session_on_commit;
+
+	return &CurrentPgSession->on_commit;
+}
+
 Oid *
 PgCurrentMyDatabaseIdRef(void)
 {
@@ -2524,6 +2557,12 @@ HTAB **
 PgCurrentPreparedQueriesRef(void)
 {
 	return &PgCurrentSessionPreparedStatementState()->prepared_queries;
+}
+
+List **
+PgCurrentOnCommitActionsRef(void)
+{
+	return &PgCurrentSessionOnCommitState()->on_commits;
 }
 
 bool *

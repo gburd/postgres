@@ -18,6 +18,7 @@
 #include "lib/ilist.h"
 #include "libpq/hba.h"
 #include "miscadmin.h"
+#include "nodes/pg_list.h"
 #include "pgtime.h"
 #include "pgstat.h"
 #include "port/atomics.h"
@@ -572,6 +573,11 @@ typedef struct PgSessionPreparedStatementState
 	HTAB	   *prepared_queries;
 } PgSessionPreparedStatementState;
 
+typedef struct PgSessionOnCommitState
+{
+	List	   *on_commits;
+} PgSessionOnCommitState;
+
 typedef struct PgRuntimeServerGUCState
 {
 	bool		initialized;
@@ -728,6 +734,7 @@ struct PgSession
 	PgSessionPlannerCostState planner_cost;
 	PgSessionPlannerMethodState planner_method;
 	PgSessionPreparedStatementState prepared_statement;
+	PgSessionOnCommitState on_commit;
 };
 
 struct PgConnection
@@ -917,6 +924,7 @@ extern int *PgCurrentPostAuthDelayRef(void);
 extern char **PgCurrentRestrictNonsystemRelationKindStringRef(void);
 extern int *PgCurrentRestrictNonsystemRelationKindRef(void);
 extern HTAB **PgCurrentPreparedQueriesRef(void);
+extern List **PgCurrentOnCommitActionsRef(void);
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);

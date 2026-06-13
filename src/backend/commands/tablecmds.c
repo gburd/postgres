@@ -99,6 +99,7 @@
 #include "storage/smgr.h"
 #include "tcop/utility.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/inval.h"
@@ -132,7 +133,7 @@ typedef struct OnCommitItem
 	SubTransactionId deleting_subid;
 } OnCommitItem;
 
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION List *on_commits = NIL;
+#define on_commits (*PgCurrentOnCommitActionsRef())
 
 
 /*
