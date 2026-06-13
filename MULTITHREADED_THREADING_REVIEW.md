@@ -865,6 +865,17 @@ build, install, `gmake check-global-lifetimes`, contrib build, PL/pgSQL
 rebuild/install, `test_backend_runtime` regression, and direct threaded TAP.
 The global-lifetime scan now reports 44 backend-local declarations with zero
 new unclassified mutable globals.
+The next state-migration slice moved the cumulative statistics
+`pgStatLocal` anchor into `PgBackendPgStatPendingState`, leaving the existing
+identifier as a compatibility macro over `PgCurrentPgStatLocalState()`.
+Validation included touched-object builds, a backend plus `src/common` clean
+rebuild, clean full build, install, `gmake check-global-lifetimes`, contrib
+build, PL/pgSQL rebuild/install, `test_backend_runtime` regression, and direct
+threaded TAP. The global-lifetime scan now reports 42 backend-local
+declarations with zero new unclassified mutable globals. This slice adds a
+temporary `backend_runtime.h` to `pgstat_internal.h` include edge so the
+pgstat local object can stay embedded; the Gate E2 header-boundary audit
+should revisit that coupling.
 
 ## Bottom Line
 

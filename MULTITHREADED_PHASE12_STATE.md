@@ -7555,6 +7555,44 @@ Validation for this slice:
   start-time buffer, elog line counter, and cached elog PID across two fake
   logical backends and sessions.
 
+## Backend PgStat Local State Bridge
+
+The one-hundred-sixty-first Phase 12 slice moves `pgStatLocal`, the
+backend-local cumulative statistics anchor, into
+`PgBackendPgStatPendingState.local`. The existing `pgStatLocal` spelling is
+now a compatibility macro over `PgCurrentPgStatLocalState()`, so the broad
+pgstat implementation still reads naturally while the shared stats control
+pointer, DSA attachment, shared dshash handle, and current statistics snapshot
+follow the logical backend object.
+
+This intentionally adds a temporary include edge from `backend_runtime.h` to
+`pgstat_internal.h` so the `PgStat_LocalState` object can remain embedded
+rather than allocated lazily per backend. That header coupling is acceptable
+for Phase 12 migration speed, but it should be revisited with the broader
+Gate E2 object-lifecycle/header-boundary audit.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `pgstat.o`, selected
+  pgstat activity objects, and `test_backend_runtime.o`;
+- `src/backend/utils/activity` built cleanly and a static search confirmed the
+  standalone `PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_LocalState pgStatLocal`
+  definition and extern declaration were removed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 44 to 42;
+- backend and `src/common` clean rebuild plus generated-header recovery
+  passed, followed by clean full `gmake -j8`;
+- `gmake DESTDIR="$PWD/tmp_install" install`, `gmake -C contrib -j8`, and a
+  clean PL/pgSQL rebuild/install passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
+  explicit `PG_REGRESS` environment;
+- `test_backend_pgstat_pending_state_is_backend_local()` now also verifies
+  `pgStatLocal.shmem`, `pgStatLocal.dsa`, `pgStatLocal.shared_hash`, and
+  `pgStatLocal.snapshot.mode` across two fake logical backends.
+
 ## Backend Parallel State Bridge
 
 The one-hundred-forty-second Phase 12 slice moves a parallel-query and

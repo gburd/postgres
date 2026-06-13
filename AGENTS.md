@@ -231,6 +231,16 @@ Important current files:
   changing this bridge, run touched-object builds for `backend_runtime.o`,
   `postgres.o`, `elog.o`, and `test_backend_runtime.o`, then use the normal
   backend plus `src/common` clean rebuild path before runtime validation.
+- `pgStatLocal` now lives in `PgBackendPgStatPendingState.local`; the
+  `pgStatLocal` identifier is a compatibility macro over
+  `PgCurrentPgStatLocalState()`. This currently makes `backend_runtime.h`
+  include `pgstat_internal.h` so the pgstat-local object stays embedded
+  instead of being lazily allocated. After changing this bridge, run
+  touched-object builds for `backend_runtime.o`, `pgstat.o`, representative
+  `src/backend/utils/activity` objects, and `test_backend_runtime.o`, then use
+  the normal backend plus `src/common` clean rebuild path before runtime
+  validation. Include `gmake check-global-lifetimes`, contrib build, PL/pgSQL
+  rebuild/install, `test_backend_runtime check`, and direct threaded TAP.
 - `proc_exit_inprogress` and `shmem_exit_inprogress` are now fields in
   `PgBackendExitState`, exposed through compatibility macros in
   `src/include/storage/ipc.h`; the old exported TLS definitions were removed

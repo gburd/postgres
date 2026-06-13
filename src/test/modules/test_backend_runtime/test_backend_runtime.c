@@ -6562,6 +6562,7 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 	bool		saved_have_lockstats;
 	PgStat_BackendPending saved_backend_stats;
 	bool		saved_backend_has_iostats;
+	PgStat_LocalState saved_local_state;
 	MemoryContext saved_pending_context;
 	WalUsage	saved_prev_backend_wal_usage;
 	bool		saved_report_fixed;
@@ -6594,6 +6595,7 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 	saved_have_lockstats = have_lockstats;
 	saved_backend_stats = PendingBackendStats;
 	saved_backend_has_iostats = backend_has_iostats;
+	saved_local_state = pgStatLocal;
 	saved_pending_context = *PgCurrentPgStatPendingContextRef();
 	saved_prev_backend_wal_usage = prevBackendWalUsage;
 	saved_report_fixed = pgstat_report_fixed;
@@ -6631,6 +6633,10 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		have_lockstats = true;
 		PendingBackendStats.pending_io.counts[IOOBJECT_RELATION][IOCONTEXT_NORMAL][IOOP_WRITE] = 20;
 		backend_has_iostats = true;
+		pgStatLocal.shmem = (PgStat_ShmemControl *) &fake_backend1;
+		pgStatLocal.dsa = (dsa_area *) &fake_backend1;
+		pgStatLocal.shared_hash = (dshash_table *) &fake_backend1;
+		pgStatLocal.snapshot.mode = PGSTAT_FETCH_CONSISTENCY_CACHE;
 		*PgCurrentPgStatPendingContextRef() = (MemoryContext) &fake_backend1;
 		prevBackendWalUsage.wal_records = 21;
 		pgstat_report_fixed = true;
@@ -6664,6 +6670,10 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok &&
 			PendingBackendStats.pending_io.counts[IOOBJECT_RELATION][IOCONTEXT_NORMAL][IOOP_WRITE] == 0;
 		ok = ok && !backend_has_iostats;
+		ok = ok && pgStatLocal.shmem == NULL;
+		ok = ok && pgStatLocal.dsa == NULL;
+		ok = ok && pgStatLocal.shared_hash == NULL;
+		ok = ok && pgStatLocal.snapshot.mode == PGSTAT_FETCH_CONSISTENCY_NONE;
 		ok = ok && *PgCurrentPgStatPendingContextRef() == NULL;
 		ok = ok && PgCurrentPgStatPendingListRef() == &fake_backend2.pgstat_pending.pending;
 		ok = ok && dlist_is_empty(PgCurrentPgStatPendingListRef());
@@ -6696,6 +6706,10 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		have_lockstats = true;
 		PendingBackendStats.pending_io.counts[IOOBJECT_RELATION][IOCONTEXT_NORMAL][IOOP_WRITE] = 30;
 		backend_has_iostats = true;
+		pgStatLocal.shmem = (PgStat_ShmemControl *) &fake_backend2;
+		pgStatLocal.dsa = (dsa_area *) &fake_backend2;
+		pgStatLocal.shared_hash = (dshash_table *) &fake_backend2;
+		pgStatLocal.snapshot.mode = PGSTAT_FETCH_CONSISTENCY_SNAPSHOT;
 		*PgCurrentPgStatPendingContextRef() = (MemoryContext) &fake_backend2;
 		prevBackendWalUsage.wal_records = 31;
 		pgstat_report_fixed = true;
@@ -6729,6 +6743,10 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok &&
 			PendingBackendStats.pending_io.counts[IOOBJECT_RELATION][IOCONTEXT_NORMAL][IOOP_WRITE] == 20;
 		ok = ok && backend_has_iostats;
+		ok = ok && pgStatLocal.shmem == (PgStat_ShmemControl *) &fake_backend1;
+		ok = ok && pgStatLocal.dsa == (dsa_area *) &fake_backend1;
+		ok = ok && pgStatLocal.shared_hash == (dshash_table *) &fake_backend1;
+		ok = ok && pgStatLocal.snapshot.mode == PGSTAT_FETCH_CONSISTENCY_CACHE;
 		ok = ok && *PgCurrentPgStatPendingContextRef() == (MemoryContext) &fake_backend1;
 		ok = ok && PgCurrentPgStatPendingListRef() == &fake_backend1.pgstat_pending.pending;
 		ok = ok && dlist_is_empty(PgCurrentPgStatPendingListRef());
@@ -6764,6 +6782,10 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok &&
 			PendingBackendStats.pending_io.counts[IOOBJECT_RELATION][IOCONTEXT_NORMAL][IOOP_WRITE] == 30;
 		ok = ok && backend_has_iostats;
+		ok = ok && pgStatLocal.shmem == (PgStat_ShmemControl *) &fake_backend2;
+		ok = ok && pgStatLocal.dsa == (dsa_area *) &fake_backend2;
+		ok = ok && pgStatLocal.shared_hash == (dshash_table *) &fake_backend2;
+		ok = ok && pgStatLocal.snapshot.mode == PGSTAT_FETCH_CONSISTENCY_SNAPSHOT;
 		ok = ok && *PgCurrentPgStatPendingContextRef() == (MemoryContext) &fake_backend2;
 		ok = ok && PgCurrentPgStatPendingListRef() == &fake_backend2.pgstat_pending.pending;
 		ok = ok && dlist_is_empty(PgCurrentPgStatPendingListRef());
@@ -6797,6 +6819,7 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		have_lockstats = saved_have_lockstats;
 		PendingBackendStats = saved_backend_stats;
 		backend_has_iostats = saved_backend_has_iostats;
+		pgStatLocal = saved_local_state;
 		*PgCurrentPgStatPendingContextRef() = saved_pending_context;
 		prevBackendWalUsage = saved_prev_backend_wal_usage;
 		pgstat_report_fixed = saved_report_fixed;
@@ -6830,6 +6853,7 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		have_lockstats = saved_have_lockstats;
 		PendingBackendStats = saved_backend_stats;
 		backend_has_iostats = saved_backend_has_iostats;
+		pgStatLocal = saved_local_state;
 		*PgCurrentPgStatPendingContextRef() = saved_pending_context;
 		prevBackendWalUsage = saved_prev_backend_wal_usage;
 		pgstat_report_fixed = saved_report_fixed;

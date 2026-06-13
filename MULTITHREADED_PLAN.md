@@ -759,7 +759,9 @@ allocation-set freelist and memory-context logging guard bridge through
 `PgBackendWaitState` and the shared-invalidation local transaction ID bridge
 through `PgBackendIPCState`, plus the command-loop read-boundary bridge
 through `PgSessionLoopState` and tcop command-timing/elog line-format state
-bridge through `PgBackendCommandState` and `PgBackendLogState`.
+bridge through `PgBackendCommandState` and `PgBackendLogState`, plus the
+backend-local cumulative statistics anchor bridge through
+`PgBackendPgStatPendingState`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.

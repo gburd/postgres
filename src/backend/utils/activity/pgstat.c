@@ -198,13 +198,6 @@ static inline bool pgstat_is_kind_valid(PgStat_Kind kind);
 
 
 /* ----------
- * state shared with pgstat_*.c
- * ----------
- */
-
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_LocalState pgStatLocal;
-
-/* ----------
  * Local data
  *
  * NB: There should be only variables related to stats infrastructure here,

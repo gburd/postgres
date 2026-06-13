@@ -870,7 +870,8 @@ extern void pgstat_create_transactional(PgStat_Kind kind, Oid dboid, uint64 obji
  */
 
 /* Backend-local stats state */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_LocalState pgStatLocal;
+extern PgStat_LocalState *PgCurrentPgStatLocalState(void);
+#define pgStatLocal (*PgCurrentPgStatLocalState())
 extern MemoryContext *PgCurrentPgStatPendingContextRef(void);
 extern dlist_head *PgCurrentPgStatPendingListRef(void);
 extern void **PgCurrentPgStatEntryRefHashRef(void);

@@ -6807,6 +6807,12 @@ PgCurrentBackendPgStatPendingState(void)
 	return &CurrentPgBackend->pgstat_pending;
 }
 
+PgStat_LocalState *
+PgCurrentPgStatLocalState(void)
+{
+	return &PgCurrentBackendPgStatPendingState()->local;
+}
+
 PgStat_BgWriterStats *
 PgCurrentPendingBgWriterStatsRef(void)
 {

@@ -30,7 +30,6 @@
 #include "miscadmin.h"
 #include "nodes/pg_list.h"
 #include "pgtime.h"
-#include "pgstat.h"
 #include "port/atomics.h"
 #include "storage/buf.h"
 #include "storage/checksum.h"
@@ -45,6 +44,7 @@
 #include "utils/global_lifetime.h"
 #include "utils/hsearch.h"
 #include "utils/palloc.h"
+#include "utils/pgstat_internal.h"
 #include "utils/sampling.h"
 #include "utils/timeout.h"
 
@@ -490,6 +490,7 @@ typedef struct PgBackendAioState
 
 typedef struct PgBackendPgStatPendingState
 {
+	PgStat_LocalState local;
 	void	   *entry_ref_hash;
 	int			shared_ref_age;
 	MemoryContext shared_ref_context;
