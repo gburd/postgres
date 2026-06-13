@@ -169,10 +169,11 @@ Important current files:
 - Backend libpq connection teardown is now part of the Gate E2 resource model:
   `socket_close()` frees the frontend/backend `WaitEventSet`, the dynamically
   sized send buffer, and the `PortContext` that owns `Port` plus most startup
-  packet/remote-host strings before closing the accepted socket. Keep the
-  threaded TAP teardown matrix current when changing backend libpq socket I/O
-  or `Port` ownership state, because normal disconnect, abandoned clients,
-  `FATAL`, and administrator termination all exercise this callback.
+  packet/remote-host/authentication strings before closing the accepted
+  socket. Keep the threaded TAP teardown matrix current when changing backend
+  libpq socket I/O or `Port` ownership state, because normal disconnect,
+  abandoned clients, `FATAL`, and administrator termination all exercise this
+  callback.
 - Thread-backed auxiliary workers receive postmaster `SIGQUIT`, `SIGKILL`,
   and `SIGABRT` as logical `PG_BACKEND_INTERRUPT_PROC_DIE` mailbox events, not
   as process signal handlers that can `_exit()`. Any custom auxiliary

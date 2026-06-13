@@ -329,9 +329,9 @@ auth_failed(Port *port, int elevel, int status, const char *logdetail)
  * successfully authenticated, even if they have reasons to know that
  * authorization will fail later.
  *
- * The provided string will be copied into TopMemoryContext, to match the
- * lifetime of MyClientConnectionInfo, so it is safe to pass a string that is
- * managed by an external library.
+ * The provided string will be copied into the Port context, to match the
+ * connection lifetime of MyClientConnectionInfo, so it is safe to pass a
+ * string that is managed by an external library.
  */
 void
 set_authn_id(Port *port, const char *id)
@@ -352,7 +352,8 @@ set_authn_id(Port *port, const char *id)
 							   MyClientConnectionInfo.authn_id, id)));
 	}
 
-	MyClientConnectionInfo.authn_id = MemoryContextStrdup(TopMemoryContext, id);
+	MyClientConnectionInfo.authn_id =
+		MemoryContextStrdup(GetMemoryChunkContext(port), id);
 	MyClientConnectionInfo.auth_method = port->hba->auth_method;
 
 	if (log_connections & LOG_CONNECTION_AUTHENTICATION)

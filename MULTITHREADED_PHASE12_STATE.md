@@ -5269,9 +5269,9 @@ threaded backend exit:
   disconnect logging while releasing the connection object before PMChild
   retained-memory accounting.
 
-This does not solve all `TopMemoryContext` reclamation. Some authentication
-and HBA-adjacent data still need separate ownership decisions, and the broader
-threaded teardown model remains a Gate E2 blocker. It does move the core
+This does not solve all `TopMemoryContext` reclamation. Authentication and
+HBA-adjacent data still needed a follow-up ownership pass, and the broader
+threaded teardown model remained a Gate E2 blocker. It did move the core
 connection object and startup packet strings out of implicit carrier lifetime
 and into an explicit connection-owned cleanup path.
 
@@ -5279,6 +5279,43 @@ Validation for this slice:
 
 - `gmake -C src/backend/libpq pqcomm.o` passed;
 - `gmake -C src/backend/tcop backend_startup.o` passed;
+- full `gmake -j8` passed;
+- full `gmake -j8 DESTDIR="$PWD/tmp_install" install` passed;
+- `gmake -C src/test/modules/test_backend_runtime DESTDIR="$PWD/tmp_install" install` passed;
+- direct threaded-runtime TAP passed all 87 tests with local
+  `/Users/samwillis/perl5` `PERL5LIB` paths before and after
+  `gmake -C src/test/modules/test_backend_runtime check` recreated
+  `tmp_install`;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression and still reported TAP disabled by configure;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- `git diff --check` passed.
+
+## Backend Authentication Connection Data Cleanup
+
+The one-hundred-fourteenth Phase 12 slice extends `PortContext` ownership to
+more authentication and HBA-adjacent connection data:
+
+- `set_authn_id()` now stores `MyClientConnectionInfo.authn_id` in the current
+  `PortContext` instead of `TopMemoryContext`, keeping the copied external
+  authentication identity at connection lifetime;
+- hostname verification now stores a forward-confirmed `remote_hostname` in
+  `PortContext`, matching the reverse-lookup hostname path moved by the
+  previous slice;
+- the implicit reject `HbaLine` for unmatched pg_hba entries is allocated in
+  `PortContext`, so even authentication-failure paths keep the temporary HBA
+  record tied to the rejected connection rather than carrier top memory.
+
+This still does not prove full threaded `TopMemoryContext` reclamation.
+Provider-specific authentication scratch, SSL/GSS state, and other caches need
+separate lifetime decisions where they are not already connection-owned. It
+does close the obvious remaining `Port`-reachable auth/hostname allocations
+called out by the previous `PortContext` slice.
+
+Validation for this slice:
+
+- `gmake -C src/backend/libpq auth.o hba.o` passed;
 - full `gmake -j8` passed;
 - full `gmake -j8 DESTDIR="$PWD/tmp_install" install` passed;
 - `gmake -C src/test/modules/test_backend_runtime DESTDIR="$PWD/tmp_install" install` passed;

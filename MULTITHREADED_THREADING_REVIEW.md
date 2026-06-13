@@ -411,7 +411,9 @@ single PMChild helper, and the exiting thread now reports retained
 `TopMemoryContext` bytes to the postmaster reaper. Backend libpq teardown now
 frees the frontend/backend wait set and dynamically sized send buffer in
 `socket_close()`, and `Port` plus most startup packet/remote-host strings now
-live in a dedicated `PortContext` that is deleted from `socket_close()`. Those
+live in a dedicated `PortContext` that is deleted from `socket_close()`.
+Follow-up work moved the connection authentication identity, forward-confirmed
+remote hostname, and implicit reject HBA record into the same context. Those
 connection-owned allocations therefore no longer survive only as retained
 top-memory accounting. PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit

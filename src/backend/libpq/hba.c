@@ -1099,7 +1099,8 @@ check_hostname(Port *port, const char *hostname)
 			return false;
 		}
 
-		port->remote_hostname = pstrdup(remote_hostname);
+		port->remote_hostname =
+			MemoryContextStrdup(GetMemoryChunkContext(port), remote_hostname);
 	}
 
 	/* Now see if remote host name matches this pg_hba line */
@@ -2432,7 +2433,7 @@ check_hba(Port *port)
 	}
 
 	/* If no matching entry was found, then implicitly reject. */
-	hba = palloc0_object(HbaLine);
+	hba = MemoryContextAllocZero(GetMemoryChunkContext(port), sizeof(HbaLine));
 	hba->auth_method = uaImplicitReject;
 	port->hba = hba;
 }

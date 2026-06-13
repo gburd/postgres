@@ -821,8 +821,11 @@ accounting for the currently retained top context. Backend libpq connection
 teardown now frees the frontend/backend wait set and dynamically sized send
 buffer in `socket_close()`, and `Port` plus most startup packet/remote-host
 strings now live in a dedicated `PortContext` that `socket_close()` deletes
-during backend exit. This removes another concrete connection-owned allocation
-group from the retained top-memory bucket before PMChild exit accounting runs.
+during backend exit. Follow-up work moved the connection authentication
+identity, forward-confirmed remote hostname, and implicit reject HBA record
+into the same context. This removes another concrete connection-owned
+allocation group from the retained top-memory bucket before PMChild exit
+accounting runs.
 PMChild assignment and slot release now also scrub stale carrier-visible signal
 ids and thread-exit payloads before reuse. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live
