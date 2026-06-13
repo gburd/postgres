@@ -54,10 +54,10 @@
 #include "utils/rel.h"
 
 
-/* GUC variables */
-#ifdef TRACE_SYNCSCAN
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool trace_syncscan = false;
-#endif
+/*
+ * GUC state now lives in PgSessionAccessWalGUCState.  The public name remains
+ * available through a compatibility macro in access/syncscan.h.
+ */
 
 
 /*

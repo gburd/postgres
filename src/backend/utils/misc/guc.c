@@ -1656,6 +1656,46 @@ InitializeThreadedSessionGUCOptions(void)
 
 	gconf = find_option("gin_pending_list_limit", false, false, PANIC);
 	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("default_table_access_method", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("synchronize_seqscans", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("default_toast_compression", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("wal_compression", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("wal_init_zero", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("wal_recycle", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("commit_delay", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("commit_siblings", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("track_wal_io_timing", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("wal_skip_threshold", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+#ifdef WAL_DEBUG
+	gconf = find_option("wal_debug", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+#endif
+
+#ifdef TRACE_SYNCSCAN
+	gconf = find_option("trace_syncscan", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+#endif
 }
 
 /*
@@ -1886,6 +1926,62 @@ RebindSessionGUCVariablePointers(void)
 	gconf = find_option("gin_pending_list_limit", false, false, PANIC);
 	Assert(gconf->vartype == PGC_INT);
 	gconf->_int.variable = PgCurrentGinPendingListLimitRef();
+
+	gconf = find_option("default_table_access_method", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentDefaultTableAccessMethodRef();
+
+	gconf = find_option("synchronize_seqscans", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentSynchronizeSeqscansRef();
+
+	gconf = find_option("default_toast_compression", false, false, PANIC);
+	Assert(gconf->vartype == PGC_ENUM);
+	gconf->_enum.variable = PgCurrentDefaultToastCompressionRef();
+
+	gconf = find_option("wal_compression", false, false, PANIC);
+	Assert(gconf->vartype == PGC_ENUM);
+	gconf->_enum.variable = PgCurrentWalCompressionRef();
+
+	gconf = find_option("wal_init_zero", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentWalInitZeroRef();
+
+	gconf = find_option("wal_recycle", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentWalRecycleRef();
+
+	gconf = find_option("wal_consistency_checking", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentWalConsistencyCheckingStringRef();
+
+	gconf = find_option("commit_delay", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentCommitDelayRef();
+
+	gconf = find_option("commit_siblings", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentCommitSiblingsRef();
+
+	gconf = find_option("track_wal_io_timing", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentTrackWalIoTimingRef();
+
+	gconf = find_option("wal_skip_threshold", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentWalSkipThresholdRef();
+
+#ifdef WAL_DEBUG
+	gconf = find_option("wal_debug", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentXLogDebugRef();
+#endif
+
+#ifdef TRACE_SYNCSCAN
+	gconf = find_option("trace_syncscan", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentTraceSyncscanRef();
+#endif
 
 	gconf = find_option("default_tablespace", false, false, PANIC);
 	Assert(gconf->vartype == PGC_STRING);

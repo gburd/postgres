@@ -15,8 +15,12 @@
 #include <errno.h>
 
 #include "access/gin.h"
+#include "access/tableam.h"
+#include "access/toast_compression.h"
 #include "access/xact.h"
+#include "access/xlog.h"
 #include "catalog/binary_upgrade.h"
+#include "catalog/storage.h"
 #include "commands/async.h"
 #include "commands/event_trigger.h"
 #include "commands/tablespace.h"
@@ -3087,6 +3091,237 @@ test_session_general_guc_state_is_session_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "session general GUC state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_session_access_wal_guc_state_is_session_local);
+Datum
+test_session_access_wal_guc_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	char	   *saved_synchronize_seqscans;
+	char	   *saved_wal_compression;
+	char	   *saved_wal_init_zero;
+	char	   *saved_wal_recycle;
+	char	   *saved_wal_consistency_checking;
+	char	   *saved_commit_delay;
+	char	   *saved_commit_siblings;
+	char	   *saved_track_wal_io_timing;
+	char	   *saved_wal_skip_threshold;
+	bool	   *fake1_wal_consistency_checking;
+	bool	   *fake2_wal_consistency_checking;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	saved_synchronize_seqscans =
+		pstrdup(GetConfigOption("synchronize_seqscans", false, false));
+	saved_wal_compression =
+		pstrdup(GetConfigOption("wal_compression", false, false));
+	saved_wal_init_zero =
+		pstrdup(GetConfigOption("wal_init_zero", false, false));
+	saved_wal_recycle =
+		pstrdup(GetConfigOption("wal_recycle", false, false));
+	saved_wal_consistency_checking =
+		pstrdup(GetConfigOption("wal_consistency_checking", false, false));
+	saved_commit_delay =
+		pstrdup(GetConfigOption("commit_delay", false, false));
+	saved_commit_siblings =
+		pstrdup(GetConfigOption("commit_siblings", false, false));
+	saved_track_wal_io_timing =
+		pstrdup(GetConfigOption("track_wal_io_timing", false, false));
+	saved_wal_skip_threshold =
+		pstrdup(GetConfigOption("wal_skip_threshold", false, false));
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && strcmp(default_table_access_method,
+						  DEFAULT_TABLE_ACCESS_METHOD) == 0;
+		ok = ok && synchronize_seqscans;
+		ok = ok && default_toast_compression == DEFAULT_TOAST_COMPRESSION;
+		ok = ok && wal_compression == WAL_COMPRESSION_NONE;
+		ok = ok && wal_init_zero;
+		ok = ok && wal_recycle;
+		ok = ok && wal_consistency_checking_string == NULL;
+		ok = ok && wal_consistency_checking == NULL;
+		ok = ok && CommitDelay == 0;
+		ok = ok && CommitSiblings == 5;
+		ok = ok && !track_wal_io_timing;
+		ok = ok && wal_skip_threshold == 2048;
+
+		default_table_access_method = "session1_tableam";
+		default_toast_compression = TOAST_LZ4_COMPRESSION;
+		SetConfigOption("synchronize_seqscans", "off",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("wal_compression", "pglz",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("wal_init_zero", "off",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("wal_recycle", "off",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("wal_consistency_checking", "all",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("commit_delay", "100",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("commit_siblings", "8",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("track_wal_io_timing", "on",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("wal_skip_threshold", "3MB",
+						PGC_USERSET, PGC_S_SESSION);
+		fake1_wal_consistency_checking = wal_consistency_checking;
+		ok = ok && strcmp(default_table_access_method,
+						  "session1_tableam") == 0;
+		ok = ok && !synchronize_seqscans;
+		ok = ok && default_toast_compression == TOAST_LZ4_COMPRESSION;
+		ok = ok && wal_compression == WAL_COMPRESSION_PGLZ;
+		ok = ok && !wal_init_zero;
+		ok = ok && !wal_recycle;
+		ok = ok && strcmp(wal_consistency_checking_string, "all") == 0;
+		ok = ok && fake1_wal_consistency_checking != NULL;
+		ok = ok && CommitDelay == 100;
+		ok = ok && CommitSiblings == 8;
+		ok = ok && track_wal_io_timing;
+		ok = ok && wal_skip_threshold == 3072;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && strcmp(default_table_access_method,
+						  DEFAULT_TABLE_ACCESS_METHOD) == 0;
+		ok = ok && synchronize_seqscans;
+		ok = ok && default_toast_compression == DEFAULT_TOAST_COMPRESSION;
+		ok = ok && wal_compression == WAL_COMPRESSION_NONE;
+		ok = ok && wal_init_zero;
+		ok = ok && wal_recycle;
+		ok = ok && wal_consistency_checking_string == NULL;
+		ok = ok && wal_consistency_checking == NULL;
+		ok = ok && CommitDelay == 0;
+		ok = ok && CommitSiblings == 5;
+		ok = ok && !track_wal_io_timing;
+		ok = ok && wal_skip_threshold == 2048;
+
+		default_table_access_method = "session2_tableam";
+		default_toast_compression = TOAST_PGLZ_COMPRESSION;
+		SetConfigOption("synchronize_seqscans", "on",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("wal_compression", "off",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("wal_init_zero", "on",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("wal_recycle", "on",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("wal_consistency_checking", "",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("commit_delay", "200",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("commit_siblings", "9",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("track_wal_io_timing", "off",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("wal_skip_threshold", "4MB",
+						PGC_USERSET, PGC_S_SESSION);
+		fake2_wal_consistency_checking = wal_consistency_checking;
+		ok = ok && strcmp(default_table_access_method,
+						  "session2_tableam") == 0;
+		ok = ok && synchronize_seqscans;
+		ok = ok && default_toast_compression == TOAST_PGLZ_COMPRESSION;
+		ok = ok && wal_compression == WAL_COMPRESSION_NONE;
+		ok = ok && wal_init_zero;
+		ok = ok && wal_recycle;
+		ok = ok && strcmp(wal_consistency_checking_string, "") == 0;
+		ok = ok && fake2_wal_consistency_checking != NULL;
+		ok = ok && fake2_wal_consistency_checking !=
+			fake1_wal_consistency_checking;
+		ok = ok && CommitDelay == 200;
+		ok = ok && CommitSiblings == 9;
+		ok = ok && !track_wal_io_timing;
+		ok = ok && wal_skip_threshold == 4096;
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && strcmp(default_table_access_method,
+						  "session1_tableam") == 0;
+		ok = ok && !synchronize_seqscans;
+		ok = ok && default_toast_compression == TOAST_LZ4_COMPRESSION;
+		ok = ok && wal_compression == WAL_COMPRESSION_PGLZ;
+		ok = ok && !wal_init_zero;
+		ok = ok && !wal_recycle;
+		ok = ok && strcmp(wal_consistency_checking_string, "all") == 0;
+		ok = ok && wal_consistency_checking ==
+			fake1_wal_consistency_checking;
+		ok = ok && CommitDelay == 100;
+		ok = ok && CommitSiblings == 8;
+		ok = ok && track_wal_io_timing;
+		ok = ok && wal_skip_threshold == 3072;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && strcmp(default_table_access_method,
+						  "session2_tableam") == 0;
+		ok = ok && synchronize_seqscans;
+		ok = ok && default_toast_compression == TOAST_PGLZ_COMPRESSION;
+		ok = ok && wal_compression == WAL_COMPRESSION_NONE;
+		ok = ok && wal_init_zero;
+		ok = ok && wal_recycle;
+		ok = ok && strcmp(wal_consistency_checking_string, "") == 0;
+		ok = ok && wal_consistency_checking ==
+			fake2_wal_consistency_checking;
+		ok = ok && CommitDelay == 200;
+		ok = ok && CommitSiblings == 9;
+		ok = ok && !track_wal_io_timing;
+		ok = ok && wal_skip_threshold == 4096;
+
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("wal_skip_threshold", saved_wal_skip_threshold,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("track_wal_io_timing", saved_track_wal_io_timing,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("commit_siblings", saved_commit_siblings,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("commit_delay", saved_commit_delay,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("wal_consistency_checking",
+						saved_wal_consistency_checking,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("wal_recycle", saved_wal_recycle,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("wal_init_zero", saved_wal_init_zero,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("wal_compression", saved_wal_compression,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("synchronize_seqscans", saved_synchronize_seqscans,
+						PGC_USERSET, PGC_S_SESSION);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("wal_skip_threshold", saved_wal_skip_threshold,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("track_wal_io_timing", saved_track_wal_io_timing,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("commit_siblings", saved_commit_siblings,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("commit_delay", saved_commit_delay,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("wal_consistency_checking",
+						saved_wal_consistency_checking,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("wal_recycle", saved_wal_recycle,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("wal_init_zero", saved_wal_init_zero,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("wal_compression", saved_wal_compression,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("synchronize_seqscans", saved_synchronize_seqscans,
+						PGC_USERSET, PGC_S_SESSION);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session access/WAL GUC state was not session-local");
 
 	PG_RETURN_BOOL(true);
 }

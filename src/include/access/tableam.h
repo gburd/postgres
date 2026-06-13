@@ -30,8 +30,10 @@
 #define DEFAULT_TABLE_ACCESS_METHOD	"heap"
 
 /* GUCs */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *default_table_access_method;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool synchronize_seqscans;
+extern char **PgCurrentDefaultTableAccessMethodRef(void);
+extern bool *PgCurrentSynchronizeSeqscansRef(void);
+#define default_table_access_method (*PgCurrentDefaultTableAccessMethodRef())
+#define synchronize_seqscans (*PgCurrentSynchronizeSeqscansRef())
 
 
 /* forward references in this file */

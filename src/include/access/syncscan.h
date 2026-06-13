@@ -20,7 +20,8 @@
 
 /* GUC variables */
 #ifdef TRACE_SYNCSCAN
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool trace_syncscan;
+extern bool *PgCurrentTraceSyncscanRef(void);
+#define trace_syncscan (*PgCurrentTraceSyncscanRef())
 #endif
 
 extern void ss_report_location(Relation rel, BlockNumber location);

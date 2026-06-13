@@ -17,8 +17,13 @@
 
 #include "access/gin.h"
 #include "access/parallel.h"
+#include "access/syncscan.h"
+#include "access/tableam.h"
+#include "access/toast_compression.h"
 #include "access/xact.h"
+#include "access/xlog.h"
 #include "catalog/binary_upgrade.h"
+#include "catalog/storage.h"
 #include "commands/async.h"
 #include "commands/repack.h"
 #include "commands/tablespace.h"
@@ -285,6 +290,27 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionGeneralGUCState early_session_
 	.gin_fuzzy_search_limit_value = 0,
 	.gin_pending_list_limit_value = 0
 };
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionAccessWalGUCState early_session_access_wal_guc = {
+	.initialized = true,
+	.default_table_access_method_value = DEFAULT_TABLE_ACCESS_METHOD,
+	.synchronize_seqscans_value = true,
+	.default_toast_compression_value = DEFAULT_TOAST_COMPRESSION,
+	.wal_compression_value = WAL_COMPRESSION_NONE,
+	.wal_init_zero_value = true,
+	.wal_recycle_value = true,
+	.wal_consistency_checking_string_value = NULL,
+	.wal_consistency_checking_value = NULL,
+	.commit_delay_us = 0,
+	.commit_siblings_value = 5,
+	.track_wal_io_timing_value = false,
+	.wal_skip_threshold_kb = 2048,
+#ifdef WAL_DEBUG
+	.xlog_debug_value = false,
+#endif
+#ifdef TRACE_SYNCSCAN
+	.trace_syncscan_value = false,
+#endif
+};
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionQueryMemoryState early_session_query_memory = {
 	.initialized = true,
 	.work_mem_kb = 4096,
@@ -405,6 +431,8 @@ static void PgSessionInitializeReplicationGUCState(PgSessionReplicationGUCState 
 static void PgSessionAdoptEarlyReplicationGUCState(PgSession *session);
 static void PgSessionInitializeGeneralGUCState(PgSessionGeneralGUCState *general_guc);
 static void PgSessionAdoptEarlyGeneralGUCState(PgSession *session);
+static void PgSessionInitializeAccessWalGUCState(PgSessionAccessWalGUCState *access_wal_guc);
+static void PgSessionAdoptEarlyAccessWalGUCState(PgSession *session);
 static void PgSessionInitializeQueryMemoryState(PgSessionQueryMemoryState *query_memory);
 static void PgSessionAdoptEarlyQueryMemoryState(PgSession *session);
 static void PgSessionInitializePlannerCostState(PgSessionPlannerCostState *planner_cost);
@@ -439,6 +467,7 @@ static PgSessionUserGUCState *PgCurrentSessionUserGUCState(void);
 static PgSessionCommandGUCState *PgCurrentSessionCommandGUCState(void);
 static PgSessionReplicationGUCState *PgCurrentSessionReplicationGUCState(void);
 static PgSessionGeneralGUCState *PgCurrentSessionGeneralGUCState(void);
+static PgSessionAccessWalGUCState *PgCurrentSessionAccessWalGUCState(void);
 static PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
 static PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
 static PgSessionPlannerMethodState *PgCurrentSessionPlannerMethodState(void);
@@ -1019,6 +1048,46 @@ PgSessionAdoptEarlyGeneralGUCState(PgSession *session)
 }
 
 static void
+PgSessionInitializeAccessWalGUCState(PgSessionAccessWalGUCState *access_wal_guc)
+{
+	Assert(access_wal_guc != NULL);
+
+	access_wal_guc->initialized = true;
+	access_wal_guc->default_table_access_method_value =
+		DEFAULT_TABLE_ACCESS_METHOD;
+	access_wal_guc->synchronize_seqscans_value = true;
+	access_wal_guc->default_toast_compression_value =
+		DEFAULT_TOAST_COMPRESSION;
+	access_wal_guc->wal_compression_value = WAL_COMPRESSION_NONE;
+	access_wal_guc->wal_init_zero_value = true;
+	access_wal_guc->wal_recycle_value = true;
+	access_wal_guc->wal_consistency_checking_string_value = NULL;
+	access_wal_guc->wal_consistency_checking_value = NULL;
+	access_wal_guc->commit_delay_us = 0;
+	access_wal_guc->commit_siblings_value = 5;
+	access_wal_guc->track_wal_io_timing_value = false;
+	access_wal_guc->wal_skip_threshold_kb = 2048;
+#ifdef WAL_DEBUG
+	access_wal_guc->xlog_debug_value = false;
+#endif
+#ifdef TRACE_SYNCSCAN
+	access_wal_guc->trace_syncscan_value = false;
+#endif
+}
+
+static void
+PgSessionAdoptEarlyAccessWalGUCState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (!early_session_access_wal_guc.initialized)
+		PgSessionInitializeAccessWalGUCState(&early_session_access_wal_guc);
+
+	session->access_wal_guc = early_session_access_wal_guc;
+	PgSessionInitializeAccessWalGUCState(&early_session_access_wal_guc);
+}
+
+static void
 PgSessionInitializeQueryMemoryState(PgSessionQueryMemoryState *query_memory)
 {
 	Assert(query_memory != NULL);
@@ -1294,6 +1363,7 @@ InitializePgProcessRuntime(void)
 	PgSessionAdoptEarlyCommandGUCState(&process_session);
 	PgSessionAdoptEarlyReplicationGUCState(&process_session);
 	PgSessionAdoptEarlyGeneralGUCState(&process_session);
+	PgSessionAdoptEarlyAccessWalGUCState(&process_session);
 	PgSessionAdoptEarlyQueryMemoryState(&process_session);
 	PgSessionAdoptEarlyPlannerCostState(&process_session);
 	PgSessionAdoptEarlyPlannerMethodState(&process_session);
@@ -1393,6 +1463,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgSessionInitializeCommandGUCState(&state->session.command_guc);
 	PgSessionInitializeReplicationGUCState(&state->session.replication_guc);
 	PgSessionInitializeGeneralGUCState(&state->session.general_guc);
+	PgSessionInitializeAccessWalGUCState(&state->session.access_wal_guc);
 	PgSessionInitializeQueryMemoryState(&state->session.query_memory);
 	PgSessionInitializePlannerCostState(&state->session.planner_cost);
 	PgSessionInitializePlannerMethodState(&state->session.planner_method);
@@ -1433,6 +1504,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgSessionAdoptEarlyCommandGUCState(&state->session);
 	PgSessionAdoptEarlyReplicationGUCState(&state->session);
 	PgSessionAdoptEarlyGeneralGUCState(&state->session);
+	PgSessionAdoptEarlyAccessWalGUCState(&state->session);
 	PgSessionAdoptEarlyQueryMemoryState(&state->session);
 	PgSessionAdoptEarlyPlannerCostState(&state->session);
 	PgSessionAdoptEarlyPlannerMethodState(&state->session);
@@ -1770,6 +1842,22 @@ PgCurrentSessionGeneralGUCState(void)
 		PgSessionInitializeGeneralGUCState(general_guc);
 
 	return general_guc;
+}
+
+static PgSessionAccessWalGUCState *
+PgCurrentSessionAccessWalGUCState(void)
+{
+	PgSessionAccessWalGUCState *access_wal_guc;
+
+	if (CurrentPgSession == NULL)
+		access_wal_guc = &early_session_access_wal_guc;
+	else
+		access_wal_guc = &CurrentPgSession->access_wal_guc;
+
+	if (!access_wal_guc->initialized)
+		PgSessionInitializeAccessWalGUCState(access_wal_guc);
+
+	return access_wal_guc;
 }
 
 static PgSessionQueryMemoryState *
@@ -2694,6 +2782,94 @@ PgCurrentGinPendingListLimitRef(void)
 {
 	return &PgCurrentSessionGeneralGUCState()->gin_pending_list_limit_value;
 }
+
+char **
+PgCurrentDefaultTableAccessMethodRef(void)
+{
+	return &PgCurrentSessionAccessWalGUCState()->default_table_access_method_value;
+}
+
+bool *
+PgCurrentSynchronizeSeqscansRef(void)
+{
+	return &PgCurrentSessionAccessWalGUCState()->synchronize_seqscans_value;
+}
+
+int *
+PgCurrentDefaultToastCompressionRef(void)
+{
+	return &PgCurrentSessionAccessWalGUCState()->default_toast_compression_value;
+}
+
+int *
+PgCurrentWalCompressionRef(void)
+{
+	return &PgCurrentSessionAccessWalGUCState()->wal_compression_value;
+}
+
+bool *
+PgCurrentWalInitZeroRef(void)
+{
+	return &PgCurrentSessionAccessWalGUCState()->wal_init_zero_value;
+}
+
+bool *
+PgCurrentWalRecycleRef(void)
+{
+	return &PgCurrentSessionAccessWalGUCState()->wal_recycle_value;
+}
+
+char **
+PgCurrentWalConsistencyCheckingStringRef(void)
+{
+	return &PgCurrentSessionAccessWalGUCState()->wal_consistency_checking_string_value;
+}
+
+bool **
+PgCurrentWalConsistencyCheckingRef(void)
+{
+	return &PgCurrentSessionAccessWalGUCState()->wal_consistency_checking_value;
+}
+
+int *
+PgCurrentCommitDelayRef(void)
+{
+	return &PgCurrentSessionAccessWalGUCState()->commit_delay_us;
+}
+
+int *
+PgCurrentCommitSiblingsRef(void)
+{
+	return &PgCurrentSessionAccessWalGUCState()->commit_siblings_value;
+}
+
+bool *
+PgCurrentTrackWalIoTimingRef(void)
+{
+	return &PgCurrentSessionAccessWalGUCState()->track_wal_io_timing_value;
+}
+
+int *
+PgCurrentWalSkipThresholdRef(void)
+{
+	return &PgCurrentSessionAccessWalGUCState()->wal_skip_threshold_kb;
+}
+
+#ifdef WAL_DEBUG
+bool *
+PgCurrentXLogDebugRef(void)
+{
+	return &PgCurrentSessionAccessWalGUCState()->xlog_debug_value;
+}
+#endif
+
+#ifdef TRACE_SYNCSCAN
+bool *
+PgCurrentTraceSyncscanRef(void)
+{
+	return &PgCurrentSessionAccessWalGUCState()->trace_syncscan_value;
+}
+#endif
 
 int *
 PgCurrentWorkMemRef(void)

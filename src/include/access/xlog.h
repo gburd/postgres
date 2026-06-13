@@ -48,15 +48,23 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *XLogArchiveCommand;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool EnableHotStandby;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool fullPageWrites;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool wal_log_hints;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int wal_compression;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool wal_init_zero;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool wal_recycle;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool *wal_consistency_checking;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *wal_consistency_checking_string;
+extern int *PgCurrentWalCompressionRef(void);
+extern bool *PgCurrentWalInitZeroRef(void);
+extern bool *PgCurrentWalRecycleRef(void);
+extern bool **PgCurrentWalConsistencyCheckingRef(void);
+extern char **PgCurrentWalConsistencyCheckingStringRef(void);
+#define wal_compression (*PgCurrentWalCompressionRef())
+#define wal_init_zero (*PgCurrentWalInitZeroRef())
+#define wal_recycle (*PgCurrentWalRecycleRef())
+#define wal_consistency_checking (*PgCurrentWalConsistencyCheckingRef())
+#define wal_consistency_checking_string (*PgCurrentWalConsistencyCheckingStringRef())
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool log_checkpoints;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int CommitDelay;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int CommitSiblings;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool track_wal_io_timing;
+extern int *PgCurrentCommitDelayRef(void);
+extern int *PgCurrentCommitSiblingsRef(void);
+extern bool *PgCurrentTrackWalIoTimingRef(void);
+#define CommitDelay (*PgCurrentCommitDelayRef())
+#define CommitSiblings (*PgCurrentCommitSiblingsRef())
+#define track_wal_io_timing (*PgCurrentTrackWalIoTimingRef())
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int wal_decode_buffer_size;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int data_checksums;
 
@@ -139,7 +147,8 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool XLogLogicalInfo;
 	 (wal_level >= WAL_LEVEL_LOGICAL || XLogLogicalInfo)
 
 #ifdef WAL_DEBUG
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool XLOG_DEBUG;
+extern bool *PgCurrentXLogDebugRef(void);
+#define XLOG_DEBUG (*PgCurrentXLogDebugRef())
 #endif
 
 /*

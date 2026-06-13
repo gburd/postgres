@@ -36,8 +36,10 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
-/* GUC variables */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int wal_skip_threshold = 2048;	/* in kilobytes */
+/*
+ * GUC state now lives in PgSessionAccessWalGUCState.  The public name remains
+ * available through a compatibility macro in catalog/storage.h.
+ */
 
 /*
  * We keep a list of all relations (represented as RelFileLocator values)

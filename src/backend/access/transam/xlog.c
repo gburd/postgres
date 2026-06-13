@@ -128,27 +128,16 @@ PG_GLOBAL_RUNTIME char *XLogArchiveCommand = NULL;
 PG_GLOBAL_RUNTIME bool EnableHotStandby = false;
 PG_GLOBAL_RUNTIME bool fullPageWrites = true;
 PG_GLOBAL_RUNTIME bool wal_log_hints = false;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int wal_compression = WAL_COMPRESSION_NONE;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION char *wal_consistency_checking_string = NULL;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool *wal_consistency_checking = NULL;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool wal_init_zero = true;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool wal_recycle = true;
+/*
+ * Session-local WAL GUC state now lives in PgSessionAccessWalGUCState.  The
+ * public names remain available through compatibility macros in access/xlog.h.
+ */
 PG_GLOBAL_RUNTIME bool log_checkpoints = true;
 PG_GLOBAL_RUNTIME int wal_sync_method = DEFAULT_WAL_SYNC_METHOD;
 PG_GLOBAL_RUNTIME int wal_level = WAL_LEVEL_REPLICA;
-/* Precommit delay in microseconds. */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int CommitDelay = 0;
-
-/* Concurrent xacts needed to sleep before commit delay. */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int CommitSiblings = 5;
 PG_GLOBAL_RUNTIME int wal_retrieve_retry_interval = 5000;
 PG_GLOBAL_RUNTIME int max_slot_wal_keep_size_mb = -1;
 PG_GLOBAL_RUNTIME int wal_decode_buffer_size = 512 * 1024;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool track_wal_io_timing = false;
-
-#ifdef WAL_DEBUG
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool XLOG_DEBUG = false;
-#endif
 
 PG_GLOBAL_RUNTIME int wal_segment_size = DEFAULT_XLOG_SEG_SIZE;
 

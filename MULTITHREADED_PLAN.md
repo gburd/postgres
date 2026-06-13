@@ -695,6 +695,10 @@ walreceiver, and logical-decoding state through `PgSession`, plus the general
 direct-pointer GUC bridge for security/function flags, temp file/buffer
 limits, role bookkeeping, large-object compatibility, float/bytea/XML binary
 formatting, identifier quoting, plan-cache mode, and GiN limits through
+`PgSession`, plus the access/WAL direct-pointer GUC bridge for table AM,
+sequential-scan synchronization, TOAST/WAL compression, WAL initialization and
+recycling, WAL consistency checking, commit delay, WAL I/O timing, and
+WAL-skipping threshold state through
 `PgSession`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move

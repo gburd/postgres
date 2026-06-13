@@ -419,6 +419,29 @@ typedef struct PgSessionGeneralGUCState
 	int			gin_pending_list_limit_value;
 } PgSessionGeneralGUCState;
 
+typedef struct PgSessionAccessWalGUCState
+{
+	bool		initialized;
+	char	   *default_table_access_method_value;
+	bool		synchronize_seqscans_value;
+	int			default_toast_compression_value;
+	int			wal_compression_value;
+	bool		wal_init_zero_value;
+	bool		wal_recycle_value;
+	char	   *wal_consistency_checking_string_value;
+	bool	   *wal_consistency_checking_value;
+	int			commit_delay_us;
+	int			commit_siblings_value;
+	bool		track_wal_io_timing_value;
+	int			wal_skip_threshold_kb;
+#ifdef WAL_DEBUG
+	bool		xlog_debug_value;
+#endif
+#ifdef TRACE_SYNCSCAN
+	bool		trace_syncscan_value;
+#endif
+} PgSessionAccessWalGUCState;
+
 typedef struct PgSessionQueryMemoryState
 {
 	bool		initialized;
@@ -626,6 +649,7 @@ struct PgSession
 	PgSessionCommandGUCState command_guc;
 	PgSessionReplicationGUCState replication_guc;
 	PgSessionGeneralGUCState general_guc;
+	PgSessionAccessWalGUCState access_wal_guc;
 	PgSessionQueryMemoryState query_memory;
 	PgSessionPlannerCostState planner_cost;
 	PgSessionPlannerMethodState planner_method;
@@ -768,6 +792,24 @@ extern bool *PgCurrentQuoteAllIdentifiersRef(void);
 extern int *PgCurrentPlanCacheModeRef(void);
 extern int *PgCurrentGinFuzzySearchLimitRef(void);
 extern int *PgCurrentGinPendingListLimitRef(void);
+extern char **PgCurrentDefaultTableAccessMethodRef(void);
+extern bool *PgCurrentSynchronizeSeqscansRef(void);
+extern int *PgCurrentDefaultToastCompressionRef(void);
+extern int *PgCurrentWalCompressionRef(void);
+extern bool *PgCurrentWalInitZeroRef(void);
+extern bool *PgCurrentWalRecycleRef(void);
+extern char **PgCurrentWalConsistencyCheckingStringRef(void);
+extern bool **PgCurrentWalConsistencyCheckingRef(void);
+extern int *PgCurrentCommitDelayRef(void);
+extern int *PgCurrentCommitSiblingsRef(void);
+extern bool *PgCurrentTrackWalIoTimingRef(void);
+extern int *PgCurrentWalSkipThresholdRef(void);
+#ifdef WAL_DEBUG
+extern bool *PgCurrentXLogDebugRef(void);
+#endif
+#ifdef TRACE_SYNCSCAN
+extern bool *PgCurrentTraceSyncscanRef(void);
+#endif
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);

@@ -1987,3 +1987,58 @@ Validation for this slice:
 - `git diff --check` passed;
 - static scans found no remaining direct session TLS definitions or extern
   declarations for the moved general GUC names.
+
+## Session Access/WAL GUC State Bridge
+
+The thirty-eighth Phase 12 slice moves access-method, TOAST, and WAL
+direct-pointer GUC state under `PgSession`:
+
+- `PgSession` now owns a `PgSessionAccessWalGUCState`;
+- `PgSessionAccessWalGUCState` owns the
+  `default_table_access_method`, `synchronize_seqscans`,
+  `default_toast_compression`, `wal_compression`, `wal_init_zero`,
+  `wal_recycle`, `wal_consistency_checking_string`,
+  `wal_consistency_checking`, `CommitDelay`, `CommitSiblings`,
+  `track_wal_io_timing`, and `wal_skip_threshold` direct-pointer GUC backing
+  variables;
+- debug-only `XLOG_DEBUG` and `trace_syncscan` are also covered by the same
+  state bucket under their existing `WAL_DEBUG` and `TRACE_SYNCSCAN`
+  compilation guards;
+- the public names remain source-compatible lvalue macros in
+  `access/tableam.h`, `access/toast_compression.h`, `access/xlog.h`,
+  `access/syncscan.h`, and `catalog/storage.h`;
+- early startup paths before `CurrentPgSession` is installed use fallback
+  session-local storage in `backend_runtime.c`;
+- process-mode and thread-runtime session installation adopt any early
+  fallback access/WAL GUC state into the logical session object;
+- `RebindSessionGUCVariablePointers()` now rebinds the generated GUC records
+  for the moved access/WAL GUCs whenever the active logical session changes.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `guc.o`,
+  `test_backend_runtime.o`, `xlog.o`, `tableam.o`, `toast_compression.o`,
+  `syncscan.o`, and `storage.o`, with nearby WAL/table/storage consumers
+  checked where they were already up to date;
+- because exported access/WAL GUC globals changed into compatibility macros,
+  `gmake -C src/backend clean` plus generated utility and node-header
+  recovery was used before the clean rebuild;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed, followed by rebuilding
+  and reinstalling `src/test/modules/test_backend_runtime` against the
+  current headers;
+- focused `test_backend_runtime` regression passed and includes
+  `test_session_access_wal_guc_state_is_session_local()`, which switches
+  sessions through `PgSetCurrentSession()`, changes the moved access/WAL GUCs
+  through the GUC machinery where portable values exist, directly exercises
+  the compatibility lvalue storage for single-valid-value settings, and proves
+  the public backing values follow the active session after GUC pointer
+  rebinding;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests, including `guc`, `create_am`, `compression`, `compression_pglz`,
+  `compression_lz4`, `largeobject`, and WAL-adjacent coverage;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- `git diff --check` passed;
+- static scans found no remaining direct session TLS definitions or extern
+  declarations for the moved access/WAL GUC names.
