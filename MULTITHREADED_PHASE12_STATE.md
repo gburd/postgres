@@ -4576,3 +4576,41 @@ Validation for this slice:
   post-termination `SELECT 84`, clean `pg_ctl -m fast stop`, and log
   inspection for crash/escalation markers;
 - `git diff --check` passed.
+
+## Threaded Client Socket Handoff
+
+The ninety-fifth Phase 12 slice closes a concrete Gate E2 teardown-resource
+hole in regular threaded backend startup:
+
+- `pq_init()` still copies the accepted socket descriptor into `Port`, but now
+  marks the launch-time `ClientSocket` as consumed only after `socket_close()`
+  has been registered as the `Port` exit callback;
+- `backend_thread_finish()` closes `BackendThreadStart.client_sock.sock` only
+  if it is still valid at thread exit, making it the backstop for startup
+  failures before `Port` owns the descriptor;
+- after a successful `pq_init()` handoff, the copied launch socket is invalid
+  and `socket_close()` remains the sole owner of closing `MyProcPort->sock`;
+- this avoids both an early-startup descriptor leak in threaded backends and a
+  later double-close hazard after `Port` has taken ownership.
+
+This is not full Gate E2 teardown completion. It resolves one descriptor
+ownership edge for regular client backends; the broader retained
+`TopMemoryContext` and backend/session/connection/execution resource ownership
+model remains a Gate E2 blocker.
+
+Validation for this slice:
+
+- touched-object builds passed for `src/backend/libpq/pqcomm.o` and
+  `src/backend/postmaster/launch_backend.o`;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- full `gmake -j8` passed;
+- `gmake -j8 DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- direct full-module `pg_regress test_backend_runtime` passed all 1 test
+  against the current temp install;
+- a manual threaded temp-cluster smoke with `multithreaded = on` passed 24
+  reconnects, `pg_terminate_backend()` against a sleeping client backend, a
+  post-termination `SELECT 168`, clean `pg_ctl -m fast stop`, and log
+  inspection for crash/escalation/assertion/bad-descriptor markers;
+- `git diff --check` passed.

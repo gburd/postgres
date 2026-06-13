@@ -827,6 +827,11 @@ Thread-backed signal-id reads and claimed thread-exit payload reads now also
 run through PMChild helper APIs under the PMChild mutex, matching the
 publication side instead of reading those fields directly after the exit flag
 is claimed.
+Threaded client-socket ownership is now explicit during backend startup:
+`pq_init()` marks the launch-time `ClientSocket` copy invalid only after
+`Port` owns the descriptor and `socket_close()` is registered, while
+`backend_thread_finish()` closes a still-valid copied socket if startup fails
+before that handoff.
 Threaded startup
 now initializes all built-in generated GUC records whose direct backing-variable
 pointers are rebound onto `PgSession`/runtime state, replacing the broad

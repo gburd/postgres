@@ -135,6 +135,11 @@ Important current files:
   bytes through PMChild exit accounting. Do not remove or bypass this
   accounting until thread-exit memory/resource cleanup has a stronger
   replacement.
+- Threaded regular backend launch duplicates the accepted client socket into
+  `BackendThreadStart.client_sock`. `pq_init()` marks that launch-time socket
+  copy invalid only after `Port` owns the descriptor and `socket_close()` is
+  registered. `backend_thread_finish()` is the backstop for closing a still
+  valid copied socket if startup fails before that handoff.
 - Thread-backed auxiliary workers receive postmaster `SIGQUIT`, `SIGKILL`,
   and `SIGABRT` as logical `PG_BACKEND_INTERRUPT_PROC_DIE` mailbox events, not
   as process signal handlers that can `_exit()`. Any custom auxiliary

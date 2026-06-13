@@ -680,6 +680,11 @@ backend_thread_finish(int code)
 									 top_memory_allocated,
 									 thread_start->postmaster_latch);
 	MyClientSocket = NULL;
+	if (thread_start->client_sock.sock != PGINVALID_SOCKET)
+	{
+		closesocket(thread_start->client_sock.sock);
+		thread_start->client_sock.sock = PGINVALID_SOCKET;
+	}
 
 	/*
 	 * Do not delete the carrier's TopMemoryContext here yet.  The current

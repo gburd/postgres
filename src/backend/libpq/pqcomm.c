@@ -291,6 +291,14 @@ pq_init(ClientSocket *client_sock)
 	on_proc_exit(socket_close, 0);
 
 	/*
+	 * The Port now owns the accepted socket and socket_close() is registered
+	 * as its exit backstop.  Mark the launch-time ClientSocket as consumed so
+	 * threaded backend teardown can distinguish an early-startup failure from
+	 * a descriptor already owned by MyProcPort.
+	 */
+	client_sock->sock = PGINVALID_SOCKET;
+
+	/*
 	 * In backends (as soon as forked) we operate the underlying socket in
 	 * nonblocking mode and use latches to implement blocking semantics if
 	 * needed. That allows us to provide safely interruptible reads and

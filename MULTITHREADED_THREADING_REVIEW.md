@@ -411,6 +411,10 @@ captures the exited logical backend id in the exit payload and clears live
 and slot release scrub stale carrier-visible signal ids and thread-exit
 payloads before reuse. Thread-backed signal-id reads and claimed thread-exit
 payload reads now also use PMChild helper APIs under the same PMChild mutex.
+Threaded regular backend socket handoff is now explicit: the launch-time
+`ClientSocket` copy remains valid until `pq_init()` has copied the descriptor
+into `Port` and registered `socket_close()`, and `backend_thread_finish()`
+closes the copied descriptor if startup exits before that ownership transfer.
 The broad threaded startup GUC
 whitelist has also been replaced for rebound built-in direct-pointer GUCs by
 a systematic generated-table adoption pass, and threaded built-in postmaster
