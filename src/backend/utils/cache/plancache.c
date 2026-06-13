@@ -137,9 +137,6 @@ ResourceOwnerForgetPlanCacheRef(ResourceOwner owner, CachedPlan *plan)
 }
 
 
-/* GUC parameter */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int plan_cache_mode = PLAN_CACHE_MODE_AUTO;
-
 /*
  * InitPlanCache: initialize module during InitPostgres.
  *

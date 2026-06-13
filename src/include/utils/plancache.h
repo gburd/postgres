@@ -37,7 +37,8 @@ typedef enum
 }			PlanCacheMode;
 
 /* GUC parameter */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int plan_cache_mode;
+extern int *PgCurrentPlanCacheModeRef(void);
+#define plan_cache_mode (*PgCurrentPlanCacheModeRef())
 
 /* Optional callback to editorialize on rewritten parse trees */
 typedef void (*PostRewriteHook) (List *querytree_list, void *arg);

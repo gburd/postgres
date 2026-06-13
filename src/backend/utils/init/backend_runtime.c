@@ -15,6 +15,7 @@
  */
 #include "postgres.h"
 
+#include "access/gin.h"
 #include "access/parallel.h"
 #include "access/xact.h"
 #include "catalog/binary_upgrade.h"
@@ -40,14 +41,21 @@
 #include "storage/bufmgr.h"
 #include "storage/copydir.h"
 #include "storage/latch.h"
+#include "storage/large_object.h"
 #include "storage/lock.h"
 #include "storage/proc.h"
 #include "storage/procsignal.h"
 #include "storage/sinval.h"
 #include "utils/backend_runtime.h"
+#include "utils/builtins.h"
+#include "utils/bytea.h"
 #include "utils/elog.h"
+#include "utils/float.h"
 #include "utils/guc.h"
+#include "utils/plancache.h"
 #include "utils/resowner.h"
+#include "utils/rls.h"
+#include "utils/xml.h"
 
 PG_GLOBAL_RUNTIME PgRuntime *CurrentPgRuntime = NULL;
 PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgCarrier *CurrentPgCarrier = NULL;
@@ -259,6 +267,24 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionReplicationGUCState early_sess
 	.debug_logical_replication_streaming_value =
 		DEBUG_LOGICAL_REP_STREAMING_BUFFERED
 };
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionGeneralGUCState early_session_general_guc = {
+	.initialized = true,
+	.allow_alter_system_value = true,
+	.row_security_value = true,
+	.check_function_bodies_value = true,
+	.current_role_is_superuser_value = false,
+	.temp_file_limit_kb = -1,
+	.num_temp_buffers_blocks = 1024,
+	.role_string_value = "none",
+	.lo_compat_privileges_value = false,
+	.extra_float_digits_value = 1,
+	.bytea_output_value = BYTEA_OUTPUT_HEX,
+	.xmlbinary_value = XMLBINARY_BASE64,
+	.quote_all_identifiers_value = false,
+	.plan_cache_mode_value = PLAN_CACHE_MODE_AUTO,
+	.gin_fuzzy_search_limit_value = 0,
+	.gin_pending_list_limit_value = 0
+};
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionQueryMemoryState early_session_query_memory = {
 	.initialized = true,
 	.work_mem_kb = 4096,
@@ -377,6 +403,8 @@ static void PgSessionInitializeCommandGUCState(PgSessionCommandGUCState *command
 static void PgSessionAdoptEarlyCommandGUCState(PgSession *session);
 static void PgSessionInitializeReplicationGUCState(PgSessionReplicationGUCState *replication_guc);
 static void PgSessionAdoptEarlyReplicationGUCState(PgSession *session);
+static void PgSessionInitializeGeneralGUCState(PgSessionGeneralGUCState *general_guc);
+static void PgSessionAdoptEarlyGeneralGUCState(PgSession *session);
 static void PgSessionInitializeQueryMemoryState(PgSessionQueryMemoryState *query_memory);
 static void PgSessionAdoptEarlyQueryMemoryState(PgSession *session);
 static void PgSessionInitializePlannerCostState(PgSessionPlannerCostState *planner_cost);
@@ -410,6 +438,7 @@ static PgSessionStorageGUCState *PgCurrentSessionStorageGUCState(void);
 static PgSessionUserGUCState *PgCurrentSessionUserGUCState(void);
 static PgSessionCommandGUCState *PgCurrentSessionCommandGUCState(void);
 static PgSessionReplicationGUCState *PgCurrentSessionReplicationGUCState(void);
+static PgSessionGeneralGUCState *PgCurrentSessionGeneralGUCState(void);
 static PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
 static PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
 static PgSessionPlannerMethodState *PgCurrentSessionPlannerMethodState(void);
@@ -955,6 +984,41 @@ PgSessionAdoptEarlyReplicationGUCState(PgSession *session)
 }
 
 static void
+PgSessionInitializeGeneralGUCState(PgSessionGeneralGUCState *general_guc)
+{
+	Assert(general_guc != NULL);
+
+	general_guc->initialized = true;
+	general_guc->allow_alter_system_value = true;
+	general_guc->row_security_value = true;
+	general_guc->check_function_bodies_value = true;
+	general_guc->current_role_is_superuser_value = false;
+	general_guc->temp_file_limit_kb = -1;
+	general_guc->num_temp_buffers_blocks = 1024;
+	general_guc->role_string_value = "none";
+	general_guc->lo_compat_privileges_value = false;
+	general_guc->extra_float_digits_value = 1;
+	general_guc->bytea_output_value = BYTEA_OUTPUT_HEX;
+	general_guc->xmlbinary_value = XMLBINARY_BASE64;
+	general_guc->quote_all_identifiers_value = false;
+	general_guc->plan_cache_mode_value = PLAN_CACHE_MODE_AUTO;
+	general_guc->gin_fuzzy_search_limit_value = 0;
+	general_guc->gin_pending_list_limit_value = 0;
+}
+
+static void
+PgSessionAdoptEarlyGeneralGUCState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (!early_session_general_guc.initialized)
+		PgSessionInitializeGeneralGUCState(&early_session_general_guc);
+
+	session->general_guc = early_session_general_guc;
+	PgSessionInitializeGeneralGUCState(&early_session_general_guc);
+}
+
+static void
 PgSessionInitializeQueryMemoryState(PgSessionQueryMemoryState *query_memory)
 {
 	Assert(query_memory != NULL);
@@ -1229,6 +1293,7 @@ InitializePgProcessRuntime(void)
 	PgSessionAdoptEarlyUserGUCState(&process_session);
 	PgSessionAdoptEarlyCommandGUCState(&process_session);
 	PgSessionAdoptEarlyReplicationGUCState(&process_session);
+	PgSessionAdoptEarlyGeneralGUCState(&process_session);
 	PgSessionAdoptEarlyQueryMemoryState(&process_session);
 	PgSessionAdoptEarlyPlannerCostState(&process_session);
 	PgSessionAdoptEarlyPlannerMethodState(&process_session);
@@ -1327,6 +1392,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgSessionInitializeUserGUCState(&state->session.user_guc);
 	PgSessionInitializeCommandGUCState(&state->session.command_guc);
 	PgSessionInitializeReplicationGUCState(&state->session.replication_guc);
+	PgSessionInitializeGeneralGUCState(&state->session.general_guc);
 	PgSessionInitializeQueryMemoryState(&state->session.query_memory);
 	PgSessionInitializePlannerCostState(&state->session.planner_cost);
 	PgSessionInitializePlannerMethodState(&state->session.planner_method);
@@ -1366,6 +1432,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgSessionAdoptEarlyUserGUCState(&state->session);
 	PgSessionAdoptEarlyCommandGUCState(&state->session);
 	PgSessionAdoptEarlyReplicationGUCState(&state->session);
+	PgSessionAdoptEarlyGeneralGUCState(&state->session);
 	PgSessionAdoptEarlyQueryMemoryState(&state->session);
 	PgSessionAdoptEarlyPlannerCostState(&state->session);
 	PgSessionAdoptEarlyPlannerMethodState(&state->session);
@@ -1687,6 +1754,22 @@ PgCurrentSessionReplicationGUCState(void)
 		PgSessionInitializeReplicationGUCState(replication_guc);
 
 	return replication_guc;
+}
+
+static PgSessionGeneralGUCState *
+PgCurrentSessionGeneralGUCState(void)
+{
+	PgSessionGeneralGUCState *general_guc;
+
+	if (CurrentPgSession == NULL)
+		general_guc = &early_session_general_guc;
+	else
+		general_guc = &CurrentPgSession->general_guc;
+
+	if (!general_guc->initialized)
+		PgSessionInitializeGeneralGUCState(general_guc);
+
+	return general_guc;
 }
 
 static PgSessionQueryMemoryState *
@@ -2520,6 +2603,96 @@ PgCurrentDebugLogicalReplicationStreamingRef(void)
 
 	replication_guc = PgCurrentSessionReplicationGUCState();
 	return &replication_guc->debug_logical_replication_streaming_value;
+}
+
+bool *
+PgCurrentAllowAlterSystemRef(void)
+{
+	return &PgCurrentSessionGeneralGUCState()->allow_alter_system_value;
+}
+
+bool *
+PgCurrentRowSecurityRef(void)
+{
+	return &PgCurrentSessionGeneralGUCState()->row_security_value;
+}
+
+bool *
+PgCurrentCheckFunctionBodiesRef(void)
+{
+	return &PgCurrentSessionGeneralGUCState()->check_function_bodies_value;
+}
+
+bool *
+PgCurrentCurrentRoleIsSuperuserRef(void)
+{
+	return &PgCurrentSessionGeneralGUCState()->current_role_is_superuser_value;
+}
+
+int *
+PgCurrentTempFileLimitRef(void)
+{
+	return &PgCurrentSessionGeneralGUCState()->temp_file_limit_kb;
+}
+
+int *
+PgCurrentNumTempBuffersRef(void)
+{
+	return &PgCurrentSessionGeneralGUCState()->num_temp_buffers_blocks;
+}
+
+char **
+PgCurrentRoleStringRef(void)
+{
+	return &PgCurrentSessionGeneralGUCState()->role_string_value;
+}
+
+bool *
+PgCurrentLoCompatPrivilegesRef(void)
+{
+	return &PgCurrentSessionGeneralGUCState()->lo_compat_privileges_value;
+}
+
+int *
+PgCurrentExtraFloatDigitsRef(void)
+{
+	return &PgCurrentSessionGeneralGUCState()->extra_float_digits_value;
+}
+
+int *
+PgCurrentByteaOutputRef(void)
+{
+	return &PgCurrentSessionGeneralGUCState()->bytea_output_value;
+}
+
+int *
+PgCurrentXmlBinaryRef(void)
+{
+	return &PgCurrentSessionGeneralGUCState()->xmlbinary_value;
+}
+
+bool *
+PgCurrentQuoteAllIdentifiersRef(void)
+{
+	return &PgCurrentSessionGeneralGUCState()->quote_all_identifiers_value;
+}
+
+int *
+PgCurrentPlanCacheModeRef(void)
+{
+	return &PgCurrentSessionGeneralGUCState()->plan_cache_mode_value;
+}
+
+int *
+PgCurrentGinFuzzySearchLimitRef(void)
+{
+	return &PgCurrentSessionGeneralGUCState()->gin_fuzzy_search_limit_value;
+}
+
+int *
+PgCurrentGinPendingListLimitRef(void)
+{
+	return &PgCurrentSessionGeneralGUCState()->gin_pending_list_limit_value;
 }
 
 int *

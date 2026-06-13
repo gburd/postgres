@@ -51,11 +51,6 @@
 
 
 /*
- * GUC: backwards-compatibility flag to suppress LO permission checks
- */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool lo_compat_privileges;
-
-/*
  * All accesses to pg_largeobject and its index make use of a single
  * Relation reference.  To guarantee that the relcache entry remains
  * in the cache, on the first reference inside a subtransaction, we

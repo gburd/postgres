@@ -54,8 +54,6 @@
  * get round-trip-accurate results. If 0 or less, then use the old, slow,
  * decimal rounding method.
  */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int extra_float_digits = 1;
-
 /* Cached constants for degree-based trig functions */
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool degree_consts_set = false;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND float8 sin_30 = 0;

@@ -1931,3 +1931,59 @@ Validation for this slice:
   `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`,
   but this system Perl is missing `IPC::Run`, so both tests failed before
   starting PostgreSQL.
+
+## Session General GUC State Bridge
+
+The thirty-seventh Phase 12 slice moves a broad direct-pointer GUC group under
+`PgSession`:
+
+- `PgSession` now owns a `PgSessionGeneralGUCState`;
+- `PgSessionGeneralGUCState` owns the `AllowAlterSystem`, `row_security`,
+  `check_function_bodies`, `current_role_is_superuser`, `temp_file_limit`,
+  `num_temp_buffers`, `role_string`, `lo_compat_privileges`,
+  `extra_float_digits`, `bytea_output`, `xmlbinary`,
+  `quote_all_identifiers`, `plan_cache_mode`, `GinFuzzySearchLimit`, and
+  `gin_pending_list_limit` direct-pointer GUC backing variables;
+- the public names remain source-compatible lvalue macros in `utils/guc.h`,
+  `utils/rls.h`, `storage/large_object.h`, `utils/float.h`,
+  `utils/bytea.h`, `utils/xml.h`, `utils/builtins.h`,
+  `utils/plancache.h`, and `access/gin.h`;
+- early startup paths before `CurrentPgSession` is installed use fallback
+  session-local storage in `backend_runtime.c`;
+- process-mode and thread-runtime session installation adopt any early
+  fallback general GUC state into the logical session object;
+- `RebindSessionGUCVariablePointers()` now rebinds the generated GUC records
+  for the moved general GUCs whenever the active logical session changes;
+- `xmloption` remains a carrier-local/thread-local global in this slice
+  because the public name collides with XML expression struct fields such as
+  `xexpr->xmloption`; it needs a later call-site migration before it can use a
+  public compatibility macro;
+- `application_name` and the TCP keepalive/user-timeout GUC variables remain
+  deferred because their public names collide with `Port` struct fields and
+  need the same kind of call-site migration.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `guc.o`,
+  `guc_tables.o`, `test_backend_runtime.o`, `float.o`, `bytea.o`, `xml.o`,
+  `ruleutils.o`, `plancache.o`, `ginget.o`, `ginfast.o`, and `inv_api.o`;
+- because exported general GUC globals changed into compatibility macros,
+  `gmake -C src/backend clean` plus generated utility and node-header
+  recovery was used before the clean rebuild;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed, followed by rebuilding
+  and reinstalling `src/test/modules/test_backend_runtime` and PL/pgSQL
+  against the current headers;
+- focused `test_backend_runtime` regression passed and includes
+  `test_session_general_guc_state_is_session_local()`, which switches
+  sessions through `PgSetCurrentSession()`, changes the moved general GUCs
+  through the GUC machinery, and proves the public backing values follow the
+  active session after GUC pointer rebinding;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests, including `guc`, `rowsecurity`, `gin`, `plancache`, `plpgsql`,
+  `largeobject`, and `xml` coverage;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- `git diff --check` passed;
+- static scans found no remaining direct session TLS definitions or extern
+  declarations for the moved general GUC names.

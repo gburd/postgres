@@ -691,7 +691,11 @@ state through `PgSession`, plus the user/role direct-pointer GUC and derived
 the command/trigger/notify direct-pointer GUC bridge for
 `session_replication_role`, `event_triggers`, and `trace_notify` through
 `PgSession`, plus the replication direct-pointer GUC bridge for walsender,
-walreceiver, and logical-decoding state through `PgSession`.
+walreceiver, and logical-decoding state through `PgSession`, plus the general
+direct-pointer GUC bridge for security/function flags, temp file/buffer
+limits, role bookkeeping, large-object compatibility, float/bytea/XML binary
+formatting, identifier quoting, plan-cache mode, and GiN limits through
+`PgSession`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.

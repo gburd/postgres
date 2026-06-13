@@ -24,6 +24,7 @@ SELECT test_session_storage_guc_state_is_session_local();
 SELECT test_session_user_guc_state_is_session_local();
 SELECT test_session_command_guc_state_is_session_local();
 SELECT test_session_replication_guc_state_is_session_local();
+SELECT test_session_general_guc_state_is_session_local();
 SELECT test_session_misc_guc_state_is_session_local();
 SELECT test_session_query_memory_state_is_session_local();
 SELECT test_session_planner_cost_state_is_session_local();

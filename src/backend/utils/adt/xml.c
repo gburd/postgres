@@ -104,8 +104,7 @@
 #include "utils/xml.h"
 
 
-/* GUC variables */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int xmlbinary = XMLBINARY_BASE64;
+/* GUC variable */
 PG_THREAD_LOCAL PG_GLOBAL_SESSION int xmloption = XMLOPTION_CONTENT;
 
 #ifdef USE_LIBXML

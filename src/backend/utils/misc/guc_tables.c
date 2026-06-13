@@ -529,22 +529,16 @@ extern const struct config_enum_entry dynamic_shared_memory_options[];
 /*
  * GUC option variables that are exported from this module
  */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool AllowAlterSystem = true;
-
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool row_security;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool check_function_bodies = true;
+/*
+ * These GUC backing variables live in PgSessionGeneralGUCState.  Public
+ * compatibility names are lvalue macros in the corresponding headers.
+ */
 
 /*
  * These GUCs exist solely for backward compatibility.
  */
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool default_with_oids = false;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool standard_conforming_strings = true;
-
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool current_role_is_superuser;
-
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int temp_file_limit = -1;
-
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int num_temp_buffers = 1024;
 
 PG_THREAD_LOCAL PG_GLOBAL_SESSION char *cluster_name = "";
 PG_THREAD_LOCAL PG_GLOBAL_SESSION char *ConfigFileName;
@@ -637,8 +631,7 @@ static PG_GLOBAL_RUNTIME char *recovery_target_xid_string;
 static PG_GLOBAL_RUNTIME char *recovery_target_name_string;
 static PG_GLOBAL_RUNTIME char *recovery_target_lsn_string;
 
-/* should be static, but commands/variable.c needs to get at this */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION char *role_string;
+/* role_string lives in PgSessionGeneralGUCState. */
 
 /* should be static, but guc.c needs to get at this */
 PG_GLOBAL_RUNTIME bool in_hot_standby_guc;

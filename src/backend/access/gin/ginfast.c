@@ -35,9 +35,6 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
-/* GUC parameter */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int gin_pending_list_limit = 0;
-
 #define GIN_PAGE_FREESIZE \
 	( (Size) BLCKSZ - MAXALIGN(SizeOfPageHeaderData) - MAXALIGN(sizeof(GinPageOpaqueData)) )
 

@@ -27,7 +27,8 @@
 /* Radians per degree, a.k.a. PI / 180 */
 #define RADIANS_PER_DEGREE 0.0174532925199432957692
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int extra_float_digits;
+extern int *PgCurrentExtraFloatDigitsRef(void);
+#define extra_float_digits (*PgCurrentExtraFloatDigitsRef())
 
 /*
  * Utility functions in float.c

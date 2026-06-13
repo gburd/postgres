@@ -16,7 +16,8 @@
 #include "utils/global_lifetime.h"
 
 /* GUC variable */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool row_security;
+extern bool *PgCurrentRowSecurityRef(void);
+#define row_security (*PgCurrentRowSecurityRef())
 
 /*
  * Used by callers of check_enable_rls.

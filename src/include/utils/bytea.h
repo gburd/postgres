@@ -23,8 +23,8 @@ typedef enum
 	BYTEA_OUTPUT_HEX,
 }			ByteaOutputType;
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int bytea_output;	/* ByteaOutputType,
-																		 * but int for GUC
-																		 * enum */
+extern int *PgCurrentByteaOutputRef(void);
+#define bytea_output (*PgCurrentByteaOutputRef())	/* ByteaOutputType,
+													 * but int for GUC enum */
 
 #endif							/* BYTEA_H */

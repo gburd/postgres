@@ -302,10 +302,13 @@ extern char **PgCurrentEventSourceRef(void);
 #define log_btree_build_stats (*PgCurrentLogBtreeBuildStatsRef())
 #define event_source (*PgCurrentEventSourceRef())
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool check_function_bodies;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool current_role_is_superuser;
+extern bool *PgCurrentCheckFunctionBodiesRef(void);
+extern bool *PgCurrentCurrentRoleIsSuperuserRef(void);
+#define check_function_bodies (*PgCurrentCheckFunctionBodiesRef())
+#define current_role_is_superuser (*PgCurrentCurrentRoleIsSuperuserRef())
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool AllowAlterSystem;
+extern bool *PgCurrentAllowAlterSystemRef(void);
+#define AllowAlterSystem (*PgCurrentAllowAlterSystemRef())
 extern bool *PgCurrentLogDurationRef(void);
 extern int *PgCurrentLogParameterMaxLengthRef(void);
 extern int *PgCurrentLogParameterMaxLengthOnErrorRef(void);
@@ -331,9 +334,11 @@ extern char **PgCurrentBacktraceFunctionsRef(void);
 #define log_xact_sample_rate (*PgCurrentLogXactSampleRateRef())
 #define backtrace_functions (*PgCurrentBacktraceFunctionsRef())
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int temp_file_limit;
+extern int *PgCurrentTempFileLimitRef(void);
+#define temp_file_limit (*PgCurrentTempFileLimitRef())
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int num_temp_buffers;
+extern int *PgCurrentNumTempBuffersRef(void);
+#define num_temp_buffers (*PgCurrentNumTempBuffersRef())
 
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *cluster_name;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *ConfigFileName;
@@ -349,7 +354,8 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int tcp_keepalives_interval
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int tcp_keepalives_count;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int tcp_user_timeout;
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *role_string;
+extern char **PgCurrentRoleStringRef(void);
+#define role_string (*PgCurrentRoleStringRef())
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool in_hot_standby_guc;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool trace_sort;
 

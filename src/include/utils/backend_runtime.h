@@ -399,6 +399,26 @@ typedef struct PgSessionReplicationGUCState
 	int			debug_logical_replication_streaming_value;
 } PgSessionReplicationGUCState;
 
+typedef struct PgSessionGeneralGUCState
+{
+	bool		initialized;
+	bool		allow_alter_system_value;
+	bool		row_security_value;
+	bool		check_function_bodies_value;
+	bool		current_role_is_superuser_value;
+	int			temp_file_limit_kb;
+	int			num_temp_buffers_blocks;
+	char	   *role_string_value;
+	bool		lo_compat_privileges_value;
+	int			extra_float_digits_value;
+	int			bytea_output_value;
+	int			xmlbinary_value;
+	bool		quote_all_identifiers_value;
+	int			plan_cache_mode_value;
+	int			gin_fuzzy_search_limit_value;
+	int			gin_pending_list_limit_value;
+} PgSessionGeneralGUCState;
+
 typedef struct PgSessionQueryMemoryState
 {
 	bool		initialized;
@@ -605,6 +625,7 @@ struct PgSession
 	PgSessionUserGUCState user_guc;
 	PgSessionCommandGUCState command_guc;
 	PgSessionReplicationGUCState replication_guc;
+	PgSessionGeneralGUCState general_guc;
 	PgSessionQueryMemoryState query_memory;
 	PgSessionPlannerCostState planner_cost;
 	PgSessionPlannerMethodState planner_method;
@@ -732,6 +753,21 @@ extern bool *PgCurrentLogReplicationCommandsRef(void);
 extern int *PgCurrentWalReceiverTimeoutRef(void);
 extern int *PgCurrentLogicalDecodingWorkMemRef(void);
 extern int *PgCurrentDebugLogicalReplicationStreamingRef(void);
+extern bool *PgCurrentAllowAlterSystemRef(void);
+extern bool *PgCurrentRowSecurityRef(void);
+extern bool *PgCurrentCheckFunctionBodiesRef(void);
+extern bool *PgCurrentCurrentRoleIsSuperuserRef(void);
+extern int *PgCurrentTempFileLimitRef(void);
+extern int *PgCurrentNumTempBuffersRef(void);
+extern char **PgCurrentRoleStringRef(void);
+extern bool *PgCurrentLoCompatPrivilegesRef(void);
+extern int *PgCurrentExtraFloatDigitsRef(void);
+extern int *PgCurrentByteaOutputRef(void);
+extern int *PgCurrentXmlBinaryRef(void);
+extern bool *PgCurrentQuoteAllIdentifiersRef(void);
+extern int *PgCurrentPlanCacheModeRef(void);
+extern int *PgCurrentGinFuzzySearchLimitRef(void);
+extern int *PgCurrentGinPendingListLimitRef(void);
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);

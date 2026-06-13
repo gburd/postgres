@@ -23,9 +23,6 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
-/* GUC parameter */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int GinFuzzySearchLimit = 0;
-
 typedef struct pendingPosition
 {
 	Buffer		pendingBuffer;

@@ -1611,6 +1611,51 @@ InitializeThreadedSessionGUCOptions(void)
 
 	gconf = find_option("wal_receiver_timeout", false, false, PANIC);
 	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("allow_alter_system", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("row_security", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("check_function_bodies", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("is_superuser", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("temp_file_limit", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("temp_buffers", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("role", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("lo_compat_privileges", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("extra_float_digits", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("bytea_output", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("xmlbinary", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("quote_all_identifiers", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("plan_cache_mode", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("gin_fuzzy_search_limit", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("gin_pending_list_limit", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
 }
 
 /*
@@ -1781,6 +1826,66 @@ RebindSessionGUCVariablePointers(void)
 	gconf = find_option("allow_in_place_tablespaces", false, false, PANIC);
 	Assert(gconf->vartype == PGC_BOOL);
 	gconf->_bool.variable = PgCurrentAllowInPlaceTablespacesRef();
+
+	gconf = find_option("allow_alter_system", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentAllowAlterSystemRef();
+
+	gconf = find_option("row_security", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentRowSecurityRef();
+
+	gconf = find_option("check_function_bodies", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentCheckFunctionBodiesRef();
+
+	gconf = find_option("is_superuser", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentCurrentRoleIsSuperuserRef();
+
+	gconf = find_option("temp_file_limit", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentTempFileLimitRef();
+
+	gconf = find_option("temp_buffers", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentNumTempBuffersRef();
+
+	gconf = find_option("role", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentRoleStringRef();
+
+	gconf = find_option("lo_compat_privileges", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentLoCompatPrivilegesRef();
+
+	gconf = find_option("extra_float_digits", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentExtraFloatDigitsRef();
+
+	gconf = find_option("bytea_output", false, false, PANIC);
+	Assert(gconf->vartype == PGC_ENUM);
+	gconf->_enum.variable = PgCurrentByteaOutputRef();
+
+	gconf = find_option("xmlbinary", false, false, PANIC);
+	Assert(gconf->vartype == PGC_ENUM);
+	gconf->_enum.variable = PgCurrentXmlBinaryRef();
+
+	gconf = find_option("quote_all_identifiers", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentQuoteAllIdentifiersRef();
+
+	gconf = find_option("plan_cache_mode", false, false, PANIC);
+	Assert(gconf->vartype == PGC_ENUM);
+	gconf->_enum.variable = PgCurrentPlanCacheModeRef();
+
+	gconf = find_option("gin_fuzzy_search_limit", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentGinFuzzySearchLimitRef();
+
+	gconf = find_option("gin_pending_list_limit", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentGinPendingListLimitRef();
 
 	gconf = find_option("default_tablespace", false, false, PANIC);
 	Assert(gconf->vartype == PGC_STRING);

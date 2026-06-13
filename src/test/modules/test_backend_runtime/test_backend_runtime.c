@@ -14,6 +14,7 @@
 
 #include <errno.h>
 
+#include "access/gin.h"
 #include "access/xact.h"
 #include "catalog/binary_upgrade.h"
 #include "commands/async.h"
@@ -46,13 +47,20 @@
 #include "storage/dsm.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
+#include "storage/large_object.h"
 #include "storage/lock.h"
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"
 #include "utils/backend_runtime.h"
+#include "utils/builtins.h"
+#include "utils/bytea.h"
+#include "utils/float.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
+#include "utils/plancache.h"
 #include "utils/resowner.h"
+#include "utils/rls.h"
+#include "utils/xml.h"
 
 PG_MODULE_MAGIC;
 
@@ -2786,6 +2794,299 @@ test_session_replication_guc_state_is_session_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "session replication GUC state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_session_general_guc_state_is_session_local);
+Datum
+test_session_general_guc_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	char	   *saved_allow_alter_system;
+	char	   *saved_row_security;
+	char	   *saved_check_function_bodies;
+	char	   *saved_is_superuser;
+	char	   *saved_temp_file_limit;
+	char	   *saved_temp_buffers;
+	char	   *saved_role;
+	char	   *saved_lo_compat_privileges;
+	char	   *saved_extra_float_digits;
+	char	   *saved_bytea_output;
+	char	   *saved_xmlbinary;
+	char	   *saved_quote_all_identifiers;
+	char	   *saved_plan_cache_mode;
+	char	   *saved_gin_fuzzy_search_limit;
+	char	   *saved_gin_pending_list_limit;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	saved_allow_alter_system =
+		pstrdup(GetConfigOption("allow_alter_system", false, false));
+	saved_row_security =
+		pstrdup(GetConfigOption("row_security", false, false));
+	saved_check_function_bodies =
+		pstrdup(GetConfigOption("check_function_bodies", false, false));
+	saved_is_superuser =
+		pstrdup(GetConfigOption("is_superuser", false, false));
+	saved_temp_file_limit =
+		pstrdup(GetConfigOption("temp_file_limit", false, false));
+	saved_temp_buffers =
+		pstrdup(GetConfigOption("temp_buffers", false, false));
+	saved_role = pstrdup(GetConfigOption("role", false, false));
+	saved_lo_compat_privileges =
+		pstrdup(GetConfigOption("lo_compat_privileges", false, false));
+	saved_extra_float_digits =
+		pstrdup(GetConfigOption("extra_float_digits", false, false));
+	saved_bytea_output =
+		pstrdup(GetConfigOption("bytea_output", false, false));
+	saved_xmlbinary =
+		pstrdup(GetConfigOption("xmlbinary", false, false));
+	saved_quote_all_identifiers =
+		pstrdup(GetConfigOption("quote_all_identifiers", false, false));
+	saved_plan_cache_mode =
+		pstrdup(GetConfigOption("plan_cache_mode", false, false));
+	saved_gin_fuzzy_search_limit =
+		pstrdup(GetConfigOption("gin_fuzzy_search_limit", false, false));
+	saved_gin_pending_list_limit =
+		pstrdup(GetConfigOption("gin_pending_list_limit", false, false));
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && AllowAlterSystem;
+		ok = ok && row_security;
+		ok = ok && check_function_bodies;
+		ok = ok && !current_role_is_superuser;
+		ok = ok && temp_file_limit == -1;
+		ok = ok && num_temp_buffers == 1024;
+		ok = ok && strcmp(role_string, "none") == 0;
+		ok = ok && !lo_compat_privileges;
+		ok = ok && extra_float_digits == 1;
+		ok = ok && bytea_output == BYTEA_OUTPUT_HEX;
+		ok = ok && xmlbinary == XMLBINARY_BASE64;
+		ok = ok && !quote_all_identifiers;
+		ok = ok && plan_cache_mode == PLAN_CACHE_MODE_AUTO;
+		ok = ok && GinFuzzySearchLimit == 0;
+		ok = ok && gin_pending_list_limit == 0;
+
+		SetConfigOption("allow_alter_system", "off",
+						PGC_SIGHUP, PGC_S_SESSION);
+		SetConfigOption("row_security", "off",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("check_function_bodies", "off",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("is_superuser", "on",
+						PGC_INTERNAL, PGC_S_OVERRIDE);
+		SetConfigOption("temp_file_limit", "64MB",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("temp_buffers", "800",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("role", "none",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("lo_compat_privileges", "on",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("extra_float_digits", "2",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("bytea_output", "escape",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("xmlbinary", "hex",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("quote_all_identifiers", "on",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("plan_cache_mode", "force_generic_plan",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("gin_fuzzy_search_limit", "7",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("gin_pending_list_limit", "8MB",
+						PGC_USERSET, PGC_S_SESSION);
+		ok = ok && !AllowAlterSystem;
+		ok = ok && !row_security;
+		ok = ok && !check_function_bodies;
+		ok = ok && current_role_is_superuser;
+		ok = ok && temp_file_limit == 65536;
+		ok = ok && num_temp_buffers == 800;
+		ok = ok && strcmp(role_string, "none") == 0;
+		ok = ok && lo_compat_privileges;
+		ok = ok && extra_float_digits == 2;
+		ok = ok && bytea_output == BYTEA_OUTPUT_ESCAPE;
+		ok = ok && xmlbinary == XMLBINARY_HEX;
+		ok = ok && quote_all_identifiers;
+		ok = ok && plan_cache_mode == PLAN_CACHE_MODE_FORCE_GENERIC_PLAN;
+		ok = ok && GinFuzzySearchLimit == 7;
+		ok = ok && gin_pending_list_limit == 8192;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && AllowAlterSystem;
+		ok = ok && row_security;
+		ok = ok && check_function_bodies;
+		ok = ok && !current_role_is_superuser;
+		ok = ok && temp_file_limit == -1;
+		ok = ok && num_temp_buffers == 1024;
+		ok = ok && strcmp(role_string, "none") == 0;
+		ok = ok && !lo_compat_privileges;
+		ok = ok && extra_float_digits == 1;
+		ok = ok && bytea_output == BYTEA_OUTPUT_HEX;
+		ok = ok && xmlbinary == XMLBINARY_BASE64;
+		ok = ok && !quote_all_identifiers;
+		ok = ok && plan_cache_mode == PLAN_CACHE_MODE_AUTO;
+		ok = ok && GinFuzzySearchLimit == 0;
+		ok = ok && gin_pending_list_limit == 0;
+		SetConfigOption("row_security", "on",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("check_function_bodies", "on",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("is_superuser", "off",
+						PGC_INTERNAL, PGC_S_OVERRIDE);
+		SetConfigOption("temp_file_limit", "128MB",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("temp_buffers", "900",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("lo_compat_privileges", "off",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("extra_float_digits", "3",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("bytea_output", "hex",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("xmlbinary", "base64",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("quote_all_identifiers", "off",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("plan_cache_mode", "force_custom_plan",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("gin_fuzzy_search_limit", "11",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("gin_pending_list_limit", "16MB",
+						PGC_USERSET, PGC_S_SESSION);
+		ok = ok && row_security;
+		ok = ok && check_function_bodies;
+		ok = ok && !current_role_is_superuser;
+		ok = ok && temp_file_limit == 131072;
+		ok = ok && num_temp_buffers == 900;
+		ok = ok && !lo_compat_privileges;
+		ok = ok && extra_float_digits == 3;
+		ok = ok && bytea_output == BYTEA_OUTPUT_HEX;
+		ok = ok && xmlbinary == XMLBINARY_BASE64;
+		ok = ok && !quote_all_identifiers;
+		ok = ok && plan_cache_mode == PLAN_CACHE_MODE_FORCE_CUSTOM_PLAN;
+		ok = ok && GinFuzzySearchLimit == 11;
+		ok = ok && gin_pending_list_limit == 16384;
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && !AllowAlterSystem;
+		ok = ok && !row_security;
+		ok = ok && !check_function_bodies;
+		ok = ok && current_role_is_superuser;
+		ok = ok && temp_file_limit == 65536;
+		ok = ok && num_temp_buffers == 800;
+		ok = ok && lo_compat_privileges;
+		ok = ok && extra_float_digits == 2;
+		ok = ok && bytea_output == BYTEA_OUTPUT_ESCAPE;
+		ok = ok && xmlbinary == XMLBINARY_HEX;
+		ok = ok && quote_all_identifiers;
+		ok = ok && plan_cache_mode == PLAN_CACHE_MODE_FORCE_GENERIC_PLAN;
+		ok = ok && GinFuzzySearchLimit == 7;
+		ok = ok && gin_pending_list_limit == 8192;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && AllowAlterSystem;
+		ok = ok && row_security;
+		ok = ok && check_function_bodies;
+		ok = ok && !current_role_is_superuser;
+		ok = ok && temp_file_limit == 131072;
+		ok = ok && num_temp_buffers == 900;
+		ok = ok && !lo_compat_privileges;
+		ok = ok && extra_float_digits == 3;
+		ok = ok && bytea_output == BYTEA_OUTPUT_HEX;
+		ok = ok && xmlbinary == XMLBINARY_BASE64;
+		ok = ok && !quote_all_identifiers;
+		ok = ok && plan_cache_mode == PLAN_CACHE_MODE_FORCE_CUSTOM_PLAN;
+		ok = ok && GinFuzzySearchLimit == 11;
+		ok = ok && gin_pending_list_limit == 16384;
+
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("gin_pending_list_limit",
+						saved_gin_pending_list_limit,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("gin_fuzzy_search_limit",
+						saved_gin_fuzzy_search_limit,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("plan_cache_mode", saved_plan_cache_mode,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("quote_all_identifiers",
+						saved_quote_all_identifiers,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("xmlbinary", saved_xmlbinary,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("bytea_output", saved_bytea_output,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("extra_float_digits", saved_extra_float_digits,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("lo_compat_privileges", saved_lo_compat_privileges,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("role", saved_role,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("temp_buffers", saved_temp_buffers,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("temp_file_limit", saved_temp_file_limit,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("is_superuser", saved_is_superuser,
+						PGC_INTERNAL, PGC_S_OVERRIDE);
+		SetConfigOption("check_function_bodies",
+						saved_check_function_bodies,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("row_security", saved_row_security,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("allow_alter_system", saved_allow_alter_system,
+						PGC_SIGHUP, PGC_S_SESSION);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("gin_pending_list_limit",
+						saved_gin_pending_list_limit,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("gin_fuzzy_search_limit",
+						saved_gin_fuzzy_search_limit,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("plan_cache_mode", saved_plan_cache_mode,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("quote_all_identifiers",
+						saved_quote_all_identifiers,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("xmlbinary", saved_xmlbinary,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("bytea_output", saved_bytea_output,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("extra_float_digits", saved_extra_float_digits,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("lo_compat_privileges", saved_lo_compat_privileges,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("role", saved_role,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("temp_buffers", saved_temp_buffers,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("temp_file_limit", saved_temp_file_limit,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("is_superuser", saved_is_superuser,
+						PGC_INTERNAL, PGC_S_OVERRIDE);
+		SetConfigOption("check_function_bodies",
+						saved_check_function_bodies,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("row_security", saved_row_security,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("allow_alter_system", saved_allow_alter_system,
+						PGC_SIGHUP, PGC_S_SESSION);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session general GUC state was not session-local");
 
 	PG_RETURN_BOOL(true);
 }
