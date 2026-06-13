@@ -255,6 +255,16 @@ values remain isolated. This closes the first GUC-heavy threaded workload
 coverage gap; extension DDL, broader lifecycle teardown, and startup-gate
 narrowing remain Gate E2 blockers.
 
+Additional status update: concurrent temp-table abandoned-client stress found
+a real threaded state-adoption crash. `PrepareTempTablespaces()` could call
+`pstrdup()` on a NULL session-local `temp_tablespaces` string during threaded
+`CREATE TEMP TABLE`. The required threaded GUC bootstrap now initializes
+`temp_tablespaces` alongside `search_path`, `dynamic_library_path`, and
+`wal_consistency_checking`. The threaded runtime fixture also adds concurrent
+abandoned-client and administrator-termination stress, proving abandoned
+threaded backends release advisory locks, terminated threaded backends leave
+`pg_stat_activity`, and the server remains usable afterward.
+
 ### 4. Broad Threaded Startup Serialization Is Still Present
 
 Severity: High

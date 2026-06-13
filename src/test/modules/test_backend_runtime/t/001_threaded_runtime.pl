@@ -554,6 +554,68 @@ is($node->safe_psql(
 		"SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted;"),
 	'0', 'abandoned threaded backend released advisory lock');
 
+my @abandoned_stress;
+for my $i (1 .. 4)
+{
+	my $session = $node->background_psql('postgres',
+		on_error_stop => 0, timeout => 20);
+	$session->query_safe(
+		"BEGIN; SELECT pg_advisory_lock(988000 + $i); CREATE TEMP TABLE threaded_abandoned_$i(id int); INSERT INTO threaded_abandoned_$i VALUES ($i);",
+		verbose => 0);
+	push @abandoned_stress, $session;
+}
+is($node->safe_psql(
+		'postgres',
+		"SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted AND objid BETWEEN 988001 AND 988004;"),
+	'4', 'concurrent abandoned-client stress acquired advisory locks');
+foreach my $session (@abandoned_stress)
+{
+	$session->{run}->kill_kill;
+	eval { $session->{run}->finish; };
+}
+for (1 .. 100)
+{
+	last
+	  if $node->safe_psql(
+		'postgres',
+		"SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted AND objid BETWEEN 988001 AND 988004;") eq '0';
+	usleep(100_000);
+}
+is($node->safe_psql(
+		'postgres',
+		"SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted AND objid BETWEEN 988001 AND 988004;"),
+	'0', 'concurrent abandoned threaded backends released advisory locks');
+
+my @terminate_stress;
+my @terminate_pids;
+for my $i (1 .. 4)
+{
+	my $session = $node->background_psql('postgres',
+		on_error_stop => 0, timeout => 20);
+	my $pid = $session->query_safe('SELECT pg_backend_pid();',
+		verbose => 0);
+	push @terminate_stress, $session;
+	push @terminate_pids, $pid;
+}
+is(scalar(@terminate_pids), 4,
+	'concurrent termination stress started threaded backends');
+is($node->safe_psql(
+		'postgres',
+		"SELECT bool_and(pg_terminate_backend(pid, 5000)) FROM unnest(ARRAY["
+		  . join(',', @terminate_pids)
+		  . "]) AS p(pid);"),
+	't', 'concurrent termination stress accepted terminate requests');
+my $terminate_pid_list = join(',', @terminate_pids);
+$node->poll_query_until(
+	'postgres',
+	"SELECT NOT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid IN ($terminate_pid_list));",
+	't') || die "timed out waiting for concurrently terminated threaded backends";
+foreach my $session (@terminate_stress)
+{
+	eval { $session->{run}->finish; };
+}
+pass('concurrently terminated threaded backends left pg_stat_activity');
+
 my $reconnect_ok = 1;
 for my $i (1 .. 30)
 {

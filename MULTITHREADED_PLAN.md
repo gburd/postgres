@@ -863,9 +863,16 @@ packet sources, and custom extension GUC `SET LOCAL`/`RESET` semantics after
 per-session module initialization. GUC-heavy threaded stress now runs several
 simultaneous sessions through repeated built-in direct-pointer GUC updates,
 assign-hook GUC updates including `wal_consistency_checking`, transaction-local
-overrides, and per-session custom extension GUC values. Broader table-DDL,
-extension-DDL, lifecycle teardown, and startup-gate narrowing remain Gate E2
-blockers before Phase 13.
+overrides, and per-session custom extension GUC values. Concurrent
+temp-table/abandoned-client teardown then exposed another required string-GUC
+bootstrap gap: `temp_tablespaces` could remain NULL and crash
+`PrepareTempTablespaces()` during threaded `CREATE TEMP TABLE`. The required
+bootstrap now includes `temp_tablespaces`, and the threaded runtime fixture
+adds concurrent abandoned-client and administrator-termination stress that
+proves advisory locks are released, terminated backends leave
+`pg_stat_activity`, and the server remains usable. Broader extension-DDL,
+full lifecycle resource cleanup, PMChild race stress, and startup-gate
+narrowing remain Gate E2 blockers before Phase 13.
 
 Phase 16 still owns broader hardening such as sanitizer runs, contrib-wide
 threaded regression, crash/FATAL behavior matrices, platform coverage, and

@@ -4245,6 +4245,52 @@ Validation for this slice:
   globals;
 - `git diff --check` passed.
 
+## Threaded Temp Tablespace And Teardown Stress
+
+The eighty-eighth Phase 12 slice fixes a temp-table startup/adoption crash and
+adds broader Gate E2 teardown stress:
+
+- a manual four-client abandoned-session smoke reproduced an abrupt postmaster
+  death during concurrent threaded `CREATE TEMP TABLE`;
+- lldb showed two client backend threads crashing in
+  `PrepareTempTablespaces()` through `pstrdup(temp_tablespaces)`, where
+  `temp_tablespaces` was still NULL for the session-local tablespace state;
+- `InitializeThreadedSessionRequiredGUCOptions()` now includes
+  `temp_tablespaces`, forcing the default string value and assign-hook state to
+  be initialized before temp table DDL can call `PrepareTempTablespaces()`;
+- the threaded runtime TAP fixture now starts four idle-in-transaction clients
+  that hold advisory locks and create temp tables, kills those clients, and
+  verifies the advisory locks are released;
+- the fixture also starts four idle threaded client backends, terminates all
+  of them through `pg_terminate_backend()`, and verifies they disappear from
+  `pg_stat_activity`.
+
+This still does not complete Gate E2 lifecycle cleanup. The branch still
+retains carrier `TopMemoryContext` allocations and needs stronger resource
+ownership or cleanup, PMChild race stress, extension-DDL coverage, and
+startup-gate narrowing before Phase 13.
+
+Validation for this slice:
+
+- the pre-fix manual repro killed the postmaster with no PostgreSQL log entry;
+  lldb captured the crash as `PrepareTempTablespaces()` ->
+  `pstrdup(temp_tablespaces)` -> `strlen(NULL)`;
+- touched-object build for `src/backend/utils/misc/guc.o` passed;
+- full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- after the fix, a manual threaded smoke with `multithreaded = on` verified
+  four concurrent idle abandoned clients released advisory locks
+  (`abandoned_locks_before=4`, `abandoned_locks_after=0`), four administrator
+  terminations were accepted and reaped (`terminate_accepted=t`,
+  `terminate_gone=t`), and the server still returned `SELECT 42`;
+- parser-only Perl syntax validation for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed
+  using a temporary local `IPC::Run` stub, because this checkout's system Perl
+  still lacks the real `IPC::Run` module required to execute TAP tests;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- `git diff --check` passed.
+
 ## Threaded GUC Heavy Stress Coverage
 
 The eighty-seventh Phase 12 slice adds the first concurrent GUC-heavy stress

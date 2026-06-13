@@ -1530,6 +1530,7 @@ InitializeThreadedSessionRequiredGUCOptions(void)
 	static const char *const required_options[] = {
 		"dynamic_library_path",
 		"search_path",
+		"temp_tablespaces",
 		"wal_consistency_checking",
 	};
 

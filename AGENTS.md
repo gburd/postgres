@@ -627,6 +627,13 @@ Important current files:
   non-interactive zsh shell; it can produce an empty list, causing the harness
   to stop the temp postmaster before the background clients finish.
 
+- Abandoned-client teardown smokes should leave the backend idle in
+  transaction before killing the client, matching `background_psql` behavior.
+  Do not use `SELECT pg_sleep(...)` as the wait point for that fixture: killing
+  the frontend while the backend is inside `pg_sleep` can leave the advisory
+  lock visible until the running query observes an interrupt or finishes,
+  which tests a different path from idle-client abandonment.
+
 - Direct logical replication parallel-apply smokes should use the upstream
   `src/test/subscription/t/015_stream.pl` interleaved transaction shape:
   start one large transaction, run and commit a second large transaction while
