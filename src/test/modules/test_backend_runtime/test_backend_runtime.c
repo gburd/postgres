@@ -11492,6 +11492,84 @@ test_execution_xloginsert_state_is_execution_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_execution_xact_state_is_execution_local);
+Datum
+test_execution_xact_state_is_execution_local(PG_FUNCTION_ARGS)
+{
+	PgExecution *saved_execution;
+	PgExecution fake_execution1;
+	PgExecution fake_execution2;
+	bool		ok = true;
+
+	saved_execution = CurrentPgExecution;
+	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
+	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+
+	PG_TRY();
+	{
+		CurrentPgExecution = &fake_execution1;
+		XactIsoLevel = XACT_SERIALIZABLE;
+		XactReadOnly = true;
+		XactDeferrable = true;
+		xact_is_sampled = true;
+		CheckXidAlive = 101;
+		bsysscan = true;
+		MyXactFlags = XACT_FLAGS_ACCESSEDTEMPNAMESPACE |
+			XACT_FLAGS_NEEDIMMEDIATECOMMIT;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && XactIsoLevel == 0;
+		ok = ok && !XactReadOnly;
+		ok = ok && !XactDeferrable;
+		ok = ok && !xact_is_sampled;
+		ok = ok && CheckXidAlive == InvalidTransactionId;
+		ok = ok && !bsysscan;
+		ok = ok && MyXactFlags == 0;
+
+		XactIsoLevel = XACT_REPEATABLE_READ;
+		XactReadOnly = false;
+		XactDeferrable = false;
+		xact_is_sampled = false;
+		CheckXidAlive = 201;
+		bsysscan = false;
+		MyXactFlags = XACT_FLAGS_ACQUIREDACCESSEXCLUSIVELOCK |
+			XACT_FLAGS_PIPELINING;
+
+		CurrentPgExecution = &fake_execution1;
+		ok = ok && XactIsoLevel == XACT_SERIALIZABLE;
+		ok = ok && XactReadOnly;
+		ok = ok && XactDeferrable;
+		ok = ok && xact_is_sampled;
+		ok = ok && CheckXidAlive == 101;
+		ok = ok && bsysscan;
+		ok = ok && MyXactFlags == (XACT_FLAGS_ACCESSEDTEMPNAMESPACE |
+								   XACT_FLAGS_NEEDIMMEDIATECOMMIT);
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && XactIsoLevel == XACT_REPEATABLE_READ;
+		ok = ok && !XactReadOnly;
+		ok = ok && !XactDeferrable;
+		ok = ok && !xact_is_sampled;
+		ok = ok && CheckXidAlive == 201;
+		ok = ok && !bsysscan;
+		ok = ok && MyXactFlags == (XACT_FLAGS_ACQUIREDACCESSEXCLUSIVELOCK |
+								   XACT_FLAGS_PIPELINING);
+
+		CurrentPgExecution = saved_execution;
+	}
+	PG_CATCH();
+	{
+		CurrentPgExecution = saved_execution;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "transaction execution state was not execution-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_connection_socket_io_is_connection_local);
 Datum
 test_connection_socket_io_is_connection_local(PG_FUNCTION_ARGS)

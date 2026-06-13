@@ -558,6 +558,10 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionSnapshotState early_execut
 };
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionComboCidState early_execution_combo_cid;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionXLogInsertState early_execution_xloginsert;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionXactState early_execution_xact = {
+	.iso_level = XACT_READ_COMMITTED,
+	.check_xid_alive = InvalidTransactionId
+};
 
 StaticAssertDecl(PG_BACKEND_INTERRUPT_COUNT <= 32,
 				 "PgBackendInterruptMask must fit all backend interrupts");
@@ -747,6 +751,8 @@ static void PgExecutionInitializeComboCidState(PgExecutionComboCidState *combo_c
 static void PgExecutionAdoptEarlyComboCidState(PgExecution *execution);
 static void PgExecutionInitializeXLogInsertState(PgExecutionXLogInsertState *xloginsert);
 static void PgExecutionAdoptEarlyXLogInsertState(PgExecution *execution);
+static void PgExecutionInitializeXactState(PgExecutionXactState *xact);
+static void PgExecutionAdoptEarlyXactState(PgExecution *execution);
 static PgBackendCoreState *PgCurrentCoreState(void);
 static PgSessionDatabaseState *PgCurrentSessionDatabaseState(void);
 static PgSessionTablespaceState *PgCurrentSessionTablespaceState(void);
@@ -802,6 +808,7 @@ static PgExecutionMatViewState *PgCurrentExecutionMatViewState(void);
 static PgExecutionSnapshotState *PgCurrentExecutionSnapshotState(void);
 static PgExecutionComboCidState *PgCurrentExecutionComboCidState(void);
 static PgExecutionXLogInsertState *PgCurrentExecutionXLogInsertState(void);
+static PgExecutionXactState *PgCurrentExecutionXactState(void);
 static PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
 static PgBackendInstrumentationState *PgCurrentBackendInstrumentationState(void);
 static PgBackendBufferState *PgCurrentBackendBufferState(void);
@@ -2955,6 +2962,25 @@ PgExecutionAdoptEarlyXLogInsertState(PgExecution *execution)
 	PgExecutionInitializeXLogInsertState(&early_execution_xloginsert);
 }
 
+static void
+PgExecutionInitializeXactState(PgExecutionXactState *xact)
+{
+	Assert(xact != NULL);
+
+	MemSet(xact, 0, sizeof(*xact));
+	xact->iso_level = XACT_READ_COMMITTED;
+	xact->check_xid_alive = InvalidTransactionId;
+}
+
+static void
+PgExecutionAdoptEarlyXactState(PgExecution *execution)
+{
+	Assert(execution != NULL);
+
+	execution->xact = early_execution_xact;
+	PgExecutionInitializeXactState(&early_execution_xact);
+}
+
 void
 InitializePgProcessRuntime(void)
 {
@@ -3098,6 +3124,7 @@ InitializePgProcessRuntime(void)
 	PgExecutionAdoptEarlySnapshotState(&process_execution);
 	PgExecutionAdoptEarlyComboCidState(&process_execution);
 	PgExecutionAdoptEarlyXLogInsertState(&process_execution);
+	PgExecutionAdoptEarlyXactState(&process_execution);
 
 	CurrentPgRuntime = &process_runtime;
 	CurrentPgCarrier = &process_carrier;
@@ -3250,6 +3277,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgExecutionInitializeSnapshotState(&state->execution.snapshot);
 	PgExecutionInitializeComboCidState(&state->execution.combo_cid);
 	PgExecutionInitializeXLogInsertState(&state->execution.xloginsert);
+	PgExecutionInitializeXactState(&state->execution.xact);
 }
 
 void
@@ -3337,6 +3365,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgExecutionAdoptEarlySnapshotState(&state->execution);
 	PgExecutionAdoptEarlyComboCidState(&state->execution);
 	PgExecutionAdoptEarlyXLogInsertState(&state->execution);
+	PgExecutionAdoptEarlyXactState(&state->execution);
 	CurrentPgRuntime = &thread_runtime;
 	CurrentPgCarrier = &state->carrier;
 	CurrentPgBackend = &state->backend;
@@ -6740,6 +6769,57 @@ MemoryContext *
 PgCurrentXLogInsertContextRef(void)
 {
 	return &PgCurrentExecutionXLogInsertState()->context;
+}
+
+static PgExecutionXactState *
+PgCurrentExecutionXactState(void)
+{
+	if (CurrentPgExecution == NULL)
+		return &early_execution_xact;
+
+	return &CurrentPgExecution->xact;
+}
+
+int *
+PgCurrentXactIsoLevelRef(void)
+{
+	return &PgCurrentExecutionXactState()->iso_level;
+}
+
+bool *
+PgCurrentXactReadOnlyRef(void)
+{
+	return &PgCurrentExecutionXactState()->read_only;
+}
+
+bool *
+PgCurrentXactDeferrableRef(void)
+{
+	return &PgCurrentExecutionXactState()->deferrable;
+}
+
+bool *
+PgCurrentXactIsSampledRef(void)
+{
+	return &PgCurrentExecutionXactState()->is_sampled;
+}
+
+TransactionId *
+PgCurrentCheckXidAliveRef(void)
+{
+	return &PgCurrentExecutionXactState()->check_xid_alive;
+}
+
+bool *
+PgCurrentBSysScanRef(void)
+{
+	return &PgCurrentExecutionXactState()->bsysscan_value;
+}
+
+int *
+PgCurrentMyXactFlagsRef(void)
+{
+	return &PgCurrentExecutionXactState()->flags;
 }
 
 PgConnectionSocketIOState *

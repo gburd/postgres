@@ -7774,6 +7774,54 @@ Validation for this slice:
   insert workspace pointers, counters, flags, embedded header record, scratch
   buffer, and memory context across two fake logical executions.
 
+## Execution Transaction Flag State Bridge
+
+The one-hundred-sixty-sixth Phase 12 slice moves the simple exported
+transaction execution state in `xact.c` into a new `PgExecutionXactState`
+bucket:
+
+- current transaction isolation level, read-only flag, and deferrable flag;
+- the statement-sampling flag for the active transaction;
+- logical-decoding concurrent-abort guard state, `CheckXidAlive` and
+  `bsysscan`;
+- `MyXactFlags`, the top-level transaction event flag word used by callers
+  across the tree.
+
+`xact.h` preserves the existing public names as lvalue macros over runtime
+accessors. This avoids including `backend_runtime.h` from `xact.h`, which
+would create a circular dependency because the runtime header already needs
+transaction definitions. The private transaction-state stack, command-id
+state, timestamps, transaction callback lists, and abort context remain in
+`xact.c` for later migration because they need a broader lifecycle split than
+this simple exported-state bridge.
+
+The lifecycle rule for this slice is straightforward: process and thread
+runtime initialization adopt any early fallback writes as a whole and reset
+the early bucket to PostgreSQL's existing defaults, `XACT_READ_COMMITTED` and
+`InvalidTransactionId` for `CheckXidAlive`. The bucket contains no lists,
+memory contexts, hash tables, or opaque owned pointers.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `xact.o`, and
+  `test_backend_runtime.o`;
+- clean backend and `src/common` rebuild passed after regenerating backend
+  utility outputs, node support, and generated header symlinks;
+- full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- `gmake -C contrib -j8` passed;
+- clean PL/pgSQL rebuild and reinstall into `tmp_install` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with execution-local declarations dropping from 121 to 108;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct threaded TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed
+  with 87 tests;
+- `test_execution_xact_state_is_execution_local()` now verifies transaction
+  isolation/read-only/deferrable state, transaction sampling state,
+  `CheckXidAlive`, `bsysscan`, and `MyXactFlags` across two fake logical
+  executions.
+
 ## Backend Parallel State Bridge
 
 The one-hundred-forty-second Phase 12 slice moves a parallel-query and

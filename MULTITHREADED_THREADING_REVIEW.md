@@ -928,6 +928,21 @@ global-lifetime scan now reports 121 execution-local declarations with zero
 new unclassified mutable globals, down from 134 before this slice. The
 function-local fake-LSN statics in `XLogGetFakeLSN()` remain a documented
 follow-up needing a separate session/execution lifetime decision.
+The next transaction-state slice moved the simple exported transaction
+execution flags into `PgExecution`: `XactIsoLevel`, `XactReadOnly`,
+`XactDeferrable`, `xact_is_sampled`, `CheckXidAlive`, `bsysscan`, and
+`MyXactFlags` now follow the logical execution behind `xact.h` lvalue
+compatibility macros. The runtime implementation keeps the storage in
+`backend_runtime.c`, while `xact.h` only declares accessors so it does not
+need to include `backend_runtime.h`. Validation included touched-object
+builds, a clean backend plus `src/common` rebuild, full `gmake -j8`, install,
+contrib build, clean PL/pgSQL rebuild/install, `gmake check-global-lifetimes`,
+the test-backend-runtime regression, and the direct threaded runtime TAP. The
+global-lifetime scan now reports 108 execution-local declarations with zero
+new unclassified mutable globals, down from 121 before this slice. The
+private transaction-state stack, command-id state, timestamps, callback lists,
+and transaction abort context remain a documented follow-up needing a broader
+lifecycle split.
 
 ## Bottom Line
 

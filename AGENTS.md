@@ -435,6 +435,18 @@ Important current files:
   `PgExecution` layout and installed runtime headers changed; at minimum
   rebuild and reinstall `src/test/modules/test_backend_runtime`, PL/pgSQL, and
   contrib before validating.
+- Simple exported transaction execution state now lives in `PgExecution`:
+  `PgExecutionXactState` owns `XactIsoLevel`, `XactReadOnly`,
+  `XactDeferrable`, `xact_is_sampled`, `CheckXidAlive`, `bsysscan`, and
+  `MyXactFlags`. `xact.h` keeps those public names as lvalue macros but must
+  not include `backend_runtime.h`; it only declares accessor prototypes
+  because `backend_runtime.h` already includes `xact.h`. The private
+  transaction-state stack, command-id state, timestamps, callback lists, and
+  abort context in `xact.c` remain a follow-up requiring a broader lifecycle
+  split. After changing this bridge, clean and rebuild backend objects because
+  `PgExecution` layout and installed runtime/xact headers changed; at minimum
+  rebuild and reinstall `src/test/modules/test_backend_runtime`, PL/pgSQL, and
+  contrib before validating.
 - Backend activity snapshot state now lives in `PgBackendActivityState`:
   `localBackendStatusTable`, `localNumBackends`, and
   `backendStatusSnapContext` are backed by runtime accessors while

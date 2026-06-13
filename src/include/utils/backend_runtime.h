@@ -920,6 +920,17 @@ typedef struct PgExecutionXLogInsertState
 	MemoryContext context;
 } PgExecutionXLogInsertState;
 
+typedef struct PgExecutionXactState
+{
+	int			iso_level;
+	bool		read_only;
+	bool		deferrable;
+	bool		is_sampled;
+	TransactionId check_xid_alive;
+	bool		bsysscan_value;
+	int			flags;
+} PgExecutionXactState;
+
 typedef struct PgSessionDatabaseState
 {
 	Oid			database_id;
@@ -1738,6 +1749,7 @@ struct PgExecution
 	PgExecutionSnapshotState snapshot;
 	PgExecutionComboCidState combo_cid;
 	PgExecutionXLogInsertState xloginsert;
+	PgExecutionXactState xact;
 };
 
 typedef struct PgThreadBackendRuntimeState
@@ -2226,6 +2238,13 @@ extern int *PgCurrentXLogInsertNumRDatasRef(void);
 extern int *PgCurrentXLogInsertMaxRDatasRef(void);
 extern bool *PgCurrentXLogInsertBeginCalledRef(void);
 extern MemoryContext *PgCurrentXLogInsertContextRef(void);
+extern int *PgCurrentXactIsoLevelRef(void);
+extern bool *PgCurrentXactReadOnlyRef(void);
+extern bool *PgCurrentXactDeferrableRef(void);
+extern bool *PgCurrentXactIsSampledRef(void);
+extern TransactionId *PgCurrentCheckXidAliveRef(void);
+extern bool *PgCurrentBSysScanRef(void);
+extern int *PgCurrentMyXactFlagsRef(void);
 extern PgConnectionSocketIOState *PgConnectionSocketIORef(PgConnection *connection);
 extern PgConnectionSocketIOState *PgCurrentConnectionSocketIORef(void);
 extern const PQcommMethods **PgConnectionPqCommMethodsRef(PgConnection *connection);

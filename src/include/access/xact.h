@@ -41,7 +41,8 @@
 
 extern int *PgCurrentDefaultXactIsoLevelRef(void);
 #define DefaultXactIsoLevel (*PgCurrentDefaultXactIsoLevelRef())
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int XactIsoLevel;
+extern int *PgCurrentXactIsoLevelRef(void);
+#define XactIsoLevel (*PgCurrentXactIsoLevelRef())
 
 /*
  * We implement three isolation levels internally.
@@ -57,10 +58,12 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int XactIsoLevel;
 /* Xact read-only state */
 extern bool *PgCurrentDefaultXactReadOnlyRef(void);
 #define DefaultXactReadOnly (*PgCurrentDefaultXactReadOnlyRef())
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool XactReadOnly;
+extern bool *PgCurrentXactReadOnlyRef(void);
+#define XactReadOnly (*PgCurrentXactReadOnlyRef())
 
 /* flag for logging statements in this transaction */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool xact_is_sampled;
+extern bool *PgCurrentXactIsSampledRef(void);
+#define xact_is_sampled (*PgCurrentXactIsSampledRef())
 
 /*
  * Xact is deferrable -- only meaningful (currently) for read only
@@ -68,7 +71,8 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool xact_is_sampled;
  */
 extern bool *PgCurrentDefaultXactDeferrableRef(void);
 #define DefaultXactDeferrable (*PgCurrentDefaultXactDeferrableRef())
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool XactDeferrable;
+extern bool *PgCurrentXactDeferrableRef(void);
+#define XactDeferrable (*PgCurrentXactDeferrableRef())
 
 typedef enum
 {
@@ -89,8 +93,10 @@ extern int *PgCurrentSynchronousCommitRef(void);
 #define synchronous_commit (*PgCurrentSynchronousCommitRef())
 
 /* used during logical streaming of a transaction */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION TransactionId CheckXidAlive;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool bsysscan;
+extern TransactionId *PgCurrentCheckXidAliveRef(void);
+extern bool *PgCurrentBSysScanRef(void);
+#define CheckXidAlive (*PgCurrentCheckXidAliveRef())
+#define bsysscan (*PgCurrentBSysScanRef())
 
 /*
  * Miscellaneous flag bits to record events which occur on the top level
@@ -99,7 +105,8 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool bsysscan;
  * globally accessible, so can be set from anywhere in the code which requires
  * recording flags.
  */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int MyXactFlags;
+extern int *PgCurrentMyXactFlagsRef(void);
+#define MyXactFlags (*PgCurrentMyXactFlagsRef())
 
 /*
  * XACT_FLAGS_ACCESSEDTEMPNAMESPACE - set when a temporary object is accessed.

@@ -75,15 +75,6 @@
 #include "utils/wait_event.h"
 
 /*
- *	User-tweakable parameters
- */
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int XactIsoLevel = XACT_READ_COMMITTED;
-
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool XactReadOnly;
-
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool XactDeferrable;
-
-/*
  * CheckXidAlive is a xid value pointing to a possibly ongoing (sub)
  * transaction.  Currently, it is used in logical decoding.  It's possible
  * that such transactions can get aborted while the decoding is ongoing in
@@ -93,8 +84,6 @@ PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool XactDeferrable;
  * directly access the tableam or heap APIs because we are checking for the
  * concurrent aborts only in systable_* APIs.
  */
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION TransactionId CheckXidAlive = InvalidTransactionId;
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool bsysscan = false;
 
 /*
  * When running as a parallel worker, we place only a single
@@ -130,8 +119,6 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION TransactionId *ParallelCurrentXids;
  * globally accessible, so can be set from anywhere in the code that requires
  * recording flags.
  */
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int MyXactFlags;
-
 /*
  *	transaction states - transaction state from server perspective
  */
@@ -288,9 +275,6 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION char *prepareGID;
  * Some commands want to force synchronous commit.
  */
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool forceSyncCommit = false;
-
-/* Flag for logging statements in a transaction. */
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool xact_is_sampled = false;
 
 /*
  * Private context for transaction-abort work --- we reserve space for this

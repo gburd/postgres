@@ -767,6 +767,7 @@ optional LWLock debug-statistics hash, dummy entry, memory context, and
 exit-registration state bridge through `PgBackendLockState`, plus the
 snapshot-manager and combo-CID transaction visibility state bridge through
 `PgExecution`, plus the WAL record-construction workspace bridge through
+`PgExecution`, plus the simple exported transaction flag/state bridge through
 `PgExecution`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
@@ -1038,6 +1039,19 @@ global-lifetime scan with zero new unclassified mutable globals;
 execution-local declarations dropped from 134 to 121. The hidden
 `XLogGetFakeLSN()` function-local statics remain a documented follow-up
 because they need a separate session/execution lifetime decision.
+The simple transaction execution-state slice moved `XactIsoLevel`,
+`XactReadOnly`, `XactDeferrable`, `xact_is_sampled`, `CheckXidAlive`,
+`bsysscan`, and `MyXactFlags` into `PgExecution`. `xact.h` preserves those
+public names as lvalue macros over runtime accessors without including
+`backend_runtime.h`, avoiding a circular header dependency. Validation
+included touched-object builds, a clean backend plus `src/common` rebuild,
+full `gmake -j8`, install, contrib build, clean PL/pgSQL rebuild/install, the
+required global-lifetime scan with zero new unclassified mutable globals, the
+test-backend-runtime regression, and the direct threaded runtime TAP;
+execution-local declarations dropped from 121 to 108. The private
+transaction-state stack, command-id state, timestamps, callback lists, and
+abort context remain a separate follow-up because they require a broader
+lifecycle split.
 The predicate-lock state slice extends `PgBackendLockState` again for
 `predicate.c`: local predicate-lock hash state, the current serializable
 transaction pointer, write-tracking flag, and saved serializable transaction
