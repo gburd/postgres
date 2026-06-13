@@ -819,8 +819,11 @@ the PMChild remains active for a later retry. Thread exit also reports retained
 carrier `TopMemoryContext` bytes to the postmaster reaper as explicit
 accounting for the currently retained top context. PMChild assignment and slot
 release now also scrub stale carrier-visible signal ids and thread-exit
-payloads before reuse, while preserving the exited logical backend id until
-the postmaster has joined/logged the reported thread exit. Threaded startup
+payloads before reuse. PMChild thread-exit publication now captures the exited
+logical backend id in the exit payload and clears live `signal_pid` under the
+same lock as `thread_backend`, so a dead thread is no longer advertised as
+signalable while the postmaster can still log and join the reported exit.
+Threaded startup
 now initializes all built-in generated GUC records whose direct backing-variable
 pointers are rebound onto `PgSession`/runtime state, replacing the broad
 hard-coded startup whitelist with a systematic rebind-adoption pass plus a

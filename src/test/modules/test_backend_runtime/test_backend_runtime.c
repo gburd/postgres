@@ -6398,6 +6398,7 @@ test_pmchild_thread_backend_signal_api(PG_FUNCTION_ARGS)
 	Latch		fake_latch;
 	PgBackendInterruptMask pending;
 	int			exitstatus;
+	pid_t		exit_signal_pid;
 	Size		top_memory_allocated;
 	bool		ok = true;
 
@@ -6419,7 +6420,8 @@ test_pmchild_thread_backend_signal_api(PG_FUNCTION_ARGS)
 	PostmasterChildSetThread(&fake_pmchild, &fake_thread);
 	ok = ok && PostmasterChildSignalPid(&fake_pmchild) == 0;
 	ok = ok && !PostmasterChildHasExitedThread(&fake_pmchild, &exitstatus,
-											   &top_memory_allocated);
+											   &top_memory_allocated,
+											   &exit_signal_pid);
 
 	PostmasterChildSetThreadBackend(&fake_pmchild, &fake_backend);
 	ok = ok && PostmasterChildSignalPid(&fake_pmchild) == 12345;
@@ -6429,19 +6431,26 @@ test_pmchild_thread_backend_signal_api(PG_FUNCTION_ARGS)
 	ok = ok && (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_QUERY_CANCEL));
 
 	PostmasterChildPublishThreadExit(&fake_pmchild, 17, 8192, &fake_latch);
+	ok = ok && PostmasterChildSignalPid(&fake_pmchild) == 0;
 	ok = ok && PostmasterChildHasExitedThread(&fake_pmchild, &exitstatus,
-											  &top_memory_allocated);
+											  &top_memory_allocated,
+											  &exit_signal_pid);
 	ok = ok && exitstatus == 17;
+	ok = ok && exit_signal_pid == 12345;
 	ok = ok && top_memory_allocated == 8192;
 	ok = ok && !PostmasterChildHasExitedThread(&fake_pmchild, &exitstatus,
-											   &top_memory_allocated);
+											   &top_memory_allocated,
+											   &exit_signal_pid);
 	PostmasterChildRetryThreadExit(&fake_pmchild);
 	ok = ok && PostmasterChildHasExitedThread(&fake_pmchild, &exitstatus,
-											  &top_memory_allocated);
+											  &top_memory_allocated,
+											  &exit_signal_pid);
 	ok = ok && exitstatus == 17;
+	ok = ok && exit_signal_pid == 12345;
 	ok = ok && top_memory_allocated == 8192;
 	ok = ok && !PostmasterChildHasExitedThread(&fake_pmchild, &exitstatus,
-											   &top_memory_allocated);
+											   &top_memory_allocated,
+											   &exit_signal_pid);
 	ok = ok && !PostmasterChildRaiseThreadInterrupt(&fake_pmchild,
 													PG_BACKEND_INTERRUPT_QUERY_CANCEL);
 	ok = ok && !PostmasterChildWakeThreadBackend(&fake_pmchild);

@@ -405,10 +405,11 @@ single PMChild helper, and the exiting thread now reports retained
 `TopMemoryContext` bytes to the postmaster reaper. PMChild cleanup and slot
 release now require a successful native thread join; a join failure restores
 the claimed thread-exit report and leaves the PMChild active for retry instead
-of releasing a possibly still-owned slot. PMChild assignment and slot release
-now scrub stale carrier-visible signal ids and thread-exit payloads before
-reuse, while the exited logical backend id remains available until the
-postmaster has joined/logged the thread exit. The broad threaded startup GUC
+of releasing a possibly still-owned slot. PMChild thread-exit publication now
+captures the exited logical backend id in the exit payload and clears live
+`signal_pid` under the same lock as `thread_backend`, while PMChild assignment
+and slot release scrub stale carrier-visible signal ids and thread-exit
+payloads before reuse. The broad threaded startup GUC
 whitelist has also been replaced for rebound built-in direct-pointer GUCs by
 a systematic generated-table adoption pass, and threaded built-in postmaster
 default replay now uses the existing serialized nondefault GUC file path.
