@@ -118,7 +118,8 @@ Important current files:
   `src/tools/global_lifetime/global_lifetime_baseline.tsv`.
 - Treat `PMChild.thread_backend` as private PMChild-owned publication state.
   Postmaster code should use PMChild helper APIs for threaded backend
-  interrupt and wakeup delivery rather than dereferencing the raw pointer.
+  interrupt, wakeup, and thread-exit publication rather than dereferencing or
+  clearing the raw pointer outside PMChild.
 - Prefer introducing compatibility wrappers around current globals before
   changing all call sites.
 - Be careful moving GUC backing variables behind dynamic lvalue macros. The

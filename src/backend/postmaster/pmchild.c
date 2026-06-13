@@ -394,13 +394,22 @@ PostmasterChildWakeThreadBackend(PMChild *pmchild)
 }
 
 void
-PostmasterChildMarkThreadExited(PMChild *pmchild, int exitstatus,
-								Latch *postmaster_latch)
+PostmasterChildPublishThreadExit(PMChild *pmchild, int exitstatus,
+								 Latch *postmaster_latch)
 {
 	Assert(PostmasterChildIsThread(pmchild));
 	Assert(postmaster_latch != NULL);
 
+	/*
+	 * Thread exit publication owns the handoff from the exiting carrier to the
+	 * postmaster.  Clear the volatile logical-backend pointer under the same
+	 * lock used by signal/wakeup delivery before making the exited flag
+	 * visible, so later postmaster signal routing cannot race with teardown.
+	 */
+	PMChildThreadBackendLock();
+	pmchild->thread_backend = NULL;
 	pmchild->thread_exitstatus = exitstatus;
+	PMChildThreadBackendUnlock();
 
 	/*
 	 * Publish the exit status before waking the postmaster.  The postmaster

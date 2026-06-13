@@ -645,9 +645,8 @@ backend_thread_finish(int code)
 	Assert(thread_start != NULL);
 
 	exitstatus = backend_thread_exitstatus(code);
-	PostmasterChildSetThreadBackend(thread_start->pmchild, NULL);
-	PostmasterChildMarkThreadExited(thread_start->pmchild, exitstatus,
-									thread_start->postmaster_latch);
+	PostmasterChildPublishThreadExit(thread_start->pmchild, exitstatus,
+									 thread_start->postmaster_latch);
 	MyClientSocket = NULL;
 
 	/*

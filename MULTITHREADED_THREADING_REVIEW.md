@@ -310,10 +310,12 @@ work.
 
 Subsequent Phase 12 work has promoted global-lifetime scanning into
 `gmake check-global-lifetimes` and moved postmaster signal/wakeup routing onto
-PMChild-owned helper APIs for thread-backed backends. These are partial Gate E2
-closures only: the full thread teardown, PMChild join/reaping contract,
-systematic GUC adoption, startup-gate narrowing, and threaded stress coverage
-remain blockers before Phase 13 scheduler-aware wait work.
+PMChild-owned helper APIs for thread-backed backends. Thread exit publication
+also now clears the logical-backend pointer and publishes exit status through a
+single PMChild helper. These are partial Gate E2 closures only: the full thread
+teardown, PMChild join/reaping contract, systematic GUC adoption, startup-gate
+narrowing, and threaded stress coverage remain blockers before Phase 13
+scheduler-aware wait work.
 
 ## Bottom Line
 

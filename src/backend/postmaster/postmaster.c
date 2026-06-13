@@ -2522,11 +2522,18 @@ process_pm_thread_exit(void)
 	{
 		PMChild    *pmchild = dlist_container(PMChild, elem, iter.cur);
 		int			exitstatus;
+		int			join_rc;
 
 		if (!PostmasterChildHasExitedThread(pmchild, &exitstatus))
 			continue;
 
-		(void) pg_thread_join(&pmchild->thread);
+		join_rc = pg_thread_join(&pmchild->thread);
+		if (join_rc != 0)
+		{
+			errno = join_rc;
+			elog(LOG, "could not join thread-backed child %d: %m",
+				 PostmasterChildSignalPid(pmchild));
+		}
 		if (pmchild->bkend_type == B_STARTUP)
 		{
 			(void) cleanup_startup_child(pmchild, exitstatus, 0);

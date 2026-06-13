@@ -163,8 +163,8 @@ extern void PostmasterChildSetThreadBackend(PMChild *pmchild,
 extern bool PostmasterChildRaiseThreadInterrupt(PMChild *pmchild,
 												int interrupt);
 extern bool PostmasterChildWakeThreadBackend(PMChild *pmchild);
-extern void PostmasterChildMarkThreadExited(PMChild *pmchild, int exitstatus,
-											struct Latch *postmaster_latch);
+extern void PostmasterChildPublishThreadExit(PMChild *pmchild, int exitstatus,
+											 struct Latch *postmaster_latch);
 extern bool PostmasterChildHasExitedThread(PMChild *pmchild, int *exitstatus);
 extern bool ReleasePostmasterChildSlot(PMChild *pmchild);
 extern PMChild *FindPostmasterChildByPid(int pid);

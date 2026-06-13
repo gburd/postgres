@@ -3774,3 +3774,37 @@ Validation for this slice:
   `002_threaded_bgworker_crash.pl` did not reach PostgreSQL because the system
   Perl is missing `IPC::Run`, matching the existing local-build note in
   `AGENTS.md`.
+
+## PMChild Thread-Exit Publication Boundary
+
+The seventy-sixth Phase 12 slice tightens the same Gate E2 ownership area by
+making thread-exit publication a single PMChild operation:
+
+- `PostmasterChildPublishThreadExit()` now clears the thread-backed
+  `PgBackend` pointer under the PMChild thread-backend lock, stores the
+  waitpid-style thread exit status, publishes the `thread_exited` flag, and
+  wakes the postmaster latch;
+- `backend_thread_finish()` no longer sequences raw unpublish and exit-mark
+  operations itself;
+- the postmaster reap loop now logs `pg_thread_join()` failures instead of
+  silently ignoring them;
+- `test_pmchild_thread_backend_signal_api()` now verifies that the publish
+  helper exposes the exit status once and rejects later interrupt/wakeup
+  delivery after the backend pointer is unpublished.
+
+This still does not complete the full Gate E2 lifecycle blocker. It establishes
+the local PMChild handoff contract for exit publication and join observability;
+remaining work must still define and test memory/resource cleanup for
+backend/session/connection/execution state after thread exit.
+
+Validation for this slice:
+
+- touched-object builds passed for `pmchild.o`, `postmaster.o`,
+  `launch_backend.o`, and `test_backend_runtime.o`;
+- full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- focused `test_backend_runtime` regression passed;
+- `gmake check-global-lifetimes` passed, reporting zero new unclassified
+  mutable globals against the checked baseline;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests.
