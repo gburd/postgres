@@ -828,11 +828,17 @@ session/runtime buckets before runtime installation. Thread-backed auxiliary
 loops that consume the logical interrupt mailbox now honor `ProcDiePending`,
 so immediate shutdown no longer leaves background writer, checkpointer,
 autovacuum launcher, or WAL writer thread carriers waiting for SIGKILL
-escalation in the basic threaded shutdown smoke. The remaining PMChild and
-teardown blockers are full resource cleanup or deliberate long-lived ownership,
-the broader join/reaping/slot-release ownership contract, extension/custom GUC
-behavior, database/role/startup setting coverage, startup-gate narrowing, and
-broader stress coverage for teardown races.
+escalation in the basic threaded shutdown smoke. The temporary threaded
+startup serialization gate is now centralized behind an explicit backend-type
+policy: only AIO workers and the syslogger bypass it. A broader attempted
+bypass for non-session auxiliary workers reproduced an abrupt postmaster death
+during a threaded `pg_class` catalog scan, so further narrowing remains a Gate
+E2 blocker and must be driven by worker-specific shared-state isolation plus
+catalog-startup stress. The remaining PMChild and teardown blockers are full
+resource cleanup or deliberate long-lived ownership, the broader
+join/reaping/slot-release ownership contract, extension/custom GUC behavior,
+database/role/startup setting coverage, startup-gate narrowing, and broader
+stress coverage for teardown races.
 
 Phase 16 still owns broader hardening such as sanitizer runs, contrib-wide
 threaded regression, crash/FATAL behavior matrices, platform coverage, and

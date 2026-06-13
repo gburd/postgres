@@ -342,10 +342,16 @@ postmaster default replay now uses the existing serialized nondefault GUC file
 path. Thread-backed auxiliary loops that use the logical interrupt mailbox now
 honor `ProcDiePending`, fixing the basic immediate-shutdown smoke for
 background writer, checkpointer, autovacuum launcher, and WAL writer thread
-carriers. These are partial Gate E2 closures only: the full thread teardown,
-PMChild join/reaping contract, extension/custom GUC adoption, startup-gate
-narrowing, and broader threaded stress coverage remain blockers before Phase
-13 scheduler-aware wait work.
+carriers. The temporary threaded startup serialization gate is also now behind
+an explicit backend-type helper, with only AIO workers and the syslogger
+permitted to bypass it. A broader attempted bypass for other non-session
+auxiliary workers reproduced an abrupt postmaster death during a threaded
+`pg_class` catalog scan, so further gate narrowing still requires
+worker-specific shared-state isolation and catalog-startup stress coverage.
+These are partial Gate E2 closures only: the full thread teardown, PMChild
+join/reaping contract, extension/custom GUC adoption, startup-gate narrowing,
+and broader threaded stress coverage remain blockers before Phase 13
+scheduler-aware wait work.
 
 ## Bottom Line
 

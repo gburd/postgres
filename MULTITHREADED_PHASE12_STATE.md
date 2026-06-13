@@ -3988,3 +3988,45 @@ Validation for this slice:
   mutable globals against the checked baseline;
 - core `src/test/regress` `parallel_schedule` passed all 245 tests;
 - focused `test_backend_runtime` regression passed.
+
+## Threaded Startup Gate Policy
+
+The eighty-first Phase 12 slice centralizes the temporary threaded startup
+serialization gate policy:
+
+- `backend_thread_run_worker()` now calls a single
+  `backend_thread_requires_startup_gate()` helper instead of open-coding the
+  two worker classes that can bypass the gate;
+- the only worker classes currently allowed to bypass the gate remain AIO
+  workers and the syslogger, matching the previously validated behavior;
+- all other thread-backed workers remain inside the gate until their startup
+  shared-state dependencies are isolated and covered by worker-specific
+  catalog-startup stress.
+
+An attempted broader bypass for non-session auxiliary workers was tested first:
+background writer, checkpointer, WAL writer, archiver, startup, WAL receiver,
+and WAL summarizer carriers were allowed to start outside the gate. A simple
+threaded `select 1` startup/query/immediate-shutdown smoke passed, but a
+threaded `select count(*) > 0 from pg_class` catalog smoke caused an abrupt
+postmaster death with no normal PostgreSQL error log before shutdown could run.
+The experiment was backed out to the conservative helper policy above.
+
+This is not a full Gate E2 startup-gate closure. It makes the current critical
+section auditable and prevents unreviewed worker classes from bypassing it,
+but the remaining broad gate still needs worker-by-worker isolation before
+Phase 13 scheduler-aware wait work can proceed.
+
+Validation for this slice:
+
+- touched-object build passed for `launch_backend.o`;
+- full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- a three-cycle threaded startup/`select 1`/immediate-shutdown smoke passed
+  without `issuing SIGKILL to recalcitrant children` or `server does not shut
+  down`;
+- `gmake check-global-lifetimes` passed, reporting zero new unclassified
+  mutable globals against the checked baseline;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests;
+- focused `test_backend_runtime` regression passed;
+- the broader bypass experiment failed the threaded `pg_class` catalog smoke
+  and is recorded as the next startup-gate narrowing blocker.

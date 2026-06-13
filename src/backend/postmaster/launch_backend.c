@@ -234,6 +234,7 @@ static void backend_thread_entry(void *arg);
 static void backend_thread_run_backend(BackendThreadStart *thread_start);
 static void backend_thread_run_worker(BackendThreadStart *thread_start);
 static void backend_thread_wait_until_registered(BackendThreadStart *thread_start);
+static bool backend_thread_requires_startup_gate(BackendType child_type);
 static void backend_thread_enter_startup_gate(BackendThreadStart *thread_start);
 static void backend_thread_leave_startup_gate(BackendThreadStart *thread_start);
 static void backend_thread_init_random_state(void);
@@ -535,14 +536,13 @@ backend_thread_run_worker(BackendThreadStart *thread_start)
 							 PostmasterChildName(thread_start->child_type))));
 
 	/*
-	 * AIO workers and the syslogger must be able to start while a regular
-	 * backend is still in the temporary serialized startup section.  Backend
-	 * startup can need worker-backed catalog reads before releasing that gate,
-	 * and the syslogger must remain available to drain redirected stderr. They
-	 * do not perform catalog/session startup of their own.
+	 * Only carriers proven not to perform database/session startup and not to
+	 * race with backend startup can bypass the temporary serialized startup
+	 * section.  Keep the rest guarded until their shared-state startup
+	 * dependencies are isolated and covered by threaded catalog-startup
+	 * smokes.
 	 */
-	if (thread_start->child_type != B_IO_WORKER &&
-		thread_start->child_type != B_LOGGER)
+	if (backend_thread_requires_startup_gate(thread_start->child_type))
 		backend_thread_enter_startup_gate(thread_start);
 
 	if (thread_start->child_type == B_BG_WORKER)
@@ -551,6 +551,34 @@ backend_thread_run_worker(BackendThreadStart *thread_start)
 	else
 		child_process_kinds[thread_start->child_type].main_fn(NULL, 0);
 	pg_unreachable();
+}
+
+static bool
+backend_thread_requires_startup_gate(BackendType child_type)
+{
+	switch (child_type)
+	{
+		case B_BACKEND:
+		case B_AUTOVAC_LAUNCHER:
+		case B_AUTOVAC_WORKER:
+		case B_ARCHIVER:
+		case B_BG_WRITER:
+		case B_BG_WORKER:
+		case B_CHECKPOINTER:
+		case B_SLOTSYNC_WORKER:
+		case B_STARTUP:
+		case B_WAL_RECEIVER:
+		case B_WAL_WRITER:
+		case B_WAL_SUMMARIZER:
+			return true;
+
+		case B_IO_WORKER:
+		case B_LOGGER:
+			return false;
+
+		default:
+			return false;
+	}
 }
 
 static void

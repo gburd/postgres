@@ -130,6 +130,13 @@ Important current files:
   interrupt loop that calls `PgCurrentBackendApplyInterrupts()` must explicitly
   handle `ProcDiePending`, or immediate shutdown can leave thread carriers
   waiting for SIGKILL escalation.
+- The threaded startup serialization gate currently allows only AIO workers
+  and the syslogger to bypass it. A broader attempt to bypass the gate for
+  non-session auxiliary workers let `select 1` pass but caused abrupt
+  postmaster death during a threaded `select count(*) > 0 from pg_class`
+  catalog smoke. Do not remove background writer, checkpointer, WAL writer, or
+  other auxiliary worker classes from the gate without a worker-specific
+  shared-state fix and catalog-startup stress validation.
 - Prefer introducing compatibility wrappers around current globals before
   changing all call sites.
 - Be careful moving GUC backing variables behind dynamic lvalue macros. The
