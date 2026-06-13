@@ -97,6 +97,7 @@
 #include "storage/aio.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
 #include "utils/guc_hooks.h"
 #include "utils/resowner.h"
@@ -237,7 +238,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool have_xact_temporary_files = fals
  * than INT_MAX kilobytes.  When not enforcing, it could theoretically
  * overflow, but we don't care.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION uint64 temporary_files_size = 0;
+#define temporary_files_size (*PgCurrentTemporaryFilesSizeRef())
 
 /* Temporary file access initialized and not yet shut down? */
 #ifdef USE_ASSERT_CHECKING
@@ -281,7 +282,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int numExternalFDs = 0;
  * Number of temporary files opened during the current session;
  * this is used in generation of tempfile names.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION long tempFileCounter = 0;
+#define tempFileCounter (*PgCurrentTempFileCounterRef())
 
 /*
  * Array of OIDs of temp tablespaces.  (Some entries may be InvalidOid,
@@ -289,9 +290,9 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION long tempFileCounter = 0;
  * When numTempTableSpaces is -1, this has not been set in the current
  * transaction.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid *tempTableSpaces = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION int numTempTableSpaces = -1;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION int nextTempTableSpace = 0;
+#define tempTableSpaces (*PgCurrentTempTableSpaceOidsRef())
+#define numTempTableSpaces (*PgCurrentNumTempTableSpacesRef())
+#define nextTempTableSpace (*PgCurrentNextTempTableSpaceRef())
 
 
 /*--------------------

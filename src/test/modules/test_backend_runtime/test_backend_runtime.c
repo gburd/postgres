@@ -52,6 +52,7 @@
 #include "storage/bufmgr.h"
 #include "storage/copydir.h"
 #include "storage/dsm.h"
+#include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
 #include "storage/large_object.h"
@@ -1465,6 +1466,105 @@ test_session_encoding_state_is_session_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "encoding state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_session_temp_file_state_is_session_local);
+Datum
+test_session_temp_file_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	uint64		saved_temporary_files_size;
+	long		saved_temp_file_counter;
+	Oid		   *saved_temp_table_spaces;
+	int			saved_num_temp_table_spaces;
+	int			saved_next_temp_table_space;
+	Oid			session1_table_spaces[2] = {1111, 2222};
+	Oid			session2_table_spaces[1] = {3333};
+	Oid			copied_table_spaces[2];
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	saved_temporary_files_size = *PgCurrentTemporaryFilesSizeRef();
+	saved_temp_file_counter = *PgCurrentTempFileCounterRef();
+	saved_temp_table_spaces = *PgCurrentTempTableSpaceOidsRef();
+	saved_num_temp_table_spaces = *PgCurrentNumTempTableSpacesRef();
+	saved_next_temp_table_space = *PgCurrentNextTempTableSpaceRef();
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && *PgCurrentTemporaryFilesSizeRef() == 0;
+		ok = ok && *PgCurrentTempFileCounterRef() == 0;
+		ok = ok && *PgCurrentTempTableSpaceOidsRef() == NULL;
+		ok = ok && !TempTablespacesAreSet();
+		ok = ok && *PgCurrentNextTempTableSpaceRef() == 0;
+		*PgCurrentTemporaryFilesSizeRef() = 1234;
+		*PgCurrentTempFileCounterRef() = 42;
+		SetTempTablespaces(session1_table_spaces, lengthof(session1_table_spaces));
+		ok = ok && TempTablespacesAreSet();
+		ok = ok && GetTempTablespaces(copied_table_spaces,
+									  lengthof(copied_table_spaces)) == 2;
+		ok = ok && copied_table_spaces[0] == session1_table_spaces[0];
+		ok = ok && copied_table_spaces[1] == session1_table_spaces[1];
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && *PgCurrentTemporaryFilesSizeRef() == 0;
+		ok = ok && *PgCurrentTempFileCounterRef() == 0;
+		ok = ok && *PgCurrentTempTableSpaceOidsRef() == NULL;
+		ok = ok && !TempTablespacesAreSet();
+		ok = ok && *PgCurrentNextTempTableSpaceRef() == 0;
+		*PgCurrentTemporaryFilesSizeRef() = 9876;
+		*PgCurrentTempFileCounterRef() = 84;
+		SetTempTablespaces(session2_table_spaces, lengthof(session2_table_spaces));
+		ok = ok && TempTablespacesAreSet();
+		ok = ok && GetTempTablespaces(copied_table_spaces,
+									  lengthof(copied_table_spaces)) == 1;
+		ok = ok && copied_table_spaces[0] == session2_table_spaces[0];
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && *PgCurrentTemporaryFilesSizeRef() == 1234;
+		ok = ok && *PgCurrentTempFileCounterRef() == 42;
+		ok = ok && TempTablespacesAreSet();
+		ok = ok && GetTempTablespaces(copied_table_spaces,
+									  lengthof(copied_table_spaces)) == 2;
+		ok = ok && copied_table_spaces[0] == session1_table_spaces[0];
+		ok = ok && copied_table_spaces[1] == session1_table_spaces[1];
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && *PgCurrentTemporaryFilesSizeRef() == 9876;
+		ok = ok && *PgCurrentTempFileCounterRef() == 84;
+		ok = ok && TempTablespacesAreSet();
+		ok = ok && GetTempTablespaces(copied_table_spaces,
+									  lengthof(copied_table_spaces)) == 1;
+		ok = ok && copied_table_spaces[0] == session2_table_spaces[0];
+
+		PgSetCurrentSession(saved_session);
+		*PgCurrentTemporaryFilesSizeRef() = saved_temporary_files_size;
+		*PgCurrentTempFileCounterRef() = saved_temp_file_counter;
+		*PgCurrentTempTableSpaceOidsRef() = saved_temp_table_spaces;
+		*PgCurrentNumTempTableSpacesRef() = saved_num_temp_table_spaces;
+		*PgCurrentNextTempTableSpaceRef() = saved_next_temp_table_space;
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		*PgCurrentTemporaryFilesSizeRef() = saved_temporary_files_size;
+		*PgCurrentTempFileCounterRef() = saved_temp_file_counter;
+		*PgCurrentTempTableSpaceOidsRef() = saved_temp_table_spaces;
+		*PgCurrentNumTempTableSpacesRef() = saved_num_temp_table_spaces;
+		*PgCurrentNextTempTableSpaceRef() = saved_next_temp_table_space;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "temporary file state was not session-local");
 
 	PG_RETURN_BOOL(true);
 }

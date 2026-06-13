@@ -2682,3 +2682,56 @@ Validation for this slice:
   `Utf8ToServerConvProc`, `ClientEncoding`, `DatabaseEncoding`,
   `MessageEncoding`, `backend_startup_complete`, or
   `pending_client_encoding`.
+
+## Session Temporary File State Bridge
+
+The fifty-second Phase 12 slice moves temporary-file accounting and temporary
+tablespace selection state under `PgSession`:
+
+- `PgSession` now owns a `PgSessionTempFileState`;
+- `PgSessionTempFileState` owns the session's total temporary-file byte
+  accounting, temporary-file name counter, current transaction's temp
+  tablespace OID array, number of selected temp tablespaces, and round-robin
+  cursor for choosing the next temp tablespace;
+- `fd.c` keeps its historical local names through compatibility macros backed
+  by `PgCurrentTemporaryFilesSizeRef()`, `PgCurrentTempFileCounterRef()`,
+  `PgCurrentTempTableSpaceOidsRef()`,
+  `PgCurrentNumTempTableSpacesRef()`, and
+  `PgCurrentNextTempTableSpaceRef()`;
+- early paths before `CurrentPgSession` is installed use fallback
+  session storage in `backend_runtime.c`;
+- process-mode and thread-runtime session installation adopt or initialize the
+  temporary-file bucket with the rest of the logical session object.
+
+This slice preserves the existing lifetime split: temporary-file size
+accounting and name generation remain session-lifetime state, while the temp
+tablespace array is still transaction-owned by its caller and cleared by
+`AtEOXact_Files()`. The object bridge moves only the roots and counters from
+raw session TLS onto the logical session.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o` and `fd.o`;
+- because `backend_runtime.h` changed, `gmake -C src/backend clean` plus
+  generated utility and node-header recovery was used before trusting
+  process-mode runtime tests;
+- clean full `gmake -j8` passed after the backend clean;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- focused `test_backend_runtime` regression includes
+  `test_session_temp_file_state_is_session_local()`, which switches fake
+  sessions through `PgSetCurrentSession()` and proves temp-file byte
+  accounting, the file-name counter, temp tablespace OID roots, count, and
+  round-robin cursor follow the active session object;
+- the same helper exercises `SetTempTablespaces()`,
+  `TempTablespacesAreSet()`, and `GetTempTablespaces()` through the
+  object-backed state;
+- direct `test_backend_runtime` regression passed after reinstalling the test
+  module into `tmp_install`;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests, including
+  the core `temp` and `tablespace` tests;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- static scans found no remaining direct session TLS definitions for
+  `temporary_files_size`, `tempFileCounter`, `tempTableSpaces`,
+  `numTempTableSpaces`, or `nextTempTableSpace`.

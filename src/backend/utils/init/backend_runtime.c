@@ -438,6 +438,10 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionRegexState early_session_regex
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionLargeObjectState early_session_large_object;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionAsyncState early_session_async;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionEncodingState early_session_encoding;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionTempFileState early_session_temp_file = {
+	.initialized = true,
+	.num_temp_table_spaces = -1
+};
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendPendingInterruptState early_pending_interrupts;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInterruptHoldoffState early_interrupt_holdoffs;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionDebugState early_execution_debug;
@@ -526,6 +530,8 @@ static void PgSessionAdoptEarlyAsyncState(PgSession *session);
 static void PgSessionInitializeEncodingState(PgSessionEncodingState *encoding);
 static void PgSessionEnsureEncodingStateInitialized(PgSessionEncodingState *encoding);
 static void PgSessionAdoptEarlyEncodingState(PgSession *session);
+static void PgSessionInitializeTempFileState(PgSessionTempFileState *temp_file);
+static void PgSessionAdoptEarlyTempFileState(PgSession *session);
 static void PgBackendResetCoreState(PgBackendCoreState *core);
 static void PgBackendAdoptEarlyCoreState(PgBackend *backend);
 static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
@@ -569,6 +575,7 @@ static PgSessionRegexState *PgCurrentSessionRegexState(void);
 static PgSessionLargeObjectState *PgCurrentSessionLargeObjectState(void);
 static PgSessionAsyncState *PgCurrentSessionAsyncState(void);
 static PgSessionEncodingState *PgCurrentSessionEncodingState(void);
+static PgSessionTempFileState *PgCurrentSessionTempFileState(void);
 static PgExecutionErrorState *PgCurrentExecutionErrorState(void);
 static PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
 static PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
@@ -1587,6 +1594,31 @@ PgSessionAdoptEarlyEncodingState(PgSession *session)
 }
 
 static void
+PgSessionInitializeTempFileState(PgSessionTempFileState *temp_file)
+{
+	Assert(temp_file != NULL);
+
+	temp_file->initialized = true;
+	temp_file->temporary_files_size = 0;
+	temp_file->temp_file_counter = 0;
+	temp_file->temp_table_spaces = NULL;
+	temp_file->num_temp_table_spaces = -1;
+	temp_file->next_temp_table_space = 0;
+}
+
+static void
+PgSessionAdoptEarlyTempFileState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (!early_session_temp_file.initialized)
+		PgSessionInitializeTempFileState(&early_session_temp_file);
+
+	session->temp_file = early_session_temp_file;
+	PgSessionInitializeTempFileState(&early_session_temp_file);
+}
+
+static void
 PgBackendResetCoreState(PgBackendCoreState *core)
 {
 	MemSet(core, 0, sizeof(*core));
@@ -1756,6 +1788,7 @@ InitializePgProcessRuntime(void)
 	PgSessionAdoptEarlyLargeObjectState(&process_session);
 	PgSessionAdoptEarlyAsyncState(&process_session);
 	PgSessionAdoptEarlyEncodingState(&process_session);
+	PgSessionAdoptEarlyTempFileState(&process_session);
 
 	process_connection.backend = &process_backend;
 	process_connection.session = &process_session;
@@ -1871,6 +1904,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgSessionInitializeLargeObjectState(&state->session.large_object);
 	PgSessionInitializeAsyncState(&state->session.async);
 	PgSessionInitializeEncodingState(&state->session.encoding);
+	PgSessionInitializeTempFileState(&state->session.temp_file);
 
 	state->connection.backend = &state->backend;
 	state->connection.session = &state->session;
@@ -1923,6 +1957,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgSessionAdoptEarlyLargeObjectState(&state->session);
 	PgSessionAdoptEarlyAsyncState(&state->session);
 	PgSessionAdoptEarlyEncodingState(&state->session);
+	PgSessionAdoptEarlyTempFileState(&state->session);
 	PgExecutionAdoptEarlyErrorState(&state->execution);
 	PgExecutionAdoptEarlyMemoryContexts(&state->execution);
 	PgExecutionAdoptEarlyResourceOwners(&state->execution);
@@ -2471,6 +2506,22 @@ PgCurrentSessionEncodingState(void)
 	return encoding;
 }
 
+static PgSessionTempFileState *
+PgCurrentSessionTempFileState(void)
+{
+	PgSessionTempFileState *temp_file;
+
+	if (CurrentPgSession == NULL)
+		temp_file = &early_session_temp_file;
+	else
+		temp_file = &CurrentPgSession->temp_file;
+
+	if (!temp_file->initialized)
+		PgSessionInitializeTempFileState(temp_file);
+
+	return temp_file;
+}
+
 Oid *
 PgCurrentMyDatabaseIdRef(void)
 {
@@ -2871,6 +2922,36 @@ int *
 PgCurrentPendingClientEncodingRef(void)
 {
 	return &PgCurrentSessionEncodingState()->pending_client_encoding;
+}
+
+uint64 *
+PgCurrentTemporaryFilesSizeRef(void)
+{
+	return &PgCurrentSessionTempFileState()->temporary_files_size;
+}
+
+long *
+PgCurrentTempFileCounterRef(void)
+{
+	return &PgCurrentSessionTempFileState()->temp_file_counter;
+}
+
+Oid **
+PgCurrentTempTableSpaceOidsRef(void)
+{
+	return &PgCurrentSessionTempFileState()->temp_table_spaces;
+}
+
+int *
+PgCurrentNumTempTableSpacesRef(void)
+{
+	return &PgCurrentSessionTempFileState()->num_temp_table_spaces;
+}
+
+int *
+PgCurrentNextTempTableSpaceRef(void)
+{
+	return &PgCurrentSessionTempFileState()->next_temp_table_space;
 }
 
 int *

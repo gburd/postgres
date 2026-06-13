@@ -619,6 +619,16 @@ typedef struct PgSessionEncodingState
 	int			pending_client_encoding;
 } PgSessionEncodingState;
 
+typedef struct PgSessionTempFileState
+{
+	bool		initialized;
+	uint64		temporary_files_size;
+	long		temp_file_counter;
+	Oid		   *temp_table_spaces;
+	int			num_temp_table_spaces;
+	int			next_temp_table_space;
+} PgSessionTempFileState;
+
 typedef struct PgRuntimeServerGUCState
 {
 	bool		initialized;
@@ -781,6 +791,7 @@ struct PgSession
 	PgSessionLargeObjectState large_object;
 	PgSessionAsyncState async;
 	PgSessionEncodingState encoding;
+	PgSessionTempFileState temp_file;
 };
 
 struct PgConnection
@@ -988,6 +999,11 @@ extern const pg_enc2name **PgCurrentDatabaseEncodingRef(void);
 extern const pg_enc2name **PgCurrentMessageEncodingRef(void);
 extern bool *PgCurrentEncodingStartupCompleteRef(void);
 extern int *PgCurrentPendingClientEncodingRef(void);
+extern uint64 *PgCurrentTemporaryFilesSizeRef(void);
+extern long *PgCurrentTempFileCounterRef(void);
+extern Oid **PgCurrentTempTableSpaceOidsRef(void);
+extern int *PgCurrentNumTempTableSpacesRef(void);
+extern int *PgCurrentNextTempTableSpaceRef(void);
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);
