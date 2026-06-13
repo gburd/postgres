@@ -839,9 +839,19 @@ during a threaded `pg_class` catalog scan, so further narrowing remains a Gate
 E2 blocker and must be driven by worker-specific shared-state isolation plus
 catalog-startup stress. The remaining PMChild and teardown blockers are full
 resource cleanup or deliberate long-lived ownership, broader reaping stress
-for termination and abandoned-client races, extension/custom GUC behavior,
-database/role/startup setting coverage, startup-gate narrowing, and broader
-stress coverage for teardown races.
+for termination and abandoned-client races, broader custom/extension GUC
+semantics, database/role/startup setting coverage, startup-gate narrowing, and
+broader stress coverage for teardown races. Follow-up extension-GUC work found
+that some generated GUC records are already rebound while the per-thread table
+is constructed, so the "changed pointer" pass alone is not a complete startup
+initializer. Threaded runtime installation now runs a narrow required
+string-GUC bootstrap for `search_path` and `dynamic_library_path`, which lets
+threaded sessions use namespace lookup and `LOAD`. A manual threaded
+`LOAD`/`SHOW` smoke proved custom extension GUC placeholder conversion across
+three sessions, including reuse of an already loaded module. Catalog-writing
+DDL currently reaches WAL insertion and can still crash in `XLogInsert()`
+during threaded `CREATE TABLE`, so that remains a Gate E2 blocker before
+Phase 13.
 
 Phase 16 still owns broader hardening such as sanitizer runs, contrib-wide
 threaded regression, crash/FATAL behavior matrices, platform coverage, and

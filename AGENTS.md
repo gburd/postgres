@@ -161,6 +161,27 @@ Important current files:
   be renamed because macro expansion also hits `object->field` expressions;
   this was observed for the local GIN build-state `work_mem` field and the
   `TableSpaceOpts` `seq_page_cost`/`random_page_cost` fields.
+- Some string GUCs can still be unset after runtime installation because the
+  generated GUC table may already point at early fallback accessors before the
+  "changed pointer" pass runs. `InstallPgThreadBackendRuntimeState()` therefore
+  calls `InitializeThreadedSessionRequiredGUCOptions()` after
+  `PgSetCurrentSession()` and after installing `CurrentPgExecution`; the latter
+  is required because GUC check hooks allocate through the current execution's
+  memory context state. Keep this list narrow and documented; it currently
+  covers `search_path` and `dynamic_library_path`, which are needed for
+  namespace lookup and `LOAD`.
+- Custom extension GUCs in threaded sessions rely on per-session `_PG_init()`
+  invocation for already-loaded dynamic libraries. `dfmgr.c` records loaded
+  module init state in `PgSession.dynamic_library_inits`; when a second
+  threaded session reuses a process-loaded module, `_PG_init()` must run again
+  so that session's GUC table receives the custom GUC definitions. A focused
+  smoke should use `LOAD 'test_backend_runtime_threaded'` plus `SHOW`, not
+  `CREATE FUNCTION`, until the threaded DDL/WAL insertion blocker below is
+  fixed.
+- Threaded catalog-writing DDL is still a Gate E2 blocker. A threaded
+  `CREATE TABLE` smoke now gets past namespace lookup but can crash in
+  `XLogInsert()` while allocating catalog/WAL state. Do not use DDL as a
+  prerequisite for extension-GUC validation until that WAL path is fixed.
 - Threaded backend startup must replay postmaster nondefault GUC state after
   `InitializeThreadedSessionGUCOptions()` and before
   `InstallPgThreadBackendRuntimeState()`. That ordering lets

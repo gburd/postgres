@@ -20,6 +20,8 @@
 #include "storage/latch.h"
 #include "storage/pmsignal.h"
 #include "utils/backend_runtime.h"
+#include "utils/builtins.h"
+#include "utils/guc.h"
 #include "utils/wait_event.h"
 
 PG_MODULE_MAGIC_EXT(
@@ -33,15 +35,37 @@ PG_FUNCTION_INFO_V1(test_backend_runtime_rejects_process_bgworker);
 PG_FUNCTION_INFO_V1(test_backend_runtime_launch_thread_bgworker);
 PG_FUNCTION_INFO_V1(test_backend_runtime_restart_thread_bgworker);
 PG_FUNCTION_INFO_V1(test_backend_runtime_crash_thread_bgworker);
+PG_FUNCTION_INFO_V1(test_backend_runtime_custom_guc_value);
+PG_FUNCTION_INFO_V1(test_backend_runtime_custom_guc_init_count);
 
 pg_noreturn PGDLLEXPORT void test_backend_runtime_unreachable_bgworker_main(Datum main_arg);
 PGDLLEXPORT void test_backend_runtime_thread_bgworker_main(Datum main_arg);
 PGDLLEXPORT void test_backend_runtime_restart_bgworker_main(Datum main_arg);
 pg_noreturn PGDLLEXPORT void test_backend_runtime_crash_bgworker_main(Datum main_arg);
+PGDLLEXPORT void _PG_init(void);
 
 static uint32 test_backend_runtime_thread_bgworker_wait_event = 0;
 static pg_atomic_uint32 test_backend_runtime_restart_count;
 static pg_atomic_uint32 test_backend_runtime_crash_count;
+static PG_THREAD_LOCAL char *test_backend_runtime_custom_guc = NULL;
+static PG_THREAD_LOCAL int test_backend_runtime_custom_guc_init_counter = 0;
+
+void
+_PG_init(void)
+{
+	test_backend_runtime_custom_guc_init_counter++;
+
+	DefineCustomStringVariable("test_backend_runtime_threaded.custom_guc",
+							   "Test threaded custom GUC.",
+							   NULL,
+							   &test_backend_runtime_custom_guc,
+							   "default",
+							   PGC_USERSET,
+							   0,
+							   NULL,
+							   NULL,
+							   NULL);
+}
 
 Datum
 test_backend_runtime_request_autovacuum_worker(PG_FUNCTION_ARGS)
@@ -229,6 +253,21 @@ test_backend_runtime_crash_thread_bgworker(PG_FUNCTION_ARGS)
 
 	elog(ERROR, "crashing thread-model background worker did not terminate the threaded runtime");
 	PG_RETURN_BOOL(false);
+}
+
+Datum
+test_backend_runtime_custom_guc_value(PG_FUNCTION_ARGS)
+{
+	if (test_backend_runtime_custom_guc == NULL)
+		PG_RETURN_NULL();
+
+	PG_RETURN_TEXT_P(cstring_to_text(test_backend_runtime_custom_guc));
+}
+
+Datum
+test_backend_runtime_custom_guc_init_count(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT32(test_backend_runtime_custom_guc_init_counter);
 }
 
 void

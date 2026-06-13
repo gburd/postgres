@@ -4069,3 +4069,57 @@ Validation for this slice:
 - `gmake check-global-lifetimes` passed, reporting zero new unclassified
   mutable globals against the checked baseline;
 - core `src/test/regress` `parallel_schedule` passed all 245 tests.
+
+## Threaded Custom Extension GUC Session Init
+
+The eighty-third Phase 12 slice starts closing the Gate E2 custom/extension
+GUC blocker:
+
+- `PgSession` now owns `dynamic_library_inits`, a list of process-loaded
+  dynamic library entries whose `_PG_init()` function has been invoked for the
+  current logical session;
+- `dfmgr.c` still keeps the loaded-library list runtime-global, matching the
+  process-wide address space, but when thread-per-session mode reuses an
+  already loaded module in a different session it calls `_PG_init()` again so
+  that session's per-thread GUC table receives the module's custom GUC
+  definitions;
+- newly loaded modules are also marked initialized for the loading session;
+- threaded runtime installation now calls
+  `InitializeThreadedSessionRequiredGUCOptions()` after
+  `PgSetCurrentSession()` and after `CurrentPgExecution` is installed. This
+  initializes required string GUCs whose
+  generated records can otherwise already point at fallback accessors before
+  the changed-pointer initialization pass runs. The list is intentionally
+  narrow and currently covers `search_path` and `dynamic_library_path`;
+- the threaded runtime TAP fixture now validates custom GUC behavior through
+  `LOAD` and `SHOW`, avoiding catalog-writing DDL while the remaining WAL
+  insertion blocker is open.
+
+This is not full Gate E2 GUC completion. It proves the first in-tree route for
+custom extension GUC definitions in thread-per-session mode, including
+placeholder conversion when a module is loaded in multiple sessions. Broader
+custom GUC reset/default semantics, database/role/startup settings,
+contrib-wide extension coverage, and GUC-heavy stress remain open. During
+validation, a threaded `CREATE TABLE` smoke got past namespace lookup and then
+crashed in `XLogInsert()` while allocating catalog/WAL state; catalog-writing
+DDL remains a separate Gate E2 blocker before scheduler-aware wait work.
+
+Validation for this slice:
+
+- touched-object builds passed for `namespace.o`, `backend_runtime.o`,
+  `guc.o`, `dfmgr.o`, and `test_backend_runtime_threaded.o`;
+- full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- a manual threaded custom-GUC smoke with `multithreaded = on`,
+  `dynamic_shared_memory_type = posix`, `LOAD 'test_backend_runtime_threaded'`,
+  and `SHOW test_backend_runtime_threaded.custom_guc` proved `session one`,
+  `session two`, and then `default` across three separate sessions;
+- `lldb` confirmed the earlier `CREATE FUNCTION` crash first came from missing
+  `search_path`, then after fixing required string GUCs moved to the existing
+  DDL/WAL path (`CREATE TABLE` -> `XLogInsert()`);
+- focused `gmake -C src/test/modules/test_backend_runtime check` is not a
+  valid control for this slice in the current checkout: it starts a plain
+  process-mode temp cluster and fails at the existing
+  `test_backend_thread_runtime_state()` threaded-runtime assertion before it
+  reaches the new `LOAD`/`SHOW` fixture.

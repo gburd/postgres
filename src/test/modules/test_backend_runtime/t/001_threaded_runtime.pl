@@ -282,6 +282,33 @@ $$;
 is($node->safe_psql('postgres', 'SELECT threaded_plpgsql_add(20, 22);'),
 	'42', 'PL/pgSQL runs in threaded runtime');
 
+is($node->safe_psql(
+		'postgres',
+		q{
+SET test_backend_runtime_threaded.custom_guc = 'session one';
+LOAD 'test_backend_runtime_threaded';
+SHOW test_backend_runtime_threaded.custom_guc;
+}),
+	'session one',
+	'threaded custom GUC placeholder converts during first module load');
+is($node->safe_psql(
+		'postgres',
+		q{
+SET test_backend_runtime_threaded.custom_guc = 'session two';
+LOAD 'test_backend_runtime_threaded';
+SHOW test_backend_runtime_threaded.custom_guc;
+}),
+	'session two',
+	'threaded custom GUC placeholder converts when loaded module is reused in another session');
+is($node->safe_psql(
+		'postgres',
+		q{
+LOAD 'test_backend_runtime_threaded';
+SHOW test_backend_runtime_threaded.custom_guc;
+}),
+	'default',
+	'threaded custom GUC initializes to default in a later session');
+
 my ($load_ret, $load_stdout, $load_stderr) =
   $node->psql('postgres', "LOAD 'test_backend_runtime';",
 	on_error_stop => 1);

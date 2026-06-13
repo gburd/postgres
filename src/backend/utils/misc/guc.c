@@ -1524,6 +1524,28 @@ InitializeThreadedSessionGUCOptions(void)
 	InitializeThreadedSessionCompatibilityGUCOptions();
 }
 
+void
+InitializeThreadedSessionRequiredGUCOptions(void)
+{
+	static const char *const required_options[] = {
+		"dynamic_library_path",
+		"search_path",
+	};
+
+	if (guc_hashtab == NULL)
+		return;
+
+	for (int i = 0; i < lengthof(required_options); i++)
+	{
+		struct config_generic *gconf;
+
+		gconf = find_option(required_options[i], false, false, PANIC);
+		Assert(gconf->vartype == PGC_STRING);
+		if (*gconf->_string.variable == NULL)
+			InitializeOneGUCOption(gconf);
+	}
+}
+
 static const void *
 GUCOptionVariablePointer(struct config_generic *gconf)
 {

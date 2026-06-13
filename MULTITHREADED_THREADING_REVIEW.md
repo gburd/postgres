@@ -207,6 +207,18 @@ before runtime installation adopts them into `PgSession`. Remaining GUC
 blockers are now focused on custom/extension behavior, database/role/startup
 settings coverage, and stress validation.
 
+Additional status update: custom extension GUC loading now has a first
+threaded route. `dfmgr.c` tracks, per `PgSession`, which already-loaded
+dynamic libraries have had `_PG_init()` invoked for that session. If a module
+is reused by another threaded session, `_PG_init()` is called again so custom
+GUC definitions are installed into that session's per-thread GUC table. A
+required post-install string-GUC bootstrap initializes `search_path` and
+`dynamic_library_path`, covering namespace lookup and `LOAD` after runtime
+installation. A manual threaded `LOAD`/`SHOW` smoke proved placeholder
+conversion in two sessions and the default value in a third. This is still not
+the complete Gate E2 GUC model: broader custom GUC reset/default behavior,
+database/role/startup settings, and stress coverage remain open.
+
 ### 4. Broad Threaded Startup Serialization Is Still Present
 
 Severity: High

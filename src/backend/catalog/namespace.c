@@ -325,7 +325,7 @@ CurrentLastSearchPathCacheEntryRef(void)
 static void
 spcache_init(void)
 {
-	if (SearchPathCache && searchPathCacheValid &&
+	if (SearchPathCache && SearchPathCache->data && searchPathCacheValid &&
 		SearchPathCache->members < SPCACHE_RESET_THRESHOLD)
 		return;
 

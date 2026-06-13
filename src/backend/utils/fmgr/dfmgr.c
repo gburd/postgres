@@ -27,6 +27,7 @@
 #include "storage/shmem.h"
 #include "utils/backend_runtime.h"
 #include "utils/hsearch.h"
+#include "utils/memutils.h"
 
 
 /* signature for PostgreSQL-specific library init function */
@@ -68,6 +69,9 @@ static PG_GLOBAL_RUNTIME DynamicFileList *file_tail = NULL;
 #endif
 
 static void *internal_load_library(const char *libname);
+static void call_module_init_function(DynamicFileList *file_scanner);
+static bool module_needs_session_init(DynamicFileList *file_scanner);
+static void remember_module_session_init(DynamicFileList *file_scanner);
 pg_noreturn static void incompatible_module_error(const char *libname,
 												  const Pg_abi_values *module_magic_data);
 static bool module_backend_model_is_valid(PgBackendModel backend_model);
@@ -210,7 +214,6 @@ internal_load_library(const char *libname)
 	PGModuleMagicFunction magic_func;
 	char	   *load_error;
 	struct stat stat_buf;
-	PG_init_t	PG_init;
 
 	/*
 	 * Scan the list of loaded FILES to see if the file has been loaded.
@@ -344,12 +347,7 @@ internal_load_library(const char *libname)
 					 errhint("Extension libraries are required to use the PG_MODULE_MAGIC macro.")));
 		}
 
-		/*
-		 * If the library has a _PG_init() function, call it.
-		 */
-		PG_init = (PG_init_t) dlsym(file_scanner->handle, "_PG_init");
-		if (PG_init)
-			(*PG_init) ();
+		call_module_init_function(file_scanner);
 
 		/* OK to link it into list */
 		if (file_list == NULL)
@@ -363,9 +361,57 @@ internal_load_library(const char *libname)
 		check_module_backend_model(libname,
 								   file_scanner->magic,
 								   PgRuntimeGetExtensionBackendModel());
+		if (module_needs_session_init(file_scanner))
+			call_module_init_function(file_scanner);
 	}
 
 	return file_scanner->handle;
+}
+
+static void
+call_module_init_function(DynamicFileList *file_scanner)
+{
+	PG_init_t	PG_init;
+
+	/*
+	 * If the library has a _PG_init() function, call it.
+	 */
+	PG_init = (PG_init_t) dlsym(file_scanner->handle, "_PG_init");
+	if (PG_init)
+		(*PG_init) ();
+
+	remember_module_session_init(file_scanner);
+}
+
+static bool
+module_needs_session_init(DynamicFileList *file_scanner)
+{
+	if (CurrentPgRuntime == NULL ||
+		CurrentPgRuntime->kind != PG_RUNTIME_THREAD_PER_SESSION ||
+		CurrentPgSession == NULL)
+		return false;
+
+	return !list_member_ptr(CurrentPgSession->dynamic_library_inits,
+							file_scanner);
+}
+
+static void
+remember_module_session_init(DynamicFileList *file_scanner)
+{
+	MemoryContext oldcontext;
+
+	if (CurrentPgRuntime == NULL ||
+		CurrentPgRuntime->kind != PG_RUNTIME_THREAD_PER_SESSION ||
+		CurrentPgSession == NULL)
+		return;
+
+	if (list_member_ptr(CurrentPgSession->dynamic_library_inits, file_scanner))
+		return;
+
+	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+	CurrentPgSession->dynamic_library_inits =
+		lappend(CurrentPgSession->dynamic_library_inits, file_scanner);
+	MemoryContextSwitchTo(oldcontext);
 }
 
 /*

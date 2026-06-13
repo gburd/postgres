@@ -1002,6 +1002,7 @@ struct PgSession
 	PgSessionPlanCacheState plan_cache;
 	PgSessionNamespaceState namespace_state;
 	PgSessionLocaleState locale;
+	List	   *dynamic_library_inits;
 };
 
 struct PgConnection

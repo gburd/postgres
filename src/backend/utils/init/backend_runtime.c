@@ -1864,12 +1864,17 @@ PgSessionInitializeNamespaceState(PgSessionNamespaceState *namespace_state)
 static void
 PgSessionAdoptEarlyNamespaceState(PgSession *session)
 {
+	char	   *namespace_search_path_value;
+
 	Assert(session != NULL);
 
 	if (!early_session_namespace.initialized)
 		PgSessionInitializeNamespaceState(&early_session_namespace);
 
-	session->namespace_state = early_session_namespace;
+	namespace_search_path_value = early_session_namespace.namespace_search_path_value;
+	PgSessionInitializeNamespaceState(&session->namespace_state);
+	session->namespace_state.namespace_search_path_value =
+		namespace_search_path_value;
 	PgSessionInitializeNamespaceState(&early_session_namespace);
 }
 
@@ -2440,6 +2445,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgSetCurrentSession(&state->session);
 	CurrentPgConnection = &state->connection;
 	CurrentPgExecution = &state->execution;
+	InitializeThreadedSessionRequiredGUCOptions();
 
 	proc_exit_inprogress = false;
 	shmem_exit_inprogress = false;
