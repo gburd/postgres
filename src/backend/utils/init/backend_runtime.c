@@ -436,6 +436,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionOnCommitState early_session_on
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionSequenceState early_session_sequence;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionRegexState early_session_regex;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionLargeObjectState early_session_large_object;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionAsyncState early_session_async;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendPendingInterruptState early_pending_interrupts;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInterruptHoldoffState early_interrupt_holdoffs;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionDebugState early_execution_debug;
@@ -519,6 +520,8 @@ static void PgSessionInitializeRegexState(PgSessionRegexState *regex);
 static void PgSessionAdoptEarlyRegexState(PgSession *session);
 static void PgSessionInitializeLargeObjectState(PgSessionLargeObjectState *large_object);
 static void PgSessionAdoptEarlyLargeObjectState(PgSession *session);
+static void PgSessionInitializeAsyncState(PgSessionAsyncState *async);
+static void PgSessionAdoptEarlyAsyncState(PgSession *session);
 static void PgBackendResetCoreState(PgBackendCoreState *core);
 static void PgBackendAdoptEarlyCoreState(PgBackend *backend);
 static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
@@ -560,6 +563,7 @@ static PgSessionOnCommitState *PgCurrentSessionOnCommitState(void);
 static PgSessionSequenceState *PgCurrentSessionSequenceState(void);
 static PgSessionRegexState *PgCurrentSessionRegexState(void);
 static PgSessionLargeObjectState *PgCurrentSessionLargeObjectState(void);
+static PgSessionAsyncState *PgCurrentSessionAsyncState(void);
 static PgExecutionErrorState *PgCurrentExecutionErrorState(void);
 static PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
 static PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
@@ -1525,6 +1529,24 @@ PgSessionAdoptEarlyLargeObjectState(PgSession *session)
 }
 
 static void
+PgSessionInitializeAsyncState(PgSessionAsyncState *async)
+{
+	Assert(async != NULL);
+
+	async->local_channel_table = NULL;
+	async->registered_listener = false;
+}
+
+static void
+PgSessionAdoptEarlyAsyncState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	session->async = early_session_async;
+	PgSessionInitializeAsyncState(&early_session_async);
+}
+
+static void
 PgBackendResetCoreState(PgBackendCoreState *core)
 {
 	MemSet(core, 0, sizeof(*core));
@@ -1692,6 +1714,7 @@ InitializePgProcessRuntime(void)
 	PgSessionAdoptEarlySequenceState(&process_session);
 	PgSessionAdoptEarlyRegexState(&process_session);
 	PgSessionAdoptEarlyLargeObjectState(&process_session);
+	PgSessionAdoptEarlyAsyncState(&process_session);
 
 	process_connection.backend = &process_backend;
 	process_connection.session = &process_session;
@@ -1805,6 +1828,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgSessionInitializeSequenceState(&state->session.sequence);
 	PgSessionInitializeRegexState(&state->session.regex);
 	PgSessionInitializeLargeObjectState(&state->session.large_object);
+	PgSessionInitializeAsyncState(&state->session.async);
 
 	state->connection.backend = &state->backend;
 	state->connection.session = &state->session;
@@ -1855,6 +1879,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgSessionAdoptEarlySequenceState(&state->session);
 	PgSessionAdoptEarlyRegexState(&state->session);
 	PgSessionAdoptEarlyLargeObjectState(&state->session);
+	PgSessionAdoptEarlyAsyncState(&state->session);
 	PgExecutionAdoptEarlyErrorState(&state->execution);
 	PgExecutionAdoptEarlyMemoryContexts(&state->execution);
 	PgExecutionAdoptEarlyResourceOwners(&state->execution);
@@ -2380,6 +2405,15 @@ PgCurrentSessionLargeObjectState(void)
 	return &CurrentPgSession->large_object;
 }
 
+static PgSessionAsyncState *
+PgCurrentSessionAsyncState(void)
+{
+	if (CurrentPgSession == NULL)
+		return &early_session_async;
+
+	return &CurrentPgSession->async;
+}
+
 Oid *
 PgCurrentMyDatabaseIdRef(void)
 {
@@ -2714,6 +2748,18 @@ struct RelationData **
 PgCurrentLargeObjectIndexRelationRef(void)
 {
 	return &PgCurrentSessionLargeObjectState()->index_relation;
+}
+
+HTAB **
+PgCurrentAsyncLocalChannelTableRef(void)
+{
+	return &PgCurrentSessionAsyncState()->local_channel_table;
+}
+
+bool *
+PgCurrentAsyncRegisteredListenerRef(void)
+{
+	return &PgCurrentSessionAsyncState()->registered_listener;
 }
 
 int *

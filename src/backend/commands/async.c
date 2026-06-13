@@ -420,7 +420,7 @@ static PG_GLOBAL_RUNTIME dsa_area *globalChannelDSA = NULL;
  * (including those we have staged to be listened on, but not yet committed).
  * Used by IsListeningOn() for fast lookups when reading notifications.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *localChannelTable = NULL;
+#define localChannelTable (*PgCurrentAsyncLocalChannelTableRef())
 
 /* We test this condition to detect that we're not listening at all */
 #define LocalChannelTableIsEmpty() \
@@ -556,7 +556,7 @@ PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t notifyInterruptPending =
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool unlistenExitRegistered = false;
 
 /* True if we're currently registered as a listener in asyncQueueControl */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool amRegisteredListener = false;
+#define amRegisteredListener (*PgCurrentAsyncRegisteredListenerRef())
 
 /*
  * Queue head positions for direct advancement.

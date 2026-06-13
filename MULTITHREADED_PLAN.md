@@ -710,7 +710,8 @@ through `PgRuntime`, plus the prepared-statement storage bridge through
 `PgSession`, plus the sequence `nextval`/`currval`/`lastval` cache bridge
 through `PgSession`, plus the parser operator lookup cache bridge through
 `PgSession`, plus the regex ctype probe cache bridge through `PgSession`, plus
-the large-object relation-handle cache bridge through `PgSession`.
+the large-object relation-handle cache bridge through `PgSession`, plus the
+async notification listener-state bridge through `PgSession`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.

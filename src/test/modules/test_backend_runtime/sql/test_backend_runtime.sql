@@ -17,6 +17,7 @@ SELECT test_session_prepared_statement_state_is_session_local();
 SELECT test_session_on_commit_state_is_session_local();
 SELECT test_session_sequence_state_is_session_local();
 SELECT test_session_large_object_state_is_session_local();
+SELECT test_session_async_state_is_session_local();
 SELECT test_runtime_server_guc_state_is_runtime_local();
 SELECT test_session_connection_guc_state_is_session_local();
 SELECT test_session_parser_state_is_session_local();
@@ -88,3 +89,7 @@ SELECT encode(lo_get(loid), 'escape') AS lo_contents
 SELECT lo_unlink(loid) = 1 AS lo_unlinked
 	FROM phase12_largeobject_state;
 DROP TABLE phase12_largeobject_state;
+LISTEN phase12_async_state;
+SELECT pg_listening_channels();
+UNLISTEN *;
+SELECT pg_listening_channels();

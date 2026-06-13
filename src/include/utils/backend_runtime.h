@@ -599,6 +599,12 @@ typedef struct PgSessionLargeObjectState
 	struct RelationData *index_relation;
 } PgSessionLargeObjectState;
 
+typedef struct PgSessionAsyncState
+{
+	HTAB	   *local_channel_table;
+	bool		registered_listener;
+} PgSessionAsyncState;
+
 typedef struct PgRuntimeServerGUCState
 {
 	bool		initialized;
@@ -759,6 +765,7 @@ struct PgSession
 	PgSessionSequenceState sequence;
 	PgSessionRegexState regex;
 	PgSessionLargeObjectState large_object;
+	PgSessionAsyncState async;
 };
 
 struct PgConnection
@@ -955,6 +962,8 @@ extern HTAB **PgCurrentOperatorLookupCacheRef(void);
 extern struct pg_ctype_cache **PgCurrentRegexCtypeCacheListRef(void);
 extern struct RelationData **PgCurrentLargeObjectHeapRelationRef(void);
 extern struct RelationData **PgCurrentLargeObjectIndexRelationRef(void);
+extern HTAB **PgCurrentAsyncLocalChannelTableRef(void);
+extern bool *PgCurrentAsyncRegisteredListenerRef(void);
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);

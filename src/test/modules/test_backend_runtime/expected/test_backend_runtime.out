@@ -101,6 +101,12 @@ SELECT test_session_large_object_state_is_session_local();
  t
 (1 row)
 
+SELECT test_session_async_state_is_session_local();
+ test_session_async_state_is_session_local 
+-------------------------------------------
+ t
+(1 row)
+
 SELECT test_runtime_server_guc_state_is_runtime_local();
  test_runtime_server_guc_state_is_runtime_local 
 ------------------------------------------------
@@ -437,3 +443,16 @@ SELECT lo_unlink(loid) = 1 AS lo_unlinked
 (1 row)
 
 DROP TABLE phase12_largeobject_state;
+LISTEN phase12_async_state;
+SELECT pg_listening_channels();
+ pg_listening_channels 
+-----------------------
+ phase12_async_state
+(1 row)
+
+UNLISTEN *;
+SELECT pg_listening_channels();
+ pg_listening_channels 
+-----------------------
+(0 rows)
+

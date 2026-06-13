@@ -1258,6 +1258,72 @@ test_session_large_object_state_is_session_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_session_async_state_is_session_local);
+Datum
+test_session_async_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	HTAB	   *saved_local_channel_table;
+	bool		saved_registered_listener;
+	HTAB	   *session1_table_marker;
+	HTAB	   *session2_table_marker;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	saved_local_channel_table = *PgCurrentAsyncLocalChannelTableRef();
+	saved_registered_listener = *PgCurrentAsyncRegisteredListenerRef();
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	session1_table_marker = (HTAB *) &fake_session1;
+	session2_table_marker = (HTAB *) &fake_session2;
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && *PgCurrentAsyncLocalChannelTableRef() == NULL;
+		ok = ok && !*PgCurrentAsyncRegisteredListenerRef();
+		*PgCurrentAsyncLocalChannelTableRef() = session1_table_marker;
+		*PgCurrentAsyncRegisteredListenerRef() = true;
+		ok = ok && *PgCurrentAsyncLocalChannelTableRef() == session1_table_marker;
+		ok = ok && *PgCurrentAsyncRegisteredListenerRef();
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && *PgCurrentAsyncLocalChannelTableRef() == NULL;
+		ok = ok && !*PgCurrentAsyncRegisteredListenerRef();
+		*PgCurrentAsyncLocalChannelTableRef() = session2_table_marker;
+		*PgCurrentAsyncRegisteredListenerRef() = false;
+		ok = ok && *PgCurrentAsyncLocalChannelTableRef() == session2_table_marker;
+		ok = ok && !*PgCurrentAsyncRegisteredListenerRef();
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && *PgCurrentAsyncLocalChannelTableRef() == session1_table_marker;
+		ok = ok && *PgCurrentAsyncRegisteredListenerRef();
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && *PgCurrentAsyncLocalChannelTableRef() == session2_table_marker;
+		ok = ok && !*PgCurrentAsyncRegisteredListenerRef();
+
+		PgSetCurrentSession(saved_session);
+		*PgCurrentAsyncLocalChannelTableRef() = saved_local_channel_table;
+		*PgCurrentAsyncRegisteredListenerRef() = saved_registered_listener;
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		*PgCurrentAsyncLocalChannelTableRef() = saved_local_channel_table;
+		*PgCurrentAsyncRegisteredListenerRef() = saved_registered_listener;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "async listener state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_session_prepared_statement_state_is_session_local);
 Datum
 test_session_prepared_statement_state_is_session_local(PG_FUNCTION_ARGS)

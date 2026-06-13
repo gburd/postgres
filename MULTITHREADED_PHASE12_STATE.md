@@ -2574,3 +2574,51 @@ Validation for this slice:
   header migration;
 - static scans found no remaining direct session TLS definitions for
   `lo_heap_r` or `lo_index_r`.
+
+## Session Async Listener-State Bridge
+
+The fiftieth Phase 12 slice moves committed asynchronous notification listener
+state under `PgSession`:
+
+- `PgSession` now owns a `PgSessionAsyncState`;
+- `PgSessionAsyncState` owns the local channel-name hash table used by
+  `LISTEN`, `UNLISTEN`, `pg_listening_channels()`, and notification filtering;
+- `PgSessionAsyncState` also owns the `amRegisteredListener` flag tracking
+  whether the logical session has an entry in the shared notification listener
+  array;
+- `async.c` keeps its existing LISTEN/UNLISTEN commit, abort, frontend
+  delivery, and cleanup logic through compatibility macros backed by
+  `PgCurrentAsyncLocalChannelTableRef()` and
+  `PgCurrentAsyncRegisteredListenerRef()`;
+- early startup paths before `CurrentPgSession` is installed use fallback
+  session storage in `backend_runtime.c`;
+- process-mode and thread-runtime session installation adopt or initialize the
+  async listener-state bucket with the rest of the logical session object.
+
+This slice deliberately leaves transaction-local pending LISTEN/UNLISTEN and
+NOTIFY queues as execution state, and leaves the exit-cleanup registration flag
+as backend state. The moved state is the committed session listener membership
+and its local lookup table.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o` and `async.o`;
+- because `backend_runtime.h` changed, `gmake -C src/backend clean` plus
+  generated utility and node-header recovery was used before trusting
+  process-mode or threaded-mode runtime tests;
+- clean full `gmake -j8` passed after the backend clean;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- focused `test_backend_runtime` regression includes
+  `test_session_async_state_is_session_local()`, which switches fake sessions
+  through `PgSetCurrentSession()` and proves both the local channel table
+  pointer and registered-listener flag follow the active session object;
+- the same regression schedule includes SQL-level `LISTEN`,
+  `pg_listening_channels()`, and `UNLISTEN *` smokes;
+- direct `test_backend_runtime` regression passed after reinstalling the test
+  module into `tmp_install`;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests, including
+  the core `async` and `guc` tests;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- static scans found no remaining direct session TLS definitions for
+  `localChannelTable` or `amRegisteredListener`.
