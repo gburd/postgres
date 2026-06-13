@@ -225,6 +225,12 @@ Important current files:
   `test_backend_runtime.o`, then clean/rebuild backend and `src/common` before
   full runtime validation; stale `src/common` server objects can still
   reference removed wait-event symbols.
+- `DoingCommandRead` now lives in `PgSessionLoopState`, while tcop command
+  option/timing state lives in `PgBackendCommandState` and elog formatted
+  start-time/line-number/PID cache state lives in `PgBackendLogState`. After
+  changing this bridge, run touched-object builds for `backend_runtime.o`,
+  `postgres.o`, `elog.o`, and `test_backend_runtime.o`, then use the normal
+  backend plus `src/common` clean rebuild path before runtime validation.
 - `proc_exit_inprogress` and `shmem_exit_inprogress` are now fields in
   `PgBackendExitState`, exposed through compatibility macros in
   `src/include/storage/ipc.h`; the old exported TLS definitions were removed

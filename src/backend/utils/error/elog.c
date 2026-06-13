@@ -84,6 +84,7 @@
 #include "storage/ipc.h"
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc_hooks.h"
 #include "utils/memutils.h"
 #include "utils/pg_locale.h"
@@ -161,8 +162,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int recursion_depth = 0;	/* to detect
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION struct timeval saved_timeval;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool saved_timeval_set = false;
 
-#define FORMATTED_TS_LEN 128
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND char formatted_start_time[FORMATTED_TS_LEN];
+#define FORMATTED_TS_LEN PG_BACKEND_FORMATTED_TS_LEN
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION char formatted_log_time[FORMATTED_TS_LEN];
 
 
@@ -3141,6 +3141,8 @@ get_formatted_log_time(void)
 void
 reset_formatted_start_time(void)
 {
+	char	   *formatted_start_time = PgCurrentFormattedStartTimeBuffer();
+
 	formatted_start_time[0] = '\0';
 }
 
@@ -3154,6 +3156,7 @@ char *
 get_formatted_start_time(void)
 {
 	pg_time_t	stamp_time = (pg_time_t) MyStartTime;
+	char	   *formatted_start_time = PgCurrentFormattedStartTimeBuffer();
 
 	/* leave if already computed */
 	if (formatted_start_time[0] != '\0')
@@ -3267,11 +3270,8 @@ log_line_prefix(StringInfo buf, ErrorData *edata)
 void
 log_status_format(StringInfo buf, const char *format, ErrorData *edata)
 {
-	/* static counter for line numbers */
-	static PG_THREAD_LOCAL PG_GLOBAL_BACKEND long log_line_number = 0;
-
-	/* has counter been reset in current process? */
-	static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int log_my_pid = 0;
+	long	   *log_line_number = PgCurrentLogLineNumberRef();
+	int		   *log_my_pid = PgCurrentLogLinePidRef();
 	int			padding;
 	const char *p;
 
@@ -3281,13 +3281,13 @@ log_status_format(StringInfo buf, const char *format, ErrorData *edata)
 	 * MyProcPid changes. MyStartTime also changes when MyProcPid does, so
 	 * reset the formatted start timestamp too.
 	 */
-	if (log_my_pid != MyProcPid)
+	if (*log_my_pid != MyProcPid)
 	{
-		log_line_number = 0;
-		log_my_pid = MyProcPid;
+		*log_line_number = 0;
+		*log_my_pid = MyProcPid;
 		reset_formatted_start_time();
 	}
-	log_line_number++;
+	(*log_line_number)++;
 
 	if (format == NULL)
 		return;					/* in case guc hasn't run yet */
@@ -3437,9 +3437,9 @@ log_status_format(StringInfo buf, const char *format, ErrorData *edata)
 
 			case 'l':
 				if (padding != 0)
-					appendStringInfo(buf, "%*ld", padding, log_line_number);
+					appendStringInfo(buf, "%*ld", padding, *log_line_number);
 				else
-					appendStringInfo(buf, "%ld", log_line_number);
+					appendStringInfo(buf, "%ld", *log_line_number);
 				break;
 			case 'm':
 				/* force a log timestamp reset */

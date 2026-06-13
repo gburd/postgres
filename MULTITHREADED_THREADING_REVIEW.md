@@ -856,6 +856,15 @@ new unclassified mutable globals. This slice also exposed a stale
 `src/common` server-object hazard after removing the exported
 `my_wait_event_info` symbol; clean `src/common` when runtime/header changes
 affect headers included by `src/common` server objects.
+The next state-migration slice moved `DoingCommandRead` into
+`PgSessionLoopState`, moved tcop's `-D` option and usage snapshots into
+`PgBackendCommandState`, and moved elog's formatted start-time buffer, log
+line counter, and cached log PID into `PgBackendLogState`. Validation included
+touched-object builds, a backend plus `src/common` clean rebuild, clean full
+build, install, `gmake check-global-lifetimes`, contrib build, PL/pgSQL
+rebuild/install, `test_backend_runtime` regression, and direct threaded TAP.
+The global-lifetime scan now reports 44 backend-local declarations with zero
+new unclassified mutable globals.
 
 ## Bottom Line
 

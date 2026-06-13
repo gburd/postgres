@@ -757,7 +757,9 @@ scheduler state bridge through `PgBackendTimeoutState`, plus the
 allocation-set freelist and memory-context logging guard bridge through
 `PgBackendMemoryManagerState`, plus the wait-event storage bridge through
 `PgBackendWaitState` and the shared-invalidation local transaction ID bridge
-through `PgBackendIPCState`.
+through `PgBackendIPCState`, plus the command-loop read-boundary bridge
+through `PgSessionLoopState` and tcop command-timing/elog line-format state
+bridge through `PgBackendCommandState` and `PgBackendLogState`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.

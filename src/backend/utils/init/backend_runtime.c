@@ -96,6 +96,8 @@ static PG_GLOBAL_EXECUTION PgExecution process_execution;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendCoreState early_backend_core = {
 	.mode = InitProcessing
 };
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendCommandState early_backend_command;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendLogState early_backend_log;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND BackendType early_backend_type = B_INVALID;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PGPROC *early_my_proc = NULL;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ProcNumber early_my_proc_number = INVALID_PROC_NUMBER;
@@ -277,6 +279,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionLockWaitState early_session_lo
 	.debug_deadlocks_value = false,
 	.trace_lwlocks_value = false
 };
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionLoopState early_session_loop_state;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionLoggingState early_session_logging = {
 	.initialized = true,
 	.debug_print_plan_value = false,
@@ -649,6 +652,12 @@ static void PgSessionAdoptEarlyNamespaceState(PgSession *session);
 static void PgSessionInitializeLocaleState(PgSessionLocaleState *locale);
 static void PgSessionAdoptEarlyLocaleState(PgSession *session);
 static void PgBackendResetCoreState(PgBackendCoreState *core);
+static void PgBackendInitializeCommandState(PgBackendCommandState *command);
+static void PgBackendAdoptEarlyCommandState(PgBackend *backend);
+static void PgBackendInitializeLogState(PgBackendLogState *log_state);
+static void PgBackendAdoptEarlyLogState(PgBackend *backend);
+static void PgSessionInitializeLoopState(PgSessionLoopState *loop_state);
+static void PgSessionAdoptEarlyLoopState(PgSession *session);
 static void PgBackendInitializeProcNumberState(PgBackend *backend);
 static void PgBackendAdoptEarlyCoreState(PgBackend *backend);
 static void PgBackendAdoptEarlyMyProc(PgBackend *backend);
@@ -2141,6 +2150,60 @@ PgBackendAdoptEarlyMyBgworkerEntry(PgBackend *backend)
 }
 
 static void
+PgBackendInitializeCommandState(PgBackendCommandState *command)
+{
+	Assert(command != NULL);
+
+	MemSet(command, 0, sizeof(*command));
+}
+
+static void
+PgBackendAdoptEarlyCommandState(PgBackend *backend)
+{
+	Assert(backend != NULL);
+
+	backend->command = early_backend_command;
+	PgBackendInitializeCommandState(&early_backend_command);
+}
+
+static void
+PgBackendInitializeLogState(PgBackendLogState *log_state)
+{
+	Assert(log_state != NULL);
+
+	MemSet(log_state, 0, sizeof(*log_state));
+}
+
+static void
+PgBackendAdoptEarlyLogState(PgBackend *backend)
+{
+	Assert(backend != NULL);
+
+	backend->log_state = early_backend_log;
+	PgBackendInitializeLogState(&early_backend_log);
+}
+
+static void
+PgSessionInitializeLoopState(PgSessionLoopState *loop_state)
+{
+	Assert(loop_state != NULL);
+
+	MemSet(loop_state, 0, sizeof(*loop_state));
+	loop_state->send_ready_for_query = true;
+}
+
+static void
+PgSessionAdoptEarlyLoopState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	session->loop_state = early_session_loop_state;
+	if (!session->loop_state.send_ready_for_query)
+		session->loop_state.send_ready_for_query = true;
+	PgSessionInitializeLoopState(&early_session_loop_state);
+}
+
+static void
 PgBackendInitializePgStatPendingState(PgBackendPgStatPendingState *pgstat_pending)
 {
 	Assert(pgstat_pending != NULL);
@@ -2829,6 +2892,8 @@ InitializePgProcessRuntime(void)
 	PgBackendInitializeProcNumberState(&process_backend);
 	PgBackendInitializeInterrupts(&process_backend);
 	PgBackendAdoptEarlyCoreState(&process_backend);
+	PgBackendAdoptEarlyCommandState(&process_backend);
+	PgBackendAdoptEarlyLogState(&process_backend);
 	PgBackendAdoptEarlyMyProc(&process_backend);
 	PgBackendAdoptEarlyProcNumberState(&process_backend);
 	PgBackendAdoptEarlyMyBEEntry(&process_backend);
@@ -2866,6 +2931,7 @@ InitializePgProcessRuntime(void)
 	process_session.backend = &process_backend;
 	process_session.connection = &process_connection;
 	process_session.execution = &process_execution;
+	PgSessionAdoptEarlyLoopState(&process_session);
 	PgSessionAdoptEarlyDatabaseState(&process_session);
 	PgSessionAdoptEarlyTablespaceState(&process_session);
 	PgSessionAdoptEarlyBinaryUpgradeState(&process_session);
@@ -2993,6 +3059,9 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	state->backend.backend_type = backend_type;
 	PgBackendInitializeProcNumberState(&state->backend);
 	PgBackendInitializeInterrupts(&state->backend);
+	PgBackendResetCoreState(&state->backend.core);
+	PgBackendInitializeCommandState(&state->backend.command);
+	PgBackendInitializeLogState(&state->backend.log_state);
 	PgBackendInitializePgStatPendingState(&state->backend.pgstat_pending);
 	PgBackendInitializeActivityState(&state->backend.activity);
 	PgBackendInitializeMemoryManagerState(&state->backend.memory_manager);
@@ -3022,6 +3091,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	state->session.backend = &state->backend;
 	state->session.connection = &state->connection;
 	state->session.execution = &state->execution;
+	PgSessionInitializeLoopState(&state->session.loop_state);
 	PgSessionInitializeTablespaceState(&state->session.tablespace);
 	PgSessionInitializeBinaryUpgradeState(&state->session.binary_upgrade);
 	PgSessionInitializeDateTimeState(&state->session.datetime);
@@ -3089,6 +3159,8 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	state->carrier.current_session = &state->session;
 	state->carrier.current_execution = &state->execution;
 	PgBackendAdoptEarlyCoreState(&state->backend);
+	PgBackendAdoptEarlyCommandState(&state->backend);
+	PgBackendAdoptEarlyLogState(&state->backend);
 	PgBackendAdoptEarlyMyProc(&state->backend);
 	PgBackendAdoptEarlyProcNumberState(&state->backend);
 	PgBackendAdoptEarlyMyBEEntry(&state->backend);
@@ -3107,6 +3179,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgBackendAdoptEarlyWaitState(&state->backend);
 	PgBackendAdoptEarlyTransactionState(&state->backend);
 	PgBackendAdoptEarlyTimeoutState(&state->backend);
+	PgSessionAdoptEarlyLoopState(&state->session);
 	PgSessionAdoptEarlyDatabaseState(&state->session);
 	PgSessionAdoptEarlyTablespaceState(&state->session);
 	PgSessionAdoptEarlyBinaryUpgradeState(&state->session);
@@ -6026,6 +6099,15 @@ PgCurrentMemoryContextRef(void)
 	return &PgCurrentExecutionMemoryContexts()->current_context;
 }
 
+bool *
+PgCurrentDoingCommandReadRef(void)
+{
+	if (CurrentPgSession == NULL)
+		return &early_session_loop_state.doing_command_read;
+
+	return &CurrentPgSession->loop_state.doing_command_read;
+}
+
 MemoryContext *
 PgErrorContextRef(void)
 {
@@ -6591,6 +6673,60 @@ pg_prng_state *
 PgCurrentGlobalPrngStateRef(void)
 {
 	return &PgCurrentCoreState()->global_prng_state;
+}
+
+static PgBackendCommandState *
+PgCurrentBackendCommandState(void)
+{
+	if (CurrentPgBackend == NULL)
+		return &early_backend_command;
+
+	return &CurrentPgBackend->command;
+}
+
+const char **
+PgCurrentUserDOptionRef(void)
+{
+	return &PgCurrentBackendCommandState()->user_d_option;
+}
+
+struct rusage *
+PgCurrentUsageSaveRusageRef(void)
+{
+	return &PgCurrentBackendCommandState()->save_rusage;
+}
+
+struct timeval *
+PgCurrentUsageSaveTimevalRef(void)
+{
+	return &PgCurrentBackendCommandState()->save_timeval;
+}
+
+static PgBackendLogState *
+PgCurrentBackendLogState(void)
+{
+	if (CurrentPgBackend == NULL)
+		return &early_backend_log;
+
+	return &CurrentPgBackend->log_state;
+}
+
+char *
+PgCurrentFormattedStartTimeBuffer(void)
+{
+	return PgCurrentBackendLogState()->formatted_start_time;
+}
+
+long *
+PgCurrentLogLineNumberRef(void)
+{
+	return &PgCurrentBackendLogState()->line_number;
+}
+
+int *
+PgCurrentLogLinePidRef(void)
+{
+	return &PgCurrentBackendLogState()->line_pid;
 }
 
 bool *

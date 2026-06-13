@@ -137,7 +137,7 @@ typedef struct BindParamCbData
  * as opposed to any random read from client that might happen within
  * commands like COPY FROM STDIN.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool DoingCommandRead = false;
+#define DoingCommandRead (*PgCurrentDoingCommandReadRef())
 
 /*
  * If an unnamed prepared statement exists, it's stored here.
@@ -147,7 +147,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool DoingCommandRead = false;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION CachedPlanSource *unnamed_stmt_psrc = NULL;
 
 /* assorted command-line switches */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND const char *userDoption = NULL;	/* -D switch */
+#define userDoption (*PgCurrentUserDOptionRef())	/* -D switch */
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool EchoQuery = false;	/* -E switch */
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool UseSemiNewlineNewline = false;	/* -j switch */
 
@@ -4265,6 +4265,7 @@ PgSessionLoopStateInit(PgSessionLoopState *state)
 	state->doing_extended_query_message = false;
 	state->ignore_till_sync = false;
 	state->step_error_boundary_active = false;
+	state->doing_command_read = false;
 	state->transaction_started = false;
 }
 
@@ -5224,8 +5225,8 @@ forbidden_in_wal_sender(char firstchar)
 }
 
 
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND struct rusage Save_r;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND struct timeval Save_t;
+#define Save_r (*PgCurrentUsageSaveRusageRef())
+#define Save_t (*PgCurrentUsageSaveTimevalRef())
 
 void
 ResetUsage(void)

@@ -77,6 +77,7 @@ SELECT test_backend_aio_state_is_backend_local();
 SELECT test_pmchild_thread_backend_signal_api();
 SELECT test_pmchild_thread_backend_publication_race();
 SELECT test_backend_core_state_is_backend_local();
+SELECT test_backend_command_log_state_is_backend_local();
 SELECT test_execution_debug_query_string_is_execution_local();
 SELECT test_execution_error_state_is_execution_local();
 SELECT test_execution_memory_contexts_are_execution_local();

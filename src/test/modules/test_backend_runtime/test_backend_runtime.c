@@ -10259,6 +10259,94 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_backend_command_log_state_is_backend_local);
+Datum
+test_backend_command_log_state_is_backend_local(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgSession  *saved_session;
+	PgBackend	fake_backend1;
+	PgBackend	fake_backend2;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	bool		ok = true;
+
+	saved_backend = CurrentPgBackend;
+	saved_session = CurrentPgSession;
+	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
+	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	PG_TRY();
+	{
+		CurrentPgBackend = &fake_backend1;
+		CurrentPgSession = &fake_session1;
+		*PgCurrentDoingCommandReadRef() = true;
+		*PgCurrentUserDOptionRef() = "data-one";
+		PgCurrentUsageSaveRusageRef()->ru_inblock = 11;
+		PgCurrentUsageSaveTimevalRef()->tv_sec = 12;
+		strlcpy(PgCurrentFormattedStartTimeBuffer(), "start-one",
+				PG_BACKEND_FORMATTED_TS_LEN);
+		*PgCurrentLogLineNumberRef() = 13;
+		*PgCurrentLogLinePidRef() = 14;
+
+		CurrentPgBackend = &fake_backend2;
+		CurrentPgSession = &fake_session2;
+		ok = ok && !*PgCurrentDoingCommandReadRef();
+		ok = ok && *PgCurrentUserDOptionRef() == NULL;
+		ok = ok && PgCurrentUsageSaveRusageRef()->ru_inblock == 0;
+		ok = ok && PgCurrentUsageSaveTimevalRef()->tv_sec == 0;
+		ok = ok && PgCurrentFormattedStartTimeBuffer()[0] == '\0';
+		ok = ok && *PgCurrentLogLineNumberRef() == 0;
+		ok = ok && *PgCurrentLogLinePidRef() == 0;
+
+		*PgCurrentDoingCommandReadRef() = false;
+		*PgCurrentUserDOptionRef() = "data-two";
+		PgCurrentUsageSaveRusageRef()->ru_inblock = 21;
+		PgCurrentUsageSaveTimevalRef()->tv_sec = 22;
+		strlcpy(PgCurrentFormattedStartTimeBuffer(), "start-two",
+				PG_BACKEND_FORMATTED_TS_LEN);
+		*PgCurrentLogLineNumberRef() = 23;
+		*PgCurrentLogLinePidRef() = 24;
+
+		CurrentPgBackend = &fake_backend1;
+		CurrentPgSession = &fake_session1;
+		ok = ok && *PgCurrentDoingCommandReadRef();
+		ok = ok && strcmp(*PgCurrentUserDOptionRef(), "data-one") == 0;
+		ok = ok && PgCurrentUsageSaveRusageRef()->ru_inblock == 11;
+		ok = ok && PgCurrentUsageSaveTimevalRef()->tv_sec == 12;
+		ok = ok && strcmp(PgCurrentFormattedStartTimeBuffer(), "start-one") == 0;
+		ok = ok && *PgCurrentLogLineNumberRef() == 13;
+		ok = ok && *PgCurrentLogLinePidRef() == 14;
+
+		CurrentPgBackend = &fake_backend2;
+		CurrentPgSession = &fake_session2;
+		ok = ok && !*PgCurrentDoingCommandReadRef();
+		ok = ok && strcmp(*PgCurrentUserDOptionRef(), "data-two") == 0;
+		ok = ok && PgCurrentUsageSaveRusageRef()->ru_inblock == 21;
+		ok = ok && PgCurrentUsageSaveTimevalRef()->tv_sec == 22;
+		ok = ok && strcmp(PgCurrentFormattedStartTimeBuffer(), "start-two") == 0;
+		ok = ok && *PgCurrentLogLineNumberRef() == 23;
+		ok = ok && *PgCurrentLogLinePidRef() == 24;
+
+		CurrentPgBackend = saved_backend;
+		CurrentPgSession = saved_session;
+	}
+	PG_CATCH();
+	{
+		CurrentPgBackend = saved_backend;
+		CurrentPgSession = saved_session;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "backend command/log state was not backend-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_execution_debug_query_string_is_execution_local);
 Datum
 test_execution_debug_query_string_is_execution_local(PG_FUNCTION_ARGS)

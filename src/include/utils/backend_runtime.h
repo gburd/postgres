@@ -13,6 +13,8 @@
 #define BACKEND_RUNTIME_H
 
 #include <signal.h>
+#include <sys/resource.h>
+#include <sys/time.h>
 
 #include "access/session.h"
 #include "access/transam.h"
@@ -215,6 +217,22 @@ typedef struct PgBackendCoreState
 	bool		ignore_system_indexes;
 	pg_prng_state global_prng_state;
 } PgBackendCoreState;
+
+typedef struct PgBackendCommandState
+{
+	const char *user_d_option;
+	struct rusage save_rusage;
+	struct timeval save_timeval;
+} PgBackendCommandState;
+
+#define PG_BACKEND_FORMATTED_TS_LEN 128
+
+typedef struct PgBackendLogState
+{
+	char		formatted_start_time[PG_BACKEND_FORMATTED_TS_LEN];
+	long		line_number;
+	int			line_pid;
+} PgBackendLogState;
 
 typedef struct PgBackendTimeoutState
 {
@@ -1473,6 +1491,7 @@ typedef struct PgSessionLoopState
 	volatile bool doing_extended_query_message;
 	volatile bool ignore_till_sync;
 	volatile bool step_error_boundary_active;
+	bool		doing_command_read;
 	bool		transaction_started;
 } PgSessionLoopState;
 
@@ -1513,6 +1532,8 @@ struct PgBackend
 	struct Latch *interrupt_latch;
 	PgBackendExitState exit_state;
 	PgBackendCoreState core;
+	PgBackendCommandState command;
+	PgBackendLogState log_state;
 	PgBackendTimeoutState timeout;
 	PgBackendWalSenderState walsender;
 	PgBackendReplicationState replication;
@@ -1649,6 +1670,7 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgSession *CurrentPgSession
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgConnection *CurrentPgConnection;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgExecution *CurrentPgExecution;
 
+extern bool *PgCurrentDoingCommandReadRef(void);
 extern MemoryContext *PgCurrentMemoryContextRef(void);
 extern MemoryContext *PgErrorContextRef(void);
 extern MemoryContext *PgMessageContextRef(void);
@@ -1958,6 +1980,12 @@ extern WaitEventSet **PgCurrentLatchWaitSetRef(void);
 extern Latch *PgCurrentLocalLatchData(void);
 extern uint32 **PgCurrentMyWaitEventInfoRef(void);
 extern uint32 *PgCurrentLocalWaitEventInfoRef(void);
+extern const char **PgCurrentUserDOptionRef(void);
+extern struct rusage *PgCurrentUsageSaveRusageRef(void);
+extern struct timeval *PgCurrentUsageSaveTimevalRef(void);
+extern char *PgCurrentFormattedStartTimeBuffer(void);
+extern long *PgCurrentLogLineNumberRef(void);
+extern int *PgCurrentLogLinePidRef(void);
 extern PgBackendTimeoutState *PgCurrentTimeoutState(void);
 extern PgBackendWalSenderState *PgCurrentWalSenderState(void);
 extern PgBackendReplicationState *PgCurrentReplicationState(void);

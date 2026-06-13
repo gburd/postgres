@@ -7512,6 +7512,49 @@ Validation for this slice:
   `test_backend_ipc_state_is_backend_local()` covers the invalidation local
   transaction ID counter.
 
+## Backend Command And Log State Bridge
+
+The one-hundred-sixtieth Phase 12 slice moves tcop command-loop and elog
+line-format state into explicit runtime objects:
+
+- `DoingCommandRead` is now a compatibility macro over
+  `PgSessionLoopState.doing_command_read`, because it describes the currently
+  attached session's protocol read boundary rather than a process-global
+  property;
+- `userDoption`, `Save_r`, and `Save_t` now live in
+  `PgBackendCommandState`;
+- elog's formatted-session-start cache, per-backend log line number, and
+  cached log-line PID now live in `PgBackendLogState`.
+
+The command and log buckets are scalar-only. Their early fallback buckets can
+be copied directly during process initialization or thread-runtime adoption.
+The session-loop fallback follows the existing loop-state initializer and
+preserves the `send_ready_for_query` default after copy-back, matching the
+pre-existing `PgSessionLoopStateInit()` behavior.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `postgres.o`,
+  `elog.o`, and `test_backend_runtime.o`;
+- backend and `src/common` clean rebuild plus generated-header recovery
+  passed, followed by clean full `gmake -j8`;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 47 to 44;
+- `gmake -C contrib -j8` passed;
+- PL/pgSQL was cleaned, rebuilt, and reinstalled after the installed-header
+  layout change;
+- `gmake -C src/test/modules/test_backend_runtime check` passed after
+  restoring the expected-file trailing blank line;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
+  explicit `PG_REGRESS` environment;
+- `test_backend_command_log_state_is_backend_local()` now covers the
+  command-read flag, `-D` option storage, usage snapshot fields, formatted
+  start-time buffer, elog line counter, and cached elog PID across two fake
+  logical backends and sessions.
+
 ## Backend Parallel State Bridge
 
 The one-hundred-forty-second Phase 12 slice moves a parallel-query and
