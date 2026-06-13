@@ -400,6 +400,72 @@ SHOW test_backend_runtime_threaded.custom_guc;
 	"changed\nlocal\nchanged\ndefault",
 	'threaded custom GUC preserves SET LOCAL and RESET stack semantics');
 
+my @guc_stress_scripts;
+for my $worker (1 .. 4)
+{
+	my $script = qq{\\set ON_ERROR_STOP on
+LOAD 'test_backend_runtime_threaded';
+BEGIN;
+DO \$stress\$
+DECLARE
+  i int;
+BEGIN
+  FOR i IN 1..25 LOOP
+    PERFORM set_config('work_mem', (4 + (i % 4))::text || 'MB', false);
+    PERFORM set_config('default_statistics_target', (100 + i)::text, false);
+    PERFORM set_config('lock_timeout', (2000 + i)::text || 'ms', false);
+    PERFORM set_config('search_path', 'pg_catalog, public', false);
+    PERFORM set_config('bytea_output',
+                       CASE WHEN i % 2 = 0 THEN 'hex' ELSE 'escape' END,
+                       false);
+    PERFORM set_config('IntervalStyle',
+                       CASE WHEN i % 2 = 0 THEN 'postgres' ELSE 'iso_8601' END,
+                       false);
+    PERFORM set_config('wal_consistency_checking',
+                       CASE WHEN i % 2 = 0 THEN 'all' ELSE '' END,
+                       false);
+    PERFORM set_config('test_backend_runtime_threaded.custom_guc',
+                       'stress-$worker-' || i::text,
+                       false);
+  END LOOP;
+END
+\$stress\$;
+SET LOCAL work_mem = '16MB';
+SET LOCAL test_backend_runtime_threaded.custom_guc = 'local-$worker';
+SELECT 'local-$worker:' || current_setting('work_mem') || ':' ||
+       current_setting('test_backend_runtime_threaded.custom_guc');
+COMMIT;
+SELECT 'done-$worker:' || current_setting('work_mem') || ':' ||
+       current_setting('default_statistics_target') || ':' ||
+       current_setting('lock_timeout') || ':' ||
+       current_setting('test_backend_runtime_threaded.custom_guc');
+};
+	push @guc_stress_scripts,
+	  {
+		worker => $worker,
+		psql => start_psql_script($script, 30),
+	  };
+}
+
+foreach my $stress (@guc_stress_scripts)
+{
+	my $worker = $stress->{worker};
+	my $psql = $stress->{psql};
+
+	ok( pump_until(
+			$psql->{run},
+			$psql->{timer},
+			$psql->{stdout},
+			qr/done-$worker:5MB:125:2025ms:stress-$worker-25/),
+		"threaded GUC stress worker $worker completed");
+	eval { $psql->{run}->finish; };
+	is(${ $psql->{stderr} }, '',
+		"threaded GUC stress worker $worker completed without stderr");
+	like(${ $psql->{stdout} },
+		qr/local-$worker:16MB:local-$worker/,
+		"threaded GUC stress worker $worker saw transaction-local values");
+}
+
 my ($load_ret, $load_stdout, $load_stderr) =
   $node->psql('postgres', "LOAD 'test_backend_runtime';",
 	on_error_stop => 1);

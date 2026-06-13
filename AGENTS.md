@@ -622,6 +622,11 @@ Important current files:
   fail with the normal library-access policy error unless explicit load
   privileges are granted.
 
+  Manual concurrent threaded GUC smokes should capture background client PIDs
+  with `$!` and wait for that explicit list. Do not rely on `jobs -p` in the
+  non-interactive zsh shell; it can produce an empty list, causing the harness
+  to stop the temp postmaster before the background clients finish.
+
 - Direct logical replication parallel-apply smokes should use the upstream
   `src/test/subscription/t/015_stream.pl` interleaved transaction shape:
   start one large transaction, run and commit a second large transaction while

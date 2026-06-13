@@ -4244,3 +4244,43 @@ Validation for this slice:
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals;
 - `git diff --check` passed.
+
+## Threaded GUC Heavy Stress Coverage
+
+The eighty-seventh Phase 12 slice adds the first concurrent GUC-heavy stress
+coverage required by Gate E2:
+
+- the threaded runtime TAP fixture now starts four simultaneous `psql`
+  scripts against the threaded postmaster;
+- each script loads `test_backend_runtime_threaded`, ensuring per-session
+  custom GUC module initialization is exercised under concurrent startup;
+- each script repeatedly updates built-in direct-pointer GUCs
+  (`work_mem`, `default_statistics_target`, and `lock_timeout`), assign-hook
+  GUCs (`search_path`, `bytea_output`, `IntervalStyle`, and
+  `wal_consistency_checking`), and the custom extension GUC
+  `test_backend_runtime_threaded.custom_guc`;
+- each script verifies transaction-local `work_mem` and custom-GUC values
+  inside the transaction, then verifies final session values after commit;
+- the expected final values include worker-specific custom GUC text, so the
+  stress catches cross-session leakage between concurrent thread-backed
+  sessions.
+
+This does not complete Gate E2. It closes the first larger GUC-heavy threaded
+workload gap, including an assign-hook path for `wal_consistency_checking`,
+but broader extension DDL, lifecycle teardown/resource cleanup, PMChild race
+stress, and startup-gate narrowing remain open before Phase 13.
+
+Validation for this slice:
+
+- a manual threaded smoke with `multithreaded = on` ran four concurrent
+  `psql` scripts with the same GUC-heavy workload and verified
+  `local-N:16MB:local-N` plus
+  `done-N:5MB:125:2025ms:stress-N-25` for workers 1 through 4;
+- parser-only Perl syntax validation for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed
+  using a temporary local `IPC::Run` stub, because this checkout's system Perl
+  still lacks the real `IPC::Run` module required to execute TAP tests;
+- full `gmake -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- `git diff --check` passed.

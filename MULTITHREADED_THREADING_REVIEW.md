@@ -246,6 +246,15 @@ semantics after per-session module initialization. The remaining GUC blockers
 are broader assign-hook coverage, extension-DDL/custom-GUC stress, and larger
 GUC-heavy threaded workloads.
 
+Additional status update: the threaded runtime fixture now includes a
+concurrent GUC-heavy stress block. Four simultaneous threaded sessions load
+the threaded test module, repeatedly update built-in direct-pointer GUCs,
+assign-hook GUCs including `wal_consistency_checking`, and per-session custom
+extension GUC values, then verify transaction-local values and final session
+values remain isolated. This closes the first GUC-heavy threaded workload
+coverage gap; extension DDL, broader lifecycle teardown, and startup-gate
+narrowing remain Gate E2 blockers.
+
 ### 4. Broad Threaded Startup Serialization Is Still Present
 
 Severity: High

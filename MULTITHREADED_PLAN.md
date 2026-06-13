@@ -860,9 +860,12 @@ in threaded sessions, including direct-pointer GUCs such as `work_mem` and
 `default_statistics_target`. The same fixture now also covers built-in
 `SET LOCAL` rollback/commit behavior, `RESET` back to database and startup
 packet sources, and custom extension GUC `SET LOCAL`/`RESET` semantics after
-per-session module initialization. Broader table-DDL, extension-DDL,
-assign-hook coverage, and GUC-heavy stress remain Gate E2 blockers before
-Phase 13.
+per-session module initialization. GUC-heavy threaded stress now runs several
+simultaneous sessions through repeated built-in direct-pointer GUC updates,
+assign-hook GUC updates including `wal_consistency_checking`, transaction-local
+overrides, and per-session custom extension GUC values. Broader table-DDL,
+extension-DDL, lifecycle teardown, and startup-gate narrowing remain Gate E2
+blockers before Phase 13.
 
 Phase 16 still owns broader hardening such as sanitizer runs, contrib-wide
 threaded regression, crash/FATAL behavior matrices, platform coverage, and
