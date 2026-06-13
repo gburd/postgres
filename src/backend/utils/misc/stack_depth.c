@@ -22,11 +22,8 @@
 #include "utils/guc_hooks.h"
 
 
-/* GUC variable for maximum stack depth (measured in kilobytes) */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int max_stack_depth = 100;
-
 /* max_stack_depth converted to bytes for speed of checking */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION ssize_t max_stack_depth_bytes = 100 * (ssize_t) 1024;
+#define max_stack_depth_bytes (*PgCurrentMaxStackDepthBytesRef())
 
 /*
  * Stack base pointer -- initialized by set_stack_base(), which

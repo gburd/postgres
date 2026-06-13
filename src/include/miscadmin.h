@@ -339,7 +339,9 @@ extern int *PgCurrentIntervalStyleRef(void);
 #define MAXTZLEN		10		/* max TZ name len, not counting tr. null */
 
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool enableFsync;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool allowSystemTableMods;
+extern bool *PgCurrentAllowSystemTableModsRef(void);
+#define allowSystemTableMods (*PgCurrentAllowSystemTableModsRef())
+
 extern int *PgCurrentWorkMemRef(void);
 extern double *PgCurrentHashMemMultiplierRef(void);
 extern int *PgCurrentMaintenanceWorkMemRef(void);
@@ -379,7 +381,9 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool VacuumCostActive;
 
 /* in utils/misc/stack_depth.c */
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int max_stack_depth;
+extern int *PgCurrentMaxStackDepthRef(void);
+extern ssize_t *PgCurrentMaxStackDepthBytesRef(void);
+#define max_stack_depth (*PgCurrentMaxStackDepthRef())
 
 /* Required daylight between max_stack_depth and the kernel limit, in bytes */
 #define STACK_DEPTH_SLOP (512 * 1024)
@@ -612,9 +616,14 @@ extern bool *PgCurrentIgnoreSystemIndexesRef(void);
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool process_shared_preload_libraries_in_progress;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool process_shared_preload_libraries_done;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool process_shmem_requests_in_progress;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *session_preload_libraries_string;
+extern char **PgCurrentSessionPreloadLibrariesRef(void);
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *shared_preload_libraries_string;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *local_preload_libraries_string;
+extern char **PgCurrentLocalPreloadLibrariesRef(void);
+
+#define session_preload_libraries_string \
+	(*PgCurrentSessionPreloadLibrariesRef())
+#define local_preload_libraries_string \
+	(*PgCurrentLocalPreloadLibrariesRef())
 
 extern void CreateDataDirLockFile(bool amPostmaster);
 extern void CreateSocketLockFile(const char *socketfile, bool amPostmaster,

@@ -1560,3 +1560,57 @@ Validation for this slice:
 - `git diff --check` passed;
 - static scans found no remaining direct session TLS definitions or extern
   declarations for the moved logging/debug names.
+
+## Session Miscellaneous GUC State Bridge
+
+The thirtieth Phase 12 slice moves miscellaneous session GUC state under
+`PgSession`:
+
+- `PgSession` now owns a `PgSessionMiscGUCState`;
+- `PgSessionMiscGUCState` owns `allowSystemTableMods`,
+  `max_stack_depth`, the derived `max_stack_depth_bytes` value used by
+  stack-depth checks, `session_preload_libraries_string`,
+  `local_preload_libraries_string`, and `Dynamic_library_path`;
+- the public names remain source-compatible lvalue macros in `miscadmin.h`
+  and `fmgr.h`;
+- `stack_depth.c` keeps `max_stack_depth_bytes` private to the stack-depth
+  implementation, but the storage now lives in the active logical session via
+  `PgCurrentMaxStackDepthBytesRef()`;
+- early startup paths before `CurrentPgSession` is installed use fallback
+  session-local storage in `backend_runtime.c`;
+- process-mode and thread-runtime session installation adopt any early
+  fallback miscellaneous GUC state into the logical session object;
+- `RebindSessionGUCVariablePointers()` now rebinds the generated GUC records
+  for `allow_system_table_mods`, `dynamic_library_path`,
+  `local_preload_libraries`, `max_stack_depth`, and
+  `session_preload_libraries` whenever the active logical session changes.
+
+Validation for this slice:
+
+- touched-object builds passed for `globals.o`, `miscinit.o`,
+  `backend_runtime.o`, `guc.o`, `stack_depth.o`, `dfmgr.o`, and
+  `test_backend_runtime.o`;
+- because exported miscellaneous GUC globals changed into compatibility
+  macros, `gmake -C src/backend clean` plus generated utility and node-header
+  recovery was used before the clean rebuild;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed, followed by rebuilding
+  and reinstalling `src/test/modules/test_backend_runtime`,
+  `src/test/regress`, `libpqwalreceiver`, and `src/backend/snowball`;
+- focused `test_backend_runtime` regression passed and includes
+  `test_session_misc_guc_state_is_session_local()`, which switches sessions
+  through `PgSetCurrentSession()`, sets the moved values through the GUC
+  machinery, verifies derived stack-depth bytes, and proves the values follow
+  the active session after GUC pointer rebinding;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- direct threaded-runtime TAP coverage was attempted for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`,
+  but this system Perl is missing `IPC::Run`, so both tests failed before
+  starting PostgreSQL;
+- `git diff --check` passed;
+- static scans found no remaining direct session TLS definitions or extern
+  declarations for the moved miscellaneous GUC names.

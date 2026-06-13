@@ -1585,6 +1585,10 @@ RebindSessionGUCVariablePointers(void)
 	if (guc_hashtab == NULL)
 		return;
 
+	gconf = find_option("allow_system_table_mods", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentAllowSystemTableModsRef();
+
 	gconf = find_option("backslash_quote", false, false, PANIC);
 	Assert(gconf->vartype == PGC_ENUM);
 	gconf->_enum.variable = PgCurrentBackslashQuoteRef();
@@ -1624,6 +1628,10 @@ RebindSessionGUCVariablePointers(void)
 	gconf = find_option("debug_print_rewritten", false, false, PANIC);
 	Assert(gconf->vartype == PGC_BOOL);
 	gconf->_bool.variable = PgCurrentDebugPrintRewrittenRef();
+
+	gconf = find_option("dynamic_library_path", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentDynamicLibraryPathRef();
 
 #ifdef DEBUG_NODE_TESTS_ENABLED
 	gconf = find_option("debug_copy_parse_plan_trees", false, false, PANIC);
@@ -1878,6 +1886,10 @@ RebindSessionGUCVariablePointers(void)
 	Assert(gconf->vartype == PGC_INT);
 	gconf->_int.variable = PgCurrentLockTimeoutRef();
 
+	gconf = find_option("local_preload_libraries", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentLocalPreloadLibrariesRef();
+
 #ifdef BTREE_BUILD_STATS
 	gconf = find_option("log_btree_build_stats", false, false, PANIC);
 	Assert(gconf->vartype == PGC_BOOL);
@@ -1956,6 +1968,14 @@ RebindSessionGUCVariablePointers(void)
 	gconf = find_option("maintenance_io_concurrency", false, false, PANIC);
 	Assert(gconf->vartype == PGC_INT);
 	gconf->_int.variable = PgCurrentMaintenanceIOConcurrencyRef();
+
+	gconf = find_option("max_stack_depth", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentMaxStackDepthRef();
+
+	gconf = find_option("session_preload_libraries", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentSessionPreloadLibrariesRef();
 
 	gconf = find_option("synchronous_commit", false, false, PANIC);
 	Assert(gconf->vartype == PGC_ENUM);

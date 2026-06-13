@@ -18,6 +18,7 @@ SELECT test_session_buffer_io_state_is_session_local();
 SELECT test_session_xact_defaults_are_session_local();
 SELECT test_session_lock_wait_state_is_session_local();
 SELECT test_session_logging_state_is_session_local();
+SELECT test_session_misc_guc_state_is_session_local();
 SELECT test_session_query_memory_state_is_session_local();
 SELECT test_session_planner_cost_state_is_session_local();
 SELECT test_session_planner_method_state_is_session_local();

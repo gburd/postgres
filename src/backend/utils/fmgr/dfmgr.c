@@ -67,8 +67,6 @@ static PG_GLOBAL_RUNTIME DynamicFileList *file_tail = NULL;
 #define SAME_INODE(A,B) false
 #endif
 
-PG_THREAD_LOCAL PG_GLOBAL_SESSION char *Dynamic_library_path;
-
 static void *internal_load_library(const char *libname);
 pg_noreturn static void incompatible_module_error(const char *libname,
 												  const Pg_abi_values *module_magic_data);

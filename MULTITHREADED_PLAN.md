@@ -680,7 +680,9 @@ tuning direct-pointer GUC bridge through `PgSession`, plus the transaction
 default direct-pointer GUC bridge through `PgSession`, plus the lock/wait
 timeout and lock debug direct-pointer GUC bridge through `PgSession`, plus the
 logging/debug direct-pointer GUC and derived `log_min_messages`/backtrace
-bridges through `PgSession`.
+bridges through `PgSession`, plus the miscellaneous session GUC bridge for
+system-table modification, stack-depth, preload-library, and dynamic-library
+path state through `PgSession`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.

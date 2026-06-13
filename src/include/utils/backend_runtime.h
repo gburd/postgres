@@ -331,6 +331,17 @@ typedef struct PgSessionLoggingState
 	char	   *backtrace_function_list_value;
 } PgSessionLoggingState;
 
+typedef struct PgSessionMiscGUCState
+{
+	bool		initialized;
+	bool		allow_system_table_mods_value;
+	int			max_stack_depth_kb;
+	ssize_t		max_stack_depth_bytes;
+	char	   *session_preload_libraries_value;
+	char	   *local_preload_libraries_value;
+	char	   *dynamic_library_path_value;
+} PgSessionMiscGUCState;
+
 typedef struct PgSessionQueryMemoryState
 {
 	bool		initialized;
@@ -530,6 +541,7 @@ struct PgSession
 	PgSessionXactDefaultState xact_defaults;
 	PgSessionLockWaitState lock_wait;
 	PgSessionLoggingState logging;
+	PgSessionMiscGUCState misc_guc;
 	PgSessionQueryMemoryState query_memory;
 	PgSessionPlannerCostState planner_cost;
 	PgSessionPlannerMethodState planner_method;
@@ -625,6 +637,12 @@ extern double *PgCurrentLogStatementSampleRateRef(void);
 extern double *PgCurrentLogXactSampleRateRef(void);
 extern char **PgCurrentBacktraceFunctionsRef(void);
 extern char **PgCurrentBacktraceFunctionListRef(void);
+extern bool *PgCurrentAllowSystemTableModsRef(void);
+extern int *PgCurrentMaxStackDepthRef(void);
+extern ssize_t *PgCurrentMaxStackDepthBytesRef(void);
+extern char **PgCurrentSessionPreloadLibrariesRef(void);
+extern char **PgCurrentLocalPreloadLibrariesRef(void);
+extern char **PgCurrentDynamicLibraryPathRef(void);
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);

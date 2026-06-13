@@ -71,7 +71,6 @@ PG_THREAD_LOCAL PG_GLOBAL_CARRIER bool IsUnderPostmaster = false;
 PG_GLOBAL_RUNTIME bool IsBinaryUpgrade = false;
 
 PG_GLOBAL_RUNTIME bool enableFsync = true;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool allowSystemTableMods = false;
 
 /*
  * Primary determinants of sizes of shared-memory structures.
