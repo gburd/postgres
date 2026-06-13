@@ -71,6 +71,7 @@
 #include "tcop/tcopprot.h"
 #include "tsearch/ts_cache.h"
 #include "utils/backend_runtime.h"
+#include "postmaster/datachecksum_state.h"
 #include "utils/backend_status.h"
 #include "utils/builtins.h"
 #include "utils/bytea.h"
@@ -9060,6 +9061,184 @@ test_backend_recovery_state_is_backend_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "backend recovery state was not backend-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_backend_maintenance_worker_state_is_backend_local);
+Datum
+test_backend_maintenance_worker_state_is_backend_local(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgBackend	fake_backend1;
+	PgBackend	fake_backend2;
+	PgBackendMaintenanceWorkerState *worker1;
+	PgBackendMaintenanceWorkerState *worker2;
+	bool		ok = true;
+
+	saved_backend = CurrentPgBackend;
+	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
+	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+	fake_backend1.maintenance_worker.bgwriter_last_snapshot_lsn =
+		InvalidXLogRecPtr;
+	fake_backend1.maintenance_worker.walsummarizer_sleep_quanta = 1;
+	fake_backend1.maintenance_worker.walsummarizer_redo_pointer_at_last_summary_removal =
+		InvalidXLogRecPtr;
+	fake_backend2.maintenance_worker.bgwriter_last_snapshot_lsn =
+		InvalidXLogRecPtr;
+	fake_backend2.maintenance_worker.walsummarizer_sleep_quanta = 1;
+	fake_backend2.maintenance_worker.walsummarizer_redo_pointer_at_last_summary_removal =
+		InvalidXLogRecPtr;
+
+	PG_TRY();
+	{
+		CurrentPgBackend = &fake_backend1;
+		worker1 = PgCurrentMaintenanceWorkerState();
+		worker1->arch_module_errdetail_string = (char *) &fake_backend1;
+		worker1->pgarch_last_sigterm_time = 101;
+		worker1->archive_callbacks = (const struct ArchiveModuleCallbacks *) &fake_backend1;
+		worker1->archive_module_state = (struct ArchiveModuleState *) &fake_backend1;
+		worker1->archive_context = (MemoryContext) &fake_backend1;
+		worker1->loaded_archive_library = (char *) &fake_backend1;
+		worker1->pgarch_files = (struct arch_files_state *) &fake_backend1;
+		worker1->pgarch_ready_to_stop = true;
+		worker1->ckpt_active = true;
+		worker1->ckpt_start_time = 102;
+		worker1->ckpt_start_recptr = UINT64CONST(103);
+		worker1->ckpt_cached_elapsed = 104.0;
+		worker1->last_checkpoint_time = 105;
+		worker1->last_xlog_switch_time = 106;
+		worker1->bgwriter_last_snapshot_ts = 107;
+		worker1->bgwriter_last_snapshot_lsn = UINT64CONST(108);
+		worker1->walsummarizer_sleep_quanta = 109;
+		worker1->walsummarizer_pages_read_since_last_sleep = 110;
+		worker1->walsummarizer_redo_pointer_at_last_summary_removal =
+			UINT64CONST(111);
+		worker1->datachecksum_abort_requested = true;
+		worker1->datachecksum_launcher_running = true;
+		worker1->datachecksum_operation = DISABLE_DATACHECKSUMS;
+
+		CurrentPgBackend = &fake_backend2;
+		worker2 = PgCurrentMaintenanceWorkerState();
+		ok = ok && worker2->arch_module_errdetail_string == NULL;
+		ok = ok && worker2->pgarch_last_sigterm_time == 0;
+		ok = ok && worker2->archive_callbacks == NULL;
+		ok = ok && worker2->archive_module_state == NULL;
+		ok = ok && worker2->archive_context == NULL;
+		ok = ok && worker2->loaded_archive_library == NULL;
+		ok = ok && worker2->pgarch_files == NULL;
+		ok = ok && !worker2->pgarch_ready_to_stop;
+		ok = ok && !worker2->ckpt_active;
+		ok = ok && worker2->ckpt_start_time == 0;
+		ok = ok && worker2->ckpt_start_recptr == 0;
+		ok = ok && worker2->ckpt_cached_elapsed == 0;
+		ok = ok && worker2->last_checkpoint_time == 0;
+		ok = ok && worker2->last_xlog_switch_time == 0;
+		ok = ok && worker2->bgwriter_last_snapshot_ts == 0;
+		ok = ok && worker2->bgwriter_last_snapshot_lsn == InvalidXLogRecPtr;
+		ok = ok && worker2->walsummarizer_sleep_quanta == 1;
+		ok = ok && worker2->walsummarizer_pages_read_since_last_sleep == 0;
+		ok = ok && worker2->walsummarizer_redo_pointer_at_last_summary_removal ==
+			InvalidXLogRecPtr;
+		ok = ok && !worker2->datachecksum_abort_requested;
+		ok = ok && !worker2->datachecksum_launcher_running;
+		ok = ok && worker2->datachecksum_operation == ENABLE_DATACHECKSUMS;
+
+		worker2->arch_module_errdetail_string = (char *) &fake_backend2;
+		worker2->pgarch_last_sigterm_time = 201;
+		worker2->archive_callbacks = (const struct ArchiveModuleCallbacks *) &fake_backend2;
+		worker2->archive_module_state = (struct ArchiveModuleState *) &fake_backend2;
+		worker2->archive_context = (MemoryContext) &fake_backend2;
+		worker2->loaded_archive_library = (char *) &fake_backend2;
+		worker2->pgarch_files = (struct arch_files_state *) &fake_backend2;
+		worker2->pgarch_ready_to_stop = true;
+		worker2->ckpt_active = true;
+		worker2->ckpt_start_time = 202;
+		worker2->ckpt_start_recptr = UINT64CONST(203);
+		worker2->ckpt_cached_elapsed = 204.0;
+		worker2->last_checkpoint_time = 205;
+		worker2->last_xlog_switch_time = 206;
+		worker2->bgwriter_last_snapshot_ts = 207;
+		worker2->bgwriter_last_snapshot_lsn = UINT64CONST(208);
+		worker2->walsummarizer_sleep_quanta = 209;
+		worker2->walsummarizer_pages_read_since_last_sleep = 210;
+		worker2->walsummarizer_redo_pointer_at_last_summary_removal =
+			UINT64CONST(211);
+		worker2->datachecksum_abort_requested = true;
+		worker2->datachecksum_launcher_running = true;
+		worker2->datachecksum_operation = DISABLE_DATACHECKSUMS;
+
+		CurrentPgBackend = &fake_backend1;
+		worker1 = PgCurrentMaintenanceWorkerState();
+		ok = ok && worker1->arch_module_errdetail_string ==
+			(char *) &fake_backend1;
+		ok = ok && worker1->pgarch_last_sigterm_time == 101;
+		ok = ok && worker1->archive_callbacks ==
+			(const struct ArchiveModuleCallbacks *) &fake_backend1;
+		ok = ok && worker1->archive_module_state ==
+			(struct ArchiveModuleState *) &fake_backend1;
+		ok = ok && worker1->archive_context == (MemoryContext) &fake_backend1;
+		ok = ok && worker1->loaded_archive_library == (char *) &fake_backend1;
+		ok = ok && worker1->pgarch_files ==
+			(struct arch_files_state *) &fake_backend1;
+		ok = ok && worker1->pgarch_ready_to_stop;
+		ok = ok && worker1->ckpt_active;
+		ok = ok && worker1->ckpt_start_time == 102;
+		ok = ok && worker1->ckpt_start_recptr == UINT64CONST(103);
+		ok = ok && worker1->ckpt_cached_elapsed == 104.0;
+		ok = ok && worker1->last_checkpoint_time == 105;
+		ok = ok && worker1->last_xlog_switch_time == 106;
+		ok = ok && worker1->bgwriter_last_snapshot_ts == 107;
+		ok = ok && worker1->bgwriter_last_snapshot_lsn == UINT64CONST(108);
+		ok = ok && worker1->walsummarizer_sleep_quanta == 109;
+		ok = ok && worker1->walsummarizer_pages_read_since_last_sleep == 110;
+		ok = ok && worker1->walsummarizer_redo_pointer_at_last_summary_removal ==
+			UINT64CONST(111);
+		ok = ok && worker1->datachecksum_abort_requested;
+		ok = ok && worker1->datachecksum_launcher_running;
+		ok = ok && worker1->datachecksum_operation == DISABLE_DATACHECKSUMS;
+
+		CurrentPgBackend = &fake_backend2;
+		worker2 = PgCurrentMaintenanceWorkerState();
+		ok = ok && worker2->arch_module_errdetail_string ==
+			(char *) &fake_backend2;
+		ok = ok && worker2->pgarch_last_sigterm_time == 201;
+		ok = ok && worker2->archive_callbacks ==
+			(const struct ArchiveModuleCallbacks *) &fake_backend2;
+		ok = ok && worker2->archive_module_state ==
+			(struct ArchiveModuleState *) &fake_backend2;
+		ok = ok && worker2->archive_context == (MemoryContext) &fake_backend2;
+		ok = ok && worker2->loaded_archive_library == (char *) &fake_backend2;
+		ok = ok && worker2->pgarch_files ==
+			(struct arch_files_state *) &fake_backend2;
+		ok = ok && worker2->pgarch_ready_to_stop;
+		ok = ok && worker2->ckpt_active;
+		ok = ok && worker2->ckpt_start_time == 202;
+		ok = ok && worker2->ckpt_start_recptr == UINT64CONST(203);
+		ok = ok && worker2->ckpt_cached_elapsed == 204.0;
+		ok = ok && worker2->last_checkpoint_time == 205;
+		ok = ok && worker2->last_xlog_switch_time == 206;
+		ok = ok && worker2->bgwriter_last_snapshot_ts == 207;
+		ok = ok && worker2->bgwriter_last_snapshot_lsn == UINT64CONST(208);
+		ok = ok && worker2->walsummarizer_sleep_quanta == 209;
+		ok = ok && worker2->walsummarizer_pages_read_since_last_sleep == 210;
+		ok = ok && worker2->walsummarizer_redo_pointer_at_last_summary_removal ==
+			UINT64CONST(211);
+		ok = ok && worker2->datachecksum_abort_requested;
+		ok = ok && worker2->datachecksum_launcher_running;
+		ok = ok && worker2->datachecksum_operation == DISABLE_DATACHECKSUMS;
+
+		CurrentPgBackend = saved_backend;
+	}
+	PG_CATCH();
+	{
+		CurrentPgBackend = saved_backend;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "backend maintenance worker state was not backend-local");
 
 	PG_RETURN_BOOL(true);
 }

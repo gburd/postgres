@@ -86,6 +86,11 @@ Important current files:
   `standby.c`, and `xlogrecovery.c`. Use
   `PG_BACKEND_STANDBY_INITIAL_WAIT_US` for the standby conflict-wait default
   so early fallback and initialized thread backends stay aligned.
+- `PgBackendMaintenanceWorkerState` in `src/include/utils/backend_runtime.h`
+  now owns backend-local state bridged from archiver, checkpointer, bgwriter,
+  WAL summarizer, and data-checksum workers. Avoid object-like compatibility
+  macros named `arch_files` or `operation`: those collide with struct members
+  in `pgarch.c` and `datachecksum_state.c`.
 - `src/backend/postmaster/launch_backend.c` and
   `src/backend/postmaster/postmaster.c`: backend launch and supervision.
 - `src/backend/postmaster/autovacuum.c`,

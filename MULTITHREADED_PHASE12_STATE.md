@@ -7139,6 +7139,50 @@ Validation for this slice:
   87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
   explicit `PG_REGRESS` environment.
 
+## Backend Maintenance Worker State Bridge
+
+The one-hundred-fiftieth Phase 12 slice moves a broad server-owned
+maintenance-worker state group into a new `PgBackendMaintenanceWorkerState`
+bucket:
+
+- archiver module errdetail scratch, restart timing, callback pointers, module
+  state, archive memory context, loaded library name, queued archive-status
+  files, and stop flag;
+- checkpointer active-checkpoint timing/progress fields and checkpoint/archive
+  timeout timestamps;
+- bgwriter standby-snapshot timestamp and LSN cache;
+- WAL summarizer sleep/backoff state and summary-removal redo pointer cache;
+- data-checksum worker abort flag, launcher-running flag, and current
+  operation.
+
+The public archive-module errdetail variable remains source-compatible through
+`arch_module_check_errdetail_string`, now implemented as a macro over
+`PgCurrentArchModuleCheckErrdetailStringRef()`. `pgarch.c` uses `PgArchFiles`
+for the archiver queue pointer to avoid an object-like macro colliding with
+the `arch_files[]` member inside the private queue struct. The data-checksum
+worker uses explicit `DataChecksums*` local-state names rather than an
+`operation` macro, because `operation` is also a shared-memory struct member.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `bgwriter.o`,
+  `checkpointer.o`, `pgarch.o`, `walsummarizer.o`,
+  `datachecksum_state.o`, `shell_archive.o`, `basic_archive.o`, and
+  `test_backend_runtime.o`;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 115 to 93;
+- a backend clean, generated-header recovery, full `gmake -j8`, and
+  `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- `gmake -C contrib -j8` and a clean PL/pgSQL rebuild/install passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct threaded runtime TAP passed all 87 tests with the local
+  `/Users/samwillis/perl5` `PERL5LIB` paths and an explicit `PG_REGRESS`
+  environment;
+- `src/test/modules/test_backend_runtime` now includes
+  `test_backend_maintenance_worker_state_is_backend_local()`, covering
+  archiver, checkpointer, bgwriter, WAL summarizer, and data-checksum worker
+  fields across two fake logical backends.
+
 ## Backend Parallel State Bridge
 
 The one-hundred-forty-second Phase 12 slice moves a parallel-query and

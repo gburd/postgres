@@ -96,19 +96,23 @@ typedef struct PgArchData
 } PgArchData;
 
 PG_GLOBAL_RUNTIME char *XLogArchiveLibrary = "";
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND char *arch_module_check_errdetail_string;
 
 
 /* ----------
  * Local data
  * ----------
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND time_t last_sigterm_time = 0;
+#define last_sigterm_time \
+	(PgCurrentMaintenanceWorkerState()->pgarch_last_sigterm_time)
 static PG_GLOBAL_SHMEM PgArchData *PgArch = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND const ArchiveModuleCallbacks *ArchiveCallbacks;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ArchiveModuleState *archive_module_state;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND MemoryContext archive_context;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND char *loaded_archive_library;
+#define ArchiveCallbacks \
+	(PgCurrentMaintenanceWorkerState()->archive_callbacks)
+#define archive_module_state \
+	(PgCurrentMaintenanceWorkerState()->archive_module_state)
+#define archive_context \
+	(PgCurrentMaintenanceWorkerState()->archive_context)
+#define loaded_archive_library \
+	(PgCurrentMaintenanceWorkerState()->loaded_archive_library)
 
 
 /*
@@ -134,12 +138,14 @@ struct arch_files_state
 	char		arch_filenames[NUM_FILES_PER_DIRECTORY_SCAN][MAX_XFN_CHARS + 1];
 };
 
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND struct arch_files_state *arch_files = NULL;
+#define PgArchFiles \
+	(PgCurrentMaintenanceWorkerState()->pgarch_files)
 
 /*
  * Flags set by interrupt handlers for later service in the main loop.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t ready_to_stop = false;
+#define ready_to_stop \
+	(PgCurrentMaintenanceWorkerState()->pgarch_ready_to_stop)
 
 /* ----------
  * Local function forward declarations
@@ -267,12 +273,12 @@ PgArchiverMain(const void *startup_data, size_t startup_data_len)
 	PgArch->pgprocno = MyProcNumber;
 
 	/* Create workspace for pgarch_readyXlog() */
-	arch_files = palloc_object(struct arch_files_state);
-	arch_files->arch_files_size = 0;
+	PgArchFiles = palloc_object(struct arch_files_state);
+	PgArchFiles->arch_files_size = 0;
 
 	/* Initialize our max-heap for prioritizing files to archive. */
-	arch_files->arch_heap = binaryheap_allocate(NUM_FILES_PER_DIRECTORY_SCAN,
-												ready_file_comparator, NULL);
+	PgArchFiles->arch_heap = binaryheap_allocate(NUM_FILES_PER_DIRECTORY_SCAN,
+												 ready_file_comparator, NULL);
 
 	/* Initialize our memory context. */
 	archive_context = AllocSetContextCreate(TopMemoryContext,
@@ -398,7 +404,7 @@ pgarch_ArchiverCopyLoop(void)
 	char		xlog[MAX_XFN_CHARS + 1];
 
 	/* force directory scan in the first call to pgarch_readyXlog() */
-	arch_files->arch_files_size = 0;
+	PgArchFiles->arch_files_size = 0;
 
 	/*
 	 * loop through all xlogs with archive_status of .ready and archive
@@ -668,7 +674,7 @@ pgarch_readyXlog(char *xlog)
 	 * proceed.
 	 */
 	if (pg_atomic_exchange_u32(&PgArch->force_dir_scan, 0) == 1)
-		arch_files->arch_files_size = 0;
+		PgArchFiles->arch_files_size = 0;
 
 	/*
 	 * If we still have stored file names from the previous directory scan,
@@ -676,14 +682,14 @@ pgarch_readyXlog(char *xlog)
 	 * still present, as the archive_command for a previous file may have
 	 * already marked it done.
 	 */
-	while (arch_files->arch_files_size > 0)
+	while (PgArchFiles->arch_files_size > 0)
 	{
 		struct stat st;
 		char		status_file[MAXPGPATH];
 		char	   *arch_file;
 
-		arch_files->arch_files_size--;
-		arch_file = arch_files->arch_files[arch_files->arch_files_size];
+		PgArchFiles->arch_files_size--;
+		arch_file = PgArchFiles->arch_files[PgArchFiles->arch_files_size];
 		StatusFilePath(status_file, arch_file, ".ready");
 
 		if (stat(status_file, &st) == 0)
@@ -698,7 +704,7 @@ pgarch_readyXlog(char *xlog)
 	}
 
 	/* arch_heap is probably empty, but let's make sure */
-	binaryheap_reset(arch_files->arch_heap);
+	binaryheap_reset(PgArchFiles->arch_heap);
 
 	/*
 	 * Open the archive status directory and read through the list of files
@@ -733,53 +739,53 @@ pgarch_readyXlog(char *xlog)
 		/*
 		 * Store the file in our max-heap if it has a high enough priority.
 		 */
-		if (binaryheap_size(arch_files->arch_heap) < NUM_FILES_PER_DIRECTORY_SCAN)
+		if (binaryheap_size(PgArchFiles->arch_heap) < NUM_FILES_PER_DIRECTORY_SCAN)
 		{
 			/* If the heap isn't full yet, quickly add it. */
-			arch_file = arch_files->arch_filenames[binaryheap_size(arch_files->arch_heap)];
+			arch_file = PgArchFiles->arch_filenames[binaryheap_size(PgArchFiles->arch_heap)];
 			strcpy(arch_file, basename);
-			binaryheap_add_unordered(arch_files->arch_heap, CStringGetDatum(arch_file));
+			binaryheap_add_unordered(PgArchFiles->arch_heap, CStringGetDatum(arch_file));
 
 			/* If we just filled the heap, make it a valid one. */
-			if (binaryheap_size(arch_files->arch_heap) == NUM_FILES_PER_DIRECTORY_SCAN)
-				binaryheap_build(arch_files->arch_heap);
+			if (binaryheap_size(PgArchFiles->arch_heap) == NUM_FILES_PER_DIRECTORY_SCAN)
+				binaryheap_build(PgArchFiles->arch_heap);
 		}
-		else if (ready_file_comparator(binaryheap_first(arch_files->arch_heap),
+		else if (ready_file_comparator(binaryheap_first(PgArchFiles->arch_heap),
 									   CStringGetDatum(basename), NULL) > 0)
 		{
 			/*
 			 * Remove the lowest priority file and add the current one to the
 			 * heap.
 			 */
-			arch_file = DatumGetCString(binaryheap_remove_first(arch_files->arch_heap));
+			arch_file = DatumGetCString(binaryheap_remove_first(PgArchFiles->arch_heap));
 			strcpy(arch_file, basename);
-			binaryheap_add(arch_files->arch_heap, CStringGetDatum(arch_file));
+			binaryheap_add(PgArchFiles->arch_heap, CStringGetDatum(arch_file));
 		}
 	}
 	FreeDir(rldir);
 
 	/* If no files were found, simply return. */
-	if (binaryheap_empty(arch_files->arch_heap))
+	if (binaryheap_empty(PgArchFiles->arch_heap))
 		return false;
 
 	/*
 	 * If we didn't fill the heap, we didn't make it a valid one.  Do that
 	 * now.
 	 */
-	if (binaryheap_size(arch_files->arch_heap) < NUM_FILES_PER_DIRECTORY_SCAN)
-		binaryheap_build(arch_files->arch_heap);
+	if (binaryheap_size(PgArchFiles->arch_heap) < NUM_FILES_PER_DIRECTORY_SCAN)
+		binaryheap_build(PgArchFiles->arch_heap);
 
 	/*
 	 * Fill arch_files array with the files to archive in ascending order of
 	 * priority.
 	 */
-	arch_files->arch_files_size = binaryheap_size(arch_files->arch_heap);
-	for (int i = 0; i < arch_files->arch_files_size; i++)
-		arch_files->arch_files[i] = DatumGetCString(binaryheap_remove_first(arch_files->arch_heap));
+	PgArchFiles->arch_files_size = binaryheap_size(PgArchFiles->arch_heap);
+	for (int i = 0; i < PgArchFiles->arch_files_size; i++)
+		PgArchFiles->arch_files[i] = DatumGetCString(binaryheap_remove_first(PgArchFiles->arch_heap));
 
 	/* Return the highest priority file. */
-	arch_files->arch_files_size--;
-	strcpy(xlog, arch_files->arch_files[arch_files->arch_files_size]);
+	PgArchFiles->arch_files_size--;
+	strcpy(xlog, PgArchFiles->arch_files[PgArchFiles->arch_files_size]);
 
 	return true;
 }

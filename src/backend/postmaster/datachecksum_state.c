@@ -349,18 +349,19 @@ typedef struct DataChecksumsWorkerDatabase
 } DataChecksumsWorkerDatabase;
 
 /* Flag set by the interrupt handler */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t
-abort_requested = false;
+#define DataChecksumsAbortRequested \
+	(PgCurrentMaintenanceWorkerState()->datachecksum_abort_requested)
 
 /*
  * Have we set the DataChecksumsStateStruct->launcher_running flag?
  * If we have, we need to clear it before exiting!
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t
-launcher_running = false;
+#define DataChecksumsLauncherRunning \
+	(PgCurrentMaintenanceWorkerState()->datachecksum_launcher_running)
 
 /* Are we enabling data checksums, or disabling them? */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND DataChecksumsWorkerOperation operation;
+#define DataChecksumsCurrentOperation \
+	(PgCurrentMaintenanceWorkerState()->datachecksum_operation)
 
 /* Prototypes */
 static void DataChecksumsShmemRequest(void *arg);
@@ -382,8 +383,8 @@ const ShmemCallbacks DataChecksumsShmemCallbacks = {
 #define CHECK_FOR_ABORT_REQUEST() \
 	do {															\
 		LWLockAcquire(DataChecksumsWorkerLock, LW_SHARED);			\
-		if (DataChecksumState->launch_operation != operation)		\
-			abort_requested = true;									\
+		if (DataChecksumState->launch_operation != DataChecksumsCurrentOperation) \
+			DataChecksumsAbortRequested = true;						\
 		LWLockRelease(DataChecksumsWorkerLock);						\
 	} while (0)
 
@@ -716,13 +717,13 @@ ProcessSingleRelationFork(Relation reln, ForkNumber forkNum, BufferAccessStrateg
 		UnlockReleaseBuffer(buf);
 
 		/* Check if we are asked to abort, the abortion will bubble up. */
-		Assert(operation == ENABLE_DATACHECKSUMS);
+		Assert(DataChecksumsCurrentOperation == ENABLE_DATACHECKSUMS);
 		LWLockAcquire(DataChecksumsWorkerLock, LW_SHARED);
 		if (DataChecksumState->launch_operation == DISABLE_DATACHECKSUMS)
-			abort_requested = true;
+			DataChecksumsAbortRequested = true;
 		LWLockRelease(DataChecksumsWorkerLock);
 
-		if (abort_requested)
+		if (DataChecksumsAbortRequested)
 			return false;
 
 		/* update the block counter */
@@ -936,9 +937,9 @@ ProcessDatabase(DataChecksumsWorkerDatabase *db)
 static void
 launcher_exit(int code, Datum arg)
 {
-	abort_requested = false;
+	DataChecksumsAbortRequested = false;
 
-	if (launcher_running)
+	if (DataChecksumsLauncherRunning)
 	{
 		LWLockAcquire(DataChecksumsWorkerLock, LW_EXCLUSIVE);
 		if (DataChecksumState->worker_signal_pid != InvalidPid)
@@ -968,7 +969,7 @@ launcher_exit(int code, Datum arg)
 		SetDataChecksumsOff();
 
 	LWLockAcquire(DataChecksumsWorkerLock, LW_EXCLUSIVE);
-	launcher_running = false;
+	DataChecksumsLauncherRunning = false;
 	DataChecksumState->launcher_running = false;
 	LWLockRelease(DataChecksumsWorkerLock);
 }
@@ -985,7 +986,7 @@ launcher_cancel_handler(SIGNAL_ARGS)
 {
 	int			save_errno = errno;
 
-	abort_requested = true;
+	DataChecksumsAbortRequested = true;
 
 	/*
 	 * There is no sleeping in the main loop, the flag will be checked
@@ -1051,7 +1052,7 @@ WaitForAllTransactionsToFinish(void)
 		CHECK_FOR_INTERRUPTS();
 		CHECK_FOR_ABORT_REQUEST();
 
-		if (abort_requested)
+		if (DataChecksumsAbortRequested)
 			break;
 	}
 
@@ -1109,14 +1110,14 @@ DataChecksumsWorkerLauncherMain(Datum arg)
 	}
 
 	on_shmem_exit(launcher_exit, 0);
-	launcher_running = true;
+	DataChecksumsLauncherRunning = true;
 
 	/* Initialize a connection to shared catalogs only */
 	BackgroundWorkerInitializeConnectionByOid(InvalidOid, InvalidOid, 0);
 
-	operation = DataChecksumState->launch_operation;
+	DataChecksumsCurrentOperation = DataChecksumState->launch_operation;
 	DataChecksumState->launcher_running = true;
-	DataChecksumState->operation = operation;
+	DataChecksumState->operation = DataChecksumsCurrentOperation;
 	DataChecksumState->cost_delay = DataChecksumState->launch_cost_delay;
 	DataChecksumState->cost_limit = DataChecksumState->launch_cost_limit;
 	LWLockRelease(DataChecksumsWorkerLock);
@@ -1132,7 +1133,7 @@ again:
 	pgstat_progress_start_command(PROGRESS_COMMAND_DATACHECKSUMS,
 								  InvalidOid);
 
-	if (operation == ENABLE_DATACHECKSUMS)
+	if (DataChecksumsCurrentOperation == ENABLE_DATACHECKSUMS)
 	{
 		/*
 		 * If we are asked to enable checksums in a cluster which already has
@@ -1162,7 +1163,7 @@ again:
 			 * failure, so restart processing instead.
 			 */
 			LWLockAcquire(DataChecksumsWorkerLock, LW_EXCLUSIVE);
-			if (DataChecksumState->launch_operation != operation)
+			if (DataChecksumState->launch_operation != DataChecksumsCurrentOperation)
 			{
 				LWLockRelease(DataChecksumsWorkerLock);
 				goto done;
@@ -1182,7 +1183,7 @@ again:
 		ereport(LOG,
 				errmsg("data checksums are now enabled"));
 	}
-	else if (operation == DISABLE_DATACHECKSUMS)
+	else if (DataChecksumsCurrentOperation == DISABLE_DATACHECKSUMS)
 	{
 		ereport(LOG,
 				errmsg("disabling data checksums requested"));
@@ -1211,10 +1212,10 @@ done:
 	 * again.
 	 */
 	LWLockAcquire(DataChecksumsWorkerLock, LW_EXCLUSIVE);
-	if (DataChecksumState->launch_operation != operation)
+	if (DataChecksumState->launch_operation != DataChecksumsCurrentOperation)
 	{
 		DataChecksumState->operation = DataChecksumState->launch_operation;
-		operation = DataChecksumState->launch_operation;
+		DataChecksumsCurrentOperation = DataChecksumState->launch_operation;
 		DataChecksumState->cost_delay = DataChecksumState->launch_cost_delay;
 		DataChecksumState->cost_limit = DataChecksumState->launch_cost_limit;
 		LWLockRelease(DataChecksumsWorkerLock);
@@ -1224,7 +1225,7 @@ done:
 	/* Shut down progress reporting as we are done */
 	pgstat_progress_end_command();
 
-	launcher_running = false;
+	DataChecksumsLauncherRunning = false;
 	DataChecksumState->launcher_running = false;
 	LWLockRelease(DataChecksumsWorkerLock);
 }
@@ -1312,7 +1313,7 @@ ProcessAllDatabases(void)
 					errmsg("data checksums failed to get enabled in all databases, aborting"),
 					errhint("The server log might have more information on the cause of the error."));
 		}
-		else if (result == DATACHECKSUMSWORKER_ABORTED || abort_requested)
+		else if (result == DATACHECKSUMSWORKER_ABORTED || DataChecksumsAbortRequested)
 		{
 			/* Abort flag set, so exit the whole process */
 			return false;
@@ -1547,7 +1548,7 @@ DataChecksumsWorkerMain(Datum arg)
 	bool		retried = false;
 #endif
 
-	operation = ENABLE_DATACHECKSUMS;
+	DataChecksumsCurrentOperation = ENABLE_DATACHECKSUMS;
 
 	if (!threaded_worker)
 	{
@@ -1629,7 +1630,7 @@ DataChecksumsWorkerMain(Datum arg)
 		CHECK_FOR_INTERRUPTS();
 		CHECK_FOR_ABORT_REQUEST();
 
-		if (abort_requested)
+		if (DataChecksumsAbortRequested)
 			break;
 
 		/*
@@ -1663,7 +1664,7 @@ DataChecksumsWorkerMain(Datum arg)
 	list_free(RelationList);
 	FreeAccessStrategy(strategy);
 
-	if (aborted || abort_requested)
+	if (aborted || DataChecksumsAbortRequested)
 	{
 		LWLockAcquire(DataChecksumsWorkerLock, LW_EXCLUSIVE);
 		DataChecksumState->success = DATACHECKSUMSWORKER_ABORTED;
@@ -1735,7 +1736,7 @@ DataChecksumsWorkerMain(Datum arg)
 		CHECK_FOR_INTERRUPTS();
 		CHECK_FOR_ABORT_REQUEST();
 
-		if (aborted || abort_requested)
+		if (aborted || DataChecksumsAbortRequested)
 		{
 			LWLockAcquire(DataChecksumsWorkerLock, LW_EXCLUSIVE);
 			DataChecksumState->success = DATACHECKSUMSWORKER_ABORTED;

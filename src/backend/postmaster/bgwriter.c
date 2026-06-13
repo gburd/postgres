@@ -76,8 +76,10 @@ PG_GLOBAL_RUNTIME int BgWriterDelay = 200;
  * doing so too often or repeatedly if there has been no other write activity
  * in the system.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND TimestampTz last_snapshot_ts;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND XLogRecPtr last_snapshot_lsn = InvalidXLogRecPtr;
+#define last_snapshot_ts \
+	(PgCurrentMaintenanceWorkerState()->bgwriter_last_snapshot_ts)
+#define last_snapshot_lsn \
+	(PgCurrentMaintenanceWorkerState()->bgwriter_last_snapshot_lsn)
 
 
 /*

@@ -360,6 +360,32 @@ typedef struct PgBackendRecoveryState
 	int			standby_wait_us;
 } PgBackendRecoveryState;
 
+typedef struct PgBackendMaintenanceWorkerState
+{
+	char	   *arch_module_errdetail_string;
+	time_t		pgarch_last_sigterm_time;
+	const struct ArchiveModuleCallbacks *archive_callbacks;
+	struct ArchiveModuleState *archive_module_state;
+	MemoryContext archive_context;
+	char	   *loaded_archive_library;
+	struct arch_files_state *pgarch_files;
+	volatile sig_atomic_t pgarch_ready_to_stop;
+	bool		ckpt_active;
+	pg_time_t	ckpt_start_time;
+	XLogRecPtr	ckpt_start_recptr;
+	double		ckpt_cached_elapsed;
+	pg_time_t	last_checkpoint_time;
+	pg_time_t	last_xlog_switch_time;
+	TimestampTz bgwriter_last_snapshot_ts;
+	XLogRecPtr	bgwriter_last_snapshot_lsn;
+	long		walsummarizer_sleep_quanta;
+	long		walsummarizer_pages_read_since_last_sleep;
+	XLogRecPtr	walsummarizer_redo_pointer_at_last_summary_removal;
+	volatile sig_atomic_t datachecksum_abort_requested;
+	volatile sig_atomic_t datachecksum_launcher_running;
+	int			datachecksum_operation;
+} PgBackendMaintenanceWorkerState;
+
 typedef struct PgBackendPgStatPendingState
 {
 	void	   *entry_ref_hash;
@@ -1384,6 +1410,7 @@ struct PgBackend
 	PgBackendLogicalReplicationState logical_replication;
 	PgBackendXLogState xlog;
 	PgBackendRecoveryState recovery;
+	PgBackendMaintenanceWorkerState maintenance_worker;
 	PgBackendPgStatPendingState pgstat_pending;
 	PgBackendActivityState activity;
 	PgBackendUtilityState utility;
@@ -1813,6 +1840,7 @@ extern PgBackendReplicationState *PgCurrentReplicationState(void);
 extern PgBackendLogicalReplicationState *PgCurrentLogicalReplicationState(void);
 extern PgBackendXLogState *PgCurrentXLogState(void);
 extern PgBackendRecoveryState *PgCurrentRecoveryState(void);
+extern PgBackendMaintenanceWorkerState *PgCurrentMaintenanceWorkerState(void);
 extern TransactionId *PgCurrentCachedFetchXidRef(void);
 extern int *PgCurrentCachedFetchXidStatusRef(void);
 extern XLogRecPtr *PgCurrentCachedCommitLSNRef(void);

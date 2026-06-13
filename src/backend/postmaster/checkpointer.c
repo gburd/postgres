@@ -172,15 +172,21 @@ PG_GLOBAL_RUNTIME double CheckPointCompletionTarget = 0.9;
 /*
  * Private state
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool ckpt_active = false;
+#define ckpt_active \
+	(PgCurrentMaintenanceWorkerState()->ckpt_active)
 
 /* these values are valid when ckpt_active is true: */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND pg_time_t ckpt_start_time;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND XLogRecPtr ckpt_start_recptr;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND double ckpt_cached_elapsed;
+#define ckpt_start_time \
+	(PgCurrentMaintenanceWorkerState()->ckpt_start_time)
+#define ckpt_start_recptr \
+	(PgCurrentMaintenanceWorkerState()->ckpt_start_recptr)
+#define ckpt_cached_elapsed \
+	(PgCurrentMaintenanceWorkerState()->ckpt_cached_elapsed)
 
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND pg_time_t last_checkpoint_time;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND pg_time_t last_xlog_switch_time;
+#define last_checkpoint_time \
+	(PgCurrentMaintenanceWorkerState()->last_checkpoint_time)
+#define last_xlog_switch_time \
+	(PgCurrentMaintenanceWorkerState()->last_xlog_switch_time)
 
 /* Prototypes for private functions */
 

@@ -22,6 +22,7 @@
 #include "access/toast_compression.h"
 #include "access/xact.h"
 #include "access/xlog.h"
+#include "archive/archive_module.h"
 #include "catalog/binary_upgrade.h"
 #include "catalog/storage.h"
 #include "commands/async.h"
@@ -126,6 +127,11 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendXLogState early_backend_xlog =
 };
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendRecoveryState early_backend_recovery = {
 	.standby_wait_us = PG_BACKEND_STANDBY_INITIAL_WAIT_US
+};
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendMaintenanceWorkerState early_backend_maintenance_worker = {
+	.bgwriter_last_snapshot_lsn = InvalidXLogRecPtr,
+	.walsummarizer_sleep_quanta = 1,
+	.walsummarizer_redo_pointer_at_last_summary_removal = InvalidXLogRecPtr
 };
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendActivityState early_backend_activity;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendUtilityState early_backend_utility;
@@ -669,6 +675,8 @@ static void PgBackendInitializeXLogState(PgBackendXLogState *xlog);
 static void PgBackendAdoptEarlyXLogState(PgBackend *backend);
 static void PgBackendInitializeRecoveryState(PgBackendRecoveryState *recovery);
 static void PgBackendAdoptEarlyRecoveryState(PgBackend *backend);
+static void PgBackendInitializeMaintenanceWorkerState(PgBackendMaintenanceWorkerState *maintenance_worker);
+static void PgBackendAdoptEarlyMaintenanceWorkerState(PgBackend *backend);
 static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
 static void PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend);
 static BackendType *PgCurrentBackendTypeRef(void);
@@ -2434,6 +2442,27 @@ PgBackendAdoptEarlyRecoveryState(PgBackend *backend)
 }
 
 static void
+PgBackendInitializeMaintenanceWorkerState(PgBackendMaintenanceWorkerState *maintenance_worker)
+{
+	Assert(maintenance_worker != NULL);
+
+	MemSet(maintenance_worker, 0, sizeof(*maintenance_worker));
+	maintenance_worker->bgwriter_last_snapshot_lsn = InvalidXLogRecPtr;
+	maintenance_worker->walsummarizer_sleep_quanta = 1;
+	maintenance_worker->walsummarizer_redo_pointer_at_last_summary_removal =
+		InvalidXLogRecPtr;
+}
+
+static void
+PgBackendAdoptEarlyMaintenanceWorkerState(PgBackend *backend)
+{
+	Assert(backend != NULL);
+
+	backend->maintenance_worker = early_backend_maintenance_worker;
+	PgBackendInitializeMaintenanceWorkerState(&early_backend_maintenance_worker);
+}
+
+static void
 PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend)
 {
 	Assert(backend != NULL);
@@ -2681,6 +2710,7 @@ InitializePgProcessRuntime(void)
 	PgBackendAdoptEarlyLogicalReplicationState(&process_backend);
 	PgBackendAdoptEarlyXLogState(&process_backend);
 	PgBackendAdoptEarlyRecoveryState(&process_backend);
+	PgBackendAdoptEarlyMaintenanceWorkerState(&process_backend);
 	PgBackendSetInterruptLatch(&process_backend, process_backend.core.latch);
 	dlist_init(&process_backend.dsm_segment_list);
 	pg_atomic_init_u32(&process_backend.wait_state.waiting, 0);
@@ -2835,6 +2865,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgBackendInitializeLogicalReplicationState(&state->backend.logical_replication);
 	PgBackendInitializeXLogState(&state->backend.xlog);
 	PgBackendInitializeRecoveryState(&state->backend.recovery);
+	PgBackendInitializeMaintenanceWorkerState(&state->backend.maintenance_worker);
 	PgBackendSetInterruptLatch(&state->backend, interrupt_latch);
 	dlist_init(&state->backend.dsm_segment_list);
 	pg_atomic_init_u32(&state->backend.wait_state.waiting, 0);
@@ -7227,6 +7258,21 @@ PgCurrentRecoveryState(void)
 		return &early_backend_recovery;
 
 	return &CurrentPgBackend->recovery;
+}
+
+PgBackendMaintenanceWorkerState *
+PgCurrentMaintenanceWorkerState(void)
+{
+	if (CurrentPgBackend == NULL)
+		return &early_backend_maintenance_worker;
+
+	return &CurrentPgBackend->maintenance_worker;
+}
+
+char **
+PgCurrentArchModuleCheckErrdetailStringRef(void)
+{
+	return &PgCurrentMaintenanceWorkerState()->arch_module_errdetail_string;
 }
 
 static PgBackendTransactionState *

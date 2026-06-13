@@ -125,7 +125,8 @@ const ShmemCallbacks WalSummarizerShmemCallbacks = {
  * the multiplier. It should vary between 1 and MAX_SLEEP_QUANTA, depending
  * on system activity. See summarizer_wait_for_wal() for how we adjust this.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND long sleep_quanta = 1;
+#define sleep_quanta \
+	(PgCurrentMaintenanceWorkerState()->walsummarizer_sleep_quanta)
 
 /*
  * The sleep time will always be a multiple of 200ms and will not exceed
@@ -142,13 +143,14 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND long sleep_quanta = 1;
  * This is a count of the number of pages of WAL that we've read since the
  * last time we waited for more WAL to appear.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND long pages_read_since_last_sleep = 0;
+#define pages_read_since_last_sleep \
+	(PgCurrentMaintenanceWorkerState()->walsummarizer_pages_read_since_last_sleep)
 
 /*
  * Most recent RedoRecPtr value observed by MaybeRemoveOldWalSummaries.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND XLogRecPtr redo_pointer_at_last_summary_removal =
-	InvalidXLogRecPtr;
+#define redo_pointer_at_last_summary_removal \
+	(PgCurrentMaintenanceWorkerState()->walsummarizer_redo_pointer_at_last_summary_removal)
 
 /*
  * GUC parameters

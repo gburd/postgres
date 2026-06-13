@@ -1103,6 +1103,17 @@ touched-object builds, clean full build/install, process-mode backend-runtime
 regression, direct threaded runtime TAP, contrib build, PL/pgSQL rebuild, and
 the required global-lifetime scan with zero new unclassified mutable globals;
 backend-local declarations dropped from 128 to 115.
+Backend maintenance-worker state now lives in
+`PgBackendMaintenanceWorkerState`: archiver module scratch and queue state,
+checkpointer timing/progress state, bgwriter standby-snapshot cache, WAL
+summarizer wait/backoff state, and data-checksum worker local flags now follow
+the logical backend. The archive-module errdetail ABI remains
+source-compatible through `arch_module_check_errdetail_string` as a macro over
+`PgCurrentArchModuleCheckErrdetailStringRef()`. The slice passed
+touched-object builds, clean full build/install, contrib build, PL/pgSQL
+rebuild/install, process-mode backend-runtime regression, direct threaded
+runtime TAP, and the required global-lifetime scan with zero new unclassified
+mutable globals; backend-local declarations dropped from 115 to 93.
 PMChild assignment and slot release now also scrub stale carrier-visible signal
 ids and thread-exit payloads before reuse. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live
