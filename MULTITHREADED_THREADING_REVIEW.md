@@ -657,6 +657,17 @@ The slice passed clean full build/install, process-mode backend-runtime
 regression, direct threaded runtime TAP, contrib build, and the required
 global-lifetime scan with zero new unclassified mutable globals;
 backend-local declarations dropped from 148 to 128.
+Backend recovery/startup/standby state now lives in
+`PgBackendRecoveryState`: startup interrupt flags, startup-progress timeout
+state, local hot-standby and promote-triggered caches, recovery lock hash
+pointers, standby timeout flags, and standby conflict wait backoff now follow
+the logical backend. `startup.c`, `standby.c`, and `xlogrecovery.c` keep local
+compatibility macros over `PgCurrentRecoveryState()`, and the standby backoff
+default is shared as `PG_BACKEND_STANDBY_INITIAL_WAIT_US`. The slice passed
+touched-object builds, clean full build/install, process-mode backend-runtime
+regression, direct threaded runtime TAP, contrib build, PL/pgSQL rebuild, and
+the required global-lifetime scan with zero new unclassified mutable globals;
+backend-local declarations dropped from 128 to 115.
 PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly

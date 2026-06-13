@@ -81,6 +81,11 @@ Important current files:
   communication.
 - `src/backend/storage/ipc/latch.c` and `src/backend/storage/ipc/waiteventset.c`:
   wait/wakeup infrastructure.
+- `PgBackendRecoveryState` in `src/include/utils/backend_runtime.h` now owns
+  backend-local recovery/startup/standby state bridged from `startup.c`,
+  `standby.c`, and `xlogrecovery.c`. Use
+  `PG_BACKEND_STANDBY_INITIAL_WAIT_US` for the standby conflict-wait default
+  so early fallback and initialized thread backends stay aligned.
 - `src/backend/postmaster/launch_backend.c` and
   `src/backend/postmaster/postmaster.c`: backend launch and supervision.
 - `src/backend/postmaster/autovacuum.c`,

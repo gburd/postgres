@@ -8947,6 +8947,123 @@ test_backend_xlog_state_is_backend_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_backend_recovery_state_is_backend_local);
+Datum
+test_backend_recovery_state_is_backend_local(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgBackend	fake_backend1;
+	PgBackend	fake_backend2;
+	PgBackendRecoveryState *recovery1;
+	PgBackendRecoveryState *recovery2;
+	bool		ok = true;
+
+	saved_backend = CurrentPgBackend;
+	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
+	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+	fake_backend1.recovery.standby_wait_us = PG_BACKEND_STANDBY_INITIAL_WAIT_US;
+	fake_backend2.recovery.standby_wait_us = PG_BACKEND_STANDBY_INITIAL_WAIT_US;
+
+	PG_TRY();
+	{
+		CurrentPgBackend = &fake_backend1;
+		recovery1 = PgCurrentRecoveryState();
+		recovery1->startup_got_sighup = true;
+		recovery1->startup_shutdown_requested = true;
+		recovery1->startup_promote_signaled = true;
+		recovery1->startup_in_restore_command = true;
+		recovery1->startup_progress_phase_start_time = 101;
+		recovery1->startup_progress_timer_expired = true;
+		recovery1->local_hot_standby_active = true;
+		recovery1->local_promote_is_triggered = true;
+		recovery1->recovery_lock_hash = (HTAB *) &fake_backend1;
+		recovery1->recovery_lock_xid_hash = (HTAB *) &fake_backend1;
+		recovery1->got_standby_deadlock_timeout = true;
+		recovery1->got_standby_delay_timeout = true;
+		recovery1->got_standby_lock_timeout = true;
+		recovery1->standby_wait_us = 102;
+
+		CurrentPgBackend = &fake_backend2;
+		recovery2 = PgCurrentRecoveryState();
+		ok = ok && !recovery2->startup_got_sighup;
+		ok = ok && !recovery2->startup_shutdown_requested;
+		ok = ok && !recovery2->startup_promote_signaled;
+		ok = ok && !recovery2->startup_in_restore_command;
+		ok = ok && recovery2->startup_progress_phase_start_time == 0;
+		ok = ok && !recovery2->startup_progress_timer_expired;
+		ok = ok && !recovery2->local_hot_standby_active;
+		ok = ok && !recovery2->local_promote_is_triggered;
+		ok = ok && recovery2->recovery_lock_hash == NULL;
+		ok = ok && recovery2->recovery_lock_xid_hash == NULL;
+		ok = ok && !recovery2->got_standby_deadlock_timeout;
+		ok = ok && !recovery2->got_standby_delay_timeout;
+		ok = ok && !recovery2->got_standby_lock_timeout;
+		ok = ok && recovery2->standby_wait_us == PG_BACKEND_STANDBY_INITIAL_WAIT_US;
+
+		recovery2->startup_got_sighup = true;
+		recovery2->startup_shutdown_requested = true;
+		recovery2->startup_promote_signaled = true;
+		recovery2->startup_in_restore_command = true;
+		recovery2->startup_progress_phase_start_time = 201;
+		recovery2->startup_progress_timer_expired = true;
+		recovery2->local_hot_standby_active = true;
+		recovery2->local_promote_is_triggered = true;
+		recovery2->recovery_lock_hash = (HTAB *) &fake_backend2;
+		recovery2->recovery_lock_xid_hash = (HTAB *) &fake_backend2;
+		recovery2->got_standby_deadlock_timeout = true;
+		recovery2->got_standby_delay_timeout = true;
+		recovery2->got_standby_lock_timeout = true;
+		recovery2->standby_wait_us = 202;
+
+		CurrentPgBackend = &fake_backend1;
+		recovery1 = PgCurrentRecoveryState();
+		ok = ok && recovery1->startup_got_sighup;
+		ok = ok && recovery1->startup_shutdown_requested;
+		ok = ok && recovery1->startup_promote_signaled;
+		ok = ok && recovery1->startup_in_restore_command;
+		ok = ok && recovery1->startup_progress_phase_start_time == 101;
+		ok = ok && recovery1->startup_progress_timer_expired;
+		ok = ok && recovery1->local_hot_standby_active;
+		ok = ok && recovery1->local_promote_is_triggered;
+		ok = ok && recovery1->recovery_lock_hash == (HTAB *) &fake_backend1;
+		ok = ok && recovery1->recovery_lock_xid_hash == (HTAB *) &fake_backend1;
+		ok = ok && recovery1->got_standby_deadlock_timeout;
+		ok = ok && recovery1->got_standby_delay_timeout;
+		ok = ok && recovery1->got_standby_lock_timeout;
+		ok = ok && recovery1->standby_wait_us == 102;
+
+		CurrentPgBackend = &fake_backend2;
+		recovery2 = PgCurrentRecoveryState();
+		ok = ok && recovery2->startup_got_sighup;
+		ok = ok && recovery2->startup_shutdown_requested;
+		ok = ok && recovery2->startup_promote_signaled;
+		ok = ok && recovery2->startup_in_restore_command;
+		ok = ok && recovery2->startup_progress_phase_start_time == 201;
+		ok = ok && recovery2->startup_progress_timer_expired;
+		ok = ok && recovery2->local_hot_standby_active;
+		ok = ok && recovery2->local_promote_is_triggered;
+		ok = ok && recovery2->recovery_lock_hash == (HTAB *) &fake_backend2;
+		ok = ok && recovery2->recovery_lock_xid_hash == (HTAB *) &fake_backend2;
+		ok = ok && recovery2->got_standby_deadlock_timeout;
+		ok = ok && recovery2->got_standby_delay_timeout;
+		ok = ok && recovery2->got_standby_lock_timeout;
+		ok = ok && recovery2->standby_wait_us == 202;
+
+		CurrentPgBackend = saved_backend;
+	}
+	PG_CATCH();
+	{
+		CurrentPgBackend = saved_backend;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "backend recovery state was not backend-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_pmchild_thread_backend_signal_api);
 Datum
 test_pmchild_thread_backend_signal_api(PG_FUNCTION_ARGS)

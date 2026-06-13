@@ -30,6 +30,7 @@
 #include "storage/procarray.h"
 #include "storage/sinvaladt.h"
 #include "storage/standby.h"
+#include "utils/backend_runtime.h"
 #include "utils/hsearch.h"
 #include "utils/injection_point.h"
 #include "utils/ps_status.h"
@@ -63,16 +64,18 @@ typedef struct RecoveryLockXidEntry
 	struct RecoveryLockEntry *head; /* chain head */
 } RecoveryLockXidEntry;
 
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND HTAB *RecoveryLockHash = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND HTAB *RecoveryLockXidHash = NULL;
+#define RecoveryLockHash \
+	(PgCurrentRecoveryState()->recovery_lock_hash)
+#define RecoveryLockXidHash \
+	(PgCurrentRecoveryState()->recovery_lock_xid_hash)
 
 /* Flags set by timeout handlers */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t
-			got_standby_deadlock_timeout = false;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t
-			got_standby_delay_timeout = false;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t
-			got_standby_lock_timeout = false;
+#define got_standby_deadlock_timeout \
+	(PgCurrentRecoveryState()->got_standby_deadlock_timeout)
+#define got_standby_delay_timeout \
+	(PgCurrentRecoveryState()->got_standby_delay_timeout)
+#define got_standby_lock_timeout \
+	(PgCurrentRecoveryState()->got_standby_lock_timeout)
 
 static void ResolveRecoveryConflictWithVirtualXIDs(VirtualTransactionId *waitlist,
 												   RecoveryConflictReason reason,
@@ -226,8 +229,9 @@ GetStandbyLimitTime(void)
 	}
 }
 
-#define STANDBY_INITIAL_WAIT_US  1000
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int standbyWait_us = STANDBY_INITIAL_WAIT_US;
+#define STANDBY_INITIAL_WAIT_US PG_BACKEND_STANDBY_INITIAL_WAIT_US
+#define standbyWait_us \
+	(PgCurrentRecoveryState()->standby_wait_us)
 
 /*
  * Standby wait logic for ResolveRecoveryConflictWithVirtualXIDs.

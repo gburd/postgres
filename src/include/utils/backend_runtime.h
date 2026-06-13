@@ -340,6 +340,26 @@ typedef struct PgBackendXLogState
 	MemoryContext wal_debug_context;
 } PgBackendXLogState;
 
+#define PG_BACKEND_STANDBY_INITIAL_WAIT_US 1000
+
+typedef struct PgBackendRecoveryState
+{
+	volatile sig_atomic_t startup_got_sighup;
+	volatile sig_atomic_t startup_shutdown_requested;
+	volatile sig_atomic_t startup_promote_signaled;
+	volatile sig_atomic_t startup_in_restore_command;
+	TimestampTz startup_progress_phase_start_time;
+	volatile sig_atomic_t startup_progress_timer_expired;
+	bool		local_hot_standby_active;
+	bool		local_promote_is_triggered;
+	HTAB	   *recovery_lock_hash;
+	HTAB	   *recovery_lock_xid_hash;
+	volatile sig_atomic_t got_standby_deadlock_timeout;
+	volatile sig_atomic_t got_standby_delay_timeout;
+	volatile sig_atomic_t got_standby_lock_timeout;
+	int			standby_wait_us;
+} PgBackendRecoveryState;
+
 typedef struct PgBackendPgStatPendingState
 {
 	void	   *entry_ref_hash;
@@ -1363,6 +1383,7 @@ struct PgBackend
 	PgBackendReplicationState replication;
 	PgBackendLogicalReplicationState logical_replication;
 	PgBackendXLogState xlog;
+	PgBackendRecoveryState recovery;
 	PgBackendPgStatPendingState pgstat_pending;
 	PgBackendActivityState activity;
 	PgBackendUtilityState utility;
@@ -1791,6 +1812,7 @@ extern PgBackendWalSenderState *PgCurrentWalSenderState(void);
 extern PgBackendReplicationState *PgCurrentReplicationState(void);
 extern PgBackendLogicalReplicationState *PgCurrentLogicalReplicationState(void);
 extern PgBackendXLogState *PgCurrentXLogState(void);
+extern PgBackendRecoveryState *PgCurrentRecoveryState(void);
 extern TransactionId *PgCurrentCachedFetchXidRef(void);
 extern int *PgCurrentCachedFetchXidStatusRef(void);
 extern XLogRecPtr *PgCurrentCachedCommitLSNRef(void);

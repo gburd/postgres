@@ -59,6 +59,7 @@
 #include "storage/procarray.h"
 #include "storage/spin.h"
 #include "storage/subsystems.h"
+#include "utils/backend_runtime.h"
 #include "utils/datetime.h"
 #include "utils/fmgrprotos.h"
 #include "utils/guc_hooks.h"
@@ -177,13 +178,15 @@ static PG_GLOBAL_RUNTIME TimeLineID RedoStartTLI = 0;
  * Local copy of SharedHotStandbyActive variable. False actually means "not
  * known, need to check the shared state".
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool LocalHotStandbyActive = false;
+#define LocalHotStandbyActive \
+	(PgCurrentRecoveryState()->local_hot_standby_active)
 
 /*
  * Local copy of SharedPromoteIsTriggered variable. False actually means "not
  * known, need to check the shared state".
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool LocalPromoteIsTriggered = false;
+#define LocalPromoteIsTriggered \
+	(PgCurrentRecoveryState()->local_promote_is_triggered)
 
 /* Has the recovery code requested a walreceiver wakeup? */
 static PG_GLOBAL_RUNTIME bool doRequestWalReceiverReply;

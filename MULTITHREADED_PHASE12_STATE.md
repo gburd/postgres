@@ -7096,6 +7096,49 @@ Validation for this slice:
   87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
   explicit `PG_REGRESS` environment.
 
+## Backend Recovery/Startup/Standby State Bridge
+
+The one-hundred-forty-ninth Phase 12 slice moves a recovery-owned
+backend-local state group into a new `PgBackendRecoveryState` bucket:
+
+- startup-process SIGHUP, shutdown, promote, and restore-command flags;
+- startup-progress phase timestamp and progress-timeout flag;
+- local hot-standby-active and promote-triggered caches;
+- recovery conflict lock hash table pointers;
+- standby deadlock, delay, and lock timeout flags;
+- standby conflict wait backoff state.
+
+`startup.c`, `standby.c`, and `xlogrecovery.c` keep their local names as
+compatibility macros over `PgCurrentRecoveryState()`. The standby conflict
+wait default is shared as `PG_BACKEND_STANDBY_INITIAL_WAIT_US`, so the early
+fallback backend and initialized thread backends start with the same backoff
+state.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `startup.o`,
+  `standby.o`, `xlogrecovery.o`, and `test_backend_runtime.o`;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 128 to 115;
+- `src/test/modules/test_backend_runtime` now includes
+  `test_backend_recovery_state_is_backend_local()`, covering startup flags,
+  local recovery caches, recovery lock hash pointers, standby timeout flags,
+  and standby wait backoff isolation across two fake logical backends.
+- a full backend clean plus generated-header recovery was run after the
+  installed-header and `PgBackend` layout changes;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- `gmake -C contrib -j8` passed;
+- PL/pgSQL and `src/test/modules/test_backend_runtime` were cleaned, rebuilt,
+  and reinstalled after the installed-header and `PgBackend` layout changes;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression, including the new recovery-state helper, and still
+  reported TAP disabled by configure;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
+  explicit `PG_REGRESS` environment.
+
 ## Backend Parallel State Bridge
 
 The one-hundred-forty-second Phase 12 slice moves a parallel-query and

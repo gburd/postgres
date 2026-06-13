@@ -50,32 +50,32 @@
 /*
  * Flags set by interrupt handlers for later service in the redo loop.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t
-got_SIGHUP = false;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t
-shutdown_requested = false;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t
-promote_signaled = false;
+#define got_SIGHUP \
+	(PgCurrentRecoveryState()->startup_got_sighup)
+#define shutdown_requested \
+	(PgCurrentRecoveryState()->startup_shutdown_requested)
+#define promote_signaled \
+	(PgCurrentRecoveryState()->startup_promote_signaled)
 
 /*
  * Flag set when executing a restore command, to tell SIGTERM signal handler
  * that it's safe to just proc_exit.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t
-in_restore_command = false;
+#define in_restore_command \
+	(PgCurrentRecoveryState()->startup_in_restore_command)
 
 /*
  * Time at which the most recent startup operation started.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND TimestampTz
-startup_progress_phase_start_time;
+#define startup_progress_phase_start_time \
+	(PgCurrentRecoveryState()->startup_progress_phase_start_time)
 
 /*
  * Indicates whether the startup progress interval mentioned by the user is
  * elapsed or not. TRUE if timeout occurred, FALSE otherwise.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t
-startup_progress_timer_expired = false;
+#define startup_progress_timer_expired \
+	(PgCurrentRecoveryState()->startup_progress_timer_expired)
 
 /*
  * Time between progress updates for long-running startup operations.

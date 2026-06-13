@@ -124,6 +124,9 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendXLogState early_backend_xlog =
 	.local_min_recovery_point = InvalidXLogRecPtr,
 	.update_min_recovery_point = true
 };
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendRecoveryState early_backend_recovery = {
+	.standby_wait_us = PG_BACKEND_STANDBY_INITIAL_WAIT_US
+};
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendActivityState early_backend_activity;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendUtilityState early_backend_utility;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendParallelState early_backend_parallel = {
@@ -662,6 +665,10 @@ static void PgBackendInitializeReplicationState(PgBackendReplicationState *repli
 static void PgBackendAdoptEarlyReplicationState(PgBackend *backend);
 static void PgBackendInitializeLogicalReplicationState(PgBackendLogicalReplicationState *logical_replication);
 static void PgBackendAdoptEarlyLogicalReplicationState(PgBackend *backend);
+static void PgBackendInitializeXLogState(PgBackendXLogState *xlog);
+static void PgBackendAdoptEarlyXLogState(PgBackend *backend);
+static void PgBackendInitializeRecoveryState(PgBackendRecoveryState *recovery);
+static void PgBackendAdoptEarlyRecoveryState(PgBackend *backend);
 static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
 static void PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend);
 static BackendType *PgCurrentBackendTypeRef(void);
@@ -2407,6 +2414,26 @@ PgBackendAdoptEarlyXLogState(PgBackend *backend)
 }
 
 static void
+PgBackendInitializeRecoveryState(PgBackendRecoveryState *recovery)
+{
+	Assert(recovery != NULL);
+
+	MemSet(recovery, 0, sizeof(*recovery));
+	recovery->standby_wait_us = PG_BACKEND_STANDBY_INITIAL_WAIT_US;
+}
+
+static void
+PgBackendAdoptEarlyRecoveryState(PgBackend *backend)
+{
+	Assert(backend != NULL);
+	Assert(early_backend_recovery.recovery_lock_hash == NULL);
+	Assert(early_backend_recovery.recovery_lock_xid_hash == NULL);
+
+	backend->recovery = early_backend_recovery;
+	PgBackendInitializeRecoveryState(&early_backend_recovery);
+}
+
+static void
 PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend)
 {
 	Assert(backend != NULL);
@@ -2653,6 +2680,7 @@ InitializePgProcessRuntime(void)
 	PgBackendAdoptEarlyReplicationState(&process_backend);
 	PgBackendAdoptEarlyLogicalReplicationState(&process_backend);
 	PgBackendAdoptEarlyXLogState(&process_backend);
+	PgBackendAdoptEarlyRecoveryState(&process_backend);
 	PgBackendSetInterruptLatch(&process_backend, process_backend.core.latch);
 	dlist_init(&process_backend.dsm_segment_list);
 	pg_atomic_init_u32(&process_backend.wait_state.waiting, 0);
@@ -2806,6 +2834,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgBackendInitializeReplicationState(&state->backend.replication);
 	PgBackendInitializeLogicalReplicationState(&state->backend.logical_replication);
 	PgBackendInitializeXLogState(&state->backend.xlog);
+	PgBackendInitializeRecoveryState(&state->backend.recovery);
 	PgBackendSetInterruptLatch(&state->backend, interrupt_latch);
 	dlist_init(&state->backend.dsm_segment_list);
 	pg_atomic_init_u32(&state->backend.wait_state.waiting, 0);
@@ -7189,6 +7218,15 @@ PgCurrentXLogState(void)
 		return &early_backend_xlog;
 
 	return &CurrentPgBackend->xlog;
+}
+
+PgBackendRecoveryState *
+PgCurrentRecoveryState(void)
+{
+	if (CurrentPgBackend == NULL)
+		return &early_backend_recovery;
+
+	return &CurrentPgBackend->recovery;
 }
 
 static PgBackendTransactionState *
