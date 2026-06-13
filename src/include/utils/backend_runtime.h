@@ -197,6 +197,15 @@ typedef struct PgSessionDateTimeState
 	int			interval_style;
 } PgSessionDateTimeState;
 
+typedef struct PgSessionQueryMemoryState
+{
+	bool		initialized;
+	int			work_mem_kb;
+	double		hash_mem_multiplier_value;
+	int			maintenance_work_mem_kb;
+	int			max_parallel_maintenance_workers_value;
+} PgSessionQueryMemoryState;
+
 #define PG_CONNECTION_SEND_BUFFER_SIZE 8192
 #define PG_CONNECTION_RECV_BUFFER_SIZE 8192
 #define PG_CONNECTION_CANCEL_KEY_LENGTH 32
@@ -316,6 +325,7 @@ struct PgSession
 	PgSessionLoopState loop_state;
 	PgSessionDatabaseState database;
 	PgSessionDateTimeState datetime;
+	PgSessionQueryMemoryState query_memory;
 };
 
 struct PgConnection

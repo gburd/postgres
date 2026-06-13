@@ -851,3 +851,69 @@ Validation for this slice:
   tests after moving `IntervalStyle`, covering the interval/date formatting
   regression that the earlier stale-pointer attempt exposed;
 - clean `gmake -C contrib -j8` passed after the header migration.
+
+## Session Query-Memory Direct GUC Pointer Bridge
+
+The nineteenth Phase 12 slice moves the direct-pointer query-memory GUC
+backing fields under `PgSession`:
+
+- `PgSession` now owns a `PgSessionQueryMemoryState`;
+- `work_mem`, `hash_mem_multiplier`, `maintenance_work_mem`, and
+  `max_parallel_maintenance_workers` remain source-compatible lvalue macros in
+  `miscadmin.h`;
+- the macros route through `PgCurrentWorkMemRef()`,
+  `PgCurrentHashMemMultiplierRef()`, `PgCurrentMaintenanceWorkMemRef()`, and
+  `PgCurrentMaxParallelMaintenanceWorkersRef()`, which return the active
+  logical session's query-memory fields;
+- zeroed logical session objects lazily initialize these fields to the
+  historical defaults: `work_mem = 4096`, `hash_mem_multiplier = 2.0`,
+  `maintenance_work_mem = 65536`, and
+  `max_parallel_maintenance_workers = 2`;
+- early startup paths before `CurrentPgSession` is installed use fallback
+  storage in `backend_runtime.c`;
+- `InitializePgProcessRuntime()` and `InstallPgThreadBackendRuntimeState()`
+  adopt any early fallback query-memory state into the logical session object
+  before resetting fallback storage to default values;
+- `RebindSessionGUCVariablePointers()` now refreshes the generated GUC records
+  for all four query-memory settings when the current session changes.
+
+This extends the direct-pointer GUC bridge from a single date/time setting to a
+cluster of planner/executor memory settings. It is still not a full
+session-owned GUC subsystem: the broader GUC table, nesting, source, and reset
+state remain carrier-local/thread-local for now. The bridge is enough to make
+these direct backing variables session-owned and to preserve existing call-site
+syntax while later Phase 12 work decides whether the whole GUC state bucket
+moves under `PgSession`.
+
+Two migration hazards were found and handled:
+
+- local fields named after common GUCs collide with the new lvalue macros
+  because expressions such as `state->work_mem` macro-expand. The local GIN
+  build-state field was renamed to `accum_work_mem`;
+- loadable modules can carry stale undefined references to the old exported
+  global symbols. A first core `parallel_schedule` run failed when
+  `libpqwalreceiver.dylib` still referenced `_work_mem`; a forced clean rebuild
+  and reinstall of `src/backend/replication/libpqwalreceiver` removed the stale
+  symbol and fixed the subscription/object-address failures.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `globals.o`, `guc.o`,
+  `gininsert.o`, and `test_backend_runtime.o`;
+- clean full `gmake -j8` passed after the GIN local-field rename;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed, followed by rebuilding
+  and reinstalling `src/test/modules/test_backend_runtime`, PL/pgSQL,
+  `src/test/regress`, `libpqwalreceiver`, and `src/backend/snowball`;
+- focused `test_backend_runtime` regression passed and includes
+  `test_session_query_memory_state_is_session_local()`, which switches
+  sessions through `PgSetCurrentSession()`, sets the query-memory settings
+  through the GUC machinery, and proves the lvalues follow the active session
+  after GUC pointer rebinding;
+- direct threaded-runtime TAP coverage passed for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`
+  with the local `PERL5LIB` for `IPC::Run`;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests after the forced clean `libpqwalreceiver` rebuild and reinstall;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration.

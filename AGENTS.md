@@ -116,9 +116,12 @@ Important current files:
   `InitializeGUCVariablePointers()`. Variables written only by assign hooks,
   such as parsed `DateStyle`/`DateOrder`, can be moved independently, but
   direct-pointer GUCs need a GUC-table pointer rebind/adoption mechanism.
-  `IntervalStyle` is the first bridged example; extend
-  `RebindSessionGUCVariablePointers()` when moving more direct-pointer GUC
-  backing variables under runtime/session/execution objects.
+  `IntervalStyle` and the query-memory GUCs are the first bridged examples;
+  extend `RebindSessionGUCVariablePointers()` when moving more direct-pointer
+  GUC backing variables under runtime/session/execution objects. When common
+  GUC names become macros, local struct fields with the same names must be
+  renamed because macro expansion also hits `object->field` expressions; this
+  was observed for the local GIN build-state `work_mem` field.
 - Avoid broad mechanical churn unless it unlocks a specific migration step.
 - Do not remove process isolation paths merely because threaded mode exists.
 
@@ -193,6 +196,18 @@ Important current files:
 
   ```sh
   gmake -C src/backend/snowball clean all DESTDIR="$PWD/tmp_install" install
+  ```
+
+  Direct-pointer GUC globals exported through `miscadmin.h` can be referenced
+  by backend loadable modules too. After converting one of these names to an
+  object-backed compatibility macro, force-clean and reinstall
+  `libpqwalreceiver` before trusting subscription tests or the core
+  `parallel_schedule`; a stale `libpqwalreceiver.dylib` failed to load with
+  `Symbol not found: _work_mem` after the query-memory GUC migration.
+
+  ```sh
+  gmake -C src/backend/replication/libpqwalreceiver clean all
+  gmake -C src/backend/replication/libpqwalreceiver DESTDIR="$PWD/tmp_install" install
   ```
 
   Core backend globals such as `MyProcPid` can also be referenced from

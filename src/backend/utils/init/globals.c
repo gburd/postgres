@@ -72,10 +72,6 @@ PG_GLOBAL_RUNTIME bool IsBinaryUpgrade = false;
 
 PG_GLOBAL_RUNTIME bool enableFsync = true;
 PG_THREAD_LOCAL PG_GLOBAL_SESSION bool allowSystemTableMods = false;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int work_mem = 4096;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION double hash_mem_multiplier = 2.0;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int maintenance_work_mem = 65536;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int max_parallel_maintenance_workers = 2;
 
 /*
  * Primary determinants of sizes of shared-memory structures.

@@ -340,10 +340,16 @@ extern int *PgCurrentIntervalStyleRef(void);
 
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool enableFsync;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool allowSystemTableMods;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int work_mem;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double hash_mem_multiplier;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int maintenance_work_mem;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int max_parallel_maintenance_workers;
+extern int *PgCurrentWorkMemRef(void);
+extern double *PgCurrentHashMemMultiplierRef(void);
+extern int *PgCurrentMaintenanceWorkMemRef(void);
+extern int *PgCurrentMaxParallelMaintenanceWorkersRef(void);
+
+#define work_mem (*PgCurrentWorkMemRef())
+#define hash_mem_multiplier (*PgCurrentHashMemMultiplierRef())
+#define maintenance_work_mem (*PgCurrentMaintenanceWorkMemRef())
+#define max_parallel_maintenance_workers \
+	(*PgCurrentMaxParallelMaintenanceWorkersRef())
 
 /*
  * Upper and lower hard limits for the buffer access strategy ring size

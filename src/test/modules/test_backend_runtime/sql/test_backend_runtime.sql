@@ -10,6 +10,7 @@ SELECT test_backend_pgproc_has_logical_id();
 SELECT test_backend_thread_ids_are_logical();
 SELECT test_session_database_state_is_session_local();
 SELECT test_session_datetime_state_is_session_local();
+SELECT test_session_query_memory_state_is_session_local();
 SELECT test_backend_interrupt_holdoffs_are_backend_local();
 SELECT test_backend_pending_interrupts_are_backend_local();
 SELECT test_backend_core_state_is_backend_local();

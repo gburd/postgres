@@ -600,6 +600,112 @@ test_session_datetime_state_is_session_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_session_query_memory_state_is_session_local);
+Datum
+test_session_query_memory_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	char	   *saved_work_mem;
+	char	   *saved_hash_mem_multiplier;
+	char	   *saved_maintenance_work_mem;
+	char	   *saved_max_parallel_maintenance_workers;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	saved_work_mem = pstrdup(GetConfigOption("work_mem", false, false));
+	saved_hash_mem_multiplier =
+		pstrdup(GetConfigOption("hash_mem_multiplier", false, false));
+	saved_maintenance_work_mem =
+		pstrdup(GetConfigOption("maintenance_work_mem", false, false));
+	saved_max_parallel_maintenance_workers =
+		pstrdup(GetConfigOption("max_parallel_maintenance_workers",
+								false, false));
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && work_mem == 4096;
+		ok = ok && hash_mem_multiplier == 2.0;
+		ok = ok && maintenance_work_mem == 65536;
+		ok = ok && max_parallel_maintenance_workers == 2;
+		SetConfigOption("work_mem", "8MB", PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("hash_mem_multiplier", "3",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("maintenance_work_mem", "128MB",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("max_parallel_maintenance_workers", "3",
+						PGC_USERSET, PGC_S_SESSION);
+		ok = ok && work_mem == 8192;
+		ok = ok && hash_mem_multiplier == 3.0;
+		ok = ok && maintenance_work_mem == 131072;
+		ok = ok && max_parallel_maintenance_workers == 3;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && work_mem == 4096;
+		ok = ok && hash_mem_multiplier == 2.0;
+		ok = ok && maintenance_work_mem == 65536;
+		ok = ok && max_parallel_maintenance_workers == 2;
+		SetConfigOption("work_mem", "9MB", PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("hash_mem_multiplier", "4",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("maintenance_work_mem", "96MB",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("max_parallel_maintenance_workers", "1",
+						PGC_USERSET, PGC_S_SESSION);
+		ok = ok && work_mem == 9216;
+		ok = ok && hash_mem_multiplier == 4.0;
+		ok = ok && maintenance_work_mem == 98304;
+		ok = ok && max_parallel_maintenance_workers == 1;
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && work_mem == 8192;
+		ok = ok && hash_mem_multiplier == 3.0;
+		ok = ok && maintenance_work_mem == 131072;
+		ok = ok && max_parallel_maintenance_workers == 3;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && work_mem == 9216;
+		ok = ok && hash_mem_multiplier == 4.0;
+		ok = ok && maintenance_work_mem == 98304;
+		ok = ok && max_parallel_maintenance_workers == 1;
+
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("work_mem", saved_work_mem, PGC_USERSET,
+						PGC_S_SESSION);
+		SetConfigOption("hash_mem_multiplier", saved_hash_mem_multiplier,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("maintenance_work_mem", saved_maintenance_work_mem,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("max_parallel_maintenance_workers",
+						saved_max_parallel_maintenance_workers,
+						PGC_USERSET, PGC_S_SESSION);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("work_mem", saved_work_mem, PGC_USERSET,
+						PGC_S_SESSION);
+		SetConfigOption("hash_mem_multiplier", saved_hash_mem_multiplier,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("maintenance_work_mem", saved_maintenance_work_mem,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("max_parallel_maintenance_workers",
+						saved_max_parallel_maintenance_workers,
+						PGC_USERSET, PGC_S_SESSION);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session query memory GUC state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_backend_interrupt_holdoffs_are_backend_local);
 Datum
 test_backend_interrupt_holdoffs_are_backend_local(PG_FUNCTION_ARGS)

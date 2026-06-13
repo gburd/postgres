@@ -1578,6 +1578,23 @@ RebindSessionGUCVariablePointers(void)
 	gconf = find_option("IntervalStyle", false, false, PANIC);
 	Assert(gconf->vartype == PGC_ENUM);
 	gconf->_enum.variable = PgCurrentIntervalStyleRef();
+
+	gconf = find_option("hash_mem_multiplier", false, false, PANIC);
+	Assert(gconf->vartype == PGC_REAL);
+	gconf->_real.variable = PgCurrentHashMemMultiplierRef();
+
+	gconf = find_option("maintenance_work_mem", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentMaintenanceWorkMemRef();
+
+	gconf = find_option("max_parallel_maintenance_workers", false, false,
+						PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentMaxParallelMaintenanceWorkersRef();
+
+	gconf = find_option("work_mem", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentWorkMemRef();
 }
 
 /*

@@ -64,6 +64,13 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionDateTimeState early_session_da
 	.date_order = DATEORDER_MDY,
 	.interval_style = INTSTYLE_POSTGRES
 };
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionQueryMemoryState early_session_query_memory = {
+	.initialized = true,
+	.work_mem_kb = 4096,
+	.hash_mem_multiplier_value = 2.0,
+	.maintenance_work_mem_kb = 65536,
+	.max_parallel_maintenance_workers_value = 2
+};
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendPendingInterruptState early_pending_interrupts;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInterruptHoldoffState early_interrupt_holdoffs;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionDebugState early_execution_debug;
@@ -86,6 +93,8 @@ static void PgConnectionAdoptEarlyClientConnectionInfo(PgConnection *connection)
 static void PgSessionAdoptEarlyDatabaseState(PgSession *session);
 static void PgSessionInitializeDateTimeState(PgSessionDateTimeState *datetime);
 static void PgSessionAdoptEarlyDateTimeState(PgSession *session);
+static void PgSessionInitializeQueryMemoryState(PgSessionQueryMemoryState *query_memory);
+static void PgSessionAdoptEarlyQueryMemoryState(PgSession *session);
 static void PgBackendResetCoreState(PgBackendCoreState *core);
 static void PgBackendAdoptEarlyCoreState(PgBackend *backend);
 static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
@@ -98,6 +107,7 @@ static void PgExecutionAdoptEarlyResourceOwners(PgExecution *execution);
 static PgBackendCoreState *PgCurrentCoreState(void);
 static PgSessionDatabaseState *PgCurrentSessionDatabaseState(void);
 static PgSessionDateTimeState *PgCurrentSessionDateTimeState(void);
+static PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
 static PgExecutionErrorState *PgCurrentExecutionErrorState(void);
 static PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
 static PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
@@ -206,6 +216,30 @@ PgSessionAdoptEarlyDateTimeState(PgSession *session)
 
 	session->datetime = early_session_datetime;
 	PgSessionInitializeDateTimeState(&early_session_datetime);
+}
+
+static void
+PgSessionInitializeQueryMemoryState(PgSessionQueryMemoryState *query_memory)
+{
+	Assert(query_memory != NULL);
+
+	query_memory->initialized = true;
+	query_memory->work_mem_kb = 4096;
+	query_memory->hash_mem_multiplier_value = 2.0;
+	query_memory->maintenance_work_mem_kb = 65536;
+	query_memory->max_parallel_maintenance_workers_value = 2;
+}
+
+static void
+PgSessionAdoptEarlyQueryMemoryState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (!early_session_query_memory.initialized)
+		PgSessionInitializeQueryMemoryState(&early_session_query_memory);
+
+	session->query_memory = early_session_query_memory;
+	PgSessionInitializeQueryMemoryState(&early_session_query_memory);
 }
 
 static void
@@ -346,6 +380,7 @@ InitializePgProcessRuntime(void)
 	process_session.execution = &process_execution;
 	PgSessionAdoptEarlyDatabaseState(&process_session);
 	PgSessionAdoptEarlyDateTimeState(&process_session);
+	PgSessionAdoptEarlyQueryMemoryState(&process_session);
 
 	process_connection.backend = &process_backend;
 	process_connection.session = &process_session;
@@ -426,6 +461,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	state->session.connection = &state->connection;
 	state->session.execution = &state->execution;
 	PgSessionInitializeDateTimeState(&state->session.datetime);
+	PgSessionInitializeQueryMemoryState(&state->session.query_memory);
 
 	state->connection.backend = &state->backend;
 	state->connection.session = &state->session;
@@ -447,6 +483,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgBackendAdoptEarlyCoreState(&state->backend);
 	PgSessionAdoptEarlyDatabaseState(&state->session);
 	PgSessionAdoptEarlyDateTimeState(&state->session);
+	PgSessionAdoptEarlyQueryMemoryState(&state->session);
 	PgExecutionAdoptEarlyErrorState(&state->execution);
 	PgExecutionAdoptEarlyMemoryContexts(&state->execution);
 	PgExecutionAdoptEarlyResourceOwners(&state->execution);
@@ -528,6 +565,22 @@ PgCurrentSessionDateTimeState(void)
 	return datetime;
 }
 
+static PgSessionQueryMemoryState *
+PgCurrentSessionQueryMemoryState(void)
+{
+	PgSessionQueryMemoryState *query_memory;
+
+	if (CurrentPgSession == NULL)
+		query_memory = &early_session_query_memory;
+	else
+		query_memory = &CurrentPgSession->query_memory;
+
+	if (!query_memory->initialized)
+		PgSessionInitializeQueryMemoryState(query_memory);
+
+	return query_memory;
+}
+
 Oid *
 PgCurrentMyDatabaseIdRef(void)
 {
@@ -568,6 +621,30 @@ int *
 PgCurrentIntervalStyleRef(void)
 {
 	return &PgCurrentSessionDateTimeState()->interval_style;
+}
+
+int *
+PgCurrentWorkMemRef(void)
+{
+	return &PgCurrentSessionQueryMemoryState()->work_mem_kb;
+}
+
+double *
+PgCurrentHashMemMultiplierRef(void)
+{
+	return &PgCurrentSessionQueryMemoryState()->hash_mem_multiplier_value;
+}
+
+int *
+PgCurrentMaintenanceWorkMemRef(void)
+{
+	return &PgCurrentSessionQueryMemoryState()->maintenance_work_mem_kb;
+}
+
+int *
+PgCurrentMaxParallelMaintenanceWorkersRef(void)
+{
+	return &PgCurrentSessionQueryMemoryState()->max_parallel_maintenance_workers_value;
 }
 
 struct Port **

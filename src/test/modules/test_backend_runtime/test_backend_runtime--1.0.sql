@@ -43,6 +43,10 @@ CREATE FUNCTION test_session_datetime_state_is_session_local()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;
 
+CREATE FUNCTION test_session_query_memory_state_is_session_local()
+	RETURNS pg_catalog.bool
+	AS 'MODULE_PATHNAME' LANGUAGE C;
+
 CREATE FUNCTION test_backend_interrupt_holdoffs_are_backend_local()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;
