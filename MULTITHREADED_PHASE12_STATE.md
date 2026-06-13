@@ -2622,3 +2622,63 @@ Validation for this slice:
   header migration;
 - static scans found no remaining direct session TLS definitions for
   `localChannelTable` or `amRegisteredListener`.
+
+## Session Encoding And Conversion Bridge
+
+The fifty-first Phase 12 slice moves client/database/message encoding and
+conversion-function cache state under `PgSession`:
+
+- `PgSession` now owns a `PgSessionEncodingState`;
+- `PgSessionEncodingState` owns the conversion procedure list, active
+  client-to-server/server-to-client conversion function pointers, the
+  UTF8-to-server helper conversion pointer, client/database/message encoding
+  descriptors, startup-complete flag, and pending startup client encoding;
+- `mbutils.c` keeps its historical local names through compatibility macros
+  backed by `PgCurrentEncodingConvProcListRef()`,
+  `PgCurrentToServerConvProcRef()`, `PgCurrentToClientConvProcRef()`,
+  `PgCurrentUtf8ToServerConvProcRef()`, `PgCurrentClientEncodingRef()`,
+  `PgCurrentDatabaseEncodingRef()`, `PgCurrentMessageEncodingRef()`,
+  `PgCurrentEncodingStartupCompleteRef()`, and
+  `PgCurrentPendingClientEncodingRef()`;
+- early paths before `CurrentPgSession` is installed use fallback
+  session storage in `backend_runtime.c`;
+- fallback encoding storage is lazily initialized to the same SQL_ASCII
+  defaults the old static variables used. This preserves very early paths such
+  as `postgres -V`, which can touch encoding state before normal backend
+  session installation;
+- process-mode and thread-runtime session installation adopt or initialize the
+  encoding bucket with the rest of the logical session object.
+
+This slice leaves the conversion cache allocation policy unchanged:
+conversion lookup entries remain long-lived `TopMemoryContext` allocations and
+rollback can still restore a previous conversion selection without a catalog
+lookup. The change only moves the roots and selected encoding pointers from
+raw session TLS onto the logical session object.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o` and `mbutils.o`;
+- because `backend_runtime.h` changed, `gmake -C src/backend clean` plus
+  generated utility and node-header recovery was used before trusting
+  process-mode runtime tests;
+- clean full `gmake -j8` passed after the backend clean;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- focused `test_backend_runtime` regression includes
+  `test_session_encoding_state_is_session_local()`, which switches fake
+  sessions through `PgSetCurrentSession()` and proves all conversion cache,
+  selected encoding, startup-complete, and pending-client-encoding fields
+  follow the active session object;
+- the same regression schedule includes SQL-level `SET LOCAL client_encoding`
+  and `convert_to()`/`convert_from()` smokes;
+- direct `test_backend_runtime` regression passed after reinstalling the test
+  module into `tmp_install`;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests, including
+  the core `encoding`, `euc_kr`, `conversion`, and JSON encoding tests;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- static scans found no remaining direct session TLS definitions for
+  `ConvProcList`, `ToServerConvProc`, `ToClientConvProc`,
+  `Utf8ToServerConvProc`, `ClientEncoding`, `DatabaseEncoding`,
+  `MessageEncoding`, `backend_startup_complete`, or
+  `pending_client_encoding`.

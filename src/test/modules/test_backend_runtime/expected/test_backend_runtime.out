@@ -107,6 +107,12 @@ SELECT test_session_async_state_is_session_local();
  t
 (1 row)
 
+SELECT test_session_encoding_state_is_session_local();
+ test_session_encoding_state_is_session_local 
+----------------------------------------------
+ t
+(1 row)
+
 SELECT test_runtime_server_guc_state_is_runtime_local();
  test_runtime_server_guc_state_is_runtime_local 
 ------------------------------------------------
@@ -455,4 +461,21 @@ SELECT pg_listening_channels();
  pg_listening_channels 
 -----------------------
 (0 rows)
+
+BEGIN;
+SET LOCAL client_encoding TO SQL_ASCII;
+SELECT current_setting('client_encoding') AS phase12_client_encoding;
+ phase12_client_encoding 
+-------------------------
+ SQL_ASCII
+(1 row)
+
+COMMIT;
+SELECT convert_from(
+	convert_to('phase12 encoding state', current_setting('server_encoding')::name),
+	current_setting('server_encoding')::name) AS phase12_encoding_roundtrip;
+ phase12_encoding_roundtrip 
+----------------------------
+ phase12 encoding state
+(1 row)
 

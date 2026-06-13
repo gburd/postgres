@@ -18,6 +18,7 @@ SELECT test_session_on_commit_state_is_session_local();
 SELECT test_session_sequence_state_is_session_local();
 SELECT test_session_large_object_state_is_session_local();
 SELECT test_session_async_state_is_session_local();
+SELECT test_session_encoding_state_is_session_local();
 SELECT test_runtime_server_guc_state_is_runtime_local();
 SELECT test_session_connection_guc_state_is_session_local();
 SELECT test_session_parser_state_is_session_local();
@@ -93,3 +94,10 @@ LISTEN phase12_async_state;
 SELECT pg_listening_channels();
 UNLISTEN *;
 SELECT pg_listening_channels();
+BEGIN;
+SET LOCAL client_encoding TO SQL_ASCII;
+SELECT current_setting('client_encoding') AS phase12_client_encoding;
+COMMIT;
+SELECT convert_from(
+	convert_to('phase12 encoding state', current_setting('server_encoding')::name),
+	current_setting('server_encoding')::name) AS phase12_encoding_roundtrip;

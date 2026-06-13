@@ -17,6 +17,7 @@
 #include "fmgr.h"
 #include "lib/ilist.h"
 #include "libpq/hba.h"
+#include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "nodes/pg_list.h"
 #include "pgtime.h"
@@ -605,6 +606,19 @@ typedef struct PgSessionAsyncState
 	bool		registered_listener;
 } PgSessionAsyncState;
 
+typedef struct PgSessionEncodingState
+{
+	List	   *conv_proc_list;
+	FmgrInfo   *to_server_conv_proc;
+	FmgrInfo   *to_client_conv_proc;
+	FmgrInfo   *utf8_to_server_conv_proc;
+	const pg_enc2name *client_encoding;
+	const pg_enc2name *database_encoding;
+	const pg_enc2name *message_encoding;
+	bool		backend_startup_complete;
+	int			pending_client_encoding;
+} PgSessionEncodingState;
+
 typedef struct PgRuntimeServerGUCState
 {
 	bool		initialized;
@@ -766,6 +780,7 @@ struct PgSession
 	PgSessionRegexState regex;
 	PgSessionLargeObjectState large_object;
 	PgSessionAsyncState async;
+	PgSessionEncodingState encoding;
 };
 
 struct PgConnection
@@ -964,6 +979,15 @@ extern struct RelationData **PgCurrentLargeObjectHeapRelationRef(void);
 extern struct RelationData **PgCurrentLargeObjectIndexRelationRef(void);
 extern HTAB **PgCurrentAsyncLocalChannelTableRef(void);
 extern bool *PgCurrentAsyncRegisteredListenerRef(void);
+extern List **PgCurrentEncodingConvProcListRef(void);
+extern FmgrInfo **PgCurrentToServerConvProcRef(void);
+extern FmgrInfo **PgCurrentToClientConvProcRef(void);
+extern FmgrInfo **PgCurrentUtf8ToServerConvProcRef(void);
+extern const pg_enc2name **PgCurrentClientEncodingRef(void);
+extern const pg_enc2name **PgCurrentDatabaseEncodingRef(void);
+extern const pg_enc2name **PgCurrentMessageEncodingRef(void);
+extern bool *PgCurrentEncodingStartupCompleteRef(void);
+extern int *PgCurrentPendingClientEncodingRef(void);
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);

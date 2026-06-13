@@ -32,6 +32,7 @@
 #include "jit/jit.h"
 #include "libpq/libpq-be.h"
 #include "libpq/libpq.h"
+#include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "nodes/queryjumble.h"
 #include "optimizer/cost.h"
@@ -1320,6 +1321,150 @@ test_session_async_state_is_session_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "async listener state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_session_encoding_state_is_session_local);
+Datum
+test_session_encoding_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	List	   *saved_conv_proc_list;
+	FmgrInfo   *saved_to_server_conv_proc;
+	FmgrInfo   *saved_to_client_conv_proc;
+	FmgrInfo   *saved_utf8_to_server_conv_proc;
+	const pg_enc2name *saved_client_encoding;
+	const pg_enc2name *saved_database_encoding;
+	const pg_enc2name *saved_message_encoding;
+	bool		saved_startup_complete;
+	int			saved_pending_client_encoding;
+	List	   *session1_list_marker;
+	List	   *session2_list_marker;
+	FmgrInfo   *session1_to_server_marker;
+	FmgrInfo   *session1_to_client_marker;
+	FmgrInfo   *session1_utf8_marker;
+	FmgrInfo   *session2_to_server_marker;
+	FmgrInfo   *session2_to_client_marker;
+	FmgrInfo   *session2_utf8_marker;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	saved_conv_proc_list = *PgCurrentEncodingConvProcListRef();
+	saved_to_server_conv_proc = *PgCurrentToServerConvProcRef();
+	saved_to_client_conv_proc = *PgCurrentToClientConvProcRef();
+	saved_utf8_to_server_conv_proc = *PgCurrentUtf8ToServerConvProcRef();
+	saved_client_encoding = *PgCurrentClientEncodingRef();
+	saved_database_encoding = *PgCurrentDatabaseEncodingRef();
+	saved_message_encoding = *PgCurrentMessageEncodingRef();
+	saved_startup_complete = *PgCurrentEncodingStartupCompleteRef();
+	saved_pending_client_encoding = *PgCurrentPendingClientEncodingRef();
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	session1_list_marker = (List *) &fake_session1;
+	session2_list_marker = (List *) &fake_session2;
+	session1_to_server_marker = (FmgrInfo *) &fake_session1;
+	session1_to_client_marker = (FmgrInfo *) &fake_session2;
+	session1_utf8_marker = (FmgrInfo *) &saved_session;
+	session2_to_server_marker = (FmgrInfo *) &saved_conv_proc_list;
+	session2_to_client_marker = (FmgrInfo *) &saved_to_server_conv_proc;
+	session2_utf8_marker = (FmgrInfo *) &saved_to_client_conv_proc;
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && *PgCurrentEncodingConvProcListRef() == NIL;
+		ok = ok && *PgCurrentToServerConvProcRef() == NULL;
+		ok = ok && *PgCurrentToClientConvProcRef() == NULL;
+		ok = ok && *PgCurrentUtf8ToServerConvProcRef() == NULL;
+		ok = ok && *PgCurrentClientEncodingRef() == &pg_enc2name_tbl[PG_SQL_ASCII];
+		ok = ok && *PgCurrentDatabaseEncodingRef() == &pg_enc2name_tbl[PG_SQL_ASCII];
+		ok = ok && *PgCurrentMessageEncodingRef() == &pg_enc2name_tbl[PG_SQL_ASCII];
+		ok = ok && !*PgCurrentEncodingStartupCompleteRef();
+		ok = ok && *PgCurrentPendingClientEncodingRef() == PG_SQL_ASCII;
+		*PgCurrentEncodingConvProcListRef() = session1_list_marker;
+		*PgCurrentToServerConvProcRef() = session1_to_server_marker;
+		*PgCurrentToClientConvProcRef() = session1_to_client_marker;
+		*PgCurrentUtf8ToServerConvProcRef() = session1_utf8_marker;
+		*PgCurrentClientEncodingRef() = &pg_enc2name_tbl[PG_UTF8];
+		*PgCurrentDatabaseEncodingRef() = &pg_enc2name_tbl[PG_UTF8];
+		*PgCurrentMessageEncodingRef() = &pg_enc2name_tbl[PG_UTF8];
+		*PgCurrentEncodingStartupCompleteRef() = true;
+		*PgCurrentPendingClientEncodingRef() = PG_UTF8;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && *PgCurrentEncodingConvProcListRef() == NIL;
+		ok = ok && *PgCurrentToServerConvProcRef() == NULL;
+		ok = ok && *PgCurrentToClientConvProcRef() == NULL;
+		ok = ok && *PgCurrentUtf8ToServerConvProcRef() == NULL;
+		ok = ok && *PgCurrentClientEncodingRef() == &pg_enc2name_tbl[PG_SQL_ASCII];
+		ok = ok && *PgCurrentDatabaseEncodingRef() == &pg_enc2name_tbl[PG_SQL_ASCII];
+		ok = ok && *PgCurrentMessageEncodingRef() == &pg_enc2name_tbl[PG_SQL_ASCII];
+		ok = ok && !*PgCurrentEncodingStartupCompleteRef();
+		ok = ok && *PgCurrentPendingClientEncodingRef() == PG_SQL_ASCII;
+		*PgCurrentEncodingConvProcListRef() = session2_list_marker;
+		*PgCurrentToServerConvProcRef() = session2_to_server_marker;
+		*PgCurrentToClientConvProcRef() = session2_to_client_marker;
+		*PgCurrentUtf8ToServerConvProcRef() = session2_utf8_marker;
+		*PgCurrentClientEncodingRef() = &pg_enc2name_tbl[PG_SQL_ASCII];
+		*PgCurrentDatabaseEncodingRef() = &pg_enc2name_tbl[PG_SQL_ASCII];
+		*PgCurrentMessageEncodingRef() = &pg_enc2name_tbl[PG_SQL_ASCII];
+		*PgCurrentEncodingStartupCompleteRef() = false;
+		*PgCurrentPendingClientEncodingRef() = PG_SQL_ASCII;
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && *PgCurrentEncodingConvProcListRef() == session1_list_marker;
+		ok = ok && *PgCurrentToServerConvProcRef() == session1_to_server_marker;
+		ok = ok && *PgCurrentToClientConvProcRef() == session1_to_client_marker;
+		ok = ok && *PgCurrentUtf8ToServerConvProcRef() == session1_utf8_marker;
+		ok = ok && *PgCurrentClientEncodingRef() == &pg_enc2name_tbl[PG_UTF8];
+		ok = ok && *PgCurrentDatabaseEncodingRef() == &pg_enc2name_tbl[PG_UTF8];
+		ok = ok && *PgCurrentMessageEncodingRef() == &pg_enc2name_tbl[PG_UTF8];
+		ok = ok && *PgCurrentEncodingStartupCompleteRef();
+		ok = ok && *PgCurrentPendingClientEncodingRef() == PG_UTF8;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && *PgCurrentEncodingConvProcListRef() == session2_list_marker;
+		ok = ok && *PgCurrentToServerConvProcRef() == session2_to_server_marker;
+		ok = ok && *PgCurrentToClientConvProcRef() == session2_to_client_marker;
+		ok = ok && *PgCurrentUtf8ToServerConvProcRef() == session2_utf8_marker;
+		ok = ok && *PgCurrentClientEncodingRef() == &pg_enc2name_tbl[PG_SQL_ASCII];
+		ok = ok && *PgCurrentDatabaseEncodingRef() == &pg_enc2name_tbl[PG_SQL_ASCII];
+		ok = ok && *PgCurrentMessageEncodingRef() == &pg_enc2name_tbl[PG_SQL_ASCII];
+		ok = ok && !*PgCurrentEncodingStartupCompleteRef();
+		ok = ok && *PgCurrentPendingClientEncodingRef() == PG_SQL_ASCII;
+
+		PgSetCurrentSession(saved_session);
+		*PgCurrentEncodingConvProcListRef() = saved_conv_proc_list;
+		*PgCurrentToServerConvProcRef() = saved_to_server_conv_proc;
+		*PgCurrentToClientConvProcRef() = saved_to_client_conv_proc;
+		*PgCurrentUtf8ToServerConvProcRef() = saved_utf8_to_server_conv_proc;
+		*PgCurrentClientEncodingRef() = saved_client_encoding;
+		*PgCurrentDatabaseEncodingRef() = saved_database_encoding;
+		*PgCurrentMessageEncodingRef() = saved_message_encoding;
+		*PgCurrentEncodingStartupCompleteRef() = saved_startup_complete;
+		*PgCurrentPendingClientEncodingRef() = saved_pending_client_encoding;
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		*PgCurrentEncodingConvProcListRef() = saved_conv_proc_list;
+		*PgCurrentToServerConvProcRef() = saved_to_server_conv_proc;
+		*PgCurrentToClientConvProcRef() = saved_to_client_conv_proc;
+		*PgCurrentUtf8ToServerConvProcRef() = saved_utf8_to_server_conv_proc;
+		*PgCurrentClientEncodingRef() = saved_client_encoding;
+		*PgCurrentDatabaseEncodingRef() = saved_database_encoding;
+		*PgCurrentMessageEncodingRef() = saved_message_encoding;
+		*PgCurrentEncodingStartupCompleteRef() = saved_startup_complete;
+		*PgCurrentPendingClientEncodingRef() = saved_pending_client_encoding;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "encoding state was not session-local");
 
 	PG_RETURN_BOOL(true);
 }

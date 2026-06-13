@@ -437,6 +437,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionSequenceState early_session_se
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionRegexState early_session_regex;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionLargeObjectState early_session_large_object;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionAsyncState early_session_async;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionEncodingState early_session_encoding;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendPendingInterruptState early_pending_interrupts;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInterruptHoldoffState early_interrupt_holdoffs;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionDebugState early_execution_debug;
@@ -522,6 +523,9 @@ static void PgSessionInitializeLargeObjectState(PgSessionLargeObjectState *large
 static void PgSessionAdoptEarlyLargeObjectState(PgSession *session);
 static void PgSessionInitializeAsyncState(PgSessionAsyncState *async);
 static void PgSessionAdoptEarlyAsyncState(PgSession *session);
+static void PgSessionInitializeEncodingState(PgSessionEncodingState *encoding);
+static void PgSessionEnsureEncodingStateInitialized(PgSessionEncodingState *encoding);
+static void PgSessionAdoptEarlyEncodingState(PgSession *session);
 static void PgBackendResetCoreState(PgBackendCoreState *core);
 static void PgBackendAdoptEarlyCoreState(PgBackend *backend);
 static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
@@ -564,6 +568,7 @@ static PgSessionSequenceState *PgCurrentSessionSequenceState(void);
 static PgSessionRegexState *PgCurrentSessionRegexState(void);
 static PgSessionLargeObjectState *PgCurrentSessionLargeObjectState(void);
 static PgSessionAsyncState *PgCurrentSessionAsyncState(void);
+static PgSessionEncodingState *PgCurrentSessionEncodingState(void);
 static PgExecutionErrorState *PgCurrentExecutionErrorState(void);
 static PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
 static PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
@@ -1547,6 +1552,41 @@ PgSessionAdoptEarlyAsyncState(PgSession *session)
 }
 
 static void
+PgSessionInitializeEncodingState(PgSessionEncodingState *encoding)
+{
+	Assert(encoding != NULL);
+
+	encoding->conv_proc_list = NIL;
+	encoding->to_server_conv_proc = NULL;
+	encoding->to_client_conv_proc = NULL;
+	encoding->utf8_to_server_conv_proc = NULL;
+	encoding->client_encoding = &pg_enc2name_tbl[PG_SQL_ASCII];
+	encoding->database_encoding = &pg_enc2name_tbl[PG_SQL_ASCII];
+	encoding->message_encoding = &pg_enc2name_tbl[PG_SQL_ASCII];
+	encoding->backend_startup_complete = false;
+	encoding->pending_client_encoding = PG_SQL_ASCII;
+}
+
+static void
+PgSessionEnsureEncodingStateInitialized(PgSessionEncodingState *encoding)
+{
+	Assert(encoding != NULL);
+
+	if (encoding->client_encoding == NULL)
+		PgSessionInitializeEncodingState(encoding);
+}
+
+static void
+PgSessionAdoptEarlyEncodingState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	PgSessionEnsureEncodingStateInitialized(&early_session_encoding);
+	session->encoding = early_session_encoding;
+	PgSessionInitializeEncodingState(&early_session_encoding);
+}
+
+static void
 PgBackendResetCoreState(PgBackendCoreState *core)
 {
 	MemSet(core, 0, sizeof(*core));
@@ -1715,6 +1755,7 @@ InitializePgProcessRuntime(void)
 	PgSessionAdoptEarlyRegexState(&process_session);
 	PgSessionAdoptEarlyLargeObjectState(&process_session);
 	PgSessionAdoptEarlyAsyncState(&process_session);
+	PgSessionAdoptEarlyEncodingState(&process_session);
 
 	process_connection.backend = &process_backend;
 	process_connection.session = &process_session;
@@ -1829,6 +1870,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgSessionInitializeRegexState(&state->session.regex);
 	PgSessionInitializeLargeObjectState(&state->session.large_object);
 	PgSessionInitializeAsyncState(&state->session.async);
+	PgSessionInitializeEncodingState(&state->session.encoding);
 
 	state->connection.backend = &state->backend;
 	state->connection.session = &state->session;
@@ -1880,6 +1922,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgSessionAdoptEarlyRegexState(&state->session);
 	PgSessionAdoptEarlyLargeObjectState(&state->session);
 	PgSessionAdoptEarlyAsyncState(&state->session);
+	PgSessionAdoptEarlyEncodingState(&state->session);
 	PgExecutionAdoptEarlyErrorState(&state->execution);
 	PgExecutionAdoptEarlyMemoryContexts(&state->execution);
 	PgExecutionAdoptEarlyResourceOwners(&state->execution);
@@ -2414,6 +2457,20 @@ PgCurrentSessionAsyncState(void)
 	return &CurrentPgSession->async;
 }
 
+static PgSessionEncodingState *
+PgCurrentSessionEncodingState(void)
+{
+	PgSessionEncodingState *encoding;
+
+	if (CurrentPgSession == NULL)
+		encoding = &early_session_encoding;
+	else
+		encoding = &CurrentPgSession->encoding;
+
+	PgSessionEnsureEncodingStateInitialized(encoding);
+	return encoding;
+}
+
 Oid *
 PgCurrentMyDatabaseIdRef(void)
 {
@@ -2760,6 +2817,60 @@ bool *
 PgCurrentAsyncRegisteredListenerRef(void)
 {
 	return &PgCurrentSessionAsyncState()->registered_listener;
+}
+
+List **
+PgCurrentEncodingConvProcListRef(void)
+{
+	return &PgCurrentSessionEncodingState()->conv_proc_list;
+}
+
+FmgrInfo **
+PgCurrentToServerConvProcRef(void)
+{
+	return &PgCurrentSessionEncodingState()->to_server_conv_proc;
+}
+
+FmgrInfo **
+PgCurrentToClientConvProcRef(void)
+{
+	return &PgCurrentSessionEncodingState()->to_client_conv_proc;
+}
+
+FmgrInfo **
+PgCurrentUtf8ToServerConvProcRef(void)
+{
+	return &PgCurrentSessionEncodingState()->utf8_to_server_conv_proc;
+}
+
+const pg_enc2name **
+PgCurrentClientEncodingRef(void)
+{
+	return &PgCurrentSessionEncodingState()->client_encoding;
+}
+
+const pg_enc2name **
+PgCurrentDatabaseEncodingRef(void)
+{
+	return &PgCurrentSessionEncodingState()->database_encoding;
+}
+
+const pg_enc2name **
+PgCurrentMessageEncodingRef(void)
+{
+	return &PgCurrentSessionEncodingState()->message_encoding;
+}
+
+bool *
+PgCurrentEncodingStartupCompleteRef(void)
+{
+	return &PgCurrentSessionEncodingState()->backend_startup_complete;
+}
+
+int *
+PgCurrentPendingClientEncodingRef(void)
+{
+	return &PgCurrentSessionEncodingState()->pending_client_encoding;
 }
 
 int *
