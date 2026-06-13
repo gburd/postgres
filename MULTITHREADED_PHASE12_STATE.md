@@ -6866,6 +6866,46 @@ Validation for this slice:
   87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
   explicit `PG_REGRESS` environment.
 
+## Backend Timeout State Bridge
+
+The one-hundred-forty-fourth Phase 12 slice moves timeout scheduler state into
+a new `PgBackendTimeoutState` bucket:
+
+- the registered timeout parameter table;
+- the active-timeout queue;
+- alarm enabled and signal-pending state;
+- the pending signal due timestamp;
+- firing-target backend/execution pointers;
+- signal-backed vs logical timeout delivery mode.
+
+`timeout.c` keeps the existing scheduler behavior through compatibility macros
+over the current backend timeout bucket. `PgTimeoutParams` is now defined in
+`utils/timeout.h` so `PgBackend` can own the fixed timeout arrays directly
+without allocating a separate private timeout object.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `timeout.o`, and
+  `test_backend_runtime.o`;
+- a static scan found no remaining raw TLS declarations for the moved timeout
+  scheduler state;
+- a full backend clean plus generated-header recovery was run after the
+  installed-header and `PgBackend` layout changes;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 244 to 236;
+- `gmake -C contrib -j8` passed;
+- PL/pgSQL and `src/test/modules/test_backend_runtime` were cleaned, rebuilt,
+  and reinstalled after the installed-header and `PgBackend` layout changes;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression, including the new timeout-state helper, and still
+  reported TAP disabled by configure;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
+  explicit `PG_REGRESS` environment.
+
 ## Backend Parallel State Bridge
 
 The one-hundred-forty-second Phase 12 slice moves a parallel-query and

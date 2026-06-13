@@ -380,6 +380,16 @@ Important current files:
   installed runtime headers changed; at minimum rebuild and reinstall
   PL/pgSQL, `src/test/modules/test_backend_runtime`, and contrib before
   validating.
+- Timeout scheduler backend-local state now lives in `PgBackendTimeoutState`:
+  registered timeout parameters, the active timeout queue, alarm/signal
+  pending flags, firing-target pointers, and signal-vs-logical delivery mode
+  are backed by runtime accessors while `timeout.c` keeps local compatibility
+  names. `PgTimeoutParams` is defined in `utils/timeout.h` so `PgBackend` can
+  own the fixed timeout arrays directly. After changing this bridge, clean and
+  rebuild backend objects because `PgBackend` layout and installed runtime
+  headers changed; at minimum rebuild and reinstall PL/pgSQL,
+  `src/test/modules/test_backend_runtime`, and contrib before validating.
+  Direct threaded TAP exercises logical timeout delivery and should be run.
 - Treat `PMChild.thread_backend` as private PMChild-owned publication state.
   Postmaster code should use PMChild helper APIs for threaded backend
   interrupt, wakeup, and thread-exit publication rather than dereferencing or

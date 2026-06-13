@@ -24,37 +24,19 @@
 #include "utils/timestamp.h"
 
 
-/* Data about any one timeout reason */
-typedef struct timeout_params
-{
-	TimeoutId	index;			/* identifier of timeout reason */
-
-	/* volatile because these may be changed from the signal handler */
-	volatile bool active;		/* true if timeout is in active_timeouts[] */
-	volatile bool indicator;	/* true if timeout has occurred */
-
-	/* callback function for timeout, or NULL if timeout not registered */
-	timeout_handler_proc timeout_handler;
-	PgBackend  *target_backend; /* logical backend that armed this timeout */
-	PgExecution *target_execution;	/* execution that armed this timeout */
-
-	TimestampTz start_time;		/* time that timeout was last activated */
-	TimestampTz fin_time;		/* time it is, or was last, due to fire */
-	int			interval_in_ms; /* time between firings, or 0 if just once */
-} timeout_params;
-
 /*
  * List of possible timeout reasons in the order of enum TimeoutId.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND timeout_params all_timeouts[MAX_TIMEOUTS];
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool all_timeouts_initialized = false;
+#define all_timeouts (PgCurrentTimeoutState()->all_timeouts)
+#define all_timeouts_initialized \
+	(PgCurrentTimeoutState()->all_timeouts_initialized)
 
 /*
  * List of active timeouts ordered by their fin_time and priority.
  * This list is subject to change by the interrupt handler, so it's volatile.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile int num_active_timeouts = 0;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND timeout_params *volatile active_timeouts[MAX_TIMEOUTS];
+#define num_active_timeouts (PgCurrentTimeoutState()->num_active_timeouts)
+#define active_timeouts (PgCurrentTimeoutState()->active_timeouts)
 
 /*
  * Flag controlling whether the signal handler is allowed to do anything.
@@ -68,7 +50,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND timeout_params *volatile active_timeout
  *
  * We leave this "false" when we're not expecting interrupts, just in case.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t alarm_enabled = false;
+#define alarm_enabled (PgCurrentTimeoutState()->alarm_enabled)
 
 #define disable_alarm() (alarm_enabled = false)
 #define enable_alarm()	(alarm_enabled = true)
@@ -79,11 +61,14 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t alarm_enabled = f
  * Note that the signal handler will unconditionally reset signal_pending to
  * false, so that can change asynchronously even when alarm_enabled is false.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t signal_pending = false;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile TimestampTz signal_due_at = 0;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackend *firing_timeout_target = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecution *firing_timeout_execution = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool timeout_signal_delivery = true;
+#define signal_pending (PgCurrentTimeoutState()->signal_pending)
+#define signal_due_at (PgCurrentTimeoutState()->signal_due_at)
+#define firing_timeout_target \
+	(PgCurrentTimeoutState()->firing_timeout_target)
+#define firing_timeout_execution \
+	(PgCurrentTimeoutState()->firing_timeout_execution)
+#define timeout_signal_delivery \
+	(PgCurrentTimeoutState()->signal_delivery)
 
 static void InitializeTimeoutState(void);
 static bool fire_due_timeouts(TimestampTz now);
@@ -188,7 +173,7 @@ enable_timeout(TimeoutId id, TimestampTz now, TimestampTz fin_time,
 	 */
 	for (i = 0; i < num_active_timeouts; i++)
 	{
-		timeout_params *old_timeout = active_timeouts[i];
+		PgTimeoutParams *old_timeout = active_timeouts[i];
 
 		if (fin_time < old_timeout->fin_time)
 			break;
@@ -387,7 +372,7 @@ fire_due_timeouts(TimestampTz now)
 	while (num_active_timeouts > 0 &&
 		   now >= active_timeouts[0]->fin_time)
 	{
-		timeout_params *this_timeout = active_timeouts[0];
+		PgTimeoutParams *this_timeout = active_timeouts[0];
 		PgBackend  *save_firing_timeout_target;
 		PgExecution *save_firing_timeout_execution;
 

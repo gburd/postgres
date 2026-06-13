@@ -48,6 +48,25 @@ typedef enum TimeoutId
 /* callback function signature */
 typedef void (*timeout_handler_proc) (void);
 
+/* Data about any one timeout reason */
+typedef struct PgTimeoutParams
+{
+	TimeoutId	index;			/* identifier of timeout reason */
+
+	/* volatile because these may be changed from the signal handler */
+	volatile bool active;		/* true if timeout is in active_timeouts[] */
+	volatile bool indicator;	/* true if timeout has occurred */
+
+	/* callback function for timeout, or NULL if timeout not registered */
+	timeout_handler_proc timeout_handler;
+	PgBackend  *target_backend; /* logical backend that armed this timeout */
+	PgExecution *target_execution;	/* execution that armed this timeout */
+
+	TimestampTz start_time;		/* time that timeout was last activated */
+	TimestampTz fin_time;		/* time it is, or was last, due to fire */
+	int			interval_in_ms; /* time between firings, or 0 if just once */
+} PgTimeoutParams;
+
 /*
  * Parameter structure for setting multiple timeouts at once
  */

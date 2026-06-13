@@ -8091,6 +8091,137 @@ test_backend_transaction_state_is_backend_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_backend_timeout_state_is_backend_local);
+Datum
+test_backend_timeout_state_is_backend_local(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgBackend	fake_backend1;
+	PgBackend	fake_backend2;
+	PgBackendTimeoutState *timeout1;
+	PgBackendTimeoutState *timeout2;
+	bool		ok = true;
+
+	saved_backend = CurrentPgBackend;
+	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
+	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+
+	PG_TRY();
+	{
+		CurrentPgBackend = &fake_backend1;
+		timeout1 = PgCurrentTimeoutState();
+		timeout1->all_timeouts_initialized = true;
+		timeout1->all_timeouts[DEADLOCK_TIMEOUT].index = DEADLOCK_TIMEOUT;
+		timeout1->all_timeouts[DEADLOCK_TIMEOUT].active = true;
+		timeout1->all_timeouts[DEADLOCK_TIMEOUT].indicator = true;
+		timeout1->all_timeouts[DEADLOCK_TIMEOUT].target_backend = &fake_backend1;
+		timeout1->all_timeouts[DEADLOCK_TIMEOUT].target_execution =
+			(PgExecution *) &fake_backend1;
+		timeout1->all_timeouts[DEADLOCK_TIMEOUT].start_time = 101;
+		timeout1->all_timeouts[DEADLOCK_TIMEOUT].fin_time = 102;
+		timeout1->all_timeouts[DEADLOCK_TIMEOUT].interval_in_ms = 103;
+		timeout1->num_active_timeouts = 1;
+		timeout1->active_timeouts[0] =
+			&timeout1->all_timeouts[DEADLOCK_TIMEOUT];
+		timeout1->alarm_enabled = true;
+		timeout1->signal_pending = true;
+		timeout1->signal_due_at = 104;
+		timeout1->firing_timeout_target = &fake_backend1;
+		timeout1->firing_timeout_execution = (PgExecution *) &fake_backend1;
+		timeout1->signal_delivery = true;
+
+		CurrentPgBackend = &fake_backend2;
+		timeout2 = PgCurrentTimeoutState();
+		ok = ok && !timeout2->all_timeouts_initialized;
+		ok = ok && timeout2->num_active_timeouts == 0;
+		ok = ok && timeout2->active_timeouts[0] == NULL;
+		ok = ok && !timeout2->alarm_enabled;
+		ok = ok && !timeout2->signal_pending;
+		ok = ok && timeout2->signal_due_at == 0;
+		ok = ok && timeout2->firing_timeout_target == NULL;
+		ok = ok && timeout2->firing_timeout_execution == NULL;
+		ok = ok && !timeout2->signal_delivery;
+
+		timeout2->all_timeouts_initialized = true;
+		timeout2->all_timeouts[LOCK_TIMEOUT].index = LOCK_TIMEOUT;
+		timeout2->all_timeouts[LOCK_TIMEOUT].active = true;
+		timeout2->all_timeouts[LOCK_TIMEOUT].indicator = false;
+		timeout2->all_timeouts[LOCK_TIMEOUT].target_backend = &fake_backend2;
+		timeout2->all_timeouts[LOCK_TIMEOUT].target_execution =
+			(PgExecution *) &fake_backend2;
+		timeout2->all_timeouts[LOCK_TIMEOUT].start_time = 201;
+		timeout2->all_timeouts[LOCK_TIMEOUT].fin_time = 202;
+		timeout2->all_timeouts[LOCK_TIMEOUT].interval_in_ms = 203;
+		timeout2->num_active_timeouts = 1;
+		timeout2->active_timeouts[0] = &timeout2->all_timeouts[LOCK_TIMEOUT];
+		timeout2->alarm_enabled = false;
+		timeout2->signal_pending = true;
+		timeout2->signal_due_at = 204;
+		timeout2->firing_timeout_target = &fake_backend2;
+		timeout2->firing_timeout_execution = (PgExecution *) &fake_backend2;
+		timeout2->signal_delivery = false;
+
+		CurrentPgBackend = &fake_backend1;
+		timeout1 = PgCurrentTimeoutState();
+		ok = ok && timeout1->all_timeouts_initialized;
+		ok = ok && timeout1->num_active_timeouts == 1;
+		ok = ok && timeout1->active_timeouts[0] ==
+			&timeout1->all_timeouts[DEADLOCK_TIMEOUT];
+		ok = ok && timeout1->all_timeouts[DEADLOCK_TIMEOUT].active;
+		ok = ok && timeout1->all_timeouts[DEADLOCK_TIMEOUT].indicator;
+		ok = ok && timeout1->all_timeouts[DEADLOCK_TIMEOUT].target_backend ==
+			&fake_backend1;
+		ok = ok && timeout1->all_timeouts[DEADLOCK_TIMEOUT].target_execution ==
+			(PgExecution *) &fake_backend1;
+		ok = ok && timeout1->all_timeouts[DEADLOCK_TIMEOUT].start_time == 101;
+		ok = ok && timeout1->all_timeouts[DEADLOCK_TIMEOUT].fin_time == 102;
+		ok = ok && timeout1->all_timeouts[DEADLOCK_TIMEOUT].interval_in_ms == 103;
+		ok = ok && timeout1->alarm_enabled;
+		ok = ok && timeout1->signal_pending;
+		ok = ok && timeout1->signal_due_at == 104;
+		ok = ok && timeout1->firing_timeout_target == &fake_backend1;
+		ok = ok && timeout1->firing_timeout_execution ==
+			(PgExecution *) &fake_backend1;
+		ok = ok && timeout1->signal_delivery;
+
+		CurrentPgBackend = &fake_backend2;
+		timeout2 = PgCurrentTimeoutState();
+		ok = ok && timeout2->all_timeouts_initialized;
+		ok = ok && timeout2->num_active_timeouts == 1;
+		ok = ok && timeout2->active_timeouts[0] ==
+			&timeout2->all_timeouts[LOCK_TIMEOUT];
+		ok = ok && timeout2->all_timeouts[LOCK_TIMEOUT].active;
+		ok = ok && !timeout2->all_timeouts[LOCK_TIMEOUT].indicator;
+		ok = ok && timeout2->all_timeouts[LOCK_TIMEOUT].target_backend ==
+			&fake_backend2;
+		ok = ok && timeout2->all_timeouts[LOCK_TIMEOUT].target_execution ==
+			(PgExecution *) &fake_backend2;
+		ok = ok && timeout2->all_timeouts[LOCK_TIMEOUT].start_time == 201;
+		ok = ok && timeout2->all_timeouts[LOCK_TIMEOUT].fin_time == 202;
+		ok = ok && timeout2->all_timeouts[LOCK_TIMEOUT].interval_in_ms == 203;
+		ok = ok && !timeout2->alarm_enabled;
+		ok = ok && timeout2->signal_pending;
+		ok = ok && timeout2->signal_due_at == 204;
+		ok = ok && timeout2->firing_timeout_target == &fake_backend2;
+		ok = ok && timeout2->firing_timeout_execution ==
+			(PgExecution *) &fake_backend2;
+		ok = ok && !timeout2->signal_delivery;
+
+		CurrentPgBackend = saved_backend;
+	}
+	PG_CATCH();
+	{
+		CurrentPgBackend = saved_backend;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "backend timeout state was not backend-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_pmchild_thread_backend_signal_api);
 Datum
 test_pmchild_thread_backend_signal_api(PG_FUNCTION_ARGS)

@@ -598,6 +598,15 @@ the early fallback. The slice passed clean full build/install, process-mode
 backend-runtime regression, direct threaded runtime TAP, contrib build, and
 the required global-lifetime scan with zero new unclassified mutable globals;
 backend-local declarations dropped from 249 to 244.
+Timeout scheduler state now lives in `PgBackendTimeoutState`: registered
+timeout parameters, the active timeout queue, alarm/signal pending flags,
+firing-target pointers, and signal-vs-logical delivery mode follow the logical
+backend. `timeout.c` keeps its existing scheduling behavior through
+compatibility macros over the current backend timeout bucket. The slice passed
+clean full build/install, process-mode backend-runtime regression, direct
+threaded runtime TAP, contrib build, and the required global-lifetime scan with
+zero new unclassified mutable globals; backend-local declarations dropped from
+244 to 236.
 PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly

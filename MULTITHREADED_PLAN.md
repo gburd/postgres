@@ -752,7 +752,8 @@ float, formatting, libxml-context, and missing-attribute utility-cache state
 bridge through `PgBackendUtilityState`, plus the parallel-worker,
 parallel-context, and pqmq backend-local state bridge through
 `PgBackendParallelState`, plus the DSM initialization, DSM registry, local
-latch, and latch wait-set bridge through `PgBackendIPCState`.
+latch, and latch wait-set bridge through `PgBackendIPCState`, plus the timeout
+scheduler state bridge through `PgBackendTimeoutState`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.
@@ -1029,6 +1030,16 @@ runtime object. The slice passed clean full build/install, process-mode
 backend-runtime regression, direct threaded runtime TAP, contrib build, and
 the required global-lifetime scan with zero new unclassified mutable globals;
 backend-local declarations dropped from 249 to 244.
+The timeout scheduler state slice moves the registered timeout table, active
+timeout queue, alarm/signal pending flags, firing-target pointers, and
+signal-vs-logical delivery mode into `PgBackendTimeoutState`. `timeout.c`
+keeps the existing scheduling and firing logic through compatibility macros
+over the current backend timeout bucket, while `PgTimeoutParams` is now exposed
+by `timeout.h` so `PgBackend` can own the fixed arrays directly. The slice
+passed clean full build/install, process-mode backend-runtime regression,
+direct threaded runtime TAP, contrib build, and the required global-lifetime
+scan with zero new unclassified mutable globals; backend-local declarations
+dropped from 244 to 236.
 PMChild assignment and slot release now also scrub stale carrier-visible signal
 ids and thread-exit payloads before reuse. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live

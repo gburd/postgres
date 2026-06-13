@@ -109,6 +109,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendStorageState early_backend_sto
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendLockState early_backend_locks;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendIPCState early_backend_ipc;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendTransactionState early_backend_transaction;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendTimeoutState early_backend_timeout;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendActivityState early_backend_activity;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendUtilityState early_backend_utility;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendParallelState early_backend_parallel = {
@@ -639,6 +640,8 @@ static void PgBackendInitializeIPCState(PgBackendIPCState *ipc);
 static void PgBackendAdoptEarlyIPCState(PgBackend *backend);
 static void PgBackendInitializeTransactionState(PgBackendTransactionState *transaction);
 static void PgBackendAdoptEarlyTransactionState(PgBackend *backend);
+static void PgBackendInitializeTimeoutState(PgBackendTimeoutState *timeout);
+static void PgBackendAdoptEarlyTimeoutState(PgBackend *backend);
 static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
 static void PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend);
 static BackendType *PgCurrentBackendTypeRef(void);
@@ -2283,6 +2286,23 @@ PgBackendAdoptEarlyTransactionState(PgBackend *backend)
 }
 
 static void
+PgBackendInitializeTimeoutState(PgBackendTimeoutState *timeout)
+{
+	Assert(timeout != NULL);
+
+	MemSet(timeout, 0, sizeof(*timeout));
+}
+
+static void
+PgBackendAdoptEarlyTimeoutState(PgBackend *backend)
+{
+	Assert(backend != NULL);
+
+	backend->timeout = early_backend_timeout;
+	PgBackendInitializeTimeoutState(&early_backend_timeout);
+}
+
+static void
 PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend)
 {
 	Assert(backend != NULL);
@@ -2524,6 +2544,7 @@ InitializePgProcessRuntime(void)
 	PgBackendAdoptEarlyLockState(&process_backend);
 	PgBackendAdoptEarlyIPCState(&process_backend);
 	PgBackendAdoptEarlyTransactionState(&process_backend);
+	PgBackendAdoptEarlyTimeoutState(&process_backend);
 	PgBackendSetInterruptLatch(&process_backend, process_backend.core.latch);
 	dlist_init(&process_backend.dsm_segment_list);
 	pg_atomic_init_u32(&process_backend.wait_state.waiting, 0);
@@ -2672,6 +2693,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgBackendInitializeLockState(&state->backend.locks);
 	PgBackendInitializeIPCState(&state->backend.ipc);
 	PgBackendInitializeTransactionState(&state->backend.transaction);
+	PgBackendInitializeTimeoutState(&state->backend.timeout);
 	PgBackendSetInterruptLatch(&state->backend, interrupt_latch);
 	dlist_init(&state->backend.dsm_segment_list);
 	pg_atomic_init_u32(&state->backend.wait_state.waiting, 0);
@@ -2762,6 +2784,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgBackendAdoptEarlyLockState(&state->backend);
 	PgBackendAdoptEarlyIPCState(&state->backend);
 	PgBackendAdoptEarlyTransactionState(&state->backend);
+	PgBackendAdoptEarlyTimeoutState(&state->backend);
 	PgSessionAdoptEarlyDatabaseState(&state->session);
 	PgSessionAdoptEarlyTablespaceState(&state->session);
 	PgSessionAdoptEarlyBinaryUpgradeState(&state->session);
@@ -7009,6 +7032,15 @@ Latch *
 PgCurrentLocalLatchData(void)
 {
 	return &PgCurrentBackendIPCState()->local_latch_data;
+}
+
+PgBackendTimeoutState *
+PgCurrentTimeoutState(void)
+{
+	if (CurrentPgBackend == NULL)
+		return &early_backend_timeout;
+
+	return &CurrentPgBackend->timeout;
 }
 
 static PgBackendTransactionState *

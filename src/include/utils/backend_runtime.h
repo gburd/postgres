@@ -39,6 +39,7 @@
 #include "utils/global_lifetime.h"
 #include "utils/hsearch.h"
 #include "utils/palloc.h"
+#include "utils/timeout.h"
 
 typedef struct PgRuntime PgRuntime;
 typedef struct PgCarrier PgCarrier;
@@ -184,6 +185,20 @@ typedef struct PgBackendCoreState
 	bool		ignore_system_indexes;
 	pg_prng_state global_prng_state;
 } PgBackendCoreState;
+
+typedef struct PgBackendTimeoutState
+{
+	PgTimeoutParams all_timeouts[MAX_TIMEOUTS];
+	bool		all_timeouts_initialized;
+	volatile int num_active_timeouts;
+	PgTimeoutParams *volatile active_timeouts[MAX_TIMEOUTS];
+	volatile sig_atomic_t alarm_enabled;
+	volatile sig_atomic_t signal_pending;
+	volatile TimestampTz signal_due_at;
+	PgBackend  *firing_timeout_target;
+	PgExecution *firing_timeout_execution;
+	bool		signal_delivery;
+} PgBackendTimeoutState;
 
 typedef struct PgBackendPgStatPendingState
 {
@@ -1203,6 +1218,7 @@ struct PgBackend
 	struct Latch *interrupt_latch;
 	PgBackendExitState exit_state;
 	PgBackendCoreState core;
+	PgBackendTimeoutState timeout;
 	PgBackendPgStatPendingState pgstat_pending;
 	PgBackendActivityState activity;
 	PgBackendUtilityState utility;
@@ -1626,6 +1642,7 @@ extern void **PgCurrentDsmRegistryDsaRef(void);
 extern void **PgCurrentDsmRegistryTableRef(void);
 extern WaitEventSet **PgCurrentLatchWaitSetRef(void);
 extern Latch *PgCurrentLocalLatchData(void);
+extern PgBackendTimeoutState *PgCurrentTimeoutState(void);
 extern TransactionId *PgCurrentCachedFetchXidRef(void);
 extern int *PgCurrentCachedFetchXidStatusRef(void);
 extern XLogRecPtr *PgCurrentCachedCommitLSNRef(void);
