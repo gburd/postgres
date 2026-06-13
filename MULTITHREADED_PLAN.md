@@ -665,7 +665,8 @@ authenticated client connection information, plus the backend pending
 interrupt flag bridge and core backend identity/lifecycle state bridge through
 `PgBackend`, and the execution error-context/exception stack bridge through
 `PgExecution`, plus the core execution memory-context pointer bridge and
-transaction resource-owner current-pointer bridge through `PgExecution`.
+transaction resource-owner current-pointer bridge through `PgExecution`, and
+the current database identity/path bridge through `PgSession`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.
@@ -677,9 +678,9 @@ Likely workstreams:
   pointers where not covered by the current-context bridge.
 - resource owners beyond the current execution pointers split by
   session/transaction/task.
-- protocol buffers into `PgConnection`.
-- debug query string and statement metadata into `PgExecution`.
-- interrupt holdoff/cancel holdoff counters into execution/backend state.
+- statement metadata beyond `debug_query_string` into `PgExecution`.
+- interrupt/cancel state beyond the current holdoff and pending-interrupt
+  bridges into execution/backend state.
 - fd cache into session-owned state plus runtime fd budget.
 - cache state either session-owned or explicitly synchronized.
 

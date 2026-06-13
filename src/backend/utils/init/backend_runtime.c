@@ -56,6 +56,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionProtocolState early_conn
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionInterruptState early_connection_interrupts;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionStartupState early_connection_startup;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionClientConnectionInfoState early_client_connection_info;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionDatabaseState early_session_database;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendPendingInterruptState early_pending_interrupts;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInterruptHoldoffState early_interrupt_holdoffs;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionDebugState early_execution_debug;
@@ -75,6 +76,7 @@ static void PgConnectionAdoptEarlyProtocolState(PgConnection *connection);
 static void PgConnectionAdoptEarlyInterruptState(PgConnection *connection);
 static void PgConnectionAdoptEarlyStartupState(PgConnection *connection);
 static void PgConnectionAdoptEarlyClientConnectionInfo(PgConnection *connection);
+static void PgSessionAdoptEarlyDatabaseState(PgSession *session);
 static void PgBackendResetCoreState(PgBackendCoreState *core);
 static void PgBackendAdoptEarlyCoreState(PgBackend *backend);
 static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
@@ -85,6 +87,7 @@ static void PgExecutionAdoptEarlyErrorState(PgExecution *execution);
 static void PgExecutionAdoptEarlyMemoryContexts(PgExecution *execution);
 static void PgExecutionAdoptEarlyResourceOwners(PgExecution *execution);
 static PgBackendCoreState *PgCurrentCoreState(void);
+static PgSessionDatabaseState *PgCurrentSessionDatabaseState(void);
 static PgExecutionErrorState *PgCurrentExecutionErrorState(void);
 static PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
 static PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
@@ -161,6 +164,15 @@ PgConnectionAdoptEarlyClientConnectionInfo(PgConnection *connection)
 
 	connection->client_connection_info = early_client_connection_info;
 	MemSet(&early_client_connection_info, 0, sizeof(early_client_connection_info));
+}
+
+static void
+PgSessionAdoptEarlyDatabaseState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	session->database = early_session_database;
+	MemSet(&early_session_database, 0, sizeof(early_session_database));
 }
 
 static void
@@ -299,6 +311,7 @@ InitializePgProcessRuntime(void)
 	process_session.backend = &process_backend;
 	process_session.connection = &process_connection;
 	process_session.execution = &process_execution;
+	PgSessionAdoptEarlyDatabaseState(&process_session);
 
 	process_connection.backend = &process_backend;
 	process_connection.session = &process_session;
@@ -397,6 +410,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	state->carrier.current_session = &state->session;
 	state->carrier.current_execution = &state->execution;
 	PgBackendAdoptEarlyCoreState(&state->backend);
+	PgSessionAdoptEarlyDatabaseState(&state->session);
 	PgExecutionAdoptEarlyErrorState(&state->execution);
 	PgExecutionAdoptEarlyMemoryContexts(&state->execution);
 	PgExecutionAdoptEarlyResourceOwners(&state->execution);
@@ -444,6 +458,39 @@ Session *
 PgCurrentLegacySession(void)
 {
 	return PgSessionGetLegacySession(CurrentPgSession);
+}
+
+static PgSessionDatabaseState *
+PgCurrentSessionDatabaseState(void)
+{
+	if (CurrentPgSession == NULL)
+		return &early_session_database;
+
+	return &CurrentPgSession->database;
+}
+
+Oid *
+PgCurrentMyDatabaseIdRef(void)
+{
+	return &PgCurrentSessionDatabaseState()->database_id;
+}
+
+Oid *
+PgCurrentMyDatabaseTableSpaceRef(void)
+{
+	return &PgCurrentSessionDatabaseState()->database_tablespace;
+}
+
+bool *
+PgCurrentMyDatabaseHasLoginEventTriggersRef(void)
+{
+	return &PgCurrentSessionDatabaseState()->database_has_login_event_triggers;
+}
+
+char **
+PgCurrentDatabasePathRef(void)
+{
+	return &PgCurrentSessionDatabaseState()->database_path;
 }
 
 struct Port **

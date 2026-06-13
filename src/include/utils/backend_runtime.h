@@ -176,6 +176,19 @@ typedef struct PgExecutionResourceOwnerState
 	struct ResourceOwnerData *top_transaction_owner;
 } PgExecutionResourceOwnerState;
 
+typedef struct PgSessionDatabaseState
+{
+	Oid			database_id;
+	Oid			database_tablespace;
+	bool		database_has_login_event_triggers;
+
+	/*
+	 * Path relative to DataDir of this database's primary directory, ie its
+	 * directory in the default tablespace.
+	 */
+	char	   *database_path;
+} PgSessionDatabaseState;
+
 #define PG_CONNECTION_SEND_BUFFER_SIZE 8192
 #define PG_CONNECTION_RECV_BUFFER_SIZE 8192
 #define PG_CONNECTION_CANCEL_KEY_LENGTH 32
@@ -293,6 +306,7 @@ struct PgSession
 	PgExecution *execution;
 	Session    *legacy_session;
 	PgSessionLoopState loop_state;
+	PgSessionDatabaseState database;
 };
 
 struct PgConnection

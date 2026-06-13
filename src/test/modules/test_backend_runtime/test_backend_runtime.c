@@ -17,6 +17,7 @@
 #include "fmgr.h"
 #include "libpq/libpq-be.h"
 #include "libpq/libpq.h"
+#include "miscadmin.h"
 #include "postmaster/postmaster.h"
 #include "port/atomics.h"
 #include "port/pg_thread.h"
@@ -440,6 +441,85 @@ test_backend_thread_ids_are_logical(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "thread backend ids were not distinct logical ids");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_session_database_state_is_session_local);
+Datum
+test_session_database_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	Oid			saved_database_id;
+	Oid			saved_database_tablespace;
+	bool		saved_database_has_login_event_triggers;
+	char	   *saved_database_path;
+	char	   *fake_path1 = "base/1";
+	char	   *fake_path2 = "base/2";
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	saved_database_id = MyDatabaseId;
+	saved_database_tablespace = MyDatabaseTableSpace;
+	saved_database_has_login_event_triggers =
+		MyDatabaseHasLoginEventTriggers;
+	saved_database_path = DatabasePath;
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	PG_TRY();
+	{
+		CurrentPgSession = &fake_session1;
+		MyDatabaseId = 1111;
+		MyDatabaseTableSpace = 2222;
+		MyDatabaseHasLoginEventTriggers = true;
+		DatabasePath = fake_path1;
+
+		CurrentPgSession = &fake_session2;
+		ok = ok && MyDatabaseId == InvalidOid;
+		ok = ok && MyDatabaseTableSpace == InvalidOid;
+		ok = ok && !MyDatabaseHasLoginEventTriggers;
+		ok = ok && DatabasePath == NULL;
+		MyDatabaseId = 3333;
+		MyDatabaseTableSpace = 4444;
+		MyDatabaseHasLoginEventTriggers = false;
+		DatabasePath = fake_path2;
+
+		CurrentPgSession = &fake_session1;
+		ok = ok && MyDatabaseId == 1111;
+		ok = ok && MyDatabaseTableSpace == 2222;
+		ok = ok && MyDatabaseHasLoginEventTriggers;
+		ok = ok && DatabasePath == fake_path1;
+
+		CurrentPgSession = &fake_session2;
+		ok = ok && MyDatabaseId == 3333;
+		ok = ok && MyDatabaseTableSpace == 4444;
+		ok = ok && !MyDatabaseHasLoginEventTriggers;
+		ok = ok && DatabasePath == fake_path2;
+
+		CurrentPgSession = saved_session;
+		MyDatabaseId = saved_database_id;
+		MyDatabaseTableSpace = saved_database_tablespace;
+		MyDatabaseHasLoginEventTriggers =
+			saved_database_has_login_event_triggers;
+		DatabasePath = saved_database_path;
+	}
+	PG_CATCH();
+	{
+		CurrentPgSession = saved_session;
+		MyDatabaseId = saved_database_id;
+		MyDatabaseTableSpace = saved_database_tablespace;
+		MyDatabaseHasLoginEventTriggers =
+			saved_database_has_login_event_triggers;
+		DatabasePath = saved_database_path;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session database state was not session-local");
 
 	PG_RETURN_BOOL(true);
 }

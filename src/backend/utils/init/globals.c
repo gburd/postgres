@@ -53,18 +53,6 @@ PG_THREAD_LOCAL PG_GLOBAL_BACKEND ProcNumber MyProcNumber = INVALID_PROC_NUMBER;
 
 PG_THREAD_LOCAL PG_GLOBAL_BACKEND ProcNumber ParallelLeaderProcNumber = INVALID_PROC_NUMBER;
 
-PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid MyDatabaseId = InvalidOid;
-
-PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid MyDatabaseTableSpace = InvalidOid;
-
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool MyDatabaseHasLoginEventTriggers = false;
-
-/*
- * DatabasePath is the path (relative to DataDir) of my database's
- * primary directory, ie, its directory in the default tablespace.
- */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION char *DatabasePath = NULL;
-
 PG_GLOBAL_RUNTIME pid_t PostmasterPid = 0;
 
 /*

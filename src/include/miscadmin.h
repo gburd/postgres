@@ -272,11 +272,14 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME char pkglib_path[];
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char postgres_exec_path[];
 #endif
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid MyDatabaseId;
+extern Oid *PgCurrentMyDatabaseIdRef(void);
+extern Oid *PgCurrentMyDatabaseTableSpaceRef(void);
+extern bool *PgCurrentMyDatabaseHasLoginEventTriggersRef(void);
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid MyDatabaseTableSpace;
-
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool MyDatabaseHasLoginEventTriggers;
+#define MyDatabaseId (*PgCurrentMyDatabaseIdRef())
+#define MyDatabaseTableSpace (*PgCurrentMyDatabaseTableSpaceRef())
+#define MyDatabaseHasLoginEventTriggers \
+	(*PgCurrentMyDatabaseHasLoginEventTriggersRef())
 
 /*
  * Date/Time Configuration
@@ -387,7 +390,8 @@ extern void PreventCommandDuringRecovery(const char *cmdname);
 #define SECURITY_RESTRICTED_OPERATION	0x0002
 #define SECURITY_NOFORCE_RLS			0x0004
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *DatabasePath;
+extern char **PgCurrentDatabasePathRef(void);
+#define DatabasePath (*PgCurrentDatabasePathRef())
 
 /* now in utils/init/miscinit.c */
 extern void InitPostmasterChild(void);

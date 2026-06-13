@@ -690,3 +690,54 @@ Validation for this slice:
 - core process-mode `src/test/regress` `parallel_schedule` passed all 245
   tests after the clean rebuild and install;
 - clean `gmake -C contrib -j8` passed after the header migration.
+
+## Session Database Identity Bridge
+
+The sixteenth Phase 12 slice moves the current database identity and path
+state under `PgSession`:
+
+- `PgSession` now owns a `PgSessionDatabaseState`;
+- `MyDatabaseId`, `MyDatabaseTableSpace`,
+  `MyDatabaseHasLoginEventTriggers`, and `DatabasePath` remain
+  source-compatible lvalue macros in `miscadmin.h`;
+- the macros route through `PgCurrentMyDatabaseIdRef()`,
+  `PgCurrentMyDatabaseTableSpaceRef()`,
+  `PgCurrentMyDatabaseHasLoginEventTriggersRef()`, and
+  `PgCurrentDatabasePathRef()`, which return the current logical session's
+  database fields;
+- early startup paths before `CurrentPgSession` is installed use fallback
+  session-local storage in `backend_runtime.c`;
+- `InitializePgProcessRuntime()` and `InstallPgThreadBackendRuntimeState()`
+  adopt any early fallback database identity into the logical session object
+  before clearing fallback storage.
+
+This moves the current database OID, tablespace OID, login-event-trigger flag,
+and database directory path from carrier-local TLS to the logical session. That
+matters because these fields are consulted by catalog/cache access, locking,
+DDL, event triggers, replication/logical paths, and statistics. A future
+scheduler can now keep database identity with the session when executions move
+between carriers instead of relying on the carrier thread's historical global
+storage.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `globals.o`,
+  `test_backend_runtime.o`, `miscinit.o`, and `postinit.o`;
+- because `miscadmin.h` changed exported session globals into compatibility
+  macros, `gmake -C src/backend clean` plus generated-header recovery was used
+  before the clean rebuild;
+- clean full `gmake -j8` passed;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed, followed by
+  rebuilding and reinstalling `src/test/modules/test_backend_runtime`,
+  PL/pgSQL, `src/test/regress`, `libpqwalreceiver`, and
+  `src/backend/snowball`;
+- focused `test_backend_runtime` regression passed and includes
+  `test_session_database_state_is_session_local()`, which switches
+  `CurrentPgSession` between fake sessions and proves the moved compatibility
+  lvalues are isolated per session;
+- threaded runtime TAP coverage passed for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests after the clean rebuild and install;
+- clean `gmake -C contrib -j8` passed after the header migration.
