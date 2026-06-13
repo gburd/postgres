@@ -613,6 +613,15 @@ Important current files:
   gmake -C src/test/modules/test_oat_hooks DESTDIR="$PWD/tmp_install" install
   ```
 
+- Threaded runtime GUC stack coverage in
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` verifies
+  built-in database/role/startup defaults, `SET LOCAL` rollback/commit
+  behavior, `RESET` back to database and startup-packet sources, and custom
+  extension GUC `SET LOCAL`/`RESET` semantics through the superuser `LOAD`
+  path. Unprivileged `LOAD 'test_backend_runtime_threaded'` is expected to
+  fail with the normal library-access policy error unless explicit load
+  privileges are granted.
+
 - Direct logical replication parallel-apply smokes should use the upstream
   `src/test/subscription/t/015_stream.pl` interleaved transaction shape:
   start one large transaction, run and commit a second large transaction while

@@ -317,6 +317,45 @@ is($node->safe_psql(
 		connstr => $threaded_guc_role_connstr . " options='-c lock_timeout=8s'"),
 	'8s',
 	'threaded runtime applies startup packet GUC options');
+is($node->safe_psql(
+		'postgres',
+		q{
+SET work_mem = '4MB';
+SHOW work_mem;
+BEGIN;
+SET LOCAL work_mem = '5MB';
+SHOW work_mem;
+ROLLBACK;
+SHOW work_mem;
+RESET work_mem;
+SHOW work_mem;
+},
+		connstr => $threaded_guc_role_connstr),
+	"4MB\n5MB\n4MB\n3MB",
+	'threaded runtime preserves built-in GUC SET LOCAL rollback and RESET stack semantics');
+is($node->safe_psql(
+		'postgres',
+		q{
+BEGIN;
+SET LOCAL statement_timeout = '9s';
+SHOW statement_timeout;
+COMMIT;
+SHOW statement_timeout;
+},
+		connstr => $threaded_guc_role_connstr),
+	"9s\n7s",
+	'threaded runtime restores role GUC default after SET LOCAL commit');
+is($node->safe_psql(
+		'postgres',
+		q{
+SET lock_timeout = '9s';
+SHOW lock_timeout;
+RESET lock_timeout;
+SHOW lock_timeout;
+},
+		connstr => $threaded_guc_role_connstr . " options='-c lock_timeout=8s'"),
+	"9s\n8s",
+	'threaded runtime restores startup packet GUC source on RESET');
 
 is($node->safe_psql(
 		'postgres',
@@ -344,6 +383,22 @@ SHOW test_backend_runtime_threaded.custom_guc;
 }),
 	'default',
 	'threaded custom GUC initializes to default in a later session');
+is($node->safe_psql(
+		'postgres',
+		q{
+LOAD 'test_backend_runtime_threaded';
+SET test_backend_runtime_threaded.custom_guc = 'changed';
+SHOW test_backend_runtime_threaded.custom_guc;
+BEGIN;
+SET LOCAL test_backend_runtime_threaded.custom_guc = 'local';
+SHOW test_backend_runtime_threaded.custom_guc;
+COMMIT;
+SHOW test_backend_runtime_threaded.custom_guc;
+RESET test_backend_runtime_threaded.custom_guc;
+SHOW test_backend_runtime_threaded.custom_guc;
+}),
+	"changed\nlocal\nchanged\ndefault",
+	'threaded custom GUC preserves SET LOCAL and RESET stack semantics');
 
 my ($load_ret, $load_stdout, $load_stderr) =
   $node->psql('postgres', "LOAD 'test_backend_runtime';",

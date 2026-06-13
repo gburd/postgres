@@ -237,6 +237,15 @@ against a threaded session. This proves the basic catalog-backed and startup
 option paths for built-in GUCs; reset/default edge cases and GUC-heavy stress
 remain open.
 
+Additional status update: the threaded runtime fixture now covers the first
+reset/default edge cases called out by this review. A role-backed threaded
+session verifies built-in `SET LOCAL` rollback and commit behavior, `RESET`
+to a database default, and `RESET` to a startup-packet `options=-c` source.
+The same fixture also checks custom extension GUC `SET LOCAL` and `RESET`
+semantics after per-session module initialization. The remaining GUC blockers
+are broader assign-hook coverage, extension-DDL/custom-GUC stress, and larger
+GUC-heavy threaded workloads.
+
 ### 4. Broad Threaded Startup Serialization Is Still Present
 
 Severity: High

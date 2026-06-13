@@ -4200,3 +4200,47 @@ Validation for this slice:
 - full `gmake -j8` passed;
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals.
+
+## Threaded GUC Reset And Stack Coverage
+
+The eighty-sixth Phase 12 slice adds focused coverage for the Gate E2
+reset/default and transaction-local GUC stack requirement:
+
+- the threaded runtime TAP fixture now runs a role-backed threaded session
+  through `SET`, `SET LOCAL`, `ROLLBACK`, and `RESET` for `work_mem`, proving
+  rollback to the session value and reset to the catalog-backed database
+  default;
+- the fixture runs `SET LOCAL statement_timeout` through `COMMIT`, proving the
+  role default is restored after the transaction-local value is discarded;
+- the fixture runs a startup-packet `options=-c lock_timeout=8s` connection
+  through session `SET` and `RESET`, proving `RESET` returns to the startup
+  option source rather than the compiled default;
+- the fixture now checks custom extension GUC stack behavior after
+  per-session module initialization by running `SET`, `SET LOCAL`, `COMMIT`,
+  and `RESET` for `test_backend_runtime_threaded.custom_guc`.
+
+This does not close all Gate E2 GUC work. It covers the first reset/default
+edge cases for built-in and custom GUCs, but broader assign-hook coverage,
+extension-DDL/custom-GUC stress, and larger GUC-heavy threaded workloads remain
+open before Phase 13 scheduler-aware wait work.
+
+Validation for this slice:
+
+- a manual threaded smoke with `multithreaded = on` verified database default,
+  role default, startup-packet reset, and transaction-local built-in GUC stack
+  behavior. The attempted unprivileged custom-GUC `LOAD` path failed with the
+  expected library-access policy error, so durable custom-GUC stack coverage is
+  kept in the superuser `LOAD` path in the TAP fixture;
+- direct Perl syntax/TAP validation for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` remains
+  blocked in this checkout because system Perl lacks `IPC::Run`, matching the
+  local test notes;
+- a manual threaded smoke with `multithreaded = on` verified the expected
+  built-in GUC stack values (`3MB`, `7s`, `77`, `4MB`, `5MB`, `4MB`, `3MB`,
+  `9s`, `7s`), startup-packet `lock_timeout` reset values (`8s`, `9s`,
+  `8s`), and custom extension GUC stack values (`changed`, `local`,
+  `changed`, `default`);
+- full `gmake -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- `git diff --check` passed.

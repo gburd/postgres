@@ -857,8 +857,12 @@ per-session bool array stayed NULL and crashed `XLogInsert()` during threaded
 `CREATE TABLE`/`INSERT`/`DROP TABLE` smoke. Follow-up GUC coverage now also
 checks database defaults, role defaults, and startup packet `options=-c ...`
 in threaded sessions, including direct-pointer GUCs such as `work_mem` and
-`default_statistics_target`. Broader table-DDL, extension-DDL, reset/default
-edge cases, and GUC-heavy stress remain Gate E2 blockers before Phase 13.
+`default_statistics_target`. The same fixture now also covers built-in
+`SET LOCAL` rollback/commit behavior, `RESET` back to database and startup
+packet sources, and custom extension GUC `SET LOCAL`/`RESET` semantics after
+per-session module initialization. Broader table-DDL, extension-DDL,
+assign-hook coverage, and GUC-heavy stress remain Gate E2 blockers before
+Phase 13.
 
 Phase 16 still owns broader hardening such as sanitizer runs, contrib-wide
 threaded regression, crash/FATAL behavior matrices, platform coverage, and
