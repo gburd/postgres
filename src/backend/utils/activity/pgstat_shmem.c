@@ -44,6 +44,13 @@ typedef struct PgStat_EntryRefHashEntry
 #define SH_DECLARE
 #include "lib/simplehash.h"
 
+static pgstat_entry_ref_hash_hash **PgCurrentPgStatEntryRefHashTypedRef(void);
+
+#define pgStatEntryRefHash (*PgCurrentPgStatEntryRefHashTypedRef())
+#define pgStatSharedRefAge (*PgCurrentPgStatSharedRefAgeRef())
+#define pgStatSharedRefContext (*PgCurrentPgStatSharedRefContextRef())
+#define pgStatEntryRefHashContext (*PgCurrentPgStatEntryRefHashContextRef())
+
 
 static void pgstat_drop_database_and_contents(Oid dboid);
 
@@ -78,36 +85,18 @@ static const dshash_parameters dsh_params = {
 
 
 /*
- * Backend local references to shared stats entries. If there are pending
- * updates to a stats entry, the PgStat_EntryRef is added to the pgStatPending
- * list.
- *
- * When a stats entry is dropped each backend needs to release its reference
- * to it before the memory can be released. To trigger that
- * pgStatLocal.shmem->gc_request_count is incremented - which each backend
- * compares to their copy of pgStatSharedRefAge on a regular basis.
- */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND pgstat_entry_ref_hash_hash *
-pgStatEntryRefHash = NULL;
-/* cache age of pgStatLocal.shmem */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int pgStatSharedRefAge = 0;
-
-/*
- * Memory contexts containing the pgStatEntryRefHash table and the
- * pgStatSharedRef entries respectively. Kept separate to make it easier to
- * track / attribute memory usage.
- */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND MemoryContext
-pgStatSharedRefContext = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND MemoryContext
-pgStatEntryRefHashContext = NULL;
-
-/*
  * Process-wide anchor for the shared stats control block.  pgStatLocal is
  * backend-local, so thread-backed backends cannot rely on the postmaster's
  * pgStatLocal.shmem value being visible in their TLS state.
  */
 static PG_GLOBAL_SHMEM PgStat_ShmemControl *pgStatSharedShmem = NULL;
+
+
+static pgstat_entry_ref_hash_hash **
+PgCurrentPgStatEntryRefHashTypedRef(void)
+{
+	return (pgstat_entry_ref_hash_hash **) PgCurrentPgStatEntryRefHashRef();
+}
 
 
 /* ------------------------------------------------------------

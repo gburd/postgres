@@ -109,6 +109,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendStorageState early_backend_sto
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendLockState early_backend_locks;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendIPCState early_backend_ipc;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendTransactionState early_backend_transaction;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendActivityState early_backend_activity;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionIdentityState early_connection_identity;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionSocketIOState early_connection_socket_io;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionProtocolState early_connection_protocol;
@@ -615,6 +616,8 @@ static void PgBackendAdoptEarlyMyBgworkerEntry(PgBackend *backend);
 static void PgBackendAdoptEarlyAuxProcessResourceOwner(PgBackend *backend);
 static void PgBackendInitializePgStatPendingState(PgBackendPgStatPendingState *pgstat_pending);
 static void PgBackendAdoptEarlyPgStatPendingState(PgBackend *backend);
+static void PgBackendInitializeActivityState(PgBackendActivityState *activity);
+static void PgBackendAdoptEarlyActivityState(PgBackend *backend);
 static void PgBackendInitializeInstrumentationState(PgBackendInstrumentationState *instrumentation);
 static void PgBackendAdoptEarlyInstrumentationState(PgBackend *backend);
 static void PgBackendInitializeBufferState(PgBackendBufferState *buffers);
@@ -2087,6 +2090,23 @@ PgBackendAdoptEarlyPgStatPendingState(PgBackend *backend)
 }
 
 static void
+PgBackendInitializeActivityState(PgBackendActivityState *activity)
+{
+	Assert(activity != NULL);
+
+	MemSet(activity, 0, sizeof(*activity));
+}
+
+static void
+PgBackendAdoptEarlyActivityState(PgBackend *backend)
+{
+	Assert(backend != NULL);
+
+	backend->activity = early_backend_activity;
+	PgBackendInitializeActivityState(&early_backend_activity);
+}
+
+static void
 PgBackendInitializeInstrumentationState(PgBackendInstrumentationState *instrumentation)
 {
 	Assert(instrumentation != NULL);
@@ -2436,6 +2456,7 @@ InitializePgProcessRuntime(void)
 	PgBackendAdoptEarlyMyBgworkerEntry(&process_backend);
 	PgBackendAdoptEarlyAuxProcessResourceOwner(&process_backend);
 	PgBackendAdoptEarlyPgStatPendingState(&process_backend);
+	PgBackendAdoptEarlyActivityState(&process_backend);
 	PgBackendAdoptEarlyInstrumentationState(&process_backend);
 	PgBackendAdoptEarlyBufferState(&process_backend);
 	PgBackendAdoptEarlyStorageState(&process_backend);
@@ -2581,6 +2602,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgBackendInitializeProcNumberState(&state->backend);
 	PgBackendInitializeInterrupts(&state->backend);
 	PgBackendInitializePgStatPendingState(&state->backend.pgstat_pending);
+	PgBackendInitializeActivityState(&state->backend.activity);
 	PgBackendInitializeInstrumentationState(&state->backend.instrumentation);
 	PgBackendInitializeBufferState(&state->backend.buffers);
 	PgBackendInitializeStorageState(&state->backend.storage);
@@ -2668,6 +2690,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgBackendAdoptEarlyMyBgworkerEntry(&state->backend);
 	PgBackendAdoptEarlyAuxProcessResourceOwner(&state->backend);
 	PgBackendAdoptEarlyPgStatPendingState(&state->backend);
+	PgBackendAdoptEarlyActivityState(&state->backend);
 	PgBackendAdoptEarlyInstrumentationState(&state->backend);
 	PgBackendAdoptEarlyBufferState(&state->backend);
 	PgBackendAdoptEarlyStorageState(&state->backend);
@@ -4436,6 +4459,33 @@ PgCurrentPgStatLastSessionReportTimeRef(void)
 	return &PgCurrentSessionPgStatState()->last_session_report_time;
 }
 
+static PgBackendActivityState *
+PgCurrentBackendActivityState(void)
+{
+	if (CurrentPgBackend == NULL)
+		return &early_backend_activity;
+
+	return &CurrentPgBackend->activity;
+}
+
+LocalPgBackendStatus **
+PgCurrentLocalBackendStatusTableRef(void)
+{
+	return &PgCurrentBackendActivityState()->backend_status_table;
+}
+
+int *
+PgCurrentLocalNumBackendsRef(void)
+{
+	return &PgCurrentBackendActivityState()->num_backends;
+}
+
+MemoryContext *
+PgCurrentBackendStatusSnapContextRef(void)
+{
+	return &PgCurrentBackendActivityState()->backend_status_context;
+}
+
 int *
 PgCurrentComputeQueryIdRef(void)
 {
@@ -5976,6 +6026,30 @@ dlist_head *
 PgCurrentPgStatPendingListRef(void)
 {
 	return &PgCurrentBackendPgStatPendingState()->pending;
+}
+
+void **
+PgCurrentPgStatEntryRefHashRef(void)
+{
+	return &PgCurrentBackendPgStatPendingState()->entry_ref_hash;
+}
+
+int *
+PgCurrentPgStatSharedRefAgeRef(void)
+{
+	return &PgCurrentBackendPgStatPendingState()->shared_ref_age;
+}
+
+MemoryContext *
+PgCurrentPgStatSharedRefContextRef(void)
+{
+	return &PgCurrentBackendPgStatPendingState()->shared_ref_context;
+}
+
+MemoryContext *
+PgCurrentPgStatEntryRefHashContextRef(void)
+{
+	return &PgCurrentBackendPgStatPendingState()->entry_ref_hash_context;
 }
 
 WalUsage *

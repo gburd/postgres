@@ -873,6 +873,10 @@ extern void pgstat_create_transactional(PgStat_Kind kind, Oid dboid, uint64 obji
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_LocalState pgStatLocal;
 extern MemoryContext *PgCurrentPgStatPendingContextRef(void);
 extern dlist_head *PgCurrentPgStatPendingListRef(void);
+extern void **PgCurrentPgStatEntryRefHashRef(void);
+extern int *PgCurrentPgStatSharedRefAgeRef(void);
+extern MemoryContext *PgCurrentPgStatSharedRefContextRef(void);
+extern MemoryContext *PgCurrentPgStatEntryRefHashContextRef(void);
 
 /* Helper functions for reading and writing of on-disk stats file */
 extern void pgstat_write_chunk(FILE *fpout, void *ptr, size_t len);

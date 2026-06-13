@@ -6560,6 +6560,10 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 	bool		saved_report_fixed;
 	bool		saved_force_next_flush;
 	bool		saved_force_snapshot_clear;
+	void	   *saved_entry_ref_hash;
+	int			saved_shared_ref_age;
+	MemoryContext saved_shared_ref_context;
+	MemoryContext saved_entry_ref_hash_context;
 	bool		saved_pgstat_is_initialized;
 	bool		saved_pgstat_is_shutdown;
 	int			saved_xact_commit;
@@ -6588,6 +6592,10 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 	saved_report_fixed = pgstat_report_fixed;
 	saved_force_next_flush = pgStatForceNextFlush;
 	saved_force_snapshot_clear = force_stats_snapshot_clear;
+	saved_entry_ref_hash = *PgCurrentPgStatEntryRefHashRef();
+	saved_shared_ref_age = *PgCurrentPgStatSharedRefAgeRef();
+	saved_shared_ref_context = *PgCurrentPgStatSharedRefContextRef();
+	saved_entry_ref_hash_context = *PgCurrentPgStatEntryRefHashContextRef();
 	saved_pgstat_is_initialized = pgstat_is_initialized;
 	saved_pgstat_is_shutdown = pgstat_is_shutdown;
 	saved_xact_commit = pgStatXactCommit;
@@ -6621,6 +6629,10 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		pgstat_report_fixed = true;
 		pgStatForceNextFlush = true;
 		force_stats_snapshot_clear = true;
+		*PgCurrentPgStatEntryRefHashRef() = &fake_backend1;
+		*PgCurrentPgStatSharedRefAgeRef() = 26;
+		*PgCurrentPgStatSharedRefContextRef() = (MemoryContext) &fake_backend1;
+		*PgCurrentPgStatEntryRefHashContextRef() = (MemoryContext) &fake_backend1;
 		pgstat_is_initialized = true;
 		pgstat_is_shutdown = true;
 		pgStatXactCommit = 22;
@@ -6652,6 +6664,10 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && !pgstat_report_fixed;
 		ok = ok && !pgStatForceNextFlush;
 		ok = ok && !force_stats_snapshot_clear;
+		ok = ok && *PgCurrentPgStatEntryRefHashRef() == NULL;
+		ok = ok && *PgCurrentPgStatSharedRefAgeRef() == 0;
+		ok = ok && *PgCurrentPgStatSharedRefContextRef() == NULL;
+		ok = ok && *PgCurrentPgStatEntryRefHashContextRef() == NULL;
 		ok = ok && !pgstat_is_initialized;
 		ok = ok && !pgstat_is_shutdown;
 		ok = ok && pgStatXactCommit == 0;
@@ -6678,6 +6694,10 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		pgstat_report_fixed = true;
 		pgStatForceNextFlush = true;
 		force_stats_snapshot_clear = true;
+		*PgCurrentPgStatEntryRefHashRef() = &fake_backend2;
+		*PgCurrentPgStatSharedRefAgeRef() = 36;
+		*PgCurrentPgStatSharedRefContextRef() = (MemoryContext) &fake_backend2;
+		*PgCurrentPgStatEntryRefHashContextRef() = (MemoryContext) &fake_backend2;
 		pgstat_is_initialized = true;
 		pgstat_is_shutdown = true;
 		pgStatXactCommit = 32;
@@ -6709,6 +6729,10 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && pgstat_report_fixed;
 		ok = ok && pgStatForceNextFlush;
 		ok = ok && force_stats_snapshot_clear;
+		ok = ok && *PgCurrentPgStatEntryRefHashRef() == &fake_backend1;
+		ok = ok && *PgCurrentPgStatSharedRefAgeRef() == 26;
+		ok = ok && *PgCurrentPgStatSharedRefContextRef() == (MemoryContext) &fake_backend1;
+		ok = ok && *PgCurrentPgStatEntryRefHashContextRef() == (MemoryContext) &fake_backend1;
 		ok = ok && pgstat_is_initialized;
 		ok = ok && pgstat_is_shutdown;
 		ok = ok && pgStatXactCommit == 22;
@@ -6740,6 +6764,10 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && pgstat_report_fixed;
 		ok = ok && pgStatForceNextFlush;
 		ok = ok && force_stats_snapshot_clear;
+		ok = ok && *PgCurrentPgStatEntryRefHashRef() == &fake_backend2;
+		ok = ok && *PgCurrentPgStatSharedRefAgeRef() == 36;
+		ok = ok && *PgCurrentPgStatSharedRefContextRef() == (MemoryContext) &fake_backend2;
+		ok = ok && *PgCurrentPgStatEntryRefHashContextRef() == (MemoryContext) &fake_backend2;
 		ok = ok && pgstat_is_initialized;
 		ok = ok && pgstat_is_shutdown;
 		ok = ok && pgStatXactCommit == 32;
@@ -6767,6 +6795,10 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		pgstat_report_fixed = saved_report_fixed;
 		pgStatForceNextFlush = saved_force_next_flush;
 		force_stats_snapshot_clear = saved_force_snapshot_clear;
+		*PgCurrentPgStatEntryRefHashRef() = saved_entry_ref_hash;
+		*PgCurrentPgStatSharedRefAgeRef() = saved_shared_ref_age;
+		*PgCurrentPgStatSharedRefContextRef() = saved_shared_ref_context;
+		*PgCurrentPgStatEntryRefHashContextRef() = saved_entry_ref_hash_context;
 		pgstat_is_initialized = saved_pgstat_is_initialized;
 		pgstat_is_shutdown = saved_pgstat_is_shutdown;
 		pgStatXactCommit = saved_xact_commit;
@@ -6796,6 +6828,10 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		pgstat_report_fixed = saved_report_fixed;
 		pgStatForceNextFlush = saved_force_next_flush;
 		force_stats_snapshot_clear = saved_force_snapshot_clear;
+		*PgCurrentPgStatEntryRefHashRef() = saved_entry_ref_hash;
+		*PgCurrentPgStatSharedRefAgeRef() = saved_shared_ref_age;
+		*PgCurrentPgStatSharedRefContextRef() = saved_shared_ref_context;
+		*PgCurrentPgStatEntryRefHashContextRef() = saved_entry_ref_hash_context;
 		pgstat_is_initialized = saved_pgstat_is_initialized;
 		pgstat_is_shutdown = saved_pgstat_is_shutdown;
 		pgStatXactCommit = saved_xact_commit;
@@ -6808,6 +6844,77 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "backend pgstat pending state was not backend-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_backend_activity_state_is_backend_local);
+Datum
+test_backend_activity_state_is_backend_local(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgBackend	fake_backend1;
+	PgBackend	fake_backend2;
+	LocalPgBackendStatus fake_status1;
+	LocalPgBackendStatus fake_status2;
+	LocalPgBackendStatus *saved_status_table;
+	int			saved_num_backends;
+	MemoryContext saved_status_context;
+	bool		ok = true;
+
+	saved_backend = CurrentPgBackend;
+	saved_status_table = *PgCurrentLocalBackendStatusTableRef();
+	saved_num_backends = *PgCurrentLocalNumBackendsRef();
+	saved_status_context = *PgCurrentBackendStatusSnapContextRef();
+
+	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
+	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+	MemSet(&fake_status1, 0, sizeof(fake_status1));
+	MemSet(&fake_status2, 0, sizeof(fake_status2));
+
+	PG_TRY();
+	{
+		CurrentPgBackend = &fake_backend1;
+		*PgCurrentLocalBackendStatusTableRef() = &fake_status1;
+		*PgCurrentLocalNumBackendsRef() = 11;
+		*PgCurrentBackendStatusSnapContextRef() = (MemoryContext) &fake_backend1;
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && *PgCurrentLocalBackendStatusTableRef() == NULL;
+		ok = ok && *PgCurrentLocalNumBackendsRef() == 0;
+		ok = ok && *PgCurrentBackendStatusSnapContextRef() == NULL;
+
+		*PgCurrentLocalBackendStatusTableRef() = &fake_status2;
+		*PgCurrentLocalNumBackendsRef() = 22;
+		*PgCurrentBackendStatusSnapContextRef() = (MemoryContext) &fake_backend2;
+
+		CurrentPgBackend = &fake_backend1;
+		ok = ok && *PgCurrentLocalBackendStatusTableRef() == &fake_status1;
+		ok = ok && *PgCurrentLocalNumBackendsRef() == 11;
+		ok = ok && *PgCurrentBackendStatusSnapContextRef() == (MemoryContext) &fake_backend1;
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && *PgCurrentLocalBackendStatusTableRef() == &fake_status2;
+		ok = ok && *PgCurrentLocalNumBackendsRef() == 22;
+		ok = ok && *PgCurrentBackendStatusSnapContextRef() == (MemoryContext) &fake_backend2;
+
+		CurrentPgBackend = saved_backend;
+		*PgCurrentLocalBackendStatusTableRef() = saved_status_table;
+		*PgCurrentLocalNumBackendsRef() = saved_num_backends;
+		*PgCurrentBackendStatusSnapContextRef() = saved_status_context;
+	}
+	PG_CATCH();
+	{
+		CurrentPgBackend = saved_backend;
+		*PgCurrentLocalBackendStatusTableRef() = saved_status_table;
+		*PgCurrentLocalNumBackendsRef() = saved_num_backends;
+		*PgCurrentBackendStatusSnapContextRef() = saved_status_context;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "backend activity state was not backend-local");
 
 	PG_RETURN_BOOL(true);
 }

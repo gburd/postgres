@@ -53,6 +53,7 @@ SELECT test_backend_interrupt_holdoffs_are_backend_local();
 SELECT test_backend_pending_interrupts_are_backend_local();
 SELECT test_backend_exit_state_is_backend_local();
 SELECT test_backend_pgstat_pending_state_is_backend_local();
+SELECT test_backend_activity_state_is_backend_local();
 SELECT test_backend_instrumentation_state_is_backend_local();
 SELECT test_backend_buffer_state_is_backend_local();
 SELECT test_backend_storage_state_is_backend_local();

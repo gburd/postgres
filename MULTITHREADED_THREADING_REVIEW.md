@@ -540,6 +540,17 @@ forward declarations. The slice passed clean full build/install,
 process-mode backend-runtime regression, direct threaded runtime TAP, contrib
 build, and the required global-lifetime scan with zero new unclassified
 mutable globals.
+Backend activity snapshot state now lives in a dedicated
+`PgBackendActivityState`: the local backend-status snapshot table pointer,
+snapshot count, and snapshot memory context now follow the logical backend.
+The pgstat shared-entry reference-cache pointer, shared-reference age, and
+reference-cache memory contexts now live in `PgBackendPgStatPendingState`
+behind private pgstat accessors while preserving the private simplehash type
+inside `pgstat_shmem.c`. `pgStatLocal` remains a dedicated follow-up because
+its type depends on internal pgstat snapshot state. The slice passed clean
+full build/install, process-mode backend-runtime regression, direct threaded
+runtime TAP, contrib build, and the required global-lifetime scan with zero
+new unclassified mutable globals.
 PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly

@@ -742,7 +742,9 @@ materialized-view maintenance-depth execution-state bridge through
 `PgBackendLockState`, plus the transaction/access-manager backend-local state
 bridge through `PgBackendTransactionState`, plus the ProcArray
 visibility-horizon and XID-cache state bridge through
-`PgBackendTransactionState`.
+`PgBackendTransactionState`, plus the backend-status activity snapshot bridge
+through `PgBackendActivityState`, plus the pgstat shared-entry reference-cache
+bridge through `PgBackendPgStatPendingState`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.
@@ -958,6 +960,19 @@ thread-backed logical backends. It passed the clean full build/install,
 process-mode backend-runtime regression, direct threaded runtime TAP, contrib
 build, and required global-lifetime scan with zero new unclassified mutable
 globals.
+The follow-up ProcArray slice moved the
+`TransactionIdIsInProgress()` negative-result cache, `GlobalVisState`
+visibility-horizon caches, horizon recomputation throttle, and optional
+`XIDCACHE_DEBUG` counters into `PgBackendTransactionState`. The backend
+activity/pgstat shared-ref slice then moved the local backend-status snapshot
+table pointer, snapshot count, and snapshot memory context into
+`PgBackendActivityState`, and moved the pgstat shared-entry reference-cache
+pointer, shared-reference age, and reference-cache memory contexts into
+`PgBackendPgStatPendingState` behind private pgstat accessors. `pgStatLocal`
+remains a dedicated follow-up because its type depends on internal pgstat
+snapshot state. Both slices passed clean full build/install, process-mode
+backend-runtime regression, direct threaded runtime TAP, contrib build, and
+required global-lifetime scans with zero new unclassified mutable globals.
 PMChild assignment and slot release now also scrub stale carrier-visible signal
 ids and thread-exit payloads before reuse. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live

@@ -55,12 +55,12 @@ static PG_GLOBAL_SHMEM PgBackendGSSStatus *BackendGssStatusBuffer = NULL;
 
 
 /* Status for backends including auxiliary */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND LocalPgBackendStatus *localBackendStatusTable = NULL;
+#define localBackendStatusTable (*PgCurrentLocalBackendStatusTableRef())
 
 /* Total number of backends including auxiliary */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int localNumBackends = 0;
+#define localNumBackends (*PgCurrentLocalNumBackendsRef())
 
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND MemoryContext backendStatusSnapContext;
+#define backendStatusSnapContext (*PgCurrentBackendStatusSnapContextRef())
 
 
 static void pgstat_beshutdown_hook(int code, Datum arg);

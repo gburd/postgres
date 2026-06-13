@@ -6677,3 +6677,54 @@ Validation for this slice:
 - `gmake -C contrib -j8` passed;
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals, with backend-local declarations dropping from 312 to 297.
+
+## Backend Activity And PgStat Shared-Ref State Bridge
+
+The one-hundred-thirty-eighth Phase 12 slice moves a backend activity and
+pgstat shared-entry reference-cache state group into runtime-owned backend
+state:
+
+- the backend-status local snapshot table pointer;
+- the local backend snapshot count;
+- the backend-status snapshot memory context;
+- the pgstat shared-entry reference hash pointer;
+- the pgstat shared-reference age counter;
+- the pgstat shared-reference memory context;
+- the pgstat entry-reference hash memory context.
+
+The backend-status snapshot fields now live in a dedicated
+`PgBackendActivityState` bucket. The pgstat shared-entry reference-cache
+fields now live in `PgBackendPgStatPendingState` behind private pgstat
+accessors and `pgstat_shmem.c` compatibility macros. The simplehash table type
+stays private to `pgstat_shmem.c`; the runtime bucket stores it as an opaque
+pointer. `pgStatLocal` deliberately remains standalone backend-local TLS for a
+later dedicated pgstat-local slice because its type currently depends on
+internal pgstat snapshot structures in `pgstat_internal.h`.
+
+Validation for this slice:
+
+- `gmake -C src/backend/utils/init backend_runtime.o` passed;
+- `gmake -C src/backend/utils/activity backend_status.o pgstat_shmem.o pgstat.o`
+  passed;
+- `gmake -C src/test/modules/test_backend_runtime test_backend_runtime.o`
+  passed after expanding the pgstat pending-state helper and adding
+  `test_backend_activity_state_is_backend_local()`;
+- a static scan found no remaining raw TLS declarations for the moved
+  backend-status snapshot state or pgstat shared-entry reference-cache state;
+- a full backend clean plus generated-header recovery was run after the
+  installed-header and `PgBackend` layout changes;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- PL/pgSQL and `src/test/modules/test_backend_runtime` were cleaned, rebuilt,
+  and reinstalled after the installed-header change;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression, including the new
+  `test_backend_activity_state_is_backend_local()` helper, and still reported
+  TAP disabled by configure;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
+  explicit `PG_REGRESS` environment;
+- `gmake -C contrib -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 297 to 291.

@@ -317,6 +317,12 @@ SELECT test_backend_pgstat_pending_state_is_backend_local();
  t
 (1 row)
 
+SELECT test_backend_activity_state_is_backend_local();
+ test_backend_activity_state_is_backend_local 
+----------------------------------------------
+ t
+(1 row)
+
 SELECT test_backend_instrumentation_state_is_backend_local();
  test_backend_instrumentation_state_is_backend_local 
 -----------------------------------------------------

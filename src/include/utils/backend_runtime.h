@@ -31,6 +31,7 @@
 #include "storage/procnumber.h"
 #include "tcop/dest.h"
 #include "utils/backend_id.h"
+#include "utils/backend_status.h"
 #include "utils/global_lifetime.h"
 #include "utils/hsearch.h"
 #include "utils/palloc.h"
@@ -182,6 +183,10 @@ typedef struct PgBackendCoreState
 
 typedef struct PgBackendPgStatPendingState
 {
+	void	   *entry_ref_hash;
+	int			shared_ref_age;
+	MemoryContext shared_ref_context;
+	MemoryContext entry_ref_hash_context;
 	PgStat_BgWriterStats pending_bgwriter;
 	PgStat_CheckpointerStats pending_checkpointer;
 	PgStat_PendingIO io_stats;
@@ -209,6 +214,13 @@ typedef struct PgBackendPgStatPendingState
 	WalUsage	wal_prev_usage;
 	WalUsage	backend_wal_prev_usage;
 } PgBackendPgStatPendingState;
+
+typedef struct PgBackendActivityState
+{
+	LocalPgBackendStatus *backend_status_table;
+	int			num_backends;
+	MemoryContext backend_status_context;
+} PgBackendActivityState;
 
 typedef struct PgBackendInstrumentationState
 {
@@ -1120,6 +1132,7 @@ struct PgBackend
 	PgBackendExitState exit_state;
 	PgBackendCoreState core;
 	PgBackendPgStatPendingState pgstat_pending;
+	PgBackendActivityState activity;
 	PgBackendInstrumentationState instrumentation;
 	PgBackendBufferState buffers;
 	PgBackendStorageState storage;
@@ -1337,6 +1350,9 @@ extern int *PgCurrentPgStatFetchConsistencyRef(void);
 extern bool *PgCurrentPgStatTrackActivitiesRef(void);
 extern SessionEndType *PgCurrentPgStatSessionEndCauseRef(void);
 extern PgStat_Counter *PgCurrentPgStatLastSessionReportTimeRef(void);
+extern LocalPgBackendStatus **PgCurrentLocalBackendStatusTableRef(void);
+extern int *PgCurrentLocalNumBackendsRef(void);
+extern MemoryContext *PgCurrentBackendStatusSnapContextRef(void);
 extern int *PgCurrentComputeQueryIdRef(void);
 extern bool *PgCurrentQueryIdEnabledRef(void);
 extern bool *PgCurrentIgnoreChecksumFailureRef(void);
