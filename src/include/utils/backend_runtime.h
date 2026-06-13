@@ -227,6 +227,13 @@ typedef struct PgExecutionNodeIOState
 	bool		restore_location_fields;
 } PgExecutionNodeIOState;
 
+typedef struct PgExecutionBaseBackupState
+{
+	bool		backup_started_in_recovery;
+	long long int total_checksum_failures;
+	bool		noverify_checksums;
+} PgExecutionBaseBackupState;
+
 typedef struct PgSessionDatabaseState
 {
 	Oid			database_id;
@@ -1006,6 +1013,7 @@ struct PgExecution
 	PgExecutionPortalState portal;
 	PgExecutionVacuumState vacuum;
 	PgExecutionNodeIOState node_io;
+	PgExecutionBaseBackupState basebackup;
 };
 
 typedef struct PgThreadBackendRuntimeState
@@ -1053,6 +1061,9 @@ extern uint32 *PgCurrentParallelVacuumSharedParamsGenerationLocalRef(void);
 extern bool *PgCurrentNodeWriteLocationFieldsRef(void);
 extern const char **PgCurrentNodeReadStrtokPtrRef(void);
 extern bool *PgCurrentNodeRestoreLocationFieldsRef(void);
+extern bool *PgCurrentBaseBackupStartedInRecoveryRef(void);
+extern long long int *PgCurrentBaseBackupTotalChecksumFailuresRef(void);
+extern bool *PgCurrentBaseBackupNoVerifyChecksumsRef(void);
 extern int *PgCurrentDeadlockTimeoutRef(void);
 extern int *PgCurrentStatementTimeoutRef(void);
 extern int *PgCurrentLockTimeoutRef(void);

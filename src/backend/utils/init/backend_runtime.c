@@ -485,6 +485,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionSPIState early_execution_s
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionPortalState early_execution_portal;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionVacuumState early_execution_vacuum;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionNodeIOState early_execution_node_io;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionBaseBackupState early_execution_basebackup;
 
 StaticAssertDecl(PG_BACKEND_INTERRUPT_COUNT <= 32,
 				 "PgBackendInterruptMask must fit all backend interrupts");
@@ -601,6 +602,8 @@ static void PgExecutionInitializeVacuumState(PgExecutionVacuumState *vacuum);
 static void PgExecutionAdoptEarlyVacuumState(PgExecution *execution);
 static void PgExecutionInitializeNodeIOState(PgExecutionNodeIOState *node_io);
 static void PgExecutionAdoptEarlyNodeIOState(PgExecution *execution);
+static void PgExecutionInitializeBaseBackupState(PgExecutionBaseBackupState *basebackup);
+static void PgExecutionAdoptEarlyBaseBackupState(PgExecution *execution);
 static PgBackendCoreState *PgCurrentCoreState(void);
 static PgSessionDatabaseState *PgCurrentSessionDatabaseState(void);
 static PgSessionTablespaceState *PgCurrentSessionTablespaceState(void);
@@ -649,6 +652,7 @@ static PgExecutionSPIState *PgCurrentExecutionSPIState(void);
 static PgExecutionPortalState *PgCurrentExecutionPortalState(void);
 static PgExecutionVacuumState *PgCurrentExecutionVacuumState(void);
 static PgExecutionNodeIOState *PgCurrentExecutionNodeIOState(void);
+static PgExecutionBaseBackupState *PgCurrentExecutionBaseBackupState(void);
 static PgBackendPendingInterruptState *PgCurrentPendingInterrupts(void);
 static PgBackendInterruptHoldoffState *PgCurrentInterruptHoldoffs(void);
 
@@ -2056,6 +2060,23 @@ PgExecutionAdoptEarlyNodeIOState(PgExecution *execution)
 	PgExecutionInitializeNodeIOState(&early_execution_node_io);
 }
 
+static void
+PgExecutionInitializeBaseBackupState(PgExecutionBaseBackupState *basebackup)
+{
+	Assert(basebackup != NULL);
+
+	MemSet(basebackup, 0, sizeof(*basebackup));
+}
+
+static void
+PgExecutionAdoptEarlyBaseBackupState(PgExecution *execution)
+{
+	Assert(execution != NULL);
+
+	execution->basebackup = early_execution_basebackup;
+	PgExecutionInitializeBaseBackupState(&early_execution_basebackup);
+}
+
 void
 InitializePgProcessRuntime(void)
 {
@@ -2161,6 +2182,7 @@ InitializePgProcessRuntime(void)
 	PgExecutionAdoptEarlyPortalState(&process_execution);
 	PgExecutionAdoptEarlyVacuumState(&process_execution);
 	PgExecutionAdoptEarlyNodeIOState(&process_execution);
+	PgExecutionAdoptEarlyBaseBackupState(&process_execution);
 
 	CurrentPgRuntime = &process_runtime;
 	CurrentPgCarrier = &process_carrier;
@@ -2279,6 +2301,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgExecutionInitializeSPIState(&state->execution.spi);
 	PgExecutionInitializeVacuumState(&state->execution.vacuum);
 	PgExecutionInitializeNodeIOState(&state->execution.node_io);
+	PgExecutionInitializeBaseBackupState(&state->execution.basebackup);
 }
 
 void
@@ -2337,6 +2360,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgExecutionAdoptEarlyPortalState(&state->execution);
 	PgExecutionAdoptEarlyVacuumState(&state->execution);
 	PgExecutionAdoptEarlyNodeIOState(&state->execution);
+	PgExecutionAdoptEarlyBaseBackupState(&state->execution);
 	CurrentPgRuntime = &thread_runtime;
 	CurrentPgCarrier = &state->carrier;
 	CurrentPgBackend = &state->backend;
@@ -5069,6 +5093,33 @@ bool *
 PgCurrentNodeRestoreLocationFieldsRef(void)
 {
 	return &PgCurrentExecutionNodeIOState()->restore_location_fields;
+}
+
+static PgExecutionBaseBackupState *
+PgCurrentExecutionBaseBackupState(void)
+{
+	if (CurrentPgExecution == NULL)
+		return &early_execution_basebackup;
+
+	return &CurrentPgExecution->basebackup;
+}
+
+bool *
+PgCurrentBaseBackupStartedInRecoveryRef(void)
+{
+	return &PgCurrentExecutionBaseBackupState()->backup_started_in_recovery;
+}
+
+long long int *
+PgCurrentBaseBackupTotalChecksumFailuresRef(void)
+{
+	return &PgCurrentExecutionBaseBackupState()->total_checksum_failures;
+}
+
+bool *
+PgCurrentBaseBackupNoVerifyChecksumsRef(void)
+{
+	return &PgCurrentExecutionBaseBackupState()->noverify_checksums;
 }
 
 PgConnectionSocketIOState *

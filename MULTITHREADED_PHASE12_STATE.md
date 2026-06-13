@@ -3528,3 +3528,43 @@ Validation for this slice:
   public header migration;
 - static scans found no remaining raw TLS declarations for the migrated node
   read/write execution-state fields.
+
+## Basebackup Execution State Bridge
+
+The seventieth Phase 12 slice moves basebackup command scratch state under the
+logical execution object:
+
+- `PgExecution` now owns `PgExecutionBaseBackupState`;
+- `basebackup.c` `backup_started_in_recovery`, `total_checksum_failures`, and
+  `noverify_checksums` remain local compatibility macros backed by the active
+  execution;
+- runtime initialization zeroes this bucket for thread backends and adopts any
+  early execution state into the installed process/thread execution object;
+- the backend-runtime regression fixture adds
+  `test_execution_basebackup_state_is_execution_local()`, switching
+  `CurrentPgExecution` between fake executions and verifying the migrated
+  basebackup fields follow the active execution.
+
+This removes the private basebackup TLS bucket from `basebackup.c`. The state
+belongs to the active execution because it is per base backup command: the
+command records whether recovery was active when the backup started, the
+backup-wide checksum failure count, and the command option controlling
+checksum verification.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `basebackup.o`, and
+  `test_backend_runtime.o`;
+- because `backend_runtime.h` changed an installed backend header, the backend
+  clean plus generated utility and node-header recovery path was used before
+  trusting process-mode runtime tests;
+- clean full `gmake -j8` passed after the backend clean;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- focused `test_backend_runtime` regression passed and includes
+  `test_execution_basebackup_state_is_execution_local()`;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  public header migration;
+- static scans found no remaining raw TLS declarations for the migrated
+  basebackup execution-state fields.

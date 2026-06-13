@@ -733,7 +733,8 @@ plus the connection startup timing bridge through `PgConnection`, plus the
 extended-query transaction-started loop flag bridge through `PgSession`, plus
 the vacuum cost/failsafe and parallel-vacuum execution-state bridge through
 `PgExecution`, plus the node read/write scratch-state bridge through
-`PgExecution`.
+`PgExecution`, plus the basebackup checksum/recovery execution-state bridge
+through `PgExecution`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.

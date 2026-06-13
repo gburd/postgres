@@ -59,6 +59,7 @@ SELECT test_execution_spi_state_is_execution_local();
 SELECT test_execution_active_portal_is_execution_local();
 SELECT test_execution_vacuum_state_is_execution_local();
 SELECT test_execution_node_io_state_is_execution_local();
+SELECT test_execution_basebackup_state_is_execution_local();
 SELECT test_execution_resource_owners_are_execution_local();
 SELECT test_connection_socket_io_is_connection_local();
 SELECT test_connection_protocol_state_is_connection_local();
