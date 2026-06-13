@@ -6236,3 +6236,67 @@ Validation for this slice:
   `src/backend/storage/smgr/md.c` and no remaining raw TLS declarations for
   the moved storage state;
 - `git diff --check` passed.
+
+## Backend File Descriptor/VFD State Bridge
+
+The one-hundred-thirtieth Phase 12 slice extends the backend storage-state
+bucket to cover file descriptor and virtual-file-descriptor bookkeeping from
+`fd.c`:
+
+- virtual descriptor cache state: `VfdCache` and `SizeVfdCache`;
+- currently open VFD file count: `nfile`;
+- assert-only temporary-file access state: `temporary_files_allowed`;
+- transient allocated descriptor state: `numAllocatedDescs`,
+  `maxAllocatedDescs`, and `allocatedDescs`;
+- externally reserved descriptor count: `numExternalFDs`.
+
+The existing `fd.c` source names remain private compatibility macros backed
+by `PgCurrentVfdCacheRef()`, `PgCurrentSizeVfdCacheRef()`,
+`PgCurrentNFileRef()`, `PgCurrentTemporaryFilesAllowedRef()`,
+`PgCurrentNumAllocatedDescsRef()`, `PgCurrentMaxAllocatedDescsRef()`,
+`PgCurrentAllocatedDescsRef()`, and `PgCurrentNumExternalFDsRef()`.
+`PgBackendStorageState` stores the private `fd.c` pointer-typed arrays as
+opaque `void *` fields so `Vfd` and `AllocateDesc` stay local to `fd.c`.
+
+This slice also fixes a thread-runtime adoption gap exposed by moving
+descriptor counts into `PgBackendStorageState`. Thread startup performs latch
+and wait-set initialization before `InstallPgThreadBackendRuntimeState()`, and
+those paths can reserve file descriptors through the early backend fallback
+state. The install path now calls `PgBackendAdoptEarlyStorageState()` so that
+early storage fallback state is copied into the thread-backed `PgBackend`
+before SQL or worker code runs. Without that adoption, the threaded TAP server
+could reach "ready to accept connections" and then exit immediately after
+launching the logical replication launcher thread.
+
+Validation for this slice:
+
+- `gmake -C src/backend/utils/init backend_runtime.o` passed;
+- `gmake -C src/backend/storage/file fd.o` passed;
+- `gmake -C src/test/modules/test_backend_runtime test_backend_runtime.o`
+  passed after expanding `test_backend_storage_state_is_backend_local()` to
+  cover the fd/VFD fields;
+- a full backend clean plus generated-header recovery was run after the
+  installed-header and `PgBackend` layout changes;
+- full `gmake -j8` passed;
+- full `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- PL/pgSQL was cleaned, rebuilt, and reinstalled after the installed-header
+  change;
+- `src/test/modules/test_backend_runtime` was cleaned, rebuilt, and
+  reinstalled after the installed-header change;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression, including the expanded
+  `test_backend_storage_state_is_backend_local()` helper, and still reported
+  TAP disabled by configure;
+- the direct threaded-runtime TAP initially exposed the missing early storage
+  adoption path by exiting before assertions; after adding
+  `PgBackendAdoptEarlyStorageState()` to
+  `InstallPgThreadBackendRuntimeState()`, direct threaded-runtime TAP passed
+  all 87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and
+  an explicit `PG_REGRESS` environment;
+- `gmake -C contrib -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 379 to 371;
+- a static scan found only the eight private compatibility macros in
+  `src/backend/storage/file/fd.c` and no remaining raw TLS declarations for
+  the moved fd/VFD state;
+- `git diff --check` passed.

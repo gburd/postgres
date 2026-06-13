@@ -480,6 +480,13 @@ cluster while preserving the local source names in `sync.c`, `smgr.c`, and
 `md.c`. The smgr relation list has the same copied-list-head invariant as the
 pgstat pending list, so early adoption asserts that no early smgr relation
 hash/list exists before runtime adoption.
+`VfdCache`, `SizeVfdCache`, `nfile`, `temporary_files_allowed`,
+`numAllocatedDescs`, `maxAllocatedDescs`, `allocatedDescs`, and
+`numExternalFDs` now also live in `PgBackendStorageState`, preserving the
+local `fd.c` source names behind private compatibility macros. This exposed
+one missing thread-runtime adoption edge: latch/wait setup can reserve file
+descriptors before `InstallPgThreadBackendRuntimeState()`, so that install
+path now adopts early storage fallback state into the thread-backed backend.
 PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly

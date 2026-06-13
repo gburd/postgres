@@ -208,6 +208,14 @@ typedef struct PgBackendInstrumentationState
 
 typedef struct PgBackendStorageState
 {
+	void	   *vfd_cache;
+	Size		size_vfd_cache;
+	int			nfile;
+	bool		temporary_files_allowed;
+	int			num_allocated_descs;
+	int			max_allocated_descs;
+	void	   *allocated_descs;
+	int			num_external_fds;
 	HTAB	   *sync_pending_ops;
 	List	   *sync_pending_unlinks;
 	MemoryContext sync_pending_ops_context;
@@ -1341,6 +1349,14 @@ extern char **PgCurrentLocaleNumericRef(void);
 extern char **PgCurrentLocaleTimeRef(void);
 extern int *PgCurrentIcuValidationLevelRef(void);
 extern PgSessionUserIdentityState *PgCurrentUserIdentityState(void);
+extern void **PgCurrentVfdCacheRef(void);
+extern Size *PgCurrentSizeVfdCacheRef(void);
+extern int *PgCurrentNFileRef(void);
+extern bool *PgCurrentTemporaryFilesAllowedRef(void);
+extern int *PgCurrentNumAllocatedDescsRef(void);
+extern int *PgCurrentMaxAllocatedDescsRef(void);
+extern void **PgCurrentAllocatedDescsRef(void);
+extern int *PgCurrentNumExternalFDsRef(void);
 extern HTAB **PgCurrentSyncPendingOpsRef(void);
 extern List **PgCurrentSyncPendingUnlinksRef(void);
 extern MemoryContext *PgCurrentSyncPendingOpsContextRef(void);

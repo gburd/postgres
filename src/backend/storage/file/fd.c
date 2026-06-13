@@ -218,13 +218,13 @@ typedef struct vfd
  * needed.  'File' values are indexes into this array.
  * Note that VfdCache[0] is not a usable VFD, just a list header.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND Vfd *VfdCache;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND Size SizeVfdCache = 0;
+#define VfdCache (*(Vfd **) PgCurrentVfdCacheRef())
+#define SizeVfdCache (*PgCurrentSizeVfdCacheRef())
 
 /*
  * Number of file descriptors known to be in use by VFD entries.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int nfile = 0;
+#define nfile (*PgCurrentNFileRef())
 
 /*
  * Flag to tell whether it's worth scanning VfdCache looking for temp files
@@ -242,7 +242,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool have_xact_temporary_files = fals
 
 /* Temporary file access initialized and not yet shut down? */
 #ifdef USE_ASSERT_CHECKING
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool temporary_files_allowed = false;
+#define temporary_files_allowed (*PgCurrentTemporaryFilesAllowedRef())
 #endif
 
 /*
@@ -269,14 +269,14 @@ typedef struct
 	}			desc;
 } AllocateDesc;
 
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int numAllocatedDescs = 0;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int maxAllocatedDescs = 0;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND AllocateDesc *allocatedDescs = NULL;
+#define numAllocatedDescs (*PgCurrentNumAllocatedDescsRef())
+#define maxAllocatedDescs (*PgCurrentMaxAllocatedDescsRef())
+#define allocatedDescs (*(AllocateDesc **) PgCurrentAllocatedDescsRef())
 
 /*
  * Number of open "external" FDs reported to Reserve/ReleaseExternalFD.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int numExternalFDs = 0;
+#define numExternalFDs (*PgCurrentNumExternalFDsRef())
 
 /*
  * Number of temporary files opened during the current session;

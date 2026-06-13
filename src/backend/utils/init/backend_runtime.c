@@ -2566,6 +2566,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgBackendAdoptEarlyAuxProcessResourceOwner(&state->backend);
 	PgBackendAdoptEarlyPgStatPendingState(&state->backend);
 	PgBackendAdoptEarlyInstrumentationState(&state->backend);
+	PgBackendAdoptEarlyStorageState(&state->backend);
 	PgSessionAdoptEarlyDatabaseState(&state->session);
 	PgSessionAdoptEarlyTablespaceState(&state->session);
 	PgSessionAdoptEarlyBinaryUpgradeState(&state->session);
@@ -5994,6 +5995,54 @@ PgCurrentBackendStorageState(void)
 		return &early_backend_storage;
 
 	return &CurrentPgBackend->storage;
+}
+
+void **
+PgCurrentVfdCacheRef(void)
+{
+	return &PgCurrentBackendStorageState()->vfd_cache;
+}
+
+Size *
+PgCurrentSizeVfdCacheRef(void)
+{
+	return &PgCurrentBackendStorageState()->size_vfd_cache;
+}
+
+int *
+PgCurrentNFileRef(void)
+{
+	return &PgCurrentBackendStorageState()->nfile;
+}
+
+bool *
+PgCurrentTemporaryFilesAllowedRef(void)
+{
+	return &PgCurrentBackendStorageState()->temporary_files_allowed;
+}
+
+int *
+PgCurrentNumAllocatedDescsRef(void)
+{
+	return &PgCurrentBackendStorageState()->num_allocated_descs;
+}
+
+int *
+PgCurrentMaxAllocatedDescsRef(void)
+{
+	return &PgCurrentBackendStorageState()->max_allocated_descs;
+}
+
+void **
+PgCurrentAllocatedDescsRef(void)
+{
+	return &PgCurrentBackendStorageState()->allocated_descs;
+}
+
+int *
+PgCurrentNumExternalFDsRef(void)
+{
+	return &PgCurrentBackendStorageState()->num_external_fds;
 }
 
 HTAB **

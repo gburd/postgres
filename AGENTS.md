@@ -219,16 +219,24 @@ Important current files:
 - Pending file-sync state (`pendingOps`, `pendingUnlinks`,
   `pendingOpsCxt`, `sync_cycle_ctr`, `checkpoint_cycle_ctr`, and
   `sync_in_progress`), storage-manager relation state (`SMgrRelationHash` and
-  `unpinned_relns`), and magnetic-disk storage-manager context (`MdCxt`) are
-  now fields in `PgBackendStorageState`, exposed through private compatibility
-  macros in `src/backend/storage/sync/sync.c`,
-  `src/backend/storage/smgr/smgr.c`, and `src/backend/storage/smgr/md.c`.
+  `unpinned_relns`), magnetic-disk storage-manager context (`MdCxt`), and
+  file-descriptor/VFD state (`VfdCache`, `SizeVfdCache`, `nfile`,
+  `temporary_files_allowed`, `numAllocatedDescs`, `maxAllocatedDescs`,
+  `allocatedDescs`, and `numExternalFDs`) are now fields in
+  `PgBackendStorageState`, exposed through private compatibility macros in
+  `src/backend/storage/sync/sync.c`, `src/backend/storage/smgr/smgr.c`,
+  `src/backend/storage/smgr/md.c`, and `src/backend/storage/file/fd.c`.
   The smgr adoption path asserts that no early smgr relation hash/list exists
   before backend-runtime adoption; copied non-empty `dlist_head` values would
-  still point at the old list head. After changing this bridge, clean and
-  rebuild backend objects because `PgBackend` layout and installed runtime
-  headers changed; at minimum rebuild and reinstall PL/pgSQL,
-  `src/test/modules/test_backend_runtime`, and contrib before validating.
+  still point at the old list head. Threaded backend startup can reserve file
+  descriptors before installing the backend runtime, so
+  `InstallPgThreadBackendRuntimeState()` must adopt early storage state into
+  the thread-backed `PgBackend`; losing that fallback fd state can make the
+  threaded TAP postmaster exit immediately after launching worker threads.
+  After changing this bridge, clean and rebuild backend objects because
+  `PgBackend` layout and installed runtime headers changed; at minimum rebuild
+  and reinstall PL/pgSQL, `src/test/modules/test_backend_runtime`, and contrib
+  before validating.
 - Treat `PMChild.thread_backend` as private PMChild-owned publication state.
   Postmaster code should use PMChild helper APIs for threaded backend
   interrupt, wakeup, and thread-exit publication rather than dereferencing or

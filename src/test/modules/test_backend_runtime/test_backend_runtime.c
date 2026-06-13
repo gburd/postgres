@@ -6904,6 +6904,14 @@ test_backend_storage_state_is_backend_local(PG_FUNCTION_ARGS)
 	PG_TRY();
 	{
 		CurrentPgBackend = &fake_backend1;
+		*PgCurrentVfdCacheRef() = &fake_backend1;
+		*PgCurrentSizeVfdCacheRef() = 101;
+		*PgCurrentNFileRef() = 102;
+		*PgCurrentTemporaryFilesAllowedRef() = true;
+		*PgCurrentNumAllocatedDescsRef() = 103;
+		*PgCurrentMaxAllocatedDescsRef() = 104;
+		*PgCurrentAllocatedDescsRef() = &fake_backend1;
+		*PgCurrentNumExternalFDsRef() = 105;
 		*PgCurrentSyncPendingOpsRef() = (HTAB *) &fake_backend1;
 		*PgCurrentSyncPendingUnlinksRef() = (List *) &fake_backend1;
 		*PgCurrentSyncPendingOpsContextRef() = (MemoryContext) &fake_backend1;
@@ -6914,6 +6922,14 @@ test_backend_storage_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentMdContextRef() = (MemoryContext) &fake_backend1;
 
 		CurrentPgBackend = &fake_backend2;
+		ok = ok && *PgCurrentVfdCacheRef() == NULL;
+		ok = ok && *PgCurrentSizeVfdCacheRef() == 0;
+		ok = ok && *PgCurrentNFileRef() == 0;
+		ok = ok && !*PgCurrentTemporaryFilesAllowedRef();
+		ok = ok && *PgCurrentNumAllocatedDescsRef() == 0;
+		ok = ok && *PgCurrentMaxAllocatedDescsRef() == 0;
+		ok = ok && *PgCurrentAllocatedDescsRef() == NULL;
+		ok = ok && *PgCurrentNumExternalFDsRef() == 0;
 		ok = ok && *PgCurrentSyncPendingOpsRef() == NULL;
 		ok = ok && *PgCurrentSyncPendingUnlinksRef() == NIL;
 		ok = ok && *PgCurrentSyncPendingOpsContextRef() == NULL;
@@ -6926,6 +6942,14 @@ test_backend_storage_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && dlist_is_empty(PgCurrentSMgrUnpinnedRelationsRef());
 		ok = ok && *PgCurrentMdContextRef() == NULL;
 
+		*PgCurrentVfdCacheRef() = &fake_backend2;
+		*PgCurrentSizeVfdCacheRef() = 201;
+		*PgCurrentNFileRef() = 202;
+		*PgCurrentTemporaryFilesAllowedRef() = true;
+		*PgCurrentNumAllocatedDescsRef() = 203;
+		*PgCurrentMaxAllocatedDescsRef() = 204;
+		*PgCurrentAllocatedDescsRef() = &fake_backend2;
+		*PgCurrentNumExternalFDsRef() = 205;
 		*PgCurrentSyncPendingOpsRef() = (HTAB *) &fake_backend2;
 		*PgCurrentSyncPendingUnlinksRef() = (List *) &fake_backend2;
 		*PgCurrentSyncPendingOpsContextRef() = (MemoryContext) &fake_backend2;
@@ -6936,6 +6960,14 @@ test_backend_storage_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentMdContextRef() = (MemoryContext) &fake_backend2;
 
 		CurrentPgBackend = &fake_backend1;
+		ok = ok && *PgCurrentVfdCacheRef() == &fake_backend1;
+		ok = ok && *PgCurrentSizeVfdCacheRef() == 101;
+		ok = ok && *PgCurrentNFileRef() == 102;
+		ok = ok && *PgCurrentTemporaryFilesAllowedRef();
+		ok = ok && *PgCurrentNumAllocatedDescsRef() == 103;
+		ok = ok && *PgCurrentMaxAllocatedDescsRef() == 104;
+		ok = ok && *PgCurrentAllocatedDescsRef() == &fake_backend1;
+		ok = ok && *PgCurrentNumExternalFDsRef() == 105;
 		ok = ok && *PgCurrentSyncPendingOpsRef() == (HTAB *) &fake_backend1;
 		ok = ok && *PgCurrentSyncPendingUnlinksRef() == (List *) &fake_backend1;
 		ok = ok && *PgCurrentSyncPendingOpsContextRef() == (MemoryContext) &fake_backend1;
@@ -6949,6 +6981,14 @@ test_backend_storage_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentMdContextRef() == (MemoryContext) &fake_backend1;
 
 		CurrentPgBackend = &fake_backend2;
+		ok = ok && *PgCurrentVfdCacheRef() == &fake_backend2;
+		ok = ok && *PgCurrentSizeVfdCacheRef() == 201;
+		ok = ok && *PgCurrentNFileRef() == 202;
+		ok = ok && *PgCurrentTemporaryFilesAllowedRef();
+		ok = ok && *PgCurrentNumAllocatedDescsRef() == 203;
+		ok = ok && *PgCurrentMaxAllocatedDescsRef() == 204;
+		ok = ok && *PgCurrentAllocatedDescsRef() == &fake_backend2;
+		ok = ok && *PgCurrentNumExternalFDsRef() == 205;
 		ok = ok && *PgCurrentSyncPendingOpsRef() == (HTAB *) &fake_backend2;
 		ok = ok && *PgCurrentSyncPendingUnlinksRef() == (List *) &fake_backend2;
 		ok = ok && *PgCurrentSyncPendingOpsContextRef() == (MemoryContext) &fake_backend2;
