@@ -848,14 +848,16 @@ so immediate shutdown no longer leaves background writer, checkpointer,
 autovacuum launcher, or WAL writer thread carriers waiting for SIGKILL
 escalation in the basic threaded shutdown smoke. The temporary threaded
 startup serialization gate is now centralized behind an explicit backend-type
-policy. AIO workers, the syslogger, background writer, checkpointer, and WAL
-writer bypass it; the latter three are a worker-specific narrowing for
-auxiliary writer classes whose common startup does not run database/session
-bootstrap before entering the worker loop. A broader attempted bypass for
-additional non-session auxiliary workers reproduced an abrupt postmaster death
-during a threaded `pg_class` catalog scan, so further narrowing remains a Gate
-E2 blocker and must be driven by worker-specific shared-state isolation plus
-catalog-startup stress. The remaining PMChild and teardown blockers are full
+policy. AIO workers, the syslogger, archiver, background writer, checkpointer,
+and WAL writer bypass it; background writer, checkpointer, WAL writer, and
+archiver are worker-specific narrowings for auxiliary classes whose common
+startup does not run database/session bootstrap before entering the worker
+loop, with archiver additionally validated through archive-command wakeup and
+shutdown coverage. A broader attempted bypass for additional non-session
+auxiliary workers reproduced an abrupt postmaster death during a threaded
+`pg_class` catalog scan, so further narrowing remains a Gate E2 blocker and
+must be driven by worker-specific shared-state isolation plus catalog-startup
+stress. The remaining PMChild and teardown blockers are full
 resource cleanup or deliberate long-lived ownership, broader reaping stress
 for termination and abandoned-client races, broader custom/extension GUC
 semantics, startup-gate narrowing for the remaining gated classes, and broader

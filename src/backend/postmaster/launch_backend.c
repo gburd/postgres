@@ -540,7 +540,10 @@ backend_thread_run_worker(BackendThreadStart *thread_start)
 	 * race with backend startup can bypass the temporary serialized startup
 	 * section.  Keep the rest guarded until their shared-state startup
 	 * dependencies are isolated and covered by worker-specific threaded
-	 * catalog-startup smokes.
+	 * catalog-startup smokes.  The archiver follows the auxiliary-process
+	 * common startup path, publishes its wakeup state in shared memory, and
+	 * keeps its per-loop archive state backend-local, so it can use the same
+	 * narrow bypass class as the writer-style auxiliary workers.
 	 */
 	if (backend_thread_requires_startup_gate(thread_start->child_type))
 		backend_thread_enter_startup_gate(thread_start);
@@ -561,7 +564,6 @@ backend_thread_requires_startup_gate(BackendType child_type)
 		case B_BACKEND:
 		case B_AUTOVAC_LAUNCHER:
 		case B_AUTOVAC_WORKER:
-		case B_ARCHIVER:
 		case B_BG_WORKER:
 		case B_SLOTSYNC_WORKER:
 		case B_STARTUP:
@@ -569,6 +571,7 @@ backend_thread_requires_startup_gate(BackendType child_type)
 		case B_WAL_SUMMARIZER:
 			return true;
 
+		case B_ARCHIVER:
 		case B_BG_WRITER:
 		case B_CHECKPOINTER:
 		case B_IO_WORKER:
