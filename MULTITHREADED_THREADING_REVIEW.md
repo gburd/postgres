@@ -511,6 +511,16 @@ backend instead of remaining standalone TLS or function-local static TLS. The
 slice passed clean full build/install, process-mode backend-runtime
 regression, direct threaded runtime TAP, contrib build, and the required
 global-lifetime scan with zero new unclassified mutable globals.
+Lock-manager backend-local state now also lives in `PgBackendLockState`:
+fast-path lock-group counters, relation-extension lock ownership, local lock
+hash state, strong-lock progress, awaited-lock/owner state, the
+deadlock-timeout pending flag, condition-variable sleep target, and
+speculative insertion token state moved behind lock-manager compatibility
+macros. This broadens the earlier deadlock-detector migration and removes
+another coherent lock/wait state group from raw backend-local TLS. The slice
+passed clean full build/install, process-mode backend-runtime regression,
+direct threaded runtime TAP, contrib build, and the required global-lifetime
+scan with zero new unclassified mutable globals.
 PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly

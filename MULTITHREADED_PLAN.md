@@ -934,6 +934,16 @@ to a carrier thread. The batch passed the clean full build/install,
 process-mode backend-runtime regression, direct threaded runtime TAP, contrib
 build, and required global-lifetime scan with zero new unclassified mutable
 globals.
+The lock-manager batch now extends `PgBackendLockState` beyond deadlock
+detector workspace to cover fast-path lock-group counters, relation-extension
+lock ownership, local lock hash state, strong-lock progress, awaited-lock and
+awaited-owner state, the deadlock-timeout pending flag, condition-variable
+sleep target, and speculative insertion token state. This removes another
+coherent backend-local lock/wait state group from standalone TLS while keeping
+the lock-manager source-level API stable. The batch passed the clean full
+build/install, process-mode backend-runtime regression, direct threaded
+runtime TAP, contrib build, and required global-lifetime scan with zero new
+unclassified mutable globals.
 PMChild assignment and slot release now also scrub stale carrier-visible signal
 ids and thread-exit payloads before reuse. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live

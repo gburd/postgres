@@ -273,6 +273,16 @@ Important current files:
   backend objects because `PgBackend` layout and installed storage/runtime
   headers changed; at minimum rebuild and reinstall PL/pgSQL,
   `src/test/modules/test_backend_runtime`, and contrib before validating.
+- Lock-manager backend-local state now also lives in `PgBackendLockState`:
+  fast-path local-use counters, relation-extension lock ownership,
+  `LockMethodLocalHash`, strong-lock progress, awaited-lock/owner state,
+  `got_deadlock_timeout`, condition-variable sleep target state, and
+  speculative insertion token state. `lock.c`, `proc.c`,
+  `condition_variable.c`, and `lmgr.c` keep local compatibility macros. After
+  changing this bridge, clean and rebuild backend objects because
+  `PgBackend` layout and installed runtime headers changed; at minimum rebuild
+  and reinstall PL/pgSQL, `src/test/modules/test_backend_runtime`, and contrib
+  before validating.
 - Treat `PMChild.thread_backend` as private PMChild-owned publication state.
   Postmaster code should use PMChild helper APIs for threaded backend
   interrupt, wakeup, and thread-exit publication rather than dereferencing or

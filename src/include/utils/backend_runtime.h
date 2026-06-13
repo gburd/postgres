@@ -257,6 +257,15 @@ typedef struct PgBackendStorageState
 
 typedef struct PgBackendLockState
 {
+	void	   *fast_path_local_use_counts;
+	bool		relation_extension_lock_held;
+	HTAB	   *lock_method_local_hash;
+	void	   *strong_lock_in_progress;
+	void	   *awaited_lock;
+	void	   *awaited_owner;
+	volatile sig_atomic_t deadlock_timeout_pending;
+	void	   *condition_variable_sleep_target;
+	uint32		speculative_insertion_token;
 	void	   *deadlock_visited_procs;
 	int			deadlock_n_visited_procs;
 	void	   *deadlock_topo_procs;
@@ -1456,6 +1465,15 @@ extern bool *PgCurrentSyncInProgressRef(void);
 extern HTAB **PgCurrentSMgrRelationHashRef(void);
 extern dlist_head *PgCurrentSMgrUnpinnedRelationsRef(void);
 extern MemoryContext *PgCurrentMdContextRef(void);
+extern void **PgCurrentFastPathLocalUseCountsRef(void);
+extern bool *PgCurrentRelationExtensionLockHeldRef(void);
+extern HTAB **PgCurrentLockMethodLocalHashRef(void);
+extern void **PgCurrentStrongLockInProgressRef(void);
+extern void **PgCurrentAwaitedLockRef(void);
+extern void **PgCurrentAwaitedOwnerRef(void);
+extern volatile sig_atomic_t *PgCurrentDeadlockTimeoutPendingRef(void);
+extern void **PgCurrentConditionVariableSleepTargetRef(void);
+extern uint32 *PgCurrentSpeculativeInsertionTokenRef(void);
 extern void **PgCurrentDeadlockVisitedProcsRef(void);
 extern int *PgCurrentDeadlockNVisitedProcsRef(void);
 extern void **PgCurrentDeadlockTopoProcsRef(void);

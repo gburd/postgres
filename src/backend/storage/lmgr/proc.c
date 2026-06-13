@@ -79,7 +79,7 @@ static PG_GLOBAL_RUNTIME size_t ProcGlobalAllProcsShmemSize;
 static PG_GLOBAL_RUNTIME size_t FastPathLockArrayShmemSize;
 
 /* Is a deadlock check pending? */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t got_deadlock_timeout;
+#define got_deadlock_timeout (*PgCurrentDeadlockTimeoutPendingRef())
 
 static void RemoveProcFromArray(int code, Datum arg);
 static void ProcKill(int code, Datum arg);

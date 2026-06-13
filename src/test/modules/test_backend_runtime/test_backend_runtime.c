@@ -7177,6 +7177,8 @@ test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
 	PgBackend  *saved_backend;
 	PgBackend	fake_backend1;
 	PgBackend	fake_backend2;
+	int			fast_path_counts1[FP_LOCK_GROUPS_PER_BACKEND_MAX] = {0};
+	int			fast_path_counts2[FP_LOCK_GROUPS_PER_BACKEND_MAX] = {0};
 	bool		ok = true;
 
 	saved_backend = CurrentPgBackend;
@@ -7186,6 +7188,16 @@ test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
 	PG_TRY();
 	{
 		CurrentPgBackend = &fake_backend1;
+		*PgCurrentFastPathLocalUseCountsRef() = fast_path_counts1;
+		fast_path_counts1[0] = 101;
+		*PgCurrentRelationExtensionLockHeldRef() = true;
+		*PgCurrentLockMethodLocalHashRef() = (HTAB *) &fake_backend1;
+		*PgCurrentStrongLockInProgressRef() = &fake_backend1;
+		*PgCurrentAwaitedLockRef() = &fake_backend1;
+		*PgCurrentAwaitedOwnerRef() = &fake_backend1;
+		*PgCurrentDeadlockTimeoutPendingRef() = true;
+		*PgCurrentConditionVariableSleepTargetRef() = &fake_backend1;
+		*PgCurrentSpeculativeInsertionTokenRef() = 108;
 		*PgCurrentDeadlockVisitedProcsRef() = &fake_backend1;
 		*PgCurrentDeadlockNVisitedProcsRef() = 101;
 		*PgCurrentDeadlockTopoProcsRef() = &fake_backend1;
@@ -7205,6 +7217,15 @@ test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentBlockingAutovacuumProcRef() = &fake_backend1;
 
 		CurrentPgBackend = &fake_backend2;
+		ok = ok && *PgCurrentFastPathLocalUseCountsRef() == NULL;
+		ok = ok && !*PgCurrentRelationExtensionLockHeldRef();
+		ok = ok && *PgCurrentLockMethodLocalHashRef() == NULL;
+		ok = ok && *PgCurrentStrongLockInProgressRef() == NULL;
+		ok = ok && *PgCurrentAwaitedLockRef() == NULL;
+		ok = ok && *PgCurrentAwaitedOwnerRef() == NULL;
+		ok = ok && !*PgCurrentDeadlockTimeoutPendingRef();
+		ok = ok && *PgCurrentConditionVariableSleepTargetRef() == NULL;
+		ok = ok && *PgCurrentSpeculativeInsertionTokenRef() == 0;
 		ok = ok && *PgCurrentDeadlockVisitedProcsRef() == NULL;
 		ok = ok && *PgCurrentDeadlockNVisitedProcsRef() == 0;
 		ok = ok && *PgCurrentDeadlockTopoProcsRef() == NULL;
@@ -7223,6 +7244,16 @@ test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentDeadlockNDetailsRef() == 0;
 		ok = ok && *PgCurrentBlockingAutovacuumProcRef() == NULL;
 
+		*PgCurrentFastPathLocalUseCountsRef() = fast_path_counts2;
+		fast_path_counts2[0] = 201;
+		*PgCurrentRelationExtensionLockHeldRef() = false;
+		*PgCurrentLockMethodLocalHashRef() = (HTAB *) &fake_backend2;
+		*PgCurrentStrongLockInProgressRef() = &fake_backend2;
+		*PgCurrentAwaitedLockRef() = &fake_backend2;
+		*PgCurrentAwaitedOwnerRef() = &fake_backend2;
+		*PgCurrentDeadlockTimeoutPendingRef() = false;
+		*PgCurrentConditionVariableSleepTargetRef() = &fake_backend2;
+		*PgCurrentSpeculativeInsertionTokenRef() = 208;
 		*PgCurrentDeadlockVisitedProcsRef() = &fake_backend2;
 		*PgCurrentDeadlockNVisitedProcsRef() = 201;
 		*PgCurrentDeadlockTopoProcsRef() = &fake_backend2;
@@ -7242,6 +7273,16 @@ test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentBlockingAutovacuumProcRef() = &fake_backend2;
 
 		CurrentPgBackend = &fake_backend1;
+		ok = ok && *PgCurrentFastPathLocalUseCountsRef() == fast_path_counts1;
+		ok = ok && ((int *) *PgCurrentFastPathLocalUseCountsRef())[0] == 101;
+		ok = ok && *PgCurrentRelationExtensionLockHeldRef();
+		ok = ok && *PgCurrentLockMethodLocalHashRef() == (HTAB *) &fake_backend1;
+		ok = ok && *PgCurrentStrongLockInProgressRef() == &fake_backend1;
+		ok = ok && *PgCurrentAwaitedLockRef() == &fake_backend1;
+		ok = ok && *PgCurrentAwaitedOwnerRef() == &fake_backend1;
+		ok = ok && *PgCurrentDeadlockTimeoutPendingRef();
+		ok = ok && *PgCurrentConditionVariableSleepTargetRef() == &fake_backend1;
+		ok = ok && *PgCurrentSpeculativeInsertionTokenRef() == 108;
 		ok = ok && *PgCurrentDeadlockVisitedProcsRef() == &fake_backend1;
 		ok = ok && *PgCurrentDeadlockNVisitedProcsRef() == 101;
 		ok = ok && *PgCurrentDeadlockTopoProcsRef() == &fake_backend1;
@@ -7261,6 +7302,16 @@ test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentBlockingAutovacuumProcRef() == &fake_backend1;
 
 		CurrentPgBackend = &fake_backend2;
+		ok = ok && *PgCurrentFastPathLocalUseCountsRef() == fast_path_counts2;
+		ok = ok && ((int *) *PgCurrentFastPathLocalUseCountsRef())[0] == 201;
+		ok = ok && !*PgCurrentRelationExtensionLockHeldRef();
+		ok = ok && *PgCurrentLockMethodLocalHashRef() == (HTAB *) &fake_backend2;
+		ok = ok && *PgCurrentStrongLockInProgressRef() == &fake_backend2;
+		ok = ok && *PgCurrentAwaitedLockRef() == &fake_backend2;
+		ok = ok && *PgCurrentAwaitedOwnerRef() == &fake_backend2;
+		ok = ok && !*PgCurrentDeadlockTimeoutPendingRef();
+		ok = ok && *PgCurrentConditionVariableSleepTargetRef() == &fake_backend2;
+		ok = ok && *PgCurrentSpeculativeInsertionTokenRef() == 208;
 		ok = ok && *PgCurrentDeadlockVisitedProcsRef() == &fake_backend2;
 		ok = ok && *PgCurrentDeadlockNVisitedProcsRef() == 201;
 		ok = ok && *PgCurrentDeadlockTopoProcsRef() == &fake_backend2;

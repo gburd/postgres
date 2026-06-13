@@ -47,6 +47,7 @@
 #include "storage/spin.h"
 #include "storage/standby.h"
 #include "storage/subsystems.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
 #include "utils/resowner.h"
@@ -170,12 +171,11 @@ typedef struct TwoPhaseLockRecord
  * our locks to the primary lock table, but it can never be lower than the
  * real value, since only we can acquire locks on our own behalf.
  *
- * XXX Allocate a static array of the maximum size. We could use a pointer
- * and then allocate just the right size to save a couple kB, but then we
- * would have to initialize that, while for the static array that happens
- * automatically. Doesn't seem worth the extra complexity.
+ * Allocate the maximum size once per backend.  Keeping the storage behind
+ * PgBackendLockState lets thread-backed logical backends own distinct fast
+ * path counters while preserving the existing array-style call sites.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int FastPathLocalUseCounts[FP_LOCK_GROUPS_PER_BACKEND_MAX];
+#define FastPathLocalUseCounts (*(int **) PgCurrentFastPathLocalUseCountsRef())
 
 /*
  * Flag to indicate if the relation extension lock is held by this backend.
@@ -190,7 +190,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int FastPathLocalUseCounts[FP_LOCK_GROU
  * taken for a short duration to extend a particular relation and then
  * released.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool IsRelationExtensionLockHeld PG_USED_FOR_ASSERTS_ONLY = false;
+#define IsRelationExtensionLockHeld (*PgCurrentRelationExtensionLockHeldRef())
 
 /*
  * Number of fast-path locks per backend - size of the arrays in PGPROC.
@@ -330,13 +330,13 @@ const ShmemCallbacks LockManagerShmemCallbacks = {
  */
 static PG_GLOBAL_SHMEM HTAB *LockMethodLockHash;
 static PG_GLOBAL_SHMEM HTAB *LockMethodProcLockHash;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND HTAB *LockMethodLocalHash;
+#define LockMethodLocalHash (*PgCurrentLockMethodLocalHashRef())
 
 
 /* private state for error cleanup */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND LOCALLOCK *StrongLockInProgress;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND LOCALLOCK *awaitedLock;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ResourceOwner awaitedOwner;
+#define StrongLockInProgress (*(LOCALLOCK **) PgCurrentStrongLockInProgressRef())
+#define awaitedLock (*(LOCALLOCK **) PgCurrentAwaitedLockRef())
+#define awaitedOwner (*(ResourceOwner *) PgCurrentAwaitedOwnerRef())
 
 
 #ifdef LOCK_DEBUG
@@ -501,6 +501,14 @@ InitLockManagerAccess(void)
 
 	info.keysize = sizeof(LOCALLOCKTAG);
 	info.entrysize = sizeof(LOCALLOCK);
+
+	if (FastPathLocalUseCounts == NULL)
+		FastPathLocalUseCounts = MemoryContextAllocZero(TopMemoryContext,
+														sizeof(int) *
+														FP_LOCK_GROUPS_PER_BACKEND_MAX);
+	else
+		MemSet(FastPathLocalUseCounts, 0,
+			   sizeof(int) * FP_LOCK_GROUPS_PER_BACKEND_MAX);
 
 	LockMethodLocalHash = hash_create("LOCALLOCK hash",
 									  16,

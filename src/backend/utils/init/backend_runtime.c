@@ -6343,6 +6343,60 @@ PgCurrentBackendLockState(void)
 }
 
 void **
+PgCurrentFastPathLocalUseCountsRef(void)
+{
+	return &PgCurrentBackendLockState()->fast_path_local_use_counts;
+}
+
+bool *
+PgCurrentRelationExtensionLockHeldRef(void)
+{
+	return &PgCurrentBackendLockState()->relation_extension_lock_held;
+}
+
+HTAB **
+PgCurrentLockMethodLocalHashRef(void)
+{
+	return &PgCurrentBackendLockState()->lock_method_local_hash;
+}
+
+void **
+PgCurrentStrongLockInProgressRef(void)
+{
+	return &PgCurrentBackendLockState()->strong_lock_in_progress;
+}
+
+void **
+PgCurrentAwaitedLockRef(void)
+{
+	return &PgCurrentBackendLockState()->awaited_lock;
+}
+
+void **
+PgCurrentAwaitedOwnerRef(void)
+{
+	return &PgCurrentBackendLockState()->awaited_owner;
+}
+
+volatile sig_atomic_t *
+PgCurrentDeadlockTimeoutPendingRef(void)
+{
+	return &PgCurrentBackendLockState()->deadlock_timeout_pending;
+}
+
+void **
+PgCurrentConditionVariableSleepTargetRef(void)
+{
+	return &PgCurrentBackendLockState()->condition_variable_sleep_target;
+}
+
+uint32 *
+PgCurrentSpeculativeInsertionTokenRef(void)
+{
+	return &PgCurrentBackendLockState()->speculative_insertion_token;
+}
+
+void **
 PgCurrentDeadlockVisitedProcsRef(void)
 {
 	return &PgCurrentBackendLockState()->deadlock_visited_procs;

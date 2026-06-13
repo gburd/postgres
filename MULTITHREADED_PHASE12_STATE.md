@@ -6530,3 +6530,55 @@ Validation for this slice:
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals, with backend-local declarations now at 330;
 - `git diff --check` passed.
+
+## Backend Lock Manager Local State Bridge
+
+The one-hundred-thirty-fifth Phase 12 slice extends `PgBackendLockState` to
+cover the remaining backend-local lock-manager and lock-wait state outside the
+deadlock detector:
+
+- fast-path lock-group use counters, replacing the former fixed TLS array
+  with backend-owned storage allocated and reset by `InitLockManagerAccess()`;
+- relation-extension lock ownership state;
+- the local lock hash table pointer;
+- strong-lock acquisition progress state;
+- awaited lock and awaited resource owner state used by deadlock timeout
+  processing;
+- the deadlock-timeout pending flag;
+- condition-variable sleep target state;
+- speculative insertion token state.
+
+The public runtime object keeps private lock-manager implementation types
+opaque where needed, and the touched lock-manager source files keep their
+historical local names as compatibility macros backed by
+`PgBackendLockState`. This removes another fixed backend-local state group
+from standalone TLS while preserving the current lock-manager call-site
+shape.
+
+Validation for this slice:
+
+- `gmake -C src/backend/utils/init backend_runtime.o` passed;
+- `gmake -C src/backend/storage/lmgr lock.o proc.o condition_variable.o lmgr.o`
+  passed;
+- `gmake -C src/test/modules/test_backend_runtime test_backend_runtime.o`
+  passed after expanding `test_backend_lock_state_is_backend_local()`;
+- a static scan found no remaining raw TLS declarations for the moved lock
+  manager, condition-variable, deadlock-timeout, or speculative-insertion
+  state;
+- a full backend clean plus generated-header recovery was run after the
+  installed-header and `PgBackend` layout changes;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- PL/pgSQL and `src/test/modules/test_backend_runtime` were cleaned, rebuilt,
+  and reinstalled after the installed-header change;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression, including the expanded
+  `test_backend_lock_state_is_backend_local()` helper, and still reported TAP
+  disabled by configure;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
+  explicit `PG_REGRESS` environment;
+- `gmake -C contrib -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 330 to 321.
