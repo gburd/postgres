@@ -206,6 +206,22 @@ typedef struct PgBackendInstrumentationState
 	WalUsage	saved_wal_usage;
 } PgBackendInstrumentationState;
 
+typedef struct PgBackendBufferState
+{
+	int			nlocbuffer;
+	void	   *local_buffer_descriptors;
+	void	   *local_buffer_block_pointers;
+	int32	   *local_ref_count;
+	int			next_free_local_buf_id;
+	HTAB	   *local_buf_hash;
+	int			n_local_pinned_buffers;
+	char	   *local_buffer_cur_block;
+	int			local_buffer_next_buf_in_block;
+	int			local_buffer_num_bufs_in_block;
+	int			local_buffer_total_bufs_allocated;
+	MemoryContext local_buffer_context;
+} PgBackendBufferState;
+
 typedef struct PgBackendStorageState
 {
 	void	   *vfd_cache;
@@ -1032,6 +1048,7 @@ struct PgBackend
 	PgBackendCoreState core;
 	PgBackendPgStatPendingState pgstat_pending;
 	PgBackendInstrumentationState instrumentation;
+	PgBackendBufferState buffers;
 	PgBackendStorageState storage;
 	PgBackendLockState locks;
 	PgBackendPendingInterruptState pending_interrupts;
@@ -1371,6 +1388,18 @@ extern char **PgCurrentLocaleNumericRef(void);
 extern char **PgCurrentLocaleTimeRef(void);
 extern int *PgCurrentIcuValidationLevelRef(void);
 extern PgSessionUserIdentityState *PgCurrentUserIdentityState(void);
+extern int *PgCurrentNLocBufferRef(void);
+extern void **PgCurrentLocalBufferDescriptorsRef(void);
+extern void **PgCurrentLocalBufferBlockPointersRef(void);
+extern int32 **PgCurrentLocalRefCountRef(void);
+extern int *PgCurrentNextFreeLocalBufIdRef(void);
+extern HTAB **PgCurrentLocalBufHashRef(void);
+extern int *PgCurrentNLocalPinnedBuffersRef(void);
+extern char **PgCurrentLocalBufferCurBlockRef(void);
+extern int *PgCurrentLocalBufferNextBufInBlockRef(void);
+extern int *PgCurrentLocalBufferNumBufsInBlockRef(void);
+extern int *PgCurrentLocalBufferTotalBufsAllocatedRef(void);
+extern MemoryContext *PgCurrentLocalBufferContextRef(void);
 extern void **PgCurrentVfdCacheRef(void);
 extern Size *PgCurrentSizeVfdCacheRef(void);
 extern int *PgCurrentNFileRef(void);

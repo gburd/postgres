@@ -20,6 +20,7 @@
 #include "storage/buf.h"
 #include "storage/bufpage.h"
 #include "storage/relfilelocator.h"
+#include "utils/backend_runtime.h"
 #include "utils/global_lifetime.h"
 #include "utils/relcache.h"
 #include "utils/snapmgr.h"
@@ -200,9 +201,9 @@ extern PGDLLIMPORT const PgAioHandleCallbacks aio_local_buffer_readv_cb;
 extern PGDLLIMPORT PG_GLOBAL_SHMEM char *BufferBlocks;
 
 /* in localbuf.c */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND int NLocBuffer;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND Block *LocalBufferBlockPointers;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND int32 *LocalRefCount;
+#define NLocBuffer (*PgCurrentNLocBufferRef())
+#define LocalBufferBlockPointers (*(Block **) PgCurrentLocalBufferBlockPointersRef())
+#define LocalRefCount (*PgCurrentLocalRefCountRef())
 
 /* upper limit for effective_io_concurrency */
 #define MAX_IO_CONCURRENCY 1000

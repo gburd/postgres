@@ -250,6 +250,18 @@ Important current files:
   objects because `PgBackend` layout and installed runtime headers changed; at
   minimum rebuild and reinstall PL/pgSQL, `src/test/modules/test_backend_runtime`,
   and contrib before validating.
+- Local-buffer state (`NLocBuffer`, `LocalBufferDescriptors`,
+  `LocalBufferBlockPointers`, `LocalRefCount`, `nextFreeLocalBufId`,
+  `LocalBufHash`, `NLocalPinnedBuffers`, and the `GetLocalBufferStorage()`
+  allocation cursor/context fields) is now owned by `PgBackendBufferState`.
+  Exported local-buffer names are compatibility macros in `storage/bufmgr.h`
+  and `storage/buf_internals.h`; private names remain compatibility macros in
+  `src/backend/storage/buffer/localbuf.c`. `BackendWritebackContext` remains a
+  separate backend-local TLS item for a later buffer-manager slice because its
+  concrete type is defined in `buf_internals.h`. After changing this bridge,
+  clean and rebuild backend objects because `PgBackend` layout and installed
+  buffer/runtime headers changed; at minimum rebuild and reinstall PL/pgSQL,
+  `src/test/modules/test_backend_runtime`, and contrib before validating.
 - Treat `PMChild.thread_backend` as private PMChild-owned publication state.
   Postmaster code should use PMChild helper APIs for threaded backend
   interrupt, wakeup, and thread-exit publication rather than dereferencing or

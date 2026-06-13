@@ -6360,3 +6360,64 @@ Validation for this slice:
   `src/backend/storage/lmgr/deadlock.c` and no remaining raw TLS declarations
   for the moved deadlock detector state;
 - `git diff --check` passed.
+
+## Backend Local Buffer State Bridge
+
+The one-hundred-thirty-second Phase 12 slice moves local-buffer backend state
+from standalone TLS and function-local static storage into
+`PgBackendBufferState`:
+
+- exported local-buffer state: `NLocBuffer`, `LocalBufferDescriptors`,
+  `LocalBufferBlockPointers`, and `LocalRefCount`;
+- private `localbuf.c` state: `nextFreeLocalBufId`, `LocalBufHash`, and
+  `NLocalPinnedBuffers`;
+- `GetLocalBufferStorage()` allocation cursor/context state:
+  `cur_block`, `next_buf_in_block`, `num_bufs_in_block`,
+  `total_bufs_allocated`, and `LocalBufferContext`.
+
+The exported source names remain compatibility macros in `storage/bufmgr.h`
+and `storage/buf_internals.h`, while the private `localbuf.c` names remain
+private compatibility macros backed by `PgCurrent*Ref()` accessors. Pointer
+fields whose concrete types are private to buffer internals are stored as
+opaque `void *` fields where needed.
+
+Including the `GetLocalBufferStorage()` cursor matters for threaded mode:
+those variables were function-local statics, not annotated TLS globals, so a
+raw file-scope global scan alone would not make the hazard obvious. Without
+this move, two thread-backed logical backends could share the same local
+buffer allocation cursor/context.
+
+`BackendWritebackContext` remains standalone backend-local TLS after this
+slice. It is buffer-manager backend state, but its concrete `WritebackContext`
+type is defined in `buf_internals.h`; moving it cleanly needs a separate
+type-boundary decision rather than forcing a header cycle into
+`backend_runtime.h`.
+
+Validation for this slice:
+
+- `gmake -C src/backend/utils/init backend_runtime.o` passed;
+- `gmake -C src/backend/storage/buffer localbuf.o bufmgr.o` passed;
+- `gmake -C src/test/modules/test_backend_runtime test_backend_runtime.o`
+  passed after adding `test_backend_buffer_state_is_backend_local()`;
+- a raw scan found only the intended twelve compatibility macros in
+  `src/include/storage/bufmgr.h`, `src/include/storage/buf_internals.h`, and
+  `src/backend/storage/buffer/localbuf.c`;
+- a full backend clean plus generated-header recovery was run after the
+  installed-header and `PgBackend` layout changes;
+- full `gmake -j8` passed;
+- full `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- PL/pgSQL was cleaned, rebuilt, and reinstalled after the installed-header
+  change;
+- `src/test/modules/test_backend_runtime` was cleaned, rebuilt, and
+  reinstalled after the installed-header change;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression, including the new
+  `test_backend_buffer_state_is_backend_local()` helper, and still reported
+  TAP disabled by configure;
+- direct threaded-runtime TAP passed all 87 tests with the local
+  `/Users/samwillis/perl5` `PERL5LIB` paths and an explicit `PG_REGRESS`
+  environment;
+- `gmake -C contrib -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 355 to 345;
+- `git diff --check` passed.

@@ -415,7 +415,7 @@ extern PGDLLIMPORT PG_GLOBAL_SHMEM ConditionVariableMinimallyPadded *BufferIOCVA
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND WritebackContext BackendWritebackContext;
 
 /* in localbuf.c */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND BufferDesc *LocalBufferDescriptors;
+#define LocalBufferDescriptors (*(BufferDesc **) PgCurrentLocalBufferDescriptorsRef())
 
 
 static inline BufferDesc *

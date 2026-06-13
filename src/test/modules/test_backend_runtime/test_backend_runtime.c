@@ -6883,6 +6883,105 @@ test_backend_instrumentation_state_is_backend_local(PG_FUNCTION_ARGS)
 	if (!ok)
 		elog(ERROR, "backend instrumentation state was not backend-local");
 
+PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_backend_buffer_state_is_backend_local);
+Datum
+test_backend_buffer_state_is_backend_local(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgBackend	fake_backend1;
+	PgBackend	fake_backend2;
+	bool		ok = true;
+
+	saved_backend = CurrentPgBackend;
+	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
+	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+
+	PG_TRY();
+	{
+		CurrentPgBackend = &fake_backend1;
+		*PgCurrentNLocBufferRef() = 101;
+		*PgCurrentLocalBufferDescriptorsRef() = &fake_backend1;
+		*PgCurrentLocalBufferBlockPointersRef() = &fake_backend1;
+		*PgCurrentLocalRefCountRef() = (int32 *) &fake_backend1;
+		*PgCurrentNextFreeLocalBufIdRef() = 102;
+		*PgCurrentLocalBufHashRef() = (HTAB *) &fake_backend1;
+		*PgCurrentNLocalPinnedBuffersRef() = 103;
+		*PgCurrentLocalBufferCurBlockRef() = (char *) &fake_backend1;
+		*PgCurrentLocalBufferNextBufInBlockRef() = 104;
+		*PgCurrentLocalBufferNumBufsInBlockRef() = 105;
+		*PgCurrentLocalBufferTotalBufsAllocatedRef() = 106;
+		*PgCurrentLocalBufferContextRef() = (MemoryContext) &fake_backend1;
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && *PgCurrentNLocBufferRef() == 0;
+		ok = ok && *PgCurrentLocalBufferDescriptorsRef() == NULL;
+		ok = ok && *PgCurrentLocalBufferBlockPointersRef() == NULL;
+		ok = ok && *PgCurrentLocalRefCountRef() == NULL;
+		ok = ok && *PgCurrentNextFreeLocalBufIdRef() == 0;
+		ok = ok && *PgCurrentLocalBufHashRef() == NULL;
+		ok = ok && *PgCurrentNLocalPinnedBuffersRef() == 0;
+		ok = ok && *PgCurrentLocalBufferCurBlockRef() == NULL;
+		ok = ok && *PgCurrentLocalBufferNextBufInBlockRef() == 0;
+		ok = ok && *PgCurrentLocalBufferNumBufsInBlockRef() == 0;
+		ok = ok && *PgCurrentLocalBufferTotalBufsAllocatedRef() == 0;
+		ok = ok && *PgCurrentLocalBufferContextRef() == NULL;
+
+		*PgCurrentNLocBufferRef() = 201;
+		*PgCurrentLocalBufferDescriptorsRef() = &fake_backend2;
+		*PgCurrentLocalBufferBlockPointersRef() = &fake_backend2;
+		*PgCurrentLocalRefCountRef() = (int32 *) &fake_backend2;
+		*PgCurrentNextFreeLocalBufIdRef() = 202;
+		*PgCurrentLocalBufHashRef() = (HTAB *) &fake_backend2;
+		*PgCurrentNLocalPinnedBuffersRef() = 203;
+		*PgCurrentLocalBufferCurBlockRef() = (char *) &fake_backend2;
+		*PgCurrentLocalBufferNextBufInBlockRef() = 204;
+		*PgCurrentLocalBufferNumBufsInBlockRef() = 205;
+		*PgCurrentLocalBufferTotalBufsAllocatedRef() = 206;
+		*PgCurrentLocalBufferContextRef() = (MemoryContext) &fake_backend2;
+
+		CurrentPgBackend = &fake_backend1;
+		ok = ok && *PgCurrentNLocBufferRef() == 101;
+		ok = ok && *PgCurrentLocalBufferDescriptorsRef() == &fake_backend1;
+		ok = ok && *PgCurrentLocalBufferBlockPointersRef() == &fake_backend1;
+		ok = ok && *PgCurrentLocalRefCountRef() == (int32 *) &fake_backend1;
+		ok = ok && *PgCurrentNextFreeLocalBufIdRef() == 102;
+		ok = ok && *PgCurrentLocalBufHashRef() == (HTAB *) &fake_backend1;
+		ok = ok && *PgCurrentNLocalPinnedBuffersRef() == 103;
+		ok = ok && *PgCurrentLocalBufferCurBlockRef() == (char *) &fake_backend1;
+		ok = ok && *PgCurrentLocalBufferNextBufInBlockRef() == 104;
+		ok = ok && *PgCurrentLocalBufferNumBufsInBlockRef() == 105;
+		ok = ok && *PgCurrentLocalBufferTotalBufsAllocatedRef() == 106;
+		ok = ok && *PgCurrentLocalBufferContextRef() == (MemoryContext) &fake_backend1;
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && *PgCurrentNLocBufferRef() == 201;
+		ok = ok && *PgCurrentLocalBufferDescriptorsRef() == &fake_backend2;
+		ok = ok && *PgCurrentLocalBufferBlockPointersRef() == &fake_backend2;
+		ok = ok && *PgCurrentLocalRefCountRef() == (int32 *) &fake_backend2;
+		ok = ok && *PgCurrentNextFreeLocalBufIdRef() == 202;
+		ok = ok && *PgCurrentLocalBufHashRef() == (HTAB *) &fake_backend2;
+		ok = ok && *PgCurrentNLocalPinnedBuffersRef() == 203;
+		ok = ok && *PgCurrentLocalBufferCurBlockRef() == (char *) &fake_backend2;
+		ok = ok && *PgCurrentLocalBufferNextBufInBlockRef() == 204;
+		ok = ok && *PgCurrentLocalBufferNumBufsInBlockRef() == 205;
+		ok = ok && *PgCurrentLocalBufferTotalBufsAllocatedRef() == 206;
+		ok = ok && *PgCurrentLocalBufferContextRef() == (MemoryContext) &fake_backend2;
+
+		CurrentPgBackend = saved_backend;
+	}
+	PG_CATCH();
+	{
+		CurrentPgBackend = saved_backend;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "backend buffer state was not backend-local");
+
 	PG_RETURN_BOOL(true);
 }
 

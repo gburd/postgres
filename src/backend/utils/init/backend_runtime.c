@@ -102,6 +102,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND BackgroundWorker *early_my_bgworker_ent
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ResourceOwner early_aux_process_resource_owner = NULL;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendPgStatPendingState early_backend_pgstat_pending;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInstrumentationState early_backend_instrumentation;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendBufferState early_backend_buffers;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendStorageState early_backend_storage;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendLockState early_backend_locks;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionIdentityState early_connection_identity;
@@ -612,6 +613,8 @@ static void PgBackendInitializePgStatPendingState(PgBackendPgStatPendingState *p
 static void PgBackendAdoptEarlyPgStatPendingState(PgBackend *backend);
 static void PgBackendInitializeInstrumentationState(PgBackendInstrumentationState *instrumentation);
 static void PgBackendAdoptEarlyInstrumentationState(PgBackend *backend);
+static void PgBackendInitializeBufferState(PgBackendBufferState *buffers);
+static void PgBackendAdoptEarlyBufferState(PgBackend *backend);
 static void PgBackendInitializeStorageState(PgBackendStorageState *storage);
 static void PgBackendAdoptEarlyStorageState(PgBackend *backend);
 static void PgBackendInitializeLockState(PgBackendLockState *locks);
@@ -692,6 +695,7 @@ static PgExecutionExtensionState *PgCurrentExecutionExtensionState(void);
 static PgExecutionMatViewState *PgCurrentExecutionMatViewState(void);
 static PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
 static PgBackendInstrumentationState *PgCurrentBackendInstrumentationState(void);
+static PgBackendBufferState *PgCurrentBackendBufferState(void);
 static PgBackendPendingInterruptState *PgCurrentPendingInterrupts(void);
 static PgBackendInterruptHoldoffState *PgCurrentInterruptHoldoffs(void);
 
@@ -2091,6 +2095,23 @@ PgBackendAdoptEarlyInstrumentationState(PgBackend *backend)
 }
 
 static void
+PgBackendInitializeBufferState(PgBackendBufferState *buffers)
+{
+	Assert(buffers != NULL);
+
+	MemSet(buffers, 0, sizeof(*buffers));
+}
+
+static void
+PgBackendAdoptEarlyBufferState(PgBackend *backend)
+{
+	Assert(backend != NULL);
+
+	backend->buffers = early_backend_buffers;
+	PgBackendInitializeBufferState(&early_backend_buffers);
+}
+
+static void
 PgBackendInitializeStorageState(PgBackendStorageState *storage)
 {
 	Assert(storage != NULL);
@@ -2362,6 +2383,7 @@ InitializePgProcessRuntime(void)
 	PgBackendAdoptEarlyAuxProcessResourceOwner(&process_backend);
 	PgBackendAdoptEarlyPgStatPendingState(&process_backend);
 	PgBackendAdoptEarlyInstrumentationState(&process_backend);
+	PgBackendAdoptEarlyBufferState(&process_backend);
 	PgBackendAdoptEarlyStorageState(&process_backend);
 	PgBackendAdoptEarlyLockState(&process_backend);
 	PgBackendSetInterruptLatch(&process_backend, process_backend.core.latch);
@@ -2504,6 +2526,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgBackendInitializeInterrupts(&state->backend);
 	PgBackendInitializePgStatPendingState(&state->backend.pgstat_pending);
 	PgBackendInitializeInstrumentationState(&state->backend.instrumentation);
+	PgBackendInitializeBufferState(&state->backend.buffers);
 	PgBackendInitializeStorageState(&state->backend.storage);
 	PgBackendInitializeLockState(&state->backend.locks);
 	PgBackendSetInterruptLatch(&state->backend, interrupt_latch);
@@ -2588,6 +2611,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgBackendAdoptEarlyAuxProcessResourceOwner(&state->backend);
 	PgBackendAdoptEarlyPgStatPendingState(&state->backend);
 	PgBackendAdoptEarlyInstrumentationState(&state->backend);
+	PgBackendAdoptEarlyBufferState(&state->backend);
 	PgBackendAdoptEarlyStorageState(&state->backend);
 	PgBackendAdoptEarlyLockState(&state->backend);
 	PgSessionAdoptEarlyDatabaseState(&state->session);
@@ -6009,6 +6033,87 @@ WalUsage *
 PgCurrentSavedWalUsageRef(void)
 {
 	return &PgCurrentBackendInstrumentationState()->saved_wal_usage;
+}
+
+static PgBackendBufferState *
+PgCurrentBackendBufferState(void)
+{
+	if (CurrentPgBackend == NULL)
+		return &early_backend_buffers;
+
+	return &CurrentPgBackend->buffers;
+}
+
+int *
+PgCurrentNLocBufferRef(void)
+{
+	return &PgCurrentBackendBufferState()->nlocbuffer;
+}
+
+void **
+PgCurrentLocalBufferDescriptorsRef(void)
+{
+	return &PgCurrentBackendBufferState()->local_buffer_descriptors;
+}
+
+void **
+PgCurrentLocalBufferBlockPointersRef(void)
+{
+	return &PgCurrentBackendBufferState()->local_buffer_block_pointers;
+}
+
+int32 **
+PgCurrentLocalRefCountRef(void)
+{
+	return &PgCurrentBackendBufferState()->local_ref_count;
+}
+
+int *
+PgCurrentNextFreeLocalBufIdRef(void)
+{
+	return &PgCurrentBackendBufferState()->next_free_local_buf_id;
+}
+
+HTAB **
+PgCurrentLocalBufHashRef(void)
+{
+	return &PgCurrentBackendBufferState()->local_buf_hash;
+}
+
+int *
+PgCurrentNLocalPinnedBuffersRef(void)
+{
+	return &PgCurrentBackendBufferState()->n_local_pinned_buffers;
+}
+
+char **
+PgCurrentLocalBufferCurBlockRef(void)
+{
+	return &PgCurrentBackendBufferState()->local_buffer_cur_block;
+}
+
+int *
+PgCurrentLocalBufferNextBufInBlockRef(void)
+{
+	return &PgCurrentBackendBufferState()->local_buffer_next_buf_in_block;
+}
+
+int *
+PgCurrentLocalBufferNumBufsInBlockRef(void)
+{
+	return &PgCurrentBackendBufferState()->local_buffer_num_bufs_in_block;
+}
+
+int *
+PgCurrentLocalBufferTotalBufsAllocatedRef(void)
+{
+	return &PgCurrentBackendBufferState()->local_buffer_total_bufs_allocated;
+}
+
+MemoryContext *
+PgCurrentLocalBufferContextRef(void)
+{
+	return &PgCurrentBackendBufferState()->local_buffer_context;
 }
 
 static PgBackendStorageState *

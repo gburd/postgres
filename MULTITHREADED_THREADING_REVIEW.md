@@ -493,6 +493,14 @@ constraint/result arrays, `deadlockDetails`, and
 `deadlock.c` compatibility macros. The runtime object keeps the private
 `deadlock.c` types opaque, so this removes the raw backend-local TLS
 workspace without widening the lock-manager type surface.
+Local-buffer state now lives in `PgBackendBufferState`: the exported
+local-buffer arrays/counters, private `localbuf.c` hash and pin counters, and
+the `GetLocalBufferStorage()` allocation cursor/context. This closes a
+threading hazard that the raw global scan alone did not fully expose: the
+function-local static allocation cursor would have been shared across thread
+backends. `BackendWritebackContext` remains for a follow-up buffer-manager
+slice because its concrete type is defined on the `buf_internals.h` side of
+the type boundary.
 PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly
