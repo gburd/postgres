@@ -77,16 +77,11 @@
 /*
  *	User-tweakable parameters
  */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int DefaultXactIsoLevel = XACT_READ_COMMITTED;
 PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int XactIsoLevel = XACT_READ_COMMITTED;
 
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool DefaultXactReadOnly = false;
 PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool XactReadOnly;
 
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool DefaultXactDeferrable = false;
 PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool XactDeferrable;
-
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int synchronous_commit = SYNCHRONOUS_COMMIT_ON;
 
 /*
  * CheckXidAlive is a xid value pointing to a possibly ongoing (sub)

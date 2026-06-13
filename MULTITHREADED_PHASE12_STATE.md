@@ -1380,3 +1380,61 @@ Validation for this slice:
 - `git diff --check` passed;
 - static scans found no remaining direct session TLS definitions or extern
   declarations for the moved buffer I/O names.
+
+## Session Transaction Default GUC State Bridge
+
+The twenty-seventh Phase 12 slice moves transaction default GUC state under
+`PgSession`:
+
+- `PgSession` now owns a `PgSessionXactDefaultState`;
+- the exported transaction default GUC backing variables remain
+  source-compatible lvalue macros in `access/xact.h`;
+- the macros route through `PgCurrent*Ref()` accessors that return fields in
+  the active logical session;
+- zeroed logical session objects lazily initialize
+  `DefaultXactIsoLevel`, `DefaultXactReadOnly`, `DefaultXactDeferrable`, and
+  `synchronous_commit` to their historical defaults;
+- early startup paths before `CurrentPgSession` is installed use fallback
+  session-local storage in `backend_runtime.c`;
+- process-mode and thread-runtime session installation adopt any early
+  fallback transaction default state into the logical session object;
+- `RebindSessionGUCVariablePointers()` now rebinds the generated GUC records
+  for `default_transaction_deferrable`, `default_transaction_isolation`,
+  `default_transaction_read_only`, and `synchronous_commit` whenever the
+  active logical session changes;
+- execution transaction state such as `XactIsoLevel`, `XactReadOnly`,
+  `XactDeferrable`, `xact_is_sampled`, `CheckXidAlive`, `bsysscan`, and
+  `MyXactFlags` intentionally remains execution-local TLS for a later
+  transaction/execution-state migration slice;
+- the private `SubOpts` C field in `subscriptioncmds.c` was renamed to
+  `synccommit` so the new lower-case compatibility macro cannot collide with
+  that struct member. SQL subscription option names are unchanged.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `xact.o`, `guc.o`,
+  `subscriptioncmds.o`, and `test_backend_runtime.o`;
+- because exported transaction default GUC globals changed into compatibility
+  macros, `gmake -C src/backend clean` plus generated-header recovery was
+  used before the clean rebuild;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed, followed by rebuilding
+  and reinstalling `src/test/modules/test_backend_runtime`,
+  `src/test/regress`, `libpqwalreceiver`, and `src/backend/snowball`;
+- focused `test_backend_runtime` regression passed and includes
+  `test_session_xact_defaults_are_session_local()`, which switches sessions
+  through `PgSetCurrentSession()`, sets the transaction default values through
+  the GUC machinery, and proves the values follow the active session after
+  GUC pointer rebinding;
+- direct threaded-runtime TAP coverage was attempted for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`,
+  but this system Perl is missing `IPC::Run`, so both tests failed before
+  starting PostgreSQL;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests, including `transactions`, `guc`, `subscription`, and PL/pgSQL
+  coverage;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- static scans found no remaining direct session TLS definitions or extern
+  declarations for the moved transaction default names.

@@ -16,6 +16,7 @@
 #include "postgres.h"
 
 #include "access/parallel.h"
+#include "access/xact.h"
 #include "catalog/binary_upgrade.h"
 #include "commands/async.h"
 #include "commands/repack.h"
@@ -134,6 +135,13 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionBufferIOState early_session_bu
 	.io_combine_limit_guc_value = DEFAULT_IO_COMBINE_LIMIT,
 	.backend_flush_after_value = DEFAULT_BACKEND_FLUSH_AFTER
 };
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionXactDefaultState early_session_xact_defaults = {
+	.initialized = true,
+	.default_xact_iso_level = XACT_READ_COMMITTED,
+	.default_xact_read_only = false,
+	.default_xact_deferrable = false,
+	.synchronous_commit_value = SYNCHRONOUS_COMMIT_ON
+};
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionQueryMemoryState early_session_query_memory = {
 	.initialized = true,
 	.work_mem_kb = 4096,
@@ -232,6 +240,8 @@ static void PgSessionInitializeVacuumState(PgSessionVacuumState *vacuum);
 static void PgSessionAdoptEarlyVacuumState(PgSession *session);
 static void PgSessionInitializeBufferIOState(PgSessionBufferIOState *buffer_io);
 static void PgSessionAdoptEarlyBufferIOState(PgSession *session);
+static void PgSessionInitializeXactDefaultState(PgSessionXactDefaultState *xact_defaults);
+static void PgSessionAdoptEarlyXactDefaultState(PgSession *session);
 static void PgSessionInitializeQueryMemoryState(PgSessionQueryMemoryState *query_memory);
 static void PgSessionAdoptEarlyQueryMemoryState(PgSession *session);
 static void PgSessionInitializePlannerCostState(PgSessionPlannerCostState *planner_cost);
@@ -255,6 +265,7 @@ static PgSessionDateTimeState *PgCurrentSessionDateTimeState(void);
 static PgSessionParserState *PgCurrentSessionParserState(void);
 static PgSessionVacuumState *PgCurrentSessionVacuumState(void);
 static PgSessionBufferIOState *PgCurrentSessionBufferIOState(void);
+static PgSessionXactDefaultState *PgCurrentSessionXactDefaultState(void);
 static PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
 static PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
 static PgSessionPlannerMethodState *PgCurrentSessionPlannerMethodState(void);
@@ -513,6 +524,30 @@ PgSessionAdoptEarlyBufferIOState(PgSession *session)
 
 	session->buffer_io = early_session_buffer_io;
 	PgSessionInitializeBufferIOState(&early_session_buffer_io);
+}
+
+static void
+PgSessionInitializeXactDefaultState(PgSessionXactDefaultState *xact_defaults)
+{
+	Assert(xact_defaults != NULL);
+
+	xact_defaults->initialized = true;
+	xact_defaults->default_xact_iso_level = XACT_READ_COMMITTED;
+	xact_defaults->default_xact_read_only = false;
+	xact_defaults->default_xact_deferrable = false;
+	xact_defaults->synchronous_commit_value = SYNCHRONOUS_COMMIT_ON;
+}
+
+static void
+PgSessionAdoptEarlyXactDefaultState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (!early_session_xact_defaults.initialized)
+		PgSessionInitializeXactDefaultState(&early_session_xact_defaults);
+
+	session->xact_defaults = early_session_xact_defaults;
+	PgSessionInitializeXactDefaultState(&early_session_xact_defaults);
 }
 
 static void
@@ -780,6 +815,7 @@ InitializePgProcessRuntime(void)
 	PgSessionAdoptEarlyParserState(&process_session);
 	PgSessionAdoptEarlyVacuumState(&process_session);
 	PgSessionAdoptEarlyBufferIOState(&process_session);
+	PgSessionAdoptEarlyXactDefaultState(&process_session);
 	PgSessionAdoptEarlyQueryMemoryState(&process_session);
 	PgSessionAdoptEarlyPlannerCostState(&process_session);
 	PgSessionAdoptEarlyPlannerMethodState(&process_session);
@@ -868,6 +904,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgSessionInitializeParserState(&state->session.parser);
 	PgSessionInitializeVacuumState(&state->session.vacuum);
 	PgSessionInitializeBufferIOState(&state->session.buffer_io);
+	PgSessionInitializeXactDefaultState(&state->session.xact_defaults);
 	PgSessionInitializeQueryMemoryState(&state->session.query_memory);
 	PgSessionInitializePlannerCostState(&state->session.planner_cost);
 	PgSessionInitializePlannerMethodState(&state->session.planner_method);
@@ -897,6 +934,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgSessionAdoptEarlyParserState(&state->session);
 	PgSessionAdoptEarlyVacuumState(&state->session);
 	PgSessionAdoptEarlyBufferIOState(&state->session);
+	PgSessionAdoptEarlyXactDefaultState(&state->session);
 	PgSessionAdoptEarlyQueryMemoryState(&state->session);
 	PgSessionAdoptEarlyPlannerCostState(&state->session);
 	PgSessionAdoptEarlyPlannerMethodState(&state->session);
@@ -1058,6 +1096,22 @@ PgCurrentSessionBufferIOState(void)
 		PgSessionInitializeBufferIOState(buffer_io);
 
 	return buffer_io;
+}
+
+static PgSessionXactDefaultState *
+PgCurrentSessionXactDefaultState(void)
+{
+	PgSessionXactDefaultState *xact_defaults;
+
+	if (CurrentPgSession == NULL)
+		xact_defaults = &early_session_xact_defaults;
+	else
+		xact_defaults = &CurrentPgSession->xact_defaults;
+
+	if (!xact_defaults->initialized)
+		PgSessionInitializeXactDefaultState(xact_defaults);
+
+	return xact_defaults;
 }
 
 static PgSessionQueryMemoryState *
@@ -1412,6 +1466,30 @@ int *
 PgCurrentBackendFlushAfterRef(void)
 {
 	return &PgCurrentSessionBufferIOState()->backend_flush_after_value;
+}
+
+int *
+PgCurrentDefaultXactIsoLevelRef(void)
+{
+	return &PgCurrentSessionXactDefaultState()->default_xact_iso_level;
+}
+
+bool *
+PgCurrentDefaultXactReadOnlyRef(void)
+{
+	return &PgCurrentSessionXactDefaultState()->default_xact_read_only;
+}
+
+bool *
+PgCurrentDefaultXactDeferrableRef(void)
+{
+	return &PgCurrentSessionXactDefaultState()->default_xact_deferrable;
+}
+
+int *
+PgCurrentSynchronousCommitRef(void)
+{
+	return &PgCurrentSessionXactDefaultState()->synchronous_commit_value;
 }
 
 int *

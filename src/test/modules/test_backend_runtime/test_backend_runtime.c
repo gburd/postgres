@@ -14,6 +14,7 @@
 
 #include <errno.h>
 
+#include "access/xact.h"
 #include "catalog/binary_upgrade.h"
 #include "commands/tablespace.h"
 #include "commands/vacuum.h"
@@ -1326,6 +1327,121 @@ test_session_buffer_io_state_is_session_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "session buffer I/O GUC state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_session_xact_defaults_are_session_local);
+Datum
+test_session_xact_defaults_are_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	char	   *saved_default_xact_deferrable;
+	char	   *saved_default_xact_isolation;
+	char	   *saved_default_xact_read_only;
+	char	   *saved_synchronous_commit;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	saved_default_xact_deferrable =
+		pstrdup(GetConfigOption("default_transaction_deferrable", false,
+								false));
+	saved_default_xact_isolation =
+		pstrdup(GetConfigOption("default_transaction_isolation", false,
+								false));
+	saved_default_xact_read_only =
+		pstrdup(GetConfigOption("default_transaction_read_only", false,
+								false));
+	saved_synchronous_commit =
+		pstrdup(GetConfigOption("synchronous_commit", false, false));
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && DefaultXactIsoLevel == XACT_READ_COMMITTED;
+		ok = ok && !DefaultXactReadOnly;
+		ok = ok && !DefaultXactDeferrable;
+		ok = ok && synchronous_commit == SYNCHRONOUS_COMMIT_ON;
+		SetConfigOption("default_transaction_isolation", "serializable",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("default_transaction_read_only", "on",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("default_transaction_deferrable", "on",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("synchronous_commit", "remote_apply",
+						PGC_USERSET, PGC_S_SESSION);
+		ok = ok && DefaultXactIsoLevel == XACT_SERIALIZABLE;
+		ok = ok && DefaultXactReadOnly;
+		ok = ok && DefaultXactDeferrable;
+		ok = ok && synchronous_commit == SYNCHRONOUS_COMMIT_REMOTE_APPLY;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && DefaultXactIsoLevel == XACT_READ_COMMITTED;
+		ok = ok && !DefaultXactReadOnly;
+		ok = ok && !DefaultXactDeferrable;
+		ok = ok && synchronous_commit == SYNCHRONOUS_COMMIT_ON;
+		SetConfigOption("default_transaction_isolation", "repeatable read",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("default_transaction_read_only", "off",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("default_transaction_deferrable", "off",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("synchronous_commit", "local",
+						PGC_USERSET, PGC_S_SESSION);
+		ok = ok && DefaultXactIsoLevel == XACT_REPEATABLE_READ;
+		ok = ok && !DefaultXactReadOnly;
+		ok = ok && !DefaultXactDeferrable;
+		ok = ok && synchronous_commit == SYNCHRONOUS_COMMIT_LOCAL_FLUSH;
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && DefaultXactIsoLevel == XACT_SERIALIZABLE;
+		ok = ok && DefaultXactReadOnly;
+		ok = ok && DefaultXactDeferrable;
+		ok = ok && synchronous_commit == SYNCHRONOUS_COMMIT_REMOTE_APPLY;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && DefaultXactIsoLevel == XACT_REPEATABLE_READ;
+		ok = ok && !DefaultXactReadOnly;
+		ok = ok && !DefaultXactDeferrable;
+		ok = ok && synchronous_commit == SYNCHRONOUS_COMMIT_LOCAL_FLUSH;
+
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("default_transaction_deferrable",
+						saved_default_xact_deferrable,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("default_transaction_isolation",
+						saved_default_xact_isolation,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("default_transaction_read_only",
+						saved_default_xact_read_only,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("synchronous_commit", saved_synchronous_commit,
+						PGC_USERSET, PGC_S_SESSION);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("default_transaction_deferrable",
+						saved_default_xact_deferrable,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("default_transaction_isolation",
+						saved_default_xact_isolation,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("default_transaction_read_only",
+						saved_default_xact_read_only,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("synchronous_commit", saved_synchronous_commit,
+						PGC_USERSET, PGC_S_SESSION);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session transaction default GUC state was not session-local");
 
 	PG_RETURN_BOOL(true);
 }

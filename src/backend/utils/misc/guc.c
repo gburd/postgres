@@ -1597,6 +1597,19 @@ RebindSessionGUCVariablePointers(void)
 	Assert(gconf->vartype == PGC_INT);
 	gconf->_int.variable = PgCurrentDefaultStatisticsTargetRef();
 
+	gconf = find_option("default_transaction_deferrable", false, false,
+						PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentDefaultXactDeferrableRef();
+
+	gconf = find_option("default_transaction_isolation", false, false, PANIC);
+	Assert(gconf->vartype == PGC_ENUM);
+	gconf->_enum.variable = PgCurrentDefaultXactIsoLevelRef();
+
+	gconf = find_option("default_transaction_read_only", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentDefaultXactReadOnlyRef();
+
 	gconf = find_option("IntervalStyle", false, false, PANIC);
 	Assert(gconf->vartype == PGC_ENUM);
 	gconf->_enum.variable = PgCurrentIntervalStyleRef();
@@ -1803,6 +1816,10 @@ RebindSessionGUCVariablePointers(void)
 	gconf = find_option("maintenance_io_concurrency", false, false, PANIC);
 	Assert(gconf->vartype == PGC_INT);
 	gconf->_int.variable = PgCurrentMaintenanceIOConcurrencyRef();
+
+	gconf = find_option("synchronous_commit", false, false, PANIC);
+	Assert(gconf->vartype == PGC_ENUM);
+	gconf->_enum.variable = PgCurrentSynchronousCommitRef();
 
 	gconf = find_option("max_parallel_workers_per_gather", false, false,
 						PANIC);

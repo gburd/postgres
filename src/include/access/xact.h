@@ -39,7 +39,8 @@
 #define XACT_REPEATABLE_READ	2
 #define XACT_SERIALIZABLE		3
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int DefaultXactIsoLevel;
+extern int *PgCurrentDefaultXactIsoLevelRef(void);
+#define DefaultXactIsoLevel (*PgCurrentDefaultXactIsoLevelRef())
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int XactIsoLevel;
 
 /*
@@ -54,7 +55,8 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int XactIsoLevel;
 #define IsolationIsSerializable() (XactIsoLevel == XACT_SERIALIZABLE)
 
 /* Xact read-only state */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool DefaultXactReadOnly;
+extern bool *PgCurrentDefaultXactReadOnlyRef(void);
+#define DefaultXactReadOnly (*PgCurrentDefaultXactReadOnlyRef())
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool XactReadOnly;
 
 /* flag for logging statements in this transaction */
@@ -64,7 +66,8 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool xact_is_sampled;
  * Xact is deferrable -- only meaningful (currently) for read only
  * SERIALIZABLE transactions
  */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool DefaultXactDeferrable;
+extern bool *PgCurrentDefaultXactDeferrableRef(void);
+#define DefaultXactDeferrable (*PgCurrentDefaultXactDeferrableRef())
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool XactDeferrable;
 
 typedef enum
@@ -82,7 +85,8 @@ typedef enum
 #define SYNCHRONOUS_COMMIT_ON	SYNCHRONOUS_COMMIT_REMOTE_FLUSH
 
 /* Synchronous commit level */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int synchronous_commit;
+extern int *PgCurrentSynchronousCommitRef(void);
+#define synchronous_commit (*PgCurrentSynchronousCommitRef())
 
 /* used during logical streaming of a transaction */
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION TransactionId CheckXidAlive;

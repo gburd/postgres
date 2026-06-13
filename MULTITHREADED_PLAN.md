@@ -676,7 +676,8 @@ binary-upgrade tablespace OID bridge through `PgSession`, plus the remaining
 binary-upgrade catalog handoff state bridge through `PgSession`, plus the
 parser direct-pointer GUC bridge through `PgSession`, plus the vacuum/analyze
 maintenance direct-pointer GUC bridge through `PgSession`, plus the buffer I/O
-tuning direct-pointer GUC bridge through `PgSession`.
+tuning direct-pointer GUC bridge through `PgSession`, plus the transaction
+default direct-pointer GUC bridge through `PgSession`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.

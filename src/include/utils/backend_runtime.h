@@ -267,6 +267,15 @@ typedef struct PgSessionBufferIOState
 	int			backend_flush_after_value;
 } PgSessionBufferIOState;
 
+typedef struct PgSessionXactDefaultState
+{
+	bool		initialized;
+	int			default_xact_iso_level;
+	bool		default_xact_read_only;
+	bool		default_xact_deferrable;
+	int			synchronous_commit_value;
+} PgSessionXactDefaultState;
+
 typedef struct PgSessionQueryMemoryState
 {
 	bool		initialized;
@@ -463,6 +472,7 @@ struct PgSession
 	PgSessionParserState parser;
 	PgSessionVacuumState vacuum;
 	PgSessionBufferIOState buffer_io;
+	PgSessionXactDefaultState xact_defaults;
 	PgSessionQueryMemoryState query_memory;
 	PgSessionPlannerCostState planner_cost;
 	PgSessionPlannerMethodState planner_method;
