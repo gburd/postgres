@@ -486,6 +486,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionPortalState early_executio
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionVacuumState early_execution_vacuum;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionNodeIOState early_execution_node_io;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionBaseBackupState early_execution_basebackup;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionAnalyzeState early_execution_analyze;
 
 StaticAssertDecl(PG_BACKEND_INTERRUPT_COUNT <= 32,
 				 "PgBackendInterruptMask must fit all backend interrupts");
@@ -604,6 +605,8 @@ static void PgExecutionInitializeNodeIOState(PgExecutionNodeIOState *node_io);
 static void PgExecutionAdoptEarlyNodeIOState(PgExecution *execution);
 static void PgExecutionInitializeBaseBackupState(PgExecutionBaseBackupState *basebackup);
 static void PgExecutionAdoptEarlyBaseBackupState(PgExecution *execution);
+static void PgExecutionInitializeAnalyzeState(PgExecutionAnalyzeState *analyze);
+static void PgExecutionAdoptEarlyAnalyzeState(PgExecution *execution);
 static PgBackendCoreState *PgCurrentCoreState(void);
 static PgSessionDatabaseState *PgCurrentSessionDatabaseState(void);
 static PgSessionTablespaceState *PgCurrentSessionTablespaceState(void);
@@ -653,6 +656,7 @@ static PgExecutionPortalState *PgCurrentExecutionPortalState(void);
 static PgExecutionVacuumState *PgCurrentExecutionVacuumState(void);
 static PgExecutionNodeIOState *PgCurrentExecutionNodeIOState(void);
 static PgExecutionBaseBackupState *PgCurrentExecutionBaseBackupState(void);
+static PgExecutionAnalyzeState *PgCurrentExecutionAnalyzeState(void);
 static PgBackendPendingInterruptState *PgCurrentPendingInterrupts(void);
 static PgBackendInterruptHoldoffState *PgCurrentInterruptHoldoffs(void);
 
@@ -2077,6 +2081,23 @@ PgExecutionAdoptEarlyBaseBackupState(PgExecution *execution)
 	PgExecutionInitializeBaseBackupState(&early_execution_basebackup);
 }
 
+static void
+PgExecutionInitializeAnalyzeState(PgExecutionAnalyzeState *analyze)
+{
+	Assert(analyze != NULL);
+
+	MemSet(analyze, 0, sizeof(*analyze));
+}
+
+static void
+PgExecutionAdoptEarlyAnalyzeState(PgExecution *execution)
+{
+	Assert(execution != NULL);
+
+	execution->analyze = early_execution_analyze;
+	PgExecutionInitializeAnalyzeState(&early_execution_analyze);
+}
+
 void
 InitializePgProcessRuntime(void)
 {
@@ -2183,6 +2204,7 @@ InitializePgProcessRuntime(void)
 	PgExecutionAdoptEarlyVacuumState(&process_execution);
 	PgExecutionAdoptEarlyNodeIOState(&process_execution);
 	PgExecutionAdoptEarlyBaseBackupState(&process_execution);
+	PgExecutionAdoptEarlyAnalyzeState(&process_execution);
 
 	CurrentPgRuntime = &process_runtime;
 	CurrentPgCarrier = &process_carrier;
@@ -2302,6 +2324,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgExecutionInitializeVacuumState(&state->execution.vacuum);
 	PgExecutionInitializeNodeIOState(&state->execution.node_io);
 	PgExecutionInitializeBaseBackupState(&state->execution.basebackup);
+	PgExecutionInitializeAnalyzeState(&state->execution.analyze);
 }
 
 void
@@ -2361,6 +2384,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgExecutionAdoptEarlyVacuumState(&state->execution);
 	PgExecutionAdoptEarlyNodeIOState(&state->execution);
 	PgExecutionAdoptEarlyBaseBackupState(&state->execution);
+	PgExecutionAdoptEarlyAnalyzeState(&state->execution);
 	CurrentPgRuntime = &thread_runtime;
 	CurrentPgCarrier = &state->carrier;
 	CurrentPgBackend = &state->backend;
@@ -5120,6 +5144,27 @@ bool *
 PgCurrentBaseBackupNoVerifyChecksumsRef(void)
 {
 	return &PgCurrentExecutionBaseBackupState()->noverify_checksums;
+}
+
+static PgExecutionAnalyzeState *
+PgCurrentExecutionAnalyzeState(void)
+{
+	if (CurrentPgExecution == NULL)
+		return &early_execution_analyze;
+
+	return &CurrentPgExecution->analyze;
+}
+
+MemoryContext *
+PgCurrentAnalyzeContextRef(void)
+{
+	return &PgCurrentExecutionAnalyzeState()->context;
+}
+
+BufferAccessStrategy *
+PgCurrentAnalyzeStrategyRef(void)
+{
+	return &PgCurrentExecutionAnalyzeState()->strategy;
 }
 
 PgConnectionSocketIOState *

@@ -46,6 +46,7 @@
 #include "storage/bufmgr.h"
 #include "storage/procarray.h"
 #include "utils/attoptcache.h"
+#include "utils/backend_runtime.h"
 #include "utils/datum.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
@@ -68,8 +69,8 @@ typedef struct AnlIndexData
 
 
 /* A few variables that don't seem worth passing around as parameters */
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext anl_context = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION BufferAccessStrategy vac_strategy;
+#define analyze_context (*PgCurrentAnalyzeContextRef())
+#define analyze_strategy (*PgCurrentAnalyzeStrategyRef())
 
 
 static void do_analyze_rel(Relation onerel,
@@ -121,7 +122,7 @@ analyze_rel(Oid relid, RangeVar *relation,
 		elevel = DEBUG2;
 
 	/* Set up static variables */
-	vac_strategy = bstrategy;
+	analyze_strategy = bstrategy;
 
 	/*
 	 * Check for user-requested abort.
@@ -352,10 +353,10 @@ do_analyze_rel(Relation onerel, const VacuumParams *params,
 	 * Set up a working context so that we can easily free whatever junk gets
 	 * created.
 	 */
-	anl_context = AllocSetContextCreate(CurrentMemoryContext,
-										"Analyze",
-										ALLOCSET_DEFAULT_SIZES);
-	caller_context = MemoryContextSwitchTo(anl_context);
+	analyze_context = AllocSetContextCreate(CurrentMemoryContext,
+											"Analyze",
+											ALLOCSET_DEFAULT_SIZES);
+	caller_context = MemoryContextSwitchTo(analyze_context);
 
 	/*
 	 * Switch to the table owner's userid, so that any index functions are run
@@ -558,7 +559,7 @@ do_analyze_rel(Relation onerel, const VacuumParams *params,
 		pgstat_progress_update_param(PROGRESS_ANALYZE_PHASE,
 									 PROGRESS_ANALYZE_PHASE_COMPUTE_STATS);
 
-		col_context = AllocSetContextCreate(anl_context,
+		col_context = AllocSetContextCreate(analyze_context,
 											"Analyze Column",
 											ALLOCSET_DEFAULT_SIZES);
 		old_context = MemoryContextSwitchTo(col_context);
@@ -727,7 +728,7 @@ do_analyze_rel(Relation onerel, const VacuumParams *params,
 			ivinfo.estimated_count = true;
 			ivinfo.message_level = elevel;
 			ivinfo.num_heap_tuples = onerel->rd_rel->reltuples;
-			ivinfo.strategy = vac_strategy;
+			ivinfo.strategy = analyze_strategy;
 
 			stats = index_vacuum_cleanup(&ivinfo, NULL);
 
@@ -863,8 +864,8 @@ do_analyze_rel(Relation onerel, const VacuumParams *params,
 
 	/* Restore current context and release memory */
 	MemoryContextSwitchTo(caller_context);
-	MemoryContextDelete(anl_context);
-	anl_context = NULL;
+	MemoryContextDelete(analyze_context);
+	analyze_context = NULL;
 }
 
 /*
@@ -883,7 +884,7 @@ compute_index_stats(Relation onerel, double totalrows,
 	int			ind,
 				i;
 
-	ind_context = AllocSetContextCreate(anl_context,
+	ind_context = AllocSetContextCreate(analyze_context,
 										"Analyze Index",
 										ALLOCSET_DEFAULT_SIZES);
 	old_context = MemoryContextSwitchTo(ind_context);
@@ -1133,7 +1134,7 @@ examine_attribute(Relation onerel, int attnum, Node *index_expr)
 	if (!HeapTupleIsValid(typtuple))
 		elog(ERROR, "cache lookup failed for type %u", stats->attrtypid);
 	stats->attrtype = (Form_pg_type) GETSTRUCT(typtuple);
-	stats->anl_context = anl_context;
+	stats->anl_context = analyze_context;
 	stats->tupattnum = attnum;
 
 	/*
@@ -1299,7 +1300,7 @@ acquire_sample_rows(Relation onerel, int elevel,
 	 */
 	stream = read_stream_begin_relation(READ_STREAM_MAINTENANCE |
 										READ_STREAM_USE_BATCHING,
-										vac_strategy,
+										analyze_strategy,
 										scan->rs_rd,
 										MAIN_FORKNUM,
 										block_sampling_read_stream_next,

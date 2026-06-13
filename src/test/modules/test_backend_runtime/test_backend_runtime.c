@@ -7106,6 +7106,70 @@ test_execution_basebackup_state_is_execution_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_execution_analyze_state_is_execution_local);
+Datum
+test_execution_analyze_state_is_execution_local(PG_FUNCTION_ARGS)
+{
+	PgExecution *saved_execution;
+	PgExecution fake_execution1;
+	PgExecution fake_execution2;
+	MemoryContext saved_analyze_context;
+	BufferAccessStrategy saved_analyze_strategy;
+	MemoryContext fake_context1;
+	MemoryContext fake_context2;
+	BufferAccessStrategy fake_strategy1;
+	BufferAccessStrategy fake_strategy2;
+	bool		ok = true;
+
+	saved_execution = CurrentPgExecution;
+	saved_analyze_context = *PgCurrentAnalyzeContextRef();
+	saved_analyze_strategy = *PgCurrentAnalyzeStrategyRef();
+	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
+	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+	fake_context1 = (MemoryContext) &fake_execution1;
+	fake_context2 = (MemoryContext) &fake_execution2;
+	fake_strategy1 = (BufferAccessStrategy) &fake_execution1;
+	fake_strategy2 = (BufferAccessStrategy) &fake_execution2;
+
+	PG_TRY();
+	{
+		CurrentPgExecution = &fake_execution1;
+		*PgCurrentAnalyzeContextRef() = fake_context1;
+		*PgCurrentAnalyzeStrategyRef() = fake_strategy1;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && *PgCurrentAnalyzeContextRef() == NULL;
+		ok = ok && *PgCurrentAnalyzeStrategyRef() == NULL;
+		*PgCurrentAnalyzeContextRef() = fake_context2;
+		*PgCurrentAnalyzeStrategyRef() = fake_strategy2;
+
+		CurrentPgExecution = &fake_execution1;
+		ok = ok && *PgCurrentAnalyzeContextRef() == fake_context1;
+		ok = ok && *PgCurrentAnalyzeStrategyRef() == fake_strategy1;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && *PgCurrentAnalyzeContextRef() == fake_context2;
+		ok = ok && *PgCurrentAnalyzeStrategyRef() == fake_strategy2;
+
+		CurrentPgExecution = saved_execution;
+		*PgCurrentAnalyzeContextRef() = saved_analyze_context;
+		*PgCurrentAnalyzeStrategyRef() = saved_analyze_strategy;
+	}
+	PG_CATCH();
+	{
+		CurrentPgExecution = saved_execution;
+		*PgCurrentAnalyzeContextRef() = saved_analyze_context;
+		*PgCurrentAnalyzeStrategyRef() = saved_analyze_strategy;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "ANALYZE state was not execution-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_connection_socket_io_is_connection_local);
 Datum
 test_connection_socket_io_is_connection_local(PG_FUNCTION_ARGS)

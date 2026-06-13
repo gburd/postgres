@@ -3568,3 +3568,50 @@ Validation for this slice:
   public header migration;
 - static scans found no remaining raw TLS declarations for the migrated
   basebackup execution-state fields.
+
+## Analyze Execution State Bridge
+
+The seventy-first Phase 12 slice moves ANALYZE command scratch state under the
+logical execution object:
+
+- `PgExecution` now owns `PgExecutionAnalyzeState`;
+- `analyze.c` now routes its command memory context and buffer access strategy
+  through private `analyze_context` and `analyze_strategy` compatibility macros
+  backed by the active execution;
+- the previous local name `anl_context` could not remain a macro because
+  `VacAttrStats` also has an `anl_context` struct field; the field name remains
+  unchanged and stores the active execution's analyze context as before;
+- runtime initialization zeroes this bucket for thread backends and adopts any
+  early execution state into the installed process/thread execution object;
+- the backend-runtime regression fixture adds
+  `test_execution_analyze_state_is_execution_local()`, switching
+  `CurrentPgExecution` between fake executions and verifying the migrated
+  ANALYZE fields follow the active execution.
+
+This removes the private ANALYZE TLS bucket from `analyze.c`. The state belongs
+to the active execution because it is per ANALYZE command: the command
+allocates a context for analysis data and carries the buffer access strategy
+selected by `analyze_rel()`.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `analyze.o`, and
+  `test_backend_runtime.o`;
+- the first `analyze.o` compile caught a macro collision when `anl_context`
+  was used as a compatibility macro and expanded inside `stats->anl_context`;
+  the final patch uses private `analyze_context` and `analyze_strategy` macros
+  and leaves the `VacAttrStats` field untouched;
+- because `backend_runtime.h` changed an installed backend header, the backend
+  clean plus generated utility and node-header recovery path was used before
+  trusting process-mode runtime tests;
+- clean full `gmake -j8` passed after the backend clean;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- focused `test_backend_runtime` regression passed and includes
+  `test_execution_analyze_state_is_execution_local()`;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests, including
+  the core `vacuum` regression test that exercises ANALYZE;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  public header migration;
+- static scans found no remaining raw TLS declarations for the migrated
+  ANALYZE execution-state fields.

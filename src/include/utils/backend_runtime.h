@@ -24,6 +24,7 @@
 #include "pgtime.h"
 #include "pgstat.h"
 #include "port/atomics.h"
+#include "storage/buf.h"
 #include "storage/ipc.h"
 #include "tcop/dest.h"
 #include "utils/backend_id.h"
@@ -233,6 +234,12 @@ typedef struct PgExecutionBaseBackupState
 	long long int total_checksum_failures;
 	bool		noverify_checksums;
 } PgExecutionBaseBackupState;
+
+typedef struct PgExecutionAnalyzeState
+{
+	MemoryContext context;
+	BufferAccessStrategy strategy;
+} PgExecutionAnalyzeState;
 
 typedef struct PgSessionDatabaseState
 {
@@ -1014,6 +1021,7 @@ struct PgExecution
 	PgExecutionVacuumState vacuum;
 	PgExecutionNodeIOState node_io;
 	PgExecutionBaseBackupState basebackup;
+	PgExecutionAnalyzeState analyze;
 };
 
 typedef struct PgThreadBackendRuntimeState
@@ -1064,6 +1072,8 @@ extern bool *PgCurrentNodeRestoreLocationFieldsRef(void);
 extern bool *PgCurrentBaseBackupStartedInRecoveryRef(void);
 extern long long int *PgCurrentBaseBackupTotalChecksumFailuresRef(void);
 extern bool *PgCurrentBaseBackupNoVerifyChecksumsRef(void);
+extern MemoryContext *PgCurrentAnalyzeContextRef(void);
+extern BufferAccessStrategy *PgCurrentAnalyzeStrategyRef(void);
 extern int *PgCurrentDeadlockTimeoutRef(void);
 extern int *PgCurrentStatementTimeoutRef(void);
 extern int *PgCurrentLockTimeoutRef(void);
