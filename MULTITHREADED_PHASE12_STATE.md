@@ -2918,3 +2918,55 @@ Validation for this slice:
   header migration;
 - static scans found no remaining direct session TLS declarations for
   `saved_plan_list` or `cached_expression_list`.
+
+## Session Namespace State Bridge
+
+The fifty-seventh Phase 12 slice moves namespace/search-path state under the
+logical session object:
+
+- `PgSessionNamespaceState` now owns the active and base search-path lists,
+  active and base creation namespaces, pending temporary-namespace creation
+  flags, the active path generation, and the namespace user;
+- the same state bucket owns `namespace_search_path`, temporary namespace and
+  temporary TOAST namespace OIDs, the temporary-namespace subtransaction ID,
+  the search-path validity flags, the search-path cache memory context, and
+  search-path cache roots;
+- `namespace.c` keeps the private `nsphash_hash` and
+  `SearchPathCacheEntry` types private by storing those roots as opaque
+  pointers in `PgSessionNamespaceState` and exposing typed local helper macros
+  only after the simplehash types are defined;
+- `namespace_search_path` remains source-compatible for callers through
+  `catalog/namespace.h`, but is backed by the active session state;
+- the `search_path` GUC participates in `RebindSessionGUCVariablePointers()`
+  through `PgCurrentNamespaceSearchPathRef()`. This was required because
+  generated GUC records can be built before `BaseInit()` installs the process
+  session; the first validation run caught the bug as an `initdb`
+  post-bootstrap `information_schema` failure before SQL tests started.
+
+This keeps namespace resolution, temporary namespace ownership, and
+search-path cache contents scoped to the logical session instead of the
+carrier thread, while preserving process mode's existing per-backend behavior.
+
+Validation for this slice:
+
+- touched-object builds passed for `namespace.o` and `backend_runtime.o`;
+- because `backend_runtime.h` changed, `gmake -C src/backend clean` plus
+  generated utility and node-header recovery was used before trusting
+  process-mode runtime tests;
+- clean full `gmake -j8` passed after the backend clean;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- focused `test_backend_runtime` regression includes
+  `test_session_namespace_state_is_session_local()`, which switches fake
+  sessions through `PgSetCurrentSession()`, mutates active/base search-path
+  state, temporary namespace state, `namespace_search_path`, and opaque
+  search-path cache pointers, then verifies they follow the active
+  `PgSession`;
+- direct `test_backend_runtime` regression passed after reinstalling the test
+  module into `tmp_install`;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests, including
+  namespace, GUC, temporary-object, and PL/pgSQL coverage;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- static scans found no remaining direct session TLS declarations for the
+  moved namespace/search-path state.

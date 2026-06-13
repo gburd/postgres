@@ -450,6 +450,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionRandomState early_session_rand
 };
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionOptimizerState early_session_optimizer;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPlanCacheState early_session_plan_cache;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionNamespaceState early_session_namespace;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendPendingInterruptState early_pending_interrupts;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInterruptHoldoffState early_interrupt_holdoffs;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionDebugState early_execution_debug;
@@ -546,6 +547,8 @@ static void PgSessionInitializeOptimizerState(PgSessionOptimizerState *optimizer
 static void PgSessionAdoptEarlyOptimizerState(PgSession *session);
 static void PgSessionInitializePlanCacheState(PgSessionPlanCacheState *plan_cache);
 static void PgSessionAdoptEarlyPlanCacheState(PgSession *session);
+static void PgSessionInitializeNamespaceState(PgSessionNamespaceState *namespace_state);
+static void PgSessionAdoptEarlyNamespaceState(PgSession *session);
 static void PgBackendResetCoreState(PgBackendCoreState *core);
 static void PgBackendAdoptEarlyCoreState(PgBackend *backend);
 static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
@@ -593,6 +596,7 @@ static PgSessionTempFileState *PgCurrentSessionTempFileState(void);
 static PgSessionRandomState *PgCurrentSessionRandomState(void);
 static PgSessionOptimizerState *PgCurrentSessionOptimizerState(void);
 static PgSessionPlanCacheState *PgCurrentSessionPlanCacheState(void);
+static PgSessionNamespaceState *PgCurrentSessionNamespaceState(void);
 static PgExecutionErrorState *PgCurrentExecutionErrorState(void);
 static PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
 static PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
@@ -1704,6 +1708,43 @@ PgSessionAdoptEarlyPlanCacheState(PgSession *session)
 }
 
 static void
+PgSessionInitializeNamespaceState(PgSessionNamespaceState *namespace_state)
+{
+	Assert(namespace_state != NULL);
+
+	namespace_state->active_search_path = NIL;
+	namespace_state->active_creation_namespace = InvalidOid;
+	namespace_state->active_temp_creation_pending = false;
+	namespace_state->active_path_generation = 1;
+	namespace_state->base_search_path = NIL;
+	namespace_state->base_creation_namespace = InvalidOid;
+	namespace_state->base_temp_creation_pending = false;
+	namespace_state->namespace_user = InvalidOid;
+	namespace_state->base_search_path_valid = true;
+	namespace_state->search_path_cache_valid = false;
+	namespace_state->search_path_cache_context = NULL;
+	namespace_state->my_temp_namespace = InvalidOid;
+	namespace_state->my_temp_toast_namespace = InvalidOid;
+	namespace_state->my_temp_namespace_subid = InvalidSubTransactionId;
+	namespace_state->namespace_search_path_value = NULL;
+	namespace_state->search_path_cache = NULL;
+	namespace_state->last_search_path_cache_entry = NULL;
+	namespace_state->initialized = true;
+}
+
+static void
+PgSessionAdoptEarlyNamespaceState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (!early_session_namespace.initialized)
+		PgSessionInitializeNamespaceState(&early_session_namespace);
+
+	session->namespace_state = early_session_namespace;
+	PgSessionInitializeNamespaceState(&early_session_namespace);
+}
+
+static void
 PgBackendResetCoreState(PgBackendCoreState *core)
 {
 	MemSet(core, 0, sizeof(*core));
@@ -1877,6 +1918,7 @@ InitializePgProcessRuntime(void)
 	PgSessionAdoptEarlyRandomState(&process_session);
 	PgSessionAdoptEarlyOptimizerState(&process_session);
 	PgSessionAdoptEarlyPlanCacheState(&process_session);
+	PgSessionAdoptEarlyNamespaceState(&process_session);
 
 	process_connection.backend = &process_backend;
 	process_connection.session = &process_session;
@@ -1996,6 +2038,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgSessionInitializeRandomState(&state->session.random);
 	PgSessionInitializeOptimizerState(&state->session.optimizer);
 	PgSessionInitializePlanCacheState(&state->session.plan_cache);
+	PgSessionInitializeNamespaceState(&state->session.namespace_state);
 
 	state->connection.backend = &state->backend;
 	state->connection.session = &state->session;
@@ -2052,6 +2095,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgSessionAdoptEarlyRandomState(&state->session);
 	PgSessionAdoptEarlyOptimizerState(&state->session);
 	PgSessionAdoptEarlyPlanCacheState(&state->session);
+	PgSessionAdoptEarlyNamespaceState(&state->session);
 	PgExecutionAdoptEarlyErrorState(&state->execution);
 	PgExecutionAdoptEarlyMemoryContexts(&state->execution);
 	PgExecutionAdoptEarlyResourceOwners(&state->execution);
@@ -2655,6 +2699,34 @@ PgCurrentSessionPlanCacheState(void)
 		PgSessionInitializePlanCacheState(plan_cache);
 
 	return plan_cache;
+}
+
+static PgSessionNamespaceState *
+PgCurrentSessionNamespaceState(void)
+{
+	PgSessionNamespaceState *namespace_state;
+
+	if (CurrentPgSession == NULL)
+		namespace_state = &early_session_namespace;
+	else
+		namespace_state = &CurrentPgSession->namespace_state;
+
+	if (!namespace_state->initialized)
+		PgSessionInitializeNamespaceState(namespace_state);
+
+	return namespace_state;
+}
+
+PgSessionNamespaceState *
+PgCurrentNamespaceState(void)
+{
+	return PgCurrentSessionNamespaceState();
+}
+
+char **
+PgCurrentNamespaceSearchPathRef(void)
+{
+	return &PgCurrentSessionNamespaceState()->namespace_search_path_value;
 }
 
 Oid *

@@ -131,38 +131,47 @@
  * a previous examination of the search path state.
  */
 
-/* These variables define the actually active state: */
-
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION List *activeSearchPath = NIL;
+/* These variables define the actually active state. */
+#define activeSearchPath \
+	(PgCurrentNamespaceState()->active_search_path)
 
 /* default place to create stuff; if InvalidOid, no default */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid activeCreationNamespace = InvalidOid;
+#define activeCreationNamespace \
+	(PgCurrentNamespaceState()->active_creation_namespace)
 
 /* if true, activeCreationNamespace is wrong, it should be temp namespace */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool activeTempCreationPending = false;
+#define activeTempCreationPending \
+	(PgCurrentNamespaceState()->active_temp_creation_pending)
 
 /* current generation counter; make sure this is never zero */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION uint64 activePathGeneration = 1;
+#define activePathGeneration \
+	(PgCurrentNamespaceState()->active_path_generation)
 
-/* These variables are the values last derived from namespace_search_path: */
+/* These variables are the values last derived from namespace_search_path. */
+#define baseSearchPath \
+	(PgCurrentNamespaceState()->base_search_path)
 
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION List *baseSearchPath = NIL;
+#define baseCreationNamespace \
+	(PgCurrentNamespaceState()->base_creation_namespace)
 
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid baseCreationNamespace = InvalidOid;
+#define baseTempCreationPending \
+	(PgCurrentNamespaceState()->base_temp_creation_pending)
 
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool baseTempCreationPending = false;
-
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid namespaceUser = InvalidOid;
+#define namespaceUser \
+	(PgCurrentNamespaceState()->namespace_user)
 
 /* The above four values are valid only if baseSearchPathValid */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool baseSearchPathValid = true;
+#define baseSearchPathValid \
+	(PgCurrentNamespaceState()->base_search_path_valid)
 
 /*
  * Storage for search path cache.  Clear searchPathCacheValid as a simple
  * way to invalidate *all* the cache entries, not just the active one.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool searchPathCacheValid = false;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION MemoryContext SearchPathCacheContext = NULL;
+#define searchPathCacheValid \
+	(PgCurrentNamespaceState()->search_path_cache_valid)
+#define SearchPathCacheContext \
+	(PgCurrentNamespaceState()->search_path_cache_context)
 
 typedef struct SearchPathCacheKey
 {
@@ -198,17 +207,14 @@ typedef struct SearchPathCacheEntry
  * we either haven't made the TEMP namespace yet, or have successfully
  * committed its creation, depending on whether myTempNamespace is valid.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid myTempNamespace = InvalidOid;
+#define myTempNamespace \
+	(PgCurrentNamespaceState()->my_temp_namespace)
 
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid myTempToastNamespace = InvalidOid;
+#define myTempToastNamespace \
+	(PgCurrentNamespaceState()->my_temp_toast_namespace)
 
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION SubTransactionId myTempNamespaceSubID = InvalidSubTransactionId;
-
-/*
- * This is the user's textual search path specification --- it's the value
- * of the GUC variable 'search_path'.
- */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION char *namespace_search_path = NULL;
+#define myTempNamespaceSubID \
+	(PgCurrentNamespaceState()->my_temp_namespace_subid)
 
 
 /* Local functions */
@@ -297,8 +303,21 @@ spcachekey_equal(SearchPathCacheKey a, SearchPathCacheKey b)
  */
 #define SPCACHE_RESET_THRESHOLD		256
 
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION nsphash_hash *SearchPathCache = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION SearchPathCacheEntry *LastSearchPathCacheEntry = NULL;
+static inline nsphash_hash **
+CurrentSearchPathCacheRef(void)
+{
+	return (nsphash_hash **) &PgCurrentNamespaceState()->search_path_cache;
+}
+
+static inline SearchPathCacheEntry **
+CurrentLastSearchPathCacheEntryRef(void)
+{
+	return (SearchPathCacheEntry **)
+		&PgCurrentNamespaceState()->last_search_path_cache_entry;
+}
+
+#define SearchPathCache (*CurrentSearchPathCacheRef())
+#define LastSearchPathCacheEntry (*CurrentLastSearchPathCacheEntryRef())
 
 /*
  * Create or reset search_path cache as necessary.

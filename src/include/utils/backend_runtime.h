@@ -654,6 +654,28 @@ typedef struct PgSessionPlanCacheState
 	dlist_head	cached_expression_list;
 } PgSessionPlanCacheState;
 
+typedef struct PgSessionNamespaceState
+{
+	bool		initialized;
+	List	   *active_search_path;
+	Oid			active_creation_namespace;
+	bool		active_temp_creation_pending;
+	uint64		active_path_generation;
+	List	   *base_search_path;
+	Oid			base_creation_namespace;
+	bool		base_temp_creation_pending;
+	Oid			namespace_user;
+	bool		base_search_path_valid;
+	bool		search_path_cache_valid;
+	MemoryContext search_path_cache_context;
+	Oid			my_temp_namespace;
+	Oid			my_temp_toast_namespace;
+	SubTransactionId my_temp_namespace_subid;
+	char	   *namespace_search_path_value;
+	void	   *search_path_cache;
+	void	   *last_search_path_cache_entry;
+} PgSessionNamespaceState;
+
 typedef struct PgRuntimeServerGUCState
 {
 	bool		initialized;
@@ -820,6 +842,7 @@ struct PgSession
 	PgSessionRandomState random;
 	PgSessionOptimizerState optimizer;
 	PgSessionPlanCacheState plan_cache;
+	PgSessionNamespaceState namespace_state;
 };
 
 struct PgConnection
@@ -1042,6 +1065,8 @@ extern int *PgCurrentPlannerExtensionNamesAllocatedRef(void);
 extern HTAB **PgCurrentOprProofCacheHashRef(void);
 extern dlist_head *PgCurrentSavedPlanListRef(void);
 extern dlist_head *PgCurrentCachedExpressionListRef(void);
+extern PgSessionNamespaceState *PgCurrentNamespaceState(void);
+extern char **PgCurrentNamespaceSearchPathRef(void);
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);

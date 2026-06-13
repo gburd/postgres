@@ -2103,6 +2103,10 @@ RebindSessionGUCVariablePointers(void)
 	Assert(gconf->vartype == PGC_INT);
 	gconf->_int.variable = PgCurrentTcpUserTimeoutRef();
 
+	gconf = find_option("search_path", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentNamespaceSearchPathRef();
+
 	gconf = find_option("gin_fuzzy_search_limit", false, false, PANIC);
 	Assert(gconf->vartype == PGC_INT);
 	gconf->_int.variable = PgCurrentGinFuzzySearchLimitRef();

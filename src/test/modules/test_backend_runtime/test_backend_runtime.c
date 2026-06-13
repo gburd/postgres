@@ -1769,6 +1769,120 @@ test_session_plan_cache_state_is_session_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_session_namespace_state_is_session_local);
+Datum
+test_session_namespace_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	PgSessionNamespaceState *namespace_state;
+	List	   *session1_path;
+	List	   *session2_path;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	session1_path = list_make2_oid(11, 12);
+	session2_path = list_make1_oid(21);
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		namespace_state = PgCurrentNamespaceState();
+		ok = ok && namespace_state->initialized;
+		ok = ok && namespace_state->active_path_generation == 1;
+		ok = ok && namespace_state->base_search_path_valid;
+		ok = ok && namespace_state->my_temp_namespace == InvalidOid;
+		namespace_state->active_search_path = session1_path;
+		namespace_state->active_creation_namespace = 11;
+		namespace_state->active_temp_creation_pending = true;
+		namespace_state->active_path_generation = 101;
+		namespace_state->base_search_path = session1_path;
+		namespace_state->base_creation_namespace = 12;
+		namespace_state->base_temp_creation_pending = true;
+		namespace_state->namespace_user = 10;
+		namespace_state->base_search_path_valid = false;
+		namespace_state->search_path_cache_valid = true;
+		namespace_state->my_temp_namespace = 13;
+		namespace_state->my_temp_toast_namespace = 14;
+		namespace_state->my_temp_namespace_subid = 15;
+		namespace_state->namespace_search_path_value = "phase12_namespace_a";
+		namespace_state->search_path_cache = &fake_session1;
+		namespace_state->last_search_path_cache_entry = &fake_session1;
+
+		PgSetCurrentSession(&fake_session2);
+		namespace_state = PgCurrentNamespaceState();
+		ok = ok && namespace_state->initialized;
+		ok = ok && namespace_state->active_search_path == NIL;
+		ok = ok && namespace_state->active_path_generation == 1;
+		ok = ok && namespace_state->base_search_path_valid;
+		ok = ok && !namespace_state->search_path_cache_valid;
+		ok = ok && namespace_state->my_temp_namespace == InvalidOid;
+		ok = ok && namespace_state->namespace_search_path_value == NULL;
+		namespace_state->active_search_path = session2_path;
+		namespace_state->active_creation_namespace = 21;
+		namespace_state->active_path_generation = 202;
+		namespace_state->base_search_path = session2_path;
+		namespace_state->base_creation_namespace = 22;
+		namespace_state->namespace_user = 20;
+		namespace_state->my_temp_namespace = 23;
+		namespace_state->my_temp_toast_namespace = 24;
+		namespace_state->namespace_search_path_value = "phase12_namespace_b";
+		namespace_state->search_path_cache = &fake_session2;
+		namespace_state->last_search_path_cache_entry = &fake_session2;
+
+		PgSetCurrentSession(&fake_session1);
+		namespace_state = PgCurrentNamespaceState();
+		ok = ok && namespace_state->active_search_path == session1_path;
+		ok = ok && namespace_state->active_creation_namespace == 11;
+		ok = ok && namespace_state->active_temp_creation_pending;
+		ok = ok && namespace_state->active_path_generation == 101;
+		ok = ok && namespace_state->base_search_path == session1_path;
+		ok = ok && namespace_state->base_creation_namespace == 12;
+		ok = ok && namespace_state->base_temp_creation_pending;
+		ok = ok && namespace_state->namespace_user == 10;
+		ok = ok && !namespace_state->base_search_path_valid;
+		ok = ok && namespace_state->search_path_cache_valid;
+		ok = ok && namespace_state->my_temp_namespace == 13;
+		ok = ok && namespace_state->my_temp_toast_namespace == 14;
+		ok = ok && namespace_state->my_temp_namespace_subid == 15;
+		ok = ok && strcmp(namespace_state->namespace_search_path_value,
+						  "phase12_namespace_a") == 0;
+		ok = ok && namespace_state->search_path_cache == &fake_session1;
+		ok = ok && namespace_state->last_search_path_cache_entry == &fake_session1;
+
+		PgSetCurrentSession(&fake_session2);
+		namespace_state = PgCurrentNamespaceState();
+		ok = ok && namespace_state->active_search_path == session2_path;
+		ok = ok && namespace_state->active_creation_namespace == 21;
+		ok = ok && namespace_state->active_path_generation == 202;
+		ok = ok && namespace_state->base_search_path == session2_path;
+		ok = ok && namespace_state->base_creation_namespace == 22;
+		ok = ok && namespace_state->namespace_user == 20;
+		ok = ok && namespace_state->my_temp_namespace == 23;
+		ok = ok && namespace_state->my_temp_toast_namespace == 24;
+		ok = ok && strcmp(namespace_state->namespace_search_path_value,
+						  "phase12_namespace_b") == 0;
+		ok = ok && namespace_state->search_path_cache == &fake_session2;
+		ok = ok && namespace_state->last_search_path_cache_entry == &fake_session2;
+
+		PgSetCurrentSession(saved_session);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "namespace state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_session_prepared_statement_state_is_session_local);
 Datum
 test_session_prepared_statement_state_is_session_local(PG_FUNCTION_ARGS)
