@@ -4030,3 +4030,42 @@ Validation for this slice:
 - focused `test_backend_runtime` regression passed;
 - the broader bypass experiment failed the threaded `pg_class` catalog smoke
   and is recorded as the next startup-gate narrowing blocker.
+
+## PMChild Thread-Join Retry Boundary
+
+The eighty-second Phase 12 slice tightens the Gate E2 PMChild
+join/reaping/slot-release contract:
+
+- `process_pm_thread_exit()` now treats successful `pg_thread_join()` as the
+  boundary before PMChild cleanup and slot release;
+- if joining a thread-backed child fails, the postmaster logs the failure,
+  calls `PostmasterChildRetryThreadExit()`, and leaves the PMChild entry on
+  `ActiveChildList` instead of running child cleanup against an unjoined
+  carrier;
+- `PostmasterChildRetryThreadExit()` re-publishes the already stored
+  waitpid-style exit status and retained top-memory payload, making the
+  claimed exit report visible to a later postmaster loop;
+- `test_pmchild_thread_backend_signal_api()` now verifies that a claimed
+  thread-exit payload is one-shot, can be re-published for retry, and remains
+  one-shot after the retry.
+
+This still does not complete Gate E2 lifecycle cleanup. It closes a concrete
+slot-reuse hazard after native thread join failure, but broader stress coverage
+is still needed for normal disconnects, abandoned clients, administrator
+termination, SQL `ERROR` recovery, repeated reconnects, and worker
+launch/shutdown races.
+
+Validation for this slice:
+
+- touched-object builds passed for `pmchild.o`, `postmaster.o`, and full
+  `gmake -j8`;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- focused `test_backend_runtime` regression passed and covers the retry
+  publication path in `test_pmchild_thread_backend_signal_api()`;
+- a three-cycle threaded startup/`select 1`/immediate-shutdown smoke passed
+  without `issuing SIGKILL to recalcitrant children` or `server does not shut
+  down`;
+- `gmake check-global-lifetimes` passed, reporting zero new unclassified
+  mutable globals against the checked baseline;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests.

@@ -812,7 +812,10 @@ Current Gate E2 progress: `gmake check-global-lifetimes` is now a required
 target, and postmaster signal/wakeup routing no longer dereferences a
 thread-backed `PMChild`'s raw `thread_backend` pointer directly. Thread exit
 publication now clears the backend pointer, stores the exit status, and wakes
-the postmaster through one PMChild helper. Thread exit also reports retained
+the postmaster through one PMChild helper. The postmaster now treats
+successful native thread join as the boundary before PMChild cleanup and slot
+release; if `pg_thread_join()` fails, the claimed exit report is restored and
+the PMChild remains active for a later retry. Thread exit also reports retained
 carrier `TopMemoryContext` bytes to the postmaster reaper as explicit
 accounting for the currently retained top context. Threaded startup now
 initializes all built-in generated GUC records whose direct backing-variable
@@ -835,8 +838,8 @@ bypass for non-session auxiliary workers reproduced an abrupt postmaster death
 during a threaded `pg_class` catalog scan, so further narrowing remains a Gate
 E2 blocker and must be driven by worker-specific shared-state isolation plus
 catalog-startup stress. The remaining PMChild and teardown blockers are full
-resource cleanup or deliberate long-lived ownership, the broader
-join/reaping/slot-release ownership contract, extension/custom GUC behavior,
+resource cleanup or deliberate long-lived ownership, broader reaping stress
+for termination and abandoned-client races, extension/custom GUC behavior,
 database/role/startup setting coverage, startup-gate narrowing, and broader
 stress coverage for teardown races.
 

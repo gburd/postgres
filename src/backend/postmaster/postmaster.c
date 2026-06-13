@@ -2552,6 +2552,8 @@ process_pm_thread_exit(void)
 			errno = join_rc;
 			elog(LOG, "could not join thread-backed child %d: %m",
 				 PostmasterChildSignalPid(pmchild));
+			PostmasterChildRetryThreadExit(pmchild);
+			continue;
 		}
 		if (pmchild->bkend_type == B_STARTUP)
 		{

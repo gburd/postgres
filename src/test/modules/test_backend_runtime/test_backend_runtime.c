@@ -6404,6 +6404,13 @@ test_pmchild_thread_backend_signal_api(PG_FUNCTION_ARGS)
 	ok = ok && top_memory_allocated == 8192;
 	ok = ok && !PostmasterChildHasExitedThread(&fake_pmchild, &exitstatus,
 											   &top_memory_allocated);
+	PostmasterChildRetryThreadExit(&fake_pmchild);
+	ok = ok && PostmasterChildHasExitedThread(&fake_pmchild, &exitstatus,
+											  &top_memory_allocated);
+	ok = ok && exitstatus == 17;
+	ok = ok && top_memory_allocated == 8192;
+	ok = ok && !PostmasterChildHasExitedThread(&fake_pmchild, &exitstatus,
+											   &top_memory_allocated);
 	ok = ok && !PostmasterChildRaiseThreadInterrupt(&fake_pmchild,
 													PG_BACKEND_INTERRUPT_QUERY_CANCEL);
 	ok = ok && !PostmasterChildWakeThreadBackend(&fake_pmchild);

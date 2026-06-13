@@ -120,6 +120,10 @@ Important current files:
   Postmaster code should use PMChild helper APIs for threaded backend
   interrupt, wakeup, and thread-exit publication rather than dereferencing or
   clearing the raw pointer outside PMChild.
+- For thread-backed PMChild reaping, successful `pg_thread_join()` is the
+  boundary before child cleanup and slot release. If join fails, leave the
+  PMChild active and re-publish the claimed thread-exit report for retry; do
+  not release or reuse a slot whose native carrier was not joined.
 - Threaded backend exit currently reports retained carrier `TopMemoryContext`
   bytes through PMChild exit accounting. Do not remove or bypass this
   accounting until thread-exit memory/resource cleanup has a stronger

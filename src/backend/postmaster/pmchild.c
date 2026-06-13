@@ -442,6 +442,21 @@ PostmasterChildHasExitedThread(PMChild *pmchild, int *exitstatus,
 	return true;
 }
 
+void
+PostmasterChildRetryThreadExit(PMChild *pmchild)
+{
+	Assert(PostmasterChildIsThread(pmchild));
+
+	/*
+	 * The postmaster claims a thread-exit report before joining the native
+	 * carrier.  If that join fails, keep the PMChild active and make the exit
+	 * report visible again so a later postmaster loop can retry instead of
+	 * releasing a slot whose carrier was not joined.
+	 */
+	pg_memory_barrier();
+	pg_atomic_write_u32(&pmchild->thread_exited, 1);
+}
+
 /*
  * Release a PMChild slot, after the child process has exited.
  *

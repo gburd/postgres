@@ -169,6 +169,7 @@ extern void PostmasterChildPublishThreadExit(PMChild *pmchild, int exitstatus,
 											 struct Latch *postmaster_latch);
 extern bool PostmasterChildHasExitedThread(PMChild *pmchild, int *exitstatus,
 										   Size *top_memory_allocated);
+extern void PostmasterChildRetryThreadExit(PMChild *pmchild);
 extern bool ReleasePostmasterChildSlot(PMChild *pmchild);
 extern PMChild *FindPostmasterChildByPid(int pid);
 
