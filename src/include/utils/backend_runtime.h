@@ -220,6 +220,13 @@ typedef struct PgExecutionVacuumState
 	uint32		parallel_shared_params_generation_local;
 } PgExecutionVacuumState;
 
+typedef struct PgExecutionNodeIOState
+{
+	bool		write_location_fields;
+	const char *strtok_ptr;
+	bool		restore_location_fields;
+} PgExecutionNodeIOState;
+
 typedef struct PgSessionDatabaseState
 {
 	Oid			database_id;
@@ -998,6 +1005,7 @@ struct PgExecution
 	PgExecutionSPIState spi;
 	PgExecutionPortalState portal;
 	PgExecutionVacuumState vacuum;
+	PgExecutionNodeIOState node_io;
 };
 
 typedef struct PgThreadBackendRuntimeState
@@ -1042,6 +1050,9 @@ extern bool *PgCurrentVacuumFailsafeActiveRef(void);
 extern int64 *PgCurrentParallelVacuumWorkerDelayNsRef(void);
 extern void **PgCurrentParallelVacuumSharedCostParamsRef(void);
 extern uint32 *PgCurrentParallelVacuumSharedParamsGenerationLocalRef(void);
+extern bool *PgCurrentNodeWriteLocationFieldsRef(void);
+extern const char **PgCurrentNodeReadStrtokPtrRef(void);
+extern bool *PgCurrentNodeRestoreLocationFieldsRef(void);
 extern int *PgCurrentDeadlockTimeoutRef(void);
 extern int *PgCurrentStatementTimeoutRef(void);
 extern int *PgCurrentLockTimeoutRef(void);

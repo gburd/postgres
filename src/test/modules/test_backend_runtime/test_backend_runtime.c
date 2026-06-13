@@ -6972,6 +6972,71 @@ test_execution_vacuum_state_is_execution_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_execution_node_io_state_is_execution_local);
+Datum
+test_execution_node_io_state_is_execution_local(PG_FUNCTION_ARGS)
+{
+	PgExecution *saved_execution;
+	PgExecution fake_execution1;
+	PgExecution fake_execution2;
+	bool		saved_write_location_fields;
+	const char *saved_strtok_ptr;
+	bool		saved_restore_location_fields;
+	bool		ok = true;
+
+	saved_execution = CurrentPgExecution;
+	saved_write_location_fields = *PgCurrentNodeWriteLocationFieldsRef();
+	saved_strtok_ptr = *PgCurrentNodeReadStrtokPtrRef();
+	saved_restore_location_fields = *PgCurrentNodeRestoreLocationFieldsRef();
+	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
+	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+
+	PG_TRY();
+	{
+		CurrentPgExecution = &fake_execution1;
+		*PgCurrentNodeWriteLocationFieldsRef() = true;
+		*PgCurrentNodeReadStrtokPtrRef() = "node io one";
+		*PgCurrentNodeRestoreLocationFieldsRef() = true;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && !*PgCurrentNodeWriteLocationFieldsRef();
+		ok = ok && *PgCurrentNodeReadStrtokPtrRef() == NULL;
+		ok = ok && !*PgCurrentNodeRestoreLocationFieldsRef();
+		*PgCurrentNodeReadStrtokPtrRef() = "node io two";
+
+		CurrentPgExecution = &fake_execution1;
+		ok = ok && *PgCurrentNodeWriteLocationFieldsRef();
+		ok = ok &&
+			strcmp(*PgCurrentNodeReadStrtokPtrRef(), "node io one") == 0;
+		ok = ok && *PgCurrentNodeRestoreLocationFieldsRef();
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && !*PgCurrentNodeWriteLocationFieldsRef();
+		ok = ok &&
+			strcmp(*PgCurrentNodeReadStrtokPtrRef(), "node io two") == 0;
+		ok = ok && !*PgCurrentNodeRestoreLocationFieldsRef();
+
+		CurrentPgExecution = saved_execution;
+		*PgCurrentNodeWriteLocationFieldsRef() = saved_write_location_fields;
+		*PgCurrentNodeReadStrtokPtrRef() = saved_strtok_ptr;
+		*PgCurrentNodeRestoreLocationFieldsRef() = saved_restore_location_fields;
+	}
+	PG_CATCH();
+	{
+		CurrentPgExecution = saved_execution;
+		*PgCurrentNodeWriteLocationFieldsRef() = saved_write_location_fields;
+		*PgCurrentNodeReadStrtokPtrRef() = saved_strtok_ptr;
+		*PgCurrentNodeRestoreLocationFieldsRef() = saved_restore_location_fields;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "node I/O state was not execution-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_connection_socket_io_is_connection_local);
 Datum
 test_connection_socket_io_is_connection_local(PG_FUNCTION_ARGS)

@@ -484,6 +484,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionSPIState early_execution_s
 };
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionPortalState early_execution_portal;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionVacuumState early_execution_vacuum;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionNodeIOState early_execution_node_io;
 
 StaticAssertDecl(PG_BACKEND_INTERRUPT_COUNT <= 32,
 				 "PgBackendInterruptMask must fit all backend interrupts");
@@ -598,6 +599,8 @@ static void PgExecutionAdoptEarlySPIState(PgExecution *execution);
 static void PgExecutionAdoptEarlyPortalState(PgExecution *execution);
 static void PgExecutionInitializeVacuumState(PgExecutionVacuumState *vacuum);
 static void PgExecutionAdoptEarlyVacuumState(PgExecution *execution);
+static void PgExecutionInitializeNodeIOState(PgExecutionNodeIOState *node_io);
+static void PgExecutionAdoptEarlyNodeIOState(PgExecution *execution);
 static PgBackendCoreState *PgCurrentCoreState(void);
 static PgSessionDatabaseState *PgCurrentSessionDatabaseState(void);
 static PgSessionTablespaceState *PgCurrentSessionTablespaceState(void);
@@ -645,6 +648,7 @@ static PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
 static PgExecutionSPIState *PgCurrentExecutionSPIState(void);
 static PgExecutionPortalState *PgCurrentExecutionPortalState(void);
 static PgExecutionVacuumState *PgCurrentExecutionVacuumState(void);
+static PgExecutionNodeIOState *PgCurrentExecutionNodeIOState(void);
 static PgBackendPendingInterruptState *PgCurrentPendingInterrupts(void);
 static PgBackendInterruptHoldoffState *PgCurrentInterruptHoldoffs(void);
 
@@ -2035,6 +2039,23 @@ PgExecutionAdoptEarlyVacuumState(PgExecution *execution)
 	PgExecutionInitializeVacuumState(&early_execution_vacuum);
 }
 
+static void
+PgExecutionInitializeNodeIOState(PgExecutionNodeIOState *node_io)
+{
+	Assert(node_io != NULL);
+
+	MemSet(node_io, 0, sizeof(*node_io));
+}
+
+static void
+PgExecutionAdoptEarlyNodeIOState(PgExecution *execution)
+{
+	Assert(execution != NULL);
+
+	execution->node_io = early_execution_node_io;
+	PgExecutionInitializeNodeIOState(&early_execution_node_io);
+}
+
 void
 InitializePgProcessRuntime(void)
 {
@@ -2139,6 +2160,7 @@ InitializePgProcessRuntime(void)
 	PgExecutionAdoptEarlySPIState(&process_execution);
 	PgExecutionAdoptEarlyPortalState(&process_execution);
 	PgExecutionAdoptEarlyVacuumState(&process_execution);
+	PgExecutionAdoptEarlyNodeIOState(&process_execution);
 
 	CurrentPgRuntime = &process_runtime;
 	CurrentPgCarrier = &process_carrier;
@@ -2256,6 +2278,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	state->execution.carrier = &state->carrier;
 	PgExecutionInitializeSPIState(&state->execution.spi);
 	PgExecutionInitializeVacuumState(&state->execution.vacuum);
+	PgExecutionInitializeNodeIOState(&state->execution.node_io);
 }
 
 void
@@ -2313,6 +2336,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgExecutionAdoptEarlySPIState(&state->execution);
 	PgExecutionAdoptEarlyPortalState(&state->execution);
 	PgExecutionAdoptEarlyVacuumState(&state->execution);
+	PgExecutionAdoptEarlyNodeIOState(&state->execution);
 	CurrentPgRuntime = &thread_runtime;
 	CurrentPgCarrier = &state->carrier;
 	CurrentPgBackend = &state->backend;
@@ -5018,6 +5042,33 @@ uint32 *
 PgCurrentParallelVacuumSharedParamsGenerationLocalRef(void)
 {
 	return &PgCurrentExecutionVacuumState()->parallel_shared_params_generation_local;
+}
+
+static PgExecutionNodeIOState *
+PgCurrentExecutionNodeIOState(void)
+{
+	if (CurrentPgExecution == NULL)
+		return &early_execution_node_io;
+
+	return &CurrentPgExecution->node_io;
+}
+
+bool *
+PgCurrentNodeWriteLocationFieldsRef(void)
+{
+	return &PgCurrentExecutionNodeIOState()->write_location_fields;
+}
+
+const char **
+PgCurrentNodeReadStrtokPtrRef(void)
+{
+	return &PgCurrentExecutionNodeIOState()->strtok_ptr;
+}
+
+bool *
+PgCurrentNodeRestoreLocationFieldsRef(void)
+{
+	return &PgCurrentExecutionNodeIOState()->restore_location_fields;
 }
 
 PgConnectionSocketIOState *
