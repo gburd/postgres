@@ -845,6 +845,10 @@ is now also stored inside `PgBackend` through `PgCurrentMyBEEntryRef()`,
 keeping the backend-status shared-memory slot pointer with logical backend
 state while leaving `pgstat_beinit()`, `pgstat_beshutdown_hook()`, and the
 underlying `PgBackendStatus` shared-memory array lifecycle unchanged.
+`MyBgworkerEntry` is now stored inside `PgBackend` through
+`PgCurrentMyBgworkerEntryRef()`, keeping background-worker registration
+identity with the logical backend while preserving the existing bgworker
+registration slot and shared-memory lifecycle.
 PMChild assignment and slot release now also scrub stale carrier-visible signal
 ids and thread-exit payloads before reuse. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live

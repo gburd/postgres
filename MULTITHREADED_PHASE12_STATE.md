@@ -5687,3 +5687,56 @@ Validation for this slice:
 - a static scan found no remaining raw `MyBEEntry` TLS declaration or exported
   `_MyBEEntry` symbol reference;
 - `git diff --check` passed.
+
+## Backend Background Worker Entry Bridge
+
+The one-hundred-twentieth Phase 12 slice moves the current background worker's
+registration entry pointer into explicit backend state:
+
+- `PgBackend` now owns `my_bgworker_entry`, keeping the backend-local pointer
+  to the process or thread worker's `BackgroundWorker` registration entry with
+  the rest of backend runtime state;
+- `MyBgworkerEntry` remains a source-compatible lvalue name through
+  `PgCurrentMyBgworkerEntryRef()`, so background-worker code, worker tests,
+  and logging paths can continue assigning and reading it without broad
+  call-site churn;
+- `backend_runtime.c` keeps a small early fallback pointer for code that runs
+  before `CurrentPgBackend` is installed, then adopts that fallback into the
+  process or thread backend during runtime installation;
+- `StartBackgroundWorker()`, worker slots, and the shared bgworker state keep
+  their existing lifecycle. This slice changes where the backend-local pointer
+  is stored, not when background-worker registration or start-state publication
+  happens.
+
+This keeps worker identity attached to the logical backend object rather than
+as standalone exported TLS. It does not make third-party background workers
+thread-safe or change the process-mode bgworker registration contract.
+
+Validation for this slice:
+
+- `gmake -C src/backend/utils/init backend_runtime.o` passed;
+- `gmake -C src/backend/postmaster postmaster.o bgworker.o` passed;
+- `gmake -C src/backend/utils/error elog.o` passed;
+- `gmake -C src/backend/tcop postgres.o` passed;
+- `gmake -C src/backend/access/transam parallel.o` passed;
+- full backend clean plus generated-header recovery was required after the
+  installed-header change, because stale objects could still reference the old
+  `_MyBgworkerEntry` symbol or miss the new accessor symbol;
+- full `gmake -j8` passed;
+- full `gmake -j8 DESTDIR="$PWD/tmp_install" install` passed;
+- PL/pgSQL was cleaned, rebuilt, and reinstalled after the installed-header
+  change;
+- `src/test/modules/test_backend_runtime` was cleaned, rebuilt, and
+  reinstalled after the installed-header change;
+- direct threaded-runtime TAP passed all 87 tests with local
+  `/Users/samwillis/perl5` `PERL5LIB` paths before and after
+  `gmake -C src/test/modules/test_backend_runtime check` recreated
+  `tmp_install`;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression and still reported TAP disabled by configure;
+- `gmake -C contrib -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 438 to 437;
+- a static scan found no remaining raw `MyBgworkerEntry` TLS declaration or
+  exported `_MyBgworkerEntry` symbol reference;
+- `git diff --check` passed.

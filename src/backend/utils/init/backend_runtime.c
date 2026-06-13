@@ -97,6 +97,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PGPROC *early_my_proc = NULL;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ProcNumber early_my_proc_number = INVALID_PROC_NUMBER;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ProcNumber early_parallel_leader_proc_number = INVALID_PROC_NUMBER;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendStatus *early_my_beentry = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND BackgroundWorker *early_my_bgworker_entry = NULL;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ResourceOwner early_aux_process_resource_owner = NULL;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionIdentityState early_connection_identity;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionSocketIOState early_connection_socket_io;
@@ -600,6 +601,7 @@ static void PgBackendAdoptEarlyCoreState(PgBackend *backend);
 static void PgBackendAdoptEarlyMyProc(PgBackend *backend);
 static void PgBackendAdoptEarlyProcNumberState(PgBackend *backend);
 static void PgBackendAdoptEarlyMyBEEntry(PgBackend *backend);
+static void PgBackendAdoptEarlyMyBgworkerEntry(PgBackend *backend);
 static void PgBackendAdoptEarlyAuxProcessResourceOwner(PgBackend *backend);
 static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
 static void PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend);
@@ -2025,6 +2027,18 @@ PgBackendAdoptEarlyMyBEEntry(PgBackend *backend)
 }
 
 static void
+PgBackendAdoptEarlyMyBgworkerEntry(PgBackend *backend)
+{
+	Assert(backend != NULL);
+
+	if (early_my_bgworker_entry != NULL)
+	{
+		backend->my_bgworker_entry = early_my_bgworker_entry;
+		early_my_bgworker_entry = NULL;
+	}
+}
+
+static void
 PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend)
 {
 	Assert(backend != NULL);
@@ -2254,6 +2268,7 @@ InitializePgProcessRuntime(void)
 	PgBackendAdoptEarlyMyProc(&process_backend);
 	PgBackendAdoptEarlyProcNumberState(&process_backend);
 	PgBackendAdoptEarlyMyBEEntry(&process_backend);
+	PgBackendAdoptEarlyMyBgworkerEntry(&process_backend);
 	PgBackendAdoptEarlyAuxProcessResourceOwner(&process_backend);
 	PgBackendSetInterruptLatch(&process_backend, process_backend.core.latch);
 	dlist_init(&process_backend.dsm_segment_list);
@@ -2471,6 +2486,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgBackendAdoptEarlyMyProc(&state->backend);
 	PgBackendAdoptEarlyProcNumberState(&state->backend);
 	PgBackendAdoptEarlyMyBEEntry(&state->backend);
+	PgBackendAdoptEarlyMyBgworkerEntry(&state->backend);
 	PgBackendAdoptEarlyAuxProcessResourceOwner(&state->backend);
 	PgSessionAdoptEarlyDatabaseState(&state->session);
 	PgSessionAdoptEarlyTablespaceState(&state->session);
@@ -5603,6 +5619,15 @@ PgCurrentMyBEEntryRef(void)
 		return &early_my_beentry;
 
 	return &CurrentPgBackend->my_beentry;
+}
+
+BackgroundWorker **
+PgCurrentMyBgworkerEntryRef(void)
+{
+	if (CurrentPgBackend == NULL)
+		return &early_my_bgworker_entry;
+
+	return &CurrentPgBackend->my_bgworker_entry;
 }
 
 ResourceOwner *

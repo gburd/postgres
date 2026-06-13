@@ -37,6 +37,7 @@ typedef struct PgRuntime PgRuntime;
 typedef struct PgCarrier PgCarrier;
 typedef struct PgBackend PgBackend;
 typedef struct PgBackendStatus PgBackendStatus;
+typedef struct BackgroundWorker BackgroundWorker;
 typedef struct PgSession PgSession;
 typedef struct PgConnection PgConnection;
 typedef struct PgExecution PgExecution;
@@ -955,6 +956,7 @@ struct PgBackend
 	ProcNumber	my_proc_number;
 	ProcNumber	parallel_leader_proc_number;
 	PgBackendStatus *my_beentry;
+	BackgroundWorker *my_bgworker_entry;
 	struct ResourceOwnerData *aux_process_resource_owner;
 
 	/* Backend-local dynamic shared memory mappings and detach callbacks. */

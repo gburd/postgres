@@ -199,8 +199,6 @@ btmask_contains(BackendTypeMask mask, BackendType t)
 }
 
 
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND BackgroundWorker *MyBgworkerEntry = NULL;
-
 /* The socket number we are listening for connections on */
 PG_GLOBAL_RUNTIME int PostPortNumber = DEF_PGPORT;
 

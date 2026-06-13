@@ -158,7 +158,8 @@ extern void TerminateBackgroundWorker(BackgroundWorkerHandle *handle);
 extern void TerminateBackgroundWorkersForDatabase(Oid databaseId);
 
 /* This is valid in a running worker */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND BackgroundWorker *MyBgworkerEntry;
+extern BackgroundWorker **PgCurrentMyBgworkerEntryRef(void);
+#define MyBgworkerEntry (*PgCurrentMyBgworkerEntryRef())
 
 /*
  * Connect to the specified database, as the specified user.  Only a worker

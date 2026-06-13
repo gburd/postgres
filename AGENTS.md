@@ -147,6 +147,15 @@ Important current files:
   still reference the removed `_MyBEEntry` symbol, or miss the new accessor
   symbol. At minimum, clean and reinstall
   `src/test/modules/test_backend_runtime` before testing.
+- `MyBgworkerEntry` is now routed through `PgBackend` via
+  `PgCurrentMyBgworkerEntryRef()` and the lvalue macro in
+  `src/include/postmaster/bgworker.h`. After changing that header or this
+  backend runtime bridge, clean and rebuild backend objects and any extension
+  modules under test before trusting link or TAP results; stale objects can
+  still reference the removed `_MyBgworkerEntry` symbol, or miss the new
+  accessor symbol. At minimum, clean and reinstall
+  `src/test/modules/test_backend_runtime`, `src/test/modules/worker_spi`,
+  `src/test/modules/test_shm_mq`, and any worker modules under test.
 - Treat `PMChild.thread_backend` as private PMChild-owned publication state.
   Postmaster code should use PMChild helper APIs for threaded backend
   interrupt, wakeup, and thread-exit publication rather than dereferencing or
