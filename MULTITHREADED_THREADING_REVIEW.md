@@ -458,6 +458,10 @@ changing the in-tree source-level API.
 `pgStatXactRollback`, `total_func_time`, and `prevWalUsage` now follow that
 same backend-owned pgstat pending bucket, further reducing raw backend-local
 TLS in fixed pgstat flush/accounting paths.
+`pgBufferUsage`, `save_pgBufferUsage`, `pgWalUsage`, and
+`save_pgWalUsage` now move as one executor instrumentation state family into
+`PgBackendInstrumentationState` behind `instrument.h` compatibility macros,
+removing another fixed backend accounting group from standalone TLS.
 PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly

@@ -196,6 +196,16 @@ Important current files:
   the new accessor symbols. At minimum, clean and reinstall PL/pgSQL,
   `src/test/modules/test_backend_runtime`, and contrib/test modules under
   pgstat coverage before validating.
+- `pgBufferUsage`, `save_pgBufferUsage`, `pgWalUsage`, and
+  `save_pgWalUsage` are now fields in `PgBackendInstrumentationState`,
+  exposed through compatibility macros in `src/include/executor/instrument.h`;
+  the old exported/static TLS definitions were removed from
+  `src/backend/executor/instrument.c`. After changing this bridge, clean and
+  rebuild backend objects and extension modules that include `instrument.h`;
+  stale objects can still reference removed `_pgBufferUsage` or
+  `_pgWalUsage` symbols, or miss the new accessor symbols. At minimum, clean
+  and reinstall PL/pgSQL, `src/test/modules/test_backend_runtime`, and contrib
+  before validating.
 - Treat `PMChild.thread_backend` as private PMChild-owned publication state.
   Postmaster code should use PMChild helper APIs for threaded backend
   interrupt, wakeup, and thread-exit publication rather than dereferencing or

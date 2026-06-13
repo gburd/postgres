@@ -188,6 +188,14 @@ typedef struct PgBackendPgStatPendingState
 	WalUsage	wal_prev_usage;
 } PgBackendPgStatPendingState;
 
+typedef struct PgBackendInstrumentationState
+{
+	BufferUsage buffer_usage;
+	BufferUsage saved_buffer_usage;
+	WalUsage	wal_usage;
+	WalUsage	saved_wal_usage;
+} PgBackendInstrumentationState;
+
 typedef struct PgExecutionDebugState
 {
 	const char *debug_query_string;
@@ -971,6 +979,7 @@ struct PgBackend
 	PgBackendExitState exit_state;
 	PgBackendCoreState core;
 	PgBackendPgStatPendingState pgstat_pending;
+	PgBackendInstrumentationState instrumentation;
 	PgBackendPendingInterruptState pending_interrupts;
 	PgBackendInterruptHoldoffState interrupt_holdoffs;
 	PgBackendWaitState wait_state;

@@ -6718,6 +6718,81 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_backend_instrumentation_state_is_backend_local);
+Datum
+test_backend_instrumentation_state_is_backend_local(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgBackend	fake_backend1;
+	PgBackend	fake_backend2;
+	BufferUsage saved_buffer_usage;
+	BufferUsage saved_saved_buffer_usage;
+	WalUsage	saved_wal_usage;
+	WalUsage	saved_saved_wal_usage;
+	bool		ok = true;
+
+	saved_backend = CurrentPgBackend;
+	saved_buffer_usage = pgBufferUsage;
+	saved_saved_buffer_usage = save_pgBufferUsage;
+	saved_wal_usage = pgWalUsage;
+	saved_saved_wal_usage = save_pgWalUsage;
+	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
+	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+
+	PG_TRY();
+	{
+		CurrentPgBackend = &fake_backend1;
+		pgBufferUsage.shared_blks_hit = 11;
+		save_pgBufferUsage.shared_blks_hit = 12;
+		pgWalUsage.wal_records = 13;
+		save_pgWalUsage.wal_records = 14;
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && pgBufferUsage.shared_blks_hit == 0;
+		ok = ok && save_pgBufferUsage.shared_blks_hit == 0;
+		ok = ok && pgWalUsage.wal_records == 0;
+		ok = ok && save_pgWalUsage.wal_records == 0;
+
+		pgBufferUsage.shared_blks_hit = 21;
+		save_pgBufferUsage.shared_blks_hit = 22;
+		pgWalUsage.wal_records = 23;
+		save_pgWalUsage.wal_records = 24;
+
+		CurrentPgBackend = &fake_backend1;
+		ok = ok && pgBufferUsage.shared_blks_hit == 11;
+		ok = ok && save_pgBufferUsage.shared_blks_hit == 12;
+		ok = ok && pgWalUsage.wal_records == 13;
+		ok = ok && save_pgWalUsage.wal_records == 14;
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && pgBufferUsage.shared_blks_hit == 21;
+		ok = ok && save_pgBufferUsage.shared_blks_hit == 22;
+		ok = ok && pgWalUsage.wal_records == 23;
+		ok = ok && save_pgWalUsage.wal_records == 24;
+
+		CurrentPgBackend = saved_backend;
+		pgBufferUsage = saved_buffer_usage;
+		save_pgBufferUsage = saved_saved_buffer_usage;
+		pgWalUsage = saved_wal_usage;
+		save_pgWalUsage = saved_saved_wal_usage;
+	}
+	PG_CATCH();
+	{
+		CurrentPgBackend = saved_backend;
+		pgBufferUsage = saved_buffer_usage;
+		save_pgBufferUsage = saved_saved_buffer_usage;
+		pgWalUsage = saved_wal_usage;
+		save_pgWalUsage = saved_saved_wal_usage;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "backend instrumentation state was not backend-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_pmchild_thread_backend_signal_api);
 Datum
 test_pmchild_thread_backend_signal_api(PG_FUNCTION_ARGS)

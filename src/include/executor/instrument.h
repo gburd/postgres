@@ -126,8 +126,15 @@ typedef struct TriggerInstrumentation
 								 * was fired */
 } TriggerInstrumentation;
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND BufferUsage pgBufferUsage;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND WalUsage pgWalUsage;
+extern BufferUsage *PgCurrentBufferUsageRef(void);
+extern BufferUsage *PgCurrentSavedBufferUsageRef(void);
+extern WalUsage *PgCurrentWalUsageRef(void);
+extern WalUsage *PgCurrentSavedWalUsageRef(void);
+
+#define pgBufferUsage (*PgCurrentBufferUsageRef())
+#define save_pgBufferUsage (*PgCurrentSavedBufferUsageRef())
+#define pgWalUsage (*PgCurrentWalUsageRef())
+#define save_pgWalUsage (*PgCurrentSavedWalUsageRef())
 
 extern Instrumentation *InstrAlloc(int instrument_options);
 extern void InstrInitOptions(Instrumentation *instr, int instrument_options);

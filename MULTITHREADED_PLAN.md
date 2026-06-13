@@ -873,6 +873,11 @@ source names. The next pgstat batch moved `PendingIOStats`, `have_iostats`,
 `PgBackendPgStatPendingState` bucket. `PGSTAT_SLRU_NUM_ELEMENTS` now exposes
 the fixed SLRU pending-array size needed by the runtime object and is checked
 against the internal `slru_names[]` list.
+The executor instrumentation counters `pgBufferUsage`, `save_pgBufferUsage`,
+`pgWalUsage`, and `save_pgWalUsage` now move as one backend instrumentation
+state family into `PgBackendInstrumentationState` behind `instrument.h`
+compatibility macros, removing another fixed accounting group from standalone
+backend-local TLS.
 PMChild assignment and slot release now also scrub stale carrier-visible signal
 ids and thread-exit payloads before reuse. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live

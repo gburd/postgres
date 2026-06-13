@@ -6016,3 +6016,53 @@ Validation for this slice:
   in `src/include/pgstat.h` and no remaining raw TLS declarations or exported
   symbol references for the moved pgstat pending/accounting state;
 - `git diff --check` passed.
+
+## Backend Instrumentation State Bridge
+
+The one-hundred-twenty-sixth Phase 12 slice moves a coherent executor
+instrumentation accounting family from standalone backend-local TLS into
+`PgBackend`:
+
+- `PgBackendInstrumentationState` now owns `pgBufferUsage`,
+  `save_pgBufferUsage`, `pgWalUsage`, and `save_pgWalUsage`;
+- those names remain source-compatible lvalues through `instrument.h`
+  compatibility macros and runtime accessors;
+- early fallback state is adopted during process/thread runtime installation,
+  matching the other backend-local compatibility bridges;
+- executor instrumentation, WAL usage accounting, `EXPLAIN`, and statistics
+  call sites continue to use the existing names, but the storage now follows
+  the logical backend object.
+
+This keeps the active and saved buffer/WAL instrumentation counters together
+because they are reset, saved, restored, and reported as one backend execution
+accounting family. It also removes four more backend-local TLS definitions
+from fixed executor instrumentation paths without changing in-tree source
+syntax.
+
+Validation for this slice:
+
+- `gmake -C src/backend/utils/init backend_runtime.o` passed;
+- `gmake -C src/backend/executor instrument.o` passed;
+- full backend clean plus generated-header recovery was required after the
+  installed-header and `PgBackend` layout changes, because stale objects could
+  still reference the old exported instrumentation symbols;
+- full `gmake -j8` passed;
+- full `gmake -j8 DESTDIR="$PWD/tmp_install" install` passed;
+- PL/pgSQL was cleaned, rebuilt, and reinstalled after the installed-header
+  change;
+- `src/test/modules/test_backend_runtime` was cleaned, rebuilt, and
+  reinstalled after the installed-header change;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression, including the new
+  `test_backend_instrumentation_state_is_backend_local()` helper, and still
+  reported TAP disabled by configure;
+- direct threaded-runtime TAP passed all 87 tests with the local
+  `/Users/samwillis/perl5` `PERL5LIB` paths and an explicit `PG_REGRESS`
+  environment;
+- `gmake -C contrib -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 402 to 397;
+- a static scan found only the four compatibility macros in
+  `src/include/executor/instrument.h` and no remaining raw TLS declarations or
+  exported symbol references for the moved instrumentation state;
+- `git diff --check` passed.
