@@ -144,6 +144,19 @@ Important current files:
   be renamed because macro expansion also hits `object->field` expressions;
   this was observed for the local GIN build-state `work_mem` field and the
   `TableSpaceOpts` `seq_page_cost`/`random_page_cost` fields.
+- Threaded backend startup must replay postmaster nondefault GUC state after
+  `InitializeThreadedSessionGUCOptions()` and before
+  `InstallPgThreadBackendRuntimeState()`. That ordering lets
+  `read_nondefault_variables()` write configured built-in defaults into early
+  fallback session/runtime GUC buckets, which runtime installation then adopts
+  into the thread's `PgSession`/runtime objects. Moving runtime installation
+  earlier can crash because some adoption paths allocate GUC strings before
+  `GUCMemoryContext` exists.
+  The replay depends on the postmaster write side too: non-`EXEC_BACKEND`
+  postmasters must call `write_nondefault_variables()` when `multithreaded` is
+  enabled, both after initial config load and after SIGHUP reloads. Without
+  `global/config_exec_params`, threaded clients silently fall back to boot
+  defaults such as `work_mem = 4MB`.
 - Avoid broad mechanical churn unless it unlocks a specific migration step.
 - Do not remove process isolation paths merely because threaded mode exists.
 

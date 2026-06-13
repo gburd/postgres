@@ -819,12 +819,16 @@ initializes all built-in generated GUC records whose direct backing-variable
 pointers are rebound onto `PgSession`/runtime state, replacing the broad
 hard-coded startup whitelist with a systematic rebind-adoption pass plus a
 small compatibility list for the remaining TLS dummy startup GUCs
-(`session_authorization`, `server_encoding`, and `client_encoding`). The
-remaining PMChild and teardown blockers are full resource cleanup or deliberate
-long-lived ownership, the broader join/reaping/slot-release ownership
-contract, postmaster/runtime default adoption for all GUC state,
-extension/custom GUC behavior, startup-gate narrowing, and stress coverage for
-those races.
+(`session_authorization`, `server_encoding`, and `client_encoding`). Threaded
+startup also has the full built-in serialized default replay path: threaded
+non-EXEC_BACKEND postmasters write and refresh `global/config_exec_params`,
+and threaded backends read it after building the per-thread GUC table, so
+configured built-in defaults are adopted into the early fallback
+session/runtime buckets before runtime installation. The remaining PMChild and
+teardown blockers are full resource cleanup or deliberate long-lived ownership,
+the broader join/reaping/slot-release ownership contract, extension/custom GUC
+behavior, database/role/startup setting coverage, startup-gate narrowing, and
+stress coverage for those races.
 
 Phase 16 still owns broader hardening such as sanitizer runs, contrib-wide
 threaded regression, crash/FATAL behavior matrices, platform coverage, and

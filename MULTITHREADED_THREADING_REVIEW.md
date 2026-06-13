@@ -197,6 +197,16 @@ remaining Gate E2 GUC work is postmaster/runtime default adoption, full
 custom/extension GUC behavior, broader assign-hook/reset/default semantics,
 and threaded stress coverage for GUC-heavy sessions.
 
+Further status update: threaded non-EXEC_BACKEND postmasters now write and
+refresh `global/config_exec_params` when `multithreaded` is enabled, and
+threaded backend startup calls `read_nondefault_variables()` after building the
+rebound per-thread GUC table. Together those match the existing process-backend
+replay path for the postmaster's serialized nondefault GUC state and move
+configured built-in defaults into the early fallback session/runtime buckets
+before runtime installation adopts them into `PgSession`. Remaining GUC
+blockers are now focused on custom/extension behavior, database/role/startup
+settings coverage, and stress validation.
+
 ### 4. Broad Threaded Startup Serialization Is Still Present
 
 Severity: High

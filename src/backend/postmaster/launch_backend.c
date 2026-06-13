@@ -494,6 +494,7 @@ backend_thread_entry(void *arg)
 	MemoryContextInit();
 	InitializeTransactionState();
 	InitializeThreadedSessionGUCOptions();
+	read_nondefault_variables();
 	InitializeLatchWaitSet();
 	InstallPgThreadBackendRuntimeState(&thread_start->runtime_state);
 	PgBackendSetInterruptLatch(CurrentPgBackend, MyLatch);

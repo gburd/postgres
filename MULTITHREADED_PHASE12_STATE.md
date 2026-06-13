@@ -3898,3 +3898,50 @@ Validation for this slice:
   `002_threaded_bgworker_crash.pl` still did not reach PostgreSQL because the
   system Perl is missing `IPC::Run`, matching the existing local-build note in
   `AGENTS.md`.
+
+## Threaded Startup Nondefault GUC Replay
+
+The seventy-ninth Phase 12 slice extends the same Gate E2 GUC adoption path by
+replaying the postmaster's serialized nondefault GUC state in threaded backend
+startup:
+
+- non-EXEC_BACKEND postmasters now write `global/config_exec_params` when
+  `multithreaded` is enabled, while EXEC_BACKEND keeps its existing
+  unconditional child-process write path;
+- SIGHUP reloads also refresh the serialized nondefault GUC file for threaded
+  non-EXEC_BACKEND postmasters, matching the existing EXEC_BACKEND refresh;
+- after `InitializeThreadedSessionGUCOptions()` builds and rebinds the
+  per-thread GUC table, `backend_thread_entry()` now calls
+  `read_nondefault_variables()`, matching the existing process-backend
+  `SubPostmasterMain()` replay path;
+- because this happens before `InstallPgThreadBackendRuntimeState()`, replayed
+  direct-pointer GUC values are written into the early fallback session/runtime
+  buckets and then adopted into the thread's `PgSession`/runtime objects during
+  runtime installation;
+- this specifically moves configured postmaster/runtime defaults, such as
+  `work_mem`, from boot defaults toward the same effective state that forked
+  or EXEC_BACKEND children receive.
+
+This still is not complete Gate E2 GUC closure. The replay uses PostgreSQL's
+existing serialized nondefault format for built-in GUCs, but custom/extension
+GUC behavior, reset/default edge cases, database/role settings, and broader
+threaded stress coverage remain open.
+
+Validation for this slice:
+
+- touched-object and full builds passed for `postmaster.o`, `guc.o`,
+  `launch_backend.o`, and full `gmake -j8`;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- `gmake check-global-lifetimes` passed, reporting zero new unclassified
+  mutable globals against the checked baseline;
+- manual threaded GUC smoke with `multithreaded = on` and `work_mem = '8MB'`
+  confirmed `SHOW work_mem` starts at `8MB`, `SET work_mem = '9MB'` changes
+  the threaded session value, and `RESET work_mem` returns to the configured
+  `8MB` default. The smoke also confirmed the postmaster wrote
+  `global/config_exec_params`;
+- the same threaded smoke did not shut down cleanly under `pg_ctl -m immediate`:
+  the postmaster received the immediate shutdown request, logged a logical
+  replication launcher thread exit, then issued SIGKILL to recalcitrant
+  children. That is retained as part of the Gate E2 threaded teardown blocker;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests;
+- focused `test_backend_runtime` regression passed.
