@@ -383,6 +383,18 @@ PostmasterChildSetThreadBackend(PMChild *pmchild, struct PgBackend *backend)
 	PMChildThreadBackendUnlock();
 }
 
+void
+PostmasterChildDetachThreadBackend(PMChild *pmchild)
+{
+	Assert(PostmasterChildIsThread(pmchild));
+
+	PMChildThreadBackendLock();
+	pmchild->thread_exit_signal_pid = pmchild->signal_pid;
+	pmchild->thread_backend = NULL;
+	pmchild->signal_pid = 0;
+	PMChildThreadBackendUnlock();
+}
+
 bool
 PostmasterChildRaiseThreadInterrupt(PMChild *pmchild,
 									int interrupt)
@@ -456,9 +468,12 @@ PostmasterChildPublishThreadExit(PMChild *pmchild, int exitstatus,
 	 * visible, so later postmaster signal routing cannot race with teardown.
 	 */
 	PMChildThreadBackendLock();
-	pmchild->thread_exit_signal_pid = pmchild->signal_pid;
-	pmchild->thread_backend = NULL;
-	pmchild->signal_pid = 0;
+	if (pmchild->thread_backend != NULL || pmchild->signal_pid != 0)
+	{
+		pmchild->thread_exit_signal_pid = pmchild->signal_pid;
+		pmchild->thread_backend = NULL;
+		pmchild->signal_pid = 0;
+	}
 	pmchild->thread_exitstatus = exitstatus;
 	pmchild->thread_exit_top_memory_allocated = top_memory_allocated;
 	PMChildThreadBackendUnlock();

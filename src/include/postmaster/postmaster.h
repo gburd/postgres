@@ -163,6 +163,7 @@ extern void PostmasterChildSetProcess(PMChild *pmchild, pid_t pid);
 extern void PostmasterChildSetThread(PMChild *pmchild, const PgThread *thread);
 extern void PostmasterChildSetThreadBackend(PMChild *pmchild,
 											struct PgBackend *backend);
+extern void PostmasterChildDetachThreadBackend(PMChild *pmchild);
 extern bool PostmasterChildRaiseThreadInterrupt(PMChild *pmchild,
 												int interrupt);
 extern bool PostmasterChildWakeThreadBackend(PMChild *pmchild);

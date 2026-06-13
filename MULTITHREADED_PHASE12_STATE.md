@@ -5094,3 +5094,51 @@ Validation for this slice:
 - direct full-module `pg_regress test_backend_runtime` passed all 1 test
   against the current temp install;
 - `git diff --check` passed.
+
+## PMChild Thread Detach Boundary
+
+The one-hundred-sixth Phase 12 slice tightens the Gate E2 PMChild/teardown
+boundary without claiming full memory cleanup:
+
+- `PostmasterChildDetachThreadBackend()` now clears a thread-backed PMChild's
+  live `thread_backend` pointer and `signal_pid` under the same PMChild mutex
+  used for signal/wakeup routing;
+- the detach helper preserves the exited logical backend id in
+  `thread_exit_signal_pid`, so later exit publication and postmaster reaping
+  can still report the backend that exited;
+- `PostmasterChildPublishThreadExit()` now preserves an already-detached
+  `thread_exit_signal_pid` instead of overwriting it with zero;
+- `backend_thread_finish()` detaches the live backend pointer before final
+  exit publication and retained-memory accounting;
+- `test_pmchild_thread_backend_signal_api()` covers the detach-then-publish
+  sequence.
+
+This is not full Gate E2 teardown completion. An attempted implementation that
+reset the exiting carrier's `TopMemoryContext` after `PgBackendExitCleanup()`
+caused an abrupt postmaster exit during a parallel threaded reconnect smoke.
+That failed validation is evidence that backend/session/connection/execution
+memory ownership still needs systematic separation before the carrier can
+reclaim its top memory tree safely. The branch therefore still reports retained
+`TopMemoryContext` bytes through PMChild exit accounting.
+
+Validation for this slice:
+
+- touched-object builds for `src/backend/postmaster/pmchild.o`,
+  `src/backend/postmaster/launch_backend.o`, and
+  `src/test/modules/test_backend_runtime/test_backend_runtime.o` passed;
+- `src/backend/postgres` relink passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- full `gmake -j8 DESTDIR="$PWD/tmp_install" install` passed;
+- direct full-module `pg_regress test_backend_runtime` passed all 1 test
+  against the current temp install;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- `git diff --check` passed;
+- a manual threaded reconnect smoke with `TopMemoryContext` reset enabled
+  failed with an abrupt postmaster exit, so that reset path was not retained;
+- the retained-memory detach path passed a manual threaded smoke with 16
+  concurrent reconnecting sessions that created temp tables, ran `ANALYZE`,
+  loaded `test_backend_runtime_threaded`, exercised per-session GUC values,
+  terminated a sleeping backend through `pg_terminate_backend()`, verified the
+  base table remained readable, and shut down cleanly with no crash or join
+  failure markers.

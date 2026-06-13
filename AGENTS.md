@@ -127,6 +127,11 @@ Important current files:
 - Thread-backed PMChild signal-id reads and thread-exit payload reads must use
   PMChild helper APIs. They are protected by the same PMChild mutex as
   `thread_backend` publication and clearing.
+- Use `PostmasterChildDetachThreadBackend()` when a thread carrier needs to
+  stop advertising its live logical-backend pointer before final exit
+  publication. It preserves the exited logical id for reaping/logging while
+  preventing later signal routing from targeting a backend committed to
+  teardown.
 - For thread-backed PMChild reaping, successful `pg_thread_join()` is the
   boundary before child cleanup and slot release. If join fails, leave the
   PMChild active and re-publish the claimed thread-exit report for retry; do
@@ -134,7 +139,9 @@ Important current files:
 - Threaded backend exit currently reports retained carrier `TopMemoryContext`
   bytes through PMChild exit accounting. Do not remove or bypass this
   accounting until thread-exit memory/resource cleanup has a stronger
-  replacement.
+  replacement. A direct attempt to reset the exiting carrier's top memory tree
+  after `PgBackendExitCleanup()` crashed a parallel threaded reconnect smoke,
+  so treat full `TopMemoryContext` reclamation as an unresolved Gate E2 blocker.
 - Threaded regular backend launch duplicates the accepted client socket into
   `BackendThreadStart.client_sock`. `pq_init()` marks that launch-time socket
   copy invalid only after `Port` owns the descriptor and `socket_close()` is

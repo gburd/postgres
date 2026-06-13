@@ -6455,6 +6455,20 @@ test_pmchild_thread_backend_signal_api(PG_FUNCTION_ARGS)
 													PG_BACKEND_INTERRUPT_QUERY_CANCEL);
 	ok = ok && !PostmasterChildWakeThreadBackend(&fake_pmchild);
 
+	PostmasterChildSetThread(&fake_pmchild, &fake_thread);
+	PostmasterChildSetThreadBackend(&fake_pmchild, &fake_backend);
+	PostmasterChildDetachThreadBackend(&fake_pmchild);
+	ok = ok && PostmasterChildSignalPid(&fake_pmchild) == 0;
+	ok = ok && !PostmasterChildRaiseThreadInterrupt(&fake_pmchild,
+													PG_BACKEND_INTERRUPT_QUERY_CANCEL);
+	PostmasterChildPublishThreadExit(&fake_pmchild, 23, 4096, &fake_latch);
+	ok = ok && PostmasterChildHasExitedThread(&fake_pmchild, &exitstatus,
+											  &top_memory_allocated,
+											  &exit_signal_pid);
+	ok = ok && exitstatus == 23;
+	ok = ok && exit_signal_pid == 12345;
+	ok = ok && top_memory_allocated == 4096;
+
 	if (!ok)
 		elog(ERROR, "PMChild thread-backend signal API failed");
 

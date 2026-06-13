@@ -826,7 +826,12 @@ signalable while the postmaster can still log and join the reported exit.
 Thread-backed signal-id reads and claimed thread-exit payload reads now also
 run through PMChild helper APIs under the PMChild mutex, matching the
 publication side instead of reading those fields directly after the exit flag
-is claimed.
+is claimed. Thread exit now also has an explicit
+`PostmasterChildDetachThreadBackend()` boundary: `backend_thread_finish()`
+stops publishing the live logical-backend pointer before final exit
+publication, while preserving the exited logical id for postmaster reaping and
+logging. This is a prerequisite for safe teardown because later signal routing
+cannot target a backend that has committed to carrier exit.
 Threaded client-socket ownership is now explicit during backend startup:
 `pq_init()` marks the launch-time `ClientSocket` copy invalid only after
 `Port` owns the descriptor and `socket_close()` is registered, while
@@ -877,10 +882,13 @@ auxiliary workers reproduced an abrupt postmaster death during a threaded
 `PgExecutionVacuumState` migration removed the remaining startup-gate users,
 so future gate reintroduction must be tied to a named shared-state dependency
 and concurrent catalog-startup stress. The remaining PMChild and teardown
-blockers are full
-resource cleanup or deliberate long-lived ownership, broader reaping stress
-for termination and abandoned-client races, broader custom/extension GUC
-semantics, and broader stress coverage for teardown races. Follow-up extension-GUC work found
+blockers are full resource cleanup or deliberate long-lived ownership, broader
+reaping stress for termination and abandoned-client races, broader
+custom/extension GUC semantics, and broader stress coverage for teardown
+races. A direct attempt to reset the exiting carrier's `TopMemoryContext`
+children after backend cleanup caused an abrupt postmaster exit during a
+parallel threaded reconnect smoke, so `TopMemoryContext` reclamation remains a
+Gate E2 blocker rather than a safe cleanup path. Follow-up extension-GUC work found
 that some generated GUC records are already rebound while the per-thread table
 is constructed, so the "changed pointer" pass alone is not a complete startup
 initializer. Threaded runtime installation now runs a narrow required

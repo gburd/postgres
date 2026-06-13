@@ -687,26 +687,27 @@ backend_thread_finish(int code)
 	Assert(thread_start != NULL);
 
 	exitstatus = backend_thread_exitstatus(code);
-	if (TopMemoryContext != NULL)
-		top_memory_allocated = MemoryContextMemAllocated(TopMemoryContext, true);
-	PostmasterChildPublishThreadExit(thread_start->pmchild, exitstatus,
-									 top_memory_allocated,
-									 thread_start->postmaster_latch);
 	MyClientSocket = NULL;
 	if (thread_start->client_sock.sock != PGINVALID_SOCKET)
 	{
 		closesocket(thread_start->client_sock.sock);
 		thread_start->client_sock.sock = PGINVALID_SOCKET;
 	}
+	backend_thread_leave_startup_gate(thread_start);
 
 	/*
-	 * Do not delete the carrier's TopMemoryContext here yet.  The current
-	 * guarded Phase 10 path exits after catalog/cache-heavy startup and leaves
-	 * enough teardown coupling that explicit context destruction corrupts later
-	 * carrier startups.  Full backend/session memory ownership belongs with the
-	 * real thread-runtime lifecycle, not this temporary guard continuation.
+	 * Stop publishing the logical backend before the final exit handoff.  This
+	 * keeps later signal routing from observing a backend pointer after the
+	 * carrier has committed to teardown.  Full TopMemoryContext reclamation is
+	 * still a separate lifecycle problem; keep reporting retained memory until
+	 * that ownership model is safe.
 	 */
-	backend_thread_leave_startup_gate(thread_start);
+	PostmasterChildDetachThreadBackend(thread_start->pmchild);
+	if (TopMemoryContext != NULL)
+		top_memory_allocated = MemoryContextMemAllocated(TopMemoryContext, true);
+	PostmasterChildPublishThreadExit(thread_start->pmchild, exitstatus,
+									 top_memory_allocated,
+									 thread_start->postmaster_latch);
 
 	CurrentBackendThreadStart = NULL;
 	free(thread_start);
