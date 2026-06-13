@@ -77,10 +77,6 @@ PG_GLOBAL_RUNTIME int io_max_concurrency = -1;
 /* global control for AIO */
 PG_GLOBAL_SHMEM PgAioCtl *pgaio_ctl;
 
-/* current backend's per-backend state */
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgAioBackend *pgaio_my_backend;
-
-
 static PG_GLOBAL_IMMUTABLE const IoMethodOps *const pgaio_method_ops_table[] = {
 	[IOMETHOD_SYNC] = &pgaio_sync_ops,
 	[IOMETHOD_WORKER] = &pgaio_worker_ops,

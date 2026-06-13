@@ -141,6 +141,9 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendRepackState early_backend_repa
 	.repacked_rel_locator.relNumber = InvalidOid,
 	.repacked_rel_toast_locator.relNumber = InvalidOid
 };
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendAioState early_backend_aio = {
+	.my_io_worker_id = -1
+};
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendActivityState early_backend_activity;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendUtilityState early_backend_utility;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendParallelState early_backend_parallel = {
@@ -689,6 +692,8 @@ static void PgBackendInitializeAutovacuumState(PgBackendAutovacuumState *autovac
 static void PgBackendAdoptEarlyAutovacuumState(PgBackend *backend);
 static void PgBackendInitializeRepackState(PgBackendRepackState *repack);
 static void PgBackendAdoptEarlyRepackState(PgBackend *backend);
+static void PgBackendInitializeAioState(PgBackendAioState *aio);
+static void PgBackendAdoptEarlyAioState(PgBackend *backend);
 static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
 static void PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend);
 static BackendType *PgCurrentBackendTypeRef(void);
@@ -2514,6 +2519,24 @@ PgBackendAdoptEarlyRepackState(PgBackend *backend)
 }
 
 static void
+PgBackendInitializeAioState(PgBackendAioState *aio)
+{
+	Assert(aio != NULL);
+
+	MemSet(aio, 0, sizeof(*aio));
+	aio->my_io_worker_id = -1;
+}
+
+static void
+PgBackendAdoptEarlyAioState(PgBackend *backend)
+{
+	Assert(backend != NULL);
+
+	backend->aio = early_backend_aio;
+	PgBackendInitializeAioState(&early_backend_aio);
+}
+
+static void
 PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend)
 {
 	Assert(backend != NULL);
@@ -2764,6 +2787,7 @@ InitializePgProcessRuntime(void)
 	PgBackendAdoptEarlyMaintenanceWorkerState(&process_backend);
 	PgBackendAdoptEarlyAutovacuumState(&process_backend);
 	PgBackendAdoptEarlyRepackState(&process_backend);
+	PgBackendAdoptEarlyAioState(&process_backend);
 	PgBackendSetInterruptLatch(&process_backend, process_backend.core.latch);
 	dlist_init(&process_backend.dsm_segment_list);
 	pg_atomic_init_u32(&process_backend.wait_state.waiting, 0);
@@ -2921,6 +2945,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgBackendInitializeMaintenanceWorkerState(&state->backend.maintenance_worker);
 	PgBackendInitializeAutovacuumState(&state->backend.autovacuum);
 	PgBackendInitializeRepackState(&state->backend.repack);
+	PgBackendInitializeAioState(&state->backend.aio);
 	PgBackendSetInterruptLatch(&state->backend, interrupt_latch);
 	dlist_init(&state->backend.dsm_segment_list);
 	pg_atomic_init_u32(&state->backend.wait_state.waiting, 0);
@@ -7352,6 +7377,21 @@ volatile sig_atomic_t *
 PgCurrentRepackMessagePendingRef(void)
 {
 	return &PgCurrentRepackState()->message_pending;
+}
+
+PgBackendAioState *
+PgCurrentAioState(void)
+{
+	if (CurrentPgBackend == NULL)
+		return &early_backend_aio;
+
+	return &CurrentPgBackend->aio;
+}
+
+struct PgAioBackend **
+PgCurrentAioBackendRef(void)
+{
+	return &PgCurrentAioState()->my_backend;
 }
 
 static PgBackendTransactionState *

@@ -7252,6 +7252,46 @@ Validation for this slice:
   `test_backend_repack_state_is_backend_local()`, covering all moved repack
   fields across two fake logical backends.
 
+## Backend AIO State Bridge
+
+The one-hundred-fifty-third Phase 12 slice moves backend-local asynchronous
+I/O state into a dedicated `PgBackendAioState` bucket:
+
+- the current backend's `PgAioBackend` pointer;
+- the AIO method-worker id;
+- the io_uring method context pointer.
+
+`aio_internal.h` keeps `pgaio_my_backend` as a source-compatible lvalue macro
+over `PgCurrentAioBackendRef()`. `method_worker.c` keeps `MyIoWorkerId` as a
+file-local macro over `PgCurrentAioState()`, and `method_io_uring.c` does the
+same for `pgaio_my_uring_context`. The private `PgAioUringContext` layout
+remains local to `method_io_uring.c`; `backend_runtime.h` only
+forward-declares the struct tag and stores the pointer.
+
+The first incremental build linked stale AIO objects that still referenced
+the removed `pgaio_my_backend` storage. A later temp-install run reached
+`initdb` bootstrap but spun during post-bootstrap shutdown cleanup with stale
+`PgBackend` layout assumptions in backend objects. The recovery was the
+backend clean plus generated-header recovery documented in `AGENTS.md`,
+followed by a clean full build and reinstall.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, AIO method objects,
+  and `test_backend_runtime.o`;
+- a backend clean, generated-header recovery, full `gmake -j8`, and
+  `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 72 to 69;
+- `gmake -C contrib -j8` and a clean PL/pgSQL rebuild/install passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct threaded runtime TAP passed all 87 tests with the local
+  `/Users/samwillis/perl5` `PERL5LIB` paths and an explicit `PG_REGRESS`
+  environment;
+- `src/test/modules/test_backend_runtime` now includes
+  `test_backend_aio_state_is_backend_local()`, covering all moved AIO fields
+  across two fake logical backends.
+
 ## Backend Parallel State Bridge
 
 The one-hundred-forty-second Phase 12 slice moves a parallel-query and

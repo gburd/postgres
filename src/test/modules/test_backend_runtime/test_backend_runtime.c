@@ -56,8 +56,9 @@
 #include "replication/syncrep.h"
 #include "replication/walreceiver.h"
 #include "replication/walsender.h"
-#include "storage/bufpage.h"
+#include "storage/aio_internal.h"
 #include "storage/bufmgr.h"
+#include "storage/bufpage.h"
 #include "storage/copydir.h"
 #include "storage/dsm.h"
 #include "storage/fd.h"
@@ -9473,6 +9474,70 @@ test_backend_repack_state_is_backend_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "backend repack state was not backend-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_backend_aio_state_is_backend_local);
+Datum
+test_backend_aio_state_is_backend_local(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgBackend	fake_backend1;
+	PgBackend	fake_backend2;
+	PgBackendAioState *aio1;
+	PgBackendAioState *aio2;
+	bool		ok = true;
+
+	saved_backend = CurrentPgBackend;
+	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
+	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+	fake_backend1.aio.my_io_worker_id = -1;
+	fake_backend2.aio.my_io_worker_id = -1;
+
+	PG_TRY();
+	{
+		CurrentPgBackend = &fake_backend1;
+		aio1 = PgCurrentAioState();
+		pgaio_my_backend = (PgAioBackend *) &fake_backend1;
+		aio1->my_io_worker_id = 101;
+		aio1->my_uring_context = (struct PgAioUringContext *) &fake_backend1;
+
+		CurrentPgBackend = &fake_backend2;
+		aio2 = PgCurrentAioState();
+		ok = ok && pgaio_my_backend == NULL;
+		ok = ok && aio2->my_io_worker_id == -1;
+		ok = ok && aio2->my_uring_context == NULL;
+
+		pgaio_my_backend = (PgAioBackend *) &fake_backend2;
+		aio2->my_io_worker_id = 201;
+		aio2->my_uring_context = (struct PgAioUringContext *) &fake_backend2;
+
+		CurrentPgBackend = &fake_backend1;
+		aio1 = PgCurrentAioState();
+		ok = ok && pgaio_my_backend == (PgAioBackend *) &fake_backend1;
+		ok = ok && aio1->my_io_worker_id == 101;
+		ok = ok && aio1->my_uring_context ==
+			(struct PgAioUringContext *) &fake_backend1;
+
+		CurrentPgBackend = &fake_backend2;
+		aio2 = PgCurrentAioState();
+		ok = ok && pgaio_my_backend == (PgAioBackend *) &fake_backend2;
+		ok = ok && aio2->my_io_worker_id == 201;
+		ok = ok && aio2->my_uring_context ==
+			(struct PgAioUringContext *) &fake_backend2;
+
+		CurrentPgBackend = saved_backend;
+	}
+	PG_CATCH();
+	{
+		CurrentPgBackend = saved_backend;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "backend AIO state was not backend-local");
 
 	PG_RETURN_BOOL(true);
 }

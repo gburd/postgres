@@ -71,6 +71,7 @@ SELECT test_backend_recovery_state_is_backend_local();
 SELECT test_backend_maintenance_worker_state_is_backend_local();
 SELECT test_backend_autovacuum_state_is_backend_local();
 SELECT test_backend_repack_state_is_backend_local();
+SELECT test_backend_aio_state_is_backend_local();
 SELECT test_pmchild_thread_backend_signal_api();
 SELECT test_pmchild_thread_backend_publication_race();
 SELECT test_backend_core_state_is_backend_local();

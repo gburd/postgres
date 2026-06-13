@@ -96,6 +96,13 @@ Important current files:
   `src/backend/commands/repack.c`, `src/backend/commands/repack_worker.c`,
   and `src/include/commands/repack.h`. Keep `DecodingWorker` private to
   `repack.c`; the runtime header should only forward-declare its struct tag.
+- `PgBackendAioState` in `src/include/utils/backend_runtime.h` now owns
+  backend-local AIO state bridged from `src/include/storage/aio_internal.h`,
+  `src/backend/storage/aio/aio.c`,
+  `src/backend/storage/aio/method_worker.c`, and
+  `src/backend/storage/aio/method_io_uring.c`. Keep `PgAioUringContext`
+  private to `method_io_uring.c`; the runtime header should only
+  forward-declare its struct tag.
 - `src/backend/postmaster/launch_backend.c` and
   `src/backend/postmaster/postmaster.c`: backend launch and supervision.
 - `src/backend/postmaster/autovacuum.c`,
@@ -754,6 +761,14 @@ Important current files:
   startup corrupting adjacent `BackendThreadStart` timezone fields and
   segfaulting in `StartupXLOG()` before readiness. Use the backend clean plus
   generated-file recovery above, then rebuild with `gmake -j8`.
+
+  The same rule applies when adding fields to `PgBackend` itself. A stale
+  incremental build after adding AIO runtime state linked, but `initdb`
+  post-bootstrap startup spun during shutdown cleanup in
+  `dsm_backend_shutdown()`/`dsm_detach()` because stale backend objects still
+  used the old `PgBackend` layout. Treat that as stale-object fallout: kill the
+  stuck temp bootstrap, run the backend clean plus generated-file recovery,
+  rebuild with `gmake -j8`, and reinstall before rerunning temp-instance tests.
 
 - When moving WAL/XLog state out of `src/backend/access/transam/xlog.c`, avoid
   object-like compatibility macros that reuse names of shared WAL struct

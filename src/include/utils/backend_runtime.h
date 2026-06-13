@@ -80,6 +80,8 @@ struct RelationData;
 struct avl_dbase;
 struct WorkerInfoData;
 struct DecodingWorker;
+struct PgAioBackend;
+struct PgAioUringContext;
 struct ClientSocket;
 typedef struct dsm_segment dsm_segment;
 typedef void (*PgBackendExitContinuation) (int code);
@@ -419,6 +421,13 @@ typedef struct PgBackendRepackState
 	RelFileLocator repacked_rel_locator;
 	RelFileLocator repacked_rel_toast_locator;
 } PgBackendRepackState;
+
+typedef struct PgBackendAioState
+{
+	struct PgAioBackend *my_backend;
+	int			my_io_worker_id;
+	struct PgAioUringContext *my_uring_context;
+} PgBackendAioState;
 
 typedef struct PgBackendPgStatPendingState
 {
@@ -1447,6 +1456,7 @@ struct PgBackend
 	PgBackendMaintenanceWorkerState maintenance_worker;
 	PgBackendAutovacuumState autovacuum;
 	PgBackendRepackState repack;
+	PgBackendAioState aio;
 	PgBackendPgStatPendingState pgstat_pending;
 	PgBackendActivityState activity;
 	PgBackendUtilityState utility;
@@ -1880,6 +1890,8 @@ extern PgBackendMaintenanceWorkerState *PgCurrentMaintenanceWorkerState(void);
 extern PgBackendAutovacuumState *PgCurrentAutovacuumState(void);
 extern PgBackendRepackState *PgCurrentRepackState(void);
 extern volatile sig_atomic_t *PgCurrentRepackMessagePendingRef(void);
+extern PgBackendAioState *PgCurrentAioState(void);
+extern struct PgAioBackend **PgCurrentAioBackendRef(void);
 extern TransactionId *PgCurrentCachedFetchXidRef(void);
 extern int *PgCurrentCachedFetchXidStatusRef(void);
 extern XLogRecPtr *PgCurrentCachedCommitLSNRef(void);

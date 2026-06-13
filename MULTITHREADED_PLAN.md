@@ -1134,6 +1134,16 @@ clean full build/install, contrib build, PL/pgSQL rebuild/install,
 process-mode backend-runtime regression, direct threaded runtime TAP, and the
 required global-lifetime scan with zero new unclassified mutable globals;
 backend-local declarations dropped from 79 to 72.
+Backend AIO state now lives in `PgBackendAioState`: the current
+`PgAioBackend` pointer, AIO method-worker id, and io_uring method context
+pointer now follow the logical backend. `pgaio_my_backend` remains a
+source-compatible lvalue macro, while the method-worker and io_uring names stay
+file-local macros over the backend runtime state. The slice passed
+touched-object builds, backend clean/generated-header recovery, clean full
+build/install, contrib build, PL/pgSQL rebuild/install, process-mode
+backend-runtime regression, direct threaded runtime TAP, and the required
+global-lifetime scan with zero new unclassified mutable globals;
+backend-local declarations dropped from 72 to 69.
 PMChild assignment and slot release now also scrub stale carrier-visible signal
 ids and thread-exit payloads before reuse. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live

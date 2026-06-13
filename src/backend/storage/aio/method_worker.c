@@ -137,7 +137,8 @@ PG_GLOBAL_RUNTIME int io_worker_launch_interval = 100;
 
 
 static PG_GLOBAL_RUNTIME int io_worker_queue_size = 64;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int MyIoWorkerId = -1;
+#define MyIoWorkerId \
+	(PgCurrentAioState()->my_io_worker_id)
 static PG_GLOBAL_SHMEM PgAioWorkerSubmissionQueue *io_worker_submission_queue;
 static PG_GLOBAL_SHMEM PgAioWorkerControl *io_worker_control;
 
