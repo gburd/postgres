@@ -198,6 +198,7 @@ InitPostmasterChildSlots(void)
 			slots[slotno].pid = 0;
 			slots[slotno].thread_backend = NULL;
 			slots[slotno].thread_exitstatus = 0;
+			slots[slotno].thread_exit_top_memory_allocated = 0;
 			pg_atomic_init_u32(&slots[slotno].thread_exited, 0);
 			slots[slotno].child_slot = slotno + 1;
 			slots[slotno].bkend_type = B_INVALID;
@@ -239,6 +240,7 @@ AssignPostmasterChildSlot(BackendType btype)
 	pmchild->pid = 0;
 	pmchild->thread_backend = NULL;
 	pmchild->thread_exitstatus = 0;
+	pmchild->thread_exit_top_memory_allocated = 0;
 	pg_atomic_write_u32(&pmchild->thread_exited, 0);
 	pmchild->bkend_type = btype;
 	pmchild->rw = NULL;
@@ -285,6 +287,7 @@ AllocDeadEndChild(void)
 		pmchild->pid = 0;
 		pmchild->signal_pid = 0;
 		pmchild->thread_exitstatus = 0;
+		pmchild->thread_exit_top_memory_allocated = 0;
 		pg_atomic_init_u32(&pmchild->thread_exited, 0);
 		pmchild->child_slot = 0;
 		pmchild->bkend_type = B_DEAD_END_BACKEND;
@@ -341,6 +344,7 @@ PostmasterChildSetThread(PMChild *pmchild, const PgThread *thread)
 	pmchild->signal_pid = 0;
 	pmchild->thread = *thread;
 	pmchild->thread_exitstatus = 0;
+	pmchild->thread_exit_top_memory_allocated = 0;
 	pg_atomic_write_u32(&pmchild->thread_exited, 0);
 }
 
@@ -395,6 +399,7 @@ PostmasterChildWakeThreadBackend(PMChild *pmchild)
 
 void
 PostmasterChildPublishThreadExit(PMChild *pmchild, int exitstatus,
+								 Size top_memory_allocated,
 								 Latch *postmaster_latch)
 {
 	Assert(PostmasterChildIsThread(pmchild));
@@ -409,6 +414,7 @@ PostmasterChildPublishThreadExit(PMChild *pmchild, int exitstatus,
 	PMChildThreadBackendLock();
 	pmchild->thread_backend = NULL;
 	pmchild->thread_exitstatus = exitstatus;
+	pmchild->thread_exit_top_memory_allocated = top_memory_allocated;
 	PMChildThreadBackendUnlock();
 
 	/*
@@ -421,7 +427,8 @@ PostmasterChildPublishThreadExit(PMChild *pmchild, int exitstatus,
 }
 
 bool
-PostmasterChildHasExitedThread(PMChild *pmchild, int *exitstatus)
+PostmasterChildHasExitedThread(PMChild *pmchild, int *exitstatus,
+							   Size *top_memory_allocated)
 {
 	if (!PostmasterChildIsThread(pmchild))
 		return false;
@@ -430,6 +437,8 @@ PostmasterChildHasExitedThread(PMChild *pmchild, int *exitstatus)
 		return false;
 
 	*exitstatus = pmchild->thread_exitstatus;
+	if (top_memory_allocated != NULL)
+		*top_memory_allocated = pmchild->thread_exit_top_memory_allocated;
 	return true;
 }
 

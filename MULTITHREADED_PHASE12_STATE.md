@@ -3808,3 +3808,42 @@ Validation for this slice:
 - `gmake check-global-lifetimes` passed, reporting zero new unclassified
   mutable globals against the checked baseline;
 - core `src/test/regress` `parallel_schedule` passed all 245 tests.
+
+## Threaded Exit Top-Memory Accounting
+
+The seventy-seventh Phase 12 slice starts addressing the Gate E2 teardown
+accounting requirement for the currently retained carrier `TopMemoryContext`:
+
+- `backend_thread_finish()` measures the exiting carrier's recursive
+  `TopMemoryContext` allocation with `MemoryContextMemAllocated()`;
+- `PostmasterChildPublishThreadExit()` carries that retained-memory value
+  through the same PMChild exit-publication handoff as the exit status;
+- `PostmasterChildHasExitedThread()` returns both the waitpid-style exit status
+  and the retained top-memory total to the postmaster reaper;
+- the postmaster logs retained top-memory bytes at `DEBUG2` before joining the
+  exited thread;
+- `test_pmchild_thread_backend_signal_api()` now verifies that PMChild exit
+  accounting is published exactly once together with the exit status.
+
+This is explicit accounting, not full cleanup. The branch still intentionally
+does not delete thread-carrier `TopMemoryContext` at exit because that has been
+observed to corrupt later carrier startup. Gate E2 remains open until the
+retained memory and other backend/session/connection/execution resources are
+either safely cleaned up or deliberately owned by a documented longer-lived
+runtime object with stronger stress coverage.
+
+Validation for this slice:
+
+- touched-object builds passed for `pmchild.o`, `postmaster.o`,
+  `launch_backend.o`, and `test_backend_runtime.o`;
+- full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- focused `test_backend_runtime` regression passed;
+- `gmake check-global-lifetimes` passed, reporting zero new unclassified
+  mutable globals against the checked baseline;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests;
+- threaded TAP coverage for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl` still did not reach PostgreSQL because the
+  system Perl is missing `IPC::Run`, matching the existing local-build note in
+  `AGENTS.md`.

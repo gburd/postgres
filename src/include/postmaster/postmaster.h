@@ -57,6 +57,7 @@ typedef struct
 	PgThread	thread;			/* native thread handle, if thread-backed */
 	struct PgBackend *thread_backend;	/* protected by PMChild APIs */
 	int			thread_exitstatus;	/* waitpid-style status for threads */
+	Size		thread_exit_top_memory_allocated;	/* retained top memory */
 	pg_atomic_uint32 thread_exited;	/* set when a thread carrier exits */
 	int			child_slot;		/* PMChildSlot for this backend, if any */
 	BackendType bkend_type;		/* child process flavor, see above */
@@ -164,8 +165,10 @@ extern bool PostmasterChildRaiseThreadInterrupt(PMChild *pmchild,
 												int interrupt);
 extern bool PostmasterChildWakeThreadBackend(PMChild *pmchild);
 extern void PostmasterChildPublishThreadExit(PMChild *pmchild, int exitstatus,
+											 Size top_memory_allocated,
 											 struct Latch *postmaster_latch);
-extern bool PostmasterChildHasExitedThread(PMChild *pmchild, int *exitstatus);
+extern bool PostmasterChildHasExitedThread(PMChild *pmchild, int *exitstatus,
+										   Size *top_memory_allocated);
 extern bool ReleasePostmasterChildSlot(PMChild *pmchild);
 extern PMChild *FindPostmasterChildByPid(int pid);
 

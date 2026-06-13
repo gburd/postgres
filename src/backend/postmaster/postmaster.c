@@ -2523,9 +2523,17 @@ process_pm_thread_exit(void)
 		PMChild    *pmchild = dlist_container(PMChild, elem, iter.cur);
 		int			exitstatus;
 		int			join_rc;
+		Size		top_memory_allocated;
 
-		if (!PostmasterChildHasExitedThread(pmchild, &exitstatus))
+		if (!PostmasterChildHasExitedThread(pmchild, &exitstatus,
+											&top_memory_allocated))
 			continue;
+
+		if (top_memory_allocated > 0)
+			ereport(DEBUG2,
+					(errmsg_internal("thread-backed child %d retained %zu bytes in TopMemoryContext at exit",
+									 PostmasterChildSignalPid(pmchild),
+									 top_memory_allocated)));
 
 		join_rc = pg_thread_join(&pmchild->thread);
 		if (join_rc != 0)

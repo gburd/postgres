@@ -812,9 +812,12 @@ Current Gate E2 progress: `gmake check-global-lifetimes` is now a required
 target, and postmaster signal/wakeup routing no longer dereferences a
 thread-backed `PMChild`'s raw `thread_backend` pointer directly. Thread exit
 publication now clears the backend pointer, stores the exit status, and wakes
-the postmaster through one PMChild helper. The remaining PMChild blocker is the
-broader join/reaping/slot-release ownership contract plus stress coverage for
-those races.
+the postmaster through one PMChild helper. Thread exit also reports retained
+carrier `TopMemoryContext` bytes to the postmaster reaper as explicit
+accounting for the currently retained top context. The remaining PMChild and
+teardown blockers are full resource cleanup or deliberate long-lived ownership,
+the broader join/reaping/slot-release ownership contract, and stress coverage
+for those races.
 
 Phase 16 still owns broader hardening such as sanitizer runs, contrib-wide
 threaded regression, crash/FATAL behavior matrices, platform coverage, and

@@ -120,6 +120,10 @@ Important current files:
   Postmaster code should use PMChild helper APIs for threaded backend
   interrupt, wakeup, and thread-exit publication rather than dereferencing or
   clearing the raw pointer outside PMChild.
+- Threaded backend exit currently reports retained carrier `TopMemoryContext`
+  bytes through PMChild exit accounting. Do not remove or bypass this
+  accounting until thread-exit memory/resource cleanup has a stronger
+  replacement.
 - Prefer introducing compatibility wrappers around current globals before
   changing all call sites.
 - Be careful moving GUC backing variables behind dynamic lvalue macros. The

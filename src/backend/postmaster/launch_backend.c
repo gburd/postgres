@@ -641,11 +641,15 @@ backend_thread_finish(int code)
 {
 	BackendThreadStart *thread_start = CurrentBackendThreadStart;
 	int			exitstatus;
+	Size		top_memory_allocated = 0;
 
 	Assert(thread_start != NULL);
 
 	exitstatus = backend_thread_exitstatus(code);
+	if (TopMemoryContext != NULL)
+		top_memory_allocated = MemoryContextMemAllocated(TopMemoryContext, true);
 	PostmasterChildPublishThreadExit(thread_start->pmchild, exitstatus,
+									 top_memory_allocated,
 									 thread_start->postmaster_latch);
 	MyClientSocket = NULL;
 

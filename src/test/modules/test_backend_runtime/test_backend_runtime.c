@@ -6376,6 +6376,7 @@ test_pmchild_thread_backend_signal_api(PG_FUNCTION_ARGS)
 	Latch		fake_latch;
 	PgBackendInterruptMask pending;
 	int			exitstatus;
+	Size		top_memory_allocated;
 	bool		ok = true;
 
 	MemSet(&fake_runtime, 0, sizeof(fake_runtime));
@@ -6396,10 +6397,13 @@ test_pmchild_thread_backend_signal_api(PG_FUNCTION_ARGS)
 	pending = PgBackendConsumeInterrupts(&fake_backend);
 	ok = ok && (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_QUERY_CANCEL));
 
-	PostmasterChildPublishThreadExit(&fake_pmchild, 17, &fake_latch);
-	ok = ok && PostmasterChildHasExitedThread(&fake_pmchild, &exitstatus);
+	PostmasterChildPublishThreadExit(&fake_pmchild, 17, 8192, &fake_latch);
+	ok = ok && PostmasterChildHasExitedThread(&fake_pmchild, &exitstatus,
+											  &top_memory_allocated);
 	ok = ok && exitstatus == 17;
-	ok = ok && !PostmasterChildHasExitedThread(&fake_pmchild, &exitstatus);
+	ok = ok && top_memory_allocated == 8192;
+	ok = ok && !PostmasterChildHasExitedThread(&fake_pmchild, &exitstatus,
+											   &top_memory_allocated);
 	ok = ok && !PostmasterChildRaiseThreadInterrupt(&fake_pmchild,
 													PG_BACKEND_INTERRUPT_QUERY_CANCEL);
 	ok = ok && !PostmasterChildWakeThreadBackend(&fake_pmchild);
