@@ -2153,6 +2153,147 @@ test_session_logging_state_is_session_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_session_pgstat_state_is_session_local);
+Datum
+test_session_pgstat_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	char	   *saved_stats_fetch_consistency;
+	char	   *saved_track_activities;
+	char	   *saved_track_counts;
+	char	   *saved_track_functions;
+	SessionEndType saved_session_end_cause;
+	PgStat_Counter saved_last_session_report_time;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	saved_stats_fetch_consistency =
+		pstrdup(GetConfigOption("stats_fetch_consistency", false, false));
+	saved_track_activities =
+		pstrdup(GetConfigOption("track_activities", false, false));
+	saved_track_counts =
+		pstrdup(GetConfigOption("track_counts", false, false));
+	saved_track_functions =
+		pstrdup(GetConfigOption("track_functions", false, false));
+	saved_session_end_cause = pgStatSessionEndCause;
+	saved_last_session_report_time = *PgCurrentPgStatLastSessionReportTimeRef();
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && pgstat_track_counts;
+		ok = ok && pgstat_track_activities;
+		ok = ok && pgstat_track_functions == TRACK_FUNC_OFF;
+		ok = ok &&
+			pgstat_fetch_consistency == PGSTAT_FETCH_CONSISTENCY_CACHE;
+		ok = ok && pgStatSessionEndCause == DISCONNECT_NORMAL;
+		ok = ok && *PgCurrentPgStatLastSessionReportTimeRef() == 0;
+
+		SetConfigOption("track_counts", "off",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("track_activities", "off",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("track_functions", "all",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("stats_fetch_consistency", "none",
+						PGC_USERSET, PGC_S_SESSION);
+		pgStatSessionEndCause = DISCONNECT_CLIENT_EOF;
+		*PgCurrentPgStatLastSessionReportTimeRef() = 12345;
+		ok = ok && !pgstat_track_counts;
+		ok = ok && !pgstat_track_activities;
+		ok = ok && pgstat_track_functions == TRACK_FUNC_ALL;
+		ok = ok &&
+			pgstat_fetch_consistency == PGSTAT_FETCH_CONSISTENCY_NONE;
+		ok = ok && pgStatSessionEndCause == DISCONNECT_CLIENT_EOF;
+		ok = ok && *PgCurrentPgStatLastSessionReportTimeRef() == 12345;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && pgstat_track_counts;
+		ok = ok && pgstat_track_activities;
+		ok = ok && pgstat_track_functions == TRACK_FUNC_OFF;
+		ok = ok &&
+			pgstat_fetch_consistency == PGSTAT_FETCH_CONSISTENCY_CACHE;
+		ok = ok && pgStatSessionEndCause == DISCONNECT_NORMAL;
+		ok = ok && *PgCurrentPgStatLastSessionReportTimeRef() == 0;
+		SetConfigOption("track_counts", "on",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("track_activities", "on",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("track_functions", "pl",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("stats_fetch_consistency", "snapshot",
+						PGC_USERSET, PGC_S_SESSION);
+		pgStatSessionEndCause = DISCONNECT_KILLED;
+		*PgCurrentPgStatLastSessionReportTimeRef() = 67890;
+		ok = ok && pgstat_track_counts;
+		ok = ok && pgstat_track_activities;
+		ok = ok && pgstat_track_functions == TRACK_FUNC_PL;
+		ok = ok &&
+			pgstat_fetch_consistency == PGSTAT_FETCH_CONSISTENCY_SNAPSHOT;
+		ok = ok && pgStatSessionEndCause == DISCONNECT_KILLED;
+		ok = ok && *PgCurrentPgStatLastSessionReportTimeRef() == 67890;
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && !pgstat_track_counts;
+		ok = ok && !pgstat_track_activities;
+		ok = ok && pgstat_track_functions == TRACK_FUNC_ALL;
+		ok = ok &&
+			pgstat_fetch_consistency == PGSTAT_FETCH_CONSISTENCY_NONE;
+		ok = ok && pgStatSessionEndCause == DISCONNECT_CLIENT_EOF;
+		ok = ok && *PgCurrentPgStatLastSessionReportTimeRef() == 12345;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && pgstat_track_counts;
+		ok = ok && pgstat_track_activities;
+		ok = ok && pgstat_track_functions == TRACK_FUNC_PL;
+		ok = ok &&
+			pgstat_fetch_consistency == PGSTAT_FETCH_CONSISTENCY_SNAPSHOT;
+		ok = ok && pgStatSessionEndCause == DISCONNECT_KILLED;
+		ok = ok && *PgCurrentPgStatLastSessionReportTimeRef() == 67890;
+
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("stats_fetch_consistency",
+						saved_stats_fetch_consistency,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("track_activities", saved_track_activities,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("track_counts", saved_track_counts,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("track_functions", saved_track_functions,
+						PGC_SUSET, PGC_S_SESSION);
+		pgStatSessionEndCause = saved_session_end_cause;
+		*PgCurrentPgStatLastSessionReportTimeRef() =
+			saved_last_session_report_time;
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("stats_fetch_consistency",
+						saved_stats_fetch_consistency,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("track_activities", saved_track_activities,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("track_counts", saved_track_counts,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("track_functions", saved_track_functions,
+						PGC_SUSET, PGC_S_SESSION);
+		pgStatSessionEndCause = saved_session_end_cause;
+		*PgCurrentPgStatLastSessionReportTimeRef() =
+			saved_last_session_report_time;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session pgstat state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_session_misc_guc_state_is_session_local);
 Datum
 test_session_misc_guc_state_is_session_local(PG_FUNCTION_ARGS)

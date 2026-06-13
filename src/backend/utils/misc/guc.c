@@ -1569,6 +1569,12 @@ InitializeThreadedSessionGUCOptions(void)
 
 	gconf = find_option("stats_fetch_consistency", false, false, PANIC);
 	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("track_activities", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("track_functions", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
 }
 
 /*
@@ -1977,6 +1983,10 @@ RebindSessionGUCVariablePointers(void)
 	Assert(gconf->vartype == PGC_STRING);
 	gconf->_string.variable = PgCurrentSessionPreloadLibrariesRef();
 
+	gconf = find_option("stats_fetch_consistency", false, false, PANIC);
+	Assert(gconf->vartype == PGC_ENUM);
+	gconf->_enum.variable = PgCurrentPgStatFetchConsistencyRef();
+
 	gconf = find_option("synchronous_commit", false, false, PANIC);
 	Assert(gconf->vartype == PGC_ENUM);
 	gconf->_enum.variable = PgCurrentSynchronousCommitRef();
@@ -2070,6 +2080,18 @@ RebindSessionGUCVariablePointers(void)
 	gconf = find_option("track_cost_delay_timing", false, false, PANIC);
 	Assert(gconf->vartype == PGC_BOOL);
 	gconf->_bool.variable = PgCurrentTrackCostDelayTimingRef();
+
+	gconf = find_option("track_activities", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentPgStatTrackActivitiesRef();
+
+	gconf = find_option("track_counts", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentPgStatTrackCountsRef();
+
+	gconf = find_option("track_functions", false, false, PANIC);
+	Assert(gconf->vartype == PGC_ENUM);
+	gconf->_enum.variable = PgCurrentPgStatTrackFunctionsRef();
 
 	gconf = find_option("transform_null_equals", false, false, PANIC);
 	Assert(gconf->vartype == PGC_BOOL);

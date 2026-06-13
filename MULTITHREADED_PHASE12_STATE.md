@@ -1614,3 +1614,56 @@ Validation for this slice:
 - `git diff --check` passed;
 - static scans found no remaining direct session TLS definitions or extern
   declarations for the moved miscellaneous GUC names.
+
+## Session Pgstat State Bridge
+
+The thirty-first Phase 12 slice moves pgstat session state under `PgSession`:
+
+- `PgSession` now owns a `PgSessionPgStatState`;
+- `PgSessionPgStatState` owns `pgstat_track_counts`,
+  `pgstat_track_functions`, `pgstat_fetch_consistency`,
+  `pgstat_track_activities`, `pgStatSessionEndCause`, and the
+  session-report timestamp formerly held in `pgLastSessionReportTime`;
+- the public names remain source-compatible lvalue macros in `pgstat.h` and
+  `utils/backend_status.h`;
+- `pgLastSessionReportTime` remains private to `pgstat_database.c`, but its
+  storage now lives in the active logical session through
+  `PgCurrentPgStatLastSessionReportTimeRef()`;
+- early startup paths before `CurrentPgSession` is installed use fallback
+  session-local storage in `backend_runtime.c`;
+- process-mode and thread-runtime session installation adopt any early
+  fallback pgstat state into the logical session object;
+- `RebindSessionGUCVariablePointers()` now rebinds the generated GUC records
+  for `stats_fetch_consistency`, `track_activities`, `track_counts`, and
+  `track_functions` whenever the active logical session changes.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `guc.o`,
+  `pgstat.o`, `pgstat_function.o`, `pgstat_database.o`,
+  `backend_status.o`, `backend_progress.o`, `execExpr.o`, and
+  `test_backend_runtime.o`;
+- because exported pgstat globals changed into compatibility macros,
+  `gmake -C src/backend clean` plus generated utility and node-header
+  recovery was used before the clean rebuild;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed, followed by rebuilding
+  and reinstalling `src/test/modules/test_backend_runtime`,
+  `src/test/regress`, `libpqwalreceiver`, and `src/backend/snowball`;
+- focused `test_backend_runtime` regression passed and includes
+  `test_session_pgstat_state_is_session_local()`, which switches sessions
+  through `PgSetCurrentSession()`, sets representative pgstat tracking and
+  session-end values through the GUC machinery or direct compatibility names,
+  and proves the values follow the active session after GUC pointer rebinding;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- direct threaded-runtime TAP coverage was attempted for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`,
+  but this system Perl is missing `IPC::Run`, so both tests failed before
+  starting PostgreSQL;
+- `git diff --check` passed;
+- static scans found no remaining direct session TLS definitions or extern
+  declarations for the moved pgstat names.

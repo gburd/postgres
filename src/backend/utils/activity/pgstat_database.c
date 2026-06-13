@@ -18,6 +18,7 @@
 #include "postgres.h"
 
 #include "storage/standby.h"
+#include "utils/backend_runtime.h"
 #include "utils/pgstat_internal.h"
 #include "utils/timestamp.h"
 
@@ -29,12 +30,11 @@ PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_Counter pgStatBlockReadTime = 0;
 PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_Counter pgStatBlockWriteTime = 0;
 PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_Counter pgStatActiveTime = 0;
 PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_Counter pgStatTransactionIdleTime = 0;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION SessionEndType pgStatSessionEndCause = DISCONNECT_NORMAL;
 
 
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int pgStatXactCommit = 0;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int pgStatXactRollback = 0;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgStat_Counter pgLastSessionReportTime = 0;
+#define pgLastSessionReportTime (*PgCurrentPgStatLastSessionReportTimeRef())
 
 
 /*

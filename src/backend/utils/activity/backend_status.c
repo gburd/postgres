@@ -38,11 +38,6 @@
 #define NumBackendStatSlots (MaxBackends + NUM_AUXILIARY_PROCS)
 
 
-/* ----------
- * GUC parameters
- * ----------
- */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool pgstat_track_activities = false;
 PG_GLOBAL_RUNTIME int pgstat_track_activity_query_size = 1024;
 
 

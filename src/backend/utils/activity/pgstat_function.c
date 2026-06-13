@@ -23,13 +23,6 @@
 #include "utils/syscache.h"
 
 
-/* ----------
- * GUC parameters
- * ----------
- */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int pgstat_track_functions = TRACK_FUNC_OFF;
-
-
 /*
  * Total time charged to functions so far in the current backend.
  * We use this to help separate "self" and "other" time charges.

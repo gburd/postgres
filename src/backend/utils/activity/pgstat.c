@@ -198,15 +198,6 @@ static inline bool pgstat_is_kind_valid(PgStat_Kind kind);
 
 
 /* ----------
- * GUC parameters
- * ----------
- */
-
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool pgstat_track_counts = false;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int pgstat_fetch_consistency = PGSTAT_FETCH_CONSISTENCY_CACHE;
-
-
-/* ----------
  * state shared with pgstat_*.c
  * ----------
  */

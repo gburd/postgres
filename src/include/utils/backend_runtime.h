@@ -18,6 +18,7 @@
 #include "lib/ilist.h"
 #include "libpq/hba.h"
 #include "miscadmin.h"
+#include "pgstat.h"
 #include "port/atomics.h"
 #include "storage/ipc.h"
 #include "utils/backend_id.h"
@@ -342,6 +343,17 @@ typedef struct PgSessionMiscGUCState
 	char	   *dynamic_library_path_value;
 } PgSessionMiscGUCState;
 
+typedef struct PgSessionPgStatState
+{
+	bool		initialized;
+	bool		track_counts;
+	int			track_functions;
+	int			fetch_consistency;
+	bool		track_activities;
+	SessionEndType session_end_cause;
+	PgStat_Counter last_session_report_time;
+} PgSessionPgStatState;
+
 typedef struct PgSessionQueryMemoryState
 {
 	bool		initialized;
@@ -542,6 +554,7 @@ struct PgSession
 	PgSessionLockWaitState lock_wait;
 	PgSessionLoggingState logging;
 	PgSessionMiscGUCState misc_guc;
+	PgSessionPgStatState pgstat;
 	PgSessionQueryMemoryState query_memory;
 	PgSessionPlannerCostState planner_cost;
 	PgSessionPlannerMethodState planner_method;
@@ -643,6 +656,12 @@ extern ssize_t *PgCurrentMaxStackDepthBytesRef(void);
 extern char **PgCurrentSessionPreloadLibrariesRef(void);
 extern char **PgCurrentLocalPreloadLibrariesRef(void);
 extern char **PgCurrentDynamicLibraryPathRef(void);
+extern bool *PgCurrentPgStatTrackCountsRef(void);
+extern int *PgCurrentPgStatTrackFunctionsRef(void);
+extern int *PgCurrentPgStatFetchConsistencyRef(void);
+extern bool *PgCurrentPgStatTrackActivitiesRef(void);
+extern SessionEndType *PgCurrentPgStatSessionEndCauseRef(void);
+extern PgStat_Counter *PgCurrentPgStatLastSessionReportTimeRef(void);
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);

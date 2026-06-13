@@ -837,9 +837,13 @@ extern PgStat_WalStats *pgstat_fetch_stat_wal(void);
  */
 
 /* GUC parameters */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool pgstat_track_counts;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int pgstat_track_functions;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int pgstat_fetch_consistency;
+extern bool *PgCurrentPgStatTrackCountsRef(void);
+extern int *PgCurrentPgStatTrackFunctionsRef(void);
+extern int *PgCurrentPgStatFetchConsistencyRef(void);
+
+#define pgstat_track_counts (*PgCurrentPgStatTrackCountsRef())
+#define pgstat_track_functions (*PgCurrentPgStatTrackFunctionsRef())
+#define pgstat_fetch_consistency (*PgCurrentPgStatFetchConsistencyRef())
 
 
 /*
@@ -877,6 +881,7 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_Counter pgStatActive
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_Counter pgStatTransactionIdleTime;
 
 /* updated by the traffic cop and in errfinish() */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION SessionEndType pgStatSessionEndCause;
+extern SessionEndType *PgCurrentPgStatSessionEndCauseRef(void);
+#define pgStatSessionEndCause (*PgCurrentPgStatSessionEndCauseRef())
 
 #endif							/* PGSTAT_H */

@@ -288,7 +288,8 @@ typedef struct LocalPgBackendStatus
  * GUC parameters
  * ----------
  */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool pgstat_track_activities;
+extern bool *PgCurrentPgStatTrackActivitiesRef(void);
+#define pgstat_track_activities (*PgCurrentPgStatTrackActivitiesRef())
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int pgstat_track_activity_query_size;
 
 
