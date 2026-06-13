@@ -848,14 +848,16 @@ so immediate shutdown no longer leaves background writer, checkpointer,
 autovacuum launcher, or WAL writer thread carriers waiting for SIGKILL
 escalation in the basic threaded shutdown smoke. The temporary threaded
 startup serialization gate is now centralized behind an explicit backend-type
-policy. AIO workers, the syslogger, archiver, WAL receiver, WAL summarizer,
-background writer, checkpointer, and WAL writer bypass it; background writer,
-checkpointer, WAL writer, archiver, WAL receiver, and WAL summarizer are
-worker-specific narrowings for auxiliary classes whose common startup does not
-run database/session bootstrap before entering the worker loop, with archiver,
-WAL receiver, and WAL summarizer additionally validated through their
-wakeup/progress, streaming, and clean shutdown paths. A broader attempted
-bypass for additional non-session
+policy. AIO workers, the syslogger, startup process, archiver, WAL receiver,
+WAL summarizer, background writer, checkpointer, and WAL writer bypass it;
+background writer, checkpointer, WAL writer, startup process, archiver, WAL
+receiver, and WAL summarizer are worker-specific narrowings for auxiliary
+classes whose common startup does not run database/session bootstrap before
+entering the worker loop, with startup additionally validated through threaded
+normal startup and crash recovery, and archiver, WAL receiver, and WAL
+summarizer additionally validated through their wakeup/progress, streaming,
+and clean shutdown paths. A broader attempted bypass for additional
+non-session
 auxiliary workers reproduced an abrupt postmaster death during a threaded
 `pg_class` catalog scan, so further narrowing remains a Gate E2 blocker and
 must be driven by worker-specific shared-state isolation plus catalog-startup

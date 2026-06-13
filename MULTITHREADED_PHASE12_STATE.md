@@ -4758,3 +4758,52 @@ Validation for this slice:
 - log inspection for that smoke found no crash, postmaster-death, shutdown
   escalation, assertion, or bad-descriptor markers;
 - `git diff --check` passed.
+
+## Threaded Startup Gate Startup Process Narrowing
+
+The ninety-ninth Phase 12 slice narrows the temporary threaded startup
+serialization gate for the startup process:
+
+- `backend_thread_requires_startup_gate()` now allows `B_STARTUP` thread
+  carriers to bypass the global startup mutex, joining the already-validated
+  AIO worker, syslogger, archiver, WAL receiver, WAL summarizer, background
+  writer, checkpointer, and WAL writer bypasses;
+- startup process uses `AuxiliaryProcessMainCommon()`, which creates its
+  auxiliary PGPROC, procsignal/barrier state, resource owner, pgstat state,
+  and normal processing mode before recovery-specific work begins;
+- startup process does not run database/session bootstrap or `InitPostgres()`;
+- the bypassed section is the common auxiliary startup section. Recovery
+  replay and normal startup-state transitions happen after
+  `ThreadedBackendStartupComplete()` and outside the temporary startup gate;
+- its recovery loop consumes logical interrupts and keeps signal, promotion,
+  shutdown, archive-recovery, and restore-command state backend-local or
+  published through shared memory control structures;
+- the remaining gated classes stay gated: regular client backend startup,
+  autovacuum launcher/workers, background workers, and slot sync.
+
+This is not the full Gate E2 startup-gate closure. It removes serialization
+from another non-session auxiliary startup path with a small, explicit
+ownership model and covers both clean startup and crash-recovery startup.
+Further narrowing still needs worker-specific shared-state isolation and
+catalog-startup stress coverage, especially for workers that run
+database/session bootstrap or load arbitrary background-worker code.
+
+Validation for this slice:
+
+- touched-object build for `src/backend/postmaster/launch_backend.o` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- full `gmake -j8` passed;
+- `gmake -j8 DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- direct full-module `pg_regress test_backend_runtime` passed all 1 test
+  against the current temp install;
+- a manual threaded startup/crash-recovery smoke with `multithreaded = on`
+  and `dynamic_shared_memory_type = posix` verified the startup process
+  logged `starting startup thread carrier` on both initial startup and
+  restart after an immediate stop, recovered a 1000-row table after crash
+  recovery, and handled a post-recovery `pg_class` catalog scan;
+- log inspection for that smoke found recovery markers and found no crash,
+  postmaster-death, shutdown escalation, assertion, or bad-descriptor
+  markers;
+- `git diff --check` passed.
