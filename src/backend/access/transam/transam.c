@@ -22,6 +22,7 @@
 #include "access/clog.h"
 #include "access/subtrans.h"
 #include "access/transam.h"
+#include "utils/backend_runtime.h"
 #include "utils/snapmgr.h"
 
 /*
@@ -30,10 +31,9 @@
  * same XID, for example when scanning a table just after a bulk insert,
  * update, or delete.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND TransactionId cachedFetchXid =
-	InvalidTransactionId;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND XidStatus cachedFetchXidStatus;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND XLogRecPtr cachedCommitLSN;
+#define cachedFetchXid (*PgCurrentCachedFetchXidRef())
+#define cachedFetchXidStatus (*PgCurrentCachedFetchXidStatusRef())
+#define cachedCommitLSN (*PgCurrentCachedCommitLSNRef())
 
 /* Local functions */
 static XidStatus TransactionLogFetch(TransactionId transactionId);

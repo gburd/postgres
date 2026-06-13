@@ -283,6 +283,18 @@ Important current files:
   `PgBackend` layout and installed runtime headers changed; at minimum rebuild
   and reinstall PL/pgSQL, `src/test/modules/test_backend_runtime`, and contrib
   before validating.
+- Transaction/access-manager backend-local state now lives in
+  `PgBackendTransactionState`: transaction-status cache fields, two-phase
+  locked-GXACT and exit-registration fields, the private `TwoPhaseGetGXact()`
+  lookup cache, SLRU error-report fields, and multixact cache/debug-string
+  state. This bridge deliberately includes function-local statics that do not
+  appear in the raw `PG_THREAD_LOCAL` scan. The multixact list head must be
+  initialized through the runtime state initializer, and early adoption asserts
+  that any initialized early list is empty before copying. After changing this
+  bridge, clean and rebuild backend objects because `PgBackend` layout and
+  installed runtime headers changed; at minimum rebuild and reinstall
+  PL/pgSQL, `src/test/modules/test_backend_runtime`, and contrib before
+  validating.
 - Treat `PMChild.thread_backend` as private PMChild-owned publication state.
   Postmaster code should use PMChild helper APIs for threaded backend
   interrupt, wakeup, and thread-exit publication rather than dereferencing or

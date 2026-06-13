@@ -13,6 +13,7 @@
 #define BACKEND_RUNTIME_H
 
 #include "access/session.h"
+#include "access/transam.h"
 #include "common/pg_prng.h"
 #include "common/relpath.h"
 #include "executor/instrument.h"
@@ -294,6 +295,23 @@ typedef struct PgBackendIPCState
 	volatile int shared_invalidation_next_msg;
 	volatile int shared_invalidation_num_msgs;
 } PgBackendIPCState;
+
+typedef struct PgBackendTransactionState
+{
+	TransactionId cached_fetch_xid;
+	int			cached_fetch_xid_status;
+	XLogRecPtr	cached_commit_lsn;
+	void	   *two_phase_locked_gxact;
+	bool		two_phase_exit_registered;
+	FullTransactionId two_phase_cached_fxid;
+	void	   *two_phase_cached_gxact;
+	int			slru_error_cause;
+	int			slru_errno_value;
+	dclist_head multixact_cache;
+	bool		multixact_cache_initialized;
+	MemoryContext multixact_context;
+	char	   *multixact_debug_string;
+} PgBackendTransactionState;
 
 typedef struct PgExecutionDebugState
 {
@@ -1083,6 +1101,7 @@ struct PgBackend
 	PgBackendStorageState storage;
 	PgBackendLockState locks;
 	PgBackendIPCState ipc;
+	PgBackendTransactionState transaction;
 	PgBackendPendingInterruptState pending_interrupts;
 	PgBackendInterruptHoldoffState interrupt_holdoffs;
 	PgBackendWaitState wait_state;
@@ -1448,6 +1467,19 @@ extern volatile sig_atomic_t *PgCurrentCatchupInterruptPendingRef(void);
 extern void **PgCurrentSharedInvalidationMessagesRef(void);
 extern volatile int *PgCurrentSharedInvalidationNextMsgRef(void);
 extern volatile int *PgCurrentSharedInvalidationNumMsgsRef(void);
+extern TransactionId *PgCurrentCachedFetchXidRef(void);
+extern int *PgCurrentCachedFetchXidStatusRef(void);
+extern XLogRecPtr *PgCurrentCachedCommitLSNRef(void);
+extern void **PgCurrentTwoPhaseLockedGxactRef(void);
+extern bool *PgCurrentTwoPhaseExitRegisteredRef(void);
+extern FullTransactionId *PgCurrentTwoPhaseCachedFxidRef(void);
+extern void **PgCurrentTwoPhaseCachedGxactRef(void);
+extern int *PgCurrentSlruErrorCauseRef(void);
+extern int *PgCurrentSlruErrnoRef(void);
+extern dclist_head *PgCurrentMultiXactCacheRef(void);
+extern bool *PgCurrentMultiXactCacheInitializedRef(void);
+extern MemoryContext *PgCurrentMultiXactContextRef(void);
+extern char **PgCurrentMultiXactDebugStringRef(void);
 extern void **PgCurrentVfdCacheRef(void);
 extern Size *PgCurrentSizeVfdCacheRef(void);
 extern int *PgCurrentNFileRef(void);

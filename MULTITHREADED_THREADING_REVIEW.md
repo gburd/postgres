@@ -521,6 +521,15 @@ another coherent lock/wait state group from raw backend-local TLS. The slice
 passed clean full build/install, process-mode backend-runtime regression,
 direct threaded runtime TAP, contrib build, and the required global-lifetime
 scan with zero new unclassified mutable globals.
+Transaction/access-manager backend-local state now has a dedicated
+`PgBackendTransactionState`: the transaction-status cache, two-phase
+locked-GXACT and exit-registration state, private two-phase GXACT lookup
+cache, SLRU error-report state, and multixact member cache/debug-string state
+now follow the logical backend. This also removes two function-local statics
+that were outside the raw TLS scan but still unsafe in a shared address space.
+The slice passed clean full build/install, process-mode backend-runtime
+regression, direct threaded runtime TAP, contrib build, and the required
+global-lifetime scan with zero new unclassified mutable globals.
 PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly

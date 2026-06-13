@@ -108,6 +108,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendBufferState early_backend_buff
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendStorageState early_backend_storage;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendLockState early_backend_locks;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendIPCState early_backend_ipc;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendTransactionState early_backend_transaction;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionIdentityState early_connection_identity;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionSocketIOState early_connection_socket_io;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionProtocolState early_connection_protocol;
@@ -624,6 +625,8 @@ static void PgBackendInitializeLockState(PgBackendLockState *locks);
 static void PgBackendAdoptEarlyLockState(PgBackend *backend);
 static void PgBackendInitializeIPCState(PgBackendIPCState *ipc);
 static void PgBackendAdoptEarlyIPCState(PgBackend *backend);
+static void PgBackendInitializeTransactionState(PgBackendTransactionState *transaction);
+static void PgBackendAdoptEarlyTransactionState(PgBackend *backend);
 static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
 static void PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend);
 static BackendType *PgCurrentBackendTypeRef(void);
@@ -701,6 +704,7 @@ static PgExecutionMatViewState *PgCurrentExecutionMatViewState(void);
 static PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
 static PgBackendInstrumentationState *PgCurrentBackendInstrumentationState(void);
 static PgBackendBufferState *PgCurrentBackendBufferState(void);
+static PgBackendTransactionState *PgCurrentBackendTransactionState(void);
 static PgBackendPendingInterruptState *PgCurrentPendingInterrupts(void);
 static PgBackendInterruptHoldoffState *PgCurrentInterruptHoldoffs(void);
 
@@ -2174,6 +2178,30 @@ PgBackendAdoptEarlyIPCState(PgBackend *backend)
 }
 
 static void
+PgBackendInitializeTransactionState(PgBackendTransactionState *transaction)
+{
+	Assert(transaction != NULL);
+
+	MemSet(transaction, 0, sizeof(*transaction));
+	transaction->cached_fetch_xid = InvalidTransactionId;
+	transaction->two_phase_cached_fxid = InvalidFullTransactionId;
+	dclist_init(&transaction->multixact_cache);
+}
+
+static void
+PgBackendAdoptEarlyTransactionState(PgBackend *backend)
+{
+	Assert(backend != NULL);
+	Assert(!early_backend_transaction.multixact_cache_initialized ||
+		   dclist_is_empty(&early_backend_transaction.multixact_cache));
+
+	backend->transaction = early_backend_transaction;
+	if (backend->transaction.multixact_cache_initialized)
+		dclist_init(&backend->transaction.multixact_cache);
+	PgBackendInitializeTransactionState(&early_backend_transaction);
+}
+
+static void
 PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend)
 {
 	Assert(backend != NULL);
@@ -2411,6 +2439,7 @@ InitializePgProcessRuntime(void)
 	PgBackendAdoptEarlyStorageState(&process_backend);
 	PgBackendAdoptEarlyLockState(&process_backend);
 	PgBackendAdoptEarlyIPCState(&process_backend);
+	PgBackendAdoptEarlyTransactionState(&process_backend);
 	PgBackendSetInterruptLatch(&process_backend, process_backend.core.latch);
 	dlist_init(&process_backend.dsm_segment_list);
 	pg_atomic_init_u32(&process_backend.wait_state.waiting, 0);
@@ -2555,6 +2584,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgBackendInitializeStorageState(&state->backend.storage);
 	PgBackendInitializeLockState(&state->backend.locks);
 	PgBackendInitializeIPCState(&state->backend.ipc);
+	PgBackendInitializeTransactionState(&state->backend.transaction);
 	PgBackendSetInterruptLatch(&state->backend, interrupt_latch);
 	dlist_init(&state->backend.dsm_segment_list);
 	pg_atomic_init_u32(&state->backend.wait_state.waiting, 0);
@@ -2641,6 +2671,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgBackendAdoptEarlyStorageState(&state->backend);
 	PgBackendAdoptEarlyLockState(&state->backend);
 	PgBackendAdoptEarlyIPCState(&state->backend);
+	PgBackendAdoptEarlyTransactionState(&state->backend);
 	PgSessionAdoptEarlyDatabaseState(&state->session);
 	PgSessionAdoptEarlyTablespaceState(&state->session);
 	PgSessionAdoptEarlyBinaryUpgradeState(&state->session);
@@ -6541,6 +6572,93 @@ volatile int *
 PgCurrentSharedInvalidationNumMsgsRef(void)
 {
 	return &PgCurrentBackendIPCState()->shared_invalidation_num_msgs;
+}
+
+static PgBackendTransactionState *
+PgCurrentBackendTransactionState(void)
+{
+	if (CurrentPgBackend == NULL)
+		return &early_backend_transaction;
+
+	return &CurrentPgBackend->transaction;
+}
+
+TransactionId *
+PgCurrentCachedFetchXidRef(void)
+{
+	return &PgCurrentBackendTransactionState()->cached_fetch_xid;
+}
+
+int *
+PgCurrentCachedFetchXidStatusRef(void)
+{
+	return &PgCurrentBackendTransactionState()->cached_fetch_xid_status;
+}
+
+XLogRecPtr *
+PgCurrentCachedCommitLSNRef(void)
+{
+	return &PgCurrentBackendTransactionState()->cached_commit_lsn;
+}
+
+void **
+PgCurrentTwoPhaseLockedGxactRef(void)
+{
+	return &PgCurrentBackendTransactionState()->two_phase_locked_gxact;
+}
+
+bool *
+PgCurrentTwoPhaseExitRegisteredRef(void)
+{
+	return &PgCurrentBackendTransactionState()->two_phase_exit_registered;
+}
+
+FullTransactionId *
+PgCurrentTwoPhaseCachedFxidRef(void)
+{
+	return &PgCurrentBackendTransactionState()->two_phase_cached_fxid;
+}
+
+void **
+PgCurrentTwoPhaseCachedGxactRef(void)
+{
+	return &PgCurrentBackendTransactionState()->two_phase_cached_gxact;
+}
+
+int *
+PgCurrentSlruErrorCauseRef(void)
+{
+	return &PgCurrentBackendTransactionState()->slru_error_cause;
+}
+
+int *
+PgCurrentSlruErrnoRef(void)
+{
+	return &PgCurrentBackendTransactionState()->slru_errno_value;
+}
+
+dclist_head *
+PgCurrentMultiXactCacheRef(void)
+{
+	return &PgCurrentBackendTransactionState()->multixact_cache;
+}
+
+bool *
+PgCurrentMultiXactCacheInitializedRef(void)
+{
+	return &PgCurrentBackendTransactionState()->multixact_cache_initialized;
+}
+
+MemoryContext *
+PgCurrentMultiXactContextRef(void)
+{
+	return &PgCurrentBackendTransactionState()->multixact_context;
+}
+
+char **
+PgCurrentMultiXactDebugStringRef(void)
+{
+	return &PgCurrentBackendTransactionState()->multixact_debug_string;
 }
 
 static PgBackendPendingInterruptState *

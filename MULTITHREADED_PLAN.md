@@ -944,6 +944,16 @@ the lock-manager source-level API stable. The batch passed the clean full
 build/install, process-mode backend-runtime regression, direct threaded
 runtime TAP, contrib build, and required global-lifetime scan with zero new
 unclassified mutable globals.
+The transaction-state batch now stores transaction-status cache state,
+two-phase locked-GXACT/exit-registration state, the private two-phase GXACT
+lookup cache, SLRU error-report state, and multixact member cache/debug-string
+state in a new `PgBackendTransactionState` bucket. This batch intentionally
+included function-local statics in `twophase.c` and `multixact.c` that were
+not visible as annotated TLS declarations but would still be shared by
+thread-backed logical backends. It passed the clean full build/install,
+process-mode backend-runtime regression, direct threaded runtime TAP, contrib
+build, and required global-lifetime scan with zero new unclassified mutable
+globals.
 PMChild assignment and slot release now also scrub stale carrier-visible signal
 ids and thread-exit payloads before reuse. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live

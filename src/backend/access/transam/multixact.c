@@ -84,6 +84,7 @@
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "storage/subsystems.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc_hooks.h"
 #include "utils/injection_point.h"
 #include "utils/lsyscache.h"
@@ -297,9 +298,9 @@ typedef struct mXactCacheEnt
 } mXactCacheEnt;
 
 #define MAX_CACHE_ENTRIES	256
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND dclist_head MXactCache;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool MXactCacheInitialized = false;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND MemoryContext MXactContext = NULL;
+#define MXactCache (*PgCurrentMultiXactCacheRef())
+#define MXactCacheInitialized (*PgCurrentMultiXactCacheInitializedRef())
+#define MXactContext (*PgCurrentMultiXactContextRef())
 
 #ifdef MULTIXACT_DEBUG
 #define debug_elog2(a,b) elog(a,b)
@@ -1618,12 +1619,12 @@ mxstatus_to_string(MultiXactStatus status)
 char *
 mxid_to_string(MultiXactId multi, int nmembers, MultiXactMember *members)
 {
-	static char *str = NULL;
+	char	  **strp = PgCurrentMultiXactDebugStringRef();
 	StringInfoData buf;
 	int			i;
 
-	if (str != NULL)
-		pfree(str);
+	if (*strp != NULL)
+		pfree(*strp);
 
 	initStringInfo(&buf);
 
@@ -1635,9 +1636,9 @@ mxid_to_string(MultiXactId multi, int nmembers, MultiXactMember *members)
 						 mxstatus_to_string(members[i].status));
 
 	appendStringInfoChar(&buf, ']');
-	str = MemoryContextStrdup(TopMemoryContext, buf.data);
+	*strp = MemoryContextStrdup(TopMemoryContext, buf.data);
 	pfree(buf.data);
-	return str;
+	return *strp;
 }
 
 /*

@@ -7414,6 +7414,116 @@ test_backend_ipc_state_is_backend_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_backend_transaction_state_is_backend_local);
+Datum
+test_backend_transaction_state_is_backend_local(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgBackend	fake_backend1;
+	PgBackend	fake_backend2;
+	FullTransactionId fxid1;
+	FullTransactionId fxid2;
+	bool		ok = true;
+
+	saved_backend = CurrentPgBackend;
+	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
+	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+	fxid1 = FullTransactionIdFromEpochAndXid(1, 101);
+	fxid2 = FullTransactionIdFromEpochAndXid(2, 201);
+
+	PG_TRY();
+	{
+		CurrentPgBackend = &fake_backend1;
+		*PgCurrentCachedFetchXidRef() = 101;
+		*PgCurrentCachedFetchXidStatusRef() = 102;
+		*PgCurrentCachedCommitLSNRef() = UINT64CONST(103);
+		*PgCurrentTwoPhaseLockedGxactRef() = &fake_backend1;
+		*PgCurrentTwoPhaseExitRegisteredRef() = true;
+		*PgCurrentTwoPhaseCachedFxidRef() = fxid1;
+		*PgCurrentTwoPhaseCachedGxactRef() = &fake_backend1;
+		*PgCurrentSlruErrorCauseRef() = 104;
+		*PgCurrentSlruErrnoRef() = 105;
+		dclist_init(PgCurrentMultiXactCacheRef());
+		*PgCurrentMultiXactCacheInitializedRef() = true;
+		*PgCurrentMultiXactContextRef() = (MemoryContext) &fake_backend1;
+		*PgCurrentMultiXactDebugStringRef() = (char *) "mxact-1";
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && *PgCurrentCachedFetchXidRef() == InvalidTransactionId;
+		ok = ok && *PgCurrentCachedFetchXidStatusRef() == 0;
+		ok = ok && *PgCurrentCachedCommitLSNRef() == 0;
+		ok = ok && *PgCurrentTwoPhaseLockedGxactRef() == NULL;
+		ok = ok && !*PgCurrentTwoPhaseExitRegisteredRef();
+		ok = ok && FullTransactionIdEquals(*PgCurrentTwoPhaseCachedFxidRef(),
+											InvalidFullTransactionId);
+		ok = ok && *PgCurrentTwoPhaseCachedGxactRef() == NULL;
+		ok = ok && *PgCurrentSlruErrorCauseRef() == 0;
+		ok = ok && *PgCurrentSlruErrnoRef() == 0;
+		ok = ok && !*PgCurrentMultiXactCacheInitializedRef();
+		ok = ok && *PgCurrentMultiXactContextRef() == NULL;
+		ok = ok && *PgCurrentMultiXactDebugStringRef() == NULL;
+
+		*PgCurrentCachedFetchXidRef() = 201;
+		*PgCurrentCachedFetchXidStatusRef() = 202;
+		*PgCurrentCachedCommitLSNRef() = UINT64CONST(203);
+		*PgCurrentTwoPhaseLockedGxactRef() = &fake_backend2;
+		*PgCurrentTwoPhaseExitRegisteredRef() = false;
+		*PgCurrentTwoPhaseCachedFxidRef() = fxid2;
+		*PgCurrentTwoPhaseCachedGxactRef() = &fake_backend2;
+		*PgCurrentSlruErrorCauseRef() = 204;
+		*PgCurrentSlruErrnoRef() = 205;
+		dclist_init(PgCurrentMultiXactCacheRef());
+		*PgCurrentMultiXactCacheInitializedRef() = true;
+		*PgCurrentMultiXactContextRef() = (MemoryContext) &fake_backend2;
+		*PgCurrentMultiXactDebugStringRef() = (char *) "mxact-2";
+
+		CurrentPgBackend = &fake_backend1;
+		ok = ok && *PgCurrentCachedFetchXidRef() == 101;
+		ok = ok && *PgCurrentCachedFetchXidStatusRef() == 102;
+		ok = ok && *PgCurrentCachedCommitLSNRef() == UINT64CONST(103);
+		ok = ok && *PgCurrentTwoPhaseLockedGxactRef() == &fake_backend1;
+		ok = ok && *PgCurrentTwoPhaseExitRegisteredRef();
+		ok = ok && FullTransactionIdEquals(*PgCurrentTwoPhaseCachedFxidRef(),
+											fxid1);
+		ok = ok && *PgCurrentTwoPhaseCachedGxactRef() == &fake_backend1;
+		ok = ok && *PgCurrentSlruErrorCauseRef() == 104;
+		ok = ok && *PgCurrentSlruErrnoRef() == 105;
+		ok = ok && *PgCurrentMultiXactCacheInitializedRef();
+		ok = ok && dclist_is_empty(PgCurrentMultiXactCacheRef());
+		ok = ok && *PgCurrentMultiXactContextRef() == (MemoryContext) &fake_backend1;
+		ok = ok && strcmp(*PgCurrentMultiXactDebugStringRef(), "mxact-1") == 0;
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && *PgCurrentCachedFetchXidRef() == 201;
+		ok = ok && *PgCurrentCachedFetchXidStatusRef() == 202;
+		ok = ok && *PgCurrentCachedCommitLSNRef() == UINT64CONST(203);
+		ok = ok && *PgCurrentTwoPhaseLockedGxactRef() == &fake_backend2;
+		ok = ok && !*PgCurrentTwoPhaseExitRegisteredRef();
+		ok = ok && FullTransactionIdEquals(*PgCurrentTwoPhaseCachedFxidRef(),
+											fxid2);
+		ok = ok && *PgCurrentTwoPhaseCachedGxactRef() == &fake_backend2;
+		ok = ok && *PgCurrentSlruErrorCauseRef() == 204;
+		ok = ok && *PgCurrentSlruErrnoRef() == 205;
+		ok = ok && *PgCurrentMultiXactCacheInitializedRef();
+		ok = ok && dclist_is_empty(PgCurrentMultiXactCacheRef());
+		ok = ok && *PgCurrentMultiXactContextRef() == (MemoryContext) &fake_backend2;
+		ok = ok && strcmp(*PgCurrentMultiXactDebugStringRef(), "mxact-2") == 0;
+
+		CurrentPgBackend = saved_backend;
+	}
+	PG_CATCH();
+	{
+		CurrentPgBackend = saved_backend;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "backend transaction state was not backend-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_pmchild_thread_backend_signal_api);
 Datum
 test_pmchild_thread_backend_signal_api(PG_FUNCTION_ARGS)

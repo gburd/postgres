@@ -58,6 +58,7 @@ SELECT test_backend_buffer_state_is_backend_local();
 SELECT test_backend_storage_state_is_backend_local();
 SELECT test_backend_lock_state_is_backend_local();
 SELECT test_backend_ipc_state_is_backend_local();
+SELECT test_backend_transaction_state_is_backend_local();
 SELECT test_pmchild_thread_backend_signal_api();
 SELECT test_pmchild_thread_backend_publication_race();
 SELECT test_backend_core_state_is_backend_local();

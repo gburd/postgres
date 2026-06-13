@@ -104,6 +104,7 @@
 #include "storage/procarray.h"
 #include "storage/subsystems.h"
 #include "utils/builtins.h"
+#include "utils/backend_runtime.h"
 #include "utils/injection_point.h"
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
@@ -204,9 +205,8 @@ const ShmemCallbacks TwoPhaseShmemCallbacks = {
  * TwoPhaseStateLock, though obviously the pointer itself doesn't need to be
  * (since it's just local memory).
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND GlobalTransaction MyLockedGxact = NULL;
-
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool twophaseExitRegistered = false;
+#define MyLockedGxact (*(GlobalTransaction *) PgCurrentTwoPhaseLockedGxactRef())
+#define twophaseExitRegistered (*PgCurrentTwoPhaseExitRegisteredRef())
 
 static void PrepareRedoRemoveFull(FullTransactionId fxid, bool giveWarning);
 static void RecordTransactionCommitPrepared(TransactionId xid,
@@ -811,8 +811,9 @@ TwoPhaseGetGXact(FullTransactionId fxid, bool lock_held)
 	GlobalTransaction result = NULL;
 	int			i;
 
-	static FullTransactionId cached_fxid = {InvalidTransactionId};
-	static GlobalTransaction cached_gxact = NULL;
+	FullTransactionId *cached_fxid = PgCurrentTwoPhaseCachedFxidRef();
+	GlobalTransaction *cached_gxact =
+		(GlobalTransaction *) PgCurrentTwoPhaseCachedGxactRef();
 
 	Assert(!lock_held || LWLockHeldByMe(TwoPhaseStateLock));
 
@@ -820,8 +821,8 @@ TwoPhaseGetGXact(FullTransactionId fxid, bool lock_held)
 	 * During a recovery, COMMIT PREPARED, or ABORT PREPARED, we'll be called
 	 * repeatedly for the same XID.  We can save work with a simple cache.
 	 */
-	if (FullTransactionIdEquals(fxid, cached_fxid))
-		return cached_gxact;
+	if (FullTransactionIdEquals(fxid, *cached_fxid))
+		return *cached_gxact;
 
 	if (!lock_held)
 		LWLockAcquire(TwoPhaseStateLock, LW_SHARED);
@@ -844,8 +845,8 @@ TwoPhaseGetGXact(FullTransactionId fxid, bool lock_held)
 		elog(ERROR, "failed to find GlobalTransaction for xid %u",
 			 XidFromFullTransactionId(fxid));
 
-	cached_fxid = fxid;
-	cached_gxact = result;
+	*cached_fxid = fxid;
+	*cached_gxact = result;
 
 	return result;
 }

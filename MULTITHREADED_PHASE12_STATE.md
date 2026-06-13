@@ -6582,3 +6582,54 @@ Validation for this slice:
 - `gmake -C contrib -j8` passed;
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals, with backend-local declarations dropping from 330 to 321.
+
+## Backend Transaction State Bridge
+
+The one-hundred-thirty-sixth Phase 12 slice moves a transaction/access-manager
+backend-local state group into a new `PgBackendTransactionState` bucket:
+
+- transaction-status single-entry cache state: cached XID, cached status, and
+  cached commit LSN;
+- two-phase backend state: the locked `GlobalTransaction` pointer and
+  two-phase exit-callback registration flag;
+- the private `TwoPhaseGetGXact()` lookup cache, which was a function-local
+  static rather than an annotated TLS global;
+- SLRU error-report state used after physical page I/O failures;
+- multixact member cache state: cache list head, initialization flag, cache
+  memory context, and the private debug string buffer used by
+  `mxid_to_string()`.
+
+The runtime state keeps private two-phase implementation pointers opaque and
+keeps SLRU's private error enum local to `slru.c`. The multixact cache list
+head is explicitly initialized in the backend transaction state initializer.
+Early fallback adoption asserts that an initialized early multixact list is
+empty before copying, because non-empty copied list heads would leave list
+nodes linked to the old head address.
+
+Validation for this slice:
+
+- `gmake -C src/backend/utils/init backend_runtime.o` passed;
+- `gmake -C src/backend/access/transam transam.o twophase.o slru.o multixact.o`
+  passed;
+- `gmake -C src/test/modules/test_backend_runtime test_backend_runtime.o`
+  passed after adding `test_backend_transaction_state_is_backend_local()`;
+- a static scan found no remaining raw TLS declarations or function-local
+  statics for the moved transaction-status, two-phase, SLRU, or multixact
+  state;
+- a full backend clean plus generated-header recovery was run after the
+  installed-header and `PgBackend` layout changes;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- PL/pgSQL and `src/test/modules/test_backend_runtime` were cleaned, rebuilt,
+  and reinstalled after the installed-header change;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression, including the new
+  `test_backend_transaction_state_is_backend_local()` helper, and still
+  reported TAP disabled by configure;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
+  explicit `PG_REGRESS` environment;
+- `gmake -C contrib -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 321 to 312.
