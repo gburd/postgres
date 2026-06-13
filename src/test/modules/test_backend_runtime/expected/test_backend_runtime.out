@@ -83,6 +83,12 @@ SELECT test_session_vacuum_state_is_session_local();
  t
 (1 row)
 
+SELECT test_session_buffer_io_state_is_session_local();
+ test_session_buffer_io_state_is_session_local 
+-----------------------------------------------
+ t
+(1 row)
+
 SELECT test_session_query_memory_state_is_session_local();
  test_session_query_memory_state_is_session_local 
 --------------------------------------------------

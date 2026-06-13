@@ -1314,3 +1314,69 @@ Validation for this slice:
 - `git diff --check` passed;
 - static scans found no remaining direct session TLS definitions or extern
   declarations for the moved vacuum/analyze names.
+
+## Session Buffer I/O GUC State Bridge
+
+The twenty-sixth Phase 12 slice moves buffer/storage I/O tuning state under
+`PgSession`:
+
+- `PgSession` now owns a `PgSessionBufferIOState`;
+- the exported buffer I/O GUC backing variables remain source-compatible
+  lvalue macros in `storage/bufmgr.h`;
+- the macros route through `PgCurrent*Ref()` accessors that return fields in
+  the active logical session;
+- zeroed logical session objects lazily initialize
+  `zero_damaged_pages`, `track_io_timing`, `effective_io_concurrency`,
+  `maintenance_io_concurrency`, `io_combine_limit`,
+  `io_combine_limit_guc`, and `backend_flush_after` to their historical
+  defaults;
+- early startup paths before `CurrentPgSession` is installed use fallback
+  session-local storage in `backend_runtime.c`;
+- process-mode and thread-runtime session installation adopt any early
+  fallback buffer I/O state into the logical session object;
+- `RebindSessionGUCVariablePointers()` now rebinds the generated GUC records
+  for `backend_flush_after`, `effective_io_concurrency`,
+  `io_combine_limit`, `maintenance_io_concurrency`, `track_io_timing`, and
+  `zero_damaged_pages` whenever the active logical session changes;
+- `io_combine_limit` is a session-local derived runtime value, while
+  `io_combine_limit_guc` is the generated GUC record's direct backing
+  variable. The existing assign hooks continue to derive the runtime value
+  from `io_combine_limit_guc` and the runtime-wide `io_max_combine_limit`;
+- internal tablespace reloption C fields were renamed to `spc_*` variants and
+  the read-stream internal member was renamed to `stream_io_combine_limit` so
+  the new compatibility macros cannot collide with struct members. SQL
+  reloption names and read-stream behavior are unchanged.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `bufmgr.o`,
+  `buf_init.o`, `freelist.o`, `localbuf.o`, `read_stream.o`, `md.o`,
+  `guc.o`, `variable.o`, `spccache.o`, `reloptions.o`, `analyze.o`,
+  `explain.o`, `heapam.o`, `vacuumlazy.o`, `xlogprefetcher.o`, and
+  `test_backend_runtime.o`;
+- the first normal `gmake -j8` attempt linked stale objects that still
+  referenced the old TLS symbols, matching the stale-object warning in
+  `AGENTS.md`; `gmake -C src/backend clean` plus generated-header recovery was
+  used before the clean rebuild;
+- clean full `gmake -j8` passed after the backend clean;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed, followed by rebuilding
+  and reinstalling `src/test/modules/test_backend_runtime`,
+  `src/test/regress`, `libpqwalreceiver`, and `src/backend/snowball`;
+- focused `test_backend_runtime` regression passed and includes
+  `test_session_buffer_io_state_is_session_local()`, which switches sessions
+  through `PgSetCurrentSession()`, sets the buffer I/O values through the GUC
+  machinery, verifies the derived `io_combine_limit`, and proves the values
+  follow the active session after GUC pointer rebinding;
+- direct threaded-runtime TAP coverage was attempted for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`,
+  but this system Perl is missing `IPC::Run`, so both tests failed before
+  starting PostgreSQL;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests, including `guc`, `reloptions`, `vacuum`, `vacuum_parallel`,
+  `stats`, and storage-heavy coverage;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- `git diff --check` passed;
+- static scans found no remaining direct session TLS definitions or extern
+  declarations for the moved buffer I/O names.

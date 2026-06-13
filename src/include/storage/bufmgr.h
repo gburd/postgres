@@ -162,25 +162,35 @@ typedef struct WritebackContext WritebackContext;
 /* in globals.c ... this duplicates miscadmin.h */
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int NBuffers;
 
+/* in backend_runtime.c */
+extern bool *PgCurrentZeroDamagedPagesRef(void);
+extern bool *PgCurrentTrackIOTimingRef(void);
+extern int *PgCurrentEffectiveIOConcurrencyRef(void);
+extern int *PgCurrentMaintenanceIOConcurrencyRef(void);
+extern int *PgCurrentIOCombineLimitRef(void);
+extern int *PgCurrentIOCombineLimitGUCRef(void);
+extern int *PgCurrentBackendFlushAfterRef(void);
+
+#define zero_damaged_pages (*PgCurrentZeroDamagedPagesRef())
+#define track_io_timing (*PgCurrentTrackIOTimingRef())
+#define effective_io_concurrency (*PgCurrentEffectiveIOConcurrencyRef())
+#define maintenance_io_concurrency (*PgCurrentMaintenanceIOConcurrencyRef())
+#define io_combine_limit (*PgCurrentIOCombineLimitRef())
+#define io_combine_limit_guc (*PgCurrentIOCombineLimitGUCRef())
+#define backend_flush_after (*PgCurrentBackendFlushAfterRef())
+
 /* in bufmgr.c */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool zero_damaged_pages;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int bgwriter_lru_maxpages;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME double bgwriter_lru_multiplier;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool track_io_timing;
 
 #define DEFAULT_EFFECTIVE_IO_CONCURRENCY 16
 #define DEFAULT_MAINTENANCE_IO_CONCURRENCY 16
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int effective_io_concurrency;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int maintenance_io_concurrency;
 
 #define MAX_IO_COMBINE_LIMIT PG_IOV_MAX
 #define DEFAULT_IO_COMBINE_LIMIT Min(MAX_IO_COMBINE_LIMIT, (128 * 1024) / BLCKSZ)
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int io_combine_limit;	/* min of the two GUCs below */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int io_combine_limit_guc;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int io_max_combine_limit;
 
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int checkpoint_flush_after;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int backend_flush_after;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int bgwriter_flush_after;
 
 extern PGDLLIMPORT const PgAioHandleCallbacks aio_shared_buffer_readv_cb;

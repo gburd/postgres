@@ -50,6 +50,7 @@
 #include "parser/parse_expr.h"
 #include "parser/scansup.h"
 #include "port/pg_bitutils.h"
+#include "storage/bufmgr.h"
 #include "storage/fd.h"
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
@@ -1588,6 +1589,10 @@ RebindSessionGUCVariablePointers(void)
 	Assert(gconf->vartype == PGC_ENUM);
 	gconf->_enum.variable = PgCurrentBackslashQuoteRef();
 
+	gconf = find_option("backend_flush_after", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentBackendFlushAfterRef();
+
 	gconf = find_option("default_statistics_target", false, false, PANIC);
 	Assert(gconf->vartype == PGC_INT);
 	gconf->_int.variable = PgCurrentDefaultStatisticsTargetRef();
@@ -1648,6 +1653,10 @@ RebindSessionGUCVariablePointers(void)
 	gconf = find_option("effective_cache_size", false, false, PANIC);
 	Assert(gconf->vartype == PGC_INT);
 	gconf->_int.variable = PgCurrentEffectiveCacheSizeRef();
+
+	gconf = find_option("effective_io_concurrency", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentEffectiveIOConcurrencyRef();
 
 	gconf = find_option("enable_async_append", false, false, PANIC);
 	Assert(gconf->vartype == PGC_BOOL);
@@ -1783,9 +1792,17 @@ RebindSessionGUCVariablePointers(void)
 	Assert(gconf->vartype == PGC_INT);
 	gconf->_int.variable = PgCurrentFromCollapseLimitRef();
 
+	gconf = find_option("io_combine_limit", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentIOCombineLimitGUCRef();
+
 	gconf = find_option("join_collapse_limit", false, false, PANIC);
 	Assert(gconf->vartype == PGC_INT);
 	gconf->_int.variable = PgCurrentJoinCollapseLimitRef();
+
+	gconf = find_option("maintenance_io_concurrency", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentMaintenanceIOConcurrencyRef();
 
 	gconf = find_option("max_parallel_workers_per_gather", false, false,
 						PANIC);
@@ -1834,6 +1851,10 @@ RebindSessionGUCVariablePointers(void)
 	gconf = find_option("temp_tablespaces", false, false, PANIC);
 	Assert(gconf->vartype == PGC_STRING);
 	gconf->_string.variable = PgCurrentTempTablespacesRef();
+
+	gconf = find_option("track_io_timing", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentTrackIOTimingRef();
 
 	gconf = find_option("track_cost_delay_timing", false, false, PANIC);
 	Assert(gconf->vartype == PGC_BOOL);
@@ -1902,6 +1923,10 @@ RebindSessionGUCVariablePointers(void)
 	gconf = find_option("vacuum_truncate", false, false, PANIC);
 	Assert(gconf->vartype == PGC_BOOL);
 	gconf->_bool.variable = PgCurrentVacuumTruncateRef();
+
+	gconf = find_option("zero_damaged_pages", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentZeroDamagedPagesRef();
 }
 
 /*

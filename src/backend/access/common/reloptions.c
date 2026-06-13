@@ -2233,8 +2233,8 @@ tablespace_reloptions(Datum reloptions, bool validate)
 	static const relopt_parse_elt tab[] = {
 		{"random_page_cost", RELOPT_TYPE_REAL, offsetof(TableSpaceOpts, spc_random_page_cost)},
 		{"seq_page_cost", RELOPT_TYPE_REAL, offsetof(TableSpaceOpts, spc_seq_page_cost)},
-		{"effective_io_concurrency", RELOPT_TYPE_INT, offsetof(TableSpaceOpts, effective_io_concurrency)},
-		{"maintenance_io_concurrency", RELOPT_TYPE_INT, offsetof(TableSpaceOpts, maintenance_io_concurrency)}
+		{"effective_io_concurrency", RELOPT_TYPE_INT, offsetof(TableSpaceOpts, spc_effective_io_concurrency)},
+		{"maintenance_io_concurrency", RELOPT_TYPE_INT, offsetof(TableSpaceOpts, spc_maintenance_io_concurrency)}
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate,

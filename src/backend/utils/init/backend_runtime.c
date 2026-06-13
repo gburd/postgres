@@ -32,6 +32,7 @@
 #include "postmaster/interrupt.h"
 #include "replication/logicalworker.h"
 #include "replication/slotsync.h"
+#include "storage/bufmgr.h"
 #include "storage/latch.h"
 #include "storage/proc.h"
 #include "storage/procsignal.h"
@@ -122,6 +123,16 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionVacuumState early_session_vacu
 	.vacuum_max_eager_freeze_failure_rate_value = 0.03,
 	.local_vacuum_cost_delay_ms = 0,
 	.local_vacuum_cost_limit_value = 200
+};
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionBufferIOState early_session_buffer_io = {
+	.initialized = true,
+	.zero_damaged_pages_value = false,
+	.track_io_timing_value = false,
+	.effective_io_concurrency_value = DEFAULT_EFFECTIVE_IO_CONCURRENCY,
+	.maintenance_io_concurrency_value = DEFAULT_MAINTENANCE_IO_CONCURRENCY,
+	.io_combine_limit_value = DEFAULT_IO_COMBINE_LIMIT,
+	.io_combine_limit_guc_value = DEFAULT_IO_COMBINE_LIMIT,
+	.backend_flush_after_value = DEFAULT_BACKEND_FLUSH_AFTER
 };
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionQueryMemoryState early_session_query_memory = {
 	.initialized = true,
@@ -219,6 +230,8 @@ static void PgSessionInitializeParserState(PgSessionParserState *parser);
 static void PgSessionAdoptEarlyParserState(PgSession *session);
 static void PgSessionInitializeVacuumState(PgSessionVacuumState *vacuum);
 static void PgSessionAdoptEarlyVacuumState(PgSession *session);
+static void PgSessionInitializeBufferIOState(PgSessionBufferIOState *buffer_io);
+static void PgSessionAdoptEarlyBufferIOState(PgSession *session);
 static void PgSessionInitializeQueryMemoryState(PgSessionQueryMemoryState *query_memory);
 static void PgSessionAdoptEarlyQueryMemoryState(PgSession *session);
 static void PgSessionInitializePlannerCostState(PgSessionPlannerCostState *planner_cost);
@@ -241,6 +254,7 @@ static PgSessionBinaryUpgradeState *PgCurrentSessionBinaryUpgradeState(void);
 static PgSessionDateTimeState *PgCurrentSessionDateTimeState(void);
 static PgSessionParserState *PgCurrentSessionParserState(void);
 static PgSessionVacuumState *PgCurrentSessionVacuumState(void);
+static PgSessionBufferIOState *PgCurrentSessionBufferIOState(void);
 static PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
 static PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
 static PgSessionPlannerMethodState *PgCurrentSessionPlannerMethodState(void);
@@ -472,6 +486,33 @@ PgSessionAdoptEarlyVacuumState(PgSession *session)
 
 	session->vacuum = early_session_vacuum;
 	PgSessionInitializeVacuumState(&early_session_vacuum);
+}
+
+static void
+PgSessionInitializeBufferIOState(PgSessionBufferIOState *buffer_io)
+{
+	Assert(buffer_io != NULL);
+
+	buffer_io->initialized = true;
+	buffer_io->zero_damaged_pages_value = false;
+	buffer_io->track_io_timing_value = false;
+	buffer_io->effective_io_concurrency_value = DEFAULT_EFFECTIVE_IO_CONCURRENCY;
+	buffer_io->maintenance_io_concurrency_value = DEFAULT_MAINTENANCE_IO_CONCURRENCY;
+	buffer_io->io_combine_limit_value = DEFAULT_IO_COMBINE_LIMIT;
+	buffer_io->io_combine_limit_guc_value = DEFAULT_IO_COMBINE_LIMIT;
+	buffer_io->backend_flush_after_value = DEFAULT_BACKEND_FLUSH_AFTER;
+}
+
+static void
+PgSessionAdoptEarlyBufferIOState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (!early_session_buffer_io.initialized)
+		PgSessionInitializeBufferIOState(&early_session_buffer_io);
+
+	session->buffer_io = early_session_buffer_io;
+	PgSessionInitializeBufferIOState(&early_session_buffer_io);
 }
 
 static void
@@ -738,6 +779,7 @@ InitializePgProcessRuntime(void)
 	PgSessionAdoptEarlyDateTimeState(&process_session);
 	PgSessionAdoptEarlyParserState(&process_session);
 	PgSessionAdoptEarlyVacuumState(&process_session);
+	PgSessionAdoptEarlyBufferIOState(&process_session);
 	PgSessionAdoptEarlyQueryMemoryState(&process_session);
 	PgSessionAdoptEarlyPlannerCostState(&process_session);
 	PgSessionAdoptEarlyPlannerMethodState(&process_session);
@@ -825,6 +867,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgSessionInitializeDateTimeState(&state->session.datetime);
 	PgSessionInitializeParserState(&state->session.parser);
 	PgSessionInitializeVacuumState(&state->session.vacuum);
+	PgSessionInitializeBufferIOState(&state->session.buffer_io);
 	PgSessionInitializeQueryMemoryState(&state->session.query_memory);
 	PgSessionInitializePlannerCostState(&state->session.planner_cost);
 	PgSessionInitializePlannerMethodState(&state->session.planner_method);
@@ -853,6 +896,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgSessionAdoptEarlyDateTimeState(&state->session);
 	PgSessionAdoptEarlyParserState(&state->session);
 	PgSessionAdoptEarlyVacuumState(&state->session);
+	PgSessionAdoptEarlyBufferIOState(&state->session);
 	PgSessionAdoptEarlyQueryMemoryState(&state->session);
 	PgSessionAdoptEarlyPlannerCostState(&state->session);
 	PgSessionAdoptEarlyPlannerMethodState(&state->session);
@@ -999,6 +1043,21 @@ PgCurrentSessionVacuumState(void)
 		PgSessionInitializeVacuumState(vacuum);
 
 	return vacuum;
+}
+
+static PgSessionBufferIOState *
+PgCurrentSessionBufferIOState(void)
+{
+	PgSessionBufferIOState *buffer_io;
+
+	if (CurrentPgSession == NULL)
+		return &early_session_buffer_io;
+
+	buffer_io = &CurrentPgSession->buffer_io;
+	if (!buffer_io->initialized)
+		PgSessionInitializeBufferIOState(buffer_io);
+
+	return buffer_io;
 }
 
 static PgSessionQueryMemoryState *
@@ -1311,6 +1370,48 @@ int *
 PgCurrentLocalVacuumCostLimitRef(void)
 {
 	return &PgCurrentSessionVacuumState()->local_vacuum_cost_limit_value;
+}
+
+bool *
+PgCurrentZeroDamagedPagesRef(void)
+{
+	return &PgCurrentSessionBufferIOState()->zero_damaged_pages_value;
+}
+
+bool *
+PgCurrentTrackIOTimingRef(void)
+{
+	return &PgCurrentSessionBufferIOState()->track_io_timing_value;
+}
+
+int *
+PgCurrentEffectiveIOConcurrencyRef(void)
+{
+	return &PgCurrentSessionBufferIOState()->effective_io_concurrency_value;
+}
+
+int *
+PgCurrentMaintenanceIOConcurrencyRef(void)
+{
+	return &PgCurrentSessionBufferIOState()->maintenance_io_concurrency_value;
+}
+
+int *
+PgCurrentIOCombineLimitRef(void)
+{
+	return &PgCurrentSessionBufferIOState()->io_combine_limit_value;
+}
+
+int *
+PgCurrentIOCombineLimitGUCRef(void)
+{
+	return &PgCurrentSessionBufferIOState()->io_combine_limit_guc_value;
+}
+
+int *
+PgCurrentBackendFlushAfterRef(void)
+{
+	return &PgCurrentSessionBufferIOState()->backend_flush_after_value;
 }
 
 int *

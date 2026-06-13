@@ -31,6 +31,7 @@
 #include "postmaster/postmaster.h"
 #include "port/atomics.h"
 #include "port/pg_thread.h"
+#include "storage/bufmgr.h"
 #include "storage/dsm.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
@@ -1201,6 +1202,130 @@ test_session_vacuum_state_is_session_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "session vacuum GUC state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_session_buffer_io_state_is_session_local);
+Datum
+test_session_buffer_io_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	enum
+	{
+		TEST_BUFFER_IO_GUC_COUNT = 6
+	};
+	const char *guc_names[TEST_BUFFER_IO_GUC_COUNT] = {
+		"backend_flush_after",
+		"effective_io_concurrency",
+		"io_combine_limit",
+		"maintenance_io_concurrency",
+		"track_io_timing",
+		"zero_damaged_pages"
+	};
+	const char *session1_values[TEST_BUFFER_IO_GUC_COUNT] = {
+		"8",
+		"32",
+		"8",
+		"24",
+		"on",
+		"on"
+	};
+	const char *session2_values[TEST_BUFFER_IO_GUC_COUNT] = {
+		"4",
+		"16",
+		"4",
+		"12",
+		"off",
+		"off"
+	};
+	char	   *saved_values[TEST_BUFFER_IO_GUC_COUNT];
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	bool		ok = true;
+	int			i;
+
+	saved_session = CurrentPgSession;
+	for (i = 0; i < TEST_BUFFER_IO_GUC_COUNT; i++)
+		saved_values[i] = pstrdup(GetConfigOption(guc_names[i], false, false));
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && backend_flush_after == DEFAULT_BACKEND_FLUSH_AFTER;
+		ok = ok && effective_io_concurrency == DEFAULT_EFFECTIVE_IO_CONCURRENCY;
+		ok = ok && io_combine_limit == DEFAULT_IO_COMBINE_LIMIT;
+		ok = ok && io_combine_limit_guc == DEFAULT_IO_COMBINE_LIMIT;
+		ok = ok && maintenance_io_concurrency == DEFAULT_MAINTENANCE_IO_CONCURRENCY;
+		ok = ok && !track_io_timing;
+		ok = ok && !zero_damaged_pages;
+		for (i = 0; i < TEST_BUFFER_IO_GUC_COUNT; i++)
+			SetConfigOption(guc_names[i], session1_values[i],
+							PGC_USERSET, PGC_S_SESSION);
+		ok = ok && backend_flush_after == 8;
+		ok = ok && effective_io_concurrency == 32;
+		ok = ok && io_combine_limit == 8;
+		ok = ok && io_combine_limit_guc == 8;
+		ok = ok && maintenance_io_concurrency == 24;
+		ok = ok && track_io_timing;
+		ok = ok && zero_damaged_pages;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && backend_flush_after == DEFAULT_BACKEND_FLUSH_AFTER;
+		ok = ok && effective_io_concurrency == DEFAULT_EFFECTIVE_IO_CONCURRENCY;
+		ok = ok && io_combine_limit == DEFAULT_IO_COMBINE_LIMIT;
+		ok = ok && io_combine_limit_guc == DEFAULT_IO_COMBINE_LIMIT;
+		ok = ok && maintenance_io_concurrency == DEFAULT_MAINTENANCE_IO_CONCURRENCY;
+		ok = ok && !track_io_timing;
+		ok = ok && !zero_damaged_pages;
+		for (i = 0; i < TEST_BUFFER_IO_GUC_COUNT; i++)
+			SetConfigOption(guc_names[i], session2_values[i],
+							PGC_USERSET, PGC_S_SESSION);
+		ok = ok && backend_flush_after == 4;
+		ok = ok && effective_io_concurrency == 16;
+		ok = ok && io_combine_limit == 4;
+		ok = ok && io_combine_limit_guc == 4;
+		ok = ok && maintenance_io_concurrency == 12;
+		ok = ok && !track_io_timing;
+		ok = ok && !zero_damaged_pages;
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && backend_flush_after == 8;
+		ok = ok && effective_io_concurrency == 32;
+		ok = ok && io_combine_limit == 8;
+		ok = ok && io_combine_limit_guc == 8;
+		ok = ok && maintenance_io_concurrency == 24;
+		ok = ok && track_io_timing;
+		ok = ok && zero_damaged_pages;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && backend_flush_after == 4;
+		ok = ok && effective_io_concurrency == 16;
+		ok = ok && io_combine_limit == 4;
+		ok = ok && io_combine_limit_guc == 4;
+		ok = ok && maintenance_io_concurrency == 12;
+		ok = ok && !track_io_timing;
+		ok = ok && !zero_damaged_pages;
+
+		PgSetCurrentSession(saved_session);
+		for (i = 0; i < TEST_BUFFER_IO_GUC_COUNT; i++)
+			SetConfigOption(guc_names[i], saved_values[i],
+							PGC_USERSET, PGC_S_SESSION);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		for (i = 0; i < TEST_BUFFER_IO_GUC_COUNT; i++)
+			SetConfigOption(guc_names[i], saved_values[i],
+							PGC_USERSET, PGC_S_SESSION);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session buffer I/O GUC state was not session-local");
 
 	PG_RETURN_BOOL(true);
 }

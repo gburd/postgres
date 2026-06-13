@@ -185,11 +185,8 @@ typedef struct SMgrSortArray
 	SMgrRelation srel;
 } SMgrSortArray;
 
-/* GUC variables */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool zero_damaged_pages = false;
 PG_GLOBAL_RUNTIME int bgwriter_lru_maxpages = 100;
 PG_GLOBAL_RUNTIME double bgwriter_lru_multiplier = 2.0;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool track_io_timing = false;
 
 /*
  * How many buffers PrefetchBuffer callers should try to stay ahead of their
@@ -197,14 +194,12 @@ PG_THREAD_LOCAL PG_GLOBAL_SESSION bool track_io_timing = false;
  * for buffers not belonging to tablespaces that have their
  * effective_io_concurrency parameter set.
  */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int effective_io_concurrency = DEFAULT_EFFECTIVE_IO_CONCURRENCY;
 
 /*
  * Like effective_io_concurrency, but used by maintenance code paths that might
  * benefit from a higher setting because they work on behalf of many sessions.
  * Overridden by the tablespace setting of the same name.
  */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int maintenance_io_concurrency = DEFAULT_MAINTENANCE_IO_CONCURRENCY;
 
 /*
  * Limit on how many blocks should be handled in single I/O operations.
@@ -212,8 +207,6 @@ PG_THREAD_LOCAL PG_GLOBAL_SESSION int maintenance_io_concurrency = DEFAULT_MAINT
  * that call smgr APIs directly.  It is computed as the minimum of underlying
  * GUCs io_combine_limit_guc and io_max_combine_limit.
  */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int io_combine_limit = DEFAULT_IO_COMBINE_LIMIT;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int io_combine_limit_guc = DEFAULT_IO_COMBINE_LIMIT;
 PG_GLOBAL_RUNTIME int io_max_combine_limit = DEFAULT_IO_COMBINE_LIMIT;
 
 /*
@@ -222,7 +215,6 @@ PG_GLOBAL_RUNTIME int io_max_combine_limit = DEFAULT_IO_COMBINE_LIMIT;
  */
 PG_GLOBAL_RUNTIME int checkpoint_flush_after = DEFAULT_CHECKPOINT_FLUSH_AFTER;
 PG_GLOBAL_RUNTIME int bgwriter_flush_after = DEFAULT_BGWRITER_FLUSH_AFTER;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int backend_flush_after = DEFAULT_BACKEND_FLUSH_AFTER;
 
 /* local state for LockBufferForCleanup */
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND BufferDesc *PinCountWaitBuf = NULL;

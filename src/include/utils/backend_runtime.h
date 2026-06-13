@@ -255,6 +255,18 @@ typedef struct PgSessionVacuumState
 	int			local_vacuum_cost_limit_value;
 } PgSessionVacuumState;
 
+typedef struct PgSessionBufferIOState
+{
+	bool		initialized;
+	bool		zero_damaged_pages_value;
+	bool		track_io_timing_value;
+	int			effective_io_concurrency_value;
+	int			maintenance_io_concurrency_value;
+	int			io_combine_limit_value;
+	int			io_combine_limit_guc_value;
+	int			backend_flush_after_value;
+} PgSessionBufferIOState;
+
 typedef struct PgSessionQueryMemoryState
 {
 	bool		initialized;
@@ -450,6 +462,7 @@ struct PgSession
 	PgSessionDateTimeState datetime;
 	PgSessionParserState parser;
 	PgSessionVacuumState vacuum;
+	PgSessionBufferIOState buffer_io;
 	PgSessionQueryMemoryState query_memory;
 	PgSessionPlannerCostState planner_cost;
 	PgSessionPlannerMethodState planner_method;

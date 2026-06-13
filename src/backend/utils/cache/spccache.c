@@ -217,10 +217,10 @@ get_tablespace_io_concurrency(Oid spcid)
 {
 	TableSpaceCacheEntry *spc = get_tablespace(spcid);
 
-	if (!spc->opts || spc->opts->effective_io_concurrency < 0)
+	if (!spc->opts || spc->opts->spc_effective_io_concurrency < 0)
 		return effective_io_concurrency;
 	else
-		return spc->opts->effective_io_concurrency;
+		return spc->opts->spc_effective_io_concurrency;
 }
 
 /*
@@ -231,8 +231,8 @@ get_tablespace_maintenance_io_concurrency(Oid spcid)
 {
 	TableSpaceCacheEntry *spc = get_tablespace(spcid);
 
-	if (!spc->opts || spc->opts->maintenance_io_concurrency < 0)
+	if (!spc->opts || spc->opts->spc_maintenance_io_concurrency < 0)
 		return maintenance_io_concurrency;
 	else
-		return spc->opts->maintenance_io_concurrency;
+		return spc->opts->spc_maintenance_io_concurrency;
 }
