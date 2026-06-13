@@ -58,6 +58,7 @@
 #include "utils/elog.h"
 #include "utils/float.h"
 #include "utils/guc.h"
+#include "utils/pgstat_internal.h"
 #include "utils/plancache.h"
 #include "utils/resowner.h"
 #include "utils/rls.h"
@@ -2052,14 +2053,17 @@ PgBackendInitializePgStatPendingState(PgBackendPgStatPendingState *pgstat_pendin
 	Assert(pgstat_pending != NULL);
 
 	MemSet(pgstat_pending, 0, sizeof(*pgstat_pending));
+	dlist_init(&pgstat_pending->pending);
 }
 
 static void
 PgBackendAdoptEarlyPgStatPendingState(PgBackend *backend)
 {
 	Assert(backend != NULL);
+	Assert(dlist_is_empty(&early_backend_pgstat_pending.pending));
 
 	backend->pgstat_pending = early_backend_pgstat_pending;
+	dlist_init(&backend->pgstat_pending.pending);
 	PgBackendInitializePgStatPendingState(&early_backend_pgstat_pending);
 }
 
@@ -5826,6 +5830,18 @@ bool *
 PgCurrentBackendHasIOStatsRef(void)
 {
 	return &PgCurrentBackendPgStatPendingState()->backend_io_stats_pending;
+}
+
+MemoryContext *
+PgCurrentPgStatPendingContextRef(void)
+{
+	return &PgCurrentBackendPgStatPendingState()->pending_context;
+}
+
+dlist_head *
+PgCurrentPgStatPendingListRef(void)
+{
+	return &PgCurrentBackendPgStatPendingState()->pending;
 }
 
 WalUsage *

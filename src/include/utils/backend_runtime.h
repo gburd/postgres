@@ -180,6 +180,8 @@ typedef struct PgBackendPgStatPendingState
 	bool		lock_stats_pending;
 	PgStat_BackendPending backend_stats;
 	bool		backend_io_stats_pending;
+	MemoryContext pending_context;
+	dlist_head	pending;
 	bool		report_fixed;
 	bool		force_next_flush;
 	bool		force_snapshot_clear;

@@ -467,9 +467,11 @@ removing another fixed backend accounting group from standalone TLS.
 `force_stats_snapshot_clear`, `pgstat_is_initialized`, and
 `pgstat_is_shutdown` now also live in `PgBackendPgStatPendingState` behind
 `pgstat.h` compatibility macros, moving backend/fixed pgstat flush state into
-the same logical backend bucket. The pending-entry context and list remain a
-tracked pgstat pending-state follow-up because they change pending-list
-ownership rather than just scalar flush state.
+the same logical backend bucket. `pgStatPendingContext` and `pgStatPending`
+now live in that same backend-owned pgstat bucket behind private pgstat
+accessors/macros. The adoption path asserts that the early pending-entry list
+is empty before moving into the logical backend, because non-empty copied
+`dlist_head` values would keep node links tied to the old list head.
 PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly

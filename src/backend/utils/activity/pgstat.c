@@ -218,7 +218,7 @@ PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_LocalState pgStatLocal;
  * easier to track / attribute memory usage.
  */
 
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND MemoryContext pgStatPendingContext = NULL;
+#define pgStatPendingContext (*PgCurrentPgStatPendingContextRef())
 
 /*
  * Backend local list of PgStat_EntryRef with unflushed pending stats.
@@ -226,7 +226,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND MemoryContext pgStatPendingContext = NU
  * Newly pending entries should only ever be added to the end of the list,
  * otherwise pgstat_flush_pending_entries() might not see them immediately.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND dlist_head pgStatPending;
+#define pgStatPending (*PgCurrentPgStatPendingListRef())
 
 
 /*

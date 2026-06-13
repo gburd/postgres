@@ -6122,3 +6122,58 @@ Validation for this slice:
   `src/include/pgstat.h` and no remaining raw TLS declarations or exported
   symbol references for the moved backend/fixed pgstat flush state;
 - `git diff --check` passed.
+
+## Backend Pgstat Pending Entry State Bridge
+
+The one-hundred-twenty-eighth Phase 12 slice completes the current pgstat
+pending-state bucket by moving the pending-entry context and pending-entry
+list from standalone backend-local TLS into `PgBackendPgStatPendingState`:
+
+- `PgBackendPgStatPendingState` now owns `pgStatPendingContext` and
+  `pgStatPending`;
+- `pgstat.c` keeps the existing private source names through local
+  compatibility macros that call `PgCurrentPgStatPendingContextRef()` and
+  `PgCurrentPgStatPendingListRef()`;
+- `src/include/utils/pgstat_internal.h` exposes the accessors to backend
+  runtime initialization and the focused runtime test module;
+- `PgBackendInitializePgStatPendingState()` initializes the list head for each
+  logical backend.
+
+This slice is separate from the scalar pgstat flush-state bridge because
+`pgStatPending` is a linked-list head, not a scalar value. The adoption path
+asserts that the early pending-entry list is empty before copying early state
+into a logical backend, then reinitializes the adopted backend's list head.
+Copying a non-empty `dlist_head` would be incorrect because list nodes would
+still point at the old list head. The zero-initialized early static state is
+valid because PostgreSQL's `dlist_is_empty()` treats a NULL first pointer as
+empty.
+
+Validation for this slice:
+
+- `gmake -C src/backend/utils/init backend_runtime.o` passed;
+- `gmake -C src/backend/utils/activity pgstat.o` passed;
+- `gmake -C src/test/modules/test_backend_runtime test_backend_runtime.o`
+  passed after expanding the pgstat backend-local helper to check the pending
+  memory context and list-head address across backend switches;
+- full backend clean plus generated-header recovery was run after the
+  installed-header and `PgBackend` layout changes;
+- full `gmake -j8` passed;
+- full `gmake -j8 DESTDIR="$PWD/tmp_install" install` passed;
+- PL/pgSQL was cleaned, rebuilt, and reinstalled after the installed-header
+  change;
+- `src/test/modules/test_backend_runtime` was cleaned, rebuilt, and
+  reinstalled after the installed-header change;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression, including the expanded
+  `test_backend_pgstat_pending_state_is_backend_local()` helper, and still
+  reported TAP disabled by configure;
+- direct threaded-runtime TAP passed all 87 tests with the local
+  `/Users/samwillis/perl5` `PERL5LIB` paths and an explicit `PG_REGRESS`
+  environment;
+- `gmake -C contrib -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 388 to 386;
+- a static scan found only the two private compatibility macros in
+  `src/backend/utils/activity/pgstat.c` and no remaining raw TLS declarations
+  for the moved pending-entry context/list state;
+- `git diff --check` passed.

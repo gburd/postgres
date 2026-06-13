@@ -76,6 +76,7 @@
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/pg_locale.h"
+#include "utils/pgstat_internal.h"
 #include "utils/plancache.h"
 #include "utils/resowner.h"
 #include "utils/rls.h"
@@ -6553,6 +6554,7 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 	bool		saved_have_lockstats;
 	PgStat_BackendPending saved_backend_stats;
 	bool		saved_backend_has_iostats;
+	MemoryContext saved_pending_context;
 	WalUsage	saved_prev_backend_wal_usage;
 	bool		saved_report_fixed;
 	bool		saved_force_next_flush;
@@ -6580,6 +6582,7 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 	saved_have_lockstats = have_lockstats;
 	saved_backend_stats = PendingBackendStats;
 	saved_backend_has_iostats = backend_has_iostats;
+	saved_pending_context = *PgCurrentPgStatPendingContextRef();
 	saved_prev_backend_wal_usage = prevBackendWalUsage;
 	saved_report_fixed = pgstat_report_fixed;
 	saved_force_next_flush = pgStatForceNextFlush;
@@ -6592,6 +6595,8 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 	saved_prev_wal_usage = prevWalUsage;
 	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
 	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+	dlist_init(&fake_backend1.pgstat_pending.pending);
+	dlist_init(&fake_backend2.pgstat_pending.pending);
 
 	PG_TRY();
 	{
@@ -6610,6 +6615,7 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		have_lockstats = true;
 		PendingBackendStats.pending_io.counts[IOOBJECT_RELATION][IOCONTEXT_NORMAL][IOOP_WRITE] = 20;
 		backend_has_iostats = true;
+		*PgCurrentPgStatPendingContextRef() = (MemoryContext) &fake_backend1;
 		prevBackendWalUsage.wal_records = 21;
 		pgstat_report_fixed = true;
 		pgStatForceNextFlush = true;
@@ -6638,6 +6644,9 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok &&
 			PendingBackendStats.pending_io.counts[IOOBJECT_RELATION][IOCONTEXT_NORMAL][IOOP_WRITE] == 0;
 		ok = ok && !backend_has_iostats;
+		ok = ok && *PgCurrentPgStatPendingContextRef() == NULL;
+		ok = ok && PgCurrentPgStatPendingListRef() == &fake_backend2.pgstat_pending.pending;
+		ok = ok && dlist_is_empty(PgCurrentPgStatPendingListRef());
 		ok = ok && prevBackendWalUsage.wal_records == 0;
 		ok = ok && !pgstat_report_fixed;
 		ok = ok && !pgStatForceNextFlush;
@@ -6663,6 +6672,7 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		have_lockstats = true;
 		PendingBackendStats.pending_io.counts[IOOBJECT_RELATION][IOCONTEXT_NORMAL][IOOP_WRITE] = 30;
 		backend_has_iostats = true;
+		*PgCurrentPgStatPendingContextRef() = (MemoryContext) &fake_backend2;
 		prevBackendWalUsage.wal_records = 31;
 		pgstat_report_fixed = true;
 		pgStatForceNextFlush = true;
@@ -6691,6 +6701,9 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok &&
 			PendingBackendStats.pending_io.counts[IOOBJECT_RELATION][IOCONTEXT_NORMAL][IOOP_WRITE] == 20;
 		ok = ok && backend_has_iostats;
+		ok = ok && *PgCurrentPgStatPendingContextRef() == (MemoryContext) &fake_backend1;
+		ok = ok && PgCurrentPgStatPendingListRef() == &fake_backend1.pgstat_pending.pending;
+		ok = ok && dlist_is_empty(PgCurrentPgStatPendingListRef());
 		ok = ok && prevBackendWalUsage.wal_records == 21;
 		ok = ok && pgstat_report_fixed;
 		ok = ok && pgStatForceNextFlush;
@@ -6719,6 +6732,9 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok &&
 			PendingBackendStats.pending_io.counts[IOOBJECT_RELATION][IOCONTEXT_NORMAL][IOOP_WRITE] == 30;
 		ok = ok && backend_has_iostats;
+		ok = ok && *PgCurrentPgStatPendingContextRef() == (MemoryContext) &fake_backend2;
+		ok = ok && PgCurrentPgStatPendingListRef() == &fake_backend2.pgstat_pending.pending;
+		ok = ok && dlist_is_empty(PgCurrentPgStatPendingListRef());
 		ok = ok && prevBackendWalUsage.wal_records == 31;
 		ok = ok && pgstat_report_fixed;
 		ok = ok && pgStatForceNextFlush;
@@ -6745,6 +6761,7 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		have_lockstats = saved_have_lockstats;
 		PendingBackendStats = saved_backend_stats;
 		backend_has_iostats = saved_backend_has_iostats;
+		*PgCurrentPgStatPendingContextRef() = saved_pending_context;
 		prevBackendWalUsage = saved_prev_backend_wal_usage;
 		pgstat_report_fixed = saved_report_fixed;
 		pgStatForceNextFlush = saved_force_next_flush;
@@ -6773,6 +6790,7 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		have_lockstats = saved_have_lockstats;
 		PendingBackendStats = saved_backend_stats;
 		backend_has_iostats = saved_backend_has_iostats;
+		*PgCurrentPgStatPendingContextRef() = saved_pending_context;
 		prevBackendWalUsage = saved_prev_backend_wal_usage;
 		pgstat_report_fixed = saved_report_fixed;
 		pgStatForceNextFlush = saved_force_next_flush;

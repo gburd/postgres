@@ -883,8 +883,12 @@ The backend/fixed pgstat flush state `PendingBackendStats`,
 `pgStatForceNextFlush`, `force_stats_snapshot_clear`,
 `pgstat_is_initialized`, and `pgstat_is_shutdown` now also lives in
 `PgBackendPgStatPendingState` behind `pgstat.h` compatibility macros. The
-pending-entry context and list remain as a separate pgstat pending-state
-follow-up because they change the list ownership surface.
+pending-entry context/list state `pgStatPendingContext` and `pgStatPending`
+now also lives in that backend-owned pgstat bucket behind private pgstat
+accessors/macros. The adoption path asserts that no early pending-entry list
+exists before runtime adoption, because copied non-empty `dlist_head` values
+would still point at the old list head; after adoption the logical backend owns
+a freshly initialized pending-entry list head.
 PMChild assignment and slot release now also scrub stale carrier-visible signal
 ids and thread-exit payloads before reuse. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live
