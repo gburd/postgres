@@ -70,12 +70,10 @@
  */
 #define PARALLEL_VACUUM_DELAY_REPORT_INTERVAL_NS	(NS_PER_S)
 
-/* Variable for reporting cost-based vacuum delay from parallel workers. */
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int64 parallel_vacuum_worker_delay_ns = 0;
-
 /*
- * VacuumFailsafeActive is a defined as a global so that we can determine
- * whether or not to re-enable cost-based vacuum delay when vacuuming a table.
+ * VacuumFailsafeActive is exposed as a global-looking compatibility lvalue so
+ * that we can determine whether or not to re-enable cost-based vacuum delay
+ * when vacuuming a table.
  * If failsafe mode has been engaged, we will not re-enable cost-based delay
  * for the table until after vacuuming has completed, regardless of other
  * settings.
@@ -85,16 +83,10 @@ PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int64 parallel_vacuum_worker_delay_ns = 0;
  * inspected to determine whether or not to allow cost-based delays. Table AMs
  * are free to set it if they desire this behavior, but it is false by default
  * and reset to false in between vacuuming each relation.
+ *
+ * Variables for cost-based parallel vacuum live in PgExecutionVacuumState.
+ * See comments atop compute_parallel_delay to understand how it works.
  */
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool VacuumFailsafeActive = false;
-
-/*
- * Variables for cost-based parallel vacuum.  See comments atop
- * compute_parallel_delay to understand how it works.
- */
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION pg_atomic_uint32 *VacuumSharedCostBalance = NULL;
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION pg_atomic_uint32 *VacuumActiveNWorkers = NULL;
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int VacuumCostBalanceLocal = 0;
 
 /* non-export function prototypes */
 static List *expand_vacuum_rel(VacuumRelation *vrel,

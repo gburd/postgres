@@ -6836,6 +6836,142 @@ test_execution_active_portal_is_execution_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_execution_vacuum_state_is_execution_local);
+Datum
+test_execution_vacuum_state_is_execution_local(PG_FUNCTION_ARGS)
+{
+	PgExecution *saved_execution;
+	PgExecution fake_execution1;
+	PgExecution fake_execution2;
+	int			saved_vacuum_cost_balance;
+	bool		saved_vacuum_cost_active;
+	pg_atomic_uint32 *saved_vacuum_shared_cost_balance;
+	pg_atomic_uint32 *saved_vacuum_active_nworkers;
+	int			saved_vacuum_cost_balance_local;
+	bool		saved_vacuum_failsafe_active;
+	int64		saved_parallel_vacuum_worker_delay_ns;
+	void	   *saved_parallel_vacuum_shared_cost_params;
+	uint32		saved_parallel_vacuum_shared_params_generation_local;
+	pg_atomic_uint32 shared_cost_balance1;
+	pg_atomic_uint32 active_nworkers1;
+	pg_atomic_uint32 shared_cost_balance2;
+	pg_atomic_uint32 active_nworkers2;
+	bool		ok = true;
+
+	saved_execution = CurrentPgExecution;
+	saved_vacuum_cost_balance = VacuumCostBalance;
+	saved_vacuum_cost_active = VacuumCostActive;
+	saved_vacuum_shared_cost_balance = VacuumSharedCostBalance;
+	saved_vacuum_active_nworkers = VacuumActiveNWorkers;
+	saved_vacuum_cost_balance_local = VacuumCostBalanceLocal;
+	saved_vacuum_failsafe_active = VacuumFailsafeActive;
+	saved_parallel_vacuum_worker_delay_ns = parallel_vacuum_worker_delay_ns;
+	saved_parallel_vacuum_shared_cost_params =
+		*PgCurrentParallelVacuumSharedCostParamsRef();
+	saved_parallel_vacuum_shared_params_generation_local =
+		*PgCurrentParallelVacuumSharedParamsGenerationLocalRef();
+
+	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
+	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+	pg_atomic_init_u32(&shared_cost_balance1, 111);
+	pg_atomic_init_u32(&active_nworkers1, 1);
+	pg_atomic_init_u32(&shared_cost_balance2, 222);
+	pg_atomic_init_u32(&active_nworkers2, 2);
+
+	PG_TRY();
+	{
+		CurrentPgExecution = &fake_execution1;
+		VacuumCostBalance = 101;
+		VacuumCostActive = true;
+		VacuumSharedCostBalance = &shared_cost_balance1;
+		VacuumActiveNWorkers = &active_nworkers1;
+		VacuumCostBalanceLocal = 17;
+		VacuumFailsafeActive = true;
+		parallel_vacuum_worker_delay_ns = 1001;
+		*PgCurrentParallelVacuumSharedCostParamsRef() = &shared_cost_balance1;
+		*PgCurrentParallelVacuumSharedParamsGenerationLocalRef() = 13;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && VacuumCostBalance == 0;
+		ok = ok && !VacuumCostActive;
+		ok = ok && VacuumSharedCostBalance == NULL;
+		ok = ok && VacuumActiveNWorkers == NULL;
+		ok = ok && VacuumCostBalanceLocal == 0;
+		ok = ok && !VacuumFailsafeActive;
+		ok = ok && parallel_vacuum_worker_delay_ns == 0;
+		ok = ok && *PgCurrentParallelVacuumSharedCostParamsRef() == NULL;
+		ok = ok && *PgCurrentParallelVacuumSharedParamsGenerationLocalRef() == 0;
+		VacuumCostBalance = 202;
+		VacuumSharedCostBalance = &shared_cost_balance2;
+		VacuumActiveNWorkers = &active_nworkers2;
+		VacuumCostBalanceLocal = 29;
+		parallel_vacuum_worker_delay_ns = 2002;
+		*PgCurrentParallelVacuumSharedCostParamsRef() = &shared_cost_balance2;
+		*PgCurrentParallelVacuumSharedParamsGenerationLocalRef() = 31;
+
+		CurrentPgExecution = &fake_execution1;
+		ok = ok && VacuumCostBalance == 101;
+		ok = ok && VacuumCostActive;
+		ok = ok && VacuumSharedCostBalance == &shared_cost_balance1;
+		ok = ok && VacuumActiveNWorkers == &active_nworkers1;
+		ok = ok && VacuumCostBalanceLocal == 17;
+		ok = ok && VacuumFailsafeActive;
+		ok = ok && parallel_vacuum_worker_delay_ns == 1001;
+		ok = ok &&
+			*PgCurrentParallelVacuumSharedCostParamsRef() == &shared_cost_balance1;
+		ok = ok &&
+			*PgCurrentParallelVacuumSharedParamsGenerationLocalRef() == 13;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && VacuumCostBalance == 202;
+		ok = ok && !VacuumCostActive;
+		ok = ok && VacuumSharedCostBalance == &shared_cost_balance2;
+		ok = ok && VacuumActiveNWorkers == &active_nworkers2;
+		ok = ok && VacuumCostBalanceLocal == 29;
+		ok = ok && !VacuumFailsafeActive;
+		ok = ok && parallel_vacuum_worker_delay_ns == 2002;
+		ok = ok &&
+			*PgCurrentParallelVacuumSharedCostParamsRef() == &shared_cost_balance2;
+		ok = ok &&
+			*PgCurrentParallelVacuumSharedParamsGenerationLocalRef() == 31;
+
+		CurrentPgExecution = saved_execution;
+		VacuumCostBalance = saved_vacuum_cost_balance;
+		VacuumCostActive = saved_vacuum_cost_active;
+		VacuumSharedCostBalance = saved_vacuum_shared_cost_balance;
+		VacuumActiveNWorkers = saved_vacuum_active_nworkers;
+		VacuumCostBalanceLocal = saved_vacuum_cost_balance_local;
+		VacuumFailsafeActive = saved_vacuum_failsafe_active;
+		parallel_vacuum_worker_delay_ns = saved_parallel_vacuum_worker_delay_ns;
+		*PgCurrentParallelVacuumSharedCostParamsRef() =
+			saved_parallel_vacuum_shared_cost_params;
+		*PgCurrentParallelVacuumSharedParamsGenerationLocalRef() =
+			saved_parallel_vacuum_shared_params_generation_local;
+	}
+	PG_CATCH();
+	{
+		CurrentPgExecution = saved_execution;
+		VacuumCostBalance = saved_vacuum_cost_balance;
+		VacuumCostActive = saved_vacuum_cost_active;
+		VacuumSharedCostBalance = saved_vacuum_shared_cost_balance;
+		VacuumActiveNWorkers = saved_vacuum_active_nworkers;
+		VacuumCostBalanceLocal = saved_vacuum_cost_balance_local;
+		VacuumFailsafeActive = saved_vacuum_failsafe_active;
+		parallel_vacuum_worker_delay_ns = saved_parallel_vacuum_worker_delay_ns;
+		*PgCurrentParallelVacuumSharedCostParamsRef() =
+			saved_parallel_vacuum_shared_cost_params;
+		*PgCurrentParallelVacuumSharedParamsGenerationLocalRef() =
+			saved_parallel_vacuum_shared_params_generation_local;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "vacuum execution state was not execution-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_connection_socket_io_is_connection_local);
 Datum
 test_connection_socket_io_is_connection_local(PG_FUNCTION_ARGS)

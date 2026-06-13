@@ -375,8 +375,11 @@ extern double *PgCurrentVacuumCostDelayRef(void);
 #define VacuumCostLimit (*PgCurrentVacuumCostLimitRef())
 #define VacuumCostDelay (*PgCurrentVacuumCostDelayRef())
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int VacuumCostBalance;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool VacuumCostActive;
+extern int *PgCurrentVacuumCostBalanceRef(void);
+extern bool *PgCurrentVacuumCostActiveRef(void);
+
+#define VacuumCostBalance (*PgCurrentVacuumCostBalanceRef())
+#define VacuumCostActive (*PgCurrentVacuumCostActiveRef())
 
 
 /* in utils/misc/stack_depth.c */

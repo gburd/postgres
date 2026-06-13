@@ -86,9 +86,6 @@ PG_GLOBAL_RUNTIME int autovacuum_max_parallel_workers = 0;
 PG_GLOBAL_RUNTIME int MaxBackends = 0;
 PG_GLOBAL_RUNTIME bool multithreaded = false;
 
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int VacuumCostBalance = 0;	/* working state for vacuum */
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool VacuumCostActive = false;
-
 /* configurable SLRU buffer sizes */
 PG_GLOBAL_RUNTIME int commit_timestamp_buffers = 0;
 PG_GLOBAL_RUNTIME int multixact_member_buffers = 32;

@@ -3435,3 +3435,54 @@ Validation for this slice:
 - clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
   public `backend_runtime.h` session-state update;
 - static scans found no remaining raw `xact_started` TLS declaration.
+
+## Vacuum Execution State Bridge
+
+The sixty-eighth Phase 12 slice moves vacuum cost accounting, failsafe, and
+parallel-vacuum scratch state under the logical execution object:
+
+- `PgExecution` now owns `PgExecutionVacuumState`;
+- exported `VacuumCostBalance` and `VacuumCostActive` remain source-compatible
+  lvalue macros backed by the active execution;
+- exported parallel-vacuum state in `commands/vacuum.h`
+  (`VacuumSharedCostBalance`, `VacuumActiveNWorkers`,
+  `VacuumCostBalanceLocal`, `VacuumFailsafeActive`, and
+  `parallel_vacuum_worker_delay_ns`) remains source-compatible lvalue macros
+  backed by the active execution;
+- `vacuumparallel.c` private worker scratch state
+  (`pv_shared_cost_params` and `shared_params_generation_local`) is also
+  backed by `PgExecutionVacuumState`, using local typed compatibility macros;
+- runtime initialization zeroes this bucket for thread backends and adopts any
+  early execution state into the installed process/thread execution object;
+- the backend-runtime regression fixture adds
+  `test_execution_vacuum_state_is_execution_local()`, switching
+  `CurrentPgExecution` between fake executions and verifying all migrated
+  vacuum fields follow the active execution.
+
+This removes the main VACUUM execution-state TLS bucket from `globals.c`,
+`vacuum.c`, and `vacuumparallel.c`. Session-level vacuum GUC backing storage
+remains in `PgSessionVacuumState`; the migrated fields here are per active
+execution/command.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `globals.o`,
+  `vacuum.o`, `vacuumparallel.o`, `bufmgr.o`, `autovacuum.o`,
+  `datachecksum_state.o`, `vacuumlazy.o`, and
+  `test_backend_runtime.o`, including forced rebuilds of header-dependent
+  users;
+- because `backend_runtime.h`, `miscadmin.h`, and `commands/vacuum.h` changed
+  exported backend state, the backend clean plus generated utility and
+  node-header recovery path was used before trusting process-mode runtime
+  tests;
+- clean full `gmake -j8` passed after the backend clean;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- focused `test_backend_runtime` regression passed and includes
+  `test_execution_vacuum_state_is_execution_local()`;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests, including
+  the core `vacuum` regression test;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  public header migration;
+- static scans found no remaining raw TLS declarations for the migrated vacuum
+  execution-state fields.

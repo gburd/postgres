@@ -483,6 +483,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionSPIState early_execution_s
 	.connected = -1
 };
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionPortalState early_execution_portal;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionVacuumState early_execution_vacuum;
 
 StaticAssertDecl(PG_BACKEND_INTERRUPT_COUNT <= 32,
 				 "PgBackendInterruptMask must fit all backend interrupts");
@@ -595,6 +596,8 @@ static void PgExecutionAdoptEarlyResourceOwners(PgExecution *execution);
 static void PgExecutionInitializeSPIState(PgExecutionSPIState *spi);
 static void PgExecutionAdoptEarlySPIState(PgExecution *execution);
 static void PgExecutionAdoptEarlyPortalState(PgExecution *execution);
+static void PgExecutionInitializeVacuumState(PgExecutionVacuumState *vacuum);
+static void PgExecutionAdoptEarlyVacuumState(PgExecution *execution);
 static PgBackendCoreState *PgCurrentCoreState(void);
 static PgSessionDatabaseState *PgCurrentSessionDatabaseState(void);
 static PgSessionTablespaceState *PgCurrentSessionTablespaceState(void);
@@ -641,6 +644,7 @@ static PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
 static PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
 static PgExecutionSPIState *PgCurrentExecutionSPIState(void);
 static PgExecutionPortalState *PgCurrentExecutionPortalState(void);
+static PgExecutionVacuumState *PgCurrentExecutionVacuumState(void);
 static PgBackendPendingInterruptState *PgCurrentPendingInterrupts(void);
 static PgBackendInterruptHoldoffState *PgCurrentInterruptHoldoffs(void);
 
@@ -2014,6 +2018,23 @@ PgExecutionAdoptEarlyPortalState(PgExecution *execution)
 	MemSet(&early_execution_portal, 0, sizeof(early_execution_portal));
 }
 
+static void
+PgExecutionInitializeVacuumState(PgExecutionVacuumState *vacuum)
+{
+	Assert(vacuum != NULL);
+
+	MemSet(vacuum, 0, sizeof(*vacuum));
+}
+
+static void
+PgExecutionAdoptEarlyVacuumState(PgExecution *execution)
+{
+	Assert(execution != NULL);
+
+	execution->vacuum = early_execution_vacuum;
+	PgExecutionInitializeVacuumState(&early_execution_vacuum);
+}
+
 void
 InitializePgProcessRuntime(void)
 {
@@ -2117,6 +2138,7 @@ InitializePgProcessRuntime(void)
 	PgExecutionAdoptEarlyResourceOwners(&process_execution);
 	PgExecutionAdoptEarlySPIState(&process_execution);
 	PgExecutionAdoptEarlyPortalState(&process_execution);
+	PgExecutionAdoptEarlyVacuumState(&process_execution);
 
 	CurrentPgRuntime = &process_runtime;
 	CurrentPgCarrier = &process_carrier;
@@ -2233,6 +2255,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	state->execution.session = &state->session;
 	state->execution.carrier = &state->carrier;
 	PgExecutionInitializeSPIState(&state->execution.spi);
+	PgExecutionInitializeVacuumState(&state->execution.vacuum);
 }
 
 void
@@ -2289,6 +2312,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgExecutionAdoptEarlyResourceOwners(&state->execution);
 	PgExecutionAdoptEarlySPIState(&state->execution);
 	PgExecutionAdoptEarlyPortalState(&state->execution);
+	PgExecutionAdoptEarlyVacuumState(&state->execution);
 	CurrentPgRuntime = &thread_runtime;
 	CurrentPgCarrier = &state->carrier;
 	CurrentPgBackend = &state->backend;
@@ -4931,6 +4955,69 @@ Portal *
 PgCurrentActivePortalRef(void)
 {
 	return &PgCurrentExecutionPortalState()->active;
+}
+
+static PgExecutionVacuumState *
+PgCurrentExecutionVacuumState(void)
+{
+	if (CurrentPgExecution == NULL)
+		return &early_execution_vacuum;
+
+	return &CurrentPgExecution->vacuum;
+}
+
+int *
+PgCurrentVacuumCostBalanceRef(void)
+{
+	return &PgCurrentExecutionVacuumState()->cost_balance;
+}
+
+bool *
+PgCurrentVacuumCostActiveRef(void)
+{
+	return &PgCurrentExecutionVacuumState()->cost_active;
+}
+
+pg_atomic_uint32 **
+PgCurrentVacuumSharedCostBalanceRef(void)
+{
+	return &PgCurrentExecutionVacuumState()->shared_cost_balance;
+}
+
+pg_atomic_uint32 **
+PgCurrentVacuumActiveNWorkersRef(void)
+{
+	return &PgCurrentExecutionVacuumState()->active_nworkers;
+}
+
+int *
+PgCurrentVacuumCostBalanceLocalRef(void)
+{
+	return &PgCurrentExecutionVacuumState()->cost_balance_local;
+}
+
+bool *
+PgCurrentVacuumFailsafeActiveRef(void)
+{
+	return &PgCurrentExecutionVacuumState()->failsafe_active;
+}
+
+int64 *
+PgCurrentParallelVacuumWorkerDelayNsRef(void)
+{
+	return &PgCurrentExecutionVacuumState()->parallel_worker_delay_ns;
+}
+
+void **
+PgCurrentParallelVacuumSharedCostParamsRef(void)
+{
+	return &PgCurrentExecutionVacuumState()->parallel_shared_cost_params;
+}
+
+uint32 *
+PgCurrentParallelVacuumSharedParamsGenerationLocalRef(void)
+{
+	return &PgCurrentExecutionVacuumState()->parallel_shared_params_generation_local;
 }
 
 PgConnectionSocketIOState *

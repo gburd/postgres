@@ -207,6 +207,19 @@ typedef struct PgExecutionPortalState
 	Portal		active;
 } PgExecutionPortalState;
 
+typedef struct PgExecutionVacuumState
+{
+	int			cost_balance;
+	bool		cost_active;
+	pg_atomic_uint32 *shared_cost_balance;
+	pg_atomic_uint32 *active_nworkers;
+	int			cost_balance_local;
+	bool		failsafe_active;
+	int64		parallel_worker_delay_ns;
+	void	   *parallel_shared_cost_params;
+	uint32		parallel_shared_params_generation_local;
+} PgExecutionVacuumState;
+
 typedef struct PgSessionDatabaseState
 {
 	Oid			database_id;
@@ -984,6 +997,7 @@ struct PgExecution
 	PgExecutionResourceOwnerState resource_owners;
 	PgExecutionSPIState spi;
 	PgExecutionPortalState portal;
+	PgExecutionVacuumState vacuum;
 };
 
 typedef struct PgThreadBackendRuntimeState
@@ -1019,6 +1033,15 @@ extern Portal *PgCurrentActivePortalRef(void);
 extern CommandDest *PgCurrentWhereToSendOutputRef(void);
 extern int *PgCurrentClientConnectionCheckIntervalRef(void);
 extern ConnectionTiming *PgCurrentConnectionTimingRef(void);
+extern int *PgCurrentVacuumCostBalanceRef(void);
+extern bool *PgCurrentVacuumCostActiveRef(void);
+extern pg_atomic_uint32 **PgCurrentVacuumSharedCostBalanceRef(void);
+extern pg_atomic_uint32 **PgCurrentVacuumActiveNWorkersRef(void);
+extern int *PgCurrentVacuumCostBalanceLocalRef(void);
+extern bool *PgCurrentVacuumFailsafeActiveRef(void);
+extern int64 *PgCurrentParallelVacuumWorkerDelayNsRef(void);
+extern void **PgCurrentParallelVacuumSharedCostParamsRef(void);
+extern uint32 *PgCurrentParallelVacuumSharedParamsGenerationLocalRef(void);
 extern int *PgCurrentDeadlockTimeoutRef(void);
 extern int *PgCurrentStatementTimeoutRef(void);
 extern int *PgCurrentLockTimeoutRef(void);

@@ -368,18 +368,23 @@ extern double *PgCurrentVacuumMaxEagerFreezeFailureRateRef(void);
 #define MAX_STATISTICS_TARGET 10000
 
 /* Variables for cost-based parallel vacuum */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION pg_atomic_uint32 *VacuumSharedCostBalance;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION pg_atomic_uint32 *VacuumActiveNWorkers;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int VacuumCostBalanceLocal;
-
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool VacuumFailsafeActive;
+extern pg_atomic_uint32 **PgCurrentVacuumSharedCostBalanceRef(void);
+extern pg_atomic_uint32 **PgCurrentVacuumActiveNWorkersRef(void);
+extern int *PgCurrentVacuumCostBalanceLocalRef(void);
+extern bool *PgCurrentVacuumFailsafeActiveRef(void);
 extern double *PgCurrentLocalVacuumCostDelayRef(void);
 extern int *PgCurrentLocalVacuumCostLimitRef(void);
+extern int64 *PgCurrentParallelVacuumWorkerDelayNsRef(void);
+
+#define VacuumSharedCostBalance (*PgCurrentVacuumSharedCostBalanceRef())
+#define VacuumActiveNWorkers (*PgCurrentVacuumActiveNWorkersRef())
+#define VacuumCostBalanceLocal (*PgCurrentVacuumCostBalanceLocalRef())
+#define VacuumFailsafeActive (*PgCurrentVacuumFailsafeActiveRef())
 
 #define vacuum_cost_delay (*PgCurrentLocalVacuumCostDelayRef())
 #define vacuum_cost_limit (*PgCurrentLocalVacuumCostLimitRef())
-
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int64 parallel_vacuum_worker_delay_ns;
+#define parallel_vacuum_worker_delay_ns \
+	(*PgCurrentParallelVacuumWorkerDelayNsRef())
 
 /* in commands/vacuum.c */
 extern void ExecVacuum(ParseState *pstate, VacuumStmt *vacstmt, bool isTopLevel);
