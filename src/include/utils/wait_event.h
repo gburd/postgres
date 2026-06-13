@@ -21,7 +21,12 @@ static inline void pgstat_report_wait_end(void);
 extern void pgstat_set_wait_event_storage(uint32 *wait_event_info);
 extern void pgstat_reset_wait_event_storage(void);
 
+#ifdef S_LOCK_TEST
 extern PGDLLIMPORT PG_GLOBAL_BACKEND uint32 *my_wait_event_info;
+#else
+extern uint32 **PgCurrentMyWaitEventInfoRef(void);
+#define my_wait_event_info (*PgCurrentMyWaitEventInfoRef())
+#endif
 
 
 /*

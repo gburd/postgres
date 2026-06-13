@@ -753,7 +753,11 @@ bridge through `PgBackendUtilityState`, plus the parallel-worker,
 parallel-context, and pqmq backend-local state bridge through
 `PgBackendParallelState`, plus the DSM initialization, DSM registry, local
 latch, and latch wait-set bridge through `PgBackendIPCState`, plus the timeout
-scheduler state bridge through `PgBackendTimeoutState`.
+scheduler state bridge through `PgBackendTimeoutState`, plus the
+allocation-set freelist and memory-context logging guard bridge through
+`PgBackendMemoryManagerState`, plus the wait-event storage bridge through
+`PgBackendWaitState` and the shared-invalidation local transaction ID bridge
+through `PgBackendIPCState`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.
@@ -815,6 +819,13 @@ Gate E2 requires:
 - `gmake check-global-lifetimes` is run as a required gate check with the
   checked baseline, and any new mutable global either has an explicit lifetime
   annotation or a deliberate baseline update;
+- every backend/session/connection/execution state bucket has an explicit
+  lifecycle classification before Phase 12 closes: initializer, early-adoption
+  behavior or proof that early adoption is impossible, reset/destroy behavior,
+  owner/lifetime, and copy/adoption rule for pointer, list, memory-context,
+  socket, hash-table, and opaque-pointer fields. Process/runtime initialization
+  and thread-runtime installation must either be mechanically centralized or
+  document every intentional asymmetry;
 - focused threaded stress covers concurrent startup, idle waits, cancellation,
   termination, SQL `ERROR` recovery, transaction abort cleanup, abandoned
   clients, repeated reconnects, worker launch/shutdown, GUC-heavy sessions,
@@ -1325,6 +1336,11 @@ threaded regression, crash/FATAL behavior matrices, platform coverage, and
 performance baselines. Gate E2 is narrower: it blocks further scheduler work
 until the current thread-per-session runtime has coherent lifecycle, state, and
 startup ownership.
+Follow-up object-model review also makes the lifecycle audit itself a Gate E2
+hardening blocker: the large `PgBackend` bucket is acceptable as a Phase 12
+bridge, but it is not a final ownership model until initialization, adoption,
+teardown, and pointer/list-bearing copy rules are explicit for each bucket,
+and the `PgSession`/legacy `Session` endpoint is documented.
 
 ## Phase 13: Scheduler-Aware Wait Boundary
 

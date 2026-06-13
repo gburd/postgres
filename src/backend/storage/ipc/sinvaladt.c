@@ -26,6 +26,7 @@
 #include "storage/sinvaladt.h"
 #include "storage/spin.h"
 #include "storage/subsystems.h"
+#include "utils/backend_runtime.h"
 
 /*
  * Conceptually, the shared cache invalidation messages are stored in an
@@ -216,7 +217,7 @@ const ShmemCallbacks SharedInvalShmemCallbacks = {
 };
 
 
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND LocalTransactionId nextLocalTransactionId;
+#define nextLocalTransactionId (*PgCurrentNextLocalTransactionIdRef())
 
 static void CleanupInvalidationState(int status, Datum arg);
 

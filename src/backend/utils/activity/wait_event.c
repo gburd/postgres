@@ -27,6 +27,7 @@
 #include "storage/shmem.h"
 #include "storage/subsystems.h"
 #include "storage/spin.h"
+#include "utils/backend_runtime.h"
 #include "utils/wait_event.h"
 
 
@@ -37,9 +38,6 @@ static const char *pgstat_get_wait_ipc(WaitEventIPC w);
 static const char *pgstat_get_wait_timeout(WaitEventTimeout w);
 static const char *pgstat_get_wait_io(WaitEventIO w);
 
-
-static PG_GLOBAL_BACKEND uint32 local_my_wait_event_info;
-PG_GLOBAL_BACKEND uint32 *my_wait_event_info = &local_my_wait_event_info;
 
 #define WAIT_EVENT_CLASS_MASK	0xFF000000
 #define WAIT_EVENT_ID_MASK		0x0000FFFF
@@ -346,7 +344,7 @@ pgstat_set_wait_event_storage(uint32 *wait_event_info)
 void
 pgstat_reset_wait_event_storage(void)
 {
-	my_wait_event_info = &local_my_wait_event_info;
+	my_wait_event_info = PgCurrentLocalWaitEventInfoRef();
 }
 
 /* ----------

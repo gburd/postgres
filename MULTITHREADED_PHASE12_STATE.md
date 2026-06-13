@@ -7466,6 +7466,52 @@ Validation for this slice:
 - `test_backend_memory_manager_state_is_backend_local()` now covers the moved
   allocator freelists and logging guard across two fake logical backends.
 
+## Backend Wait And Invalidation State Bridge
+
+The one-hundred-fifty-ninth Phase 12 slice moves a wait/IPC-adjacent backend
+state group under the logical backend object:
+
+- wait-event reporting local storage and the current wait-event storage
+  pointer now live in `PgBackendWaitState`;
+- the local transaction ID counter used by shared-invalidation slot reuse now
+  lives in `PgBackendIPCState`.
+
+`wait_event.h` keeps the historical `my_wait_event_info` lvalue name as a
+compatibility macro over the current backend's wait state. The standalone
+`S_LOCK_TEST` compile path keeps its private test-only fallback storage
+because it intentionally builds outside the backend runtime. The wait-state
+early fallback follows the normal adoption pattern: default local wait storage
+is retargeted to the adopted backend object, while an explicitly redirected
+storage pointer is preserved.
+
+`sinvaladt.c` keeps `nextLocalTransactionId` as a local compatibility macro
+over `PgBackendIPCState`, so the slot startup/shutdown copy-back behavior is
+unchanged while the counter now follows the logical backend.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `wait_event.o`,
+  `sinvaladt.o`, and `test_backend_runtime.o`;
+- backend clean plus generated-header recovery was required after the
+  installed-header and `PgBackend` layout changes. The first clean rebuild
+  failed at link against a stale `src/common` server object that still
+  referenced `_my_wait_event_info`; cleaning `src/common` and rebuilding fixed
+  the stale object;
+- clean full `gmake -j8` passed after the `src/common` clean;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 49 to 47;
+- `gmake -C contrib -j8` and a clean PL/pgSQL rebuild/install passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed after
+  restoring the expected-file trailing blank line;
+- direct threaded runtime TAP passed all 87 tests with the local
+  `/Users/samwillis/perl5` `PERL5LIB` paths and an explicit `PG_REGRESS`
+  environment;
+- `test_backend_wait_state_is_backend_local()` now covers local and redirected
+  wait-event storage across two fake logical backends, while
+  `test_backend_ipc_state_is_backend_local()` covers the invalidation local
+  transaction ID counter.
+
 ## Backend Parallel State Bridge
 
 The one-hundred-forty-second Phase 12 slice moves a parallel-query and

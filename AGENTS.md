@@ -144,6 +144,13 @@ Important current files:
   `gmake check-global-lifetimes` as part of Gate E2. A new mutable global must
   be annotated with an explicit `PG_GLOBAL_*` owner or deliberately accepted in
   `src/tools/global_lifetime/global_lifetime_baseline.tsv`.
+- Before leaving Phase 12, perform the Gate E2 object-lifecycle audit. Every
+  backend/session/connection/execution state bucket needs a documented
+  initializer, early-adoption behavior or proof that early adoption is
+  impossible, reset/destroy behavior, owner/lifetime, and copy/adoption rule
+  for pointer, list, memory-context, socket, hash-table, and opaque-pointer
+  fields. Manual process/thread init/adopt asymmetries must be centralized or
+  explicitly justified.
 - `AuxProcessResourceOwner` is now routed through `PgBackend` via
   `PgCurrentAuxProcessResourceOwnerRef()` and the `AuxProcessResourceOwner`
   lvalue macro. After changing `src/include/utils/resowner.h` or this backend
@@ -209,6 +216,15 @@ Important current files:
   use a clean backend rebuild/install before runtime validation. The
   global-lifetime scan drops by one for this slice because two raw globals are
   replaced by one early-backend fallback bucket.
+- Wait-event reporting storage now lives in `PgBackendWaitState`, and
+  `my_wait_event_info` is a compatibility macro over the current backend wait
+  state except in the standalone `S_LOCK_TEST` build. The shared-invalidation
+  local transaction ID counter now lives in `PgBackendIPCState`. After changing
+  this bridge or `src/include/utils/wait_event.h`, run touched-object builds
+  for `backend_runtime.o`, `wait_event.o`, `sinvaladt.o`, and
+  `test_backend_runtime.o`, then clean/rebuild backend and `src/common` before
+  full runtime validation; stale `src/common` server objects can still
+  reference removed wait-event symbols.
 - `proc_exit_inprogress` and `shmem_exit_inprogress` are now fields in
   `PgBackendExitState`, exposed through compatibility macros in
   `src/include/storage/ipc.h`; the old exported TLS definitions were removed
@@ -769,6 +785,14 @@ Important current files:
 
   ```sh
   gmake -C src/port clean all
+  ```
+
+  Server-side common objects can have the same stale-symbol problem. If a
+  clean backend link fails with a removed backend-global symbol from
+  `libpgcommon_srv.a`, clean and rebuild `src/common` as well:
+
+  ```sh
+  gmake -C src/common clean all
   ```
 
 - After changing a contrib/test module header to expose `PG_THREAD_LOCAL`

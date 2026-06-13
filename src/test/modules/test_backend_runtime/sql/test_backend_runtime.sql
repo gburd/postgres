@@ -61,6 +61,7 @@ SELECT test_backend_instrumentation_state_is_backend_local();
 SELECT test_backend_buffer_state_is_backend_local();
 SELECT test_backend_storage_state_is_backend_local();
 SELECT test_backend_lock_state_is_backend_local();
+SELECT test_backend_wait_state_is_backend_local();
 SELECT test_backend_ipc_state_is_backend_local();
 SELECT test_backend_transaction_state_is_backend_local();
 SELECT test_backend_timeout_state_is_backend_local();

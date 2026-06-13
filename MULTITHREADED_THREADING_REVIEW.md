@@ -832,6 +832,30 @@ scheduler-aware wait work. A direct attempt to reset the exiting carrier's top
 memory tree after backend cleanup crashed a parallel threaded reconnect smoke,
 confirming that memory reclamation still needs systematic ownership separation
 rather than a terminal reset.
+A follow-up object-model review keeps the current direction but raises one
+additional Gate E2 hardening requirement: `PgBackend`, `PgSession`,
+`PgConnection`, `PgExecution`, and `PgThreadBackendRuntimeState` now form a
+coherent object shape, but manual initializer/adoption lists and pointer/list-
+bearing bucket copies are now a real correctness risk. Before Phase 12 closes,
+each state bucket needs an explicit lifecycle classification covering
+initializer, early-adoption behavior or proof that early adoption is
+impossible, reset/destroy behavior, owner/lifetime, and copy/adoption rules
+for pointers, list heads, memory contexts, sockets, hash tables, and opaque
+pointers. Process/runtime initialization and thread-runtime installation must
+be centralized or have every intentional asymmetry documented. The same review
+also requires documenting the endpoint for the `PgSession`/legacy `Session`
+bridge and treating `PgBackend` as a Phase 12 consolidation bridge, not the
+final ownership boundary.
+The latest state-migration slice moved wait-event storage into
+`PgBackendWaitState` and the shared-invalidation local transaction ID counter
+into `PgBackendIPCState`. Validation included touched-object builds, a clean
+full build, install, `gmake check-global-lifetimes`, contrib build, PL/pgSQL
+rebuild/install, `test_backend_runtime` regression, and direct threaded TAP.
+The global-lifetime scan now reports 47 backend-local declarations with zero
+new unclassified mutable globals. This slice also exposed a stale
+`src/common` server-object hazard after removing the exported
+`my_wait_event_info` symbol; clean `src/common` when runtime/header changes
+affect headers included by `src/common` server objects.
 
 ## Bottom Line
 

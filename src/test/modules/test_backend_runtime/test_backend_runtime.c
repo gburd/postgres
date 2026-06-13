@@ -87,6 +87,7 @@
 #include "utils/plancache.h"
 #include "utils/resowner.h"
 #include "utils/rls.h"
+#include "utils/wait_event.h"
 #include "utils/xml.h"
 
 PG_MODULE_MAGIC;
@@ -7904,6 +7905,7 @@ test_backend_ipc_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentDsmInitDoneRef() = true;
 		*PgCurrentDsmRegistryDsaRef() = &fake_backend1;
 		*PgCurrentDsmRegistryTableRef() = &fake_backend1;
+		*PgCurrentNextLocalTransactionIdRef() = 104;
 		*PgCurrentLatchWaitSetRef() = (WaitEventSet *) &fake_backend1;
 		PgCurrentLocalLatchData()->is_set = true;
 		PgCurrentLocalLatchData()->owner_pid = 111;
@@ -7918,6 +7920,7 @@ test_backend_ipc_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && !*PgCurrentDsmInitDoneRef();
 		ok = ok && *PgCurrentDsmRegistryDsaRef() == NULL;
 		ok = ok && *PgCurrentDsmRegistryTableRef() == NULL;
+		ok = ok && *PgCurrentNextLocalTransactionIdRef() == 0;
 		ok = ok && *PgCurrentLatchWaitSetRef() == NULL;
 		ok = ok && !PgCurrentLocalLatchData()->is_set;
 		ok = ok && PgCurrentLocalLatchData()->owner_pid == 0;
@@ -7931,6 +7934,7 @@ test_backend_ipc_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentDsmInitDoneRef() = false;
 		*PgCurrentDsmRegistryDsaRef() = &fake_backend2;
 		*PgCurrentDsmRegistryTableRef() = &fake_backend2;
+		*PgCurrentNextLocalTransactionIdRef() = 204;
 		*PgCurrentLatchWaitSetRef() = (WaitEventSet *) &fake_backend2;
 		PgCurrentLocalLatchData()->is_set = false;
 		PgCurrentLocalLatchData()->owner_pid = 222;
@@ -7945,6 +7949,7 @@ test_backend_ipc_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentDsmInitDoneRef();
 		ok = ok && *PgCurrentDsmRegistryDsaRef() == &fake_backend1;
 		ok = ok && *PgCurrentDsmRegistryTableRef() == &fake_backend1;
+		ok = ok && *PgCurrentNextLocalTransactionIdRef() == 104;
 		ok = ok && *PgCurrentLatchWaitSetRef() == (WaitEventSet *) &fake_backend1;
 		ok = ok && PgCurrentLocalLatchData()->is_set;
 		ok = ok && PgCurrentLocalLatchData()->owner_pid == 111;
@@ -7959,6 +7964,7 @@ test_backend_ipc_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && !*PgCurrentDsmInitDoneRef();
 		ok = ok && *PgCurrentDsmRegistryDsaRef() == &fake_backend2;
 		ok = ok && *PgCurrentDsmRegistryTableRef() == &fake_backend2;
+		ok = ok && *PgCurrentNextLocalTransactionIdRef() == 204;
 		ok = ok && *PgCurrentLatchWaitSetRef() == (WaitEventSet *) &fake_backend2;
 		ok = ok && !PgCurrentLocalLatchData()->is_set;
 		ok = ok && PgCurrentLocalLatchData()->owner_pid == 222;
@@ -7974,6 +7980,70 @@ test_backend_ipc_state_is_backend_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "backend IPC state was not backend-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_backend_wait_state_is_backend_local);
+Datum
+test_backend_wait_state_is_backend_local(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgBackend	fake_backend1;
+	PgBackend	fake_backend2;
+	uint32		external_wait_event1 = 0;
+	uint32		external_wait_event2 = 0;
+	bool		ok = true;
+
+	saved_backend = CurrentPgBackend;
+	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
+	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+
+	PG_TRY();
+	{
+		CurrentPgBackend = &fake_backend1;
+		ok = ok && *PgCurrentMyWaitEventInfoRef() ==
+			PgCurrentLocalWaitEventInfoRef();
+		pgstat_report_wait_start(0x01000011);
+		ok = ok && *PgCurrentLocalWaitEventInfoRef() == 0x01000011;
+		pgstat_report_wait_end();
+		ok = ok && *PgCurrentLocalWaitEventInfoRef() == 0;
+		my_wait_event_info = &external_wait_event1;
+		pgstat_report_wait_start(0x02000022);
+		ok = ok && external_wait_event1 == 0x02000022;
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && *PgCurrentMyWaitEventInfoRef() ==
+			PgCurrentLocalWaitEventInfoRef();
+		ok = ok && external_wait_event2 == 0;
+		my_wait_event_info = &external_wait_event2;
+		pgstat_report_wait_start(0x03000033);
+		ok = ok && external_wait_event2 == 0x03000033;
+
+		CurrentPgBackend = &fake_backend1;
+		ok = ok && *PgCurrentMyWaitEventInfoRef() == &external_wait_event1;
+		ok = ok && external_wait_event1 == 0x02000022;
+		pgstat_report_wait_end();
+		ok = ok && external_wait_event1 == 0;
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && *PgCurrentMyWaitEventInfoRef() == &external_wait_event2;
+		ok = ok && external_wait_event2 == 0x03000033;
+		pgstat_reset_wait_event_storage();
+		ok = ok && *PgCurrentMyWaitEventInfoRef() ==
+			PgCurrentLocalWaitEventInfoRef();
+
+		CurrentPgBackend = saved_backend;
+	}
+	PG_CATCH();
+	{
+		CurrentPgBackend = saved_backend;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "backend wait state was not backend-local");
 
 	PG_RETURN_BOOL(true);
 }

@@ -197,6 +197,8 @@ typedef struct PgWaitSpec
 typedef struct PgBackendWaitState
 {
 	PgWaitSpec	spec;
+	uint32		local_wait_event_info;
+	uint32	   *my_wait_event_info;
 	pg_atomic_uint32 waiting;
 } PgBackendWaitState;
 
@@ -692,6 +694,7 @@ typedef struct PgBackendIPCState
 	bool		dsm_init_done;
 	void	   *dsm_registry_dsa;
 	void	   *dsm_registry_table;
+	LocalTransactionId next_local_transaction_id;
 	WaitEventSet *latch_wait_set;
 	Latch		local_latch_data;
 } PgBackendIPCState;
@@ -1950,8 +1953,11 @@ extern volatile int *PgCurrentSharedInvalidationNumMsgsRef(void);
 extern bool *PgCurrentDsmInitDoneRef(void);
 extern void **PgCurrentDsmRegistryDsaRef(void);
 extern void **PgCurrentDsmRegistryTableRef(void);
+extern LocalTransactionId *PgCurrentNextLocalTransactionIdRef(void);
 extern WaitEventSet **PgCurrentLatchWaitSetRef(void);
 extern Latch *PgCurrentLocalLatchData(void);
+extern uint32 **PgCurrentMyWaitEventInfoRef(void);
+extern uint32 *PgCurrentLocalWaitEventInfoRef(void);
 extern PgBackendTimeoutState *PgCurrentTimeoutState(void);
 extern PgBackendWalSenderState *PgCurrentWalSenderState(void);
 extern PgBackendReplicationState *PgCurrentReplicationState(void);
