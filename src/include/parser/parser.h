@@ -53,8 +53,9 @@ typedef enum
 	BACKSLASH_QUOTE_SAFE_ENCODING,
 }			BackslashQuoteType;
 
-/* GUC variable in scan.l */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int backslash_quote;
+extern int *PgCurrentBackslashQuoteRef(void);
+
+#define backslash_quote (*PgCurrentBackslashQuoteRef())
 
 
 /* Primary entry point for the raw parsing functions */

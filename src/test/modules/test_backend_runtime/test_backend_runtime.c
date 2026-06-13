@@ -25,6 +25,8 @@
 #include "optimizer/optimizer.h"
 #include "optimizer/paths.h"
 #include "optimizer/planmain.h"
+#include "parser/parser.h"
+#include "parser/parse_expr.h"
 #include "postmaster/postmaster.h"
 #include "port/atomics.h"
 #include "port/pg_thread.h"
@@ -916,6 +918,80 @@ test_session_datetime_state_is_session_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "session date/time GUC state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_session_parser_state_is_session_local);
+Datum
+test_session_parser_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	char	   *saved_backslash_quote;
+	char	   *saved_transform_null_equals;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	saved_backslash_quote =
+		pstrdup(GetConfigOption("backslash_quote", false, false));
+	saved_transform_null_equals =
+		pstrdup(GetConfigOption("transform_null_equals", false, false));
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && backslash_quote == BACKSLASH_QUOTE_SAFE_ENCODING;
+		ok = ok && !Transform_null_equals;
+		SetConfigOption("backslash_quote", "on",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("transform_null_equals", "on",
+						PGC_USERSET, PGC_S_SESSION);
+		ok = ok && backslash_quote == BACKSLASH_QUOTE_ON;
+		ok = ok && Transform_null_equals;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && backslash_quote == BACKSLASH_QUOTE_SAFE_ENCODING;
+		ok = ok && !Transform_null_equals;
+		SetConfigOption("backslash_quote", "off",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("transform_null_equals", "off",
+						PGC_USERSET, PGC_S_SESSION);
+		ok = ok && backslash_quote == BACKSLASH_QUOTE_OFF;
+		ok = ok && !Transform_null_equals;
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && backslash_quote == BACKSLASH_QUOTE_ON;
+		ok = ok && Transform_null_equals;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && backslash_quote == BACKSLASH_QUOTE_OFF;
+		ok = ok && !Transform_null_equals;
+
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("backslash_quote", saved_backslash_quote,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("transform_null_equals",
+						saved_transform_null_equals,
+						PGC_USERSET, PGC_S_SESSION);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("backslash_quote", saved_backslash_quote,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("transform_null_equals",
+						saved_transform_null_equals,
+						PGC_USERSET, PGC_S_SESSION);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session parser state was not session-local");
 
 	PG_RETURN_BOOL(true);
 }

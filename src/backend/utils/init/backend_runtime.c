@@ -26,6 +26,8 @@
 #include "optimizer/optimizer.h"
 #include "optimizer/paths.h"
 #include "optimizer/planmain.h"
+#include "parser/parser.h"
+#include "parser/parse_expr.h"
 #include "postmaster/interrupt.h"
 #include "replication/logicalworker.h"
 #include "replication/slotsync.h"
@@ -93,6 +95,11 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionDateTimeState early_session_da
 	.date_style = USE_ISO_DATES,
 	.date_order = DATEORDER_MDY,
 	.interval_style = INTSTYLE_POSTGRES
+};
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionParserState early_session_parser = {
+	.initialized = true,
+	.transform_null_equals_value = false,
+	.backslash_quote_value = BACKSLASH_QUOTE_SAFE_ENCODING
 };
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionQueryMemoryState early_session_query_memory = {
 	.initialized = true,
@@ -186,6 +193,8 @@ static void PgSessionInitializeBinaryUpgradeState(PgSessionBinaryUpgradeState *b
 static void PgSessionAdoptEarlyBinaryUpgradeState(PgSession *session);
 static void PgSessionInitializeDateTimeState(PgSessionDateTimeState *datetime);
 static void PgSessionAdoptEarlyDateTimeState(PgSession *session);
+static void PgSessionInitializeParserState(PgSessionParserState *parser);
+static void PgSessionAdoptEarlyParserState(PgSession *session);
 static void PgSessionInitializeQueryMemoryState(PgSessionQueryMemoryState *query_memory);
 static void PgSessionAdoptEarlyQueryMemoryState(PgSession *session);
 static void PgSessionInitializePlannerCostState(PgSessionPlannerCostState *planner_cost);
@@ -206,6 +215,7 @@ static PgSessionDatabaseState *PgCurrentSessionDatabaseState(void);
 static PgSessionTablespaceState *PgCurrentSessionTablespaceState(void);
 static PgSessionBinaryUpgradeState *PgCurrentSessionBinaryUpgradeState(void);
 static PgSessionDateTimeState *PgCurrentSessionDateTimeState(void);
+static PgSessionParserState *PgCurrentSessionParserState(void);
 static PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
 static PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
 static PgSessionPlannerMethodState *PgCurrentSessionPlannerMethodState(void);
@@ -377,6 +387,28 @@ PgSessionAdoptEarlyDateTimeState(PgSession *session)
 
 	session->datetime = early_session_datetime;
 	PgSessionInitializeDateTimeState(&early_session_datetime);
+}
+
+static void
+PgSessionInitializeParserState(PgSessionParserState *parser)
+{
+	Assert(parser != NULL);
+
+	parser->initialized = true;
+	parser->transform_null_equals_value = false;
+	parser->backslash_quote_value = BACKSLASH_QUOTE_SAFE_ENCODING;
+}
+
+static void
+PgSessionAdoptEarlyParserState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (!early_session_parser.initialized)
+		PgSessionInitializeParserState(&early_session_parser);
+
+	session->parser = early_session_parser;
+	PgSessionInitializeParserState(&early_session_parser);
 }
 
 static void
@@ -641,6 +673,7 @@ InitializePgProcessRuntime(void)
 	PgSessionAdoptEarlyTablespaceState(&process_session);
 	PgSessionAdoptEarlyBinaryUpgradeState(&process_session);
 	PgSessionAdoptEarlyDateTimeState(&process_session);
+	PgSessionAdoptEarlyParserState(&process_session);
 	PgSessionAdoptEarlyQueryMemoryState(&process_session);
 	PgSessionAdoptEarlyPlannerCostState(&process_session);
 	PgSessionAdoptEarlyPlannerMethodState(&process_session);
@@ -726,6 +759,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgSessionInitializeTablespaceState(&state->session.tablespace);
 	PgSessionInitializeBinaryUpgradeState(&state->session.binary_upgrade);
 	PgSessionInitializeDateTimeState(&state->session.datetime);
+	PgSessionInitializeParserState(&state->session.parser);
 	PgSessionInitializeQueryMemoryState(&state->session.query_memory);
 	PgSessionInitializePlannerCostState(&state->session.planner_cost);
 	PgSessionInitializePlannerMethodState(&state->session.planner_method);
@@ -752,6 +786,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgSessionAdoptEarlyTablespaceState(&state->session);
 	PgSessionAdoptEarlyBinaryUpgradeState(&state->session);
 	PgSessionAdoptEarlyDateTimeState(&state->session);
+	PgSessionAdoptEarlyParserState(&state->session);
 	PgSessionAdoptEarlyQueryMemoryState(&state->session);
 	PgSessionAdoptEarlyPlannerCostState(&state->session);
 	PgSessionAdoptEarlyPlannerMethodState(&state->session);
@@ -866,6 +901,22 @@ PgCurrentSessionDateTimeState(void)
 		PgSessionInitializeDateTimeState(datetime);
 
 	return datetime;
+}
+
+static PgSessionParserState *
+PgCurrentSessionParserState(void)
+{
+	PgSessionParserState *parser;
+
+	if (CurrentPgSession == NULL)
+		parser = &early_session_parser;
+	else
+		parser = &CurrentPgSession->parser;
+
+	if (!parser->initialized)
+		PgSessionInitializeParserState(parser);
+
+	return parser;
 }
 
 static PgSessionQueryMemoryState *
@@ -1058,6 +1109,18 @@ int *
 PgCurrentIntervalStyleRef(void)
 {
 	return &PgCurrentSessionDateTimeState()->interval_style;
+}
+
+bool *
+PgCurrentTransformNullEqualsRef(void)
+{
+	return &PgCurrentSessionParserState()->transform_null_equals_value;
+}
+
+int *
+PgCurrentBackslashQuoteRef(void)
+{
+	return &PgCurrentSessionParserState()->backslash_quote_value;
 }
 
 int *

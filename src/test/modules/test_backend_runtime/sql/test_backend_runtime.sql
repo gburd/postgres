@@ -12,6 +12,7 @@ SELECT test_session_database_state_is_session_local();
 SELECT test_session_tablespace_state_is_session_local();
 SELECT test_session_binary_upgrade_state_is_session_local();
 SELECT test_session_datetime_state_is_session_local();
+SELECT test_session_parser_state_is_session_local();
 SELECT test_session_query_memory_state_is_session_local();
 SELECT test_session_planner_cost_state_is_session_local();
 SELECT test_session_planner_method_state_is_session_local();

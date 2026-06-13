@@ -225,6 +225,13 @@ typedef struct PgSessionDateTimeState
 	int			interval_style;
 } PgSessionDateTimeState;
 
+typedef struct PgSessionParserState
+{
+	bool		initialized;
+	bool		transform_null_equals_value;
+	int			backslash_quote_value;
+} PgSessionParserState;
+
 typedef struct PgSessionQueryMemoryState
 {
 	bool		initialized;
@@ -418,6 +425,7 @@ struct PgSession
 	PgSessionTablespaceState tablespace;
 	PgSessionBinaryUpgradeState binary_upgrade;
 	PgSessionDateTimeState datetime;
+	PgSessionParserState parser;
 	PgSessionQueryMemoryState query_memory;
 	PgSessionPlannerCostState planner_cost;
 	PgSessionPlannerMethodState planner_method;

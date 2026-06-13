@@ -45,6 +45,8 @@
 #include "optimizer/optimizer.h"
 #include "optimizer/paths.h"
 #include "optimizer/planmain.h"
+#include "parser/parser.h"
+#include "parser/parse_expr.h"
 #include "parser/scansup.h"
 #include "port/pg_bitutils.h"
 #include "storage/fd.h"
@@ -1581,6 +1583,10 @@ RebindSessionGUCVariablePointers(void)
 	if (guc_hashtab == NULL)
 		return;
 
+	gconf = find_option("backslash_quote", false, false, PANIC);
+	Assert(gconf->vartype == PGC_ENUM);
+	gconf->_enum.variable = PgCurrentBackslashQuoteRef();
+
 	gconf = find_option("IntervalStyle", false, false, PANIC);
 	Assert(gconf->vartype == PGC_ENUM);
 	gconf->_enum.variable = PgCurrentIntervalStyleRef();
@@ -1823,6 +1829,10 @@ RebindSessionGUCVariablePointers(void)
 	gconf = find_option("temp_tablespaces", false, false, PANIC);
 	Assert(gconf->vartype == PGC_STRING);
 	gconf->_string.variable = PgCurrentTempTablespacesRef();
+
+	gconf = find_option("transform_null_equals", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentTransformNullEqualsRef();
 }
 
 /*

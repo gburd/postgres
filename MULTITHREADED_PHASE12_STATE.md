@@ -1195,3 +1195,56 @@ Validation for this slice:
 - static scans found no remaining direct session TLS definitions or extern
   declarations for the moved `binary_upgrade_next_*` and
   `binary_upgrade_record_init_privs` names.
+
+## Session Parser GUC State Bridge
+
+The twenty-fourth Phase 12 slice moves the parser direct-pointer GUC state
+under `PgSession`:
+
+- `PgSession` now owns a `PgSessionParserState`;
+- `Transform_null_equals` and `backslash_quote` remain source-compatible
+  lvalue macros in `parser/parse_expr.h` and `parser/parser.h`;
+- the macros route through `PgCurrentTransformNullEqualsRef()` and
+  `PgCurrentBackslashQuoteRef()` accessors that return fields in the active
+  logical session;
+- zeroed logical session objects lazily initialize
+  `Transform_null_equals` to `false` and `backslash_quote` to
+  `BACKSLASH_QUOTE_SAFE_ENCODING`;
+- early startup paths before `CurrentPgSession` is installed use fallback
+  session-local storage in `backend_runtime.c`;
+- process-mode and thread-runtime session installation adopt any early
+  fallback parser GUC state into the logical session object;
+- `RebindSessionGUCVariablePointers()` now rebinds the generated GUC records
+  for `transform_null_equals` and `backslash_quote` whenever the active
+  logical session changes;
+- the scanner-private cached copy was renamed from `backslash_quote` to
+  `scanner_backslash_quote` so it cannot collide with the compatibility macro.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `guc.o`,
+  `parse_expr.o`, `scan.o`, and `test_backend_runtime.o`;
+- because exported parser GUC globals changed into compatibility macros,
+  `gmake -C src/backend clean` plus generated-header recovery was used before
+  the clean rebuild;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed, followed by rebuilding
+  and reinstalling `src/test/modules/test_backend_runtime`, PL/pgSQL,
+  `src/test/regress`, `libpqwalreceiver`, and `src/backend/snowball`;
+- focused `test_backend_runtime` regression passed and includes
+  `test_session_parser_state_is_session_local()`, which switches sessions
+  through `PgSetCurrentSession()`, sets `backslash_quote` and
+  `transform_null_equals` through the GUC machinery, and proves both lvalues
+  follow the active session after GUC pointer rebinding;
+- direct threaded-runtime TAP coverage was attempted for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`,
+  but this system Perl is missing `IPC::Run`, so both tests failed before
+  starting PostgreSQL;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests, including the core `guc` and parser-heavy SQL tests;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- `git diff --check` passed;
+- static scans found no remaining direct session TLS definitions or extern
+  declarations for `Transform_null_equals` or `backslash_quote`.
