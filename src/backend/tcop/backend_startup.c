@@ -874,7 +874,7 @@ retry:
 				 */
 				if (strcmp(nameptr, "application_name") == 0)
 				{
-					port->application_name = pg_clean_ascii(valptr, 0);
+					port->startup_application_name = pg_clean_ascii(valptr, 0);
 				}
 			}
 			offset = valoffset + strlen(valptr) + 1;

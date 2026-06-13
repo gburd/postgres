@@ -1061,6 +1061,208 @@ test_session_text_search_state_is_session_local(PG_FUNCTION_ARGS)
 	if (!ok)
 		elog(ERROR, "session text-search state was not session-local");
 
+PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_session_connection_guc_state_is_session_local);
+Datum
+test_session_connection_guc_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	char	   *saved_application_name;
+	char	   *saved_log_disconnections;
+	char	   *saved_log_statement;
+	char	   *saved_post_auth_delay;
+	char	   *saved_restrict_relation_kind;
+	char	   *saved_tcp_keepalives_idle;
+	char	   *saved_tcp_keepalives_interval;
+	char	   *saved_tcp_keepalives_count;
+	char	   *saved_tcp_user_timeout;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	saved_application_name =
+		pstrdup(GetConfigOption("application_name", false, false));
+	saved_log_disconnections =
+		pstrdup(GetConfigOption("log_disconnections", false, false));
+	saved_log_statement =
+		pstrdup(GetConfigOption("log_statement", false, false));
+	saved_post_auth_delay =
+		pstrdup(GetConfigOption("post_auth_delay", false, false));
+	saved_restrict_relation_kind =
+		pstrdup(GetConfigOption("restrict_nonsystem_relation_kind",
+								false, false));
+	saved_tcp_keepalives_idle =
+		pstrdup(GetConfigOption("tcp_keepalives_idle", false, false));
+	saved_tcp_keepalives_interval =
+		pstrdup(GetConfigOption("tcp_keepalives_interval", false, false));
+	saved_tcp_keepalives_count =
+		pstrdup(GetConfigOption("tcp_keepalives_count", false, false));
+	saved_tcp_user_timeout =
+		pstrdup(GetConfigOption("tcp_user_timeout", false, false));
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && strcmp(application_name, "") == 0;
+		ok = ok && tcp_keepalives_idle == 0;
+		ok = ok && tcp_keepalives_interval == 0;
+		ok = ok && tcp_keepalives_count == 0;
+		ok = ok && tcp_user_timeout == 0;
+		ok = ok && !Log_disconnections;
+		ok = ok && log_statement == LOGSTMT_NONE;
+		ok = ok && PostAuthDelay == 0;
+		ok = ok && strcmp(*PgCurrentRestrictNonsystemRelationKindStringRef(),
+						  "") == 0;
+		ok = ok && restrict_nonsystem_relation_kind == 0;
+
+		SetConfigOption("application_name", "phase12_conn_one",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("tcp_keepalives_idle", "11",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("tcp_keepalives_interval", "12",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("tcp_keepalives_count", "13",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("tcp_user_timeout", "14",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("log_disconnections", "on",
+						PGC_SU_BACKEND, PGC_S_CLIENT);
+		SetConfigOption("log_statement", "ddl",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("post_auth_delay", "15",
+						PGC_BACKEND, PGC_S_CLIENT);
+		SetConfigOption("restrict_nonsystem_relation_kind", "view",
+						PGC_USERSET, PGC_S_SESSION);
+		ok = ok && strcmp(application_name, "phase12_conn_one") == 0;
+		ok = ok && tcp_keepalives_idle == 11;
+		ok = ok && tcp_keepalives_interval == 12;
+		ok = ok && tcp_keepalives_count == 13;
+		ok = ok && tcp_user_timeout == 14;
+		ok = ok && Log_disconnections;
+		ok = ok && log_statement == LOGSTMT_DDL;
+		ok = ok && PostAuthDelay == 15;
+		ok = ok && restrict_nonsystem_relation_kind == RESTRICT_RELKIND_VIEW;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && strcmp(application_name, "") == 0;
+		ok = ok && tcp_keepalives_idle == 0;
+		ok = ok && tcp_keepalives_interval == 0;
+		ok = ok && tcp_keepalives_count == 0;
+		ok = ok && tcp_user_timeout == 0;
+		ok = ok && !Log_disconnections;
+		ok = ok && log_statement == LOGSTMT_NONE;
+		ok = ok && PostAuthDelay == 0;
+		ok = ok && restrict_nonsystem_relation_kind == 0;
+		SetConfigOption("application_name", "phase12_conn_two",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("tcp_keepalives_idle", "21",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("tcp_keepalives_interval", "22",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("tcp_keepalives_count", "23",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("tcp_user_timeout", "24",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("log_disconnections", "off",
+						PGC_SU_BACKEND, PGC_S_CLIENT);
+		SetConfigOption("log_statement", "all",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("post_auth_delay", "25",
+						PGC_BACKEND, PGC_S_CLIENT);
+		SetConfigOption("restrict_nonsystem_relation_kind",
+						"view, foreign-table",
+						PGC_USERSET, PGC_S_SESSION);
+		ok = ok && strcmp(application_name, "phase12_conn_two") == 0;
+		ok = ok && tcp_keepalives_idle == 21;
+		ok = ok && tcp_keepalives_interval == 22;
+		ok = ok && tcp_keepalives_count == 23;
+		ok = ok && tcp_user_timeout == 24;
+		ok = ok && !Log_disconnections;
+		ok = ok && log_statement == LOGSTMT_ALL;
+		ok = ok && PostAuthDelay == 25;
+		ok = ok && restrict_nonsystem_relation_kind ==
+			(RESTRICT_RELKIND_VIEW | RESTRICT_RELKIND_FOREIGN_TABLE);
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && strcmp(application_name, "phase12_conn_one") == 0;
+		ok = ok && tcp_keepalives_idle == 11;
+		ok = ok && tcp_keepalives_interval == 12;
+		ok = ok && tcp_keepalives_count == 13;
+		ok = ok && tcp_user_timeout == 14;
+		ok = ok && Log_disconnections;
+		ok = ok && log_statement == LOGSTMT_DDL;
+		ok = ok && PostAuthDelay == 15;
+		ok = ok && restrict_nonsystem_relation_kind == RESTRICT_RELKIND_VIEW;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && strcmp(application_name, "phase12_conn_two") == 0;
+		ok = ok && tcp_keepalives_idle == 21;
+		ok = ok && tcp_keepalives_interval == 22;
+		ok = ok && tcp_keepalives_count == 23;
+		ok = ok && tcp_user_timeout == 24;
+		ok = ok && !Log_disconnections;
+		ok = ok && log_statement == LOGSTMT_ALL;
+		ok = ok && PostAuthDelay == 25;
+		ok = ok && restrict_nonsystem_relation_kind ==
+			(RESTRICT_RELKIND_VIEW | RESTRICT_RELKIND_FOREIGN_TABLE);
+
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("application_name", saved_application_name,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("log_disconnections", saved_log_disconnections,
+						PGC_SU_BACKEND, PGC_S_CLIENT);
+		SetConfigOption("log_statement", saved_log_statement,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("post_auth_delay", saved_post_auth_delay,
+						PGC_BACKEND, PGC_S_CLIENT);
+		SetConfigOption("restrict_nonsystem_relation_kind",
+						saved_restrict_relation_kind,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("tcp_keepalives_idle", saved_tcp_keepalives_idle,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("tcp_keepalives_interval",
+						saved_tcp_keepalives_interval,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("tcp_keepalives_count", saved_tcp_keepalives_count,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("tcp_user_timeout", saved_tcp_user_timeout,
+						PGC_USERSET, PGC_S_SESSION);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("application_name", saved_application_name,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("log_disconnections", saved_log_disconnections,
+						PGC_SU_BACKEND, PGC_S_CLIENT);
+		SetConfigOption("log_statement", saved_log_statement,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("post_auth_delay", saved_post_auth_delay,
+						PGC_BACKEND, PGC_S_CLIENT);
+		SetConfigOption("restrict_nonsystem_relation_kind",
+						saved_restrict_relation_kind,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("tcp_keepalives_idle", saved_tcp_keepalives_idle,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("tcp_keepalives_interval",
+						saved_tcp_keepalives_interval,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("tcp_keepalives_count", saved_tcp_keepalives_count,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("tcp_user_timeout", saved_tcp_user_timeout,
+						PGC_USERSET, PGC_S_SESSION);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session connection GUC state was not session-local");
+
 	PG_RETURN_BOOL(true);
 }
 

@@ -2197,3 +2197,60 @@ Validation for this slice:
 - static scans found no remaining direct session TLS definitions or extern
   declarations for `TSCurrentConfig`, `session_timezone`, `log_timezone`,
   `timezone_string`, or `log_timezone_string`.
+
+## Session Connection And Tcop GUC State Bridge
+
+The forty-second Phase 12 slice moves connection-facing and tcop exported GUC
+state under `PgSession`:
+
+- `PgSession` now owns a `PgSessionConnectionGUCState`;
+- `PgSessionConnectionGUCState` owns `application_name`,
+  `tcp_keepalives_idle`, `tcp_keepalives_interval`,
+  `tcp_keepalives_count`, `tcp_user_timeout`, `Log_disconnections`,
+  `log_statement`, `PostAuthDelay`, the
+  `restrict_nonsystem_relation_kind` string GUC backing variable, and the
+  derived `restrict_nonsystem_relation_kind` flag value;
+- the public names remain source-compatible lvalue macros in `utils/guc.h`
+  and `tcop/tcopprot.h`;
+- early startup paths before `CurrentPgSession` is installed use fallback
+  session-local storage in `backend_runtime.c`;
+- process-mode and thread-runtime session installation adopt any early
+  fallback connection/tcop GUC state into the logical session object;
+- `InitializeThreadedSessionGUCOptions()` initializes the moved connection
+  and tcop GUC records for freshly created threaded logical sessions;
+- `RebindSessionGUCVariablePointers()` now rebinds the generated GUC records
+  for the moved connection and tcop GUCs whenever the active logical session
+  changes;
+- the backend `Port` fields formerly named `application_name` and
+  `tcp_user_timeout` were renamed to `startup_application_name` and
+  `socket_tcp_user_timeout`, because the public GUC names are now
+  compatibility macros and those common field names collided with installed
+  headers.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `postinit.o`,
+  `guc.o`, `guc_tables.o`, `postgres.o`, `backend_startup.o`, `pqcomm.o`,
+  and `test_backend_runtime.o`;
+- because exported connection/tcop GUC globals changed into compatibility
+  macros in installed headers, `gmake -C src/backend clean` plus generated
+  utility and node-header recovery was used before the clean rebuild;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed, followed by rebuilding
+  and reinstalling `src/test/modules/test_backend_runtime` against the
+  current headers;
+- focused `test_backend_runtime` regression passed and includes
+  `test_session_connection_guc_state_is_session_local()`, which switches
+  sessions through `PgSetCurrentSession()`, changes the moved generated GUCs
+  through the GUC machinery, exercises the relation-kind assign-hook derived
+  flags, and proves all moved values follow the active session;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests, including `guc`, `rules`, `plpgsql`, `subscription`, and logging/
+  connection-visible coverage;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- `git diff --check` passed;
+- static scans found no remaining direct session TLS definitions or extern
+  declarations for `application_name`, the TCP keepalive/user-timeout GUCs,
+  `Log_disconnections`, `log_statement`, `PostAuthDelay`, or
+  `restrict_nonsystem_relation_kind`.

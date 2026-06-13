@@ -547,12 +547,11 @@ PG_THREAD_LOCAL PG_GLOBAL_SESSION char *IdentFileName;
 PG_THREAD_LOCAL PG_GLOBAL_SESSION char *HostsFileName;
 PG_THREAD_LOCAL PG_GLOBAL_SESSION char *external_pid_file;
 
-PG_THREAD_LOCAL PG_GLOBAL_SESSION char *application_name;
-
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int tcp_keepalives_idle;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int tcp_keepalives_interval;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int tcp_keepalives_count;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int tcp_user_timeout;
+/*
+ * Connection/session exported GUC backing variables live in
+ * PgSessionConnectionGUCState.  Public compatibility names are lvalue macros
+ * in the corresponding headers.
+ */
 
 /*
  * SSL renegotiation was been removed in PostgreSQL 9.5, but we tolerate it
@@ -583,7 +582,9 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *server_encoding_string;
 static PG_GLOBAL_RUNTIME char *server_version_string;
 static PG_GLOBAL_RUNTIME int server_version_num;
 static PG_GLOBAL_RUNTIME char *debug_io_direct_string;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *restrict_nonsystem_relation_kind_string;
+extern char **PgCurrentRestrictNonsystemRelationKindStringRef(void);
+#define restrict_nonsystem_relation_kind_string \
+	(*PgCurrentRestrictNonsystemRelationKindStringRef())
 extern char **PgCurrentLogMinMessagesStringRef(void);
 #define log_min_messages_string (*PgCurrentLogMinMessagesStringRef())
 

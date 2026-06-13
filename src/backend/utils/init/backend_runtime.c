@@ -129,6 +129,19 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionTextSearchState early_session_
 	.current_config_value = "pg_catalog.simple",
 	.current_config_cache = InvalidOid
 };
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionConnectionGUCState early_session_connection_guc = {
+	.initialized = true,
+	.application_name_value = "",
+	.tcp_keepalives_idle_value = 0,
+	.tcp_keepalives_interval_value = 0,
+	.tcp_keepalives_count_value = 0,
+	.tcp_user_timeout_value = 0,
+	.log_disconnections_value = false,
+	.log_statement_value = 0,
+	.post_auth_delay_seconds = 0,
+	.restrict_nonsystem_relation_kind_string_value = "",
+	.restrict_nonsystem_relation_kind_value = 0
+};
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionParserState early_session_parser = {
 	.initialized = true,
 	.transform_null_equals_value = false,
@@ -436,6 +449,8 @@ static void PgSessionInitializeDateTimeState(PgSessionDateTimeState *datetime);
 static void PgSessionAdoptEarlyDateTimeState(PgSession *session);
 static void PgSessionInitializeTextSearchState(PgSessionTextSearchState *text_search);
 static void PgSessionAdoptEarlyTextSearchState(PgSession *session);
+static void PgSessionInitializeConnectionGUCState(PgSessionConnectionGUCState *connection_guc);
+static void PgSessionAdoptEarlyConnectionGUCState(PgSession *session);
 static void PgSessionInitializeParserState(PgSessionParserState *parser);
 static void PgSessionAdoptEarlyParserState(PgSession *session);
 static void PgSessionInitializeVacuumState(PgSessionVacuumState *vacuum);
@@ -491,6 +506,7 @@ static PgSessionTablespaceState *PgCurrentSessionTablespaceState(void);
 static PgSessionBinaryUpgradeState *PgCurrentSessionBinaryUpgradeState(void);
 static PgSessionDateTimeState *PgCurrentSessionDateTimeState(void);
 static PgSessionTextSearchState *PgCurrentSessionTextSearchState(void);
+static PgSessionConnectionGUCState *PgCurrentSessionConnectionGUCState(void);
 static PgSessionParserState *PgCurrentSessionParserState(void);
 static PgSessionVacuumState *PgCurrentSessionVacuumState(void);
 static PgSessionBufferIOState *PgCurrentSessionBufferIOState(void);
@@ -705,6 +721,37 @@ PgSessionAdoptEarlyTextSearchState(PgSession *session)
 
 	session->text_search = early_session_text_search;
 	PgSessionInitializeTextSearchState(&early_session_text_search);
+}
+
+static void
+PgSessionInitializeConnectionGUCState(PgSessionConnectionGUCState *connection_guc)
+{
+	Assert(connection_guc != NULL);
+
+	connection_guc->initialized = true;
+	connection_guc->application_name_value = guc_strdup(FATAL, "");
+	connection_guc->tcp_keepalives_idle_value = 0;
+	connection_guc->tcp_keepalives_interval_value = 0;
+	connection_guc->tcp_keepalives_count_value = 0;
+	connection_guc->tcp_user_timeout_value = 0;
+	connection_guc->log_disconnections_value = false;
+	connection_guc->log_statement_value = 0;
+	connection_guc->post_auth_delay_seconds = 0;
+	connection_guc->restrict_nonsystem_relation_kind_string_value =
+		guc_strdup(FATAL, "");
+	connection_guc->restrict_nonsystem_relation_kind_value = 0;
+}
+
+static void
+PgSessionAdoptEarlyConnectionGUCState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (!early_session_connection_guc.initialized)
+		PgSessionInitializeConnectionGUCState(&early_session_connection_guc);
+
+	session->connection_guc = early_session_connection_guc;
+	PgSessionInitializeConnectionGUCState(&early_session_connection_guc);
 }
 
 static void
@@ -1471,6 +1518,7 @@ InitializePgProcessRuntime(void)
 	PgSessionAdoptEarlyBinaryUpgradeState(&process_session);
 	PgSessionAdoptEarlyDateTimeState(&process_session);
 	PgSessionAdoptEarlyTextSearchState(&process_session);
+	PgSessionAdoptEarlyConnectionGUCState(&process_session);
 	PgSessionAdoptEarlyParserState(&process_session);
 	PgSessionAdoptEarlyVacuumState(&process_session);
 	PgSessionAdoptEarlyBufferIOState(&process_session);
@@ -1574,6 +1622,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgSessionInitializeBinaryUpgradeState(&state->session.binary_upgrade);
 	PgSessionInitializeDateTimeState(&state->session.datetime);
 	PgSessionInitializeTextSearchState(&state->session.text_search);
+	PgSessionInitializeConnectionGUCState(&state->session.connection_guc);
 	PgSessionInitializeParserState(&state->session.parser);
 	PgSessionInitializeVacuumState(&state->session.vacuum);
 	PgSessionInitializeBufferIOState(&state->session.buffer_io);
@@ -1618,6 +1667,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgSessionAdoptEarlyBinaryUpgradeState(&state->session);
 	PgSessionAdoptEarlyDateTimeState(&state->session);
 	PgSessionAdoptEarlyTextSearchState(&state->session);
+	PgSessionAdoptEarlyConnectionGUCState(&state->session);
 	PgSessionAdoptEarlyParserState(&state->session);
 	PgSessionAdoptEarlyVacuumState(&state->session);
 	PgSessionAdoptEarlyBufferIOState(&state->session);
@@ -1765,6 +1815,22 @@ PgCurrentSessionTextSearchState(void)
 		PgSessionInitializeTextSearchState(text_search);
 
 	return text_search;
+}
+
+static PgSessionConnectionGUCState *
+PgCurrentSessionConnectionGUCState(void)
+{
+	PgSessionConnectionGUCState *connection_guc;
+
+	if (CurrentPgSession == NULL)
+		connection_guc = &early_session_connection_guc;
+	else
+		connection_guc = &CurrentPgSession->connection_guc;
+
+	if (!connection_guc->initialized)
+		PgSessionInitializeConnectionGUCState(connection_guc);
+
+	return connection_guc;
 }
 
 static PgSessionParserState *
@@ -2264,6 +2330,66 @@ Oid *
 PgCurrentTSCurrentConfigCacheRef(void)
 {
 	return &PgCurrentSessionTextSearchState()->current_config_cache;
+}
+
+char **
+PgCurrentApplicationNameRef(void)
+{
+	return &PgCurrentSessionConnectionGUCState()->application_name_value;
+}
+
+int *
+PgCurrentTcpKeepalivesIdleRef(void)
+{
+	return &PgCurrentSessionConnectionGUCState()->tcp_keepalives_idle_value;
+}
+
+int *
+PgCurrentTcpKeepalivesIntervalRef(void)
+{
+	return &PgCurrentSessionConnectionGUCState()->tcp_keepalives_interval_value;
+}
+
+int *
+PgCurrentTcpKeepalivesCountRef(void)
+{
+	return &PgCurrentSessionConnectionGUCState()->tcp_keepalives_count_value;
+}
+
+int *
+PgCurrentTcpUserTimeoutRef(void)
+{
+	return &PgCurrentSessionConnectionGUCState()->tcp_user_timeout_value;
+}
+
+bool *
+PgCurrentLogDisconnectionsRef(void)
+{
+	return &PgCurrentSessionConnectionGUCState()->log_disconnections_value;
+}
+
+int *
+PgCurrentLogStatementRef(void)
+{
+	return &PgCurrentSessionConnectionGUCState()->log_statement_value;
+}
+
+int *
+PgCurrentPostAuthDelayRef(void)
+{
+	return &PgCurrentSessionConnectionGUCState()->post_auth_delay_seconds;
+}
+
+char **
+PgCurrentRestrictNonsystemRelationKindStringRef(void)
+{
+	return &PgCurrentSessionConnectionGUCState()->restrict_nonsystem_relation_kind_string_value;
+}
+
+int *
+PgCurrentRestrictNonsystemRelationKindRef(void)
+{
+	return &PgCurrentSessionConnectionGUCState()->restrict_nonsystem_relation_kind_value;
 }
 
 bool *

@@ -91,19 +91,19 @@
 /* Note: whereToSendOutput is initialized for the bootstrap/standalone case */
 PG_THREAD_LOCAL PG_GLOBAL_CONNECTION CommandDest whereToSendOutput = DestDebug;
 
-/* flag for logging end of session */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Log_disconnections = false;
-
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int log_statement = LOGSTMT_NONE;
-
-/* wait N seconds to allow attach from a debugger */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int PostAuthDelay = 0;
+/*
+ * Log_disconnections, log_statement, and PostAuthDelay live in
+ * PgSessionConnectionGUCState.  Public names remain source-compatible lvalue
+ * macros from tcopprot.h.
+ */
 
 /* Time between checks that the client is still connected. */
 PG_THREAD_LOCAL PG_GLOBAL_CONNECTION int client_connection_check_interval = 0;
 
-/* flags for non-system relation kinds to restrict use */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int restrict_nonsystem_relation_kind;
+/*
+ * restrict_nonsystem_relation_kind also lives in
+ * PgSessionConnectionGUCState.
+ */
 
 /*
  * Include signal sender PID/UID in the server log when available

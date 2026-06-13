@@ -160,7 +160,7 @@ typedef struct Port
 	 * authorized" log message. We shouldn't use this post-startup, instead
 	 * the GUC should be used as application can change it afterward.
 	 */
-	char	   *application_name;
+	char	   *startup_application_name;
 
 	/*
 	 * Information that needs to be held during the authentication cycle.
@@ -181,7 +181,7 @@ typedef struct Port
 	int			keepalives_idle;
 	int			keepalives_interval;
 	int			keepalives_count;
-	int			tcp_user_timeout;
+	int			socket_tcp_user_timeout;
 
 	/*
 	 * SCRAM structures.

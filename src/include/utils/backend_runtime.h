@@ -238,6 +238,21 @@ typedef struct PgSessionTextSearchState
 	Oid			current_config_cache;
 } PgSessionTextSearchState;
 
+typedef struct PgSessionConnectionGUCState
+{
+	bool		initialized;
+	char	   *application_name_value;
+	int			tcp_keepalives_idle_value;
+	int			tcp_keepalives_interval_value;
+	int			tcp_keepalives_count_value;
+	int			tcp_user_timeout_value;
+	bool		log_disconnections_value;
+	int			log_statement_value;
+	int			post_auth_delay_seconds;
+	char	   *restrict_nonsystem_relation_kind_string_value;
+	int			restrict_nonsystem_relation_kind_value;
+} PgSessionConnectionGUCState;
+
 typedef struct PgSessionParserState
 {
 	bool		initialized;
@@ -690,6 +705,7 @@ struct PgSession
 	PgSessionJitGUCState jit_guc;
 	PgSessionSortGUCState sort_guc;
 	PgSessionTextSearchState text_search;
+	PgSessionConnectionGUCState connection_guc;
 	PgSessionQueryMemoryState query_memory;
 	PgSessionPlannerCostState planner_cost;
 	PgSessionPlannerMethodState planner_method;
@@ -871,6 +887,16 @@ extern char **PgCurrentTimeZoneStringRef(void);
 extern char **PgCurrentLogTimeZoneStringRef(void);
 extern pg_tz **PgCurrentSessionTimeZoneRef(void);
 extern pg_tz **PgCurrentLogTimeZoneRef(void);
+extern char **PgCurrentApplicationNameRef(void);
+extern int *PgCurrentTcpKeepalivesIdleRef(void);
+extern int *PgCurrentTcpKeepalivesIntervalRef(void);
+extern int *PgCurrentTcpKeepalivesCountRef(void);
+extern int *PgCurrentTcpUserTimeoutRef(void);
+extern bool *PgCurrentLogDisconnectionsRef(void);
+extern int *PgCurrentLogStatementRef(void);
+extern int *PgCurrentPostAuthDelayRef(void);
+extern char **PgCurrentRestrictNonsystemRelationKindStringRef(void);
+extern int *PgCurrentRestrictNonsystemRelationKindRef(void);
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);

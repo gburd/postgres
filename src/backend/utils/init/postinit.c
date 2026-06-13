@@ -306,9 +306,9 @@ PerformAuthentication(Port *port)
 		if (!am_walsender)
 			appendStringInfo(&logmsg, _(" database=%s"), port->database_name);
 
-		if (port->application_name != NULL)
+		if (port->startup_application_name != NULL)
 			appendStringInfo(&logmsg, _(" application_name=%s"),
-							 port->application_name);
+							 port->startup_application_name);
 
 #ifdef USE_SSL
 		if (port->ssl_in_use)

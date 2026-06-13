@@ -347,12 +347,17 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *IdentFileName;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *HostsFileName;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *external_pid_file;
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *application_name;
+extern char **PgCurrentApplicationNameRef(void);
+#define application_name (*PgCurrentApplicationNameRef())
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int tcp_keepalives_idle;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int tcp_keepalives_interval;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int tcp_keepalives_count;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int tcp_user_timeout;
+extern int *PgCurrentTcpKeepalivesIdleRef(void);
+extern int *PgCurrentTcpKeepalivesIntervalRef(void);
+extern int *PgCurrentTcpKeepalivesCountRef(void);
+extern int *PgCurrentTcpUserTimeoutRef(void);
+#define tcp_keepalives_idle (*PgCurrentTcpKeepalivesIdleRef())
+#define tcp_keepalives_interval (*PgCurrentTcpKeepalivesIntervalRef())
+#define tcp_keepalives_count (*PgCurrentTcpKeepalivesCountRef())
+#define tcp_user_timeout (*PgCurrentTcpUserTimeoutRef())
 
 extern char **PgCurrentRoleStringRef(void);
 #define role_string (*PgCurrentRoleStringRef())

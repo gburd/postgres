@@ -1511,6 +1511,34 @@ InitializeThreadedSessionGUCOptions(void)
 	gconf = find_option("role", false, false, PANIC);
 	InitializeOneGUCOption(gconf);
 
+	gconf = find_option("application_name", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("post_auth_delay", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("log_disconnections", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("log_statement", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("restrict_nonsystem_relation_kind", false, false,
+						PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("tcp_keepalives_idle", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("tcp_keepalives_interval", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("tcp_keepalives_count", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("tcp_user_timeout", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
 	gconf = find_option("search_path", false, false, PANIC);
 	InitializeOneGUCOption(gconf);
 
@@ -1763,6 +1791,10 @@ RebindSessionGUCVariablePointers(void)
 	Assert(gconf->vartype == PGC_BOOL);
 	gconf->_bool.variable = PgCurrentAllowSystemTableModsRef();
 
+	gconf = find_option("application_name", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentApplicationNameRef();
+
 	gconf = find_option("backslash_quote", false, false, PANIC);
 	Assert(gconf->vartype == PGC_ENUM);
 	gconf->_enum.variable = PgCurrentBackslashQuoteRef();
@@ -1962,6 +1994,14 @@ RebindSessionGUCVariablePointers(void)
 	Assert(gconf->vartype == PGC_BOOL);
 	gconf->_bool.variable = PgCurrentLoCompatPrivilegesRef();
 
+	gconf = find_option("log_disconnections", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentLogDisconnectionsRef();
+
+	gconf = find_option("log_statement", false, false, PANIC);
+	Assert(gconf->vartype == PGC_ENUM);
+	gconf->_enum.variable = PgCurrentLogStatementRef();
+
 	gconf = find_option("extra_float_digits", false, false, PANIC);
 	Assert(gconf->vartype == PGC_INT);
 	gconf->_int.variable = PgCurrentExtraFloatDigitsRef();
@@ -1978,9 +2018,34 @@ RebindSessionGUCVariablePointers(void)
 	Assert(gconf->vartype == PGC_BOOL);
 	gconf->_bool.variable = PgCurrentQuoteAllIdentifiersRef();
 
+	gconf = find_option("post_auth_delay", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentPostAuthDelayRef();
+
 	gconf = find_option("plan_cache_mode", false, false, PANIC);
 	Assert(gconf->vartype == PGC_ENUM);
 	gconf->_enum.variable = PgCurrentPlanCacheModeRef();
+
+	gconf = find_option("restrict_nonsystem_relation_kind", false, false,
+						PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentRestrictNonsystemRelationKindStringRef();
+
+	gconf = find_option("tcp_keepalives_idle", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentTcpKeepalivesIdleRef();
+
+	gconf = find_option("tcp_keepalives_interval", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentTcpKeepalivesIntervalRef();
+
+	gconf = find_option("tcp_keepalives_count", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentTcpKeepalivesCountRef();
+
+	gconf = find_option("tcp_user_timeout", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentTcpUserTimeoutRef();
 
 	gconf = find_option("gin_fuzzy_search_limit", false, false, PANIC);
 	Assert(gconf->vartype == PGC_INT);

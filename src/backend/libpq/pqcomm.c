@@ -1885,8 +1885,8 @@ pq_gettcpusertimeout(Port *port)
 	if (port == NULL || port->laddr.addr.ss_family == AF_UNIX)
 		return 0;
 
-	if (port->tcp_user_timeout != 0)
-		return port->tcp_user_timeout;
+	if (port->socket_tcp_user_timeout != 0)
+		return port->socket_tcp_user_timeout;
 
 	if (port->default_tcp_user_timeout == 0)
 	{
@@ -1915,7 +1915,7 @@ pq_settcpusertimeout(int timeout, Port *port)
 		return STATUS_OK;
 
 #ifdef TCP_USER_TIMEOUT
-	if (timeout == port->tcp_user_timeout)
+	if (timeout == port->socket_tcp_user_timeout)
 		return STATUS_OK;
 
 	if (port->default_tcp_user_timeout <= 0)
@@ -1940,7 +1940,7 @@ pq_settcpusertimeout(int timeout, Port *port)
 		return STATUS_ERROR;
 	}
 
-	port->tcp_user_timeout = timeout;
+	port->socket_tcp_user_timeout = timeout;
 #else
 	if (timeout != 0)
 	{
