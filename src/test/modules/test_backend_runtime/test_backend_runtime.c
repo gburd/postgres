@@ -1707,6 +1707,68 @@ test_session_optimizer_state_is_session_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_session_plan_cache_state_is_session_local);
+Datum
+test_session_plan_cache_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	dlist_node	session1_saved_node;
+	dlist_node	session1_expr_node;
+	dlist_node	session2_saved_node;
+	dlist_node	session2_expr_node;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	dlist_node_init(&session1_saved_node);
+	dlist_node_init(&session1_expr_node);
+	dlist_node_init(&session2_saved_node);
+	dlist_node_init(&session2_expr_node);
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && dlist_is_empty(PgCurrentSavedPlanListRef());
+		ok = ok && dlist_is_empty(PgCurrentCachedExpressionListRef());
+		dlist_push_tail(PgCurrentSavedPlanListRef(), &session1_saved_node);
+		dlist_push_tail(PgCurrentCachedExpressionListRef(), &session1_expr_node);
+		ok = ok && !dlist_is_empty(PgCurrentSavedPlanListRef());
+		ok = ok && !dlist_is_empty(PgCurrentCachedExpressionListRef());
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && dlist_is_empty(PgCurrentSavedPlanListRef());
+		ok = ok && dlist_is_empty(PgCurrentCachedExpressionListRef());
+		dlist_push_tail(PgCurrentSavedPlanListRef(), &session2_saved_node);
+		dlist_push_tail(PgCurrentCachedExpressionListRef(), &session2_expr_node);
+		ok = ok && !dlist_is_empty(PgCurrentSavedPlanListRef());
+		ok = ok && !dlist_is_empty(PgCurrentCachedExpressionListRef());
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && PgCurrentSavedPlanListRef()->head.next == &session1_saved_node;
+		ok = ok && PgCurrentCachedExpressionListRef()->head.next == &session1_expr_node;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && PgCurrentSavedPlanListRef()->head.next == &session2_saved_node;
+		ok = ok && PgCurrentCachedExpressionListRef()->head.next == &session2_expr_node;
+
+		PgSetCurrentSession(saved_session);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "plan cache state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_session_prepared_statement_state_is_session_local);
 Datum
 test_session_prepared_statement_state_is_session_local(PG_FUNCTION_ARGS)

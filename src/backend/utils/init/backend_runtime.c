@@ -449,6 +449,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionRandomState early_session_rand
 	.prng_seed_set = false
 };
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionOptimizerState early_session_optimizer;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPlanCacheState early_session_plan_cache;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendPendingInterruptState early_pending_interrupts;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInterruptHoldoffState early_interrupt_holdoffs;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionDebugState early_execution_debug;
@@ -543,6 +544,8 @@ static void PgSessionInitializeRandomState(PgSessionRandomState *random);
 static void PgSessionAdoptEarlyRandomState(PgSession *session);
 static void PgSessionInitializeOptimizerState(PgSessionOptimizerState *optimizer);
 static void PgSessionAdoptEarlyOptimizerState(PgSession *session);
+static void PgSessionInitializePlanCacheState(PgSessionPlanCacheState *plan_cache);
+static void PgSessionAdoptEarlyPlanCacheState(PgSession *session);
 static void PgBackendResetCoreState(PgBackendCoreState *core);
 static void PgBackendAdoptEarlyCoreState(PgBackend *backend);
 static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
@@ -589,6 +592,7 @@ static PgSessionEncodingState *PgCurrentSessionEncodingState(void);
 static PgSessionTempFileState *PgCurrentSessionTempFileState(void);
 static PgSessionRandomState *PgCurrentSessionRandomState(void);
 static PgSessionOptimizerState *PgCurrentSessionOptimizerState(void);
+static PgSessionPlanCacheState *PgCurrentSessionPlanCacheState(void);
 static PgExecutionErrorState *PgCurrentExecutionErrorState(void);
 static PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
 static PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
@@ -1676,6 +1680,30 @@ PgSessionAdoptEarlyOptimizerState(PgSession *session)
 }
 
 static void
+PgSessionInitializePlanCacheState(PgSessionPlanCacheState *plan_cache)
+{
+	Assert(plan_cache != NULL);
+
+	dlist_init(&plan_cache->saved_plan_list);
+	dlist_init(&plan_cache->cached_expression_list);
+	plan_cache->initialized = true;
+}
+
+static void
+PgSessionAdoptEarlyPlanCacheState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (!early_session_plan_cache.initialized)
+		PgSessionInitializePlanCacheState(&early_session_plan_cache);
+
+	Assert(dlist_is_empty(&early_session_plan_cache.saved_plan_list));
+	Assert(dlist_is_empty(&early_session_plan_cache.cached_expression_list));
+	PgSessionInitializePlanCacheState(&session->plan_cache);
+	PgSessionInitializePlanCacheState(&early_session_plan_cache);
+}
+
+static void
 PgBackendResetCoreState(PgBackendCoreState *core)
 {
 	MemSet(core, 0, sizeof(*core));
@@ -1848,6 +1876,7 @@ InitializePgProcessRuntime(void)
 	PgSessionAdoptEarlyTempFileState(&process_session);
 	PgSessionAdoptEarlyRandomState(&process_session);
 	PgSessionAdoptEarlyOptimizerState(&process_session);
+	PgSessionAdoptEarlyPlanCacheState(&process_session);
 
 	process_connection.backend = &process_backend;
 	process_connection.session = &process_session;
@@ -1966,6 +1995,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgSessionInitializeTempFileState(&state->session.temp_file);
 	PgSessionInitializeRandomState(&state->session.random);
 	PgSessionInitializeOptimizerState(&state->session.optimizer);
+	PgSessionInitializePlanCacheState(&state->session.plan_cache);
 
 	state->connection.backend = &state->backend;
 	state->connection.session = &state->session;
@@ -2021,6 +2051,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgSessionAdoptEarlyTempFileState(&state->session);
 	PgSessionAdoptEarlyRandomState(&state->session);
 	PgSessionAdoptEarlyOptimizerState(&state->session);
+	PgSessionAdoptEarlyPlanCacheState(&state->session);
 	PgExecutionAdoptEarlyErrorState(&state->execution);
 	PgExecutionAdoptEarlyMemoryContexts(&state->execution);
 	PgExecutionAdoptEarlyResourceOwners(&state->execution);
@@ -2610,6 +2641,22 @@ PgCurrentSessionOptimizerState(void)
 	return &CurrentPgSession->optimizer;
 }
 
+static PgSessionPlanCacheState *
+PgCurrentSessionPlanCacheState(void)
+{
+	PgSessionPlanCacheState *plan_cache;
+
+	if (CurrentPgSession == NULL)
+		plan_cache = &early_session_plan_cache;
+	else
+		plan_cache = &CurrentPgSession->plan_cache;
+
+	if (!plan_cache->initialized)
+		PgSessionInitializePlanCacheState(plan_cache);
+
+	return plan_cache;
+}
+
 Oid *
 PgCurrentMyDatabaseIdRef(void)
 {
@@ -3076,6 +3123,18 @@ HTAB **
 PgCurrentOprProofCacheHashRef(void)
 {
 	return &PgCurrentSessionOptimizerState()->opr_proof_cache_hash;
+}
+
+dlist_head *
+PgCurrentSavedPlanListRef(void)
+{
+	return &PgCurrentSessionPlanCacheState()->saved_plan_list;
+}
+
+dlist_head *
+PgCurrentCachedExpressionListRef(void)
+{
+	return &PgCurrentSessionPlanCacheState()->cached_expression_list;
 }
 
 int *

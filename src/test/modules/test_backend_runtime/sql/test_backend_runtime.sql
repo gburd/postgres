@@ -22,6 +22,7 @@ SELECT test_session_encoding_state_is_session_local();
 SELECT test_session_temp_file_state_is_session_local();
 SELECT test_session_random_state_is_session_local();
 SELECT test_session_optimizer_state_is_session_local();
+SELECT test_session_plan_cache_state_is_session_local();
 SELECT test_runtime_server_guc_state_is_runtime_local();
 SELECT test_session_connection_guc_state_is_session_local();
 SELECT test_session_parser_state_is_session_local();

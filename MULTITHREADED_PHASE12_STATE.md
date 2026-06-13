@@ -2870,3 +2870,51 @@ Validation for this slice:
 - static scans found no remaining direct session TLS definitions for
   `PlannerExtensionNameArray`, `PlannerExtensionNamesAssigned`,
   `PlannerExtensionNamesAllocated`, or `OprProofCacheHash`.
+
+## Session Plan Cache List State Bridge
+
+The fifty-sixth Phase 12 slice moves the plan-cache saved-plan and cached
+expression list heads under the logical session object:
+
+- `PgSessionPlanCacheState` now owns `saved_plan_list` and
+  `cached_expression_list`;
+- `backend_runtime.c` provides `PgCurrentSavedPlanListRef()` and
+  `PgCurrentCachedExpressionListRef()` accessors with lazy initialization, so
+  zeroed test/future runtime `PgSession` objects get valid list heads on first
+  use;
+- the early fallback exists only before a process or thread backend session is
+  installed;
+- adoption deliberately initializes fresh list heads and asserts that the early
+  fallback lists are empty, rather than copying `dlist_head` storage. Empty
+  `dlist_head` values contain self-pointers, so a plain struct copy would leave
+  the copied list head pointing back to the old storage;
+- `plancache.c` keeps the historical `saved_plan_list` and
+  `cached_expression_list` source names as source-compatible lvalue macros
+  backed by the active `PgSession`.
+
+This keeps saved plans and cached expressions scoped to the logical session
+instead of the carrier thread, while preserving process mode's existing
+per-backend behavior.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o` and `plancache.o`;
+- because `backend_runtime.h` changed, `gmake -C src/backend clean` plus
+  generated utility and node-header recovery was used before trusting
+  process-mode runtime tests;
+- clean full `gmake -j8` passed after the backend clean;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- focused `test_backend_runtime` regression includes
+  `test_session_plan_cache_state_is_session_local()`, which switches fake
+  sessions through `PgSetCurrentSession()`, inserts distinct nodes into each
+  session's saved-plan and cached-expression lists, and verifies that the list
+  heads follow the active `PgSession`;
+- direct `test_backend_runtime` regression passed after reinstalling the test
+  module into `tmp_install`;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests, including
+  the core `plancache` and `plpgsql` tests;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- static scans found no remaining direct session TLS declarations for
+  `saved_plan_list` or `cached_expression_list`.

@@ -717,7 +717,9 @@ encoding/conversion cache and selected-encoding state bridge through
 state bridge through `PgSession`, plus the `array_nulls` and `xmloption`
 direct-pointer GUC completion bridge through `PgSession`, plus the SQL
 random-function PRNG state bridge through `PgSession`, plus the optimizer
-extension-ID and predicate proof-cache state bridge through `PgSession`.
+extension-ID and predicate proof-cache state bridge through `PgSession`, plus
+the saved-plan and cached-expression plan-cache list bridge through
+`PgSession`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.

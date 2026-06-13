@@ -67,7 +67,7 @@
 #include "storage/lmgr.h"
 #include "tcop/pquery.h"
 #include "tcop/utility.h"
-#include "utils/global_lifetime.h"
+#include "utils/backend_runtime.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
@@ -82,12 +82,12 @@
  * We use a dlist instead of separate List cells so that we can guarantee
  * to save a CachedPlanSource without error.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION dlist_head saved_plan_list;
+#define saved_plan_list (*PgCurrentSavedPlanListRef())
 
 /*
  * This is the head of the backend's list of CachedExpressions.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION dlist_head cached_expression_list;
+#define cached_expression_list (*PgCurrentCachedExpressionListRef())
 
 static void ReleaseGenericPlan(CachedPlanSource *plansource);
 static bool StmtPlanRequiresRevalidation(CachedPlanSource *plansource);

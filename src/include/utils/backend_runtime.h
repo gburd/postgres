@@ -647,6 +647,13 @@ typedef struct PgSessionOptimizerState
 	HTAB	   *opr_proof_cache_hash;
 } PgSessionOptimizerState;
 
+typedef struct PgSessionPlanCacheState
+{
+	bool		initialized;
+	dlist_head	saved_plan_list;
+	dlist_head	cached_expression_list;
+} PgSessionPlanCacheState;
+
 typedef struct PgRuntimeServerGUCState
 {
 	bool		initialized;
@@ -812,6 +819,7 @@ struct PgSession
 	PgSessionTempFileState temp_file;
 	PgSessionRandomState random;
 	PgSessionOptimizerState optimizer;
+	PgSessionPlanCacheState plan_cache;
 };
 
 struct PgConnection
@@ -1032,6 +1040,8 @@ extern const char ***PgCurrentPlannerExtensionNameArrayRef(void);
 extern int *PgCurrentPlannerExtensionNamesAssignedRef(void);
 extern int *PgCurrentPlannerExtensionNamesAllocatedRef(void);
 extern HTAB **PgCurrentOprProofCacheHashRef(void);
+extern dlist_head *PgCurrentSavedPlanListRef(void);
+extern dlist_head *PgCurrentCachedExpressionListRef(void);
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);
