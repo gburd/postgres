@@ -15,12 +15,14 @@
 #include <signal.h>
 
 #include "replication/walreceiver.h"
+#include "utils/backend_runtime.h"
 #include "utils/global_lifetime.h"
 
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool sync_replication_slots;
 
 /* Interrupt flag set by HandleSlotSyncMessageInterrupt() */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t SlotSyncShutdownPending;
+#define SlotSyncShutdownPending \
+	(PgCurrentLogicalReplicationState()->slotsync_shutdown_pending)
 
 /*
  * GUCs needed by slot sync worker to connect to the primary

@@ -6993,6 +6993,64 @@ Validation for this slice:
   87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
   explicit `PG_REGRESS` environment.
 
+## Backend Logical Replication Worker State Bridge
+
+The one-hundred-forty-seventh Phase 12 slice moves a broad logical
+replication worker state group into a new
+`PgBackendLogicalReplicationState` bucket:
+
+- exported apply-worker state: `ApplyContext`, `MyParallelShared`,
+  `ParallelApplyMessagePending`, `LogRepWorkerWalRcvConn`, `MySubscription`,
+  `MyLogicalRepWorker`, `in_remote_transaction`,
+  `InitializingApplyWorker`, and `table_states_not_ready`;
+- apply-worker private backend state for subscription validity,
+  on-commit wakeups, remote/stream transaction tracking, skip LSN, stream
+  file, and last flush position;
+- logical replication launcher DSA/dshash attachment state and on-commit
+  launcher wakeup flag;
+- parallel apply transaction hash, worker pool, current stream worker, and
+  subtransaction list pointers;
+- table-sync copy buffer and sequence-sync sequence-info list;
+- logical decoding `XLogLogicalInfo` cache and delayed-update flag;
+- slot-sync shutdown flag and observed slot-sync configuration state.
+
+The public logical replication worker headers keep the old variable names as
+compatibility macros over `PgCurrentLogicalReplicationState()`. Source-file
+private state keeps local compatibility macros in its owning file. The runtime
+initializer preserves the former non-zero sentinels for invalid remote final
+LSN, streamed transaction XID, skip LSN, and last flush position. The deeper
+logical replication internals that still expose private layout
+(`lsn_mapping`, `apply_error_callback_arg`, and `subxact_data`) remain
+standalone backend-local TLS for a later focused slice. Slot-sync `sleep_ms`
+also remains standalone for now because it has a private non-zero default tied
+to slot-sync scheduling constants.
+
+Validation for this slice:
+
+- focused object builds passed for `backend_runtime.o`, logical replication
+  `worker.o`, `launcher.o`, `applyparallelworker.o`, `tablesync.o`,
+  `sequencesync.o`, `logicalctl.o`, `slotsync.o`, and
+  `test_backend_runtime.o`;
+- a static scan found no remaining raw TLS declarations for the moved logical
+  replication worker, launcher, parallel-apply, table-sync, sequence-sync,
+  logical-info, or slot-sync state;
+- a full backend clean plus generated-header recovery was run after the
+  installed-header and `PgBackend` layout changes;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 193 to 148;
+- `gmake -C contrib -j8` passed;
+- PL/pgSQL and `src/test/modules/test_backend_runtime` were cleaned, rebuilt,
+  and reinstalled after the installed-header and `PgBackend` layout changes;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression, including the new logical replication state helper,
+  and still reported TAP disabled by configure;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
+  explicit `PG_REGRESS` environment.
+
 ## Backend Parallel State Bridge
 
 The one-hundred-forty-second Phase 12 slice moves a parallel-query and

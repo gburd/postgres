@@ -61,6 +61,13 @@ typedef struct BufferDesc BufferDesc;
 typedef struct WalSnd WalSnd;
 typedef struct WalReceiverConn WalReceiverConn;
 typedef struct ReplicationSlot ReplicationSlot;
+typedef struct LogicalRepWorker LogicalRepWorker;
+typedef struct ParallelApplyWorkerInfo ParallelApplyWorkerInfo;
+typedef struct ParallelApplyWorkerShared ParallelApplyWorkerShared;
+typedef struct Subscription Subscription;
+typedef struct BufFile BufFile;
+typedef struct dsa_area dsa_area;
+typedef struct dshash_table dshash_table;
 typedef struct XLogReaderState XLogReaderState;
 typedef struct PortalData *Portal;
 typedef struct SPITupleTable SPITupleTable;
@@ -264,6 +271,45 @@ typedef struct PgBackendReplicationState
 	StringInfoData walreceiver_reply_message;
 	bool		walreceiver_primary_has_standby_xmin;
 } PgBackendReplicationState;
+
+typedef struct PgBackendLogicalReplicationState
+{
+	MemoryContext apply_context;
+	ParallelApplyWorkerShared *my_parallel_shared;
+	volatile sig_atomic_t parallel_apply_message_pending;
+	WalReceiverConn *logrep_worker_walrcv_conn;
+	Subscription *my_subscription;
+	bool		my_subscription_valid;
+	LogicalRepWorker *my_logical_rep_worker;
+	List	   *on_commit_wakeup_workers_subids;
+	bool		in_remote_transaction;
+	XLogRecPtr	remote_final_lsn;
+	bool		in_streamed_transaction;
+	TransactionId stream_xid;
+	uint32		parallel_stream_nchanges;
+	bool		initializing_apply_worker;
+	XLogRecPtr	skip_xact_finish_lsn;
+	BufFile    *stream_fd;
+	XLogRecPtr	last_flushpos;
+	List	   *table_states_not_ready;
+	StringInfo	copybuf;
+	List	   *seqinfos;
+	bool		xlog_logical_info;
+	bool		xlog_logical_info_update_pending;
+	bool		slotsync_syncing_slots;
+	char	   *slotsync_observed_primary_conninfo;
+	char	   *slotsync_observed_primary_slotname;
+	bool		slotsync_observed_sync_replication_slots;
+	bool		slotsync_observed_hot_standby_feedback;
+	volatile sig_atomic_t slotsync_shutdown_pending;
+	dsa_area   *launcher_last_start_times_dsa;
+	dshash_table *launcher_last_start_times;
+	bool		launcher_on_commit_wakeup;
+	HTAB	   *parallel_apply_txn_hash;
+	List	   *parallel_apply_worker_pool;
+	ParallelApplyWorkerInfo *stream_apply_worker;
+	List	   *parallel_apply_subxactlist;
+} PgBackendLogicalReplicationState;
 
 typedef struct PgBackendPgStatPendingState
 {
@@ -1286,6 +1332,7 @@ struct PgBackend
 	PgBackendTimeoutState timeout;
 	PgBackendWalSenderState walsender;
 	PgBackendReplicationState replication;
+	PgBackendLogicalReplicationState logical_replication;
 	PgBackendPgStatPendingState pgstat_pending;
 	PgBackendActivityState activity;
 	PgBackendUtilityState utility;
@@ -1712,6 +1759,7 @@ extern Latch *PgCurrentLocalLatchData(void);
 extern PgBackendTimeoutState *PgCurrentTimeoutState(void);
 extern PgBackendWalSenderState *PgCurrentWalSenderState(void);
 extern PgBackendReplicationState *PgCurrentReplicationState(void);
+extern PgBackendLogicalReplicationState *PgCurrentLogicalReplicationState(void);
 extern TransactionId *PgCurrentCachedFetchXidRef(void);
 extern int *PgCurrentCachedFetchXidStatusRef(void);
 extern XLogRecPtr *PgCurrentCachedCommitLSNRef(void);

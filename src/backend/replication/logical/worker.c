@@ -475,34 +475,29 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ApplyErrorCallbackArg apply_error_callb
 PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ErrorContextCallback *apply_error_context_stack = NULL;
 
 PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext ApplyMessageContext = NULL;
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND MemoryContext ApplyContext = NULL;
 
 /* per stream context for streaming transactions */
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext LogicalStreamingContext = NULL;
 
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND WalReceiverConn *LogRepWorkerWalRcvConn = NULL;
-
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND Subscription *MySubscription = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool MySubscriptionValid = false;
-
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND List *on_commit_wakeup_workers_subids = NIL;
-
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool in_remote_transaction = false;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND XLogRecPtr remote_final_lsn = InvalidXLogRecPtr;
+#define MySubscriptionValid \
+	(PgCurrentLogicalReplicationState()->my_subscription_valid)
+#define on_commit_wakeup_workers_subids \
+	(PgCurrentLogicalReplicationState()->on_commit_wakeup_workers_subids)
+#define remote_final_lsn \
+	(PgCurrentLogicalReplicationState()->remote_final_lsn)
 
 /* fields valid only when processing streamed transaction */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool in_streamed_transaction = false;
-
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND TransactionId stream_xid = InvalidTransactionId;
+#define in_streamed_transaction \
+	(PgCurrentLogicalReplicationState()->in_streamed_transaction)
+#define stream_xid \
+	(PgCurrentLogicalReplicationState()->stream_xid)
 
 /*
  * The number of changes applied by parallel apply worker during one streaming
  * block.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND uint32 parallel_stream_nchanges = 0;
-
-/* Are we initializing an apply worker? */
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool InitializingApplyWorker = false;
+#define parallel_stream_nchanges \
+	(PgCurrentLogicalReplicationState()->parallel_stream_nchanges)
 
 /*
  * We enable skipping all data modification changes (INSERT, UPDATE, etc.) for
@@ -519,18 +514,19 @@ PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool InitializingApplyWorker = false;
  * the changes. So, we don't start parallel apply worker when finish LSN is set
  * by the user.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND XLogRecPtr skip_xact_finish_lsn = InvalidXLogRecPtr;
+#define skip_xact_finish_lsn \
+	(PgCurrentLogicalReplicationState()->skip_xact_finish_lsn)
 #define is_skipping_changes() (unlikely(XLogRecPtrIsValid(skip_xact_finish_lsn)))
 
 /* BufFile handle of the current streaming file */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND BufFile *stream_fd = NULL;
+#define stream_fd (PgCurrentLogicalReplicationState()->stream_fd)
 
 /*
  * The remote WAL position that has been applied and flushed locally. We record
  * and use this information both while sending feedback to the server and
  * advancing oldest_nonremovable_xid.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND XLogRecPtr last_flushpos = InvalidXLogRecPtr;
+#define last_flushpos (PgCurrentLogicalReplicationState()->last_flushpos)
 
 typedef struct SubXactInfo
 {

@@ -73,6 +73,7 @@
 #include "storage/procarray.h"
 #include "storage/procsignal.h"
 #include "storage/subsystems.h"
+#include "utils/backend_runtime.h"
 #include "utils/injection_point.h"
 
 /*
@@ -112,7 +113,8 @@ const ShmemCallbacks LogicalDecodingCtlShmemCallbacks = {
  * is in an XID-assigned transaction, the cache update is delayed until the
  * transaction ends. See the comments for XLogLogicalInfoUpdatePending for details.
  */
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool XLogLogicalInfo = false;
+#define XLogLogicalInfo \
+	(PgCurrentLogicalReplicationState()->xlog_logical_info)
 
 /*
  * When receiving the PROCSIGNAL_BARRIER_UPDATE_XLOG_LOGICAL_INFO signal, if
@@ -121,7 +123,8 @@ PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool XLogLogicalInfo = false;
  * that the XLogLogicalInfo value (typically accessed via XLogLogicalInfoActive)
  * remains consistent throughout the transaction.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool XLogLogicalInfoUpdatePending = false;
+#define XLogLogicalInfoUpdatePending \
+	(PgCurrentLogicalReplicationState()->xlog_logical_info_update_pending)
 
 static void update_xlog_logical_info(void);
 static void abort_logical_decoding_activation(int code, Datum arg);

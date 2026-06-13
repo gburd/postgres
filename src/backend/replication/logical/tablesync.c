@@ -124,9 +124,7 @@
 #include "utils/usercontext.h"
 #include "utils/wait_event.h"
 
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND List *table_states_not_ready = NIL;
-
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND StringInfo copybuf = NULL;
+#define copybuf (PgCurrentLogicalReplicationState()->copybuf)
 
 /*
  * Wait until the relation sync state is set in the catalog to the expected

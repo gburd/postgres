@@ -58,8 +58,6 @@ PG_GLOBAL_RUNTIME int max_logical_replication_workers = 4;
 PG_GLOBAL_RUNTIME int max_sync_workers_per_subscription = 2;
 PG_GLOBAL_RUNTIME int max_parallel_apply_workers_per_subscription = 2;
 
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND LogicalRepWorker *MyLogicalRepWorker = NULL;
-
 typedef struct LogicalRepCtxStruct
 {
 	/* Supervisor process. */
@@ -102,10 +100,12 @@ static const dshash_parameters dsh_params = {
 	LWTRANCHE_LAUNCHER_HASH
 };
 
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND dsa_area *last_start_times_dsa = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND dshash_table *last_start_times = NULL;
-
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool on_commit_launcher_wakeup = false;
+#define last_start_times_dsa \
+	(PgCurrentLogicalReplicationState()->launcher_last_start_times_dsa)
+#define last_start_times \
+	(PgCurrentLogicalReplicationState()->launcher_last_start_times)
+#define on_commit_launcher_wakeup \
+	(PgCurrentLogicalReplicationState()->launcher_on_commit_wakeup)
 
 
 static void logicalrep_launcher_onexit(int code, Datum arg);

@@ -24,6 +24,7 @@
 #include "storage/shm_mq.h"
 #include "storage/shm_toc.h"
 #include "storage/spin.h"
+#include "utils/backend_runtime.h"
 #include "utils/global_lifetime.h"
 
 /* Different types of worker */
@@ -247,30 +248,32 @@ typedef struct ParallelApplyWorkerInfo
 } ParallelApplyWorkerInfo;
 
 /* Main memory context for apply worker. Permanent during worker lifetime. */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND MemoryContext ApplyContext;
+#define ApplyContext (PgCurrentLogicalReplicationState()->apply_context)
 
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext ApplyMessageContext;
 
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ErrorContextCallback *apply_error_context_stack;
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND ParallelApplyWorkerShared
-		   *MyParallelShared;
+#define MyParallelShared \
+	(PgCurrentLogicalReplicationState()->my_parallel_shared)
 
 /* libpqreceiver connection */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND struct WalReceiverConn
-		   *LogRepWorkerWalRcvConn;
+#define LogRepWorkerWalRcvConn \
+	(PgCurrentLogicalReplicationState()->logrep_worker_walrcv_conn)
 
 /* Worker and subscription objects. */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND Subscription *MySubscription;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND LogicalRepWorker
-		   *MyLogicalRepWorker;
+#define MySubscription (PgCurrentLogicalReplicationState()->my_subscription)
+#define MyLogicalRepWorker \
+	(PgCurrentLogicalReplicationState()->my_logical_rep_worker)
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool in_remote_transaction;
+#define in_remote_transaction \
+	(PgCurrentLogicalReplicationState()->in_remote_transaction)
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool InitializingApplyWorker;
+#define InitializingApplyWorker \
+	(PgCurrentLogicalReplicationState()->initializing_apply_worker)
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND List
-		   *table_states_not_ready;
+#define table_states_not_ready \
+	(PgCurrentLogicalReplicationState()->table_states_not_ready)
 
 extern void logicalrep_worker_attach(int slot);
 extern LogicalRepWorker *logicalrep_worker_find(LogicalRepWorkerType wtype,

@@ -162,18 +162,16 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND long sleep_ms = MIN_SLOTSYNC_WORKER_NAP
  * in SlotSyncCtxStruct, this flag is true only if the current process is
  * performing slot synchronization.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool syncing_slots = false;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND char *slotsync_observed_primary_conninfo = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND char *slotsync_observed_primary_slotname = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool slotsync_observed_sync_replication_slots = false;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool slotsync_observed_hot_standby_feedback = false;
-
-/*
- * Interrupt flag set when PROCSIG_SLOTSYNC_MESSAGE is received, asking the
- * slotsync worker or pg_sync_replication_slots() to stop because
- * standby promotion has been triggered.
- */
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t SlotSyncShutdownPending = false;
+#define syncing_slots \
+	(PgCurrentLogicalReplicationState()->slotsync_syncing_slots)
+#define slotsync_observed_primary_conninfo \
+	(PgCurrentLogicalReplicationState()->slotsync_observed_primary_conninfo)
+#define slotsync_observed_primary_slotname \
+	(PgCurrentLogicalReplicationState()->slotsync_observed_primary_slotname)
+#define slotsync_observed_sync_replication_slots \
+	(PgCurrentLogicalReplicationState()->slotsync_observed_sync_replication_slots)
+#define slotsync_observed_hot_standby_feedback \
+	(PgCurrentLogicalReplicationState()->slotsync_observed_hot_standby_feedback)
 
 /*
  * Structure to hold information fetched from the primary server about a logical

@@ -415,6 +415,29 @@ Important current files:
   `PgBackend` layout and installed runtime headers changed; at minimum rebuild
   and reinstall PL/pgSQL, `src/test/modules/test_backend_runtime`, and contrib
   before validating. Direct threaded TAP should be run.
+- Logical replication worker backend-local state now lives in
+  `PgBackendLogicalReplicationState`. Public logical replication headers keep
+  the old names for `ApplyContext`, `MyParallelShared`,
+  `ParallelApplyMessagePending`, `LogRepWorkerWalRcvConn`, `MySubscription`,
+  `MyLogicalRepWorker`, `in_remote_transaction`, `InitializingApplyWorker`,
+  `table_states_not_ready`, `SlotSyncShutdownPending`, and `XLogLogicalInfo`
+  as compatibility macros over `PgCurrentLogicalReplicationState()`.
+  Source-private launcher, apply-worker, parallel-apply, table-sync,
+  sequence-sync, logical-info, and slot-sync fields use local macros in their
+  owning files. The runtime initializer sets non-zero sentinels for
+  `remote_final_lsn`, `stream_xid`, `skip_xact_finish_lsn`, and
+  `last_flushpos`. Fake-backend tests that inspect untouched logical
+  replication state must initialize those fields explicitly because raw
+  `MemSet()` does not model `PgBackendInitializeLogicalReplicationState()`.
+  The deeper logical replication internals `lsn_mapping`,
+  `apply_error_callback_arg`, and `subxact_data` still expose private layout
+  and remain standalone backend-local TLS for a later focused slice. Slot-sync
+  `sleep_ms` also remains standalone for now because it has a private non-zero
+  scheduling default. After changing this bridge, clean and rebuild backend
+  objects because `PgBackend` layout and installed runtime headers changed; at
+  minimum rebuild and reinstall PL/pgSQL,
+  `src/test/modules/test_backend_runtime`, and contrib before validating.
+  Direct threaded TAP should be run.
 - Treat `PMChild.thread_backend` as private PMChild-owned publication state.
   Postmaster code should use PMChild helper APIs for threaded backend
   interrupt, wakeup, and thread-exit publication rather than dereferencing or

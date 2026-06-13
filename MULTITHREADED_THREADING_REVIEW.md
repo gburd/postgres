@@ -630,6 +630,21 @@ and primary-standby-xmin true. The slice passed clean full build/install,
 process-mode backend-runtime regression, direct threaded runtime TAP, contrib
 build, and the required global-lifetime scan with zero new unclassified
 mutable globals; backend-local declarations dropped from 202 to 193.
+Logical replication worker state now lives in
+`PgBackendLogicalReplicationState`: apply worker context/pointers, logical
+worker/subscription identity, walreceiver connection, launcher DSA/hash state,
+parallel-apply hash/pool/message state, table/sequence sync scratch state,
+logical-info barrier cache, and slot-sync shutdown/observed-configuration
+state now follow the logical backend. Public logical replication headers keep
+the old names as compatibility macros over `PgCurrentLogicalReplicationState()`,
+while source-private state uses local macros in the owning files. The deeper
+logical replication internals with private layout (`lsn_mapping`,
+`apply_error_callback_arg`, and `subxact_data`) and the slot-sync `sleep_ms`
+non-zero scheduling default remain for later focused slices. The slice passed
+clean full build/install, process-mode backend-runtime regression, direct
+threaded runtime TAP, contrib build, and the required global-lifetime scan
+with zero new unclassified mutable globals; backend-local declarations dropped
+from 193 to 148.
 PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly

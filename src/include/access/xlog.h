@@ -17,6 +17,7 @@
 #include "datatype/timestamp.h"
 #include "lib/stringinfo.h"
 #include "nodes/pg_list.h"
+#include "utils/backend_runtime.h"
 #include "utils/global_lifetime.h"
 
 
@@ -105,7 +106,8 @@ typedef enum RecoveryState
 } RecoveryState;
 
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int wal_level;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool XLogLogicalInfo;
+#define XLogLogicalInfo \
+	(PgCurrentLogicalReplicationState()->xlog_logical_info)
 
 /* Is WAL archiving enabled (always or only while server is running normally)? */
 #define XLogArchivingActive() \

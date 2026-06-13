@@ -8533,6 +8533,260 @@ test_backend_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_backend_logical_replication_state_is_backend_local);
+Datum
+test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgBackend	fake_backend1;
+	PgBackend	fake_backend2;
+	PgBackendLogicalReplicationState *logical1;
+	PgBackendLogicalReplicationState *logical2;
+	bool		ok = true;
+
+	saved_backend = CurrentPgBackend;
+	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
+	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+	fake_backend1.logical_replication.remote_final_lsn = InvalidXLogRecPtr;
+	fake_backend1.logical_replication.stream_xid = InvalidTransactionId;
+	fake_backend1.logical_replication.skip_xact_finish_lsn = InvalidXLogRecPtr;
+	fake_backend1.logical_replication.last_flushpos = InvalidXLogRecPtr;
+	fake_backend2.logical_replication.remote_final_lsn = InvalidXLogRecPtr;
+	fake_backend2.logical_replication.stream_xid = InvalidTransactionId;
+	fake_backend2.logical_replication.skip_xact_finish_lsn = InvalidXLogRecPtr;
+	fake_backend2.logical_replication.last_flushpos = InvalidXLogRecPtr;
+
+	PG_TRY();
+	{
+		CurrentPgBackend = &fake_backend1;
+		logical1 = PgCurrentLogicalReplicationState();
+		logical1->apply_context = (MemoryContext) &fake_backend1;
+		logical1->my_parallel_shared =
+			(ParallelApplyWorkerShared *) &fake_backend1;
+		logical1->parallel_apply_message_pending = true;
+		logical1->logrep_worker_walrcv_conn =
+			(WalReceiverConn *) &fake_backend1;
+		logical1->my_subscription = (Subscription *) &fake_backend1;
+		logical1->my_subscription_valid = true;
+		logical1->my_logical_rep_worker =
+			(LogicalRepWorker *) &fake_backend1;
+		logical1->on_commit_wakeup_workers_subids = (List *) &fake_backend1;
+		logical1->in_remote_transaction = true;
+		logical1->remote_final_lsn = UINT64CONST(101);
+		logical1->in_streamed_transaction = true;
+		logical1->stream_xid = 102;
+		logical1->parallel_stream_nchanges = 103;
+		logical1->initializing_apply_worker = true;
+		logical1->skip_xact_finish_lsn = UINT64CONST(104);
+		logical1->stream_fd = (BufFile *) &fake_backend1;
+		logical1->last_flushpos = UINT64CONST(105);
+		logical1->table_states_not_ready = (List *) &fake_backend1;
+		logical1->copybuf = (StringInfo) &fake_backend1;
+		logical1->seqinfos = (List *) &fake_backend1;
+		logical1->xlog_logical_info = true;
+		logical1->xlog_logical_info_update_pending = true;
+		logical1->slotsync_syncing_slots = true;
+		logical1->slotsync_observed_primary_conninfo = (char *) &fake_backend1;
+		logical1->slotsync_observed_primary_slotname = (char *) &fake_backend1;
+		logical1->slotsync_observed_sync_replication_slots = true;
+		logical1->slotsync_observed_hot_standby_feedback = true;
+		logical1->slotsync_shutdown_pending = true;
+		logical1->launcher_last_start_times_dsa = (dsa_area *) &fake_backend1;
+		logical1->launcher_last_start_times = (dshash_table *) &fake_backend1;
+		logical1->launcher_on_commit_wakeup = true;
+		logical1->parallel_apply_txn_hash = (HTAB *) &fake_backend1;
+		logical1->parallel_apply_worker_pool = (List *) &fake_backend1;
+		logical1->stream_apply_worker =
+			(ParallelApplyWorkerInfo *) &fake_backend1;
+		logical1->parallel_apply_subxactlist = (List *) &fake_backend1;
+
+		CurrentPgBackend = &fake_backend2;
+		logical2 = PgCurrentLogicalReplicationState();
+		ok = ok && logical2->apply_context == NULL;
+		ok = ok && logical2->my_parallel_shared == NULL;
+		ok = ok && !logical2->parallel_apply_message_pending;
+		ok = ok && logical2->logrep_worker_walrcv_conn == NULL;
+		ok = ok && logical2->my_subscription == NULL;
+		ok = ok && !logical2->my_subscription_valid;
+		ok = ok && logical2->my_logical_rep_worker == NULL;
+		ok = ok && logical2->on_commit_wakeup_workers_subids == NIL;
+		ok = ok && !logical2->in_remote_transaction;
+		ok = ok && logical2->remote_final_lsn == InvalidXLogRecPtr;
+		ok = ok && !logical2->in_streamed_transaction;
+		ok = ok && logical2->stream_xid == InvalidTransactionId;
+		ok = ok && logical2->parallel_stream_nchanges == 0;
+		ok = ok && !logical2->initializing_apply_worker;
+		ok = ok && logical2->skip_xact_finish_lsn == InvalidXLogRecPtr;
+		ok = ok && logical2->stream_fd == NULL;
+		ok = ok && logical2->last_flushpos == InvalidXLogRecPtr;
+		ok = ok && logical2->table_states_not_ready == NIL;
+		ok = ok && logical2->copybuf == NULL;
+		ok = ok && logical2->seqinfos == NIL;
+		ok = ok && !logical2->xlog_logical_info;
+		ok = ok && !logical2->xlog_logical_info_update_pending;
+		ok = ok && !logical2->slotsync_syncing_slots;
+		ok = ok && logical2->slotsync_observed_primary_conninfo == NULL;
+		ok = ok && logical2->slotsync_observed_primary_slotname == NULL;
+		ok = ok && !logical2->slotsync_observed_sync_replication_slots;
+		ok = ok && !logical2->slotsync_observed_hot_standby_feedback;
+		ok = ok && !logical2->slotsync_shutdown_pending;
+		ok = ok && logical2->launcher_last_start_times_dsa == NULL;
+		ok = ok && logical2->launcher_last_start_times == NULL;
+		ok = ok && !logical2->launcher_on_commit_wakeup;
+		ok = ok && logical2->parallel_apply_txn_hash == NULL;
+		ok = ok && logical2->parallel_apply_worker_pool == NIL;
+		ok = ok && logical2->stream_apply_worker == NULL;
+		ok = ok && logical2->parallel_apply_subxactlist == NIL;
+
+		logical2->apply_context = (MemoryContext) &fake_backend2;
+		logical2->my_parallel_shared =
+			(ParallelApplyWorkerShared *) &fake_backend2;
+		logical2->parallel_apply_message_pending = true;
+		logical2->logrep_worker_walrcv_conn =
+			(WalReceiverConn *) &fake_backend2;
+		logical2->my_subscription = (Subscription *) &fake_backend2;
+		logical2->my_subscription_valid = true;
+		logical2->my_logical_rep_worker =
+			(LogicalRepWorker *) &fake_backend2;
+		logical2->on_commit_wakeup_workers_subids = (List *) &fake_backend2;
+		logical2->in_remote_transaction = true;
+		logical2->remote_final_lsn = UINT64CONST(201);
+		logical2->in_streamed_transaction = true;
+		logical2->stream_xid = 202;
+		logical2->parallel_stream_nchanges = 203;
+		logical2->initializing_apply_worker = true;
+		logical2->skip_xact_finish_lsn = UINT64CONST(204);
+		logical2->stream_fd = (BufFile *) &fake_backend2;
+		logical2->last_flushpos = UINT64CONST(205);
+		logical2->table_states_not_ready = (List *) &fake_backend2;
+		logical2->copybuf = (StringInfo) &fake_backend2;
+		logical2->seqinfos = (List *) &fake_backend2;
+		logical2->xlog_logical_info = true;
+		logical2->xlog_logical_info_update_pending = true;
+		logical2->slotsync_syncing_slots = true;
+		logical2->slotsync_observed_primary_conninfo = (char *) &fake_backend2;
+		logical2->slotsync_observed_primary_slotname = (char *) &fake_backend2;
+		logical2->slotsync_observed_sync_replication_slots = true;
+		logical2->slotsync_observed_hot_standby_feedback = true;
+		logical2->slotsync_shutdown_pending = true;
+		logical2->launcher_last_start_times_dsa = (dsa_area *) &fake_backend2;
+		logical2->launcher_last_start_times = (dshash_table *) &fake_backend2;
+		logical2->launcher_on_commit_wakeup = true;
+		logical2->parallel_apply_txn_hash = (HTAB *) &fake_backend2;
+		logical2->parallel_apply_worker_pool = (List *) &fake_backend2;
+		logical2->stream_apply_worker =
+			(ParallelApplyWorkerInfo *) &fake_backend2;
+		logical2->parallel_apply_subxactlist = (List *) &fake_backend2;
+
+		CurrentPgBackend = &fake_backend1;
+		logical1 = PgCurrentLogicalReplicationState();
+		ok = ok && logical1->apply_context == (MemoryContext) &fake_backend1;
+		ok = ok && logical1->my_parallel_shared ==
+			(ParallelApplyWorkerShared *) &fake_backend1;
+		ok = ok && logical1->parallel_apply_message_pending;
+		ok = ok && logical1->logrep_worker_walrcv_conn ==
+			(WalReceiverConn *) &fake_backend1;
+		ok = ok && logical1->my_subscription == (Subscription *) &fake_backend1;
+		ok = ok && logical1->my_subscription_valid;
+		ok = ok && logical1->my_logical_rep_worker ==
+			(LogicalRepWorker *) &fake_backend1;
+		ok = ok && logical1->on_commit_wakeup_workers_subids ==
+			(List *) &fake_backend1;
+		ok = ok && logical1->in_remote_transaction;
+		ok = ok && logical1->remote_final_lsn == UINT64CONST(101);
+		ok = ok && logical1->in_streamed_transaction;
+		ok = ok && logical1->stream_xid == 102;
+		ok = ok && logical1->parallel_stream_nchanges == 103;
+		ok = ok && logical1->initializing_apply_worker;
+		ok = ok && logical1->skip_xact_finish_lsn == UINT64CONST(104);
+		ok = ok && logical1->stream_fd == (BufFile *) &fake_backend1;
+		ok = ok && logical1->last_flushpos == UINT64CONST(105);
+		ok = ok && logical1->table_states_not_ready == (List *) &fake_backend1;
+		ok = ok && logical1->copybuf == (StringInfo) &fake_backend1;
+		ok = ok && logical1->seqinfos == (List *) &fake_backend1;
+		ok = ok && logical1->xlog_logical_info;
+		ok = ok && logical1->xlog_logical_info_update_pending;
+		ok = ok && logical1->slotsync_syncing_slots;
+		ok = ok && logical1->slotsync_observed_primary_conninfo ==
+			(char *) &fake_backend1;
+		ok = ok && logical1->slotsync_observed_primary_slotname ==
+			(char *) &fake_backend1;
+		ok = ok && logical1->slotsync_observed_sync_replication_slots;
+		ok = ok && logical1->slotsync_observed_hot_standby_feedback;
+		ok = ok && logical1->slotsync_shutdown_pending;
+		ok = ok && logical1->launcher_last_start_times_dsa ==
+			(dsa_area *) &fake_backend1;
+		ok = ok && logical1->launcher_last_start_times ==
+			(dshash_table *) &fake_backend1;
+		ok = ok && logical1->launcher_on_commit_wakeup;
+		ok = ok && logical1->parallel_apply_txn_hash == (HTAB *) &fake_backend1;
+		ok = ok && logical1->parallel_apply_worker_pool == (List *) &fake_backend1;
+		ok = ok && logical1->stream_apply_worker ==
+			(ParallelApplyWorkerInfo *) &fake_backend1;
+		ok = ok && logical1->parallel_apply_subxactlist == (List *) &fake_backend1;
+
+		CurrentPgBackend = &fake_backend2;
+		logical2 = PgCurrentLogicalReplicationState();
+		ok = ok && logical2->apply_context == (MemoryContext) &fake_backend2;
+		ok = ok && logical2->my_parallel_shared ==
+			(ParallelApplyWorkerShared *) &fake_backend2;
+		ok = ok && logical2->parallel_apply_message_pending;
+		ok = ok && logical2->logrep_worker_walrcv_conn ==
+			(WalReceiverConn *) &fake_backend2;
+		ok = ok && logical2->my_subscription == (Subscription *) &fake_backend2;
+		ok = ok && logical2->my_subscription_valid;
+		ok = ok && logical2->my_logical_rep_worker ==
+			(LogicalRepWorker *) &fake_backend2;
+		ok = ok && logical2->on_commit_wakeup_workers_subids ==
+			(List *) &fake_backend2;
+		ok = ok && logical2->in_remote_transaction;
+		ok = ok && logical2->remote_final_lsn == UINT64CONST(201);
+		ok = ok && logical2->in_streamed_transaction;
+		ok = ok && logical2->stream_xid == 202;
+		ok = ok && logical2->parallel_stream_nchanges == 203;
+		ok = ok && logical2->initializing_apply_worker;
+		ok = ok && logical2->skip_xact_finish_lsn == UINT64CONST(204);
+		ok = ok && logical2->stream_fd == (BufFile *) &fake_backend2;
+		ok = ok && logical2->last_flushpos == UINT64CONST(205);
+		ok = ok && logical2->table_states_not_ready == (List *) &fake_backend2;
+		ok = ok && logical2->copybuf == (StringInfo) &fake_backend2;
+		ok = ok && logical2->seqinfos == (List *) &fake_backend2;
+		ok = ok && logical2->xlog_logical_info;
+		ok = ok && logical2->xlog_logical_info_update_pending;
+		ok = ok && logical2->slotsync_syncing_slots;
+		ok = ok && logical2->slotsync_observed_primary_conninfo ==
+			(char *) &fake_backend2;
+		ok = ok && logical2->slotsync_observed_primary_slotname ==
+			(char *) &fake_backend2;
+		ok = ok && logical2->slotsync_observed_sync_replication_slots;
+		ok = ok && logical2->slotsync_observed_hot_standby_feedback;
+		ok = ok && logical2->slotsync_shutdown_pending;
+		ok = ok && logical2->launcher_last_start_times_dsa ==
+			(dsa_area *) &fake_backend2;
+		ok = ok && logical2->launcher_last_start_times ==
+			(dshash_table *) &fake_backend2;
+		ok = ok && logical2->launcher_on_commit_wakeup;
+		ok = ok && logical2->parallel_apply_txn_hash == (HTAB *) &fake_backend2;
+		ok = ok && logical2->parallel_apply_worker_pool == (List *) &fake_backend2;
+		ok = ok && logical2->stream_apply_worker ==
+			(ParallelApplyWorkerInfo *) &fake_backend2;
+		ok = ok && logical2->parallel_apply_subxactlist == (List *) &fake_backend2;
+
+		CurrentPgBackend = saved_backend;
+	}
+	PG_CATCH();
+	{
+		CurrentPgBackend = saved_backend;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "backend logical replication state was not backend-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_pmchild_thread_backend_signal_api);
 Datum
 test_pmchild_thread_backend_signal_api(PG_FUNCTION_ARGS)

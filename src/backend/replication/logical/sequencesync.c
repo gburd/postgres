@@ -83,7 +83,7 @@ typedef enum CopySeqResult
 	COPYSEQ_SKIPPED
 } CopySeqResult;
 
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND List *seqinfos = NIL;
+#define seqinfos (PgCurrentLogicalReplicationState()->seqinfos)
 
 static bool
 SequenceSyncWorkerThreadedRuntime(void)
