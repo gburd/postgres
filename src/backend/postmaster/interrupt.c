@@ -25,8 +25,6 @@
 #include "utils/guc.h"
 #include "utils/memutils.h"
 
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t ConfigReloadPending = false;
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t ShutdownRequestPending = false;
 PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t WakeupStopPending = false;
 PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t AutoVacLauncherPending = false;
 

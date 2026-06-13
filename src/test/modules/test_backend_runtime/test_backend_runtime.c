@@ -6297,6 +6297,8 @@ test_backend_pending_interrupts_are_backend_local(PG_FUNCTION_ARGS)
 	sig_atomic_t saved_proc_signal_barrier_pending;
 	sig_atomic_t saved_log_memory_context_pending;
 	sig_atomic_t saved_idle_stats_update_timeout_pending;
+	sig_atomic_t saved_config_reload_pending;
+	sig_atomic_t saved_shutdown_request_pending;
 	bool		ok = true;
 
 	saved_backend = CurrentPgBackend;
@@ -6313,6 +6315,8 @@ test_backend_pending_interrupts_are_backend_local(PG_FUNCTION_ARGS)
 	saved_log_memory_context_pending = LogMemoryContextPending;
 	saved_idle_stats_update_timeout_pending =
 		IdleStatsUpdateTimeoutPending;
+	saved_config_reload_pending = ConfigReloadPending;
+	saved_shutdown_request_pending = ShutdownRequestPending;
 	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
 	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
 
@@ -6330,6 +6334,8 @@ test_backend_pending_interrupts_are_backend_local(PG_FUNCTION_ARGS)
 		ProcSignalBarrierPending = true;
 		LogMemoryContextPending = true;
 		IdleStatsUpdateTimeoutPending = true;
+		ConfigReloadPending = true;
+		ShutdownRequestPending = true;
 
 		CurrentPgBackend = &fake_backend2;
 		ok = ok && !InterruptPending;
@@ -6343,6 +6349,8 @@ test_backend_pending_interrupts_are_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && !ProcSignalBarrierPending;
 		ok = ok && !LogMemoryContextPending;
 		ok = ok && !IdleStatsUpdateTimeoutPending;
+		ok = ok && !ConfigReloadPending;
+		ok = ok && !ShutdownRequestPending;
 
 		InterruptPending = false;
 		QueryCancelPending = false;
@@ -6355,6 +6363,8 @@ test_backend_pending_interrupts_are_backend_local(PG_FUNCTION_ARGS)
 		ProcSignalBarrierPending = false;
 		LogMemoryContextPending = false;
 		IdleStatsUpdateTimeoutPending = false;
+		ConfigReloadPending = false;
+		ShutdownRequestPending = false;
 
 		CurrentPgBackend = &fake_backend1;
 		ok = ok && InterruptPending;
@@ -6368,6 +6378,8 @@ test_backend_pending_interrupts_are_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && ProcSignalBarrierPending;
 		ok = ok && LogMemoryContextPending;
 		ok = ok && IdleStatsUpdateTimeoutPending;
+		ok = ok && ConfigReloadPending;
+		ok = ok && ShutdownRequestPending;
 
 		CurrentPgBackend = &fake_backend2;
 		ok = ok && !InterruptPending;
@@ -6381,6 +6393,8 @@ test_backend_pending_interrupts_are_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && !ProcSignalBarrierPending;
 		ok = ok && !LogMemoryContextPending;
 		ok = ok && !IdleStatsUpdateTimeoutPending;
+		ok = ok && !ConfigReloadPending;
+		ok = ok && !ShutdownRequestPending;
 
 		CurrentPgBackend = saved_backend;
 		InterruptPending = saved_interrupt_pending;
@@ -6396,6 +6410,8 @@ test_backend_pending_interrupts_are_backend_local(PG_FUNCTION_ARGS)
 		LogMemoryContextPending = saved_log_memory_context_pending;
 		IdleStatsUpdateTimeoutPending =
 			saved_idle_stats_update_timeout_pending;
+		ConfigReloadPending = saved_config_reload_pending;
+		ShutdownRequestPending = saved_shutdown_request_pending;
 	}
 	PG_CATCH();
 	{
@@ -6413,6 +6429,8 @@ test_backend_pending_interrupts_are_backend_local(PG_FUNCTION_ARGS)
 		LogMemoryContextPending = saved_log_memory_context_pending;
 		IdleStatsUpdateTimeoutPending =
 			saved_idle_stats_update_timeout_pending;
+		ConfigReloadPending = saved_config_reload_pending;
+		ShutdownRequestPending = saved_shutdown_request_pending;
 		PG_RE_THROW();
 	}
 	PG_END_TRY();

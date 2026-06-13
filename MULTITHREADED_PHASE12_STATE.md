@@ -5740,3 +5740,59 @@ Validation for this slice:
 - a static scan found no remaining raw `MyBgworkerEntry` TLS declaration or
   exported `_MyBgworkerEntry` symbol reference;
 - `git diff --check` passed.
+
+## Backend Main-Loop Interrupt Flag Bridge
+
+The one-hundred-twenty-first Phase 12 slice moves two generic background
+main-loop interrupt flags into explicit backend pending-interrupt state:
+
+- `PgBackendPendingInterruptState` now owns `config_reload_pending` and
+  `shutdown_request_pending`, keeping cooperative config reload and shutdown
+  requests with the logical backend's interrupt state;
+- `ConfigReloadPending` and `ShutdownRequestPending` remain
+  source-compatible lvalue names through `miscadmin.h` compatibility macros,
+  so existing regular backend, auxiliary worker, replication worker, and
+  contrib worker loops can continue checking and clearing them without broad
+  call-site churn;
+- `ProcessMainLoopInterrupts()`, `SignalHandlerForConfigReload()`,
+  `SignalHandlerForShutdownRequest()`, and
+  `PgCurrentBackendApplyInterrupts()` now read and write the backend-owned
+  fields through those compatibility names;
+- the worker-specific pending flags in `postmaster/interrupt.h`
+  (`WakeupStopPending`, `AutoVacLauncherPending`, and
+  `CheckpointerShutdownXLOGPending`) keep their existing standalone TLS
+  storage for now.
+
+This removes two more exported backend-local TLS symbols and keeps generic
+worker shutdown/reload delivery attached to the same backend interrupt object
+that already owns cancel, die, timeout, barrier, memory-context, and
+idle-stats pending flags. It does not change signal delivery semantics or
+make the remaining worker-specific flags scheduler-aware.
+
+Validation for this slice:
+
+- `gmake -C src/backend/postmaster interrupt.o` passed;
+- `gmake -C src/backend/utils/init backend_runtime.o globals.o` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean` passed;
+- `gmake -C src/test/modules/test_backend_runtime all` passed;
+- full backend clean plus generated-header recovery was required after the
+  installed-header change, because stale objects could still reference the old
+  `_ConfigReloadPending` and `_ShutdownRequestPending` symbols;
+- full `gmake -j8` passed;
+- full `gmake -j8 DESTDIR="$PWD/tmp_install" install` passed;
+- PL/pgSQL was cleaned, rebuilt, and reinstalled after the installed-header
+  change;
+- `src/test/modules/test_backend_runtime` was cleaned, rebuilt, and
+  reinstalled after the installed-header change;
+- direct threaded-runtime TAP passed all 87 tests with local
+  `/Users/samwillis/perl5` `PERL5LIB` paths before and after
+  `gmake -C src/test/modules/test_backend_runtime check` recreated
+  `tmp_install`;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression and still reported TAP disabled by configure;
+- `gmake -C contrib -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 437 to 433;
+- a static scan found no remaining raw `ConfigReloadPending` or
+  `ShutdownRequestPending` TLS declarations or exported symbol references;
+- `git diff --check` passed.

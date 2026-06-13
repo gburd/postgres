@@ -437,6 +437,10 @@ the shared `PgBackendStatus` array lifecycle remains unchanged.
 `PgCurrentMyBgworkerEntryRef()`, keeping background-worker registration
 identity with the logical backend while preserving the existing bgworker
 registration slot and shared-memory lifecycle.
+`ConfigReloadPending` and `ShutdownRequestPending` are now also owned by
+`PgBackendPendingInterruptState` behind their existing lvalue names, keeping
+generic main-loop reload and shutdown requests attached to the logical
+backend.
 PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly

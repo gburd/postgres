@@ -100,6 +100,8 @@ typedef struct PgBackendPendingInterruptState
 	volatile sig_atomic_t proc_signal_barrier_pending;
 	volatile sig_atomic_t log_memory_context_pending;
 	volatile sig_atomic_t idle_stats_update_timeout_pending;
+	volatile sig_atomic_t config_reload_pending;
+	volatile sig_atomic_t shutdown_request_pending;
 } PgBackendPendingInterruptState;
 
 extern PgBackendPendingInterruptState *PgCurrentPendingInterruptStateRef(void);
@@ -131,6 +133,10 @@ extern PgBackendPendingInterruptState *PgCurrentPendingInterruptStateRef(void);
 	(PgCurrentPendingInterruptStateRef()->log_memory_context_pending)
 #define IdleStatsUpdateTimeoutPending \
 	(PgCurrentPendingInterruptStateRef()->idle_stats_update_timeout_pending)
+#define ConfigReloadPending \
+	(PgCurrentPendingInterruptStateRef()->config_reload_pending)
+#define ShutdownRequestPending \
+	(PgCurrentPendingInterruptStateRef()->shutdown_request_pending)
 
 extern volatile sig_atomic_t *PgCurrentCheckClientConnectionPendingRef(void);
 extern volatile sig_atomic_t *PgCurrentClientConnectionLostRef(void);
