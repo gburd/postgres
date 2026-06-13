@@ -22,6 +22,7 @@
 #include "libpq/libpq-be.h"
 #include "libpq/libpq.h"
 #include "miscadmin.h"
+#include "nodes/queryjumble.h"
 #include "optimizer/cost.h"
 #include "optimizer/geqo.h"
 #include "optimizer/optimizer.h"
@@ -2290,6 +2291,81 @@ test_session_pgstat_state_is_session_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "session pgstat state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_session_query_id_state_is_session_local);
+Datum
+test_session_query_id_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	char	   *saved_compute_query_id;
+	bool		saved_query_id_enabled;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	saved_compute_query_id =
+		pstrdup(GetConfigOption("compute_query_id", false, false));
+	saved_query_id_enabled = query_id_enabled;
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && compute_query_id == COMPUTE_QUERY_ID_AUTO;
+		ok = ok && !query_id_enabled;
+		ok = ok && !IsQueryIdEnabled();
+
+		SetConfigOption("compute_query_id", "off",
+						PGC_SUSET, PGC_S_SESSION);
+		query_id_enabled = true;
+		ok = ok && compute_query_id == COMPUTE_QUERY_ID_OFF;
+		ok = ok && query_id_enabled;
+		ok = ok && !IsQueryIdEnabled();
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && compute_query_id == COMPUTE_QUERY_ID_AUTO;
+		ok = ok && !query_id_enabled;
+		ok = ok && !IsQueryIdEnabled();
+
+		SetConfigOption("compute_query_id", "auto",
+						PGC_SUSET, PGC_S_SESSION);
+		EnableQueryId();
+		ok = ok && compute_query_id == COMPUTE_QUERY_ID_AUTO;
+		ok = ok && query_id_enabled;
+		ok = ok && IsQueryIdEnabled();
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && compute_query_id == COMPUTE_QUERY_ID_OFF;
+		ok = ok && query_id_enabled;
+		ok = ok && !IsQueryIdEnabled();
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && compute_query_id == COMPUTE_QUERY_ID_AUTO;
+		ok = ok && query_id_enabled;
+		ok = ok && IsQueryIdEnabled();
+
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("compute_query_id", saved_compute_query_id,
+						PGC_SUSET, PGC_S_SESSION);
+		query_id_enabled = saved_query_id_enabled;
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("compute_query_id", saved_compute_query_id,
+						PGC_SUSET, PGC_S_SESSION);
+		query_id_enabled = saved_query_id_enabled;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session query ID state was not session-local");
 
 	PG_RETURN_BOOL(true);
 }

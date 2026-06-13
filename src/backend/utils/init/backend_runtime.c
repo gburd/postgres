@@ -23,6 +23,7 @@
 #include "commands/tablespace.h"
 #include "commands/vacuum.h"
 #include "miscadmin.h"
+#include "nodes/queryjumble.h"
 #include "optimizer/cost.h"
 #include "optimizer/geqo.h"
 #include "optimizer/optimizer.h"
@@ -218,6 +219,11 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPgStatState early_session_pgst
 	.session_end_cause = DISCONNECT_NORMAL,
 	.last_session_report_time = 0
 };
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionQueryIdState early_session_query_id = {
+	.initialized = true,
+	.compute_query_id_value = COMPUTE_QUERY_ID_AUTO,
+	.query_id_enabled_value = false
+};
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionQueryMemoryState early_session_query_memory = {
 	.initialized = true,
 	.work_mem_kb = 4096,
@@ -326,6 +332,8 @@ static void PgSessionInitializeMiscGUCState(PgSessionMiscGUCState *misc_guc);
 static void PgSessionAdoptEarlyMiscGUCState(PgSession *session);
 static void PgSessionInitializePgStatState(PgSessionPgStatState *pgstat);
 static void PgSessionAdoptEarlyPgStatState(PgSession *session);
+static void PgSessionInitializeQueryIdState(PgSessionQueryIdState *query_id);
+static void PgSessionAdoptEarlyQueryIdState(PgSession *session);
 static void PgSessionInitializeQueryMemoryState(PgSessionQueryMemoryState *query_memory);
 static void PgSessionAdoptEarlyQueryMemoryState(PgSession *session);
 static void PgSessionInitializePlannerCostState(PgSessionPlannerCostState *planner_cost);
@@ -354,6 +362,7 @@ static PgSessionLockWaitState *PgCurrentSessionLockWaitState(void);
 static PgSessionLoggingState *PgCurrentSessionLoggingState(void);
 static PgSessionMiscGUCState *PgCurrentSessionMiscGUCState(void);
 static PgSessionPgStatState *PgCurrentSessionPgStatState(void);
+static PgSessionQueryIdState *PgCurrentSessionQueryIdState(void);
 static PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
 static PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
 static PgSessionPlannerMethodState *PgCurrentSessionPlannerMethodState(void);
@@ -777,6 +786,28 @@ PgSessionAdoptEarlyPgStatState(PgSession *session)
 }
 
 static void
+PgSessionInitializeQueryIdState(PgSessionQueryIdState *query_id)
+{
+	Assert(query_id != NULL);
+
+	query_id->initialized = true;
+	query_id->compute_query_id_value = COMPUTE_QUERY_ID_AUTO;
+	query_id->query_id_enabled_value = false;
+}
+
+static void
+PgSessionAdoptEarlyQueryIdState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (!early_session_query_id.initialized)
+		PgSessionInitializeQueryIdState(&early_session_query_id);
+
+	session->query_id = early_session_query_id;
+	PgSessionInitializeQueryIdState(&early_session_query_id);
+}
+
+static void
 PgSessionInitializeQueryMemoryState(PgSessionQueryMemoryState *query_memory)
 {
 	Assert(query_memory != NULL);
@@ -1046,6 +1077,7 @@ InitializePgProcessRuntime(void)
 	PgSessionAdoptEarlyLoggingState(&process_session);
 	PgSessionAdoptEarlyMiscGUCState(&process_session);
 	PgSessionAdoptEarlyPgStatState(&process_session);
+	PgSessionAdoptEarlyQueryIdState(&process_session);
 	PgSessionAdoptEarlyQueryMemoryState(&process_session);
 	PgSessionAdoptEarlyPlannerCostState(&process_session);
 	PgSessionAdoptEarlyPlannerMethodState(&process_session);
@@ -1139,6 +1171,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgSessionInitializeLoggingState(&state->session.logging);
 	PgSessionInitializeMiscGUCState(&state->session.misc_guc);
 	PgSessionInitializePgStatState(&state->session.pgstat);
+	PgSessionInitializeQueryIdState(&state->session.query_id);
 	PgSessionInitializeQueryMemoryState(&state->session.query_memory);
 	PgSessionInitializePlannerCostState(&state->session.planner_cost);
 	PgSessionInitializePlannerMethodState(&state->session.planner_method);
@@ -1173,6 +1206,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgSessionAdoptEarlyLoggingState(&state->session);
 	PgSessionAdoptEarlyMiscGUCState(&state->session);
 	PgSessionAdoptEarlyPgStatState(&state->session);
+	PgSessionAdoptEarlyQueryIdState(&state->session);
 	PgSessionAdoptEarlyQueryMemoryState(&state->session);
 	PgSessionAdoptEarlyPlannerCostState(&state->session);
 	PgSessionAdoptEarlyPlannerMethodState(&state->session);
@@ -1414,6 +1448,22 @@ PgCurrentSessionPgStatState(void)
 		PgSessionInitializePgStatState(pgstat);
 
 	return pgstat;
+}
+
+static PgSessionQueryIdState *
+PgCurrentSessionQueryIdState(void)
+{
+	PgSessionQueryIdState *query_id;
+
+	if (CurrentPgSession == NULL)
+		query_id = &early_session_query_id;
+	else
+		query_id = &CurrentPgSession->query_id;
+
+	if (!query_id->initialized)
+		PgSessionInitializeQueryIdState(query_id);
+
+	return query_id;
 }
 
 static PgSessionQueryMemoryState *
@@ -2124,6 +2174,18 @@ PgStat_Counter *
 PgCurrentPgStatLastSessionReportTimeRef(void)
 {
 	return &PgCurrentSessionPgStatState()->last_session_report_time;
+}
+
+int *
+PgCurrentComputeQueryIdRef(void)
+{
+	return &PgCurrentSessionQueryIdState()->compute_query_id_value;
+}
+
+bool *
+PgCurrentQueryIdEnabledRef(void)
+{
+	return &PgCurrentSessionQueryIdState()->query_id_enabled_value;
 }
 
 int *

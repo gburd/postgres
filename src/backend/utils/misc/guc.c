@@ -1575,6 +1575,9 @@ InitializeThreadedSessionGUCOptions(void)
 
 	gconf = find_option("track_functions", false, false, PANIC);
 	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("compute_query_id", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
 }
 
 /*
@@ -1610,6 +1613,10 @@ RebindSessionGUCVariablePointers(void)
 	gconf = find_option("client_min_messages", false, false, PANIC);
 	Assert(gconf->vartype == PGC_ENUM);
 	gconf->_enum.variable = PgCurrentClientMinMessagesRef();
+
+	gconf = find_option("compute_query_id", false, false, PANIC);
+	Assert(gconf->vartype == PGC_ENUM);
+	gconf->_enum.variable = PgCurrentComputeQueryIdRef();
 
 	gconf = find_option("deadlock_timeout", false, false, PANIC);
 	Assert(gconf->vartype == PGC_INT);

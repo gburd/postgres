@@ -354,6 +354,13 @@ typedef struct PgSessionPgStatState
 	PgStat_Counter last_session_report_time;
 } PgSessionPgStatState;
 
+typedef struct PgSessionQueryIdState
+{
+	bool		initialized;
+	int			compute_query_id_value;
+	bool		query_id_enabled_value;
+} PgSessionQueryIdState;
+
 typedef struct PgSessionQueryMemoryState
 {
 	bool		initialized;
@@ -555,6 +562,7 @@ struct PgSession
 	PgSessionLoggingState logging;
 	PgSessionMiscGUCState misc_guc;
 	PgSessionPgStatState pgstat;
+	PgSessionQueryIdState query_id;
 	PgSessionQueryMemoryState query_memory;
 	PgSessionPlannerCostState planner_cost;
 	PgSessionPlannerMethodState planner_method;
@@ -662,6 +670,8 @@ extern int *PgCurrentPgStatFetchConsistencyRef(void);
 extern bool *PgCurrentPgStatTrackActivitiesRef(void);
 extern SessionEndType *PgCurrentPgStatSessionEndCauseRef(void);
 extern PgStat_Counter *PgCurrentPgStatLastSessionReportTimeRef(void);
+extern int *PgCurrentComputeQueryIdRef(void);
+extern bool *PgCurrentQueryIdEnabledRef(void);
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);

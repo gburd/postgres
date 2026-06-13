@@ -87,9 +87,11 @@ enum ComputeQueryIdType
 	COMPUTE_QUERY_ID_REGRESS,
 };
 
-/* GUC parameters */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int compute_query_id;
+extern int *PgCurrentComputeQueryIdRef(void);
+extern bool *PgCurrentQueryIdEnabledRef(void);
 
+#define compute_query_id (*PgCurrentComputeQueryIdRef())
+#define query_id_enabled (*PgCurrentQueryIdEnabledRef())
 
 extern const char *CleanQuerytext(const char *query, int *location, int *len);
 extern LocationLen *ComputeConstantLengths(const JumbleState *jstate,
@@ -97,8 +99,6 @@ extern LocationLen *ComputeConstantLengths(const JumbleState *jstate,
 										   int query_loc);
 extern JumbleState *JumbleQuery(Query *query);
 extern void EnableQueryId(void);
-
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool query_id_enabled;
 
 /*
  * Returns whether query identifier computation has been enabled, either
