@@ -154,9 +154,6 @@ const ShmemCallbacks ReplicationSlotsShmemCallbacks = {
 	.init_fn = ReplicationSlotsShmemInit,
 };
 
-/* My backend's replication slot in the shared memory array */
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND ReplicationSlot *MyReplicationSlot = NULL;
-
 /* GUC variables */
 PG_GLOBAL_RUNTIME int max_replication_slots = 10; /* the maximum number of replication
 										 * slots */

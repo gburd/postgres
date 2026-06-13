@@ -401,6 +401,20 @@ Important current files:
   headers changed; at minimum rebuild and reinstall PL/pgSQL,
   `src/test/modules/test_backend_runtime`, and contrib before validating.
   Direct threaded TAP should be run.
+- Replication receiver and slot backend-local state now lives in
+  `PgBackendReplicationState`. `MyReplicationSlot` is a compatibility macro
+  over `PgCurrentReplicationState()`, while `syncrep.c` and `walreceiver.c`
+  keep local compatibility names for sync-rep wait mode and WAL receiver
+  connection/file/logstream/wakeup/reply state. The runtime initializer sets
+  non-zero sentinels: `sync_rep_wait_mode = SYNC_REP_NO_WAIT`,
+  `walreceiver_recv_file = -1`, and
+  `walreceiver_primary_has_standby_xmin = true`. Fake-backend tests that
+  inspect untouched replication state must initialize those fields explicitly
+  because raw `MemSet()` does not model `PgBackendInitializeReplicationState()`.
+  After changing this bridge, clean and rebuild backend objects because
+  `PgBackend` layout and installed runtime headers changed; at minimum rebuild
+  and reinstall PL/pgSQL, `src/test/modules/test_backend_runtime`, and contrib
+  before validating. Direct threaded TAP should be run.
 - Treat `PMChild.thread_backend` as private PMChild-owned publication state.
   Postmaster code should use PMChild helper APIs for threaded backend
   interrupt, wakeup, and thread-exit publication rather than dereferencing or

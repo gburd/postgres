@@ -93,7 +93,7 @@ PG_GLOBAL_RUNTIME int wal_receiver_status_interval;
 PG_GLOBAL_RUNTIME bool hot_standby_feedback;
 
 /* libpqwalreceiver connection */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND WalReceiverConn *wrconn = NULL;
+#define wrconn (PgCurrentReplicationState()->walreceiver_conn)
 PG_GLOBAL_RUNTIME WalReceiverFunctionsType *WalReceiverFunctions = NULL;
 
 /*
@@ -101,19 +101,16 @@ PG_GLOBAL_RUNTIME WalReceiverFunctionsType *WalReceiverFunctions = NULL;
  * but for walreceiver to write the XLOG. recvFileTLI is the TimeLineID
  * corresponding the filename of recvFile.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int recvFile = -1;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND TimeLineID recvFileTLI = 0;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND XLogSegNo recvSegNo = 0;
+#define recvFile (PgCurrentReplicationState()->walreceiver_recv_file)
+#define recvFileTLI (PgCurrentReplicationState()->walreceiver_recv_file_tli)
+#define recvSegNo (PgCurrentReplicationState()->walreceiver_recv_seg_no)
 
 /*
  * LogstreamResult indicates the byte positions that we have already
  * written/fsynced.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND struct
-{
-	XLogRecPtr	Write;			/* last byte + 1 written out in the standby */
-	XLogRecPtr	Flush;			/* last byte + 1 flushed in the standby */
-}			LogstreamResult;
+#define LogstreamResult \
+	(PgCurrentReplicationState()->walreceiver_logstream_result)
 
 /*
  * Reasons to wake up and perform periodic tasks.
@@ -127,12 +124,17 @@ typedef enum WalRcvWakeupReason
 #define NUM_WALRCV_WAKEUPS (WALRCV_WAKEUP_HSFEEDBACK + 1)
 } WalRcvWakeupReason;
 
+StaticAssertDecl(PG_BACKEND_WALRCV_NUM_WAKEUPS == NUM_WALRCV_WAKEUPS,
+				 "PgBackendReplicationState wakeup array size must match walreceiver wakeups");
+
 /*
  * Wake up times for periodic tasks.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND TimestampTz wakeup[NUM_WALRCV_WAKEUPS];
+#define wakeup (PgCurrentReplicationState()->walreceiver_wakeup)
 
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND StringInfoData reply_message;
+#define reply_message (PgCurrentReplicationState()->walreceiver_reply_message)
+#define primary_has_standby_xmin \
+	(PgCurrentReplicationState()->walreceiver_primary_has_standby_xmin)
 
 /* Prototypes for private functions */
 static void WalRcvFetchTimeLineHistoryFiles(TimeLineID first, TimeLineID last);
@@ -1251,9 +1253,6 @@ XLogWalRcvSendHSFeedback(bool immed)
 				catalog_xmin_epoch;
 	TransactionId xmin,
 				catalog_xmin;
-
-	/* initially true so we always send at least one feedback message */
-	static bool primary_has_standby_xmin = true;
 
 	/*
 	 * If the user doesn't want status to be reported to the primary, be sure

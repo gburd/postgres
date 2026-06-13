@@ -111,6 +111,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendIPCState early_backend_ipc;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendTransactionState early_backend_transaction;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendTimeoutState early_backend_timeout;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendWalSenderState early_backend_walsender;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendReplicationState early_backend_replication;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendActivityState early_backend_activity;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendUtilityState early_backend_utility;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendParallelState early_backend_parallel = {
@@ -645,6 +646,8 @@ static void PgBackendInitializeTimeoutState(PgBackendTimeoutState *timeout);
 static void PgBackendAdoptEarlyTimeoutState(PgBackend *backend);
 static void PgBackendInitializeWalSenderState(PgBackendWalSenderState *walsender);
 static void PgBackendAdoptEarlyWalSenderState(PgBackend *backend);
+static void PgBackendInitializeReplicationState(PgBackendReplicationState *replication);
+static void PgBackendAdoptEarlyReplicationState(PgBackend *backend);
 static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
 static void PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend);
 static BackendType *PgCurrentBackendTypeRef(void);
@@ -2323,6 +2326,26 @@ PgBackendAdoptEarlyWalSenderState(PgBackend *backend)
 }
 
 static void
+PgBackendInitializeReplicationState(PgBackendReplicationState *replication)
+{
+	Assert(replication != NULL);
+
+	MemSet(replication, 0, sizeof(*replication));
+	replication->sync_rep_wait_mode = -1;
+	replication->walreceiver_recv_file = -1;
+	replication->walreceiver_primary_has_standby_xmin = true;
+}
+
+static void
+PgBackendAdoptEarlyReplicationState(PgBackend *backend)
+{
+	Assert(backend != NULL);
+
+	backend->replication = early_backend_replication;
+	PgBackendInitializeReplicationState(&early_backend_replication);
+}
+
+static void
 PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend)
 {
 	Assert(backend != NULL);
@@ -2566,6 +2589,7 @@ InitializePgProcessRuntime(void)
 	PgBackendAdoptEarlyTransactionState(&process_backend);
 	PgBackendAdoptEarlyTimeoutState(&process_backend);
 	PgBackendAdoptEarlyWalSenderState(&process_backend);
+	PgBackendAdoptEarlyReplicationState(&process_backend);
 	PgBackendSetInterruptLatch(&process_backend, process_backend.core.latch);
 	dlist_init(&process_backend.dsm_segment_list);
 	pg_atomic_init_u32(&process_backend.wait_state.waiting, 0);
@@ -2716,6 +2740,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgBackendInitializeTransactionState(&state->backend.transaction);
 	PgBackendInitializeTimeoutState(&state->backend.timeout);
 	PgBackendInitializeWalSenderState(&state->backend.walsender);
+	PgBackendInitializeReplicationState(&state->backend.replication);
 	PgBackendSetInterruptLatch(&state->backend, interrupt_latch);
 	dlist_init(&state->backend.dsm_segment_list);
 	pg_atomic_init_u32(&state->backend.wait_state.waiting, 0);
@@ -7072,6 +7097,15 @@ PgCurrentWalSenderState(void)
 		return &early_backend_walsender;
 
 	return &CurrentPgBackend->walsender;
+}
+
+PgBackendReplicationState *
+PgCurrentReplicationState(void)
+{
+	if (CurrentPgBackend == NULL)
+		return &early_backend_replication;
+
+	return &CurrentPgBackend->replication;
 }
 
 static PgBackendTransactionState *

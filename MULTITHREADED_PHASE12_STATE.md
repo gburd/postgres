@@ -6951,6 +6951,48 @@ Validation for this slice:
   87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
   explicit `PG_REGRESS` environment.
 
+## Backend Replication Receiver And Slot State Bridge
+
+The one-hundred-forty-sixth Phase 12 slice moves a coherent replication
+receiver and slot backend-local state group into a new
+`PgBackendReplicationState` bucket:
+
+- `MyReplicationSlot`;
+- synchronous replication wait mode;
+- WAL receiver connection, receive-file, timeline, segment, logstream,
+  wakeup, reply-message, and primary-standby-xmin state.
+
+The public replication slot header keeps `MyReplicationSlot` as a compatibility
+macro over `PgCurrentReplicationState()`. `syncrep.c` and `walreceiver.c` keep
+their existing local names through source-file-local macros over the same
+backend-owned state. The runtime initializer preserves the non-zero sentinels
+from the former standalone state: sync-rep wait mode starts at
+`SYNC_REP_NO_WAIT`, WAL receiver receive file starts at `-1`, and
+`primary_has_standby_xmin` starts true.
+
+Validation for this slice:
+
+- focused object builds passed for `backend_runtime.o`, `walreceiver.o`,
+  `syncrep.o`, `slot.o`, and `test_backend_runtime.o`;
+- a static scan found no remaining raw TLS declarations for the moved
+  replication slot, sync-rep, or WAL receiver state;
+- a full backend clean plus generated-header recovery was run after the
+  installed-header and `PgBackend` layout changes;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 202 to 193;
+- `gmake -C contrib -j8` passed;
+- PL/pgSQL and `src/test/modules/test_backend_runtime` were cleaned, rebuilt,
+  and reinstalled after the installed-header and `PgBackend` layout changes;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression, including the new replication-state helper, and
+  still reported TAP disabled by configure;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
+  explicit `PG_REGRESS` environment.
+
 ## Backend Parallel State Bridge
 
 The one-hundred-forty-second Phase 12 slice moves a parallel-query and

@@ -97,7 +97,7 @@ PG_GLOBAL_RUNTIME char *SyncRepStandbyNames;
 static PG_GLOBAL_RUNTIME bool announce_next_takeover = true;
 
 PG_GLOBAL_RUNTIME SyncRepConfigData *SyncRepConfig = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int SyncRepWaitMode = SYNC_REP_NO_WAIT;
+#define SyncRepWaitMode (PgCurrentReplicationState()->sync_rep_wait_mode)
 
 static void SyncRepQueueInsert(int mode);
 static void SyncRepCancelWait(void);

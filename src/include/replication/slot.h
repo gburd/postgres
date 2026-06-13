@@ -16,6 +16,7 @@
 #include "storage/shmem.h"
 #include "storage/spin.h"
 #include "replication/walreceiver.h"
+#include "utils/backend_runtime.h"
 #include "utils/global_lifetime.h"
 
 /* directory to store replication slot data in */
@@ -321,7 +322,7 @@ ReplicationSlotSetInactiveSince(ReplicationSlot *s, TimestampTz ts,
  * Pointers to shared memory
  */
 extern PGDLLIMPORT PG_GLOBAL_SHMEM ReplicationSlotCtlData *ReplicationSlotCtl;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND ReplicationSlot *MyReplicationSlot;
+#define MyReplicationSlot (PgCurrentReplicationState()->my_replication_slot)
 
 /* GUCs */
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_replication_slots;

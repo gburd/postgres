@@ -1053,6 +1053,18 @@ passed clean full build/install, process-mode backend-runtime regression,
 direct threaded runtime TAP, contrib build, and the required global-lifetime
 scan with zero new unclassified mutable globals; backend-local declarations
 dropped from 236 to 202.
+Replication receiver and slot backend-local state now lives in
+`PgBackendReplicationState`: `MyReplicationSlot`, synchronous replication wait
+mode, and WAL receiver connection/file/logstream/wakeup/reply state now follow
+the logical backend. Public slot references retain the `MyReplicationSlot`
+compatibility name over `PgCurrentReplicationState()`, while `syncrep.c` and
+`walreceiver.c` keep their local names through source-file macros. The runtime
+initializer preserves the former non-zero sentinels for sync-rep no-wait,
+receive-file `-1`, and primary-standby-xmin true. The slice passed clean full
+build/install, process-mode backend-runtime regression, direct threaded
+runtime TAP, contrib build, and the required global-lifetime scan with zero
+new unclassified mutable globals; backend-local declarations dropped from 202
+to 193.
 PMChild assignment and slot release now also scrub stale carrier-visible signal
 ids and thread-exit payloads before reuse. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live

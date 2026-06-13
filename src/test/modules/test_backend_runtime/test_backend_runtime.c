@@ -51,6 +51,8 @@
 #include "port/atomics.h"
 #include "port/pg_thread.h"
 #include "replication/reorderbuffer.h"
+#include "replication/slot.h"
+#include "replication/syncrep.h"
 #include "replication/walreceiver.h"
 #include "replication/walsender.h"
 #include "storage/bufpage.h"
@@ -8411,6 +8413,122 @@ test_backend_walsender_state_is_backend_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "backend WAL sender state was not backend-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_backend_replication_state_is_backend_local);
+Datum
+test_backend_replication_state_is_backend_local(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgBackend	fake_backend1;
+	PgBackend	fake_backend2;
+	PgBackendReplicationState *replication1;
+	PgBackendReplicationState *replication2;
+	bool		ok = true;
+
+	saved_backend = CurrentPgBackend;
+	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
+	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+	fake_backend1.replication.sync_rep_wait_mode = SYNC_REP_NO_WAIT;
+	fake_backend1.replication.walreceiver_recv_file = -1;
+	fake_backend1.replication.walreceiver_primary_has_standby_xmin = true;
+	fake_backend2.replication.sync_rep_wait_mode = SYNC_REP_NO_WAIT;
+	fake_backend2.replication.walreceiver_recv_file = -1;
+	fake_backend2.replication.walreceiver_primary_has_standby_xmin = true;
+
+	PG_TRY();
+	{
+		CurrentPgBackend = &fake_backend1;
+		replication1 = PgCurrentReplicationState();
+		replication1->my_replication_slot =
+			(ReplicationSlot *) &fake_backend1;
+		replication1->sync_rep_wait_mode = SYNC_REP_WAIT_FLUSH;
+		replication1->walreceiver_conn = (WalReceiverConn *) &fake_backend1;
+		replication1->walreceiver_recv_file = 101;
+		replication1->walreceiver_recv_file_tli = 102;
+		replication1->walreceiver_recv_seg_no = 103;
+		replication1->walreceiver_logstream_result.Write = UINT64CONST(104);
+		replication1->walreceiver_logstream_result.Flush = UINT64CONST(105);
+		replication1->walreceiver_wakeup[0] = 106;
+		replication1->walreceiver_reply_message.maxlen = 107;
+		replication1->walreceiver_primary_has_standby_xmin = false;
+
+		CurrentPgBackend = &fake_backend2;
+		replication2 = PgCurrentReplicationState();
+		ok = ok && replication2->my_replication_slot == NULL;
+		ok = ok && replication2->sync_rep_wait_mode == SYNC_REP_NO_WAIT;
+		ok = ok && replication2->walreceiver_conn == NULL;
+		ok = ok && replication2->walreceiver_recv_file == -1;
+		ok = ok && replication2->walreceiver_recv_file_tli == 0;
+		ok = ok && replication2->walreceiver_recv_seg_no == 0;
+		ok = ok && replication2->walreceiver_logstream_result.Write == 0;
+		ok = ok && replication2->walreceiver_logstream_result.Flush == 0;
+		ok = ok && replication2->walreceiver_wakeup[0] == 0;
+		ok = ok && replication2->walreceiver_reply_message.maxlen == 0;
+		ok = ok && replication2->walreceiver_primary_has_standby_xmin;
+
+		replication2->my_replication_slot =
+			(ReplicationSlot *) &fake_backend2;
+		replication2->sync_rep_wait_mode = SYNC_REP_WAIT_APPLY;
+		replication2->walreceiver_conn = (WalReceiverConn *) &fake_backend2;
+		replication2->walreceiver_recv_file = 201;
+		replication2->walreceiver_recv_file_tli = 202;
+		replication2->walreceiver_recv_seg_no = 203;
+		replication2->walreceiver_logstream_result.Write = UINT64CONST(204);
+		replication2->walreceiver_logstream_result.Flush = UINT64CONST(205);
+		replication2->walreceiver_wakeup[0] = 206;
+		replication2->walreceiver_reply_message.maxlen = 207;
+		replication2->walreceiver_primary_has_standby_xmin = true;
+
+		CurrentPgBackend = &fake_backend1;
+		replication1 = PgCurrentReplicationState();
+		ok = ok && replication1->my_replication_slot ==
+			(ReplicationSlot *) &fake_backend1;
+		ok = ok && replication1->sync_rep_wait_mode == SYNC_REP_WAIT_FLUSH;
+		ok = ok && replication1->walreceiver_conn ==
+			(WalReceiverConn *) &fake_backend1;
+		ok = ok && replication1->walreceiver_recv_file == 101;
+		ok = ok && replication1->walreceiver_recv_file_tli == 102;
+		ok = ok && replication1->walreceiver_recv_seg_no == 103;
+		ok = ok && replication1->walreceiver_logstream_result.Write ==
+			UINT64CONST(104);
+		ok = ok && replication1->walreceiver_logstream_result.Flush ==
+			UINT64CONST(105);
+		ok = ok && replication1->walreceiver_wakeup[0] == 106;
+		ok = ok && replication1->walreceiver_reply_message.maxlen == 107;
+		ok = ok && !replication1->walreceiver_primary_has_standby_xmin;
+
+		CurrentPgBackend = &fake_backend2;
+		replication2 = PgCurrentReplicationState();
+		ok = ok && replication2->my_replication_slot ==
+			(ReplicationSlot *) &fake_backend2;
+		ok = ok && replication2->sync_rep_wait_mode == SYNC_REP_WAIT_APPLY;
+		ok = ok && replication2->walreceiver_conn ==
+			(WalReceiverConn *) &fake_backend2;
+		ok = ok && replication2->walreceiver_recv_file == 201;
+		ok = ok && replication2->walreceiver_recv_file_tli == 202;
+		ok = ok && replication2->walreceiver_recv_seg_no == 203;
+		ok = ok && replication2->walreceiver_logstream_result.Write ==
+			UINT64CONST(204);
+		ok = ok && replication2->walreceiver_logstream_result.Flush ==
+			UINT64CONST(205);
+		ok = ok && replication2->walreceiver_wakeup[0] == 206;
+		ok = ok && replication2->walreceiver_reply_message.maxlen == 207;
+		ok = ok && replication2->walreceiver_primary_has_standby_xmin;
+
+		CurrentPgBackend = saved_backend;
+	}
+	PG_CATCH();
+	{
+		CurrentPgBackend = saved_backend;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "backend replication state was not backend-local");
 
 	PG_RETURN_BOOL(true);
 }

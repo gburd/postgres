@@ -59,6 +59,8 @@ typedef struct WaitEventSet WaitEventSet;
 typedef struct WritebackContext WritebackContext;
 typedef struct BufferDesc BufferDesc;
 typedef struct WalSnd WalSnd;
+typedef struct WalReceiverConn WalReceiverConn;
+typedef struct ReplicationSlot ReplicationSlot;
 typedef struct XLogReaderState XLogReaderState;
 typedef struct PortalData *Portal;
 typedef struct SPITupleTable SPITupleTable;
@@ -240,6 +242,28 @@ typedef struct PgBackendWalSenderState
 	MemoryContext replication_cmd_context;
 	LagTracker *lag_tracker;
 } PgBackendWalSenderState;
+
+#define PG_BACKEND_WALRCV_NUM_WAKEUPS 4
+
+typedef struct PgBackendWalReceiverLogstreamResult
+{
+	XLogRecPtr	Write;
+	XLogRecPtr	Flush;
+} PgBackendWalReceiverLogstreamResult;
+
+typedef struct PgBackendReplicationState
+{
+	ReplicationSlot *my_replication_slot;
+	int			sync_rep_wait_mode;
+	WalReceiverConn *walreceiver_conn;
+	int			walreceiver_recv_file;
+	TimeLineID	walreceiver_recv_file_tli;
+	XLogSegNo	walreceiver_recv_seg_no;
+	PgBackendWalReceiverLogstreamResult walreceiver_logstream_result;
+	TimestampTz walreceiver_wakeup[PG_BACKEND_WALRCV_NUM_WAKEUPS];
+	StringInfoData walreceiver_reply_message;
+	bool		walreceiver_primary_has_standby_xmin;
+} PgBackendReplicationState;
 
 typedef struct PgBackendPgStatPendingState
 {
@@ -1261,6 +1285,7 @@ struct PgBackend
 	PgBackendCoreState core;
 	PgBackendTimeoutState timeout;
 	PgBackendWalSenderState walsender;
+	PgBackendReplicationState replication;
 	PgBackendPgStatPendingState pgstat_pending;
 	PgBackendActivityState activity;
 	PgBackendUtilityState utility;
@@ -1686,6 +1711,7 @@ extern WaitEventSet **PgCurrentLatchWaitSetRef(void);
 extern Latch *PgCurrentLocalLatchData(void);
 extern PgBackendTimeoutState *PgCurrentTimeoutState(void);
 extern PgBackendWalSenderState *PgCurrentWalSenderState(void);
+extern PgBackendReplicationState *PgCurrentReplicationState(void);
 extern TransactionId *PgCurrentCachedFetchXidRef(void);
 extern int *PgCurrentCachedFetchXidStatusRef(void);
 extern XLogRecPtr *PgCurrentCachedCommitLSNRef(void);
