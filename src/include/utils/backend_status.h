@@ -297,7 +297,8 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME int pgstat_track_activity_query_size;
  * Other global variables
  * ----------
  */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendStatus *MyBEEntry;
+extern PgBackendStatus **PgCurrentMyBEEntryRef(void);
+#define MyBEEntry (*PgCurrentMyBEEntryRef())
 
 
 /* ----------

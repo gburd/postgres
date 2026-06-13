@@ -429,7 +429,10 @@ bridge through `PgCurrentMyProcNumberRef()` and
 `PgCurrentParallelLeaderProcNumberRef()`, with storage inside `PgBackend` and
 explicit `INVALID_PROC_NUMBER` initialization for each process or thread
 backend runtime. This narrows raw backend-local TLS around proc identity state
-without changing the shared-memory procarray lifecycle.
+without changing the shared-memory procarray lifecycle. `MyBEEntry` is also
+now owned by `PgBackend` through `PgCurrentMyBEEntryRef()`, so the
+backend-status shared-memory slot pointer follows the logical backend while
+the shared `PgBackendStatus` array lifecycle remains unchanged.
 PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly

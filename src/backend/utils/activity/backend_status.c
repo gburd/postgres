@@ -41,10 +41,6 @@
 PG_GLOBAL_RUNTIME int pgstat_track_activity_query_size = 1024;
 
 
-/* exposed so that backend_progress.c can access it */
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendStatus *MyBEEntry = NULL;
-
-
 static PG_GLOBAL_SHMEM PgBackendStatus *BackendStatusArray = NULL;
 static PG_GLOBAL_SHMEM char *BackendAppnameBuffer = NULL;
 static PG_GLOBAL_SHMEM char *BackendClientHostnameBuffer = NULL;

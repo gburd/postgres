@@ -5634,3 +5634,56 @@ Validation for this slice:
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals;
 - `git diff --check` passed.
+
+## Backend Status Slot Pointer Bridge
+
+The one-hundred-nineteenth Phase 12 slice moves the current backend's
+backend-status slot pointer into explicit backend state:
+
+- `PgBackend` now owns `my_beentry`, keeping the backend-local pointer to the
+  shared-memory `PgBackendStatus` slot with the rest of backend runtime state;
+- `MyBEEntry` remains a source-compatible lvalue name through
+  `PgCurrentMyBEEntryRef()`, so activity/progress/status reporting code can
+  continue assigning, testing, and dereferencing it without broad call-site
+  churn;
+- `backend_runtime.c` keeps a small early fallback pointer for code that runs
+  before `CurrentPgBackend` is installed, then adopts that fallback into the
+  process or thread backend during runtime installation;
+- `pgstat_beinit()`, `pgstat_beshutdown_hook()`, and the shared
+  `PgBackendStatus` array keep their existing lifecycle. This slice changes
+  where the backend-local pointer is stored, not when the status slot is
+  initialized, cleared, or read by monitoring code.
+
+This removes another exported backend-local TLS global and keeps SQL-visible
+backend activity identity attached to the logical backend object. It does not
+change the shared-memory backend status protocol or the broader PMChild
+teardown/reaping model.
+
+Validation for this slice:
+
+- `gmake -C src/backend/utils/init backend_runtime.o` passed;
+- `gmake -C src/backend/utils/activity backend_status.o backend_progress.o`
+  passed;
+- `gmake -C src/backend/commands analyze.o` passed;
+- `gmake -C src/backend/access/heap vacuumlazy.o` passed;
+- full backend clean plus generated-header recovery was required after the
+  installed-header change, because stale objects could still reference the old
+  `_MyBEEntry` symbol or miss the new accessor symbol;
+- full `gmake -j8` passed;
+- full `gmake -j8 DESTDIR="$PWD/tmp_install" install` passed;
+- PL/pgSQL was cleaned, rebuilt, and reinstalled after the installed-header
+  change;
+- `src/test/modules/test_backend_runtime` was cleaned, rebuilt, and
+  reinstalled after the installed-header change;
+- direct threaded-runtime TAP passed all 87 tests with local
+  `/Users/samwillis/perl5` `PERL5LIB` paths before and after
+  `gmake -C src/test/modules/test_backend_runtime check` recreated
+  `tmp_install`;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression and still reported TAP disabled by configure;
+- `gmake -C contrib -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 439 to 438;
+- a static scan found no remaining raw `MyBEEntry` TLS declaration or exported
+  `_MyBEEntry` symbol reference;
+- `git diff --check` passed.

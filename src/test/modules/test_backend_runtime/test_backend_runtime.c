@@ -66,6 +66,7 @@
 #include "tcop/tcopprot.h"
 #include "tsearch/ts_cache.h"
 #include "utils/backend_runtime.h"
+#include "utils/backend_status.h"
 #include "utils/builtins.h"
 #include "utils/bytea.h"
 #include "utils/float.h"
@@ -6653,6 +6654,9 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 	int			saved_proc_pid;
 	ProcNumber	saved_proc_number;
 	ProcNumber	saved_parallel_leader_proc_number;
+	PgBackendStatus *saved_beentry;
+	PgBackendStatus fake_beentry1;
+	PgBackendStatus fake_beentry2;
 	pg_time_t	saved_start_time;
 	TimestampTz saved_start_timestamp;
 	int			saved_pm_child_slot;
@@ -6668,6 +6672,7 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 	saved_proc_pid = MyProcPid;
 	saved_proc_number = MyProcNumber;
 	saved_parallel_leader_proc_number = ParallelLeaderProcNumber;
+	saved_beentry = MyBEEntry;
 	saved_start_time = MyStartTime;
 	saved_start_timestamp = MyStartTimestamp;
 	saved_latch = MyLatch;
@@ -6693,6 +6698,7 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 		MyProcPid = 111;
 		MyProcNumber = 12;
 		ParallelLeaderProcNumber = 34;
+		MyBEEntry = &fake_beentry1;
 		MyStartTime = 222;
 		MyStartTimestamp = 333;
 		MyLatch = &fake_latch1;
@@ -6709,6 +6715,7 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && MyProcPid == 0;
 		ok = ok && MyProcNumber == INVALID_PROC_NUMBER;
 		ok = ok && ParallelLeaderProcNumber == INVALID_PROC_NUMBER;
+		ok = ok && MyBEEntry == NULL;
 		ok = ok && MyStartTime == 0;
 		ok = ok && MyStartTimestamp == 0;
 		ok = ok && MyLatch == NULL;
@@ -6724,6 +6731,7 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 		MyProcPid = 555;
 		MyProcNumber = 56;
 		ParallelLeaderProcNumber = 78;
+		MyBEEntry = &fake_beentry2;
 		MyStartTime = 666;
 		MyStartTimestamp = 777;
 		MyLatch = &fake_latch2;
@@ -6740,6 +6748,7 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && MyProcPid == 111;
 		ok = ok && MyProcNumber == 12;
 		ok = ok && ParallelLeaderProcNumber == 34;
+		ok = ok && MyBEEntry == &fake_beentry1;
 		ok = ok && MyStartTime == 222;
 		ok = ok && MyStartTimestamp == 333;
 		ok = ok && MyLatch == &fake_latch1;
@@ -6756,6 +6765,7 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && MyProcPid == 555;
 		ok = ok && MyProcNumber == 56;
 		ok = ok && ParallelLeaderProcNumber == 78;
+		ok = ok && MyBEEntry == &fake_beentry2;
 		ok = ok && MyStartTime == 666;
 		ok = ok && MyStartTimestamp == 777;
 		ok = ok && MyLatch == &fake_latch2;
@@ -6772,6 +6782,7 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 		MyProcPid = saved_proc_pid;
 		MyProcNumber = saved_proc_number;
 		ParallelLeaderProcNumber = saved_parallel_leader_proc_number;
+		MyBEEntry = saved_beentry;
 		MyStartTime = saved_start_time;
 		MyStartTimestamp = saved_start_timestamp;
 		MyLatch = saved_latch;
@@ -6789,6 +6800,7 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 		MyProcPid = saved_proc_pid;
 		MyProcNumber = saved_proc_number;
 		ParallelLeaderProcNumber = saved_parallel_leader_proc_number;
+		MyBEEntry = saved_beentry;
 		MyStartTime = saved_start_time;
 		MyStartTimestamp = saved_start_timestamp;
 		MyLatch = saved_latch;

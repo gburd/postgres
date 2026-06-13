@@ -840,7 +840,11 @@ but the backend-local pointer is no longer standalone TLS. `MyProcNumber` and
 with storage inside `PgBackend`, explicit `INVALID_PROC_NUMBER`
 initialization for process and thread runtime state, and early fallback
 adoption for pre-runtime writes. The shared-memory `PGPROC`, procarray, and
-parallel-worker assignment/release lifecycle remains unchanged.
+parallel-worker assignment/release lifecycle remains unchanged. `MyBEEntry`
+is now also stored inside `PgBackend` through `PgCurrentMyBEEntryRef()`,
+keeping the backend-status shared-memory slot pointer with logical backend
+state while leaving `pgstat_beinit()`, `pgstat_beshutdown_hook()`, and the
+underlying `PgBackendStatus` shared-memory array lifecycle unchanged.
 PMChild assignment and slot release now also scrub stale carrier-visible signal
 ids and thread-exit payloads before reuse. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live

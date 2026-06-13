@@ -139,6 +139,14 @@ Important current files:
   `_ParallelLeaderProcNumber` symbols, or miss the new accessor symbols. At
   minimum, clean and reinstall PL/pgSQL and
   `src/test/modules/test_backend_runtime` before testing.
+- `MyBEEntry` is now routed through `PgBackend` via
+  `PgCurrentMyBEEntryRef()` and the existing lvalue name in
+  `src/include/utils/backend_status.h`. After changing that header or this
+  backend runtime bridge, clean and rebuild backend objects and any extension
+  modules under test before trusting link or TAP results; stale objects can
+  still reference the removed `_MyBEEntry` symbol, or miss the new accessor
+  symbol. At minimum, clean and reinstall
+  `src/test/modules/test_backend_runtime` before testing.
 - Treat `PMChild.thread_backend` as private PMChild-owned publication state.
   Postmaster code should use PMChild helper APIs for threaded backend
   interrupt, wakeup, and thread-exit publication rather than dereferencing or
