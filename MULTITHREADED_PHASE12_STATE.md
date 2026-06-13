@@ -3304,3 +3304,49 @@ Validation for this slice:
   public `pquery.h` migration;
 - static scans found no remaining direct exported TLS declaration for
   `ActivePortal`.
+
+## Connection Output State Bridge
+
+The sixty-fifth Phase 12 slice moves tcop connection output state under the
+logical connection object:
+
+- `PgConnection` now owns a `PgConnectionOutputState`;
+- public `whereToSendOutput` remains a source-compatible lvalue macro in
+  `tcopprot.h`, backed by `PgCurrentWhereToSendOutputRef()`;
+- public `client_connection_check_interval` remains a source-compatible
+  lvalue macro in `tcopprot.h`, backed by
+  `PgCurrentClientConnectionCheckIntervalRef()`;
+- early startup paths before `CurrentPgConnection` is installed use fallback
+  connection-local storage initialized to the historical `DestDebug` default;
+- process runtime installation adopts any early output state into the
+  installed process connection;
+- thread runtime initialization sets each connection output state to
+  `DestDebug`;
+- the backend-runtime regression fixture now switches `CurrentPgConnection`
+  between fake connections and verifies that assignments through
+  `whereToSendOutput` and `client_connection_check_interval` follow the active
+  connection.
+
+This removes another exported connection TLS bucket from the command dispatch
+and interrupt paths while preserving the current source-level API shape for
+backend call sites.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `postgres.o`, and
+  `test_backend_runtime.o`;
+- because `backend_runtime.h` and `tcopprot.h` changed exported backend state,
+  the backend clean plus generated utility and node-header recovery path was
+  used before trusting process-mode runtime tests;
+- clean full `gmake -j8` passed after the backend clean;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- focused `test_backend_runtime` regression passed and includes
+  `test_connection_output_state_is_connection_local()`;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  public `tcopprot.h` migration;
+- static scans found no remaining direct exported TLS declaration for
+  `whereToSendOutput` or `client_connection_check_interval`; the only broad
+  declaration-pattern match was the existing
+  `check_client_connection_check_interval()` GUC hook prototype.

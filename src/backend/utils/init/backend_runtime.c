@@ -96,6 +96,9 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND BackendType early_backend_type = B_INVA
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionIdentityState early_connection_identity;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionSocketIOState early_connection_socket_io;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionProtocolState early_connection_protocol;
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionOutputState early_connection_output = {
+	.where_to_send_output = DestDebug
+};
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionInterruptState early_connection_interrupts;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionStartupState early_connection_startup;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionClientConnectionInfoState early_client_connection_info;
@@ -491,6 +494,8 @@ static PgRuntimeServerGUCState *PgCurrentRuntimeServerGUCState(void);
 static void PgConnectionAdoptEarlyIdentity(PgConnection *connection);
 static void PgConnectionAdoptEarlySocketIO(PgConnection *connection);
 static void PgConnectionAdoptEarlyProtocolState(PgConnection *connection);
+static void PgConnectionInitializeOutputState(PgConnectionOutputState *output);
+static void PgConnectionAdoptEarlyOutputState(PgConnection *connection);
 static void PgConnectionAdoptEarlyInterruptState(PgConnection *connection);
 static void PgConnectionAdoptEarlyStartupState(PgConnection *connection);
 static void PgConnectionAdoptEarlyClientConnectionInfo(PgConnection *connection);
@@ -705,6 +710,24 @@ PgConnectionAdoptEarlyProtocolState(PgConnection *connection)
 
 	connection->protocol = early_connection_protocol;
 	MemSet(&early_connection_protocol, 0, sizeof(early_connection_protocol));
+}
+
+static void
+PgConnectionInitializeOutputState(PgConnectionOutputState *output)
+{
+	Assert(output != NULL);
+
+	MemSet(output, 0, sizeof(*output));
+	output->where_to_send_output = DestDebug;
+}
+
+static void
+PgConnectionAdoptEarlyOutputState(PgConnection *connection)
+{
+	Assert(connection != NULL);
+
+	connection->output = early_connection_output;
+	PgConnectionInitializeOutputState(&early_connection_output);
 }
 
 static void
@@ -2066,6 +2089,7 @@ InitializePgProcessRuntime(void)
 	PgConnectionAdoptEarlyIdentity(&process_connection);
 	PgConnectionAdoptEarlySocketIO(&process_connection);
 	PgConnectionAdoptEarlyProtocolState(&process_connection);
+	PgConnectionAdoptEarlyOutputState(&process_connection);
 	PgConnectionAdoptEarlyInterruptState(&process_connection);
 	PgConnectionAdoptEarlyStartupState(&process_connection);
 	PgConnectionAdoptEarlyClientConnectionInfo(&process_connection);
@@ -2190,6 +2214,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	state->connection.backend = &state->backend;
 	state->connection.session = &state->session;
 	state->connection.identity.port = port;
+	PgConnectionInitializeOutputState(&state->connection.output);
 
 	state->execution.backend = &state->backend;
 	state->execution.session = &state->session;
@@ -4953,6 +4978,36 @@ uint32 *
 PgCurrentFrontendProtocolRef(void)
 {
 	return PgConnectionFrontendProtocolRef(CurrentPgConnection);
+}
+
+static CommandDest *
+PgConnectionWhereToSendOutputRef(PgConnection *connection)
+{
+	if (connection == NULL)
+		return &early_connection_output.where_to_send_output;
+
+	return &connection->output.where_to_send_output;
+}
+
+CommandDest *
+PgCurrentWhereToSendOutputRef(void)
+{
+	return PgConnectionWhereToSendOutputRef(CurrentPgConnection);
+}
+
+static int *
+PgConnectionClientConnectionCheckIntervalRef(PgConnection *connection)
+{
+	if (connection == NULL)
+		return &early_connection_output.client_connection_check_interval;
+
+	return &connection->output.client_connection_check_interval;
+}
+
+int *
+PgCurrentClientConnectionCheckIntervalRef(void)
+{
+	return PgConnectionClientConnectionCheckIntervalRef(CurrentPgConnection);
 }
 
 volatile sig_atomic_t *

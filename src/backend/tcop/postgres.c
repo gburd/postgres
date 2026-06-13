@@ -88,17 +88,11 @@
 #include "utils/timestamp.h"
 #include "utils/varlena.h"
 
-/* Note: whereToSendOutput is initialized for the bootstrap/standalone case */
-PG_THREAD_LOCAL PG_GLOBAL_CONNECTION CommandDest whereToSendOutput = DestDebug;
-
 /*
  * Log_disconnections, log_statement, and PostAuthDelay live in
  * PgSessionConnectionGUCState.  Public names remain source-compatible lvalue
  * macros from tcopprot.h.
  */
-
-/* Time between checks that the client is still connected. */
-PG_THREAD_LOCAL PG_GLOBAL_CONNECTION int client_connection_check_interval = 0;
 
 /*
  * restrict_nonsystem_relation_kind also lives in

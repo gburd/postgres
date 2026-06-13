@@ -19,15 +19,18 @@
 #include "storage/procsignal.h"
 #include "utils/backend_runtime.h"
 #include "utils/guc.h"
-#include "utils/global_lifetime.h"
 #include "utils/queryenvironment.h"
 
 typedef struct ExplainState ExplainState;	/* defined in explain_state.h */
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CONNECTION CommandDest whereToSendOutput;
+/*
+ * Connection output state remains source-compatible, but storage belongs to
+ * PgConnection so a logical connection can move between carriers.
+ */
+#define whereToSendOutput (*PgCurrentWhereToSendOutputRef())
 extern int *PgCurrentPostAuthDelayRef(void);
 #define PostAuthDelay (*PgCurrentPostAuthDelayRef())
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CONNECTION int client_connection_check_interval;
+#define client_connection_check_interval (*PgCurrentClientConnectionCheckIntervalRef())
 
 /*
  * Compatibility lvalue for the historical execution-local debug query string.

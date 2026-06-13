@@ -59,6 +59,7 @@ SELECT test_execution_active_portal_is_execution_local();
 SELECT test_execution_resource_owners_are_execution_local();
 SELECT test_connection_socket_io_is_connection_local();
 SELECT test_connection_protocol_state_is_connection_local();
+SELECT test_connection_output_state_is_connection_local();
 SELECT test_connection_identity_state_is_connection_local();
 SELECT test_connection_interrupt_state_is_connection_local();
 SELECT test_connection_frontend_protocol_is_connection_local();

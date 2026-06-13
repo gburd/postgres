@@ -25,6 +25,7 @@
 #include "pgstat.h"
 #include "port/atomics.h"
 #include "storage/ipc.h"
+#include "tcop/dest.h"
 #include "utils/backend_id.h"
 #include "utils/global_lifetime.h"
 #include "utils/hsearch.h"
@@ -774,6 +775,12 @@ typedef struct PgConnectionProtocolState
 	uint32		frontend_protocol;
 } PgConnectionProtocolState;
 
+typedef struct PgConnectionOutputState
+{
+	CommandDest where_to_send_output;
+	int			client_connection_check_interval;
+} PgConnectionOutputState;
+
 typedef struct PgConnectionInterruptState
 {
 	volatile sig_atomic_t check_client_connection_pending;
@@ -928,6 +935,7 @@ struct PgConnection
 	PgConnectionIdentityState identity;
 	PgConnectionSocketIOState socket_io;
 	PgConnectionProtocolState protocol;
+	PgConnectionOutputState output;
 	PgConnectionInterruptState interrupts;
 	PgConnectionStartupState startup;
 	PgConnectionClientConnectionInfoState client_connection_info;
@@ -977,6 +985,8 @@ extern _SPI_connection **PgCurrentSPICurrentRef(void);
 extern int *PgCurrentSPIStackDepthRef(void);
 extern int *PgCurrentSPIConnectedRef(void);
 extern Portal *PgCurrentActivePortalRef(void);
+extern CommandDest *PgCurrentWhereToSendOutputRef(void);
+extern int *PgCurrentClientConnectionCheckIntervalRef(void);
 extern int *PgCurrentDeadlockTimeoutRef(void);
 extern int *PgCurrentStatementTimeoutRef(void);
 extern int *PgCurrentLockTimeoutRef(void);

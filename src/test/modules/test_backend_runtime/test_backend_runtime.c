@@ -6905,6 +6905,64 @@ test_connection_protocol_state_is_connection_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_connection_output_state_is_connection_local);
+Datum
+test_connection_output_state_is_connection_local(PG_FUNCTION_ARGS)
+{
+	PgConnection *saved_connection;
+	PgConnection fake_connection1;
+	PgConnection fake_connection2;
+	CommandDest saved_where_to_send_output;
+	int			saved_client_connection_check_interval;
+	bool		ok = true;
+
+	saved_connection = CurrentPgConnection;
+	saved_where_to_send_output = whereToSendOutput;
+	saved_client_connection_check_interval = client_connection_check_interval;
+	MemSet(&fake_connection1, 0, sizeof(fake_connection1));
+	MemSet(&fake_connection2, 0, sizeof(fake_connection2));
+	fake_connection1.output.where_to_send_output = DestDebug;
+	fake_connection2.output.where_to_send_output = DestDebug;
+
+	PG_TRY();
+	{
+		CurrentPgConnection = &fake_connection1;
+		whereToSendOutput = DestRemote;
+		client_connection_check_interval = 11;
+
+		CurrentPgConnection = &fake_connection2;
+		ok = ok && whereToSendOutput == DestDebug;
+		ok = ok && client_connection_check_interval == 0;
+		whereToSendOutput = DestNone;
+		client_connection_check_interval = 22;
+
+		CurrentPgConnection = &fake_connection1;
+		ok = ok && whereToSendOutput == DestRemote;
+		ok = ok && client_connection_check_interval == 11;
+
+		CurrentPgConnection = &fake_connection2;
+		ok = ok && whereToSendOutput == DestNone;
+		ok = ok && client_connection_check_interval == 22;
+
+		CurrentPgConnection = saved_connection;
+		whereToSendOutput = saved_where_to_send_output;
+		client_connection_check_interval = saved_client_connection_check_interval;
+	}
+	PG_CATCH();
+	{
+		CurrentPgConnection = saved_connection;
+		whereToSendOutput = saved_where_to_send_output;
+		client_connection_check_interval = saved_client_connection_check_interval;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "connection output state was not connection-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_connection_identity_state_is_connection_local);
 Datum
 test_connection_identity_state_is_connection_local(PG_FUNCTION_ARGS)

@@ -353,6 +353,12 @@ SELECT test_connection_protocol_state_is_connection_local();
  t
 (1 row)
 
+SELECT test_connection_output_state_is_connection_local();
+ test_connection_output_state_is_connection_local 
+--------------------------------------------------
+ t
+(1 row)
+
 SELECT test_connection_identity_state_is_connection_local();
  test_connection_identity_state_is_connection_local 
 ----------------------------------------------------
