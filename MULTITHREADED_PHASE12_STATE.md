@@ -3263,3 +3263,44 @@ Validation for this slice:
   public SPI header migration;
 - static scans found no remaining direct TLS declarations for the migrated SPI
   API variables or private SPI connection-stack state.
+
+## Active Portal Execution State Bridge
+
+The sixty-fourth Phase 12 slice moves the exported `ActivePortal` pointer
+under the logical execution object:
+
+- `PgExecution` now owns a `PgExecutionPortalState`;
+- public `ActivePortal` remains a source-compatible lvalue macro in
+  `pquery.h`, backed by `PgCurrentActivePortalRef()`;
+- early paths before `CurrentPgExecution` is installed use fallback
+  execution-local storage in `backend_runtime.c`;
+- process and thread runtime installation adopt any early active portal value
+  into the installed execution object;
+- the backend-runtime regression fixture now switches `CurrentPgExecution`
+  between fake executions and verifies that assignments through `ActivePortal`
+  follow the active execution.
+
+This removes the portal executor's current-portal pointer from raw execution
+TLS while preserving the existing portal execution, cursor, and catalog-helper
+call sites. It is a small bridge, but it sits directly on the query execution
+path and helps make command execution state explicit before future scheduler
+work tries to suspend and resume executions.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `pquery.o`, and
+  `test_backend_runtime.o`;
+- because `pquery.h` and `backend_runtime.h` changed exported backend state,
+  the backend clean plus generated utility and node-header recovery path was
+  used before trusting process-mode runtime tests;
+- clean full `gmake -j8` passed after the backend clean;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- focused `test_backend_runtime` regression passed and includes
+  `test_execution_active_portal_is_execution_local()`;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests, including
+  `portals` and `portals_p2`;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  public `pquery.h` migration;
+- static scans found no remaining direct exported TLS declaration for
+  `ActivePortal`.

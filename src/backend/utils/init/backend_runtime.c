@@ -477,6 +477,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionResourceOwnerState early_e
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionSPIState early_execution_spi = {
 	.connected = -1
 };
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionPortalState early_execution_portal;
 
 StaticAssertDecl(PG_BACKEND_INTERRUPT_COUNT <= 32,
 				 "PgBackendInterruptMask must fit all backend interrupts");
@@ -585,6 +586,7 @@ static void PgExecutionAdoptEarlyMemoryContexts(PgExecution *execution);
 static void PgExecutionAdoptEarlyResourceOwners(PgExecution *execution);
 static void PgExecutionInitializeSPIState(PgExecutionSPIState *spi);
 static void PgExecutionAdoptEarlySPIState(PgExecution *execution);
+static void PgExecutionAdoptEarlyPortalState(PgExecution *execution);
 static PgBackendCoreState *PgCurrentCoreState(void);
 static PgSessionDatabaseState *PgCurrentSessionDatabaseState(void);
 static PgSessionTablespaceState *PgCurrentSessionTablespaceState(void);
@@ -630,6 +632,7 @@ static PgExecutionErrorState *PgCurrentExecutionErrorState(void);
 static PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
 static PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
 static PgExecutionSPIState *PgCurrentExecutionSPIState(void);
+static PgExecutionPortalState *PgCurrentExecutionPortalState(void);
 static PgBackendPendingInterruptState *PgCurrentPendingInterrupts(void);
 static PgBackendInterruptHoldoffState *PgCurrentInterruptHoldoffs(void);
 
@@ -1967,6 +1970,15 @@ PgExecutionAdoptEarlySPIState(PgExecution *execution)
 	PgExecutionInitializeSPIState(&early_execution_spi);
 }
 
+static void
+PgExecutionAdoptEarlyPortalState(PgExecution *execution)
+{
+	Assert(execution != NULL);
+
+	execution->portal = early_execution_portal;
+	MemSet(&early_execution_portal, 0, sizeof(early_execution_portal));
+}
+
 void
 InitializePgProcessRuntime(void)
 {
@@ -2068,6 +2080,7 @@ InitializePgProcessRuntime(void)
 	PgExecutionAdoptEarlyMemoryContexts(&process_execution);
 	PgExecutionAdoptEarlyResourceOwners(&process_execution);
 	PgExecutionAdoptEarlySPIState(&process_execution);
+	PgExecutionAdoptEarlyPortalState(&process_execution);
 
 	CurrentPgRuntime = &process_runtime;
 	CurrentPgCarrier = &process_carrier;
@@ -2237,6 +2250,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgExecutionAdoptEarlyMemoryContexts(&state->execution);
 	PgExecutionAdoptEarlyResourceOwners(&state->execution);
 	PgExecutionAdoptEarlySPIState(&state->execution);
+	PgExecutionAdoptEarlyPortalState(&state->execution);
 	CurrentPgRuntime = &thread_runtime;
 	CurrentPgCarrier = &state->carrier;
 	CurrentPgBackend = &state->backend;
@@ -4864,6 +4878,21 @@ int *
 PgCurrentSPIConnectedRef(void)
 {
 	return &PgCurrentExecutionSPIState()->connected;
+}
+
+static PgExecutionPortalState *
+PgCurrentExecutionPortalState(void)
+{
+	if (CurrentPgExecution == NULL)
+		return &early_execution_portal;
+
+	return &CurrentPgExecution->portal;
+}
+
+Portal *
+PgCurrentActivePortalRef(void)
+{
+	return &PgCurrentExecutionPortalState()->active;
 }
 
 PgConnectionSocketIOState *

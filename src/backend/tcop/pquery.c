@@ -29,13 +29,6 @@
 #include "utils/snapmgr.h"
 
 
-/*
- * ActivePortal is the currently executing Portal (the most closely nested,
- * if there are several).
- */
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION Portal ActivePortal = NULL;
-
-
 static void ProcessQuery(PlannedStmt *plan,
 						 const char *sourceText,
 						 ParamListInfo params,

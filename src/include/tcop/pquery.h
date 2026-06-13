@@ -15,12 +15,17 @@
 #define PQUERY_H
 
 #include "nodes/parsenodes.h"
+#include "utils/backend_runtime.h"
 #include "utils/portal.h"
 
 typedef struct PlannedStmt PlannedStmt; /* avoid including plannodes.h here */
 
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION Portal ActivePortal;
+/*
+ * The active portal is execution-local state.  Keep the historical name as an
+ * assignable lvalue while storing it under PgExecution.
+ */
+#define ActivePortal (*PgCurrentActivePortalRef())
 
 
 extern PortalStrategy ChoosePortalStrategy(List *stmts);

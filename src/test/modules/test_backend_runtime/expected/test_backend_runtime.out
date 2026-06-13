@@ -329,6 +329,12 @@ SELECT test_execution_spi_state_is_execution_local();
  t
 (1 row)
 
+SELECT test_execution_active_portal_is_execution_local();
+ test_execution_active_portal_is_execution_local 
+-------------------------------------------------
+ t
+(1 row)
+
 SELECT test_execution_resource_owners_are_execution_local();
  test_execution_resource_owners_are_execution_local 
 ----------------------------------------------------

@@ -38,6 +38,7 @@ typedef struct PgConnection PgConnection;
 typedef struct PgExecution PgExecution;
 typedef struct PQcommMethods PQcommMethods;
 typedef struct WaitEventSet WaitEventSet;
+typedef struct PortalData *Portal;
 typedef struct SPITupleTable SPITupleTable;
 typedef struct _SPI_connection _SPI_connection;
 struct SeqTableData;
@@ -199,6 +200,11 @@ typedef struct PgExecutionSPIState
 	int			stack_depth;
 	int			connected;
 } PgExecutionSPIState;
+
+typedef struct PgExecutionPortalState
+{
+	Portal		active;
+} PgExecutionPortalState;
 
 typedef struct PgSessionDatabaseState
 {
@@ -938,6 +944,7 @@ struct PgExecution
 	PgExecutionMemoryContextState memory_contexts;
 	PgExecutionResourceOwnerState resource_owners;
 	PgExecutionSPIState spi;
+	PgExecutionPortalState portal;
 };
 
 typedef struct PgThreadBackendRuntimeState
@@ -969,6 +976,7 @@ extern _SPI_connection **PgCurrentSPIStackRef(void);
 extern _SPI_connection **PgCurrentSPICurrentRef(void);
 extern int *PgCurrentSPIStackDepthRef(void);
 extern int *PgCurrentSPIConnectedRef(void);
+extern Portal *PgCurrentActivePortalRef(void);
 extern int *PgCurrentDeadlockTimeoutRef(void);
 extern int *PgCurrentStatementTimeoutRef(void);
 extern int *PgCurrentLockTimeoutRef(void);
