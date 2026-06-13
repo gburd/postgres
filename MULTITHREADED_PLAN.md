@@ -763,6 +763,55 @@ Validation:
 - process-mode and thread-per-session mode stay working;
 - static global report shrinks over time.
 
+Exit gate:
+
+Gate E2 is part of Phase 12 completion. Before leaving Phase 12 and starting
+scheduler-aware wait work, close the thread-per-session lifecycle and state
+ownership gaps identified in
+`MULTITHREADED_THREADING_REVIEW.md`. This gate exists because Phase 13 and
+Phase 14 will make backend ownership bugs harder to isolate.
+
+Gate E2 requires:
+
+- threaded backend exit and teardown are safe: normal disconnect, abandoned
+  clients, `FATAL`, administrator termination, and worker exit must clean up or
+  explicitly account for backend/session/connection/execution memory and
+  resources without corrupting later carrier startups;
+- the thread-exit path must no longer depend on leaving carrier
+  `TopMemoryContext` cleanup unresolved because deletion corrupts later
+  carriers, unless the remaining memory is deliberately owned by a documented
+  longer-lived runtime object and covered by leak/resource accounting;
+- PMChild/thread-backed backend ownership is race-free: postmaster signalling,
+  thread exit publication, PMChild reaping, `thread_backend`/logical id
+  lookup, and worker notification must have a documented synchronization
+  contract with no unsynchronized use-after-free-prone pointer handoff;
+- threaded GUC initialization uses a systematic per-session adoption/rebind
+  model rather than a growing hard-coded whitelist of options reached by the
+  current smokes. The model must cover postmaster/runtime defaults,
+  database/role settings, startup options, direct-pointer variables, assign
+  hooks, reset/default semantics, and extension/custom GUC behavior expected in
+  thread-per-session mode;
+- the broad threaded startup serialization gate is removed or narrowed to a
+  precisely documented critical section with an explicit removal plan. The
+  remaining gate, if any, must not serialize normal post-bootstrap SQL
+  execution and must be justified by identified shared state;
+- the global lifetime scanner is run as a required gate check with the checked
+  baseline, and any new mutable global either has an explicit lifetime
+  annotation or a deliberate baseline update;
+- focused threaded stress covers concurrent startup, idle waits, cancellation,
+  termination, SQL `ERROR` recovery, transaction abort cleanup, abandoned
+  clients, repeated reconnects, worker launch/shutdown, GUC-heavy sessions,
+  and clean fast shutdown;
+- process-mode behavior remains the control group, with at least core
+  regression coverage and targeted tests for subsystems touched during Phase
+  12 cleanup.
+
+Phase 16 still owns broader hardening such as sanitizer runs, contrib-wide
+threaded regression, crash/FATAL behavior matrices, platform coverage, and
+performance baselines. Gate E2 is narrower: it blocks further scheduler work
+until the current thread-per-session runtime has coherent lifecycle, state, and
+startup ownership.
+
 ## Phase 13: Scheduler-Aware Wait Boundary
 
 Goal: extend the visible wait boundary so sessions can suspend and resume

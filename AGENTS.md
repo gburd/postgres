@@ -33,6 +33,9 @@ the code evolves.
 - [MULTITHREADED_PHASE12_STATE.md](MULTITHREADED_PHASE12_STATE.md) records the
   state-migration bridge work that starts moving TLS/global state toward
   explicit runtime/session objects.
+- [MULTITHREADED_THREADING_REVIEW.md](MULTITHREADED_THREADING_REVIEW.md)
+  records the critical branch review findings and the Phase 12 exit-gate
+  rationale.
 - [refs/REFERENCES.md](refs/REFERENCES.md) lists external references.
 - [refs/pgconf-2025-multithreading-transcript.md](refs/pgconf-2025-multithreading-transcript.md)
   is the local transcript of the PgConf.dev 2025 talk that motivates this work.
