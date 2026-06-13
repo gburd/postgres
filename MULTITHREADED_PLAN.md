@@ -853,11 +853,18 @@ launcher/workers, archiver, WAL receiver, WAL summarizer, background writer,
 checkpointer, and WAL writer bypass it; background writer, checkpointer, WAL
 writer, startup process, autovacuum launcher/workers, archiver, WAL receiver,
 and WAL summarizer are worker-specific narrowings with concrete startup
-ownership models. The autovacuum launcher narrowing is validated against the
-no-database launcher loop, while autovacuum worker narrowing is validated
-against a real database-connected autovacuum worker launch and table vacuum
-smoke. Startup is additionally validated through threaded normal startup and
-crash recovery, and archiver, WAL receiver, and WAL summarizer are
+ownership models. Process-model background workers remain rejected in threaded
+mode, and thread-compatible background workers still remain behind the startup
+gate. A focused attempt to let `BgWorkerBackendThreadPerSession` dynamic
+background workers bypass the gate reached the copied worker's thread carrier
+but lost the server connection during
+`test_backend_runtime_launch_thread_bgworker()`, so background-worker startup
+still needs a worker-specific shared-state fix before it can leave the gate.
+The autovacuum launcher narrowing is validated against the no-database
+launcher loop, while autovacuum worker narrowing is validated against a real
+database-connected autovacuum worker launch and table vacuum smoke. Startup is
+additionally validated through threaded normal startup and crash recovery, and
+archiver, WAL receiver, and WAL summarizer are
 additionally validated through their wakeup/progress, streaming, and clean
 shutdown paths. A broader attempted bypass for additional non-session
 auxiliary workers reproduced an abrupt postmaster death during a threaded

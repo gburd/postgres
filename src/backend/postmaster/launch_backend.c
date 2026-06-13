@@ -540,10 +540,13 @@ backend_thread_run_worker(BackendThreadStart *thread_start)
 	 * race with backend startup can bypass the temporary serialized startup
 	 * section.  Keep the rest guarded until their shared-state startup
 	 * dependencies are isolated and covered by worker-specific threaded
-	 * catalog-startup smokes.  The autovacuum launcher performs backend
-	 * initialization before entering its no-database launcher loop, while
-	 * autovacuum workers publish their worker slot before connecting to the
-	 * selected database and running table work.  The startup process,
+	 * catalog-startup smokes.  Thread-compatible background workers remain
+	 * guarded because bypassing the gate during dynamic worker startup still
+	 * crashes the threaded runtime after the worker entrypoint is reached.
+	 * The autovacuum launcher performs backend initialization before entering
+	 * its no-database launcher loop, while autovacuum workers publish their
+	 * worker slot before connecting to the selected database and running table
+	 * work.  The startup process,
 	 * archiver, WAL receiver, and WAL summarizer follow the auxiliary-process
 	 * common startup path, publish their wakeup/progress state in shared
 	 * memory, and keep their per-loop work state backend-local, so they can

@@ -4906,3 +4906,51 @@ Validation for this slice:
 - log inspection for that smoke found no crash, postmaster-death, shutdown
   escalation, assertion, or bad-descriptor markers;
 - `git diff --check` passed.
+
+## Threaded Startup Gate Background Worker Bypass Probe
+
+The one-hundred-second Phase 12 slice tested, but did not land, removing the
+temporary threaded startup serialization gate for thread-compatible dynamic
+background workers:
+
+- a probe changed `backend_thread_requires_startup_gate()` to inspect the full
+  `BackendThreadStart` record and allow `B_BG_WORKER` to bypass the global
+  startup mutex when `BackgroundWorkerCanUseThreadCarrier()` accepted the
+  copied worker definition;
+- process-model background worker rejection still worked before carrier
+  launch;
+- a manual threaded temp-cluster smoke created
+  `test_backend_runtime_threaded`, ran
+  `test_backend_runtime_rejects_process_bgworker()`, and then lost the server
+  connection during `test_backend_runtime_launch_thread_bgworker()`;
+- the failure log reached `registering background worker
+  "test_backend_runtime thread bgworker"`, `starting background worker thread
+  carrier "test_backend_runtime thread bgworker"`, and `starting background
+  worker thread carrier` before the disconnect;
+- the behavior was reverted. All `B_BG_WORKER` startup remains behind the
+  temporary startup gate, including explicitly thread-compatible dynamic
+  workers.
+
+This keeps background-worker startup as a Gate E2 blocker. The next attempt
+needs a background-worker-specific shared-state fix and stress coverage for
+dynamic worker start, restart, stop, and post-disconnect server usability
+before `B_BG_WORKER` can leave the gate.
+
+Validation for this probe:
+
+- `gmake -C src/backend/postmaster launch_backend.o` passed before the failed
+  smoke;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals before the failed smoke;
+- `gmake -j8` and `gmake -j8 DESTDIR="$PWD/tmp_install" install` passed before
+  the failed smoke;
+- `gmake -C src/test/modules/test_backend_runtime clean`, `gmake -C
+  src/test/modules/test_backend_runtime all`, and `gmake -C
+  src/test/modules/test_backend_runtime DESTDIR="$PWD/tmp_install" install`
+  passed before the failed smoke;
+- the manual dynamic background-worker bypass smoke failed as described above,
+  so the code path was reverted and documented rather than committed as a
+  narrowing;
+- after the revert, `gmake -C src/backend/postmaster launch_backend.o`,
+  `gmake check-global-lifetimes`, and the direct `test_backend_runtime`
+  `pg_regress` control passed with all `B_BG_WORKER` startup still gated.

@@ -149,16 +149,23 @@ Important current files:
 - The threaded startup serialization gate currently allows only AIO workers,
   the syslogger, startup process, autovacuum launcher/workers, archiver, WAL
   receiver, WAL summarizer, background writer, checkpointer, and WAL writer
-  to bypass it. Background writer/checkpointer/WAL writer bypass was
-  validated as a worker-specific narrowing because their common auxiliary
-  startup does not run database/session bootstrap before entering the worker
-  loop. The autovacuum launcher bypass is validated against the no-database
-  launcher loop; autovacuum worker bypass is validated against a real
-  database-connected autovacuum worker launch and table vacuum smoke. Startup
-  process, archiver, WAL receiver, and WAL summarizer bypasses are validated
-  separately because they use the same common auxiliary startup, publish
-  wakeup/progress state through shared memory, and keep per-loop work state
-  backend-local. WAL receiver's gate bypass covers
+  to bypass it. Process-model background workers are still rejected in
+  threaded mode, and even thread-compatible background workers remain gated
+  for now. An attempted bypass for thread-compatible dynamic background
+  workers reached `starting background worker thread carrier` and then lost
+  the server connection during `test_backend_runtime_launch_thread_bgworker()`,
+  so background-worker startup still needs a specific shared-state fix before
+  it can leave the gate. Background writer/checkpointer/WAL writer bypass was
+  validated as a worker-specific
+  narrowing because their common auxiliary startup does not run
+  database/session bootstrap before entering the worker loop. The autovacuum
+  launcher bypass is validated against the no-database launcher loop;
+  autovacuum worker bypass is validated against a real database-connected
+  autovacuum worker launch and table vacuum smoke. Startup process, archiver,
+  WAL receiver, and WAL summarizer bypasses are validated separately because
+  they use the same common auxiliary startup, publish wakeup/progress state
+  through shared memory, and keep per-loop work state backend-local. WAL
+  receiver's gate bypass covers
   `AuxiliaryProcessMainCommon()`; the later `libpqwalreceiver` load and
   streaming loop are validated by a threaded physical-replication smoke.
   Startup process bypass is validated by threaded normal-startup and

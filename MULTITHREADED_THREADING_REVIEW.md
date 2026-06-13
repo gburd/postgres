@@ -432,17 +432,23 @@ autovacuum launcher/workers, archiver, WAL receiver, WAL summarizer,
 background writer, checkpointer, and WAL writer can bypass it. The
 writer-class, startup process, autovacuum launcher/workers, archiver, WAL
 receiver, and WAL summarizer bypasses are worker-specific narrowings with
-concrete startup ownership models. The autovacuum launcher narrowing is
-validated against the no-database launcher loop, while autovacuum worker
-narrowing is validated against a real database-connected autovacuum worker
-launch and table vacuum smoke. Startup process was additionally validated
-through threaded normal startup and crash recovery, while archiver, WAL
-receiver, and WAL summarizer were additionally validated through their
-wakeup/progress, streaming, and clean shutdown paths. A broader attempted
-bypass for other non-session auxiliary workers reproduced an abrupt postmaster
-death during a threaded `pg_class` catalog scan, so further gate narrowing
-still requires worker-specific shared-state isolation and catalog-startup
-stress coverage.
+concrete startup ownership models. Process-model background workers remain
+rejected in threaded mode, and thread-compatible background workers still
+remain behind the startup gate. A focused attempt to let
+`BgWorkerBackendThreadPerSession` dynamic background workers bypass the gate
+reached the copied worker's thread carrier but lost the server connection
+during `test_backend_runtime_launch_thread_bgworker()`, so background-worker
+startup still needs a worker-specific shared-state fix before it can leave the
+gate. The autovacuum launcher narrowing is validated against the no-database
+launcher loop, while autovacuum worker narrowing is validated against a real
+database-connected autovacuum worker launch and table vacuum smoke. Startup
+process was additionally validated through threaded normal startup and crash
+recovery, while archiver, WAL receiver, and WAL
+summarizer were additionally validated through their wakeup/progress,
+streaming, and clean shutdown paths. A broader attempted bypass for other
+non-session auxiliary workers reproduced an abrupt postmaster death during a
+threaded `pg_class` catalog scan, so further gate narrowing still requires
+worker-specific shared-state isolation and catalog-startup stress coverage.
 These are partial Gate E2 closures only: the full thread teardown, PMChild
 termination/reaping stress coverage, extension/custom GUC adoption,
 startup-gate narrowing for the remaining gated classes, and broader threaded
