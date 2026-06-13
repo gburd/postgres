@@ -116,6 +116,12 @@ Important current files:
   `gmake check-global-lifetimes` as part of Gate E2. A new mutable global must
   be annotated with an explicit `PG_GLOBAL_*` owner or deliberately accepted in
   `src/tools/global_lifetime/global_lifetime_baseline.tsv`.
+- `AuxProcessResourceOwner` is now routed through `PgBackend` via
+  `PgCurrentAuxProcessResourceOwnerRef()` and the `AuxProcessResourceOwner`
+  lvalue macro. After changing `src/include/utils/resowner.h` or this backend
+  runtime bridge, clean and rebuild backend objects before trusting link or TAP
+  results; stale objects can still reference the removed
+  `_AuxProcessResourceOwner` symbol.
 - Treat `PMChild.thread_backend` as private PMChild-owned publication state.
   Postmaster code should use PMChild helper APIs for threaded backend
   interrupt, wakeup, and thread-exit publication rather than dereferencing or

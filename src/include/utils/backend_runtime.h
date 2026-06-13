@@ -949,6 +949,7 @@ struct PgBackend
 	PgBackendPendingInterruptState pending_interrupts;
 	PgBackendInterruptHoldoffState interrupt_holdoffs;
 	PgBackendWaitState wait_state;
+	struct ResourceOwnerData *aux_process_resource_owner;
 
 	/* Backend-local dynamic shared memory mappings and detach callbacks. */
 	dlist_head	dsm_segment_list;

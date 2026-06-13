@@ -166,12 +166,6 @@ struct ResourceOwnerData
 };
 
 
-/*****************************************************************************
- *	  GLOBAL MEMORY															 *
- *****************************************************************************/
-
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND ResourceOwner AuxProcessResourceOwner = NULL;
-
 /* #define RESOWNER_STATS */
 
 #ifdef RESOWNER_STATS

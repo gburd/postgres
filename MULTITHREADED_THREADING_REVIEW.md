@@ -417,8 +417,11 @@ remote hostname, and implicit reject HBA record into the same context.
 SSL/GSS connection-owned identity state now follows the same lifetime:
 `pg_gssinfo`, GSS principal strings, and SSL peer certificate names are
 allocated in `PortContext`. Those connection-owned allocations therefore no
-longer survive only as retained top-memory accounting. PMChild cleanup and slot
-release now require a
+longer survive only as retained top-memory accounting.
+`AuxProcessResourceOwner` is now owned by `PgBackend` behind the existing
+lvalue compatibility name, with early fallback adoption for pre-runtime
+initialization, so it is no longer raw backend-local TLS. PMChild cleanup and
+slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly
 still-owned slot. PMChild thread-exit publication now

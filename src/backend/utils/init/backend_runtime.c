@@ -93,6 +93,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendCoreState early_backend_core =
 	.mode = InitProcessing
 };
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND BackendType early_backend_type = B_INVALID;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ResourceOwner early_aux_process_resource_owner = NULL;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionIdentityState early_connection_identity;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionSocketIOState early_connection_socket_io;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionProtocolState early_connection_protocol;
@@ -591,6 +592,7 @@ static void PgSessionInitializeLocaleState(PgSessionLocaleState *locale);
 static void PgSessionAdoptEarlyLocaleState(PgSession *session);
 static void PgBackendResetCoreState(PgBackendCoreState *core);
 static void PgBackendAdoptEarlyCoreState(PgBackend *backend);
+static void PgBackendAdoptEarlyAuxProcessResourceOwner(PgBackend *backend);
 static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
 static void PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend);
 static BackendType *PgCurrentBackendTypeRef(void);
@@ -1951,6 +1953,18 @@ PgBackendAdoptEarlyCoreState(PgBackend *backend)
 }
 
 static void
+PgBackendAdoptEarlyAuxProcessResourceOwner(PgBackend *backend)
+{
+	Assert(backend != NULL);
+
+	if (early_aux_process_resource_owner != NULL)
+	{
+		backend->aux_process_resource_owner = early_aux_process_resource_owner;
+		early_aux_process_resource_owner = NULL;
+	}
+}
+
+static void
 PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend)
 {
 	Assert(backend != NULL);
@@ -2176,6 +2190,7 @@ InitializePgProcessRuntime(void)
 	process_backend.backend_type = MyBackendType;
 	PgBackendInitializeInterrupts(&process_backend);
 	PgBackendAdoptEarlyCoreState(&process_backend);
+	PgBackendAdoptEarlyAuxProcessResourceOwner(&process_backend);
 	PgBackendSetInterruptLatch(&process_backend, process_backend.core.latch);
 	dlist_init(&process_backend.dsm_segment_list);
 	pg_atomic_init_u32(&process_backend.wait_state.waiting, 0);
@@ -2388,6 +2403,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	state->carrier.current_session = &state->session;
 	state->carrier.current_execution = &state->execution;
 	PgBackendAdoptEarlyCoreState(&state->backend);
+	PgBackendAdoptEarlyAuxProcessResourceOwner(&state->backend);
 	PgSessionAdoptEarlyDatabaseState(&state->session);
 	PgSessionAdoptEarlyTablespaceState(&state->session);
 	PgSessionAdoptEarlyBinaryUpgradeState(&state->session);
@@ -5483,6 +5499,15 @@ PgCurrentCoreState(void)
 		return &early_backend_core;
 
 	return &CurrentPgBackend->core;
+}
+
+ResourceOwner *
+PgCurrentAuxProcessResourceOwnerRef(void)
+{
+	if (CurrentPgBackend == NULL)
+		return &early_aux_process_resource_owner;
+
+	return &CurrentPgBackend->aux_process_resource_owner;
 }
 
 pg_prng_state *

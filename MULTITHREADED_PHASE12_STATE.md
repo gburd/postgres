@@ -5478,3 +5478,47 @@ Validation for this slice:
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals;
 - `git diff --check` passed.
+
+## Backend Auxiliary Resource Owner Bridge
+
+The one-hundred-sixteenth Phase 12 slice moves the auxiliary-process resource
+owner pointer into explicit backend state:
+
+- `PgBackend` now owns `aux_process_resource_owner`, keeping the pointer with
+  backend-local runtime state instead of as standalone backend-local TLS;
+- `AuxProcessResourceOwner` remains a source-compatible lvalue macro through
+  `PgCurrentAuxProcessResourceOwnerRef()`, so existing auxiliary-process
+  resource-owner lifecycle code can continue to assign and compare it without
+  call-site churn;
+- `backend_runtime.c` keeps a small early fallback pointer for code that runs
+  before `CurrentPgBackend` is installed, then adopts that fallback into the
+  process or thread backend during runtime installation;
+- `CreateAuxProcessResourceOwner()` and `ReleaseAuxProcessResources()` keep
+  their existing object lifecycle. This slice changes where the backend-local
+  pointer is stored, not when the resource owner is created, released, or
+  deleted.
+
+This removes another raw backend-local TLS global from the Phase 12 migration
+set. It does not change the broader auxiliary-worker lifecycle model or close
+the full Gate E2 teardown/resource blocker.
+
+Validation for this slice:
+
+- `gmake -C src/backend/utils/init backend_runtime.o` passed;
+- `gmake -C src/backend/utils/resowner resowner.o` passed;
+- full backend clean plus generated-header recovery was required after the
+  installed-header change, because stale objects still referenced the old
+  `_AuxProcessResourceOwner` symbol;
+- full `gmake -j8` passed;
+- full `gmake -j8 DESTDIR="$PWD/tmp_install" install` passed;
+- `gmake -C src/test/modules/test_backend_runtime DESTDIR="$PWD/tmp_install" install` passed;
+- direct threaded-runtime TAP passed all 87 tests with local
+  `/Users/samwillis/perl5` `PERL5LIB` paths before and after
+  `gmake -C src/test/modules/test_backend_runtime check` recreated
+  `tmp_install`;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression and still reported TAP disabled by configure;
+- `gmake -C contrib -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- `git diff --check` passed.

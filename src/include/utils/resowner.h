@@ -37,7 +37,8 @@ extern ResourceOwner *PgCurTransactionResourceOwnerRef(void);
 #define CurTransactionResourceOwner (*PgCurTransactionResourceOwnerRef())
 extern ResourceOwner *PgTopTransactionResourceOwnerRef(void);
 #define TopTransactionResourceOwner (*PgTopTransactionResourceOwnerRef())
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND ResourceOwner AuxProcessResourceOwner;
+extern ResourceOwner *PgCurrentAuxProcessResourceOwnerRef(void);
+#define AuxProcessResourceOwner (*PgCurrentAuxProcessResourceOwnerRef())
 
 /*
  * Resource releasing is done in three phases: pre-locks, locks, and
