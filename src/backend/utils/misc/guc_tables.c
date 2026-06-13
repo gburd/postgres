@@ -540,12 +540,11 @@ extern const struct config_enum_entry dynamic_shared_memory_options[];
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool default_with_oids = false;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool standard_conforming_strings = true;
 
-PG_THREAD_LOCAL PG_GLOBAL_SESSION char *cluster_name = "";
-PG_THREAD_LOCAL PG_GLOBAL_SESSION char *ConfigFileName;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION char *HbaFileName;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION char *IdentFileName;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION char *HostsFileName;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION char *external_pid_file;
+/*
+ * Server/config-file identity GUC backing variables live in
+ * PgRuntimeServerGUCState.  Public compatibility names are lvalue macros in
+ * utils/guc.h.
+ */
 
 /*
  * Connection/session exported GUC backing variables live in

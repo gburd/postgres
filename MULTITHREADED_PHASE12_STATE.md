@@ -2254,3 +2254,59 @@ Validation for this slice:
   declarations for `application_name`, the TCP keepalive/user-timeout GUCs,
   `Log_disconnections`, `log_statement`, `PostAuthDelay`, or
   `restrict_nonsystem_relation_kind`.
+
+## Runtime Server/Config-File GUC State Bridge
+
+The forty-third Phase 12 slice moves server/config-file identity GUC state
+under `PgRuntime` rather than `PgSession`:
+
+- `PgRuntime` now owns a `PgRuntimeServerGUCState`;
+- `PgRuntimeServerGUCState` owns `cluster_name`, `ConfigFileName`,
+  `HbaFileName`, `IdentFileName`, `HostsFileName`, and `external_pid_file`;
+- the public names remain source-compatible lvalue macros in `utils/guc.h`;
+- early startup paths before `CurrentPgRuntime` is installed use fallback
+  runtime storage in `backend_runtime.c`;
+- `InitializePgProcessRuntime()` adopts any early fallback server/config-file
+  GUC state into the process runtime object;
+- `InitializePgThreadRuntime()` copies the process runtime's server/config-file
+  GUC state into the thread-per-session runtime. These are `PGC_POSTMASTER`
+  server-owned values, so the current bridge treats their string values as
+  runtime/server configuration rather than logical-session state;
+- `InitializeThreadedSessionGUCOptions()` initializes the generated GUC records
+  for these names when a threaded backend builds its local GUC table;
+- `RebindSessionGUCVariablePointers()` now rebinds the generated GUC records
+  for these runtime-owned settings when the current runtime/session binding is
+  refreshed.
+
+This removes another direct TLS bucket without pretending these values are
+session-local. The focused test deliberately avoids using `SetConfigOption()`
+to create two simultaneously different `PGC_POSTMASTER` string-GUC values,
+because PostgreSQL's broader GUC record, source, reset, and allocation
+bookkeeping is still global/carrier-local. Instead it proves that the public
+lvalue compatibility names are runtime-backed, that rebinding makes
+`GetConfigOption()` read from the active runtime's storage, and that switching
+between runtime objects does not require raw exported TLS variables.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `guc.o`,
+  `guc_tables.o`, and `test_backend_runtime.o`;
+- because `backend_runtime.h` and `utils/guc.h` changed installed runtime/GUC
+  declarations, `gmake -C src/backend clean` plus generated utility and
+  node-header recovery was used before the clean rebuild;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed, followed by rebuilding
+  and reinstalling `src/test/modules/test_backend_runtime` against the current
+  headers;
+- focused `test_backend_runtime` regression passed and includes
+  `test_runtime_server_guc_state_is_runtime_local()`, which switches
+  `CurrentPgRuntime` between fake runtimes, exercises the runtime-backed
+  lvalue macros, and proves `GetConfigOption()` follows the active runtime
+  after GUC pointer rebinding;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests, including `guc`, `cluster`, `subscription`, and PL/pgSQL coverage;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- static scans found no remaining direct session TLS definitions or extern
+  declarations for `cluster_name`, `ConfigFileName`, `HbaFileName`,
+  `IdentFileName`, `HostsFileName`, or `external_pid_file`.

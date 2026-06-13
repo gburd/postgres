@@ -566,6 +566,17 @@ typedef struct PgSessionPlannerMethodState
 	int			join_collapse_limit_value;
 } PgSessionPlannerMethodState;
 
+typedef struct PgRuntimeServerGUCState
+{
+	bool		initialized;
+	char	   *cluster_name_value;
+	char	   *config_file_name;
+	char	   *hba_file_name;
+	char	   *ident_file_name;
+	char	   *hosts_file_name;
+	char	   *external_pid_file_value;
+} PgRuntimeServerGUCState;
+
 #define PG_CONNECTION_SEND_BUFFER_SIZE 8192
 #define PG_CONNECTION_RECV_BUFFER_SIZE 8192
 #define PG_CONNECTION_CANCEL_KEY_LENGTH 32
@@ -635,6 +646,7 @@ struct PgRuntime
 	PgRuntimeKind kind;
 	PgCarrier  *current_carrier;
 	PgBackendModel extension_backend_model;
+	PgRuntimeServerGUCState server_guc;
 
 	/*
 	 * Optional continuation used after PgBackendExitCleanup().  Process mode

@@ -77,6 +77,12 @@ SELECT test_session_text_search_state_is_session_local();
  t
 (1 row)
 
+SELECT test_runtime_server_guc_state_is_runtime_local();
+ test_runtime_server_guc_state_is_runtime_local 
+------------------------------------------------
+ t
+(1 row)
+
 SELECT test_session_connection_guc_state_is_session_local();
  test_session_connection_guc_state_is_session_local 
 ----------------------------------------------------

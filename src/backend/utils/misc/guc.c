@@ -1514,6 +1514,24 @@ InitializeThreadedSessionGUCOptions(void)
 	gconf = find_option("application_name", false, false, PANIC);
 	InitializeOneGUCOption(gconf);
 
+	gconf = find_option("cluster_name", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("config_file", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("external_pid_file", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("hba_file", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("hosts_file", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("ident_file", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
 	gconf = find_option("post_auth_delay", false, false, PANIC);
 	InitializeOneGUCOption(gconf);
 
@@ -1794,6 +1812,30 @@ RebindSessionGUCVariablePointers(void)
 	gconf = find_option("application_name", false, false, PANIC);
 	Assert(gconf->vartype == PGC_STRING);
 	gconf->_string.variable = PgCurrentApplicationNameRef();
+
+	gconf = find_option("cluster_name", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentClusterNameRef();
+
+	gconf = find_option("config_file", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentConfigFileNameRef();
+
+	gconf = find_option("external_pid_file", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentExternalPidFileRef();
+
+	gconf = find_option("hba_file", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentHbaFileNameRef();
+
+	gconf = find_option("hosts_file", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentHostsFileNameRef();
+
+	gconf = find_option("ident_file", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentIdentFileNameRef();
 
 	gconf = find_option("backslash_quote", false, false, PANIC);
 	Assert(gconf->vartype == PGC_ENUM);

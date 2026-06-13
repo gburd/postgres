@@ -75,6 +75,15 @@ static PG_GLOBAL_RUNTIME PgRuntime thread_runtime;
 static PG_GLOBAL_RUNTIME bool thread_runtime_initialized = false;
 static PG_GLOBAL_RUNTIME bool backend_id_counter_initialized = false;
 static PG_GLOBAL_RUNTIME pg_atomic_uint64 next_backend_id;
+static PG_GLOBAL_RUNTIME PgRuntimeServerGUCState early_runtime_server_guc = {
+	.initialized = true,
+	.cluster_name_value = "",
+	.config_file_name = NULL,
+	.hba_file_name = NULL,
+	.ident_file_name = NULL,
+	.hosts_file_name = NULL,
+	.external_pid_file_value = NULL
+};
 static PG_GLOBAL_CARRIER PgCarrier process_carrier;
 static PG_GLOBAL_BACKEND PgBackend process_backend;
 static PG_GLOBAL_SESSION PgSession process_session;
@@ -434,6 +443,9 @@ StaticAssertDecl(PG_BACKEND_INTERRUPT_COUNT <= 32,
 static void PgBackendInitializeIdCounter(void);
 static PgBackendId PgBackendAssignId(void);
 static void PgBackendWakeForInterrupt(PgBackend *backend);
+static void PgRuntimeInitializeServerGUCState(PgRuntimeServerGUCState *server_guc);
+static void PgRuntimeAdoptEarlyServerGUCState(PgRuntime *runtime);
+static PgRuntimeServerGUCState *PgCurrentRuntimeServerGUCState(void);
 static void PgConnectionAdoptEarlyIdentity(PgConnection *connection);
 static void PgConnectionAdoptEarlySocketIO(PgConnection *connection);
 static void PgConnectionAdoptEarlyProtocolState(PgConnection *connection);
@@ -549,6 +561,32 @@ PgBackendAssignId(void)
 	PgBackendInitializeIdCounter();
 
 	return pg_atomic_add_fetch_u64(&next_backend_id, 1);
+}
+
+static void
+PgRuntimeInitializeServerGUCState(PgRuntimeServerGUCState *server_guc)
+{
+	Assert(server_guc != NULL);
+
+	server_guc->initialized = true;
+	server_guc->cluster_name_value = guc_strdup(FATAL, "");
+	server_guc->config_file_name = NULL;
+	server_guc->hba_file_name = NULL;
+	server_guc->ident_file_name = NULL;
+	server_guc->hosts_file_name = NULL;
+	server_guc->external_pid_file_value = NULL;
+}
+
+static void
+PgRuntimeAdoptEarlyServerGUCState(PgRuntime *runtime)
+{
+	Assert(runtime != NULL);
+
+	if (!early_runtime_server_guc.initialized)
+		PgRuntimeInitializeServerGUCState(&early_runtime_server_guc);
+
+	runtime->server_guc = early_runtime_server_guc;
+	PgRuntimeInitializeServerGUCState(&early_runtime_server_guc);
 }
 
 static void
@@ -1486,6 +1524,7 @@ InitializePgProcessRuntime(void)
 	process_runtime.kind = PG_RUNTIME_PROCESS;
 	process_runtime.current_carrier = &process_carrier;
 	process_runtime.extension_backend_model = PG_BACKEND_MODEL_PROCESS;
+	PgRuntimeAdoptEarlyServerGUCState(&process_runtime);
 
 	process_carrier.kind = PG_CARRIER_PROCESS;
 	process_carrier.runtime = &process_runtime;
@@ -1578,6 +1617,10 @@ InitializePgThreadRuntime(PgBackendExitContinuation exit_backend)
 		thread_runtime.kind = PG_RUNTIME_THREAD_PER_SESSION;
 		thread_runtime.extension_backend_model =
 			PG_BACKEND_MODEL_THREAD_PER_SESSION;
+		if (process_runtime.server_guc.initialized)
+			thread_runtime.server_guc = process_runtime.server_guc;
+		else
+			PgRuntimeInitializeServerGUCState(&thread_runtime.server_guc);
 		PgBackendInitializeIdCounter();
 		thread_runtime_initialized = true;
 	}
@@ -1751,6 +1794,22 @@ PgCurrentSessionDatabaseState(void)
 		return &early_session_database;
 
 	return &CurrentPgSession->database;
+}
+
+static PgRuntimeServerGUCState *
+PgCurrentRuntimeServerGUCState(void)
+{
+	PgRuntimeServerGUCState *server_guc;
+
+	if (CurrentPgRuntime == NULL)
+		server_guc = &early_runtime_server_guc;
+	else
+		server_guc = &CurrentPgRuntime->server_guc;
+
+	if (!server_guc->initialized)
+		PgRuntimeInitializeServerGUCState(server_guc);
+
+	return server_guc;
 }
 
 static PgSessionTablespaceState *
@@ -2330,6 +2389,42 @@ Oid *
 PgCurrentTSCurrentConfigCacheRef(void)
 {
 	return &PgCurrentSessionTextSearchState()->current_config_cache;
+}
+
+char **
+PgCurrentClusterNameRef(void)
+{
+	return &PgCurrentRuntimeServerGUCState()->cluster_name_value;
+}
+
+char **
+PgCurrentConfigFileNameRef(void)
+{
+	return &PgCurrentRuntimeServerGUCState()->config_file_name;
+}
+
+char **
+PgCurrentHbaFileNameRef(void)
+{
+	return &PgCurrentRuntimeServerGUCState()->hba_file_name;
+}
+
+char **
+PgCurrentIdentFileNameRef(void)
+{
+	return &PgCurrentRuntimeServerGUCState()->ident_file_name;
+}
+
+char **
+PgCurrentHostsFileNameRef(void)
+{
+	return &PgCurrentRuntimeServerGUCState()->hosts_file_name;
+}
+
+char **
+PgCurrentExternalPidFileRef(void)
+{
+	return &PgCurrentRuntimeServerGUCState()->external_pid_file_value;
 }
 
 char **

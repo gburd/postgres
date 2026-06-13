@@ -1064,6 +1064,176 @@ test_session_text_search_state_is_session_local(PG_FUNCTION_ARGS)
 PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_runtime_server_guc_state_is_runtime_local);
+Datum
+test_runtime_server_guc_state_is_runtime_local(PG_FUNCTION_ARGS)
+{
+	PgRuntime  *saved_runtime;
+	PgRuntime	fake_runtime1;
+	PgRuntime	fake_runtime2;
+	char	   *saved_cluster_name;
+	char	   *saved_config_file_name;
+	char	   *saved_hba_file_name;
+	char	   *saved_ident_file_name;
+	char	   *saved_hosts_file_name;
+	char	   *saved_external_pid_file;
+	const char *stage = "initial";
+	bool		ok = true;
+
+	saved_runtime = CurrentPgRuntime;
+	saved_cluster_name = cluster_name ? pstrdup(cluster_name) : NULL;
+	saved_config_file_name = ConfigFileName ? pstrdup(ConfigFileName) : NULL;
+	saved_hba_file_name = HbaFileName ? pstrdup(HbaFileName) : NULL;
+	saved_ident_file_name = IdentFileName ? pstrdup(IdentFileName) : NULL;
+	saved_hosts_file_name = HostsFileName ? pstrdup(HostsFileName) : NULL;
+	saved_external_pid_file =
+		external_pid_file ? pstrdup(external_pid_file) : NULL;
+	MemSet(&fake_runtime1, 0, sizeof(fake_runtime1));
+	MemSet(&fake_runtime2, 0, sizeof(fake_runtime2));
+
+	PG_TRY();
+	{
+		stage = "runtime1 default";
+		CurrentPgRuntime = &fake_runtime1;
+		RebindSessionGUCVariablePointers();
+		ok = ok && strcmp(cluster_name, "") == 0;
+		ok = ok && ConfigFileName == NULL;
+		ok = ok && HbaFileName == NULL;
+		ok = ok && IdentFileName == NULL;
+		ok = ok && HostsFileName == NULL;
+		ok = ok && external_pid_file == NULL;
+		if (!ok)
+			elog(ERROR,
+				 "runtime server GUC state was not runtime-local at %s",
+				 stage);
+
+		stage = "runtime1 set";
+		cluster_name = "phase12_runtime_one";
+		ConfigFileName = "/tmp/phase12_runtime_one.conf";
+		HbaFileName = "/tmp/phase12_runtime_one_hba.conf";
+		IdentFileName = "/tmp/phase12_runtime_one_ident.conf";
+		HostsFileName = "/tmp/phase12_runtime_one_hosts.conf";
+		external_pid_file = "/tmp/phase12_runtime_one.pid";
+		ok = ok && strcmp(cluster_name, "phase12_runtime_one") == 0;
+		ok = ok && strcmp(ConfigFileName,
+						  "/tmp/phase12_runtime_one.conf") == 0;
+		ok = ok && strcmp(HbaFileName,
+						  "/tmp/phase12_runtime_one_hba.conf") == 0;
+		ok = ok && strcmp(IdentFileName,
+						  "/tmp/phase12_runtime_one_ident.conf") == 0;
+		ok = ok && strcmp(HostsFileName,
+						  "/tmp/phase12_runtime_one_hosts.conf") == 0;
+		ok = ok && strcmp(external_pid_file,
+						  "/tmp/phase12_runtime_one.pid") == 0;
+		ok = ok && strcmp(GetConfigOption("cluster_name", false, false),
+						  "phase12_runtime_one") == 0;
+		ok = ok && strcmp(GetConfigOption("config_file", false, false),
+						  "/tmp/phase12_runtime_one.conf") == 0;
+		if (!ok)
+			elog(ERROR,
+				 "runtime server GUC state was not runtime-local at %s",
+				 stage);
+
+		stage = "runtime2 default";
+		CurrentPgRuntime = &fake_runtime2;
+		RebindSessionGUCVariablePointers();
+		ok = ok && strcmp(cluster_name, "") == 0;
+		ok = ok && ConfigFileName == NULL;
+		ok = ok && HbaFileName == NULL;
+		ok = ok && IdentFileName == NULL;
+		ok = ok && HostsFileName == NULL;
+		ok = ok && external_pid_file == NULL;
+		if (!ok)
+			elog(ERROR,
+				 "runtime server GUC state was not runtime-local at %s",
+				 stage);
+		stage = "runtime2 set";
+		cluster_name = "phase12_runtime_two";
+		ConfigFileName = "/tmp/phase12_runtime_two.conf";
+		HbaFileName = "/tmp/phase12_runtime_two_hba.conf";
+		IdentFileName = "/tmp/phase12_runtime_two_ident.conf";
+		HostsFileName = "/tmp/phase12_runtime_two_hosts.conf";
+		external_pid_file = "/tmp/phase12_runtime_two.pid";
+		ok = ok && strcmp(cluster_name, "phase12_runtime_two") == 0;
+		ok = ok && strcmp(ConfigFileName,
+						  "/tmp/phase12_runtime_two.conf") == 0;
+		ok = ok && strcmp(HbaFileName,
+						  "/tmp/phase12_runtime_two_hba.conf") == 0;
+		ok = ok && strcmp(IdentFileName,
+						  "/tmp/phase12_runtime_two_ident.conf") == 0;
+		ok = ok && strcmp(HostsFileName,
+						  "/tmp/phase12_runtime_two_hosts.conf") == 0;
+		ok = ok && strcmp(external_pid_file,
+						  "/tmp/phase12_runtime_two.pid") == 0;
+		ok = ok && strcmp(GetConfigOption("cluster_name", false, false),
+						  "phase12_runtime_two") == 0;
+		ok = ok && strcmp(GetConfigOption("config_file", false, false),
+						  "/tmp/phase12_runtime_two.conf") == 0;
+		if (!ok)
+			elog(ERROR,
+				 "runtime server GUC state was not runtime-local at %s",
+				 stage);
+
+		stage = "runtime1 restore";
+		CurrentPgRuntime = &fake_runtime1;
+		RebindSessionGUCVariablePointers();
+		ok = ok && strcmp(cluster_name, "phase12_runtime_one") == 0;
+		ok = ok && strcmp(ConfigFileName,
+						  "/tmp/phase12_runtime_one.conf") == 0;
+		ok = ok && strcmp(HbaFileName,
+						  "/tmp/phase12_runtime_one_hba.conf") == 0;
+		ok = ok && strcmp(IdentFileName,
+						  "/tmp/phase12_runtime_one_ident.conf") == 0;
+		ok = ok && strcmp(HostsFileName,
+						  "/tmp/phase12_runtime_one_hosts.conf") == 0;
+		ok = ok && strcmp(external_pid_file,
+						  "/tmp/phase12_runtime_one.pid") == 0;
+		ok = ok && strcmp(GetConfigOption("cluster_name", false, false),
+						  "phase12_runtime_one") == 0;
+		ok = ok && strcmp(GetConfigOption("config_file", false, false),
+						  "/tmp/phase12_runtime_one.conf") == 0;
+		if (!ok)
+			elog(ERROR,
+				 "runtime server GUC state was not runtime-local at %s: cluster=%s config=%s hba=%s ident=%s hosts=%s pid=%s",
+				 stage,
+				 cluster_name ? cluster_name : "<null>",
+				 ConfigFileName ? ConfigFileName : "<null>",
+				 HbaFileName ? HbaFileName : "<null>",
+				 IdentFileName ? IdentFileName : "<null>",
+				 HostsFileName ? HostsFileName : "<null>",
+				 external_pid_file ? external_pid_file : "<null>");
+
+		stage = "saved runtime restore";
+		CurrentPgRuntime = saved_runtime;
+		RebindSessionGUCVariablePointers();
+		cluster_name = saved_cluster_name;
+		ConfigFileName = saved_config_file_name;
+		HbaFileName = saved_hba_file_name;
+		IdentFileName = saved_ident_file_name;
+		HostsFileName = saved_hosts_file_name;
+		external_pid_file = saved_external_pid_file;
+	}
+	PG_CATCH();
+	{
+		CurrentPgRuntime = saved_runtime;
+		RebindSessionGUCVariablePointers();
+		cluster_name = saved_cluster_name;
+		ConfigFileName = saved_config_file_name;
+		HbaFileName = saved_hba_file_name;
+		IdentFileName = saved_ident_file_name;
+		HostsFileName = saved_hosts_file_name;
+		external_pid_file = saved_external_pid_file;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "runtime server GUC state was not runtime-local at %s",
+			 stage);
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_session_connection_guc_state_is_session_local);
 Datum
 test_session_connection_guc_state_is_session_local(PG_FUNCTION_ARGS)

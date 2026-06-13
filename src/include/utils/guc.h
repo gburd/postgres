@@ -340,12 +340,18 @@ extern int *PgCurrentTempFileLimitRef(void);
 extern int *PgCurrentNumTempBuffersRef(void);
 #define num_temp_buffers (*PgCurrentNumTempBuffersRef())
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *cluster_name;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *ConfigFileName;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *HbaFileName;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *IdentFileName;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *HostsFileName;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *external_pid_file;
+extern char **PgCurrentClusterNameRef(void);
+extern char **PgCurrentConfigFileNameRef(void);
+extern char **PgCurrentHbaFileNameRef(void);
+extern char **PgCurrentIdentFileNameRef(void);
+extern char **PgCurrentHostsFileNameRef(void);
+extern char **PgCurrentExternalPidFileRef(void);
+#define cluster_name (*PgCurrentClusterNameRef())
+#define ConfigFileName (*PgCurrentConfigFileNameRef())
+#define HbaFileName (*PgCurrentHbaFileNameRef())
+#define IdentFileName (*PgCurrentIdentFileNameRef())
+#define HostsFileName (*PgCurrentHostsFileNameRef())
+#define external_pid_file (*PgCurrentExternalPidFileRef())
 
 extern char **PgCurrentApplicationNameRef(void);
 #define application_name (*PgCurrentApplicationNameRef())

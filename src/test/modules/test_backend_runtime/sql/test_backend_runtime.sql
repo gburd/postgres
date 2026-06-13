@@ -13,6 +13,7 @@ SELECT test_session_tablespace_state_is_session_local();
 SELECT test_session_binary_upgrade_state_is_session_local();
 SELECT test_session_datetime_state_is_session_local();
 SELECT test_session_text_search_state_is_session_local();
+SELECT test_runtime_server_guc_state_is_runtime_local();
 SELECT test_session_connection_guc_state_is_session_local();
 SELECT test_session_parser_state_is_session_local();
 SELECT test_session_vacuum_state_is_session_local();
