@@ -32,7 +32,7 @@
 
 /* frontend default state vector; backend builds route this through PgBackend */
 #ifdef FRONTEND
-pg_prng_state pg_global_prng_state;
+PG_GLOBAL_RUNTIME pg_prng_state pg_global_prng_state;
 #endif
 
 

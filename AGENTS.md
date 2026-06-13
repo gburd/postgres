@@ -112,6 +112,10 @@ Important current files:
   backend-local globals must not be shared plain process globals, backend exit
   must not terminate the whole runtime, and timeout/interrupt delivery must be
   per logical backend.
+- Before leaving Phase 12 or starting scheduler-aware wait work, run
+  `gmake check-global-lifetimes` as part of Gate E2. A new mutable global must
+  be annotated with an explicit `PG_GLOBAL_*` owner or deliberately accepted in
+  `src/tools/global_lifetime/global_lifetime_baseline.tsv`.
 - Prefer introducing compatibility wrappers around current globals before
   changing all call sites.
 - Be careful moving GUC backing variables behind dynamic lvalue macros. The

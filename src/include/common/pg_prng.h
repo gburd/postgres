@@ -29,7 +29,7 @@ typedef struct pg_prng_state
  * after initializing it with one of the pg_prng_...seed functions.
  */
 #ifdef FRONTEND
-extern PGDLLIMPORT pg_prng_state pg_global_prng_state;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME pg_prng_state pg_global_prng_state;
 #else
 extern pg_prng_state *PgCurrentGlobalPrngStateRef(void);
 #define pg_global_prng_state (*PgCurrentGlobalPrngStateRef())

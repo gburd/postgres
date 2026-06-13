@@ -3703,3 +3703,32 @@ Validation for this slice:
   public header migration;
 - static scans found no remaining raw TLS declaration for the migrated
   materialized-view execution-state field.
+
+## Gate E2 Global Lifetime Scan Enforcement
+
+The seventy-fourth Phase 12 slice turns the global-lifetime scanner into an
+explicit Gate E2 validation target:
+
+- the top-level configured makefile now exposes `gmake check-global-lifetimes`;
+- the target runs `src/tools/global_lifetime/scan_global_lifetimes.pl` against
+  `src/tools/global_lifetime/global_lifetime_baseline.tsv`;
+- `AGENTS.md`, `MULTITHREADED_PLAN.md`, and the scanner README name this target
+  as the required Phase 12 exit-gate command;
+- the frontend `pg_global_prng_state` declaration and definition are annotated
+  as `PG_GLOBAL_RUNTIME`, while backend builds still route the name through the
+  `PgBackend` object-backed accessor.
+
+This does not complete the broader Gate E2 lifecycle, GUC, PMChild, startup,
+or stress-test requirements. It makes the global-classification requirement
+enforceable so later Phase 12 work cannot add unclassified mutable globals
+without a failing target.
+
+Validation for this slice:
+
+- `./config.status GNUmakefile` regenerated the local configured makefile from
+  `GNUmakefile.in`;
+- `gmake check-global-lifetimes` passed, scanning 1923 declarations with the
+  checked baseline and reporting zero new unclassified mutable globals;
+- touched-object builds passed for frontend and backend PRNG objects via
+  `gmake -C src/common pg_prng.o pg_prng_srv.o`;
+- `git diff --check` passed.

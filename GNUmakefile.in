@@ -134,4 +134,8 @@ headerscheck: submake-generated-headers
 cpluspluscheck: submake-generated-headers
 	$(top_srcdir)/src/tools/pginclude/headerscheck --cplusplus $(top_srcdir) $(abs_top_builddir)
 
-.PHONY: dist distcheck docs install-docs world check-world install-world installcheck-world headerscheck cpluspluscheck
+check-global-lifetimes:
+	$(PERL) $(top_srcdir)/src/tools/global_lifetime/scan_global_lifetimes.pl \
+		--baseline $(top_srcdir)/src/tools/global_lifetime/global_lifetime_baseline.tsv
+
+.PHONY: dist distcheck docs install-docs world check-world install-world installcheck-world headerscheck cpluspluscheck check-global-lifetimes

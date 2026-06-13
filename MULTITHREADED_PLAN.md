@@ -797,8 +797,8 @@ Gate E2 requires:
   precisely documented critical section with an explicit removal plan. The
   remaining gate, if any, must not serialize normal post-bootstrap SQL
   execution and must be justified by identified shared state;
-- the global lifetime scanner is run as a required gate check with the checked
-  baseline, and any new mutable global either has an explicit lifetime
+- `gmake check-global-lifetimes` is run as a required gate check with the
+  checked baseline, and any new mutable global either has an explicit lifetime
   annotation or a deliberate baseline update;
 - focused threaded stress covers concurrent startup, idle waits, cancellation,
   termination, SQL `ERROR` recovery, transaction abort cleanup, abandoned

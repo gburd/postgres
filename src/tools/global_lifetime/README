@@ -21,6 +21,10 @@ Check that no new unclassified mutable globals have appeared:
     perl src/tools/global_lifetime/scan_global_lifetimes.pl \
       --baseline src/tools/global_lifetime/global_lifetime_baseline.tsv
 
+From a configured tree, the same Gate E2 validation is available as:
+
+    gmake check-global-lifetimes
+
 Refresh the baseline after deliberately accepting the current unclassified set:
 
     perl src/tools/global_lifetime/scan_global_lifetimes.pl \
