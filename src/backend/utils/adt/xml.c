@@ -95,6 +95,7 @@
 #include "nodes/miscnodes.h"
 #include "nodes/nodeFuncs.h"
 #include "utils/array.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/date.h"
 #include "utils/datetime.h"
@@ -104,8 +105,8 @@
 #include "utils/xml.h"
 
 
-/* GUC variable */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int xmloption = XMLOPTION_CONTENT;
+/* Keep the compatibility name local to avoid colliding with struct fields. */
+#define xmloption (*PgCurrentXmlOptionRef())
 
 #ifdef USE_LIBXML
 

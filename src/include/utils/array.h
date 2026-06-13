@@ -347,7 +347,8 @@ typedef struct ArrayIteratorData *ArrayIterator;
 /*
  * GUC parameter
  */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Array_nulls;
+extern bool *PgCurrentArrayNullsRef(void);
+#define Array_nulls (*PgCurrentArrayNullsRef())
 
 /*
  * prototypes for functions defined in arrayfuncs.c

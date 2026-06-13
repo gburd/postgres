@@ -714,7 +714,8 @@ the large-object relation-handle cache bridge through `PgSession`, plus the
 async notification listener-state bridge through `PgSession`, plus the
 encoding/conversion cache and selected-encoding state bridge through
 `PgSession`, plus the temporary-file accounting and temp-tablespace selection
-state bridge through `PgSession`.
+state bridge through `PgSession`, plus the `array_nulls` and `xmloption`
+direct-pointer GUC completion bridge through `PgSession`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.

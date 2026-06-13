@@ -317,8 +317,10 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionGeneralGUCState early_session_
 	.role_string_value = "none",
 	.lo_compat_privileges_value = false,
 	.extra_float_digits_value = 1,
+	.array_nulls_value = true,
 	.bytea_output_value = BYTEA_OUTPUT_HEX,
 	.xmlbinary_value = XMLBINARY_BASE64,
+	.xmloption_value = XMLOPTION_CONTENT,
 	.quote_all_identifiers_value = false,
 	.plan_cache_mode_value = PLAN_CACHE_MODE_AUTO,
 	.gin_fuzzy_search_limit_value = 0,
@@ -1217,8 +1219,10 @@ PgSessionInitializeGeneralGUCState(PgSessionGeneralGUCState *general_guc)
 	general_guc->role_string_value = "none";
 	general_guc->lo_compat_privileges_value = false;
 	general_guc->extra_float_digits_value = 1;
+	general_guc->array_nulls_value = true;
 	general_guc->bytea_output_value = BYTEA_OUTPUT_HEX;
 	general_guc->xmlbinary_value = XMLBINARY_BASE64;
+	general_guc->xmloption_value = XMLOPTION_CONTENT;
 	general_guc->quote_all_identifiers_value = false;
 	general_guc->plan_cache_mode_value = PLAN_CACHE_MODE_AUTO;
 	general_guc->gin_fuzzy_search_limit_value = 0;
@@ -3643,6 +3647,12 @@ PgCurrentExtraFloatDigitsRef(void)
 	return &PgCurrentSessionGeneralGUCState()->extra_float_digits_value;
 }
 
+bool *
+PgCurrentArrayNullsRef(void)
+{
+	return &PgCurrentSessionGeneralGUCState()->array_nulls_value;
+}
+
 int *
 PgCurrentByteaOutputRef(void)
 {
@@ -3653,6 +3663,12 @@ int *
 PgCurrentXmlBinaryRef(void)
 {
 	return &PgCurrentSessionGeneralGUCState()->xmlbinary_value;
+}
+
+int *
+PgCurrentXmlOptionRef(void)
+{
+	return &PgCurrentSessionGeneralGUCState()->xmloption_value;
 }
 
 bool *

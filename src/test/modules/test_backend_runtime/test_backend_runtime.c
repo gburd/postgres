@@ -3885,8 +3885,10 @@ test_session_general_guc_state_is_session_local(PG_FUNCTION_ARGS)
 	char	   *saved_role;
 	char	   *saved_lo_compat_privileges;
 	char	   *saved_extra_float_digits;
+	char	   *saved_array_nulls;
 	char	   *saved_bytea_output;
 	char	   *saved_xmlbinary;
+	char	   *saved_xmloption;
 	char	   *saved_quote_all_identifiers;
 	char	   *saved_plan_cache_mode;
 	char	   *saved_gin_fuzzy_search_limit;
@@ -3911,10 +3913,14 @@ test_session_general_guc_state_is_session_local(PG_FUNCTION_ARGS)
 		pstrdup(GetConfigOption("lo_compat_privileges", false, false));
 	saved_extra_float_digits =
 		pstrdup(GetConfigOption("extra_float_digits", false, false));
+	saved_array_nulls =
+		pstrdup(GetConfigOption("array_nulls", false, false));
 	saved_bytea_output =
 		pstrdup(GetConfigOption("bytea_output", false, false));
 	saved_xmlbinary =
 		pstrdup(GetConfigOption("xmlbinary", false, false));
+	saved_xmloption =
+		pstrdup(GetConfigOption("xmloption", false, false));
 	saved_quote_all_identifiers =
 		pstrdup(GetConfigOption("quote_all_identifiers", false, false));
 	saved_plan_cache_mode =
@@ -3938,8 +3944,10 @@ test_session_general_guc_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && strcmp(role_string, "none") == 0;
 		ok = ok && !lo_compat_privileges;
 		ok = ok && extra_float_digits == 1;
+		ok = ok && Array_nulls;
 		ok = ok && bytea_output == BYTEA_OUTPUT_HEX;
 		ok = ok && xmlbinary == XMLBINARY_BASE64;
+		ok = ok && *PgCurrentXmlOptionRef() == XMLOPTION_CONTENT;
 		ok = ok && !quote_all_identifiers;
 		ok = ok && plan_cache_mode == PLAN_CACHE_MODE_AUTO;
 		ok = ok && GinFuzzySearchLimit == 0;
@@ -3963,9 +3971,13 @@ test_session_general_guc_state_is_session_local(PG_FUNCTION_ARGS)
 						PGC_SUSET, PGC_S_SESSION);
 		SetConfigOption("extra_float_digits", "2",
 						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("array_nulls", "off",
+						PGC_USERSET, PGC_S_SESSION);
 		SetConfigOption("bytea_output", "escape",
 						PGC_USERSET, PGC_S_SESSION);
 		SetConfigOption("xmlbinary", "hex",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("xmloption", "document",
 						PGC_USERSET, PGC_S_SESSION);
 		SetConfigOption("quote_all_identifiers", "on",
 						PGC_USERSET, PGC_S_SESSION);
@@ -3984,8 +3996,10 @@ test_session_general_guc_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && strcmp(role_string, "none") == 0;
 		ok = ok && lo_compat_privileges;
 		ok = ok && extra_float_digits == 2;
+		ok = ok && !Array_nulls;
 		ok = ok && bytea_output == BYTEA_OUTPUT_ESCAPE;
 		ok = ok && xmlbinary == XMLBINARY_HEX;
+		ok = ok && *PgCurrentXmlOptionRef() == XMLOPTION_DOCUMENT;
 		ok = ok && quote_all_identifiers;
 		ok = ok && plan_cache_mode == PLAN_CACHE_MODE_FORCE_GENERIC_PLAN;
 		ok = ok && GinFuzzySearchLimit == 7;
@@ -4001,8 +4015,10 @@ test_session_general_guc_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && strcmp(role_string, "none") == 0;
 		ok = ok && !lo_compat_privileges;
 		ok = ok && extra_float_digits == 1;
+		ok = ok && Array_nulls;
 		ok = ok && bytea_output == BYTEA_OUTPUT_HEX;
 		ok = ok && xmlbinary == XMLBINARY_BASE64;
+		ok = ok && *PgCurrentXmlOptionRef() == XMLOPTION_CONTENT;
 		ok = ok && !quote_all_identifiers;
 		ok = ok && plan_cache_mode == PLAN_CACHE_MODE_AUTO;
 		ok = ok && GinFuzzySearchLimit == 0;
@@ -4021,9 +4037,13 @@ test_session_general_guc_state_is_session_local(PG_FUNCTION_ARGS)
 						PGC_SUSET, PGC_S_SESSION);
 		SetConfigOption("extra_float_digits", "3",
 						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("array_nulls", "on",
+						PGC_USERSET, PGC_S_SESSION);
 		SetConfigOption("bytea_output", "hex",
 						PGC_USERSET, PGC_S_SESSION);
 		SetConfigOption("xmlbinary", "base64",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("xmloption", "content",
 						PGC_USERSET, PGC_S_SESSION);
 		SetConfigOption("quote_all_identifiers", "off",
 						PGC_USERSET, PGC_S_SESSION);
@@ -4040,8 +4060,10 @@ test_session_general_guc_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && num_temp_buffers == 900;
 		ok = ok && !lo_compat_privileges;
 		ok = ok && extra_float_digits == 3;
+		ok = ok && Array_nulls;
 		ok = ok && bytea_output == BYTEA_OUTPUT_HEX;
 		ok = ok && xmlbinary == XMLBINARY_BASE64;
+		ok = ok && *PgCurrentXmlOptionRef() == XMLOPTION_CONTENT;
 		ok = ok && !quote_all_identifiers;
 		ok = ok && plan_cache_mode == PLAN_CACHE_MODE_FORCE_CUSTOM_PLAN;
 		ok = ok && GinFuzzySearchLimit == 11;
@@ -4056,8 +4078,10 @@ test_session_general_guc_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && num_temp_buffers == 800;
 		ok = ok && lo_compat_privileges;
 		ok = ok && extra_float_digits == 2;
+		ok = ok && !Array_nulls;
 		ok = ok && bytea_output == BYTEA_OUTPUT_ESCAPE;
 		ok = ok && xmlbinary == XMLBINARY_HEX;
+		ok = ok && *PgCurrentXmlOptionRef() == XMLOPTION_DOCUMENT;
 		ok = ok && quote_all_identifiers;
 		ok = ok && plan_cache_mode == PLAN_CACHE_MODE_FORCE_GENERIC_PLAN;
 		ok = ok && GinFuzzySearchLimit == 7;
@@ -4072,8 +4096,10 @@ test_session_general_guc_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && num_temp_buffers == 900;
 		ok = ok && !lo_compat_privileges;
 		ok = ok && extra_float_digits == 3;
+		ok = ok && Array_nulls;
 		ok = ok && bytea_output == BYTEA_OUTPUT_HEX;
 		ok = ok && xmlbinary == XMLBINARY_BASE64;
+		ok = ok && *PgCurrentXmlOptionRef() == XMLOPTION_CONTENT;
 		ok = ok && !quote_all_identifiers;
 		ok = ok && plan_cache_mode == PLAN_CACHE_MODE_FORCE_CUSTOM_PLAN;
 		ok = ok && GinFuzzySearchLimit == 11;
@@ -4095,7 +4121,11 @@ test_session_general_guc_state_is_session_local(PG_FUNCTION_ARGS)
 						PGC_USERSET, PGC_S_SESSION);
 		SetConfigOption("bytea_output", saved_bytea_output,
 						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("array_nulls", saved_array_nulls,
+						PGC_USERSET, PGC_S_SESSION);
 		SetConfigOption("extra_float_digits", saved_extra_float_digits,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("xmloption", saved_xmloption,
 						PGC_USERSET, PGC_S_SESSION);
 		SetConfigOption("lo_compat_privileges", saved_lo_compat_privileges,
 						PGC_SUSET, PGC_S_SESSION);
@@ -4133,7 +4163,11 @@ test_session_general_guc_state_is_session_local(PG_FUNCTION_ARGS)
 						PGC_USERSET, PGC_S_SESSION);
 		SetConfigOption("bytea_output", saved_bytea_output,
 						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("array_nulls", saved_array_nulls,
+						PGC_USERSET, PGC_S_SESSION);
 		SetConfigOption("extra_float_digits", saved_extra_float_digits,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("xmloption", saved_xmloption,
 						PGC_USERSET, PGC_S_SESSION);
 		SetConfigOption("lo_compat_privileges", saved_lo_compat_privileges,
 						PGC_SUSET, PGC_S_SESSION);

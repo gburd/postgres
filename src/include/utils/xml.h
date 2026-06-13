@@ -90,9 +90,8 @@ extern int *PgCurrentXmlBinaryRef(void);
 #define xmlbinary (*PgCurrentXmlBinaryRef())	/* XmlBinaryType,
 												 * but int for GUC enum */
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int xmloption;	/* XmlOptionType,
-																	 * but int for
-																	 * guc enum */
+extern int *PgCurrentXmlOptionRef(void);	/* XmlOptionType, but int for
+											 * GUC enum */
 
 extern PGDLLIMPORT const TableFuncRoutine XmlTableRoutine;
 

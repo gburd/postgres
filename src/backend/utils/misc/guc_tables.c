@@ -90,6 +90,7 @@
 #include "tcop/tcopprot.h"
 #include "portability/instr_time.h"
 #include "tsearch/ts_cache.h"
+#include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/bytea.h"
 #include "utils/float.h"
@@ -533,6 +534,7 @@ extern const struct config_enum_entry dynamic_shared_memory_options[];
  * These GUC backing variables live in PgSessionGeneralGUCState.  Public
  * compatibility names are lvalue macros in the corresponding headers.
  */
+#define xmloption (*PgCurrentXmlOptionRef())
 
 /*
  * These GUCs exist solely for backward compatibility.

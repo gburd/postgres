@@ -39,11 +39,6 @@
 
 
 /*
- * GUC parameter
- */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Array_nulls = true;
-
-/*
  * Local definitions
  */
 #define ASSGN	 "="

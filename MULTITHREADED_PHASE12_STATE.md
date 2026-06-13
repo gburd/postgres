@@ -1954,10 +1954,10 @@ The thirty-seventh Phase 12 slice moves a broad direct-pointer GUC group under
   fallback general GUC state into the logical session object;
 - `RebindSessionGUCVariablePointers()` now rebinds the generated GUC records
   for the moved general GUCs whenever the active logical session changes;
-- `xmloption` remains a carrier-local/thread-local global in this slice
-  because the public name collides with XML expression struct fields such as
-  `xexpr->xmloption`; it needs a later call-site migration before it can use a
-  public compatibility macro;
+- `array_nulls` and `xmloption` remained carrier-local/thread-local globals in
+  this slice. A later Phase 12 slice moves them into the same
+  `PgSessionGeneralGUCState` bucket after handling the `xmloption` identifier
+  collision without a public macro;
 - `application_name` and the TCP keepalive/user-timeout GUC variables remain
   deferred because their public names collide with `Port` struct fields and
   need the same kind of call-site migration.
@@ -2735,3 +2735,47 @@ Validation for this slice:
 - static scans found no remaining direct session TLS definitions for
   `temporary_files_size`, `tempFileCounter`, `tempTableSpaces`,
   `numTempTableSpaces`, or `nextTempTableSpace`.
+
+## Session Array/XML Option GUC Completion Bridge
+
+The fifty-third Phase 12 slice completes two direct-pointer GUC leftovers in
+the general GUC bucket:
+
+- `PgSessionGeneralGUCState` now owns `Array_nulls` and `xmloption` as
+  `array_nulls_value` and `xmloption_value`;
+- `utils/array.h` keeps `Array_nulls` as a source-compatible lvalue macro
+  backed by `PgCurrentArrayNullsRef()`;
+- `utils/xml.h` exposes `PgCurrentXmlOptionRef()` but deliberately does not
+  define a public `xmloption` macro, because the identifier appears as a
+  parameter and struct-field name in XML-related code;
+- `xml.c` and `guc_tables.c` use file-local `xmloption` compatibility macros
+  so existing call sites and generated GUC variable assignment still write to
+  the active `PgSession`;
+- early startup paths before `CurrentPgSession` is installed use fallback
+  session-local storage in `backend_runtime.c`;
+- `InitializeThreadedSessionGUCOptions()` and
+  `RebindSessionGUCVariablePointers()` now initialize and rebind the generated
+  `array_nulls` and `xmloption` GUC records for the active logical session.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `arrayfuncs.o`,
+  `xml.o`, `guc.o`, and `guc_tables.o`;
+- because `backend_runtime.h` and installed public headers changed,
+  `gmake -C src/backend clean` plus generated utility and node-header recovery
+  was used before trusting process-mode runtime tests;
+- clean full `gmake -j8` passed after the backend clean;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- focused `test_backend_runtime` regression extends
+  `test_session_general_guc_state_is_session_local()` to switch fake sessions
+  through `PgSetCurrentSession()` and prove `Array_nulls` and `xmloption`
+  follow the active session object;
+- direct `test_backend_runtime` regression passed after reinstalling the test
+  module into `tmp_install`;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests, including
+  `arrays`, `xml`, and `guc`;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- static scans found no remaining direct session TLS definitions or exported
+  declarations for `Array_nulls` or `xmloption`.

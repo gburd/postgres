@@ -1694,10 +1694,16 @@ InitializeThreadedSessionGUCOptions(void)
 	gconf = find_option("extra_float_digits", false, false, PANIC);
 	InitializeOneGUCOption(gconf);
 
+	gconf = find_option("array_nulls", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
 	gconf = find_option("bytea_output", false, false, PANIC);
 	InitializeOneGUCOption(gconf);
 
 	gconf = find_option("xmlbinary", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("xmloption", false, false, PANIC);
 	InitializeOneGUCOption(gconf);
 
 	gconf = find_option("quote_all_identifiers", false, false, PANIC);
@@ -2048,6 +2054,10 @@ RebindSessionGUCVariablePointers(void)
 	Assert(gconf->vartype == PGC_INT);
 	gconf->_int.variable = PgCurrentExtraFloatDigitsRef();
 
+	gconf = find_option("array_nulls", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentArrayNullsRef();
+
 	gconf = find_option("bytea_output", false, false, PANIC);
 	Assert(gconf->vartype == PGC_ENUM);
 	gconf->_enum.variable = PgCurrentByteaOutputRef();
@@ -2055,6 +2065,10 @@ RebindSessionGUCVariablePointers(void)
 	gconf = find_option("xmlbinary", false, false, PANIC);
 	Assert(gconf->vartype == PGC_ENUM);
 	gconf->_enum.variable = PgCurrentXmlBinaryRef();
+
+	gconf = find_option("xmloption", false, false, PANIC);
+	Assert(gconf->vartype == PGC_ENUM);
+	gconf->_enum.variable = PgCurrentXmlOptionRef();
 
 	gconf = find_option("quote_all_identifiers", false, false, PANIC);
 	Assert(gconf->vartype == PGC_BOOL);
