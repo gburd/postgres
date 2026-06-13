@@ -154,6 +154,13 @@ Important current files:
   the function through `psql`, checking for the expected `FATAL`, verifying
   the backend id leaves `pg_stat_activity`, and confirming the server remains
   usable.
+- `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` contains
+  the broader mixed teardown stress for Gate E2. It starts concurrent
+  backend-local `FATAL`, `pg_terminate_backend()`, and abandoned-client
+  sessions, then verifies logical backend ids leave `pg_stat_activity`,
+  advisory locks are released, and the server remains usable. Keep this
+  fixture current when changing PMChild exit publication, thread join/retry,
+  backend teardown, or session resource cleanup.
 - Threaded regular backend launch duplicates the accepted client socket into
   `BackendThreadStart.client_sock`. `pq_init()` marks that launch-time socket
   copy invalid only after `Port` owns the descriptor and `socket_close()` is

@@ -5250,3 +5250,37 @@ Validation for this slice:
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals;
 - `git diff --check` passed.
+
+## Mixed Threaded Backend Teardown Stress
+
+The one-hundred-tenth Phase 12 slice strengthens Gate E2 real-server teardown
+coverage:
+
+- `t/001_threaded_runtime.pl` now starts a mixed batch of thread-backed
+  backends that exit through backend-local `FATAL`, administrator
+  `pg_terminate_backend()`, and abandoned-client disconnect while holding
+  advisory locks and owning temp tables;
+- the fixture captures the SQL-visible logical backend ids for the `FATAL` and
+  terminated sessions, verifies all of those ids leave `pg_stat_activity`,
+  verifies the abandoned-client advisory locks are released, and confirms the
+  threaded server remains usable afterward;
+- this runs in the same live threaded server as the worker-launch, extension,
+  GUC, parallel-query, and reconnect checks, so it exercises PMChild
+  publication, detach, exit reporting, reaping, and carrier reuse under a
+  broader mixed teardown load.
+
+This still does not close the full Gate E2 teardown/resource blocker.
+`TopMemoryContext` ownership/reclamation and deliberately retained resource
+boundaries remain unresolved, and larger/longer teardown stress is still
+useful. It does raise the real-server coverage floor for the PMChild reaping
+path before scheduler work.
+
+Validation for this slice:
+
+- direct threaded-runtime TAP passed all 87 tests with local
+  `/Users/samwillis/perl5` `PERL5LIB` paths;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression and still reported TAP disabled by configure;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- `git diff --check` passed.

@@ -435,6 +435,10 @@ serialized from stale generic string storage, so a late thread-backed IO worker
 could replay garbage and terminate the threaded server. `client_encoding` is
 now required bootstrap state for threaded sessions and is serialized from
 authoritative encoding state.
+Real-server teardown coverage has also been broadened: the threaded runtime
+TAP now runs concurrent backend-local `FATAL`, administrator termination, and
+abandoned-client exits in one live threaded server, then verifies logical
+backend ids and advisory locks are gone and the server remains usable.
 The focused `test_backend_runtime` regression is also usable again as a
 process-mode validation control after fake thread-runtime tests were changed
 to construct thread-backend state without installing it into the active SQL

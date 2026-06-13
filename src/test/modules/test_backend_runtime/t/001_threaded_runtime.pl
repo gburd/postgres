@@ -624,6 +624,91 @@ foreach my $session (@terminate_stress)
 }
 pass('concurrently terminated threaded backends left pg_stat_activity');
 
+my @mixed_fatal_stress;
+my @mixed_abandoned_stress;
+my @mixed_terminate_stress;
+my @mixed_terminate_pids;
+for my $i (1 .. 4)
+{
+	my $fatal = start_psql_script(
+		"SELECT pg_backend_pid();\nSELECT test_backend_runtime_emit_fatal();\n",
+		30);
+	push @mixed_fatal_stress, $fatal;
+
+	my $abandoned_session = $node->background_psql('postgres',
+		on_error_stop => 0, timeout => 20);
+	$abandoned_session->query_safe(
+		"BEGIN; SELECT pg_advisory_lock(989000 + $i); CREATE TEMP TABLE threaded_mixed_abandoned_$i(id int); INSERT INTO threaded_mixed_abandoned_$i VALUES ($i);",
+		verbose => 0);
+	push @mixed_abandoned_stress, $abandoned_session;
+
+	my $terminate_session = $node->background_psql('postgres',
+		on_error_stop => 0, timeout => 20);
+	push @mixed_terminate_stress, $terminate_session;
+	push @mixed_terminate_pids,
+	  $terminate_session->query_safe('SELECT pg_backend_pid();',
+		verbose => 0);
+}
+
+my @mixed_fatal_pids;
+foreach my $fatal (@mixed_fatal_stress)
+{
+	ok( pump_until($fatal->{run}, $fatal->{timer},
+			$fatal->{stdout}, qr/^\d+\s*$/m),
+		'mixed teardown stress FATAL backend reported logical backend id');
+	my ($pid) = ${ $fatal->{stdout} } =~ /^(\d+)\s*$/m;
+	push @mixed_fatal_pids, $pid;
+}
+is($node->safe_psql(
+		'postgres',
+		"SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted AND objid BETWEEN 989001 AND 989004;"),
+	'4', 'mixed teardown stress acquired abandoned-client advisory locks');
+is($node->safe_psql(
+		'postgres',
+		"SELECT bool_and(pg_terminate_backend(pid, 5000)) FROM unnest(ARRAY["
+		  . join(',', @mixed_terminate_pids)
+		  . "]) AS p(pid);"),
+	't', 'mixed teardown stress accepted terminate requests');
+
+foreach my $session (@mixed_abandoned_stress)
+{
+	$session->{run}->kill_kill;
+	eval { $session->{run}->finish; };
+}
+foreach my $fatal (@mixed_fatal_stress)
+{
+	ok( pump_until($fatal->{run}, $fatal->{timer},
+			$fatal->{stderr}, qr/test_backend_runtime requested FATAL/),
+		'mixed teardown stress FATAL backend reported test FATAL');
+	eval { $fatal->{run}->finish; };
+}
+foreach my $session (@mixed_terminate_stress)
+{
+	eval { $session->{run}->finish; };
+}
+
+my $mixed_pid_list = join(',', @mixed_fatal_pids, @mixed_terminate_pids);
+$node->poll_query_until(
+	'postgres',
+	"SELECT NOT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid IN ($mixed_pid_list));",
+	't') || die "timed out waiting for mixed teardown threaded backends";
+pass('mixed teardown stress FATAL and terminated backends left pg_stat_activity');
+
+for (1 .. 100)
+{
+	last
+	  if $node->safe_psql(
+		'postgres',
+		"SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted AND objid BETWEEN 989001 AND 989004;") eq '0';
+	usleep(100_000);
+}
+is($node->safe_psql(
+		'postgres',
+		"SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted AND objid BETWEEN 989001 AND 989004;"),
+	'0', 'mixed teardown stress abandoned backends released advisory locks');
+is($node->safe_psql('postgres', 'SELECT 42;'), '42',
+	'threaded server remains usable after mixed teardown stress');
+
 my $reconnect_ok = 1;
 for my $i (1 .. 30)
 {

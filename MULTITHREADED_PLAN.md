@@ -935,6 +935,10 @@ worker. Threaded startup now includes `client_encoding` in the required string
 GUC bootstrap list, and exec/thread config serialization writes
 `client_encoding` through the authoritative encoding state instead of the
 generic string backing pointer.
+The threaded runtime TAP now also runs a mixed teardown batch in one live
+server, combining backend-local `FATAL`, administrator termination, and
+abandoned-client exits while verifying logical backend ids leave
+`pg_stat_activity`, advisory locks are released, and the server remains usable.
 Broader contrib/in-tree extension coverage, full
 lifecycle resource cleanup, and PMChild race stress remain Gate E2 blockers
 before Phase 13.
