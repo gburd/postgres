@@ -2093,3 +2093,50 @@ Validation for this slice:
 - `git diff --check` passed;
 - static scans found no remaining direct session TLS definitions or extern
   declarations for the moved JIT GUC names.
+
+## Session Extension-Control And Sort GUC State Bridge
+
+The fortieth Phase 12 slice moves extension-control and sort direct-pointer
+GUC state under `PgSession`:
+
+- `PgSessionMiscGUCState` now owns `Extension_control_path`;
+- `PgSession` now owns a `PgSessionSortGUCState`;
+- `PgSessionSortGUCState` owns `trace_sort` and, when compiled with
+  `DEBUG_BOUNDED_SORT`, `optimize_bounded_sort`;
+- the public names remain source-compatible lvalue macros in
+  `commands/extension.h` and `utils/guc.h`;
+- early startup paths before `CurrentPgSession` is installed use fallback
+  session-local storage in `backend_runtime.c`;
+- process-mode and thread-runtime session installation adopt any early
+  fallback extension-control and sort GUC state into the logical session
+  object;
+- `RebindSessionGUCVariablePointers()` now rebinds the generated GUC records
+  for `extension_control_path`, `trace_sort`, and debug-only
+  `optimize_bounded_sort` whenever the active logical session changes;
+- debug-only bounded-sort state is compiled and tested only in builds that
+  define `DEBUG_BOUNDED_SORT`.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `guc.o`,
+  `guc_tables.o`, `extension.o`, `tuplesort.o`, `tuplesortvariants.o`, and
+  `test_backend_runtime.o`;
+- because exported direct-pointer GUC globals changed into compatibility
+  macros, `gmake -C src/backend clean` plus generated utility and node-header
+  recovery was used before the clean rebuild;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed, followed by rebuilding
+  and reinstalling `src/test/modules/test_backend_runtime` against the
+  current headers;
+- focused `test_backend_runtime` regression passed and includes coverage for
+  `Extension_control_path` in
+  `test_session_misc_guc_state_is_session_local()` and sort GUC state in
+  `test_session_sort_guc_state_is_session_local()`;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests, including `tuplesort`, `guc`, and extension-loading coverage;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- `git diff --check` passed;
+- static scans found no remaining direct session TLS definitions or extern
+  declarations for `Extension_control_path`, `trace_sort`, or
+  `optimize_bounded_sort`.

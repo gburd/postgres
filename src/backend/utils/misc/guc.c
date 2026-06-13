@@ -1697,6 +1697,14 @@ InitializeThreadedSessionGUCOptions(void)
 	InitializeOneGUCOption(gconf);
 #endif
 
+	gconf = find_option("trace_sort", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+#ifdef DEBUG_BOUNDED_SORT
+	gconf = find_option("optimize_bounded_sort", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+#endif
+
 	gconf = find_option("jit", false, false, PANIC);
 	InitializeOneGUCOption(gconf);
 
@@ -1809,6 +1817,10 @@ RebindSessionGUCVariablePointers(void)
 	gconf = find_option("dynamic_library_path", false, false, PANIC);
 	Assert(gconf->vartype == PGC_STRING);
 	gconf->_string.variable = PgCurrentDynamicLibraryPathRef();
+
+	gconf = find_option("extension_control_path", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentExtensionControlPathRef();
 
 #ifdef DEBUG_NODE_TESTS_ENABLED
 	gconf = find_option("debug_copy_parse_plan_trees", false, false, PANIC);
@@ -2052,6 +2064,16 @@ RebindSessionGUCVariablePointers(void)
 	gconf = find_option("jit_optimize_above_cost", false, false, PANIC);
 	Assert(gconf->vartype == PGC_REAL);
 	gconf->_real.variable = PgCurrentJitOptimizeAboveCostRef();
+
+	gconf = find_option("trace_sort", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentTraceSortRef();
+
+#ifdef DEBUG_BOUNDED_SORT
+	gconf = find_option("optimize_bounded_sort", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentOptimizeBoundedSortRef();
+#endif
 
 	gconf = find_option("default_tablespace", false, false, PANIC);
 	Assert(gconf->vartype == PGC_STRING);

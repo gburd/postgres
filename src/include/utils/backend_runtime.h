@@ -341,6 +341,7 @@ typedef struct PgSessionMiscGUCState
 	char	   *session_preload_libraries_value;
 	char	   *local_preload_libraries_value;
 	char	   *dynamic_library_path_value;
+	char	   *extension_control_path_value;
 } PgSessionMiscGUCState;
 
 typedef struct PgSessionPgStatState
@@ -456,6 +457,15 @@ typedef struct PgSessionJitGUCState
 	double		jit_inline_above_cost_value;
 	double		jit_optimize_above_cost_value;
 } PgSessionJitGUCState;
+
+typedef struct PgSessionSortGUCState
+{
+	bool		initialized;
+	bool		trace_sort_value;
+#ifdef DEBUG_BOUNDED_SORT
+	bool		optimize_bounded_sort_value;
+#endif
+} PgSessionSortGUCState;
 
 typedef struct PgSessionQueryMemoryState
 {
@@ -666,6 +676,7 @@ struct PgSession
 	PgSessionGeneralGUCState general_guc;
 	PgSessionAccessWalGUCState access_wal_guc;
 	PgSessionJitGUCState jit_guc;
+	PgSessionSortGUCState sort_guc;
 	PgSessionQueryMemoryState query_memory;
 	PgSessionPlannerCostState planner_cost;
 	PgSessionPlannerMethodState planner_method;
@@ -767,6 +778,7 @@ extern ssize_t *PgCurrentMaxStackDepthBytesRef(void);
 extern char **PgCurrentSessionPreloadLibrariesRef(void);
 extern char **PgCurrentLocalPreloadLibrariesRef(void);
 extern char **PgCurrentDynamicLibraryPathRef(void);
+extern char **PgCurrentExtensionControlPathRef(void);
 extern bool *PgCurrentPgStatTrackCountsRef(void);
 extern int *PgCurrentPgStatTrackFunctionsRef(void);
 extern int *PgCurrentPgStatFetchConsistencyRef(void);
@@ -836,6 +848,10 @@ extern bool *PgCurrentJitTupleDeformingRef(void);
 extern double *PgCurrentJitAboveCostRef(void);
 extern double *PgCurrentJitInlineAboveCostRef(void);
 extern double *PgCurrentJitOptimizeAboveCostRef(void);
+extern bool *PgCurrentTraceSortRef(void);
+#ifdef DEBUG_BOUNDED_SORT
+extern bool *PgCurrentOptimizeBoundedSortRef(void);
+#endif
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);

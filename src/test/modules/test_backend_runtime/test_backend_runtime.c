@@ -23,6 +23,7 @@
 #include "catalog/storage.h"
 #include "commands/async.h"
 #include "commands/event_trigger.h"
+#include "commands/extension.h"
 #include "commands/tablespace.h"
 #include "commands/trigger.h"
 #include "commands/user.h"
@@ -3336,6 +3337,7 @@ test_session_misc_guc_state_is_session_local(PG_FUNCTION_ARGS)
 	PgSession	fake_session2;
 	char	   *saved_allow_system_table_mods;
 	char	   *saved_dynamic_library_path;
+	char	   *saved_extension_control_path;
 	char	   *saved_local_preload_libraries;
 	char	   *saved_max_stack_depth;
 	char	   *saved_session_preload_libraries;
@@ -3346,6 +3348,8 @@ test_session_misc_guc_state_is_session_local(PG_FUNCTION_ARGS)
 		pstrdup(GetConfigOption("allow_system_table_mods", false, false));
 	saved_dynamic_library_path =
 		pstrdup(GetConfigOption("dynamic_library_path", false, false));
+	saved_extension_control_path =
+		pstrdup(GetConfigOption("extension_control_path", false, false));
 	saved_local_preload_libraries =
 		pstrdup(GetConfigOption("local_preload_libraries", false, false));
 	saved_max_stack_depth =
@@ -3364,6 +3368,7 @@ test_session_misc_guc_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && session_preload_libraries_string == NULL;
 		ok = ok && local_preload_libraries_string == NULL;
 		ok = ok && Dynamic_library_path == NULL;
+		ok = ok && strcmp(Extension_control_path, "$system") == 0;
 
 		SetConfigOption("allow_system_table_mods", "on",
 						PGC_SUSET, PGC_S_SESSION);
@@ -3375,6 +3380,8 @@ test_session_misc_guc_state_is_session_local(PG_FUNCTION_ARGS)
 						PGC_USERSET, PGC_S_SESSION);
 		SetConfigOption("dynamic_library_path", "$libdir/plugins",
 						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("extension_control_path", "$system:/tmp/session1",
+						PGC_SUSET, PGC_S_SESSION);
 		ok = ok && allowSystemTableMods;
 		ok = ok && max_stack_depth == 101;
 		ok = ok && *PgCurrentMaxStackDepthBytesRef() == 101 * (ssize_t) 1024;
@@ -3384,11 +3391,14 @@ test_session_misc_guc_state_is_session_local(PG_FUNCTION_ARGS)
 			strcmp(local_preload_libraries_string, "pg_stat_statements") == 0;
 		ok = ok && Dynamic_library_path != NULL &&
 			strcmp(Dynamic_library_path, "$libdir/plugins") == 0;
+		ok = ok && strcmp(Extension_control_path,
+						  "$system:/tmp/session1") == 0;
 
 		PgSetCurrentSession(&fake_session2);
 		ok = ok && !allowSystemTableMods;
 		ok = ok && max_stack_depth == 100;
 		ok = ok && *PgCurrentMaxStackDepthBytesRef() == 100 * (ssize_t) 1024;
+		ok = ok && strcmp(Extension_control_path, "$system") == 0;
 		SetConfigOption("allow_system_table_mods", "off",
 						PGC_SUSET, PGC_S_SESSION);
 		SetConfigOption("max_stack_depth", "102",
@@ -3399,6 +3409,8 @@ test_session_misc_guc_state_is_session_local(PG_FUNCTION_ARGS)
 						PGC_USERSET, PGC_S_SESSION);
 		SetConfigOption("dynamic_library_path", "$libdir",
 						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("extension_control_path", "$system:/tmp/session2",
+						PGC_SUSET, PGC_S_SESSION);
 		ok = ok && !allowSystemTableMods;
 		ok = ok && max_stack_depth == 102;
 		ok = ok && *PgCurrentMaxStackDepthBytesRef() == 102 * (ssize_t) 1024;
@@ -3408,6 +3420,8 @@ test_session_misc_guc_state_is_session_local(PG_FUNCTION_ARGS)
 			strcmp(local_preload_libraries_string, "pg_trgm") == 0;
 		ok = ok && Dynamic_library_path != NULL &&
 			strcmp(Dynamic_library_path, "$libdir") == 0;
+		ok = ok && strcmp(Extension_control_path,
+						  "$system:/tmp/session2") == 0;
 
 		PgSetCurrentSession(&fake_session1);
 		ok = ok && allowSystemTableMods;
@@ -3419,6 +3433,8 @@ test_session_misc_guc_state_is_session_local(PG_FUNCTION_ARGS)
 			strcmp(local_preload_libraries_string, "pg_stat_statements") == 0;
 		ok = ok && Dynamic_library_path != NULL &&
 			strcmp(Dynamic_library_path, "$libdir/plugins") == 0;
+		ok = ok && strcmp(Extension_control_path,
+						  "$system:/tmp/session1") == 0;
 
 		PgSetCurrentSession(&fake_session2);
 		ok = ok && !allowSystemTableMods;
@@ -3430,12 +3446,17 @@ test_session_misc_guc_state_is_session_local(PG_FUNCTION_ARGS)
 			strcmp(local_preload_libraries_string, "pg_trgm") == 0;
 		ok = ok && Dynamic_library_path != NULL &&
 			strcmp(Dynamic_library_path, "$libdir") == 0;
+		ok = ok && strcmp(Extension_control_path,
+						  "$system:/tmp/session2") == 0;
 
 		PgSetCurrentSession(saved_session);
 		SetConfigOption("allow_system_table_mods",
 						saved_allow_system_table_mods,
 						PGC_SUSET, PGC_S_SESSION);
 		SetConfigOption("dynamic_library_path", saved_dynamic_library_path,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("extension_control_path",
+						saved_extension_control_path,
 						PGC_SUSET, PGC_S_SESSION);
 		SetConfigOption("local_preload_libraries",
 						saved_local_preload_libraries,
@@ -3454,6 +3475,9 @@ test_session_misc_guc_state_is_session_local(PG_FUNCTION_ARGS)
 						PGC_SUSET, PGC_S_SESSION);
 		SetConfigOption("dynamic_library_path", saved_dynamic_library_path,
 						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("extension_control_path",
+						saved_extension_control_path,
+						PGC_SUSET, PGC_S_SESSION);
 		SetConfigOption("local_preload_libraries",
 						saved_local_preload_libraries,
 						PGC_USERSET, PGC_S_SESSION);
@@ -3468,6 +3492,103 @@ test_session_misc_guc_state_is_session_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "session miscellaneous GUC state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_session_sort_guc_state_is_session_local);
+Datum
+test_session_sort_guc_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	char	   *saved_trace_sort;
+#ifdef DEBUG_BOUNDED_SORT
+	char	   *saved_optimize_bounded_sort;
+#endif
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	saved_trace_sort = pstrdup(GetConfigOption("trace_sort", false, false));
+#ifdef DEBUG_BOUNDED_SORT
+	saved_optimize_bounded_sort =
+		pstrdup(GetConfigOption("optimize_bounded_sort", false, false));
+#endif
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && !trace_sort;
+#ifdef DEBUG_BOUNDED_SORT
+		ok = ok && optimize_bounded_sort;
+#endif
+		SetConfigOption("trace_sort", "on",
+						PGC_USERSET, PGC_S_SESSION);
+#ifdef DEBUG_BOUNDED_SORT
+		SetConfigOption("optimize_bounded_sort", "off",
+						PGC_USERSET, PGC_S_SESSION);
+#endif
+		ok = ok && trace_sort;
+#ifdef DEBUG_BOUNDED_SORT
+		ok = ok && !optimize_bounded_sort;
+#endif
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && !trace_sort;
+#ifdef DEBUG_BOUNDED_SORT
+		ok = ok && optimize_bounded_sort;
+#endif
+		SetConfigOption("trace_sort", "off",
+						PGC_USERSET, PGC_S_SESSION);
+#ifdef DEBUG_BOUNDED_SORT
+		SetConfigOption("optimize_bounded_sort", "on",
+						PGC_USERSET, PGC_S_SESSION);
+#endif
+		ok = ok && !trace_sort;
+#ifdef DEBUG_BOUNDED_SORT
+		ok = ok && optimize_bounded_sort;
+#endif
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && trace_sort;
+#ifdef DEBUG_BOUNDED_SORT
+		ok = ok && !optimize_bounded_sort;
+#endif
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && !trace_sort;
+#ifdef DEBUG_BOUNDED_SORT
+		ok = ok && optimize_bounded_sort;
+#endif
+
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("trace_sort", saved_trace_sort,
+						PGC_USERSET, PGC_S_SESSION);
+#ifdef DEBUG_BOUNDED_SORT
+		SetConfigOption("optimize_bounded_sort",
+						saved_optimize_bounded_sort,
+						PGC_USERSET, PGC_S_SESSION);
+#endif
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("trace_sort", saved_trace_sort,
+						PGC_USERSET, PGC_S_SESSION);
+#ifdef DEBUG_BOUNDED_SORT
+		SetConfigOption("optimize_bounded_sort",
+						saved_optimize_bounded_sort,
+						PGC_USERSET, PGC_S_SESSION);
+#endif
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session sort GUC state was not session-local");
 
 	PG_RETURN_BOOL(true);
 }

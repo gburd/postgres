@@ -357,10 +357,12 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int tcp_user_timeout;
 extern char **PgCurrentRoleStringRef(void);
 #define role_string (*PgCurrentRoleStringRef())
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool in_hot_standby_guc;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool trace_sort;
+extern bool *PgCurrentTraceSortRef(void);
+#define trace_sort (*PgCurrentTraceSortRef())
 
 #ifdef DEBUG_BOUNDED_SORT
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool optimize_bounded_sort;
+extern bool *PgCurrentOptimizeBoundedSortRef(void);
+#define optimize_bounded_sort (*PgCurrentOptimizeBoundedSortRef())
 #endif
 
 /*

@@ -19,8 +19,8 @@
 #include "utils/global_lifetime.h"
 
 /* GUC */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char
-		   *Extension_control_path;
+extern char **PgCurrentExtensionControlPathRef(void);
+#define Extension_control_path (*PgCurrentExtensionControlPathRef())
 
 /*
  * creating_extension is only true while running a CREATE EXTENSION or ALTER

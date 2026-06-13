@@ -73,8 +73,11 @@
 #include "utils/varlena.h"
 
 
-/* GUC */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION char *Extension_control_path;
+/*
+ * Extension control path GUC state lives in PgSessionMiscGUCState.  The
+ * public name remains available through a compatibility macro in
+ * commands/extension.h.
+ */
 
 /* Globally visible state variables */
 PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool creating_extension = false;

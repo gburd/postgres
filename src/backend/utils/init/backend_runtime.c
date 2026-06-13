@@ -226,7 +226,8 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionMiscGUCState early_session_mis
 	.max_stack_depth_bytes = 100 * (ssize_t) 1024,
 	.session_preload_libraries_value = NULL,
 	.local_preload_libraries_value = NULL,
-	.dynamic_library_path_value = NULL
+	.dynamic_library_path_value = NULL,
+	.extension_control_path_value = "$system"
 };
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPgStatState early_session_pgstat = {
 	.initialized = true,
@@ -324,6 +325,13 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionJitGUCState early_session_jit_
 	.jit_above_cost_value = 100000,
 	.jit_inline_above_cost_value = 500000,
 	.jit_optimize_above_cost_value = 500000
+};
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionSortGUCState early_session_sort_guc = {
+	.initialized = true,
+	.trace_sort_value = false,
+#ifdef DEBUG_BOUNDED_SORT
+	.optimize_bounded_sort_value = true,
+#endif
 };
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionQueryMemoryState early_session_query_memory = {
 	.initialized = true,
@@ -449,6 +457,8 @@ static void PgSessionInitializeAccessWalGUCState(PgSessionAccessWalGUCState *acc
 static void PgSessionAdoptEarlyAccessWalGUCState(PgSession *session);
 static void PgSessionInitializeJitGUCState(PgSessionJitGUCState *jit_guc);
 static void PgSessionAdoptEarlyJitGUCState(PgSession *session);
+static void PgSessionInitializeSortGUCState(PgSessionSortGUCState *sort_guc);
+static void PgSessionAdoptEarlySortGUCState(PgSession *session);
 static void PgSessionInitializeQueryMemoryState(PgSessionQueryMemoryState *query_memory);
 static void PgSessionAdoptEarlyQueryMemoryState(PgSession *session);
 static void PgSessionInitializePlannerCostState(PgSessionPlannerCostState *planner_cost);
@@ -485,6 +495,7 @@ static PgSessionReplicationGUCState *PgCurrentSessionReplicationGUCState(void);
 static PgSessionGeneralGUCState *PgCurrentSessionGeneralGUCState(void);
 static PgSessionAccessWalGUCState *PgCurrentSessionAccessWalGUCState(void);
 static PgSessionJitGUCState *PgCurrentSessionJitGUCState(void);
+static PgSessionSortGUCState *PgCurrentSessionSortGUCState(void);
 static PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
 static PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
 static PgSessionPlannerMethodState *PgCurrentSessionPlannerMethodState(void);
@@ -867,6 +878,7 @@ PgSessionInitializeMiscGUCState(PgSessionMiscGUCState *misc_guc)
 	misc_guc->session_preload_libraries_value = NULL;
 	misc_guc->local_preload_libraries_value = NULL;
 	misc_guc->dynamic_library_path_value = NULL;
+	misc_guc->extension_control_path_value = "$system";
 }
 
 static void
@@ -1132,6 +1144,30 @@ PgSessionAdoptEarlyJitGUCState(PgSession *session)
 
 	session->jit_guc = early_session_jit_guc;
 	PgSessionInitializeJitGUCState(&early_session_jit_guc);
+}
+
+static void
+PgSessionInitializeSortGUCState(PgSessionSortGUCState *sort_guc)
+{
+	Assert(sort_guc != NULL);
+
+	sort_guc->initialized = true;
+	sort_guc->trace_sort_value = false;
+#ifdef DEBUG_BOUNDED_SORT
+	sort_guc->optimize_bounded_sort_value = true;
+#endif
+}
+
+static void
+PgSessionAdoptEarlySortGUCState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (!early_session_sort_guc.initialized)
+		PgSessionInitializeSortGUCState(&early_session_sort_guc);
+
+	session->sort_guc = early_session_sort_guc;
+	PgSessionInitializeSortGUCState(&early_session_sort_guc);
 }
 
 static void
@@ -1412,6 +1448,7 @@ InitializePgProcessRuntime(void)
 	PgSessionAdoptEarlyGeneralGUCState(&process_session);
 	PgSessionAdoptEarlyAccessWalGUCState(&process_session);
 	PgSessionAdoptEarlyJitGUCState(&process_session);
+	PgSessionAdoptEarlySortGUCState(&process_session);
 	PgSessionAdoptEarlyQueryMemoryState(&process_session);
 	PgSessionAdoptEarlyPlannerCostState(&process_session);
 	PgSessionAdoptEarlyPlannerMethodState(&process_session);
@@ -1513,6 +1550,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgSessionInitializeGeneralGUCState(&state->session.general_guc);
 	PgSessionInitializeAccessWalGUCState(&state->session.access_wal_guc);
 	PgSessionInitializeJitGUCState(&state->session.jit_guc);
+	PgSessionInitializeSortGUCState(&state->session.sort_guc);
 	PgSessionInitializeQueryMemoryState(&state->session.query_memory);
 	PgSessionInitializePlannerCostState(&state->session.planner_cost);
 	PgSessionInitializePlannerMethodState(&state->session.planner_method);
@@ -1555,6 +1593,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgSessionAdoptEarlyGeneralGUCState(&state->session);
 	PgSessionAdoptEarlyAccessWalGUCState(&state->session);
 	PgSessionAdoptEarlyJitGUCState(&state->session);
+	PgSessionAdoptEarlySortGUCState(&state->session);
 	PgSessionAdoptEarlyQueryMemoryState(&state->session);
 	PgSessionAdoptEarlyPlannerCostState(&state->session);
 	PgSessionAdoptEarlyPlannerMethodState(&state->session);
@@ -1924,6 +1963,22 @@ PgCurrentSessionJitGUCState(void)
 		PgSessionInitializeJitGUCState(jit_guc);
 
 	return jit_guc;
+}
+
+static PgSessionSortGUCState *
+PgCurrentSessionSortGUCState(void)
+{
+	PgSessionSortGUCState *sort_guc;
+
+	if (CurrentPgSession == NULL)
+		sort_guc = &early_session_sort_guc;
+	else
+		sort_guc = &CurrentPgSession->sort_guc;
+
+	if (!sort_guc->initialized)
+		PgSessionInitializeSortGUCState(sort_guc);
+
+	return sort_guc;
 }
 
 static PgSessionQueryMemoryState *
@@ -2600,6 +2655,12 @@ PgCurrentDynamicLibraryPathRef(void)
 	return &PgCurrentSessionMiscGUCState()->dynamic_library_path_value;
 }
 
+char **
+PgCurrentExtensionControlPathRef(void)
+{
+	return &PgCurrentSessionMiscGUCState()->extension_control_path_value;
+}
+
 bool *
 PgCurrentPgStatTrackCountsRef(void)
 {
@@ -2996,6 +3057,20 @@ PgCurrentJitOptimizeAboveCostRef(void)
 {
 	return &PgCurrentSessionJitGUCState()->jit_optimize_above_cost_value;
 }
+
+bool *
+PgCurrentTraceSortRef(void)
+{
+	return &PgCurrentSessionSortGUCState()->trace_sort_value;
+}
+
+#ifdef DEBUG_BOUNDED_SORT
+bool *
+PgCurrentOptimizeBoundedSortRef(void)
+{
+	return &PgCurrentSessionSortGUCState()->optimize_bounded_sort_value;
+}
+#endif
 
 int *
 PgCurrentWorkMemRef(void)
