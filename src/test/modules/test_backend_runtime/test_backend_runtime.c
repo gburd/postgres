@@ -6925,6 +6925,79 @@ test_backend_activity_state_is_backend_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_backend_memory_manager_state_is_backend_local);
+Datum
+test_backend_memory_manager_state_is_backend_local(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgBackend	fake_backend1;
+	PgBackend	fake_backend2;
+	bool		ok = true;
+
+	saved_backend = CurrentPgBackend;
+
+	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
+	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+
+	PG_TRY();
+	{
+		CurrentPgBackend = &fake_backend1;
+		PgCurrentAllocSetContextFreeLists()[0].num_free = 11;
+		PgCurrentAllocSetContextFreeLists()[0].first_free =
+			(struct AllocSetContext *) &fake_backend1;
+		PgCurrentAllocSetContextFreeLists()[1].num_free = 12;
+		PgCurrentAllocSetContextFreeLists()[1].first_free =
+			(struct AllocSetContext *) &fake_backend1;
+		*PgCurrentLogMemoryContextInProgressRef() = true;
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && PgCurrentAllocSetContextFreeLists()[0].num_free == 0;
+		ok = ok && PgCurrentAllocSetContextFreeLists()[0].first_free == NULL;
+		ok = ok && PgCurrentAllocSetContextFreeLists()[1].num_free == 0;
+		ok = ok && PgCurrentAllocSetContextFreeLists()[1].first_free == NULL;
+		ok = ok && !*PgCurrentLogMemoryContextInProgressRef();
+
+		PgCurrentAllocSetContextFreeLists()[0].num_free = 21;
+		PgCurrentAllocSetContextFreeLists()[0].first_free =
+			(struct AllocSetContext *) &fake_backend2;
+		PgCurrentAllocSetContextFreeLists()[1].num_free = 22;
+		PgCurrentAllocSetContextFreeLists()[1].first_free =
+			(struct AllocSetContext *) &fake_backend2;
+		*PgCurrentLogMemoryContextInProgressRef() = true;
+
+		CurrentPgBackend = &fake_backend1;
+		ok = ok && PgCurrentAllocSetContextFreeLists()[0].num_free == 11;
+		ok = ok && PgCurrentAllocSetContextFreeLists()[0].first_free ==
+			(struct AllocSetContext *) &fake_backend1;
+		ok = ok && PgCurrentAllocSetContextFreeLists()[1].num_free == 12;
+		ok = ok && PgCurrentAllocSetContextFreeLists()[1].first_free ==
+			(struct AllocSetContext *) &fake_backend1;
+		ok = ok && *PgCurrentLogMemoryContextInProgressRef();
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && PgCurrentAllocSetContextFreeLists()[0].num_free == 21;
+		ok = ok && PgCurrentAllocSetContextFreeLists()[0].first_free ==
+			(struct AllocSetContext *) &fake_backend2;
+		ok = ok && PgCurrentAllocSetContextFreeLists()[1].num_free == 22;
+		ok = ok && PgCurrentAllocSetContextFreeLists()[1].first_free ==
+			(struct AllocSetContext *) &fake_backend2;
+		ok = ok && *PgCurrentLogMemoryContextInProgressRef();
+
+		CurrentPgBackend = saved_backend;
+	}
+	PG_CATCH();
+	{
+		CurrentPgBackend = saved_backend;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "backend memory manager state was not backend-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_backend_utility_state_is_backend_local);
 Datum
 test_backend_utility_state_is_backend_local(PG_FUNCTION_ARGS)

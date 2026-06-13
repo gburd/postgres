@@ -202,6 +202,13 @@ Important current files:
   changing the XLog state bridge or these redo files, run touched-object
   builds for the affected AM redo objects and `backend_runtime.o`, then clean
   rebuild/install before trusting runtime tests.
+- Allocation-set freelists and the memory-context logging reentrancy guard now
+  live in `PgBackendMemoryManagerState`. After changing this bridge or
+  `src/backend/utils/mmgr/aset.c`/`mcxt.c`, run touched-object builds for
+  `backend_runtime.o`, `aset.o`, `mcxt.o`, and `test_backend_runtime.o`, then
+  use a clean backend rebuild/install before runtime validation. The
+  global-lifetime scan drops by one for this slice because two raw globals are
+  replaced by one early-backend fallback bucket.
 - `proc_exit_inprogress` and `shmem_exit_inprogress` are now fields in
   `PgBackendExitState`, exposed through compatibility macros in
   `src/include/storage/ipc.h`; the old exported TLS definitions were removed

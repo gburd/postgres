@@ -164,7 +164,8 @@ PG_GLOBAL_RUNTIME MemoryContext PostmasterContext = NULL;
 PG_THREAD_LOCAL PG_GLOBAL_SESSION MemoryContext CacheMemoryContext = NULL;
 
 /* Is memory context logging currently in progress? */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool LogMemoryContextInProgress = false;
+#define LogMemoryContextInProgress \
+	(*PgCurrentLogMemoryContextInProgressRef())
 
 static void MemoryContextDeleteOnly(MemoryContext context);
 static void MemoryContextCallResetCallbacks(MemoryContext context);

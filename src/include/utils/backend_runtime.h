@@ -85,6 +85,7 @@ struct DecodingWorker;
 struct ExtensionSiblingCache;
 struct PgAioBackend;
 struct PgAioUringContext;
+struct AllocSetContext;
 struct ClientSocket;
 typedef struct dsm_segment dsm_segment;
 typedef void (*PgBackendExitContinuation) (int code);
@@ -507,6 +508,20 @@ typedef struct PgBackendActivityState
 	int			num_backends;
 	MemoryContext backend_status_context;
 } PgBackendActivityState;
+
+typedef struct PgBackendAllocSetFreeList
+{
+	int			num_free;
+	struct AllocSetContext *first_free;
+} PgBackendAllocSetFreeList;
+
+#define PG_BACKEND_ALLOCSET_NUM_FREELISTS 2
+
+typedef struct PgBackendMemoryManagerState
+{
+	PgBackendAllocSetFreeList context_freelists[PG_BACKEND_ALLOCSET_NUM_FREELISTS];
+	bool		log_memory_context_in_progress;
+} PgBackendMemoryManagerState;
 
 #define PG_BACKEND_MAX_SEQ_SCANS 100
 #define PG_BACKEND_MAX_DATE_FIELDS 25
@@ -1507,6 +1522,7 @@ struct PgBackend
 	PgBackendAioState aio;
 	PgBackendPgStatPendingState pgstat_pending;
 	PgBackendActivityState activity;
+	PgBackendMemoryManagerState memory_manager;
 	PgBackendUtilityState utility;
 	PgBackendParallelState parallel;
 	PgBackendInstrumentationState instrumentation;
@@ -1729,6 +1745,8 @@ extern PgStat_Counter *PgCurrentPgStatLastSessionReportTimeRef(void);
 extern LocalPgBackendStatus **PgCurrentLocalBackendStatusTableRef(void);
 extern int *PgCurrentLocalNumBackendsRef(void);
 extern MemoryContext *PgCurrentBackendStatusSnapContextRef(void);
+extern PgBackendAllocSetFreeList *PgCurrentAllocSetContextFreeLists(void);
+extern bool *PgCurrentLogMemoryContextInProgressRef(void);
 extern HTAB **PgCurrentSeqScanTables(void);
 extern int *PgCurrentSeqScanLevels(void);
 extern int *PgCurrentNumSeqScansRef(void);

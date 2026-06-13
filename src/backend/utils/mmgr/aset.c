@@ -47,6 +47,7 @@
 #include "postgres.h"
 
 #include "port/pg_bitutils.h"
+#include "utils/backend_runtime.h"
 #include "utils/memdebug.h"
 #include "utils/memutils.h"
 #include "utils/memutils_internal.h"
@@ -247,23 +248,11 @@ typedef struct AllocBlockData
 /* Check if the block is the keeper block of the given allocation set */
 #define IsKeeperBlock(set, block) ((block) == (KeeperBlock(set)))
 
-typedef struct AllocSetFreeList
-{
-	int			num_free;		/* current list length */
-	AllocSetContext *first_free;	/* list header */
-} AllocSetFreeList;
+typedef PgBackendAllocSetFreeList AllocSetFreeList;
 
 /* context_freelists[0] is for default params, [1] for small params */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND AllocSetFreeList context_freelists[2] =
-{
-	{
-		0, NULL
-	},
-	{
-		0, NULL
-	}
-};
-
+#define context_freelists \
+	(PgCurrentAllocSetContextFreeLists())
 
 /* ----------
  * AllocSetFreeIndex -

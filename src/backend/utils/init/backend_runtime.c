@@ -110,6 +110,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendStorageState early_backend_sto
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendLockState early_backend_locks;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendIPCState early_backend_ipc;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendTransactionState early_backend_transaction;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendMemoryManagerState early_backend_memory_manager;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendTimeoutState early_backend_timeout;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendWalSenderState early_backend_walsender;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendReplicationState early_backend_replication;
@@ -658,6 +659,8 @@ static void PgBackendInitializePgStatPendingState(PgBackendPgStatPendingState *p
 static void PgBackendAdoptEarlyPgStatPendingState(PgBackend *backend);
 static void PgBackendInitializeActivityState(PgBackendActivityState *activity);
 static void PgBackendAdoptEarlyActivityState(PgBackend *backend);
+static void PgBackendInitializeMemoryManagerState(PgBackendMemoryManagerState *memory_manager);
+static void PgBackendAdoptEarlyMemoryManagerState(PgBackend *backend);
 static void PgBackendInitializeUtilityState(PgBackendUtilityState *utility);
 static void PgBackendAdoptEarlyUtilityState(PgBackend *backend);
 static void PgBackendInitializeParallelState(PgBackendParallelState *parallel);
@@ -2171,6 +2174,23 @@ PgBackendAdoptEarlyActivityState(PgBackend *backend)
 }
 
 static void
+PgBackendInitializeMemoryManagerState(PgBackendMemoryManagerState *memory_manager)
+{
+	Assert(memory_manager != NULL);
+
+	MemSet(memory_manager, 0, sizeof(*memory_manager));
+}
+
+static void
+PgBackendAdoptEarlyMemoryManagerState(PgBackend *backend)
+{
+	Assert(backend != NULL);
+
+	backend->memory_manager = early_backend_memory_manager;
+	PgBackendInitializeMemoryManagerState(&early_backend_memory_manager);
+}
+
+static void
 PgBackendInitializeUtilityState(PgBackendUtilityState *utility)
 {
 	Assert(utility != NULL);
@@ -2777,6 +2797,7 @@ InitializePgProcessRuntime(void)
 	PgBackendAdoptEarlyAuxProcessResourceOwner(&process_backend);
 	PgBackendAdoptEarlyPgStatPendingState(&process_backend);
 	PgBackendAdoptEarlyActivityState(&process_backend);
+	PgBackendAdoptEarlyMemoryManagerState(&process_backend);
 	PgBackendAdoptEarlyUtilityState(&process_backend);
 	PgBackendAdoptEarlyParallelState(&process_backend);
 	PgBackendAdoptEarlyInstrumentationState(&process_backend);
@@ -2935,6 +2956,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgBackendInitializeInterrupts(&state->backend);
 	PgBackendInitializePgStatPendingState(&state->backend.pgstat_pending);
 	PgBackendInitializeActivityState(&state->backend.activity);
+	PgBackendInitializeMemoryManagerState(&state->backend.memory_manager);
 	PgBackendInitializeUtilityState(&state->backend.utility);
 	PgBackendInitializeParallelState(&state->backend.parallel);
 	PgBackendInitializeInstrumentationState(&state->backend.instrumentation);
@@ -3035,6 +3057,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgBackendAdoptEarlyAuxProcessResourceOwner(&state->backend);
 	PgBackendAdoptEarlyPgStatPendingState(&state->backend);
 	PgBackendAdoptEarlyActivityState(&state->backend);
+	PgBackendAdoptEarlyMemoryManagerState(&state->backend);
 	PgBackendAdoptEarlyUtilityState(&state->backend);
 	PgBackendAdoptEarlyParallelState(&state->backend);
 	PgBackendAdoptEarlyInstrumentationState(&state->backend);
@@ -4831,6 +4854,27 @@ MemoryContext *
 PgCurrentBackendStatusSnapContextRef(void)
 {
 	return &PgCurrentBackendActivityState()->backend_status_context;
+}
+
+static PgBackendMemoryManagerState *
+PgCurrentBackendMemoryManagerState(void)
+{
+	if (CurrentPgBackend == NULL)
+		return &early_backend_memory_manager;
+
+	return &CurrentPgBackend->memory_manager;
+}
+
+PgBackendAllocSetFreeList *
+PgCurrentAllocSetContextFreeLists(void)
+{
+	return PgCurrentBackendMemoryManagerState()->context_freelists;
+}
+
+bool *
+PgCurrentLogMemoryContextInProgressRef(void)
+{
+	return &PgCurrentBackendMemoryManagerState()->log_memory_context_in_progress;
 }
 
 static PgBackendUtilityState *

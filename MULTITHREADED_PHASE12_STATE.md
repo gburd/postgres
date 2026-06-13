@@ -7433,6 +7433,39 @@ Validation for this slice:
 - `test_backend_xlog_state_is_backend_local()` now covers the moved index WAL
   redo contexts across two fake logical backends.
 
+## Backend Memory Manager State Bridge
+
+The one-hundred-fifty-eighth Phase 12 slice adds a dedicated
+`PgBackendMemoryManagerState` bucket for backend-local memory-manager state:
+
+- the allocation-set context freelists in `aset.c`;
+- the memory-context logging reentrancy guard in `mcxt.c`.
+
+`backend_runtime.h` exposes only the `AllocSetContext` struct tag, not the
+allocation-set layout, so `aset.c` remains the only owner of allocation-set
+internals. The state uses the normal early-backend fallback pattern because
+memory allocation and memory-context logging can be reached before a full
+`PgBackend` object is installed.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `aset.o`, `mcxt.o`,
+  and `test_backend_runtime.o`;
+- backend clean plus generated-header recovery, full `gmake -j8`, and
+  `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 50 to 49. This is a
+  net drop of one because the slice removes two raw memory-manager globals and
+  adds one early backend fallback bucket;
+- `gmake -C contrib -j8` and a clean PL/pgSQL rebuild/install passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed after updating
+  the expected output for the new memory-manager state helper;
+- direct threaded runtime TAP passed all 87 tests with the local
+  `/Users/samwillis/perl5` `PERL5LIB` paths and an explicit `PG_REGRESS`
+  environment;
+- `test_backend_memory_manager_state_is_backend_local()` now covers the moved
+  allocator freelists and logging guard across two fake logical backends.
+
 ## Backend Parallel State Bridge
 
 The one-hundred-forty-second Phase 12 slice moves a parallel-query and

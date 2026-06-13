@@ -579,6 +579,17 @@ recovery, clean full build/install, process-mode backend-runtime regression,
 direct threaded runtime TAP, contrib build, PL/pgSQL rebuild/install, and the
 required global-lifetime scan with zero new unclassified mutable globals;
 backend-local declarations dropped from 54 to 50.
+Memory-manager backend-local state now lives in a dedicated
+`PgBackendMemoryManagerState`: allocation-set freelists and the
+memory-context logging reentrancy guard now follow the logical backend.
+`backend_runtime.h` exposes only the `AllocSetContext` tag, keeping
+allocation-set internals owned by `aset.c`. The slice passed touched-object
+builds, backend clean/generated-header recovery, clean full build/install,
+process-mode backend-runtime regression, direct threaded runtime TAP, contrib
+build, PL/pgSQL rebuild/install, and the required global-lifetime scan with
+zero new unclassified mutable globals; backend-local declarations dropped from
+50 to 49 because the two removed raw globals are offset by one early-backend
+fallback bucket.
 Backend utility/support state now lives in `PgBackendUtilityState`: dynahash
 active sequential-scan tracking, the superuser one-entry cache, the
 resource-owner release callback list pointer, and optional `RESOWNER_STATS`
