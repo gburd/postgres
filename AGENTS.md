@@ -147,21 +147,24 @@ Important current files:
   handle `ProcDiePending`, or immediate shutdown can leave thread carriers
   waiting for SIGKILL escalation.
 - The threaded startup serialization gate currently allows only AIO workers,
-  the syslogger, startup process, archiver, WAL receiver, WAL summarizer,
-  background writer, checkpointer, and WAL writer to bypass it. Background
-  writer/checkpointer/WAL writer bypass was validated as a worker-specific
-  narrowing because their common auxiliary startup does not run
-  database/session bootstrap before entering the worker loop. Startup process,
-  archiver, WAL receiver, and WAL summarizer bypasses are validated separately
-  because they use the same common auxiliary startup, publish wakeup/progress
-  state through shared memory, and keep per-loop work state backend-local. WAL
-  receiver's gate bypass covers `AuxiliaryProcessMainCommon()`; the later
-  `libpqwalreceiver` load and streaming loop are validated by a threaded
-  physical-replication smoke. Startup process bypass is validated by threaded
-  normal-startup and crash-recovery smokes. A broader attempt to bypass the
-  gate for additional non-session auxiliary workers let `select 1` pass but
-  caused abrupt postmaster death during a threaded `select count(*) > 0 from
-  pg_class` catalog smoke. Do not remove background workers, autovacuum, slot
+  the syslogger, startup process, autovacuum launcher, archiver, WAL
+  receiver, WAL summarizer, background writer, checkpointer, and WAL writer
+  to bypass it. Background writer/checkpointer/WAL writer bypass was
+  validated as a worker-specific narrowing because their common auxiliary
+  startup does not run database/session bootstrap before entering the worker
+  loop. The autovacuum launcher bypass is limited to the no-database launcher
+  loop; autovacuum workers stay gated because they connect to databases and
+  perform table work. Startup process, archiver, WAL receiver, and WAL
+  summarizer bypasses are validated separately because they use the same
+  common auxiliary startup, publish wakeup/progress state through shared
+  memory, and keep per-loop work state backend-local. WAL receiver's gate
+  bypass covers `AuxiliaryProcessMainCommon()`; the later `libpqwalreceiver`
+  load and streaming loop are validated by a threaded physical-replication
+  smoke. Startup process bypass is validated by threaded normal-startup and
+  crash-recovery smokes. A broader attempt to bypass the gate for additional
+  non-session auxiliary workers let `select 1` pass but caused abrupt
+  postmaster death during a threaded `select count(*) > 0 from pg_class`
+  catalog smoke. Do not remove background workers, autovacuum workers, slot
   sync, or other worker classes from the gate without a worker-specific
   shared-state fix and catalog-startup stress validation.
 - Prefer introducing compatibility wrappers around current globals before
