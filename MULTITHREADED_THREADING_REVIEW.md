@@ -443,6 +443,10 @@ owned by `PgBackendPendingInterruptState` behind their existing lvalue names,
 keeping generic main-loop reload/shutdown requests and the archiver,
 autovac-launcher, and checkpointer-specific pending requests attached to the
 logical backend.
+`proc_exit_inprogress` and `shmem_exit_inprogress` are now owned by
+`PgBackendExitState` behind compatibility macros in `storage/ipc.h`, so
+backend exit and shared-memory-exit in-progress state follows the logical
+backend exit object rather than exported standalone TLS.
 PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly

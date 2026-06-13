@@ -5850,3 +5850,57 @@ Validation for this slice:
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals, with backend-local declarations dropping from 433 to 427;
 - `git diff --check` passed.
+
+## Backend Exit In-Progress Flag Bridge
+
+The one-hundred-twenty-third Phase 12 slice moves the exported backend exit
+in-progress flags from standalone backend-local TLS into the existing
+`PgBackendExitState` object:
+
+- `PgBackendExitState` now owns `proc_exit_active` and `shmem_exit_active`;
+- `proc_exit_inprogress` and `shmem_exit_inprogress` remain
+  source-compatible lvalue names through `storage/ipc.h` compatibility macros;
+- `PgBackendExitInProgress()` and `PgBackendShmemExitInProgress()` now read
+  through those object-backed lvalues;
+- `PgBackendExitCleanup()`, `shmem_exit()`, and `on_exit_reset()` set and
+  clear the backend-owned fields through the existing names;
+- the exported TLS definitions were removed from `storage/ipc/ipc.c`.
+
+This is a Gate E2 lifecycle cleanup step: exit state now follows the logical
+backend object that owns the callback stacks and cleanup indexes, instead of a
+separate carrier-local mirror. The broader `TopMemoryContext` reclamation and
+full threaded teardown model remain open, but another exit-path dependency on
+raw backend-local TLS is gone.
+
+Validation for this slice:
+
+- `gmake -C src/backend/storage/ipc ipc.o` passed;
+- `gmake -C src/backend/utils/init backend_runtime.o` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean` passed;
+- `gmake -C src/test/modules/test_backend_runtime all` passed after relinking
+  `src/backend/postgres` so the new accessor symbol was visible to the test
+  module;
+- full backend clean plus generated-header recovery was required after the
+  installed-header change, because stale objects could still reference the old
+  exported flag symbols;
+- full `gmake -j8` passed;
+- full `gmake -j8 DESTDIR="$PWD/tmp_install" install` passed;
+- PL/pgSQL was cleaned, rebuilt, and reinstalled after the installed-header
+  change;
+- `src/test/modules/test_backend_runtime` was cleaned, rebuilt, and
+  reinstalled after the installed-header change;
+- direct threaded-runtime TAP passed all 87 tests with local
+  `/Users/samwillis/perl5` `PERL5LIB` paths before and after
+  `gmake -C src/test/modules/test_backend_runtime check` recreated
+  `tmp_install`;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression, including the new
+  `test_backend_exit_state_is_backend_local()` helper, and still reported TAP
+  disabled by configure;
+- `gmake -C contrib -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 427 to 423;
+- a static scan found only the two compatibility macros in
+  `src/include/storage/ipc.h` and no remaining TLS declarations or exported
+  symbol references for the moved flags;
+- `git diff --check` passed.

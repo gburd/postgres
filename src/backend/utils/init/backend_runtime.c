@@ -2546,9 +2546,6 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	CurrentPgConnection = &state->connection;
 	CurrentPgExecution = &state->execution;
 	InitializeThreadedSessionRequiredGUCOptions();
-
-	proc_exit_inprogress = false;
-	shmem_exit_inprogress = false;
 }
 
 void

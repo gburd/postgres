@@ -39,8 +39,8 @@ typedef struct PgBackendExitState
 	int			on_proc_exit_index;
 	int			on_shmem_exit_index;
 	int			before_shmem_exit_index;
-	bool		proc_exit_inprogress;
-	bool		shmem_exit_inprogress;
+	bool		proc_exit_active;
+	bool		shmem_exit_active;
 } PgBackendExitState;
 
 /*----------
@@ -84,9 +84,7 @@ typedef struct PgBackendExitState
 
 
 /* ipc.c */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool proc_exit_inprogress;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool shmem_exit_inprogress;
-
+extern PgBackendExitState *PgCurrentBackendExitStateRef(void);
 extern void PgBackendInitializeExitState(PgBackendExitState *exit_state);
 extern void PgBackendAdoptEarlyExitState(PgBackendExitState *exit_state);
 extern bool PgBackendExitInProgress(void);
@@ -102,6 +100,11 @@ extern void before_shmem_exit(pg_on_exit_callback function, Datum arg);
 extern void cancel_before_shmem_exit(pg_on_exit_callback function, Datum arg);
 extern void on_exit_reset(void);
 extern void check_on_shmem_exit_lists_are_empty(void);
+
+#define proc_exit_inprogress \
+	(PgCurrentBackendExitStateRef()->proc_exit_active)
+#define shmem_exit_inprogress \
+	(PgCurrentBackendExitStateRef()->shmem_exit_active)
 
 /* ipci.c */
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME shmem_startup_hook_type shmem_startup_hook;

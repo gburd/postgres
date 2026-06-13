@@ -6471,6 +6471,67 @@ test_backend_pending_interrupts_are_backend_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_backend_exit_state_is_backend_local);
+Datum
+test_backend_exit_state_is_backend_local(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgBackend	fake_backend1;
+	PgBackend	fake_backend2;
+	bool		saved_proc_exit_flag;
+	bool		saved_shmem_exit_flag;
+	bool		ok = true;
+
+	saved_backend = CurrentPgBackend;
+	saved_proc_exit_flag = proc_exit_inprogress;
+	saved_shmem_exit_flag = shmem_exit_inprogress;
+	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
+	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+
+	PG_TRY();
+	{
+		CurrentPgBackend = &fake_backend1;
+		proc_exit_inprogress = true;
+		shmem_exit_inprogress = true;
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && !proc_exit_inprogress;
+		ok = ok && !shmem_exit_inprogress;
+		ok = ok && !PgBackendExitInProgress();
+		ok = ok && !PgBackendShmemExitInProgress();
+
+		proc_exit_inprogress = false;
+		shmem_exit_inprogress = false;
+
+		CurrentPgBackend = &fake_backend1;
+		ok = ok && proc_exit_inprogress;
+		ok = ok && shmem_exit_inprogress;
+		ok = ok && PgBackendExitInProgress();
+		ok = ok && PgBackendShmemExitInProgress();
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && !proc_exit_inprogress;
+		ok = ok && !shmem_exit_inprogress;
+
+		CurrentPgBackend = saved_backend;
+		proc_exit_inprogress = saved_proc_exit_flag;
+		shmem_exit_inprogress = saved_shmem_exit_flag;
+	}
+	PG_CATCH();
+	{
+		CurrentPgBackend = saved_backend;
+		proc_exit_inprogress = saved_proc_exit_flag;
+		shmem_exit_inprogress = saved_shmem_exit_flag;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "backend exit state was not backend-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_pmchild_thread_backend_signal_api);
 Datum
 test_pmchild_thread_backend_signal_api(PG_FUNCTION_ARGS)

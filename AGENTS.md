@@ -108,6 +108,9 @@ Important current files:
 - Keep process-mode behavior working after each implementation phase.
 - Use static annotations and tools to classify globals before moving large
   amounts of state.
+- For Phase 12 state migration, prefer larger coherent batches when the state
+  has the same owner and validation surface. Avoid one-variable commits unless
+  the variable sits on a fragile lifecycle path where a narrow proof is needed.
 - Do not attempt thread launch until the thread-safety floor is in place:
   backend-local globals must not be shared plain process globals, backend exit
   must not terminate the whole runtime, and timeout/interrupt delivery must be
@@ -169,6 +172,14 @@ Important current files:
   `_CheckpointerShutdownXLOGPending` symbols. At minimum, clean and reinstall
   PL/pgSQL, `src/test/modules/test_backend_runtime`, worker modules, and
   contrib modules under test before validating.
+- `proc_exit_inprogress` and `shmem_exit_inprogress` are now fields in
+  `PgBackendExitState`, exposed through compatibility macros in
+  `src/include/storage/ipc.h`; the old exported TLS definitions were removed
+  from `src/backend/storage/ipc/ipc.c`. After changing this bridge, clean and
+  rebuild backend objects and extension modules that include `storage/ipc.h`;
+  stale modules can still reference the removed `_proc_exit_inprogress` or
+  `_shmem_exit_inprogress` symbols, or miss the
+  `PgCurrentBackendExitStateRef()` accessor.
 - Treat `PMChild.thread_backend` as private PMChild-owned publication state.
   Postmaster code should use PMChild helper APIs for threaded backend
   interrupt, wakeup, and thread-exit publication rather than dereferencing or

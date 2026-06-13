@@ -35,19 +35,6 @@
 
 
 /*
- * Compatibility mirror of the current backend's proc_exit_inprogress state.
- * Core code should use PgBackendExitInProgress() so threaded runtimes can
- * observe the active logical backend rather than a process-global flag.
- */
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool proc_exit_inprogress = false;
-
-/*
- * Compatibility mirror of the current backend's shmem_exit_inprogress state.
- * Core code should use PgBackendShmemExitInProgress().
- */
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool shmem_exit_inprogress = false;
-
-/*
  * This flag tracks whether we've called atexit() in the current process
  * (or in the parent postmaster).
  */
@@ -83,6 +70,12 @@ CurrentBackendExitState(void)
 	return &early_exit_state;
 }
 
+PgBackendExitState *
+PgCurrentBackendExitStateRef(void)
+{
+	return CurrentBackendExitState();
+}
+
 void
 PgBackendInitializeExitState(PgBackendExitState *exit_state)
 {
@@ -105,13 +98,13 @@ PgBackendAdoptEarlyExitState(PgBackendExitState *exit_state)
 bool
 PgBackendExitInProgress(void)
 {
-	return CurrentBackendExitState()->proc_exit_inprogress;
+	return proc_exit_inprogress;
 }
 
 bool
 PgBackendShmemExitInProgress(void)
 {
-	return CurrentBackendExitState()->shmem_exit_inprogress;
+	return shmem_exit_inprogress;
 }
 
 
@@ -251,7 +244,6 @@ PgBackendExitCleanup(int code)
 	 * Once we set this flag, we are committed to exit.  Any ereport() will
 	 * NOT send control back to the main loop, but right back here.
 	 */
-	exit_state->proc_exit_inprogress = true;
 	proc_exit_inprogress = true;
 
 	/*
@@ -316,7 +308,6 @@ shmem_exit(int code)
 	PgBackendExitState *exit_state = CurrentBackendExitState();
 	PgBackendExitCallback *callback;
 
-	exit_state->shmem_exit_inprogress = true;
 	shmem_exit_inprogress = true;
 
 	/*
@@ -377,7 +368,6 @@ shmem_exit(int code)
 	}
 	exit_state->on_shmem_exit_index = 0;
 
-	exit_state->shmem_exit_inprogress = false;
 	shmem_exit_inprogress = false;
 }
 

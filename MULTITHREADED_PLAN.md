@@ -857,7 +857,10 @@ worker-specific pending flags `WakeupStopPending`,
 `AutoVacLauncherPending`, and `CheckpointerShutdownXLOGPending` now follow the
 same model, keeping archiver stop wakeups, autovac launcher wakeups, and
 checkpointer shutdown-XLOG requests in the logical backend's pending-interrupt
-state.
+state. The exit in-progress flags `proc_exit_inprogress` and
+`shmem_exit_inprogress` now live in `PgBackendExitState` behind compatibility
+macros in `storage/ipc.h`, so exit and shared-memory-exit state also follows
+the logical backend instead of exported standalone TLS.
 PMChild assignment and slot release now also scrub stale carrier-visible signal
 ids and thread-exit payloads before reuse. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live
