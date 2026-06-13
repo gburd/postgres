@@ -1874,3 +1874,60 @@ Validation for this slice:
 - `git diff --check` passed;
 - static scans found no remaining direct session TLS definitions or extern
   declarations for the moved command GUC names.
+
+## Session Replication GUC State Bridge
+
+The thirty-sixth Phase 12 slice moves replication direct-pointer GUC state
+under `PgSession`:
+
+- `PgSession` now owns a `PgSessionReplicationGUCState`;
+- `PgSessionReplicationGUCState` owns the `wal_sender_timeout`,
+  `wal_sender_shutdown_timeout`, `log_replication_commands`,
+  `wal_receiver_timeout`, `logical_decoding_work_mem`, and
+  `debug_logical_replication_streaming` direct-pointer GUC backing variables;
+- the public names remain source-compatible lvalue macros in
+  `replication/walsender.h`, `replication/walreceiver.h`, and
+  `replication/reorderbuffer.h`;
+- early startup paths before `CurrentPgSession` is installed use fallback
+  session-local storage in `backend_runtime.c`;
+- process-mode and thread-runtime session installation adopt any early
+  fallback replication GUC state into the logical session object;
+- `RebindSessionGUCVariablePointers()` now rebinds the generated GUC records
+  for the moved replication GUCs whenever the active logical session changes;
+- the local subscription option field for `wal_receiver_timeout` was renamed
+  to avoid macro expansion on `object->field` while preserving the
+  user-visible option and GUC name.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `walsender.o`,
+  `walreceiver.o`, `reorderbuffer.o`, logical replication `worker.o` and
+  `applyparallelworker.o`, `guc.o`, `guc_tables.o`, and
+  `test_backend_runtime.o`;
+- because exported replication GUC globals changed into compatibility macros,
+  `gmake -C src/backend clean` plus generated utility and node-header
+  recovery was used before the clean rebuild;
+- clean full `gmake -j8` passed after renaming the local
+  `wal_receiver_timeout` subscription option field that collided with the new
+  compatibility macro;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed, followed by rebuilding
+  and reinstalling `src/test/modules/test_backend_runtime`,
+  `src/test/regress`, `libpqwalreceiver`, and `src/backend/snowball`;
+- focused `test_backend_runtime` regression passed and includes
+  `test_session_replication_guc_state_is_session_local()`, which switches
+  sessions through `PgSetCurrentSession()`, changes all six moved replication
+  GUCs through the GUC machinery, and proves the public backing values follow
+  the active session after GUC pointer rebinding;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- direct `contrib/test_decoding` regression passed all 20 tests after
+  rebuilding stale `pgoutput` and `pgrepack` output plugin dylibs against the
+  current headers;
+- direct `contrib/test_decoding` isolation regression passed all 14 tests;
+- direct threaded-runtime TAP coverage was attempted for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`,
+  but this system Perl is missing `IPC::Run`, so both tests failed before
+  starting PostgreSQL.

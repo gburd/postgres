@@ -143,14 +143,6 @@ PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool am_db_walsender = false;
 PG_GLOBAL_RUNTIME int max_wal_senders = 10;	/* the maximum number of concurrent
 											 * walsenders */
 
-/* Maximum time to send one WAL data message. */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int wal_sender_timeout = 60 * 1000;
-
-/* Maximum time to wait during shutdown for WAL replication. */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int wal_sender_shutdown_timeout = -1;
-
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_replication_commands = false;
-
 /*
  * State for WalSndWakeupRequest
  */

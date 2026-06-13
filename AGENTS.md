@@ -211,6 +211,17 @@ Important current files:
   gmake -C src/backend/replication/libpqwalreceiver DESTDIR="$PWD/tmp_install" install
   ```
 
+  Logical-decoding output plugins can also keep stale references to moved
+  backend globals. After moving memory-context or replication GUC globals,
+  clean and reinstall `pgoutput` and `pgrepack` before trusting
+  `contrib/test_decoding`; stale copies have failed with
+  `Symbol not found: _CurrentMemoryContext`.
+
+  ```sh
+  gmake -C src/backend/replication/pgoutput clean all DESTDIR="$PWD/tmp_install" install
+  gmake -C src/backend/replication/pgrepack clean all DESTDIR="$PWD/tmp_install" install
+  ```
+
   Core backend globals such as `MyProcPid` can also be referenced from
   server-side port objects. If a clean backend link fails with a removed
   backend-global symbol from `libpgport_srv.a`, clean and rebuild `src/port`

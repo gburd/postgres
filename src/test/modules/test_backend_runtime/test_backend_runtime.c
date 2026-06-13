@@ -37,6 +37,9 @@
 #include "postmaster/postmaster.h"
 #include "port/atomics.h"
 #include "port/pg_thread.h"
+#include "replication/reorderbuffer.h"
+#include "replication/walreceiver.h"
+#include "replication/walsender.h"
 #include "storage/bufpage.h"
 #include "storage/bufmgr.h"
 #include "storage/copydir.h"
@@ -2627,6 +2630,162 @@ test_session_command_guc_state_is_session_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "session command GUC state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_session_replication_guc_state_is_session_local);
+Datum
+test_session_replication_guc_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	char	   *saved_wal_sender_timeout;
+	char	   *saved_wal_sender_shutdown_timeout;
+	char	   *saved_log_replication_commands;
+	char	   *saved_wal_receiver_timeout;
+	char	   *saved_logical_decoding_work_mem;
+	char	   *saved_debug_logical_replication_streaming;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	saved_wal_sender_timeout =
+		pstrdup(GetConfigOption("wal_sender_timeout", false, false));
+	saved_wal_sender_shutdown_timeout =
+		pstrdup(GetConfigOption("wal_sender_shutdown_timeout", false, false));
+	saved_log_replication_commands =
+		pstrdup(GetConfigOption("log_replication_commands", false, false));
+	saved_wal_receiver_timeout =
+		pstrdup(GetConfigOption("wal_receiver_timeout", false, false));
+	saved_logical_decoding_work_mem =
+		pstrdup(GetConfigOption("logical_decoding_work_mem", false, false));
+	saved_debug_logical_replication_streaming =
+		pstrdup(GetConfigOption("debug_logical_replication_streaming",
+								false, false));
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && wal_sender_timeout == 60 * 1000;
+		ok = ok && wal_sender_shutdown_timeout == -1;
+		ok = ok && !log_replication_commands;
+		ok = ok && wal_receiver_timeout == 60 * 1000;
+		ok = ok && logical_decoding_work_mem == 65536;
+		ok = ok && debug_logical_replication_streaming ==
+			DEBUG_LOGICAL_REP_STREAMING_BUFFERED;
+
+		SetConfigOption("wal_sender_timeout", "7000",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("wal_sender_shutdown_timeout", "8000",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("log_replication_commands", "on",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("wal_receiver_timeout", "9000",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("logical_decoding_work_mem", "128MB",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("debug_logical_replication_streaming", "immediate",
+						PGC_USERSET, PGC_S_SESSION);
+		ok = ok && wal_sender_timeout == 7000;
+		ok = ok && wal_sender_shutdown_timeout == 8000;
+		ok = ok && log_replication_commands;
+		ok = ok && wal_receiver_timeout == 9000;
+		ok = ok && logical_decoding_work_mem == 131072;
+		ok = ok && debug_logical_replication_streaming ==
+			DEBUG_LOGICAL_REP_STREAMING_IMMEDIATE;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && wal_sender_timeout == 60 * 1000;
+		ok = ok && wal_sender_shutdown_timeout == -1;
+		ok = ok && !log_replication_commands;
+		ok = ok && wal_receiver_timeout == 60 * 1000;
+		ok = ok && logical_decoding_work_mem == 65536;
+		ok = ok && debug_logical_replication_streaming ==
+			DEBUG_LOGICAL_REP_STREAMING_BUFFERED;
+		SetConfigOption("wal_sender_timeout", "1000",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("wal_sender_shutdown_timeout", "-1",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("log_replication_commands", "off",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("wal_receiver_timeout", "2000",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("logical_decoding_work_mem", "64kB",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("debug_logical_replication_streaming", "buffered",
+						PGC_USERSET, PGC_S_SESSION);
+		ok = ok && wal_sender_timeout == 1000;
+		ok = ok && wal_sender_shutdown_timeout == -1;
+		ok = ok && !log_replication_commands;
+		ok = ok && wal_receiver_timeout == 2000;
+		ok = ok && logical_decoding_work_mem == 64;
+		ok = ok && debug_logical_replication_streaming ==
+			DEBUG_LOGICAL_REP_STREAMING_BUFFERED;
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && wal_sender_timeout == 7000;
+		ok = ok && wal_sender_shutdown_timeout == 8000;
+		ok = ok && log_replication_commands;
+		ok = ok && wal_receiver_timeout == 9000;
+		ok = ok && logical_decoding_work_mem == 131072;
+		ok = ok && debug_logical_replication_streaming ==
+			DEBUG_LOGICAL_REP_STREAMING_IMMEDIATE;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && wal_sender_timeout == 1000;
+		ok = ok && wal_sender_shutdown_timeout == -1;
+		ok = ok && !log_replication_commands;
+		ok = ok && wal_receiver_timeout == 2000;
+		ok = ok && logical_decoding_work_mem == 64;
+		ok = ok && debug_logical_replication_streaming ==
+			DEBUG_LOGICAL_REP_STREAMING_BUFFERED;
+
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("debug_logical_replication_streaming",
+						saved_debug_logical_replication_streaming,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("logical_decoding_work_mem",
+						saved_logical_decoding_work_mem,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("log_replication_commands",
+						saved_log_replication_commands,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("wal_receiver_timeout", saved_wal_receiver_timeout,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("wal_sender_shutdown_timeout",
+						saved_wal_sender_shutdown_timeout,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("wal_sender_timeout", saved_wal_sender_timeout,
+						PGC_USERSET, PGC_S_SESSION);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("debug_logical_replication_streaming",
+						saved_debug_logical_replication_streaming,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("logical_decoding_work_mem",
+						saved_logical_decoding_work_mem,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("log_replication_commands",
+						saved_log_replication_commands,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("wal_receiver_timeout", saved_wal_receiver_timeout,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("wal_sender_shutdown_timeout",
+						saved_wal_sender_shutdown_timeout,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("wal_sender_timeout", saved_wal_sender_timeout,
+						PGC_USERSET, PGC_S_SESSION);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session replication GUC state was not session-local");
 
 	PG_RETURN_BOOL(true);
 }

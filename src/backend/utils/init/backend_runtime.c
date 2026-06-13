@@ -34,6 +34,7 @@
 #include "parser/parser.h"
 #include "parser/parse_expr.h"
 #include "postmaster/interrupt.h"
+#include "replication/reorderbuffer.h"
 #include "replication/logicalworker.h"
 #include "replication/slotsync.h"
 #include "storage/bufmgr.h"
@@ -248,6 +249,16 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionCommandGUCState early_session_
 	.event_triggers_value = true,
 	.trace_notify_value = false
 };
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionReplicationGUCState early_session_replication_guc = {
+	.initialized = true,
+	.wal_sender_timeout_ms = 60 * 1000,
+	.wal_sender_shutdown_timeout_ms = -1,
+	.log_replication_commands_value = false,
+	.wal_receiver_timeout_ms = 60 * 1000,
+	.logical_decoding_work_mem_kb = 65536,
+	.debug_logical_replication_streaming_value =
+		DEBUG_LOGICAL_REP_STREAMING_BUFFERED
+};
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionQueryMemoryState early_session_query_memory = {
 	.initialized = true,
 	.work_mem_kb = 4096,
@@ -364,6 +375,8 @@ static void PgSessionInitializeUserGUCState(PgSessionUserGUCState *user_guc);
 static void PgSessionAdoptEarlyUserGUCState(PgSession *session);
 static void PgSessionInitializeCommandGUCState(PgSessionCommandGUCState *command_guc);
 static void PgSessionAdoptEarlyCommandGUCState(PgSession *session);
+static void PgSessionInitializeReplicationGUCState(PgSessionReplicationGUCState *replication_guc);
+static void PgSessionAdoptEarlyReplicationGUCState(PgSession *session);
 static void PgSessionInitializeQueryMemoryState(PgSessionQueryMemoryState *query_memory);
 static void PgSessionAdoptEarlyQueryMemoryState(PgSession *session);
 static void PgSessionInitializePlannerCostState(PgSessionPlannerCostState *planner_cost);
@@ -396,6 +409,7 @@ static PgSessionQueryIdState *PgCurrentSessionQueryIdState(void);
 static PgSessionStorageGUCState *PgCurrentSessionStorageGUCState(void);
 static PgSessionUserGUCState *PgCurrentSessionUserGUCState(void);
 static PgSessionCommandGUCState *PgCurrentSessionCommandGUCState(void);
+static PgSessionReplicationGUCState *PgCurrentSessionReplicationGUCState(void);
 static PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
 static PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
 static PgSessionPlannerMethodState *PgCurrentSessionPlannerMethodState(void);
@@ -914,6 +928,33 @@ PgSessionAdoptEarlyCommandGUCState(PgSession *session)
 }
 
 static void
+PgSessionInitializeReplicationGUCState(PgSessionReplicationGUCState *replication_guc)
+{
+	Assert(replication_guc != NULL);
+
+	replication_guc->initialized = true;
+	replication_guc->wal_sender_timeout_ms = 60 * 1000;
+	replication_guc->wal_sender_shutdown_timeout_ms = -1;
+	replication_guc->log_replication_commands_value = false;
+	replication_guc->wal_receiver_timeout_ms = 60 * 1000;
+	replication_guc->logical_decoding_work_mem_kb = 65536;
+	replication_guc->debug_logical_replication_streaming_value =
+		DEBUG_LOGICAL_REP_STREAMING_BUFFERED;
+}
+
+static void
+PgSessionAdoptEarlyReplicationGUCState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (!early_session_replication_guc.initialized)
+		PgSessionInitializeReplicationGUCState(&early_session_replication_guc);
+
+	session->replication_guc = early_session_replication_guc;
+	PgSessionInitializeReplicationGUCState(&early_session_replication_guc);
+}
+
+static void
 PgSessionInitializeQueryMemoryState(PgSessionQueryMemoryState *query_memory)
 {
 	Assert(query_memory != NULL);
@@ -1187,6 +1228,7 @@ InitializePgProcessRuntime(void)
 	PgSessionAdoptEarlyStorageGUCState(&process_session);
 	PgSessionAdoptEarlyUserGUCState(&process_session);
 	PgSessionAdoptEarlyCommandGUCState(&process_session);
+	PgSessionAdoptEarlyReplicationGUCState(&process_session);
 	PgSessionAdoptEarlyQueryMemoryState(&process_session);
 	PgSessionAdoptEarlyPlannerCostState(&process_session);
 	PgSessionAdoptEarlyPlannerMethodState(&process_session);
@@ -1284,6 +1326,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgSessionInitializeStorageGUCState(&state->session.storage_guc);
 	PgSessionInitializeUserGUCState(&state->session.user_guc);
 	PgSessionInitializeCommandGUCState(&state->session.command_guc);
+	PgSessionInitializeReplicationGUCState(&state->session.replication_guc);
 	PgSessionInitializeQueryMemoryState(&state->session.query_memory);
 	PgSessionInitializePlannerCostState(&state->session.planner_cost);
 	PgSessionInitializePlannerMethodState(&state->session.planner_method);
@@ -1322,6 +1365,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgSessionAdoptEarlyStorageGUCState(&state->session);
 	PgSessionAdoptEarlyUserGUCState(&state->session);
 	PgSessionAdoptEarlyCommandGUCState(&state->session);
+	PgSessionAdoptEarlyReplicationGUCState(&state->session);
 	PgSessionAdoptEarlyQueryMemoryState(&state->session);
 	PgSessionAdoptEarlyPlannerCostState(&state->session);
 	PgSessionAdoptEarlyPlannerMethodState(&state->session);
@@ -1627,6 +1671,22 @@ PgCurrentSessionCommandGUCState(void)
 		PgSessionInitializeCommandGUCState(command_guc);
 
 	return command_guc;
+}
+
+static PgSessionReplicationGUCState *
+PgCurrentSessionReplicationGUCState(void)
+{
+	PgSessionReplicationGUCState *replication_guc;
+
+	if (CurrentPgSession == NULL)
+		replication_guc = &early_session_replication_guc;
+	else
+		replication_guc = &CurrentPgSession->replication_guc;
+
+	if (!replication_guc->initialized)
+		PgSessionInitializeReplicationGUCState(replication_guc);
+
+	return replication_guc;
 }
 
 static PgSessionQueryMemoryState *
@@ -2421,6 +2481,45 @@ bool *
 PgCurrentTraceNotifyRef(void)
 {
 	return &PgCurrentSessionCommandGUCState()->trace_notify_value;
+}
+
+int *
+PgCurrentWalSenderTimeoutRef(void)
+{
+	return &PgCurrentSessionReplicationGUCState()->wal_sender_timeout_ms;
+}
+
+int *
+PgCurrentWalSenderShutdownTimeoutRef(void)
+{
+	return &PgCurrentSessionReplicationGUCState()->wal_sender_shutdown_timeout_ms;
+}
+
+bool *
+PgCurrentLogReplicationCommandsRef(void)
+{
+	return &PgCurrentSessionReplicationGUCState()->log_replication_commands_value;
+}
+
+int *
+PgCurrentWalReceiverTimeoutRef(void)
+{
+	return &PgCurrentSessionReplicationGUCState()->wal_receiver_timeout_ms;
+}
+
+int *
+PgCurrentLogicalDecodingWorkMemRef(void)
+{
+	return &PgCurrentSessionReplicationGUCState()->logical_decoding_work_mem_kb;
+}
+
+int *
+PgCurrentDebugLogicalReplicationStreamingRef(void)
+{
+	PgSessionReplicationGUCState *replication_guc;
+
+	replication_guc = PgCurrentSessionReplicationGUCState();
+	return &replication_guc->debug_logical_replication_streaming_value;
 }
 
 int *

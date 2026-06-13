@@ -388,6 +388,17 @@ typedef struct PgSessionCommandGUCState
 	bool		trace_notify_value;
 } PgSessionCommandGUCState;
 
+typedef struct PgSessionReplicationGUCState
+{
+	bool		initialized;
+	int			wal_sender_timeout_ms;
+	int			wal_sender_shutdown_timeout_ms;
+	bool		log_replication_commands_value;
+	int			wal_receiver_timeout_ms;
+	int			logical_decoding_work_mem_kb;
+	int			debug_logical_replication_streaming_value;
+} PgSessionReplicationGUCState;
+
 typedef struct PgSessionQueryMemoryState
 {
 	bool		initialized;
@@ -593,6 +604,7 @@ struct PgSession
 	PgSessionStorageGUCState storage_guc;
 	PgSessionUserGUCState user_guc;
 	PgSessionCommandGUCState command_guc;
+	PgSessionReplicationGUCState replication_guc;
 	PgSessionQueryMemoryState query_memory;
 	PgSessionPlannerCostState planner_cost;
 	PgSessionPlannerMethodState planner_method;
@@ -714,6 +726,12 @@ extern bool *PgCurrentCreateRoleSelfGrantOptionsSetRef(void);
 extern int *PgCurrentSessionReplicationRoleRef(void);
 extern bool *PgCurrentEventTriggersRef(void);
 extern bool *PgCurrentTraceNotifyRef(void);
+extern int *PgCurrentWalSenderTimeoutRef(void);
+extern int *PgCurrentWalSenderShutdownTimeoutRef(void);
+extern bool *PgCurrentLogReplicationCommandsRef(void);
+extern int *PgCurrentWalReceiverTimeoutRef(void);
+extern int *PgCurrentLogicalDecodingWorkMemRef(void);
+extern int *PgCurrentDebugLogicalReplicationStreamingRef(void);
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);

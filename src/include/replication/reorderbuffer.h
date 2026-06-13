@@ -25,8 +25,12 @@
 #define PG_LOGICAL_SNAPSHOTS_DIR	PG_LOGICAL_DIR "/snapshots"
 
 /* GUC variables */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int logical_decoding_work_mem;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int debug_logical_replication_streaming;
+extern int *PgCurrentLogicalDecodingWorkMemRef(void);
+extern int *PgCurrentDebugLogicalReplicationStreamingRef(void);
+
+#define logical_decoding_work_mem (*PgCurrentLogicalDecodingWorkMemRef())
+#define debug_logical_replication_streaming \
+	(*PgCurrentDebugLogicalReplicationStreamingRef())
 
 /* possible values for debug_logical_replication_streaming */
 typedef enum

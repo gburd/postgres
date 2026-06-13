@@ -690,7 +690,8 @@ state through `PgSession`, plus the user/role direct-pointer GUC and derived
 `createrole_self_grant` assign-hook state bridge through `PgSession`, plus
 the command/trigger/notify direct-pointer GUC bridge for
 `session_replication_role`, `event_triggers`, and `trace_notify` through
-`PgSession`.
+`PgSession`, plus the replication direct-pointer GUC bridge for walsender,
+walreceiver, and logical-decoding state through `PgSession`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.

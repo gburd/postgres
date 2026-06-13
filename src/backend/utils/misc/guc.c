@@ -1599,6 +1599,18 @@ InitializeThreadedSessionGUCOptions(void)
 
 	gconf = find_option("trace_notify", false, false, PANIC);
 	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("wal_sender_timeout", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("wal_sender_shutdown_timeout", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("log_replication_commands", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("wal_receiver_timeout", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
 }
 
 /*
@@ -1646,6 +1658,10 @@ RebindSessionGUCVariablePointers(void)
 	gconf = find_option("event_triggers", false, false, PANIC);
 	Assert(gconf->vartype == PGC_BOOL);
 	gconf->_bool.variable = PgCurrentEventTriggersRef();
+
+	gconf = find_option("log_replication_commands", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentLogReplicationCommandsRef();
 
 	gconf = find_option("file_copy_method", false, false, PANIC);
 	Assert(gconf->vartype == PGC_ENUM);
@@ -1729,6 +1745,15 @@ RebindSessionGUCVariablePointers(void)
 	Assert(gconf->vartype == PGC_BOOL);
 	gconf->_bool.variable = PgCurrentIgnoreChecksumFailureRef();
 
+	gconf = find_option("logical_decoding_work_mem", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentLogicalDecodingWorkMemRef();
+
+	gconf = find_option("debug_logical_replication_streaming", false, false,
+						PANIC);
+	Assert(gconf->vartype == PGC_ENUM);
+	gconf->_enum.variable = PgCurrentDebugLogicalReplicationStreamingRef();
+
 	gconf = find_option("password_encryption", false, false, PANIC);
 	Assert(gconf->vartype == PGC_ENUM);
 	gconf->_enum.variable = PgCurrentPasswordEncryptionRef();
@@ -1740,6 +1765,18 @@ RebindSessionGUCVariablePointers(void)
 	gconf = find_option("trace_notify", false, false, PANIC);
 	Assert(gconf->vartype == PGC_BOOL);
 	gconf->_bool.variable = PgCurrentTraceNotifyRef();
+
+	gconf = find_option("wal_receiver_timeout", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentWalReceiverTimeoutRef();
+
+	gconf = find_option("wal_sender_shutdown_timeout", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentWalSenderShutdownTimeoutRef();
+
+	gconf = find_option("wal_sender_timeout", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentWalSenderTimeoutRef();
 
 	gconf = find_option("allow_in_place_tablespaces", false, false, PANIC);
 	Assert(gconf->vartype == PGC_BOOL);
