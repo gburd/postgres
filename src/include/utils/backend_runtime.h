@@ -167,6 +167,16 @@ typedef struct PgBackendCoreState
 	pg_prng_state global_prng_state;
 } PgBackendCoreState;
 
+typedef struct PgBackendPgStatPendingState
+{
+	PgStat_BgWriterStats pending_bgwriter;
+	PgStat_CheckpointerStats pending_checkpointer;
+	PgStat_Counter block_read_time;
+	PgStat_Counter block_write_time;
+	PgStat_Counter active_time;
+	PgStat_Counter transaction_idle_time;
+} PgBackendPgStatPendingState;
+
 typedef struct PgExecutionDebugState
 {
 	const char *debug_query_string;
@@ -949,6 +959,7 @@ struct PgBackend
 	struct Latch *interrupt_latch;
 	PgBackendExitState exit_state;
 	PgBackendCoreState core;
+	PgBackendPgStatPendingState pgstat_pending;
 	PgBackendPendingInterruptState pending_interrupts;
 	PgBackendInterruptHoldoffState interrupt_holdoffs;
 	PgBackendWaitState wait_state;

@@ -6532,6 +6532,99 @@ test_backend_exit_state_is_backend_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_backend_pgstat_pending_state_is_backend_local);
+Datum
+test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgBackend	fake_backend1;
+	PgBackend	fake_backend2;
+	PgStat_BgWriterStats saved_bgwriter_stats;
+	PgStat_CheckpointerStats saved_checkpointer_stats;
+	PgStat_Counter saved_block_read_time;
+	PgStat_Counter saved_block_write_time;
+	PgStat_Counter saved_active_time;
+	PgStat_Counter saved_transaction_idle_time;
+	bool		ok = true;
+
+	saved_backend = CurrentPgBackend;
+	saved_bgwriter_stats = PendingBgWriterStats;
+	saved_checkpointer_stats = PendingCheckpointerStats;
+	saved_block_read_time = pgStatBlockReadTime;
+	saved_block_write_time = pgStatBlockWriteTime;
+	saved_active_time = pgStatActiveTime;
+	saved_transaction_idle_time = pgStatTransactionIdleTime;
+	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
+	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+
+	PG_TRY();
+	{
+		CurrentPgBackend = &fake_backend1;
+		PendingBgWriterStats.buf_alloc = 11;
+		PendingCheckpointerStats.num_requested = 12;
+		pgStatBlockReadTime = 13;
+		pgStatBlockWriteTime = 14;
+		pgStatActiveTime = 15;
+		pgStatTransactionIdleTime = 16;
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && PendingBgWriterStats.buf_alloc == 0;
+		ok = ok && PendingCheckpointerStats.num_requested == 0;
+		ok = ok && pgStatBlockReadTime == 0;
+		ok = ok && pgStatBlockWriteTime == 0;
+		ok = ok && pgStatActiveTime == 0;
+		ok = ok && pgStatTransactionIdleTime == 0;
+
+		PendingBgWriterStats.buf_alloc = 21;
+		PendingCheckpointerStats.num_requested = 22;
+		pgStatBlockReadTime = 23;
+		pgStatBlockWriteTime = 24;
+		pgStatActiveTime = 25;
+		pgStatTransactionIdleTime = 26;
+
+		CurrentPgBackend = &fake_backend1;
+		ok = ok && PendingBgWriterStats.buf_alloc == 11;
+		ok = ok && PendingCheckpointerStats.num_requested == 12;
+		ok = ok && pgStatBlockReadTime == 13;
+		ok = ok && pgStatBlockWriteTime == 14;
+		ok = ok && pgStatActiveTime == 15;
+		ok = ok && pgStatTransactionIdleTime == 16;
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && PendingBgWriterStats.buf_alloc == 21;
+		ok = ok && PendingCheckpointerStats.num_requested == 22;
+		ok = ok && pgStatBlockReadTime == 23;
+		ok = ok && pgStatBlockWriteTime == 24;
+		ok = ok && pgStatActiveTime == 25;
+		ok = ok && pgStatTransactionIdleTime == 26;
+
+		CurrentPgBackend = saved_backend;
+		PendingBgWriterStats = saved_bgwriter_stats;
+		PendingCheckpointerStats = saved_checkpointer_stats;
+		pgStatBlockReadTime = saved_block_read_time;
+		pgStatBlockWriteTime = saved_block_write_time;
+		pgStatActiveTime = saved_active_time;
+		pgStatTransactionIdleTime = saved_transaction_idle_time;
+	}
+	PG_CATCH();
+	{
+		CurrentPgBackend = saved_backend;
+		PendingBgWriterStats = saved_bgwriter_stats;
+		PendingCheckpointerStats = saved_checkpointer_stats;
+		pgStatBlockReadTime = saved_block_read_time;
+		pgStatBlockWriteTime = saved_block_write_time;
+		pgStatActiveTime = saved_active_time;
+		pgStatTransactionIdleTime = saved_transaction_idle_time;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "backend pgstat pending state was not backend-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_pmchild_thread_backend_signal_api);
 Datum
 test_pmchild_thread_backend_signal_api(PG_FUNCTION_ARGS)

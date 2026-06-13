@@ -5904,3 +5904,57 @@ Validation for this slice:
   `src/include/storage/ipc.h` and no remaining TLS declarations or exported
   symbol references for the moved flags;
 - `git diff --check` passed.
+
+## Backend Pgstat Pending State Bridge
+
+The one-hundred-twenty-fourth Phase 12 slice moves a coherent pgstat pending
+state family from standalone backend-local TLS into `PgBackend`:
+
+- `PgBackendPgStatPendingState` now owns `PendingBgWriterStats`,
+  `PendingCheckpointerStats`, `pgStatBlockReadTime`,
+  `pgStatBlockWriteTime`, `pgStatActiveTime`, and
+  `pgStatTransactionIdleTime`;
+- those names remain source-compatible lvalues through `pgstat.h`
+  compatibility macros and runtime accessors;
+- early fallback state is adopted during process/thread runtime installation,
+  matching the other backend-local compatibility bridges;
+- the bgwriter, checkpointer, database pgstat, bufmgr, activity reporting, and
+  timing call sites continue to use the existing names, but the storage now
+  follows the logical backend object.
+
+This is the first deliberately larger state-family batch after the narrower
+exit-path bridge. It keeps related pgstat pending counters together because
+they have the same owner, reset shape, and validation surface. It also removes
+six more exported backend-local TLS definitions while preserving process-mode
+source compatibility for in-tree callers.
+
+Validation for this slice:
+
+- `gmake -C src/backend/utils/init backend_runtime.o` passed;
+- `gmake -C src/backend/utils/activity pgstat_database.o pgstat_bgwriter.o pgstat_checkpointer.o`
+  passed;
+- representative dependent objects in buffer, WAL, checkpointer, ANALYZE,
+  VACUUM, backend-status, and pgstat I/O code were rebuilt successfully;
+- full backend clean plus generated-header recovery was required after the
+  installed-header change, because stale objects could still reference the old
+  exported pgstat symbols;
+- full `gmake -j8` passed;
+- full `gmake -j8 DESTDIR="$PWD/tmp_install" install` passed;
+- PL/pgSQL was cleaned, rebuilt, and reinstalled after the installed-header
+  change;
+- `src/test/modules/test_backend_runtime` was cleaned, rebuilt, and
+  reinstalled after the installed-header change;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression, including the new
+  `test_backend_pgstat_pending_state_is_backend_local()` helper, and still
+  reported TAP disabled by configure;
+- direct threaded-runtime TAP passed all 87 tests with the local
+  `/Users/samwillis/perl5` `PERL5LIB` paths and an explicit `PG_REGRESS`
+  environment;
+- `gmake -C contrib -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 423 to 417;
+- a static scan found only the six compatibility macros/accessor prototypes in
+  `src/include/pgstat.h` and no remaining raw TLS declarations or exported
+  symbol references for the moved pgstat pending state;
+- `git diff --check` passed.

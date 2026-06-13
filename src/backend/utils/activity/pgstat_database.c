@@ -26,12 +26,6 @@
 static bool pgstat_should_report_connstat(void);
 
 
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_Counter pgStatBlockReadTime = 0;
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_Counter pgStatBlockWriteTime = 0;
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_Counter pgStatActiveTime = 0;
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_Counter pgStatTransactionIdleTime = 0;
-
-
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int pgStatXactCommit = 0;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int pgStatXactRollback = 0;
 #define pgLastSessionReportTime (*PgCurrentPgStatLastSessionReportTimeRef())

@@ -447,6 +447,12 @@ logical backend.
 `PgBackendExitState` behind compatibility macros in `storage/ipc.h`, so
 backend exit and shared-memory-exit in-progress state follows the logical
 backend exit object rather than exported standalone TLS.
+`PendingBgWriterStats`, `PendingCheckpointerStats`, `pgStatBlockReadTime`,
+`pgStatBlockWriteTime`, `pgStatActiveTime`, and
+`pgStatTransactionIdleTime` now move as one pgstat pending state family into
+`PgBackendPgStatPendingState` behind `pgstat.h` compatibility macros,
+removing another set of exported backend-local TLS definitions without
+changing the in-tree source-level API.
 PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly

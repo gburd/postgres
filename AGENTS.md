@@ -180,6 +180,17 @@ Important current files:
   stale modules can still reference the removed `_proc_exit_inprogress` or
   `_shmem_exit_inprogress` symbols, or miss the
   `PgCurrentBackendExitStateRef()` accessor.
+- `PendingBgWriterStats`, `PendingCheckpointerStats`,
+  `pgStatBlockReadTime`, `pgStatBlockWriteTime`, `pgStatActiveTime`, and
+  `pgStatTransactionIdleTime` are now fields in
+  `PgBackendPgStatPendingState`, exposed through compatibility macros in
+  `src/include/pgstat.h`; the old exported TLS definitions were removed from
+  pgstat implementation files. After changing this bridge, clean and rebuild
+  backend objects and extension modules that include `pgstat.h`; stale objects
+  can still reference removed pgstat symbols or miss the new accessor
+  symbols. At minimum, clean and reinstall PL/pgSQL,
+  `src/test/modules/test_backend_runtime`, and contrib/test modules under
+  pgstat coverage before validating.
 - Treat `PMChild.thread_backend` as private PMChild-owned publication state.
   Postmaster code should use PMChild helper APIs for threaded backend
   interrupt, wakeup, and thread-exit publication rather than dereferencing or
@@ -844,7 +855,10 @@ Important current files:
   tests not enabled`. Do not treat that configure-time message as a reason to
   skip TAP coverage; run the direct `prove` command with the local `PERL5LIB`
   path. Direct `prove` runs also need the same harness environment that
-  `gmake check` supplies, especially `PG_REGRESS`, for example:
+  `gmake check` supplies, especially `PG_REGRESS`; if `PG_REGRESS` is missing,
+  `PostgreSQL::Test::Cluster->init` can call `system_or_bail()` with an
+  undefined command and `prove` may report an empty skip reason before the
+  server starts. A minimal direct environment is:
 
   ```sh
   PERL5LIB="$HOME/perl5/lib/perl5:$HOME/perl5/lib/perl5/darwin-thread-multi-2level:$PWD/src/test/perl" \
@@ -871,11 +885,12 @@ Important current files:
   ps -axo pid,ppid,stat,command | rg '[p]ostgres|[p]ostmaster|[i]nitdb' || true
   ```
 
-  If there is no live server to preserve, clear stale IPC objects owned by the
-  current user:
+  Prefer removing only detached shared-memory segments (`NATTCH` is zero in
+  `ipcs -ma`). If there is no live server to preserve, clear stale IPC objects
+  owned by the current user:
 
   ```sh
-  for id in $(ipcs -m | awk '$5 == "'$USER'" {print $2}'); do ipcrm -m "$id" || true; done
+  for id in $(ipcs -ma | awk '$1 == "m" && $9 == 0 && $5 == "'$USER'" {print $2}'); do ipcrm -m "$id" || true; done
   for id in $(ipcs -s | awk '$5 == "'$USER'" {print $2}'); do ipcrm -s "$id" || true; done
   ```
 

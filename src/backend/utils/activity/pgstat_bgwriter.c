@@ -21,9 +21,6 @@
 #include "utils/pgstat_internal.h"
 
 
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_BgWriterStats PendingBgWriterStats = {0};
-
-
 /*
  * Report bgwriter and IO statistics
  */

@@ -851,7 +851,9 @@ extern int *PgCurrentPgStatFetchConsistencyRef(void);
  */
 
 /* updated directly by bgwriter and bufmgr */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_BgWriterStats PendingBgWriterStats;
+extern PgStat_BgWriterStats *PgCurrentPendingBgWriterStatsRef(void);
+
+#define PendingBgWriterStats (*PgCurrentPendingBgWriterStatsRef())
 
 
 /*
@@ -862,7 +864,9 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_BgWriterStats Pendin
  * Checkpointer statistics counters are updated directly by checkpointer and
  * bufmgr.
  */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_CheckpointerStats PendingCheckpointerStats;
+extern PgStat_CheckpointerStats *PgCurrentPendingCheckpointerStatsRef(void);
+
+#define PendingCheckpointerStats (*PgCurrentPendingCheckpointerStatsRef())
 
 
 /*
@@ -870,15 +874,21 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_CheckpointerStats Pe
  */
 
 /* Updated by pgstat_count_buffer_*_time macros */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_Counter pgStatBlockReadTime;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_Counter pgStatBlockWriteTime;
+extern PgStat_Counter *PgCurrentPgStatBlockReadTimeRef(void);
+extern PgStat_Counter *PgCurrentPgStatBlockWriteTimeRef(void);
+
+#define pgStatBlockReadTime (*PgCurrentPgStatBlockReadTimeRef())
+#define pgStatBlockWriteTime (*PgCurrentPgStatBlockWriteTimeRef())
 
 /*
  * Updated by pgstat_count_conn_*_time macros, called by
  * pgstat_report_activity().
  */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_Counter pgStatActiveTime;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgStat_Counter pgStatTransactionIdleTime;
+extern PgStat_Counter *PgCurrentPgStatActiveTimeRef(void);
+extern PgStat_Counter *PgCurrentPgStatTransactionIdleTimeRef(void);
+
+#define pgStatActiveTime (*PgCurrentPgStatActiveTimeRef())
+#define pgStatTransactionIdleTime (*PgCurrentPgStatTransactionIdleTimeRef())
 
 /* updated by the traffic cop and in errfinish() */
 extern SessionEndType *PgCurrentPgStatSessionEndCauseRef(void);

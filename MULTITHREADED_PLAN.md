@@ -860,7 +860,13 @@ checkpointer shutdown-XLOG requests in the logical backend's pending-interrupt
 state. The exit in-progress flags `proc_exit_inprogress` and
 `shmem_exit_inprogress` now live in `PgBackendExitState` behind compatibility
 macros in `storage/ipc.h`, so exit and shared-memory-exit state also follows
-the logical backend instead of exported standalone TLS.
+the logical backend instead of exported standalone TLS. A larger coherent
+pgstat state-family batch now stores `PendingBgWriterStats`,
+`PendingCheckpointerStats`, `pgStatBlockReadTime`, `pgStatBlockWriteTime`,
+`pgStatActiveTime`, and `pgStatTransactionIdleTime` in
+`PgBackendPgStatPendingState` behind `pgstat.h` compatibility macros, removing
+six exported backend-local TLS definitions while keeping the existing in-tree
+source names.
 PMChild assignment and slot release now also scrub stale carrier-visible signal
 ids and thread-exit payloads before reuse. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live
