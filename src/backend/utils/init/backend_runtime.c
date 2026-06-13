@@ -19,6 +19,8 @@
 #include "commands/async.h"
 #include "commands/repack.h"
 #include "miscadmin.h"
+#include "optimizer/cost.h"
+#include "optimizer/optimizer.h"
 #include "postmaster/interrupt.h"
 #include "replication/logicalworker.h"
 #include "replication/slotsync.h"
@@ -71,6 +73,22 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionQueryMemoryState early_session
 	.maintenance_work_mem_kb = 65536,
 	.max_parallel_maintenance_workers_value = 2
 };
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPlannerCostState early_session_planner_cost = {
+	.initialized = true,
+	.seq_page_cost_value = DEFAULT_SEQ_PAGE_COST,
+	.random_page_cost_value = DEFAULT_RANDOM_PAGE_COST,
+	.cpu_tuple_cost_value = DEFAULT_CPU_TUPLE_COST,
+	.cpu_index_tuple_cost_value = DEFAULT_CPU_INDEX_TUPLE_COST,
+	.cpu_operator_cost_value = DEFAULT_CPU_OPERATOR_COST,
+	.parallel_tuple_cost_value = DEFAULT_PARALLEL_TUPLE_COST,
+	.parallel_setup_cost_value = DEFAULT_PARALLEL_SETUP_COST,
+	.recursive_worktable_factor_value = DEFAULT_RECURSIVE_WORKTABLE_FACTOR,
+	.effective_cache_size_pages = DEFAULT_EFFECTIVE_CACHE_SIZE,
+	.disable_cost_value = 1.0e10,
+	.max_parallel_workers_per_gather_value = 2,
+	.debug_parallel_query_value = DEBUG_PARALLEL_OFF,
+	.parallel_leader_participation_value = true
+};
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendPendingInterruptState early_pending_interrupts;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInterruptHoldoffState early_interrupt_holdoffs;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionDebugState early_execution_debug;
@@ -95,6 +113,8 @@ static void PgSessionInitializeDateTimeState(PgSessionDateTimeState *datetime);
 static void PgSessionAdoptEarlyDateTimeState(PgSession *session);
 static void PgSessionInitializeQueryMemoryState(PgSessionQueryMemoryState *query_memory);
 static void PgSessionAdoptEarlyQueryMemoryState(PgSession *session);
+static void PgSessionInitializePlannerCostState(PgSessionPlannerCostState *planner_cost);
+static void PgSessionAdoptEarlyPlannerCostState(PgSession *session);
 static void PgBackendResetCoreState(PgBackendCoreState *core);
 static void PgBackendAdoptEarlyCoreState(PgBackend *backend);
 static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
@@ -108,6 +128,7 @@ static PgBackendCoreState *PgCurrentCoreState(void);
 static PgSessionDatabaseState *PgCurrentSessionDatabaseState(void);
 static PgSessionDateTimeState *PgCurrentSessionDateTimeState(void);
 static PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
+static PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
 static PgExecutionErrorState *PgCurrentExecutionErrorState(void);
 static PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
 static PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
@@ -240,6 +261,40 @@ PgSessionAdoptEarlyQueryMemoryState(PgSession *session)
 
 	session->query_memory = early_session_query_memory;
 	PgSessionInitializeQueryMemoryState(&early_session_query_memory);
+}
+
+static void
+PgSessionInitializePlannerCostState(PgSessionPlannerCostState *planner_cost)
+{
+	Assert(planner_cost != NULL);
+
+	planner_cost->initialized = true;
+	planner_cost->seq_page_cost_value = DEFAULT_SEQ_PAGE_COST;
+	planner_cost->random_page_cost_value = DEFAULT_RANDOM_PAGE_COST;
+	planner_cost->cpu_tuple_cost_value = DEFAULT_CPU_TUPLE_COST;
+	planner_cost->cpu_index_tuple_cost_value = DEFAULT_CPU_INDEX_TUPLE_COST;
+	planner_cost->cpu_operator_cost_value = DEFAULT_CPU_OPERATOR_COST;
+	planner_cost->parallel_tuple_cost_value = DEFAULT_PARALLEL_TUPLE_COST;
+	planner_cost->parallel_setup_cost_value = DEFAULT_PARALLEL_SETUP_COST;
+	planner_cost->recursive_worktable_factor_value =
+		DEFAULT_RECURSIVE_WORKTABLE_FACTOR;
+	planner_cost->effective_cache_size_pages = DEFAULT_EFFECTIVE_CACHE_SIZE;
+	planner_cost->disable_cost_value = 1.0e10;
+	planner_cost->max_parallel_workers_per_gather_value = 2;
+	planner_cost->debug_parallel_query_value = DEBUG_PARALLEL_OFF;
+	planner_cost->parallel_leader_participation_value = true;
+}
+
+static void
+PgSessionAdoptEarlyPlannerCostState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (!early_session_planner_cost.initialized)
+		PgSessionInitializePlannerCostState(&early_session_planner_cost);
+
+	session->planner_cost = early_session_planner_cost;
+	PgSessionInitializePlannerCostState(&early_session_planner_cost);
 }
 
 static void
@@ -381,6 +436,7 @@ InitializePgProcessRuntime(void)
 	PgSessionAdoptEarlyDatabaseState(&process_session);
 	PgSessionAdoptEarlyDateTimeState(&process_session);
 	PgSessionAdoptEarlyQueryMemoryState(&process_session);
+	PgSessionAdoptEarlyPlannerCostState(&process_session);
 
 	process_connection.backend = &process_backend;
 	process_connection.session = &process_session;
@@ -462,6 +518,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	state->session.execution = &state->execution;
 	PgSessionInitializeDateTimeState(&state->session.datetime);
 	PgSessionInitializeQueryMemoryState(&state->session.query_memory);
+	PgSessionInitializePlannerCostState(&state->session.planner_cost);
 
 	state->connection.backend = &state->backend;
 	state->connection.session = &state->session;
@@ -484,6 +541,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgSessionAdoptEarlyDatabaseState(&state->session);
 	PgSessionAdoptEarlyDateTimeState(&state->session);
 	PgSessionAdoptEarlyQueryMemoryState(&state->session);
+	PgSessionAdoptEarlyPlannerCostState(&state->session);
 	PgExecutionAdoptEarlyErrorState(&state->execution);
 	PgExecutionAdoptEarlyMemoryContexts(&state->execution);
 	PgExecutionAdoptEarlyResourceOwners(&state->execution);
@@ -581,6 +639,22 @@ PgCurrentSessionQueryMemoryState(void)
 	return query_memory;
 }
 
+static PgSessionPlannerCostState *
+PgCurrentSessionPlannerCostState(void)
+{
+	PgSessionPlannerCostState *planner_cost;
+
+	if (CurrentPgSession == NULL)
+		planner_cost = &early_session_planner_cost;
+	else
+		planner_cost = &CurrentPgSession->planner_cost;
+
+	if (!planner_cost->initialized)
+		PgSessionInitializePlannerCostState(planner_cost);
+
+	return planner_cost;
+}
+
 Oid *
 PgCurrentMyDatabaseIdRef(void)
 {
@@ -645,6 +719,84 @@ int *
 PgCurrentMaxParallelMaintenanceWorkersRef(void)
 {
 	return &PgCurrentSessionQueryMemoryState()->max_parallel_maintenance_workers_value;
+}
+
+double *
+PgCurrentSeqPageCostRef(void)
+{
+	return &PgCurrentSessionPlannerCostState()->seq_page_cost_value;
+}
+
+double *
+PgCurrentRandomPageCostRef(void)
+{
+	return &PgCurrentSessionPlannerCostState()->random_page_cost_value;
+}
+
+double *
+PgCurrentCpuTupleCostRef(void)
+{
+	return &PgCurrentSessionPlannerCostState()->cpu_tuple_cost_value;
+}
+
+double *
+PgCurrentCpuIndexTupleCostRef(void)
+{
+	return &PgCurrentSessionPlannerCostState()->cpu_index_tuple_cost_value;
+}
+
+double *
+PgCurrentCpuOperatorCostRef(void)
+{
+	return &PgCurrentSessionPlannerCostState()->cpu_operator_cost_value;
+}
+
+double *
+PgCurrentParallelTupleCostRef(void)
+{
+	return &PgCurrentSessionPlannerCostState()->parallel_tuple_cost_value;
+}
+
+double *
+PgCurrentParallelSetupCostRef(void)
+{
+	return &PgCurrentSessionPlannerCostState()->parallel_setup_cost_value;
+}
+
+double *
+PgCurrentRecursiveWorktableFactorRef(void)
+{
+	return &PgCurrentSessionPlannerCostState()->recursive_worktable_factor_value;
+}
+
+int *
+PgCurrentEffectiveCacheSizeRef(void)
+{
+	return &PgCurrentSessionPlannerCostState()->effective_cache_size_pages;
+}
+
+Cost *
+PgCurrentDisableCostRef(void)
+{
+	return (Cost *) &PgCurrentSessionPlannerCostState()->disable_cost_value;
+}
+
+int *
+PgCurrentMaxParallelWorkersPerGatherRef(void)
+{
+	return &PgCurrentSessionPlannerCostState()->max_parallel_workers_per_gather_value;
+}
+
+int *
+PgCurrentDebugParallelQueryRef(void)
+{
+	return &PgCurrentSessionPlannerCostState()->debug_parallel_query_value;
+}
+
+bool *
+PgCurrentParallelLeaderParticipationRef(void)
+{
+	return &PgCurrentSessionPlannerCostState()->parallel_leader_participation_value;
 }
 
 struct Port **

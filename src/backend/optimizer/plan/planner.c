@@ -66,8 +66,6 @@
 
 /* GUC parameters */
 PG_THREAD_LOCAL PG_GLOBAL_SESSION double cursor_tuple_fraction = DEFAULT_CURSOR_TUPLE_FRACTION;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int debug_parallel_query = DEBUG_PARALLEL_OFF;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool parallel_leader_participation = true;
 PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_distinct_reordering = true;
 
 /* Hook for plugins to get control in planner() */

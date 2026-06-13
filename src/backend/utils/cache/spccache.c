@@ -190,18 +190,18 @@ get_tablespace_page_costs(Oid spcid,
 
 	if (spc_random_page_cost)
 	{
-		if (!spc->opts || spc->opts->random_page_cost < 0)
+		if (!spc->opts || spc->opts->spc_random_page_cost < 0)
 			*spc_random_page_cost = random_page_cost;
 		else
-			*spc_random_page_cost = spc->opts->random_page_cost;
+			*spc_random_page_cost = spc->opts->spc_random_page_cost;
 	}
 
 	if (spc_seq_page_cost)
 	{
-		if (!spc->opts || spc->opts->seq_page_cost < 0)
+		if (!spc->opts || spc->opts->spc_seq_page_cost < 0)
 			*spc_seq_page_cost = seq_page_cost;
 		else
-			*spc_seq_page_cost = spc->opts->seq_page_cost;
+			*spc_seq_page_cost = spc->opts->spc_seq_page_cost;
 	}
 }
 

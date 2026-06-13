@@ -48,8 +48,8 @@ typedef enum
  */
 
 /* parameter variables and flags (see also optimizer.h) */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION Cost disable_cost;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int max_parallel_workers_per_gather;
+extern Cost *PgCurrentDisableCostRef(void);
+extern int *PgCurrentMaxParallelWorkersPerGatherRef(void);
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_seqscan;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_indexscan;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_indexonlyscan;
@@ -72,6 +72,10 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_partition_pruni
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_presorted_aggregate;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_async_append;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int constraint_exclusion;
+
+#define disable_cost (*PgCurrentDisableCostRef())
+#define max_parallel_workers_per_gather \
+	(*PgCurrentMaxParallelWorkersPerGatherRef())
 
 extern double index_pages_fetched(double tuples_fetched, BlockNumber pages,
 								  double index_pages, PlannerInfo *root);

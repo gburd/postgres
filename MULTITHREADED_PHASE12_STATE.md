@@ -917,3 +917,68 @@ Validation for this slice:
   tests after the forced clean `libpqwalreceiver` rebuild and reinstall;
 - clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
   header migration.
+
+## Session Planner Cost Direct GUC Pointer Bridge
+
+The twentieth Phase 12 slice moves a planner cost and parallel-planner state
+bucket under `PgSession`:
+
+- `PgSession` now owns a `PgSessionPlannerCostState`;
+- `seq_page_cost`, `random_page_cost`, `cpu_tuple_cost`,
+  `cpu_index_tuple_cost`, `cpu_operator_cost`, `parallel_tuple_cost`,
+  `parallel_setup_cost`, `recursive_worktable_factor`,
+  `effective_cache_size`, `disable_cost`, `max_parallel_workers_per_gather`,
+  `debug_parallel_query`, and `parallel_leader_participation` remain
+  source-compatible lvalue macros in the optimizer headers;
+- the macros route through `PgCurrent*Ref()` accessors that return the active
+  logical session's planner-cost fields;
+- zeroed logical session objects lazily initialize these fields to the
+  historical defaults from `optimizer/cost.h`, plus `disable_cost = 1.0e10`,
+  `max_parallel_workers_per_gather = 2`, `debug_parallel_query =
+  DEBUG_PARALLEL_OFF`, and `parallel_leader_participation = true`;
+- early startup paths before `CurrentPgSession` is installed use fallback
+  storage in `backend_runtime.c`;
+- process-mode and thread-runtime session installation adopt any early fallback
+  planner-cost state into the logical session object;
+- `RebindSessionGUCVariablePointers()` now refreshes the generated GUC records
+  for the direct-pointer GUC-backed members of this bucket when the current
+  session changes.
+
+`disable_cost` is part of the same planner-cost state bucket but is not a GUC,
+so it does not have a generated GUC record to rebind. The broad family of
+planner `enable_*` switches remains a separate future slice; they are numerous
+enough that moving them separately keeps validation readable.
+
+One additional macro-collision hazard was found and handled. The tablespace
+reloptions struct had fields named `seq_page_cost` and `random_page_cost`,
+which collided with the new lvalue macros in expressions such as
+`spc->opts->seq_page_cost`. The struct fields were renamed to
+`spc_seq_page_cost` and `spc_random_page_cost` while preserving the SQL
+reloption names and reloption parser mappings.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `guc.o`,
+  `costsize.o`, `planner.o`, and `test_backend_runtime.o`;
+- because exported optimizer headers changed direct globals into
+  compatibility macros, `gmake -C src/backend clean` plus generated-header
+  recovery was used before the clean rebuild;
+- clean full `gmake -j8` passed after the tablespace reloption field rename;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed, followed by rebuilding
+  and reinstalling `src/test/modules/test_backend_runtime`, PL/pgSQL,
+  `src/test/regress`, `libpqwalreceiver`, and `src/backend/snowball`;
+- focused `test_backend_runtime` regression passed and includes
+  `test_session_planner_cost_state_is_session_local()`, which switches
+  sessions through `PgSetCurrentSession()`, sets the GUC-backed planner cost
+  and parallel-planner settings through the GUC machinery, sets `disable_cost`
+  directly, and proves the lvalues follow the active session after GUC pointer
+  rebinding;
+- direct threaded-runtime TAP coverage passed for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`
+  with the local `PERL5LIB` for `IPC::Run`;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests, covering plan-shape-sensitive regressions after moving planner cost
+  state;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  optimizer header migration.

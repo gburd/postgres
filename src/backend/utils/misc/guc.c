@@ -39,6 +39,8 @@
 #include "libpq/pqformat.h"
 #include "libpq/protocol.h"
 #include "miscadmin.h"
+#include "optimizer/cost.h"
+#include "optimizer/optimizer.h"
 #include "parser/scansup.h"
 #include "port/pg_bitutils.h"
 #include "storage/fd.h"
@@ -1595,6 +1597,56 @@ RebindSessionGUCVariablePointers(void)
 	gconf = find_option("work_mem", false, false, PANIC);
 	Assert(gconf->vartype == PGC_INT);
 	gconf->_int.variable = PgCurrentWorkMemRef();
+
+	gconf = find_option("cpu_index_tuple_cost", false, false, PANIC);
+	Assert(gconf->vartype == PGC_REAL);
+	gconf->_real.variable = PgCurrentCpuIndexTupleCostRef();
+
+	gconf = find_option("cpu_operator_cost", false, false, PANIC);
+	Assert(gconf->vartype == PGC_REAL);
+	gconf->_real.variable = PgCurrentCpuOperatorCostRef();
+
+	gconf = find_option("cpu_tuple_cost", false, false, PANIC);
+	Assert(gconf->vartype == PGC_REAL);
+	gconf->_real.variable = PgCurrentCpuTupleCostRef();
+
+	gconf = find_option("debug_parallel_query", false, false, PANIC);
+	Assert(gconf->vartype == PGC_ENUM);
+	gconf->_enum.variable = PgCurrentDebugParallelQueryRef();
+
+	gconf = find_option("effective_cache_size", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentEffectiveCacheSizeRef();
+
+	gconf = find_option("max_parallel_workers_per_gather", false, false,
+						PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentMaxParallelWorkersPerGatherRef();
+
+	gconf = find_option("parallel_leader_participation", false, false,
+						PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentParallelLeaderParticipationRef();
+
+	gconf = find_option("parallel_setup_cost", false, false, PANIC);
+	Assert(gconf->vartype == PGC_REAL);
+	gconf->_real.variable = PgCurrentParallelSetupCostRef();
+
+	gconf = find_option("parallel_tuple_cost", false, false, PANIC);
+	Assert(gconf->vartype == PGC_REAL);
+	gconf->_real.variable = PgCurrentParallelTupleCostRef();
+
+	gconf = find_option("random_page_cost", false, false, PANIC);
+	Assert(gconf->vartype == PGC_REAL);
+	gconf->_real.variable = PgCurrentRandomPageCostRef();
+
+	gconf = find_option("recursive_worktable_factor", false, false, PANIC);
+	Assert(gconf->vartype == PGC_REAL);
+	gconf->_real.variable = PgCurrentRecursiveWorktableFactorRef();
+
+	gconf = find_option("seq_page_cost", false, false, PANIC);
+	Assert(gconf->vartype == PGC_REAL);
+	gconf->_real.variable = PgCurrentSeqPageCostRef();
 }
 
 /*

@@ -206,6 +206,24 @@ typedef struct PgSessionQueryMemoryState
 	int			max_parallel_maintenance_workers_value;
 } PgSessionQueryMemoryState;
 
+typedef struct PgSessionPlannerCostState
+{
+	bool		initialized;
+	double		seq_page_cost_value;
+	double		random_page_cost_value;
+	double		cpu_tuple_cost_value;
+	double		cpu_index_tuple_cost_value;
+	double		cpu_operator_cost_value;
+	double		parallel_tuple_cost_value;
+	double		parallel_setup_cost_value;
+	double		recursive_worktable_factor_value;
+	int			effective_cache_size_pages;
+	double		disable_cost_value;
+	int			max_parallel_workers_per_gather_value;
+	int			debug_parallel_query_value;
+	bool		parallel_leader_participation_value;
+} PgSessionPlannerCostState;
+
 #define PG_CONNECTION_SEND_BUFFER_SIZE 8192
 #define PG_CONNECTION_RECV_BUFFER_SIZE 8192
 #define PG_CONNECTION_CANCEL_KEY_LENGTH 32
@@ -326,6 +344,7 @@ struct PgSession
 	PgSessionDatabaseState database;
 	PgSessionDateTimeState datetime;
 	PgSessionQueryMemoryState query_memory;
+	PgSessionPlannerCostState planner_cost;
 };
 
 struct PgConnection

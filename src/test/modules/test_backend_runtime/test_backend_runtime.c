@@ -18,6 +18,8 @@
 #include "libpq/libpq-be.h"
 #include "libpq/libpq.h"
 #include "miscadmin.h"
+#include "optimizer/cost.h"
+#include "optimizer/optimizer.h"
 #include "postmaster/postmaster.h"
 #include "port/atomics.h"
 #include "port/pg_thread.h"
@@ -702,6 +704,251 @@ test_session_query_memory_state_is_session_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "session query memory GUC state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_session_planner_cost_state_is_session_local);
+Datum
+test_session_planner_cost_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	char	   *saved_seq_page_cost;
+	char	   *saved_random_page_cost;
+	char	   *saved_cpu_tuple_cost;
+	char	   *saved_cpu_index_tuple_cost;
+	char	   *saved_cpu_operator_cost;
+	char	   *saved_parallel_tuple_cost;
+	char	   *saved_parallel_setup_cost;
+	char	   *saved_recursive_worktable_factor;
+	char	   *saved_effective_cache_size;
+	char	   *saved_max_parallel_workers_per_gather;
+	char	   *saved_debug_parallel_query;
+	char	   *saved_parallel_leader_participation;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	saved_seq_page_cost = pstrdup(GetConfigOption("seq_page_cost",
+												  false, false));
+	saved_random_page_cost = pstrdup(GetConfigOption("random_page_cost",
+													 false, false));
+	saved_cpu_tuple_cost = pstrdup(GetConfigOption("cpu_tuple_cost",
+												   false, false));
+	saved_cpu_index_tuple_cost =
+		pstrdup(GetConfigOption("cpu_index_tuple_cost", false, false));
+	saved_cpu_operator_cost =
+		pstrdup(GetConfigOption("cpu_operator_cost", false, false));
+	saved_parallel_tuple_cost =
+		pstrdup(GetConfigOption("parallel_tuple_cost", false, false));
+	saved_parallel_setup_cost =
+		pstrdup(GetConfigOption("parallel_setup_cost", false, false));
+	saved_recursive_worktable_factor =
+		pstrdup(GetConfigOption("recursive_worktable_factor", false, false));
+	saved_effective_cache_size =
+		pstrdup(GetConfigOption("effective_cache_size", false, false));
+	saved_max_parallel_workers_per_gather =
+		pstrdup(GetConfigOption("max_parallel_workers_per_gather",
+								false, false));
+	saved_debug_parallel_query =
+		pstrdup(GetConfigOption("debug_parallel_query", false, false));
+	saved_parallel_leader_participation =
+		pstrdup(GetConfigOption("parallel_leader_participation",
+								false, false));
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && seq_page_cost == DEFAULT_SEQ_PAGE_COST;
+		ok = ok && random_page_cost == DEFAULT_RANDOM_PAGE_COST;
+		ok = ok && cpu_tuple_cost == DEFAULT_CPU_TUPLE_COST;
+		ok = ok && cpu_index_tuple_cost == DEFAULT_CPU_INDEX_TUPLE_COST;
+		ok = ok && cpu_operator_cost == DEFAULT_CPU_OPERATOR_COST;
+		ok = ok && parallel_tuple_cost == DEFAULT_PARALLEL_TUPLE_COST;
+		ok = ok && parallel_setup_cost == DEFAULT_PARALLEL_SETUP_COST;
+		ok = ok && recursive_worktable_factor ==
+			DEFAULT_RECURSIVE_WORKTABLE_FACTOR;
+		ok = ok && effective_cache_size == DEFAULT_EFFECTIVE_CACHE_SIZE;
+		ok = ok && disable_cost == 1.0e10;
+		ok = ok && max_parallel_workers_per_gather == 2;
+		ok = ok && debug_parallel_query == DEBUG_PARALLEL_OFF;
+		ok = ok && parallel_leader_participation;
+		SetConfigOption("seq_page_cost", "1.25",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("random_page_cost", "3.5",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("cpu_tuple_cost", "0.02",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("cpu_index_tuple_cost", "0.01",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("cpu_operator_cost", "0.005",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("parallel_tuple_cost", "0.2",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("parallel_setup_cost", "2000",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("recursive_worktable_factor", "12",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("effective_cache_size", "4096",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("max_parallel_workers_per_gather", "3",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("debug_parallel_query", "regress",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("parallel_leader_participation", "off",
+						PGC_USERSET, PGC_S_SESSION);
+		disable_cost = 42.0;
+		ok = ok && seq_page_cost == 1.25;
+		ok = ok && random_page_cost == 3.5;
+		ok = ok && cpu_tuple_cost == 0.02;
+		ok = ok && cpu_index_tuple_cost == 0.01;
+		ok = ok && cpu_operator_cost == 0.005;
+		ok = ok && parallel_tuple_cost == 0.2;
+		ok = ok && parallel_setup_cost == 2000.0;
+		ok = ok && recursive_worktable_factor == 12.0;
+		ok = ok && effective_cache_size == 4096;
+		ok = ok && disable_cost == 42.0;
+		ok = ok && max_parallel_workers_per_gather == 3;
+		ok = ok && debug_parallel_query == DEBUG_PARALLEL_REGRESS;
+		ok = ok && !parallel_leader_participation;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && seq_page_cost == DEFAULT_SEQ_PAGE_COST;
+		ok = ok && random_page_cost == DEFAULT_RANDOM_PAGE_COST;
+		ok = ok && cpu_tuple_cost == DEFAULT_CPU_TUPLE_COST;
+		ok = ok && cpu_index_tuple_cost == DEFAULT_CPU_INDEX_TUPLE_COST;
+		ok = ok && cpu_operator_cost == DEFAULT_CPU_OPERATOR_COST;
+		ok = ok && parallel_tuple_cost == DEFAULT_PARALLEL_TUPLE_COST;
+		ok = ok && parallel_setup_cost == DEFAULT_PARALLEL_SETUP_COST;
+		ok = ok && recursive_worktable_factor ==
+			DEFAULT_RECURSIVE_WORKTABLE_FACTOR;
+		ok = ok && effective_cache_size == DEFAULT_EFFECTIVE_CACHE_SIZE;
+		ok = ok && disable_cost == 1.0e10;
+		ok = ok && max_parallel_workers_per_gather == 2;
+		ok = ok && debug_parallel_query == DEBUG_PARALLEL_OFF;
+		ok = ok && parallel_leader_participation;
+		SetConfigOption("seq_page_cost", "1.5",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("random_page_cost", "2.5",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("cpu_tuple_cost", "0.03",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("cpu_index_tuple_cost", "0.015",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("cpu_operator_cost", "0.0075",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("parallel_tuple_cost", "0.3",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("parallel_setup_cost", "3000",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("recursive_worktable_factor", "13",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("effective_cache_size", "8192",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("max_parallel_workers_per_gather", "1",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("debug_parallel_query", "on",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("parallel_leader_participation", "on",
+						PGC_USERSET, PGC_S_SESSION);
+		disable_cost = 84.0;
+		ok = ok && seq_page_cost == 1.5;
+		ok = ok && random_page_cost == 2.5;
+		ok = ok && cpu_tuple_cost == 0.03;
+		ok = ok && cpu_index_tuple_cost == 0.015;
+		ok = ok && cpu_operator_cost == 0.0075;
+		ok = ok && parallel_tuple_cost == 0.3;
+		ok = ok && parallel_setup_cost == 3000.0;
+		ok = ok && recursive_worktable_factor == 13.0;
+		ok = ok && effective_cache_size == 8192;
+		ok = ok && disable_cost == 84.0;
+		ok = ok && max_parallel_workers_per_gather == 1;
+		ok = ok && debug_parallel_query == DEBUG_PARALLEL_ON;
+		ok = ok && parallel_leader_participation;
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && seq_page_cost == 1.25;
+		ok = ok && random_page_cost == 3.5;
+		ok = ok && cpu_tuple_cost == 0.02;
+		ok = ok && cpu_index_tuple_cost == 0.01;
+		ok = ok && cpu_operator_cost == 0.005;
+		ok = ok && parallel_tuple_cost == 0.2;
+		ok = ok && parallel_setup_cost == 2000.0;
+		ok = ok && recursive_worktable_factor == 12.0;
+		ok = ok && effective_cache_size == 4096;
+		ok = ok && disable_cost == 42.0;
+		ok = ok && max_parallel_workers_per_gather == 3;
+		ok = ok && debug_parallel_query == DEBUG_PARALLEL_REGRESS;
+		ok = ok && !parallel_leader_participation;
+
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("seq_page_cost", saved_seq_page_cost,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("random_page_cost", saved_random_page_cost,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("cpu_tuple_cost", saved_cpu_tuple_cost,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("cpu_index_tuple_cost", saved_cpu_index_tuple_cost,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("cpu_operator_cost", saved_cpu_operator_cost,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("parallel_tuple_cost", saved_parallel_tuple_cost,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("parallel_setup_cost", saved_parallel_setup_cost,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("recursive_worktable_factor",
+						saved_recursive_worktable_factor,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("effective_cache_size", saved_effective_cache_size,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("max_parallel_workers_per_gather",
+						saved_max_parallel_workers_per_gather,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("debug_parallel_query", saved_debug_parallel_query,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("parallel_leader_participation",
+						saved_parallel_leader_participation,
+						PGC_USERSET, PGC_S_SESSION);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("seq_page_cost", saved_seq_page_cost,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("random_page_cost", saved_random_page_cost,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("cpu_tuple_cost", saved_cpu_tuple_cost,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("cpu_index_tuple_cost", saved_cpu_index_tuple_cost,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("cpu_operator_cost", saved_cpu_operator_cost,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("parallel_tuple_cost", saved_parallel_tuple_cost,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("parallel_setup_cost", saved_parallel_setup_cost,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("recursive_worktable_factor",
+						saved_recursive_worktable_factor,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("effective_cache_size", saved_effective_cache_size,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("max_parallel_workers_per_gather",
+						saved_max_parallel_workers_per_gather,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("debug_parallel_query", saved_debug_parallel_query,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("parallel_leader_participation",
+						saved_parallel_leader_participation,
+						PGC_USERSET, PGC_S_SESSION);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session planner cost GUC state was not session-local");
 
 	PG_RETURN_BOOL(true);
 }

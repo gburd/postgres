@@ -2231,8 +2231,8 @@ bytea *
 tablespace_reloptions(Datum reloptions, bool validate)
 {
 	static const relopt_parse_elt tab[] = {
-		{"random_page_cost", RELOPT_TYPE_REAL, offsetof(TableSpaceOpts, random_page_cost)},
-		{"seq_page_cost", RELOPT_TYPE_REAL, offsetof(TableSpaceOpts, seq_page_cost)},
+		{"random_page_cost", RELOPT_TYPE_REAL, offsetof(TableSpaceOpts, spc_random_page_cost)},
+		{"seq_page_cost", RELOPT_TYPE_REAL, offsetof(TableSpaceOpts, spc_seq_page_cost)},
 		{"effective_io_concurrency", RELOPT_TYPE_INT, offsetof(TableSpaceOpts, effective_io_concurrency)},
 		{"maintenance_io_concurrency", RELOPT_TYPE_INT, offsetof(TableSpaceOpts, maintenance_io_concurrency)}
 	};

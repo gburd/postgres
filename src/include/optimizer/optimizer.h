@@ -71,15 +71,25 @@ extern Selectivity clauselist_selectivity_ext(PlannerInfo *root,
 /* in path/costsize.c: */
 
 /* widely used cost parameters */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double seq_page_cost;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double random_page_cost;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double cpu_tuple_cost;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double cpu_index_tuple_cost;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double cpu_operator_cost;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double parallel_tuple_cost;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double parallel_setup_cost;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double recursive_worktable_factor;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int effective_cache_size;
+extern double *PgCurrentSeqPageCostRef(void);
+extern double *PgCurrentRandomPageCostRef(void);
+extern double *PgCurrentCpuTupleCostRef(void);
+extern double *PgCurrentCpuIndexTupleCostRef(void);
+extern double *PgCurrentCpuOperatorCostRef(void);
+extern double *PgCurrentParallelTupleCostRef(void);
+extern double *PgCurrentParallelSetupCostRef(void);
+extern double *PgCurrentRecursiveWorktableFactorRef(void);
+extern int *PgCurrentEffectiveCacheSizeRef(void);
+
+#define seq_page_cost (*PgCurrentSeqPageCostRef())
+#define random_page_cost (*PgCurrentRandomPageCostRef())
+#define cpu_tuple_cost (*PgCurrentCpuTupleCostRef())
+#define cpu_index_tuple_cost (*PgCurrentCpuIndexTupleCostRef())
+#define cpu_operator_cost (*PgCurrentCpuOperatorCostRef())
+#define parallel_tuple_cost (*PgCurrentParallelTupleCostRef())
+#define parallel_setup_cost (*PgCurrentParallelSetupCostRef())
+#define recursive_worktable_factor (*PgCurrentRecursiveWorktableFactorRef())
+#define effective_cache_size (*PgCurrentEffectiveCacheSizeRef())
 
 extern double clamp_row_est(double nrows);
 extern int32 clamp_width_est(int64 tuple_width);
@@ -100,9 +110,13 @@ typedef enum
 }			DebugParallelMode;
 
 /* GUC parameters */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int debug_parallel_query;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool parallel_leader_participation;
+extern int *PgCurrentDebugParallelQueryRef(void);
+extern bool *PgCurrentParallelLeaderParticipationRef(void);
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_distinct_reordering;
+
+#define debug_parallel_query (*PgCurrentDebugParallelQueryRef())
+#define parallel_leader_participation \
+	(*PgCurrentParallelLeaderParticipationRef())
 
 extern PlannedStmt *planner(Query *parse, const char *query_string,
 							int cursorOptions,

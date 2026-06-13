@@ -121,7 +121,8 @@ Important current files:
   GUC backing variables under runtime/session/execution objects. When common
   GUC names become macros, local struct fields with the same names must be
   renamed because macro expansion also hits `object->field` expressions; this
-  was observed for the local GIN build-state `work_mem` field.
+  was observed for the local GIN build-state `work_mem` field and the
+  `TableSpaceOpts` `seq_page_cost`/`random_page_cost` fields.
 - Avoid broad mechanical churn unless it unlocks a specific migration step.
 - Do not remove process isolation paths merely because threaded mode exists.
 
