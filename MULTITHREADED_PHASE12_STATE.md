@@ -4165,3 +4165,38 @@ Validation for this slice:
 - a manual threaded smoke with `multithreaded = on`,
   `dynamic_shared_memory_type = posix`, and `CREATE TABLE`/`INSERT`/
   `DROP TABLE` passed after the fix.
+
+## Threaded Database Role Startup GUC Coverage
+
+The eighty-fifth Phase 12 slice adds focused coverage for the Gate E2
+database/role/startup GUC requirement:
+
+- the threaded runtime TAP fixture now creates a login role and installs GUC
+  defaults through `ALTER DATABASE` and `ALTER ROLE`;
+- the role connection verifies the database default `work_mem`, the role
+  default `statement_timeout`, and the role default
+  `default_statistics_target`;
+- a separate role connection uses a libpq startup packet
+  `options='-c lock_timeout=8s'` and verifies that the startup option is
+  applied in the threaded session;
+- the selected settings cover both string/time display behavior and
+  direct-pointer GUC backing variables that have moved under `PgSession`.
+
+This does not close all Gate E2 GUC work. It proves the basic catalog-backed
+database/role setting path and startup option path for built-in GUCs in
+threaded sessions. Reset/default edge cases, transaction-local GUC stack
+behavior, broader assign-hook semantics, custom extension GUC stress, and
+larger GUC-heavy threaded workloads remain open.
+
+Validation for this slice:
+
+- a manual threaded smoke with `multithreaded = on` verified `ALTER DATABASE`
+  `work_mem`, `ALTER ROLE` `statement_timeout` and
+  `default_statistics_target`, and startup `options=-c lock_timeout=8s`;
+- direct Perl syntax/TAP validation for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` was
+  blocked in this checkout because system Perl lacks `IPC::Run`, matching the
+  local test notes;
+- full `gmake -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals.

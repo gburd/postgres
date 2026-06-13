@@ -229,6 +229,14 @@ runtime fixture includes a basic `CREATE TABLE`/`INSERT`/`DROP TABLE` smoke.
 This closes the immediate table-DDL WAL consistency pointer crash, but broader
 database/role/startup settings and GUC stress remain open.
 
+Additional status update: the threaded runtime fixture now covers a first
+database/role/startup GUC matrix. It verifies a database default
+(`work_mem`), role defaults (`statement_timeout` and
+`default_statistics_target`), and a startup packet `options=-c lock_timeout=...`
+against a threaded session. This proves the basic catalog-backed and startup
+option paths for built-in GUCs; reset/default edge cases and GUC-heavy stress
+remain open.
+
 ### 4. Broad Threaded Startup Serialization Is Still Present
 
 Severity: High

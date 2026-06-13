@@ -186,6 +186,11 @@ Important current files:
   `CREATE TABLE`/`INSERT`/`DROP TABLE` smoke in
   `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` when
   changing required GUC bootstrap or WAL GUC state.
+- The same threaded runtime TAP fixture now covers database, role, and startup
+  GUC adoption: `ALTER DATABASE postgres SET work_mem`, `ALTER ROLE ... SET
+  statement_timeout`, `ALTER ROLE ... SET default_statistics_target`, and a
+  startup-packet `options='-c lock_timeout=8s'` connection. Keep that matrix
+  current when changing threaded GUC replay/adoption paths.
 - Threaded backend startup must replay postmaster nondefault GUC state after
   `InitializeThreadedSessionGUCOptions()` and before
   `InstallPgThreadBackendRuntimeState()`. That ordering lets

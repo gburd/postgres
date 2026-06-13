@@ -291,6 +291,33 @@ DROP TABLE threaded_gate_e2_smoke;
 });
 pass('threaded runtime supports basic catalog-writing table DDL');
 
+$node->safe_psql(
+	'postgres',
+	q{
+ALTER DATABASE postgres SET work_mem = '3MB';
+CREATE ROLE threaded_guc_role LOGIN;
+ALTER ROLE threaded_guc_role SET statement_timeout = '7s';
+ALTER ROLE threaded_guc_role SET default_statistics_target = 77;
+});
+my $threaded_guc_role_connstr =
+  $node->connstr('postgres') . " user=threaded_guc_role";
+is($node->safe_psql(
+		'postgres',
+		q{
+SHOW work_mem;
+SHOW statement_timeout;
+SHOW default_statistics_target;
+},
+		connstr => $threaded_guc_role_connstr),
+	"3MB\n7s\n77",
+	'threaded runtime applies database and role GUC defaults');
+is($node->safe_psql(
+		'postgres',
+		'SHOW lock_timeout;',
+		connstr => $threaded_guc_role_connstr . " options='-c lock_timeout=8s'"),
+	'8s',
+	'threaded runtime applies startup packet GUC options');
+
 is($node->safe_psql(
 		'postgres',
 		q{
