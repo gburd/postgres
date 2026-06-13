@@ -21,6 +21,7 @@
 #include "commands/async.h"
 #include "commands/repack.h"
 #include "commands/tablespace.h"
+#include "commands/trigger.h"
 #include "commands/vacuum.h"
 #include "libpq/crypt.h"
 #include "miscadmin.h"
@@ -241,6 +242,12 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionUserGUCState early_session_use
 	.createrole_self_grant_options_inherit = false,
 	.createrole_self_grant_options_set = false
 };
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionCommandGUCState early_session_command_guc = {
+	.initialized = true,
+	.session_replication_role_value = SESSION_REPLICATION_ROLE_ORIGIN,
+	.event_triggers_value = true,
+	.trace_notify_value = false
+};
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionQueryMemoryState early_session_query_memory = {
 	.initialized = true,
 	.work_mem_kb = 4096,
@@ -355,6 +362,8 @@ static void PgSessionInitializeStorageGUCState(PgSessionStorageGUCState *storage
 static void PgSessionAdoptEarlyStorageGUCState(PgSession *session);
 static void PgSessionInitializeUserGUCState(PgSessionUserGUCState *user_guc);
 static void PgSessionAdoptEarlyUserGUCState(PgSession *session);
+static void PgSessionInitializeCommandGUCState(PgSessionCommandGUCState *command_guc);
+static void PgSessionAdoptEarlyCommandGUCState(PgSession *session);
 static void PgSessionInitializeQueryMemoryState(PgSessionQueryMemoryState *query_memory);
 static void PgSessionAdoptEarlyQueryMemoryState(PgSession *session);
 static void PgSessionInitializePlannerCostState(PgSessionPlannerCostState *planner_cost);
@@ -386,6 +395,7 @@ static PgSessionPgStatState *PgCurrentSessionPgStatState(void);
 static PgSessionQueryIdState *PgCurrentSessionQueryIdState(void);
 static PgSessionStorageGUCState *PgCurrentSessionStorageGUCState(void);
 static PgSessionUserGUCState *PgCurrentSessionUserGUCState(void);
+static PgSessionCommandGUCState *PgCurrentSessionCommandGUCState(void);
 static PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
 static PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
 static PgSessionPlannerMethodState *PgCurrentSessionPlannerMethodState(void);
@@ -880,6 +890,30 @@ PgSessionAdoptEarlyUserGUCState(PgSession *session)
 }
 
 static void
+PgSessionInitializeCommandGUCState(PgSessionCommandGUCState *command_guc)
+{
+	Assert(command_guc != NULL);
+
+	command_guc->initialized = true;
+	command_guc->session_replication_role_value =
+		SESSION_REPLICATION_ROLE_ORIGIN;
+	command_guc->event_triggers_value = true;
+	command_guc->trace_notify_value = false;
+}
+
+static void
+PgSessionAdoptEarlyCommandGUCState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (!early_session_command_guc.initialized)
+		PgSessionInitializeCommandGUCState(&early_session_command_guc);
+
+	session->command_guc = early_session_command_guc;
+	PgSessionInitializeCommandGUCState(&early_session_command_guc);
+}
+
+static void
 PgSessionInitializeQueryMemoryState(PgSessionQueryMemoryState *query_memory)
 {
 	Assert(query_memory != NULL);
@@ -1152,6 +1186,7 @@ InitializePgProcessRuntime(void)
 	PgSessionAdoptEarlyQueryIdState(&process_session);
 	PgSessionAdoptEarlyStorageGUCState(&process_session);
 	PgSessionAdoptEarlyUserGUCState(&process_session);
+	PgSessionAdoptEarlyCommandGUCState(&process_session);
 	PgSessionAdoptEarlyQueryMemoryState(&process_session);
 	PgSessionAdoptEarlyPlannerCostState(&process_session);
 	PgSessionAdoptEarlyPlannerMethodState(&process_session);
@@ -1248,6 +1283,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgSessionInitializeQueryIdState(&state->session.query_id);
 	PgSessionInitializeStorageGUCState(&state->session.storage_guc);
 	PgSessionInitializeUserGUCState(&state->session.user_guc);
+	PgSessionInitializeCommandGUCState(&state->session.command_guc);
 	PgSessionInitializeQueryMemoryState(&state->session.query_memory);
 	PgSessionInitializePlannerCostState(&state->session.planner_cost);
 	PgSessionInitializePlannerMethodState(&state->session.planner_method);
@@ -1285,6 +1321,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgSessionAdoptEarlyQueryIdState(&state->session);
 	PgSessionAdoptEarlyStorageGUCState(&state->session);
 	PgSessionAdoptEarlyUserGUCState(&state->session);
+	PgSessionAdoptEarlyCommandGUCState(&state->session);
 	PgSessionAdoptEarlyQueryMemoryState(&state->session);
 	PgSessionAdoptEarlyPlannerCostState(&state->session);
 	PgSessionAdoptEarlyPlannerMethodState(&state->session);
@@ -1574,6 +1611,22 @@ PgCurrentSessionUserGUCState(void)
 		PgSessionInitializeUserGUCState(user_guc);
 
 	return user_guc;
+}
+
+static PgSessionCommandGUCState *
+PgCurrentSessionCommandGUCState(void)
+{
+	PgSessionCommandGUCState *command_guc;
+
+	if (CurrentPgSession == NULL)
+		command_guc = &early_session_command_guc;
+	else
+		command_guc = &CurrentPgSession->command_guc;
+
+	if (!command_guc->initialized)
+		PgSessionInitializeCommandGUCState(command_guc);
+
+	return command_guc;
 }
 
 static PgSessionQueryMemoryState *
@@ -2350,6 +2403,24 @@ bool *
 PgCurrentCreateRoleSelfGrantOptionsSetRef(void)
 {
 	return &PgCurrentSessionUserGUCState()->createrole_self_grant_options_set;
+}
+
+int *
+PgCurrentSessionReplicationRoleRef(void)
+{
+	return &PgCurrentSessionCommandGUCState()->session_replication_role_value;
+}
+
+bool *
+PgCurrentEventTriggersRef(void)
+{
+	return &PgCurrentSessionCommandGUCState()->event_triggers_value;
+}
+
+bool *
+PgCurrentTraceNotifyRef(void)
+{
+	return &PgCurrentSessionCommandGUCState()->trace_notify_value;
 }
 
 int *

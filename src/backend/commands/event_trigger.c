@@ -84,9 +84,6 @@ typedef struct EventTriggerQueryState
 
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION EventTriggerQueryState *currentEventTriggerState = NULL;
 
-/* GUC parameter */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool event_triggers = true;
-
 /* Support for dropped objects */
 typedef struct SQLDropObject
 {

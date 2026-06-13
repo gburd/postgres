@@ -1590,6 +1590,15 @@ InitializeThreadedSessionGUCOptions(void)
 
 	gconf = find_option("createrole_self_grant", false, false, PANIC);
 	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("session_replication_role", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("event_triggers", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("trace_notify", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
 }
 
 /*
@@ -1633,6 +1642,10 @@ RebindSessionGUCVariablePointers(void)
 	gconf = find_option("createrole_self_grant", false, false, PANIC);
 	Assert(gconf->vartype == PGC_STRING);
 	gconf->_string.variable = PgCurrentCreateRoleSelfGrantRef();
+
+	gconf = find_option("event_triggers", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentEventTriggersRef();
 
 	gconf = find_option("file_copy_method", false, false, PANIC);
 	Assert(gconf->vartype == PGC_ENUM);
@@ -1719,6 +1732,14 @@ RebindSessionGUCVariablePointers(void)
 	gconf = find_option("password_encryption", false, false, PANIC);
 	Assert(gconf->vartype == PGC_ENUM);
 	gconf->_enum.variable = PgCurrentPasswordEncryptionRef();
+
+	gconf = find_option("session_replication_role", false, false, PANIC);
+	Assert(gconf->vartype == PGC_ENUM);
+	gconf->_enum.variable = PgCurrentSessionReplicationRoleRef();
+
+	gconf = find_option("trace_notify", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentTraceNotifyRef();
 
 	gconf = find_option("allow_in_place_tablespaces", false, false, PANIC);
 	Assert(gconf->vartype == PGC_BOOL);

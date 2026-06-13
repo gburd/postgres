@@ -578,9 +578,6 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ProcNumber *signalProcnos = NULL;
 /* have we advanced to a page that's a multiple of QUEUE_CLEANUP_DELAY? */
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool tryAdvanceTail = false;
 
-/* GUC parameters */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Trace_notify = false;
-
 /* For 8 KB pages this gives 8 GB of disk space */
 PG_GLOBAL_RUNTIME int max_notify_queue_pages = 1048576;
 

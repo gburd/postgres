@@ -61,10 +61,6 @@
 #include "utils/tuplestore.h"
 
 
-/* GUC variables */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int SessionReplicationRole =
-			SESSION_REPLICATION_ROLE_ORIGIN;
-
 /* How many levels deep into trigger execution are we? */
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int MyTriggerDepth = 0;
 

@@ -16,7 +16,10 @@
 
 #include "access/xact.h"
 #include "catalog/binary_upgrade.h"
+#include "commands/async.h"
+#include "commands/event_trigger.h"
 #include "commands/tablespace.h"
+#include "commands/trigger.h"
 #include "commands/user.h"
 #include "commands/vacuum.h"
 #include "fmgr.h"
@@ -2532,6 +2535,98 @@ test_session_user_guc_state_is_session_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "session user GUC state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_session_command_guc_state_is_session_local);
+Datum
+test_session_command_guc_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	char	   *saved_session_replication_role;
+	char	   *saved_event_triggers;
+	char	   *saved_trace_notify;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	saved_session_replication_role =
+		pstrdup(GetConfigOption("session_replication_role", false, false));
+	saved_event_triggers =
+		pstrdup(GetConfigOption("event_triggers", false, false));
+	saved_trace_notify =
+		pstrdup(GetConfigOption("trace_notify", false, false));
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && SessionReplicationRole == SESSION_REPLICATION_ROLE_ORIGIN;
+		ok = ok && event_triggers;
+		ok = ok && !Trace_notify;
+
+		SetConfigOption("session_replication_role", "replica",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("event_triggers", "off",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("trace_notify", "on",
+						PGC_USERSET, PGC_S_SESSION);
+		ok = ok && SessionReplicationRole == SESSION_REPLICATION_ROLE_REPLICA;
+		ok = ok && !event_triggers;
+		ok = ok && Trace_notify;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && SessionReplicationRole == SESSION_REPLICATION_ROLE_ORIGIN;
+		ok = ok && event_triggers;
+		ok = ok && !Trace_notify;
+		SetConfigOption("session_replication_role", "local",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("event_triggers", "on",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("trace_notify", "off",
+						PGC_USERSET, PGC_S_SESSION);
+		ok = ok && SessionReplicationRole == SESSION_REPLICATION_ROLE_LOCAL;
+		ok = ok && event_triggers;
+		ok = ok && !Trace_notify;
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && SessionReplicationRole == SESSION_REPLICATION_ROLE_REPLICA;
+		ok = ok && !event_triggers;
+		ok = ok && Trace_notify;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && SessionReplicationRole == SESSION_REPLICATION_ROLE_LOCAL;
+		ok = ok && event_triggers;
+		ok = ok && !Trace_notify;
+
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("session_replication_role",
+						saved_session_replication_role,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("event_triggers", saved_event_triggers,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("trace_notify", saved_trace_notify,
+						PGC_USERSET, PGC_S_SESSION);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("session_replication_role",
+						saved_session_replication_role,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("event_triggers", saved_event_triggers,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("trace_notify", saved_trace_notify,
+						PGC_USERSET, PGC_S_SESSION);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session command GUC state was not session-local");
 
 	PG_RETURN_BOOL(true);
 }

@@ -380,6 +380,14 @@ typedef struct PgSessionUserGUCState
 	bool		createrole_self_grant_options_set;
 } PgSessionUserGUCState;
 
+typedef struct PgSessionCommandGUCState
+{
+	bool		initialized;
+	int			session_replication_role_value;
+	bool		event_triggers_value;
+	bool		trace_notify_value;
+} PgSessionCommandGUCState;
+
 typedef struct PgSessionQueryMemoryState
 {
 	bool		initialized;
@@ -584,6 +592,7 @@ struct PgSession
 	PgSessionQueryIdState query_id;
 	PgSessionStorageGUCState storage_guc;
 	PgSessionUserGUCState user_guc;
+	PgSessionCommandGUCState command_guc;
 	PgSessionQueryMemoryState query_memory;
 	PgSessionPlannerCostState planner_cost;
 	PgSessionPlannerMethodState planner_method;
@@ -702,6 +711,9 @@ extern unsigned *PgCurrentCreateRoleSelfGrantOptionsSpecifiedRef(void);
 extern bool *PgCurrentCreateRoleSelfGrantOptionsAdminRef(void);
 extern bool *PgCurrentCreateRoleSelfGrantOptionsInheritRef(void);
 extern bool *PgCurrentCreateRoleSelfGrantOptionsSetRef(void);
+extern int *PgCurrentSessionReplicationRoleRef(void);
+extern bool *PgCurrentEventTriggersRef(void);
+extern bool *PgCurrentTraceNotifyRef(void);
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);
