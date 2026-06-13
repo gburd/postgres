@@ -107,6 +107,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInstrumentationState early_bac
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendBufferState early_backend_buffers;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendStorageState early_backend_storage;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendLockState early_backend_locks;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendIPCState early_backend_ipc;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionIdentityState early_connection_identity;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionSocketIOState early_connection_socket_io;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionProtocolState early_connection_protocol;
@@ -621,6 +622,8 @@ static void PgBackendInitializeStorageState(PgBackendStorageState *storage);
 static void PgBackendAdoptEarlyStorageState(PgBackend *backend);
 static void PgBackendInitializeLockState(PgBackendLockState *locks);
 static void PgBackendAdoptEarlyLockState(PgBackend *backend);
+static void PgBackendInitializeIPCState(PgBackendIPCState *ipc);
+static void PgBackendAdoptEarlyIPCState(PgBackend *backend);
 static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
 static void PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend);
 static BackendType *PgCurrentBackendTypeRef(void);
@@ -2154,6 +2157,23 @@ PgBackendAdoptEarlyLockState(PgBackend *backend)
 }
 
 static void
+PgBackendInitializeIPCState(PgBackendIPCState *ipc)
+{
+	Assert(ipc != NULL);
+
+	MemSet(ipc, 0, sizeof(*ipc));
+}
+
+static void
+PgBackendAdoptEarlyIPCState(PgBackend *backend)
+{
+	Assert(backend != NULL);
+
+	backend->ipc = early_backend_ipc;
+	PgBackendInitializeIPCState(&early_backend_ipc);
+}
+
+static void
 PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend)
 {
 	Assert(backend != NULL);
@@ -2390,6 +2410,7 @@ InitializePgProcessRuntime(void)
 	PgBackendAdoptEarlyBufferState(&process_backend);
 	PgBackendAdoptEarlyStorageState(&process_backend);
 	PgBackendAdoptEarlyLockState(&process_backend);
+	PgBackendAdoptEarlyIPCState(&process_backend);
 	PgBackendSetInterruptLatch(&process_backend, process_backend.core.latch);
 	dlist_init(&process_backend.dsm_segment_list);
 	pg_atomic_init_u32(&process_backend.wait_state.waiting, 0);
@@ -2533,6 +2554,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgBackendInitializeBufferState(&state->backend.buffers);
 	PgBackendInitializeStorageState(&state->backend.storage);
 	PgBackendInitializeLockState(&state->backend.locks);
+	PgBackendInitializeIPCState(&state->backend.ipc);
 	PgBackendSetInterruptLatch(&state->backend, interrupt_latch);
 	dlist_init(&state->backend.dsm_segment_list);
 	pg_atomic_init_u32(&state->backend.wait_state.waiting, 0);
@@ -2618,6 +2640,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgBackendAdoptEarlyBufferState(&state->backend);
 	PgBackendAdoptEarlyStorageState(&state->backend);
 	PgBackendAdoptEarlyLockState(&state->backend);
+	PgBackendAdoptEarlyIPCState(&state->backend);
 	PgSessionAdoptEarlyDatabaseState(&state->session);
 	PgSessionAdoptEarlyTablespaceState(&state->session);
 	PgSessionAdoptEarlyBinaryUpgradeState(&state->session);
@@ -6419,6 +6442,51 @@ void **
 PgCurrentBlockingAutovacuumProcRef(void)
 {
 	return &PgCurrentBackendLockState()->blocking_autovacuum_proc;
+}
+
+static PgBackendIPCState *
+PgCurrentBackendIPCState(void)
+{
+	if (CurrentPgBackend == NULL)
+		return &early_backend_ipc;
+
+	return &CurrentPgBackend->ipc;
+}
+
+void **
+PgCurrentProcSignalSlotRef(void)
+{
+	return &PgCurrentBackendIPCState()->proc_signal_slot;
+}
+
+uint64 *
+PgCurrentSharedInvalidMessageCounterRef(void)
+{
+	return &PgCurrentBackendIPCState()->shared_invalid_message_counter;
+}
+
+volatile sig_atomic_t *
+PgCurrentCatchupInterruptPendingRef(void)
+{
+	return &PgCurrentBackendIPCState()->catchup_interrupt_pending;
+}
+
+void **
+PgCurrentSharedInvalidationMessagesRef(void)
+{
+	return &PgCurrentBackendIPCState()->shared_invalidation_messages;
+}
+
+volatile int *
+PgCurrentSharedInvalidationNextMsgRef(void)
+{
+	return &PgCurrentBackendIPCState()->shared_invalidation_next_msg;
+}
+
+volatile int *
+PgCurrentSharedInvalidationNumMsgsRef(void)
+{
+	return &PgCurrentBackendIPCState()->shared_invalidation_num_msgs;
 }
 
 static PgBackendPendingInterruptState *

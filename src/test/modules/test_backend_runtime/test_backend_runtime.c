@@ -62,6 +62,7 @@
 #include "storage/large_object.h"
 #include "storage/lock.h"
 #include "storage/proc.h"
+#include "storage/sinval.h"
 #include "tcop/backend_startup.h"
 #include "tcop/pquery.h"
 #include "tcop/tcopprot.h"
@@ -7289,6 +7290,75 @@ test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "backend lock state was not backend-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_backend_ipc_state_is_backend_local);
+Datum
+test_backend_ipc_state_is_backend_local(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgBackend	fake_backend1;
+	PgBackend	fake_backend2;
+	bool		ok = true;
+
+	saved_backend = CurrentPgBackend;
+	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
+	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+
+	PG_TRY();
+	{
+		CurrentPgBackend = &fake_backend1;
+		*PgCurrentProcSignalSlotRef() = &fake_backend1;
+		SharedInvalidMessageCounter = 101;
+		catchupInterruptPending = true;
+		*PgCurrentSharedInvalidationMessagesRef() = &fake_backend1;
+		*PgCurrentSharedInvalidationNextMsgRef() = 102;
+		*PgCurrentSharedInvalidationNumMsgsRef() = 103;
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && *PgCurrentProcSignalSlotRef() == NULL;
+		ok = ok && SharedInvalidMessageCounter == 0;
+		ok = ok && !catchupInterruptPending;
+		ok = ok && *PgCurrentSharedInvalidationMessagesRef() == NULL;
+		ok = ok && *PgCurrentSharedInvalidationNextMsgRef() == 0;
+		ok = ok && *PgCurrentSharedInvalidationNumMsgsRef() == 0;
+
+		*PgCurrentProcSignalSlotRef() = &fake_backend2;
+		SharedInvalidMessageCounter = 201;
+		catchupInterruptPending = false;
+		*PgCurrentSharedInvalidationMessagesRef() = &fake_backend2;
+		*PgCurrentSharedInvalidationNextMsgRef() = 202;
+		*PgCurrentSharedInvalidationNumMsgsRef() = 203;
+
+		CurrentPgBackend = &fake_backend1;
+		ok = ok && *PgCurrentProcSignalSlotRef() == &fake_backend1;
+		ok = ok && SharedInvalidMessageCounter == 101;
+		ok = ok && catchupInterruptPending;
+		ok = ok && *PgCurrentSharedInvalidationMessagesRef() == &fake_backend1;
+		ok = ok && *PgCurrentSharedInvalidationNextMsgRef() == 102;
+		ok = ok && *PgCurrentSharedInvalidationNumMsgsRef() == 103;
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && *PgCurrentProcSignalSlotRef() == &fake_backend2;
+		ok = ok && SharedInvalidMessageCounter == 201;
+		ok = ok && !catchupInterruptPending;
+		ok = ok && *PgCurrentSharedInvalidationMessagesRef() == &fake_backend2;
+		ok = ok && *PgCurrentSharedInvalidationNextMsgRef() == 202;
+		ok = ok && *PgCurrentSharedInvalidationNumMsgsRef() == 203;
+
+		CurrentPgBackend = saved_backend;
+	}
+	PG_CATCH();
+	{
+		CurrentPgBackend = saved_backend;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "backend IPC state was not backend-local");
 
 	PG_RETURN_BOOL(true);
 }

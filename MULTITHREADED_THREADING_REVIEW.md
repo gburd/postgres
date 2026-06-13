@@ -503,6 +503,14 @@ backends. The follow-up buffer-manager slice now also stores
 refcount array/hash state, and `MaxProportionalPins` in
 `PgBackendBufferState`, with object-like compatibility macros preserving the
 existing buffer-manager call sites.
+Backend IPC/cache-invalidation state now has a dedicated
+`PgBackendIPCState`: `MyProcSignalSlot`, `SharedInvalidMessageCounter`,
+`catchupInterruptPending`, and the recursive
+`ReceiveSharedInvalidMessages()` buffer/cursor state now follow the logical
+backend instead of remaining standalone TLS or function-local static TLS. The
+slice passed clean full build/install, process-mode backend-runtime
+regression, direct threaded runtime TAP, contrib build, and the required
+global-lifetime scan with zero new unclassified mutable globals.
 PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly

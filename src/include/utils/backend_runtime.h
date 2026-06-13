@@ -276,6 +276,16 @@ typedef struct PgBackendLockState
 	void	   *blocking_autovacuum_proc;
 } PgBackendLockState;
 
+typedef struct PgBackendIPCState
+{
+	void	   *proc_signal_slot;
+	uint64		shared_invalid_message_counter;
+	volatile sig_atomic_t catchup_interrupt_pending;
+	void	   *shared_invalidation_messages;
+	volatile int shared_invalidation_next_msg;
+	volatile int shared_invalidation_num_msgs;
+} PgBackendIPCState;
+
 typedef struct PgExecutionDebugState
 {
 	const char *debug_query_string;
@@ -1063,6 +1073,7 @@ struct PgBackend
 	PgBackendBufferState buffers;
 	PgBackendStorageState storage;
 	PgBackendLockState locks;
+	PgBackendIPCState ipc;
 	PgBackendPendingInterruptState pending_interrupts;
 	PgBackendInterruptHoldoffState interrupt_holdoffs;
 	PgBackendWaitState wait_state;
@@ -1422,6 +1433,12 @@ extern uint32 *PgCurrentPrivateRefCountClockRef(void);
 extern int *PgCurrentReservedRefCountSlotRef(void);
 extern int *PgCurrentPrivateRefCountEntryLastRef(void);
 extern uint32 *PgCurrentMaxProportionalPinsRef(void);
+extern void **PgCurrentProcSignalSlotRef(void);
+extern uint64 *PgCurrentSharedInvalidMessageCounterRef(void);
+extern volatile sig_atomic_t *PgCurrentCatchupInterruptPendingRef(void);
+extern void **PgCurrentSharedInvalidationMessagesRef(void);
+extern volatile int *PgCurrentSharedInvalidationNextMsgRef(void);
+extern volatile int *PgCurrentSharedInvalidationNumMsgsRef(void);
 extern void **PgCurrentVfdCacheRef(void);
 extern Size *PgCurrentSizeVfdCacheRef(void);
 extern int *PgCurrentNFileRef(void);

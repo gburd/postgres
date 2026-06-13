@@ -925,6 +925,15 @@ The shared-buffer pin/writeback batch now extends `PgBackendBufferState` with
 state, and `MaxProportionalPins`. `BackendWritebackContext` remains
 object-like at call sites through a `buf_internals.h` compatibility macro,
 while the runtime object owns the per-backend storage pointer.
+The IPC/sinval batch now stores `MyProcSignalSlot`,
+`SharedInvalidMessageCounter`, `catchupInterruptPending`, and the recursive
+`ReceiveSharedInvalidMessages()` buffer/cursor state in a new
+`PgBackendIPCState` bucket. This keeps proc-signal slot ownership and
+already-fetched invalidation state attached to the logical backend rather than
+to a carrier thread. The batch passed the clean full build/install,
+process-mode backend-runtime regression, direct threaded runtime TAP, contrib
+build, and required global-lifetime scan with zero new unclassified mutable
+globals.
 PMChild assignment and slot release now also scrub stale carrier-visible signal
 ids and thread-exit payloads before reuse. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live

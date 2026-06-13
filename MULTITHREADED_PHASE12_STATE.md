@@ -6477,3 +6477,56 @@ Validation for this slice:
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals, with backend-local declarations dropping from 345 to 334;
 - `git diff --check` passed.
+
+## Backend IPC And Sinval State Bridge
+
+The one-hundred-thirty-fourth Phase 12 slice moves a backend IPC/cache
+invalidation state group into a new `PgBackendIPCState` bucket:
+
+- `MyProcSignalSlot`, the current backend's proc-signal slot pointer;
+- `SharedInvalidMessageCounter`, the SQL/cache invalidation progress counter;
+- `catchupInterruptPending`, the backend-local catchup interrupt flag;
+- the recursive `ReceiveSharedInvalidMessages()` message buffer and its
+  `nextmsg`/`nummsgs` cursor state.
+
+`procsignal.c` keeps the private `ProcSignalSlot` type local by exposing
+`MyProcSignalSlot` as a file-local compatibility macro backed by
+`PgCurrentProcSignalSlotRef()`. `sinval.h` keeps the exported
+`SharedInvalidMessageCounter` and `catchupInterruptPending` source names as
+macros backed by `PgBackendIPCState`, preserving existing call sites in
+namespace/object-address invalidation checks and tcop interrupt handling.
+
+The recursive sinval receive buffer is intentionally part of this batch even
+though it was function-local static TLS rather than an exported global. In a
+threaded runtime with carrier migration, recursion cursor state and already
+fetched invalidation messages must travel with the logical backend, not with a
+physical carrier thread.
+
+Validation for this slice:
+
+- `gmake -C src/backend/utils/init backend_runtime.o` passed;
+- `gmake -C src/backend/storage/ipc procsignal.o sinval.o` passed;
+- `gmake -C src/test/modules/test_backend_runtime test_backend_runtime.o`
+  passed after adding `test_backend_ipc_state_is_backend_local()`;
+- a static scan found no remaining raw TLS declarations for
+  `MyProcSignalSlot`, `SharedInvalidMessageCounter`,
+  `catchupInterruptPending`, or the moved recursive sinval receive buffer and
+  cursor state;
+- because `backend_runtime.h`, `sinval.h`, and the `PgBackend` layout changed,
+  `gmake -C src/backend clean` plus generated utility and node-header recovery
+  was used before the clean rebuild;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed, followed by rebuilding
+  and reinstalling PL/pgSQL and `src/test/modules/test_backend_runtime`;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression, including the new
+  `test_backend_ipc_state_is_backend_local()` helper, and still reported TAP
+  disabled by configure;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
+  explicit `PG_REGRESS` environment;
+- `gmake -C contrib -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations now at 330;
+- `git diff --check` passed.

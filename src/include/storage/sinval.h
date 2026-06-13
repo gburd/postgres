@@ -17,6 +17,7 @@
 #include <signal.h>
 
 #include "storage/relfilelocator.h"
+#include "utils/backend_runtime.h"
 #include "utils/global_lifetime.h"
 
 /*
@@ -136,10 +137,9 @@ typedef union
 
 
 /* Counter of messages processed; don't worry about overflow. */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND uint64
-SharedInvalidMessageCounter;
+#define SharedInvalidMessageCounter (*PgCurrentSharedInvalidMessageCounterRef())
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t catchupInterruptPending;
+#define catchupInterruptPending (*PgCurrentCatchupInterruptPendingRef())
 
 extern void SendSharedInvalidMessages(const SharedInvalidationMessage *msgs,
 									  int n);

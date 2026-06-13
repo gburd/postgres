@@ -124,7 +124,7 @@ const ShmemCallbacks ProcSignalShmemCallbacks = {
 
 PG_GLOBAL_SHMEM NON_EXEC_STATIC ProcSignalHeader *ProcSignal = NULL;
 
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ProcSignalSlot *MyProcSignalSlot = NULL;
+#define MyProcSignalSlot (*(ProcSignalSlot **) PgCurrentProcSignalSlotRef())
 
 static bool ProcSignalReasonToBackendInterrupt(ProcSignalReason reason,
 											   PgBackendInterruptType *interrupt_type);

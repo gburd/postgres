@@ -264,6 +264,15 @@ Important current files:
   clean and rebuild backend objects because `PgBackend` layout and installed
   buffer/runtime headers changed; at minimum rebuild and reinstall PL/pgSQL,
   `src/test/modules/test_backend_runtime`, and contrib before validating.
+- IPC/sinval backend state (`MyProcSignalSlot`, `SharedInvalidMessageCounter`,
+  `catchupInterruptPending`, and the recursive
+  `ReceiveSharedInvalidMessages()` buffer/cursor state) is now owned by
+  `PgBackendIPCState`. `procsignal.c` keeps `ProcSignalSlot` private through a
+  file-local compatibility macro; `sinval.h` keeps the exported counter/flag
+  names as compatibility macros. After changing this bridge, clean and rebuild
+  backend objects because `PgBackend` layout and installed storage/runtime
+  headers changed; at minimum rebuild and reinstall PL/pgSQL,
+  `src/test/modules/test_backend_runtime`, and contrib before validating.
 - Treat `PMChild.thread_backend` as private PMChild-owned publication state.
   Postmaster code should use PMChild helper APIs for threaded backend
   interrupt, wakeup, and thread-exit publication rather than dereferencing or
