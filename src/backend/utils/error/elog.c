@@ -106,7 +106,6 @@
 PG_GLOBAL_RUNTIME emit_log_hook_type emit_log_hook = NULL;
 
 /* GUC parameters */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int Log_error_verbosity = PGERROR_DEFAULT;
 PG_GLOBAL_RUNTIME char *Log_line_prefix = NULL;	/* format for extra log line info */
 PG_GLOBAL_RUNTIME int Log_destination = LOG_DESTINATION_STDERR;
 PG_GLOBAL_RUNTIME char *Log_destination_string = NULL;
@@ -114,7 +113,8 @@ PG_GLOBAL_RUNTIME bool syslog_sequence_numbers = true;
 PG_GLOBAL_RUNTIME bool syslog_split_messages = true;
 
 /* Processed form of backtrace_functions GUC */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *backtrace_function_list;
+extern char **PgCurrentBacktraceFunctionListRef(void);
+#define backtrace_function_list (*PgCurrentBacktraceFunctionListRef())
 
 #ifdef HAVE_SYSLOG
 

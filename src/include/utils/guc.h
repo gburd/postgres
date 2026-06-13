@@ -246,16 +246,24 @@ typedef enum
 
 
 /* GUC vars that are actually defined in guc_tables.c, rather than elsewhere */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_print_plan;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_print_parse;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_print_raw_parse;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_print_rewritten;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_pretty_print;
+extern bool *PgCurrentDebugPrintPlanRef(void);
+extern bool *PgCurrentDebugPrintParseRef(void);
+extern bool *PgCurrentDebugPrintRawParseRef(void);
+extern bool *PgCurrentDebugPrintRewrittenRef(void);
+extern bool *PgCurrentDebugPrettyPrintRef(void);
+#define Debug_print_plan (*PgCurrentDebugPrintPlanRef())
+#define Debug_print_parse (*PgCurrentDebugPrintParseRef())
+#define Debug_print_raw_parse (*PgCurrentDebugPrintRawParseRef())
+#define Debug_print_rewritten (*PgCurrentDebugPrintRewrittenRef())
+#define Debug_pretty_print (*PgCurrentDebugPrettyPrintRef())
 
 #ifdef DEBUG_NODE_TESTS_ENABLED
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_copy_parse_plan_trees;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_write_read_parse_plan_trees;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_raw_expression_coverage_test;
+extern bool *PgCurrentDebugCopyParsePlanTreesRef(void);
+extern bool *PgCurrentDebugWriteReadParsePlanTreesRef(void);
+extern bool *PgCurrentDebugRawExpressionCoverageTestRef(void);
+#define Debug_copy_parse_plan_trees (*PgCurrentDebugCopyParsePlanTreesRef())
+#define Debug_write_read_parse_plan_trees (*PgCurrentDebugWriteReadParsePlanTreesRef())
+#define Debug_raw_expression_coverage_test (*PgCurrentDebugRawExpressionCoverageTestRef())
 
 /*
  * support for legacy compile-time settings
@@ -281,29 +289,47 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_raw_expression_c
 
 #endif							/* DEBUG_NODE_TESTS_ENABLED */
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_parser_stats;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_planner_stats;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_executor_stats;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_statement_stats;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_btree_build_stats;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *event_source;
+extern bool *PgCurrentLogParserStatsRef(void);
+extern bool *PgCurrentLogPlannerStatsRef(void);
+extern bool *PgCurrentLogExecutorStatsRef(void);
+extern bool *PgCurrentLogStatementStatsRef(void);
+extern bool *PgCurrentLogBtreeBuildStatsRef(void);
+extern char **PgCurrentEventSourceRef(void);
+#define log_parser_stats (*PgCurrentLogParserStatsRef())
+#define log_planner_stats (*PgCurrentLogPlannerStatsRef())
+#define log_executor_stats (*PgCurrentLogExecutorStatsRef())
+#define log_statement_stats (*PgCurrentLogStatementStatsRef())
+#define log_btree_build_stats (*PgCurrentLogBtreeBuildStatsRef())
+#define event_source (*PgCurrentEventSourceRef())
 
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool check_function_bodies;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool current_role_is_superuser;
 
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool AllowAlterSystem;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_duration;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int log_parameter_max_length;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int log_parameter_max_length_on_error;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int log_min_error_statement;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int log_min_messages[];
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int client_min_messages;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int log_min_duration_sample;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int log_min_duration_statement;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int log_temp_files;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double log_statement_sample_rate;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double log_xact_sample_rate;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *backtrace_functions;
+extern bool *PgCurrentLogDurationRef(void);
+extern int *PgCurrentLogParameterMaxLengthRef(void);
+extern int *PgCurrentLogParameterMaxLengthOnErrorRef(void);
+extern int *PgCurrentLogMinErrorStatementRef(void);
+extern int *PgCurrentLogMinMessagesArrayRef(void);
+extern int *PgCurrentClientMinMessagesRef(void);
+extern int *PgCurrentLogMinDurationSampleRef(void);
+extern int *PgCurrentLogMinDurationStatementRef(void);
+extern int *PgCurrentLogTempFilesRef(void);
+extern double *PgCurrentLogStatementSampleRateRef(void);
+extern double *PgCurrentLogXactSampleRateRef(void);
+extern char **PgCurrentBacktraceFunctionsRef(void);
+#define log_duration (*PgCurrentLogDurationRef())
+#define log_parameter_max_length (*PgCurrentLogParameterMaxLengthRef())
+#define log_parameter_max_length_on_error (*PgCurrentLogParameterMaxLengthOnErrorRef())
+#define log_min_error_statement (*PgCurrentLogMinErrorStatementRef())
+#define log_min_messages (PgCurrentLogMinMessagesArrayRef())
+#define client_min_messages (*PgCurrentClientMinMessagesRef())
+#define log_min_duration_sample (*PgCurrentLogMinDurationSampleRef())
+#define log_min_duration_statement (*PgCurrentLogMinDurationStatementRef())
+#define log_temp_files (*PgCurrentLogTempFilesRef())
+#define log_statement_sample_rate (*PgCurrentLogStatementSampleRateRef())
+#define log_xact_sample_rate (*PgCurrentLogXactSampleRateRef())
+#define backtrace_functions (*PgCurrentBacktraceFunctionsRef())
 
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int temp_file_limit;
 

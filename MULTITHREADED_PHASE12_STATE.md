@@ -1497,3 +1497,66 @@ Validation for this slice:
 - `git diff --check` passed;
 - static scans found no remaining direct session TLS definitions or extern
   declarations for the moved lock/wait names.
+
+## Session Logging/Debug GUC State Bridge
+
+The twenty-ninth Phase 12 slice moves logging/debug GUC state under
+`PgSession`:
+
+- `PgSession` now owns a `PgSessionLoggingState`;
+- `PgSessionLoggingState` owns debug print flags, parser/planner/executor
+  statement statistics flags, log duration/min-severity/sample/temp/parameter
+  settings, `Log_error_verbosity`, `client_min_messages`, `event_source`,
+  `backtrace_functions`, the parsed `backtrace_function_list`,
+  `log_min_messages_string`, and the derived
+  `log_min_messages[BACKEND_NUM_TYPES]` array;
+- the public names remain source-compatible lvalue macros in `utils/guc.h`
+  and `utils/elog.h`;
+- `log_min_messages` remains indexable through a pointer-returning macro, so
+  existing `log_min_messages[MyBackendType]` call sites keep their source
+  shape;
+- `guc_tables.c` uses a private macro for the generated
+  `log_min_messages_string` storage pointer, and `elog.c` uses a private macro
+  for the parsed `backtrace_function_list` pointer;
+- early startup paths before `CurrentPgSession` is installed use fallback
+  session-local storage in `backend_runtime.c`;
+- process-mode and thread-runtime session installation adopt any early
+  fallback logging/debug state into the logical session object;
+- `RebindSessionGUCVariablePointers()` now rebinds the generated GUC records
+  for the moved debug, stats, logging, severity, sampling, temp-file, and
+  backtrace options whenever the active logical session changes;
+- `log_btree_build_stats` and the debug-node-test GUCs are guarded by their
+  compile-time `BTREE_BUILD_STATS` and `DEBUG_NODE_TESTS_ENABLED` options in
+  the rebind and test paths;
+- `event_source` is bridged but is not mutated in the regression test because
+  it is a `PGC_POSTMASTER` GUC.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `guc.o`,
+  `guc_tables.o`, `elog.o`, `csvlog.o`, `jsonlog.o`, `postgres.o`, and
+  `test_backend_runtime.o`;
+- because exported logging/debug GUC globals changed into compatibility macros,
+  `gmake -C src/backend clean` plus generated utility and node-header recovery
+  was used before the clean rebuild;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed, followed by rebuilding
+  and reinstalling `src/test/modules/test_backend_runtime`,
+  `src/test/regress`, `libpqwalreceiver`, and `src/backend/snowball`;
+- focused `test_backend_runtime` regression passed and includes
+  `test_session_logging_state_is_session_local()`, which switches sessions
+  through `PgSetCurrentSession()`, sets representative debug/logging values
+  through the GUC machinery, exercises the `log_min_messages` assign path, and
+  proves the values follow the active session after GUC pointer rebinding;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- direct threaded-runtime TAP coverage was attempted for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`,
+  but this system Perl is missing `IPC::Run`, so both tests failed before
+  starting PostgreSQL;
+- `git diff --check` passed;
+- static scans found no remaining direct session TLS definitions or extern
+  declarations for the moved logging/debug names.

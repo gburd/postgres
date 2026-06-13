@@ -530,26 +530,6 @@ extern const struct config_enum_entry dynamic_shared_memory_options[];
  * GUC option variables that are exported from this module
  */
 PG_THREAD_LOCAL PG_GLOBAL_SESSION bool AllowAlterSystem = true;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_duration = false;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_print_plan = false;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_print_parse = false;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_print_raw_parse = false;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_print_rewritten = false;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_pretty_print = true;
-
-#ifdef DEBUG_NODE_TESTS_ENABLED
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_copy_parse_plan_trees;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_write_read_parse_plan_trees;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool Debug_raw_expression_coverage_test;
-#endif
-
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_parser_stats = false;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_planner_stats = false;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_executor_stats = false;
-/* This is sort of all three above together. */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_statement_stats = false;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool log_btree_build_stats = false;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION char *event_source;
 
 PG_THREAD_LOCAL PG_GLOBAL_SESSION bool row_security;
 PG_THREAD_LOCAL PG_GLOBAL_SESSION bool check_function_bodies = true;
@@ -561,17 +541,6 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool default_with_oids = false;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool standard_conforming_strings = true;
 
 PG_THREAD_LOCAL PG_GLOBAL_SESSION bool current_role_is_superuser;
-
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int log_min_error_statement = ERROR;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int client_min_messages = NOTICE;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int log_min_duration_sample = -1;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int log_min_duration_statement = -1;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int log_parameter_max_length = -1;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int log_parameter_max_length_on_error = 0;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int log_temp_files = -1;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION double log_statement_sample_rate = 1.0;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION double log_xact_sample_rate = 0;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION char *backtrace_functions;
 
 PG_THREAD_LOCAL PG_GLOBAL_SESSION int temp_file_limit = -1;
 
@@ -621,7 +590,8 @@ static PG_GLOBAL_RUNTIME char *server_version_string;
 static PG_GLOBAL_RUNTIME int server_version_num;
 static PG_GLOBAL_RUNTIME char *debug_io_direct_string;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *restrict_nonsystem_relation_kind_string;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *log_min_messages_string;
+extern char **PgCurrentLogMinMessagesStringRef(void);
+#define log_min_messages_string (*PgCurrentLogMinMessagesStringRef())
 
 #ifdef HAVE_SYSLOG
 #define	DEFAULT_SYSLOG_FACILITY LOG_LOCAL0
@@ -672,16 +642,6 @@ PG_THREAD_LOCAL PG_GLOBAL_SESSION char *role_string;
 
 /* should be static, but guc.c needs to get at this */
 PG_GLOBAL_RUNTIME bool in_hot_standby_guc;
-
-/*
- * set default log_min_messages to WARNING for all process types
- */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int log_min_messages[] = {
-#define PG_PROCTYPE(bktype, bkcategory, description, main_func, shmem_attach) \
-	[bktype] = WARNING,
-#include "postmaster/proctypelist.h"
-#undef PG_PROCTYPE
-};
 
 /*
  * Displayable names for context types (enum GucContext)

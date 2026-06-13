@@ -1718,6 +1718,441 @@ test_session_lock_wait_state_is_session_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_session_logging_state_is_session_local);
+Datum
+test_session_logging_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	char	   *saved_debug_pretty_print;
+	char	   *saved_debug_print_parse;
+	char	   *saved_debug_print_plan;
+	char	   *saved_debug_print_raw_parse;
+	char	   *saved_debug_print_rewritten;
+	char	   *saved_log_parser_stats;
+	char	   *saved_log_planner_stats;
+	char	   *saved_log_executor_stats;
+	char	   *saved_log_statement_stats;
+#ifdef BTREE_BUILD_STATS
+	char	   *saved_log_btree_build_stats;
+#endif
+	char	   *saved_log_duration;
+	char	   *saved_log_error_verbosity;
+	char	   *saved_log_parameter_max_length;
+	char	   *saved_log_parameter_max_length_on_error;
+	char	   *saved_log_min_error_statement;
+	char	   *saved_log_min_messages;
+	char	   *saved_client_min_messages;
+	char	   *saved_log_min_duration_sample;
+	char	   *saved_log_min_duration_statement;
+	char	   *saved_log_temp_files;
+	char	   *saved_log_statement_sample_rate;
+	char	   *saved_log_transaction_sample_rate;
+	char	   *saved_backtrace_functions;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	saved_debug_pretty_print =
+		pstrdup(GetConfigOption("debug_pretty_print", false, false));
+	saved_debug_print_parse =
+		pstrdup(GetConfigOption("debug_print_parse", false, false));
+	saved_debug_print_plan =
+		pstrdup(GetConfigOption("debug_print_plan", false, false));
+	saved_debug_print_raw_parse =
+		pstrdup(GetConfigOption("debug_print_raw_parse", false, false));
+	saved_debug_print_rewritten =
+		pstrdup(GetConfigOption("debug_print_rewritten", false, false));
+	saved_log_parser_stats =
+		pstrdup(GetConfigOption("log_parser_stats", false, false));
+	saved_log_planner_stats =
+		pstrdup(GetConfigOption("log_planner_stats", false, false));
+	saved_log_executor_stats =
+		pstrdup(GetConfigOption("log_executor_stats", false, false));
+	saved_log_statement_stats =
+		pstrdup(GetConfigOption("log_statement_stats", false, false));
+#ifdef BTREE_BUILD_STATS
+	saved_log_btree_build_stats =
+		pstrdup(GetConfigOption("log_btree_build_stats", false, false));
+#endif
+	saved_log_duration =
+		pstrdup(GetConfigOption("log_duration", false, false));
+	saved_log_error_verbosity =
+		pstrdup(GetConfigOption("log_error_verbosity", false, false));
+	saved_log_parameter_max_length =
+		pstrdup(GetConfigOption("log_parameter_max_length", false, false));
+	saved_log_parameter_max_length_on_error =
+		pstrdup(GetConfigOption("log_parameter_max_length_on_error",
+								false, false));
+	saved_log_min_error_statement =
+		pstrdup(GetConfigOption("log_min_error_statement", false, false));
+	saved_log_min_messages =
+		pstrdup(GetConfigOption("log_min_messages", false, false));
+	saved_client_min_messages =
+		pstrdup(GetConfigOption("client_min_messages", false, false));
+	saved_log_min_duration_sample =
+		pstrdup(GetConfigOption("log_min_duration_sample", false, false));
+	saved_log_min_duration_statement =
+		pstrdup(GetConfigOption("log_min_duration_statement", false, false));
+	saved_log_temp_files =
+		pstrdup(GetConfigOption("log_temp_files", false, false));
+	saved_log_statement_sample_rate =
+		pstrdup(GetConfigOption("log_statement_sample_rate", false, false));
+	saved_log_transaction_sample_rate =
+		pstrdup(GetConfigOption("log_transaction_sample_rate", false, false));
+	saved_backtrace_functions =
+		pstrdup(GetConfigOption("backtrace_functions", false, false));
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && !Debug_print_plan;
+		ok = ok && !Debug_print_parse;
+		ok = ok && !Debug_print_raw_parse;
+		ok = ok && !Debug_print_rewritten;
+		ok = ok && Debug_pretty_print;
+		ok = ok && !log_parser_stats;
+		ok = ok && !log_planner_stats;
+		ok = ok && !log_executor_stats;
+		ok = ok && !log_statement_stats;
+#ifdef BTREE_BUILD_STATS
+		ok = ok && !log_btree_build_stats;
+#endif
+		ok = ok && !log_duration;
+		ok = ok && Log_error_verbosity == PGERROR_DEFAULT;
+		ok = ok && log_parameter_max_length == -1;
+		ok = ok && log_parameter_max_length_on_error == 0;
+		ok = ok && log_min_error_statement == ERROR;
+		ok = ok && log_min_messages[MyBackendType] == WARNING;
+		ok = ok && client_min_messages == NOTICE;
+		ok = ok && log_min_duration_sample == -1;
+		ok = ok && log_min_duration_statement == -1;
+		ok = ok && log_temp_files == -1;
+		ok = ok && log_statement_sample_rate == 1.0;
+		ok = ok && log_xact_sample_rate == 0;
+
+		SetConfigOption("debug_pretty_print", "off",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("debug_print_parse", "on",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("debug_print_plan", "on",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("debug_print_raw_parse", "on",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("debug_print_rewritten", "on",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("log_statement_stats", "off",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_parser_stats", "on",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_planner_stats", "off",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_executor_stats", "off",
+						PGC_SUSET, PGC_S_SESSION);
+#ifdef BTREE_BUILD_STATS
+		SetConfigOption("log_btree_build_stats", "on",
+						PGC_SUSET, PGC_S_SESSION);
+#endif
+		SetConfigOption("log_duration", "on",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_error_verbosity", "verbose",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_parameter_max_length", "128",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_parameter_max_length_on_error", "256",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("log_min_error_statement", "fatal",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_min_messages", "error",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("client_min_messages", "warning",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("log_min_duration_sample", "1000",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_min_duration_statement", "2000",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_temp_files", "3000",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_statement_sample_rate", "0.25",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_transaction_sample_rate", "0.5",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("backtrace_functions", "errstart",
+						PGC_SUSET, PGC_S_SESSION);
+		ok = ok && !Debug_pretty_print;
+		ok = ok && Debug_print_parse;
+		ok = ok && Debug_print_plan;
+		ok = ok && Debug_print_raw_parse;
+		ok = ok && Debug_print_rewritten;
+		ok = ok && log_parser_stats;
+		ok = ok && !log_planner_stats;
+		ok = ok && !log_executor_stats;
+		ok = ok && !log_statement_stats;
+#ifdef BTREE_BUILD_STATS
+		ok = ok && log_btree_build_stats;
+#endif
+		ok = ok && log_duration;
+		ok = ok && Log_error_verbosity == PGERROR_VERBOSE;
+		ok = ok && log_parameter_max_length == 128;
+		ok = ok && log_parameter_max_length_on_error == 256;
+		ok = ok && log_min_error_statement == FATAL;
+		ok = ok && log_min_messages[MyBackendType] == ERROR;
+		ok = ok && client_min_messages == WARNING;
+		ok = ok && log_min_duration_sample == 1000;
+		ok = ok && log_min_duration_statement == 2000;
+		ok = ok && log_temp_files == 3000;
+		ok = ok && log_statement_sample_rate == 0.25;
+		ok = ok && log_xact_sample_rate == 0.5;
+		ok = ok && backtrace_functions != NULL &&
+			strcmp(backtrace_functions, "errstart") == 0;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && !Debug_print_plan;
+		ok = ok && !Debug_print_parse;
+		ok = ok && !Debug_print_raw_parse;
+		ok = ok && !Debug_print_rewritten;
+		ok = ok && Debug_pretty_print;
+		ok = ok && log_min_messages[MyBackendType] == WARNING;
+		SetConfigOption("debug_pretty_print", "on",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("debug_print_parse", "off",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("debug_print_plan", "off",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("debug_print_raw_parse", "off",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("debug_print_rewritten", "off",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("log_parser_stats", "off",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_planner_stats", "off",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_executor_stats", "off",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_statement_stats", "on",
+						PGC_SUSET, PGC_S_SESSION);
+#ifdef BTREE_BUILD_STATS
+		SetConfigOption("log_btree_build_stats", "off",
+						PGC_SUSET, PGC_S_SESSION);
+#endif
+		SetConfigOption("log_duration", "off",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_error_verbosity", "terse",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_parameter_max_length", "64",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_parameter_max_length_on_error", "32",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("log_min_error_statement", "panic",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_min_messages", "debug1",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("client_min_messages", "debug1",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("log_min_duration_sample", "3000",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_min_duration_statement", "4000",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_temp_files", "5000",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_statement_sample_rate", "0.5",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_transaction_sample_rate", "0.25",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("backtrace_functions", "errmsg",
+						PGC_SUSET, PGC_S_SESSION);
+		ok = ok && Debug_pretty_print;
+		ok = ok && !Debug_print_parse;
+		ok = ok && !Debug_print_plan;
+		ok = ok && !Debug_print_raw_parse;
+		ok = ok && !Debug_print_rewritten;
+		ok = ok && !log_parser_stats;
+		ok = ok && !log_planner_stats;
+		ok = ok && !log_executor_stats;
+		ok = ok && log_statement_stats;
+#ifdef BTREE_BUILD_STATS
+		ok = ok && !log_btree_build_stats;
+#endif
+		ok = ok && !log_duration;
+		ok = ok && Log_error_verbosity == PGERROR_TERSE;
+		ok = ok && log_parameter_max_length == 64;
+		ok = ok && log_parameter_max_length_on_error == 32;
+		ok = ok && log_min_error_statement == PANIC;
+		ok = ok && log_min_messages[MyBackendType] == DEBUG1;
+		ok = ok && client_min_messages == DEBUG1;
+		ok = ok && log_min_duration_sample == 3000;
+		ok = ok && log_min_duration_statement == 4000;
+		ok = ok && log_temp_files == 5000;
+		ok = ok && log_statement_sample_rate == 0.5;
+		ok = ok && log_xact_sample_rate == 0.25;
+		ok = ok && backtrace_functions != NULL &&
+			strcmp(backtrace_functions, "errmsg") == 0;
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && !Debug_pretty_print;
+		ok = ok && Debug_print_parse;
+		ok = ok && Debug_print_plan;
+		ok = ok && Debug_print_raw_parse;
+		ok = ok && Debug_print_rewritten;
+		ok = ok && log_parser_stats;
+		ok = ok && !log_statement_stats;
+		ok = ok && log_min_messages[MyBackendType] == ERROR;
+		ok = ok && client_min_messages == WARNING;
+		ok = ok && backtrace_functions != NULL &&
+			strcmp(backtrace_functions, "errstart") == 0;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && Debug_pretty_print;
+		ok = ok && !Debug_print_parse;
+		ok = ok && log_statement_stats;
+		ok = ok && log_min_messages[MyBackendType] == DEBUG1;
+		ok = ok && client_min_messages == DEBUG1;
+		ok = ok && backtrace_functions != NULL &&
+			strcmp(backtrace_functions, "errmsg") == 0;
+
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("log_statement_stats", "off",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_parser_stats", "off",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_planner_stats", "off",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_executor_stats", "off",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("debug_pretty_print", saved_debug_pretty_print,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("debug_print_parse", saved_debug_print_parse,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("debug_print_plan", saved_debug_print_plan,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("debug_print_raw_parse", saved_debug_print_raw_parse,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("debug_print_rewritten", saved_debug_print_rewritten,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("log_parser_stats", saved_log_parser_stats,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_planner_stats", saved_log_planner_stats,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_executor_stats", saved_log_executor_stats,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_statement_stats", saved_log_statement_stats,
+						PGC_SUSET, PGC_S_SESSION);
+#ifdef BTREE_BUILD_STATS
+		SetConfigOption("log_btree_build_stats", saved_log_btree_build_stats,
+						PGC_SUSET, PGC_S_SESSION);
+#endif
+		SetConfigOption("log_duration", saved_log_duration,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_error_verbosity", saved_log_error_verbosity,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_parameter_max_length",
+						saved_log_parameter_max_length,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_parameter_max_length_on_error",
+						saved_log_parameter_max_length_on_error,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("log_min_error_statement",
+						saved_log_min_error_statement,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_min_messages", saved_log_min_messages,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("client_min_messages", saved_client_min_messages,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("log_min_duration_sample",
+						saved_log_min_duration_sample,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_min_duration_statement",
+						saved_log_min_duration_statement,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_temp_files", saved_log_temp_files,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_statement_sample_rate",
+						saved_log_statement_sample_rate,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_transaction_sample_rate",
+						saved_log_transaction_sample_rate,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("backtrace_functions", saved_backtrace_functions,
+						PGC_SUSET, PGC_S_SESSION);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("log_statement_stats", "off",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_parser_stats", "off",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_planner_stats", "off",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_executor_stats", "off",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("debug_pretty_print", saved_debug_pretty_print,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("debug_print_parse", saved_debug_print_parse,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("debug_print_plan", saved_debug_print_plan,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("debug_print_raw_parse", saved_debug_print_raw_parse,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("debug_print_rewritten", saved_debug_print_rewritten,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("log_parser_stats", saved_log_parser_stats,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_planner_stats", saved_log_planner_stats,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_executor_stats", saved_log_executor_stats,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_statement_stats", saved_log_statement_stats,
+						PGC_SUSET, PGC_S_SESSION);
+#ifdef BTREE_BUILD_STATS
+		SetConfigOption("log_btree_build_stats", saved_log_btree_build_stats,
+						PGC_SUSET, PGC_S_SESSION);
+#endif
+		SetConfigOption("log_duration", saved_log_duration,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_error_verbosity", saved_log_error_verbosity,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_parameter_max_length",
+						saved_log_parameter_max_length,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_parameter_max_length_on_error",
+						saved_log_parameter_max_length_on_error,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("log_min_error_statement",
+						saved_log_min_error_statement,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_min_messages", saved_log_min_messages,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("client_min_messages", saved_client_min_messages,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("log_min_duration_sample",
+						saved_log_min_duration_sample,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_min_duration_statement",
+						saved_log_min_duration_statement,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_temp_files", saved_log_temp_files,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_statement_sample_rate",
+						saved_log_statement_sample_rate,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("log_transaction_sample_rate",
+						saved_log_transaction_sample_rate,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("backtrace_functions", saved_backtrace_functions,
+						PGC_SUSET, PGC_S_SESSION);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session logging GUC state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_session_query_memory_state_is_session_local);
 Datum
 test_session_query_memory_state_is_session_local(PG_FUNCTION_ARGS)

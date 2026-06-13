@@ -1589,13 +1589,57 @@ RebindSessionGUCVariablePointers(void)
 	Assert(gconf->vartype == PGC_ENUM);
 	gconf->_enum.variable = PgCurrentBackslashQuoteRef();
 
+	gconf = find_option("backtrace_functions", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentBacktraceFunctionsRef();
+
 	gconf = find_option("backend_flush_after", false, false, PANIC);
 	Assert(gconf->vartype == PGC_INT);
 	gconf->_int.variable = PgCurrentBackendFlushAfterRef();
 
+	gconf = find_option("client_min_messages", false, false, PANIC);
+	Assert(gconf->vartype == PGC_ENUM);
+	gconf->_enum.variable = PgCurrentClientMinMessagesRef();
+
 	gconf = find_option("deadlock_timeout", false, false, PANIC);
 	Assert(gconf->vartype == PGC_INT);
 	gconf->_int.variable = PgCurrentDeadlockTimeoutRef();
+
+	gconf = find_option("debug_pretty_print", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentDebugPrettyPrintRef();
+
+	gconf = find_option("debug_print_parse", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentDebugPrintParseRef();
+
+	gconf = find_option("debug_print_plan", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentDebugPrintPlanRef();
+
+	gconf = find_option("debug_print_raw_parse", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentDebugPrintRawParseRef();
+
+	gconf = find_option("debug_print_rewritten", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentDebugPrintRewrittenRef();
+
+#ifdef DEBUG_NODE_TESTS_ENABLED
+	gconf = find_option("debug_copy_parse_plan_trees", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentDebugCopyParsePlanTreesRef();
+
+	gconf = find_option("debug_raw_expression_coverage_test", false, false,
+						PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentDebugRawExpressionCoverageTestRef();
+
+	gconf = find_option("debug_write_read_parse_plan_trees", false, false,
+						PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentDebugWriteReadParsePlanTreesRef();
+#endif
 
 	gconf = find_option("default_statistics_target", false, false, PANIC);
 	Assert(gconf->vartype == PGC_INT);
@@ -1786,6 +1830,10 @@ RebindSessionGUCVariablePointers(void)
 	Assert(gconf->vartype == PGC_BOOL);
 	gconf->_bool.variable = PgCurrentEnableTidscanRef();
 
+	gconf = find_option("event_source", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentEventSourceRef();
+
 	gconf = find_option("geqo", false, false, PANIC);
 	Assert(gconf->vartype == PGC_BOOL);
 	gconf->_bool.variable = PgCurrentEnableGeqoRef();
@@ -1830,6 +1878,24 @@ RebindSessionGUCVariablePointers(void)
 	Assert(gconf->vartype == PGC_INT);
 	gconf->_int.variable = PgCurrentLockTimeoutRef();
 
+#ifdef BTREE_BUILD_STATS
+	gconf = find_option("log_btree_build_stats", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentLogBtreeBuildStatsRef();
+#endif
+
+	gconf = find_option("log_duration", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentLogDurationRef();
+
+	gconf = find_option("log_error_verbosity", false, false, PANIC);
+	Assert(gconf->vartype == PGC_ENUM);
+	gconf->_enum.variable = PgCurrentLogErrorVerbosityRef();
+
+	gconf = find_option("log_executor_stats", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentLogExecutorStatsRef();
+
 	gconf = find_option("log_lock_failures", false, false, PANIC);
 	Assert(gconf->vartype == PGC_BOOL);
 	gconf->_bool.variable = PgCurrentLogLockFailuresRef();
@@ -1837,6 +1903,55 @@ RebindSessionGUCVariablePointers(void)
 	gconf = find_option("log_lock_waits", false, false, PANIC);
 	Assert(gconf->vartype == PGC_BOOL);
 	gconf->_bool.variable = PgCurrentLogLockWaitsRef();
+
+	gconf = find_option("log_min_duration_sample", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentLogMinDurationSampleRef();
+
+	gconf = find_option("log_min_duration_statement", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentLogMinDurationStatementRef();
+
+	gconf = find_option("log_min_error_statement", false, false, PANIC);
+	Assert(gconf->vartype == PGC_ENUM);
+	gconf->_enum.variable = PgCurrentLogMinErrorStatementRef();
+
+	gconf = find_option("log_min_messages", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentLogMinMessagesStringRef();
+
+	gconf = find_option("log_parameter_max_length", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentLogParameterMaxLengthRef();
+
+	gconf = find_option("log_parameter_max_length_on_error", false, false,
+						PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentLogParameterMaxLengthOnErrorRef();
+
+	gconf = find_option("log_parser_stats", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentLogParserStatsRef();
+
+	gconf = find_option("log_planner_stats", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentLogPlannerStatsRef();
+
+	gconf = find_option("log_statement_sample_rate", false, false, PANIC);
+	Assert(gconf->vartype == PGC_REAL);
+	gconf->_real.variable = PgCurrentLogStatementSampleRateRef();
+
+	gconf = find_option("log_statement_stats", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentLogStatementStatsRef();
+
+	gconf = find_option("log_temp_files", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentLogTempFilesRef();
+
+	gconf = find_option("log_transaction_sample_rate", false, false, PANIC);
+	Assert(gconf->vartype == PGC_REAL);
+	gconf->_real.variable = PgCurrentLogXactSampleRateRef();
 
 	gconf = find_option("maintenance_io_concurrency", false, false, PANIC);
 	Assert(gconf->vartype == PGC_INT);

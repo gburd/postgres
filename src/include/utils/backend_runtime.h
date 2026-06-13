@@ -295,6 +295,42 @@ typedef struct PgSessionLockWaitState
 	bool		trace_lwlocks_value;
 } PgSessionLockWaitState;
 
+typedef struct PgSessionLoggingState
+{
+	bool		initialized;
+	bool		debug_print_plan_value;
+	bool		debug_print_parse_value;
+	bool		debug_print_raw_parse_value;
+	bool		debug_print_rewritten_value;
+	bool		debug_pretty_print_value;
+#ifdef DEBUG_NODE_TESTS_ENABLED
+	bool		debug_copy_parse_plan_trees_value;
+	bool		debug_write_read_parse_plan_trees_value;
+	bool		debug_raw_expression_coverage_test_value;
+#endif
+	bool		log_parser_stats_value;
+	bool		log_planner_stats_value;
+	bool		log_executor_stats_value;
+	bool		log_statement_stats_value;
+	bool		log_btree_build_stats_value;
+	char	   *event_source_value;
+	bool		log_duration_value;
+	int			log_error_verbosity_value;
+	int			log_parameter_max_length_value;
+	int			log_parameter_max_length_on_error_value;
+	int			log_min_error_statement_value;
+	int			log_min_messages_values[BACKEND_NUM_TYPES];
+	char	   *log_min_messages_string_value;
+	int			client_min_messages_value;
+	int			log_min_duration_sample_value;
+	int			log_min_duration_statement_value;
+	int			log_temp_files_value;
+	double		log_statement_sample_rate_value;
+	double		log_xact_sample_rate_value;
+	char	   *backtrace_functions_value;
+	char	   *backtrace_function_list_value;
+} PgSessionLoggingState;
+
 typedef struct PgSessionQueryMemoryState
 {
 	bool		initialized;
@@ -493,6 +529,7 @@ struct PgSession
 	PgSessionBufferIOState buffer_io;
 	PgSessionXactDefaultState xact_defaults;
 	PgSessionLockWaitState lock_wait;
+	PgSessionLoggingState logging;
 	PgSessionQueryMemoryState query_memory;
 	PgSessionPlannerCostState planner_cost;
 	PgSessionPlannerMethodState planner_method;
@@ -557,6 +594,37 @@ extern bool *PgCurrentTraceUserlocksRef(void);
 extern int *PgCurrentTraceLockTableRef(void);
 extern bool *PgCurrentDebugDeadlocksRef(void);
 extern bool *PgCurrentTraceLwlocksRef(void);
+extern bool *PgCurrentDebugPrintPlanRef(void);
+extern bool *PgCurrentDebugPrintParseRef(void);
+extern bool *PgCurrentDebugPrintRawParseRef(void);
+extern bool *PgCurrentDebugPrintRewrittenRef(void);
+extern bool *PgCurrentDebugPrettyPrintRef(void);
+#ifdef DEBUG_NODE_TESTS_ENABLED
+extern bool *PgCurrentDebugCopyParsePlanTreesRef(void);
+extern bool *PgCurrentDebugWriteReadParsePlanTreesRef(void);
+extern bool *PgCurrentDebugRawExpressionCoverageTestRef(void);
+#endif
+extern bool *PgCurrentLogParserStatsRef(void);
+extern bool *PgCurrentLogPlannerStatsRef(void);
+extern bool *PgCurrentLogExecutorStatsRef(void);
+extern bool *PgCurrentLogStatementStatsRef(void);
+extern bool *PgCurrentLogBtreeBuildStatsRef(void);
+extern char **PgCurrentEventSourceRef(void);
+extern bool *PgCurrentLogDurationRef(void);
+extern int *PgCurrentLogErrorVerbosityRef(void);
+extern int *PgCurrentLogParameterMaxLengthRef(void);
+extern int *PgCurrentLogParameterMaxLengthOnErrorRef(void);
+extern int *PgCurrentLogMinErrorStatementRef(void);
+extern int *PgCurrentLogMinMessagesArrayRef(void);
+extern char **PgCurrentLogMinMessagesStringRef(void);
+extern int *PgCurrentClientMinMessagesRef(void);
+extern int *PgCurrentLogMinDurationSampleRef(void);
+extern int *PgCurrentLogMinDurationStatementRef(void);
+extern int *PgCurrentLogTempFilesRef(void);
+extern double *PgCurrentLogStatementSampleRateRef(void);
+extern double *PgCurrentLogXactSampleRateRef(void);
+extern char **PgCurrentBacktraceFunctionsRef(void);
+extern char **PgCurrentBacktraceFunctionListRef(void);
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);

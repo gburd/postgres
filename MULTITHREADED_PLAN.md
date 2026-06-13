@@ -678,7 +678,9 @@ parser direct-pointer GUC bridge through `PgSession`, plus the vacuum/analyze
 maintenance direct-pointer GUC bridge through `PgSession`, plus the buffer I/O
 tuning direct-pointer GUC bridge through `PgSession`, plus the transaction
 default direct-pointer GUC bridge through `PgSession`, plus the lock/wait
-timeout and lock debug direct-pointer GUC bridge through `PgSession`.
+timeout and lock debug direct-pointer GUC bridge through `PgSession`, plus the
+logging/debug direct-pointer GUC and derived `log_min_messages`/backtrace
+bridges through `PgSession`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.

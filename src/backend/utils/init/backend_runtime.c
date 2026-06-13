@@ -40,6 +40,7 @@
 #include "storage/procsignal.h"
 #include "storage/sinval.h"
 #include "utils/backend_runtime.h"
+#include "utils/elog.h"
 #include "utils/guc.h"
 #include "utils/resowner.h"
 
@@ -160,6 +161,45 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionLockWaitState early_session_lo
 	.debug_deadlocks_value = false,
 	.trace_lwlocks_value = false
 };
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionLoggingState early_session_logging = {
+	.initialized = true,
+	.debug_print_plan_value = false,
+	.debug_print_parse_value = false,
+	.debug_print_raw_parse_value = false,
+	.debug_print_rewritten_value = false,
+	.debug_pretty_print_value = true,
+#ifdef DEBUG_NODE_TESTS_ENABLED
+	.debug_copy_parse_plan_trees_value = DEFAULT_DEBUG_COPY_PARSE_PLAN_TREES,
+	.debug_write_read_parse_plan_trees_value = DEFAULT_DEBUG_WRITE_READ_PARSE_PLAN_TREES,
+	.debug_raw_expression_coverage_test_value = DEFAULT_DEBUG_RAW_EXPRESSION_COVERAGE_TEST,
+#endif
+	.log_parser_stats_value = false,
+	.log_planner_stats_value = false,
+	.log_executor_stats_value = false,
+	.log_statement_stats_value = false,
+	.log_btree_build_stats_value = false,
+	.event_source_value = NULL,
+	.log_duration_value = false,
+	.log_error_verbosity_value = PGERROR_DEFAULT,
+	.log_parameter_max_length_value = -1,
+	.log_parameter_max_length_on_error_value = 0,
+	.log_min_error_statement_value = ERROR,
+	.log_min_messages_values = {
+#define PG_PROCTYPE(bktype, bkcategory, description, main_func, shmem_attach) \
+		[bktype] = WARNING,
+#include "postmaster/proctypelist.h"
+#undef PG_PROCTYPE
+	},
+	.log_min_messages_string_value = NULL,
+	.client_min_messages_value = NOTICE,
+	.log_min_duration_sample_value = -1,
+	.log_min_duration_statement_value = -1,
+	.log_temp_files_value = -1,
+	.log_statement_sample_rate_value = 1.0,
+	.log_xact_sample_rate_value = 0,
+	.backtrace_functions_value = NULL,
+	.backtrace_function_list_value = NULL
+};
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionQueryMemoryState early_session_query_memory = {
 	.initialized = true,
 	.work_mem_kb = 4096,
@@ -262,6 +302,8 @@ static void PgSessionInitializeXactDefaultState(PgSessionXactDefaultState *xact_
 static void PgSessionAdoptEarlyXactDefaultState(PgSession *session);
 static void PgSessionInitializeLockWaitState(PgSessionLockWaitState *lock_wait);
 static void PgSessionAdoptEarlyLockWaitState(PgSession *session);
+static void PgSessionInitializeLoggingState(PgSessionLoggingState *logging);
+static void PgSessionAdoptEarlyLoggingState(PgSession *session);
 static void PgSessionInitializeQueryMemoryState(PgSessionQueryMemoryState *query_memory);
 static void PgSessionAdoptEarlyQueryMemoryState(PgSession *session);
 static void PgSessionInitializePlannerCostState(PgSessionPlannerCostState *planner_cost);
@@ -287,6 +329,7 @@ static PgSessionVacuumState *PgCurrentSessionVacuumState(void);
 static PgSessionBufferIOState *PgCurrentSessionBufferIOState(void);
 static PgSessionXactDefaultState *PgCurrentSessionXactDefaultState(void);
 static PgSessionLockWaitState *PgCurrentSessionLockWaitState(void);
+static PgSessionLoggingState *PgCurrentSessionLoggingState(void);
 static PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
 static PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
 static PgSessionPlannerMethodState *PgCurrentSessionPlannerMethodState(void);
@@ -606,6 +649,58 @@ PgSessionAdoptEarlyLockWaitState(PgSession *session)
 }
 
 static void
+PgSessionInitializeLoggingState(PgSessionLoggingState *logging)
+{
+	Assert(logging != NULL);
+
+	logging->initialized = true;
+	logging->debug_print_plan_value = false;
+	logging->debug_print_parse_value = false;
+	logging->debug_print_raw_parse_value = false;
+	logging->debug_print_rewritten_value = false;
+	logging->debug_pretty_print_value = true;
+#ifdef DEBUG_NODE_TESTS_ENABLED
+	logging->debug_copy_parse_plan_trees_value = DEFAULT_DEBUG_COPY_PARSE_PLAN_TREES;
+	logging->debug_write_read_parse_plan_trees_value = DEFAULT_DEBUG_WRITE_READ_PARSE_PLAN_TREES;
+	logging->debug_raw_expression_coverage_test_value = DEFAULT_DEBUG_RAW_EXPRESSION_COVERAGE_TEST;
+#endif
+	logging->log_parser_stats_value = false;
+	logging->log_planner_stats_value = false;
+	logging->log_executor_stats_value = false;
+	logging->log_statement_stats_value = false;
+	logging->log_btree_build_stats_value = false;
+	logging->event_source_value = NULL;
+	logging->log_duration_value = false;
+	logging->log_error_verbosity_value = PGERROR_DEFAULT;
+	logging->log_parameter_max_length_value = -1;
+	logging->log_parameter_max_length_on_error_value = 0;
+	logging->log_min_error_statement_value = ERROR;
+	for (int i = 0; i < BACKEND_NUM_TYPES; i++)
+		logging->log_min_messages_values[i] = WARNING;
+	logging->log_min_messages_string_value = NULL;
+	logging->client_min_messages_value = NOTICE;
+	logging->log_min_duration_sample_value = -1;
+	logging->log_min_duration_statement_value = -1;
+	logging->log_temp_files_value = -1;
+	logging->log_statement_sample_rate_value = 1.0;
+	logging->log_xact_sample_rate_value = 0;
+	logging->backtrace_functions_value = NULL;
+	logging->backtrace_function_list_value = NULL;
+}
+
+static void
+PgSessionAdoptEarlyLoggingState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (!early_session_logging.initialized)
+		PgSessionInitializeLoggingState(&early_session_logging);
+
+	session->logging = early_session_logging;
+	PgSessionInitializeLoggingState(&early_session_logging);
+}
+
+static void
 PgSessionInitializeQueryMemoryState(PgSessionQueryMemoryState *query_memory)
 {
 	Assert(query_memory != NULL);
@@ -872,6 +967,7 @@ InitializePgProcessRuntime(void)
 	PgSessionAdoptEarlyBufferIOState(&process_session);
 	PgSessionAdoptEarlyXactDefaultState(&process_session);
 	PgSessionAdoptEarlyLockWaitState(&process_session);
+	PgSessionAdoptEarlyLoggingState(&process_session);
 	PgSessionAdoptEarlyQueryMemoryState(&process_session);
 	PgSessionAdoptEarlyPlannerCostState(&process_session);
 	PgSessionAdoptEarlyPlannerMethodState(&process_session);
@@ -962,6 +1058,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgSessionInitializeBufferIOState(&state->session.buffer_io);
 	PgSessionInitializeXactDefaultState(&state->session.xact_defaults);
 	PgSessionInitializeLockWaitState(&state->session.lock_wait);
+	PgSessionInitializeLoggingState(&state->session.logging);
 	PgSessionInitializeQueryMemoryState(&state->session.query_memory);
 	PgSessionInitializePlannerCostState(&state->session.planner_cost);
 	PgSessionInitializePlannerMethodState(&state->session.planner_method);
@@ -993,6 +1090,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgSessionAdoptEarlyBufferIOState(&state->session);
 	PgSessionAdoptEarlyXactDefaultState(&state->session);
 	PgSessionAdoptEarlyLockWaitState(&state->session);
+	PgSessionAdoptEarlyLoggingState(&state->session);
 	PgSessionAdoptEarlyQueryMemoryState(&state->session);
 	PgSessionAdoptEarlyPlannerCostState(&state->session);
 	PgSessionAdoptEarlyPlannerMethodState(&state->session);
@@ -1186,6 +1284,22 @@ PgCurrentSessionLockWaitState(void)
 		PgSessionInitializeLockWaitState(lock_wait);
 
 	return lock_wait;
+}
+
+static PgSessionLoggingState *
+PgCurrentSessionLoggingState(void)
+{
+	PgSessionLoggingState *logging;
+
+	if (CurrentPgSession == NULL)
+		logging = &early_session_logging;
+	else
+		logging = &CurrentPgSession->logging;
+
+	if (!logging->initialized)
+		PgSessionInitializeLoggingState(logging);
+
+	return logging;
 }
 
 static PgSessionQueryMemoryState *
@@ -1648,6 +1762,182 @@ bool *
 PgCurrentTraceLwlocksRef(void)
 {
 	return &PgCurrentSessionLockWaitState()->trace_lwlocks_value;
+}
+
+bool *
+PgCurrentDebugPrintPlanRef(void)
+{
+	return &PgCurrentSessionLoggingState()->debug_print_plan_value;
+}
+
+bool *
+PgCurrentDebugPrintParseRef(void)
+{
+	return &PgCurrentSessionLoggingState()->debug_print_parse_value;
+}
+
+bool *
+PgCurrentDebugPrintRawParseRef(void)
+{
+	return &PgCurrentSessionLoggingState()->debug_print_raw_parse_value;
+}
+
+bool *
+PgCurrentDebugPrintRewrittenRef(void)
+{
+	return &PgCurrentSessionLoggingState()->debug_print_rewritten_value;
+}
+
+bool *
+PgCurrentDebugPrettyPrintRef(void)
+{
+	return &PgCurrentSessionLoggingState()->debug_pretty_print_value;
+}
+
+#ifdef DEBUG_NODE_TESTS_ENABLED
+bool *
+PgCurrentDebugCopyParsePlanTreesRef(void)
+{
+	return &PgCurrentSessionLoggingState()->debug_copy_parse_plan_trees_value;
+}
+
+bool *
+PgCurrentDebugWriteReadParsePlanTreesRef(void)
+{
+	return &PgCurrentSessionLoggingState()->debug_write_read_parse_plan_trees_value;
+}
+
+bool *
+PgCurrentDebugRawExpressionCoverageTestRef(void)
+{
+	return &PgCurrentSessionLoggingState()->debug_raw_expression_coverage_test_value;
+}
+#endif
+
+bool *
+PgCurrentLogParserStatsRef(void)
+{
+	return &PgCurrentSessionLoggingState()->log_parser_stats_value;
+}
+
+bool *
+PgCurrentLogPlannerStatsRef(void)
+{
+	return &PgCurrentSessionLoggingState()->log_planner_stats_value;
+}
+
+bool *
+PgCurrentLogExecutorStatsRef(void)
+{
+	return &PgCurrentSessionLoggingState()->log_executor_stats_value;
+}
+
+bool *
+PgCurrentLogStatementStatsRef(void)
+{
+	return &PgCurrentSessionLoggingState()->log_statement_stats_value;
+}
+
+bool *
+PgCurrentLogBtreeBuildStatsRef(void)
+{
+	return &PgCurrentSessionLoggingState()->log_btree_build_stats_value;
+}
+
+char **
+PgCurrentEventSourceRef(void)
+{
+	return &PgCurrentSessionLoggingState()->event_source_value;
+}
+
+bool *
+PgCurrentLogDurationRef(void)
+{
+	return &PgCurrentSessionLoggingState()->log_duration_value;
+}
+
+int *
+PgCurrentLogErrorVerbosityRef(void)
+{
+	return &PgCurrentSessionLoggingState()->log_error_verbosity_value;
+}
+
+int *
+PgCurrentLogParameterMaxLengthRef(void)
+{
+	return &PgCurrentSessionLoggingState()->log_parameter_max_length_value;
+}
+
+int *
+PgCurrentLogParameterMaxLengthOnErrorRef(void)
+{
+	return &PgCurrentSessionLoggingState()->log_parameter_max_length_on_error_value;
+}
+
+int *
+PgCurrentLogMinErrorStatementRef(void)
+{
+	return &PgCurrentSessionLoggingState()->log_min_error_statement_value;
+}
+
+int *
+PgCurrentLogMinMessagesArrayRef(void)
+{
+	return PgCurrentSessionLoggingState()->log_min_messages_values;
+}
+
+char **
+PgCurrentLogMinMessagesStringRef(void)
+{
+	return &PgCurrentSessionLoggingState()->log_min_messages_string_value;
+}
+
+int *
+PgCurrentClientMinMessagesRef(void)
+{
+	return &PgCurrentSessionLoggingState()->client_min_messages_value;
+}
+
+int *
+PgCurrentLogMinDurationSampleRef(void)
+{
+	return &PgCurrentSessionLoggingState()->log_min_duration_sample_value;
+}
+
+int *
+PgCurrentLogMinDurationStatementRef(void)
+{
+	return &PgCurrentSessionLoggingState()->log_min_duration_statement_value;
+}
+
+int *
+PgCurrentLogTempFilesRef(void)
+{
+	return &PgCurrentSessionLoggingState()->log_temp_files_value;
+}
+
+double *
+PgCurrentLogStatementSampleRateRef(void)
+{
+	return &PgCurrentSessionLoggingState()->log_statement_sample_rate_value;
+}
+
+double *
+PgCurrentLogXactSampleRateRef(void)
+{
+	return &PgCurrentSessionLoggingState()->log_xact_sample_rate_value;
+}
+
+char **
+PgCurrentBacktraceFunctionsRef(void)
+{
+	return &PgCurrentSessionLoggingState()->backtrace_functions_value;
+}
+
+char **
+PgCurrentBacktraceFunctionListRef(void)
+{
+	return &PgCurrentSessionLoggingState()->backtrace_function_list_value;
 }
 
 int *

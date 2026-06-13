@@ -493,7 +493,8 @@ typedef enum
 	PGERROR_VERBOSE,			/* all the facts, ma'am */
 }			PGErrorVerbosity;
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int Log_error_verbosity;
+extern int *PgCurrentLogErrorVerbosityRef(void);
+#define Log_error_verbosity (*PgCurrentLogErrorVerbosityRef())
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *Log_line_prefix;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int Log_destination;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *Log_destination_string;
