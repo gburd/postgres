@@ -579,6 +579,15 @@ build/install, process-mode backend-runtime regression, direct threaded
 runtime TAP, contrib build, and the required global-lifetime scan with zero
 new unclassified mutable globals; backend-local declarations dropped from 280
 to 262.
+Parallel worker and pqmq backend-local state now lives in
+`PgBackendParallelState`: exported worker number/message/initialization flags,
+private parallel context tracking, and shared-memory message queue redirection
+state follow the logical backend. Private `FixedParallelState` and
+`shm_mq_handle` types stay local to their owning files through opaque runtime
+pointers. The slice passed clean full build/install, process-mode
+backend-runtime regression, direct threaded runtime TAP, contrib build, and
+the required global-lifetime scan with zero new unclassified mutable globals;
+backend-local declarations dropped from 262 to 249.
 PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly

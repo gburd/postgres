@@ -110,28 +110,21 @@ typedef struct FixedParallelState
 } FixedParallelState;
 
 /*
- * Our parallel worker number.  We initialize this to -1, meaning that we are
- * not a parallel worker.  In parallel workers, it will be set to a value >= 0
- * and < the number of workers before any user code is invoked; each parallel
- * worker will get a different parallel worker number.
+ * ParallelWorkerNumber, ParallelMessagePending, and
+ * InitializingParallelWorker are runtime-backed lvalue macros declared in
+ * parallel.h.
  */
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND int ParallelWorkerNumber = -1;
-
-/* Is there a parallel message pending which we need to receive? */
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t ParallelMessagePending = false;
-
-/* Are we initializing a parallel worker? */
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool InitializingParallelWorker = false;
 
 /* Pointer to our fixed parallel state. */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND FixedParallelState *MyFixedParallelState;
+#define MyFixedParallelState \
+	(*(FixedParallelState **) PgCurrentFixedParallelStateRef())
 
 /* List of active parallel contexts. */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND dlist_head pcxt_list;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool pcxt_list_initialized = false;
+#define pcxt_list (*PgCurrentParallelContextListRef())
+#define pcxt_list_initialized (*PgCurrentParallelContextListInitializedRef())
 
 /* Backend-local copy of data from FixedParallelState. */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND pid_t ParallelLeaderPid;
+#define ParallelLeaderPid (*PgCurrentParallelLeaderPidRef())
 
 /*
  * List of internal parallel worker entry points.  We need this for

@@ -12,6 +12,8 @@
 #ifndef BACKEND_RUNTIME_H
 #define BACKEND_RUNTIME_H
 
+#include <signal.h>
+
 #include "access/session.h"
 #include "access/transam.h"
 #include "common/pg_prng.h"
@@ -259,6 +261,21 @@ typedef struct PgBackendUtilityState
 	MemoryContext libxml_context;
 	HTAB	   *missing_attr_cache;
 } PgBackendUtilityState;
+
+typedef struct PgBackendParallelState
+{
+	int			worker_number;
+	volatile sig_atomic_t message_pending;
+	bool		initializing_worker;
+	void	   *fixed_parallel_state;
+	dlist_head	context_list;
+	bool		context_list_initialized;
+	pid_t		leader_pid;
+	void	   *pq_mq_handle;
+	bool		pq_mq_busy;
+	pid_t		pq_mq_parallel_leader_pid;
+	ProcNumber	pq_mq_parallel_leader_proc_number;
+} PgBackendParallelState;
 
 typedef struct PgBackendInstrumentationState
 {
@@ -1183,6 +1200,7 @@ struct PgBackend
 	PgBackendPgStatPendingState pgstat_pending;
 	PgBackendActivityState activity;
 	PgBackendUtilityState utility;
+	PgBackendParallelState parallel;
 	PgBackendInstrumentationState instrumentation;
 	PgBackendBufferState buffers;
 	PgBackendStorageState storage;
@@ -1432,6 +1450,17 @@ extern int *PgCurrentNumNUMCacheRef(void);
 extern int *PgCurrentNUMCounterRef(void);
 extern MemoryContext *PgCurrentLibxmlContextRef(void);
 extern HTAB **PgCurrentMissingAttrCacheRef(void);
+extern int *PgCurrentParallelWorkerNumberRef(void);
+extern volatile sig_atomic_t *PgCurrentParallelMessagePendingRef(void);
+extern bool *PgCurrentInitializingParallelWorkerRef(void);
+extern void **PgCurrentFixedParallelStateRef(void);
+extern dlist_head *PgCurrentParallelContextListRef(void);
+extern bool *PgCurrentParallelContextListInitializedRef(void);
+extern pid_t *PgCurrentParallelLeaderPidRef(void);
+extern void **PgCurrentPqMqHandleRef(void);
+extern bool *PgCurrentPqMqBusyRef(void);
+extern pid_t *PgCurrentPqMqParallelLeaderPidRef(void);
+extern ProcNumber *PgCurrentPqMqParallelLeaderProcNumberRef(void);
 extern int *PgCurrentComputeQueryIdRef(void);
 extern bool *PgCurrentQueryIdEnabledRef(void);
 extern bool *PgCurrentIgnoreChecksumFailureRef(void);

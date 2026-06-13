@@ -749,7 +749,9 @@ backend-local state bridge through `PgBackendLockState`, plus the dynahash,
 superuser-cache, resource-owner callback, and optional resource-owner stats
 utility-state bridge through `PgBackendUtilityState`, plus the date/time,
 float, formatting, libxml-context, and missing-attribute utility-cache state
-bridge through `PgBackendUtilityState`.
+bridge through `PgBackendUtilityState`, plus the parallel-worker,
+parallel-context, and pqmq backend-local state bridge through
+`PgBackendParallelState`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.
@@ -1005,6 +1007,17 @@ pointer arrays and local casts. The slice passed clean full build/install,
 process-mode backend-runtime regression, direct threaded runtime TAP, contrib
 build, and the required global-lifetime scan with zero new unclassified
 mutable globals; backend-local declarations dropped from 280 to 262.
+The parallel/pqmq state slice moves exported parallel worker state, private
+parallel context tracking, and private shared-memory message queue redirection
+state into `PgBackendParallelState`. Private `FixedParallelState` and
+`shm_mq_handle` types stay local to `parallel.c` and `pqmq.c` through opaque
+runtime pointers and file-local casts. The early fallback state keeps the
+legacy `ParallelWorkerNumber = -1` sentinel statically initialized because
+bootstrap consults parallel-worker state before full runtime adoption. The
+slice passed clean full build/install, process-mode backend-runtime
+regression, direct threaded runtime TAP, contrib build, and the required
+global-lifetime scan with zero new unclassified mutable globals; backend-local
+declarations dropped from 262 to 249.
 PMChild assignment and slot release now also scrub stale carrier-visible signal
 ids and thread-exit payloads before reuse. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live

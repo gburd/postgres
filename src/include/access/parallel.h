@@ -21,6 +21,7 @@
 #include "postmaster/bgworker.h"
 #include "storage/shm_mq.h"
 #include "storage/shm_toc.h"
+#include "utils/backend_runtime.h"
 #include "utils/global_lifetime.h"
 
 typedef void (*parallel_worker_main_type) (dsm_segment *seg, shm_toc *toc);
@@ -56,9 +57,9 @@ typedef struct ParallelWorkerContext
 	shm_toc    *toc;
 } ParallelWorkerContext;
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t ParallelMessagePending;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND int ParallelWorkerNumber;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool InitializingParallelWorker;
+#define ParallelMessagePending (*PgCurrentParallelMessagePendingRef())
+#define ParallelWorkerNumber (*PgCurrentParallelWorkerNumberRef())
+#define InitializingParallelWorker (*PgCurrentInitializingParallelWorkerRef())
 
 #define		IsParallelWorker()		(ParallelWorkerNumber >= 0)
 

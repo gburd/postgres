@@ -111,6 +111,10 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendIPCState early_backend_ipc;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendTransactionState early_backend_transaction;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendActivityState early_backend_activity;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendUtilityState early_backend_utility;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendParallelState early_backend_parallel = {
+	.worker_number = -1,
+	.pq_mq_parallel_leader_proc_number = INVALID_PROC_NUMBER
+};
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionIdentityState early_connection_identity;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionSocketIOState early_connection_socket_io;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionProtocolState early_connection_protocol;
@@ -621,6 +625,8 @@ static void PgBackendInitializeActivityState(PgBackendActivityState *activity);
 static void PgBackendAdoptEarlyActivityState(PgBackend *backend);
 static void PgBackendInitializeUtilityState(PgBackendUtilityState *utility);
 static void PgBackendAdoptEarlyUtilityState(PgBackend *backend);
+static void PgBackendInitializeParallelState(PgBackendParallelState *parallel);
+static void PgBackendAdoptEarlyParallelState(PgBackend *backend);
 static void PgBackendInitializeInstrumentationState(PgBackendInstrumentationState *instrumentation);
 static void PgBackendAdoptEarlyInstrumentationState(PgBackend *backend);
 static void PgBackendInitializeBufferState(PgBackendBufferState *buffers);
@@ -2128,6 +2134,31 @@ PgBackendAdoptEarlyUtilityState(PgBackend *backend)
 }
 
 static void
+PgBackendInitializeParallelState(PgBackendParallelState *parallel)
+{
+	Assert(parallel != NULL);
+
+	MemSet(parallel, 0, sizeof(*parallel));
+	parallel->worker_number = -1;
+	parallel->pq_mq_parallel_leader_proc_number = INVALID_PROC_NUMBER;
+}
+
+static void
+PgBackendAdoptEarlyParallelState(PgBackend *backend)
+{
+	Assert(backend != NULL);
+
+	backend->parallel = early_backend_parallel;
+	if (early_backend_parallel.context_list_initialized)
+	{
+		Assert(dlist_is_empty(&early_backend_parallel.context_list));
+		dlist_init(&backend->parallel.context_list);
+		backend->parallel.context_list_initialized = true;
+	}
+	PgBackendInitializeParallelState(&early_backend_parallel);
+}
+
+static void
 PgBackendInitializeInstrumentationState(PgBackendInstrumentationState *instrumentation)
 {
 	Assert(instrumentation != NULL);
@@ -2479,6 +2510,7 @@ InitializePgProcessRuntime(void)
 	PgBackendAdoptEarlyPgStatPendingState(&process_backend);
 	PgBackendAdoptEarlyActivityState(&process_backend);
 	PgBackendAdoptEarlyUtilityState(&process_backend);
+	PgBackendAdoptEarlyParallelState(&process_backend);
 	PgBackendAdoptEarlyInstrumentationState(&process_backend);
 	PgBackendAdoptEarlyBufferState(&process_backend);
 	PgBackendAdoptEarlyStorageState(&process_backend);
@@ -2626,6 +2658,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgBackendInitializePgStatPendingState(&state->backend.pgstat_pending);
 	PgBackendInitializeActivityState(&state->backend.activity);
 	PgBackendInitializeUtilityState(&state->backend.utility);
+	PgBackendInitializeParallelState(&state->backend.parallel);
 	PgBackendInitializeInstrumentationState(&state->backend.instrumentation);
 	PgBackendInitializeBufferState(&state->backend.buffers);
 	PgBackendInitializeStorageState(&state->backend.storage);
@@ -2715,6 +2748,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgBackendAdoptEarlyPgStatPendingState(&state->backend);
 	PgBackendAdoptEarlyActivityState(&state->backend);
 	PgBackendAdoptEarlyUtilityState(&state->backend);
+	PgBackendAdoptEarlyParallelState(&state->backend);
 	PgBackendAdoptEarlyInstrumentationState(&state->backend);
 	PgBackendAdoptEarlyBufferState(&state->backend);
 	PgBackendAdoptEarlyStorageState(&state->backend);
@@ -4681,6 +4715,81 @@ HTAB **
 PgCurrentMissingAttrCacheRef(void)
 {
 	return &PgCurrentBackendUtilityState()->missing_attr_cache;
+}
+
+static PgBackendParallelState *
+PgCurrentBackendParallelState(void)
+{
+	if (CurrentPgBackend == NULL)
+		return &early_backend_parallel;
+
+	return &CurrentPgBackend->parallel;
+}
+
+int *
+PgCurrentParallelWorkerNumberRef(void)
+{
+	return &PgCurrentBackendParallelState()->worker_number;
+}
+
+volatile sig_atomic_t *
+PgCurrentParallelMessagePendingRef(void)
+{
+	return &PgCurrentBackendParallelState()->message_pending;
+}
+
+bool *
+PgCurrentInitializingParallelWorkerRef(void)
+{
+	return &PgCurrentBackendParallelState()->initializing_worker;
+}
+
+void **
+PgCurrentFixedParallelStateRef(void)
+{
+	return &PgCurrentBackendParallelState()->fixed_parallel_state;
+}
+
+dlist_head *
+PgCurrentParallelContextListRef(void)
+{
+	return &PgCurrentBackendParallelState()->context_list;
+}
+
+bool *
+PgCurrentParallelContextListInitializedRef(void)
+{
+	return &PgCurrentBackendParallelState()->context_list_initialized;
+}
+
+pid_t *
+PgCurrentParallelLeaderPidRef(void)
+{
+	return &PgCurrentBackendParallelState()->leader_pid;
+}
+
+void **
+PgCurrentPqMqHandleRef(void)
+{
+	return &PgCurrentBackendParallelState()->pq_mq_handle;
+}
+
+bool *
+PgCurrentPqMqBusyRef(void)
+{
+	return &PgCurrentBackendParallelState()->pq_mq_busy;
+}
+
+pid_t *
+PgCurrentPqMqParallelLeaderPidRef(void)
+{
+	return &PgCurrentBackendParallelState()->pq_mq_parallel_leader_pid;
+}
+
+ProcNumber *
+PgCurrentPqMqParallelLeaderProcNumberRef(void)
+{
+	return &PgCurrentBackendParallelState()->pq_mq_parallel_leader_proc_number;
 }
 
 int *

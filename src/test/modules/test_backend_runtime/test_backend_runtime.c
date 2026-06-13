@@ -15,6 +15,7 @@
 #include <errno.h>
 
 #include "access/gin.h"
+#include "access/parallel.h"
 #include "access/tableam.h"
 #include "access/toast_compression.h"
 #include "access/xact.h"
@@ -7080,6 +7081,115 @@ test_backend_utility_state_is_backend_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "backend utility state was not backend-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_backend_parallel_state_is_backend_local);
+Datum
+test_backend_parallel_state_is_backend_local(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgBackend	fake_backend1;
+	PgBackend	fake_backend2;
+	bool		ok = true;
+
+	saved_backend = CurrentPgBackend;
+
+	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
+	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+	fake_backend1.parallel.worker_number = -1;
+	fake_backend1.parallel.pq_mq_parallel_leader_proc_number = INVALID_PROC_NUMBER;
+	fake_backend2.parallel.worker_number = -1;
+	fake_backend2.parallel.pq_mq_parallel_leader_proc_number = INVALID_PROC_NUMBER;
+
+	PG_TRY();
+	{
+		CurrentPgBackend = &fake_backend1;
+		ok = ok && ParallelWorkerNumber == -1;
+		ok = ok && !ParallelMessagePending;
+		ok = ok && !InitializingParallelWorker;
+		ok = ok && *PgCurrentFixedParallelStateRef() == NULL;
+		ok = ok && !*PgCurrentParallelContextListInitializedRef();
+		ok = ok && *PgCurrentParallelLeaderPidRef() == 0;
+		ok = ok && *PgCurrentPqMqHandleRef() == NULL;
+		ok = ok && !*PgCurrentPqMqBusyRef();
+		ok = ok && *PgCurrentPqMqParallelLeaderPidRef() == 0;
+		ok = ok && *PgCurrentPqMqParallelLeaderProcNumberRef() == INVALID_PROC_NUMBER;
+
+		ParallelWorkerNumber = 3;
+		ParallelMessagePending = true;
+		InitializingParallelWorker = true;
+		*PgCurrentFixedParallelStateRef() = &fake_backend1;
+		dlist_init(PgCurrentParallelContextListRef());
+		*PgCurrentParallelContextListInitializedRef() = true;
+		*PgCurrentParallelLeaderPidRef() = 111;
+		*PgCurrentPqMqHandleRef() = &fake_backend1;
+		*PgCurrentPqMqBusyRef() = true;
+		*PgCurrentPqMqParallelLeaderPidRef() = 222;
+		*PgCurrentPqMqParallelLeaderProcNumberRef() = 12;
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && ParallelWorkerNumber == -1;
+		ok = ok && !ParallelMessagePending;
+		ok = ok && !InitializingParallelWorker;
+		ok = ok && *PgCurrentFixedParallelStateRef() == NULL;
+		ok = ok && !*PgCurrentParallelContextListInitializedRef();
+		ok = ok && *PgCurrentParallelLeaderPidRef() == 0;
+		ok = ok && *PgCurrentPqMqHandleRef() == NULL;
+		ok = ok && !*PgCurrentPqMqBusyRef();
+		ok = ok && *PgCurrentPqMqParallelLeaderPidRef() == 0;
+		ok = ok && *PgCurrentPqMqParallelLeaderProcNumberRef() == INVALID_PROC_NUMBER;
+
+		ParallelWorkerNumber = 4;
+		ParallelMessagePending = false;
+		InitializingParallelWorker = true;
+		*PgCurrentFixedParallelStateRef() = &fake_backend2;
+		dlist_init(PgCurrentParallelContextListRef());
+		*PgCurrentParallelContextListInitializedRef() = true;
+		*PgCurrentParallelLeaderPidRef() = 333;
+		*PgCurrentPqMqHandleRef() = &fake_backend2;
+		*PgCurrentPqMqBusyRef() = true;
+		*PgCurrentPqMqParallelLeaderPidRef() = 444;
+		*PgCurrentPqMqParallelLeaderProcNumberRef() = 34;
+
+		CurrentPgBackend = &fake_backend1;
+		ok = ok && ParallelWorkerNumber == 3;
+		ok = ok && ParallelMessagePending;
+		ok = ok && InitializingParallelWorker;
+		ok = ok && *PgCurrentFixedParallelStateRef() == &fake_backend1;
+		ok = ok && *PgCurrentParallelContextListInitializedRef();
+		ok = ok && dlist_is_empty(PgCurrentParallelContextListRef());
+		ok = ok && *PgCurrentParallelLeaderPidRef() == 111;
+		ok = ok && *PgCurrentPqMqHandleRef() == &fake_backend1;
+		ok = ok && *PgCurrentPqMqBusyRef();
+		ok = ok && *PgCurrentPqMqParallelLeaderPidRef() == 222;
+		ok = ok && *PgCurrentPqMqParallelLeaderProcNumberRef() == 12;
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && ParallelWorkerNumber == 4;
+		ok = ok && !ParallelMessagePending;
+		ok = ok && InitializingParallelWorker;
+		ok = ok && *PgCurrentFixedParallelStateRef() == &fake_backend2;
+		ok = ok && *PgCurrentParallelContextListInitializedRef();
+		ok = ok && dlist_is_empty(PgCurrentParallelContextListRef());
+		ok = ok && *PgCurrentParallelLeaderPidRef() == 333;
+		ok = ok && *PgCurrentPqMqHandleRef() == &fake_backend2;
+		ok = ok && *PgCurrentPqMqBusyRef();
+		ok = ok && *PgCurrentPqMqParallelLeaderPidRef() == 444;
+		ok = ok && *PgCurrentPqMqParallelLeaderProcNumberRef() == 34;
+
+		CurrentPgBackend = saved_backend;
+	}
+	PG_CATCH();
+	{
+		CurrentPgBackend = saved_backend;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "backend parallel state was not backend-local");
 
 	PG_RETURN_BOOL(true);
 }

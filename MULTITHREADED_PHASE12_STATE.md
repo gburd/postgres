@@ -6820,6 +6820,50 @@ Validation for this slice:
   87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
   explicit `PG_REGRESS` environment.
 
+## Backend Parallel State Bridge
+
+The one-hundred-forty-second Phase 12 slice moves a parallel-query and
+shared-memory message-queue backend-local state group into a new
+`PgBackendParallelState` bucket:
+
+- exported parallel worker state: `ParallelWorkerNumber`,
+  `ParallelMessagePending`, and `InitializingParallelWorker`;
+- private parallel context state in `parallel.c`: `MyFixedParallelState`,
+  `pcxt_list`, `pcxt_list_initialized`, and `ParallelLeaderPid`;
+- private shared-memory message queue state in `pqmq.c`: `pq_mq_handle`,
+  `pq_mq_busy`, `pq_mq_parallel_leader_pid`, and
+  `pq_mq_parallel_leader_proc_number`.
+
+The private `FixedParallelState` and `shm_mq_handle` types stay private to
+their owning source files. `PgBackendParallelState` stores those pointers as
+opaque `void *` fields, and the owning files cast them through local
+compatibility macros. The early fallback state is statically initialized with
+the same sentinels as the former standalone TLS globals, especially
+`ParallelWorkerNumber = -1`, because bootstrap reaches parallel-worker checks
+before full backend runtime adoption.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `parallel.o`,
+  `pqmq.o`, and `test_backend_runtime.o`;
+- a static scan found no remaining raw TLS declarations for the moved
+  parallel worker or pqmq state;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed after fixing the early
+  parallel fallback sentinel;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 262 to 249;
+- `gmake -C contrib -j8` passed;
+- PL/pgSQL and `src/test/modules/test_backend_runtime` were cleaned, rebuilt,
+  and reinstalled after the installed-header and `PgBackend` layout changes;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression, including the new parallel-state helper, and still
+  reported TAP disabled by configure;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
+  explicit `PG_REGRESS` environment.
+
 ## Backend Utility Cache State Bridge
 
 The one-hundred-forty-first Phase 12 slice extends `PgBackendUtilityState` to
