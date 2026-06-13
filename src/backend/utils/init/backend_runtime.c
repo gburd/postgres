@@ -557,6 +557,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionSnapshotState early_execut
 	.recent_xmin = FirstNormalTransactionId
 };
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionComboCidState early_execution_combo_cid;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionXLogInsertState early_execution_xloginsert;
 
 StaticAssertDecl(PG_BACKEND_INTERRUPT_COUNT <= 32,
 				 "PgBackendInterruptMask must fit all backend interrupts");
@@ -744,6 +745,8 @@ static void PgExecutionInitializeSnapshotState(PgExecutionSnapshotState *snapsho
 static void PgExecutionAdoptEarlySnapshotState(PgExecution *execution);
 static void PgExecutionInitializeComboCidState(PgExecutionComboCidState *combo_cid);
 static void PgExecutionAdoptEarlyComboCidState(PgExecution *execution);
+static void PgExecutionInitializeXLogInsertState(PgExecutionXLogInsertState *xloginsert);
+static void PgExecutionAdoptEarlyXLogInsertState(PgExecution *execution);
 static PgBackendCoreState *PgCurrentCoreState(void);
 static PgSessionDatabaseState *PgCurrentSessionDatabaseState(void);
 static PgSessionTablespaceState *PgCurrentSessionTablespaceState(void);
@@ -798,6 +801,7 @@ static PgExecutionExtensionState *PgCurrentExecutionExtensionState(void);
 static PgExecutionMatViewState *PgCurrentExecutionMatViewState(void);
 static PgExecutionSnapshotState *PgCurrentExecutionSnapshotState(void);
 static PgExecutionComboCidState *PgCurrentExecutionComboCidState(void);
+static PgExecutionXLogInsertState *PgCurrentExecutionXLogInsertState(void);
 static PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
 static PgBackendInstrumentationState *PgCurrentBackendInstrumentationState(void);
 static PgBackendBufferState *PgCurrentBackendBufferState(void);
@@ -2928,6 +2932,29 @@ PgExecutionAdoptEarlyComboCidState(PgExecution *execution)
 	PgExecutionInitializeComboCidState(&early_execution_combo_cid);
 }
 
+static void
+PgExecutionInitializeXLogInsertState(PgExecutionXLogInsertState *xloginsert)
+{
+	Assert(xloginsert != NULL);
+
+	MemSet(xloginsert, 0, sizeof(*xloginsert));
+}
+
+static void
+PgExecutionAdoptEarlyXLogInsertState(PgExecution *execution)
+{
+	Assert(execution != NULL);
+	Assert(!early_execution_xloginsert.begininsert_called);
+
+	execution->xloginsert = early_execution_xloginsert;
+	if (execution->xloginsert.mainrdata_last ==
+		(XLogRecData *) &early_execution_xloginsert.mainrdata_head)
+		execution->xloginsert.mainrdata_last =
+			(XLogRecData *) &execution->xloginsert.mainrdata_head;
+
+	PgExecutionInitializeXLogInsertState(&early_execution_xloginsert);
+}
+
 void
 InitializePgProcessRuntime(void)
 {
@@ -3070,6 +3097,7 @@ InitializePgProcessRuntime(void)
 	PgExecutionAdoptEarlyMatViewState(&process_execution);
 	PgExecutionAdoptEarlySnapshotState(&process_execution);
 	PgExecutionAdoptEarlyComboCidState(&process_execution);
+	PgExecutionAdoptEarlyXLogInsertState(&process_execution);
 
 	CurrentPgRuntime = &process_runtime;
 	CurrentPgCarrier = &process_carrier;
@@ -3221,6 +3249,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgExecutionInitializeMatViewState(&state->execution.matview);
 	PgExecutionInitializeSnapshotState(&state->execution.snapshot);
 	PgExecutionInitializeComboCidState(&state->execution.combo_cid);
+	PgExecutionInitializeXLogInsertState(&state->execution.xloginsert);
 }
 
 void
@@ -3307,6 +3336,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgExecutionAdoptEarlyMatViewState(&state->execution);
 	PgExecutionAdoptEarlySnapshotState(&state->execution);
 	PgExecutionAdoptEarlyComboCidState(&state->execution);
+	PgExecutionAdoptEarlyXLogInsertState(&state->execution);
 	CurrentPgRuntime = &thread_runtime;
 	CurrentPgCarrier = &state->carrier;
 	CurrentPgBackend = &state->backend;
@@ -6617,6 +6647,99 @@ int *
 PgCurrentSizeComboCidsRef(void)
 {
 	return &PgCurrentExecutionComboCidState()->size;
+}
+
+static PgExecutionXLogInsertState *
+PgCurrentExecutionXLogInsertState(void)
+{
+	if (CurrentPgExecution == NULL)
+		return &early_execution_xloginsert;
+
+	return &CurrentPgExecution->xloginsert;
+}
+
+void **
+PgCurrentXLogInsertRegisteredBuffersRef(void)
+{
+	return &PgCurrentExecutionXLogInsertState()->registered_buffers;
+}
+
+int *
+PgCurrentXLogInsertMaxRegisteredBuffersRef(void)
+{
+	return &PgCurrentExecutionXLogInsertState()->max_registered_buffers;
+}
+
+int *
+PgCurrentXLogInsertMaxRegisteredBlockIdRef(void)
+{
+	return &PgCurrentExecutionXLogInsertState()->max_registered_block_id;
+}
+
+XLogRecData **
+PgCurrentXLogInsertMainRDataHeadRef(void)
+{
+	return &PgCurrentExecutionXLogInsertState()->mainrdata_head;
+}
+
+XLogRecData **
+PgCurrentXLogInsertMainRDataLastRef(void)
+{
+	return &PgCurrentExecutionXLogInsertState()->mainrdata_last;
+}
+
+uint64 *
+PgCurrentXLogInsertMainRDataLenRef(void)
+{
+	return &PgCurrentExecutionXLogInsertState()->mainrdata_len;
+}
+
+uint8 *
+PgCurrentXLogInsertFlagsRef(void)
+{
+	return &PgCurrentExecutionXLogInsertState()->curinsert_flags;
+}
+
+XLogRecData *
+PgCurrentXLogInsertHeaderRecordDataRef(void)
+{
+	return &PgCurrentExecutionXLogInsertState()->hdr_rdt;
+}
+
+char **
+PgCurrentXLogInsertHeaderScratchRef(void)
+{
+	return &PgCurrentExecutionXLogInsertState()->hdr_scratch;
+}
+
+XLogRecData **
+PgCurrentXLogInsertRDatasRef(void)
+{
+	return &PgCurrentExecutionXLogInsertState()->rdatas;
+}
+
+int *
+PgCurrentXLogInsertNumRDatasRef(void)
+{
+	return &PgCurrentExecutionXLogInsertState()->num_rdatas;
+}
+
+int *
+PgCurrentXLogInsertMaxRDatasRef(void)
+{
+	return &PgCurrentExecutionXLogInsertState()->max_rdatas;
+}
+
+bool *
+PgCurrentXLogInsertBeginCalledRef(void)
+{
+	return &PgCurrentExecutionXLogInsertState()->begininsert_called;
+}
+
+MemoryContext *
+PgCurrentXLogInsertContextRef(void)
+{
+	return &PgCurrentExecutionXLogInsertState()->context;
 }
 
 PgConnectionSocketIOState *

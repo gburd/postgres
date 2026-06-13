@@ -19,6 +19,7 @@
 #include "access/session.h"
 #include "access/transam.h"
 #include "access/xlogdefs.h"
+#include "access/xlog_internal.h"
 #include "common/pg_prng.h"
 #include "common/relpath.h"
 #include "executor/instrument.h"
@@ -901,6 +902,24 @@ typedef struct PgExecutionComboCidState
 	int			size;
 } PgExecutionComboCidState;
 
+typedef struct PgExecutionXLogInsertState
+{
+	void	   *registered_buffers;
+	int			max_registered_buffers;
+	int			max_registered_block_id;
+	XLogRecData *mainrdata_head;
+	XLogRecData *mainrdata_last;
+	uint64		mainrdata_len;
+	uint8		curinsert_flags;
+	XLogRecData hdr_rdt;
+	char	   *hdr_scratch;
+	XLogRecData *rdatas;
+	int			num_rdatas;
+	int			max_rdatas;
+	bool		begininsert_called;
+	MemoryContext context;
+} PgExecutionXLogInsertState;
+
 typedef struct PgSessionDatabaseState
 {
 	Oid			database_id;
@@ -1718,6 +1737,7 @@ struct PgExecution
 	PgExecutionMatViewState matview;
 	PgExecutionSnapshotState snapshot;
 	PgExecutionComboCidState combo_cid;
+	PgExecutionXLogInsertState xloginsert;
 };
 
 typedef struct PgThreadBackendRuntimeState
@@ -2192,6 +2212,20 @@ extern HTAB **PgCurrentComboCidHashRef(void);
 extern void **PgCurrentComboCidsRef(void);
 extern int *PgCurrentUsedComboCidsRef(void);
 extern int *PgCurrentSizeComboCidsRef(void);
+extern void **PgCurrentXLogInsertRegisteredBuffersRef(void);
+extern int *PgCurrentXLogInsertMaxRegisteredBuffersRef(void);
+extern int *PgCurrentXLogInsertMaxRegisteredBlockIdRef(void);
+extern XLogRecData **PgCurrentXLogInsertMainRDataHeadRef(void);
+extern XLogRecData **PgCurrentXLogInsertMainRDataLastRef(void);
+extern uint64 *PgCurrentXLogInsertMainRDataLenRef(void);
+extern uint8 *PgCurrentXLogInsertFlagsRef(void);
+extern XLogRecData *PgCurrentXLogInsertHeaderRecordDataRef(void);
+extern char **PgCurrentXLogInsertHeaderScratchRef(void);
+extern XLogRecData **PgCurrentXLogInsertRDatasRef(void);
+extern int *PgCurrentXLogInsertNumRDatasRef(void);
+extern int *PgCurrentXLogInsertMaxRDatasRef(void);
+extern bool *PgCurrentXLogInsertBeginCalledRef(void);
+extern MemoryContext *PgCurrentXLogInsertContextRef(void);
 extern PgConnectionSocketIOState *PgConnectionSocketIORef(PgConnection *connection);
 extern PgConnectionSocketIOState *PgCurrentConnectionSocketIORef(void);
 extern const PQcommMethods **PgConnectionPqCommMethodsRef(PgConnection *connection);

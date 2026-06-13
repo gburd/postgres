@@ -766,6 +766,7 @@ dispatch/reverse-lookup bridge through `PgBackendExprInterpState`, plus the
 optional LWLock debug-statistics hash, dummy entry, memory context, and
 exit-registration state bridge through `PgBackendLockState`, plus the
 snapshot-manager and combo-CID transaction visibility state bridge through
+`PgExecution`, plus the WAL record-construction workspace bridge through
 `PgExecution`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
@@ -1024,6 +1025,19 @@ backend-runtime regression, direct threaded runtime TAP, contrib build,
 PL/pgSQL rebuild/install, and the required global-lifetime scan with zero new
 unclassified mutable globals; execution-local declarations dropped from 154
 to 134.
+The WAL insert execution-state slice moved `xloginsert.c` registered-buffer
+workspace, main-data `XLogRecData` chain state, current insert flags, header
+record/scratch storage, registered-data array state, in-progress flag, and
+workspace memory context into `PgExecution`. The private `registered_buffer`
+type remains local to `xloginsert.c` behind an opaque runtime pointer, and
+early adoption retargets the legacy `mainrdata_last` self-pointer sentinel
+when needed. Validation included touched-object builds, clean full
+build/install, process-mode backend-runtime regression, direct threaded
+runtime TAP, contrib build, PL/pgSQL rebuild/install, and the required
+global-lifetime scan with zero new unclassified mutable globals;
+execution-local declarations dropped from 134 to 121. The hidden
+`XLogGetFakeLSN()` function-local statics remain a documented follow-up
+because they need a separate session/execution lifetime decision.
 The predicate-lock state slice extends `PgBackendLockState` again for
 `predicate.c`: local predicate-lock hash state, the current serializable
 transaction pointer, write-tracking flag, and saved serializable transaction

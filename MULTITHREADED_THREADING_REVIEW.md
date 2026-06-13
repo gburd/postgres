@@ -912,6 +912,22 @@ runtime-owned heap. Validation included touched-object builds, a backend plus
 `test_backend_runtime` regression, and direct threaded TAP. The
 global-lifetime scan now reports 134 execution-local declarations with zero
 new unclassified mutable globals, down from 154 before this slice.
+The next execution-state slice moved WAL record-construction workspace from
+`xloginsert.c` into `PgExecution`: registered-buffer workspace, main-data
+`XLogRecData` chain state, current insert flags, header record/scratch
+storage, registered-data array state, in-progress flag, and the workspace
+memory context now follow the logical execution. `registered_buffer` remains
+private to `xloginsert.c` behind an opaque runtime pointer. The adoption path
+asserts that no WAL insert is in progress and retargets the legacy
+`mainrdata_last` self-pointer sentinel from the early fallback bucket to the
+destination execution bucket. Validation included touched-object builds, a
+backend plus `src/common` clean rebuild, clean full build, install,
+`gmake check-global-lifetimes`, contrib build, PL/pgSQL rebuild/install,
+`test_backend_runtime` regression, and direct threaded TAP. The
+global-lifetime scan now reports 121 execution-local declarations with zero
+new unclassified mutable globals, down from 134 before this slice. The
+function-local fake-LSN statics in `XLogGetFakeLSN()` remain a documented
+follow-up needing a separate session/execution lifetime decision.
 
 ## Bottom Line
 

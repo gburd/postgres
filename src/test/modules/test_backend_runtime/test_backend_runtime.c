@@ -11368,6 +11368,130 @@ test_execution_snapshot_combo_state_is_execution_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_execution_xloginsert_state_is_execution_local);
+Datum
+test_execution_xloginsert_state_is_execution_local(PG_FUNCTION_ARGS)
+{
+	PgExecution *saved_execution;
+	PgExecution fake_execution1;
+	PgExecution fake_execution2;
+	XLogRecData fake_rdata1;
+	XLogRecData fake_rdata2;
+	bool		ok = true;
+
+	saved_execution = CurrentPgExecution;
+	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
+	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+	MemSet(&fake_rdata1, 0, sizeof(fake_rdata1));
+	MemSet(&fake_rdata2, 0, sizeof(fake_rdata2));
+
+	PG_TRY();
+	{
+		CurrentPgExecution = &fake_execution1;
+		*PgCurrentXLogInsertRegisteredBuffersRef() = &fake_execution1;
+		*PgCurrentXLogInsertMaxRegisteredBuffersRef() = 101;
+		*PgCurrentXLogInsertMaxRegisteredBlockIdRef() = 102;
+		*PgCurrentXLogInsertMainRDataHeadRef() = &fake_rdata1;
+		*PgCurrentXLogInsertMainRDataLastRef() = &fake_rdata1;
+		*PgCurrentXLogInsertMainRDataLenRef() = UINT64CONST(103);
+		*PgCurrentXLogInsertFlagsRef() = 104;
+		PgCurrentXLogInsertHeaderRecordDataRef()->data = &fake_execution1;
+		PgCurrentXLogInsertHeaderRecordDataRef()->len = 105;
+		*PgCurrentXLogInsertHeaderScratchRef() = (char *) &fake_execution1;
+		*PgCurrentXLogInsertRDatasRef() = &fake_rdata1;
+		*PgCurrentXLogInsertNumRDatasRef() = 106;
+		*PgCurrentXLogInsertMaxRDatasRef() = 107;
+		*PgCurrentXLogInsertBeginCalledRef() = true;
+		*PgCurrentXLogInsertContextRef() = (MemoryContext) &fake_execution1;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && *PgCurrentXLogInsertRegisteredBuffersRef() == NULL;
+		ok = ok && *PgCurrentXLogInsertMaxRegisteredBuffersRef() == 0;
+		ok = ok && *PgCurrentXLogInsertMaxRegisteredBlockIdRef() == 0;
+		ok = ok && *PgCurrentXLogInsertMainRDataHeadRef() == NULL;
+		ok = ok && *PgCurrentXLogInsertMainRDataLastRef() == NULL;
+		ok = ok && *PgCurrentXLogInsertMainRDataLenRef() == 0;
+		ok = ok && *PgCurrentXLogInsertFlagsRef() == 0;
+		ok = ok && PgCurrentXLogInsertHeaderRecordDataRef()->data == NULL;
+		ok = ok && PgCurrentXLogInsertHeaderRecordDataRef()->len == 0;
+		ok = ok && *PgCurrentXLogInsertHeaderScratchRef() == NULL;
+		ok = ok && *PgCurrentXLogInsertRDatasRef() == NULL;
+		ok = ok && *PgCurrentXLogInsertNumRDatasRef() == 0;
+		ok = ok && *PgCurrentXLogInsertMaxRDatasRef() == 0;
+		ok = ok && !*PgCurrentXLogInsertBeginCalledRef();
+		ok = ok && *PgCurrentXLogInsertContextRef() == NULL;
+
+		*PgCurrentXLogInsertRegisteredBuffersRef() = &fake_execution2;
+		*PgCurrentXLogInsertMaxRegisteredBuffersRef() = 201;
+		*PgCurrentXLogInsertMaxRegisteredBlockIdRef() = 202;
+		*PgCurrentXLogInsertMainRDataHeadRef() = &fake_rdata2;
+		*PgCurrentXLogInsertMainRDataLastRef() = &fake_rdata2;
+		*PgCurrentXLogInsertMainRDataLenRef() = UINT64CONST(203);
+		*PgCurrentXLogInsertFlagsRef() = 204;
+		PgCurrentXLogInsertHeaderRecordDataRef()->data = &fake_execution2;
+		PgCurrentXLogInsertHeaderRecordDataRef()->len = 205;
+		*PgCurrentXLogInsertHeaderScratchRef() = (char *) &fake_execution2;
+		*PgCurrentXLogInsertRDatasRef() = &fake_rdata2;
+		*PgCurrentXLogInsertNumRDatasRef() = 206;
+		*PgCurrentXLogInsertMaxRDatasRef() = 207;
+		*PgCurrentXLogInsertBeginCalledRef() = false;
+		*PgCurrentXLogInsertContextRef() = (MemoryContext) &fake_execution2;
+
+		CurrentPgExecution = &fake_execution1;
+		ok = ok && *PgCurrentXLogInsertRegisteredBuffersRef() == &fake_execution1;
+		ok = ok && *PgCurrentXLogInsertMaxRegisteredBuffersRef() == 101;
+		ok = ok && *PgCurrentXLogInsertMaxRegisteredBlockIdRef() == 102;
+		ok = ok && *PgCurrentXLogInsertMainRDataHeadRef() == &fake_rdata1;
+		ok = ok && *PgCurrentXLogInsertMainRDataLastRef() == &fake_rdata1;
+		ok = ok && *PgCurrentXLogInsertMainRDataLenRef() == UINT64CONST(103);
+		ok = ok && *PgCurrentXLogInsertFlagsRef() == 104;
+		ok = ok && PgCurrentXLogInsertHeaderRecordDataRef()->data ==
+			&fake_execution1;
+		ok = ok && PgCurrentXLogInsertHeaderRecordDataRef()->len == 105;
+		ok = ok && *PgCurrentXLogInsertHeaderScratchRef() ==
+			(char *) &fake_execution1;
+		ok = ok && *PgCurrentXLogInsertRDatasRef() == &fake_rdata1;
+		ok = ok && *PgCurrentXLogInsertNumRDatasRef() == 106;
+		ok = ok && *PgCurrentXLogInsertMaxRDatasRef() == 107;
+		ok = ok && *PgCurrentXLogInsertBeginCalledRef();
+		ok = ok && *PgCurrentXLogInsertContextRef() ==
+			(MemoryContext) &fake_execution1;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && *PgCurrentXLogInsertRegisteredBuffersRef() == &fake_execution2;
+		ok = ok && *PgCurrentXLogInsertMaxRegisteredBuffersRef() == 201;
+		ok = ok && *PgCurrentXLogInsertMaxRegisteredBlockIdRef() == 202;
+		ok = ok && *PgCurrentXLogInsertMainRDataHeadRef() == &fake_rdata2;
+		ok = ok && *PgCurrentXLogInsertMainRDataLastRef() == &fake_rdata2;
+		ok = ok && *PgCurrentXLogInsertMainRDataLenRef() == UINT64CONST(203);
+		ok = ok && *PgCurrentXLogInsertFlagsRef() == 204;
+		ok = ok && PgCurrentXLogInsertHeaderRecordDataRef()->data ==
+			&fake_execution2;
+		ok = ok && PgCurrentXLogInsertHeaderRecordDataRef()->len == 205;
+		ok = ok && *PgCurrentXLogInsertHeaderScratchRef() ==
+			(char *) &fake_execution2;
+		ok = ok && *PgCurrentXLogInsertRDatasRef() == &fake_rdata2;
+		ok = ok && *PgCurrentXLogInsertNumRDatasRef() == 206;
+		ok = ok && *PgCurrentXLogInsertMaxRDatasRef() == 207;
+		ok = ok && !*PgCurrentXLogInsertBeginCalledRef();
+		ok = ok && *PgCurrentXLogInsertContextRef() ==
+			(MemoryContext) &fake_execution2;
+
+		CurrentPgExecution = saved_execution;
+	}
+	PG_CATCH();
+	{
+		CurrentPgExecution = saved_execution;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "WAL insert construction state was not execution-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_connection_socket_io_is_connection_local);
 Datum
 test_connection_socket_io_is_connection_local(PG_FUNCTION_ARGS)

@@ -545,6 +545,12 @@ SELECT test_execution_snapshot_combo_state_is_execution_local();
  t
 (1 row)
 
+SELECT test_execution_xloginsert_state_is_execution_local();
+ test_execution_xloginsert_state_is_execution_local 
+----------------------------------------------------
+ t
+(1 row)
+
 SELECT test_execution_resource_owners_are_execution_local();
  test_execution_resource_owners_are_execution_local 
 ----------------------------------------------------

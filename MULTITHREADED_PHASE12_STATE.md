@@ -7722,6 +7722,58 @@ Validation for this slice:
   exported-snapshot list, tuple-CID state, and combo-CID state across two fake
   logical executions.
 
+## Execution XLog Insert State Bridge
+
+The one-hundred-sixty-fifth Phase 12 slice moves the WAL record-construction
+workspace in `xloginsert.c` into a new `PgExecutionXLogInsertState` bucket:
+
+- the registered-buffer array pointer, allocation size, and highest registered
+  block id;
+- the main-data `XLogRecData` chain head/tail and accumulated byte count;
+- the current insert flags, embedded header `XLogRecData`, and header scratch
+  buffer;
+- the registered-data array pointer/count/capacity;
+- the in-progress `XLogBeginInsert()` guard and the workspace memory context.
+
+`registered_buffer` stays private to `xloginsert.c`; the runtime object stores
+that array through an opaque pointer, while `xloginsert.c` casts it back behind
+source-local compatibility macros. The existing `XLogRecData` type is already
+part of the WAL insertion interface, so the runtime object can store those
+chain pointers and the header record directly.
+
+The lifecycle rule for this slice is explicit: `InitXLogInsert()` still owns
+workspace allocation and `XLogResetInsertion()` still resets the current
+record. Early adoption is allowed only when no WAL insert is in progress. If
+early initialization has installed the legacy `mainrdata_last` sentinel that
+points at the early bucket's own `mainrdata_head`, adoption retargets that
+self-pointer to the destination execution bucket before resetting the early
+fallback state. All allocation pointers copied during adoption are then owned
+by the destination `PgExecution`.
+
+This slice deliberately does not move the hidden function-local fake-LSN
+statics in `XLogGetFakeLSN()`. Those values are not part of the transient WAL
+record-construction workspace and need a separate session/execution lifetime
+decision before migration.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `xloginsert.o`, and
+  `test_backend_runtime.o`;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with execution-local declarations dropping from 134 to 121;
+- backend and `src/common` clean rebuild plus generated-header recovery
+  passed, followed by clean full `gmake -j8`;
+- `gmake DESTDIR="$PWD/tmp_install" install`, `gmake -C contrib -j8`, and a
+  clean PL/pgSQL rebuild/install passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
+  explicit `PG_REGRESS` environment;
+- `test_execution_xloginsert_state_is_execution_local()` now verifies the WAL
+  insert workspace pointers, counters, flags, embedded header record, scratch
+  buffer, and memory context across two fake logical executions.
+
 ## Backend Parallel State Bridge
 
 The one-hundred-forty-second Phase 12 slice moves a parallel-query and

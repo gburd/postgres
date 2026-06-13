@@ -421,6 +421,20 @@ Important current files:
   because `PgExecution` layout and installed runtime/snapshot headers changed;
   at minimum rebuild and reinstall PL/pgSQL, `src/test/modules/test_backend_runtime`,
   and contrib before validating.
+- WAL record-construction workspace now lives in `PgExecution`:
+  `PgExecutionXLogInsertState` owns the `xloginsert.c` registered-buffer
+  workspace, main-data `XLogRecData` chain state, insert flags, header
+  record/scratch storage, registered-data array state, in-progress flag, and
+  memory context. `registered_buffer` remains private to `xloginsert.c` behind
+  an opaque runtime pointer. Early adoption asserts that no WAL insert is in
+  progress and retargets the `mainrdata_last` self-pointer sentinel when early
+  `InitXLogInsert()` has run before process/thread runtime installation. The
+  hidden `XLogGetFakeLSN()` function-local statics are still a follow-up
+  because they need a separate session/execution lifetime decision. After
+  changing this bridge, clean and rebuild backend objects because
+  `PgExecution` layout and installed runtime headers changed; at minimum
+  rebuild and reinstall `src/test/modules/test_backend_runtime`, PL/pgSQL, and
+  contrib before validating.
 - Backend activity snapshot state now lives in `PgBackendActivityState`:
   `localBackendStatusTable`, `localNumBackends`, and
   `backendStatusSnapContext` are backed by runtime accessors while
