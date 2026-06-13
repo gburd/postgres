@@ -16,8 +16,10 @@
 #include "postgres.h"
 
 #include "access/parallel.h"
+#include "catalog/binary_upgrade.h"
 #include "commands/async.h"
 #include "commands/repack.h"
+#include "commands/tablespace.h"
 #include "miscadmin.h"
 #include "optimizer/cost.h"
 #include "optimizer/geqo.h"
@@ -63,6 +65,13 @@ static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionInterruptState early_con
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionStartupState early_connection_startup;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionClientConnectionInfoState early_client_connection_info;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionDatabaseState early_session_database;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionTablespaceState early_session_tablespace = {
+	.initialized = true,
+	.default_tablespace_name = NULL,
+	.temp_tablespaces_names = NULL,
+	.allow_in_place_tablespaces_value = false,
+	.binary_upgrade_next_pg_tablespace_oid_value = InvalidOid
+};
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionDateTimeState early_session_datetime = {
 	.initialized = true,
 	.date_style = USE_ISO_DATES,
@@ -155,6 +164,8 @@ static void PgConnectionAdoptEarlyInterruptState(PgConnection *connection);
 static void PgConnectionAdoptEarlyStartupState(PgConnection *connection);
 static void PgConnectionAdoptEarlyClientConnectionInfo(PgConnection *connection);
 static void PgSessionAdoptEarlyDatabaseState(PgSession *session);
+static void PgSessionInitializeTablespaceState(PgSessionTablespaceState *tablespace);
+static void PgSessionAdoptEarlyTablespaceState(PgSession *session);
 static void PgSessionInitializeDateTimeState(PgSessionDateTimeState *datetime);
 static void PgSessionAdoptEarlyDateTimeState(PgSession *session);
 static void PgSessionInitializeQueryMemoryState(PgSessionQueryMemoryState *query_memory);
@@ -174,6 +185,7 @@ static void PgExecutionAdoptEarlyMemoryContexts(PgExecution *execution);
 static void PgExecutionAdoptEarlyResourceOwners(PgExecution *execution);
 static PgBackendCoreState *PgCurrentCoreState(void);
 static PgSessionDatabaseState *PgCurrentSessionDatabaseState(void);
+static PgSessionTablespaceState *PgCurrentSessionTablespaceState(void);
 static PgSessionDateTimeState *PgCurrentSessionDateTimeState(void);
 static PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
 static PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
@@ -263,6 +275,30 @@ PgSessionAdoptEarlyDatabaseState(PgSession *session)
 
 	session->database = early_session_database;
 	MemSet(&early_session_database, 0, sizeof(early_session_database));
+}
+
+static void
+PgSessionInitializeTablespaceState(PgSessionTablespaceState *tablespace)
+{
+	Assert(tablespace != NULL);
+
+	tablespace->initialized = true;
+	tablespace->default_tablespace_name = NULL;
+	tablespace->temp_tablespaces_names = NULL;
+	tablespace->allow_in_place_tablespaces_value = false;
+	tablespace->binary_upgrade_next_pg_tablespace_oid_value = InvalidOid;
+}
+
+static void
+PgSessionAdoptEarlyTablespaceState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (!early_session_tablespace.initialized)
+		PgSessionInitializeTablespaceState(&early_session_tablespace);
+
+	session->tablespace = early_session_tablespace;
+	PgSessionInitializeTablespaceState(&early_session_tablespace);
 }
 
 static void
@@ -547,6 +583,7 @@ InitializePgProcessRuntime(void)
 	process_session.connection = &process_connection;
 	process_session.execution = &process_execution;
 	PgSessionAdoptEarlyDatabaseState(&process_session);
+	PgSessionAdoptEarlyTablespaceState(&process_session);
 	PgSessionAdoptEarlyDateTimeState(&process_session);
 	PgSessionAdoptEarlyQueryMemoryState(&process_session);
 	PgSessionAdoptEarlyPlannerCostState(&process_session);
@@ -630,6 +667,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	state->session.backend = &state->backend;
 	state->session.connection = &state->connection;
 	state->session.execution = &state->execution;
+	PgSessionInitializeTablespaceState(&state->session.tablespace);
 	PgSessionInitializeDateTimeState(&state->session.datetime);
 	PgSessionInitializeQueryMemoryState(&state->session.query_memory);
 	PgSessionInitializePlannerCostState(&state->session.planner_cost);
@@ -654,6 +692,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	state->carrier.current_execution = &state->execution;
 	PgBackendAdoptEarlyCoreState(&state->backend);
 	PgSessionAdoptEarlyDatabaseState(&state->session);
+	PgSessionAdoptEarlyTablespaceState(&state->session);
 	PgSessionAdoptEarlyDateTimeState(&state->session);
 	PgSessionAdoptEarlyQueryMemoryState(&state->session);
 	PgSessionAdoptEarlyPlannerCostState(&state->session);
@@ -721,6 +760,22 @@ PgCurrentSessionDatabaseState(void)
 		return &early_session_database;
 
 	return &CurrentPgSession->database;
+}
+
+static PgSessionTablespaceState *
+PgCurrentSessionTablespaceState(void)
+{
+	PgSessionTablespaceState *tablespace;
+
+	if (CurrentPgSession == NULL)
+		tablespace = &early_session_tablespace;
+	else
+		tablespace = &CurrentPgSession->tablespace;
+
+	if (!tablespace->initialized)
+		PgSessionInitializeTablespaceState(tablespace);
+
+	return tablespace;
 }
 
 static PgSessionDateTimeState *
@@ -809,6 +864,30 @@ char **
 PgCurrentDatabasePathRef(void)
 {
 	return &PgCurrentSessionDatabaseState()->database_path;
+}
+
+char **
+PgCurrentDefaultTablespaceRef(void)
+{
+	return &PgCurrentSessionTablespaceState()->default_tablespace_name;
+}
+
+char **
+PgCurrentTempTablespacesRef(void)
+{
+	return &PgCurrentSessionTablespaceState()->temp_tablespaces_names;
+}
+
+bool *
+PgCurrentAllowInPlaceTablespacesRef(void)
+{
+	return &PgCurrentSessionTablespaceState()->allow_in_place_tablespaces_value;
+}
+
+Oid *
+PgCurrentBinaryUpgradeNextPgTablespaceOidRef(void)
+{
+	return &PgCurrentSessionTablespaceState()->binary_upgrade_next_pg_tablespace_oid_value;
 }
 
 int *

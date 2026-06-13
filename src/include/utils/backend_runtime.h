@@ -189,6 +189,15 @@ typedef struct PgSessionDatabaseState
 	char	   *database_path;
 } PgSessionDatabaseState;
 
+typedef struct PgSessionTablespaceState
+{
+	bool		initialized;
+	char	   *default_tablespace_name;
+	char	   *temp_tablespaces_names;
+	bool		allow_in_place_tablespaces_value;
+	Oid			binary_upgrade_next_pg_tablespace_oid_value;
+} PgSessionTablespaceState;
+
 typedef struct PgSessionDateTimeState
 {
 	bool		initialized;
@@ -387,6 +396,7 @@ struct PgSession
 	Session    *legacy_session;
 	PgSessionLoopState loop_state;
 	PgSessionDatabaseState database;
+	PgSessionTablespaceState tablespace;
 	PgSessionDateTimeState datetime;
 	PgSessionQueryMemoryState query_memory;
 	PgSessionPlannerCostState planner_cost;

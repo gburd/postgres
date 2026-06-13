@@ -17,7 +17,10 @@
 #include "common/relpath.h"
 #include "utils/global_lifetime.h"
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid binary_upgrade_next_pg_tablespace_oid;
+extern Oid *PgCurrentBinaryUpgradeNextPgTablespaceOidRef(void);
+
+#define binary_upgrade_next_pg_tablespace_oid \
+	(*PgCurrentBinaryUpgradeNextPgTablespaceOidRef())
 
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid binary_upgrade_next_pg_type_oid;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid binary_upgrade_next_array_pg_type_oid;

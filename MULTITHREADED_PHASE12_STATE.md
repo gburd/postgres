@@ -1063,3 +1063,66 @@ Validation for this slice:
 - static scans found no remaining optimizer-session TLS definitions and no
   migrated planner-method member-name macro collisions outside the intended
   `_value` fields in `backend_runtime.c`.
+
+## Session Tablespace Direct GUC Pointer Bridge
+
+The twenty-second Phase 12 slice moves tablespace-related session state under
+`PgSession`:
+
+- `PgSession` now owns a `PgSessionTablespaceState`;
+- `default_tablespace`, `temp_tablespaces`, and
+  `allow_in_place_tablespaces` remain source-compatible lvalue macros in
+  `commands/tablespace.h`;
+- `binary_upgrade_next_pg_tablespace_oid` remains a source-compatible lvalue
+  macro in `catalog/binary_upgrade.h`;
+- the macros route through `PgCurrent*Ref()` accessors that return the active
+  logical session's tablespace fields;
+- zeroed logical session objects lazily initialize these fields to the
+  historical defaults: NULL tablespace strings, `allow_in_place_tablespaces =
+  false`, and `binary_upgrade_next_pg_tablespace_oid = InvalidOid`;
+- early startup paths before `CurrentPgSession` is installed use fallback
+  session-local storage in `backend_runtime.c`;
+- process-mode and thread-runtime session installation adopt any early
+  fallback tablespace state into the logical session object;
+- `RebindSessionGUCVariablePointers()` now refreshes the generated GUC
+  records for `default_tablespace`, `temp_tablespaces`, and
+  `allow_in_place_tablespaces` when the current session changes.
+
+This moves the default/permitted tablespace selection state, temporary
+tablespace search list, in-place tablespace override, and binary-upgrade
+tablespace OID handoff out of raw session TLS. It keeps the existing
+DDL/storage call sites source-compatible while making the state belong to the
+logical SQL session. `binary_upgrade_next_pg_tablespace_oid` is not a GUC, but
+it has the same session lifetime and was kept in the same tablespace bucket so
+the tablespace module does not retain a single raw TLS outlier.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `guc.o`,
+  `tablespace.o`, `pg_upgrade_support.o`, and `test_backend_runtime.o`;
+- because installed headers changed exported tablespace globals into
+  compatibility macros, `gmake -C src/backend clean` plus generated-header
+  recovery was used before the clean rebuild;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed, followed by rebuilding
+  and reinstalling `src/test/modules/test_backend_runtime`, PL/pgSQL,
+  `src/test/regress`, `libpqwalreceiver`, and `src/backend/snowball`;
+- focused `test_backend_runtime` regression passed and includes
+  `test_session_tablespace_state_is_session_local()`, which switches sessions
+  through `PgSetCurrentSession()`, sets the GUC-backed tablespace settings
+  through the GUC machinery, sets `binary_upgrade_next_pg_tablespace_oid`
+  directly, and proves the lvalues follow the active session after GUC pointer
+  rebinding;
+- direct threaded-runtime TAP coverage passed for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`
+  with `PERL5LIB` including both `src/test/perl` and the local `IPC::Run`
+  install path;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests, including the core `tablespace` test;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- `git diff --check` passed;
+- static scans found no remaining direct TLS definitions or extern
+  declarations for `default_tablespace`, `temp_tablespaces`,
+  `allow_in_place_tablespaces`, or `binary_upgrade_next_pg_tablespace_oid`.

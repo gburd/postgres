@@ -14,6 +14,8 @@
 
 #include <errno.h>
 
+#include "catalog/binary_upgrade.h"
+#include "commands/tablespace.h"
 #include "fmgr.h"
 #include "libpq/libpq-be.h"
 #include "libpq/libpq.h"
@@ -559,6 +561,101 @@ test_session_database_state_is_session_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "session database state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_session_tablespace_state_is_session_local);
+Datum
+test_session_tablespace_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	char	   *saved_default_tablespace;
+	char	   *saved_temp_tablespaces;
+	char	   *saved_allow_in_place_tablespaces;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	saved_default_tablespace =
+		pstrdup(GetConfigOption("default_tablespace", false, false));
+	saved_temp_tablespaces =
+		pstrdup(GetConfigOption("temp_tablespaces", false, false));
+	saved_allow_in_place_tablespaces =
+		pstrdup(GetConfigOption("allow_in_place_tablespaces", false, false));
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && default_tablespace == NULL;
+		ok = ok && temp_tablespaces == NULL;
+		ok = ok && !allow_in_place_tablespaces;
+		ok = ok && binary_upgrade_next_pg_tablespace_oid == InvalidOid;
+		SetConfigOption("default_tablespace", "pg_default",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("temp_tablespaces", "pg_default",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("allow_in_place_tablespaces", "on",
+						PGC_SUSET, PGC_S_SESSION);
+		binary_upgrade_next_pg_tablespace_oid = 12345;
+		ok = ok && strcmp(default_tablespace, "pg_default") == 0;
+		ok = ok && strcmp(temp_tablespaces, "pg_default") == 0;
+		ok = ok && allow_in_place_tablespaces;
+		ok = ok && binary_upgrade_next_pg_tablespace_oid == 12345;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && default_tablespace == NULL;
+		ok = ok && temp_tablespaces == NULL;
+		ok = ok && !allow_in_place_tablespaces;
+		ok = ok && binary_upgrade_next_pg_tablespace_oid == InvalidOid;
+		SetConfigOption("default_tablespace", "",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("temp_tablespaces", "",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("allow_in_place_tablespaces", "off",
+						PGC_SUSET, PGC_S_SESSION);
+		binary_upgrade_next_pg_tablespace_oid = 67890;
+		ok = ok && default_tablespace != NULL;
+		ok = ok && default_tablespace[0] == '\0';
+		ok = ok && temp_tablespaces != NULL;
+		ok = ok && temp_tablespaces[0] == '\0';
+		ok = ok && !allow_in_place_tablespaces;
+		ok = ok && binary_upgrade_next_pg_tablespace_oid == 67890;
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && strcmp(default_tablespace, "pg_default") == 0;
+		ok = ok && strcmp(temp_tablespaces, "pg_default") == 0;
+		ok = ok && allow_in_place_tablespaces;
+		ok = ok && binary_upgrade_next_pg_tablespace_oid == 12345;
+
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("default_tablespace", saved_default_tablespace,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("temp_tablespaces", saved_temp_tablespaces,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("allow_in_place_tablespaces",
+						saved_allow_in_place_tablespaces,
+						PGC_SUSET, PGC_S_SESSION);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("default_tablespace", saved_default_tablespace,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("temp_tablespaces", saved_temp_tablespaces,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("allow_in_place_tablespaces",
+						saved_allow_in_place_tablespaces,
+						PGC_SUSET, PGC_S_SESSION);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session tablespace state was not session-local");
 
 	PG_RETURN_BOOL(true);
 }

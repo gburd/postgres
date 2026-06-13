@@ -20,11 +20,13 @@
 #include "nodes/parsenodes.h"
 #include "utils/global_lifetime.h"
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char
-		   *default_tablespace;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *temp_tablespaces;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool
-			allow_in_place_tablespaces;
+extern char **PgCurrentDefaultTablespaceRef(void);
+extern char **PgCurrentTempTablespacesRef(void);
+extern bool *PgCurrentAllowInPlaceTablespacesRef(void);
+
+#define default_tablespace (*PgCurrentDefaultTablespaceRef())
+#define temp_tablespaces (*PgCurrentTempTablespacesRef())
+#define allow_in_place_tablespaces (*PgCurrentAllowInPlaceTablespacesRef())
 
 /* XLOG stuff */
 #define XLOG_TBLSPC_CREATE		0x00

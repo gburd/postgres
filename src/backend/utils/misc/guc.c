@@ -35,6 +35,7 @@
 #include "catalog/pg_authid.h"
 #include "catalog/pg_parameter_acl.h"
 #include "catalog/pg_type.h"
+#include "commands/tablespace.h"
 #include "guc_internal.h"
 #include "libpq/pqformat.h"
 #include "libpq/protocol.h"
@@ -1584,6 +1585,14 @@ RebindSessionGUCVariablePointers(void)
 	Assert(gconf->vartype == PGC_ENUM);
 	gconf->_enum.variable = PgCurrentIntervalStyleRef();
 
+	gconf = find_option("allow_in_place_tablespaces", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentAllowInPlaceTablespacesRef();
+
+	gconf = find_option("default_tablespace", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentDefaultTablespaceRef();
+
 	gconf = find_option("hash_mem_multiplier", false, false, PANIC);
 	Assert(gconf->vartype == PGC_REAL);
 	gconf->_real.variable = PgCurrentHashMemMultiplierRef();
@@ -1810,6 +1819,10 @@ RebindSessionGUCVariablePointers(void)
 	gconf = find_option("seq_page_cost", false, false, PANIC);
 	Assert(gconf->vartype == PGC_REAL);
 	gconf->_real.variable = PgCurrentSeqPageCostRef();
+
+	gconf = find_option("temp_tablespaces", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentTempTablespacesRef();
 }
 
 /*
