@@ -81,16 +81,26 @@ struct JitProviderCallbacks
 
 
 /* GUCs */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool jit_enabled;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *jit_provider;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool jit_debugging_support;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool jit_dump_bitcode;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool jit_expressions;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool jit_profiling_support;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool jit_tuple_deforming;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double jit_above_cost;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double jit_inline_above_cost;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double jit_optimize_above_cost;
+extern bool *PgCurrentJitEnabledRef(void);
+extern char **PgCurrentJitProviderRef(void);
+extern bool *PgCurrentJitDebuggingSupportRef(void);
+extern bool *PgCurrentJitDumpBitcodeRef(void);
+extern bool *PgCurrentJitExpressionsRef(void);
+extern bool *PgCurrentJitProfilingSupportRef(void);
+extern bool *PgCurrentJitTupleDeformingRef(void);
+extern double *PgCurrentJitAboveCostRef(void);
+extern double *PgCurrentJitInlineAboveCostRef(void);
+extern double *PgCurrentJitOptimizeAboveCostRef(void);
+#define jit_enabled (*PgCurrentJitEnabledRef())
+#define jit_provider (*PgCurrentJitProviderRef())
+#define jit_debugging_support (*PgCurrentJitDebuggingSupportRef())
+#define jit_dump_bitcode (*PgCurrentJitDumpBitcodeRef())
+#define jit_expressions (*PgCurrentJitExpressionsRef())
+#define jit_profiling_support (*PgCurrentJitProfilingSupportRef())
+#define jit_tuple_deforming (*PgCurrentJitTupleDeformingRef())
+#define jit_above_cost (*PgCurrentJitAboveCostRef())
+#define jit_inline_above_cost (*PgCurrentJitInlineAboveCostRef())
+#define jit_optimize_above_cost (*PgCurrentJitOptimizeAboveCostRef())
 
 
 extern void jit_reset_after_error(void);

@@ -698,7 +698,9 @@ formatting, identifier quoting, plan-cache mode, and GiN limits through
 `PgSession`, plus the access/WAL direct-pointer GUC bridge for table AM,
 sequential-scan synchronization, TOAST/WAL compression, WAL initialization and
 recycling, WAL consistency checking, commit delay, WAL I/O timing, and
-WAL-skipping threshold state through
+WAL-skipping threshold state through `PgSession`, plus the JIT direct-pointer
+GUC bridge for provider selection, enablement, cost thresholds,
+expression/deforming toggles, and debugging/profiling/bitcode flags through
 `PgSession`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move

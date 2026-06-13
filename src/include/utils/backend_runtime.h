@@ -442,6 +442,21 @@ typedef struct PgSessionAccessWalGUCState
 #endif
 } PgSessionAccessWalGUCState;
 
+typedef struct PgSessionJitGUCState
+{
+	bool		initialized;
+	bool		jit_enabled_value;
+	char	   *jit_provider_value;
+	bool		jit_debugging_support_value;
+	bool		jit_dump_bitcode_value;
+	bool		jit_expressions_value;
+	bool		jit_profiling_support_value;
+	bool		jit_tuple_deforming_value;
+	double		jit_above_cost_value;
+	double		jit_inline_above_cost_value;
+	double		jit_optimize_above_cost_value;
+} PgSessionJitGUCState;
+
 typedef struct PgSessionQueryMemoryState
 {
 	bool		initialized;
@@ -650,6 +665,7 @@ struct PgSession
 	PgSessionReplicationGUCState replication_guc;
 	PgSessionGeneralGUCState general_guc;
 	PgSessionAccessWalGUCState access_wal_guc;
+	PgSessionJitGUCState jit_guc;
 	PgSessionQueryMemoryState query_memory;
 	PgSessionPlannerCostState planner_cost;
 	PgSessionPlannerMethodState planner_method;
@@ -810,6 +826,16 @@ extern bool *PgCurrentXLogDebugRef(void);
 #ifdef TRACE_SYNCSCAN
 extern bool *PgCurrentTraceSyncscanRef(void);
 #endif
+extern bool *PgCurrentJitEnabledRef(void);
+extern char **PgCurrentJitProviderRef(void);
+extern bool *PgCurrentJitDebuggingSupportRef(void);
+extern bool *PgCurrentJitDumpBitcodeRef(void);
+extern bool *PgCurrentJitExpressionsRef(void);
+extern bool *PgCurrentJitProfilingSupportRef(void);
+extern bool *PgCurrentJitTupleDeformingRef(void);
+extern double *PgCurrentJitAboveCostRef(void);
+extern double *PgCurrentJitInlineAboveCostRef(void);
+extern double *PgCurrentJitOptimizeAboveCostRef(void);
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);

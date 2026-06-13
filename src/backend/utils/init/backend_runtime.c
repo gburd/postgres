@@ -29,6 +29,7 @@
 #include "commands/tablespace.h"
 #include "commands/trigger.h"
 #include "commands/vacuum.h"
+#include "jit/jit.h"
 #include "libpq/crypt.h"
 #include "miscadmin.h"
 #include "nodes/queryjumble.h"
@@ -311,6 +312,19 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionAccessWalGUCState early_sessio
 	.trace_syncscan_value = false,
 #endif
 };
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionJitGUCState early_session_jit_guc = {
+	.initialized = true,
+	.jit_enabled_value = false,
+	.jit_provider_value = "llvmjit",
+	.jit_debugging_support_value = false,
+	.jit_dump_bitcode_value = false,
+	.jit_expressions_value = true,
+	.jit_profiling_support_value = false,
+	.jit_tuple_deforming_value = true,
+	.jit_above_cost_value = 100000,
+	.jit_inline_above_cost_value = 500000,
+	.jit_optimize_above_cost_value = 500000
+};
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionQueryMemoryState early_session_query_memory = {
 	.initialized = true,
 	.work_mem_kb = 4096,
@@ -433,6 +447,8 @@ static void PgSessionInitializeGeneralGUCState(PgSessionGeneralGUCState *general
 static void PgSessionAdoptEarlyGeneralGUCState(PgSession *session);
 static void PgSessionInitializeAccessWalGUCState(PgSessionAccessWalGUCState *access_wal_guc);
 static void PgSessionAdoptEarlyAccessWalGUCState(PgSession *session);
+static void PgSessionInitializeJitGUCState(PgSessionJitGUCState *jit_guc);
+static void PgSessionAdoptEarlyJitGUCState(PgSession *session);
 static void PgSessionInitializeQueryMemoryState(PgSessionQueryMemoryState *query_memory);
 static void PgSessionAdoptEarlyQueryMemoryState(PgSession *session);
 static void PgSessionInitializePlannerCostState(PgSessionPlannerCostState *planner_cost);
@@ -468,6 +484,7 @@ static PgSessionCommandGUCState *PgCurrentSessionCommandGUCState(void);
 static PgSessionReplicationGUCState *PgCurrentSessionReplicationGUCState(void);
 static PgSessionGeneralGUCState *PgCurrentSessionGeneralGUCState(void);
 static PgSessionAccessWalGUCState *PgCurrentSessionAccessWalGUCState(void);
+static PgSessionJitGUCState *PgCurrentSessionJitGUCState(void);
 static PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
 static PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
 static PgSessionPlannerMethodState *PgCurrentSessionPlannerMethodState(void);
@@ -1088,6 +1105,36 @@ PgSessionAdoptEarlyAccessWalGUCState(PgSession *session)
 }
 
 static void
+PgSessionInitializeJitGUCState(PgSessionJitGUCState *jit_guc)
+{
+	Assert(jit_guc != NULL);
+
+	jit_guc->initialized = true;
+	jit_guc->jit_enabled_value = false;
+	jit_guc->jit_provider_value = "llvmjit";
+	jit_guc->jit_debugging_support_value = false;
+	jit_guc->jit_dump_bitcode_value = false;
+	jit_guc->jit_expressions_value = true;
+	jit_guc->jit_profiling_support_value = false;
+	jit_guc->jit_tuple_deforming_value = true;
+	jit_guc->jit_above_cost_value = 100000;
+	jit_guc->jit_inline_above_cost_value = 500000;
+	jit_guc->jit_optimize_above_cost_value = 500000;
+}
+
+static void
+PgSessionAdoptEarlyJitGUCState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (!early_session_jit_guc.initialized)
+		PgSessionInitializeJitGUCState(&early_session_jit_guc);
+
+	session->jit_guc = early_session_jit_guc;
+	PgSessionInitializeJitGUCState(&early_session_jit_guc);
+}
+
+static void
 PgSessionInitializeQueryMemoryState(PgSessionQueryMemoryState *query_memory)
 {
 	Assert(query_memory != NULL);
@@ -1364,6 +1411,7 @@ InitializePgProcessRuntime(void)
 	PgSessionAdoptEarlyReplicationGUCState(&process_session);
 	PgSessionAdoptEarlyGeneralGUCState(&process_session);
 	PgSessionAdoptEarlyAccessWalGUCState(&process_session);
+	PgSessionAdoptEarlyJitGUCState(&process_session);
 	PgSessionAdoptEarlyQueryMemoryState(&process_session);
 	PgSessionAdoptEarlyPlannerCostState(&process_session);
 	PgSessionAdoptEarlyPlannerMethodState(&process_session);
@@ -1464,6 +1512,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgSessionInitializeReplicationGUCState(&state->session.replication_guc);
 	PgSessionInitializeGeneralGUCState(&state->session.general_guc);
 	PgSessionInitializeAccessWalGUCState(&state->session.access_wal_guc);
+	PgSessionInitializeJitGUCState(&state->session.jit_guc);
 	PgSessionInitializeQueryMemoryState(&state->session.query_memory);
 	PgSessionInitializePlannerCostState(&state->session.planner_cost);
 	PgSessionInitializePlannerMethodState(&state->session.planner_method);
@@ -1505,6 +1554,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgSessionAdoptEarlyReplicationGUCState(&state->session);
 	PgSessionAdoptEarlyGeneralGUCState(&state->session);
 	PgSessionAdoptEarlyAccessWalGUCState(&state->session);
+	PgSessionAdoptEarlyJitGUCState(&state->session);
 	PgSessionAdoptEarlyQueryMemoryState(&state->session);
 	PgSessionAdoptEarlyPlannerCostState(&state->session);
 	PgSessionAdoptEarlyPlannerMethodState(&state->session);
@@ -1858,6 +1908,22 @@ PgCurrentSessionAccessWalGUCState(void)
 		PgSessionInitializeAccessWalGUCState(access_wal_guc);
 
 	return access_wal_guc;
+}
+
+static PgSessionJitGUCState *
+PgCurrentSessionJitGUCState(void)
+{
+	PgSessionJitGUCState *jit_guc;
+
+	if (CurrentPgSession == NULL)
+		jit_guc = &early_session_jit_guc;
+	else
+		jit_guc = &CurrentPgSession->jit_guc;
+
+	if (!jit_guc->initialized)
+		PgSessionInitializeJitGUCState(jit_guc);
+
+	return jit_guc;
 }
 
 static PgSessionQueryMemoryState *
@@ -2870,6 +2936,66 @@ PgCurrentTraceSyncscanRef(void)
 	return &PgCurrentSessionAccessWalGUCState()->trace_syncscan_value;
 }
 #endif
+
+bool *
+PgCurrentJitEnabledRef(void)
+{
+	return &PgCurrentSessionJitGUCState()->jit_enabled_value;
+}
+
+char **
+PgCurrentJitProviderRef(void)
+{
+	return &PgCurrentSessionJitGUCState()->jit_provider_value;
+}
+
+bool *
+PgCurrentJitDebuggingSupportRef(void)
+{
+	return &PgCurrentSessionJitGUCState()->jit_debugging_support_value;
+}
+
+bool *
+PgCurrentJitDumpBitcodeRef(void)
+{
+	return &PgCurrentSessionJitGUCState()->jit_dump_bitcode_value;
+}
+
+bool *
+PgCurrentJitExpressionsRef(void)
+{
+	return &PgCurrentSessionJitGUCState()->jit_expressions_value;
+}
+
+bool *
+PgCurrentJitProfilingSupportRef(void)
+{
+	return &PgCurrentSessionJitGUCState()->jit_profiling_support_value;
+}
+
+bool *
+PgCurrentJitTupleDeformingRef(void)
+{
+	return &PgCurrentSessionJitGUCState()->jit_tuple_deforming_value;
+}
+
+double *
+PgCurrentJitAboveCostRef(void)
+{
+	return &PgCurrentSessionJitGUCState()->jit_above_cost_value;
+}
+
+double *
+PgCurrentJitInlineAboveCostRef(void)
+{
+	return &PgCurrentSessionJitGUCState()->jit_inline_above_cost_value;
+}
+
+double *
+PgCurrentJitOptimizeAboveCostRef(void)
+{
+	return &PgCurrentSessionJitGUCState()->jit_optimize_above_cost_value;
+}
 
 int *
 PgCurrentWorkMemRef(void)

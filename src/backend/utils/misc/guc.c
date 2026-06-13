@@ -1696,6 +1696,36 @@ InitializeThreadedSessionGUCOptions(void)
 	gconf = find_option("trace_syncscan", false, false, PANIC);
 	InitializeOneGUCOption(gconf);
 #endif
+
+	gconf = find_option("jit", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("jit_provider", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("jit_debugging_support", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("jit_dump_bitcode", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("jit_expressions", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("jit_profiling_support", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("jit_tuple_deforming", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("jit_above_cost", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("jit_inline_above_cost", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("jit_optimize_above_cost", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
 }
 
 /*
@@ -1982,6 +2012,46 @@ RebindSessionGUCVariablePointers(void)
 	Assert(gconf->vartype == PGC_BOOL);
 	gconf->_bool.variable = PgCurrentTraceSyncscanRef();
 #endif
+
+	gconf = find_option("jit", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentJitEnabledRef();
+
+	gconf = find_option("jit_provider", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentJitProviderRef();
+
+	gconf = find_option("jit_debugging_support", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentJitDebuggingSupportRef();
+
+	gconf = find_option("jit_dump_bitcode", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentJitDumpBitcodeRef();
+
+	gconf = find_option("jit_expressions", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentJitExpressionsRef();
+
+	gconf = find_option("jit_profiling_support", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentJitProfilingSupportRef();
+
+	gconf = find_option("jit_tuple_deforming", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentJitTupleDeformingRef();
+
+	gconf = find_option("jit_above_cost", false, false, PANIC);
+	Assert(gconf->vartype == PGC_REAL);
+	gconf->_real.variable = PgCurrentJitAboveCostRef();
+
+	gconf = find_option("jit_inline_above_cost", false, false, PANIC);
+	Assert(gconf->vartype == PGC_REAL);
+	gconf->_real.variable = PgCurrentJitInlineAboveCostRef();
+
+	gconf = find_option("jit_optimize_above_cost", false, false, PANIC);
+	Assert(gconf->vartype == PGC_REAL);
+	gconf->_real.variable = PgCurrentJitOptimizeAboveCostRef();
 
 	gconf = find_option("default_tablespace", false, false, PANIC);
 	Assert(gconf->vartype == PGC_STRING);

@@ -2042,3 +2042,54 @@ Validation for this slice:
 - `git diff --check` passed;
 - static scans found no remaining direct session TLS definitions or extern
   declarations for the moved access/WAL GUC names.
+
+## Session JIT GUC State Bridge
+
+The thirty-ninth Phase 12 slice moves JIT direct-pointer GUC state under
+`PgSession`:
+
+- `PgSession` now owns a `PgSessionJitGUCState`;
+- `PgSessionJitGUCState` owns the `jit_enabled`, `jit_provider`,
+  `jit_debugging_support`, `jit_dump_bitcode`, `jit_expressions`,
+  `jit_profiling_support`, `jit_tuple_deforming`, `jit_above_cost`,
+  `jit_inline_above_cost`, and `jit_optimize_above_cost` direct-pointer GUC
+  backing variables;
+- the public names remain source-compatible lvalue macros in `jit/jit.h`;
+- early startup paths before `CurrentPgSession` is installed use fallback
+  session-local storage in `backend_runtime.c`;
+- process-mode and thread-runtime session installation adopt any early
+  fallback JIT GUC state into the logical session object;
+- `RebindSessionGUCVariablePointers()` now rebinds the generated GUC records
+  for the moved JIT GUCs whenever the active logical session changes;
+- the provider callback table and provider load/failure markers remain
+  `PG_GLOBAL_SESSION` TLS for a later JIT provider-state slice, because they
+  are provider lifecycle state rather than direct GUC backing variables;
+- LLVM-specific provider internals remain deferred in this checkout because it
+  is configured with `with_llvm = no`; compile/runtime coverage for those
+  internals needs an LLVM-enabled build.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `jit.o`, `guc.o`,
+  `guc_tables.o`, and `test_backend_runtime.o`; `planner.o` was checked as a
+  nearby JIT-GUC consumer and was already up to date after the clean rebuild;
+- because exported JIT GUC globals changed into compatibility macros,
+  `gmake -C src/backend clean` plus generated utility and node-header
+  recovery was used before the clean rebuild;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed, followed by rebuilding
+  and reinstalling `src/test/modules/test_backend_runtime` against the
+  current headers;
+- focused `test_backend_runtime` regression passed and includes
+  `test_session_jit_guc_state_is_session_local()`, which switches sessions
+  through `PgSetCurrentSession()`, changes portable JIT GUCs through the GUC
+  machinery, directly exercises the compatibility lvalue storage for
+  postmaster/backend-start settings, and proves the public backing values
+  follow the active session after GUC pointer rebinding;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- `git diff --check` passed;
+- static scans found no remaining direct session TLS definitions or extern
+  declarations for the moved JIT GUC names.

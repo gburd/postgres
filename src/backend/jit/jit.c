@@ -29,17 +29,10 @@
 #include "storage/fd.h"
 #include "utils/fmgrprotos.h"
 
-/* GUCs */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool jit_enabled = false;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION char *jit_provider = NULL;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool jit_debugging_support = false;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool jit_dump_bitcode = false;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool jit_expressions = true;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool jit_profiling_support = false;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool jit_tuple_deforming = true;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION double jit_above_cost = 100000;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION double jit_inline_above_cost = 500000;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION double jit_optimize_above_cost = 500000;
+/*
+ * JIT GUC state lives in PgSessionJitGUCState.  Public names remain available
+ * through compatibility macros in jit/jit.h.
+ */
 
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION JitProviderCallbacks provider;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool provider_successfully_loaded = false;

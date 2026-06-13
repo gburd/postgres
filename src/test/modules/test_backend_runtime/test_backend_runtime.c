@@ -28,6 +28,7 @@
 #include "commands/user.h"
 #include "commands/vacuum.h"
 #include "fmgr.h"
+#include "jit/jit.h"
 #include "libpq/libpq-be.h"
 #include "libpq/libpq.h"
 #include "miscadmin.h"
@@ -3467,6 +3468,190 @@ test_session_misc_guc_state_is_session_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "session miscellaneous GUC state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_session_jit_guc_state_is_session_local);
+Datum
+test_session_jit_guc_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	char	   *saved_jit;
+	char	   *saved_jit_dump_bitcode;
+	char	   *saved_jit_expressions;
+	char	   *saved_jit_tuple_deforming;
+	char	   *saved_jit_above_cost;
+	char	   *saved_jit_inline_above_cost;
+	char	   *saved_jit_optimize_above_cost;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	saved_jit = pstrdup(GetConfigOption("jit", false, false));
+	saved_jit_dump_bitcode =
+		pstrdup(GetConfigOption("jit_dump_bitcode", false, false));
+	saved_jit_expressions =
+		pstrdup(GetConfigOption("jit_expressions", false, false));
+	saved_jit_tuple_deforming =
+		pstrdup(GetConfigOption("jit_tuple_deforming", false, false));
+	saved_jit_above_cost =
+		pstrdup(GetConfigOption("jit_above_cost", false, false));
+	saved_jit_inline_above_cost =
+		pstrdup(GetConfigOption("jit_inline_above_cost", false, false));
+	saved_jit_optimize_above_cost =
+		pstrdup(GetConfigOption("jit_optimize_above_cost", false, false));
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && !jit_enabled;
+		ok = ok && strcmp(jit_provider, "llvmjit") == 0;
+		ok = ok && !jit_debugging_support;
+		ok = ok && !jit_dump_bitcode;
+		ok = ok && jit_expressions;
+		ok = ok && !jit_profiling_support;
+		ok = ok && jit_tuple_deforming;
+		ok = ok && jit_above_cost == 100000.0;
+		ok = ok && jit_inline_above_cost == 500000.0;
+		ok = ok && jit_optimize_above_cost == 500000.0;
+		SetConfigOption("jit", "on",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("jit_dump_bitcode", "on",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("jit_expressions", "off",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("jit_tuple_deforming", "off",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("jit_above_cost", "11",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("jit_inline_above_cost", "12",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("jit_optimize_above_cost", "13",
+						PGC_USERSET, PGC_S_SESSION);
+		jit_provider = "session1_jit_provider";
+		jit_debugging_support = true;
+		jit_profiling_support = true;
+		ok = ok && jit_enabled;
+		ok = ok && strcmp(jit_provider, "session1_jit_provider") == 0;
+		ok = ok && jit_debugging_support;
+		ok = ok && jit_dump_bitcode;
+		ok = ok && !jit_expressions;
+		ok = ok && jit_profiling_support;
+		ok = ok && !jit_tuple_deforming;
+		ok = ok && jit_above_cost == 11.0;
+		ok = ok && jit_inline_above_cost == 12.0;
+		ok = ok && jit_optimize_above_cost == 13.0;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && !jit_enabled;
+		ok = ok && strcmp(jit_provider, "llvmjit") == 0;
+		ok = ok && !jit_debugging_support;
+		ok = ok && !jit_dump_bitcode;
+		ok = ok && jit_expressions;
+		ok = ok && !jit_profiling_support;
+		ok = ok && jit_tuple_deforming;
+		ok = ok && jit_above_cost == 100000.0;
+		ok = ok && jit_inline_above_cost == 500000.0;
+		ok = ok && jit_optimize_above_cost == 500000.0;
+		SetConfigOption("jit", "off",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("jit_dump_bitcode", "off",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("jit_expressions", "on",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("jit_tuple_deforming", "on",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("jit_above_cost", "21",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("jit_inline_above_cost", "22",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("jit_optimize_above_cost", "23",
+						PGC_USERSET, PGC_S_SESSION);
+		jit_provider = "session2_jit_provider";
+		jit_debugging_support = false;
+		jit_profiling_support = false;
+		ok = ok && !jit_enabled;
+		ok = ok && strcmp(jit_provider, "session2_jit_provider") == 0;
+		ok = ok && !jit_debugging_support;
+		ok = ok && !jit_dump_bitcode;
+		ok = ok && jit_expressions;
+		ok = ok && !jit_profiling_support;
+		ok = ok && jit_tuple_deforming;
+		ok = ok && jit_above_cost == 21.0;
+		ok = ok && jit_inline_above_cost == 22.0;
+		ok = ok && jit_optimize_above_cost == 23.0;
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && jit_enabled;
+		ok = ok && strcmp(jit_provider, "session1_jit_provider") == 0;
+		ok = ok && jit_debugging_support;
+		ok = ok && jit_dump_bitcode;
+		ok = ok && !jit_expressions;
+		ok = ok && jit_profiling_support;
+		ok = ok && !jit_tuple_deforming;
+		ok = ok && jit_above_cost == 11.0;
+		ok = ok && jit_inline_above_cost == 12.0;
+		ok = ok && jit_optimize_above_cost == 13.0;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && !jit_enabled;
+		ok = ok && strcmp(jit_provider, "session2_jit_provider") == 0;
+		ok = ok && !jit_debugging_support;
+		ok = ok && !jit_dump_bitcode;
+		ok = ok && jit_expressions;
+		ok = ok && !jit_profiling_support;
+		ok = ok && jit_tuple_deforming;
+		ok = ok && jit_above_cost == 21.0;
+		ok = ok && jit_inline_above_cost == 22.0;
+		ok = ok && jit_optimize_above_cost == 23.0;
+
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("jit_optimize_above_cost",
+						saved_jit_optimize_above_cost,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("jit_inline_above_cost",
+						saved_jit_inline_above_cost,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("jit_above_cost", saved_jit_above_cost,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("jit_tuple_deforming", saved_jit_tuple_deforming,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("jit_expressions", saved_jit_expressions,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("jit_dump_bitcode", saved_jit_dump_bitcode,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("jit", saved_jit,
+						PGC_USERSET, PGC_S_SESSION);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("jit_optimize_above_cost",
+						saved_jit_optimize_above_cost,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("jit_inline_above_cost",
+						saved_jit_inline_above_cost,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("jit_above_cost", saved_jit_above_cost,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("jit_tuple_deforming", saved_jit_tuple_deforming,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("jit_expressions", saved_jit_expressions,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("jit_dump_bitcode", saved_jit_dump_bitcode,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("jit", saved_jit,
+						PGC_USERSET, PGC_S_SESSION);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session JIT GUC state was not session-local");
 
 	PG_RETURN_BOOL(true);
 }
