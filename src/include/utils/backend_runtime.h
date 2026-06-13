@@ -210,6 +210,7 @@ typedef struct PgExecutionPortalState
 
 typedef struct PgExecutionVacuumState
 {
+	bool		in_vacuum;
 	int			cost_balance;
 	bool		cost_active;
 	pg_atomic_uint32 *shared_cost_balance;
@@ -1071,6 +1072,7 @@ extern Portal *PgCurrentActivePortalRef(void);
 extern CommandDest *PgCurrentWhereToSendOutputRef(void);
 extern int *PgCurrentClientConnectionCheckIntervalRef(void);
 extern ConnectionTiming *PgCurrentConnectionTimingRef(void);
+extern bool *PgCurrentVacuumInProgressRef(void);
 extern int *PgCurrentVacuumCostBalanceRef(void);
 extern bool *PgCurrentVacuumCostActiveRef(void);
 extern pg_atomic_uint32 **PgCurrentVacuumSharedCostBalanceRef(void);

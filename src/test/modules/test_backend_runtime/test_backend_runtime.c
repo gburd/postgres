@@ -6938,6 +6938,7 @@ test_execution_vacuum_state_is_execution_local(PG_FUNCTION_ARGS)
 	PgExecution *saved_execution;
 	PgExecution fake_execution1;
 	PgExecution fake_execution2;
+	bool		saved_vacuum_in_progress;
 	int			saved_vacuum_cost_balance;
 	bool		saved_vacuum_cost_active;
 	pg_atomic_uint32 *saved_vacuum_shared_cost_balance;
@@ -6954,6 +6955,7 @@ test_execution_vacuum_state_is_execution_local(PG_FUNCTION_ARGS)
 	bool		ok = true;
 
 	saved_execution = CurrentPgExecution;
+	saved_vacuum_in_progress = *PgCurrentVacuumInProgressRef();
 	saved_vacuum_cost_balance = VacuumCostBalance;
 	saved_vacuum_cost_active = VacuumCostActive;
 	saved_vacuum_shared_cost_balance = VacuumSharedCostBalance;
@@ -6976,6 +6978,7 @@ test_execution_vacuum_state_is_execution_local(PG_FUNCTION_ARGS)
 	PG_TRY();
 	{
 		CurrentPgExecution = &fake_execution1;
+		*PgCurrentVacuumInProgressRef() = true;
 		VacuumCostBalance = 101;
 		VacuumCostActive = true;
 		VacuumSharedCostBalance = &shared_cost_balance1;
@@ -6987,6 +6990,7 @@ test_execution_vacuum_state_is_execution_local(PG_FUNCTION_ARGS)
 		*PgCurrentParallelVacuumSharedParamsGenerationLocalRef() = 13;
 
 		CurrentPgExecution = &fake_execution2;
+		ok = ok && !*PgCurrentVacuumInProgressRef();
 		ok = ok && VacuumCostBalance == 0;
 		ok = ok && !VacuumCostActive;
 		ok = ok && VacuumSharedCostBalance == NULL;
@@ -7005,6 +7009,7 @@ test_execution_vacuum_state_is_execution_local(PG_FUNCTION_ARGS)
 		*PgCurrentParallelVacuumSharedParamsGenerationLocalRef() = 31;
 
 		CurrentPgExecution = &fake_execution1;
+		ok = ok && *PgCurrentVacuumInProgressRef();
 		ok = ok && VacuumCostBalance == 101;
 		ok = ok && VacuumCostActive;
 		ok = ok && VacuumSharedCostBalance == &shared_cost_balance1;
@@ -7018,6 +7023,7 @@ test_execution_vacuum_state_is_execution_local(PG_FUNCTION_ARGS)
 			*PgCurrentParallelVacuumSharedParamsGenerationLocalRef() == 13;
 
 		CurrentPgExecution = &fake_execution2;
+		ok = ok && !*PgCurrentVacuumInProgressRef();
 		ok = ok && VacuumCostBalance == 202;
 		ok = ok && !VacuumCostActive;
 		ok = ok && VacuumSharedCostBalance == &shared_cost_balance2;
@@ -7031,6 +7037,7 @@ test_execution_vacuum_state_is_execution_local(PG_FUNCTION_ARGS)
 			*PgCurrentParallelVacuumSharedParamsGenerationLocalRef() == 31;
 
 		CurrentPgExecution = saved_execution;
+		*PgCurrentVacuumInProgressRef() = saved_vacuum_in_progress;
 		VacuumCostBalance = saved_vacuum_cost_balance;
 		VacuumCostActive = saved_vacuum_cost_active;
 		VacuumSharedCostBalance = saved_vacuum_shared_cost_balance;
@@ -7046,6 +7053,7 @@ test_execution_vacuum_state_is_execution_local(PG_FUNCTION_ARGS)
 	PG_CATCH();
 	{
 		CurrentPgExecution = saved_execution;
+		*PgCurrentVacuumInProgressRef() = saved_vacuum_in_progress;
 		VacuumCostBalance = saved_vacuum_cost_balance;
 		VacuumCostActive = saved_vacuum_cost_active;
 		VacuumSharedCostBalance = saved_vacuum_shared_cost_balance;

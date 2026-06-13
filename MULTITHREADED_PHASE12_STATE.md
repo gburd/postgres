@@ -5048,3 +5048,49 @@ Validation for this slice:
 - direct full-module `pg_regress test_backend_runtime` passed all 1 test
   against the current temp install;
 - `git diff --check` passed.
+
+## Threaded Startup Gate Regular Backend Removal
+
+The one-hundred-fifth Phase 12 slice removes the remaining regular client
+backend startup user from the temporary threaded startup serialization gate:
+
+- `backend_thread_run_backend()` now consults the same
+  `backend_thread_requires_startup_gate()` policy helper as worker carriers;
+- `backend_thread_requires_startup_gate()` now allows `B_BACKEND`, leaving no
+  backend type currently serialized by `ThreadedBackendStartupMutex`;
+- a first no-gate startup stress exposed that the recursive VACUUM/ANALYZE
+  guard was a function-local `static bool` in `vacuum()`, so concurrent
+  sessions running `ANALYZE` could make unrelated sessions fail with
+  `ANALYZE cannot be executed from VACUUM or ANALYZE`;
+- that guard now lives in `PgExecutionVacuumState` behind
+  `PgCurrentVacuumInProgressRef()`, matching the existing execution-local
+  vacuum cost/failsafe state and preparing it for future carrier migration;
+- the `test_execution_vacuum_state_is_execution_local()` regression helper now
+  covers the recursive VACUUM/ANALYZE flag.
+
+This closes the current Gate E2 startup-gate blocker. Future work should not
+reintroduce broad startup serialization unless it names the shared-state
+dependency that requires serialization and includes concurrent catalog-startup
+stress that reaches the affected path.
+
+Validation for this slice:
+
+- touched-object builds for `src/backend/postmaster/launch_backend.o`,
+  `src/backend/commands/vacuum.o`, and
+  `src/backend/utils/init/backend_runtime.o` passed;
+- `src/backend/postgres` relink passed;
+- full `gmake -j8` passed before the final backend-path policy change, and
+  `gmake -j8 DESTDIR="$PWD/tmp_install" install` passed after the final
+  policy change;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- the initial manual 32-connection threaded no-gate stress reproduced the
+  shared `in_vacuum` leak with concurrent `ANALYZE`;
+- after moving `in_vacuum` into `PgExecutionVacuumState`, the same manual
+  32-connection threaded startup/catalog/temp-table/ANALYZE stress passed,
+  verified catalog usability and table row count after the concurrent
+  sessions, found no crash/corruption log markers, and stopped cleanly;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- direct full-module `pg_regress test_backend_runtime` passed all 1 test
+  against the current temp install;
+- `git diff --check` passed.

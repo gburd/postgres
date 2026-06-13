@@ -427,14 +427,15 @@ Thread-backed auxiliary loops that use the logical interrupt mailbox now
 honor `ProcDiePending`, fixing the basic immediate-shutdown smoke for
 background writer, checkpointer, autovacuum launcher, and WAL writer thread
 carriers. The temporary threaded startup serialization gate is also now behind
-an explicit backend-type helper. AIO workers, the syslogger, startup process,
-autovacuum launcher/workers, archiver, WAL receiver, WAL summarizer,
-slot sync worker, thread-compatible background workers, background writer,
-checkpointer, and WAL writer can bypass it. The writer-class, startup process,
-autovacuum launcher/workers, thread-compatible background workers, archiver,
-WAL receiver, WAL summarizer, and slot sync worker bypasses are
-worker-specific narrowings with concrete startup ownership models.
-Process-model background workers remain rejected in threaded mode.
+an explicit backend-type helper and has no remaining backend-type users.
+Regular client backend startup can bypass it after moving the recursive
+VACUUM/ANALYZE guard from a function-local static into
+`PgExecutionVacuumState`; a 32-connection threaded
+startup/catalog/temp-table/ANALYZE stress validated the no-gate path. The
+writer-class, startup process, autovacuum launcher/workers, thread-compatible
+background workers, archiver, WAL receiver, WAL summarizer, and slot sync
+worker bypasses are worker-specific narrowings with concrete startup ownership
+models. Process-model background workers remain rejected in threaded mode.
 Thread-compatible dynamic background workers now
 publish postmaster-visible startup only after
 `ThreadedBackendStartupComplete()`, preventing dynamic waiters from
@@ -450,12 +451,12 @@ validated through a threaded physical standby smoke that synchronized a
 failover logical slot from the primary and verified standby catalog usability.
 A broader attempted bypass for other
 non-session auxiliary workers reproduced an abrupt postmaster death during a
-threaded `pg_class` catalog scan, so further gate narrowing still requires
-worker-specific shared-state isolation and catalog-startup stress coverage.
+threaded `pg_class` catalog scan, so future startup-gate reintroduction still
+requires a named shared-state dependency and catalog-startup stress coverage.
 These are partial Gate E2 closures only: the full thread teardown, PMChild
 termination/reaping stress coverage, extension/custom GUC adoption,
-startup-gate narrowing for regular client backend startup, and broader threaded
-stress coverage remain blockers before Phase 13 scheduler-aware wait work.
+and broader threaded stress coverage remain blockers before Phase 13
+scheduler-aware wait work.
 
 ## Bottom Line
 

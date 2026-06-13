@@ -54,6 +54,7 @@
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/fmgroids.h"
 #include "utils/guc.h"
 #include "utils/guc_hooks.h"
@@ -464,9 +465,8 @@ void
 vacuum(List *relations, const VacuumParams *params, BufferAccessStrategy bstrategy,
 	   MemoryContext vac_context, bool isTopLevel)
 {
-	static bool in_vacuum = false;
-
 	const char *stmttype;
+	bool	   *in_vacuum = PgCurrentVacuumInProgressRef();
 	volatile bool in_outer_xact,
 				use_own_xacts;
 
@@ -493,7 +493,7 @@ vacuum(List *relations, const VacuumParams *params, BufferAccessStrategy bstrate
 	 * FULL or ANALYZE calls a hostile index expression that itself calls
 	 * ANALYZE.
 	 */
-	if (in_vacuum)
+	if (*in_vacuum)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("%s cannot be executed from VACUUM or ANALYZE",
@@ -583,7 +583,7 @@ vacuum(List *relations, const VacuumParams *params, BufferAccessStrategy bstrate
 	{
 		ListCell   *cur;
 
-		in_vacuum = true;
+		*in_vacuum = true;
 		VacuumFailsafeActive = false;
 		VacuumUpdateCosts();
 		VacuumCostBalance = 0;
@@ -648,7 +648,7 @@ vacuum(List *relations, const VacuumParams *params, BufferAccessStrategy bstrate
 	}
 	PG_FINALLY();
 	{
-		in_vacuum = false;
+		*in_vacuum = false;
 		VacuumCostActive = false;
 		VacuumFailsafeActive = false;
 		VacuumCostBalance = 0;

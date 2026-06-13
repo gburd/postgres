@@ -848,11 +848,13 @@ so immediate shutdown no longer leaves background writer, checkpointer,
 autovacuum launcher, or WAL writer thread carriers waiting for SIGKILL
 escalation in the basic threaded shutdown smoke. The temporary threaded
 startup serialization gate is now centralized behind an explicit backend-type
-policy. AIO workers, the syslogger, startup process, autovacuum
-launcher/workers, thread-compatible background workers, archiver, WAL
-receiver, WAL summarizer, slot sync worker, background writer, checkpointer,
-and WAL writer
-bypass it; background writer, checkpointer, WAL writer, startup process,
+policy and has no remaining backend-type users. Regular client backend startup
+now bypasses it after a concrete shared-state fix: the recursive
+VACUUM/ANALYZE guard moved out of a function-local static and into
+`PgExecutionVacuumState`, preventing concurrent sessions from seeing unrelated
+ANALYZE activity as recursive vacuum execution. A 32-connection threaded
+startup/catalog/temp-table/ANALYZE stress validated the no-gate regular
+backend path. Background writer, checkpointer, WAL writer, startup process,
 autovacuum launcher/workers, thread-compatible background workers, archiver,
 WAL receiver, WAL summarizer, and slot sync worker are worker-specific
 narrowings with concrete startup ownership models. Process-model background
@@ -871,13 +873,14 @@ and slot sync worker is validated through a threaded physical standby smoke
 that synchronizes a failover logical slot from the primary and verifies standby
 catalog usability. A broader attempted bypass for additional non-session
 auxiliary workers reproduced an abrupt postmaster death during a threaded
-`pg_class` catalog scan, so further narrowing remains a Gate E2 blocker and
-must be driven by worker-specific shared-state isolation plus catalog-startup
-stress. The remaining PMChild and teardown blockers are full
+`pg_class` catalog scan; later worker-specific fixes and the
+`PgExecutionVacuumState` migration removed the remaining startup-gate users,
+so future gate reintroduction must be tied to a named shared-state dependency
+and concurrent catalog-startup stress. The remaining PMChild and teardown
+blockers are full
 resource cleanup or deliberate long-lived ownership, broader reaping stress
 for termination and abandoned-client races, broader custom/extension GUC
-semantics, startup-gate narrowing for regular client backend startup,
-and broader stress coverage for teardown races. Follow-up extension-GUC work found
+semantics, and broader stress coverage for teardown races. Follow-up extension-GUC work found
 that some generated GUC records are already rebound while the per-thread table
 is constructed, so the "changed pointer" pass alone is not a complete startup
 initializer. Threaded runtime installation now runs a narrow required
@@ -911,8 +914,8 @@ now also has a real `test_backend_runtime_threaded` extension control file and
 SQL script, and the threaded runtime fixture exercises `CREATE EXTENSION`,
 extension-created C functions, custom-GUC initialization through `_PG_init()`,
 and `DROP EXTENSION`. Broader contrib/in-tree extension coverage, full
-lifecycle resource cleanup, PMChild race stress, and startup-gate narrowing
-for regular client backend startup remain Gate E2 blockers before Phase 13.
+lifecycle resource cleanup, and PMChild race stress remain Gate E2 blockers
+before Phase 13.
 The focused `test_backend_runtime` regression is runnable again as a
 process-mode validation control for runtime-state, state-migration, and
 PMChild helper coverage after fake thread-runtime tests were changed to

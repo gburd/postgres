@@ -146,35 +146,33 @@ Important current files:
   interrupt loop that calls `PgCurrentBackendApplyInterrupts()` must explicitly
   handle `ProcDiePending`, or immediate shutdown can leave thread carriers
   waiting for SIGKILL escalation.
-- The threaded startup serialization gate currently allows only AIO workers,
-  the syslogger, startup process, autovacuum launcher/workers, thread-compatible
-  background workers, archiver, WAL receiver, WAL summarizer, slot sync worker,
-  background writer, checkpointer, and WAL writer to bypass it. Process-model
-  background workers are still rejected in threaded mode. Thread-compatible dynamic
-  background workers publish their shared bgworker started state only after the
-  worker reaches `ThreadedBackendStartupComplete()`, so dynamic waiters cannot
-  terminate the worker while `InitProcess()`, `BaseInit()`, or background
-  worker function lookup are still running. Background writer/checkpointer/WAL
-  writer bypass was validated as a worker-specific narrowing because their
-  common auxiliary startup does not run database/session bootstrap before
-  entering the worker loop. The autovacuum launcher bypass is validated
-  against the no-database launcher loop; autovacuum worker bypass is validated
-  against a real database-connected autovacuum worker launch and table vacuum
-  smoke. Startup process, archiver, WAL receiver, and WAL summarizer bypasses
-  are validated separately because they use the same common auxiliary startup,
-  publish wakeup/progress state through shared memory, and keep per-loop work
-  state backend-local. WAL receiver's gate bypass covers
+- The temporary threaded startup serialization gate currently has no remaining
+  backend-type users. Regular client backend startup bypass is validated by a
+  32-connection threaded startup/catalog/temp-table/ANALYZE stress after
+  moving VACUUM/ANALYZE recursive execution state into `PgExecutionVacuumState`.
+  Process-model background workers are still rejected in threaded mode.
+  Thread-compatible dynamic background workers publish their shared bgworker
+  started state only after the worker reaches
+  `ThreadedBackendStartupComplete()`, so dynamic waiters cannot terminate the
+  worker while `InitProcess()`, `BaseInit()`, or background-worker function
+  lookup are still running. Background writer/checkpointer/WAL writer bypass
+  was validated as a worker-specific narrowing because their common auxiliary
+  startup does not run database/session bootstrap before entering the worker
+  loop. The autovacuum launcher bypass is validated against the no-database
+  launcher loop; autovacuum worker bypass is validated against a real
+  database-connected autovacuum worker launch and table vacuum smoke. Startup
+  process, archiver, WAL receiver, and WAL summarizer bypasses are validated
+  separately because they use the same common auxiliary startup, publish
+  wakeup/progress state through shared memory, and keep per-loop work state
+  backend-local. WAL receiver's gate bypass covers
   `AuxiliaryProcessMainCommon()`; the later `libpqwalreceiver` load and
   streaming loop are validated by a threaded physical-replication smoke.
   Startup process bypass is validated by threaded normal-startup and
   crash-recovery smokes. Slot sync worker bypass is validated by a threaded
   physical standby smoke that synchronizes a failover logical slot from a
-  primary and verifies standby catalog usability. A broader attempt to bypass
-  the gate for additional non-session auxiliary workers let `select 1` pass but
-  caused abrupt postmaster death during a threaded
-  `select count(*) > 0 from pg_class` catalog smoke. Do not remove regular
-  client backend startup from the gate without a backend-specific shared-state
-  fix and catalog-startup stress validation.
+  primary and verifies standby catalog usability. Keep any future startup-gate
+  reintroduction narrowly tied to a named shared-state dependency and covered
+  by concurrent catalog-startup stress.
 - Prefer introducing compatibility wrappers around current globals before
   changing all call sites.
 - Be careful moving GUC backing variables behind dynamic lvalue macros. The

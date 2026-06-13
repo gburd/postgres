@@ -520,7 +520,8 @@ backend_thread_run_backend(BackendThreadStart *thread_start)
 	conn_timing.fork_start = thread_start->startup_data.fork_started;
 	conn_timing.fork_end = GetCurrentTimestamp();
 
-	backend_thread_enter_startup_gate(thread_start);
+	if (backend_thread_requires_startup_gate(thread_start->child_type))
+		backend_thread_enter_startup_gate(thread_start);
 
 	BackendMainWithStartupData(&thread_start->startup_data,
 							   &thread_start->client_sock,
@@ -571,10 +572,8 @@ backend_thread_requires_startup_gate(BackendType child_type)
 {
 	switch (child_type)
 	{
-		case B_BACKEND:
-			return true;
-
 		case B_ARCHIVER:
+		case B_BACKEND:
 		case B_AUTOVAC_LAUNCHER:
 		case B_AUTOVAC_WORKER:
 		case B_BG_WRITER:

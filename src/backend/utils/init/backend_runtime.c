@@ -5093,6 +5093,12 @@ PgCurrentExecutionVacuumState(void)
 	return &CurrentPgExecution->vacuum;
 }
 
+bool *
+PgCurrentVacuumInProgressRef(void)
+{
+	return &PgCurrentExecutionVacuumState()->in_vacuum;
+}
+
 int *
 PgCurrentVacuumCostBalanceRef(void)
 {
