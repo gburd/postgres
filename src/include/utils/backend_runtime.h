@@ -247,6 +247,11 @@ typedef struct PgExecutionExtensionState
 	Oid			current_object;
 } PgExecutionExtensionState;
 
+typedef struct PgExecutionMatViewState
+{
+	int			maintenance_depth;
+} PgExecutionMatViewState;
+
 typedef struct PgSessionDatabaseState
 {
 	Oid			database_id;
@@ -1029,6 +1034,7 @@ struct PgExecution
 	PgExecutionBaseBackupState basebackup;
 	PgExecutionAnalyzeState analyze;
 	PgExecutionExtensionState extension;
+	PgExecutionMatViewState matview;
 };
 
 typedef struct PgThreadBackendRuntimeState
@@ -1083,6 +1089,7 @@ extern MemoryContext *PgCurrentAnalyzeContextRef(void);
 extern BufferAccessStrategy *PgCurrentAnalyzeStrategyRef(void);
 extern bool *PgCurrentCreatingExtensionRef(void);
 extern Oid *PgCurrentExtensionObjectRef(void);
+extern int *PgCurrentMatViewMaintenanceDepthRef(void);
 extern int *PgCurrentDeadlockTimeoutRef(void);
 extern int *PgCurrentStatementTimeoutRef(void);
 extern int *PgCurrentLockTimeoutRef(void);

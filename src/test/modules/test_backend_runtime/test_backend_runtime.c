@@ -7225,6 +7225,53 @@ test_execution_extension_state_is_execution_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_execution_matview_state_is_execution_local);
+Datum
+test_execution_matview_state_is_execution_local(PG_FUNCTION_ARGS)
+{
+	PgExecution *saved_execution;
+	PgExecution fake_execution1;
+	PgExecution fake_execution2;
+	int			saved_maintenance_depth;
+	bool		ok = true;
+
+	saved_execution = CurrentPgExecution;
+	saved_maintenance_depth = *PgCurrentMatViewMaintenanceDepthRef();
+	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
+	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+
+	PG_TRY();
+	{
+		CurrentPgExecution = &fake_execution1;
+		*PgCurrentMatViewMaintenanceDepthRef() = 2;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && *PgCurrentMatViewMaintenanceDepthRef() == 0;
+		*PgCurrentMatViewMaintenanceDepthRef() = 5;
+
+		CurrentPgExecution = &fake_execution1;
+		ok = ok && *PgCurrentMatViewMaintenanceDepthRef() == 2;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && *PgCurrentMatViewMaintenanceDepthRef() == 5;
+
+		CurrentPgExecution = saved_execution;
+		*PgCurrentMatViewMaintenanceDepthRef() = saved_maintenance_depth;
+	}
+	PG_CATCH();
+	{
+		CurrentPgExecution = saved_execution;
+		*PgCurrentMatViewMaintenanceDepthRef() = saved_maintenance_depth;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "materialized view state was not execution-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_connection_socket_io_is_connection_local);
 Datum
 test_connection_socket_io_is_connection_local(PG_FUNCTION_ARGS)

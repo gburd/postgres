@@ -736,7 +736,9 @@ the vacuum cost/failsafe and parallel-vacuum execution-state bridge through
 `PgExecution`, plus the basebackup checksum/recovery execution-state bridge
 through `PgExecution`, plus the ANALYZE memory-context and buffer-access
 strategy execution-state bridge through `PgExecution`, plus the extension
-creation execution-state bridge through `PgExecution`.
+creation execution-state bridge through `PgExecution`, plus the
+materialized-view maintenance-depth execution-state bridge through
+`PgExecution`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.

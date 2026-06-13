@@ -3663,3 +3663,43 @@ Validation for this slice:
   public header migration;
 - static scans found no remaining raw TLS declarations for the migrated
   extension creation execution-state fields.
+
+## Materialized View Maintenance Execution State Bridge
+
+The seventy-third Phase 12 slice moves the materialized-view incremental
+maintenance depth counter under the logical execution object:
+
+- `PgExecution` now owns `PgExecutionMatViewState`;
+- `matview.c` keeps its local `matview_maintenance_depth` name as a
+  compatibility macro backed by the active execution;
+- runtime initialization zeroes this bucket for thread backends and adopts any
+  early execution state into the installed process/thread execution object;
+- the backend-runtime regression fixture adds
+  `test_execution_matview_state_is_execution_local()`, switching
+  `CurrentPgExecution` between fake executions and verifying the maintenance
+  depth follows the active execution.
+
+This removes the private materialized-view maintenance TLS counter from
+`matview.c`. The state is execution-scoped because it is a per-command nesting
+guard used while refreshing or incrementally maintaining a materialized view.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `matview.o`, and
+  `test_backend_runtime.o`;
+- because `backend_runtime.h` changed an installed backend header, the backend
+  clean plus generated utility and node-header recovery path was used before
+  trusting process-mode runtime tests;
+- clean full `gmake -j8` passed after the backend clean;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- focused `test_backend_runtime` regression passed and includes
+  `test_execution_matview_state_is_execution_local()`;
+- the first focused regression run caught the expected-output underline width
+  and final blank-line fixture adjustments for the new test block;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests, including
+  the core `matview` regression;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  public header migration;
+- static scans found no remaining raw TLS declaration for the migrated
+  materialized-view execution-state field.

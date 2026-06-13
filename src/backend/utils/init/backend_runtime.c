@@ -488,6 +488,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionNodeIOState early_executio
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionBaseBackupState early_execution_basebackup;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionAnalyzeState early_execution_analyze;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionExtensionState early_execution_extension;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionMatViewState early_execution_matview;
 
 StaticAssertDecl(PG_BACKEND_INTERRUPT_COUNT <= 32,
 				 "PgBackendInterruptMask must fit all backend interrupts");
@@ -610,6 +611,8 @@ static void PgExecutionInitializeAnalyzeState(PgExecutionAnalyzeState *analyze);
 static void PgExecutionAdoptEarlyAnalyzeState(PgExecution *execution);
 static void PgExecutionInitializeExtensionState(PgExecutionExtensionState *extension);
 static void PgExecutionAdoptEarlyExtensionState(PgExecution *execution);
+static void PgExecutionInitializeMatViewState(PgExecutionMatViewState *matview);
+static void PgExecutionAdoptEarlyMatViewState(PgExecution *execution);
 static PgBackendCoreState *PgCurrentCoreState(void);
 static PgSessionDatabaseState *PgCurrentSessionDatabaseState(void);
 static PgSessionTablespaceState *PgCurrentSessionTablespaceState(void);
@@ -661,6 +664,7 @@ static PgExecutionNodeIOState *PgCurrentExecutionNodeIOState(void);
 static PgExecutionBaseBackupState *PgCurrentExecutionBaseBackupState(void);
 static PgExecutionAnalyzeState *PgCurrentExecutionAnalyzeState(void);
 static PgExecutionExtensionState *PgCurrentExecutionExtensionState(void);
+static PgExecutionMatViewState *PgCurrentExecutionMatViewState(void);
 static PgBackendPendingInterruptState *PgCurrentPendingInterrupts(void);
 static PgBackendInterruptHoldoffState *PgCurrentInterruptHoldoffs(void);
 
@@ -2120,6 +2124,23 @@ PgExecutionAdoptEarlyExtensionState(PgExecution *execution)
 	PgExecutionInitializeExtensionState(&early_execution_extension);
 }
 
+static void
+PgExecutionInitializeMatViewState(PgExecutionMatViewState *matview)
+{
+	Assert(matview != NULL);
+
+	matview->maintenance_depth = 0;
+}
+
+static void
+PgExecutionAdoptEarlyMatViewState(PgExecution *execution)
+{
+	Assert(execution != NULL);
+
+	execution->matview = early_execution_matview;
+	PgExecutionInitializeMatViewState(&early_execution_matview);
+}
+
 void
 InitializePgProcessRuntime(void)
 {
@@ -2228,6 +2249,7 @@ InitializePgProcessRuntime(void)
 	PgExecutionAdoptEarlyBaseBackupState(&process_execution);
 	PgExecutionAdoptEarlyAnalyzeState(&process_execution);
 	PgExecutionAdoptEarlyExtensionState(&process_execution);
+	PgExecutionAdoptEarlyMatViewState(&process_execution);
 
 	CurrentPgRuntime = &process_runtime;
 	CurrentPgCarrier = &process_carrier;
@@ -2349,6 +2371,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgExecutionInitializeBaseBackupState(&state->execution.basebackup);
 	PgExecutionInitializeAnalyzeState(&state->execution.analyze);
 	PgExecutionInitializeExtensionState(&state->execution.extension);
+	PgExecutionInitializeMatViewState(&state->execution.matview);
 }
 
 void
@@ -2410,6 +2433,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgExecutionAdoptEarlyBaseBackupState(&state->execution);
 	PgExecutionAdoptEarlyAnalyzeState(&state->execution);
 	PgExecutionAdoptEarlyExtensionState(&state->execution);
+	PgExecutionAdoptEarlyMatViewState(&state->execution);
 	CurrentPgRuntime = &thread_runtime;
 	CurrentPgCarrier = &state->carrier;
 	CurrentPgBackend = &state->backend;
@@ -5211,6 +5235,21 @@ Oid *
 PgCurrentExtensionObjectRef(void)
 {
 	return &PgCurrentExecutionExtensionState()->current_object;
+}
+
+static PgExecutionMatViewState *
+PgCurrentExecutionMatViewState(void)
+{
+	if (CurrentPgExecution == NULL)
+		return &early_execution_matview;
+
+	return &CurrentPgExecution->matview;
+}
+
+int *
+PgCurrentMatViewMaintenanceDepthRef(void)
+{
+	return &PgCurrentExecutionMatViewState()->maintenance_depth;
 }
 
 PgConnectionSocketIOState *
