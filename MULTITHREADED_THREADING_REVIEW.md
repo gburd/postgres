@@ -408,10 +408,13 @@ Subsequent Phase 12 work has promoted global-lifetime scanning into
 PMChild-owned helper APIs for thread-backed backends. Thread exit publication
 also now clears the logical-backend pointer and publishes exit status through a
 single PMChild helper, and the exiting thread now reports retained
-`TopMemoryContext` bytes to the postmaster reaper. PMChild cleanup and slot
-release now require a successful native thread join; a join failure restores
-the claimed thread-exit report and leaves the PMChild active for retry instead
-of releasing a possibly still-owned slot. PMChild thread-exit publication now
+`TopMemoryContext` bytes to the postmaster reaper. Backend libpq teardown now
+frees the frontend/backend wait set and dynamically sized send buffer in
+`socket_close()`, so those connection-owned allocations no longer survive only
+as retained top-memory accounting. PMChild cleanup and slot release now require
+a successful native thread join; a join failure restores the claimed
+thread-exit report and leaves the PMChild active for retry instead of releasing
+a possibly still-owned slot. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live
 `signal_pid` under the same lock as `thread_backend`, while PMChild assignment
 and slot release scrub stale carrier-visible signal ids and thread-exit

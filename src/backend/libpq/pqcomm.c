@@ -79,6 +79,7 @@
 #include "postmaster/postmaster.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
+#include "storage/waiteventset.h"
 #include "utils/backend_runtime.h"
 #include "utils/guc_hooks.h"
 #include "utils/memutils.h"
@@ -361,6 +362,20 @@ socket_comm_reset(void)
 static void
 socket_close(int code, Datum arg)
 {
+	if (FeBeWaitSet != NULL)
+	{
+		FreeWaitEventSet(FeBeWaitSet);
+		FeBeWaitSet = NULL;
+	}
+
+	if (PqSendBuffer != NULL)
+	{
+		pfree(PqSendBuffer);
+		PqSendBuffer = NULL;
+		PqSendBufferSize = 0;
+		PqSendPointer = PqSendStart = 0;
+	}
+
 	/* Nothing to do in a standalone backend, where MyProcPort is NULL. */
 	if (MyProcPort != NULL)
 	{

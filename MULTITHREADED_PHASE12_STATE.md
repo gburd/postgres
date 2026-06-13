@@ -5324,3 +5324,40 @@ Validation for this slice:
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals;
 - `git diff --check` passed.
+
+## Backend Libpq Socket I/O Exit Cleanup
+
+The one-hundred-twelfth Phase 12 slice removes two concrete connection-owned
+allocations from the retained `TopMemoryContext` bucket during threaded backend
+exit:
+
+- `socket_close()` now frees the backend libpq frontend/backend `WaitEventSet`
+  before closing the accepted socket and invalidating `MyProcPort->sock`;
+- `socket_close()` now frees the dynamically sized backend libpq send buffer
+  and clears its pointer, size, and cursor fields;
+- the fixed-size receive buffer is already embedded in
+  `PgConnectionSocketIOState`, so it does not require a separate release path;
+- normal disconnect, abandoned-client exit, backend-local `FATAL`, and
+  administrator termination all reach this same `on_proc_exit()` callback in
+  the threaded TAP matrix.
+
+This does not solve full `TopMemoryContext` reclamation. It is a scoped
+resource-ownership cleanup: backend libpq socket I/O state that has clear
+connection lifetime is now explicitly released before PMChild retained-memory
+accounting instead of relying on carrier top-memory retention.
+
+Validation for this slice:
+
+- `gmake -C src/backend/libpq pqcomm.o` passed;
+- full `gmake -j8` passed;
+- full `gmake -j8 DESTDIR="$PWD/tmp_install" install` passed;
+- `gmake -C src/test/modules/test_backend_runtime DESTDIR="$PWD/tmp_install" install` passed;
+- direct threaded-runtime TAP passed all 87 tests with local
+  `/Users/samwillis/perl5` `PERL5LIB` paths before and after
+  `gmake -C src/test/modules/test_backend_runtime check` recreated
+  `tmp_install`;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression and still reported TAP disabled by configure;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- `git diff --check` passed.

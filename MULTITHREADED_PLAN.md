@@ -817,12 +817,16 @@ successful native thread join as the boundary before PMChild cleanup and slot
 release; if `pg_thread_join()` fails, the claimed exit report is restored and
 the PMChild remains active for a later retry. Thread exit also reports retained
 carrier `TopMemoryContext` bytes to the postmaster reaper as explicit
-accounting for the currently retained top context. PMChild assignment and slot
-release now also scrub stale carrier-visible signal ids and thread-exit
-payloads before reuse. PMChild thread-exit publication now captures the exited
-logical backend id in the exit payload and clears live `signal_pid` under the
-same lock as `thread_backend`, so a dead thread is no longer advertised as
-signalable while the postmaster can still log and join the reported exit.
+accounting for the currently retained top context. Backend libpq connection
+teardown now frees the frontend/backend wait set and dynamically sized send
+buffer in `socket_close()`, removing two connection-owned allocations from the
+retained top-memory bucket before PMChild exit accounting runs. PMChild
+assignment and slot release now also scrub stale carrier-visible signal ids and
+thread-exit payloads before reuse. PMChild thread-exit publication now
+captures the exited logical backend id in the exit payload and clears live
+`signal_pid` under the same lock as `thread_backend`, so a dead thread is no
+longer advertised as signalable while the postmaster can still log and join
+the reported exit.
 Thread-backed signal-id reads and claimed thread-exit payload reads now also
 run through PMChild helper APIs under the PMChild mutex, matching the
 publication side instead of reading those fields directly after the exit flag
