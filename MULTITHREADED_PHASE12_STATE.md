@@ -4857,3 +4857,52 @@ Validation for this slice:
 - log inspection for that smoke found no crash, postmaster-death, shutdown
   escalation, assertion, or bad-descriptor markers;
 - `git diff --check` passed.
+
+## Threaded Startup Gate Autovacuum Worker Narrowing
+
+The one-hundred-first Phase 12 slice narrows the temporary threaded startup
+serialization gate for autovacuum workers:
+
+- `backend_thread_requires_startup_gate()` now allows `B_AUTOVAC_WORKER`
+  thread carriers to bypass the global startup mutex, joining the
+  already-validated autovacuum launcher and other in-tree server-owned worker
+  bypasses;
+- this bypass covers the autovacuum worker's own startup path after the
+  launcher has published a worker slot in `AutoVacuumShmem`;
+- the worker claims its shared-memory worker entry under `AutovacuumLock`,
+  clears `av_startingWorker`, wakes the launcher through the postmaster in
+  threaded mode, connects to the selected database, forces worker-local GUC
+  overrides after threaded `InitPostgres()`, then releases the temporary
+  startup gate boundary before table work;
+- worker-local vacuum state remains backend-local/thread-local, while
+  shared scheduling and cost-balancing state stays protected by
+  `AutovacuumLock` and `AutoVacuumShmem`;
+- the remaining gated classes stay gated: regular client backend startup,
+  background workers, and slot sync.
+
+This is not the full Gate E2 startup-gate closure. It removes serialization
+from the database-connected in-tree autovacuum worker path after a real
+threaded autovacuum validation, but arbitrary background workers and the slot
+sync worker still need their own startup ownership model and stress coverage.
+
+Validation for this slice:
+
+- touched-object build for `src/backend/postmaster/launch_backend.o` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- full `gmake -j8` passed;
+- `gmake -j8 DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- direct full-module `pg_regress test_backend_runtime` passed all 1 test
+  against the current temp install;
+- a manual threaded autovacuum worker temp-cluster smoke with
+  `multithreaded = on`, `autovacuum = on`, `autovacuum_naptime = '1s'`,
+  zero vacuum/analyze thresholds, and `dynamic_shared_memory_type = posix`
+  created a table, inserted and deleted 5000 rows, waited until
+  `pg_stat_user_tables.autovacuum_count` reached 1, verified the log contains
+  `starting autovacuum worker thread carrier` and `automatic vacuum of table`,
+  handled twelve concurrent `pg_class` catalog scans, and stopped cleanly with
+  `pg_ctl -m fast -w stop`;
+- log inspection for that smoke found no crash, postmaster-death, shutdown
+  escalation, assertion, or bad-descriptor markers;
+- `git diff --check` passed.

@@ -428,15 +428,16 @@ honor `ProcDiePending`, fixing the basic immediate-shutdown smoke for
 background writer, checkpointer, autovacuum launcher, and WAL writer thread
 carriers. The temporary threaded startup serialization gate is also now behind
 an explicit backend-type helper. AIO workers, the syslogger, startup process,
-autovacuum launcher, archiver, WAL receiver, WAL summarizer, background
-writer, checkpointer, and WAL writer can bypass it. The writer-class, startup
-process, autovacuum launcher, archiver, WAL receiver, and WAL summarizer
-bypasses are worker-specific narrowings for classes whose startup path is
-bounded before user table work. The autovacuum launcher narrowing is limited
-to the no-database launcher loop; autovacuum workers stay gated because they
-connect to databases and perform table work. Startup process was additionally
-validated through threaded normal startup and crash recovery, while archiver,
-WAL receiver, and WAL summarizer were additionally validated through their
+autovacuum launcher/workers, archiver, WAL receiver, WAL summarizer,
+background writer, checkpointer, and WAL writer can bypass it. The
+writer-class, startup process, autovacuum launcher/workers, archiver, WAL
+receiver, and WAL summarizer bypasses are worker-specific narrowings with
+concrete startup ownership models. The autovacuum launcher narrowing is
+validated against the no-database launcher loop, while autovacuum worker
+narrowing is validated against a real database-connected autovacuum worker
+launch and table vacuum smoke. Startup process was additionally validated
+through threaded normal startup and crash recovery, while archiver, WAL
+receiver, and WAL summarizer were additionally validated through their
 wakeup/progress, streaming, and clean shutdown paths. A broader attempted
 bypass for other non-session auxiliary workers reproduced an abrupt postmaster
 death during a threaded `pg_class` catalog scan, so further gate narrowing
