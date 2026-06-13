@@ -29,6 +29,7 @@
 #include "storage/fd.h"
 #include "storage/latch.h"
 #include "storage/md.h"
+#include "utils/backend_runtime.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/wait_event.h"
@@ -68,12 +69,12 @@ typedef struct
 	bool		canceled;		/* true if request has been canceled */
 } PendingUnlinkEntry;
 
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND HTAB *pendingOps = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND List *pendingUnlinks = NIL;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND MemoryContext pendingOpsCxt; /* context for the above  */
-
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND CycleCtr sync_cycle_ctr = 0;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND CycleCtr checkpoint_cycle_ctr = 0;
+#define pendingOps (*PgCurrentSyncPendingOpsRef())
+#define pendingUnlinks (*PgCurrentSyncPendingUnlinksRef())
+#define pendingOpsCxt (*PgCurrentSyncPendingOpsContextRef())
+#define sync_cycle_ctr (*PgCurrentSyncCycleCounterRef())
+#define checkpoint_cycle_ctr (*PgCurrentSyncCheckpointCycleCounterRef())
+#define sync_in_progress (*PgCurrentSyncInProgressRef())
 
 /* Intervals for calling AbsorbSyncRequests */
 #define FSYNCS_PER_ABSORB		10
@@ -286,8 +287,6 @@ SyncPostCheckpoint(void)
 void
 ProcessSyncRequests(void)
 {
-	static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool sync_in_progress = false;
-
 	HASH_SEQ_STATUS hstat;
 	PendingFsyncEntry *entry;
 	int			absorb_counter;

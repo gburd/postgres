@@ -6177,3 +6177,62 @@ Validation for this slice:
   `src/backend/utils/activity/pgstat.c` and no remaining raw TLS declarations
   for the moved pending-entry context/list state;
 - `git diff --check` passed.
+
+## Backend Storage Pending/SMgr State Bridge
+
+The one-hundred-twenty-ninth Phase 12 slice moves a coherent storage-owned
+backend-local state group from standalone backend-local TLS into
+`PgBackendStorageState`:
+
+- pending file-sync/unlink state from `sync.c`: `pendingOps`,
+  `pendingUnlinks`, `pendingOpsCxt`, `sync_cycle_ctr`,
+  `checkpoint_cycle_ctr`, and `sync_in_progress`;
+- storage-manager relation state from `smgr.c`: `SMgrRelationHash` and
+  `unpinned_relns`;
+- magnetic-disk storage-manager allocation context from `md.c`: `MdCxt`.
+
+The existing source names remain local compatibility macros in their owning
+storage files, routed through `PgCurrentSync*Ref()`,
+`PgCurrentSMgr*Ref()`, and `PgCurrentMdContextRef()` accessors. The new state
+bucket is initialized for every thread-backed backend and adopted by the
+process-mode backend during `InitializePgProcessRuntime()`.
+
+This slice keeps related storage lifetime state together because pending fsync
+bookkeeping, smgr relation entries, and md descriptor allocations all belong
+to one logical backend's storage-manager view. The smgr unpinned relation list
+has the same copied-list-head hazard as other moved `dlist_head` values:
+copying a non-empty list head would leave node links pointing at the old list
+head. The process-mode adoption path therefore asserts that no early smgr
+relation hash/list exists before backend-runtime adoption and initializes the
+logical backend's smgr list head.
+
+Validation for this slice:
+
+- `gmake -C src/backend/utils/init backend_runtime.o` passed;
+- `gmake -C src/backend/storage/sync sync.o` passed;
+- `gmake -C src/backend/storage/smgr smgr.o md.o` passed;
+- `gmake -C src/test/modules/test_backend_runtime test_backend_runtime.o`
+  passed after adding `test_backend_storage_state_is_backend_local()`;
+- full backend clean plus generated-header recovery was run after the
+  installed-header and `PgBackend` layout changes;
+- full `gmake -j8` passed;
+- full `gmake -j8 DESTDIR="$PWD/tmp_install" install` passed;
+- PL/pgSQL was cleaned, rebuilt, and reinstalled after the installed-header
+  change;
+- `src/test/modules/test_backend_runtime` was cleaned, rebuilt, and
+  reinstalled after the installed-header change;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression, including the new
+  `test_backend_storage_state_is_backend_local()` helper, and still reported
+  TAP disabled by configure;
+- direct threaded-runtime TAP passed all 87 tests with the local
+  `/Users/samwillis/perl5` `PERL5LIB` paths and an explicit `PG_REGRESS`
+  environment;
+- `gmake -C contrib -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 386 to 379;
+- a static scan found only the nine private compatibility macros in
+  `src/backend/storage/sync/sync.c`, `src/backend/storage/smgr/smgr.c`, and
+  `src/backend/storage/smgr/md.c` and no remaining raw TLS declarations for
+  the moved storage state;
+- `git diff --check` passed.

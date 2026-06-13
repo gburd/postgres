@@ -889,6 +889,14 @@ accessors/macros. The adoption path asserts that no early pending-entry list
 exists before runtime adoption, because copied non-empty `dlist_head` values
 would still point at the old list head; after adoption the logical backend owns
 a freshly initialized pending-entry list head.
+The storage pending/smgr batch now stores `pendingOps`, `pendingUnlinks`,
+`pendingOpsCxt`, `sync_cycle_ctr`, `checkpoint_cycle_ctr`,
+`sync_in_progress`, `SMgrRelationHash`, `unpinned_relns`, and `MdCxt` in
+`PgBackendStorageState` behind private compatibility macros in `sync.c`,
+`smgr.c`, and `md.c`. This keeps backend-local fsync/unlink tracking and smgr
+relation-cache state with the logical backend; the smgr adoption path asserts
+that no early relation hash/list exists before runtime adoption because a
+non-empty copied `dlist_head` would still point at the old list head.
 PMChild assignment and slot release now also scrub stale carrier-visible signal
 ids and thread-exit payloads before reuse. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live

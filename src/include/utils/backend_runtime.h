@@ -206,6 +206,19 @@ typedef struct PgBackendInstrumentationState
 	WalUsage	saved_wal_usage;
 } PgBackendInstrumentationState;
 
+typedef struct PgBackendStorageState
+{
+	HTAB	   *sync_pending_ops;
+	List	   *sync_pending_unlinks;
+	MemoryContext sync_pending_ops_context;
+	uint16		sync_cycle_counter;
+	uint16		sync_checkpoint_cycle_counter;
+	bool		sync_in_progress;
+	HTAB	   *smgr_relation_hash;
+	dlist_head	smgr_unpinned_relations;
+	MemoryContext md_context;
+} PgBackendStorageState;
+
 typedef struct PgExecutionDebugState
 {
 	const char *debug_query_string;
@@ -990,6 +1003,7 @@ struct PgBackend
 	PgBackendCoreState core;
 	PgBackendPgStatPendingState pgstat_pending;
 	PgBackendInstrumentationState instrumentation;
+	PgBackendStorageState storage;
 	PgBackendPendingInterruptState pending_interrupts;
 	PgBackendInterruptHoldoffState interrupt_holdoffs;
 	PgBackendWaitState wait_state;
@@ -1327,6 +1341,15 @@ extern char **PgCurrentLocaleNumericRef(void);
 extern char **PgCurrentLocaleTimeRef(void);
 extern int *PgCurrentIcuValidationLevelRef(void);
 extern PgSessionUserIdentityState *PgCurrentUserIdentityState(void);
+extern HTAB **PgCurrentSyncPendingOpsRef(void);
+extern List **PgCurrentSyncPendingUnlinksRef(void);
+extern MemoryContext *PgCurrentSyncPendingOpsContextRef(void);
+extern uint16 *PgCurrentSyncCycleCounterRef(void);
+extern uint16 *PgCurrentSyncCheckpointCycleCounterRef(void);
+extern bool *PgCurrentSyncInProgressRef(void);
+extern HTAB **PgCurrentSMgrRelationHashRef(void);
+extern dlist_head *PgCurrentSMgrUnpinnedRelationsRef(void);
+extern MemoryContext *PgCurrentMdContextRef(void);
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);

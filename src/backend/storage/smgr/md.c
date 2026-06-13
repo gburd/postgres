@@ -39,6 +39,7 @@
 #include "storage/relfilelocator.h"
 #include "storage/smgr.h"
 #include "storage/sync.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "utils/wait_event.h"
 
@@ -95,7 +96,7 @@ typedef struct _MdfdVec
 	BlockNumber mdfd_segno;		/* segment number, from 0 */
 } MdfdVec;
 
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND MemoryContext MdCxt;	/* context for all MdfdVec objects */
+#define MdCxt (*PgCurrentMdContextRef()) /* context for all MdfdVec objects */
 
 
 /* Populate a file tag describing an md.c segment file. */

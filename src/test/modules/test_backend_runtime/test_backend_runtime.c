@@ -6886,6 +6886,96 @@ test_backend_instrumentation_state_is_backend_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_backend_storage_state_is_backend_local);
+Datum
+test_backend_storage_state_is_backend_local(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgBackend	fake_backend1;
+	PgBackend	fake_backend2;
+	bool		ok = true;
+
+	saved_backend = CurrentPgBackend;
+	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
+	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+	dlist_init(&fake_backend1.storage.smgr_unpinned_relations);
+	dlist_init(&fake_backend2.storage.smgr_unpinned_relations);
+
+	PG_TRY();
+	{
+		CurrentPgBackend = &fake_backend1;
+		*PgCurrentSyncPendingOpsRef() = (HTAB *) &fake_backend1;
+		*PgCurrentSyncPendingUnlinksRef() = (List *) &fake_backend1;
+		*PgCurrentSyncPendingOpsContextRef() = (MemoryContext) &fake_backend1;
+		*PgCurrentSyncCycleCounterRef() = 11;
+		*PgCurrentSyncCheckpointCycleCounterRef() = 12;
+		*PgCurrentSyncInProgressRef() = true;
+		*PgCurrentSMgrRelationHashRef() = (HTAB *) &fake_backend1;
+		*PgCurrentMdContextRef() = (MemoryContext) &fake_backend1;
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && *PgCurrentSyncPendingOpsRef() == NULL;
+		ok = ok && *PgCurrentSyncPendingUnlinksRef() == NIL;
+		ok = ok && *PgCurrentSyncPendingOpsContextRef() == NULL;
+		ok = ok && *PgCurrentSyncCycleCounterRef() == 0;
+		ok = ok && *PgCurrentSyncCheckpointCycleCounterRef() == 0;
+		ok = ok && !*PgCurrentSyncInProgressRef();
+		ok = ok && *PgCurrentSMgrRelationHashRef() == NULL;
+		ok = ok && PgCurrentSMgrUnpinnedRelationsRef() ==
+			&fake_backend2.storage.smgr_unpinned_relations;
+		ok = ok && dlist_is_empty(PgCurrentSMgrUnpinnedRelationsRef());
+		ok = ok && *PgCurrentMdContextRef() == NULL;
+
+		*PgCurrentSyncPendingOpsRef() = (HTAB *) &fake_backend2;
+		*PgCurrentSyncPendingUnlinksRef() = (List *) &fake_backend2;
+		*PgCurrentSyncPendingOpsContextRef() = (MemoryContext) &fake_backend2;
+		*PgCurrentSyncCycleCounterRef() = 21;
+		*PgCurrentSyncCheckpointCycleCounterRef() = 22;
+		*PgCurrentSyncInProgressRef() = true;
+		*PgCurrentSMgrRelationHashRef() = (HTAB *) &fake_backend2;
+		*PgCurrentMdContextRef() = (MemoryContext) &fake_backend2;
+
+		CurrentPgBackend = &fake_backend1;
+		ok = ok && *PgCurrentSyncPendingOpsRef() == (HTAB *) &fake_backend1;
+		ok = ok && *PgCurrentSyncPendingUnlinksRef() == (List *) &fake_backend1;
+		ok = ok && *PgCurrentSyncPendingOpsContextRef() == (MemoryContext) &fake_backend1;
+		ok = ok && *PgCurrentSyncCycleCounterRef() == 11;
+		ok = ok && *PgCurrentSyncCheckpointCycleCounterRef() == 12;
+		ok = ok && *PgCurrentSyncInProgressRef();
+		ok = ok && *PgCurrentSMgrRelationHashRef() == (HTAB *) &fake_backend1;
+		ok = ok && PgCurrentSMgrUnpinnedRelationsRef() ==
+			&fake_backend1.storage.smgr_unpinned_relations;
+		ok = ok && dlist_is_empty(PgCurrentSMgrUnpinnedRelationsRef());
+		ok = ok && *PgCurrentMdContextRef() == (MemoryContext) &fake_backend1;
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && *PgCurrentSyncPendingOpsRef() == (HTAB *) &fake_backend2;
+		ok = ok && *PgCurrentSyncPendingUnlinksRef() == (List *) &fake_backend2;
+		ok = ok && *PgCurrentSyncPendingOpsContextRef() == (MemoryContext) &fake_backend2;
+		ok = ok && *PgCurrentSyncCycleCounterRef() == 21;
+		ok = ok && *PgCurrentSyncCheckpointCycleCounterRef() == 22;
+		ok = ok && *PgCurrentSyncInProgressRef();
+		ok = ok && *PgCurrentSMgrRelationHashRef() == (HTAB *) &fake_backend2;
+		ok = ok && PgCurrentSMgrUnpinnedRelationsRef() ==
+			&fake_backend2.storage.smgr_unpinned_relations;
+		ok = ok && dlist_is_empty(PgCurrentSMgrUnpinnedRelationsRef());
+		ok = ok && *PgCurrentMdContextRef() == (MemoryContext) &fake_backend2;
+
+		CurrentPgBackend = saved_backend;
+	}
+	PG_CATCH();
+	{
+		CurrentPgBackend = saved_backend;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "backend storage state was not backend-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_pmchild_thread_backend_signal_api);
 Datum
 test_pmchild_thread_backend_signal_api(PG_FUNCTION_ARGS)

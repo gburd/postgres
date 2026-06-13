@@ -102,6 +102,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND BackgroundWorker *early_my_bgworker_ent
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ResourceOwner early_aux_process_resource_owner = NULL;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendPgStatPendingState early_backend_pgstat_pending;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInstrumentationState early_backend_instrumentation;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendStorageState early_backend_storage;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionIdentityState early_connection_identity;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionSocketIOState early_connection_socket_io;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionProtocolState early_connection_protocol;
@@ -610,6 +611,8 @@ static void PgBackendInitializePgStatPendingState(PgBackendPgStatPendingState *p
 static void PgBackendAdoptEarlyPgStatPendingState(PgBackend *backend);
 static void PgBackendInitializeInstrumentationState(PgBackendInstrumentationState *instrumentation);
 static void PgBackendAdoptEarlyInstrumentationState(PgBackend *backend);
+static void PgBackendInitializeStorageState(PgBackendStorageState *storage);
+static void PgBackendAdoptEarlyStorageState(PgBackend *backend);
 static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
 static void PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend);
 static BackendType *PgCurrentBackendTypeRef(void);
@@ -2085,6 +2088,27 @@ PgBackendAdoptEarlyInstrumentationState(PgBackend *backend)
 }
 
 static void
+PgBackendInitializeStorageState(PgBackendStorageState *storage)
+{
+	Assert(storage != NULL);
+
+	MemSet(storage, 0, sizeof(*storage));
+	dlist_init(&storage->smgr_unpinned_relations);
+}
+
+static void
+PgBackendAdoptEarlyStorageState(PgBackend *backend)
+{
+	Assert(backend != NULL);
+	Assert(early_backend_storage.smgr_relation_hash == NULL);
+	Assert(dlist_is_empty(&early_backend_storage.smgr_unpinned_relations));
+
+	backend->storage = early_backend_storage;
+	dlist_init(&backend->storage.smgr_unpinned_relations);
+	PgBackendInitializeStorageState(&early_backend_storage);
+}
+
+static void
 PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend)
 {
 	Assert(backend != NULL);
@@ -2318,6 +2342,7 @@ InitializePgProcessRuntime(void)
 	PgBackendAdoptEarlyAuxProcessResourceOwner(&process_backend);
 	PgBackendAdoptEarlyPgStatPendingState(&process_backend);
 	PgBackendAdoptEarlyInstrumentationState(&process_backend);
+	PgBackendAdoptEarlyStorageState(&process_backend);
 	PgBackendSetInterruptLatch(&process_backend, process_backend.core.latch);
 	dlist_init(&process_backend.dsm_segment_list);
 	pg_atomic_init_u32(&process_backend.wait_state.waiting, 0);
@@ -2458,6 +2483,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgBackendInitializeInterrupts(&state->backend);
 	PgBackendInitializePgStatPendingState(&state->backend.pgstat_pending);
 	PgBackendInitializeInstrumentationState(&state->backend.instrumentation);
+	PgBackendInitializeStorageState(&state->backend.storage);
 	PgBackendSetInterruptLatch(&state->backend, interrupt_latch);
 	dlist_init(&state->backend.dsm_segment_list);
 	pg_atomic_init_u32(&state->backend.wait_state.waiting, 0);
@@ -5959,6 +5985,69 @@ WalUsage *
 PgCurrentSavedWalUsageRef(void)
 {
 	return &PgCurrentBackendInstrumentationState()->saved_wal_usage;
+}
+
+static PgBackendStorageState *
+PgCurrentBackendStorageState(void)
+{
+	if (CurrentPgBackend == NULL)
+		return &early_backend_storage;
+
+	return &CurrentPgBackend->storage;
+}
+
+HTAB **
+PgCurrentSyncPendingOpsRef(void)
+{
+	return &PgCurrentBackendStorageState()->sync_pending_ops;
+}
+
+List **
+PgCurrentSyncPendingUnlinksRef(void)
+{
+	return &PgCurrentBackendStorageState()->sync_pending_unlinks;
+}
+
+MemoryContext *
+PgCurrentSyncPendingOpsContextRef(void)
+{
+	return &PgCurrentBackendStorageState()->sync_pending_ops_context;
+}
+
+uint16 *
+PgCurrentSyncCycleCounterRef(void)
+{
+	return &PgCurrentBackendStorageState()->sync_cycle_counter;
+}
+
+uint16 *
+PgCurrentSyncCheckpointCycleCounterRef(void)
+{
+	return &PgCurrentBackendStorageState()->sync_checkpoint_cycle_counter;
+}
+
+bool *
+PgCurrentSyncInProgressRef(void)
+{
+	return &PgCurrentBackendStorageState()->sync_in_progress;
+}
+
+HTAB **
+PgCurrentSMgrRelationHashRef(void)
+{
+	return &PgCurrentBackendStorageState()->smgr_relation_hash;
+}
+
+dlist_head *
+PgCurrentSMgrUnpinnedRelationsRef(void)
+{
+	return &PgCurrentBackendStorageState()->smgr_unpinned_relations;
+}
+
+MemoryContext *
+PgCurrentMdContextRef(void)
+{
+	return &PgCurrentBackendStorageState()->md_context;
 }
 
 static PgBackendPendingInterruptState *

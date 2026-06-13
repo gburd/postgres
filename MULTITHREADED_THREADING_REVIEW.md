@@ -472,6 +472,14 @@ now live in that same backend-owned pgstat bucket behind private pgstat
 accessors/macros. The adoption path asserts that the early pending-entry list
 is empty before moving into the logical backend, because non-empty copied
 `dlist_head` values would keep node links tied to the old list head.
+`pendingOps`, `pendingUnlinks`, `pendingOpsCxt`, `sync_cycle_ctr`,
+`checkpoint_cycle_ctr`, `sync_in_progress`, `SMgrRelationHash`,
+`unpinned_relns`, and `MdCxt` now move together into
+`PgBackendStorageState`, removing another storage-owned backend-local TLS
+cluster while preserving the local source names in `sync.c`, `smgr.c`, and
+`md.c`. The smgr relation list has the same copied-list-head invariant as the
+pgstat pending list, so early adoption asserts that no early smgr relation
+hash/list exists before runtime adoption.
 PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly

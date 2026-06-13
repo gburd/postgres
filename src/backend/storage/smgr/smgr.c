@@ -71,6 +71,7 @@
 #include "storage/ipc.h"
 #include "storage/md.h"
 #include "storage/smgr.h"
+#include "utils/backend_runtime.h"
 #include "utils/hsearch.h"
 #include "utils/inval.h"
 
@@ -157,9 +158,8 @@ static PG_GLOBAL_IMMUTABLE const int NSmgr = lengthof(smgrsw);
  * Each backend has a hashtable that stores all extant SMgrRelation objects.
  * In addition, "unpinned" SMgrRelation objects are chained together in a list.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND HTAB *SMgrRelationHash = NULL;
-
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND dlist_head unpinned_relns;
+#define SMgrRelationHash (*PgCurrentSMgrRelationHashRef())
+#define unpinned_relns (*PgCurrentSMgrUnpinnedRelationsRef())
 
 /* local function prototypes */
 static void smgrshutdown(int code, Datum arg);
