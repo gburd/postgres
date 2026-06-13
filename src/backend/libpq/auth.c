@@ -107,19 +107,17 @@ static int	pam_passwd_conv_proc(int num_msg,
 								 PG_PAM_CONST struct pam_message **msg,
 								 struct pam_response **resp, void *appdata_ptr);
 
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION struct pam_conv pam_passw_conv = {
-	&pam_passwd_conv_proc,
-	NULL
-};
-
 /* Workaround for Solaris 2.6 brokenness. */
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION const char *pam_passwd = NULL;
+#define pam_passwd \
+	(PgCurrentConnectionSecurityStateRef()->pam_password)
 
 /* Workaround for passing "Port *port" into pam_passwd_conv_proc. */
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION Port *pam_port_cludge;
+#define pam_port_cludge \
+	(PgCurrentConnectionSecurityStateRef()->pam_port)
 
 /* For detecting no-password-given. */
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION bool pam_no_password;
+#define pam_no_password \
+	(PgCurrentConnectionSecurityStateRef()->pam_no_password)
 #endif							/* USE_PAM */
 
 
@@ -2047,23 +2045,19 @@ CheckPAMAuth(Port *port, const char *user, const char *password)
 {
 	int			retval;
 	pam_handle_t *pamh = NULL;
+	struct pam_conv pam_passw_conv = {
+		&pam_passwd_conv_proc,
+		unconstify(char *, password)
+	};
 
 	/*
 	 * We can't entirely rely on PAM to pass through appdata --- it appears
-	 * not to work on at least Solaris 2.6.  So use these ugly static
-	 * variables instead.
+	 * not to work on at least Solaris 2.6.  So use these compatibility
+	 * fields instead.
 	 */
 	pam_passwd = password;
 	pam_port_cludge = port;
 	pam_no_password = false;
-
-	/*
-	 * Set the application data portion of the conversation struct.  This is
-	 * later used inside the PAM conversation to pass the password to the
-	 * authentication module.
-	 */
-	pam_passw_conv.appdata_ptr = unconstify(char *, password);	/* from password above,
-																 * not allocated */
 
 	/* Optionally, one can set the service name in pg_hba.conf */
 	if (port->hba->pamservice && port->hba->pamservice[0] != '\0')

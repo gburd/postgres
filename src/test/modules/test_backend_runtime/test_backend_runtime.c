@@ -7081,6 +7081,9 @@ test_connection_security_state_is_connection_local(PG_FUNCTION_ARGS)
 		ok = ok && security->gss_recv_buffer == NULL;
 		ok = ok && security->gss_result_buffer == NULL;
 		ok = ok && security->gss_max_packet_size == 0;
+		ok = ok && security->pam_password == NULL;
+		ok = ok && security->pam_port == NULL;
+		ok = ok && !security->pam_no_password;
 		security->ssl_loaded_verify_locations = true;
 		security->gss_send_buffer = (char *) &fake_connection1;
 		security->gss_send_length = 11;
@@ -7092,6 +7095,9 @@ test_connection_security_state_is_connection_local(PG_FUNCTION_ARGS)
 		security->gss_result_length = 15;
 		security->gss_result_next = 16;
 		security->gss_max_packet_size = 17;
+		security->pam_password = "pam-one";
+		security->pam_port = (struct Port *) &fake_connection1;
+		security->pam_no_password = true;
 
 		CurrentPgConnection = &fake_connection2;
 		security = PgCurrentConnectionSecurityStateRef();
@@ -7101,6 +7107,9 @@ test_connection_security_state_is_connection_local(PG_FUNCTION_ARGS)
 		ok = ok && security->gss_recv_buffer == NULL;
 		ok = ok && security->gss_result_buffer == NULL;
 		ok = ok && security->gss_max_packet_size == 0;
+		ok = ok && security->pam_password == NULL;
+		ok = ok && security->pam_port == NULL;
+		ok = ok && !security->pam_no_password;
 		security->ssl_loaded_verify_locations = false;
 		security->gss_send_buffer = (char *) &fake_connection2;
 		security->gss_send_length = 21;
@@ -7112,6 +7121,9 @@ test_connection_security_state_is_connection_local(PG_FUNCTION_ARGS)
 		security->gss_result_length = 25;
 		security->gss_result_next = 26;
 		security->gss_max_packet_size = 27;
+		security->pam_password = "pam-two";
+		security->pam_port = (struct Port *) &fake_connection2;
+		security->pam_no_password = false;
 
 		CurrentPgConnection = &fake_connection1;
 		security = PgCurrentConnectionSecurityStateRef();
@@ -7126,6 +7138,9 @@ test_connection_security_state_is_connection_local(PG_FUNCTION_ARGS)
 		ok = ok && security->gss_result_length == 15;
 		ok = ok && security->gss_result_next == 16;
 		ok = ok && security->gss_max_packet_size == 17;
+		ok = ok && strcmp(security->pam_password, "pam-one") == 0;
+		ok = ok && security->pam_port == (struct Port *) &fake_connection1;
+		ok = ok && security->pam_no_password;
 
 		CurrentPgConnection = &fake_connection2;
 		security = PgCurrentConnectionSecurityStateRef();
@@ -7140,6 +7155,9 @@ test_connection_security_state_is_connection_local(PG_FUNCTION_ARGS)
 		ok = ok && security->gss_result_length == 25;
 		ok = ok && security->gss_result_next == 26;
 		ok = ok && security->gss_max_packet_size == 27;
+		ok = ok && strcmp(security->pam_password, "pam-two") == 0;
+		ok = ok && security->pam_port == (struct Port *) &fake_connection2;
+		ok = ok && !security->pam_no_password;
 
 		CurrentPgConnection = saved_connection;
 	}

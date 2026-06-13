@@ -785,6 +785,9 @@ typedef struct PgConnectionSecurityState
 	int			gss_result_length;
 	int			gss_result_next;
 	uint32		gss_max_packet_size;
+	const char *pam_password;
+	struct Port *pam_port;
+	bool		pam_no_password;
 } PgConnectionSecurityState;
 
 /*

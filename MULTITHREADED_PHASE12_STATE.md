@@ -3088,10 +3088,9 @@ logical connection object:
   lvalue macros backed by the active `PgConnection`;
 - process-mode startup adopts any early security state into the process
   connection, matching the existing connection-state compatibility pattern;
-- PAM authentication scratch state remains deliberately separate for a later
-  PAM-specific callback-state refactor because its storage shape depends on
-  PAM headers and callback lifetime, not on the SSL/GSS transport buffers
-  moved in this slice.
+- PAM authentication scratch state remained deliberately separate in this
+  slice because its storage shape depends on PAM headers and callback
+  lifetime, not on the SSL/GSS transport buffers moved here.
 
 This keeps connection transport security state scoped to the logical
 connection instead of the carrier thread, while preserving source compatibility
@@ -3125,3 +3124,47 @@ Validation for this slice:
 - static scans found no remaining migrated SSL/GSS direct connection TLS
   declarations for `ssl_loaded_verify_locations` or the `PqGSS*` buffer and
   cursor state.
+
+## PAM Connection Authentication State Bridge
+
+The sixty-first Phase 12 slice completes the deferred PAM authentication
+scratch-state move under the logical connection object:
+
+- `PgConnectionSecurityState` now owns the Solaris fallback PAM password
+  pointer, the current PAM authentication `Port *`, and the no-password flag
+  used by `pam_passwd_conv_proc()`;
+- `auth.c` keeps the historical private `pam_passwd`, `pam_port_cludge`, and
+  `pam_no_password` names as local lvalue macros backed by the active
+  `PgConnection`;
+- the PAM conversation struct is now stack-local to `CheckPAMAuth()`, with
+  `appdata_ptr` initialized directly from the password argument for the normal
+  PAM callback path;
+- the connection security state bucket now owns SSL, GSS, and PAM
+  connection/authentication scratch state.
+
+This removes the remaining PAM-specific connection TLS variables while
+preserving the existing PAM callback contract and the Solaris fallback path.
+
+Validation for this slice:
+
+- touched-object builds passed for `auth.o` and `test_backend_runtime.o`;
+- this checkout is configured without PAM, so PAM-specific source was covered
+  here by static scans plus the full non-PAM build; compile/runtime coverage
+  for the PAM branch still requires a PAM-enabled configuration;
+- because `backend_runtime.h` changed, the backend clean plus generated
+  utility and node-header recovery path was used before trusting process-mode
+  runtime tests;
+- clean full `gmake -j8` passed after the backend clean;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- focused `test_backend_runtime` regression passed and now verifies that the
+  PAM password pointer, `Port *`, and no-password flag follow the active
+  `PgConnection` as part of
+  `test_connection_security_state_is_connection_local()`;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests, including
+  connection, password/authentication, GUC, PL/pgSQL, subscription, and
+  event-trigger coverage;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- static scans found no remaining direct connection TLS declarations for the
+  migrated PAM scratch state.
