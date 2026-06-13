@@ -36,6 +36,7 @@ typedef struct PgConnection PgConnection;
 typedef struct PgExecution PgExecution;
 typedef struct PQcommMethods PQcommMethods;
 typedef struct WaitEventSet WaitEventSet;
+struct SeqTableData;
 struct ClientSocket;
 typedef void (*PgBackendExitContinuation) (int code);
 typedef int (*PgSuspendCallback) (void *callback_arg);
@@ -578,6 +579,12 @@ typedef struct PgSessionOnCommitState
 	List	   *on_commits;
 } PgSessionOnCommitState;
 
+typedef struct PgSessionSequenceState
+{
+	HTAB	   *seqhashtab;
+	struct SeqTableData *last_used_seq;
+} PgSessionSequenceState;
+
 typedef struct PgRuntimeServerGUCState
 {
 	bool		initialized;
@@ -735,6 +742,7 @@ struct PgSession
 	PgSessionPlannerMethodState planner_method;
 	PgSessionPreparedStatementState prepared_statement;
 	PgSessionOnCommitState on_commit;
+	PgSessionSequenceState sequence;
 };
 
 struct PgConnection
@@ -925,6 +933,8 @@ extern char **PgCurrentRestrictNonsystemRelationKindStringRef(void);
 extern int *PgCurrentRestrictNonsystemRelationKindRef(void);
 extern HTAB **PgCurrentPreparedQueriesRef(void);
 extern List **PgCurrentOnCommitActionsRef(void);
+extern HTAB **PgCurrentSequenceHashTableRef(void);
+extern struct SeqTableData **PgCurrentLastUsedSequenceRef(void);
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);

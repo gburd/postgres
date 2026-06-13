@@ -2401,3 +2401,49 @@ Validation for this slice:
   header migration;
 - static scans found no remaining direct session TLS definition for
   `on_commits`.
+
+## Session Sequence State Bridge
+
+The forty-sixth Phase 12 slice moves SQL sequence session cache state under
+`PgSession`:
+
+- `PgSession` now owns a `PgSessionSequenceState`;
+- `PgSessionSequenceState` owns the `seqhashtab` hash table used to remember
+  per-session sequence cache entries and the `last_used_seq` pointer used by
+  `lastval()`;
+- `sequence.c` keeps its existing local logic through compatibility macros
+  backed by `PgCurrentSequenceHashTableRef()` and
+  `PgCurrentLastUsedSequenceRef()`;
+- early startup paths before `CurrentPgSession` is installed use fallback
+  session storage in `backend_runtime.c`;
+- process-mode and thread-runtime session installation adopt or initialize the
+  sequence bucket with the rest of the logical session object.
+
+This preserves PostgreSQL's existing `nextval()`, `currval()`, `lastval()`,
+and `DISCARD SEQUENCES` behavior while making the ownership of sequence cache
+state explicit. Sequence relation state remains catalog/storage state; this
+slice only migrates the logical-session cache that PostgreSQL already treated
+as session lifetime.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `sequence.o`, and
+  `test_backend_runtime.o`;
+- because `backend_runtime.h` changed, `gmake -C src/backend clean` plus
+  generated utility and node-header recovery was used before trusting
+  process-mode or threaded-mode runtime tests;
+- clean full `gmake -j8` passed after the backend clean;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- focused `test_backend_runtime` regression includes
+  `test_session_sequence_state_is_session_local()`, which switches fake
+  sessions through `PgSetCurrentSession()` and proves both sequence state
+  pointers follow the active session object;
+- the same regression schedule includes SQL-level `nextval()`, `currval()`,
+  `lastval()`, and `DISCARD SEQUENCES` smokes for a temporary sequence;
+- direct `test_backend_runtime` regression passed after reinstalling the test
+  module into `tmp_install`;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- static scans found no remaining direct session TLS definitions for
+  `seqhashtab` or `last_used_seq`.

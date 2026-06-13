@@ -89,6 +89,12 @@ SELECT test_session_on_commit_state_is_session_local();
  t
 (1 row)
 
+SELECT test_session_sequence_state_is_session_local();
+ test_session_sequence_state_is_session_local 
+----------------------------------------------
+ t
+(1 row)
+
 SELECT test_runtime_server_guc_state_is_runtime_local();
  test_runtime_server_guc_state_is_runtime_local 
 ------------------------------------------------
@@ -338,5 +344,37 @@ SELECT to_regclass('pg_temp.phase12_on_commit_drop') IS NULL AS dropped;
  dropped 
 ---------
  t
+(1 row)
+
+CREATE TEMP SEQUENCE phase12_sequence_state;
+SELECT nextval('phase12_sequence_state') AS first_nextval;
+ first_nextval 
+---------------
+             1
+(1 row)
+
+SELECT currval('phase12_sequence_state') AS current_value;
+ current_value 
+---------------
+             1
+(1 row)
+
+SELECT lastval() AS last_value;
+ last_value 
+------------
+          1
+(1 row)
+
+DISCARD SEQUENCES;
+SELECT nextval('phase12_sequence_state') AS nextval_after_discard;
+ nextval_after_discard 
+-----------------------
+                     2
+(1 row)
+
+SELECT currval('phase12_sequence_state') AS current_after_discard;
+ current_after_discard 
+-----------------------
+                     2
 (1 row)
 

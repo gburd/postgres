@@ -42,6 +42,7 @@
 #include "storage/proc.h"
 #include "storage/smgr.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/pg_lsn.h"
@@ -78,13 +79,13 @@ typedef struct SeqTableData
 
 typedef SeqTableData *SeqTable;
 
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *seqhashtab = NULL; /* hash table for SeqTable items */
+#define seqhashtab (*PgCurrentSequenceHashTableRef()) /* hash table for SeqTable items */
 
 /*
  * last_used_seq is updated by nextval() to point to the last used
  * sequence.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION SeqTableData *last_used_seq = NULL;
+#define last_used_seq (*PgCurrentLastUsedSequenceRef())
 
 static void fill_seq_with_data(Relation rel, HeapTuple tuple);
 static void fill_seq_fork_with_data(Relation rel, HeapTuple tuple, ForkNumber forkNum);
