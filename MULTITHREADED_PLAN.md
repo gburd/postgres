@@ -833,15 +833,18 @@ so immediate shutdown no longer leaves background writer, checkpointer,
 autovacuum launcher, or WAL writer thread carriers waiting for SIGKILL
 escalation in the basic threaded shutdown smoke. The temporary threaded
 startup serialization gate is now centralized behind an explicit backend-type
-policy: only AIO workers and the syslogger bypass it. A broader attempted
-bypass for non-session auxiliary workers reproduced an abrupt postmaster death
+policy. AIO workers, the syslogger, background writer, checkpointer, and WAL
+writer bypass it; the latter three are a worker-specific narrowing for
+auxiliary writer classes whose common startup does not run database/session
+bootstrap before entering the worker loop. A broader attempted bypass for
+additional non-session auxiliary workers reproduced an abrupt postmaster death
 during a threaded `pg_class` catalog scan, so further narrowing remains a Gate
 E2 blocker and must be driven by worker-specific shared-state isolation plus
 catalog-startup stress. The remaining PMChild and teardown blockers are full
 resource cleanup or deliberate long-lived ownership, broader reaping stress
 for termination and abandoned-client races, broader custom/extension GUC
-semantics, database/role/startup setting coverage, startup-gate narrowing, and
-broader stress coverage for teardown races. Follow-up extension-GUC work found
+semantics, startup-gate narrowing for the remaining gated classes, and broader
+stress coverage for teardown races. Follow-up extension-GUC work found
 that some generated GUC records are already rebound while the per-thread table
 is constructed, so the "changed pointer" pass alone is not a complete startup
 initializer. Threaded runtime installation now runs a narrow required
@@ -876,7 +879,7 @@ SQL script, and the threaded runtime fixture exercises `CREATE EXTENSION`,
 extension-created C functions, custom-GUC initialization through `_PG_init()`,
 and `DROP EXTENSION`. Broader contrib/in-tree extension coverage, full
 lifecycle resource cleanup, PMChild race stress, and startup-gate narrowing
-remain Gate E2 blockers before Phase 13.
+for the remaining gated classes remain Gate E2 blockers before Phase 13.
 
 Phase 16 still owns broader hardening such as sanitizer runs, contrib-wide
 threaded regression, crash/FATAL behavior matrices, platform coverage, and

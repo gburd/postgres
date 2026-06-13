@@ -4373,3 +4373,44 @@ Validation for this slice:
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals;
 - `git diff --check` passed.
+
+## Threaded Startup Gate Auxiliary Writer Narrowing
+
+The ninetieth Phase 12 slice narrows the temporary threaded startup
+serialization gate for the lowest-risk auxiliary writer classes:
+
+- `backend_thread_requires_startup_gate()` now allows background writer,
+  checkpointer, and WAL writer thread carriers to bypass the global startup
+  mutex, joining the already-validated AIO worker and syslogger bypasses;
+- those three classes share `AuxiliaryProcessMainCommon()`, which creates the
+  auxiliary PGPROC, initializes procsignal/barrier state, creates the
+  auxiliary resource owner, starts pgstat, sets normal processing mode, and
+  then enters worker-specific loops without running database/session bootstrap;
+- the remaining classes that were part of the earlier failed broad bypass
+  experiment stay gated: archiver, startup, WAL receiver, WAL summarizer,
+  background workers, autovacuum, slot sync, and regular client backend
+  startup;
+- the policy comment now requires worker-specific shared-state isolation and
+  threaded catalog-startup stress before adding more worker classes to the
+  bypass list.
+
+This is not the full Gate E2 startup-gate closure. It removes serialization
+from three auxiliary writer startup paths that do not perform session/database
+bootstrap, but the regular backend bootstrap and several server worker
+families remain gated until their catalog/cache/lifecycle dependencies are
+isolated or otherwise proven.
+
+Validation for this slice:
+
+- touched-object build for `src/backend/postmaster/launch_backend.o` passed;
+- full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- a threaded startup/concurrent-catalog/fast-shutdown smoke with
+  `multithreaded = on` and `dynamic_shared_memory_type = posix` passed with
+  eight simultaneous clients running catalog scans and temp-table DDL while
+  background writer, checkpointer, and WAL writer bypassed the startup gate;
+- server log inspection for that smoke found no crash, no postmaster death,
+  and no `issuing SIGKILL to recalcitrant children` shutdown escalation;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- `git diff --check` passed.

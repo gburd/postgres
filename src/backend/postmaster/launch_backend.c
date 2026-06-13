@@ -539,8 +539,8 @@ backend_thread_run_worker(BackendThreadStart *thread_start)
 	 * Only carriers proven not to perform database/session startup and not to
 	 * race with backend startup can bypass the temporary serialized startup
 	 * section.  Keep the rest guarded until their shared-state startup
-	 * dependencies are isolated and covered by threaded catalog-startup
-	 * smokes.
+	 * dependencies are isolated and covered by worker-specific threaded
+	 * catalog-startup smokes.
 	 */
 	if (backend_thread_requires_startup_gate(thread_start->child_type))
 		backend_thread_enter_startup_gate(thread_start);
@@ -562,18 +562,18 @@ backend_thread_requires_startup_gate(BackendType child_type)
 		case B_AUTOVAC_LAUNCHER:
 		case B_AUTOVAC_WORKER:
 		case B_ARCHIVER:
-		case B_BG_WRITER:
 		case B_BG_WORKER:
-		case B_CHECKPOINTER:
 		case B_SLOTSYNC_WORKER:
 		case B_STARTUP:
 		case B_WAL_RECEIVER:
-		case B_WAL_WRITER:
 		case B_WAL_SUMMARIZER:
 			return true;
 
+		case B_BG_WRITER:
+		case B_CHECKPOINTER:
 		case B_IO_WORKER:
 		case B_LOGGER:
+		case B_WAL_WRITER:
 			return false;
 
 		default:
