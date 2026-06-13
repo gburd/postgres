@@ -3980,6 +3980,10 @@ Validation for this slice:
   client query, and thread-backed auxiliary workers passed: `pg_ctl -m
   immediate -w -t 8 stop` reported `server stopped` and the log did not
   contain `issuing SIGKILL to recalcitrant children`;
+- a five-cycle threaded startup/query/immediate-shutdown loop also passed
+  without `issuing SIGKILL to recalcitrant children` or `server does not shut
+  down`, giving basic repeated teardown coverage for the same auxiliary worker
+  set;
 - `gmake check-global-lifetimes` passed, reporting zero new unclassified
   mutable globals against the checked baseline;
 - core `src/test/regress` `parallel_schedule` passed all 245 tests;
