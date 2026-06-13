@@ -3168,3 +3168,46 @@ Validation for this slice:
   header migration;
 - static scans found no remaining direct connection TLS declarations for the
   migrated PAM scratch state.
+
+## Backend Default PRNG State Bridge
+
+The sixty-second Phase 12 slice moves the exported backend default
+`pg_global_prng_state` under the logical backend object:
+
+- `PgBackendCoreState` now owns the backend default PRNG state;
+- backend builds keep `pg_global_prng_state` as a source-compatible lvalue
+  macro backed by `PgCurrentGlobalPrngStateRef()`;
+- frontend builds keep a real `pg_global_prng_state` definition in
+  `src/common/pg_prng.c`, so frontend tools such as `pg_test_fsync` still
+  link without the backend runtime object model;
+- the backend-runtime regression fixture now verifies that assignments through
+  `pg_global_prng_state` follow the active `CurrentPgBackend`.
+
+This removes another exported backend TLS bucket while preserving the existing
+backend and frontend PRNG call sites. A zeroed fake backend also exposed a real
+fixture requirement: DSM handle generation uses `pg_global_prng_state`, so fake
+backend tests that call DSM creation must seed the fake backend's PRNG just as
+real backend startup does.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `pg_prng.o`,
+  `pg_prng_srv.o`, `pg_test_fsync`, and `test_backend_runtime.o`;
+- because `backend_runtime.h` and `pg_prng.h` changed exported backend state,
+  the backend clean plus generated utility and node-header recovery path was
+  used before trusting process-mode runtime tests;
+- clean full `gmake -j8` passed after the backend clean;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- focused `test_backend_runtime` regression passed and includes the extended
+  `test_backend_core_state_is_backend_local()` coverage for
+  `pg_global_prng_state`;
+- the existing DSM shutdown fixture was updated to seed its fake backend PRNG
+  before `dsm_create()`, matching real backend startup and avoiding an
+  all-zero PRNG state in DSM handle generation;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- static scans found no remaining direct
+  `PG_THREAD_LOCAL PG_GLOBAL_BACKEND pg_prng_state pg_global_prng_state`
+  declaration.

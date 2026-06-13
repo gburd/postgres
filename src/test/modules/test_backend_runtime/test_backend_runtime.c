@@ -215,6 +215,7 @@ test_backend_dsm_shutdown_is_backend_local(PG_FUNCTION_ARGS)
 		 * ownership; the rest of the current process runtime remains real.
 		 */
 		CurrentPgBackend = &fake_backend_with_dsm;
+		pg_prng_seed(&pg_global_prng_state, 1);
 		seg = dsm_create(1024, 0);
 		dsm_pin_mapping(seg);
 		handle = dsm_segment_handle(seg);
@@ -6317,6 +6318,7 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 	BackendType saved_backend_type;
 	ProcessingMode saved_mode;
 	bool		saved_ignore_system_indexes;
+	pg_prng_state saved_global_prng_state;
 	bool		ok = true;
 
 	saved_backend = CurrentPgBackend;
@@ -6330,6 +6332,7 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 	saved_backend_type = MyBackendType;
 	saved_mode = Mode;
 	saved_ignore_system_indexes = IgnoreSystemIndexes;
+	saved_global_prng_state = pg_global_prng_state;
 	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
 	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
 	MemSet(&fake_latch1, 0, sizeof(fake_latch1));
@@ -6348,6 +6351,8 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 		MyBackendType = B_BACKEND;
 		Mode = NormalProcessing;
 		IgnoreSystemIndexes = true;
+		pg_global_prng_state.s0 = 1111;
+		pg_global_prng_state.s1 = 2222;
 
 		CurrentPgBackend = &fake_backend2;
 		ok = ok && !ExitOnAnyError;
@@ -6360,6 +6365,8 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && MyBackendType == B_INVALID;
 		ok = ok && Mode == BootstrapProcessing;
 		ok = ok && !IgnoreSystemIndexes;
+		ok = ok && pg_global_prng_state.s0 == 0;
+		ok = ok && pg_global_prng_state.s1 == 0;
 
 		ExitOnAnyError = false;
 		MyProcPid = 555;
@@ -6371,6 +6378,8 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 		MyBackendType = B_WAL_SENDER;
 		Mode = InitProcessing;
 		IgnoreSystemIndexes = false;
+		pg_global_prng_state.s0 = 5555;
+		pg_global_prng_state.s1 = 6666;
 
 		CurrentPgBackend = &fake_backend1;
 		ok = ok && ExitOnAnyError;
@@ -6383,6 +6392,8 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && MyBackendType == B_BACKEND;
 		ok = ok && Mode == NormalProcessing;
 		ok = ok && IgnoreSystemIndexes;
+		ok = ok && pg_global_prng_state.s0 == 1111;
+		ok = ok && pg_global_prng_state.s1 == 2222;
 
 		CurrentPgBackend = &fake_backend2;
 		ok = ok && !ExitOnAnyError;
@@ -6395,6 +6406,8 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && MyBackendType == B_WAL_SENDER;
 		ok = ok && Mode == InitProcessing;
 		ok = ok && !IgnoreSystemIndexes;
+		ok = ok && pg_global_prng_state.s0 == 5555;
+		ok = ok && pg_global_prng_state.s1 == 6666;
 
 		CurrentPgBackend = saved_backend;
 		ExitOnAnyError = saved_exit_on_any_error;
@@ -6407,6 +6420,7 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 		MyBackendType = saved_backend_type;
 		Mode = saved_mode;
 		IgnoreSystemIndexes = saved_ignore_system_indexes;
+		pg_global_prng_state = saved_global_prng_state;
 	}
 	PG_CATCH();
 	{
@@ -6421,6 +6435,7 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 		MyBackendType = saved_backend_type;
 		Mode = saved_mode;
 		IgnoreSystemIndexes = saved_ignore_system_indexes;
+		pg_global_prng_state = saved_global_prng_state;
 		PG_RE_THROW();
 	}
 	PG_END_TRY();

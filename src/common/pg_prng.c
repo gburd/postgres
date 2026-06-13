@@ -30,8 +30,10 @@
 #endif
 
 
-/* backend-local default state vector */
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND pg_prng_state pg_global_prng_state;
+/* frontend default state vector; backend builds route this through PgBackend */
+#ifdef FRONTEND
+pg_prng_state pg_global_prng_state;
+#endif
 
 
 /*

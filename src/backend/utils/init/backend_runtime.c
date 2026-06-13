@@ -4946,6 +4946,12 @@ PgCurrentCoreState(void)
 	return &CurrentPgBackend->core;
 }
 
+pg_prng_state *
+PgCurrentGlobalPrngStateRef(void)
+{
+	return &PgCurrentCoreState()->global_prng_state;
+}
+
 bool *
 PgCurrentExitOnAnyErrorRef(void)
 {

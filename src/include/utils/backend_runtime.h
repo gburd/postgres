@@ -156,6 +156,7 @@ typedef struct PgBackendCoreState
 	char		output_file_name[MAXPGPATH];
 	ProcessingMode mode;
 	bool		ignore_system_indexes;
+	pg_prng_state global_prng_state;
 } PgBackendCoreState;
 
 typedef struct PgExecutionDebugState
