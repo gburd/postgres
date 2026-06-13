@@ -434,6 +434,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPlannerMethodState early_sessi
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPreparedStatementState early_session_prepared_statement;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionOnCommitState early_session_on_commit;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionSequenceState early_session_sequence;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionRegexState early_session_regex;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendPendingInterruptState early_pending_interrupts;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInterruptHoldoffState early_interrupt_holdoffs;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionDebugState early_execution_debug;
@@ -513,6 +514,8 @@ static void PgSessionInitializeOnCommitState(PgSessionOnCommitState *on_commit);
 static void PgSessionAdoptEarlyOnCommitState(PgSession *session);
 static void PgSessionInitializeSequenceState(PgSessionSequenceState *sequence);
 static void PgSessionAdoptEarlySequenceState(PgSession *session);
+static void PgSessionInitializeRegexState(PgSessionRegexState *regex);
+static void PgSessionAdoptEarlyRegexState(PgSession *session);
 static void PgBackendResetCoreState(PgBackendCoreState *core);
 static void PgBackendAdoptEarlyCoreState(PgBackend *backend);
 static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
@@ -552,6 +555,7 @@ static PgSessionPlannerMethodState *PgCurrentSessionPlannerMethodState(void);
 static PgSessionPreparedStatementState *PgCurrentSessionPreparedStatementState(void);
 static PgSessionOnCommitState *PgCurrentSessionOnCommitState(void);
 static PgSessionSequenceState *PgCurrentSessionSequenceState(void);
+static PgSessionRegexState *PgCurrentSessionRegexState(void);
 static PgExecutionErrorState *PgCurrentExecutionErrorState(void);
 static PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
 static PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
@@ -1482,6 +1486,23 @@ PgSessionAdoptEarlySequenceState(PgSession *session)
 }
 
 static void
+PgSessionInitializeRegexState(PgSessionRegexState *regex)
+{
+	Assert(regex != NULL);
+
+	regex->ctype_cache_list = NULL;
+}
+
+static void
+PgSessionAdoptEarlyRegexState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	session->regex = early_session_regex;
+	PgSessionInitializeRegexState(&early_session_regex);
+}
+
+static void
 PgBackendResetCoreState(PgBackendCoreState *core)
 {
 	MemSet(core, 0, sizeof(*core));
@@ -1647,6 +1668,7 @@ InitializePgProcessRuntime(void)
 	PgSessionAdoptEarlyPreparedStatementState(&process_session);
 	PgSessionAdoptEarlyOnCommitState(&process_session);
 	PgSessionAdoptEarlySequenceState(&process_session);
+	PgSessionAdoptEarlyRegexState(&process_session);
 
 	process_connection.backend = &process_backend;
 	process_connection.session = &process_session;
@@ -1758,6 +1780,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgSessionInitializePreparedStatementState(&state->session.prepared_statement);
 	PgSessionInitializeOnCommitState(&state->session.on_commit);
 	PgSessionInitializeSequenceState(&state->session.sequence);
+	PgSessionInitializeRegexState(&state->session.regex);
 
 	state->connection.backend = &state->backend;
 	state->connection.session = &state->session;
@@ -1806,6 +1829,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgSessionAdoptEarlyPreparedStatementState(&state->session);
 	PgSessionAdoptEarlyOnCommitState(&state->session);
 	PgSessionAdoptEarlySequenceState(&state->session);
+	PgSessionAdoptEarlyRegexState(&state->session);
 	PgExecutionAdoptEarlyErrorState(&state->execution);
 	PgExecutionAdoptEarlyMemoryContexts(&state->execution);
 	PgExecutionAdoptEarlyResourceOwners(&state->execution);
@@ -2313,6 +2337,15 @@ PgCurrentSessionSequenceState(void)
 	return &CurrentPgSession->sequence;
 }
 
+static PgSessionRegexState *
+PgCurrentSessionRegexState(void)
+{
+	if (CurrentPgSession == NULL)
+		return &early_session_regex;
+
+	return &CurrentPgSession->regex;
+}
+
 Oid *
 PgCurrentMyDatabaseIdRef(void)
 {
@@ -2629,6 +2662,12 @@ HTAB **
 PgCurrentOperatorLookupCacheRef(void)
 {
 	return &PgCurrentSessionParserState()->operator_lookup_cache;
+}
+
+struct pg_ctype_cache **
+PgCurrentRegexCtypeCacheListRef(void)
+{
+	return &PgCurrentSessionRegexState()->ctype_cache_list;
 }
 
 int *

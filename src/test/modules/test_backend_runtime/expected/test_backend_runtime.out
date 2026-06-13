@@ -396,3 +396,21 @@ SELECT 3 OPERATOR(pg_catalog.*) 4 AS operator_lookup_product;
                       12
 (1 row)
 
+SELECT 'abc' ~ '^[[:alpha:]]+$' AS regex_alpha_cache;
+ regex_alpha_cache 
+-------------------
+ t
+(1 row)
+
+SELECT '123' ~ '^[[:digit:]]+$' AS regex_digit_cache;
+ regex_digit_cache 
+-------------------
+ t
+(1 row)
+
+SELECT 'ABC' ~ '^[[:alpha:]]+$' AS regex_alpha_cache_reuse;
+ regex_alpha_cache_reuse 
+-------------------------
+ t
+(1 row)
+

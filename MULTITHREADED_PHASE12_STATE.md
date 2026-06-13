@@ -2488,3 +2488,42 @@ Validation for this slice:
   header migration;
 - static scans found no remaining direct session TLS definition for
   `OprCacheHash`.
+
+## Session Regex Ctype Cache Bridge
+
+The forty-eighth Phase 12 slice moves the regular-expression ctype probe cache
+under `PgSession`:
+
+- `PgSession` now owns a `PgSessionRegexState`;
+- `PgSessionRegexState` owns the `pg_ctype_cache_list` chain used by the
+  regex compiler to cache ctype character-class probe results for a collation;
+- `regc_pg_locale.c` keeps its existing local cache logic through a
+  compatibility macro backed by `PgCurrentRegexCtypeCacheListRef()`;
+- early startup paths before `CurrentPgSession` is installed use fallback
+  session storage in `backend_runtime.c`;
+- process-mode and thread-runtime session installation adopt or initialize the
+  regex cache pointer with the rest of the logical session object.
+
+The regex cache is malloc-managed because the regex code must return failure
+rather than lose control on out-of-memory. This slice preserves that ownership
+and failure behavior while moving the cache root out of raw session TLS.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o` and `regcomp.o`;
+- because `backend_runtime.h` changed, `gmake -C src/backend clean` plus
+  generated utility and node-header recovery was used before trusting
+  process-mode or threaded-mode runtime tests;
+- clean full `gmake -j8` passed after the backend clean;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- focused `test_backend_runtime` regression includes SQL-level regex
+  character-class smokes that compile alpha and digit classes and then reuse
+  an alpha-class pattern in the same session;
+- direct `test_backend_runtime` regression passed after reinstalling the test
+  module into `tmp_install`;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests, including
+  the core `regex` test;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- static scans found no remaining direct session TLS definition for
+  `pg_ctype_cache_list`.

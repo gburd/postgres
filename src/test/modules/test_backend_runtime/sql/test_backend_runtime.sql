@@ -77,3 +77,6 @@ SELECT currval('phase12_sequence_state') AS current_after_discard;
 SELECT 1 + 2 AS operator_lookup_sum;
 SELECT OPERATOR(pg_catalog.-) 5 AS operator_lookup_unary;
 SELECT 3 OPERATOR(pg_catalog.*) 4 AS operator_lookup_product;
+SELECT 'abc' ~ '^[[:alpha:]]+$' AS regex_alpha_cache;
+SELECT '123' ~ '^[[:digit:]]+$' AS regex_digit_cache;
+SELECT 'ABC' ~ '^[[:alpha:]]+$' AS regex_alpha_cache_reuse;
