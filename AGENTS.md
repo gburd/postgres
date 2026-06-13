@@ -98,6 +98,9 @@ Important current files:
   `src/backend/postmaster/bgworker.c`, and the individual auxiliary worker
   files under `src/backend/postmaster/`: worker launch, supervision, and
   server-owned worker lifecycles.
+  `PgBackendAutovacuumState` owns autovacuum launcher/worker backend-local
+  state bridged from `autovacuum.c`; keep private `avl_dbase` and
+  `WorkerInfoData` pointers typed through forward-declared struct tags.
 - `src/backend/replication/walreceiver.c`,
   `src/backend/replication/logical/launcher.c`,
   `src/backend/replication/logical/worker.c`, and

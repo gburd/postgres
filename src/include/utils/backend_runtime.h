@@ -76,6 +76,8 @@ typedef struct _SPI_connection _SPI_connection;
 struct SeqTableData;
 struct pg_ctype_cache;
 struct RelationData;
+struct avl_dbase;
+struct WorkerInfoData;
 struct ClientSocket;
 typedef void (*PgBackendExitContinuation) (int code);
 typedef int (*PgSuspendCallback) (void *callback_arg);
@@ -385,6 +387,24 @@ typedef struct PgBackendMaintenanceWorkerState
 	volatile sig_atomic_t datachecksum_launcher_running;
 	int			datachecksum_operation;
 } PgBackendMaintenanceWorkerState;
+
+typedef struct PgBackendAutovacuumState
+{
+	double		av_storage_param_cost_delay;
+	int			av_storage_param_cost_limit;
+	volatile sig_atomic_t got_sigusr2;
+	TransactionId recent_xid;
+	MultiXactId recent_multi;
+	int			default_freeze_min_age;
+	int			default_freeze_table_age;
+	int			default_multixact_freeze_min_age;
+	int			default_multixact_freeze_table_age;
+	MemoryContext autovac_mem_cxt;
+	dlist_head	database_list;
+	MemoryContext database_list_cxt;
+	struct avl_dbase *avl_dbase_array;
+	struct WorkerInfoData *my_worker_info;
+} PgBackendAutovacuumState;
 
 typedef struct PgBackendPgStatPendingState
 {
@@ -1411,6 +1431,7 @@ struct PgBackend
 	PgBackendXLogState xlog;
 	PgBackendRecoveryState recovery;
 	PgBackendMaintenanceWorkerState maintenance_worker;
+	PgBackendAutovacuumState autovacuum;
 	PgBackendPgStatPendingState pgstat_pending;
 	PgBackendActivityState activity;
 	PgBackendUtilityState utility;
@@ -1841,6 +1862,7 @@ extern PgBackendLogicalReplicationState *PgCurrentLogicalReplicationState(void);
 extern PgBackendXLogState *PgCurrentXLogState(void);
 extern PgBackendRecoveryState *PgCurrentRecoveryState(void);
 extern PgBackendMaintenanceWorkerState *PgCurrentMaintenanceWorkerState(void);
+extern PgBackendAutovacuumState *PgCurrentAutovacuumState(void);
 extern TransactionId *PgCurrentCachedFetchXidRef(void);
 extern int *PgCurrentCachedFetchXidStatusRef(void);
 extern XLogRecPtr *PgCurrentCachedCommitLSNRef(void);

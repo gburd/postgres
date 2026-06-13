@@ -7183,6 +7183,42 @@ Validation for this slice:
   archiver, checkpointer, bgwriter, WAL summarizer, and data-checksum worker
   fields across two fake logical backends.
 
+## Backend Autovacuum State Bridge
+
+The one-hundred-fifty-first Phase 12 slice moves autovacuum launcher and
+worker backend-local state into a dedicated `PgBackendAutovacuumState` bucket:
+
+- worker-local cost storage-parameter overrides;
+- launcher `SIGUSR2` wake flag;
+- recent XID and multixact comparison points;
+- per-database default freeze-age settings used by workers;
+- autovacuum long-lived memory context;
+- launcher database list and database-list memory context;
+- Valgrind-preserved launcher database array pointer;
+- worker `WorkerInfo` pointer.
+
+The private `avl_dbase` and `WorkerInfoData` types remain private to
+`autovacuum.c`; `backend_runtime.h` forward-declares their struct tags so the
+compatibility macros in `autovacuum.c` stay typed and assignable without
+exposing those struct layouts.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `autovacuum.o`, and
+  `test_backend_runtime.o`;
+- a backend clean, generated-header recovery, full `gmake -j8`, and
+  `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 93 to 79;
+- `gmake -C contrib -j8` and a clean PL/pgSQL rebuild/install passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct threaded runtime TAP passed all 87 tests with the local
+  `/Users/samwillis/perl5` `PERL5LIB` paths and an explicit `PG_REGRESS`
+  environment;
+- `src/test/modules/test_backend_runtime` now includes
+  `test_backend_autovacuum_state_is_backend_local()`, covering all moved
+  autovacuum fields across two fake logical backends.
+
 ## Backend Parallel State Bridge
 
 The one-hundred-forty-second Phase 12 slice moves a parallel-query and

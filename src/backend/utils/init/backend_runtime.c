@@ -133,6 +133,10 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendMaintenanceWorkerState early_b
 	.walsummarizer_sleep_quanta = 1,
 	.walsummarizer_redo_pointer_at_last_summary_removal = InvalidXLogRecPtr
 };
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendAutovacuumState early_backend_autovacuum = {
+	.av_storage_param_cost_delay = -1,
+	.av_storage_param_cost_limit = -1
+};
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendActivityState early_backend_activity;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendUtilityState early_backend_utility;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendParallelState early_backend_parallel = {
@@ -677,6 +681,8 @@ static void PgBackendInitializeRecoveryState(PgBackendRecoveryState *recovery);
 static void PgBackendAdoptEarlyRecoveryState(PgBackend *backend);
 static void PgBackendInitializeMaintenanceWorkerState(PgBackendMaintenanceWorkerState *maintenance_worker);
 static void PgBackendAdoptEarlyMaintenanceWorkerState(PgBackend *backend);
+static void PgBackendInitializeAutovacuumState(PgBackendAutovacuumState *autovacuum);
+static void PgBackendAdoptEarlyAutovacuumState(PgBackend *backend);
 static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
 static void PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend);
 static BackendType *PgCurrentBackendTypeRef(void);
@@ -2463,6 +2469,26 @@ PgBackendAdoptEarlyMaintenanceWorkerState(PgBackend *backend)
 }
 
 static void
+PgBackendInitializeAutovacuumState(PgBackendAutovacuumState *autovacuum)
+{
+	Assert(autovacuum != NULL);
+
+	MemSet(autovacuum, 0, sizeof(*autovacuum));
+	autovacuum->av_storage_param_cost_delay = -1;
+	autovacuum->av_storage_param_cost_limit = -1;
+	dlist_init(&autovacuum->database_list);
+}
+
+static void
+PgBackendAdoptEarlyAutovacuumState(PgBackend *backend)
+{
+	Assert(backend != NULL);
+
+	backend->autovacuum = early_backend_autovacuum;
+	PgBackendInitializeAutovacuumState(&early_backend_autovacuum);
+}
+
+static void
 PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend)
 {
 	Assert(backend != NULL);
@@ -2711,6 +2737,7 @@ InitializePgProcessRuntime(void)
 	PgBackendAdoptEarlyXLogState(&process_backend);
 	PgBackendAdoptEarlyRecoveryState(&process_backend);
 	PgBackendAdoptEarlyMaintenanceWorkerState(&process_backend);
+	PgBackendAdoptEarlyAutovacuumState(&process_backend);
 	PgBackendSetInterruptLatch(&process_backend, process_backend.core.latch);
 	dlist_init(&process_backend.dsm_segment_list);
 	pg_atomic_init_u32(&process_backend.wait_state.waiting, 0);
@@ -2866,6 +2893,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgBackendInitializeXLogState(&state->backend.xlog);
 	PgBackendInitializeRecoveryState(&state->backend.recovery);
 	PgBackendInitializeMaintenanceWorkerState(&state->backend.maintenance_worker);
+	PgBackendInitializeAutovacuumState(&state->backend.autovacuum);
 	PgBackendSetInterruptLatch(&state->backend, interrupt_latch);
 	dlist_init(&state->backend.dsm_segment_list);
 	pg_atomic_init_u32(&state->backend.wait_state.waiting, 0);
@@ -7273,6 +7301,15 @@ char **
 PgCurrentArchModuleCheckErrdetailStringRef(void)
 {
 	return &PgCurrentMaintenanceWorkerState()->arch_module_errdetail_string;
+}
+
+PgBackendAutovacuumState *
+PgCurrentAutovacuumState(void)
+{
+	if (CurrentPgBackend == NULL)
+		return &early_backend_autovacuum;
+
+	return &CurrentPgBackend->autovacuum;
 }
 
 static PgBackendTransactionState *

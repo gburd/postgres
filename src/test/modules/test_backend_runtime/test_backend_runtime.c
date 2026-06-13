@@ -9243,6 +9243,135 @@ test_backend_maintenance_worker_state_is_backend_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_backend_autovacuum_state_is_backend_local);
+Datum
+test_backend_autovacuum_state_is_backend_local(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgBackend	fake_backend1;
+	PgBackend	fake_backend2;
+	PgBackendAutovacuumState *av1;
+	PgBackendAutovacuumState *av2;
+	dlist_node	node1;
+	dlist_node	node2;
+	bool		ok = true;
+
+	saved_backend = CurrentPgBackend;
+	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
+	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+	fake_backend1.autovacuum.av_storage_param_cost_delay = -1;
+	fake_backend1.autovacuum.av_storage_param_cost_limit = -1;
+	dlist_init(&fake_backend1.autovacuum.database_list);
+	fake_backend2.autovacuum.av_storage_param_cost_delay = -1;
+	fake_backend2.autovacuum.av_storage_param_cost_limit = -1;
+	dlist_init(&fake_backend2.autovacuum.database_list);
+	dlist_node_init(&node1);
+	dlist_node_init(&node2);
+
+	PG_TRY();
+	{
+		CurrentPgBackend = &fake_backend1;
+		av1 = PgCurrentAutovacuumState();
+		av1->av_storage_param_cost_delay = 1.5;
+		av1->av_storage_param_cost_limit = 101;
+		av1->got_sigusr2 = true;
+		av1->recent_xid = 102;
+		av1->recent_multi = 103;
+		av1->default_freeze_min_age = 104;
+		av1->default_freeze_table_age = 105;
+		av1->default_multixact_freeze_min_age = 106;
+		av1->default_multixact_freeze_table_age = 107;
+		av1->autovac_mem_cxt = (MemoryContext) &fake_backend1;
+		dlist_push_head(&av1->database_list, &node1);
+		av1->database_list_cxt = (MemoryContext) &node1;
+		av1->avl_dbase_array = (struct avl_dbase *) &fake_backend1;
+		av1->my_worker_info = (struct WorkerInfoData *) &fake_backend1;
+
+		CurrentPgBackend = &fake_backend2;
+		av2 = PgCurrentAutovacuumState();
+		ok = ok && av2->av_storage_param_cost_delay == -1;
+		ok = ok && av2->av_storage_param_cost_limit == -1;
+		ok = ok && !av2->got_sigusr2;
+		ok = ok && av2->recent_xid == 0;
+		ok = ok && av2->recent_multi == 0;
+		ok = ok && av2->default_freeze_min_age == 0;
+		ok = ok && av2->default_freeze_table_age == 0;
+		ok = ok && av2->default_multixact_freeze_min_age == 0;
+		ok = ok && av2->default_multixact_freeze_table_age == 0;
+		ok = ok && av2->autovac_mem_cxt == NULL;
+		ok = ok && dlist_is_empty(&av2->database_list);
+		ok = ok && av2->database_list_cxt == NULL;
+		ok = ok && av2->avl_dbase_array == NULL;
+		ok = ok && av2->my_worker_info == NULL;
+
+		av2->av_storage_param_cost_delay = 2.5;
+		av2->av_storage_param_cost_limit = 201;
+		av2->got_sigusr2 = true;
+		av2->recent_xid = 202;
+		av2->recent_multi = 203;
+		av2->default_freeze_min_age = 204;
+		av2->default_freeze_table_age = 205;
+		av2->default_multixact_freeze_min_age = 206;
+		av2->default_multixact_freeze_table_age = 207;
+		av2->autovac_mem_cxt = (MemoryContext) &fake_backend2;
+		dlist_push_head(&av2->database_list, &node2);
+		av2->database_list_cxt = (MemoryContext) &node2;
+		av2->avl_dbase_array = (struct avl_dbase *) &fake_backend2;
+		av2->my_worker_info = (struct WorkerInfoData *) &fake_backend2;
+
+		CurrentPgBackend = &fake_backend1;
+		av1 = PgCurrentAutovacuumState();
+		ok = ok && av1->av_storage_param_cost_delay == 1.5;
+		ok = ok && av1->av_storage_param_cost_limit == 101;
+		ok = ok && av1->got_sigusr2;
+		ok = ok && av1->recent_xid == 102;
+		ok = ok && av1->recent_multi == 103;
+		ok = ok && av1->default_freeze_min_age == 104;
+		ok = ok && av1->default_freeze_table_age == 105;
+		ok = ok && av1->default_multixact_freeze_min_age == 106;
+		ok = ok && av1->default_multixact_freeze_table_age == 107;
+		ok = ok && av1->autovac_mem_cxt == (MemoryContext) &fake_backend1;
+		ok = ok && av1->database_list.head.next == &node1;
+		ok = ok && av1->database_list_cxt == (MemoryContext) &node1;
+		ok = ok && av1->avl_dbase_array ==
+			(struct avl_dbase *) &fake_backend1;
+		ok = ok && av1->my_worker_info ==
+			(struct WorkerInfoData *) &fake_backend1;
+
+		CurrentPgBackend = &fake_backend2;
+		av2 = PgCurrentAutovacuumState();
+		ok = ok && av2->av_storage_param_cost_delay == 2.5;
+		ok = ok && av2->av_storage_param_cost_limit == 201;
+		ok = ok && av2->got_sigusr2;
+		ok = ok && av2->recent_xid == 202;
+		ok = ok && av2->recent_multi == 203;
+		ok = ok && av2->default_freeze_min_age == 204;
+		ok = ok && av2->default_freeze_table_age == 205;
+		ok = ok && av2->default_multixact_freeze_min_age == 206;
+		ok = ok && av2->default_multixact_freeze_table_age == 207;
+		ok = ok && av2->autovac_mem_cxt == (MemoryContext) &fake_backend2;
+		ok = ok && av2->database_list.head.next == &node2;
+		ok = ok && av2->database_list_cxt == (MemoryContext) &node2;
+		ok = ok && av2->avl_dbase_array ==
+			(struct avl_dbase *) &fake_backend2;
+		ok = ok && av2->my_worker_info ==
+			(struct WorkerInfoData *) &fake_backend2;
+
+		CurrentPgBackend = saved_backend;
+	}
+	PG_CATCH();
+	{
+		CurrentPgBackend = saved_backend;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "backend autovacuum state was not backend-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_pmchild_thread_backend_signal_api);
 Datum
 test_pmchild_thread_backend_signal_api(PG_FUNCTION_ARGS)

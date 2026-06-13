@@ -160,28 +160,34 @@ PG_GLOBAL_RUNTIME int Log_autoanalyze_min_duration = 600000;
  * parameters were specified and will be set in do_autovacuum() after checking
  * the storage parameters in table_recheck_autovac().
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND double
-			av_storage_param_cost_delay = -1;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int av_storage_param_cost_limit = -1;
+#define av_storage_param_cost_delay \
+	(PgCurrentAutovacuumState()->av_storage_param_cost_delay)
+#define av_storage_param_cost_limit \
+	(PgCurrentAutovacuumState()->av_storage_param_cost_limit)
 
 /* Flags set by signal handlers */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t
-			got_SIGUSR2 = false;
+#define got_SIGUSR2 \
+	(PgCurrentAutovacuumState()->got_sigusr2)
 
 /* Comparison points for determining whether freeze_max_age is exceeded */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND TransactionId recentXid;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND MultiXactId recentMulti;
+#define recentXid \
+	(PgCurrentAutovacuumState()->recent_xid)
+#define recentMulti \
+	(PgCurrentAutovacuumState()->recent_multi)
 
 /* Default freeze ages to use for autovacuum (varies by database) */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int default_freeze_min_age;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int default_freeze_table_age;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int
-			default_multixact_freeze_min_age;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int
-			default_multixact_freeze_table_age;
+#define default_freeze_min_age \
+	(PgCurrentAutovacuumState()->default_freeze_min_age)
+#define default_freeze_table_age \
+	(PgCurrentAutovacuumState()->default_freeze_table_age)
+#define default_multixact_freeze_min_age \
+	(PgCurrentAutovacuumState()->default_multixact_freeze_min_age)
+#define default_multixact_freeze_table_age \
+	(PgCurrentAutovacuumState()->default_multixact_freeze_table_age)
 
 /* Memory context for long-lived data */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND MemoryContext AutovacMemCxt;
+#define AutovacMemCxt \
+	(PgCurrentAutovacuumState()->autovac_mem_cxt)
 
 /* struct to keep track of databases in launcher */
 typedef struct avl_dbase
@@ -330,8 +336,10 @@ const ShmemCallbacks AutoVacuumShmemCallbacks = {
  * the database list (of avl_dbase elements) in the launcher, and the context
  * that contains it
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND dlist_head DatabaseList;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND MemoryContext DatabaseListCxt = NULL;
+#define DatabaseList \
+	(PgCurrentAutovacuumState()->database_list)
+#define DatabaseListCxt \
+	(PgCurrentAutovacuumState()->database_list_cxt)
 
 /*
  * This struct is used by relation_needs_vacanalyze() to return the table's
@@ -363,12 +371,13 @@ typedef struct
  * optimize it away.
  */
 #ifdef USE_VALGRIND
-extern PG_THREAD_LOCAL PG_GLOBAL_BACKEND avl_dbase *avl_dbase_array;
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND avl_dbase *avl_dbase_array;
+#define avl_dbase_array \
+	(PgCurrentAutovacuumState()->avl_dbase_array)
 #endif
 
 /* Pointer to my own WorkerInfo, valid on each worker */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND WorkerInfo MyWorkerInfo = NULL;
+#define MyWorkerInfo \
+	(PgCurrentAutovacuumState()->my_worker_info)
 
 static Oid	do_start_worker(void);
 static void ProcessAutoVacLauncherInterrupts(void);

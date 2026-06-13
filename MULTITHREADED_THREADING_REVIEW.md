@@ -679,6 +679,16 @@ touched-object builds, clean full build/install, contrib build, PL/pgSQL
 rebuild/install, process-mode backend-runtime regression, direct threaded
 runtime TAP, and the required global-lifetime scan with zero new unclassified
 mutable globals; backend-local declarations dropped from 115 to 93.
+Backend autovacuum state now lives in `PgBackendAutovacuumState`: autovacuum
+launcher and worker cost, signal, freeze-age, memory-context, database-list,
+Valgrind-preserved array, and worker-info pointer state now follows the
+logical backend. The private `avl_dbase` and `WorkerInfoData` layouts remain
+private to `autovacuum.c`; the runtime header only forward-declares their
+struct tags. The slice passed touched-object builds, clean full build/install,
+contrib build, PL/pgSQL rebuild/install, process-mode backend-runtime
+regression, direct threaded runtime TAP, and the required global-lifetime scan
+with zero new unclassified mutable globals; backend-local declarations
+dropped from 93 to 79.
 PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly
