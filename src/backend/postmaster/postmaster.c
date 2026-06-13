@@ -433,6 +433,7 @@ static void process_pm_child_exit(void);
 static void process_pm_reload_request(void);
 static void process_pm_shutdown_request(void);
 static void dummy_handler(SIGNAL_ARGS);
+static void process_pm_thread_startup_complete(void);
 static void process_pm_thread_exit(void);
 static void CleanupBackend(PMChild *bp, int exitstatus);
 static bool cleanup_archiver_child(PMChild *child, int exitstatus);
@@ -1751,6 +1752,7 @@ ServerLoop(void)
 				process_pm_child_exit();
 			if (pending_pm_pmsignal)
 				process_pm_pmsignal();
+			process_pm_thread_startup_complete();
 			process_pm_thread_exit();
 
 			if (events[i].events & WL_SOCKET_ACCEPT)
@@ -2638,6 +2640,27 @@ process_pm_thread_exit(void)
 
 	if (reaped)
 		PostmasterStateMachine();
+}
+
+/*
+ * Complete postmaster-visible startup for thread-backed children that publish
+ * an explicit startup boundary after carrier creation.
+ */
+static void
+process_pm_thread_startup_complete(void)
+{
+	dlist_iter	iter;
+
+	dlist_foreach(iter, &ActiveChildList)
+	{
+		PMChild    *pmchild = dlist_container(PMChild, elem, iter.cur);
+
+		if (!PostmasterChildHasStartupComplete(pmchild))
+			continue;
+
+		if (pmchild->bkend_type == B_BG_WORKER && pmchild->rw != NULL)
+			ReportBackgroundWorkerPID(pmchild->rw);
+	}
 }
 
 /*
@@ -4501,7 +4524,15 @@ StartBackgroundWorker(RegisteredBgWorker *rw)
 
 	/* in postmaster, carrier launch succeeded ... */
 	rw->rw_pid = PostmasterChildSignalPid(bn);
-	ReportBackgroundWorkerPID(rw);
+
+	/*
+	 * Process-backed workers are visible to dynamic waiters as soon as fork
+	 * succeeds.  Thread-backed workers publish that visibility from the
+	 * worker's explicit startup-complete boundary, after the startup path can
+	 * safely accept termination.
+	 */
+	if (!PostmasterChildIsThread(bn))
+		ReportBackgroundWorkerPID(rw);
 	return true;
 }
 

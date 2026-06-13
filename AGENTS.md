@@ -147,34 +147,32 @@ Important current files:
   handle `ProcDiePending`, or immediate shutdown can leave thread carriers
   waiting for SIGKILL escalation.
 - The threaded startup serialization gate currently allows only AIO workers,
-  the syslogger, startup process, autovacuum launcher/workers, archiver, WAL
-  receiver, WAL summarizer, background writer, checkpointer, and WAL writer
-  to bypass it. Process-model background workers are still rejected in
-  threaded mode, and even thread-compatible background workers remain gated
-  for now. An attempted bypass for thread-compatible dynamic background
-  workers reached `starting background worker thread carrier` and then lost
-  the server connection during `test_backend_runtime_launch_thread_bgworker()`,
-  so background-worker startup still needs a specific shared-state fix before
-  it can leave the gate. Background writer/checkpointer/WAL writer bypass was
-  validated as a worker-specific
-  narrowing because their common auxiliary startup does not run
-  database/session bootstrap before entering the worker loop. The autovacuum
-  launcher bypass is validated against the no-database launcher loop;
-  autovacuum worker bypass is validated against a real database-connected
-  autovacuum worker launch and table vacuum smoke. Startup process, archiver,
-  WAL receiver, and WAL summarizer bypasses are validated separately because
-  they use the same common auxiliary startup, publish wakeup/progress state
-  through shared memory, and keep per-loop work state backend-local. WAL
-  receiver's gate bypass covers
+  the syslogger, startup process, autovacuum launcher/workers, thread-compatible
+  background workers, archiver, WAL receiver, WAL summarizer, background
+  writer, checkpointer, and WAL writer to bypass it. Process-model background
+  workers are still rejected in threaded mode. Thread-compatible dynamic
+  background workers publish their shared bgworker started state only after the
+  worker reaches `ThreadedBackendStartupComplete()`, so dynamic waiters cannot
+  terminate the worker while `InitProcess()`, `BaseInit()`, or background
+  worker function lookup are still running. Background writer/checkpointer/WAL
+  writer bypass was validated as a worker-specific narrowing because their
+  common auxiliary startup does not run database/session bootstrap before
+  entering the worker loop. The autovacuum launcher bypass is validated
+  against the no-database launcher loop; autovacuum worker bypass is validated
+  against a real database-connected autovacuum worker launch and table vacuum
+  smoke. Startup process, archiver, WAL receiver, and WAL summarizer bypasses
+  are validated separately because they use the same common auxiliary startup,
+  publish wakeup/progress state through shared memory, and keep per-loop work
+  state backend-local. WAL receiver's gate bypass covers
   `AuxiliaryProcessMainCommon()`; the later `libpqwalreceiver` load and
   streaming loop are validated by a threaded physical-replication smoke.
   Startup process bypass is validated by threaded normal-startup and
   crash-recovery smokes. A broader attempt to bypass the gate for additional
   non-session auxiliary workers let `select 1` pass but caused abrupt
   postmaster death during a threaded `select count(*) > 0 from pg_class`
-  catalog smoke. Do not remove background workers, slot sync, or other worker
-  classes from the gate without a worker-specific shared-state fix and
-  catalog-startup stress validation.
+  catalog smoke. Do not remove slot sync or other worker classes from the gate
+  without a worker-specific shared-state fix and catalog-startup stress
+  validation.
 - Prefer introducing compatibility wrappers around current globals before
   changing all call sites.
 - Be careful moving GUC backing variables behind dynamic lvalue macros. The

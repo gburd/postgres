@@ -4954,3 +4954,54 @@ Validation for this probe:
 - after the revert, `gmake -C src/backend/postmaster launch_backend.o`,
   `gmake check-global-lifetimes`, and the direct `test_backend_runtime`
   `pg_regress` control passed with all `B_BG_WORKER` startup still gated.
+
+## Threaded Startup Gate Background Worker Narrowing
+
+The one-hundred-third Phase 12 slice fixes the failed dynamic background
+worker bypass and removes thread-compatible background workers from the
+temporary startup serialization gate:
+
+- `PMChild` now has an explicit thread startup-complete flag, published by
+  `ThreadedBackendStartupComplete()` and claimed by the postmaster main loop;
+- thread-backed background workers are marked running in postmaster-private
+  state as soon as the carrier launches, preventing duplicate launches, but
+  the shared background-worker slot is not reported as started until the
+  worker reaches the startup-complete boundary;
+- this closes the race found in the previous probe where a dynamic waiter
+  observed the worker as started, immediately called `TerminateBackgroundWorker()`,
+  and delivered termination while the thread carrier was still in
+  `InitProcess()`, `BaseInit()`, or background-worker function lookup;
+- `backend_thread_requires_startup_gate()` now allows `B_BG_WORKER` carriers
+  to bypass the global startup mutex. Process-model background workers remain
+  rejected in threaded mode before carrier launch;
+- the `test_backend_runtime_threaded` restart helper now accepts the
+  documented `BGWH_STOPPED` transient when the first restartable worker run
+  exits before the waiter observes the started state, then continues waiting
+  for the restarted run.
+
+This is not the full Gate E2 startup-gate closure. It removes serialization
+from explicitly thread-compatible dynamic background workers with a concrete
+postmaster startup-publication boundary, while regular client backend startup
+and slot sync remain gated.
+
+Validation for this slice:
+
+- touched-object build for `src/backend/postmaster/launch_backend.o`,
+  `pmchild.o`, and `postmaster.o` passed;
+- full `gmake -j8` passed;
+- `gmake -j8 DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- a manual threaded dynamic background-worker smoke with `multithreaded = on`,
+  `max_worker_processes = 8`, and `dynamic_shared_memory_type = posix`
+  created `test_backend_runtime_threaded`, verified process-model background
+  worker rejection, launched/stopped a thread-compatible dynamic worker,
+  restarted a thread-compatible dynamic worker through a crash-and-restart
+  cycle, and verified the server remained usable with a `pg_class` catalog
+  query;
+- the manual smoke log showed the expected registering, thread-carrier
+  startup, restart-run, unregistering, and clean shutdown markers with no
+  `FATAL`, `PANIC`, postmaster-death, or terminated-by-signal markers;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- direct full-module `pg_regress test_backend_runtime` passed all 1 test
+  against the current temp install.

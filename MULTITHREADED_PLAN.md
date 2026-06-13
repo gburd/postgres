@@ -849,22 +849,21 @@ autovacuum launcher, or WAL writer thread carriers waiting for SIGKILL
 escalation in the basic threaded shutdown smoke. The temporary threaded
 startup serialization gate is now centralized behind an explicit backend-type
 policy. AIO workers, the syslogger, startup process, autovacuum
-launcher/workers, archiver, WAL receiver, WAL summarizer, background writer,
-checkpointer, and WAL writer bypass it; background writer, checkpointer, WAL
-writer, startup process, autovacuum launcher/workers, archiver, WAL receiver,
-and WAL summarizer are worker-specific narrowings with concrete startup
-ownership models. Process-model background workers remain rejected in threaded
-mode, and thread-compatible background workers still remain behind the startup
-gate. A focused attempt to let `BgWorkerBackendThreadPerSession` dynamic
-background workers bypass the gate reached the copied worker's thread carrier
-but lost the server connection during
-`test_backend_runtime_launch_thread_bgworker()`, so background-worker startup
-still needs a worker-specific shared-state fix before it can leave the gate.
-The autovacuum launcher narrowing is validated against the no-database
-launcher loop, while autovacuum worker narrowing is validated against a real
-database-connected autovacuum worker launch and table vacuum smoke. Startup is
-additionally validated through threaded normal startup and crash recovery, and
-archiver, WAL receiver, and WAL summarizer are
+launcher/workers, thread-compatible background workers, archiver, WAL
+receiver, WAL summarizer, background writer, checkpointer, and WAL writer
+bypass it; background writer, checkpointer, WAL writer, startup process,
+autovacuum launcher/workers, thread-compatible background workers, archiver,
+WAL receiver, and WAL summarizer are worker-specific narrowings with concrete
+startup ownership models. Process-model background workers remain rejected in
+threaded mode. Thread-compatible dynamic background workers now use an
+explicit thread startup-complete publication path before the postmaster reports
+the shared bgworker slot as started, which keeps dynamic waiters from
+terminating the worker while `InitProcess()`, `BaseInit()`, or function lookup
+are still in progress. The autovacuum launcher narrowing is validated against
+the no-database launcher loop, while autovacuum worker narrowing is validated
+against a real database-connected autovacuum worker launch and table vacuum
+smoke. Startup is additionally validated through threaded normal startup and
+crash recovery, and archiver, WAL receiver, and WAL summarizer are
 additionally validated through their wakeup/progress, streaming, and clean
 shutdown paths. A broader attempted bypass for additional non-session
 auxiliary workers reproduced an abrupt postmaster death during a threaded
@@ -873,8 +872,8 @@ must be driven by worker-specific shared-state isolation plus catalog-startup
 stress. The remaining PMChild and teardown blockers are full
 resource cleanup or deliberate long-lived ownership, broader reaping stress
 for termination and abandoned-client races, broader custom/extension GUC
-semantics, startup-gate narrowing for the remaining gated classes, and broader
-stress coverage for teardown races. Follow-up extension-GUC work found
+semantics, startup-gate narrowing for regular backend and slot-sync startup,
+and broader stress coverage for teardown races. Follow-up extension-GUC work found
 that some generated GUC records are already rebound while the per-thread table
 is constructed, so the "changed pointer" pass alone is not a complete startup
 initializer. Threaded runtime installation now runs a narrow required

@@ -429,21 +429,20 @@ background writer, checkpointer, autovacuum launcher, and WAL writer thread
 carriers. The temporary threaded startup serialization gate is also now behind
 an explicit backend-type helper. AIO workers, the syslogger, startup process,
 autovacuum launcher/workers, archiver, WAL receiver, WAL summarizer,
-background writer, checkpointer, and WAL writer can bypass it. The
-writer-class, startup process, autovacuum launcher/workers, archiver, WAL
+thread-compatible background workers, background writer, checkpointer, and WAL
+writer can bypass it. The writer-class, startup process, autovacuum
+launcher/workers, thread-compatible background workers, archiver, WAL
 receiver, and WAL summarizer bypasses are worker-specific narrowings with
 concrete startup ownership models. Process-model background workers remain
-rejected in threaded mode, and thread-compatible background workers still
-remain behind the startup gate. A focused attempt to let
-`BgWorkerBackendThreadPerSession` dynamic background workers bypass the gate
-reached the copied worker's thread carrier but lost the server connection
-during `test_backend_runtime_launch_thread_bgworker()`, so background-worker
-startup still needs a worker-specific shared-state fix before it can leave the
-gate. The autovacuum launcher narrowing is validated against the no-database
-launcher loop, while autovacuum worker narrowing is validated against a real
-database-connected autovacuum worker launch and table vacuum smoke. Startup
-process was additionally validated through threaded normal startup and crash
-recovery, while archiver, WAL receiver, and WAL
+rejected in threaded mode. Thread-compatible dynamic background workers now
+publish postmaster-visible startup only after
+`ThreadedBackendStartupComplete()`, preventing dynamic waiters from
+terminating a worker while `InitProcess()`, `BaseInit()`, or function lookup
+are still running. The autovacuum launcher narrowing is validated against the
+no-database launcher loop, while autovacuum worker narrowing is validated
+against a real database-connected autovacuum worker launch and table vacuum
+smoke. Startup process was additionally validated through threaded normal
+startup and crash recovery, while archiver, WAL receiver, and WAL
 summarizer were additionally validated through their wakeup/progress,
 streaming, and clean shutdown paths. A broader attempted bypass for other
 non-session auxiliary workers reproduced an abrupt postmaster death during a

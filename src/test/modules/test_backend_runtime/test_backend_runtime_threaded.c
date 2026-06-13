@@ -179,7 +179,9 @@ test_backend_runtime_restart_thread_bgworker(PG_FUNCTION_ARGS)
 		elog(ERROR, "could not register restartable thread-model background worker");
 
 	status = WaitForBackgroundWorkerStartup(handle, &pid);
-	if (status != BGWH_STARTED)
+	if (status != BGWH_STARTED &&
+		!(status == BGWH_STOPPED &&
+		  pg_atomic_read_u32(&test_backend_runtime_restart_count) >= 1))
 		elog(ERROR, "restartable thread-model background worker did not start: status %d",
 			 status);
 

@@ -201,6 +201,7 @@ InitPostmasterChildSlots(void)
 			slots[slotno].thread_exitstatus = 0;
 			slots[slotno].thread_exit_signal_pid = 0;
 			slots[slotno].thread_exit_top_memory_allocated = 0;
+			pg_atomic_init_u32(&slots[slotno].thread_startup_complete, 0);
 			pg_atomic_init_u32(&slots[slotno].thread_exited, 0);
 			slots[slotno].child_slot = slotno + 1;
 			slots[slotno].bkend_type = B_INVALID;
@@ -245,6 +246,7 @@ AssignPostmasterChildSlot(BackendType btype)
 	pmchild->thread_exitstatus = 0;
 	pmchild->thread_exit_signal_pid = 0;
 	pmchild->thread_exit_top_memory_allocated = 0;
+	pg_atomic_write_u32(&pmchild->thread_startup_complete, 0);
 	pg_atomic_write_u32(&pmchild->thread_exited, 0);
 	pmchild->bkend_type = btype;
 	pmchild->rw = NULL;
@@ -294,6 +296,7 @@ AllocDeadEndChild(void)
 		pmchild->thread_exitstatus = 0;
 		pmchild->thread_exit_signal_pid = 0;
 		pmchild->thread_exit_top_memory_allocated = 0;
+		pg_atomic_init_u32(&pmchild->thread_startup_complete, 0);
 		pg_atomic_init_u32(&pmchild->thread_exited, 0);
 		pmchild->child_slot = 0;
 		pmchild->bkend_type = B_DEAD_END_BACKEND;
@@ -346,6 +349,7 @@ PostmasterChildSetProcess(PMChild *pmchild, pid_t pid)
 	pmchild->thread_exitstatus = 0;
 	pmchild->thread_exit_signal_pid = 0;
 	pmchild->thread_exit_top_memory_allocated = 0;
+	pg_atomic_write_u32(&pmchild->thread_startup_complete, 0);
 	pg_atomic_write_u32(&pmchild->thread_exited, 0);
 }
 
@@ -361,6 +365,7 @@ PostmasterChildSetThread(PMChild *pmchild, const PgThread *thread)
 	pmchild->thread_exitstatus = 0;
 	pmchild->thread_exit_signal_pid = 0;
 	pmchild->thread_exit_top_memory_allocated = 0;
+	pg_atomic_write_u32(&pmchild->thread_startup_complete, 0);
 	pg_atomic_write_u32(&pmchild->thread_exited, 0);
 }
 
@@ -413,6 +418,27 @@ PostmasterChildWakeThreadBackend(PMChild *pmchild)
 	PMChildThreadBackendUnlock();
 
 	return woke;
+}
+
+void
+PostmasterChildPublishThreadStartupComplete(PMChild *pmchild,
+											Latch *postmaster_latch)
+{
+	Assert(PostmasterChildIsThread(pmchild));
+	Assert(postmaster_latch != NULL);
+
+	pg_memory_barrier();
+	pg_atomic_write_u32(&pmchild->thread_startup_complete, 1);
+	SetLatch(postmaster_latch);
+}
+
+bool
+PostmasterChildHasStartupComplete(PMChild *pmchild)
+{
+	if (!PostmasterChildIsThread(pmchild))
+		return false;
+
+	return pg_atomic_exchange_u32(&pmchild->thread_startup_complete, 0) != 0;
 }
 
 void
@@ -499,6 +525,7 @@ ReleasePostmasterChildSlot(PMChild *pmchild)
 	pmchild->thread_exitstatus = 0;
 	pmchild->thread_exit_signal_pid = 0;
 	pmchild->thread_exit_top_memory_allocated = 0;
+	pg_atomic_write_u32(&pmchild->thread_startup_complete, 0);
 	pg_atomic_write_u32(&pmchild->thread_exited, 0);
 	if (pmchild->bkend_type == B_DEAD_END_BACKEND)
 	{
