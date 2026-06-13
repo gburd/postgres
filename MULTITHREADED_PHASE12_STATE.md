@@ -4533,3 +4533,46 @@ Validation for this slice:
   reconnects, `pg_terminate_backend()` against a sleeping client backend,
   a post-termination `SELECT 42`, and clean `pg_ctl -m fast stop`;
 - `git diff --check` passed.
+
+## PMChild Thread Read-Side Synchronization
+
+The ninety-fourth Phase 12 slice tightens the Gate E2 PMChild synchronization
+contract on the read side:
+
+- `PostmasterChildSignalPid()` now reads a thread-backed PMChild's live
+  `signal_pid` while holding `PMChildThreadBackendMutex`;
+- `PostmasterChildHasExitedThread()` now claims the thread-exited flag and
+  then copies the waitpid-style exit status, retained top-memory accounting,
+  and captured exit signal id while holding the same mutex;
+- this matches the write-side protocol used by
+  `PostmasterChildSetThreadBackend()` and
+  `PostmasterChildPublishThreadExit()`, so postmaster signal routing and exit
+  reaping no longer read PMChild thread-owned identity/payload fields outside
+  the PMChild synchronization boundary.
+
+This is still not the full PMChild Gate E2 closure. It narrows the local data
+race surface around PMChild identity and exit payload fields, but broader
+runtime stress is still needed for concurrent signal routing, administrator
+termination, abandoned-client teardown, worker exit, and native thread
+join/retry races.
+
+Validation for this slice:
+
+- touched-object build passed for `src/backend/postmaster/pmchild.o`;
+- touched-object check for `src/backend/postmaster/postmaster.o` was already
+  up to date against the new PMChild API;
+- touched-object check for
+  `src/test/modules/test_backend_runtime/test_backend_runtime.o` was already
+  up to date against the unchanged PMChild helper test;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- full `gmake -j8` passed;
+- `gmake -j8 DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- direct full-module `pg_regress test_backend_runtime` passed all 1 test
+  against the current temp install;
+- a manual threaded temp-cluster smoke with `multithreaded = on` passed 16
+  reconnects, `pg_terminate_backend()` against a sleeping client backend, a
+  post-termination `SELECT 84`, clean `pg_ctl -m fast stop`, and log
+  inspection for crash/escalation markers;
+- `git diff --check` passed.

@@ -823,6 +823,10 @@ payloads before reuse. PMChild thread-exit publication now captures the exited
 logical backend id in the exit payload and clears live `signal_pid` under the
 same lock as `thread_backend`, so a dead thread is no longer advertised as
 signalable while the postmaster can still log and join the reported exit.
+Thread-backed signal-id reads and claimed thread-exit payload reads now also
+run through PMChild helper APIs under the PMChild mutex, matching the
+publication side instead of reading those fields directly after the exit flag
+is claimed.
 Threaded startup
 now initializes all built-in generated GUC records whose direct backing-variable
 pointers are rebound onto `PgSession`/runtime state, replacing the broad

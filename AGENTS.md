@@ -124,6 +124,9 @@ Important current files:
   Thread exit publication must capture the exited logical backend id in the
   PMChild exit payload before clearing `signal_pid`, so the postmaster can log
   the exited backend without advertising a dead thread as signalable.
+- Thread-backed PMChild signal-id reads and thread-exit payload reads must use
+  PMChild helper APIs. They are protected by the same PMChild mutex as
+  `thread_backend` publication and clearing.
 - For thread-backed PMChild reaping, successful `pg_thread_join()` is the
   boundary before child cleanup and slot release. If join fails, leave the
   PMChild active and re-publish the claimed thread-exit report for retry; do

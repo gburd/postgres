@@ -409,7 +409,9 @@ of releasing a possibly still-owned slot. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live
 `signal_pid` under the same lock as `thread_backend`, while PMChild assignment
 and slot release scrub stale carrier-visible signal ids and thread-exit
-payloads before reuse. The broad threaded startup GUC
+payloads before reuse. Thread-backed signal-id reads and claimed thread-exit
+payload reads now also use PMChild helper APIs under the same PMChild mutex.
+The broad threaded startup GUC
 whitelist has also been replaced for rebound built-in direct-pointer GUCs by
 a systematic generated-table adoption pass, and threaded built-in postmaster
 default replay now uses the existing serialized nondefault GUC file path.

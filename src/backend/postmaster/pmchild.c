@@ -321,12 +321,17 @@ PostmasterChildIsThread(const PMChild *pmchild)
 pid_t
 PostmasterChildSignalPid(const PMChild *pmchild)
 {
+	pid_t		signal_pid;
+
 	Assert(pmchild != NULL);
 
-	if (PostmasterChildIsThread(pmchild))
-		return pmchild->signal_pid;
+	if (!PostmasterChildIsThread(pmchild))
+		return pmchild->pid;
 
-	return pmchild->pid;
+	PMChildThreadBackendLock();
+	signal_pid = pmchild->signal_pid;
+	PMChildThreadBackendUnlock();
+	return signal_pid;
 }
 
 void
@@ -452,11 +457,14 @@ PostmasterChildHasExitedThread(PMChild *pmchild, int *exitstatus,
 	if (pg_atomic_exchange_u32(&pmchild->thread_exited, 0) == 0)
 		return false;
 
+	PMChildThreadBackendLock();
 	*exitstatus = pmchild->thread_exitstatus;
 	if (top_memory_allocated != NULL)
 		*top_memory_allocated = pmchild->thread_exit_top_memory_allocated;
 	if (signal_pid != NULL)
 		*signal_pid = pmchild->thread_exit_signal_pid;
+	PMChildThreadBackendUnlock();
+
 	return true;
 }
 
