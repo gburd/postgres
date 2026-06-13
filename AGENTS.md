@@ -149,11 +149,11 @@ Important current files:
   so treat full `TopMemoryContext` reclamation as an unresolved Gate E2 blocker.
 - `test_backend_runtime_emit_fatal()` in
   `test_backend_runtime_threaded` is the focused threaded backend `FATAL`
-  fixture. When TAP is unavailable because `IPC::Run` is missing, validate it
-  manually by creating the extension in a multithreaded temp cluster, invoking
-  the function through `psql`, checking for the expected `FATAL`, verifying
-  the backend id leaves `pg_stat_activity`, and confirming the server remains
-  usable.
+  fixture. Run it through
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` with the
+  local TAP `PERL5LIB` paths documented below, so the check covers the
+  expected `FATAL`, verifies the backend id leaves `pg_stat_activity`, and
+  confirms the server remains usable.
 - `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` contains
   the broader mixed teardown stress for Gate E2. It starts concurrent
   backend-local `FATAL`, `pg_terminate_backend()`, and abandoned-client
