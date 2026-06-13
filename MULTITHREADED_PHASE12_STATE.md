@@ -5522,3 +5522,59 @@ Validation for this slice:
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals;
 - `git diff --check` passed.
+
+## Backend PGPROC Pointer Bridge
+
+The one-hundred-seventeenth Phase 12 slice moves the current backend's
+`PGPROC` pointer into explicit backend state:
+
+- `PgBackend` now owns `my_proc`, keeping the backend-local pointer to the
+  shared-memory `PGPROC` object with the rest of backend runtime state;
+- `MyProc` remains a source-compatible lvalue macro through
+  `PgCurrentMyProcRef()`, so existing `MyProc = ...`, comparison, and
+  dereference call sites do not need broad churn in this slice;
+- `backend_runtime.c` keeps a small early fallback pointer for code that runs
+  before `CurrentPgBackend` is installed, then adopts that fallback into the
+  process or thread backend during runtime installation;
+- `InitProcess()`, `InitAuxiliaryProcess()`, `ProcKill()`, and
+  `AuxiliaryProcKill()` keep their existing `PGPROC` object lifecycle and
+  shared-memory ownership rules. This slice changes where the backend-local
+  pointer is stored, not when the `PGPROC` object is allocated, published, or
+  released.
+
+This removes another raw backend-local TLS global from the Phase 12 migration
+set and narrows procarray/lock/signalling state's dependency on standalone TLS.
+It does not move `MyProcNumber`, `ParallelLeaderProcNumber`, or the full
+`PGPROC` lifecycle yet.
+
+The focused PMChild publication race regression was also made deterministic
+enough for this macOS checkout: after publishing a fake thread backend, the
+writer waits briefly for a reader to observe the live backend before detaching
+and publishing exit. The test still covers concurrent signal-id, interrupt,
+wakeup, detach, exit-publication, and exit-claim behavior, but no longer
+depends on the OS scheduling a reader inside a tiny publish/detach window.
+
+Validation for this slice:
+
+- `gmake -C src/backend/utils/init backend_runtime.o` passed;
+- `gmake -C src/backend/storage/lmgr proc.o` passed;
+- full backend clean plus generated-header recovery was required after the
+  installed-header change, because stale objects still referenced the old
+  `_MyProc` symbol;
+- full `gmake -j8` passed;
+- full `gmake -j8 DESTDIR="$PWD/tmp_install" install` passed;
+- PL/pgSQL was cleaned, rebuilt, and reinstalled after the installed-header
+  change because its stale `plpgsql.dylib` referenced `_MyProc`;
+- `src/test/modules/test_backend_runtime` was cleaned, rebuilt, and
+  reinstalled after the installed-header change because its stale test module
+  referenced `_MyProc`;
+- direct threaded-runtime TAP passed all 87 tests with local
+  `/Users/samwillis/perl5` `PERL5LIB` paths before and after
+  `gmake -C src/test/modules/test_backend_runtime check` recreated
+  `tmp_install`;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression and still reported TAP disabled by configure;
+- `gmake -C contrib -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- `git diff --check` passed.

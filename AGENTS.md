@@ -122,6 +122,13 @@ Important current files:
   runtime bridge, clean and rebuild backend objects before trusting link or TAP
   results; stale objects can still reference the removed
   `_AuxProcessResourceOwner` symbol.
+- `MyProc` is now routed through `PgBackend` via `PgCurrentMyProcRef()` and
+  the `MyProc` lvalue macro. After changing `src/include/storage/proc.h` or
+  this backend runtime bridge, clean and rebuild backend objects and any
+  extension modules under test before trusting link or TAP results; stale
+  objects can still reference the removed `_MyProc` symbol. At minimum, clean
+  and reinstall PL/pgSQL and `src/test/modules/test_backend_runtime` before
+  rerunning their tests after a `MyProc` bridge change.
 - Treat `PMChild.thread_backend` as private PMChild-owned publication state.
   Postmaster code should use PMChild helper APIs for threaded backend
   interrupt, wakeup, and thread-exit publication rather than dereferencing or
@@ -783,9 +790,10 @@ Important current files:
   `PERL5LIB="$HOME/perl5/lib/perl5:$HOME/perl5/lib/perl5/darwin-thread-multi-2level:$PWD/src/test/perl"`
   in direct TAP commands. This checkout is still configured without
   `--enable-tap-tests`, so recursive `gmake ... check` targets report `TAP
-  tests not enabled`. Direct `prove` runs also need the same harness
-  environment that `gmake check` supplies, especially `PG_REGRESS`, for
-  example:
+  tests not enabled`. Do not treat that configure-time message as a reason to
+  skip TAP coverage; run the direct `prove` command with the local `PERL5LIB`
+  path. Direct `prove` runs also need the same harness environment that
+  `gmake check` supplies, especially `PG_REGRESS`, for example:
 
   ```sh
   PERL5LIB="$HOME/perl5/lib/perl5:$HOME/perl5/lib/perl5/darwin-thread-multi-2level:$PWD/src/test/perl" \

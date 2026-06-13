@@ -388,7 +388,8 @@ typedef struct PGPROC
 }
 PGPROC;
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND PGPROC *MyProc;
+extern PGPROC **PgCurrentMyProcRef(void);
+#define MyProc (*PgCurrentMyProcRef())
 
 /*
  * There is one ProcGlobal struct for the whole database cluster.

@@ -6578,6 +6578,15 @@ test_pmchild_thread_backend_publication_race(PG_FUNCTION_ARGS)
 		for (int i = 0; i < TEST_PMCHILD_PUBLICATION_CYCLES; i++)
 		{
 			PostmasterChildSetThreadBackend(&fake_pmchild, &fake_backend);
+			/* Make the reader-side observation deterministic on fast runs. */
+			if (pg_atomic_read_u32(&race_state.hits) == 0)
+			{
+				for (int spins = 0;
+					 spins < 1000 &&
+					 pg_atomic_read_u32(&race_state.hits) == 0;
+					 spins++)
+					pg_usleep(100L);
+			}
 			PostmasterChildDetachThreadBackend(&fake_pmchild);
 			PostmasterChildPublishThreadExit(&fake_pmchild, i,
 											 (Size) i * 16, &fake_latch);

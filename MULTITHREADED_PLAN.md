@@ -830,7 +830,11 @@ connection-owned allocation group from the retained top-memory bucket before
 PMChild exit accounting runs. `AuxProcessResourceOwner` is now stored inside
 `PgBackend` behind the existing lvalue compatibility name, with an early
 fallback adopted during process/thread runtime installation, so it is no
-longer a standalone backend-local TLS global.
+longer a standalone backend-local TLS global. `MyProc` is now stored inside
+`PgBackend` behind a source-compatible lvalue macro and
+`PgCurrentMyProcRef()`, with an early fallback adopted during process/thread
+runtime installation; the shared-memory `PGPROC` object lifecycle is unchanged,
+but the backend-local pointer is no longer standalone TLS.
 PMChild assignment and slot release now also scrub stale carrier-visible signal
 ids and thread-exit payloads before reuse. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live

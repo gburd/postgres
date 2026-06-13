@@ -59,9 +59,6 @@
 #include "utils/timestamp.h"
 #include "utils/wait_event.h"
 
-/* Pointer to this process's PGPROC struct, if any */
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND PGPROC *MyProc = NULL;
-
 /* Pointers to shared-memory structures */
 PG_GLOBAL_SHMEM PROC_HDR *ProcGlobal = NULL;
 static PG_GLOBAL_SHMEM void *AllProcsShmemPtr;

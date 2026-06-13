@@ -93,6 +93,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendCoreState early_backend_core =
 	.mode = InitProcessing
 };
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND BackendType early_backend_type = B_INVALID;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PGPROC *early_my_proc = NULL;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ResourceOwner early_aux_process_resource_owner = NULL;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionIdentityState early_connection_identity;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionSocketIOState early_connection_socket_io;
@@ -592,6 +593,7 @@ static void PgSessionInitializeLocaleState(PgSessionLocaleState *locale);
 static void PgSessionAdoptEarlyLocaleState(PgSession *session);
 static void PgBackendResetCoreState(PgBackendCoreState *core);
 static void PgBackendAdoptEarlyCoreState(PgBackend *backend);
+static void PgBackendAdoptEarlyMyProc(PgBackend *backend);
 static void PgBackendAdoptEarlyAuxProcessResourceOwner(PgBackend *backend);
 static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
 static void PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend);
@@ -1965,6 +1967,18 @@ PgBackendAdoptEarlyAuxProcessResourceOwner(PgBackend *backend)
 }
 
 static void
+PgBackendAdoptEarlyMyProc(PgBackend *backend)
+{
+	Assert(backend != NULL);
+
+	if (early_my_proc != NULL)
+	{
+		backend->my_proc = early_my_proc;
+		early_my_proc = NULL;
+	}
+}
+
+static void
 PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend)
 {
 	Assert(backend != NULL);
@@ -2190,6 +2204,7 @@ InitializePgProcessRuntime(void)
 	process_backend.backend_type = MyBackendType;
 	PgBackendInitializeInterrupts(&process_backend);
 	PgBackendAdoptEarlyCoreState(&process_backend);
+	PgBackendAdoptEarlyMyProc(&process_backend);
 	PgBackendAdoptEarlyAuxProcessResourceOwner(&process_backend);
 	PgBackendSetInterruptLatch(&process_backend, process_backend.core.latch);
 	dlist_init(&process_backend.dsm_segment_list);
@@ -2403,6 +2418,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	state->carrier.current_session = &state->session;
 	state->carrier.current_execution = &state->execution;
 	PgBackendAdoptEarlyCoreState(&state->backend);
+	PgBackendAdoptEarlyMyProc(&state->backend);
 	PgBackendAdoptEarlyAuxProcessResourceOwner(&state->backend);
 	PgSessionAdoptEarlyDatabaseState(&state->session);
 	PgSessionAdoptEarlyTablespaceState(&state->session);
@@ -5499,6 +5515,15 @@ PgCurrentCoreState(void)
 		return &early_backend_core;
 
 	return &CurrentPgBackend->core;
+}
+
+PGPROC **
+PgCurrentMyProcRef(void)
+{
+	if (CurrentPgBackend == NULL)
+		return &early_my_proc;
+
+	return &CurrentPgBackend->my_proc;
 }
 
 ResourceOwner *

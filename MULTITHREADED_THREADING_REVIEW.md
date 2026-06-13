@@ -420,8 +420,12 @@ allocated in `PortContext`. Those connection-owned allocations therefore no
 longer survive only as retained top-memory accounting.
 `AuxProcessResourceOwner` is now owned by `PgBackend` behind the existing
 lvalue compatibility name, with early fallback adoption for pre-runtime
-initialization, so it is no longer raw backend-local TLS. PMChild cleanup and
-slot release now require a
+initialization, so it is no longer raw backend-local TLS. `MyProc` is now also
+owned by `PgBackend` behind the existing source-compatible lvalue name and
+`PgCurrentMyProcRef()`, with early fallback adoption for pre-runtime
+initialization. The `PGPROC` object lifecycle and shared-memory ownership are
+unchanged; this narrows raw backend-local TLS to the pointer storage boundary.
+PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly
 still-owned slot. PMChild thread-exit publication now
