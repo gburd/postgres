@@ -94,42 +94,6 @@
  */
 #define BUF_DROP_FULL_SCAN_THRESHOLD		(uint64) (NBuffers / 32)
 
-/*
- * This is separated out from PrivateRefCountEntry to allow for copying all
- * the data members via struct assignment.
- */
-typedef struct PrivateRefCountData
-{
-	/*
-	 * How many times has the buffer been pinned by this backend.
-	 */
-	int32		refcount;
-
-	/*
-	 * Is the buffer locked by this backend? BUFFER_LOCK_UNLOCK indicates that
-	 * the buffer is not locked.
-	 */
-	BufferLockMode lockmode;
-} PrivateRefCountData;
-
-typedef struct PrivateRefCountEntry
-{
-	/*
-	 * Note that this needs to be same as the entry's corresponding
-	 * PrivateRefCountArrayKeys[i], if the entry is stored in the array. We
-	 * store it in both places as this is used for the hashtable key and
-	 * because it is more convenient (passing around a PrivateRefCountEntry
-	 * suffices to identify the buffer) and faster (checking the keys array is
-	 * faster when checking many entries, checking the entry is faster if just
-	 * checking a single entry).
-	 */
-	Buffer		buffer;
-
-	char		status;
-
-	PrivateRefCountData data;
-} PrivateRefCountEntry;
-
 #define SH_PREFIX refcount
 #define SH_ELEMENT_TYPE PrivateRefCountEntry
 #define SH_KEY_TYPE Buffer
@@ -140,9 +104,6 @@ typedef struct PrivateRefCountEntry
 #define SH_DECLARE
 #define SH_DEFINE
 #include "lib/simplehash.h"
-
-/* 64 bytes, about the size of a cache line on common systems */
-#define REFCOUNT_ARRAY_ENTRIES 8
 
 /*
  * Status of buffers to checkpoint for a particular tablespace, used
@@ -217,7 +178,7 @@ PG_GLOBAL_RUNTIME int checkpoint_flush_after = DEFAULT_CHECKPOINT_FLUSH_AFTER;
 PG_GLOBAL_RUNTIME int bgwriter_flush_after = DEFAULT_BGWRITER_FLUSH_AFTER;
 
 /* local state for LockBufferForCleanup */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND BufferDesc *PinCountWaitBuf = NULL;
+#define PinCountWaitBuf (*PgCurrentPinCountWaitBufRef())
 
 /*
  * Backend-Private refcount management:
@@ -252,15 +213,15 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND BufferDesc *PinCountWaitBuf = NULL;
  * memory allocations in NewPrivateRefCountEntry() which can be important
  * because in some scenarios it's called with a spinlock held...
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND Buffer PrivateRefCountArrayKeys[REFCOUNT_ARRAY_ENTRIES];
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND struct PrivateRefCountEntry PrivateRefCountArray[REFCOUNT_ARRAY_ENTRIES];
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND refcount_hash *PrivateRefCountHash = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int32 PrivateRefCountOverflowed = 0;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND uint32 PrivateRefCountClock = 0;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int ReservedRefCountSlot = -1;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int PrivateRefCountEntryLast = -1;
+#define PrivateRefCountArrayKeys (*(Buffer **) PgCurrentPrivateRefCountArrayKeysRef())
+#define PrivateRefCountArray (*(PrivateRefCountEntry **) PgCurrentPrivateRefCountArrayRef())
+#define PrivateRefCountHash (*(refcount_hash **) PgCurrentPrivateRefCountHashRef())
+#define PrivateRefCountOverflowed (*PgCurrentPrivateRefCountOverflowedRef())
+#define PrivateRefCountClock (*PgCurrentPrivateRefCountClockRef())
+#define ReservedRefCountSlot (*PgCurrentReservedRefCountSlotRef())
+#define PrivateRefCountEntryLast (*PgCurrentPrivateRefCountEntryLastRef())
 
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND uint32 MaxProportionalPins;
+#define MaxProportionalPins (*PgCurrentMaxProportionalPinsRef())
 
 static void ReservePrivateRefCountEntry(void);
 static PrivateRefCountEntry *NewPrivateRefCountEntry(Buffer buffer);
@@ -4225,8 +4186,26 @@ InitBufferManagerAccess(void)
 	 */
 	MaxProportionalPins = NBuffers / (MaxBackends + NUM_AUXILIARY_PROCS);
 
-	memset(&PrivateRefCountArray, 0, sizeof(PrivateRefCountArray));
-	memset(&PrivateRefCountArrayKeys, 0, sizeof(PrivateRefCountArrayKeys));
+	if (PrivateRefCountArray == NULL)
+		PrivateRefCountArray = MemoryContextAllocZero(TopMemoryContext,
+													  sizeof(PrivateRefCountEntry) *
+													  REFCOUNT_ARRAY_ENTRIES);
+	else
+		memset(PrivateRefCountArray, 0,
+			   sizeof(PrivateRefCountEntry) * REFCOUNT_ARRAY_ENTRIES);
+
+	if (PrivateRefCountArrayKeys == NULL)
+		PrivateRefCountArrayKeys = MemoryContextAllocZero(TopMemoryContext,
+														  sizeof(Buffer) *
+														  REFCOUNT_ARRAY_ENTRIES);
+	else
+		memset(PrivateRefCountArrayKeys, 0,
+			   sizeof(Buffer) * REFCOUNT_ARRAY_ENTRIES);
+
+	PrivateRefCountOverflowed = 0;
+	PrivateRefCountClock = 0;
+	ReservedRefCountSlot = -1;
+	PrivateRefCountEntryLast = -1;
 
 	PrivateRefCountHash = refcount_create(CurrentMemoryContext, 100, NULL);
 

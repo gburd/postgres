@@ -919,9 +919,12 @@ The local-buffer batch now stores `NLocBuffer`, `LocalBufferDescriptors`,
 `LocalBufHash`, `NLocalPinnedBuffers`, and the `GetLocalBufferStorage()`
 allocation cursor/context fields in `PgBackendBufferState`. This removes both
 the file-scope local-buffer TLS and the function-local static allocation
-cursor that would otherwise be shared by thread backends. `BackendWritebackContext`
-is deliberately left for a separate buffer-manager slice because its concrete
-type lives in `buf_internals.h` and needs a cleaner type-boundary decision.
+cursor that would otherwise be shared by thread backends.
+The shared-buffer pin/writeback batch now extends `PgBackendBufferState` with
+`BackendWritebackContext`, `PinCountWaitBuf`, the private refcount array/hash
+state, and `MaxProportionalPins`. `BackendWritebackContext` remains
+object-like at call sites through a `buf_internals.h` compatibility macro,
+while the runtime object owns the per-backend storage pointer.
 PMChild assignment and slot release now also scrub stale carrier-visible signal
 ids and thread-exit payloads before reuse. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live

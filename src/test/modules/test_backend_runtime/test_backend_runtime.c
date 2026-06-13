@@ -6893,6 +6893,8 @@ test_backend_buffer_state_is_backend_local(PG_FUNCTION_ARGS)
 	PgBackend  *saved_backend;
 	PgBackend	fake_backend1;
 	PgBackend	fake_backend2;
+	WritebackContext *fake_backend1_writeback;
+	WritebackContext *fake_backend2_writeback;
 	bool		ok = true;
 
 	saved_backend = CurrentPgBackend;
@@ -6914,8 +6916,20 @@ test_backend_buffer_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentLocalBufferNumBufsInBlockRef() = 105;
 		*PgCurrentLocalBufferTotalBufsAllocatedRef() = 106;
 		*PgCurrentLocalBufferContextRef() = (MemoryContext) &fake_backend1;
+		*PgCurrentPinCountWaitBufRef() = (BufferDesc *) &fake_backend1;
+		fake_backend1_writeback = PgCurrentBackendWritebackContextRef();
+		ok = ok && fake_backend1_writeback != NULL;
+		*PgCurrentPrivateRefCountArrayKeysRef() = &fake_backend1;
+		*PgCurrentPrivateRefCountArrayRef() = &fake_backend1;
+		*PgCurrentPrivateRefCountHashRef() = &fake_backend1;
+		*PgCurrentPrivateRefCountOverflowedRef() = 107;
+		*PgCurrentPrivateRefCountClockRef() = 108;
+		*PgCurrentReservedRefCountSlotRef() = 109;
+		*PgCurrentPrivateRefCountEntryLastRef() = 110;
+		*PgCurrentMaxProportionalPinsRef() = 111;
 
 		CurrentPgBackend = &fake_backend2;
+		fake_backend2_writeback = PgCurrentBackendWritebackContextRef();
 		ok = ok && *PgCurrentNLocBufferRef() == 0;
 		ok = ok && *PgCurrentLocalBufferDescriptorsRef() == NULL;
 		ok = ok && *PgCurrentLocalBufferBlockPointersRef() == NULL;
@@ -6928,6 +6942,17 @@ test_backend_buffer_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentLocalBufferNumBufsInBlockRef() == 0;
 		ok = ok && *PgCurrentLocalBufferTotalBufsAllocatedRef() == 0;
 		ok = ok && *PgCurrentLocalBufferContextRef() == NULL;
+		ok = ok && *PgCurrentPinCountWaitBufRef() == NULL;
+		ok = ok && fake_backend2_writeback != NULL;
+		ok = ok && fake_backend2_writeback != fake_backend1_writeback;
+		ok = ok && *PgCurrentPrivateRefCountArrayKeysRef() == NULL;
+		ok = ok && *PgCurrentPrivateRefCountArrayRef() == NULL;
+		ok = ok && *PgCurrentPrivateRefCountHashRef() == NULL;
+		ok = ok && *PgCurrentPrivateRefCountOverflowedRef() == 0;
+		ok = ok && *PgCurrentPrivateRefCountClockRef() == 0;
+		ok = ok && *PgCurrentReservedRefCountSlotRef() == 0;
+		ok = ok && *PgCurrentPrivateRefCountEntryLastRef() == 0;
+		ok = ok && *PgCurrentMaxProportionalPinsRef() == 0;
 
 		*PgCurrentNLocBufferRef() = 201;
 		*PgCurrentLocalBufferDescriptorsRef() = &fake_backend2;
@@ -6941,8 +6966,18 @@ test_backend_buffer_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentLocalBufferNumBufsInBlockRef() = 205;
 		*PgCurrentLocalBufferTotalBufsAllocatedRef() = 206;
 		*PgCurrentLocalBufferContextRef() = (MemoryContext) &fake_backend2;
+		*PgCurrentPinCountWaitBufRef() = (BufferDesc *) &fake_backend2;
+		*PgCurrentPrivateRefCountArrayKeysRef() = &fake_backend2;
+		*PgCurrentPrivateRefCountArrayRef() = &fake_backend2;
+		*PgCurrentPrivateRefCountHashRef() = &fake_backend2;
+		*PgCurrentPrivateRefCountOverflowedRef() = 207;
+		*PgCurrentPrivateRefCountClockRef() = 208;
+		*PgCurrentReservedRefCountSlotRef() = 209;
+		*PgCurrentPrivateRefCountEntryLastRef() = 210;
+		*PgCurrentMaxProportionalPinsRef() = 211;
 
 		CurrentPgBackend = &fake_backend1;
+		ok = ok && PgCurrentBackendWritebackContextRef() == fake_backend1_writeback;
 		ok = ok && *PgCurrentNLocBufferRef() == 101;
 		ok = ok && *PgCurrentLocalBufferDescriptorsRef() == &fake_backend1;
 		ok = ok && *PgCurrentLocalBufferBlockPointersRef() == &fake_backend1;
@@ -6955,8 +6990,18 @@ test_backend_buffer_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentLocalBufferNumBufsInBlockRef() == 105;
 		ok = ok && *PgCurrentLocalBufferTotalBufsAllocatedRef() == 106;
 		ok = ok && *PgCurrentLocalBufferContextRef() == (MemoryContext) &fake_backend1;
+		ok = ok && *PgCurrentPinCountWaitBufRef() == (BufferDesc *) &fake_backend1;
+		ok = ok && *PgCurrentPrivateRefCountArrayKeysRef() == &fake_backend1;
+		ok = ok && *PgCurrentPrivateRefCountArrayRef() == &fake_backend1;
+		ok = ok && *PgCurrentPrivateRefCountHashRef() == &fake_backend1;
+		ok = ok && *PgCurrentPrivateRefCountOverflowedRef() == 107;
+		ok = ok && *PgCurrentPrivateRefCountClockRef() == 108;
+		ok = ok && *PgCurrentReservedRefCountSlotRef() == 109;
+		ok = ok && *PgCurrentPrivateRefCountEntryLastRef() == 110;
+		ok = ok && *PgCurrentMaxProportionalPinsRef() == 111;
 
 		CurrentPgBackend = &fake_backend2;
+		ok = ok && PgCurrentBackendWritebackContextRef() == fake_backend2_writeback;
 		ok = ok && *PgCurrentNLocBufferRef() == 201;
 		ok = ok && *PgCurrentLocalBufferDescriptorsRef() == &fake_backend2;
 		ok = ok && *PgCurrentLocalBufferBlockPointersRef() == &fake_backend2;
@@ -6969,6 +7014,15 @@ test_backend_buffer_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentLocalBufferNumBufsInBlockRef() == 205;
 		ok = ok && *PgCurrentLocalBufferTotalBufsAllocatedRef() == 206;
 		ok = ok && *PgCurrentLocalBufferContextRef() == (MemoryContext) &fake_backend2;
+		ok = ok && *PgCurrentPinCountWaitBufRef() == (BufferDesc *) &fake_backend2;
+		ok = ok && *PgCurrentPrivateRefCountArrayKeysRef() == &fake_backend2;
+		ok = ok && *PgCurrentPrivateRefCountArrayRef() == &fake_backend2;
+		ok = ok && *PgCurrentPrivateRefCountHashRef() == &fake_backend2;
+		ok = ok && *PgCurrentPrivateRefCountOverflowedRef() == 207;
+		ok = ok && *PgCurrentPrivateRefCountClockRef() == 208;
+		ok = ok && *PgCurrentReservedRefCountSlotRef() == 209;
+		ok = ok && *PgCurrentPrivateRefCountEntryLastRef() == 210;
+		ok = ok && *PgCurrentMaxProportionalPinsRef() == 211;
 
 		CurrentPgBackend = saved_backend;
 	}

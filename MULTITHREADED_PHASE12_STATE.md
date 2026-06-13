@@ -6387,11 +6387,8 @@ raw file-scope global scan alone would not make the hazard obvious. Without
 this move, two thread-backed logical backends could share the same local
 buffer allocation cursor/context.
 
-`BackendWritebackContext` remains standalone backend-local TLS after this
-slice. It is buffer-manager backend state, but its concrete `WritebackContext`
-type is defined in `buf_internals.h`; moving it cleanly needs a separate
-type-boundary decision rather than forcing a header cycle into
-`backend_runtime.h`.
+The next buffer-manager slice moves `BackendWritebackContext` and the shared
+buffer private-refcount state into the same `PgBackendBufferState` bucket.
 
 Validation for this slice:
 
@@ -6420,4 +6417,63 @@ Validation for this slice:
 - `gmake -C contrib -j8` passed;
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals, with backend-local declarations dropping from 355 to 345;
+- `git diff --check` passed.
+
+## Backend Shared Buffer Pin State Bridge
+
+The one-hundred-thirty-third Phase 12 slice extends `PgBackendBufferState` to
+cover shared-buffer backend-local pin/writeback bookkeeping:
+
+- `BackendWritebackContext`, used by shared-buffer writeback coalescing;
+- `PinCountWaitBuf`, the `LockBufferForCleanup()` wait target;
+- private refcount array and overflow hash state:
+  `PrivateRefCountArrayKeys`, `PrivateRefCountArray`,
+  `PrivateRefCountHash`, `PrivateRefCountOverflowed`,
+  `PrivateRefCountClock`, `ReservedRefCountSlot`, and
+  `PrivateRefCountEntryLast`;
+- `MaxProportionalPins`, the backend's advisory shared-buffer pin budget.
+
+The compatibility surface keeps `BackendWritebackContext` object-like because
+existing buffer manager code takes its address. `PgCurrentBackendWritebackContextRef()`
+therefore returns the per-backend `WritebackContext` storage and
+`storage/buf_internals.h` exposes `BackendWritebackContext` as `*ref`. The
+concrete `WritebackContext` and `PrivateRefCountEntry` types remain in the
+buffer-manager internal header; the public runtime object stores pointers and
+does not expose the buffer-manager internals to unrelated backend headers.
+
+`InitBufferManagerAccess()` now allocates and resets the private refcount
+arrays through `PgBackendBufferState`, recreates the overflow hash for the
+current backend, and initializes the per-backend writeback context through the
+runtime bridge. This keeps the hot refcount state backend-owned without
+changing the existing buffer pin call sites.
+
+Validation for this slice:
+
+- `gmake -C src/backend/utils/init backend_runtime.o` passed;
+- `gmake -C src/backend/storage/buffer bufmgr.o buf_init.o` passed;
+- `gmake -C src/test/modules/test_backend_runtime test_backend_runtime.o`
+  passed after expanding `test_backend_buffer_state_is_backend_local()`;
+- a static scan found no remaining raw TLS declarations for
+  `BackendWritebackContext`, `PinCountWaitBuf`, private refcount state, or
+  `MaxProportionalPins`;
+- a stale-doc scan found no remaining notes treating `BackendWritebackContext`
+  as a deferred buffer-manager slice;
+- a full backend clean plus generated-header recovery was run after the
+  installed-header and `PgBackend` layout changes;
+- full `gmake -j8` passed;
+- full `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- PL/pgSQL was cleaned, rebuilt, and reinstalled after the installed-header
+  change;
+- `src/test/modules/test_backend_runtime` was cleaned, rebuilt, and
+  reinstalled after the installed-header change;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression, including the expanded
+  `test_backend_buffer_state_is_backend_local()` helper, and still reported
+  TAP disabled by configure;
+- direct threaded-runtime TAP passed all 87 tests with the local
+  `/Users/samwillis/perl5` `PERL5LIB` paths and an explicit `PG_REGRESS`
+  environment;
+- `gmake -C contrib -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 345 to 334;
 - `git diff --check` passed.

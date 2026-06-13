@@ -498,9 +498,11 @@ local-buffer arrays/counters, private `localbuf.c` hash and pin counters, and
 the `GetLocalBufferStorage()` allocation cursor/context. This closes a
 threading hazard that the raw global scan alone did not fully expose: the
 function-local static allocation cursor would have been shared across thread
-backends. `BackendWritebackContext` remains for a follow-up buffer-manager
-slice because its concrete type is defined on the `buf_internals.h` side of
-the type boundary.
+backends. The follow-up buffer-manager slice now also stores
+`BackendWritebackContext`, `PinCountWaitBuf`, the shared-buffer private
+refcount array/hash state, and `MaxProportionalPins` in
+`PgBackendBufferState`, with object-like compatibility macros preserving the
+existing buffer-manager call sites.
 PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly

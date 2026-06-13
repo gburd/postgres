@@ -44,6 +44,8 @@ typedef struct PgConnection PgConnection;
 typedef struct PgExecution PgExecution;
 typedef struct PQcommMethods PQcommMethods;
 typedef struct WaitEventSet WaitEventSet;
+typedef struct WritebackContext WritebackContext;
+typedef struct BufferDesc BufferDesc;
 typedef struct PortalData *Portal;
 typedef struct SPITupleTable SPITupleTable;
 typedef struct _SPI_connection _SPI_connection;
@@ -208,6 +210,7 @@ typedef struct PgBackendInstrumentationState
 
 typedef struct PgBackendBufferState
 {
+	BufferDesc *pin_count_wait_buf;
 	int			nlocbuffer;
 	void	   *local_buffer_descriptors;
 	void	   *local_buffer_block_pointers;
@@ -220,6 +223,15 @@ typedef struct PgBackendBufferState
 	int			local_buffer_num_bufs_in_block;
 	int			local_buffer_total_bufs_allocated;
 	MemoryContext local_buffer_context;
+	WritebackContext *backend_writeback_context;
+	void	   *private_ref_count_array_keys;
+	void	   *private_ref_count_array;
+	void	   *private_ref_count_hash;
+	int32		private_ref_count_overflowed;
+	uint32		private_ref_count_clock;
+	int			reserved_ref_count_slot;
+	int			private_ref_count_entry_last;
+	uint32		max_proportional_pins;
 } PgBackendBufferState;
 
 typedef struct PgBackendStorageState
@@ -1400,6 +1412,16 @@ extern int *PgCurrentLocalBufferNextBufInBlockRef(void);
 extern int *PgCurrentLocalBufferNumBufsInBlockRef(void);
 extern int *PgCurrentLocalBufferTotalBufsAllocatedRef(void);
 extern MemoryContext *PgCurrentLocalBufferContextRef(void);
+extern BufferDesc **PgCurrentPinCountWaitBufRef(void);
+extern WritebackContext *PgCurrentBackendWritebackContextRef(void);
+extern void **PgCurrentPrivateRefCountArrayKeysRef(void);
+extern void **PgCurrentPrivateRefCountArrayRef(void);
+extern void **PgCurrentPrivateRefCountHashRef(void);
+extern int32 *PgCurrentPrivateRefCountOverflowedRef(void);
+extern uint32 *PgCurrentPrivateRefCountClockRef(void);
+extern int *PgCurrentReservedRefCountSlotRef(void);
+extern int *PgCurrentPrivateRefCountEntryLastRef(void);
+extern uint32 *PgCurrentMaxProportionalPinsRef(void);
 extern void **PgCurrentVfdCacheRef(void);
 extern Size *PgCurrentSizeVfdCacheRef(void);
 extern int *PgCurrentNFileRef(void);

@@ -24,7 +24,6 @@
 PG_GLOBAL_SHMEM BufferDescPadded *BufferDescriptors;
 PG_GLOBAL_SHMEM char *BufferBlocks;
 PG_GLOBAL_SHMEM ConditionVariableMinimallyPadded *BufferIOCVArray;
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND WritebackContext BackendWritebackContext;
 PG_GLOBAL_SHMEM CkptSortItem *CkptBufferIds;
 
 static void BufferManagerShmemRequest(void *arg);

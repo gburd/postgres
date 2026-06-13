@@ -45,6 +45,7 @@
 #include "replication/logicalworker.h"
 #include "replication/slotsync.h"
 #include "storage/bufmgr.h"
+#include "storage/buf_internals.h"
 #include "storage/copydir.h"
 #include "storage/latch.h"
 #include "storage/large_object.h"
@@ -58,6 +59,7 @@
 #include "utils/elog.h"
 #include "utils/float.h"
 #include "utils/guc.h"
+#include "utils/memutils.h"
 #include "utils/pgstat_internal.h"
 #include "utils/plancache.h"
 #include "utils/resowner.h"
@@ -2100,6 +2102,8 @@ PgBackendInitializeBufferState(PgBackendBufferState *buffers)
 	Assert(buffers != NULL);
 
 	MemSet(buffers, 0, sizeof(*buffers));
+	buffers->reserved_ref_count_slot = -1;
+	buffers->private_ref_count_entry_last = -1;
 }
 
 static void
@@ -6044,6 +6048,18 @@ PgCurrentBackendBufferState(void)
 	return &CurrentPgBackend->buffers;
 }
 
+static MemoryContext
+PgBackendBufferAllocationContext(void)
+{
+	if (TopMemoryContext != NULL)
+		return TopMemoryContext;
+	if (CurrentMemoryContext != NULL)
+		return CurrentMemoryContext;
+
+	elog(ERROR, "cannot allocate backend buffer state before memory contexts exist");
+	return NULL;				/* keep compiler quiet */
+}
+
 int *
 PgCurrentNLocBufferRef(void)
 {
@@ -6114,6 +6130,73 @@ MemoryContext *
 PgCurrentLocalBufferContextRef(void)
 {
 	return &PgCurrentBackendBufferState()->local_buffer_context;
+}
+
+BufferDesc **
+PgCurrentPinCountWaitBufRef(void)
+{
+	return &PgCurrentBackendBufferState()->pin_count_wait_buf;
+}
+
+WritebackContext *
+PgCurrentBackendWritebackContextRef(void)
+{
+	PgBackendBufferState *buffers = PgCurrentBackendBufferState();
+
+	if (buffers->backend_writeback_context == NULL)
+		buffers->backend_writeback_context =
+			MemoryContextAllocZero(PgBackendBufferAllocationContext(),
+								   sizeof(WritebackContext));
+
+	return buffers->backend_writeback_context;
+}
+
+void **
+PgCurrentPrivateRefCountArrayKeysRef(void)
+{
+	return &PgCurrentBackendBufferState()->private_ref_count_array_keys;
+}
+
+void **
+PgCurrentPrivateRefCountArrayRef(void)
+{
+	return &PgCurrentBackendBufferState()->private_ref_count_array;
+}
+
+void **
+PgCurrentPrivateRefCountHashRef(void)
+{
+	return &PgCurrentBackendBufferState()->private_ref_count_hash;
+}
+
+int32 *
+PgCurrentPrivateRefCountOverflowedRef(void)
+{
+	return &PgCurrentBackendBufferState()->private_ref_count_overflowed;
+}
+
+uint32 *
+PgCurrentPrivateRefCountClockRef(void)
+{
+	return &PgCurrentBackendBufferState()->private_ref_count_clock;
+}
+
+int *
+PgCurrentReservedRefCountSlotRef(void)
+{
+	return &PgCurrentBackendBufferState()->reserved_ref_count_slot;
+}
+
+int *
+PgCurrentPrivateRefCountEntryLastRef(void)
+{
+	return &PgCurrentBackendBufferState()->private_ref_count_entry_last;
+}
+
+uint32 *
+PgCurrentMaxProportionalPinsRef(void)
+{
+	return &PgCurrentBackendBufferState()->max_proportional_pins;
 }
 
 static PgBackendStorageState *

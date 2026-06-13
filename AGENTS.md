@@ -256,9 +256,11 @@ Important current files:
   allocation cursor/context fields) is now owned by `PgBackendBufferState`.
   Exported local-buffer names are compatibility macros in `storage/bufmgr.h`
   and `storage/buf_internals.h`; private names remain compatibility macros in
-  `src/backend/storage/buffer/localbuf.c`. `BackendWritebackContext` remains a
-  separate backend-local TLS item for a later buffer-manager slice because its
-  concrete type is defined in `buf_internals.h`. After changing this bridge,
+  `src/backend/storage/buffer/localbuf.c`. Shared-buffer pin/writeback state
+  (`BackendWritebackContext`, `PinCountWaitBuf`, the private refcount
+  array/hash state, and `MaxProportionalPins`) is also owned by
+  `PgBackendBufferState`; `BackendWritebackContext` remains object-like at call
+  sites through a `storage/buf_internals.h` macro. After changing this bridge,
   clean and rebuild backend objects because `PgBackend` layout and installed
   buffer/runtime headers changed; at minimum rebuild and reinstall PL/pgSQL,
   `src/test/modules/test_backend_runtime`, and contrib before validating.
