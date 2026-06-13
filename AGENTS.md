@@ -225,14 +225,12 @@ Important current files:
   calls `InitializeThreadedSessionRequiredGUCOptions()` after
   `PgSetCurrentSession()` and after installing `CurrentPgExecution`; the latter
   is required because GUC check hooks allocate through the current execution's
-  memory context state. Keep this list narrow and documented; it currently
-  covers `client_encoding`, `search_path`, `dynamic_library_path`,
-  `temp_tablespaces`, and `wal_consistency_checking`. The
-  `client_encoding` entry is required because dynamic-default replay and late
-  worker startup need initialized per-session string storage. The WAL entry is
-  required because the generated GUC variable is the string value, while the
-  assign hook also initializes the derived per-session resource-manager bool
-  array used by `XLogInsert()`.
+  memory context state. That pass now initializes any built-in string GUC whose
+  backing pointer is owned by the installed `PgSession` and still has NULL
+  string storage, so future session-owned string GUCs do not need to be added
+  to a growing whitelist. `client_encoding` remains the only post-install
+  compatibility exception because its authoritative state is the session
+  encoding object rather than a direct `char *` field in `PgSession`.
 - Custom extension GUCs in threaded sessions rely on per-session `_PG_init()`
   invocation for already-loaded dynamic libraries. `dfmgr.c` records loaded
   module init state in `PgSession.dynamic_library_inits`; when a second

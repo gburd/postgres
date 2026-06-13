@@ -5284,3 +5284,43 @@ Validation for this slice:
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals;
 - `git diff --check` passed.
+
+## Session-Owned String GUC Bootstrap Scan
+
+The one-hundred-eleventh Phase 12 slice replaces the post-runtime required
+string-GUC whitelist with an ownership-based scan:
+
+- `PgCurrentSessionOwnsPointer()` now exposes the runtime-level check for
+  whether an arbitrary backing pointer is inside the installed `PgSession`;
+- after `InstallPgThreadBackendRuntimeState()` installs the thread runtime,
+  `InitializeThreadedSessionRequiredGUCOptions()` scans every built-in string
+  GUC record and initializes any NULL backing storage owned by the current
+  `PgSession`;
+- this keeps process/runtime string globals out of the post-install bootstrap
+  path while automatically covering future session-owned string GUCs, including
+  the previously discovered `dynamic_library_path`, `search_path`,
+  `temp_tablespaces`, and `wal_consistency_checking` cases;
+- `client_encoding` remains the only explicit post-install compatibility
+  exception because its authoritative state is the session encoding object
+  rather than a direct `char *` field inside `PgSession`.
+
+This does not close all Gate E2 GUC work. It does remove the growing
+post-runtime required string-GUC list as a blocker and leaves the remaining GUC
+work focused on broader default/reset/custom-GUC semantics and stress coverage.
+
+Validation for this slice:
+
+- `gmake -C src/backend/utils/init backend_runtime.o` passed;
+- `gmake -C src/backend/utils/misc guc.o` passed;
+- full `gmake -j8` passed;
+- full `gmake -j8 DESTDIR="$PWD/tmp_install" install` passed;
+- `gmake -C src/test/modules/test_backend_runtime DESTDIR="$PWD/tmp_install" install` passed;
+- direct threaded-runtime TAP passed all 87 tests with local
+  `/Users/samwillis/perl5` `PERL5LIB` paths before and after
+  `gmake -C src/test/modules/test_backend_runtime check` recreated
+  `tmp_install`;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression and still reported TAP disabled by configure;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- `git diff --check` passed.

@@ -931,8 +931,10 @@ backend leaves `pg_stat_activity`, and confirms the server remains usable.
 After installing the missing local TAP Perl dependency, the threaded runtime
 TAP exposed a SIGHUP/default-replay bug where the postmaster serialized a
 garbage dynamic-default `client_encoding` value for a late thread-backed IO
-worker. Threaded startup now includes `client_encoding` in the required string
-GUC bootstrap list, and exec/thread config serialization writes
+worker. `client_encoding` is now the only post-install required-string
+compatibility exception, while other session-owned string GUCs are initialized
+by scanning the generated built-in GUC table for NULL string backing pointers
+inside the installed `PgSession`. Exec/thread config serialization also writes
 `client_encoding` through the authoritative encoding state instead of the
 generic string backing pointer.
 The threaded runtime TAP now also runs a mixed teardown batch in one live

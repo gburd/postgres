@@ -1290,6 +1290,7 @@ extern void InitializePgThreadBackendRuntime(PgThreadBackendRuntimeState *state,
 											 struct Port *port,
 											 struct Latch *interrupt_latch);
 extern void PgSetCurrentSession(PgSession *session);
+extern bool PgCurrentSessionOwnsPointer(const void *ptr);
 extern Session *PgSessionGetLegacySession(PgSession *session);
 extern void PgSessionSetLegacySession(PgSession *session,
 									   Session *legacy_session);

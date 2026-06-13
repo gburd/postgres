@@ -2469,6 +2469,23 @@ PgSetCurrentSession(PgSession *session)
 	RebindSessionGUCVariablePointers();
 }
 
+bool
+PgCurrentSessionOwnsPointer(const void *ptr)
+{
+	uintptr_t	address;
+	uintptr_t	session_start;
+	uintptr_t	session_end;
+
+	if (CurrentPgSession == NULL || ptr == NULL)
+		return false;
+
+	address = (uintptr_t) ptr;
+	session_start = (uintptr_t) CurrentPgSession;
+	session_end = session_start + sizeof(PgSession);
+
+	return address >= session_start && address < session_end;
+}
+
 Session *
 PgSessionGetLegacySession(PgSession *session)
 {

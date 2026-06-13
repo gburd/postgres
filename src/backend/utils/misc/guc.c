@@ -57,6 +57,7 @@
 #include "storage/shmem.h"
 #include "tcop/tcopprot.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/conffiles.h"
 #include "utils/guc_tables.h"
@@ -1528,22 +1529,46 @@ InitializeThreadedSessionGUCOptions(void)
 void
 InitializeThreadedSessionRequiredGUCOptions(void)
 {
-	static const char *const required_options[] = {
+	static const char *const compatibility_options[] = {
 		"client_encoding",
-		"dynamic_library_path",
-		"search_path",
-		"temp_tablespaces",
-		"wal_consistency_checking",
 	};
 
 	if (guc_hashtab == NULL)
 		return;
 
-	for (int i = 0; i < lengthof(required_options); i++)
+	/*
+	 * RebindSessionGUCVariablePointers() can be called before the final
+	 * PgSession is installed, so the pointer-change pass used during early GUC
+	 * setup can miss string GUCs that already point at fallback session
+	 * accessors.  After PgSetCurrentSession(), initialize any built-in string
+	 * GUC whose backing pointer now lives inside the current PgSession and
+	 * still lacks string storage.  That avoids writing boot defaults into
+	 * process/runtime globals while keeping future PgSession-owned string GUCs
+	 * out of a hand-maintained required list.
+	 */
+	for (int i = 0; i < num_guc_variables; i++)
+	{
+		struct config_generic *gconf = &guc_variables[i];
+
+		if (gconf->vartype != PGC_STRING)
+			continue;
+		if (!PgCurrentSessionOwnsPointer(gconf->_string.variable))
+			continue;
+		if (*gconf->_string.variable == NULL)
+			InitializeOneGUCOption(gconf);
+	}
+
+	/*
+	 * client_encoding exposes a string GUC, but its authoritative state is the
+	 * session encoding object rather than a direct char * field in PgSession.
+	 * Keep this narrow compatibility exception until encoding GUC storage is
+	 * represented as an ordinary session-owned string pointer.
+	 */
+	for (int i = 0; i < lengthof(compatibility_options); i++)
 	{
 		struct config_generic *gconf;
 
-		gconf = find_option(required_options[i], false, false, PANIC);
+		gconf = find_option(compatibility_options[i], false, false, PANIC);
 		Assert(gconf->vartype == PGC_STRING);
 		if (*gconf->_string.variable == NULL)
 			InitializeOneGUCOption(gconf);

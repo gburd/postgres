@@ -193,9 +193,15 @@ current logical session/runtime state, and initializes every record whose
 backing pointer changed. A small compatibility list remains for TLS dummy
 startup GUCs that do not yet have `PgSession` accessors:
 `session_authorization`, `server_encoding`, and `client_encoding`. The
-remaining Gate E2 GUC work is postmaster/runtime default adoption, full
-custom/extension GUC behavior, broader assign-hook/reset/default semantics,
-and threaded stress coverage for GUC-heavy sessions.
+post-runtime required string-GUC pass has also been made ownership-based: after
+`PgSetCurrentSession()` it scans built-in string GUC records and initializes
+any NULL backing storage whose pointer is inside the installed `PgSession`.
+Only `client_encoding` remains as a post-install compatibility exception
+because its authoritative state is the session encoding object rather than a
+direct `char *` field. The remaining Gate E2 GUC work is broadening
+postmaster/runtime default adoption, full custom/extension GUC behavior,
+broader assign-hook/reset/default semantics, and threaded stress coverage for
+GUC-heavy sessions.
 
 Further status update: threaded non-EXEC_BACKEND postmasters now write and
 refresh `global/config_exec_params` when `multithreaded` is enabled, and
@@ -433,8 +439,9 @@ Making the local TAP dependency available then exposed and fixed a threaded
 SIGHUP/default-replay bug: dynamic-default `client_encoding` was being
 serialized from stale generic string storage, so a late thread-backed IO worker
 could replay garbage and terminate the threaded server. `client_encoding` is
-now required bootstrap state for threaded sessions and is serialized from
-authoritative encoding state.
+now the only post-install required-string compatibility exception, while other
+session-owned string GUCs are initialized by an ownership scan, and
+`client_encoding` is serialized from authoritative encoding state.
 Real-server teardown coverage has also been broadened: the threaded runtime
 TAP now runs concurrent backend-local `FATAL`, administrator termination, and
 abandoned-client exits in one live threaded server, then verifies logical
