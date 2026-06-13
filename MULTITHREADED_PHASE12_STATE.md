@@ -741,3 +741,55 @@ Validation for this slice:
 - core process-mode `src/test/regress` `parallel_schedule` passed all 245
   tests after the clean rebuild and install;
 - clean `gmake -C contrib -j8` passed after the header migration.
+
+## Session DateStyle/DateOrder Bridge
+
+The seventeenth Phase 12 slice moves the parsed `DateStyle` and `DateOrder`
+backing fields under `PgSession`:
+
+- `PgSession` now owns a `PgSessionDateTimeState`;
+- `DateStyle` and `DateOrder` remain source-compatible lvalue macros in
+  `miscadmin.h`;
+- the macros route through `PgCurrentDateStyleRef()` and
+  `PgCurrentDateOrderRef()`, which return the current logical session's parsed
+  date/time formatting fields;
+- zeroed logical session objects lazily initialize these fields to the
+  historical defaults, `USE_ISO_DATES` and `DATEORDER_MDY`;
+- early startup paths before `CurrentPgSession` is installed use fallback
+  session-local storage in `backend_runtime.c`;
+- `InitializePgProcessRuntime()` and `InstallPgThreadBackendRuntimeState()`
+  adopt any early fallback date/time state into the logical session object
+  before resetting fallback storage to the default values.
+
+This is deliberately narrower than "all date/time GUCs". `IntervalStyle`
+remains a direct `PG_THREAD_LOCAL PG_GLOBAL_SESSION` variable for now because
+the generated GUC table stores a direct pointer to its backing variable. An
+initial attempt to move `IntervalStyle` through a dynamic lvalue macro caused
+the GUC record to keep pointing at early fallback storage, and core regression
+then showed widespread interval-format output diffs. Direct-pointer GUCs need a
+separate Phase 12 GUC-table rebind/adoption mechanism before they can safely
+move under `PgSession`.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `globals.o`,
+  `variable.o`, `date.o`, `timestamp.o`, `datetime.o`, and
+  `test_backend_runtime.o`;
+- because `miscadmin.h` changed exported session globals into compatibility
+  macros, `gmake -C src/backend clean` plus generated-header recovery was used
+  before the clean rebuild;
+- clean full `gmake -j8` passed;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed, followed by
+  rebuilding and reinstalling `src/test/modules/test_backend_runtime`,
+  PL/pgSQL, `src/test/regress`, `libpqwalreceiver`, and
+  `src/backend/snowball`;
+- focused `test_backend_runtime` regression passed and includes
+  `test_session_datetime_state_is_session_local()`, which switches
+  `CurrentPgSession` between fake sessions and proves the moved compatibility
+  lvalues are isolated per session and default-initialized;
+- threaded runtime TAP coverage passed for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests after narrowing this slice to exclude direct-pointer `IntervalStyle`;
+- clean `gmake -C contrib -j8` passed after the header migration.

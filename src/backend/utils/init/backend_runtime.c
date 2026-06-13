@@ -57,6 +57,11 @@ static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionInterruptState early_con
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionStartupState early_connection_startup;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionClientConnectionInfoState early_client_connection_info;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionDatabaseState early_session_database;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionDateTimeState early_session_datetime = {
+	.initialized = true,
+	.date_style = USE_ISO_DATES,
+	.date_order = DATEORDER_MDY
+};
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendPendingInterruptState early_pending_interrupts;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInterruptHoldoffState early_interrupt_holdoffs;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionDebugState early_execution_debug;
@@ -77,6 +82,8 @@ static void PgConnectionAdoptEarlyInterruptState(PgConnection *connection);
 static void PgConnectionAdoptEarlyStartupState(PgConnection *connection);
 static void PgConnectionAdoptEarlyClientConnectionInfo(PgConnection *connection);
 static void PgSessionAdoptEarlyDatabaseState(PgSession *session);
+static void PgSessionInitializeDateTimeState(PgSessionDateTimeState *datetime);
+static void PgSessionAdoptEarlyDateTimeState(PgSession *session);
 static void PgBackendResetCoreState(PgBackendCoreState *core);
 static void PgBackendAdoptEarlyCoreState(PgBackend *backend);
 static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
@@ -88,6 +95,7 @@ static void PgExecutionAdoptEarlyMemoryContexts(PgExecution *execution);
 static void PgExecutionAdoptEarlyResourceOwners(PgExecution *execution);
 static PgBackendCoreState *PgCurrentCoreState(void);
 static PgSessionDatabaseState *PgCurrentSessionDatabaseState(void);
+static PgSessionDateTimeState *PgCurrentSessionDateTimeState(void);
 static PgExecutionErrorState *PgCurrentExecutionErrorState(void);
 static PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
 static PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
@@ -173,6 +181,28 @@ PgSessionAdoptEarlyDatabaseState(PgSession *session)
 
 	session->database = early_session_database;
 	MemSet(&early_session_database, 0, sizeof(early_session_database));
+}
+
+static void
+PgSessionInitializeDateTimeState(PgSessionDateTimeState *datetime)
+{
+	Assert(datetime != NULL);
+
+	datetime->initialized = true;
+	datetime->date_style = USE_ISO_DATES;
+	datetime->date_order = DATEORDER_MDY;
+}
+
+static void
+PgSessionAdoptEarlyDateTimeState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (!early_session_datetime.initialized)
+		PgSessionInitializeDateTimeState(&early_session_datetime);
+
+	session->datetime = early_session_datetime;
+	PgSessionInitializeDateTimeState(&early_session_datetime);
 }
 
 static void
@@ -312,6 +342,7 @@ InitializePgProcessRuntime(void)
 	process_session.connection = &process_connection;
 	process_session.execution = &process_execution;
 	PgSessionAdoptEarlyDatabaseState(&process_session);
+	PgSessionAdoptEarlyDateTimeState(&process_session);
 
 	process_connection.backend = &process_backend;
 	process_connection.session = &process_session;
@@ -391,6 +422,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	state->session.backend = &state->backend;
 	state->session.connection = &state->connection;
 	state->session.execution = &state->execution;
+	PgSessionInitializeDateTimeState(&state->session.datetime);
 
 	state->connection.backend = &state->backend;
 	state->connection.session = &state->session;
@@ -411,6 +443,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	state->carrier.current_execution = &state->execution;
 	PgBackendAdoptEarlyCoreState(&state->backend);
 	PgSessionAdoptEarlyDatabaseState(&state->session);
+	PgSessionAdoptEarlyDateTimeState(&state->session);
 	PgExecutionAdoptEarlyErrorState(&state->execution);
 	PgExecutionAdoptEarlyMemoryContexts(&state->execution);
 	PgExecutionAdoptEarlyResourceOwners(&state->execution);
@@ -469,6 +502,22 @@ PgCurrentSessionDatabaseState(void)
 	return &CurrentPgSession->database;
 }
 
+static PgSessionDateTimeState *
+PgCurrentSessionDateTimeState(void)
+{
+	PgSessionDateTimeState *datetime;
+
+	if (CurrentPgSession == NULL)
+		datetime = &early_session_datetime;
+	else
+		datetime = &CurrentPgSession->datetime;
+
+	if (!datetime->initialized)
+		PgSessionInitializeDateTimeState(datetime);
+
+	return datetime;
+}
+
 Oid *
 PgCurrentMyDatabaseIdRef(void)
 {
@@ -491,6 +540,18 @@ char **
 PgCurrentDatabasePathRef(void)
 {
 	return &PgCurrentSessionDatabaseState()->database_path;
+}
+
+int *
+PgCurrentDateStyleRef(void)
+{
+	return &PgCurrentSessionDateTimeState()->date_style;
+}
+
+int *
+PgCurrentDateOrderRef(void)
+{
+	return &PgCurrentSessionDateTimeState()->date_order;
 }
 
 struct Port **

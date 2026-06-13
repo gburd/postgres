@@ -524,6 +524,64 @@ test_session_database_state_is_session_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_session_datetime_state_is_session_local);
+Datum
+test_session_datetime_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	int			saved_date_style;
+	int			saved_date_order;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	saved_date_style = DateStyle;
+	saved_date_order = DateOrder;
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	PG_TRY();
+	{
+		CurrentPgSession = &fake_session1;
+		ok = ok && DateStyle == USE_ISO_DATES;
+		ok = ok && DateOrder == DATEORDER_MDY;
+		DateStyle = USE_SQL_DATES;
+		DateOrder = DATEORDER_DMY;
+
+		CurrentPgSession = &fake_session2;
+		ok = ok && DateStyle == USE_ISO_DATES;
+		ok = ok && DateOrder == DATEORDER_MDY;
+		DateStyle = USE_GERMAN_DATES;
+		DateOrder = DATEORDER_YMD;
+
+		CurrentPgSession = &fake_session1;
+		ok = ok && DateStyle == USE_SQL_DATES;
+		ok = ok && DateOrder == DATEORDER_DMY;
+
+		CurrentPgSession = &fake_session2;
+		ok = ok && DateStyle == USE_GERMAN_DATES;
+		ok = ok && DateOrder == DATEORDER_YMD;
+
+		CurrentPgSession = saved_session;
+		DateStyle = saved_date_style;
+		DateOrder = saved_date_order;
+	}
+	PG_CATCH();
+	{
+		CurrentPgSession = saved_session;
+		DateStyle = saved_date_style;
+		DateOrder = saved_date_order;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session date/time GUC state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_backend_interrupt_holdoffs_are_backend_local);
 Datum
 test_backend_interrupt_holdoffs_are_backend_local(PG_FUNCTION_ARGS)

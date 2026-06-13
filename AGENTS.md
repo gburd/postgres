@@ -111,6 +111,12 @@ Important current files:
   per logical backend.
 - Prefer introducing compatibility wrappers around current globals before
   changing all call sites.
+- Be careful moving GUC backing variables behind dynamic lvalue macros. The
+  generated GUC table stores direct pointers for many variables during
+  `InitializeGUCVariablePointers()`. Variables written only by assign hooks,
+  such as parsed `DateStyle`/`DateOrder`, can be moved independently, but
+  direct-pointer GUCs such as `IntervalStyle` need a GUC-table pointer
+  rebind/adoption mechanism first.
 - Avoid broad mechanical churn unless it unlocks a specific migration step.
 - Do not remove process isolation paths merely because threaded mode exists.
 

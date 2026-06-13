@@ -189,6 +189,13 @@ typedef struct PgSessionDatabaseState
 	char	   *database_path;
 } PgSessionDatabaseState;
 
+typedef struct PgSessionDateTimeState
+{
+	bool		initialized;
+	int			date_style;
+	int			date_order;
+} PgSessionDateTimeState;
+
 #define PG_CONNECTION_SEND_BUFFER_SIZE 8192
 #define PG_CONNECTION_RECV_BUFFER_SIZE 8192
 #define PG_CONNECTION_CANCEL_KEY_LENGTH 32
@@ -307,6 +314,7 @@ struct PgSession
 	Session    *legacy_session;
 	PgSessionLoopState loop_state;
 	PgSessionDatabaseState database;
+	PgSessionDateTimeState datetime;
 };
 
 struct PgConnection

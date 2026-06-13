@@ -315,8 +315,11 @@ extern bool *PgCurrentMyDatabaseHasLoginEventTriggersRef(void);
 #define DATEORDER_DMY			1
 #define DATEORDER_MDY			2
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int DateStyle;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int DateOrder;
+extern int *PgCurrentDateStyleRef(void);
+extern int *PgCurrentDateOrderRef(void);
+
+#define DateStyle (*PgCurrentDateStyleRef())
+#define DateOrder (*PgCurrentDateOrderRef())
 
 /*
  * IntervalStyles

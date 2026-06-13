@@ -666,14 +666,17 @@ interrupt flag bridge and core backend identity/lifecycle state bridge through
 `PgBackend`, and the execution error-context/exception stack bridge through
 `PgExecution`, plus the core execution memory-context pointer bridge and
 transaction resource-owner current-pointer bridge through `PgExecution`, and
-the current database identity/path bridge through `PgSession`.
+the current database identity/path bridge through `PgSession`, plus the parsed
+`DateStyle`/`DateOrder` bridge through `PgSession`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.
 
 Likely workstreams:
 
-- GUC state into `PgSession` and transaction/execution state.
+- direct-pointer GUC backing variables into `PgSession` and
+  transaction/execution state, with a GUC-table pointer rebind/adoption
+  mechanism where generated GUC records store backing-variable addresses.
 - remaining memory context state into `PgExecution` or carrier current
   pointers where not covered by the current-context bridge.
 - resource owners beyond the current execution pointers split by
