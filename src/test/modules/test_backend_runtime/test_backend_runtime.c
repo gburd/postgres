@@ -10371,6 +10371,63 @@ test_backend_command_log_state_is_backend_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_backend_expr_interp_state_is_backend_local);
+Datum
+test_backend_expr_interp_state_is_backend_local(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgBackend	fake_backend1;
+	PgBackend	fake_backend2;
+	const void *dispatch_one[1];
+	const void *dispatch_two[1];
+	bool		ok = true;
+
+	saved_backend = CurrentPgBackend;
+	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
+	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+	dispatch_one[0] = &fake_backend1;
+	dispatch_two[0] = &fake_backend2;
+
+	PG_TRY();
+	{
+		CurrentPgBackend = &fake_backend1;
+		PgCurrentExprInterpState()->dispatch_table = dispatch_one;
+		PgCurrentExprInterpState()->reverse_dispatch_table[0].opcode = &fake_backend1;
+		PgCurrentExprInterpState()->reverse_dispatch_table[0].op = 11;
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && PgCurrentExprInterpState()->dispatch_table == NULL;
+		ok = ok && PgCurrentExprInterpState()->reverse_dispatch_table[0].opcode == NULL;
+		ok = ok && PgCurrentExprInterpState()->reverse_dispatch_table[0].op == 0;
+		PgCurrentExprInterpState()->dispatch_table = dispatch_two;
+		PgCurrentExprInterpState()->reverse_dispatch_table[0].opcode = &fake_backend2;
+		PgCurrentExprInterpState()->reverse_dispatch_table[0].op = 22;
+
+		CurrentPgBackend = &fake_backend1;
+		ok = ok && PgCurrentExprInterpState()->dispatch_table == dispatch_one;
+		ok = ok && PgCurrentExprInterpState()->reverse_dispatch_table[0].opcode == &fake_backend1;
+		ok = ok && PgCurrentExprInterpState()->reverse_dispatch_table[0].op == 11;
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && PgCurrentExprInterpState()->dispatch_table == dispatch_two;
+		ok = ok && PgCurrentExprInterpState()->reverse_dispatch_table[0].opcode == &fake_backend2;
+		ok = ok && PgCurrentExprInterpState()->reverse_dispatch_table[0].op == 22;
+
+		CurrentPgBackend = saved_backend;
+	}
+	PG_CATCH();
+	{
+		CurrentPgBackend = saved_backend;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "backend expression interpreter state was not backend-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_execution_debug_query_string_is_execution_local);
 Datum
 test_execution_debug_query_string_is_execution_local(PG_FUNCTION_ARGS)

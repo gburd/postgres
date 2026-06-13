@@ -98,6 +98,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendCoreState early_backend_core =
 };
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendCommandState early_backend_command;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendLogState early_backend_log;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendExprInterpState early_backend_expr_interp;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND BackendType early_backend_type = B_INVALID;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PGPROC *early_my_proc = NULL;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ProcNumber early_my_proc_number = INVALID_PROC_NUMBER;
@@ -656,6 +657,8 @@ static void PgBackendInitializeCommandState(PgBackendCommandState *command);
 static void PgBackendAdoptEarlyCommandState(PgBackend *backend);
 static void PgBackendInitializeLogState(PgBackendLogState *log_state);
 static void PgBackendAdoptEarlyLogState(PgBackend *backend);
+static void PgBackendInitializeExprInterpState(PgBackendExprInterpState *expr_interp);
+static void PgBackendAdoptEarlyExprInterpState(PgBackend *backend);
 static void PgSessionInitializeLoopState(PgSessionLoopState *loop_state);
 static void PgSessionAdoptEarlyLoopState(PgSession *session);
 static void PgBackendInitializeProcNumberState(PgBackend *backend);
@@ -2184,6 +2187,23 @@ PgBackendAdoptEarlyLogState(PgBackend *backend)
 }
 
 static void
+PgBackendInitializeExprInterpState(PgBackendExprInterpState *expr_interp)
+{
+	Assert(expr_interp != NULL);
+
+	MemSet(expr_interp, 0, sizeof(*expr_interp));
+}
+
+static void
+PgBackendAdoptEarlyExprInterpState(PgBackend *backend)
+{
+	Assert(backend != NULL);
+
+	backend->expr_interp = early_backend_expr_interp;
+	PgBackendInitializeExprInterpState(&early_backend_expr_interp);
+}
+
+static void
 PgSessionInitializeLoopState(PgSessionLoopState *loop_state)
 {
 	Assert(loop_state != NULL);
@@ -2894,6 +2914,7 @@ InitializePgProcessRuntime(void)
 	PgBackendAdoptEarlyCoreState(&process_backend);
 	PgBackendAdoptEarlyCommandState(&process_backend);
 	PgBackendAdoptEarlyLogState(&process_backend);
+	PgBackendAdoptEarlyExprInterpState(&process_backend);
 	PgBackendAdoptEarlyMyProc(&process_backend);
 	PgBackendAdoptEarlyProcNumberState(&process_backend);
 	PgBackendAdoptEarlyMyBEEntry(&process_backend);
@@ -3062,6 +3083,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgBackendResetCoreState(&state->backend.core);
 	PgBackendInitializeCommandState(&state->backend.command);
 	PgBackendInitializeLogState(&state->backend.log_state);
+	PgBackendInitializeExprInterpState(&state->backend.expr_interp);
 	PgBackendInitializePgStatPendingState(&state->backend.pgstat_pending);
 	PgBackendInitializeActivityState(&state->backend.activity);
 	PgBackendInitializeMemoryManagerState(&state->backend.memory_manager);
@@ -3161,6 +3183,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgBackendAdoptEarlyCoreState(&state->backend);
 	PgBackendAdoptEarlyCommandState(&state->backend);
 	PgBackendAdoptEarlyLogState(&state->backend);
+	PgBackendAdoptEarlyExprInterpState(&state->backend);
 	PgBackendAdoptEarlyMyProc(&state->backend);
 	PgBackendAdoptEarlyProcNumberState(&state->backend);
 	PgBackendAdoptEarlyMyBEEntry(&state->backend);
@@ -6727,6 +6750,15 @@ int *
 PgCurrentLogLinePidRef(void)
 {
 	return &PgCurrentBackendLogState()->line_pid;
+}
+
+PgBackendExprInterpState *
+PgCurrentExprInterpState(void)
+{
+	if (CurrentPgBackend == NULL)
+		return &early_backend_expr_interp;
+
+	return &CurrentPgBackend->expr_interp;
 }
 
 bool *

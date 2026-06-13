@@ -234,6 +234,20 @@ typedef struct PgBackendLogState
 	int			line_pid;
 } PgBackendLogState;
 
+typedef struct PgBackendExprEvalOpLookup
+{
+	const void *opcode;
+	int			op;
+} PgBackendExprEvalOpLookup;
+
+#define PG_BACKEND_EXPR_INTERP_MAX_OPS 512
+
+typedef struct PgBackendExprInterpState
+{
+	const void **dispatch_table;
+	PgBackendExprEvalOpLookup reverse_dispatch_table[PG_BACKEND_EXPR_INTERP_MAX_OPS];
+} PgBackendExprInterpState;
+
 typedef struct PgBackendTimeoutState
 {
 	PgTimeoutParams all_timeouts[MAX_TIMEOUTS];
@@ -1535,6 +1549,7 @@ struct PgBackend
 	PgBackendCoreState core;
 	PgBackendCommandState command;
 	PgBackendLogState log_state;
+	PgBackendExprInterpState expr_interp;
 	PgBackendTimeoutState timeout;
 	PgBackendWalSenderState walsender;
 	PgBackendReplicationState replication;
@@ -1987,6 +2002,7 @@ extern struct timeval *PgCurrentUsageSaveTimevalRef(void);
 extern char *PgCurrentFormattedStartTimeBuffer(void);
 extern long *PgCurrentLogLineNumberRef(void);
 extern int *PgCurrentLogLinePidRef(void);
+extern PgBackendExprInterpState *PgCurrentExprInterpState(void);
 extern PgBackendTimeoutState *PgCurrentTimeoutState(void);
 extern PgBackendWalSenderState *PgCurrentWalSenderState(void);
 extern PgBackendReplicationState *PgCurrentReplicationState(void);

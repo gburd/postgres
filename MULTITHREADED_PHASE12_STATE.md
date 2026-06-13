@@ -7593,6 +7593,49 @@ Validation for this slice:
   `pgStatLocal.shmem`, `pgStatLocal.dsa`, `pgStatLocal.shared_hash`, and
   `pgStatLocal.snapshot.mode` across two fake logical backends.
 
+## Backend Expression Interpreter State Bridge
+
+The one-hundred-sixty-second Phase 12 slice moves the computed-goto
+expression interpreter lookup state into a new `PgBackendExprInterpState`
+bucket:
+
+- `dispatch_table` is now a compatibility macro over the current backend's
+  interpreter state;
+- `reverse_dispatch_table` is now embedded in `PgBackendExprInterpState` and
+  follows the logical backend;
+- the local label-address table inside `ExecInterpExpr()` was renamed to
+  `local_dispatch_table` so the compatibility macro only targets backend-owned
+  state.
+
+The reverse lookup table stores the opcode as an integer to avoid adding an
+`executor/execExpr.h` include edge to `backend_runtime.h`. The runtime bucket
+uses a fixed capacity, `PG_BACKEND_EXPR_INTERP_MAX_OPS`, and
+`execExprInterp.c` asserts that `EEOP_LAST` fits. This keeps the bucket
+copyable for process/thread early adoption and avoids a new teardown-owned
+allocation.
+
+Validation for this slice:
+
+- touched-object builds passed for `execExprInterp.o`, `backend_runtime.o`,
+  and `test_backend_runtime.o`;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 42 to 41. The net
+  drop is one because two standalone interpreter globals were replaced by one
+  early backend fallback bucket;
+- backend and `src/common` clean rebuild plus generated-header recovery
+  passed, followed by clean full `gmake -j8`;
+- `gmake DESTDIR="$PWD/tmp_install" install`, `gmake -C contrib -j8`, and a
+  clean PL/pgSQL rebuild/install passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed after fixing
+  the new expected-output column width and trailing blank line;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
+  explicit `PG_REGRESS` environment;
+- `test_backend_expr_interp_state_is_backend_local()` now verifies the
+  dispatch table pointer and first reverse-lookup entry across two fake
+  logical backends.
+
 ## Backend Parallel State Bridge
 
 The one-hundred-forty-second Phase 12 slice moves a parallel-query and

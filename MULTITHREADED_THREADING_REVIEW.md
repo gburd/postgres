@@ -876,6 +876,16 @@ declarations with zero new unclassified mutable globals. This slice adds a
 temporary `backend_runtime.h` to `pgstat_internal.h` include edge so the
 pgstat local object can stay embedded; the Gate E2 header-boundary audit
 should revisit that coupling.
+The next state-migration slice moved the computed-goto expression interpreter
+dispatch and reverse-lookup tables into `PgBackendExprInterpState`. Validation
+included touched-object builds, a backend plus `src/common` clean rebuild,
+clean full build, install, `gmake check-global-lifetimes`, contrib build,
+PL/pgSQL rebuild/install, `test_backend_runtime` regression, and direct
+threaded TAP. The global-lifetime scan now reports 41 backend-local
+declarations with zero new unclassified mutable globals. The runtime bucket
+uses a fixed `PG_BACKEND_EXPR_INTERP_MAX_OPS` capacity with an
+`execExprInterp.c` assertion rather than adding an executor include edge to
+`backend_runtime.h`.
 
 ## Bottom Line
 

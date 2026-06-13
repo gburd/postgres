@@ -761,7 +761,8 @@ through `PgBackendIPCState`, plus the command-loop read-boundary bridge
 through `PgSessionLoopState` and tcop command-timing/elog line-format state
 bridge through `PgBackendCommandState` and `PgBackendLogState`, plus the
 backend-local cumulative statistics anchor bridge through
-`PgBackendPgStatPendingState`.
+`PgBackendPgStatPendingState`, plus the computed-goto expression interpreter
+dispatch/reverse-lookup bridge through `PgBackendExprInterpState`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.
