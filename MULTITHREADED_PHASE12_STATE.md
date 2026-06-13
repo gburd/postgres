@@ -7368,6 +7368,40 @@ Validation for this slice:
   remaining logical replication worker and slot-sync fields across two fake
   logical backends.
 
+## Backend Predicate Lock State Bridge
+
+The one-hundred-fifty-sixth Phase 12 slice extends `PgBackendLockState` to
+cover the remaining predicate-lock backend-local state in `predicate.c`:
+
+- the local predicate-lock coalescing hash table;
+- the current serializable transaction pointer;
+- the current transaction write-tracking flag;
+- the saved serializable transaction pointer used by parallel-query
+  read-only-safe release.
+
+`predicate.c` keeps the historical source-local names as macros over
+`PgBackendLockState`. The private `SERIALIZABLEXACT` layout remains private
+to predicate locking; `backend_runtime.h` stores those pointers as opaque
+`void *` fields and `predicate.c` casts them locally.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `predicate.o`, and
+  `test_backend_runtime.o`;
+- backend clean plus generated-header recovery, full `gmake -j8`, and
+  `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 58 to 54;
+- `gmake -C contrib -j8` and a clean PL/pgSQL rebuild/install passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct threaded runtime TAP passed all 87 tests with the local
+  `/Users/samwillis/perl5` `PERL5LIB` paths and an explicit `PG_REGRESS`
+  environment. An immediately preceding run hit a transient macOS
+  postmaster-child-count/shutdown race after completing the SQL assertions;
+  the clean rerun passed without code changes;
+- `test_backend_lock_state_is_backend_local()` now covers the moved
+  predicate-lock fields across two fake logical backends.
+
 ## Backend Parallel State Bridge
 
 The one-hundred-forty-second Phase 12 slice moves a parallel-query and

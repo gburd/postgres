@@ -656,6 +656,10 @@ typedef struct PgBackendLockState
 	void	   *deadlock_details;
 	int			deadlock_n_details;
 	void	   *blocking_autovacuum_proc;
+	HTAB	   *local_predicate_lock_hash;
+	void	   *my_serializable_xact;
+	bool		my_xact_did_write;
+	void	   *saved_serializable_xact;
 } PgBackendLockState;
 
 typedef struct PgBackendIPCState
@@ -2012,6 +2016,10 @@ extern int *PgCurrentDeadlockMaxPossibleConstraintsRef(void);
 extern void **PgCurrentDeadlockDetailsRef(void);
 extern int *PgCurrentDeadlockNDetailsRef(void);
 extern void **PgCurrentBlockingAutovacuumProcRef(void);
+extern HTAB **PgCurrentLocalPredicateLockHashRef(void);
+extern void **PgCurrentMySerializableXactRef(void);
+extern bool *PgCurrentMyXactDidWriteRef(void);
+extern void **PgCurrentSavedSerializableXactRef(void);
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);

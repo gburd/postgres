@@ -560,6 +560,17 @@ stats entry uses a private debug struct and that code is not built in this
 checkout. The slice passed clean full build/install, process-mode
 backend-runtime regression, direct threaded runtime TAP, contrib build, and
 the required global-lifetime scan with zero new unclassified mutable globals.
+Predicate-lock backend-local state now also lives in `PgBackendLockState`:
+the local predicate-lock hash table, current serializable transaction pointer,
+write-tracking flag, and saved serializable transaction pointer now follow the
+logical backend while `predicate.c` keeps local compatibility macros. Private
+`SERIALIZABLEXACT` layout stays private to predicate locking through opaque
+runtime pointers. The slice passed touched-object builds, backend
+clean/generated-header recovery, clean full build/install, process-mode
+backend-runtime regression, a clean threaded runtime TAP rerun, contrib build,
+PL/pgSQL rebuild/install, and the required global-lifetime scan with zero new
+unclassified mutable globals; backend-local declarations dropped from 58 to
+54.
 Backend utility/support state now lives in `PgBackendUtilityState`: dynahash
 active sequential-scan tracking, the superuser one-entry cache, the
 resource-owner release callback list pointer, and optional `RESOWNER_STATS`

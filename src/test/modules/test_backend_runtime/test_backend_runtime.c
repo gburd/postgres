@@ -7640,6 +7640,10 @@ test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentDeadlockDetailsRef() = &fake_backend1;
 		*PgCurrentDeadlockNDetailsRef() = 107;
 		*PgCurrentBlockingAutovacuumProcRef() = &fake_backend1;
+		*PgCurrentLocalPredicateLockHashRef() = (HTAB *) &fake_backend1;
+		*PgCurrentMySerializableXactRef() = &fake_backend1;
+		*PgCurrentMyXactDidWriteRef() = true;
+		*PgCurrentSavedSerializableXactRef() = &fake_backend1;
 
 		CurrentPgBackend = &fake_backend2;
 		ok = ok && *PgCurrentNumHeldLWLocksRef() == 0;
@@ -7672,6 +7676,10 @@ test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentDeadlockDetailsRef() == NULL;
 		ok = ok && *PgCurrentDeadlockNDetailsRef() == 0;
 		ok = ok && *PgCurrentBlockingAutovacuumProcRef() == NULL;
+		ok = ok && *PgCurrentLocalPredicateLockHashRef() == NULL;
+		ok = ok && *PgCurrentMySerializableXactRef() == NULL;
+		ok = ok && !*PgCurrentMyXactDidWriteRef();
+		ok = ok && *PgCurrentSavedSerializableXactRef() == NULL;
 
 		*PgCurrentNumHeldLWLocksRef() = 1;
 		PgCurrentHeldLWLocks()[0].lock = (LWLock *) &fake_backend2;
@@ -7704,6 +7712,10 @@ test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentDeadlockDetailsRef() = &fake_backend2;
 		*PgCurrentDeadlockNDetailsRef() = 207;
 		*PgCurrentBlockingAutovacuumProcRef() = &fake_backend2;
+		*PgCurrentLocalPredicateLockHashRef() = (HTAB *) &fake_backend2;
+		*PgCurrentMySerializableXactRef() = &fake_backend2;
+		*PgCurrentMyXactDidWriteRef() = false;
+		*PgCurrentSavedSerializableXactRef() = &fake_backend2;
 
 		CurrentPgBackend = &fake_backend1;
 		ok = ok && *PgCurrentNumHeldLWLocksRef() == 1;
@@ -7737,6 +7749,10 @@ test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentDeadlockDetailsRef() == &fake_backend1;
 		ok = ok && *PgCurrentDeadlockNDetailsRef() == 107;
 		ok = ok && *PgCurrentBlockingAutovacuumProcRef() == &fake_backend1;
+		ok = ok && *PgCurrentLocalPredicateLockHashRef() == (HTAB *) &fake_backend1;
+		ok = ok && *PgCurrentMySerializableXactRef() == &fake_backend1;
+		ok = ok && *PgCurrentMyXactDidWriteRef();
+		ok = ok && *PgCurrentSavedSerializableXactRef() == &fake_backend1;
 
 		CurrentPgBackend = &fake_backend2;
 		ok = ok && *PgCurrentNumHeldLWLocksRef() == 1;
@@ -7770,6 +7786,10 @@ test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentDeadlockDetailsRef() == &fake_backend2;
 		ok = ok && *PgCurrentDeadlockNDetailsRef() == 207;
 		ok = ok && *PgCurrentBlockingAutovacuumProcRef() == &fake_backend2;
+		ok = ok && *PgCurrentLocalPredicateLockHashRef() == (HTAB *) &fake_backend2;
+		ok = ok && *PgCurrentMySerializableXactRef() == &fake_backend2;
+		ok = ok && !*PgCurrentMyXactDidWriteRef();
+		ok = ok && *PgCurrentSavedSerializableXactRef() == &fake_backend2;
 
 		CurrentPgBackend = saved_backend;
 	}

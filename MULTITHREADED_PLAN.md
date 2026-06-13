@@ -991,6 +991,17 @@ and that code is not built in this checkout. The slice passed clean full
 build/install, process-mode backend-runtime regression, direct threaded
 runtime TAP, contrib build, and the required global-lifetime scan with zero
 new unclassified mutable globals.
+The predicate-lock state slice extends `PgBackendLockState` again for
+`predicate.c`: local predicate-lock hash state, the current serializable
+transaction pointer, write-tracking flag, and saved serializable transaction
+pointer now follow the logical backend through local compatibility macros.
+Private `SERIALIZABLEXACT` layout stays private to predicate locking through
+opaque runtime pointers. The slice passed touched-object builds, backend
+clean/generated-header recovery, clean full build/install, process-mode
+backend-runtime regression, a clean threaded runtime TAP rerun, contrib build,
+PL/pgSQL rebuild/install, and the required global-lifetime scan with zero new
+unclassified mutable globals; backend-local declarations dropped from 58 to
+54.
 The backend utility/support state slice now stores dynahash active
 sequential-scan tracking, the superuser one-entry cache, the resource-owner
 release callback list pointer, and optional `RESOWNER_STATS` lookup counters

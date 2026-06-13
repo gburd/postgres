@@ -209,6 +209,7 @@
 #include "storage/procarray.h"
 #include "storage/shmem.h"
 #include "storage/subsystems.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc_hooks.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
@@ -424,16 +425,18 @@ static PG_GLOBAL_SHMEM LWLock *ScratchPartitionLock;
  * The local hash table used to determine when to combine multiple fine-
  * grained locks into a single courser-grained lock.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND HTAB *LocalPredicateLockHash = NULL;
+#define LocalPredicateLockHash \
+	(*PgCurrentLocalPredicateLockHashRef())
 
 /*
  * Keep a pointer to the currently-running serializable transaction (if any)
  * for quick reference. Also, remember if we have written anything that could
  * cause a rw-conflict.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND SERIALIZABLEXACT *
-MySerializableXact = InvalidSerializableXact;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool MyXactDidWrite = false;
+#define MySerializableXact \
+	(*(SERIALIZABLEXACT **) PgCurrentMySerializableXactRef())
+#define MyXactDidWrite \
+	(*PgCurrentMyXactDidWriteRef())
 
 /*
  * The SXACT_FLAG_RO_UNSAFE optimization might lead us to release
@@ -442,8 +445,8 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool MyXactDidWrite = false;
  * transaction, because the workers still have a reference to it.  In that
  * case, the leader stores it here.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND SERIALIZABLEXACT *
-SavedSerializableXact = InvalidSerializableXact;
+#define SavedSerializableXact \
+	(*(SERIALIZABLEXACT **) PgCurrentSavedSerializableXactRef())
 
 static PG_GLOBAL_RUNTIME int64 max_serializable_xacts;
 

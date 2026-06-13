@@ -318,6 +318,18 @@ Important current files:
   installed runtime headers changed; at minimum rebuild and reinstall
   PL/pgSQL, `src/test/modules/test_backend_runtime`, and contrib before
   validating.
+- Predicate-lock backend-local state now also lives in `PgBackendLockState`:
+  `LocalPredicateLockHash`, `MySerializableXact`, `MyXactDidWrite`, and
+  `SavedSerializableXact` are backed by runtime accessors while `predicate.c`
+  keeps the existing local source names. Keep private `SERIALIZABLEXACT`
+  layout out of `backend_runtime.h`; store those pointers as opaque `void *`
+  fields and cast them in `predicate.c`. After changing this bridge, clean and
+  rebuild backend objects because `PgBackend` layout and installed runtime
+  headers changed; at minimum rebuild and reinstall PL/pgSQL,
+  `src/test/modules/test_backend_runtime`, and contrib before validating.
+  Direct threaded TAP should be run; a clean rerun is acceptable if the first
+  run hits the known transient macOS child-count/shutdown race after SQL
+  assertions finish.
 - Transaction/access-manager backend-local state now lives in
   `PgBackendTransactionState`: transaction-status cache fields, two-phase
   locked-GXACT and exit-registration fields, the private `TwoPhaseGetGXact()`

@@ -7254,6 +7254,30 @@ PgCurrentBlockingAutovacuumProcRef(void)
 	return &PgCurrentBackendLockState()->blocking_autovacuum_proc;
 }
 
+HTAB **
+PgCurrentLocalPredicateLockHashRef(void)
+{
+	return &PgCurrentBackendLockState()->local_predicate_lock_hash;
+}
+
+void **
+PgCurrentMySerializableXactRef(void)
+{
+	return &PgCurrentBackendLockState()->my_serializable_xact;
+}
+
+bool *
+PgCurrentMyXactDidWriteRef(void)
+{
+	return &PgCurrentBackendLockState()->my_xact_did_write;
+}
+
+void **
+PgCurrentSavedSerializableXactRef(void)
+{
+	return &PgCurrentBackendLockState()->saved_serializable_xact;
+}
+
 static PgBackendIPCState *
 PgCurrentBackendIPCState(void)
 {
