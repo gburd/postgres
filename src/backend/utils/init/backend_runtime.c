@@ -103,6 +103,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ResourceOwner early_aux_process_resourc
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendPgStatPendingState early_backend_pgstat_pending;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInstrumentationState early_backend_instrumentation;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendStorageState early_backend_storage;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendLockState early_backend_locks;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionIdentityState early_connection_identity;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionSocketIOState early_connection_socket_io;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionProtocolState early_connection_protocol;
@@ -613,6 +614,8 @@ static void PgBackendInitializeInstrumentationState(PgBackendInstrumentationStat
 static void PgBackendAdoptEarlyInstrumentationState(PgBackend *backend);
 static void PgBackendInitializeStorageState(PgBackendStorageState *storage);
 static void PgBackendAdoptEarlyStorageState(PgBackend *backend);
+static void PgBackendInitializeLockState(PgBackendLockState *locks);
+static void PgBackendAdoptEarlyLockState(PgBackend *backend);
 static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
 static void PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend);
 static BackendType *PgCurrentBackendTypeRef(void);
@@ -2109,6 +2112,23 @@ PgBackendAdoptEarlyStorageState(PgBackend *backend)
 }
 
 static void
+PgBackendInitializeLockState(PgBackendLockState *locks)
+{
+	Assert(locks != NULL);
+
+	MemSet(locks, 0, sizeof(*locks));
+}
+
+static void
+PgBackendAdoptEarlyLockState(PgBackend *backend)
+{
+	Assert(backend != NULL);
+
+	backend->locks = early_backend_locks;
+	PgBackendInitializeLockState(&early_backend_locks);
+}
+
+static void
 PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend)
 {
 	Assert(backend != NULL);
@@ -2343,6 +2363,7 @@ InitializePgProcessRuntime(void)
 	PgBackendAdoptEarlyPgStatPendingState(&process_backend);
 	PgBackendAdoptEarlyInstrumentationState(&process_backend);
 	PgBackendAdoptEarlyStorageState(&process_backend);
+	PgBackendAdoptEarlyLockState(&process_backend);
 	PgBackendSetInterruptLatch(&process_backend, process_backend.core.latch);
 	dlist_init(&process_backend.dsm_segment_list);
 	pg_atomic_init_u32(&process_backend.wait_state.waiting, 0);
@@ -2484,6 +2505,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgBackendInitializePgStatPendingState(&state->backend.pgstat_pending);
 	PgBackendInitializeInstrumentationState(&state->backend.instrumentation);
 	PgBackendInitializeStorageState(&state->backend.storage);
+	PgBackendInitializeLockState(&state->backend.locks);
 	PgBackendSetInterruptLatch(&state->backend, interrupt_latch);
 	dlist_init(&state->backend.dsm_segment_list);
 	pg_atomic_init_u32(&state->backend.wait_state.waiting, 0);
@@ -2567,6 +2589,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgBackendAdoptEarlyPgStatPendingState(&state->backend);
 	PgBackendAdoptEarlyInstrumentationState(&state->backend);
 	PgBackendAdoptEarlyStorageState(&state->backend);
+	PgBackendAdoptEarlyLockState(&state->backend);
 	PgSessionAdoptEarlyDatabaseState(&state->session);
 	PgSessionAdoptEarlyTablespaceState(&state->session);
 	PgSessionAdoptEarlyBinaryUpgradeState(&state->session);
@@ -6097,6 +6120,117 @@ MemoryContext *
 PgCurrentMdContextRef(void)
 {
 	return &PgCurrentBackendStorageState()->md_context;
+}
+
+static PgBackendLockState *
+PgCurrentBackendLockState(void)
+{
+	if (CurrentPgBackend == NULL)
+		return &early_backend_locks;
+
+	return &CurrentPgBackend->locks;
+}
+
+void **
+PgCurrentDeadlockVisitedProcsRef(void)
+{
+	return &PgCurrentBackendLockState()->deadlock_visited_procs;
+}
+
+int *
+PgCurrentDeadlockNVisitedProcsRef(void)
+{
+	return &PgCurrentBackendLockState()->deadlock_n_visited_procs;
+}
+
+void **
+PgCurrentDeadlockTopoProcsRef(void)
+{
+	return &PgCurrentBackendLockState()->deadlock_topo_procs;
+}
+
+void **
+PgCurrentDeadlockBeforeConstraintsRef(void)
+{
+	return &PgCurrentBackendLockState()->deadlock_before_constraints;
+}
+
+void **
+PgCurrentDeadlockAfterConstraintsRef(void)
+{
+	return &PgCurrentBackendLockState()->deadlock_after_constraints;
+}
+
+void **
+PgCurrentDeadlockWaitOrdersRef(void)
+{
+	return &PgCurrentBackendLockState()->deadlock_wait_orders;
+}
+
+int *
+PgCurrentDeadlockNWaitOrdersRef(void)
+{
+	return &PgCurrentBackendLockState()->deadlock_n_wait_orders;
+}
+
+void **
+PgCurrentDeadlockWaitOrderProcsRef(void)
+{
+	return &PgCurrentBackendLockState()->deadlock_wait_order_procs;
+}
+
+void **
+PgCurrentDeadlockCurConstraintsRef(void)
+{
+	return &PgCurrentBackendLockState()->deadlock_cur_constraints;
+}
+
+int *
+PgCurrentDeadlockNCurConstraintsRef(void)
+{
+	return &PgCurrentBackendLockState()->deadlock_n_cur_constraints;
+}
+
+int *
+PgCurrentDeadlockMaxCurConstraintsRef(void)
+{
+	return &PgCurrentBackendLockState()->deadlock_max_cur_constraints;
+}
+
+void **
+PgCurrentDeadlockPossibleConstraintsRef(void)
+{
+	return &PgCurrentBackendLockState()->deadlock_possible_constraints;
+}
+
+int *
+PgCurrentDeadlockNPossibleConstraintsRef(void)
+{
+	return &PgCurrentBackendLockState()->deadlock_n_possible_constraints;
+}
+
+int *
+PgCurrentDeadlockMaxPossibleConstraintsRef(void)
+{
+	return &PgCurrentBackendLockState()->deadlock_max_possible_constraints;
+}
+
+void **
+PgCurrentDeadlockDetailsRef(void)
+{
+	return &PgCurrentBackendLockState()->deadlock_details;
+}
+
+int *
+PgCurrentDeadlockNDetailsRef(void)
+{
+	return &PgCurrentBackendLockState()->deadlock_n_details;
+}
+
+void **
+PgCurrentBlockingAutovacuumProcRef(void)
+{
+	return &PgCurrentBackendLockState()->blocking_autovacuum_proc;
 }
 
 static PgBackendPendingInterruptState *

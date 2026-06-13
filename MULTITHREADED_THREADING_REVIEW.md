@@ -487,6 +487,12 @@ local `fd.c` source names behind private compatibility macros. This exposed
 one missing thread-runtime adoption edge: latch/wait setup can reserve file
 descriptors before `InstallPgThreadBackendRuntimeState()`, so that install
 path now adopts early storage fallback state into the thread-backed backend.
+The deadlock detector workspace (`visitedProcs`, topo-sort arrays,
+constraint/result arrays, `deadlockDetails`, and
+`blocking_autovacuum_proc`) now lives in `PgBackendLockState` behind private
+`deadlock.c` compatibility macros. The runtime object keeps the private
+`deadlock.c` types opaque, so this removes the raw backend-local TLS
+workspace without widening the lock-manager type surface.
 PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly

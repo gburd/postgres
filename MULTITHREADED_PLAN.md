@@ -904,6 +904,16 @@ The follow-up file-descriptor/VFD batch now stores `VfdCache`,
 Threaded startup can reserve file descriptors before runtime installation, so
 `InstallPgThreadBackendRuntimeState()` now adopts early storage fallback state
 along with the other early backend buckets.
+The deadlock detector workspace batch now stores `visitedProcs`,
+`nVisitedProcs`, `topoProcs`, `beforeConstraints`, `afterConstraints`,
+`waitOrders`, `nWaitOrders`, `waitOrderProcs`, `curConstraints`,
+`nCurConstraints`, `maxCurConstraints`, `possibleConstraints`,
+`nPossibleConstraints`, `maxPossibleConstraints`, `deadlockDetails`,
+`nDeadlockDetails`, and `blocking_autovacuum_proc` in `PgBackendLockState`
+behind private `deadlock.c` compatibility macros. The runtime state keeps the
+private `EDGE`, `WAIT_ORDER`, and `DEADLOCK_INFO` storage opaque, preserving
+the local source-file boundary while removing the raw backend-local TLS
+workspace.
 PMChild assignment and slot release now also scrub stale carrier-visible signal
 ids and thread-exit payloads before reuse. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live

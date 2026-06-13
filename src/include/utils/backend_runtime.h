@@ -227,6 +227,27 @@ typedef struct PgBackendStorageState
 	MemoryContext md_context;
 } PgBackendStorageState;
 
+typedef struct PgBackendLockState
+{
+	void	   *deadlock_visited_procs;
+	int			deadlock_n_visited_procs;
+	void	   *deadlock_topo_procs;
+	void	   *deadlock_before_constraints;
+	void	   *deadlock_after_constraints;
+	void	   *deadlock_wait_orders;
+	int			deadlock_n_wait_orders;
+	void	   *deadlock_wait_order_procs;
+	void	   *deadlock_cur_constraints;
+	int			deadlock_n_cur_constraints;
+	int			deadlock_max_cur_constraints;
+	void	   *deadlock_possible_constraints;
+	int			deadlock_n_possible_constraints;
+	int			deadlock_max_possible_constraints;
+	void	   *deadlock_details;
+	int			deadlock_n_details;
+	void	   *blocking_autovacuum_proc;
+} PgBackendLockState;
+
 typedef struct PgExecutionDebugState
 {
 	const char *debug_query_string;
@@ -1012,6 +1033,7 @@ struct PgBackend
 	PgBackendPgStatPendingState pgstat_pending;
 	PgBackendInstrumentationState instrumentation;
 	PgBackendStorageState storage;
+	PgBackendLockState locks;
 	PgBackendPendingInterruptState pending_interrupts;
 	PgBackendInterruptHoldoffState interrupt_holdoffs;
 	PgBackendWaitState wait_state;
@@ -1366,6 +1388,23 @@ extern bool *PgCurrentSyncInProgressRef(void);
 extern HTAB **PgCurrentSMgrRelationHashRef(void);
 extern dlist_head *PgCurrentSMgrUnpinnedRelationsRef(void);
 extern MemoryContext *PgCurrentMdContextRef(void);
+extern void **PgCurrentDeadlockVisitedProcsRef(void);
+extern int *PgCurrentDeadlockNVisitedProcsRef(void);
+extern void **PgCurrentDeadlockTopoProcsRef(void);
+extern void **PgCurrentDeadlockBeforeConstraintsRef(void);
+extern void **PgCurrentDeadlockAfterConstraintsRef(void);
+extern void **PgCurrentDeadlockWaitOrdersRef(void);
+extern int *PgCurrentDeadlockNWaitOrdersRef(void);
+extern void **PgCurrentDeadlockWaitOrderProcsRef(void);
+extern void **PgCurrentDeadlockCurConstraintsRef(void);
+extern int *PgCurrentDeadlockNCurConstraintsRef(void);
+extern int *PgCurrentDeadlockMaxCurConstraintsRef(void);
+extern void **PgCurrentDeadlockPossibleConstraintsRef(void);
+extern int *PgCurrentDeadlockNPossibleConstraintsRef(void);
+extern int *PgCurrentDeadlockMaxPossibleConstraintsRef(void);
+extern void **PgCurrentDeadlockDetailsRef(void);
+extern int *PgCurrentDeadlockNDetailsRef(void);
+extern void **PgCurrentBlockingAutovacuumProcRef(void);
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);

@@ -6300,3 +6300,63 @@ Validation for this slice:
   `src/backend/storage/file/fd.c` and no remaining raw TLS declarations for
   the moved fd/VFD state;
 - `git diff --check` passed.
+
+## Backend Deadlock Detector State Bridge
+
+The one-hundred-thirty-first Phase 12 slice moves the deadlock detector's
+backend-local workspace from standalone TLS into a new `PgBackendLockState`
+bucket:
+
+- cycle detection workspace: `visitedProcs` and `nVisitedProcs`;
+- topo-sort workspace: `topoProcs`, `beforeConstraints`, and
+  `afterConstraints`;
+- wait-order expansion workspace: `waitOrders`, `nWaitOrders`, and
+  `waitOrderProcs`;
+- active and possible constraint arrays: `curConstraints`,
+  `nCurConstraints`, `maxCurConstraints`, `possibleConstraints`,
+  `nPossibleConstraints`, and `maxPossibleConstraints`;
+- deadlock detail output state: `deadlockDetails` and `nDeadlockDetails`;
+- autovacuum deadlock cancellation target: `blocking_autovacuum_proc`.
+
+`deadlock.c` keeps its historical local source names through private
+compatibility macros backed by `PgCurrentDeadlock*Ref()` and
+`PgCurrentBlockingAutovacuumProcRef()`. `PgBackendLockState` stores the
+private `EDGE`, `WAIT_ORDER`, `DEADLOCK_INFO`, and `PGPROC` pointer-typed
+fields as opaque `void *` values, so the deadlock detector's private types
+stay local to `deadlock.c`.
+
+The lock-state bucket is initialized for every process and thread backend.
+Like the other backend-owned buckets, it also has early fallback storage that
+is adopted during process and thread runtime installation. The current early
+fallback is expected to be zero for normal deadlock checking, but adopting it
+keeps the runtime bridge consistent with the rest of Phase 12 and avoids
+future pre-runtime writes being silently discarded.
+
+Validation for this slice:
+
+- `gmake -C src/backend/utils/init backend_runtime.o` passed;
+- `gmake -C src/backend/storage/lmgr deadlock.o` passed;
+- `gmake -C src/test/modules/test_backend_runtime test_backend_runtime.o`
+  passed after adding `test_backend_lock_state_is_backend_local()`;
+- a full backend clean plus generated-header recovery was run after the
+  installed-header and `PgBackend` layout changes;
+- full `gmake -j8` passed;
+- full `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- PL/pgSQL was cleaned, rebuilt, and reinstalled after the installed-header
+  change;
+- `src/test/modules/test_backend_runtime` was cleaned, rebuilt, and
+  reinstalled after the installed-header change;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression, including the new
+  `test_backend_lock_state_is_backend_local()` helper, and still reported TAP
+  disabled by configure;
+- direct threaded-runtime TAP passed all 87 tests with the local
+  `/Users/samwillis/perl5` `PERL5LIB` paths and an explicit `PG_REGRESS`
+  environment;
+- `gmake -C contrib -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 371 to 355;
+- a static scan found only the seventeen private compatibility macros in
+  `src/backend/storage/lmgr/deadlock.c` and no remaining raw TLS declarations
+  for the moved deadlock detector state;
+- `git diff --check` passed.

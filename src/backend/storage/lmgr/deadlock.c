@@ -31,6 +31,7 @@
 #include "storage/lmgr.h"
 #include "storage/proc.h"
 #include "storage/procnumber.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 
 
@@ -101,38 +102,38 @@ static void PrintLockQueue(LOCK *lock, const char *info);
 
 /* Workspace for FindLockCycle */
 /* Array of visited procs */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PGPROC **visitedProcs;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int nVisitedProcs;
+#define visitedProcs (*(PGPROC ***) PgCurrentDeadlockVisitedProcsRef())
+#define nVisitedProcs (*PgCurrentDeadlockNVisitedProcsRef())
 
 /* Workspace for TopoSort */
 /* Array of not-yet-output procs */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PGPROC **topoProcs;
+#define topoProcs (*(PGPROC ***) PgCurrentDeadlockTopoProcsRef())
 /* Counts of remaining before-constraints */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int *beforeConstraints;
+#define beforeConstraints (*(int **) PgCurrentDeadlockBeforeConstraintsRef())
 /* List head for after-constraints */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int *afterConstraints;
+#define afterConstraints (*(int **) PgCurrentDeadlockAfterConstraintsRef())
 
 /* Output area for ExpandConstraints */
 /* Array of proposed queue rearrangements */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND WAIT_ORDER *waitOrders;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int nWaitOrders;
+#define waitOrders (*(WAIT_ORDER **) PgCurrentDeadlockWaitOrdersRef())
+#define nWaitOrders (*PgCurrentDeadlockNWaitOrdersRef())
 /* Space for waitOrders queue contents */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PGPROC **waitOrderProcs;
+#define waitOrderProcs (*(PGPROC ***) PgCurrentDeadlockWaitOrderProcsRef())
 
 /* Current list of constraints being considered */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND EDGE *curConstraints;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int nCurConstraints;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int maxCurConstraints;
+#define curConstraints (*(EDGE **) PgCurrentDeadlockCurConstraintsRef())
+#define nCurConstraints (*PgCurrentDeadlockNCurConstraintsRef())
+#define maxCurConstraints (*PgCurrentDeadlockMaxCurConstraintsRef())
 
 /* Storage space for results from FindLockCycle */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND EDGE *possibleConstraints;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int nPossibleConstraints;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int maxPossibleConstraints;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND DEADLOCK_INFO *deadlockDetails;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND int nDeadlockDetails;
+#define possibleConstraints (*(EDGE **) PgCurrentDeadlockPossibleConstraintsRef())
+#define nPossibleConstraints (*PgCurrentDeadlockNPossibleConstraintsRef())
+#define maxPossibleConstraints (*PgCurrentDeadlockMaxPossibleConstraintsRef())
+#define deadlockDetails (*(DEADLOCK_INFO **) PgCurrentDeadlockDetailsRef())
+#define nDeadlockDetails (*PgCurrentDeadlockNDetailsRef())
 
 /* PGPROC pointer of any blocking autovacuum worker found */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PGPROC *blocking_autovacuum_proc = NULL;
+#define blocking_autovacuum_proc (*(PGPROC **) PgCurrentBlockingAutovacuumProcRef())
 
 
 /*

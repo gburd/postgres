@@ -237,6 +237,19 @@ Important current files:
   `PgBackend` layout and installed runtime headers changed; at minimum rebuild
   and reinstall PL/pgSQL, `src/test/modules/test_backend_runtime`, and contrib
   before validating.
+- Deadlock detector workspace state (`visitedProcs`, `nVisitedProcs`,
+  `topoProcs`, `beforeConstraints`, `afterConstraints`, `waitOrders`,
+  `nWaitOrders`, `waitOrderProcs`, `curConstraints`, `nCurConstraints`,
+  `maxCurConstraints`, `possibleConstraints`, `nPossibleConstraints`,
+  `maxPossibleConstraints`, `deadlockDetails`, `nDeadlockDetails`, and
+  `blocking_autovacuum_proc`) is now owned by `PgBackendLockState`, exposed
+  through private compatibility macros in `src/backend/storage/lmgr/deadlock.c`.
+  `PgBackendLockState` intentionally uses opaque pointer fields so the private
+  `deadlock.c` `EDGE`, `WAIT_ORDER`, and `DEADLOCK_INFO` types stay local to
+  that source file. After changing this bridge, clean and rebuild backend
+  objects because `PgBackend` layout and installed runtime headers changed; at
+  minimum rebuild and reinstall PL/pgSQL, `src/test/modules/test_backend_runtime`,
+  and contrib before validating.
 - Treat `PMChild.thread_backend` as private PMChild-owned publication state.
   Postmaster code should use PMChild helper APIs for threaded backend
   interrupt, wakeup, and thread-exit publication rather than dereferencing or

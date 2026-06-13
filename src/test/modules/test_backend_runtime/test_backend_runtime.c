@@ -7016,6 +7016,130 @@ test_backend_storage_state_is_backend_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_backend_lock_state_is_backend_local);
+Datum
+test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgBackend	fake_backend1;
+	PgBackend	fake_backend2;
+	bool		ok = true;
+
+	saved_backend = CurrentPgBackend;
+	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
+	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+
+	PG_TRY();
+	{
+		CurrentPgBackend = &fake_backend1;
+		*PgCurrentDeadlockVisitedProcsRef() = &fake_backend1;
+		*PgCurrentDeadlockNVisitedProcsRef() = 101;
+		*PgCurrentDeadlockTopoProcsRef() = &fake_backend1;
+		*PgCurrentDeadlockBeforeConstraintsRef() = &fake_backend1;
+		*PgCurrentDeadlockAfterConstraintsRef() = &fake_backend1;
+		*PgCurrentDeadlockWaitOrdersRef() = &fake_backend1;
+		*PgCurrentDeadlockNWaitOrdersRef() = 102;
+		*PgCurrentDeadlockWaitOrderProcsRef() = &fake_backend1;
+		*PgCurrentDeadlockCurConstraintsRef() = &fake_backend1;
+		*PgCurrentDeadlockNCurConstraintsRef() = 103;
+		*PgCurrentDeadlockMaxCurConstraintsRef() = 104;
+		*PgCurrentDeadlockPossibleConstraintsRef() = &fake_backend1;
+		*PgCurrentDeadlockNPossibleConstraintsRef() = 105;
+		*PgCurrentDeadlockMaxPossibleConstraintsRef() = 106;
+		*PgCurrentDeadlockDetailsRef() = &fake_backend1;
+		*PgCurrentDeadlockNDetailsRef() = 107;
+		*PgCurrentBlockingAutovacuumProcRef() = &fake_backend1;
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && *PgCurrentDeadlockVisitedProcsRef() == NULL;
+		ok = ok && *PgCurrentDeadlockNVisitedProcsRef() == 0;
+		ok = ok && *PgCurrentDeadlockTopoProcsRef() == NULL;
+		ok = ok && *PgCurrentDeadlockBeforeConstraintsRef() == NULL;
+		ok = ok && *PgCurrentDeadlockAfterConstraintsRef() == NULL;
+		ok = ok && *PgCurrentDeadlockWaitOrdersRef() == NULL;
+		ok = ok && *PgCurrentDeadlockNWaitOrdersRef() == 0;
+		ok = ok && *PgCurrentDeadlockWaitOrderProcsRef() == NULL;
+		ok = ok && *PgCurrentDeadlockCurConstraintsRef() == NULL;
+		ok = ok && *PgCurrentDeadlockNCurConstraintsRef() == 0;
+		ok = ok && *PgCurrentDeadlockMaxCurConstraintsRef() == 0;
+		ok = ok && *PgCurrentDeadlockPossibleConstraintsRef() == NULL;
+		ok = ok && *PgCurrentDeadlockNPossibleConstraintsRef() == 0;
+		ok = ok && *PgCurrentDeadlockMaxPossibleConstraintsRef() == 0;
+		ok = ok && *PgCurrentDeadlockDetailsRef() == NULL;
+		ok = ok && *PgCurrentDeadlockNDetailsRef() == 0;
+		ok = ok && *PgCurrentBlockingAutovacuumProcRef() == NULL;
+
+		*PgCurrentDeadlockVisitedProcsRef() = &fake_backend2;
+		*PgCurrentDeadlockNVisitedProcsRef() = 201;
+		*PgCurrentDeadlockTopoProcsRef() = &fake_backend2;
+		*PgCurrentDeadlockBeforeConstraintsRef() = &fake_backend2;
+		*PgCurrentDeadlockAfterConstraintsRef() = &fake_backend2;
+		*PgCurrentDeadlockWaitOrdersRef() = &fake_backend2;
+		*PgCurrentDeadlockNWaitOrdersRef() = 202;
+		*PgCurrentDeadlockWaitOrderProcsRef() = &fake_backend2;
+		*PgCurrentDeadlockCurConstraintsRef() = &fake_backend2;
+		*PgCurrentDeadlockNCurConstraintsRef() = 203;
+		*PgCurrentDeadlockMaxCurConstraintsRef() = 204;
+		*PgCurrentDeadlockPossibleConstraintsRef() = &fake_backend2;
+		*PgCurrentDeadlockNPossibleConstraintsRef() = 205;
+		*PgCurrentDeadlockMaxPossibleConstraintsRef() = 206;
+		*PgCurrentDeadlockDetailsRef() = &fake_backend2;
+		*PgCurrentDeadlockNDetailsRef() = 207;
+		*PgCurrentBlockingAutovacuumProcRef() = &fake_backend2;
+
+		CurrentPgBackend = &fake_backend1;
+		ok = ok && *PgCurrentDeadlockVisitedProcsRef() == &fake_backend1;
+		ok = ok && *PgCurrentDeadlockNVisitedProcsRef() == 101;
+		ok = ok && *PgCurrentDeadlockTopoProcsRef() == &fake_backend1;
+		ok = ok && *PgCurrentDeadlockBeforeConstraintsRef() == &fake_backend1;
+		ok = ok && *PgCurrentDeadlockAfterConstraintsRef() == &fake_backend1;
+		ok = ok && *PgCurrentDeadlockWaitOrdersRef() == &fake_backend1;
+		ok = ok && *PgCurrentDeadlockNWaitOrdersRef() == 102;
+		ok = ok && *PgCurrentDeadlockWaitOrderProcsRef() == &fake_backend1;
+		ok = ok && *PgCurrentDeadlockCurConstraintsRef() == &fake_backend1;
+		ok = ok && *PgCurrentDeadlockNCurConstraintsRef() == 103;
+		ok = ok && *PgCurrentDeadlockMaxCurConstraintsRef() == 104;
+		ok = ok && *PgCurrentDeadlockPossibleConstraintsRef() == &fake_backend1;
+		ok = ok && *PgCurrentDeadlockNPossibleConstraintsRef() == 105;
+		ok = ok && *PgCurrentDeadlockMaxPossibleConstraintsRef() == 106;
+		ok = ok && *PgCurrentDeadlockDetailsRef() == &fake_backend1;
+		ok = ok && *PgCurrentDeadlockNDetailsRef() == 107;
+		ok = ok && *PgCurrentBlockingAutovacuumProcRef() == &fake_backend1;
+
+		CurrentPgBackend = &fake_backend2;
+		ok = ok && *PgCurrentDeadlockVisitedProcsRef() == &fake_backend2;
+		ok = ok && *PgCurrentDeadlockNVisitedProcsRef() == 201;
+		ok = ok && *PgCurrentDeadlockTopoProcsRef() == &fake_backend2;
+		ok = ok && *PgCurrentDeadlockBeforeConstraintsRef() == &fake_backend2;
+		ok = ok && *PgCurrentDeadlockAfterConstraintsRef() == &fake_backend2;
+		ok = ok && *PgCurrentDeadlockWaitOrdersRef() == &fake_backend2;
+		ok = ok && *PgCurrentDeadlockNWaitOrdersRef() == 202;
+		ok = ok && *PgCurrentDeadlockWaitOrderProcsRef() == &fake_backend2;
+		ok = ok && *PgCurrentDeadlockCurConstraintsRef() == &fake_backend2;
+		ok = ok && *PgCurrentDeadlockNCurConstraintsRef() == 203;
+		ok = ok && *PgCurrentDeadlockMaxCurConstraintsRef() == 204;
+		ok = ok && *PgCurrentDeadlockPossibleConstraintsRef() == &fake_backend2;
+		ok = ok && *PgCurrentDeadlockNPossibleConstraintsRef() == 205;
+		ok = ok && *PgCurrentDeadlockMaxPossibleConstraintsRef() == 206;
+		ok = ok && *PgCurrentDeadlockDetailsRef() == &fake_backend2;
+		ok = ok && *PgCurrentDeadlockNDetailsRef() == 207;
+		ok = ok && *PgCurrentBlockingAutovacuumProcRef() == &fake_backend2;
+
+		CurrentPgBackend = saved_backend;
+	}
+	PG_CATCH();
+	{
+		CurrentPgBackend = saved_backend;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "backend lock state was not backend-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_pmchild_thread_backend_signal_api);
 Datum
 test_pmchild_thread_backend_signal_api(PG_FUNCTION_ARGS)
