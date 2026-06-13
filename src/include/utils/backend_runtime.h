@@ -31,6 +31,7 @@
 #include "pgstat.h"
 #include "port/atomics.h"
 #include "storage/buf.h"
+#include "storage/checksum.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
 #include "storage/lwlock.h"
@@ -310,6 +311,34 @@ typedef struct PgBackendLogicalReplicationState
 	ParallelApplyWorkerInfo *stream_apply_worker;
 	List	   *parallel_apply_subxactlist;
 } PgBackendLogicalReplicationState;
+
+typedef struct PgBackendXLogWriteResult
+{
+	XLogRecPtr	Write;
+	XLogRecPtr	Flush;
+} PgBackendXLogWriteResult;
+
+typedef struct PgBackendXLogState
+{
+	bool		local_recovery_in_progress;
+	int			local_xlog_insert_allowed;
+	XLogRecPtr	proc_last_rec_ptr;
+	XLogRecPtr	xact_last_rec_end;
+	XLogRecPtr	xact_last_commit_end;
+	XLogRecPtr	redo_rec_ptr;
+	bool		do_page_writes;
+	PgBackendXLogWriteResult logwrt_result;
+	int			open_log_file;
+	XLogSegNo	open_log_seg_no;
+	TimeLineID	open_log_tli;
+	XLogRecPtr	local_min_recovery_point;
+	TimeLineID	local_min_recovery_point_tli;
+	bool		update_min_recovery_point;
+	ChecksumStateType local_data_checksum_state;
+	int			my_lock_no;
+	bool		holding_all_locks;
+	MemoryContext wal_debug_context;
+} PgBackendXLogState;
 
 typedef struct PgBackendPgStatPendingState
 {
@@ -1333,6 +1362,7 @@ struct PgBackend
 	PgBackendWalSenderState walsender;
 	PgBackendReplicationState replication;
 	PgBackendLogicalReplicationState logical_replication;
+	PgBackendXLogState xlog;
 	PgBackendPgStatPendingState pgstat_pending;
 	PgBackendActivityState activity;
 	PgBackendUtilityState utility;
@@ -1760,6 +1790,7 @@ extern PgBackendTimeoutState *PgCurrentTimeoutState(void);
 extern PgBackendWalSenderState *PgCurrentWalSenderState(void);
 extern PgBackendReplicationState *PgCurrentReplicationState(void);
 extern PgBackendLogicalReplicationState *PgCurrentLogicalReplicationState(void);
+extern PgBackendXLogState *PgCurrentXLogState(void);
 extern TransactionId *PgCurrentCachedFetchXidRef(void);
 extern int *PgCurrentCachedFetchXidStatusRef(void);
 extern XLogRecPtr *PgCurrentCachedCommitLSNRef(void);

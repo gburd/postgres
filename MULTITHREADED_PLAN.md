@@ -1080,6 +1080,18 @@ clean full build/install, process-mode backend-runtime regression, direct
 threaded runtime TAP, contrib build, and the required global-lifetime scan
 with zero new unclassified mutable globals; backend-local declarations dropped
 from 193 to 148.
+Backend WAL/XLog state now lives in `PgBackendXLogState`: local recovery and
+insert-permission flags, exported transaction WAL pointers, local redo and
+full-page-write caches, cached write/flush result, open WAL segment tracking,
+local min-recovery-point copies, checksum state, insertion-lock bookkeeping,
+and WAL debug context now follow the logical backend. Public transaction WAL
+pointers remain compatibility macros over `PgCurrentXLogState()`. The local
+redo pointer uses a distinct `XLogLocalRedoRecPtr` compatibility name in
+`xlog.c` to avoid colliding with shared WAL struct fields named `RedoRecPtr`.
+The slice passed clean full build/install, process-mode backend-runtime
+regression, direct threaded runtime TAP, contrib build, and the required
+global-lifetime scan with zero new unclassified mutable globals;
+backend-local declarations dropped from 148 to 128.
 PMChild assignment and slot release now also scrub stale carrier-visible signal
 ids and thread-exit payloads before reuse. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live

@@ -7051,6 +7051,51 @@ Validation for this slice:
   87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
   explicit `PG_REGRESS` environment.
 
+## Backend WAL/XLog State Bridge
+
+The one-hundred-forty-eighth Phase 12 slice moves the main backend-local
+WAL/XLog cache group into a new `PgBackendXLogState` bucket:
+
+- local recovery and XLog-insert permission flags;
+- exported transaction WAL pointers `ProcLastRecPtr`, `XactLastRecEnd`, and
+  `XactLastCommitEnd`;
+- the backend-local redo pointer, full-page-write cache, and private
+  `LogwrtResult` copy;
+- open WAL segment file/segment/timeline tracking;
+- local min-recovery-point copies and update flag;
+- local checksum state;
+- WAL insertion-lock bookkeeping;
+- WAL debug memory context.
+
+The public transaction WAL pointers remain source-compatible macros in
+`xlog.h` over `PgCurrentXLogState()`. Most private `xlog.c` names also use
+local compatibility macros. The local redo pointer deliberately uses the
+non-conflicting `XLogLocalRedoRecPtr` name instead of a `RedoRecPtr` macro,
+because shared WAL structs also contain fields named `RedoRecPtr`, and an
+object-like macro would corrupt `Insert->RedoRecPtr` and
+`XLogCtl->RedoRecPtr` member references.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `xlog.o`, and
+  `test_backend_runtime.o`;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 148 to 128;
+- a full backend clean plus generated-header recovery was run after the
+  installed-header and `PgBackend` layout changes;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- `gmake -C contrib -j8` passed;
+- PL/pgSQL and `src/test/modules/test_backend_runtime` were cleaned, rebuilt,
+  and reinstalled after the installed-header and `PgBackend` layout changes;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression, including the new XLog-state helper, and still
+  reported TAP disabled by configure;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
+  explicit `PG_REGRESS` environment.
+
 ## Backend Parallel State Bridge
 
 The one-hundred-forty-second Phase 12 slice moves a parallel-query and

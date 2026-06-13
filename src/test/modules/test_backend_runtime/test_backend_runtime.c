@@ -8787,6 +8787,166 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_backend_xlog_state_is_backend_local);
+Datum
+test_backend_xlog_state_is_backend_local(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgBackend	fake_backend1;
+	PgBackend	fake_backend2;
+	PgBackendXLogState *xlog1;
+	PgBackendXLogState *xlog2;
+	bool		ok = true;
+
+	saved_backend = CurrentPgBackend;
+	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
+	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+	fake_backend1.xlog.local_recovery_in_progress = true;
+	fake_backend1.xlog.local_xlog_insert_allowed = -1;
+	fake_backend1.xlog.proc_last_rec_ptr = InvalidXLogRecPtr;
+	fake_backend1.xlog.xact_last_rec_end = InvalidXLogRecPtr;
+	fake_backend1.xlog.xact_last_commit_end = InvalidXLogRecPtr;
+	fake_backend1.xlog.redo_rec_ptr = InvalidXLogRecPtr;
+	fake_backend1.xlog.open_log_file = -1;
+	fake_backend1.xlog.local_min_recovery_point = InvalidXLogRecPtr;
+	fake_backend1.xlog.update_min_recovery_point = true;
+	fake_backend2.xlog.local_recovery_in_progress = true;
+	fake_backend2.xlog.local_xlog_insert_allowed = -1;
+	fake_backend2.xlog.proc_last_rec_ptr = InvalidXLogRecPtr;
+	fake_backend2.xlog.xact_last_rec_end = InvalidXLogRecPtr;
+	fake_backend2.xlog.xact_last_commit_end = InvalidXLogRecPtr;
+	fake_backend2.xlog.redo_rec_ptr = InvalidXLogRecPtr;
+	fake_backend2.xlog.open_log_file = -1;
+	fake_backend2.xlog.local_min_recovery_point = InvalidXLogRecPtr;
+	fake_backend2.xlog.update_min_recovery_point = true;
+
+	PG_TRY();
+	{
+		CurrentPgBackend = &fake_backend1;
+		xlog1 = PgCurrentXLogState();
+		xlog1->local_recovery_in_progress = false;
+		xlog1->local_xlog_insert_allowed = 1;
+		xlog1->proc_last_rec_ptr = UINT64CONST(101);
+		xlog1->xact_last_rec_end = UINT64CONST(102);
+		xlog1->xact_last_commit_end = UINT64CONST(103);
+		xlog1->redo_rec_ptr = UINT64CONST(104);
+		xlog1->do_page_writes = true;
+		xlog1->logwrt_result.Write = UINT64CONST(105);
+		xlog1->logwrt_result.Flush = UINT64CONST(106);
+		xlog1->open_log_file = 107;
+		xlog1->open_log_seg_no = 108;
+		xlog1->open_log_tli = 109;
+		xlog1->local_min_recovery_point = UINT64CONST(110);
+		xlog1->local_min_recovery_point_tli = 111;
+		xlog1->update_min_recovery_point = false;
+		xlog1->local_data_checksum_state = PG_DATA_CHECKSUM_INPROGRESS_ON;
+		xlog1->my_lock_no = 112;
+		xlog1->holding_all_locks = true;
+		xlog1->wal_debug_context = (MemoryContext) &fake_backend1;
+
+		CurrentPgBackend = &fake_backend2;
+		xlog2 = PgCurrentXLogState();
+		ok = ok && xlog2->local_recovery_in_progress;
+		ok = ok && xlog2->local_xlog_insert_allowed == -1;
+		ok = ok && xlog2->proc_last_rec_ptr == InvalidXLogRecPtr;
+		ok = ok && xlog2->xact_last_rec_end == InvalidXLogRecPtr;
+		ok = ok && xlog2->xact_last_commit_end == InvalidXLogRecPtr;
+		ok = ok && xlog2->redo_rec_ptr == InvalidXLogRecPtr;
+		ok = ok && !xlog2->do_page_writes;
+		ok = ok && xlog2->logwrt_result.Write == 0;
+		ok = ok && xlog2->logwrt_result.Flush == 0;
+		ok = ok && xlog2->open_log_file == -1;
+		ok = ok && xlog2->open_log_seg_no == 0;
+		ok = ok && xlog2->open_log_tli == 0;
+		ok = ok && xlog2->local_min_recovery_point == InvalidXLogRecPtr;
+		ok = ok && xlog2->local_min_recovery_point_tli == 0;
+		ok = ok && xlog2->update_min_recovery_point;
+		ok = ok && xlog2->local_data_checksum_state == PG_DATA_CHECKSUM_OFF;
+		ok = ok && xlog2->my_lock_no == 0;
+		ok = ok && !xlog2->holding_all_locks;
+		ok = ok && xlog2->wal_debug_context == NULL;
+
+		xlog2->local_recovery_in_progress = false;
+		xlog2->local_xlog_insert_allowed = 0;
+		xlog2->proc_last_rec_ptr = UINT64CONST(201);
+		xlog2->xact_last_rec_end = UINT64CONST(202);
+		xlog2->xact_last_commit_end = UINT64CONST(203);
+		xlog2->redo_rec_ptr = UINT64CONST(204);
+		xlog2->do_page_writes = true;
+		xlog2->logwrt_result.Write = UINT64CONST(205);
+		xlog2->logwrt_result.Flush = UINT64CONST(206);
+		xlog2->open_log_file = 207;
+		xlog2->open_log_seg_no = 208;
+		xlog2->open_log_tli = 209;
+		xlog2->local_min_recovery_point = UINT64CONST(210);
+		xlog2->local_min_recovery_point_tli = 211;
+		xlog2->update_min_recovery_point = false;
+		xlog2->local_data_checksum_state = PG_DATA_CHECKSUM_INPROGRESS_OFF;
+		xlog2->my_lock_no = 212;
+		xlog2->holding_all_locks = true;
+		xlog2->wal_debug_context = (MemoryContext) &fake_backend2;
+
+		CurrentPgBackend = &fake_backend1;
+		xlog1 = PgCurrentXLogState();
+		ok = ok && !xlog1->local_recovery_in_progress;
+		ok = ok && xlog1->local_xlog_insert_allowed == 1;
+		ok = ok && xlog1->proc_last_rec_ptr == UINT64CONST(101);
+		ok = ok && xlog1->xact_last_rec_end == UINT64CONST(102);
+		ok = ok && xlog1->xact_last_commit_end == UINT64CONST(103);
+		ok = ok && xlog1->redo_rec_ptr == UINT64CONST(104);
+		ok = ok && xlog1->do_page_writes;
+		ok = ok && xlog1->logwrt_result.Write == UINT64CONST(105);
+		ok = ok && xlog1->logwrt_result.Flush == UINT64CONST(106);
+		ok = ok && xlog1->open_log_file == 107;
+		ok = ok && xlog1->open_log_seg_no == 108;
+		ok = ok && xlog1->open_log_tli == 109;
+		ok = ok && xlog1->local_min_recovery_point == UINT64CONST(110);
+		ok = ok && xlog1->local_min_recovery_point_tli == 111;
+		ok = ok && !xlog1->update_min_recovery_point;
+		ok = ok && xlog1->local_data_checksum_state ==
+			PG_DATA_CHECKSUM_INPROGRESS_ON;
+		ok = ok && xlog1->my_lock_no == 112;
+		ok = ok && xlog1->holding_all_locks;
+		ok = ok && xlog1->wal_debug_context == (MemoryContext) &fake_backend1;
+
+		CurrentPgBackend = &fake_backend2;
+		xlog2 = PgCurrentXLogState();
+		ok = ok && !xlog2->local_recovery_in_progress;
+		ok = ok && xlog2->local_xlog_insert_allowed == 0;
+		ok = ok && xlog2->proc_last_rec_ptr == UINT64CONST(201);
+		ok = ok && xlog2->xact_last_rec_end == UINT64CONST(202);
+		ok = ok && xlog2->xact_last_commit_end == UINT64CONST(203);
+		ok = ok && xlog2->redo_rec_ptr == UINT64CONST(204);
+		ok = ok && xlog2->do_page_writes;
+		ok = ok && xlog2->logwrt_result.Write == UINT64CONST(205);
+		ok = ok && xlog2->logwrt_result.Flush == UINT64CONST(206);
+		ok = ok && xlog2->open_log_file == 207;
+		ok = ok && xlog2->open_log_seg_no == 208;
+		ok = ok && xlog2->open_log_tli == 209;
+		ok = ok && xlog2->local_min_recovery_point == UINT64CONST(210);
+		ok = ok && xlog2->local_min_recovery_point_tli == 211;
+		ok = ok && !xlog2->update_min_recovery_point;
+		ok = ok && xlog2->local_data_checksum_state ==
+			PG_DATA_CHECKSUM_INPROGRESS_OFF;
+		ok = ok && xlog2->my_lock_no == 212;
+		ok = ok && xlog2->holding_all_locks;
+		ok = ok && xlog2->wal_debug_context == (MemoryContext) &fake_backend2;
+
+		CurrentPgBackend = saved_backend;
+	}
+	PG_CATCH();
+	{
+		CurrentPgBackend = saved_backend;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "backend XLog state was not backend-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_pmchild_thread_backend_signal_api);
 Datum
 test_pmchild_thread_backend_signal_api(PG_FUNCTION_ARGS)

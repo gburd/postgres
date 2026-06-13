@@ -737,6 +737,13 @@ Important current files:
   segfaulting in `StartupXLOG()` before readiness. Use the backend clean plus
   generated-file recovery above, then rebuild with `gmake -j8`.
 
+- When moving WAL/XLog state out of `src/backend/access/transam/xlog.c`, avoid
+  object-like compatibility macros that reuse names of shared WAL struct
+  fields. In particular, do not define a `RedoRecPtr` macro: it also expands
+  inside `Insert->RedoRecPtr` and `XLogCtl->RedoRecPtr`. Use the existing
+  `XLogLocalRedoRecPtr` compatibility name for the backend-local redo-pointer
+  cache and leave shared struct member references untouched.
+
 - If `src/include/replication/worker_internal.h` changes the layout of
   `LogicalRepWorker`, clean and rebuild the whole logical replication backend
   directory before running logical replication smokes. Incremental builds in

@@ -32,9 +32,9 @@ enum WalSyncMethod
 };
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int wal_sync_method;
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND XLogRecPtr ProcLastRecPtr;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND XLogRecPtr XactLastRecEnd;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_BACKEND XLogRecPtr XactLastCommitEnd;
+#define ProcLastRecPtr (PgCurrentXLogState()->proc_last_rec_ptr)
+#define XactLastRecEnd (PgCurrentXLogState()->xact_last_rec_end)
+#define XactLastCommitEnd (PgCurrentXLogState()->xact_last_commit_end)
 
 /* these variables are GUC parameters related to XLOG */
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int wal_segment_size;
