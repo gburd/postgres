@@ -156,25 +156,12 @@ static const MemoryContextMethods mcxt_methods[] = {
 #undef BOGUS_MCTX
 
 /*
- * CurrentMemoryContext
- *		Default memory context for allocations.
- */
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext CurrentMemoryContext = NULL;
-
-/*
  * Standard top-level contexts. For a description of the purpose of each
  * of these contexts, refer to src/backend/utils/mmgr/README
  */
 PG_THREAD_LOCAL PG_GLOBAL_SESSION MemoryContext TopMemoryContext = NULL;
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext ErrorContext = NULL;
 PG_GLOBAL_RUNTIME MemoryContext PostmasterContext = NULL;
 PG_THREAD_LOCAL PG_GLOBAL_SESSION MemoryContext CacheMemoryContext = NULL;
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext MessageContext = NULL;
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext TopTransactionContext = NULL;
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext CurTransactionContext = NULL;
-
-/* This is a transient link to the active portal's memory context: */
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext PortalContext = NULL;
 
 /* Is memory context logging currently in progress? */
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool LogMemoryContextInProgress = false;

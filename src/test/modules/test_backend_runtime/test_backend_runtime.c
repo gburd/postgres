@@ -26,6 +26,7 @@
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"
 #include "utils/backend_runtime.h"
+#include "utils/memutils.h"
 
 PG_MODULE_MAGIC;
 
@@ -809,6 +810,101 @@ test_execution_error_state_is_execution_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "execution error state was not execution-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_execution_memory_contexts_are_execution_local);
+Datum
+test_execution_memory_contexts_are_execution_local(PG_FUNCTION_ARGS)
+{
+	PgExecution *saved_execution;
+	PgExecution fake_execution1;
+	PgExecution fake_execution2;
+	MemoryContext saved_current_memory_context;
+	MemoryContext saved_error_context;
+	MemoryContext saved_message_context;
+	MemoryContext saved_top_transaction_context;
+	MemoryContext saved_cur_transaction_context;
+	MemoryContext saved_portal_context;
+	MemoryContext fake_context1 = (MemoryContext) &fake_execution1;
+	MemoryContext fake_context2 = (MemoryContext) &fake_execution2;
+	MemoryContext fake_context3 = (MemoryContext) &saved_execution;
+	bool		ok = true;
+
+	saved_execution = CurrentPgExecution;
+	saved_current_memory_context = CurrentMemoryContext;
+	saved_error_context = ErrorContext;
+	saved_message_context = MessageContext;
+	saved_top_transaction_context = TopTransactionContext;
+	saved_cur_transaction_context = CurTransactionContext;
+	saved_portal_context = PortalContext;
+	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
+	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+
+	PG_TRY();
+	{
+		CurrentPgExecution = &fake_execution1;
+		CurrentMemoryContext = fake_context1;
+		ErrorContext = fake_context2;
+		MessageContext = fake_context3;
+		TopTransactionContext = fake_context1;
+		CurTransactionContext = fake_context2;
+		PortalContext = fake_context3;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && CurrentMemoryContext == NULL;
+		ok = ok && ErrorContext == NULL;
+		ok = ok && MessageContext == NULL;
+		ok = ok && TopTransactionContext == NULL;
+		ok = ok && CurTransactionContext == NULL;
+		ok = ok && PortalContext == NULL;
+		CurrentMemoryContext = fake_context3;
+		ErrorContext = fake_context1;
+		MessageContext = fake_context2;
+		TopTransactionContext = fake_context3;
+		CurTransactionContext = fake_context1;
+		PortalContext = fake_context2;
+
+		CurrentPgExecution = &fake_execution1;
+		ok = ok && CurrentMemoryContext == fake_context1;
+		ok = ok && ErrorContext == fake_context2;
+		ok = ok && MessageContext == fake_context3;
+		ok = ok && TopTransactionContext == fake_context1;
+		ok = ok && CurTransactionContext == fake_context2;
+		ok = ok && PortalContext == fake_context3;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && CurrentMemoryContext == fake_context3;
+		ok = ok && ErrorContext == fake_context1;
+		ok = ok && MessageContext == fake_context2;
+		ok = ok && TopTransactionContext == fake_context3;
+		ok = ok && CurTransactionContext == fake_context1;
+		ok = ok && PortalContext == fake_context2;
+
+		CurrentPgExecution = saved_execution;
+		CurrentMemoryContext = saved_current_memory_context;
+		ErrorContext = saved_error_context;
+		MessageContext = saved_message_context;
+		TopTransactionContext = saved_top_transaction_context;
+		CurTransactionContext = saved_cur_transaction_context;
+		PortalContext = saved_portal_context;
+	}
+	PG_CATCH();
+	{
+		CurrentPgExecution = saved_execution;
+		CurrentMemoryContext = saved_current_memory_context;
+		ErrorContext = saved_error_context;
+		MessageContext = saved_message_context;
+		TopTransactionContext = saved_top_transaction_context;
+		CurTransactionContext = saved_cur_transaction_context;
+		PortalContext = saved_portal_context;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "execution memory contexts were not execution-local");
 
 	PG_RETURN_BOOL(true);
 }

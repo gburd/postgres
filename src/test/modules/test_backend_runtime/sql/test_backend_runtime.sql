@@ -13,6 +13,7 @@ SELECT test_backend_pending_interrupts_are_backend_local();
 SELECT test_backend_core_state_is_backend_local();
 SELECT test_execution_debug_query_string_is_execution_local();
 SELECT test_execution_error_state_is_execution_local();
+SELECT test_execution_memory_contexts_are_execution_local();
 SELECT test_connection_socket_io_is_connection_local();
 SELECT test_connection_protocol_state_is_connection_local();
 SELECT test_connection_identity_state_is_connection_local();

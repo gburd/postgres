@@ -57,15 +57,20 @@
  * MemoryContextInit() itself.
  */
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION MemoryContext TopMemoryContext;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext ErrorContext;
+extern MemoryContext *PgErrorContextRef(void);
+#define ErrorContext (*PgErrorContextRef())
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME MemoryContext PostmasterContext;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION MemoryContext CacheMemoryContext;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext MessageContext;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext TopTransactionContext;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext CurTransactionContext;
+extern MemoryContext *PgMessageContextRef(void);
+#define MessageContext (*PgMessageContextRef())
+extern MemoryContext *PgTopTransactionContextRef(void);
+#define TopTransactionContext (*PgTopTransactionContextRef())
+extern MemoryContext *PgCurTransactionContextRef(void);
+#define CurTransactionContext (*PgCurTransactionContextRef())
 
 /* This is a transient link to the active portal's memory context: */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext PortalContext;
+extern MemoryContext *PgPortalContextRef(void);
+#define PortalContext (*PgPortalContextRef())
 
 
 /*

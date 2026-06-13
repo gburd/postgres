@@ -664,6 +664,7 @@ the connection protocol-state bucket, backend startup/authentication state, and
 authenticated client connection information, plus the backend pending
 interrupt flag bridge and core backend identity/lifecycle state bridge through
 `PgBackend`, and the execution error-context/exception stack bridge through
+`PgExecution`, plus the core execution memory-context pointer bridge through
 `PgExecution`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move

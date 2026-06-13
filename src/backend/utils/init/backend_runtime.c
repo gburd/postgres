@@ -59,6 +59,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendPendingInterruptState early_pe
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInterruptHoldoffState early_interrupt_holdoffs;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionDebugState early_execution_debug;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionErrorState early_execution_error;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionMemoryContextState early_execution_memory_contexts;
 
 StaticAssertDecl(PG_BACKEND_INTERRUPT_COUNT <= 32,
 				 "PgBackendInterruptMask must fit all backend interrupts");
@@ -79,8 +80,10 @@ static void PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend);
 static BackendType *PgCurrentBackendTypeRef(void);
 static void PgExecutionAdoptEarlyDebugState(PgExecution *execution);
 static void PgExecutionAdoptEarlyErrorState(PgExecution *execution);
+static void PgExecutionAdoptEarlyMemoryContexts(PgExecution *execution);
 static PgBackendCoreState *PgCurrentCoreState(void);
 static PgExecutionErrorState *PgCurrentExecutionErrorState(void);
+static PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
 static PgBackendPendingInterruptState *PgCurrentPendingInterrupts(void);
 static PgBackendInterruptHoldoffState *PgCurrentInterruptHoldoffs(void);
 
@@ -232,6 +235,16 @@ PgExecutionAdoptEarlyErrorState(PgExecution *execution)
 	MemSet(&early_execution_error, 0, sizeof(early_execution_error));
 }
 
+static void
+PgExecutionAdoptEarlyMemoryContexts(PgExecution *execution)
+{
+	Assert(execution != NULL);
+
+	execution->memory_contexts = early_execution_memory_contexts;
+	MemSet(&early_execution_memory_contexts, 0,
+		   sizeof(early_execution_memory_contexts));
+}
+
 void
 InitializePgProcessRuntime(void)
 {
@@ -287,6 +300,7 @@ InitializePgProcessRuntime(void)
 	process_execution.carrier = &process_carrier;
 	PgExecutionAdoptEarlyDebugState(&process_execution);
 	PgExecutionAdoptEarlyErrorState(&process_execution);
+	PgExecutionAdoptEarlyMemoryContexts(&process_execution);
 
 	CurrentPgRuntime = &process_runtime;
 	CurrentPgCarrier = &process_carrier;
@@ -369,6 +383,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	state->carrier.current_execution = &state->execution;
 	PgBackendAdoptEarlyCoreState(&state->backend);
 	PgExecutionAdoptEarlyErrorState(&state->execution);
+	PgExecutionAdoptEarlyMemoryContexts(&state->execution);
 	CurrentPgRuntime = &thread_runtime;
 	CurrentPgCarrier = &state->carrier;
 	CurrentPgBackend = &state->backend;
@@ -494,6 +509,51 @@ sigjmp_buf **
 PgCurrentExceptionStackRef(void)
 {
 	return &PgCurrentExecutionErrorState()->exception_stack;
+}
+
+static PgExecutionMemoryContextState *
+PgCurrentExecutionMemoryContexts(void)
+{
+	if (CurrentPgExecution == NULL)
+		return &early_execution_memory_contexts;
+
+	return &CurrentPgExecution->memory_contexts;
+}
+
+MemoryContext *
+PgCurrentMemoryContextRef(void)
+{
+	return &PgCurrentExecutionMemoryContexts()->current_context;
+}
+
+MemoryContext *
+PgErrorContextRef(void)
+{
+	return &PgCurrentExecutionMemoryContexts()->error_context;
+}
+
+MemoryContext *
+PgMessageContextRef(void)
+{
+	return &PgCurrentExecutionMemoryContexts()->message_context;
+}
+
+MemoryContext *
+PgTopTransactionContextRef(void)
+{
+	return &PgCurrentExecutionMemoryContexts()->top_transaction_context;
+}
+
+MemoryContext *
+PgCurTransactionContextRef(void)
+{
+	return &PgCurrentExecutionMemoryContexts()->cur_transaction_context;
+}
+
+MemoryContext *
+PgPortalContextRef(void)
+{
+	return &PgCurrentExecutionMemoryContexts()->portal_context;
 }
 
 PgConnectionSocketIOState *

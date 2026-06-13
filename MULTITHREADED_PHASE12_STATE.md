@@ -584,3 +584,55 @@ Validation for this slice:
 - core process-mode `src/test/regress` `parallel_schedule` passed all 245
   tests after the clean rebuild and install;
 - clean `gmake -C contrib -j8` passed after the header migration.
+
+## Execution Memory Context Bridge
+
+The fourteenth Phase 12 slice moves the core execution-owned memory context
+pointers under `PgExecution`:
+
+- `PgExecution` now owns a `PgExecutionMemoryContextState`;
+- `CurrentMemoryContext` remains a source-compatible lvalue macro in
+  `palloc.h`;
+- `ErrorContext`, `MessageContext`, `TopTransactionContext`,
+  `CurTransactionContext`, and `PortalContext` remain source-compatible
+  lvalue macros in `memutils.h`;
+- the macros route through `PgCurrentMemoryContextRef()`,
+  `PgErrorContextRef()`, `PgMessageContextRef()`,
+  `PgTopTransactionContextRef()`, `PgCurTransactionContextRef()`, and
+  `PgPortalContextRef()`, which return the current logical execution's
+  fields;
+- early memory setup before `CurrentPgExecution` is installed uses fallback
+  execution-local storage in `backend_runtime.c`;
+- `InitializePgProcessRuntime()` and `InstallPgThreadBackendRuntimeState()`
+  adopt any early fallback memory-context pointers into the logical execution
+  object before clearing fallback storage.
+
+This removes the allocator's most central execution globals from raw TLS
+while keeping `MemoryContextSwitchTo()` and the standard context names source
+compatible. It is a high-value scheduler-preparation step because allocation,
+error recovery, message handling, transactions, and portal execution now hang
+off the logical execution object rather than the carrier thread.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `mcxt.o`, and
+  `test_backend_runtime.o`;
+- because `palloc.h` and `memutils.h` changed widely exported execution
+  globals into compatibility macros, `gmake -C src/backend clean` plus
+  generated-header recovery was used before the clean rebuild;
+- clean full `gmake -j8` passed;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed, followed by
+  rebuilding and reinstalling `src/test/modules/test_backend_runtime`,
+  PL/pgSQL, `src/test/regress`, `libpqwalreceiver`, and
+  `src/backend/snowball`;
+- focused `test_backend_runtime` regression passed and includes
+  `test_execution_memory_contexts_are_execution_local()`, which switches
+  `CurrentPgExecution` between fake executions and proves the moved
+  compatibility lvalues are isolated per execution without allocating through
+  fake contexts;
+- threaded runtime TAP coverage passed for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests after the clean rebuild and install;
+- clean `gmake -C contrib -j8` passed after the header migration.

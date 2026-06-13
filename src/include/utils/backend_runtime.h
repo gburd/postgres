@@ -21,6 +21,7 @@
 #include "storage/ipc.h"
 #include "utils/backend_id.h"
 #include "utils/global_lifetime.h"
+#include "utils/palloc.h"
 
 typedef struct PgRuntime PgRuntime;
 typedef struct PgCarrier PgCarrier;
@@ -157,6 +158,16 @@ typedef struct PgExecutionErrorState
 	struct ErrorContextCallback *context_stack;
 	sigjmp_buf *exception_stack;
 } PgExecutionErrorState;
+
+typedef struct PgExecutionMemoryContextState
+{
+	MemoryContext current_context;
+	MemoryContext error_context;
+	MemoryContext message_context;
+	MemoryContext top_transaction_context;
+	MemoryContext cur_transaction_context;
+	MemoryContext portal_context;
+} PgExecutionMemoryContextState;
 
 #define PG_CONNECTION_SEND_BUFFER_SIZE 8192
 #define PG_CONNECTION_RECV_BUFFER_SIZE 8192
@@ -296,6 +307,7 @@ struct PgExecution
 	PgCarrier  *carrier;
 	PgExecutionDebugState debug;
 	PgExecutionErrorState error;
+	PgExecutionMemoryContextState memory_contexts;
 };
 
 typedef struct PgThreadBackendRuntimeState
@@ -313,6 +325,13 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgBackend *CurrentPgBackend
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgSession *CurrentPgSession;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgConnection *CurrentPgConnection;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgExecution *CurrentPgExecution;
+
+extern MemoryContext *PgCurrentMemoryContextRef(void);
+extern MemoryContext *PgErrorContextRef(void);
+extern MemoryContext *PgMessageContextRef(void);
+extern MemoryContext *PgTopTransactionContextRef(void);
+extern MemoryContext *PgCurTransactionContextRef(void);
+extern MemoryContext *PgPortalContextRef(void);
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);
