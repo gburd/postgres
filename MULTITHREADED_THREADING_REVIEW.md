@@ -428,15 +428,16 @@ honor `ProcDiePending`, fixing the basic immediate-shutdown smoke for
 background writer, checkpointer, autovacuum launcher, and WAL writer thread
 carriers. The temporary threaded startup serialization gate is also now behind
 an explicit backend-type helper. AIO workers, the syslogger, archiver, WAL
-summarizer, background writer, checkpointer, and WAL writer can bypass it. The
-writer-class, archiver, and WAL summarizer bypasses are worker-specific
-narrowings for auxiliary classes whose common startup does not run
-database/session bootstrap before entering the worker loop; archiver and WAL
-summarizer were additionally validated through their wakeup/progress and clean
-shutdown paths. A broader attempted bypass for other non-session auxiliary
-workers reproduced an abrupt postmaster death during a threaded `pg_class`
-catalog scan, so further gate narrowing still requires worker-specific
-shared-state isolation and catalog-startup stress coverage.
+receiver, WAL summarizer, background writer, checkpointer, and WAL writer can
+bypass it. The writer-class, archiver, WAL receiver, and WAL summarizer
+bypasses are worker-specific narrowings for auxiliary classes whose common
+startup does not run database/session bootstrap before entering the worker
+loop; archiver, WAL receiver, and WAL summarizer were additionally validated
+through their wakeup/progress, streaming, and clean shutdown paths. A broader
+attempted bypass for other non-session auxiliary workers reproduced an abrupt
+postmaster death during a threaded `pg_class` catalog scan, so further gate
+narrowing still requires worker-specific shared-state isolation and
+catalog-startup stress coverage.
 These are partial Gate E2 closures only: the full thread teardown, PMChild
 termination/reaping stress coverage, extension/custom GUC adoption,
 startup-gate narrowing for the remaining gated classes, and broader threaded

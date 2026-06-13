@@ -4707,3 +4707,54 @@ Validation for this slice:
 - log inspection for that smoke found no crash, postmaster-death, shutdown
   escalation, assertion, or bad-descriptor markers;
 - `git diff --check` passed.
+
+## Threaded Startup Gate WAL Receiver Narrowing
+
+The ninety-eighth Phase 12 slice narrows the temporary threaded startup
+serialization gate for the WAL receiver:
+
+- `backend_thread_requires_startup_gate()` now allows `B_WAL_RECEIVER` thread
+  carriers to bypass the global startup mutex, joining the already-validated
+  AIO worker, syslogger, archiver, WAL summarizer, background writer,
+  checkpointer, and WAL writer bypasses;
+- WAL receiver uses `AuxiliaryProcessMainCommon()`, which creates its
+  auxiliary PGPROC, procsignal/barrier state, resource owner, pgstat state,
+  and normal processing mode before receiver-specific work begins;
+- WAL receiver does not run database/session bootstrap or `InitPostgres()`;
+- its connection, receive-file, reply, and wakeup state is backend-local or
+  published through `WalRcv` shared memory, and its streaming loop consumes
+  the logical interrupt mailbox before checking shutdown/configuration state;
+- the bypassed section is the common auxiliary startup section. The later
+  `libpqwalreceiver` module load and physical streaming path remain outside
+  the temporary startup gate and are covered by the threaded replication smoke;
+- the remaining gated classes stay gated: regular client backend startup,
+  autovacuum launcher/workers, background workers, slot sync, and startup.
+
+This is not the full Gate E2 startup-gate closure. It removes serialization
+from another non-session auxiliary startup path with a small, explicit
+ownership model and a real threaded physical-replication validation path.
+Further narrowing still needs worker-specific shared-state isolation and
+catalog-startup stress coverage, especially for workers that run
+database/session bootstrap or load arbitrary background-worker code.
+
+Validation for this slice:
+
+- touched-object build for `src/backend/postmaster/launch_backend.o` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- full `gmake -j8` passed;
+- `gmake -j8 DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- direct full-module `pg_regress test_backend_runtime` passed all 1 test
+  against the current temp install;
+- a manual physical-replication smoke with a process-mode primary and a
+  threaded standby verified the standby WAL receiver appears in
+  `pg_stat_activity`, logged `starting walreceiver thread carrier` and
+  `started streaming WAL from primary`, streamed and replayed a 1000-row table
+  created on the primary, handled concurrent standby `pg_class` catalog scans,
+  and stopped both clusters cleanly with `pg_ctl -m fast -w stop`;
+- the same smoke patched the temp-install `libpqwalreceiver.dylib` libpq
+  install name before startup, matching this checkout's macOS test notes;
+- log inspection for that smoke found no crash, postmaster-death, shutdown
+  escalation, assertion, or bad-descriptor markers;
+- `git diff --check` passed.
