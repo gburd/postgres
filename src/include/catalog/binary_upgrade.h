@@ -18,25 +18,50 @@
 #include "utils/global_lifetime.h"
 
 extern Oid *PgCurrentBinaryUpgradeNextPgTablespaceOidRef(void);
+extern Oid *PgCurrentBinaryUpgradeNextPgTypeOidRef(void);
+extern Oid *PgCurrentBinaryUpgradeNextArrayPgTypeOidRef(void);
+extern Oid *PgCurrentBinaryUpgradeNextMrngPgTypeOidRef(void);
+extern Oid *PgCurrentBinaryUpgradeNextMrngArrayPgTypeOidRef(void);
+extern Oid *PgCurrentBinaryUpgradeNextHeapPgClassOidRef(void);
+extern RelFileNumber *PgCurrentBinaryUpgradeNextHeapPgClassRelfilenumberRef(void);
+extern Oid *PgCurrentBinaryUpgradeNextIndexPgClassOidRef(void);
+extern RelFileNumber *PgCurrentBinaryUpgradeNextIndexPgClassRelfilenumberRef(void);
+extern Oid *PgCurrentBinaryUpgradeNextToastPgClassOidRef(void);
+extern RelFileNumber *PgCurrentBinaryUpgradeNextToastPgClassRelfilenumberRef(void);
+extern Oid *PgCurrentBinaryUpgradeNextPgEnumOidRef(void);
+extern Oid *PgCurrentBinaryUpgradeNextPgAuthidOidRef(void);
+extern bool *PgCurrentBinaryUpgradeRecordInitPrivsRef(void);
 
 #define binary_upgrade_next_pg_tablespace_oid \
 	(*PgCurrentBinaryUpgradeNextPgTablespaceOidRef())
+#define binary_upgrade_next_pg_type_oid \
+	(*PgCurrentBinaryUpgradeNextPgTypeOidRef())
+#define binary_upgrade_next_array_pg_type_oid \
+	(*PgCurrentBinaryUpgradeNextArrayPgTypeOidRef())
+#define binary_upgrade_next_mrng_pg_type_oid \
+	(*PgCurrentBinaryUpgradeNextMrngPgTypeOidRef())
+#define binary_upgrade_next_mrng_array_pg_type_oid \
+	(*PgCurrentBinaryUpgradeNextMrngArrayPgTypeOidRef())
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid binary_upgrade_next_pg_type_oid;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid binary_upgrade_next_array_pg_type_oid;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid binary_upgrade_next_mrng_pg_type_oid;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid binary_upgrade_next_mrng_array_pg_type_oid;
+#define binary_upgrade_next_heap_pg_class_oid \
+	(*PgCurrentBinaryUpgradeNextHeapPgClassOidRef())
+#define binary_upgrade_next_heap_pg_class_relfilenumber \
+	(*PgCurrentBinaryUpgradeNextHeapPgClassRelfilenumberRef())
+#define binary_upgrade_next_index_pg_class_oid \
+	(*PgCurrentBinaryUpgradeNextIndexPgClassOidRef())
+#define binary_upgrade_next_index_pg_class_relfilenumber \
+	(*PgCurrentBinaryUpgradeNextIndexPgClassRelfilenumberRef())
+#define binary_upgrade_next_toast_pg_class_oid \
+	(*PgCurrentBinaryUpgradeNextToastPgClassOidRef())
+#define binary_upgrade_next_toast_pg_class_relfilenumber \
+	(*PgCurrentBinaryUpgradeNextToastPgClassRelfilenumberRef())
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid binary_upgrade_next_heap_pg_class_oid;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION RelFileNumber binary_upgrade_next_heap_pg_class_relfilenumber;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid binary_upgrade_next_index_pg_class_oid;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION RelFileNumber binary_upgrade_next_index_pg_class_relfilenumber;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid binary_upgrade_next_toast_pg_class_oid;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION RelFileNumber binary_upgrade_next_toast_pg_class_relfilenumber;
+#define binary_upgrade_next_pg_enum_oid \
+	(*PgCurrentBinaryUpgradeNextPgEnumOidRef())
+#define binary_upgrade_next_pg_authid_oid \
+	(*PgCurrentBinaryUpgradeNextPgAuthidOidRef())
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid binary_upgrade_next_pg_enum_oid;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid binary_upgrade_next_pg_authid_oid;
-
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool binary_upgrade_record_init_privs;
+#define binary_upgrade_record_init_privs \
+	(*PgCurrentBinaryUpgradeRecordInitPrivsRef())
 
 #endif							/* BINARY_UPGRADE_H */

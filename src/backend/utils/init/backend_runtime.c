@@ -72,6 +72,22 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionTablespaceState early_session_
 	.allow_in_place_tablespaces_value = false,
 	.binary_upgrade_next_pg_tablespace_oid_value = InvalidOid
 };
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionBinaryUpgradeState early_session_binary_upgrade = {
+	.initialized = true,
+	.binary_upgrade_next_pg_type_oid_value = InvalidOid,
+	.binary_upgrade_next_array_pg_type_oid_value = InvalidOid,
+	.binary_upgrade_next_mrng_pg_type_oid_value = InvalidOid,
+	.binary_upgrade_next_mrng_array_pg_type_oid_value = InvalidOid,
+	.binary_upgrade_next_heap_pg_class_oid_value = InvalidOid,
+	.binary_upgrade_next_heap_pg_class_relfilenumber_value = InvalidRelFileNumber,
+	.binary_upgrade_next_index_pg_class_oid_value = InvalidOid,
+	.binary_upgrade_next_index_pg_class_relfilenumber_value = InvalidRelFileNumber,
+	.binary_upgrade_next_toast_pg_class_oid_value = InvalidOid,
+	.binary_upgrade_next_toast_pg_class_relfilenumber_value = InvalidRelFileNumber,
+	.binary_upgrade_next_pg_enum_oid_value = InvalidOid,
+	.binary_upgrade_next_pg_authid_oid_value = InvalidOid,
+	.binary_upgrade_record_init_privs_value = false
+};
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionDateTimeState early_session_datetime = {
 	.initialized = true,
 	.date_style = USE_ISO_DATES,
@@ -166,6 +182,8 @@ static void PgConnectionAdoptEarlyClientConnectionInfo(PgConnection *connection)
 static void PgSessionAdoptEarlyDatabaseState(PgSession *session);
 static void PgSessionInitializeTablespaceState(PgSessionTablespaceState *tablespace);
 static void PgSessionAdoptEarlyTablespaceState(PgSession *session);
+static void PgSessionInitializeBinaryUpgradeState(PgSessionBinaryUpgradeState *binary_upgrade);
+static void PgSessionAdoptEarlyBinaryUpgradeState(PgSession *session);
 static void PgSessionInitializeDateTimeState(PgSessionDateTimeState *datetime);
 static void PgSessionAdoptEarlyDateTimeState(PgSession *session);
 static void PgSessionInitializeQueryMemoryState(PgSessionQueryMemoryState *query_memory);
@@ -186,6 +204,7 @@ static void PgExecutionAdoptEarlyResourceOwners(PgExecution *execution);
 static PgBackendCoreState *PgCurrentCoreState(void);
 static PgSessionDatabaseState *PgCurrentSessionDatabaseState(void);
 static PgSessionTablespaceState *PgCurrentSessionTablespaceState(void);
+static PgSessionBinaryUpgradeState *PgCurrentSessionBinaryUpgradeState(void);
 static PgSessionDateTimeState *PgCurrentSessionDateTimeState(void);
 static PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
 static PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
@@ -299,6 +318,42 @@ PgSessionAdoptEarlyTablespaceState(PgSession *session)
 
 	session->tablespace = early_session_tablespace;
 	PgSessionInitializeTablespaceState(&early_session_tablespace);
+}
+
+static void
+PgSessionInitializeBinaryUpgradeState(PgSessionBinaryUpgradeState *binary_upgrade)
+{
+	Assert(binary_upgrade != NULL);
+
+	binary_upgrade->initialized = true;
+	binary_upgrade->binary_upgrade_next_pg_type_oid_value = InvalidOid;
+	binary_upgrade->binary_upgrade_next_array_pg_type_oid_value = InvalidOid;
+	binary_upgrade->binary_upgrade_next_mrng_pg_type_oid_value = InvalidOid;
+	binary_upgrade->binary_upgrade_next_mrng_array_pg_type_oid_value = InvalidOid;
+	binary_upgrade->binary_upgrade_next_heap_pg_class_oid_value = InvalidOid;
+	binary_upgrade->binary_upgrade_next_heap_pg_class_relfilenumber_value =
+		InvalidRelFileNumber;
+	binary_upgrade->binary_upgrade_next_index_pg_class_oid_value = InvalidOid;
+	binary_upgrade->binary_upgrade_next_index_pg_class_relfilenumber_value =
+		InvalidRelFileNumber;
+	binary_upgrade->binary_upgrade_next_toast_pg_class_oid_value = InvalidOid;
+	binary_upgrade->binary_upgrade_next_toast_pg_class_relfilenumber_value =
+		InvalidRelFileNumber;
+	binary_upgrade->binary_upgrade_next_pg_enum_oid_value = InvalidOid;
+	binary_upgrade->binary_upgrade_next_pg_authid_oid_value = InvalidOid;
+	binary_upgrade->binary_upgrade_record_init_privs_value = false;
+}
+
+static void
+PgSessionAdoptEarlyBinaryUpgradeState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (!early_session_binary_upgrade.initialized)
+		PgSessionInitializeBinaryUpgradeState(&early_session_binary_upgrade);
+
+	session->binary_upgrade = early_session_binary_upgrade;
+	PgSessionInitializeBinaryUpgradeState(&early_session_binary_upgrade);
 }
 
 static void
@@ -584,6 +639,7 @@ InitializePgProcessRuntime(void)
 	process_session.execution = &process_execution;
 	PgSessionAdoptEarlyDatabaseState(&process_session);
 	PgSessionAdoptEarlyTablespaceState(&process_session);
+	PgSessionAdoptEarlyBinaryUpgradeState(&process_session);
 	PgSessionAdoptEarlyDateTimeState(&process_session);
 	PgSessionAdoptEarlyQueryMemoryState(&process_session);
 	PgSessionAdoptEarlyPlannerCostState(&process_session);
@@ -668,6 +724,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	state->session.connection = &state->connection;
 	state->session.execution = &state->execution;
 	PgSessionInitializeTablespaceState(&state->session.tablespace);
+	PgSessionInitializeBinaryUpgradeState(&state->session.binary_upgrade);
 	PgSessionInitializeDateTimeState(&state->session.datetime);
 	PgSessionInitializeQueryMemoryState(&state->session.query_memory);
 	PgSessionInitializePlannerCostState(&state->session.planner_cost);
@@ -693,6 +750,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgBackendAdoptEarlyCoreState(&state->backend);
 	PgSessionAdoptEarlyDatabaseState(&state->session);
 	PgSessionAdoptEarlyTablespaceState(&state->session);
+	PgSessionAdoptEarlyBinaryUpgradeState(&state->session);
 	PgSessionAdoptEarlyDateTimeState(&state->session);
 	PgSessionAdoptEarlyQueryMemoryState(&state->session);
 	PgSessionAdoptEarlyPlannerCostState(&state->session);
@@ -776,6 +834,22 @@ PgCurrentSessionTablespaceState(void)
 		PgSessionInitializeTablespaceState(tablespace);
 
 	return tablespace;
+}
+
+static PgSessionBinaryUpgradeState *
+PgCurrentSessionBinaryUpgradeState(void)
+{
+	PgSessionBinaryUpgradeState *binary_upgrade;
+
+	if (CurrentPgSession == NULL)
+		binary_upgrade = &early_session_binary_upgrade;
+	else
+		binary_upgrade = &CurrentPgSession->binary_upgrade;
+
+	if (!binary_upgrade->initialized)
+		PgSessionInitializeBinaryUpgradeState(binary_upgrade);
+
+	return binary_upgrade;
 }
 
 static PgSessionDateTimeState *
@@ -888,6 +962,84 @@ Oid *
 PgCurrentBinaryUpgradeNextPgTablespaceOidRef(void)
 {
 	return &PgCurrentSessionTablespaceState()->binary_upgrade_next_pg_tablespace_oid_value;
+}
+
+Oid *
+PgCurrentBinaryUpgradeNextPgTypeOidRef(void)
+{
+	return &PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_pg_type_oid_value;
+}
+
+Oid *
+PgCurrentBinaryUpgradeNextArrayPgTypeOidRef(void)
+{
+	return &PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_array_pg_type_oid_value;
+}
+
+Oid *
+PgCurrentBinaryUpgradeNextMrngPgTypeOidRef(void)
+{
+	return &PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_mrng_pg_type_oid_value;
+}
+
+Oid *
+PgCurrentBinaryUpgradeNextMrngArrayPgTypeOidRef(void)
+{
+	return &PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_mrng_array_pg_type_oid_value;
+}
+
+Oid *
+PgCurrentBinaryUpgradeNextHeapPgClassOidRef(void)
+{
+	return &PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_heap_pg_class_oid_value;
+}
+
+RelFileNumber *
+PgCurrentBinaryUpgradeNextHeapPgClassRelfilenumberRef(void)
+{
+	return &PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_heap_pg_class_relfilenumber_value;
+}
+
+Oid *
+PgCurrentBinaryUpgradeNextIndexPgClassOidRef(void)
+{
+	return &PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_index_pg_class_oid_value;
+}
+
+RelFileNumber *
+PgCurrentBinaryUpgradeNextIndexPgClassRelfilenumberRef(void)
+{
+	return &PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_index_pg_class_relfilenumber_value;
+}
+
+Oid *
+PgCurrentBinaryUpgradeNextToastPgClassOidRef(void)
+{
+	return &PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_toast_pg_class_oid_value;
+}
+
+RelFileNumber *
+PgCurrentBinaryUpgradeNextToastPgClassRelfilenumberRef(void)
+{
+	return &PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_toast_pg_class_relfilenumber_value;
+}
+
+Oid *
+PgCurrentBinaryUpgradeNextPgEnumOidRef(void)
+{
+	return &PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_pg_enum_oid_value;
+}
+
+Oid *
+PgCurrentBinaryUpgradeNextPgAuthidOidRef(void)
+{
+	return &PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_pg_authid_oid_value;
+}
+
+bool *
+PgCurrentBinaryUpgradeRecordInitPrivsRef(void)
+{
+	return &PgCurrentSessionBinaryUpgradeState()->binary_upgrade_record_init_privs_value;
 }
 
 int *

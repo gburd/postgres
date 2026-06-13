@@ -37,9 +37,6 @@
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
-/* Potentially set by pg_upgrade_support functions */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid binary_upgrade_next_pg_type_oid = InvalidOid;
-
 /* ----------------------------------------------------------------
  *		TypeShellMake
  *

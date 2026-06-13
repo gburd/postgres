@@ -59,6 +59,12 @@ SELECT test_session_tablespace_state_is_session_local();
  t
 (1 row)
 
+SELECT test_session_binary_upgrade_state_is_session_local();
+ test_session_binary_upgrade_state_is_session_local 
+----------------------------------------------------
+ t
+(1 row)
+
 SELECT test_session_datetime_state_is_session_local();
  test_session_datetime_state_is_session_local 
 ----------------------------------------------

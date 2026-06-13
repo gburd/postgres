@@ -78,12 +78,6 @@
 #include "utils/syscache.h"
 
 
-/* Potentially set by pg_upgrade_support functions */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid binary_upgrade_next_heap_pg_class_oid = InvalidOid;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid binary_upgrade_next_toast_pg_class_oid = InvalidOid;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION RelFileNumber binary_upgrade_next_heap_pg_class_relfilenumber = InvalidRelFileNumber;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION RelFileNumber binary_upgrade_next_toast_pg_class_relfilenumber = InvalidRelFileNumber;
-
 static void AddNewRelationTuple(Relation pg_class_desc,
 								Relation new_rel_desc,
 								Oid new_rel_oid,

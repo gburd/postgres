@@ -1126,3 +1126,72 @@ Validation for this slice:
 - static scans found no remaining direct TLS definitions or extern
   declarations for `default_tablespace`, `temp_tablespaces`,
   `allow_in_place_tablespaces`, or `binary_upgrade_next_pg_tablespace_oid`.
+
+## Session Binary-Upgrade State Bridge
+
+The twenty-third Phase 12 slice moves the remaining binary-upgrade catalog
+handoff state under `PgSession`:
+
+- `PgSession` now owns a `PgSessionBinaryUpgradeState`;
+- `binary_upgrade_next_pg_type_oid`,
+  `binary_upgrade_next_array_pg_type_oid`,
+  `binary_upgrade_next_mrng_pg_type_oid`,
+  `binary_upgrade_next_mrng_array_pg_type_oid`,
+  `binary_upgrade_next_heap_pg_class_oid`,
+  `binary_upgrade_next_heap_pg_class_relfilenumber`,
+  `binary_upgrade_next_index_pg_class_oid`,
+  `binary_upgrade_next_index_pg_class_relfilenumber`,
+  `binary_upgrade_next_toast_pg_class_oid`,
+  `binary_upgrade_next_toast_pg_class_relfilenumber`,
+  `binary_upgrade_next_pg_enum_oid`,
+  `binary_upgrade_next_pg_authid_oid`, and
+  `binary_upgrade_record_init_privs` remain source-compatible lvalue macros
+  in `catalog/binary_upgrade.h`;
+- the macros route through `PgCurrent*Ref()` accessors that return fields in
+  the active logical session;
+- zeroed logical session objects lazily initialize the OID fields to
+  `InvalidOid`, relfilenumber fields to `InvalidRelFileNumber`, and
+  `binary_upgrade_record_init_privs` to `false`;
+- early startup paths before `CurrentPgSession` is installed use fallback
+  session-local storage in `backend_runtime.c`;
+- process-mode and thread-runtime session installation adopt any early
+  fallback binary-upgrade state into the logical session object.
+
+`binary_upgrade_next_pg_tablespace_oid` remains in the tablespace state bucket
+introduced by the previous slice because it is consumed by the tablespace
+module and shares that bucket's lifetime. With this slice, the remaining
+catalog/type/class/enum/authid binary-upgrade state no longer has raw
+session-TLS backing storage.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`,
+  `pg_upgrade_support.o`, `test_backend_runtime.o`, `pg_type.o`,
+  `pg_enum.o`, `index.o`, `heap.o`, `aclchk.o`, `typecmds.o`, `user.o`, and
+  `relcache.o`;
+- because `catalog/binary_upgrade.h` changed exported session globals into
+  compatibility macros, `gmake -C src/backend clean` plus generated-header
+  recovery was used before the clean rebuild;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed, followed by rebuilding
+  and reinstalling `src/test/modules/test_backend_runtime`, PL/pgSQL,
+  `src/test/regress`, `libpqwalreceiver`, and `src/backend/snowball`;
+- focused `test_backend_runtime` regression passed and includes
+  `test_session_binary_upgrade_state_is_session_local()`, which switches
+  sessions through `PgSetCurrentSession()`, verifies the default invalid/false
+  values, assigns every moved binary-upgrade lvalue, and proves the values
+  follow the active session;
+- direct threaded-runtime TAP coverage passed for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`
+  with `PERL5LIB` including both `src/test/perl` and the local `IPC::Run`
+  install path;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests, covering catalog/type/class/enum/authid DDL and init-privilege paths
+  after the binary-upgrade header migration;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- `git diff --check` passed;
+- static scans found no remaining direct session TLS definitions or extern
+  declarations for the moved `binary_upgrade_next_*` and
+  `binary_upgrade_record_init_privs` names.

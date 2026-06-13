@@ -13,6 +13,7 @@
 #define BACKEND_RUNTIME_H
 
 #include "access/session.h"
+#include "common/relpath.h"
 #include "fmgr.h"
 #include "lib/ilist.h"
 #include "libpq/hba.h"
@@ -197,6 +198,24 @@ typedef struct PgSessionTablespaceState
 	bool		allow_in_place_tablespaces_value;
 	Oid			binary_upgrade_next_pg_tablespace_oid_value;
 } PgSessionTablespaceState;
+
+typedef struct PgSessionBinaryUpgradeState
+{
+	bool		initialized;
+	Oid			binary_upgrade_next_pg_type_oid_value;
+	Oid			binary_upgrade_next_array_pg_type_oid_value;
+	Oid			binary_upgrade_next_mrng_pg_type_oid_value;
+	Oid			binary_upgrade_next_mrng_array_pg_type_oid_value;
+	Oid			binary_upgrade_next_heap_pg_class_oid_value;
+	RelFileNumber binary_upgrade_next_heap_pg_class_relfilenumber_value;
+	Oid			binary_upgrade_next_index_pg_class_oid_value;
+	RelFileNumber binary_upgrade_next_index_pg_class_relfilenumber_value;
+	Oid			binary_upgrade_next_toast_pg_class_oid_value;
+	RelFileNumber binary_upgrade_next_toast_pg_class_relfilenumber_value;
+	Oid			binary_upgrade_next_pg_enum_oid_value;
+	Oid			binary_upgrade_next_pg_authid_oid_value;
+	bool		binary_upgrade_record_init_privs_value;
+} PgSessionBinaryUpgradeState;
 
 typedef struct PgSessionDateTimeState
 {
@@ -397,6 +416,7 @@ struct PgSession
 	PgSessionLoopState loop_state;
 	PgSessionDatabaseState database;
 	PgSessionTablespaceState tablespace;
+	PgSessionBinaryUpgradeState binary_upgrade;
 	PgSessionDateTimeState datetime;
 	PgSessionQueryMemoryState query_memory;
 	PgSessionPlannerCostState planner_cost;

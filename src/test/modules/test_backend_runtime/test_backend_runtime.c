@@ -657,6 +657,191 @@ test_session_tablespace_state_is_session_local(PG_FUNCTION_ARGS)
 	if (!ok)
 		elog(ERROR, "session tablespace state was not session-local");
 
+PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_session_binary_upgrade_state_is_session_local);
+Datum
+test_session_binary_upgrade_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	Oid			saved_pg_type_oid;
+	Oid			saved_array_pg_type_oid;
+	Oid			saved_mrng_pg_type_oid;
+	Oid			saved_mrng_array_pg_type_oid;
+	Oid			saved_heap_pg_class_oid;
+	RelFileNumber saved_heap_pg_class_relfilenumber;
+	Oid			saved_index_pg_class_oid;
+	RelFileNumber saved_index_pg_class_relfilenumber;
+	Oid			saved_toast_pg_class_oid;
+	RelFileNumber saved_toast_pg_class_relfilenumber;
+	Oid			saved_pg_enum_oid;
+	Oid			saved_pg_authid_oid;
+	bool		saved_record_init_privs;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	saved_pg_type_oid = binary_upgrade_next_pg_type_oid;
+	saved_array_pg_type_oid = binary_upgrade_next_array_pg_type_oid;
+	saved_mrng_pg_type_oid = binary_upgrade_next_mrng_pg_type_oid;
+	saved_mrng_array_pg_type_oid = binary_upgrade_next_mrng_array_pg_type_oid;
+	saved_heap_pg_class_oid = binary_upgrade_next_heap_pg_class_oid;
+	saved_heap_pg_class_relfilenumber =
+		binary_upgrade_next_heap_pg_class_relfilenumber;
+	saved_index_pg_class_oid = binary_upgrade_next_index_pg_class_oid;
+	saved_index_pg_class_relfilenumber =
+		binary_upgrade_next_index_pg_class_relfilenumber;
+	saved_toast_pg_class_oid = binary_upgrade_next_toast_pg_class_oid;
+	saved_toast_pg_class_relfilenumber =
+		binary_upgrade_next_toast_pg_class_relfilenumber;
+	saved_pg_enum_oid = binary_upgrade_next_pg_enum_oid;
+	saved_pg_authid_oid = binary_upgrade_next_pg_authid_oid;
+	saved_record_init_privs = binary_upgrade_record_init_privs;
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && binary_upgrade_next_pg_type_oid == InvalidOid;
+		ok = ok && binary_upgrade_next_array_pg_type_oid == InvalidOid;
+		ok = ok && binary_upgrade_next_mrng_pg_type_oid == InvalidOid;
+		ok = ok && binary_upgrade_next_mrng_array_pg_type_oid == InvalidOid;
+		ok = ok && binary_upgrade_next_heap_pg_class_oid == InvalidOid;
+		ok = ok && binary_upgrade_next_heap_pg_class_relfilenumber ==
+			InvalidRelFileNumber;
+		ok = ok && binary_upgrade_next_index_pg_class_oid == InvalidOid;
+		ok = ok && binary_upgrade_next_index_pg_class_relfilenumber ==
+			InvalidRelFileNumber;
+		ok = ok && binary_upgrade_next_toast_pg_class_oid == InvalidOid;
+		ok = ok && binary_upgrade_next_toast_pg_class_relfilenumber ==
+			InvalidRelFileNumber;
+		ok = ok && binary_upgrade_next_pg_enum_oid == InvalidOid;
+		ok = ok && binary_upgrade_next_pg_authid_oid == InvalidOid;
+		ok = ok && !binary_upgrade_record_init_privs;
+		binary_upgrade_next_pg_type_oid = 1001;
+		binary_upgrade_next_array_pg_type_oid = 1002;
+		binary_upgrade_next_mrng_pg_type_oid = 1003;
+		binary_upgrade_next_mrng_array_pg_type_oid = 1004;
+		binary_upgrade_next_heap_pg_class_oid = 1005;
+		binary_upgrade_next_heap_pg_class_relfilenumber = 1006;
+		binary_upgrade_next_index_pg_class_oid = 1007;
+		binary_upgrade_next_index_pg_class_relfilenumber = 1008;
+		binary_upgrade_next_toast_pg_class_oid = 1009;
+		binary_upgrade_next_toast_pg_class_relfilenumber = 1010;
+		binary_upgrade_next_pg_enum_oid = 1011;
+		binary_upgrade_next_pg_authid_oid = 1012;
+		binary_upgrade_record_init_privs = true;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && binary_upgrade_next_pg_type_oid == InvalidOid;
+		ok = ok && binary_upgrade_next_array_pg_type_oid == InvalidOid;
+		ok = ok && binary_upgrade_next_mrng_pg_type_oid == InvalidOid;
+		ok = ok && binary_upgrade_next_mrng_array_pg_type_oid == InvalidOid;
+		ok = ok && binary_upgrade_next_heap_pg_class_oid == InvalidOid;
+		ok = ok && binary_upgrade_next_heap_pg_class_relfilenumber ==
+			InvalidRelFileNumber;
+		ok = ok && binary_upgrade_next_index_pg_class_oid == InvalidOid;
+		ok = ok && binary_upgrade_next_index_pg_class_relfilenumber ==
+			InvalidRelFileNumber;
+		ok = ok && binary_upgrade_next_toast_pg_class_oid == InvalidOid;
+		ok = ok && binary_upgrade_next_toast_pg_class_relfilenumber ==
+			InvalidRelFileNumber;
+		ok = ok && binary_upgrade_next_pg_enum_oid == InvalidOid;
+		ok = ok && binary_upgrade_next_pg_authid_oid == InvalidOid;
+		ok = ok && !binary_upgrade_record_init_privs;
+		binary_upgrade_next_pg_type_oid = 2001;
+		binary_upgrade_next_array_pg_type_oid = 2002;
+		binary_upgrade_next_mrng_pg_type_oid = 2003;
+		binary_upgrade_next_mrng_array_pg_type_oid = 2004;
+		binary_upgrade_next_heap_pg_class_oid = 2005;
+		binary_upgrade_next_heap_pg_class_relfilenumber = 2006;
+		binary_upgrade_next_index_pg_class_oid = 2007;
+		binary_upgrade_next_index_pg_class_relfilenumber = 2008;
+		binary_upgrade_next_toast_pg_class_oid = 2009;
+		binary_upgrade_next_toast_pg_class_relfilenumber = 2010;
+		binary_upgrade_next_pg_enum_oid = 2011;
+		binary_upgrade_next_pg_authid_oid = 2012;
+		binary_upgrade_record_init_privs = false;
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && binary_upgrade_next_pg_type_oid == 1001;
+		ok = ok && binary_upgrade_next_array_pg_type_oid == 1002;
+		ok = ok && binary_upgrade_next_mrng_pg_type_oid == 1003;
+		ok = ok && binary_upgrade_next_mrng_array_pg_type_oid == 1004;
+		ok = ok && binary_upgrade_next_heap_pg_class_oid == 1005;
+		ok = ok && binary_upgrade_next_heap_pg_class_relfilenumber == 1006;
+		ok = ok && binary_upgrade_next_index_pg_class_oid == 1007;
+		ok = ok && binary_upgrade_next_index_pg_class_relfilenumber == 1008;
+		ok = ok && binary_upgrade_next_toast_pg_class_oid == 1009;
+		ok = ok && binary_upgrade_next_toast_pg_class_relfilenumber == 1010;
+		ok = ok && binary_upgrade_next_pg_enum_oid == 1011;
+		ok = ok && binary_upgrade_next_pg_authid_oid == 1012;
+		ok = ok && binary_upgrade_record_init_privs;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && binary_upgrade_next_pg_type_oid == 2001;
+		ok = ok && binary_upgrade_next_array_pg_type_oid == 2002;
+		ok = ok && binary_upgrade_next_mrng_pg_type_oid == 2003;
+		ok = ok && binary_upgrade_next_mrng_array_pg_type_oid == 2004;
+		ok = ok && binary_upgrade_next_heap_pg_class_oid == 2005;
+		ok = ok && binary_upgrade_next_heap_pg_class_relfilenumber == 2006;
+		ok = ok && binary_upgrade_next_index_pg_class_oid == 2007;
+		ok = ok && binary_upgrade_next_index_pg_class_relfilenumber == 2008;
+		ok = ok && binary_upgrade_next_toast_pg_class_oid == 2009;
+		ok = ok && binary_upgrade_next_toast_pg_class_relfilenumber == 2010;
+		ok = ok && binary_upgrade_next_pg_enum_oid == 2011;
+		ok = ok && binary_upgrade_next_pg_authid_oid == 2012;
+		ok = ok && !binary_upgrade_record_init_privs;
+
+		PgSetCurrentSession(saved_session);
+		binary_upgrade_next_pg_type_oid = saved_pg_type_oid;
+		binary_upgrade_next_array_pg_type_oid = saved_array_pg_type_oid;
+		binary_upgrade_next_mrng_pg_type_oid = saved_mrng_pg_type_oid;
+		binary_upgrade_next_mrng_array_pg_type_oid =
+			saved_mrng_array_pg_type_oid;
+		binary_upgrade_next_heap_pg_class_oid = saved_heap_pg_class_oid;
+		binary_upgrade_next_heap_pg_class_relfilenumber =
+			saved_heap_pg_class_relfilenumber;
+		binary_upgrade_next_index_pg_class_oid = saved_index_pg_class_oid;
+		binary_upgrade_next_index_pg_class_relfilenumber =
+			saved_index_pg_class_relfilenumber;
+		binary_upgrade_next_toast_pg_class_oid = saved_toast_pg_class_oid;
+		binary_upgrade_next_toast_pg_class_relfilenumber =
+			saved_toast_pg_class_relfilenumber;
+		binary_upgrade_next_pg_enum_oid = saved_pg_enum_oid;
+		binary_upgrade_next_pg_authid_oid = saved_pg_authid_oid;
+		binary_upgrade_record_init_privs = saved_record_init_privs;
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		binary_upgrade_next_pg_type_oid = saved_pg_type_oid;
+		binary_upgrade_next_array_pg_type_oid = saved_array_pg_type_oid;
+		binary_upgrade_next_mrng_pg_type_oid = saved_mrng_pg_type_oid;
+		binary_upgrade_next_mrng_array_pg_type_oid =
+			saved_mrng_array_pg_type_oid;
+		binary_upgrade_next_heap_pg_class_oid = saved_heap_pg_class_oid;
+		binary_upgrade_next_heap_pg_class_relfilenumber =
+			saved_heap_pg_class_relfilenumber;
+		binary_upgrade_next_index_pg_class_oid = saved_index_pg_class_oid;
+		binary_upgrade_next_index_pg_class_relfilenumber =
+			saved_index_pg_class_relfilenumber;
+		binary_upgrade_next_toast_pg_class_oid = saved_toast_pg_class_oid;
+		binary_upgrade_next_toast_pg_class_relfilenumber =
+			saved_toast_pg_class_relfilenumber;
+		binary_upgrade_next_pg_enum_oid = saved_pg_enum_oid;
+		binary_upgrade_next_pg_authid_oid = saved_pg_authid_oid;
+		binary_upgrade_record_init_privs = saved_record_init_privs;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session binary-upgrade state was not session-local");
+
 	PG_RETURN_BOOL(true);
 }
 
