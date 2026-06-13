@@ -1623,6 +1623,9 @@ test_session_parser_state_is_session_local(PG_FUNCTION_ARGS)
 	PgSession	fake_session2;
 	char	   *saved_backslash_quote;
 	char	   *saved_transform_null_equals;
+	HTAB	   *saved_operator_lookup_cache;
+	HTAB	   *session1_operator_cache;
+	HTAB	   *session2_operator_cache;
 	bool		ok = true;
 
 	saved_session = CurrentPgSession;
@@ -1630,40 +1633,56 @@ test_session_parser_state_is_session_local(PG_FUNCTION_ARGS)
 		pstrdup(GetConfigOption("backslash_quote", false, false));
 	saved_transform_null_equals =
 		pstrdup(GetConfigOption("transform_null_equals", false, false));
+	saved_operator_lookup_cache = *PgCurrentOperatorLookupCacheRef();
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	session1_operator_cache = (HTAB *) &fake_session1;
+	session2_operator_cache = (HTAB *) &fake_session2;
 
 	PG_TRY();
 	{
 		PgSetCurrentSession(&fake_session1);
 		ok = ok && backslash_quote == BACKSLASH_QUOTE_SAFE_ENCODING;
 		ok = ok && !Transform_null_equals;
+		ok = ok && *PgCurrentOperatorLookupCacheRef() == NULL;
 		SetConfigOption("backslash_quote", "on",
 						PGC_USERSET, PGC_S_SESSION);
 		SetConfigOption("transform_null_equals", "on",
 						PGC_USERSET, PGC_S_SESSION);
+		*PgCurrentOperatorLookupCacheRef() = session1_operator_cache;
 		ok = ok && backslash_quote == BACKSLASH_QUOTE_ON;
 		ok = ok && Transform_null_equals;
+		ok = ok && *PgCurrentOperatorLookupCacheRef() ==
+			session1_operator_cache;
 
 		PgSetCurrentSession(&fake_session2);
 		ok = ok && backslash_quote == BACKSLASH_QUOTE_SAFE_ENCODING;
 		ok = ok && !Transform_null_equals;
+		ok = ok && *PgCurrentOperatorLookupCacheRef() == NULL;
 		SetConfigOption("backslash_quote", "off",
 						PGC_USERSET, PGC_S_SESSION);
 		SetConfigOption("transform_null_equals", "off",
 						PGC_USERSET, PGC_S_SESSION);
+		*PgCurrentOperatorLookupCacheRef() = session2_operator_cache;
 		ok = ok && backslash_quote == BACKSLASH_QUOTE_OFF;
 		ok = ok && !Transform_null_equals;
+		ok = ok && *PgCurrentOperatorLookupCacheRef() ==
+			session2_operator_cache;
 
 		PgSetCurrentSession(&fake_session1);
 		ok = ok && backslash_quote == BACKSLASH_QUOTE_ON;
 		ok = ok && Transform_null_equals;
+		ok = ok && *PgCurrentOperatorLookupCacheRef() ==
+			session1_operator_cache;
 
 		PgSetCurrentSession(&fake_session2);
 		ok = ok && backslash_quote == BACKSLASH_QUOTE_OFF;
 		ok = ok && !Transform_null_equals;
+		ok = ok && *PgCurrentOperatorLookupCacheRef() ==
+			session2_operator_cache;
 
 		PgSetCurrentSession(saved_session);
+		*PgCurrentOperatorLookupCacheRef() = saved_operator_lookup_cache;
 		SetConfigOption("backslash_quote", saved_backslash_quote,
 						PGC_USERSET, PGC_S_SESSION);
 		SetConfigOption("transform_null_equals",
@@ -1673,6 +1692,7 @@ test_session_parser_state_is_session_local(PG_FUNCTION_ARGS)
 	PG_CATCH();
 	{
 		PgSetCurrentSession(saved_session);
+		*PgCurrentOperatorLookupCacheRef() = saved_operator_lookup_cache;
 		SetConfigOption("backslash_quote", saved_backslash_quote,
 						PGC_USERSET, PGC_S_SESSION);
 		SetConfigOption("transform_null_equals",

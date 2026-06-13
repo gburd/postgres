@@ -708,7 +708,8 @@ bridge through `PgSession`, plus the server/config-file identity GUC bridge
 through `PgRuntime`, plus the prepared-statement storage bridge through
 `PgSession`, plus the temporary-table ON COMMIT action bridge through
 `PgSession`, plus the sequence `nextval`/`currval`/`lastval` cache bridge
-through `PgSession`.
+through `PgSession`, plus the parser operator lookup cache bridge through
+`PgSession`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.

@@ -74,3 +74,6 @@ SELECT lastval() AS last_value;
 DISCARD SEQUENCES;
 SELECT nextval('phase12_sequence_state') AS nextval_after_discard;
 SELECT currval('phase12_sequence_state') AS current_after_discard;
+SELECT 1 + 2 AS operator_lookup_sum;
+SELECT OPERATOR(pg_catalog.-) 5 AS operator_lookup_unary;
+SELECT 3 OPERATOR(pg_catalog.*) 4 AS operator_lookup_product;

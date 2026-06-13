@@ -154,7 +154,8 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionConnectionGUCState early_sessi
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionParserState early_session_parser = {
 	.initialized = true,
 	.transform_null_equals_value = false,
-	.backslash_quote_value = BACKSLASH_QUOTE_SAFE_ENCODING
+	.backslash_quote_value = BACKSLASH_QUOTE_SAFE_ENCODING,
+	.operator_lookup_cache = NULL
 };
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionVacuumState early_session_vacuum = {
 	.initialized = true,
@@ -812,6 +813,7 @@ PgSessionInitializeParserState(PgSessionParserState *parser)
 	parser->initialized = true;
 	parser->transform_null_equals_value = false;
 	parser->backslash_quote_value = BACKSLASH_QUOTE_SAFE_ENCODING;
+	parser->operator_lookup_cache = NULL;
 }
 
 static void
@@ -2621,6 +2623,12 @@ int *
 PgCurrentBackslashQuoteRef(void)
 {
 	return &PgCurrentSessionParserState()->backslash_quote_value;
+}
+
+HTAB **
+PgCurrentOperatorLookupCacheRef(void)
+{
+	return &PgCurrentSessionParserState()->operator_lookup_cache;
 }
 
 int *

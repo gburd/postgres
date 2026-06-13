@@ -261,6 +261,7 @@ typedef struct PgSessionParserState
 	bool		initialized;
 	bool		transform_null_equals_value;
 	int			backslash_quote_value;
+	HTAB	   *operator_lookup_cache;
 } PgSessionParserState;
 
 typedef struct PgSessionVacuumState
@@ -935,6 +936,7 @@ extern HTAB **PgCurrentPreparedQueriesRef(void);
 extern List **PgCurrentOnCommitActionsRef(void);
 extern HTAB **PgCurrentSequenceHashTableRef(void);
 extern struct SeqTableData **PgCurrentLastUsedSequenceRef(void);
+extern HTAB **PgCurrentOperatorLookupCacheRef(void);
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);

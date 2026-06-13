@@ -378,3 +378,21 @@ SELECT currval('phase12_sequence_state') AS current_after_discard;
                      2
 (1 row)
 
+SELECT 1 + 2 AS operator_lookup_sum;
+ operator_lookup_sum 
+---------------------
+                   3
+(1 row)
+
+SELECT OPERATOR(pg_catalog.-) 5 AS operator_lookup_unary;
+ operator_lookup_unary 
+-----------------------
+                    -5
+(1 row)
+
+SELECT 3 OPERATOR(pg_catalog.*) 4 AS operator_lookup_product;
+ operator_lookup_product 
+-------------------------
+                      12
+(1 row)
+
