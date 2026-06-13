@@ -24,11 +24,10 @@
 #include "utils/hsearch.h"
 
 
-/* Current session timezone (controlled by TimeZone GUC) */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION pg_tz *session_timezone = NULL;
-
-/* Current log timezone (controlled by log_timezone GUC) */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION pg_tz *log_timezone = NULL;
+/*
+ * Current session and log timezones live in PgSessionDateTimeState.  The
+ * public names remain source-compatible lvalue macros from pgtime.h.
+ */
 
 
 static bool scan_directory_ci(const char *dirname,

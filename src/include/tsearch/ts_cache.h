@@ -85,7 +85,9 @@ typedef struct
 /*
  * GUC variable for current configuration
  */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char *TSCurrentConfig;
+extern char **PgCurrentTSCurrentConfigRef(void);
+extern Oid *PgCurrentTSCurrentConfigCacheRef(void);
+#define TSCurrentConfig (*PgCurrentTSCurrentConfigRef())
 
 
 extern TSParserCacheEntry *lookup_ts_parser_cache(Oid prsId);

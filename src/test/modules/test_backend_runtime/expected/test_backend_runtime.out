@@ -71,6 +71,12 @@ SELECT test_session_datetime_state_is_session_local();
  t
 (1 row)
 
+SELECT test_session_text_search_state_is_session_local();
+ test_session_text_search_state_is_session_local 
+-------------------------------------------------
+ t
+(1 row)
+
 SELECT test_session_parser_state_is_session_local();
  test_session_parser_state_is_session_local 
 --------------------------------------------

@@ -18,6 +18,7 @@
 #include "lib/ilist.h"
 #include "libpq/hba.h"
 #include "miscadmin.h"
+#include "pgtime.h"
 #include "pgstat.h"
 #include "port/atomics.h"
 #include "storage/ipc.h"
@@ -224,7 +225,18 @@ typedef struct PgSessionDateTimeState
 	int			date_style;
 	int			date_order;
 	int			interval_style;
+	char	   *timezone_string_value;
+	char	   *log_timezone_string_value;
+	pg_tz	   *session_timezone_value;
+	pg_tz	   *log_timezone_value;
 } PgSessionDateTimeState;
+
+typedef struct PgSessionTextSearchState
+{
+	bool		initialized;
+	char	   *current_config_value;
+	Oid			current_config_cache;
+} PgSessionTextSearchState;
 
 typedef struct PgSessionParserState
 {
@@ -677,6 +689,7 @@ struct PgSession
 	PgSessionAccessWalGUCState access_wal_guc;
 	PgSessionJitGUCState jit_guc;
 	PgSessionSortGUCState sort_guc;
+	PgSessionTextSearchState text_search;
 	PgSessionQueryMemoryState query_memory;
 	PgSessionPlannerCostState planner_cost;
 	PgSessionPlannerMethodState planner_method;
@@ -852,6 +865,12 @@ extern bool *PgCurrentTraceSortRef(void);
 #ifdef DEBUG_BOUNDED_SORT
 extern bool *PgCurrentOptimizeBoundedSortRef(void);
 #endif
+extern char **PgCurrentTSCurrentConfigRef(void);
+extern Oid *PgCurrentTSCurrentConfigCacheRef(void);
+extern char **PgCurrentTimeZoneStringRef(void);
+extern char **PgCurrentLogTimeZoneStringRef(void);
+extern pg_tz **PgCurrentSessionTimeZoneRef(void);
+extern pg_tz **PgCurrentLogTimeZoneRef(void);
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);

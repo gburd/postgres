@@ -594,8 +594,10 @@ extern char **PgCurrentLogMinMessagesStringRef(void);
 #endif
 static PG_GLOBAL_RUNTIME int syslog_facility = DEFAULT_SYSLOG_FACILITY;
 
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *timezone_string;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *log_timezone_string;
+extern char **PgCurrentTimeZoneStringRef(void);
+extern char **PgCurrentLogTimeZoneStringRef(void);
+#define timezone_string (*PgCurrentTimeZoneStringRef())
+#define log_timezone_string (*PgCurrentLogTimeZoneStringRef())
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *timezone_abbreviations_string;
 static PG_GLOBAL_RUNTIME char *data_directory;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *session_authorization_string;

@@ -2140,3 +2140,60 @@ Validation for this slice:
 - static scans found no remaining direct session TLS definitions or extern
   declarations for `Extension_control_path`, `trace_sort`, or
   `optimize_bounded_sort`.
+
+## Session Text-Search And Timezone State Bridge
+
+The forty-first Phase 12 slice moves text-search and timezone session
+environment state under `PgSession`:
+
+- `PgSessionDateTimeState` now owns the `TimeZone` and `log_timezone` string
+  GUC backing variables plus the derived `session_timezone` and
+  `log_timezone` `pg_tz` pointers;
+- `PgSession` now owns a `PgSessionTextSearchState`;
+- `PgSessionTextSearchState` owns `TSCurrentConfig` and the
+  `TSCurrentConfigCache` derived cache value;
+- the public names remain source-compatible lvalue macros in `pgtime.h` and
+  `tsearch/ts_cache.h`;
+- early startup paths before `CurrentPgSession` is installed use fallback
+  session-local storage in `backend_runtime.c`;
+- process-mode and thread-runtime session installation adopt any early
+  fallback timezone and text-search state into the logical session object;
+- `InitializeThreadedSessionGUCOptions()` initializes
+  `default_text_search_config`, `TimeZone`, and `log_timezone` for freshly
+  created threaded logical sessions;
+- `RebindSessionGUCVariablePointers()` now rebinds the generated GUC records
+  for `default_text_search_config`, `TimeZone`, and `log_timezone` whenever
+  the active logical session changes;
+- local backend-launch handoff fields were renamed away from
+  `session_timezone` and `log_timezone`, because those public names are now
+  compatibility macros;
+- `search_path` remains deferred. Its string GUC backing variable can move
+  mechanically, but its namespace-derived caches and invalidation behavior
+  need a separate migration plan before session switching can be made
+  trustworthy.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `guc.o`,
+  `guc_tables.o`, `ts_cache.o`, `pgtz.o`, and `test_backend_runtime.o`;
+- because exported timezone and text-search globals changed into
+  compatibility macros, `gmake -C src/backend clean` plus generated utility
+  and node-header recovery was used before the clean rebuild;
+- clean full `gmake -j8` passed after renaming the backend-launch handoff
+  fields that collided with the new timezone compatibility macros;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed, followed by rebuilding
+  and reinstalling `src/test/modules/test_backend_runtime` against the
+  current headers;
+- focused `test_backend_runtime` regression passed and includes an extended
+  datetime state test plus `test_session_text_search_state_is_session_local()`,
+  which switches sessions through `PgSetCurrentSession()`, changes the
+  text-search GUC through the GUC machinery, directly exercises the derived
+  text-search cache storage, and proves both values follow the active session;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests, including text-search, GUC, and date/time coverage;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- `git diff --check` passed;
+- static scans found no remaining direct session TLS definitions or extern
+  declarations for `TSCurrentConfig`, `session_timezone`, `log_timezone`,
+  `timezone_string`, or `log_timezone_string`.

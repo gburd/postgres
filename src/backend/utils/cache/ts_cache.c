@@ -73,10 +73,11 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION TSConfigCacheEntry *lastUsedConfig = NU
 
 /*
  * GUC default_text_search_config, and a cache of the current config's OID
+ * live in PgSessionTextSearchState.  Keep TSCurrentConfig source-compatible
+ * through the public lvalue macro in ts_cache.h, and keep the OID cache local
+ * to the active logical session through the accessor below.
  */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION char *TSCurrentConfig = NULL;
-
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid TSCurrentConfigCache = InvalidOid;
+#define TSCurrentConfigCache (*PgCurrentTSCurrentConfigCacheRef())
 
 
 /*

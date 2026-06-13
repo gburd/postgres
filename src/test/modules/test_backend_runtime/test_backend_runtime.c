@@ -57,6 +57,7 @@
 #include "storage/lock.h"
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"
+#include "tsearch/ts_cache.h"
 #include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/bytea.h"
@@ -885,6 +886,8 @@ test_session_datetime_state_is_session_local(PG_FUNCTION_ARGS)
 	int			saved_date_style;
 	int			saved_date_order;
 	char	   *saved_interval_style;
+	char	   *saved_timezone;
+	char	   *saved_log_timezone;
 	bool		ok = true;
 
 	saved_session = CurrentPgSession;
@@ -892,6 +895,9 @@ test_session_datetime_state_is_session_local(PG_FUNCTION_ARGS)
 	saved_date_order = DateOrder;
 	saved_interval_style = pstrdup(GetConfigOption("IntervalStyle",
 												   false, false));
+	saved_timezone = pstrdup(GetConfigOption("TimeZone", false, false));
+	saved_log_timezone = pstrdup(GetConfigOption("log_timezone",
+												 false, false));
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
 
@@ -901,37 +907,77 @@ test_session_datetime_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && DateStyle == USE_ISO_DATES;
 		ok = ok && DateOrder == DATEORDER_MDY;
 		ok = ok && IntervalStyle == INTSTYLE_POSTGRES;
+		ok = ok && strcmp(*PgCurrentTimeZoneStringRef(), "GMT") == 0;
+		ok = ok && strcmp(*PgCurrentLogTimeZoneStringRef(), "GMT") == 0;
+		ok = ok && session_timezone != NULL &&
+			strcmp(pg_get_timezone_name(session_timezone), "GMT") == 0;
+		ok = ok && log_timezone != NULL &&
+			strcmp(pg_get_timezone_name(log_timezone), "GMT") == 0;
 		DateStyle = USE_SQL_DATES;
 		DateOrder = DATEORDER_DMY;
 		SetConfigOption("IntervalStyle", "sql_standard",
 						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("TimeZone", "UTC",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("log_timezone", "UTC",
+						PGC_SIGHUP, PGC_S_FILE);
 		ok = ok && IntervalStyle == INTSTYLE_SQL_STANDARD;
+		ok = ok && session_timezone != NULL &&
+			strcmp(pg_get_timezone_name(session_timezone), "UTC") == 0;
+		ok = ok && log_timezone != NULL &&
+			strcmp(pg_get_timezone_name(log_timezone), "UTC") == 0;
 
 		PgSetCurrentSession(&fake_session2);
 		ok = ok && DateStyle == USE_ISO_DATES;
 		ok = ok && DateOrder == DATEORDER_MDY;
 		ok = ok && IntervalStyle == INTSTYLE_POSTGRES;
+		ok = ok && strcmp(*PgCurrentTimeZoneStringRef(), "GMT") == 0;
+		ok = ok && strcmp(*PgCurrentLogTimeZoneStringRef(), "GMT") == 0;
+		ok = ok && session_timezone != NULL &&
+			strcmp(pg_get_timezone_name(session_timezone), "GMT") == 0;
+		ok = ok && log_timezone != NULL &&
+			strcmp(pg_get_timezone_name(log_timezone), "GMT") == 0;
 		DateStyle = USE_GERMAN_DATES;
 		DateOrder = DATEORDER_YMD;
 		SetConfigOption("IntervalStyle", "iso_8601",
 						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("TimeZone", "Europe/London",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("log_timezone", "Europe/London",
+						PGC_SIGHUP, PGC_S_FILE);
 		ok = ok && IntervalStyle == INTSTYLE_ISO_8601;
+		ok = ok && session_timezone != NULL &&
+			strcmp(pg_get_timezone_name(session_timezone), "Europe/London") == 0;
+		ok = ok && log_timezone != NULL &&
+			strcmp(pg_get_timezone_name(log_timezone), "Europe/London") == 0;
 
 		PgSetCurrentSession(&fake_session1);
 		ok = ok && DateStyle == USE_SQL_DATES;
 		ok = ok && DateOrder == DATEORDER_DMY;
 		ok = ok && IntervalStyle == INTSTYLE_SQL_STANDARD;
+		ok = ok && session_timezone != NULL &&
+			strcmp(pg_get_timezone_name(session_timezone), "UTC") == 0;
+		ok = ok && log_timezone != NULL &&
+			strcmp(pg_get_timezone_name(log_timezone), "UTC") == 0;
 
 		PgSetCurrentSession(&fake_session2);
 		ok = ok && DateStyle == USE_GERMAN_DATES;
 		ok = ok && DateOrder == DATEORDER_YMD;
 		ok = ok && IntervalStyle == INTSTYLE_ISO_8601;
+		ok = ok && session_timezone != NULL &&
+			strcmp(pg_get_timezone_name(session_timezone), "Europe/London") == 0;
+		ok = ok && log_timezone != NULL &&
+			strcmp(pg_get_timezone_name(log_timezone), "Europe/London") == 0;
 
 		PgSetCurrentSession(saved_session);
 		DateStyle = saved_date_style;
 		DateOrder = saved_date_order;
 		SetConfigOption("IntervalStyle", saved_interval_style,
 						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("TimeZone", saved_timezone,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("log_timezone", saved_log_timezone,
+						PGC_SIGHUP, PGC_S_FILE);
 	}
 	PG_CATCH();
 	{
@@ -940,12 +986,80 @@ test_session_datetime_state_is_session_local(PG_FUNCTION_ARGS)
 		DateOrder = saved_date_order;
 		SetConfigOption("IntervalStyle", saved_interval_style,
 						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("TimeZone", saved_timezone,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("log_timezone", saved_log_timezone,
+						PGC_SIGHUP, PGC_S_FILE);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
 
 	if (!ok)
 		elog(ERROR, "session date/time GUC state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_session_text_search_state_is_session_local);
+Datum
+test_session_text_search_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	char	   *saved_text_search_config;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	saved_text_search_config =
+		pstrdup(GetConfigOption("default_text_search_config", false, false));
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && strcmp(TSCurrentConfig, "pg_catalog.simple") == 0;
+		ok = ok && !OidIsValid(*PgCurrentTSCurrentConfigCacheRef());
+		SetConfigOption("default_text_search_config", "pg_catalog.english",
+						PGC_USERSET, PGC_S_SESSION);
+		ok = ok && strcmp(TSCurrentConfig, "pg_catalog.english") == 0;
+		ok = ok && !OidIsValid(*PgCurrentTSCurrentConfigCacheRef());
+		*PgCurrentTSCurrentConfigCacheRef() = 12345;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && strcmp(TSCurrentConfig, "pg_catalog.simple") == 0;
+		ok = ok && !OidIsValid(*PgCurrentTSCurrentConfigCacheRef());
+		SetConfigOption("default_text_search_config", "pg_catalog.simple",
+						PGC_USERSET, PGC_S_SESSION);
+		ok = ok && strcmp(TSCurrentConfig, "pg_catalog.simple") == 0;
+		*PgCurrentTSCurrentConfigCacheRef() = 67890;
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && strcmp(TSCurrentConfig, "pg_catalog.english") == 0;
+		ok = ok && *PgCurrentTSCurrentConfigCacheRef() == 12345;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && strcmp(TSCurrentConfig, "pg_catalog.simple") == 0;
+		ok = ok && *PgCurrentTSCurrentConfigCacheRef() == 67890;
+
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("default_text_search_config",
+						saved_text_search_config,
+						PGC_USERSET, PGC_S_SESSION);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("default_text_search_config",
+						saved_text_search_config,
+						PGC_USERSET, PGC_S_SESSION);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session text-search state was not session-local");
 
 	PG_RETURN_BOOL(true);
 }

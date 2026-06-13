@@ -702,7 +702,8 @@ WAL-skipping threshold state through `PgSession`, plus the JIT direct-pointer
 GUC bridge for provider selection, enablement, cost thresholds,
 expression/deforming toggles, and debugging/profiling/bitcode flags through
 `PgSession`, plus the extension-control path and sort direct-pointer GUC
-bridge through `PgSession`.
+bridge through `PgSession`, plus the text-search and timezone session
+environment bridge through `PgSession`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.

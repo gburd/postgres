@@ -205,8 +205,8 @@ typedef struct BackendThreadStart
 	BackgroundWorker bgworker_startup_data;
 	ClientSocket client_sock;
 	Latch	   *postmaster_latch;
-	pg_tz	   *session_timezone;
-	pg_tz	   *log_timezone;
+	pg_tz	   *startup_session_timezone;
+	pg_tz	   *startup_log_timezone;
 	pg_atomic_uint32 launch_registered;
 	bool		startup_gate_held;
 } BackendThreadStart;
@@ -438,8 +438,8 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 		thread_start->client_sock.sock = PGINVALID_SOCKET;
 	}
 	thread_start->postmaster_latch = MyLatch;
-	thread_start->session_timezone = session_timezone;
-	thread_start->log_timezone = log_timezone;
+	thread_start->startup_session_timezone = session_timezone;
+	thread_start->startup_log_timezone = log_timezone;
 	pg_atomic_init_u32(&thread_start->launch_registered, 0);
 	thread_start->startup_gate_held = false;
 
@@ -486,8 +486,8 @@ backend_thread_entry(void *arg)
 	MyPMChildSlot = thread_start->child_slot;
 	MyProcPid = (int) getpid();
 	IsUnderPostmaster = true;
-	session_timezone = thread_start->session_timezone;
-	log_timezone = thread_start->log_timezone;
+	session_timezone = thread_start->startup_session_timezone;
+	log_timezone = thread_start->startup_log_timezone;
 
 	InitializeWaitEventSupport();
 	InitProcessLocalLatch();

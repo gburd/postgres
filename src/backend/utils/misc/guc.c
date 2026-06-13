@@ -1514,6 +1514,15 @@ InitializeThreadedSessionGUCOptions(void)
 	gconf = find_option("search_path", false, false, PANIC);
 	InitializeOneGUCOption(gconf);
 
+	gconf = find_option("default_text_search_config", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("TimeZone", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("log_timezone", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
 	gconf = find_option("server_encoding", false, false, PANIC);
 	InitializeOneGUCOption(gconf);
 
@@ -1855,9 +1864,21 @@ RebindSessionGUCVariablePointers(void)
 	Assert(gconf->vartype == PGC_BOOL);
 	gconf->_bool.variable = PgCurrentDefaultXactReadOnlyRef();
 
+	gconf = find_option("default_text_search_config", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentTSCurrentConfigRef();
+
 	gconf = find_option("IntervalStyle", false, false, PANIC);
 	Assert(gconf->vartype == PGC_ENUM);
 	gconf->_enum.variable = PgCurrentIntervalStyleRef();
+
+	gconf = find_option("TimeZone", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentTimeZoneStringRef();
+
+	gconf = find_option("log_timezone", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentLogTimeZoneStringRef();
 
 	gconf = find_option("idle_in_transaction_session_timeout", false, false,
 						PANIC);

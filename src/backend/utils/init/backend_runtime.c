@@ -118,7 +118,16 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionDateTimeState early_session_da
 	.initialized = true,
 	.date_style = USE_ISO_DATES,
 	.date_order = DATEORDER_MDY,
-	.interval_style = INTSTYLE_POSTGRES
+	.interval_style = INTSTYLE_POSTGRES,
+	.timezone_string_value = "GMT",
+	.log_timezone_string_value = "GMT",
+	.session_timezone_value = NULL,
+	.log_timezone_value = NULL
+};
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionTextSearchState early_session_text_search = {
+	.initialized = true,
+	.current_config_value = "pg_catalog.simple",
+	.current_config_cache = InvalidOid
 };
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionParserState early_session_parser = {
 	.initialized = true,
@@ -425,6 +434,8 @@ static void PgSessionInitializeBinaryUpgradeState(PgSessionBinaryUpgradeState *b
 static void PgSessionAdoptEarlyBinaryUpgradeState(PgSession *session);
 static void PgSessionInitializeDateTimeState(PgSessionDateTimeState *datetime);
 static void PgSessionAdoptEarlyDateTimeState(PgSession *session);
+static void PgSessionInitializeTextSearchState(PgSessionTextSearchState *text_search);
+static void PgSessionAdoptEarlyTextSearchState(PgSession *session);
 static void PgSessionInitializeParserState(PgSessionParserState *parser);
 static void PgSessionAdoptEarlyParserState(PgSession *session);
 static void PgSessionInitializeVacuumState(PgSessionVacuumState *vacuum);
@@ -479,6 +490,7 @@ static PgSessionDatabaseState *PgCurrentSessionDatabaseState(void);
 static PgSessionTablespaceState *PgCurrentSessionTablespaceState(void);
 static PgSessionBinaryUpgradeState *PgCurrentSessionBinaryUpgradeState(void);
 static PgSessionDateTimeState *PgCurrentSessionDateTimeState(void);
+static PgSessionTextSearchState *PgCurrentSessionTextSearchState(void);
 static PgSessionParserState *PgCurrentSessionParserState(void);
 static PgSessionVacuumState *PgCurrentSessionVacuumState(void);
 static PgSessionBufferIOState *PgCurrentSessionBufferIOState(void);
@@ -655,6 +667,10 @@ PgSessionInitializeDateTimeState(PgSessionDateTimeState *datetime)
 	datetime->date_style = USE_ISO_DATES;
 	datetime->date_order = DATEORDER_MDY;
 	datetime->interval_style = INTSTYLE_POSTGRES;
+	datetime->timezone_string_value = guc_strdup(FATAL, "GMT");
+	datetime->log_timezone_string_value = guc_strdup(FATAL, "GMT");
+	datetime->session_timezone_value = pg_tzset("GMT");
+	datetime->log_timezone_value = datetime->session_timezone_value;
 }
 
 static void
@@ -667,6 +683,28 @@ PgSessionAdoptEarlyDateTimeState(PgSession *session)
 
 	session->datetime = early_session_datetime;
 	PgSessionInitializeDateTimeState(&early_session_datetime);
+}
+
+static void
+PgSessionInitializeTextSearchState(PgSessionTextSearchState *text_search)
+{
+	Assert(text_search != NULL);
+
+	text_search->initialized = true;
+	text_search->current_config_value = guc_strdup(FATAL, "pg_catalog.simple");
+	text_search->current_config_cache = InvalidOid;
+}
+
+static void
+PgSessionAdoptEarlyTextSearchState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (!early_session_text_search.initialized)
+		PgSessionInitializeTextSearchState(&early_session_text_search);
+
+	session->text_search = early_session_text_search;
+	PgSessionInitializeTextSearchState(&early_session_text_search);
 }
 
 static void
@@ -1432,6 +1470,7 @@ InitializePgProcessRuntime(void)
 	PgSessionAdoptEarlyTablespaceState(&process_session);
 	PgSessionAdoptEarlyBinaryUpgradeState(&process_session);
 	PgSessionAdoptEarlyDateTimeState(&process_session);
+	PgSessionAdoptEarlyTextSearchState(&process_session);
 	PgSessionAdoptEarlyParserState(&process_session);
 	PgSessionAdoptEarlyVacuumState(&process_session);
 	PgSessionAdoptEarlyBufferIOState(&process_session);
@@ -1534,6 +1573,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgSessionInitializeTablespaceState(&state->session.tablespace);
 	PgSessionInitializeBinaryUpgradeState(&state->session.binary_upgrade);
 	PgSessionInitializeDateTimeState(&state->session.datetime);
+	PgSessionInitializeTextSearchState(&state->session.text_search);
 	PgSessionInitializeParserState(&state->session.parser);
 	PgSessionInitializeVacuumState(&state->session.vacuum);
 	PgSessionInitializeBufferIOState(&state->session.buffer_io);
@@ -1577,6 +1617,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgSessionAdoptEarlyTablespaceState(&state->session);
 	PgSessionAdoptEarlyBinaryUpgradeState(&state->session);
 	PgSessionAdoptEarlyDateTimeState(&state->session);
+	PgSessionAdoptEarlyTextSearchState(&state->session);
 	PgSessionAdoptEarlyParserState(&state->session);
 	PgSessionAdoptEarlyVacuumState(&state->session);
 	PgSessionAdoptEarlyBufferIOState(&state->session);
@@ -1708,6 +1749,22 @@ PgCurrentSessionDateTimeState(void)
 		PgSessionInitializeDateTimeState(datetime);
 
 	return datetime;
+}
+
+static PgSessionTextSearchState *
+PgCurrentSessionTextSearchState(void)
+{
+	PgSessionTextSearchState *text_search;
+
+	if (CurrentPgSession == NULL)
+		text_search = &early_session_text_search;
+	else
+		text_search = &CurrentPgSession->text_search;
+
+	if (!text_search->initialized)
+		PgSessionInitializeTextSearchState(text_search);
+
+	return text_search;
 }
 
 static PgSessionParserState *
@@ -2171,6 +2228,42 @@ int *
 PgCurrentIntervalStyleRef(void)
 {
 	return &PgCurrentSessionDateTimeState()->interval_style;
+}
+
+char **
+PgCurrentTimeZoneStringRef(void)
+{
+	return &PgCurrentSessionDateTimeState()->timezone_string_value;
+}
+
+char **
+PgCurrentLogTimeZoneStringRef(void)
+{
+	return &PgCurrentSessionDateTimeState()->log_timezone_string_value;
+}
+
+pg_tz **
+PgCurrentSessionTimeZoneRef(void)
+{
+	return &PgCurrentSessionDateTimeState()->session_timezone_value;
+}
+
+pg_tz **
+PgCurrentLogTimeZoneRef(void)
+{
+	return &PgCurrentSessionDateTimeState()->log_timezone_value;
+}
+
+char **
+PgCurrentTSCurrentConfigRef(void)
+{
+	return &PgCurrentSessionTextSearchState()->current_config_value;
+}
+
+Oid *
+PgCurrentTSCurrentConfigCacheRef(void)
+{
+	return &PgCurrentSessionTextSearchState()->current_config_cache;
 }
 
 bool *
