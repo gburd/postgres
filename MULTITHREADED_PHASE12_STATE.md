@@ -5142,3 +5142,40 @@ Validation for this slice:
   terminated a sleeping backend through `pg_terminate_backend()`, verified the
   base table remained readable, and shut down cleanly with no crash or join
   failure markers.
+
+## PMChild Publication Race Regression
+
+The one-hundred-seventh Phase 12 slice adds focused PMChild synchronization
+stress for Gate E2:
+
+- `test_pmchild_thread_backend_publication_race()` creates a fake
+  thread-backed PMChild and a fake thread-runtime backend, then starts native
+  reader threads inside the regression backend;
+- reader threads repeatedly call `PostmasterChildSignalPid()`,
+  `PostmasterChildRaiseThreadInterrupt()`, and
+  `PostmasterChildWakeThreadBackend()` while the owner thread cycles through
+  live backend publication, explicit detach, exit publication, and exit report
+  claiming;
+- each detach-then-publish cycle verifies that the exit payload preserves the
+  logical backend id and retained-memory accounting, while reader threads
+  prove that the live signal path is sometimes targetable and eventually
+  becomes untargetable after detach;
+- the full `test_backend_runtime` regression now exercises the new race helper
+  alongside the single-threaded PMChild API contract.
+
+This is not full Gate E2 PMChild completion. It raises the floor for the local
+PMChild helper API, but broader real-server stress is still required for
+administrator termination, abandoned clients, worker exits, postmaster reaping,
+and native thread join/retry paths.
+
+Validation for this slice:
+
+- `src/test/modules/test_backend_runtime/test_backend_runtime.o` and
+  `test_backend_runtime.dylib` rebuilt successfully;
+- reinstalling `src/test/modules/test_backend_runtime` into the temp install
+  passed;
+- direct full-module `pg_regress test_backend_runtime` passed all 1 test
+  against the current temp install;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- `git diff --check` passed.

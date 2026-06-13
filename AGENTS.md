@@ -132,6 +132,11 @@ Important current files:
   publication. It preserves the exited logical id for reaping/logging while
   preventing later signal routing from targeting a backend committed to
   teardown.
+- `test_pmchild_thread_backend_publication_race()` in
+  `src/test/modules/test_backend_runtime` is the focused C-level stress for
+  the PMChild helper contract. Run the full `test_backend_runtime` regression
+  after changing PMChild thread publication, detach, signal-id, interrupt,
+  wakeup, or exit-payload behavior.
 - For thread-backed PMChild reaping, successful `pg_thread_join()` is the
   boundary before child cleanup and slot release. If join fails, leave the
   PMChild active and re-publish the claimed thread-exit report for retry; do

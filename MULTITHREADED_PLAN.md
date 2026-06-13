@@ -831,7 +831,11 @@ is claimed. Thread exit now also has an explicit
 stops publishing the live logical-backend pointer before final exit
 publication, while preserving the exited logical id for postmaster reaping and
 logging. This is a prerequisite for safe teardown because later signal routing
-cannot target a backend that has committed to carrier exit.
+cannot target a backend that has committed to carrier exit. The
+`test_backend_runtime` regression now also has a native-thread PMChild
+publication race helper that repeatedly publishes, detaches, publishes exit,
+and claims exit reports while reader threads concurrently call signal-id,
+interrupt, and wakeup helpers.
 Threaded client-socket ownership is now explicit during backend startup:
 `pq_init()` marks the launch-time `ClientSocket` copy invalid only after
 `Port` owns the descriptor and `socket_close()` is registered, while
@@ -883,7 +887,7 @@ auxiliary workers reproduced an abrupt postmaster death during a threaded
 so future gate reintroduction must be tied to a named shared-state dependency
 and concurrent catalog-startup stress. The remaining PMChild and teardown
 blockers are full resource cleanup or deliberate long-lived ownership, broader
-reaping stress for termination and abandoned-client races, broader
+real-server reaping stress for termination and abandoned-client races, broader
 custom/extension GUC semantics, and broader stress coverage for teardown
 races. A direct attempt to reset the exiting carrier's `TopMemoryContext`
 children after backend cleanup caused an abrupt postmaster exit during a

@@ -311,6 +311,12 @@ SELECT test_pmchild_thread_backend_signal_api();
  t
 (1 row)
 
+SELECT test_pmchild_thread_backend_publication_race();
+ test_pmchild_thread_backend_publication_race 
+----------------------------------------------
+ t
+(1 row)
+
 SELECT test_backend_core_state_is_backend_local();
  test_backend_core_state_is_backend_local 
 ------------------------------------------

@@ -52,6 +52,7 @@ SELECT test_session_planner_method_state_is_session_local();
 SELECT test_backend_interrupt_holdoffs_are_backend_local();
 SELECT test_backend_pending_interrupts_are_backend_local();
 SELECT test_pmchild_thread_backend_signal_api();
+SELECT test_pmchild_thread_backend_publication_race();
 SELECT test_backend_core_state_is_backend_local();
 SELECT test_execution_debug_query_string_is_execution_local();
 SELECT test_execution_error_state_is_execution_local();

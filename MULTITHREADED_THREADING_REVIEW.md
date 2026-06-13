@@ -413,7 +413,10 @@ payloads before reuse. Thread-backed signal-id reads and claimed thread-exit
 payload reads now also use PMChild helper APIs under the same PMChild mutex.
 Thread exit now has an explicit PMChild detach boundary before final exit
 publication, so the live `thread_backend` pointer is cleared before the carrier
-continues through final teardown accounting.
+continues through final teardown accounting. The focused backend-runtime
+regression now includes a native-thread race helper that hammers PMChild
+signal-id, interrupt, and wakeup reads while the owner repeatedly publishes a
+backend pointer, detaches it, publishes exit, and claims the exit payload.
 Threaded regular backend socket handoff is now explicit: the launch-time
 `ClientSocket` copy remains valid until `pq_init()` has copied the descriptor
 into `Port` and registered `socket_close()`, and `backend_thread_finish()`
@@ -457,12 +460,13 @@ non-session auxiliary workers reproduced an abrupt postmaster death during a
 threaded `pg_class` catalog scan, so future startup-gate reintroduction still
 requires a named shared-state dependency and catalog-startup stress coverage.
 These are partial Gate E2 closures only: the full thread teardown,
-`TopMemoryContext` ownership/reclamation, PMChild termination/reaping stress
-coverage, extension/custom GUC adoption, and broader threaded stress coverage
-remain blockers before Phase 13 scheduler-aware wait work. A direct attempt to
-reset the exiting carrier's top memory tree after backend cleanup crashed a
-parallel threaded reconnect smoke, confirming that memory reclamation still
-needs systematic ownership separation rather than a terminal reset.
+`TopMemoryContext` ownership/reclamation, real-server PMChild
+termination/reaping stress coverage, extension/custom GUC adoption, and
+broader threaded stress coverage remain blockers before Phase 13
+scheduler-aware wait work. A direct attempt to reset the exiting carrier's top
+memory tree after backend cleanup crashed a parallel threaded reconnect smoke,
+confirming that memory reclamation still needs systematic ownership separation
+rather than a terminal reset.
 
 ## Bottom Line
 
