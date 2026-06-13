@@ -22,10 +22,11 @@
 #include "port/atomics.h"
 #include "storage/latch.h"
 #include "storage/waiteventset.h"
+#include "utils/backend_runtime.h"
 #include "utils/resowner.h"
 
 /* A backend-local WaitEventSet used to implement WaitLatch() */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND WaitEventSet *LatchWaitSet;
+#define LatchWaitSet (*PgCurrentLatchWaitSetRef())
 
 /* The positions of the latch and PM death events in LatchWaitSet */
 #define LatchWaitSetLatchPos 0

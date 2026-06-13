@@ -108,7 +108,7 @@ static inline dsm_handle make_main_region_dsm_handle(int slot);
 static inline bool is_main_region_dsm_handle(dsm_handle handle);
 
 /* Has this backend initialized the dynamic shared memory system yet? */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool dsm_init_done = false;
+#define dsm_init_done (*PgCurrentDsmInitDoneRef())
 
 /* Preallocated DSM space in the main shared memory region. */
 static PG_GLOBAL_SHMEM void *dsm_main_space_begin = NULL;

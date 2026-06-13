@@ -2246,6 +2246,13 @@ PgBackendAdoptEarlyIPCState(PgBackend *backend)
 	Assert(backend != NULL);
 
 	backend->ipc = early_backend_ipc;
+
+	if (backend->core.latch == &early_backend_ipc.local_latch_data)
+		backend->core.latch = &backend->ipc.local_latch_data;
+
+	if (backend->interrupt_latch == &early_backend_ipc.local_latch_data)
+		PgBackendSetInterruptLatch(backend, &backend->ipc.local_latch_data);
+
 	PgBackendInitializeIPCState(&early_backend_ipc);
 }
 
@@ -6972,6 +6979,36 @@ volatile int *
 PgCurrentSharedInvalidationNumMsgsRef(void)
 {
 	return &PgCurrentBackendIPCState()->shared_invalidation_num_msgs;
+}
+
+bool *
+PgCurrentDsmInitDoneRef(void)
+{
+	return &PgCurrentBackendIPCState()->dsm_init_done;
+}
+
+void **
+PgCurrentDsmRegistryDsaRef(void)
+{
+	return &PgCurrentBackendIPCState()->dsm_registry_dsa;
+}
+
+void **
+PgCurrentDsmRegistryTableRef(void)
+{
+	return &PgCurrentBackendIPCState()->dsm_registry_table;
+}
+
+WaitEventSet **
+PgCurrentLatchWaitSetRef(void)
+{
+	return &PgCurrentBackendIPCState()->latch_wait_set;
+}
+
+Latch *
+PgCurrentLocalLatchData(void)
+{
+	return &PgCurrentBackendIPCState()->local_latch_data;
 }
 
 static PgBackendTransactionState *

@@ -588,6 +588,16 @@ pointers. The slice passed clean full build/install, process-mode
 backend-runtime regression, direct threaded runtime TAP, contrib build, and
 the required global-lifetime scan with zero new unclassified mutable globals;
 backend-local declarations dropped from 262 to 249.
+DSM initialization, DSM registry, local latch, and latch wait-set state now
+also live in `PgBackendIPCState`. The slice exposed an important startup
+ordering invariant: threaded backend startup calls `InitProcessLocalLatch()`
+and `InitializeLatchWaitSet()` before installing the backend runtime object, so
+runtime adoption must retarget adopted early `backend->core.latch` and
+`backend->interrupt_latch` pointers to the backend-owned latch before clearing
+the early fallback. The slice passed clean full build/install, process-mode
+backend-runtime regression, direct threaded runtime TAP, contrib build, and
+the required global-lifetime scan with zero new unclassified mutable globals;
+backend-local declarations dropped from 249 to 244.
 PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly

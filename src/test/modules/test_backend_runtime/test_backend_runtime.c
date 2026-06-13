@@ -7769,6 +7769,12 @@ test_backend_ipc_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentSharedInvalidationMessagesRef() = &fake_backend1;
 		*PgCurrentSharedInvalidationNextMsgRef() = 102;
 		*PgCurrentSharedInvalidationNumMsgsRef() = 103;
+		*PgCurrentDsmInitDoneRef() = true;
+		*PgCurrentDsmRegistryDsaRef() = &fake_backend1;
+		*PgCurrentDsmRegistryTableRef() = &fake_backend1;
+		*PgCurrentLatchWaitSetRef() = (WaitEventSet *) &fake_backend1;
+		PgCurrentLocalLatchData()->is_set = true;
+		PgCurrentLocalLatchData()->owner_pid = 111;
 
 		CurrentPgBackend = &fake_backend2;
 		ok = ok && *PgCurrentProcSignalSlotRef() == NULL;
@@ -7777,6 +7783,12 @@ test_backend_ipc_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentSharedInvalidationMessagesRef() == NULL;
 		ok = ok && *PgCurrentSharedInvalidationNextMsgRef() == 0;
 		ok = ok && *PgCurrentSharedInvalidationNumMsgsRef() == 0;
+		ok = ok && !*PgCurrentDsmInitDoneRef();
+		ok = ok && *PgCurrentDsmRegistryDsaRef() == NULL;
+		ok = ok && *PgCurrentDsmRegistryTableRef() == NULL;
+		ok = ok && *PgCurrentLatchWaitSetRef() == NULL;
+		ok = ok && !PgCurrentLocalLatchData()->is_set;
+		ok = ok && PgCurrentLocalLatchData()->owner_pid == 0;
 
 		*PgCurrentProcSignalSlotRef() = &fake_backend2;
 		SharedInvalidMessageCounter = 201;
@@ -7784,6 +7796,12 @@ test_backend_ipc_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentSharedInvalidationMessagesRef() = &fake_backend2;
 		*PgCurrentSharedInvalidationNextMsgRef() = 202;
 		*PgCurrentSharedInvalidationNumMsgsRef() = 203;
+		*PgCurrentDsmInitDoneRef() = false;
+		*PgCurrentDsmRegistryDsaRef() = &fake_backend2;
+		*PgCurrentDsmRegistryTableRef() = &fake_backend2;
+		*PgCurrentLatchWaitSetRef() = (WaitEventSet *) &fake_backend2;
+		PgCurrentLocalLatchData()->is_set = false;
+		PgCurrentLocalLatchData()->owner_pid = 222;
 
 		CurrentPgBackend = &fake_backend1;
 		ok = ok && *PgCurrentProcSignalSlotRef() == &fake_backend1;
@@ -7792,6 +7810,12 @@ test_backend_ipc_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentSharedInvalidationMessagesRef() == &fake_backend1;
 		ok = ok && *PgCurrentSharedInvalidationNextMsgRef() == 102;
 		ok = ok && *PgCurrentSharedInvalidationNumMsgsRef() == 103;
+		ok = ok && *PgCurrentDsmInitDoneRef();
+		ok = ok && *PgCurrentDsmRegistryDsaRef() == &fake_backend1;
+		ok = ok && *PgCurrentDsmRegistryTableRef() == &fake_backend1;
+		ok = ok && *PgCurrentLatchWaitSetRef() == (WaitEventSet *) &fake_backend1;
+		ok = ok && PgCurrentLocalLatchData()->is_set;
+		ok = ok && PgCurrentLocalLatchData()->owner_pid == 111;
 
 		CurrentPgBackend = &fake_backend2;
 		ok = ok && *PgCurrentProcSignalSlotRef() == &fake_backend2;
@@ -7800,6 +7824,12 @@ test_backend_ipc_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentSharedInvalidationMessagesRef() == &fake_backend2;
 		ok = ok && *PgCurrentSharedInvalidationNextMsgRef() == 202;
 		ok = ok && *PgCurrentSharedInvalidationNumMsgsRef() == 203;
+		ok = ok && !*PgCurrentDsmInitDoneRef();
+		ok = ok && *PgCurrentDsmRegistryDsaRef() == &fake_backend2;
+		ok = ok && *PgCurrentDsmRegistryTableRef() == &fake_backend2;
+		ok = ok && *PgCurrentLatchWaitSetRef() == (WaitEventSet *) &fake_backend2;
+		ok = ok && !PgCurrentLocalLatchData()->is_set;
+		ok = ok && PgCurrentLocalLatchData()->owner_pid == 222;
 
 		CurrentPgBackend = saved_backend;
 	}

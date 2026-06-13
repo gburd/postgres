@@ -6820,6 +6820,52 @@ Validation for this slice:
   87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
   explicit `PG_REGRESS` environment.
 
+## Backend IPC DSM And Latch State Bridge
+
+The one-hundred-forty-third Phase 12 slice extends `PgBackendIPCState` to cover
+DSM initialization and local latch state:
+
+- `dsm_init_done`;
+- the DSM registry's `dsm_registry_dsa` and `dsm_registry_table`;
+- the process-local `LatchWaitSet` used by `WaitLatch()`;
+- `LocalLatchData`.
+
+The owning source files keep their existing names through compatibility macros,
+with `dsm_registry.c` preserving its private typed pointers by casting the
+runtime-owned opaque fields locally.
+
+This slice also records an early-runtime adoption invariant. Threaded backend
+startup calls `InitProcessLocalLatch()` and `InitializeLatchWaitSet()` before
+`InstallPgThreadBackendRuntimeState()`, so the early fallback `MyLatch` pointer
+can be copied into `backend->core.latch` before `PgBackendIPCState` is adopted.
+`PgBackendAdoptEarlyIPCState()` now retargets adopted `backend->core.latch` and
+`backend->interrupt_latch` pointers from the early fallback latch to the
+backend-owned `backend->ipc.local_latch_data` before clearing the fallback. A
+direct threaded-runtime TAP run caught the missing retargeting as
+`cannot wait on a latch owned by another process` during startup.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `dsm.o`,
+  `dsm_registry.o`, `latch.o`, `miscinit.o`, and
+  `test_backend_runtime.o`;
+- a static scan found no remaining raw TLS declarations for the moved DSM,
+  DSM-registry, latch wait-set, or local-latch state;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 249 to 244;
+- `gmake -C contrib -j8` passed;
+- PL/pgSQL and `src/test/modules/test_backend_runtime` were cleaned, rebuilt,
+  and reinstalled after the installed-header and `PgBackend` layout changes;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression, including the expanded IPC-state helper, and still
+  reported TAP disabled by configure;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
+  explicit `PG_REGRESS` environment.
+
 ## Backend Parallel State Bridge
 
 The one-hundred-forty-second Phase 12 slice moves a parallel-query and

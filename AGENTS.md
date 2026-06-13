@@ -366,6 +366,20 @@ Important current files:
   objects because `PgBackend` layout and installed runtime headers changed; at
   minimum rebuild and reinstall PL/pgSQL, `src/test/modules/test_backend_runtime`,
   and contrib before validating.
+- DSM/latch IPC backend-local state now also lives in `PgBackendIPCState`:
+  `dsm_init_done`, `dsm_registry_dsa`, `dsm_registry_table`, `LatchWaitSet`,
+  and `LocalLatchData` are backed by runtime accessors while `dsm.c`,
+  `dsm_registry.c`, `latch.c`, and `miscinit.c` keep local compatibility
+  names. Threaded backend startup initializes `MyLatch` and `LatchWaitSet`
+  before installing the backend runtime object, so early IPC adoption must
+  retarget adopted `backend->core.latch` and `backend->interrupt_latch`
+  pointers from the early fallback latch to the backend-owned latch. If this
+  is missed, direct threaded TAP fails during startup with
+  `cannot wait on a latch owned by another process`. After changing this
+  bridge, clean and rebuild backend objects because `PgBackend` layout and
+  installed runtime headers changed; at minimum rebuild and reinstall
+  PL/pgSQL, `src/test/modules/test_backend_runtime`, and contrib before
+  validating.
 - Treat `PMChild.thread_backend` as private PMChild-owned publication state.
   Postmaster code should use PMChild helper APIs for threaded backend
   interrupt, wakeup, and thread-exit publication rather than dereferencing or

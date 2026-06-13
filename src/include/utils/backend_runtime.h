@@ -30,6 +30,7 @@
 #include "port/atomics.h"
 #include "storage/buf.h"
 #include "storage/ipc.h"
+#include "storage/latch.h"
 #include "storage/lwlock.h"
 #include "storage/procnumber.h"
 #include "tcop/dest.h"
@@ -381,6 +382,11 @@ typedef struct PgBackendIPCState
 	void	   *shared_invalidation_messages;
 	volatile int shared_invalidation_next_msg;
 	volatile int shared_invalidation_num_msgs;
+	bool		dsm_init_done;
+	void	   *dsm_registry_dsa;
+	void	   *dsm_registry_table;
+	WaitEventSet *latch_wait_set;
+	Latch		local_latch_data;
 } PgBackendIPCState;
 
 typedef struct PgBackendTransactionState
@@ -1615,6 +1621,11 @@ extern volatile sig_atomic_t *PgCurrentCatchupInterruptPendingRef(void);
 extern void **PgCurrentSharedInvalidationMessagesRef(void);
 extern volatile int *PgCurrentSharedInvalidationNextMsgRef(void);
 extern volatile int *PgCurrentSharedInvalidationNumMsgsRef(void);
+extern bool *PgCurrentDsmInitDoneRef(void);
+extern void **PgCurrentDsmRegistryDsaRef(void);
+extern void **PgCurrentDsmRegistryTableRef(void);
+extern WaitEventSet **PgCurrentLatchWaitSetRef(void);
+extern Latch *PgCurrentLocalLatchData(void);
 extern TransactionId *PgCurrentCachedFetchXidRef(void);
 extern int *PgCurrentCachedFetchXidStatusRef(void);
 extern XLogRecPtr *PgCurrentCachedCommitLSNRef(void);

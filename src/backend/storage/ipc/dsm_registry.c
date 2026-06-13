@@ -47,6 +47,7 @@
 #include "storage/shmem.h"
 #include "storage/subsystems.h"
 #include "utils/builtins.h"
+#include "utils/backend_runtime.h"
 #include "utils/global_lifetime.h"
 #include "utils/memutils.h"
 #include "utils/tuplestore.h"
@@ -121,8 +122,8 @@ static const dshash_parameters dsh_params = {
 	LWTRANCHE_DSM_REGISTRY_HASH
 };
 
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND dsa_area *dsm_registry_dsa;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND dshash_table *dsm_registry_table;
+#define dsm_registry_dsa (*(dsa_area **) PgCurrentDsmRegistryDsaRef())
+#define dsm_registry_table (*(dshash_table **) PgCurrentDsmRegistryTableRef())
 
 static void
 DSMRegistryShmemRequest(void *arg)

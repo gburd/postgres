@@ -64,7 +64,7 @@
 /* List of lock files to be removed at proc exit */
 static PG_GLOBAL_RUNTIME List *lock_files = NIL;
 
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND Latch LocalLatchData;
+#define LocalLatchData (*PgCurrentLocalLatchData())
 
 /* ----------------------------------------------------------------
  *		ignoring system indexes support stuff

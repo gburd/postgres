@@ -751,7 +751,8 @@ utility-state bridge through `PgBackendUtilityState`, plus the date/time,
 float, formatting, libxml-context, and missing-attribute utility-cache state
 bridge through `PgBackendUtilityState`, plus the parallel-worker,
 parallel-context, and pqmq backend-local state bridge through
-`PgBackendParallelState`.
+`PgBackendParallelState`, plus the DSM initialization, DSM registry, local
+latch, and latch wait-set bridge through `PgBackendIPCState`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.
@@ -1018,6 +1019,16 @@ slice passed clean full build/install, process-mode backend-runtime
 regression, direct threaded runtime TAP, contrib build, and the required
 global-lifetime scan with zero new unclassified mutable globals; backend-local
 declarations dropped from 262 to 249.
+The IPC DSM/latch state slice moves `dsm_init_done`,
+`dsm_registry_dsa`, `dsm_registry_table`, `LatchWaitSet`, and
+`LocalLatchData` into `PgBackendIPCState`. Runtime installation now retargets
+adopted early `backend->core.latch` and `backend->interrupt_latch` pointers
+from the early fallback latch to the backend-owned latch because threaded
+backend startup initializes the local latch before installing the backend
+runtime object. The slice passed clean full build/install, process-mode
+backend-runtime regression, direct threaded runtime TAP, contrib build, and
+the required global-lifetime scan with zero new unclassified mutable globals;
+backend-local declarations dropped from 249 to 244.
 PMChild assignment and slot release now also scrub stale carrier-visible signal
 ids and thread-exit payloads before reuse. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live
