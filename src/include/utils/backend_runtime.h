@@ -368,6 +368,18 @@ typedef struct PgSessionStorageGUCState
 	int			file_copy_method_value;
 } PgSessionStorageGUCState;
 
+typedef struct PgSessionUserGUCState
+{
+	bool		initialized;
+	int			password_encryption_value;
+	char	   *createrole_self_grant_value;
+	bool		createrole_self_grant_enabled;
+	unsigned	createrole_self_grant_options_specified;
+	bool		createrole_self_grant_options_admin;
+	bool		createrole_self_grant_options_inherit;
+	bool		createrole_self_grant_options_set;
+} PgSessionUserGUCState;
+
 typedef struct PgSessionQueryMemoryState
 {
 	bool		initialized;
@@ -571,6 +583,7 @@ struct PgSession
 	PgSessionPgStatState pgstat;
 	PgSessionQueryIdState query_id;
 	PgSessionStorageGUCState storage_guc;
+	PgSessionUserGUCState user_guc;
 	PgSessionQueryMemoryState query_memory;
 	PgSessionPlannerCostState planner_cost;
 	PgSessionPlannerMethodState planner_method;
@@ -682,6 +695,13 @@ extern int *PgCurrentComputeQueryIdRef(void);
 extern bool *PgCurrentQueryIdEnabledRef(void);
 extern bool *PgCurrentIgnoreChecksumFailureRef(void);
 extern int *PgCurrentFileCopyMethodRef(void);
+extern int *PgCurrentPasswordEncryptionRef(void);
+extern char **PgCurrentCreateRoleSelfGrantRef(void);
+extern bool *PgCurrentCreateRoleSelfGrantEnabledRef(void);
+extern unsigned *PgCurrentCreateRoleSelfGrantOptionsSpecifiedRef(void);
+extern bool *PgCurrentCreateRoleSelfGrantOptionsAdminRef(void);
+extern bool *PgCurrentCreateRoleSelfGrantOptionsInheritRef(void);
+extern bool *PgCurrentCreateRoleSelfGrantOptionsSetRef(void);
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);

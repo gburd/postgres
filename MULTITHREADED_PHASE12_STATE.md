@@ -1772,3 +1772,54 @@ Validation for this slice:
 - `git diff --check` passed;
 - static scans found no remaining direct session TLS definitions or extern
   declarations for the moved storage GUC names.
+
+## Session User GUC State Bridge
+
+The thirty-fourth Phase 12 slice moves user/role direct-pointer GUC state
+under `PgSession`:
+
+- `PgSession` now owns a `PgSessionUserGUCState`;
+- `PgSessionUserGUCState` owns the `Password_encryption` direct-pointer GUC
+  backing variable and the `createrole_self_grant` direct-pointer GUC backing
+  variable;
+- the same state bucket owns the derived `createrole_self_grant` assign-hook
+  values that drive automatic self-grants during `CREATE ROLE`;
+- the public names remain source-compatible lvalue macros in
+  `commands/user.h`;
+- early startup paths before `CurrentPgSession` is installed use fallback
+  session-local storage in `backend_runtime.c`;
+- process-mode and thread-runtime session installation adopt any early
+  fallback user GUC state into the logical session object;
+- `RebindSessionGUCVariablePointers()` now rebinds the generated GUC records
+  for `password_encryption` and `createrole_self_grant` whenever the active
+  logical session changes.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `user.o`, `guc.o`,
+  `test_backend_runtime.o`, and `auth.o`;
+- because exported user GUC globals changed into compatibility macros,
+  `gmake -C src/backend clean` plus generated utility and node-header
+  recovery was used before the clean rebuild;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed, followed by rebuilding
+  and reinstalling `src/test/modules/test_backend_runtime`,
+  `src/test/regress`, `libpqwalreceiver`, and `src/backend/snowball`;
+- focused `test_backend_runtime` regression passed and includes
+  `test_session_user_guc_state_is_session_local()`, which switches sessions
+  through `PgSetCurrentSession()`, changes `password_encryption` and
+  `createrole_self_grant` through the GUC machinery, and proves both public
+  backing values and the derived self-grant option flags follow the active
+  session after GUC pointer rebinding;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests, including the `password` and `create_role` schedules;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- direct threaded-runtime TAP coverage was attempted for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`,
+  but this system Perl is missing `IPC::Run`, so both tests failed before
+  starting PostgreSQL;
+- `git diff --check` passed;
+- static scans found no remaining direct session TLS definitions or extern
+  declarations for the moved user GUC names.

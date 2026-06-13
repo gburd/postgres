@@ -17,6 +17,7 @@
 #include "access/xact.h"
 #include "catalog/binary_upgrade.h"
 #include "commands/tablespace.h"
+#include "commands/user.h"
 #include "commands/vacuum.h"
 #include "fmgr.h"
 #include "libpq/libpq-be.h"
@@ -2442,6 +2443,95 @@ test_session_storage_guc_state_is_session_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "session storage GUC state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_session_user_guc_state_is_session_local);
+Datum
+test_session_user_guc_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	char	   *saved_password_encryption;
+	char	   *saved_createrole_self_grant;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	saved_password_encryption =
+		pstrdup(GetConfigOption("password_encryption", false, false));
+	saved_createrole_self_grant =
+		pstrdup(GetConfigOption("createrole_self_grant", false, false));
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && Password_encryption == PASSWORD_TYPE_SCRAM_SHA_256;
+		ok = ok && strcmp(createrole_self_grant, "") == 0;
+		ok = ok && !*PgCurrentCreateRoleSelfGrantEnabledRef();
+
+		SetConfigOption("password_encryption", "md5",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("createrole_self_grant", "set, inherit",
+						PGC_USERSET, PGC_S_SESSION);
+		ok = ok && Password_encryption == PASSWORD_TYPE_MD5;
+		ok = ok && strcmp(createrole_self_grant, "set, inherit") == 0;
+		ok = ok && *PgCurrentCreateRoleSelfGrantEnabledRef();
+		ok = ok && *PgCurrentCreateRoleSelfGrantOptionsSpecifiedRef() != 0;
+		ok = ok && !*PgCurrentCreateRoleSelfGrantOptionsAdminRef();
+		ok = ok && *PgCurrentCreateRoleSelfGrantOptionsInheritRef();
+		ok = ok && *PgCurrentCreateRoleSelfGrantOptionsSetRef();
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && Password_encryption == PASSWORD_TYPE_SCRAM_SHA_256;
+		ok = ok && strcmp(createrole_self_grant, "") == 0;
+		ok = ok && !*PgCurrentCreateRoleSelfGrantEnabledRef();
+		SetConfigOption("password_encryption", "scram-sha-256",
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("createrole_self_grant", "set",
+						PGC_USERSET, PGC_S_SESSION);
+		ok = ok && Password_encryption == PASSWORD_TYPE_SCRAM_SHA_256;
+		ok = ok && strcmp(createrole_self_grant, "set") == 0;
+		ok = ok && *PgCurrentCreateRoleSelfGrantEnabledRef();
+		ok = ok && !*PgCurrentCreateRoleSelfGrantOptionsInheritRef();
+		ok = ok && *PgCurrentCreateRoleSelfGrantOptionsSetRef();
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && Password_encryption == PASSWORD_TYPE_MD5;
+		ok = ok && strcmp(createrole_self_grant, "set, inherit") == 0;
+		ok = ok && *PgCurrentCreateRoleSelfGrantOptionsInheritRef();
+		ok = ok && *PgCurrentCreateRoleSelfGrantOptionsSetRef();
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && Password_encryption == PASSWORD_TYPE_SCRAM_SHA_256;
+		ok = ok && strcmp(createrole_self_grant, "set") == 0;
+		ok = ok && !*PgCurrentCreateRoleSelfGrantOptionsInheritRef();
+		ok = ok && *PgCurrentCreateRoleSelfGrantOptionsSetRef();
+
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("password_encryption", saved_password_encryption,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("createrole_self_grant",
+						saved_createrole_self_grant,
+						PGC_USERSET, PGC_S_SESSION);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("password_encryption", saved_password_encryption,
+						PGC_USERSET, PGC_S_SESSION);
+		SetConfigOption("createrole_self_grant",
+						saved_createrole_self_grant,
+						PGC_USERSET, PGC_S_SESSION);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session user GUC state was not session-local");
 
 	PG_RETURN_BOOL(true);
 }

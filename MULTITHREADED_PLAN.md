@@ -686,7 +686,8 @@ path state through `PgSession`, plus the pgstat tracking/session-end and
 session-report state bridge through `PgSession`, plus the query-ID GUC and
 derived enablement flag bridge through `PgSession`, plus the storage
 direct-pointer GUC bridge for checksum-failure handling and file-copy method
-state through `PgSession`.
+state through `PgSession`, plus the user/role direct-pointer GUC and derived
+`createrole_self_grant` assign-hook state bridge through `PgSession`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.

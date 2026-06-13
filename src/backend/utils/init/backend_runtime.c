@@ -22,6 +22,7 @@
 #include "commands/repack.h"
 #include "commands/tablespace.h"
 #include "commands/vacuum.h"
+#include "libpq/crypt.h"
 #include "miscadmin.h"
 #include "nodes/queryjumble.h"
 #include "optimizer/cost.h"
@@ -230,6 +231,16 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionStorageGUCState early_session_
 	.ignore_checksum_failure_value = false,
 	.file_copy_method_value = FILE_COPY_METHOD_COPY
 };
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionUserGUCState early_session_user_guc = {
+	.initialized = true,
+	.password_encryption_value = PASSWORD_TYPE_SCRAM_SHA_256,
+	.createrole_self_grant_value = "",
+	.createrole_self_grant_enabled = false,
+	.createrole_self_grant_options_specified = 0,
+	.createrole_self_grant_options_admin = false,
+	.createrole_self_grant_options_inherit = false,
+	.createrole_self_grant_options_set = false
+};
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionQueryMemoryState early_session_query_memory = {
 	.initialized = true,
 	.work_mem_kb = 4096,
@@ -342,6 +353,8 @@ static void PgSessionInitializeQueryIdState(PgSessionQueryIdState *query_id);
 static void PgSessionAdoptEarlyQueryIdState(PgSession *session);
 static void PgSessionInitializeStorageGUCState(PgSessionStorageGUCState *storage_guc);
 static void PgSessionAdoptEarlyStorageGUCState(PgSession *session);
+static void PgSessionInitializeUserGUCState(PgSessionUserGUCState *user_guc);
+static void PgSessionAdoptEarlyUserGUCState(PgSession *session);
 static void PgSessionInitializeQueryMemoryState(PgSessionQueryMemoryState *query_memory);
 static void PgSessionAdoptEarlyQueryMemoryState(PgSession *session);
 static void PgSessionInitializePlannerCostState(PgSessionPlannerCostState *planner_cost);
@@ -372,6 +385,7 @@ static PgSessionMiscGUCState *PgCurrentSessionMiscGUCState(void);
 static PgSessionPgStatState *PgCurrentSessionPgStatState(void);
 static PgSessionQueryIdState *PgCurrentSessionQueryIdState(void);
 static PgSessionStorageGUCState *PgCurrentSessionStorageGUCState(void);
+static PgSessionUserGUCState *PgCurrentSessionUserGUCState(void);
 static PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
 static PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
 static PgSessionPlannerMethodState *PgCurrentSessionPlannerMethodState(void);
@@ -839,6 +853,33 @@ PgSessionAdoptEarlyStorageGUCState(PgSession *session)
 }
 
 static void
+PgSessionInitializeUserGUCState(PgSessionUserGUCState *user_guc)
+{
+	Assert(user_guc != NULL);
+
+	user_guc->initialized = true;
+	user_guc->password_encryption_value = PASSWORD_TYPE_SCRAM_SHA_256;
+	user_guc->createrole_self_grant_value = "";
+	user_guc->createrole_self_grant_enabled = false;
+	user_guc->createrole_self_grant_options_specified = 0;
+	user_guc->createrole_self_grant_options_admin = false;
+	user_guc->createrole_self_grant_options_inherit = false;
+	user_guc->createrole_self_grant_options_set = false;
+}
+
+static void
+PgSessionAdoptEarlyUserGUCState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (!early_session_user_guc.initialized)
+		PgSessionInitializeUserGUCState(&early_session_user_guc);
+
+	session->user_guc = early_session_user_guc;
+	PgSessionInitializeUserGUCState(&early_session_user_guc);
+}
+
+static void
 PgSessionInitializeQueryMemoryState(PgSessionQueryMemoryState *query_memory)
 {
 	Assert(query_memory != NULL);
@@ -1110,6 +1151,7 @@ InitializePgProcessRuntime(void)
 	PgSessionAdoptEarlyPgStatState(&process_session);
 	PgSessionAdoptEarlyQueryIdState(&process_session);
 	PgSessionAdoptEarlyStorageGUCState(&process_session);
+	PgSessionAdoptEarlyUserGUCState(&process_session);
 	PgSessionAdoptEarlyQueryMemoryState(&process_session);
 	PgSessionAdoptEarlyPlannerCostState(&process_session);
 	PgSessionAdoptEarlyPlannerMethodState(&process_session);
@@ -1205,6 +1247,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgSessionInitializePgStatState(&state->session.pgstat);
 	PgSessionInitializeQueryIdState(&state->session.query_id);
 	PgSessionInitializeStorageGUCState(&state->session.storage_guc);
+	PgSessionInitializeUserGUCState(&state->session.user_guc);
 	PgSessionInitializeQueryMemoryState(&state->session.query_memory);
 	PgSessionInitializePlannerCostState(&state->session.planner_cost);
 	PgSessionInitializePlannerMethodState(&state->session.planner_method);
@@ -1241,6 +1284,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgSessionAdoptEarlyPgStatState(&state->session);
 	PgSessionAdoptEarlyQueryIdState(&state->session);
 	PgSessionAdoptEarlyStorageGUCState(&state->session);
+	PgSessionAdoptEarlyUserGUCState(&state->session);
 	PgSessionAdoptEarlyQueryMemoryState(&state->session);
 	PgSessionAdoptEarlyPlannerCostState(&state->session);
 	PgSessionAdoptEarlyPlannerMethodState(&state->session);
@@ -1514,6 +1558,22 @@ PgCurrentSessionStorageGUCState(void)
 		PgSessionInitializeStorageGUCState(storage_guc);
 
 	return storage_guc;
+}
+
+static PgSessionUserGUCState *
+PgCurrentSessionUserGUCState(void)
+{
+	PgSessionUserGUCState *user_guc;
+
+	if (CurrentPgSession == NULL)
+		user_guc = &early_session_user_guc;
+	else
+		user_guc = &CurrentPgSession->user_guc;
+
+	if (!user_guc->initialized)
+		PgSessionInitializeUserGUCState(user_guc);
+
+	return user_guc;
 }
 
 static PgSessionQueryMemoryState *
@@ -2248,6 +2308,48 @@ int *
 PgCurrentFileCopyMethodRef(void)
 {
 	return &PgCurrentSessionStorageGUCState()->file_copy_method_value;
+}
+
+int *
+PgCurrentPasswordEncryptionRef(void)
+{
+	return &PgCurrentSessionUserGUCState()->password_encryption_value;
+}
+
+char **
+PgCurrentCreateRoleSelfGrantRef(void)
+{
+	return &PgCurrentSessionUserGUCState()->createrole_self_grant_value;
+}
+
+bool *
+PgCurrentCreateRoleSelfGrantEnabledRef(void)
+{
+	return &PgCurrentSessionUserGUCState()->createrole_self_grant_enabled;
+}
+
+unsigned *
+PgCurrentCreateRoleSelfGrantOptionsSpecifiedRef(void)
+{
+	return &PgCurrentSessionUserGUCState()->createrole_self_grant_options_specified;
+}
+
+bool *
+PgCurrentCreateRoleSelfGrantOptionsAdminRef(void)
+{
+	return &PgCurrentSessionUserGUCState()->createrole_self_grant_options_admin;
+}
+
+bool *
+PgCurrentCreateRoleSelfGrantOptionsInheritRef(void)
+{
+	return &PgCurrentSessionUserGUCState()->createrole_self_grant_options_inherit;
+}
+
+bool *
+PgCurrentCreateRoleSelfGrantOptionsSetRef(void)
+{
+	return &PgCurrentSessionUserGUCState()->createrole_self_grant_options_set;
 }
 
 int *

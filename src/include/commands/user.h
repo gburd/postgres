@@ -15,14 +15,15 @@
 #include "libpq/crypt.h"
 #include "nodes/parsenodes.h"
 #include "parser/parse_node.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
-#include "utils/global_lifetime.h"
 
 /* GUCs */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int
-			Password_encryption; /* values from enum PasswordType */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION char
-		   *createrole_self_grant;
+extern int *PgCurrentPasswordEncryptionRef(void);
+extern char **PgCurrentCreateRoleSelfGrantRef(void);
+
+#define Password_encryption (*PgCurrentPasswordEncryptionRef())
+#define createrole_self_grant (*PgCurrentCreateRoleSelfGrantRef())
 
 /* Hook to check passwords in CreateRole() and AlterRole() */
 typedef void (*check_password_hook_type) (const char *username, const char *shadow_pass, PasswordType password_type, Datum validuntil_time, bool validuntil_null);

@@ -79,12 +79,6 @@ typedef struct
 #define GRANT_ROLE_SPECIFIED_INHERIT		0x0002
 #define GRANT_ROLE_SPECIFIED_SET			0x0004
 
-/* GUC parameters */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int Password_encryption = PASSWORD_TYPE_SCRAM_SHA_256;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION char *createrole_self_grant = "";
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool createrole_self_grant_enabled = false;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION GrantRoleOptions createrole_self_grant_options;
-
 /* Hook to check passwords in CreateRole() and AlterRole() */
 PG_GLOBAL_RUNTIME check_password_hook_type check_password_hook = NULL;
 
@@ -113,6 +107,7 @@ static void plan_recursive_revoke(CatCList *memlist,
 								  bool revoke_admin_option_only,
 								  DropBehavior behavior);
 static void InitGrantRoleOptions(GrantRoleOptions *popt);
+static void GetCreateRoleSelfGrantOptions(GrantRoleOptions *popt);
 
 
 /* Check if current user has createrole privileges */
@@ -578,10 +573,15 @@ CreateRole(ParseState *pstate, CreateRoleStmt *stmt)
 		 * security implications since the same user is able to make the same
 		 * grant using an explicit GRANT statement; it's just convenient.
 		 */
-		if (createrole_self_grant_enabled)
+		if (*PgCurrentCreateRoleSelfGrantEnabledRef())
+		{
+			GrantRoleOptions self_grant_options;
+
+			GetCreateRoleSelfGrantOptions(&self_grant_options);
 			AddRoleMems(currentUserId, stmt->role, roleid,
 						memberSpecs, memberIds,
-						currentUserId, &createrole_self_grant_options);
+						currentUserId, &self_grant_options);
+		}
 	}
 
 	/*
@@ -2521,6 +2521,19 @@ InitGrantRoleOptions(GrantRoleOptions *popt)
 }
 
 /*
+ * Materialize the session-owned createrole_self_grant derived state into the
+ * local options type used by role membership routines.
+ */
+static void
+GetCreateRoleSelfGrantOptions(GrantRoleOptions *popt)
+{
+	popt->specified = *PgCurrentCreateRoleSelfGrantOptionsSpecifiedRef();
+	popt->admin = *PgCurrentCreateRoleSelfGrantOptionsAdminRef();
+	popt->inherit = *PgCurrentCreateRoleSelfGrantOptionsInheritRef();
+	popt->set = *PgCurrentCreateRoleSelfGrantOptionsSetRef();
+}
+
+/*
  * GUC check_hook for createrole_self_grant
  */
 bool
@@ -2581,13 +2594,13 @@ assign_createrole_self_grant(const char *newval, void *extra)
 {
 	unsigned	options = *(unsigned *) extra;
 
-	createrole_self_grant_enabled = (options != 0);
-	createrole_self_grant_options.specified = GRANT_ROLE_SPECIFIED_ADMIN
+	*PgCurrentCreateRoleSelfGrantEnabledRef() = (options != 0);
+	*PgCurrentCreateRoleSelfGrantOptionsSpecifiedRef() = GRANT_ROLE_SPECIFIED_ADMIN
 		| GRANT_ROLE_SPECIFIED_INHERIT
 		| GRANT_ROLE_SPECIFIED_SET;
-	createrole_self_grant_options.admin = false;
-	createrole_self_grant_options.inherit =
+	*PgCurrentCreateRoleSelfGrantOptionsAdminRef() = false;
+	*PgCurrentCreateRoleSelfGrantOptionsInheritRef() =
 		(options & GRANT_ROLE_SPECIFIED_INHERIT) != 0;
-	createrole_self_grant_options.set =
+	*PgCurrentCreateRoleSelfGrantOptionsSetRef() =
 		(options & GRANT_ROLE_SPECIFIED_SET) != 0;
 }
