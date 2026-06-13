@@ -852,7 +852,12 @@ registration slot and shared-memory lifecycle.
 The generic main-loop interrupt flags `ConfigReloadPending` and
 `ShutdownRequestPending` now live in `PgBackendPendingInterruptState` behind
 their existing lvalue names, so config reload and cooperative shutdown state
-follows the logical backend rather than standalone TLS.
+follows the logical backend rather than standalone TLS. The remaining
+worker-specific pending flags `WakeupStopPending`,
+`AutoVacLauncherPending`, and `CheckpointerShutdownXLOGPending` now follow the
+same model, keeping archiver stop wakeups, autovac launcher wakeups, and
+checkpointer shutdown-XLOG requests in the logical backend's pending-interrupt
+state.
 PMChild assignment and slot release now also scrub stale carrier-visible signal
 ids and thread-exit payloads before reuse. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live

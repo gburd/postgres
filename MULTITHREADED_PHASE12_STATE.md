@@ -5796,3 +5796,57 @@ Validation for this slice:
 - a static scan found no remaining raw `ConfigReloadPending` or
   `ShutdownRequestPending` TLS declarations or exported symbol references;
 - `git diff --check` passed.
+
+## Backend Worker-Specific Interrupt Flag Bridge
+
+The one-hundred-twenty-second Phase 12 slice moves the remaining
+worker-specific pending-interrupt flags from standalone backend-local TLS into
+the same explicit backend pending-interrupt state:
+
+- `PgBackendPendingInterruptState` now owns `wakeup_stop_pending`,
+  `autovac_launcher_pending`, and `checkpointer_shutdown_xlog_pending`;
+- `WakeupStopPending`, `AutoVacLauncherPending`, and
+  `CheckpointerShutdownXLOGPending` remain source-compatible lvalue names
+  through `miscadmin.h` compatibility macros;
+- `PgCurrentBackendApplyInterrupts()` continues setting those flags from
+  logical interrupt masks, while the archiver, autovac launcher, and
+  checkpointer handlers and main loops read and clear the backend-owned fields
+  through the existing names;
+- the exported TLS definitions and declarations were removed from
+  `postmaster/interrupt.h`, `postmaster/interrupt.c`, and
+  `postmaster/checkpointer.c`.
+
+This completes the current pending-interrupt flag bridge for the generic
+main-loop, archiver, autovac launcher, and checkpointer flags. Logical
+interrupt delivery semantics are unchanged, but those pending requests now
+follow the logical backend object rather than the carrier thread.
+
+Validation for this slice:
+
+- `gmake -C src/backend/postmaster interrupt.o checkpointer.o autovacuum.o pgarch.o`
+  passed;
+- `gmake -C src/backend/utils/init backend_runtime.o` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean` passed;
+- `gmake -C src/test/modules/test_backend_runtime all` passed;
+- the raw symbol scan found only the five compatibility macros in
+  `src/include/miscadmin.h` and no remaining TLS declarations or exported
+  symbol references for the moved flags;
+- full backend clean plus generated-header recovery was required after the
+  installed-header change, because stale objects could still reference the old
+  exported flag symbols;
+- full `gmake -j8` passed;
+- full `gmake -j8 DESTDIR="$PWD/tmp_install" install` passed;
+- PL/pgSQL was cleaned, rebuilt, and reinstalled after the installed-header
+  change;
+- `src/test/modules/test_backend_runtime` was cleaned, rebuilt, and
+  reinstalled after the installed-header change;
+- direct threaded-runtime TAP passed all 87 tests with local
+  `/Users/samwillis/perl5` `PERL5LIB` paths before and after
+  `gmake -C src/test/modules/test_backend_runtime check` recreated
+  `tmp_install`;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression and still reported TAP disabled by configure;
+- `gmake -C contrib -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with backend-local declarations dropping from 433 to 427;
+- `git diff --check` passed.

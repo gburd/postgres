@@ -6299,6 +6299,9 @@ test_backend_pending_interrupts_are_backend_local(PG_FUNCTION_ARGS)
 	sig_atomic_t saved_idle_stats_update_timeout_pending;
 	sig_atomic_t saved_config_reload_pending;
 	sig_atomic_t saved_shutdown_request_pending;
+	sig_atomic_t saved_wakeup_stop_pending;
+	sig_atomic_t saved_autovac_launcher_pending;
+	sig_atomic_t saved_checkpointer_shutdown_xlog_pending;
 	bool		ok = true;
 
 	saved_backend = CurrentPgBackend;
@@ -6317,6 +6320,10 @@ test_backend_pending_interrupts_are_backend_local(PG_FUNCTION_ARGS)
 		IdleStatsUpdateTimeoutPending;
 	saved_config_reload_pending = ConfigReloadPending;
 	saved_shutdown_request_pending = ShutdownRequestPending;
+	saved_wakeup_stop_pending = WakeupStopPending;
+	saved_autovac_launcher_pending = AutoVacLauncherPending;
+	saved_checkpointer_shutdown_xlog_pending =
+		CheckpointerShutdownXLOGPending;
 	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
 	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
 
@@ -6336,6 +6343,9 @@ test_backend_pending_interrupts_are_backend_local(PG_FUNCTION_ARGS)
 		IdleStatsUpdateTimeoutPending = true;
 		ConfigReloadPending = true;
 		ShutdownRequestPending = true;
+		WakeupStopPending = true;
+		AutoVacLauncherPending = true;
+		CheckpointerShutdownXLOGPending = true;
 
 		CurrentPgBackend = &fake_backend2;
 		ok = ok && !InterruptPending;
@@ -6351,6 +6361,9 @@ test_backend_pending_interrupts_are_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && !IdleStatsUpdateTimeoutPending;
 		ok = ok && !ConfigReloadPending;
 		ok = ok && !ShutdownRequestPending;
+		ok = ok && !WakeupStopPending;
+		ok = ok && !AutoVacLauncherPending;
+		ok = ok && !CheckpointerShutdownXLOGPending;
 
 		InterruptPending = false;
 		QueryCancelPending = false;
@@ -6365,6 +6378,9 @@ test_backend_pending_interrupts_are_backend_local(PG_FUNCTION_ARGS)
 		IdleStatsUpdateTimeoutPending = false;
 		ConfigReloadPending = false;
 		ShutdownRequestPending = false;
+		WakeupStopPending = false;
+		AutoVacLauncherPending = false;
+		CheckpointerShutdownXLOGPending = false;
 
 		CurrentPgBackend = &fake_backend1;
 		ok = ok && InterruptPending;
@@ -6380,6 +6396,9 @@ test_backend_pending_interrupts_are_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && IdleStatsUpdateTimeoutPending;
 		ok = ok && ConfigReloadPending;
 		ok = ok && ShutdownRequestPending;
+		ok = ok && WakeupStopPending;
+		ok = ok && AutoVacLauncherPending;
+		ok = ok && CheckpointerShutdownXLOGPending;
 
 		CurrentPgBackend = &fake_backend2;
 		ok = ok && !InterruptPending;
@@ -6395,6 +6414,9 @@ test_backend_pending_interrupts_are_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && !IdleStatsUpdateTimeoutPending;
 		ok = ok && !ConfigReloadPending;
 		ok = ok && !ShutdownRequestPending;
+		ok = ok && !WakeupStopPending;
+		ok = ok && !AutoVacLauncherPending;
+		ok = ok && !CheckpointerShutdownXLOGPending;
 
 		CurrentPgBackend = saved_backend;
 		InterruptPending = saved_interrupt_pending;
@@ -6412,6 +6434,10 @@ test_backend_pending_interrupts_are_backend_local(PG_FUNCTION_ARGS)
 			saved_idle_stats_update_timeout_pending;
 		ConfigReloadPending = saved_config_reload_pending;
 		ShutdownRequestPending = saved_shutdown_request_pending;
+		WakeupStopPending = saved_wakeup_stop_pending;
+		AutoVacLauncherPending = saved_autovac_launcher_pending;
+		CheckpointerShutdownXLOGPending =
+			saved_checkpointer_shutdown_xlog_pending;
 	}
 	PG_CATCH();
 	{
@@ -6431,6 +6457,10 @@ test_backend_pending_interrupts_are_backend_local(PG_FUNCTION_ARGS)
 			saved_idle_stats_update_timeout_pending;
 		ConfigReloadPending = saved_config_reload_pending;
 		ShutdownRequestPending = saved_shutdown_request_pending;
+		WakeupStopPending = saved_wakeup_stop_pending;
+		AutoVacLauncherPending = saved_autovac_launcher_pending;
+		CheckpointerShutdownXLOGPending =
+			saved_checkpointer_shutdown_xlog_pending;
 		PG_RE_THROW();
 	}
 	PG_END_TRY();

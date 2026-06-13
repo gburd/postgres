@@ -156,16 +156,19 @@ Important current files:
   accessor symbol. At minimum, clean and reinstall
   `src/test/modules/test_backend_runtime`, `src/test/modules/worker_spi`,
   `src/test/modules/test_shm_mq`, and any worker modules under test.
-- `ConfigReloadPending` and `ShutdownRequestPending` are now fields in
-  `PgBackendPendingInterruptState`, exposed through compatibility macros in
-  `src/include/miscadmin.h`; their old exported TLS symbols were removed from
-  `src/backend/postmaster/interrupt.c`. After changing this bridge, clean and
-  rebuild backend objects and extension modules that include
+- `ConfigReloadPending`, `ShutdownRequestPending`, `WakeupStopPending`,
+  `AutoVacLauncherPending`, and `CheckpointerShutdownXLOGPending` are now
+  fields in `PgBackendPendingInterruptState`, exposed through compatibility
+  macros in `src/include/miscadmin.h`; their old exported TLS symbols were
+  removed from `src/backend/postmaster/interrupt.c` and
+  `src/backend/postmaster/checkpointer.c`. After changing this bridge, clean
+  and rebuild backend objects and extension modules that include
   `postmaster/interrupt.h` or `miscadmin.h`; stale modules can still reference
-  removed `_ConfigReloadPending` or `_ShutdownRequestPending` symbols. At
-  minimum, clean and reinstall PL/pgSQL,
-  `src/test/modules/test_backend_runtime`, worker modules, and contrib
-  modules under test before validating.
+  removed `_ConfigReloadPending`, `_ShutdownRequestPending`,
+  `_WakeupStopPending`, `_AutoVacLauncherPending`, or
+  `_CheckpointerShutdownXLOGPending` symbols. At minimum, clean and reinstall
+  PL/pgSQL, `src/test/modules/test_backend_runtime`, worker modules, and
+  contrib modules under test before validating.
 - Treat `PMChild.thread_backend` as private PMChild-owned publication state.
   Postmaster code should use PMChild helper APIs for threaded backend
   interrupt, wakeup, and thread-exit publication rather than dereferencing or

@@ -173,7 +173,6 @@ PG_GLOBAL_RUNTIME double CheckPointCompletionTarget = 0.9;
  * Private state
  */
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND bool ckpt_active = false;
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND volatile sig_atomic_t CheckpointerShutdownXLOGPending = false;
 
 /* these values are valid when ckpt_active is true: */
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND pg_time_t ckpt_start_time;
