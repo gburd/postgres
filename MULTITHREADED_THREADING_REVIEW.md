@@ -424,7 +424,12 @@ initialization, so it is no longer raw backend-local TLS. `MyProc` is now also
 owned by `PgBackend` behind the existing source-compatible lvalue name and
 `PgCurrentMyProcRef()`, with early fallback adoption for pre-runtime
 initialization. The `PGPROC` object lifecycle and shared-memory ownership are
-unchanged; this narrows raw backend-local TLS to the pointer storage boundary.
+unchanged. `MyProcNumber` and `ParallelLeaderProcNumber` now use the same
+bridge through `PgCurrentMyProcNumberRef()` and
+`PgCurrentParallelLeaderProcNumberRef()`, with storage inside `PgBackend` and
+explicit `INVALID_PROC_NUMBER` initialization for each process or thread
+backend runtime. This narrows raw backend-local TLS around proc identity state
+without changing the shared-memory procarray lifecycle.
 PMChild cleanup and slot release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly

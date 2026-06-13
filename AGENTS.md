@@ -129,6 +129,16 @@ Important current files:
   objects can still reference the removed `_MyProc` symbol. At minimum, clean
   and reinstall PL/pgSQL and `src/test/modules/test_backend_runtime` before
   rerunning their tests after a `MyProc` bridge change.
+- `MyProcNumber` and `ParallelLeaderProcNumber` are now routed through
+  `PgBackend` via `PgCurrentMyProcNumberRef()`,
+  `PgCurrentParallelLeaderProcNumberRef()`, and the existing lvalue names in
+  `src/include/storage/procnumber.h`. After changing that header or this
+  backend runtime bridge, clean and rebuild backend objects and any extension
+  modules under test before trusting link or TAP results; stale objects can
+  still reference the removed `_MyProcNumber` or
+  `_ParallelLeaderProcNumber` symbols, or miss the new accessor symbols. At
+  minimum, clean and reinstall PL/pgSQL and
+  `src/test/modules/test_backend_runtime` before testing.
 - Treat `PMChild.thread_backend` as private PMChild-owned publication state.
   Postmaster code should use PMChild helper APIs for threaded backend
   interrupt, wakeup, and thread-exit publication rather than dereferencing or

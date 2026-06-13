@@ -26,6 +26,7 @@
 #include "port/atomics.h"
 #include "storage/buf.h"
 #include "storage/ipc.h"
+#include "storage/procnumber.h"
 #include "tcop/dest.h"
 #include "utils/backend_id.h"
 #include "utils/global_lifetime.h"
@@ -950,6 +951,8 @@ struct PgBackend
 	PgBackendInterruptHoldoffState interrupt_holdoffs;
 	PgBackendWaitState wait_state;
 	struct PGPROC *my_proc;
+	ProcNumber	my_proc_number;
+	ProcNumber	parallel_leader_proc_number;
 	struct ResourceOwnerData *aux_process_resource_owner;
 
 	/* Backend-local dynamic shared memory mappings and detach callbacks. */

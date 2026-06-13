@@ -6651,6 +6651,8 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 	Latch		fake_latch2;
 	bool		saved_exit_on_any_error;
 	int			saved_proc_pid;
+	ProcNumber	saved_proc_number;
+	ProcNumber	saved_parallel_leader_proc_number;
 	pg_time_t	saved_start_time;
 	TimestampTz saved_start_timestamp;
 	int			saved_pm_child_slot;
@@ -6664,6 +6666,8 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 	saved_backend = CurrentPgBackend;
 	saved_exit_on_any_error = ExitOnAnyError;
 	saved_proc_pid = MyProcPid;
+	saved_proc_number = MyProcNumber;
+	saved_parallel_leader_proc_number = ParallelLeaderProcNumber;
 	saved_start_time = MyStartTime;
 	saved_start_timestamp = MyStartTimestamp;
 	saved_latch = MyLatch;
@@ -6675,6 +6679,10 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 	saved_global_prng_state = pg_global_prng_state;
 	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
 	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+	fake_backend1.my_proc_number = INVALID_PROC_NUMBER;
+	fake_backend1.parallel_leader_proc_number = INVALID_PROC_NUMBER;
+	fake_backend2.my_proc_number = INVALID_PROC_NUMBER;
+	fake_backend2.parallel_leader_proc_number = INVALID_PROC_NUMBER;
 	MemSet(&fake_latch1, 0, sizeof(fake_latch1));
 	MemSet(&fake_latch2, 0, sizeof(fake_latch2));
 
@@ -6683,6 +6691,8 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 		CurrentPgBackend = &fake_backend1;
 		ExitOnAnyError = true;
 		MyProcPid = 111;
+		MyProcNumber = 12;
+		ParallelLeaderProcNumber = 34;
 		MyStartTime = 222;
 		MyStartTimestamp = 333;
 		MyLatch = &fake_latch1;
@@ -6697,6 +6707,8 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 		CurrentPgBackend = &fake_backend2;
 		ok = ok && !ExitOnAnyError;
 		ok = ok && MyProcPid == 0;
+		ok = ok && MyProcNumber == INVALID_PROC_NUMBER;
+		ok = ok && ParallelLeaderProcNumber == INVALID_PROC_NUMBER;
 		ok = ok && MyStartTime == 0;
 		ok = ok && MyStartTimestamp == 0;
 		ok = ok && MyLatch == NULL;
@@ -6710,6 +6722,8 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 
 		ExitOnAnyError = false;
 		MyProcPid = 555;
+		MyProcNumber = 56;
+		ParallelLeaderProcNumber = 78;
 		MyStartTime = 666;
 		MyStartTimestamp = 777;
 		MyLatch = &fake_latch2;
@@ -6724,6 +6738,8 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 		CurrentPgBackend = &fake_backend1;
 		ok = ok && ExitOnAnyError;
 		ok = ok && MyProcPid == 111;
+		ok = ok && MyProcNumber == 12;
+		ok = ok && ParallelLeaderProcNumber == 34;
 		ok = ok && MyStartTime == 222;
 		ok = ok && MyStartTimestamp == 333;
 		ok = ok && MyLatch == &fake_latch1;
@@ -6738,6 +6754,8 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 		CurrentPgBackend = &fake_backend2;
 		ok = ok && !ExitOnAnyError;
 		ok = ok && MyProcPid == 555;
+		ok = ok && MyProcNumber == 56;
+		ok = ok && ParallelLeaderProcNumber == 78;
 		ok = ok && MyStartTime == 666;
 		ok = ok && MyStartTimestamp == 777;
 		ok = ok && MyLatch == &fake_latch2;
@@ -6752,6 +6770,8 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 		CurrentPgBackend = saved_backend;
 		ExitOnAnyError = saved_exit_on_any_error;
 		MyProcPid = saved_proc_pid;
+		MyProcNumber = saved_proc_number;
+		ParallelLeaderProcNumber = saved_parallel_leader_proc_number;
 		MyStartTime = saved_start_time;
 		MyStartTimestamp = saved_start_timestamp;
 		MyLatch = saved_latch;
@@ -6767,6 +6787,8 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 		CurrentPgBackend = saved_backend;
 		ExitOnAnyError = saved_exit_on_any_error;
 		MyProcPid = saved_proc_pid;
+		MyProcNumber = saved_proc_number;
+		ParallelLeaderProcNumber = saved_parallel_leader_proc_number;
 		MyStartTime = saved_start_time;
 		MyStartTimestamp = saved_start_timestamp;
 		MyLatch = saved_latch;

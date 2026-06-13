@@ -834,7 +834,13 @@ longer a standalone backend-local TLS global. `MyProc` is now stored inside
 `PgBackend` behind a source-compatible lvalue macro and
 `PgCurrentMyProcRef()`, with an early fallback adopted during process/thread
 runtime installation; the shared-memory `PGPROC` object lifecycle is unchanged,
-but the backend-local pointer is no longer standalone TLS.
+but the backend-local pointer is no longer standalone TLS. `MyProcNumber` and
+`ParallelLeaderProcNumber` now follow the same model through
+`PgCurrentMyProcNumberRef()` and `PgCurrentParallelLeaderProcNumberRef()`,
+with storage inside `PgBackend`, explicit `INVALID_PROC_NUMBER`
+initialization for process and thread runtime state, and early fallback
+adoption for pre-runtime writes. The shared-memory `PGPROC`, procarray, and
+parallel-worker assignment/release lifecycle remains unchanged.
 PMChild assignment and slot release now also scrub stale carrier-visible signal
 ids and thread-exit payloads before reuse. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live

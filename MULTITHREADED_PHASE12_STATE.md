@@ -5578,3 +5578,59 @@ Validation for this slice:
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals;
 - `git diff --check` passed.
+
+## Backend ProcNumber Bridge
+
+The one-hundred-eighteenth Phase 12 slice moves the current backend's proc
+number fields into explicit backend state:
+
+- `PgBackend` now owns `my_proc_number` and
+  `parallel_leader_proc_number`, keeping the backend-local proc identity
+  values with the rest of backend runtime state;
+- `MyProcNumber` and `ParallelLeaderProcNumber` remain source-compatible
+  lvalue names through `PgCurrentMyProcNumberRef()` and
+  `PgCurrentParallelLeaderProcNumberRef()`, so existing procarray, lock, and
+  parallel-worker call sites can continue assigning and reading them without a
+  broad mechanical rewrite;
+- process and thread backend runtime initialization explicitly sets both proc
+  numbers to `INVALID_PROC_NUMBER`, so zeroed or freshly allocated backend
+  objects do not accidentally masquerade as proc number 0;
+- `backend_runtime.c` keeps small early fallback proc-number slots for code
+  that writes before `CurrentPgBackend` is installed, then adopts those values
+  into the process or thread backend during runtime installation;
+- `InitProcess()`, `InitAuxiliaryProcess()`, `ProcKill()`, parallel-worker
+  leader assignment, and the underlying `PGPROC`/procarray shared-memory
+  lifecycle keep their existing behavior. This slice changes where the
+  backend-local proc-number values are stored, not when shared proc state is
+  allocated, published, or released.
+
+This closes the immediate follow-up left by the `MyProc` pointer bridge for
+backend proc identity storage. It still does not move the full `PGPROC`
+lifecycle or procarray ownership model out of its current shared-memory
+structures.
+
+Validation for this slice:
+
+- `gmake -C src/backend/utils/init backend_runtime.o` passed;
+- `gmake -C src/backend/storage/lmgr proc.o` passed;
+- `gmake -C src/backend/utils/init globals.o` passed;
+- full backend clean plus generated-header recovery was required after the
+  installed-header change, because stale objects and test modules still
+  referenced the old `_MyProcNumber` and `_ParallelLeaderProcNumber` symbols
+  or missed the new accessor symbols;
+- full `gmake -j8` passed;
+- full `gmake -j8 DESTDIR="$PWD/tmp_install" install` passed;
+- PL/pgSQL was cleaned, rebuilt, and reinstalled after the installed-header
+  change;
+- `src/test/modules/test_backend_runtime` was cleaned, rebuilt, and
+  reinstalled after the installed-header change;
+- direct threaded-runtime TAP passed all 87 tests with local
+  `/Users/samwillis/perl5` `PERL5LIB` paths before and after
+  `gmake -C src/test/modules/test_backend_runtime check` recreated
+  `tmp_install`;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression and still reported TAP disabled by configure;
+- `gmake -C contrib -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- `git diff --check` passed.

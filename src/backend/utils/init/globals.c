@@ -49,10 +49,6 @@ PG_GLOBAL_RUNTIME char postgres_exec_path[MAXPGPATH];	/* full path to backend */
 /* note: currently this is not valid in backend processes */
 #endif
 
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND ProcNumber MyProcNumber = INVALID_PROC_NUMBER;
-
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND ProcNumber ParallelLeaderProcNumber = INVALID_PROC_NUMBER;
-
 PG_GLOBAL_RUNTIME pid_t PostmasterPid = 0;
 
 /*

@@ -94,6 +94,8 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendCoreState early_backend_core =
 };
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND BackendType early_backend_type = B_INVALID;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PGPROC *early_my_proc = NULL;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ProcNumber early_my_proc_number = INVALID_PROC_NUMBER;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ProcNumber early_parallel_leader_proc_number = INVALID_PROC_NUMBER;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ResourceOwner early_aux_process_resource_owner = NULL;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionIdentityState early_connection_identity;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionSocketIOState early_connection_socket_io;
@@ -592,8 +594,10 @@ static void PgSessionAdoptEarlyNamespaceState(PgSession *session);
 static void PgSessionInitializeLocaleState(PgSessionLocaleState *locale);
 static void PgSessionAdoptEarlyLocaleState(PgSession *session);
 static void PgBackendResetCoreState(PgBackendCoreState *core);
+static void PgBackendInitializeProcNumberState(PgBackend *backend);
 static void PgBackendAdoptEarlyCoreState(PgBackend *backend);
 static void PgBackendAdoptEarlyMyProc(PgBackend *backend);
+static void PgBackendAdoptEarlyProcNumberState(PgBackend *backend);
 static void PgBackendAdoptEarlyAuxProcessResourceOwner(PgBackend *backend);
 static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
 static void PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend);
@@ -1932,6 +1936,15 @@ PgBackendResetCoreState(PgBackendCoreState *core)
 }
 
 static void
+PgBackendInitializeProcNumberState(PgBackend *backend)
+{
+	Assert(backend != NULL);
+
+	backend->my_proc_number = INVALID_PROC_NUMBER;
+	backend->parallel_leader_proc_number = INVALID_PROC_NUMBER;
+}
+
+static void
 PgBackendAdoptEarlyCoreState(PgBackend *backend)
 {
 	struct Latch *existing_interrupt_latch;
@@ -1975,6 +1988,25 @@ PgBackendAdoptEarlyMyProc(PgBackend *backend)
 	{
 		backend->my_proc = early_my_proc;
 		early_my_proc = NULL;
+	}
+}
+
+static void
+PgBackendAdoptEarlyProcNumberState(PgBackend *backend)
+{
+	Assert(backend != NULL);
+
+	if (early_my_proc_number != INVALID_PROC_NUMBER)
+	{
+		backend->my_proc_number = early_my_proc_number;
+		early_my_proc_number = INVALID_PROC_NUMBER;
+	}
+
+	if (early_parallel_leader_proc_number != INVALID_PROC_NUMBER)
+	{
+		backend->parallel_leader_proc_number =
+			early_parallel_leader_proc_number;
+		early_parallel_leader_proc_number = INVALID_PROC_NUMBER;
 	}
 }
 
@@ -2202,9 +2234,11 @@ InitializePgProcessRuntime(void)
 	process_backend.connection = &process_connection;
 	process_backend.execution = &process_execution;
 	process_backend.backend_type = MyBackendType;
+	PgBackendInitializeProcNumberState(&process_backend);
 	PgBackendInitializeInterrupts(&process_backend);
 	PgBackendAdoptEarlyCoreState(&process_backend);
 	PgBackendAdoptEarlyMyProc(&process_backend);
+	PgBackendAdoptEarlyProcNumberState(&process_backend);
 	PgBackendAdoptEarlyAuxProcessResourceOwner(&process_backend);
 	PgBackendSetInterruptLatch(&process_backend, process_backend.core.latch);
 	dlist_init(&process_backend.dsm_segment_list);
@@ -2342,6 +2376,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	state->backend.connection = &state->connection;
 	state->backend.execution = &state->execution;
 	state->backend.backend_type = backend_type;
+	PgBackendInitializeProcNumberState(&state->backend);
 	PgBackendInitializeInterrupts(&state->backend);
 	PgBackendSetInterruptLatch(&state->backend, interrupt_latch);
 	dlist_init(&state->backend.dsm_segment_list);
@@ -2419,6 +2454,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	state->carrier.current_execution = &state->execution;
 	PgBackendAdoptEarlyCoreState(&state->backend);
 	PgBackendAdoptEarlyMyProc(&state->backend);
+	PgBackendAdoptEarlyProcNumberState(&state->backend);
 	PgBackendAdoptEarlyAuxProcessResourceOwner(&state->backend);
 	PgSessionAdoptEarlyDatabaseState(&state->session);
 	PgSessionAdoptEarlyTablespaceState(&state->session);
@@ -5524,6 +5560,24 @@ PgCurrentMyProcRef(void)
 		return &early_my_proc;
 
 	return &CurrentPgBackend->my_proc;
+}
+
+ProcNumber *
+PgCurrentMyProcNumberRef(void)
+{
+	if (CurrentPgBackend == NULL)
+		return &early_my_proc_number;
+
+	return &CurrentPgBackend->my_proc_number;
+}
+
+ProcNumber *
+PgCurrentParallelLeaderProcNumberRef(void)
+{
+	if (CurrentPgBackend == NULL)
+		return &early_parallel_leader_proc_number;
+
+	return &CurrentPgBackend->parallel_leader_proc_number;
 }
 
 ResourceOwner *
