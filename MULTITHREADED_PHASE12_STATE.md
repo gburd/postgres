@@ -4659,3 +4659,51 @@ Validation for this slice:
 - log inspection for that smoke found no crash, postmaster-death, shutdown
   escalation, assertion, or bad-descriptor markers;
 - `git diff --check` passed.
+
+## Threaded Startup Gate WAL Summarizer Narrowing
+
+The ninety-seventh Phase 12 slice narrows the temporary threaded startup
+serialization gate for the WAL summarizer:
+
+- `backend_thread_requires_startup_gate()` now allows `B_WAL_SUMMARIZER`
+  thread carriers to bypass the global startup mutex, joining the
+  already-validated AIO worker, syslogger, archiver, background writer,
+  checkpointer, and WAL writer bypasses;
+- WAL summarizer uses `AuxiliaryProcessMainCommon()`, which creates its
+  auxiliary PGPROC, procsignal/barrier state, resource owner, pgstat state,
+  and normal processing mode before summarizer-specific work begins;
+- WAL summarizer does not run database/session bootstrap or `InitPostgres()`;
+- its sleep/progress state is backend-local/thread-local or published through
+  `WalSummarizerCtl` shared memory, and its interrupt loop consumes the
+  logical interrupt mailbox before checking shutdown/configuration state;
+- the remaining gated classes stay gated: regular client backend startup,
+  autovacuum launcher/workers, background workers, slot sync, startup, and WAL
+  receiver.
+
+This is not the full Gate E2 startup-gate closure. It removes serialization
+from another non-session auxiliary startup path with a small, explicit
+ownership model. Further narrowing still needs worker-specific shared-state
+isolation and catalog-startup stress coverage, especially for workers that run
+database/session bootstrap, connect to external systems, or load arbitrary
+background-worker code.
+
+Validation for this slice:
+
+- touched-object build for `src/backend/postmaster/launch_backend.o` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- full `gmake -j8` passed;
+- `gmake -j8 DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- direct full-module `pg_regress test_backend_runtime` passed all 1 test
+  against the current temp install;
+- a manual threaded WAL summarizer temp-cluster smoke with
+  `multithreaded = on`, `summarize_wal = on`, and
+  `dynamic_shared_memory_type = posix` verified the WAL summarizer appears in
+  `pg_stat_activity`, logged `starting walsummarizer thread carrier` and `WAL
+  summarizer started`, generated WAL while concurrent `pg_class` catalog scans
+  ran, created WAL summary files after `pg_switch_wal()` and `CHECKPOINT`, and
+  stopped cleanly with `pg_ctl -m fast -w stop`;
+- log inspection for that smoke found no crash, postmaster-death, shutdown
+  escalation, assertion, or bad-descriptor markers;
+- `git diff --check` passed.
