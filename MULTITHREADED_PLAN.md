@@ -670,6 +670,7 @@ the current database identity/path bridge through `PgSession`, plus the parsed
 `DateStyle`/`DateOrder` bridge through `PgSession`, and the first
 direct-pointer GUC bridges for `IntervalStyle` and query-memory settings
 through `PgSession`, plus the planner cost/parallel-planner direct-pointer GUC
+bridge through `PgSession`, plus the planner method/tuning direct-pointer GUC
 bridge through `PgSession`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move

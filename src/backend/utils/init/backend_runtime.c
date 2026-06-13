@@ -20,7 +20,10 @@
 #include "commands/repack.h"
 #include "miscadmin.h"
 #include "optimizer/cost.h"
+#include "optimizer/geqo.h"
 #include "optimizer/optimizer.h"
+#include "optimizer/paths.h"
+#include "optimizer/planmain.h"
 #include "postmaster/interrupt.h"
 #include "replication/logicalworker.h"
 #include "replication/slotsync.h"
@@ -89,6 +92,49 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPlannerCostState early_session
 	.debug_parallel_query_value = DEBUG_PARALLEL_OFF,
 	.parallel_leader_participation_value = true
 };
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPlannerMethodState early_session_planner_method = {
+	.initialized = true,
+	.enable_seqscan_value = true,
+	.enable_indexscan_value = true,
+	.enable_indexonlyscan_value = true,
+	.enable_bitmapscan_value = true,
+	.enable_tidscan_value = true,
+	.enable_sort_value = true,
+	.enable_incremental_sort_value = true,
+	.enable_hashagg_value = true,
+	.enable_nestloop_value = true,
+	.enable_material_value = true,
+	.enable_memoize_value = true,
+	.enable_mergejoin_value = true,
+	.enable_hashjoin_value = true,
+	.enable_gathermerge_value = true,
+	.enable_partitionwise_join_value = false,
+	.enable_partitionwise_aggregate_value = false,
+	.enable_parallel_append_value = true,
+	.enable_parallel_hash_value = true,
+	.enable_partition_pruning_value = true,
+	.enable_presorted_aggregate_value = true,
+	.enable_async_append_value = true,
+	.enable_distinct_reordering_value = true,
+	.enable_geqo_value = true,
+	.enable_eager_aggregate_value = true,
+	.enable_group_by_reordering_value = true,
+	.enable_self_join_elimination_value = true,
+	.cursor_tuple_fraction_value = DEFAULT_CURSOR_TUPLE_FRACTION,
+	.constraint_exclusion_value = CONSTRAINT_EXCLUSION_PARTITION,
+	.geqo_threshold_value = 12,
+	.Geqo_effort_value = DEFAULT_GEQO_EFFORT,
+	.Geqo_pool_size_value = 0,
+	.Geqo_generations_value = 0,
+	.Geqo_selection_bias_value = DEFAULT_GEQO_SELECTION_BIAS,
+	.Geqo_seed_value = 0.0,
+	.Geqo_planner_extension_id_value = -1,
+	.min_eager_agg_group_size_value = 8.0,
+	.min_parallel_table_scan_size_blocks = (8 * 1024 * 1024) / BLCKSZ,
+	.min_parallel_index_scan_size_blocks = (512 * 1024) / BLCKSZ,
+	.from_collapse_limit_value = 8,
+	.join_collapse_limit_value = 8
+};
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendPendingInterruptState early_pending_interrupts;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInterruptHoldoffState early_interrupt_holdoffs;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionDebugState early_execution_debug;
@@ -115,6 +161,8 @@ static void PgSessionInitializeQueryMemoryState(PgSessionQueryMemoryState *query
 static void PgSessionAdoptEarlyQueryMemoryState(PgSession *session);
 static void PgSessionInitializePlannerCostState(PgSessionPlannerCostState *planner_cost);
 static void PgSessionAdoptEarlyPlannerCostState(PgSession *session);
+static void PgSessionInitializePlannerMethodState(PgSessionPlannerMethodState *planner_method);
+static void PgSessionAdoptEarlyPlannerMethodState(PgSession *session);
 static void PgBackendResetCoreState(PgBackendCoreState *core);
 static void PgBackendAdoptEarlyCoreState(PgBackend *backend);
 static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
@@ -129,6 +177,7 @@ static PgSessionDatabaseState *PgCurrentSessionDatabaseState(void);
 static PgSessionDateTimeState *PgCurrentSessionDateTimeState(void);
 static PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
 static PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
+static PgSessionPlannerMethodState *PgCurrentSessionPlannerMethodState(void);
 static PgExecutionErrorState *PgCurrentExecutionErrorState(void);
 static PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
 static PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
@@ -298,6 +347,70 @@ PgSessionAdoptEarlyPlannerCostState(PgSession *session)
 }
 
 static void
+PgSessionInitializePlannerMethodState(PgSessionPlannerMethodState *planner_method)
+{
+	Assert(planner_method != NULL);
+
+	planner_method->initialized = true;
+	planner_method->enable_seqscan_value = true;
+	planner_method->enable_indexscan_value = true;
+	planner_method->enable_indexonlyscan_value = true;
+	planner_method->enable_bitmapscan_value = true;
+	planner_method->enable_tidscan_value = true;
+	planner_method->enable_sort_value = true;
+	planner_method->enable_incremental_sort_value = true;
+	planner_method->enable_hashagg_value = true;
+	planner_method->enable_nestloop_value = true;
+	planner_method->enable_material_value = true;
+	planner_method->enable_memoize_value = true;
+	planner_method->enable_mergejoin_value = true;
+	planner_method->enable_hashjoin_value = true;
+	planner_method->enable_gathermerge_value = true;
+	planner_method->enable_partitionwise_join_value = false;
+	planner_method->enable_partitionwise_aggregate_value = false;
+	planner_method->enable_parallel_append_value = true;
+	planner_method->enable_parallel_hash_value = true;
+	planner_method->enable_partition_pruning_value = true;
+	planner_method->enable_presorted_aggregate_value = true;
+	planner_method->enable_async_append_value = true;
+	planner_method->enable_distinct_reordering_value = true;
+	planner_method->enable_geqo_value = true;
+	planner_method->enable_eager_aggregate_value = true;
+	planner_method->enable_group_by_reordering_value = true;
+	planner_method->enable_self_join_elimination_value = true;
+	planner_method->cursor_tuple_fraction_value = DEFAULT_CURSOR_TUPLE_FRACTION;
+	planner_method->constraint_exclusion_value =
+		CONSTRAINT_EXCLUSION_PARTITION;
+	planner_method->geqo_threshold_value = 12;
+	planner_method->Geqo_effort_value = DEFAULT_GEQO_EFFORT;
+	planner_method->Geqo_pool_size_value = 0;
+	planner_method->Geqo_generations_value = 0;
+	planner_method->Geqo_selection_bias_value =
+		DEFAULT_GEQO_SELECTION_BIAS;
+	planner_method->Geqo_seed_value = 0.0;
+	planner_method->Geqo_planner_extension_id_value = -1;
+	planner_method->min_eager_agg_group_size_value = 8.0;
+	planner_method->min_parallel_table_scan_size_blocks =
+		(8 * 1024 * 1024) / BLCKSZ;
+	planner_method->min_parallel_index_scan_size_blocks =
+		(512 * 1024) / BLCKSZ;
+	planner_method->from_collapse_limit_value = 8;
+	planner_method->join_collapse_limit_value = 8;
+}
+
+static void
+PgSessionAdoptEarlyPlannerMethodState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (!early_session_planner_method.initialized)
+		PgSessionInitializePlannerMethodState(&early_session_planner_method);
+
+	session->planner_method = early_session_planner_method;
+	PgSessionInitializePlannerMethodState(&early_session_planner_method);
+}
+
+static void
 PgBackendResetCoreState(PgBackendCoreState *core)
 {
 	MemSet(core, 0, sizeof(*core));
@@ -437,6 +550,7 @@ InitializePgProcessRuntime(void)
 	PgSessionAdoptEarlyDateTimeState(&process_session);
 	PgSessionAdoptEarlyQueryMemoryState(&process_session);
 	PgSessionAdoptEarlyPlannerCostState(&process_session);
+	PgSessionAdoptEarlyPlannerMethodState(&process_session);
 
 	process_connection.backend = &process_backend;
 	process_connection.session = &process_session;
@@ -519,6 +633,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgSessionInitializeDateTimeState(&state->session.datetime);
 	PgSessionInitializeQueryMemoryState(&state->session.query_memory);
 	PgSessionInitializePlannerCostState(&state->session.planner_cost);
+	PgSessionInitializePlannerMethodState(&state->session.planner_method);
 
 	state->connection.backend = &state->backend;
 	state->connection.session = &state->session;
@@ -542,6 +657,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgSessionAdoptEarlyDateTimeState(&state->session);
 	PgSessionAdoptEarlyQueryMemoryState(&state->session);
 	PgSessionAdoptEarlyPlannerCostState(&state->session);
+	PgSessionAdoptEarlyPlannerMethodState(&state->session);
 	PgExecutionAdoptEarlyErrorState(&state->execution);
 	PgExecutionAdoptEarlyMemoryContexts(&state->execution);
 	PgExecutionAdoptEarlyResourceOwners(&state->execution);
@@ -653,6 +769,22 @@ PgCurrentSessionPlannerCostState(void)
 		PgSessionInitializePlannerCostState(planner_cost);
 
 	return planner_cost;
+}
+
+static PgSessionPlannerMethodState *
+PgCurrentSessionPlannerMethodState(void)
+{
+	PgSessionPlannerMethodState *planner_method;
+
+	if (CurrentPgSession == NULL)
+		planner_method = &early_session_planner_method;
+	else
+		planner_method = &CurrentPgSession->planner_method;
+
+	if (!planner_method->initialized)
+		PgSessionInitializePlannerMethodState(planner_method);
+
+	return planner_method;
 }
 
 Oid *
@@ -797,6 +929,246 @@ bool *
 PgCurrentParallelLeaderParticipationRef(void)
 {
 	return &PgCurrentSessionPlannerCostState()->parallel_leader_participation_value;
+}
+
+bool *
+PgCurrentEnableSeqscanRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->enable_seqscan_value;
+}
+
+bool *
+PgCurrentEnableIndexscanRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->enable_indexscan_value;
+}
+
+bool *
+PgCurrentEnableIndexonlyscanRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->enable_indexonlyscan_value;
+}
+
+bool *
+PgCurrentEnableBitmapscanRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->enable_bitmapscan_value;
+}
+
+bool *
+PgCurrentEnableTidscanRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->enable_tidscan_value;
+}
+
+bool *
+PgCurrentEnableSortRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->enable_sort_value;
+}
+
+bool *
+PgCurrentEnableIncrementalSortRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->enable_incremental_sort_value;
+}
+
+bool *
+PgCurrentEnableHashaggRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->enable_hashagg_value;
+}
+
+bool *
+PgCurrentEnableNestloopRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->enable_nestloop_value;
+}
+
+bool *
+PgCurrentEnableMaterialRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->enable_material_value;
+}
+
+bool *
+PgCurrentEnableMemoizeRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->enable_memoize_value;
+}
+
+bool *
+PgCurrentEnableMergejoinRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->enable_mergejoin_value;
+}
+
+bool *
+PgCurrentEnableHashjoinRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->enable_hashjoin_value;
+}
+
+bool *
+PgCurrentEnableGathermergeRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->enable_gathermerge_value;
+}
+
+bool *
+PgCurrentEnablePartitionwiseJoinRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->enable_partitionwise_join_value;
+}
+
+bool *
+PgCurrentEnablePartitionwiseAggregateRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->enable_partitionwise_aggregate_value;
+}
+
+bool *
+PgCurrentEnableParallelAppendRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->enable_parallel_append_value;
+}
+
+bool *
+PgCurrentEnableParallelHashRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->enable_parallel_hash_value;
+}
+
+bool *
+PgCurrentEnablePartitionPruningRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->enable_partition_pruning_value;
+}
+
+bool *
+PgCurrentEnablePresortedAggregateRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->enable_presorted_aggregate_value;
+}
+
+bool *
+PgCurrentEnableAsyncAppendRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->enable_async_append_value;
+}
+
+bool *
+PgCurrentEnableDistinctReorderingRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->enable_distinct_reordering_value;
+}
+
+bool *
+PgCurrentEnableGeqoRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->enable_geqo_value;
+}
+
+bool *
+PgCurrentEnableEagerAggregateRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->enable_eager_aggregate_value;
+}
+
+bool *
+PgCurrentEnableGroupByReorderingRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->enable_group_by_reordering_value;
+}
+
+bool *
+PgCurrentEnableSelfJoinEliminationRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->enable_self_join_elimination_value;
+}
+
+double *
+PgCurrentCursorTupleFractionRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->cursor_tuple_fraction_value;
+}
+
+int *
+PgCurrentConstraintExclusionRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->constraint_exclusion_value;
+}
+
+int *
+PgCurrentGeqoThresholdRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->geqo_threshold_value;
+}
+
+int *
+PgCurrentGeqoEffortRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->Geqo_effort_value;
+}
+
+int *
+PgCurrentGeqoPoolSizeRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->Geqo_pool_size_value;
+}
+
+int *
+PgCurrentGeqoGenerationsRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->Geqo_generations_value;
+}
+
+double *
+PgCurrentGeqoSelectionBiasRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->Geqo_selection_bias_value;
+}
+
+double *
+PgCurrentGeqoSeedRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->Geqo_seed_value;
+}
+
+int *
+PgCurrentGeqoPlannerExtensionIdRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->Geqo_planner_extension_id_value;
+}
+
+double *
+PgCurrentMinEagerAggGroupSizeRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->min_eager_agg_group_size_value;
+}
+
+int *
+PgCurrentMinParallelTableScanSizeRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->min_parallel_table_scan_size_blocks;
+}
+
+int *
+PgCurrentMinParallelIndexScanSizeRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->min_parallel_index_scan_size_blocks;
+}
+
+int *
+PgCurrentFromCollapseLimitRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->from_collapse_limit_value;
+}
+
+int *
+PgCurrentJoinCollapseLimitRef(void)
+{
+	return &PgCurrentSessionPlannerMethodState()->join_collapse_limit_value;
 }
 
 struct Port **

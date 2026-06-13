@@ -21,13 +21,22 @@
 /*
  * allpaths.c
  */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_geqo;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_eager_aggregate;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int geqo_threshold;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double min_eager_agg_group_size;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int min_parallel_table_scan_size;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int min_parallel_index_scan_size;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_group_by_reordering;
+extern bool *PgCurrentEnableGeqoRef(void);
+extern bool *PgCurrentEnableEagerAggregateRef(void);
+extern int *PgCurrentGeqoThresholdRef(void);
+extern double *PgCurrentMinEagerAggGroupSizeRef(void);
+extern int *PgCurrentMinParallelTableScanSizeRef(void);
+extern int *PgCurrentMinParallelIndexScanSizeRef(void);
+extern bool *PgCurrentEnableGroupByReorderingRef(void);
+
+#define enable_geqo (*PgCurrentEnableGeqoRef())
+#define enable_eager_aggregate (*PgCurrentEnableEagerAggregateRef())
+#define geqo_threshold (*PgCurrentGeqoThresholdRef())
+#define min_eager_agg_group_size (*PgCurrentMinEagerAggGroupSizeRef())
+#define min_parallel_table_scan_size (*PgCurrentMinParallelTableScanSizeRef())
+#define min_parallel_index_scan_size (*PgCurrentMinParallelIndexScanSizeRef())
+#define enable_group_by_reordering \
+	(*PgCurrentEnableGroupByReorderingRef())
 
 /* Hooks for plugins to get control in set_rel_pathlist() */
 typedef void (*join_path_setup_hook_type) (PlannerInfo *root,

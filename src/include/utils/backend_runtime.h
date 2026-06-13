@@ -224,6 +224,51 @@ typedef struct PgSessionPlannerCostState
 	bool		parallel_leader_participation_value;
 } PgSessionPlannerCostState;
 
+typedef struct PgSessionPlannerMethodState
+{
+	bool		initialized;
+	bool		enable_seqscan_value;
+	bool		enable_indexscan_value;
+	bool		enable_indexonlyscan_value;
+	bool		enable_bitmapscan_value;
+	bool		enable_tidscan_value;
+	bool		enable_sort_value;
+	bool		enable_incremental_sort_value;
+	bool		enable_hashagg_value;
+	bool		enable_nestloop_value;
+	bool		enable_material_value;
+	bool		enable_memoize_value;
+	bool		enable_mergejoin_value;
+	bool		enable_hashjoin_value;
+	bool		enable_gathermerge_value;
+	bool		enable_partitionwise_join_value;
+	bool		enable_partitionwise_aggregate_value;
+	bool		enable_parallel_append_value;
+	bool		enable_parallel_hash_value;
+	bool		enable_partition_pruning_value;
+	bool		enable_presorted_aggregate_value;
+	bool		enable_async_append_value;
+	bool		enable_distinct_reordering_value;
+	bool		enable_geqo_value;
+	bool		enable_eager_aggregate_value;
+	bool		enable_group_by_reordering_value;
+	bool		enable_self_join_elimination_value;
+	double		cursor_tuple_fraction_value;
+	int			constraint_exclusion_value;
+	int			geqo_threshold_value;
+	int			Geqo_effort_value;
+	int			Geqo_pool_size_value;
+	int			Geqo_generations_value;
+	double		Geqo_selection_bias_value;
+	double		Geqo_seed_value;
+	int			Geqo_planner_extension_id_value;
+	double		min_eager_agg_group_size_value;
+	int			min_parallel_table_scan_size_blocks;
+	int			min_parallel_index_scan_size_blocks;
+	int			from_collapse_limit_value;
+	int			join_collapse_limit_value;
+} PgSessionPlannerMethodState;
+
 #define PG_CONNECTION_SEND_BUFFER_SIZE 8192
 #define PG_CONNECTION_RECV_BUFFER_SIZE 8192
 #define PG_CONNECTION_CANCEL_KEY_LENGTH 32
@@ -345,6 +390,7 @@ struct PgSession
 	PgSessionDateTimeState datetime;
 	PgSessionQueryMemoryState query_memory;
 	PgSessionPlannerCostState planner_cost;
+	PgSessionPlannerMethodState planner_method;
 };
 
 struct PgConnection

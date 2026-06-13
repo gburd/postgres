@@ -19,7 +19,10 @@
 #include "libpq/libpq.h"
 #include "miscadmin.h"
 #include "optimizer/cost.h"
+#include "optimizer/geqo.h"
 #include "optimizer/optimizer.h"
+#include "optimizer/paths.h"
+#include "optimizer/planmain.h"
 #include "postmaster/postmaster.h"
 #include "port/atomics.h"
 #include "port/pg_thread.h"
@@ -38,6 +41,39 @@ PG_MODULE_MAGIC;
 static sigjmp_buf exit_continuation_jmp;
 static volatile bool exit_continuation_seen;
 static volatile int exit_continuation_code;
+
+typedef struct TestBoolGUCSetting
+{
+	const char *name;
+	bool	   *(*ref) (void);
+	bool		default_value;
+	const char *session1_value;
+	bool		session1_expected;
+	const char *session2_value;
+	bool		session2_expected;
+} TestBoolGUCSetting;
+
+typedef struct TestIntGUCSetting
+{
+	const char *name;
+	int		   *(*ref) (void);
+	int			default_value;
+	const char *session1_value;
+	int			session1_expected;
+	const char *session2_value;
+	int			session2_expected;
+} TestIntGUCSetting;
+
+typedef struct TestRealGUCSetting
+{
+	const char *name;
+	double	   *(*ref) (void);
+	double		default_value;
+	const char *session1_value;
+	double		session1_expected;
+	const char *session2_value;
+	double		session2_expected;
+} TestRealGUCSetting;
 
 static void test_pg_thread_routine(void *arg);
 static void test_pg_thread_exit_routine(void *arg);
@@ -949,6 +985,237 @@ test_session_planner_cost_state_is_session_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "session planner cost GUC state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_session_planner_method_state_is_session_local);
+Datum
+test_session_planner_method_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	static const TestBoolGUCSetting bool_settings[] = {
+		{"enable_async_append", PgCurrentEnableAsyncAppendRef, true,
+			"off", false, "on", true},
+		{"enable_bitmapscan", PgCurrentEnableBitmapscanRef, true,
+			"off", false, "on", true},
+		{"enable_distinct_reordering", PgCurrentEnableDistinctReorderingRef,
+			true, "off", false, "on", true},
+		{"enable_eager_aggregate", PgCurrentEnableEagerAggregateRef, true,
+			"off", false, "on", true},
+		{"enable_gathermerge", PgCurrentEnableGathermergeRef, true,
+			"off", false, "on", true},
+		{"enable_group_by_reordering", PgCurrentEnableGroupByReorderingRef,
+			true, "off", false, "on", true},
+		{"enable_hashagg", PgCurrentEnableHashaggRef, true,
+			"off", false, "on", true},
+		{"enable_hashjoin", PgCurrentEnableHashjoinRef, true,
+			"off", false, "on", true},
+		{"enable_incremental_sort", PgCurrentEnableIncrementalSortRef, true,
+			"off", false, "on", true},
+		{"enable_indexonlyscan", PgCurrentEnableIndexonlyscanRef, true,
+			"off", false, "on", true},
+		{"enable_indexscan", PgCurrentEnableIndexscanRef, true,
+			"off", false, "on", true},
+		{"enable_material", PgCurrentEnableMaterialRef, true,
+			"off", false, "on", true},
+		{"enable_memoize", PgCurrentEnableMemoizeRef, true,
+			"off", false, "on", true},
+		{"enable_mergejoin", PgCurrentEnableMergejoinRef, true,
+			"off", false, "on", true},
+		{"enable_nestloop", PgCurrentEnableNestloopRef, true,
+			"off", false, "on", true},
+		{"enable_parallel_append", PgCurrentEnableParallelAppendRef, true,
+			"off", false, "on", true},
+		{"enable_parallel_hash", PgCurrentEnableParallelHashRef, true,
+			"off", false, "on", true},
+		{"enable_partition_pruning", PgCurrentEnablePartitionPruningRef, true,
+			"off", false, "on", true},
+		{"enable_partitionwise_aggregate",
+			PgCurrentEnablePartitionwiseAggregateRef, false,
+			"on", true, "off", false},
+		{"enable_partitionwise_join", PgCurrentEnablePartitionwiseJoinRef,
+			false, "on", true, "off", false},
+		{"enable_presorted_aggregate", PgCurrentEnablePresortedAggregateRef,
+			true, "off", false, "on", true},
+		{"enable_self_join_elimination",
+			PgCurrentEnableSelfJoinEliminationRef, true,
+			"off", false, "on", true},
+		{"enable_seqscan", PgCurrentEnableSeqscanRef, true,
+			"off", false, "on", true},
+		{"enable_sort", PgCurrentEnableSortRef, true,
+			"off", false, "on", true},
+		{"enable_tidscan", PgCurrentEnableTidscanRef, true,
+			"off", false, "on", true},
+		{"geqo", PgCurrentEnableGeqoRef, true,
+			"off", false, "on", true}
+	};
+	static const TestIntGUCSetting int_settings[] = {
+		{"constraint_exclusion", PgCurrentConstraintExclusionRef,
+			CONSTRAINT_EXCLUSION_PARTITION,
+			"off", CONSTRAINT_EXCLUSION_OFF, "on", CONSTRAINT_EXCLUSION_ON},
+		{"from_collapse_limit", PgCurrentFromCollapseLimitRef, 8,
+			"4", 4, "5", 5},
+		{"geqo_effort", PgCurrentGeqoEffortRef, DEFAULT_GEQO_EFFORT,
+			"6", 6, "7", 7},
+		{"geqo_generations", PgCurrentGeqoGenerationsRef, 0,
+			"20", 20, "22", 22},
+		{"geqo_pool_size", PgCurrentGeqoPoolSizeRef, 0,
+			"10", 10, "12", 12},
+		{"geqo_threshold", PgCurrentGeqoThresholdRef, 12,
+			"13", 13, "14", 14},
+		{"join_collapse_limit", PgCurrentJoinCollapseLimitRef, 8,
+			"6", 6, "7", 7},
+		{"min_parallel_index_scan_size",
+			PgCurrentMinParallelIndexScanSizeRef,
+			(512 * 1024) / BLCKSZ, "32", 32, "64", 64},
+		{"min_parallel_table_scan_size",
+			PgCurrentMinParallelTableScanSizeRef,
+			(8 * 1024 * 1024) / BLCKSZ, "64", 64, "128", 128}
+	};
+	static const TestRealGUCSetting real_settings[] = {
+		{"cursor_tuple_fraction", PgCurrentCursorTupleFractionRef,
+			DEFAULT_CURSOR_TUPLE_FRACTION, "0.25", 0.25, "0.75", 0.75},
+		{"geqo_seed", PgCurrentGeqoSeedRef, 0.0, "0.11", 0.11,
+			"0.22", 0.22},
+		{"geqo_selection_bias", PgCurrentGeqoSelectionBiasRef,
+			DEFAULT_GEQO_SELECTION_BIAS, "1.75", 1.75, "2.0", 2.0},
+		{"min_eager_agg_group_size", PgCurrentMinEagerAggGroupSizeRef,
+			8.0, "5.5", 5.5, "9.5", 9.5}
+	};
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	char	   *saved_bool_values[lengthof(bool_settings)];
+	char	   *saved_int_values[lengthof(int_settings)];
+	char	   *saved_real_values[lengthof(real_settings)];
+	bool		ok = true;
+	int			i;
+
+	saved_session = CurrentPgSession;
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	for (i = 0; i < lengthof(bool_settings); i++)
+		saved_bool_values[i] =
+			pstrdup(GetConfigOption(bool_settings[i].name, false, false));
+	for (i = 0; i < lengthof(int_settings); i++)
+		saved_int_values[i] =
+			pstrdup(GetConfigOption(int_settings[i].name, false, false));
+	for (i = 0; i < lengthof(real_settings); i++)
+		saved_real_values[i] =
+			pstrdup(GetConfigOption(real_settings[i].name, false, false));
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		for (i = 0; i < lengthof(bool_settings); i++)
+		{
+			ok = ok && *bool_settings[i].ref() ==
+				bool_settings[i].default_value;
+			SetConfigOption(bool_settings[i].name,
+							bool_settings[i].session1_value,
+							PGC_USERSET, PGC_S_SESSION);
+			ok = ok && *bool_settings[i].ref() ==
+				bool_settings[i].session1_expected;
+		}
+		for (i = 0; i < lengthof(int_settings); i++)
+		{
+			ok = ok && *int_settings[i].ref() ==
+				int_settings[i].default_value;
+			SetConfigOption(int_settings[i].name,
+							int_settings[i].session1_value,
+							PGC_USERSET, PGC_S_SESSION);
+			ok = ok && *int_settings[i].ref() ==
+				int_settings[i].session1_expected;
+		}
+		for (i = 0; i < lengthof(real_settings); i++)
+		{
+			ok = ok && *real_settings[i].ref() ==
+				real_settings[i].default_value;
+			SetConfigOption(real_settings[i].name,
+							real_settings[i].session1_value,
+							PGC_USERSET, PGC_S_SESSION);
+			ok = ok && *real_settings[i].ref() ==
+				real_settings[i].session1_expected;
+		}
+		Geqo_planner_extension_id = 17;
+		ok = ok && Geqo_planner_extension_id == 17;
+
+		PgSetCurrentSession(&fake_session2);
+		for (i = 0; i < lengthof(bool_settings); i++)
+		{
+			ok = ok && *bool_settings[i].ref() ==
+				bool_settings[i].default_value;
+			SetConfigOption(bool_settings[i].name,
+							bool_settings[i].session2_value,
+							PGC_USERSET, PGC_S_SESSION);
+			ok = ok && *bool_settings[i].ref() ==
+				bool_settings[i].session2_expected;
+		}
+		for (i = 0; i < lengthof(int_settings); i++)
+		{
+			ok = ok && *int_settings[i].ref() ==
+				int_settings[i].default_value;
+			SetConfigOption(int_settings[i].name,
+							int_settings[i].session2_value,
+							PGC_USERSET, PGC_S_SESSION);
+			ok = ok && *int_settings[i].ref() ==
+				int_settings[i].session2_expected;
+		}
+		for (i = 0; i < lengthof(real_settings); i++)
+		{
+			ok = ok && *real_settings[i].ref() ==
+				real_settings[i].default_value;
+			SetConfigOption(real_settings[i].name,
+							real_settings[i].session2_value,
+							PGC_USERSET, PGC_S_SESSION);
+			ok = ok && *real_settings[i].ref() ==
+				real_settings[i].session2_expected;
+		}
+		Geqo_planner_extension_id = 23;
+		ok = ok && Geqo_planner_extension_id == 23;
+
+		PgSetCurrentSession(&fake_session1);
+		for (i = 0; i < lengthof(bool_settings); i++)
+			ok = ok && *bool_settings[i].ref() ==
+				bool_settings[i].session1_expected;
+		for (i = 0; i < lengthof(int_settings); i++)
+			ok = ok && *int_settings[i].ref() ==
+				int_settings[i].session1_expected;
+		for (i = 0; i < lengthof(real_settings); i++)
+			ok = ok && *real_settings[i].ref() ==
+				real_settings[i].session1_expected;
+		ok = ok && Geqo_planner_extension_id == 17;
+
+		PgSetCurrentSession(saved_session);
+		for (i = 0; i < lengthof(bool_settings); i++)
+			SetConfigOption(bool_settings[i].name, saved_bool_values[i],
+							PGC_USERSET, PGC_S_SESSION);
+		for (i = 0; i < lengthof(int_settings); i++)
+			SetConfigOption(int_settings[i].name, saved_int_values[i],
+							PGC_USERSET, PGC_S_SESSION);
+		for (i = 0; i < lengthof(real_settings); i++)
+			SetConfigOption(real_settings[i].name, saved_real_values[i],
+							PGC_USERSET, PGC_S_SESSION);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		for (i = 0; i < lengthof(bool_settings); i++)
+			SetConfigOption(bool_settings[i].name, saved_bool_values[i],
+							PGC_USERSET, PGC_S_SESSION);
+		for (i = 0; i < lengthof(int_settings); i++)
+			SetConfigOption(int_settings[i].name, saved_int_values[i],
+							PGC_USERSET, PGC_S_SESSION);
+		for (i = 0; i < lengthof(real_settings); i++)
+			SetConfigOption(real_settings[i].name, saved_real_values[i],
+							PGC_USERSET, PGC_S_SESSION);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session planner method GUC state was not session-local");
 
 	PG_RETURN_BOOL(true);
 }

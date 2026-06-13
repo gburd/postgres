@@ -50,32 +50,55 @@ typedef enum
 /* parameter variables and flags (see also optimizer.h) */
 extern Cost *PgCurrentDisableCostRef(void);
 extern int *PgCurrentMaxParallelWorkersPerGatherRef(void);
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_seqscan;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_indexscan;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_indexonlyscan;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_bitmapscan;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_tidscan;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_sort;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_incremental_sort;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_hashagg;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_nestloop;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_material;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_memoize;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_mergejoin;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_hashjoin;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_gathermerge;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_partitionwise_join;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_partitionwise_aggregate;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_parallel_append;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_parallel_hash;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_partition_pruning;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_presorted_aggregate;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_async_append;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int constraint_exclusion;
+extern bool *PgCurrentEnableSeqscanRef(void);
+extern bool *PgCurrentEnableIndexscanRef(void);
+extern bool *PgCurrentEnableIndexonlyscanRef(void);
+extern bool *PgCurrentEnableBitmapscanRef(void);
+extern bool *PgCurrentEnableTidscanRef(void);
+extern bool *PgCurrentEnableSortRef(void);
+extern bool *PgCurrentEnableIncrementalSortRef(void);
+extern bool *PgCurrentEnableHashaggRef(void);
+extern bool *PgCurrentEnableNestloopRef(void);
+extern bool *PgCurrentEnableMaterialRef(void);
+extern bool *PgCurrentEnableMemoizeRef(void);
+extern bool *PgCurrentEnableMergejoinRef(void);
+extern bool *PgCurrentEnableHashjoinRef(void);
+extern bool *PgCurrentEnableGathermergeRef(void);
+extern bool *PgCurrentEnablePartitionwiseJoinRef(void);
+extern bool *PgCurrentEnablePartitionwiseAggregateRef(void);
+extern bool *PgCurrentEnableParallelAppendRef(void);
+extern bool *PgCurrentEnableParallelHashRef(void);
+extern bool *PgCurrentEnablePartitionPruningRef(void);
+extern bool *PgCurrentEnablePresortedAggregateRef(void);
+extern bool *PgCurrentEnableAsyncAppendRef(void);
+extern int *PgCurrentConstraintExclusionRef(void);
 
 #define disable_cost (*PgCurrentDisableCostRef())
 #define max_parallel_workers_per_gather \
 	(*PgCurrentMaxParallelWorkersPerGatherRef())
+#define enable_seqscan (*PgCurrentEnableSeqscanRef())
+#define enable_indexscan (*PgCurrentEnableIndexscanRef())
+#define enable_indexonlyscan (*PgCurrentEnableIndexonlyscanRef())
+#define enable_bitmapscan (*PgCurrentEnableBitmapscanRef())
+#define enable_tidscan (*PgCurrentEnableTidscanRef())
+#define enable_sort (*PgCurrentEnableSortRef())
+#define enable_incremental_sort (*PgCurrentEnableIncrementalSortRef())
+#define enable_hashagg (*PgCurrentEnableHashaggRef())
+#define enable_nestloop (*PgCurrentEnableNestloopRef())
+#define enable_material (*PgCurrentEnableMaterialRef())
+#define enable_memoize (*PgCurrentEnableMemoizeRef())
+#define enable_mergejoin (*PgCurrentEnableMergejoinRef())
+#define enable_hashjoin (*PgCurrentEnableHashjoinRef())
+#define enable_gathermerge (*PgCurrentEnableGathermergeRef())
+#define enable_partitionwise_join (*PgCurrentEnablePartitionwiseJoinRef())
+#define enable_partitionwise_aggregate \
+	(*PgCurrentEnablePartitionwiseAggregateRef())
+#define enable_parallel_append (*PgCurrentEnableParallelAppendRef())
+#define enable_parallel_hash (*PgCurrentEnableParallelHashRef())
+#define enable_partition_pruning (*PgCurrentEnablePartitionPruningRef())
+#define enable_presorted_aggregate (*PgCurrentEnablePresortedAggregateRef())
+#define enable_async_append (*PgCurrentEnableAsyncAppendRef())
+#define constraint_exclusion (*PgCurrentConstraintExclusionRef())
 
 extern double index_pages_fetched(double tuples_fetched, BlockNumber pages,
 								  double index_pages, PlannerInfo *root);

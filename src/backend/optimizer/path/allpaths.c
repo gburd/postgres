@@ -77,15 +77,6 @@ typedef enum pushdown_safe_type
 									 * run condition */
 } pushdown_safe_type;
 
-/* These parameters are set by GUC */
-/* Keep a safe default before GUC initializes enable_geqo. */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_geqo = false;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_eager_aggregate = true;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int geqo_threshold;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION double min_eager_agg_group_size;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int min_parallel_table_scan_size;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int min_parallel_index_scan_size;
-
 /* Hook for plugins to get control in set_rel_pathlist() */
 PG_GLOBAL_RUNTIME set_rel_pathlist_hook_type set_rel_pathlist_hook = NULL;
 

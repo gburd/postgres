@@ -128,28 +128,6 @@
  */
 #define MAXIMUM_ROWCOUNT 1e100
 
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_seqscan = true;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_indexscan = true;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_indexonlyscan = true;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_bitmapscan = true;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_tidscan = true;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_sort = true;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_incremental_sort = true;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_hashagg = true;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_nestloop = true;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_material = true;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_memoize = true;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_mergejoin = true;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_hashjoin = true;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_gathermerge = true;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_partitionwise_join = false;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_partitionwise_aggregate = false;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_parallel_append = true;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_parallel_hash = true;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_partition_pruning = true;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_presorted_aggregate = true;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_async_append = true;
-
 typedef struct
 {
 	PlannerInfo *root;

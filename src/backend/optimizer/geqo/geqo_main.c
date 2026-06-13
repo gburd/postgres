@@ -39,18 +39,6 @@
 #include "optimizer/geqo_selection.h"
 
 
-/*
- * Configuration options
- */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int Geqo_effort;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int Geqo_pool_size;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int Geqo_generations;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION double Geqo_selection_bias;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION double Geqo_seed;
-
-/* GEQO is treated as an in-core planner extension */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int Geqo_planner_extension_id = -1;
-
 static int	gimme_pool_size(int nr_rel);
 static int	gimme_number_generations(int pool_size);
 

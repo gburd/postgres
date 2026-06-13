@@ -37,11 +37,6 @@
 #include "utils/rel.h"
 #include "utils/typcache.h"
 
-/* These parameters are set by GUC */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int from_collapse_limit;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int join_collapse_limit;
-
-
 /*
  * deconstruct_jointree requires multiple passes over the join tree, because we
  * need to finish computing JoinDomains before we start distributing quals.

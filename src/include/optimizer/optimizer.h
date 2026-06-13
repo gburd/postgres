@@ -112,11 +112,13 @@ typedef enum
 /* GUC parameters */
 extern int *PgCurrentDebugParallelQueryRef(void);
 extern bool *PgCurrentParallelLeaderParticipationRef(void);
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_distinct_reordering;
+extern bool *PgCurrentEnableDistinctReorderingRef(void);
 
 #define debug_parallel_query (*PgCurrentDebugParallelQueryRef())
 #define parallel_leader_participation \
 	(*PgCurrentParallelLeaderParticipationRef())
+#define enable_distinct_reordering \
+	(*PgCurrentEnableDistinctReorderingRef())
 
 extern PlannedStmt *planner(Query *parse, const char *query_string,
 							int cursorOptions,

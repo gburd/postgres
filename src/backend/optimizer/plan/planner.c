@@ -65,8 +65,6 @@
 #include "utils/selfuncs.h"
 
 /* GUC parameters */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION double cursor_tuple_fraction = DEFAULT_CURSOR_TUPLE_FRACTION;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool enable_distinct_reordering = true;
 
 /* Hook for plugins to get control in planner() */
 PG_GLOBAL_RUNTIME planner_hook_type planner_hook = NULL;

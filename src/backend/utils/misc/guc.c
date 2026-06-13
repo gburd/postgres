@@ -40,7 +40,10 @@
 #include "libpq/protocol.h"
 #include "miscadmin.h"
 #include "optimizer/cost.h"
+#include "optimizer/geqo.h"
 #include "optimizer/optimizer.h"
+#include "optimizer/paths.h"
+#include "optimizer/planmain.h"
 #include "parser/scansup.h"
 #include "port/pg_bitutils.h"
 #include "storage/fd.h"
@@ -1610,6 +1613,14 @@ RebindSessionGUCVariablePointers(void)
 	Assert(gconf->vartype == PGC_REAL);
 	gconf->_real.variable = PgCurrentCpuTupleCostRef();
 
+	gconf = find_option("constraint_exclusion", false, false, PANIC);
+	Assert(gconf->vartype == PGC_ENUM);
+	gconf->_enum.variable = PgCurrentConstraintExclusionRef();
+
+	gconf = find_option("cursor_tuple_fraction", false, false, PANIC);
+	Assert(gconf->vartype == PGC_REAL);
+	gconf->_real.variable = PgCurrentCursorTupleFractionRef();
+
 	gconf = find_option("debug_parallel_query", false, false, PANIC);
 	Assert(gconf->vartype == PGC_ENUM);
 	gconf->_enum.variable = PgCurrentDebugParallelQueryRef();
@@ -1618,10 +1629,162 @@ RebindSessionGUCVariablePointers(void)
 	Assert(gconf->vartype == PGC_INT);
 	gconf->_int.variable = PgCurrentEffectiveCacheSizeRef();
 
+	gconf = find_option("enable_async_append", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentEnableAsyncAppendRef();
+
+	gconf = find_option("enable_bitmapscan", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentEnableBitmapscanRef();
+
+	gconf = find_option("enable_distinct_reordering", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentEnableDistinctReorderingRef();
+
+	gconf = find_option("enable_eager_aggregate", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentEnableEagerAggregateRef();
+
+	gconf = find_option("enable_gathermerge", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentEnableGathermergeRef();
+
+	gconf = find_option("enable_group_by_reordering", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentEnableGroupByReorderingRef();
+
+	gconf = find_option("enable_hashagg", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentEnableHashaggRef();
+
+	gconf = find_option("enable_hashjoin", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentEnableHashjoinRef();
+
+	gconf = find_option("enable_incremental_sort", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentEnableIncrementalSortRef();
+
+	gconf = find_option("enable_indexonlyscan", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentEnableIndexonlyscanRef();
+
+	gconf = find_option("enable_indexscan", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentEnableIndexscanRef();
+
+	gconf = find_option("enable_material", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentEnableMaterialRef();
+
+	gconf = find_option("enable_memoize", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentEnableMemoizeRef();
+
+	gconf = find_option("enable_mergejoin", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentEnableMergejoinRef();
+
+	gconf = find_option("enable_nestloop", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentEnableNestloopRef();
+
+	gconf = find_option("enable_parallel_append", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentEnableParallelAppendRef();
+
+	gconf = find_option("enable_parallel_hash", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentEnableParallelHashRef();
+
+	gconf = find_option("enable_partition_pruning", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentEnablePartitionPruningRef();
+
+	gconf = find_option("enable_partitionwise_aggregate", false, false,
+						PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentEnablePartitionwiseAggregateRef();
+
+	gconf = find_option("enable_partitionwise_join", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentEnablePartitionwiseJoinRef();
+
+	gconf = find_option("enable_presorted_aggregate", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentEnablePresortedAggregateRef();
+
+	gconf = find_option("enable_self_join_elimination", false, false,
+						PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentEnableSelfJoinEliminationRef();
+
+	gconf = find_option("enable_seqscan", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentEnableSeqscanRef();
+
+	gconf = find_option("enable_sort", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentEnableSortRef();
+
+	gconf = find_option("enable_tidscan", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentEnableTidscanRef();
+
+	gconf = find_option("geqo", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentEnableGeqoRef();
+
+	gconf = find_option("geqo_effort", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentGeqoEffortRef();
+
+	gconf = find_option("geqo_generations", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentGeqoGenerationsRef();
+
+	gconf = find_option("geqo_pool_size", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentGeqoPoolSizeRef();
+
+	gconf = find_option("geqo_seed", false, false, PANIC);
+	Assert(gconf->vartype == PGC_REAL);
+	gconf->_real.variable = PgCurrentGeqoSeedRef();
+
+	gconf = find_option("geqo_selection_bias", false, false, PANIC);
+	Assert(gconf->vartype == PGC_REAL);
+	gconf->_real.variable = PgCurrentGeqoSelectionBiasRef();
+
+	gconf = find_option("geqo_threshold", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentGeqoThresholdRef();
+
+	gconf = find_option("from_collapse_limit", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentFromCollapseLimitRef();
+
+	gconf = find_option("join_collapse_limit", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentJoinCollapseLimitRef();
+
 	gconf = find_option("max_parallel_workers_per_gather", false, false,
 						PANIC);
 	Assert(gconf->vartype == PGC_INT);
 	gconf->_int.variable = PgCurrentMaxParallelWorkersPerGatherRef();
+
+	gconf = find_option("min_eager_agg_group_size", false, false, PANIC);
+	Assert(gconf->vartype == PGC_REAL);
+	gconf->_real.variable = PgCurrentMinEagerAggGroupSizeRef();
+
+	gconf = find_option("min_parallel_index_scan_size", false, false,
+						PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentMinParallelIndexScanSizeRef();
+
+	gconf = find_option("min_parallel_table_scan_size", false, false,
+						PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentMinParallelTableScanSizeRef();
 
 	gconf = find_option("parallel_leader_participation", false, false,
 						PANIC);

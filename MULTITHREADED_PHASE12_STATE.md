@@ -946,8 +946,8 @@ bucket under `PgSession`:
 
 `disable_cost` is part of the same planner-cost state bucket but is not a GUC,
 so it does not have a generated GUC record to rebind. The broad family of
-planner `enable_*` switches remains a separate future slice; they are numerous
-enough that moving them separately keeps validation readable.
+planner `enable_*` switches was intentionally left for the separate planner
+method slice below so validation stayed readable.
 
 One additional macro-collision hazard was found and handled. The tablespace
 reloptions struct had fields named `seq_page_cost` and `random_page_cost`,
@@ -982,3 +982,84 @@ Validation for this slice:
   state;
 - clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
   optimizer header migration.
+
+## Session Planner Method Direct GUC Pointer Bridge
+
+The twenty-first Phase 12 slice moves the remaining optimizer-session planner
+method and planner-tuning direct-pointer state under `PgSession`:
+
+- `PgSession` now owns a `PgSessionPlannerMethodState`;
+- the planner method switches `enable_seqscan`, `enable_indexscan`,
+  `enable_indexonlyscan`, `enable_bitmapscan`, `enable_tidscan`,
+  `enable_sort`, `enable_incremental_sort`, `enable_hashagg`,
+  `enable_nestloop`, `enable_material`, `enable_memoize`,
+  `enable_mergejoin`, `enable_hashjoin`, `enable_gathermerge`,
+  `enable_partitionwise_join`, `enable_partitionwise_aggregate`,
+  `enable_parallel_append`, `enable_parallel_hash`,
+  `enable_partition_pruning`, `enable_presorted_aggregate`,
+  `enable_async_append`, `enable_distinct_reordering`, `enable_geqo`,
+  `enable_eager_aggregate`, `enable_group_by_reordering`, and
+  `enable_self_join_elimination` remain source-compatible lvalue macros in
+  the optimizer headers;
+- planner scalar tuning state `cursor_tuple_fraction`,
+  `constraint_exclusion`, `geqo_threshold`, `Geqo_effort`,
+  `Geqo_pool_size`, `Geqo_generations`, `Geqo_selection_bias`,
+  `Geqo_seed`, `min_eager_agg_group_size`,
+  `min_parallel_table_scan_size`, `min_parallel_index_scan_size`,
+  `from_collapse_limit`, and `join_collapse_limit` also routes through the
+  current session;
+- the non-GUC cached GEQO planner extension id
+  `Geqo_planner_extension_id` moves with the same state bucket so the
+  optimizer session TLS baseline is not left with a single GEQO outlier;
+- zeroed logical session objects lazily initialize these fields to the
+  historical GUC boot defaults, including the disabled defaults for
+  partitionwise join and partitionwise aggregate and `-1` for
+  `Geqo_planner_extension_id`;
+- early startup paths before `CurrentPgSession` is installed use fallback
+  storage in `backend_runtime.c`;
+- process-mode and thread-runtime session installation adopt any early
+  fallback planner-method state into the logical session object;
+- `RebindSessionGUCVariablePointers()` now refreshes the generated GUC
+  records for every GUC-backed member of this bucket when the current session
+  changes.
+
+This completes the direct optimizer-session TLS migration: a static scan over
+`src/backend/optimizer` and `src/include/optimizer` now finds no remaining
+`PG_THREAD_LOCAL PG_GLOBAL_SESSION` definitions or declarations. It does not
+complete all planner-adjacent GUC migration; non-optimizer modules still own
+other session GUC globals, and the broader GUC stack/source/reset state
+remains process-global for now.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `guc.o`,
+  `costsize.o`, `allpaths.o`, `pathkeys.o`, `planner.o`,
+  `analyzejoins.o`, `initsplan.o`, `plancat.o`, `geqo_main.o`, and
+  `test_backend_runtime.o`;
+- because exported optimizer headers changed direct globals into
+  compatibility macros, `gmake -C src/backend clean` plus generated-header
+  recovery was used before the clean rebuild;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed, followed by rebuilding
+  and reinstalling `src/test/modules/test_backend_runtime`, PL/pgSQL,
+  `src/test/regress`, `libpqwalreceiver`, and `src/backend/snowball`;
+- focused `test_backend_runtime` regression passed and includes
+  `test_session_planner_method_state_is_session_local()`, which switches
+  sessions through `PgSetCurrentSession()`, sets every GUC-backed member of
+  this bucket through the GUC machinery, sets `Geqo_planner_extension_id`
+  directly, and proves the lvalues follow the active session after GUC pointer
+  rebinding;
+- direct threaded-runtime TAP coverage passed for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`
+  with `PERL5LIB` including both `src/test/perl` and the local `IPC::Run`
+  install path;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests, covering plan-shape-sensitive regressions after moving planner method
+  and tuning state;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  optimizer header migration;
+- `git diff --check` passed;
+- static scans found no remaining optimizer-session TLS definitions and no
+  migrated planner-method member-name macro collisions outside the intended
+  `_value` fields in `backend_runtime.c`.
