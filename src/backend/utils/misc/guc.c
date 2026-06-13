@@ -1578,6 +1578,12 @@ InitializeThreadedSessionGUCOptions(void)
 
 	gconf = find_option("compute_query_id", false, false, PANIC);
 	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("file_copy_method", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
+
+	gconf = find_option("ignore_checksum_failure", false, false, PANIC);
+	InitializeOneGUCOption(gconf);
 }
 
 /*
@@ -1617,6 +1623,10 @@ RebindSessionGUCVariablePointers(void)
 	gconf = find_option("compute_query_id", false, false, PANIC);
 	Assert(gconf->vartype == PGC_ENUM);
 	gconf->_enum.variable = PgCurrentComputeQueryIdRef();
+
+	gconf = find_option("file_copy_method", false, false, PANIC);
+	Assert(gconf->vartype == PGC_ENUM);
+	gconf->_enum.variable = PgCurrentFileCopyMethodRef();
 
 	gconf = find_option("deadlock_timeout", false, false, PANIC);
 	Assert(gconf->vartype == PGC_INT);
@@ -1691,6 +1701,10 @@ RebindSessionGUCVariablePointers(void)
 	gconf = find_option("idle_session_timeout", false, false, PANIC);
 	Assert(gconf->vartype == PGC_INT);
 	gconf->_int.variable = PgCurrentIdleSessionTimeoutRef();
+
+	gconf = find_option("ignore_checksum_failure", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentIgnoreChecksumFailureRef();
 
 	gconf = find_option("allow_in_place_tablespaces", false, false, PANIC);
 	Assert(gconf->vartype == PGC_BOOL);

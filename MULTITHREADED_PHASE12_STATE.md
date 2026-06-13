@@ -1715,3 +1715,60 @@ Validation for this slice:
 - `git diff --check` passed;
 - static scans found no remaining direct session TLS definitions or extern
   declarations for the moved query-ID names.
+
+## Session Storage GUC State Bridge
+
+The thirty-third Phase 12 slice moves storage direct-pointer GUC state under
+`PgSession`:
+
+- `PgSession` now owns a `PgSessionStorageGUCState`;
+- `PgSessionStorageGUCState` owns the `ignore_checksum_failure` direct-pointer
+  GUC backing variable and the `file_copy_method` direct-pointer GUC backing
+  variable;
+- the public names remain source-compatible lvalue macros in
+  `storage/bufpage.h` and `storage/copydir.h`;
+- early startup paths before `CurrentPgSession` is installed use fallback
+  session-local storage in `backend_runtime.c`;
+- process-mode and thread-runtime session installation adopt any early
+  fallback storage GUC state into the logical session object;
+- `RebindSessionGUCVariablePointers()` now rebinds the generated GUC records
+  for `ignore_checksum_failure` and `file_copy_method` whenever the active
+  logical session changes.
+
+The backend runtime regression test uses a direct
+`FILE_COPY_METHOD_CLONE` assignment for the alternate session value because
+the `clone` spelling for the `file_copy_method` GUC option is platform
+conditional. The public compatibility name is still exercised as an lvalue,
+and the `copy` GUC path is exercised through the normal GUC machinery.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `bufpage.o`,
+  `copydir.o`, `guc.o`, `test_backend_runtime.o`, `bufmgr.o`, and
+  `storage.o`;
+- because exported storage globals changed into compatibility macros,
+  `gmake -C src/backend clean` plus generated utility and node-header
+  recovery was used before the clean rebuild;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed, followed by rebuilding
+  and reinstalling `src/test/modules/test_backend_runtime`,
+  `src/test/regress`, `libpqwalreceiver`, and `src/backend/snowball`;
+- focused `test_backend_runtime` regression passed and includes
+  `test_session_storage_guc_state_is_session_local()`, which switches
+  sessions through `PgSetCurrentSession()`, changes
+  `ignore_checksum_failure` through the GUC machinery, changes
+  `file_copy_method` through both the public lvalue compatibility name and the
+  GUC machinery, and proves both values follow the active session after GUC
+  pointer rebinding;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- direct threaded-runtime TAP coverage was attempted for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`,
+  but this system Perl is missing `IPC::Run`, so both tests failed before
+  starting PostgreSQL;
+- `git diff --check` passed;
+- static scans found no remaining direct session TLS definitions or extern
+  declarations for the moved storage GUC names.

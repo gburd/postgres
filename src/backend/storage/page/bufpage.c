@@ -22,11 +22,6 @@
 #include "utils/memdebug.h"
 #include "utils/memutils.h"
 
-
-/* GUC variable */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool ignore_checksum_failure = false;
-
-
 /* ----------------------------------------------------------------
  *						Page support functions
  * ----------------------------------------------------------------

@@ -33,7 +33,9 @@
 #include "postmaster/postmaster.h"
 #include "port/atomics.h"
 #include "port/pg_thread.h"
+#include "storage/bufpage.h"
 #include "storage/bufmgr.h"
+#include "storage/copydir.h"
 #include "storage/dsm.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
@@ -2366,6 +2368,80 @@ test_session_query_id_state_is_session_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "session query ID state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_session_storage_guc_state_is_session_local);
+Datum
+test_session_storage_guc_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	char	   *saved_ignore_checksum_failure;
+	char	   *saved_file_copy_method;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	saved_ignore_checksum_failure =
+		pstrdup(GetConfigOption("ignore_checksum_failure", false, false));
+	saved_file_copy_method =
+		pstrdup(GetConfigOption("file_copy_method", false, false));
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && !ignore_checksum_failure;
+		ok = ok && file_copy_method == FILE_COPY_METHOD_COPY;
+
+		SetConfigOption("ignore_checksum_failure", "on",
+						PGC_SUSET, PGC_S_SESSION);
+		file_copy_method = FILE_COPY_METHOD_CLONE;
+		ok = ok && ignore_checksum_failure;
+		ok = ok && file_copy_method == FILE_COPY_METHOD_CLONE;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && !ignore_checksum_failure;
+		ok = ok && file_copy_method == FILE_COPY_METHOD_COPY;
+		SetConfigOption("ignore_checksum_failure", "off",
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("file_copy_method", "copy",
+						PGC_USERSET, PGC_S_SESSION);
+		ok = ok && !ignore_checksum_failure;
+		ok = ok && file_copy_method == FILE_COPY_METHOD_COPY;
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && ignore_checksum_failure;
+		ok = ok && file_copy_method == FILE_COPY_METHOD_CLONE;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && !ignore_checksum_failure;
+		ok = ok && file_copy_method == FILE_COPY_METHOD_COPY;
+
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("ignore_checksum_failure",
+						saved_ignore_checksum_failure,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("file_copy_method", saved_file_copy_method,
+						PGC_USERSET, PGC_S_SESSION);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		SetConfigOption("ignore_checksum_failure",
+						saved_ignore_checksum_failure,
+						PGC_SUSET, PGC_S_SESSION);
+		SetConfigOption("file_copy_method", saved_file_copy_method,
+						PGC_USERSET, PGC_S_SESSION);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session storage GUC state was not session-local");
 
 	PG_RETURN_BOOL(true);
 }

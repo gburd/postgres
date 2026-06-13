@@ -17,10 +17,10 @@
 #include "access/xlogdefs.h"
 #include "storage/block.h"
 #include "storage/off.h"
-#include "utils/global_lifetime.h"
-
 /* GUC variable */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool ignore_checksum_failure;
+extern bool *PgCurrentIgnoreChecksumFailureRef(void);
+
+#define ignore_checksum_failure (*PgCurrentIgnoreChecksumFailureRef())
 
 /*
  * A postgres disk page is an abstraction layered on top of a postgres
