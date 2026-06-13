@@ -4982,7 +4982,8 @@ temporary startup serialization gate:
 This is not the full Gate E2 startup-gate closure. It removes serialization
 from explicitly thread-compatible dynamic background workers with a concrete
 postmaster startup-publication boundary, while regular client backend startup
-and slot sync remain gated.
+and slot sync remained gated until the next worker-specific slot-sync
+narrowing.
 
 Validation for this slice:
 
@@ -5005,3 +5006,45 @@ Validation for this slice:
   globals;
 - direct full-module `pg_regress test_backend_runtime` passed all 1 test
   against the current temp install.
+
+## Threaded Startup Gate Slot Sync Worker Narrowing
+
+The one-hundred-fourth Phase 12 slice removes the slot sync worker from the
+temporary threaded startup serialization gate:
+
+- `backend_thread_requires_startup_gate()` now allows `B_SLOTSYNC_WORKER`
+  carriers to bypass the global startup mutex;
+- the slot sync worker already reaches `ThreadedBackendStartupComplete()` only
+  after `InitPostgres()` connects it to the local database and before it
+  connects to the primary, giving the postmaster the same explicit startup
+  publication boundary used by other thread-backed workers;
+- slot sync wake/stop paths already use `SlotSyncCtx` procno/threaded state
+  and latch wakeups for promotion rather than process-signal-only routing;
+- this removes startup serialization from slot-sync startup while retaining the
+  gate for regular client backend startup.
+
+This is not the full Gate E2 startup-gate closure. It removes serialization
+from a worker-specific path with an identified startup-complete boundary and a
+real threaded physical standby validation. Regular client backend startup
+remains gated until its remaining shared-state startup dependencies are
+isolated and covered by concurrent catalog-startup stress.
+
+Validation for this slice:
+
+- touched-object build for `src/backend/postmaster/launch_backend.o` passed;
+- full `gmake -j8` passed before the documentation update;
+- `gmake -j8 DESTDIR="$PWD/tmp_install" install` passed before the
+  documentation update;
+- a manual threaded primary/standby slot-sync smoke created a primary with
+  physical and failover logical replication slots, started a physical standby
+  with `multithreaded = on`, `dynamic_shared_memory_type = posix`,
+  `hot_standby_feedback = on`, and `sync_replication_slots = on`, observed
+  `starting slotsync worker thread carrier` and `slot sync worker started` in
+  the standby log, waited until the standby reported the failover logical slot
+  as synced, verified standby catalog usability with a `pg_class` query, and
+  stopped both clusters cleanly;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- direct full-module `pg_regress test_backend_runtime` passed all 1 test
+  against the current temp install;
+- `git diff --check` passed.

@@ -547,7 +547,9 @@ backend_thread_run_worker(BackendThreadStart *thread_start)
 	 * progress.  The autovacuum launcher performs backend initialization
 	 * before entering its no-database launcher loop, while autovacuum workers
 	 * publish their worker slot before connecting to the selected database and
-	 * running table work.  The startup process,
+	 * running table work.  The slot sync worker publishes startup completion
+	 * after connecting to the local database and before connecting to the
+	 * primary.  The startup process,
 	 * archiver, WAL receiver, and WAL summarizer follow the auxiliary-process
 	 * common startup path, publish their wakeup/progress state in shared
 	 * memory, and keep their per-loop work state backend-local, so they can
@@ -570,7 +572,6 @@ backend_thread_requires_startup_gate(BackendType child_type)
 	switch (child_type)
 	{
 		case B_BACKEND:
-		case B_SLOTSYNC_WORKER:
 			return true;
 
 		case B_ARCHIVER:
@@ -580,6 +581,7 @@ backend_thread_requires_startup_gate(BackendType child_type)
 		case B_CHECKPOINTER:
 		case B_IO_WORKER:
 		case B_LOGGER:
+		case B_SLOTSYNC_WORKER:
 		case B_STARTUP:
 		case B_WAL_RECEIVER:
 		case B_WAL_SUMMARIZER:

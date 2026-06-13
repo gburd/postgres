@@ -148,9 +148,9 @@ Important current files:
   waiting for SIGKILL escalation.
 - The threaded startup serialization gate currently allows only AIO workers,
   the syslogger, startup process, autovacuum launcher/workers, thread-compatible
-  background workers, archiver, WAL receiver, WAL summarizer, background
-  writer, checkpointer, and WAL writer to bypass it. Process-model background
-  workers are still rejected in threaded mode. Thread-compatible dynamic
+  background workers, archiver, WAL receiver, WAL summarizer, slot sync worker,
+  background writer, checkpointer, and WAL writer to bypass it. Process-model
+  background workers are still rejected in threaded mode. Thread-compatible dynamic
   background workers publish their shared bgworker started state only after the
   worker reaches `ThreadedBackendStartupComplete()`, so dynamic waiters cannot
   terminate the worker while `InitProcess()`, `BaseInit()`, or background
@@ -167,12 +167,14 @@ Important current files:
   `AuxiliaryProcessMainCommon()`; the later `libpqwalreceiver` load and
   streaming loop are validated by a threaded physical-replication smoke.
   Startup process bypass is validated by threaded normal-startup and
-  crash-recovery smokes. A broader attempt to bypass the gate for additional
-  non-session auxiliary workers let `select 1` pass but caused abrupt
-  postmaster death during a threaded `select count(*) > 0 from pg_class`
-  catalog smoke. Do not remove slot sync or other worker classes from the gate
-  without a worker-specific shared-state fix and catalog-startup stress
-  validation.
+  crash-recovery smokes. Slot sync worker bypass is validated by a threaded
+  physical standby smoke that synchronizes a failover logical slot from a
+  primary and verifies standby catalog usability. A broader attempt to bypass
+  the gate for additional non-session auxiliary workers let `select 1` pass but
+  caused abrupt postmaster death during a threaded
+  `select count(*) > 0 from pg_class` catalog smoke. Do not remove regular
+  client backend startup from the gate without a backend-specific shared-state
+  fix and catalog-startup stress validation.
 - Prefer introducing compatibility wrappers around current globals before
   changing all call sites.
 - Be careful moving GUC backing variables behind dynamic lvalue macros. The
@@ -701,6 +703,14 @@ Important current files:
   for `logical replication parallel apply worker for subscription`, the final
   replicated row/default counts, and a postmaster child-process check as the
   primary smoke evidence.
+
+- Manual threaded slot-sync smokes that use `pg_basebackup -R` should write
+  the final `primary_conninfo` containing `dbname=postgres` into
+  `postgresql.auto.conf`, not only `postgresql.conf`. The `-R` generated
+  `primary_conninfo` in `postgresql.auto.conf` otherwise overrides the later
+  config-file value and makes the slot sync worker restart with
+  `replication slot synchronization requires "dbname" to be specified in
+  "primary_conninfo"` before testing the intended threaded path.
 
 - Threaded checkpointer/background-writer smokes should wait for the
   post-startup handoff. In threaded mode those workers intentionally start as
