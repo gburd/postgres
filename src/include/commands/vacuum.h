@@ -324,15 +324,28 @@ typedef struct PVWorkerUsage
 
 /* GUC parameters */
 /* Exported for PostGIS. */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int default_statistics_target;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int vacuum_freeze_min_age;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int vacuum_freeze_table_age;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int vacuum_multixact_freeze_min_age;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int vacuum_multixact_freeze_table_age;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int vacuum_failsafe_age;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int vacuum_multixact_failsafe_age;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool track_cost_delay_timing;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool vacuum_truncate;
+extern int *PgCurrentDefaultStatisticsTargetRef(void);
+extern int *PgCurrentVacuumFreezeMinAgeRef(void);
+extern int *PgCurrentVacuumFreezeTableAgeRef(void);
+extern int *PgCurrentVacuumMultixactFreezeMinAgeRef(void);
+extern int *PgCurrentVacuumMultixactFreezeTableAgeRef(void);
+extern int *PgCurrentVacuumFailsafeAgeRef(void);
+extern int *PgCurrentVacuumMultixactFailsafeAgeRef(void);
+extern bool *PgCurrentTrackCostDelayTimingRef(void);
+extern bool *PgCurrentVacuumTruncateRef(void);
+
+#define default_statistics_target (*PgCurrentDefaultStatisticsTargetRef())
+#define vacuum_freeze_min_age (*PgCurrentVacuumFreezeMinAgeRef())
+#define vacuum_freeze_table_age (*PgCurrentVacuumFreezeTableAgeRef())
+#define vacuum_multixact_freeze_min_age \
+	(*PgCurrentVacuumMultixactFreezeMinAgeRef())
+#define vacuum_multixact_freeze_table_age \
+	(*PgCurrentVacuumMultixactFreezeTableAgeRef())
+#define vacuum_failsafe_age (*PgCurrentVacuumFailsafeAgeRef())
+#define vacuum_multixact_failsafe_age \
+	(*PgCurrentVacuumMultixactFailsafeAgeRef())
+#define track_cost_delay_timing (*PgCurrentTrackCostDelayTimingRef())
+#define vacuum_truncate (*PgCurrentVacuumTruncateRef())
 
 /*
  * Relevant for vacuums implementing eager scanning. Normal vacuums may
@@ -342,7 +355,10 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool vacuum_truncate;
  * fraction of pages in the relation vacuum may scan and fail to freeze
  * before disabling eager scanning.
  */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double vacuum_max_eager_freeze_failure_rate;
+extern double *PgCurrentVacuumMaxEagerFreezeFailureRateRef(void);
+
+#define vacuum_max_eager_freeze_failure_rate \
+	(*PgCurrentVacuumMaxEagerFreezeFailureRateRef())
 
 /*
  * Maximum value for default_statistics_target and per-column statistics
@@ -357,8 +373,11 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION pg_atomic_uint32 *VacuumA
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int VacuumCostBalanceLocal;
 
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool VacuumFailsafeActive;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double vacuum_cost_delay;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int vacuum_cost_limit;
+extern double *PgCurrentLocalVacuumCostDelayRef(void);
+extern int *PgCurrentLocalVacuumCostLimitRef(void);
+
+#define vacuum_cost_delay (*PgCurrentLocalVacuumCostDelayRef())
+#define vacuum_cost_limit (*PgCurrentLocalVacuumCostLimitRef())
 
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int64 parallel_vacuum_worker_delay_ns;
 

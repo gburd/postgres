@@ -1988,8 +1988,8 @@ default_reloptions(Datum reloptions, bool validate, relopt_kind kind)
 		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, vacuum_ins_threshold)},
 		{"autovacuum_analyze_threshold", RELOPT_TYPE_INT,
 		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, analyze_threshold)},
-		{"autovacuum_vacuum_cost_limit", RELOPT_TYPE_INT,
-		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, vacuum_cost_limit)},
+	{"autovacuum_vacuum_cost_limit", RELOPT_TYPE_INT,
+	offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, relopt_vacuum_cost_limit)},
 		{"autovacuum_freeze_min_age", RELOPT_TYPE_INT,
 		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, freeze_min_age)},
 		{"autovacuum_freeze_max_age", RELOPT_TYPE_INT,
@@ -2008,8 +2008,8 @@ default_reloptions(Datum reloptions, bool validate, relopt_kind kind)
 		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, log_analyze_min_duration)},
 		{"toast_tuple_target", RELOPT_TYPE_INT,
 		offsetof(StdRdOptions, toast_tuple_target)},
-		{"autovacuum_vacuum_cost_delay", RELOPT_TYPE_REAL,
-		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, vacuum_cost_delay)},
+	{"autovacuum_vacuum_cost_delay", RELOPT_TYPE_REAL,
+	offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, relopt_vacuum_cost_delay)},
 		{"autovacuum_vacuum_scale_factor", RELOPT_TYPE_REAL,
 		offsetof(StdRdOptions, autovacuum) + offsetof(AutoVacOpts, vacuum_scale_factor)},
 		{"autovacuum_vacuum_insert_scale_factor", RELOPT_TYPE_REAL,
@@ -2022,10 +2022,10 @@ default_reloptions(Datum reloptions, bool validate, relopt_kind kind)
 		offsetof(StdRdOptions, parallel_workers)},
 		{"vacuum_index_cleanup", RELOPT_TYPE_ENUM,
 		offsetof(StdRdOptions, vacuum_index_cleanup)},
-		{"vacuum_truncate", RELOPT_TYPE_TERNARY,
-		offsetof(StdRdOptions, vacuum_truncate)},
-		{"vacuum_max_eager_freeze_failure_rate", RELOPT_TYPE_REAL,
-		offsetof(StdRdOptions, vacuum_max_eager_freeze_failure_rate)}
+	{"vacuum_truncate", RELOPT_TYPE_TERNARY,
+	offsetof(StdRdOptions, relopt_vacuum_truncate)},
+	{"vacuum_max_eager_freeze_failure_rate", RELOPT_TYPE_REAL,
+	offsetof(StdRdOptions, relopt_vacuum_max_eager_freeze_failure_rate)}
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate, kind,

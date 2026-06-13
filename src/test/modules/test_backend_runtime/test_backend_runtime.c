@@ -16,6 +16,7 @@
 
 #include "catalog/binary_upgrade.h"
 #include "commands/tablespace.h"
+#include "commands/vacuum.h"
 #include "fmgr.h"
 #include "libpq/libpq-be.h"
 #include "libpq/libpq.h"
@@ -992,6 +993,214 @@ test_session_parser_state_is_session_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "session parser state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_session_vacuum_state_is_session_local);
+Datum
+test_session_vacuum_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	enum
+	{
+		TEST_VACUUM_GUC_COUNT = 16
+	};
+	const char *guc_names[TEST_VACUUM_GUC_COUNT] = {
+		"default_statistics_target",
+		"track_cost_delay_timing",
+		"vacuum_buffer_usage_limit",
+		"vacuum_cost_delay",
+		"vacuum_cost_limit",
+		"vacuum_cost_page_dirty",
+		"vacuum_cost_page_hit",
+		"vacuum_cost_page_miss",
+		"vacuum_failsafe_age",
+		"vacuum_freeze_min_age",
+		"vacuum_freeze_table_age",
+		"vacuum_max_eager_freeze_failure_rate",
+		"vacuum_multixact_failsafe_age",
+		"vacuum_multixact_freeze_min_age",
+		"vacuum_multixact_freeze_table_age",
+		"vacuum_truncate"
+	};
+	const char *session1_values[TEST_VACUUM_GUC_COUNT] = {
+		"101",
+		"on",
+		"4096",
+		"2",
+		"301",
+		"31",
+		"3",
+		"5",
+		"1700000000",
+		"60000000",
+		"160000000",
+		"0.04",
+		"1700000000",
+		"6000000",
+		"160000000",
+		"off"
+	};
+	const char *session2_values[TEST_VACUUM_GUC_COUNT] = {
+		"102",
+		"off",
+		"8192",
+		"3",
+		"302",
+		"32",
+		"4",
+		"6",
+		"1800000000",
+		"70000000",
+		"170000000",
+		"0.05",
+		"1800000000",
+		"7000000",
+		"170000000",
+		"on"
+	};
+	char	   *saved_values[TEST_VACUUM_GUC_COUNT];
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	bool		ok = true;
+	int			i;
+
+	saved_session = CurrentPgSession;
+	for (i = 0; i < TEST_VACUUM_GUC_COUNT; i++)
+		saved_values[i] = pstrdup(GetConfigOption(guc_names[i], false, false));
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && default_statistics_target == 100;
+		ok = ok && !track_cost_delay_timing;
+		ok = ok && VacuumBufferUsageLimit == 2048;
+		ok = ok && VacuumCostDelay == 0;
+		ok = ok && VacuumCostLimit == 200;
+		ok = ok && VacuumCostPageDirty == 20;
+		ok = ok && VacuumCostPageHit == 1;
+		ok = ok && VacuumCostPageMiss == 2;
+		ok = ok && vacuum_failsafe_age == 1600000000;
+		ok = ok && vacuum_freeze_min_age == 50000000;
+		ok = ok && vacuum_freeze_table_age == 150000000;
+		ok = ok && vacuum_max_eager_freeze_failure_rate > 0.029;
+		ok = ok && vacuum_max_eager_freeze_failure_rate < 0.031;
+		ok = ok && vacuum_multixact_failsafe_age == 1600000000;
+		ok = ok && vacuum_multixact_freeze_min_age == 5000000;
+		ok = ok && vacuum_multixact_freeze_table_age == 150000000;
+		ok = ok && vacuum_truncate;
+		ok = ok && vacuum_cost_delay == 0;
+		ok = ok && vacuum_cost_limit == 200;
+		for (i = 0; i < TEST_VACUUM_GUC_COUNT; i++)
+			SetConfigOption(guc_names[i], session1_values[i],
+							PGC_USERSET, PGC_S_SESSION);
+		vacuum_cost_delay = 7.0;
+		vacuum_cost_limit = 701;
+		ok = ok && default_statistics_target == 101;
+		ok = ok && track_cost_delay_timing;
+		ok = ok && VacuumBufferUsageLimit == 4096;
+		ok = ok && VacuumCostDelay == 2.0;
+		ok = ok && VacuumCostLimit == 301;
+		ok = ok && VacuumCostPageDirty == 31;
+		ok = ok && VacuumCostPageHit == 3;
+		ok = ok && VacuumCostPageMiss == 5;
+		ok = ok && vacuum_failsafe_age == 1700000000;
+		ok = ok && vacuum_freeze_min_age == 60000000;
+		ok = ok && vacuum_freeze_table_age == 160000000;
+		ok = ok && vacuum_max_eager_freeze_failure_rate > 0.039;
+		ok = ok && vacuum_max_eager_freeze_failure_rate < 0.041;
+		ok = ok && vacuum_multixact_failsafe_age == 1700000000;
+		ok = ok && vacuum_multixact_freeze_min_age == 6000000;
+		ok = ok && vacuum_multixact_freeze_table_age == 160000000;
+		ok = ok && !vacuum_truncate;
+		ok = ok && vacuum_cost_delay == 7.0;
+		ok = ok && vacuum_cost_limit == 701;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && default_statistics_target == 100;
+		ok = ok && !track_cost_delay_timing;
+		ok = ok && VacuumBufferUsageLimit == 2048;
+		ok = ok && VacuumCostDelay == 0;
+		ok = ok && VacuumCostLimit == 200;
+		ok = ok && VacuumCostPageDirty == 20;
+		ok = ok && VacuumCostPageHit == 1;
+		ok = ok && VacuumCostPageMiss == 2;
+		ok = ok && vacuum_truncate;
+		ok = ok && vacuum_cost_delay == 0;
+		ok = ok && vacuum_cost_limit == 200;
+		for (i = 0; i < TEST_VACUUM_GUC_COUNT; i++)
+			SetConfigOption(guc_names[i], session2_values[i],
+							PGC_USERSET, PGC_S_SESSION);
+		vacuum_cost_delay = 9.0;
+		vacuum_cost_limit = 901;
+		ok = ok && default_statistics_target == 102;
+		ok = ok && !track_cost_delay_timing;
+		ok = ok && VacuumBufferUsageLimit == 8192;
+		ok = ok && VacuumCostDelay == 3.0;
+		ok = ok && VacuumCostLimit == 302;
+		ok = ok && VacuumCostPageDirty == 32;
+		ok = ok && VacuumCostPageHit == 4;
+		ok = ok && VacuumCostPageMiss == 6;
+		ok = ok && vacuum_failsafe_age == 1800000000;
+		ok = ok && vacuum_freeze_min_age == 70000000;
+		ok = ok && vacuum_freeze_table_age == 170000000;
+		ok = ok && vacuum_max_eager_freeze_failure_rate > 0.049;
+		ok = ok && vacuum_max_eager_freeze_failure_rate < 0.051;
+		ok = ok && vacuum_multixact_failsafe_age == 1800000000;
+		ok = ok && vacuum_multixact_freeze_min_age == 7000000;
+		ok = ok && vacuum_multixact_freeze_table_age == 170000000;
+		ok = ok && vacuum_truncate;
+		ok = ok && vacuum_cost_delay == 9.0;
+		ok = ok && vacuum_cost_limit == 901;
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && default_statistics_target == 101;
+		ok = ok && track_cost_delay_timing;
+		ok = ok && VacuumBufferUsageLimit == 4096;
+		ok = ok && VacuumCostDelay == 2.0;
+		ok = ok && VacuumCostLimit == 301;
+		ok = ok && VacuumCostPageDirty == 31;
+		ok = ok && VacuumCostPageHit == 3;
+		ok = ok && VacuumCostPageMiss == 5;
+		ok = ok && vacuum_failsafe_age == 1700000000;
+		ok = ok && !vacuum_truncate;
+		ok = ok && vacuum_cost_delay == 7.0;
+		ok = ok && vacuum_cost_limit == 701;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && default_statistics_target == 102;
+		ok = ok && !track_cost_delay_timing;
+		ok = ok && VacuumBufferUsageLimit == 8192;
+		ok = ok && VacuumCostDelay == 3.0;
+		ok = ok && VacuumCostLimit == 302;
+		ok = ok && VacuumCostPageDirty == 32;
+		ok = ok && VacuumCostPageHit == 4;
+		ok = ok && VacuumCostPageMiss == 6;
+		ok = ok && vacuum_failsafe_age == 1800000000;
+		ok = ok && vacuum_truncate;
+		ok = ok && vacuum_cost_delay == 9.0;
+		ok = ok && vacuum_cost_limit == 901;
+
+		PgSetCurrentSession(saved_session);
+		for (i = 0; i < TEST_VACUUM_GUC_COUNT; i++)
+			SetConfigOption(guc_names[i], saved_values[i],
+							PGC_USERSET, PGC_S_SESSION);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		for (i = 0; i < TEST_VACUUM_GUC_COUNT; i++)
+			SetConfigOption(guc_names[i], saved_values[i],
+							PGC_USERSET, PGC_S_SESSION);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session vacuum GUC state was not session-local");
 
 	PG_RETURN_BOOL(true);
 }

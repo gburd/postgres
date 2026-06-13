@@ -87,15 +87,6 @@ PG_GLOBAL_RUNTIME int autovacuum_max_parallel_workers = 0;
 PG_GLOBAL_RUNTIME int MaxBackends = 0;
 PG_GLOBAL_RUNTIME bool multithreaded = false;
 
-/* GUC parameters for vacuum */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int VacuumBufferUsageLimit = 2048;
-
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int VacuumCostPageHit = 1;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int VacuumCostPageMiss = 2;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int VacuumCostPageDirty = 20;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int VacuumCostLimit = 200;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION double VacuumCostDelay = 0;
-
 PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int VacuumCostBalance = 0;	/* working state for vacuum */
 PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool VacuumCostActive = false;
 

@@ -36,6 +36,7 @@
 #include "catalog/pg_parameter_acl.h"
 #include "catalog/pg_type.h"
 #include "commands/tablespace.h"
+#include "commands/vacuum.h"
 #include "guc_internal.h"
 #include "libpq/pqformat.h"
 #include "libpq/protocol.h"
@@ -1587,6 +1588,10 @@ RebindSessionGUCVariablePointers(void)
 	Assert(gconf->vartype == PGC_ENUM);
 	gconf->_enum.variable = PgCurrentBackslashQuoteRef();
 
+	gconf = find_option("default_statistics_target", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentDefaultStatisticsTargetRef();
+
 	gconf = find_option("IntervalStyle", false, false, PANIC);
 	Assert(gconf->vartype == PGC_ENUM);
 	gconf->_enum.variable = PgCurrentIntervalStyleRef();
@@ -1830,9 +1835,73 @@ RebindSessionGUCVariablePointers(void)
 	Assert(gconf->vartype == PGC_STRING);
 	gconf->_string.variable = PgCurrentTempTablespacesRef();
 
+	gconf = find_option("track_cost_delay_timing", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentTrackCostDelayTimingRef();
+
 	gconf = find_option("transform_null_equals", false, false, PANIC);
 	Assert(gconf->vartype == PGC_BOOL);
 	gconf->_bool.variable = PgCurrentTransformNullEqualsRef();
+
+	gconf = find_option("vacuum_buffer_usage_limit", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentVacuumBufferUsageLimitRef();
+
+	gconf = find_option("vacuum_cost_delay", false, false, PANIC);
+	Assert(gconf->vartype == PGC_REAL);
+	gconf->_real.variable = PgCurrentVacuumCostDelayRef();
+
+	gconf = find_option("vacuum_cost_limit", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentVacuumCostLimitRef();
+
+	gconf = find_option("vacuum_cost_page_dirty", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentVacuumCostPageDirtyRef();
+
+	gconf = find_option("vacuum_cost_page_hit", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentVacuumCostPageHitRef();
+
+	gconf = find_option("vacuum_cost_page_miss", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentVacuumCostPageMissRef();
+
+	gconf = find_option("vacuum_failsafe_age", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentVacuumFailsafeAgeRef();
+
+	gconf = find_option("vacuum_freeze_min_age", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentVacuumFreezeMinAgeRef();
+
+	gconf = find_option("vacuum_freeze_table_age", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentVacuumFreezeTableAgeRef();
+
+	gconf = find_option("vacuum_max_eager_freeze_failure_rate", false, false,
+						PANIC);
+	Assert(gconf->vartype == PGC_REAL);
+	gconf->_real.variable = PgCurrentVacuumMaxEagerFreezeFailureRateRef();
+
+	gconf = find_option("vacuum_multixact_failsafe_age", false, false,
+						PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentVacuumMultixactFailsafeAgeRef();
+
+	gconf = find_option("vacuum_multixact_freeze_min_age", false, false,
+						PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentVacuumMultixactFreezeMinAgeRef();
+
+	gconf = find_option("vacuum_multixact_freeze_table_age", false, false,
+						PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentVacuumMultixactFreezeTableAgeRef();
+
+	gconf = find_option("vacuum_truncate", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentVacuumTruncateRef();
 }
 
 /*

@@ -359,12 +359,19 @@ extern int *PgCurrentMaxParallelMaintenanceWorkersRef(void);
 #define MIN_BAS_VAC_RING_SIZE_KB 128
 #define MAX_BAS_VAC_RING_SIZE_KB (16 * 1024 * 1024)
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int VacuumBufferUsageLimit;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int VacuumCostPageHit;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int VacuumCostPageMiss;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int VacuumCostPageDirty;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int VacuumCostLimit;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION double VacuumCostDelay;
+extern int *PgCurrentVacuumBufferUsageLimitRef(void);
+extern int *PgCurrentVacuumCostPageHitRef(void);
+extern int *PgCurrentVacuumCostPageMissRef(void);
+extern int *PgCurrentVacuumCostPageDirtyRef(void);
+extern int *PgCurrentVacuumCostLimitRef(void);
+extern double *PgCurrentVacuumCostDelayRef(void);
+
+#define VacuumBufferUsageLimit (*PgCurrentVacuumBufferUsageLimitRef())
+#define VacuumCostPageHit (*PgCurrentVacuumCostPageHitRef())
+#define VacuumCostPageMiss (*PgCurrentVacuumCostPageMissRef())
+#define VacuumCostPageDirty (*PgCurrentVacuumCostPageDirtyRef())
+#define VacuumCostLimit (*PgCurrentVacuumCostLimitRef())
+#define VacuumCostDelay (*PgCurrentVacuumCostDelayRef())
 
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int VacuumCostBalance;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool VacuumCostActive;

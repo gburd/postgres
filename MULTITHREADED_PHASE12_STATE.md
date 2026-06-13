@@ -1248,3 +1248,69 @@ Validation for this slice:
 - `git diff --check` passed;
 - static scans found no remaining direct session TLS definitions or extern
   declarations for `Transform_null_equals` or `backslash_quote`.
+
+## Session Vacuum And Analyze GUC State Bridge
+
+The twenty-fifth Phase 12 slice moves vacuum/analyze maintenance state under
+`PgSession`:
+
+- `PgSession` now owns a `PgSessionVacuumState`;
+- the exported vacuum/analyze GUC backing variables remain source-compatible
+  lvalue macros in `miscadmin.h` and `commands/vacuum.h`;
+- the macros route through `PgCurrent*Ref()` accessors that return fields in
+  the active logical session;
+- zeroed logical session objects lazily initialize the moved state to the
+  historical defaults for vacuum cost, buffer usage, statistics target,
+  freeze/failsafe ages, truncation, eager freeze failure rate, and cost-delay
+  timing;
+- early startup paths before `CurrentPgSession` is installed use fallback
+  session-local storage in `backend_runtime.c`;
+- process-mode and thread-runtime session installation adopt any early
+  fallback vacuum/analyze state into the logical session object;
+- `RebindSessionGUCVariablePointers()` now rebinds the generated GUC records
+  for `default_statistics_target`, `track_cost_delay_timing`,
+  `vacuum_buffer_usage_limit`, `vacuum_cost_delay`, `vacuum_cost_limit`,
+  `vacuum_cost_page_dirty`, `vacuum_cost_page_hit`,
+  `vacuum_cost_page_miss`, `vacuum_failsafe_age`,
+  `vacuum_freeze_min_age`, `vacuum_freeze_table_age`,
+  `vacuum_max_eager_freeze_failure_rate`,
+  `vacuum_multixact_failsafe_age`, `vacuum_multixact_freeze_min_age`,
+  `vacuum_multixact_freeze_table_age`, and `vacuum_truncate` whenever the
+  active logical session changes;
+- the lower-case `vacuum_cost_delay` and `vacuum_cost_limit` runtime copies
+  are also session-local lvalue macros, but they are not the generated GUC
+  records' direct backing variables;
+- internal reloption C fields were renamed to `relopt_*` variants so
+  `AutoVacOpts` and `StdRdOptions` members cannot collide with the new
+  compatibility macros. SQL reloption names are unchanged.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `globals.o`,
+  `guc.o`, `vacuum.o`, `analyze.o`, `vacuumparallel.o`,
+  `autovacuum.o`, `reloptions.o`, and `test_backend_runtime.o`;
+- because exported vacuum/analyze GUC globals changed into compatibility
+  macros, `gmake -C src/backend clean` plus generated-header recovery was
+  used before the clean rebuild;
+- clean full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed, followed by rebuilding
+  and reinstalling `src/test/modules/test_backend_runtime`, PL/pgSQL,
+  `src/test/regress`, `libpqwalreceiver`, and `src/backend/snowball`;
+- focused `test_backend_runtime` regression passed and includes
+  `test_session_vacuum_state_is_session_local()`, which switches sessions
+  through `PgSetCurrentSession()`, sets the vacuum/analyze values through the
+  GUC machinery plus the lower-case runtime lvalues, and proves the values
+  follow the active session after GUC pointer rebinding;
+- direct threaded-runtime TAP coverage was attempted for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`,
+  but this system Perl is missing `IPC::Run`, so both tests failed before
+  starting PostgreSQL;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests, including `vacuum`, `vacuum_parallel`, `guc`, `reloptions`,
+  `stats`, and PL/pgSQL coverage;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- `git diff --check` passed;
+- static scans found no remaining direct session TLS definitions or extern
+  declarations for the moved vacuum/analyze names.

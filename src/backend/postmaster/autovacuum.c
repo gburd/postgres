@@ -3025,9 +3025,9 @@ table_recheck_autovac(Oid relid, HTAB *table_toast_map,
 		 */
 		tab->at_params.max_eager_freeze_failure_rate = vacuum_max_eager_freeze_failure_rate;
 		tab->at_storage_param_vac_cost_limit = avopts ?
-			avopts->vacuum_cost_limit : 0;
+			avopts->relopt_vacuum_cost_limit : 0;
 		tab->at_storage_param_vac_cost_delay = avopts ?
-			avopts->vacuum_cost_delay : -1;
+			avopts->relopt_vacuum_cost_delay : -1;
 		tab->at_relname = NULL;
 		tab->at_nspname = NULL;
 		tab->at_datname = NULL;
@@ -3037,8 +3037,8 @@ table_recheck_autovac(Oid relid, HTAB *table_toast_map,
 		 * this table, disable the balancing algorithm.
 		 */
 		tab->at_dobalance =
-			!(avopts && (avopts->vacuum_cost_limit > 0 ||
-						 avopts->vacuum_cost_delay >= 0));
+			!(avopts && (avopts->relopt_vacuum_cost_limit > 0 ||
+						 avopts->relopt_vacuum_cost_delay >= 0));
 	}
 
 	if (free_avopts)

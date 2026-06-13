@@ -70,28 +70,6 @@
  */
 #define PARALLEL_VACUUM_DELAY_REPORT_INTERVAL_NS	(NS_PER_S)
 
-/*
- * GUC parameters
- */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int vacuum_freeze_min_age;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int vacuum_freeze_table_age;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int vacuum_multixact_freeze_min_age;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int vacuum_multixact_freeze_table_age;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int vacuum_failsafe_age;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int vacuum_multixact_failsafe_age;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION double vacuum_max_eager_freeze_failure_rate;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool track_cost_delay_timing;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool vacuum_truncate;
-
-/*
- * Variables for cost-based vacuum delay. The defaults differ between
- * autovacuum and vacuum. They should be set with the appropriate GUC value in
- * vacuum code. They are initialized here to the defaults for client backends
- * executing VACUUM or ANALYZE.
- */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION double vacuum_cost_delay = 0;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int vacuum_cost_limit = 200;
-
 /* Variable for reporting cost-based vacuum delay from parallel workers. */
 PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int64 parallel_vacuum_worker_delay_ns = 0;
 
@@ -2222,9 +2200,9 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams params,
 	 * parameter was specified. This overrides the GUC value.
 	 */
 	if (rel->rd_options != NULL &&
-		((StdRdOptions *) rel->rd_options)->vacuum_max_eager_freeze_failure_rate >= 0)
+		((StdRdOptions *) rel->rd_options)->relopt_vacuum_max_eager_freeze_failure_rate >= 0)
 		params.max_eager_freeze_failure_rate =
-			((StdRdOptions *) rel->rd_options)->vacuum_max_eager_freeze_failure_rate;
+			((StdRdOptions *) rel->rd_options)->relopt_vacuum_max_eager_freeze_failure_rate;
 
 	/*
 	 * Set truncate option based on truncate reloption or GUC if it wasn't
@@ -2234,9 +2212,9 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams params,
 	{
 		StdRdOptions *opts = (StdRdOptions *) rel->rd_options;
 
-		if (opts && opts->vacuum_truncate != PG_TERNARY_UNSET)
+		if (opts && opts->relopt_vacuum_truncate != PG_TERNARY_UNSET)
 		{
-			if (opts->vacuum_truncate == PG_TERNARY_TRUE)
+			if (opts->relopt_vacuum_truncate == PG_TERNARY_TRUE)
 				params.truncate = VACOPTVALUE_ENABLED;
 			else
 				params.truncate = VACOPTVALUE_DISABLED;

@@ -232,6 +232,29 @@ typedef struct PgSessionParserState
 	int			backslash_quote_value;
 } PgSessionParserState;
 
+typedef struct PgSessionVacuumState
+{
+	bool		initialized;
+	int			vacuum_buffer_usage_limit_kb;
+	int			vacuum_cost_page_hit_value;
+	int			vacuum_cost_page_miss_value;
+	int			vacuum_cost_page_dirty_value;
+	int			vacuum_cost_limit_value;
+	double		vacuum_cost_delay_ms;
+	int			default_statistics_target_value;
+	int			vacuum_freeze_min_age_value;
+	int			vacuum_freeze_table_age_value;
+	int			vacuum_multixact_freeze_min_age_value;
+	int			vacuum_multixact_freeze_table_age_value;
+	int			vacuum_failsafe_age_value;
+	int			vacuum_multixact_failsafe_age_value;
+	bool		track_cost_delay_timing_value;
+	bool		vacuum_truncate_value;
+	double		vacuum_max_eager_freeze_failure_rate_value;
+	double		local_vacuum_cost_delay_ms;
+	int			local_vacuum_cost_limit_value;
+} PgSessionVacuumState;
+
 typedef struct PgSessionQueryMemoryState
 {
 	bool		initialized;
@@ -426,6 +449,7 @@ struct PgSession
 	PgSessionBinaryUpgradeState binary_upgrade;
 	PgSessionDateTimeState datetime;
 	PgSessionParserState parser;
+	PgSessionVacuumState vacuum;
 	PgSessionQueryMemoryState query_memory;
 	PgSessionPlannerCostState planner_cost;
 	PgSessionPlannerMethodState planner_method;

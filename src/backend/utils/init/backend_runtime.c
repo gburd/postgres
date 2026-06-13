@@ -20,6 +20,7 @@
 #include "commands/async.h"
 #include "commands/repack.h"
 #include "commands/tablespace.h"
+#include "commands/vacuum.h"
 #include "miscadmin.h"
 #include "optimizer/cost.h"
 #include "optimizer/geqo.h"
@@ -100,6 +101,27 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionParserState early_session_pars
 	.initialized = true,
 	.transform_null_equals_value = false,
 	.backslash_quote_value = BACKSLASH_QUOTE_SAFE_ENCODING
+};
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionVacuumState early_session_vacuum = {
+	.initialized = true,
+	.vacuum_buffer_usage_limit_kb = 2048,
+	.vacuum_cost_page_hit_value = 1,
+	.vacuum_cost_page_miss_value = 2,
+	.vacuum_cost_page_dirty_value = 20,
+	.vacuum_cost_limit_value = 200,
+	.vacuum_cost_delay_ms = 0,
+	.default_statistics_target_value = 100,
+	.vacuum_freeze_min_age_value = 50000000,
+	.vacuum_freeze_table_age_value = 150000000,
+	.vacuum_multixact_freeze_min_age_value = 5000000,
+	.vacuum_multixact_freeze_table_age_value = 150000000,
+	.vacuum_failsafe_age_value = 1600000000,
+	.vacuum_multixact_failsafe_age_value = 1600000000,
+	.track_cost_delay_timing_value = false,
+	.vacuum_truncate_value = true,
+	.vacuum_max_eager_freeze_failure_rate_value = 0.03,
+	.local_vacuum_cost_delay_ms = 0,
+	.local_vacuum_cost_limit_value = 200
 };
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionQueryMemoryState early_session_query_memory = {
 	.initialized = true,
@@ -195,6 +217,8 @@ static void PgSessionInitializeDateTimeState(PgSessionDateTimeState *datetime);
 static void PgSessionAdoptEarlyDateTimeState(PgSession *session);
 static void PgSessionInitializeParserState(PgSessionParserState *parser);
 static void PgSessionAdoptEarlyParserState(PgSession *session);
+static void PgSessionInitializeVacuumState(PgSessionVacuumState *vacuum);
+static void PgSessionAdoptEarlyVacuumState(PgSession *session);
 static void PgSessionInitializeQueryMemoryState(PgSessionQueryMemoryState *query_memory);
 static void PgSessionAdoptEarlyQueryMemoryState(PgSession *session);
 static void PgSessionInitializePlannerCostState(PgSessionPlannerCostState *planner_cost);
@@ -216,6 +240,7 @@ static PgSessionTablespaceState *PgCurrentSessionTablespaceState(void);
 static PgSessionBinaryUpgradeState *PgCurrentSessionBinaryUpgradeState(void);
 static PgSessionDateTimeState *PgCurrentSessionDateTimeState(void);
 static PgSessionParserState *PgCurrentSessionParserState(void);
+static PgSessionVacuumState *PgCurrentSessionVacuumState(void);
 static PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
 static PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
 static PgSessionPlannerMethodState *PgCurrentSessionPlannerMethodState(void);
@@ -409,6 +434,44 @@ PgSessionAdoptEarlyParserState(PgSession *session)
 
 	session->parser = early_session_parser;
 	PgSessionInitializeParserState(&early_session_parser);
+}
+
+static void
+PgSessionInitializeVacuumState(PgSessionVacuumState *vacuum)
+{
+	Assert(vacuum != NULL);
+
+	vacuum->initialized = true;
+	vacuum->vacuum_buffer_usage_limit_kb = 2048;
+	vacuum->vacuum_cost_page_hit_value = 1;
+	vacuum->vacuum_cost_page_miss_value = 2;
+	vacuum->vacuum_cost_page_dirty_value = 20;
+	vacuum->vacuum_cost_limit_value = 200;
+	vacuum->vacuum_cost_delay_ms = 0;
+	vacuum->default_statistics_target_value = 100;
+	vacuum->vacuum_freeze_min_age_value = 50000000;
+	vacuum->vacuum_freeze_table_age_value = 150000000;
+	vacuum->vacuum_multixact_freeze_min_age_value = 5000000;
+	vacuum->vacuum_multixact_freeze_table_age_value = 150000000;
+	vacuum->vacuum_failsafe_age_value = 1600000000;
+	vacuum->vacuum_multixact_failsafe_age_value = 1600000000;
+	vacuum->track_cost_delay_timing_value = false;
+	vacuum->vacuum_truncate_value = true;
+	vacuum->vacuum_max_eager_freeze_failure_rate_value = 0.03;
+	vacuum->local_vacuum_cost_delay_ms = 0;
+	vacuum->local_vacuum_cost_limit_value = 200;
+}
+
+static void
+PgSessionAdoptEarlyVacuumState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (!early_session_vacuum.initialized)
+		PgSessionInitializeVacuumState(&early_session_vacuum);
+
+	session->vacuum = early_session_vacuum;
+	PgSessionInitializeVacuumState(&early_session_vacuum);
 }
 
 static void
@@ -674,6 +737,7 @@ InitializePgProcessRuntime(void)
 	PgSessionAdoptEarlyBinaryUpgradeState(&process_session);
 	PgSessionAdoptEarlyDateTimeState(&process_session);
 	PgSessionAdoptEarlyParserState(&process_session);
+	PgSessionAdoptEarlyVacuumState(&process_session);
 	PgSessionAdoptEarlyQueryMemoryState(&process_session);
 	PgSessionAdoptEarlyPlannerCostState(&process_session);
 	PgSessionAdoptEarlyPlannerMethodState(&process_session);
@@ -760,6 +824,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgSessionInitializeBinaryUpgradeState(&state->session.binary_upgrade);
 	PgSessionInitializeDateTimeState(&state->session.datetime);
 	PgSessionInitializeParserState(&state->session.parser);
+	PgSessionInitializeVacuumState(&state->session.vacuum);
 	PgSessionInitializeQueryMemoryState(&state->session.query_memory);
 	PgSessionInitializePlannerCostState(&state->session.planner_cost);
 	PgSessionInitializePlannerMethodState(&state->session.planner_method);
@@ -787,6 +852,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgSessionAdoptEarlyBinaryUpgradeState(&state->session);
 	PgSessionAdoptEarlyDateTimeState(&state->session);
 	PgSessionAdoptEarlyParserState(&state->session);
+	PgSessionAdoptEarlyVacuumState(&state->session);
 	PgSessionAdoptEarlyQueryMemoryState(&state->session);
 	PgSessionAdoptEarlyPlannerCostState(&state->session);
 	PgSessionAdoptEarlyPlannerMethodState(&state->session);
@@ -917,6 +983,22 @@ PgCurrentSessionParserState(void)
 		PgSessionInitializeParserState(parser);
 
 	return parser;
+}
+
+static PgSessionVacuumState *
+PgCurrentSessionVacuumState(void)
+{
+	PgSessionVacuumState *vacuum;
+
+	if (CurrentPgSession == NULL)
+		vacuum = &early_session_vacuum;
+	else
+		vacuum = &CurrentPgSession->vacuum;
+
+	if (!vacuum->initialized)
+		PgSessionInitializeVacuumState(vacuum);
+
+	return vacuum;
 }
 
 static PgSessionQueryMemoryState *
@@ -1121,6 +1203,114 @@ int *
 PgCurrentBackslashQuoteRef(void)
 {
 	return &PgCurrentSessionParserState()->backslash_quote_value;
+}
+
+int *
+PgCurrentVacuumBufferUsageLimitRef(void)
+{
+	return &PgCurrentSessionVacuumState()->vacuum_buffer_usage_limit_kb;
+}
+
+int *
+PgCurrentVacuumCostPageHitRef(void)
+{
+	return &PgCurrentSessionVacuumState()->vacuum_cost_page_hit_value;
+}
+
+int *
+PgCurrentVacuumCostPageMissRef(void)
+{
+	return &PgCurrentSessionVacuumState()->vacuum_cost_page_miss_value;
+}
+
+int *
+PgCurrentVacuumCostPageDirtyRef(void)
+{
+	return &PgCurrentSessionVacuumState()->vacuum_cost_page_dirty_value;
+}
+
+int *
+PgCurrentVacuumCostLimitRef(void)
+{
+	return &PgCurrentSessionVacuumState()->vacuum_cost_limit_value;
+}
+
+double *
+PgCurrentVacuumCostDelayRef(void)
+{
+	return &PgCurrentSessionVacuumState()->vacuum_cost_delay_ms;
+}
+
+int *
+PgCurrentDefaultStatisticsTargetRef(void)
+{
+	return &PgCurrentSessionVacuumState()->default_statistics_target_value;
+}
+
+int *
+PgCurrentVacuumFreezeMinAgeRef(void)
+{
+	return &PgCurrentSessionVacuumState()->vacuum_freeze_min_age_value;
+}
+
+int *
+PgCurrentVacuumFreezeTableAgeRef(void)
+{
+	return &PgCurrentSessionVacuumState()->vacuum_freeze_table_age_value;
+}
+
+int *
+PgCurrentVacuumMultixactFreezeMinAgeRef(void)
+{
+	return &PgCurrentSessionVacuumState()->vacuum_multixact_freeze_min_age_value;
+}
+
+int *
+PgCurrentVacuumMultixactFreezeTableAgeRef(void)
+{
+	return &PgCurrentSessionVacuumState()->vacuum_multixact_freeze_table_age_value;
+}
+
+int *
+PgCurrentVacuumFailsafeAgeRef(void)
+{
+	return &PgCurrentSessionVacuumState()->vacuum_failsafe_age_value;
+}
+
+int *
+PgCurrentVacuumMultixactFailsafeAgeRef(void)
+{
+	return &PgCurrentSessionVacuumState()->vacuum_multixact_failsafe_age_value;
+}
+
+bool *
+PgCurrentTrackCostDelayTimingRef(void)
+{
+	return &PgCurrentSessionVacuumState()->track_cost_delay_timing_value;
+}
+
+bool *
+PgCurrentVacuumTruncateRef(void)
+{
+	return &PgCurrentSessionVacuumState()->vacuum_truncate_value;
+}
+
+double *
+PgCurrentVacuumMaxEagerFreezeFailureRateRef(void)
+{
+	return &PgCurrentSessionVacuumState()->vacuum_max_eager_freeze_failure_rate_value;
+}
+
+double *
+PgCurrentLocalVacuumCostDelayRef(void)
+{
+	return &PgCurrentSessionVacuumState()->local_vacuum_cost_delay_ms;
+}
+
+int *
+PgCurrentLocalVacuumCostLimitRef(void)
+{
+	return &PgCurrentSessionVacuumState()->local_vacuum_cost_limit_value;
 }
 
 int *
