@@ -3022,3 +3022,54 @@ Validation for this slice:
   header migration;
 - static scans found no remaining direct session TLS declarations for the
   moved locale/session-environment state.
+
+## Session User Identity State Bridge
+
+The fifty-ninth Phase 12 slice moves user/security identity state under the
+logical session object:
+
+- `PgSessionUserIdentityState` now owns the authenticated user ID, session user
+  ID, outer/current user IDs, `SYSTEM_USER` string, session-user superuser
+  flag, security restriction context, and SET ROLE activity flag;
+- `miscinit.c` keeps the historical private source names as lvalue macros
+  backed by the active `PgSession`;
+- `GetAuthenticatedUserId()`, `GetSessionUserId()`, `GetOuterUserId()`,
+  `GetUserId()`, `GetUserIdAndSecContext()`,
+  `SetUserIdAndSecContext()`, `SetUserIdAndContext()`,
+  `GetCurrentRoleId()`, `SetSessionAuthorization()`, and
+  `InitializeSystemUser()` now operate through the active session state;
+- the early fallback identity state is adopted into the process or thread
+  session when runtime/session objects are installed;
+- `test_backend_runtime` seeds synthetic sessions with the current user
+  identity for tests that exercise unrelated session-local state and set
+  superuser-only GUCs. The identity-specific test deliberately leaves its fake
+  sessions zeroed so it still verifies lazy default initialization.
+
+This keeps authentication identity, SQL session identity, effective-user
+identity, and security context scoped to the logical session instead of the
+carrier thread, while preserving process mode's existing per-backend behavior.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `miscinit.o`, and
+  `test_backend_runtime.o`;
+- because `backend_runtime.h` changed, the backend clean plus generated
+  utility and node-header recovery path was used before trusting process-mode
+  runtime tests;
+- clean full `gmake -j8` passed after the backend clean;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- focused `test_backend_runtime` regression includes
+  `test_session_user_identity_state_is_session_local()`, which switches fake
+  sessions through `PgSetCurrentSession()`, mutates authenticated/session/
+  outer/current user IDs, system-user strings, superuser flags, SET ROLE state,
+  and security restriction context, then verifies those values follow the
+  active `PgSession`;
+- direct `test_backend_runtime` regression passed after reinstalling the test
+  module into `tmp_install`;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests, including
+  role, privilege, GUC, PL/pgSQL, subscription, and event-trigger coverage;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- static scans found no remaining direct session TLS declarations for the
+  migrated user/security identity state.

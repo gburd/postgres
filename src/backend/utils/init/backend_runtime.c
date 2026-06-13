@@ -290,6 +290,17 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionUserGUCState early_session_use
 	.createrole_self_grant_options_inherit = false,
 	.createrole_self_grant_options_set = false
 };
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionUserIdentityState early_session_user_identity = {
+	.initialized = true,
+	.authenticated_user_id = InvalidOid,
+	.session_user_id = InvalidOid,
+	.outer_user_id = InvalidOid,
+	.current_user_id = InvalidOid,
+	.system_user = NULL,
+	.session_user_is_superuser = false,
+	.security_restriction_context = 0,
+	.set_role_is_active = false
+};
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionCommandGUCState early_session_command_guc = {
 	.initialized = true,
 	.session_replication_role_value = SESSION_REPLICATION_ROLE_ORIGIN,
@@ -511,6 +522,8 @@ static void PgSessionInitializeStorageGUCState(PgSessionStorageGUCState *storage
 static void PgSessionAdoptEarlyStorageGUCState(PgSession *session);
 static void PgSessionInitializeUserGUCState(PgSessionUserGUCState *user_guc);
 static void PgSessionAdoptEarlyUserGUCState(PgSession *session);
+static void PgSessionInitializeUserIdentityState(PgSessionUserIdentityState *user_identity);
+static void PgSessionAdoptEarlyUserIdentityState(PgSession *session);
 static void PgSessionInitializeCommandGUCState(PgSessionCommandGUCState *command_guc);
 static void PgSessionAdoptEarlyCommandGUCState(PgSession *session);
 static void PgSessionInitializeReplicationGUCState(PgSessionReplicationGUCState *replication_guc);
@@ -583,6 +596,7 @@ static PgSessionPgStatState *PgCurrentSessionPgStatState(void);
 static PgSessionQueryIdState *PgCurrentSessionQueryIdState(void);
 static PgSessionStorageGUCState *PgCurrentSessionStorageGUCState(void);
 static PgSessionUserGUCState *PgCurrentSessionUserGUCState(void);
+static PgSessionUserIdentityState *PgCurrentSessionUserIdentityState(void);
 static PgSessionCommandGUCState *PgCurrentSessionCommandGUCState(void);
 static PgSessionReplicationGUCState *PgCurrentSessionReplicationGUCState(void);
 static PgSessionGeneralGUCState *PgCurrentSessionGeneralGUCState(void);
@@ -1178,6 +1192,34 @@ PgSessionAdoptEarlyUserGUCState(PgSession *session)
 
 	session->user_guc = early_session_user_guc;
 	PgSessionInitializeUserGUCState(&early_session_user_guc);
+}
+
+static void
+PgSessionInitializeUserIdentityState(PgSessionUserIdentityState *user_identity)
+{
+	Assert(user_identity != NULL);
+
+	user_identity->authenticated_user_id = InvalidOid;
+	user_identity->session_user_id = InvalidOid;
+	user_identity->outer_user_id = InvalidOid;
+	user_identity->current_user_id = InvalidOid;
+	user_identity->system_user = NULL;
+	user_identity->session_user_is_superuser = false;
+	user_identity->security_restriction_context = 0;
+	user_identity->set_role_is_active = false;
+	user_identity->initialized = true;
+}
+
+static void
+PgSessionAdoptEarlyUserIdentityState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (!early_session_user_identity.initialized)
+		PgSessionInitializeUserIdentityState(&early_session_user_identity);
+
+	session->user_identity = early_session_user_identity;
+	PgSessionInitializeUserIdentityState(&early_session_user_identity);
 }
 
 static void
@@ -1948,6 +1990,7 @@ InitializePgProcessRuntime(void)
 	PgSessionAdoptEarlyQueryIdState(&process_session);
 	PgSessionAdoptEarlyStorageGUCState(&process_session);
 	PgSessionAdoptEarlyUserGUCState(&process_session);
+	PgSessionAdoptEarlyUserIdentityState(&process_session);
 	PgSessionAdoptEarlyCommandGUCState(&process_session);
 	PgSessionAdoptEarlyReplicationGUCState(&process_session);
 	PgSessionAdoptEarlyGeneralGUCState(&process_session);
@@ -2069,6 +2112,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgSessionInitializeQueryIdState(&state->session.query_id);
 	PgSessionInitializeStorageGUCState(&state->session.storage_guc);
 	PgSessionInitializeUserGUCState(&state->session.user_guc);
+	PgSessionInitializeUserIdentityState(&state->session.user_identity);
 	PgSessionInitializeCommandGUCState(&state->session.command_guc);
 	PgSessionInitializeReplicationGUCState(&state->session.replication_guc);
 	PgSessionInitializeGeneralGUCState(&state->session.general_guc);
@@ -2127,6 +2171,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgSessionAdoptEarlyQueryIdState(&state->session);
 	PgSessionAdoptEarlyStorageGUCState(&state->session);
 	PgSessionAdoptEarlyUserGUCState(&state->session);
+	PgSessionAdoptEarlyUserIdentityState(&state->session);
 	PgSessionAdoptEarlyCommandGUCState(&state->session);
 	PgSessionAdoptEarlyReplicationGUCState(&state->session);
 	PgSessionAdoptEarlyGeneralGUCState(&state->session);
@@ -2483,6 +2528,28 @@ PgCurrentSessionUserGUCState(void)
 		PgSessionInitializeUserGUCState(user_guc);
 
 	return user_guc;
+}
+
+static PgSessionUserIdentityState *
+PgCurrentSessionUserIdentityState(void)
+{
+	PgSessionUserIdentityState *user_identity;
+
+	if (CurrentPgSession == NULL)
+		user_identity = &early_session_user_identity;
+	else
+		user_identity = &CurrentPgSession->user_identity;
+
+	if (!user_identity->initialized)
+		PgSessionInitializeUserIdentityState(user_identity);
+
+	return user_identity;
+}
+
+PgSessionUserIdentityState *
+PgCurrentUserIdentityState(void)
+{
+	return PgCurrentSessionUserIdentityState();
 }
 
 static PgSessionCommandGUCState *

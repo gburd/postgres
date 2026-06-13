@@ -443,19 +443,27 @@ ChangeToDataDir(void)
  * convenient way to do it.
  * ----------------------------------------------------------------
  */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid AuthenticatedUserId = InvalidOid;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid SessionUserId = InvalidOid;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid OuterUserId = InvalidOid;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid CurrentUserId = InvalidOid;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION const char *SystemUser = NULL;
+#define AuthenticatedUserId \
+	(PgCurrentUserIdentityState()->authenticated_user_id)
+#define SessionUserId \
+	(PgCurrentUserIdentityState()->session_user_id)
+#define OuterUserId \
+	(PgCurrentUserIdentityState()->outer_user_id)
+#define CurrentUserId \
+	(PgCurrentUserIdentityState()->current_user_id)
+#define SystemUser \
+	(PgCurrentUserIdentityState()->system_user)
 
 /* We also have to remember the superuser state of the session user */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool SessionUserIsSuperuser = false;
+#define SessionUserIsSuperuser \
+	(PgCurrentUserIdentityState()->session_user_is_superuser)
 
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION int SecurityRestrictionContext = 0;
+#define SecurityRestrictionContext \
+	(PgCurrentUserIdentityState()->security_restriction_context)
 
 /* We also remember if a SET ROLE is currently active */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool SetRoleIsActive = false;
+#define SetRoleIsActive \
+	(PgCurrentUserIdentityState()->set_role_is_active)
 
 /*
  * GetUserId - get the current effective user ID.

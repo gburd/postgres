@@ -117,6 +117,7 @@ typedef struct TestRealGUCSetting
 
 static void test_pg_thread_routine(void *arg);
 static void test_pg_thread_exit_routine(void *arg);
+static void test_copy_current_user_identity(PgSession *session);
 
 static void
 test_pg_thread_routine(void *arg)
@@ -133,6 +134,14 @@ test_pg_thread_exit_routine(void *arg)
 
 	pg_atomic_write_u32(ran, 1);
 	pg_thread_exit();
+}
+
+static void
+test_copy_current_user_identity(PgSession *session)
+{
+	Assert(session != NULL);
+
+	session->user_identity = *PgCurrentUserIdentityState();
 }
 
 static void
@@ -547,6 +556,8 @@ test_session_database_state_is_session_local(PG_FUNCTION_ARGS)
 	saved_database_path = DatabasePath;
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 
 	PG_TRY();
 	{
@@ -624,6 +635,8 @@ test_session_tablespace_state_is_session_local(PG_FUNCTION_ARGS)
 		pstrdup(GetConfigOption("allow_in_place_tablespaces", false, false));
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 
 	PG_TRY();
 	{
@@ -739,6 +752,8 @@ test_session_binary_upgrade_state_is_session_local(PG_FUNCTION_ARGS)
 	saved_record_init_privs = binary_upgrade_record_init_privs;
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 
 	PG_TRY();
 	{
@@ -907,6 +922,8 @@ test_session_datetime_state_is_session_local(PG_FUNCTION_ARGS)
 												 false, false));
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 
 	PG_TRY();
 	{
@@ -1022,6 +1039,8 @@ test_session_text_search_state_is_session_local(PG_FUNCTION_ARGS)
 		pstrdup(GetConfigOption("default_text_search_config", false, false));
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 
 	PG_TRY();
 	{
@@ -1087,6 +1106,8 @@ test_session_on_commit_state_is_session_local(PG_FUNCTION_ARGS)
 	saved_on_commits = *PgCurrentOnCommitActionsRef();
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 	session1_marker = (List *) &fake_session1;
 	session2_marker = (List *) &fake_session2;
 
@@ -1145,6 +1166,8 @@ test_session_sequence_state_is_session_local(PG_FUNCTION_ARGS)
 	saved_last_used_seq = *PgCurrentLastUsedSequenceRef();
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 	session1_hash_marker = (HTAB *) &fake_session1;
 	session2_hash_marker = (HTAB *) &fake_session2;
 	session1_last_marker = (struct SeqTableData *) &fake_session1;
@@ -1215,6 +1238,8 @@ test_session_large_object_state_is_session_local(PG_FUNCTION_ARGS)
 	saved_index_relation = *PgCurrentLargeObjectIndexRelationRef();
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 	session1_heap_marker = (Relation) &fake_session1;
 	session1_index_marker = (Relation) &fake_session2;
 	session2_heap_marker = (Relation) &saved_session;
@@ -1283,6 +1308,8 @@ test_session_async_state_is_session_local(PG_FUNCTION_ARGS)
 	saved_registered_listener = *PgCurrentAsyncRegisteredListenerRef();
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 	session1_table_marker = (HTAB *) &fake_session1;
 	session2_table_marker = (HTAB *) &fake_session2;
 
@@ -1369,6 +1396,8 @@ test_session_encoding_state_is_session_local(PG_FUNCTION_ARGS)
 	saved_pending_client_encoding = *PgCurrentPendingClientEncodingRef();
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 	session1_list_marker = (List *) &fake_session1;
 	session2_list_marker = (List *) &fake_session2;
 	session1_to_server_marker = (FmgrInfo *) &fake_session1;
@@ -1500,6 +1529,8 @@ test_session_temp_file_state_is_session_local(PG_FUNCTION_ARGS)
 	saved_next_temp_table_space = *PgCurrentNextTempTableSpaceRef();
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 
 	PG_TRY();
 	{
@@ -1596,6 +1627,8 @@ test_session_random_state_is_session_local(PG_FUNCTION_ARGS)
 	saved_session = CurrentPgSession;
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 
 	pg_prng_fseed(&expected1, 0.25);
 	expected1_first = pg_prng_double(&expected1);
@@ -1660,6 +1693,8 @@ test_session_optimizer_state_is_session_local(PG_FUNCTION_ARGS)
 	saved_session = CurrentPgSession;
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 	session1_proof_marker = (HTAB *) &fake_session1;
 	session2_proof_marker = (HTAB *) &fake_session2;
 
@@ -1724,6 +1759,8 @@ test_session_plan_cache_state_is_session_local(PG_FUNCTION_ARGS)
 	saved_session = CurrentPgSession;
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 	dlist_node_init(&session1_saved_node);
 	dlist_node_init(&session1_expr_node);
 	dlist_node_init(&session2_saved_node);
@@ -1785,6 +1822,8 @@ test_session_namespace_state_is_session_local(PG_FUNCTION_ARGS)
 	saved_session = CurrentPgSession;
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 	session1_path = list_make2_oid(11, 12);
 	session2_path = list_make1_oid(21);
 
@@ -2017,6 +2056,8 @@ test_session_prepared_statement_state_is_session_local(PG_FUNCTION_ARGS)
 	saved_prepared_queries = *PgCurrentPreparedQueriesRef();
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 	session1_marker = (HTAB *) &fake_session1;
 	session2_marker = (HTAB *) &fake_session2;
 
@@ -2265,6 +2306,8 @@ test_session_connection_guc_state_is_session_local(PG_FUNCTION_ARGS)
 		pstrdup(GetConfigOption("tcp_user_timeout", false, false));
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 
 	PG_TRY();
 	{
@@ -2449,6 +2492,8 @@ test_session_parser_state_is_session_local(PG_FUNCTION_ARGS)
 	saved_operator_lookup_cache = *PgCurrentOperatorLookupCacheRef();
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 	session1_operator_cache = (HTAB *) &fake_session1;
 	session2_operator_cache = (HTAB *) &fake_session2;
 
@@ -2595,6 +2640,8 @@ test_session_vacuum_state_is_session_local(PG_FUNCTION_ARGS)
 		saved_values[i] = pstrdup(GetConfigOption(guc_names[i], false, false));
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 
 	PG_TRY();
 	{
@@ -2773,6 +2820,8 @@ test_session_buffer_io_state_is_session_local(PG_FUNCTION_ARGS)
 		saved_values[i] = pstrdup(GetConfigOption(guc_names[i], false, false));
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 
 	PG_TRY();
 	{
@@ -2880,6 +2929,8 @@ test_session_xact_defaults_are_session_local(PG_FUNCTION_ARGS)
 		pstrdup(GetConfigOption("synchronous_commit", false, false));
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 
 	PG_TRY();
 	{
@@ -3027,6 +3078,8 @@ test_session_lock_wait_state_is_session_local(PG_FUNCTION_ARGS)
 #endif
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 
 	PG_TRY();
 	{
@@ -3325,6 +3378,8 @@ test_session_logging_state_is_session_local(PG_FUNCTION_ARGS)
 		pstrdup(GetConfigOption("backtrace_functions", false, false));
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 
 	PG_TRY();
 	{
@@ -3702,6 +3757,8 @@ test_session_pgstat_state_is_session_local(PG_FUNCTION_ARGS)
 	saved_last_session_report_time = *PgCurrentPgStatLastSessionReportTimeRef();
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 
 	PG_TRY();
 	{
@@ -3832,6 +3889,8 @@ test_session_query_id_state_is_session_local(PG_FUNCTION_ARGS)
 	saved_query_id_enabled = query_id_enabled;
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 
 	PG_TRY();
 	{
@@ -3908,6 +3967,8 @@ test_session_storage_guc_state_is_session_local(PG_FUNCTION_ARGS)
 		pstrdup(GetConfigOption("file_copy_method", false, false));
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 
 	PG_TRY();
 	{
@@ -3982,6 +4043,8 @@ test_session_user_guc_state_is_session_local(PG_FUNCTION_ARGS)
 		pstrdup(GetConfigOption("createrole_self_grant", false, false));
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 
 	PG_TRY();
 	{
@@ -4053,6 +4116,128 @@ test_session_user_guc_state_is_session_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_session_user_identity_state_is_session_local);
+Datum
+test_session_user_identity_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	PgSessionUserIdentityState *identity_state;
+	Oid			userid;
+	int			sec_context;
+	bool		sec_def_context;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		identity_state = PgCurrentUserIdentityState();
+		ok = ok && identity_state->initialized;
+		ok = ok && identity_state->authenticated_user_id == InvalidOid;
+		ok = ok && identity_state->session_user_id == InvalidOid;
+		ok = ok && identity_state->outer_user_id == InvalidOid;
+		ok = ok && identity_state->current_user_id == InvalidOid;
+		ok = ok && identity_state->system_user == NULL;
+		ok = ok && !identity_state->session_user_is_superuser;
+		ok = ok && identity_state->security_restriction_context == 0;
+		ok = ok && !identity_state->set_role_is_active;
+
+		identity_state->authenticated_user_id = 10;
+		identity_state->session_user_id = 11;
+		identity_state->outer_user_id = 12;
+		identity_state->current_user_id = 13;
+		identity_state->system_user = "auth_method_a:authn_id_a";
+		identity_state->session_user_is_superuser = true;
+		identity_state->security_restriction_context =
+			SECURITY_RESTRICTED_OPERATION | SECURITY_NOFORCE_RLS;
+		identity_state->set_role_is_active = true;
+
+		ok = ok && GetAuthenticatedUserId() == 10;
+		ok = ok && GetSessionUserId() == 11;
+		ok = ok && GetOuterUserId() == 12;
+		ok = ok && GetUserId() == 13;
+		ok = ok && GetSessionUserIsSuperuser();
+		ok = ok && strcmp(GetSystemUser(), "auth_method_a:authn_id_a") == 0;
+		ok = ok && GetCurrentRoleId() == 12;
+		ok = ok && InSecurityRestrictedOperation();
+		ok = ok && InNoForceRLSOperation();
+		ok = ok && !InLocalUserIdChange();
+		GetUserIdAndSecContext(&userid, &sec_context);
+		ok = ok && userid == 13;
+		ok = ok && sec_context == (SECURITY_RESTRICTED_OPERATION |
+								   SECURITY_NOFORCE_RLS);
+
+		SetUserIdAndSecContext(14, SECURITY_LOCAL_USERID_CHANGE);
+		ok = ok && GetUserId() == 14;
+		ok = ok && InLocalUserIdChange();
+		GetUserIdAndContext(&userid, &sec_def_context);
+		ok = ok && userid == 14;
+		ok = ok && sec_def_context;
+		SetUserIdAndContext(15, false);
+		ok = ok && GetUserId() == 15;
+		ok = ok && !InLocalUserIdChange();
+
+		PgSetCurrentSession(&fake_session2);
+		identity_state = PgCurrentUserIdentityState();
+		ok = ok && identity_state->initialized;
+		ok = ok && identity_state->authenticated_user_id == InvalidOid;
+		ok = ok && identity_state->session_user_id == InvalidOid;
+		ok = ok && identity_state->outer_user_id == InvalidOid;
+		ok = ok && identity_state->current_user_id == InvalidOid;
+		ok = ok && identity_state->system_user == NULL;
+		ok = ok && !identity_state->session_user_is_superuser;
+		ok = ok && identity_state->security_restriction_context == 0;
+		ok = ok && !identity_state->set_role_is_active;
+
+		identity_state->authenticated_user_id = 20;
+		identity_state->session_user_id = 21;
+		identity_state->outer_user_id = 22;
+		identity_state->current_user_id = 23;
+		identity_state->system_user = "auth_method_b:authn_id_b";
+		identity_state->session_user_is_superuser = false;
+		identity_state->set_role_is_active = false;
+
+		ok = ok && GetAuthenticatedUserId() == 20;
+		ok = ok && GetSessionUserId() == 21;
+		ok = ok && GetOuterUserId() == 22;
+		ok = ok && GetUserId() == 23;
+		ok = ok && !GetSessionUserIsSuperuser();
+		ok = ok && strcmp(GetSystemUser(), "auth_method_b:authn_id_b") == 0;
+		ok = ok && GetCurrentRoleId() == InvalidOid;
+		ok = ok && !InSecurityRestrictedOperation();
+		ok = ok && !InNoForceRLSOperation();
+		ok = ok && !InLocalUserIdChange();
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && GetAuthenticatedUserId() == 10;
+		ok = ok && GetSessionUserId() == 11;
+		ok = ok && GetOuterUserId() == 12;
+		ok = ok && GetUserId() == 15;
+		ok = ok && GetSessionUserIsSuperuser();
+		ok = ok && strcmp(GetSystemUser(), "auth_method_a:authn_id_a") == 0;
+		ok = ok && GetCurrentRoleId() == 12;
+		ok = ok && !InLocalUserIdChange();
+
+		PgSetCurrentSession(saved_session);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "user identity state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_session_command_guc_state_is_session_local);
 Datum
 test_session_command_guc_state_is_session_local(PG_FUNCTION_ARGS)
@@ -4074,6 +4259,8 @@ test_session_command_guc_state_is_session_local(PG_FUNCTION_ARGS)
 		pstrdup(GetConfigOption("trace_notify", false, false));
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 
 	PG_TRY();
 	{
@@ -4176,6 +4363,8 @@ test_session_replication_guc_state_is_session_local(PG_FUNCTION_ARGS)
 								false, false));
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 
 	PG_TRY();
 	{
@@ -4363,6 +4552,8 @@ test_session_general_guc_state_is_session_local(PG_FUNCTION_ARGS)
 		pstrdup(GetConfigOption("gin_pending_list_limit", false, false));
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 
 	PG_TRY();
 	{
@@ -4669,6 +4860,8 @@ test_session_access_wal_guc_state_is_session_local(PG_FUNCTION_ARGS)
 		pstrdup(GetConfigOption("wal_skip_threshold", false, false));
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 
 	PG_TRY();
 	{
@@ -4889,6 +5082,8 @@ test_session_misc_guc_state_is_session_local(PG_FUNCTION_ARGS)
 		pstrdup(GetConfigOption("session_preload_libraries", false, false));
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 
 	PG_TRY();
 	{
@@ -5048,6 +5243,8 @@ test_session_sort_guc_state_is_session_local(PG_FUNCTION_ARGS)
 #endif
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 
 	PG_TRY();
 	{
@@ -5156,6 +5353,8 @@ test_session_jit_guc_state_is_session_local(PG_FUNCTION_ARGS)
 		pstrdup(GetConfigOption("jit_optimize_above_cost", false, false));
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 
 	PG_TRY();
 	{
@@ -5332,6 +5531,8 @@ test_session_query_memory_state_is_session_local(PG_FUNCTION_ARGS)
 								false, false));
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 
 	PG_TRY();
 	{
@@ -5464,6 +5665,8 @@ test_session_planner_cost_state_is_session_local(PG_FUNCTION_ARGS)
 								false, false));
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 
 	PG_TRY();
 	{
@@ -5764,6 +5967,8 @@ test_session_planner_method_state_is_session_local(PG_FUNCTION_ARGS)
 	saved_session = CurrentPgSession;
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
 
 	for (i = 0; i < lengthof(bool_settings); i++)
 		saved_bool_values[i] =

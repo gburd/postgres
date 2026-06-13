@@ -416,6 +416,19 @@ typedef struct PgSessionUserGUCState
 	bool		createrole_self_grant_options_set;
 } PgSessionUserGUCState;
 
+typedef struct PgSessionUserIdentityState
+{
+	bool		initialized;
+	Oid			authenticated_user_id;
+	Oid			session_user_id;
+	Oid			outer_user_id;
+	Oid			current_user_id;
+	const char *system_user;
+	bool		session_user_is_superuser;
+	int			security_restriction_context;
+	bool		set_role_is_active;
+} PgSessionUserIdentityState;
+
 typedef struct PgSessionCommandGUCState
 {
 	bool		initialized;
@@ -843,6 +856,7 @@ struct PgSession
 	PgSessionQueryIdState query_id;
 	PgSessionStorageGUCState storage_guc;
 	PgSessionUserGUCState user_guc;
+	PgSessionUserIdentityState user_identity;
 	PgSessionCommandGUCState command_guc;
 	PgSessionReplicationGUCState replication_guc;
 	PgSessionGeneralGUCState general_guc;
@@ -1097,6 +1111,7 @@ extern char **PgCurrentLocaleMonetaryRef(void);
 extern char **PgCurrentLocaleNumericRef(void);
 extern char **PgCurrentLocaleTimeRef(void);
 extern int *PgCurrentIcuValidationLevelRef(void);
+extern PgSessionUserIdentityState *PgCurrentUserIdentityState(void);
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);
