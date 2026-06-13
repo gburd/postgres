@@ -115,8 +115,10 @@ Important current files:
   generated GUC table stores direct pointers for many variables during
   `InitializeGUCVariablePointers()`. Variables written only by assign hooks,
   such as parsed `DateStyle`/`DateOrder`, can be moved independently, but
-  direct-pointer GUCs such as `IntervalStyle` need a GUC-table pointer
-  rebind/adoption mechanism first.
+  direct-pointer GUCs need a GUC-table pointer rebind/adoption mechanism.
+  `IntervalStyle` is the first bridged example; extend
+  `RebindSessionGUCVariablePointers()` when moving more direct-pointer GUC
+  backing variables under runtime/session/execution objects.
 - Avoid broad mechanical churn unless it unlocks a specific migration step.
 - Do not remove process isolation paths merely because threaded mode exists.
 
@@ -320,7 +322,14 @@ Important current files:
   Direct isolation runs can fail the same way from build-tree binaries. Patch
   `src/test/isolation/isolationtester` and
   `src/test/isolation/pg_isolation_regress` to the same temp-install
-  `libpq.5.dylib` before rerunning them.
+  `libpq.5.dylib` before rerunning them. Direct TAP runs that pass
+  `PG_REGRESS="$PWD/src/test/regress/pg_regress"` can fail during
+  `pg_regress --config-auth` with signal 6 for the same reason after
+  rebuilding `src/test/regress`; patch `src/test/regress/pg_regress` too:
+
+  ```sh
+  install_name_tool -change /usr/local/pgsql/lib/libpq.5.dylib "$PWD/tmp_install/usr/local/pgsql/lib/libpq.5.dylib" src/test/regress/pg_regress
+  ```
 
   `gmake -C src/test/regress check-tests` recreates `tmp_install`, so a
   previously patched `psql` can become unpatched again. If that target fails

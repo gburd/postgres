@@ -70,8 +70,6 @@ PG_GLOBAL_RUNTIME bool IsPostmasterEnvironment = false;
 PG_THREAD_LOCAL PG_GLOBAL_CARRIER bool IsUnderPostmaster = false;
 PG_GLOBAL_RUNTIME bool IsBinaryUpgrade = false;
 
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int IntervalStyle = INTSTYLE_POSTGRES;
-
 PG_GLOBAL_RUNTIME bool enableFsync = true;
 PG_THREAD_LOCAL PG_GLOBAL_SESSION bool allowSystemTableMods = false;
 PG_THREAD_LOCAL PG_GLOBAL_SESSION int work_mem = 4096;

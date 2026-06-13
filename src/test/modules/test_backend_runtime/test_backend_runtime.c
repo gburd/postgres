@@ -27,6 +27,7 @@
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"
 #include "utils/backend_runtime.h"
+#include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
 
@@ -533,45 +534,62 @@ test_session_datetime_state_is_session_local(PG_FUNCTION_ARGS)
 	PgSession	fake_session2;
 	int			saved_date_style;
 	int			saved_date_order;
+	char	   *saved_interval_style;
 	bool		ok = true;
 
 	saved_session = CurrentPgSession;
 	saved_date_style = DateStyle;
 	saved_date_order = DateOrder;
+	saved_interval_style = pstrdup(GetConfigOption("IntervalStyle",
+												   false, false));
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
 
 	PG_TRY();
 	{
-		CurrentPgSession = &fake_session1;
+		PgSetCurrentSession(&fake_session1);
 		ok = ok && DateStyle == USE_ISO_DATES;
 		ok = ok && DateOrder == DATEORDER_MDY;
+		ok = ok && IntervalStyle == INTSTYLE_POSTGRES;
 		DateStyle = USE_SQL_DATES;
 		DateOrder = DATEORDER_DMY;
+		SetConfigOption("IntervalStyle", "sql_standard",
+						PGC_USERSET, PGC_S_SESSION);
+		ok = ok && IntervalStyle == INTSTYLE_SQL_STANDARD;
 
-		CurrentPgSession = &fake_session2;
+		PgSetCurrentSession(&fake_session2);
 		ok = ok && DateStyle == USE_ISO_DATES;
 		ok = ok && DateOrder == DATEORDER_MDY;
+		ok = ok && IntervalStyle == INTSTYLE_POSTGRES;
 		DateStyle = USE_GERMAN_DATES;
 		DateOrder = DATEORDER_YMD;
+		SetConfigOption("IntervalStyle", "iso_8601",
+						PGC_USERSET, PGC_S_SESSION);
+		ok = ok && IntervalStyle == INTSTYLE_ISO_8601;
 
-		CurrentPgSession = &fake_session1;
+		PgSetCurrentSession(&fake_session1);
 		ok = ok && DateStyle == USE_SQL_DATES;
 		ok = ok && DateOrder == DATEORDER_DMY;
+		ok = ok && IntervalStyle == INTSTYLE_SQL_STANDARD;
 
-		CurrentPgSession = &fake_session2;
+		PgSetCurrentSession(&fake_session2);
 		ok = ok && DateStyle == USE_GERMAN_DATES;
 		ok = ok && DateOrder == DATEORDER_YMD;
+		ok = ok && IntervalStyle == INTSTYLE_ISO_8601;
 
-		CurrentPgSession = saved_session;
+		PgSetCurrentSession(saved_session);
 		DateStyle = saved_date_style;
 		DateOrder = saved_date_order;
+		SetConfigOption("IntervalStyle", saved_interval_style,
+						PGC_USERSET, PGC_S_SESSION);
 	}
 	PG_CATCH();
 	{
-		CurrentPgSession = saved_session;
+		PgSetCurrentSession(saved_session);
 		DateStyle = saved_date_style;
 		DateOrder = saved_date_order;
+		SetConfigOption("IntervalStyle", saved_interval_style,
+						PGC_USERSET, PGC_S_SESSION);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();

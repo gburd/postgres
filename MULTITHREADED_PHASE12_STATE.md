@@ -761,14 +761,14 @@ backing fields under `PgSession`:
   adopt any early fallback date/time state into the logical session object
   before resetting fallback storage to the default values.
 
-This is deliberately narrower than "all date/time GUCs". `IntervalStyle`
-remains a direct `PG_THREAD_LOCAL PG_GLOBAL_SESSION` variable for now because
-the generated GUC table stores a direct pointer to its backing variable. An
-initial attempt to move `IntervalStyle` through a dynamic lvalue macro caused
-the GUC record to keep pointing at early fallback storage, and core regression
-then showed widespread interval-format output diffs. Direct-pointer GUCs need a
-separate Phase 12 GUC-table rebind/adoption mechanism before they can safely
-move under `PgSession`.
+This slice was deliberately narrower than "all date/time GUCs". `IntervalStyle`
+remained a direct `PG_THREAD_LOCAL PG_GLOBAL_SESSION` variable here because the
+generated GUC table stores a direct pointer to its backing variable. An initial
+attempt to move `IntervalStyle` through a dynamic lvalue macro caused the GUC
+record to keep pointing at early fallback storage, and core regression then
+showed widespread interval-format output diffs. Direct-pointer GUCs therefore
+needed a separate Phase 12 GUC-table rebind/adoption mechanism before they
+could safely move under `PgSession`.
 
 Validation for this slice:
 
@@ -792,4 +792,62 @@ Validation for this slice:
   `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`;
 - core process-mode `src/test/regress` `parallel_schedule` passed all 245
   tests after narrowing this slice to exclude direct-pointer `IntervalStyle`;
+- clean `gmake -C contrib -j8` passed after the header migration.
+
+## Session IntervalStyle Direct GUC Pointer Bridge
+
+The eighteenth Phase 12 slice moves the `IntervalStyle` direct-pointer GUC
+backing field under `PgSession` and introduces the first GUC pointer rebind
+hook:
+
+- `PgSessionDateTimeState` now also owns `interval_style`;
+- `IntervalStyle` remains a source-compatible lvalue macro in `miscadmin.h`;
+- the macro routes through `PgCurrentIntervalStyleRef()`, which returns the
+  current logical session's interval formatting field;
+- zeroed logical session objects lazily initialize `IntervalStyle` to the
+  historical default, `INTSTYLE_POSTGRES`;
+- `PgSetCurrentSession()` centralizes session activation for runtime-owned
+  session switches and calls `RebindSessionGUCVariablePointers()`;
+- `InitializePgProcessRuntime()` and `InstallPgThreadBackendRuntimeState()`
+  now activate their session through `PgSetCurrentSession()`;
+- `RebindSessionGUCVariablePointers()` refreshes the generated
+  `IntervalStyle` GUC record's cached backing-variable pointer to the current
+  `PgSession` field when the GUC table exists, and is a no-op before GUC
+  initialization.
+
+This establishes the pattern needed for other direct-pointer GUC backing
+variables whose generated GUC records cache C-variable addresses in
+`InitializeGUCVariablePointers()`. It is still a narrow bridge, not a complete
+session-swappable GUC stack: the broader GUC table, nesting, source, and reset
+state remain carrier-local/thread-local for now. Later Phase 12 work should
+extend this rebind/adoption mechanism or move the whole GUC state bucket under
+the logical session before pooled carrier scheduling depends on arbitrary
+session migration.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `globals.o`, `guc.o`,
+  `test_backend_runtime.o`, `variable.o`, `date.o`, `timestamp.o`, and
+  `datetime.o`;
+- because `miscadmin.h` changed another exported session global into a
+  compatibility macro, `gmake -C src/backend clean` plus generated-header
+  recovery was used before the clean rebuild;
+- clean full `gmake -j8` passed;
+- `gmake install DESTDIR="$PWD/tmp_install"` passed, followed by rebuilding and
+  reinstalling `src/test/modules/test_backend_runtime`, PL/pgSQL,
+  `src/test/regress`, `libpqwalreceiver`, and `src/backend/snowball`;
+- focused `test_backend_runtime` regression passed. The
+  `test_session_datetime_state_is_session_local()` function now switches
+  sessions through `PgSetCurrentSession()`, sets `IntervalStyle` through the
+  GUC machinery, and proves the lvalue follows the active session after GUC
+  pointer rebinding;
+- direct threaded-runtime TAP coverage passed for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`
+  after setting `PERL5LIB="$HOME/perl5/lib/perl5:..."` for the local
+  `IPC::Run` install and patching build-tree `src/test/regress/pg_regress` to
+  use the temp-install `libpq.5.dylib`;
+- core process-mode `src/test/regress` `parallel_schedule` passed all 245
+  tests after moving `IntervalStyle`, covering the interval/date formatting
+  regression that the earlier stale-pointer attempt exposed;
 - clean `gmake -C contrib -j8` passed after the header migration.

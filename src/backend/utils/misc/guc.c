@@ -1562,6 +1562,25 @@ InitializeThreadedSessionGUCOptions(void)
 }
 
 /*
+ * Refresh direct GUC variable pointers that now live behind the current
+ * PgSession.  build_guc_variables() copies static GUC metadata and stores raw
+ * C-variable addresses, so a later logical session switch must update any
+ * records whose backing storage moved from TLS globals into PgSession.
+ */
+void
+RebindSessionGUCVariablePointers(void)
+{
+	struct config_generic *gconf;
+
+	if (guc_hashtab == NULL)
+		return;
+
+	gconf = find_option("IntervalStyle", false, false, PANIC);
+	Assert(gconf->vartype == PGC_ENUM);
+	gconf->_enum.variable = PgCurrentIntervalStyleRef();
+}
+
+/*
  * Assign any GUC values that can come from the server's environment.
  *
  * This is called from InitializeGUCOptions, and also from ProcessConfigFile

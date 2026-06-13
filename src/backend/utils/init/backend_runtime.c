@@ -27,6 +27,7 @@
 #include "storage/procsignal.h"
 #include "storage/sinval.h"
 #include "utils/backend_runtime.h"
+#include "utils/guc.h"
 #include "utils/resowner.h"
 
 PG_GLOBAL_RUNTIME PgRuntime *CurrentPgRuntime = NULL;
@@ -60,7 +61,8 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionDatabaseState early_session_da
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionDateTimeState early_session_datetime = {
 	.initialized = true,
 	.date_style = USE_ISO_DATES,
-	.date_order = DATEORDER_MDY
+	.date_order = DATEORDER_MDY,
+	.interval_style = INTSTYLE_POSTGRES
 };
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendPendingInterruptState early_pending_interrupts;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInterruptHoldoffState early_interrupt_holdoffs;
@@ -191,6 +193,7 @@ PgSessionInitializeDateTimeState(PgSessionDateTimeState *datetime)
 	datetime->initialized = true;
 	datetime->date_style = USE_ISO_DATES;
 	datetime->date_order = DATEORDER_MDY;
+	datetime->interval_style = INTSTYLE_POSTGRES;
 }
 
 static void
@@ -364,7 +367,7 @@ InitializePgProcessRuntime(void)
 	CurrentPgRuntime = &process_runtime;
 	CurrentPgCarrier = &process_carrier;
 	CurrentPgBackend = &process_backend;
-	CurrentPgSession = &process_session;
+	PgSetCurrentSession(&process_session);
 	CurrentPgConnection = &process_connection;
 	CurrentPgExecution = &process_execution;
 
@@ -450,7 +453,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	CurrentPgRuntime = &thread_runtime;
 	CurrentPgCarrier = &state->carrier;
 	CurrentPgBackend = &state->backend;
-	CurrentPgSession = &state->session;
+	PgSetCurrentSession(&state->session);
 	CurrentPgConnection = &state->connection;
 	CurrentPgExecution = &state->execution;
 
@@ -467,6 +470,13 @@ InitializePgThreadBackendRuntime(PgThreadBackendRuntimeState *state,
 	InitializePgThreadBackendRuntimeState(state, backend_type, port,
 										  interrupt_latch);
 	InstallPgThreadBackendRuntimeState(state);
+}
+
+void
+PgSetCurrentSession(PgSession *session)
+{
+	CurrentPgSession = session;
+	RebindSessionGUCVariablePointers();
 }
 
 Session *
@@ -552,6 +562,12 @@ int *
 PgCurrentDateOrderRef(void)
 {
 	return &PgCurrentSessionDateTimeState()->date_order;
+}
+
+int *
+PgCurrentIntervalStyleRef(void)
+{
+	return &PgCurrentSessionDateTimeState()->interval_style;
 }
 
 struct Port **

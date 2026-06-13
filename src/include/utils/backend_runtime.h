@@ -194,6 +194,7 @@ typedef struct PgSessionDateTimeState
 	bool		initialized;
 	int			date_style;
 	int			date_order;
+	int			interval_style;
 } PgSessionDateTimeState;
 
 #define PG_CONNECTION_SEND_BUFFER_SIZE 8192
@@ -374,6 +375,7 @@ extern void InitializePgThreadBackendRuntime(PgThreadBackendRuntimeState *state,
 											 BackendType backend_type,
 											 struct Port *port,
 											 struct Latch *interrupt_latch);
+extern void PgSetCurrentSession(PgSession *session);
 extern Session *PgSessionGetLegacySession(PgSession *session);
 extern void PgSessionSetLegacySession(PgSession *session,
 									   Session *legacy_session);

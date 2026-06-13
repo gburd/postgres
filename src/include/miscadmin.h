@@ -317,6 +317,7 @@ extern bool *PgCurrentMyDatabaseHasLoginEventTriggersRef(void);
 
 extern int *PgCurrentDateStyleRef(void);
 extern int *PgCurrentDateOrderRef(void);
+extern int *PgCurrentIntervalStyleRef(void);
 
 #define DateStyle (*PgCurrentDateStyleRef())
 #define DateOrder (*PgCurrentDateOrderRef())
@@ -333,7 +334,7 @@ extern int *PgCurrentDateOrderRef(void);
 #define INTSTYLE_SQL_STANDARD		2
 #define INTSTYLE_ISO_8601			3
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int IntervalStyle;
+#define IntervalStyle (*PgCurrentIntervalStyleRef())
 
 #define MAXTZLEN		10		/* max TZ name len, not counting tr. null */
 
