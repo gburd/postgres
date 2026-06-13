@@ -531,7 +531,7 @@ secure_open_gssapi(Port *port)
 	 * Allocate subsidiary Port data for GSSAPI operations.
 	 */
 	port->gss = (pg_gssinfo *)
-		MemoryContextAllocZero(TopMemoryContext, sizeof(pg_gssinfo));
+		MemoryContextAllocZero(GetMemoryChunkContext(port), sizeof(pg_gssinfo));
 
 	delegated_creds = GSS_C_NO_CREDENTIAL;
 	port->gss->delegated_creds = false;

@@ -823,9 +823,11 @@ buffer in `socket_close()`, and `Port` plus most startup packet/remote-host
 strings now live in a dedicated `PortContext` that `socket_close()` deletes
 during backend exit. Follow-up work moved the connection authentication
 identity, forward-confirmed remote hostname, and implicit reject HBA record
-into the same context. This removes another concrete connection-owned
-allocation group from the retained top-memory bucket before PMChild exit
-accounting runs.
+into the same context. SSL/GSS connection-owned identity state now follows the
+same lifetime: `pg_gssinfo`, GSS principal strings, and SSL peer certificate
+names are allocated in `PortContext`. This removes another concrete
+connection-owned allocation group from the retained top-memory bucket before
+PMChild exit accounting runs.
 PMChild assignment and slot release now also scrub stale carrier-visible signal
 ids and thread-exit payloads before reuse. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live

@@ -5308,16 +5308,55 @@ more authentication and HBA-adjacent connection data:
   record tied to the rejected connection rather than carrier top memory.
 
 This still does not prove full threaded `TopMemoryContext` reclamation.
-Provider-specific authentication scratch, SSL/GSS state, and other caches need
-separate lifetime decisions where they are not already connection-owned. It
-does close the obvious remaining `Port`-reachable auth/hostname allocations
-called out by the previous `PortContext` slice.
+Provider-specific authentication scratch, SSL/GSS state, and other caches
+needed separate lifetime decisions where they were not already
+connection-owned. It did close the obvious remaining `Port`-reachable
+auth/hostname allocations called out by the previous `PortContext` slice.
 
 Validation for this slice:
 
 - `gmake -C src/backend/libpq auth.o hba.o` passed;
 - full `gmake -j8` passed;
 - full `gmake -j8 DESTDIR="$PWD/tmp_install" install` passed;
+- `gmake -C src/test/modules/test_backend_runtime DESTDIR="$PWD/tmp_install" install` passed;
+- direct threaded-runtime TAP passed all 87 tests with local
+  `/Users/samwillis/perl5` `PERL5LIB` paths before and after
+  `gmake -C src/test/modules/test_backend_runtime check` recreated
+  `tmp_install`;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode regression and still reported TAP disabled by configure;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- `git diff --check` passed.
+
+## Backend SSL/GSS Connection Identity Cleanup
+
+The one-hundred-fifteenth Phase 12 slice extends `PortContext` ownership to
+SSL/GSS connection identity state:
+
+- GSS and SSPI authentication now allocate the `pg_gssinfo` workspace in
+  `PortContext` when it is created from `auth.c`;
+- GSS encrypted-transport startup now allocates its `pg_gssinfo` workspace in
+  `PortContext`;
+- `pg_GSS_checkauth()` now stores the display principal in `PortContext`,
+  matching the authenticated identity string stored by `set_authn_id()`;
+- OpenSSL peer common-name and distinguished-name strings now allocate in
+  `PortContext` instead of `TopMemoryContext`.
+
+This keeps the connection-owned SSL/GSS identity structures under the same
+explicit cleanup boundary as `Port`: `socket_close()` releases external
+SSL/GSS handles first, then deletes `PortContext`. It does not prove every
+provider-specific authentication scratch allocation is connection-owned, and
+the broader threaded teardown model remains a Gate E2 blocker.
+
+Validation for this slice:
+
+- `gmake -C src/backend/libpq auth.o` passed;
+- static scans of `auth.c`, `be-secure-gssapi.c`, and `be-secure-openssl.c`
+  found no remaining `TopMemoryContext` allocation for `pg_gssinfo`, the GSS
+  principal string, or SSL peer certificate-name strings;
+- full non-SSL/non-GSS `gmake -j8` passed;
+- full non-SSL/non-GSS `gmake -j8 DESTDIR="$PWD/tmp_install" install` passed;
 - `gmake -C src/test/modules/test_backend_runtime DESTDIR="$PWD/tmp_install" install` passed;
 - direct threaded-runtime TAP passed all 87 tests with local
   `/Users/samwillis/perl5` `PERL5LIB` paths before and after

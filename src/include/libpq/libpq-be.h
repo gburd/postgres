@@ -80,8 +80,9 @@ typedef struct
 /*
  * ClientConnectionInfo includes the fields describing the client connection
  * that are copied over to parallel workers as nothing from Port does that.
- * The same rules apply for allocations here as for Port (everything must be
- * malloc'd or palloc'd in TopMemoryContext).
+ * Backend connection-owned data follows the Port lifetime; serialized
+ * parallel-worker copies are restored into TopMemoryContext because there is
+ * no Port object in that path.
  *
  * If you add a struct member here, remember to also handle serialization in
  * SerializeClientConnectionInfo() and co.

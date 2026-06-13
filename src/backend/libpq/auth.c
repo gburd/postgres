@@ -549,7 +549,7 @@ ClientAuthentication(Port *port)
 			/* We might or might not have the gss workspace already */
 			if (port->gss == NULL)
 				port->gss = (pg_gssinfo *)
-					MemoryContextAllocZero(TopMemoryContext,
+					MemoryContextAllocZero(GetMemoryChunkContext(port),
 										   sizeof(pg_gssinfo));
 			port->gss->auth = true;
 
@@ -573,7 +573,7 @@ ClientAuthentication(Port *port)
 #ifdef ENABLE_SSPI
 			if (port->gss == NULL)
 				port->gss = (pg_gssinfo *)
-					MemoryContextAllocZero(TopMemoryContext,
+					MemoryContextAllocZero(GetMemoryChunkContext(port),
 										   sizeof(pg_gssinfo));
 			sendAuthRequest(port, AUTH_REQ_SSPI, NULL, 0);
 			status = pg_SSPI_recvauth(port);
@@ -1116,7 +1116,7 @@ pg_GSS_checkauth(Port *port)
 	 * waiting for the usermap check below, because authentication has already
 	 * succeeded and we want the log file to reflect that.
 	 */
-	port->gss->princ = MemoryContextStrdup(TopMemoryContext, princ);
+	port->gss->princ = MemoryContextStrdup(GetMemoryChunkContext(port), princ);
 	set_authn_id(port, princ);
 
 	/*

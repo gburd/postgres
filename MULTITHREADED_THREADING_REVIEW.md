@@ -413,9 +413,12 @@ frees the frontend/backend wait set and dynamically sized send buffer in
 `socket_close()`, and `Port` plus most startup packet/remote-host strings now
 live in a dedicated `PortContext` that is deleted from `socket_close()`.
 Follow-up work moved the connection authentication identity, forward-confirmed
-remote hostname, and implicit reject HBA record into the same context. Those
-connection-owned allocations therefore no longer survive only as retained
-top-memory accounting. PMChild cleanup and slot release now require a
+remote hostname, and implicit reject HBA record into the same context.
+SSL/GSS connection-owned identity state now follows the same lifetime:
+`pg_gssinfo`, GSS principal strings, and SSL peer certificate names are
+allocated in `PortContext`. Those connection-owned allocations therefore no
+longer survive only as retained top-memory accounting. PMChild cleanup and slot
+release now require a
 successful native thread join; a join failure restores the claimed thread-exit
 report and leaves the PMChild active for retry instead of releasing a possibly
 still-owned slot. PMChild thread-exit publication now

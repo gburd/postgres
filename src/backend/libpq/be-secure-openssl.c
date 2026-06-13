@@ -1079,7 +1079,7 @@ aloop:
 		{
 			char	   *peer_cn;
 
-			peer_cn = MemoryContextAlloc(TopMemoryContext, len + 1);
+			peer_cn = MemoryContextAlloc(GetMemoryChunkContext(port), len + 1);
 			r = X509_NAME_get_text_by_NID(unconstify(X509_NAME *, x509name), NID_commonName, peer_cn,
 										  len + 1);
 			peer_cn[len] = '\0';
@@ -1135,7 +1135,8 @@ aloop:
 			}
 			return -1;
 		}
-		peer_dn = MemoryContextAlloc(TopMemoryContext, bio_buf->length + 1);
+		peer_dn = MemoryContextAlloc(GetMemoryChunkContext(port),
+									 bio_buf->length + 1);
 		memcpy(peer_dn, bio_buf->data, bio_buf->length);
 		len = bio_buf->length;
 		BIO_free(bio);
