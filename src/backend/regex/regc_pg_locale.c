@@ -22,7 +22,7 @@
 #include "utils/pg_locale.h"
 #include "utils/pg_locale_c.h"
 
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION pg_locale_t pg_regex_locale;
+#define pg_regex_locale (*(pg_locale_t *) PgCurrentRegexLocaleRef())
 
 
 /*

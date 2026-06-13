@@ -563,6 +563,9 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionXactState early_execution_
 	.check_xid_alive = InvalidTransactionId
 };
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionGUCErrorState early_execution_guc_error;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionRegexState early_execution_regex;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionValgrindState early_execution_valgrind;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionSnapBuildState early_execution_snapbuild;
 
 StaticAssertDecl(PG_BACKEND_INTERRUPT_COUNT <= 32,
 				 "PgBackendInterruptMask must fit all backend interrupts");
@@ -756,6 +759,12 @@ static void PgExecutionInitializeXactState(PgExecutionXactState *xact);
 static void PgExecutionAdoptEarlyXactState(PgExecution *execution);
 static void PgExecutionInitializeGUCErrorState(PgExecutionGUCErrorState *guc_error);
 static void PgExecutionAdoptEarlyGUCErrorState(PgExecution *execution);
+static void PgExecutionInitializeRegexState(PgExecutionRegexState *regex);
+static void PgExecutionAdoptEarlyRegexState(PgExecution *execution);
+static void PgExecutionInitializeValgrindState(PgExecutionValgrindState *valgrind);
+static void PgExecutionAdoptEarlyValgrindState(PgExecution *execution);
+static void PgExecutionInitializeSnapBuildState(PgExecutionSnapBuildState *snapbuild);
+static void PgExecutionAdoptEarlySnapBuildState(PgExecution *execution);
 static PgBackendCoreState *PgCurrentCoreState(void);
 static PgSessionDatabaseState *PgCurrentSessionDatabaseState(void);
 static PgSessionTablespaceState *PgCurrentSessionTablespaceState(void);
@@ -813,6 +822,9 @@ static PgExecutionComboCidState *PgCurrentExecutionComboCidState(void);
 static PgExecutionXLogInsertState *PgCurrentExecutionXLogInsertState(void);
 static PgExecutionXactState *PgCurrentExecutionXactState(void);
 static PgExecutionGUCErrorState *PgCurrentExecutionGUCErrorState(void);
+static PgExecutionRegexState *PgCurrentExecutionRegexState(void);
+static PgExecutionValgrindState *PgCurrentExecutionValgrindState(void);
+static PgExecutionSnapBuildState *PgCurrentExecutionSnapBuildState(void);
 static PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
 static PgBackendInstrumentationState *PgCurrentBackendInstrumentationState(void);
 static PgBackendBufferState *PgCurrentBackendBufferState(void);
@@ -3002,6 +3014,57 @@ PgExecutionAdoptEarlyGUCErrorState(PgExecution *execution)
 	PgExecutionInitializeGUCErrorState(&early_execution_guc_error);
 }
 
+static void
+PgExecutionInitializeRegexState(PgExecutionRegexState *regex)
+{
+	Assert(regex != NULL);
+
+	MemSet(regex, 0, sizeof(*regex));
+}
+
+static void
+PgExecutionAdoptEarlyRegexState(PgExecution *execution)
+{
+	Assert(execution != NULL);
+
+	execution->regex = early_execution_regex;
+	PgExecutionInitializeRegexState(&early_execution_regex);
+}
+
+static void
+PgExecutionInitializeValgrindState(PgExecutionValgrindState *valgrind)
+{
+	Assert(valgrind != NULL);
+
+	MemSet(valgrind, 0, sizeof(*valgrind));
+}
+
+static void
+PgExecutionAdoptEarlyValgrindState(PgExecution *execution)
+{
+	Assert(execution != NULL);
+
+	execution->valgrind = early_execution_valgrind;
+	PgExecutionInitializeValgrindState(&early_execution_valgrind);
+}
+
+static void
+PgExecutionInitializeSnapBuildState(PgExecutionSnapBuildState *snapbuild)
+{
+	Assert(snapbuild != NULL);
+
+	MemSet(snapbuild, 0, sizeof(*snapbuild));
+}
+
+static void
+PgExecutionAdoptEarlySnapBuildState(PgExecution *execution)
+{
+	Assert(execution != NULL);
+
+	execution->snapbuild = early_execution_snapbuild;
+	PgExecutionInitializeSnapBuildState(&early_execution_snapbuild);
+}
+
 void
 InitializePgProcessRuntime(void)
 {
@@ -3147,6 +3210,9 @@ InitializePgProcessRuntime(void)
 	PgExecutionAdoptEarlyXLogInsertState(&process_execution);
 	PgExecutionAdoptEarlyXactState(&process_execution);
 	PgExecutionAdoptEarlyGUCErrorState(&process_execution);
+	PgExecutionAdoptEarlyRegexState(&process_execution);
+	PgExecutionAdoptEarlyValgrindState(&process_execution);
+	PgExecutionAdoptEarlySnapBuildState(&process_execution);
 
 	CurrentPgRuntime = &process_runtime;
 	CurrentPgCarrier = &process_carrier;
@@ -3301,6 +3367,9 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgExecutionInitializeXLogInsertState(&state->execution.xloginsert);
 	PgExecutionInitializeXactState(&state->execution.xact);
 	PgExecutionInitializeGUCErrorState(&state->execution.guc_error);
+	PgExecutionInitializeRegexState(&state->execution.regex);
+	PgExecutionInitializeValgrindState(&state->execution.valgrind);
+	PgExecutionInitializeSnapBuildState(&state->execution.snapbuild);
 }
 
 void
@@ -3390,6 +3459,9 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgExecutionAdoptEarlyXLogInsertState(&state->execution);
 	PgExecutionAdoptEarlyXactState(&state->execution);
 	PgExecutionAdoptEarlyGUCErrorState(&state->execution);
+	PgExecutionAdoptEarlyRegexState(&state->execution);
+	PgExecutionAdoptEarlyValgrindState(&state->execution);
+	PgExecutionAdoptEarlySnapBuildState(&state->execution);
 	CurrentPgRuntime = &thread_runtime;
 	CurrentPgCarrier = &state->carrier;
 	CurrentPgBackend = &state->backend;
@@ -6534,6 +6606,12 @@ PgCurrentAnalyzeStrategyRef(void)
 	return &PgCurrentExecutionAnalyzeState()->strategy;
 }
 
+void **
+PgCurrentArrayAnalyzeExtraDataRef(void)
+{
+	return &PgCurrentExecutionAnalyzeState()->array_extra_data;
+}
+
 static PgExecutionExtensionState *
 PgCurrentExecutionExtensionState(void)
 {
@@ -6907,6 +6985,57 @@ sigjmp_buf **
 PgCurrentGUCFlexFatalJmpRef(void)
 {
 	return &PgCurrentExecutionGUCErrorState()->flex_fatal_jmp;
+}
+
+static PgExecutionRegexState *
+PgCurrentExecutionRegexState(void)
+{
+	if (CurrentPgExecution == NULL)
+		return &early_execution_regex;
+
+	return &CurrentPgExecution->regex;
+}
+
+void **
+PgCurrentRegexLocaleRef(void)
+{
+	return &PgCurrentExecutionRegexState()->regex_locale;
+}
+
+static PgExecutionValgrindState *
+PgCurrentExecutionValgrindState(void)
+{
+	if (CurrentPgExecution == NULL)
+		return &early_execution_valgrind;
+
+	return &CurrentPgExecution->valgrind;
+}
+
+unsigned int *
+PgCurrentValgrindOldErrorCountRef(void)
+{
+	return &PgCurrentExecutionValgrindState()->old_error_count;
+}
+
+static PgExecutionSnapBuildState *
+PgCurrentExecutionSnapBuildState(void)
+{
+	if (CurrentPgExecution == NULL)
+		return &early_execution_snapbuild;
+
+	return &CurrentPgExecution->snapbuild;
+}
+
+struct ResourceOwnerData **
+PgCurrentSnapBuildSavedResourceOwnerDuringExportRef(void)
+{
+	return &PgCurrentExecutionSnapBuildState()->saved_resource_owner_during_export;
+}
+
+bool *
+PgCurrentSnapBuildExportInProgressRef(void)
+{
+	return &PgCurrentExecutionSnapBuildState()->export_in_progress;
 }
 
 PgConnectionSocketIOState *

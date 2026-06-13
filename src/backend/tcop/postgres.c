@@ -193,7 +193,7 @@ static void disable_statement_timeout(void);
  */
 #ifdef USE_VALGRIND
 /* This variable should be set at the top of the main loop. */
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION unsigned int old_valgrind_error_count;
+#define old_valgrind_error_count (*PgCurrentValgrindOldErrorCountRef())
 
 /*
  * If Valgrind detected any errors since old_valgrind_error_count was updated,

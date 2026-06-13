@@ -862,6 +862,7 @@ typedef struct PgExecutionAnalyzeState
 {
 	MemoryContext context;
 	BufferAccessStrategy strategy;
+	void	   *array_extra_data;
 } PgExecutionAnalyzeState;
 
 typedef struct PgExecutionExtensionState
@@ -943,6 +944,22 @@ typedef struct PgExecutionGUCErrorState
 	const char *flex_fatal_errmsg;
 	sigjmp_buf *flex_fatal_jmp;
 } PgExecutionGUCErrorState;
+
+typedef struct PgExecutionRegexState
+{
+	void	   *regex_locale;
+} PgExecutionRegexState;
+
+typedef struct PgExecutionValgrindState
+{
+	unsigned int old_error_count;
+} PgExecutionValgrindState;
+
+typedef struct PgExecutionSnapBuildState
+{
+	struct ResourceOwnerData *saved_resource_owner_during_export;
+	bool		export_in_progress;
+} PgExecutionSnapBuildState;
 
 typedef struct PgSessionDatabaseState
 {
@@ -1764,6 +1781,9 @@ struct PgExecution
 	PgExecutionXLogInsertState xloginsert;
 	PgExecutionXactState xact;
 	PgExecutionGUCErrorState guc_error;
+	PgExecutionRegexState regex;
+	PgExecutionValgrindState valgrind;
+	PgExecutionSnapBuildState snapbuild;
 };
 
 typedef struct PgThreadBackendRuntimeState
@@ -1818,6 +1838,7 @@ extern long long int *PgCurrentBaseBackupTotalChecksumFailuresRef(void);
 extern bool *PgCurrentBaseBackupNoVerifyChecksumsRef(void);
 extern MemoryContext *PgCurrentAnalyzeContextRef(void);
 extern BufferAccessStrategy *PgCurrentAnalyzeStrategyRef(void);
+extern void **PgCurrentArrayAnalyzeExtraDataRef(void);
 extern bool *PgCurrentCreatingExtensionRef(void);
 extern Oid *PgCurrentExtensionObjectRef(void);
 extern int *PgCurrentMatViewMaintenanceDepthRef(void);
@@ -2268,6 +2289,10 @@ extern const char **PgCurrentFormatDomainRef(void);
 extern unsigned int *PgCurrentConfigFileLinenoRef(void);
 extern const char **PgCurrentGUCFlexFatalErrmsgRef(void);
 extern sigjmp_buf **PgCurrentGUCFlexFatalJmpRef(void);
+extern void **PgCurrentRegexLocaleRef(void);
+extern unsigned int *PgCurrentValgrindOldErrorCountRef(void);
+extern struct ResourceOwnerData **PgCurrentSnapBuildSavedResourceOwnerDuringExportRef(void);
+extern bool *PgCurrentSnapBuildExportInProgressRef(void);
 extern PgConnectionSocketIOState *PgConnectionSocketIORef(PgConnection *connection);
 extern PgConnectionSocketIOState *PgCurrentConnectionSocketIORef(void);
 extern const PQcommMethods **PgConnectionPqCommMethodsRef(PgConnection *connection);

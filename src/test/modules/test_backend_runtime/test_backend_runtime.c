@@ -11656,6 +11656,75 @@ test_execution_guc_error_state_is_execution_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_execution_misc_scratch_state_is_execution_local);
+Datum
+test_execution_misc_scratch_state_is_execution_local(PG_FUNCTION_ARGS)
+{
+	PgExecution *saved_execution;
+	PgExecution fake_execution1;
+	PgExecution fake_execution2;
+	bool		ok = true;
+
+	saved_execution = CurrentPgExecution;
+	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
+	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+
+	PG_TRY();
+	{
+		CurrentPgExecution = &fake_execution1;
+		*PgCurrentArrayAnalyzeExtraDataRef() = &fake_execution1;
+		*PgCurrentRegexLocaleRef() = &fake_execution1;
+		*PgCurrentValgrindOldErrorCountRef() = 101;
+		*PgCurrentSnapBuildSavedResourceOwnerDuringExportRef() =
+			(ResourceOwner) &fake_execution1;
+		*PgCurrentSnapBuildExportInProgressRef() = true;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && *PgCurrentArrayAnalyzeExtraDataRef() == NULL;
+		ok = ok && *PgCurrentRegexLocaleRef() == NULL;
+		ok = ok && *PgCurrentValgrindOldErrorCountRef() == 0;
+		ok = ok && *PgCurrentSnapBuildSavedResourceOwnerDuringExportRef() ==
+			NULL;
+		ok = ok && !*PgCurrentSnapBuildExportInProgressRef();
+
+		*PgCurrentArrayAnalyzeExtraDataRef() = &fake_execution2;
+		*PgCurrentRegexLocaleRef() = &fake_execution2;
+		*PgCurrentValgrindOldErrorCountRef() = 201;
+		*PgCurrentSnapBuildSavedResourceOwnerDuringExportRef() =
+			(ResourceOwner) &fake_execution2;
+		*PgCurrentSnapBuildExportInProgressRef() = false;
+
+		CurrentPgExecution = &fake_execution1;
+		ok = ok && *PgCurrentArrayAnalyzeExtraDataRef() == &fake_execution1;
+		ok = ok && *PgCurrentRegexLocaleRef() == &fake_execution1;
+		ok = ok && *PgCurrentValgrindOldErrorCountRef() == 101;
+		ok = ok && *PgCurrentSnapBuildSavedResourceOwnerDuringExportRef() ==
+			(ResourceOwner) &fake_execution1;
+		ok = ok && *PgCurrentSnapBuildExportInProgressRef();
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && *PgCurrentArrayAnalyzeExtraDataRef() == &fake_execution2;
+		ok = ok && *PgCurrentRegexLocaleRef() == &fake_execution2;
+		ok = ok && *PgCurrentValgrindOldErrorCountRef() == 201;
+		ok = ok && *PgCurrentSnapBuildSavedResourceOwnerDuringExportRef() ==
+			(ResourceOwner) &fake_execution2;
+		ok = ok && !*PgCurrentSnapBuildExportInProgressRef();
+
+		CurrentPgExecution = saved_execution;
+	}
+	PG_CATCH();
+	{
+		CurrentPgExecution = saved_execution;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "miscellaneous execution scratch state was not execution-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_connection_socket_io_is_connection_local);
 Datum
 test_connection_socket_io_is_connection_local(PG_FUNCTION_ARGS)

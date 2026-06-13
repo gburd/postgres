@@ -7870,6 +7870,57 @@ Validation for this slice:
   GUC check-hook, formatting, and config-file scanner scratch fields across
   two fake logical executions.
 
+## Execution Misc Scratch State Bridge
+
+The one-hundred-sixty-eighth Phase 12 slice moves a small set of
+execution-scope scratch globals under `PgExecution`:
+
+- array typanalyze callback scratch state, as
+  `PgExecutionAnalyzeState.array_extra_data`;
+- regular-expression locale lookup scratch state, as
+  `PgExecutionRegexState.regex_locale`;
+- the optional Valgrind command-loop error counter scratch state, as
+  `PgExecutionValgrindState.old_error_count`;
+- logical-decoding snapshot-builder exported-snapshot scratch state, as
+  `PgExecutionSnapBuildState`.
+
+The regex and snapshot-builder fields are intentionally opaque or borrowed:
+the regex locale pointer keeps the `pg_locale_t` definition private to the
+regex/locale boundary, while `saved_resource_owner_during_export` is a
+borrowed `ResourceOwner` pointer restored by snapshot-builder export cleanup.
+The array typanalyze field continues to be owned by the analyze callback path,
+and the Valgrind field is a scalar counter.
+
+The lifecycle rule is whole-bucket copy/adopt plus zero reset. The moved
+fields are scalars or borrowed execution-scope pointers; the bucket owns no
+lists, memory contexts, hash tables, sockets, or heap allocations. Thread
+runtime install adopts the same early fallback buckets as process runtime
+initialization, so there is no silent process/thread asymmetry for this slice.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `regcomp.o`,
+  `array_typanalyze.o`, `postgres.o`, `snapbuild.o`, and
+  `test_backend_runtime.o`;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals, with execution-local declarations dropping from 97 to 95;
+- clean backend and `src/common` rebuild passed after regenerating backend
+  utility outputs, node support, and generated header symlinks;
+- full `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- clean PL/pgSQL rebuild and reinstall into `tmp_install` passed after the
+  runtime header/layout change;
+- `gmake -C contrib -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed after
+  refreshing the expected terminal blank line for the new output shape;
+- direct threaded TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed
+  with 87 tests after patching local macOS `libpq.5.dylib` install names for
+  `pg_regress` and temp-install frontend binaries;
+- `test_execution_misc_scratch_state_is_execution_local()` now verifies the
+  moved array typanalyze, regex locale, Valgrind, and snapshot-builder
+  scratch fields across two fake logical executions.
+
 ## Backend Parallel State Bridge
 
 The one-hundred-forty-second Phase 12 slice moves a parallel-query and

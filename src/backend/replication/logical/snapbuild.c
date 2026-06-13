@@ -141,6 +141,7 @@
 #include "storage/procarray.h"
 #include "storage/standby.h"
 #include "utils/builtins.h"
+#include "utils/backend_runtime.h"
 #include "utils/global_lifetime.h"
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
@@ -152,8 +153,9 @@
  * Starting a transaction -- which we need to do while exporting a snapshot --
  * removes knowledge about the previously used resowner, so we save it here.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ResourceOwner SavedResourceOwnerDuringExport = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool ExportInProgress = false;
+#define SavedResourceOwnerDuringExport \
+	(*PgCurrentSnapBuildSavedResourceOwnerDuringExportRef())
+#define ExportInProgress (*PgCurrentSnapBuildExportInProgressRef())
 
 /* ->committed and ->catchange manipulation */
 static void SnapBuildPurgeOlderTxn(SnapBuild *builder);

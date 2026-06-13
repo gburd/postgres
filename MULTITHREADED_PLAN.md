@@ -769,7 +769,8 @@ snapshot-manager and combo-CID transaction visibility state bridge through
 `PgExecution`, plus the WAL record-construction workspace bridge through
 `PgExecution`, plus the simple exported transaction flag/state bridge through
 `PgExecution`, plus the GUC/error-report scratch state bridge through
-`PgExecution`.
+`PgExecution`, plus the miscellaneous array typanalyze, regex locale,
+Valgrind, and snapshot-builder scratch-state bridge through `PgExecution`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.
@@ -1065,6 +1066,17 @@ rebuild, full `gmake -j8`, install, clean PL/pgSQL rebuild/install, the
 test-backend-runtime regression, contrib build, the required global-lifetime
 scan with zero new unclassified mutable globals, and the direct threaded
 runtime TAP; execution-local declarations dropped from 108 to 97.
+The miscellaneous execution scratch-state slice moved array typanalyze
+callback scratch, regex locale scratch, the optional Valgrind command-loop
+error counter, and logical-decoding snapshot-builder exported-snapshot scratch
+state into `PgExecution`. The moved pointer fields are borrowed or opaque and
+the slice uses the same whole-bucket copy/adopt plus zero-reset lifecycle rule
+as the adjacent execution scratch buckets. Validation included touched-object
+builds, the required global-lifetime scan with zero new unclassified mutable
+globals, clean backend plus `src/common` rebuild, full `gmake -j8`, install,
+clean PL/pgSQL rebuild/install, contrib build, the test-backend-runtime
+regression, and the direct threaded runtime TAP; execution-local declarations
+dropped from 97 to 95.
 The predicate-lock state slice extends `PgBackendLockState` again for
 `predicate.c`: local predicate-lock hash state, the current serializable
 transaction pointer, write-tracking flag, and saved serializable transaction

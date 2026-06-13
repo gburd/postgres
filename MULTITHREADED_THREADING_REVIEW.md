@@ -956,6 +956,20 @@ test-backend-runtime regression, contrib build, `gmake check-global-lifetimes`,
 and direct threaded runtime TAP. The global-lifetime scan now reports 97
 execution-local declarations with zero new unclassified mutable globals, down
 from 108 before this slice.
+The next miscellaneous execution scratch-state slice moved array typanalyze
+callback scratch, regex locale scratch, the optional Valgrind command-loop
+error counter, and logical-decoding snapshot-builder exported-snapshot scratch
+state into `PgExecution`. The pointer-bearing fields are explicitly classified
+as borrowed or opaque execution-scope pointers, with no owned lists, memory
+contexts, hash tables, sockets, or heap allocations. Process runtime
+initialization and thread runtime installation both adopt the early fallback
+buckets, avoiding a new manual adoption asymmetry for this slice. Validation
+included touched-object builds, `gmake check-global-lifetimes`, clean backend
+plus `src/common` rebuild, full `gmake -j8`, install, clean PL/pgSQL
+rebuild/install, contrib build, the test-backend-runtime regression, and
+direct threaded runtime TAP. The global-lifetime scan now reports 95
+execution-local declarations with zero new unclassified mutable globals, down
+from 97 before this slice.
 
 ## Bottom Line
 

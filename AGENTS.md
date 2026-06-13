@@ -151,6 +151,14 @@ Important current files:
   for pointer, list, memory-context, socket, hash-table, and opaque-pointer
   fields. Manual process/thread init/adopt asymmetries must be centralized or
   explicitly justified.
+- Phase 12 miscellaneous execution scratch state now lives under
+  `PgExecution`: `PgExecutionAnalyzeState.array_extra_data`,
+  `PgExecutionRegexState`, `PgExecutionValgrindState`, and
+  `PgExecutionSnapBuildState`. These buckets use whole-bucket copy/adopt plus
+  zero reset; their pointer fields are borrowed or opaque and do not own lists,
+  memory contexts, hash tables, sockets, or heap allocations. After changing
+  these runtime structs or accessors, use the installed-header/layout clean
+  rebuild path before trusting TAP or extension results.
 - `AuxProcessResourceOwner` is now routed through `PgBackend` via
   `PgCurrentAuxProcessResourceOwnerRef()` and the `AuxProcessResourceOwner`
   lvalue macro. After changing `src/include/utils/resowner.h` or this backend
