@@ -870,9 +870,13 @@ bootstrap gap: `temp_tablespaces` could remain NULL and crash
 bootstrap now includes `temp_tablespaces`, and the threaded runtime fixture
 adds concurrent abandoned-client and administrator-termination stress that
 proves advisory locks are released, terminated backends leave
-`pg_stat_activity`, and the server remains usable. Broader extension-DDL,
-full lifecycle resource cleanup, PMChild race stress, and startup-gate
-narrowing remain Gate E2 blockers before Phase 13.
+`pg_stat_activity`, and the server remains usable. The threaded test module
+now also has a real `test_backend_runtime_threaded` extension control file and
+SQL script, and the threaded runtime fixture exercises `CREATE EXTENSION`,
+extension-created C functions, custom-GUC initialization through `_PG_init()`,
+and `DROP EXTENSION`. Broader contrib/in-tree extension coverage, full
+lifecycle resource cleanup, PMChild race stress, and startup-gate narrowing
+remain Gate E2 blockers before Phase 13.
 
 Phase 16 still owns broader hardening such as sanitizer runs, contrib-wide
 threaded regression, crash/FATAL behavior matrices, platform coverage, and

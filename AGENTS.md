@@ -606,6 +606,16 @@ Important current files:
   gmake -C src/test/modules/test_extensions DESTDIR="$PWD/tmp_install" install
   ```
 
+- The threaded backend-runtime TAP fixture uses
+  `CREATE EXTENSION test_backend_runtime_threaded`. After changing
+  `src/test/modules/test_backend_runtime/test_backend_runtime_threaded.c`, its
+  extension control/SQL files, or the module Makefile/meson metadata, reinstall
+  that module before manual threaded smokes:
+
+  ```sh
+  gmake -C src/test/modules/test_backend_runtime DESTDIR="$PWD/tmp_install" install
+  ```
+
 - GUC custom-prefix smoke tests that preload `test_oat_hooks` need that module
   installed into the current temp install first:
 

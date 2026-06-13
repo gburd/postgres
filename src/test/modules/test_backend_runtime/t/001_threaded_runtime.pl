@@ -101,28 +101,17 @@ is($node->safe_psql('postgres', 'SHOW multithreaded'), 'on',
 $node->safe_psql(
 	'postgres',
 	q{
-CREATE FUNCTION test_backend_runtime_request_autovacuum_worker()
-RETURNS bool
-AS 'test_backend_runtime_threaded',
-   'test_backend_runtime_request_autovacuum_worker'
-LANGUAGE C;
-CREATE FUNCTION test_backend_runtime_rejects_process_bgworker()
-RETURNS bool
-AS 'test_backend_runtime_threaded',
-   'test_backend_runtime_rejects_process_bgworker'
-LANGUAGE C;
-CREATE FUNCTION test_backend_runtime_launch_thread_bgworker()
-RETURNS int4
-AS 'test_backend_runtime_threaded',
-   'test_backend_runtime_launch_thread_bgworker'
-LANGUAGE C;
-CREATE FUNCTION test_backend_runtime_restart_thread_bgworker()
-RETURNS bool
-AS 'test_backend_runtime_threaded',
-   'test_backend_runtime_restart_thread_bgworker'
-LANGUAGE C;
+CREATE EXTENSION test_backend_runtime_threaded;
 SELECT test_backend_runtime_request_autovacuum_worker();
 });
+is($node->safe_psql(
+		'postgres',
+		q{
+SELECT test_backend_runtime_custom_guc_value();
+SELECT test_backend_runtime_custom_guc_init_count() >= 1;
+}),
+	"default\nt",
+	'threaded extension DDL loads module and initializes custom GUC');
 
 for (1 .. 50)
 {
@@ -635,6 +624,16 @@ ok($reconnect_ok, 'repeated threaded connect/disconnect loop completed');
 
 is($node->safe_psql('postgres', 'SELECT 42;'), '42',
 	'threaded server remains usable after Gate D smoke');
+
+$node->safe_psql('postgres', 'DROP EXTENSION test_backend_runtime_threaded;');
+is($node->safe_psql(
+		'postgres',
+		q{SELECT NOT EXISTS (
+	SELECT 1 FROM pg_extension WHERE extname = 'test_backend_runtime_threaded'
+);}),
+	't', 'threaded extension DDL drops thread-compatible extension');
+is($node->safe_psql('postgres', 'SELECT 42;'), '42',
+	'threaded server remains usable after threaded extension drop');
 
 SKIP:
 {

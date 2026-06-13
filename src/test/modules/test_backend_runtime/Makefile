@@ -7,8 +7,8 @@ OBJS = \
 	test_backend_runtime.o
 PGFILEDESC = "test_backend_runtime - test code for backend runtime scaffolding"
 
-EXTENSION = test_backend_runtime
-DATA = test_backend_runtime--1.0.sql
+EXTENSION = test_backend_runtime test_backend_runtime_threaded
+DATA = test_backend_runtime--1.0.sql test_backend_runtime_threaded--1.0.sql
 
 REGRESS = test_backend_runtime
 

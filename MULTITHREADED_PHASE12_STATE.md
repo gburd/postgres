@@ -4245,6 +4245,46 @@ Validation for this slice:
   globals;
 - `git diff --check` passed.
 
+## Threaded GUC Heavy Stress Coverage
+
+The eighty-seventh Phase 12 slice adds the first concurrent GUC-heavy stress
+coverage required by Gate E2:
+
+- the threaded runtime TAP fixture now starts four simultaneous `psql`
+  scripts against the threaded postmaster;
+- each script loads `test_backend_runtime_threaded`, ensuring per-session
+  custom GUC module initialization is exercised under concurrent startup;
+- each script repeatedly updates built-in direct-pointer GUCs
+  (`work_mem`, `default_statistics_target`, and `lock_timeout`), assign-hook
+  GUCs (`search_path`, `bytea_output`, `IntervalStyle`, and
+  `wal_consistency_checking`), and the custom extension GUC
+  `test_backend_runtime_threaded.custom_guc`;
+- each script verifies transaction-local `work_mem` and custom-GUC values
+  inside the transaction, then verifies final session values after commit;
+- the expected final values include worker-specific custom GUC text, so the
+  stress catches cross-session leakage between concurrent thread-backed
+  sessions.
+
+This does not complete Gate E2. It closes the first larger GUC-heavy threaded
+workload gap, including an assign-hook path for `wal_consistency_checking`,
+but broader extension DDL, lifecycle teardown/resource cleanup, PMChild race
+stress, and startup-gate narrowing remain open before Phase 13.
+
+Validation for this slice:
+
+- a manual threaded smoke with `multithreaded = on` ran four concurrent
+  `psql` scripts with the same GUC-heavy workload and verified
+  `local-N:16MB:local-N` plus
+  `done-N:5MB:125:2025ms:stress-N-25` for workers 1 through 4;
+- parser-only Perl syntax validation for
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed
+  using a temporary local `IPC::Run` stub, because this checkout's system Perl
+  still lacks the real `IPC::Run` module required to execute TAP tests;
+- full `gmake -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- `git diff --check` passed.
+
 ## Threaded Temp Tablespace And Teardown Stress
 
 The eighty-eighth Phase 12 slice fixes a temp-table startup/adoption crash and
@@ -4291,37 +4331,40 @@ Validation for this slice:
   globals;
 - `git diff --check` passed.
 
-## Threaded GUC Heavy Stress Coverage
+## Threaded Extension DDL Coverage
 
-The eighty-seventh Phase 12 slice adds the first concurrent GUC-heavy stress
-coverage required by Gate E2:
+The eighty-ninth Phase 12 slice adds a real thread-compatible extension DDL
+path for the threaded runtime fixture:
 
-- the threaded runtime TAP fixture now starts four simultaneous `psql`
-  scripts against the threaded postmaster;
-- each script loads `test_backend_runtime_threaded`, ensuring per-session
-  custom GUC module initialization is exercised under concurrent startup;
-- each script repeatedly updates built-in direct-pointer GUCs
-  (`work_mem`, `default_statistics_target`, and `lock_timeout`), assign-hook
-  GUCs (`search_path`, `bytea_output`, `IntervalStyle`, and
-  `wal_consistency_checking`), and the custom extension GUC
-  `test_backend_runtime_threaded.custom_guc`;
-- each script verifies transaction-local `work_mem` and custom-GUC values
-  inside the transaction, then verifies final session values after commit;
-- the expected final values include worker-specific custom GUC text, so the
-  stress catches cross-session leakage between concurrent thread-backed
-  sessions.
+- `src/test/modules/test_backend_runtime` now installs
+  `test_backend_runtime_threaded.control` and
+  `test_backend_runtime_threaded--1.0.sql`;
+- the extension script exposes the existing `test_backend_runtime_threaded`
+  helper functions through `MODULE_PATHNAME`, using the same shared library
+  that is marked with
+  `PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION`;
+- the threaded runtime TAP fixture now creates
+  `test_backend_runtime_threaded` with `CREATE EXTENSION` instead of declaring
+  the helper C functions ad hoc;
+- the fixture verifies an extension-created custom-GUC helper function and
+  confirms `_PG_init()` initialized the module's per-session custom GUC state;
+- after all helper calls are complete, the fixture drops the extension and
+  verifies that the threaded server remains usable.
 
-This does not complete Gate E2. It closes the first larger GUC-heavy threaded
-workload gap, including an assign-hook path for `wal_consistency_checking`,
-but broader extension DDL, lifecycle teardown/resource cleanup, PMChild race
-stress, and startup-gate narrowing remain open before Phase 13.
+This does not complete all Gate E2 extension work. It proves the focused
+thread-compatible extension DDL route for an in-tree test module, but broader
+contrib/in-tree extension coverage and full lifecycle/startup-gate blockers
+remain open before Phase 13.
 
 Validation for this slice:
 
-- a manual threaded smoke with `multithreaded = on` ran four concurrent
-  `psql` scripts with the same GUC-heavy workload and verified
-  `local-N:16MB:local-N` plus
-  `done-N:5MB:125:2025ms:stress-N-25` for workers 1 through 4;
+- `gmake -C src/test/modules/test_backend_runtime all` passed;
+- `gmake -C src/test/modules/test_backend_runtime DESTDIR="$PWD/tmp_install"
+  install` passed;
+- a manual threaded smoke with `multithreaded = on` verified
+  `CREATE EXTENSION test_backend_runtime_threaded`, custom-GUC helper output
+  (`default`, `t`), a thread-model background-worker helper call, and
+  `DROP EXTENSION test_backend_runtime_threaded`;
 - parser-only Perl syntax validation for
   `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed
   using a temporary local `IPC::Run` stub, because this checkout's system Perl

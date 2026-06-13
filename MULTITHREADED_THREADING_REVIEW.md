@@ -265,6 +265,15 @@ abandoned-client and administrator-termination stress, proving abandoned
 threaded backends release advisory locks, terminated threaded backends leave
 `pg_stat_activity`, and the server remains usable afterward.
 
+Additional status update: the threaded test helper now has a real extension
+packaging path. `test_backend_runtime_threaded.control` and its extension SQL
+install the thread-compatible helper module as
+`test_backend_runtime_threaded`, and the threaded runtime fixture now uses
+`CREATE EXTENSION` instead of ad hoc C function declarations. The fixture also
+checks extension-created custom-GUC helper functions and drops the extension
+after all helper calls, giving Gate E2 focused thread-compatible extension DDL
+coverage.
+
 ### 4. Broad Threaded Startup Serialization Is Still Present
 
 Severity: High
