@@ -2779,3 +2779,48 @@ Validation for this slice:
   header migration;
 - static scans found no remaining direct session TLS definitions or exported
   declarations for `Array_nulls` or `xmloption`.
+
+## Session Random Function State Bridge
+
+The fifty-fourth Phase 12 slice moves SQL random-function state under the
+logical session object:
+
+- `PgSessionRandomState` now owns `random()`/`random_normal()` PRNG state and
+  the `setseed()` initialized flag;
+- `PgSession` embeds `PgSessionRandomState` with the rest of the session-owned
+  state buckets;
+- `backend_runtime.c` provides `PgCurrentPseudoRandomStateRef()` and
+  `PgCurrentPseudoRandomSeedSetRef()` accessors, with an early session-local
+  fallback before a `PgSession` is installed;
+- process-mode session initialization and thread-runtime session installation
+  adopt or initialize the random state with the rest of the logical session;
+- `pseudorandomfuncs.c` keeps its local `prng_state` and `prng_seed_set` names
+  as source-compatible lvalue macros backed by the active `PgSession`.
+
+This keeps the SQL-visible behavior of `setseed()` and the random-family
+functions unchanged in process mode while making the mutable PRNG stream
+belong to the active logical session rather than a carrier-local TLS global.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o` and
+  `pseudorandomfuncs.o`;
+- because `backend_runtime.h` changed, `gmake -C src/backend clean` plus
+  generated utility and node-header recovery was used before trusting
+  process-mode runtime tests;
+- clean full `gmake -j8` passed after the backend clean;
+- `gmake DESTDIR="$PWD/tmp_install" install` passed;
+- rebuilding and reinstalling `src/test/modules/test_backend_runtime` passed;
+- focused `test_backend_runtime` regression includes
+  `test_session_random_state_is_session_local()`, which switches fake sessions
+  through `PgSetCurrentSession()`, seeds them independently through
+  `setseed()`, calls the SQL `random()` function, and proves each PRNG stream
+  follows the active session object;
+- direct `test_backend_runtime` regression passed after reinstalling the test
+  module into `tmp_install`;
+- core `src/test/regress` `parallel_schedule` passed all 245 tests, including
+  the core `random` test;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  header migration;
+- static scans found no remaining direct session TLS definitions for
+  `pseudorandomfuncs.c`'s `prng_state` or `prng_seed_set`.

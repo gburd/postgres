@@ -444,6 +444,10 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionTempFileState early_session_te
 	.initialized = true,
 	.num_temp_table_spaces = -1
 };
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionRandomState early_session_random = {
+	.initialized = true,
+	.prng_seed_set = false
+};
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendPendingInterruptState early_pending_interrupts;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInterruptHoldoffState early_interrupt_holdoffs;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionDebugState early_execution_debug;
@@ -534,6 +538,8 @@ static void PgSessionEnsureEncodingStateInitialized(PgSessionEncodingState *enco
 static void PgSessionAdoptEarlyEncodingState(PgSession *session);
 static void PgSessionInitializeTempFileState(PgSessionTempFileState *temp_file);
 static void PgSessionAdoptEarlyTempFileState(PgSession *session);
+static void PgSessionInitializeRandomState(PgSessionRandomState *random);
+static void PgSessionAdoptEarlyRandomState(PgSession *session);
 static void PgBackendResetCoreState(PgBackendCoreState *core);
 static void PgBackendAdoptEarlyCoreState(PgBackend *backend);
 static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
@@ -578,6 +584,7 @@ static PgSessionLargeObjectState *PgCurrentSessionLargeObjectState(void);
 static PgSessionAsyncState *PgCurrentSessionAsyncState(void);
 static PgSessionEncodingState *PgCurrentSessionEncodingState(void);
 static PgSessionTempFileState *PgCurrentSessionTempFileState(void);
+static PgSessionRandomState *PgCurrentSessionRandomState(void);
 static PgExecutionErrorState *PgCurrentExecutionErrorState(void);
 static PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
 static PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
@@ -1623,6 +1630,28 @@ PgSessionAdoptEarlyTempFileState(PgSession *session)
 }
 
 static void
+PgSessionInitializeRandomState(PgSessionRandomState *random)
+{
+	Assert(random != NULL);
+
+	MemSet(&random->prng_state, 0, sizeof(random->prng_state));
+	random->prng_seed_set = false;
+	random->initialized = true;
+}
+
+static void
+PgSessionAdoptEarlyRandomState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (!early_session_random.initialized)
+		PgSessionInitializeRandomState(&early_session_random);
+
+	session->random = early_session_random;
+	PgSessionInitializeRandomState(&early_session_random);
+}
+
+static void
 PgBackendResetCoreState(PgBackendCoreState *core)
 {
 	MemSet(core, 0, sizeof(*core));
@@ -1793,6 +1822,7 @@ InitializePgProcessRuntime(void)
 	PgSessionAdoptEarlyAsyncState(&process_session);
 	PgSessionAdoptEarlyEncodingState(&process_session);
 	PgSessionAdoptEarlyTempFileState(&process_session);
+	PgSessionAdoptEarlyRandomState(&process_session);
 
 	process_connection.backend = &process_backend;
 	process_connection.session = &process_session;
@@ -1909,6 +1939,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgSessionInitializeAsyncState(&state->session.async);
 	PgSessionInitializeEncodingState(&state->session.encoding);
 	PgSessionInitializeTempFileState(&state->session.temp_file);
+	PgSessionInitializeRandomState(&state->session.random);
 
 	state->connection.backend = &state->backend;
 	state->connection.session = &state->session;
@@ -1962,6 +1993,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgSessionAdoptEarlyAsyncState(&state->session);
 	PgSessionAdoptEarlyEncodingState(&state->session);
 	PgSessionAdoptEarlyTempFileState(&state->session);
+	PgSessionAdoptEarlyRandomState(&state->session);
 	PgExecutionAdoptEarlyErrorState(&state->execution);
 	PgExecutionAdoptEarlyMemoryContexts(&state->execution);
 	PgExecutionAdoptEarlyResourceOwners(&state->execution);
@@ -2526,6 +2558,22 @@ PgCurrentSessionTempFileState(void)
 	return temp_file;
 }
 
+static PgSessionRandomState *
+PgCurrentSessionRandomState(void)
+{
+	PgSessionRandomState *random;
+
+	if (CurrentPgSession == NULL)
+		random = &early_session_random;
+	else
+		random = &CurrentPgSession->random;
+
+	if (!random->initialized)
+		PgSessionInitializeRandomState(random);
+
+	return random;
+}
+
 Oid *
 PgCurrentMyDatabaseIdRef(void)
 {
@@ -2956,6 +3004,18 @@ int *
 PgCurrentNextTempTableSpaceRef(void)
 {
 	return &PgCurrentSessionTempFileState()->next_temp_table_space;
+}
+
+pg_prng_state *
+PgCurrentPseudoRandomStateRef(void)
+{
+	return &PgCurrentSessionRandomState()->prng_state;
+}
+
+bool *
+PgCurrentPseudoRandomSeedSetRef(void)
+{
+	return &PgCurrentSessionRandomState()->prng_seed_set;
 }
 
 int *

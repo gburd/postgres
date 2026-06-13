@@ -21,6 +21,7 @@
 #include "access/xlog.h"
 #include "catalog/binary_upgrade.h"
 #include "catalog/storage.h"
+#include "common/pg_prng.h"
 #include "commands/async.h"
 #include "commands/event_trigger.h"
 #include "commands/extension.h"
@@ -64,6 +65,8 @@
 #include "utils/builtins.h"
 #include "utils/bytea.h"
 #include "utils/float.h"
+#include "utils/fmgroids.h"
+#include "utils/fmgrprotos.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/plancache.h"
@@ -1565,6 +1568,78 @@ test_session_temp_file_state_is_session_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "temporary file state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_session_random_state_is_session_local);
+Datum
+test_session_random_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	pg_prng_state expected1;
+	pg_prng_state expected2;
+	float8		expected1_first;
+	float8		expected1_second;
+	float8		expected2_first;
+	float8		expected2_second;
+	float8		session1_first = 0;
+	float8		session1_second = 0;
+	float8		session2_first = 0;
+	float8		session2_second = 0;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	pg_prng_fseed(&expected1, 0.25);
+	expected1_first = pg_prng_double(&expected1);
+	expected1_second = pg_prng_double(&expected1);
+	pg_prng_fseed(&expected2, -0.5);
+	expected2_first = pg_prng_double(&expected2);
+	expected2_second = pg_prng_double(&expected2);
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && !*PgCurrentPseudoRandomSeedSetRef();
+		DirectFunctionCall1(setseed, Float8GetDatum(0.25));
+		ok = ok && *PgCurrentPseudoRandomSeedSetRef();
+		session1_first = DatumGetFloat8(OidFunctionCall0(F_RANDOM_));
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && !*PgCurrentPseudoRandomSeedSetRef();
+		DirectFunctionCall1(setseed, Float8GetDatum(-0.5));
+		ok = ok && *PgCurrentPseudoRandomSeedSetRef();
+		session2_first = DatumGetFloat8(OidFunctionCall0(F_RANDOM_));
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && *PgCurrentPseudoRandomSeedSetRef();
+		session1_second = DatumGetFloat8(OidFunctionCall0(F_RANDOM_));
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && *PgCurrentPseudoRandomSeedSetRef();
+		session2_second = DatumGetFloat8(OidFunctionCall0(F_RANDOM_));
+
+		PgSetCurrentSession(saved_session);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	ok = ok && session1_first == expected1_first;
+	ok = ok && session1_second == expected1_second;
+	ok = ok && session2_first == expected2_first;
+	ok = ok && session2_second == expected2_second;
+
+	if (!ok)
+		elog(ERROR, "random state was not session-local");
 
 	PG_RETURN_BOOL(true);
 }

@@ -13,6 +13,7 @@
 #define BACKEND_RUNTIME_H
 
 #include "access/session.h"
+#include "common/pg_prng.h"
 #include "common/relpath.h"
 #include "fmgr.h"
 #include "lib/ilist.h"
@@ -631,6 +632,13 @@ typedef struct PgSessionTempFileState
 	int			next_temp_table_space;
 } PgSessionTempFileState;
 
+typedef struct PgSessionRandomState
+{
+	bool		initialized;
+	pg_prng_state prng_state;
+	bool		prng_seed_set;
+} PgSessionRandomState;
+
 typedef struct PgRuntimeServerGUCState
 {
 	bool		initialized;
@@ -794,6 +802,7 @@ struct PgSession
 	PgSessionAsyncState async;
 	PgSessionEncodingState encoding;
 	PgSessionTempFileState temp_file;
+	PgSessionRandomState random;
 };
 
 struct PgConnection
@@ -1008,6 +1017,8 @@ extern long *PgCurrentTempFileCounterRef(void);
 extern Oid **PgCurrentTempTableSpaceOidsRef(void);
 extern int *PgCurrentNumTempTableSpacesRef(void);
 extern int *PgCurrentNextTempTableSpaceRef(void);
+extern pg_prng_state *PgCurrentPseudoRandomStateRef(void);
+extern bool *PgCurrentPseudoRandomSeedSetRef(void);
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);

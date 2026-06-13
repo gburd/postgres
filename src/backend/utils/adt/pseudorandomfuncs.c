@@ -17,14 +17,15 @@
 
 #include "common/pg_prng.h"
 #include "miscadmin.h"
+#include "utils/backend_runtime.h"
 #include "utils/date.h"
 #include "utils/fmgrprotos.h"
 #include "utils/numeric.h"
 #include "utils/timestamp.h"
 
 /* Session-local PRNG state used by all the random functions */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION pg_prng_state prng_state;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool prng_seed_set = false;
+#define prng_state (*PgCurrentPseudoRandomStateRef())
+#define prng_seed_set (*PgCurrentPseudoRandomSeedSetRef())
 
 /*
  * Macro for checking the range bounds of random(min, max) functions. Throws
