@@ -10723,3 +10723,49 @@ Validation for this owned identity-string reset slice:
   configured build;
 - `gmake check-runtime-lifecycles` passed with 150 runtime fields classified,
   150 bucket definitions checked, and 25 reset definitions checked.
+
+Lock closed-reset ownership slice completed:
+
+- `PgBackendLockState` now records ownership for the fast-path local-use-count
+  array and the deadlock detector workspace. `InitLockManagerAccess()` marks
+  the fast-path counter allocation as backend-owned, and
+  `InitDeadLockChecking()` marks the deadlock workspace allocations as
+  backend-owned;
+- `PgBackendResetClosedState()` now resets the lock bucket through
+  `PgBackendResetLockClosedState()`, which frees owned fast-path/deadlock
+  scratch and then reinitializes the bucket. It deliberately leaves held-lock
+  state, `LOCALLOCK` entries, local lock-owner arrays, and predicate-lock
+  state under their existing lock/resource-owner cleanup paths;
+- the deadlock reset treats `deadlock_topo_procs` as an alias of
+  `deadlock_visited_procs`, matching `InitDeadLockChecking()`, so it does not
+  double-free that pointer;
+- early fallback lock-state adoption now asserts that transient lock-wait
+  pointers are not populated before runtime adoption, while still allowing
+  early-owned setup allocations to move with their ownership bits;
+- `test_backend_reset_closed_state()` covers owned lock scratch cleanup, and
+  `test_backend_lock_state_is_backend_local()` now covers the new ownership
+  flags as backend-local fields.
+
+Validation for this lock closed-reset ownership slice:
+
+- touched-object builds passed for `backend_runtime.o`,
+  `backend_runtime_lmgr.o`, `lock.o`, `deadlock.o`, and
+  `test_backend_runtime_backend.o`;
+- `gmake check-runtime-lifecycles` passed with 150 runtime fields classified,
+  150 bucket definitions checked, and 25 reset definitions checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- `git diff --check` passed;
+- full `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime all` passed after cleaning
+  the module earlier in the slice;
+- `gmake -C src/test/modules/test_backend_runtime check` did not reach SQL on
+  this machine. The temp postmaster started and reported ready, but the first
+  authentication backend spun in
+  `PerformAuthentication -> hba_getauthmethod -> get_role_oid ->
+  SearchCatCacheMiss -> pgstat_assoc_relation -> pgstat_get_entry_ref ->
+  dsa_get_address -> dsm_attach`. A direct `pg_regress` rerun with
+  `dynamic_shared_memory_type = mmap` reproduced the same pre-SQL stall. The
+  run was interrupted cleanly; no test diff was produced. This remains a local
+  temp-instance validation blocker rather than evidence from the lock reset
+  SQL itself.

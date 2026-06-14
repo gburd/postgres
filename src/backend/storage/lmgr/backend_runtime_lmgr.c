@@ -25,6 +25,12 @@ PgCurrentFastPathLocalUseCountsRef(void)
 	return &PgCurrentBackendLockState()->fast_path_local_use_counts;
 }
 
+bool *
+PgCurrentFastPathLocalUseCountsOwnedRef(void)
+{
+	return &PgCurrentBackendLockState()->fast_path_local_use_counts_owned;
+}
+
 PgBackendLWLockHandle *
 PgCurrentHeldLWLocks(void)
 {
@@ -209,6 +215,12 @@ int *
 PgCurrentDeadlockNDetailsRef(void)
 {
 	return &PgCurrentBackendLockState()->deadlock_n_details;
+}
+
+bool *
+PgCurrentDeadlockWorkspaceOwnedRef(void)
+{
+	return &PgCurrentBackendLockState()->deadlock_workspace_owned;
 }
 
 void **

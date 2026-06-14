@@ -503,9 +503,12 @@ InitLockManagerAccess(void)
 	info.entrysize = sizeof(LOCALLOCK);
 
 	if (FastPathLocalUseCounts == NULL)
+	{
 		FastPathLocalUseCounts = MemoryContextAllocZero(TopMemoryContext,
 														sizeof(int) *
 														FP_LOCK_GROUPS_PER_BACKEND_MAX);
+		*PgCurrentFastPathLocalUseCountsOwnedRef() = true;
+	}
 	else
 		MemSet(FastPathLocalUseCounts, 0,
 			   sizeof(int) * FP_LOCK_GROUPS_PER_BACKEND_MAX);

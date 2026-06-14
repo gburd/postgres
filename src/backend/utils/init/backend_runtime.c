@@ -808,6 +808,7 @@ static void PgBackendInitializeStorageState(PgBackendStorageState *storage);
 static void PgBackendAdoptEarlyStorageState(PgBackend *backend);
 static void PgBackendInitializeLockState(PgBackendLockState *locks);
 static void PgBackendAdoptEarlyLockState(PgBackend *backend);
+static void PgBackendResetLockClosedState(PgBackendLockState *locks);
 static void PgBackendInitializeIPCState(PgBackendIPCState *ipc);
 static void PgBackendAdoptEarlyIPCState(PgBackend *backend);
 static void PgBackendEnsureWaitStateInitialized(PgBackendWaitState *wait_state);
@@ -3115,9 +3116,45 @@ static void
 PgBackendAdoptEarlyLockState(PgBackend *backend)
 {
 	Assert(backend != NULL);
+	Assert(early_backend_locks.strong_lock_in_progress == NULL);
+	Assert(early_backend_locks.awaited_lock == NULL);
+	Assert(early_backend_locks.awaited_owner == NULL);
+	Assert(early_backend_locks.blocking_autovacuum_proc == NULL);
 
 	backend->locks = early_backend_locks;
 	PgBackendInitializeLockState(&early_backend_locks);
+}
+
+static void
+PgBackendResetLockClosedState(PgBackendLockState *locks)
+{
+	Assert(locks != NULL);
+
+	if (locks->fast_path_local_use_counts_owned &&
+		locks->fast_path_local_use_counts != NULL)
+		pfree(locks->fast_path_local_use_counts);
+
+	if (locks->deadlock_workspace_owned)
+	{
+		if (locks->deadlock_visited_procs != NULL)
+			pfree(locks->deadlock_visited_procs);
+		if (locks->deadlock_before_constraints != NULL)
+			pfree(locks->deadlock_before_constraints);
+		if (locks->deadlock_after_constraints != NULL)
+			pfree(locks->deadlock_after_constraints);
+		if (locks->deadlock_wait_orders != NULL)
+			pfree(locks->deadlock_wait_orders);
+		if (locks->deadlock_wait_order_procs != NULL)
+			pfree(locks->deadlock_wait_order_procs);
+		if (locks->deadlock_cur_constraints != NULL)
+			pfree(locks->deadlock_cur_constraints);
+		if (locks->deadlock_possible_constraints != NULL)
+			pfree(locks->deadlock_possible_constraints);
+		if (locks->deadlock_details != NULL)
+			pfree(locks->deadlock_details);
+	}
+
+	PgBackendInitializeLockState(locks);
 }
 
 static void

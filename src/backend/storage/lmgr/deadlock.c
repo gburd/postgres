@@ -205,6 +205,7 @@ InitDeadLockChecking(void)
 		possibleConstraints =
 			(EDGE *) palloc(maxPossibleConstraints * sizeof(EDGE));
 	}
+	*PgCurrentDeadlockWorkspaceOwnedRef() = true;
 
 	MemoryContextSwitchTo(oldcxt);
 }

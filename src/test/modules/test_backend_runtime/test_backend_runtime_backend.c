@@ -734,6 +734,7 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	PgBackendMaintenanceWorkerState *maintenance_worker;
 	PgBackendAutovacuumState *autovacuum;
 	PgBackendAioState *aio;
+	PgBackendLockState *locks;
 	HASHCTL		hash_ctl;
 	bool		ok = true;
 
@@ -746,6 +747,7 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	maintenance_worker = &fake_backend.maintenance_worker;
 	autovacuum = &fake_backend.autovacuum;
 	aio = &fake_backend.aio;
+	locks = &fake_backend.locks;
 	replication->walreceiver_recv_file = -1;
 	xlog->open_log_file = -1;
 
@@ -868,6 +870,30 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	aio->my_io_worker_id = 4;
 	aio->my_uring_context = (struct PgAioUringContext *) &fake_backend;
 
+	locks->fast_path_local_use_counts = palloc0(8);
+	locks->fast_path_local_use_counts_owned = true;
+	locks->strong_lock_in_progress = &fake_backend;
+	locks->awaited_lock = &fake_backend;
+	locks->awaited_owner = &fake_backend;
+	locks->deadlock_visited_procs = palloc0(8);
+	locks->deadlock_n_visited_procs = 1;
+	locks->deadlock_topo_procs = locks->deadlock_visited_procs;
+	locks->deadlock_before_constraints = palloc0(8);
+	locks->deadlock_after_constraints = palloc0(8);
+	locks->deadlock_wait_orders = palloc0(8);
+	locks->deadlock_n_wait_orders = 2;
+	locks->deadlock_wait_order_procs = palloc0(8);
+	locks->deadlock_cur_constraints = palloc0(8);
+	locks->deadlock_n_cur_constraints = 3;
+	locks->deadlock_max_cur_constraints = 4;
+	locks->deadlock_possible_constraints = palloc0(8);
+	locks->deadlock_n_possible_constraints = 5;
+	locks->deadlock_max_possible_constraints = 6;
+	locks->deadlock_details = palloc0(8);
+	locks->deadlock_n_details = 7;
+	locks->blocking_autovacuum_proc = &fake_backend;
+	locks->deadlock_workspace_owned = true;
+
 	fake_backend.memory_manager.log_memory_context_in_progress = true;
 
 	utility->notify_interrupt_pending = true;
@@ -923,6 +949,29 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && logical_replication->apply_error_callback_arg.origin_name ==
 		NULL;
 	ok = ok && logical_replication->my_parallel_shared == NULL;
+	ok = ok && locks->fast_path_local_use_counts == NULL;
+	ok = ok && !locks->fast_path_local_use_counts_owned;
+	ok = ok && locks->strong_lock_in_progress == NULL;
+	ok = ok && locks->awaited_lock == NULL;
+	ok = ok && locks->awaited_owner == NULL;
+	ok = ok && locks->deadlock_visited_procs == NULL;
+	ok = ok && locks->deadlock_n_visited_procs == 0;
+	ok = ok && locks->deadlock_topo_procs == NULL;
+	ok = ok && locks->deadlock_before_constraints == NULL;
+	ok = ok && locks->deadlock_after_constraints == NULL;
+	ok = ok && locks->deadlock_wait_orders == NULL;
+	ok = ok && locks->deadlock_n_wait_orders == 0;
+	ok = ok && locks->deadlock_wait_order_procs == NULL;
+	ok = ok && locks->deadlock_cur_constraints == NULL;
+	ok = ok && locks->deadlock_n_cur_constraints == 0;
+	ok = ok && locks->deadlock_max_cur_constraints == 0;
+	ok = ok && locks->deadlock_possible_constraints == NULL;
+	ok = ok && locks->deadlock_n_possible_constraints == 0;
+	ok = ok && locks->deadlock_max_possible_constraints == 0;
+	ok = ok && locks->deadlock_details == NULL;
+	ok = ok && locks->deadlock_n_details == 0;
+	ok = ok && locks->blocking_autovacuum_proc == NULL;
+	ok = ok && !locks->deadlock_workspace_owned;
 	ok = ok && logical_replication->my_subscription == NULL;
 	ok = ok && !logical_replication->my_subscription_valid;
 	ok = ok && logical_replication->my_logical_rep_worker == NULL;
@@ -1480,6 +1529,7 @@ test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentLWLockStatsContextRef() = (MemoryContext) &fake_backend1;
 		*PgCurrentLWLockStatsExitRegisteredRef() = true;
 		*PgCurrentFastPathLocalUseCountsRef() = fast_path_counts1;
+		*PgCurrentFastPathLocalUseCountsOwnedRef() = true;
 		fast_path_counts1[0] = 101;
 		*PgCurrentRelationExtensionLockHeldRef() = true;
 		*PgCurrentLockMethodLocalHashRef() = (HTAB *) &fake_backend1;
@@ -1505,6 +1555,7 @@ test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentDeadlockMaxPossibleConstraintsRef() = 106;
 		*PgCurrentDeadlockDetailsRef() = &fake_backend1;
 		*PgCurrentDeadlockNDetailsRef() = 107;
+		*PgCurrentDeadlockWorkspaceOwnedRef() = true;
 		*PgCurrentBlockingAutovacuumProcRef() = &fake_backend1;
 		*PgCurrentLocalPredicateLockHashRef() = (HTAB *) &fake_backend1;
 		*PgCurrentMySerializableXactRef() = &fake_backend1;
@@ -1523,6 +1574,7 @@ test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentLWLockStatsContextRef() == NULL;
 		ok = ok && !*PgCurrentLWLockStatsExitRegisteredRef();
 		ok = ok && *PgCurrentFastPathLocalUseCountsRef() == NULL;
+		ok = ok && !*PgCurrentFastPathLocalUseCountsOwnedRef();
 		ok = ok && !*PgCurrentRelationExtensionLockHeldRef();
 		ok = ok && *PgCurrentLockMethodLocalHashRef() == NULL;
 		ok = ok && *PgCurrentStrongLockInProgressRef() == NULL;
@@ -1547,6 +1599,7 @@ test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentDeadlockMaxPossibleConstraintsRef() == 0;
 		ok = ok && *PgCurrentDeadlockDetailsRef() == NULL;
 		ok = ok && *PgCurrentDeadlockNDetailsRef() == 0;
+		ok = ok && !*PgCurrentDeadlockWorkspaceOwnedRef();
 		ok = ok && *PgCurrentBlockingAutovacuumProcRef() == NULL;
 		ok = ok && *PgCurrentLocalPredicateLockHashRef() == NULL;
 		ok = ok && *PgCurrentMySerializableXactRef() == NULL;
@@ -1564,6 +1617,7 @@ test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentLWLockStatsContextRef() = (MemoryContext) &fake_backend2;
 		*PgCurrentLWLockStatsExitRegisteredRef() = false;
 		*PgCurrentFastPathLocalUseCountsRef() = fast_path_counts2;
+		*PgCurrentFastPathLocalUseCountsOwnedRef() = false;
 		fast_path_counts2[0] = 201;
 		*PgCurrentRelationExtensionLockHeldRef() = false;
 		*PgCurrentLockMethodLocalHashRef() = (HTAB *) &fake_backend2;
@@ -1589,6 +1643,7 @@ test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentDeadlockMaxPossibleConstraintsRef() = 206;
 		*PgCurrentDeadlockDetailsRef() = &fake_backend2;
 		*PgCurrentDeadlockNDetailsRef() = 207;
+		*PgCurrentDeadlockWorkspaceOwnedRef() = false;
 		*PgCurrentBlockingAutovacuumProcRef() = &fake_backend2;
 		*PgCurrentLocalPredicateLockHashRef() = (HTAB *) &fake_backend2;
 		*PgCurrentMySerializableXactRef() = &fake_backend2;
@@ -1607,6 +1662,7 @@ test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentLWLockStatsContextRef() == (MemoryContext) &fake_backend1;
 		ok = ok && *PgCurrentLWLockStatsExitRegisteredRef();
 		ok = ok && *PgCurrentFastPathLocalUseCountsRef() == fast_path_counts1;
+		ok = ok && *PgCurrentFastPathLocalUseCountsOwnedRef();
 		ok = ok && ((int *) *PgCurrentFastPathLocalUseCountsRef())[0] == 101;
 		ok = ok && *PgCurrentRelationExtensionLockHeldRef();
 		ok = ok && *PgCurrentLockMethodLocalHashRef() == (HTAB *) &fake_backend1;
@@ -1632,6 +1688,7 @@ test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentDeadlockMaxPossibleConstraintsRef() == 106;
 		ok = ok && *PgCurrentDeadlockDetailsRef() == &fake_backend1;
 		ok = ok && *PgCurrentDeadlockNDetailsRef() == 107;
+		ok = ok && *PgCurrentDeadlockWorkspaceOwnedRef();
 		ok = ok && *PgCurrentBlockingAutovacuumProcRef() == &fake_backend1;
 		ok = ok && *PgCurrentLocalPredicateLockHashRef() == (HTAB *) &fake_backend1;
 		ok = ok && *PgCurrentMySerializableXactRef() == &fake_backend1;
@@ -1650,6 +1707,7 @@ test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentLWLockStatsContextRef() == (MemoryContext) &fake_backend2;
 		ok = ok && !*PgCurrentLWLockStatsExitRegisteredRef();
 		ok = ok && *PgCurrentFastPathLocalUseCountsRef() == fast_path_counts2;
+		ok = ok && !*PgCurrentFastPathLocalUseCountsOwnedRef();
 		ok = ok && ((int *) *PgCurrentFastPathLocalUseCountsRef())[0] == 201;
 		ok = ok && !*PgCurrentRelationExtensionLockHeldRef();
 		ok = ok && *PgCurrentLockMethodLocalHashRef() == (HTAB *) &fake_backend2;
@@ -1675,6 +1733,7 @@ test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentDeadlockMaxPossibleConstraintsRef() == 206;
 		ok = ok && *PgCurrentDeadlockDetailsRef() == &fake_backend2;
 		ok = ok && *PgCurrentDeadlockNDetailsRef() == 207;
+		ok = ok && !*PgCurrentDeadlockWorkspaceOwnedRef();
 		ok = ok && *PgCurrentBlockingAutovacuumProcRef() == &fake_backend2;
 		ok = ok && *PgCurrentLocalPredicateLockHashRef() == (HTAB *) &fake_backend2;
 		ok = ok && *PgCurrentMySerializableXactRef() == &fake_backend2;
