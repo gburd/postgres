@@ -1400,9 +1400,11 @@ The threaded runtime TAP now also runs a mixed teardown batch in one live
 server, combining backend-local `FATAL`, administrator termination, and
 abandoned-client exits while verifying logical backend ids leave
 `pg_stat_activity`, advisory locks are released, and the server remains usable.
-Broader contrib/in-tree extension coverage, full
-lifecycle resource cleanup, and PMChild race stress remain Gate E2 blockers
-before Phase 13.
+PMChild slot reuse now also scrubs thread-carrier visible payloads under the
+same PMChild mutex used by signal-id, interrupt, wakeup, and exit-payload
+readers. Broader contrib/in-tree extension coverage, full lifecycle resource
+cleanup, and broader real-server PMChild termination/reaping stress remain
+Gate E2 blockers before Phase 13.
 The focused `test_backend_runtime` regression is runnable again as a
 process-mode validation control for runtime-state, state-migration, and
 PMChild helper coverage after fake thread-runtime tests were changed to
@@ -1532,8 +1534,8 @@ field currently declared in `PgBackend`, `PgSession`, `PgConnection`, and
 `PgExecution`. `gmake check-runtime-lifecycles` parses
 `backend_runtime.h` and fails if a field is missing from the manifest or if
 the manifest contains a stale entry. This makes the Gate E2 bucket-lifecycle
-audit enforceable, while the rows marked as pending still represent work that
-must be closed before Phase 12 can complete.
+audit enforceable; any future unknown or pending lifecycle row is a Phase 12
+blocker until it is resolved or deliberately documented as a long-lived owner.
 
 ## Phase 13: Scheduler-Aware Wait Boundary
 

@@ -759,8 +759,12 @@ still-owned slot. PMChild thread-exit publication now
 captures the exited logical backend id in the exit payload and clears live
 `signal_pid` under the same lock as `thread_backend`, while PMChild assignment
 and slot release scrub stale carrier-visible signal ids and thread-exit
-payloads before reuse. Thread-backed signal-id reads and claimed thread-exit
-payload reads now also use PMChild helper APIs under the same PMChild mutex.
+payloads before reuse. A later hardening pass moved the SetProcess,
+SetThread, and ReleasePostmasterChildSlot thread-payload scrubs under the same
+PMChild mutex, so slot reuse cannot race with thread-backed signal-id,
+interrupt, wakeup, or exit-payload readers. Thread-backed signal-id reads and
+claimed thread-exit payload reads now also use PMChild helper APIs under the
+same PMChild mutex.
 Thread exit now has an explicit PMChild detach boundary before final exit
 publication, so the live `thread_backend` pointer is cleared before the carrier
 continues through final teardown accounting. The focused backend-runtime
@@ -826,8 +830,8 @@ threaded `pg_class` catalog scan, so future startup-gate reintroduction still
 requires a named shared-state dependency and catalog-startup stress coverage.
 These are partial Gate E2 closures only: the full thread teardown,
 `TopMemoryContext` ownership/reclamation, real-server PMChild
-termination/reaping stress coverage, extension/custom GUC adoption, and
-broader threaded stress coverage remain blockers before Phase 13
+termination/reaping stress coverage, broader contrib/in-tree extension
+coverage, and broader threaded stress coverage remain blockers before Phase 13
 scheduler-aware wait work. A direct attempt to reset the exiting carrier's top
 memory tree after backend cleanup crashed a parallel threaded reconnect smoke,
 confirming that memory reclamation still needs systematic ownership separation

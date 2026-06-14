@@ -697,7 +697,11 @@ Important current files:
   the exited backend without advertising a dead thread as signalable.
 - Thread-backed PMChild signal-id reads and thread-exit payload reads must use
   PMChild helper APIs. They are protected by the same PMChild mutex as
-  `thread_backend` publication and clearing.
+  `thread_backend` publication and clearing. Thread-carrier payload resets in
+  `PostmasterChildSetProcess()`, `PostmasterChildSetThread()`, and
+  `ReleasePostmasterChildSlot()` also belong under that mutex, so slot release
+  and reuse cannot race with signal-id, interrupt, wakeup, or exit-payload
+  readers.
 - Use `PostmasterChildDetachThreadBackend()` when a thread carrier needs to
   stop advertising its live logical-backend pointer before final exit
   publication. It preserves the exited logical id for reaping/logging while

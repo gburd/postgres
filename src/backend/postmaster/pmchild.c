@@ -344,11 +344,14 @@ PostmasterChildSetProcess(PMChild *pmchild, pid_t pid)
 
 	pmchild->carrier_kind = PM_CHILD_CARRIER_PROCESS;
 	pmchild->pid = pid;
+
+	PMChildThreadBackendLock();
 	pmchild->signal_pid = pid;
 	pmchild->thread_backend = NULL;
 	pmchild->thread_exitstatus = 0;
 	pmchild->thread_exit_signal_pid = 0;
 	pmchild->thread_exit_top_memory_allocated = 0;
+	PMChildThreadBackendUnlock();
 	pg_atomic_write_u32(&pmchild->thread_startup_complete, 0);
 	pg_atomic_write_u32(&pmchild->thread_exited, 0);
 }
@@ -360,11 +363,15 @@ PostmasterChildSetThread(PMChild *pmchild, const PgThread *thread)
 
 	pmchild->carrier_kind = PM_CHILD_CARRIER_THREAD;
 	pmchild->pid = 0;
+
+	PMChildThreadBackendLock();
 	pmchild->signal_pid = 0;
 	pmchild->thread = *thread;
 	pmchild->thread_exitstatus = 0;
 	pmchild->thread_exit_signal_pid = 0;
 	pmchild->thread_exit_top_memory_allocated = 0;
+	pmchild->thread_backend = NULL;
+	PMChildThreadBackendUnlock();
 	pg_atomic_write_u32(&pmchild->thread_startup_complete, 0);
 	pg_atomic_write_u32(&pmchild->thread_exited, 0);
 }
@@ -535,11 +542,14 @@ ReleasePostmasterChildSlot(PMChild *pmchild)
 {
 	dlist_delete(&pmchild->elem);
 	pmchild->pid = 0;
+
+	PMChildThreadBackendLock();
 	pmchild->signal_pid = 0;
 	pmchild->thread_backend = NULL;
 	pmchild->thread_exitstatus = 0;
 	pmchild->thread_exit_signal_pid = 0;
 	pmchild->thread_exit_top_memory_allocated = 0;
+	PMChildThreadBackendUnlock();
 	pg_atomic_write_u32(&pmchild->thread_startup_complete, 0);
 	pg_atomic_write_u32(&pmchild->thread_exited, 0);
 	if (pmchild->bkend_type == B_DEAD_END_BACKEND)
