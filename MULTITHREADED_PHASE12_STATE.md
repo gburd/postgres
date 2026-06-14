@@ -12031,6 +12031,15 @@ allocation-context setup/reset, reset-through-initializer, delete-and-null
 memory-context cleanup, list/hash cleanup, and copy/adopt-then-reset fallback
 adoption.
 
+Acceleration rule: lifecycle framework work is the preferred way to move
+faster when Phase 12 feels slow. If the manual lifecycle path requires repeated
+helper bodies, parallel call-list edits, or several one-off reset/adoption
+functions, stop and add the missing checked primitive first. The deliverable
+should be code, not just documentation: a `PG_RUNTIME_*` action,
+`PG_RUNTIME_DEFINE_*` helper, bucket `.def` convention, or checker rule that
+lets the following state-migration or teardown batch be larger while remaining
+manifest-verified.
+
 Gate E2 ordering update: do lifecycle ergonomics/refactor work before the next
 broad teardown or state-migration batch. The preferred order is to simplify the
 checked lifecycle path first, then use that path while closing backend

@@ -16,6 +16,11 @@ is object-owned allocation contexts and related delete-and-null/list/hash/
 copy-adopt-reset patterns. Record the preflight decision in
 `MULTITHREADED_PHASE12_STATE.md` before editing code.
 
+If lifecycle bookkeeping itself is making Phase 12 slow, treat that as a code
+smell in the lifecycle framework. Do not keep grinding through repeated manual
+helpers. Add the missing macro, bucket-row action, declarative table pattern, or
+checker rule first, then move a larger coherent batch through the checked path.
+
 ## Project Docs
 
 - [MULTITHREADED_ARCHITECTURE.md](MULTITHREADED_ARCHITECTURE.md) describes the

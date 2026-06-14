@@ -932,7 +932,10 @@ Gate E2 requires:
   repetitive init/adopt/reset/destroy glue, extend the checked macro,
   `.def`-row, or declarative-rule layer before moving the globals. This is a
   Gate E2 work item because it keeps large-batch state migration fast while
-  preserving manifest-checked lifecycle coverage;
+  preserving manifest-checked lifecycle coverage. If lifecycle bookkeeping is
+  the thing slowing progress, treat that as evidence that the checked
+  vocabulary is still too weak: add the missing macro, action, table rule, or
+  checker validation first, then use it to move a larger coherent batch;
 - the lifecycle-ergonomics review is a required Gate E2 checkpoint. For each
   boilerplate-heavy Phase 12 batch, document whether the existing
   `PG_RUNTIME_DEFINE_*` macros, checked bucket `.def` files, and lifecycle
