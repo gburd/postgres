@@ -895,7 +895,10 @@ Gate E2 requires:
   semantics handwritten and owner-adjacent. If a later Phase 12 migration
   starts repeating lifecycle boilerplate, pause the migration long enough to
   extend the checked helper/definition mechanism instead of adding another
-  manual call-list pattern;
+  manual call-list pattern. Lifecycle bookkeeping friction should be treated
+  as a prompt to improve the framework: batch related buckets, add the missing
+  helper macro/table rule/checker validation, and then move the batch through
+  that checked path rather than landing several narrow one-off lifecycle edits;
 - the Phase 12 runtime and test scaffolding is refactored before additional
   Gate E2 state migration or Phase 13 scheduler-aware wait work begins.
   `src/backend/utils/init/backend_runtime.c` must remain the orchestration

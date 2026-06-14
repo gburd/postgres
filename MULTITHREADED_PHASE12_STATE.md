@@ -10422,6 +10422,10 @@ Acceptance criteria for the refactor slice:
   lifecycle framework before continuing. Future agents should prefer adding a
   helper macro, `.def` bucket row, or declarative lifecycle rule over carrying
   another manual constructor/adoption/reset list through Phase 12;
+- treat lifecycle bookkeeping friction as a design signal, not just local
+  annoyance. When the call-list mechanics start dominating the work, batch the
+  related root-object or subsystem buckets and add the missing helper
+  macro/table rule/checker validation before migrating the batch;
 - keep semantic cleanup/destructor functions handwritten and close to the
   owning subsystem. The generated or macro-driven layer should cover only
   repetitive coverage and call-list mechanics;

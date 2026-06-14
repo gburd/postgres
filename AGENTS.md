@@ -275,6 +275,10 @@ Important current files:
   maintaining another handwritten constructor/adoption/reset list. This should
   make larger coherent migrations easier while keeping ownership and teardown
   semantics explicit.
+- If lifecycle bookkeeping is slowing progress, treat that friction as a
+  design signal. Batch related buckets by root object or subsystem, add the
+  missing helper macro/table rule/checker validation first, and then migrate the
+  batch through that mechanism instead of making several narrow one-off edits.
 - Session GUC direct-variable rebinding in `src/backend/utils/misc/guc.c`
   is table-driven by `threaded_session_guc_rebinds[]`. Add new migrated
   built-in direct-pointer GUCs to that table instead of extending
