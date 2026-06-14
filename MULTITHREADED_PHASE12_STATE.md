@@ -275,6 +275,29 @@ Validation for this slice:
   passed all 87 tests with the local `/Users/samwillis/perl5` `PERL5LIB`
   paths and an explicit `PG_REGRESS`.
 
+## Borrowed Execution Scratch Classification
+
+The next manifest-hardening slice clears the remaining simple scratch rows
+that do not own dynamic storage:
+
+- backend expression-interpreter state owns an inline reverse-dispatch table
+  and borrows the opcode dispatch table pointer;
+- execution node I/O state owns scalar location flags and borrows the tokenizer
+  pointer used by node read/write routines;
+- execution regex state borrows the active `pg_locale_t` selected by the regex
+  compiler/executor. The locale object is owned by the collation/locale cache,
+  not the execution bucket.
+
+The remaining `GateE2 pending` rows after this slice are therefore the real
+resource/lifetime blockers: backend identity and worker buckets, memory
+manager and execution memory contexts, and the legacy `Session` bridge.
+
+Validation for this slice:
+
+- `gmake check-runtime-lifecycles` passed with 134 fields classified;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals.
+
 ## Runtime Lifecycle Manifest
 
 The one-hundred-seventy-third Phase 12 slice makes the Gate E2 object-lifecycle
