@@ -11315,3 +11315,50 @@ Validation for the PMChild reaping stress coverage slice:
   `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`
   passed all 6 tests with the same local TAP environment;
 - `git diff --check` passed.
+
+Backend-status snapshot lifecycle preflight:
+
+- target root and bucket: `PgBackend.activity`;
+- repeated lifecycle operations: one owner-adjacent closed-backend reset that
+  deletes a backend-status snapshot memory context and clears the copied local
+  backend-status table/count;
+- lifecycle preflight result: the existing `PG_BACKEND_BUCKET(activity, ...)`
+  checked reset column is the right mechanism. The semantic cleanup belongs
+  near backend-status ownership, so this slice adds
+  `PgBackendResetActivityClosedState()` in `backend_status.c` and extends
+  `check-runtime-lifecycles` to scan that owner source. No new generic
+  lifecycle action is needed because this is a one-bucket context destructor,
+  not a repeated helper family.
+
+Backend-status snapshot lifecycle slice completed:
+
+- `PgBackend.activity` closed reset now calls
+  `PgBackendResetActivityClosedState()`, which deletes the
+  `backendStatusSnapContext` memory context and clears
+  `localBackendStatusTable`/`localNumBackends`;
+- `MULTITHREADED_RUNTIME_OWNERS.tsv` now maps the three legacy backend-status
+  snapshot symbols to `PgBackend.activity`, making this resource ownership
+  searchable for future rebase and teardown work;
+- `check-runtime-lifecycles` now scans `backend_status.c` by default, so the
+  owner-adjacent reset helper remains manifest-checked;
+- `test_backend_reset_closed_state()` seeds a real backend-status snapshot
+  context under `TopMemoryContext` and verifies closed-backend reset deletes
+  and clears it.
+
+Validation for the backend-status snapshot lifecycle slice:
+
+- touched-object builds passed for `backend_status.o`, `backend_runtime.o`,
+  and `test_backend_runtime_backend.o`;
+- full `gmake -j8` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 27 reset definitions checked, and 154 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode runtime regression;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with the local
+  `IPC::Run` `PERL5LIB` and patched temporary-install/build-tree
+  install-name paths;
+- `git diff --check` passed.

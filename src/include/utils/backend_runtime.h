@@ -2387,6 +2387,7 @@ extern PgStat_Counter *PgCurrentPgStatLastSessionReportTimeRef(void);
 extern LocalPgBackendStatus **PgCurrentLocalBackendStatusTableRef(void);
 extern int *PgCurrentLocalNumBackendsRef(void);
 extern MemoryContext *PgCurrentBackendStatusSnapContextRef(void);
+extern void PgBackendResetActivityClosedState(PgBackendActivityState *activity);
 extern PgBackendAllocSetFreeList *PgCurrentAllocSetContextFreeLists(void);
 extern void AllocSetFreeContextFreelists(PgBackendAllocSetFreeList *freelists,
 										 int nfreelists);

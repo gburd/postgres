@@ -257,6 +257,14 @@ Important current files:
   agents can move larger batches without maintaining several call lists by
   hand. Keep exceptional ordering and semantic cleanup handwritten near the
   owning subsystem.
+- Before each large Phase 12 migration or Gate E2 teardown batch, do a
+  lifecycle-ergonomics preflight and record the result in
+  `MULTITHREADED_PHASE12_STATE.md`. If the batch would add repetitive
+  init/adopt/reset/destroy boilerplate, first add the small checked lifecycle
+  action, `PG_RUNTIME_DEFINE_*` helper, bucket `.def` rule, or checker
+  validation that makes the batch declarative. If the existing checked
+  mechanism is sufficient, say which bucket rows/macros/checker rules are
+  being reused before editing code.
 - The first lifecycle framework slice uses
   `src/backend/utils/init/backend_runtime_*_buckets.def`. The checker validates
   one bucket-definition row for every `PgCarrier`, `PgBackend`, `PgSession`,

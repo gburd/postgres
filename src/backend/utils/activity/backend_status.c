@@ -510,6 +510,21 @@ pgstat_clear_backend_activity_snapshot(void)
 	localNumBackends = 0;
 }
 
+void
+PgBackendResetActivityClosedState(PgBackendActivityState *activity)
+{
+	Assert(activity != NULL);
+
+	if (activity->backend_status_context)
+	{
+		MemoryContextDelete(activity->backend_status_context);
+		activity->backend_status_context = NULL;
+	}
+
+	activity->backend_status_table = NULL;
+	activity->num_backends = 0;
+}
+
 static void
 pgstat_setup_backend_status_context(void)
 {

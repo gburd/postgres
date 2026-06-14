@@ -1079,6 +1079,11 @@ underlying `PgBackendStatus` shared-memory array lifecycle unchanged.
 `PgCurrentMyBgworkerEntryRef()`, keeping background-worker registration
 identity with the logical backend while preserving the existing bgworker
 registration slot and shared-memory lifecycle.
+Backend-status local snapshots now also have explicit closed-backend reset
+ownership: `localBackendStatusTable`, `localNumBackends`, and
+`backendStatusSnapContext` live in `PgBackend.activity`, and
+`PgBackendResetClosedState()` deletes the snapshot memory context and clears
+the table/count through the owner-adjacent backend-status helper.
 The opted-in `worker_spi` module no longer keeps its custom wait-event ID in
 backend-local TLS; `worker_spi_wait_event_main` is classified as
 `PG_GLOBAL_RUNTIME` because it caches a shared wait-event registry ID, not

@@ -735,6 +735,7 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	PgBackendAutovacuumState *autovacuum;
 	PgBackendAioState *aio;
 	PgBackendLockState *locks;
+	PgBackendActivityState *activity;
 	HASHCTL		hash_ctl;
 	bool		ok = true;
 
@@ -748,6 +749,7 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	autovacuum = &fake_backend.autovacuum;
 	aio = &fake_backend.aio;
 	locks = &fake_backend.locks;
+	activity = &fake_backend.activity;
 	replication->walreceiver_recv_file = -1;
 	xlog->open_log_file = -1;
 
@@ -894,6 +896,15 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	locks->blocking_autovacuum_proc = &fake_backend;
 	locks->deadlock_workspace_owned = true;
 
+	activity->backend_status_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test backend status snapshot context",
+							  ALLOCSET_SMALL_SIZES);
+	activity->backend_status_table =
+		MemoryContextAlloc(activity->backend_status_context,
+						   sizeof(LocalPgBackendStatus));
+	activity->num_backends = 1;
+
 	fake_backend.memory_manager.log_memory_context_in_progress = true;
 
 	utility->notify_interrupt_pending = true;
@@ -1007,6 +1018,9 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && aio->my_backend == NULL;
 	ok = ok && aio->my_io_worker_id == -1;
 	ok = ok && aio->my_uring_context == NULL;
+	ok = ok && activity->backend_status_table == NULL;
+	ok = ok && activity->num_backends == 0;
+	ok = ok && activity->backend_status_context == NULL;
 	ok = ok && !fake_backend.memory_manager.log_memory_context_in_progress;
 	ok = ok && utility->notify_interrupt_pending;
 	ok = ok && utility->seq_scan_tables[0] == NULL;

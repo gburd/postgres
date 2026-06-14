@@ -28,7 +28,7 @@ PG_BACKEND_BUCKET(my_beentry, PG_RUNTIME_NOOP, PgBackendAdoptEarlyMyBEEntry(back
 PG_BACKEND_BUCKET(my_bgworker_entry, PG_RUNTIME_NOOP, PgBackendAdoptEarlyMyBgworkerEntry(backend), PG_RUNTIME_NOOP)
 PG_BACKEND_BUCKET(aux_process_resource_owner, PG_RUNTIME_NOOP, PgBackendAdoptEarlyAuxProcessResourceOwner(backend), PG_RUNTIME_NOOP)
 PG_BACKEND_BUCKET(pgstat_pending, PgBackendInitializePgStatPendingState(&backend->pgstat_pending), PgBackendAdoptEarlyPgStatPendingState(backend), PG_RUNTIME_NOOP)
-PG_BACKEND_BUCKET(activity, PgBackendInitializeActivityState(&backend->activity), PgBackendAdoptEarlyActivityState(backend), PG_RUNTIME_NOOP)
+PG_BACKEND_BUCKET(activity, PgBackendInitializeActivityState(&backend->activity), PgBackendAdoptEarlyActivityState(backend), PgBackendResetActivityClosedState(&backend->activity))
 PG_BACKEND_BUCKET(memory_manager, PgBackendInitializeMemoryManagerState(&backend->memory_manager), PgBackendAdoptEarlyMemoryManagerState(backend), PgBackendResetMemoryManagerClosedState(&backend->memory_manager))
 PG_BACKEND_BUCKET(utility, PgBackendInitializeUtilityState(&backend->utility), PgBackendAdoptEarlyUtilityState(backend), PgBackendResetUtilityClosedState(&backend->utility))
 PG_BACKEND_BUCKET(parallel, PgBackendInitializeParallelState(&backend->parallel), PgBackendAdoptEarlyParallelState(backend), PG_RUNTIME_NOOP)
