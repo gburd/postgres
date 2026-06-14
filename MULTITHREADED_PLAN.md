@@ -924,6 +924,14 @@ underlying `PgBackendStatus` shared-memory array lifecycle unchanged.
 `PgCurrentMyBgworkerEntryRef()`, keeping background-worker registration
 identity with the logical backend while preserving the existing bgworker
 registration slot and shared-memory lifecycle.
+The opted-in `worker_spi` module no longer keeps its custom wait-event ID in
+backend-local TLS; `worker_spi_wait_event_main` is classified as
+`PG_GLOBAL_RUNTIME` because it caches a shared wait-event registry ID, not
+backend-owned mutable state. A raw scan for
+`PG_THREAD_LOCAL PG_GLOBAL_BACKEND`, `PG_GLOBAL_SESSION`,
+`PG_GLOBAL_CONNECTION`, and `PG_GLOBAL_EXECUTION` declarations now finds no
+matches outside `src/backend/utils/init/backend_runtime.c` early-fallback
+storage.
 The generic main-loop interrupt flags `ConfigReloadPending` and
 `ShutdownRequestPending` now live in `PgBackendPendingInterruptState` behind
 their existing lvalue names, so config reload and cooperative shutdown state

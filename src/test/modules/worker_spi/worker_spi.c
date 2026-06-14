@@ -58,8 +58,12 @@ static int	worker_spi_total_workers = 2;
 static char *worker_spi_database = NULL;
 static char *worker_spi_role = NULL;
 
-/* value cached, fetched from shared memory */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND uint32 worker_spi_wait_event_main = 0;
+/*
+ * Value cached after lookup in the shared custom wait-event registry.  This is
+ * a registry ID, not backend-owned mutable state, so a single runtime cache is
+ * enough for process and thread-backed workers.
+ */
+static PG_GLOBAL_RUNTIME uint32 worker_spi_wait_event_main = 0;
 
 typedef struct worktable
 {

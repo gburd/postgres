@@ -173,6 +173,12 @@ Important current files:
   `gmake check-global-lifetimes` as part of Gate E2. A new mutable global must
   be annotated with an explicit `PG_GLOBAL_*` owner or deliberately accepted in
   `src/tools/global_lifetime/global_lifetime_baseline.tsv`.
+- Raw `PG_THREAD_LOCAL PG_GLOBAL_BACKEND`, `PG_GLOBAL_SESSION`,
+  `PG_GLOBAL_CONNECTION`, and `PG_GLOBAL_EXECUTION` declarations should now be
+  confined to `src/backend/utils/init/backend_runtime.c` early-fallback
+  storage. If a new in-tree module needs cached shared registry data, prefer
+  `PG_GLOBAL_RUNTIME`; if it needs backend/session/execution state, add an
+  explicit runtime-object bucket instead.
 - Before leaving Phase 12, perform the Gate E2 object-lifecycle audit. Every
   backend/session/connection/execution state bucket needs a documented
   initializer, early-adoption behavior or proof that early adoption is
@@ -1666,6 +1672,28 @@ Important current files:
   INITDB_TEMPLATE="$PWD/tmp_install/initdb-template" \
   PG_REGRESS="$PWD/src/test/regress/pg_regress" \
   prove -I src/test/perl src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl
+  ```
+
+  Module TAP tests that normally run through `prove_check` may need the full
+  makefile harness environment. For worker SPI, run from the module directory
+  after refreshing `tmp_install` and patching the temp-install dynamic library
+  names:
+
+  ```sh
+  cd src/test/modules/worker_spi
+  rm -rf tmp_check && mkdir -p tmp_check/log
+  PERL5LIB="/Users/samwillis/.cpan/build/IPC-Run-20260402.0-5/blib/lib:$OLDPWD/src/test/perl" \
+  TESTLOGDIR="$PWD/tmp_check/log" \
+  TESTDATADIR="$PWD/tmp_check" \
+  PATH="$OLDPWD/tmp_install/usr/local/pgsql/bin:$PWD:$PATH" \
+  DYLD_LIBRARY_PATH="$OLDPWD/tmp_install/usr/local/pgsql/lib" \
+  INITDB_TEMPLATE="$OLDPWD/tmp_install/initdb-template" \
+  PGPORT=65432 \
+  top_builddir="$PWD/../../../.." \
+  PG_REGRESS="$PWD/../../../../src/test/regress/pg_regress" \
+  share_contrib_dir="$OLDPWD/tmp_install/usr/local/pgsql/share/extension" \
+  enable_injection_points=no \
+  prove -I "$OLDPWD/src/test/perl" -I . t/001_worker_spi.pl t/002_worker_terminate.pl
   ```
 
 - In the managed Codex sandbox, PostgreSQL temp-instance tests can fail during

@@ -10206,3 +10206,42 @@ Validation for this slice:
 - direct backend-runtime TAP passed for `001_threaded_runtime.pl` with 88
   tests and `002_threaded_bgworker_crash.pl` with 6 tests using the local
   `IPC::Run` `PERL5LIB` and patched temporary-install dynamic library names.
+
+## Worker SPI Wait-Event Cache Lifetime
+
+This Phase 12 cleanup removes the last non-runtime raw
+`PG_THREAD_LOCAL PG_GLOBAL_BACKEND` declaration outside
+`src/backend/utils/init/backend_runtime.c` early-fallback storage:
+
+- `worker_spi_wait_event_main` in `src/test/modules/worker_spi/worker_spi.c`
+  is now `PG_GLOBAL_RUNTIME`;
+- the value is a custom wait-event registry ID returned by
+  `WaitEventExtensionNew("WorkerSpiMain")`, not per-backend mutable execution
+  state;
+- `WaitEventExtensionNew()` already rechecks the shared registry under the
+  wait-event lock, so concurrent process/thread callers can converge on the
+  same ID even if they race through the zero-cache fast path;
+- this keeps opted-in in-tree test extension code from depending on raw
+  backend-local TLS for shared registry metadata.
+
+After this slice, the direct raw TLS scan for
+`PG_THREAD_LOCAL PG_GLOBAL_BACKEND`, `PG_GLOBAL_SESSION`,
+`PG_GLOBAL_CONNECTION`, and `PG_GLOBAL_EXECUTION` outside
+`src/backend/utils/init/backend_runtime.c` has no matches. Future in-tree
+module additions should use `PG_GLOBAL_RUNTIME` only for real runtime-wide
+registry/cache values; backend/session/execution/connection state should use
+an explicit runtime-object bucket.
+
+Validation for this slice:
+
+- `gmake -C src/test/modules/worker_spi worker_spi.o all` passed;
+- `gmake -C src/test/modules/worker_spi check` refreshed the temp install
+  and completed the non-TAP target for this non-`--enable-tap-tests` checkout;
+- direct worker SPI TAP passed for `001_worker_spi.pl`; `002_worker_terminate.pl`
+  skipped as expected because this checkout is configured without injection
+  points;
+- `gmake check-runtime-lifecycles` passed with 149 runtime fields classified;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- the focused raw TLS scan outside `backend_runtime.c` found no remaining
+  matches.
