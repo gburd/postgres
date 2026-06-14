@@ -3934,6 +3934,11 @@ PgExecutionResetReplicationScratchClosedState(PgExecutionReplicationScratchState
 	Assert(replication_scratch != NULL);
 
 	EventTriggerResetQueryStateStack(&replication_scratch->event_trigger_query_state);
+	if (replication_scratch->event_trigger_context != NULL)
+	{
+		MemoryContextDelete(replication_scratch->event_trigger_context);
+		replication_scratch->event_trigger_context = NULL;
+	}
 	PgExecutionInitializeReplicationScratchState(replication_scratch);
 }
 
@@ -7727,6 +7732,28 @@ EventTriggerQueryState **
 PgCurrentEventTriggerQueryStateRef(void)
 {
 	return &PgCurrentExecutionReplicationScratchState()->event_trigger_query_state;
+}
+
+MemoryContext
+PgCurrentEventTriggerMemoryContext(void)
+{
+	PgExecutionReplicationScratchState *replication_scratch;
+
+	replication_scratch = PgCurrentExecutionReplicationScratchState();
+
+	if (replication_scratch->event_trigger_context == NULL)
+		replication_scratch->event_trigger_context =
+			AllocSetContextCreate(TopMemoryContext,
+								  "event trigger execution state",
+								  ALLOCSET_SMALL_SIZES);
+
+	return replication_scratch->event_trigger_context;
+}
+
+MemoryContext *
+PgCurrentEventTriggerMemoryContextRef(void)
+{
+	return &PgCurrentExecutionReplicationScratchState()->event_trigger_context;
 }
 
 ReplOriginXactState *

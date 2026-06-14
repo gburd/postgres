@@ -11671,3 +11671,56 @@ Validation for the session encoding conversion-cache lifecycle slice:
   `conversion` test assumes the earlier `test_setup` public-schema grant
   fixture. The corrected focused run with `test_setup encoding conversion`
   passed all three tests.
+
+Event-trigger execution-context lifecycle preflight:
+
+- target root and bucket: `PgExecution.replication_scratch`;
+- repeated lifecycle operations: one execution-owned parent allocation context
+  for complete-query event-trigger state, plus the existing owner-adjacent
+  stack reset helper;
+- lifecycle preflight result: the existing
+  `PG_EXECUTION_BUCKET(replication_scratch, ...)` checked reset row,
+  `EventTriggerResetQueryStateStack()`, and owner-map checker are sufficient.
+  No new generic lifecycle action is needed because this is a single semantic
+  stack/context family. The reset remains handwritten because the event-trigger
+  stack has owner-adjacent ordering and memory-context deletion semantics.
+
+Event-trigger execution-context lifecycle slice:
+
+- `PgExecutionReplicationScratchState` now includes
+  `event_trigger_context`, which is the execution-owned parent context for
+  complete-query event-trigger state contexts;
+- `EventTriggerBeginCompleteQuery()` now creates per-query
+  `EventTriggerQueryState` contexts under
+  `PgCurrentEventTriggerMemoryContext()` instead of directly under
+  `TopMemoryContext`;
+- `PgExecutionResetClosedState()` deletes any live query-state stack, deletes
+  the execution-owned event-trigger parent context, and reinitializes the
+  replication scratch bucket;
+- `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` and
+  `MULTITHREADED_RUNTIME_OWNERS.tsv` record the stack root and parent context
+  as `PgExecution.replication_scratch` state;
+- `test_execution_event_trigger_query_state_reset()` now verifies that a fake
+  execution closed reset deletes the parent context. The live
+  `EventTriggerBeginCompleteQuery()` path is exercised under the real current
+  execution because event-trigger internals expect the normal execution
+  memory-context bridge.
+
+Validation for the event-trigger execution-context lifecycle slice:
+
+- touched-object builds passed for `event_trigger.o`, `backend_runtime.o`,
+  and `test_backend_runtime_execution.o`;
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 28 reset definitions checked, and 173 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- after the installed `backend_runtime.h` layout change, the documented
+  backend clean/generated-header recovery path completed and full `gmake -j8`
+  passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with the documented
+  local `IPC::Run` `PERL5LIB` and patched temporary-install install-name
+  paths.

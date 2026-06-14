@@ -709,6 +709,8 @@ test_execution_reset_closed_state(PG_FUNCTION_ARGS)
 		ok = ok &&
 			fake_execution.replication_scratch.event_trigger_query_state == NULL;
 		ok = ok &&
+			fake_execution.replication_scratch.event_trigger_context == NULL;
+		ok = ok &&
 			fake_execution.replication_scratch.replorigin_xact.origin ==
 			InvalidReplOriginId;
 		ok = ok &&
@@ -786,9 +788,15 @@ PG_FUNCTION_INFO_V1(test_execution_event_trigger_query_state_reset);
 Datum
 test_execution_event_trigger_query_state_reset(PG_FUNCTION_ARGS)
 {
+	PgExecution *saved_execution;
+	PgExecution fake_execution;
 	EventTriggerQueryState **statep;
+	MemoryContext event_trigger_context = NULL;
+	MemoryContext fake_event_trigger_context = NULL;
 	bool		began = false;
 	bool		ok = true;
+
+	saved_execution = CurrentPgExecution;
 
 	PG_TRY();
 	{
@@ -798,15 +806,49 @@ test_execution_event_trigger_query_state_reset(PG_FUNCTION_ARGS)
 
 		statep = PgCurrentEventTriggerQueryStateRef();
 		ok = ok && *statep != NULL;
+		event_trigger_context = *PgCurrentEventTriggerMemoryContextRef();
+		ok = ok && event_trigger_context != NULL;
+		ok = ok && event_trigger_context != TopMemoryContext;
+		ok = ok && MemoryContextGetParent(event_trigger_context) ==
+			TopMemoryContext;
 
 		EventTriggerResetQueryStateStack(statep);
 
 		ok = ok && *statep == NULL;
+		ok = ok && *PgCurrentEventTriggerMemoryContextRef() ==
+			event_trigger_context;
+		MemoryContextDelete(event_trigger_context);
+		*PgCurrentEventTriggerMemoryContextRef() = NULL;
+		event_trigger_context = NULL;
+
+		MemSet(&fake_execution, 0, sizeof(fake_execution));
+		test_backend_runtime_seed_execution_memory_contexts(&fake_execution);
+		fake_event_trigger_context =
+			AllocSetContextCreate(TopMemoryContext,
+								  "fake event trigger execution state",
+								  ALLOCSET_SMALL_SIZES);
+		fake_execution.replication_scratch.event_trigger_context =
+			fake_event_trigger_context;
+		CurrentPgExecution = &fake_execution;
+		PgExecutionResetClosedState(&fake_execution);
+		fake_event_trigger_context = NULL;
+		ok = ok && *PgCurrentEventTriggerMemoryContextRef() == NULL;
+		CurrentPgExecution = saved_execution;
 	}
 	PG_CATCH();
 	{
-		if (began)
+		if (CurrentPgExecution == saved_execution && began)
 			EventTriggerResetQueryStateStack(PgCurrentEventTriggerQueryStateRef());
+		if (CurrentPgExecution == saved_execution &&
+			event_trigger_context != NULL &&
+			*PgCurrentEventTriggerMemoryContextRef() == event_trigger_context)
+		{
+			MemoryContextDelete(event_trigger_context);
+			*PgCurrentEventTriggerMemoryContextRef() = NULL;
+		}
+		if (fake_event_trigger_context != NULL)
+			MemoryContextDelete(fake_event_trigger_context);
+		CurrentPgExecution = saved_execution;
 		PG_RE_THROW();
 	}
 	PG_END_TRY();

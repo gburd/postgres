@@ -1201,7 +1201,7 @@ EventTriggerBeginCompleteQuery(void)
 	if (!trackDroppedObjectsNeeded())
 		return false;
 
-	cxt = AllocSetContextCreate(TopMemoryContext,
+	cxt = AllocSetContextCreate(PgCurrentEventTriggerMemoryContext(),
 								"event trigger state",
 								ALLOCSET_DEFAULT_SIZES);
 	state = MemoryContextAlloc(cxt, sizeof(EventTriggerQueryState));

@@ -1022,6 +1022,7 @@ typedef struct PgExecutionTransactionCleanupState
 typedef struct PgExecutionReplicationScratchState
 {
 	EventTriggerQueryState *event_trigger_query_state;
+	MemoryContext event_trigger_context;
 	ReplOriginXactState replorigin_xact;
 	ErrorContextCallback *apply_error_context_stack;
 	MemoryContext apply_message_context;
@@ -2956,6 +2957,8 @@ extern PgStat_SubXactStatus **PgCurrentPgStatXactStackRef(void);
 extern HTAB **PgCurrentRIFastPathCacheRef(void);
 extern bool *PgCurrentRIFastPathCallbackRegisteredRef(void);
 extern EventTriggerQueryState **PgCurrentEventTriggerQueryStateRef(void);
+extern MemoryContext PgCurrentEventTriggerMemoryContext(void);
+extern MemoryContext *PgCurrentEventTriggerMemoryContextRef(void);
 extern ReplOriginXactState *PgCurrentReplOriginXactStateRef(void);
 extern ErrorContextCallback **PgCurrentApplyErrorContextStackRef(void);
 extern MemoryContext *PgCurrentApplyMessageContextRef(void);
