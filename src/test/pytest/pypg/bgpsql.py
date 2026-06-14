@@ -231,6 +231,12 @@ class BackgroundPsql:
 
     finish = quit
 
+    def __enter__(self) -> "BackgroundPsql":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.quit()
+
     def restart(self):
         """Quit (if needed) and start a fresh psql session with the same params."""
         self.quit()

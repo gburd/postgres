@@ -110,3 +110,9 @@ class InteractivePsql:
             self._proc.wait()
         os.close(self._master)
         return self._proc.returncode
+
+    def __enter__(self) -> "InteractivePsql":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.quit()

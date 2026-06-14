@@ -71,3 +71,12 @@ def test_scalar_rejects_multi_row(pg):
     result = pg.sql("SELECT * FROM (VALUES (1), (2)) v")
     with pytest.raises(ValueError):
         result.scalar()
+
+
+def test_background_psql_context_manager(pg):
+    """A background psql session can be used as a context manager."""
+    with pg.background_psql("postgres") as bg:
+        assert bg.query("SELECT 1").strip() == "1"
+    # Leaving the block quits the session; a second one starts cleanly.
+    with pg.background_psql("postgres") as bg:
+        assert bg.query("SELECT 2").strip() == "2"
