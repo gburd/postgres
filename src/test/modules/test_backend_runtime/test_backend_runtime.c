@@ -11859,6 +11859,10 @@ test_execution_xact_state_is_execution_local(PG_FUNCTION_ARGS)
 	PgExecution *saved_execution;
 	PgExecution fake_execution1;
 	PgExecution fake_execution2;
+	TransactionId parallel_xids1[2] = {11, 12};
+	TransactionId parallel_xids2[1] = {21};
+	char		prepare_gid1[] = "gid-one";
+	char		prepare_gid2[] = "gid-two";
 	bool		ok = true;
 
 	saved_execution = CurrentPgExecution;
@@ -11876,6 +11880,23 @@ test_execution_xact_state_is_execution_local(PG_FUNCTION_ARGS)
 		bsysscan = true;
 		MyXactFlags = XACT_FLAGS_ACCESSEDTEMPNAMESPACE |
 			XACT_FLAGS_NEEDIMMEDIATECOMMIT;
+		*PgCurrentXactTopFullTransactionIdRef() =
+			FullTransactionIdFromEpochAndXid(1, 101);
+		*PgCurrentNParallelCurrentXidsRef() = 2;
+		*PgCurrentParallelCurrentXidsRef() = parallel_xids1;
+		*PgCurrentNUnreportedXidsRef() = 2;
+		PgCurrentUnreportedXids()[0] = 111;
+		PgCurrentUnreportedXids()[1] = 112;
+		*PgCurrentSubTransactionIdCounterRef() = 5;
+		*PgCurrentCommandIdCounterRef() = 6;
+		*PgCurrentCommandIdUsedRef() = true;
+		*PgCurrentXactStartTimestampRef() = 1001;
+		*PgCurrentStmtStartTimestampRef() = 1002;
+		*PgCurrentXactStopTimestampRef() = 1003;
+		*PgCurrentPrepareGIDRef() = prepare_gid1;
+		*PgCurrentForceSyncCommitRef() = true;
+		*PgCurrentTransactionAbortContextRef() =
+			(MemoryContext) &fake_execution1;
 
 		CurrentPgExecution = &fake_execution2;
 		ok = ok && XactIsoLevel == 0;
@@ -11885,6 +11906,22 @@ test_execution_xact_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && CheckXidAlive == InvalidTransactionId;
 		ok = ok && !bsysscan;
 		ok = ok && MyXactFlags == 0;
+		ok = ok &&
+			FullTransactionIdEquals(*PgCurrentXactTopFullTransactionIdRef(),
+									FullTransactionIdFromU64(0));
+		ok = ok && *PgCurrentNParallelCurrentXidsRef() == 0;
+		ok = ok && *PgCurrentParallelCurrentXidsRef() == NULL;
+		ok = ok && *PgCurrentNUnreportedXidsRef() == 0;
+		ok = ok && PgCurrentUnreportedXids()[0] == InvalidTransactionId;
+		ok = ok && *PgCurrentSubTransactionIdCounterRef() == 0;
+		ok = ok && *PgCurrentCommandIdCounterRef() == 0;
+		ok = ok && !*PgCurrentCommandIdUsedRef();
+		ok = ok && *PgCurrentXactStartTimestampRef() == 0;
+		ok = ok && *PgCurrentStmtStartTimestampRef() == 0;
+		ok = ok && *PgCurrentXactStopTimestampRef() == 0;
+		ok = ok && *PgCurrentPrepareGIDRef() == NULL;
+		ok = ok && !*PgCurrentForceSyncCommitRef();
+		ok = ok && *PgCurrentTransactionAbortContextRef() == NULL;
 
 		XactIsoLevel = XACT_REPEATABLE_READ;
 		XactReadOnly = false;
@@ -11894,6 +11931,23 @@ test_execution_xact_state_is_execution_local(PG_FUNCTION_ARGS)
 		bsysscan = false;
 		MyXactFlags = XACT_FLAGS_ACQUIREDACCESSEXCLUSIVELOCK |
 			XACT_FLAGS_PIPELINING;
+		*PgCurrentXactTopFullTransactionIdRef() =
+			FullTransactionIdFromEpochAndXid(2, 201);
+		*PgCurrentNParallelCurrentXidsRef() = 1;
+		*PgCurrentParallelCurrentXidsRef() = parallel_xids2;
+		*PgCurrentNUnreportedXidsRef() = 1;
+		PgCurrentUnreportedXids()[0] = 211;
+		PgCurrentUnreportedXids()[1] = InvalidTransactionId;
+		*PgCurrentSubTransactionIdCounterRef() = 7;
+		*PgCurrentCommandIdCounterRef() = 8;
+		*PgCurrentCommandIdUsedRef() = false;
+		*PgCurrentXactStartTimestampRef() = 2001;
+		*PgCurrentStmtStartTimestampRef() = 2002;
+		*PgCurrentXactStopTimestampRef() = 2003;
+		*PgCurrentPrepareGIDRef() = prepare_gid2;
+		*PgCurrentForceSyncCommitRef() = false;
+		*PgCurrentTransactionAbortContextRef() =
+			(MemoryContext) &fake_execution2;
 
 		CurrentPgExecution = &fake_execution1;
 		ok = ok && XactIsoLevel == XACT_SERIALIZABLE;
@@ -11904,6 +11958,24 @@ test_execution_xact_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && bsysscan;
 		ok = ok && MyXactFlags == (XACT_FLAGS_ACCESSEDTEMPNAMESPACE |
 								   XACT_FLAGS_NEEDIMMEDIATECOMMIT);
+		ok = ok &&
+			FullTransactionIdEquals(*PgCurrentXactTopFullTransactionIdRef(),
+									FullTransactionIdFromEpochAndXid(1, 101));
+		ok = ok && *PgCurrentNParallelCurrentXidsRef() == 2;
+		ok = ok && *PgCurrentParallelCurrentXidsRef() == parallel_xids1;
+		ok = ok && *PgCurrentNUnreportedXidsRef() == 2;
+		ok = ok && PgCurrentUnreportedXids()[0] == 111;
+		ok = ok && PgCurrentUnreportedXids()[1] == 112;
+		ok = ok && *PgCurrentSubTransactionIdCounterRef() == 5;
+		ok = ok && *PgCurrentCommandIdCounterRef() == 6;
+		ok = ok && *PgCurrentCommandIdUsedRef();
+		ok = ok && *PgCurrentXactStartTimestampRef() == 1001;
+		ok = ok && *PgCurrentStmtStartTimestampRef() == 1002;
+		ok = ok && *PgCurrentXactStopTimestampRef() == 1003;
+		ok = ok && *PgCurrentPrepareGIDRef() == prepare_gid1;
+		ok = ok && *PgCurrentForceSyncCommitRef();
+		ok = ok && *PgCurrentTransactionAbortContextRef() ==
+			(MemoryContext) &fake_execution1;
 
 		CurrentPgExecution = &fake_execution2;
 		ok = ok && XactIsoLevel == XACT_REPEATABLE_READ;
@@ -11914,6 +11986,24 @@ test_execution_xact_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && !bsysscan;
 		ok = ok && MyXactFlags == (XACT_FLAGS_ACQUIREDACCESSEXCLUSIVELOCK |
 								   XACT_FLAGS_PIPELINING);
+		ok = ok &&
+			FullTransactionIdEquals(*PgCurrentXactTopFullTransactionIdRef(),
+									FullTransactionIdFromEpochAndXid(2, 201));
+		ok = ok && *PgCurrentNParallelCurrentXidsRef() == 1;
+		ok = ok && *PgCurrentParallelCurrentXidsRef() == parallel_xids2;
+		ok = ok && *PgCurrentNUnreportedXidsRef() == 1;
+		ok = ok && PgCurrentUnreportedXids()[0] == 211;
+		ok = ok && PgCurrentUnreportedXids()[1] == InvalidTransactionId;
+		ok = ok && *PgCurrentSubTransactionIdCounterRef() == 7;
+		ok = ok && *PgCurrentCommandIdCounterRef() == 8;
+		ok = ok && !*PgCurrentCommandIdUsedRef();
+		ok = ok && *PgCurrentXactStartTimestampRef() == 2001;
+		ok = ok && *PgCurrentStmtStartTimestampRef() == 2002;
+		ok = ok && *PgCurrentXactStopTimestampRef() == 2003;
+		ok = ok && *PgCurrentPrepareGIDRef() == prepare_gid2;
+		ok = ok && !*PgCurrentForceSyncCommitRef();
+		ok = ok && *PgCurrentTransactionAbortContextRef() ==
+			(MemoryContext) &fake_execution2;
 
 		CurrentPgExecution = saved_execution;
 	}

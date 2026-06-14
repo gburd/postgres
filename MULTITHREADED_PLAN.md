@@ -1477,6 +1477,16 @@ list/hash storage, while the runtime object owns the execution-local pointer
 slots and queue-position values. The global-lifetime scan now reports 81
 execution-local declarations, down from 88, with zero new unclassified mutable
 globals.
+The next transaction-state batch moved another coherent `xact.c` scalar and
+pointer group into `PgExecutionXactState`: top full XID, parallel-current-XID
+borrowed pointer and count, inline unreported-XID storage, subtransaction and
+command ID counters, transaction/statement/stop timestamps, prepare GID,
+force-sync flag, and transaction abort context pointer. The private
+`TransactionStateData` stack and transaction callback lists deliberately
+remain in `xact.c` for a later lifecycle split, but the moved fields now have
+explicit manifest copy/adoption rules. The global-lifetime scan now reports
+67 execution-local declarations, down from 81, with zero new unclassified
+mutable globals.
 The lifecycle audit is now also mechanically checked. The root
 `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` manifest records owner/lifetime,
 initializer, early-adoption, reset/destroy, and copy/adoption rules for every

@@ -484,15 +484,20 @@ Important current files:
 - Simple exported transaction execution state now lives in `PgExecution`:
   `PgExecutionXactState` owns `XactIsoLevel`, `XactReadOnly`,
   `XactDeferrable`, `xact_is_sampled`, `CheckXidAlive`, `bsysscan`, and
-  `MyXactFlags`. `xact.h` keeps those public names as lvalue macros but must
-  not include `backend_runtime.h`; it only declares accessor prototypes
-  because `backend_runtime.h` already includes `xact.h`. The private
-  transaction-state stack, command-id state, timestamps, callback lists, and
-  abort context in `xact.c` remain a follow-up requiring a broader lifecycle
-  split. After changing this bridge, clean and rebuild backend objects because
-  `PgExecution` layout and installed runtime/xact headers changed; at minimum
-  rebuild and reinstall `src/test/modules/test_backend_runtime`, PL/pgSQL, and
-  contrib before validating.
+  `MyXactFlags`, plus the top full XID, parallel-current-XID count/borrowed
+  pointer, inline unreported-XID array, subtransaction and command ID counters,
+  transaction timestamps, prepare GID, force-sync flag, and transaction abort
+  context pointer. `xact.h` keeps the public exported names as lvalue macros
+  but must not include `backend_runtime.h`; it only declares accessor
+  prototypes because `backend_runtime.h` already includes `xact.h`. The
+  private transaction-state stack and transaction callback lists in `xact.c`
+  remain a follow-up requiring a broader lifecycle split. After changing this
+  bridge, clean and rebuild backend objects because `PgExecution` layout and
+  installed runtime/xact headers changed; at minimum rebuild and reinstall
+  `src/test/modules/test_backend_runtime`, PL/pgSQL, and contrib before
+  validating. If `xact.c` defines compatibility macros for private names,
+  rename local struct fields such as serialized transaction-state fields so
+  macro expansion does not rewrite `tstate->field` references.
 - GUC/error-report scratch state now lives in `PgExecution`:
   `PgExecutionGUCErrorState` owns the GUC check-hook error code and
   message/detail/hint strings, `pre_format_elog_string()` errno/domain state,
@@ -1076,6 +1081,17 @@ Important current files:
   Tests that create subscriptions can reach `libpqwalreceiver.dylib`; patch it
   along with the frontend binaries after reinstalling or recreating
   `tmp_install`.
+
+  After rebuilding backend/postmaster code, reinstall before direct TAP runs
+  that use `tmp_install`; otherwise an old `postgres` binary can run with new
+  test modules or headers. One observed stale-install symptom was
+  `001_threaded_runtime.pl` failing at
+  `test_backend_runtime_launch_thread_bgworker()` with
+  `thread-model background worker did not start: status 2` and server log
+  `could not access file ""`. Reinstall with
+  `gmake -j8 install DESTDIR="$PWD/tmp_install"` and reinstall
+  `src/test/modules/test_backend_runtime`, then patch install names again
+  before rerunning TAP.
 
   Direct isolation runs can fail the same way from build-tree binaries. Patch
   `src/test/isolation/isolationtester` and

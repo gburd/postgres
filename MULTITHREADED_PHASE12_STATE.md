@@ -8341,3 +8341,52 @@ Validation for this slice:
   globals and 81 execution-local declarations;
 - `gmake -C contrib -j8` passed;
 - `git diff --check` passed.
+
+## Transaction Scalar Execution State
+
+The next Phase 12 transaction-state slice moves a larger scalar/pointer batch
+from `xact.c` into `PgExecutionXactState`:
+
+- top-level full transaction ID;
+- parallel-current-XID count and borrowed pointer;
+- inline unreported-XID storage, with a runtime/static assert that the array
+  capacity matches `PGPROC_MAX_CACHED_SUBXIDS`;
+- subtransaction and command ID counters;
+- transaction, statement, and transaction-stop timestamps;
+- prepare GID pointer;
+- force-synchronous-commit flag;
+- transaction abort context pointer.
+
+`xact.c` keeps its historic local names as file-local compatibility macros
+over runtime accessors. The serialized parallel-transaction state struct uses
+renamed fields for the command ID and parallel-XID count so those macros do
+not rewrite `result->field` or `tstate->field` references.
+
+This is still not the full transaction lifecycle split. The private
+`TransactionStateData` stack and transaction callback lists remain in `xact.c`
+for a later batch because moving them cleanly needs either a private
+transaction runtime-state boundary or a broader destructor/reset rule. The
+moved pointers are explicitly borrowed: parallel-current-XID storage is owned
+by serialized parallel transaction state, prepare GID follows existing
+transaction prepare-state ownership, and `TransactionAbortContext` is owned by
+existing transaction memory-context cleanup. The runtime object owns the
+execution-local slots and inline unreported-XID array.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `xact.o`, and
+  `test_backend_runtime.o`;
+- full `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed, including
+  the expanded `test_execution_xact_state_is_execution_local()` coverage for
+  the moved transaction fields;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths, explicit
+  `PG_REGRESS`, patched macOS install names, and a freshly reinstalled
+  `tmp_install`;
+- `gmake check-runtime-lifecycles` passed with 127 fields classified;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and 67 execution-local declarations;
+- `gmake -C contrib -j8` passed;
+- `git diff --check` passed.

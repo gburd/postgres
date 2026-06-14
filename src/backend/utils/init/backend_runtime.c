@@ -574,6 +574,8 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionSnapBuildState early_execu
 
 StaticAssertDecl(PG_BACKEND_INTERRUPT_COUNT <= 32,
 				 "PgBackendInterruptMask must fit all backend interrupts");
+StaticAssertDecl(PG_EXECUTION_UNREPORTED_XIDS_CAPACITY == PGPROC_MAX_CACHED_SUBXIDS,
+				 "PgExecution xact unreported XID storage must match PGPROC");
 
 static void PgBackendInitializeIdCounter(void);
 static PgBackendId PgBackendAssignId(void);
@@ -3137,6 +3139,7 @@ PgExecutionInitializeXactState(PgExecutionXactState *xact)
 	MemSet(xact, 0, sizeof(*xact));
 	xact->iso_level = XACT_READ_COMMITTED;
 	xact->check_xid_alive = InvalidTransactionId;
+	xact->top_full_transaction_id = InvalidFullTransactionId;
 }
 
 static void
@@ -6996,6 +6999,90 @@ int *
 PgCurrentMyXactFlagsRef(void)
 {
 	return &PgCurrentExecutionXactState()->flags;
+}
+
+FullTransactionId *
+PgCurrentXactTopFullTransactionIdRef(void)
+{
+	return &PgCurrentExecutionXactState()->top_full_transaction_id;
+}
+
+int *
+PgCurrentNParallelCurrentXidsRef(void)
+{
+	return &PgCurrentExecutionXactState()->n_parallel_current_xids;
+}
+
+TransactionId **
+PgCurrentParallelCurrentXidsRef(void)
+{
+	return &PgCurrentExecutionXactState()->parallel_current_xids;
+}
+
+int *
+PgCurrentNUnreportedXidsRef(void)
+{
+	return &PgCurrentExecutionXactState()->n_unreported_xids;
+}
+
+TransactionId *
+PgCurrentUnreportedXids(void)
+{
+	return PgCurrentExecutionXactState()->unreported_xids;
+}
+
+SubTransactionId *
+PgCurrentSubTransactionIdCounterRef(void)
+{
+	return &PgCurrentExecutionXactState()->current_sub_transaction_id;
+}
+
+CommandId *
+PgCurrentCommandIdCounterRef(void)
+{
+	return &PgCurrentExecutionXactState()->current_command_id;
+}
+
+bool *
+PgCurrentCommandIdUsedRef(void)
+{
+	return &PgCurrentExecutionXactState()->current_command_id_used;
+}
+
+TimestampTz *
+PgCurrentXactStartTimestampRef(void)
+{
+	return &PgCurrentExecutionXactState()->xact_start_timestamp;
+}
+
+TimestampTz *
+PgCurrentStmtStartTimestampRef(void)
+{
+	return &PgCurrentExecutionXactState()->stmt_start_timestamp;
+}
+
+TimestampTz *
+PgCurrentXactStopTimestampRef(void)
+{
+	return &PgCurrentExecutionXactState()->xact_stop_timestamp;
+}
+
+char **
+PgCurrentPrepareGIDRef(void)
+{
+	return &PgCurrentExecutionXactState()->prepare_gid;
+}
+
+bool *
+PgCurrentForceSyncCommitRef(void)
+{
+	return &PgCurrentExecutionXactState()->force_sync_commit;
+}
+
+MemoryContext *
+PgCurrentTransactionAbortContextRef(void)
+{
+	return &PgCurrentExecutionXactState()->transaction_abort_context;
 }
 
 static PgExecutionGUCErrorState *

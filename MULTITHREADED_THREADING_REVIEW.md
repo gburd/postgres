@@ -1030,6 +1030,21 @@ rebuild/install, contrib build, the test-backend-runtime regression, and
 direct threaded runtime TAP. The global-lifetime scan now reports 95
 execution-local declarations with zero new unclassified mutable globals, down
 from 97 before this slice.
+The next transaction-state slice moved a larger scalar/pointer group from
+`xact.c` into `PgExecutionXactState`: top full transaction ID,
+parallel-current-XID count and borrowed pointer, inline unreported-XID array,
+subtransaction and command ID counters, transaction timestamps, prepare GID,
+force-sync flag, and transaction abort context pointer. The serialized
+parallel-transaction state fields were renamed locally so `xact.c` compatibility
+macros do not rewrite `tstate->field` references. The runtime lifecycle
+manifest now documents the inline array rule and borrowed-pointer ownership,
+while the private transaction-state stack and callback lists remain explicit
+follow-up work. Validation included touched-object builds, full `gmake -j8`,
+the `test_backend_runtime` regression, direct threaded TAP after reinstalling
+the temp install, `gmake check-runtime-lifecycles`, `gmake
+check-global-lifetimes`, `gmake -C contrib -j8`, and `git diff --check`. The
+global-lifetime scan now reports 67 execution-local declarations with zero new
+unclassified mutable globals, down from 81 before this slice.
 
 ## Bottom Line
 

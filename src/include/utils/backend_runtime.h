@@ -922,6 +922,8 @@ typedef struct PgExecutionXLogInsertState
 	MemoryContext context;
 } PgExecutionXLogInsertState;
 
+#define PG_EXECUTION_UNREPORTED_XIDS_CAPACITY 64
+
 typedef struct PgExecutionXactState
 {
 	int			iso_level;
@@ -931,6 +933,20 @@ typedef struct PgExecutionXactState
 	TransactionId check_xid_alive;
 	bool		bsysscan_value;
 	int			flags;
+	FullTransactionId top_full_transaction_id;
+	int			n_parallel_current_xids;
+	TransactionId *parallel_current_xids;
+	int			n_unreported_xids;
+	TransactionId unreported_xids[PG_EXECUTION_UNREPORTED_XIDS_CAPACITY];
+	SubTransactionId current_sub_transaction_id;
+	CommandId	current_command_id;
+	bool		current_command_id_used;
+	TimestampTz xact_start_timestamp;
+	TimestampTz stmt_start_timestamp;
+	TimestampTz xact_stop_timestamp;
+	char	   *prepare_gid;
+	bool		force_sync_commit;
+	MemoryContext transaction_abort_context;
 } PgExecutionXactState;
 
 typedef struct PgExecutionGUCErrorState
@@ -2327,6 +2343,20 @@ extern bool *PgCurrentXactIsSampledRef(void);
 extern TransactionId *PgCurrentCheckXidAliveRef(void);
 extern bool *PgCurrentBSysScanRef(void);
 extern int *PgCurrentMyXactFlagsRef(void);
+extern FullTransactionId *PgCurrentXactTopFullTransactionIdRef(void);
+extern int *PgCurrentNParallelCurrentXidsRef(void);
+extern TransactionId **PgCurrentParallelCurrentXidsRef(void);
+extern int *PgCurrentNUnreportedXidsRef(void);
+extern TransactionId *PgCurrentUnreportedXids(void);
+extern SubTransactionId *PgCurrentSubTransactionIdCounterRef(void);
+extern CommandId *PgCurrentCommandIdCounterRef(void);
+extern bool *PgCurrentCommandIdUsedRef(void);
+extern TimestampTz *PgCurrentXactStartTimestampRef(void);
+extern TimestampTz *PgCurrentStmtStartTimestampRef(void);
+extern TimestampTz *PgCurrentXactStopTimestampRef(void);
+extern char **PgCurrentPrepareGIDRef(void);
+extern bool *PgCurrentForceSyncCommitRef(void);
+extern MemoryContext *PgCurrentTransactionAbortContextRef(void);
 extern int *PgCurrentGUCCheckErrcodeValueRef(void);
 extern char **PgCurrentGUCCheckErrmsgStringRef(void);
 extern char **PgCurrentGUCCheckErrdetailStringRef(void);
