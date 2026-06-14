@@ -862,10 +862,13 @@ Further hardening centralized the session and execution counterparts in
 runtime initialization and thread backend installation no longer maintain
 parallel manual lists for those object families either. Focused regression
 coverage now verifies representative session/execution fallback adoption and
-reset. Connection fallback adoption is still intentionally explicit because
-thread backend initialization receives the active `Port` directly; classifying
-which connection fallbacks can be adopted in threaded mode remains part of the
-connection-lifetime audit.
+reset. Further hardening added the connection counterpart,
+`PgConnectionAdoptEarlyState()`, with a preserved-port rule for threaded
+backend installation. That closes the immediate process/thread adoption-list
+asymmetry across backend, session, connection, and execution objects. The
+broader connection-lifetime audit remains open because connection state owns
+or borrows pointer-bearing resources such as send buffers, wait sets, security
+buffers, and authentication strings.
 The latest state-migration slice moved wait-event storage into
 `PgBackendWaitState` and the shared-invalidation local transaction ID counter
 into `PgBackendIPCState`. Validation included touched-object builds, a clean

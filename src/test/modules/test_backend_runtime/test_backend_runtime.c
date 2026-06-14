@@ -592,6 +592,126 @@ test_thread_install_adopts_session_execution_fallback_state(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_thread_install_adopts_connection_fallback_state);
+Datum
+test_thread_install_adopts_connection_fallback_state(PG_FUNCTION_ARGS)
+{
+	PgConnection *saved_connection;
+	PgConnection connection;
+	Port		fallback_port;
+	Port		preserved_port;
+	const PQcommMethods methods = {0};
+	WaitEventSet *fake_wait_set;
+	PgConnectionSocketIOState *socket_io;
+	PgConnectionSecurityState *security;
+	bool		ok = true;
+
+	saved_connection = CurrentPgConnection;
+	MemSet(&connection, 0, sizeof(connection));
+	MemSet(&fallback_port, 0, sizeof(fallback_port));
+	MemSet(&preserved_port, 0, sizeof(preserved_port));
+	fake_wait_set = (WaitEventSet *) &connection;
+
+	PG_TRY();
+	{
+		CurrentPgConnection = NULL;
+		MyProcPort = &fallback_port;
+		MyCancelKey[0] = 11;
+		MyCancelKeyLength = 1;
+		socket_io = PgCurrentConnectionSocketIORef();
+		socket_io->send_buffer = (char *) "connection fallback";
+		socket_io->send_buffer_size = 32;
+		PqCommMethods = &methods;
+		FeBeWaitSet = fake_wait_set;
+		FrontendProtocol = PG_PROTOCOL(3, 2);
+		whereToSendOutput = DestRemote;
+		client_connection_check_interval = 13;
+		CheckClientConnectionPending = true;
+		ClientConnectionLost = true;
+		ClientAuthInProgress = true;
+		MyClientSocket = (struct ClientSocket *) &fallback_port;
+		conn_timing.socket_create = 21;
+		conn_timing.ready_for_use = 22;
+		MyClientConnectionInfo.authn_id = "fallback-authn";
+		MyClientConnectionInfo.auth_method = uaSCRAM;
+		security = PgCurrentConnectionSecurityStateRef();
+		security->ssl_loaded_verify_locations = true;
+		security->gss_send_buffer = (char *) "gss-send";
+		security->gss_send_length = 31;
+		security->pam_password = "pam-fallback";
+		security->pam_port = &fallback_port;
+		security->pam_no_password = true;
+
+		PgConnectionAdoptEarlyState(&connection, &preserved_port);
+
+		CurrentPgConnection = &connection;
+		ok = ok && MyProcPort == &preserved_port;
+		ok = ok && MyCancelKey[0] == 11;
+		ok = ok && MyCancelKeyLength == 1;
+		ok = ok && strcmp(PgCurrentConnectionSocketIORef()->send_buffer,
+						  "connection fallback") == 0;
+		ok = ok && PgCurrentConnectionSocketIORef()->send_buffer_size == 32;
+		ok = ok && PqCommMethods == &methods;
+		ok = ok && FeBeWaitSet == fake_wait_set;
+		ok = ok && FrontendProtocol == PG_PROTOCOL(3, 2);
+		ok = ok && whereToSendOutput == DestRemote;
+		ok = ok && client_connection_check_interval == 13;
+		ok = ok && CheckClientConnectionPending;
+		ok = ok && ClientConnectionLost;
+		ok = ok && ClientAuthInProgress;
+		ok = ok && MyClientSocket == (struct ClientSocket *) &fallback_port;
+		ok = ok && conn_timing.socket_create == 21;
+		ok = ok && conn_timing.ready_for_use == 22;
+		ok = ok && strcmp(MyClientConnectionInfo.authn_id,
+						  "fallback-authn") == 0;
+		ok = ok && MyClientConnectionInfo.auth_method == uaSCRAM;
+		ok = ok && PgCurrentConnectionSecurityStateRef()->ssl_loaded_verify_locations;
+		ok = ok && strcmp(PgCurrentConnectionSecurityStateRef()->gss_send_buffer,
+						  "gss-send") == 0;
+		ok = ok && PgCurrentConnectionSecurityStateRef()->gss_send_length == 31;
+		ok = ok && strcmp(PgCurrentConnectionSecurityStateRef()->pam_password,
+						  "pam-fallback") == 0;
+		ok = ok && PgCurrentConnectionSecurityStateRef()->pam_port ==
+			&fallback_port;
+		ok = ok && PgCurrentConnectionSecurityStateRef()->pam_no_password;
+
+		CurrentPgConnection = NULL;
+		ok = ok && MyProcPort == NULL;
+		ok = ok && MyCancelKeyLength == 0;
+		ok = ok && PgCurrentConnectionSocketIORef()->send_buffer == NULL;
+		ok = ok && PgCurrentConnectionSocketIORef()->send_buffer_size == 0;
+		ok = ok && PqCommMethods == NULL;
+		ok = ok && FeBeWaitSet == NULL;
+		ok = ok && FrontendProtocol == 0;
+		ok = ok && whereToSendOutput == DestDebug;
+		ok = ok && client_connection_check_interval == 0;
+		ok = ok && !CheckClientConnectionPending;
+		ok = ok && !ClientConnectionLost;
+		ok = ok && !ClientAuthInProgress;
+		ok = ok && MyClientSocket == NULL;
+		ok = ok && conn_timing.socket_create == 0;
+		ok = ok && conn_timing.ready_for_use == TIMESTAMP_MINUS_INFINITY;
+		ok = ok && MyClientConnectionInfo.authn_id == NULL;
+		ok = ok && !PgCurrentConnectionSecurityStateRef()->ssl_loaded_verify_locations;
+		ok = ok && PgCurrentConnectionSecurityStateRef()->gss_send_buffer == NULL;
+		ok = ok && PgCurrentConnectionSecurityStateRef()->pam_password == NULL;
+
+		CurrentPgConnection = saved_connection;
+	}
+	PG_CATCH();
+	{
+		CurrentPgConnection = saved_connection;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR,
+			 "thread backend install did not adopt connection fallback state");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_backend_pgproc_has_logical_id);
 Datum
 test_backend_pgproc_has_logical_id(PG_FUNCTION_ARGS)

@@ -47,6 +47,12 @@ SELECT test_thread_install_adopts_session_execution_fallback_state();
  t
 (1 row)
 
+SELECT test_thread_install_adopts_connection_fallback_state();
+ test_thread_install_adopts_connection_fallback_state 
+------------------------------------------------------
+ t
+(1 row)
+
 SELECT test_backend_pgproc_has_logical_id();
  test_backend_pgproc_has_logical_id 
 ------------------------------------

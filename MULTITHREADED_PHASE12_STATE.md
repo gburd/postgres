@@ -7980,11 +7980,7 @@ hardening to `PgSession` and `PgExecution`:
 
 This is another Gate E2 hardening step, not the full lifecycle audit. It
 prevents newly migrated session/execution buckets from being added to only one
-runtime path, while leaving connection fallback adoption explicit: process
-mode still adopts early connection state, but threaded backend construction
-receives the live `Port` during initialization and should not blindly copy all
-process-mode connection fallbacks without a separate connection-lifetime
-classification.
+runtime path.
 
 Validation for this slice:
 
@@ -7993,6 +7989,46 @@ Validation for this slice:
 - static scan of `backend_runtime.c` confirmed process and thread install now
   call only `PgSessionAdoptEarlyState()` and `PgExecutionAdoptEarlyState()`
   for session/execution early adoption;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and
+  patched macOS install names;
+- full `gmake -j8` passed;
+- `gmake -C contrib -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals.
+
+## Connection Early Adoption Symmetry
+
+The one-hundred-seventy-first Phase 12 slice completes the current aggregate
+early-adoption symmetry pass for the four runtime object families:
+
+- `PgConnectionAdoptEarlyState()` now owns the complete list of connection
+  early fallback buckets;
+- process runtime initialization calls `PgConnectionAdoptEarlyState()` with no
+  preserved port, matching the historical process behavior of adopting
+  `MyProcPort` from early fallback state;
+- thread backend installation calls the same helper while preserving the
+  constructor-provided `Port`, so pre-install connection fallback writes are
+  adopted and reset without losing the live frontend connection object;
+- `test_thread_install_adopts_connection_fallback_state()` verifies identity,
+  cancel key, socket I/O, protocol, output, interrupt, startup timing, client
+  auth info, and security fallback adoption plus fallback reset.
+
+This closes the concrete manual process/thread connection adoption-list
+asymmetry. It does not close the broader Gate E2 lifecycle audit: connection
+state still has pointer-bearing fields such as send buffers, wait sets,
+security buffers, and borrowed authentication strings that need explicit
+reset/destroy ownership classification before Phase 12 closes.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o` and
+  `test_backend_runtime.o`;
+- static scan of `backend_runtime.c` confirmed process and thread install now
+  use aggregate helpers for backend, session, connection, and execution early
+  adoption;
 - `gmake -C src/test/modules/test_backend_runtime check` passed;
 - direct threaded-runtime TAP
   `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all

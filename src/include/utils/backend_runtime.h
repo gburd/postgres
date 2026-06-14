@@ -2320,6 +2320,8 @@ extern void PgRuntimeSetExtensionBackendModel(PgBackendModel backend_model);
 extern void PgBackendInitializeInterrupts(PgBackend *backend);
 extern void PgBackendAdoptEarlyState(PgBackend *backend);
 extern void PgSessionAdoptEarlyState(PgSession *session);
+extern void PgConnectionAdoptEarlyState(PgConnection *connection,
+										 struct Port *preserved_port);
 extern void PgExecutionAdoptEarlyState(PgExecution *execution);
 extern void PgBackendSetInterruptLatch(PgBackend *backend,
 										struct Latch *interrupt_latch);

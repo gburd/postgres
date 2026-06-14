@@ -158,12 +158,14 @@ Important current files:
   an explicit copy/adopt rule, and copied empty list heads must be asserted and
   reinitialized in the destination object rather than preserving fallback
   self-pointers.
-- Session and execution early fallback adoption are centralized in
-  `PgSessionAdoptEarlyState()` and `PgExecutionAdoptEarlyState()`. Add newly
-  migrated session/execution buckets to those helpers rather than directly to
+- Session, connection, and execution early fallback adoption are centralized in
+  `PgSessionAdoptEarlyState()`, `PgConnectionAdoptEarlyState()`, and
+  `PgExecutionAdoptEarlyState()`. Add newly migrated buckets to those helpers
+  rather than directly to
   `InitializePgProcessRuntime()` or `InstallPgThreadBackendRuntimeState()`.
-  Connection fallback adoption remains more specific for now because threaded
-  backend state receives the live `Port` during initialization.
+  Threaded connection adoption must preserve the live `Port` supplied during
+  `InitializePgThreadBackendRuntimeState()` by passing it as
+  `PgConnectionAdoptEarlyState()`'s `preserved_port`.
 - Phase 12 miscellaneous execution scratch state now lives under
   `PgExecution`: `PgExecutionAnalyzeState.array_extra_data`,
   `PgExecutionRegexState`, `PgExecutionValgrindState`, and

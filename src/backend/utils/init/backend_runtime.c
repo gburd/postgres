@@ -966,6 +966,24 @@ PgConnectionAdoptEarlySecurityState(PgConnection *connection)
 	MemSet(&early_connection_security, 0, sizeof(early_connection_security));
 }
 
+void
+PgConnectionAdoptEarlyState(PgConnection *connection,
+							struct Port *preserved_port)
+{
+	Assert(connection != NULL);
+
+	PgConnectionAdoptEarlyIdentity(connection);
+	if (preserved_port != NULL)
+		connection->identity.port = preserved_port;
+	PgConnectionAdoptEarlySocketIO(connection);
+	PgConnectionAdoptEarlyProtocolState(connection);
+	PgConnectionAdoptEarlyOutputState(connection);
+	PgConnectionAdoptEarlyInterruptState(connection);
+	PgConnectionAdoptEarlyStartupState(connection);
+	PgConnectionAdoptEarlyClientConnectionInfo(connection);
+	PgConnectionAdoptEarlySecurityState(connection);
+}
+
 static void
 PgSessionAdoptEarlyDatabaseState(PgSession *session)
 {
@@ -3225,14 +3243,7 @@ InitializePgProcessRuntime(void)
 
 	process_connection.backend = &process_backend;
 	process_connection.session = &process_session;
-	PgConnectionAdoptEarlyIdentity(&process_connection);
-	PgConnectionAdoptEarlySocketIO(&process_connection);
-	PgConnectionAdoptEarlyProtocolState(&process_connection);
-	PgConnectionAdoptEarlyOutputState(&process_connection);
-	PgConnectionAdoptEarlyInterruptState(&process_connection);
-	PgConnectionAdoptEarlyStartupState(&process_connection);
-	PgConnectionAdoptEarlyClientConnectionInfo(&process_connection);
-	PgConnectionAdoptEarlySecurityState(&process_connection);
+	PgConnectionAdoptEarlyState(&process_connection, NULL);
 
 	process_execution.backend = &process_backend;
 	process_execution.session = &process_session;
@@ -3408,6 +3419,8 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	state->carrier.current_execution = &state->execution;
 	PgBackendAdoptEarlyState(&state->backend);
 	PgSessionAdoptEarlyState(&state->session);
+	PgConnectionAdoptEarlyState(&state->connection,
+								state->connection.identity.port);
 	PgExecutionAdoptEarlyState(&state->execution);
 	CurrentPgRuntime = &thread_runtime;
 	CurrentPgCarrier = &state->carrier;
