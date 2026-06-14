@@ -24,17 +24,21 @@
 #include "commands/user.h"
 #include "fmgr.h"
 #include "libpq/crypt.h"
+#include "utils/backend_runtime.h"
+#include "utils/global_lifetime.h"
 
 PG_MODULE_MAGIC_EXT(
 					.name = "passwordcheck",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
 );
 
 /* Saved hook value */
-static check_password_hook_type prev_check_password_hook = NULL;
+static PG_GLOBAL_RUNTIME check_password_hook_type prev_check_password_hook = NULL;
+static PG_GLOBAL_RUNTIME bool passwordcheck_hook_installed = false;
 
 /* GUC variables */
-static int	min_password_length = 8;
+#define min_password_length (*PgCurrentPasswordcheckMinPasswordLengthRef())
 
 /*
  * check_password
@@ -162,6 +166,10 @@ _PG_init(void)
 	MarkGUCPrefixReserved("passwordcheck");
 
 	/* activate password checks when the module is loaded */
-	prev_check_password_hook = check_password_hook;
-	check_password_hook = check_password;
+	if (!passwordcheck_hook_installed)
+	{
+		prev_check_password_hook = check_password_hook;
+		check_password_hook = check_password;
+		passwordcheck_hook_installed = true;
+	}
 }

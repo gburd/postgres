@@ -427,6 +427,36 @@ PgCurrentRefintResetRegisteredRef(void)
 	return &PgCurrentSessionExtensionModuleState()->refint_reset_registered;
 }
 
+int *
+PgCurrentAuthDelayMillisecondsRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->auth_delay_milliseconds;
+}
+
+char **
+PgCurrentBasebackupToShellCommandRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->basebackup_to_shell_command;
+}
+
+char **
+PgCurrentBasebackupToShellRequiredRoleRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->basebackup_to_shell_required_role;
+}
+
+bool *
+PgCurrentIsnWeakRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->isn_weak;
+}
+
+int *
+PgCurrentPasswordcheckMinPasswordLengthRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->passwordcheck_min_password_length;
+}
+
 void **
 PgCurrentDblinkPersistentConnectionRef(void)
 {

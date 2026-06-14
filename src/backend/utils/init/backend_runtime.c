@@ -2032,6 +2032,11 @@ PgSessionInitializeExtensionModuleState(PgSessionExtensionModuleState *extension
 	extension_modules->refint_primary_plans = NULL;
 	extension_modules->refint_num_primary_plans = 0;
 	extension_modules->refint_reset_registered = false;
+	extension_modules->auth_delay_milliseconds = 0;
+	extension_modules->basebackup_to_shell_command = "";
+	extension_modules->basebackup_to_shell_required_role = "";
+	extension_modules->isn_weak = false;
+	extension_modules->passwordcheck_min_password_length = 8;
 	extension_modules->reset_callbacks = NIL;
 	extension_modules->auto_explain_log_min_duration =
 		AUTO_EXPLAIN_LOG_MIN_DURATION_DEFAULT;

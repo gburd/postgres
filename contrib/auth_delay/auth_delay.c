@@ -14,18 +14,22 @@
 #include <limits.h>
 
 #include "libpq/auth.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
+#include "utils/global_lifetime.h"
 
 PG_MODULE_MAGIC_EXT(
 					.name = "auth_delay",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
 );
 
 /* GUC Variables */
-static int	auth_delay_milliseconds = 0;
+#define auth_delay_milliseconds (*PgCurrentAuthDelayMillisecondsRef())
 
 /* Original Hook */
-static ClientAuthentication_hook_type original_client_auth_hook = NULL;
+static PG_GLOBAL_RUNTIME ClientAuthentication_hook_type original_client_auth_hook = NULL;
+static PG_GLOBAL_RUNTIME bool auth_delay_hook_installed = false;
 
 /*
  * Check authentication
@@ -70,6 +74,10 @@ _PG_init(void)
 	MarkGUCPrefixReserved("auth_delay");
 
 	/* Install Hooks */
-	original_client_auth_hook = ClientAuthentication_hook;
-	ClientAuthentication_hook = auth_delay_checks;
+	if (!auth_delay_hook_installed)
+	{
+		original_client_auth_hook = ClientAuthentication_hook;
+		ClientAuthentication_hook = auth_delay_checks;
+		auth_delay_hook_installed = true;
+	}
 }

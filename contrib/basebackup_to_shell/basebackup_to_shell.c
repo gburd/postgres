@@ -15,12 +15,15 @@
 #include "common/percentrepl.h"
 #include "miscadmin.h"
 #include "storage/fd.h"
+#include "utils/backend_runtime.h"
 #include "utils/acl.h"
 #include "utils/guc.h"
+#include "utils/global_lifetime.h"
 
 PG_MODULE_MAGIC_EXT(
 					.name = "basebackup_to_shell",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
 );
 
 typedef struct bbsink_shell
@@ -64,8 +67,11 @@ static const bbsink_ops bbsink_shell_ops = {
 	.cleanup = bbsink_forward_cleanup
 };
 
-static char *shell_command = "";
-static char *shell_required_role = "";
+#define basebackup_to_shell_command (*PgCurrentBasebackupToShellCommandRef())
+#define basebackup_to_shell_required_role \
+	(*PgCurrentBasebackupToShellRequiredRoleRef())
+
+static PG_GLOBAL_RUNTIME bool shell_target_registered = false;
 
 void
 _PG_init(void)
@@ -73,7 +79,7 @@ _PG_init(void)
 	DefineCustomStringVariable("basebackup_to_shell.command",
 							   "Shell command to be executed for each backup file.",
 							   NULL,
-							   &shell_command,
+							   &basebackup_to_shell_command,
 							   "",
 							   PGC_SIGHUP,
 							   0,
@@ -82,7 +88,7 @@ _PG_init(void)
 	DefineCustomStringVariable("basebackup_to_shell.required_role",
 							   "Backup user must be a member of this role to use shell backup target.",
 							   NULL,
-							   &shell_required_role,
+							   &basebackup_to_shell_required_role,
 							   "",
 							   PGC_SIGHUP,
 							   0,
@@ -90,7 +96,11 @@ _PG_init(void)
 
 	MarkGUCPrefixReserved("basebackup_to_shell");
 
-	BaseBackupAddTarget("shell", shell_check_detail, shell_get_sink);
+	if (!shell_target_registered)
+	{
+		BaseBackupAddTarget("shell", shell_check_detail, shell_get_sink);
+		shell_target_registered = true;
+	}
 }
 
 /*
@@ -101,12 +111,12 @@ _PG_init(void)
 static void *
 shell_check_detail(char *target, char *target_detail)
 {
-	if (shell_required_role[0] != '\0')
+	if (basebackup_to_shell_required_role[0] != '\0')
 	{
 		Oid			roleid;
 
 		StartTransactionCommand();
-		roleid = get_role_oid(shell_required_role, true);
+		roleid = get_role_oid(basebackup_to_shell_required_role, true);
 		if (!has_privs_of_role(GetUserId(), roleid))
 			ereport(ERROR,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
@@ -140,7 +150,7 @@ shell_get_sink(bbsink *next_sink, void *detail_arg)
 	*((const bbsink_ops **) &sink->base.bbs_ops) = &bbsink_shell_ops;
 	sink->base.bbs_next = next_sink;
 	sink->target_detail = detail_arg;
-	sink->shell_command = pstrdup(shell_command);
+	sink->shell_command = pstrdup(basebackup_to_shell_command);
 
 	/* Reject an empty shell command. */
 	if (sink->shell_command[0] == '\0')

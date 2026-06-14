@@ -12493,6 +12493,14 @@ macro/action/table/checker primitive, not to split the same migration into
 smaller manual commits. Record that preflight decision here before editing the
 next implementation batch.
 
+Implementation reminder for the next state-migration batch: do not choose the
+next globals first and then bolt lifecycle handling onto them. Start by asking
+whether repeated lifecycle mechanics can be made easier with a checked
+primitive. If yes, land the `PG_RUNTIME_*` action, `PG_RUNTIME_DEFINE_*`
+helper, bucket `.def` rule, owner-map metadata, generated table, or
+`check_runtime_lifecycles.pl` validation first, then use it to move a larger
+coherent group of state.
+
 ## Threaded Startup Gate Removal
 
 Lifecycle/preflight note:
@@ -13180,3 +13188,86 @@ Validation for the SPI contrib session-state slice:
   once failed because both targets recreated the shared repository
   `tmp_install`. The checks passed when rerun sequentially, and `AGENTS.md`
   now documents that temp-install checks should not be parallelized.
+
+## Small Contrib Custom-GUC Session State
+
+Lifecycle/preflight note:
+
+- target root and bucket: `PgSession.extension_modules`;
+- state moved: custom-GUC backing slots for `auth_delay.milliseconds`,
+  `basebackup_to_shell.command`, `basebackup_to_shell.required_role`,
+  `isn.weak`, and `passwordcheck.min_password_length`;
+- owner source files: `contrib/auth_delay/auth_delay.c`,
+  `contrib/basebackup_to_shell/basebackup_to_shell.c`,
+  `contrib/isn/isn.c`, and `contrib/passwordcheck/passwordcheck.c`;
+- repeated lifecycle operations: three scalar GUC slots and two string GUC
+  slots in an existing whole-bucket session state. The existing
+  `PgSessionInitializeExtensionModuleState()` and `PgSessionAdoptEarlyState()`
+  checked lifecycle path is sufficient; no new lifecycle primitive is needed
+  because the GUC machinery owns string allocation and the bucket initializer
+  restores the default pointers/scalars;
+- retained invariant: auth/password hooks and basebackup target registration
+  remain process-wide runtime state. `_PG_init()` can be replayed once per
+  threaded logical session for GUC variable binding, but hook/target
+  registration must be guarded so replay does not reinstall hooks or duplicate
+  target registration.
+
+Small contrib custom-GUC session-state slice:
+
+- `PgSessionExtensionModuleState` now owns the backing slots for
+  `auth_delay.milliseconds`, `basebackup_to_shell.command`,
+  `basebackup_to_shell.required_role`, `isn.weak`, and
+  `passwordcheck.min_password_length`;
+- `contrib/auth_delay`, `contrib/basebackup_to_shell`, `contrib/isn`, and
+  `contrib/passwordcheck` now advertise
+  `PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION`;
+- the custom-GUC variables are source-local lvalue compatibility macros over
+  the current session object, so `_PG_init()` binds each logical session's GUC
+  record to session-owned storage;
+- process-wide hook/target registrations are guarded with runtime globals so
+  threaded `_PG_init()` replay does not reinstall the authentication hook,
+  password-check hook, or basebackup target;
+- `contrib/isn`'s private enum value was renamed from `INVALID` to
+  `ISN_INVALID` to avoid a pre-existing name collision exposed by including
+  the runtime header;
+- `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` and
+  `MULTITHREADED_RUNTIME_OWNERS.tsv` record the new session ownership.
+
+Validation for the small contrib custom-GUC session-state slice:
+
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 221 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- stale-symbol scan found no remaining raw `static int auth_delay_milliseconds`,
+  `static char *shell_command`, `static char *shell_required_role`,
+  `static bool g_weak`, or `static int min_password_length` declarations in
+  the moved contrib modules;
+- touched-object builds passed:
+  `gmake -C src/backend/utils/init backend_runtime.o backend_runtime_session.o`,
+  `gmake -C src/test/modules/test_backend_runtime test_backend_runtime_session.o`,
+  `gmake -C contrib/auth_delay auth_delay.o`,
+  `gmake -C contrib/basebackup_to_shell basebackup_to_shell.o`,
+  `gmake -C contrib/isn isn.o`, and
+  `gmake -C contrib/passwordcheck passwordcheck.o`;
+- after the installed `backend_runtime.h` layout change, the documented
+  backend clean and generated-file recovery path was run and full `gmake -j8`
+  passed from that clean backend state;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed
+  after the fake-session test setup was fixed to seed the new string defaults
+  before comparing them;
+- `gmake -C contrib/isn clean all check` passed;
+- `gmake -C contrib/passwordcheck clean all check` passed;
+- `gmake -C contrib/auth_delay clean all` passed. The module has no direct
+  regression/TAP target in this checkout;
+- `gmake -C contrib/basebackup_to_shell clean all check` built the module and
+  skipped TAP through make because this checkout is not configured with
+  `--enable-tap-tests`; direct TAP
+  `prove -I ../../src/test/perl t/001_basic.pl` passed with explicit
+  `PG_REGRESS`, repo-local `.perl5` `PERL5LIB`, and absolute
+  `TESTDATADIR`/`TESTLOGDIR`;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with patched macOS
+  install-name paths and the repo-local `.perl5` `PERL5LIB`.

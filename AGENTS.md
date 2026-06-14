@@ -113,6 +113,12 @@ macro/table/checker improvement would make the whole slice simpler and safer.
   updates are repetitive, do not respond by slicing the work smaller. Add or
   reuse the checked macro/action/table/checker path that lets the larger batch
   move safely.
+- Before picking the next group of globals, explicitly look for lifecycle
+  friction first. If the next group would require repeated manual lifecycle
+  code, the next implementation task is the lifecycle helper itself: add a
+  checked `PG_RUNTIME_*` action, `PG_RUNTIME_DEFINE_*` macro, declarative
+  bucket-table rule, owner-map metadata, or checker validation, then migrate
+  the larger group through that mechanism.
 
 ## Phase 12 Lifecycle Preflight Checklist
 

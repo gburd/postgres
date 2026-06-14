@@ -871,6 +871,12 @@ Gate E2 requires:
   startup-serialization narrowing, and remaining global/object migration work.
   This is a Gate E2 blocker because it keeps the rest of the phase agent-safe
   and avoids growing more parallel handwritten init/adopt/reset/destroy lists;
+- before selecting the next large group of globals, perform an explicit
+  lifecycle-simplification decision. If the group would add repeated manual
+  init/adopt/reset/destroy, memory-context delete-and-null, list/hash cleanup,
+  or fallback copy/reset code, first add the checked macro/action/table/checker
+  primitive that makes the larger migration easier, then move the state through
+  that primitive;
 - threaded backend exit and teardown are safe: normal disconnect, abandoned
   clients, `FATAL`, administrator termination, and worker exit must clean up or
   explicitly account for backend/session/connection/execution memory and

@@ -104,6 +104,26 @@ test_backend_runtime_refint_defaults_ok(PgSessionExtensionModuleState *extension
 		!extension_modules->refint_reset_registered;
 }
 
+static bool
+test_backend_runtime_small_contrib_defaults_ok(PgSessionExtensionModuleState *extension_modules)
+{
+	return extension_modules->auth_delay_milliseconds == 0 &&
+		strcmp(extension_modules->basebackup_to_shell_command, "") == 0 &&
+		strcmp(extension_modules->basebackup_to_shell_required_role, "") == 0 &&
+		!extension_modules->isn_weak &&
+		extension_modules->passwordcheck_min_password_length == 8;
+}
+
+static void
+test_backend_runtime_seed_small_contrib_defaults(PgSessionExtensionModuleState *extension_modules)
+{
+	extension_modules->auth_delay_milliseconds = 0;
+	extension_modules->basebackup_to_shell_command = "";
+	extension_modules->basebackup_to_shell_required_role = "";
+	extension_modules->isn_weak = false;
+	extension_modules->passwordcheck_min_password_length = 8;
+}
+
 void
 test_copy_current_user_identity(PgSession *session)
 {
@@ -2707,6 +2727,10 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 	char		session2_stash[] = "session2_stash";
 	char		session1_auto_explain_options[] = "debug";
 	char		session2_auto_explain_options[] = "range_table";
+	char		session1_shell_command[] = "session1cmd";
+	char		session1_shell_role[] = "session1role";
+	char		session2_shell_command[] = "session2cmd";
+	char		session2_shell_role[] = "session2role";
 	int			session1_refint_foreign;
 	int			session1_refint_primary;
 	int			session2_refint_foreign;
@@ -2727,12 +2751,14 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		fake_session1.extension_modules.pg_plan_advice_always_explain_supplied_advice = true;
 		fake_session1.extension_modules.pg_stash_advice_stash_name = "";
 		test_backend_runtime_seed_auto_explain_defaults(&fake_session1.extension_modules);
+		test_backend_runtime_seed_small_contrib_defaults(&fake_session1.extension_modules);
 		fake_session2.extension_modules.pg_trgm_similarity_threshold = 0.3;
 		fake_session2.extension_modules.pg_trgm_word_similarity_threshold = 0.6;
 		fake_session2.extension_modules.pg_trgm_strict_word_similarity_threshold = 0.5;
 		fake_session2.extension_modules.pg_plan_advice_always_explain_supplied_advice = true;
 		fake_session2.extension_modules.pg_stash_advice_stash_name = "";
 		test_backend_runtime_seed_auto_explain_defaults(&fake_session2.extension_modules);
+		test_backend_runtime_seed_small_contrib_defaults(&fake_session2.extension_modules);
 
 		PgSetCurrentSession(&fake_session1);
 		extension_modules = PgCurrentSessionExtensionModuleState();
@@ -2756,6 +2782,7 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && extension_modules->pltcl_current_call_state == NULL;
 		ok = ok && !extension_modules->pltcl_reset_registered;
 		ok = ok && test_backend_runtime_refint_defaults_ok(extension_modules);
+		ok = ok && test_backend_runtime_small_contrib_defaults_ok(extension_modules);
 		ok = ok && extension_modules->dblink_persistent_connection == NULL;
 		ok = ok && extension_modules->dblink_remote_conn_hash == NULL;
 		ok = ok && !extension_modules->dblink_reset_registered;
@@ -2802,6 +2829,11 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		extension_modules->refint_primary_plans = &session1_refint_primary;
 		extension_modules->refint_num_primary_plans = 32;
 		extension_modules->refint_reset_registered = true;
+		extension_modules->auth_delay_milliseconds = 31;
+		extension_modules->basebackup_to_shell_command = session1_shell_command;
+		extension_modules->basebackup_to_shell_required_role = session1_shell_role;
+		extension_modules->isn_weak = true;
+		extension_modules->passwordcheck_min_password_length = 32;
 		extension_modules->dblink_persistent_connection = &session1_private;
 		extension_modules->dblink_remote_conn_hash = &session1_reset_count;
 		extension_modules->dblink_reset_registered = true;
@@ -2842,6 +2874,7 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && extension_modules->pltcl_current_call_state == NULL;
 		ok = ok && !extension_modules->pltcl_reset_registered;
 		ok = ok && test_backend_runtime_refint_defaults_ok(extension_modules);
+		ok = ok && test_backend_runtime_small_contrib_defaults_ok(extension_modules);
 		ok = ok && extension_modules->dblink_persistent_connection == NULL;
 		ok = ok && extension_modules->dblink_remote_conn_hash == NULL;
 		ok = ok && !extension_modules->dblink_reset_registered;
@@ -2888,6 +2921,11 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		extension_modules->refint_primary_plans = &session2_refint_primary;
 		extension_modules->refint_num_primary_plans = 42;
 		extension_modules->refint_reset_registered = true;
+		extension_modules->auth_delay_milliseconds = 41;
+		extension_modules->basebackup_to_shell_command = session2_shell_command;
+		extension_modules->basebackup_to_shell_required_role = session2_shell_role;
+		extension_modules->isn_weak = true;
+		extension_modules->passwordcheck_min_password_length = 42;
 		extension_modules->dblink_persistent_connection = &session2_private;
 		extension_modules->dblink_remote_conn_hash = &session2_reset_count;
 		extension_modules->dblink_reset_registered = true;
@@ -2961,6 +2999,13 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 			&session1_refint_primary;
 		ok = ok && extension_modules->refint_num_primary_plans == 32;
 		ok = ok && extension_modules->refint_reset_registered;
+		ok = ok && extension_modules->auth_delay_milliseconds == 31;
+		ok = ok && strcmp(extension_modules->basebackup_to_shell_command,
+						  "session1cmd") == 0;
+		ok = ok && strcmp(extension_modules->basebackup_to_shell_required_role,
+						  "session1role") == 0;
+		ok = ok && extension_modules->isn_weak;
+		ok = ok && extension_modules->passwordcheck_min_password_length == 32;
 		ok = ok && extension_modules->dblink_persistent_connection ==
 			&session1_private;
 		ok = ok && extension_modules->dblink_remote_conn_hash ==
@@ -3032,6 +3077,13 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 			&session2_refint_primary;
 		ok = ok && extension_modules->refint_num_primary_plans == 42;
 		ok = ok && extension_modules->refint_reset_registered;
+		ok = ok && extension_modules->auth_delay_milliseconds == 41;
+		ok = ok && strcmp(extension_modules->basebackup_to_shell_command,
+						  "session2cmd") == 0;
+		ok = ok && strcmp(extension_modules->basebackup_to_shell_required_role,
+						  "session2role") == 0;
+		ok = ok && extension_modules->isn_weak;
+		ok = ok && extension_modules->passwordcheck_min_password_length == 42;
 		ok = ok && extension_modules->dblink_persistent_connection ==
 			&session2_private;
 		ok = ok && extension_modules->dblink_remote_conn_hash ==
@@ -3063,6 +3115,7 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && fake_session1.extension_modules.pltcl_current_call_state == NULL;
 		ok = ok && !fake_session1.extension_modules.pltcl_reset_registered;
 		ok = ok && test_backend_runtime_refint_defaults_ok(&fake_session1.extension_modules);
+		ok = ok && test_backend_runtime_small_contrib_defaults_ok(&fake_session1.extension_modules);
 		ok = ok && fake_session1.extension_modules.reset_callbacks == NIL;
 		ok = ok && fake_session1.extension_modules.pg_trgm_similarity_threshold == 0.3;
 		ok = ok && fake_session1.extension_modules.pg_trgm_word_similarity_threshold == 0.6;
@@ -3104,6 +3157,13 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 			&session2_refint_primary;
 		ok = ok && fake_session2.extension_modules.refint_num_primary_plans == 42;
 		ok = ok && fake_session2.extension_modules.refint_reset_registered;
+		ok = ok && fake_session2.extension_modules.auth_delay_milliseconds == 41;
+		ok = ok && strcmp(fake_session2.extension_modules.basebackup_to_shell_command,
+						  "session2cmd") == 0;
+		ok = ok && strcmp(fake_session2.extension_modules.basebackup_to_shell_required_role,
+						  "session2role") == 0;
+		ok = ok && fake_session2.extension_modules.isn_weak;
+		ok = ok && fake_session2.extension_modules.passwordcheck_min_password_length == 42;
 		ok = ok && fake_session2.extension_modules.reset_callbacks != NIL;
 		ok = ok && fake_session2.extension_modules.pg_trgm_similarity_threshold == 0.21;
 		ok = ok && fake_session2.extension_modules.pg_trgm_word_similarity_threshold == 0.22;
@@ -3164,6 +3224,7 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && fake_session2.extension_modules.pltcl_current_call_state == NULL;
 		ok = ok && !fake_session2.extension_modules.pltcl_reset_registered;
 		ok = ok && test_backend_runtime_refint_defaults_ok(&fake_session2.extension_modules);
+		ok = ok && test_backend_runtime_small_contrib_defaults_ok(&fake_session2.extension_modules);
 		ok = ok && fake_session2.extension_modules.reset_callbacks == NIL;
 		ok = ok && fake_session2.extension_modules.pg_trgm_similarity_threshold == 0.3;
 		ok = ok && fake_session2.extension_modules.pg_trgm_word_similarity_threshold == 0.6;
