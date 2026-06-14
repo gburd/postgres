@@ -110,6 +110,7 @@ SELECT name, category
   ORDER BY name;
              name             |                    category                     
 ------------------------------+-------------------------------------------------
+ recno_analyze_refresh_dict   | Resource Usage / Memory
  recno_compression_algorithm  | Resource Usage / Memory
  recno_compression_level      | Resource Usage / Memory
  recno_compression_min_ratio  | Resource Usage / Memory
@@ -119,5 +120,5 @@ SELECT name, category
  recno_node_id                | Replication / Sending Servers
  recno_uncertainty_wait       | Replication / Standby Servers
  recno_use_hlc                | Client Connection Defaults / Statement Behavior
-(9 rows)
+(10 rows)
 
