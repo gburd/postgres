@@ -3073,12 +3073,6 @@ PgBackendAdoptEarlyUtilityState(PgBackend *backend)
 		Assert(early_backend_utility.date_cache[i] == NULL);
 		Assert(early_backend_utility.delta_cache[i] == NULL);
 	}
-	for (i = 0; i < PG_BACKEND_FORMAT_CACHE_ENTRIES; i++)
-	{
-		Assert(early_backend_utility.dch_cache[i] == NULL);
-		Assert(early_backend_utility.num_cache[i] == NULL);
-	}
-
 	backend->utility = early_backend_utility;
 	PgBackendInitializeUtilityState(&early_backend_utility);
 }
@@ -4592,6 +4586,12 @@ PgBackendResetUtilityClosedState(PgBackendUtilityState *utility)
 	}
 	utility->n_num_cache = 0;
 	utility->num_counter = 0;
+
+	if (utility->format_cache_context != NULL)
+	{
+		MemoryContextDelete(utility->format_cache_context);
+		utility->format_cache_context = NULL;
+	}
 
 	if (utility->libxml_context != NULL)
 	{

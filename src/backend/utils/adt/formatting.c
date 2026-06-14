@@ -3838,7 +3838,8 @@ DCH_cache_getnew(const char *str, bool std)
 #endif
 		Assert(DCHCache[n_DCHCache] == NULL);
 		DCHCache[n_DCHCache] = ent = (DCHCacheEntry *)
-			MemoryContextAllocZero(TopMemoryContext, sizeof(DCHCacheEntry));
+			MemoryContextAllocZero(PgCurrentFormatCacheMemoryContext(),
+								   sizeof(DCHCacheEntry));
 		ent->valid = false;
 		strlcpy(ent->str, str, DCH_CACHE_SIZE + 1);
 		ent->std = std;
@@ -4893,7 +4894,8 @@ NUM_cache_getnew(const char *str)
 #endif
 		Assert(NUMCache[n_NUMCache] == NULL);
 		NUMCache[n_NUMCache] = ent = (NUMCacheEntry *)
-			MemoryContextAllocZero(TopMemoryContext, sizeof(NUMCacheEntry));
+			MemoryContextAllocZero(PgCurrentFormatCacheMemoryContext(),
+								   sizeof(NUMCacheEntry));
 		ent->valid = false;
 		strlcpy(ent->str, str, NUM_CACHE_SIZE + 1);
 		ent->age = (++NUMCounter);

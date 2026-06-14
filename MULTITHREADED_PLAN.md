@@ -1712,6 +1712,11 @@ subtransaction callback list-node allocation under a session-owned
 ordering remain unchanged, but session close now frees callback nodes and then
 deletes the allocation context instead of leaving the list-node family under
 the retained top-memory tree.
+Follow-up backend utility hardening moved DCH/NUM formatting cache entry
+allocation under a backend-owned `FormatCacheContext`. The cache lookup and
+aging semantics remain unchanged, but closed-backend reset now reclaims the
+formatting cache allocation family through the backend utility bucket instead
+of leaving entries as direct `TopMemoryContext` children.
 Follow-up session teardown hardening added `PgSessionResetClosedState()`.
 `dfmgr.c` now allocates the per-session dynamic-library `_PG_init()` replay
 list under `PgSession.dynamic_library_context` instead of `TopMemoryContext`,

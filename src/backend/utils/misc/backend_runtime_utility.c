@@ -17,6 +17,7 @@
 #include "postgres.h"
 
 #include "utils/backend_runtime.h"
+#include "utils/memutils.h"
 #include "../init/backend_runtime_internal.h"
 
 HTAB **
@@ -211,6 +212,20 @@ int *
 PgCurrentNUMCounterRef(void)
 {
 	return &PgCurrentBackendUtilityState()->num_counter;
+}
+
+MemoryContext
+PgCurrentFormatCacheMemoryContext(void)
+{
+	PgBackendUtilityState *utility = PgCurrentBackendUtilityState();
+
+	if (utility->format_cache_context == NULL)
+		utility->format_cache_context =
+			AllocSetContextCreate(TopMemoryContext,
+								  "format cache backend state",
+								  ALLOCSET_SMALL_SIZES);
+
+	return utility->format_cache_context;
 }
 
 MemoryContext *

@@ -640,6 +640,7 @@ typedef struct PgBackendUtilityState
 	void	   *num_cache[PG_BACKEND_FORMAT_CACHE_ENTRIES];
 	int			n_num_cache;
 	int			num_counter;
+	MemoryContext format_cache_context;
 	MemoryContext libxml_context;
 	HTAB	   *missing_attr_cache;
 } PgBackendUtilityState;
@@ -2427,6 +2428,7 @@ extern int *PgCurrentDCHCounterRef(void);
 extern void **PgCurrentNUMCache(void);
 extern int *PgCurrentNumNUMCacheRef(void);
 extern int *PgCurrentNUMCounterRef(void);
+extern MemoryContext PgCurrentFormatCacheMemoryContext(void);
 extern MemoryContext *PgCurrentLibxmlContextRef(void);
 extern HTAB **PgCurrentMissingAttrCacheRef(void);
 extern int *PgCurrentParallelWorkerNumberRef(void);

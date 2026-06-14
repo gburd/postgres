@@ -11272,6 +11272,12 @@ Lifecycle-framework simplification backlog:
   Gate E2 slices: object-owned allocation contexts, delete-and-null
   memory-context teardown, free/reset list heads, clear-pointer-slot reset,
   copy/adopt-then-reset-fallback, and reset-through-initializer;
+- treat repeated lifecycle helper code as a Gate E2 implementation task. If a
+  planned slice would add two or more similar init/adopt/reset/destroy helpers,
+  first extend the checked lifecycle path with a named `PG_RUNTIME_*` action,
+  `PG_RUNTIME_DEFINE_*` helper, declarative `.def` pattern, or
+  `check_runtime_lifecycles.pl` rule. Use handwritten owner-adjacent helpers
+  only for real ordering constraints or semantic cleanup;
 - if a planned Phase 12 batch needs two or more parallel helper bodies for
   those patterns, land the checked mechanism first. The expected shape is a
   named `PG_RUNTIME_*` bucket action where useful, a
@@ -11475,6 +11481,56 @@ Validation for the session xact-callback allocation-context slice:
 - a clean backend rebuild was required after the installed
   `backend_runtime.h` layout change. The documented backend clean/generated
   header recovery path completed, and full `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed
+  after the clean rebuild;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with the documented
+  local `IPC::Run` `PERL5LIB` and patched temporary-install install-name
+  paths.
+
+Backend formatting-cache allocation-context preflight:
+
+- target root and bucket: `PgBackend.utility`;
+- repeated lifecycle operations: one backend-owned allocation context for the
+  DCH/NUM formatting cache entries, whole-bucket early-adoption movement for
+  that allocation family, and close-time cache-entry reset;
+- lifecycle preflight result: the existing `PG_BACKEND_BUCKET(utility, ...)`
+  checked row and owner-adjacent utility accessors are sufficient. No new
+  generic lifecycle action is needed because this is one allocation family
+  inside an existing semantic reset helper, not a repeated helper family.
+
+Backend formatting-cache allocation-context slice completed:
+
+- `PgBackendUtilityState` now includes `format_cache_context`, and
+  `PgCurrentFormatCacheMemoryContext()` lazily creates a backend-owned
+  allocation context for formatting cache entries;
+- `DCH_cache_getnew()` and `NUM_cache_getnew()` allocate their cache entries
+  in that context instead of `TopMemoryContext`;
+- `PgBackendResetClosedState()` still clears the DCH/NUM entry arrays and
+  counters, then deletes `format_cache_context`;
+- early fallback adoption moves any DCH/NUM formatting cache arrays, counters,
+  and `format_cache_context` into the installed backend, then reinitializes
+  the fallback utility bucket;
+- `MULTITHREADED_RUNTIME_OWNERS.tsv` now maps the DCH/NUM cache arrays,
+  counters, and `FormatCacheContext` to `PgBackend.utility`;
+- `test_backend_reset_closed_state()` verifies that DCH and NUM entries are
+  allocated in the backend-owned context and that closed-backend reset clears
+  the entries, counters, and context slot.
+
+Validation for the backend formatting-cache allocation-context slice:
+
+- touched-object builds passed for `backend_runtime_utility.o`,
+  `formatting.o`, `backend_runtime.o`, and `test_backend_runtime_backend.o`;
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 27 reset definitions checked, and 163 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- after the installed `backend_runtime.h` layout change, an incremental
+  backend-runtime module check failed during temp-install bootstrap. The
+  documented backend clean/generated-header recovery path was then used, full
+  `gmake -j8` passed, and the bootstrap failure did not reproduce;
 - `gmake -C src/test/modules/test_backend_runtime clean all check` passed
   after the clean rebuild;
 - direct backend-runtime TAP passed for `001_threaded_runtime.pl` and

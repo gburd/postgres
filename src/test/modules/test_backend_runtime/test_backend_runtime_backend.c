@@ -918,14 +918,26 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	utility->injection_point_cache =
 		hash_create("test injection point cache", 8, &hash_ctl,
 					HASH_ELEM | HASH_BLOBS);
-	utility->dch_cache[0] = palloc(8);
-	utility->dch_cache[1] = palloc(8);
+	utility->format_cache_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test format cache context",
+							  ALLOCSET_SMALL_SIZES);
+	utility->dch_cache[0] =
+		MemoryContextAlloc(utility->format_cache_context, 8);
+	utility->dch_cache[1] =
+		MemoryContextAlloc(utility->format_cache_context, 8);
 	utility->n_dch_cache = 2;
 	utility->dch_counter = 11;
-	utility->num_cache[0] = palloc(8);
-	utility->num_cache[1] = palloc(8);
+	utility->num_cache[0] =
+		MemoryContextAlloc(utility->format_cache_context, 8);
+	utility->num_cache[1] =
+		MemoryContextAlloc(utility->format_cache_context, 8);
 	utility->n_num_cache = 2;
 	utility->num_counter = 12;
+	ok = ok && GetMemoryChunkContext(utility->dch_cache[0]) ==
+		utility->format_cache_context;
+	ok = ok && GetMemoryChunkContext(utility->num_cache[0]) ==
+		utility->format_cache_context;
 	utility->libxml_context =
 		AllocSetContextCreate(TopMemoryContext,
 							  "test libxml context",
@@ -1038,6 +1050,7 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && utility->num_cache[1] == NULL;
 	ok = ok && utility->n_num_cache == 0;
 	ok = ok && utility->num_counter == 0;
+	ok = ok && utility->format_cache_context == NULL;
 	ok = ok && utility->libxml_context == NULL;
 	ok = ok && utility->missing_attr_cache == NULL;
 

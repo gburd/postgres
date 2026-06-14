@@ -364,6 +364,13 @@ Important current files:
   checked action names, or declarative bucket rules would make the batch
   simpler. If yes, land that lifecycle-framework improvement first, then move
   the globals through the checked path.
+- Treat lifecycle-helper repetition as implementation work, not documentation
+  debt. If a Phase 12/Gate E2 slice would add two or more similar
+  init/adopt/reset/destroy helpers, first add or extend the checked
+  lifecycle mechanism: a `PG_RUNTIME_DEFINE_*` helper, named `PG_RUNTIME_*`
+  bucket action, `.def` row pattern, or `check_runtime_lifecycles.pl`
+  validation. Only continue with handwritten helpers when the cleanup has
+  real ordering or ownership semantics that need owner-adjacent code.
 - Do this lifecycle-ergonomics preflight before any further large Gate E2
   teardown or state-migration batch, including PMChild/thread-backend cleanup
   work if it starts adding repeated reset/destroy glue. The expected outcome is
