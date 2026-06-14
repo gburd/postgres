@@ -292,6 +292,11 @@ Important current files:
   `.def` rows, or declarative lifecycle rules before moving the state. The goal
   is faster large-batch migration with the same manifest-checked discipline,
   not more manual bookkeeping.
+- Treat this as a required lifecycle-ergonomics checkpoint, not a preference:
+  before coding a boilerplate-heavy Phase 12 batch, decide whether the existing
+  `PG_RUNTIME_DEFINE_*` macros, bucket `.def` files, and checker rules are
+  enough. If not, extend that framework first and record the chosen pattern in
+  `MULTITHREADED_PHASE12_STATE.md` so future agents follow the same path.
 - When adding another runtime root object or moving more fields into an
   existing root, extend the checked lifecycle framework first if the existing
   macros and `.def` rows do not make the lifecycle obvious. The default should
@@ -1008,10 +1013,15 @@ Important current files:
 - `PgConnectionResetClosedState()` is the retained-object cleanup companion to
   `socket_close()`. `socket_close()` remains responsible for freeing the
   palloc-backed send buffer and `WaitEventSet`; the runtime helper scrubs the
-  retained `PgConnection` socket/protocol/startup/security buckets and frees
-  the malloc-backed GSS buffers. Keep
-  `test_connection_reset_closed_state()` current when changing connection
-  teardown ownership.
+  retained `PgConnection` socket/protocol/startup/security buckets, deletes
+  any connection-owned warning context left by startup/authentication, and
+  frees the malloc-backed GSS buffers. `StoreConnectionWarning()` delegates to
+  the object-explicit `StoreConnectionWarningForConnection()`, which copies
+  warning text into `PgConnection.startup.connection_warning_context`; do not
+  reintroduce `TopMemoryContext` allocation for connection warning list cells
+  or strings. Keep `test_connection_reset_closed_state()` and
+  `test_connection_warning_state_is_connection_local()` current when changing
+  connection teardown ownership.
 - `PgSessionResetClosedState()` is the first retained-session cleanup
   companion. It deletes `PgSession.dynamic_library_context`, which owns the
   `dynamic_library_inits` list cells used for per-session dynamic-library

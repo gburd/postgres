@@ -10130,13 +10130,14 @@ from plain TLS storage and gives their lifecycle rules explicit runtime owners:
   session caches.
 
 The list-bearing connection warning fields are reset by
-`PgConnectionResetClosedState()`, which frees saved warning message/detail
-lists and clears the connection-owned slots. `EmitConnectionWarnings()` also
-clears the slots after freeing the lists so normal warning emission does not
-leave dangling list pointers in the connection object. The RI fast-path
-registration guard is scalar session state; it is initialized, adopted with
-the rest of `PgSession.ri_globals`, and reset during
-`PgSessionResetClosedState()`.
+`PgConnectionResetClosedState()`, which deletes the saved warning context when
+present, falls back to freeing saved warning message/detail lists for older
+manually seeded state, and clears the connection-owned slots.
+`EmitConnectionWarnings()` also clears the slots after freeing the lists so
+normal warning emission does not leave dangling list pointers in the
+connection object. The RI fast-path registration guard is scalar session
+state; it is initialized, adopted with the rest of `PgSession.ri_globals`, and
+reset during `PgSessionResetClosedState()`.
 
 `MULTITHREADED_RUNTIME_OWNERS.tsv` now records symbol-level mappings for this
 batch, and `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` documents the reset/copy
@@ -10435,6 +10436,10 @@ Acceptance criteria for the refactor slice:
   the globals. This is part of the Gate E2 closeout strategy: larger batches
   are encouraged, but they should go through a simpler checked path rather than
   more hand-maintained call lists;
+- record that lifecycle-ergonomics decision in this file before or as part of
+  the batch. Future agents should be able to see whether the batch reused the
+  existing `PG_RUNTIME_DEFINE_*` macros and bucket `.def` rows, or whether it
+  first extended the checked lifecycle framework;
 - keep semantic cleanup/destructor functions handwritten and close to the
   owning subsystem. The generated or macro-driven layer should cover only
   repetitive coverage and call-list mechanics;
@@ -10902,3 +10907,20 @@ Validation for this owner map checker hardening:
 - `gmake check-runtime-lifecycles` passed with 164 runtime fields classified,
   164 bucket definitions checked, 25 reset definitions checked, and 135 owner
   mappings checked.
+
+Connection warning context ownership slice completed:
+
+- `PgConnection.startup` now owns a `connection_warning_context` for deferred
+  authentication/startup warnings;
+- `StoreConnectionWarning()` delegates to
+  `StoreConnectionWarningForConnection()`, which copies warning text into that
+  connection-owned context instead of requiring callers to preallocate strings
+  and list cells in `TopMemoryContext`;
+- password-expiration and MD5-password warning paths in `crypt.c` no longer
+  switch to `TopMemoryContext` before queuing connection warnings;
+- `EmitConnectionWarnings()` deletes the warning context after normal emission,
+  while `PgConnectionResetClosedState()` deletes it during retained connection
+  cleanup if startup exits before warnings are emitted;
+- `test_connection_warning_state_is_connection_local()` verifies queued
+  warning strings are copied into each connection's own warning context and
+  switch with `CurrentPgConnection`.

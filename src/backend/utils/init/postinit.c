@@ -99,6 +99,7 @@ static void ClientCheckTimeoutHandler(void);
 static bool ThereIsAtLeastOneRole(void);
 static void process_startup_options(Port *port, bool am_superuser);
 static void process_settings(Oid databaseid, Oid roleid);
+static MemoryContext ConnectionWarningMemoryContext(PgConnection *connection);
 static void EmitConnectionWarnings(void);
 
 
@@ -1585,28 +1586,62 @@ ThereIsAtLeastOneRole(void)
 
 /*
  * Stores a warning message to be sent later via EmitConnectionWarnings().
- * Both msg and detail must be non-NULL.
- *
- * NB: Caller should ensure the strings are allocated in a long-lived context
- * like TopMemoryContext.
+ * Both msg and detail must be non-NULL.  The strings are copied into
+ * connection-owned storage so queued warnings can be reclaimed if startup exits
+ * before EmitConnectionWarnings().
  */
 void
-StoreConnectionWarning(char *msg, char *detail)
+StoreConnectionWarningForConnection(PgConnection *connection,
+									const char *msg,
+									const char *detail)
 {
 	MemoryContext oldcontext;
+	PgConnectionStartupState *startup;
+	char	   *saved_msg;
+	char	   *saved_detail;
 
+	Assert(connection != NULL);
 	Assert(msg);
 	Assert(detail);
 
-	if (ConnectionWarningsEmitted)
+	startup = &connection->startup;
+	if (startup->connection_warnings_emitted)
 		elog(ERROR, "StoreConnectionWarning() called after EmitConnectionWarnings()");
 
-	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+	oldcontext = MemoryContextSwitchTo(ConnectionWarningMemoryContext(connection));
 
-	ConnectionWarningMessages = lappend(ConnectionWarningMessages, msg);
-	ConnectionWarningDetails = lappend(ConnectionWarningDetails, detail);
+	saved_msg = pstrdup(msg);
+	saved_detail = pstrdup(detail);
+
+	startup->connection_warning_messages =
+		lappend(startup->connection_warning_messages, saved_msg);
+	startup->connection_warning_details =
+		lappend(startup->connection_warning_details, saved_detail);
 
 	MemoryContextSwitchTo(oldcontext);
+}
+
+void
+StoreConnectionWarning(const char *msg, const char *detail)
+{
+	StoreConnectionWarningForConnection(CurrentPgConnection, msg, detail);
+}
+
+static MemoryContext
+ConnectionWarningMemoryContext(PgConnection *connection)
+{
+	PgConnectionStartupState *startup;
+
+	Assert(connection != NULL);
+
+	startup = &connection->startup;
+	if (startup->connection_warning_context == NULL)
+		startup->connection_warning_context =
+			AllocSetContextCreate(TopMemoryContext,
+								  "connection warning state",
+								  ALLOCSET_SMALL_SIZES);
+
+	return startup->connection_warning_context;
 }
 
 /*
@@ -1638,4 +1673,10 @@ EmitConnectionWarnings(void)
 	list_free_deep(ConnectionWarningDetails);
 	ConnectionWarningMessages = NIL;
 	ConnectionWarningDetails = NIL;
+
+	if (CurrentPgConnection->startup.connection_warning_context != NULL)
+	{
+		MemoryContextDelete(CurrentPgConnection->startup.connection_warning_context);
+		CurrentPgConnection->startup.connection_warning_context = NULL;
+	}
 }

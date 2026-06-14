@@ -29,6 +29,8 @@
 #include "pgtime.h"				/* for pg_time_t */
 #include "utils/global_lifetime.h"
 
+struct PgConnection;
+
 
 #define InvalidPid				(-1)
 
@@ -628,7 +630,10 @@ extern void InitPostgres(const char *in_dbname, Oid dboid,
 						 uint32 flags,
 						 char *out_dbname);
 extern void BaseInit(void);
-extern void StoreConnectionWarning(char *msg, char *detail);
+extern void StoreConnectionWarningForConnection(struct PgConnection *connection,
+												const char *msg,
+												const char *detail);
+extern void StoreConnectionWarning(const char *msg, const char *detail);
 
 /* in utils/init/miscinit.c */
 extern bool *PgCurrentIgnoreSystemIndexesRef(void);

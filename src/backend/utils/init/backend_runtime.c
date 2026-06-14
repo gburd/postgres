@@ -1181,8 +1181,18 @@ PgConnectionResetStartupClosedState(PgConnection *connection)
 
 	connection->startup.client_auth_in_progress = false;
 	connection->startup.client_socket = NULL;
-	list_free_deep(connection->startup.connection_warning_messages);
-	list_free_deep(connection->startup.connection_warning_details);
+	if (connection->startup.connection_warning_context != NULL)
+	{
+		if (CurrentMemoryContext == connection->startup.connection_warning_context)
+			MemoryContextSwitchTo(TopMemoryContext);
+		MemoryContextDelete(connection->startup.connection_warning_context);
+		connection->startup.connection_warning_context = NULL;
+	}
+	else
+	{
+		list_free_deep(connection->startup.connection_warning_messages);
+		list_free_deep(connection->startup.connection_warning_details);
+	}
 	connection->startup.connection_warnings_emitted = false;
 	connection->startup.connection_warning_messages = NIL;
 	connection->startup.connection_warning_details = NIL;

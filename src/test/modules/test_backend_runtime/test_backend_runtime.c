@@ -207,6 +207,13 @@ PG_FUNCTION_INFO_V1(test_backend_thread_runtime_state);
 Datum
 test_backend_thread_runtime_state(PG_FUNCTION_ARGS)
 {
+#define CHECK_THREAD_RUNTIME_STATE(expr) \
+	do { \
+		if (!(expr)) \
+			elog(ERROR, "thread backend runtime state check failed: %s", \
+				 #expr); \
+	} while (0)
+
 	PgRuntime  *saved_runtime;
 	PgCarrier  *saved_carrier;
 	PgBackend  *saved_backend;
@@ -215,7 +222,6 @@ test_backend_thread_runtime_state(PG_FUNCTION_ARGS)
 	PgExecution *saved_execution;
 	PgThreadBackendRuntimeState state;
 	Latch		fake_latch;
-	bool		ok = true;
 
 	saved_runtime = CurrentPgRuntime;
 	saved_carrier = CurrentPgCarrier;
@@ -232,41 +238,42 @@ test_backend_thread_runtime_state(PG_FUNCTION_ARGS)
 		InitializePgThreadBackendRuntimeState(&state, B_BACKEND, NULL,
 											  &fake_latch);
 
-		ok = ok && state.backend.runtime != NULL;
-		ok = ok && state.backend.runtime->kind == PG_RUNTIME_THREAD_PER_SESSION;
-		ok = ok && state.backend.runtime->extension_backend_model ==
-			PG_BACKEND_MODEL_THREAD_PER_SESSION;
-		ok = ok && state.carrier.kind == PG_CARRIER_THREAD;
-		ok = ok && state.carrier.current_backend == &state.backend;
-		ok = ok && state.carrier.current_session == &state.session;
-		ok = ok && state.carrier.current_execution == &state.execution;
-		ok = ok && state.carrier.backend_thread_start == NULL;
-		ok = ok && state.carrier.wait_event_waiting == false;
-		ok = ok && state.carrier.wait_event_signal_fd == -1;
-		ok = ok && state.carrier.wait_event_selfpipe_readfd == -1;
-		ok = ok && state.carrier.wait_event_selfpipe_writefd == -1;
-		ok = ok && state.carrier.wait_event_selfpipe_owner_pid == 0;
-		ok = ok && state.carrier.stack_base_ptr == NULL;
-		ok = ok && state.backend.backend_type == B_BACKEND;
-		ok = ok && state.backend.interrupt_latch == &fake_latch;
-		ok = ok && dlist_is_empty(&state.backend.dsm_segment_list);
-		ok = ok && state.backend.session == &state.session;
-		ok = ok && state.backend.connection == &state.connection;
-		ok = ok && state.backend.execution == &state.execution;
-		ok = ok && state.session.backend == &state.backend;
-		ok = ok && state.session.connection == &state.connection;
-		ok = ok && state.session.execution == &state.execution;
-		ok = ok && state.connection.backend == &state.backend;
-		ok = ok && state.connection.session == &state.session;
-		ok = ok && state.execution.backend == &state.backend;
-		ok = ok && state.execution.session == &state.session;
-		ok = ok && state.execution.carrier == &state.carrier;
-		ok = ok && CurrentPgRuntime == saved_runtime;
-		ok = ok && CurrentPgCarrier == saved_carrier;
-		ok = ok && CurrentPgBackend == saved_backend;
-		ok = ok && CurrentPgSession == saved_session;
-		ok = ok && CurrentPgConnection == saved_connection;
-		ok = ok && CurrentPgExecution == saved_execution;
+		CHECK_THREAD_RUNTIME_STATE(state.backend.runtime != NULL);
+		CHECK_THREAD_RUNTIME_STATE(state.backend.runtime->kind ==
+								   PG_RUNTIME_THREAD_PER_SESSION);
+		CHECK_THREAD_RUNTIME_STATE(state.backend.runtime->extension_backend_model ==
+								   PG_BACKEND_MODEL_THREAD_PER_SESSION);
+		CHECK_THREAD_RUNTIME_STATE(state.carrier.kind == PG_CARRIER_THREAD);
+		CHECK_THREAD_RUNTIME_STATE(state.carrier.current_backend == &state.backend);
+		CHECK_THREAD_RUNTIME_STATE(state.carrier.current_session == &state.session);
+		CHECK_THREAD_RUNTIME_STATE(state.carrier.current_execution == &state.execution);
+		CHECK_THREAD_RUNTIME_STATE(state.carrier.backend_thread_start == NULL);
+		CHECK_THREAD_RUNTIME_STATE(state.carrier.wait_event_waiting == false);
+		CHECK_THREAD_RUNTIME_STATE(state.carrier.wait_event_signal_fd == -1);
+		CHECK_THREAD_RUNTIME_STATE(state.carrier.wait_event_selfpipe_readfd == -1);
+		CHECK_THREAD_RUNTIME_STATE(state.carrier.wait_event_selfpipe_writefd == -1);
+		CHECK_THREAD_RUNTIME_STATE(state.carrier.wait_event_selfpipe_owner_pid == 0);
+		CHECK_THREAD_RUNTIME_STATE(state.carrier.stack_base_ptr == NULL);
+		CHECK_THREAD_RUNTIME_STATE(state.backend.backend_type == B_BACKEND);
+		CHECK_THREAD_RUNTIME_STATE(state.backend.interrupt_latch == &fake_latch);
+		CHECK_THREAD_RUNTIME_STATE(dlist_is_empty(&state.backend.dsm_segment_list));
+		CHECK_THREAD_RUNTIME_STATE(state.backend.session == &state.session);
+		CHECK_THREAD_RUNTIME_STATE(state.backend.connection == &state.connection);
+		CHECK_THREAD_RUNTIME_STATE(state.backend.execution == &state.execution);
+		CHECK_THREAD_RUNTIME_STATE(state.session.backend == &state.backend);
+		CHECK_THREAD_RUNTIME_STATE(state.session.connection == &state.connection);
+		CHECK_THREAD_RUNTIME_STATE(state.session.execution == &state.execution);
+		CHECK_THREAD_RUNTIME_STATE(state.connection.backend == &state.backend);
+		CHECK_THREAD_RUNTIME_STATE(state.connection.session == &state.session);
+		CHECK_THREAD_RUNTIME_STATE(state.execution.backend == &state.backend);
+		CHECK_THREAD_RUNTIME_STATE(state.execution.session == &state.session);
+		CHECK_THREAD_RUNTIME_STATE(state.execution.carrier == &state.carrier);
+		CHECK_THREAD_RUNTIME_STATE(CurrentPgRuntime == saved_runtime);
+		CHECK_THREAD_RUNTIME_STATE(CurrentPgCarrier == saved_carrier);
+		CHECK_THREAD_RUNTIME_STATE(CurrentPgBackend == saved_backend);
+		CHECK_THREAD_RUNTIME_STATE(CurrentPgSession == saved_session);
+		CHECK_THREAD_RUNTIME_STATE(CurrentPgConnection == saved_connection);
+		CHECK_THREAD_RUNTIME_STATE(CurrentPgExecution == saved_execution);
 
 		CurrentPgRuntime = saved_runtime;
 		CurrentPgCarrier = saved_carrier;
@@ -287,8 +294,7 @@ test_backend_thread_runtime_state(PG_FUNCTION_ARGS)
 	}
 	PG_END_TRY();
 
-	if (!ok)
-		elog(ERROR, "thread backend runtime state was not initialized");
+#undef CHECK_THREAD_RUNTIME_STATE
 
 	PG_RETURN_BOOL(true);
 }

@@ -160,6 +160,8 @@ test_connection_reset_closed_state(PG_FUNCTION_ARGS)
 	const PQcommMethods methods = {0};
 	struct ClientSocket fake_client_socket;
 	WaitEventSet *fake_wait_set;
+	MemoryContext oldcontext;
+	MemoryContext warning_context;
 	bool		ok = true;
 
 	MemSet(&connection, 0, sizeof(connection));
@@ -190,10 +192,16 @@ test_connection_reset_closed_state(PG_FUNCTION_ARGS)
 	connection.startup.client_auth_in_progress = true;
 	connection.startup.client_socket = &fake_client_socket;
 	connection.startup.connection_warnings_emitted = true;
+	warning_context = AllocSetContextCreate(TopMemoryContext,
+											"test connection warning state",
+											ALLOCSET_SMALL_SIZES);
+	connection.startup.connection_warning_context = warning_context;
+	oldcontext = MemoryContextSwitchTo(warning_context);
 	connection.startup.connection_warning_messages =
 		list_make1(pstrdup("test warning"));
 	connection.startup.connection_warning_details =
 		list_make1(pstrdup("test detail"));
+	MemoryContextSwitchTo(oldcontext);
 	connection.client_connection_info.authn_id = pstrdup("owned-authn");
 	connection.client_connection_info.auth_method = uaSCRAM;
 	connection.client_connection_info_authn_id_owned = true;
@@ -248,6 +256,7 @@ test_connection_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && !connection.startup.client_auth_in_progress;
 	ok = ok && connection.startup.client_socket == NULL;
 	ok = ok && !connection.startup.connection_warnings_emitted;
+	ok = ok && connection.startup.connection_warning_context == NULL;
 	ok = ok && connection.startup.connection_warning_messages == NIL;
 	ok = ok && connection.startup.connection_warning_details == NIL;
 	ok = ok && connection.client_connection_info.authn_id == NULL;
@@ -272,6 +281,85 @@ test_connection_reset_closed_state(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "closed connection runtime state was not reset");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_connection_warning_state_is_connection_local);
+Datum
+test_connection_warning_state_is_connection_local(PG_FUNCTION_ARGS)
+{
+	PgConnection *saved_connection;
+	PgThreadBackendRuntimeState state1;
+	PgThreadBackendRuntimeState state2;
+	PgConnection *fake_connection1;
+	PgConnection *fake_connection2;
+	MemoryContext warning_context1;
+	MemoryContext warning_context2;
+	bool		ok = true;
+
+	saved_connection = CurrentPgConnection;
+	InitializePgThreadRuntime(NULL);
+	InitializePgThreadBackendRuntimeState(&state1, B_BACKEND, NULL, NULL);
+	InitializePgThreadBackendRuntimeState(&state2, B_BACKEND, NULL, NULL);
+	fake_connection1 = &state1.connection;
+	fake_connection2 = &state2.connection;
+
+	PG_TRY();
+	{
+		StoreConnectionWarningForConnection(fake_connection1,
+											"warning one", "detail one");
+		warning_context1 =
+			fake_connection1->startup.connection_warning_context;
+		ok = ok && warning_context1 != NULL;
+		ok = ok && list_length(fake_connection1->startup.connection_warning_messages) == 1;
+		ok = ok && list_length(fake_connection1->startup.connection_warning_details) == 1;
+		ok = ok && strcmp((char *) linitial(fake_connection1->startup.connection_warning_messages),
+						  "warning one") == 0;
+		ok = ok && strcmp((char *) linitial(fake_connection1->startup.connection_warning_details),
+						  "detail one") == 0;
+
+		StoreConnectionWarningForConnection(fake_connection2,
+											"warning two", "detail two");
+		warning_context2 =
+			fake_connection2->startup.connection_warning_context;
+		ok = ok && warning_context2 != NULL;
+		ok = ok && warning_context2 != warning_context1;
+		ok = ok && list_length(fake_connection2->startup.connection_warning_messages) == 1;
+		ok = ok && list_length(fake_connection2->startup.connection_warning_details) == 1;
+		ok = ok && strcmp((char *) linitial(fake_connection2->startup.connection_warning_messages),
+						  "warning two") == 0;
+		ok = ok && strcmp((char *) linitial(fake_connection2->startup.connection_warning_details),
+						  "detail two") == 0;
+
+		ok = ok && fake_connection1->startup.connection_warning_context ==
+			warning_context1;
+		ok = ok && list_length(fake_connection1->startup.connection_warning_messages) == 1;
+		ok = ok && strcmp((char *) linitial(fake_connection1->startup.connection_warning_messages),
+						  "warning one") == 0;
+
+		CurrentPgConnection = saved_connection;
+	}
+	PG_CATCH();
+	{
+		CurrentPgConnection = saved_connection;
+		PgConnectionResetClosedState(fake_connection1);
+		PgConnectionResetClosedState(fake_connection2);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	PgConnectionResetClosedState(fake_connection1);
+	PgConnectionResetClosedState(fake_connection2);
+	ok = ok && fake_connection1->startup.connection_warning_context == NULL;
+	ok = ok && fake_connection1->startup.connection_warning_messages == NIL;
+	ok = ok && fake_connection1->startup.connection_warning_details == NIL;
+	ok = ok && fake_connection2->startup.connection_warning_context == NULL;
+	ok = ok && fake_connection2->startup.connection_warning_messages == NIL;
+	ok = ok && fake_connection2->startup.connection_warning_details == NIL;
+
+	if (!ok)
+		elog(ERROR, "connection warning state was not connection-local");
 
 	PG_RETURN_BOOL(true);
 }

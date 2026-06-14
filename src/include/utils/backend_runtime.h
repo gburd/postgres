@@ -1965,6 +1965,7 @@ typedef struct PgConnectionStartupState
 	struct ClientSocket *client_socket;
 	ConnectionTiming timing;
 	bool		connection_warnings_emitted;
+	MemoryContext connection_warning_context;
 	List	   *connection_warning_messages;
 	List	   *connection_warning_details;
 } PgConnectionStartupState;

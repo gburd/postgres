@@ -908,6 +908,12 @@ Gate E2 requires:
   `.def`-row, or declarative-rule layer before moving the globals. This is a
   Gate E2 work item because it keeps large-batch state migration fast while
   preserving manifest-checked lifecycle coverage;
+- the lifecycle-ergonomics review is a required Gate E2 checkpoint. For each
+  boilerplate-heavy Phase 12 batch, document whether the existing
+  `PG_RUNTIME_DEFINE_*` macros, checked bucket `.def` files, and lifecycle
+  checker rules are sufficient. If they are not, extend the checked mechanism
+  before migrating the state, then record the chosen pattern in
+  `MULTITHREADED_PHASE12_STATE.md`;
 - future lifecycle ergonomics work should prefer reusable checked mechanisms
   over local one-off helpers. The desired shape is one manifest row and one
   checked bucket-definition row per migrated field, with `PG_RUNTIME_DEFINE_*`
@@ -1618,8 +1624,12 @@ Follow-up connection teardown hardening added
 `PgConnectionResetClosedState()`. `socket_close()` still owns freeing the
 palloc-backed send buffer and frontend/backend `WaitEventSet`, while the
 runtime helper scrubs the retained `PgConnection` socket/protocol/startup/
-security buckets and frees the malloc-backed GSS buffers. This closes one
-concrete Gate E2 reset/destroy rule for connection state, but the complete
+security buckets and frees the malloc-backed GSS buffers. Follow-up connection
+startup cleanup moved deferred connection warning list cells and message/detail
+strings into `PgConnection.startup.connection_warning_context`, so normal
+warning emission and retained connection reset no longer depend on
+`TopMemoryContext` allocations for that path. This closes concrete Gate E2
+reset/destroy rules for connection state, but the complete
 backend/session/connection/execution destructor tree and `TopMemoryContext`
 ownership model remain Phase 12 blockers.
 Follow-up session teardown hardening added `PgSessionResetClosedState()`.
