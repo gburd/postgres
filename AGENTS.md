@@ -95,6 +95,10 @@ Important current files:
   for provider-independent and LLVM-provider JIT session state. Keep
   LLVM-provider-private semantic lifecycle work under `src/backend/jit/llvm`
   when that state needs provider-specific cleanup.
+- `src/backend/libpq/backend_runtime_connection.c`: fork-owned runtime bridge
+  accessors for frontend/backend connection state. Add backend libpq,
+  protocol, startup, and client-connection compatibility accessors here rather
+  than growing `backend_runtime.c`.
 - `src/backend/storage/buffer/backend_runtime_buffer.c`: fork-owned runtime
   bridge accessors for backend-local buffer state. Add buffer-manager
   compatibility accessors here rather than growing `backend_runtime.c`.
@@ -117,7 +121,9 @@ Important current files:
 - `src/test/modules/test_backend_runtime/test_backend_runtime_backend.c`:
   backend, carrier, PMChild, interrupt, and backend-exit test functions.
 - `src/test/modules/test_backend_runtime/test_backend_runtime_session.c`:
-  session, GUC, cache, identity, and session-reset test functions.
+  core session, cache, identity, and session-reset test functions.
+- `src/test/modules/test_backend_runtime/test_backend_runtime_session_guc.c`:
+  runtime/server GUC, session GUC, and generated GUC rebind test functions.
 - `src/test/modules/test_backend_runtime/test_backend_runtime_connection.c`:
   connection, socket, protocol, startup, and security test functions.
 - `src/test/modules/test_backend_runtime/test_backend_runtime_execution.c`:

@@ -6,6 +6,7 @@ test_backend_runtime_sources = files(
   'test_backend_runtime_connection.c',
   'test_backend_runtime_execution.c',
   'test_backend_runtime_session.c',
+  'test_backend_runtime_session_guc.c',
 )
 
 if host_system == 'windows'

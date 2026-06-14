@@ -8361,49 +8361,13 @@ PgCurrentJoinCollapseLimitRef(void)
 	return &PgCurrentSessionPlannerMethodState()->join_collapse_limit_value;
 }
 
-struct Port **
-PgConnectionProcPortRef(PgConnection *connection)
+PgConnectionIdentityState *
+PgConnectionIdentityStateRef(PgConnection *connection)
 {
 	if (connection == NULL)
-		return &early_connection_identity.port;
+		return &early_connection_identity;
 
-	return &connection->identity.port;
-}
-
-struct Port **
-PgCurrentProcPortRef(void)
-{
-	return PgConnectionProcPortRef(CurrentPgConnection);
-}
-
-uint8 *
-PgConnectionCancelKey(PgConnection *connection)
-{
-	if (connection == NULL)
-		return early_connection_identity.cancel_key;
-
-	return connection->identity.cancel_key;
-}
-
-uint8 *
-PgCurrentCancelKey(void)
-{
-	return PgConnectionCancelKey(CurrentPgConnection);
-}
-
-int *
-PgConnectionCancelKeyLengthRef(PgConnection *connection)
-{
-	if (connection == NULL)
-		return &early_connection_identity.cancel_key_length;
-
-	return &connection->identity.cancel_key_length;
-}
-
-int *
-PgCurrentCancelKeyLengthRef(void)
-{
-	return PgConnectionCancelKeyLengthRef(CurrentPgConnection);
+	return &connection->identity;
 }
 
 const char **
@@ -9679,7 +9643,7 @@ PgCurrentSnapBuildExportInProgressRef(void)
 }
 
 PgConnectionSocketIOState *
-PgConnectionSocketIORef(PgConnection *connection)
+PgConnectionSocketIOStateRef(PgConnection *connection)
 {
 	if (connection == NULL)
 		return &early_connection_socket_io;
@@ -9687,197 +9651,44 @@ PgConnectionSocketIORef(PgConnection *connection)
 	return &connection->socket_io;
 }
 
-PgConnectionSocketIOState *
-PgCurrentConnectionSocketIORef(void)
-{
-	return PgConnectionSocketIORef(CurrentPgConnection);
-}
-
-int *
-PgCurrentPgwin32NoBlockRef(void)
-{
-	return &PgCurrentConnectionSocketIORef()->win32_noblock;
-}
-
-const PQcommMethods **
-PgConnectionPqCommMethodsRef(PgConnection *connection)
+PgConnectionProtocolState *
+PgConnectionProtocolStateRef(PgConnection *connection)
 {
 	if (connection == NULL)
-		return &early_connection_protocol.comm_methods;
+		return &early_connection_protocol;
 
-	return &connection->protocol.comm_methods;
+	return &connection->protocol;
 }
 
-const PQcommMethods **
-PgCurrentPqCommMethodsRef(void)
-{
-	return PgConnectionPqCommMethodsRef(CurrentPgConnection);
-}
-
-WaitEventSet **
-PgConnectionFeBeWaitSetRef(PgConnection *connection)
+PgConnectionOutputState *
+PgConnectionOutputStateRef(PgConnection *connection)
 {
 	if (connection == NULL)
-		return &early_connection_protocol.fe_be_wait_set;
+		return &early_connection_output;
 
-	return &connection->protocol.fe_be_wait_set;
+	return &connection->output;
 }
 
-WaitEventSet **
-PgCurrentFeBeWaitSetRef(void)
-{
-	return PgConnectionFeBeWaitSetRef(CurrentPgConnection);
-}
-
-uint32 *
-PgConnectionFrontendProtocolRef(PgConnection *connection)
+PgConnectionInterruptState *
+PgConnectionInterruptStateRef(PgConnection *connection)
 {
 	if (connection == NULL)
-		return &early_connection_protocol.frontend_protocol;
+		return &early_connection_interrupts;
 
-	return &connection->protocol.frontend_protocol;
+	return &connection->interrupts;
 }
 
-uint32 *
-PgCurrentFrontendProtocolRef(void)
-{
-	return PgConnectionFrontendProtocolRef(CurrentPgConnection);
-}
-
-static CommandDest *
-PgConnectionWhereToSendOutputRef(PgConnection *connection)
+PgConnectionStartupState *
+PgConnectionStartupStateRef(PgConnection *connection)
 {
 	if (connection == NULL)
-		return &early_connection_output.where_to_send_output;
-
-	return &connection->output.where_to_send_output;
-}
-
-CommandDest *
-PgCurrentWhereToSendOutputRef(void)
-{
-	return PgConnectionWhereToSendOutputRef(CurrentPgConnection);
-}
-
-static int *
-PgConnectionClientConnectionCheckIntervalRef(PgConnection *connection)
-{
-	if (connection == NULL)
-		return &early_connection_output.client_connection_check_interval;
-
-	return &connection->output.client_connection_check_interval;
-}
-
-int *
-PgCurrentClientConnectionCheckIntervalRef(void)
-{
-	return PgConnectionClientConnectionCheckIntervalRef(CurrentPgConnection);
-}
-
-volatile sig_atomic_t *
-PgConnectionCheckClientConnectionPendingRef(PgConnection *connection)
-{
-	if (connection == NULL)
-		return &early_connection_interrupts.check_client_connection_pending;
-
-	return &connection->interrupts.check_client_connection_pending;
-}
-
-volatile sig_atomic_t *
-PgCurrentCheckClientConnectionPendingRef(void)
-{
-	return PgConnectionCheckClientConnectionPendingRef(CurrentPgConnection);
-}
-
-volatile sig_atomic_t *
-PgConnectionClientConnectionLostRef(PgConnection *connection)
-{
-	if (connection == NULL)
-		return &early_connection_interrupts.client_connection_lost;
-
-	return &connection->interrupts.client_connection_lost;
-}
-
-volatile sig_atomic_t *
-PgCurrentClientConnectionLostRef(void)
-{
-	return PgConnectionClientConnectionLostRef(CurrentPgConnection);
-}
-
-bool *
-PgConnectionClientAuthInProgressRef(PgConnection *connection)
-{
-	if (connection == NULL)
-		return &early_connection_startup.client_auth_in_progress;
-
-	return &connection->startup.client_auth_in_progress;
-}
-
-bool *
-PgCurrentClientAuthInProgressRef(void)
-{
-	return PgConnectionClientAuthInProgressRef(CurrentPgConnection);
-}
-
-struct ClientSocket **
-PgConnectionClientSocketRef(PgConnection *connection)
-{
-	if (connection == NULL)
-		return &early_connection_startup.client_socket;
-
-	return &connection->startup.client_socket;
-}
-
-struct ClientSocket **
-PgCurrentClientSocketRef(void)
-{
-	return PgConnectionClientSocketRef(CurrentPgConnection);
-}
-
-static ConnectionTiming *
-PgConnectionTimingRef(PgConnection *connection)
-{
-	if (connection == NULL)
-		return &early_connection_startup.timing;
-
-	return &connection->startup.timing;
-}
-
-static PgConnectionStartupState *
-PgCurrentConnectionStartupStateRef(void)
-{
-	if (CurrentPgConnection == NULL)
 		return &early_connection_startup;
 
-	return &CurrentPgConnection->startup;
+	return &connection->startup;
 }
 
-ConnectionTiming *
-PgCurrentConnectionTimingRef(void)
-{
-	return PgConnectionTimingRef(CurrentPgConnection);
-}
-
-bool *
-PgCurrentConnectionWarningsEmittedRef(void)
-{
-	return &PgCurrentConnectionStartupStateRef()->connection_warnings_emitted;
-}
-
-List **
-PgCurrentConnectionWarningMessagesRef(void)
-{
-	return &PgCurrentConnectionStartupStateRef()->connection_warning_messages;
-}
-
-List **
-PgCurrentConnectionWarningDetailsRef(void)
-{
-	return &PgCurrentConnectionStartupStateRef()->connection_warning_details;
-}
-
-void *
-PgConnectionClientConnectionInfoRef(PgConnection *connection)
+PgConnectionClientConnectionInfoState *
+PgConnectionClientConnectionInfoStateRef(PgConnection *connection)
 {
 	if (connection == NULL)
 		return &early_client_connection_info;
@@ -9885,25 +9696,13 @@ PgConnectionClientConnectionInfoRef(PgConnection *connection)
 	return &connection->client_connection_info;
 }
 
-void *
-PgCurrentClientConnectionInfoRef(void)
-{
-	return PgConnectionClientConnectionInfoRef(CurrentPgConnection);
-}
-
 PgConnectionSecurityState *
-PgConnectionSecurityStateRef(PgConnection *connection)
+PgConnectionRuntimeSecurityStateRef(PgConnection *connection)
 {
 	if (connection == NULL)
 		return &early_connection_security;
 
 	return &connection->security;
-}
-
-PgConnectionSecurityState *
-PgCurrentConnectionSecurityStateRef(void)
-{
-	return PgConnectionSecurityStateRef(CurrentPgConnection);
 }
 
 static PgBackendCoreState *

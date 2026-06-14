@@ -824,7 +824,9 @@ lock-manager, and IPC compatibility accessors into
 `src/backend/storage/buffer/backend_runtime_buffer.c`,
 `src/backend/storage/file/backend_runtime_file.c`,
 `src/backend/storage/lmgr/backend_runtime_lmgr.c`, and
-`src/backend/storage/ipc/backend_runtime_ipc.c`.
+`src/backend/storage/ipc/backend_runtime_ipc.c`. The next split moves
+frontend/backend connection compatibility accessors into
+`src/backend/libpq/backend_runtime_connection.c`.
 Future Phase 12 bucket additions should pick an adjacent owner file first;
 adding more code to `backend_runtime.c` should be reserved for root runtime
 construction, current-object helpers, and top-level adopt/reset calls.
@@ -903,11 +905,12 @@ expected output, and TAP entry points. The shared test header is
 `src/test/modules/test_backend_runtime/test_backend_runtime.h`; the split
 sources are `test_backend_runtime_backend.c`,
 `test_backend_runtime_session.c`, `test_backend_runtime_connection.c`, and
-`test_backend_runtime_execution.c`, with the small module/launch tests kept in
-`test_backend_runtime.c` and threaded extension entry points kept in
+`test_backend_runtime_execution.c`, with the session GUC half further split
+into `test_backend_runtime_session_guc.c`, the small module/launch tests kept
+in `test_backend_runtime.c`, and threaded extension entry points kept in
 `test_backend_runtime_threaded.c`. The runtime bridge also moved buffer,
-fd/storage, lock-manager, and IPC compatibility accessors into owner-adjacent
-`backend_runtime_*.c` files under `src/backend/storage/*`, and the lifecycle
+fd/storage, lock-manager, IPC, and frontend/backend connection compatibility
+accessors into owner-adjacent `backend_runtime_*.c` files, and the lifecycle
 checker default source set now includes those split files.
 
 Current Gate E2 progress: `gmake check-global-lifetimes` is now a required

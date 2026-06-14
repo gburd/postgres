@@ -10375,6 +10375,8 @@ Acceptance criteria for the refactor slice:
 
 First refactor slice completed:
 
+- `src/backend/libpq/backend_runtime_connection.c` now owns
+  frontend/backend connection compatibility accessors;
 - `src/backend/storage/buffer/backend_runtime_buffer.c` now owns the
   backend-local buffer compatibility accessors;
 - `src/backend/storage/file/backend_runtime_file.c` now owns backend-local
@@ -10396,11 +10398,21 @@ First refactor slice completed:
   `test_backend_runtime_execution.c`, with shared declarations in
   `test_backend_runtime.h`.
 
+Second refactor slice completed:
+
+- `src/backend/utils/init/backend_runtime.c` now keeps fallback-aware
+  connection bucket selectors, while exported connection compatibility
+  accessors live in `src/backend/libpq/backend_runtime_connection.c`;
+- `src/test/modules/test_backend_runtime/test_backend_runtime_session_guc.c`
+  now owns the runtime/server GUC, session GUC, and GUC rebind tests, reducing
+  `test_backend_runtime_session.c` to core session/cache/identity/reset tests.
+
 Validation for this refactor slice:
 
 - touched-object builds passed for `backend_runtime.o`,
-  `backend_runtime_buffer.o`, `backend_runtime_file.o`,
-  `backend_runtime_lmgr.o`, and `backend_runtime_ipc.o`;
+  `backend_runtime_connection.o`, `backend_runtime_buffer.o`,
+  `backend_runtime_file.o`, `backend_runtime_lmgr.o`, and
+  `backend_runtime_ipc.o`;
 - full `gmake -j8` passed;
 - `gmake -C src/test/modules/test_backend_runtime clean all` passed after
   the test split;

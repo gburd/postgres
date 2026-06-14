@@ -97,4 +97,6 @@
 #include "utils/wait_event.h"
 #include "utils/xml.h"
 
+extern void test_copy_current_user_identity(PgSession *session);
+
 #endif							/* TEST_BACKEND_RUNTIME_H */
