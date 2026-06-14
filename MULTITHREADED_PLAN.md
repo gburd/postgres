@@ -913,7 +913,11 @@ Gate E2 requires:
   `PG_RUNTIME_DEFINE_*` macros, checked bucket `.def` files, and lifecycle
   checker rules are sufficient. If they are not, extend the checked mechanism
   before migrating the state, then record the chosen pattern in
-  `MULTITHREADED_PHASE12_STATE.md`;
+  `MULTITHREADED_PHASE12_STATE.md`. The operational checklist for this
+  checkpoint is: identify the root object and bucket rows, list the lifecycle
+  operations the batch repeats, decide whether an existing checked helper
+  covers them, add a reusable helper/table/checker rule first if not, and only
+  then move the batch through that path;
 - future lifecycle ergonomics work should prefer reusable checked mechanisms
   over local one-off helpers. The desired shape is one manifest row and one
   checked bucket-definition row per migrated field, with `PG_RUNTIME_DEFINE_*`

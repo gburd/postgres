@@ -297,6 +297,12 @@ Important current files:
   `PG_RUNTIME_DEFINE_*` macros, bucket `.def` files, and checker rules are
   enough. If not, extend that framework first and record the chosen pattern in
   `MULTITHREADED_PHASE12_STATE.md` so future agents follow the same path.
+- Use this concrete preflight before a large Phase 12 migration:
+  identify the target root object and bucket rows, list the repeated lifecycle
+  operations the batch would need, decide whether the existing macros/`.def`
+  rows/checker rules cover them, add a reusable checked helper first if they do
+  not, then migrate the batch through that mechanism. Record the decision in
+  the Phase 12 state log even when the existing framework is sufficient.
 - When adding another runtime root object or moving more fields into an
   existing root, extend the checked lifecycle framework first if the existing
   macros and `.def` rows do not make the lifecycle obvious. The default should

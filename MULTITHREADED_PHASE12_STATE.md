@@ -10924,3 +10924,14 @@ Connection warning context ownership slice completed:
 - `test_connection_warning_state_is_connection_local()` verifies queued
   warning strings are copied into each connection's own warning context and
   switch with `CurrentPgConnection`.
+
+Lifecycle ergonomics operational checkpoint:
+
+- before the next large Phase 12 migration, explicitly run the lifecycle
+  preflight in `AGENTS.md`: identify the target root object and bucket rows,
+  list the repeated lifecycle operations, decide whether existing
+  `PG_RUNTIME_DEFINE_*` macros, bucket `.def` rows, and checker rules are
+  sufficient, and add a reusable checked helper first if they are not;
+- record that decision in this file as part of the batch. This applies even
+  when no new helper is needed, so future agents can see why the batch used the
+  existing mechanism instead of adding another macro/table/checker rule.
