@@ -60,6 +60,7 @@ SELECT test_backend_pgstat_pending_state_is_backend_local();
 SELECT test_backend_activity_state_is_backend_local();
 SELECT test_backend_memory_manager_state_is_backend_local();
 SELECT test_backend_utility_state_is_backend_local();
+SELECT test_backend_reset_closed_state();
 SELECT test_backend_parallel_state_is_backend_local();
 SELECT test_backend_instrumentation_state_is_backend_local();
 SELECT test_backend_buffer_state_is_backend_local();

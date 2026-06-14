@@ -403,6 +403,38 @@ Those slots must not be shallow-copied between concurrently live executions.
 The unresolved work is the carrier/session `TopMemoryContext` split and the
 destroy/reset path for contexts retained after a thread-backed backend exits.
 
+## Backend Utility Closed-State Reset
+
+The next code slice adds `PgBackendResetClosedState()` and calls it from
+`proc_exit()` after ordinary `on_proc_exit` callbacks and
+`PgSessionResetClosedState()`. The first backend reset implementation is
+deliberately narrow and covers only utility-bucket allocations with clear
+backend ownership:
+
+- injection-point cache HTABs allocated in `TopMemoryContext`;
+- DCH/NUM formatting cache entries allocated in `TopMemoryContext`;
+- backend-local libxml memory context;
+- missing-attribute cache HTABs allocated in `TopMemoryContext`.
+
+The reset does not claim the whole utility bucket. Extension sibling cache
+entries live in `CacheMemoryContext` and have syscache callback registration
+semantics; sequential hash scan state and resource-release callbacks are owned
+by their subsystem protocols. Those remain in the utility row's Gate E2 note
+until they get their own explicit cleanup story.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `ipc.o`, and
+  `test_backend_runtime.o`;
+- `gmake check-runtime-lifecycles`, `gmake check-global-lifetimes`,
+  `git diff --check`, and full `gmake -j8` passed;
+- the regression module has a direct `test_backend_reset_closed_state()` check
+  using real dynahash tables and a real memory context for the owned utility
+  resources, and `gmake -C src/test/modules/test_backend_runtime check`
+  passed;
+- the direct threaded-runtime TAP script passed all 87 tests with the local
+  Perl `IPC::Run` install.
+
 ## Runtime Lifecycle Manifest
 
 The one-hundred-seventy-third Phase 12 slice makes the Gate E2 object-lifecycle

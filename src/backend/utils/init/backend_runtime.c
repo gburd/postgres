@@ -3906,6 +3906,58 @@ PgCurrentSessionOwnsPointer(const void *ptr)
 	return address >= session_start && address < session_end;
 }
 
+static void
+PgBackendResetUtilityClosedState(PgBackendUtilityState *utility)
+{
+	int			i;
+
+	if (utility == NULL)
+		return;
+
+	if (utility->injection_point_cache != NULL)
+	{
+		hash_destroy(utility->injection_point_cache);
+		utility->injection_point_cache = NULL;
+	}
+
+	for (i = 0; i < utility->n_dch_cache; i++)
+	{
+		pfree(utility->dch_cache[i]);
+		utility->dch_cache[i] = NULL;
+	}
+	utility->n_dch_cache = 0;
+	utility->dch_counter = 0;
+
+	for (i = 0; i < utility->n_num_cache; i++)
+	{
+		pfree(utility->num_cache[i]);
+		utility->num_cache[i] = NULL;
+	}
+	utility->n_num_cache = 0;
+	utility->num_counter = 0;
+
+	if (utility->libxml_context != NULL)
+	{
+		MemoryContextDelete(utility->libxml_context);
+		utility->libxml_context = NULL;
+	}
+
+	if (utility->missing_attr_cache != NULL)
+	{
+		hash_destroy(utility->missing_attr_cache);
+		utility->missing_attr_cache = NULL;
+	}
+}
+
+void
+PgBackendResetClosedState(PgBackend *backend)
+{
+	if (backend == NULL)
+		return;
+
+	PgBackendResetUtilityClosedState(&backend->utility);
+}
+
 MemoryContext
 PgSessionGetDynamicLibraryMemoryContext(PgSession *session)
 {

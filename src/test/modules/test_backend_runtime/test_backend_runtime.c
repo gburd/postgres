@@ -7631,6 +7631,63 @@ test_backend_utility_state_is_backend_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_backend_reset_closed_state);
+Datum
+test_backend_reset_closed_state(PG_FUNCTION_ARGS)
+{
+	PgBackend	fake_backend;
+	PgBackendUtilityState *utility;
+	HASHCTL		hash_ctl;
+	bool		ok = true;
+
+	MemSet(&fake_backend, 0, sizeof(fake_backend));
+	utility = &fake_backend.utility;
+
+	MemSet(&hash_ctl, 0, sizeof(hash_ctl));
+	hash_ctl.keysize = sizeof(Oid);
+	hash_ctl.entrysize = sizeof(Oid);
+
+	utility->notify_interrupt_pending = true;
+	utility->injection_point_cache =
+		hash_create("test injection point cache", 8, &hash_ctl,
+					HASH_ELEM | HASH_BLOBS);
+	utility->dch_cache[0] = palloc(8);
+	utility->dch_cache[1] = palloc(8);
+	utility->n_dch_cache = 2;
+	utility->dch_counter = 11;
+	utility->num_cache[0] = palloc(8);
+	utility->num_cache[1] = palloc(8);
+	utility->n_num_cache = 2;
+	utility->num_counter = 12;
+	utility->libxml_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test libxml context",
+							  ALLOCSET_SMALL_SIZES);
+	utility->missing_attr_cache =
+		hash_create("test missing attr cache", 8, &hash_ctl,
+					HASH_ELEM | HASH_BLOBS);
+
+	PgBackendResetClosedState(&fake_backend);
+
+	ok = ok && utility->notify_interrupt_pending;
+	ok = ok && utility->injection_point_cache == NULL;
+	ok = ok && utility->dch_cache[0] == NULL;
+	ok = ok && utility->dch_cache[1] == NULL;
+	ok = ok && utility->n_dch_cache == 0;
+	ok = ok && utility->dch_counter == 0;
+	ok = ok && utility->num_cache[0] == NULL;
+	ok = ok && utility->num_cache[1] == NULL;
+	ok = ok && utility->n_num_cache == 0;
+	ok = ok && utility->num_counter == 0;
+	ok = ok && utility->libxml_context == NULL;
+	ok = ok && utility->missing_attr_cache == NULL;
+
+	if (!ok)
+		elog(ERROR, "closed backend runtime state was not reset");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_backend_parallel_state_is_backend_local);
 Datum
 test_backend_parallel_state_is_backend_local(PG_FUNCTION_ARGS)
