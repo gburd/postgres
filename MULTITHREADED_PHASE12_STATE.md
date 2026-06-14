@@ -361,6 +361,48 @@ Validation for this slice:
   passed all 87 tests after cleaning and rerunning a transient failed cluster
   that had left one defunct postmaster child during TAP shutdown.
 
+## Subsystem-Owned Backend Cleanup Audit
+
+The next lifecycle-audit slice narrows several remaining `GateE2 pending`
+backend rows by recording the existing subsystem-owned cleanup paths instead
+of waiting for a central `DestroyPgBackend()` tree:
+
+- `PgBackend.replication` relies on existing WAL receiver and replication slot
+  exit callbacks. `WalRcvDie()` disconnects the active `walreceiver_conn`, and
+  slot cleanup/release paths handle `MyReplicationSlot`;
+- `PgBackend.recovery` owns backend-local startup/recovery conflict state, with
+  `ShutdownRecoveryTransactionEnvironment()` destroying the recovery lock hash
+  tables and clearing the virtual transaction state;
+- `PgBackend.repack` has paired cleanup on both sides: the leader-side
+  `stop_repack_decoding_worker()` detaches DSM/MQ state and frees the worker
+  object, while worker-side `RepackWorkerShutdown()` detaches the mapped DSM
+  segment;
+- `PgBackend.aio` uses the existing `pgaio_shutdown()` before-shmem-exit
+  callback to drain in-flight IO and clear `pgaio_my_backend`; the io_uring
+  context pointer is a borrowed shared method context, not a backend-owned
+  allocation.
+
+This is an audit classification, not a new destructor implementation. The
+remaining backend rows that still cannot honestly close are the ones with
+retained `TopMemoryContext` allocations or worker-specific contexts that need a
+real thread-runtime teardown story: WAL sender, logical replication, XLog,
+maintenance worker, autovacuum, memory manager, and utility.
+
+The legacy `Session` bridge now has an explicit endpoint in the manifest:
+`PgSession` owns the pointer slot, while `access/session.h` remains the
+parallel-query DSM/DSA compatibility payload. `DetachSession()` owns DSM/DSA
+detach for that payload. The endpoint is folding that payload into `PgSession`
+once typmod/parallel-query sharing no longer needs the old object as a
+separate compatibility shell. Its allocation still sits under
+`TopMemoryContext`, so this remains tied to the memory-context ownership split.
+
+`PgExecution.memory_contexts` is likewise narrowed but not closed. The object
+owns the execution-local pointer slots; the pointed-to contexts are still
+owned by the existing main-loop, transaction, portal, and memory-manager paths.
+Those slots must not be shallow-copied between concurrently live executions.
+The unresolved work is the carrier/session `TopMemoryContext` split and the
+destroy/reset path for contexts retained after a thread-backed backend exits.
+
 ## Runtime Lifecycle Manifest
 
 The one-hundred-seventy-third Phase 12 slice makes the Gate E2 object-lifecycle
