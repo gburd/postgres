@@ -1557,6 +1557,13 @@ arrays, and last-used pointers explicitly, and the lifecycle manifest records
 the pointer/hash ownership rule. The global-lifetime scan now reports 191
 session-local declarations and 30 execution-local declarations with zero new
 unclassified mutable globals.
+The following user-identity cache batch moved `acl.c`'s role-membership cache
+arrays and database hash into `PgSessionUserIdentityState`. `acl.c` keeps its
+historic local names through file-local macros over the current session
+object, while `PgSessionResetClosedState()` now invalidates cached role OIDs
+and frees the copied membership lists. The global-lifetime scan now reports
+188 session-local declarations and 30 execution-local declarations with zero
+new unclassified mutable globals.
 
 ## Phase 13: Scheduler-Aware Wait Boundary
 

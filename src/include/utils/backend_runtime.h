@@ -1370,6 +1370,9 @@ typedef struct PgSessionUserIdentityState
 	bool		session_user_is_superuser;
 	int			security_restriction_context;
 	bool		set_role_is_active;
+	Oid			cached_role[3];
+	List	   *cached_roles[3];
+	uint32		cached_db_hash;
 } PgSessionUserIdentityState;
 
 typedef struct PgSessionCommandGUCState

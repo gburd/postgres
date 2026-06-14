@@ -1124,6 +1124,15 @@ global-lifetime scan. The global-lifetime scan now reports 191 session-local
 declarations and 30 execution-local declarations with zero new unclassified
 mutable globals.
 
+The following user-identity cache slice moved `acl.c`'s role-membership cache
+arrays and cached database hash into `PgSessionUserIdentityState`. The cache
+lists are copied into `TopMemoryContext` by the existing ACL code, but are now
+session object slots with explicit invalidation and `PgSessionResetClosedState()`
+cleanup. Validation included touched-object builds, `gmake
+check-runtime-lifecycles`, and the required global-lifetime scan. The
+global-lifetime scan now reports 188 session-local declarations and 30
+execution-local declarations with zero new unclassified mutable globals.
+
 ## Bottom Line
 
 The branch is on track only if the current debt is treated as Phase 12

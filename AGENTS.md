@@ -225,6 +225,13 @@ Important current files:
   pointer clearing. After changing this bridge, rebuild `backend_runtime.o`,
   `ts_cache.o`, and `test_backend_runtime.o`, then run
   `gmake check-runtime-lifecycles` and `gmake check-global-lifetimes`.
+- ACL role-membership caches now live under `PgSessionUserIdentityState`.
+  `acl.c` keeps `cached_role`, `cached_roles`, and `cached_db_hash` as
+  file-local macros over the current session object. The copied membership
+  lists are allocated in `TopMemoryContext` by existing ACL code and freed by
+  `PgSessionResetClosedState()`. After changing this bridge, rebuild `acl.o`,
+  `backend_runtime.o`, and `test_backend_runtime.o`, then run
+  `gmake check-runtime-lifecycles` and `gmake check-global-lifetimes`.
 - Transaction cleanup slots now live under
   `PgExecutionTransactionCleanupState`: large-object descriptor cleanup slots,
   the transaction temporary-file cleanup flag, the pgstat subtransaction stack,

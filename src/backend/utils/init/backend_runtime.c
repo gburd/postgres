@@ -1588,6 +1588,13 @@ PgSessionInitializeUserIdentityState(PgSessionUserIdentityState *user_identity)
 	user_identity->session_user_is_superuser = false;
 	user_identity->security_restriction_context = 0;
 	user_identity->set_role_is_active = false;
+	user_identity->cached_role[0] = InvalidOid;
+	user_identity->cached_role[1] = InvalidOid;
+	user_identity->cached_role[2] = InvalidOid;
+	user_identity->cached_roles[0] = NIL;
+	user_identity->cached_roles[1] = NIL;
+	user_identity->cached_roles[2] = NIL;
+	user_identity->cached_db_hash = 0;
 	user_identity->initialized = true;
 }
 
@@ -4292,6 +4299,14 @@ PgSessionResetClosedState(PgSession *session)
 		session->async.local_channel_table = NULL;
 	}
 	session->async.registered_listener = false;
+
+	for (int i = 0; i < lengthof(session->user_identity.cached_roles); i++)
+	{
+		session->user_identity.cached_role[i] = InvalidOid;
+		list_free(session->user_identity.cached_roles[i]);
+		session->user_identity.cached_roles[i] = NIL;
+	}
+	session->user_identity.cached_db_hash = 0;
 
 	if (session->text_search.parser_cache_hash != NULL)
 	{

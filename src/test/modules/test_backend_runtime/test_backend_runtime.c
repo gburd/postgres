@@ -193,6 +193,12 @@ test_copy_current_user_identity(PgSession *session)
 	Assert(session != NULL);
 
 	session->user_identity = *PgCurrentUserIdentityState();
+	for (int i = 0; i < lengthof(session->user_identity.cached_roles); i++)
+	{
+		session->user_identity.cached_role[i] = InvalidOid;
+		session->user_identity.cached_roles[i] = NIL;
+	}
+	session->user_identity.cached_db_hash = 0;
 }
 
 static void
@@ -2631,6 +2637,9 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 		hash_create("test async channel cache", 8, &hash_ctl,
 					HASH_ELEM | HASH_BLOBS);
 	fake_session.async.registered_listener = true;
+	fake_session.user_identity.cached_role[0] = BOOLOID;
+	fake_session.user_identity.cached_roles[0] = list_make1_oid(BOOLOID);
+	fake_session.user_identity.cached_db_hash = 12345;
 
 	hash_ctl.entrysize = sizeof(TSParserCacheEntry);
 	fake_session.text_search.parser_cache_hash =
@@ -2719,6 +2728,9 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && fake_session.sequence.last_used_seq == NULL;
 	ok = ok && fake_session.async.local_channel_table == NULL;
 	ok = ok && !fake_session.async.registered_listener;
+	ok = ok && fake_session.user_identity.cached_role[0] == InvalidOid;
+	ok = ok && fake_session.user_identity.cached_roles[0] == NIL;
+	ok = ok && fake_session.user_identity.cached_db_hash == 0;
 	ok = ok && fake_session.text_search.parser_cache_hash == NULL;
 	ok = ok && fake_session.text_search.last_used_parser == NULL;
 	ok = ok && fake_session.text_search.dictionary_cache_hash == NULL;
@@ -4821,6 +4833,9 @@ test_session_user_identity_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && !identity_state->session_user_is_superuser;
 		ok = ok && identity_state->security_restriction_context == 0;
 		ok = ok && !identity_state->set_role_is_active;
+		ok = ok && identity_state->cached_role[0] == InvalidOid;
+		ok = ok && identity_state->cached_roles[0] == NIL;
+		ok = ok && identity_state->cached_db_hash == 0;
 
 		identity_state->authenticated_user_id = 10;
 		identity_state->session_user_id = 11;
@@ -4831,6 +4846,9 @@ test_session_user_identity_state_is_session_local(PG_FUNCTION_ARGS)
 		identity_state->security_restriction_context =
 			SECURITY_RESTRICTED_OPERATION | SECURITY_NOFORCE_RLS;
 		identity_state->set_role_is_active = true;
+		identity_state->cached_role[0] = 31;
+		identity_state->cached_roles[0] = list_make1_oid(31);
+		identity_state->cached_db_hash = 41;
 
 		ok = ok && GetAuthenticatedUserId() == 10;
 		ok = ok && GetSessionUserId() == 11;
@@ -4868,6 +4886,9 @@ test_session_user_identity_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && !identity_state->session_user_is_superuser;
 		ok = ok && identity_state->security_restriction_context == 0;
 		ok = ok && !identity_state->set_role_is_active;
+		ok = ok && identity_state->cached_role[0] == InvalidOid;
+		ok = ok && identity_state->cached_roles[0] == NIL;
+		ok = ok && identity_state->cached_db_hash == 0;
 
 		identity_state->authenticated_user_id = 20;
 		identity_state->session_user_id = 21;
@@ -4876,6 +4897,9 @@ test_session_user_identity_state_is_session_local(PG_FUNCTION_ARGS)
 		identity_state->system_user = "auth_method_b:authn_id_b";
 		identity_state->session_user_is_superuser = false;
 		identity_state->set_role_is_active = false;
+		identity_state->cached_role[0] = 32;
+		identity_state->cached_roles[0] = list_make1_oid(32);
+		identity_state->cached_db_hash = 42;
 
 		ok = ok && GetAuthenticatedUserId() == 20;
 		ok = ok && GetSessionUserId() == 21;
@@ -4897,6 +4921,16 @@ test_session_user_identity_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && strcmp(GetSystemUser(), "auth_method_a:authn_id_a") == 0;
 		ok = ok && GetCurrentRoleId() == 12;
 		ok = ok && !InLocalUserIdChange();
+		ok = ok && PgCurrentUserIdentityState()->cached_role[0] == 31;
+		ok = ok && list_member_oid(PgCurrentUserIdentityState()->cached_roles[0],
+								   31);
+		ok = ok && PgCurrentUserIdentityState()->cached_db_hash == 41;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && PgCurrentUserIdentityState()->cached_role[0] == 32;
+		ok = ok && list_member_oid(PgCurrentUserIdentityState()->cached_roles[0],
+								   32);
+		ok = ok && PgCurrentUserIdentityState()->cached_db_hash == 42;
 
 		PgSetCurrentSession(saved_session);
 	}
