@@ -222,8 +222,9 @@ whose ownership is already covered by existing backend or GUC cleanup rules:
   rebound through `RebindSessionGUCVariablePointers()` after switching the
   current session;
 - user identity state is owned by the existing session authorization and
-  reset-role paths. The `system_user` pointer remains borrowed and must not be
-  freed by the bucket.
+  reset-role paths. The runtime object now tracks whether `system_user` is an
+  owned session copy or a borrowed bridge/test pointer, and closed-session
+  reset frees only the owned copy.
 
 This slice intentionally leaves rows pending where the bucket owns or borrows
 memory contexts, hash tables, dlist/dclist heads, sockets, replication worker
@@ -246,8 +247,9 @@ runtime buckets:
 - `PgConnectionResetClosedState()` now clears the borrowed `Port` pointer and
   cancel key from `PgConnection.identity`, in addition to the existing socket,
   protocol, startup, and security resets;
-- `PgSessionResetClosedState()` frees the copied `database_path`, destroys the
-  parser operator lookup hash, destroys the sequence hash and clears
+- `PgSessionResetClosedState()` frees the copied `database_path` only when its
+  runtime-object ownership bit is set, destroys the parser operator lookup
+  hash, destroys the sequence hash and clears
   `last_used_seq`, frees the regex ctype cache list through a regex-owned
   helper, frees the planner-extension name array while leaving the borrowed
   strings alone, destroys the operator proof hash, and deletes the collation
