@@ -7,6 +7,15 @@ be ambitious and is not currently optimized for upstream patch shape.
 Implementation is now underway. Keep the plan and architecture notes current as
 the code evolves.
 
+Current Phase 12/Gate E2 default: move state in larger coherent batches, but
+do not let lifecycle boilerplate grow by hand. Before a batch that would repeat
+init/adopt/reset/destroy helper shapes, first add or reuse a checked
+`PG_RUNTIME_*` action, `PG_RUNTIME_DEFINE_*` helper, bucket `.def` rule, or
+`check_runtime_lifecycles.pl` validation. The next likely simplification target
+is object-owned allocation contexts and related delete-and-null/list/hash/
+copy-adopt-reset patterns. Record the preflight decision in
+`MULTITHREADED_PHASE12_STATE.md` before editing code.
+
 ## Project Docs
 
 - [MULTITHREADED_ARCHITECTURE.md](MULTITHREADED_ARCHITECTURE.md) describes the
