@@ -22,6 +22,44 @@ dependencies = [
     "cryptography >= 3.3.2",
 ]
 
+# Optional high-level drivers. These are import-skipped at runtime, so tests
+# that want them are skipped when absent. The in-tree libpq ctypes wrapper is
+# the default connection path; psycopg3 is the default real driver and asyncpg
+# the alternative, selected via PG_PYTEST_DRIVER.
+[project.optional-dependencies]
+drivers = [
+    "psycopg[binary] >= 3.1",
+    "asyncpg >= 0.28",
+]
+
+# Optional realistic fake-data generation (names, emails, addresses,
+# sentences). Soft-imported by pypg.fake: when absent, pypg.faker() returns
+# None after a single warning and pypg.meaningful_text() falls back to the
+# random rand_str. rand_str itself never needs this.
+fake = [
+    "faker >= 20",
+]
+
+# Dev tooling, managed project-locally by uv (uv sync --group dev). Kept out of
+# the runtime dependencies so the suite stays lean; only needed to
+# lint/format/type-check, never to run the tests.
+[dependency-groups]
+dev = [
+    "black >= 24, < 26",
+    "mypy >= 1.8, < 2",
+    "pylint >= 3, < 4",
+    "pyrefly >= 1, < 2",
+]
+
+[tool.uv]
+# This pyproject is not itself a distributable package; uv just manages the
+# project-local .venv. (pip ignores [tool.uv], so non-uv devs are unaffected.)
+package = false
+# The runtime suite supports Python >= 3.6 (run via system pytest on old
+# distros, never via uv). Dev tooling targets modern Python, so scope uv's
+# resolution to the dev interpreter range instead of the full requires-python.
+environments = ["python_full_version >= '3.9'"]
+
 [tool.pytest.ini_options]
 minversion = "7.0"
 
@@ -30,3 +68,73 @@ pythonpath = ["src/test/pytest"]
 
 # Load the shared fixtures plugin
 addopts = ["-p", "pypg.fixtures"]
+
+[tool.black]
+# black's default line length; pylint is aligned to it below.
+line-length = 88
+
+[tool.mypy]
+# No explicit python_version: type-check against the dev interpreter. (The
+# runtime suite still targets >= 3.6, but pytest itself now requires 3.10+
+# syntax, so pinning an old version makes mypy choke on followed library code.)
+# The suite leans on ctypes/libpq and third-party libs without stubs; be
+# pragmatic rather than strict so existing code stays clean while still
+# catching real type errors in our own helpers.
+ignore_missing_imports = true
+follow_imports = "silent"
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+# Test trees have many same-named modules (conftest.py, test_*.py) that are not
+# importable packages; these settings let mypy map files to distinct modules.
+namespace_packages = true
+explicit_package_bases = true
+
+[tool.pyrefly]
+# Pyrefly (https://pyrefly.org) is a fast type checker run as an extra gate.
+# The in-tree infra lives here, so it can resolve `pypg`/`libpq` imports
+# without relying on PYTHONPATH.
+search-path = ["src/test/pytest"]
+
+[tool.pylint.main]
+py-version = "3.9"
+
+[tool.pylint.format]
+max-line-length = 88
+# PostgresServer is a large facade mirroring PostgreSQL::Test::Cluster (~3000
+# lines of Perl); allow it room rather than splitting it artificially.
+max-module-lines = 2000
+
+[tool.pylint."messages control"]
+# Curated relaxations for pytest/ctypes idioms (not bug-hiding). The checks that
+# matter for a cross-platform suite (encoding, broad-except, with-resources,
+# real errors) stay ENABLED and are satisfied in code, not silenced here.
+disable = [
+    "redefined-outer-name",      # pytest passes fixtures by name on purpose
+    "missing-module-docstring",
+    "missing-function-docstring",  # tests and plugin hooks self-describe
+    "too-few-public-methods",
+    "duplicate-code",            # parallel tests legitimately share shape
+    "import-outside-toplevel",   # required by the importorskip() pattern
+    "unused-argument",           # pytest hook/fixture signatures are fixed
+    "wrong-import-order",        # in-tree pypg/libpq misread as third-party
+    "fixme",                     # TODO/XXX are tracked intentionally
+    "use-dict-literal",          # dict(opt=...) reads well for conn options
+    "consider-using-f-string",
+]
+
+[tool.pylint.design]
+# Advisory complexity metrics. A server-management harness and a ctypes/error
+# wrapper are inherently "wide" (many attributes/args/branches); the Perl
+# equivalents are larger still. Complexity is managed by review, not a hard
+# pylint threshold, so these refactor-nudges are relaxed rather than silenced
+# bug checks.
+max-args = 22
+max-positional-arguments = 10
+max-attributes = 20
+max-locals = 26
+max-branches = 15
+max-statements = 65
+# PostgresServer is a facade mirroring the large PostgreSQL::Test::Cluster
+# module; a wide method surface is expected and intended.
+max-public-methods = 90
