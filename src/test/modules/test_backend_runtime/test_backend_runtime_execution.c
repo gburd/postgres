@@ -447,6 +447,88 @@ test_execution_active_portal_is_execution_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_execution_reset_closed_state);
+Datum
+test_execution_reset_closed_state(PG_FUNCTION_ARGS)
+{
+	PgExecution *saved_execution;
+	PgExecution fake_execution;
+	ErrorContextCallback fake_error_context;
+	sigjmp_buf fake_exception_stack;
+	SPITupleTable fake_tuptable;
+	PortalData	fake_portal;
+	bool		ok = true;
+
+	saved_execution = CurrentPgExecution;
+	MemSet(&fake_execution, 0, sizeof(fake_execution));
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution);
+	MemSet(&fake_error_context, 0, sizeof(fake_error_context));
+	MemSet(&fake_tuptable, 0, sizeof(fake_tuptable));
+	MemSet(&fake_portal, 0, sizeof(fake_portal));
+
+	PG_TRY();
+	{
+		CurrentPgExecution = &fake_execution;
+		debug_query_string = "reset execution";
+		fake_execution.error.context_stack = &fake_error_context;
+		fake_execution.error.exception_stack = &fake_exception_stack;
+		fake_execution.error.errordata_stack_depth = 3;
+		fake_execution.error.recursion_depth = 2;
+		fake_execution.error.saved_timeval_set = true;
+		CurrentResourceOwner = (ResourceOwner) &fake_execution;
+		CurTransactionResourceOwner = (ResourceOwner) saved_execution;
+		TopTransactionResourceOwner = (ResourceOwner) &fake_error_context;
+		SPI_processed = 123;
+		SPI_tuptable = &fake_tuptable;
+		SPI_result = SPI_OK_SELECT;
+		fake_execution.spi.stack = (_SPI_connection *) &fake_execution;
+		fake_execution.spi.current = (_SPI_connection *) &fake_tuptable;
+		fake_execution.spi.stack_depth = 2;
+		fake_execution.spi.connected = 1;
+		ActivePortal = &fake_portal;
+
+		PgExecutionResetClosedState(&fake_execution);
+
+		ok = ok && debug_query_string == NULL;
+		ok = ok && error_context_stack == NULL;
+		ok = ok && PG_exception_stack == NULL;
+		ok = ok && fake_execution.error.errordata_stack_depth == -1;
+		ok = ok && fake_execution.error.recursion_depth == 0;
+		ok = ok && !fake_execution.error.saved_timeval_set;
+		ok = ok && CurrentResourceOwner == NULL;
+		ok = ok && CurTransactionResourceOwner == NULL;
+		ok = ok && TopTransactionResourceOwner == NULL;
+		ok = ok && SPI_processed == 0;
+		ok = ok && SPI_tuptable == NULL;
+		ok = ok && SPI_result == 0;
+		ok = ok && fake_execution.spi.stack == NULL;
+		ok = ok && fake_execution.spi.current == NULL;
+		ok = ok && fake_execution.spi.stack_depth == 0;
+		ok = ok && fake_execution.spi.connected == -1;
+		ok = ok && ActivePortal == NULL;
+		ok = ok && fake_execution.memory_contexts.top_context == NULL;
+		ok = ok && fake_execution.memory_contexts.current_context == NULL;
+		ok = ok && fake_execution.memory_contexts.error_context == NULL;
+		ok = ok && fake_execution.memory_contexts.message_context == NULL;
+		ok = ok && fake_execution.memory_contexts.top_transaction_context == NULL;
+		ok = ok && fake_execution.memory_contexts.cur_transaction_context == NULL;
+		ok = ok && fake_execution.memory_contexts.portal_context == NULL;
+
+		CurrentPgExecution = saved_execution;
+	}
+	PG_CATCH();
+	{
+		CurrentPgExecution = saved_execution;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "execution closed reset did not clear volatile state");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_execution_vacuum_state_is_execution_local);
 Datum
 test_execution_vacuum_state_is_execution_local(PG_FUNCTION_ARGS)

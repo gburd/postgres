@@ -842,12 +842,17 @@ static void PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend);
 static BackendType *PgCurrentBackendTypeRef(void);
 static void PgExecutionAdoptEarlyDebugState(PgExecution *execution);
 static void PgExecutionInitializeErrorState(PgExecutionErrorState *error);
+static void PgExecutionResetErrorClosedState(PgExecutionErrorState *error);
 static void PgExecutionAdoptEarlyErrorState(PgExecution *execution);
 static void PgExecutionAdoptEarlyMemoryContexts(PgExecution *execution);
 static void PgExecutionAdoptEarlyResourceOwners(PgExecution *execution);
+static void PgExecutionResetResourceOwnersClosedState(PgExecutionResourceOwnerState
+													  *resource_owners);
 static void PgExecutionInitializeSPIState(PgExecutionSPIState *spi);
 static void PgExecutionAdoptEarlySPIState(PgExecution *execution);
+static void PgExecutionResetSPIClosedState(PgExecutionSPIState *spi);
 static void PgExecutionAdoptEarlyPortalState(PgExecution *execution);
+static void PgExecutionResetPortalClosedState(PgExecutionPortalState *portal);
 static void PgExecutionInitializeVacuumState(PgExecutionVacuumState *vacuum);
 static void PgExecutionAdoptEarlyVacuumState(PgExecution *execution);
 static void PgExecutionInitializeNodeIOState(PgExecutionNodeIOState *node_io);
@@ -3607,6 +3612,12 @@ PgExecutionInitializeErrorState(PgExecutionErrorState *error)
 }
 
 static void
+PgExecutionResetErrorClosedState(PgExecutionErrorState *error)
+{
+	PgExecutionInitializeErrorState(error);
+}
+
+static void
 PgExecutionAdoptEarlyErrorState(PgExecution *execution)
 {
 	Assert(execution != NULL);
@@ -3621,6 +3632,15 @@ PG_RUNTIME_DEFINE_ADOPT_EARLY_ZERO(PgExecutionAdoptEarlyMemoryContexts,
 PG_RUNTIME_DEFINE_ADOPT_EARLY_ZERO(PgExecutionAdoptEarlyResourceOwners,
 								   PgExecution, execution, resource_owners,
 								   early_execution_resource_owners)
+
+static void
+PgExecutionResetResourceOwnersClosedState(PgExecutionResourceOwnerState
+										  *resource_owners)
+{
+	Assert(resource_owners != NULL);
+
+	MemSet(resource_owners, 0, sizeof(*resource_owners));
+}
 
 static void
 PgExecutionInitializeSPIState(PgExecutionSPIState *spi)
@@ -3640,9 +3660,23 @@ PgExecutionAdoptEarlySPIState(PgExecution *execution)
 	PgExecutionInitializeSPIState(&early_execution_spi);
 }
 
+static void
+PgExecutionResetSPIClosedState(PgExecutionSPIState *spi)
+{
+	PgExecutionInitializeSPIState(spi);
+}
+
 PG_RUNTIME_DEFINE_ADOPT_EARLY_ZERO(PgExecutionAdoptEarlyPortalState,
 								   PgExecution, execution, portal,
 								   early_execution_portal)
+
+static void
+PgExecutionResetPortalClosedState(PgExecutionPortalState *portal)
+{
+	Assert(portal != NULL);
+
+	MemSet(portal, 0, sizeof(*portal));
+}
 
 PG_RUNTIME_DEFINE_ZERO_INIT(PgExecutionInitializeVacuumState,
 							PgExecutionVacuumState, vacuum)

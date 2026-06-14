@@ -104,6 +104,7 @@ SELECT test_execution_error_state_is_execution_local();
 SELECT test_execution_memory_contexts_are_execution_local();
 SELECT test_execution_spi_state_is_execution_local();
 SELECT test_execution_active_portal_is_execution_local();
+SELECT test_execution_reset_closed_state();
 SELECT test_execution_vacuum_state_is_execution_local();
 SELECT test_execution_node_io_state_is_execution_local();
 SELECT test_execution_basebackup_state_is_execution_local();

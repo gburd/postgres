@@ -10935,3 +10935,19 @@ Lifecycle ergonomics operational checkpoint:
 - record that decision in this file as part of the batch. This applies even
   when no new helper is needed, so future agents can see why the batch used the
   existing mechanism instead of adding another macro/table/checker rule.
+
+Execution closed-reset hardening slice completed:
+
+- lifecycle preflight result: the existing execution bucket `.def` rows and
+  initializer helpers were sufficient for this batch. No new lifecycle macro
+  was needed because the reset operations are either "call the existing
+  initializer" or "zero a borrowed-pointer bucket";
+- `PgExecutionResetClosedState()` now resets the execution error state,
+  resource-owner pointer slots, SPI result/stack slots, and active portal
+  pointer through checked `PG_EXECUTION_BUCKET` rows;
+- the reset intentionally clears borrowed compatibility slots only. It does
+  not free resource owners, SPI stacks, active portals, or deeper transaction
+  resources; those remain owned by their subsystem cleanup paths and by the
+  broader Gate E2 destructor audit;
+- `test_execution_reset_closed_state()` covers the new reset behavior for
+  debug, error, memory-context, resource-owner, SPI, and active-portal state.

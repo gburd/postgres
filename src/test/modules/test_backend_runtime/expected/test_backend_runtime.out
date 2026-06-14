@@ -623,6 +623,12 @@ SELECT test_execution_active_portal_is_execution_local();
  t
 (1 row)
 
+SELECT test_execution_reset_closed_state();
+ test_execution_reset_closed_state 
+-----------------------------------
+ t
+(1 row)
+
 SELECT test_execution_vacuum_state_is_execution_local();
  test_execution_vacuum_state_is_execution_local 
 ------------------------------------------------
