@@ -20,13 +20,14 @@
 
 PG_MODULE_MAGIC_EXT(
 					.name = "pg_trgm",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
 );
 
 /* GUC variables */
-double		similarity_threshold = 0.3f;
-double		word_similarity_threshold = 0.6f;
-double		strict_word_similarity_threshold = 0.5f;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION double similarity_threshold = 0.3f;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION double word_similarity_threshold = 0.6f;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION double strict_word_similarity_threshold = 0.5f;
 
 PG_FUNCTION_INFO_V1(set_limit);
 PG_FUNCTION_INFO_V1(show_limit);

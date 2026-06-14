@@ -830,11 +830,17 @@ threaded `pg_class` catalog scan, so future startup-gate reintroduction still
 requires a named shared-state dependency and catalog-startup stress coverage.
 These are partial Gate E2 closures only: the full thread teardown,
 `TopMemoryContext` ownership/reclamation, real-server PMChild
-termination/reaping stress coverage, broader contrib/in-tree extension
-coverage, and broader threaded stress coverage remain blockers before Phase 13
-scheduler-aware wait work. A direct attempt to reset the exiting carrier's top
-memory tree after backend cleanup crashed a parallel threaded reconnect smoke,
-confirming that memory reclamation still needs systematic ownership separation
+termination/reaping stress coverage, and broader threaded stress coverage
+remain blockers before Phase 13 scheduler-aware wait work. Representative
+threaded contrib coverage now installs and exercises `hstore`, `pg_trgm`,
+`btree_gist`, and `pageinspect` in the threaded TAP. Those modules now carry
+thread-per-session backend-model metadata, with `pg_trgm`'s custom GUC backing
+variables moved to session-local TLS storage before opt-in. Phase 16 still
+owns contrib-wide threaded regression and modules that need a broader
+state/export audit before thread opt-in. A direct attempt to reset the exiting
+carrier's top memory tree after backend cleanup crashed a parallel threaded
+reconnect smoke, confirming that memory reclamation still needs systematic
+ownership separation
 rather than a terminal reset.
 A follow-up object-model review keeps the current direction but raises one
 additional Gate E2 hardening requirement: `PgBackend`, `PgSession`,

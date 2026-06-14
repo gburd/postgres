@@ -1402,9 +1402,16 @@ abandoned-client exits while verifying logical backend ids leave
 `pg_stat_activity`, advisory locks are released, and the server remains usable.
 PMChild slot reuse now also scrubs thread-carrier visible payloads under the
 same PMChild mutex used by signal-id, interrupt, wakeup, and exit-payload
-readers. Broader contrib/in-tree extension coverage, full lifecycle resource
-cleanup, and broader real-server PMChild termination/reaping stress remain
-Gate E2 blockers before Phase 13.
+readers. Full lifecycle resource cleanup and broader real-server PMChild
+termination/reaping stress remain Gate E2 blockers before Phase 13.
+Follow-up threaded TAP coverage now installs and exercises a representative
+contrib set (`hstore`, `pg_trgm`, `btree_gist`, and `pageinspect`) in threaded
+mode. That proves extension DDL plus C extension entry points across
+types/operators, GiST opclasses, and page inspection. Those modules now
+explicitly opt in to the thread-per-session backend model; `pg_trgm` first
+moved its custom GUC backing variables to session-local TLS storage. Phase 16
+still owns contrib-wide threaded regression, including the modules that need a
+broader state/export audit before thread opt-in.
 The focused `test_backend_runtime` regression is runnable again as a
 process-mode validation control for runtime-state, state-migration, and
 PMChild helper coverage after fake thread-runtime tests were changed to

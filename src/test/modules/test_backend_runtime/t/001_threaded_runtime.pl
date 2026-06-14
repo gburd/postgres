@@ -3,13 +3,29 @@
 use strict;
 use warnings FATAL => 'all';
 
+use Cwd qw(abs_path);
+use FindBin;
 use IPC::Run ();
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
 use Time::HiRes qw(usleep);
 
+my $repo_root = abs_path("$FindBin::Bin/../../../../..");
 my $node = PostgreSQL::Test::Cluster->new('threaded_runtime');
+
+sub install_contrib_extensions
+{
+	my @contrib_dirs = qw(hstore pg_trgm btree_gist pageinspect);
+	my $gmake = $ENV{GMAKE} || 'gmake';
+
+	foreach my $dir (@contrib_dirs)
+	{
+		system_or_bail(
+			$gmake, '-C', "$repo_root/contrib/$dir",
+			"DESTDIR=$repo_root/tmp_install", 'install');
+	}
+}
 
 sub start_psql_script
 {
@@ -79,6 +95,8 @@ sub postmaster_child_command_count
 	}
 	return $count;
 }
+
+install_contrib_extensions();
 
 $node->init;
 $node->append_conf(
@@ -188,6 +206,24 @@ DELETE FROM threaded_runtime_stress WHERE id = 1;
 SELECT pg_stat_force_next_flush();
 });
 pass('threaded DDL and primary-key index build completed');
+
+is($node->safe_psql(
+		'postgres',
+		q{
+CREATE EXTENSION hstore;
+CREATE EXTENSION pg_trgm;
+CREATE EXTENSION btree_gist;
+CREATE EXTENSION pageinspect;
+SELECT ('"a"=>"b"'::hstore -> 'a') || '|' ||
+       (similarity('thread', 'threads') > 0)::text || '|' ||
+       ((bt_metap('threaded_runtime_stress_pkey')).level >= 0)::text;
+CREATE TABLE threaded_btree_gist(id int, EXCLUDE USING gist (id WITH =));
+INSERT INTO threaded_btree_gist VALUES (1), (2);
+SELECT count(*) FROM threaded_btree_gist;
+DROP TABLE threaded_btree_gist;
+}),
+	"b|true|true\n2",
+	'threaded runtime loads and exercises representative contrib extensions');
 
 my @sessions;
 my %signal_pids;
