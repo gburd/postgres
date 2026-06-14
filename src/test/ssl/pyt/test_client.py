@@ -121,6 +121,7 @@ def tcp_server_class(remaining_timeout):
             # racing against the test's own use of remaining_timeout(). (It's
             # preferable to let tests report timeouts; the stack traces will
             # help with debugging.)
+            assert self._thread is not None  # set by background()
             self._thread.join(remaining_timeout() + 1)
             if self._thread.is_alive():
                 raise TimeoutError("background thread is still running after timeout")

@@ -155,6 +155,7 @@ def test_direct_ssl_certificate_authentication(
                     elif key == b"M":
                         msg = val.decode()
 
+                assert msg is not None, "server did not send an error message"
                 assert re.search(expected_error, msg), "server error did not match"
 
             # Terminate.

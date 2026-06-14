@@ -128,10 +128,12 @@ def certs(cryptography, tmp_path_factory):
     return _Certs()
 
 
-@pytest.fixture(scope="module", autouse=True)
+@pytest.fixture(scope="module")
 def ssl_setup(pg_server_module, certs, datadir):
     """
-    Sets up required server settings for all tests in this module.
+    Sets up required server settings for tests that use the shared module
+    server (Jacob Champion's client/server-split tests). Parity ports that
+    create their own server via create_pg do not request this fixture.
     """
     try:
         with pg_server_module.restarting() as s:
