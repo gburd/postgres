@@ -692,13 +692,13 @@ static void PgSessionInitializeConnectionGUCState(PgSessionConnectionGUCState *c
 static void PgSessionAdoptEarlyConnectionGUCState(PgSession *session);
 static void PgSessionInitializeParserState(PgSessionParserState *parser);
 static void PgSessionAdoptEarlyParserState(PgSession *session);
-static void PgSessionInitializeVacuumState(PgSessionVacuumState *vacuum);
+void PgSessionInitializeVacuumState(PgSessionVacuumState *vacuum);
 static void PgSessionAdoptEarlyVacuumState(PgSession *session);
 static void PgSessionInitializeBufferIOState(PgSessionBufferIOState *buffer_io);
 static void PgSessionAdoptEarlyBufferIOState(PgSession *session);
 static void PgSessionInitializeXactDefaultState(PgSessionXactDefaultState *xact_defaults);
 static void PgSessionAdoptEarlyXactDefaultState(PgSession *session);
-static void PgSessionInitializeLockWaitState(PgSessionLockWaitState *lock_wait);
+void PgSessionInitializeLockWaitState(PgSessionLockWaitState *lock_wait);
 static void PgSessionAdoptEarlyLockWaitState(PgSession *session);
 static void PgSessionInitializeLoggingState(PgSessionLoggingState *logging);
 static void PgSessionAdoptEarlyLoggingState(PgSession *session);
@@ -762,21 +762,21 @@ static void PgSessionInitializeBackupState(PgSessionBackupState *backup);
 static void PgSessionAdoptEarlyBackupState(PgSession *session);
 static void PgSessionAdoptEarlyRegexState(PgSession *session);
 static void PgSessionAdoptEarlyPortalManagerState(PgSession *session);
-static void PgSessionInitializeLargeObjectState(PgSessionLargeObjectState *large_object);
+void PgSessionInitializeLargeObjectState(PgSessionLargeObjectState *large_object);
 static void PgSessionAdoptEarlyLargeObjectState(PgSession *session);
 static void PgSessionInitializeAsyncState(PgSessionAsyncState *async);
 static void PgSessionAdoptEarlyAsyncState(PgSession *session);
 static void PgSessionEnsureEncodingStateInitialized(PgSessionEncodingState *encoding);
 static void PgSessionAdoptEarlyEncodingState(PgSession *session);
-static void PgSessionInitializeTempFileState(PgSessionTempFileState *temp_file);
+void PgSessionInitializeTempFileState(PgSessionTempFileState *temp_file);
 static void PgSessionAdoptEarlyTempFileState(PgSession *session);
 static void PgSessionInitializeRandomState(PgSessionRandomState *random);
 static void PgSessionAdoptEarlyRandomState(PgSession *session);
 static void PgSessionInitializeOptimizerState(PgSessionOptimizerState *optimizer);
 static void PgSessionAdoptEarlyOptimizerState(PgSession *session);
-static void PgSessionInitializePlanCacheState(PgSessionPlanCacheState *plan_cache);
+void PgSessionInitializePlanCacheState(PgSessionPlanCacheState *plan_cache);
 static void PgSessionAdoptEarlyPlanCacheState(PgSession *session);
-static void PgSessionInitializeNamespaceState(PgSessionNamespaceState *namespace_state);
+void PgSessionInitializeNamespaceState(PgSessionNamespaceState *namespace_state);
 static void PgSessionAdoptEarlyNamespaceState(PgSession *session);
 static void PgSessionInitializeLocaleState(PgSessionLocaleState *locale);
 static void PgSessionAdoptEarlyLocaleState(PgSession *session);
@@ -1445,7 +1445,7 @@ PgSessionAdoptEarlyParserState(PgSession *session)
 	PgSessionInitializeParserState(&early_session_parser);
 }
 
-static void
+void
 PgSessionInitializeVacuumState(PgSessionVacuumState *vacuum)
 {
 	Assert(vacuum != NULL);
@@ -1534,7 +1534,7 @@ PgSessionAdoptEarlyXactDefaultState(PgSession *session)
 	PgSessionInitializeXactDefaultState(&early_session_xact_defaults);
 }
 
-static void
+void
 PgSessionInitializeLockWaitState(PgSessionLockWaitState *lock_wait)
 {
 	Assert(lock_wait != NULL);
@@ -2483,7 +2483,7 @@ PgSessionAdoptEarlyPortalManagerState(PgSession *session)
 	PgSessionInitializePortalManagerState(&early_session_portal_manager);
 }
 
-static void
+void
 PgSessionInitializeLargeObjectState(PgSessionLargeObjectState *large_object)
 {
 	Assert(large_object != NULL);
@@ -2557,7 +2557,7 @@ PgSessionAdoptEarlyEncodingState(PgSession *session)
 	PgSessionInitializeEncodingState(&early_session_encoding);
 }
 
-static void
+void
 PgSessionInitializeTempFileState(PgSessionTempFileState *temp_file)
 {
 	Assert(temp_file != NULL);
@@ -2624,7 +2624,7 @@ PgSessionAdoptEarlyOptimizerState(PgSession *session)
 	PgSessionInitializeOptimizerState(&early_session_optimizer);
 }
 
-static void
+void
 PgSessionInitializePlanCacheState(PgSessionPlanCacheState *plan_cache)
 {
 	Assert(plan_cache != NULL);
@@ -2648,7 +2648,7 @@ PgSessionAdoptEarlyPlanCacheState(PgSession *session)
 	PgSessionInitializePlanCacheState(&early_session_plan_cache);
 }
 
-static void
+void
 PgSessionInitializeNamespaceState(PgSessionNamespaceState *namespace_state)
 {
 	Assert(namespace_state != NULL);

@@ -1020,6 +1020,71 @@ PgSessionResetLegacySessionClosedState(PgSession *session)
 	session->legacy_session = NULL;
 }
 
+static void
+PgSessionResetVacuumClosedState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	PgSessionInitializeVacuumState(&session->vacuum);
+}
+
+static void
+PgSessionResetLockWaitClosedState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	PgSessionInitializeLockWaitState(&session->lock_wait);
+}
+
+static void
+PgSessionResetLargeObjectClosedState(PgSession *session)
+{
+	Assert(session != NULL);
+	Assert(session->large_object.heap_relation == NULL);
+	Assert(session->large_object.index_relation == NULL);
+
+	PgSessionInitializeLargeObjectState(&session->large_object);
+}
+
+static void
+PgSessionResetTempFileClosedState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	PgSessionInitializeTempFileState(&session->temp_file);
+}
+
+static void
+PgSessionResetPlanCacheClosedState(PgSession *session)
+{
+	Assert(session != NULL);
+	if (!session->plan_cache.initialized)
+	{
+		PgSessionInitializePlanCacheState(&session->plan_cache);
+		return;
+	}
+
+	Assert(dlist_is_empty(&session->plan_cache.saved_plan_list));
+	Assert(dlist_is_empty(&session->plan_cache.cached_expression_list));
+
+	PgSessionInitializePlanCacheState(&session->plan_cache);
+}
+
+static void
+PgSessionResetNamespaceClosedState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	/*
+	 * Normal namespace cleanup owns temp-namespace relation removal and GUC
+	 * cleanup owns namespace_search_path_value.  Closed-session reset only
+	 * releases the search-path cache context and clears the remaining slots.
+	 */
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(
+		session->namespace_state.search_path_cache_context);
+	PgSessionInitializeNamespaceState(&session->namespace_state);
+}
+
 void
 PgSessionResetClosedState(PgSession *session)
 {

@@ -12137,3 +12137,57 @@ Validation for the backend storage closed-state reset slice:
   `002_threaded_bgworker_crash.pl`, 131 tests total, with the documented
   local `IPC::Run` `PERL5LIB` and patched temporary-install install-name
   paths.
+
+## Session Closed-State Reset Batch
+
+Lifecycle preflight:
+
+- target: Gate E2 session buckets whose manifest rows still said only that
+  existing cleanup owned active state: `vacuum`, `lock_wait`, `large_object`,
+  `temp_file`, `plan_cache`, and `namespace_state`;
+- repeated lifecycle operations: six ordered `PgSessionResetClosedState()`
+  rows that either reinitialize scalar/default buckets or clear retained
+  pointer/list/cache slots after existing subsystem cleanup owns active
+  resources;
+- preflight result: the existing ordered session reset table and checked
+  lifecycle source scan are sufficient. No new generic lifecycle primitive is
+  needed because the reset semantics differ by owner: scalar GUC defaults,
+  relation pointer slots, temp-file counters, plan-cache dlist assertions, and
+  namespace search-path cache context cleanup.
+
+Session closed-reset slice:
+
+- `backend_runtime_session_reset_buckets.def` now routes `vacuum`,
+  `lock_wait`, `large_object`, `temp_file`, `plan_cache`, and
+  `namespace_state` through checked closed-session reset rows;
+- `backend_runtime_teardown.c` owns the corresponding reset helpers. They keep
+  normal transaction/proc-exit cleanup ownership intact, then reinitialize the
+  retained session bucket state;
+- plan-cache reset tolerates an uninitialized zeroed session but asserts that
+  initialized saved-plan/expression lists are empty before resetting list
+  heads, so reset does not pretend to own arbitrary `dlist_node` payloads;
+- namespace reset deletes only the search-path cache context and clears slots;
+  `namespace_search_path_value` remains GUC-owned and is reset after
+  `PgSessionResetGUCClosedState()`;
+- the lifecycle manifest now records the explicit closed-reset rule for all
+  six buckets instead of leaving them as vague cleanup-owner notes;
+- `test_session_reset_closed_state()` now verifies the new scalar/default,
+  temp-file, plan-cache, and namespace reset behavior.
+
+Validation for the session closed-state reset batch:
+
+- `gmake -C src/backend/utils/init backend_runtime.o
+  backend_runtime_teardown.o` passed;
+- `gmake -C src/test/modules/test_backend_runtime test_backend_runtime_session.o`
+  passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 34 reset definitions checked, and 176 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- full incremental `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with the documented
+  local `IPC::Run` `PERL5LIB` and patched temporary-install install-name
+  paths.

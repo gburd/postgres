@@ -3156,6 +3156,7 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	TSDictionaryCacheEntry *dictionary_entry;
 	TSConfigCacheEntry *config_entry;
 	Oid			test_key = BOOLOID;
+	Oid			temp_table_spaces[2] = {BOOLOID, INT4OID};
 	bool		found;
 	bool		ok = true;
 
@@ -3202,6 +3203,43 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	fake_session.user_identity.system_user = pstrdup("trust:test");
 	fake_session.user_identity.system_user_owned = true;
 	fake_session.user_identity.cached_db_hash = 12345;
+	fake_session.vacuum.initialized = true;
+	fake_session.vacuum.vacuum_buffer_usage_limit_kb = 9999;
+	fake_session.vacuum.vacuum_cost_limit_value = 9999;
+	fake_session.vacuum.vacuum_truncate_value = false;
+	fake_session.lock_wait.initialized = true;
+	fake_session.lock_wait.deadlock_timeout_ms = 9999;
+	fake_session.lock_wait.log_lock_waits_value = false;
+	fake_session.temp_file.initialized = true;
+	fake_session.temp_file.temporary_files_size = 98765;
+	fake_session.temp_file.temp_file_counter = 99;
+	fake_session.temp_file.temp_table_spaces = temp_table_spaces;
+	fake_session.temp_file.num_temp_table_spaces = lengthof(temp_table_spaces);
+	fake_session.temp_file.next_temp_table_space = 1;
+	fake_session.plan_cache.initialized = true;
+	dlist_init(&fake_session.plan_cache.saved_plan_list);
+	dlist_init(&fake_session.plan_cache.cached_expression_list);
+	fake_session.namespace_state.initialized = true;
+	fake_session.namespace_state.active_search_path = list_make1_oid(BOOLOID);
+	fake_session.namespace_state.active_creation_namespace = BOOLOID;
+	fake_session.namespace_state.active_path_generation = 42;
+	fake_session.namespace_state.base_search_path =
+		fake_session.namespace_state.active_search_path;
+	fake_session.namespace_state.base_creation_namespace = BOOLOID;
+	fake_session.namespace_state.namespace_user = BOOLOID;
+	fake_session.namespace_state.base_search_path_valid = true;
+	fake_session.namespace_state.search_path_cache_valid = true;
+	fake_session.namespace_state.search_path_cache_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test search path cache",
+							  ALLOCSET_SMALL_SIZES);
+	fake_session.namespace_state.my_temp_namespace = BOOLOID;
+	fake_session.namespace_state.my_temp_toast_namespace = INT4OID;
+	fake_session.namespace_state.my_temp_namespace_subid = 1;
+	fake_session.namespace_state.namespace_search_path_value =
+		"test_namespace_path";
+	fake_session.namespace_state.search_path_cache = &fake_session;
+	fake_session.namespace_state.last_search_path_cache_entry = &fake_session;
 
 	hash_ctl.entrysize = sizeof(TSParserCacheEntry);
 	fake_session.text_search.parser_cache_hash =
@@ -3299,6 +3337,40 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && fake_session.database.database_path == NULL;
 	ok = ok && !fake_session.database.database_path_owned;
 	ok = ok && fake_session.prepared_statement.prepared_queries == NULL;
+	ok = ok && fake_session.vacuum.initialized;
+	ok = ok && fake_session.vacuum.vacuum_buffer_usage_limit_kb == 2048;
+	ok = ok && fake_session.vacuum.vacuum_cost_limit_value == 200;
+	ok = ok && fake_session.vacuum.vacuum_truncate_value;
+	ok = ok && fake_session.lock_wait.initialized;
+	ok = ok && fake_session.lock_wait.deadlock_timeout_ms == 1000;
+	ok = ok && fake_session.lock_wait.log_lock_waits_value;
+	ok = ok && fake_session.large_object.heap_relation == NULL;
+	ok = ok && fake_session.large_object.index_relation == NULL;
+	ok = ok && fake_session.temp_file.initialized;
+	ok = ok && fake_session.temp_file.temporary_files_size == 0;
+	ok = ok && fake_session.temp_file.temp_file_counter == 0;
+	ok = ok && fake_session.temp_file.temp_table_spaces == NULL;
+	ok = ok && fake_session.temp_file.num_temp_table_spaces == -1;
+	ok = ok && fake_session.temp_file.next_temp_table_space == 0;
+	ok = ok && fake_session.plan_cache.initialized;
+	ok = ok && dlist_is_empty(&fake_session.plan_cache.saved_plan_list);
+	ok = ok && dlist_is_empty(&fake_session.plan_cache.cached_expression_list);
+	ok = ok && fake_session.namespace_state.initialized;
+	ok = ok && fake_session.namespace_state.active_search_path == NIL;
+	ok = ok && fake_session.namespace_state.active_creation_namespace == InvalidOid;
+	ok = ok && fake_session.namespace_state.active_path_generation == 1;
+	ok = ok && fake_session.namespace_state.base_search_path == NIL;
+	ok = ok && fake_session.namespace_state.base_creation_namespace == InvalidOid;
+	ok = ok && fake_session.namespace_state.namespace_user == InvalidOid;
+	ok = ok && fake_session.namespace_state.base_search_path_valid;
+	ok = ok && !fake_session.namespace_state.search_path_cache_valid;
+	ok = ok && fake_session.namespace_state.search_path_cache_context == NULL;
+	ok = ok && fake_session.namespace_state.my_temp_namespace == InvalidOid;
+	ok = ok && fake_session.namespace_state.my_temp_toast_namespace == InvalidOid;
+	ok = ok && fake_session.namespace_state.my_temp_namespace_subid == InvalidSubTransactionId;
+	ok = ok && fake_session.namespace_state.namespace_search_path_value == NULL;
+	ok = ok && fake_session.namespace_state.search_path_cache == NULL;
+	ok = ok && fake_session.namespace_state.last_search_path_cache_entry == NULL;
 	ok = ok && fake_session.on_commit.on_commits == NIL;
 	ok = ok && fake_session.xact_callbacks.xact_callbacks == NULL;
 	ok = ok && fake_session.xact_callbacks.subxact_callbacks == NULL;

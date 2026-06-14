@@ -1239,6 +1239,15 @@ cleared or reclaimed. Buffer reset is process-exit aware because late
 process-mode `proc_exit` can run after private-refcount hash context ownership
 is no longer safe to destroy; non-exit retained-backend reset still reclaims
 the local-buffer and private-refcount allocations directly.
+The Gate E2 session closed-reset batch now removes six more vague
+session-cleanup rows: `vacuum`, `lock_wait`, `large_object`, `temp_file`,
+`plan_cache`, and `namespace_state` have ordered
+`PgSessionResetClosedState()` rows. The reset path restores scalar GUC/default
+state for vacuum and lock waits, clears large-object relation slots after
+large-object cleanup, resets temp-file counters/table-space slots after fd.c
+cleanup, asserts plan-cache lists are empty after plancache cleanup owns
+plan destruction, and deletes the namespace search-path cache context while
+leaving `namespace_search_path` ownership with GUC reset.
 The deadlock detector workspace batch now stores `visitedProcs`,
 `nVisitedProcs`, `topoProcs`, `beforeConstraints`, `afterConstraints`,
 `waitOrders`, `nWaitOrders`, `waitOrderProcs`, `curConstraints`,
