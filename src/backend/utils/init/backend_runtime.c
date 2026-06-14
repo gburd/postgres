@@ -4927,7 +4927,19 @@ PgSessionResetDatabaseClosedState(PgSession *session)
 }
 
 static void
-PgSessionResetDynamicLibraryClosedState(PgSession *session)
+PgSessionResetDynamicLibraryInitsClosedState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (session->dynamic_library_context == NULL &&
+		session->dynamic_library_inits != NIL)
+		list_free(session->dynamic_library_inits);
+
+	session->dynamic_library_inits = NIL;
+}
+
+static void
+PgSessionResetDynamicLibraryContextClosedState(PgSession *session)
 {
 	Assert(session != NULL);
 
@@ -4936,10 +4948,6 @@ PgSessionResetDynamicLibraryClosedState(PgSession *session)
 		MemoryContextDelete(session->dynamic_library_context);
 		session->dynamic_library_context = NULL;
 	}
-	else if (session->dynamic_library_inits != NIL)
-		list_free(session->dynamic_library_inits);
-
-	session->dynamic_library_inits = NIL;
 }
 
 static void
@@ -5034,7 +5042,7 @@ PgSessionResetLocaleClosedState(PgSession *session)
 }
 
 static void
-PgSessionResetLegacySessionClosedState(PgSession *session)
+PgSessionResetLegacySessionContextClosedState(PgSession *session)
 {
 	Assert(session != NULL);
 
@@ -5045,8 +5053,18 @@ PgSessionResetLegacySessionClosedState(PgSession *session)
 			CurrentSession = NULL;
 		MemoryContextDelete(session->legacy_session_context);
 		session->legacy_session_context = NULL;
-		session->legacy_session = NULL;
 	}
+}
+
+static void
+PgSessionResetLegacySessionClosedState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (CurrentPgSession == session &&
+		CurrentSession == session->legacy_session)
+		CurrentSession = NULL;
+	session->legacy_session = NULL;
 }
 
 void

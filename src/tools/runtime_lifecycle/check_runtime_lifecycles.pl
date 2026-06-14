@@ -192,6 +192,18 @@ foreach my $row (@reset_rows)
 	}
 }
 
+foreach my $row (@manifest_rows)
+{
+	next unless $row->{object} eq 'PgSession';
+	next unless $row->{reset_destroy} =~ /\bPgSessionResetClosedState\b/;
+
+	my $key = field_key($row);
+
+	push @errors,
+	  "$manifest:$row->{line}: reset_destroy names PgSessionResetClosedState(), but $key has no ordered reset definition"
+	  unless exists $reset_fields{$key};
+}
+
 push @errors, require_function_calls(
 	'InitializePgProcessRuntime',
 	[qw(PgCarrierInitializeRuntimeObject

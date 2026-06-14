@@ -10984,3 +10984,23 @@ Connection closed-reset completion slice:
 - `test_connection_reset_closed_state()` now covers output routing defaults
   and client-connection interrupt flags in addition to the existing connection
   resource reset checks.
+
+Session reset manifest hardening slice:
+
+- lifecycle preflight result: this is lifecycle-framework work, not a new state
+  migration. The existing ordered `backend_runtime_session_reset_buckets.def`
+  mechanism is the right shape for session reset ordering, but the checker did
+  not require every `PgSession` lifecycle row that names
+  `PgSessionResetClosedState()` to appear in that ordered list;
+- `check_runtime_lifecycles.pl` now rejects a `PgSession` manifest row whose
+  reset/destroy column names `PgSessionResetClosedState()` unless the bucket
+  has an ordered reset definition. This keeps manifest reset claims and actual
+  reset orchestration synchronized;
+- the two combined cleanup helpers were split into per-bucket actions so the
+  ordered reset list can represent ownership precisely without double-running
+  destructors: dynamic-library init-list cleanup is separate from deleting the
+  dynamic-library context, and legacy-session context deletion is separate from
+  clearing the legacy session pointer;
+- `gmake check-runtime-lifecycles` now reports 27 ordered session reset
+  definitions, covering every current session bucket whose manifest row claims
+  `PgSessionResetClosedState()` cleanup.
