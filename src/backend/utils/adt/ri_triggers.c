@@ -43,6 +43,7 @@
 #include "parser/parse_coerce.h"
 #include "parser/parse_relation.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/fmgroids.h"
@@ -259,8 +260,8 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *ri_query_cache = NULL;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *ri_compare_cache = NULL;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION dclist_head ri_constraint_cache_valid_list;
 
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION HTAB *ri_fastpath_cache = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool ri_fastpath_callback_registered = false;
+#define ri_fastpath_cache (*PgCurrentRIFastPathCacheRef())
+#define ri_fastpath_callback_registered (*PgCurrentRIFastPathCallbackRegisteredRef())
 
 /*
  * Local function prototypes

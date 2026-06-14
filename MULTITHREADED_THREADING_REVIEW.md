@@ -1046,6 +1046,22 @@ check-global-lifetimes`, `gmake -C contrib -j8`, and `git diff --check`. The
 global-lifetime scan now reports 67 execution-local declarations with zero new
 unclassified mutable globals, down from 81 before this slice.
 
+The following transaction-cleanup slice moved large-object cleanup slots,
+transaction temporary-file cleanup state, the pgstat subtransaction stack
+pointer, and RI fast-path batch-cache state into
+`PgExecutionTransactionCleanupState`. The moved pointers are explicitly
+borrowed: large-object, temporary-file, pgstat, and RI cleanup remain owned by
+their existing transaction/subtransaction cleanup paths, while `PgExecution`
+owns the slots and scalar flags. The lifecycle manifest now captures that
+copy/adoption rule, and both process runtime initialization and thread runtime
+installation adopt the bucket through `PgExecutionAdoptEarlyState()`.
+Validation included touched-object builds, full `gmake -j8`, the
+`test_backend_runtime` regression, direct threaded TAP, `gmake
+check-runtime-lifecycles`, `gmake check-global-lifetimes`, `gmake -C contrib
+-j8`, and `git diff --check`. The global-lifetime scan now reports 60
+execution-local declarations with zero new unclassified mutable globals, down
+from 67 before this slice.
+
 ## Bottom Line
 
 The branch is on track only if the current debt is treated as Phase 12

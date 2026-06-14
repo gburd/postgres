@@ -197,6 +197,17 @@ Important current files:
   remain owned by transaction memory contexts and async transaction cleanup;
   the signal workspace arrays are still allocated under `TopMemoryContext`
   until the broader backend destructor model is closed.
+- Transaction cleanup slots now live under
+  `PgExecutionTransactionCleanupState`: large-object descriptor cleanup slots,
+  the transaction temporary-file cleanup flag, the pgstat subtransaction stack,
+  and RI fast-path batch-cache state. The runtime object owns these slots and
+  scalar flags, but the pointed-to storage remains owned by existing
+  large-object, temporary-file, pgstat, and RI transaction/subtransaction
+  cleanup paths. Add future execution cleanup buckets through
+  `PgExecutionAdoptEarlyState()` and update
+  `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`; after changing this bridge, run
+  touched-object builds plus `gmake check-runtime-lifecycles` and
+  `gmake check-global-lifetimes` before trusting TAP.
 - `AuxProcessResourceOwner` is now routed through `PgBackend` via
   `PgCurrentAuxProcessResourceOwnerRef()` and the `AuxProcessResourceOwner`
   lvalue macro. After changing `src/include/utils/resowner.h` or this backend

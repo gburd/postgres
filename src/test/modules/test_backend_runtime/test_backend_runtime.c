@@ -12020,6 +12020,95 @@ test_execution_xact_state_is_execution_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_execution_transaction_cleanup_state_is_execution_local);
+Datum
+test_execution_transaction_cleanup_state_is_execution_local(PG_FUNCTION_ARGS)
+{
+	PgExecution *saved_execution;
+	PgExecution fake_execution1;
+	PgExecution fake_execution2;
+	bool		ok = true;
+
+	saved_execution = CurrentPgExecution;
+	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
+	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+
+	PG_TRY();
+	{
+		CurrentPgExecution = &fake_execution1;
+		*PgCurrentLargeObjectCookiesRef() =
+			(LargeObjectDesc **) &fake_execution1;
+		*PgCurrentLargeObjectCookiesSizeRef() = 101;
+		*PgCurrentLargeObjectCleanupNeededRef() = true;
+		*PgCurrentLargeObjectContextRef() = (MemoryContext) &fake_execution1;
+		*PgCurrentHaveXactTemporaryFilesRef() = true;
+		*PgCurrentPgStatXactStackRef() =
+			(PgStat_SubXactStatus *) &fake_execution1;
+		*PgCurrentRIFastPathCacheRef() = (HTAB *) &fake_execution1;
+		*PgCurrentRIFastPathCallbackRegisteredRef() = true;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && *PgCurrentLargeObjectCookiesRef() == NULL;
+		ok = ok && *PgCurrentLargeObjectCookiesSizeRef() == 0;
+		ok = ok && !*PgCurrentLargeObjectCleanupNeededRef();
+		ok = ok && *PgCurrentLargeObjectContextRef() == NULL;
+		ok = ok && !*PgCurrentHaveXactTemporaryFilesRef();
+		ok = ok && *PgCurrentPgStatXactStackRef() == NULL;
+		ok = ok && *PgCurrentRIFastPathCacheRef() == NULL;
+		ok = ok && !*PgCurrentRIFastPathCallbackRegisteredRef();
+
+		*PgCurrentLargeObjectCookiesRef() =
+			(LargeObjectDesc **) &fake_execution2;
+		*PgCurrentLargeObjectCookiesSizeRef() = 201;
+		*PgCurrentLargeObjectCleanupNeededRef() = false;
+		*PgCurrentLargeObjectContextRef() = (MemoryContext) &fake_execution2;
+		*PgCurrentHaveXactTemporaryFilesRef() = false;
+		*PgCurrentPgStatXactStackRef() =
+			(PgStat_SubXactStatus *) &fake_execution2;
+		*PgCurrentRIFastPathCacheRef() = (HTAB *) &fake_execution2;
+		*PgCurrentRIFastPathCallbackRegisteredRef() = false;
+
+		CurrentPgExecution = &fake_execution1;
+		ok = ok && *PgCurrentLargeObjectCookiesRef() ==
+			(LargeObjectDesc **) &fake_execution1;
+		ok = ok && *PgCurrentLargeObjectCookiesSizeRef() == 101;
+		ok = ok && *PgCurrentLargeObjectCleanupNeededRef();
+		ok = ok && *PgCurrentLargeObjectContextRef() ==
+			(MemoryContext) &fake_execution1;
+		ok = ok && *PgCurrentHaveXactTemporaryFilesRef();
+		ok = ok && *PgCurrentPgStatXactStackRef() ==
+			(PgStat_SubXactStatus *) &fake_execution1;
+		ok = ok && *PgCurrentRIFastPathCacheRef() == (HTAB *) &fake_execution1;
+		ok = ok && *PgCurrentRIFastPathCallbackRegisteredRef();
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && *PgCurrentLargeObjectCookiesRef() ==
+			(LargeObjectDesc **) &fake_execution2;
+		ok = ok && *PgCurrentLargeObjectCookiesSizeRef() == 201;
+		ok = ok && !*PgCurrentLargeObjectCleanupNeededRef();
+		ok = ok && *PgCurrentLargeObjectContextRef() ==
+			(MemoryContext) &fake_execution2;
+		ok = ok && !*PgCurrentHaveXactTemporaryFilesRef();
+		ok = ok && *PgCurrentPgStatXactStackRef() ==
+			(PgStat_SubXactStatus *) &fake_execution2;
+		ok = ok && *PgCurrentRIFastPathCacheRef() == (HTAB *) &fake_execution2;
+		ok = ok && !*PgCurrentRIFastPathCallbackRegisteredRef();
+
+		CurrentPgExecution = saved_execution;
+	}
+	PG_CATCH();
+	{
+		CurrentPgExecution = saved_execution;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "transaction cleanup execution state was not execution-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_execution_guc_error_state_is_execution_local);
 Datum
 test_execution_guc_error_state_is_execution_local(PG_FUNCTION_ARGS)

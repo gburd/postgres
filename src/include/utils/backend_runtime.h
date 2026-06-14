@@ -73,6 +73,7 @@ typedef struct ParallelApplyWorkerInfo ParallelApplyWorkerInfo;
 typedef struct ParallelApplyWorkerShared ParallelApplyWorkerShared;
 typedef struct Subscription Subscription;
 typedef struct BufFile BufFile;
+typedef struct LargeObjectDesc LargeObjectDesc;
 typedef struct dsa_area dsa_area;
 typedef struct dshash_table dshash_table;
 typedef struct XLogReaderState XLogReaderState;
@@ -948,6 +949,18 @@ typedef struct PgExecutionXactState
 	bool		force_sync_commit;
 	MemoryContext transaction_abort_context;
 } PgExecutionXactState;
+
+typedef struct PgExecutionTransactionCleanupState
+{
+	LargeObjectDesc **lo_cookies;
+	int			lo_cookies_size;
+	bool		lo_cleanup_needed;
+	MemoryContext lo_context;
+	bool		have_xact_temporary_files;
+	PgStat_SubXactStatus *pgstat_xact_stack;
+	HTAB	   *ri_fastpath_cache;
+	bool		ri_fastpath_callback_registered;
+} PgExecutionTransactionCleanupState;
 
 typedef struct PgExecutionGUCErrorState
 {
@@ -1831,6 +1844,7 @@ struct PgExecution
 	PgExecutionComboCidState combo_cid;
 	PgExecutionXLogInsertState xloginsert;
 	PgExecutionXactState xact;
+	PgExecutionTransactionCleanupState transaction_cleanup;
 	PgExecutionGUCErrorState guc_error;
 	PgExecutionAsyncState async;
 	PgExecutionCatalogState catalog;
@@ -2357,6 +2371,14 @@ extern TimestampTz *PgCurrentXactStopTimestampRef(void);
 extern char **PgCurrentPrepareGIDRef(void);
 extern bool *PgCurrentForceSyncCommitRef(void);
 extern MemoryContext *PgCurrentTransactionAbortContextRef(void);
+extern LargeObjectDesc ***PgCurrentLargeObjectCookiesRef(void);
+extern int *PgCurrentLargeObjectCookiesSizeRef(void);
+extern bool *PgCurrentLargeObjectCleanupNeededRef(void);
+extern MemoryContext *PgCurrentLargeObjectContextRef(void);
+extern bool *PgCurrentHaveXactTemporaryFilesRef(void);
+extern PgStat_SubXactStatus **PgCurrentPgStatXactStackRef(void);
+extern HTAB **PgCurrentRIFastPathCacheRef(void);
+extern bool *PgCurrentRIFastPathCallbackRegisteredRef(void);
 extern int *PgCurrentGUCCheckErrcodeValueRef(void);
 extern char **PgCurrentGUCCheckErrmsgStringRef(void);
 extern char **PgCurrentGUCCheckErrdetailStringRef(void);

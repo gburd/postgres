@@ -1487,6 +1487,16 @@ remain in `xact.c` for a later lifecycle split, but the moved fields now have
 explicit manifest copy/adoption rules. The global-lifetime scan now reports
 67 execution-local declarations, down from 81, with zero new unclassified
 mutable globals.
+The following transaction-cleanup batch moved large-object descriptor cleanup
+slots, the transaction temporary-file cleanup flag, the pgstat subtransaction
+stack pointer, and the RI fast-path batch-cache pointer/callback flag into
+`PgExecutionTransactionCleanupState`. This keeps existing large-object,
+temporary-file, pgstat, and RI transaction cleanup authoritative for the
+pointed-to storage, while the runtime object owns the execution-local slots
+and scalar flags. The lifecycle manifest records the borrowed-pointer rules
+and centralized early fallback adoption through `PgExecutionAdoptEarlyState()`.
+The global-lifetime scan now reports 60 execution-local declarations, down
+from 67, with zero new unclassified mutable globals.
 The lifecycle audit is now also mechanically checked. The root
 `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` manifest records owner/lifetime,
 initializer, early-adoption, reset/destroy, and copy/adoption rules for every

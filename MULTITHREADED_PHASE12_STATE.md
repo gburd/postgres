@@ -8390,3 +8390,46 @@ Validation for this slice:
   globals and 67 execution-local declarations;
 - `gmake -C contrib -j8` passed;
 - `git diff --check` passed.
+
+## Transaction Cleanup Execution State
+
+The next Phase 12 transaction-cleanup slice moves a coherent set of
+transaction/subtransaction cleanup pointers and flags into
+`PgExecutionTransactionCleanupState`:
+
+- large-object descriptor cookie array, size, cleanup-needed flag, and memory
+  context pointer from `be-fsstubs.c`;
+- the transaction temporary-file cleanup-needed flag from `fd.c`;
+- the pgstat subtransaction stack pointer from `pgstat_xact.c`;
+- the RI fast-path batch cache pointer and callback-registered flag from
+  `ri_triggers.c`.
+
+This is a slot-ownership move, not a destructor rewrite. The moved pointer
+slots now belong to the logical execution object, while the pointed-to storage
+continues to be owned by existing PostgreSQL cleanup paths: large-object
+descriptor state is released by the current large-object transaction cleanup,
+temporary files are removed by the existing transaction cleanup path, pgstat
+subtransaction status is allocated and popped by pgstat xact cleanup, and the
+RI fast-path hash table remains tied to the current batch/transaction callback
+behavior. The lifecycle manifest records these as borrowed pointer slots plus
+copied scalar flags, with whole-bucket fallback adoption through
+`PgExecutionAdoptEarlyState()`.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `be-fsstubs.o`,
+  `fd.o`, `pgstat_xact.o`, `ri_triggers.o`, and
+  `test_backend_runtime.o`;
+- full `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed, including
+  `test_execution_transaction_cleanup_state_is_execution_local()`;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths, explicit
+  `PG_REGRESS`, patched macOS install names, and a freshly recreated
+  `tmp_install`;
+- `gmake check-runtime-lifecycles` passed with 128 fields classified;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and 60 execution-local declarations;
+- `gmake -C contrib -j8` passed;
+- `git diff --check` passed.

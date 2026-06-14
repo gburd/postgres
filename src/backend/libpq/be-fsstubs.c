@@ -49,6 +49,7 @@
 #include "miscadmin.h"
 #include "storage/fd.h"
 #include "storage/large_object.h"
+#include "utils/backend_runtime.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
@@ -68,11 +69,11 @@
  * dynamically allocated in that context.  Its current allocated size is
  * cookies_size entries, of which any unused entries will be NULL.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION LargeObjectDesc **cookies = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int cookies_size = 0;
+#define cookies (*PgCurrentLargeObjectCookiesRef())
+#define cookies_size (*PgCurrentLargeObjectCookiesSizeRef())
 
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool lo_cleanup_needed = false;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext fscxt = NULL;
+#define lo_cleanup_needed (*PgCurrentLargeObjectCleanupNeededRef())
+#define fscxt (*PgCurrentLargeObjectContextRef())
 
 static int	newLOfd(void);
 static void closeLOfd(int fd);

@@ -230,7 +230,7 @@ typedef struct vfd
  * Flag to tell whether it's worth scanning VfdCache looking for temp files
  * to close
  */
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool have_xact_temporary_files = false;
+#define have_xact_temporary_files (*PgCurrentHaveXactTemporaryFilesRef())
 
 /*
  * Tracks the total size of all temporary files.  Note: when temp_file_limit

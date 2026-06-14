@@ -562,6 +562,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionXactState early_execution_
 	.iso_level = XACT_READ_COMMITTED,
 	.check_xid_alive = InvalidTransactionId
 };
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionTransactionCleanupState early_execution_transaction_cleanup;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionGUCErrorState early_execution_guc_error;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionAsyncState early_execution_async;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionCatalogState early_execution_catalog = {
@@ -764,6 +765,8 @@ static void PgExecutionInitializeXLogInsertState(PgExecutionXLogInsertState *xlo
 static void PgExecutionAdoptEarlyXLogInsertState(PgExecution *execution);
 static void PgExecutionInitializeXactState(PgExecutionXactState *xact);
 static void PgExecutionAdoptEarlyXactState(PgExecution *execution);
+static void PgExecutionInitializeTransactionCleanupState(PgExecutionTransactionCleanupState *transaction_cleanup);
+static void PgExecutionAdoptEarlyTransactionCleanupState(PgExecution *execution);
 static void PgExecutionInitializeGUCErrorState(PgExecutionGUCErrorState *guc_error);
 static void PgExecutionAdoptEarlyGUCErrorState(PgExecution *execution);
 static void PgExecutionInitializeAsyncState(PgExecutionAsyncState *async);
@@ -832,6 +835,7 @@ static PgExecutionSnapshotState *PgCurrentExecutionSnapshotState(void);
 static PgExecutionComboCidState *PgCurrentExecutionComboCidState(void);
 static PgExecutionXLogInsertState *PgCurrentExecutionXLogInsertState(void);
 static PgExecutionXactState *PgCurrentExecutionXactState(void);
+static PgExecutionTransactionCleanupState *PgCurrentExecutionTransactionCleanupState(void);
 static PgExecutionGUCErrorState *PgCurrentExecutionGUCErrorState(void);
 static PgExecutionAsyncState *PgCurrentExecutionAsyncState(void);
 static PgExecutionCatalogState *PgCurrentExecutionCatalogState(void);
@@ -3152,6 +3156,23 @@ PgExecutionAdoptEarlyXactState(PgExecution *execution)
 }
 
 static void
+PgExecutionInitializeTransactionCleanupState(PgExecutionTransactionCleanupState *transaction_cleanup)
+{
+	Assert(transaction_cleanup != NULL);
+
+	MemSet(transaction_cleanup, 0, sizeof(*transaction_cleanup));
+}
+
+static void
+PgExecutionAdoptEarlyTransactionCleanupState(PgExecution *execution)
+{
+	Assert(execution != NULL);
+
+	execution->transaction_cleanup = early_execution_transaction_cleanup;
+	PgExecutionInitializeTransactionCleanupState(&early_execution_transaction_cleanup);
+}
+
+static void
 PgExecutionInitializeGUCErrorState(PgExecutionGUCErrorState *guc_error)
 {
 	Assert(guc_error != NULL);
@@ -3276,6 +3297,7 @@ PgExecutionAdoptEarlyState(PgExecution *execution)
 	PgExecutionAdoptEarlyComboCidState(execution);
 	PgExecutionAdoptEarlyXLogInsertState(execution);
 	PgExecutionAdoptEarlyXactState(execution);
+	PgExecutionAdoptEarlyTransactionCleanupState(execution);
 	PgExecutionAdoptEarlyGUCErrorState(execution);
 	PgExecutionAdoptEarlyAsyncState(execution);
 	PgExecutionAdoptEarlyCatalogState(execution);
@@ -3487,6 +3509,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgExecutionInitializeComboCidState(&state->execution.combo_cid);
 	PgExecutionInitializeXLogInsertState(&state->execution.xloginsert);
 	PgExecutionInitializeXactState(&state->execution.xact);
+	PgExecutionInitializeTransactionCleanupState(&state->execution.transaction_cleanup);
 	PgExecutionInitializeGUCErrorState(&state->execution.guc_error);
 	PgExecutionInitializeAsyncState(&state->execution.async);
 	PgExecutionInitializeCatalogState(&state->execution.catalog);
@@ -7083,6 +7106,63 @@ MemoryContext *
 PgCurrentTransactionAbortContextRef(void)
 {
 	return &PgCurrentExecutionXactState()->transaction_abort_context;
+}
+
+static PgExecutionTransactionCleanupState *
+PgCurrentExecutionTransactionCleanupState(void)
+{
+	if (CurrentPgExecution == NULL)
+		return &early_execution_transaction_cleanup;
+
+	return &CurrentPgExecution->transaction_cleanup;
+}
+
+LargeObjectDesc ***
+PgCurrentLargeObjectCookiesRef(void)
+{
+	return &PgCurrentExecutionTransactionCleanupState()->lo_cookies;
+}
+
+int *
+PgCurrentLargeObjectCookiesSizeRef(void)
+{
+	return &PgCurrentExecutionTransactionCleanupState()->lo_cookies_size;
+}
+
+bool *
+PgCurrentLargeObjectCleanupNeededRef(void)
+{
+	return &PgCurrentExecutionTransactionCleanupState()->lo_cleanup_needed;
+}
+
+MemoryContext *
+PgCurrentLargeObjectContextRef(void)
+{
+	return &PgCurrentExecutionTransactionCleanupState()->lo_context;
+}
+
+bool *
+PgCurrentHaveXactTemporaryFilesRef(void)
+{
+	return &PgCurrentExecutionTransactionCleanupState()->have_xact_temporary_files;
+}
+
+PgStat_SubXactStatus **
+PgCurrentPgStatXactStackRef(void)
+{
+	return &PgCurrentExecutionTransactionCleanupState()->pgstat_xact_stack;
+}
+
+HTAB **
+PgCurrentRIFastPathCacheRef(void)
+{
+	return &PgCurrentExecutionTransactionCleanupState()->ri_fastpath_cache;
+}
+
+bool *
+PgCurrentRIFastPathCallbackRegisteredRef(void)
+{
+	return &PgCurrentExecutionTransactionCleanupState()->ri_fastpath_callback_registered;
 }
 
 static PgExecutionGUCErrorState *
