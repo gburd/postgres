@@ -321,12 +321,14 @@ Important current files:
   intentionally different from early-adoption order; keep semantic cleanup in
   handwritten helper functions and add ordered reset rows for new non-noop
   session reset buckets.
-- For routine lifecycle helper functions in `backend_runtime.c`, use the
-  local `PG_RUNTIME_DEFINE_*` helper macros where they fit. The lifecycle
-  checker recognizes those macro-defined functions, so use them for ordinary
-  zero-init, copy/adopt plus reinit, and copy/adopt plus zero-reset helpers.
-  Do not hide exceptional destructor ordering or ownership semantics behind
-  these macros.
+- For routine lifecycle helper functions, use the
+  `PG_RUNTIME_DEFINE_*` helpers in
+  `src/backend/utils/init/backend_runtime_internal.h` where they fit. The
+  lifecycle checker recognizes those macro-defined functions, so use them for
+  ordinary zero-init, whole-bucket early adoption, initialized-bucket adoption,
+  and initialized-bucket adoption with a distinct early-reset function. Do not
+  hide exceptional destructor ordering, pointer rebasing, list-head repair, or
+  ownership assertions behind these macros.
 - When a Phase 12 migration starts adding repeated lifecycle boilerplate,
   improve the checked lifecycle framework before continuing. Prefer adding a
   helper macro, `.def` bucket row, or declarative lifecycle rule over

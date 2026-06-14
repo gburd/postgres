@@ -12040,6 +12040,46 @@ required Gate E2 work because the macro/action/checker layer should make later
 batches faster and less error-prone, not merely document the current manual
 process.
 
+## Lifecycle Helper Macro Consolidation
+
+Lifecycle preflight:
+
+- target: Gate E2 lifecycle ergonomics before the next broad teardown or
+  state-migration batch;
+- repeated lifecycle operations: zero initialization, whole-bucket early
+  adoption followed by zeroing or an initializer, initialized-bucket adoption,
+  and initialized-bucket adoption followed by a distinct early-reset function;
+- preflight result: extend/reuse the checked helper path before migrating more
+  state. The existing macro pattern was local to `backend_runtime.c`; promote
+  it into the private runtime header and add initialized-bucket variants so
+  future owner-adjacent runtime files can use the same checked definitions.
+
+Lifecycle helper macro slice:
+
+- `backend_runtime_internal.h` now owns the routine `PG_RUNTIME_DEFINE_*`
+  helper definitions used for mechanical lifecycle helpers;
+- new helpers cover initialized-bucket adoption and initialized-bucket
+  adoption with a distinct early-reset function;
+- simple connection, session, and backend early-adoption helpers in
+  `backend_runtime.c` now use those macros;
+- handwritten helpers remain where they repair list heads, preserve or rebase
+  pointers, assert empty owner state, or encode ordering-sensitive semantics.
+
+Validation for the lifecycle helper macro slice:
+
+- `gmake -C src/backend/utils/init backend_runtime.o` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 194 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with no new unclassified mutable
+  globals and no local runtime boundary violations;
+- `git diff --check` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with the local
+  `IPC::Run` `PERL5LIB` and patched temporary-install install-name paths;
+- `gmake -j8` passed.
+
 Docs refresh: `AGENTS.md` now carries this as a top-level Phase 12/Gate E2
 workflow instruction so continuation agents see it before coding. The next
 repetitive lifecycle batch should start with a preflight decision: reuse the

@@ -1016,32 +1016,15 @@ PgRuntimeAdoptEarlyServerGUCState(PgRuntime *runtime)
 	PgRuntimeInitializeServerGUCState(&early_runtime_server_guc);
 }
 
-static void
-PgConnectionAdoptEarlyIdentity(PgConnection *connection)
-{
-	Assert(connection != NULL);
-
-	connection->identity = early_connection_identity;
-	MemSet(&early_connection_identity, 0, sizeof(early_connection_identity));
-}
-
-static void
-PgConnectionAdoptEarlySocketIO(PgConnection *connection)
-{
-	Assert(connection != NULL);
-
-	connection->socket_io = early_connection_socket_io;
-	MemSet(&early_connection_socket_io, 0, sizeof(early_connection_socket_io));
-}
-
-static void
-PgConnectionAdoptEarlyProtocolState(PgConnection *connection)
-{
-	Assert(connection != NULL);
-
-	connection->protocol = early_connection_protocol;
-	MemSet(&early_connection_protocol, 0, sizeof(early_connection_protocol));
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_ZERO(PgConnectionAdoptEarlyIdentity,
+								   PgConnection, connection, identity,
+								   early_connection_identity)
+PG_RUNTIME_DEFINE_ADOPT_EARLY_ZERO(PgConnectionAdoptEarlySocketIO,
+								   PgConnection, connection, socket_io,
+								   early_connection_socket_io)
+PG_RUNTIME_DEFINE_ADOPT_EARLY_ZERO(PgConnectionAdoptEarlyProtocolState,
+								   PgConnection, connection, protocol,
+								   early_connection_protocol)
 
 static void
 PgConnectionInitializeOutputState(PgConnectionOutputState *output)
@@ -1052,23 +1035,13 @@ PgConnectionInitializeOutputState(PgConnectionOutputState *output)
 	output->where_to_send_output = DestDebug;
 }
 
-static void
-PgConnectionAdoptEarlyOutputState(PgConnection *connection)
-{
-	Assert(connection != NULL);
-
-	connection->output = early_connection_output;
-	PgConnectionInitializeOutputState(&early_connection_output);
-}
-
-static void
-PgConnectionAdoptEarlyInterruptState(PgConnection *connection)
-{
-	Assert(connection != NULL);
-
-	connection->interrupts = early_connection_interrupts;
-	MemSet(&early_connection_interrupts, 0, sizeof(early_connection_interrupts));
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgConnectionAdoptEarlyOutputState,
+										PgConnection, connection, output,
+										early_connection_output,
+										PgConnectionInitializeOutputState)
+PG_RUNTIME_DEFINE_ADOPT_EARLY_ZERO(PgConnectionAdoptEarlyInterruptState,
+								   PgConnection, connection, interrupts,
+								   early_connection_interrupts)
 
 static void
 PgConnectionInitializeStartupState(PgConnectionStartupState *startup)
@@ -1079,23 +1052,14 @@ PgConnectionInitializeStartupState(PgConnectionStartupState *startup)
 	startup->timing.ready_for_use = TIMESTAMP_MINUS_INFINITY;
 }
 
-static void
-PgConnectionAdoptEarlyStartupState(PgConnection *connection)
-{
-	Assert(connection != NULL);
-
-	connection->startup = early_connection_startup;
-	PgConnectionInitializeStartupState(&early_connection_startup);
-}
-
-static void
-PgConnectionAdoptEarlyClientConnectionInfo(PgConnection *connection)
-{
-	Assert(connection != NULL);
-
-	connection->client_connection_info = early_client_connection_info;
-	MemSet(&early_client_connection_info, 0, sizeof(early_client_connection_info));
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgConnectionAdoptEarlyStartupState,
+										PgConnection, connection, startup,
+										early_connection_startup,
+										PgConnectionInitializeStartupState)
+PG_RUNTIME_DEFINE_ADOPT_EARLY_ZERO(PgConnectionAdoptEarlyClientConnectionInfo,
+								   PgConnection, connection,
+								   client_connection_info,
+								   early_client_connection_info)
 
 static void
 PgConnectionAdoptEarlyClientConnectionInfoAuthnIdOwned(PgConnection *connection)
@@ -1121,14 +1085,9 @@ PgConnectionResetClientConnectionInfoClosedState(PgConnection *connection)
 	connection->client_connection_info_authn_id_owned = false;
 }
 
-static void
-PgConnectionAdoptEarlySecurityState(PgConnection *connection)
-{
-	Assert(connection != NULL);
-
-	connection->security = early_connection_security;
-	MemSet(&early_connection_security, 0, sizeof(early_connection_security));
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_ZERO(PgConnectionAdoptEarlySecurityState,
+								   PgConnection, connection, security,
+								   early_connection_security)
 
 static void
 PgConnectionResetIdentityClosedState(PgConnection *connection)
@@ -1229,14 +1188,9 @@ PgConnectionAdoptEarlyState(PgConnection *connection,
 #undef PG_CONNECTION_BUCKET
 }
 
-static void
-PgSessionAdoptEarlyDatabaseState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	session->database = early_session_database;
-	MemSet(&early_session_database, 0, sizeof(early_session_database));
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_ZERO(PgSessionAdoptEarlyDatabaseState,
+								   PgSession, session, database,
+								   early_session_database)
 
 static void
 PgSessionInitializeTablespaceState(PgSessionTablespaceState *tablespace)
@@ -1250,17 +1204,10 @@ PgSessionInitializeTablespaceState(PgSessionTablespaceState *tablespace)
 	tablespace->binary_upgrade_next_pg_tablespace_oid_value = InvalidOid;
 }
 
-static void
-PgSessionAdoptEarlyTablespaceState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	if (!early_session_tablespace.initialized)
-		PgSessionInitializeTablespaceState(&early_session_tablespace);
-
-	session->tablespace = early_session_tablespace;
-	PgSessionInitializeTablespaceState(&early_session_tablespace);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED(PgSessionAdoptEarlyTablespaceState,
+										  PgSession, session, tablespace,
+										  early_session_tablespace,
+										  PgSessionInitializeTablespaceState)
 
 static void
 PgSessionInitializeBinaryUpgradeState(PgSessionBinaryUpgradeState *binary_upgrade)
@@ -1286,17 +1233,10 @@ PgSessionInitializeBinaryUpgradeState(PgSessionBinaryUpgradeState *binary_upgrad
 	binary_upgrade->binary_upgrade_record_init_privs_value = false;
 }
 
-static void
-PgSessionAdoptEarlyBinaryUpgradeState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	if (!early_session_binary_upgrade.initialized)
-		PgSessionInitializeBinaryUpgradeState(&early_session_binary_upgrade);
-
-	session->binary_upgrade = early_session_binary_upgrade;
-	PgSessionInitializeBinaryUpgradeState(&early_session_binary_upgrade);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED(PgSessionAdoptEarlyBinaryUpgradeState,
+										  PgSession, session, binary_upgrade,
+										  early_session_binary_upgrade,
+										  PgSessionInitializeBinaryUpgradeState)
 
 static void
 PgSessionInitializeDateTimeState(PgSessionDateTimeState *datetime)
@@ -1338,17 +1278,12 @@ PgSessionResetEarlyDateTimeState(PgSessionDateTimeState *datetime)
 		   sizeof(datetime->timezone_abbrev_cache));
 }
 
-static void
-PgSessionAdoptEarlyDateTimeState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	if (!early_session_datetime.initialized)
-		PgSessionInitializeDateTimeState(&early_session_datetime);
-
-	session->datetime = early_session_datetime;
-	PgSessionResetEarlyDateTimeState(&early_session_datetime);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED_WITH_RESET(PgSessionAdoptEarlyDateTimeState,
+													 PgSession, session,
+													 datetime,
+													 early_session_datetime,
+													 PgSessionInitializeDateTimeState,
+													 PgSessionResetEarlyDateTimeState)
 
 static void
 PgSessionInitializeTextSearchState(PgSessionTextSearchState *text_search)
@@ -1371,17 +1306,12 @@ PgSessionResetEarlyTextSearchState(PgSessionTextSearchState *text_search)
 	text_search->current_config_cache = InvalidOid;
 }
 
-static void
-PgSessionAdoptEarlyTextSearchState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	if (!early_session_text_search.initialized)
-		PgSessionInitializeTextSearchState(&early_session_text_search);
-
-	session->text_search = early_session_text_search;
-	PgSessionResetEarlyTextSearchState(&early_session_text_search);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED_WITH_RESET(PgSessionAdoptEarlyTextSearchState,
+													 PgSession, session,
+													 text_search,
+													 early_session_text_search,
+													 PgSessionInitializeTextSearchState,
+													 PgSessionResetEarlyTextSearchState)
 
 static void
 PgSessionInitializeConnectionGUCState(PgSessionConnectionGUCState *connection_guc)
@@ -1422,17 +1352,12 @@ PgSessionResetEarlyConnectionGUCState(PgSessionConnectionGUCState *connection_gu
 	connection_guc->restrict_nonsystem_relation_kind_value = 0;
 }
 
-static void
-PgSessionAdoptEarlyConnectionGUCState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	if (!early_session_connection_guc.initialized)
-		PgSessionInitializeConnectionGUCState(&early_session_connection_guc);
-
-	session->connection_guc = early_session_connection_guc;
-	PgSessionResetEarlyConnectionGUCState(&early_session_connection_guc);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED_WITH_RESET(PgSessionAdoptEarlyConnectionGUCState,
+													 PgSession, session,
+													 connection_guc,
+													 early_session_connection_guc,
+													 PgSessionInitializeConnectionGUCState,
+													 PgSessionResetEarlyConnectionGUCState)
 
 static void
 PgSessionInitializeParserState(PgSessionParserState *parser)
@@ -1445,17 +1370,10 @@ PgSessionInitializeParserState(PgSessionParserState *parser)
 	parser->operator_lookup_cache = NULL;
 }
 
-static void
-PgSessionAdoptEarlyParserState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	if (!early_session_parser.initialized)
-		PgSessionInitializeParserState(&early_session_parser);
-
-	session->parser = early_session_parser;
-	PgSessionInitializeParserState(&early_session_parser);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED(PgSessionAdoptEarlyParserState,
+										  PgSession, session, parser,
+										  early_session_parser,
+										  PgSessionInitializeParserState)
 
 void
 PgSessionInitializeVacuumState(PgSessionVacuumState *vacuum)
@@ -1483,17 +1401,10 @@ PgSessionInitializeVacuumState(PgSessionVacuumState *vacuum)
 	vacuum->local_vacuum_cost_limit_value = 200;
 }
 
-static void
-PgSessionAdoptEarlyVacuumState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	if (!early_session_vacuum.initialized)
-		PgSessionInitializeVacuumState(&early_session_vacuum);
-
-	session->vacuum = early_session_vacuum;
-	PgSessionInitializeVacuumState(&early_session_vacuum);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED(PgSessionAdoptEarlyVacuumState,
+										  PgSession, session, vacuum,
+										  early_session_vacuum,
+										  PgSessionInitializeVacuumState)
 
 static void
 PgSessionInitializeBufferIOState(PgSessionBufferIOState *buffer_io)
@@ -1510,17 +1421,10 @@ PgSessionInitializeBufferIOState(PgSessionBufferIOState *buffer_io)
 	buffer_io->backend_flush_after_value = DEFAULT_BACKEND_FLUSH_AFTER;
 }
 
-static void
-PgSessionAdoptEarlyBufferIOState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	if (!early_session_buffer_io.initialized)
-		PgSessionInitializeBufferIOState(&early_session_buffer_io);
-
-	session->buffer_io = early_session_buffer_io;
-	PgSessionInitializeBufferIOState(&early_session_buffer_io);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED(PgSessionAdoptEarlyBufferIOState,
+										  PgSession, session, buffer_io,
+										  early_session_buffer_io,
+										  PgSessionInitializeBufferIOState)
 
 static void
 PgSessionInitializeXactDefaultState(PgSessionXactDefaultState *xact_defaults)
@@ -1534,17 +1438,10 @@ PgSessionInitializeXactDefaultState(PgSessionXactDefaultState *xact_defaults)
 	xact_defaults->synchronous_commit_value = SYNCHRONOUS_COMMIT_ON;
 }
 
-static void
-PgSessionAdoptEarlyXactDefaultState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	if (!early_session_xact_defaults.initialized)
-		PgSessionInitializeXactDefaultState(&early_session_xact_defaults);
-
-	session->xact_defaults = early_session_xact_defaults;
-	PgSessionInitializeXactDefaultState(&early_session_xact_defaults);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED(PgSessionAdoptEarlyXactDefaultState,
+										  PgSession, session, xact_defaults,
+										  early_session_xact_defaults,
+										  PgSessionInitializeXactDefaultState)
 
 void
 PgSessionInitializeLockWaitState(PgSessionLockWaitState *lock_wait)
@@ -1568,17 +1465,10 @@ PgSessionInitializeLockWaitState(PgSessionLockWaitState *lock_wait)
 	lock_wait->trace_lwlocks_value = false;
 }
 
-static void
-PgSessionAdoptEarlyLockWaitState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	if (!early_session_lock_wait.initialized)
-		PgSessionInitializeLockWaitState(&early_session_lock_wait);
-
-	session->lock_wait = early_session_lock_wait;
-	PgSessionInitializeLockWaitState(&early_session_lock_wait);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED(PgSessionAdoptEarlyLockWaitState,
+										  PgSession, session, lock_wait,
+										  early_session_lock_wait,
+										  PgSessionInitializeLockWaitState)
 
 static void
 PgSessionInitializeLoggingState(PgSessionLoggingState *logging)
@@ -1620,17 +1510,10 @@ PgSessionInitializeLoggingState(PgSessionLoggingState *logging)
 	logging->backtrace_function_list_value = NULL;
 }
 
-static void
-PgSessionAdoptEarlyLoggingState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	if (!early_session_logging.initialized)
-		PgSessionInitializeLoggingState(&early_session_logging);
-
-	session->logging = early_session_logging;
-	PgSessionInitializeLoggingState(&early_session_logging);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED(PgSessionAdoptEarlyLoggingState,
+										  PgSession, session, logging,
+										  early_session_logging,
+										  PgSessionInitializeLoggingState)
 
 static void
 PgSessionInitializeMiscGUCState(PgSessionMiscGUCState *misc_guc)
@@ -1648,17 +1531,10 @@ PgSessionInitializeMiscGUCState(PgSessionMiscGUCState *misc_guc)
 	misc_guc->update_process_title_value = DEFAULT_UPDATE_PROCESS_TITLE;
 }
 
-static void
-PgSessionAdoptEarlyMiscGUCState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	if (!early_session_misc_guc.initialized)
-		PgSessionInitializeMiscGUCState(&early_session_misc_guc);
-
-	session->misc_guc = early_session_misc_guc;
-	PgSessionInitializeMiscGUCState(&early_session_misc_guc);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED(PgSessionAdoptEarlyMiscGUCState,
+										  PgSession, session, misc_guc,
+										  early_session_misc_guc,
+										  PgSessionInitializeMiscGUCState)
 
 void
 PgSessionInitializeGUCState(PgSessionGUCState *guc)
@@ -1705,17 +1581,10 @@ PgSessionInitializePgStatState(PgSessionPgStatState *pgstat)
 	pgstat->last_session_report_time = 0;
 }
 
-static void
-PgSessionAdoptEarlyPgStatState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	if (!early_session_pgstat.initialized)
-		PgSessionInitializePgStatState(&early_session_pgstat);
-
-	session->pgstat = early_session_pgstat;
-	PgSessionInitializePgStatState(&early_session_pgstat);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED(PgSessionAdoptEarlyPgStatState,
+										  PgSession, session, pgstat,
+										  early_session_pgstat,
+										  PgSessionInitializePgStatState)
 
 static void
 PgSessionInitializeQueryIdState(PgSessionQueryIdState *query_id)
@@ -1727,17 +1596,10 @@ PgSessionInitializeQueryIdState(PgSessionQueryIdState *query_id)
 	query_id->query_id_enabled_value = false;
 }
 
-static void
-PgSessionAdoptEarlyQueryIdState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	if (!early_session_query_id.initialized)
-		PgSessionInitializeQueryIdState(&early_session_query_id);
-
-	session->query_id = early_session_query_id;
-	PgSessionInitializeQueryIdState(&early_session_query_id);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED(PgSessionAdoptEarlyQueryIdState,
+										  PgSession, session, query_id,
+										  early_session_query_id,
+										  PgSessionInitializeQueryIdState)
 
 static void
 PgSessionInitializeStorageGUCState(PgSessionStorageGUCState *storage_guc)
@@ -1749,17 +1611,10 @@ PgSessionInitializeStorageGUCState(PgSessionStorageGUCState *storage_guc)
 	storage_guc->file_copy_method_value = FILE_COPY_METHOD_COPY;
 }
 
-static void
-PgSessionAdoptEarlyStorageGUCState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	if (!early_session_storage_guc.initialized)
-		PgSessionInitializeStorageGUCState(&early_session_storage_guc);
-
-	session->storage_guc = early_session_storage_guc;
-	PgSessionInitializeStorageGUCState(&early_session_storage_guc);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED(PgSessionAdoptEarlyStorageGUCState,
+										  PgSession, session, storage_guc,
+										  early_session_storage_guc,
+										  PgSessionInitializeStorageGUCState)
 
 static void
 PgSessionInitializeUserGUCState(PgSessionUserGUCState *user_guc)
@@ -1776,17 +1631,10 @@ PgSessionInitializeUserGUCState(PgSessionUserGUCState *user_guc)
 	user_guc->createrole_self_grant_options_set = false;
 }
 
-static void
-PgSessionAdoptEarlyUserGUCState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	if (!early_session_user_guc.initialized)
-		PgSessionInitializeUserGUCState(&early_session_user_guc);
-
-	session->user_guc = early_session_user_guc;
-	PgSessionInitializeUserGUCState(&early_session_user_guc);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED(PgSessionAdoptEarlyUserGUCState,
+										  PgSession, session, user_guc,
+										  early_session_user_guc,
+										  PgSessionInitializeUserGUCState)
 
 static void
 PgSessionInitializeUserIdentityState(PgSessionUserIdentityState *user_identity)
@@ -1812,17 +1660,10 @@ PgSessionInitializeUserIdentityState(PgSessionUserIdentityState *user_identity)
 	user_identity->initialized = true;
 }
 
-static void
-PgSessionAdoptEarlyUserIdentityState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	if (!early_session_user_identity.initialized)
-		PgSessionInitializeUserIdentityState(&early_session_user_identity);
-
-	session->user_identity = early_session_user_identity;
-	PgSessionInitializeUserIdentityState(&early_session_user_identity);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED(PgSessionAdoptEarlyUserIdentityState,
+										  PgSession, session, user_identity,
+										  early_session_user_identity,
+										  PgSessionInitializeUserIdentityState)
 
 static void
 PgSessionInitializeCommandGUCState(PgSessionCommandGUCState *command_guc)
@@ -1836,17 +1677,10 @@ PgSessionInitializeCommandGUCState(PgSessionCommandGUCState *command_guc)
 	command_guc->trace_notify_value = false;
 }
 
-static void
-PgSessionAdoptEarlyCommandGUCState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	if (!early_session_command_guc.initialized)
-		PgSessionInitializeCommandGUCState(&early_session_command_guc);
-
-	session->command_guc = early_session_command_guc;
-	PgSessionInitializeCommandGUCState(&early_session_command_guc);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED(PgSessionAdoptEarlyCommandGUCState,
+										  PgSession, session, command_guc,
+										  early_session_command_guc,
+										  PgSessionInitializeCommandGUCState)
 
 static void
 PgSessionInitializeReplicationGUCState(PgSessionReplicationGUCState *replication_guc)
@@ -1863,17 +1697,10 @@ PgSessionInitializeReplicationGUCState(PgSessionReplicationGUCState *replication
 		DEBUG_LOGICAL_REP_STREAMING_BUFFERED;
 }
 
-static void
-PgSessionAdoptEarlyReplicationGUCState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	if (!early_session_replication_guc.initialized)
-		PgSessionInitializeReplicationGUCState(&early_session_replication_guc);
-
-	session->replication_guc = early_session_replication_guc;
-	PgSessionInitializeReplicationGUCState(&early_session_replication_guc);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED(PgSessionAdoptEarlyReplicationGUCState,
+										  PgSession, session, replication_guc,
+										  early_session_replication_guc,
+										  PgSessionInitializeReplicationGUCState)
 
 static void
 PgSessionInitializeLogicalReplicationState(PgSessionLogicalReplicationState *logical_replication)
@@ -1964,17 +1791,10 @@ PgSessionInitializeGeneralGUCState(PgSessionGeneralGUCState *general_guc)
 	general_guc->gin_pending_list_limit_value = 0;
 }
 
-static void
-PgSessionAdoptEarlyGeneralGUCState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	if (!early_session_general_guc.initialized)
-		PgSessionInitializeGeneralGUCState(&early_session_general_guc);
-
-	session->general_guc = early_session_general_guc;
-	PgSessionInitializeGeneralGUCState(&early_session_general_guc);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED(PgSessionAdoptEarlyGeneralGUCState,
+										  PgSession, session, general_guc,
+										  early_session_general_guc,
+										  PgSessionInitializeGeneralGUCState)
 
 static void
 PgSessionInitializeAccessWalGUCState(PgSessionAccessWalGUCState *access_wal_guc)
@@ -2004,17 +1824,10 @@ PgSessionInitializeAccessWalGUCState(PgSessionAccessWalGUCState *access_wal_guc)
 #endif
 }
 
-static void
-PgSessionAdoptEarlyAccessWalGUCState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	if (!early_session_access_wal_guc.initialized)
-		PgSessionInitializeAccessWalGUCState(&early_session_access_wal_guc);
-
-	session->access_wal_guc = early_session_access_wal_guc;
-	PgSessionInitializeAccessWalGUCState(&early_session_access_wal_guc);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED(PgSessionAdoptEarlyAccessWalGUCState,
+										  PgSession, session, access_wal_guc,
+										  early_session_access_wal_guc,
+										  PgSessionInitializeAccessWalGUCState)
 
 static void
 PgSessionInitializeJitGUCState(PgSessionJitGUCState *jit_guc)
@@ -2034,17 +1847,10 @@ PgSessionInitializeJitGUCState(PgSessionJitGUCState *jit_guc)
 	jit_guc->jit_optimize_above_cost_value = 500000;
 }
 
-static void
-PgSessionAdoptEarlyJitGUCState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	if (!early_session_jit_guc.initialized)
-		PgSessionInitializeJitGUCState(&early_session_jit_guc);
-
-	session->jit_guc = early_session_jit_guc;
-	PgSessionInitializeJitGUCState(&early_session_jit_guc);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED(PgSessionAdoptEarlyJitGUCState,
+										  PgSession, session, jit_guc,
+										  early_session_jit_guc,
+										  PgSessionInitializeJitGUCState)
 
 static void
 PgSessionInitializeJitProviderState(PgSessionJitProviderState *jit_provider_state)
@@ -2054,14 +1860,11 @@ PgSessionInitializeJitProviderState(PgSessionJitProviderState *jit_provider_stat
 	MemSet(jit_provider_state, 0, sizeof(*jit_provider_state));
 }
 
-static void
-PgSessionAdoptEarlyJitProviderState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	session->jit_provider_state = early_session_jit_provider;
-	PgSessionInitializeJitProviderState(&early_session_jit_provider);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgSessionAdoptEarlyJitProviderState,
+										PgSession, session,
+										jit_provider_state,
+										early_session_jit_provider,
+										PgSessionInitializeJitProviderState)
 
 static void
 PgSessionInitializeLLVMJitState(PgSessionLLVMJitState *llvm_jit)
@@ -2071,14 +1874,10 @@ PgSessionInitializeLLVMJitState(PgSessionLLVMJitState *llvm_jit)
 	MemSet(llvm_jit, 0, sizeof(*llvm_jit));
 }
 
-static void
-PgSessionAdoptEarlyLLVMJitState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	session->llvm_jit = early_session_llvm_jit;
-	PgSessionInitializeLLVMJitState(&early_session_llvm_jit);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgSessionAdoptEarlyLLVMJitState,
+										PgSession, session, llvm_jit,
+										early_session_llvm_jit,
+										PgSessionInitializeLLVMJitState)
 
 static void
 PgSessionInitializeSortGUCState(PgSessionSortGUCState *sort_guc)
@@ -2092,17 +1891,10 @@ PgSessionInitializeSortGUCState(PgSessionSortGUCState *sort_guc)
 #endif
 }
 
-static void
-PgSessionAdoptEarlySortGUCState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	if (!early_session_sort_guc.initialized)
-		PgSessionInitializeSortGUCState(&early_session_sort_guc);
-
-	session->sort_guc = early_session_sort_guc;
-	PgSessionInitializeSortGUCState(&early_session_sort_guc);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED(PgSessionAdoptEarlySortGUCState,
+										  PgSession, session, sort_guc,
+										  early_session_sort_guc,
+										  PgSessionInitializeSortGUCState)
 
 static void
 PgSessionInitializeQueryMemoryState(PgSessionQueryMemoryState *query_memory)
@@ -2116,17 +1908,10 @@ PgSessionInitializeQueryMemoryState(PgSessionQueryMemoryState *query_memory)
 	query_memory->max_parallel_maintenance_workers_value = 2;
 }
 
-static void
-PgSessionAdoptEarlyQueryMemoryState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	if (!early_session_query_memory.initialized)
-		PgSessionInitializeQueryMemoryState(&early_session_query_memory);
-
-	session->query_memory = early_session_query_memory;
-	PgSessionInitializeQueryMemoryState(&early_session_query_memory);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED(PgSessionAdoptEarlyQueryMemoryState,
+										  PgSession, session, query_memory,
+										  early_session_query_memory,
+										  PgSessionInitializeQueryMemoryState)
 
 static void
 PgSessionInitializePlannerCostState(PgSessionPlannerCostState *planner_cost)
@@ -2150,17 +1935,10 @@ PgSessionInitializePlannerCostState(PgSessionPlannerCostState *planner_cost)
 	planner_cost->parallel_leader_participation_value = true;
 }
 
-static void
-PgSessionAdoptEarlyPlannerCostState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	if (!early_session_planner_cost.initialized)
-		PgSessionInitializePlannerCostState(&early_session_planner_cost);
-
-	session->planner_cost = early_session_planner_cost;
-	PgSessionInitializePlannerCostState(&early_session_planner_cost);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED(PgSessionAdoptEarlyPlannerCostState,
+										  PgSession, session, planner_cost,
+										  early_session_planner_cost,
+										  PgSessionInitializePlannerCostState)
 
 static void
 PgSessionInitializePlannerMethodState(PgSessionPlannerMethodState *planner_method)
@@ -2214,17 +1992,10 @@ PgSessionInitializePlannerMethodState(PgSessionPlannerMethodState *planner_metho
 	planner_method->join_collapse_limit_value = 8;
 }
 
-static void
-PgSessionAdoptEarlyPlannerMethodState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	if (!early_session_planner_method.initialized)
-		PgSessionInitializePlannerMethodState(&early_session_planner_method);
-
-	session->planner_method = early_session_planner_method;
-	PgSessionInitializePlannerMethodState(&early_session_planner_method);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED(PgSessionAdoptEarlyPlannerMethodState,
+										  PgSession, session, planner_method,
+										  early_session_planner_method,
+										  PgSessionInitializePlannerMethodState)
 
 static void
 PgSessionInitializeFunctionManagerState(PgSessionFunctionManagerState *function_manager)
@@ -2235,14 +2006,11 @@ PgSessionInitializeFunctionManagerState(PgSessionFunctionManagerState *function_
 	function_manager->cached_function_hash = NULL;
 }
 
-static void
-PgSessionAdoptEarlyFunctionManagerState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	session->function_manager = early_session_function_manager;
-	PgSessionInitializeFunctionManagerState(&early_session_function_manager);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgSessionAdoptEarlyFunctionManagerState,
+										PgSession, session,
+										function_manager,
+										early_session_function_manager,
+										PgSessionInitializeFunctionManagerState)
 
 void
 PgSessionInitializeExtensionModuleState(PgSessionExtensionModuleState *extension_modules)
@@ -2289,14 +2057,11 @@ PgSessionInitializeExtensionModuleState(PgSessionExtensionModuleState *extension
 	extension_modules->pg_stash_advice_stash_name = "";
 }
 
-static void
-PgSessionAdoptEarlyExtensionModuleState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	session->extension_modules = early_session_extension_modules;
-	PgSessionInitializeExtensionModuleState(&early_session_extension_modules);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgSessionAdoptEarlyExtensionModuleState,
+										PgSession, session,
+										extension_modules,
+										early_session_extension_modules,
+										PgSessionInitializeExtensionModuleState)
 
 static void
 PgSessionInitializeCatalogLookupState(PgSessionCatalogLookupState *catalog_lookup)
@@ -2333,14 +2098,11 @@ PgSessionInitializeInvalidationCallbackState(PgSessionInvalidationCallbackState 
 	MemSet(invalidation_callbacks, 0, sizeof(*invalidation_callbacks));
 }
 
-static void
-PgSessionAdoptEarlyInvalidationCallbackState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	session->invalidation_callbacks = early_session_invalidation_callbacks;
-	PgSessionInitializeInvalidationCallbackState(&early_session_invalidation_callbacks);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgSessionAdoptEarlyInvalidationCallbackState,
+										PgSession, session,
+										invalidation_callbacks,
+										early_session_invalidation_callbacks,
+										PgSessionInitializeInvalidationCallbackState)
 
 static void
 PgSessionInitializeRIGlobalsState(PgSessionRIGlobalsState *ri_globals)
@@ -2378,14 +2140,10 @@ PgSessionInitializeRelMapState(PgSessionRelMapState *relmap)
 	MemSet(relmap, 0, sizeof(*relmap));
 }
 
-static void
-PgSessionAdoptEarlyRelMapState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	session->relmap = early_session_relmap;
-	PgSessionInitializeRelMapState(&early_session_relmap);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgSessionAdoptEarlyRelMapState,
+										PgSession, session, relmap,
+										early_session_relmap,
+										PgSessionInitializeRelMapState)
 
 static void
 PgSessionInitializePreparedStatementState(PgSessionPreparedStatementState *prepared_statement)
@@ -2395,14 +2153,11 @@ PgSessionInitializePreparedStatementState(PgSessionPreparedStatementState *prepa
 	prepared_statement->prepared_queries = NULL;
 }
 
-static void
-PgSessionAdoptEarlyPreparedStatementState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	session->prepared_statement = early_session_prepared_statement;
-	PgSessionInitializePreparedStatementState(&early_session_prepared_statement);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgSessionAdoptEarlyPreparedStatementState,
+										PgSession, session,
+										prepared_statement,
+										early_session_prepared_statement,
+										PgSessionInitializePreparedStatementState)
 
 static void
 PgSessionInitializeOnCommitState(PgSessionOnCommitState *on_commit)
@@ -2412,14 +2167,10 @@ PgSessionInitializeOnCommitState(PgSessionOnCommitState *on_commit)
 	on_commit->on_commits = NIL;
 }
 
-static void
-PgSessionAdoptEarlyOnCommitState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	session->on_commit = early_session_on_commit;
-	PgSessionInitializeOnCommitState(&early_session_on_commit);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgSessionAdoptEarlyOnCommitState,
+										PgSession, session, on_commit,
+										early_session_on_commit,
+										PgSessionInitializeOnCommitState)
 
 static void
 PgSessionInitializeSequenceState(PgSessionSequenceState *sequence)
@@ -2430,14 +2181,10 @@ PgSessionInitializeSequenceState(PgSessionSequenceState *sequence)
 	sequence->last_used_seq = NULL;
 }
 
-static void
-PgSessionAdoptEarlySequenceState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	session->sequence = early_session_sequence;
-	PgSessionInitializeSequenceState(&early_session_sequence);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgSessionAdoptEarlySequenceState,
+										PgSession, session, sequence,
+										early_session_sequence,
+										PgSessionInitializeSequenceState)
 
 static void
 PgSessionInitializeXactCallbackState(PgSessionXactCallbackState *xact_callbacks)
@@ -2449,14 +2196,10 @@ PgSessionInitializeXactCallbackState(PgSessionXactCallbackState *xact_callbacks)
 	xact_callbacks->xact_callback_context = NULL;
 }
 
-static void
-PgSessionAdoptEarlyXactCallbackState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	session->xact_callbacks = early_session_xact_callbacks;
-	PgSessionInitializeXactCallbackState(&early_session_xact_callbacks);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgSessionAdoptEarlyXactCallbackState,
+										PgSession, session, xact_callbacks,
+										early_session_xact_callbacks,
+										PgSessionInitializeXactCallbackState)
 
 static void
 PgSessionInitializeBackupState(PgSessionBackupState *backup)
@@ -2469,14 +2212,10 @@ PgSessionInitializeBackupState(PgSessionBackupState *backup)
 	backup->session_backup_state = SESSION_BACKUP_NONE;
 }
 
-static void
-PgSessionAdoptEarlyBackupState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	session->backup = early_session_backup;
-	PgSessionInitializeBackupState(&early_session_backup);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgSessionAdoptEarlyBackupState,
+										PgSession, session, backup,
+										early_session_backup,
+										PgSessionInitializeBackupState)
 
 void
 PgSessionInitializeRegexState(PgSessionRegexState *regex)
@@ -2489,14 +2228,10 @@ PgSessionInitializeRegexState(PgSessionRegexState *regex)
 	regex->ctype_cache_list = NULL;
 }
 
-static void
-PgSessionAdoptEarlyRegexState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	session->regex = early_session_regex;
-	PgSessionInitializeRegexState(&early_session_regex);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgSessionAdoptEarlyRegexState,
+										PgSession, session, regex,
+										early_session_regex,
+										PgSessionInitializeRegexState)
 
 void
 PgSessionInitializePortalManagerState(PgSessionPortalManagerState *portal_manager)
@@ -2508,14 +2243,10 @@ PgSessionInitializePortalManagerState(PgSessionPortalManagerState *portal_manage
 	portal_manager->unnamed_portal_count = 0;
 }
 
-static void
-PgSessionAdoptEarlyPortalManagerState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	session->portal_manager = early_session_portal_manager;
-	PgSessionInitializePortalManagerState(&early_session_portal_manager);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgSessionAdoptEarlyPortalManagerState,
+										PgSession, session, portal_manager,
+										early_session_portal_manager,
+										PgSessionInitializePortalManagerState)
 
 void
 PgSessionInitializeLargeObjectState(PgSessionLargeObjectState *large_object)
@@ -2526,14 +2257,10 @@ PgSessionInitializeLargeObjectState(PgSessionLargeObjectState *large_object)
 	large_object->index_relation = NULL;
 }
 
-static void
-PgSessionAdoptEarlyLargeObjectState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	session->large_object = early_session_large_object;
-	PgSessionInitializeLargeObjectState(&early_session_large_object);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgSessionAdoptEarlyLargeObjectState,
+										PgSession, session, large_object,
+										early_session_large_object,
+										PgSessionInitializeLargeObjectState)
 
 static void
 PgSessionInitializeAsyncState(PgSessionAsyncState *async)
@@ -2544,14 +2271,10 @@ PgSessionInitializeAsyncState(PgSessionAsyncState *async)
 	async->registered_listener = false;
 }
 
-static void
-PgSessionAdoptEarlyAsyncState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	session->async = early_session_async;
-	PgSessionInitializeAsyncState(&early_session_async);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgSessionAdoptEarlyAsyncState,
+										PgSession, session, async,
+										early_session_async,
+										PgSessionInitializeAsyncState)
 
 void
 PgSessionInitializeEncodingState(PgSessionEncodingState *encoding)
@@ -2604,17 +2327,10 @@ PgSessionInitializeTempFileState(PgSessionTempFileState *temp_file)
 	temp_file->next_temp_table_space = 0;
 }
 
-static void
-PgSessionAdoptEarlyTempFileState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	if (!early_session_temp_file.initialized)
-		PgSessionInitializeTempFileState(&early_session_temp_file);
-
-	session->temp_file = early_session_temp_file;
-	PgSessionInitializeTempFileState(&early_session_temp_file);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED(PgSessionAdoptEarlyTempFileState,
+										  PgSession, session, temp_file,
+										  early_session_temp_file,
+										  PgSessionInitializeTempFileState)
 
 static void
 PgSessionInitializeRandomState(PgSessionRandomState *random)
@@ -2626,17 +2342,10 @@ PgSessionInitializeRandomState(PgSessionRandomState *random)
 	random->initialized = true;
 }
 
-static void
-PgSessionAdoptEarlyRandomState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	if (!early_session_random.initialized)
-		PgSessionInitializeRandomState(&early_session_random);
-
-	session->random = early_session_random;
-	PgSessionInitializeRandomState(&early_session_random);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED(PgSessionAdoptEarlyRandomState,
+										  PgSession, session, random,
+										  early_session_random,
+										  PgSessionInitializeRandomState)
 
 static void
 PgSessionInitializeOptimizerState(PgSessionOptimizerState *optimizer)
@@ -2649,14 +2358,10 @@ PgSessionInitializeOptimizerState(PgSessionOptimizerState *optimizer)
 	optimizer->opr_proof_cache_hash = NULL;
 }
 
-static void
-PgSessionAdoptEarlyOptimizerState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	session->optimizer = early_session_optimizer;
-	PgSessionInitializeOptimizerState(&early_session_optimizer);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgSessionAdoptEarlyOptimizerState,
+										PgSession, session, optimizer,
+										early_session_optimizer,
+										PgSessionInitializeOptimizerState)
 
 void
 PgSessionInitializePlanCacheState(PgSessionPlanCacheState *plan_cache)
@@ -2754,17 +2459,10 @@ PgSessionInitializeLocaleState(PgSessionLocaleState *locale)
 	locale->initialized = true;
 }
 
-static void
-PgSessionAdoptEarlyLocaleState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	if (!early_session_locale.initialized)
-		PgSessionInitializeLocaleState(&early_session_locale);
-
-	session->locale = early_session_locale;
-	PgSessionInitializeLocaleState(&early_session_locale);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED(PgSessionAdoptEarlyLocaleState,
+										  PgSession, session, locale,
+										  early_session_locale,
+										  PgSessionInitializeLocaleState)
 
 void
 PgSessionAdoptEarlyState(PgSession *session)
@@ -2891,14 +2589,10 @@ PgBackendInitializeCommandState(PgBackendCommandState *command)
 	MemSet(command, 0, sizeof(*command));
 }
 
-static void
-PgBackendAdoptEarlyCommandState(PgBackend *backend)
-{
-	Assert(backend != NULL);
-
-	backend->command = early_backend_command;
-	PgBackendInitializeCommandState(&early_backend_command);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgBackendAdoptEarlyCommandState,
+										PgBackend, backend, command,
+										early_backend_command,
+										PgBackendInitializeCommandState)
 
 static void
 PgBackendInitializeLogState(PgBackendLogState *log_state)
@@ -2908,14 +2602,10 @@ PgBackendInitializeLogState(PgBackendLogState *log_state)
 	MemSet(log_state, 0, sizeof(*log_state));
 }
 
-static void
-PgBackendAdoptEarlyLogState(PgBackend *backend)
-{
-	Assert(backend != NULL);
-
-	backend->log_state = early_backend_log;
-	PgBackendInitializeLogState(&early_backend_log);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgBackendAdoptEarlyLogState,
+										PgBackend, backend, log_state,
+										early_backend_log,
+										PgBackendInitializeLogState)
 
 static void
 PgBackendInitializeExprInterpState(PgBackendExprInterpState *expr_interp)
@@ -2925,14 +2615,10 @@ PgBackendInitializeExprInterpState(PgBackendExprInterpState *expr_interp)
 	MemSet(expr_interp, 0, sizeof(*expr_interp));
 }
 
-static void
-PgBackendAdoptEarlyExprInterpState(PgBackend *backend)
-{
-	Assert(backend != NULL);
-
-	backend->expr_interp = early_backend_expr_interp;
-	PgBackendInitializeExprInterpState(&early_backend_expr_interp);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgBackendAdoptEarlyExprInterpState,
+										PgBackend, backend, expr_interp,
+										early_backend_expr_interp,
+										PgBackendInitializeExprInterpState)
 
 static void
 PgSessionInitializeLoopState(PgSessionLoopState *loop_state)
@@ -3002,14 +2688,10 @@ PgBackendInitializeActivityState(PgBackendActivityState *activity)
 	MemSet(activity, 0, sizeof(*activity));
 }
 
-static void
-PgBackendAdoptEarlyActivityState(PgBackend *backend)
-{
-	Assert(backend != NULL);
-
-	backend->activity = early_backend_activity;
-	PgBackendInitializeActivityState(&early_backend_activity);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgBackendAdoptEarlyActivityState,
+										PgBackend, backend, activity,
+										early_backend_activity,
+										PgBackendInitializeActivityState)
 
 static void
 PgBackendInitializeMemoryManagerState(PgBackendMemoryManagerState *memory_manager)
@@ -3097,14 +2779,11 @@ PgBackendInitializeInstrumentationState(PgBackendInstrumentationState *instrumen
 	MemSet(instrumentation, 0, sizeof(*instrumentation));
 }
 
-static void
-PgBackendAdoptEarlyInstrumentationState(PgBackend *backend)
-{
-	Assert(backend != NULL);
-
-	backend->instrumentation = early_backend_instrumentation;
-	PgBackendInitializeInstrumentationState(&early_backend_instrumentation);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgBackendAdoptEarlyInstrumentationState,
+										PgBackend, backend,
+										instrumentation,
+										early_backend_instrumentation,
+										PgBackendInitializeInstrumentationState)
 
 void
 PgBackendInitializeBufferState(PgBackendBufferState *buffers)
@@ -3116,14 +2795,10 @@ PgBackendInitializeBufferState(PgBackendBufferState *buffers)
 	buffers->private_ref_count_entry_last = -1;
 }
 
-static void
-PgBackendAdoptEarlyBufferState(PgBackend *backend)
-{
-	Assert(backend != NULL);
-
-	backend->buffers = early_backend_buffers;
-	PgBackendInitializeBufferState(&early_backend_buffers);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgBackendAdoptEarlyBufferState,
+										PgBackend, backend, buffers,
+										early_backend_buffers,
+										PgBackendInitializeBufferState)
 
 void
 PgBackendInitializeStorageState(PgBackendStorageState *storage)
@@ -3260,14 +2935,10 @@ PgBackendInitializeTimeoutState(PgBackendTimeoutState *timeout)
 	MemSet(timeout, 0, sizeof(*timeout));
 }
 
-static void
-PgBackendAdoptEarlyTimeoutState(PgBackend *backend)
-{
-	Assert(backend != NULL);
-
-	backend->timeout = early_backend_timeout;
-	PgBackendInitializeTimeoutState(&early_backend_timeout);
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgBackendAdoptEarlyTimeoutState,
+										PgBackend, backend, timeout,
+										early_backend_timeout,
+										PgBackendInitializeTimeoutState)
 
 static void
 PgBackendInitializeWalSenderState(PgBackendWalSenderState *walsender)
@@ -3574,32 +3245,6 @@ PgBackendAdoptEarlyState(PgBackend *backend)
 	do { adopt; } while (0);
 #include "backend_runtime_backend_buckets.def"
 #undef PG_BACKEND_BUCKET
-}
-
-#define PG_RUNTIME_DEFINE_ZERO_INIT(function_name, state_type, state_arg) \
-void \
-function_name(state_type *state_arg) \
-{ \
-	Assert(state_arg != NULL); \
-	MemSet(state_arg, 0, sizeof(*state_arg)); \
-}
-
-#define PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(function_name, object_type, object_arg, field_name, early_state, init_function) \
-static void \
-function_name(object_type *object_arg) \
-{ \
-	Assert(object_arg != NULL); \
-	object_arg->field_name = early_state; \
-	init_function(&early_state); \
-}
-
-#define PG_RUNTIME_DEFINE_ADOPT_EARLY_ZERO(function_name, object_type, object_arg, field_name, early_state) \
-static void \
-function_name(object_type *object_arg) \
-{ \
-	Assert(object_arg != NULL); \
-	object_arg->field_name = early_state; \
-	MemSet(&early_state, 0, sizeof(early_state)); \
 }
 
 static void
@@ -3911,10 +3556,6 @@ PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgExecutionAdoptEarlySnapBuildState,
 										PgExecution, execution, snapbuild,
 										early_execution_snapbuild,
 										PgExecutionInitializeSnapBuildState)
-
-#undef PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT
-#undef PG_RUNTIME_DEFINE_ADOPT_EARLY_ZERO
-#undef PG_RUNTIME_DEFINE_ZERO_INIT
 
 void
 PgExecutionAdoptEarlyState(PgExecution *execution)

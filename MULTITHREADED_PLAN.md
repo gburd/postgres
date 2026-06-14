@@ -997,6 +997,15 @@ Gate E2 requires:
   defaults through the same initializer. Use it instead of raw initializer
   calls in reset columns, including after a separate checked destructor action
   such as `PG_RUNTIME_DELETE_MEMORY_CONTEXT(context)`;
+- routine lifecycle helper macros are centralized in
+  `backend_runtime_internal.h`: `PG_RUNTIME_DEFINE_ZERO_INIT`,
+  `PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT`,
+  `PG_RUNTIME_DEFINE_ADOPT_EARLY_ZERO`,
+  `PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED`, and
+  `PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED_WITH_RESET`. Use these for
+  mechanical helper bodies before adding new handwritten init/adopt/reset
+  functions. Semantic cleanup, pointer rebasing, list repair, and ownership
+  assertions remain handwritten and owner-adjacent;
 - the next lifecycle-framework improvement should target the patterns now
   recurring in Gate E2: create an object-owned allocation context,
   delete-and-null a memory context, free/reset list heads, clear pointer slots

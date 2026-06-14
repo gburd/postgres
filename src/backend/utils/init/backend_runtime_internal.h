@@ -64,6 +64,59 @@
 		(list_head) = NIL; \
 	} while (0)
 
+/*
+ * Routine lifecycle helper definitions.  Use these for plain whole-bucket
+ * initialization/adoption patterns; keep ownership-sensitive pointer fixups
+ * and ordered cleanup handwritten near the owning subsystem.
+ */
+#define PG_RUNTIME_DEFINE_ZERO_INIT(function_name, state_type, state_arg) \
+void \
+function_name(state_type *state_arg) \
+{ \
+	Assert(state_arg != NULL); \
+	MemSet(state_arg, 0, sizeof(*state_arg)); \
+}
+
+#define PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(function_name, object_type, object_arg, field_name, early_state, init_function) \
+static void \
+function_name(object_type *object_arg) \
+{ \
+	Assert(object_arg != NULL); \
+	object_arg->field_name = early_state; \
+	init_function(&early_state); \
+}
+
+#define PG_RUNTIME_DEFINE_ADOPT_EARLY_ZERO(function_name, object_type, object_arg, field_name, early_state) \
+static void \
+function_name(object_type *object_arg) \
+{ \
+	Assert(object_arg != NULL); \
+	object_arg->field_name = early_state; \
+	MemSet(&early_state, 0, sizeof(early_state)); \
+}
+
+#define PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED(function_name, object_type, object_arg, field_name, early_state, init_function) \
+static void \
+function_name(object_type *object_arg) \
+{ \
+	Assert(object_arg != NULL); \
+	if (!early_state.initialized) \
+		init_function(&early_state); \
+	object_arg->field_name = early_state; \
+	init_function(&early_state); \
+}
+
+#define PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED_WITH_RESET(function_name, object_type, object_arg, field_name, early_state, init_function, reset_function) \
+static void \
+function_name(object_type *object_arg) \
+{ \
+	Assert(object_arg != NULL); \
+	if (!early_state.initialized) \
+		init_function(&early_state); \
+	object_arg->field_name = early_state; \
+	reset_function(&early_state); \
+}
+
 extern PgCarrier *PgCurrentCarrierState(void);
 extern PgRuntimeServerGUCState *PgCurrentRuntimeServerGUCState(void);
 extern PgSessionTcopState *PgCurrentSessionTcopState(void);
