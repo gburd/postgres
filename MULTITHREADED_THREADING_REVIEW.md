@@ -1306,6 +1306,8 @@ files proving the intended direction:
   backend/session accessors;
 - `src/backend/jit/backend_runtime_jit.c` owns provider-independent JIT
   session accessors.
+- `src/backend/utils/misc/backend_runtime_guc.c` owns migrated GUC
+  compatibility accessors.
 
 `backend_runtime.c` should remain focused on root runtime construction,
 current-object installation, process/thread symmetry, and top-level

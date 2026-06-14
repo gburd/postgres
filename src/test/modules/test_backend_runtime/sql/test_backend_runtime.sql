@@ -55,6 +55,7 @@ SELECT test_session_user_identity_state_is_session_local();
 SELECT test_session_command_guc_state_is_session_local();
 SELECT test_session_replication_guc_state_is_session_local();
 SELECT test_session_general_guc_state_is_session_local();
+SELECT test_session_compat_guc_state_is_session_local();
 SELECT test_session_access_wal_guc_state_is_session_local();
 SELECT test_session_jit_guc_state_is_session_local();
 SELECT test_session_jit_provider_state_is_session_local();

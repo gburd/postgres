@@ -9998,3 +9998,50 @@ Validation for this slice:
   tests and `002_threaded_bgworker_crash.pl` with 6 tests using the local
   `IPC::Run` `PERL5LIB` and explicit `PG_REGRESS` harness environment;
 - `gmake -C contrib -j8` passed after the installed runtime-header change.
+
+## Compatibility GUC Session State
+
+The next Phase 12 state-migration slice moves another GUC compatibility batch
+from raw session-local TLS into existing `PgSession` buckets:
+
+- `PgSessionGeneralGUCState` now owns `default_with_oids`,
+  `standard_conforming_strings`, `seed`'s display-only
+  `phony_random_seed`, and `session_authorization`'s string slot;
+- `PgSessionConnectionGUCState` now owns the ignored
+  `ssl_renegotiation_limit` compatibility scalar;
+- `PgSessionDateTimeState` now owns the `DateStyle` and
+  `timezone_abbreviations` GUC string slots;
+- `PgSessionEncodingState` now owns the `client_encoding` and
+  `server_encoding` display string slots;
+- `src/backend/utils/misc/backend_runtime_guc.c` owns the compatibility
+  accessors, keeping this GUC bridge out of `backend_runtime.c`;
+- `guc_tables.c` preserves the historical local names through macros over the
+  current session buckets, and `RebindSessionGUCVariablePointers()` retargets
+  every moved built-in GUC after a session switch;
+- `MULTITHREADED_RUNTIME_OWNERS.tsv` maps all nine legacy symbols to their
+  runtime bucket/member/accessor and owner source.
+
+This removes nine raw session-local TLS declarations from `guc_tables.c`.
+The moved string slots still rely on existing GUC allocation/reset ownership;
+the runtime buckets own pointer slots and scalar values, not a new string
+destructor path.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime_guc.o`, `guc.o`,
+  `guc_tables.o`, `backend_runtime.o`, and `test_backend_runtime.o`;
+- clean full `gmake -j8` passed after backend clean and generated-header
+  recovery for the installed runtime-header change;
+- `gmake -C src/pl/plpgsql/src clean all` and
+  `gmake -C src/test/modules/test_backend_runtime clean all` passed;
+- `gmake check-runtime-lifecycles` passed with 148 runtime fields classified;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and session-local declarations reduced from 106 to 97;
+- the raw TLS declaration search for this migrated batch found no remaining
+  matches in `guc_tables.c`;
+- `gmake -C src/test/modules/test_backend_runtime check` passed after adding
+  `test_session_compat_guc_state_is_session_local()`;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` with 88
+  tests and `002_threaded_bgworker_crash.pl` with 6 tests using the local
+  `IPC::Run` `PERL5LIB` and explicit `PG_REGRESS` harness environment;
+- `gmake -C contrib -j8` passed after the installed runtime-header change.

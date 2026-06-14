@@ -227,8 +227,10 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionDateTimeState early_session_da
 	.date_style = USE_ISO_DATES,
 	.date_order = DATEORDER_MDY,
 	.interval_style = INTSTYLE_POSTGRES,
+	.datestyle_string_value = "ISO, MDY",
 	.timezone_string_value = "GMT",
 	.log_timezone_string_value = "GMT",
+	.timezone_abbreviations_string_value = NULL,
 	.session_timezone_value = NULL,
 	.log_timezone_value = NULL,
 	.timezone_abbrev_table = NULL
@@ -241,6 +243,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionTextSearchState early_session_
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionConnectionGUCState early_session_connection_guc = {
 	.initialized = true,
 	.application_name_value = "",
+	.ssl_renegotiation_limit_value = 0,
 	.tcp_keepalives_idle_value = 0,
 	.tcp_keepalives_interval_value = 0,
 	.tcp_keepalives_count_value = 0,
@@ -888,9 +891,9 @@ static PgBackendCoreState *PgCurrentCoreState(void);
 static PgSessionDatabaseState *PgCurrentSessionDatabaseState(void);
 static PgSessionTablespaceState *PgCurrentSessionTablespaceState(void);
 static PgSessionBinaryUpgradeState *PgCurrentSessionBinaryUpgradeState(void);
-static PgSessionDateTimeState *PgCurrentSessionDateTimeState(void);
+PgSessionDateTimeState *PgCurrentSessionDateTimeState(void);
 static PgSessionTextSearchState *PgCurrentSessionTextSearchState(void);
-static PgSessionConnectionGUCState *PgCurrentSessionConnectionGUCState(void);
+PgSessionConnectionGUCState *PgCurrentSessionConnectionGUCState(void);
 static PgSessionParserState *PgCurrentSessionParserState(void);
 static PgSessionVacuumState *PgCurrentSessionVacuumState(void);
 static PgSessionBufferIOState *PgCurrentSessionBufferIOState(void);
@@ -907,7 +910,7 @@ static PgSessionUserIdentityState *PgCurrentSessionUserIdentityState(void);
 static PgSessionCommandGUCState *PgCurrentSessionCommandGUCState(void);
 static PgSessionReplicationGUCState *PgCurrentSessionReplicationGUCState(void);
 static PgSessionLogicalReplicationState *PgCurrentSessionLogicalReplicationState(void);
-static PgSessionGeneralGUCState *PgCurrentSessionGeneralGUCState(void);
+PgSessionGeneralGUCState *PgCurrentSessionGeneralGUCState(void);
 static PgSessionAccessWalGUCState *PgCurrentSessionAccessWalGUCState(void);
 static PgSessionJitGUCState *PgCurrentSessionJitGUCState(void);
 PgSessionJitProviderState *PgCurrentSessionJitProviderState(void);
@@ -928,7 +931,7 @@ static PgSessionRegexState *PgCurrentSessionRegexState(void);
 static PgSessionPortalManagerState *PgCurrentSessionPortalManagerState(void);
 static PgSessionLargeObjectState *PgCurrentSessionLargeObjectState(void);
 static PgSessionAsyncState *PgCurrentSessionAsyncState(void);
-static PgSessionEncodingState *PgCurrentSessionEncodingState(void);
+PgSessionEncodingState *PgCurrentSessionEncodingState(void);
 static PgSessionTempFileState *PgCurrentSessionTempFileState(void);
 static PgSessionRandomState *PgCurrentSessionRandomState(void);
 static PgSessionOptimizerState *PgCurrentSessionOptimizerState(void);
@@ -1236,8 +1239,10 @@ PgSessionInitializeDateTimeState(PgSessionDateTimeState *datetime)
 	datetime->date_style = USE_ISO_DATES;
 	datetime->date_order = DATEORDER_MDY;
 	datetime->interval_style = INTSTYLE_POSTGRES;
+	datetime->datestyle_string_value = guc_strdup(FATAL, "ISO, MDY");
 	datetime->timezone_string_value = guc_strdup(FATAL, "GMT");
 	datetime->log_timezone_string_value = guc_strdup(FATAL, "GMT");
+	datetime->timezone_abbreviations_string_value = NULL;
 	datetime->session_timezone_value = pg_tzset("GMT");
 	datetime->log_timezone_value = datetime->session_timezone_value;
 	datetime->timezone_abbrev_table = NULL;
@@ -1254,8 +1259,10 @@ PgSessionResetEarlyDateTimeState(PgSessionDateTimeState *datetime)
 	datetime->date_style = USE_ISO_DATES;
 	datetime->date_order = DATEORDER_MDY;
 	datetime->interval_style = INTSTYLE_POSTGRES;
+	datetime->datestyle_string_value = NULL;
 	datetime->timezone_string_value = NULL;
 	datetime->log_timezone_string_value = NULL;
+	datetime->timezone_abbreviations_string_value = NULL;
 	datetime->session_timezone_value = NULL;
 	datetime->log_timezone_value = NULL;
 	datetime->timezone_abbrev_table = NULL;
@@ -1315,6 +1322,7 @@ PgSessionInitializeConnectionGUCState(PgSessionConnectionGUCState *connection_gu
 
 	connection_guc->initialized = true;
 	connection_guc->application_name_value = guc_strdup(FATAL, "");
+	connection_guc->ssl_renegotiation_limit_value = 0;
 	connection_guc->tcp_keepalives_idle_value = 0;
 	connection_guc->tcp_keepalives_interval_value = 0;
 	connection_guc->tcp_keepalives_count_value = 0;
@@ -1334,6 +1342,7 @@ PgSessionResetEarlyConnectionGUCState(PgSessionConnectionGUCState *connection_gu
 
 	connection_guc->initialized = false;
 	connection_guc->application_name_value = NULL;
+	connection_guc->ssl_renegotiation_limit_value = 0;
 	connection_guc->tcp_keepalives_idle_value = 0;
 	connection_guc->tcp_keepalives_interval_value = 0;
 	connection_guc->tcp_keepalives_count_value = 0;
@@ -1867,9 +1876,13 @@ PgSessionInitializeGeneralGUCState(PgSessionGeneralGUCState *general_guc)
 	general_guc->row_security_value = true;
 	general_guc->check_function_bodies_value = true;
 	general_guc->current_role_is_superuser_value = false;
+	general_guc->default_with_oids_value = false;
+	general_guc->standard_conforming_strings_value = true;
+	general_guc->phony_random_seed_value = 0.0;
 	general_guc->temp_file_limit_kb = -1;
 	general_guc->num_temp_buffers_blocks = 1024;
 	general_guc->role_string_value = "none";
+	general_guc->session_authorization_string_value = NULL;
 	general_guc->lo_compat_privileges_value = false;
 	general_guc->extra_float_digits_value = 1;
 	general_guc->array_nulls_value = true;
@@ -2416,6 +2429,8 @@ PgSessionInitializeEncodingState(PgSessionEncodingState *encoding)
 	encoding->to_server_conv_proc = NULL;
 	encoding->to_client_conv_proc = NULL;
 	encoding->utf8_to_server_conv_proc = NULL;
+	encoding->client_encoding_string_value = "SQL_ASCII";
+	encoding->server_encoding_string_value = "SQL_ASCII";
 	encoding->client_encoding = &pg_enc2name_tbl[PG_SQL_ASCII];
 	encoding->database_encoding = &pg_enc2name_tbl[PG_SQL_ASCII];
 	encoding->message_encoding = &pg_enc2name_tbl[PG_SQL_ASCII];
@@ -5182,7 +5197,7 @@ PgCurrentSessionBinaryUpgradeState(void)
 	return binary_upgrade;
 }
 
-static PgSessionDateTimeState *
+PgSessionDateTimeState *
 PgCurrentSessionDateTimeState(void)
 {
 	PgSessionDateTimeState *datetime;
@@ -5214,7 +5229,7 @@ PgCurrentSessionTextSearchState(void)
 	return text_search;
 }
 
-static PgSessionConnectionGUCState *
+PgSessionConnectionGUCState *
 PgCurrentSessionConnectionGUCState(void)
 {
 	PgSessionConnectionGUCState *connection_guc;
@@ -5484,7 +5499,7 @@ PgCurrentSessionLogicalReplicationState(void)
 	return &CurrentPgSession->logical_replication;
 }
 
-static PgSessionGeneralGUCState *
+PgSessionGeneralGUCState *
 PgCurrentSessionGeneralGUCState(void)
 {
 	PgSessionGeneralGUCState *general_guc;
@@ -5729,7 +5744,7 @@ PgCurrentSessionAsyncState(void)
 	return &CurrentPgSession->async;
 }
 
-static PgSessionEncodingState *
+PgSessionEncodingState *
 PgCurrentSessionEncodingState(void)
 {
 	PgSessionEncodingState *encoding;

@@ -20,7 +20,11 @@
 #include "utils/backend_runtime.h"
 
 extern PgSessionCatalogLookupState *PgCurrentSessionCatalogLookupState(void);
+extern PgSessionConnectionGUCState *PgCurrentSessionConnectionGUCState(void);
+extern PgSessionDateTimeState *PgCurrentSessionDateTimeState(void);
+extern PgSessionEncodingState *PgCurrentSessionEncodingState(void);
 extern PgSessionFunctionManagerState *PgCurrentSessionFunctionManagerState(void);
+extern PgSessionGeneralGUCState *PgCurrentSessionGeneralGUCState(void);
 extern PgSessionJitProviderState *PgCurrentSessionJitProviderState(void);
 extern PgSessionPgStatState *PgCurrentSessionPgStatState(void);
 extern PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);

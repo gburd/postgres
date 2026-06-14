@@ -91,6 +91,7 @@
 #include "portability/instr_time.h"
 #include "tsearch/ts_cache.h"
 #include "utils/array.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/bytea.h"
 #include "utils/float.h"
@@ -539,8 +540,8 @@ extern const struct config_enum_entry dynamic_shared_memory_options[];
 /*
  * These GUCs exist solely for backward compatibility.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool default_with_oids = false;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool standard_conforming_strings = true;
+#define default_with_oids (*PgCurrentDefaultWithOidsRef())
+#define standard_conforming_strings (*PgCurrentStandardConformingStringsRef())
 
 /*
  * Server/config-file identity GUC backing variables live in
@@ -560,7 +561,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool standard_conforming_strings = true
  * This avoids breaking compatibility with clients that have never supported
  * renegotiation and therefore always try to zero it.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION int ssl_renegotiation_limit;
+#define ssl_renegotiation_limit (*PgCurrentSslRenegotiationLimitRef())
 
 /*
  * This really belongs in pg_shmem.c, but is defined here so that it doesn't
@@ -576,10 +577,10 @@ PG_GLOBAL_RUNTIME int huge_pages_status = HUGE_PAGES_UNKNOWN;
  * and is kept in sync by assign_hooks.
  */
 static PG_GLOBAL_RUNTIME char *syslog_ident_str;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION double phony_random_seed;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *client_encoding_string;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *datestyle_string;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *server_encoding_string;
+#define phony_random_seed (*PgCurrentPhonyRandomSeedRef())
+#define client_encoding_string (*PgCurrentClientEncodingStringRef())
+#define datestyle_string (*PgCurrentDateStyleStringRef())
+#define server_encoding_string (*PgCurrentServerEncodingStringRef())
 static PG_GLOBAL_RUNTIME char *server_version_string;
 static PG_GLOBAL_RUNTIME int server_version_num;
 static PG_GLOBAL_RUNTIME char *debug_io_direct_string;
@@ -600,9 +601,9 @@ extern char **PgCurrentTimeZoneStringRef(void);
 extern char **PgCurrentLogTimeZoneStringRef(void);
 #define timezone_string (*PgCurrentTimeZoneStringRef())
 #define log_timezone_string (*PgCurrentLogTimeZoneStringRef())
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *timezone_abbreviations_string;
+#define timezone_abbreviations_string (*PgCurrentTimeZoneAbbreviationsStringRef())
 static PG_GLOBAL_RUNTIME char *data_directory;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *session_authorization_string;
+#define session_authorization_string (*PgCurrentSessionAuthorizationStringRef())
 static PG_GLOBAL_RUNTIME int max_function_args;
 static PG_GLOBAL_RUNTIME int max_index_keys;
 static PG_GLOBAL_RUNTIME int max_identifier_length;

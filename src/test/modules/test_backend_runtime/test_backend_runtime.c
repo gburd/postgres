@@ -6828,6 +6828,110 @@ test_session_general_guc_state_is_session_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_session_compat_guc_state_is_session_local);
+Datum
+test_session_compat_guc_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && !*PgCurrentDefaultWithOidsRef();
+		ok = ok && *PgCurrentStandardConformingStringsRef();
+		ok = ok && *PgCurrentPhonyRandomSeedRef() == 0.0;
+		ok = ok && *PgCurrentSslRenegotiationLimitRef() == 0;
+		ok = ok && strcmp(*PgCurrentDateStyleStringRef(), "ISO, MDY") == 0;
+		ok = ok && strcmp(*PgCurrentClientEncodingStringRef(), "SQL_ASCII") == 0;
+		ok = ok && strcmp(*PgCurrentServerEncodingStringRef(), "SQL_ASCII") == 0;
+		ok = ok && *PgCurrentTimeZoneAbbreviationsStringRef() == NULL;
+		ok = ok && *PgCurrentSessionAuthorizationStringRef() == NULL;
+		*PgCurrentDefaultWithOidsRef() = true;
+		*PgCurrentStandardConformingStringsRef() = false;
+		*PgCurrentPhonyRandomSeedRef() = 0.25;
+		*PgCurrentSslRenegotiationLimitRef() = 11;
+		*PgCurrentDateStyleStringRef() = "session1_datestyle";
+		*PgCurrentClientEncodingStringRef() = "session1_client_encoding";
+		*PgCurrentServerEncodingStringRef() = "session1_server_encoding";
+		*PgCurrentTimeZoneAbbreviationsStringRef() = "session1_tz_abbrevs";
+		*PgCurrentSessionAuthorizationStringRef() = "session1_auth";
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && !*PgCurrentDefaultWithOidsRef();
+		ok = ok && *PgCurrentStandardConformingStringsRef();
+		ok = ok && *PgCurrentPhonyRandomSeedRef() == 0.0;
+		ok = ok && *PgCurrentSslRenegotiationLimitRef() == 0;
+		ok = ok && strcmp(*PgCurrentDateStyleStringRef(), "ISO, MDY") == 0;
+		ok = ok && strcmp(*PgCurrentClientEncodingStringRef(), "SQL_ASCII") == 0;
+		ok = ok && strcmp(*PgCurrentServerEncodingStringRef(), "SQL_ASCII") == 0;
+		ok = ok && *PgCurrentTimeZoneAbbreviationsStringRef() == NULL;
+		ok = ok && *PgCurrentSessionAuthorizationStringRef() == NULL;
+		*PgCurrentDefaultWithOidsRef() = false;
+		*PgCurrentStandardConformingStringsRef() = true;
+		*PgCurrentPhonyRandomSeedRef() = -0.25;
+		*PgCurrentSslRenegotiationLimitRef() = 22;
+		*PgCurrentDateStyleStringRef() = "session2_datestyle";
+		*PgCurrentClientEncodingStringRef() = "session2_client_encoding";
+		*PgCurrentServerEncodingStringRef() = "session2_server_encoding";
+		*PgCurrentTimeZoneAbbreviationsStringRef() = "session2_tz_abbrevs";
+		*PgCurrentSessionAuthorizationStringRef() = "session2_auth";
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && *PgCurrentDefaultWithOidsRef();
+		ok = ok && !*PgCurrentStandardConformingStringsRef();
+		ok = ok && *PgCurrentPhonyRandomSeedRef() == 0.25;
+		ok = ok && *PgCurrentSslRenegotiationLimitRef() == 11;
+		ok = ok && strcmp(*PgCurrentDateStyleStringRef(),
+						  "session1_datestyle") == 0;
+		ok = ok && strcmp(*PgCurrentClientEncodingStringRef(),
+						  "session1_client_encoding") == 0;
+		ok = ok && strcmp(*PgCurrentServerEncodingStringRef(),
+						  "session1_server_encoding") == 0;
+		ok = ok && strcmp(*PgCurrentTimeZoneAbbreviationsStringRef(),
+						  "session1_tz_abbrevs") == 0;
+		ok = ok && strcmp(*PgCurrentSessionAuthorizationStringRef(),
+						  "session1_auth") == 0;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && !*PgCurrentDefaultWithOidsRef();
+		ok = ok && *PgCurrentStandardConformingStringsRef();
+		ok = ok && *PgCurrentPhonyRandomSeedRef() == -0.25;
+		ok = ok && *PgCurrentSslRenegotiationLimitRef() == 22;
+		ok = ok && strcmp(*PgCurrentDateStyleStringRef(),
+						  "session2_datestyle") == 0;
+		ok = ok && strcmp(*PgCurrentClientEncodingStringRef(),
+						  "session2_client_encoding") == 0;
+		ok = ok && strcmp(*PgCurrentServerEncodingStringRef(),
+						  "session2_server_encoding") == 0;
+		ok = ok && strcmp(*PgCurrentTimeZoneAbbreviationsStringRef(),
+						  "session2_tz_abbrevs") == 0;
+		ok = ok && strcmp(*PgCurrentSessionAuthorizationStringRef(),
+						  "session2_auth") == 0;
+
+		PgSetCurrentSession(saved_session);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session compatibility GUC state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_session_access_wal_guc_state_is_session_local);
 Datum
 test_session_access_wal_guc_state_is_session_local(PG_FUNCTION_ARGS)

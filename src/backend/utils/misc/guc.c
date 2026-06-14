@@ -1756,6 +1756,10 @@ RebindSessionGUCVariablePointers(void)
 	Assert(gconf->vartype == PGC_STRING);
 	gconf->_string.variable = PgCurrentApplicationNameRef();
 
+	gconf = find_option("client_encoding", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentClientEncodingStringRef();
+
 	gconf = find_option("cluster_name", false, false, PANIC);
 	Assert(gconf->vartype == PGC_STRING);
 	gconf->_string.variable = PgCurrentClusterNameRef();
@@ -1784,6 +1788,10 @@ RebindSessionGUCVariablePointers(void)
 	Assert(gconf->vartype == PGC_ENUM);
 	gconf->_enum.variable = PgCurrentBackslashQuoteRef();
 
+	gconf = find_option("DateStyle", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentDateStyleStringRef();
+
 	gconf = find_option("backtrace_functions", false, false, PANIC);
 	Assert(gconf->vartype == PGC_STRING);
 	gconf->_string.variable = PgCurrentBacktraceFunctionsRef();
@@ -1795,6 +1803,10 @@ RebindSessionGUCVariablePointers(void)
 	gconf = find_option("client_min_messages", false, false, PANIC);
 	Assert(gconf->vartype == PGC_ENUM);
 	gconf->_enum.variable = PgCurrentClientMinMessagesRef();
+
+	gconf = find_option("default_with_oids", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentDefaultWithOidsRef();
 
 	gconf = find_option("compute_query_id", false, false, PANIC);
 	Assert(gconf->vartype == PGC_ENUM);
@@ -2472,9 +2484,29 @@ RebindSessionGUCVariablePointers(void)
 	Assert(gconf->vartype == PGC_STRING);
 	gconf->_string.variable = PgCurrentSessionPreloadLibrariesRef();
 
+	gconf = find_option("seed", false, false, PANIC);
+	Assert(gconf->vartype == PGC_REAL);
+	gconf->_real.variable = PgCurrentPhonyRandomSeedRef();
+
+	gconf = find_option("server_encoding", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentServerEncodingStringRef();
+
+	gconf = find_option("session_authorization", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentSessionAuthorizationStringRef();
+
 	gconf = find_option("stats_fetch_consistency", false, false, PANIC);
 	Assert(gconf->vartype == PGC_ENUM);
 	gconf->_enum.variable = PgCurrentPgStatFetchConsistencyRef();
+
+	gconf = find_option("ssl_renegotiation_limit", false, false, PANIC);
+	Assert(gconf->vartype == PGC_INT);
+	gconf->_int.variable = PgCurrentSslRenegotiationLimitRef();
+
+	gconf = find_option("standard_conforming_strings", false, false, PANIC);
+	Assert(gconf->vartype == PGC_BOOL);
+	gconf->_bool.variable = PgCurrentStandardConformingStringsRef();
 
 	gconf = find_option("synchronous_commit", false, false, PANIC);
 	Assert(gconf->vartype == PGC_ENUM);
@@ -2581,6 +2613,10 @@ RebindSessionGUCVariablePointers(void)
 	gconf = find_option("track_functions", false, false, PANIC);
 	Assert(gconf->vartype == PGC_ENUM);
 	gconf->_enum.variable = PgCurrentPgStatTrackFunctionsRef();
+
+	gconf = find_option("timezone_abbreviations", false, false, PANIC);
+	Assert(gconf->vartype == PGC_STRING);
+	gconf->_string.variable = PgCurrentTimeZoneAbbreviationsStringRef();
 
 	gconf = find_option("transform_null_equals", false, false, PANIC);
 	Assert(gconf->vartype == PGC_BOOL);
