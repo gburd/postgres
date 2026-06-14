@@ -1468,6 +1468,11 @@ manifest, and deletes that context during `PgSessionResetClosedState()` after
 DSM/DSA detach paths have run. A matching execution cleanup slice now clears
 the retained `PgExecution.memory_contexts` slots at the end of backend-exit
 cleanup, after session/backend reset still has usable memory-context state.
+Follow-up session cache teardown now also drops prepared statements and
+destroys the prepared-query hash, frees any leftover `ON COMMIT` action list,
+and destroys the remaining async local-channel hash after proc-exit async
+callbacks have had their chance to clean shared listener state. These buckets
+no longer depend on resetting the whole carrier `TopMemoryContext`.
 There are no `GateE2 pending` lifecycle manifest rows left; the broader
 `TopMemoryContext` ownership split remains tracked as a separate memory
 ownership problem rather than an unclassified bucket.

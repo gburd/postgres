@@ -213,6 +213,11 @@ Important current files:
   remain owned by transaction memory contexts and async transaction cleanup;
   the signal workspace arrays are still allocated under `TopMemoryContext`
   until the broader backend destructor model is closed.
+- Session teardown now explicitly drops prepared statements, destroys the
+  prepared-query hash, frees leftover `ON COMMIT` actions, and destroys any
+  remaining async local-channel hash. Keep that cleanup after `shmem_exit()`
+  and `on_proc_exit` callbacks; async shared listener cleanup still belongs to
+  the existing proc-exit callback path.
 - Transaction cleanup slots now live under
   `PgExecutionTransactionCleanupState`: large-object descriptor cleanup slots,
   the transaction temporary-file cleanup flag, the pgstat subtransaction stack,

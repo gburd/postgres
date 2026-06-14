@@ -2562,6 +2562,10 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	hash_ctl.entrysize = sizeof(Oid);
 
 	fake_session.database.database_path = pstrdup("base/1");
+	fake_session.prepared_statement.prepared_queries =
+		hash_create("test prepared statement cache", 8, &hash_ctl,
+					HASH_ELEM | HASH_BLOBS);
+	fake_session.on_commit.on_commits = list_make1(palloc(8));
 	fake_session.parser.operator_lookup_cache =
 		hash_create("test operator lookup cache", 8, &hash_ctl,
 					HASH_ELEM | HASH_BLOBS);
@@ -2570,6 +2574,10 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 					HASH_ELEM | HASH_BLOBS);
 	fake_session.sequence.last_used_seq =
 		(struct SeqTableData *) &fake_session;
+	fake_session.async.local_channel_table =
+		hash_create("test async channel cache", 8, &hash_ctl,
+					HASH_ELEM | HASH_BLOBS);
+	fake_session.async.registered_listener = true;
 	fake_session.optimizer.planner_extension_names =
 		(const char **) palloc(sizeof(char *));
 	fake_session.optimizer.planner_extension_names[0] = "test";
@@ -2606,9 +2614,13 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && fake_session.dynamic_library_context == NULL;
 	ok = ok && fake_session.dynamic_library_inits == NIL;
 	ok = ok && fake_session.database.database_path == NULL;
+	ok = ok && fake_session.prepared_statement.prepared_queries == NULL;
+	ok = ok && fake_session.on_commit.on_commits == NIL;
 	ok = ok && fake_session.parser.operator_lookup_cache == NULL;
 	ok = ok && fake_session.sequence.seqhashtab == NULL;
 	ok = ok && fake_session.sequence.last_used_seq == NULL;
+	ok = ok && fake_session.async.local_channel_table == NULL;
+	ok = ok && !fake_session.async.registered_listener;
 	ok = ok && fake_session.regex.ctype_cache_list == NULL;
 	ok = ok && fake_session.optimizer.planner_extension_names == NULL;
 	ok = ok && fake_session.optimizer.planner_extension_names_assigned == 0;

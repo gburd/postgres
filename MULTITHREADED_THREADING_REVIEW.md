@@ -891,7 +891,10 @@ and deletes that context during `PgSessionResetClosedState()` after DSM/DSA
 detach paths have run. A matching execution cleanup slice clears retained
 `PgExecution.memory_contexts` slots at the end of backend-exit cleanup, after
 session/backend reset has finished using live memory-context state. This
-closes the previously pending lifecycle manifest rows, while the broader
+closes the previously pending lifecycle manifest rows. Further session-cache
+teardown now drops prepared statements, destroys the prepared-query hash,
+frees leftover `ON COMMIT` list cells, and destroys any remaining async
+local-channel hash after proc-exit async callbacks have run. The broader
 `TopMemoryContext` ownership split remains a separate memory ownership
 problem.
 The next state-migration batch added `PgExecutionCatalogState` and moved seven

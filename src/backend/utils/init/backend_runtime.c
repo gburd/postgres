@@ -29,6 +29,7 @@
 #include "catalog/storage.h"
 #include "commands/async.h"
 #include "commands/extension.h"
+#include "commands/prepare.h"
 #include "commands/repack.h"
 #include "commands/tablespace.h"
 #include "commands/trigger.h"
@@ -4255,8 +4256,40 @@ PgSessionGetDynamicLibraryMemoryContext(PgSession *session)
 void
 PgSessionResetClosedState(PgSession *session)
 {
+	PgSession  *saved_session;
+
 	if (session == NULL)
 		return;
+
+	saved_session = CurrentPgSession;
+
+	if (session->prepared_statement.prepared_queries != NULL)
+	{
+		CurrentPgSession = session;
+		PG_TRY();
+		{
+			DropAllPreparedStatements();
+			CurrentPgSession = saved_session;
+		}
+		PG_CATCH();
+		{
+			CurrentPgSession = saved_session;
+			PG_RE_THROW();
+		}
+		PG_END_TRY();
+		hash_destroy(session->prepared_statement.prepared_queries);
+		session->prepared_statement.prepared_queries = NULL;
+	}
+
+	list_free_deep(session->on_commit.on_commits);
+	session->on_commit.on_commits = NIL;
+
+	if (session->async.local_channel_table != NULL)
+	{
+		hash_destroy(session->async.local_channel_table);
+		session->async.local_channel_table = NULL;
+	}
+	session->async.registered_listener = false;
 
 	if (session->database.database_path != NULL)
 	{
