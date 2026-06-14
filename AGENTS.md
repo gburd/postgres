@@ -226,6 +226,15 @@ Important current files:
 - For Phase 12 state migration, prefer larger coherent batches when the state
   has the same owner and validation surface. Avoid one-variable commits unless
   the variable sits on a fragile lifecycle path where a narrow proof is needed.
+- Current Phase 12/Gate E2 workflow: before starting the next repetitive
+  state-migration or teardown batch, first decide whether lifecycle mechanics
+  can be simplified. If the batch would add two or more similar
+  init/adopt/reset/destroy helpers, add the checked macro/action/table/checker
+  primitive first, then move the larger batch through that path. Good
+  candidates include `PG_RUNTIME_DEFINE_*` helpers, named `PG_RUNTIME_*`
+  bucket actions, bucket `.def` row patterns, and
+  `check_runtime_lifecycles.pl` validation. Record the preflight result in
+  `MULTITHREADED_PHASE12_STATE.md`.
 - Keep `src/backend/utils/init/backend_runtime.c` focused on root runtime
   construction, current-pointer installation, process/thread symmetry, and
   top-level adoption/reset orchestration. New domain-specific accessors and

@@ -11980,6 +11980,13 @@ allocation-context setup/reset, reset-through-initializer, delete-and-null
 memory-context cleanup, list/hash cleanup, and copy/adopt-then-reset fallback
 adoption.
 
+Docs refresh: `AGENTS.md` now carries this as a top-level Phase 12/Gate E2
+workflow instruction so continuation agents see it before coding. The next
+repetitive lifecycle batch should start with a preflight decision: reuse the
+existing checked bucket rows/macros/checker rules, or add the missing
+`PG_RUNTIME_*` action, `PG_RUNTIME_DEFINE_*` helper, `.def` row pattern, or
+`check_runtime_lifecycles.pl` validation first.
+
 ## PL/pgSQL Trigger Record Type Repair
 
 PL/pgSQL trigger validation found a concrete Phase 12 regression in the
