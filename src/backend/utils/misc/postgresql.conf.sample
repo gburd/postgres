@@ -383,6 +383,10 @@
                                 # none disables compression
                                 # (lz4 requires --with-lz4, zstd --with-zstd)
 #recno_compression_min_ratio = 0.8      # minimum compression ratio (0.0-1.0)
+#recno_analyze_refresh_dict = on        # ANALYZE retrains the active RECNO
+                                        # compression dictionary when the new
+                                        # one compresses the sample materially
+                                        # better (existing data not rewritten)
 
 # RECNO table access method - general settings
 #recno_lazy_uncommitted_clear = off     # defer clearing uncommitted version slots

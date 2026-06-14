@@ -2440,6 +2440,13 @@
   max => 'DBL_MAX',
 },
 
+{ name => 'recno_analyze_refresh_dict', type => 'bool', context => 'PGC_USERSET', group => 'RESOURCES_MEM',
+  short_desc => 'Whether ANALYZE retrains the active RECNO compression dictionary.',
+  long_desc => 'When enabled, ANALYZE on a RECNO table trains a candidate ZSTD dictionary from the sampled rows and activates it for new writes only if it compresses the sample materially better than the current dictionary. Existing data is never rewritten.',
+  variable => 'recno_analyze_refresh_dict',
+  boot_val => 'true',
+},
+
 { name => 'recno_compression_algorithm', type => 'enum', context => 'PGC_USERSET', group => 'RESOURCES_MEM',
   short_desc => 'Compression algorithm for RECNO attribute compression.',
   variable => 'recno_compression_algorithm',

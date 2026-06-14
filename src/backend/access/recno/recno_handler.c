@@ -332,6 +332,21 @@ recno_scan_end(TableScanDesc sscan)
 {
 	RecnoScanDesc scan = (RecnoScanDesc) sscan;
 
+	/*
+	 * If this was an ANALYZE scan that accumulated a dictionary-training
+	 * corpus, give the compression layer a chance to retrain and activate a
+	 * better dictionary before we free the sample buffers.  Done before any
+	 * buffer release so it runs while the scan context is still intact.
+	 */
+	if ((scan->rs_base.rs_flags & SO_TYPE_ANALYZE) &&
+		scan->rs_dict_samplebuf != NULL &&
+		scan->rs_dict_nsamples > 0)
+		RecnoMaybeRefreshDict(scan->rs_base.rs_rd,
+							  scan->rs_dict_samplebuf,
+							  scan->rs_dict_sizes,
+							  scan->rs_dict_nsamples,
+							  scan->rs_dict_total);
+
 	/* End read stream before releasing buffers */
 	if (scan->rs_read_stream != NULL)
 	{
@@ -4508,6 +4523,116 @@ recno_tableam_handler(PG_FUNCTION_ARGS)
 }
 
 /*
+ * recno_analyze_accumulate_sample
+ *
+ * During an ANALYZE scan, capture the decompressed bytes of the relation's
+ * first varlena column from the just-materialized slot.  These samples feed
+ * RecnoMaybeRefreshDict() at scan end so it can train a candidate compression
+ * dictionary from data ANALYZE already sampled, with no extra table reads.
+ *
+ * Sample buffers are allocated lazily in the scan's own memory context and
+ * are bounded by fixed byte/count caps.  Once a cap is hit we stop collecting
+ * but let the ANALYZE scan continue normally.
+ */
+static void
+recno_analyze_accumulate_sample(RecnoScanDesc rscan, TupleTableSlot *slot)
+{
+#ifdef USE_ZSTD
+	TupleDesc	tupdesc = RelationGetDescr(rscan->rs_base.rs_rd);
+	Datum		value;
+	bool		isnull;
+	struct varlena *detoasted;
+	Size		len;
+
+	/* Only when an ANALYZE-driven refresh could actually act on the result. */
+	if (!recno_enable_compression || !recno_analyze_refresh_dict)
+		return;
+	if (recno_compression_algorithm == RECNO_COMP_ALGO_OFF)
+		return;
+
+	/* Pick the first varlena column once; 0 means "none found, give up". */
+	if (rscan->rs_dict_attnum == 0)
+	{
+		int16		chosen = -1;
+
+		for (int i = 0; i < tupdesc->natts; i++)
+		{
+			Form_pg_attribute att = TupleDescAttr(tupdesc, i);
+
+			if (!att->attisdropped && att->attlen == -1)
+			{
+				chosen = (int16) (i + 1);
+				break;
+			}
+		}
+		if (chosen < 0)
+		{
+			rscan->rs_dict_attnum = -1;
+			return;
+		}
+		rscan->rs_dict_attnum = chosen;
+	}
+	if (rscan->rs_dict_attnum < 0)
+		return;
+
+	/* Caps reached: keep sampling stats, stop sampling dictionary corpus. */
+	if (rscan->rs_dict_total >= rscan->rs_dict_cap ||
+		rscan->rs_dict_nsamples >= rscan->rs_dict_maxsamples)
+		return;
+
+	value = slot_getattr(slot, rscan->rs_dict_attnum, &isnull);
+	if (isnull)
+		return;
+
+	detoasted = (struct varlena *) PG_DETOAST_DATUM(value);
+	len = VARSIZE_ANY_EXHDR(detoasted);
+	if (len == 0)
+	{
+		if ((Pointer) detoasted != DatumGetPointer(value))
+			pfree(detoasted);
+		return;
+	}
+
+	/*
+	 * Lazily allocate the bounded sample buffers on first real sample.  Anchor
+	 * them in the scan descriptor's own memory context (not the transient
+	 * per-tuple context active during the ANALYZE callback) so they survive
+	 * until recno_scan_end() consumes them in RecnoMaybeRefreshDict().
+	 */
+	if (rscan->rs_dict_samplebuf == NULL)
+	{
+		MemoryContext scancxt = GetMemoryChunkContext(rscan);
+		MemoryContext oldcxt = MemoryContextSwitchTo(scancxt);
+
+		rscan->rs_dict_cap = 4 * 1024 * 1024;	/* ~4MB corpus cap */
+		rscan->rs_dict_maxsamples = 100000;
+		rscan->rs_dict_samplebuf = (char *) palloc(rscan->rs_dict_cap);
+		rscan->rs_dict_sizes = (size_t *)
+			palloc(sizeof(size_t) * rscan->rs_dict_maxsamples);
+		rscan->rs_dict_nsamples = 0;
+		rscan->rs_dict_total = 0;
+
+		MemoryContextSwitchTo(oldcxt);
+	}
+
+	if (rscan->rs_dict_total + len > rscan->rs_dict_cap)
+	{
+		if ((Pointer) detoasted != DatumGetPointer(value))
+			pfree(detoasted);
+		return;
+	}
+
+	memcpy(rscan->rs_dict_samplebuf + rscan->rs_dict_total,
+		   VARDATA_ANY(detoasted), len);
+	rscan->rs_dict_sizes[rscan->rs_dict_nsamples++] = len;
+	rscan->rs_dict_total += len;
+
+	if ((Pointer) detoasted != DatumGetPointer(value))
+		pfree(detoasted);
+#endif
+}
+
+/*
  * ANALYZE support: select next block to sample
  *
  * Called by ANALYZE to prepare the next sampled block for tuple extraction.
@@ -4667,6 +4792,15 @@ recno_scan_analyze_next_tuple(TableScanDesc scan,
 			 * function when called again.
 			 */
 			LockBuffer(rscan->rs_cbuf, BUFFER_LOCK_UNLOCK);
+
+			/*
+			 * Opportunistically feed the dictionary-refresh corpus from the
+			 * same sampled tuple.  Done after the unlock so any overflow-column
+			 * detoast can lock this page safely.
+			 */
+			if (scan->rs_flags & SO_TYPE_ANALYZE)
+				recno_analyze_accumulate_sample(rscan, slot);
+
 			return true;
 		}
 	}

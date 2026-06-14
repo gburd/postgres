@@ -60,6 +60,7 @@
 int			recno_compression_level = 3;	/* Default compression level */
 int			recno_compression_algorithm = RECNO_COMP_ALGO_AUTO;
 bool		recno_enable_compression = true;
+bool		recno_analyze_refresh_dict = true;
 double		recno_compression_min_ratio = 0.8;	/* Minimum compression ratio */
 
 /*
@@ -1598,6 +1599,208 @@ RecnoResetCompressionDict(void)
 		MemoryContextReset(trained_cache_context);
 }
 
+#ifdef USE_ZSTD
+/*
+ * recno_train_dict_from_samples
+ *
+ * Train a ZSTD dictionary from an accumulated sample buffer.  Returns a
+ * palloc'd blob in the current memory context (caller frees) and stores its
+ * length in *out_len, or NULL if training was declined (too few samples) or
+ * ZDICT failed.  The sample layout matches ZDICT_trainFromBuffer: all sample
+ * bytes are concatenated in sample_buf and sample_sizes[i] gives each one's
+ * length in order.
+ */
+static char *
+recno_train_dict_from_samples(const char *sample_buf,
+							  const size_t *sample_sizes,
+							  int nsamples, Size total, uint32 *out_len)
+{
+	size_t		dict_cap;
+	char	   *dict_buf;
+	size_t		trained;
+
+	if (nsamples < 10 || total == 0)
+		return NULL;
+
+	dict_cap = Min((size_t) 112640, total / 100);
+	if (dict_cap < 4096)
+		dict_cap = 4096;
+	dict_buf = (char *) palloc(dict_cap);
+
+	trained = ZDICT_trainFromBuffer(dict_buf, dict_cap, sample_buf,
+									sample_sizes, (unsigned) nsamples);
+	if (ZDICT_isError(trained) || trained == 0)
+	{
+		pfree(dict_buf);
+		return NULL;
+	}
+
+	*out_len = (uint32) trained;
+	return dict_buf;
+}
+
+/*
+ * recno_measure_sample_compressed_size
+ *
+ * Sum the ZSTD-compressed size of every sample, using the supplied dictionary
+ * blob (pass NULL / 0 for plain, no-dictionary compression).  Lets a candidate
+ * dictionary be scored against the active one on an identical corpus.  Returns
+ * 0 on any compression error.
+ */
+static Size
+recno_measure_sample_compressed_size(const char *sample_buf,
+									 const size_t *sample_sizes, int nsamples,
+									 const char *dict_blob, uint32 dict_len,
+									 int level)
+{
+	ZSTD_CCtx  *cctx;
+	ZSTD_CDict *cdict = NULL;
+	char	   *out;
+	size_t		out_cap;
+	Size		offset = 0;
+	Size		total_comp = 0;
+	Size		max_sample = 0;
+
+	for (int i = 0; i < nsamples; i++)
+		if (sample_sizes[i] > max_sample)
+			max_sample = sample_sizes[i];
+	if (max_sample == 0)
+		return 0;
+
+	out_cap = ZSTD_compressBound(max_sample);
+	out = (char *) palloc(out_cap);
+
+	cctx = ZSTD_createCCtx();
+	if (cctx == NULL)
+	{
+		pfree(out);
+		return 0;
+	}
+
+	if (dict_blob != NULL && dict_len > 0)
+		cdict = ZSTD_createCDict(dict_blob, dict_len, level);
+
+	for (int i = 0; i < nsamples; i++)
+	{
+		size_t		csize;
+
+		if (cdict != NULL)
+			csize = ZSTD_compress_usingCDict(cctx, out, out_cap,
+											 sample_buf + offset,
+											 sample_sizes[i], cdict);
+		else
+			csize = ZSTD_compress(out, out_cap, sample_buf + offset,
+								  sample_sizes[i], level);
+		offset += sample_sizes[i];
+
+		if (ZSTD_isError(csize))
+		{
+			total_comp = 0;
+			break;
+		}
+		total_comp += csize;
+	}
+
+	if (cdict != NULL)
+		ZSTD_freeCDict(cdict);
+	ZSTD_freeCCtx(cctx);
+	pfree(out);
+
+	return total_comp;
+}
+#endif
+
+/*
+ * RecnoMaybeRefreshDict
+ *
+ * Called at the end of an ANALYZE scan with the sampled (decompressed) values
+ * of a chosen varlena column.  Trains a candidate ZSTD dictionary and
+ * activates it for new writes only when it compresses the sample materially
+ * better (>= 10% smaller) than the relation's current active dictionary -- or
+ * better than plain compression when no dictionary is active yet.
+ *
+ * Existing rows are never rewritten: previously written dictionary ids stay
+ * resolvable for decompression because dictionaries are append-only.  No-ops
+ * unless compression and ANALYZE refresh are both enabled and ZSTD is built in.
+ */
+void
+RecnoMaybeRefreshDict(Relation rel, const char *sample_buf,
+					  const size_t *sample_sizes, int nsamples, Size total)
+{
+#ifdef USE_ZSTD
+	char	   *cand_blob;
+	uint32		cand_len = 0;
+	uint32		active_dictid;
+	Size		cand_comp;
+	Size		base_comp;
+	uint32		newid;
+
+	if (!recno_enable_compression || !recno_analyze_refresh_dict)
+		return;
+	if (recno_compression_algorithm == RECNO_COMP_ALGO_OFF)
+		return;
+
+	cand_blob = recno_train_dict_from_samples(sample_buf, sample_sizes,
+											  nsamples, total, &cand_len);
+	if (cand_blob == NULL)
+		return;
+
+	cand_comp = recno_measure_sample_compressed_size(sample_buf, sample_sizes,
+													 nsamples, cand_blob,
+													 cand_len,
+													 recno_compression_level);
+	if (cand_comp == 0)
+	{
+		pfree(cand_blob);
+		return;
+	}
+
+	/*
+	 * Baseline: the current active dictionary if one exists, otherwise plain
+	 * (no-dictionary) compression.  Scored on the identical sample corpus.
+	 */
+	active_dictid = recno_dict_get_active(rel);
+	if (active_dictid != RECNO_DICT_INVALID_ID)
+	{
+		RecnoTrainedDict *td = RecnoGetTrainedDict(RelationGetRelid(rel),
+												   active_dictid);
+
+		base_comp = recno_measure_sample_compressed_size(sample_buf,
+														 sample_sizes, nsamples,
+														 td ? td->blob : NULL,
+														 td ? td->blob_len : 0,
+														 recno_compression_level);
+	}
+	else
+		base_comp = recno_measure_sample_compressed_size(sample_buf,
+														 sample_sizes, nsamples,
+														 NULL, 0,
+														 recno_compression_level);
+
+	if (base_comp == 0)
+	{
+		pfree(cand_blob);
+		return;
+	}
+
+	/*
+	 * Require a material improvement before churning the active dictionary;
+	 * marginal gains are not worth a new directory entry and a per-backend
+	 * cache reload across the fleet.
+	 */
+	if ((double) cand_comp > (double) base_comp * 0.9)
+	{
+		pfree(cand_blob);
+		return;
+	}
+
+	newid = recno_dict_append(rel, RECNO_COMP_ZSTD, cand_blob, cand_len,
+							  (uint32) total, 0);
+	recno_dict_set_active(rel, newid);
+	pfree(cand_blob);
+#endif
+}
+
 /*
  * build_zstd_dict_for_attribute(rel regclass, attnum int4) RETURNS int4
  *
@@ -1631,9 +1834,8 @@ build_zstd_dict_for_attribute(PG_FUNCTION_ARGS)
 	int			nsamples = 0;
 
 	/* Training output. */
-	size_t		dict_cap;
 	char	   *dict_buf;
-	size_t		trained;
+	uint32		dict_len = 0;
 	uint32		dictid = 0;
 
 	rel = relation_open(relid, AccessShareLock);
@@ -1706,30 +1908,17 @@ build_zstd_dict_for_attribute(PG_FUNCTION_ARGS)
 	table_endscan(scan);
 	ExecDropSingleTupleTableSlot(slot);
 
-	/* Need a reasonable corpus to train a useful dictionary. */
-	if (nsamples < 10 || total == 0)
-	{
-		relation_close(rel, AccessShareLock);
-		PG_RETURN_INT32(0);
-	}
-
-	dict_cap = Min((size_t) 112640, total / 100);
-	if (dict_cap < 4096)
-		dict_cap = 4096;
-	dict_buf = (char *) palloc(dict_cap);
-
-	trained = ZDICT_trainFromBuffer(dict_buf, dict_cap,
-									sample_buf, sample_sizes,
-									(unsigned) nsamples);
-
-	if (ZDICT_isError(trained) || trained == 0)
+	/* Train a dictionary from the sampled corpus (declines if too small). */
+	dict_buf = recno_train_dict_from_samples(sample_buf, sample_sizes,
+											 nsamples, total, &dict_len);
+	if (dict_buf == NULL)
 	{
 		relation_close(rel, AccessShareLock);
 		PG_RETURN_INT32(0);
 	}
 
 	dictid = recno_dict_append(rel, RECNO_COMP_ZSTD, dict_buf,
-							   (uint32) trained, (uint32) total, 0);
+							   dict_len, (uint32) total, 0);
 	recno_dict_set_active(rel, dictid);
 
 	relation_close(rel, AccessShareLock);

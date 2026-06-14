@@ -496,6 +496,65 @@ WHERE id <> 600;
 (1 row)
 
 DROP TABLE recno_comp_dict;
+-- =============================================
+-- ANALYZE-driven dictionary refresh (recno_analyze_refresh_dict)
+--
+-- ANALYZE reuses its own sampled rows to train a candidate ZSTD dictionary
+-- over the first varlena column and activates it only when it compresses the
+-- sample materially better than the current dictionary.  Existing rows are
+-- never rewritten; both pre- and post-refresh rows must round-trip.
+-- =============================================
+SET recno_enable_compression = on;
+SET recno_compression_algorithm = 'zstd';
+SHOW recno_analyze_refresh_dict;
+ recno_analyze_refresh_dict 
+----------------------------
+ on
+(1 row)
+
+CREATE TABLE recno_comp_analyze (
+    id serial PRIMARY KEY,
+    payload text
+) USING recno;
+-- Seed a highly self-similar corpus so a trained dict beats the plain codec.
+INSERT INTO recno_comp_analyze (payload)
+SELECT repeat('analyze refresh corpus token ' || (i % 16)::text || ' ', 24)
+FROM generate_series(1, 1000) i;
+-- ANALYZE trains+activates a dictionary from the rows it already sampled.
+ANALYZE recno_comp_analyze;
+-- New rows now use whatever dictionary ANALYZE activated; old rows still read.
+INSERT INTO recno_comp_analyze (payload)
+SELECT repeat('analyze refresh corpus token ' || (i % 16)::text || ' ', 24)
+FROM generate_series(1001, 1200) i;
+-- Full round-trip integrity across pre- and post-ANALYZE rows.
+SELECT COUNT(*) AS total,
+       COUNT(*) FILTER (
+           WHERE payload = repeat('analyze refresh corpus token '
+                                  || (id % 16)::text || ' ', 24)) AS intact
+FROM recno_comp_analyze;
+ total | intact 
+-------+--------
+  1200 |   1200
+(1 row)
+
+-- With refresh disabled, ANALYZE must not change compression behavior.
+SET recno_analyze_refresh_dict = off;
+ANALYZE recno_comp_analyze;
+INSERT INTO recno_comp_analyze (payload)
+SELECT repeat('analyze refresh corpus token ' || (i % 16)::text || ' ', 24)
+FROM generate_series(1201, 1300) i;
+SELECT COUNT(*) AS total_after_disable,
+       COUNT(*) FILTER (
+           WHERE payload = repeat('analyze refresh corpus token '
+                                  || (id % 16)::text || ' ', 24)) AS intact
+FROM recno_comp_analyze;
+ total_after_disable | intact 
+---------------------+--------
+                1300 |   1300
+(1 row)
+
+DROP TABLE recno_comp_analyze;
+RESET recno_analyze_refresh_dict;
 -- Reset to defaults
 RESET recno_compression_algorithm;
 RESET recno_enable_compression;

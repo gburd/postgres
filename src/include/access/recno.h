@@ -479,6 +479,20 @@ typedef struct RecnoScanDescData
 	/* Cached visibility map buffer to avoid per-page VM I/O */
 	Buffer		rs_vm_buffer;	/* Pinned VM buffer (or InvalidBuffer) */
 	BlockNumber rs_vm_blockno;	/* VM block number for rs_vm_buffer */
+
+	/*
+	 * ANALYZE dictionary-refresh sample accumulation.  During an ANALYZE scan
+	 * the decompressed bytes of the first varlena column are gathered here so
+	 * RecnoMaybeRefreshDict() can train a candidate dictionary at scan end.
+	 * All fields stay zero/NULL on non-ANALYZE scans.
+	 */
+	char	   *rs_dict_samplebuf;	/* Concatenated sample bytes */
+	size_t	   *rs_dict_sizes;	/* Per-sample lengths, in order */
+	int			rs_dict_nsamples;	/* Number of accumulated samples */
+	Size		rs_dict_total;	/* Total bytes in rs_dict_samplebuf */
+	Size		rs_dict_cap;	/* Capacity of rs_dict_samplebuf */
+	int			rs_dict_maxsamples; /* Capacity of rs_dict_sizes */
+	int16		rs_dict_attnum; /* 1-based varlena attr sampled, 0 = none */
 } RecnoScanDescData;
 
 typedef RecnoScanDescData *RecnoScanDesc;
@@ -591,6 +605,9 @@ extern BlockNumber RecnoFindOverflowPageForReuse(Relation rel, Page head_page,
 /* Compression */
 extern Datum RecnoCompressAttribute(Relation rel, Datum value, Oid typid, RecnoCompressionType comp_type);
 extern Datum RecnoDecompressAttribute(Oid relid, Datum value, Oid typid, RecnoCompressionHeader *header);
+extern void RecnoMaybeRefreshDict(Relation rel, const char *sample_buf,
+								  const size_t *sample_sizes, int nsamples,
+								  Size total);
 
 /* Free space management */
 extern void RecnoInitFSM(Relation rel);
@@ -805,6 +822,7 @@ extern void RecnoLogRelationStats(Relation rel, const RecnoRelationStats *stats,
 extern int	recno_compression_level;
 extern int	recno_compression_algorithm;
 extern bool recno_enable_compression;
+extern bool recno_analyze_refresh_dict;
 extern double recno_compression_min_ratio;
 extern int	recno_overflow_inline_prefix;
 
