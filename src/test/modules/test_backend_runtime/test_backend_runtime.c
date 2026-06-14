@@ -7645,6 +7645,120 @@ test_session_jit_guc_state_is_session_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+static void
+test_jit_provider_reset_after_error_1(void)
+{
+}
+
+static void
+test_jit_provider_reset_after_error_2(void)
+{
+}
+
+static void
+test_jit_provider_release_context_1(JitContext *context)
+{
+}
+
+static void
+test_jit_provider_release_context_2(JitContext *context)
+{
+}
+
+static bool
+test_jit_provider_compile_expr_1(struct ExprState *state)
+{
+	return false;
+}
+
+static bool
+test_jit_provider_compile_expr_2(struct ExprState *state)
+{
+	return false;
+}
+
+PG_FUNCTION_INFO_V1(test_session_jit_provider_state_is_session_local);
+Datum
+test_session_jit_provider_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && PgCurrentJitProviderCallbacksRef()->reset_after_error == NULL;
+		ok = ok && PgCurrentJitProviderCallbacksRef()->release_context == NULL;
+		ok = ok && PgCurrentJitProviderCallbacksRef()->compile_expr == NULL;
+		ok = ok && !*PgCurrentJitProviderSuccessfullyLoadedRef();
+		ok = ok && !*PgCurrentJitProviderFailedLoadingRef();
+		PgCurrentJitProviderCallbacksRef()->reset_after_error =
+			test_jit_provider_reset_after_error_1;
+		PgCurrentJitProviderCallbacksRef()->release_context =
+			test_jit_provider_release_context_1;
+		PgCurrentJitProviderCallbacksRef()->compile_expr =
+			test_jit_provider_compile_expr_1;
+		*PgCurrentJitProviderSuccessfullyLoadedRef() = true;
+		*PgCurrentJitProviderFailedLoadingRef() = false;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && PgCurrentJitProviderCallbacksRef()->reset_after_error == NULL;
+		ok = ok && PgCurrentJitProviderCallbacksRef()->release_context == NULL;
+		ok = ok && PgCurrentJitProviderCallbacksRef()->compile_expr == NULL;
+		ok = ok && !*PgCurrentJitProviderSuccessfullyLoadedRef();
+		ok = ok && !*PgCurrentJitProviderFailedLoadingRef();
+		PgCurrentJitProviderCallbacksRef()->reset_after_error =
+			test_jit_provider_reset_after_error_2;
+		PgCurrentJitProviderCallbacksRef()->release_context =
+			test_jit_provider_release_context_2;
+		PgCurrentJitProviderCallbacksRef()->compile_expr =
+			test_jit_provider_compile_expr_2;
+		*PgCurrentJitProviderSuccessfullyLoadedRef() = false;
+		*PgCurrentJitProviderFailedLoadingRef() = true;
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && PgCurrentJitProviderCallbacksRef()->reset_after_error ==
+			test_jit_provider_reset_after_error_1;
+		ok = ok && PgCurrentJitProviderCallbacksRef()->release_context ==
+			test_jit_provider_release_context_1;
+		ok = ok && PgCurrentJitProviderCallbacksRef()->compile_expr ==
+			test_jit_provider_compile_expr_1;
+		ok = ok && *PgCurrentJitProviderSuccessfullyLoadedRef();
+		ok = ok && !*PgCurrentJitProviderFailedLoadingRef();
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && PgCurrentJitProviderCallbacksRef()->reset_after_error ==
+			test_jit_provider_reset_after_error_2;
+		ok = ok && PgCurrentJitProviderCallbacksRef()->release_context ==
+			test_jit_provider_release_context_2;
+		ok = ok && PgCurrentJitProviderCallbacksRef()->compile_expr ==
+			test_jit_provider_compile_expr_2;
+		ok = ok && !*PgCurrentJitProviderSuccessfullyLoadedRef();
+		ok = ok && *PgCurrentJitProviderFailedLoadingRef();
+
+		PgSetCurrentSession(saved_session);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session JIT provider state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_session_query_memory_state_is_session_local);
 Datum
 test_session_query_memory_state_is_session_local(PG_FUNCTION_ARGS)

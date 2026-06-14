@@ -9954,3 +9954,47 @@ Validation for this slice:
   initial combined `prove` run saw `001_threaded_runtime.pl` lose the temp
   postmaster immediately after startup without reaching SQL; rerunning the two
   files individually passed cleanly.
+
+## JIT Provider Session Cache
+
+The next Phase 12 state-migration slice moves the provider-independent JIT
+callback cache and load-status flags into `PgSession`:
+
+- `PgSessionJitProviderState` owns the `JitProviderCallbacks` table plus the
+  successful-load and failed-load booleans formerly stored as raw
+  session-local TLS in `src/backend/jit/jit.c`;
+- `src/backend/jit/backend_runtime_jit.c` owns the compatibility accessors,
+  keeping JIT-specific bridge code out of `backend_runtime.c`;
+- `jit.c` preserves the historical local names through macros over the current
+  session bucket;
+- `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` records that the bucket owns only the
+  callback slots and flags. Dynamic library handles remain dfmgr-owned, and
+  provider-private LLVM resources remain with the provider callbacks until the
+  LLVM-specific cache migration is handled under `src/backend/jit/llvm`;
+- `MULTITHREADED_RUNTIME_OWNERS.tsv` maps `provider`,
+  `provider_successfully_loaded`, and `provider_failed_loading` to the new
+  bucket and owner file;
+- `test_backend_runtime` now checks that the provider callback table and flags
+  are session-local across fake sessions.
+
+This removes the provider-independent JIT TLS declarations from
+`src/backend/jit/jit.c`. It deliberately does not move the LLVM provider's
+larger type/module/context cache, because this checkout is configured without
+LLVM and that work needs an LLVM-enabled compile/test pass.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime_jit.o`, `jit.o`,
+  `backend_runtime.o`, and `test_backend_runtime.o`;
+- clean full `gmake -j8` passed after backend clean and generated-header
+  recovery for the installed runtime-header change;
+- `gmake -C src/pl/plpgsql/src clean all` and
+  `gmake -C src/test/modules/test_backend_runtime clean all` passed;
+- `gmake check-runtime-lifecycles` passed with 148 runtime fields classified;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and session-local declarations reduced from 108 to 106;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` with 88
+  tests and `002_threaded_bgworker_crash.pl` with 6 tests using the local
+  `IPC::Run` `PERL5LIB` and explicit `PG_REGRESS` harness environment;
+- `gmake -C contrib -j8` passed after the installed runtime-header change.

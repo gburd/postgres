@@ -21,6 +21,7 @@
 
 extern PgSessionCatalogLookupState *PgCurrentSessionCatalogLookupState(void);
 extern PgSessionFunctionManagerState *PgCurrentSessionFunctionManagerState(void);
+extern PgSessionJitProviderState *PgCurrentSessionJitProviderState(void);
 extern PgSessionPgStatState *PgCurrentSessionPgStatState(void);
 extern PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
 

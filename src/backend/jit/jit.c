@@ -33,10 +33,9 @@
  * JIT GUC state lives in PgSessionJitGUCState.  Public names remain available
  * through compatibility macros in jit/jit.h.
  */
-
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION JitProviderCallbacks provider;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool provider_successfully_loaded = false;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool provider_failed_loading = false;
+#define provider (*PgCurrentJitProviderCallbacksRef())
+#define provider_successfully_loaded (*PgCurrentJitProviderSuccessfullyLoadedRef())
+#define provider_failed_loading (*PgCurrentJitProviderFailedLoadingRef())
 
 
 static bool provider_init(void);

@@ -26,6 +26,7 @@
 #include "common/relpath.h"
 #include "executor/instrument.h"
 #include "fmgr.h"
+#include "jit/jit.h"
 #include "lib/ilist.h"
 #include "lib/stringinfo.h"
 #include "libpq/hba.h"
@@ -1502,6 +1503,13 @@ typedef struct PgSessionJitGUCState
 	double		jit_optimize_above_cost_value;
 } PgSessionJitGUCState;
 
+typedef struct PgSessionJitProviderState
+{
+	JitProviderCallbacks provider;
+	bool		provider_successfully_loaded;
+	bool		provider_failed_loading;
+} PgSessionJitProviderState;
+
 typedef struct PgSessionSortGUCState
 {
 	bool		initialized;
@@ -2100,6 +2108,7 @@ struct PgSession
 	PgSessionGeneralGUCState general_guc;
 	PgSessionAccessWalGUCState access_wal_guc;
 	PgSessionJitGUCState jit_guc;
+	PgSessionJitProviderState jit_provider_state;
 	PgSessionSortGUCState sort_guc;
 	PgSessionTextSearchState text_search;
 	PgSessionConnectionGUCState connection_guc;
@@ -2432,6 +2441,9 @@ extern bool *PgCurrentJitTupleDeformingRef(void);
 extern double *PgCurrentJitAboveCostRef(void);
 extern double *PgCurrentJitInlineAboveCostRef(void);
 extern double *PgCurrentJitOptimizeAboveCostRef(void);
+extern JitProviderCallbacks *PgCurrentJitProviderCallbacksRef(void);
+extern bool *PgCurrentJitProviderSuccessfullyLoadedRef(void);
+extern bool *PgCurrentJitProviderFailedLoadingRef(void);
 extern bool *PgCurrentTraceSortRef(void);
 #ifdef DEBUG_BOUNDED_SORT
 extern bool *PgCurrentOptimizeBoundedSortRef(void);

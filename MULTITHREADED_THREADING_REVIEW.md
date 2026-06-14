@@ -1303,7 +1303,9 @@ files proving the intended direction:
 - `src/backend/utils/cache/backend_runtime_cache.c` owns migrated
   cache/function-manager accessors;
 - `src/backend/utils/activity/backend_runtime_pgstat.c` owns migrated pgstat
-  backend/session accessors.
+  backend/session accessors;
+- `src/backend/jit/backend_runtime_jit.c` owns provider-independent JIT
+  session accessors.
 
 `backend_runtime.c` should remain focused on root runtime construction,
 current-object installation, process/thread symmetry, and top-level

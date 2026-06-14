@@ -91,6 +91,9 @@ extern bool *PgCurrentJitTupleDeformingRef(void);
 extern double *PgCurrentJitAboveCostRef(void);
 extern double *PgCurrentJitInlineAboveCostRef(void);
 extern double *PgCurrentJitOptimizeAboveCostRef(void);
+extern JitProviderCallbacks *PgCurrentJitProviderCallbacksRef(void);
+extern bool *PgCurrentJitProviderSuccessfullyLoadedRef(void);
+extern bool *PgCurrentJitProviderFailedLoadingRef(void);
 #define jit_enabled (*PgCurrentJitEnabledRef())
 #define jit_provider (*PgCurrentJitProviderRef())
 #define jit_debugging_support (*PgCurrentJitDebuggingSupportRef())

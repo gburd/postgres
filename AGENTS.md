@@ -87,6 +87,9 @@ Important current files:
 - `src/backend/utils/activity/backend_runtime_pgstat.c`: fork-owned runtime
   bridge accessors for pgstat-owned backend/session state. Add future pgstat
   accessor shims here rather than growing `backend_runtime.c`.
+- `src/backend/jit/backend_runtime_jit.c`: fork-owned runtime bridge accessors
+  for provider-independent JIT session state. Keep LLVM-provider-private
+  lifecycle work under `src/backend/jit/llvm` when that state is migrated.
 - `src/backend/utils/init/backend_runtime_internal.h`: backend-private runtime
   declarations shared by fork-owned runtime support files. Do not expose these
   helpers in installed headers unless an upstream-owned caller truly needs

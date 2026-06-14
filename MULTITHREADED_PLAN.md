@@ -808,10 +808,11 @@ symbol-level mapping from legacy global to runtime bucket/member/accessor.
 The first owner files proving this direction are
 `src/backend/utils/cache/backend_runtime_cache.c` for cache/function-manager
 accessors and `src/backend/utils/activity/backend_runtime_pgstat.c` for
-pgstat/backend-status accessors. Future Phase 12 bucket additions should pick
-an adjacent owner file first; adding more code to `backend_runtime.c` should be
-reserved for root runtime construction, current-object helpers, and top-level
-adopt/reset calls.
+pgstat/backend-status accessors, followed by
+`src/backend/jit/backend_runtime_jit.c` for provider-independent JIT state.
+Future Phase 12 bucket additions should pick an adjacent owner file first;
+adding more code to `backend_runtime.c` should be reserved for root runtime
+construction, current-object helpers, and top-level adopt/reset calls.
 
 Validation:
 
