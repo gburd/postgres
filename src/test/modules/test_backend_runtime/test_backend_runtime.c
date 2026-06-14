@@ -46,6 +46,16 @@ test_exit_backend(int code)
 	siglongjmp(exit_continuation_jmp, 1);
 }
 
+PG_FUNCTION_INFO_V1(test_backend_runtime_noop_event_trigger);
+Datum
+test_backend_runtime_noop_event_trigger(PG_FUNCTION_ARGS)
+{
+	if (!CALLED_AS_EVENT_TRIGGER(fcinfo))
+		elog(ERROR, "not called as an event trigger");
+
+	PG_RETURN_VOID();
+}
+
 PG_FUNCTION_INFO_V1(test_backend_exit_runtime_continuation);
 Datum
 test_backend_exit_runtime_continuation(PG_FUNCTION_ARGS)

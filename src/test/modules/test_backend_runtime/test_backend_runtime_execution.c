@@ -549,8 +549,6 @@ test_execution_reset_closed_state(PG_FUNCTION_ARGS)
 			(PgStat_SubXactStatus *) &fake_tuptable;
 		fake_execution.transaction_cleanup.ri_fastpath_cache =
 			(HTAB *) &fake_portal;
-		fake_execution.replication_scratch.event_trigger_query_state =
-			(EventTriggerQueryState *) &fake_execution;
 		fake_execution.replication_scratch.replorigin_xact.origin = 1;
 		fake_execution.replication_scratch.replorigin_xact.origin_lsn = 2;
 		fake_execution.replication_scratch.replorigin_xact.origin_timestamp = 3;
@@ -769,6 +767,41 @@ test_execution_reset_closed_state(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "execution closed reset did not clear volatile state");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_execution_event_trigger_query_state_reset);
+Datum
+test_execution_event_trigger_query_state_reset(PG_FUNCTION_ARGS)
+{
+	EventTriggerQueryState **statep;
+	bool		began = false;
+	bool		ok = true;
+
+	PG_TRY();
+	{
+		began = EventTriggerBeginCompleteQuery();
+		if (!began)
+			elog(ERROR, "event trigger complete-query state was not created");
+
+		statep = PgCurrentEventTriggerQueryStateRef();
+		ok = ok && *statep != NULL;
+
+		EventTriggerResetQueryStateStack(statep);
+
+		ok = ok && *statep == NULL;
+	}
+	PG_CATCH();
+	{
+		if (began)
+			EventTriggerResetQueryStateStack(PgCurrentEventTriggerQueryStateRef());
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "event trigger query state was not reset");
 
 	PG_RETURN_BOOL(true);
 }

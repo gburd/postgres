@@ -10966,6 +10966,33 @@ Async signal workspace lifecycle slice completed:
   `test_execution_async_state_is_execution_local()` verifies the workspace
   context follows the current execution.
 
+Event-trigger query-state lifecycle preflight:
+
+- target root and bucket: `PgExecution.replication_scratch`;
+- repeated lifecycle operations: zero initialization, whole-bucket early
+  fallback adoption, and closed-execution reset with one owner-adjacent
+  destructor for the private event-trigger query-state stack;
+- lifecycle preflight result: the existing
+  `PG_EXECUTION_BUCKET(replication_scratch, ...)` row is the right checked
+  call site, but `backend_runtime.c` should not know the private
+  `EventTriggerQueryState` layout. The framework was therefore extended by
+  adding `src/backend/commands/event_trigger.c` to the checked lifecycle
+  source set and putting the semantic stack destructor in that owner file.
+
+Event-trigger query-state lifecycle slice completed:
+
+- `event_trigger.c` now owns `EventTriggerResetQueryStateStack()`, which
+  deletes every open complete-query event-trigger context in a runtime slot;
+- `PgExecutionResetClosedState()` reaches that helper through the checked
+  `PgExecution.replication_scratch` bucket reset before restoring the default
+  replication scratch state;
+- the lifecycle manifest now classifies event-trigger query-state contexts as
+  owned by the execution scratch slot, while logical apply contexts remain
+  borrowed from existing worker cleanup;
+- `test_execution_event_trigger_query_state_reset()` creates a real
+  `ddl_command_end` event trigger fixture, begins complete-query event-trigger
+  state, and verifies the owner-adjacent reset helper deletes the live slot.
+
 Execution closed-reset hardening slice completed:
 
 - lifecycle preflight result: the existing execution bucket `.def` rows and

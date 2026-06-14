@@ -25,6 +25,7 @@ my @sources = (
 	'src/backend/utils/activity/backend_runtime_pgstat.c',
 	'src/backend/utils/misc/backend_runtime_guc.c',
 	'src/backend/utils/misc/backend_runtime_utility.c',
+	'src/backend/commands/event_trigger.c',
 	'src/backend/jit/backend_runtime_jit.c',
 	'src/backend/access/transam/backend_runtime_parallel.c',
 	'src/backend/libpq/backend_runtime_connection.c',

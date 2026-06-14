@@ -105,6 +105,11 @@ SELECT test_execution_memory_contexts_are_execution_local();
 SELECT test_execution_spi_state_is_execution_local();
 SELECT test_execution_active_portal_is_execution_local();
 SELECT test_execution_reset_closed_state();
+CREATE EVENT TRIGGER test_backend_runtime_ddl_command_end
+	ON ddl_command_end
+	EXECUTE FUNCTION test_backend_runtime_noop_event_trigger();
+SELECT test_execution_event_trigger_query_state_reset();
+DROP EVENT TRIGGER test_backend_runtime_ddl_command_end;
 SELECT test_execution_vacuum_state_is_execution_local();
 SELECT test_execution_node_io_state_is_execution_local();
 SELECT test_execution_basebackup_state_is_execution_local();

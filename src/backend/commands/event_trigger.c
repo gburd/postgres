@@ -1244,6 +1244,20 @@ EventTriggerEndCompleteQuery(void)
 	currentEventTriggerState = prevstate;
 }
 
+void
+EventTriggerResetQueryStateStack(struct EventTriggerQueryState **statep)
+{
+	EventTriggerQueryState *state;
+
+	Assert(statep != NULL);
+
+	while ((state = *statep) != NULL)
+	{
+		*statep = state->previous;
+		MemoryContextDelete(state->cxt);
+	}
+}
+
 /*
  * Do we need to keep close track of objects being dropped?
  *

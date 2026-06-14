@@ -68,6 +68,7 @@ extern void EventTriggerOnLogin(void);
 
 extern bool EventTriggerBeginCompleteQuery(void);
 extern void EventTriggerEndCompleteQuery(void);
+extern void EventTriggerResetQueryStateStack(struct EventTriggerQueryState **statep);
 extern bool trackDroppedObjectsNeeded(void);
 extern void EventTriggerSQLDropAddObject(const ObjectAddress *object,
 										 bool original, bool normal);

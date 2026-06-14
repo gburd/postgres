@@ -423,6 +423,14 @@ CREATE FUNCTION test_execution_reset_closed_state()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;
 
+CREATE FUNCTION test_execution_event_trigger_query_state_reset()
+	RETURNS pg_catalog.bool
+	AS 'MODULE_PATHNAME' LANGUAGE C;
+
+CREATE FUNCTION test_backend_runtime_noop_event_trigger()
+	RETURNS event_trigger
+	AS 'MODULE_PATHNAME' LANGUAGE C;
+
 CREATE FUNCTION test_execution_vacuum_state_is_execution_local()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;

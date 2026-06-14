@@ -28,6 +28,7 @@
 #include "catalog/binary_upgrade.h"
 #include "catalog/storage.h"
 #include "commands/async.h"
+#include "commands/event_trigger.h"
 #include "commands/extension.h"
 #include "commands/prepare.h"
 #include "commands/repack.h"
@@ -877,6 +878,8 @@ static void PgExecutionInitializeTransactionCleanupState(PgExecutionTransactionC
 static void PgExecutionAdoptEarlyTransactionCleanupState(PgExecution *execution);
 static void PgExecutionInitializeReplicationScratchState(PgExecutionReplicationScratchState *replication_scratch);
 static void PgExecutionAdoptEarlyReplicationScratchState(PgExecution *execution);
+static void PgExecutionResetReplicationScratchClosedState(PgExecutionReplicationScratchState
+														  *replication_scratch);
 static void PgExecutionInitializeGUCErrorState(PgExecutionGUCErrorState *guc_error);
 static void PgExecutionAdoptEarlyGUCErrorState(PgExecution *execution);
 static void PgExecutionInitializeAsyncState(PgExecutionAsyncState *async);
@@ -3835,6 +3838,16 @@ PgExecutionAdoptEarlyReplicationScratchState(PgExecution *execution)
 
 	execution->replication_scratch = early_execution_replication_scratch;
 	PgExecutionInitializeReplicationScratchState(&early_execution_replication_scratch);
+}
+
+static void
+PgExecutionResetReplicationScratchClosedState(PgExecutionReplicationScratchState
+											  *replication_scratch)
+{
+	Assert(replication_scratch != NULL);
+
+	EventTriggerResetQueryStateStack(&replication_scratch->event_trigger_query_state);
+	PgExecutionInitializeReplicationScratchState(replication_scratch);
 }
 
 PG_RUNTIME_DEFINE_ZERO_INIT(PgExecutionInitializeGUCErrorState,
