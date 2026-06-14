@@ -417,7 +417,7 @@ test_backend_thread_runtime_state(PG_FUNCTION_ARGS)
 		CurrentPgRuntime = saved_runtime;
 		CurrentPgCarrier = saved_carrier;
 		CurrentPgBackend = saved_backend;
-		CurrentPgSession = saved_session;
+		PgSetCurrentSession(saved_session);
 		CurrentPgConnection = saved_connection;
 		CurrentPgExecution = saved_execution;
 	}
@@ -426,7 +426,7 @@ test_backend_thread_runtime_state(PG_FUNCTION_ARGS)
 		CurrentPgRuntime = saved_runtime;
 		CurrentPgCarrier = saved_carrier;
 		CurrentPgBackend = saved_backend;
-		CurrentPgSession = saved_session;
+		PgSetCurrentSession(saved_session);
 		CurrentPgConnection = saved_connection;
 		CurrentPgExecution = saved_execution;
 		PG_RE_THROW();
@@ -435,6 +435,87 @@ test_backend_thread_runtime_state(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "thread backend runtime state was not initialized");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_thread_install_adopts_backend_fallback_state);
+Datum
+test_thread_install_adopts_backend_fallback_state(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgThreadBackendRuntimeState state;
+	Latch		fake_latch;
+	bool		ok = true;
+
+	saved_backend = CurrentPgBackend;
+
+	InitLatch(&fake_latch);
+
+	PG_TRY();
+	{
+		CurrentPgBackend = NULL;
+		PgCurrentWalSenderState()->is_walsender = true;
+		PgCurrentReplicationState()->sync_rep_wait_mode = 101;
+		PgCurrentLogicalReplicationState()->slotsync_sleep_ms = 102;
+		PgCurrentXLogState()->local_xlog_insert_allowed = 103;
+		PgCurrentRecoveryState()->standby_wait_us = 104;
+		PgCurrentMaintenanceWorkerState()->walsummarizer_sleep_quanta = 105;
+		PgCurrentAutovacuumState()->av_storage_param_cost_limit = 106;
+		PgCurrentRepackState()->current_segment = 107;
+		PgCurrentAioState()->my_io_worker_id = 108;
+		InterruptPending = true;
+		InterruptHoldoffCount = 109;
+
+		InitializePgThreadRuntime(NULL);
+		InitializePgThreadBackendRuntimeState(&state, B_BACKEND, NULL,
+											  &fake_latch);
+		PgBackendAdoptEarlyState(&state.backend);
+
+		ok = ok && state.backend.walsender.is_walsender;
+		ok = ok && state.backend.replication.sync_rep_wait_mode == 101;
+		ok = ok && state.backend.logical_replication.slotsync_sleep_ms == 102;
+		ok = ok && dlist_is_empty(&state.backend.logical_replication.lsn_mapping);
+		ok = ok && state.backend.xlog.local_xlog_insert_allowed == 103;
+		ok = ok && state.backend.recovery.standby_wait_us == 104;
+		ok = ok &&
+			state.backend.maintenance_worker.walsummarizer_sleep_quanta == 105;
+		ok = ok && state.backend.autovacuum.av_storage_param_cost_limit == 106;
+		ok = ok && dlist_is_empty(&state.backend.autovacuum.database_list);
+		ok = ok && state.backend.repack.current_segment == 107;
+		ok = ok && state.backend.aio.my_io_worker_id == 108;
+		ok = ok && state.backend.pending_interrupts.interrupt_pending;
+		ok = ok &&
+			state.backend.interrupt_holdoffs.interrupt_holdoff_count == 109;
+
+		ok = ok && !PgCurrentWalSenderState()->is_walsender;
+		ok = ok && PgCurrentReplicationState()->sync_rep_wait_mode == -1;
+		ok = ok && PgCurrentLogicalReplicationState()->slotsync_sleep_ms ==
+			PG_BACKEND_SLOTSYNC_INITIAL_SLEEP_MS;
+		ok = ok && dlist_is_empty(&PgCurrentLogicalReplicationState()->lsn_mapping);
+		ok = ok && PgCurrentXLogState()->local_xlog_insert_allowed == -1;
+		ok = ok && PgCurrentRecoveryState()->standby_wait_us ==
+			PG_BACKEND_STANDBY_INITIAL_WAIT_US;
+		ok = ok &&
+			PgCurrentMaintenanceWorkerState()->walsummarizer_sleep_quanta == 1;
+		ok = ok && PgCurrentAutovacuumState()->av_storage_param_cost_limit == -1;
+		ok = ok && dlist_is_empty(&PgCurrentAutovacuumState()->database_list);
+		ok = ok && PgCurrentRepackState()->current_segment == 0;
+		ok = ok && PgCurrentAioState()->my_io_worker_id == -1;
+		ok = ok && !InterruptPending;
+		ok = ok && InterruptHoldoffCount == 0;
+
+		CurrentPgBackend = saved_backend;
+	}
+	PG_CATCH();
+	{
+		CurrentPgBackend = saved_backend;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "thread backend install did not adopt backend fallback state");
 
 	PG_RETURN_BOOL(true);
 }

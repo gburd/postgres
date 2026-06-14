@@ -151,6 +151,13 @@ Important current files:
   for pointer, list, memory-context, socket, hash-table, and opaque-pointer
   fields. Manual process/thread init/adopt asymmetries must be centralized or
   explicitly justified.
+- Backend early fallback adoption is centralized in
+  `PgBackendAdoptEarlyState()`. Do not add a backend bucket adoption helper to
+  only the process or thread install path; add it to that shared helper or
+  document why the asymmetry is intentional. Pointer/list-bearing buckets need
+  an explicit copy/adopt rule, and copied empty list heads must be asserted and
+  reinitialized in the destination object rather than preserving fallback
+  self-pointers.
 - Phase 12 miscellaneous execution scratch state now lives under
   `PgExecution`: `PgExecutionAnalyzeState.array_extra_data`,
   `PgExecutionRegexState`, `PgExecutionValgrindState`, and

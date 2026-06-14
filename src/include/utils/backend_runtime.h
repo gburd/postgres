@@ -2318,6 +2318,7 @@ extern bool PgRuntimeShouldThreadBackend(BackendType backend_type);
 extern PgBackendModel PgRuntimeGetExtensionBackendModel(void);
 extern void PgRuntimeSetExtensionBackendModel(PgBackendModel backend_model);
 extern void PgBackendInitializeInterrupts(PgBackend *backend);
+extern void PgBackendAdoptEarlyState(PgBackend *backend);
 extern void PgBackendSetInterruptLatch(PgBackend *backend,
 										struct Latch *interrupt_latch);
 extern PgBackendId PgBackendGetId(PgBackend *backend);

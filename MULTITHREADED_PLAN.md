@@ -1416,6 +1416,19 @@ hardening blocker: the large `PgBackend` bucket is acceptable as a Phase 12
 bridge, but it is not a final ownership model until initialization, adoption,
 teardown, and pointer/list-bearing copy rules are explicit for each bucket,
 and the `PgSession`/legacy `Session` endpoint is documented.
+Follow-up Gate E2 hardening centralized backend early fallback adoption in
+`PgBackendAdoptEarlyState()`, so process runtime initialization and thread
+backend installation no longer maintain separate backend adoption lists. This
+explicitly brings WAL sender, replication, logical replication, XLog,
+recovery, maintenance-worker, autovacuum, repack, AIO, pending-interrupt, and
+interrupt-holdoff adoption into the thread-install path. Backend exit state
+remains deliberately separate because it is owned by the backend-exit cleanup
+lifecycle. The same slice fixed one pointer/list-bearing copy rule by
+asserting that the early autovacuum database list is empty and reinitializing
+the adopted backend's list head. Validation included touched-object builds,
+the `test_backend_runtime` regression, direct threaded TAP, full `gmake -j8`,
+contrib build, and `gmake check-global-lifetimes` with zero new unclassified
+mutable globals.
 
 ## Phase 13: Scheduler-Aware Wait Boundary
 

@@ -846,6 +846,17 @@ be centralized or have every intentional asymmetry documented. The same review
 also requires documenting the endpoint for the `PgSession`/legacy `Session`
 bridge and treating `PgBackend` as a Phase 12 consolidation bridge, not the
 final ownership boundary.
+Subsequent Gate E2 hardening addressed the first adoption-asymmetry concern by
+adding `PgBackendAdoptEarlyState()` and making both process runtime
+initialization and thread backend installation call it. That brings the
+previously process-only WAL sender, replication, logical replication, XLog,
+recovery, maintenance-worker, autovacuum, repack, AIO, pending-interrupt, and
+interrupt-holdoff adoption paths into thread install. The same slice fixed one
+pointer/list-bearing bucket rule by asserting an empty early autovacuum
+database list and reinitializing the adopted backend list head instead of
+copying a fallback `dlist_head` self-pointer. This is a partial Gate E2
+closure only; the full bucket lifecycle audit, session/execution completion,
+legacy `Session` endpoint, and destructor/reset model remain blockers.
 The latest state-migration slice moved wait-event storage into
 `PgBackendWaitState` and the shared-invalidation local transaction ID counter
 into `PgBackendIPCState`. Validation included touched-object builds, a clean

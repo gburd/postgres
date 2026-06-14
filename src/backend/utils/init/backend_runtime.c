@@ -2681,8 +2681,10 @@ static void
 PgBackendAdoptEarlyAutovacuumState(PgBackend *backend)
 {
 	Assert(backend != NULL);
+	Assert(dlist_is_empty(&early_backend_autovacuum.database_list));
 
 	backend->autovacuum = early_backend_autovacuum;
+	dlist_init(&backend->autovacuum.database_list);
 	PgBackendInitializeAutovacuumState(&early_backend_autovacuum);
 }
 
@@ -2747,6 +2749,46 @@ PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend)
 	early_interrupt_holdoffs.interrupt_holdoff_count = 0;
 	early_interrupt_holdoffs.query_cancel_holdoff_count = 0;
 	early_interrupt_holdoffs.crit_section_count = 0;
+}
+
+void
+PgBackendAdoptEarlyState(PgBackend *backend)
+{
+	Assert(backend != NULL);
+
+	PgBackendAdoptEarlyCoreState(backend);
+	PgBackendAdoptEarlyCommandState(backend);
+	PgBackendAdoptEarlyLogState(backend);
+	PgBackendAdoptEarlyExprInterpState(backend);
+	PgBackendAdoptEarlyMyProc(backend);
+	PgBackendAdoptEarlyProcNumberState(backend);
+	PgBackendAdoptEarlyMyBEEntry(backend);
+	PgBackendAdoptEarlyMyBgworkerEntry(backend);
+	PgBackendAdoptEarlyAuxProcessResourceOwner(backend);
+	PgBackendAdoptEarlyPgStatPendingState(backend);
+	PgBackendAdoptEarlyActivityState(backend);
+	PgBackendAdoptEarlyMemoryManagerState(backend);
+	PgBackendAdoptEarlyUtilityState(backend);
+	PgBackendAdoptEarlyParallelState(backend);
+	PgBackendAdoptEarlyInstrumentationState(backend);
+	PgBackendAdoptEarlyBufferState(backend);
+	PgBackendAdoptEarlyStorageState(backend);
+	PgBackendAdoptEarlyLockState(backend);
+	PgBackendAdoptEarlyIPCState(backend);
+	PgBackendAdoptEarlyWaitState(backend);
+	PgBackendAdoptEarlyTransactionState(backend);
+	PgBackendAdoptEarlyTimeoutState(backend);
+	PgBackendAdoptEarlyWalSenderState(backend);
+	PgBackendAdoptEarlyReplicationState(backend);
+	PgBackendAdoptEarlyLogicalReplicationState(backend);
+	PgBackendAdoptEarlyXLogState(backend);
+	PgBackendAdoptEarlyRecoveryState(backend);
+	PgBackendAdoptEarlyMaintenanceWorkerState(backend);
+	PgBackendAdoptEarlyAutovacuumState(backend);
+	PgBackendAdoptEarlyRepackState(backend);
+	PgBackendAdoptEarlyAioState(backend);
+	PgBackendAdoptEarlyPendingInterrupts(backend);
+	PgBackendAdoptEarlyInterruptHoldoffs(backend);
 }
 
 static void
@@ -3095,42 +3137,10 @@ InitializePgProcessRuntime(void)
 	process_backend.backend_type = MyBackendType;
 	PgBackendInitializeProcNumberState(&process_backend);
 	PgBackendInitializeInterrupts(&process_backend);
-	PgBackendAdoptEarlyCoreState(&process_backend);
-	PgBackendAdoptEarlyCommandState(&process_backend);
-	PgBackendAdoptEarlyLogState(&process_backend);
-	PgBackendAdoptEarlyExprInterpState(&process_backend);
-	PgBackendAdoptEarlyMyProc(&process_backend);
-	PgBackendAdoptEarlyProcNumberState(&process_backend);
-	PgBackendAdoptEarlyMyBEEntry(&process_backend);
-	PgBackendAdoptEarlyMyBgworkerEntry(&process_backend);
-	PgBackendAdoptEarlyAuxProcessResourceOwner(&process_backend);
-	PgBackendAdoptEarlyPgStatPendingState(&process_backend);
-	PgBackendAdoptEarlyActivityState(&process_backend);
-	PgBackendAdoptEarlyMemoryManagerState(&process_backend);
-	PgBackendAdoptEarlyUtilityState(&process_backend);
-	PgBackendAdoptEarlyParallelState(&process_backend);
-	PgBackendAdoptEarlyInstrumentationState(&process_backend);
-	PgBackendAdoptEarlyBufferState(&process_backend);
-	PgBackendAdoptEarlyStorageState(&process_backend);
-	PgBackendAdoptEarlyLockState(&process_backend);
-	PgBackendAdoptEarlyIPCState(&process_backend);
-	PgBackendAdoptEarlyWaitState(&process_backend);
-	PgBackendAdoptEarlyTransactionState(&process_backend);
-	PgBackendAdoptEarlyTimeoutState(&process_backend);
-	PgBackendAdoptEarlyWalSenderState(&process_backend);
-	PgBackendAdoptEarlyReplicationState(&process_backend);
-	PgBackendAdoptEarlyLogicalReplicationState(&process_backend);
-	PgBackendAdoptEarlyXLogState(&process_backend);
-	PgBackendAdoptEarlyRecoveryState(&process_backend);
-	PgBackendAdoptEarlyMaintenanceWorkerState(&process_backend);
-	PgBackendAdoptEarlyAutovacuumState(&process_backend);
-	PgBackendAdoptEarlyRepackState(&process_backend);
-	PgBackendAdoptEarlyAioState(&process_backend);
+	PgBackendAdoptEarlyState(&process_backend);
 	PgBackendSetInterruptLatch(&process_backend, process_backend.core.latch);
 	dlist_init(&process_backend.dsm_segment_list);
 	PgBackendInitializeExitState(&process_backend.exit_state);
-	PgBackendAdoptEarlyPendingInterrupts(&process_backend);
-	PgBackendAdoptEarlyInterruptHoldoffs(&process_backend);
 	PgBackendAdoptEarlyExitState(&process_backend.exit_state);
 
 	process_session.backend = &process_backend;
@@ -3380,28 +3390,7 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	state->carrier.current_backend = &state->backend;
 	state->carrier.current_session = &state->session;
 	state->carrier.current_execution = &state->execution;
-	PgBackendAdoptEarlyCoreState(&state->backend);
-	PgBackendAdoptEarlyCommandState(&state->backend);
-	PgBackendAdoptEarlyLogState(&state->backend);
-	PgBackendAdoptEarlyExprInterpState(&state->backend);
-	PgBackendAdoptEarlyMyProc(&state->backend);
-	PgBackendAdoptEarlyProcNumberState(&state->backend);
-	PgBackendAdoptEarlyMyBEEntry(&state->backend);
-	PgBackendAdoptEarlyMyBgworkerEntry(&state->backend);
-	PgBackendAdoptEarlyAuxProcessResourceOwner(&state->backend);
-	PgBackendAdoptEarlyPgStatPendingState(&state->backend);
-	PgBackendAdoptEarlyActivityState(&state->backend);
-	PgBackendAdoptEarlyMemoryManagerState(&state->backend);
-	PgBackendAdoptEarlyUtilityState(&state->backend);
-	PgBackendAdoptEarlyParallelState(&state->backend);
-	PgBackendAdoptEarlyInstrumentationState(&state->backend);
-	PgBackendAdoptEarlyBufferState(&state->backend);
-	PgBackendAdoptEarlyStorageState(&state->backend);
-	PgBackendAdoptEarlyLockState(&state->backend);
-	PgBackendAdoptEarlyIPCState(&state->backend);
-	PgBackendAdoptEarlyWaitState(&state->backend);
-	PgBackendAdoptEarlyTransactionState(&state->backend);
-	PgBackendAdoptEarlyTimeoutState(&state->backend);
+	PgBackendAdoptEarlyState(&state->backend);
 	PgSessionAdoptEarlyLoopState(&state->session);
 	PgSessionAdoptEarlyDatabaseState(&state->session);
 	PgSessionAdoptEarlyTablespaceState(&state->session);

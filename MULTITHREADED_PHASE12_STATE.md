@@ -7921,6 +7921,47 @@ Validation for this slice:
   moved array typanalyze, regex locale, Valgrind, and snapshot-builder
   scratch fields across two fake logical executions.
 
+## Backend Early Adoption Symmetry
+
+The one-hundred-sixty-ninth Phase 12 slice closes the first concrete
+object-model review concern by centralizing backend early fallback adoption in
+`PgBackendAdoptEarlyState()`:
+
+- process runtime initialization and thread backend installation now call the
+  same backend adoption helper instead of maintaining separate manual lists;
+- the shared helper covers the backend buckets that process mode already
+  adopted but thread install had missed: WAL sender, replication, logical
+  replication, XLog, recovery, maintenance-worker, autovacuum, repack, AIO,
+  pending-interrupt, and interrupt-holdoff state;
+- backend exit state intentionally remains outside this helper because it is
+  owned by the `storage/ipc` backend-exit cleanup lifecycle and is adopted
+  through `PgBackendAdoptEarlyExitState()`;
+- `PgBackendAdoptEarlyAutovacuumState()` now asserts that the early
+  autovacuum database list is empty before adoption and reinitializes the
+  adopted backend's `database_list` head, avoiding copied empty-`dlist`
+  self-pointers.
+
+This is a Gate E2 hardening step, not the full lifecycle audit. It removes one
+class of process/thread adoption drift and adds one explicit pointer/list copy
+rule. The remaining Gate E2 object-model work still needs bucket-by-bucket
+initializer, adoption, reset/destroy, owner/lifetime, and pointer/list/socket/
+hash/memory-context classification.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o` and
+  `test_backend_runtime.o`;
+- `gmake -C src/test/modules/test_backend_runtime check` passed with the new
+  `test_thread_install_adopts_backend_fallback_state()` regression helper;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and
+  patched macOS install names;
+- full `gmake -j8` passed;
+- `gmake -C contrib -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals.
+
 ## Backend Parallel State Bridge
 
 The one-hundred-forty-second Phase 12 slice moves a parallel-query and
