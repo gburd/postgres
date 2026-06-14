@@ -34,6 +34,7 @@
 #include "commands/tablespace.h"
 #include "commands/trigger.h"
 #include "commands/vacuum.h"
+#include "executor/spi.h"
 #include "jit/jit.h"
 #include "lib/dshash.h"
 #include "libpq/crypt.h"
@@ -544,6 +545,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPlannerMethodState early_sessi
 	.join_collapse_limit_value = 8
 };
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionFunctionManagerState early_session_function_manager;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionCatalogLookupState early_session_catalog_lookup;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionInvalidationCallbackState early_session_invalidation_callbacks;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPreparedStatementState early_session_prepared_statement;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionOnCommitState early_session_on_commit;
@@ -700,6 +702,8 @@ static void PgSessionInitializePlannerMethodState(PgSessionPlannerMethodState *p
 static void PgSessionAdoptEarlyPlannerMethodState(PgSession *session);
 static void PgSessionInitializeFunctionManagerState(PgSessionFunctionManagerState *function_manager);
 static void PgSessionAdoptEarlyFunctionManagerState(PgSession *session);
+static void PgSessionInitializeCatalogLookupState(PgSessionCatalogLookupState *catalog_lookup);
+static void PgSessionAdoptEarlyCatalogLookupState(PgSession *session);
 static void PgSessionInitializeInvalidationCallbackState(PgSessionInvalidationCallbackState *invalidation_callbacks);
 static void PgSessionAdoptEarlyInvalidationCallbackState(PgSession *session);
 static void PgSessionInitializePreparedStatementState(PgSessionPreparedStatementState *prepared_statement);
@@ -879,6 +883,7 @@ static PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
 static PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
 static PgSessionPlannerMethodState *PgCurrentSessionPlannerMethodState(void);
 static PgSessionFunctionManagerState *PgCurrentSessionFunctionManagerState(void);
+static PgSessionCatalogLookupState *PgCurrentSessionCatalogLookupState(void);
 static PgSessionInvalidationCallbackState *PgCurrentSessionInvalidationCallbackState(void);
 static PgSessionPreparedStatementState *PgCurrentSessionPreparedStatementState(void);
 static PgSessionOnCommitState *PgCurrentSessionOnCommitState(void);
@@ -1973,6 +1978,23 @@ PgSessionAdoptEarlyFunctionManagerState(PgSession *session)
 }
 
 static void
+PgSessionInitializeCatalogLookupState(PgSessionCatalogLookupState *catalog_lookup)
+{
+	Assert(catalog_lookup != NULL);
+
+	MemSet(catalog_lookup, 0, sizeof(*catalog_lookup));
+}
+
+static void
+PgSessionAdoptEarlyCatalogLookupState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	session->catalog_lookup = early_session_catalog_lookup;
+	PgSessionInitializeCatalogLookupState(&early_session_catalog_lookup);
+}
+
+static void
 PgSessionInitializeInvalidationCallbackState(PgSessionInvalidationCallbackState *invalidation_callbacks)
 {
 	Assert(invalidation_callbacks != NULL);
@@ -2339,6 +2361,7 @@ PgSessionAdoptEarlyState(PgSession *session)
 	PgSessionAdoptEarlyPlannerCostState(session);
 	PgSessionAdoptEarlyPlannerMethodState(session);
 	PgSessionAdoptEarlyFunctionManagerState(session);
+	PgSessionAdoptEarlyCatalogLookupState(session);
 	PgSessionAdoptEarlyInvalidationCallbackState(session);
 	PgSessionAdoptEarlyPreparedStatementState(session);
 	PgSessionAdoptEarlyOnCommitState(session);
@@ -3762,6 +3785,7 @@ PgSessionInitializeRuntimeObject(PgSession *session,
 	PgSessionInitializePlannerCostState(&session->planner_cost);
 	PgSessionInitializePlannerMethodState(&session->planner_method);
 	PgSessionInitializeFunctionManagerState(&session->function_manager);
+	PgSessionInitializeCatalogLookupState(&session->catalog_lookup);
 	PgSessionInitializeInvalidationCallbackState(&session->invalidation_callbacks);
 	PgSessionInitializePreparedStatementState(&session->prepared_statement);
 	PgSessionInitializeOnCommitState(&session->on_commit);
@@ -4386,6 +4410,45 @@ PgSessionResetClosedState(PgSession *session)
 		hash_destroy(session->function_manager.c_func_hash);
 		session->function_manager.c_func_hash = NULL;
 	}
+	if (session->catalog_lookup.attopt_cache_hash != NULL)
+	{
+		hash_destroy(session->catalog_lookup.attopt_cache_hash);
+		session->catalog_lookup.attopt_cache_hash = NULL;
+	}
+	if (session->catalog_lookup.relfilenumber_map_hash != NULL)
+	{
+		hash_destroy(session->catalog_lookup.relfilenumber_map_hash);
+		session->catalog_lookup.relfilenumber_map_hash = NULL;
+	}
+	MemSet(session->catalog_lookup.relfilenumber_skey, 0,
+		   sizeof(session->catalog_lookup.relfilenumber_skey));
+	if (session->catalog_lookup.tablespace_cache_hash != NULL)
+	{
+		hash_destroy(session->catalog_lookup.tablespace_cache_hash);
+		session->catalog_lookup.tablespace_cache_hash = NULL;
+	}
+	if (session->catalog_lookup.event_trigger_cache_context != NULL)
+	{
+		MemoryContextDelete(session->catalog_lookup.event_trigger_cache_context);
+		session->catalog_lookup.event_trigger_cache_context = NULL;
+		session->catalog_lookup.event_trigger_cache = NULL;
+	}
+	else if (session->catalog_lookup.event_trigger_cache != NULL)
+	{
+		hash_destroy(session->catalog_lookup.event_trigger_cache);
+		session->catalog_lookup.event_trigger_cache = NULL;
+	}
+	session->catalog_lookup.event_trigger_cache_state = 0;
+	if (session->catalog_lookup.ruleutils_rule_by_oid_plan != NULL)
+	{
+		SPI_freeplan(session->catalog_lookup.ruleutils_rule_by_oid_plan);
+		session->catalog_lookup.ruleutils_rule_by_oid_plan = NULL;
+	}
+	if (session->catalog_lookup.ruleutils_view_rule_plan != NULL)
+	{
+		SPI_freeplan(session->catalog_lookup.ruleutils_view_rule_plan);
+		session->catalog_lookup.ruleutils_view_rule_plan = NULL;
+	}
 	PgSessionInitializeInvalidationCallbackState(&session->invalidation_callbacks);
 
 	if (session->logical_replication.logical_rep_relmap_context != NULL)
@@ -4530,6 +4593,11 @@ PgSessionResetClosedState(PgSession *session)
 		session->locale.collation_cache = NULL;
 		session->locale.last_collation_cache_oid = InvalidOid;
 		session->locale.last_collation_cache_locale = NULL;
+	}
+	if (session->locale.icu_converter != NULL)
+	{
+		PgCloseIcuConverter(session->locale.icu_converter);
+		session->locale.icu_converter = NULL;
 	}
 
 	if (session->legacy_session_context != NULL)
@@ -5053,6 +5121,15 @@ PgCurrentSessionFunctionManagerState(void)
 	return &CurrentPgSession->function_manager;
 }
 
+static PgSessionCatalogLookupState *
+PgCurrentSessionCatalogLookupState(void)
+{
+	if (CurrentPgSession == NULL)
+		return &early_session_catalog_lookup;
+
+	return &CurrentPgSession->catalog_lookup;
+}
+
 static PgSessionInvalidationCallbackState *
 PgCurrentSessionInvalidationCallbackState(void)
 {
@@ -5235,6 +5312,12 @@ PgSessionLocaleState *
 PgCurrentLocaleState(void)
 {
 	return PgCurrentSessionLocaleState();
+}
+
+void **
+PgCurrentIcuConverterRef(void)
+{
+	return &PgCurrentSessionLocaleState()->icu_converter;
 }
 
 char **
@@ -5595,6 +5678,60 @@ HTAB **
 PgCurrentCFuncHashRef(void)
 {
 	return &PgCurrentSessionFunctionManagerState()->c_func_hash;
+}
+
+HTAB **
+PgCurrentAttoptCacheHashRef(void)
+{
+	return &PgCurrentSessionCatalogLookupState()->attopt_cache_hash;
+}
+
+HTAB **
+PgCurrentRelfilenumberMapHashRef(void)
+{
+	return &PgCurrentSessionCatalogLookupState()->relfilenumber_map_hash;
+}
+
+ScanKeyData *
+PgCurrentRelfilenumberScanKeyArray(void)
+{
+	return PgCurrentSessionCatalogLookupState()->relfilenumber_skey;
+}
+
+HTAB **
+PgCurrentTableSpaceCacheHashRef(void)
+{
+	return &PgCurrentSessionCatalogLookupState()->tablespace_cache_hash;
+}
+
+HTAB **
+PgCurrentEventTriggerCacheRef(void)
+{
+	return &PgCurrentSessionCatalogLookupState()->event_trigger_cache;
+}
+
+MemoryContext *
+PgCurrentEventTriggerCacheContextRef(void)
+{
+	return &PgCurrentSessionCatalogLookupState()->event_trigger_cache_context;
+}
+
+int *
+PgCurrentEventTriggerCacheStateRef(void)
+{
+	return &PgCurrentSessionCatalogLookupState()->event_trigger_cache_state;
+}
+
+struct _SPI_plan **
+PgCurrentRuleutilsRuleByOidPlanRef(void)
+{
+	return &PgCurrentSessionCatalogLookupState()->ruleutils_rule_by_oid_plan;
+}
+
+struct _SPI_plan **
+PgCurrentRuleutilsViewRulePlanRef(void)
+{
+	return &PgCurrentSessionCatalogLookupState()->ruleutils_view_rule_plan;
 }
 
 PgSessionInvalidationCallbackState *

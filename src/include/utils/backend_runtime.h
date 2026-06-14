@@ -17,6 +17,7 @@
 #include <sys/time.h>
 
 #include "access/session.h"
+#include "access/skey.h"
 #include "access/tupdesc.h"
 #include "access/transam.h"
 #include "access/xlogdefs.h"
@@ -93,6 +94,7 @@ typedef struct XLogReaderState XLogReaderState;
 typedef struct PortalData *Portal;
 typedef struct SPITupleTable SPITupleTable;
 typedef struct _SPI_connection _SPI_connection;
+struct _SPI_plan;
 struct LogicalRepRelMapEntry;
 struct SeqTableData;
 struct pg_ctype_cache;
@@ -1564,6 +1566,19 @@ typedef struct PgSessionFunctionManagerState
 	HTAB	   *c_func_hash;
 } PgSessionFunctionManagerState;
 
+typedef struct PgSessionCatalogLookupState
+{
+	HTAB	   *attopt_cache_hash;
+	HTAB	   *relfilenumber_map_hash;
+	ScanKeyData relfilenumber_skey[2];
+	HTAB	   *tablespace_cache_hash;
+	HTAB	   *event_trigger_cache;
+	MemoryContext event_trigger_cache_context;
+	int			event_trigger_cache_state;
+	struct _SPI_plan *ruleutils_rule_by_oid_plan;
+	struct _SPI_plan *ruleutils_view_rule_plan;
+} PgSessionCatalogLookupState;
+
 #define PG_SESSION_MAX_SYSCACHE_CALLBACKS 64
 #define PG_SESSION_MAX_RELCACHE_CALLBACKS 10
 #define PG_SESSION_MAX_RELSYNC_CALLBACKS 10
@@ -1720,6 +1735,7 @@ typedef struct PgSessionLocaleState
 	void	   *collation_cache;
 	Oid			last_collation_cache_oid;
 	void	   *last_collation_cache_locale;
+	void	   *icu_converter;
 } PgSessionLocaleState;
 
 typedef struct PgRuntimeServerGUCState
@@ -1967,6 +1983,7 @@ struct PgSession
 	PgSessionPlannerCostState planner_cost;
 	PgSessionPlannerMethodState planner_method;
 	PgSessionFunctionManagerState function_manager;
+	PgSessionCatalogLookupState catalog_lookup;
 	PgSessionInvalidationCallbackState invalidation_callbacks;
 	PgSessionPreparedStatementState prepared_statement;
 	PgSessionOnCommitState on_commit;
@@ -2304,6 +2321,15 @@ extern int *PgCurrentPostAuthDelayRef(void);
 extern char **PgCurrentRestrictNonsystemRelationKindStringRef(void);
 extern int *PgCurrentRestrictNonsystemRelationKindRef(void);
 extern HTAB **PgCurrentCFuncHashRef(void);
+extern HTAB **PgCurrentAttoptCacheHashRef(void);
+extern HTAB **PgCurrentRelfilenumberMapHashRef(void);
+extern ScanKeyData *PgCurrentRelfilenumberScanKeyArray(void);
+extern HTAB **PgCurrentTableSpaceCacheHashRef(void);
+extern HTAB **PgCurrentEventTriggerCacheRef(void);
+extern MemoryContext *PgCurrentEventTriggerCacheContextRef(void);
+extern int *PgCurrentEventTriggerCacheStateRef(void);
+extern struct _SPI_plan **PgCurrentRuleutilsRuleByOidPlanRef(void);
+extern struct _SPI_plan **PgCurrentRuleutilsViewRulePlanRef(void);
 extern PgSessionInvalidationCallbackState *PgCurrentInvalidationCallbackState(void);
 extern HTAB **PgCurrentPreparedQueriesRef(void);
 extern List **PgCurrentOnCommitActionsRef(void);
@@ -2340,6 +2366,8 @@ extern dlist_head *PgCurrentCachedExpressionListRef(void);
 extern PgSessionNamespaceState *PgCurrentNamespaceState(void);
 extern char **PgCurrentNamespaceSearchPathRef(void);
 extern PgSessionLocaleState *PgCurrentLocaleState(void);
+extern void PgCloseIcuConverter(void *converter);
+extern void **PgCurrentIcuConverterRef(void);
 extern char **PgCurrentLocaleMessagesRef(void);
 extern char **PgCurrentLocaleMonetaryRef(void);
 extern char **PgCurrentLocaleNumericRef(void);

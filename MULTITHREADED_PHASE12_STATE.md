@@ -9189,3 +9189,51 @@ Validation for this slice:
   `PgSession` layout;
 - `gmake -C contrib -j8`, `gmake -C src/test/modules/test_backend_runtime
   check`, and direct threaded runtime TAP all passed before commit.
+
+## Session Catalog Lookup Caches
+
+The next larger session-cache batch moves several catalog lookup and
+formatting support roots into a single `PgSessionCatalogLookupState` bucket:
+
+- attribute-options cache hash from `attoptcache.c`;
+- relfilenumber-to-OID cache hash and its reusable scan-key array from
+  `relfilenumbermap.c`;
+- tablespace-options cache hash from `spccache.c`;
+- event-trigger cache hash, cache context, and cache-state flag from
+  `evtcache.c`;
+- retained ruleutils SPI plans for rewrite/view lookups from `ruleutils.c`;
+- ICU database-encoding converter slot from `pg_locale_icu.c`.
+
+The ownership rule is explicit. Early fallback adoption transfers these cache
+roots as a whole through `PgSessionAdoptEarlyState()` and zeros the fallback
+bucket, so process and threaded install cannot drift. Closed-session reset
+destroys hash roots, deletes the event-trigger cache context, frees retained
+ruleutils SPI plans, closes the ICU converter through `pg_locale_icu.c`, and
+clears the inline relfilenumber scan keys.
+
+This is still a bridge over the broader memory-context blocker. Some entries
+can point at allocations under `CacheMemoryContext`; this slice moves the
+session roots and documents that the pointed allocation lifetime remains tied
+to the later cache-memory-context split rather than claiming full reclamation
+today. `test_session_catalog_lookup_state_is_session_local()` switches fake
+sessions and verifies the moved pointer, context, plan, state, and inline
+scan-key slots remain isolated.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `attoptcache.o`,
+  `relfilenumbermap.o`, `spccache.o`, `evtcache.o`, `ruleutils.o`,
+  `pg_locale_icu.o`, and `test_backend_runtime.o`;
+- `gmake check-runtime-lifecycles` passed with 139 fields classified after
+  adding the catalog-lookup lifecycle row;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and session-local declarations reduced from 173 to 164;
+- clean backend rebuild plus full `gmake -j8` passed after changing
+  `PgSession` layout;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"` and `gmake -C contrib -j8`
+  passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed after updating
+  the expected output for the added runtime test;
+- direct threaded runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  88 tests.

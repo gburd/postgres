@@ -246,6 +246,16 @@ Important current files:
   session caches have been destroyed. After changing this bridge, rebuild
   `inval.o`, `backend_runtime.o`, and `test_backend_runtime.o`, then run
   `gmake check-runtime-lifecycles` and `gmake check-global-lifetimes`.
+- Catalog lookup cache roots for attribute options, relfilenumber mapping,
+  tablespace options, event triggers, ruleutils SPI plans, and the ICU
+  converter now live under `PgSessionCatalogLookupState`. The bucket owns the
+  root slots and reset closes/destroys the roots that can be safely reclaimed,
+  but pointed allocations under `CacheMemoryContext` remain part of the
+  broader memory-context ownership split. After changing this bridge, rebuild
+  `backend_runtime.o`, `attoptcache.o`, `relfilenumbermap.o`, `spccache.o`,
+  `evtcache.o`, `ruleutils.o`, `pg_locale_icu.o`, and
+  `test_backend_runtime.o`, then run `gmake check-runtime-lifecycles` and
+  `gmake check-global-lifetimes`.
 - Transaction cleanup slots now live under
   `PgExecutionTransactionCleanupState`: large-object descriptor cleanup slots,
   the transaction temporary-file cleanup flag, the pgstat subtransaction stack,

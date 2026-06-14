@@ -2582,6 +2582,7 @@ test_session_locale_state_is_session_local(PG_FUNCTION_ARGS)
 		locale_state->collation_cache = &fake_session1;
 		locale_state->last_collation_cache_oid = 111;
 		locale_state->last_collation_cache_locale = &fake_session1;
+		locale_state->icu_converter = &fake_session1;
 
 		PgSetCurrentSession(&fake_session2);
 		locale_state = PgCurrentLocaleState();
@@ -2608,6 +2609,7 @@ test_session_locale_state_is_session_local(PG_FUNCTION_ARGS)
 		locale_state->collation_cache = &fake_session2;
 		locale_state->last_collation_cache_oid = 222;
 		locale_state->last_collation_cache_locale = &fake_session2;
+		locale_state->icu_converter = &fake_session2;
 
 		PgSetCurrentSession(&fake_session1);
 		locale_state = PgCurrentLocaleState();
@@ -2628,6 +2630,7 @@ test_session_locale_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && locale_state->collation_cache == &fake_session1;
 		ok = ok && locale_state->last_collation_cache_oid == 111;
 		ok = ok && locale_state->last_collation_cache_locale == &fake_session1;
+		ok = ok && *PgCurrentIcuConverterRef() == &fake_session1;
 
 		PgSetCurrentSession(&fake_session2);
 		locale_state = PgCurrentLocaleState();
@@ -2645,6 +2648,7 @@ test_session_locale_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && locale_state->collation_cache == &fake_session2;
 		ok = ok && locale_state->last_collation_cache_oid == 222;
 		ok = ok && locale_state->last_collation_cache_locale == &fake_session2;
+		ok = ok && *PgCurrentIcuConverterRef() == &fake_session2;
 
 		PgSetCurrentSession(saved_session);
 	}
@@ -2657,6 +2661,156 @@ test_session_locale_state_is_session_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "locale state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_session_catalog_lookup_state_is_session_local);
+Datum
+test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	HTAB	   *saved_attopt_cache_hash;
+	HTAB	   *saved_relfilenumber_map_hash;
+	ScanKeyData saved_relfilenumber_skey[2];
+	HTAB	   *saved_tablespace_cache_hash;
+	HTAB	   *saved_event_trigger_cache;
+	MemoryContext saved_event_trigger_cache_context;
+	int			saved_event_trigger_cache_state;
+	struct _SPI_plan *saved_rule_by_oid_plan;
+	struct _SPI_plan *saved_view_rule_plan;
+	HTAB	   *session1_hash_marker;
+	HTAB	   *session2_hash_marker;
+	MemoryContext session1_context_marker;
+	MemoryContext session2_context_marker;
+	struct _SPI_plan *session1_plan_marker;
+	struct _SPI_plan *session2_plan_marker;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	saved_attopt_cache_hash = *PgCurrentAttoptCacheHashRef();
+	saved_relfilenumber_map_hash = *PgCurrentRelfilenumberMapHashRef();
+	memcpy(saved_relfilenumber_skey, PgCurrentRelfilenumberScanKeyArray(),
+		   sizeof(saved_relfilenumber_skey));
+	saved_tablespace_cache_hash = *PgCurrentTableSpaceCacheHashRef();
+	saved_event_trigger_cache = *PgCurrentEventTriggerCacheRef();
+	saved_event_trigger_cache_context = *PgCurrentEventTriggerCacheContextRef();
+	saved_event_trigger_cache_state = *PgCurrentEventTriggerCacheStateRef();
+	saved_rule_by_oid_plan = *PgCurrentRuleutilsRuleByOidPlanRef();
+	saved_view_rule_plan = *PgCurrentRuleutilsViewRulePlanRef();
+
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
+	session1_hash_marker = (HTAB *) &fake_session1;
+	session2_hash_marker = (HTAB *) &fake_session2;
+	session1_context_marker = (MemoryContext) &fake_session1;
+	session2_context_marker = (MemoryContext) &fake_session2;
+	session1_plan_marker = (struct _SPI_plan *) &fake_session1;
+	session2_plan_marker = (struct _SPI_plan *) &fake_session2;
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && *PgCurrentAttoptCacheHashRef() == NULL;
+		ok = ok && *PgCurrentRelfilenumberMapHashRef() == NULL;
+		ok = ok && PgCurrentRelfilenumberScanKeyArray()[0].sk_attno == 0;
+		ok = ok && *PgCurrentTableSpaceCacheHashRef() == NULL;
+		ok = ok && *PgCurrentEventTriggerCacheRef() == NULL;
+		ok = ok && *PgCurrentEventTriggerCacheContextRef() == NULL;
+		ok = ok && *PgCurrentEventTriggerCacheStateRef() == 0;
+		ok = ok && *PgCurrentRuleutilsRuleByOidPlanRef() == NULL;
+		ok = ok && *PgCurrentRuleutilsViewRulePlanRef() == NULL;
+		*PgCurrentAttoptCacheHashRef() = session1_hash_marker;
+		*PgCurrentRelfilenumberMapHashRef() = session1_hash_marker;
+		PgCurrentRelfilenumberScanKeyArray()[0].sk_attno = 11;
+		PgCurrentRelfilenumberScanKeyArray()[1].sk_attno = 12;
+		*PgCurrentTableSpaceCacheHashRef() = session1_hash_marker;
+		*PgCurrentEventTriggerCacheRef() = session1_hash_marker;
+		*PgCurrentEventTriggerCacheContextRef() = session1_context_marker;
+		*PgCurrentEventTriggerCacheStateRef() = 1;
+		*PgCurrentRuleutilsRuleByOidPlanRef() = session1_plan_marker;
+		*PgCurrentRuleutilsViewRulePlanRef() = session1_plan_marker;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && *PgCurrentAttoptCacheHashRef() == NULL;
+		ok = ok && *PgCurrentRelfilenumberMapHashRef() == NULL;
+		ok = ok && PgCurrentRelfilenumberScanKeyArray()[0].sk_attno == 0;
+		ok = ok && *PgCurrentTableSpaceCacheHashRef() == NULL;
+		ok = ok && *PgCurrentEventTriggerCacheRef() == NULL;
+		ok = ok && *PgCurrentEventTriggerCacheContextRef() == NULL;
+		ok = ok && *PgCurrentEventTriggerCacheStateRef() == 0;
+		ok = ok && *PgCurrentRuleutilsRuleByOidPlanRef() == NULL;
+		ok = ok && *PgCurrentRuleutilsViewRulePlanRef() == NULL;
+		*PgCurrentAttoptCacheHashRef() = session2_hash_marker;
+		*PgCurrentRelfilenumberMapHashRef() = session2_hash_marker;
+		PgCurrentRelfilenumberScanKeyArray()[0].sk_attno = 21;
+		PgCurrentRelfilenumberScanKeyArray()[1].sk_attno = 22;
+		*PgCurrentTableSpaceCacheHashRef() = session2_hash_marker;
+		*PgCurrentEventTriggerCacheRef() = session2_hash_marker;
+		*PgCurrentEventTriggerCacheContextRef() = session2_context_marker;
+		*PgCurrentEventTriggerCacheStateRef() = 2;
+		*PgCurrentRuleutilsRuleByOidPlanRef() = session2_plan_marker;
+		*PgCurrentRuleutilsViewRulePlanRef() = session2_plan_marker;
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && *PgCurrentAttoptCacheHashRef() == session1_hash_marker;
+		ok = ok && *PgCurrentRelfilenumberMapHashRef() == session1_hash_marker;
+		ok = ok && PgCurrentRelfilenumberScanKeyArray()[0].sk_attno == 11;
+		ok = ok && PgCurrentRelfilenumberScanKeyArray()[1].sk_attno == 12;
+		ok = ok && *PgCurrentTableSpaceCacheHashRef() == session1_hash_marker;
+		ok = ok && *PgCurrentEventTriggerCacheRef() == session1_hash_marker;
+		ok = ok && *PgCurrentEventTriggerCacheContextRef() == session1_context_marker;
+		ok = ok && *PgCurrentEventTriggerCacheStateRef() == 1;
+		ok = ok && *PgCurrentRuleutilsRuleByOidPlanRef() == session1_plan_marker;
+		ok = ok && *PgCurrentRuleutilsViewRulePlanRef() == session1_plan_marker;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && *PgCurrentAttoptCacheHashRef() == session2_hash_marker;
+		ok = ok && *PgCurrentRelfilenumberMapHashRef() == session2_hash_marker;
+		ok = ok && PgCurrentRelfilenumberScanKeyArray()[0].sk_attno == 21;
+		ok = ok && PgCurrentRelfilenumberScanKeyArray()[1].sk_attno == 22;
+		ok = ok && *PgCurrentTableSpaceCacheHashRef() == session2_hash_marker;
+		ok = ok && *PgCurrentEventTriggerCacheRef() == session2_hash_marker;
+		ok = ok && *PgCurrentEventTriggerCacheContextRef() == session2_context_marker;
+		ok = ok && *PgCurrentEventTriggerCacheStateRef() == 2;
+		ok = ok && *PgCurrentRuleutilsRuleByOidPlanRef() == session2_plan_marker;
+		ok = ok && *PgCurrentRuleutilsViewRulePlanRef() == session2_plan_marker;
+
+		PgSetCurrentSession(saved_session);
+		*PgCurrentAttoptCacheHashRef() = saved_attopt_cache_hash;
+		*PgCurrentRelfilenumberMapHashRef() = saved_relfilenumber_map_hash;
+		memcpy(PgCurrentRelfilenumberScanKeyArray(), saved_relfilenumber_skey,
+			   sizeof(saved_relfilenumber_skey));
+		*PgCurrentTableSpaceCacheHashRef() = saved_tablespace_cache_hash;
+		*PgCurrentEventTriggerCacheRef() = saved_event_trigger_cache;
+		*PgCurrentEventTriggerCacheContextRef() = saved_event_trigger_cache_context;
+		*PgCurrentEventTriggerCacheStateRef() = saved_event_trigger_cache_state;
+		*PgCurrentRuleutilsRuleByOidPlanRef() = saved_rule_by_oid_plan;
+		*PgCurrentRuleutilsViewRulePlanRef() = saved_view_rule_plan;
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		*PgCurrentAttoptCacheHashRef() = saved_attopt_cache_hash;
+		*PgCurrentRelfilenumberMapHashRef() = saved_relfilenumber_map_hash;
+		memcpy(PgCurrentRelfilenumberScanKeyArray(), saved_relfilenumber_skey,
+			   sizeof(saved_relfilenumber_skey));
+		*PgCurrentTableSpaceCacheHashRef() = saved_tablespace_cache_hash;
+		*PgCurrentEventTriggerCacheRef() = saved_event_trigger_cache;
+		*PgCurrentEventTriggerCacheContextRef() = saved_event_trigger_cache_context;
+		*PgCurrentEventTriggerCacheStateRef() = saved_event_trigger_cache_state;
+		*PgCurrentRuleutilsRuleByOidPlanRef() = saved_rule_by_oid_plan;
+		*PgCurrentRuleutilsViewRulePlanRef() = saved_view_rule_plan;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "catalog lookup state was not session-local");
 
 	PG_RETURN_BOOL(true);
 }

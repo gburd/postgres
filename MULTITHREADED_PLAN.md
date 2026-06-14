@@ -770,7 +770,10 @@ snapshot-manager and combo-CID transaction visibility state bridge through
 `PgExecution`, plus the simple exported transaction flag/state bridge through
 `PgExecution`, plus the GUC/error-report scratch state bridge through
 `PgExecution`, plus the miscellaneous array typanalyze, regex locale,
-Valgrind, and snapshot-builder scratch-state bridge through `PgExecution`.
+Valgrind, and snapshot-builder scratch-state bridge through `PgExecution`,
+plus the attribute-options, relfilenumber, tablespace-options, event-trigger,
+ruleutils SPI-plan, and ICU converter catalog lookup/cache bridge through
+`PgSession`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.
@@ -1598,6 +1601,12 @@ state, and sync-worker relation validity into `PgSessionLogicalReplicationState`
 The bucket has null-asserted early adoption and explicit closed-session cleanup
 for owned contexts/hashes; replication-origin refcount release remains owned by
 the origin subsystem reset/exit path.
+The following catalog-lookup cache batch moved attribute-options,
+relfilenumber, tablespace-options, event-trigger, ruleutils SPI-plan, and ICU
+converter cache roots into `PgSessionCatalogLookupState`. The reset path now
+destroys the owned hash/context/plan/converter roots it can safely own today,
+while the lifecycle manifest explicitly records that pointed allocations under
+`CacheMemoryContext` remain part of the broader memory-context ownership split.
 
 ## Phase 13: Scheduler-Aware Wait Boundary
 

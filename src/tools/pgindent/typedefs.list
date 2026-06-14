@@ -2317,6 +2317,7 @@ PgFdwScanState
 PgIfAddrCallback
 PgRuntime
 PgSession
+PgSessionCatalogLookupState
 PgSessionLoopState
 PgSessionLogicalReplicationState
 PgSessionTzAbbrevCache

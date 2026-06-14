@@ -1176,6 +1176,16 @@ hashes, and replication-origin refcount release remains with
 `replorigin_session_reset()`/exit cleanup instead of being hidden inside the
 generic session destructor.
 
+The following catalog-lookup session-cache slice moved attribute-options,
+relfilenumber, tablespace-options, event-trigger, ruleutils SPI-plan, and ICU
+converter roots into `PgSessionCatalogLookupState`. This addresses the review
+concern about pointer/hash/context-bearing buckets by giving the whole batch a
+single lifecycle row and fake-session isolation test. The row deliberately
+calls out the remaining limitation: hash roots, SPI plans, event-trigger
+contexts, and ICU converters have reset paths now, but pointed allocations
+under `CacheMemoryContext` are still owned by the unresolved cache memory
+context split.
+
 ## Bottom Line
 
 The branch is on track only if the current debt is treated as Phase 12

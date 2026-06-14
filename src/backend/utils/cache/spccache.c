@@ -24,6 +24,7 @@
 #include "miscadmin.h"
 #include "optimizer/optimizer.h"
 #include "storage/bufmgr.h"
+#include "utils/backend_runtime.h"
 #include "utils/catcache.h"
 #include "utils/hsearch.h"
 #include "utils/inval.h"
@@ -33,7 +34,7 @@
 
 
 /* Hash table for information about each tablespace */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *TableSpaceCacheHash = NULL;
+#define TableSpaceCacheHash (*PgCurrentTableSpaceCacheHashRef())
 
 typedef struct
 {
