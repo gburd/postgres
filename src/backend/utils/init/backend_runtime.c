@@ -2058,6 +2058,14 @@ PgSessionInitializeExtensionModuleState(PgSessionExtensionModuleState *extension
 	extension_modules->dblink_persistent_connection = NULL;
 	extension_modules->dblink_remote_conn_hash = NULL;
 	extension_modules->dblink_reset_registered = false;
+	extension_modules->postgres_fdw_connection_hash = NULL;
+	extension_modules->postgres_fdw_shippable_cache_hash = NULL;
+	extension_modules->postgres_fdw_cursor_number = 0;
+	extension_modules->postgres_fdw_prep_stmt_number = 0;
+	extension_modules->postgres_fdw_xact_got_connection = false;
+	extension_modules->postgres_fdw_read_only_level = 0;
+	extension_modules->postgres_fdw_connection_callbacks_registered = false;
+	extension_modules->postgres_fdw_shippable_callbacks_registered = false;
 }
 
 PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgSessionAdoptEarlyExtensionModuleState,

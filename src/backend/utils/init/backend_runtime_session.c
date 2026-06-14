@@ -361,6 +361,54 @@ PgCurrentDblinkResetRegisteredRef(void)
 	return &PgCurrentSessionExtensionModuleState()->dblink_reset_registered;
 }
 
+void **
+PgCurrentPostgresFdwConnectionHashRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->postgres_fdw_connection_hash;
+}
+
+void **
+PgCurrentPostgresFdwShippableCacheHashRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->postgres_fdw_shippable_cache_hash;
+}
+
+unsigned int *
+PgCurrentPostgresFdwCursorNumberRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->postgres_fdw_cursor_number;
+}
+
+unsigned int *
+PgCurrentPostgresFdwPrepStmtNumberRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->postgres_fdw_prep_stmt_number;
+}
+
+bool *
+PgCurrentPostgresFdwXactGotConnectionRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->postgres_fdw_xact_got_connection;
+}
+
+int *
+PgCurrentPostgresFdwReadOnlyLevelRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->postgres_fdw_read_only_level;
+}
+
+bool *
+PgCurrentPostgresFdwConnectionCallbacksRegisteredRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->postgres_fdw_connection_callbacks_registered;
+}
+
+bool *
+PgCurrentPostgresFdwShippableCallbacksRegisteredRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->postgres_fdw_shippable_callbacks_registered;
+}
+
 void
 PgSessionRegisterResetCallback(PgSessionResetCallback callback, void *arg)
 {

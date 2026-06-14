@@ -1678,6 +1678,14 @@ typedef struct PgSessionExtensionModuleState
 	void	   *dblink_persistent_connection;
 	void	   *dblink_remote_conn_hash;
 	bool		dblink_reset_registered;
+	void	   *postgres_fdw_connection_hash;
+	void	   *postgres_fdw_shippable_cache_hash;
+	unsigned int postgres_fdw_cursor_number;
+	unsigned int postgres_fdw_prep_stmt_number;
+	bool		postgres_fdw_xact_got_connection;
+	int			postgres_fdw_read_only_level;
+	bool		postgres_fdw_connection_callbacks_registered;
+	bool		postgres_fdw_shippable_callbacks_registered;
 } PgSessionExtensionModuleState;
 
 typedef struct PgSessionCatalogLookupState
@@ -2909,6 +2917,14 @@ extern PgSessionExtensionModuleState *PgCurrentSessionExtensionModuleState(void)
 extern void **PgCurrentDblinkPersistentConnectionRef(void);
 extern void **PgCurrentDblinkRemoteConnHashRef(void);
 extern bool *PgCurrentDblinkResetRegisteredRef(void);
+extern void **PgCurrentPostgresFdwConnectionHashRef(void);
+extern void **PgCurrentPostgresFdwShippableCacheHashRef(void);
+extern unsigned int *PgCurrentPostgresFdwCursorNumberRef(void);
+extern unsigned int *PgCurrentPostgresFdwPrepStmtNumberRef(void);
+extern bool *PgCurrentPostgresFdwXactGotConnectionRef(void);
+extern int *PgCurrentPostgresFdwReadOnlyLevelRef(void);
+extern bool *PgCurrentPostgresFdwConnectionCallbacksRegisteredRef(void);
+extern bool *PgCurrentPostgresFdwShippableCallbacksRegisteredRef(void);
 extern PgExecutionExtensionState *PgCurrentExecutionExtensionState(void);
 extern void PgSessionRegisterResetCallback(PgSessionResetCallback callback,
 										   void *arg);

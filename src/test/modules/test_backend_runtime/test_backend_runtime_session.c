@@ -81,6 +81,19 @@ test_backend_runtime_auto_explain_defaults_ok(PgSessionExtensionModuleState *ext
 		extension_modules->auto_explain_extension_options == NULL;
 }
 
+static bool
+test_backend_runtime_postgres_fdw_defaults_ok(PgSessionExtensionModuleState *extension_modules)
+{
+	return extension_modules->postgres_fdw_connection_hash == NULL &&
+		extension_modules->postgres_fdw_shippable_cache_hash == NULL &&
+		extension_modules->postgres_fdw_cursor_number == 0 &&
+		extension_modules->postgres_fdw_prep_stmt_number == 0 &&
+		!extension_modules->postgres_fdw_xact_got_connection &&
+		extension_modules->postgres_fdw_read_only_level == 0 &&
+		!extension_modules->postgres_fdw_connection_callbacks_registered &&
+		!extension_modules->postgres_fdw_shippable_callbacks_registered;
+}
+
 void
 test_copy_current_user_identity(PgSession *session)
 {
@@ -2722,6 +2735,7 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && extension_modules->dblink_persistent_connection == NULL;
 		ok = ok && extension_modules->dblink_remote_conn_hash == NULL;
 		ok = ok && !extension_modules->dblink_reset_registered;
+		ok = ok && test_backend_runtime_postgres_fdw_defaults_ok(extension_modules);
 		ok = ok && test_backend_runtime_auto_explain_defaults_ok(extension_modules);
 		extension_modules->pg_trgm_similarity_threshold = 0.11;
 		extension_modules->pg_trgm_word_similarity_threshold = 0.12;
@@ -2753,6 +2767,15 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		extension_modules->dblink_persistent_connection = &session1_private;
 		extension_modules->dblink_remote_conn_hash = &session1_reset_count;
 		extension_modules->dblink_reset_registered = true;
+		extension_modules->postgres_fdw_connection_hash = &session1_private;
+		extension_modules->postgres_fdw_shippable_cache_hash =
+			&session1_reset_count;
+		extension_modules->postgres_fdw_cursor_number = 11;
+		extension_modules->postgres_fdw_prep_stmt_number = 12;
+		extension_modules->postgres_fdw_xact_got_connection = true;
+		extension_modules->postgres_fdw_read_only_level = 13;
+		extension_modules->postgres_fdw_connection_callbacks_registered = true;
+		extension_modules->postgres_fdw_shippable_callbacks_registered = true;
 
 		ok = ok && *PgCurrentPLpgSQLSessionStateRef() == NULL;
 		*PgCurrentPLpgSQLSessionStateRef() = &session1_private;
@@ -2774,6 +2797,7 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && extension_modules->dblink_persistent_connection == NULL;
 		ok = ok && extension_modules->dblink_remote_conn_hash == NULL;
 		ok = ok && !extension_modules->dblink_reset_registered;
+		ok = ok && test_backend_runtime_postgres_fdw_defaults_ok(extension_modules);
 		ok = ok && test_backend_runtime_auto_explain_defaults_ok(extension_modules);
 		extension_modules->pg_trgm_similarity_threshold = 0.21;
 		extension_modules->pg_trgm_word_similarity_threshold = 0.22;
@@ -2805,6 +2829,15 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		extension_modules->dblink_persistent_connection = &session2_private;
 		extension_modules->dblink_remote_conn_hash = &session2_reset_count;
 		extension_modules->dblink_reset_registered = true;
+		extension_modules->postgres_fdw_connection_hash = &session2_private;
+		extension_modules->postgres_fdw_shippable_cache_hash =
+			&session2_reset_count;
+		extension_modules->postgres_fdw_cursor_number = 21;
+		extension_modules->postgres_fdw_prep_stmt_number = 22;
+		extension_modules->postgres_fdw_xact_got_connection = true;
+		extension_modules->postgres_fdw_read_only_level = 23;
+		extension_modules->postgres_fdw_connection_callbacks_registered = true;
+		extension_modules->postgres_fdw_shippable_callbacks_registered = true;
 
 		ok = ok && *PgCurrentPLpgSQLSessionStateRef() == NULL;
 		*PgCurrentPLpgSQLSessionStateRef() = &session2_private;
@@ -2849,6 +2882,16 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && extension_modules->dblink_remote_conn_hash ==
 			&session1_reset_count;
 		ok = ok && extension_modules->dblink_reset_registered;
+		ok = ok && extension_modules->postgres_fdw_connection_hash ==
+			&session1_private;
+		ok = ok && extension_modules->postgres_fdw_shippable_cache_hash ==
+			&session1_reset_count;
+		ok = ok && extension_modules->postgres_fdw_cursor_number == 11;
+		ok = ok && extension_modules->postgres_fdw_prep_stmt_number == 12;
+		ok = ok && extension_modules->postgres_fdw_xact_got_connection;
+		ok = ok && extension_modules->postgres_fdw_read_only_level == 13;
+		ok = ok && extension_modules->postgres_fdw_connection_callbacks_registered;
+		ok = ok && extension_modules->postgres_fdw_shippable_callbacks_registered;
 
 		PgSetCurrentSession(&fake_session2);
 		ok = ok && *PgCurrentPLpgSQLSessionStateRef() == &session2_private;
@@ -2888,6 +2931,16 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && extension_modules->dblink_remote_conn_hash ==
 			&session2_reset_count;
 		ok = ok && extension_modules->dblink_reset_registered;
+		ok = ok && extension_modules->postgres_fdw_connection_hash ==
+			&session2_private;
+		ok = ok && extension_modules->postgres_fdw_shippable_cache_hash ==
+			&session2_reset_count;
+		ok = ok && extension_modules->postgres_fdw_cursor_number == 21;
+		ok = ok && extension_modules->postgres_fdw_prep_stmt_number == 22;
+		ok = ok && extension_modules->postgres_fdw_xact_got_connection;
+		ok = ok && extension_modules->postgres_fdw_read_only_level == 23;
+		ok = ok && extension_modules->postgres_fdw_connection_callbacks_registered;
+		ok = ok && extension_modules->postgres_fdw_shippable_callbacks_registered;
 
 		PgSetCurrentSession(saved_session);
 		PgSessionResetClosedState(&fake_session1);
@@ -2909,6 +2962,7 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && fake_session1.extension_modules.dblink_persistent_connection == NULL;
 		ok = ok && fake_session1.extension_modules.dblink_remote_conn_hash == NULL;
 		ok = ok && !fake_session1.extension_modules.dblink_reset_registered;
+		ok = ok && test_backend_runtime_postgres_fdw_defaults_ok(&fake_session1.extension_modules);
 		ok = ok && test_backend_runtime_auto_explain_defaults_ok(&fake_session1.extension_modules);
 		ok = ok && fake_session2.extension_modules.plpgsql_state == &session2_private;
 		ok = ok && fake_session2.extension_modules.reset_callbacks != NIL;
@@ -2947,6 +3001,16 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && fake_session2.extension_modules.dblink_remote_conn_hash ==
 			&session2_reset_count;
 		ok = ok && fake_session2.extension_modules.dblink_reset_registered;
+		ok = ok && fake_session2.extension_modules.postgres_fdw_connection_hash ==
+			&session2_private;
+		ok = ok && fake_session2.extension_modules.postgres_fdw_shippable_cache_hash ==
+			&session2_reset_count;
+		ok = ok && fake_session2.extension_modules.postgres_fdw_cursor_number == 21;
+		ok = ok && fake_session2.extension_modules.postgres_fdw_prep_stmt_number == 22;
+		ok = ok && fake_session2.extension_modules.postgres_fdw_xact_got_connection;
+		ok = ok && fake_session2.extension_modules.postgres_fdw_read_only_level == 23;
+		ok = ok && fake_session2.extension_modules.postgres_fdw_connection_callbacks_registered;
+		ok = ok && fake_session2.extension_modules.postgres_fdw_shippable_callbacks_registered;
 
 		PgSessionResetClosedState(&fake_session2);
 		ok = ok && session2_reset_count == 1;
@@ -2966,6 +3030,7 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && fake_session2.extension_modules.dblink_persistent_connection == NULL;
 		ok = ok && fake_session2.extension_modules.dblink_remote_conn_hash == NULL;
 		ok = ok && !fake_session2.extension_modules.dblink_reset_registered;
+		ok = ok && test_backend_runtime_postgres_fdw_defaults_ok(&fake_session2.extension_modules);
 		ok = ok && test_backend_runtime_auto_explain_defaults_ok(&fake_session2.extension_modules);
 	}
 	PG_CATCH();

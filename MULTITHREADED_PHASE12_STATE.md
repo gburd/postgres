@@ -12892,3 +12892,81 @@ Validation for the dblink session-state slice:
   repo-local `.perl5` `PERL5LIB`;
 - a stale-symbol scan found no remaining raw `static remoteConn *pconn` or
   `static HTAB *remoteConnHash` declarations in dblink.
+
+## postgres_fdw Session Connection State
+
+Lifecycle/preflight note:
+
+- target root and bucket: `PgSession.extension_modules`;
+- state moved: contrib `postgres_fdw`'s connection cache `ConnectionHash`,
+  shippability cache `ShippableCacheHash`, cursor and prepared-statement
+  counters, transaction-work flag, and read-only nesting level;
+- repeated lifecycle operations: two opaque hash/cache pointer slots plus four
+  scalar slots and two callback-registration flags. The existing session
+  extension-module reset callback mechanism is sufficient because postgres_fdw
+  owns the libpq disconnect, shippability invalidation, and private hash
+  teardown semantics. No new generic lifecycle macro is needed for this batch;
+- retained invariant: postgres_fdw remains responsible for disconnecting
+  remote libpq connections, destroying private hashes, and unregistering its
+  logical per-session callback state through closed-session reset. The runtime
+  owns only the session-local pointer/scalar slots and invokes registered
+  extension reset callbacks with the closing session installed.
+
+postgres_fdw session-state slice:
+
+- `PgSessionExtensionModuleState` now owns postgres_fdw connection and
+  shippability cache pointers, cursor/prepared-statement counters,
+  transaction/read-only tracking flags, and callback-registration flags;
+- `contrib/postgres_fdw/connection.c` and
+  `contrib/postgres_fdw/shippable.c` keep the historical static names as
+  source-local lvalue compatibility macros over the current session object;
+- postgres_fdw registers per-session reset callbacks once per logical session.
+  The connection reset callback disconnects retained remote connections,
+  destroys the connection cache, and resets counters/flags. The shippability
+  reset callback destroys the shippability cache and clears its registration
+  flag;
+- syscache and transaction callback paths now tolerate a session whose runtime
+  slots have already been cleared during closed-session reset;
+- `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` and
+  `MULTITHREADED_RUNTIME_OWNERS.tsv` record the postgres_fdw session
+  ownership.
+
+Validation for the postgres_fdw session-state slice:
+
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 205 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- touched-object builds passed for `connection.o`, `shippable.o`,
+  `backend_runtime.o`, `backend_runtime_session.o`, and
+  `test_backend_runtime_session.o`;
+- after the installed `backend_runtime.h` layout change, the documented
+  backend clean and generated-file recovery path was run and full `gmake -j8`
+  passed from that clean backend state;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- `gmake -C contrib/postgres_fdw clean all check` rebuilt postgres_fdw and
+  reached SQL, then first failed on this macOS checkout because the recreated
+  temp-install `postgres_fdw.dylib` pointed at
+  `/usr/local/pgsql/lib/libpq.5.dylib`;
+- after patching the recreated temp-install `postgres_fdw.dylib` install name,
+  the full postgres_fdw regression still hit a backend `SIGSEGV` partway
+  through the long upstream schedule. A temporary isolation run restored
+  postgres_fdw connection/shippability storage and new reset registrations to
+  static/no-op form, and the same regression segment still crashed, so this is
+  tracked as pre-existing branch instability exposed by the broad postgres_fdw
+  schedule rather than evidence against this session-state slice;
+- a direct loopback postgres_fdw smoke passed after patching temp-install
+  install names. The smoke created `postgres_fdw`, created a loopback server
+  and user mapping, selected through a foreign table, verified
+  `postgres_fdw_get_connections()` reported the cached connection, and ran
+  `postgres_fdw_disconnect_all()`;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with `PG_REGRESS`,
+  temp-install `PATH`, patched temp-install install-name paths, and the
+  repo-local `.perl5` `PERL5LIB`;
+- a stale-symbol scan found no remaining raw `static HTAB *ConnectionHash`,
+  `static HTAB *ShippableCacheHash`, `static unsigned int cursor_number`,
+  `static unsigned int prep_stmt_number`, `static bool xact_got_connection`,
+  or `static int read_only_level` declarations in postgres_fdw.
