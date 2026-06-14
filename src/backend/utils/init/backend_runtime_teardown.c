@@ -92,6 +92,15 @@ PgBackendResetLockClosedState(PgBackendLockState *locks)
 			pfree(locks->deadlock_details);
 	}
 
+	/*
+	 * LWLOCK_STATS registers print_lwlock_stats() as a shmem-exit callback.
+	 * proc_exit() drains that callback stack before closed-backend reset; this
+	 * only reclaims any retained per-backend stats hash storage afterwards.
+	 */
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(locks->lwlock_stats_context);
+	locks->lwlock_stats_htab = NULL;
+	locks->lwlock_stats_exit_registered = false;
+
 	PgBackendInitializeLockState(locks);
 }
 

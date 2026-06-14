@@ -955,6 +955,12 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	locks->deadlock_n_details = 7;
 	locks->blocking_autovacuum_proc = &fake_backend;
 	locks->deadlock_workspace_owned = true;
+	locks->lwlock_stats_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test LWLock stats context",
+							  ALLOCSET_SMALL_SIZES);
+	locks->lwlock_stats_htab = (HTAB *) &fake_backend;
+	locks->lwlock_stats_exit_registered = true;
 
 	activity->backend_status_context =
 		AllocSetContextCreate(TopMemoryContext,
@@ -1286,6 +1292,9 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && locks->deadlock_n_details == 0;
 	ok = ok && locks->blocking_autovacuum_proc == NULL;
 	ok = ok && !locks->deadlock_workspace_owned;
+	ok = ok && locks->lwlock_stats_htab == NULL;
+	ok = ok && locks->lwlock_stats_context == NULL;
+	ok = ok && !locks->lwlock_stats_exit_registered;
 	ok = ok && logical_replication->my_subscription == NULL;
 	ok = ok && !logical_replication->my_subscription_valid;
 	ok = ok && logical_replication->my_logical_rep_worker == NULL;
