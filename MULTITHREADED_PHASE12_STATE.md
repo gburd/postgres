@@ -298,6 +298,30 @@ Validation for this slice:
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals.
 
+## Backend Core Lifetime Classification
+
+The next manifest-hardening slice classifies `PgBackend.core` as backend-owned
+identity and borrowed latch state rather than a destructor owner:
+
+- `PgBackendCoreState` holds backend identity/scalar state, an inline
+  `OutputFileName` buffer, and the backend PRNG state;
+- its `Latch *` points at latch storage owned by the process/thread
+  initialization path or by `PGPROC`, and must not be freed by the core bucket;
+- the PMChild/thread synchronization concern is not hidden by this
+  classification. It is covered by the existing PMChild helper contract:
+  thread-backed PMChild signal routing, detach, exit publication, join retry,
+  and race coverage are handled outside `PgBackend.core`.
+
+This leaves the actual remaining Gate E2 lifecycle blockers focused on
+backend worker/resource buckets, legacy `Session`, and the execution/carrier
+memory-context ownership split.
+
+Validation for this slice:
+
+- `gmake check-runtime-lifecycles` passed with 134 fields classified;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals.
+
 ## Runtime Lifecycle Manifest
 
 The one-hundred-seventy-third Phase 12 slice makes the Gate E2 object-lifecycle
