@@ -1614,8 +1614,14 @@ abandoned-client exits while verifying logical backend ids leave
 `pg_stat_activity`, advisory locks are released, and the server remains usable.
 PMChild slot reuse now also scrubs thread-carrier visible payloads under the
 same PMChild mutex used by signal-id, interrupt, wakeup, and exit-payload
-readers. Full lifecycle resource cleanup and broader real-server PMChild
-termination/reaping stress remain Gate E2 blockers before Phase 13.
+readers. Follow-up TAP coverage now runs repeated real-server PMChild reaping
+stress: each cycle combines abandoned clients with temp tables and advisory
+locks, actively sleeping sessions terminated through `pg_terminate_backend()`,
+and backend-local `FATAL`, then verifies all logical backend ids leave
+`pg_stat_activity`, advisory locks are released, the server remains usable,
+and the Unix postmaster child count is unchanged. Full lifecycle resource
+cleanup, deliberate long-lived ownership accounting, and broader resource-leak
+auditing remain Gate E2 blockers before Phase 13.
 Follow-up threaded TAP coverage now installs and exercises a representative
 contrib set (`hstore`, `pg_trgm`, `btree_gist`, and `pageinspect`) in threaded
 mode. That proves extension DDL plus C extension entry points across
