@@ -18,6 +18,47 @@
 #define BACKEND_RUNTIME_INTERNAL_H
 
 #include "utils/backend_runtime.h"
+#include "utils/hsearch.h"
+#include "utils/memutils.h"
+
+/*
+ * Lifecycle action vocabulary used by backend_runtime_*_buckets.def and
+ * owner-adjacent runtime teardown files.
+ *
+ * Keep this vocabulary small and mechanically checked.  Routine no-op cells
+ * should be named here rather than written as anonymous C expressions in the
+ * bucket definition files, so the lifecycle checker can distinguish explicit
+ * intent from forgotten lifecycle work.
+ */
+#define PG_RUNTIME_NOOP ((void) 0)
+#define PG_RUNTIME_DELETE_MEMORY_CONTEXT(context) \
+	do { \
+		if ((context) != NULL) \
+		{ \
+			if (CurrentMemoryContext == (context)) \
+				MemoryContextSwitchTo(TopMemoryContext); \
+			MemoryContextDelete(context); \
+			(context) = NULL; \
+		} \
+	} while (0)
+#define PG_RUNTIME_DESTROY_HASH(hash) \
+	do { \
+		if ((hash) != NULL) \
+		{ \
+			hash_destroy(hash); \
+			(hash) = NULL; \
+		} \
+	} while (0)
+#define PG_RUNTIME_LIST_FREE(list_head) \
+	do { \
+		list_free(list_head); \
+		(list_head) = NIL; \
+	} while (0)
+#define PG_RUNTIME_LIST_FREE_DEEP(list_head) \
+	do { \
+		list_free_deep(list_head); \
+		(list_head) = NIL; \
+	} while (0)
 
 extern PgCarrier *PgCurrentCarrierState(void);
 extern PgRuntimeServerGUCState *PgCurrentRuntimeServerGUCState(void);
@@ -76,5 +117,40 @@ extern PgBackendIPCState *PgCurrentBackendIPCState(void);
 extern PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
 extern PgBackendUtilityState *PgCurrentBackendUtilityState(void);
 extern PgBackendParallelState *PgCurrentBackendParallelState(void);
+
+extern void PgSessionInitializeGUCState(PgSessionGUCState *guc);
+extern void PgSessionInitializeExtensionModuleState(PgSessionExtensionModuleState *extension_modules);
+extern void PgSessionInitializeInvalidationCallbackState(PgSessionInvalidationCallbackState *invalidation_callbacks);
+extern void PgSessionInitializeRelMapState(PgSessionRelMapState *relmap);
+extern void PgSessionInitializeRegexState(PgSessionRegexState *regex);
+extern void PgSessionInitializePortalManagerState(PgSessionPortalManagerState *portal_manager);
+extern void PgSessionInitializeEncodingState(PgSessionEncodingState *encoding);
+extern void PgBackendInitializeLockState(PgBackendLockState *locks);
+extern void PgBackendInitializeExtensionModuleState(PgBackendExtensionModuleState *extension_modules);
+extern void PgExecutionInitializeErrorState(PgExecutionErrorState *error);
+extern void PgExecutionInitializeSPIState(PgExecutionSPIState *spi);
+extern void PgExecutionInitializeVacuumState(PgExecutionVacuumState *vacuum);
+extern void PgExecutionInitializeNodeIOState(PgExecutionNodeIOState *node_io);
+extern void PgExecutionInitializeBaseBackupState(PgExecutionBaseBackupState *basebackup);
+extern void PgExecutionInitializeAnalyzeState(PgExecutionAnalyzeState *analyze);
+extern void PgExecutionInitializeExtensionState(PgExecutionExtensionState *extension);
+extern void PgExecutionInitializeMatViewState(PgExecutionMatViewState *matview);
+extern void PgExecutionInitializeSnapshotState(PgExecutionSnapshotState *snapshot);
+extern void PgExecutionInitializeComboCidState(PgExecutionComboCidState *combo_cid);
+extern void PgExecutionInitializeXLogInsertState(PgExecutionXLogInsertState *xloginsert);
+extern void PgExecutionInitializeXactState(PgExecutionXactState *xact);
+extern void PgExecutionInitializeTransactionCleanupState(PgExecutionTransactionCleanupState *transaction_cleanup);
+extern void PgExecutionInitializeReplicationScratchState(PgExecutionReplicationScratchState *replication_scratch);
+extern void PgExecutionInitializeGUCErrorState(PgExecutionGUCErrorState *guc_error);
+extern void PgExecutionInitializeAsyncState(PgExecutionAsyncState *async);
+extern void PgExecutionInitializeCatalogState(PgExecutionCatalogState *catalog);
+extern void PgExecutionInitializeCatalogCacheState(PgExecutionCatalogCacheState *catalog_cache);
+extern void PgExecutionInitializeRelMapState(PgExecutionRelMapState *relmap);
+extern void PgExecutionInitializeInvalidationState(PgExecutionInvalidationState *invalidation);
+extern void PgExecutionInitializeTwoPhaseRecordState(PgExecutionTwoPhaseRecordState *two_phase_records);
+extern void PgExecutionInitializeTriggerState(PgExecutionTriggerState *trigger);
+extern void PgExecutionInitializeRegexState(PgExecutionRegexState *regex);
+extern void PgExecutionInitializeValgrindState(PgExecutionValgrindState *valgrind);
+extern void PgExecutionInitializeSnapBuildState(PgExecutionSnapBuildState *snapbuild);
 
 #endif							/* BACKEND_RUNTIME_INTERNAL_H */

@@ -11912,3 +11912,55 @@ Validation for this repair:
 Validation note: an attempted parallel run of PL/pgSQL regression and
 `test_backend_runtime` checks failed before SQL started because both targets
 owned and recreated `$PWD/tmp_install`. The checks were rerun sequentially.
+
+## Runtime Teardown Owner Refactor
+
+Lifecycle ergonomics preflight:
+
+- target: Gate E2 maintainability and teardown ownership before the next large
+  state-migration batch;
+- repeated lifecycle operations: delete-and-null memory contexts, destroy hash
+  tables and clear slots, free list heads and reset them to `NIL`, and route
+  ordered closed-state reset through the same checked bucket rows;
+- preflight result: extend the checked action vocabulary and split the
+  closed-state reset tree out of `backend_runtime.c`. This is framework and
+  organization work, not a semantic state migration. The reset ordering remains
+  the existing bucket ordering; detach/fallback/ordering-sensitive cleanup
+  stays handwritten in the teardown owner file.
+
+Teardown refactor slice completed:
+
+- `src/backend/utils/init/backend_runtime_teardown.c` now owns
+  `PgBackendResetClosedState()`, `PgSessionResetClosedState()`,
+  `PgExecutionResetClosedState()`, and their closed-reset helper tree;
+- `backend_runtime.c` keeps root object construction, current pointer
+  installation, process/thread setup, early fallback adoption, and current
+  bucket selectors;
+- initializer helpers needed by reset-through-initializer rows are exposed
+  only through the backend-private `backend_runtime_internal.h`, not installed
+  headers;
+- `src/backend/utils/init/Makefile`, `meson.build`, top-level
+  `check-runtime-lifecycles`, and `check_runtime_lifecycles.pl` include the
+  new teardown source, so manifest-referenced reset functions remain checked;
+- `PG_RUNTIME_DESTROY_HASH(hash)`, `PG_RUNTIME_LIST_FREE(list_head)`, and
+  `PG_RUNTIME_LIST_FREE_DEEP(list_head)` are now checked lifecycle actions
+  alongside `PG_RUNTIME_NOOP` and
+  `PG_RUNTIME_DELETE_MEMORY_CONTEXT(context)`;
+- `check_runtime_lifecycles.pl` validates `PG_RUNTIME_*` actions in
+  `backend_runtime_session_reset_buckets.def`, so ordered session reset rows
+  cannot grow unknown lifecycle actions outside the checked vocabulary;
+- simple ordered reset rows for `on_commit`, `dynamic_library_context`,
+  parser state, and sequence state now use checked actions directly, while
+  cleanup with context/hash fallback ownership, DSA/dshash detach, text-search
+  entry walking, extension reset callbacks, or transaction/backup side effects
+  remains handwritten.
+
+Validation for this teardown refactor slice:
+
+- `gmake -C src/backend/utils/init backend_runtime.o
+  backend_runtime_teardown.o` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 28 reset definitions checked, and 176 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations.

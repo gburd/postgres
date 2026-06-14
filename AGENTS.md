@@ -95,6 +95,11 @@ Important current files:
   relmap, prepared-statement, on-commit, and sequence shims. Keep
   fallback-aware current-bucket selectors in `backend_runtime.c` and expose
   them only through `backend_runtime_internal.h`.
+- `src/backend/utils/init/backend_runtime_teardown.c`: fork-owned closed-state
+  reset/teardown owner for `PgBackend`, `PgSession`, and `PgExecution`.
+  Keep root object construction, current-pointer installation, and early
+  fallback adoption in `backend_runtime.c`; move semantic closed-reset work
+  here or to a narrower owner-adjacent runtime file.
 - `src/backend/utils/activity/backend_runtime_pgstat.c`: fork-owned runtime
   bridge accessors for pgstat-owned backend/session state. Add future pgstat
   accessor shims here rather than growing `backend_runtime.c`.

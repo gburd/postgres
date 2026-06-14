@@ -835,7 +835,11 @@ lock-manager, and IPC compatibility accessors into
 `src/backend/storage/lmgr/backend_runtime_lmgr.c`, and
 `src/backend/storage/ipc/backend_runtime_ipc.c`. Another split moved
 frontend/backend connection compatibility accessors into
-`src/backend/libpq/backend_runtime_connection.c`.
+`src/backend/libpq/backend_runtime_connection.c`. Closed-state reset and
+teardown helpers for `PgBackend`, `PgSession`, and `PgExecution` now live in
+`src/backend/utils/init/backend_runtime_teardown.c`, leaving
+`backend_runtime.c` focused on construction, current-object installation,
+early fallback adoption, and top-level orchestration.
 Future Phase 12 bucket additions should pick an adjacent owner file first;
 adding more code to `backend_runtime.c` should be reserved for root runtime
 construction, current-object helpers, and top-level adopt/reset calls.
@@ -969,6 +973,13 @@ Gate E2 requires:
   in lifecycle rows and nearby reset helpers; keep handwritten owner-adjacent
   cleanup for cases that require ordering, conditional destruction, or
   additional pointer/list/hash cleanup;
+- the teardown-owner lifecycle vocabulary slice is in place:
+  `PG_RUNTIME_DESTROY_HASH(hash)`, `PG_RUNTIME_LIST_FREE(list_head)`, and
+  `PG_RUNTIME_LIST_FREE_DEEP(list_head)` are recognized checked actions, and
+  `check_runtime_lifecycles.pl` now validates `PG_RUNTIME_*` actions in the
+  ordered session reset table as well as root bucket definition files. Use
+  those actions for routine clear-after-cleanup cases while keeping
+  owner-adjacent detach, fallback, and ordering-sensitive cleanup handwritten;
 - the next lifecycle-framework improvement should target the patterns now
   recurring in Gate E2: create an object-owned allocation context,
   delete-and-null a memory context, free/reset list heads, clear pointer slots
@@ -1069,7 +1080,11 @@ field, and `check-runtime-lifecycles` verifies process and thread runtime
 construction both call `PgCarrierInitializeRuntimeObject()`.
 The owner-map hardening slice also made `check-runtime-lifecycles` validate
 `MULTITHREADED_RUNTIME_OWNERS.tsv`, so symbol-level mappings cannot drift away
-from checked lifecycle buckets or owner-adjacent accessors.
+from checked lifecycle buckets or owner-adjacent accessors. A teardown-owner
+refactor moved backend/session/execution closed-reset helpers out of
+`backend_runtime.c` into `backend_runtime_teardown.c`, added that file to the
+build systems and default lifecycle-checker source set, and made routine
+hash/list teardown actions part of the checked lifecycle vocabulary.
 
 Current Gate E2 progress: `gmake check-global-lifetimes` is now a required
 target, and postmaster signal/wakeup routing no longer dereferences a

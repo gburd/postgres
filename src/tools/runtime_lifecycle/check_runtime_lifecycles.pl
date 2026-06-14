@@ -21,6 +21,7 @@ my $owner_map = 'MULTITHREADED_RUNTIME_OWNERS.tsv';
 my @sources = (
 	'src/backend/utils/init/backend_runtime.c',
 	'src/backend/utils/init/backend_runtime_session.c',
+	'src/backend/utils/init/backend_runtime_teardown.c',
 	'src/backend/utils/cache/backend_runtime_cache.c',
 	'src/backend/utils/activity/backend_runtime_pgstat.c',
 	'src/backend/utils/activity/backend_status.c',
@@ -194,6 +195,8 @@ foreach my $row (@reset_rows)
 			  "$row->{file}:$row->{line}: reset_destroy references $function(), but no definition was found in the checked runtime sources";
 		}
 	}
+
+	validate_lifecycle_action_cell($row, 'reset_destroy');
 }
 
 foreach my $row (@manifest_rows)
@@ -381,7 +384,10 @@ sub validate_lifecycle_action_cell
 	my $text = $row->{$column};
 	my %known_actions = map { $_ => 1 } qw(
 	  PG_RUNTIME_NOOP
-	  PG_RUNTIME_DELETE_MEMORY_CONTEXT);
+	  PG_RUNTIME_DELETE_MEMORY_CONTEXT
+	  PG_RUNTIME_DESTROY_HASH
+	  PG_RUNTIME_LIST_FREE
+	  PG_RUNTIME_LIST_FREE_DEEP);
 
 	if ($text =~ /^\(void\)\s*0$/)
 	{
