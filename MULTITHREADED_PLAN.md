@@ -939,6 +939,13 @@ Gate E2 requires:
   the thing slowing progress, treat that as evidence that the checked
   vocabulary is still too weak: add the missing macro, action, table rule, or
   checker validation first, then use it to move a larger coherent batch;
+- apply the same simplification review to every remaining Gate E2 blocker, not
+  only raw state migration. Threaded teardown, PMChild/thread synchronization,
+  startup-gate removal, systematic GUC adoption, and owner-map hardening should
+  each begin by deciding whether a small checked macro, lifecycle action,
+  bucket/table rule, or checker extension would reduce repeated bookkeeping.
+  If it would, land that primitive first and then move the larger blocker
+  through the checked path;
 - the lifecycle-ergonomics review is a required Gate E2 checkpoint. For each
   boilerplate-heavy Phase 12 batch, document whether the existing
   `PG_RUNTIME_DEFINE_*` macros, checked bucket `.def` files, and lifecycle

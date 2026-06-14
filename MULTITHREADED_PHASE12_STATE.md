@@ -12450,3 +12450,23 @@ Validation for the generated GUC rebind slice:
   `002_threaded_bgworker_crash.pl`, 131 tests total, with `PG_REGRESS`,
   patched temp-install install-name paths, and the repo-local `.perl5`
   `PERL5LIB`.
+
+## Gate E2 Lifecycle Simplification Rule
+
+Before resuming the remaining Gate E2 blockers, apply the lifecycle
+ergonomics rule to the blocker itself, not just to raw global migration. The
+next implementation slice should explicitly ask whether threaded teardown,
+PMChild/thread synchronization, startup-gate removal, systematic GUC adoption,
+owner-map hardening, or any remaining object migration would be simpler with a
+small checked primitive first.
+
+If the answer is yes, land the primitive before the larger code movement. Good
+primitive shapes are `PG_RUNTIME_*` lifecycle actions, `PG_RUNTIME_DEFINE_*`
+helper macros, bucket `.def` table rules, generated source tables, owner-map
+metadata, or `check_runtime_lifecycles.pl` validation. The goal is to remove
+repeated lifecycle bookkeeping while keeping semantic teardown and ownership
+ordering handwritten near the owning subsystem.
+
+Each remaining Gate E2 slice should record a preflight note here naming either
+the existing checked rows/macros/checker rules being reused or the new
+primitive added first.

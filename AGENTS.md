@@ -20,6 +20,10 @@ If lifecycle bookkeeping itself is making Phase 12 slow, treat that as a code
 smell in the lifecycle framework. Do not keep grinding through repeated manual
 helpers. Add the missing macro, bucket-row action, declarative table pattern, or
 checker rule first, then move a larger coherent batch through the checked path.
+This is especially important before the remaining Gate E2 blockers: threaded
+teardown, PMChild/thread synchronization, startup-gate removal, and any
+remaining object migration should each start by asking whether a small
+macro/table/checker improvement would make the whole slice simpler and safer.
 
 ## Project Docs
 
@@ -83,6 +87,11 @@ checker rule first, then move a larger coherent batch through the checked path.
 - Keep exceptional ownership, ordering, and subsystem cleanup handwritten and
   owner-adjacent. Use macros/tables only for repeated lifecycle mechanics so
   large batches move faster without weakening the manifest gate.
+- Apply that rule before each remaining Gate E2 blocker, not only before raw
+  global migration. If teardown, PMChild synchronization, startup-gate cleanup,
+  or owner-map hardening would require repeated bookkeeping, first land the
+  small checked macro/table/checker primitive and then do the larger slice
+  through that path.
 
 ## Working Assumptions
 
