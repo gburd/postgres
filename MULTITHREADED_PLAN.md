@@ -925,6 +925,14 @@ Gate E2 requires:
   copy/adopt, zero-reset, and destructor-call cases. If a migration cannot be
   expressed clearly through that path, document why and keep the semantic
   cleanup handwritten near the owning subsystem;
+- Gate E2 lifecycle ergonomics should keep moving toward a small checked
+  action vocabulary rather than long handwritten helper lists. Candidate
+  actions include zero-init, zero-reset, copy/adopt, copy/adopt-with-reinit,
+  reset-through-initializer, and explicit destroy actions for memory contexts,
+  lists, hash tables, sockets, and other owned resources. The checker should
+  grow with the vocabulary, including rejecting stale or unexplained `(void) 0`
+  lifecycle cells for buckets whose manifest row says they own pointer-like or
+  teardown-sensitive state;
 - `MULTITHREADED_RUNTIME_OWNERS.tsv` remains synchronized with the lifecycle
   manifest and runtime accessors. `check-runtime-lifecycles` must reject owner
   rows that point at a non-manifest bucket, a missing owner source, a duplicate

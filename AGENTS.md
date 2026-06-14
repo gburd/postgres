@@ -297,6 +297,15 @@ Important current files:
   `PG_RUNTIME_DEFINE_*` macros, bucket `.def` files, and checker rules are
   enough. If not, extend that framework first and record the chosen pattern in
   `MULTITHREADED_PHASE12_STATE.md` so future agents follow the same path.
+- Keep improving lifecycle ergonomics when the pattern becomes repetitive. Good
+  candidates are checked action names in the bucket `.def` files for common
+  cases such as zero-init, zero-reset, copy/adopt, copy/adopt-with-reinit,
+  reset-through-initializer, and memory-context/list/hash destruction; small
+  `PG_RUNTIME_DEFINE_*` wrappers for those actions; and checker rules that
+  reject unclassified `(void) 0` lifecycle cells on buckets with pointers,
+  lists, memory contexts, or owned resources. Add these framework improvements
+  before migrating another large batch that would otherwise duplicate the same
+  helper code by hand.
 - Use this concrete preflight before a large Phase 12 migration:
   identify the target root object and bucket rows, list the repeated lifecycle
   operations the batch would need, decide whether the existing macros/`.def`
