@@ -482,6 +482,10 @@ typedef struct PgBackendMaintenanceWorkerState
 	MemoryContext archive_context;
 	char	   *loaded_archive_library;
 	struct arch_files_state *pgarch_files;
+	MemoryContext bgwriter_context;
+	MemoryContext walwriter_context;
+	MemoryContext checkpointer_context;
+	MemoryContext walsummarizer_context;
 	volatile sig_atomic_t pgarch_ready_to_stop;
 	bool		ckpt_active;
 	pg_time_t	ckpt_start_time;

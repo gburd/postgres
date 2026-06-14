@@ -494,6 +494,11 @@ PgBackendResetMaintenanceWorkerClosedState(PgBackendMaintenanceWorkerState *main
 	}
 	PgArchResetFilesState(&maintenance_worker->pgarch_files);
 
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(maintenance_worker->bgwriter_context);
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(maintenance_worker->walwriter_context);
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(maintenance_worker->checkpointer_context);
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(maintenance_worker->walsummarizer_context);
+
 	maintenance_worker->archive_callbacks = NULL;
 }
 

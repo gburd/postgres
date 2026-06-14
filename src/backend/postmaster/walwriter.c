@@ -80,6 +80,9 @@ PG_GLOBAL_RUNTIME int WalWriterFlushAfter = DEFAULT_WAL_WRITER_FLUSH_AFTER;
 #define LOOPS_UNTIL_HIBERNATE		50
 #define HIBERNATE_FACTOR			25
 
+#define walwriter_context \
+	(PgCurrentMaintenanceWorkerState()->walwriter_context)
+
 /*
  * Main entry point for walwriter process
  *
@@ -90,7 +93,6 @@ void
 WalWriterMain(const void *startup_data, size_t startup_data_len)
 {
 	sigjmp_buf	local_sigjmp_buf;
-	MemoryContext walwriter_context;
 	int			left_till_hibernate;
 	bool		hibernating;
 	bool		threaded_worker;

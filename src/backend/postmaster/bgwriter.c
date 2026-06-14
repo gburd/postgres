@@ -80,6 +80,8 @@ PG_GLOBAL_RUNTIME int BgWriterDelay = 200;
 	(PgCurrentMaintenanceWorkerState()->bgwriter_last_snapshot_ts)
 #define last_snapshot_lsn \
 	(PgCurrentMaintenanceWorkerState()->bgwriter_last_snapshot_lsn)
+#define bgwriter_context \
+	(PgCurrentMaintenanceWorkerState()->bgwriter_context)
 
 
 /*
@@ -92,7 +94,6 @@ void
 BackgroundWriterMain(const void *startup_data, size_t startup_data_len)
 {
 	sigjmp_buf	local_sigjmp_buf;
-	MemoryContext bgwriter_context;
 	bool		prev_hibernate;
 	bool		threaded_worker;
 	WritebackContext wb_context;

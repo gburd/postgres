@@ -152,6 +152,9 @@ const ShmemCallbacks WalSummarizerShmemCallbacks = {
 #define redo_pointer_at_last_summary_removal \
 	(PgCurrentMaintenanceWorkerState()->walsummarizer_redo_pointer_at_last_summary_removal)
 
+#define walsummarizer_context \
+	(PgCurrentMaintenanceWorkerState()->walsummarizer_context)
+
 /*
  * GUC parameters
  */
@@ -218,7 +221,6 @@ void
 WalSummarizerMain(const void *startup_data, size_t startup_data_len)
 {
 	sigjmp_buf	local_sigjmp_buf;
-	MemoryContext context;
 
 	/*
 	 * Within this function, 'current_lsn' and 'current_tli' refer to the
@@ -269,10 +271,10 @@ WalSummarizerMain(const void *startup_data, size_t startup_data_len)
 	LWLockRelease(WALSummarizerLock);
 
 	/* Create and switch to a memory context that we can reset on error. */
-	context = AllocSetContextCreate(TopMemoryContext,
-									"Wal Summarizer",
-									ALLOCSET_DEFAULT_SIZES);
-	MemoryContextSwitchTo(context);
+	walsummarizer_context = AllocSetContextCreate(TopMemoryContext,
+												  "Wal Summarizer",
+												  ALLOCSET_DEFAULT_SIZES);
+	MemoryContextSwitchTo(walsummarizer_context);
 
 	/*
 	 * Reset some signals that are accepted by postmaster but not here
@@ -307,11 +309,11 @@ WalSummarizerMain(const void *startup_data, size_t startup_data_len)
 		 * Now return to normal top-level context and clear ErrorContext for
 		 * next time.
 		 */
-		MemoryContextSwitchTo(context);
+		MemoryContextSwitchTo(walsummarizer_context);
 		FlushErrorState();
 
 		/* Flush any leaked data in the top-level context */
-		MemoryContextReset(context);
+		MemoryContextReset(walsummarizer_context);
 
 		/* Now we can allow interrupts again */
 		RESUME_INTERRUPTS();
@@ -364,7 +366,7 @@ WalSummarizerMain(const void *startup_data, size_t startup_data_len)
 		XLogRecPtr	end_of_summary_lsn;
 
 		/* Flush any leaked data in the top-level context */
-		MemoryContextReset(context);
+		MemoryContextReset(walsummarizer_context);
 
 		/* Process any signals received recently. */
 		ProcessWalSummarizerInterrupts();

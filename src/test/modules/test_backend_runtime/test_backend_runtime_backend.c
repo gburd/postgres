@@ -895,6 +895,22 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 							  ALLOCSET_SMALL_SIZES);
 	maintenance_worker->loaded_archive_library = pstrdup("archive_library");
 	maintenance_worker->pgarch_files = palloc0(8);
+	maintenance_worker->bgwriter_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test background writer context",
+							  ALLOCSET_SMALL_SIZES);
+	maintenance_worker->walwriter_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test WAL writer context",
+							  ALLOCSET_SMALL_SIZES);
+	maintenance_worker->checkpointer_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test checkpointer context",
+							  ALLOCSET_SMALL_SIZES);
+	maintenance_worker->walsummarizer_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test WAL summarizer context",
+							  ALLOCSET_SMALL_SIZES);
 
 	autovacuum->autovac_mem_cxt =
 		AllocSetContextCreate(TopMemoryContext,
@@ -1285,6 +1301,10 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && maintenance_worker->archive_context == NULL;
 	ok = ok && maintenance_worker->loaded_archive_library == NULL;
 	ok = ok && maintenance_worker->pgarch_files == NULL;
+	ok = ok && maintenance_worker->bgwriter_context == NULL;
+	ok = ok && maintenance_worker->walwriter_context == NULL;
+	ok = ok && maintenance_worker->checkpointer_context == NULL;
+	ok = ok && maintenance_worker->walsummarizer_context == NULL;
 	ok = ok && autovacuum->autovac_mem_cxt == NULL;
 	ok = ok && autovacuum->database_list_cxt == NULL;
 	ok = ok && autovacuum->avl_dbase_array == NULL;
@@ -3740,6 +3760,10 @@ test_backend_maintenance_worker_state_is_backend_local(PG_FUNCTION_ARGS)
 		worker1->archive_context = (MemoryContext) &fake_backend1;
 		worker1->loaded_archive_library = (char *) &fake_backend1;
 		worker1->pgarch_files = (struct arch_files_state *) &fake_backend1;
+		worker1->bgwriter_context = (MemoryContext) &fake_backend1;
+		worker1->walwriter_context = (MemoryContext) &fake_backend1;
+		worker1->checkpointer_context = (MemoryContext) &fake_backend1;
+		worker1->walsummarizer_context = (MemoryContext) &fake_backend1;
 		worker1->pgarch_ready_to_stop = true;
 		worker1->ckpt_active = true;
 		worker1->ckpt_start_time = 102;
@@ -3766,6 +3790,10 @@ test_backend_maintenance_worker_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && worker2->archive_context == NULL;
 		ok = ok && worker2->loaded_archive_library == NULL;
 		ok = ok && worker2->pgarch_files == NULL;
+		ok = ok && worker2->bgwriter_context == NULL;
+		ok = ok && worker2->walwriter_context == NULL;
+		ok = ok && worker2->checkpointer_context == NULL;
+		ok = ok && worker2->walsummarizer_context == NULL;
 		ok = ok && !worker2->pgarch_ready_to_stop;
 		ok = ok && !worker2->ckpt_active;
 		ok = ok && worker2->ckpt_start_time == 0;
@@ -3790,6 +3818,10 @@ test_backend_maintenance_worker_state_is_backend_local(PG_FUNCTION_ARGS)
 		worker2->archive_context = (MemoryContext) &fake_backend2;
 		worker2->loaded_archive_library = (char *) &fake_backend2;
 		worker2->pgarch_files = (struct arch_files_state *) &fake_backend2;
+		worker2->bgwriter_context = (MemoryContext) &fake_backend2;
+		worker2->walwriter_context = (MemoryContext) &fake_backend2;
+		worker2->checkpointer_context = (MemoryContext) &fake_backend2;
+		worker2->walsummarizer_context = (MemoryContext) &fake_backend2;
 		worker2->pgarch_ready_to_stop = true;
 		worker2->ckpt_active = true;
 		worker2->ckpt_start_time = 202;
@@ -3820,6 +3852,14 @@ test_backend_maintenance_worker_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && worker1->loaded_archive_library == (char *) &fake_backend1;
 		ok = ok && worker1->pgarch_files ==
 			(struct arch_files_state *) &fake_backend1;
+		ok = ok && worker1->bgwriter_context ==
+			(MemoryContext) &fake_backend1;
+		ok = ok && worker1->walwriter_context ==
+			(MemoryContext) &fake_backend1;
+		ok = ok && worker1->checkpointer_context ==
+			(MemoryContext) &fake_backend1;
+		ok = ok && worker1->walsummarizer_context ==
+			(MemoryContext) &fake_backend1;
 		ok = ok && worker1->pgarch_ready_to_stop;
 		ok = ok && worker1->ckpt_active;
 		ok = ok && worker1->ckpt_start_time == 102;
@@ -3850,6 +3890,14 @@ test_backend_maintenance_worker_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && worker2->loaded_archive_library == (char *) &fake_backend2;
 		ok = ok && worker2->pgarch_files ==
 			(struct arch_files_state *) &fake_backend2;
+		ok = ok && worker2->bgwriter_context ==
+			(MemoryContext) &fake_backend2;
+		ok = ok && worker2->walwriter_context ==
+			(MemoryContext) &fake_backend2;
+		ok = ok && worker2->checkpointer_context ==
+			(MemoryContext) &fake_backend2;
+		ok = ok && worker2->walsummarizer_context ==
+			(MemoryContext) &fake_backend2;
 		ok = ok && worker2->pgarch_ready_to_stop;
 		ok = ok && worker2->ckpt_active;
 		ok = ok && worker2->ckpt_start_time == 202;

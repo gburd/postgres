@@ -1058,6 +1058,12 @@ Gate E2 requires:
   destroy helper list, extend the checked lifecycle vocabulary first with a
   named action, helper macro, table row, or checker rule, then run the batch
   through that mechanism;
+- the concrete lifecycle-framework TODO is to add checked primitives for
+  repeated object-owned allocation-context ownership, list/hash cleanup, and
+  copy-adopt-reset fallback patterns when the next batch needs them more than
+  once. The likely next useful primitive is an allocation-context helper/table
+  rule that exposes create-on-demand context ownership and close-time
+  delete-and-null cleanup to `check-runtime-lifecycles`;
 - `MULTITHREADED_RUNTIME_OWNERS.tsv` remains synchronized with the lifecycle
   manifest and runtime accessors. `check-runtime-lifecycles` must reject owner
   rows that point at a non-manifest bucket, a missing owner source, a duplicate

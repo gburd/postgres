@@ -188,6 +188,9 @@ PG_GLOBAL_RUNTIME double CheckPointCompletionTarget = 0.9;
 #define last_xlog_switch_time \
 	(PgCurrentMaintenanceWorkerState()->last_xlog_switch_time)
 
+#define checkpointer_context \
+	(PgCurrentMaintenanceWorkerState()->checkpointer_context)
+
 /* Prototypes for private functions */
 
 static void ProcessCheckpointerInterrupts(void);
@@ -211,7 +214,6 @@ void
 CheckpointerMain(const void *startup_data, size_t startup_data_len)
 {
 	sigjmp_buf	local_sigjmp_buf;
-	MemoryContext checkpointer_context;
 	bool		threaded_worker;
 
 	Assert(startup_data_len == 0);

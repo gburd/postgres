@@ -3121,6 +3121,10 @@ PgBackendAdoptEarlyMaintenanceWorkerState(PgBackend *backend)
 	Assert(early_backend_maintenance_worker.archive_context == NULL);
 	Assert(early_backend_maintenance_worker.loaded_archive_library == NULL);
 	Assert(early_backend_maintenance_worker.pgarch_files == NULL);
+	Assert(early_backend_maintenance_worker.bgwriter_context == NULL);
+	Assert(early_backend_maintenance_worker.walwriter_context == NULL);
+	Assert(early_backend_maintenance_worker.checkpointer_context == NULL);
+	Assert(early_backend_maintenance_worker.walsummarizer_context == NULL);
 
 	backend->maintenance_worker = early_backend_maintenance_worker;
 	PgBackendInitializeMaintenanceWorkerState(&early_backend_maintenance_worker);

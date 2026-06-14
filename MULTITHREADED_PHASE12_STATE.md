@@ -12472,6 +12472,21 @@ Each remaining Gate E2 slice should record a preflight note here naming either
 the existing checked rows/macros/checker rules being reused or the new
 primitive added first.
 
+Concrete lifecycle-framework TODO:
+
+- promote repeated object-owned allocation-context mechanics into a checked
+  primitive when the next batch needs them more than once. The target shape is
+  a small `PG_RUNTIME_*` action, `PG_RUNTIME_DEFINE_*` helper, bucket `.def`
+  rule, or checker extension that makes create-on-demand context ownership,
+  fallback adoption, and close-time delete-and-null behavior visible to
+  `check-runtime-lifecycles`;
+- do the same for repeated list/hash cleanup and copy-adopt-reset fallback
+  patterns. If a batch starts adding parallel handwritten helper bodies, stop
+  and land the reusable checked primitive before moving the state;
+- keep semantic cleanup and ordering-sensitive destruction handwritten in the
+  owner file. The primitive should remove clerical lifecycle plumbing, not
+  hide subsystem ownership rules.
+
 ## Threaded Startup Gate Removal
 
 Lifecycle/preflight note:
@@ -12520,6 +12535,66 @@ Validation for the startup-gate removal slice:
   globals and zero local-runtime-boundary violations;
 - full incremental `gmake -j8` passed;
 - `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with `PG_REGRESS`,
+  temp-install `PATH`, and the repo-local `.perl5` `PERL5LIB`.
+
+## Maintenance Worker Context Ownership
+
+Lifecycle/preflight note:
+
+- target: reduce concrete `TopMemoryContext` retention for thread-backed
+  server-owned maintenance workers by making their main work contexts explicit
+  `PgBackend.maintenance_worker` state;
+- repeated lifecycle operations: four worker-owned memory contexts need the
+  same close-time delete-and-null behavior. The existing checked
+  `PG_RUNTIME_DELETE_MEMORY_CONTEXT` action already covers that pattern, so no
+  new lifecycle primitive is needed;
+- retained invariant: the worker loops still reset their own context after
+  recoverable errors. The ownership change only moves the context pointer from
+  a local variable to the logical backend object so closed-backend reset can
+  reclaim it.
+
+Maintenance-worker context slice:
+
+- `PgBackendMaintenanceWorkerState` now owns `bgwriter_context`,
+  `walwriter_context`, `checkpointer_context`, and
+  `walsummarizer_context`;
+- `bgwriter.c`, `walwriter.c`, `checkpointer.c`, and `walsummarizer.c` route
+  their existing work-context creation, switch, and reset paths through the
+  current backend's maintenance-worker bucket;
+- `PgBackendResetMaintenanceWorkerClosedState()` deletes the four work
+  contexts with the checked `PG_RUNTIME_DELETE_MEMORY_CONTEXT` action;
+- early maintenance-worker adoption asserts those context slots are empty
+  before copying fallback state into a real backend object;
+- `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` records the new closed-backend reset
+  rule for the maintenance-worker bucket;
+- `test_backend_reset_closed_state()` now proves closed-backend reset deletes
+  all four worker contexts, and
+  `test_backend_maintenance_worker_state_is_backend_local()` proves the new
+  slots follow `CurrentPgBackend`.
+
+Validation for the maintenance-worker context slice:
+
+- touched-object builds passed for `bgwriter.o`, `walwriter.o`,
+  `checkpointer.o`, `walsummarizer.o`, `backend_runtime.o`,
+  `backend_runtime_teardown.o`, and `test_backend_runtime_backend.o`;
+- after the installed `backend_runtime.h` layout change, an incremental
+  `test_backend_runtime` check initially hung during bootstrap shutdown in
+  `dsm_backend_shutdown`, consistent with stale backend objects after an
+  installed-header state-layout edit;
+- the documented backend clean and generated-file recovery path was run:
+  backend generated utility files and node headers were regenerated, include
+  symlinks were rebuilt, and full `gmake -j8` passed from that clean backend
+  state;
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 194 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed
+  after the clean rebuild;
 - direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
   `002_threaded_bgworker_crash.pl`, 131 tests total, with `PG_REGRESS`,
   temp-install `PATH`, and the repo-local `.perl5` `PERL5LIB`.

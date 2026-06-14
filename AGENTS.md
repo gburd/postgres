@@ -92,6 +92,12 @@ macro/table/checker improvement would make the whole slice simpler and safer.
   or owner-map hardening would require repeated bookkeeping, first land the
   small checked macro/table/checker primitive and then do the larger slice
   through that path.
+- Do not leave this as an abstract guideline. The next time a Phase 12 batch
+  repeats object-owned allocation-context setup, delete-and-null cleanup,
+  list/hash cleanup, fallback copy-then-reset, or reset-through-initializer
+  code, add the missing checked lifecycle primitive first. The likely next
+  useful primitive is an allocation-context helper/table rule that covers
+  create-on-demand context ownership plus checked close-time deletion.
 
 ## Working Assumptions
 
@@ -1351,6 +1357,12 @@ Important current files:
   reclamation is implemented; thread-mode reset clears the memory-manager
   freelist bucket, while process-mode reset still calls
   `AllocSetFreeContextFreelists()`.
+- Background writer, WAL writer, checkpointer, and WAL summarizer work
+  contexts are owned through `PgBackend.maintenance_worker`, not local-only
+  variables. Preserve that ownership when changing those loops: the worker
+  still resets its context after recoverable errors, and
+  `PgBackendResetMaintenanceWorkerClosedState()` deletes the retained context
+  on closed-backend reset.
 - Threaded startup serialization has been removed rather than kept as a no-op
   helper. A broad `backend_thread_entry()` gate can block normal threaded
   startup behind worker paths that have not reached
