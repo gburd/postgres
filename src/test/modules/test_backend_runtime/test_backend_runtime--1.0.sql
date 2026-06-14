@@ -95,6 +95,10 @@ CREATE FUNCTION test_runtime_server_guc_state_is_runtime_local()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;
 
+CREATE FUNCTION test_session_guc_rebind_table_matches_registry()
+	RETURNS pg_catalog.bool
+	AS 'MODULE_PATHNAME' LANGUAGE C;
+
 CREATE FUNCTION test_session_prepared_statement_state_is_session_local()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;

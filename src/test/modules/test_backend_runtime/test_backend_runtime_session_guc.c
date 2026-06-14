@@ -215,6 +215,20 @@ test_runtime_server_guc_state_is_runtime_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_session_guc_rebind_table_matches_registry);
+Datum
+test_session_guc_rebind_table_matches_registry(PG_FUNCTION_ARGS)
+{
+	int			rebound;
+
+	RebindSessionGUCVariablePointers();
+	rebound = ValidateSessionGUCVariableRebinds();
+	if (rebound <= 0)
+		elog(ERROR, "session GUC rebind table did not validate any entries");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_session_connection_guc_state_is_session_local);
 Datum
 test_session_connection_guc_state_is_session_local(PG_FUNCTION_ARGS)

@@ -279,7 +279,10 @@ Important current files:
   is table-driven by `threaded_session_guc_rebinds[]`. Add new migrated
   built-in direct-pointer GUCs to that table instead of extending
   `RebindSessionGUCVariablePointers()` with handwritten `find_option()` blocks.
-  Keep custom/extension GUC semantics covered by tests when changing this path.
+  `ValidateSessionGUCVariableRebinds()` and
+  `test_session_guc_rebind_table_matches_registry()` verify that the table
+  matches the live GUC registry. Keep custom/extension GUC semantics covered
+  by tests when changing this path.
 - Do not attempt thread launch until the thread-safety floor is in place:
   backend-local globals must not be shared plain process globals, backend exit
   must not terminate the whole runtime, and timeout/interrupt delivery must be

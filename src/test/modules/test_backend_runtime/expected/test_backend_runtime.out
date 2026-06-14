@@ -251,6 +251,12 @@ SELECT test_runtime_server_guc_state_is_runtime_local();
  t
 (1 row)
 
+SELECT test_session_guc_rebind_table_matches_registry();
+ test_session_guc_rebind_table_matches_registry 
+------------------------------------------------
+ t
+(1 row)
+
 SELECT test_session_connection_guc_state_is_session_local();
  test_session_connection_guc_state_is_session_local 
 ----------------------------------------------------

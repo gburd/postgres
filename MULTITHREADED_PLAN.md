@@ -950,7 +950,10 @@ selection centralized. A GUC adoption maintainability slice then replaced the
 large handwritten `RebindSessionGUCVariablePointers()` sequence with the
 typed `threaded_session_guc_rebinds[]` table and one generic rebind helper,
 so future migrated built-in direct-pointer GUCs are one-row additions instead
-of another manual `find_option()` block.
+of another manual `find_option()` block. The backend-runtime regression now
+calls `ValidateSessionGUCVariableRebinds()` through
+`test_session_guc_rebind_table_matches_registry()`, so stale names, wrong
+types, and stale direct-variable pointers fail in the focused runtime test.
 
 Current Gate E2 progress: `gmake check-global-lifetimes` is now a required
 target, and postmaster signal/wakeup routing no longer dereferences a

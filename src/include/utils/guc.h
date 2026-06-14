@@ -477,6 +477,7 @@ extern void InitializeGUCOptions(void);
 extern void InitializeThreadedSessionGUCOptions(void);
 extern void InitializeThreadedSessionRequiredGUCOptions(void);
 extern void RebindSessionGUCVariablePointers(void);
+extern int	ValidateSessionGUCVariableRebinds(void);
 extern bool SelectConfigFiles(const char *userDoption, const char *progname);
 extern void ResetAllOptions(void);
 extern void AtStart_GUC(void);

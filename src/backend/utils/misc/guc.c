@@ -2053,6 +2053,54 @@ RebindSessionGUCVariablePointers(void)
 		RebindSessionGUCVariablePointer(&threaded_session_guc_rebinds[i]);
 }
 
+int
+ValidateSessionGUCVariableRebinds(void)
+{
+	if (guc_hashtab == NULL)
+		return 0;
+
+	for (int i = 0; i < lengthof(threaded_session_guc_rebinds); i++)
+	{
+		const ThreadedSessionGUCRebind *rebind = &threaded_session_guc_rebinds[i];
+		struct config_generic *gconf;
+		const void *expected;
+
+		gconf = find_option(rebind->name, false, false, PANIC);
+		if (gconf->vartype != rebind->vartype)
+			elog(ERROR,
+				 "session GUC rebind entry \"%s\" expected vartype %d, found %d",
+				 rebind->name, rebind->vartype, gconf->vartype);
+
+		switch (rebind->vartype)
+		{
+			case PGC_BOOL:
+				expected = rebind->accessor.bool_ref();
+				break;
+			case PGC_INT:
+				expected = rebind->accessor.int_ref();
+				break;
+			case PGC_REAL:
+				expected = rebind->accessor.real_ref();
+				break;
+			case PGC_STRING:
+				expected = rebind->accessor.string_ref();
+				break;
+			case PGC_ENUM:
+				expected = rebind->accessor.enum_ref();
+				break;
+			default:
+				pg_unreachable();
+		}
+
+		if (GUCOptionVariablePointer(gconf) != expected)
+			elog(ERROR,
+				 "session GUC rebind entry \"%s\" points at stale storage",
+				 rebind->name);
+	}
+
+	return lengthof(threaded_session_guc_rebinds);
+}
+
 /*
  * Assign any GUC values that can come from the server's environment.
  *

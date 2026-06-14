@@ -10649,3 +10649,31 @@ Validation for this GUC rebind table slice:
   disabled in this configured build;
 - direct focused `src/test/regress` `guc` regression passed against the fresh
   temp install.
+
+GUC rebind table validation slice completed:
+
+- `ValidateSessionGUCVariableRebinds()` now validates the static
+  `threaded_session_guc_rebinds[]` table against the live GUC registry,
+  checking each configured name, expected `enum config_type`, and active
+  direct-variable pointer;
+- `test_session_guc_rebind_table_matches_registry()` runs that validator from
+  the `test_backend_runtime` regression after calling
+  `RebindSessionGUCVariablePointers()`;
+- this turns the table-driven systematic rebind path into a checked Gate E2
+  guard, so future migrated built-in direct-pointer GUCs cannot leave a stale
+  row, wrong type, or stale storage pointer unnoticed in the focused runtime
+  test.
+
+Validation for this GUC rebind validation slice:
+
+- touched-object build passed for `guc.o`;
+- full `gmake -j8` passed after relinking the backend symbol used by the test
+  module;
+- `gmake -C src/test/modules/test_backend_runtime check` passed with the new
+  registry validator. TAP remains disabled in this configured build;
+- `gmake check-runtime-lifecycles` passed with 149 runtime fields classified,
+  149 bucket definitions checked, and 25 reset definitions checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- direct focused `src/test/regress` `guc` regression passed against the fresh
+  temp install.
