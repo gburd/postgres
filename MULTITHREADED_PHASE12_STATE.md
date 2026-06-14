@@ -11257,3 +11257,11 @@ Current lifecycle-ergonomics instruction:
 - if the existing bucket rows, `PG_RUNTIME_DEFINE_*` helpers, and
   `check-runtime-lifecycles` rules are sufficient, record that in the
   migration preflight before editing code.
+
+This also applies to Gate E2 teardown hardening, not only to raw global
+migration. If the next PMChild/thread-backend cleanup, reset, or destroy slice
+would add repeated helper bodies or another manual call list, first add the
+small checked lifecycle vocabulary item, macro, `.def` rule, or checker
+validation that lets the batch move through the manifest-backed path. Record
+that decision here before the behavior change so future agents can reuse the
+same pattern.

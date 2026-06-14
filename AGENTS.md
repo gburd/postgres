@@ -349,6 +349,12 @@ Important current files:
   checked action names, or declarative bucket rules would make the batch
   simpler. If yes, land that lifecycle-framework improvement first, then move
   the globals through the checked path.
+- Do this lifecycle-ergonomics preflight before any further large Gate E2
+  teardown or state-migration batch, including PMChild/thread-backend cleanup
+  work if it starts adding repeated reset/destroy glue. The expected outcome is
+  either a short state-log note naming the existing checked mechanism being
+  reused, or a documentation/code slice that adds the missing macro, named
+  action, `.def` row, or checker rule before the behavior change.
 - Session GUC direct-variable rebinding in `src/backend/utils/misc/guc.c`
   is table-driven by `threaded_session_guc_rebinds[]`. Add new migrated
   built-in direct-pointer GUCs to that table instead of extending
