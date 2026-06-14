@@ -779,7 +779,10 @@ unnamed-statement, interactive-switch, and row-description protocol scratch
 bridge through `PgSessionTcopState`, plus transaction callback registration
 and SQL backup session-state bridges through `PgSession`, plus the
 provider-independent JIT callback cache and LLVM provider-private
-type/template/module/context cache through `PgSession`.
+type/template/module/context cache through `PgSession`, plus the
+`CurrentSession` compatibility pointer bridge through `PgSession`, deferred
+connection warning scratch bridge through `PgConnection`, and RI fast-path
+xact callback registration guard bridge through `PgSession`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.

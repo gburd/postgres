@@ -1134,6 +1134,11 @@ PgConnectionResetClosedState(PgConnection *connection)
 
 	connection->startup.client_auth_in_progress = false;
 	connection->startup.client_socket = NULL;
+	list_free_deep(connection->startup.connection_warning_messages);
+	list_free_deep(connection->startup.connection_warning_details);
+	connection->startup.connection_warnings_emitted = false;
+	connection->startup.connection_warning_messages = NIL;
+	connection->startup.connection_warning_details = NIL;
 
 	/*
 	 * GSSAPI connection buffers are malloc-backed in be-secure-gssapi.c.
@@ -2241,6 +2246,7 @@ PgSessionInitializeRIGlobalsState(PgSessionRIGlobalsState *ri_globals)
 	ri_globals->query_cache = NULL;
 	ri_globals->compare_cache = NULL;
 	dclist_init(&ri_globals->constraint_cache_valid_list);
+	ri_globals->fastpath_xact_callback_registered = false;
 	ri_globals->debug_discard_caches_initialized = true;
 	ri_globals->debug_discard_caches_value = DEFAULT_DEBUG_DISCARD_CACHES;
 }
@@ -4933,6 +4939,7 @@ PgSessionResetClosedState(PgSession *session)
 		session->ri_globals.compare_cache = NULL;
 	}
 	dclist_init(&session->ri_globals.constraint_cache_valid_list);
+	session->ri_globals.fastpath_xact_callback_registered = false;
 	session->ri_globals.debug_discard_caches_initialized = true;
 	session->ri_globals.debug_discard_caches_value = DEFAULT_DEBUG_DISCARD_CACHES;
 
@@ -5108,7 +5115,8 @@ PgSessionResetClosedState(PgSession *session)
 
 	if (session->legacy_session_context != NULL)
 	{
-		if (CurrentSession == session->legacy_session)
+		if (CurrentPgSession == session &&
+			CurrentSession == session->legacy_session)
 			CurrentSession = NULL;
 		MemoryContextDelete(session->legacy_session_context);
 		session->legacy_session_context = NULL;
@@ -5161,6 +5169,15 @@ Session *
 PgCurrentLegacySession(void)
 {
 	return PgSessionGetLegacySession(CurrentPgSession);
+}
+
+Session **
+PgCurrentLegacySessionRef(void)
+{
+	if (CurrentPgSession == NULL)
+		return &process_session.legacy_session;
+
+	return &CurrentPgSession->legacy_session;
 }
 
 static PgSessionDatabaseState *
@@ -6361,6 +6378,12 @@ dclist_head *
 PgCurrentRIConstraintCacheValidListRef(void)
 {
 	return &PgCurrentSessionRIGlobalsState()->constraint_cache_valid_list;
+}
+
+bool *
+PgCurrentRIFastPathXactCallbackRegisteredRef(void)
+{
+	return &PgCurrentSessionRIGlobalsState()->fastpath_xact_callback_registered;
 }
 
 int *
@@ -9799,10 +9822,37 @@ PgConnectionTimingRef(PgConnection *connection)
 	return &connection->startup.timing;
 }
 
+static PgConnectionStartupState *
+PgCurrentConnectionStartupStateRef(void)
+{
+	if (CurrentPgConnection == NULL)
+		return &early_connection_startup;
+
+	return &CurrentPgConnection->startup;
+}
+
 ConnectionTiming *
 PgCurrentConnectionTimingRef(void)
 {
 	return PgConnectionTimingRef(CurrentPgConnection);
+}
+
+bool *
+PgCurrentConnectionWarningsEmittedRef(void)
+{
+	return &PgCurrentConnectionStartupStateRef()->connection_warnings_emitted;
+}
+
+List **
+PgCurrentConnectionWarningMessagesRef(void)
+{
+	return &PgCurrentConnectionStartupStateRef()->connection_warning_messages;
+}
+
+List **
+PgCurrentConnectionWarningDetailsRef(void)
+{
+	return &PgCurrentConnectionStartupStateRef()->connection_warning_details;
 }
 
 void *

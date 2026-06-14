@@ -262,6 +262,7 @@ typedef struct RI_FastPathEntry
 
 #define ri_fastpath_cache (*PgCurrentRIFastPathCacheRef())
 #define ri_fastpath_callback_registered (*PgCurrentRIFastPathCallbackRegisteredRef())
+#define ri_fastpath_xact_callback_registered (*PgCurrentRIFastPathXactCallbackRegisteredRef())
 
 /*
  * Local function prototypes
@@ -4190,8 +4191,6 @@ ri_FastPathTeardown(void)
 	ri_fastpath_cache = NULL;
 	ri_fastpath_callback_registered = false;
 }
-
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool ri_fastpath_xact_callback_registered = false;
 
 static void
 ri_FastPathXactCallback(XactEvent event, void *arg)

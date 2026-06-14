@@ -10110,3 +10110,53 @@ Validation for this slice:
   tests and `002_threaded_bgworker_crash.pl` with 6 tests using the local
   `IPC::Run` `PERL5LIB` and explicit `PG_REGRESS` harness environment;
 - `gmake -C contrib -j8` passed after the installed runtime-header change.
+
+## Legacy Session And Connection Scratch Cleanup
+
+This Phase 12 Gate E2 cleanup removes three more raw compatibility globals
+from plain TLS storage and gives their lifecycle rules explicit runtime owners:
+
+- `CurrentSession` is now an lvalue macro over
+  `PgCurrentLegacySessionRef()`, so the legacy `access/session.h` pointer slot
+  lives in `PgSession.legacy_session` instead of a separate exported TLS
+  variable;
+- `ConnectionWarningsEmitted`, `ConnectionWarningMessages`, and
+  `ConnectionWarningDetails` now live in `PgConnection.startup`, matching the
+  fact that they are frontend-connection startup/authentication scratch;
+- `ri_fastpath_xact_callback_registered` now lives in
+  `PgSession.ri_globals`, alongside the other referential-integrity trigger
+  session caches.
+
+The list-bearing connection warning fields are reset by
+`PgConnectionResetClosedState()`, which frees saved warning message/detail
+lists and clears the connection-owned slots. `EmitConnectionWarnings()` also
+clears the slots after freeing the lists so normal warning emission does not
+leave dangling list pointers in the connection object. The RI fast-path
+registration guard is scalar session state; it is initialized, adopted with
+the rest of `PgSession.ri_globals`, and reset during
+`PgSessionResetClosedState()`.
+
+`MULTITHREADED_RUNTIME_OWNERS.tsv` now records symbol-level mappings for this
+batch, and `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` documents the reset/copy
+rules for the affected buckets.
+
+Validation for this slice:
+
+- touched-object builds passed for `postinit.o`, `backend_runtime.o`,
+  `session.o`, `ri_triggers.o`, and `test_backend_runtime.o`;
+- clean backend rebuild plus generated utility/node-header recovery passed;
+- full LLVM-enabled `gmake -j8` passed;
+- `gmake -C src/pl/plpgsql/src clean all` and
+  `gmake -C src/test/modules/test_backend_runtime clean all` passed after the
+  installed `access/session.h`/runtime-header change;
+- `gmake check-runtime-lifecycles` passed with 149 runtime fields classified;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and session-local declarations reduced from 61 to 58;
+- the raw TLS declaration search for this migrated batch found no remaining
+  matches;
+- `gmake -C src/test/modules/test_backend_runtime check` passed after
+  extending the RI/session and connection startup/reset tests;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` with 88
+  tests and `002_threaded_bgworker_crash.pl` with 6 tests using the local
+  `IPC::Run` `PERL5LIB` and patched build-tree `pg_regress` install name;
+- `git diff --check` passed.

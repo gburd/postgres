@@ -40,6 +40,7 @@ extern void AttachSession(dsm_handle handle);
 extern void DetachSession(void);
 
 /* The current session, or NULL for none. */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION Session *CurrentSession;
+extern Session **PgCurrentLegacySessionRef(void);
+#define CurrentSession (*PgCurrentLegacySessionRef())
 
 #endif							/* SESSION_H */

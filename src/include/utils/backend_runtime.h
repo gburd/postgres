@@ -1697,6 +1697,7 @@ typedef struct PgSessionRIGlobalsState
 	HTAB	   *query_cache;
 	HTAB	   *compare_cache;
 	dclist_head constraint_cache_valid_list;
+	bool		fastpath_xact_callback_registered;
 	bool		debug_discard_caches_initialized;
 	int			debug_discard_caches_value;
 } PgSessionRIGlobalsState;
@@ -1957,6 +1958,9 @@ typedef struct PgConnectionStartupState
 	bool		client_auth_in_progress;
 	struct ClientSocket *client_socket;
 	ConnectionTiming timing;
+	bool		connection_warnings_emitted;
+	List	   *connection_warning_messages;
+	List	   *connection_warning_details;
 } PgConnectionStartupState;
 
 typedef struct PgConnectionClientConnectionInfoState
@@ -2236,6 +2240,9 @@ extern Portal *PgCurrentActivePortalRef(void);
 extern CommandDest *PgCurrentWhereToSendOutputRef(void);
 extern int *PgCurrentClientConnectionCheckIntervalRef(void);
 extern ConnectionTiming *PgCurrentConnectionTimingRef(void);
+extern bool *PgCurrentConnectionWarningsEmittedRef(void);
+extern List **PgCurrentConnectionWarningMessagesRef(void);
+extern List **PgCurrentConnectionWarningDetailsRef(void);
 extern bool *PgCurrentVacuumInProgressRef(void);
 extern int *PgCurrentVacuumCostBalanceRef(void);
 extern bool *PgCurrentVacuumCostActiveRef(void);
@@ -2534,6 +2541,7 @@ extern HTAB **PgCurrentRIConstraintCacheRef(void);
 extern HTAB **PgCurrentRIQueryCacheRef(void);
 extern HTAB **PgCurrentRICompareCacheRef(void);
 extern dclist_head *PgCurrentRIConstraintCacheValidListRef(void);
+extern bool *PgCurrentRIFastPathXactCallbackRegisteredRef(void);
 extern int *PgCurrentDebugDiscardCachesRef(void);
 extern PgExecutionRelMapFile *PgCurrentRelMapSharedMapRef(void);
 extern PgExecutionRelMapFile *PgCurrentRelMapLocalMapRef(void);
@@ -2784,6 +2792,7 @@ extern Session *PgSessionGetLegacySession(PgSession *session);
 extern void PgSessionSetLegacySession(PgSession *session,
 									   Session *legacy_session);
 extern Session *PgCurrentLegacySession(void);
+extern Session **PgCurrentLegacySessionRef(void);
 extern struct Port **PgConnectionProcPortRef(PgConnection *connection);
 extern struct Port **PgCurrentProcPortRef(void);
 extern uint8 *PgConnectionCancelKey(PgConnection *connection);

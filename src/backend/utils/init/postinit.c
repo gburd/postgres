@@ -75,11 +75,11 @@
 #include "utils/timeout.h"
 
 /* has this backend called EmitConnectionWarnings()? */
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION bool ConnectionWarningsEmitted;
+#define ConnectionWarningsEmitted (*PgCurrentConnectionWarningsEmittedRef())
 
 /* content of warnings to send via EmitConnectionWarnings() */
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION List *ConnectionWarningMessages;
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION List *ConnectionWarningDetails;
+#define ConnectionWarningMessages (*PgCurrentConnectionWarningMessagesRef())
+#define ConnectionWarningDetails (*PgCurrentConnectionWarningDetailsRef())
 
 static HeapTuple GetDatabaseTuple(const char *dbname);
 static HeapTuple GetDatabaseTupleByOid(Oid dboid);
@@ -1636,4 +1636,6 @@ EmitConnectionWarnings(void)
 
 	list_free_deep(ConnectionWarningMessages);
 	list_free_deep(ConnectionWarningDetails);
+	ConnectionWarningMessages = NIL;
+	ConnectionWarningDetails = NIL;
 }

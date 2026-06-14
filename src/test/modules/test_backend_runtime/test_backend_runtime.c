@@ -3744,6 +3744,7 @@ test_session_ri_globals_state_is_session_local(PG_FUNCTION_ARGS)
 		*PgCurrentRIConstraintCacheRef() = (HTAB *) &fake_session1;
 		*PgCurrentRIQueryCacheRef() = (HTAB *) &fake_session1;
 		*PgCurrentRICompareCacheRef() = (HTAB *) &fake_session1;
+		*PgCurrentRIFastPathXactCallbackRegisteredRef() = true;
 		*PgCurrentDebugDiscardCachesRef() = 3;
 
 		PgSessionAdoptEarlyState(&fake_session1);
@@ -3754,10 +3755,12 @@ test_session_ri_globals_state_is_session_local(PG_FUNCTION_ARGS)
 			(HTAB *) &fake_session1;
 		ok = ok && fake_session1.ri_globals.compare_cache ==
 			(HTAB *) &fake_session1;
+		ok = ok && fake_session1.ri_globals.fastpath_xact_callback_registered;
 		ok = ok && fake_session1.ri_globals.debug_discard_caches_value == 3;
 		ok = ok && *PgCurrentRIConstraintCacheRef() == NULL;
 		ok = ok && *PgCurrentRIQueryCacheRef() == NULL;
 		ok = ok && *PgCurrentRICompareCacheRef() == NULL;
+		ok = ok && !*PgCurrentRIFastPathXactCallbackRegisteredRef();
 		ok = ok && *PgCurrentDebugDiscardCachesRef() ==
 			DEFAULT_DEBUG_DISCARD_CACHES;
 		ok = ok && dclist_is_empty(PgCurrentRIConstraintCacheValidListRef());
@@ -3766,11 +3769,13 @@ test_session_ri_globals_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentRIConstraintCacheRef() == NULL;
 		ok = ok && *PgCurrentRIQueryCacheRef() == NULL;
 		ok = ok && *PgCurrentRICompareCacheRef() == NULL;
+		ok = ok && !*PgCurrentRIFastPathXactCallbackRegisteredRef();
 		ok = ok && *PgCurrentDebugDiscardCachesRef() ==
 			DEFAULT_DEBUG_DISCARD_CACHES;
 		*PgCurrentRIConstraintCacheRef() = (HTAB *) &fake_session2;
 		*PgCurrentRIQueryCacheRef() = (HTAB *) &fake_session2;
 		*PgCurrentRICompareCacheRef() = (HTAB *) &fake_session2;
+		*PgCurrentRIFastPathXactCallbackRegisteredRef() = false;
 		*PgCurrentDebugDiscardCachesRef() = 4;
 
 		PgSetCurrentSession(&fake_session1);
@@ -3778,6 +3783,7 @@ test_session_ri_globals_state_is_session_local(PG_FUNCTION_ARGS)
 			(HTAB *) &fake_session1;
 		ok = ok && *PgCurrentRIQueryCacheRef() == (HTAB *) &fake_session1;
 		ok = ok && *PgCurrentRICompareCacheRef() == (HTAB *) &fake_session1;
+		ok = ok && *PgCurrentRIFastPathXactCallbackRegisteredRef();
 		ok = ok && *PgCurrentDebugDiscardCachesRef() == 3;
 
 		PgSetCurrentSession(&fake_session2);
@@ -3785,6 +3791,7 @@ test_session_ri_globals_state_is_session_local(PG_FUNCTION_ARGS)
 			(HTAB *) &fake_session2;
 		ok = ok && *PgCurrentRIQueryCacheRef() == (HTAB *) &fake_session2;
 		ok = ok && *PgCurrentRICompareCacheRef() == (HTAB *) &fake_session2;
+		ok = ok && !*PgCurrentRIFastPathXactCallbackRegisteredRef();
 		ok = ok && *PgCurrentDebugDiscardCachesRef() == 4;
 
 		PgSetCurrentSession(saved_session);
@@ -3884,6 +3891,7 @@ Datum
 test_session_reset_closed_state(PG_FUNCTION_ARGS)
 {
 	PgSession	fake_session;
+	PgSession  *saved_session;
 	HASHCTL		hash_ctl;
 	MemoryContext oldcontext;
 	MemoryContext dynamic_library_context;
@@ -3895,6 +3903,7 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	bool		found;
 	bool		ok = true;
 
+	saved_session = CurrentPgSession;
 	MemSet(&fake_session, 0, sizeof(fake_session));
 	MemSet(&hash_ctl, 0, sizeof(hash_ctl));
 	hash_ctl.keysize = sizeof(Oid);
@@ -3994,6 +4003,7 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	fake_session.locale.collation_cache = &fake_session;
 	fake_session.locale.last_collation_cache_oid = BOOLOID;
 	fake_session.locale.last_collation_cache_locale = &fake_session;
+	fake_session.ri_globals.fastpath_xact_callback_registered = true;
 
 	dynamic_library_context =
 		PgSessionGetDynamicLibraryMemoryContext(&fake_session);
@@ -4047,6 +4057,7 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && fake_session.locale.collation_cache == NULL;
 	ok = ok && fake_session.locale.last_collation_cache_oid == InvalidOid;
 	ok = ok && fake_session.locale.last_collation_cache_locale == NULL;
+	ok = ok && !fake_session.ri_globals.fastpath_xact_callback_registered;
 
 	legacy_session = PgSessionGetLegacySession(&fake_session);
 	ok = ok && legacy_session != NULL;
@@ -4057,6 +4068,14 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 
 	legacy_session->segment = (dsm_segment *) &fake_session;
 	legacy_session->area = (dsa_area *) &fake_session;
+
+	PgSetCurrentSession(&fake_session);
+	CurrentSession = legacy_session;
+	ok = ok && fake_session.legacy_session == legacy_session;
+	CurrentSession = NULL;
+	ok = ok && fake_session.legacy_session == NULL;
+	CurrentSession = legacy_session;
+	PgSetCurrentSession(saved_session);
 
 	/*
 	 * Also cover the legacy fallback where a list exists before the dedicated
@@ -15270,6 +15289,11 @@ test_connection_reset_closed_state(PG_FUNCTION_ARGS)
 	connection.protocol.frontend_protocol = PG_PROTOCOL(3, 2);
 	connection.startup.client_auth_in_progress = true;
 	connection.startup.client_socket = &fake_client_socket;
+	connection.startup.connection_warnings_emitted = true;
+	connection.startup.connection_warning_messages =
+		list_make1(pstrdup("test warning"));
+	connection.startup.connection_warning_details =
+		list_make1(pstrdup("test detail"));
 
 	security = &connection.security;
 	security->ssl_loaded_verify_locations = true;
@@ -15319,6 +15343,9 @@ test_connection_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && connection.protocol.frontend_protocol == 0;
 	ok = ok && !connection.startup.client_auth_in_progress;
 	ok = ok && connection.startup.client_socket == NULL;
+	ok = ok && !connection.startup.connection_warnings_emitted;
+	ok = ok && connection.startup.connection_warning_messages == NIL;
+	ok = ok && connection.startup.connection_warning_details == NIL;
 
 	security = &connection.security;
 	ok = ok && !security->ssl_loaded_verify_locations;
@@ -15589,6 +15616,10 @@ test_connection_startup_state_is_connection_local(PG_FUNCTION_ARGS)
 	struct ClientSocket *fake_client_socket2;
 	bool		saved_client_auth_in_progress;
 	ConnectionTiming saved_timing;
+	List	   *warning_messages1;
+	List	   *warning_messages2;
+	List	   *warning_details1;
+	List	   *warning_details2;
 	bool		ok = true;
 
 	saved_connection = CurrentPgConnection;
@@ -15597,6 +15628,10 @@ test_connection_startup_state_is_connection_local(PG_FUNCTION_ARGS)
 	saved_timing = conn_timing;
 	fake_client_socket1 = (struct ClientSocket *) &fake_connection1;
 	fake_client_socket2 = (struct ClientSocket *) &fake_connection2;
+	warning_messages1 = list_make1(&fake_connection1);
+	warning_messages2 = list_make1(&fake_connection2);
+	warning_details1 = list_make1(&fake_client_socket1);
+	warning_details2 = list_make1(&fake_client_socket2);
 	MemSet(&fake_connection1, 0, sizeof(fake_connection1));
 	MemSet(&fake_connection2, 0, sizeof(fake_connection2));
 	fake_connection1.startup.timing.ready_for_use = TIMESTAMP_MINUS_INFINITY;
@@ -15613,6 +15648,9 @@ test_connection_startup_state_is_connection_local(PG_FUNCTION_ARGS)
 		conn_timing.fork_end = 14;
 		conn_timing.auth_start = 15;
 		conn_timing.auth_end = 16;
+		*PgCurrentConnectionWarningsEmittedRef() = true;
+		*PgCurrentConnectionWarningMessagesRef() = warning_messages1;
+		*PgCurrentConnectionWarningDetailsRef() = warning_details1;
 
 		CurrentPgConnection = &fake_connection2;
 		ok = ok && !ClientAuthInProgress;
@@ -15623,6 +15661,9 @@ test_connection_startup_state_is_connection_local(PG_FUNCTION_ARGS)
 		ok = ok && conn_timing.fork_end == 0;
 		ok = ok && conn_timing.auth_start == 0;
 		ok = ok && conn_timing.auth_end == 0;
+		ok = ok && !*PgCurrentConnectionWarningsEmittedRef();
+		ok = ok && *PgCurrentConnectionWarningMessagesRef() == NIL;
+		ok = ok && *PgCurrentConnectionWarningDetailsRef() == NIL;
 		ClientAuthInProgress = false;
 		MyClientSocket = fake_client_socket2;
 		conn_timing.socket_create = 21;
@@ -15631,6 +15672,9 @@ test_connection_startup_state_is_connection_local(PG_FUNCTION_ARGS)
 		conn_timing.fork_end = 24;
 		conn_timing.auth_start = 25;
 		conn_timing.auth_end = 26;
+		*PgCurrentConnectionWarningsEmittedRef() = false;
+		*PgCurrentConnectionWarningMessagesRef() = warning_messages2;
+		*PgCurrentConnectionWarningDetailsRef() = warning_details2;
 
 		CurrentPgConnection = &fake_connection1;
 		ok = ok && ClientAuthInProgress;
@@ -15641,6 +15685,11 @@ test_connection_startup_state_is_connection_local(PG_FUNCTION_ARGS)
 		ok = ok && conn_timing.fork_end == 14;
 		ok = ok && conn_timing.auth_start == 15;
 		ok = ok && conn_timing.auth_end == 16;
+		ok = ok && *PgCurrentConnectionWarningsEmittedRef();
+		ok = ok && *PgCurrentConnectionWarningMessagesRef() ==
+			warning_messages1;
+		ok = ok && *PgCurrentConnectionWarningDetailsRef() ==
+			warning_details1;
 
 		CurrentPgConnection = &fake_connection2;
 		ok = ok && !ClientAuthInProgress;
@@ -15651,6 +15700,11 @@ test_connection_startup_state_is_connection_local(PG_FUNCTION_ARGS)
 		ok = ok && conn_timing.fork_end == 24;
 		ok = ok && conn_timing.auth_start == 25;
 		ok = ok && conn_timing.auth_end == 26;
+		ok = ok && !*PgCurrentConnectionWarningsEmittedRef();
+		ok = ok && *PgCurrentConnectionWarningMessagesRef() ==
+			warning_messages2;
+		ok = ok && *PgCurrentConnectionWarningDetailsRef() ==
+			warning_details2;
 
 		CurrentPgConnection = saved_connection;
 		ClientAuthInProgress = saved_client_auth_in_progress;
@@ -15663,9 +15717,18 @@ test_connection_startup_state_is_connection_local(PG_FUNCTION_ARGS)
 		ClientAuthInProgress = saved_client_auth_in_progress;
 		MyClientSocket = saved_client_socket;
 		conn_timing = saved_timing;
+		list_free(warning_messages1);
+		list_free(warning_messages2);
+		list_free(warning_details1);
+		list_free(warning_details2);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
+
+	list_free(warning_messages1);
+	list_free(warning_messages2);
+	list_free(warning_details1);
+	list_free(warning_details2);
 
 	if (!ok)
 		elog(ERROR, "connection startup state was not connection-local");

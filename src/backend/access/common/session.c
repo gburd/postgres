@@ -45,9 +45,6 @@
 #define SESSION_KEY_DSA						UINT64CONST(0xFFFFFFFFFFFF0001)
 #define SESSION_KEY_RECORD_TYPMOD_REGISTRY	UINT64CONST(0xFFFFFFFFFFFF0002)
 
-/* This backend's current session. */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION Session *CurrentSession = NULL;
-
 /*
  * Set up CurrentSession to point to an empty Session object.
  */
