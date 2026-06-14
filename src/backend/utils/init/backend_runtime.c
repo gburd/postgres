@@ -227,7 +227,8 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionDateTimeState early_session_da
 	.timezone_string_value = "GMT",
 	.log_timezone_string_value = "GMT",
 	.session_timezone_value = NULL,
-	.log_timezone_value = NULL
+	.log_timezone_value = NULL,
+	.timezone_abbrev_table = NULL
 };
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionTextSearchState early_session_text_search = {
 	.initialized = true,
@@ -1193,6 +1194,9 @@ PgSessionInitializeDateTimeState(PgSessionDateTimeState *datetime)
 	datetime->log_timezone_string_value = guc_strdup(FATAL, "GMT");
 	datetime->session_timezone_value = pg_tzset("GMT");
 	datetime->log_timezone_value = datetime->session_timezone_value;
+	datetime->timezone_abbrev_table = NULL;
+	MemSet(datetime->timezone_abbrev_cache, 0,
+		   sizeof(datetime->timezone_abbrev_cache));
 }
 
 static void
@@ -5357,6 +5361,18 @@ pg_tz **
 PgCurrentLogTimeZoneRef(void)
 {
 	return &PgCurrentSessionDateTimeState()->log_timezone_value;
+}
+
+TimeZoneAbbrevTable **
+PgCurrentTimeZoneAbbrevTableRef(void)
+{
+	return &PgCurrentSessionDateTimeState()->timezone_abbrev_table;
+}
+
+PgSessionTzAbbrevCache *
+PgCurrentTimeZoneAbbrevCache(void)
+{
+	return PgCurrentSessionDateTimeState()->timezone_abbrev_cache;
 }
 
 char **

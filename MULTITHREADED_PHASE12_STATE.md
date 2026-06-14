@@ -9128,3 +9128,25 @@ Validation for this slice:
   `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
   87 tests with patched macOS install names after cleaning a stranded failed
   `tmp_check`/`log` run.
+
+## Session Timezone-Abbreviation Cache
+
+The next session datetime slice moves `datetime.c`'s active
+`TimeZoneAbbrevTable` pointer and recent timezone-abbreviation lookup cache
+into `PgSessionDateTimeState`. The table pointer remains borrowed from the
+`timezone_abbreviations` GUC extra value; the inline cache is session scratch
+cleared by `InstallTimeZoneAbbrevs()` and `ClearTimeZoneAbbrevCache()`.
+`datetime.c` keeps its existing local names through accessors over the current
+session object, and `test_session_datetime_state_is_session_local()` now
+proves the table pointer and cache entry do not leak between logical sessions.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `datetime.o`, and
+  `test_backend_runtime.o`;
+- `gmake check-runtime-lifecycles` passed after updating the lifecycle
+  manifest with the borrowed-pointer and inline-cache copy rule;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- full `gmake -j8`, `test_backend_runtime` regression, contrib build, and
+  direct threaded runtime TAP were run before commit.

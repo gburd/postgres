@@ -259,8 +259,6 @@ static const datetkn deltatktbl[] = {
 
 static const int szdeltatktbl = sizeof deltatktbl / sizeof deltatktbl[0];
 
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION TimeZoneAbbrevTable *zoneabbrevtbl = NULL;
-
 /* Caches of recent lookup results in the above tables */
 
 StaticAssertDecl(MAXDATEFIELDS == PG_BACKEND_MAX_DATE_FIELDS,
@@ -268,18 +266,8 @@ StaticAssertDecl(MAXDATEFIELDS == PG_BACKEND_MAX_DATE_FIELDS,
 
 #define datecache ((const datetkn **) PgCurrentDateTokenCache())
 #define deltacache ((const datetkn **) PgCurrentDeltaTokenCache())
-
-/* Cache for results of timezone abbreviation lookups */
-
-typedef struct TzAbbrevCache
-{
-	char		abbrev[TOKMAXLEN + 1];	/* always NUL-terminated */
-	char		ftype;			/* TZ, DTZ, or DYNTZ */
-	int			offset;			/* GMT offset, if fixed-offset */
-	pg_tz	   *tz;				/* relevant zone, if variable-offset */
-} TzAbbrevCache;
-
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION TzAbbrevCache tzabbrevcache[MAXDATEFIELDS];
+#define zoneabbrevtbl (*PgCurrentTimeZoneAbbrevTableRef())
+#define tzabbrevcache PgCurrentTimeZoneAbbrevCache()
 
 
 /*
@@ -3170,7 +3158,7 @@ DecodeTimezoneAbbrev(int field, const char *lowtoken,
 					 int *ftype, int *offset, pg_tz **tz,
 					 DateTimeErrorExtra *extra)
 {
-	TzAbbrevCache *tzc = &tzabbrevcache[field];
+	PgSessionTzAbbrevCache *tzc = &tzabbrevcache[field];
 	bool		isfixed;
 	int			isdst;
 	const datetkn *tp;
@@ -3254,7 +3242,8 @@ DecodeTimezoneAbbrev(int field, const char *lowtoken,
 void
 ClearTimeZoneAbbrevCache(void)
 {
-	memset(tzabbrevcache, 0, sizeof(tzabbrevcache));
+	memset(tzabbrevcache, 0,
+		   sizeof(PgSessionTzAbbrevCache) * PG_BACKEND_MAX_DATE_FIELDS);
 }
 
 
@@ -5122,7 +5111,8 @@ InstallTimeZoneAbbrevs(TimeZoneAbbrevTable *tbl)
 {
 	zoneabbrevtbl = tbl;
 	/* reset tzabbrevcache, which may contain results from old table */
-	memset(tzabbrevcache, 0, sizeof(tzabbrevcache));
+	memset(tzabbrevcache, 0,
+		   sizeof(PgSessionTzAbbrevCache) * PG_BACKEND_MAX_DATE_FIELDS);
 }
 
 /*

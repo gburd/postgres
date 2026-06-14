@@ -1414,6 +1414,8 @@ test_session_datetime_state_is_session_local(PG_FUNCTION_ARGS)
 			strcmp(pg_get_timezone_name(session_timezone), "GMT") == 0;
 		ok = ok && log_timezone != NULL &&
 			strcmp(pg_get_timezone_name(log_timezone), "GMT") == 0;
+		ok = ok && *PgCurrentTimeZoneAbbrevTableRef() == NULL;
+		ok = ok && PgCurrentTimeZoneAbbrevCache()[0].abbrev[0] == '\0';
 		DateStyle = USE_SQL_DATES;
 		DateOrder = DATEORDER_DMY;
 		SetConfigOption("IntervalStyle", "sql_standard",
@@ -1427,6 +1429,13 @@ test_session_datetime_state_is_session_local(PG_FUNCTION_ARGS)
 			strcmp(pg_get_timezone_name(session_timezone), "UTC") == 0;
 		ok = ok && log_timezone != NULL &&
 			strcmp(pg_get_timezone_name(log_timezone), "UTC") == 0;
+		*PgCurrentTimeZoneAbbrevTableRef() =
+			(TimeZoneAbbrevTable *) &fake_session1;
+		strlcpy(PgCurrentTimeZoneAbbrevCache()[0].abbrev, "utc",
+				TOKMAXLEN + 1);
+		PgCurrentTimeZoneAbbrevCache()[0].ftype = TZ;
+		PgCurrentTimeZoneAbbrevCache()[0].offset = 11;
+		PgCurrentTimeZoneAbbrevCache()[0].tz = (pg_tz *) &fake_session1;
 
 		PgSetCurrentSession(&fake_session2);
 		ok = ok && DateStyle == USE_ISO_DATES;
@@ -1438,6 +1447,8 @@ test_session_datetime_state_is_session_local(PG_FUNCTION_ARGS)
 			strcmp(pg_get_timezone_name(session_timezone), "GMT") == 0;
 		ok = ok && log_timezone != NULL &&
 			strcmp(pg_get_timezone_name(log_timezone), "GMT") == 0;
+		ok = ok && *PgCurrentTimeZoneAbbrevTableRef() == NULL;
+		ok = ok && PgCurrentTimeZoneAbbrevCache()[0].abbrev[0] == '\0';
 		DateStyle = USE_GERMAN_DATES;
 		DateOrder = DATEORDER_YMD;
 		SetConfigOption("IntervalStyle", "iso_8601",
@@ -1451,6 +1462,13 @@ test_session_datetime_state_is_session_local(PG_FUNCTION_ARGS)
 			strcmp(pg_get_timezone_name(session_timezone), "Europe/London") == 0;
 		ok = ok && log_timezone != NULL &&
 			strcmp(pg_get_timezone_name(log_timezone), "Europe/London") == 0;
+		*PgCurrentTimeZoneAbbrevTableRef() =
+			(TimeZoneAbbrevTable *) &fake_session2;
+		strlcpy(PgCurrentTimeZoneAbbrevCache()[0].abbrev, "bst",
+				TOKMAXLEN + 1);
+		PgCurrentTimeZoneAbbrevCache()[0].ftype = DYNTZ;
+		PgCurrentTimeZoneAbbrevCache()[0].offset = 22;
+		PgCurrentTimeZoneAbbrevCache()[0].tz = (pg_tz *) &fake_session2;
 
 		PgSetCurrentSession(&fake_session1);
 		ok = ok && DateStyle == USE_SQL_DATES;
@@ -1460,6 +1478,14 @@ test_session_datetime_state_is_session_local(PG_FUNCTION_ARGS)
 			strcmp(pg_get_timezone_name(session_timezone), "UTC") == 0;
 		ok = ok && log_timezone != NULL &&
 			strcmp(pg_get_timezone_name(log_timezone), "UTC") == 0;
+		ok = ok && *PgCurrentTimeZoneAbbrevTableRef() ==
+			(TimeZoneAbbrevTable *) &fake_session1;
+		ok = ok && strcmp(PgCurrentTimeZoneAbbrevCache()[0].abbrev,
+						  "utc") == 0;
+		ok = ok && PgCurrentTimeZoneAbbrevCache()[0].ftype == TZ;
+		ok = ok && PgCurrentTimeZoneAbbrevCache()[0].offset == 11;
+		ok = ok && PgCurrentTimeZoneAbbrevCache()[0].tz ==
+			(pg_tz *) &fake_session1;
 
 		PgSetCurrentSession(&fake_session2);
 		ok = ok && DateStyle == USE_GERMAN_DATES;
@@ -1469,6 +1495,14 @@ test_session_datetime_state_is_session_local(PG_FUNCTION_ARGS)
 			strcmp(pg_get_timezone_name(session_timezone), "Europe/London") == 0;
 		ok = ok && log_timezone != NULL &&
 			strcmp(pg_get_timezone_name(log_timezone), "Europe/London") == 0;
+		ok = ok && *PgCurrentTimeZoneAbbrevTableRef() ==
+			(TimeZoneAbbrevTable *) &fake_session2;
+		ok = ok && strcmp(PgCurrentTimeZoneAbbrevCache()[0].abbrev,
+						  "bst") == 0;
+		ok = ok && PgCurrentTimeZoneAbbrevCache()[0].ftype == DYNTZ;
+		ok = ok && PgCurrentTimeZoneAbbrevCache()[0].offset == 22;
+		ok = ok && PgCurrentTimeZoneAbbrevCache()[0].tz ==
+			(pg_tz *) &fake_session2;
 
 		PgSetCurrentSession(saved_session);
 		DateStyle = saved_date_style;

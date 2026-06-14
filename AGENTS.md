@@ -619,6 +619,14 @@ Important current files:
   and installed runtime headers changed; at minimum rebuild and reinstall
   PL/pgSQL, `src/test/modules/test_backend_runtime`, and contrib before
   validating.
+- Timezone-abbreviation session state now lives in `PgSessionDateTimeState`:
+  `datetime.c` keeps local names for the active `TimeZoneAbbrevTable` pointer
+  and recent abbreviation lookup cache through runtime accessors. The table
+  pointer is borrowed from GUC extra storage; the inline cache is copied with
+  the session bucket and reset by `InstallTimeZoneAbbrevs()` and
+  `ClearTimeZoneAbbrevCache()`. After changing this bridge, rebuild
+  `backend_runtime.o`, `datetime.o`, and `test_backend_runtime.o`, then run
+  `gmake check-runtime-lifecycles` and `gmake check-global-lifetimes`.
 - Utility command/cache state in `PgBackendUtilityState` now also covers
   async notify pending and exit-registration flags, the extension sibling cache
   head, the injection-point callback cache, and the legacy sampling reservoir

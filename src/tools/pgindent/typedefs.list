@@ -2318,6 +2318,7 @@ PgIfAddrCallback
 PgRuntime
 PgSession
 PgSessionLoopState
+PgSessionTzAbbrevCache
 PgStepBudget
 PgStepResult
 PgStatShared_Archiver
@@ -3318,7 +3319,6 @@ TypeCat
 TypeFuncClass
 TypeInfo
 TypeName
-TzAbbrevCache
 U32
 U8
 UCaseMap

@@ -1157,6 +1157,15 @@ asserting the payload latch is non-NULL before creating the carrier. This
 prevents threaded startup completion and exit publication from calling
 `SetLatch(NULL)` if `MyLatch` is not yet visible through the runtime wrapper.
 
+The following datetime slice moved `datetime.c`'s active
+`TimeZoneAbbrevTable` pointer and recent timezone-abbreviation lookup cache
+behind `PgSessionDateTimeState`. This is a narrow session-cache migration with
+an explicit ownership rule: the table pointer is borrowed from GUC extra
+storage, and the inline cache is session scratch reset by
+`InstallTimeZoneAbbrevs()` and `ClearTimeZoneAbbrevCache()`. The
+session-local runtime test now switches fake sessions and verifies both the
+borrowed pointer slot and cache entry remain isolated.
+
 ## Bottom Line
 
 The branch is on track only if the current debt is treated as Phase 12

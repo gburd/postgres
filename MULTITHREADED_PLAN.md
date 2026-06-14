@@ -1586,6 +1586,12 @@ postmaster latch after runtime-state initialization, falls back to the current
 local latch data if `MyLatch` is not populated through the runtime wrapper, and
 asserts the published latch is non-NULL before carrier creation. This preserves
 the PMChild startup/exit wakeup path used by threaded workers.
+The next session datetime batch moved the active timezone-abbreviation table
+pointer and timezone-abbreviation lookup cache into `PgSessionDateTimeState`.
+The table pointer is a borrowed GUC extra value, while the inline cache is
+session scratch reset by the existing timezone-abbreviation and timezone
+assign paths. This removes two more session TLS declarations while keeping the
+lifecycle rule explicit in `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`.
 
 ## Phase 13: Scheduler-Aware Wait Boundary
 

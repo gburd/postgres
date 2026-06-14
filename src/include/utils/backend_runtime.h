@@ -45,6 +45,7 @@
 #include "tcop/dest.h"
 #include "utils/backend_id.h"
 #include "utils/backend_status.h"
+#include "utils/datetime.h"
 #include "utils/elog.h"
 #include "utils/global_lifetime.h"
 #include "utils/hsearch.h"
@@ -1164,6 +1165,14 @@ typedef struct PgSessionBinaryUpgradeState
 	bool		binary_upgrade_record_init_privs_value;
 } PgSessionBinaryUpgradeState;
 
+typedef struct PgSessionTzAbbrevCache
+{
+	char		abbrev[TOKMAXLEN + 1];
+	char		ftype;
+	int			offset;
+	pg_tz	   *tz;
+} PgSessionTzAbbrevCache;
+
 typedef struct PgSessionDateTimeState
 {
 	bool		initialized;
@@ -1174,6 +1183,8 @@ typedef struct PgSessionDateTimeState
 	char	   *log_timezone_string_value;
 	pg_tz	   *session_timezone_value;
 	pg_tz	   *log_timezone_value;
+	TimeZoneAbbrevTable *timezone_abbrev_table;
+	PgSessionTzAbbrevCache timezone_abbrev_cache[PG_BACKEND_MAX_DATE_FIELDS];
 } PgSessionDateTimeState;
 
 typedef struct PgSessionTextSearchState
@@ -2259,6 +2270,8 @@ extern char **PgCurrentTimeZoneStringRef(void);
 extern char **PgCurrentLogTimeZoneStringRef(void);
 extern pg_tz **PgCurrentSessionTimeZoneRef(void);
 extern pg_tz **PgCurrentLogTimeZoneRef(void);
+extern TimeZoneAbbrevTable **PgCurrentTimeZoneAbbrevTableRef(void);
+extern PgSessionTzAbbrevCache *PgCurrentTimeZoneAbbrevCache(void);
 extern char **PgCurrentApplicationNameRef(void);
 extern int *PgCurrentTcpKeepalivesIdleRef(void);
 extern int *PgCurrentTcpKeepalivesIntervalRef(void);
