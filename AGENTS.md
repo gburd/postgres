@@ -50,6 +50,21 @@ the code evolves.
 - [refs/pgconf-2025-multithreading-transcript.md](refs/pgconf-2025-multithreading-transcript.md)
   is the local transcript of the PgConf.dev 2025 talk that motivates this work.
 
+## Active Phase 12 Gate E2 Rule
+
+- Before the next repetitive Phase 12/Gate E2 lifecycle batch, do a short
+  lifecycle-ergonomics preflight. If the batch would add two or more similar
+  init/adopt/reset/destroy helpers, first add or extend a checked lifecycle
+  primitive: a `PG_RUNTIME_*` bucket action, `PG_RUNTIME_DEFINE_*` helper,
+  bucket `.def` rule, or `check_runtime_lifecycles.pl` validation.
+- Record the preflight decision in
+  [MULTITHREADED_PHASE12_STATE.md](MULTITHREADED_PHASE12_STATE.md) before
+  editing code. The note must either name the existing bucket rows/macros/
+  checker rules being reused, or name the new primitive added first.
+- Keep exceptional ownership, ordering, and subsystem cleanup handwritten and
+  owner-adjacent. Use macros/tables only for repeated lifecycle mechanics so
+  large batches move faster without weakening the manifest gate.
+
 ## Working Assumptions
 
 - Use Heikki Linnakangas's multithreading branch as reference material, not as
