@@ -951,6 +951,12 @@ Gate E2 requires:
   that mechanism. The exit criterion is that future agents can add routine
   lifecycle buckets by editing the manifest and bucket-definition row, without
   remembering several parallel call lists;
+- the first lifecycle action vocabulary slice is in place:
+  `PG_RUNTIME_NOOP` replaces bare no-op expressions in checked bucket
+  definitions, and `check_runtime_lifecycles.pl` rejects anonymous `(void) 0`
+  cells or unknown `PG_RUNTIME_*` action names. Future vocabulary extensions
+  should follow the same pattern: named bucket-row action, C expansion, and
+  checker validation;
 - `MULTITHREADED_RUNTIME_OWNERS.tsv` remains synchronized with the lifecycle
   manifest and runtime accessors. `check-runtime-lifecycles` must reject owner
   rows that point at a non-manifest bucket, a missing owner source, a duplicate

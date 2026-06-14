@@ -87,6 +87,16 @@
 #include "utils/rls.h"
 #include "utils/xml.h"
 
+/*
+ * Lifecycle action vocabulary used by backend_runtime_*_buckets.def.
+ *
+ * Keep this vocabulary small and mechanically checked.  Routine no-op cells
+ * should be named here rather than written as anonymous C expressions in the
+ * bucket definition files, so the lifecycle checker can distinguish explicit
+ * intent from forgotten lifecycle work.
+ */
+#define PG_RUNTIME_NOOP ((void) 0)
+
 PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgRuntime *CurrentPgRuntime = NULL;
 PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgCarrier *CurrentPgCarrier = NULL;
 PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgBackend *CurrentPgBackend = NULL;

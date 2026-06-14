@@ -11097,3 +11097,18 @@ Lifecycle action-vocabulary follow-up:
 - record the action-vocabulary decision in this state log before moving the
   next large batch. The point is to make larger migrations faster without
   weakening manifest-checked lifecycle discipline.
+
+Lifecycle action-vocabulary first slice completed:
+
+- lifecycle preflight result: this is framework work, not a state migration.
+  The repetitive pattern being simplified is the anonymous no-op cells in
+  root-object bucket definitions;
+- `PG_RUNTIME_NOOP` is now the checked no-op lifecycle action used by
+  `backend_runtime_*_buckets.def`;
+- `check_runtime_lifecycles.pl` rejects bare `(void) 0` bucket cells and
+  unknown `PG_RUNTIME_*` action names, so future vocabulary additions must be
+  deliberate and checker-visible;
+- this slice is intentionally no-behavior-change. It prepares the next
+  migration batches to add further checked actions for reset-through-init,
+  scalar copy/adopt, whole-bucket copy/adopt, and owner-adjacent destroy cases
+  without growing more handwritten lifecycle lists.

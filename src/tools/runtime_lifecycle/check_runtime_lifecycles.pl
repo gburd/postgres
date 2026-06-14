@@ -139,6 +139,8 @@ foreach my $row (@bucket_rows)
 
 	foreach my $column (qw(initializer early_adoption reset_destroy))
 	{
+		validate_lifecycle_action_cell($row, $column);
+
 		foreach my $function (runtime_function_refs($row->{$column}))
 		{
 			if (!exists $source_functions{$function})
@@ -370,6 +372,29 @@ sub runtime_function_refs
 	}
 
 	return sort keys %refs;
+}
+
+sub validate_lifecycle_action_cell
+{
+	my ($row, $column) = @_;
+	my $text = $row->{$column};
+	my %known_actions = map { $_ => 1 } qw(PG_RUNTIME_NOOP);
+
+	if ($text =~ /^\(void\)\s*0$/)
+	{
+		push @errors,
+		  "$row->{file}:$row->{line}: $column uses bare (void) 0; use PG_RUNTIME_NOOP so no-op lifecycle intent is checked";
+	}
+
+	while ($text =~ /\b(PG_RUNTIME_[A-Z0-9_]+)\b/g)
+	{
+		my $action = $1;
+
+		next if exists $known_actions{$action};
+
+		push @errors,
+		  "$row->{file}:$row->{line}: $column uses unknown lifecycle action $action";
+	}
 }
 
 sub read_bucket_defs

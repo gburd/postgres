@@ -334,6 +334,11 @@ Important current files:
   those actions against `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` and reject
   unexplained no-op lifecycle cells for buckets that own pointers, lists,
   memory contexts, sockets, or other close-time resources.
+- The first checked lifecycle action is `PG_RUNTIME_NOOP`. Use it in
+  `backend_runtime_*_buckets.def` instead of bare `(void) 0`; the lifecycle
+  checker rejects anonymous no-op cells and unknown `PG_RUNTIME_*` action
+  names. Extend this vocabulary before adding another family of repetitive
+  lifecycle helper bodies.
 - Session GUC direct-variable rebinding in `src/backend/utils/misc/guc.c`
   is table-driven by `threaded_session_guc_rebinds[]`. Add new migrated
   built-in direct-pointer GUCs to that table instead of extending

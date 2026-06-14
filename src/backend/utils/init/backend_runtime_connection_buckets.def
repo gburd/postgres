@@ -4,8 +4,8 @@
  * Each row is:
  * PG_CONNECTION_BUCKET(field, constructor_init, early_adoption, closed_reset)
  */
-PG_CONNECTION_BUCKET(backend, connection->backend = backend, (void) 0, (void) 0)
-PG_CONNECTION_BUCKET(session, connection->session = session, (void) 0, (void) 0)
+PG_CONNECTION_BUCKET(backend, connection->backend = backend, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)
+PG_CONNECTION_BUCKET(session, connection->session = session, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)
 PG_CONNECTION_BUCKET(identity, MemSet(&connection->identity, 0, sizeof(connection->identity)); connection->identity.port = port, PgConnectionAdoptEarlyIdentity(connection); if (preserved_port != NULL) connection->identity.port = preserved_port, PgConnectionResetIdentityClosedState(connection))
 PG_CONNECTION_BUCKET(socket_io, MemSet(&connection->socket_io, 0, sizeof(connection->socket_io)), PgConnectionAdoptEarlySocketIO(connection), PgConnectionResetSocketIOClosedState(connection))
 PG_CONNECTION_BUCKET(protocol, MemSet(&connection->protocol, 0, sizeof(connection->protocol)), PgConnectionAdoptEarlyProtocolState(connection), PgConnectionResetProtocolClosedState(connection))
