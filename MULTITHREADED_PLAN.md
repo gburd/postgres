@@ -1023,6 +1023,13 @@ Gate E2 requires:
   path that makes the batch safe, or land the missing lifecycle primitive
   before the state migration. The purpose is to make larger batches faster
   without growing manual call lists or weakening the manifest gate;
+- the operational form of that decision is the Phase 12 lifecycle preflight
+  checklist in `AGENTS.md`. Each substantial Gate E2 slice must list the
+  touched root object, bucket rows, legacy symbols, owner sources, and repeated
+  lifecycle operations, then name the checked primitive being reused or land
+  the missing primitive first. Do not treat "no new primitive needed" as a
+  default; explain why the cleanup is single-use, semantic, or
+  ordering-sensitive;
 - use that rule aggressively for the remaining Gate E2 work. If lifecycle
   code starts to feel like clerical bookkeeping, that is a signal to add a
   checked primitive first, then move the larger batch through the primitive.

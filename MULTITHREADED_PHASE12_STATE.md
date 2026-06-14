@@ -12791,6 +12791,13 @@ preference: the branch should move faster by batching more state at once while
 reducing repeated handwritten init/adopt/reset/destroy code. Record the
 preflight result in this file before editing the code for the batch.
 
+`AGENTS.md` now includes the operational checklist to use for that preflight.
+Every substantial Gate E2 slice should name the touched root/bucket/owner
+sources, identify repeated lifecycle operations, and either name the existing
+checked primitive being reused or land the missing primitive before the state
+migration. A bare assertion that no primitive is needed is not enough unless
+the note explains why the batch is single-use, semantic, or ordering-sensitive.
+
 ## LWLock Stats Closed-Reset Ownership
 
 Lifecycle/preflight note:

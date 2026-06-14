@@ -114,6 +114,30 @@ macro/table/checker improvement would make the whole slice simpler and safer.
   reuse the checked macro/action/table/checker path that lets the larger batch
   move safely.
 
+## Phase 12 Lifecycle Preflight Checklist
+
+Before starting any substantial Phase 12/Gate E2 implementation batch, answer
+these questions in `MULTITHREADED_PHASE12_STATE.md`:
+
+- Which runtime root, bucket rows, legacy globals, and owner source files are
+  being touched?
+- Which lifecycle operations repeat: init, early adoption, fallback reset,
+  close-time reset, destructor calls, memory-context deletion, list/hash
+  cleanup, pointer clearing, or owner-map updates?
+- Does an existing checked primitive cover the repetition? Name the exact
+  `PG_RUNTIME_*` action, `PG_RUNTIME_DEFINE_*` helper, bucket `.def` rule,
+  manifest/checker rule, or owner-map validation.
+- If no existing primitive covers the repetition, add the missing checked
+  primitive first, then use it for the larger migration batch.
+- If the cleanup is semantic or ordering-sensitive, keep that part handwritten
+  in the owner file, but still use checked primitives for any surrounding
+  clerical lifecycle mechanics.
+
+Do not begin a large state migration with a vague "no new primitive needed"
+claim. The preflight note must explain why existing checked lifecycle
+infrastructure is enough, or it must point at the lifecycle-framework commit
+that made it enough.
+
 ## Working Assumptions
 
 - Use Heikki Linnakangas's multithreading branch as reference material, not as
