@@ -951,10 +951,20 @@ Important current files:
   `PgSessionCatalogLookupState`. `syscache.c` keeps `SysCache[]`, the
   initialization flag, and relation/supporting-relation OID arrays behind
   runtime accessors; `catcache.c` keeps `CacheHdr` behind a runtime accessor.
-  Session reset clears those roots, while catcache entry memory still belongs
-  to the broader `CacheMemoryContext` ownership split. Do not move
-  `funccache.c`'s hash root without adding a real iterator/destructor for
-  copied tuple descriptors and language-specific cached-function state.
+  Relcache root hashes, critical-cache flags, and the relcache invalidation
+  counter also live in this bucket; `relcache.h` keeps the historical critical
+  flag names as accessor macros for `relcache.c`, `catcache.c`, and
+  `postinit.c`. Session reset clears those roots and scalars, while cache entry
+  memory still belongs to the broader `CacheMemoryContext` ownership split. Do
+  not move `funccache.c`'s hash root without adding a real iterator/destructor
+  for copied tuple descriptors and language-specific cached-function state.
+- After changing the relcache critical-cache flags from exported TLS variables
+  to `relcache.h` accessor macros, stale objects may still reference the old
+  linker symbols even when GNU make thinks they are up to date. If the backend
+  link fails with unresolved `_criticalRelcachesBuilt` or
+  `_criticalSharedRelcachesBuilt`, remove and rebuild at least
+  `src/backend/utils/cache/catcache.o`, `src/backend/utils/init/postinit.o`,
+  and `src/backend/commands/seclabel.o`, then rerun `gmake -j8`.
 - Do not shallow-copy live `dlist_head` or `dclist_head` values when moving
   fallback state into a real runtime object. Use the runtime list-head move
   helpers so moved list nodes' back-links point at the destination head. This

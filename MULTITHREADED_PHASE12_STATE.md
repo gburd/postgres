@@ -9687,3 +9687,46 @@ Validation for this slice:
 - `gmake check-runtime-lifecycles` passed with 147 runtime fields classified;
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals and session-local declarations reduced from 137 to 130.
+
+## Relcache Session Roots
+
+The next Phase 12 cache-state batch moves the remaining relcache session root
+storage behind `PgSessionCatalogLookupState`:
+
+- `RelationIdCache` now resolves through `PgCurrentRelationIdCacheRef()`;
+- `criticalRelcachesBuilt` and `criticalSharedRelcachesBuilt` remain visible
+  to `relcache.c`, `catcache.c`, and `postinit.c` through the historical names,
+  but those names are now `relcache.h` accessors into the current `PgSession`;
+- `relcacheInvalsReceived` now resolves through
+  `PgCurrentRelcacheInvalsReceivedRef()`;
+- `OpClassCache` now resolves through `PgCurrentOpClassCacheRef()`.
+
+This slice moves the session-owned root pointers and scalar build/invalidation
+state that select the logical session's relcache universe. It deliberately does
+not claim ownership of relation descriptors, opclass entry arrays, catcache
+entries, tuple descriptors, or other allocations that still live under
+`CacheMemoryContext` or existing relcache cleanup paths. Those allocations
+remain part of the broader `CacheMemoryContext` split and explicit destructor
+work required before Gate E2 can close.
+
+The lifecycle rule is explicit. Early fallback adoption moves these fields as
+part of the whole `PgSessionCatalogLookupState` bucket. Session reset clears
+the root hashes, critical-cache flags, and invalidation counter after dependent
+cache roots have been handled. The hash root pointers must not be shallow-copied
+between concurrently live sessions.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `postinit.o`,
+  `relcache.o`, `catcache.o`, `syscache.o`, and `test_backend_runtime.o`;
+- `gmake -j8` passed after removing and rebuilding stale users of the former
+  exported relcache critical-cache symbols;
+- `test_session_catalog_lookup_state_is_session_local()` now covers relcache
+  root hashes, critical-cache flags, and invalidation counter across
+  fake-session switching;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl` with 94 tests;
+- `gmake check-runtime-lifecycles` passed with 147 runtime fields classified;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and session-local declarations reduced from 130 to 123.

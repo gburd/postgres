@@ -156,10 +156,15 @@ extern void RelationCacheInitFilePreInvalidate(void);
 extern void RelationCacheInitFilePostInvalidate(void);
 extern void RelationCacheInitFileRemove(void);
 
-/* should be used only by relcache.c and catcache.c */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool criticalRelcachesBuilt;
+/*
+ * These should be used only by relcache.c, catcache.c, and postinit.c.
+ * Storage lives in the current PgSession; keep the historical names as
+ * compatibility accessors while relcache state moves behind runtime objects.
+ */
+extern bool *PgCurrentCriticalRelcachesBuiltRef(void);
+extern bool *PgCurrentCriticalSharedRelcachesBuiltRef(void);
 
-/* should be used only by relcache.c and postinit.c */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool criticalSharedRelcachesBuilt;
+#define criticalRelcachesBuilt (*PgCurrentCriticalRelcachesBuiltRef())
+#define criticalSharedRelcachesBuilt (*PgCurrentCriticalSharedRelcachesBuiltRef())
 
 #endif							/* RELCACHE_H */

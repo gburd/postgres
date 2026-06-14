@@ -134,19 +134,21 @@ typedef struct relidcacheent
 	Relation	reldesc;
 } RelIdCacheEnt;
 
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *RelationIdCache;
+#define RelationIdCache (*PgCurrentRelationIdCacheRef())
 
 /*
- * This flag is false until we have prepared the critical relcache entries
- * that are needed to do indexscans on the tables read by relcache building.
+ * criticalRelcachesBuilt is false until we have prepared the critical
+ * relcache entries that are needed to do indexscans on the tables read by
+ * relcache building.  Storage lives in the current PgSession through the
+ * relcache.h accessor macro.
  */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool criticalRelcachesBuilt = false;
 
 /*
- * This flag is false until we have prepared the critical relcache entries
- * for shared catalogs (which are the tables needed for login).
+ * criticalSharedRelcachesBuilt is false until we have prepared the critical
+ * relcache entries for shared catalogs (which are the tables needed for
+ * login).  Storage lives in the current PgSession through the relcache.h
+ * accessor macro.
  */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool criticalSharedRelcachesBuilt = false;
 
 /*
  * This counter counts relcache inval events received since backend startup
@@ -154,7 +156,7 @@ PG_THREAD_LOCAL PG_GLOBAL_SESSION bool criticalSharedRelcachesBuilt = false;
  * to detect whether data about to be written by write_relcache_init_file()
  * might already be obsolete.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION long relcacheInvalsReceived = 0L;
+#define relcacheInvalsReceived (*PgCurrentRelcacheInvalsReceivedRef())
 
 /*
  * in_progress_list is a stack of ongoing RelationBuildDesc() calls.  CREATE
@@ -270,7 +272,7 @@ typedef struct opclasscacheent
 	RegProcedure *supportProcs; /* OIDs of support procedures */
 } OpClassCacheEnt;
 
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *OpClassCache = NULL;
+#define OpClassCache (*PgCurrentOpClassCacheRef())
 
 
 /* non-export function prototypes */

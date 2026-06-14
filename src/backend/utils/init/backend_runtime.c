@@ -4820,6 +4820,11 @@ PgSessionResetClosedState(PgSession *session)
 		   sizeof(session->catalog_lookup.sys_cache_supporting_rel_oid));
 	session->catalog_lookup.sys_cache_supporting_rel_oid_size = 0;
 	session->catalog_lookup.cat_cache_header = NULL;
+	session->catalog_lookup.relcache_relation_id_cache = NULL;
+	session->catalog_lookup.relcache_critical_built = false;
+	session->catalog_lookup.relcache_critical_shared_built = false;
+	session->catalog_lookup.relcache_invals_received = 0;
+	session->catalog_lookup.relcache_opclass_cache = NULL;
 	PgSessionInitializeInvalidationCallbackState(&session->invalidation_callbacks);
 
 	if (session->ri_globals.constraint_cache != NULL)
@@ -6235,6 +6240,36 @@ CatCacheHeader **
 PgCurrentCatCacheHeaderRef(void)
 {
 	return &PgCurrentSessionCatalogLookupState()->cat_cache_header;
+}
+
+HTAB **
+PgCurrentRelationIdCacheRef(void)
+{
+	return &PgCurrentSessionCatalogLookupState()->relcache_relation_id_cache;
+}
+
+bool *
+PgCurrentCriticalRelcachesBuiltRef(void)
+{
+	return &PgCurrentSessionCatalogLookupState()->relcache_critical_built;
+}
+
+bool *
+PgCurrentCriticalSharedRelcachesBuiltRef(void)
+{
+	return &PgCurrentSessionCatalogLookupState()->relcache_critical_shared_built;
+}
+
+long *
+PgCurrentRelcacheInvalsReceivedRef(void)
+{
+	return &PgCurrentSessionCatalogLookupState()->relcache_invals_received;
+}
+
+HTAB **
+PgCurrentOpClassCacheRef(void)
+{
+	return &PgCurrentSessionCatalogLookupState()->relcache_opclass_cache;
 }
 
 void **
