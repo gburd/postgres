@@ -1,0 +1,24 @@
+/*
+ * PgCarrier lifecycle buckets.
+ *
+ * Each row is:
+ * PG_CARRIER_BUCKET(field, constructor_init, early_adoption, closed_reset)
+ *
+ * Carrier state represents the physical execution vehicle. It has no early
+ * fallback adoption or closed-backend reset path yet; process/thread runtime
+ * setup installs the appropriate carrier object directly.
+ */
+PG_CARRIER_BUCKET(kind, (void) 0, (void) 0, (void) 0)
+PG_CARRIER_BUCKET(runtime, (void) 0, (void) 0, (void) 0)
+PG_CARRIER_BUCKET(current_backend, (void) 0, (void) 0, (void) 0)
+PG_CARRIER_BUCKET(current_session, (void) 0, (void) 0, (void) 0)
+PG_CARRIER_BUCKET(current_execution, (void) 0, (void) 0, (void) 0)
+PG_CARRIER_BUCKET(backend_thread_start, (void) 0, (void) 0, (void) 0)
+PG_CARRIER_BUCKET(is_under_postmaster, (void) 0, (void) 0, (void) 0)
+PG_CARRIER_BUCKET(wait_event_waiting, (void) 0, (void) 0, (void) 0)
+PG_CARRIER_BUCKET(wait_event_signal_fd, carrier->wait_event_signal_fd = -1, (void) 0, (void) 0)
+PG_CARRIER_BUCKET(wait_event_selfpipe_readfd, carrier->wait_event_selfpipe_readfd = -1, (void) 0, (void) 0)
+PG_CARRIER_BUCKET(wait_event_selfpipe_writefd, carrier->wait_event_selfpipe_writefd = -1, (void) 0, (void) 0)
+PG_CARRIER_BUCKET(wait_event_selfpipe_owner_pid, (void) 0, (void) 0, (void) 0)
+PG_CARRIER_BUCKET(stack_base_ptr, (void) 0, (void) 0, (void) 0)
+PG_CARRIER_BUCKET(threaded_guc_mutex_depth, (void) 0, (void) 0, (void) 0)

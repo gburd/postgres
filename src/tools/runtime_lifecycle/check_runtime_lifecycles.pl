@@ -35,6 +35,7 @@ my @sources = (
 	'src/backend/storage/ipc/ipc.c');
 my @bucket_defs = (
 	'src/backend/utils/init/backend_runtime_backend_buckets.def',
+	'src/backend/utils/init/backend_runtime_carrier_buckets.def',
 	'src/backend/utils/init/backend_runtime_session_buckets.def',
 	'src/backend/utils/init/backend_runtime_connection_buckets.def',
 	'src/backend/utils/init/backend_runtime_execution_buckets.def');
@@ -188,7 +189,8 @@ foreach my $row (@reset_rows)
 
 push @errors, require_function_calls(
 	'InitializePgProcessRuntime',
-	[qw(PgBackendInitializeRuntimeObject
+	[qw(PgCarrierInitializeRuntimeObject
+		PgBackendInitializeRuntimeObject
 		PgSessionInitializeRuntimeObject
 		PgConnectionInitializeRuntimeObject
 		PgExecutionInitializeRuntimeObject
@@ -199,7 +201,8 @@ push @errors, require_function_calls(
 
 push @errors, require_function_calls(
 	'InitializePgThreadBackendRuntimeState',
-	[qw(PgBackendInitializeRuntimeObject
+	[qw(PgCarrierInitializeRuntimeObject
+		PgBackendInitializeRuntimeObject
 		PgSessionInitializeRuntimeObject
 		PgConnectionInitializeRuntimeObject
 		PgExecutionInitializeRuntimeObject)]);
@@ -258,11 +261,11 @@ sub read_runtime_fields
 	my $object;
 	my $in_object = 0;
 	my %objects = map { $_ => 1 }
-	  qw(PgBackend PgSession PgConnection PgExecution);
+	  qw(PgCarrier PgBackend PgSession PgConnection PgExecution);
 
 	while (my $line = <$fh>)
 	{
-		if ($line =~ /^struct\s+(PgBackend|PgSession|PgConnection|PgExecution)\s*$/)
+		if ($line =~ /^struct\s+(PgCarrier|PgBackend|PgSession|PgConnection|PgExecution)\s*$/)
 		{
 			$object = $1;
 			$in_object = 1;
@@ -279,6 +282,8 @@ sub read_runtime_fields
 		next unless $in_object;
 		next if $line =~ /^\s*$/;
 		next if $line =~ /^\s*(?:\/\*|\*)/;
+
+		$line =~ s/^\s*volatile\s+/ /;
 
 		if ($line =~ /^\s*(?:struct\s+)?[A-Za-z_][A-Za-z0-9_]*\s*(?:\*+\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*;/)
 		{
@@ -331,7 +336,7 @@ sub runtime_function_refs
 	my ($text) = @_;
 	my %refs;
 
-	while ($text =~ /\b((?:PgRuntime|PgBackend|PgSession|PgConnection|PgExecution|InitializePg)[A-Za-z0-9_]*)\s*\(/g)
+	while ($text =~ /\b((?:PgRuntime|PgCarrier|PgBackend|PgSession|PgConnection|PgExecution|InitializePg)[A-Za-z0-9_]*)\s*\(/g)
 	{
 		$refs{$1} = 1;
 	}
@@ -345,6 +350,7 @@ sub read_bucket_defs
 	my @rows;
 	my %objects = (
 		BACKEND => 'PgBackend',
+		CARRIER => 'PgCarrier',
 		SESSION => 'PgSession',
 		CONNECTION => 'PgConnection',
 		EXECUTION => 'PgExecution',
@@ -360,7 +366,7 @@ sub read_bucket_defs
 			next if $line =~ /^\s*$/;
 			next if $line =~ /^\s*(?:\/\*|\*)/;
 
-			if ($line !~ /^\s*PG_(BACKEND|SESSION|CONNECTION|EXECUTION)_BUCKET\s*\((.*)\)\s*$/)
+			if ($line !~ /^\s*PG_(BACKEND|CARRIER|SESSION|CONNECTION|EXECUTION)_BUCKET\s*\((.*)\)\s*$/)
 			{
 				push @errors, "$file:$.: expected PG_*_BUCKET(...) row";
 				next;

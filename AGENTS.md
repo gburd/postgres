@@ -256,14 +256,17 @@ Important current files:
   owning subsystem.
 - The first lifecycle framework slice uses
   `src/backend/utils/init/backend_runtime_*_buckets.def`. The checker validates
-  one bucket-definition row for every `PgBackend`, `PgSession`, `PgConnection`,
-  and `PgExecution` field. Backend, connection, and execution constructor,
-  adoption, and closed-reset orchestration include those rows directly.
-  Session constructor/adoption includes the rows. Session closed reset uses
-  the separate ordered `backend_runtime_session_reset_buckets.def` because its
-  teardown order is intentionally different from early-adoption order; keep
-  semantic cleanup in handwritten helper functions and add ordered reset rows
-  for new non-noop session reset buckets.
+  one bucket-definition row for every `PgCarrier`, `PgBackend`, `PgSession`,
+  `PgConnection`, and `PgExecution` field. Carrier, backend, connection, and
+  execution constructor orchestration includes those rows directly. Backend,
+  connection, and execution closed-reset orchestration also includes the rows;
+  carrier has no closed-backend reset path yet because carrier lifetime is
+  outside closed logical backend reset. Session constructor/adoption includes
+  the rows. Session closed reset uses the separate ordered
+  `backend_runtime_session_reset_buckets.def` because its teardown order is
+  intentionally different from early-adoption order; keep semantic cleanup in
+  handwritten helper functions and add ordered reset rows for new non-noop
+  session reset buckets.
 - For routine lifecycle helper functions in `backend_runtime.c`, use the
   local `PG_RUNTIME_DEFINE_*` helper macros where they fit. The lifecycle
   checker recognizes those macro-defined functions, so use them for ordinary

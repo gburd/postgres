@@ -3960,9 +3960,11 @@ PgCarrierInitializeRuntimeObject(PgCarrier *carrier)
 	is_under_postmaster = carrier->is_under_postmaster;
 	MemSet(carrier, 0, sizeof(*carrier));
 	carrier->is_under_postmaster = is_under_postmaster;
-	carrier->wait_event_signal_fd = -1;
-	carrier->wait_event_selfpipe_readfd = -1;
-	carrier->wait_event_selfpipe_writefd = -1;
+
+#define PG_CARRIER_BUCKET(field, init, adopt, reset) \
+	do { init; } while (0);
+#include "backend_runtime_carrier_buckets.def"
+#undef PG_CARRIER_BUCKET
 }
 
 void

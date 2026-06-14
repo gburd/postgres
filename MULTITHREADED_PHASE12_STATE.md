@@ -10834,11 +10834,9 @@ Carrier `IsUnderPostmaster` migration completed:
 - `test_carrier_misc_state_is_carrier_local()` now verifies that
   `IsUnderPostmaster` switches with `CurrentPgCarrier` alongside the existing
   carrier-local wait-event and thread-start fields;
-- this is a carrier-object migration rather than a
-  `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` row. The current lifecycle manifest
-  covers `PgBackend`, `PgSession`, `PgConnection`, and `PgExecution`; carrier
-  fields are covered by explicit initialization tests and the global lifetime
-  scan for now.
+- this started as a carrier-object migration and is now covered by
+  `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` through the carrier lifecycle checker
+  slice below.
 
 Validation for this carrier migration:
 
@@ -10856,3 +10854,30 @@ Validation for this carrier migration:
   Remaining raw annotations outside runtime/test/checker code are the known
   Windows carrier globals and the standalone `S_LOCK_TEST`
   `my_wait_event_info` fallback.
+
+Carrier lifecycle checker slice completed:
+
+- `src/backend/utils/init/backend_runtime_carrier_buckets.def` now defines one
+  checked lifecycle row for each `PgCarrier` field;
+- `PgCarrierInitializeRuntimeObject()` includes the carrier bucket rows for
+  constructor setup, while preserving the early `InitPostmasterChild()`
+  `is_under_postmaster` assignment across carrier zeroing;
+- the carrier bucket file keeps carrier fd initialization (`-1`) in the same
+  checked path as other carrier constructor state;
+- `check_runtime_lifecycles.pl` now parses `PgCarrier`, checks
+  `PG_CARRIER_BUCKET` rows, and requires `PgCarrierInitializeRuntimeObject()`
+  in both process and thread runtime construction paths;
+- `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` now records ownership, initialization,
+  and reset/destroy rules for all current `PgCarrier` fields.
+
+Validation for this carrier lifecycle checker slice:
+
+- `perl -c src/tools/runtime_lifecycle/check_runtime_lifecycles.pl` passed;
+- touched-object build passed for `backend_runtime.o`;
+- `gmake check-runtime-lifecycles` passed with 164 runtime fields classified,
+  164 bucket definitions checked, and 25 reset definitions checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- full `gmake -j8` passed;
+- `git diff --check` passed.

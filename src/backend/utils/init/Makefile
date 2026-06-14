@@ -21,6 +21,7 @@ OBJS = \
 	usercontext.o
 
 backend_runtime.o: backend_runtime_backend_buckets.def \
+	backend_runtime_carrier_buckets.def \
 	backend_runtime_connection_buckets.def \
 	backend_runtime_execution_buckets.def \
 	backend_runtime_session_buckets.def \
