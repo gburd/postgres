@@ -12,7 +12,7 @@ import stat
 import subprocess
 import tempfile
 import time
-from collections import namedtuple
+from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Tuple
 
 from ._env import test_timeout_default
@@ -122,7 +122,14 @@ class Config(FileBackup):
                 print(n, "=", v, file=f)
 
 
-Backup = namedtuple("Backup", "conf, hba")
+@dataclass(frozen=True)
+class Backup:
+    """The HBA and postgresql.conf backups taken by a reloading()/restarting()
+    scope, restored when the scope exits."""
+
+    conf: "Config"
+    hba: "HBA"
+
 
 WINDOWS_OS = platform.system() == "Windows"
 
