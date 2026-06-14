@@ -244,7 +244,7 @@ sub scan_file
 
 		if ($starts_decl)
 		{
-			next if $clean =~ /^\s*(?:else\b|return\b|case\b|default:)/;
+			next if $clean =~ /^\s*(?:else\b|return\b|case\b|default:|\})/;
 			$decl_line = $lineno;
 		}
 
@@ -252,7 +252,7 @@ sub scan_file
 			&& ($decl . $clean) =~ /{/
 			&& should_skip_top_level_block($decl . $clean))
 		{
-			$skip_block_depth = brace_delta($clean);
+			$skip_block_depth = brace_delta($decl . $clean);
 			$skip_block_depth = 0 if $skip_block_depth < 0;
 			$decl = '';
 			$decl_line = 0;
@@ -314,7 +314,7 @@ sub strip_comments
 			}
 			else
 			{
-				return "\n";
+				return $out . "\n";
 			}
 		}
 		elsif ($line =~ s/^(.*?)\/\*//)

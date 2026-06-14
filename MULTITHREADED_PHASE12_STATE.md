@@ -13537,3 +13537,48 @@ Validation for the delete-memory-context-and-reset lifecycle action slice:
 - direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
   `002_threaded_bgworker_crash.pl`, 131 tests total, with patched macOS
   install-name paths and the repo-local `.perl5` `PERL5LIB`.
+
+## Global-Lifetime Scanner Tightening
+
+Lifecycle/preflight note:
+
+- target: Gate E2 global-lifetime validation rather than runtime state
+  movement;
+- owner source files: `src/tools/global_lifetime/scan_global_lifetimes.pl`
+  and `src/include/fe_utils/print.h`;
+- repeated lifecycle operations: none. This slice hardens the required
+  validation tool before the next state-migration batch. No lifecycle
+  primitive is needed because no runtime bucket ownership changes;
+- retained invariant: the global-lifetime scan should report real
+  unclassified mutable globals, not baseline-accepted parser artifacts.
+
+Slice:
+
+- fixed multiline comment stripping so code before an unterminated block
+  comment on the same line still contributes to brace-depth tracking;
+- initialized skipped top-level block depth from the accumulated declaration
+  plus the current line, making split typedef/function blocks less fragile;
+- discarded top-level closing-brace lines before they can be carried into the
+  next declaration;
+- classified frontend `pg_utf8format` as `PG_GLOBAL_RUNTIME`, since it is an
+  exported mutable singleton initialized at runtime;
+- removed the obsolete `tsrank.c` false-positive entry from the global
+  lifetime baseline;
+- reduced the full global-lifetime scan to zero unclassified mutable globals
+  while keeping the local-runtime-boundary check at zero violations.
+
+Validation for the global-lifetime scanner tightening slice:
+
+- `perl -c src/tools/global_lifetime/scan_global_lifetimes.pl` passed;
+- focused scan of `src/backend/utils/adt/tsrank.c` reported zero declarations,
+  removing the prior false positive for the `DocRepresentation.pos` field;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 222 owner
+  mappings checked;
+- `gmake -C src/fe_utils clean all` passed, forcing a rebuild of the frontend
+  print code that consumes the annotated header;
+- full incremental `gmake -j8` passed when rerun by itself after an earlier
+  self-inflicted parallel invocation raced with the forced `src/fe_utils`
+  clean/rebuild over `libpgfeutils.a`.

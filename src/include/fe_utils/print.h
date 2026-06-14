@@ -200,8 +200,8 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME volatile sig_atomic_t cancel_pressed;
 
 extern PGDLLIMPORT const printTextFormat pg_asciiformat;
 extern PGDLLIMPORT const printTextFormat pg_asciiformat_old;
-extern PGDLLIMPORT printTextFormat pg_utf8format;	/* ideally would be const,
-													 * but... */
+/* Ideally this would be const, but the unicode line style is initialized. */
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME printTextFormat pg_utf8format;
 
 
 extern void disable_sigpipe_trap(void);
