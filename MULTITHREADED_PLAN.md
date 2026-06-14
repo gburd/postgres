@@ -848,6 +848,17 @@ Future Phase 12 bucket additions should pick an adjacent owner file first;
 adding more code to `backend_runtime.c` should be reserved for root runtime
 construction, current-object helpers, and top-level adopt/reset calls.
 
+Phase 12 early-fallback storage is now object-shaped for the major logical
+runtime roots. The backend fallback consolidation replaced the standalone
+backend-local fallback TLS slots with one `PgBackend early_backend_fallback`;
+the follow-up session/execution consolidation replaced the standalone
+`early_session_*` and `early_execution_*` TLS slots with one `PgSession
+early_session_fallback` and one `PgExecution early_execution_fallback`. The
+existing checked init/adopt/reset helpers still own per-bucket semantics, and
+source-local compatibility macros keep the helper bodies stable while the
+global-lifetime scan now reports only 2 session-local and 2 execution-local
+fallback declarations in this area.
+
 Validation:
 
 - targeted tests per subsystem;

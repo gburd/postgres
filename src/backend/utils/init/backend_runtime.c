@@ -235,456 +235,505 @@ static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionStartupState early_conne
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionClientConnectionInfoState early_client_connection_info;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION bool early_client_connection_info_authn_id_owned;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionSecurityState early_connection_security;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionDatabaseState early_session_database;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionTablespaceState early_session_tablespace = {
-	.initialized = true,
-	.default_tablespace_name = NULL,
-	.temp_tablespaces_names = NULL,
-	.allow_in_place_tablespaces_value = false,
-	.binary_upgrade_next_pg_tablespace_oid_value = InvalidOid
-};
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionBinaryUpgradeState early_session_binary_upgrade = {
-	.initialized = true,
-	.binary_upgrade_next_pg_type_oid_value = InvalidOid,
-	.binary_upgrade_next_array_pg_type_oid_value = InvalidOid,
-	.binary_upgrade_next_mrng_pg_type_oid_value = InvalidOid,
-	.binary_upgrade_next_mrng_array_pg_type_oid_value = InvalidOid,
-	.binary_upgrade_next_heap_pg_class_oid_value = InvalidOid,
-	.binary_upgrade_next_heap_pg_class_relfilenumber_value = InvalidRelFileNumber,
-	.binary_upgrade_next_index_pg_class_oid_value = InvalidOid,
-	.binary_upgrade_next_index_pg_class_relfilenumber_value = InvalidRelFileNumber,
-	.binary_upgrade_next_toast_pg_class_oid_value = InvalidOid,
-	.binary_upgrade_next_toast_pg_class_relfilenumber_value = InvalidRelFileNumber,
-	.binary_upgrade_next_pg_enum_oid_value = InvalidOid,
-	.binary_upgrade_next_pg_authid_oid_value = InvalidOid,
-	.binary_upgrade_record_init_privs_value = false
-};
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionDateTimeState early_session_datetime = {
-	.initialized = true,
-	.date_style = USE_ISO_DATES,
-	.date_order = DATEORDER_MDY,
-	.interval_style = INTSTYLE_POSTGRES,
-	.datestyle_string_value = "ISO, MDY",
-	.timezone_string_value = "GMT",
-	.log_timezone_string_value = "GMT",
-	.timezone_abbreviations_string_value = NULL,
-	.session_timezone_value = NULL,
-	.log_timezone_value = NULL,
-	.timezone_abbrev_table = NULL
-};
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionTextSearchState early_session_text_search = {
-	.initialized = true,
-	.current_config_value = "pg_catalog.simple",
-	.current_config_cache = InvalidOid
-};
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionConnectionGUCState early_session_connection_guc = {
-	.initialized = true,
-	.application_name_value = "",
-	.ssl_renegotiation_limit_value = 0,
-	.tcp_keepalives_idle_value = 0,
-	.tcp_keepalives_interval_value = 0,
-	.tcp_keepalives_count_value = 0,
-	.tcp_user_timeout_value = 0,
-	.log_disconnections_value = false,
-	.log_statement_value = 0,
-	.post_auth_delay_seconds = 0,
-	.restrict_nonsystem_relation_kind_string_value = "",
-	.restrict_nonsystem_relation_kind_value = 0
-};
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionParserState early_session_parser = {
-	.initialized = true,
-	.transform_null_equals_value = false,
-	.backslash_quote_value = BACKSLASH_QUOTE_SAFE_ENCODING,
-	.operator_lookup_cache = NULL
-};
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionVacuumState early_session_vacuum = {
-	.initialized = true,
-	.vacuum_buffer_usage_limit_kb = 2048,
-	.vacuum_cost_page_hit_value = 1,
-	.vacuum_cost_page_miss_value = 2,
-	.vacuum_cost_page_dirty_value = 20,
-	.vacuum_cost_limit_value = 200,
-	.vacuum_cost_delay_ms = 0,
-	.default_statistics_target_value = 100,
-	.vacuum_freeze_min_age_value = 50000000,
-	.vacuum_freeze_table_age_value = 150000000,
-	.vacuum_multixact_freeze_min_age_value = 5000000,
-	.vacuum_multixact_freeze_table_age_value = 150000000,
-	.vacuum_failsafe_age_value = 1600000000,
-	.vacuum_multixact_failsafe_age_value = 1600000000,
-	.track_cost_delay_timing_value = false,
-	.vacuum_truncate_value = true,
-	.vacuum_max_eager_freeze_failure_rate_value = 0.03,
-	.local_vacuum_cost_delay_ms = 0,
-	.local_vacuum_cost_limit_value = 200
-};
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionBufferIOState early_session_buffer_io = {
-	.initialized = true,
-	.zero_damaged_pages_value = false,
-	.track_io_timing_value = false,
-	.effective_io_concurrency_value = DEFAULT_EFFECTIVE_IO_CONCURRENCY,
-	.maintenance_io_concurrency_value = DEFAULT_MAINTENANCE_IO_CONCURRENCY,
-	.io_combine_limit_value = DEFAULT_IO_COMBINE_LIMIT,
-	.io_combine_limit_guc_value = DEFAULT_IO_COMBINE_LIMIT,
-	.backend_flush_after_value = DEFAULT_BACKEND_FLUSH_AFTER
-};
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionXactDefaultState early_session_xact_defaults = {
-	.initialized = true,
-	.default_xact_iso_level = XACT_READ_COMMITTED,
-	.default_xact_read_only = false,
-	.default_xact_deferrable = false,
-	.synchronous_commit_value = SYNCHRONOUS_COMMIT_ON
-};
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionLockWaitState early_session_lock_wait = {
-	.initialized = true,
-	.deadlock_timeout_ms = 1000,
-	.statement_timeout_ms = 0,
-	.lock_timeout_ms = 0,
-	.idle_in_transaction_session_timeout_ms = 0,
-	.transaction_timeout_ms = 0,
-	.idle_session_timeout_ms = 0,
-	.log_lock_waits_value = true,
-	.log_lock_failures_value = false,
-	.trace_lock_oidmin_value = FirstNormalObjectId,
-	.trace_locks_value = false,
-	.trace_userlocks_value = false,
-	.trace_lock_table_value = 0,
-	.debug_deadlocks_value = false,
-	.trace_lwlocks_value = false
-};
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionLoopState early_session_loop_state;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionTcopState early_session_tcop;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionLoggingState early_session_logging = {
-	.initialized = true,
-	.debug_print_plan_value = false,
-	.debug_print_parse_value = false,
-	.debug_print_raw_parse_value = false,
-	.debug_print_rewritten_value = false,
-	.debug_pretty_print_value = true,
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSession early_session_fallback = {
+	.tablespace = {
+		.initialized = true,
+		.default_tablespace_name = NULL,
+		.temp_tablespaces_names = NULL,
+		.allow_in_place_tablespaces_value = false,
+		.binary_upgrade_next_pg_tablespace_oid_value = InvalidOid
+	},
+	.binary_upgrade = {
+		.initialized = true,
+		.binary_upgrade_next_pg_type_oid_value = InvalidOid,
+		.binary_upgrade_next_array_pg_type_oid_value = InvalidOid,
+		.binary_upgrade_next_mrng_pg_type_oid_value = InvalidOid,
+		.binary_upgrade_next_mrng_array_pg_type_oid_value = InvalidOid,
+		.binary_upgrade_next_heap_pg_class_oid_value = InvalidOid,
+		.binary_upgrade_next_heap_pg_class_relfilenumber_value =
+			InvalidRelFileNumber,
+		.binary_upgrade_next_index_pg_class_oid_value = InvalidOid,
+		.binary_upgrade_next_index_pg_class_relfilenumber_value =
+			InvalidRelFileNumber,
+		.binary_upgrade_next_toast_pg_class_oid_value = InvalidOid,
+		.binary_upgrade_next_toast_pg_class_relfilenumber_value =
+			InvalidRelFileNumber,
+		.binary_upgrade_next_pg_enum_oid_value = InvalidOid,
+		.binary_upgrade_next_pg_authid_oid_value = InvalidOid,
+		.binary_upgrade_record_init_privs_value = false
+	},
+	.datetime = {
+		.initialized = true,
+		.date_style = USE_ISO_DATES,
+		.date_order = DATEORDER_MDY,
+		.interval_style = INTSTYLE_POSTGRES,
+		.datestyle_string_value = "ISO, MDY",
+		.timezone_string_value = "GMT",
+		.log_timezone_string_value = "GMT",
+		.timezone_abbreviations_string_value = NULL,
+		.session_timezone_value = NULL,
+		.log_timezone_value = NULL,
+		.timezone_abbrev_table = NULL
+	},
+	.text_search = {
+		.initialized = true,
+		.current_config_value = "pg_catalog.simple",
+		.current_config_cache = InvalidOid
+	},
+	.connection_guc = {
+		.initialized = true,
+		.application_name_value = "",
+		.ssl_renegotiation_limit_value = 0,
+		.tcp_keepalives_idle_value = 0,
+		.tcp_keepalives_interval_value = 0,
+		.tcp_keepalives_count_value = 0,
+		.tcp_user_timeout_value = 0,
+		.log_disconnections_value = false,
+		.log_statement_value = 0,
+		.post_auth_delay_seconds = 0,
+		.restrict_nonsystem_relation_kind_string_value = "",
+		.restrict_nonsystem_relation_kind_value = 0
+	},
+	.parser = {
+		.initialized = true,
+		.transform_null_equals_value = false,
+		.backslash_quote_value = BACKSLASH_QUOTE_SAFE_ENCODING,
+		.operator_lookup_cache = NULL
+	},
+	.vacuum = {
+		.initialized = true,
+		.vacuum_buffer_usage_limit_kb = 2048,
+		.vacuum_cost_page_hit_value = 1,
+		.vacuum_cost_page_miss_value = 2,
+		.vacuum_cost_page_dirty_value = 20,
+		.vacuum_cost_limit_value = 200,
+		.vacuum_cost_delay_ms = 0,
+		.default_statistics_target_value = 100,
+		.vacuum_freeze_min_age_value = 50000000,
+		.vacuum_freeze_table_age_value = 150000000,
+		.vacuum_multixact_freeze_min_age_value = 5000000,
+		.vacuum_multixact_freeze_table_age_value = 150000000,
+		.vacuum_failsafe_age_value = 1600000000,
+		.vacuum_multixact_failsafe_age_value = 1600000000,
+		.track_cost_delay_timing_value = false,
+		.vacuum_truncate_value = true,
+		.vacuum_max_eager_freeze_failure_rate_value = 0.03,
+		.local_vacuum_cost_delay_ms = 0,
+		.local_vacuum_cost_limit_value = 200
+	},
+	.buffer_io = {
+		.initialized = true,
+		.zero_damaged_pages_value = false,
+		.track_io_timing_value = false,
+		.effective_io_concurrency_value = DEFAULT_EFFECTIVE_IO_CONCURRENCY,
+		.maintenance_io_concurrency_value = DEFAULT_MAINTENANCE_IO_CONCURRENCY,
+		.io_combine_limit_value = DEFAULT_IO_COMBINE_LIMIT,
+		.io_combine_limit_guc_value = DEFAULT_IO_COMBINE_LIMIT,
+		.backend_flush_after_value = DEFAULT_BACKEND_FLUSH_AFTER
+	},
+	.xact_defaults = {
+		.initialized = true,
+		.default_xact_iso_level = XACT_READ_COMMITTED,
+		.default_xact_read_only = false,
+		.default_xact_deferrable = false,
+		.synchronous_commit_value = SYNCHRONOUS_COMMIT_ON
+	},
+	.lock_wait = {
+		.initialized = true,
+		.deadlock_timeout_ms = 1000,
+		.statement_timeout_ms = 0,
+		.lock_timeout_ms = 0,
+		.idle_in_transaction_session_timeout_ms = 0,
+		.transaction_timeout_ms = 0,
+		.idle_session_timeout_ms = 0,
+		.log_lock_waits_value = true,
+		.log_lock_failures_value = false,
+		.trace_lock_oidmin_value = FirstNormalObjectId,
+		.trace_locks_value = false,
+		.trace_userlocks_value = false,
+		.trace_lock_table_value = 0,
+		.debug_deadlocks_value = false,
+		.trace_lwlocks_value = false
+	},
+	.logging = {
+		.initialized = true,
+		.debug_print_plan_value = false,
+		.debug_print_parse_value = false,
+		.debug_print_raw_parse_value = false,
+		.debug_print_rewritten_value = false,
+		.debug_pretty_print_value = true,
 #ifdef DEBUG_NODE_TESTS_ENABLED
-	.debug_copy_parse_plan_trees_value = DEFAULT_DEBUG_COPY_PARSE_PLAN_TREES,
-	.debug_write_read_parse_plan_trees_value = DEFAULT_DEBUG_WRITE_READ_PARSE_PLAN_TREES,
-	.debug_raw_expression_coverage_test_value = DEFAULT_DEBUG_RAW_EXPRESSION_COVERAGE_TEST,
+		.debug_copy_parse_plan_trees_value = DEFAULT_DEBUG_COPY_PARSE_PLAN_TREES,
+		.debug_write_read_parse_plan_trees_value =
+			DEFAULT_DEBUG_WRITE_READ_PARSE_PLAN_TREES,
+		.debug_raw_expression_coverage_test_value =
+			DEFAULT_DEBUG_RAW_EXPRESSION_COVERAGE_TEST,
 #endif
-	.log_parser_stats_value = false,
-	.log_planner_stats_value = false,
-	.log_executor_stats_value = false,
-	.log_statement_stats_value = false,
-	.log_btree_build_stats_value = false,
-	.event_source_value = NULL,
-	.log_duration_value = false,
-	.log_error_verbosity_value = PGERROR_DEFAULT,
-	.log_parameter_max_length_value = -1,
-	.log_parameter_max_length_on_error_value = 0,
-	.log_min_error_statement_value = ERROR,
-	.log_min_messages_values = {
+		.log_parser_stats_value = false,
+		.log_planner_stats_value = false,
+		.log_executor_stats_value = false,
+		.log_statement_stats_value = false,
+		.log_btree_build_stats_value = false,
+		.event_source_value = NULL,
+		.log_duration_value = false,
+		.log_error_verbosity_value = PGERROR_DEFAULT,
+		.log_parameter_max_length_value = -1,
+		.log_parameter_max_length_on_error_value = 0,
+		.log_min_error_statement_value = ERROR,
+		.log_min_messages_values = {
 #define PG_PROCTYPE(bktype, bkcategory, description, main_func, shmem_attach) \
-		[bktype] = WARNING,
+			[bktype] = WARNING,
 #include "postmaster/proctypelist.h"
 #undef PG_PROCTYPE
+		},
+		.log_min_messages_string_value = NULL,
+		.client_min_messages_value = NOTICE,
+		.log_min_duration_sample_value = -1,
+		.log_min_duration_statement_value = -1,
+		.log_temp_files_value = -1,
+		.log_statement_sample_rate_value = 1.0,
+		.log_xact_sample_rate_value = 0,
+		.backtrace_functions_value = NULL,
+		.backtrace_function_list_value = NULL
 	},
-	.log_min_messages_string_value = NULL,
-	.client_min_messages_value = NOTICE,
-	.log_min_duration_sample_value = -1,
-	.log_min_duration_statement_value = -1,
-	.log_temp_files_value = -1,
-	.log_statement_sample_rate_value = 1.0,
-	.log_xact_sample_rate_value = 0,
-	.backtrace_functions_value = NULL,
-	.backtrace_function_list_value = NULL
-};
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionMiscGUCState early_session_misc_guc = {
-	.initialized = true,
-	.allow_system_table_mods_value = false,
-	.max_stack_depth_kb = 100,
-	.max_stack_depth_bytes = 100 * (ssize_t) 1024,
-	.session_preload_libraries_value = NULL,
-	.local_preload_libraries_value = NULL,
-	.dynamic_library_path_value = NULL,
-	.extension_control_path_value = "$system"
-};
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionGUCState early_session_guc;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPgStatState early_session_pgstat = {
-	.initialized = true,
-	.track_counts = true,
-	.track_functions = TRACK_FUNC_OFF,
-	.fetch_consistency = PGSTAT_FETCH_CONSISTENCY_CACHE,
-	.track_activities = true,
-	.session_end_cause = DISCONNECT_NORMAL,
-	.last_session_report_time = 0
-};
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionQueryIdState early_session_query_id = {
-	.initialized = true,
-	.compute_query_id_value = COMPUTE_QUERY_ID_AUTO,
-	.query_id_enabled_value = false
-};
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionStorageGUCState early_session_storage_guc = {
-	.initialized = true,
-	.ignore_checksum_failure_value = false,
-	.file_copy_method_value = FILE_COPY_METHOD_COPY
-};
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionUserGUCState early_session_user_guc = {
-	.initialized = true,
-	.password_encryption_value = PASSWORD_TYPE_SCRAM_SHA_256,
-	.createrole_self_grant_value = "",
-	.createrole_self_grant_enabled = false,
-	.createrole_self_grant_options_specified = 0,
-	.createrole_self_grant_options_admin = false,
-	.createrole_self_grant_options_inherit = false,
-	.createrole_self_grant_options_set = false
-};
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionUserIdentityState early_session_user_identity = {
-	.initialized = true,
-	.authenticated_user_id = InvalidOid,
-	.session_user_id = InvalidOid,
-	.outer_user_id = InvalidOid,
-	.current_user_id = InvalidOid,
-	.system_user = NULL,
-	.session_user_is_superuser = false,
-	.security_restriction_context = 0,
-	.set_role_is_active = false
-};
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionCommandGUCState early_session_command_guc = {
-	.initialized = true,
-	.session_replication_role_value = SESSION_REPLICATION_ROLE_ORIGIN,
-	.event_triggers_value = true,
-	.trace_notify_value = false
-};
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionReplicationGUCState early_session_replication_guc = {
-	.initialized = true,
-	.wal_sender_timeout_ms = 60 * 1000,
-	.wal_sender_shutdown_timeout_ms = -1,
-	.log_replication_commands_value = false,
-	.wal_receiver_timeout_ms = 60 * 1000,
-	.logical_decoding_work_mem_kb = 65536,
-	.debug_logical_replication_streaming_value =
-		DEBUG_LOGICAL_REP_STREAMING_BUFFERED
-};
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionLogicalReplicationState early_session_logical_replication;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionGeneralGUCState early_session_general_guc = {
-	.initialized = true,
-	.allow_alter_system_value = true,
-	.row_security_value = true,
-	.check_function_bodies_value = true,
-	.current_role_is_superuser_value = false,
-	.temp_file_limit_kb = -1,
-	.num_temp_buffers_blocks = 1024,
-	.role_string_value = "none",
-	.lo_compat_privileges_value = false,
-	.extra_float_digits_value = 1,
-	.array_nulls_value = true,
-	.bytea_output_value = BYTEA_OUTPUT_HEX,
-	.xmlbinary_value = XMLBINARY_BASE64,
-	.xmloption_value = XMLOPTION_CONTENT,
-	.quote_all_identifiers_value = false,
-	.plan_cache_mode_value = PLAN_CACHE_MODE_AUTO,
-	.gin_fuzzy_search_limit_value = 0,
-	.gin_pending_list_limit_value = 0
-};
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionAccessWalGUCState early_session_access_wal_guc = {
-	.initialized = true,
-	.default_table_access_method_value = DEFAULT_TABLE_ACCESS_METHOD,
-	.synchronize_seqscans_value = true,
-	.default_toast_compression_value = DEFAULT_TOAST_COMPRESSION,
-	.wal_compression_value = WAL_COMPRESSION_NONE,
-	.wal_init_zero_value = true,
-	.wal_recycle_value = true,
-	.wal_consistency_checking_string_value = NULL,
-	.wal_consistency_checking_value = NULL,
-	.commit_delay_us = 0,
-	.commit_siblings_value = 5,
-	.track_wal_io_timing_value = false,
-	.wal_skip_threshold_kb = 2048,
+	.misc_guc = {
+		.initialized = true,
+		.allow_system_table_mods_value = false,
+		.max_stack_depth_kb = 100,
+		.max_stack_depth_bytes = 100 * (ssize_t) 1024,
+		.session_preload_libraries_value = NULL,
+		.local_preload_libraries_value = NULL,
+		.dynamic_library_path_value = NULL,
+		.extension_control_path_value = "$system"
+	},
+	.pgstat = {
+		.initialized = true,
+		.track_counts = true,
+		.track_functions = TRACK_FUNC_OFF,
+		.fetch_consistency = PGSTAT_FETCH_CONSISTENCY_CACHE,
+		.track_activities = true,
+		.session_end_cause = DISCONNECT_NORMAL,
+		.last_session_report_time = 0
+	},
+	.query_id = {
+		.initialized = true,
+		.compute_query_id_value = COMPUTE_QUERY_ID_AUTO,
+		.query_id_enabled_value = false
+	},
+	.storage_guc = {
+		.initialized = true,
+		.ignore_checksum_failure_value = false,
+		.file_copy_method_value = FILE_COPY_METHOD_COPY
+	},
+	.user_guc = {
+		.initialized = true,
+		.password_encryption_value = PASSWORD_TYPE_SCRAM_SHA_256,
+		.createrole_self_grant_value = "",
+		.createrole_self_grant_enabled = false,
+		.createrole_self_grant_options_specified = 0,
+		.createrole_self_grant_options_admin = false,
+		.createrole_self_grant_options_inherit = false,
+		.createrole_self_grant_options_set = false
+	},
+	.user_identity = {
+		.initialized = true,
+		.authenticated_user_id = InvalidOid,
+		.session_user_id = InvalidOid,
+		.outer_user_id = InvalidOid,
+		.current_user_id = InvalidOid,
+		.system_user = NULL,
+		.session_user_is_superuser = false,
+		.security_restriction_context = 0,
+		.set_role_is_active = false
+	},
+	.command_guc = {
+		.initialized = true,
+		.session_replication_role_value = SESSION_REPLICATION_ROLE_ORIGIN,
+		.event_triggers_value = true,
+		.trace_notify_value = false
+	},
+	.replication_guc = {
+		.initialized = true,
+		.wal_sender_timeout_ms = 60 * 1000,
+		.wal_sender_shutdown_timeout_ms = -1,
+		.log_replication_commands_value = false,
+		.wal_receiver_timeout_ms = 60 * 1000,
+		.logical_decoding_work_mem_kb = 65536,
+		.debug_logical_replication_streaming_value =
+			DEBUG_LOGICAL_REP_STREAMING_BUFFERED
+	},
+	.general_guc = {
+		.initialized = true,
+		.allow_alter_system_value = true,
+		.row_security_value = true,
+		.check_function_bodies_value = true,
+		.current_role_is_superuser_value = false,
+		.temp_file_limit_kb = -1,
+		.num_temp_buffers_blocks = 1024,
+		.role_string_value = "none",
+		.lo_compat_privileges_value = false,
+		.extra_float_digits_value = 1,
+		.array_nulls_value = true,
+		.bytea_output_value = BYTEA_OUTPUT_HEX,
+		.xmlbinary_value = XMLBINARY_BASE64,
+		.xmloption_value = XMLOPTION_CONTENT,
+		.quote_all_identifiers_value = false,
+		.plan_cache_mode_value = PLAN_CACHE_MODE_AUTO,
+		.gin_fuzzy_search_limit_value = 0,
+		.gin_pending_list_limit_value = 0
+	},
+	.access_wal_guc = {
+		.initialized = true,
+		.default_table_access_method_value = DEFAULT_TABLE_ACCESS_METHOD,
+		.synchronize_seqscans_value = true,
+		.default_toast_compression_value = DEFAULT_TOAST_COMPRESSION,
+		.wal_compression_value = WAL_COMPRESSION_NONE,
+		.wal_init_zero_value = true,
+		.wal_recycle_value = true,
+		.wal_consistency_checking_string_value = NULL,
+		.wal_consistency_checking_value = NULL,
+		.commit_delay_us = 0,
+		.commit_siblings_value = 5,
+		.track_wal_io_timing_value = false,
+		.wal_skip_threshold_kb = 2048,
 #ifdef WAL_DEBUG
-	.xlog_debug_value = false,
+		.xlog_debug_value = false,
 #endif
 #ifdef TRACE_SYNCSCAN
-	.trace_syncscan_value = false,
+		.trace_syncscan_value = false,
 #endif
-};
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionJitGUCState early_session_jit_guc = {
-	.initialized = true,
-	.jit_enabled_value = false,
-	.jit_provider_value = "llvmjit",
-	.jit_debugging_support_value = false,
-	.jit_dump_bitcode_value = false,
-	.jit_expressions_value = true,
-	.jit_profiling_support_value = false,
-	.jit_tuple_deforming_value = true,
-	.jit_above_cost_value = 100000,
-	.jit_inline_above_cost_value = 500000,
-	.jit_optimize_above_cost_value = 500000
-};
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionJitProviderState early_session_jit_provider;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionLLVMJitState early_session_llvm_jit;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionSortGUCState early_session_sort_guc = {
-	.initialized = true,
-	.trace_sort_value = false,
+	},
+	.jit_guc = {
+		.initialized = true,
+		.jit_enabled_value = false,
+		.jit_provider_value = "llvmjit",
+		.jit_debugging_support_value = false,
+		.jit_dump_bitcode_value = false,
+		.jit_expressions_value = true,
+		.jit_profiling_support_value = false,
+		.jit_tuple_deforming_value = true,
+		.jit_above_cost_value = 100000,
+		.jit_inline_above_cost_value = 500000,
+		.jit_optimize_above_cost_value = 500000
+	},
+	.sort_guc = {
+		.initialized = true,
+		.trace_sort_value = false,
 #ifdef DEBUG_BOUNDED_SORT
-	.optimize_bounded_sort_value = true,
+		.optimize_bounded_sort_value = true,
 #endif
-};
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionQueryMemoryState early_session_query_memory = {
-	.initialized = true,
-	.work_mem_kb = 4096,
-	.hash_mem_multiplier_value = 2.0,
-	.maintenance_work_mem_kb = 65536,
-	.max_parallel_maintenance_workers_value = 2
-};
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPlannerCostState early_session_planner_cost = {
-	.initialized = true,
-	.seq_page_cost_value = DEFAULT_SEQ_PAGE_COST,
-	.random_page_cost_value = DEFAULT_RANDOM_PAGE_COST,
-	.cpu_tuple_cost_value = DEFAULT_CPU_TUPLE_COST,
-	.cpu_index_tuple_cost_value = DEFAULT_CPU_INDEX_TUPLE_COST,
-	.cpu_operator_cost_value = DEFAULT_CPU_OPERATOR_COST,
-	.parallel_tuple_cost_value = DEFAULT_PARALLEL_TUPLE_COST,
-	.parallel_setup_cost_value = DEFAULT_PARALLEL_SETUP_COST,
-	.recursive_worktable_factor_value = DEFAULT_RECURSIVE_WORKTABLE_FACTOR,
-	.effective_cache_size_pages = DEFAULT_EFFECTIVE_CACHE_SIZE,
-	.disable_cost_value = 1.0e10,
-	.max_parallel_workers_per_gather_value = 2,
-	.debug_parallel_query_value = DEBUG_PARALLEL_OFF,
-	.parallel_leader_participation_value = true
-};
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPlannerMethodState early_session_planner_method = {
-	.initialized = true,
-	.enable_seqscan_value = true,
-	.enable_indexscan_value = true,
-	.enable_indexonlyscan_value = true,
-	.enable_bitmapscan_value = true,
-	.enable_tidscan_value = true,
-	.enable_sort_value = true,
-	.enable_incremental_sort_value = true,
-	.enable_hashagg_value = true,
-	.enable_nestloop_value = true,
-	.enable_material_value = true,
-	.enable_memoize_value = true,
-	.enable_mergejoin_value = true,
-	.enable_hashjoin_value = true,
-	.enable_gathermerge_value = true,
-	.enable_partitionwise_join_value = false,
-	.enable_partitionwise_aggregate_value = false,
-	.enable_parallel_append_value = true,
-	.enable_parallel_hash_value = true,
-	.enable_partition_pruning_value = true,
-	.enable_presorted_aggregate_value = true,
-	.enable_async_append_value = true,
-	.enable_distinct_reordering_value = true,
-	.enable_geqo_value = true,
-	.enable_eager_aggregate_value = true,
-	.enable_group_by_reordering_value = true,
-	.enable_self_join_elimination_value = true,
-	.cursor_tuple_fraction_value = DEFAULT_CURSOR_TUPLE_FRACTION,
-	.constraint_exclusion_value = CONSTRAINT_EXCLUSION_PARTITION,
-	.geqo_threshold_value = 12,
-	.Geqo_effort_value = DEFAULT_GEQO_EFFORT,
-	.Geqo_pool_size_value = 0,
-	.Geqo_generations_value = 0,
-	.Geqo_selection_bias_value = DEFAULT_GEQO_SELECTION_BIAS,
-	.Geqo_seed_value = 0.0,
-	.Geqo_planner_extension_id_value = -1,
-	.min_eager_agg_group_size_value = 8.0,
-	.min_parallel_table_scan_size_blocks = (8 * 1024 * 1024) / BLCKSZ,
-	.min_parallel_index_scan_size_blocks = (512 * 1024) / BLCKSZ,
-	.from_collapse_limit_value = 8,
-	.join_collapse_limit_value = 8
-};
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionFunctionManagerState early_session_function_manager;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionExtensionModuleState early_session_extension_modules = {
-	.auto_explain_log_min_duration = AUTO_EXPLAIN_LOG_MIN_DURATION_DEFAULT,
-	.auto_explain_log_parameter_max_length = AUTO_EXPLAIN_LOG_PARAMETER_MAX_LENGTH_DEFAULT,
-	.auto_explain_log_timing = AUTO_EXPLAIN_LOG_TIMING_DEFAULT,
-	.auto_explain_log_format = AUTO_EXPLAIN_LOG_FORMAT_DEFAULT,
-	.auto_explain_log_level = AUTO_EXPLAIN_LOG_LEVEL_DEFAULT,
-	.auto_explain_sample_rate = AUTO_EXPLAIN_SAMPLE_RATE_DEFAULT,
-	.pg_trgm_similarity_threshold = PG_TRGM_SIMILARITY_THRESHOLD_DEFAULT,
-	.pg_trgm_word_similarity_threshold = PG_TRGM_WORD_SIMILARITY_THRESHOLD_DEFAULT,
-	.pg_trgm_strict_word_similarity_threshold = PG_TRGM_STRICT_WORD_SIMILARITY_THRESHOLD_DEFAULT,
-	.pg_plan_advice_always_explain_supplied_advice = PG_PLAN_ADVICE_ALWAYS_EXPLAIN_SUPPLIED_ADVICE_DEFAULT,
-	.pg_stash_advice_stash_name = ""
-};
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionCatalogLookupState early_session_catalog_lookup;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionInvalidationCallbackState early_session_invalidation_callbacks;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionRIGlobalsState early_session_ri_globals;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionRelMapState early_session_relmap;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPreparedStatementState early_session_prepared_statement;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionOnCommitState early_session_on_commit;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionSequenceState early_session_sequence;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionXactCallbackState early_session_xact_callbacks;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionBackupState early_session_backup;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionRegexState early_session_regex;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPortalManagerState early_session_portal_manager;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionLargeObjectState early_session_large_object;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionAsyncState early_session_async;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionEncodingState early_session_encoding;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionTempFileState early_session_temp_file = {
-	.initialized = true,
-	.num_temp_table_spaces = -1
-};
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionRandomState early_session_random = {
-	.initialized = true,
-	.prng_seed_set = false
-};
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionOptimizerState early_session_optimizer;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPlanCacheState early_session_plan_cache;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionNamespaceState early_session_namespace;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionLocaleState early_session_locale = {
-	.initialized = true,
-	.icu_validation_level_value = WARNING,
-	.last_collation_cache_oid = InvalidOid
-};
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionDebugState early_execution_debug;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionErrorState early_execution_error = {
-	.errordata_stack_depth = -1
-};
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionMemoryContextState early_execution_memory_contexts;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionResourceOwnerState early_execution_resource_owners;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionSPIState early_execution_spi = {
-	.connected = -1
-};
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionPortalState early_execution_portal;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionVacuumState early_execution_vacuum;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionNodeIOState early_execution_node_io;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionBaseBackupState early_execution_basebackup;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionAnalyzeState early_execution_analyze;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionExtensionState early_execution_extension;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionMatViewState early_execution_matview;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionSnapshotState early_execution_snapshot = {
-	.transaction_xmin = FirstNormalTransactionId,
-	.recent_xmin = FirstNormalTransactionId
-};
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionComboCidState early_execution_combo_cid;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionXLogInsertState early_execution_xloginsert;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionXactState early_execution_xact = {
-	.iso_level = XACT_READ_COMMITTED,
-	.check_xid_alive = InvalidTransactionId
-};
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionTransactionCleanupState early_execution_transaction_cleanup;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionReplicationScratchState early_execution_replication_scratch = {
-	.replorigin_xact = {
-		.origin = InvalidReplOriginId,
-		.origin_lsn = InvalidXLogRecPtr,
-		.origin_timestamp = 0
+	},
+	.query_memory = {
+		.initialized = true,
+		.work_mem_kb = 4096,
+		.hash_mem_multiplier_value = 2.0,
+		.maintenance_work_mem_kb = 65536,
+		.max_parallel_maintenance_workers_value = 2
+	},
+	.planner_cost = {
+		.initialized = true,
+		.seq_page_cost_value = DEFAULT_SEQ_PAGE_COST,
+		.random_page_cost_value = DEFAULT_RANDOM_PAGE_COST,
+		.cpu_tuple_cost_value = DEFAULT_CPU_TUPLE_COST,
+		.cpu_index_tuple_cost_value = DEFAULT_CPU_INDEX_TUPLE_COST,
+		.cpu_operator_cost_value = DEFAULT_CPU_OPERATOR_COST,
+		.parallel_tuple_cost_value = DEFAULT_PARALLEL_TUPLE_COST,
+		.parallel_setup_cost_value = DEFAULT_PARALLEL_SETUP_COST,
+		.recursive_worktable_factor_value = DEFAULT_RECURSIVE_WORKTABLE_FACTOR,
+		.effective_cache_size_pages = DEFAULT_EFFECTIVE_CACHE_SIZE,
+		.disable_cost_value = 1.0e10,
+		.max_parallel_workers_per_gather_value = 2,
+		.debug_parallel_query_value = DEBUG_PARALLEL_OFF,
+		.parallel_leader_participation_value = true
+	},
+	.planner_method = {
+		.initialized = true,
+		.enable_seqscan_value = true,
+		.enable_indexscan_value = true,
+		.enable_indexonlyscan_value = true,
+		.enable_bitmapscan_value = true,
+		.enable_tidscan_value = true,
+		.enable_sort_value = true,
+		.enable_incremental_sort_value = true,
+		.enable_hashagg_value = true,
+		.enable_nestloop_value = true,
+		.enable_material_value = true,
+		.enable_memoize_value = true,
+		.enable_mergejoin_value = true,
+		.enable_hashjoin_value = true,
+		.enable_gathermerge_value = true,
+		.enable_partitionwise_join_value = false,
+		.enable_partitionwise_aggregate_value = false,
+		.enable_parallel_append_value = true,
+		.enable_parallel_hash_value = true,
+		.enable_partition_pruning_value = true,
+		.enable_presorted_aggregate_value = true,
+		.enable_async_append_value = true,
+		.enable_distinct_reordering_value = true,
+		.enable_geqo_value = true,
+		.enable_eager_aggregate_value = true,
+		.enable_group_by_reordering_value = true,
+		.enable_self_join_elimination_value = true,
+		.cursor_tuple_fraction_value = DEFAULT_CURSOR_TUPLE_FRACTION,
+		.constraint_exclusion_value = CONSTRAINT_EXCLUSION_PARTITION,
+		.geqo_threshold_value = 12,
+		.Geqo_effort_value = DEFAULT_GEQO_EFFORT,
+		.Geqo_pool_size_value = 0,
+		.Geqo_generations_value = 0,
+		.Geqo_selection_bias_value = DEFAULT_GEQO_SELECTION_BIAS,
+		.Geqo_seed_value = 0.0,
+		.Geqo_planner_extension_id_value = -1,
+		.min_eager_agg_group_size_value = 8.0,
+		.min_parallel_table_scan_size_blocks = (8 * 1024 * 1024) / BLCKSZ,
+		.min_parallel_index_scan_size_blocks = (512 * 1024) / BLCKSZ,
+		.from_collapse_limit_value = 8,
+		.join_collapse_limit_value = 8
+	},
+	.extension_modules = {
+		.auto_explain_log_min_duration = AUTO_EXPLAIN_LOG_MIN_DURATION_DEFAULT,
+		.auto_explain_log_parameter_max_length =
+			AUTO_EXPLAIN_LOG_PARAMETER_MAX_LENGTH_DEFAULT,
+		.auto_explain_log_timing = AUTO_EXPLAIN_LOG_TIMING_DEFAULT,
+		.auto_explain_log_format = AUTO_EXPLAIN_LOG_FORMAT_DEFAULT,
+		.auto_explain_log_level = AUTO_EXPLAIN_LOG_LEVEL_DEFAULT,
+		.auto_explain_sample_rate = AUTO_EXPLAIN_SAMPLE_RATE_DEFAULT,
+		.pg_trgm_similarity_threshold = PG_TRGM_SIMILARITY_THRESHOLD_DEFAULT,
+		.pg_trgm_word_similarity_threshold =
+			PG_TRGM_WORD_SIMILARITY_THRESHOLD_DEFAULT,
+		.pg_trgm_strict_word_similarity_threshold =
+			PG_TRGM_STRICT_WORD_SIMILARITY_THRESHOLD_DEFAULT,
+		.pg_plan_advice_always_explain_supplied_advice =
+			PG_PLAN_ADVICE_ALWAYS_EXPLAIN_SUPPLIED_ADVICE_DEFAULT,
+		.pg_stash_advice_stash_name = ""
+	},
+	.temp_file = {
+		.initialized = true,
+		.num_temp_table_spaces = -1
+	},
+	.random = {
+		.initialized = true,
+		.prng_seed_set = false
+	},
+	.locale = {
+		.initialized = true,
+		.icu_validation_level_value = WARNING,
+		.last_collation_cache_oid = InvalidOid
 	}
 };
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionGUCErrorState early_execution_guc_error;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionAsyncState early_execution_async;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionCatalogState early_execution_catalog = {
-	.currently_reindexed_heap = InvalidOid,
-	.currently_reindexed_index = InvalidOid
+
+#define early_session_database early_session_fallback.database
+#define early_session_tablespace early_session_fallback.tablespace
+#define early_session_binary_upgrade early_session_fallback.binary_upgrade
+#define early_session_datetime early_session_fallback.datetime
+#define early_session_text_search early_session_fallback.text_search
+#define early_session_connection_guc early_session_fallback.connection_guc
+#define early_session_parser early_session_fallback.parser
+#define early_session_vacuum early_session_fallback.vacuum
+#define early_session_buffer_io early_session_fallback.buffer_io
+#define early_session_xact_defaults early_session_fallback.xact_defaults
+#define early_session_lock_wait early_session_fallback.lock_wait
+#define early_session_loop_state early_session_fallback.loop_state
+#define early_session_tcop early_session_fallback.tcop
+#define early_session_logging early_session_fallback.logging
+#define early_session_misc_guc early_session_fallback.misc_guc
+#define early_session_guc early_session_fallback.guc
+#define early_session_pgstat early_session_fallback.pgstat
+#define early_session_query_id early_session_fallback.query_id
+#define early_session_storage_guc early_session_fallback.storage_guc
+#define early_session_user_guc early_session_fallback.user_guc
+#define early_session_user_identity early_session_fallback.user_identity
+#define early_session_command_guc early_session_fallback.command_guc
+#define early_session_replication_guc early_session_fallback.replication_guc
+#define early_session_logical_replication early_session_fallback.logical_replication
+#define early_session_general_guc early_session_fallback.general_guc
+#define early_session_access_wal_guc early_session_fallback.access_wal_guc
+#define early_session_jit_guc early_session_fallback.jit_guc
+#define early_session_jit_provider early_session_fallback.jit_provider_state
+#define early_session_llvm_jit early_session_fallback.llvm_jit
+#define early_session_sort_guc early_session_fallback.sort_guc
+#define early_session_query_memory early_session_fallback.query_memory
+#define early_session_planner_cost early_session_fallback.planner_cost
+#define early_session_planner_method early_session_fallback.planner_method
+#define early_session_function_manager early_session_fallback.function_manager
+#define early_session_extension_modules early_session_fallback.extension_modules
+#define early_session_catalog_lookup early_session_fallback.catalog_lookup
+#define early_session_invalidation_callbacks early_session_fallback.invalidation_callbacks
+#define early_session_ri_globals early_session_fallback.ri_globals
+#define early_session_relmap early_session_fallback.relmap
+#define early_session_prepared_statement early_session_fallback.prepared_statement
+#define early_session_on_commit early_session_fallback.on_commit
+#define early_session_sequence early_session_fallback.sequence
+#define early_session_xact_callbacks early_session_fallback.xact_callbacks
+#define early_session_backup early_session_fallback.backup
+#define early_session_regex early_session_fallback.regex
+#define early_session_portal_manager early_session_fallback.portal_manager
+#define early_session_large_object early_session_fallback.large_object
+#define early_session_async early_session_fallback.async
+#define early_session_encoding early_session_fallback.encoding
+#define early_session_temp_file early_session_fallback.temp_file
+#define early_session_random early_session_fallback.random
+#define early_session_optimizer early_session_fallback.optimizer
+#define early_session_plan_cache early_session_fallback.plan_cache
+#define early_session_namespace early_session_fallback.namespace_state
+#define early_session_locale early_session_fallback.locale
+
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecution early_execution_fallback = {
+	.error = {
+		.errordata_stack_depth = -1
+	},
+	.spi = {
+		.connected = -1
+	},
+	.snapshot = {
+		.transaction_xmin = FirstNormalTransactionId,
+		.recent_xmin = FirstNormalTransactionId
+	},
+	.xact = {
+		.iso_level = XACT_READ_COMMITTED,
+		.check_xid_alive = InvalidTransactionId
+	},
+	.replication_scratch = {
+		.replorigin_xact = {
+			.origin = InvalidReplOriginId,
+			.origin_lsn = InvalidXLogRecPtr,
+			.origin_timestamp = 0
+		}
+	},
+	.catalog = {
+		.currently_reindexed_heap = InvalidOid,
+		.currently_reindexed_index = InvalidOid
+	}
 };
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionCatalogCacheState early_execution_catalog_cache;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionRelMapState early_execution_relmap;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionInvalidationState
-			early_execution_invalidation;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionTwoPhaseRecordState
-			early_execution_two_phase_records;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionTriggerState
-			early_execution_trigger;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionRegexState early_execution_regex;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionValgrindState early_execution_valgrind;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionSnapBuildState early_execution_snapbuild;
+
+#define early_execution_debug early_execution_fallback.debug
+#define early_execution_error early_execution_fallback.error
+#define early_execution_memory_contexts early_execution_fallback.memory_contexts
+#define early_execution_resource_owners early_execution_fallback.resource_owners
+#define early_execution_spi early_execution_fallback.spi
+#define early_execution_portal early_execution_fallback.portal
+#define early_execution_vacuum early_execution_fallback.vacuum
+#define early_execution_node_io early_execution_fallback.node_io
+#define early_execution_basebackup early_execution_fallback.basebackup
+#define early_execution_analyze early_execution_fallback.analyze
+#define early_execution_extension early_execution_fallback.extension
+#define early_execution_matview early_execution_fallback.matview
+#define early_execution_snapshot early_execution_fallback.snapshot
+#define early_execution_combo_cid early_execution_fallback.combo_cid
+#define early_execution_xloginsert early_execution_fallback.xloginsert
+#define early_execution_xact early_execution_fallback.xact
+#define early_execution_transaction_cleanup early_execution_fallback.transaction_cleanup
+#define early_execution_replication_scratch early_execution_fallback.replication_scratch
+#define early_execution_guc_error early_execution_fallback.guc_error
+#define early_execution_async early_execution_fallback.async
+#define early_execution_catalog early_execution_fallback.catalog
+#define early_execution_catalog_cache early_execution_fallback.catalog_cache
+#define early_execution_relmap early_execution_fallback.relmap
+#define early_execution_invalidation early_execution_fallback.invalidation
+#define early_execution_two_phase_records early_execution_fallback.two_phase_records
+#define early_execution_trigger early_execution_fallback.trigger
+#define early_execution_regex early_execution_fallback.regex
+#define early_execution_valgrind early_execution_fallback.valgrind
+#define early_execution_snapbuild early_execution_fallback.snapbuild
 
 StaticAssertDecl(PG_BACKEND_INTERRUPT_COUNT <= 32,
 				 "PgBackendInterruptMask must fit all backend interrupts");

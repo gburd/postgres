@@ -148,6 +148,13 @@ claim. The preflight note must explain why existing checked lifecycle
 infrastructure is enough, or it must point at the lifecycle-framework commit
 that made it enough.
 
+When resuming Phase 12 after an interruption, compaction, or branch review,
+run this checklist before choosing the next globals or teardown target. The
+default next step is not "move another symbol"; it is to decide whether the
+next coherent batch needs a small lifecycle macro/action/table/checker
+improvement first, land that improvement if needed, and then move the larger
+batch through the checked path.
+
 ## Working Assumptions
 
 - Use Heikki Linnakangas's multithreading branch as reference material, not as

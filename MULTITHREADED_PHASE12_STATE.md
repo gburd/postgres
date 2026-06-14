@@ -12507,6 +12507,13 @@ the checked lifecycle vocabulary first and then migrate the larger group
 through that path, rather than splitting the same work into many smaller
 manual commits.
 
+Resume-time rule: after an interruption, context compaction, or branch-review
+reset, do the lifecycle preflight before choosing the next globals or teardown
+target. The first question is whether the next coherent batch needs a small
+checked lifecycle macro, action, table rule, owner-map rule, or checker
+extension. If it does, land that primitive first and then move the larger
+batch through the checked path.
+
 ## Threaded Startup Gate Removal
 
 Lifecycle/preflight note:
@@ -13375,6 +13382,61 @@ Validation for the backend early-fallback consolidation slice:
   and 40 backend-local declarations before this slice;
 - `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
 - full incremental `gmake -j8` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with patched macOS
+  install-name paths and the repo-local `.perl5` `PERL5LIB`.
+
+## Session And Execution Early-Fallback TLS Consolidation
+
+Lifecycle/preflight note:
+
+- target roots and buckets: `PgSession` and `PgExecution` early fallback
+  objects in `backend_runtime.c`;
+- state moved: the session and execution early-fallback TLS buckets formerly
+  declared as independent `early_session_*` and `early_execution_*` globals;
+- owner source file: `src/backend/utils/init/backend_runtime.c`;
+- repeated lifecycle operations: existing session/execution init, adoption,
+  pointer rebasing, dlist reinitialization, and reset helpers remain
+  unchanged and already flow through checked bucket definitions and helper
+  macros. This slice changes only the early fallback storage container,
+  replacing the standalone TLS slots with one `PgSession
+  early_session_fallback` and one `PgExecution early_execution_fallback` plus
+  source-local compatibility macros. No new lifecycle primitive is needed
+  because the existing checked helper path still owns the per-bucket
+  semantics;
+- retained invariant: early fallback remains carrier/TLS-local until a real
+  session or execution object is installed, but the fallback storage is now
+  root-object-shaped. This makes process-mode and thread-mode fallback
+  adoption exercise the same object layout used by installed runtime roots.
+
+Slice:
+
+- replaced the individual session early fallback bucket declarations with a
+  single `PgSession early_session_fallback` root object;
+- replaced the individual execution early fallback bucket declarations with a
+  single `PgExecution early_execution_fallback` root object;
+- preserved source compatibility inside `backend_runtime.c` with local macros
+  for the historical `early_session_*` and `early_execution_*` names;
+- kept all existing session/execution adopt/reset helper bodies and checked
+  lifecycle rows in force;
+- reduced the live `check-global-lifetimes` session-local declaration count
+  from 56 to 2 and execution-local declaration count from 30 to 2 in this
+  checkout.
+
+Validation for the session/execution early-fallback consolidation slice:
+
+- `git diff --check` passed;
+- `gmake -C src/backend/utils/init backend_runtime.o` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 222 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations. The scan reported 1133
+  declarations, 2 session-local declarations, and 2 execution-local
+  declarations, down from 1215 declarations, 56 session-local declarations,
+  and 30 execution-local declarations before this slice;
+- full incremental `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
 - direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
   `002_threaded_bgworker_crash.pl`, 131 tests total, with patched macOS
   install-name paths and the repo-local `.perl5` `PERL5LIB`.
