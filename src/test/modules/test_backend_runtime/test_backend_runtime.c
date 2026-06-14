@@ -106,6 +106,7 @@ static void test_backend_runtime_syscache_callback(Datum arg,
 static void test_backend_runtime_relcache_callback(Datum arg, Oid relid);
 static void test_backend_runtime_relsync_callback(Datum arg, Oid relid);
 static void test_backend_runtime_session_reset_callback(void *arg);
+static void test_backend_runtime_seed_execution_memory_contexts(PgExecution *execution);
 
 typedef struct TestBoolGUCSetting
 {
@@ -217,6 +218,18 @@ test_backend_runtime_session_reset_callback(void *arg)
 	int		   *counter = (int *) arg;
 
 	(*counter)++;
+}
+
+static void
+test_backend_runtime_seed_execution_memory_contexts(PgExecution *execution)
+{
+	execution->memory_contexts.top_context = TopMemoryContext;
+	execution->memory_contexts.current_context = CurrentMemoryContext;
+	execution->memory_contexts.error_context = ErrorContext;
+	execution->memory_contexts.message_context = MessageContext;
+	execution->memory_contexts.top_transaction_context = TopTransactionContext;
+	execution->memory_contexts.cur_transaction_context = CurTransactionContext;
+	execution->memory_contexts.portal_context = PortalContext;
 }
 
 static void
@@ -585,10 +598,24 @@ test_thread_install_adopts_session_execution_fallback_state(PG_FUNCTION_ARGS)
 	PgExecution *saved_execution;
 	PgSession	session;
 	PgExecution execution;
+	MemoryContext saved_top_memory_context;
+	MemoryContext saved_current_memory_context;
+	MemoryContext saved_error_context;
+	MemoryContext saved_message_context;
+	MemoryContext saved_top_transaction_context;
+	MemoryContext saved_cur_transaction_context;
+	MemoryContext saved_portal_context;
 	bool		ok = true;
 
 	saved_session = CurrentPgSession;
 	saved_execution = CurrentPgExecution;
+	saved_top_memory_context = TopMemoryContext;
+	saved_current_memory_context = CurrentMemoryContext;
+	saved_error_context = ErrorContext;
+	saved_message_context = MessageContext;
+	saved_top_transaction_context = TopTransactionContext;
+	saved_cur_transaction_context = CurTransactionContext;
+	saved_portal_context = PortalContext;
 	MemSet(&session, 0, sizeof(session));
 	MemSet(&execution, 0, sizeof(execution));
 
@@ -596,6 +623,13 @@ test_thread_install_adopts_session_execution_fallback_state(PG_FUNCTION_ARGS)
 	{
 		PgSetCurrentSession(NULL);
 		CurrentPgExecution = NULL;
+		TopMemoryContext = saved_top_memory_context;
+		CurrentMemoryContext = saved_current_memory_context;
+		ErrorContext = saved_error_context;
+		MessageContext = saved_message_context;
+		TopTransactionContext = saved_top_transaction_context;
+		CurTransactionContext = saved_cur_transaction_context;
+		PortalContext = saved_portal_context;
 		*PgCurrentDoingCommandReadRef() = true;
 		*PgCurrentClientEncodingRef() = &pg_enc2name_tbl[PG_UTF8];
 		*PgCurrentPendingClientEncodingRef() = PG_UTF8;
@@ -621,6 +655,12 @@ test_thread_install_adopts_session_execution_fallback_state(PG_FUNCTION_ARGS)
 		PgSessionAdoptEarlyState(&session);
 		PgExecutionAdoptEarlyState(&execution);
 
+		ok = ok && execution.memory_contexts.top_context ==
+			saved_top_memory_context;
+		ok = ok && execution.memory_contexts.current_context ==
+			saved_current_memory_context;
+		ok = ok && execution.memory_contexts.error_context ==
+			saved_error_context;
 		ok = ok && session.loop_state.doing_command_read;
 		ok = ok && session.encoding.client_encoding == &pg_enc2name_tbl[PG_UTF8];
 		ok = ok && session.encoding.pending_client_encoding == PG_UTF8;
@@ -646,6 +686,14 @@ test_thread_install_adopts_session_execution_fallback_state(PG_FUNCTION_ARGS)
 		ok = ok && execution.trigger.depth == 88;
 		ok = ok && execution.trigger.after_triggers_data == &execution;
 		ok = ok && execution.valgrind.old_error_count == 77;
+
+		TopMemoryContext = saved_top_memory_context;
+		CurrentMemoryContext = saved_current_memory_context;
+		ErrorContext = saved_error_context;
+		MessageContext = saved_message_context;
+		TopTransactionContext = saved_top_transaction_context;
+		CurTransactionContext = saved_cur_transaction_context;
+		PortalContext = saved_portal_context;
 
 		ok = ok && !*PgCurrentDoingCommandReadRef();
 		ok = ok && *PgCurrentClientEncodingRef() ==
@@ -677,6 +725,13 @@ test_thread_install_adopts_session_execution_fallback_state(PG_FUNCTION_ARGS)
 	{
 		PgSetCurrentSession(saved_session);
 		CurrentPgExecution = saved_execution;
+		TopMemoryContext = saved_top_memory_context;
+		CurrentMemoryContext = saved_current_memory_context;
+		ErrorContext = saved_error_context;
+		MessageContext = saved_message_context;
+		TopTransactionContext = saved_top_transaction_context;
+		CurTransactionContext = saved_cur_transaction_context;
+		PortalContext = saved_portal_context;
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -844,6 +899,8 @@ test_execution_resource_owners_are_execution_local(PG_FUNCTION_ARGS)
 	saved_top_transaction_resource_owner = TopTransactionResourceOwner;
 	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
 	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution1);
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution2);
 
 	PG_TRY();
 	{
@@ -13027,6 +13084,8 @@ test_execution_debug_query_string_is_execution_local(PG_FUNCTION_ARGS)
 	saved_debug_query_string = debug_query_string;
 	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
 	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution1);
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution2);
 
 	PG_TRY();
 	{
@@ -13086,6 +13145,8 @@ test_execution_error_state_is_execution_local(PG_FUNCTION_ARGS)
 	saved_exception_stack = PG_exception_stack;
 	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
 	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution1);
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution2);
 	MemSet(&fake_error_context1, 0, sizeof(fake_error_context1));
 	MemSet(&fake_error_context2, 0, sizeof(fake_error_context2));
 
@@ -13128,6 +13189,7 @@ test_execution_memory_contexts_are_execution_local(PG_FUNCTION_ARGS)
 	PgExecution *saved_execution;
 	PgExecution fake_execution1;
 	PgExecution fake_execution2;
+	MemoryContext saved_top_memory_context;
 	MemoryContext saved_current_memory_context;
 	MemoryContext saved_error_context;
 	MemoryContext saved_message_context;
@@ -13140,6 +13202,7 @@ test_execution_memory_contexts_are_execution_local(PG_FUNCTION_ARGS)
 	bool		ok = true;
 
 	saved_execution = CurrentPgExecution;
+	saved_top_memory_context = TopMemoryContext;
 	saved_current_memory_context = CurrentMemoryContext;
 	saved_error_context = ErrorContext;
 	saved_message_context = MessageContext;
@@ -13152,6 +13215,7 @@ test_execution_memory_contexts_are_execution_local(PG_FUNCTION_ARGS)
 	PG_TRY();
 	{
 		CurrentPgExecution = &fake_execution1;
+		TopMemoryContext = fake_context1;
 		CurrentMemoryContext = fake_context1;
 		ErrorContext = fake_context2;
 		MessageContext = fake_context3;
@@ -13160,12 +13224,14 @@ test_execution_memory_contexts_are_execution_local(PG_FUNCTION_ARGS)
 		PortalContext = fake_context3;
 
 		CurrentPgExecution = &fake_execution2;
+		ok = ok && TopMemoryContext == NULL;
 		ok = ok && CurrentMemoryContext == NULL;
 		ok = ok && ErrorContext == NULL;
 		ok = ok && MessageContext == NULL;
 		ok = ok && TopTransactionContext == NULL;
 		ok = ok && CurTransactionContext == NULL;
 		ok = ok && PortalContext == NULL;
+		TopMemoryContext = fake_context2;
 		CurrentMemoryContext = fake_context3;
 		ErrorContext = fake_context1;
 		MessageContext = fake_context2;
@@ -13174,6 +13240,7 @@ test_execution_memory_contexts_are_execution_local(PG_FUNCTION_ARGS)
 		PortalContext = fake_context2;
 
 		CurrentPgExecution = &fake_execution1;
+		ok = ok && TopMemoryContext == fake_context1;
 		ok = ok && CurrentMemoryContext == fake_context1;
 		ok = ok && ErrorContext == fake_context2;
 		ok = ok && MessageContext == fake_context3;
@@ -13182,6 +13249,7 @@ test_execution_memory_contexts_are_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && PortalContext == fake_context3;
 
 		CurrentPgExecution = &fake_execution2;
+		ok = ok && TopMemoryContext == fake_context2;
 		ok = ok && CurrentMemoryContext == fake_context3;
 		ok = ok && ErrorContext == fake_context1;
 		ok = ok && MessageContext == fake_context2;
@@ -13190,6 +13258,7 @@ test_execution_memory_contexts_are_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && PortalContext == fake_context2;
 
 		PgExecutionResetClosedState(&fake_execution2);
+		ok = ok && TopMemoryContext == NULL;
 		ok = ok && CurrentMemoryContext == NULL;
 		ok = ok && ErrorContext == NULL;
 		ok = ok && MessageContext == NULL;
@@ -13198,6 +13267,7 @@ test_execution_memory_contexts_are_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && PortalContext == NULL;
 
 		CurrentPgExecution = saved_execution;
+		TopMemoryContext = saved_top_memory_context;
 		CurrentMemoryContext = saved_current_memory_context;
 		ErrorContext = saved_error_context;
 		MessageContext = saved_message_context;
@@ -13208,6 +13278,7 @@ test_execution_memory_contexts_are_execution_local(PG_FUNCTION_ARGS)
 	PG_CATCH();
 	{
 		CurrentPgExecution = saved_execution;
+		TopMemoryContext = saved_top_memory_context;
 		CurrentMemoryContext = saved_current_memory_context;
 		ErrorContext = saved_error_context;
 		MessageContext = saved_message_context;
@@ -13244,6 +13315,8 @@ test_execution_spi_state_is_execution_local(PG_FUNCTION_ARGS)
 	saved_spi_result = SPI_result;
 	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
 	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution1);
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution2);
 	fake_execution1.spi.connected = -1;
 	fake_execution2.spi.connected = -1;
 	MemSet(&fake_tuptable1, 0, sizeof(fake_tuptable1));
@@ -13314,6 +13387,8 @@ test_execution_active_portal_is_execution_local(PG_FUNCTION_ARGS)
 	saved_active_portal = ActivePortal;
 	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
 	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution1);
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution2);
 	MemSet(&fake_portal1, 0, sizeof(fake_portal1));
 	MemSet(&fake_portal2, 0, sizeof(fake_portal2));
 
@@ -13388,6 +13463,8 @@ test_execution_vacuum_state_is_execution_local(PG_FUNCTION_ARGS)
 
 	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
 	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution1);
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution2);
 	pg_atomic_init_u32(&shared_cost_balance1, 111);
 	pg_atomic_init_u32(&active_nworkers1, 1);
 	pg_atomic_init_u32(&shared_cost_balance2, 222);
@@ -13511,6 +13588,8 @@ test_execution_node_io_state_is_execution_local(PG_FUNCTION_ARGS)
 	saved_restore_location_fields = *PgCurrentNodeRestoreLocationFieldsRef();
 	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
 	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution1);
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution2);
 
 	PG_TRY();
 	{
@@ -13578,6 +13657,8 @@ test_execution_basebackup_state_is_execution_local(PG_FUNCTION_ARGS)
 	saved_noverify_checksums = *PgCurrentBaseBackupNoVerifyChecksumsRef();
 	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
 	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution1);
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution2);
 
 	PG_TRY();
 	{
@@ -13647,6 +13728,8 @@ test_execution_analyze_state_is_execution_local(PG_FUNCTION_ARGS)
 	saved_analyze_strategy = *PgCurrentAnalyzeStrategyRef();
 	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
 	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution1);
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution2);
 	fake_context1 = (MemoryContext) &fake_execution1;
 	fake_context2 = (MemoryContext) &fake_execution2;
 	fake_strategy1 = (BufferAccessStrategy) &fake_execution1;
@@ -13707,6 +13790,8 @@ test_execution_extension_state_is_execution_local(PG_FUNCTION_ARGS)
 	saved_current_extension_object = CurrentExtensionObject;
 	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
 	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution1);
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution2);
 
 	PG_TRY();
 	{
@@ -13760,6 +13845,8 @@ test_execution_matview_state_is_execution_local(PG_FUNCTION_ARGS)
 	saved_maintenance_depth = *PgCurrentMatViewMaintenanceDepthRef();
 	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
 	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution1);
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution2);
 
 	PG_TRY();
 	{
@@ -13805,6 +13892,8 @@ test_execution_snapshot_combo_state_is_execution_local(PG_FUNCTION_ARGS)
 	saved_execution = CurrentPgExecution;
 	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
 	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution1);
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution2);
 
 	PG_TRY();
 	{
@@ -13950,6 +14039,8 @@ test_execution_xloginsert_state_is_execution_local(PG_FUNCTION_ARGS)
 	saved_execution = CurrentPgExecution;
 	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
 	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution1);
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution2);
 	MemSet(&fake_rdata1, 0, sizeof(fake_rdata1));
 	MemSet(&fake_rdata2, 0, sizeof(fake_rdata2));
 
@@ -14076,6 +14167,8 @@ test_execution_xact_state_is_execution_local(PG_FUNCTION_ARGS)
 	saved_execution = CurrentPgExecution;
 	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
 	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution1);
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution2);
 
 	PG_TRY();
 	{
@@ -14258,6 +14351,8 @@ test_execution_transaction_cleanup_state_is_execution_local(PG_FUNCTION_ARGS)
 	saved_execution = CurrentPgExecution;
 	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
 	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution1);
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution2);
 
 	PG_TRY();
 	{
@@ -14349,6 +14444,8 @@ test_execution_reporting_replication_state_is_execution_local(PG_FUNCTION_ARGS)
 	saved_execution = CurrentPgExecution;
 	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
 	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution1);
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution2);
 	MemSet(&callback1, 0, sizeof(callback1));
 	MemSet(&callback2, 0, sizeof(callback2));
 	fake_execution1.error.errordata_stack_depth = -1;
@@ -14480,6 +14577,8 @@ test_execution_guc_error_state_is_execution_local(PG_FUNCTION_ARGS)
 	saved_execution = CurrentPgExecution;
 	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
 	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution1);
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution2);
 
 	PG_TRY();
 	{
@@ -14567,6 +14666,8 @@ test_execution_catalog_state_is_execution_local(PG_FUNCTION_ARGS)
 	saved_execution = CurrentPgExecution;
 	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
 	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution1);
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution2);
 	fake_execution1.catalog.currently_reindexed_heap = InvalidOid;
 	fake_execution1.catalog.currently_reindexed_index = InvalidOid;
 	fake_execution2.catalog.currently_reindexed_heap = InvalidOid;
@@ -14670,6 +14771,8 @@ test_execution_catalog_cache_state_is_execution_local(PG_FUNCTION_ARGS)
 	saved_execution = CurrentPgExecution;
 	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
 	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution1);
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution2);
 	MemSet(tupledesc_array1, 0, sizeof(tupledesc_array1));
 	MemSet(tupledesc_array2, 0, sizeof(tupledesc_array2));
 
@@ -14771,6 +14874,8 @@ test_execution_relmap_state_is_execution_local(PG_FUNCTION_ARGS)
 	saved_execution = CurrentPgExecution;
 	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
 	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution1);
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution2);
 
 	PG_TRY();
 	{
@@ -14849,6 +14954,8 @@ test_execution_inval_twophase_state_is_execution_local(PG_FUNCTION_ARGS)
 	saved_execution = CurrentPgExecution;
 	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
 	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution1);
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution2);
 	MemSet(&invalmsg1, 0, sizeof(invalmsg1));
 	MemSet(&invalmsg2, 0, sizeof(invalmsg2));
 
@@ -14951,6 +15058,8 @@ test_execution_async_state_is_execution_local(PG_FUNCTION_ARGS)
 	saved_execution = CurrentPgExecution;
 	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
 	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution1);
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution2);
 
 	PG_TRY();
 	{
@@ -15050,6 +15159,8 @@ test_execution_misc_scratch_state_is_execution_local(PG_FUNCTION_ARGS)
 	saved_execution = CurrentPgExecution;
 	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
 	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution1);
+	test_backend_runtime_seed_execution_memory_contexts(&fake_execution2);
 
 	PG_TRY();
 	{

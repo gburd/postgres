@@ -8479,6 +8479,12 @@ PgCurrentExecutionMemoryContexts(void)
 }
 
 MemoryContext *
+PgTopMemoryContextRef(void)
+{
+	return &PgCurrentExecutionMemoryContexts()->top_context;
+}
+
+MemoryContext *
 PgCurrentMemoryContextRef(void)
 {
 	return &PgCurrentExecutionMemoryContexts()->current_context;

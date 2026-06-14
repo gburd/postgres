@@ -819,6 +819,10 @@ Important current files:
   replacement. A direct attempt to reset the exiting carrier's top memory tree
   after `PgBackendExitCleanup()` crashed a parallel threaded reconnect smoke,
   so treat full `TopMemoryContext` reclamation as an unresolved Gate E2 blocker.
+  The `TopMemoryContext` pointer slot itself now lives in
+  `PgExecution.memory_contexts.top_context`; that is only a pointer-slot
+  migration and must not be treated as proof that the top context tree can be
+  deleted safely.
 - `test_backend_runtime_emit_fatal()` in
   `test_backend_runtime_threaded` is the focused threaded backend `FATAL`
   fixture. Run it through

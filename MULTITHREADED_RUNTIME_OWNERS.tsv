@@ -120,6 +120,7 @@ EventTriggerCacheContext	PgSession	catalog_lookup	event_trigger_cache_context	Pg
 EventTriggerCacheState	PgSession	catalog_lookup	event_trigger_cache_state	PgCurrentEventTriggerCacheStateRef	src/backend/utils/cache/backend_runtime_cache.c	event trigger cache state flag
 ruleutils_rule_by_oid_plan	PgSession	catalog_lookup	ruleutils_rule_by_oid_plan	PgCurrentRuleutilsRuleByOidPlanRef	src/backend/utils/cache/backend_runtime_cache.c	retained ruleutils SPI plan
 ruleutils_view_rule_plan	PgSession	catalog_lookup	ruleutils_view_rule_plan	PgCurrentRuleutilsViewRulePlanRef	src/backend/utils/cache/backend_runtime_cache.c	retained ruleutils SPI plan
+TopMemoryContext	PgExecution	memory_contexts	top_context	PgTopMemoryContextRef	src/backend/utils/mmgr/mcxt.c	standard top memory context pointer; physical tree reclamation remains Gate E2 work
 CurrentSession	PgSession	legacy_session	legacy_session	PgCurrentLegacySessionRef	src/backend/access/common/session.c	legacy access/session.h compatibility pointer
 ConnectionWarningsEmitted	PgConnection	startup	connection_warnings_emitted	PgCurrentConnectionWarningsEmittedRef	src/backend/utils/init/postinit.c	connection warning emit guard
 ConnectionWarningMessages	PgConnection	startup	connection_warning_messages	PgCurrentConnectionWarningMessagesRef	src/backend/utils/init/postinit.c	saved connection warning messages

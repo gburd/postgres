@@ -782,7 +782,8 @@ provider-independent JIT callback cache and LLVM provider-private
 type/template/module/context cache through `PgSession`, plus the
 `CurrentSession` compatibility pointer bridge through `PgSession`, deferred
 connection warning scratch bridge through `PgConnection`, and RI fast-path
-xact callback registration guard bridge through `PgSession`.
+xact callback registration guard bridge through `PgSession`, plus the
+`TopMemoryContext` pointer-slot bridge through `PgExecution`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.
@@ -793,8 +794,9 @@ Likely workstreams:
   transaction/execution state, extending the GUC-table pointer
   rebind/adoption mechanism where generated GUC records store
   backing-variable addresses.
-- remaining memory context state into `PgExecution` or carrier current
-  pointers where not covered by the current-context bridge.
+- remaining memory-context tree ownership/reclamation beyond the current
+  pointer-slot bridges, especially full `TopMemoryContext` teardown for
+  thread-backed backend exit.
 - resource owners beyond the current execution pointers split by
   session/transaction/task.
 - statement metadata beyond `debug_query_string` into `PgExecution`.

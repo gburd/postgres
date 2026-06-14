@@ -56,7 +56,8 @@
  * Only TopMemoryContext and ErrorContext are initialized by
  * MemoryContextInit() itself.
  */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION MemoryContext TopMemoryContext;
+extern MemoryContext *PgTopMemoryContextRef(void);
+#define TopMemoryContext (*PgTopMemoryContextRef())
 extern MemoryContext *PgErrorContextRef(void);
 #define ErrorContext (*PgErrorContextRef())
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME MemoryContext PostmasterContext;

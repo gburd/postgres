@@ -10160,3 +10160,49 @@ Validation for this slice:
   tests and `002_threaded_bgworker_crash.pl` with 6 tests using the local
   `IPC::Run` `PERL5LIB` and patched build-tree `pg_regress` install name;
 - `git diff --check` passed.
+
+## Top Memory Context Pointer Slot
+
+This Phase 12 state-migration slice moves the historical
+`TopMemoryContext` pointer out of standalone session-local TLS and into the
+existing `PgExecution.memory_contexts` bucket:
+
+- `PgExecutionMemoryContextState` now owns the `top_context` pointer slot
+  beside `CurrentMemoryContext`, `ErrorContext`, `MessageContext`,
+  transaction context pointers, and `PortalContext`;
+- `utils/memutils.h` preserves the historical `TopMemoryContext` lvalue name
+  as a macro over `PgTopMemoryContextRef()`;
+- `MemoryContextInit()` continues to create the same root context, but writes
+  the pointer through the runtime-owned slot;
+- `test_execution_memory_contexts_are_execution_local()` now verifies
+  `TopMemoryContext` switches and resets with the rest of the execution
+  memory-context pointer slots;
+- `MULTITHREADED_RUNTIME_OWNERS.tsv` records the symbol-level mapping, and
+  `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` documents that this is a pointer-slot
+  migration only.
+
+This does not close the broader Gate E2 `TopMemoryContext` reclamation
+blocker. The pointed memory-context tree is still retained during
+thread-backed backend exit and accounted through the existing PMChild exit
+path until a safe deletion/reparenting model exists.
+
+Validation for this slice:
+
+- touched-object builds passed for `mcxt.o`, `backend_runtime.o`, and
+  `test_backend_runtime.o`;
+- the LLVM-enabled full `gmake -j8` build passed after the backend clean and
+  generated-file recovery sequence;
+- `gmake -C src/pl/plpgsql/src clean all`,
+  `gmake -C src/test/modules/test_backend_runtime clean all`, and
+  `gmake -C contrib -j8` passed after the installed header/runtime change;
+- `gmake check-runtime-lifecycles` passed with 149 runtime fields classified;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and session-local declarations reduced from 58 to 56;
+- the raw TLS declaration search found no remaining `TopMemoryContext`
+  storage declaration;
+- `gmake -C src/test/modules/test_backend_runtime check` passed after seeding
+  fake execution memory-context slots in the test harness for allocation-heavy
+  execution-local tests;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` with 88
+  tests and `002_threaded_bgworker_crash.pl` with 6 tests using the local
+  `IPC::Run` `PERL5LIB` and patched temporary-install dynamic library names.

@@ -838,6 +838,7 @@ typedef struct PgExecutionErrorState
 
 typedef struct PgExecutionMemoryContextState
 {
+	MemoryContext top_context;
 	MemoryContext current_context;
 	MemoryContext error_context;
 	MemoryContext message_context;
@@ -2223,6 +2224,7 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgConnection *CurrentPgConn
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgExecution *CurrentPgExecution;
 
 extern bool *PgCurrentDoingCommandReadRef(void);
+extern MemoryContext *PgTopMemoryContextRef(void);
 extern MemoryContext *PgCurrentMemoryContextRef(void);
 extern MemoryContext *PgErrorContextRef(void);
 extern MemoryContext *PgMessageContextRef(void);

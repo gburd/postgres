@@ -159,7 +159,6 @@ static const MemoryContextMethods mcxt_methods[] = {
  * Standard top-level contexts. For a description of the purpose of each
  * of these contexts, refer to src/backend/utils/mmgr/README
  */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION MemoryContext TopMemoryContext = NULL;
 PG_GLOBAL_RUNTIME MemoryContext PostmasterContext = NULL;
 
 /* Is memory context logging currently in progress? */
