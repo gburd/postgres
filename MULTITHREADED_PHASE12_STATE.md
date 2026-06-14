@@ -322,6 +322,45 @@ Validation for this slice:
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals.
 
+## Backend Early-Adoption Resource Guard
+
+The next Gate E2 hardening slice tightens the review concern about raw
+copy/adopt of pointer-bearing backend buckets. `PgBackendAdoptEarlyState()` is
+still the single process/thread adoption path, but the resource-bearing helper
+functions now assert that fallback storage contains only scalar early state
+before adoption:
+
+- WAL sender, replication, logical replication, XLog, recovery, maintenance
+  worker, autovacuum, repack, AIO, memory-manager, and utility buckets all
+  reject early-owned pointers, memory contexts, lists, HTABs, DSM/DSA handles,
+  file descriptors, StringInfo buffers, or equivalent opaque resources;
+- scalar fields that genuinely can be touched before runtime installation are
+  still adopted and the fallback bucket is reset through its normal
+  initializer;
+- list-head buckets are reinitialized in the installed backend object after
+  adoption, so zeroed fallback storage and circular initialized list heads both
+  remain valid empty states;
+- replication and logical-replication fallback storage now has explicit
+  nonzero sentinel defaults instead of relying on the first adoption reset to
+  install those defaults.
+
+This does not close the `GateE2 pending full destroy` rows. It narrows the
+copy rule: early adoption is no longer allowed to transfer owned resources for
+these buckets. Their normal runtime teardown still needs bucket-by-bucket
+destructor proof before Phase 12 can close.
+
+Validation for this slice:
+
+- touched-object build passed for `backend_runtime.o`;
+- `gmake check-runtime-lifecycles` passed with 134 fields classified;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- full `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl`
+  passed all 87 tests after cleaning and rerunning a transient failed cluster
+  that had left one defunct postmaster child during TAP shutdown.
+
 ## Runtime Lifecycle Manifest
 
 The one-hundred-seventy-third Phase 12 slice makes the Gate E2 object-lifecycle

@@ -119,8 +119,22 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendTransactionState early_backend
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendMemoryManagerState early_backend_memory_manager;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendTimeoutState early_backend_timeout;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendWalSenderState early_backend_walsender;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendReplicationState early_backend_replication;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendLogicalReplicationState early_backend_logical_replication;
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendReplicationState early_backend_replication = {
+	.sync_rep_wait_mode = -1,
+	.walreceiver_recv_file = -1,
+	.walreceiver_primary_has_standby_xmin = true
+};
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendLogicalReplicationState early_backend_logical_replication = {
+	.apply_error_callback_arg.remote_attnum = -1,
+	.apply_error_callback_arg.remote_xid = InvalidTransactionId,
+	.apply_error_callback_arg.finish_lsn = InvalidXLogRecPtr,
+	.subxact_data.subxact_last = InvalidTransactionId,
+	.remote_final_lsn = InvalidXLogRecPtr,
+	.stream_xid = InvalidTransactionId,
+	.skip_xact_finish_lsn = InvalidXLogRecPtr,
+	.last_flushpos = InvalidXLogRecPtr,
+	.slotsync_sleep_ms = PG_BACKEND_SLOTSYNC_INITIAL_SLEEP_MS
+};
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendXLogState early_backend_xlog = {
 	.local_recovery_in_progress = true,
 	.local_xlog_insert_allowed = -1,
@@ -2469,6 +2483,10 @@ static void
 PgBackendAdoptEarlyMemoryManagerState(PgBackend *backend)
 {
 	Assert(backend != NULL);
+	Assert(early_backend_memory_manager.context_freelists[0].num_free == 0);
+	Assert(early_backend_memory_manager.context_freelists[0].first_free == NULL);
+	Assert(early_backend_memory_manager.context_freelists[1].num_free == 0);
+	Assert(early_backend_memory_manager.context_freelists[1].first_free == NULL);
 
 	backend->memory_manager = early_backend_memory_manager;
 	PgBackendInitializeMemoryManagerState(&early_backend_memory_manager);
@@ -2486,7 +2504,26 @@ PgBackendInitializeUtilityState(PgBackendUtilityState *utility)
 static void
 PgBackendAdoptEarlyUtilityState(PgBackend *backend)
 {
+	int			i;
+
 	Assert(backend != NULL);
+	Assert(early_backend_utility.extension_sibling_list == NULL);
+	Assert(early_backend_utility.injection_point_cache == NULL);
+	Assert(early_backend_utility.resource_release_callbacks == NULL);
+	Assert(early_backend_utility.libxml_context == NULL);
+	Assert(early_backend_utility.missing_attr_cache == NULL);
+	for (i = 0; i < PG_BACKEND_MAX_SEQ_SCANS; i++)
+		Assert(early_backend_utility.seq_scan_tables[i] == NULL);
+	for (i = 0; i < PG_BACKEND_MAX_DATE_FIELDS; i++)
+	{
+		Assert(early_backend_utility.date_cache[i] == NULL);
+		Assert(early_backend_utility.delta_cache[i] == NULL);
+	}
+	for (i = 0; i < PG_BACKEND_FORMAT_CACHE_ENTRIES; i++)
+	{
+		Assert(early_backend_utility.dch_cache[i] == NULL);
+		Assert(early_backend_utility.num_cache[i] == NULL);
+	}
 
 	backend->utility = early_backend_utility;
 	PgBackendInitializeUtilityState(&early_backend_utility);
@@ -2705,6 +2742,16 @@ static void
 PgBackendAdoptEarlyWalSenderState(PgBackend *backend)
 {
 	Assert(backend != NULL);
+	Assert(early_backend_walsender.my_wal_snd == NULL);
+	Assert(early_backend_walsender.xlogreader == NULL);
+	Assert(early_backend_walsender.uploaded_manifest == NULL);
+	Assert(early_backend_walsender.uploaded_manifest_mcxt == NULL);
+	Assert(early_backend_walsender.output_message.data == NULL);
+	Assert(early_backend_walsender.reply_message.data == NULL);
+	Assert(early_backend_walsender.tmpbuf.data == NULL);
+	Assert(early_backend_walsender.logical_decoding_ctx == NULL);
+	Assert(early_backend_walsender.replication_cmd_context == NULL);
+	Assert(early_backend_walsender.lag_tracker == NULL);
 
 	backend->walsender = early_backend_walsender;
 	PgBackendInitializeWalSenderState(&early_backend_walsender);
@@ -2725,6 +2772,10 @@ static void
 PgBackendAdoptEarlyReplicationState(PgBackend *backend)
 {
 	Assert(backend != NULL);
+	Assert(early_backend_replication.my_replication_slot == NULL);
+	Assert(early_backend_replication.walreceiver_conn == NULL);
+	Assert(early_backend_replication.walreceiver_recv_file == -1);
+	Assert(early_backend_replication.walreceiver_reply_message.data == NULL);
 
 	backend->replication = early_backend_replication;
 	PgBackendInitializeReplicationState(&early_backend_replication);
@@ -2752,6 +2803,33 @@ static void
 PgBackendAdoptEarlyLogicalReplicationState(PgBackend *backend)
 {
 	Assert(backend != NULL);
+	Assert(dlist_is_empty(&early_backend_logical_replication.lsn_mapping));
+	Assert(early_backend_logical_replication.apply_error_callback_arg.rel ==
+		   NULL);
+	Assert(early_backend_logical_replication.apply_error_callback_arg.origin_name
+		   == NULL);
+	Assert(early_backend_logical_replication.subxact_data.subxacts == NULL);
+	Assert(early_backend_logical_replication.apply_context == NULL);
+	Assert(early_backend_logical_replication.my_parallel_shared == NULL);
+	Assert(early_backend_logical_replication.logrep_worker_walrcv_conn == NULL);
+	Assert(early_backend_logical_replication.my_subscription == NULL);
+	Assert(early_backend_logical_replication.my_logical_rep_worker == NULL);
+	Assert(early_backend_logical_replication.on_commit_wakeup_workers_subids ==
+		   NIL);
+	Assert(early_backend_logical_replication.stream_fd == NULL);
+	Assert(early_backend_logical_replication.table_states_not_ready == NIL);
+	Assert(early_backend_logical_replication.copybuf == NULL);
+	Assert(early_backend_logical_replication.seqinfos == NIL);
+	Assert(early_backend_logical_replication.slotsync_observed_primary_conninfo
+		   == NULL);
+	Assert(early_backend_logical_replication.slotsync_observed_primary_slotname
+		   == NULL);
+	Assert(early_backend_logical_replication.launcher_last_start_times_dsa == NULL);
+	Assert(early_backend_logical_replication.launcher_last_start_times == NULL);
+	Assert(early_backend_logical_replication.parallel_apply_txn_hash == NULL);
+	Assert(early_backend_logical_replication.parallel_apply_worker_pool == NIL);
+	Assert(early_backend_logical_replication.stream_apply_worker == NULL);
+	Assert(early_backend_logical_replication.parallel_apply_subxactlist == NIL);
 
 	backend->logical_replication = early_backend_logical_replication;
 	dlist_init(&backend->logical_replication.lsn_mapping);
@@ -2779,6 +2857,12 @@ static void
 PgBackendAdoptEarlyXLogState(PgBackend *backend)
 {
 	Assert(backend != NULL);
+	Assert(early_backend_xlog.open_log_file == -1);
+	Assert(early_backend_xlog.wal_debug_context == NULL);
+	Assert(early_backend_xlog.btree_xlog_op_context == NULL);
+	Assert(early_backend_xlog.gin_xlog_op_context == NULL);
+	Assert(early_backend_xlog.gist_xlog_op_context == NULL);
+	Assert(early_backend_xlog.spgist_xlog_op_context == NULL);
 
 	backend->xlog = early_backend_xlog;
 	PgBackendInitializeXLogState(&early_backend_xlog);
@@ -2820,6 +2904,13 @@ static void
 PgBackendAdoptEarlyMaintenanceWorkerState(PgBackend *backend)
 {
 	Assert(backend != NULL);
+	Assert(early_backend_maintenance_worker.arch_module_errdetail_string ==
+		   NULL);
+	Assert(early_backend_maintenance_worker.archive_callbacks == NULL);
+	Assert(early_backend_maintenance_worker.archive_module_state == NULL);
+	Assert(early_backend_maintenance_worker.archive_context == NULL);
+	Assert(early_backend_maintenance_worker.loaded_archive_library == NULL);
+	Assert(early_backend_maintenance_worker.pgarch_files == NULL);
 
 	backend->maintenance_worker = early_backend_maintenance_worker;
 	PgBackendInitializeMaintenanceWorkerState(&early_backend_maintenance_worker);
@@ -2840,7 +2931,11 @@ static void
 PgBackendAdoptEarlyAutovacuumState(PgBackend *backend)
 {
 	Assert(backend != NULL);
+	Assert(early_backend_autovacuum.autovac_mem_cxt == NULL);
 	Assert(dlist_is_empty(&early_backend_autovacuum.database_list));
+	Assert(early_backend_autovacuum.database_list_cxt == NULL);
+	Assert(early_backend_autovacuum.avl_dbase_array == NULL);
+	Assert(early_backend_autovacuum.my_worker_info == NULL);
 
 	backend->autovacuum = early_backend_autovacuum;
 	dlist_init(&backend->autovacuum.database_list);
@@ -2861,6 +2956,8 @@ static void
 PgBackendAdoptEarlyRepackState(PgBackend *backend)
 {
 	Assert(backend != NULL);
+	Assert(early_backend_repack.decoding_worker == NULL);
+	Assert(early_backend_repack.worker_dsm_segment == NULL);
 
 	backend->repack = early_backend_repack;
 	PgBackendInitializeRepackState(&early_backend_repack);
@@ -2879,6 +2976,8 @@ static void
 PgBackendAdoptEarlyAioState(PgBackend *backend)
 {
 	Assert(backend != NULL);
+	Assert(early_backend_aio.my_backend == NULL);
+	Assert(early_backend_aio.my_uring_context == NULL);
 
 	backend->aio = early_backend_aio;
 	PgBackendInitializeAioState(&early_backend_aio);
