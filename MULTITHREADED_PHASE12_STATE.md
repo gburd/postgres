@@ -203,6 +203,40 @@ Validation for this slice:
   87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and
   patched macOS install names.
 
+## Scalar And GUC Lifecycle Classification
+
+The next Gate E2 manifest-hardening slice classifies low-risk lifecycle rows
+whose ownership is already covered by existing backend or GUC cleanup rules:
+
+- backend command, logging scratch, and instrumentation buckets contain only
+  inline counters/buffers or borrowed startup pointers and therefore need no
+  separate dynamic destroy path;
+- scalar session GUC buckets such as buffer I/O, transaction defaults, storage,
+  command, replication, sort, and query memory state are whole-bucket adopted
+  and have no independent allocations;
+- string-backed session GUC buckets such as tablespaces, datetime, logging,
+  miscellaneous preload settings, user/session settings, general role state,
+  JIT provider, text search config, and connection settings rely on the
+  existing GUC reset machinery for string ownership. Their runtime object
+  fields are pointer slots plus derived scalars, and those slots must be
+  rebound through `RebindSessionGUCVariablePointers()` after switching the
+  current session;
+- user identity state is owned by the existing session authorization and
+  reset-role paths. The `system_user` pointer remains borrowed and must not be
+  freed by the bucket.
+
+This slice intentionally leaves rows pending where the bucket owns or borrows
+memory contexts, hash tables, dlist/dclist heads, sockets, replication worker
+state, AIO state, collation/regex/sequence/optimizer caches, or the legacy
+`Session` allocation. Those rows still need concrete reset/destroy work or a
+more precise owner split before Phase 12 can close.
+
+Validation for this slice:
+
+- `gmake check-runtime-lifecycles` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals.
+
 ## Runtime Lifecycle Manifest
 
 The one-hundred-seventy-third Phase 12 slice makes the Gate E2 object-lifecycle
