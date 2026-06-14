@@ -25,8 +25,20 @@ extern PgSessionDateTimeState *PgCurrentSessionDateTimeState(void);
 extern PgSessionEncodingState *PgCurrentSessionEncodingState(void);
 extern PgSessionFunctionManagerState *PgCurrentSessionFunctionManagerState(void);
 extern PgSessionGeneralGUCState *PgCurrentSessionGeneralGUCState(void);
+extern PgSessionQueryIdState *PgCurrentSessionQueryIdState(void);
+extern PgSessionStorageGUCState *PgCurrentSessionStorageGUCState(void);
+extern PgSessionUserGUCState *PgCurrentSessionUserGUCState(void);
+extern PgSessionCommandGUCState *PgCurrentSessionCommandGUCState(void);
+extern PgSessionReplicationGUCState *PgCurrentSessionReplicationGUCState(void);
+extern PgSessionLogicalReplicationState *PgCurrentSessionLogicalReplicationState(void);
+extern PgSessionAccessWalGUCState *PgCurrentSessionAccessWalGUCState(void);
+extern PgSessionJitGUCState *PgCurrentSessionJitGUCState(void);
 extern PgSessionJitProviderState *PgCurrentSessionJitProviderState(void);
 extern PgSessionLLVMJitState *PgCurrentSessionLLVMJitState(void);
+extern PgSessionSortGUCState *PgCurrentSessionSortGUCState(void);
+extern PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
+extern PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
+extern PgSessionPlannerMethodState *PgCurrentSessionPlannerMethodState(void);
 extern PgSessionPgStatState *PgCurrentSessionPgStatState(void);
 extern PgConnectionIdentityState *PgConnectionIdentityStateRef(PgConnection *connection);
 extern PgConnectionSocketIOState *PgConnectionSocketIOStateRef(PgConnection *connection);
@@ -42,5 +54,7 @@ extern PgBackendStorageState *PgCurrentBackendStorageState(void);
 extern PgBackendLockState *PgCurrentBackendLockState(void);
 extern PgBackendIPCState *PgCurrentBackendIPCState(void);
 extern PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
+extern PgBackendUtilityState *PgCurrentBackendUtilityState(void);
+extern PgBackendParallelState *PgCurrentBackendParallelState(void);
 
 #endif							/* BACKEND_RUNTIME_INTERNAL_H */

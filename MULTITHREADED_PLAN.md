@@ -819,12 +819,15 @@ pgstat/backend-status accessors, followed by
 `src/backend/jit/backend_runtime_jit.c` for provider-independent and
 LLVM-provider JIT state accessors and
 `src/backend/utils/misc/backend_runtime_guc.c` for GUC compatibility backing
-variables. The first storage-owner split moves buffer, fd/storage,
+variables, then `src/backend/utils/misc/backend_runtime_utility.c` for
+backend-local utility/formatting/resource-owner callback accessors and
+`src/backend/access/transam/backend_runtime_parallel.c` for backend-local
+parallel-query accessors. The storage-owner split moves buffer, fd/storage,
 lock-manager, and IPC compatibility accessors into
 `src/backend/storage/buffer/backend_runtime_buffer.c`,
 `src/backend/storage/file/backend_runtime_file.c`,
 `src/backend/storage/lmgr/backend_runtime_lmgr.c`, and
-`src/backend/storage/ipc/backend_runtime_ipc.c`. The next split moves
+`src/backend/storage/ipc/backend_runtime_ipc.c`. Another split moved
 frontend/backend connection compatibility accessors into
 `src/backend/libpq/backend_runtime_connection.c`.
 Future Phase 12 bucket additions should pick an adjacent owner file first;
@@ -904,6 +907,8 @@ split by object family while preserving the same extension, SQL regression,
 expected output, and TAP entry points. The shared test header is
 `src/test/modules/test_backend_runtime/test_backend_runtime.h`; the split
 sources are `test_backend_runtime_backend.c`,
+`test_backend_runtime_backend_core.c`,
+`test_backend_runtime_backend_interrupt.c`, `test_backend_runtime_pmchild.c`,
 `test_backend_runtime_session.c`, `test_backend_runtime_connection.c`, and
 `test_backend_runtime_execution.c`, with the session GUC half further split
 into `test_backend_runtime_session_guc.c`, the small module/launch tests kept

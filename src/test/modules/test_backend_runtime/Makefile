@@ -5,8 +5,11 @@ MODULES = test_backend_runtime_threaded
 OBJS = \
 	$(WIN32RES) \
 	test_backend_runtime_backend.o \
+	test_backend_runtime_backend_core.o \
+	test_backend_runtime_backend_interrupt.o \
 	test_backend_runtime_connection.o \
 	test_backend_runtime_execution.o \
+	test_backend_runtime_pmchild.o \
 	test_backend_runtime_session.o \
 	test_backend_runtime_session_guc.o \
 	test_backend_runtime.o

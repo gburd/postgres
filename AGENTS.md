@@ -91,6 +91,13 @@ Important current files:
   accessors for GUC compatibility state that lives in session/backend/runtime
   buckets. Add future GUC backing-variable shims here rather than growing
   `backend_runtime.c` or `guc_tables.c`.
+- `src/backend/utils/misc/backend_runtime_utility.c`: fork-owned runtime
+  bridge accessors for backend-local utility, formatting, sampling, superuser,
+  and resource-owner callback state. Add small utility compatibility shims here
+  rather than growing `backend_runtime.c`.
+- `src/backend/access/transam/backend_runtime_parallel.c`: fork-owned runtime
+  bridge accessors for backend-local parallel-query state. Add parallel-query
+  compatibility shims here rather than growing `backend_runtime.c`.
 - `src/backend/jit/backend_runtime_jit.c`: fork-owned runtime bridge accessors
   for provider-independent and LLVM-provider JIT session state. Keep
   LLVM-provider-private semantic lifecycle work under `src/backend/jit/llvm`
@@ -119,7 +126,14 @@ Important current files:
 - `src/test/modules/test_backend_runtime/test_backend_runtime.h`: shared
   declarations for the backend runtime test extension.
 - `src/test/modules/test_backend_runtime/test_backend_runtime_backend.c`:
-  backend, carrier, PMChild, interrupt, and backend-exit test functions.
+  broad backend bucket tests that have not yet earned a narrower owner file.
+- `src/test/modules/test_backend_runtime/test_backend_runtime_backend_core.c`:
+  core backend identity, command/log, expression-interpreter, and latch
+  interrupt tests.
+- `src/test/modules/test_backend_runtime/test_backend_runtime_backend_interrupt.c`:
+  backend interrupt-holdoff, pending-interrupt, and exit-state tests.
+- `src/test/modules/test_backend_runtime/test_backend_runtime_pmchild.c`:
+  PMChild thread-backend signal and publication-race tests.
 - `src/test/modules/test_backend_runtime/test_backend_runtime_session.c`:
   core session, cache, identity, and session-reset test functions.
 - `src/test/modules/test_backend_runtime/test_backend_runtime_session_guc.c`:
@@ -203,7 +217,7 @@ Important current files:
   refactor: split owner-specific runtime bridge code out of
   `backend_runtime.c` where practical, make every manifest-referenced split
   source part of the default lifecycle checker input, and split
-  `src/test/modules/test_backend_runtime/test_backend_runtime.c` into smaller
+  `src/test/modules/test_backend_runtime` into smaller
   object/lifetime-focused test sources while preserving the same extension,
   SQL, expected output, and TAP surface.
 - The first Gate E2 maintainability split is in place. Keep adding

@@ -907,22 +907,22 @@ static PgSessionLoggingState *PgCurrentSessionLoggingState(void);
 static PgSessionMiscGUCState *PgCurrentSessionMiscGUCState(void);
 static PgSessionGUCState *PgCurrentSessionGUCState(void);
 PgSessionPgStatState *PgCurrentSessionPgStatState(void);
-static PgSessionQueryIdState *PgCurrentSessionQueryIdState(void);
-static PgSessionStorageGUCState *PgCurrentSessionStorageGUCState(void);
-static PgSessionUserGUCState *PgCurrentSessionUserGUCState(void);
+PgSessionQueryIdState *PgCurrentSessionQueryIdState(void);
+PgSessionStorageGUCState *PgCurrentSessionStorageGUCState(void);
+PgSessionUserGUCState *PgCurrentSessionUserGUCState(void);
 static PgSessionUserIdentityState *PgCurrentSessionUserIdentityState(void);
-static PgSessionCommandGUCState *PgCurrentSessionCommandGUCState(void);
-static PgSessionReplicationGUCState *PgCurrentSessionReplicationGUCState(void);
-static PgSessionLogicalReplicationState *PgCurrentSessionLogicalReplicationState(void);
+PgSessionCommandGUCState *PgCurrentSessionCommandGUCState(void);
+PgSessionReplicationGUCState *PgCurrentSessionReplicationGUCState(void);
+PgSessionLogicalReplicationState *PgCurrentSessionLogicalReplicationState(void);
 PgSessionGeneralGUCState *PgCurrentSessionGeneralGUCState(void);
-static PgSessionAccessWalGUCState *PgCurrentSessionAccessWalGUCState(void);
-static PgSessionJitGUCState *PgCurrentSessionJitGUCState(void);
+PgSessionAccessWalGUCState *PgCurrentSessionAccessWalGUCState(void);
+PgSessionJitGUCState *PgCurrentSessionJitGUCState(void);
 PgSessionJitProviderState *PgCurrentSessionJitProviderState(void);
 PgSessionLLVMJitState *PgCurrentSessionLLVMJitState(void);
-static PgSessionSortGUCState *PgCurrentSessionSortGUCState(void);
-static PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
-static PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
-static PgSessionPlannerMethodState *PgCurrentSessionPlannerMethodState(void);
+PgSessionSortGUCState *PgCurrentSessionSortGUCState(void);
+PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
+PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
+PgSessionPlannerMethodState *PgCurrentSessionPlannerMethodState(void);
 PgSessionFunctionManagerState *PgCurrentSessionFunctionManagerState(void);
 static PgSessionExtensionModuleState *PgCurrentSessionExtensionModuleState(void);
 PgSessionCatalogLookupState *PgCurrentSessionCatalogLookupState(void);
@@ -5428,7 +5428,7 @@ PgCurrentSessionPgStatState(void)
 	return pgstat;
 }
 
-static PgSessionQueryIdState *
+PgSessionQueryIdState *
 PgCurrentSessionQueryIdState(void)
 {
 	PgSessionQueryIdState *query_id;
@@ -5444,7 +5444,7 @@ PgCurrentSessionQueryIdState(void)
 	return query_id;
 }
 
-static PgSessionStorageGUCState *
+PgSessionStorageGUCState *
 PgCurrentSessionStorageGUCState(void)
 {
 	PgSessionStorageGUCState *storage_guc;
@@ -5460,7 +5460,7 @@ PgCurrentSessionStorageGUCState(void)
 	return storage_guc;
 }
 
-static PgSessionUserGUCState *
+PgSessionUserGUCState *
 PgCurrentSessionUserGUCState(void)
 {
 	PgSessionUserGUCState *user_guc;
@@ -5498,7 +5498,7 @@ PgCurrentUserIdentityState(void)
 	return PgCurrentSessionUserIdentityState();
 }
 
-static PgSessionCommandGUCState *
+PgSessionCommandGUCState *
 PgCurrentSessionCommandGUCState(void)
 {
 	PgSessionCommandGUCState *command_guc;
@@ -5514,7 +5514,7 @@ PgCurrentSessionCommandGUCState(void)
 	return command_guc;
 }
 
-static PgSessionReplicationGUCState *
+PgSessionReplicationGUCState *
 PgCurrentSessionReplicationGUCState(void)
 {
 	PgSessionReplicationGUCState *replication_guc;
@@ -5530,7 +5530,7 @@ PgCurrentSessionReplicationGUCState(void)
 	return replication_guc;
 }
 
-static PgSessionLogicalReplicationState *
+PgSessionLogicalReplicationState *
 PgCurrentSessionLogicalReplicationState(void)
 {
 	if (CurrentPgSession == NULL)
@@ -5555,7 +5555,7 @@ PgCurrentSessionGeneralGUCState(void)
 	return general_guc;
 }
 
-static PgSessionAccessWalGUCState *
+PgSessionAccessWalGUCState *
 PgCurrentSessionAccessWalGUCState(void)
 {
 	PgSessionAccessWalGUCState *access_wal_guc;
@@ -5571,7 +5571,7 @@ PgCurrentSessionAccessWalGUCState(void)
 	return access_wal_guc;
 }
 
-static PgSessionJitGUCState *
+PgSessionJitGUCState *
 PgCurrentSessionJitGUCState(void)
 {
 	PgSessionJitGUCState *jit_guc;
@@ -5605,7 +5605,7 @@ PgCurrentSessionLLVMJitState(void)
 	return &CurrentPgSession->llvm_jit;
 }
 
-static PgSessionSortGUCState *
+PgSessionSortGUCState *
 PgCurrentSessionSortGUCState(void)
 {
 	PgSessionSortGUCState *sort_guc;
@@ -5621,7 +5621,7 @@ PgCurrentSessionSortGUCState(void)
 	return sort_guc;
 }
 
-static PgSessionQueryMemoryState *
+PgSessionQueryMemoryState *
 PgCurrentSessionQueryMemoryState(void)
 {
 	PgSessionQueryMemoryState *query_memory;
@@ -5637,7 +5637,7 @@ PgCurrentSessionQueryMemoryState(void)
 	return query_memory;
 }
 
-static PgSessionPlannerCostState *
+PgSessionPlannerCostState *
 PgCurrentSessionPlannerCostState(void)
 {
 	PgSessionPlannerCostState *planner_cost;
@@ -5653,7 +5653,7 @@ PgCurrentSessionPlannerCostState(void)
 	return planner_cost;
 }
 
-static PgSessionPlannerMethodState *
+PgSessionPlannerMethodState *
 PgCurrentSessionPlannerMethodState(void)
 {
 	PgSessionPlannerMethodState *planner_method;
@@ -7300,7 +7300,7 @@ PgCurrentLogMemoryContextInProgressRef(void)
 	return &PgCurrentBackendMemoryManagerState()->log_memory_context_in_progress;
 }
 
-static PgBackendUtilityState *
+PgBackendUtilityState *
 PgCurrentBackendUtilityState(void)
 {
 	if (CurrentPgBackend == NULL)
@@ -7309,1056 +7309,13 @@ PgCurrentBackendUtilityState(void)
 	return &CurrentPgBackend->utility;
 }
 
-HTAB **
-PgCurrentSeqScanTables(void)
-{
-	return PgCurrentBackendUtilityState()->seq_scan_tables;
-}
-
-int *
-PgCurrentSeqScanLevels(void)
-{
-	return PgCurrentBackendUtilityState()->seq_scan_levels;
-}
-
-int *
-PgCurrentNumSeqScansRef(void)
-{
-	return &PgCurrentBackendUtilityState()->num_seq_scans;
-}
-
-volatile sig_atomic_t *
-PgCurrentNotifyInterruptPendingRef(void)
-{
-	return &PgCurrentBackendUtilityState()->notify_interrupt_pending;
-}
-
-bool *
-PgCurrentAsyncUnlistenExitRegisteredRef(void)
-{
-	return &PgCurrentBackendUtilityState()->async_unlisten_exit_registered;
-}
-
-struct ExtensionSiblingCache **
-PgCurrentExtensionSiblingListRef(void)
-{
-	return &PgCurrentBackendUtilityState()->extension_sibling_list;
-}
-
-HTAB **
-PgCurrentInjectionPointCacheRef(void)
-{
-	return &PgCurrentBackendUtilityState()->injection_point_cache;
-}
-
-ReservoirStateData *
-PgCurrentSamplingOldReservoirRef(void)
-{
-	return &PgCurrentBackendUtilityState()->sampling_old_reservoir;
-}
-
-bool *
-PgCurrentSamplingOldReservoirInitializedRef(void)
-{
-	return &PgCurrentBackendUtilityState()->sampling_old_reservoir_initialized;
-}
-
-Oid *
-PgCurrentSuperuserLastRoleIdRef(void)
-{
-	return &PgCurrentBackendUtilityState()->superuser_last_roleid;
-}
-
-bool *
-PgCurrentSuperuserLastRoleIdIsSuperRef(void)
-{
-	return &PgCurrentBackendUtilityState()->superuser_last_roleid_is_super;
-}
-
-bool *
-PgCurrentSuperuserRoleIdCallbackRegisteredRef(void)
-{
-	return &PgCurrentBackendUtilityState()->superuser_roleid_callback_registered;
-}
-
-void **
-PgCurrentResourceReleaseCallbacksRef(void)
-{
-	return &PgCurrentBackendUtilityState()->resource_release_callbacks;
-}
-
-#ifdef RESOWNER_STATS
-int *
-PgCurrentResourceOwnerArrayLookupsRef(void)
-{
-	return &PgCurrentBackendUtilityState()->resource_owner_array_lookups;
-}
-
-int *
-PgCurrentResourceOwnerHashLookupsRef(void)
-{
-	return &PgCurrentBackendUtilityState()->resource_owner_hash_lookups;
-}
-#endif
-
-const void **
-PgCurrentDateTokenCache(void)
-{
-	return PgCurrentBackendUtilityState()->date_cache;
-}
-
-const void **
-PgCurrentDeltaTokenCache(void)
-{
-	return PgCurrentBackendUtilityState()->delta_cache;
-}
-
-bool *
-PgCurrentDegreeConstsSetRef(void)
-{
-	return &PgCurrentBackendUtilityState()->degree_consts_set;
-}
-
-float8 *
-PgCurrentDegreeSin30Ref(void)
-{
-	return &PgCurrentBackendUtilityState()->degree_sin_30;
-}
-
-float8 *
-PgCurrentDegreeOneMinusCos60Ref(void)
-{
-	return &PgCurrentBackendUtilityState()->degree_one_minus_cos_60;
-}
-
-float8 *
-PgCurrentDegreeAsin05Ref(void)
-{
-	return &PgCurrentBackendUtilityState()->degree_asin_0_5;
-}
-
-float8 *
-PgCurrentDegreeAcos05Ref(void)
-{
-	return &PgCurrentBackendUtilityState()->degree_acos_0_5;
-}
-
-float8 *
-PgCurrentDegreeAtan10Ref(void)
-{
-	return &PgCurrentBackendUtilityState()->degree_atan_1_0;
-}
-
-float8 *
-PgCurrentDegreeTan45Ref(void)
-{
-	return &PgCurrentBackendUtilityState()->degree_tan_45;
-}
-
-float8 *
-PgCurrentDegreeCot45Ref(void)
-{
-	return &PgCurrentBackendUtilityState()->degree_cot_45;
-}
-
-void **
-PgCurrentDCHCache(void)
-{
-	return PgCurrentBackendUtilityState()->dch_cache;
-}
-
-int *
-PgCurrentNumDCHCacheRef(void)
-{
-	return &PgCurrentBackendUtilityState()->n_dch_cache;
-}
-
-int *
-PgCurrentDCHCounterRef(void)
-{
-	return &PgCurrentBackendUtilityState()->dch_counter;
-}
-
-void **
-PgCurrentNUMCache(void)
-{
-	return PgCurrentBackendUtilityState()->num_cache;
-}
-
-int *
-PgCurrentNumNUMCacheRef(void)
-{
-	return &PgCurrentBackendUtilityState()->n_num_cache;
-}
-
-int *
-PgCurrentNUMCounterRef(void)
-{
-	return &PgCurrentBackendUtilityState()->num_counter;
-}
-
-MemoryContext *
-PgCurrentLibxmlContextRef(void)
-{
-	return &PgCurrentBackendUtilityState()->libxml_context;
-}
-
-HTAB **
-PgCurrentMissingAttrCacheRef(void)
-{
-	return &PgCurrentBackendUtilityState()->missing_attr_cache;
-}
-
-static PgBackendParallelState *
+PgBackendParallelState *
 PgCurrentBackendParallelState(void)
 {
 	if (CurrentPgBackend == NULL)
 		return &early_backend_parallel;
 
 	return &CurrentPgBackend->parallel;
-}
-
-int *
-PgCurrentParallelWorkerNumberRef(void)
-{
-	return &PgCurrentBackendParallelState()->worker_number;
-}
-
-volatile sig_atomic_t *
-PgCurrentParallelMessagePendingRef(void)
-{
-	return &PgCurrentBackendParallelState()->message_pending;
-}
-
-bool *
-PgCurrentInitializingParallelWorkerRef(void)
-{
-	return &PgCurrentBackendParallelState()->initializing_worker;
-}
-
-void **
-PgCurrentFixedParallelStateRef(void)
-{
-	return &PgCurrentBackendParallelState()->fixed_parallel_state;
-}
-
-dlist_head *
-PgCurrentParallelContextListRef(void)
-{
-	return &PgCurrentBackendParallelState()->context_list;
-}
-
-bool *
-PgCurrentParallelContextListInitializedRef(void)
-{
-	return &PgCurrentBackendParallelState()->context_list_initialized;
-}
-
-pid_t *
-PgCurrentParallelLeaderPidRef(void)
-{
-	return &PgCurrentBackendParallelState()->leader_pid;
-}
-
-void **
-PgCurrentPqMqHandleRef(void)
-{
-	return &PgCurrentBackendParallelState()->pq_mq_handle;
-}
-
-bool *
-PgCurrentPqMqBusyRef(void)
-{
-	return &PgCurrentBackendParallelState()->pq_mq_busy;
-}
-
-pid_t *
-PgCurrentPqMqParallelLeaderPidRef(void)
-{
-	return &PgCurrentBackendParallelState()->pq_mq_parallel_leader_pid;
-}
-
-ProcNumber *
-PgCurrentPqMqParallelLeaderProcNumberRef(void)
-{
-	return &PgCurrentBackendParallelState()->pq_mq_parallel_leader_proc_number;
-}
-
-int *
-PgCurrentComputeQueryIdRef(void)
-{
-	return &PgCurrentSessionQueryIdState()->compute_query_id_value;
-}
-
-bool *
-PgCurrentQueryIdEnabledRef(void)
-{
-	return &PgCurrentSessionQueryIdState()->query_id_enabled_value;
-}
-
-bool *
-PgCurrentIgnoreChecksumFailureRef(void)
-{
-	return &PgCurrentSessionStorageGUCState()->ignore_checksum_failure_value;
-}
-
-int *
-PgCurrentFileCopyMethodRef(void)
-{
-	return &PgCurrentSessionStorageGUCState()->file_copy_method_value;
-}
-
-int *
-PgCurrentPasswordEncryptionRef(void)
-{
-	return &PgCurrentSessionUserGUCState()->password_encryption_value;
-}
-
-char **
-PgCurrentCreateRoleSelfGrantRef(void)
-{
-	return &PgCurrentSessionUserGUCState()->createrole_self_grant_value;
-}
-
-bool *
-PgCurrentCreateRoleSelfGrantEnabledRef(void)
-{
-	return &PgCurrentSessionUserGUCState()->createrole_self_grant_enabled;
-}
-
-unsigned *
-PgCurrentCreateRoleSelfGrantOptionsSpecifiedRef(void)
-{
-	return &PgCurrentSessionUserGUCState()->createrole_self_grant_options_specified;
-}
-
-bool *
-PgCurrentCreateRoleSelfGrantOptionsAdminRef(void)
-{
-	return &PgCurrentSessionUserGUCState()->createrole_self_grant_options_admin;
-}
-
-bool *
-PgCurrentCreateRoleSelfGrantOptionsInheritRef(void)
-{
-	return &PgCurrentSessionUserGUCState()->createrole_self_grant_options_inherit;
-}
-
-bool *
-PgCurrentCreateRoleSelfGrantOptionsSetRef(void)
-{
-	return &PgCurrentSessionUserGUCState()->createrole_self_grant_options_set;
-}
-
-int *
-PgCurrentSessionReplicationRoleRef(void)
-{
-	return &PgCurrentSessionCommandGUCState()->session_replication_role_value;
-}
-
-bool *
-PgCurrentEventTriggersRef(void)
-{
-	return &PgCurrentSessionCommandGUCState()->event_triggers_value;
-}
-
-bool *
-PgCurrentTraceNotifyRef(void)
-{
-	return &PgCurrentSessionCommandGUCState()->trace_notify_value;
-}
-
-int *
-PgCurrentWalSenderTimeoutRef(void)
-{
-	return &PgCurrentSessionReplicationGUCState()->wal_sender_timeout_ms;
-}
-
-int *
-PgCurrentWalSenderShutdownTimeoutRef(void)
-{
-	return &PgCurrentSessionReplicationGUCState()->wal_sender_shutdown_timeout_ms;
-}
-
-bool *
-PgCurrentLogReplicationCommandsRef(void)
-{
-	return &PgCurrentSessionReplicationGUCState()->log_replication_commands_value;
-}
-
-int *
-PgCurrentWalReceiverTimeoutRef(void)
-{
-	return &PgCurrentSessionReplicationGUCState()->wal_receiver_timeout_ms;
-}
-
-int *
-PgCurrentLogicalDecodingWorkMemRef(void)
-{
-	return &PgCurrentSessionReplicationGUCState()->logical_decoding_work_mem_kb;
-}
-
-int *
-PgCurrentDebugLogicalReplicationStreamingRef(void)
-{
-	PgSessionReplicationGUCState *replication_guc;
-
-	replication_guc = PgCurrentSessionReplicationGUCState();
-	return &replication_guc->debug_logical_replication_streaming_value;
-}
-
-struct ReplicationState **
-PgCurrentReplicationOriginSessionStateRef(void)
-{
-	return &PgCurrentSessionLogicalReplicationState()->session_replication_state;
-}
-
-MemoryContext *
-PgCurrentLogicalRepRelMapContextRef(void)
-{
-	return &PgCurrentSessionLogicalReplicationState()->logical_rep_relmap_context;
-}
-
-HTAB **
-PgCurrentLogicalRepRelMapRef(void)
-{
-	return &PgCurrentSessionLogicalReplicationState()->logical_rep_relmap;
-}
-
-MemoryContext *
-PgCurrentLogicalRepPartMapContextRef(void)
-{
-	return &PgCurrentSessionLogicalReplicationState()->logical_rep_partmap_context;
-}
-
-HTAB **
-PgCurrentLogicalRepPartMapRef(void)
-{
-	return &PgCurrentSessionLogicalReplicationState()->logical_rep_partmap;
-}
-
-bool *
-PgCurrentPgOutputPublicationsValidRef(void)
-{
-	return &PgCurrentSessionLogicalReplicationState()->pgoutput_publications_valid;
-}
-
-HTAB **
-PgCurrentPgOutputRelationSyncCacheRef(void)
-{
-	return &PgCurrentSessionLogicalReplicationState()->pgoutput_relation_sync_cache;
-}
-
-int *
-PgCurrentLogicalRepSyncingRelationsStateRef(void)
-{
-	return &PgCurrentSessionLogicalReplicationState()->syncing_relations_state;
-}
-
-bool *
-PgCurrentAllowAlterSystemRef(void)
-{
-	return &PgCurrentSessionGeneralGUCState()->allow_alter_system_value;
-}
-
-bool *
-PgCurrentRowSecurityRef(void)
-{
-	return &PgCurrentSessionGeneralGUCState()->row_security_value;
-}
-
-bool *
-PgCurrentCheckFunctionBodiesRef(void)
-{
-	return &PgCurrentSessionGeneralGUCState()->check_function_bodies_value;
-}
-
-bool *
-PgCurrentCurrentRoleIsSuperuserRef(void)
-{
-	return &PgCurrentSessionGeneralGUCState()->current_role_is_superuser_value;
-}
-
-int *
-PgCurrentTempFileLimitRef(void)
-{
-	return &PgCurrentSessionGeneralGUCState()->temp_file_limit_kb;
-}
-
-int *
-PgCurrentNumTempBuffersRef(void)
-{
-	return &PgCurrentSessionGeneralGUCState()->num_temp_buffers_blocks;
-}
-
-char **
-PgCurrentRoleStringRef(void)
-{
-	return &PgCurrentSessionGeneralGUCState()->role_string_value;
-}
-
-bool *
-PgCurrentLoCompatPrivilegesRef(void)
-{
-	return &PgCurrentSessionGeneralGUCState()->lo_compat_privileges_value;
-}
-
-int *
-PgCurrentExtraFloatDigitsRef(void)
-{
-	return &PgCurrentSessionGeneralGUCState()->extra_float_digits_value;
-}
-
-bool *
-PgCurrentArrayNullsRef(void)
-{
-	return &PgCurrentSessionGeneralGUCState()->array_nulls_value;
-}
-
-int *
-PgCurrentByteaOutputRef(void)
-{
-	return &PgCurrentSessionGeneralGUCState()->bytea_output_value;
-}
-
-int *
-PgCurrentXmlBinaryRef(void)
-{
-	return &PgCurrentSessionGeneralGUCState()->xmlbinary_value;
-}
-
-int *
-PgCurrentXmlOptionRef(void)
-{
-	return &PgCurrentSessionGeneralGUCState()->xmloption_value;
-}
-
-bool *
-PgCurrentQuoteAllIdentifiersRef(void)
-{
-	return &PgCurrentSessionGeneralGUCState()->quote_all_identifiers_value;
-}
-
-int *
-PgCurrentPlanCacheModeRef(void)
-{
-	return &PgCurrentSessionGeneralGUCState()->plan_cache_mode_value;
-}
-
-int *
-PgCurrentGinFuzzySearchLimitRef(void)
-{
-	return &PgCurrentSessionGeneralGUCState()->gin_fuzzy_search_limit_value;
-}
-
-int *
-PgCurrentGinPendingListLimitRef(void)
-{
-	return &PgCurrentSessionGeneralGUCState()->gin_pending_list_limit_value;
-}
-
-char **
-PgCurrentDefaultTableAccessMethodRef(void)
-{
-	return &PgCurrentSessionAccessWalGUCState()->default_table_access_method_value;
-}
-
-bool *
-PgCurrentSynchronizeSeqscansRef(void)
-{
-	return &PgCurrentSessionAccessWalGUCState()->synchronize_seqscans_value;
-}
-
-int *
-PgCurrentDefaultToastCompressionRef(void)
-{
-	return &PgCurrentSessionAccessWalGUCState()->default_toast_compression_value;
-}
-
-int *
-PgCurrentWalCompressionRef(void)
-{
-	return &PgCurrentSessionAccessWalGUCState()->wal_compression_value;
-}
-
-bool *
-PgCurrentWalInitZeroRef(void)
-{
-	return &PgCurrentSessionAccessWalGUCState()->wal_init_zero_value;
-}
-
-bool *
-PgCurrentWalRecycleRef(void)
-{
-	return &PgCurrentSessionAccessWalGUCState()->wal_recycle_value;
-}
-
-char **
-PgCurrentWalConsistencyCheckingStringRef(void)
-{
-	return &PgCurrentSessionAccessWalGUCState()->wal_consistency_checking_string_value;
-}
-
-bool **
-PgCurrentWalConsistencyCheckingRef(void)
-{
-	return &PgCurrentSessionAccessWalGUCState()->wal_consistency_checking_value;
-}
-
-int *
-PgCurrentCommitDelayRef(void)
-{
-	return &PgCurrentSessionAccessWalGUCState()->commit_delay_us;
-}
-
-int *
-PgCurrentCommitSiblingsRef(void)
-{
-	return &PgCurrentSessionAccessWalGUCState()->commit_siblings_value;
-}
-
-bool *
-PgCurrentTrackWalIoTimingRef(void)
-{
-	return &PgCurrentSessionAccessWalGUCState()->track_wal_io_timing_value;
-}
-
-int *
-PgCurrentWalSkipThresholdRef(void)
-{
-	return &PgCurrentSessionAccessWalGUCState()->wal_skip_threshold_kb;
-}
-
-#ifdef WAL_DEBUG
-bool *
-PgCurrentXLogDebugRef(void)
-{
-	return &PgCurrentSessionAccessWalGUCState()->xlog_debug_value;
-}
-#endif
-
-#ifdef TRACE_SYNCSCAN
-bool *
-PgCurrentTraceSyncscanRef(void)
-{
-	return &PgCurrentSessionAccessWalGUCState()->trace_syncscan_value;
-}
-#endif
-
-bool *
-PgCurrentJitEnabledRef(void)
-{
-	return &PgCurrentSessionJitGUCState()->jit_enabled_value;
-}
-
-char **
-PgCurrentJitProviderRef(void)
-{
-	return &PgCurrentSessionJitGUCState()->jit_provider_value;
-}
-
-bool *
-PgCurrentJitDebuggingSupportRef(void)
-{
-	return &PgCurrentSessionJitGUCState()->jit_debugging_support_value;
-}
-
-bool *
-PgCurrentJitDumpBitcodeRef(void)
-{
-	return &PgCurrentSessionJitGUCState()->jit_dump_bitcode_value;
-}
-
-bool *
-PgCurrentJitExpressionsRef(void)
-{
-	return &PgCurrentSessionJitGUCState()->jit_expressions_value;
-}
-
-bool *
-PgCurrentJitProfilingSupportRef(void)
-{
-	return &PgCurrentSessionJitGUCState()->jit_profiling_support_value;
-}
-
-bool *
-PgCurrentJitTupleDeformingRef(void)
-{
-	return &PgCurrentSessionJitGUCState()->jit_tuple_deforming_value;
-}
-
-double *
-PgCurrentJitAboveCostRef(void)
-{
-	return &PgCurrentSessionJitGUCState()->jit_above_cost_value;
-}
-
-double *
-PgCurrentJitInlineAboveCostRef(void)
-{
-	return &PgCurrentSessionJitGUCState()->jit_inline_above_cost_value;
-}
-
-double *
-PgCurrentJitOptimizeAboveCostRef(void)
-{
-	return &PgCurrentSessionJitGUCState()->jit_optimize_above_cost_value;
-}
-
-bool *
-PgCurrentTraceSortRef(void)
-{
-	return &PgCurrentSessionSortGUCState()->trace_sort_value;
-}
-
-#ifdef DEBUG_BOUNDED_SORT
-bool *
-PgCurrentOptimizeBoundedSortRef(void)
-{
-	return &PgCurrentSessionSortGUCState()->optimize_bounded_sort_value;
-}
-#endif
-
-int *
-PgCurrentWorkMemRef(void)
-{
-	return &PgCurrentSessionQueryMemoryState()->work_mem_kb;
-}
-
-double *
-PgCurrentHashMemMultiplierRef(void)
-{
-	return &PgCurrentSessionQueryMemoryState()->hash_mem_multiplier_value;
-}
-
-int *
-PgCurrentMaintenanceWorkMemRef(void)
-{
-	return &PgCurrentSessionQueryMemoryState()->maintenance_work_mem_kb;
-}
-
-int *
-PgCurrentMaxParallelMaintenanceWorkersRef(void)
-{
-	return &PgCurrentSessionQueryMemoryState()->max_parallel_maintenance_workers_value;
-}
-
-double *
-PgCurrentSeqPageCostRef(void)
-{
-	return &PgCurrentSessionPlannerCostState()->seq_page_cost_value;
-}
-
-double *
-PgCurrentRandomPageCostRef(void)
-{
-	return &PgCurrentSessionPlannerCostState()->random_page_cost_value;
-}
-
-double *
-PgCurrentCpuTupleCostRef(void)
-{
-	return &PgCurrentSessionPlannerCostState()->cpu_tuple_cost_value;
-}
-
-double *
-PgCurrentCpuIndexTupleCostRef(void)
-{
-	return &PgCurrentSessionPlannerCostState()->cpu_index_tuple_cost_value;
-}
-
-double *
-PgCurrentCpuOperatorCostRef(void)
-{
-	return &PgCurrentSessionPlannerCostState()->cpu_operator_cost_value;
-}
-
-double *
-PgCurrentParallelTupleCostRef(void)
-{
-	return &PgCurrentSessionPlannerCostState()->parallel_tuple_cost_value;
-}
-
-double *
-PgCurrentParallelSetupCostRef(void)
-{
-	return &PgCurrentSessionPlannerCostState()->parallel_setup_cost_value;
-}
-
-double *
-PgCurrentRecursiveWorktableFactorRef(void)
-{
-	return &PgCurrentSessionPlannerCostState()->recursive_worktable_factor_value;
-}
-
-int *
-PgCurrentEffectiveCacheSizeRef(void)
-{
-	return &PgCurrentSessionPlannerCostState()->effective_cache_size_pages;
-}
-
-Cost *
-PgCurrentDisableCostRef(void)
-{
-	return (Cost *) &PgCurrentSessionPlannerCostState()->disable_cost_value;
-}
-
-int *
-PgCurrentMaxParallelWorkersPerGatherRef(void)
-{
-	return &PgCurrentSessionPlannerCostState()->max_parallel_workers_per_gather_value;
-}
-
-int *
-PgCurrentDebugParallelQueryRef(void)
-{
-	return &PgCurrentSessionPlannerCostState()->debug_parallel_query_value;
-}
-
-bool *
-PgCurrentParallelLeaderParticipationRef(void)
-{
-	return &PgCurrentSessionPlannerCostState()->parallel_leader_participation_value;
-}
-
-bool *
-PgCurrentEnableSeqscanRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->enable_seqscan_value;
-}
-
-bool *
-PgCurrentEnableIndexscanRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->enable_indexscan_value;
-}
-
-bool *
-PgCurrentEnableIndexonlyscanRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->enable_indexonlyscan_value;
-}
-
-bool *
-PgCurrentEnableBitmapscanRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->enable_bitmapscan_value;
-}
-
-bool *
-PgCurrentEnableTidscanRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->enable_tidscan_value;
-}
-
-bool *
-PgCurrentEnableSortRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->enable_sort_value;
-}
-
-bool *
-PgCurrentEnableIncrementalSortRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->enable_incremental_sort_value;
-}
-
-bool *
-PgCurrentEnableHashaggRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->enable_hashagg_value;
-}
-
-bool *
-PgCurrentEnableNestloopRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->enable_nestloop_value;
-}
-
-bool *
-PgCurrentEnableMaterialRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->enable_material_value;
-}
-
-bool *
-PgCurrentEnableMemoizeRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->enable_memoize_value;
-}
-
-bool *
-PgCurrentEnableMergejoinRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->enable_mergejoin_value;
-}
-
-bool *
-PgCurrentEnableHashjoinRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->enable_hashjoin_value;
-}
-
-bool *
-PgCurrentEnableGathermergeRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->enable_gathermerge_value;
-}
-
-bool *
-PgCurrentEnablePartitionwiseJoinRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->enable_partitionwise_join_value;
-}
-
-bool *
-PgCurrentEnablePartitionwiseAggregateRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->enable_partitionwise_aggregate_value;
-}
-
-bool *
-PgCurrentEnableParallelAppendRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->enable_parallel_append_value;
-}
-
-bool *
-PgCurrentEnableParallelHashRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->enable_parallel_hash_value;
-}
-
-bool *
-PgCurrentEnablePartitionPruningRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->enable_partition_pruning_value;
-}
-
-bool *
-PgCurrentEnablePresortedAggregateRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->enable_presorted_aggregate_value;
-}
-
-bool *
-PgCurrentEnableAsyncAppendRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->enable_async_append_value;
-}
-
-bool *
-PgCurrentEnableDistinctReorderingRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->enable_distinct_reordering_value;
-}
-
-bool *
-PgCurrentEnableGeqoRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->enable_geqo_value;
-}
-
-bool *
-PgCurrentEnableEagerAggregateRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->enable_eager_aggregate_value;
-}
-
-bool *
-PgCurrentEnableGroupByReorderingRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->enable_group_by_reordering_value;
-}
-
-bool *
-PgCurrentEnableSelfJoinEliminationRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->enable_self_join_elimination_value;
-}
-
-double *
-PgCurrentCursorTupleFractionRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->cursor_tuple_fraction_value;
-}
-
-int *
-PgCurrentConstraintExclusionRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->constraint_exclusion_value;
-}
-
-int *
-PgCurrentGeqoThresholdRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->geqo_threshold_value;
-}
-
-int *
-PgCurrentGeqoEffortRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->Geqo_effort_value;
-}
-
-int *
-PgCurrentGeqoPoolSizeRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->Geqo_pool_size_value;
-}
-
-int *
-PgCurrentGeqoGenerationsRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->Geqo_generations_value;
-}
-
-double *
-PgCurrentGeqoSelectionBiasRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->Geqo_selection_bias_value;
-}
-
-double *
-PgCurrentGeqoSeedRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->Geqo_seed_value;
-}
-
-int *
-PgCurrentGeqoPlannerExtensionIdRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->Geqo_planner_extension_id_value;
-}
-
-double *
-PgCurrentMinEagerAggGroupSizeRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->min_eager_agg_group_size_value;
-}
-
-int *
-PgCurrentMinParallelTableScanSizeRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->min_parallel_table_scan_size_blocks;
-}
-
-int *
-PgCurrentMinParallelIndexScanSizeRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->min_parallel_index_scan_size_blocks;
-}
-
-int *
-PgCurrentFromCollapseLimitRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->from_collapse_limit_value;
-}
-
-int *
-PgCurrentJoinCollapseLimitRef(void)
-{
-	return &PgCurrentSessionPlannerMethodState()->join_collapse_limit_value;
 }
 
 PgConnectionIdentityState *

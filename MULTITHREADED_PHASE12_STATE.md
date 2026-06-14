@@ -10407,20 +10407,46 @@ Second refactor slice completed:
   now owns the runtime/server GUC, session GUC, and GUC rebind tests, reducing
   `test_backend_runtime_session.c` to core session/cache/identity/reset tests.
 
+Third refactor slice completed:
+
+- the remaining session-owned GUC compatibility accessors for query-id,
+  storage/user/command/replication GUCs, logical replication GUC state,
+  access/WAL GUCs, JIT GUCs, sort/query-memory/planner-cost/planner-method
+  GUCs moved from `src/backend/utils/init/backend_runtime.c` to
+  `src/backend/utils/misc/backend_runtime_guc.c`;
+- backend-local utility, formatting, sampling, superuser, and resource-owner
+  compatibility accessors moved to
+  `src/backend/utils/misc/backend_runtime_utility.c`;
+- backend-local parallel-query compatibility accessors moved to
+  `src/backend/access/transam/backend_runtime_parallel.c`;
+- `backend_runtime.c` keeps only the small fallback-aware current-bucket
+  selectors for those owners, reducing the central runtime file by roughly
+  another thousand lines without changing behavior;
+- `test_backend_runtime_backend.c` was split again so PMChild
+  thread-backend publication tests live in `test_backend_runtime_pmchild.c`,
+  interrupt/exit-state tests live in
+  `test_backend_runtime_backend_interrupt.c`, and core backend identity,
+  command/log, expression-interpreter, and latch interrupt tests live in
+  `test_backend_runtime_backend_core.c`.
+
 Validation for this refactor slice:
 
 - touched-object builds passed for `backend_runtime.o`,
-  `backend_runtime_connection.o`, `backend_runtime_buffer.o`,
-  `backend_runtime_file.o`, `backend_runtime_lmgr.o`, and
-  `backend_runtime_ipc.o`;
+  `backend_runtime_guc.o`, `backend_runtime_utility.o`,
+  `backend_runtime_parallel.o`, and the split `test_backend_runtime` module
+  objects;
 - full `gmake -j8` passed;
 - `gmake -C src/test/modules/test_backend_runtime clean all` passed after
   the test split;
 - `gmake check-runtime-lifecycles` passed with 149 runtime fields classified
-  after adding the storage owner files to the default checked source set;
+  after adding the new utility and parallel owner files to the default checked
+  source set;
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals;
 - `gmake -C src/test/modules/test_backend_runtime check` passed;
 - direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
   `002_threaded_bgworker_crash.pl` using the local `IPC::Run` `PERL5LIB` and
-  patched temporary-install dynamic library names.
+  patched temporary-install dynamic library names. The direct TAP invocation
+  also needs `PG_REGRESS=$PWD/src/test/regress/pg_regress` when run outside
+  the configured TAP make target, and stale `tmp_check` TAP scratch
+  directories must be removed before rerun after a failed harness setup.

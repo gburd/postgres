@@ -2,6 +2,7 @@
 
 backend_sources += files(
   'backend_runtime_guc.c',
+  'backend_runtime_utility.c',
   'conffiles.c',
   'guc.c',
   'guc_funcs.c',

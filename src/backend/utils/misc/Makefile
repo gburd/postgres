@@ -16,6 +16,7 @@ override CPPFLAGS := -I. -I$(srcdir) $(CPPFLAGS)
 
 OBJS = \
 	backend_runtime_guc.o \
+	backend_runtime_utility.o \
 	conffiles.o \
 	guc.o \
 	guc-file.o \
