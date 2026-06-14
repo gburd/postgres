@@ -10459,6 +10459,13 @@ Current lifecycle ergonomics rule:
   validation so the batch moves through one checked path instead of several
   hand-maintained init/adopt/reset/destroy lists. Keep nontrivial destructor
   ordering and ownership cleanup handwritten in the owning subsystem.
+- the same rule applies when adding a new runtime root object, not only when
+  adding fields to `PgBackend`, `PgSession`, `PgConnection`, or `PgExecution`.
+  Add the root to `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`,
+  `check_runtime_lifecycles.pl`, and a checked bucket-definition file before
+  relying on it for further migrations. The preferred steady state is one
+  manifest row and one checked bucket row per migrated field, with helper
+  macros covering routine lifecycle cases.
 
 Lifecycle bucket definition framework slice completed:
 

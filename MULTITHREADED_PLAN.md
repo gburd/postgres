@@ -876,8 +876,11 @@ Gate E2 requires:
   checked baseline, and any new mutable global either has an explicit lifetime
   annotation or a deliberate baseline update;
 - `gmake check-runtime-lifecycles` is run as a required gate check with
-  `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`, so every `PgBackend`, `PgSession`,
-  `PgConnection`, and `PgExecution` field has a checked lifecycle row;
+  `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`, so every runtime-root field has a
+  checked lifecycle row. The checked roots currently include `PgCarrier`,
+  `PgBackend`, `PgSession`, `PgConnection`, and `PgExecution`, and any new
+  root object added during Phase 12 must be added to the manifest/checker
+  before it becomes a migration target;
 - lifecycle call lists are made mechanically checkable before the remaining
   teardown work: add root-object bucket definition files, X-macros, or an
   equivalent manifest-driven mechanism so constructor, early-adoption, and
@@ -905,6 +908,13 @@ Gate E2 requires:
   `.def`-row, or declarative-rule layer before moving the globals. This is a
   Gate E2 work item because it keeps large-batch state migration fast while
   preserving manifest-checked lifecycle coverage;
+- future lifecycle ergonomics work should prefer reusable checked mechanisms
+  over local one-off helpers. The desired shape is one manifest row and one
+  checked bucket-definition row per migrated field, with `PG_RUNTIME_DEFINE_*`
+  or equivalent macros for routine zero-init, scalar copy/adopt, whole-bucket
+  copy/adopt, zero-reset, and destructor-call cases. If a migration cannot be
+  expressed clearly through that path, document why and keep the semantic
+  cleanup handwritten near the owning subsystem;
 - the Phase 12 runtime and test scaffolding is refactored before additional
   Gate E2 state migration or Phase 13 scheduler-aware wait work begins.
   `src/backend/utils/init/backend_runtime.c` must remain the orchestration

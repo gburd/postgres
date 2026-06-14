@@ -34,8 +34,9 @@ the code evolves.
   state-migration bridge work that starts moving TLS/global state toward
   explicit runtime/session objects.
 - [MULTITHREADED_RUNTIME_LIFECYCLE.tsv](MULTITHREADED_RUNTIME_LIFECYCLE.tsv)
-  is the Gate E2 lifecycle manifest for `PgBackend`, `PgSession`,
-  `PgConnection`, and `PgExecution` fields.
+  is the Gate E2 lifecycle manifest for runtime-root fields, currently
+  including `PgCarrier`, `PgBackend`, `PgSession`, `PgConnection`, and
+  `PgExecution`.
 - [MULTITHREADED_RUNTIME_OWNERS.tsv](MULTITHREADED_RUNTIME_OWNERS.tsv) maps
   migrated legacy symbols to runtime object buckets, members, accessors, and
   owner source files. Extend it when moving globals behind runtime objects.
@@ -285,6 +286,12 @@ Important current files:
   `.def` rows, or declarative lifecycle rules before moving the state. The goal
   is faster large-batch migration with the same manifest-checked discipline,
   not more manual bookkeeping.
+- When adding another runtime root object or moving more fields into an
+  existing root, extend the checked lifecycle framework first if the existing
+  macros and `.def` rows do not make the lifecycle obvious. The default should
+  be one manifest row plus one checked bucket-definition row per field, with
+  helper macros covering routine init/adopt/reset cases and handwritten code
+  reserved for real ownership semantics.
 - Session GUC direct-variable rebinding in `src/backend/utils/misc/guc.c`
   is table-driven by `threaded_session_guc_rebinds[]`. Add new migrated
   built-in direct-pointer GUCs to that table instead of extending
