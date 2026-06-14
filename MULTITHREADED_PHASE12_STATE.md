@@ -8295,3 +8295,49 @@ Validation for this slice:
 - `gmake -C contrib -j8` passed;
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals.
+
+## Async Execution State
+
+The next Phase 12 state-migration slice moves LISTEN/NOTIFY transaction
+scratch state into `PgExecutionAsyncState`:
+
+- `pendingActions`, `pendingListenActions`, `pendingNotifies`,
+  `queueHeadBeforeWrite`, `queueHeadAfterWrite`, `signalPids`,
+  `signalProcnos`, and `tryAdvanceTail` are now fields in the current
+  `PgExecution`;
+- `async.c` keeps the historic local names as macros over runtime accessors,
+  while `QueuePosition` is now an alias of the runtime queue-position layout;
+- `PgExecutionAdoptEarlyState()` adopts and resets the async fallback bucket,
+  so process runtime initialization and thread backend install remain
+  symmetrical;
+- `InitializePgThreadBackendRuntimeState()` explicitly initializes the async
+  bucket before install;
+- `test_thread_install_adopts_session_execution_fallback_state()` now verifies
+  early async fallback adoption and reset behavior;
+- `test_execution_async_state_is_execution_local()` verifies that two
+  simulated logical executions keep pending async pointers, queue positions,
+  signal work arrays, and cleanup flags isolated.
+
+Ownership remains with existing async cleanup paths: pending action/notify
+lists and hash state live in transaction contexts and are cleared by async
+transaction cleanup, while the `SignalBackends()` workspace arrays are still
+allocated under `TopMemoryContext` until the broader backend destructor model
+is closed. The runtime object now owns the execution-local pointer slots and
+queue-position values, not the pointed-to storage.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `async.o`, and
+  `test_backend_runtime.o`;
+- full `gmake -j8` passed after the final async object relink;
+- `gmake -C src/test/modules/test_backend_runtime check` passed, including
+  `test_execution_async_state_is_execution_local()`;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths, explicit
+  `PG_REGRESS`, and patched macOS install names;
+- `gmake check-runtime-lifecycles` passed with 127 fields classified;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and 81 execution-local declarations;
+- `gmake -C contrib -j8` passed;
+- `git diff --check` passed.

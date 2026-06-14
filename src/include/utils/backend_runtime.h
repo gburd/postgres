@@ -946,6 +946,27 @@ typedef struct PgExecutionGUCErrorState
 	sigjmp_buf *flex_fatal_jmp;
 } PgExecutionGUCErrorState;
 
+typedef struct PgExecutionAsyncQueuePosition
+{
+	int64		page;
+	int			offset;
+} PgExecutionAsyncQueuePosition;
+
+struct ActionList;
+struct NotificationList;
+
+typedef struct PgExecutionAsyncState
+{
+	struct ActionList *pending_actions;
+	HTAB	   *pending_listen_actions;
+	struct NotificationList *pending_notifies;
+	PgExecutionAsyncQueuePosition queue_head_before_write;
+	PgExecutionAsyncQueuePosition queue_head_after_write;
+	int32	   *signal_pids;
+	ProcNumber *signal_procnos;
+	bool		try_advance_tail;
+} PgExecutionAsyncState;
+
 typedef struct PgExecutionCatalogState
 {
 	HTAB	   *uncommitted_enum_types;
@@ -1795,6 +1816,7 @@ struct PgExecution
 	PgExecutionXLogInsertState xloginsert;
 	PgExecutionXactState xact;
 	PgExecutionGUCErrorState guc_error;
+	PgExecutionAsyncState async;
 	PgExecutionCatalogState catalog;
 	PgExecutionRegexState regex;
 	PgExecutionValgrindState valgrind;
@@ -2314,6 +2336,14 @@ extern const char **PgCurrentFormatDomainRef(void);
 extern unsigned int *PgCurrentConfigFileLinenoRef(void);
 extern const char **PgCurrentGUCFlexFatalErrmsgRef(void);
 extern sigjmp_buf **PgCurrentGUCFlexFatalJmpRef(void);
+extern struct ActionList **PgCurrentPendingActionsRef(void);
+extern HTAB **PgCurrentPendingListenActionsRef(void);
+extern struct NotificationList **PgCurrentPendingNotifiesRef(void);
+extern PgExecutionAsyncQueuePosition *PgCurrentQueueHeadBeforeWriteRef(void);
+extern PgExecutionAsyncQueuePosition *PgCurrentQueueHeadAfterWriteRef(void);
+extern int32 **PgCurrentSignalPidsRef(void);
+extern ProcNumber **PgCurrentSignalProcnosRef(void);
+extern bool *PgCurrentTryAdvanceTailRef(void);
 extern void **PgCurrentRegexLocaleRef(void);
 extern unsigned int *PgCurrentValgrindOldErrorCountRef(void);
 extern struct ResourceOwnerData **PgCurrentSnapBuildSavedResourceOwnerDuringExportRef(void);

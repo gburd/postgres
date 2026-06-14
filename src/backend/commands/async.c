@@ -230,11 +230,7 @@ typedef struct AsyncQueueEntry
 /*
  * Struct describing a queue position, and assorted macros for working with it
  */
-typedef struct QueuePosition
-{
-	int64		page;			/* SLRU page number */
-	int			offset;			/* byte offset within page */
-} QueuePosition;
+typedef PgExecutionAsyncQueuePosition QueuePosition;
 
 #define QUEUE_POS_PAGE(x)		((x).page)
 #define QUEUE_POS_OFFSET(x)		((x).offset)
@@ -456,7 +452,7 @@ typedef struct ActionList
 	struct ActionList *upper;	/* details for upper transaction levels */
 } ActionList;
 
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ActionList *pendingActions = NULL;
+#define pendingActions (*PgCurrentPendingActionsRef())
 
 /*
  * Hash table recording the final listen/unlisten intent per channel for
@@ -478,7 +474,7 @@ typedef struct PendingListenEntry
 	PendingListenAction action; /* which action should we perform? */
 } PendingListenEntry;
 
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION HTAB *pendingListenActions = NULL;
+#define pendingListenActions (*PgCurrentPendingListenActionsRef())
 
 /*
  * State for outbound notifies consists of a list of all channels+payloads
@@ -532,7 +528,7 @@ struct NotificationHash
 	Notification *event;		/* => the actual Notification struct */
 };
 
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION NotificationList *pendingNotifies = NULL;
+#define pendingNotifies (*PgCurrentPendingNotifiesRef())
 
 /*
  * Hash entry in NotificationList.uniqueChannelHash or localChannelTable
@@ -562,19 +558,19 @@ typedef struct ChannelName
  * lock on database 0, ensuring no other backend can insert notifications
  * between them.  SignalBackends uses these to advance idle backends.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION QueuePosition queueHeadBeforeWrite;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION QueuePosition queueHeadAfterWrite;
+#define queueHeadBeforeWrite (*PgCurrentQueueHeadBeforeWriteRef())
+#define queueHeadAfterWrite (*PgCurrentQueueHeadAfterWriteRef())
 
 /*
  * Workspace arrays for SignalBackends.  These are preallocated in
  * PreCommit_Notify to avoid needing memory allocation after committing to
  * clog.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int32 *signalPids = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ProcNumber *signalProcnos = NULL;
+#define signalPids (*PgCurrentSignalPidsRef())
+#define signalProcnos (*PgCurrentSignalProcnosRef())
 
 /* have we advanced to a page that's a multiple of QUEUE_CLEANUP_DELAY? */
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool tryAdvanceTail = false;
+#define tryAdvanceTail (*PgCurrentTryAdvanceTailRef())
 
 /* For 8 KB pages this gives 8 GB of disk space */
 PG_GLOBAL_RUNTIME int max_notify_queue_pages = 1048576;

@@ -1468,6 +1468,15 @@ state. This removed seven raw `PG_GLOBAL_EXECUTION` declarations while keeping
 the existing enum/reindex/smgr transaction cleanup ownership intact. The
 global-lifetime scan now reports 88 execution-local declarations, down from
 95, with zero new unclassified mutable globals.
+The following state-migration batch moved LISTEN/NOTIFY transaction scratch
+state into `PgExecutionAsyncState`: pending LISTEN/UNLISTEN actions, pending
+NOTIFY lists, pending listen intent hash state, queue head snapshots used by
+`SignalBackends()`, and preallocated signal workspace arrays. Existing async
+transaction cleanup and transaction memory contexts still own the pointed-to
+list/hash storage, while the runtime object owns the execution-local pointer
+slots and queue-position values. The global-lifetime scan now reports 81
+execution-local declarations, down from 88, with zero new unclassified mutable
+globals.
 The lifecycle audit is now also mechanically checked. The root
 `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` manifest records owner/lifetime,
 initializer, early-adoption, reset/destroy, and copy/adoption rules for every

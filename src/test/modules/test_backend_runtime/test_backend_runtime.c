@@ -547,6 +547,16 @@ test_thread_install_adopts_session_execution_fallback_state(PG_FUNCTION_ARGS)
 		*PgCurrentSPIConnectedRef() = 17;
 		*PgCurrentXactIsoLevelRef() = XACT_SERIALIZABLE;
 		*PgCurrentGUCCheckErrcodeValueRef() = 503;
+		*PgCurrentPendingActionsRef() = (struct ActionList *) &execution;
+		*PgCurrentPendingListenActionsRef() = (HTAB *) &execution;
+		*PgCurrentPendingNotifiesRef() = (struct NotificationList *) &execution;
+		PgCurrentQueueHeadBeforeWriteRef()->page = 11;
+		PgCurrentQueueHeadBeforeWriteRef()->offset = 12;
+		PgCurrentQueueHeadAfterWriteRef()->page = 13;
+		PgCurrentQueueHeadAfterWriteRef()->offset = 14;
+		*PgCurrentSignalPidsRef() = (int32 *) &execution;
+		*PgCurrentSignalProcnosRef() = (ProcNumber *) &execution;
+		*PgCurrentTryAdvanceTailRef() = true;
 		*PgCurrentValgrindOldErrorCountRef() = 77;
 
 		PgSessionAdoptEarlyState(&session);
@@ -561,6 +571,19 @@ test_thread_install_adopts_session_execution_fallback_state(PG_FUNCTION_ARGS)
 		ok = ok && execution.spi.connected == 17;
 		ok = ok && execution.xact.iso_level == XACT_SERIALIZABLE;
 		ok = ok && execution.guc_error.check_errcode_value == 503;
+		ok = ok && execution.async.pending_actions ==
+			(struct ActionList *) &execution;
+		ok = ok && execution.async.pending_listen_actions ==
+			(HTAB *) &execution;
+		ok = ok && execution.async.pending_notifies ==
+			(struct NotificationList *) &execution;
+		ok = ok && execution.async.queue_head_before_write.page == 11;
+		ok = ok && execution.async.queue_head_before_write.offset == 12;
+		ok = ok && execution.async.queue_head_after_write.page == 13;
+		ok = ok && execution.async.queue_head_after_write.offset == 14;
+		ok = ok && execution.async.signal_pids == (int32 *) &execution;
+		ok = ok && execution.async.signal_procnos == (ProcNumber *) &execution;
+		ok = ok && execution.async.try_advance_tail;
 		ok = ok && execution.valgrind.old_error_count == 77;
 
 		ok = ok && !*PgCurrentDoingCommandReadRef();
@@ -572,6 +595,16 @@ test_thread_install_adopts_session_execution_fallback_state(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentSPIConnectedRef() == -1;
 		ok = ok && *PgCurrentXactIsoLevelRef() == XACT_READ_COMMITTED;
 		ok = ok && *PgCurrentGUCCheckErrcodeValueRef() == 0;
+		ok = ok && *PgCurrentPendingActionsRef() == NULL;
+		ok = ok && *PgCurrentPendingListenActionsRef() == NULL;
+		ok = ok && *PgCurrentPendingNotifiesRef() == NULL;
+		ok = ok && PgCurrentQueueHeadBeforeWriteRef()->page == 0;
+		ok = ok && PgCurrentQueueHeadBeforeWriteRef()->offset == 0;
+		ok = ok && PgCurrentQueueHeadAfterWriteRef()->page == 0;
+		ok = ok && PgCurrentQueueHeadAfterWriteRef()->offset == 0;
+		ok = ok && *PgCurrentSignalPidsRef() == NULL;
+		ok = ok && *PgCurrentSignalProcnosRef() == NULL;
+		ok = ok && !*PgCurrentTryAdvanceTailRef();
 		ok = ok && *PgCurrentValgrindOldErrorCountRef() == 0;
 
 		PgSetCurrentSession(saved_session);
@@ -12081,6 +12114,105 @@ test_execution_catalog_state_is_execution_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "catalog execution state was not execution-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_execution_async_state_is_execution_local);
+Datum
+test_execution_async_state_is_execution_local(PG_FUNCTION_ARGS)
+{
+	PgExecution *saved_execution;
+	PgExecution fake_execution1;
+	PgExecution fake_execution2;
+	bool		ok = true;
+
+	saved_execution = CurrentPgExecution;
+	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
+	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+
+	PG_TRY();
+	{
+		CurrentPgExecution = &fake_execution1;
+		*PgCurrentPendingActionsRef() = (struct ActionList *) &fake_execution1;
+		*PgCurrentPendingListenActionsRef() = (HTAB *) &fake_execution1;
+		*PgCurrentPendingNotifiesRef() =
+			(struct NotificationList *) &fake_execution1;
+		PgCurrentQueueHeadBeforeWriteRef()->page = 101;
+		PgCurrentQueueHeadBeforeWriteRef()->offset = 102;
+		PgCurrentQueueHeadAfterWriteRef()->page = 103;
+		PgCurrentQueueHeadAfterWriteRef()->offset = 104;
+		*PgCurrentSignalPidsRef() = (int32 *) &fake_execution1;
+		*PgCurrentSignalProcnosRef() = (ProcNumber *) &fake_execution1;
+		*PgCurrentTryAdvanceTailRef() = true;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && *PgCurrentPendingActionsRef() == NULL;
+		ok = ok && *PgCurrentPendingListenActionsRef() == NULL;
+		ok = ok && *PgCurrentPendingNotifiesRef() == NULL;
+		ok = ok && PgCurrentQueueHeadBeforeWriteRef()->page == 0;
+		ok = ok && PgCurrentQueueHeadBeforeWriteRef()->offset == 0;
+		ok = ok && PgCurrentQueueHeadAfterWriteRef()->page == 0;
+		ok = ok && PgCurrentQueueHeadAfterWriteRef()->offset == 0;
+		ok = ok && *PgCurrentSignalPidsRef() == NULL;
+		ok = ok && *PgCurrentSignalProcnosRef() == NULL;
+		ok = ok && !*PgCurrentTryAdvanceTailRef();
+
+		*PgCurrentPendingActionsRef() = (struct ActionList *) &fake_execution2;
+		*PgCurrentPendingListenActionsRef() = (HTAB *) &fake_execution2;
+		*PgCurrentPendingNotifiesRef() =
+			(struct NotificationList *) &fake_execution2;
+		PgCurrentQueueHeadBeforeWriteRef()->page = 201;
+		PgCurrentQueueHeadBeforeWriteRef()->offset = 202;
+		PgCurrentQueueHeadAfterWriteRef()->page = 203;
+		PgCurrentQueueHeadAfterWriteRef()->offset = 204;
+		*PgCurrentSignalPidsRef() = (int32 *) &fake_execution2;
+		*PgCurrentSignalProcnosRef() = (ProcNumber *) &fake_execution2;
+		*PgCurrentTryAdvanceTailRef() = false;
+
+		CurrentPgExecution = &fake_execution1;
+		ok = ok && *PgCurrentPendingActionsRef() ==
+			(struct ActionList *) &fake_execution1;
+		ok = ok && *PgCurrentPendingListenActionsRef() ==
+			(HTAB *) &fake_execution1;
+		ok = ok && *PgCurrentPendingNotifiesRef() ==
+			(struct NotificationList *) &fake_execution1;
+		ok = ok && PgCurrentQueueHeadBeforeWriteRef()->page == 101;
+		ok = ok && PgCurrentQueueHeadBeforeWriteRef()->offset == 102;
+		ok = ok && PgCurrentQueueHeadAfterWriteRef()->page == 103;
+		ok = ok && PgCurrentQueueHeadAfterWriteRef()->offset == 104;
+		ok = ok && *PgCurrentSignalPidsRef() == (int32 *) &fake_execution1;
+		ok = ok && *PgCurrentSignalProcnosRef() ==
+			(ProcNumber *) &fake_execution1;
+		ok = ok && *PgCurrentTryAdvanceTailRef();
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && *PgCurrentPendingActionsRef() ==
+			(struct ActionList *) &fake_execution2;
+		ok = ok && *PgCurrentPendingListenActionsRef() ==
+			(HTAB *) &fake_execution2;
+		ok = ok && *PgCurrentPendingNotifiesRef() ==
+			(struct NotificationList *) &fake_execution2;
+		ok = ok && PgCurrentQueueHeadBeforeWriteRef()->page == 201;
+		ok = ok && PgCurrentQueueHeadBeforeWriteRef()->offset == 202;
+		ok = ok && PgCurrentQueueHeadAfterWriteRef()->page == 203;
+		ok = ok && PgCurrentQueueHeadAfterWriteRef()->offset == 204;
+		ok = ok && *PgCurrentSignalPidsRef() == (int32 *) &fake_execution2;
+		ok = ok && *PgCurrentSignalProcnosRef() ==
+			(ProcNumber *) &fake_execution2;
+		ok = ok && !*PgCurrentTryAdvanceTailRef();
+
+		CurrentPgExecution = saved_execution;
+	}
+	PG_CATCH();
+	{
+		CurrentPgExecution = saved_execution;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "async execution state was not execution-local");
 
 	PG_RETURN_BOOL(true);
 }

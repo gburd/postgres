@@ -99,6 +99,7 @@ SELECT test_execution_xloginsert_state_is_execution_local();
 SELECT test_execution_xact_state_is_execution_local();
 SELECT test_execution_guc_error_state_is_execution_local();
 SELECT test_execution_catalog_state_is_execution_local();
+SELECT test_execution_async_state_is_execution_local();
 SELECT test_execution_misc_scratch_state_is_execution_local();
 SELECT test_execution_resource_owners_are_execution_local();
 SELECT test_connection_socket_io_is_connection_local();

@@ -563,6 +563,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionXactState early_execution_
 	.check_xid_alive = InvalidTransactionId
 };
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionGUCErrorState early_execution_guc_error;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionAsyncState early_execution_async;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionCatalogState early_execution_catalog = {
 	.currently_reindexed_heap = InvalidOid,
 	.currently_reindexed_index = InvalidOid
@@ -763,6 +764,8 @@ static void PgExecutionInitializeXactState(PgExecutionXactState *xact);
 static void PgExecutionAdoptEarlyXactState(PgExecution *execution);
 static void PgExecutionInitializeGUCErrorState(PgExecutionGUCErrorState *guc_error);
 static void PgExecutionAdoptEarlyGUCErrorState(PgExecution *execution);
+static void PgExecutionInitializeAsyncState(PgExecutionAsyncState *async);
+static void PgExecutionAdoptEarlyAsyncState(PgExecution *execution);
 static void PgExecutionInitializeCatalogState(PgExecutionCatalogState *catalog);
 static void PgExecutionAdoptEarlyCatalogState(PgExecution *execution);
 static void PgExecutionInitializeRegexState(PgExecutionRegexState *regex);
@@ -828,6 +831,7 @@ static PgExecutionComboCidState *PgCurrentExecutionComboCidState(void);
 static PgExecutionXLogInsertState *PgCurrentExecutionXLogInsertState(void);
 static PgExecutionXactState *PgCurrentExecutionXactState(void);
 static PgExecutionGUCErrorState *PgCurrentExecutionGUCErrorState(void);
+static PgExecutionAsyncState *PgCurrentExecutionAsyncState(void);
 static PgExecutionCatalogState *PgCurrentExecutionCatalogState(void);
 static PgExecutionRegexState *PgCurrentExecutionRegexState(void);
 static PgExecutionValgrindState *PgCurrentExecutionValgrindState(void);
@@ -3162,6 +3166,23 @@ PgExecutionAdoptEarlyGUCErrorState(PgExecution *execution)
 }
 
 static void
+PgExecutionInitializeAsyncState(PgExecutionAsyncState *async)
+{
+	Assert(async != NULL);
+
+	MemSet(async, 0, sizeof(*async));
+}
+
+static void
+PgExecutionAdoptEarlyAsyncState(PgExecution *execution)
+{
+	Assert(execution != NULL);
+
+	execution->async = early_execution_async;
+	PgExecutionInitializeAsyncState(&early_execution_async);
+}
+
+static void
 PgExecutionInitializeCatalogState(PgExecutionCatalogState *catalog)
 {
 	Assert(catalog != NULL);
@@ -3253,6 +3274,7 @@ PgExecutionAdoptEarlyState(PgExecution *execution)
 	PgExecutionAdoptEarlyXLogInsertState(execution);
 	PgExecutionAdoptEarlyXactState(execution);
 	PgExecutionAdoptEarlyGUCErrorState(execution);
+	PgExecutionAdoptEarlyAsyncState(execution);
 	PgExecutionAdoptEarlyCatalogState(execution);
 	PgExecutionAdoptEarlyRegexState(execution);
 	PgExecutionAdoptEarlyValgrindState(execution);
@@ -3463,6 +3485,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgExecutionInitializeXLogInsertState(&state->execution.xloginsert);
 	PgExecutionInitializeXactState(&state->execution.xact);
 	PgExecutionInitializeGUCErrorState(&state->execution.guc_error);
+	PgExecutionInitializeAsyncState(&state->execution.async);
 	PgExecutionInitializeCatalogState(&state->execution.catalog);
 	PgExecutionInitializeRegexState(&state->execution.regex);
 	PgExecutionInitializeValgrindState(&state->execution.valgrind);
@@ -7036,6 +7059,63 @@ sigjmp_buf **
 PgCurrentGUCFlexFatalJmpRef(void)
 {
 	return &PgCurrentExecutionGUCErrorState()->flex_fatal_jmp;
+}
+
+static PgExecutionAsyncState *
+PgCurrentExecutionAsyncState(void)
+{
+	if (CurrentPgExecution == NULL)
+		return &early_execution_async;
+
+	return &CurrentPgExecution->async;
+}
+
+struct ActionList **
+PgCurrentPendingActionsRef(void)
+{
+	return &PgCurrentExecutionAsyncState()->pending_actions;
+}
+
+HTAB **
+PgCurrentPendingListenActionsRef(void)
+{
+	return &PgCurrentExecutionAsyncState()->pending_listen_actions;
+}
+
+struct NotificationList **
+PgCurrentPendingNotifiesRef(void)
+{
+	return &PgCurrentExecutionAsyncState()->pending_notifies;
+}
+
+PgExecutionAsyncQueuePosition *
+PgCurrentQueueHeadBeforeWriteRef(void)
+{
+	return &PgCurrentExecutionAsyncState()->queue_head_before_write;
+}
+
+PgExecutionAsyncQueuePosition *
+PgCurrentQueueHeadAfterWriteRef(void)
+{
+	return &PgCurrentExecutionAsyncState()->queue_head_after_write;
+}
+
+int32 **
+PgCurrentSignalPidsRef(void)
+{
+	return &PgCurrentExecutionAsyncState()->signal_pids;
+}
+
+ProcNumber **
+PgCurrentSignalProcnosRef(void)
+{
+	return &PgCurrentExecutionAsyncState()->signal_procnos;
+}
+
+bool *
+PgCurrentTryAdvanceTailRef(void)
+{
+	return &PgCurrentExecutionAsyncState()->try_advance_tail;
 }
 
 static PgExecutionCatalogState *

@@ -890,6 +890,14 @@ and smgr transaction cleanup remains authoritative for the pointed-to
 hash/list storage; the runtime object now owns the carrier-independent pointer
 slots. The global-lifetime scan now reports 88 execution-local declarations,
 down from 95, with zero new unclassified mutable globals.
+The following state-migration batch added `PgExecutionAsyncState` and moved
+LISTEN/NOTIFY transaction scratch state into it: pending LISTEN/UNLISTEN
+actions, pending NOTIFY lists, pending listen intent hash state, queue head
+snapshots, and `SignalBackends()` workspace arrays. Existing async
+transaction cleanup and transaction memory contexts remain authoritative for
+the pointed-to list/hash storage. The global-lifetime scan now reports 81
+execution-local declarations, down from 88, with zero new unclassified mutable
+globals.
 Further hardening made the object-lifecycle audit mechanically enforceable:
 `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` now records owner/lifetime, initializer,
 early-adoption, reset/destroy, and copy/adoption rules for every current

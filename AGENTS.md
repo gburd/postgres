@@ -189,6 +189,14 @@ Important current files:
   macros, rename the field; this was required for `SerializedReindexState`.
   The actual hash/list storage is still owned by existing transaction cleanup
   paths such as enum, reindex, and smgr end-of-transaction cleanup.
+- LISTEN/NOTIFY transaction scratch state now lives under
+  `PgExecutionAsyncState`: pending LISTEN/UNLISTEN actions, pending NOTIFY
+  lists, pending listen hash state, queue head snapshots used by
+  `SignalBackends()`, and its preallocated workspace arrays. `async.c` keeps
+  the historic local names as macros over runtime accessors. The pending lists
+  remain owned by transaction memory contexts and async transaction cleanup;
+  the signal workspace arrays are still allocated under `TopMemoryContext`
+  until the broader backend destructor model is closed.
 - `AuxProcessResourceOwner` is now routed through `PgBackend` via
   `PgCurrentAuxProcessResourceOwnerRef()` and the `AuxProcessResourceOwner`
   lvalue macro. After changing `src/include/utils/resowner.h` or this backend
