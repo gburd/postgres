@@ -3745,11 +3745,14 @@ test_backend_extension_module_state_is_backend_local(PG_FUNCTION_ARGS)
 	{
 		CurrentPgBackend = &fake_backend1;
 		extension_modules = PgCurrentBackendExtensionModuleState();
+		ok = ok && extension_modules->pg_prewarm_autoprewarm_state == NULL;
 		ok = ok && extension_modules->pg_stash_advice_state == NULL;
 		ok = ok && extension_modules->pg_stash_advice_dsa_area == NULL;
 		ok = ok && extension_modules->pg_stash_advice_stash_dshash == NULL;
 		ok = ok && extension_modules->pg_stash_advice_entry_dshash == NULL;
 		ok = ok && extension_modules->pg_stash_advice_context == NULL;
+		extension_modules->pg_prewarm_autoprewarm_state =
+			(struct AutoPrewarmSharedState *) &fake_backend1;
 		extension_modules->pg_stash_advice_state =
 			(struct pgsa_shared_state *) &fake_backend1;
 		extension_modules->pg_stash_advice_dsa_area =
@@ -3763,6 +3766,7 @@ test_backend_extension_module_state_is_backend_local(PG_FUNCTION_ARGS)
 
 		CurrentPgBackend = &fake_backend2;
 		extension_modules = PgCurrentBackendExtensionModuleState();
+		ok = ok && extension_modules->pg_prewarm_autoprewarm_state == NULL;
 		ok = ok && extension_modules->pg_stash_advice_state == NULL;
 		ok = ok && extension_modules->pg_stash_advice_dsa_area == NULL;
 		ok = ok && extension_modules->pg_stash_advice_stash_dshash == NULL;
@@ -3773,6 +3777,8 @@ test_backend_extension_module_state_is_backend_local(PG_FUNCTION_ARGS)
 
 		CurrentPgBackend = &fake_backend1;
 		extension_modules = PgCurrentBackendExtensionModuleState();
+		ok = ok && extension_modules->pg_prewarm_autoprewarm_state ==
+			(struct AutoPrewarmSharedState *) &fake_backend1;
 		ok = ok && extension_modules->pg_stash_advice_state ==
 			(struct pgsa_shared_state *) &fake_backend1;
 		ok = ok && extension_modules->pg_stash_advice_dsa_area ==
@@ -3786,13 +3792,18 @@ test_backend_extension_module_state_is_backend_local(PG_FUNCTION_ARGS)
 
 		CurrentPgBackend = &fake_backend2;
 		extension_modules = PgCurrentBackendExtensionModuleState();
+		ok = ok && extension_modules->pg_prewarm_autoprewarm_state == NULL;
 		ok = ok && extension_modules->pg_stash_advice_state ==
 			(struct pgsa_shared_state *) &fake_backend2;
 		ok = ok && extension_modules->pg_stash_advice_dsa_area == NULL;
 
+		fake_backend_reset.extension_modules.pg_prewarm_autoprewarm_state =
+			(struct AutoPrewarmSharedState *) &fake_backend_reset;
 		fake_backend_reset.extension_modules.pg_stash_advice_state =
 			(struct pgsa_shared_state *) &fake_backend_reset;
 		PgBackendResetClosedState(&fake_backend_reset);
+		ok = ok &&
+			fake_backend_reset.extension_modules.pg_prewarm_autoprewarm_state == NULL;
 		ok = ok &&
 			fake_backend_reset.extension_modules.pg_stash_advice_state == NULL;
 

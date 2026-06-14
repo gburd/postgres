@@ -11219,6 +11219,33 @@ pg_stash_advice object migration completed:
   `test_session_extension_module_state_is_session_local()` cover backend and
   session switching/reset behavior.
 
+pg_prewarm autoprewarm lifecycle preflight:
+
+- target root and bucket: `PgBackend.extension_modules`;
+- repeated lifecycle operations: one backend-local borrowed pointer to a
+  named DSM shared-state object, whole-bucket backend early adoption, and
+  closed-backend reset through the existing extension-module bucket reset;
+- lifecycle preflight result: the existing `PgBackend.extension_modules`
+  bucket row, `PgBackendInitializeExtensionModuleState()`, and
+  `PgBackendResetExtensionModuleClosedState()` are sufficient. No new
+  lifecycle action is needed because `apw_state` does not own the named DSM
+  segment; the autoprewarm before-shmem-exit callback clears worker PIDs, and
+  the runtime bucket only has to clear the local borrowed pointer.
+
+pg_prewarm autoprewarm object migration completed:
+
+- `apw_state` no longer lives in a contrib-local `PG_THREAD_LOCAL` backend
+  global;
+- `contrib/pg_prewarm/autoprewarm.c` keeps the historical local name as a
+  compatibility macro over
+  `PgCurrentBackendExtensionModuleState()->pg_prewarm_autoprewarm_state`;
+- `MULTITHREADED_RUNTIME_OWNERS.tsv` maps `apw_state` to
+  `PgBackend.extension_modules`, and the backend extension-module lifecycle
+  row documents that the pointer is borrowed shared-state attachment state;
+- `test_backend_extension_module_state_is_backend_local()` verifies the
+  autoprewarm pointer switches with `CurrentPgBackend` and is cleared by
+  `PgBackendResetClosedState()`.
+
 Current lifecycle-ergonomics instruction:
 
 - before the next boilerplate-heavy Phase 12 migration batch, explicitly

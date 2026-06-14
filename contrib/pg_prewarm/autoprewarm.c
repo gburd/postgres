@@ -116,7 +116,8 @@ static void apw_detach_shmem(int code, Datum arg);
 static int	apw_compare_blockinfo(const void *p, const void *q);
 
 /* Backend-local pointer to shared autoprewarm state. */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND AutoPrewarmSharedState *apw_state = NULL;
+#define apw_state \
+	(PgCurrentBackendExtensionModuleState()->pg_prewarm_autoprewarm_state)
 
 /* GUC variables. */
 static bool autoprewarm = true; /* start worker? */

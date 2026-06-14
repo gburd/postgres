@@ -603,7 +603,9 @@ Likely changes:
     metadata;
   - the bundled `pg_prewarm` autoprewarm leader and per-database workers have
     an initial thread-carrier slice through explicit background-worker
-    backend-model metadata;
+    backend-model metadata, and the autoprewarm shared-state attachment
+    pointer now lives in `PgBackend.extension_modules` rather than
+    contrib-local TLS;
   - the bundled `pg_stash_advice` persistence worker has an initial
     thread-carrier slice through explicit background-worker backend-model
     metadata, with its `pg_plan_advice` dependency marked for the same

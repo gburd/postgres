@@ -120,6 +120,7 @@ struct PgAioBackend;
 struct PgAioUringContext;
 struct AllocSetContext;
 struct ClientSocket;
+struct AutoPrewarmSharedState;
 struct pgsa_shared_state;
 typedef struct dsm_segment dsm_segment;
 typedef void (*PgBackendExitContinuation) (int code);
@@ -536,6 +537,7 @@ typedef struct PgBackendAioState
 
 typedef struct PgBackendExtensionModuleState
 {
+	struct AutoPrewarmSharedState *pg_prewarm_autoprewarm_state;
 	struct pgsa_shared_state *pg_stash_advice_state;
 	dsa_area   *pg_stash_advice_dsa_area;
 	dshash_table *pg_stash_advice_stash_dshash;
