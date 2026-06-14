@@ -745,6 +745,13 @@ Important current files:
   `InstallPgThreadBackendRuntimeState()` must adopt early storage state into
   the thread-backed `PgBackend`; losing that fallback fd state can make the
   threaded TAP postmaster exit immediately after launching worker threads.
+  Closed-backend reset now routes the `storage` bucket through
+  `PgBackendResetStorageClosedState()`: fd.c reclaims its private VFD and
+  AllocateDesc arrays, while the owner-adjacent runtime file bridge destroys
+  pending-sync/smgr hash and list state, deletes pending-sync and md memory
+  contexts, and reinitializes the bucket. Keep normal temp-file/resource-owner
+  semantics in the existing transaction/proc-exit paths; the runtime reset is
+  the retained-object cleanup pass after those callbacks.
   After changing this bridge, clean and rebuild backend objects because
   `PgBackend` layout and installed runtime headers changed; at minimum rebuild
   and reinstall PL/pgSQL, `src/test/modules/test_backend_runtime`, and contrib

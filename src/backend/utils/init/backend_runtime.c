@@ -812,7 +812,6 @@ static void PgBackendInitializeInstrumentationState(PgBackendInstrumentationStat
 static void PgBackendAdoptEarlyInstrumentationState(PgBackend *backend);
 static void PgBackendInitializeBufferState(PgBackendBufferState *buffers);
 static void PgBackendAdoptEarlyBufferState(PgBackend *backend);
-static void PgBackendInitializeStorageState(PgBackendStorageState *storage);
 static void PgBackendAdoptEarlyStorageState(PgBackend *backend);
 static void PgBackendAdoptEarlyLockState(PgBackend *backend);
 static void PgBackendInitializeIPCState(PgBackendIPCState *ipc);
@@ -3092,7 +3091,7 @@ PgBackendAdoptEarlyBufferState(PgBackend *backend)
 	PgBackendInitializeBufferState(&early_backend_buffers);
 }
 
-static void
+void
 PgBackendInitializeStorageState(PgBackendStorageState *storage)
 {
 	Assert(storage != NULL);

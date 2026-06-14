@@ -112,6 +112,8 @@ extern PgConnectionSecurityState *PgConnectionRuntimeSecurityStateRef(PgConnecti
 extern PgBackendBufferState *PgCurrentBackendBufferState(void);
 extern MemoryContext PgBackendBufferAllocationContext(void);
 extern PgBackendStorageState *PgCurrentBackendStorageState(void);
+extern void PgBackendResetFileAccessClosedState(PgBackendStorageState *storage);
+extern void PgBackendResetStorageClosedState(PgBackendStorageState *storage);
 extern PgBackendLockState *PgCurrentBackendLockState(void);
 extern PgBackendIPCState *PgCurrentBackendIPCState(void);
 extern PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
@@ -125,6 +127,7 @@ extern void PgSessionInitializeRelMapState(PgSessionRelMapState *relmap);
 extern void PgSessionInitializeRegexState(PgSessionRegexState *regex);
 extern void PgSessionInitializePortalManagerState(PgSessionPortalManagerState *portal_manager);
 extern void PgSessionInitializeEncodingState(PgSessionEncodingState *encoding);
+extern void PgBackendInitializeStorageState(PgBackendStorageState *storage);
 extern void PgBackendInitializeLockState(PgBackendLockState *locks);
 extern void PgBackendInitializeExtensionModuleState(PgBackendExtensionModuleState *extension_modules);
 extern void PgExecutionInitializeErrorState(PgExecutionErrorState *error);

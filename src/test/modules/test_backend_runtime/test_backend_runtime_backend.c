@@ -736,6 +736,7 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	PgBackendAioState *aio;
 	PgBackendLockState *locks;
 	PgBackendActivityState *activity;
+	PgBackendStorageState *storage;
 	HASHCTL		hash_ctl;
 	bool		ok = true;
 
@@ -750,6 +751,7 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	aio = &fake_backend.aio;
 	locks = &fake_backend.locks;
 	activity = &fake_backend.activity;
+	storage = &fake_backend.storage;
 	replication->walreceiver_recv_file = -1;
 	xlog->open_log_file = -1;
 
@@ -905,6 +907,44 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 						   sizeof(LocalPgBackendStatus));
 	activity->num_backends = 1;
 
+	storage->vfd_cache = malloc(8);
+	storage->size_vfd_cache = 0;
+	storage->nfile = 1;
+	storage->temporary_files_allowed = true;
+	storage->allocated_descs = malloc(8);
+	storage->num_allocated_descs = 0;
+	storage->max_allocated_descs = 1;
+	storage->num_external_fds = 2;
+	storage->sync_pending_ops_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test pending sync context",
+							  ALLOCSET_SMALL_SIZES);
+	hash_ctl.hcxt = storage->sync_pending_ops_context;
+	storage->sync_pending_ops =
+		hash_create("test pending sync hash", 8, &hash_ctl,
+					HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	{
+		MemoryContext oldcontext;
+
+		oldcontext = MemoryContextSwitchTo(storage->sync_pending_ops_context);
+		storage->sync_pending_unlinks = list_make1(pstrdup("pending-unlink"));
+		MemoryContextSwitchTo(oldcontext);
+	}
+	MemSet(&hash_ctl, 0, sizeof(hash_ctl));
+	hash_ctl.keysize = sizeof(Oid);
+	hash_ctl.entrysize = sizeof(Oid);
+	storage->smgr_relation_hash =
+		hash_create("test smgr relation hash", 8, &hash_ctl,
+					HASH_ELEM | HASH_BLOBS);
+	dlist_init(&storage->smgr_unpinned_relations);
+	storage->md_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test md context",
+							  ALLOCSET_SMALL_SIZES);
+	storage->sync_cycle_counter = 3;
+	storage->sync_checkpoint_cycle_counter = 4;
+	storage->sync_in_progress = true;
+
 	fake_backend.memory_manager.log_memory_context_in_progress = true;
 
 	utility->notify_interrupt_pending = true;
@@ -1042,6 +1082,23 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && activity->backend_status_table == NULL;
 	ok = ok && activity->num_backends == 0;
 	ok = ok && activity->backend_status_context == NULL;
+	ok = ok && storage->vfd_cache == NULL;
+	ok = ok && storage->size_vfd_cache == 0;
+	ok = ok && storage->nfile == 0;
+	ok = ok && !storage->temporary_files_allowed;
+	ok = ok && storage->allocated_descs == NULL;
+	ok = ok && storage->num_allocated_descs == 0;
+	ok = ok && storage->max_allocated_descs == 0;
+	ok = ok && storage->num_external_fds == 0;
+	ok = ok && storage->sync_pending_ops == NULL;
+	ok = ok && storage->sync_pending_unlinks == NIL;
+	ok = ok && storage->sync_pending_ops_context == NULL;
+	ok = ok && storage->sync_cycle_counter == 0;
+	ok = ok && storage->sync_checkpoint_cycle_counter == 0;
+	ok = ok && !storage->sync_in_progress;
+	ok = ok && storage->smgr_relation_hash == NULL;
+	ok = ok && dlist_is_empty(&storage->smgr_unpinned_relations);
+	ok = ok && storage->md_context == NULL;
 	ok = ok && !fake_backend.memory_manager.log_memory_context_in_progress;
 	ok = ok && utility->notify_interrupt_pending;
 	ok = ok && utility->seq_scan_tables[0] == NULL;

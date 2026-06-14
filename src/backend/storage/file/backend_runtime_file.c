@@ -122,3 +122,27 @@ PgCurrentMdContextRef(void)
 {
 	return &PgCurrentBackendStorageState()->md_context;
 }
+
+void
+PgBackendResetStorageClosedState(PgBackendStorageState *storage)
+{
+	Assert(storage != NULL);
+
+	/*
+	 * fd.c owns the private Vfd and AllocateDesc layouts.  By the time a
+	 * logical backend reaches closed-state reset, normal transaction and
+	 * proc-exit cleanup should have closed semantic file owners; this reclaim
+	 * step clears the retained arrays and defensively closes any leftovers.
+	 */
+	PgBackendResetFileAccessClosedState(storage);
+
+	PG_RUNTIME_DESTROY_HASH(storage->sync_pending_ops);
+	PG_RUNTIME_LIST_FREE_DEEP(storage->sync_pending_unlinks);
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(storage->sync_pending_ops_context);
+
+	PG_RUNTIME_DESTROY_HASH(storage->smgr_relation_hash);
+	dlist_init(&storage->smgr_unpinned_relations);
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(storage->md_context);
+
+	PgBackendInitializeStorageState(storage);
+}

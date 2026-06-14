@@ -1217,6 +1217,12 @@ The follow-up file-descriptor/VFD batch now stores `VfdCache`,
 Threaded startup can reserve file descriptors before runtime installation, so
 `InstallPgThreadBackendRuntimeState()` now adopts early storage fallback state
 along with the other early backend buckets.
+The Gate E2 storage closed-state slice now routes `PgBackend.storage` through
+`PgBackendResetStorageClosedState()`. The reset keeps normal temp-file,
+resource-owner, and proc-exit semantics in the existing storage callbacks, then
+reclaims retained VFD/AllocateDesc arrays, pending-sync hash/list/context
+state, smgr hash/list state, and the md context before reinitializing the
+bucket.
 The deadlock detector workspace batch now stores `visitedProcs`,
 `nVisitedProcs`, `topoProcs`, `beforeConstraints`, `afterConstraints`,
 `waitOrders`, `nWaitOrders`, `waitOrderProcs`, `curConstraints`,

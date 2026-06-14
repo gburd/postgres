@@ -11972,3 +11972,49 @@ Validation for this teardown refactor slice:
   mappings checked;
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals and zero local-runtime-boundary violations.
+
+## Backend Storage Closed-State Reset
+
+Lifecycle preflight:
+
+- target: Gate E2 retained backend storage cleanup for `PgBackend.storage`;
+- repeated lifecycle operations: one owner-adjacent fd.c cleanup for private
+  VFD/AllocateDesc arrays, followed by hash/list/context reset and
+  reset-through-initializer for the storage bucket;
+- preflight result: the existing backend bucket `.def` reset column,
+  checked `PG_RUNTIME_*` hash/list/memory-context actions, and
+  `backend_runtime_file.c` checker source coverage are sufficient. No new
+  lifecycle primitive is needed because fd.c owns private layout semantics and
+  the rest is a single bucket-level reset.
+
+Storage closed-state reset slice:
+
+- `PG_BACKEND_BUCKET(storage, ...)` now calls
+  `PgBackendResetStorageClosedState()` during `PgBackendResetClosedState()`;
+- fd.c owns `PgBackendResetFileAccessClosedState()` so VFD and AllocateDesc
+  array reclamation stays beside the private `Vfd` and `AllocateDesc` layouts;
+- `backend_runtime_file.c` owns the bucket-level cleanup: pending-sync hash,
+  pending-unlink list, pending-sync context, smgr relation hash/list head,
+  md context, and final `PgBackendInitializeStorageState()` reinitialization;
+- the lifecycle manifest now records the storage reset rule instead of leaving
+  the bucket as a closed-reset no-op;
+- `test_backend_reset_closed_state()` now verifies the storage bucket is reset
+  through the top-level backend closed-state reset path.
+
+Validation for the backend storage closed-state reset slice:
+
+- `gmake -C src/backend/storage/file fd.o backend_runtime_file.o` passed;
+- `gmake -C src/backend/utils/init backend_runtime.o
+  backend_runtime_teardown.o` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 28 reset definitions checked, and 176 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all` passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with the documented
+  local `IPC::Run` `PERL5LIB` and patched temporary-install install-name
+  paths.

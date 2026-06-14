@@ -103,6 +103,7 @@
 #include "utils/resowner.h"
 #include "utils/varlena.h"
 #include "utils/wait_event.h"
+#include "../../utils/init/backend_runtime_internal.h"
 
 /* Define PG_FLUSH_DATA_WORKS if we have an implementation for pg_flush_data */
 #if defined(HAVE_SYNC_FILE_RANGE)
@@ -382,6 +383,77 @@ static inline void
 ResourceOwnerForgetFile(ResourceOwner owner, File file)
 {
 	ResourceOwnerForget(owner, Int32GetDatum(file), &file_resowner_desc);
+}
+
+void
+PgBackendResetFileAccessClosedState(PgBackendStorageState *storage)
+{
+	Vfd		   *vfd_cache;
+	AllocateDesc *allocated_descs;
+	Index		i;
+
+	Assert(storage != NULL);
+
+	vfd_cache = (Vfd *) storage->vfd_cache;
+	if (vfd_cache != NULL)
+	{
+		for (i = 1; i < storage->size_vfd_cache; i++)
+		{
+			Vfd		   *vfdP = &vfd_cache[i];
+
+			if (vfdP->fd != VFD_CLOSED)
+			{
+				pgaio_closing_fd(vfdP->fd);
+				(void) close(vfdP->fd);
+				vfdP->fd = VFD_CLOSED;
+			}
+
+			if ((vfdP->fdstate & FD_DELETE_AT_CLOSE) &&
+				vfdP->fileName != NULL)
+				(void) unlink(vfdP->fileName);
+
+			if (vfdP->fileName != NULL)
+			{
+				free(vfdP->fileName);
+				vfdP->fileName = NULL;
+			}
+		}
+
+		free(vfd_cache);
+	}
+
+	allocated_descs = (AllocateDesc *) storage->allocated_descs;
+	if (allocated_descs != NULL)
+	{
+		for (i = 0; i < storage->num_allocated_descs; i++)
+		{
+			switch (allocated_descs[i].kind)
+			{
+				case AllocateDescFile:
+					(void) fclose(allocated_descs[i].desc.file);
+					break;
+				case AllocateDescPipe:
+					(void) pclose(allocated_descs[i].desc.file);
+					break;
+				case AllocateDescDir:
+					(void) closedir(allocated_descs[i].desc.dir);
+					break;
+				case AllocateDescRawFD:
+					pgaio_closing_fd(allocated_descs[i].desc.fd);
+					(void) close(allocated_descs[i].desc.fd);
+					break;
+			}
+		}
+
+		free(allocated_descs);
+	}
+
+	storage->vfd_cache = NULL;
+	storage->size_vfd_cache = 0;
+	storage->num_allocated_descs = 0;
+	storage->max_allocated_descs = 0;
+	storage->allocated_descs = NULL;
+	storage->num_external_fds = 0;
 }
 
 /*

@@ -34,7 +34,7 @@ PG_BACKEND_BUCKET(utility, PgBackendInitializeUtilityState(&backend->utility), P
 PG_BACKEND_BUCKET(parallel, PgBackendInitializeParallelState(&backend->parallel), PgBackendAdoptEarlyParallelState(backend), PG_RUNTIME_NOOP)
 PG_BACKEND_BUCKET(instrumentation, PgBackendInitializeInstrumentationState(&backend->instrumentation), PgBackendAdoptEarlyInstrumentationState(backend), PG_RUNTIME_NOOP)
 PG_BACKEND_BUCKET(buffers, PgBackendInitializeBufferState(&backend->buffers), PgBackendAdoptEarlyBufferState(backend), PG_RUNTIME_NOOP)
-PG_BACKEND_BUCKET(storage, PgBackendInitializeStorageState(&backend->storage), PgBackendAdoptEarlyStorageState(backend), PG_RUNTIME_NOOP)
+PG_BACKEND_BUCKET(storage, PgBackendInitializeStorageState(&backend->storage), PgBackendAdoptEarlyStorageState(backend), PgBackendResetStorageClosedState(&backend->storage))
 PG_BACKEND_BUCKET(locks, PgBackendInitializeLockState(&backend->locks), PgBackendAdoptEarlyLockState(backend), PgBackendResetLockClosedState(&backend->locks))
 PG_BACKEND_BUCKET(dsm_segment_list, PgBackendInitializeDsmSegmentList(&backend->dsm_segment_list), PgBackendAdoptEarlyDsmSegmentList(&backend->dsm_segment_list), PgBackendResetDsmSegmentList(&backend->dsm_segment_list))
 PG_BACKEND_BUCKET(ipc, PgBackendInitializeIPCState(&backend->ipc), PgBackendAdoptEarlyIPCState(backend), PG_RUNTIME_NOOP)
