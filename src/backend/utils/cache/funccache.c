@@ -28,6 +28,7 @@
 #include "commands/trigger.h"
 #include "common/hashfn.h"
 #include "funcapi.h"
+#include "utils/backend_runtime.h"
 #include "utils/funccache.h"
 #include "utils/hsearch.h"
 #include "utils/syscache.h"
@@ -36,7 +37,7 @@
 /*
  * Hash table for cached functions
  */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *cfunc_hashtable = NULL;
+#define cfunc_hashtable (*PgCurrentCachedFunctionHashRef())
 
 typedef struct CachedFunctionHashEntry
 {
@@ -48,6 +49,7 @@ typedef struct CachedFunctionHashEntry
 
 static uint32 cfunc_hash(const void *key, Size keysize);
 static int	cfunc_match(const void *key1, const void *key2, Size keysize);
+static void delete_function_storage(CachedFunction *func);
 
 
 /*
@@ -234,6 +236,41 @@ cfunc_hashtable_delete(CachedFunction *function)
 	/* Release the callResultType if present */
 	if (tupdesc)
 		FreeTupleDesc(tupdesc);
+}
+
+/*
+ * Destroy a session's cached-function hash table during session teardown.
+ *
+ * This mirrors delete_function()'s safety rule: language-specific subsidiary
+ * storage is released only when no invocation is active.  Active recursive
+ * calls can retain fn_extra pointers, so those entries follow the historical
+ * leak-on-active-use behavior.
+ */
+void
+DestroyCachedFunctionHash(HTAB *hashtable)
+{
+	HASH_SEQ_STATUS status;
+	CachedFunctionHashEntry *hentry;
+
+	if (hashtable == NULL)
+		return;
+
+	hash_seq_init(&status, hashtable);
+	while ((hentry = (CachedFunctionHashEntry *) hash_seq_search(&status)) != NULL)
+	{
+		CachedFunction *func = hentry->function;
+
+		if (hentry->key.callResultType)
+			FreeTupleDesc(hentry->key.callResultType);
+
+		if (func != NULL)
+		{
+			func->fn_hashkey = NULL;
+			delete_function_storage(func);
+		}
+	}
+
+	hash_destroy(hashtable);
 }
 
 /*
@@ -435,6 +472,12 @@ delete_function(CachedFunction *func)
 	/* remove function from hash table (might be done already) */
 	cfunc_hashtable_delete(func);
 
+	delete_function_storage(func);
+}
+
+static void
+delete_function_storage(CachedFunction *func)
+{
 	/* release the function's storage if safe and not done already */
 	if (func->use_count == 0 &&
 		func->dcallback != NULL)

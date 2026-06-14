@@ -20,5 +20,6 @@
 #include "utils/backend_runtime.h"
 
 extern PgSessionCatalogLookupState *PgCurrentSessionCatalogLookupState(void);
+extern PgSessionFunctionManagerState *PgCurrentSessionFunctionManagerState(void);
 
 #endif							/* BACKEND_RUNTIME_INTERNAL_H */

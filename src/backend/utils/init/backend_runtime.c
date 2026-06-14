@@ -73,6 +73,7 @@
 #include "utils/dsa.h"
 #include "utils/elog.h"
 #include "utils/float.h"
+#include "utils/funccache.h"
 #include "utils/guc.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
@@ -910,7 +911,7 @@ static PgSessionSortGUCState *PgCurrentSessionSortGUCState(void);
 static PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
 static PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
 static PgSessionPlannerMethodState *PgCurrentSessionPlannerMethodState(void);
-static PgSessionFunctionManagerState *PgCurrentSessionFunctionManagerState(void);
+PgSessionFunctionManagerState *PgCurrentSessionFunctionManagerState(void);
 static PgSessionExtensionModuleState *PgCurrentSessionExtensionModuleState(void);
 PgSessionCatalogLookupState *PgCurrentSessionCatalogLookupState(void);
 static PgSessionInvalidationCallbackState *PgCurrentSessionInvalidationCallbackState(void);
@@ -2111,6 +2112,7 @@ PgSessionInitializeFunctionManagerState(PgSessionFunctionManagerState *function_
 	Assert(function_manager != NULL);
 
 	function_manager->c_func_hash = NULL;
+	function_manager->cached_function_hash = NULL;
 }
 
 static void
@@ -4765,6 +4767,11 @@ PgSessionResetClosedState(PgSession *session)
 		hash_destroy(session->function_manager.c_func_hash);
 		session->function_manager.c_func_hash = NULL;
 	}
+	if (session->function_manager.cached_function_hash != NULL)
+	{
+		DestroyCachedFunctionHash(session->function_manager.cached_function_hash);
+		session->function_manager.cached_function_hash = NULL;
+	}
 	foreach_ptr(PgSessionResetCallbackItem, item,
 				session->extension_modules.reset_callbacks)
 		item->callback(item->arg);
@@ -5566,7 +5573,7 @@ PgCurrentSessionPlannerMethodState(void)
 	return planner_method;
 }
 
-static PgSessionFunctionManagerState *
+PgSessionFunctionManagerState *
 PgCurrentSessionFunctionManagerState(void)
 {
 	if (CurrentPgSession == NULL)
@@ -6214,12 +6221,6 @@ PgCurrentRowDescriptionBufRef(void)
 		return &early_session_tcop.row_description_buf;
 
 	return &CurrentPgSession->tcop.row_description_buf;
-}
-
-HTAB **
-PgCurrentCFuncHashRef(void)
-{
-	return &PgCurrentSessionFunctionManagerState()->c_func_hash;
 }
 
 void **

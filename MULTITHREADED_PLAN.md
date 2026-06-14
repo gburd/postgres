@@ -1704,13 +1704,15 @@ macro through `PgCacheMemoryContextRef()`, implemented in
 `backend_runtime_cache.c`. This closes the most immediate cache-context
 ownership gap for the moved syscache/catcache/relcache/typcache roots. Active
 backend teardown clears the slot but deliberately does not delete the live
-cache context until the broader `TopMemoryContext` ownership and full
-cache-entry destructor audit
-remain Gate E2 blockers. Remaining cache-state Phase 12 targets include
-`funccache.c` and JIT/provider caches, each of which needs an explicit
-reset/destroy rule before leaving Gate E2. The global-lifetime scan now
-reports 109 session-local declarations with zero new unclassified mutable
-globals.
+cache context; the broader `TopMemoryContext` ownership and full cache-entry
+destructor audit remain Gate E2 blockers. Follow-up cache work moved
+`funccache.c`'s cached-function hash root into
+`PgSessionFunctionManagerState`, with the compatibility accessor in
+`backend_runtime_cache.c` and the tuple-descriptor/language-callback destructor
+handwritten in `funccache.c`. Remaining cache-state Phase 12 targets include
+JIT/provider caches, each of which needs an explicit reset/destroy rule before
+leaving Gate E2. The global-lifetime scan now reports 108 session-local
+declarations with zero new unclassified mutable globals.
 
 ## Phase 13: Scheduler-Aware Wait Boundary
 

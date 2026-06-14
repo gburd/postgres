@@ -68,6 +68,18 @@ PgCurrentCatCacheHeaderRef(void)
 }
 
 HTAB **
+PgCurrentCFuncHashRef(void)
+{
+	return &PgCurrentSessionFunctionManagerState()->c_func_hash;
+}
+
+HTAB **
+PgCurrentCachedFunctionHashRef(void)
+{
+	return &PgCurrentSessionFunctionManagerState()->cached_function_hash;
+}
+
+HTAB **
 PgCurrentRelationIdCacheRef(void)
 {
 	return &PgCurrentSessionCatalogLookupState()->relcache_relation_id_cache;

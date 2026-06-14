@@ -1,4 +1,6 @@
 legacy_symbol	root_object	bucket	member	accessor	owner_source	notes
+PgCurrentCFuncHash	PgSession	function_manager	c_func_hash	PgCurrentCFuncHashRef	src/backend/utils/cache/backend_runtime_cache.c	fmgr C-function hash root; entries point to fmgr/dynamic-loader metadata and do not own dynamic-library handles
+cfunc_hashtable	PgSession	function_manager	cached_function_hash	PgCurrentCachedFunctionHashRef	src/backend/utils/cache/backend_runtime_cache.c	funccache cached-function hash root; destruction is handwritten in funccache.c because entries can own copied tuple descriptors and language callback state
 CacheMemoryContext	PgSession	catalog_lookup	cache_memory_context	PgCacheMemoryContextRef	src/backend/utils/cache/backend_runtime_cache.c	session cache memory context pointer; active backend teardown clears the slot while offline session reset can delete the context until full TopMemoryContext reclamation is safe
 SysCache	PgSession	catalog_lookup	sys_cache	PgCurrentSysCacheArray	src/backend/utils/cache/backend_runtime_cache.c	syscache root array; pointed cache entries remain CacheMemoryContext-owned
 SysCacheInitialized	PgSession	catalog_lookup	sys_cache_initialized	PgCurrentSysCacheInitializedRef	src/backend/utils/cache/backend_runtime_cache.c	syscache initialization flag

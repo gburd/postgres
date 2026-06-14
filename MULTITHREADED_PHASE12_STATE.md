@@ -9866,3 +9866,49 @@ Validation for this slice:
 - `gmake -C src/test/modules/test_backend_runtime check` passed;
 - direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
   `002_threaded_bgworker_crash.pl` with 94 tests.
+
+## Cached-Function Hash Session Root
+
+The next Phase 12 cache-state slice moves `funccache.c`'s cached-function hash
+root into `PgSessionFunctionManagerState`:
+
+- `PgSessionFunctionManagerState` now owns both the existing fmgr C-function
+  hash and `funccache.c`'s cached-function hash;
+- `backend_runtime_cache.c` owns both `PgCurrentCFuncHashRef()` and
+  `PgCurrentCachedFunctionHashRef()`, keeping function-manager cache accessors
+  out of the central runtime/orchestration file;
+- `funccache.c` keeps the semantic cleanup path through
+  `DestroyCachedFunctionHash()`, because entries can own copied tuple
+  descriptors and language-specific cached-function storage;
+- session reset destroys the cached-function hash through that funccache-owned
+  destructor and preserves the existing leak-on-active-use rule for recursive
+  active invocations;
+- `MULTITHREADED_RUNTIME_OWNERS.tsv` records the symbol-level owner mapping for
+  both function-manager cache roots.
+
+This closes the specific `funccache.c` blocker called out after the syscache,
+catcache, relcache, typcache, and `CacheMemoryContext` root moves. It does not
+solve the broader `TopMemoryContext` reclamation problem; cached-function
+structs are still allocated in the existing memory-context tree, and full
+active-backend memory-tree teardown remains part of Gate E2.
+
+Validation for this slice:
+
+- touched-object builds passed for `funccache.o`, `backend_runtime_cache.o`,
+  `backend_runtime.o`, and `test_backend_runtime.o`;
+- a stale `dfmgr.o` after the `PgSession` layout change crashed threaded TAP
+  during `call_module_init_function()` by treating the old
+  `dynamic_library_inits` offset as a `List`; the documented backend clean plus
+  generated utility/node-header recovery fixed that stale-object failure;
+- clean full `gmake -j8` passed after backend clean and generated-header
+  recovery;
+- `gmake -C src/pl/plpgsql/src clean all` and
+  `gmake -C src/test/modules/test_backend_runtime clean all` passed after the
+  installed runtime-header change;
+- `gmake check-runtime-lifecycles` passed with 147 runtime fields classified;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and session-local declarations reduced from 109 to 108;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl` with 94 tests using the local `IPC::Run`
+  `PERL5LIB` and explicit `PG_REGRESS` harness environment.

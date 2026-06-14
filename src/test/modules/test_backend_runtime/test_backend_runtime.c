@@ -3574,6 +3574,7 @@ test_session_prepared_statement_state_is_session_local(PG_FUNCTION_ARGS)
 	PgSession	fake_session2;
 	HTAB	   *saved_prepared_queries;
 	HTAB	   *saved_c_func_hash;
+	HTAB	   *saved_cached_function_hash;
 	HTAB	   *session1_marker;
 	HTAB	   *session2_marker;
 	bool		ok = true;
@@ -3581,6 +3582,7 @@ test_session_prepared_statement_state_is_session_local(PG_FUNCTION_ARGS)
 	saved_session = CurrentPgSession;
 	saved_prepared_queries = *PgCurrentPreparedQueriesRef();
 	saved_c_func_hash = *PgCurrentCFuncHashRef();
+	saved_cached_function_hash = *PgCurrentCachedFunctionHashRef();
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
 	test_copy_current_user_identity(&fake_session1);
@@ -3593,42 +3595,52 @@ test_session_prepared_statement_state_is_session_local(PG_FUNCTION_ARGS)
 		PgSetCurrentSession(&fake_session1);
 		ok = ok && *PgCurrentPreparedQueriesRef() == NULL;
 		ok = ok && *PgCurrentCFuncHashRef() == NULL;
+		ok = ok && *PgCurrentCachedFunctionHashRef() == NULL;
 		*PgCurrentPreparedQueriesRef() = session1_marker;
 		*PgCurrentCFuncHashRef() = session1_marker;
+		*PgCurrentCachedFunctionHashRef() = session1_marker;
 		ok = ok && *PgCurrentPreparedQueriesRef() == session1_marker;
 		ok = ok && *PgCurrentCFuncHashRef() == session1_marker;
+		ok = ok && *PgCurrentCachedFunctionHashRef() == session1_marker;
 
 		PgSetCurrentSession(&fake_session2);
 		ok = ok && *PgCurrentPreparedQueriesRef() == NULL;
 		ok = ok && *PgCurrentCFuncHashRef() == NULL;
+		ok = ok && *PgCurrentCachedFunctionHashRef() == NULL;
 		*PgCurrentPreparedQueriesRef() = session2_marker;
 		*PgCurrentCFuncHashRef() = session2_marker;
+		*PgCurrentCachedFunctionHashRef() = session2_marker;
 		ok = ok && *PgCurrentPreparedQueriesRef() == session2_marker;
 		ok = ok && *PgCurrentCFuncHashRef() == session2_marker;
+		ok = ok && *PgCurrentCachedFunctionHashRef() == session2_marker;
 
 		PgSetCurrentSession(&fake_session1);
 		ok = ok && *PgCurrentPreparedQueriesRef() == session1_marker;
 		ok = ok && *PgCurrentCFuncHashRef() == session1_marker;
+		ok = ok && *PgCurrentCachedFunctionHashRef() == session1_marker;
 
 		PgSetCurrentSession(&fake_session2);
 		ok = ok && *PgCurrentPreparedQueriesRef() == session2_marker;
 		ok = ok && *PgCurrentCFuncHashRef() == session2_marker;
+		ok = ok && *PgCurrentCachedFunctionHashRef() == session2_marker;
 
 		PgSetCurrentSession(saved_session);
 		*PgCurrentPreparedQueriesRef() = saved_prepared_queries;
 		*PgCurrentCFuncHashRef() = saved_c_func_hash;
+		*PgCurrentCachedFunctionHashRef() = saved_cached_function_hash;
 	}
 	PG_CATCH();
 	{
 		PgSetCurrentSession(saved_session);
 		*PgCurrentPreparedQueriesRef() = saved_prepared_queries;
 		*PgCurrentCFuncHashRef() = saved_c_func_hash;
+		*PgCurrentCachedFunctionHashRef() = saved_cached_function_hash;
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
 
 	if (!ok)
-		elog(ERROR, "prepared statement state was not session-local");
+		elog(ERROR, "prepared statement/function manager state was not session-local");
 
 	PG_RETURN_BOOL(true);
 }
@@ -4007,6 +4019,7 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && fake_session.on_commit.on_commits == NIL;
 	ok = ok && fake_session.parser.operator_lookup_cache == NULL;
 	ok = ok && fake_session.function_manager.c_func_hash == NULL;
+	ok = ok && fake_session.function_manager.cached_function_hash == NULL;
 	ok = ok && fake_session.sequence.seqhashtab == NULL;
 	ok = ok && fake_session.sequence.last_used_seq == NULL;
 	ok = ok && fake_session.async.local_channel_table == NULL;

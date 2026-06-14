@@ -1600,10 +1600,16 @@ Important current files:
   thread-backed worker that consumed logical interrupts without routing
   shutdown requests through `ProcessMainLoopInterrupts()`.
 
-- PostgreSQL TAP tests require the non-core Perl module `IPC::Run`. It is
-  installed locally for this checkout under `/Users/samwillis/perl5`; direct
-  `prove` invocations with system Perl need the local `PERL5LIB` paths. To
-  reinstall or update it locally without relying on system Perl paths, use:
+- PostgreSQL TAP tests require the non-core Perl module `IPC::Run`. The system
+  Perl on this checkout does not provide it. CPAN attempts to install through
+  the normal system/local-lib path have stalled while installing `IO::Tty`, but
+  the unpacked pure-Perl IPC::Run build is usable directly from:
+
+  ```sh
+  /Users/samwillis/.cpan/build/IPC-Run-20260402.0-5/blib/lib
+  ```
+
+  To retry a normal local install without relying on system Perl paths, use:
 
   ```sh
   PERL_MM_USE_DEFAULT=1 \
@@ -1612,8 +1618,8 @@ Important current files:
   cpan -T -i IPC::Run
   ```
 
-  Keep
-  `PERL5LIB="$HOME/perl5/lib/perl5:$HOME/perl5/lib/perl5/darwin-thread-multi-2level:$PWD/src/test/perl"`
+  Until that succeeds, keep
+  `PERL5LIB="/Users/samwillis/.cpan/build/IPC-Run-20260402.0-5/blib/lib:$PWD/src/test/perl"`
   in direct TAP commands. This checkout is still configured without
   `--enable-tap-tests`, so recursive `gmake ... check` targets report `TAP
   tests not enabled`. Do not treat that configure-time message as a reason to
@@ -1625,7 +1631,7 @@ Important current files:
   server starts. A minimal direct environment is:
 
   ```sh
-  PERL5LIB="$HOME/perl5/lib/perl5:$HOME/perl5/lib/perl5/darwin-thread-multi-2level:$PWD/src/test/perl" \
+  PERL5LIB="/Users/samwillis/.cpan/build/IPC-Run-20260402.0-5/blib/lib:$PWD/src/test/perl" \
   PATH="$PWD/tmp_install/usr/local/pgsql/bin:$PATH" \
   DYLD_LIBRARY_PATH="$PWD/tmp_install/usr/local/pgsql/lib" \
   INITDB_TEMPLATE="$PWD/tmp_install/initdb-template" \
