@@ -116,6 +116,7 @@ struct ResourceOwnerData
 	ResourceOwner firstchild;	/* head of linked list of children */
 	ResourceOwner nextchild;	/* next child of same parent */
 	const char *name;			/* name (just for debugging) */
+	MemoryContext context;		/* context owning this ResourceOwner */
 
 	/*
 	 * When ResourceOwnerRelease is called, we sort the 'hash' and 'arr' by
@@ -411,17 +412,25 @@ ResourceOwnerReleaseAll(ResourceOwner owner, ResourceReleasePhase phase,
  * ResourceOwnerCreate
  *		Create an empty ResourceOwner.
  *
- * All ResourceOwner objects are kept in TopMemoryContext, since they should
- * only be freed explicitly.
+ * ResourceOwner objects are kept in the current execution's resource-owner
+ * context.  They are still freed explicitly, but grouping their allocation
+ * under the execution lets closed-backend cleanup delete an otherwise empty
+ * allocation family without resetting the whole TopMemoryContext tree.
  */
 ResourceOwner
 ResourceOwnerCreate(ResourceOwner parent, const char *name)
 {
+	MemoryContext context;
 	ResourceOwner owner;
 
-	owner = (ResourceOwner) MemoryContextAllocZero(TopMemoryContext,
+	context = parent != NULL ? parent->context : PgCurrentResourceOwnerMemoryContext();
+	if (context == NULL)
+		context = TopMemoryContext;
+
+	owner = (ResourceOwner) MemoryContextAllocZero(context,
 												   sizeof(struct ResourceOwnerData));
 	owner->name = name;
+	owner->context = context;
 
 	if (parent)
 	{
@@ -474,7 +483,7 @@ ResourceOwnerEnlarge(ResourceOwner owner)
 
 		/* Double the capacity (it must stay a power of 2!) */
 		newcap = (oldcap > 0) ? oldcap * 2 : RESOWNER_HASH_INIT_SIZE;
-		newhash = (ResourceElem *) MemoryContextAllocZero(TopMemoryContext,
+		newhash = (ResourceElem *) MemoryContextAllocZero(owner->context,
 														  newcap * sizeof(ResourceElem));
 
 		/*

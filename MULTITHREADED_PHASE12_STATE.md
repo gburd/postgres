@@ -11362,3 +11362,56 @@ Validation for the backend-status snapshot lifecycle slice:
   `IPC::Run` `PERL5LIB` and patched temporary-install/build-tree
   install-name paths;
 - `git diff --check` passed.
+
+Execution ResourceOwner allocation-context preflight:
+
+- target root and bucket: `PgExecution.resource_owners`;
+- repeated lifecycle operations: one execution-owned allocation context for
+  `ResourceOwner` objects and their expandable hash arrays, plus conservative
+  closed-execution reset;
+- lifecycle preflight result: the existing `PG_EXECUTION_BUCKET(resource_owners,
+  ...)` checked reset column is sufficient. No new generic lifecycle action is
+  needed because the close rule has semantic resource-owner behavior:
+  resource release/delete remains explicit, normal closed reset deletes the
+  allocation context only when owner slots are already clear, and stale live
+  owner slots deliberately prevent blind memory deletion.
+
+Execution ResourceOwner allocation-context slice completed:
+
+- `PgExecutionResourceOwnerState` now includes `resource_owner_context`, and
+  `PgCurrentResourceOwnerMemoryContext()` lazily creates an execution-owned
+  `ResourceOwnerContext`;
+- `ResourceOwnerCreate()` allocates top-level owners in that context and child
+  owners in the parent owner context, while `ResourceOwnerEnlarge()` allocates
+  expanded hash arrays in the same context as the owner;
+- `PgExecutionResetClosedState()` clears the current/transaction/top
+  `ResourceOwner` pointer slots and deletes `resource_owner_context` only when
+  those slots were already clear. This reclaims the normal allocation family
+  without hiding resource-release bugs behind a blanket context deletion;
+- `MULTITHREADED_RUNTIME_OWNERS.tsv` maps `ResourceOwnerContext` to
+  `PgExecution.resource_owners`, making the allocation parent searchable for
+  future teardown and rebase work;
+- `test_execution_reset_closed_state()` now verifies that a close reset with
+  live owner slots keeps the context, then a second reset after the slots are
+  clear deletes it.
+
+Validation for the execution ResourceOwner allocation-context slice:
+
+- touched-object builds passed for `resowner.o`, `backend_runtime.o`, and
+  `test_backend_runtime_execution.o`;
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 27 reset definitions checked, and 155 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- full `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all` passed after the
+  installed runtime header changed, avoiding stale stack-allocated
+  `PgThreadBackendRuntimeState` layout in the test module;
+- `gmake -C src/test/modules/test_backend_runtime check` passed after removing
+  leaked keyed System V shared-memory segments left by the stale-object abort;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with the documented
+  local `IPC::Run` `PERL5LIB` and patched temporary-install install-name
+  paths.

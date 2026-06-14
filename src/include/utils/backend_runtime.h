@@ -866,6 +866,7 @@ typedef struct PgExecutionResourceOwnerState
 	struct ResourceOwnerData *current_owner;
 	struct ResourceOwnerData *cur_transaction_owner;
 	struct ResourceOwnerData *top_transaction_owner;
+	MemoryContext resource_owner_context;
 } PgExecutionResourceOwnerState;
 
 typedef struct PgExecutionSPIState
@@ -2868,6 +2869,7 @@ extern void PgSessionRegisterResetCallback(PgSessionResetCallback callback,
 										   void *arg);
 extern void PgSessionResetClosedState(PgSession *session);
 extern void PgExecutionResetClosedState(PgExecution *execution);
+extern MemoryContext PgCurrentResourceOwnerMemoryContext(void);
 extern Session *PgSessionGetLegacySession(PgSession *session);
 extern void PgSessionSetLegacySession(PgSession *session,
 									   Session *legacy_session);

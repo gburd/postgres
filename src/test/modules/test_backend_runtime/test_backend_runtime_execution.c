@@ -457,6 +457,8 @@ test_execution_reset_closed_state(PG_FUNCTION_ARGS)
 	sigjmp_buf fake_exception_stack;
 	SPITupleTable fake_tuptable;
 	PortalData	fake_portal;
+	ResourceOwner test_owner;
+	MemoryContext resource_owner_context;
 	bool		ok = true;
 
 	saved_execution = CurrentPgExecution;
@@ -478,6 +480,10 @@ test_execution_reset_closed_state(PG_FUNCTION_ARGS)
 		CurrentResourceOwner = (ResourceOwner) &fake_execution;
 		CurTransactionResourceOwner = (ResourceOwner) saved_execution;
 		TopTransactionResourceOwner = (ResourceOwner) &fake_error_context;
+		test_owner = ResourceOwnerCreate(NULL, "test execution resource owner");
+		resource_owner_context =
+			fake_execution.resource_owners.resource_owner_context;
+		ResourceOwnerDelete(test_owner);
 		SPI_processed = 123;
 		SPI_tuptable = &fake_tuptable;
 		SPI_result = SPI_OK_SELECT;
@@ -624,6 +630,8 @@ test_execution_reset_closed_state(PG_FUNCTION_ARGS)
 		ok = ok && CurrentResourceOwner == NULL;
 		ok = ok && CurTransactionResourceOwner == NULL;
 		ok = ok && TopTransactionResourceOwner == NULL;
+		ok = ok && fake_execution.resource_owners.resource_owner_context ==
+			resource_owner_context;
 		ok = ok && SPI_processed == 0;
 		ok = ok && SPI_tuptable == NULL;
 		ok = ok && SPI_result == 0;
@@ -755,6 +763,9 @@ test_execution_reset_closed_state(PG_FUNCTION_ARGS)
 		ok = ok &&
 			fake_execution.snapbuild.saved_resource_owner_during_export == NULL;
 		ok = ok && !fake_execution.snapbuild.export_in_progress;
+
+		PgExecutionResetClosedState(&fake_execution);
+		ok = ok && fake_execution.resource_owners.resource_owner_context == NULL;
 
 		CurrentPgExecution = saved_execution;
 	}

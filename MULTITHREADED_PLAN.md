@@ -1690,6 +1690,14 @@ warning emission and retained connection reset no longer depend on
 reset/destroy rules for connection state, but the complete
 backend/session/connection/execution destructor tree and `TopMemoryContext`
 ownership model remain Phase 12 blockers.
+Follow-up execution resource-owner hardening moved `ResourceOwner` object and
+hash-array allocation under an execution-owned `ResourceOwnerContext`.
+Resource release/delete semantics remain explicit, but normal execution close
+can now delete the otherwise empty allocation family instead of leaving it
+under the retained top-memory tree. If stale owner slots are still present at
+closed reset, the reset remains conservative and clears the slots without
+blindly deleting live owner memory; that keeps resource-release bugs visible
+for the broader teardown audit.
 Follow-up session teardown hardening added `PgSessionResetClosedState()`.
 `dfmgr.c` now allocates the per-session dynamic-library `_PG_init()` replay
 list under `PgSession.dynamic_library_context` instead of `TopMemoryContext`,

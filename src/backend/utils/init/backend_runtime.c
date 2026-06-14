@@ -3715,9 +3715,25 @@ static void
 PgExecutionResetResourceOwnersClosedState(PgExecutionResourceOwnerState
 										  *resource_owners)
 {
+	bool		have_live_owner;
+	MemoryContext resource_owner_context;
+
 	Assert(resource_owners != NULL);
 
-	MemSet(resource_owners, 0, sizeof(*resource_owners));
+	have_live_owner = resource_owners->current_owner != NULL ||
+		resource_owners->cur_transaction_owner != NULL ||
+		resource_owners->top_transaction_owner != NULL;
+	resource_owner_context = resource_owners->resource_owner_context;
+
+	resource_owners->current_owner = NULL;
+	resource_owners->cur_transaction_owner = NULL;
+	resource_owners->top_transaction_owner = NULL;
+
+	if (!have_live_owner && resource_owner_context != NULL)
+	{
+		MemoryContextDelete(resource_owner_context);
+		resource_owners->resource_owner_context = NULL;
+	}
 }
 
 static void
@@ -6936,6 +6952,21 @@ ResourceOwner *
 PgTopTransactionResourceOwnerRef(void)
 {
 	return &PgCurrentExecutionResourceOwners()->top_transaction_owner;
+}
+
+MemoryContext
+PgCurrentResourceOwnerMemoryContext(void)
+{
+	PgExecutionResourceOwnerState *resource_owners;
+
+	resource_owners = PgCurrentExecutionResourceOwners();
+	if (resource_owners->resource_owner_context == NULL)
+		resource_owners->resource_owner_context =
+			AllocSetContextCreate(TopMemoryContext,
+								  "ResourceOwnerContext",
+								  ALLOCSET_DEFAULT_SIZES);
+
+	return resource_owners->resource_owner_context;
 }
 
 static PgExecutionSPIState *
