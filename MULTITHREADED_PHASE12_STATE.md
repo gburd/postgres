@@ -10951,3 +10951,22 @@ Execution closed-reset hardening slice completed:
   broader Gate E2 destructor audit;
 - `test_execution_reset_closed_state()` covers the new reset behavior for
   debug, error, memory-context, resource-owner, SPI, and active-portal state.
+
+Execution closed-reset sweep completed:
+
+- lifecycle preflight result: this batch reused the existing
+  `PG_EXECUTION_BUCKET` reset column plus the per-bucket initializer functions.
+  That is the right mechanism here because every remaining execution bucket
+  already had an initializer that expresses its default state;
+- `PgExecutionResetClosedState()` now runs a checked reset action for every
+  current `PgExecution` bucket. The object no longer retains stale execution
+  pointer/scalar slots after logical backend exit;
+- this is a reset sweep, not a deep destructor claim. Pointers to resource
+  owners, SPI stacks, snapshots, transaction contexts, combo CID storage, XLog
+  insertion scratch, async lists, invalidation arrays, trigger state, and other
+  subsystem-owned allocations are still freed by their existing subsystem
+  cleanup paths or remain part of the broader Gate E2 memory-context ownership
+  audit;
+- `test_execution_reset_closed_state()` now seeds representative non-default
+  fields across the full execution bucket set and verifies that the reset path
+  returns them to initializer defaults.

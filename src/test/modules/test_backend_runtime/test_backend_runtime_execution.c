@@ -486,6 +486,126 @@ test_execution_reset_closed_state(PG_FUNCTION_ARGS)
 		fake_execution.spi.stack_depth = 2;
 		fake_execution.spi.connected = 1;
 		ActivePortal = &fake_portal;
+		fake_execution.vacuum.in_vacuum = true;
+		fake_execution.vacuum.cost_balance = 10;
+		fake_execution.vacuum.cost_active = true;
+		fake_execution.vacuum.shared_cost_balance =
+			(pg_atomic_uint32 *) &fake_execution;
+		fake_execution.vacuum.active_nworkers =
+			(pg_atomic_uint32 *) &fake_error_context;
+		fake_execution.vacuum.cost_balance_local = 11;
+		fake_execution.vacuum.failsafe_active = true;
+		fake_execution.vacuum.parallel_worker_delay_ns = 12;
+		fake_execution.vacuum.parallel_shared_cost_params = &fake_tuptable;
+		fake_execution.vacuum.parallel_shared_params_generation_local = 13;
+		fake_execution.node_io.write_location_fields = true;
+		fake_execution.node_io.strtok_ptr = "node";
+		fake_execution.node_io.restore_location_fields = true;
+		fake_execution.basebackup.backup_started_in_recovery = true;
+		fake_execution.basebackup.total_checksum_failures = 7;
+		fake_execution.basebackup.noverify_checksums = true;
+		fake_execution.analyze.context = (MemoryContext) &fake_execution;
+		fake_execution.analyze.strategy = (BufferAccessStrategy) &fake_tuptable;
+		fake_execution.analyze.array_extra_data = &fake_error_context;
+		fake_execution.extension.creating = true;
+		fake_execution.extension.current_object = 1234;
+		fake_execution.matview.maintenance_depth = 2;
+		fake_execution.snapshot.current_snapshot = (Snapshot) &fake_execution;
+		fake_execution.snapshot.transaction_xmin = 123;
+		fake_execution.snapshot.recent_xmin = 456;
+		fake_execution.snapshot.first_snapshot_set = true;
+		fake_execution.snapshot.exported_snapshots = (List *) &fake_tuptable;
+		fake_execution.combo_cid.hash = (HTAB *) &fake_execution;
+		fake_execution.combo_cid.cids = &fake_error_context;
+		fake_execution.combo_cid.used = 1;
+		fake_execution.combo_cid.size = 2;
+		fake_execution.xloginsert.registered_buffers = &fake_tuptable;
+		fake_execution.xloginsert.max_registered_buffers = 4;
+		fake_execution.xloginsert.mainrdata_head = (XLogRecData *) &fake_execution;
+		fake_execution.xloginsert.mainrdata_last = (XLogRecData *) &fake_tuptable;
+		fake_execution.xloginsert.mainrdata_len = 5;
+		fake_execution.xloginsert.begininsert_called = true;
+		fake_execution.xloginsert.context = (MemoryContext) &fake_error_context;
+		fake_execution.xact.iso_level = XACT_SERIALIZABLE;
+		fake_execution.xact.read_only = true;
+		fake_execution.xact.check_xid_alive = 789;
+		fake_execution.xact.top_full_transaction_id =
+			FullTransactionIdFromEpochAndXid(1, 789);
+		fake_execution.xact.parallel_current_xids =
+			(TransactionId *) &fake_execution;
+		fake_execution.xact.n_unreported_xids = 1;
+		fake_execution.xact.current_command_id = 42;
+		fake_execution.xact.prepare_gid = (char *) "gid";
+		fake_execution.xact.transaction_abort_context =
+			(MemoryContext) &fake_tuptable;
+		fake_execution.transaction_cleanup.lo_cookies =
+			(LargeObjectDesc **) &fake_execution;
+		fake_execution.transaction_cleanup.lo_cookies_size = 3;
+		fake_execution.transaction_cleanup.lo_cleanup_needed = true;
+		fake_execution.transaction_cleanup.lo_context =
+			(MemoryContext) &fake_error_context;
+		fake_execution.transaction_cleanup.have_xact_temporary_files = true;
+		fake_execution.transaction_cleanup.pgstat_xact_stack =
+			(PgStat_SubXactStatus *) &fake_tuptable;
+		fake_execution.transaction_cleanup.ri_fastpath_cache =
+			(HTAB *) &fake_portal;
+		fake_execution.replication_scratch.event_trigger_query_state =
+			(EventTriggerQueryState *) &fake_execution;
+		fake_execution.replication_scratch.replorigin_xact.origin = 1;
+		fake_execution.replication_scratch.replorigin_xact.origin_lsn = 2;
+		fake_execution.replication_scratch.replorigin_xact.origin_timestamp = 3;
+		fake_execution.replication_scratch.apply_error_context_stack =
+			&fake_error_context;
+		fake_execution.replication_scratch.apply_message_context =
+			(MemoryContext) &fake_tuptable;
+		fake_execution.replication_scratch.logical_streaming_context =
+			(MemoryContext) &fake_portal;
+		fake_execution.guc_error.check_errcode_value = 1;
+		fake_execution.guc_error.check_errmsg_string = (char *) "msg";
+		fake_execution.guc_error.format_errnumber = 2;
+		fake_execution.guc_error.format_domain = "domain";
+		fake_execution.guc_error.flex_fatal_jmp = &fake_exception_stack;
+		fake_execution.async.pending_actions = (struct ActionList *) &fake_execution;
+		fake_execution.async.pending_listen_actions = (HTAB *) &fake_tuptable;
+		fake_execution.async.pending_notifies =
+			(struct NotificationList *) &fake_portal;
+		fake_execution.async.signal_pids = (int32 *) &fake_error_context;
+		fake_execution.async.signal_procnos = (ProcNumber *) &fake_execution;
+		fake_execution.async.try_advance_tail = true;
+		fake_execution.catalog.uncommitted_enum_types = (HTAB *) &fake_execution;
+		fake_execution.catalog.currently_reindexed_heap = 555;
+		fake_execution.catalog.currently_reindexed_index = 666;
+		fake_execution.catalog.pending_reindexed_indexes = (List *) &fake_tuptable;
+		fake_execution.catalog.pending_rel_deletes =
+			(struct PendingRelDelete *) &fake_portal;
+		fake_execution.catalog.pending_sync_hash = (HTAB *) &fake_error_context;
+		fake_execution.catalog_cache.catcache_in_progress_stack =
+			(CatCInProgress *) &fake_execution;
+		fake_execution.catalog_cache.relcache_in_progress_list =
+			(InProgressEnt *) &fake_tuptable;
+		fake_execution.catalog_cache.relcache_eoxact_list_len = 1;
+		fake_execution.catalog_cache.relcache_eoxact_tupledesc_array =
+			(TupleDesc *) &fake_portal;
+		fake_execution.relmap.active_shared_updates.magic = 1;
+		fake_execution.relmap.pending_local_updates.num_mappings = 1;
+		fake_execution.invalidation.message_arrays[0].msgs = &fake_execution;
+		fake_execution.invalidation.message_arrays[0].maxmsgs = 1;
+		fake_execution.invalidation.trans_info =
+			(struct TransInvalidationInfo *) &fake_tuptable;
+		fake_execution.invalidation.inplace_info =
+			(struct InvalidationInfo *) &fake_portal;
+		fake_execution.two_phase_records.head =
+			(struct StateFileChunk *) &fake_execution;
+		fake_execution.two_phase_records.tail =
+			(struct StateFileChunk *) &fake_tuptable;
+		fake_execution.two_phase_records.num_chunks = 2;
+		fake_execution.trigger.depth = 3;
+		fake_execution.trigger.after_triggers_data = &fake_execution;
+		fake_execution.regex.regex_locale = &fake_tuptable;
+		fake_execution.valgrind.old_error_count = 99;
+		fake_execution.snapbuild.saved_resource_owner_during_export =
+			(ResourceOwner) &fake_portal;
+		fake_execution.snapbuild.export_in_progress = true;
 
 		PgExecutionResetClosedState(&fake_execution);
 
@@ -513,6 +633,121 @@ test_execution_reset_closed_state(PG_FUNCTION_ARGS)
 		ok = ok && fake_execution.memory_contexts.top_transaction_context == NULL;
 		ok = ok && fake_execution.memory_contexts.cur_transaction_context == NULL;
 		ok = ok && fake_execution.memory_contexts.portal_context == NULL;
+		ok = ok && !fake_execution.vacuum.in_vacuum;
+		ok = ok && fake_execution.vacuum.cost_balance == 0;
+		ok = ok && !fake_execution.vacuum.cost_active;
+		ok = ok && fake_execution.vacuum.shared_cost_balance == NULL;
+		ok = ok && fake_execution.vacuum.active_nworkers == NULL;
+		ok = ok && fake_execution.vacuum.cost_balance_local == 0;
+		ok = ok && !fake_execution.vacuum.failsafe_active;
+		ok = ok && fake_execution.vacuum.parallel_worker_delay_ns == 0;
+		ok = ok && fake_execution.vacuum.parallel_shared_cost_params == NULL;
+		ok = ok &&
+			fake_execution.vacuum.parallel_shared_params_generation_local == 0;
+		ok = ok && !fake_execution.node_io.write_location_fields;
+		ok = ok && fake_execution.node_io.strtok_ptr == NULL;
+		ok = ok && !fake_execution.node_io.restore_location_fields;
+		ok = ok && !fake_execution.basebackup.backup_started_in_recovery;
+		ok = ok && fake_execution.basebackup.total_checksum_failures == 0;
+		ok = ok && !fake_execution.basebackup.noverify_checksums;
+		ok = ok && fake_execution.analyze.context == NULL;
+		ok = ok && fake_execution.analyze.strategy == NULL;
+		ok = ok && fake_execution.analyze.array_extra_data == NULL;
+		ok = ok && !fake_execution.extension.creating;
+		ok = ok && fake_execution.extension.current_object == InvalidOid;
+		ok = ok && fake_execution.matview.maintenance_depth == 0;
+		ok = ok && fake_execution.snapshot.current_snapshot == NULL;
+		ok = ok &&
+			fake_execution.snapshot.transaction_xmin == FirstNormalTransactionId;
+		ok = ok &&
+			fake_execution.snapshot.recent_xmin == FirstNormalTransactionId;
+		ok = ok && !fake_execution.snapshot.first_snapshot_set;
+		ok = ok && fake_execution.snapshot.exported_snapshots == NIL;
+		ok = ok && fake_execution.combo_cid.hash == NULL;
+		ok = ok && fake_execution.combo_cid.cids == NULL;
+		ok = ok && fake_execution.combo_cid.used == 0;
+		ok = ok && fake_execution.combo_cid.size == 0;
+		ok = ok && fake_execution.xloginsert.registered_buffers == NULL;
+		ok = ok && fake_execution.xloginsert.max_registered_buffers == 0;
+		ok = ok && fake_execution.xloginsert.mainrdata_head == NULL;
+		ok = ok && fake_execution.xloginsert.mainrdata_last == NULL;
+		ok = ok && fake_execution.xloginsert.mainrdata_len == 0;
+		ok = ok && !fake_execution.xloginsert.begininsert_called;
+		ok = ok && fake_execution.xloginsert.context == NULL;
+		ok = ok && fake_execution.xact.iso_level == XACT_READ_COMMITTED;
+		ok = ok && !fake_execution.xact.read_only;
+		ok = ok && fake_execution.xact.check_xid_alive == InvalidTransactionId;
+		ok = ok &&
+			!FullTransactionIdIsValid(fake_execution.xact.top_full_transaction_id);
+		ok = ok && fake_execution.xact.parallel_current_xids == NULL;
+		ok = ok && fake_execution.xact.n_unreported_xids == 0;
+		ok = ok && fake_execution.xact.current_command_id == 0;
+		ok = ok && fake_execution.xact.prepare_gid == NULL;
+		ok = ok && fake_execution.xact.transaction_abort_context == NULL;
+		ok = ok && fake_execution.transaction_cleanup.lo_cookies == NULL;
+		ok = ok && fake_execution.transaction_cleanup.lo_cookies_size == 0;
+		ok = ok && !fake_execution.transaction_cleanup.lo_cleanup_needed;
+		ok = ok && fake_execution.transaction_cleanup.lo_context == NULL;
+		ok = ok &&
+			!fake_execution.transaction_cleanup.have_xact_temporary_files;
+		ok = ok && fake_execution.transaction_cleanup.pgstat_xact_stack == NULL;
+		ok = ok && fake_execution.transaction_cleanup.ri_fastpath_cache == NULL;
+		ok = ok &&
+			fake_execution.replication_scratch.event_trigger_query_state == NULL;
+		ok = ok &&
+			fake_execution.replication_scratch.replorigin_xact.origin ==
+			InvalidReplOriginId;
+		ok = ok &&
+			fake_execution.replication_scratch.replorigin_xact.origin_lsn ==
+			InvalidXLogRecPtr;
+		ok = ok &&
+			fake_execution.replication_scratch.replorigin_xact.origin_timestamp == 0;
+		ok = ok &&
+			fake_execution.replication_scratch.apply_error_context_stack == NULL;
+		ok = ok &&
+			fake_execution.replication_scratch.apply_message_context == NULL;
+		ok = ok &&
+			fake_execution.replication_scratch.logical_streaming_context == NULL;
+		ok = ok && fake_execution.guc_error.check_errcode_value == 0;
+		ok = ok && fake_execution.guc_error.check_errmsg_string == NULL;
+		ok = ok && fake_execution.guc_error.format_errnumber == 0;
+		ok = ok && fake_execution.guc_error.format_domain == NULL;
+		ok = ok && fake_execution.guc_error.flex_fatal_jmp == NULL;
+		ok = ok && fake_execution.async.pending_actions == NULL;
+		ok = ok && fake_execution.async.pending_listen_actions == NULL;
+		ok = ok && fake_execution.async.pending_notifies == NULL;
+		ok = ok && fake_execution.async.signal_pids == NULL;
+		ok = ok && fake_execution.async.signal_procnos == NULL;
+		ok = ok && !fake_execution.async.try_advance_tail;
+		ok = ok && fake_execution.catalog.uncommitted_enum_types == NULL;
+		ok = ok && fake_execution.catalog.currently_reindexed_heap == InvalidOid;
+		ok = ok && fake_execution.catalog.currently_reindexed_index == InvalidOid;
+		ok = ok && fake_execution.catalog.pending_reindexed_indexes == NIL;
+		ok = ok && fake_execution.catalog.pending_rel_deletes == NULL;
+		ok = ok && fake_execution.catalog.pending_sync_hash == NULL;
+		ok = ok &&
+			fake_execution.catalog_cache.catcache_in_progress_stack == NULL;
+		ok = ok &&
+			fake_execution.catalog_cache.relcache_in_progress_list == NULL;
+		ok = ok && fake_execution.catalog_cache.relcache_eoxact_list_len == 0;
+		ok = ok &&
+			fake_execution.catalog_cache.relcache_eoxact_tupledesc_array == NULL;
+		ok = ok && fake_execution.relmap.active_shared_updates.magic == 0;
+		ok = ok && fake_execution.relmap.pending_local_updates.num_mappings == 0;
+		ok = ok && fake_execution.invalidation.message_arrays[0].msgs == NULL;
+		ok = ok && fake_execution.invalidation.message_arrays[0].maxmsgs == 0;
+		ok = ok && fake_execution.invalidation.trans_info == NULL;
+		ok = ok && fake_execution.invalidation.inplace_info == NULL;
+		ok = ok && fake_execution.two_phase_records.head == NULL;
+		ok = ok && fake_execution.two_phase_records.tail == NULL;
+		ok = ok && fake_execution.two_phase_records.num_chunks == 0;
+		ok = ok && fake_execution.trigger.depth == 0;
+		ok = ok && fake_execution.trigger.after_triggers_data == NULL;
+		ok = ok && fake_execution.regex.regex_locale == NULL;
+		ok = ok && fake_execution.valgrind.old_error_count == 0;
+		ok = ok &&
+			fake_execution.snapbuild.saved_resource_owner_during_export == NULL;
+		ok = ok && !fake_execution.snapbuild.export_in_progress;
 
 		CurrentPgExecution = saved_execution;
 	}
