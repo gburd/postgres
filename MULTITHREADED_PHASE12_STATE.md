@@ -10621,3 +10621,31 @@ Validation for this session refactor slice:
 - full `gmake -j8` passed;
 - `gmake -C src/test/modules/test_backend_runtime check` passed. TAP remains
   disabled in this configured build.
+
+GUC rebind table slice completed:
+
+- `RebindSessionGUCVariablePointers()` now iterates over the typed
+  `threaded_session_guc_rebinds[]` table instead of maintaining a long
+  handwritten sequence of `find_option()`, vartype assertion, and direct
+  variable assignment blocks;
+- the table records each migrated built-in direct-pointer GUC name, expected
+  `enum config_type`, and current runtime accessor through local
+  `PG_SESSION_GUC_*` row macros;
+- the generic helper preserves the existing type assertions and writes through
+  the same `struct config_generic` union fields. A mechanical comparison
+  against the previous function body confirmed that all 227 rebind entries
+  were preserved one-for-one.
+
+Validation for this GUC rebind table slice:
+
+- touched-object build passed for `guc.o`;
+- mechanical table comparison preserved all 227 prior rebind entries;
+- `gmake check-runtime-lifecycles` passed with 149 runtime fields classified,
+  149 bucket definitions checked, and 25 reset definitions checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- full `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed. TAP remains
+  disabled in this configured build;
+- direct focused `src/test/regress` `guc` regression passed against the fresh
+  temp install.

@@ -1740,951 +1740,317 @@ InitializeThreadedSessionCompatibilityGUCOptions(void)
  * C-variable addresses, so a later logical session switch must update any
  * records whose backing storage moved from TLS globals into PgSession.
  */
-void
-RebindSessionGUCVariablePointers(void)
+typedef union ThreadedSessionGUCVariableAccessor
+{
+	bool		*(*bool_ref) (void);
+	int			*(*int_ref) (void);
+	double		*(*real_ref) (void);
+	char		**(*string_ref) (void);
+	int			*(*enum_ref) (void);
+} ThreadedSessionGUCVariableAccessor;
+
+typedef struct ThreadedSessionGUCRebind
+{
+	const char *name;
+	enum config_type vartype;
+	ThreadedSessionGUCVariableAccessor accessor;
+} ThreadedSessionGUCRebind;
+
+#define PG_SESSION_GUC_BOOL(name, accessor) \
+	{name, PGC_BOOL, {.bool_ref = accessor}}
+#define PG_SESSION_GUC_INT(name, accessor) \
+	{name, PGC_INT, {.int_ref = accessor}}
+#define PG_SESSION_GUC_REAL(name, accessor) \
+	{name, PGC_REAL, {.real_ref = accessor}}
+#define PG_SESSION_GUC_STRING(name, accessor) \
+	{name, PGC_STRING, {.string_ref = accessor}}
+#define PG_SESSION_GUC_ENUM(name, accessor) \
+	{name, PGC_ENUM, {.enum_ref = accessor}}
+
+static const ThreadedSessionGUCRebind threaded_session_guc_rebinds[] = {
+	PG_SESSION_GUC_BOOL("allow_system_table_mods", PgCurrentAllowSystemTableModsRef),
+	PG_SESSION_GUC_STRING("application_name", PgCurrentApplicationNameRef),
+	PG_SESSION_GUC_STRING("client_encoding", PgCurrentClientEncodingStringRef),
+	PG_SESSION_GUC_STRING("cluster_name", PgCurrentClusterNameRef),
+	PG_SESSION_GUC_STRING("config_file", PgCurrentConfigFileNameRef),
+	PG_SESSION_GUC_STRING("external_pid_file", PgCurrentExternalPidFileRef),
+	PG_SESSION_GUC_STRING("hba_file", PgCurrentHbaFileNameRef),
+	PG_SESSION_GUC_STRING("hosts_file", PgCurrentHostsFileNameRef),
+	PG_SESSION_GUC_STRING("ident_file", PgCurrentIdentFileNameRef),
+	PG_SESSION_GUC_ENUM("backslash_quote", PgCurrentBackslashQuoteRef),
+	PG_SESSION_GUC_STRING("DateStyle", PgCurrentDateStyleStringRef),
+	PG_SESSION_GUC_STRING("backtrace_functions", PgCurrentBacktraceFunctionsRef),
+	PG_SESSION_GUC_INT("backend_flush_after", PgCurrentBackendFlushAfterRef),
+	PG_SESSION_GUC_ENUM("client_min_messages", PgCurrentClientMinMessagesRef),
+	PG_SESSION_GUC_BOOL("default_with_oids", PgCurrentDefaultWithOidsRef),
+	PG_SESSION_GUC_ENUM("compute_query_id", PgCurrentComputeQueryIdRef),
+	PG_SESSION_GUC_STRING("createrole_self_grant", PgCurrentCreateRoleSelfGrantRef),
+	PG_SESSION_GUC_BOOL("event_triggers", PgCurrentEventTriggersRef),
+	PG_SESSION_GUC_BOOL("log_replication_commands", PgCurrentLogReplicationCommandsRef),
+	PG_SESSION_GUC_ENUM("file_copy_method", PgCurrentFileCopyMethodRef),
+	PG_SESSION_GUC_INT("deadlock_timeout", PgCurrentDeadlockTimeoutRef),
+	PG_SESSION_GUC_BOOL("debug_pretty_print", PgCurrentDebugPrettyPrintRef),
+	PG_SESSION_GUC_BOOL("debug_print_parse", PgCurrentDebugPrintParseRef),
+	PG_SESSION_GUC_BOOL("debug_print_plan", PgCurrentDebugPrintPlanRef),
+	PG_SESSION_GUC_BOOL("debug_print_raw_parse", PgCurrentDebugPrintRawParseRef),
+	PG_SESSION_GUC_BOOL("debug_print_rewritten", PgCurrentDebugPrintRewrittenRef),
+	PG_SESSION_GUC_STRING("dynamic_library_path", PgCurrentDynamicLibraryPathRef),
+	PG_SESSION_GUC_STRING("extension_control_path", PgCurrentExtensionControlPathRef),
+#ifdef DEBUG_NODE_TESTS_ENABLED
+	PG_SESSION_GUC_BOOL("debug_copy_parse_plan_trees", PgCurrentDebugCopyParsePlanTreesRef),
+	PG_SESSION_GUC_BOOL("debug_raw_expression_coverage_test", PgCurrentDebugRawExpressionCoverageTestRef),
+	PG_SESSION_GUC_BOOL("debug_write_read_parse_plan_trees", PgCurrentDebugWriteReadParsePlanTreesRef),
+#endif
+	PG_SESSION_GUC_INT("default_statistics_target", PgCurrentDefaultStatisticsTargetRef),
+	PG_SESSION_GUC_BOOL("default_transaction_deferrable", PgCurrentDefaultXactDeferrableRef),
+	PG_SESSION_GUC_ENUM("default_transaction_isolation", PgCurrentDefaultXactIsoLevelRef),
+	PG_SESSION_GUC_BOOL("default_transaction_read_only", PgCurrentDefaultXactReadOnlyRef),
+	PG_SESSION_GUC_STRING("default_text_search_config", PgCurrentTSCurrentConfigRef),
+	PG_SESSION_GUC_ENUM("IntervalStyle", PgCurrentIntervalStyleRef),
+	PG_SESSION_GUC_STRING("TimeZone", PgCurrentTimeZoneStringRef),
+	PG_SESSION_GUC_STRING("log_timezone", PgCurrentLogTimeZoneStringRef),
+	PG_SESSION_GUC_INT("idle_in_transaction_session_timeout", PgCurrentIdleInTransactionSessionTimeoutRef),
+	PG_SESSION_GUC_INT("idle_session_timeout", PgCurrentIdleSessionTimeoutRef),
+	PG_SESSION_GUC_BOOL("ignore_checksum_failure", PgCurrentIgnoreChecksumFailureRef),
+	PG_SESSION_GUC_INT("logical_decoding_work_mem", PgCurrentLogicalDecodingWorkMemRef),
+	PG_SESSION_GUC_ENUM("debug_logical_replication_streaming", PgCurrentDebugLogicalReplicationStreamingRef),
+	PG_SESSION_GUC_ENUM("password_encryption", PgCurrentPasswordEncryptionRef),
+	PG_SESSION_GUC_ENUM("session_replication_role", PgCurrentSessionReplicationRoleRef),
+	PG_SESSION_GUC_BOOL("trace_notify", PgCurrentTraceNotifyRef),
+	PG_SESSION_GUC_INT("wal_receiver_timeout", PgCurrentWalReceiverTimeoutRef),
+	PG_SESSION_GUC_INT("wal_sender_shutdown_timeout", PgCurrentWalSenderShutdownTimeoutRef),
+	PG_SESSION_GUC_INT("wal_sender_timeout", PgCurrentWalSenderTimeoutRef),
+	PG_SESSION_GUC_BOOL("allow_in_place_tablespaces", PgCurrentAllowInPlaceTablespacesRef),
+	PG_SESSION_GUC_BOOL("allow_alter_system", PgCurrentAllowAlterSystemRef),
+	PG_SESSION_GUC_BOOL("row_security", PgCurrentRowSecurityRef),
+	PG_SESSION_GUC_BOOL("check_function_bodies", PgCurrentCheckFunctionBodiesRef),
+	PG_SESSION_GUC_BOOL("is_superuser", PgCurrentCurrentRoleIsSuperuserRef),
+	PG_SESSION_GUC_INT("temp_file_limit", PgCurrentTempFileLimitRef),
+	PG_SESSION_GUC_INT("temp_buffers", PgCurrentNumTempBuffersRef),
+	PG_SESSION_GUC_STRING("role", PgCurrentRoleStringRef),
+	PG_SESSION_GUC_BOOL("lo_compat_privileges", PgCurrentLoCompatPrivilegesRef),
+	PG_SESSION_GUC_BOOL("log_disconnections", PgCurrentLogDisconnectionsRef),
+	PG_SESSION_GUC_ENUM("log_statement", PgCurrentLogStatementRef),
+	PG_SESSION_GUC_INT("extra_float_digits", PgCurrentExtraFloatDigitsRef),
+	PG_SESSION_GUC_BOOL("array_nulls", PgCurrentArrayNullsRef),
+	PG_SESSION_GUC_ENUM("bytea_output", PgCurrentByteaOutputRef),
+	PG_SESSION_GUC_ENUM("xmlbinary", PgCurrentXmlBinaryRef),
+	PG_SESSION_GUC_ENUM("xmloption", PgCurrentXmlOptionRef),
+	PG_SESSION_GUC_BOOL("quote_all_identifiers", PgCurrentQuoteAllIdentifiersRef),
+	PG_SESSION_GUC_INT("post_auth_delay", PgCurrentPostAuthDelayRef),
+	PG_SESSION_GUC_ENUM("plan_cache_mode", PgCurrentPlanCacheModeRef),
+	PG_SESSION_GUC_STRING("restrict_nonsystem_relation_kind", PgCurrentRestrictNonsystemRelationKindStringRef),
+	PG_SESSION_GUC_INT("tcp_keepalives_idle", PgCurrentTcpKeepalivesIdleRef),
+	PG_SESSION_GUC_INT("tcp_keepalives_interval", PgCurrentTcpKeepalivesIntervalRef),
+	PG_SESSION_GUC_INT("tcp_keepalives_count", PgCurrentTcpKeepalivesCountRef),
+	PG_SESSION_GUC_INT("tcp_user_timeout", PgCurrentTcpUserTimeoutRef),
+	PG_SESSION_GUC_STRING("search_path", PgCurrentNamespaceSearchPathRef),
+	PG_SESSION_GUC_STRING("lc_messages", PgCurrentLocaleMessagesRef),
+	PG_SESSION_GUC_STRING("lc_monetary", PgCurrentLocaleMonetaryRef),
+	PG_SESSION_GUC_STRING("lc_numeric", PgCurrentLocaleNumericRef),
+	PG_SESSION_GUC_STRING("lc_time", PgCurrentLocaleTimeRef),
+	PG_SESSION_GUC_ENUM("icu_validation_level", PgCurrentIcuValidationLevelRef),
+	PG_SESSION_GUC_INT("gin_fuzzy_search_limit", PgCurrentGinFuzzySearchLimitRef),
+	PG_SESSION_GUC_INT("gin_pending_list_limit", PgCurrentGinPendingListLimitRef),
+	PG_SESSION_GUC_STRING("default_table_access_method", PgCurrentDefaultTableAccessMethodRef),
+	PG_SESSION_GUC_BOOL("synchronize_seqscans", PgCurrentSynchronizeSeqscansRef),
+	PG_SESSION_GUC_ENUM("default_toast_compression", PgCurrentDefaultToastCompressionRef),
+	PG_SESSION_GUC_ENUM("wal_compression", PgCurrentWalCompressionRef),
+	PG_SESSION_GUC_BOOL("wal_init_zero", PgCurrentWalInitZeroRef),
+	PG_SESSION_GUC_BOOL("wal_recycle", PgCurrentWalRecycleRef),
+	PG_SESSION_GUC_STRING("wal_consistency_checking", PgCurrentWalConsistencyCheckingStringRef),
+	PG_SESSION_GUC_INT("commit_delay", PgCurrentCommitDelayRef),
+	PG_SESSION_GUC_INT("commit_siblings", PgCurrentCommitSiblingsRef),
+	PG_SESSION_GUC_BOOL("track_wal_io_timing", PgCurrentTrackWalIoTimingRef),
+	PG_SESSION_GUC_INT("wal_skip_threshold", PgCurrentWalSkipThresholdRef),
+#ifdef WAL_DEBUG
+	PG_SESSION_GUC_BOOL("wal_debug", PgCurrentXLogDebugRef),
+#endif
+#ifdef TRACE_SYNCSCAN
+	PG_SESSION_GUC_BOOL("trace_syncscan", PgCurrentTraceSyncscanRef),
+#endif
+	PG_SESSION_GUC_BOOL("jit", PgCurrentJitEnabledRef),
+	PG_SESSION_GUC_STRING("jit_provider", PgCurrentJitProviderRef),
+	PG_SESSION_GUC_BOOL("jit_debugging_support", PgCurrentJitDebuggingSupportRef),
+	PG_SESSION_GUC_BOOL("jit_dump_bitcode", PgCurrentJitDumpBitcodeRef),
+	PG_SESSION_GUC_BOOL("jit_expressions", PgCurrentJitExpressionsRef),
+	PG_SESSION_GUC_BOOL("jit_profiling_support", PgCurrentJitProfilingSupportRef),
+	PG_SESSION_GUC_BOOL("jit_tuple_deforming", PgCurrentJitTupleDeformingRef),
+	PG_SESSION_GUC_REAL("jit_above_cost", PgCurrentJitAboveCostRef),
+	PG_SESSION_GUC_REAL("jit_inline_above_cost", PgCurrentJitInlineAboveCostRef),
+	PG_SESSION_GUC_REAL("jit_optimize_above_cost", PgCurrentJitOptimizeAboveCostRef),
+	PG_SESSION_GUC_BOOL("trace_sort", PgCurrentTraceSortRef),
+#ifdef DEBUG_BOUNDED_SORT
+	PG_SESSION_GUC_BOOL("optimize_bounded_sort", PgCurrentOptimizeBoundedSortRef),
+#endif
+	PG_SESSION_GUC_STRING("default_tablespace", PgCurrentDefaultTablespaceRef),
+	PG_SESSION_GUC_REAL("hash_mem_multiplier", PgCurrentHashMemMultiplierRef),
+	PG_SESSION_GUC_INT("maintenance_work_mem", PgCurrentMaintenanceWorkMemRef),
+	PG_SESSION_GUC_INT("max_parallel_maintenance_workers", PgCurrentMaxParallelMaintenanceWorkersRef),
+	PG_SESSION_GUC_INT("work_mem", PgCurrentWorkMemRef),
+	PG_SESSION_GUC_REAL("cpu_index_tuple_cost", PgCurrentCpuIndexTupleCostRef),
+	PG_SESSION_GUC_REAL("cpu_operator_cost", PgCurrentCpuOperatorCostRef),
+	PG_SESSION_GUC_REAL("cpu_tuple_cost", PgCurrentCpuTupleCostRef),
+	PG_SESSION_GUC_ENUM("constraint_exclusion", PgCurrentConstraintExclusionRef),
+	PG_SESSION_GUC_REAL("cursor_tuple_fraction", PgCurrentCursorTupleFractionRef),
+	PG_SESSION_GUC_ENUM("debug_parallel_query", PgCurrentDebugParallelQueryRef),
+	PG_SESSION_GUC_INT("effective_cache_size", PgCurrentEffectiveCacheSizeRef),
+	PG_SESSION_GUC_INT("effective_io_concurrency", PgCurrentEffectiveIOConcurrencyRef),
+	PG_SESSION_GUC_BOOL("enable_async_append", PgCurrentEnableAsyncAppendRef),
+	PG_SESSION_GUC_BOOL("enable_bitmapscan", PgCurrentEnableBitmapscanRef),
+	PG_SESSION_GUC_BOOL("enable_distinct_reordering", PgCurrentEnableDistinctReorderingRef),
+	PG_SESSION_GUC_BOOL("enable_eager_aggregate", PgCurrentEnableEagerAggregateRef),
+	PG_SESSION_GUC_BOOL("enable_gathermerge", PgCurrentEnableGathermergeRef),
+	PG_SESSION_GUC_BOOL("enable_group_by_reordering", PgCurrentEnableGroupByReorderingRef),
+	PG_SESSION_GUC_BOOL("enable_hashagg", PgCurrentEnableHashaggRef),
+	PG_SESSION_GUC_BOOL("enable_hashjoin", PgCurrentEnableHashjoinRef),
+	PG_SESSION_GUC_BOOL("enable_incremental_sort", PgCurrentEnableIncrementalSortRef),
+	PG_SESSION_GUC_BOOL("enable_indexonlyscan", PgCurrentEnableIndexonlyscanRef),
+	PG_SESSION_GUC_BOOL("enable_indexscan", PgCurrentEnableIndexscanRef),
+	PG_SESSION_GUC_BOOL("enable_material", PgCurrentEnableMaterialRef),
+	PG_SESSION_GUC_BOOL("enable_memoize", PgCurrentEnableMemoizeRef),
+	PG_SESSION_GUC_BOOL("enable_mergejoin", PgCurrentEnableMergejoinRef),
+	PG_SESSION_GUC_BOOL("enable_nestloop", PgCurrentEnableNestloopRef),
+	PG_SESSION_GUC_BOOL("enable_parallel_append", PgCurrentEnableParallelAppendRef),
+	PG_SESSION_GUC_BOOL("enable_parallel_hash", PgCurrentEnableParallelHashRef),
+	PG_SESSION_GUC_BOOL("enable_partition_pruning", PgCurrentEnablePartitionPruningRef),
+	PG_SESSION_GUC_BOOL("enable_partitionwise_aggregate", PgCurrentEnablePartitionwiseAggregateRef),
+	PG_SESSION_GUC_BOOL("enable_partitionwise_join", PgCurrentEnablePartitionwiseJoinRef),
+	PG_SESSION_GUC_BOOL("enable_presorted_aggregate", PgCurrentEnablePresortedAggregateRef),
+	PG_SESSION_GUC_BOOL("enable_self_join_elimination", PgCurrentEnableSelfJoinEliminationRef),
+	PG_SESSION_GUC_BOOL("enable_seqscan", PgCurrentEnableSeqscanRef),
+	PG_SESSION_GUC_BOOL("enable_sort", PgCurrentEnableSortRef),
+	PG_SESSION_GUC_BOOL("enable_tidscan", PgCurrentEnableTidscanRef),
+	PG_SESSION_GUC_STRING("event_source", PgCurrentEventSourceRef),
+	PG_SESSION_GUC_BOOL("geqo", PgCurrentEnableGeqoRef),
+	PG_SESSION_GUC_INT("geqo_effort", PgCurrentGeqoEffortRef),
+	PG_SESSION_GUC_INT("geqo_generations", PgCurrentGeqoGenerationsRef),
+	PG_SESSION_GUC_INT("geqo_pool_size", PgCurrentGeqoPoolSizeRef),
+	PG_SESSION_GUC_REAL("geqo_seed", PgCurrentGeqoSeedRef),
+	PG_SESSION_GUC_REAL("geqo_selection_bias", PgCurrentGeqoSelectionBiasRef),
+	PG_SESSION_GUC_INT("geqo_threshold", PgCurrentGeqoThresholdRef),
+	PG_SESSION_GUC_INT("from_collapse_limit", PgCurrentFromCollapseLimitRef),
+	PG_SESSION_GUC_INT("io_combine_limit", PgCurrentIOCombineLimitGUCRef),
+	PG_SESSION_GUC_INT("join_collapse_limit", PgCurrentJoinCollapseLimitRef),
+	PG_SESSION_GUC_INT("lock_timeout", PgCurrentLockTimeoutRef),
+	PG_SESSION_GUC_STRING("local_preload_libraries", PgCurrentLocalPreloadLibrariesRef),
+#ifdef BTREE_BUILD_STATS
+	PG_SESSION_GUC_BOOL("log_btree_build_stats", PgCurrentLogBtreeBuildStatsRef),
+#endif
+	PG_SESSION_GUC_BOOL("log_duration", PgCurrentLogDurationRef),
+	PG_SESSION_GUC_ENUM("log_error_verbosity", PgCurrentLogErrorVerbosityRef),
+	PG_SESSION_GUC_BOOL("log_executor_stats", PgCurrentLogExecutorStatsRef),
+	PG_SESSION_GUC_BOOL("log_lock_failures", PgCurrentLogLockFailuresRef),
+	PG_SESSION_GUC_BOOL("log_lock_waits", PgCurrentLogLockWaitsRef),
+	PG_SESSION_GUC_INT("log_min_duration_sample", PgCurrentLogMinDurationSampleRef),
+	PG_SESSION_GUC_INT("log_min_duration_statement", PgCurrentLogMinDurationStatementRef),
+	PG_SESSION_GUC_ENUM("log_min_error_statement", PgCurrentLogMinErrorStatementRef),
+	PG_SESSION_GUC_STRING("log_min_messages", PgCurrentLogMinMessagesStringRef),
+	PG_SESSION_GUC_INT("log_parameter_max_length", PgCurrentLogParameterMaxLengthRef),
+	PG_SESSION_GUC_INT("log_parameter_max_length_on_error", PgCurrentLogParameterMaxLengthOnErrorRef),
+	PG_SESSION_GUC_BOOL("log_parser_stats", PgCurrentLogParserStatsRef),
+	PG_SESSION_GUC_BOOL("log_planner_stats", PgCurrentLogPlannerStatsRef),
+	PG_SESSION_GUC_REAL("log_statement_sample_rate", PgCurrentLogStatementSampleRateRef),
+	PG_SESSION_GUC_BOOL("log_statement_stats", PgCurrentLogStatementStatsRef),
+	PG_SESSION_GUC_INT("log_temp_files", PgCurrentLogTempFilesRef),
+	PG_SESSION_GUC_REAL("log_transaction_sample_rate", PgCurrentLogXactSampleRateRef),
+	PG_SESSION_GUC_INT("maintenance_io_concurrency", PgCurrentMaintenanceIOConcurrencyRef),
+	PG_SESSION_GUC_INT("max_stack_depth", PgCurrentMaxStackDepthRef),
+	PG_SESSION_GUC_STRING("session_preload_libraries", PgCurrentSessionPreloadLibrariesRef),
+	PG_SESSION_GUC_REAL("seed", PgCurrentPhonyRandomSeedRef),
+	PG_SESSION_GUC_STRING("server_encoding", PgCurrentServerEncodingStringRef),
+	PG_SESSION_GUC_STRING("session_authorization", PgCurrentSessionAuthorizationStringRef),
+	PG_SESSION_GUC_ENUM("stats_fetch_consistency", PgCurrentPgStatFetchConsistencyRef),
+	PG_SESSION_GUC_INT("ssl_renegotiation_limit", PgCurrentSslRenegotiationLimitRef),
+	PG_SESSION_GUC_BOOL("standard_conforming_strings", PgCurrentStandardConformingStringsRef),
+	PG_SESSION_GUC_ENUM("synchronous_commit", PgCurrentSynchronousCommitRef),
+	PG_SESSION_GUC_INT("statement_timeout", PgCurrentStatementTimeoutRef),
+	PG_SESSION_GUC_INT("transaction_timeout", PgCurrentTransactionTimeoutRef),
+#ifdef LOCK_DEBUG
+	PG_SESSION_GUC_BOOL("debug_deadlocks", PgCurrentDebugDeadlocksRef),
+	PG_SESSION_GUC_INT("trace_lock_oidmin", PgCurrentTraceLockOidMinRef),
+	PG_SESSION_GUC_INT("trace_lock_table", PgCurrentTraceLockTableRef),
+	PG_SESSION_GUC_BOOL("trace_locks", PgCurrentTraceLocksRef),
+	PG_SESSION_GUC_BOOL("trace_lwlocks", PgCurrentTraceLwlocksRef),
+	PG_SESSION_GUC_BOOL("trace_userlocks", PgCurrentTraceUserlocksRef),
+#endif
+	PG_SESSION_GUC_INT("max_parallel_workers_per_gather", PgCurrentMaxParallelWorkersPerGatherRef),
+	PG_SESSION_GUC_REAL("min_eager_agg_group_size", PgCurrentMinEagerAggGroupSizeRef),
+	PG_SESSION_GUC_INT("min_parallel_index_scan_size", PgCurrentMinParallelIndexScanSizeRef),
+	PG_SESSION_GUC_INT("min_parallel_table_scan_size", PgCurrentMinParallelTableScanSizeRef),
+	PG_SESSION_GUC_BOOL("parallel_leader_participation", PgCurrentParallelLeaderParticipationRef),
+	PG_SESSION_GUC_REAL("parallel_setup_cost", PgCurrentParallelSetupCostRef),
+	PG_SESSION_GUC_REAL("parallel_tuple_cost", PgCurrentParallelTupleCostRef),
+	PG_SESSION_GUC_REAL("random_page_cost", PgCurrentRandomPageCostRef),
+	PG_SESSION_GUC_REAL("recursive_worktable_factor", PgCurrentRecursiveWorktableFactorRef),
+	PG_SESSION_GUC_REAL("seq_page_cost", PgCurrentSeqPageCostRef),
+	PG_SESSION_GUC_STRING("temp_tablespaces", PgCurrentTempTablespacesRef),
+	PG_SESSION_GUC_BOOL("track_io_timing", PgCurrentTrackIOTimingRef),
+	PG_SESSION_GUC_BOOL("track_cost_delay_timing", PgCurrentTrackCostDelayTimingRef),
+	PG_SESSION_GUC_BOOL("track_activities", PgCurrentPgStatTrackActivitiesRef),
+	PG_SESSION_GUC_BOOL("track_counts", PgCurrentPgStatTrackCountsRef),
+	PG_SESSION_GUC_ENUM("track_functions", PgCurrentPgStatTrackFunctionsRef),
+	PG_SESSION_GUC_STRING("timezone_abbreviations", PgCurrentTimeZoneAbbreviationsStringRef),
+	PG_SESSION_GUC_BOOL("transform_null_equals", PgCurrentTransformNullEqualsRef),
+	PG_SESSION_GUC_INT("vacuum_buffer_usage_limit", PgCurrentVacuumBufferUsageLimitRef),
+	PG_SESSION_GUC_REAL("vacuum_cost_delay", PgCurrentVacuumCostDelayRef),
+	PG_SESSION_GUC_INT("vacuum_cost_limit", PgCurrentVacuumCostLimitRef),
+	PG_SESSION_GUC_INT("vacuum_cost_page_dirty", PgCurrentVacuumCostPageDirtyRef),
+	PG_SESSION_GUC_INT("vacuum_cost_page_hit", PgCurrentVacuumCostPageHitRef),
+	PG_SESSION_GUC_INT("vacuum_cost_page_miss", PgCurrentVacuumCostPageMissRef),
+	PG_SESSION_GUC_INT("vacuum_failsafe_age", PgCurrentVacuumFailsafeAgeRef),
+	PG_SESSION_GUC_INT("vacuum_freeze_min_age", PgCurrentVacuumFreezeMinAgeRef),
+	PG_SESSION_GUC_INT("vacuum_freeze_table_age", PgCurrentVacuumFreezeTableAgeRef),
+	PG_SESSION_GUC_REAL("vacuum_max_eager_freeze_failure_rate", PgCurrentVacuumMaxEagerFreezeFailureRateRef),
+	PG_SESSION_GUC_INT("vacuum_multixact_failsafe_age", PgCurrentVacuumMultixactFailsafeAgeRef),
+	PG_SESSION_GUC_INT("vacuum_multixact_freeze_min_age", PgCurrentVacuumMultixactFreezeMinAgeRef),
+	PG_SESSION_GUC_INT("vacuum_multixact_freeze_table_age", PgCurrentVacuumMultixactFreezeTableAgeRef),
+	PG_SESSION_GUC_BOOL("vacuum_truncate", PgCurrentVacuumTruncateRef),
+	PG_SESSION_GUC_BOOL("zero_damaged_pages", PgCurrentZeroDamagedPagesRef),
+};
+
+#undef PG_SESSION_GUC_BOOL
+#undef PG_SESSION_GUC_INT
+#undef PG_SESSION_GUC_REAL
+#undef PG_SESSION_GUC_STRING
+#undef PG_SESSION_GUC_ENUM
+
+static void
+RebindSessionGUCVariablePointer(const ThreadedSessionGUCRebind *rebind)
 {
 	struct config_generic *gconf;
 
+	gconf = find_option(rebind->name, false, false, PANIC);
+	Assert(gconf->vartype == rebind->vartype);
+
+	switch (rebind->vartype)
+	{
+		case PGC_BOOL:
+			gconf->_bool.variable = rebind->accessor.bool_ref();
+			break;
+		case PGC_INT:
+			gconf->_int.variable = rebind->accessor.int_ref();
+			break;
+		case PGC_REAL:
+			gconf->_real.variable = rebind->accessor.real_ref();
+			break;
+		case PGC_STRING:
+			gconf->_string.variable = rebind->accessor.string_ref();
+			break;
+		case PGC_ENUM:
+			gconf->_enum.variable = rebind->accessor.enum_ref();
+			break;
+	}
+}
+
+void
+RebindSessionGUCVariablePointers(void)
+{
 	if (guc_hashtab == NULL)
 		return;
 
-	gconf = find_option("allow_system_table_mods", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentAllowSystemTableModsRef();
-
-	gconf = find_option("application_name", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentApplicationNameRef();
-
-	gconf = find_option("client_encoding", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentClientEncodingStringRef();
-
-	gconf = find_option("cluster_name", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentClusterNameRef();
-
-	gconf = find_option("config_file", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentConfigFileNameRef();
-
-	gconf = find_option("external_pid_file", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentExternalPidFileRef();
-
-	gconf = find_option("hba_file", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentHbaFileNameRef();
-
-	gconf = find_option("hosts_file", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentHostsFileNameRef();
-
-	gconf = find_option("ident_file", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentIdentFileNameRef();
-
-	gconf = find_option("backslash_quote", false, false, PANIC);
-	Assert(gconf->vartype == PGC_ENUM);
-	gconf->_enum.variable = PgCurrentBackslashQuoteRef();
-
-	gconf = find_option("DateStyle", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentDateStyleStringRef();
-
-	gconf = find_option("backtrace_functions", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentBacktraceFunctionsRef();
-
-	gconf = find_option("backend_flush_after", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentBackendFlushAfterRef();
-
-	gconf = find_option("client_min_messages", false, false, PANIC);
-	Assert(gconf->vartype == PGC_ENUM);
-	gconf->_enum.variable = PgCurrentClientMinMessagesRef();
-
-	gconf = find_option("default_with_oids", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentDefaultWithOidsRef();
-
-	gconf = find_option("compute_query_id", false, false, PANIC);
-	Assert(gconf->vartype == PGC_ENUM);
-	gconf->_enum.variable = PgCurrentComputeQueryIdRef();
-
-	gconf = find_option("createrole_self_grant", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentCreateRoleSelfGrantRef();
-
-	gconf = find_option("event_triggers", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentEventTriggersRef();
-
-	gconf = find_option("log_replication_commands", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentLogReplicationCommandsRef();
-
-	gconf = find_option("file_copy_method", false, false, PANIC);
-	Assert(gconf->vartype == PGC_ENUM);
-	gconf->_enum.variable = PgCurrentFileCopyMethodRef();
-
-	gconf = find_option("deadlock_timeout", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentDeadlockTimeoutRef();
-
-	gconf = find_option("debug_pretty_print", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentDebugPrettyPrintRef();
-
-	gconf = find_option("debug_print_parse", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentDebugPrintParseRef();
-
-	gconf = find_option("debug_print_plan", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentDebugPrintPlanRef();
-
-	gconf = find_option("debug_print_raw_parse", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentDebugPrintRawParseRef();
-
-	gconf = find_option("debug_print_rewritten", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentDebugPrintRewrittenRef();
-
-	gconf = find_option("dynamic_library_path", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentDynamicLibraryPathRef();
-
-	gconf = find_option("extension_control_path", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentExtensionControlPathRef();
-
-#ifdef DEBUG_NODE_TESTS_ENABLED
-	gconf = find_option("debug_copy_parse_plan_trees", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentDebugCopyParsePlanTreesRef();
-
-	gconf = find_option("debug_raw_expression_coverage_test", false, false,
-						PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentDebugRawExpressionCoverageTestRef();
-
-	gconf = find_option("debug_write_read_parse_plan_trees", false, false,
-						PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentDebugWriteReadParsePlanTreesRef();
-#endif
-
-	gconf = find_option("default_statistics_target", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentDefaultStatisticsTargetRef();
-
-	gconf = find_option("default_transaction_deferrable", false, false,
-						PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentDefaultXactDeferrableRef();
-
-	gconf = find_option("default_transaction_isolation", false, false, PANIC);
-	Assert(gconf->vartype == PGC_ENUM);
-	gconf->_enum.variable = PgCurrentDefaultXactIsoLevelRef();
-
-	gconf = find_option("default_transaction_read_only", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentDefaultXactReadOnlyRef();
-
-	gconf = find_option("default_text_search_config", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentTSCurrentConfigRef();
-
-	gconf = find_option("IntervalStyle", false, false, PANIC);
-	Assert(gconf->vartype == PGC_ENUM);
-	gconf->_enum.variable = PgCurrentIntervalStyleRef();
-
-	gconf = find_option("TimeZone", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentTimeZoneStringRef();
-
-	gconf = find_option("log_timezone", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentLogTimeZoneStringRef();
-
-	gconf = find_option("idle_in_transaction_session_timeout", false, false,
-						PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentIdleInTransactionSessionTimeoutRef();
-
-	gconf = find_option("idle_session_timeout", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentIdleSessionTimeoutRef();
-
-	gconf = find_option("ignore_checksum_failure", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentIgnoreChecksumFailureRef();
-
-	gconf = find_option("logical_decoding_work_mem", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentLogicalDecodingWorkMemRef();
-
-	gconf = find_option("debug_logical_replication_streaming", false, false,
-						PANIC);
-	Assert(gconf->vartype == PGC_ENUM);
-	gconf->_enum.variable = PgCurrentDebugLogicalReplicationStreamingRef();
-
-	gconf = find_option("password_encryption", false, false, PANIC);
-	Assert(gconf->vartype == PGC_ENUM);
-	gconf->_enum.variable = PgCurrentPasswordEncryptionRef();
-
-	gconf = find_option("session_replication_role", false, false, PANIC);
-	Assert(gconf->vartype == PGC_ENUM);
-	gconf->_enum.variable = PgCurrentSessionReplicationRoleRef();
-
-	gconf = find_option("trace_notify", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentTraceNotifyRef();
-
-	gconf = find_option("wal_receiver_timeout", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentWalReceiverTimeoutRef();
-
-	gconf = find_option("wal_sender_shutdown_timeout", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentWalSenderShutdownTimeoutRef();
-
-	gconf = find_option("wal_sender_timeout", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentWalSenderTimeoutRef();
-
-	gconf = find_option("allow_in_place_tablespaces", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentAllowInPlaceTablespacesRef();
-
-	gconf = find_option("allow_alter_system", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentAllowAlterSystemRef();
-
-	gconf = find_option("row_security", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentRowSecurityRef();
-
-	gconf = find_option("check_function_bodies", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentCheckFunctionBodiesRef();
-
-	gconf = find_option("is_superuser", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentCurrentRoleIsSuperuserRef();
-
-	gconf = find_option("temp_file_limit", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentTempFileLimitRef();
-
-	gconf = find_option("temp_buffers", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentNumTempBuffersRef();
-
-	gconf = find_option("role", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentRoleStringRef();
-
-	gconf = find_option("lo_compat_privileges", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentLoCompatPrivilegesRef();
-
-	gconf = find_option("log_disconnections", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentLogDisconnectionsRef();
-
-	gconf = find_option("log_statement", false, false, PANIC);
-	Assert(gconf->vartype == PGC_ENUM);
-	gconf->_enum.variable = PgCurrentLogStatementRef();
-
-	gconf = find_option("extra_float_digits", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentExtraFloatDigitsRef();
-
-	gconf = find_option("array_nulls", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentArrayNullsRef();
-
-	gconf = find_option("bytea_output", false, false, PANIC);
-	Assert(gconf->vartype == PGC_ENUM);
-	gconf->_enum.variable = PgCurrentByteaOutputRef();
-
-	gconf = find_option("xmlbinary", false, false, PANIC);
-	Assert(gconf->vartype == PGC_ENUM);
-	gconf->_enum.variable = PgCurrentXmlBinaryRef();
-
-	gconf = find_option("xmloption", false, false, PANIC);
-	Assert(gconf->vartype == PGC_ENUM);
-	gconf->_enum.variable = PgCurrentXmlOptionRef();
-
-	gconf = find_option("quote_all_identifiers", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentQuoteAllIdentifiersRef();
-
-	gconf = find_option("post_auth_delay", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentPostAuthDelayRef();
-
-	gconf = find_option("plan_cache_mode", false, false, PANIC);
-	Assert(gconf->vartype == PGC_ENUM);
-	gconf->_enum.variable = PgCurrentPlanCacheModeRef();
-
-	gconf = find_option("restrict_nonsystem_relation_kind", false, false,
-						PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentRestrictNonsystemRelationKindStringRef();
-
-	gconf = find_option("tcp_keepalives_idle", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentTcpKeepalivesIdleRef();
-
-	gconf = find_option("tcp_keepalives_interval", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentTcpKeepalivesIntervalRef();
-
-	gconf = find_option("tcp_keepalives_count", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentTcpKeepalivesCountRef();
-
-	gconf = find_option("tcp_user_timeout", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentTcpUserTimeoutRef();
-
-	gconf = find_option("search_path", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentNamespaceSearchPathRef();
-
-	gconf = find_option("lc_messages", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentLocaleMessagesRef();
-
-	gconf = find_option("lc_monetary", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentLocaleMonetaryRef();
-
-	gconf = find_option("lc_numeric", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentLocaleNumericRef();
-
-	gconf = find_option("lc_time", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentLocaleTimeRef();
-
-	gconf = find_option("icu_validation_level", false, false, PANIC);
-	Assert(gconf->vartype == PGC_ENUM);
-	gconf->_enum.variable = PgCurrentIcuValidationLevelRef();
-
-	gconf = find_option("gin_fuzzy_search_limit", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentGinFuzzySearchLimitRef();
-
-	gconf = find_option("gin_pending_list_limit", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentGinPendingListLimitRef();
-
-	gconf = find_option("default_table_access_method", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentDefaultTableAccessMethodRef();
-
-	gconf = find_option("synchronize_seqscans", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentSynchronizeSeqscansRef();
-
-	gconf = find_option("default_toast_compression", false, false, PANIC);
-	Assert(gconf->vartype == PGC_ENUM);
-	gconf->_enum.variable = PgCurrentDefaultToastCompressionRef();
-
-	gconf = find_option("wal_compression", false, false, PANIC);
-	Assert(gconf->vartype == PGC_ENUM);
-	gconf->_enum.variable = PgCurrentWalCompressionRef();
-
-	gconf = find_option("wal_init_zero", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentWalInitZeroRef();
-
-	gconf = find_option("wal_recycle", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentWalRecycleRef();
-
-	gconf = find_option("wal_consistency_checking", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentWalConsistencyCheckingStringRef();
-
-	gconf = find_option("commit_delay", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentCommitDelayRef();
-
-	gconf = find_option("commit_siblings", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentCommitSiblingsRef();
-
-	gconf = find_option("track_wal_io_timing", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentTrackWalIoTimingRef();
-
-	gconf = find_option("wal_skip_threshold", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentWalSkipThresholdRef();
-
-#ifdef WAL_DEBUG
-	gconf = find_option("wal_debug", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentXLogDebugRef();
-#endif
-
-#ifdef TRACE_SYNCSCAN
-	gconf = find_option("trace_syncscan", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentTraceSyncscanRef();
-#endif
-
-	gconf = find_option("jit", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentJitEnabledRef();
-
-	gconf = find_option("jit_provider", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentJitProviderRef();
-
-	gconf = find_option("jit_debugging_support", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentJitDebuggingSupportRef();
-
-	gconf = find_option("jit_dump_bitcode", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentJitDumpBitcodeRef();
-
-	gconf = find_option("jit_expressions", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentJitExpressionsRef();
-
-	gconf = find_option("jit_profiling_support", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentJitProfilingSupportRef();
-
-	gconf = find_option("jit_tuple_deforming", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentJitTupleDeformingRef();
-
-	gconf = find_option("jit_above_cost", false, false, PANIC);
-	Assert(gconf->vartype == PGC_REAL);
-	gconf->_real.variable = PgCurrentJitAboveCostRef();
-
-	gconf = find_option("jit_inline_above_cost", false, false, PANIC);
-	Assert(gconf->vartype == PGC_REAL);
-	gconf->_real.variable = PgCurrentJitInlineAboveCostRef();
-
-	gconf = find_option("jit_optimize_above_cost", false, false, PANIC);
-	Assert(gconf->vartype == PGC_REAL);
-	gconf->_real.variable = PgCurrentJitOptimizeAboveCostRef();
-
-	gconf = find_option("trace_sort", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentTraceSortRef();
-
-#ifdef DEBUG_BOUNDED_SORT
-	gconf = find_option("optimize_bounded_sort", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentOptimizeBoundedSortRef();
-#endif
-
-	gconf = find_option("default_tablespace", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentDefaultTablespaceRef();
-
-	gconf = find_option("hash_mem_multiplier", false, false, PANIC);
-	Assert(gconf->vartype == PGC_REAL);
-	gconf->_real.variable = PgCurrentHashMemMultiplierRef();
-
-	gconf = find_option("maintenance_work_mem", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentMaintenanceWorkMemRef();
-
-	gconf = find_option("max_parallel_maintenance_workers", false, false,
-						PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentMaxParallelMaintenanceWorkersRef();
-
-	gconf = find_option("work_mem", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentWorkMemRef();
-
-	gconf = find_option("cpu_index_tuple_cost", false, false, PANIC);
-	Assert(gconf->vartype == PGC_REAL);
-	gconf->_real.variable = PgCurrentCpuIndexTupleCostRef();
-
-	gconf = find_option("cpu_operator_cost", false, false, PANIC);
-	Assert(gconf->vartype == PGC_REAL);
-	gconf->_real.variable = PgCurrentCpuOperatorCostRef();
-
-	gconf = find_option("cpu_tuple_cost", false, false, PANIC);
-	Assert(gconf->vartype == PGC_REAL);
-	gconf->_real.variable = PgCurrentCpuTupleCostRef();
-
-	gconf = find_option("constraint_exclusion", false, false, PANIC);
-	Assert(gconf->vartype == PGC_ENUM);
-	gconf->_enum.variable = PgCurrentConstraintExclusionRef();
-
-	gconf = find_option("cursor_tuple_fraction", false, false, PANIC);
-	Assert(gconf->vartype == PGC_REAL);
-	gconf->_real.variable = PgCurrentCursorTupleFractionRef();
-
-	gconf = find_option("debug_parallel_query", false, false, PANIC);
-	Assert(gconf->vartype == PGC_ENUM);
-	gconf->_enum.variable = PgCurrentDebugParallelQueryRef();
-
-	gconf = find_option("effective_cache_size", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentEffectiveCacheSizeRef();
-
-	gconf = find_option("effective_io_concurrency", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentEffectiveIOConcurrencyRef();
-
-	gconf = find_option("enable_async_append", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentEnableAsyncAppendRef();
-
-	gconf = find_option("enable_bitmapscan", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentEnableBitmapscanRef();
-
-	gconf = find_option("enable_distinct_reordering", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentEnableDistinctReorderingRef();
-
-	gconf = find_option("enable_eager_aggregate", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentEnableEagerAggregateRef();
-
-	gconf = find_option("enable_gathermerge", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentEnableGathermergeRef();
-
-	gconf = find_option("enable_group_by_reordering", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentEnableGroupByReorderingRef();
-
-	gconf = find_option("enable_hashagg", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentEnableHashaggRef();
-
-	gconf = find_option("enable_hashjoin", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentEnableHashjoinRef();
-
-	gconf = find_option("enable_incremental_sort", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentEnableIncrementalSortRef();
-
-	gconf = find_option("enable_indexonlyscan", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentEnableIndexonlyscanRef();
-
-	gconf = find_option("enable_indexscan", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentEnableIndexscanRef();
-
-	gconf = find_option("enable_material", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentEnableMaterialRef();
-
-	gconf = find_option("enable_memoize", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentEnableMemoizeRef();
-
-	gconf = find_option("enable_mergejoin", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentEnableMergejoinRef();
-
-	gconf = find_option("enable_nestloop", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentEnableNestloopRef();
-
-	gconf = find_option("enable_parallel_append", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentEnableParallelAppendRef();
-
-	gconf = find_option("enable_parallel_hash", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentEnableParallelHashRef();
-
-	gconf = find_option("enable_partition_pruning", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentEnablePartitionPruningRef();
-
-	gconf = find_option("enable_partitionwise_aggregate", false, false,
-						PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentEnablePartitionwiseAggregateRef();
-
-	gconf = find_option("enable_partitionwise_join", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentEnablePartitionwiseJoinRef();
-
-	gconf = find_option("enable_presorted_aggregate", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentEnablePresortedAggregateRef();
-
-	gconf = find_option("enable_self_join_elimination", false, false,
-						PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentEnableSelfJoinEliminationRef();
-
-	gconf = find_option("enable_seqscan", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentEnableSeqscanRef();
-
-	gconf = find_option("enable_sort", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentEnableSortRef();
-
-	gconf = find_option("enable_tidscan", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentEnableTidscanRef();
-
-	gconf = find_option("event_source", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentEventSourceRef();
-
-	gconf = find_option("geqo", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentEnableGeqoRef();
-
-	gconf = find_option("geqo_effort", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentGeqoEffortRef();
-
-	gconf = find_option("geqo_generations", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentGeqoGenerationsRef();
-
-	gconf = find_option("geqo_pool_size", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentGeqoPoolSizeRef();
-
-	gconf = find_option("geqo_seed", false, false, PANIC);
-	Assert(gconf->vartype == PGC_REAL);
-	gconf->_real.variable = PgCurrentGeqoSeedRef();
-
-	gconf = find_option("geqo_selection_bias", false, false, PANIC);
-	Assert(gconf->vartype == PGC_REAL);
-	gconf->_real.variable = PgCurrentGeqoSelectionBiasRef();
-
-	gconf = find_option("geqo_threshold", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentGeqoThresholdRef();
-
-	gconf = find_option("from_collapse_limit", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentFromCollapseLimitRef();
-
-	gconf = find_option("io_combine_limit", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentIOCombineLimitGUCRef();
-
-	gconf = find_option("join_collapse_limit", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentJoinCollapseLimitRef();
-
-	gconf = find_option("lock_timeout", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentLockTimeoutRef();
-
-	gconf = find_option("local_preload_libraries", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentLocalPreloadLibrariesRef();
-
-#ifdef BTREE_BUILD_STATS
-	gconf = find_option("log_btree_build_stats", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentLogBtreeBuildStatsRef();
-#endif
-
-	gconf = find_option("log_duration", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentLogDurationRef();
-
-	gconf = find_option("log_error_verbosity", false, false, PANIC);
-	Assert(gconf->vartype == PGC_ENUM);
-	gconf->_enum.variable = PgCurrentLogErrorVerbosityRef();
-
-	gconf = find_option("log_executor_stats", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentLogExecutorStatsRef();
-
-	gconf = find_option("log_lock_failures", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentLogLockFailuresRef();
-
-	gconf = find_option("log_lock_waits", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentLogLockWaitsRef();
-
-	gconf = find_option("log_min_duration_sample", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentLogMinDurationSampleRef();
-
-	gconf = find_option("log_min_duration_statement", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentLogMinDurationStatementRef();
-
-	gconf = find_option("log_min_error_statement", false, false, PANIC);
-	Assert(gconf->vartype == PGC_ENUM);
-	gconf->_enum.variable = PgCurrentLogMinErrorStatementRef();
-
-	gconf = find_option("log_min_messages", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentLogMinMessagesStringRef();
-
-	gconf = find_option("log_parameter_max_length", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentLogParameterMaxLengthRef();
-
-	gconf = find_option("log_parameter_max_length_on_error", false, false,
-						PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentLogParameterMaxLengthOnErrorRef();
-
-	gconf = find_option("log_parser_stats", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentLogParserStatsRef();
-
-	gconf = find_option("log_planner_stats", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentLogPlannerStatsRef();
-
-	gconf = find_option("log_statement_sample_rate", false, false, PANIC);
-	Assert(gconf->vartype == PGC_REAL);
-	gconf->_real.variable = PgCurrentLogStatementSampleRateRef();
-
-	gconf = find_option("log_statement_stats", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentLogStatementStatsRef();
-
-	gconf = find_option("log_temp_files", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentLogTempFilesRef();
-
-	gconf = find_option("log_transaction_sample_rate", false, false, PANIC);
-	Assert(gconf->vartype == PGC_REAL);
-	gconf->_real.variable = PgCurrentLogXactSampleRateRef();
-
-	gconf = find_option("maintenance_io_concurrency", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentMaintenanceIOConcurrencyRef();
-
-	gconf = find_option("max_stack_depth", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentMaxStackDepthRef();
-
-	gconf = find_option("session_preload_libraries", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentSessionPreloadLibrariesRef();
-
-	gconf = find_option("seed", false, false, PANIC);
-	Assert(gconf->vartype == PGC_REAL);
-	gconf->_real.variable = PgCurrentPhonyRandomSeedRef();
-
-	gconf = find_option("server_encoding", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentServerEncodingStringRef();
-
-	gconf = find_option("session_authorization", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentSessionAuthorizationStringRef();
-
-	gconf = find_option("stats_fetch_consistency", false, false, PANIC);
-	Assert(gconf->vartype == PGC_ENUM);
-	gconf->_enum.variable = PgCurrentPgStatFetchConsistencyRef();
-
-	gconf = find_option("ssl_renegotiation_limit", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentSslRenegotiationLimitRef();
-
-	gconf = find_option("standard_conforming_strings", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentStandardConformingStringsRef();
-
-	gconf = find_option("synchronous_commit", false, false, PANIC);
-	Assert(gconf->vartype == PGC_ENUM);
-	gconf->_enum.variable = PgCurrentSynchronousCommitRef();
-
-	gconf = find_option("statement_timeout", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentStatementTimeoutRef();
-
-	gconf = find_option("transaction_timeout", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentTransactionTimeoutRef();
-
-#ifdef LOCK_DEBUG
-	gconf = find_option("debug_deadlocks", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentDebugDeadlocksRef();
-
-	gconf = find_option("trace_lock_oidmin", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentTraceLockOidMinRef();
-
-	gconf = find_option("trace_lock_table", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentTraceLockTableRef();
-
-	gconf = find_option("trace_locks", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentTraceLocksRef();
-
-	gconf = find_option("trace_lwlocks", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentTraceLwlocksRef();
-
-	gconf = find_option("trace_userlocks", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentTraceUserlocksRef();
-#endif
-
-	gconf = find_option("max_parallel_workers_per_gather", false, false,
-						PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentMaxParallelWorkersPerGatherRef();
-
-	gconf = find_option("min_eager_agg_group_size", false, false, PANIC);
-	Assert(gconf->vartype == PGC_REAL);
-	gconf->_real.variable = PgCurrentMinEagerAggGroupSizeRef();
-
-	gconf = find_option("min_parallel_index_scan_size", false, false,
-						PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentMinParallelIndexScanSizeRef();
-
-	gconf = find_option("min_parallel_table_scan_size", false, false,
-						PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentMinParallelTableScanSizeRef();
-
-	gconf = find_option("parallel_leader_participation", false, false,
-						PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentParallelLeaderParticipationRef();
-
-	gconf = find_option("parallel_setup_cost", false, false, PANIC);
-	Assert(gconf->vartype == PGC_REAL);
-	gconf->_real.variable = PgCurrentParallelSetupCostRef();
-
-	gconf = find_option("parallel_tuple_cost", false, false, PANIC);
-	Assert(gconf->vartype == PGC_REAL);
-	gconf->_real.variable = PgCurrentParallelTupleCostRef();
-
-	gconf = find_option("random_page_cost", false, false, PANIC);
-	Assert(gconf->vartype == PGC_REAL);
-	gconf->_real.variable = PgCurrentRandomPageCostRef();
-
-	gconf = find_option("recursive_worktable_factor", false, false, PANIC);
-	Assert(gconf->vartype == PGC_REAL);
-	gconf->_real.variable = PgCurrentRecursiveWorktableFactorRef();
-
-	gconf = find_option("seq_page_cost", false, false, PANIC);
-	Assert(gconf->vartype == PGC_REAL);
-	gconf->_real.variable = PgCurrentSeqPageCostRef();
-
-	gconf = find_option("temp_tablespaces", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentTempTablespacesRef();
-
-	gconf = find_option("track_io_timing", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentTrackIOTimingRef();
-
-	gconf = find_option("track_cost_delay_timing", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentTrackCostDelayTimingRef();
-
-	gconf = find_option("track_activities", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentPgStatTrackActivitiesRef();
-
-	gconf = find_option("track_counts", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentPgStatTrackCountsRef();
-
-	gconf = find_option("track_functions", false, false, PANIC);
-	Assert(gconf->vartype == PGC_ENUM);
-	gconf->_enum.variable = PgCurrentPgStatTrackFunctionsRef();
-
-	gconf = find_option("timezone_abbreviations", false, false, PANIC);
-	Assert(gconf->vartype == PGC_STRING);
-	gconf->_string.variable = PgCurrentTimeZoneAbbreviationsStringRef();
-
-	gconf = find_option("transform_null_equals", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentTransformNullEqualsRef();
-
-	gconf = find_option("vacuum_buffer_usage_limit", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentVacuumBufferUsageLimitRef();
-
-	gconf = find_option("vacuum_cost_delay", false, false, PANIC);
-	Assert(gconf->vartype == PGC_REAL);
-	gconf->_real.variable = PgCurrentVacuumCostDelayRef();
-
-	gconf = find_option("vacuum_cost_limit", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentVacuumCostLimitRef();
-
-	gconf = find_option("vacuum_cost_page_dirty", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentVacuumCostPageDirtyRef();
-
-	gconf = find_option("vacuum_cost_page_hit", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentVacuumCostPageHitRef();
-
-	gconf = find_option("vacuum_cost_page_miss", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentVacuumCostPageMissRef();
-
-	gconf = find_option("vacuum_failsafe_age", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentVacuumFailsafeAgeRef();
-
-	gconf = find_option("vacuum_freeze_min_age", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentVacuumFreezeMinAgeRef();
-
-	gconf = find_option("vacuum_freeze_table_age", false, false, PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentVacuumFreezeTableAgeRef();
-
-	gconf = find_option("vacuum_max_eager_freeze_failure_rate", false, false,
-						PANIC);
-	Assert(gconf->vartype == PGC_REAL);
-	gconf->_real.variable = PgCurrentVacuumMaxEagerFreezeFailureRateRef();
-
-	gconf = find_option("vacuum_multixact_failsafe_age", false, false,
-						PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentVacuumMultixactFailsafeAgeRef();
-
-	gconf = find_option("vacuum_multixact_freeze_min_age", false, false,
-						PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentVacuumMultixactFreezeMinAgeRef();
-
-	gconf = find_option("vacuum_multixact_freeze_table_age", false, false,
-						PANIC);
-	Assert(gconf->vartype == PGC_INT);
-	gconf->_int.variable = PgCurrentVacuumMultixactFreezeTableAgeRef();
-
-	gconf = find_option("vacuum_truncate", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentVacuumTruncateRef();
-
-	gconf = find_option("zero_damaged_pages", false, false, PANIC);
-	Assert(gconf->vartype == PGC_BOOL);
-	gconf->_bool.variable = PgCurrentZeroDamagedPagesRef();
+	for (int i = 0; i < lengthof(threaded_session_guc_rebinds); i++)
+		RebindSessionGUCVariablePointer(&threaded_session_guc_rebinds[i]);
 }
 
 /*
