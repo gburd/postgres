@@ -665,6 +665,7 @@ typedef struct PgBackendParallelState
 	bool		pq_mq_busy;
 	pid_t		pq_mq_parallel_leader_pid;
 	ProcNumber	pq_mq_parallel_leader_proc_number;
+	MemoryContext message_context;
 } PgBackendParallelState;
 
 typedef struct PgBackendInstrumentationState
@@ -2467,6 +2468,7 @@ extern void **PgCurrentFixedParallelStateRef(void);
 extern dlist_head *PgCurrentParallelContextListRef(void);
 extern bool *PgCurrentParallelContextListInitializedRef(void);
 extern pid_t *PgCurrentParallelLeaderPidRef(void);
+extern MemoryContext *PgCurrentParallelMessageContextRef(void);
 extern void **PgCurrentPqMqHandleRef(void);
 extern bool *PgCurrentPqMqBusyRef(void);
 extern pid_t *PgCurrentPqMqParallelLeaderPidRef(void);

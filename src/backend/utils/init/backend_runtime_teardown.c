@@ -126,6 +126,8 @@ PgBackendResetParallelClosedState(PgBackendParallelState *parallel)
 		parallel->pq_mq_handle = NULL;
 	}
 
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(parallel->message_context);
+
 	PgBackendInitializeParallelState(parallel);
 }
 

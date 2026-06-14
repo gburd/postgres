@@ -12710,3 +12710,64 @@ Validation for the message-context ownership slice:
   `002_threaded_bgworker_crash.pl`, 131 tests total, with `PG_REGRESS`,
   temp-install `PATH`, patched temp-install install-name paths, and the
   repo-local `.perl5` `PERL5LIB`.
+
+## Parallel Message Context Ownership
+
+Lifecycle/preflight note:
+
+- target: close the remaining Gate E2 retained `TopMemoryContext` scratch
+  context used by core parallel-query worker-message handling in
+  `ProcessParallelMessages()`;
+- repeated lifecycle operations: one backend-owned message context follows the
+  same create-on-demand, reset-between-uses, close-time delete-and-null pattern
+  as the previous logical apply/repack message-context slice. The existing
+  checked `PG_RUNTIME_DELETE_MEMORY_CONTEXT` action covers the close-time
+  ownership rule, so no new lifecycle primitive is needed;
+- retained invariant: `ProcessParallelMessages()` still resets its scratch
+  context before and after draining worker messages. `ParallelContext`
+  fallback private memory remains owned by `DestroyParallelContext()`, and the
+  active context list must still be empty before closed-backend reset.
+
+Parallel message-context slice:
+
+- `PgBackendParallelState` now owns `message_context`, replacing the static
+  `hpm_context` in `parallel.c`;
+- early backend fallback adoption asserts the message context slot is empty
+  before copying fallback parallel state into a real backend object;
+- `PgBackendResetParallelClosedState()` deletes the retained message context
+  through `PG_RUNTIME_DELETE_MEMORY_CONTEXT`;
+- `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` and
+  `MULTITHREADED_RUNTIME_OWNERS.tsv` record the new ownership rule. The owner
+  map uses `parallel_hpm_context` as the unique legacy key because repack also
+  had a file-local `hpm_context`;
+- `test_backend_reset_closed_state()` verifies closed-backend reset deletes the
+  message context, and `test_backend_parallel_state_is_backend_local()` proves
+  the pointer follows `CurrentPgBackend`.
+
+Validation for the parallel message-context slice:
+
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 197 owner
+  mappings checked;
+- touched-object builds passed for `parallel.o`, `backend_runtime_parallel.o`,
+  `backend_runtime.o`, `backend_runtime_teardown.o`, and
+  `test_backend_runtime_backend.o`;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- full incremental `gmake -j8` passed;
+- after the installed `backend_runtime.h` layout change, the first
+  `gmake -C src/test/modules/test_backend_runtime clean all check` failed
+  during bootstrap `initdb` with "error occurred before error message
+  processing is available", matching the documented stale backend-object
+  failure mode after a runtime layout edit;
+- the documented backend clean and generated-file recovery path was run:
+  backend generated utility files and node headers were regenerated, include
+  symlinks were rebuilt, and full `gmake -j8` passed from that clean backend
+  state;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed
+  after the clean rebuild;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with `PG_REGRESS`,
+  temp-install `PATH`, patched temp-install install-name paths, and the
+  repo-local `.perl5` `PERL5LIB`.

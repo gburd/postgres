@@ -2760,6 +2760,7 @@ static void
 PgBackendAdoptEarlyParallelState(PgBackend *backend)
 {
 	Assert(backend != NULL);
+	Assert(early_backend_parallel.message_context == NULL);
 
 	backend->parallel = early_backend_parallel;
 	if (early_backend_parallel.context_list_initialized)

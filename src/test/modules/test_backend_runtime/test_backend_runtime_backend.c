@@ -1033,6 +1033,10 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	parallel->pq_mq_busy = true;
 	parallel->pq_mq_parallel_leader_pid = 12;
 	parallel->pq_mq_parallel_leader_proc_number = 13;
+	parallel->message_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test parallel message context",
+							  ALLOCSET_SMALL_SIZES);
 
 	buffers->pin_count_wait_buf = (BufferDesc *) &fake_backend;
 	buffers->nlocbuffer = 2;
@@ -1371,6 +1375,7 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && parallel->pq_mq_parallel_leader_pid == 0;
 	ok = ok && parallel->pq_mq_parallel_leader_proc_number ==
 		INVALID_PROC_NUMBER;
+	ok = ok && parallel->message_context == NULL;
 	ok = ok && buffers->pin_count_wait_buf == NULL;
 	ok = ok && buffers->nlocbuffer == 0;
 	ok = ok && buffers->local_buffer_descriptors == NULL;
@@ -1560,6 +1565,7 @@ test_backend_parallel_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentPqMqBusyRef() = true;
 		*PgCurrentPqMqParallelLeaderPidRef() = 222;
 		*PgCurrentPqMqParallelLeaderProcNumberRef() = 12;
+		*PgCurrentParallelMessageContextRef() = (MemoryContext) &fake_backend1;
 
 		CurrentPgBackend = &fake_backend2;
 		ok = ok && ParallelWorkerNumber == -1;
@@ -1572,6 +1578,7 @@ test_backend_parallel_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && !*PgCurrentPqMqBusyRef();
 		ok = ok && *PgCurrentPqMqParallelLeaderPidRef() == 0;
 		ok = ok && *PgCurrentPqMqParallelLeaderProcNumberRef() == INVALID_PROC_NUMBER;
+		ok = ok && *PgCurrentParallelMessageContextRef() == NULL;
 
 		ParallelWorkerNumber = 4;
 		ParallelMessagePending = false;
@@ -1584,6 +1591,7 @@ test_backend_parallel_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentPqMqBusyRef() = true;
 		*PgCurrentPqMqParallelLeaderPidRef() = 444;
 		*PgCurrentPqMqParallelLeaderProcNumberRef() = 34;
+		*PgCurrentParallelMessageContextRef() = (MemoryContext) &fake_backend2;
 
 		CurrentPgBackend = &fake_backend1;
 		ok = ok && ParallelWorkerNumber == 3;
@@ -1597,6 +1605,8 @@ test_backend_parallel_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentPqMqBusyRef();
 		ok = ok && *PgCurrentPqMqParallelLeaderPidRef() == 222;
 		ok = ok && *PgCurrentPqMqParallelLeaderProcNumberRef() == 12;
+		ok = ok && *PgCurrentParallelMessageContextRef() ==
+			(MemoryContext) &fake_backend1;
 
 		CurrentPgBackend = &fake_backend2;
 		ok = ok && ParallelWorkerNumber == 4;
@@ -1610,6 +1620,8 @@ test_backend_parallel_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentPqMqBusyRef();
 		ok = ok && *PgCurrentPqMqParallelLeaderPidRef() == 444;
 		ok = ok && *PgCurrentPqMqParallelLeaderProcNumberRef() == 34;
+		ok = ok && *PgCurrentParallelMessageContextRef() ==
+			(MemoryContext) &fake_backend2;
 
 		CurrentPgBackend = saved_backend;
 	}

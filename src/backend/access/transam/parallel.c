@@ -125,6 +125,7 @@ typedef struct FixedParallelState
 
 /* Backend-local copy of data from FixedParallelState. */
 #define ParallelLeaderPid (*PgCurrentParallelLeaderPidRef())
+#define hpm_context (*PgCurrentParallelMessageContextRef())
 
 /*
  * List of internal parallel worker entry points.  We need this for
@@ -1067,8 +1068,6 @@ ProcessParallelMessages(void)
 {
 	dlist_iter	iter;
 	MemoryContext oldcontext;
-
-	static MemoryContext hpm_context = NULL;
 
 	/*
 	 * This is invoked from ProcessInterrupts(), and since some of the

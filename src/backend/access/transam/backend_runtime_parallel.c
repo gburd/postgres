@@ -60,6 +60,12 @@ PgCurrentParallelLeaderPidRef(void)
 	return &PgCurrentBackendParallelState()->leader_pid;
 }
 
+MemoryContext *
+PgCurrentParallelMessageContextRef(void)
+{
+	return &PgCurrentBackendParallelState()->message_context;
+}
+
 void **
 PgCurrentPqMqHandleRef(void)
 {
@@ -83,4 +89,3 @@ PgCurrentPqMqParallelLeaderProcNumberRef(void)
 {
 	return &PgCurrentBackendParallelState()->pq_mq_parallel_leader_proc_number;
 }
-
