@@ -1675,6 +1675,9 @@ typedef struct PgSessionExtensionModuleState
 	bool		pg_plan_advice_trace_mask;
 	int			pg_plan_advice_generate_advice;
 	char	   *pg_stash_advice_stash_name;
+	void	   *dblink_persistent_connection;
+	void	   *dblink_remote_conn_hash;
+	bool		dblink_reset_registered;
 } PgSessionExtensionModuleState;
 
 typedef struct PgSessionCatalogLookupState
@@ -2903,6 +2906,9 @@ extern void PgBackendResetClosedState(PgBackend *backend);
 extern MemoryContext PgSessionGetDynamicLibraryMemoryContext(PgSession *session);
 extern void **PgCurrentPLpgSQLSessionStateRef(void);
 extern PgSessionExtensionModuleState *PgCurrentSessionExtensionModuleState(void);
+extern void **PgCurrentDblinkPersistentConnectionRef(void);
+extern void **PgCurrentDblinkRemoteConnHashRef(void);
+extern bool *PgCurrentDblinkResetRegisteredRef(void);
 extern PgExecutionExtensionState *PgCurrentExecutionExtensionState(void);
 extern void PgSessionRegisterResetCallback(PgSessionResetCallback callback,
 										   void *arg);

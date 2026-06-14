@@ -343,6 +343,24 @@ PgCurrentPLpgSQLSessionStateRef(void)
 	return &PgCurrentSessionExtensionModuleState()->plpgsql_state;
 }
 
+void **
+PgCurrentDblinkPersistentConnectionRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->dblink_persistent_connection;
+}
+
+void **
+PgCurrentDblinkRemoteConnHashRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->dblink_remote_conn_hash;
+}
+
+bool *
+PgCurrentDblinkResetRegisteredRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->dblink_reset_registered;
+}
+
 void
 PgSessionRegisterResetCallback(PgSessionResetCallback callback, void *arg)
 {

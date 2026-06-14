@@ -741,11 +741,26 @@ PgSessionResetFunctionManagerClosedState(PgSession *session)
 static void
 PgSessionResetExtensionModuleClosedState(PgSession *session)
 {
+	PgSession  *saved_session;
+
 	Assert(session != NULL);
 
-	foreach_ptr(PgSessionResetCallbackItem, item,
-				session->extension_modules.reset_callbacks)
-		item->callback(item->arg);
+	saved_session = CurrentPgSession;
+	CurrentPgSession = session;
+	PG_TRY();
+	{
+		foreach_ptr(PgSessionResetCallbackItem, item,
+					session->extension_modules.reset_callbacks)
+			item->callback(item->arg);
+		CurrentPgSession = saved_session;
+	}
+	PG_CATCH();
+	{
+		CurrentPgSession = saved_session;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
 	list_free_deep(session->extension_modules.reset_callbacks);
 	PgSessionInitializeExtensionModuleState(&session->extension_modules);
 }

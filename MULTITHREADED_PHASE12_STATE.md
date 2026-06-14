@@ -12831,3 +12831,64 @@ Validation for the LWLock stats reset slice:
   temp-install `PATH`, patched temp-install install-name paths, and the
   repo-local `.perl5` `PERL5LIB`;
 - full incremental `gmake -j8` passed.
+
+## Dblink Session Connection State
+
+Lifecycle/preflight note:
+
+- target root and bucket: `PgSession.extension_modules`;
+- state moved: contrib `dblink`'s unnamed persistent connection pointer
+  `pconn` and named-connection hash `remoteConnHash`;
+- repeated lifecycle operations: two opaque pointer slots plus one reset
+  callback registration flag. The existing session extension-module reset
+  callback mechanism is the right lifecycle primitive because dblink owns the
+  private `remoteConn` layout and libpq disconnect semantics. No new generic
+  lifecycle macro is needed;
+- retained invariant: dblink remains responsible for disconnecting live remote
+  libpq connections and destroying its private hash. The runtime only owns
+  session-local pointer slots and invokes registered extension reset callbacks
+  with the closing session installed.
+
+Dblink session-state slice:
+
+- `PgSessionExtensionModuleState` now owns dblink's unnamed persistent
+  connection pointer, named connection hash pointer, and reset-registration
+  flag;
+- `contrib/dblink/dblink.c` keeps the historical `pconn` and
+  `remoteConnHash` names as lvalue compatibility macros over the current
+  session object;
+- `dblink_init()` registers a per-session reset callback once per logical
+  session, and the callback disconnects retained remote connections, destroys
+  the private hash, and clears the runtime slots;
+- `PgSessionResetExtensionModuleClosedState()` now runs extension reset
+  callbacks with `CurrentPgSession` set to the session being reset, so
+  callback-owned cleanup can safely use current-session accessors;
+- `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` and
+  `MULTITHREADED_RUNTIME_OWNERS.tsv` record the dblink session ownership.
+
+Validation for the dblink session-state slice:
+
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 199 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- touched-object builds passed for `dblink.o`, `backend_runtime.o`,
+  `backend_runtime_session.o`, `backend_runtime_teardown.o`, and
+  `test_backend_runtime_session.o`;
+- after the installed `backend_runtime.h` layout change, the documented
+  backend clean and generated-file recovery path was run and full `gmake -j8`
+  passed from that clean backend state;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- `gmake -C contrib/dblink clean all check` rebuilt dblink and reached SQL,
+  then failed on this macOS checkout because the recreated temp-install
+  `dblink.dylib` pointed at `/usr/local/pgsql/lib/libpq.5.dylib`;
+- after patching the recreated temp-install `dblink.dylib` install name, the
+  direct dblink `pg_regress` command passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with `PG_REGRESS`,
+  temp-install `PATH`, patched temp-install install-name paths, and the
+  repo-local `.perl5` `PERL5LIB`;
+- a stale-symbol scan found no remaining raw `static remoteConn *pconn` or
+  `static HTAB *remoteConnHash` declarations in dblink.

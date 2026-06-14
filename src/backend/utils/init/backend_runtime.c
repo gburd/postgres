@@ -2055,6 +2055,9 @@ PgSessionInitializeExtensionModuleState(PgSessionExtensionModuleState *extension
 	extension_modules->pg_plan_advice_trace_mask = false;
 	extension_modules->pg_plan_advice_generate_advice = 0;
 	extension_modules->pg_stash_advice_stash_name = "";
+	extension_modules->dblink_persistent_connection = NULL;
+	extension_modules->dblink_remote_conn_hash = NULL;
+	extension_modules->dblink_reset_registered = false;
 }
 
 PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgSessionAdoptEarlyExtensionModuleState,

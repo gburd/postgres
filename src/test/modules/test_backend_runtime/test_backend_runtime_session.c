@@ -2719,6 +2719,9 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && !extension_modules->pg_plan_advice_trace_mask;
 		ok = ok && extension_modules->pg_plan_advice_generate_advice == 0;
 		ok = ok && strcmp(extension_modules->pg_stash_advice_stash_name, "") == 0;
+		ok = ok && extension_modules->dblink_persistent_connection == NULL;
+		ok = ok && extension_modules->dblink_remote_conn_hash == NULL;
+		ok = ok && !extension_modules->dblink_reset_registered;
 		ok = ok && test_backend_runtime_auto_explain_defaults_ok(extension_modules);
 		extension_modules->pg_trgm_similarity_threshold = 0.11;
 		extension_modules->pg_trgm_word_similarity_threshold = 0.12;
@@ -2747,6 +2750,9 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		extension_modules->auto_explain_log_extension_options =
 			session1_auto_explain_options;
 		extension_modules->auto_explain_extension_options = &session1_private;
+		extension_modules->dblink_persistent_connection = &session1_private;
+		extension_modules->dblink_remote_conn_hash = &session1_reset_count;
+		extension_modules->dblink_reset_registered = true;
 
 		ok = ok && *PgCurrentPLpgSQLSessionStateRef() == NULL;
 		*PgCurrentPLpgSQLSessionStateRef() = &session1_private;
@@ -2765,6 +2771,9 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && !extension_modules->pg_plan_advice_trace_mask;
 		ok = ok && extension_modules->pg_plan_advice_generate_advice == 0;
 		ok = ok && strcmp(extension_modules->pg_stash_advice_stash_name, "") == 0;
+		ok = ok && extension_modules->dblink_persistent_connection == NULL;
+		ok = ok && extension_modules->dblink_remote_conn_hash == NULL;
+		ok = ok && !extension_modules->dblink_reset_registered;
 		ok = ok && test_backend_runtime_auto_explain_defaults_ok(extension_modules);
 		extension_modules->pg_trgm_similarity_threshold = 0.21;
 		extension_modules->pg_trgm_word_similarity_threshold = 0.22;
@@ -2793,6 +2802,9 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		extension_modules->auto_explain_log_extension_options =
 			session2_auto_explain_options;
 		extension_modules->auto_explain_extension_options = &session2_private;
+		extension_modules->dblink_persistent_connection = &session2_private;
+		extension_modules->dblink_remote_conn_hash = &session2_reset_count;
+		extension_modules->dblink_reset_registered = true;
 
 		ok = ok && *PgCurrentPLpgSQLSessionStateRef() == NULL;
 		*PgCurrentPLpgSQLSessionStateRef() = &session2_private;
@@ -2832,6 +2844,11 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 						  "debug") == 0;
 		ok = ok && extension_modules->auto_explain_extension_options ==
 			&session1_private;
+		ok = ok && extension_modules->dblink_persistent_connection ==
+			&session1_private;
+		ok = ok && extension_modules->dblink_remote_conn_hash ==
+			&session1_reset_count;
+		ok = ok && extension_modules->dblink_reset_registered;
 
 		PgSetCurrentSession(&fake_session2);
 		ok = ok && *PgCurrentPLpgSQLSessionStateRef() == &session2_private;
@@ -2866,6 +2883,11 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 						  "range_table") == 0;
 		ok = ok && extension_modules->auto_explain_extension_options ==
 			&session2_private;
+		ok = ok && extension_modules->dblink_persistent_connection ==
+			&session2_private;
+		ok = ok && extension_modules->dblink_remote_conn_hash ==
+			&session2_reset_count;
+		ok = ok && extension_modules->dblink_reset_registered;
 
 		PgSetCurrentSession(saved_session);
 		PgSessionResetClosedState(&fake_session1);
@@ -2884,6 +2906,9 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && fake_session1.extension_modules.pg_plan_advice_generate_advice == 0;
 		ok = ok && strcmp(fake_session1.extension_modules.pg_stash_advice_stash_name,
 						  "") == 0;
+		ok = ok && fake_session1.extension_modules.dblink_persistent_connection == NULL;
+		ok = ok && fake_session1.extension_modules.dblink_remote_conn_hash == NULL;
+		ok = ok && !fake_session1.extension_modules.dblink_reset_registered;
 		ok = ok && test_backend_runtime_auto_explain_defaults_ok(&fake_session1.extension_modules);
 		ok = ok && fake_session2.extension_modules.plpgsql_state == &session2_private;
 		ok = ok && fake_session2.extension_modules.reset_callbacks != NIL;
@@ -2917,6 +2942,11 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 						  "range_table") == 0;
 		ok = ok && fake_session2.extension_modules.auto_explain_extension_options ==
 			&session2_private;
+		ok = ok && fake_session2.extension_modules.dblink_persistent_connection ==
+			&session2_private;
+		ok = ok && fake_session2.extension_modules.dblink_remote_conn_hash ==
+			&session2_reset_count;
+		ok = ok && fake_session2.extension_modules.dblink_reset_registered;
 
 		PgSessionResetClosedState(&fake_session2);
 		ok = ok && session2_reset_count == 1;
@@ -2933,6 +2963,9 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && fake_session2.extension_modules.pg_plan_advice_generate_advice == 0;
 		ok = ok && strcmp(fake_session2.extension_modules.pg_stash_advice_stash_name,
 						  "") == 0;
+		ok = ok && fake_session2.extension_modules.dblink_persistent_connection == NULL;
+		ok = ok && fake_session2.extension_modules.dblink_remote_conn_hash == NULL;
+		ok = ok && !fake_session2.extension_modules.dblink_reset_registered;
 		ok = ok && test_backend_runtime_auto_explain_defaults_ok(&fake_session2.extension_modules);
 	}
 	PG_CATCH();

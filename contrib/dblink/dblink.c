@@ -56,6 +56,7 @@
 #include "miscadmin.h"
 #include "parser/scansup.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/guc.h"
@@ -139,10 +140,12 @@ static void appendSCRAMKeysInfo(StringInfo buf);
 static bool is_valid_dblink_fdw_option(const PQconninfoOption *options, const char *option,
 									   Oid context);
 static bool dblink_connstr_has_required_scram_options(const char *connstr);
+static void dblink_reset_session_state(void *arg);
 
-/* Global */
-static remoteConn *pconn = NULL;
-static HTAB *remoteConnHash = NULL;
+/* Session-local state, exposed through compatibility macros. */
+#define pconn (*(remoteConn **) PgCurrentDblinkPersistentConnectionRef())
+#define remoteConnHash (*(HTAB **) PgCurrentDblinkRemoteConnHashRef())
+#define dblink_reset_registered (*PgCurrentDblinkResetRegisteredRef())
 
 /* custom wait event values, retrieved from shared memory */
 static uint32 dblink_we_connect = 0;
@@ -274,6 +277,12 @@ dblink_init(void)
 		pconn->conn = NULL;
 		pconn->openCursorCount = 0;
 		pconn->newXactForCursor = false;
+	}
+
+	if (!dblink_reset_registered)
+	{
+		PgSessionRegisterResetCallback(dblink_reset_session_state, NULL);
+		dblink_reset_registered = true;
 	}
 }
 
@@ -2606,6 +2615,37 @@ deleteConnection(const char *name)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 				 errmsg("undefined connection name")));
+}
+
+static void
+dblink_reset_session_state(void *arg)
+{
+	HASH_SEQ_STATUS status;
+	remoteConnHashEnt *hentry;
+
+	(void) arg;
+
+	if (pconn != NULL)
+	{
+		if (pconn->conn != NULL)
+			libpqsrv_disconnect(pconn->conn);
+		pfree(pconn);
+		pconn = NULL;
+	}
+
+	if (remoteConnHash != NULL)
+	{
+		hash_seq_init(&status, remoteConnHash);
+		while ((hentry = (remoteConnHashEnt *) hash_seq_search(&status)) != NULL)
+		{
+			if (hentry->rconn.conn != NULL)
+				libpqsrv_disconnect(hentry->rconn.conn);
+		}
+		hash_destroy(remoteConnHash);
+		remoteConnHash = NULL;
+	}
+
+	dblink_reset_registered = false;
 }
 
  /*
