@@ -11590,3 +11590,18 @@ Validation for the backend utility-cache allocation-context slice:
   `002_threaded_bgworker_crash.pl`, 131 tests total, with the documented
   local `IPC::Run` `PERL5LIB` and patched temporary-install install-name
   paths.
+
+Current lifecycle-framework standing instruction:
+
+- before the next Phase 12 or Gate E2 batch that would add repeated lifecycle
+  helper code, first decide whether the checked lifecycle framework should be
+  extended. If the batch needs two or more similar init/adopt/reset/destroy
+  helpers, add or extend a reusable `PG_RUNTIME_DEFINE_*` helper, named
+  `PG_RUNTIME_*` bucket action, `.def` rule, or
+  `check_runtime_lifecycles.pl` validation before moving the state;
+- record the decision as a preflight note in this file before the behavior
+  change. The note should either name the existing checked mechanism being
+  reused, or name the new macro/action/rule/checker validation landed first;
+- keep semantic cleanup handwritten and owner-adjacent when ordering or real
+  ownership decisions matter. The framework should remove repetitive
+  lifecycle plumbing, not hide destruction semantics.
