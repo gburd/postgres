@@ -14,6 +14,7 @@ tests += {
       'pyt/test_fake.py',
       'pyt/test_libpq.py',
       'pyt/test_multi_server.py',
+      'pyt/test_node_sql.py',
       'pyt/test_query_helpers.py',
     ],
   },

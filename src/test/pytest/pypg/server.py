@@ -13,15 +13,16 @@ import subprocess
 import tempfile
 import time
 from collections import namedtuple
-from typing import Callable, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 from ._env import test_timeout_default
 from .command import PgBin, ProgramResult
 from .bgpsql import BackgroundPsql
 from .errors import PgServerError, PgSqlError
+from .sqlresult import SqlResult
 from .interactive import InteractivePsql
 from .util import append_to_file, eprint, run, slurp_file
-from libpq import PGconn, connect as libpq_connect
+from libpq import PGconn, connect as libpq_connect, ExecStatus
 
 
 class FileBackup(contextlib.AbstractContextManager):
@@ -136,14 +137,14 @@ _PSQL_FIELD_RES = {
 }
 
 
-def _parse_psql_diagnostics(stderr):
+def _parse_psql_diagnostics(stderr) -> Dict[str, str]:
     """Extract the diagnostic fields psql prints into PgSqlError kwargs.
 
     psql's text protocol does not surface the SQLSTATE, so sqlstate stays None;
     the primary message and any DETAIL/HINT/CONTEXT lines are recovered so the
     error object is still introspectable.
     """
-    fields = {}
+    fields: Dict[str, str] = {}
     match = _PSQL_PRIMARY_RE.search(stderr or "")
     if match:
         fields["primary"] = match.group(1).strip()
@@ -845,11 +846,6 @@ class PostgresServer:
         """Run psql with the given arguments."""
         self._run(os.path.join(self._bindir, "psql"), "-w", *args)
 
-    def sql(self, query):
-        """Execute a SQL query via libpq. Returns simplified results."""
-        with self.connect() as conn:
-            return conn.sql(query)
-
     def psql_capture(
         self,
         query,
@@ -917,6 +913,21 @@ class PostgresServer:
         environment variables (e.g. PGOPTIONS, PGUSER). A connstr overrides the
         --dbname target (merged with PGHOST/PGPORT from the environment), used
         by the SSL tests to pick a specific cert/host combination.
+
+        Prefer :meth:`sql`, which returns a typed :class:`SqlResult` rather than
+        a bare string; safe_psql is kept for the per-statement string contract.
+        """
+        stdout = self._psql_text(
+            query, dbname=dbname, timeout=timeout, extra_env=extra_env, connstr=connstr
+        )
+        return stdout.rstrip("\n")
+
+    def _psql_text(
+        self, query, *, dbname="postgres", timeout=None, extra_env=None, connstr=None
+    ):
+        """Run query through psql (tuples-only, unaligned, ON_ERROR_STOP) and
+        return its raw stdout, raising PgSqlError on a nonzero exit. Shared by
+        safe_psql and sql.
         """
         if connstr is None:
             connstr = self.dbname_connstr(dbname)
@@ -943,11 +954,57 @@ class PostgresServer:
             timeout=timeout,
         )
         if proc.returncode != 0:
+            diags = _parse_psql_diagnostics(proc.stderr)
             raise PgSqlError(
                 _psql_error_message(query, proc.stderr),
-                **_parse_psql_diagnostics(proc.stderr),
+                primary=diags.get("primary"),
+                detail=diags.get("detail"),
+                hint=diags.get("hint"),
+                context=diags.get("context"),
             )
-        return proc.stdout.rstrip("\n")
+        return proc.stdout
+
+    def sql(
+        self,
+        query,
+        *,
+        dbname="postgres",
+        timeout=None,
+        extra_env=None,
+        connstr=None,
+        channel="psql",
+    ) -> SqlResult:
+        """Run query and return a typed :class:`SqlResult`, raising on error.
+
+        This is the framework's primary SQL entry point. The default ``psql``
+        channel pipes the SQL to the psql client, so each statement runs in its
+        own implicit transaction (CREATE DATABASE and other
+        non-transaction-block statements work) -- the same semantics as Perl's
+        safe_psql. Pass ``channel="libpq"`` to run the query in-process over a
+        fresh libpq connection (one connection, useful for protocol-level tests
+        or a single transaction); errors raise the same PgSqlError either way.
+
+        Use the result's accessors to say what shape you expect:
+        ``.scalar()``, ``.row()``, ``.column()``, or ``.rows``.
+        """
+        if channel == "libpq":
+            rows: list = []
+            with self.connect(dbname=dbname) as conn:
+                result = conn.exec(query)
+                status = result.status()
+                if status == ExecStatus.PGRES_TUPLES_OK:
+                    rows = result.fetch_all()
+                elif status != ExecStatus.PGRES_COMMAND_OK:
+                    result.raise_error()
+            return SqlResult([tuple(str(c) for c in row) for row in rows])
+        if channel != "psql":
+            raise ValueError(
+                "channel must be 'psql' or 'libpq', got {!r}".format(channel)
+            )
+        stdout = self._psql_text(
+            query, dbname=dbname, timeout=timeout, extra_env=extra_env, connstr=connstr
+        )
+        return SqlResult.from_psql(stdout)
 
     def check_extension(self, extname):
         """Return True if extname is available (in pg_available_extensions).

@@ -10,6 +10,7 @@ from .errors import PgError, PgServerError, PgSqlError, LibpqError
 from .fake import faker, meaningful_text, rand_str
 from .kerberos import KerberosServer
 from .server import PostgresServer
+from .sqlresult import SqlResult
 from .util import (
     wait_for_file,
     compare_files,
@@ -32,6 +33,7 @@ __all__ = [
     "rand_str",
     "KerberosServer",
     "PostgresServer",
+    "SqlResult",
     "PgBin",
     "CommandResult",
     "ProgramResult",

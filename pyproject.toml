@@ -103,7 +103,7 @@ py-version = "3.9"
 max-line-length = 88
 # PostgresServer is a large facade mirroring PostgreSQL::Test::Cluster (~3000
 # lines of Perl); allow it room rather than splitting it artificially.
-max-module-lines = 2000
+max-module-lines = 2200
 
 [tool.pylint."messages control"]
 # Curated relaxations for pytest/ctypes idioms (not bug-hiding). The checks that
