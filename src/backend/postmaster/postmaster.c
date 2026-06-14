@@ -1728,31 +1728,43 @@ ServerLoop(void)
 
 		/*
 		 * Latch set by signal handler, or new connection pending on any of
-		 * our sockets? If the latter, fork a child process to deal with it.
+		 * our sockets?  Reset the latch before handling control-plane work,
+		 * then accept any pending connections after the postmaster-visible
+		 * child state has been drained.
 		 */
 		for (int i = 0; i < nevents; i++)
 		{
 			if (events[i].events & WL_LATCH_SET)
 				ResetLatch(MyLatch);
+		}
 
-			/*
-			 * The following requests are handled unconditionally, even if we
-			 * didn't see WL_LATCH_SET.  This gives high priority to shutdown
-			 * and reload requests where the latch happens to appear later in
-			 * events[] or will be reported by a later call to
-			 * WaitEventSetWait().
-			 */
-			if (pending_pm_shutdown_request)
-				process_pm_shutdown_request();
-			if (pending_pm_reload_request)
-				process_pm_reload_request();
-			if (pending_pm_child_exit)
-				process_pm_child_exit();
-			if (pending_pm_pmsignal)
-				process_pm_pmsignal();
-			process_pm_thread_startup_complete();
-			process_pm_thread_exit();
+		/*
+		 * The following requests are handled once per loop, even if we didn't
+		 * see WL_LATCH_SET.  This gives high priority to shutdown and reload
+		 * requests where the latch happens to appear later in events[] or will
+		 * be reported by a later call to WaitEventSetWait().
+		 *
+		 * In threaded mode, process-era auxiliary workers can exit as part of
+		 * the startup-to-thread handoff while later server activity is driven
+		 * by thread-carrier latch notifications and socket readiness.  Drain
+		 * process child exits opportunistically once thread carriers exist so
+		 * a missed or coalesced SIGCHLD cannot leave a zombie PMChild that
+		 * blocks shutdown-state accounting.
+		 */
+		if (pending_pm_shutdown_request)
+			process_pm_shutdown_request();
+		if (pending_pm_reload_request)
+			process_pm_reload_request();
+		if (pending_pm_child_exit ||
+			(multithreaded && PostmasterThreadCarriersStarted()))
+			process_pm_child_exit();
+		if (pending_pm_pmsignal)
+			process_pm_pmsignal();
+		process_pm_thread_startup_complete();
+		process_pm_thread_exit();
 
+		for (int i = 0; i < nevents; i++)
+		{
 			if (events[i].events & WL_SOCKET_ACCEPT)
 			{
 				ClientSocket s;

@@ -493,6 +493,47 @@ Validation for this slice:
   `git diff --check`, and full `gmake -j8` passed;
 - the direct threaded-runtime TAP script passed all 87 tests.
 
+## Backend Exit-State Lifecycle Closure
+
+The exit-state lifecycle row is now closed explicitly. `PgBackendExitState`
+contains only inline callback arrays, stack indexes, and exit-in-progress
+flags. `PgBackendExitCleanup()` and `shmem_exit()` drain and zero callback
+indexes as they run callbacks, and `PgBackendInitializeExitState()` zeroes the
+full inline bucket for early-state reset or fresh backend construction.
+
+The regression module now extends `test_backend_exit_state_is_backend_local()`
+to seed callback indexes, flags, and a callback slot, then proves
+`PgBackendInitializeExitState()` clears them. This documents that the bucket
+does not need an additional dynamic destructor.
+
+This slice also closes a Gate E2 PMChild/thread synchronization failure found
+by the threaded-runtime TAP. During startup-to-thread handoff, a process-era
+auxiliary worker can exit while normal server activity is driven by thread
+carrier latch events and socket readiness. If the postmaster later reaches
+shutdown with that process child still unreaped, the old process PMChild can
+block shutdown-state accounting and the TAP observes a defunct postmaster
+child. `ServerLoop()` now handles postmaster control-plane work once per loop
+before accepting sockets, and opportunistically drains process child exits in
+threaded mode after thread carriers have started. Thread startup and exit
+handoffs are likewise drained once per loop, keeping PMChild list mutation in
+the postmaster while preventing stale process-era handoff children from
+surviving into shutdown.
+
+Validation for this slice:
+
+- `gmake -C src/test/modules/test_backend_runtime test_backend_runtime.o`
+  passed before the full validation run;
+- full `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed with a fresh
+  temp install;
+- `gmake check-runtime-lifecycles` passed with 134 fields classified;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- `git diff --check` passed;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests, including the postmaster-child-count checks and clean shutdown.
+
 ## Runtime Lifecycle Manifest
 
 The one-hundred-seventy-third Phase 12 slice makes the Gate E2 object-lifecycle

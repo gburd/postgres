@@ -96,6 +96,7 @@ PG_MODULE_MAGIC;
 static sigjmp_buf exit_continuation_jmp;
 static volatile bool exit_continuation_seen;
 static volatile int exit_continuation_code;
+static void test_backend_runtime_exit_callback(int code, Datum arg);
 
 typedef struct TestBoolGUCSetting
 {
@@ -6890,6 +6891,11 @@ test_backend_pending_interrupts_are_backend_local(PG_FUNCTION_ARGS)
 }
 
 PG_FUNCTION_INFO_V1(test_backend_exit_state_is_backend_local);
+static void
+test_backend_runtime_exit_callback(int code, Datum arg)
+{
+}
+
 Datum
 test_backend_exit_state_is_backend_local(PG_FUNCTION_ARGS)
 {
@@ -6911,6 +6917,15 @@ test_backend_exit_state_is_backend_local(PG_FUNCTION_ARGS)
 		CurrentPgBackend = &fake_backend1;
 		proc_exit_inprogress = true;
 		shmem_exit_inprogress = true;
+		fake_backend1.exit_state.on_proc_exit_index = 1;
+		fake_backend1.exit_state.on_shmem_exit_index = 1;
+		fake_backend1.exit_state.before_shmem_exit_index = 1;
+		fake_backend1.exit_state.proc_exit_active = true;
+		fake_backend1.exit_state.shmem_exit_active = true;
+		fake_backend1.exit_state.on_proc_exit_list[0].function =
+			test_backend_runtime_exit_callback;
+		fake_backend1.exit_state.on_proc_exit_list[0].arg =
+			PointerGetDatum(&fake_backend1);
 
 		CurrentPgBackend = &fake_backend2;
 		ok = ok && !proc_exit_inprogress;
@@ -6926,6 +6941,15 @@ test_backend_exit_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && shmem_exit_inprogress;
 		ok = ok && PgBackendExitInProgress();
 		ok = ok && PgBackendShmemExitInProgress();
+
+		PgBackendInitializeExitState(&fake_backend1.exit_state);
+		ok = ok && fake_backend1.exit_state.on_proc_exit_index == 0;
+		ok = ok && fake_backend1.exit_state.on_shmem_exit_index == 0;
+		ok = ok && fake_backend1.exit_state.before_shmem_exit_index == 0;
+		ok = ok && !fake_backend1.exit_state.proc_exit_active;
+		ok = ok && !fake_backend1.exit_state.shmem_exit_active;
+		ok = ok && fake_backend1.exit_state.on_proc_exit_list[0].function == NULL;
+		ok = ok && fake_backend1.exit_state.on_proc_exit_list[0].arg == 0;
 
 		CurrentPgBackend = &fake_backend2;
 		ok = ok && !proc_exit_inprogress;
