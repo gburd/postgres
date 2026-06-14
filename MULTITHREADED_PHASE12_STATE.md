@@ -11438,6 +11438,50 @@ Validation for the execution ResourceOwner allocation-context slice:
   local `IPC::Run` `PERL5LIB` and patched temporary-install install-name
   paths.
 
+## Backend Timeout Closed-State Reset
+
+Lifecycle preflight:
+
+- target: Gate E2 stale timeout target cleanup for `PgBackend.timeout`;
+- repeated lifecycle operations: one owner-adjacent closed-backend reset and
+  one checked bucket reset row;
+- preflight result: the existing backend bucket `.def` reset column and
+  lifecycle checker source-list mechanism are sufficient. The reset belongs in
+  `timeout.c` because it must be distinguished from live-backend timeout APIs
+  such as `disable_all_timeouts()`.
+
+Timeout closed-state reset slice:
+
+- `PG_BACKEND_BUCKET(timeout, ...)` now calls
+  `PgBackendResetTimeoutClosedState()` during `PgBackendResetClosedState()`;
+- `PgBackendResetTimeoutClosedState()` lives in `timeout.c`, clears active
+  timeout arrays, handler registrations, signal flags, and stale
+  `PgBackend`/`PgExecution` target pointers for retained closed logical
+  backends;
+- `check-runtime-lifecycles` and the checker default source list now scan
+  `src/backend/utils/misc/timeout.c`, preserving owner-adjacent lifecycle
+  ownership without weakening manifest validation;
+- the lifecycle manifest records the closed-backend timeout reset rule instead
+  of leaving timeout state as a no-op cleanup bucket;
+- `test_backend_reset_closed_state()` now verifies timeout state is cleared
+  through the top-level backend closed-state reset path.
+
+Validation for the backend timeout closed-state reset slice:
+
+- `gmake -C src/backend/utils/misc timeout.o` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 28 reset definitions checked, and 176 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with the documented
+  local `IPC::Run` `PERL5LIB` and patched temporary-install install-name
+  paths.
+
 Session xact-callback allocation-context preflight:
 
 - target root and bucket: `PgSession.xact_callbacks`;

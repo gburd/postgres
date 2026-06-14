@@ -116,6 +116,7 @@ extern void PgBackendResetFileAccessClosedState(PgBackendStorageState *storage);
 extern void PgBackendResetStorageClosedState(PgBackendStorageState *storage);
 extern PgBackendLockState *PgCurrentBackendLockState(void);
 extern PgBackendIPCState *PgCurrentBackendIPCState(void);
+extern void PgBackendResetTimeoutClosedState(PgBackendTimeoutState *timeout);
 extern PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
 extern PgBackendUtilityState *PgCurrentBackendUtilityState(void);
 extern PgBackendParallelState *PgCurrentBackendParallelState(void);

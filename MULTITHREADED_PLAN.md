@@ -1223,6 +1223,11 @@ resource-owner, and proc-exit semantics in the existing storage callbacks, then
 reclaims retained VFD/AllocateDesc arrays, pending-sync hash/list/context
 state, smgr hash/list state, and the md context before reinitializing the
 bucket.
+The Gate E2 timeout closed-state slice now routes `PgBackend.timeout` through
+`PgBackendResetTimeoutClosedState()` in `timeout.c`, and the lifecycle checker
+scans that owner source by default. The reset is intentionally distinct from
+`disable_all_timeouts()`: it clears retained closed-backend timeout arrays,
+handler registrations, signal flags, and stale backend/execution targets.
 The deadlock detector workspace batch now stores `visitedProcs`,
 `nVisitedProcs`, `topoProcs`, `beforeConstraints`, `afterConstraints`,
 `waitOrders`, `nWaitOrders`, `waitOrderProcs`, `curConstraints`,

@@ -40,7 +40,7 @@ PG_BACKEND_BUCKET(dsm_segment_list, PgBackendInitializeDsmSegmentList(&backend->
 PG_BACKEND_BUCKET(ipc, PgBackendInitializeIPCState(&backend->ipc), PgBackendAdoptEarlyIPCState(backend), PG_RUNTIME_NOOP)
 PG_BACKEND_BUCKET(wait_state, PgBackendInitializeWaitState(&backend->wait_state), PgBackendAdoptEarlyWaitState(backend), PG_RUNTIME_NOOP)
 PG_BACKEND_BUCKET(transaction, PgBackendInitializeTransactionState(&backend->transaction), PgBackendAdoptEarlyTransactionState(backend), PG_RUNTIME_NOOP)
-PG_BACKEND_BUCKET(timeout, PgBackendInitializeTimeoutState(&backend->timeout), PgBackendAdoptEarlyTimeoutState(backend), PG_RUNTIME_NOOP)
+PG_BACKEND_BUCKET(timeout, PgBackendInitializeTimeoutState(&backend->timeout), PgBackendAdoptEarlyTimeoutState(backend), PgBackendResetTimeoutClosedState(&backend->timeout))
 PG_BACKEND_BUCKET(walsender, PgBackendInitializeWalSenderState(&backend->walsender), PgBackendAdoptEarlyWalSenderState(backend), PgBackendResetWalSenderClosedState(&backend->walsender))
 PG_BACKEND_BUCKET(replication, PgBackendInitializeReplicationState(&backend->replication), PgBackendAdoptEarlyReplicationState(backend), PgBackendResetReplicationClosedState(&backend->replication))
 PG_BACKEND_BUCKET(logical_replication, PgBackendInitializeLogicalReplicationState(&backend->logical_replication), PgBackendAdoptEarlyLogicalReplicationState(backend), PgBackendResetLogicalReplicationClosedState(&backend->logical_replication))

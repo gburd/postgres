@@ -22,6 +22,7 @@
 #include "utils/backend_runtime.h"
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
+#include "../init/backend_runtime_internal.h"
 
 
 /*
@@ -548,6 +549,19 @@ InitializeLogicalTimeouts(void)
 {
 	InitializeTimeoutState();
 	timeout_signal_delivery = false;
+}
+
+void
+PgBackendResetTimeoutClosedState(PgBackendTimeoutState *timeout)
+{
+	Assert(timeout != NULL);
+
+	/*
+	 * This is closed-logical-backend cleanup, not the normal timeout-disable
+	 * path.  A retained backend must not keep active timeout entries pointing
+	 * at stale PgBackend/PgExecution objects or old handler registrations.
+	 */
+	MemSet(timeout, 0, sizeof(*timeout));
 }
 
 /*

@@ -722,6 +722,11 @@ test_backend_runtime_resource_release_callback(ResourceReleasePhase phase,
 {
 }
 
+static void
+test_backend_runtime_timeout_handler(void)
+{
+}
+
 Datum
 test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 {
@@ -737,6 +742,7 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	PgBackendLockState *locks;
 	PgBackendActivityState *activity;
 	PgBackendStorageState *storage;
+	PgBackendTimeoutState *timeout;
 	HASHCTL		hash_ctl;
 	bool		ok = true;
 
@@ -752,6 +758,7 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	locks = &fake_backend.locks;
 	activity = &fake_backend.activity;
 	storage = &fake_backend.storage;
+	timeout = &fake_backend.timeout;
 	replication->walreceiver_recv_file = -1;
 	xlog->open_log_file = -1;
 
@@ -945,6 +952,27 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	storage->sync_checkpoint_cycle_counter = 4;
 	storage->sync_in_progress = true;
 
+	timeout->all_timeouts_initialized = true;
+	timeout->all_timeouts[DEADLOCK_TIMEOUT].index = DEADLOCK_TIMEOUT;
+	timeout->all_timeouts[DEADLOCK_TIMEOUT].active = true;
+	timeout->all_timeouts[DEADLOCK_TIMEOUT].indicator = true;
+	timeout->all_timeouts[DEADLOCK_TIMEOUT].target_backend = &fake_backend;
+	timeout->all_timeouts[DEADLOCK_TIMEOUT].target_execution =
+		(PgExecution *) &fake_backend;
+	timeout->all_timeouts[DEADLOCK_TIMEOUT].timeout_handler =
+		test_backend_runtime_timeout_handler;
+	timeout->all_timeouts[DEADLOCK_TIMEOUT].start_time = 1;
+	timeout->all_timeouts[DEADLOCK_TIMEOUT].fin_time = 2;
+	timeout->all_timeouts[DEADLOCK_TIMEOUT].interval_in_ms = 3;
+	timeout->num_active_timeouts = 1;
+	timeout->active_timeouts[0] = &timeout->all_timeouts[DEADLOCK_TIMEOUT];
+	timeout->alarm_enabled = true;
+	timeout->signal_pending = true;
+	timeout->signal_due_at = 4;
+	timeout->firing_timeout_target = &fake_backend;
+	timeout->firing_timeout_execution = (PgExecution *) &fake_backend;
+	timeout->signal_delivery = true;
+
 	fake_backend.memory_manager.log_memory_context_in_progress = true;
 
 	utility->notify_interrupt_pending = true;
@@ -1099,6 +1127,24 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && storage->smgr_relation_hash == NULL;
 	ok = ok && dlist_is_empty(&storage->smgr_unpinned_relations);
 	ok = ok && storage->md_context == NULL;
+	ok = ok && !timeout->all_timeouts_initialized;
+	ok = ok && timeout->all_timeouts[DEADLOCK_TIMEOUT].index == 0;
+	ok = ok && !timeout->all_timeouts[DEADLOCK_TIMEOUT].active;
+	ok = ok && !timeout->all_timeouts[DEADLOCK_TIMEOUT].indicator;
+	ok = ok && timeout->all_timeouts[DEADLOCK_TIMEOUT].target_backend == NULL;
+	ok = ok && timeout->all_timeouts[DEADLOCK_TIMEOUT].target_execution == NULL;
+	ok = ok && timeout->all_timeouts[DEADLOCK_TIMEOUT].timeout_handler == NULL;
+	ok = ok && timeout->all_timeouts[DEADLOCK_TIMEOUT].start_time == 0;
+	ok = ok && timeout->all_timeouts[DEADLOCK_TIMEOUT].fin_time == 0;
+	ok = ok && timeout->all_timeouts[DEADLOCK_TIMEOUT].interval_in_ms == 0;
+	ok = ok && timeout->num_active_timeouts == 0;
+	ok = ok && timeout->active_timeouts[0] == NULL;
+	ok = ok && !timeout->alarm_enabled;
+	ok = ok && !timeout->signal_pending;
+	ok = ok && timeout->signal_due_at == 0;
+	ok = ok && timeout->firing_timeout_target == NULL;
+	ok = ok && timeout->firing_timeout_execution == NULL;
+	ok = ok && !timeout->signal_delivery;
 	ok = ok && !fake_backend.memory_manager.log_memory_context_in_progress;
 	ok = ok && utility->notify_interrupt_pending;
 	ok = ok && utility->seq_scan_tables[0] == NULL;

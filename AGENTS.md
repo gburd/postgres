@@ -1300,6 +1300,14 @@ Important current files:
   Keep startup gating helper-controlled through
   `backend_thread_requires_startup_gate()`, and require a named shared-state
   dependency plus a release/stress test for any backend type that opts in.
+- Backend timeout state now has a closed-backend reset:
+  `PgBackendResetTimeoutClosedState()` lives beside timeout semantics in
+  `src/backend/utils/misc/timeout.c`, and `check-runtime-lifecycles` scans
+  that file. This reset is for retained closed logical backends and clears
+  active timeout arrays, handler registrations, signal flags, and stale
+  `PgBackend`/`PgExecution` target pointers. Do not substitute
+  `disable_all_timeouts()` for closed-backend teardown; that API is for live
+  backends and preserves timeout registrations.
 - Custom extension GUCs in threaded sessions rely on per-session `_PG_init()`
   invocation for already-loaded dynamic libraries. `dfmgr.c` records loaded
   module init state in `PgSession.dynamic_library_inits`, with list storage
