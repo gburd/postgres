@@ -22,6 +22,10 @@ my @sources = (
 	'src/backend/utils/cache/backend_runtime_cache.c',
 	'src/backend/utils/activity/backend_runtime_pgstat.c',
 	'src/backend/jit/backend_runtime_jit.c',
+	'src/backend/storage/buffer/backend_runtime_buffer.c',
+	'src/backend/storage/file/backend_runtime_file.c',
+	'src/backend/storage/lmgr/backend_runtime_lmgr.c',
+	'src/backend/storage/ipc/backend_runtime_ipc.c',
 	'src/backend/storage/ipc/ipc.c');
 my $help = 0;
 

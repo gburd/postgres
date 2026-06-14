@@ -68,6 +68,7 @@
 #include "storage/sinval.h"
 #include "tsearch/ts_cache.h"
 #include "utils/backend_runtime.h"
+#include "backend_runtime_internal.h"
 #include "utils/builtins.h"
 #include "utils/bytea.h"
 #include "utils/dsa.h"
@@ -971,7 +972,6 @@ static PgExecutionValgrindState *PgCurrentExecutionValgrindState(void);
 static PgExecutionSnapBuildState *PgCurrentExecutionSnapBuildState(void);
 PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
 static PgBackendInstrumentationState *PgCurrentBackendInstrumentationState(void);
-static PgBackendBufferState *PgCurrentBackendBufferState(void);
 static PgBackendTransactionState *PgCurrentBackendTransactionState(void);
 static PgBackendPendingInterruptState *PgCurrentPendingInterrupts(void);
 static PgBackendInterruptHoldoffState *PgCurrentInterruptHoldoffs(void);
@@ -10149,7 +10149,7 @@ PgCurrentSavedWalUsageRef(void)
 	return &PgCurrentBackendInstrumentationState()->saved_wal_usage;
 }
 
-static PgBackendBufferState *
+PgBackendBufferState *
 PgCurrentBackendBufferState(void)
 {
 	if (CurrentPgBackend == NULL)
@@ -10158,7 +10158,7 @@ PgCurrentBackendBufferState(void)
 	return &CurrentPgBackend->buffers;
 }
 
-static MemoryContext
+MemoryContext
 PgBackendBufferAllocationContext(void)
 {
 	if (TopMemoryContext != NULL)
@@ -10170,146 +10170,7 @@ PgBackendBufferAllocationContext(void)
 	return NULL;				/* keep compiler quiet */
 }
 
-int *
-PgCurrentNLocBufferRef(void)
-{
-	return &PgCurrentBackendBufferState()->nlocbuffer;
-}
-
-void **
-PgCurrentLocalBufferDescriptorsRef(void)
-{
-	return &PgCurrentBackendBufferState()->local_buffer_descriptors;
-}
-
-void **
-PgCurrentLocalBufferBlockPointersRef(void)
-{
-	return &PgCurrentBackendBufferState()->local_buffer_block_pointers;
-}
-
-int32 **
-PgCurrentLocalRefCountRef(void)
-{
-	return &PgCurrentBackendBufferState()->local_ref_count;
-}
-
-int *
-PgCurrentNextFreeLocalBufIdRef(void)
-{
-	return &PgCurrentBackendBufferState()->next_free_local_buf_id;
-}
-
-HTAB **
-PgCurrentLocalBufHashRef(void)
-{
-	return &PgCurrentBackendBufferState()->local_buf_hash;
-}
-
-int *
-PgCurrentNLocalPinnedBuffersRef(void)
-{
-	return &PgCurrentBackendBufferState()->n_local_pinned_buffers;
-}
-
-char **
-PgCurrentLocalBufferCurBlockRef(void)
-{
-	return &PgCurrentBackendBufferState()->local_buffer_cur_block;
-}
-
-int *
-PgCurrentLocalBufferNextBufInBlockRef(void)
-{
-	return &PgCurrentBackendBufferState()->local_buffer_next_buf_in_block;
-}
-
-int *
-PgCurrentLocalBufferNumBufsInBlockRef(void)
-{
-	return &PgCurrentBackendBufferState()->local_buffer_num_bufs_in_block;
-}
-
-int *
-PgCurrentLocalBufferTotalBufsAllocatedRef(void)
-{
-	return &PgCurrentBackendBufferState()->local_buffer_total_bufs_allocated;
-}
-
-MemoryContext *
-PgCurrentLocalBufferContextRef(void)
-{
-	return &PgCurrentBackendBufferState()->local_buffer_context;
-}
-
-BufferDesc **
-PgCurrentPinCountWaitBufRef(void)
-{
-	return &PgCurrentBackendBufferState()->pin_count_wait_buf;
-}
-
-WritebackContext *
-PgCurrentBackendWritebackContextRef(void)
-{
-	PgBackendBufferState *buffers = PgCurrentBackendBufferState();
-
-	if (buffers->backend_writeback_context == NULL)
-		buffers->backend_writeback_context =
-			MemoryContextAllocZero(PgBackendBufferAllocationContext(),
-								   sizeof(WritebackContext));
-
-	return buffers->backend_writeback_context;
-}
-
-void **
-PgCurrentPrivateRefCountArrayKeysRef(void)
-{
-	return &PgCurrentBackendBufferState()->private_ref_count_array_keys;
-}
-
-void **
-PgCurrentPrivateRefCountArrayRef(void)
-{
-	return &PgCurrentBackendBufferState()->private_ref_count_array;
-}
-
-void **
-PgCurrentPrivateRefCountHashRef(void)
-{
-	return &PgCurrentBackendBufferState()->private_ref_count_hash;
-}
-
-int32 *
-PgCurrentPrivateRefCountOverflowedRef(void)
-{
-	return &PgCurrentBackendBufferState()->private_ref_count_overflowed;
-}
-
-uint32 *
-PgCurrentPrivateRefCountClockRef(void)
-{
-	return &PgCurrentBackendBufferState()->private_ref_count_clock;
-}
-
-int *
-PgCurrentReservedRefCountSlotRef(void)
-{
-	return &PgCurrentBackendBufferState()->reserved_ref_count_slot;
-}
-
-int *
-PgCurrentPrivateRefCountEntryLastRef(void)
-{
-	return &PgCurrentBackendBufferState()->private_ref_count_entry_last;
-}
-
-uint32 *
-PgCurrentMaxProportionalPinsRef(void)
-{
-	return &PgCurrentBackendBufferState()->max_proportional_pins;
-}
-
-static PgBackendStorageState *
+PgBackendStorageState *
 PgCurrentBackendStorageState(void)
 {
 	if (CurrentPgBackend == NULL)
@@ -10318,109 +10179,7 @@ PgCurrentBackendStorageState(void)
 	return &CurrentPgBackend->storage;
 }
 
-void **
-PgCurrentVfdCacheRef(void)
-{
-	return &PgCurrentBackendStorageState()->vfd_cache;
-}
-
-Size *
-PgCurrentSizeVfdCacheRef(void)
-{
-	return &PgCurrentBackendStorageState()->size_vfd_cache;
-}
-
-int *
-PgCurrentNFileRef(void)
-{
-	return &PgCurrentBackendStorageState()->nfile;
-}
-
-bool *
-PgCurrentTemporaryFilesAllowedRef(void)
-{
-	return &PgCurrentBackendStorageState()->temporary_files_allowed;
-}
-
-int *
-PgCurrentNumAllocatedDescsRef(void)
-{
-	return &PgCurrentBackendStorageState()->num_allocated_descs;
-}
-
-int *
-PgCurrentMaxAllocatedDescsRef(void)
-{
-	return &PgCurrentBackendStorageState()->max_allocated_descs;
-}
-
-void **
-PgCurrentAllocatedDescsRef(void)
-{
-	return &PgCurrentBackendStorageState()->allocated_descs;
-}
-
-int *
-PgCurrentNumExternalFDsRef(void)
-{
-	return &PgCurrentBackendStorageState()->num_external_fds;
-}
-
-HTAB **
-PgCurrentSyncPendingOpsRef(void)
-{
-	return &PgCurrentBackendStorageState()->sync_pending_ops;
-}
-
-List **
-PgCurrentSyncPendingUnlinksRef(void)
-{
-	return &PgCurrentBackendStorageState()->sync_pending_unlinks;
-}
-
-MemoryContext *
-PgCurrentSyncPendingOpsContextRef(void)
-{
-	return &PgCurrentBackendStorageState()->sync_pending_ops_context;
-}
-
-uint16 *
-PgCurrentSyncCycleCounterRef(void)
-{
-	return &PgCurrentBackendStorageState()->sync_cycle_counter;
-}
-
-uint16 *
-PgCurrentSyncCheckpointCycleCounterRef(void)
-{
-	return &PgCurrentBackendStorageState()->sync_checkpoint_cycle_counter;
-}
-
-bool *
-PgCurrentSyncInProgressRef(void)
-{
-	return &PgCurrentBackendStorageState()->sync_in_progress;
-}
-
-HTAB **
-PgCurrentSMgrRelationHashRef(void)
-{
-	return &PgCurrentBackendStorageState()->smgr_relation_hash;
-}
-
-dlist_head *
-PgCurrentSMgrUnpinnedRelationsRef(void)
-{
-	return &PgCurrentBackendStorageState()->smgr_unpinned_relations;
-}
-
-MemoryContext *
-PgCurrentMdContextRef(void)
-{
-	return &PgCurrentBackendStorageState()->md_context;
-}
-
-static PgBackendLockState *
+PgBackendLockState *
 PgCurrentBackendLockState(void)
 {
 	if (CurrentPgBackend == NULL)
@@ -10429,307 +10188,13 @@ PgCurrentBackendLockState(void)
 	return &CurrentPgBackend->locks;
 }
 
-void **
-PgCurrentFastPathLocalUseCountsRef(void)
-{
-	return &PgCurrentBackendLockState()->fast_path_local_use_counts;
-}
-
-PgBackendLWLockHandle *
-PgCurrentHeldLWLocks(void)
-{
-	return PgCurrentBackendLockState()->held_lwlocks;
-}
-
-int *
-PgCurrentNumHeldLWLocksRef(void)
-{
-	return &PgCurrentBackendLockState()->num_held_lwlocks;
-}
-
-HTAB **
-PgCurrentLWLockStatsHashRef(void)
-{
-	return &PgCurrentBackendLockState()->lwlock_stats_htab;
-}
-
-PgBackendLWLockStats *
-PgCurrentLWLockStatsDummy(void)
-{
-	return &PgCurrentBackendLockState()->lwlock_stats_dummy;
-}
-
-MemoryContext *
-PgCurrentLWLockStatsContextRef(void)
-{
-	return &PgCurrentBackendLockState()->lwlock_stats_context;
-}
-
-bool *
-PgCurrentLWLockStatsExitRegisteredRef(void)
-{
-	return &PgCurrentBackendLockState()->lwlock_stats_exit_registered;
-}
-
-int *
-PgCurrentLocalNumUserDefinedLWLockTranchesRef(void)
-{
-	return &PgCurrentBackendLockState()->local_num_user_defined_lwlock_tranches;
-}
-
-bool *
-PgCurrentRelationExtensionLockHeldRef(void)
-{
-	return &PgCurrentBackendLockState()->relation_extension_lock_held;
-}
-
-HTAB **
-PgCurrentLockMethodLocalHashRef(void)
-{
-	return &PgCurrentBackendLockState()->lock_method_local_hash;
-}
-
-void **
-PgCurrentStrongLockInProgressRef(void)
-{
-	return &PgCurrentBackendLockState()->strong_lock_in_progress;
-}
-
-void **
-PgCurrentAwaitedLockRef(void)
-{
-	return &PgCurrentBackendLockState()->awaited_lock;
-}
-
-void **
-PgCurrentAwaitedOwnerRef(void)
-{
-	return &PgCurrentBackendLockState()->awaited_owner;
-}
-
-volatile sig_atomic_t *
-PgCurrentDeadlockTimeoutPendingRef(void)
-{
-	return &PgCurrentBackendLockState()->deadlock_timeout_pending;
-}
-
-void **
-PgCurrentConditionVariableSleepTargetRef(void)
-{
-	return &PgCurrentBackendLockState()->condition_variable_sleep_target;
-}
-
-uint32 *
-PgCurrentSpeculativeInsertionTokenRef(void)
-{
-	return &PgCurrentBackendLockState()->speculative_insertion_token;
-}
-
-void **
-PgCurrentDeadlockVisitedProcsRef(void)
-{
-	return &PgCurrentBackendLockState()->deadlock_visited_procs;
-}
-
-int *
-PgCurrentDeadlockNVisitedProcsRef(void)
-{
-	return &PgCurrentBackendLockState()->deadlock_n_visited_procs;
-}
-
-void **
-PgCurrentDeadlockTopoProcsRef(void)
-{
-	return &PgCurrentBackendLockState()->deadlock_topo_procs;
-}
-
-void **
-PgCurrentDeadlockBeforeConstraintsRef(void)
-{
-	return &PgCurrentBackendLockState()->deadlock_before_constraints;
-}
-
-void **
-PgCurrentDeadlockAfterConstraintsRef(void)
-{
-	return &PgCurrentBackendLockState()->deadlock_after_constraints;
-}
-
-void **
-PgCurrentDeadlockWaitOrdersRef(void)
-{
-	return &PgCurrentBackendLockState()->deadlock_wait_orders;
-}
-
-int *
-PgCurrentDeadlockNWaitOrdersRef(void)
-{
-	return &PgCurrentBackendLockState()->deadlock_n_wait_orders;
-}
-
-void **
-PgCurrentDeadlockWaitOrderProcsRef(void)
-{
-	return &PgCurrentBackendLockState()->deadlock_wait_order_procs;
-}
-
-void **
-PgCurrentDeadlockCurConstraintsRef(void)
-{
-	return &PgCurrentBackendLockState()->deadlock_cur_constraints;
-}
-
-int *
-PgCurrentDeadlockNCurConstraintsRef(void)
-{
-	return &PgCurrentBackendLockState()->deadlock_n_cur_constraints;
-}
-
-int *
-PgCurrentDeadlockMaxCurConstraintsRef(void)
-{
-	return &PgCurrentBackendLockState()->deadlock_max_cur_constraints;
-}
-
-void **
-PgCurrentDeadlockPossibleConstraintsRef(void)
-{
-	return &PgCurrentBackendLockState()->deadlock_possible_constraints;
-}
-
-int *
-PgCurrentDeadlockNPossibleConstraintsRef(void)
-{
-	return &PgCurrentBackendLockState()->deadlock_n_possible_constraints;
-}
-
-int *
-PgCurrentDeadlockMaxPossibleConstraintsRef(void)
-{
-	return &PgCurrentBackendLockState()->deadlock_max_possible_constraints;
-}
-
-void **
-PgCurrentDeadlockDetailsRef(void)
-{
-	return &PgCurrentBackendLockState()->deadlock_details;
-}
-
-int *
-PgCurrentDeadlockNDetailsRef(void)
-{
-	return &PgCurrentBackendLockState()->deadlock_n_details;
-}
-
-void **
-PgCurrentBlockingAutovacuumProcRef(void)
-{
-	return &PgCurrentBackendLockState()->blocking_autovacuum_proc;
-}
-
-HTAB **
-PgCurrentLocalPredicateLockHashRef(void)
-{
-	return &PgCurrentBackendLockState()->local_predicate_lock_hash;
-}
-
-void **
-PgCurrentMySerializableXactRef(void)
-{
-	return &PgCurrentBackendLockState()->my_serializable_xact;
-}
-
-bool *
-PgCurrentMyXactDidWriteRef(void)
-{
-	return &PgCurrentBackendLockState()->my_xact_did_write;
-}
-
-void **
-PgCurrentSavedSerializableXactRef(void)
-{
-	return &PgCurrentBackendLockState()->saved_serializable_xact;
-}
-
-static PgBackendIPCState *
+PgBackendIPCState *
 PgCurrentBackendIPCState(void)
 {
 	if (CurrentPgBackend == NULL)
 		return &early_backend_ipc;
 
 	return &CurrentPgBackend->ipc;
-}
-
-void **
-PgCurrentProcSignalSlotRef(void)
-{
-	return &PgCurrentBackendIPCState()->proc_signal_slot;
-}
-
-uint64 *
-PgCurrentSharedInvalidMessageCounterRef(void)
-{
-	return &PgCurrentBackendIPCState()->shared_invalid_message_counter;
-}
-
-volatile sig_atomic_t *
-PgCurrentCatchupInterruptPendingRef(void)
-{
-	return &PgCurrentBackendIPCState()->catchup_interrupt_pending;
-}
-
-void **
-PgCurrentSharedInvalidationMessagesRef(void)
-{
-	return &PgCurrentBackendIPCState()->shared_invalidation_messages;
-}
-
-volatile int *
-PgCurrentSharedInvalidationNextMsgRef(void)
-{
-	return &PgCurrentBackendIPCState()->shared_invalidation_next_msg;
-}
-
-volatile int *
-PgCurrentSharedInvalidationNumMsgsRef(void)
-{
-	return &PgCurrentBackendIPCState()->shared_invalidation_num_msgs;
-}
-
-bool *
-PgCurrentDsmInitDoneRef(void)
-{
-	return &PgCurrentBackendIPCState()->dsm_init_done;
-}
-
-void **
-PgCurrentDsmRegistryDsaRef(void)
-{
-	return &PgCurrentBackendIPCState()->dsm_registry_dsa;
-}
-
-void **
-PgCurrentDsmRegistryTableRef(void)
-{
-	return &PgCurrentBackendIPCState()->dsm_registry_table;
-}
-
-LocalTransactionId *
-PgCurrentNextLocalTransactionIdRef(void)
-{
-	return &PgCurrentBackendIPCState()->next_local_transaction_id;
-}
-
-WaitEventSet **
-PgCurrentLatchWaitSetRef(void)
-{
-	return &PgCurrentBackendIPCState()->latch_wait_set;
-}
-
-Latch *
-PgCurrentLocalLatchData(void)
-{
-	return &PgCurrentBackendIPCState()->local_latch_data;
 }
 
 static PgBackendWaitState *

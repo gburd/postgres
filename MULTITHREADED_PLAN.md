@@ -819,7 +819,12 @@ pgstat/backend-status accessors, followed by
 `src/backend/jit/backend_runtime_jit.c` for provider-independent and
 LLVM-provider JIT state accessors and
 `src/backend/utils/misc/backend_runtime_guc.c` for GUC compatibility backing
-variables.
+variables. The first storage-owner split moves buffer, fd/storage,
+lock-manager, and IPC compatibility accessors into
+`src/backend/storage/buffer/backend_runtime_buffer.c`,
+`src/backend/storage/file/backend_runtime_file.c`,
+`src/backend/storage/lmgr/backend_runtime_lmgr.c`, and
+`src/backend/storage/ipc/backend_runtime_ipc.c`.
 Future Phase 12 bucket additions should pick an adjacent owner file first;
 adding more code to `backend_runtime.c` should be reserved for root runtime
 construction, current-object helpers, and top-level adopt/reset calls.
@@ -891,6 +896,19 @@ Gate E2 requires:
 - process-mode behavior remains the control group, with at least core
   regression coverage and targeted tests for subsystems touched during Phase
   12 cleanup.
+
+Gate E2 maintainability progress: the backend-runtime test extension has been
+split by object family while preserving the same extension, SQL regression,
+expected output, and TAP entry points. The shared test header is
+`src/test/modules/test_backend_runtime/test_backend_runtime.h`; the split
+sources are `test_backend_runtime_backend.c`,
+`test_backend_runtime_session.c`, `test_backend_runtime_connection.c`, and
+`test_backend_runtime_execution.c`, with the small module/launch tests kept in
+`test_backend_runtime.c` and threaded extension entry points kept in
+`test_backend_runtime_threaded.c`. The runtime bridge also moved buffer,
+fd/storage, lock-manager, and IPC compatibility accessors into owner-adjacent
+`backend_runtime_*.c` files under `src/backend/storage/*`, and the lifecycle
+checker default source set now includes those split files.
 
 Current Gate E2 progress: `gmake check-global-lifetimes` is now a required
 target, and postmaster signal/wakeup routing no longer dereferences a

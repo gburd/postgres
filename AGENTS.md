@@ -95,10 +95,37 @@ Important current files:
   for provider-independent and LLVM-provider JIT session state. Keep
   LLVM-provider-private semantic lifecycle work under `src/backend/jit/llvm`
   when that state needs provider-specific cleanup.
+- `src/backend/storage/buffer/backend_runtime_buffer.c`: fork-owned runtime
+  bridge accessors for backend-local buffer state. Add buffer-manager
+  compatibility accessors here rather than growing `backend_runtime.c`.
+- `src/backend/storage/file/backend_runtime_file.c`: fork-owned runtime bridge
+  accessors for backend-local fd/storage state. Add fd, smgr, and pending-fsync
+  compatibility accessors here rather than growing `backend_runtime.c`.
+- `src/backend/storage/lmgr/backend_runtime_lmgr.c`: fork-owned runtime bridge
+  accessors for backend-local lock-manager state. Add lock, LWLock, predicate,
+  and deadlock-detector compatibility accessors here rather than growing
+  `backend_runtime.c`.
+- `src/backend/storage/ipc/backend_runtime_ipc.c`: fork-owned runtime bridge
+  accessors for backend-local IPC, sinval, DSM, and latch state. Add IPC
+  compatibility accessors here rather than growing `backend_runtime.c`.
 - `src/backend/utils/init/backend_runtime_internal.h`: backend-private runtime
   declarations shared by fork-owned runtime support files. Do not expose these
   helpers in installed headers unless an upstream-owned caller truly needs
   them.
+- `src/test/modules/test_backend_runtime/test_backend_runtime.h`: shared
+  declarations for the backend runtime test extension.
+- `src/test/modules/test_backend_runtime/test_backend_runtime_backend.c`:
+  backend, carrier, PMChild, interrupt, and backend-exit test functions.
+- `src/test/modules/test_backend_runtime/test_backend_runtime_session.c`:
+  session, GUC, cache, identity, and session-reset test functions.
+- `src/test/modules/test_backend_runtime/test_backend_runtime_connection.c`:
+  connection, socket, protocol, startup, and security test functions.
+- `src/test/modules/test_backend_runtime/test_backend_runtime_execution.c`:
+  execution, transaction, snapshot, resource-owner, and query-work test
+  functions.
+- `src/test/modules/test_backend_runtime/test_backend_runtime.c`: keep this as
+  the small module entry point and native-thread/runtime smoke holder; add new
+  object-family tests to the split files above.
 - `src/include/miscadmin.h`: widely visible process/session globals and the
   interrupt macros.
 - `src/backend/storage/ipc/procsignal.c`: process-signal-style backend
@@ -173,6 +200,10 @@ Important current files:
   `src/test/modules/test_backend_runtime/test_backend_runtime.c` into smaller
   object/lifetime-focused test sources while preserving the same extension,
   SQL, expected output, and TAP surface.
+- The first Gate E2 maintainability split is in place. Keep adding
+  owner-specific runtime accessors to adjacent `backend_runtime_*.c` files and
+  backend-runtime tests to the object-family test files instead of rebuilding
+  the old monoliths.
 - Do not attempt thread launch until the thread-safety floor is in place:
   backend-local globals must not be shared plain process globals, backend exit
   must not terminate the whole runtime, and timeout/interrupt delivery must be

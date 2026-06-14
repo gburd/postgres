@@ -28,6 +28,11 @@ extern PgSessionGeneralGUCState *PgCurrentSessionGeneralGUCState(void);
 extern PgSessionJitProviderState *PgCurrentSessionJitProviderState(void);
 extern PgSessionLLVMJitState *PgCurrentSessionLLVMJitState(void);
 extern PgSessionPgStatState *PgCurrentSessionPgStatState(void);
+extern PgBackendBufferState *PgCurrentBackendBufferState(void);
+extern MemoryContext PgBackendBufferAllocationContext(void);
+extern PgBackendStorageState *PgCurrentBackendStorageState(void);
+extern PgBackendLockState *PgCurrentBackendLockState(void);
+extern PgBackendIPCState *PgCurrentBackendIPCState(void);
 extern PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
 
 #endif							/* BACKEND_RUNTIME_INTERNAL_H */

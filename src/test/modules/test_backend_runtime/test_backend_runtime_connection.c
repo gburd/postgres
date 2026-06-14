@@ -1,0 +1,812 @@
+/*--------------------------------------------------------------------------
+ *
+ * test_backend_runtime_connection.c
+ *		Connection-owned backend runtime state tests.
+ *
+ * Copyright (c) 2026, PostgreSQL Global Development Group
+ *
+ * IDENTIFICATION
+ *		src/test/modules/test_backend_runtime/test_backend_runtime_connection.c
+ *
+ * -------------------------------------------------------------------------
+ */
+#include "test_backend_runtime.h"
+
+PG_FUNCTION_INFO_V1(test_connection_socket_io_is_connection_local);
+Datum
+test_connection_socket_io_is_connection_local(PG_FUNCTION_ARGS)
+{
+	PgConnection *saved_connection;
+	PgConnection fake_connection1;
+	PgConnection fake_connection2;
+	PgConnectionSocketIOState *socket_io;
+	bool		ok = true;
+
+	saved_connection = CurrentPgConnection;
+	MemSet(&fake_connection1, 0, sizeof(fake_connection1));
+	MemSet(&fake_connection2, 0, sizeof(fake_connection2));
+
+	PG_TRY();
+	{
+		CurrentPgConnection = &fake_connection1;
+		socket_io = PgCurrentConnectionSocketIORef();
+		socket_io->send_buffer = (char *) "fake connection one";
+		socket_io->send_buffer_size = 11;
+		socket_io->send_pointer = 7;
+		socket_io->send_start = 3;
+		socket_io->recv_pointer = 5;
+		socket_io->recv_length = 9;
+		socket_io->comm_busy = true;
+		socket_io->comm_reading_msg = true;
+		socket_io->win32_noblock = 1;
+
+		CurrentPgConnection = &fake_connection2;
+		socket_io = PgCurrentConnectionSocketIORef();
+		ok = ok && socket_io->send_buffer == NULL;
+		ok = ok && socket_io->send_buffer_size == 0;
+		ok = ok && socket_io->send_pointer == 0;
+		ok = ok && socket_io->send_start == 0;
+		ok = ok && socket_io->recv_pointer == 0;
+		ok = ok && socket_io->recv_length == 0;
+		ok = ok && !socket_io->comm_busy;
+		ok = ok && !socket_io->comm_reading_msg;
+		ok = ok && socket_io->win32_noblock == 0;
+		socket_io->send_buffer = (char *) "fake connection two";
+		socket_io->comm_busy = true;
+		socket_io->win32_noblock = 2;
+
+		CurrentPgConnection = &fake_connection1;
+		socket_io = PgCurrentConnectionSocketIORef();
+		ok = ok && strcmp(socket_io->send_buffer, "fake connection one") == 0;
+		ok = ok && socket_io->send_buffer_size == 11;
+		ok = ok && socket_io->send_pointer == 7;
+		ok = ok && socket_io->send_start == 3;
+		ok = ok && socket_io->recv_pointer == 5;
+		ok = ok && socket_io->recv_length == 9;
+		ok = ok && socket_io->comm_busy;
+		ok = ok && socket_io->comm_reading_msg;
+		ok = ok && socket_io->win32_noblock == 1;
+
+		CurrentPgConnection = &fake_connection2;
+		socket_io = PgCurrentConnectionSocketIORef();
+		ok = ok && strcmp(socket_io->send_buffer, "fake connection two") == 0;
+		ok = ok && socket_io->comm_busy;
+		ok = ok && !socket_io->comm_reading_msg;
+		ok = ok && socket_io->win32_noblock == 2;
+
+		CurrentPgConnection = saved_connection;
+	}
+	PG_CATCH();
+	{
+		CurrentPgConnection = saved_connection;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "connection socket I/O state was not connection-local");
+
+	PG_RETURN_BOOL(true);
+}
+PG_FUNCTION_INFO_V1(test_connection_protocol_state_is_connection_local);
+Datum
+test_connection_protocol_state_is_connection_local(PG_FUNCTION_ARGS)
+{
+	PgConnection *saved_connection;
+	PgConnection fake_connection1;
+	PgConnection fake_connection2;
+	const PQcommMethods *saved_comm_methods;
+	WaitEventSet *saved_wait_set;
+	const PQcommMethods methods1 = {0};
+	const PQcommMethods methods2 = {0};
+	WaitEventSet *wait_set1;
+	WaitEventSet *wait_set2;
+	bool		ok = true;
+
+	saved_connection = CurrentPgConnection;
+	saved_comm_methods = PqCommMethods;
+	saved_wait_set = FeBeWaitSet;
+	wait_set1 = (WaitEventSet *) &fake_connection1;
+	wait_set2 = (WaitEventSet *) &fake_connection2;
+	MemSet(&fake_connection1, 0, sizeof(fake_connection1));
+	MemSet(&fake_connection2, 0, sizeof(fake_connection2));
+
+	PG_TRY();
+	{
+		CurrentPgConnection = &fake_connection1;
+		PqCommMethods = &methods1;
+		FeBeWaitSet = wait_set1;
+
+		CurrentPgConnection = &fake_connection2;
+		ok = ok && PqCommMethods == NULL;
+		ok = ok && FeBeWaitSet == NULL;
+		PqCommMethods = &methods2;
+		FeBeWaitSet = wait_set2;
+
+		CurrentPgConnection = &fake_connection1;
+		ok = ok && PqCommMethods == &methods1;
+		ok = ok && FeBeWaitSet == wait_set1;
+
+		CurrentPgConnection = &fake_connection2;
+		ok = ok && PqCommMethods == &methods2;
+		ok = ok && FeBeWaitSet == wait_set2;
+
+		CurrentPgConnection = saved_connection;
+		PqCommMethods = saved_comm_methods;
+		FeBeWaitSet = saved_wait_set;
+	}
+	PG_CATCH();
+	{
+		CurrentPgConnection = saved_connection;
+		PqCommMethods = saved_comm_methods;
+		FeBeWaitSet = saved_wait_set;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "connection protocol state was not connection-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_connection_reset_closed_state);
+Datum
+test_connection_reset_closed_state(PG_FUNCTION_ARGS)
+{
+	PgConnection connection;
+	PgConnectionSocketIOState *socket_io;
+	PgConnectionSecurityState *security;
+	const PQcommMethods methods = {0};
+	struct ClientSocket fake_client_socket;
+	WaitEventSet *fake_wait_set;
+	bool		ok = true;
+
+	MemSet(&connection, 0, sizeof(connection));
+	MemSet(&fake_client_socket, 0, sizeof(fake_client_socket));
+	fake_wait_set = (WaitEventSet *) &connection;
+
+	connection.identity.port = (struct Port *) &connection;
+	MemSet(connection.identity.cancel_key, 0x7a,
+		   sizeof(connection.identity.cancel_key));
+	connection.identity.cancel_key_length =
+		sizeof(connection.identity.cancel_key);
+
+	socket_io = &connection.socket_io;
+	socket_io->send_buffer = (char *) "released by socket_close";
+	socket_io->send_buffer_size = 128;
+	socket_io->send_pointer = 64;
+	socket_io->send_start = 32;
+	socket_io->recv_buffer[0] = 'x';
+	socket_io->recv_pointer = 7;
+	socket_io->recv_length = 9;
+	socket_io->comm_busy = true;
+	socket_io->comm_reading_msg = true;
+	socket_io->win32_noblock = 1;
+
+	connection.protocol.comm_methods = &methods;
+	connection.protocol.fe_be_wait_set = fake_wait_set;
+	connection.protocol.frontend_protocol = PG_PROTOCOL(3, 2);
+	connection.startup.client_auth_in_progress = true;
+	connection.startup.client_socket = &fake_client_socket;
+	connection.startup.connection_warnings_emitted = true;
+	connection.startup.connection_warning_messages =
+		list_make1(pstrdup("test warning"));
+	connection.startup.connection_warning_details =
+		list_make1(pstrdup("test detail"));
+
+	security = &connection.security;
+	security->ssl_loaded_verify_locations = true;
+	security->gss_send_buffer = malloc(8);
+	security->gss_send_length = 1;
+	security->gss_send_next = 2;
+	security->gss_send_consumed = 3;
+	security->gss_recv_buffer = malloc(8);
+	security->gss_recv_length = 4;
+	security->gss_result_buffer = malloc(8);
+	security->gss_result_length = 5;
+	security->gss_result_next = 6;
+	security->gss_max_packet_size = 7;
+	security->pam_password = "borrowed";
+	security->pam_port = (struct Port *) &connection;
+	security->pam_no_password = true;
+
+	if (security->gss_send_buffer == NULL ||
+		security->gss_recv_buffer == NULL ||
+		security->gss_result_buffer == NULL)
+	{
+		free(security->gss_send_buffer);
+		free(security->gss_recv_buffer);
+		free(security->gss_result_buffer);
+		elog(ERROR, "out of memory");
+	}
+
+	PgConnectionResetClosedState(&connection);
+
+	ok = ok && connection.identity.port == NULL;
+	ok = ok && connection.identity.cancel_key[0] == 0;
+	ok = ok && connection.identity.cancel_key_length == 0;
+
+	socket_io = &connection.socket_io;
+	ok = ok && socket_io->send_buffer == NULL;
+	ok = ok && socket_io->send_buffer_size == 0;
+	ok = ok && socket_io->send_pointer == 0;
+	ok = ok && socket_io->send_start == 0;
+	ok = ok && socket_io->recv_buffer[0] == '\0';
+	ok = ok && socket_io->recv_pointer == 0;
+	ok = ok && socket_io->recv_length == 0;
+	ok = ok && !socket_io->comm_busy;
+	ok = ok && !socket_io->comm_reading_msg;
+	ok = ok && socket_io->win32_noblock == 0;
+
+	ok = ok && connection.protocol.comm_methods == NULL;
+	ok = ok && connection.protocol.fe_be_wait_set == NULL;
+	ok = ok && connection.protocol.frontend_protocol == 0;
+	ok = ok && !connection.startup.client_auth_in_progress;
+	ok = ok && connection.startup.client_socket == NULL;
+	ok = ok && !connection.startup.connection_warnings_emitted;
+	ok = ok && connection.startup.connection_warning_messages == NIL;
+	ok = ok && connection.startup.connection_warning_details == NIL;
+
+	security = &connection.security;
+	ok = ok && !security->ssl_loaded_verify_locations;
+	ok = ok && security->gss_send_buffer == NULL;
+	ok = ok && security->gss_send_length == 0;
+	ok = ok && security->gss_send_next == 0;
+	ok = ok && security->gss_send_consumed == 0;
+	ok = ok && security->gss_recv_buffer == NULL;
+	ok = ok && security->gss_recv_length == 0;
+	ok = ok && security->gss_result_buffer == NULL;
+	ok = ok && security->gss_result_length == 0;
+	ok = ok && security->gss_result_next == 0;
+	ok = ok && security->gss_max_packet_size == 0;
+	ok = ok && security->pam_password == NULL;
+	ok = ok && security->pam_port == NULL;
+	ok = ok && !security->pam_no_password;
+
+	if (!ok)
+		elog(ERROR, "closed connection runtime state was not reset");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_connection_output_state_is_connection_local);
+Datum
+test_connection_output_state_is_connection_local(PG_FUNCTION_ARGS)
+{
+	PgConnection *saved_connection;
+	PgConnection fake_connection1;
+	PgConnection fake_connection2;
+	CommandDest saved_where_to_send_output;
+	int			saved_client_connection_check_interval;
+	bool		ok = true;
+
+	saved_connection = CurrentPgConnection;
+	saved_where_to_send_output = whereToSendOutput;
+	saved_client_connection_check_interval = client_connection_check_interval;
+	MemSet(&fake_connection1, 0, sizeof(fake_connection1));
+	MemSet(&fake_connection2, 0, sizeof(fake_connection2));
+	fake_connection1.output.where_to_send_output = DestDebug;
+	fake_connection2.output.where_to_send_output = DestDebug;
+
+	PG_TRY();
+	{
+		CurrentPgConnection = &fake_connection1;
+		whereToSendOutput = DestRemote;
+		client_connection_check_interval = 11;
+
+		CurrentPgConnection = &fake_connection2;
+		ok = ok && whereToSendOutput == DestDebug;
+		ok = ok && client_connection_check_interval == 0;
+		whereToSendOutput = DestNone;
+		client_connection_check_interval = 22;
+
+		CurrentPgConnection = &fake_connection1;
+		ok = ok && whereToSendOutput == DestRemote;
+		ok = ok && client_connection_check_interval == 11;
+
+		CurrentPgConnection = &fake_connection2;
+		ok = ok && whereToSendOutput == DestNone;
+		ok = ok && client_connection_check_interval == 22;
+
+		CurrentPgConnection = saved_connection;
+		whereToSendOutput = saved_where_to_send_output;
+		client_connection_check_interval = saved_client_connection_check_interval;
+	}
+	PG_CATCH();
+	{
+		CurrentPgConnection = saved_connection;
+		whereToSendOutput = saved_where_to_send_output;
+		client_connection_check_interval = saved_client_connection_check_interval;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "connection output state was not connection-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_connection_identity_state_is_connection_local);
+Datum
+test_connection_identity_state_is_connection_local(PG_FUNCTION_ARGS)
+{
+	PgConnection *saved_connection;
+	PgConnection fake_connection1;
+	PgConnection fake_connection2;
+	Port	   *saved_port;
+	Port		fake_port1;
+	Port		fake_port2;
+	uint8		saved_cancel_key[PG_CONNECTION_CANCEL_KEY_LENGTH];
+	int			saved_cancel_key_length;
+	bool		ok = true;
+
+	saved_connection = CurrentPgConnection;
+	saved_port = MyProcPort;
+	saved_cancel_key_length = MyCancelKeyLength;
+	memcpy(saved_cancel_key, MyCancelKey, sizeof(saved_cancel_key));
+	MemSet(&fake_connection1, 0, sizeof(fake_connection1));
+	MemSet(&fake_connection2, 0, sizeof(fake_connection2));
+	MemSet(&fake_port1, 0, sizeof(fake_port1));
+	MemSet(&fake_port2, 0, sizeof(fake_port2));
+
+	PG_TRY();
+	{
+		CurrentPgConnection = &fake_connection1;
+		MyProcPort = &fake_port1;
+		MyCancelKey[0] = 1;
+		MyCancelKey[1] = 2;
+		MyCancelKeyLength = 2;
+
+		CurrentPgConnection = &fake_connection2;
+		ok = ok && MyProcPort == NULL;
+		ok = ok && MyCancelKeyLength == 0;
+		MyProcPort = &fake_port2;
+		MyCancelKey[0] = 7;
+		MyCancelKey[1] = 8;
+		MyCancelKey[2] = 9;
+		MyCancelKeyLength = 3;
+
+		CurrentPgConnection = &fake_connection1;
+		ok = ok && MyProcPort == &fake_port1;
+		ok = ok && MyCancelKeyLength == 2;
+		ok = ok && MyCancelKey[0] == 1;
+		ok = ok && MyCancelKey[1] == 2;
+
+		CurrentPgConnection = &fake_connection2;
+		ok = ok && MyProcPort == &fake_port2;
+		ok = ok && MyCancelKeyLength == 3;
+		ok = ok && MyCancelKey[0] == 7;
+		ok = ok && MyCancelKey[1] == 8;
+		ok = ok && MyCancelKey[2] == 9;
+
+		CurrentPgConnection = saved_connection;
+		MyProcPort = saved_port;
+		memcpy(MyCancelKey, saved_cancel_key, sizeof(saved_cancel_key));
+		MyCancelKeyLength = saved_cancel_key_length;
+	}
+	PG_CATCH();
+	{
+		CurrentPgConnection = saved_connection;
+		MyProcPort = saved_port;
+		memcpy(MyCancelKey, saved_cancel_key, sizeof(saved_cancel_key));
+		MyCancelKeyLength = saved_cancel_key_length;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "connection identity state was not connection-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_connection_interrupt_state_is_connection_local);
+Datum
+test_connection_interrupt_state_is_connection_local(PG_FUNCTION_ARGS)
+{
+	PgConnection *saved_connection;
+	PgConnection fake_connection1;
+	PgConnection fake_connection2;
+	volatile sig_atomic_t saved_check_client_connection_pending;
+	volatile sig_atomic_t saved_client_connection_lost;
+	bool		ok = true;
+
+	saved_connection = CurrentPgConnection;
+	saved_check_client_connection_pending = CheckClientConnectionPending;
+	saved_client_connection_lost = ClientConnectionLost;
+	MemSet(&fake_connection1, 0, sizeof(fake_connection1));
+	MemSet(&fake_connection2, 0, sizeof(fake_connection2));
+
+	PG_TRY();
+	{
+		CurrentPgConnection = &fake_connection1;
+		CheckClientConnectionPending = true;
+		ClientConnectionLost = false;
+
+		CurrentPgConnection = &fake_connection2;
+		ok = ok && !CheckClientConnectionPending;
+		ok = ok && !ClientConnectionLost;
+		CheckClientConnectionPending = false;
+		ClientConnectionLost = true;
+
+		CurrentPgConnection = &fake_connection1;
+		ok = ok && CheckClientConnectionPending;
+		ok = ok && !ClientConnectionLost;
+
+		CurrentPgConnection = &fake_connection2;
+		ok = ok && !CheckClientConnectionPending;
+		ok = ok && ClientConnectionLost;
+
+		CurrentPgConnection = saved_connection;
+		CheckClientConnectionPending = saved_check_client_connection_pending;
+		ClientConnectionLost = saved_client_connection_lost;
+	}
+	PG_CATCH();
+	{
+		CurrentPgConnection = saved_connection;
+		CheckClientConnectionPending = saved_check_client_connection_pending;
+		ClientConnectionLost = saved_client_connection_lost;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "connection interrupt state was not connection-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_connection_frontend_protocol_is_connection_local);
+Datum
+test_connection_frontend_protocol_is_connection_local(PG_FUNCTION_ARGS)
+{
+	PgConnection *saved_connection;
+	PgConnection fake_connection1;
+	PgConnection fake_connection2;
+	ProtocolVersion saved_frontend_protocol;
+	bool		ok = true;
+
+	saved_connection = CurrentPgConnection;
+	saved_frontend_protocol = FrontendProtocol;
+	MemSet(&fake_connection1, 0, sizeof(fake_connection1));
+	MemSet(&fake_connection2, 0, sizeof(fake_connection2));
+
+	PG_TRY();
+	{
+		CurrentPgConnection = &fake_connection1;
+		FrontendProtocol = PG_PROTOCOL(3, 0);
+
+		CurrentPgConnection = &fake_connection2;
+		ok = ok && FrontendProtocol == 0;
+		FrontendProtocol = PG_PROTOCOL(3, 2);
+
+		CurrentPgConnection = &fake_connection1;
+		ok = ok && FrontendProtocol == PG_PROTOCOL(3, 0);
+
+		CurrentPgConnection = &fake_connection2;
+		ok = ok && FrontendProtocol == PG_PROTOCOL(3, 2);
+
+		CurrentPgConnection = saved_connection;
+		FrontendProtocol = saved_frontend_protocol;
+	}
+	PG_CATCH();
+	{
+		CurrentPgConnection = saved_connection;
+		FrontendProtocol = saved_frontend_protocol;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "frontend protocol state was not connection-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_connection_startup_state_is_connection_local);
+Datum
+test_connection_startup_state_is_connection_local(PG_FUNCTION_ARGS)
+{
+	PgConnection *saved_connection;
+	PgConnection fake_connection1;
+	PgConnection fake_connection2;
+	struct ClientSocket *saved_client_socket;
+	struct ClientSocket *fake_client_socket1;
+	struct ClientSocket *fake_client_socket2;
+	bool		saved_client_auth_in_progress;
+	ConnectionTiming saved_timing;
+	List	   *warning_messages1;
+	List	   *warning_messages2;
+	List	   *warning_details1;
+	List	   *warning_details2;
+	bool		ok = true;
+
+	saved_connection = CurrentPgConnection;
+	saved_client_auth_in_progress = ClientAuthInProgress;
+	saved_client_socket = MyClientSocket;
+	saved_timing = conn_timing;
+	fake_client_socket1 = (struct ClientSocket *) &fake_connection1;
+	fake_client_socket2 = (struct ClientSocket *) &fake_connection2;
+	warning_messages1 = list_make1(&fake_connection1);
+	warning_messages2 = list_make1(&fake_connection2);
+	warning_details1 = list_make1(&fake_client_socket1);
+	warning_details2 = list_make1(&fake_client_socket2);
+	MemSet(&fake_connection1, 0, sizeof(fake_connection1));
+	MemSet(&fake_connection2, 0, sizeof(fake_connection2));
+	fake_connection1.startup.timing.ready_for_use = TIMESTAMP_MINUS_INFINITY;
+	fake_connection2.startup.timing.ready_for_use = TIMESTAMP_MINUS_INFINITY;
+
+	PG_TRY();
+	{
+		CurrentPgConnection = &fake_connection1;
+		ClientAuthInProgress = true;
+		MyClientSocket = fake_client_socket1;
+		conn_timing.socket_create = 11;
+		conn_timing.ready_for_use = 12;
+		conn_timing.fork_start = 13;
+		conn_timing.fork_end = 14;
+		conn_timing.auth_start = 15;
+		conn_timing.auth_end = 16;
+		*PgCurrentConnectionWarningsEmittedRef() = true;
+		*PgCurrentConnectionWarningMessagesRef() = warning_messages1;
+		*PgCurrentConnectionWarningDetailsRef() = warning_details1;
+
+		CurrentPgConnection = &fake_connection2;
+		ok = ok && !ClientAuthInProgress;
+		ok = ok && MyClientSocket == NULL;
+		ok = ok && conn_timing.socket_create == 0;
+		ok = ok && conn_timing.ready_for_use == TIMESTAMP_MINUS_INFINITY;
+		ok = ok && conn_timing.fork_start == 0;
+		ok = ok && conn_timing.fork_end == 0;
+		ok = ok && conn_timing.auth_start == 0;
+		ok = ok && conn_timing.auth_end == 0;
+		ok = ok && !*PgCurrentConnectionWarningsEmittedRef();
+		ok = ok && *PgCurrentConnectionWarningMessagesRef() == NIL;
+		ok = ok && *PgCurrentConnectionWarningDetailsRef() == NIL;
+		ClientAuthInProgress = false;
+		MyClientSocket = fake_client_socket2;
+		conn_timing.socket_create = 21;
+		conn_timing.ready_for_use = 22;
+		conn_timing.fork_start = 23;
+		conn_timing.fork_end = 24;
+		conn_timing.auth_start = 25;
+		conn_timing.auth_end = 26;
+		*PgCurrentConnectionWarningsEmittedRef() = false;
+		*PgCurrentConnectionWarningMessagesRef() = warning_messages2;
+		*PgCurrentConnectionWarningDetailsRef() = warning_details2;
+
+		CurrentPgConnection = &fake_connection1;
+		ok = ok && ClientAuthInProgress;
+		ok = ok && MyClientSocket == fake_client_socket1;
+		ok = ok && conn_timing.socket_create == 11;
+		ok = ok && conn_timing.ready_for_use == 12;
+		ok = ok && conn_timing.fork_start == 13;
+		ok = ok && conn_timing.fork_end == 14;
+		ok = ok && conn_timing.auth_start == 15;
+		ok = ok && conn_timing.auth_end == 16;
+		ok = ok && *PgCurrentConnectionWarningsEmittedRef();
+		ok = ok && *PgCurrentConnectionWarningMessagesRef() ==
+			warning_messages1;
+		ok = ok && *PgCurrentConnectionWarningDetailsRef() ==
+			warning_details1;
+
+		CurrentPgConnection = &fake_connection2;
+		ok = ok && !ClientAuthInProgress;
+		ok = ok && MyClientSocket == fake_client_socket2;
+		ok = ok && conn_timing.socket_create == 21;
+		ok = ok && conn_timing.ready_for_use == 22;
+		ok = ok && conn_timing.fork_start == 23;
+		ok = ok && conn_timing.fork_end == 24;
+		ok = ok && conn_timing.auth_start == 25;
+		ok = ok && conn_timing.auth_end == 26;
+		ok = ok && !*PgCurrentConnectionWarningsEmittedRef();
+		ok = ok && *PgCurrentConnectionWarningMessagesRef() ==
+			warning_messages2;
+		ok = ok && *PgCurrentConnectionWarningDetailsRef() ==
+			warning_details2;
+
+		CurrentPgConnection = saved_connection;
+		ClientAuthInProgress = saved_client_auth_in_progress;
+		MyClientSocket = saved_client_socket;
+		conn_timing = saved_timing;
+	}
+	PG_CATCH();
+	{
+		CurrentPgConnection = saved_connection;
+		ClientAuthInProgress = saved_client_auth_in_progress;
+		MyClientSocket = saved_client_socket;
+		conn_timing = saved_timing;
+		list_free(warning_messages1);
+		list_free(warning_messages2);
+		list_free(warning_details1);
+		list_free(warning_details2);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	list_free(warning_messages1);
+	list_free(warning_messages2);
+	list_free(warning_details1);
+	list_free(warning_details2);
+
+	if (!ok)
+		elog(ERROR, "connection startup state was not connection-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_client_connection_info_is_connection_local);
+Datum
+test_client_connection_info_is_connection_local(PG_FUNCTION_ARGS)
+{
+	PgConnection *saved_connection;
+	PgConnection fake_connection1;
+	PgConnection fake_connection2;
+	const char *saved_authn_id;
+	UserAuth	saved_auth_method;
+	bool		ok = true;
+
+	saved_connection = CurrentPgConnection;
+	saved_authn_id = MyClientConnectionInfo.authn_id;
+	saved_auth_method = MyClientConnectionInfo.auth_method;
+	MemSet(&fake_connection1, 0, sizeof(fake_connection1));
+	MemSet(&fake_connection2, 0, sizeof(fake_connection2));
+
+	PG_TRY();
+	{
+		CurrentPgConnection = &fake_connection1;
+		MyClientConnectionInfo.authn_id = "connection-one";
+		MyClientConnectionInfo.auth_method = uaTrust;
+
+		CurrentPgConnection = &fake_connection2;
+		ok = ok && MyClientConnectionInfo.authn_id == NULL;
+		MyClientConnectionInfo.authn_id = "connection-two";
+		MyClientConnectionInfo.auth_method = uaSCRAM;
+
+		CurrentPgConnection = &fake_connection1;
+		ok = ok && strcmp(MyClientConnectionInfo.authn_id,
+						  "connection-one") == 0;
+		ok = ok && MyClientConnectionInfo.auth_method == uaTrust;
+
+		CurrentPgConnection = &fake_connection2;
+		ok = ok && strcmp(MyClientConnectionInfo.authn_id,
+						  "connection-two") == 0;
+		ok = ok && MyClientConnectionInfo.auth_method == uaSCRAM;
+
+		CurrentPgConnection = saved_connection;
+		MyClientConnectionInfo.authn_id = saved_authn_id;
+		MyClientConnectionInfo.auth_method = saved_auth_method;
+	}
+	PG_CATCH();
+	{
+		CurrentPgConnection = saved_connection;
+		MyClientConnectionInfo.authn_id = saved_authn_id;
+		MyClientConnectionInfo.auth_method = saved_auth_method;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "client connection info was not connection-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_connection_security_state_is_connection_local);
+Datum
+test_connection_security_state_is_connection_local(PG_FUNCTION_ARGS)
+{
+	PgConnection *saved_connection;
+	PgConnection fake_connection1;
+	PgConnection fake_connection2;
+	PgConnectionSecurityState *security;
+	bool		ok = true;
+
+	saved_connection = CurrentPgConnection;
+	MemSet(&fake_connection1, 0, sizeof(fake_connection1));
+	MemSet(&fake_connection2, 0, sizeof(fake_connection2));
+
+	PG_TRY();
+	{
+		CurrentPgConnection = &fake_connection1;
+		security = PgCurrentConnectionSecurityStateRef();
+		ok = ok && !security->ssl_loaded_verify_locations;
+		ok = ok && security->gss_send_buffer == NULL;
+		ok = ok && security->gss_send_length == 0;
+		ok = ok && security->gss_recv_buffer == NULL;
+		ok = ok && security->gss_result_buffer == NULL;
+		ok = ok && security->gss_max_packet_size == 0;
+		ok = ok && security->pam_password == NULL;
+		ok = ok && security->pam_port == NULL;
+		ok = ok && !security->pam_no_password;
+		security->ssl_loaded_verify_locations = true;
+		security->gss_send_buffer = (char *) &fake_connection1;
+		security->gss_send_length = 11;
+		security->gss_send_next = 12;
+		security->gss_send_consumed = 13;
+		security->gss_recv_buffer = (char *) &fake_connection2;
+		security->gss_recv_length = 14;
+		security->gss_result_buffer = (char *) &saved_connection;
+		security->gss_result_length = 15;
+		security->gss_result_next = 16;
+		security->gss_max_packet_size = 17;
+		security->pam_password = "pam-one";
+		security->pam_port = (struct Port *) &fake_connection1;
+		security->pam_no_password = true;
+
+		CurrentPgConnection = &fake_connection2;
+		security = PgCurrentConnectionSecurityStateRef();
+		ok = ok && !security->ssl_loaded_verify_locations;
+		ok = ok && security->gss_send_buffer == NULL;
+		ok = ok && security->gss_send_length == 0;
+		ok = ok && security->gss_recv_buffer == NULL;
+		ok = ok && security->gss_result_buffer == NULL;
+		ok = ok && security->gss_max_packet_size == 0;
+		ok = ok && security->pam_password == NULL;
+		ok = ok && security->pam_port == NULL;
+		ok = ok && !security->pam_no_password;
+		security->ssl_loaded_verify_locations = false;
+		security->gss_send_buffer = (char *) &fake_connection2;
+		security->gss_send_length = 21;
+		security->gss_send_next = 22;
+		security->gss_send_consumed = 23;
+		security->gss_recv_buffer = (char *) &fake_connection1;
+		security->gss_recv_length = 24;
+		security->gss_result_buffer = (char *) &fake_connection2;
+		security->gss_result_length = 25;
+		security->gss_result_next = 26;
+		security->gss_max_packet_size = 27;
+		security->pam_password = "pam-two";
+		security->pam_port = (struct Port *) &fake_connection2;
+		security->pam_no_password = false;
+
+		CurrentPgConnection = &fake_connection1;
+		security = PgCurrentConnectionSecurityStateRef();
+		ok = ok && security->ssl_loaded_verify_locations;
+		ok = ok && security->gss_send_buffer == (char *) &fake_connection1;
+		ok = ok && security->gss_send_length == 11;
+		ok = ok && security->gss_send_next == 12;
+		ok = ok && security->gss_send_consumed == 13;
+		ok = ok && security->gss_recv_buffer == (char *) &fake_connection2;
+		ok = ok && security->gss_recv_length == 14;
+		ok = ok && security->gss_result_buffer == (char *) &saved_connection;
+		ok = ok && security->gss_result_length == 15;
+		ok = ok && security->gss_result_next == 16;
+		ok = ok && security->gss_max_packet_size == 17;
+		ok = ok && strcmp(security->pam_password, "pam-one") == 0;
+		ok = ok && security->pam_port == (struct Port *) &fake_connection1;
+		ok = ok && security->pam_no_password;
+
+		CurrentPgConnection = &fake_connection2;
+		security = PgCurrentConnectionSecurityStateRef();
+		ok = ok && !security->ssl_loaded_verify_locations;
+		ok = ok && security->gss_send_buffer == (char *) &fake_connection2;
+		ok = ok && security->gss_send_length == 21;
+		ok = ok && security->gss_send_next == 22;
+		ok = ok && security->gss_send_consumed == 23;
+		ok = ok && security->gss_recv_buffer == (char *) &fake_connection1;
+		ok = ok && security->gss_recv_length == 24;
+		ok = ok && security->gss_result_buffer == (char *) &fake_connection2;
+		ok = ok && security->gss_result_length == 25;
+		ok = ok && security->gss_result_next == 26;
+		ok = ok && security->gss_max_packet_size == 27;
+		ok = ok && strcmp(security->pam_password, "pam-two") == 0;
+		ok = ok && security->pam_port == (struct Port *) &fake_connection2;
+		ok = ok && !security->pam_no_password;
+
+		CurrentPgConnection = saved_connection;
+	}
+	PG_CATCH();
+	{
+		CurrentPgConnection = saved_connection;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "connection security state was not connection-local");
+
+	PG_RETURN_BOOL(true);
+}

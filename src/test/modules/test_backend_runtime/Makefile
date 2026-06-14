@@ -4,6 +4,10 @@ MODULE_big = test_backend_runtime
 MODULES = test_backend_runtime_threaded
 OBJS = \
 	$(WIN32RES) \
+	test_backend_runtime_backend.o \
+	test_backend_runtime_connection.o \
+	test_backend_runtime_execution.o \
+	test_backend_runtime_session.o \
 	test_backend_runtime.o
 PGFILEDESC = "test_backend_runtime - test code for backend runtime scaffolding"
 

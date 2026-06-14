@@ -10372,3 +10372,43 @@ Acceptance criteria for the refactor slice:
   backend-runtime TAP still pass;
 - docs and `AGENTS.md` tell future agents where new runtime buckets and tests
   should go, so new work does not default back to the giant central files.
+
+First refactor slice completed:
+
+- `src/backend/storage/buffer/backend_runtime_buffer.c` now owns the
+  backend-local buffer compatibility accessors;
+- `src/backend/storage/file/backend_runtime_file.c` now owns backend-local
+  fd/storage compatibility accessors;
+- `src/backend/storage/lmgr/backend_runtime_lmgr.c` now owns backend-local
+  lock-manager compatibility accessors;
+- `src/backend/storage/ipc/backend_runtime_ipc.c` now owns backend-local IPC,
+  sinval, DSM, and latch compatibility accessors;
+- `src/backend/utils/init/backend_runtime.c` still owns root object
+  construction, early fallback storage, current-pointer installation, and the
+  fallback-aware current-bucket selectors used by the split owner files;
+- `check_runtime_lifecycles.pl` now scans the storage owner files by default,
+  so future manifest-referenced lifecycle helpers can be split out without
+  weakening the Gate E2 checker;
+- `src/test/modules/test_backend_runtime/test_backend_runtime.c` has been
+  split into object-family files:
+  `test_backend_runtime_backend.c`, `test_backend_runtime_session.c`,
+  `test_backend_runtime_connection.c`, and
+  `test_backend_runtime_execution.c`, with shared declarations in
+  `test_backend_runtime.h`.
+
+Validation for this refactor slice:
+
+- touched-object builds passed for `backend_runtime.o`,
+  `backend_runtime_buffer.o`, `backend_runtime_file.o`,
+  `backend_runtime_lmgr.o`, and `backend_runtime_ipc.o`;
+- full `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all` passed after
+  the test split;
+- `gmake check-runtime-lifecycles` passed with 149 runtime fields classified
+  after adding the storage owner files to the default checked source set;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl` using the local `IPC::Run` `PERL5LIB` and
+  patched temporary-install dynamic library names.
