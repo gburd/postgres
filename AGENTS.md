@@ -109,6 +109,10 @@ macro/table/checker improvement would make the whole slice simpler and safer.
   land that lifecycle-framework improvement before moving the globals or
   teardown code. The intended speed-up is larger object-migration batches with
   less handwritten lifecycle bookkeeping, not smaller manual slices.
+- When a batch feels slow because lifecycle setup, reset, destroy, or manifest
+  updates are repetitive, do not respond by slicing the work smaller. Add or
+  reuse the checked macro/action/table/checker path that lets the larger batch
+  move safely.
 
 ## Working Assumptions
 

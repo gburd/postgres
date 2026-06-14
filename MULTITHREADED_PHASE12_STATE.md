@@ -12487,6 +12487,12 @@ Concrete lifecycle-framework TODO:
   owner file. The primitive should remove clerical lifecycle plumbing, not
   hide subsystem ownership rules.
 
+Operational acceleration rule: if lifecycle bookkeeping is the reason a Phase
+12/Gate E2 batch is slowing down, the next step is to add or reuse a checked
+macro/action/table/checker primitive, not to split the same migration into
+smaller manual commits. Record that preflight decision here before editing the
+next implementation batch.
+
 ## Threaded Startup Gate Removal
 
 Lifecycle/preflight note:
