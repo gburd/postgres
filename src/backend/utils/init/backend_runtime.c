@@ -17,6 +17,7 @@
 
 #include "access/gin.h"
 #include "access/parallel.h"
+#include "access/session.h"
 #include "access/syncscan.h"
 #include "access/tableam.h"
 #include "access/toast_compression.h"
@@ -4310,6 +4311,15 @@ PgSessionResetClosedState(PgSession *session)
 		session->locale.last_collation_cache_oid = InvalidOid;
 		session->locale.last_collation_cache_locale = NULL;
 	}
+
+	if (session->legacy_session_context != NULL)
+	{
+		if (CurrentSession == session->legacy_session)
+			CurrentSession = NULL;
+		MemoryContextDelete(session->legacy_session_context);
+		session->legacy_session_context = NULL;
+		session->legacy_session = NULL;
+	}
 }
 
 void
@@ -4319,6 +4329,8 @@ PgExecutionResetClosedState(PgExecution *execution)
 		return;
 
 	execution->debug.debug_query_string = NULL;
+	MemSet(&execution->memory_contexts, 0,
+		   sizeof(execution->memory_contexts));
 }
 
 Session *
@@ -4326,6 +4338,18 @@ PgSessionGetLegacySession(PgSession *session)
 {
 	if (session == NULL)
 		return NULL;
+
+	if (session->legacy_session == NULL)
+	{
+		Assert(session->legacy_session_context == NULL);
+		session->legacy_session_context =
+			AllocSetContextCreate(TopMemoryContext,
+								  "legacy session compatibility state",
+								  ALLOCSET_SMALL_SIZES);
+		session->legacy_session =
+			MemoryContextAllocZero(session->legacy_session_context,
+								   sizeof(Session));
+	}
 
 	return session->legacy_session;
 }

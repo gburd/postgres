@@ -10,10 +10,11 @@
 #ifndef PG_ORIGIN_H
 #define PG_ORIGIN_H
 
-#include "access/xlog.h"
 #include "access/xlogdefs.h"
 #include "access/xlogreader.h"
 #include "catalog/pg_replication_origin.h"
+#include "datatype/timestamp.h"
+#include "lib/stringinfo.h"
 #include "utils/global_lifetime.h"
 
 typedef struct xl_replorigin_set

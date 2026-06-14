@@ -1459,8 +1459,16 @@ Follow-up session teardown hardening added `PgSessionResetClosedState()`.
 list under `PgSession.dynamic_library_context` instead of `TopMemoryContext`,
 and backend exit deletes that context after `on_proc_exit` callbacks have had
 their chance to use session state. This closes one concrete list-bearing
-`PgSession` reset/destroy rule, while the broader session destructor model and
-remaining pending lifecycle rows remain Phase 12 blockers.
+`PgSession` reset/destroy rule. Follow-up bridge hardening moved the legacy
+`access/session.h` payload allocation behind `PgSessionGetLegacySession()`,
+records the dedicated `PgSession.legacy_session_context` in the lifecycle
+manifest, and deletes that context during `PgSessionResetClosedState()` after
+DSM/DSA detach paths have run. A matching execution cleanup slice now clears
+the retained `PgExecution.memory_contexts` slots at the end of backend-exit
+cleanup, after session/backend reset still has usable memory-context state.
+There are no `GateE2 pending` lifecycle manifest rows left; the broader
+`TopMemoryContext` ownership split remains tracked as a separate memory
+ownership problem rather than an unclassified bucket.
 The next state-migration batch moved catalog transaction/execution scratch
 state into `PgExecutionCatalogState`: uncommitted enum type/value hash
 pointers, REINDEX suppression state, and pending smgr relation delete/sync

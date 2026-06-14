@@ -880,9 +880,16 @@ per-session dynamic-library `_PG_init()` replay list. `dfmgr.c` now allocates
 the `dynamic_library_inits` list cells under a session-owned
 `dynamic_library_context`, and backend exit deletes that context only after
 `on_proc_exit` callbacks run. This closes one concrete list-bearing
-`PgSession` reset/destroy rule, but it is still a partial Gate E2 closure; the
-full session destructor model and remaining pending manifest rows are still
-blockers.
+`PgSession` reset/destroy rule. Follow-up bridge hardening moved the legacy
+`access/session.h` payload allocation behind `PgSessionGetLegacySession()`,
+added `PgSession.legacy_session_context` to the checked lifecycle manifest,
+and deletes that context during `PgSessionResetClosedState()` after DSM/DSA
+detach paths have run. A matching execution cleanup slice clears retained
+`PgExecution.memory_contexts` slots at the end of backend-exit cleanup, after
+session/backend reset has finished using live memory-context state. This
+closes the previously pending lifecycle manifest rows, while the broader
+`TopMemoryContext` ownership split remains a separate memory ownership
+problem.
 The next state-migration batch added `PgExecutionCatalogState` and moved seven
 catalog execution globals into it: uncommitted enum hash pointers, REINDEX
 suppression state, and pending smgr delete/sync state. Existing enum, reindex,
@@ -905,7 +912,10 @@ early-adoption, reset/destroy, and copy/adoption rules for every current
 `gmake check-runtime-lifecycles` fails if the manifest misses a field or
 contains a stale field. This does not close the lifecycle blocker by itself;
 it turns the bucket audit into a required validation target and makes the
-remaining pending reset/destroy rows explicit.
+remaining reset/destroy rows mechanically visible. Subsequent bridge cleanup
+closed the pending legacy-session and execution-memory-context rows, so new
+Gate E2 lifecycle debt should show up either as a manifest check failure or as
+an explicitly added pending row.
 The latest state-migration slice moved wait-event storage into
 `PgBackendWaitState` and the shared-invalidation local transaction ID counter
 into `PgBackendIPCState`. Validation included touched-object builds, a clean

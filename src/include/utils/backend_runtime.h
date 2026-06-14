@@ -1860,6 +1860,7 @@ struct PgSession
 	PgConnection *connection;
 	PgExecution *execution;
 	Session    *legacy_session;
+	MemoryContext legacy_session_context;
 	PgSessionLoopState loop_state;
 	PgSessionDatabaseState database;
 	PgSessionTablespaceState tablespace;

@@ -208,9 +208,18 @@ AttachSession(dsm_handle handle)
 void
 DetachSession(void)
 {
+	if (CurrentSession == NULL)
+		return;
+
 	/* Runs detach hooks. */
-	dsm_detach(CurrentSession->segment);
-	CurrentSession->segment = NULL;
-	dsa_detach(CurrentSession->area);
-	CurrentSession->area = NULL;
+	if (CurrentSession->segment != NULL)
+	{
+		dsm_detach(CurrentSession->segment);
+		CurrentSession->segment = NULL;
+	}
+	if (CurrentSession->area != NULL)
+	{
+		dsa_detach(CurrentSession->area);
+		CurrentSession->area = NULL;
+	}
 }

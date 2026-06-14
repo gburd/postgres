@@ -158,6 +158,11 @@ Important current files:
   `PgBackend`, `PgSession`, `PgConnection`, or `PgExecution` fields. Manual
   process/thread init/adopt asymmetries must be centralized or explicitly
   justified.
+- When closing a lifecycle row for a memory-context or compatibility bridge,
+  make the reset order explicit in code and docs. If cleanup only clears
+  pointer slots while existing transaction/main-loop cleanup still owns the
+  pointed-to contexts, say that in `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`
+  rather than implying the broader `TopMemoryContext` split is solved.
 - Backend early fallback adoption is centralized in
   `PgBackendAdoptEarlyState()`. Do not add a backend bucket adoption helper to
   only the process or thread install path; add it to that shared helper or

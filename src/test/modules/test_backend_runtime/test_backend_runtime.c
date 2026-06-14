@@ -16,6 +16,7 @@
 
 #include "access/gin.h"
 #include "access/parallel.h"
+#include "access/session.h"
 #include "access/tableam.h"
 #include "access/toast_compression.h"
 #include "access/xact.h"
@@ -2552,6 +2553,7 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	HASHCTL		hash_ctl;
 	MemoryContext oldcontext;
 	MemoryContext dynamic_library_context;
+	Session    *legacy_session;
 	bool		ok = true;
 
 	MemSet(&fake_session, 0, sizeof(fake_session));
@@ -2617,6 +2619,16 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && fake_session.locale.last_collation_cache_oid == InvalidOid;
 	ok = ok && fake_session.locale.last_collation_cache_locale == NULL;
 
+	legacy_session = PgSessionGetLegacySession(&fake_session);
+	ok = ok && legacy_session != NULL;
+	ok = ok && fake_session.legacy_session == legacy_session;
+	ok = ok && fake_session.legacy_session_context != NULL;
+	ok = ok && GetMemoryChunkContext(legacy_session) ==
+		fake_session.legacy_session_context;
+
+	legacy_session->segment = (dsm_segment *) &fake_session;
+	legacy_session->area = (dsa_area *) &fake_session;
+
 	/*
 	 * Also cover the legacy fallback where a list exists before the dedicated
 	 * session context has been created.
@@ -2633,6 +2645,8 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 
 	ok = ok && fake_session.dynamic_library_context == NULL;
 	ok = ok && fake_session.dynamic_library_inits == NIL;
+	ok = ok && fake_session.legacy_session_context == NULL;
+	ok = ok && fake_session.legacy_session == NULL;
 
 	if (!ok)
 		elog(ERROR, "closed session runtime state was not reset");
@@ -11357,6 +11371,14 @@ test_execution_memory_contexts_are_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && TopTransactionContext == fake_context3;
 		ok = ok && CurTransactionContext == fake_context1;
 		ok = ok && PortalContext == fake_context2;
+
+		PgExecutionResetClosedState(&fake_execution2);
+		ok = ok && CurrentMemoryContext == NULL;
+		ok = ok && ErrorContext == NULL;
+		ok = ok && MessageContext == NULL;
+		ok = ok && TopTransactionContext == NULL;
+		ok = ok && CurTransactionContext == NULL;
+		ok = ok && PortalContext == NULL;
 
 		CurrentPgExecution = saved_execution;
 		CurrentMemoryContext = saved_current_memory_context;
