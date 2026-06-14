@@ -1,0 +1,125 @@
+object	field	owner_lifetime	initializer	early_adoption	reset_destroy	copy_rule	notes
+PgBackend	id	backend identity	PgBackendAssignId()	no early fallback	no reset; logical id lives for backend lifetime	scalar; never copied between live backends	Unique logical backend id.
+PgBackend	runtime	runtime link	InitializePgProcessRuntime()/InitializePgThreadBackendRuntimeState()	no early fallback	no destroy; runtime owns target pointer	pointer link assigned by constructor	Points at process or thread runtime.
+PgBackend	carrier	carrier link	InitializePgProcessRuntime()/InitializePgThreadBackendRuntimeState()	no early fallback	no destroy; carrier owns target pointer	pointer link assigned by constructor	Physical execution vehicle link.
+PgBackend	session	session link	InitializePgProcessRuntime()/InitializePgThreadBackendRuntimeState()	no early fallback	no destroy here; session object owns target	pointer link assigned by constructor	Back-reference to logical session.
+PgBackend	connection	connection link	InitializePgProcessRuntime()/InitializePgThreadBackendRuntimeState()	no early fallback	no destroy here; connection object owns target	pointer link assigned by constructor	Back-reference to frontend connection.
+PgBackend	execution	execution link	InitializePgProcessRuntime()/InitializePgThreadBackendRuntimeState()	no early fallback	no destroy here; execution object owns target	pointer link assigned by constructor	Back-reference to active execution.
+PgBackend	interrupts	backend owned	PgBackendInitializeInterrupts()	no early fallback	backend lifetime; mailbox consumed by PgBackendConsumeInterrupts()	scalar mailbox; no pointer adoption	Logical interrupt mailbox.
+PgBackend	interrupt_latch	backend borrowed link	PgBackendSetInterruptLatch()	no early fallback	not owned; latch lifetime outside bucket	pointer link; do not free here	Interrupt wake target.
+PgBackend	exit_state	backend owned	PgBackendInitializeExitState()	PgBackendAdoptEarlyExitState()	backend exit cleanup; full destroy pending	whole bucket adoption; reset early fallback	Backend-local exit callback state.
+PgBackend	core	backend owned	PgBackendResetCoreState()	PgBackendAdoptEarlyCoreState()	GateE2 pending full destroy	whole bucket adoption	Core backend identity and latch-facing state.
+PgBackend	command	backend owned	PgBackendInitializeCommandState()	PgBackendAdoptEarlyState()	GateE2 pending full destroy	whole bucket adoption	Command and command-counter state.
+PgBackend	log_state	backend owned	PgBackendInitializeLogState()	PgBackendAdoptEarlyState()	GateE2 pending full destroy	whole bucket adoption	Logging scratch state.
+PgBackend	expr_interp	backend owned	PgBackendInitializeExprInterpState()	PgBackendAdoptEarlyState()	GateE2 pending full destroy	whole bucket adoption	Expression interpreter scratch state.
+PgBackend	timeout	backend owned	PgBackendInitializeTimeoutState()	PgBackendAdoptEarlyState()	timeout cleanup path owns active timeout state	whole bucket adoption	Logical timeout state.
+PgBackend	walsender	backend owned	PgBackendInitializeWalSenderState()	PgBackendAdoptEarlyState()	GateE2 pending full destroy	whole bucket adoption	WAL sender backend-local state.
+PgBackend	replication	backend owned	PgBackendInitializeReplicationState()	PgBackendAdoptEarlyState()	GateE2 pending full destroy	whole bucket adoption	Replication backend-local state.
+PgBackend	logical_replication	backend owned	PgBackendInitializeLogicalReplicationState()	PgBackendAdoptEarlyState()	GateE2 pending full destroy	whole bucket adoption	Logical replication worker state.
+PgBackend	xlog	backend owned	PgBackendInitializeXLogState()	PgBackendAdoptEarlyState()	GateE2 pending full destroy	whole bucket adoption	XLog backend-local state.
+PgBackend	recovery	backend owned	PgBackendInitializeRecoveryState()	PgBackendAdoptEarlyState()	GateE2 pending full destroy	whole bucket adoption	Recovery conflict and startup state.
+PgBackend	maintenance_worker	backend owned	PgBackendInitializeMaintenanceWorkerState()	PgBackendAdoptEarlyState()	GateE2 pending full destroy	whole bucket adoption	Maintenance worker state.
+PgBackend	autovacuum	backend owned	PgBackendInitializeAutovacuumState()	PgBackendAdoptEarlyState()	GateE2 pending full destroy	list heads must be reinitialized on adoption	Autovacuum state; empty early database list asserted.
+PgBackend	repack	backend owned	PgBackendInitializeRepackState()	PgBackendAdoptEarlyState()	GateE2 pending full destroy	whole bucket adoption	Repack/check state.
+PgBackend	aio	backend owned	PgBackendInitializeAioState()	PgBackendAdoptEarlyState()	GateE2 pending full destroy	whole bucket adoption	AIO worker state.
+PgBackend	pgstat_pending	backend owned	PgBackendInitializePgStatPendingState()	PgBackendAdoptEarlyState()	pgstat shutdown owns flush/reset	whole bucket adoption	Pending pgstat state.
+PgBackend	activity	backend owned	PgBackendInitializeActivityState()	PgBackendAdoptEarlyState()	pgstat/backend status cleanup owns shared slot detachment	whole bucket adoption	Activity and status-reporting scratch.
+PgBackend	memory_manager	backend owned	PgBackendInitializeMemoryManagerState()	PgBackendAdoptEarlyState()	GateE2 pending TopMemoryContext ownership split	whole bucket adoption	Memory manager bridge state.
+PgBackend	utility	backend owned	PgBackendInitializeUtilityState()	PgBackendAdoptEarlyState()	GateE2 pending full destroy	whole bucket adoption	Utility cache/scratch state.
+PgBackend	parallel	backend owned	PgBackendInitializeParallelState()	PgBackendAdoptEarlyState()	parallel cleanup owns active contexts	whole bucket adoption	Parallel query and pqmq backend-local state.
+PgBackend	instrumentation	backend owned	PgBackendInitializeInstrumentationState()	PgBackendAdoptEarlyState()	GateE2 pending full destroy	whole bucket adoption	Instrumentation scratch state.
+PgBackend	buffers	backend owned	PgBackendInitializeBufferState()	PgBackendAdoptEarlyState()	buffer cleanup owns pins/local refs	whole bucket adoption	Buffer manager backend-local state.
+PgBackend	storage	backend owned	PgBackendInitializeStorageState()	PgBackendAdoptEarlyState()	storage cleanup owns pending storage callbacks	whole bucket adoption	Storage manager backend-local state.
+PgBackend	locks	backend owned	PgBackendInitializeLockState()	PgBackendAdoptEarlyState()	lock/resource-owner cleanup owns held locks	whole bucket adoption	Lock manager backend-local state.
+PgBackend	ipc	backend owned	PgBackendInitializeIPCState()	PgBackendAdoptEarlyState()	IPC exit callbacks own detach paths	whole bucket adoption	IPC and sinval backend-local state.
+PgBackend	transaction	backend owned	PgBackendInitializeTransactionState()	PgBackendAdoptEarlyState()	transaction abort/exit cleanup owns live state	whole bucket adoption	Transaction manager backend-local state.
+PgBackend	pending_interrupts	backend owned	zeroed with backend	PgBackendAdoptEarlyState()	consumed/reset by interrupt application	scalar whole bucket adoption	Pending interrupt flags.
+PgBackend	interrupt_holdoffs	backend owned	zeroed with backend	PgBackendAdoptEarlyState()	reset by backend lifecycle	scalar whole bucket adoption	Holdoff and critical-section counters.
+PgBackend	wait_state	backend owned	PgBackendInitializeWaitState()	PgBackendAdoptEarlyState()	wait end cleanup owns current wait fields	whole bucket adoption	Wait-event backend-local state.
+PgBackend	my_proc	shared-memory borrowed link	PgBackendInitializeProcNumberState()	PgBackendAdoptEarlyState()	shared PGPROC lifecycle owns object	pointer link; do not free	Current PGPROC pointer.
+PgBackend	my_proc_number	backend identity	PgBackendInitializeProcNumberState()	PgBackendAdoptEarlyState()	no destroy; scalar identity	scalar copy on adoption	Current ProcNumber.
+PgBackend	parallel_leader_proc_number	backend identity	PgBackendInitializeProcNumberState()	PgBackendAdoptEarlyState()	no destroy; scalar identity	scalar copy on adoption	Parallel leader ProcNumber.
+PgBackend	my_beentry	shared-memory borrowed link	zeroed with backend	PgBackendAdoptEarlyState()	shared PgBackendStatus lifecycle owns object	pointer link; do not free	Current backend status entry.
+PgBackend	my_bgworker_entry	shared-memory borrowed link	zeroed with backend	PgBackendAdoptEarlyState()	postmaster/bgworker registry owns object	pointer link; do not free	Background worker registration entry.
+PgBackend	aux_process_resource_owner	backend borrowed link	zeroed with backend	PgBackendAdoptEarlyState()	resource owner cleanup owns target	pointer link; target cleanup external	Auxiliary process resource owner.
+PgBackend	dsm_segment_list	backend owned	dlist_init()	no early fallback	DSM shutdown owns entries; head reinitialized	list head never copied	Backend-local DSM segment list.
+PgBackend	backend_type	backend identity	InitializePgProcessRuntime()/InitializePgThreadBackendRuntimeState()	no early fallback	no destroy; scalar identity	scalar assigned by constructor	BackendType classification.
+PgSession	backend	backend link	InitializePgProcessRuntime()/InitializePgThreadBackendRuntimeState()	no early fallback	no destroy here; backend owns target	pointer link assigned by constructor	Back-reference to backend object.
+PgSession	connection	connection link	InitializePgProcessRuntime()/InitializePgThreadBackendRuntimeState()	no early fallback	no destroy here; connection owns target	pointer link assigned by constructor	Back-reference to connection object.
+PgSession	execution	execution link	InitializePgProcessRuntime()/InitializePgThreadBackendRuntimeState()	no early fallback	no destroy here; execution owns target	pointer link assigned by constructor	Back-reference to active execution.
+PgSession	legacy_session	session owned compatibility link	InitializeSession()/PgSessionSetLegacySession()	no early fallback	GateE2 pending legacy Session endpoint	pointer link; allocation remains TopMemoryContext for now	Bridge to access/session.h Session.
+PgSession	loop_state	session owned	PgSessionInitializeLoopState()	PgSessionAdoptEarlyState()	reset on session creation; no separate destroy	scalar whole bucket adoption	PostgresMain loop flags.
+PgSession	database	session owned	zeroed with session	PgSessionAdoptEarlyState()	GateE2 pending full destroy	whole bucket adoption	Current database/user namespace state.
+PgSession	tablespace	session owned	PgSessionInitializeTablespaceState()	PgSessionAdoptEarlyState()	GateE2 pending string/list cleanup classification	whole bucket adoption	Tablespace GUC/session state.
+PgSession	binary_upgrade	session owned	PgSessionInitializeBinaryUpgradeState()	PgSessionAdoptEarlyState()	no dynamic destroy currently	scalar whole bucket adoption	Binary upgrade OID override state.
+PgSession	datetime	session owned	PgSessionInitializeDateTimeState()	PgSessionAdoptEarlyState()	GateE2 pending full destroy	whole bucket adoption	Date/time session state.
+PgSession	parser	session owned	PgSessionInitializeParserState()	PgSessionAdoptEarlyState()	GateE2 pending full destroy	whole bucket adoption	Parser session state.
+PgSession	vacuum	session owned	PgSessionInitializeVacuumState()	PgSessionAdoptEarlyState()	vacuum cleanup owns active allocations	whole bucket adoption	Vacuum session GUC/cache state.
+PgSession	buffer_io	session owned	PgSessionInitializeBufferIOState()	PgSessionAdoptEarlyState()	GateE2 pending full destroy	whole bucket adoption	Buffer I/O session state.
+PgSession	xact_defaults	session owned	PgSessionInitializeXactDefaultState()	PgSessionAdoptEarlyState()	GateE2 pending full destroy	whole bucket adoption	Transaction default GUC state.
+PgSession	lock_wait	session owned	PgSessionInitializeLockWaitState()	PgSessionAdoptEarlyState()	lock wait cleanup owns wait state	whole bucket adoption	Lock wait GUC/state.
+PgSession	logging	session owned	PgSessionInitializeLoggingState()	PgSessionAdoptEarlyState()	GateE2 pending string cleanup classification	whole bucket adoption	Logging GUC state.
+PgSession	misc_guc	session owned	PgSessionInitializeMiscGUCState()	PgSessionAdoptEarlyState()	GateE2 pending full destroy	whole bucket adoption	Miscellaneous session GUC state.
+PgSession	pgstat	session owned	PgSessionInitializePgStatState()	PgSessionAdoptEarlyState()	pgstat shutdown owns session stats refs	whole bucket adoption	Pgstat session state.
+PgSession	query_id	session owned	PgSessionInitializeQueryIdState()	PgSessionAdoptEarlyState()	no dynamic destroy currently	scalar whole bucket adoption	Query ID GUC state.
+PgSession	storage_guc	session owned	PgSessionInitializeStorageGUCState()	PgSessionAdoptEarlyState()	GateE2 pending full destroy	whole bucket adoption	Storage GUC state.
+PgSession	user_guc	session owned	PgSessionInitializeUserGUCState()	PgSessionAdoptEarlyState()	GateE2 pending full destroy	whole bucket adoption	User/session GUC state.
+PgSession	user_identity	session owned	PgSessionInitializeUserIdentityState()	PgSessionAdoptEarlyState()	GateE2 pending full destroy	whole bucket adoption	Current user identity state.
+PgSession	command_guc	session owned	PgSessionInitializeCommandGUCState()	PgSessionAdoptEarlyState()	GateE2 pending full destroy	whole bucket adoption	Command GUC state.
+PgSession	replication_guc	session owned	PgSessionInitializeReplicationGUCState()	PgSessionAdoptEarlyState()	GateE2 pending full destroy	whole bucket adoption	Replication GUC state.
+PgSession	general_guc	session owned	PgSessionInitializeGeneralGUCState()	PgSessionAdoptEarlyState()	GateE2 pending string cleanup classification	whole bucket adoption	General GUC state.
+PgSession	access_wal_guc	session owned	PgSessionInitializeAccessWalGUCState()	PgSessionAdoptEarlyState()	GateE2 pending full destroy	whole bucket adoption	Access/WAL GUC state.
+PgSession	jit_guc	session owned	PgSessionInitializeJitGUCState()	PgSessionAdoptEarlyState()	GateE2 pending full destroy	whole bucket adoption	JIT GUC state.
+PgSession	sort_guc	session owned	PgSessionInitializeSortGUCState()	PgSessionAdoptEarlyState()	GateE2 pending full destroy	whole bucket adoption	Sort GUC state.
+PgSession	text_search	session owned	PgSessionInitializeTextSearchState()	PgSessionAdoptEarlyState()	text search cache cleanup pending	whole bucket adoption	Text search session state.
+PgSession	connection_guc	session owned	PgSessionInitializeConnectionGUCState()	PgSessionAdoptEarlyState()	GateE2 pending string cleanup classification	whole bucket adoption	Connection GUC state.
+PgSession	query_memory	session owned	PgSessionInitializeQueryMemoryState()	PgSessionAdoptEarlyState()	GateE2 pending full destroy	whole bucket adoption	Query memory GUC state.
+PgSession	planner_cost	session owned	PgSessionInitializePlannerCostState()	PgSessionAdoptEarlyState()	no dynamic destroy currently	scalar whole bucket adoption	Planner cost GUC state.
+PgSession	planner_method	session owned	PgSessionInitializePlannerMethodState()	PgSessionAdoptEarlyState()	no dynamic destroy currently	scalar whole bucket adoption	Planner method GUC state.
+PgSession	prepared_statement	session owned	PgSessionInitializePreparedStatementState()	PgSessionAdoptEarlyState()	prepared statement cleanup owns hash/list	whole bucket adoption	Prepared statement state.
+PgSession	on_commit	session owned	PgSessionInitializeOnCommitState()	PgSessionAdoptEarlyState()	transaction cleanup owns on-commit actions	whole bucket adoption	ON COMMIT action state.
+PgSession	sequence	session owned	PgSessionInitializeSequenceState()	PgSessionAdoptEarlyState()	sequence state cleanup pending	whole bucket adoption	Sequence session state.
+PgSession	regex	session owned	PgSessionInitializeRegexState()	PgSessionAdoptEarlyState()	regex cache cleanup pending	whole bucket adoption	Regex session cache.
+PgSession	large_object	session owned	PgSessionInitializeLargeObjectState()	PgSessionAdoptEarlyState()	large object cleanup owns open descriptors	whole bucket adoption	Large object session state.
+PgSession	async	session owned	PgSessionInitializeAsyncState()	PgSessionAdoptEarlyState()	async cleanup owns listen/notify state	whole bucket adoption	LISTEN/NOTIFY session state.
+PgSession	encoding	session owned	PgSessionInitializeEncodingState()	PgSessionAdoptEarlyState()	no dynamic destroy currently	scalar whole bucket adoption	Client/server encoding state.
+PgSession	temp_file	session owned	PgSessionInitializeTempFileState()	PgSessionAdoptEarlyState()	temp file cleanup owns files and counters	whole bucket adoption	Temporary file session state.
+PgSession	random	session owned	PgSessionInitializeRandomState()	PgSessionAdoptEarlyState()	no dynamic destroy currently	scalar whole bucket adoption	Session PRNG state.
+PgSession	optimizer	session owned	PgSessionInitializeOptimizerState()	PgSessionAdoptEarlyState()	optimizer cache cleanup pending	whole bucket adoption	Optimizer session state.
+PgSession	plan_cache	session owned	PgSessionInitializePlanCacheState()	PgSessionAdoptEarlyState()	plancache cleanup owns saved plans	whole bucket adoption	Plan cache session state.
+PgSession	namespace_state	session owned	PgSessionInitializeNamespaceState()	PgSessionAdoptEarlyState()	namespace cleanup owns search path caches	whole bucket adoption	Namespace/search-path state.
+PgSession	locale	session owned	PgSessionInitializeLocaleState()	PgSessionAdoptEarlyState()	collation/locale cache cleanup pending	whole bucket adoption	Locale and collation cache state.
+PgSession	dynamic_library_inits	session owned	zeroed with session	no early fallback	list cleanup pending; library handles runtime-owned	list pointer must not be shallow-copied across sessions	Per-session extension _PG_init replay list.
+PgConnection	backend	backend link	InitializePgProcessRuntime()/InitializePgThreadBackendRuntimeState()	no early fallback	no destroy here; backend owns target	pointer link assigned by constructor	Back-reference to backend object.
+PgConnection	session	session link	InitializePgProcessRuntime()/InitializePgThreadBackendRuntimeState()	no early fallback	no destroy here; session owns target	pointer link assigned by constructor	Back-reference to session object.
+PgConnection	identity	connection owned	zeroed or constructor port assignment	PgConnectionAdoptEarlyState()	PortContext/socket close owns Port cleanup; reset pending for identity pointer	whole bucket adoption with preserved-port rule	Connection Port and cancel key.
+PgConnection	socket_io	connection owned	zeroed with connection	PgConnectionAdoptEarlyState()	PgConnectionResetClosedState(); socket_close frees send buffer first	whole bucket adoption	Send/receive buffer state.
+PgConnection	protocol	connection owned	zeroed with connection	PgConnectionAdoptEarlyState()	PgConnectionResetClosedState(); socket_close frees wait set first	whole bucket adoption	Protocol methods and frontend wait set.
+PgConnection	output	connection owned	PgConnectionInitializeOutputState()	PgConnectionAdoptEarlyState()	no dynamic destroy currently	scalar whole bucket adoption	Output destination/check interval.
+PgConnection	interrupts	connection owned	zeroed with connection	PgConnectionAdoptEarlyState()	reset by connection close/error path	scalar whole bucket adoption	Client connection interrupt flags.
+PgConnection	startup	connection owned	PgConnectionInitializeStartupState()	PgConnectionAdoptEarlyState()	PgConnectionResetClosedState() clears client socket pointer	whole bucket adoption	Backend startup/auth timing state.
+PgConnection	client_connection_info	connection owned	zeroed with connection	PgConnectionAdoptEarlyState()	authentication string lifetime borrowed from PortContext	whole bucket adoption	Authenticated-client info.
+PgConnection	security	connection owned	zeroed with connection	PgConnectionAdoptEarlyState()	PgConnectionResetClosedState() frees GSS buffers and clears borrowed PAM fields	whole bucket adoption	SSL/GSS/PAM connection security state.
+PgExecution	backend	backend link	InitializePgProcessRuntime()/InitializePgThreadBackendRuntimeState()	no early fallback	no destroy here; backend owns target	pointer link assigned by constructor	Back-reference to backend object.
+PgExecution	session	session link	InitializePgProcessRuntime()/InitializePgThreadBackendRuntimeState()	no early fallback	no destroy here; session owns target	pointer link assigned by constructor	Back-reference to session object.
+PgExecution	carrier	carrier link	InitializePgProcessRuntime()/InitializePgThreadBackendRuntimeState()	no early fallback	no destroy here; carrier owns target	pointer link assigned by constructor	Back-reference to current carrier.
+PgExecution	debug	execution owned	zeroed with execution	PgExecutionAdoptEarlyState()	reset with execution boundary pending	scalar whole bucket adoption	Debug query string pointer.
+PgExecution	error	execution owned	zeroed with execution	PgExecutionAdoptEarlyState()	error context cleanup owns transient state	whole bucket adoption	Error reporting state.
+PgExecution	memory_contexts	execution owned	zeroed with execution	PgExecutionAdoptEarlyState()	GateE2 pending memory context ownership split	whole bucket adoption	Current/error/message transaction contexts.
+PgExecution	resource_owners	execution owned	zeroed with execution	PgExecutionAdoptEarlyState()	resource owner cleanup owns target objects	whole bucket adoption	ResourceOwner bridge state.
+PgExecution	spi	execution owned	PgExecutionInitializeSPIState()	PgExecutionAdoptEarlyState()	SPI cleanup owns stack/result state	whole bucket adoption	SPI execution state.
+PgExecution	portal	execution owned	zeroed with execution	PgExecutionAdoptEarlyState()	portal cleanup owns active portal state	whole bucket adoption	Active portal state.
+PgExecution	vacuum	execution owned	PgExecutionInitializeVacuumState()	PgExecutionAdoptEarlyState()	vacuum cleanup owns execution state	whole bucket adoption	Vacuum execution state.
+PgExecution	node_io	execution owned	PgExecutionInitializeNodeIOState()	PgExecutionAdoptEarlyState()	GateE2 pending full destroy	whole bucket adoption	Node I/O execution state.
+PgExecution	basebackup	execution owned	PgExecutionInitializeBaseBackupState()	PgExecutionAdoptEarlyState()	basebackup cleanup owns active state	whole bucket adoption	Base backup execution state.
+PgExecution	analyze	execution owned	PgExecutionInitializeAnalyzeState()	PgExecutionAdoptEarlyState()	ANALYZE cleanup owns active state	whole bucket adoption	Analyze execution state.
+PgExecution	extension	execution owned	PgExecutionInitializeExtensionState()	PgExecutionAdoptEarlyState()	extension DDL cleanup owns active state	whole bucket adoption	Extension command execution state.
+PgExecution	matview	execution owned	PgExecutionInitializeMatViewState()	PgExecutionAdoptEarlyState()	matview cleanup owns active state	whole bucket adoption	Materialized view refresh state.
+PgExecution	snapshot	execution owned	PgExecutionInitializeSnapshotState()	PgExecutionAdoptEarlyState()	snapshot cleanup owns stacks/lists	whole bucket adoption	Snapshot execution state.
+PgExecution	combo_cid	execution owned	PgExecutionInitializeComboCidState()	PgExecutionAdoptEarlyState()	combo CID cleanup owns hash/array	whole bucket adoption	Combo CID state.
+PgExecution	xloginsert	execution owned	PgExecutionInitializeXLogInsertState()	PgExecutionAdoptEarlyState()	XLog insert cleanup owns buffers/scratch	whole bucket adoption	XLog insertion execution state.
+PgExecution	xact	execution owned	PgExecutionInitializeXactState()	PgExecutionAdoptEarlyState()	transaction cleanup owns execution xact state	whole bucket adoption	Transaction execution state.
+PgExecution	guc_error	execution owned	PgExecutionInitializeGUCErrorState()	PgExecutionAdoptEarlyState()	GUC error cleanup owns strings	whole bucket adoption	GUC error reporting state.
+PgExecution	regex	execution owned	PgExecutionInitializeRegexState()	PgExecutionAdoptEarlyState()	regex execution cleanup pending	whole bucket adoption	Execution regex state.
+PgExecution	valgrind	execution owned	PgExecutionInitializeValgrindState()	PgExecutionAdoptEarlyState()	no dynamic destroy currently	scalar whole bucket adoption	Valgrind error-count state.
+PgExecution	snapbuild	execution owned	PgExecutionInitializeSnapBuildState()	PgExecutionAdoptEarlyState()	snapbuild cleanup owns export state	whole bucket adoption	Logical decoding snapbuild state.

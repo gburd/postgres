@@ -138,4 +138,9 @@ check-global-lifetimes:
 	$(PERL) $(top_srcdir)/src/tools/global_lifetime/scan_global_lifetimes.pl \
 		--baseline $(top_srcdir)/src/tools/global_lifetime/global_lifetime_baseline.tsv
 
-.PHONY: dist distcheck docs install-docs world check-world install-world installcheck-world headerscheck cpluspluscheck check-global-lifetimes
+check-runtime-lifecycles:
+	$(PERL) $(top_srcdir)/src/tools/runtime_lifecycle/check_runtime_lifecycles.pl \
+		--header $(top_srcdir)/src/include/utils/backend_runtime.h \
+		--manifest $(top_srcdir)/MULTITHREADED_RUNTIME_LIFECYCLE.tsv
+
+.PHONY: dist distcheck docs install-docs world check-world install-world installcheck-world headerscheck cpluspluscheck check-global-lifetimes check-runtime-lifecycles

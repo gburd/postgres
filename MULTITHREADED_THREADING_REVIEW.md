@@ -875,6 +875,14 @@ retained connection socket/protocol/startup/security buckets and frees the
 malloc-backed GSS buffers. This closes one concrete connection reset/destroy
 rule; the complete destructor tree and `TopMemoryContext` ownership model
 remain blockers.
+Further hardening made the object-lifecycle audit mechanically enforceable:
+`MULTITHREADED_RUNTIME_LIFECYCLE.tsv` now records owner/lifetime, initializer,
+early-adoption, reset/destroy, and copy/adoption rules for every current
+`PgBackend`, `PgSession`, `PgConnection`, and `PgExecution` field, and
+`gmake check-runtime-lifecycles` fails if the manifest misses a field or
+contains a stale field. This does not close the lifecycle blocker by itself;
+it turns the bucket audit into a required validation target and makes the
+remaining pending reset/destroy rows explicit.
 The latest state-migration slice moved wait-event storage into
 `PgBackendWaitState` and the shared-invalidation local transaction ID counter
 into `PgBackendIPCState`. Validation included touched-object builds, a clean

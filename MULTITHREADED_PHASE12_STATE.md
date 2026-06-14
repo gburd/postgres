@@ -159,6 +159,51 @@ Validation for this slice:
 - `gmake -C contrib -j8` passed;
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals.
+
+## Runtime Lifecycle Manifest
+
+The one-hundred-seventy-third Phase 12 slice makes the Gate E2 object-lifecycle
+audit enforceable:
+
+- `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` records the owner/lifetime,
+  initializer, early-adoption behavior, reset/destroy status, and copy/adoption
+  rule for every current field in `PgBackend`, `PgSession`, `PgConnection`,
+  and `PgExecution`;
+- `src/tools/runtime_lifecycle/check_runtime_lifecycles.pl` parses
+  `src/include/utils/backend_runtime.h` and fails if the manifest is missing a
+  runtime-object field, has a duplicate row, or has a stale row;
+- `gmake check-runtime-lifecycles` runs that checker as a top-level validation
+  target;
+- rows marked as `GateE2 pending` are deliberate blockers, not completion
+  claims. They identify buckets that still need concrete reset/destroy or
+  ownership work before Phase 12 can close.
+
+This does not complete the destructor model or `TopMemoryContext` reclamation.
+It makes the lifecycle audit durable so later larger state-migration and
+teardown slices cannot add or rename runtime object fields without updating
+the Gate E2 classification.
+
+Validation for this slice:
+
+- `perl -c src/tools/runtime_lifecycle/check_runtime_lifecycles.pl` passed;
+- direct `perl src/tools/runtime_lifecycle/check_runtime_lifecycles.pl
+  --header src/include/utils/backend_runtime.h --manifest
+  MULTITHREADED_RUNTIME_LIFECYCLE.tsv` passed with 124 fields classified;
+- `gmake check-runtime-lifecycles` passed after regenerating the local
+  configured `GNUmakefile`;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- full `gmake -j8` passed.
+- `gmake -C src/test/modules/test_backend_runtime check` passed, including
+  `test_connection_reset_closed_state()`;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and
+  patched macOS install names;
+- full `gmake -j8` passed;
+- `gmake -C contrib -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals.
 - an incremental full build initially left stale backend objects with old
   `PgThreadBackendRuntimeState` layout assumptions. Threaded TAP then crashed
   during startup before readiness. The recovery was a backend clean plus

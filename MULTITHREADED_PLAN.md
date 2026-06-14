@@ -832,6 +832,9 @@ Gate E2 requires:
 - `gmake check-global-lifetimes` is run as a required gate check with the
   checked baseline, and any new mutable global either has an explicit lifetime
   annotation or a deliberate baseline update;
+- `gmake check-runtime-lifecycles` is run as a required gate check with
+  `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`, so every `PgBackend`, `PgSession`,
+  `PgConnection`, and `PgExecution` field has a checked lifecycle row;
 - every backend/session/connection/execution state bucket has an explicit
   lifecycle classification before Phase 12 closes: initializer, early-adoption
   behavior or proof that early adoption is impossible, reset/destroy behavior,
@@ -1451,6 +1454,15 @@ security buckets and frees the malloc-backed GSS buffers. This closes one
 concrete Gate E2 reset/destroy rule for connection state, but the complete
 backend/session/connection/execution destructor tree and `TopMemoryContext`
 ownership model remain Phase 12 blockers.
+The lifecycle audit is now also mechanically checked. The root
+`MULTITHREADED_RUNTIME_LIFECYCLE.tsv` manifest records owner/lifetime,
+initializer, early-adoption, reset/destroy, and copy/adoption rules for every
+field currently declared in `PgBackend`, `PgSession`, `PgConnection`, and
+`PgExecution`. `gmake check-runtime-lifecycles` parses
+`backend_runtime.h` and fails if a field is missing from the manifest or if
+the manifest contains a stale entry. This makes the Gate E2 bucket-lifecycle
+audit enforceable, while the rows marked as pending still represent work that
+must be closed before Phase 12 can complete.
 
 ## Phase 13: Scheduler-Aware Wait Boundary
 

@@ -33,6 +33,9 @@ the code evolves.
 - [MULTITHREADED_PHASE12_STATE.md](MULTITHREADED_PHASE12_STATE.md) records the
   state-migration bridge work that starts moving TLS/global state toward
   explicit runtime/session objects.
+- [MULTITHREADED_RUNTIME_LIFECYCLE.tsv](MULTITHREADED_RUNTIME_LIFECYCLE.tsv)
+  is the Gate E2 lifecycle manifest for `PgBackend`, `PgSession`,
+  `PgConnection`, and `PgExecution` fields.
 - [MULTITHREADED_THREADING_REVIEW.md](MULTITHREADED_THREADING_REVIEW.md)
   records the critical branch review findings and the Phase 12 exit-gate
   rationale.
@@ -149,8 +152,12 @@ Important current files:
   initializer, early-adoption behavior or proof that early adoption is
   impossible, reset/destroy behavior, owner/lifetime, and copy/adoption rule
   for pointer, list, memory-context, socket, hash-table, and opaque-pointer
-  fields. Manual process/thread init/adopt asymmetries must be centralized or
-  explicitly justified.
+  fields. Keep `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` synchronized with
+  `src/include/utils/backend_runtime.h`, and run
+  `gmake check-runtime-lifecycles` after adding, renaming, or removing
+  `PgBackend`, `PgSession`, `PgConnection`, or `PgExecution` fields. Manual
+  process/thread init/adopt asymmetries must be centralized or explicitly
+  justified.
 - Backend early fallback adoption is centralized in
   `PgBackendAdoptEarlyState()`. Do not add a backend bucket adoption helper to
   only the process or thread install path; add it to that shared helper or
