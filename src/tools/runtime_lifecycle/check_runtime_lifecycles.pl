@@ -35,6 +35,8 @@ my @bucket_defs = (
 	'src/backend/utils/init/backend_runtime_session_buckets.def',
 	'src/backend/utils/init/backend_runtime_connection_buckets.def',
 	'src/backend/utils/init/backend_runtime_execution_buckets.def');
+my @reset_defs = (
+	'src/backend/utils/init/backend_runtime_session_reset_buckets.def');
 my $help = 0;
 
 GetOptions(
@@ -42,6 +44,7 @@ GetOptions(
 	'manifest=s' => \$manifest,
 	'source=s' => \@sources,
 	'bucket-def=s' => \@bucket_defs,
+	'reset-def=s' => \@reset_defs,
 	'help' => \$help,
 ) or usage(2);
 
@@ -52,10 +55,12 @@ my @fields = read_runtime_fields($header);
 my %header_fields = map { field_key($_) => $_ } @fields;
 my @manifest_rows = read_manifest($manifest);
 my @bucket_rows = read_bucket_defs(@bucket_defs);
+my @reset_rows = read_reset_defs(@reset_defs);
 my $source_text = read_sources(@sources);
 my %source_functions = defined_functions($source_text);
 my %manifest_fields;
 my %bucket_fields;
+my %reset_fields;
 
 foreach my $row (@manifest_rows)
 {
@@ -143,6 +148,41 @@ foreach my $field (@fields)
 	  unless exists $bucket_fields{$key};
 }
 
+foreach my $row (@reset_rows)
+{
+	my $key = field_key($row);
+
+	if (exists $reset_fields{$key})
+	{
+		push @errors,
+		  "$row->{file}:$row->{line}: duplicate reset definition for $key";
+		next;
+	}
+
+	$reset_fields{$key} = $row;
+
+	if (!exists $header_fields{$key})
+	{
+		push @errors,
+		  "$row->{file}:$row->{line}: stale reset definition for $key";
+	}
+
+	if (!exists $manifest_fields{$key})
+	{
+		push @errors,
+		  "$row->{file}:$row->{line}: reset definition for $key has no lifecycle manifest row";
+	}
+
+	foreach my $function (runtime_function_refs($row->{reset_destroy}))
+	{
+		if (!exists $source_functions{$function})
+		{
+			push @errors,
+			  "$row->{file}:$row->{line}: reset_destroy references $function(), but no definition was found in the checked runtime sources";
+		}
+	}
+}
+
 push @errors, require_function_calls(
 	'InitializePgProcessRuntime',
 	[qw(PgBackendInitializeRuntimeObject
@@ -175,8 +215,8 @@ if (@errors)
 	exit 1;
 }
 
-printf "runtime lifecycle check passed: %d fields classified, %d bucket definitions checked\n",
-  scalar @fields, scalar @bucket_rows;
+printf "runtime lifecycle check passed: %d fields classified, %d bucket definitions checked, %d reset definitions checked\n",
+  scalar @fields, scalar @bucket_rows, scalar @reset_rows;
 exit 0;
 
 sub usage
@@ -191,6 +231,7 @@ Options:
   --manifest FILE   lifecycle manifest path
   --source FILE     runtime source path to scan for lifecycle functions
   --bucket-def FILE root-object bucket definition file to validate
+  --reset-def FILE  ordered reset definition file to validate
   --help            show this help
 USAGE
 
@@ -333,6 +374,50 @@ sub read_bucket_defs
 				initializer => $args[1],
 				early_adoption => $args[2],
 				reset_destroy => $args[3],
+				file => $file,
+				line => $.,
+			  };
+		}
+	}
+
+	return @rows;
+}
+
+sub read_reset_defs
+{
+	my (@files) = @_;
+	my @rows;
+
+	foreach my $file (@files)
+	{
+		open my $fh, '<', $file or die "could not open $file: $!";
+
+		while (my $line = <$fh>)
+		{
+			chomp $line;
+			next if $line =~ /^\s*$/;
+			next if $line =~ /^\s*(?:\/\*|\*)/;
+
+			if ($line !~ /^\s*PG_SESSION_RESET_BUCKET\s*\((.*)\)\s*$/)
+			{
+				push @errors,
+				  "$file:$.: expected PG_SESSION_RESET_BUCKET(...) row";
+				next;
+			}
+
+			my @args = split_macro_args($1);
+			if (@args != 2)
+			{
+				push @errors,
+				  "$file:$.: expected 2 reset definition arguments, got " . scalar(@args);
+				next;
+			}
+
+			push @rows,
+			  {
+				object => 'PgSession',
+				field => $args[0],
+				reset_destroy => $args[1],
 				file => $file,
 				line => $.,
 			  };

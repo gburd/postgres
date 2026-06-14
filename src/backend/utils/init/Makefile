@@ -19,4 +19,10 @@ OBJS = \
 	postinit.o \
 	usercontext.o
 
+backend_runtime.o: backend_runtime_backend_buckets.def \
+	backend_runtime_connection_buckets.def \
+	backend_runtime_execution_buckets.def \
+	backend_runtime_session_buckets.def \
+	backend_runtime_session_reset_buckets.def
+
 include $(top_srcdir)/src/backend/common.mk

@@ -10444,10 +10444,11 @@ Lifecycle bucket definition framework slice completed:
 - `backend_runtime.c` includes the rows for constructor setup and early
   fallback adoption. Backend, connection, and execution closed-reset
   orchestration includes the same rows directly;
-- session closed reset remains a handwritten semantic cleanup path for now
-  because its teardown order differs from early-adoption order. Close this
-  remaining reset asymmetry with an order-aware reset definition, not by
-  blindly reusing the adoption order.
+- session closed reset uses the separate ordered
+  `backend_runtime_session_reset_buckets.def`, because its teardown order
+  differs from early-adoption order. The reset file is checked by
+  `check_runtime_lifecycles.pl`; semantic cleanup remains handwritten in named
+  helper functions.
 
 First refactor slice completed:
 

@@ -242,9 +242,11 @@ Important current files:
   one bucket-definition row for every `PgBackend`, `PgSession`, `PgConnection`,
   and `PgExecution` field. Backend, connection, and execution constructor,
   adoption, and closed-reset orchestration include those rows directly.
-  Session constructor/adoption includes the rows; session closed reset remains
-  handwritten for now because its teardown order is intentionally different
-  from early-adoption order.
+  Session constructor/adoption includes the rows. Session closed reset uses
+  the separate ordered `backend_runtime_session_reset_buckets.def` because its
+  teardown order is intentionally different from early-adoption order; keep
+  semantic cleanup in handwritten helper functions and add ordered reset rows
+  for new non-noop session reset buckets.
 - Do not attempt thread launch until the thread-safety floor is in place:
   backend-local globals must not be shared plain process globals, backend exit
   must not terminate the whole runtime, and timeout/interrupt delivery must be

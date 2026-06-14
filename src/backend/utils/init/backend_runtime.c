@@ -4554,15 +4554,10 @@ PgSessionGetDynamicLibraryMemoryContext(PgSession *session)
 	return session->dynamic_library_context;
 }
 
-void
-PgSessionResetClosedState(PgSession *session)
+static void
+PgSessionResetTcopClosedState(PgSession *session)
 {
-	PgSession  *saved_session;
-
-	if (session == NULL)
-		return;
-
-	saved_session = CurrentPgSession;
+	Assert(session != NULL);
 
 	if (session->tcop.unnamed_stmt_psrc != NULL)
 	{
@@ -4578,9 +4573,18 @@ PgSessionResetClosedState(PgSession *session)
 		MemSet(&session->tcop.row_description_buf, 0,
 			   sizeof(session->tcop.row_description_buf));
 	}
+}
+
+static void
+PgSessionResetPreparedStatementClosedState(PgSession *session)
+{
+	PgSession  *saved_session;
+
+	Assert(session != NULL);
 
 	if (session->prepared_statement.prepared_queries != NULL)
 	{
+		saved_session = CurrentPgSession;
 		CurrentPgSession = session;
 		PG_TRY();
 		{
@@ -4596,16 +4600,40 @@ PgSessionResetClosedState(PgSession *session)
 		hash_destroy(session->prepared_statement.prepared_queries);
 		session->prepared_statement.prepared_queries = NULL;
 	}
+}
+
+static void
+PgSessionResetOnCommitClosedState(PgSession *session)
+{
+	Assert(session != NULL);
 
 	list_free_deep(session->on_commit.on_commits);
 	session->on_commit.on_commits = NIL;
+}
 
+static void
+PgSessionResetXactCallbackClosedState(PgSession *session)
+{
+	PgSession  *saved_session;
+
+	Assert(session != NULL);
+
+	saved_session = CurrentPgSession;
 	CurrentPgSession = session;
 	ResetXactCallbackState();
 	CurrentPgSession = saved_session;
+}
+
+static void
+PgSessionResetBackupClosedState(PgSession *session)
+{
+	PgSession  *saved_session;
+
+	Assert(session != NULL);
 
 	if (session->backup.session_backup_state != SESSION_BACKUP_NONE)
 	{
+		saved_session = CurrentPgSession;
 		CurrentPgSession = session;
 		PG_TRY();
 		{
@@ -4627,6 +4655,12 @@ PgSessionResetClosedState(PgSession *session)
 	session->backup.backup_state = NULL;
 	session->backup.tablespace_map = NULL;
 	session->backup.session_backup_state = SESSION_BACKUP_NONE;
+}
+
+static void
+PgSessionResetAsyncClosedState(PgSession *session)
+{
+	Assert(session != NULL);
 
 	if (session->async.local_channel_table != NULL)
 	{
@@ -4634,6 +4668,12 @@ PgSessionResetClosedState(PgSession *session)
 		session->async.local_channel_table = NULL;
 	}
 	session->async.registered_listener = false;
+}
+
+static void
+PgSessionResetFunctionManagerClosedState(PgSession *session)
+{
+	Assert(session != NULL);
 
 	if (session->function_manager.c_func_hash != NULL)
 	{
@@ -4645,12 +4685,25 @@ PgSessionResetClosedState(PgSession *session)
 		DestroyCachedFunctionHash(session->function_manager.cached_function_hash);
 		session->function_manager.cached_function_hash = NULL;
 	}
+}
+
+static void
+PgSessionResetExtensionModuleClosedState(PgSession *session)
+{
+	Assert(session != NULL);
+
 	foreach_ptr(PgSessionResetCallbackItem, item,
 				session->extension_modules.reset_callbacks)
 		item->callback(item->arg);
 	list_free_deep(session->extension_modules.reset_callbacks);
 	session->extension_modules.reset_callbacks = NIL;
 	session->extension_modules.plpgsql_state = NULL;
+}
+
+static void
+PgSessionResetCatalogLookupClosedState(PgSession *session)
+{
+	Assert(session != NULL);
 
 	if (session->catalog_lookup.attopt_cache_hash != NULL)
 	{
@@ -4727,7 +4780,20 @@ PgSessionResetClosedState(PgSession *session)
 	session->catalog_lookup.typcache_record_cache_array_len = 0;
 	session->catalog_lookup.typcache_next_record_typmod = 0;
 	session->catalog_lookup.typcache_tupledesc_id_counter = (uint64) 1;
+}
+
+static void
+PgSessionResetInvalidationCallbackClosedState(PgSession *session)
+{
+	Assert(session != NULL);
+
 	PgSessionInitializeInvalidationCallbackState(&session->invalidation_callbacks);
+}
+
+static void
+PgSessionResetRIGlobalsClosedState(PgSession *session)
+{
+	Assert(session != NULL);
 
 	if (session->ri_globals.constraint_cache != NULL)
 	{
@@ -4748,8 +4814,20 @@ PgSessionResetClosedState(PgSession *session)
 	session->ri_globals.fastpath_xact_callback_registered = false;
 	session->ri_globals.debug_discard_caches_initialized = true;
 	session->ri_globals.debug_discard_caches_value = DEFAULT_DEBUG_DISCARD_CACHES;
+}
+
+static void
+PgSessionResetRelMapClosedState(PgSession *session)
+{
+	Assert(session != NULL);
 
 	PgSessionInitializeRelMapState(&session->relmap);
+}
+
+static void
+PgSessionResetGUCClosedState(PgSession *session)
+{
+	Assert(session != NULL);
 
 	if (session->guc.memory_context != NULL)
 	{
@@ -4757,6 +4835,12 @@ PgSessionResetClosedState(PgSession *session)
 		session->guc.memory_context = NULL;
 	}
 	PgSessionInitializeGUCState(&session->guc);
+}
+
+static void
+PgSessionResetLogicalReplicationClosedState(PgSession *session)
+{
+	Assert(session != NULL);
 
 	if (session->logical_replication.logical_rep_relmap_context != NULL)
 	{
@@ -4789,6 +4873,12 @@ PgSessionResetClosedState(PgSession *session)
 	}
 	session->logical_replication.pgoutput_publications_valid = false;
 	session->logical_replication.syncing_relations_state = 0;
+}
+
+static void
+PgSessionResetUserIdentityClosedState(PgSession *session)
+{
+	Assert(session != NULL);
 
 	for (int i = 0; i < lengthof(session->user_identity.cached_roles); i++)
 	{
@@ -4797,6 +4887,12 @@ PgSessionResetClosedState(PgSession *session)
 		session->user_identity.cached_roles[i] = NIL;
 	}
 	session->user_identity.cached_db_hash = 0;
+}
+
+static void
+PgSessionResetTextSearchClosedState(PgSession *session)
+{
+	Assert(session != NULL);
 
 	if (session->text_search.parser_cache_hash != NULL)
 	{
@@ -4847,12 +4943,24 @@ PgSessionResetClosedState(PgSession *session)
 	}
 	session->text_search.last_used_config = NULL;
 	session->text_search.current_config_cache = InvalidOid;
+}
+
+static void
+PgSessionResetDatabaseClosedState(PgSession *session)
+{
+	Assert(session != NULL);
 
 	if (session->database.database_path != NULL)
 	{
 		pfree(session->database.database_path);
 		session->database.database_path = NULL;
 	}
+}
+
+static void
+PgSessionResetDynamicLibraryClosedState(PgSession *session)
+{
+	Assert(session != NULL);
 
 	if (session->dynamic_library_context != NULL)
 	{
@@ -4863,12 +4971,24 @@ PgSessionResetClosedState(PgSession *session)
 		list_free(session->dynamic_library_inits);
 
 	session->dynamic_library_inits = NIL;
+}
+
+static void
+PgSessionResetParserClosedState(PgSession *session)
+{
+	Assert(session != NULL);
 
 	if (session->parser.operator_lookup_cache != NULL)
 	{
 		hash_destroy(session->parser.operator_lookup_cache);
 		session->parser.operator_lookup_cache = NULL;
 	}
+}
+
+static void
+PgSessionResetSequenceClosedState(PgSession *session)
+{
+	Assert(session != NULL);
 
 	if (session->sequence.seqhashtab != NULL)
 	{
@@ -4876,6 +4996,12 @@ PgSessionResetClosedState(PgSession *session)
 		session->sequence.seqhashtab = NULL;
 	}
 	session->sequence.last_used_seq = NULL;
+}
+
+static void
+PgSessionResetRegexClosedState(PgSession *session)
+{
+	Assert(session != NULL);
 
 	if (session->regex.regexp_cache_context != NULL)
 	{
@@ -4884,6 +5010,12 @@ PgSessionResetClosedState(PgSession *session)
 	}
 	pg_free_regex_ctype_cache_list(session->regex.ctype_cache_list);
 	PgSessionInitializeRegexState(&session->regex);
+}
+
+static void
+PgSessionResetPortalManagerClosedState(PgSession *session)
+{
+	Assert(session != NULL);
 
 	if (session->portal_manager.top_portal_context != NULL)
 	{
@@ -4891,6 +5023,12 @@ PgSessionResetClosedState(PgSession *session)
 		session->portal_manager.top_portal_context = NULL;
 	}
 	PgSessionInitializePortalManagerState(&session->portal_manager);
+}
+
+static void
+PgSessionResetOptimizerClosedState(PgSession *session)
+{
+	Assert(session != NULL);
 
 	if (session->optimizer.planner_extension_names != NULL)
 	{
@@ -4904,6 +5042,12 @@ PgSessionResetClosedState(PgSession *session)
 		hash_destroy(session->optimizer.opr_proof_cache_hash);
 		session->optimizer.opr_proof_cache_hash = NULL;
 	}
+}
+
+static void
+PgSessionResetLocaleClosedState(PgSession *session)
+{
+	Assert(session != NULL);
 
 	if (session->locale.collation_cache_context != NULL)
 	{
@@ -4918,6 +5062,12 @@ PgSessionResetClosedState(PgSession *session)
 		PgCloseIcuConverter(session->locale.icu_converter);
 		session->locale.icu_converter = NULL;
 	}
+}
+
+static void
+PgSessionResetLegacySessionClosedState(PgSession *session)
+{
+	Assert(session != NULL);
 
 	if (session->legacy_session_context != NULL)
 	{
@@ -4928,6 +5078,18 @@ PgSessionResetClosedState(PgSession *session)
 		session->legacy_session_context = NULL;
 		session->legacy_session = NULL;
 	}
+}
+
+void
+PgSessionResetClosedState(PgSession *session)
+{
+	if (session == NULL)
+		return;
+
+#define PG_SESSION_RESET_BUCKET(field, reset) \
+	do { reset; } while (0);
+#include "backend_runtime_session_reset_buckets.def"
+#undef PG_SESSION_RESET_BUCKET
 }
 
 static void
