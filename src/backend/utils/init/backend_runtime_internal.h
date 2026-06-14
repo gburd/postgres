@@ -21,10 +21,24 @@
 
 extern PgCarrier *PgCurrentCarrierState(void);
 extern PgRuntimeServerGUCState *PgCurrentRuntimeServerGUCState(void);
+extern PgSessionTcopState *PgCurrentSessionTcopState(void);
+extern PgSessionDatabaseState *PgCurrentSessionDatabaseState(void);
+extern PgSessionTablespaceState *PgCurrentSessionTablespaceState(void);
+extern PgSessionBinaryUpgradeState *PgCurrentSessionBinaryUpgradeState(void);
 extern PgSessionCatalogLookupState *PgCurrentSessionCatalogLookupState(void);
+extern PgSessionTextSearchState *PgCurrentSessionTextSearchState(void);
 extern PgSessionConnectionGUCState *PgCurrentSessionConnectionGUCState(void);
 extern PgSessionDateTimeState *PgCurrentSessionDateTimeState(void);
 extern PgSessionEncodingState *PgCurrentSessionEncodingState(void);
+extern PgSessionNamespaceState *PgCurrentSessionNamespaceState(void);
+extern PgSessionLocaleState *PgCurrentSessionLocaleState(void);
+extern PgSessionExtensionModuleState *PgCurrentSessionExtensionModuleState(void);
+extern PgSessionInvalidationCallbackState *PgCurrentSessionInvalidationCallbackState(void);
+extern PgSessionRIGlobalsState *PgCurrentSessionRIGlobalsState(void);
+extern PgSessionRelMapState *PgCurrentSessionRelMapState(void);
+extern PgSessionPreparedStatementState *PgCurrentSessionPreparedStatementState(void);
+extern PgSessionOnCommitState *PgCurrentSessionOnCommitState(void);
+extern PgSessionSequenceState *PgCurrentSessionSequenceState(void);
 extern PgSessionFunctionManagerState *PgCurrentSessionFunctionManagerState(void);
 extern PgSessionGeneralGUCState *PgCurrentSessionGeneralGUCState(void);
 extern PgSessionQueryIdState *PgCurrentSessionQueryIdState(void);

@@ -892,7 +892,10 @@ Gate E2 requires:
   declarative rule columns for common copied-scalar, zero-reset, whole-bucket
   copy/adopt, and destructor-call cases so new buckets do not require updating
   several handwritten lists by memory. Keep nontrivial destructor and ordering
-  semantics handwritten and owner-adjacent;
+  semantics handwritten and owner-adjacent. If a later Phase 12 migration
+  starts repeating lifecycle boilerplate, pause the migration long enough to
+  extend the checked helper/definition mechanism instead of adding another
+  manual call-list pattern;
 - the Phase 12 runtime and test scaffolding is refactored before additional
   Gate E2 state migration or Phase 13 scheduler-aware wait work begins.
   `src/backend/utils/init/backend_runtime.c` must remain the orchestration
@@ -939,7 +942,11 @@ validation. A follow-up GUC split moved the remaining server/runtime,
 connection, core registry, miscellaneous, threaded-mutex-depth, and GUC
 error-reporting accessors into `backend_runtime_guc.c`, leaving
 `backend_runtime.c` with only fallback-aware current-bucket selectors for that
-owner.
+owner. A further session split moved broad session-owned compatibility shims
+for namespace, locale, database, tablespace, binary-upgrade, text-search, tcop,
+extension, invalidation, RI, relmap, prepared statements, on-commit actions,
+and sequences into `backend_runtime_session.c`, while keeping current-bucket
+selection centralized.
 
 Current Gate E2 progress: `gmake check-global-lifetimes` is now a required
 target, and postmaster signal/wakeup routing no longer dereferences a

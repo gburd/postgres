@@ -19,6 +19,7 @@ my $header = 'src/include/utils/backend_runtime.h';
 my $manifest = 'MULTITHREADED_RUNTIME_LIFECYCLE.tsv';
 my @sources = (
 	'src/backend/utils/init/backend_runtime.c',
+	'src/backend/utils/init/backend_runtime_session.c',
 	'src/backend/utils/cache/backend_runtime_cache.c',
 	'src/backend/utils/activity/backend_runtime_pgstat.c',
 	'src/backend/utils/misc/backend_runtime_guc.c',

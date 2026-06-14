@@ -10418,6 +10418,10 @@ Acceptance criteria for the refactor slice:
   copied-scalar, zero-reset, whole-bucket copy/adopt, and destructor-call
   cases. The goal is to remove repetitive manual lifecycle boilerplate while
   keeping exceptional ordering and semantic cleanup explicit;
+- treat repeated lifecycle boilerplate as a signal to extend the checked
+  lifecycle framework before continuing. Future agents should prefer adding a
+  helper macro, `.def` bucket row, or declarative lifecycle rule over carrying
+  another manual constructor/adoption/reset list through Phase 12;
 - keep semantic cleanup/destructor functions handwritten and close to the
   owning subsystem. The generated or macro-driven layer should cover only
   repetitive coverage and call-list mechanics;
@@ -10588,3 +10592,32 @@ Validation for this GUC refactor slice:
   after the full build finished. The first concurrent run failed in `src/port`
   archive creation because it raced with the full build, not because of this
   source change. TAP remains disabled in this configured build.
+
+Fifth refactor slice completed:
+
+- broad session-owned compatibility accessors moved from
+  `src/backend/utils/init/backend_runtime.c` to the new fork-owned
+  `src/backend/utils/init/backend_runtime_session.c`;
+- the moved shims cover namespace, locale, database identity, tablespace,
+  binary-upgrade, date/time, text-search, tcop, PL/pgSQL session state,
+  invalidation callbacks, RI caches, relation maps, prepared statements,
+  on-commit actions, and sequences;
+- `backend_runtime.c` keeps the fallback-aware current-bucket selectors for
+  those session buckets, and `backend_runtime_internal.h` exposes only those
+  private selectors to the split owner file;
+- `Makefile`, `meson.build`, `GNUmakefile.in`, and
+  `check_runtime_lifecycles.pl` now include `backend_runtime_session.c`, so
+  owner-file migration remains covered by the lifecycle checker.
+
+Validation for this session refactor slice:
+
+- forced touched-object rebuild passed for `backend_runtime_session.o` and
+  `backend_runtime.o` after the installed header prototypes were added;
+- `perl -c src/tools/runtime_lifecycle/check_runtime_lifecycles.pl` passed;
+- `gmake check-runtime-lifecycles` passed with 149 runtime fields classified,
+  149 bucket definitions checked, and 25 reset definitions checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- full `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed. TAP remains
+  disabled in this configured build.

@@ -892,11 +892,12 @@ static void PgExecutionAdoptEarlyValgrindState(PgExecution *execution);
 static void PgExecutionInitializeSnapBuildState(PgExecutionSnapBuildState *snapbuild);
 static void PgExecutionAdoptEarlySnapBuildState(PgExecution *execution);
 static PgBackendCoreState *PgCurrentCoreState(void);
-static PgSessionDatabaseState *PgCurrentSessionDatabaseState(void);
-static PgSessionTablespaceState *PgCurrentSessionTablespaceState(void);
-static PgSessionBinaryUpgradeState *PgCurrentSessionBinaryUpgradeState(void);
+PgSessionTcopState *PgCurrentSessionTcopState(void);
+PgSessionDatabaseState *PgCurrentSessionDatabaseState(void);
+PgSessionTablespaceState *PgCurrentSessionTablespaceState(void);
+PgSessionBinaryUpgradeState *PgCurrentSessionBinaryUpgradeState(void);
 PgSessionDateTimeState *PgCurrentSessionDateTimeState(void);
-static PgSessionTextSearchState *PgCurrentSessionTextSearchState(void);
+PgSessionTextSearchState *PgCurrentSessionTextSearchState(void);
 PgSessionConnectionGUCState *PgCurrentSessionConnectionGUCState(void);
 static PgSessionParserState *PgCurrentSessionParserState(void);
 static PgSessionVacuumState *PgCurrentSessionVacuumState(void);
@@ -924,14 +925,14 @@ PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
 PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
 PgSessionPlannerMethodState *PgCurrentSessionPlannerMethodState(void);
 PgSessionFunctionManagerState *PgCurrentSessionFunctionManagerState(void);
-static PgSessionExtensionModuleState *PgCurrentSessionExtensionModuleState(void);
+PgSessionExtensionModuleState *PgCurrentSessionExtensionModuleState(void);
 PgSessionCatalogLookupState *PgCurrentSessionCatalogLookupState(void);
-static PgSessionInvalidationCallbackState *PgCurrentSessionInvalidationCallbackState(void);
-static PgSessionRIGlobalsState *PgCurrentSessionRIGlobalsState(void);
-static PgSessionRelMapState *PgCurrentSessionRelMapState(void);
-static PgSessionPreparedStatementState *PgCurrentSessionPreparedStatementState(void);
-static PgSessionOnCommitState *PgCurrentSessionOnCommitState(void);
-static PgSessionSequenceState *PgCurrentSessionSequenceState(void);
+PgSessionInvalidationCallbackState *PgCurrentSessionInvalidationCallbackState(void);
+PgSessionRIGlobalsState *PgCurrentSessionRIGlobalsState(void);
+PgSessionRelMapState *PgCurrentSessionRelMapState(void);
+PgSessionPreparedStatementState *PgCurrentSessionPreparedStatementState(void);
+PgSessionOnCommitState *PgCurrentSessionOnCommitState(void);
+PgSessionSequenceState *PgCurrentSessionSequenceState(void);
 static PgSessionRegexState *PgCurrentSessionRegexState(void);
 static PgSessionPortalManagerState *PgCurrentSessionPortalManagerState(void);
 static PgSessionLargeObjectState *PgCurrentSessionLargeObjectState(void);
@@ -941,8 +942,8 @@ static PgSessionTempFileState *PgCurrentSessionTempFileState(void);
 static PgSessionRandomState *PgCurrentSessionRandomState(void);
 static PgSessionOptimizerState *PgCurrentSessionOptimizerState(void);
 static PgSessionPlanCacheState *PgCurrentSessionPlanCacheState(void);
-static PgSessionNamespaceState *PgCurrentSessionNamespaceState(void);
-static PgSessionLocaleState *PgCurrentSessionLocaleState(void);
+PgSessionNamespaceState *PgCurrentSessionNamespaceState(void);
+PgSessionLocaleState *PgCurrentSessionLocaleState(void);
 static PgExecutionErrorState *PgCurrentExecutionErrorState(void);
 static PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
 static PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
@@ -5011,7 +5012,7 @@ PgCurrentLegacySessionRef(void)
 	return &CurrentPgSession->legacy_session;
 }
 
-static PgSessionDatabaseState *
+PgSessionDatabaseState *
 PgCurrentSessionDatabaseState(void)
 {
 	if (CurrentPgSession == NULL)
@@ -5036,7 +5037,7 @@ PgCurrentRuntimeServerGUCState(void)
 	return server_guc;
 }
 
-static PgSessionTablespaceState *
+PgSessionTablespaceState *
 PgCurrentSessionTablespaceState(void)
 {
 	PgSessionTablespaceState *tablespace;
@@ -5052,7 +5053,7 @@ PgCurrentSessionTablespaceState(void)
 	return tablespace;
 }
 
-static PgSessionBinaryUpgradeState *
+PgSessionBinaryUpgradeState *
 PgCurrentSessionBinaryUpgradeState(void)
 {
 	PgSessionBinaryUpgradeState *binary_upgrade;
@@ -5084,7 +5085,7 @@ PgCurrentSessionDateTimeState(void)
 	return datetime;
 }
 
-static PgSessionTextSearchState *
+PgSessionTextSearchState *
 PgCurrentSessionTextSearchState(void)
 {
 	PgSessionTextSearchState *text_search;
@@ -5509,7 +5510,7 @@ PgCurrentSessionFunctionManagerState(void)
 	return &CurrentPgSession->function_manager;
 }
 
-static PgSessionExtensionModuleState *
+PgSessionExtensionModuleState *
 PgCurrentSessionExtensionModuleState(void)
 {
 	if (CurrentPgSession == NULL)
@@ -5527,7 +5528,7 @@ PgCurrentSessionCatalogLookupState(void)
 	return &CurrentPgSession->catalog_lookup;
 }
 
-static PgSessionInvalidationCallbackState *
+PgSessionInvalidationCallbackState *
 PgCurrentSessionInvalidationCallbackState(void)
 {
 	if (CurrentPgSession == NULL)
@@ -5536,7 +5537,7 @@ PgCurrentSessionInvalidationCallbackState(void)
 	return &CurrentPgSession->invalidation_callbacks;
 }
 
-static PgSessionRIGlobalsState *
+PgSessionRIGlobalsState *
 PgCurrentSessionRIGlobalsState(void)
 {
 	PgSessionRIGlobalsState *ri_globals;
@@ -5552,7 +5553,7 @@ PgCurrentSessionRIGlobalsState(void)
 	return ri_globals;
 }
 
-static PgSessionRelMapState *
+PgSessionRelMapState *
 PgCurrentSessionRelMapState(void)
 {
 	if (CurrentPgSession == NULL)
@@ -5561,7 +5562,7 @@ PgCurrentSessionRelMapState(void)
 	return &CurrentPgSession->relmap;
 }
 
-static PgSessionPreparedStatementState *
+PgSessionPreparedStatementState *
 PgCurrentSessionPreparedStatementState(void)
 {
 	if (CurrentPgSession == NULL)
@@ -5570,7 +5571,7 @@ PgCurrentSessionPreparedStatementState(void)
 	return &CurrentPgSession->prepared_statement;
 }
 
-static PgSessionOnCommitState *
+PgSessionOnCommitState *
 PgCurrentSessionOnCommitState(void)
 {
 	if (CurrentPgSession == NULL)
@@ -5579,7 +5580,7 @@ PgCurrentSessionOnCommitState(void)
 	return &CurrentPgSession->on_commit;
 }
 
-static PgSessionSequenceState *
+PgSessionSequenceState *
 PgCurrentSessionSequenceState(void)
 {
 	if (CurrentPgSession == NULL)
@@ -5695,7 +5696,16 @@ PgCurrentSessionPlanCacheState(void)
 	return plan_cache;
 }
 
-static PgSessionNamespaceState *
+PgSessionTcopState *
+PgCurrentSessionTcopState(void)
+{
+	if (CurrentPgSession == NULL)
+		return &early_session_tcop;
+
+	return &CurrentPgSession->tcop;
+}
+
+PgSessionNamespaceState *
 PgCurrentSessionNamespaceState(void)
 {
 	PgSessionNamespaceState *namespace_state;
@@ -5711,19 +5721,7 @@ PgCurrentSessionNamespaceState(void)
 	return namespace_state;
 }
 
-PgSessionNamespaceState *
-PgCurrentNamespaceState(void)
-{
-	return PgCurrentSessionNamespaceState();
-}
-
-char **
-PgCurrentNamespaceSearchPathRef(void)
-{
-	return &PgCurrentSessionNamespaceState()->namespace_search_path_value;
-}
-
-static PgSessionLocaleState *
+PgSessionLocaleState *
 PgCurrentSessionLocaleState(void)
 {
 	PgSessionLocaleState *locale;
@@ -5737,430 +5735,6 @@ PgCurrentSessionLocaleState(void)
 		PgSessionInitializeLocaleState(locale);
 
 	return locale;
-}
-
-PgSessionLocaleState *
-PgCurrentLocaleState(void)
-{
-	return PgCurrentSessionLocaleState();
-}
-
-void **
-PgCurrentIcuConverterRef(void)
-{
-	return &PgCurrentSessionLocaleState()->icu_converter;
-}
-
-char **
-PgCurrentLocaleMessagesRef(void)
-{
-	return &PgCurrentSessionLocaleState()->locale_messages_value;
-}
-
-char **
-PgCurrentLocaleMonetaryRef(void)
-{
-	return &PgCurrentSessionLocaleState()->locale_monetary_value;
-}
-
-char **
-PgCurrentLocaleNumericRef(void)
-{
-	return &PgCurrentSessionLocaleState()->locale_numeric_value;
-}
-
-char **
-PgCurrentLocaleTimeRef(void)
-{
-	return &PgCurrentSessionLocaleState()->locale_time_value;
-}
-
-int *
-PgCurrentIcuValidationLevelRef(void)
-{
-	return &PgCurrentSessionLocaleState()->icu_validation_level_value;
-}
-
-Oid *
-PgCurrentMyDatabaseIdRef(void)
-{
-	return &PgCurrentSessionDatabaseState()->database_id;
-}
-
-Oid *
-PgCurrentMyDatabaseTableSpaceRef(void)
-{
-	return &PgCurrentSessionDatabaseState()->database_tablespace;
-}
-
-bool *
-PgCurrentMyDatabaseHasLoginEventTriggersRef(void)
-{
-	return &PgCurrentSessionDatabaseState()->database_has_login_event_triggers;
-}
-
-char **
-PgCurrentDatabasePathRef(void)
-{
-	return &PgCurrentSessionDatabaseState()->database_path;
-}
-
-char **
-PgCurrentDefaultTablespaceRef(void)
-{
-	return &PgCurrentSessionTablespaceState()->default_tablespace_name;
-}
-
-char **
-PgCurrentTempTablespacesRef(void)
-{
-	return &PgCurrentSessionTablespaceState()->temp_tablespaces_names;
-}
-
-bool *
-PgCurrentAllowInPlaceTablespacesRef(void)
-{
-	return &PgCurrentSessionTablespaceState()->allow_in_place_tablespaces_value;
-}
-
-Oid *
-PgCurrentBinaryUpgradeNextPgTablespaceOidRef(void)
-{
-	return &PgCurrentSessionTablespaceState()->binary_upgrade_next_pg_tablespace_oid_value;
-}
-
-Oid *
-PgCurrentBinaryUpgradeNextPgTypeOidRef(void)
-{
-	return &PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_pg_type_oid_value;
-}
-
-Oid *
-PgCurrentBinaryUpgradeNextArrayPgTypeOidRef(void)
-{
-	return &PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_array_pg_type_oid_value;
-}
-
-Oid *
-PgCurrentBinaryUpgradeNextMrngPgTypeOidRef(void)
-{
-	return &PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_mrng_pg_type_oid_value;
-}
-
-Oid *
-PgCurrentBinaryUpgradeNextMrngArrayPgTypeOidRef(void)
-{
-	return &PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_mrng_array_pg_type_oid_value;
-}
-
-Oid *
-PgCurrentBinaryUpgradeNextHeapPgClassOidRef(void)
-{
-	return &PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_heap_pg_class_oid_value;
-}
-
-RelFileNumber *
-PgCurrentBinaryUpgradeNextHeapPgClassRelfilenumberRef(void)
-{
-	return &PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_heap_pg_class_relfilenumber_value;
-}
-
-Oid *
-PgCurrentBinaryUpgradeNextIndexPgClassOidRef(void)
-{
-	return &PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_index_pg_class_oid_value;
-}
-
-RelFileNumber *
-PgCurrentBinaryUpgradeNextIndexPgClassRelfilenumberRef(void)
-{
-	return &PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_index_pg_class_relfilenumber_value;
-}
-
-Oid *
-PgCurrentBinaryUpgradeNextToastPgClassOidRef(void)
-{
-	return &PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_toast_pg_class_oid_value;
-}
-
-RelFileNumber *
-PgCurrentBinaryUpgradeNextToastPgClassRelfilenumberRef(void)
-{
-	return &PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_toast_pg_class_relfilenumber_value;
-}
-
-Oid *
-PgCurrentBinaryUpgradeNextPgEnumOidRef(void)
-{
-	return &PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_pg_enum_oid_value;
-}
-
-Oid *
-PgCurrentBinaryUpgradeNextPgAuthidOidRef(void)
-{
-	return &PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_pg_authid_oid_value;
-}
-
-bool *
-PgCurrentBinaryUpgradeRecordInitPrivsRef(void)
-{
-	return &PgCurrentSessionBinaryUpgradeState()->binary_upgrade_record_init_privs_value;
-}
-
-int *
-PgCurrentDateStyleRef(void)
-{
-	return &PgCurrentSessionDateTimeState()->date_style;
-}
-
-int *
-PgCurrentDateOrderRef(void)
-{
-	return &PgCurrentSessionDateTimeState()->date_order;
-}
-
-int *
-PgCurrentIntervalStyleRef(void)
-{
-	return &PgCurrentSessionDateTimeState()->interval_style;
-}
-
-char **
-PgCurrentTimeZoneStringRef(void)
-{
-	return &PgCurrentSessionDateTimeState()->timezone_string_value;
-}
-
-char **
-PgCurrentLogTimeZoneStringRef(void)
-{
-	return &PgCurrentSessionDateTimeState()->log_timezone_string_value;
-}
-
-pg_tz **
-PgCurrentSessionTimeZoneRef(void)
-{
-	return &PgCurrentSessionDateTimeState()->session_timezone_value;
-}
-
-pg_tz **
-PgCurrentLogTimeZoneRef(void)
-{
-	return &PgCurrentSessionDateTimeState()->log_timezone_value;
-}
-
-TimeZoneAbbrevTable **
-PgCurrentTimeZoneAbbrevTableRef(void)
-{
-	return &PgCurrentSessionDateTimeState()->timezone_abbrev_table;
-}
-
-PgSessionTzAbbrevCache *
-PgCurrentTimeZoneAbbrevCache(void)
-{
-	return PgCurrentSessionDateTimeState()->timezone_abbrev_cache;
-}
-
-char **
-PgCurrentTSCurrentConfigRef(void)
-{
-	return &PgCurrentSessionTextSearchState()->current_config_value;
-}
-
-Oid *
-PgCurrentTSCurrentConfigCacheRef(void)
-{
-	return &PgCurrentSessionTextSearchState()->current_config_cache;
-}
-
-HTAB **
-PgCurrentTSParserCacheHashRef(void)
-{
-	return &PgCurrentSessionTextSearchState()->parser_cache_hash;
-}
-
-TSParserCacheEntry **
-PgCurrentTSLastUsedParserRef(void)
-{
-	return &PgCurrentSessionTextSearchState()->last_used_parser;
-}
-
-HTAB **
-PgCurrentTSDictionaryCacheHashRef(void)
-{
-	return &PgCurrentSessionTextSearchState()->dictionary_cache_hash;
-}
-
-TSDictionaryCacheEntry **
-PgCurrentTSLastUsedDictionaryRef(void)
-{
-	return &PgCurrentSessionTextSearchState()->last_used_dictionary;
-}
-
-HTAB **
-PgCurrentTSConfigCacheHashRef(void)
-{
-	return &PgCurrentSessionTextSearchState()->config_cache_hash;
-}
-
-TSConfigCacheEntry **
-PgCurrentTSLastUsedConfigRef(void)
-{
-	return &PgCurrentSessionTextSearchState()->last_used_config;
-}
-
-CachedPlanSource **
-PgCurrentUnnamedStmtPsrcRef(void)
-{
-	if (CurrentPgSession == NULL)
-		return &early_session_tcop.unnamed_stmt_psrc;
-
-	return &CurrentPgSession->tcop.unnamed_stmt_psrc;
-}
-
-bool *
-PgCurrentEchoQueryRef(void)
-{
-	if (CurrentPgSession == NULL)
-		return &early_session_tcop.echo_query;
-
-	return &CurrentPgSession->tcop.echo_query;
-}
-
-bool *
-PgCurrentUseSemiNewlineNewlineRef(void)
-{
-	if (CurrentPgSession == NULL)
-		return &early_session_tcop.use_semi_newline_newline;
-
-	return &CurrentPgSession->tcop.use_semi_newline_newline;
-}
-
-MemoryContext *
-PgCurrentRowDescriptionContextRef(void)
-{
-	if (CurrentPgSession == NULL)
-		return &early_session_tcop.row_description_context;
-
-	return &CurrentPgSession->tcop.row_description_context;
-}
-
-StringInfoData *
-PgCurrentRowDescriptionBufRef(void)
-{
-	if (CurrentPgSession == NULL)
-		return &early_session_tcop.row_description_buf;
-
-	return &CurrentPgSession->tcop.row_description_buf;
-}
-
-void **
-PgCurrentPLpgSQLSessionStateRef(void)
-{
-	return &PgCurrentSessionExtensionModuleState()->plpgsql_state;
-}
-
-void
-PgSessionRegisterResetCallback(PgSessionResetCallback callback, void *arg)
-{
-	PgSessionExtensionModuleState *extension_modules;
-	PgSessionResetCallbackItem *item;
-	MemoryContext oldcontext;
-
-	Assert(callback != NULL);
-
-	extension_modules = PgCurrentSessionExtensionModuleState();
-
-	if (CurrentPgSession != NULL)
-		oldcontext = MemoryContextSwitchTo(PgSessionGetDynamicLibraryMemoryContext(CurrentPgSession));
-	else
-		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
-
-	item = palloc_object(PgSessionResetCallbackItem);
-	item->callback = callback;
-	item->arg = arg;
-	extension_modules->reset_callbacks =
-		lappend(extension_modules->reset_callbacks, item);
-
-	MemoryContextSwitchTo(oldcontext);
-}
-
-PgSessionInvalidationCallbackState *
-PgCurrentInvalidationCallbackState(void)
-{
-	return PgCurrentSessionInvalidationCallbackState();
-}
-
-HTAB **
-PgCurrentRIConstraintCacheRef(void)
-{
-	return &PgCurrentSessionRIGlobalsState()->constraint_cache;
-}
-
-HTAB **
-PgCurrentRIQueryCacheRef(void)
-{
-	return &PgCurrentSessionRIGlobalsState()->query_cache;
-}
-
-HTAB **
-PgCurrentRICompareCacheRef(void)
-{
-	return &PgCurrentSessionRIGlobalsState()->compare_cache;
-}
-
-dclist_head *
-PgCurrentRIConstraintCacheValidListRef(void)
-{
-	return &PgCurrentSessionRIGlobalsState()->constraint_cache_valid_list;
-}
-
-bool *
-PgCurrentRIFastPathXactCallbackRegisteredRef(void)
-{
-	return &PgCurrentSessionRIGlobalsState()->fastpath_xact_callback_registered;
-}
-
-int *
-PgCurrentDebugDiscardCachesRef(void)
-{
-	return &PgCurrentSessionRIGlobalsState()->debug_discard_caches_value;
-}
-
-PgExecutionRelMapFile *
-PgCurrentRelMapSharedMapRef(void)
-{
-	return &PgCurrentSessionRelMapState()->shared_map;
-}
-
-PgExecutionRelMapFile *
-PgCurrentRelMapLocalMapRef(void)
-{
-	return &PgCurrentSessionRelMapState()->local_map;
-}
-
-HTAB **
-PgCurrentPreparedQueriesRef(void)
-{
-	return &PgCurrentSessionPreparedStatementState()->prepared_queries;
-}
-
-List **
-PgCurrentOnCommitActionsRef(void)
-{
-	return &PgCurrentSessionOnCommitState()->on_commits;
-}
-
-HTAB **
-PgCurrentSequenceHashTableRef(void)
-{
-	return &PgCurrentSessionSequenceState()->seqhashtab;
-}
-
-struct SeqTableData **
-PgCurrentLastUsedSequenceRef(void)
-{
-	return &PgCurrentSessionSequenceState()->last_used_seq;
 }
 
 XactCallbackItem **

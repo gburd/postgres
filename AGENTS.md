@@ -84,6 +84,13 @@ Important current files:
 - `src/backend/utils/cache/backend_runtime_cache.c`: fork-owned runtime bridge
   accessors for session-owned cache roots. Add future catalog/cache accessor
   shims here rather than growing `backend_runtime.c`.
+- `src/backend/utils/init/backend_runtime_session.c`: fork-owned runtime
+  bridge accessors for broad session-owned compatibility state that does not
+  yet have a narrower owner file, including namespace, locale, database,
+  tablespace, binary-upgrade, text-search, tcop, extension, invalidation, RI,
+  relmap, prepared-statement, on-commit, and sequence shims. Keep
+  fallback-aware current-bucket selectors in `backend_runtime.c` and expose
+  them only through `backend_runtime_internal.h`.
 - `src/backend/utils/activity/backend_runtime_pgstat.c`: fork-owned runtime
   bridge accessors for pgstat-owned backend/session state. Add future pgstat
   accessor shims here rather than growing `backend_runtime.c`.
@@ -262,6 +269,12 @@ Important current files:
   zero-init, copy/adopt plus reinit, and copy/adopt plus zero-reset helpers.
   Do not hide exceptional destructor ordering or ownership semantics behind
   these macros.
+- When a Phase 12 migration starts adding repeated lifecycle boilerplate,
+  improve the checked lifecycle framework before continuing. Prefer adding a
+  helper macro, `.def` bucket row, or declarative lifecycle rule over
+  maintaining another handwritten constructor/adoption/reset list. This should
+  make larger coherent migrations easier while keeping ownership and teardown
+  semantics explicit.
 - Do not attempt thread launch until the thread-safety floor is in place:
   backend-local globals must not be shared plain process globals, backend exit
   must not terminate the whole runtime, and timeout/interrupt delivery must be

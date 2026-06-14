@@ -2,6 +2,7 @@
 
 backend_sources += files(
   'backend_runtime.c',
+  'backend_runtime_session.c',
   'globals.c',
   'miscinit.c',
   'postinit.c',

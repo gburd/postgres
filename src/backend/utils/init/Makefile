@@ -14,6 +14,7 @@ include $(top_builddir)/src/Makefile.global
 
 OBJS = \
 	backend_runtime.o \
+	backend_runtime_session.o \
 	globals.o \
 	miscinit.o \
 	postinit.o \
