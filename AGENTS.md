@@ -89,8 +89,11 @@ Important current files:
   accessor shims here rather than growing `backend_runtime.c`.
 - `src/backend/utils/misc/backend_runtime_guc.c`: fork-owned runtime bridge
   accessors for GUC compatibility state that lives in session/backend/runtime
-  buckets. Add future GUC backing-variable shims here rather than growing
-  `backend_runtime.c` or `guc_tables.c`.
+  buckets, including server/runtime GUCs, connection GUCs, core GUC registry
+  pointers/lists, miscellaneous GUCs, threaded GUC mutex depth, and GUC
+  error-reporting state. Add future GUC backing-variable shims here rather
+  than growing `backend_runtime.c` or `guc_tables.c`; keep only
+  fallback-aware current-bucket selectors in `backend_runtime.c`.
 - `src/backend/utils/misc/backend_runtime_utility.c`: fork-owned runtime
   bridge accessors for backend-local utility, formatting, sampling, superuser,
   and resource-owner callback state. Add small utility compatibility shims here

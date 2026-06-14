@@ -21,12 +21,109 @@
 #include "optimizer/paths.h"
 #include "optimizer/planmain.h"
 #include "utils/backend_runtime.h"
+#include "utils/memutils.h"
 #include "../init/backend_runtime_internal.h"
+
+char **
+PgCurrentClusterNameRef(void)
+{
+	return &PgCurrentRuntimeServerGUCState()->cluster_name_value;
+}
+
+char **
+PgCurrentConfigFileNameRef(void)
+{
+	return &PgCurrentRuntimeServerGUCState()->config_file_name;
+}
+
+char **
+PgCurrentHbaFileNameRef(void)
+{
+	return &PgCurrentRuntimeServerGUCState()->hba_file_name;
+}
+
+char **
+PgCurrentIdentFileNameRef(void)
+{
+	return &PgCurrentRuntimeServerGUCState()->ident_file_name;
+}
+
+char **
+PgCurrentHostsFileNameRef(void)
+{
+	return &PgCurrentRuntimeServerGUCState()->hosts_file_name;
+}
+
+char **
+PgCurrentExternalPidFileRef(void)
+{
+	return &PgCurrentRuntimeServerGUCState()->external_pid_file_value;
+}
 
 int *
 PgCurrentSslRenegotiationLimitRef(void)
 {
 	return &PgCurrentSessionConnectionGUCState()->ssl_renegotiation_limit_value;
+}
+
+char **
+PgCurrentApplicationNameRef(void)
+{
+	return &PgCurrentSessionConnectionGUCState()->application_name_value;
+}
+
+int *
+PgCurrentTcpKeepalivesIdleRef(void)
+{
+	return &PgCurrentSessionConnectionGUCState()->tcp_keepalives_idle_value;
+}
+
+int *
+PgCurrentTcpKeepalivesIntervalRef(void)
+{
+	return &PgCurrentSessionConnectionGUCState()->tcp_keepalives_interval_value;
+}
+
+int *
+PgCurrentTcpKeepalivesCountRef(void)
+{
+	return &PgCurrentSessionConnectionGUCState()->tcp_keepalives_count_value;
+}
+
+int *
+PgCurrentTcpUserTimeoutRef(void)
+{
+	return &PgCurrentSessionConnectionGUCState()->tcp_user_timeout_value;
+}
+
+bool *
+PgCurrentLogDisconnectionsRef(void)
+{
+	return &PgCurrentSessionConnectionGUCState()->log_disconnections_value;
+}
+
+int *
+PgCurrentLogStatementRef(void)
+{
+	return &PgCurrentSessionConnectionGUCState()->log_statement_value;
+}
+
+int *
+PgCurrentPostAuthDelayRef(void)
+{
+	return &PgCurrentSessionConnectionGUCState()->post_auth_delay_seconds;
+}
+
+char **
+PgCurrentRestrictNonsystemRelationKindStringRef(void)
+{
+	return &PgCurrentSessionConnectionGUCState()->restrict_nonsystem_relation_kind_string_value;
+}
+
+int *
+PgCurrentRestrictNonsystemRelationKindRef(void)
+{
+	return &PgCurrentSessionConnectionGUCState()->restrict_nonsystem_relation_kind_value;
 }
 
 char **
@@ -159,6 +256,123 @@ bool *
 PgCurrentTraceNotifyRef(void)
 {
 	return &PgCurrentSessionCommandGUCState()->trace_notify_value;
+}
+
+bool *
+PgCurrentAllowSystemTableModsRef(void)
+{
+	return &PgCurrentSessionMiscGUCState()->allow_system_table_mods_value;
+}
+
+int *
+PgCurrentMaxStackDepthRef(void)
+{
+	return &PgCurrentSessionMiscGUCState()->max_stack_depth_kb;
+}
+
+ssize_t *
+PgCurrentMaxStackDepthBytesRef(void)
+{
+	return &PgCurrentSessionMiscGUCState()->max_stack_depth_bytes;
+}
+
+char **
+PgCurrentSessionPreloadLibrariesRef(void)
+{
+	return &PgCurrentSessionMiscGUCState()->session_preload_libraries_value;
+}
+
+char **
+PgCurrentLocalPreloadLibrariesRef(void)
+{
+	return &PgCurrentSessionMiscGUCState()->local_preload_libraries_value;
+}
+
+char **
+PgCurrentDynamicLibraryPathRef(void)
+{
+	return &PgCurrentSessionMiscGUCState()->dynamic_library_path_value;
+}
+
+char **
+PgCurrentExtensionControlPathRef(void)
+{
+	return &PgCurrentSessionMiscGUCState()->extension_control_path_value;
+}
+
+bool *
+PgCurrentUpdateProcessTitleRef(void)
+{
+	return &PgCurrentSessionMiscGUCState()->update_process_title_value;
+}
+
+MemoryContext *
+PgCurrentGUCMemoryContextRef(void)
+{
+	PgSessionGUCState *guc = PgCurrentSessionGUCState();
+
+	if (CurrentPgSession == NULL &&
+		guc->memory_context == NULL &&
+		TopMemoryContext != NULL)
+		guc->memory_context = AllocSetContextCreate(TopMemoryContext,
+													"early GUC fallback state",
+													ALLOCSET_DEFAULT_SIZES);
+
+	return &guc->memory_context;
+}
+
+struct config_generic **
+PgCurrentGUCVariablesRef(void)
+{
+	return &PgCurrentSessionGUCState()->variables;
+}
+
+int *
+PgCurrentNumGUCVariablesRef(void)
+{
+	return &PgCurrentSessionGUCState()->num_variables;
+}
+
+HTAB **
+PgCurrentGUCHashTableRef(void)
+{
+	return &PgCurrentSessionGUCState()->hash_table;
+}
+
+dlist_head *
+PgCurrentGUCNondefListRef(void)
+{
+	return &PgCurrentSessionGUCState()->nondef_list;
+}
+
+slist_head *
+PgCurrentGUCStackListRef(void)
+{
+	return &PgCurrentSessionGUCState()->stack_list;
+}
+
+slist_head *
+PgCurrentGUCReportListRef(void)
+{
+	return &PgCurrentSessionGUCState()->report_list;
+}
+
+bool *
+PgCurrentGUCReportingEnabledRef(void)
+{
+	return &PgCurrentSessionGUCState()->reporting_enabled;
+}
+
+int *
+PgCurrentGUCNestLevelRef(void)
+{
+	return &PgCurrentSessionGUCState()->nest_level;
+}
+
+int *
+PgCurrentThreadedGUCMutexDepthRef(void)
+{
+	return &PgCurrentCarrierState()->threaded_guc_mutex_depth;
 }
 
 int *
@@ -852,4 +1066,58 @@ int *
 PgCurrentJoinCollapseLimitRef(void)
 {
 	return &PgCurrentSessionPlannerMethodState()->join_collapse_limit_value;
+}
+
+int *
+PgCurrentGUCCheckErrcodeValueRef(void)
+{
+	return &PgCurrentExecutionGUCErrorState()->check_errcode_value;
+}
+
+char **
+PgCurrentGUCCheckErrmsgStringRef(void)
+{
+	return &PgCurrentExecutionGUCErrorState()->check_errmsg_string;
+}
+
+char **
+PgCurrentGUCCheckErrdetailStringRef(void)
+{
+	return &PgCurrentExecutionGUCErrorState()->check_errdetail_string;
+}
+
+char **
+PgCurrentGUCCheckErrhintStringRef(void)
+{
+	return &PgCurrentExecutionGUCErrorState()->check_errhint_string;
+}
+
+int *
+PgCurrentFormatErrnumberRef(void)
+{
+	return &PgCurrentExecutionGUCErrorState()->format_errnumber;
+}
+
+const char **
+PgCurrentFormatDomainRef(void)
+{
+	return &PgCurrentExecutionGUCErrorState()->format_domain;
+}
+
+unsigned int *
+PgCurrentConfigFileLinenoRef(void)
+{
+	return &PgCurrentExecutionGUCErrorState()->config_file_lineno;
+}
+
+const char **
+PgCurrentGUCFlexFatalErrmsgRef(void)
+{
+	return &PgCurrentExecutionGUCErrorState()->flex_fatal_errmsg;
+}
+
+sigjmp_buf **
+PgCurrentGUCFlexFatalJmpRef(void)
+{
+	return &PgCurrentExecutionGUCErrorState()->flex_fatal_jmp;
 }

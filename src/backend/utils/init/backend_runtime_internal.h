@@ -20,6 +20,7 @@
 #include "utils/backend_runtime.h"
 
 extern PgCarrier *PgCurrentCarrierState(void);
+extern PgRuntimeServerGUCState *PgCurrentRuntimeServerGUCState(void);
 extern PgSessionCatalogLookupState *PgCurrentSessionCatalogLookupState(void);
 extern PgSessionConnectionGUCState *PgCurrentSessionConnectionGUCState(void);
 extern PgSessionDateTimeState *PgCurrentSessionDateTimeState(void);
@@ -41,6 +42,9 @@ extern PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
 extern PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
 extern PgSessionPlannerMethodState *PgCurrentSessionPlannerMethodState(void);
 extern PgSessionPgStatState *PgCurrentSessionPgStatState(void);
+extern PgSessionMiscGUCState *PgCurrentSessionMiscGUCState(void);
+extern PgSessionGUCState *PgCurrentSessionGUCState(void);
+extern PgExecutionGUCErrorState *PgCurrentExecutionGUCErrorState(void);
 extern PgConnectionIdentityState *PgConnectionIdentityStateRef(PgConnection *connection);
 extern PgConnectionSocketIOState *PgConnectionSocketIOStateRef(PgConnection *connection);
 extern PgConnectionProtocolState *PgConnectionProtocolStateRef(PgConnection *connection);

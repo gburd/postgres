@@ -10554,3 +10554,37 @@ Validation for this lifecycle ergonomics slice:
 - `perl -c src/tools/runtime_lifecycle/check_runtime_lifecycles.pl` passed;
 - `gmake -C src/backend/utils/init backend_runtime.o` passed;
 - `gmake check-runtime-lifecycles` passed with 149 runtime fields classified.
+
+Fourth refactor slice completed:
+
+- remaining server/runtime GUC accessors, connection GUC accessors, core GUC
+  registry accessors, miscellaneous GUC accessors, threaded GUC mutex-depth
+  accessor, and GUC error-reporting accessors moved from
+  `src/backend/utils/init/backend_runtime.c` to
+  `src/backend/utils/misc/backend_runtime_guc.c`;
+- `backend_runtime.c` keeps the fallback-aware current-bucket selectors,
+  including early server GUC, session GUC, miscellaneous GUC, and execution
+  GUC-error selectors. Those selectors are exported only through
+  `backend_runtime_internal.h` for owner-adjacent runtime files;
+- `PgCurrentThreadedGUCMutexDepthRef()` now uses the internal
+  `PgCurrentCarrierState()` selector from the GUC owner file instead of
+  reading `process_carrier` directly from the central runtime file;
+- `GNUmakefile.in` and `check_runtime_lifecycles.pl` now include
+  `src/backend/utils/misc/backend_runtime_guc.c` in the checked runtime source
+  set.
+
+Validation for this GUC refactor slice:
+
+- regenerated local configure output after an accidental parallel
+  `gmake -B` forced `config.status` rechecks and corrupted the generated
+  `config.status` script. Do not use `gmake -B` here for object-only rebuilds;
+- touched-object builds passed for `backend_runtime.o` and
+  `backend_runtime_guc.o`;
+- `gmake check-runtime-lifecycles` passed with 149 runtime fields classified;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- full `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed on rerun
+  after the full build finished. The first concurrent run failed in `src/port`
+  archive creation because it raced with the full build, not because of this
+  source change. TAP remains disabled in this configured build.

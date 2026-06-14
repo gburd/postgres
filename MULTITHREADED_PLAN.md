@@ -935,7 +935,11 @@ checker default source set now includes those split files. The first lifecycle
 ergonomics cleanup also added checked `PG_RUNTIME_DEFINE_*` helper macros for
 routine zero-init and whole-bucket early fallback copy/adopt functions, so
 simple lifecycle boilerplate can move behind macros without weakening manifest
-validation.
+validation. A follow-up GUC split moved the remaining server/runtime,
+connection, core registry, miscellaneous, threaded-mutex-depth, and GUC
+error-reporting accessors into `backend_runtime_guc.c`, leaving
+`backend_runtime.c` with only fallback-aware current-bucket selectors for that
+owner.
 
 Current Gate E2 progress: `gmake check-global-lifetimes` is now a required
 target, and postmaster signal/wakeup routing no longer dereferences a
