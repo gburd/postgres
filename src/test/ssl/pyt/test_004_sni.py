@@ -220,7 +220,9 @@ def _test_invalid_pg_hosts(node):
     for conf, msg in cases:
         os.unlink(_data_dir(node) / "pg_hosts.conf")
         node.append_conf(conf, "pg_hosts.conf")
-        assert node.restart(fail_ok=True) is False, msg
+        with pytest.raises(pypg.PgServerError):
+            node.restart()
+        assert node.is_alive() is False, msg
 
 
 def _test_passphrase_reload(node, connstr, exec_backend):
@@ -261,10 +263,9 @@ def _test_passphrase_reload(node, connstr, exec_backend):
         '"echo wrongpassword" on',
         "pg_hosts.conf",
     )
-    assert node.restart(fail_ok=True) is False, (
-        "pg_hosts.conf: restart fails with password-protected key when using "
-        "the wrong passphrase command"
-    )
+    with pytest.raises(pypg.PgServerError):
+        # restart must fail with password-protected key and the wrong passphrase
+        node.restart()
 
     # Correct passphrase command: server must start.
     os.unlink(_data_dir(node) / "pg_hosts.conf")
@@ -273,10 +274,8 @@ def _test_passphrase_reload(node, connstr, exec_backend):
         '"echo secret1" on',
         "pg_hosts.conf",
     )
-    assert node.restart(fail_ok=True) is True, (
-        "pg_hosts.conf: restart succeeds with password-protected key when using "
-        "the correct passphrase command"
-    )
+    # restart succeeds with password-protected key and the correct passphrase
+    node.restart()
 
     localhost_connstr = (
         "{} sslrootcert=ssl/root+server_ca.crt sslmode=require host=localhost".format(
@@ -312,10 +311,8 @@ def _test_passphrase_no_reload(node, localhost_connstr, exec_backend):
         "pg_hosts.conf",
     )
     node_loglocation = node.current_log_position()
-    assert node.restart(fail_ok=True) is True, (
-        "pg_hosts.conf: restart succeeds with password-protected key when using "
-        "the correct passphrase command"
-    )
+    # restart succeeds with password-protected key and the correct passphrase
+    node.restart()
     log = pypg.slurp_file(node.log, node_loglocation)
     assert (
         "cannot be reloaded because it requires a passphrase" not in log
@@ -442,9 +439,9 @@ def _test_client_cas_eol(node):
         '"cmd" on TRAILING_TEXT MORE_TEXT',
         "pg_hosts.conf",
     )
-    assert (
-        node.restart(fail_ok=True) is False
-    ), "pg_hosts.conf: restart fails with extra data at EOL"
+    with pytest.raises(pypg.PgServerError):
+        # restart fails with extra data at EOL
+        node.restart()
 
     os.unlink(_data_dir(node) / "pg_hosts.conf")
     node.append_conf(
@@ -452,6 +449,6 @@ def _test_client_cas_eol(node):
         '"cmd" notabooleanvalue',
         "pg_hosts.conf",
     )
-    assert (
-        node.restart(fail_ok=True) is False
-    ), "pg_hosts.conf: restart fails with non-boolean value in boolean field"
+    with pytest.raises(pypg.PgServerError):
+        # restart fails with non-boolean value in boolean field
+        node.restart()

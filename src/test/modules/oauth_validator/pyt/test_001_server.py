@@ -756,9 +756,9 @@ def _phase_validator_hba_options(node, common, issuer, offset):
 def _phase_multiple_validators(node, issuer, offset):
     """With multiple validators each HBA line must name one explicitly."""
     node.append_conf("oauth_validator_libraries = 'validator, fail_validator'\n")
-    assert (
-        node.restart(fail_ok=True) is False
-    ), "restart fails without explicit validators in oauth HBA entries"
+    with pytest.raises(pypg.PgServerError):
+        # restart fails without explicit validators in oauth HBA entries
+        node.restart()
     offset = node.wait_for_log(
         r'authentication method "oauth" requires option "validator" to be set', offset
     )

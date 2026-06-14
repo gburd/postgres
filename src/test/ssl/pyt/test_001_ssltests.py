@@ -163,19 +163,20 @@ def _test_protocol_and_groups(node, ssl_server):
     node.append_conf(
         "ssl_min_protocol_version='TLSv1.2'\nssl_max_protocol_version='TLSv1.1'"
     )
-    assert (
-        node.restart(fail_ok=True) is False
-    ), "restart fails with incorrect SSL protocol bounds"
+    with pytest.raises(pypg.PgServerError):
+        # restart fails with incorrect SSL protocol bounds
+        node.restart()
 
     node.append_conf("ssl_min_protocol_version='TLSv1.2'\nssl_max_protocol_version=''")
-    assert (
-        node.restart(fail_ok=True) is True
-    ), "restart succeeds with correct SSL protocol bounds"
+    # restart succeeds with correct SSL protocol bounds
+    node.restart()
 
     # Colon-separated groups: a bad value fails to start. The value is reset
     # later by switch_server_cert (which rewrites sslconfig.conf from scratch).
     node.append_conf("ssl_groups='bad:value'", "sslconfig.conf")
-    assert node.restart(fail_ok=True) is False, "restart fails with incorrect groups"
+    with pytest.raises(pypg.PgServerError):
+        # restart fails with incorrect groups
+        node.restart()
     assert not node.log_matches(r"no SSL error reported"), "error message translated"
     node.append_conf("ssl_groups='prime256v1'", "ssl_config.conf")
     node.restart(fail_ok=True)

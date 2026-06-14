@@ -56,7 +56,7 @@ def _test_tablespace(create_pg, strategy):
 
     standby.safe_psql("ALTER SYSTEM SET log_min_messages TO debug1;")
     standby.stop("immediate")
-    assert standby.start(fail_ok=True) is True, "standby node started for " + strategy
+    standby.start()  # standby node must start for this strategy
     standby.stop("immediate")
 
 
