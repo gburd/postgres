@@ -157,7 +157,10 @@ Important current files:
   `gmake check-runtime-lifecycles` after adding, renaming, or removing
   `PgBackend`, `PgSession`, `PgConnection`, or `PgExecution` fields. Manual
   process/thread init/adopt asymmetries must be centralized or explicitly
-  justified.
+  justified. The checker also verifies the manifest's runtime lifecycle
+  function references and the required process/thread constructor and
+  top-level adoption calls; update the checker deliberately if the object
+  construction shape changes.
 - When closing a lifecycle row for a memory-context or compatibility bridge,
   make the reset order explicit in code and docs. If cleanup only clears
   pointer slots while existing transaction/main-loop cleanup still owns the

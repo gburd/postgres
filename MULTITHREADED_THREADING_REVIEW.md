@@ -929,6 +929,17 @@ remaining reset/destroy rows mechanically visible. Subsequent bridge cleanup
 closed the pending legacy-session and execution-memory-context rows, so new
 Gate E2 lifecycle debt should show up either as a manifest check failure or as
 an explicitly added pending row.
+Further Gate E2 hardening removed the remaining duplicated process-mode
+constructor path for runtime objects. `InitializePgProcessRuntime()` now uses
+the same backend/session/connection/execution object constructors as
+`InitializePgThreadBackendRuntimeState()`, while process and thread install
+paths both go through the top-level early-adoption helpers. The lifecycle
+checker now also verifies manifest-referenced runtime lifecycle function names
+against the checked runtime sources and asserts these constructor/adoption
+calls remain present. This addresses the concrete manual-list asymmetry risk;
+it does not change the longer-term assessment that `PgBackend` is a Phase 12
+state-consolidation bridge rather than the final per-subsystem ownership
+model.
 The latest state-migration slice moved wait-event storage into
 `PgBackendWaitState` and the shared-invalidation local transaction ID counter
 into `PgBackendIPCState`. Validation included touched-object builds, a clean

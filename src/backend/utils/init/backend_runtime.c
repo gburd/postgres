@@ -3907,34 +3907,24 @@ InitializePgProcessRuntime(void)
 	process_carrier.current_session = &process_session;
 	process_carrier.current_execution = &process_execution;
 
-	process_backend.runtime = &process_runtime;
-	process_backend.id = PgBackendAssignId();
-	process_backend.carrier = &process_carrier;
-	process_backend.session = &process_session;
-	process_backend.connection = &process_connection;
-	process_backend.execution = &process_execution;
-	process_backend.backend_type = MyBackendType;
-	PgBackendInitializeProcNumberState(&process_backend);
-	PgBackendInitializeInterrupts(&process_backend);
+	PgBackendInitializeRuntimeObject(&process_backend, &process_runtime,
+									 &process_carrier, &process_session,
+									 &process_connection, &process_execution,
+									 MyBackendType, NULL);
 	PgBackendAdoptEarlyState(&process_backend);
 	PgBackendSetInterruptLatch(&process_backend, process_backend.core.latch);
-	dlist_init(&process_backend.dsm_segment_list);
-	PgBackendInitializeExitState(&process_backend.exit_state);
 	PgBackendAdoptEarlyExitState(&process_backend.exit_state);
 
-	process_session.backend = &process_backend;
-	process_session.connection = &process_connection;
-	process_session.execution = &process_execution;
+	PgSessionInitializeRuntimeObject(&process_session, &process_backend,
+									 &process_connection, &process_execution);
 	PgSessionAdoptEarlyState(&process_session);
 
-	process_connection.backend = &process_backend;
-	process_connection.session = &process_session;
+	PgConnectionInitializeRuntimeObject(&process_connection, &process_backend,
+										&process_session, NULL);
 	PgConnectionAdoptEarlyState(&process_connection, NULL);
 
-	process_execution.backend = &process_backend;
-	process_execution.session = &process_session;
-	process_execution.carrier = &process_carrier;
-	PgExecutionInitializeSPIState(&process_execution.spi);
+	PgExecutionInitializeRuntimeObject(&process_execution, &process_backend,
+									   &process_session, &process_carrier);
 	PgExecutionAdoptEarlyState(&process_execution);
 
 	CurrentPgRuntime = &process_runtime;

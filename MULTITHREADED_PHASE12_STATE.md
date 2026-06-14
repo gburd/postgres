@@ -9291,3 +9291,40 @@ Validation for this slice:
 - direct threaded runtime TAP
   `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
   88 tests.
+
+## Runtime Constructor And Lifecycle Gate Hardening
+
+The next Gate E2 hardening slice removes another manual process/thread
+runtime drift point and strengthens the lifecycle checker:
+
+- `InitializePgProcessRuntime()` now uses the same
+  `PgBackendInitializeRuntimeObject()`, `PgSessionInitializeRuntimeObject()`,
+  `PgConnectionInitializeRuntimeObject()`, and
+  `PgExecutionInitializeRuntimeObject()` helpers as
+  `InitializePgThreadBackendRuntimeState()`;
+- process-mode setup and threaded setup still differ in the physical runtime
+  object and connection `Port`, but object construction now has a single
+  implementation path for backend/session/connection/execution fields;
+- `gmake check-runtime-lifecycles` now verifies that manifest-referenced
+  runtime lifecycle functions are defined in the checked runtime sources;
+- the same checker now asserts the process and thread construction/adoption
+  entrypoints call the required object constructor and top-level early-adoption
+  helpers.
+
+This directly addresses the Gate E2 adoption-list risk. Adding a field to
+`PgBackend`, `PgSession`, `PgConnection`, or `PgExecution` still requires an
+explicit manifest row, but the gate now also catches stale function names and
+loss of the shared constructor/adoption shape.
+
+This does not make the large `PgBackend` object the final ownership model.
+`PgBackend` remains the Phase 12 consolidation bridge for backend-local state
+while the branch proves initialization, early adoption, reset/destroy, and
+copy rules bucket by bucket. Likewise, `PgSession.legacy_session` remains a
+narrow compatibility endpoint for the existing `access/session.h` payload
+until that payload is folded fully into `PgSession` or deliberately retained
+as a subobject with this documented lifetime.
+
+Validation for this slice:
+
+- `gmake check-runtime-lifecycles` passed with 140 fields classified after the
+  checker was tightened.

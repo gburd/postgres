@@ -1552,6 +1552,14 @@ field currently declared in `PgBackend`, `PgSession`, `PgConnection`, and
 the manifest contains a stale entry. This makes the Gate E2 bucket-lifecycle
 audit enforceable; any future unknown or pending lifecycle row is a Phase 12
 blocker until it is resolved or deliberately documented as a long-lived owner.
+Follow-up Gate E2 hardening made process-mode runtime setup use the same
+backend/session/connection/execution object constructor helpers as threaded
+backend-state setup. The lifecycle checker now also verifies manifest-
+referenced runtime lifecycle function names against the checked runtime
+sources and asserts that process/thread construction and installation retain
+the required constructor/adoption calls. This keeps the adoption-list
+symmetry from regressing while `PgBackend` remains a Phase 12 consolidation
+bridge rather than the final subsystem ownership boundary.
 The following session-cache batch moved the text-search parser, dictionary,
 and configuration cache hashes plus their last-used entry pointers into
 `PgSessionTextSearchState`, alongside the already migrated
