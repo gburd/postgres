@@ -1292,3 +1292,21 @@ correctness work. It has enough real infrastructure to become a serious
 multithreaded PostgreSQL branch, but it also has enough tactical guardrails
 and one-off bridges that, if left in place, would make the result a fragile
 proof of concept.
+
+## Phase 12 Organization Steering
+
+The Gate E2 lifecycle discipline should stay manifest-checked, but
+`backend_runtime.c` should not become the permanent owner for every accessor
+and lifecycle helper. The branch now has two adjacent fork-owned runtime bridge
+files proving the intended direction:
+
+- `src/backend/utils/cache/backend_runtime_cache.c` owns migrated
+  cache/function-manager accessors;
+- `src/backend/utils/activity/backend_runtime_pgstat.c` owns migrated pgstat
+  backend/session accessors.
+
+`backend_runtime.c` should remain focused on root runtime construction,
+current-object installation, process/thread symmetry, and top-level
+adoption/reset orchestration. Future migrations should update
+`MULTITHREADED_RUNTIME_OWNERS.tsv`, the lifecycle checker source set when
+needed, and the adjacent owner file in the same commit.

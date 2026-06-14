@@ -21,5 +21,7 @@
 
 extern PgSessionCatalogLookupState *PgCurrentSessionCatalogLookupState(void);
 extern PgSessionFunctionManagerState *PgCurrentSessionFunctionManagerState(void);
+extern PgSessionPgStatState *PgCurrentSessionPgStatState(void);
+extern PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
 
 #endif							/* BACKEND_RUNTIME_INTERNAL_H */

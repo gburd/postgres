@@ -9912,3 +9912,45 @@ Validation for this slice:
 - direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
   `002_threaded_bgworker_crash.pl` with 94 tests using the local `IPC::Run`
   `PERL5LIB` and explicit `PG_REGRESS` harness environment.
+
+## Pgstat Runtime Owner File
+
+The next organizational slice keeps Phase 12 from concentrating all runtime
+bridge code in `backend_runtime.c`:
+
+- `src/backend/utils/activity/backend_runtime_pgstat.c` now owns the
+  compatibility accessors for `PgSessionPgStatState` and
+  `PgBackendPgStatPendingState`;
+- `backend_runtime.c` retains only the private current-bucket helpers plus
+  initialization, early adoption, process/thread construction symmetry, and
+  top-level reset orchestration;
+- `backend_runtime_internal.h` exposes the small backend-private current-bucket
+  helpers needed by this adjacent owner file, without adding installed-header
+  plumbing;
+- `src/backend/utils/activity/Makefile`, `src/backend/utils/activity/meson.build`,
+  the `check-runtime-lifecycles` top-level target, and the checker default
+  source set include the new owner file;
+- `MULTITHREADED_RUNTIME_OWNERS.tsv` now maps pgstat legacy symbols to their
+  runtime bucket/member/accessor and owner source.
+
+This is a no-behavior-change organization proof. It does not migrate new
+globals or change pgstat lifecycle semantics; it makes the owner-file pattern
+concrete before more Phase 12 bucket moves.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime_pgstat.o` and
+  `backend_runtime.o`;
+- `perl -c src/tools/runtime_lifecycle/check_runtime_lifecycles.pl` passed;
+- full `gmake -j8` passed;
+- `gmake check-runtime-lifecycles` passed with the explicit source list
+  including `backend_runtime_pgstat.c`;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and unchanged session-local count of 108;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` with 88
+  tests and `002_threaded_bgworker_crash.pl` with 6 tests using the local
+  `IPC::Run` `PERL5LIB` and explicit `PG_REGRESS` harness environment. An
+  initial combined `prove` run saw `001_threaded_runtime.pl` lose the temp
+  postmaster immediately after startup without reaching SQL; rerunning the two
+  files individually passed cleanly.

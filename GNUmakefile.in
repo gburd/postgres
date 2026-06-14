@@ -144,6 +144,7 @@ check-runtime-lifecycles:
 		--manifest $(top_srcdir)/MULTITHREADED_RUNTIME_LIFECYCLE.tsv \
 		--source $(top_srcdir)/src/backend/utils/init/backend_runtime.c \
 		--source $(top_srcdir)/src/backend/utils/cache/backend_runtime_cache.c \
+		--source $(top_srcdir)/src/backend/utils/activity/backend_runtime_pgstat.c \
 		--source $(top_srcdir)/src/backend/storage/ipc/ipc.c
 
 .PHONY: dist distcheck docs install-docs world check-world install-world installcheck-world headerscheck cpluspluscheck check-global-lifetimes check-runtime-lifecycles
