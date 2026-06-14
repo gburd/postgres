@@ -347,6 +347,13 @@ Important current files:
   checker rejects anonymous no-op cells and unknown `PG_RUNTIME_*` action
   names. Extend this vocabulary before adding another family of repetitive
   lifecycle helper bodies.
+- The next lifecycle-framework simplification should cover the patterns now
+  recurring in Gate E2: object-owned allocation contexts, delete-and-null
+  memory-context teardown, free/reset list heads, clear-pointer-slot reset,
+  copy/adopt-then-reset-fallback, and reset-through-initializer. If a planned
+  Phase 12 batch needs two or more parallel helper bodies for these patterns,
+  add the checked `PG_RUNTIME_*` action, `PG_RUNTIME_DEFINE_*` helper, bucket
+  `.def` rule, and checker validation before moving the state.
 - If the lifecycle process itself feels slow or repetitive, stop and improve
   the checked lifecycle vocabulary before continuing the migration. The
   preferred fix is a small named action, helper macro, table row, or checker

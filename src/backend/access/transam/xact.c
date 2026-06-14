@@ -3880,7 +3880,8 @@ RegisterXactCallback(XactCallback callback, void *arg)
 	XactCallbackItem *item;
 
 	item = (XactCallbackItem *)
-		MemoryContextAlloc(TopMemoryContext, sizeof(XactCallbackItem));
+		MemoryContextAlloc(PgCurrentXactCallbackMemoryContext(),
+						   sizeof(XactCallbackItem));
 	item->callback = callback;
 	item->arg = arg;
 	item->next = Xact_callbacks;
@@ -3940,7 +3941,8 @@ RegisterSubXactCallback(SubXactCallback callback, void *arg)
 	SubXactCallbackItem *item;
 
 	item = (SubXactCallbackItem *)
-		MemoryContextAlloc(TopMemoryContext, sizeof(SubXactCallbackItem));
+		MemoryContextAlloc(PgCurrentXactCallbackMemoryContext(),
+						   sizeof(SubXactCallbackItem));
 	item->callback = callback;
 	item->arg = arg;
 	item->next = SubXact_callbacks;

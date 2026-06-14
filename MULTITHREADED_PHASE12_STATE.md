@@ -11266,6 +11266,22 @@ validation that lets the batch move through the manifest-backed path. Record
 that decision here before the behavior change so future agents can reuse the
 same pattern.
 
+Lifecycle-framework simplification backlog:
+
+- the next framework extension should target patterns that are recurring in
+  Gate E2 slices: object-owned allocation contexts, delete-and-null
+  memory-context teardown, free/reset list heads, clear-pointer-slot reset,
+  copy/adopt-then-reset-fallback, and reset-through-initializer;
+- if a planned Phase 12 batch needs two or more parallel helper bodies for
+  those patterns, land the checked mechanism first. The expected shape is a
+  named `PG_RUNTIME_*` bucket action where useful, a
+  `PG_RUNTIME_DEFINE_*` helper or declarative `.def` rule that expands to the
+  repetitive C, and `check_runtime_lifecycles.pl` validation that rejects
+  stale or unknown actions;
+- semantic cleanup still belongs in owner-adjacent handwritten functions. The
+  framework should remove repeated lifecycle plumbing, not hide real ownership
+  decisions.
+
 PMChild reaping stress coverage preflight:
 
 - target: Gate E2 real-server PMChild/thread-backend teardown evidence in
@@ -11411,6 +11427,56 @@ Validation for the execution ResourceOwner allocation-context slice:
   `PgThreadBackendRuntimeState` layout in the test module;
 - `gmake -C src/test/modules/test_backend_runtime check` passed after removing
   leaked keyed System V shared-memory segments left by the stale-object abort;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with the documented
+  local `IPC::Run` `PERL5LIB` and patched temporary-install install-name
+  paths.
+
+Session xact-callback allocation-context preflight:
+
+- target root and bucket: `PgSession.xact_callbacks`;
+- repeated lifecycle operations: one session-owned allocation context for
+  transaction and subtransaction callback list nodes, whole-bucket early
+  adoption, and close-time callback-list reset;
+- lifecycle preflight result: the existing `PG_SESSION_BUCKET(xact_callbacks,
+  ...)` checked row and ordered session reset list are sufficient. No new
+  generic lifecycle action is needed because `ResetXactCallbackState()` must
+  keep its explicit callback-list deletion semantics; the only new ownership
+  operation is deleting the now-empty allocation context after that reset.
+
+Session xact-callback allocation-context slice completed:
+
+- `PgSessionXactCallbackState` now includes `xact_callback_context`, and
+  `PgCurrentXactCallbackMemoryContext()` lazily creates a session-owned
+  `XactCallbackContext`;
+- `RegisterXactCallback()` and `RegisterSubXactCallback()` allocate callback
+  nodes in that context instead of `TopMemoryContext`;
+- `PgSessionResetClosedState()` still calls `ResetXactCallbackState()` through
+  the ordered session reset list, then deletes `xact_callback_context`;
+- early fallback adoption moves the callback lists and allocation context as
+  one bucket into the installed session;
+- `MULTITHREADED_RUNTIME_OWNERS.tsv` maps `XactCallbackContext` to
+  `PgSession.xact_callbacks`, making this allocation family searchable for
+  future rebase and teardown work;
+- `test_session_reset_closed_state()` registers real xact and subxact
+  callbacks, verifies their nodes are allocated in `XactCallbackContext`, and
+  verifies session reset clears the lists and deletes the context.
+
+Validation for the session xact-callback allocation-context slice:
+
+- touched-object builds passed for `xact.o`, `backend_runtime.o`, and
+  `test_backend_runtime_session.o`;
+- `git diff --check` passed before the full validation pass;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 27 reset definitions checked, and 156 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- a clean backend rebuild was required after the installed
+  `backend_runtime.h` layout change. The documented backend clean/generated
+  header recovery path completed, and full `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed
+  after the clean rebuild;
 - direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
   `002_threaded_bgworker_crash.pl`, 131 tests total, with the documented
   local `IPC::Run` `PERL5LIB` and patched temporary-install install-name

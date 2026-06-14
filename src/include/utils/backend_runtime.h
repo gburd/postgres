@@ -1757,6 +1757,7 @@ typedef struct PgSessionXactCallbackState
 {
 	XactCallbackItem *xact_callbacks;
 	SubXactCallbackItem *subxact_callbacks;
+	MemoryContext xact_callback_context;
 } PgSessionXactCallbackState;
 
 typedef struct PgSessionBackupState
@@ -2627,6 +2628,7 @@ extern HTAB **PgCurrentSequenceHashTableRef(void);
 extern struct SeqTableData **PgCurrentLastUsedSequenceRef(void);
 extern XactCallbackItem **PgCurrentXactCallbacksRef(void);
 extern SubXactCallbackItem **PgCurrentSubXactCallbacksRef(void);
+extern MemoryContext PgCurrentXactCallbackMemoryContext(void);
 extern struct BackupState **PgCurrentBackupStateRef(void);
 extern StringInfo *PgCurrentTablespaceMapRef(void);
 extern MemoryContext *PgCurrentBackupContextRef(void);

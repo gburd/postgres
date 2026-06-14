@@ -2461,6 +2461,7 @@ PgSessionInitializeXactCallbackState(PgSessionXactCallbackState *xact_callbacks)
 
 	xact_callbacks->xact_callbacks = NULL;
 	xact_callbacks->subxact_callbacks = NULL;
+	xact_callbacks->xact_callback_context = NULL;
 }
 
 static void
@@ -4699,6 +4700,12 @@ PgSessionResetXactCallbackClosedState(PgSession *session)
 	CurrentPgSession = session;
 	ResetXactCallbackState();
 	CurrentPgSession = saved_session;
+
+	if (session->xact_callbacks.xact_callback_context != NULL)
+	{
+		MemoryContextDelete(session->xact_callbacks.xact_callback_context);
+		session->xact_callbacks.xact_callback_context = NULL;
+	}
 }
 
 static void
@@ -6008,6 +6015,25 @@ PgCurrentSubXactCallbacksRef(void)
 		return &early_session_xact_callbacks.subxact_callbacks;
 
 	return &CurrentPgSession->xact_callbacks.subxact_callbacks;
+}
+
+MemoryContext
+PgCurrentXactCallbackMemoryContext(void)
+{
+	PgSessionXactCallbackState *xact_callbacks;
+
+	if (CurrentPgSession == NULL)
+		xact_callbacks = &early_session_xact_callbacks;
+	else
+		xact_callbacks = &CurrentPgSession->xact_callbacks;
+
+	if (xact_callbacks->xact_callback_context == NULL)
+		xact_callbacks->xact_callback_context =
+			AllocSetContextCreate(TopMemoryContext,
+								  "transaction callback session state",
+								  ALLOCSET_SMALL_SIZES);
+
+	return xact_callbacks->xact_callback_context;
 }
 
 struct BackupState **

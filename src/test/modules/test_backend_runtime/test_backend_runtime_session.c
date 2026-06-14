@@ -29,6 +29,19 @@ test_backend_runtime_relsync_callback(Datum arg, Oid relid)
 }
 
 static void
+test_backend_runtime_xact_callback(XactEvent event, void *arg)
+{
+}
+
+static void
+test_backend_runtime_subxact_callback(SubXactEvent event,
+									  SubTransactionId mySubid,
+									  SubTransactionId parentSubid,
+									  void *arg)
+{
+}
+
+static void
 test_backend_runtime_session_reset_callback(void *arg)
 {
 	int		   *counter = (int *) arg;
@@ -3106,6 +3119,7 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	HASHCTL		hash_ctl;
 	MemoryContext oldcontext;
 	MemoryContext dynamic_library_context;
+	MemoryContext xact_callback_context;
 	Session    *legacy_session;
 	TSParserCacheEntry *parser_entry;
 	TSDictionaryCacheEntry *dictionary_entry;
@@ -3219,6 +3233,19 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	fake_session.locale.last_collation_cache_locale = &fake_session;
 	fake_session.ri_globals.fastpath_xact_callback_registered = true;
 
+	PgSetCurrentSession(&fake_session);
+	RegisterXactCallback(test_backend_runtime_xact_callback, &fake_session);
+	RegisterSubXactCallback(test_backend_runtime_subxact_callback,
+							&fake_session);
+	PgSetCurrentSession(saved_session);
+	xact_callback_context = fake_session.xact_callbacks.xact_callback_context;
+	ok = ok && xact_callback_context != NULL;
+	ok = ok && GetMemoryChunkContext(fake_session.xact_callbacks.xact_callbacks) ==
+		xact_callback_context;
+	ok = ok &&
+		GetMemoryChunkContext(fake_session.xact_callbacks.subxact_callbacks) ==
+		xact_callback_context;
+
 	dynamic_library_context =
 		PgSessionGetDynamicLibraryMemoryContext(&fake_session);
 	ok = ok && dynamic_library_context != NULL;
@@ -3242,6 +3269,9 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && !fake_session.database.database_path_owned;
 	ok = ok && fake_session.prepared_statement.prepared_queries == NULL;
 	ok = ok && fake_session.on_commit.on_commits == NIL;
+	ok = ok && fake_session.xact_callbacks.xact_callbacks == NULL;
+	ok = ok && fake_session.xact_callbacks.subxact_callbacks == NULL;
+	ok = ok && fake_session.xact_callbacks.xact_callback_context == NULL;
 	ok = ok && fake_session.parser.operator_lookup_cache == NULL;
 	ok = ok && fake_session.function_manager.c_func_hash == NULL;
 	ok = ok && fake_session.function_manager.cached_function_hash == NULL;

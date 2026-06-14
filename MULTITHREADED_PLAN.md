@@ -963,6 +963,14 @@ Gate E2 requires:
   cells or unknown `PG_RUNTIME_*` action names. Future vocabulary extensions
   should follow the same pattern: named bucket-row action, C expansion, and
   checker validation;
+- the next lifecycle-framework improvement should target the patterns now
+  recurring in Gate E2: create an object-owned allocation context,
+  delete-and-null a memory context, free/reset list heads, clear pointer slots
+  after owner-adjacent cleanup, copy/adopt a bucket then reset the fallback,
+  and reset a bucket through its initializer. If a Phase 12 batch needs two or
+  more of these in parallel helper bodies, add the named `PG_RUNTIME_*`
+  action, `PG_RUNTIME_DEFINE_*` helper, bucket `.def` rule, and checker
+  validation first, then migrate the state through that checked path;
 - lifecycle-process friction is itself a Gate E2 signal. If state migration or
   teardown work starts requiring another repeated manual init/adopt/reset/
   destroy helper list, extend the checked lifecycle vocabulary first with a
@@ -1698,6 +1706,12 @@ under the retained top-memory tree. If stale owner slots are still present at
 closed reset, the reset remains conservative and clears the slots without
 blindly deleting live owner memory; that keeps resource-release bugs visible
 for the broader teardown audit.
+Follow-up session xact-callback hardening moved transaction and
+subtransaction callback list-node allocation under a session-owned
+`XactCallbackContext`. The registration/unregistration APIs and callback
+ordering remain unchanged, but session close now frees callback nodes and then
+deletes the allocation context instead of leaving the list-node family under
+the retained top-memory tree.
 Follow-up session teardown hardening added `PgSessionResetClosedState()`.
 `dfmgr.c` now allocates the per-session dynamic-library `_PG_init()` replay
 list under `PgSession.dynamic_library_context` instead of `TopMemoryContext`,
