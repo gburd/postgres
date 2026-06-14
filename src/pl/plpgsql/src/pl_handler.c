@@ -30,7 +30,15 @@
 static bool plpgsql_extra_checks_check_hook(char **newvalue, void **extra, GucSource source);
 static void plpgsql_extra_warnings_assign_hook(const char *newvalue, void *extra);
 static void plpgsql_extra_errors_assign_hook(const char *newvalue, void *extra);
+static void plpgsql_initialize_session_state(PLpgSQL_session_state *state);
 static void plpgsql_session_init(void);
+
+#define plpgsql_extra_warnings_string \
+	(plpgsql_current_session_state()->extra_warnings_string)
+#define plpgsql_extra_errors_string \
+	(plpgsql_current_session_state()->extra_errors_string)
+#define plpgsql_session_inited \
+	(plpgsql_current_session_state()->session_inited)
 
 PG_MODULE_MAGIC_EXT(
 					.name = "plpgsql",
@@ -46,22 +54,39 @@ static const struct config_enum_entry variable_conflict_options[] = {
 	{NULL, 0, false}
 };
 
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int plpgsql_variable_conflict = PLPGSQL_RESOLVE_ERROR;
+static void
+plpgsql_initialize_session_state(PLpgSQL_session_state *state)
+{
+	MemSet(state, 0, sizeof(*state));
+	state->identifier_lookup = IDENTIFIER_LOOKUP_NORMAL;
+	state->variable_conflict = PLPGSQL_RESOLVE_ERROR;
+	state->check_asserts = true;
+}
 
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool plpgsql_print_strict_params = false;
+PLpgSQL_session_state *
+plpgsql_current_session_state(void)
+{
+	void	  **slot;
+	PLpgSQL_session_state *state;
+	MemoryContext oldcontext;
 
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool plpgsql_check_asserts = true;
+	slot = PgCurrentPLpgSQLSessionStateRef();
+	if (*slot != NULL)
+		return (PLpgSQL_session_state *) *slot;
 
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *plpgsql_extra_warnings_string = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *plpgsql_extra_errors_string = NULL;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int plpgsql_extra_warnings;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int plpgsql_extra_errors;
+	if (CurrentPgSession != NULL)
+		oldcontext = MemoryContextSwitchTo(PgSessionGetDynamicLibraryMemoryContext(CurrentPgSession));
+	else
+		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
 
-/* Hook for plugins */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION PLpgSQL_plugin **plpgsql_plugin_ptr = NULL;
+	state = palloc_object(PLpgSQL_session_state);
+	plpgsql_initialize_session_state(state);
+	*slot = state;
+	PgSessionRegisterResetCallback(plpgsql_reset_session_state, state);
 
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool plpgsql_session_inited = false;
-
+	MemoryContextSwitchTo(oldcontext);
+	return state;
+}
 
 static bool
 plpgsql_extra_checks_check_hook(char **newvalue, void **extra, GucSource source)

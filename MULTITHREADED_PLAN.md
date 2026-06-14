@@ -773,7 +773,8 @@ snapshot-manager and combo-CID transaction visibility state bridge through
 Valgrind, and snapshot-builder scratch-state bridge through `PgExecution`,
 plus the attribute-options, relfilenumber, tablespace-options, event-trigger,
 ruleutils SPI-plan, and ICU converter catalog lookup/cache bridge through
-`PgSession`.
+`PgSession`, plus the PL/pgSQL in-tree extension private-state bridge and
+per-session reset callback route through `PgSession`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.
@@ -1607,6 +1608,12 @@ converter cache roots into `PgSessionCatalogLookupState`. The reset path now
 destroys the owned hash/context/plan/converter roots it can safely own today,
 while the lifecycle manifest explicitly records that pointed allocations under
 `CacheMemoryContext` remain part of the broader memory-context ownership split.
+The following PL/pgSQL in-tree extension batch moved PL/pgSQL's custom-GUC,
+compile, namespace, plugin, simple-expression, and cast-cache session state
+behind an opaque `PgSessionExtensionModuleState` private pointer. A per-session
+reset-callback list now lets PL/pgSQL release its private roots before
+`dynamic_library_context` is deleted, establishing the intended in-tree route
+for extension-owned session state without exposing PL/pgSQL internals in core.
 
 ## Phase 13: Scheduler-Aware Wait Boundary
 

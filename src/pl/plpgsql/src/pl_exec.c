@@ -81,15 +81,17 @@
  * is a bit ugly, but it isn't worth doing better, since scenarios like this
  * can't result in indefinite accumulation of state trees.)
  */
-typedef struct SimpleEcontextStackEntry
+struct SimpleEcontextStackEntry
 {
 	ExprContext *stack_econtext;	/* a stacked econtext */
 	SubTransactionId xact_subxid;	/* ID for current subxact */
 	struct SimpleEcontextStackEntry *next;	/* next stack entry up */
-} SimpleEcontextStackEntry;
+};
 
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION EState *shared_simple_eval_estate = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION SimpleEcontextStackEntry *simple_econtext_stack = NULL;
+#define shared_simple_eval_estate \
+	(plpgsql_current_session_state()->shared_simple_eval_estate_value)
+#define simple_econtext_stack \
+	(plpgsql_current_session_state()->simple_econtext_stack_value)
 
 /*
  * In addition to the shared simple-eval EState, we have a shared resource
@@ -99,7 +101,8 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION SimpleEcontextStackEntry *simple_econte
  * is used over and over.  (DO blocks use their own resowner, in exactly the
  * same way described above for shared_simple_eval_estate.)
  */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION ResourceOwner shared_simple_eval_resowner = NULL;
+#define shared_simple_eval_resowner \
+	(plpgsql_current_session_state()->shared_simple_eval_resowner_value)
 
 /*
  * Memory management within a plpgsql function generally works with three
@@ -175,8 +178,10 @@ typedef struct					/* cast_hash table entry */
 	LocalTransactionId cast_lxid;
 } plpgsql_CastHashEntry;
 
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *cast_expr_hash = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *shared_cast_hash = NULL;
+#define cast_expr_hash \
+	(plpgsql_current_session_state()->cast_expr_hash_value)
+#define shared_cast_hash \
+	(plpgsql_current_session_state()->shared_cast_hash_value)
 
 /*
  * LOOP_RC_PROCESSING encapsulates common logic for looping statements to
@@ -8799,6 +8804,67 @@ plpgsql_destroy_econtext(PLpgSQL_execstate *estate)
 
 	FreeExprContext(estate->eval_econtext, true);
 	estate->eval_econtext = NULL;
+}
+
+void
+plpgsql_reset_session_state(void *arg)
+{
+	PLpgSQL_session_state *state = (PLpgSQL_session_state *) arg;
+
+	if (state == NULL)
+		state = plpgsql_current_session_state();
+
+	state->simple_econtext_stack_value = NULL;
+	if (state->shared_simple_eval_estate_value != NULL)
+		FreeExecutorState(state->shared_simple_eval_estate_value);
+	state->shared_simple_eval_estate_value = NULL;
+	if (state->shared_simple_eval_resowner_value != NULL)
+		ReleaseAllPlanCacheRefsInOwner(state->shared_simple_eval_resowner_value);
+	state->shared_simple_eval_resowner_value = NULL;
+
+	if (state->cast_expr_hash_value != NULL)
+	{
+		HASH_SEQ_STATUS status;
+		plpgsql_CastExprHashEntry *entry;
+
+		hash_seq_init(&status, state->cast_expr_hash_value);
+		while ((entry = (plpgsql_CastExprHashEntry *) hash_seq_search(&status)) != NULL)
+		{
+			if (entry->cast_cexpr != NULL)
+			{
+				FreeCachedExpression(entry->cast_cexpr);
+				entry->cast_cexpr = NULL;
+			}
+		}
+		hash_destroy(state->cast_expr_hash_value);
+		state->cast_expr_hash_value = NULL;
+	}
+	if (state->shared_cast_hash_value != NULL)
+	{
+		hash_destroy(state->shared_cast_hash_value);
+		state->shared_cast_hash_value = NULL;
+	}
+
+	state->identifier_lookup = IDENTIFIER_LOOKUP_NORMAL;
+	state->variable_conflict = PLPGSQL_RESOLVE_ERROR;
+	state->print_strict_params = false;
+	state->check_asserts = true;
+	state->extra_warnings_string = NULL;
+	state->extra_errors_string = NULL;
+	state->extra_warnings = 0;
+	state->extra_errors = 0;
+	state->check_syntax = false;
+	state->dump_exec_tree = false;
+	state->datums_alloc = 0;
+	state->n_datums = 0;
+	state->datums = NULL;
+	state->datums_last = 0;
+	state->error_funcname = NULL;
+	state->curr_compile = NULL;
+	state->compile_tmp_cxt = NULL;
+	state->plugin_ptr = NULL;
+	state->session_inited = false;
+	state->ns_top = NULL;
 }
 
 /*

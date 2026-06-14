@@ -104,6 +104,7 @@ static void test_backend_runtime_syscache_callback(Datum arg,
 												   uint32 hashvalue);
 static void test_backend_runtime_relcache_callback(Datum arg, Oid relid);
 static void test_backend_runtime_relsync_callback(Datum arg, Oid relid);
+static void test_backend_runtime_session_reset_callback(void *arg);
 
 typedef struct TestBoolGUCSetting
 {
@@ -207,6 +208,14 @@ test_backend_runtime_relcache_callback(Datum arg, Oid relid)
 static void
 test_backend_runtime_relsync_callback(Datum arg, Oid relid)
 {
+}
+
+static void
+test_backend_runtime_session_reset_callback(void *arg)
+{
+	int		   *counter = (int *) arg;
+
+	(*counter)++;
 }
 
 static void
@@ -2811,6 +2820,72 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "catalog lookup state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_session_extension_module_state_is_session_local);
+Datum
+test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	int			session1_private;
+	int			session2_private;
+	int			session1_reset_count = 0;
+	int			session2_reset_count = 0;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && *PgCurrentPLpgSQLSessionStateRef() == NULL;
+		*PgCurrentPLpgSQLSessionStateRef() = &session1_private;
+		PgSessionRegisterResetCallback(test_backend_runtime_session_reset_callback,
+									   &session1_reset_count);
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && *PgCurrentPLpgSQLSessionStateRef() == NULL;
+		*PgCurrentPLpgSQLSessionStateRef() = &session2_private;
+		PgSessionRegisterResetCallback(test_backend_runtime_session_reset_callback,
+									   &session2_reset_count);
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && *PgCurrentPLpgSQLSessionStateRef() == &session1_private;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && *PgCurrentPLpgSQLSessionStateRef() == &session2_private;
+
+		PgSetCurrentSession(saved_session);
+		PgSessionResetClosedState(&fake_session1);
+		ok = ok && session1_reset_count == 1;
+		ok = ok && session2_reset_count == 0;
+		ok = ok && fake_session1.extension_modules.plpgsql_state == NULL;
+		ok = ok && fake_session1.extension_modules.reset_callbacks == NIL;
+		ok = ok && fake_session2.extension_modules.plpgsql_state == &session2_private;
+		ok = ok && fake_session2.extension_modules.reset_callbacks != NIL;
+
+		PgSessionResetClosedState(&fake_session2);
+		ok = ok && session2_reset_count == 1;
+		ok = ok && fake_session2.extension_modules.plpgsql_state == NULL;
+		ok = ok && fake_session2.extension_modules.reset_callbacks == NIL;
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "extension module state was not session-local");
 
 	PG_RETURN_BOOL(true);
 }

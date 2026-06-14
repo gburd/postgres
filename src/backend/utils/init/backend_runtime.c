@@ -545,6 +545,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPlannerMethodState early_sessi
 	.join_collapse_limit_value = 8
 };
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionFunctionManagerState early_session_function_manager;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionExtensionModuleState early_session_extension_modules;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionCatalogLookupState early_session_catalog_lookup;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionInvalidationCallbackState early_session_invalidation_callbacks;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPreparedStatementState early_session_prepared_statement;
@@ -702,6 +703,8 @@ static void PgSessionInitializePlannerMethodState(PgSessionPlannerMethodState *p
 static void PgSessionAdoptEarlyPlannerMethodState(PgSession *session);
 static void PgSessionInitializeFunctionManagerState(PgSessionFunctionManagerState *function_manager);
 static void PgSessionAdoptEarlyFunctionManagerState(PgSession *session);
+static void PgSessionInitializeExtensionModuleState(PgSessionExtensionModuleState *extension_modules);
+static void PgSessionAdoptEarlyExtensionModuleState(PgSession *session);
 static void PgSessionInitializeCatalogLookupState(PgSessionCatalogLookupState *catalog_lookup);
 static void PgSessionAdoptEarlyCatalogLookupState(PgSession *session);
 static void PgSessionInitializeInvalidationCallbackState(PgSessionInvalidationCallbackState *invalidation_callbacks);
@@ -883,6 +886,7 @@ static PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
 static PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
 static PgSessionPlannerMethodState *PgCurrentSessionPlannerMethodState(void);
 static PgSessionFunctionManagerState *PgCurrentSessionFunctionManagerState(void);
+static PgSessionExtensionModuleState *PgCurrentSessionExtensionModuleState(void);
 static PgSessionCatalogLookupState *PgCurrentSessionCatalogLookupState(void);
 static PgSessionInvalidationCallbackState *PgCurrentSessionInvalidationCallbackState(void);
 static PgSessionPreparedStatementState *PgCurrentSessionPreparedStatementState(void);
@@ -1978,6 +1982,24 @@ PgSessionAdoptEarlyFunctionManagerState(PgSession *session)
 }
 
 static void
+PgSessionInitializeExtensionModuleState(PgSessionExtensionModuleState *extension_modules)
+{
+	Assert(extension_modules != NULL);
+
+	extension_modules->plpgsql_state = NULL;
+	extension_modules->reset_callbacks = NIL;
+}
+
+static void
+PgSessionAdoptEarlyExtensionModuleState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	session->extension_modules = early_session_extension_modules;
+	PgSessionInitializeExtensionModuleState(&early_session_extension_modules);
+}
+
+static void
 PgSessionInitializeCatalogLookupState(PgSessionCatalogLookupState *catalog_lookup)
 {
 	Assert(catalog_lookup != NULL);
@@ -2361,6 +2383,7 @@ PgSessionAdoptEarlyState(PgSession *session)
 	PgSessionAdoptEarlyPlannerCostState(session);
 	PgSessionAdoptEarlyPlannerMethodState(session);
 	PgSessionAdoptEarlyFunctionManagerState(session);
+	PgSessionAdoptEarlyExtensionModuleState(session);
 	PgSessionAdoptEarlyCatalogLookupState(session);
 	PgSessionAdoptEarlyInvalidationCallbackState(session);
 	PgSessionAdoptEarlyPreparedStatementState(session);
@@ -3785,6 +3808,7 @@ PgSessionInitializeRuntimeObject(PgSession *session,
 	PgSessionInitializePlannerCostState(&session->planner_cost);
 	PgSessionInitializePlannerMethodState(&session->planner_method);
 	PgSessionInitializeFunctionManagerState(&session->function_manager);
+	PgSessionInitializeExtensionModuleState(&session->extension_modules);
 	PgSessionInitializeCatalogLookupState(&session->catalog_lookup);
 	PgSessionInitializeInvalidationCallbackState(&session->invalidation_callbacks);
 	PgSessionInitializePreparedStatementState(&session->prepared_statement);
@@ -4410,6 +4434,13 @@ PgSessionResetClosedState(PgSession *session)
 		hash_destroy(session->function_manager.c_func_hash);
 		session->function_manager.c_func_hash = NULL;
 	}
+	foreach_ptr(PgSessionResetCallbackItem, item,
+				session->extension_modules.reset_callbacks)
+		item->callback(item->arg);
+	list_free_deep(session->extension_modules.reset_callbacks);
+	session->extension_modules.reset_callbacks = NIL;
+	session->extension_modules.plpgsql_state = NULL;
+
 	if (session->catalog_lookup.attopt_cache_hash != NULL)
 	{
 		hash_destroy(session->catalog_lookup.attopt_cache_hash);
@@ -5121,6 +5152,15 @@ PgCurrentSessionFunctionManagerState(void)
 	return &CurrentPgSession->function_manager;
 }
 
+static PgSessionExtensionModuleState *
+PgCurrentSessionExtensionModuleState(void)
+{
+	if (CurrentPgSession == NULL)
+		return &early_session_extension_modules;
+
+	return &CurrentPgSession->extension_modules;
+}
+
 static PgSessionCatalogLookupState *
 PgCurrentSessionCatalogLookupState(void)
 {
@@ -5678,6 +5718,37 @@ HTAB **
 PgCurrentCFuncHashRef(void)
 {
 	return &PgCurrentSessionFunctionManagerState()->c_func_hash;
+}
+
+void **
+PgCurrentPLpgSQLSessionStateRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->plpgsql_state;
+}
+
+void
+PgSessionRegisterResetCallback(PgSessionResetCallback callback, void *arg)
+{
+	PgSessionExtensionModuleState *extension_modules;
+	PgSessionResetCallbackItem *item;
+	MemoryContext oldcontext;
+
+	Assert(callback != NULL);
+
+	extension_modules = PgCurrentSessionExtensionModuleState();
+
+	if (CurrentPgSession != NULL)
+		oldcontext = MemoryContextSwitchTo(PgSessionGetDynamicLibraryMemoryContext(CurrentPgSession));
+	else
+		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+
+	item = palloc_object(PgSessionResetCallbackItem);
+	item->callback = callback;
+	item->arg = arg;
+	extension_modules->reset_callbacks =
+		lappend(extension_modules->reset_callbacks, item);
+
+	MemoryContextSwitchTo(oldcontext);
 }
 
 HTAB **

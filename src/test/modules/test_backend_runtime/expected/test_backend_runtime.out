@@ -191,6 +191,12 @@ SELECT test_session_catalog_lookup_state_is_session_local();
  t
 (1 row)
 
+SELECT test_session_extension_module_state_is_session_local();
+ test_session_extension_module_state_is_session_local 
+------------------------------------------------------
+ t
+(1 row)
+
 SELECT test_runtime_server_guc_state_is_runtime_local();
  test_runtime_server_guc_state_is_runtime_local 
 ------------------------------------------------

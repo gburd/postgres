@@ -21,6 +21,7 @@
 #include "commands/trigger.h"
 #include "executor/spi.h"
 #include "utils/expandedrecord.h"
+#include "utils/backend_runtime.h"
 #include "utils/funccache.h"
 #include "utils/global_lifetime.h"
 #include "utils/typcache.h"
@@ -1183,14 +1184,6 @@ typedef enum
 	IDENTIFIER_LOOKUP_EXPR,		/* In SQL expression --- special case */
 } IdentifierLookup;
 
-extern PG_THREAD_LOCAL PG_GLOBAL_SESSION IdentifierLookup plpgsql_IdentifierLookup;
-
-extern PG_THREAD_LOCAL PG_GLOBAL_SESSION int plpgsql_variable_conflict;
-
-extern PG_THREAD_LOCAL PG_GLOBAL_SESSION bool plpgsql_print_strict_params;
-
-extern PG_THREAD_LOCAL PG_GLOBAL_SESSION bool plpgsql_check_asserts;
-
 /* extra compile-time and run-time checks */
 #define PLPGSQL_XCHECK_NONE						0
 #define PLPGSQL_XCHECK_SHADOWVAR				(1 << 1)
@@ -1198,21 +1191,68 @@ extern PG_THREAD_LOCAL PG_GLOBAL_SESSION bool plpgsql_check_asserts;
 #define PLPGSQL_XCHECK_STRICTMULTIASSIGNMENT	(1 << 3)
 #define PLPGSQL_XCHECK_ALL						((int) ~0)
 
-extern PG_THREAD_LOCAL PG_GLOBAL_SESSION int plpgsql_extra_warnings;
-extern PG_THREAD_LOCAL PG_GLOBAL_SESSION int plpgsql_extra_errors;
+typedef struct SimpleEcontextStackEntry SimpleEcontextStackEntry;
 
-extern PG_THREAD_LOCAL PG_GLOBAL_SESSION bool plpgsql_check_syntax;
-extern PG_THREAD_LOCAL PG_GLOBAL_SESSION bool plpgsql_DumpExecTree;
+typedef struct PLpgSQL_session_state
+{
+	IdentifierLookup identifier_lookup;
+	int			variable_conflict;
+	bool		print_strict_params;
+	bool		check_asserts;
+	char	   *extra_warnings_string;
+	char	   *extra_errors_string;
+	int			extra_warnings;
+	int			extra_errors;
+	bool		check_syntax;
+	bool		dump_exec_tree;
+	int			datums_alloc;
+	int			n_datums;
+	PLpgSQL_datum **datums;
+	int			datums_last;
+	char	   *error_funcname;
+	PLpgSQL_function *curr_compile;
+	MemoryContext compile_tmp_cxt;
+	PLpgSQL_plugin **plugin_ptr;
+	bool		session_inited;
+	EState	   *shared_simple_eval_estate_value;
+	SimpleEcontextStackEntry *simple_econtext_stack_value;
+	ResourceOwner shared_simple_eval_resowner_value;
+	HTAB	   *cast_expr_hash_value;
+	HTAB	   *shared_cast_hash_value;
+	PLpgSQL_nsitem *ns_top;
+} PLpgSQL_session_state;
 
-extern PG_THREAD_LOCAL PG_GLOBAL_SESSION int plpgsql_nDatums;
-extern PG_THREAD_LOCAL PG_GLOBAL_SESSION PLpgSQL_datum **plpgsql_Datums;
+extern PLpgSQL_session_state *plpgsql_current_session_state(void);
+extern void plpgsql_reset_session_state(void *arg);
 
-extern PG_THREAD_LOCAL PG_GLOBAL_SESSION char *plpgsql_error_funcname;
-
-extern PG_THREAD_LOCAL PG_GLOBAL_SESSION PLpgSQL_function *plpgsql_curr_compile;
-extern PG_THREAD_LOCAL PG_GLOBAL_SESSION MemoryContext plpgsql_compile_tmp_cxt;
-
-extern PG_THREAD_LOCAL PG_GLOBAL_SESSION PLpgSQL_plugin **plpgsql_plugin_ptr;
+#define plpgsql_IdentifierLookup \
+	(plpgsql_current_session_state()->identifier_lookup)
+#define plpgsql_variable_conflict \
+	(plpgsql_current_session_state()->variable_conflict)
+#define plpgsql_print_strict_params \
+	(plpgsql_current_session_state()->print_strict_params)
+#define plpgsql_check_asserts \
+	(plpgsql_current_session_state()->check_asserts)
+#define plpgsql_extra_warnings \
+	(plpgsql_current_session_state()->extra_warnings)
+#define plpgsql_extra_errors \
+	(plpgsql_current_session_state()->extra_errors)
+#define plpgsql_check_syntax \
+	(plpgsql_current_session_state()->check_syntax)
+#define plpgsql_DumpExecTree \
+	(plpgsql_current_session_state()->dump_exec_tree)
+#define plpgsql_nDatums \
+	(plpgsql_current_session_state()->n_datums)
+#define plpgsql_Datums \
+	(plpgsql_current_session_state()->datums)
+#define plpgsql_error_funcname \
+	(plpgsql_current_session_state()->error_funcname)
+#define plpgsql_curr_compile \
+	(plpgsql_current_session_state()->curr_compile)
+#define plpgsql_compile_tmp_cxt \
+	(plpgsql_current_session_state()->compile_tmp_cxt)
+#define plpgsql_plugin_ptr \
+	(plpgsql_current_session_state()->plugin_ptr)
 
 /**********************************************************************
  * Function declarations

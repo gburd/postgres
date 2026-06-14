@@ -1186,6 +1186,16 @@ contexts, and ICU converters have reset paths now, but pointed allocations
 under `CacheMemoryContext` are still owned by the unresolved cache memory
 context split.
 
+The following in-tree extension session-state slice added
+`PgSessionExtensionModuleState`, an opaque per-session private-state pointer
+plus reset callback list, and moved PL/pgSQL's remaining session-local
+custom-GUC, compile, namespace, plugin, simple-expression, and cast-cache
+state behind it. PL/pgSQL now registers a closed-session reset callback that
+frees cached cast expressions and leftover simple-expression roots before
+`dynamic_library_context` is deleted. This establishes the intended route for
+bundled extension-owned session state without exposing PL/pgSQL internals in
+`backend_runtime.h`; contrib-wide opt-in and regression remain Phase 16 work.
+
 ## Bottom Line
 
 The branch is on track only if the current debt is treated as Phase 12

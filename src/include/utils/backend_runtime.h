@@ -1566,6 +1566,20 @@ typedef struct PgSessionFunctionManagerState
 	HTAB	   *c_func_hash;
 } PgSessionFunctionManagerState;
 
+typedef void (*PgSessionResetCallback) (void *arg);
+
+typedef struct PgSessionResetCallbackItem
+{
+	PgSessionResetCallback callback;
+	void	   *arg;
+} PgSessionResetCallbackItem;
+
+typedef struct PgSessionExtensionModuleState
+{
+	void	   *plpgsql_state;
+	List	   *reset_callbacks;
+} PgSessionExtensionModuleState;
+
 typedef struct PgSessionCatalogLookupState
 {
 	HTAB	   *attopt_cache_hash;
@@ -1983,6 +1997,7 @@ struct PgSession
 	PgSessionPlannerCostState planner_cost;
 	PgSessionPlannerMethodState planner_method;
 	PgSessionFunctionManagerState function_manager;
+	PgSessionExtensionModuleState extension_modules;
 	PgSessionCatalogLookupState catalog_lookup;
 	PgSessionInvalidationCallbackState invalidation_callbacks;
 	PgSessionPreparedStatementState prepared_statement;
@@ -2555,6 +2570,9 @@ extern void PgSetCurrentSession(PgSession *session);
 extern bool PgCurrentSessionOwnsPointer(const void *ptr);
 extern void PgBackendResetClosedState(PgBackend *backend);
 extern MemoryContext PgSessionGetDynamicLibraryMemoryContext(PgSession *session);
+extern void **PgCurrentPLpgSQLSessionStateRef(void);
+extern void PgSessionRegisterResetCallback(PgSessionResetCallback callback,
+										   void *arg);
 extern void PgSessionResetClosedState(PgSession *session);
 extern void PgExecutionResetClosedState(PgExecution *execution);
 extern Session *PgSessionGetLegacySession(PgSession *session);

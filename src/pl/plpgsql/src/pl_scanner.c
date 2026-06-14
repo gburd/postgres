@@ -22,9 +22,6 @@
 #include "pl_gram.h"			/* must be after parser/scanner.h */
 
 
-/* Klugy flag to tell scanner how to look up identifiers */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION IdentifierLookup plpgsql_IdentifierLookup = IDENTIFIER_LOOKUP_NORMAL;
-
 /*
  * A word about keywords:
  *

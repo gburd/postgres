@@ -9237,3 +9237,57 @@ Validation for this slice:
 - direct threaded runtime TAP
   `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
   88 tests.
+
+## PL/pgSQL Session Extension State
+
+The next Phase 12 in-tree extension batch moves PL/pgSQL's remaining
+session-local globals behind an explicit per-session private-state pointer
+owned by `PgSessionExtensionModuleState`:
+
+- PL/pgSQL custom-GUC backing variables and assign-hook derived flags;
+- compiler scratch state, datum arrays, error context name, current compile
+  pointer, and compile memory-context pointer;
+- parser identifier lookup mode and namespace stack;
+- plugin rendezvous pointer and per-session initialization flag;
+- shared simple-expression EState/resource-owner roots and econtext stack;
+- session-wide cast expression and cast execution hash roots.
+
+Core deliberately does not expose PL/pgSQL private structs. `PgSession` owns an
+opaque `plpgsql_state` pointer plus a reset-callback list. PL/pgSQL allocates
+its concrete `PLpgSQL_session_state` under the session dynamic-library context
+on first use, registers `plpgsql_reset_session_state()`, and then uses
+lvalue-compatible macros over that state so existing PL/pgSQL code keeps its
+source-local names.
+
+The lifecycle rule is explicit. Early fallback adoption transfers the opaque
+private-state pointer and callback list through `PgSessionAdoptEarlyState()`.
+Normal transaction cleanup remains owned by PL/pgSQL's xact/subxact callbacks.
+Closed-session reset invokes registered module callbacks before deleting
+`dynamic_library_context`; the PL/pgSQL callback releases any leftover simple
+expression executor state, releases plan-cache refs from the shared simple
+expression resource owner, frees cached cast expressions, destroys the cast
+hash roots, and scrubs the session struct back to defaults.
+
+This removes the direct PL/pgSQL `PG_GLOBAL_SESSION` declarations while
+establishing the in-tree route for extension-owned session state without
+making `backend_runtime.h` depend on PL/pgSQL internals.
+
+Validation for this slice:
+
+- a static scan found no remaining direct `PG_GLOBAL_SESSION` declarations
+  under `src/pl/plpgsql/src`;
+- touched-object builds passed for `backend_runtime.o`, the PL/pgSQL objects,
+  and `test_backend_runtime.o`;
+- `gmake check-runtime-lifecycles` passed with 140 fields classified after
+  adding the extension-module lifecycle row;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- a clean backend rebuild plus full `gmake -j8` passed after changing
+  `backend_runtime.h` and `plpgsql.h`;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"`, `gmake -C contrib -j8`,
+  and `gmake -C src/pl/plpgsql/src all` passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed, including
+  `test_session_extension_module_state_is_session_local()`;
+- direct threaded runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  88 tests.

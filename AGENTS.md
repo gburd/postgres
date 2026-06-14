@@ -256,6 +256,13 @@ Important current files:
   `evtcache.o`, `ruleutils.o`, `pg_locale_icu.o`, and
   `test_backend_runtime.o`, then run `gmake check-runtime-lifecycles` and
   `gmake check-global-lifetimes`.
+- PL/pgSQL's custom-GUC, compile, namespace, plugin, simple-expression, and
+  cast-cache session state now lives behind an opaque private pointer in
+  `PgSessionExtensionModuleState`. PL/pgSQL registers a session reset callback
+  so closed-session reset can release its private roots before
+  `dynamic_library_context` is deleted. After changing this bridge, rebuild
+  `backend_runtime.o`, PL/pgSQL objects, and `test_backend_runtime.o`; clean
+  and reinstall PL/pgSQL into `tmp_install` before threaded TAP.
 - Transaction cleanup slots now live under
   `PgExecutionTransactionCleanupState`: large-object descriptor cleanup slots,
   the transaction temporary-file cleanup flag, the pgstat subtransaction stack,

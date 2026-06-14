@@ -38,19 +38,10 @@
  * Our own local and global variables
  * ----------
  */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION int datums_alloc;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int plpgsql_nDatums;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION PLpgSQL_datum **plpgsql_Datums;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION int datums_last;
-
-PG_THREAD_LOCAL PG_GLOBAL_SESSION char *plpgsql_error_funcname;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool plpgsql_DumpExecTree = false;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool plpgsql_check_syntax = false;
-
-PG_THREAD_LOCAL PG_GLOBAL_SESSION PLpgSQL_function *plpgsql_curr_compile;
-
-/* A context appropriate for short-term allocs during compilation */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION MemoryContext plpgsql_compile_tmp_cxt;
+#define datums_alloc \
+	(plpgsql_current_session_state()->datums_alloc)
+#define datums_last \
+	(plpgsql_current_session_state()->datums_last)
 
 /* ----------
  * Lookup table for EXCEPTION condition names

@@ -2021,6 +2021,7 @@ PLpgSQL_recfield
 PLpgSQL_resolve_option
 PLpgSQL_row
 PLpgSQL_rwopt
+PLpgSQL_session_state
 PLpgSQL_stmt
 PLpgSQL_stmt_assert
 PLpgSQL_stmt_assign
@@ -2318,8 +2319,10 @@ PgIfAddrCallback
 PgRuntime
 PgSession
 PgSessionCatalogLookupState
+PgSessionExtensionModuleState
 PgSessionLoopState
 PgSessionLogicalReplicationState
+PgSessionResetCallbackItem
 PgSessionTzAbbrevCache
 PgStepBudget
 PgStepResult
