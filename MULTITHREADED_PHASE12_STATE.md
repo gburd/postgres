@@ -435,6 +435,55 @@ Validation for this slice:
 - the direct threaded-runtime TAP script passed all 87 tests with the local
   Perl `IPC::Run` install.
 
+## Backend Closed-State Resource Reset
+
+The next Gate E2 hardening slice broadens `PgBackendResetClosedState()` beyond
+the utility bucket. It now handles backend-owned resources in several
+resource-bearing buckets after ordinary exit callbacks have run:
+
+- WAL sender state: still-owned physical WAL readers, logical decoding
+  contexts, uploaded-manifest context, `StringInfoData` buffers, replication
+  command context, and lag tracker;
+- replication state: stale WAL receiver connection pointers, lingering
+  receiver file descriptors, and the WAL receiver reply buffer;
+- logical replication state: worker WAL receiver connection pointers, stream
+  `BufFile`, copy buffer, subtransaction array, slotsync strings, list/hash
+  scratch, launcher DSA/dshash local mappings, and `ApplyContext`;
+- XLog state: lingering open WAL file descriptor and WAL/index-redo memory
+  contexts;
+- maintenance-worker state: archiver error string, module-state shell, loaded
+  library string, archiver file-list heap, and archive memory context after
+  the archive module shutdown callback;
+- autovacuum state: `AutovacMemCxt`, child database-list context pointer,
+  scheduling array pointer, worker-info pointer after `FreeWorkerInfo()`, and
+  database-list head reinitialization;
+- AIO state: backend pointer, worker id, and borrowed io_uring context pointer
+  after `pgaio_shutdown()` drains in-flight IO.
+
+The same slice also clears stale pointers in subsystem-owned callbacks:
+logical WAL sender now clears `logical_decoding_ctx` and `xlogreader` after
+`FreeDecodingContext()`, WAL receiver clears `wrconn` after disconnect, and
+logical replication worker exit clears `LogRepWorkerWalRcvConn` after
+disconnect. This makes the generic backend reset safe to run after callback
+teardown without double-disconnecting or double-freeing normal-path state.
+
+The reset still does not claim ownership of shared control-plane state such as
+WAL sender shared slots, replication slots, logical worker slots, or stream
+filesets. Those remain owned by existing callback paths. The memory-manager
+`TopMemoryContext` split and the residual utility extension/resource-callback
+audit remain separate Gate E2 blockers.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `pgarch.o`,
+  `walsender.o`, `walreceiver.o`, `launcher.o`, and
+  `test_backend_runtime.o`;
+- `gmake -C src/test/modules/test_backend_runtime check` passed with the
+  expanded `test_backend_reset_closed_state()` fixture;
+- `gmake check-runtime-lifecycles`, `gmake check-global-lifetimes`,
+  `git diff --check`, and full `gmake -j8` passed;
+- the direct threaded-runtime TAP script passed all 87 tests.
+
 ## Runtime Lifecycle Manifest
 
 The one-hundred-seventy-third Phase 12 slice makes the Gate E2 object-lifecycle

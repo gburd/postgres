@@ -141,6 +141,21 @@ struct arch_files_state
 #define PgArchFiles \
 	(PgCurrentMaintenanceWorkerState()->pgarch_files)
 
+void
+PgArchResetFilesState(struct arch_files_state **files)
+{
+	struct arch_files_state *state;
+
+	if (files == NULL || *files == NULL)
+		return;
+
+	state = *files;
+	if (state->arch_heap != NULL)
+		binaryheap_free(state->arch_heap);
+	pfree(state);
+	*files = NULL;
+}
+
 /*
  * Flags set by interrupt handlers for later service in the main loop.
  */

@@ -22,6 +22,7 @@
 #include "access/toast_compression.h"
 #include "access/xact.h"
 #include "access/xlog.h"
+#include "access/xlogreader.h"
 #include "archive/archive_module.h"
 #include "catalog/binary_upgrade.h"
 #include "catalog/storage.h"
@@ -31,6 +32,7 @@
 #include "commands/trigger.h"
 #include "commands/vacuum.h"
 #include "jit/jit.h"
+#include "lib/dshash.h"
 #include "libpq/crypt.h"
 #include "miscadmin.h"
 #include "nodes/queryjumble.h"
@@ -41,14 +43,19 @@
 #include "optimizer/planmain.h"
 #include "parser/parser.h"
 #include "parser/parse_expr.h"
+#include "postmaster/pgarch.h"
 #include "postmaster/interrupt.h"
 #include "regex/regex.h"
+#include "replication/logical.h"
 #include "replication/reorderbuffer.h"
 #include "replication/logicalworker.h"
 #include "replication/slotsync.h"
+#include "replication/walreceiver.h"
 #include "storage/bufmgr.h"
 #include "storage/buf_internals.h"
+#include "storage/buffile.h"
 #include "storage/copydir.h"
+#include "storage/fd.h"
 #include "storage/latch.h"
 #include "storage/large_object.h"
 #include "storage/lock.h"
@@ -58,6 +65,7 @@
 #include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/bytea.h"
+#include "utils/dsa.h"
 #include "utils/elog.h"
 #include "utils/float.h"
 #include "utils/guc.h"
@@ -3907,6 +3915,246 @@ PgCurrentSessionOwnsPointer(const void *ptr)
 }
 
 static void
+PgBackendDeleteMemoryContext(MemoryContext *context)
+{
+	if (context == NULL || *context == NULL)
+		return;
+
+	if (CurrentMemoryContext == *context)
+		MemoryContextSwitchTo(TopMemoryContext);
+	MemoryContextDelete(*context);
+	*context = NULL;
+}
+
+static void
+PgBackendResetStringInfo(StringInfoData *buf)
+{
+	if (buf == NULL)
+		return;
+
+	if (buf->data != NULL)
+		pfree(buf->data);
+	MemSet(buf, 0, sizeof(*buf));
+}
+
+static void
+PgBackendResetWalSenderClosedState(PgBackendWalSenderState *walsender)
+{
+	if (walsender == NULL)
+		return;
+
+	if (walsender->logical_decoding_ctx != NULL)
+	{
+		FreeDecodingContext(walsender->logical_decoding_ctx);
+		walsender->logical_decoding_ctx = NULL;
+		walsender->xlogreader = NULL;
+	}
+	else if (walsender->xlogreader != NULL)
+	{
+		XLogReaderFree(walsender->xlogreader);
+		walsender->xlogreader = NULL;
+	}
+
+	PgBackendDeleteMemoryContext(&walsender->uploaded_manifest_mcxt);
+	walsender->uploaded_manifest = NULL;
+
+	PgBackendResetStringInfo(&walsender->output_message);
+	PgBackendResetStringInfo(&walsender->reply_message);
+	PgBackendResetStringInfo(&walsender->tmpbuf);
+
+	PgBackendDeleteMemoryContext(&walsender->replication_cmd_context);
+
+	if (walsender->lag_tracker != NULL)
+	{
+		pfree(walsender->lag_tracker);
+		walsender->lag_tracker = NULL;
+	}
+}
+
+static void
+PgBackendResetReplicationClosedState(PgBackendReplicationState *replication)
+{
+	if (replication == NULL)
+		return;
+
+	if (replication->walreceiver_conn != NULL)
+	{
+		walrcv_disconnect(replication->walreceiver_conn);
+		replication->walreceiver_conn = NULL;
+	}
+
+	if (replication->walreceiver_recv_file >= 0)
+	{
+		(void) close(replication->walreceiver_recv_file);
+		replication->walreceiver_recv_file = -1;
+	}
+
+	PgBackendResetStringInfo(&replication->walreceiver_reply_message);
+}
+
+static void
+PgBackendResetLogicalReplicationClosedState(PgBackendLogicalReplicationState *logical_replication)
+{
+	if (logical_replication == NULL)
+		return;
+
+	if (logical_replication->logrep_worker_walrcv_conn != NULL)
+	{
+		walrcv_disconnect(logical_replication->logrep_worker_walrcv_conn);
+		logical_replication->logrep_worker_walrcv_conn = NULL;
+	}
+
+	if (logical_replication->stream_fd != NULL)
+	{
+		BufFileClose(logical_replication->stream_fd);
+		logical_replication->stream_fd = NULL;
+	}
+
+	if (logical_replication->copybuf != NULL)
+	{
+		PgBackendResetStringInfo(logical_replication->copybuf);
+		pfree(logical_replication->copybuf);
+		logical_replication->copybuf = NULL;
+	}
+
+	if (logical_replication->subxact_data.subxacts != NULL)
+	{
+		pfree(logical_replication->subxact_data.subxacts);
+		logical_replication->subxact_data.subxacts = NULL;
+	}
+	logical_replication->subxact_data.nsubxacts = 0;
+	logical_replication->subxact_data.nsubxacts_max = 0;
+	logical_replication->subxact_data.subxact_last = InvalidTransactionId;
+
+	if (logical_replication->apply_error_callback_arg.origin_name != NULL)
+	{
+		pfree(logical_replication->apply_error_callback_arg.origin_name);
+		logical_replication->apply_error_callback_arg.origin_name = NULL;
+	}
+	logical_replication->apply_error_callback_arg.rel = NULL;
+	logical_replication->apply_error_callback_arg.remote_attnum = -1;
+	logical_replication->apply_error_callback_arg.remote_xid = InvalidTransactionId;
+	logical_replication->apply_error_callback_arg.finish_lsn = InvalidXLogRecPtr;
+
+	if (logical_replication->slotsync_observed_primary_conninfo != NULL)
+	{
+		pfree(logical_replication->slotsync_observed_primary_conninfo);
+		logical_replication->slotsync_observed_primary_conninfo = NULL;
+	}
+	if (logical_replication->slotsync_observed_primary_slotname != NULL)
+	{
+		pfree(logical_replication->slotsync_observed_primary_slotname);
+		logical_replication->slotsync_observed_primary_slotname = NULL;
+	}
+
+	if (logical_replication->parallel_apply_txn_hash != NULL)
+	{
+		hash_destroy(logical_replication->parallel_apply_txn_hash);
+		logical_replication->parallel_apply_txn_hash = NULL;
+	}
+
+	list_free(logical_replication->on_commit_wakeup_workers_subids);
+	list_free(logical_replication->table_states_not_ready);
+	list_free(logical_replication->seqinfos);
+	list_free(logical_replication->parallel_apply_worker_pool);
+	list_free(logical_replication->parallel_apply_subxactlist);
+
+	PgBackendDeleteMemoryContext(&logical_replication->apply_context);
+
+	dlist_init(&logical_replication->lsn_mapping);
+	logical_replication->my_parallel_shared = NULL;
+	logical_replication->my_subscription = NULL;
+	logical_replication->my_subscription_valid = false;
+	logical_replication->my_logical_rep_worker = NULL;
+	logical_replication->on_commit_wakeup_workers_subids = NIL;
+	logical_replication->table_states_not_ready = NIL;
+	logical_replication->seqinfos = NIL;
+	if (logical_replication->launcher_last_start_times != NULL)
+	{
+		dshash_detach(logical_replication->launcher_last_start_times);
+		logical_replication->launcher_last_start_times = NULL;
+	}
+	if (logical_replication->launcher_last_start_times_dsa != NULL)
+	{
+		dsa_detach(logical_replication->launcher_last_start_times_dsa);
+		logical_replication->launcher_last_start_times_dsa = NULL;
+	}
+	logical_replication->parallel_apply_worker_pool = NIL;
+	logical_replication->stream_apply_worker = NULL;
+	logical_replication->parallel_apply_subxactlist = NIL;
+}
+
+static void
+PgBackendResetXLogClosedState(PgBackendXLogState *xlog)
+{
+	if (xlog == NULL)
+		return;
+
+	if (xlog->open_log_file >= 0)
+	{
+		(void) close(xlog->open_log_file);
+		xlog->open_log_file = -1;
+	}
+
+	PgBackendDeleteMemoryContext(&xlog->wal_debug_context);
+	PgBackendDeleteMemoryContext(&xlog->btree_xlog_op_context);
+	PgBackendDeleteMemoryContext(&xlog->gin_xlog_op_context);
+	PgBackendDeleteMemoryContext(&xlog->gist_xlog_op_context);
+	PgBackendDeleteMemoryContext(&xlog->spgist_xlog_op_context);
+}
+
+static void
+PgBackendResetMaintenanceWorkerClosedState(PgBackendMaintenanceWorkerState *maintenance_worker)
+{
+	if (maintenance_worker == NULL)
+		return;
+
+	if (maintenance_worker->arch_module_errdetail_string != NULL)
+	{
+		pfree(maintenance_worker->arch_module_errdetail_string);
+		maintenance_worker->arch_module_errdetail_string = NULL;
+	}
+	if (maintenance_worker->archive_module_state != NULL)
+	{
+		pfree(maintenance_worker->archive_module_state);
+		maintenance_worker->archive_module_state = NULL;
+	}
+	PgBackendDeleteMemoryContext(&maintenance_worker->archive_context);
+	if (maintenance_worker->loaded_archive_library != NULL)
+	{
+		pfree(maintenance_worker->loaded_archive_library);
+		maintenance_worker->loaded_archive_library = NULL;
+	}
+	PgArchResetFilesState(&maintenance_worker->pgarch_files);
+
+	maintenance_worker->archive_callbacks = NULL;
+}
+
+static void
+PgBackendResetAutovacuumClosedState(PgBackendAutovacuumState *autovacuum)
+{
+	if (autovacuum == NULL)
+		return;
+
+	PgBackendDeleteMemoryContext(&autovacuum->autovac_mem_cxt);
+	autovacuum->database_list_cxt = NULL;
+	autovacuum->avl_dbase_array = NULL;
+	autovacuum->my_worker_info = NULL;
+	dlist_init(&autovacuum->database_list);
+}
+
+static void
+PgBackendResetAioClosedState(PgBackendAioState *aio)
+{
+	if (aio == NULL)
+		return;
+
+	aio->my_backend = NULL;
+	aio->my_io_worker_id = -1;
+	aio->my_uring_context = NULL;
+}
+
+static void
 PgBackendResetUtilityClosedState(PgBackendUtilityState *utility)
 {
 	int			i;
@@ -3955,6 +4203,13 @@ PgBackendResetClosedState(PgBackend *backend)
 	if (backend == NULL)
 		return;
 
+	PgBackendResetWalSenderClosedState(&backend->walsender);
+	PgBackendResetReplicationClosedState(&backend->replication);
+	PgBackendResetLogicalReplicationClosedState(&backend->logical_replication);
+	PgBackendResetXLogClosedState(&backend->xlog);
+	PgBackendResetMaintenanceWorkerClosedState(&backend->maintenance_worker);
+	PgBackendResetAutovacuumClosedState(&backend->autovacuum);
+	PgBackendResetAioClosedState(&backend->aio);
 	PgBackendResetUtilityClosedState(&backend->utility);
 }
 

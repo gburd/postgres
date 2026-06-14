@@ -853,7 +853,10 @@ WalRcvDie(int code, Datum arg)
 
 	/* Terminate the connection gracefully. */
 	if (wrconn != NULL)
+	{
 		walrcv_disconnect(wrconn);
+		wrconn = NULL;
+	}
 
 	/* Wake up the startup process to notice promptly that we're gone */
 	WakeupRecovery();

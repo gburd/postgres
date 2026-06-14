@@ -7637,15 +7637,146 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 {
 	PgBackend	fake_backend;
 	PgBackendUtilityState *utility;
+	PgBackendWalSenderState *walsender;
+	PgBackendReplicationState *replication;
+	PgBackendLogicalReplicationState *logical_replication;
+	PgBackendXLogState *xlog;
+	PgBackendMaintenanceWorkerState *maintenance_worker;
+	PgBackendAutovacuumState *autovacuum;
+	PgBackendAioState *aio;
 	HASHCTL		hash_ctl;
 	bool		ok = true;
 
 	MemSet(&fake_backend, 0, sizeof(fake_backend));
 	utility = &fake_backend.utility;
+	walsender = &fake_backend.walsender;
+	replication = &fake_backend.replication;
+	logical_replication = &fake_backend.logical_replication;
+	xlog = &fake_backend.xlog;
+	maintenance_worker = &fake_backend.maintenance_worker;
+	autovacuum = &fake_backend.autovacuum;
+	aio = &fake_backend.aio;
+	replication->walreceiver_recv_file = -1;
+	xlog->open_log_file = -1;
 
 	MemSet(&hash_ctl, 0, sizeof(hash_ctl));
 	hash_ctl.keysize = sizeof(Oid);
 	hash_ctl.entrysize = sizeof(Oid);
+
+	walsender->uploaded_manifest_mcxt =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test uploaded manifest context",
+							  ALLOCSET_SMALL_SIZES);
+	{
+		MemoryContext oldcontext;
+
+		oldcontext = MemoryContextSwitchTo(walsender->uploaded_manifest_mcxt);
+		walsender->uploaded_manifest = (IncrementalBackupInfo *) palloc(8);
+		MemoryContextSwitchTo(oldcontext);
+	}
+	initStringInfo(&walsender->output_message);
+	appendStringInfoString(&walsender->output_message, "output");
+	initStringInfo(&walsender->reply_message);
+	appendStringInfoString(&walsender->reply_message, "reply");
+	initStringInfo(&walsender->tmpbuf);
+	appendStringInfoString(&walsender->tmpbuf, "tmp");
+	walsender->replication_cmd_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test replication command context",
+							  ALLOCSET_SMALL_SIZES);
+	walsender->lag_tracker = (LagTracker *) palloc0(8);
+
+	initStringInfo(&replication->walreceiver_reply_message);
+	appendStringInfoString(&replication->walreceiver_reply_message, "walrcv");
+
+	logical_replication->subxact_data.nsubxacts = 1;
+	logical_replication->subxact_data.nsubxacts_max = 1;
+	logical_replication->subxact_data.subxact_last = FirstNormalTransactionId;
+	logical_replication->subxact_data.subxacts = palloc(8);
+	logical_replication->apply_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test apply context",
+							  ALLOCSET_SMALL_SIZES);
+	logical_replication->apply_error_callback_arg.rel =
+		(struct LogicalRepRelMapEntry *) &fake_backend;
+	logical_replication->apply_error_callback_arg.remote_attnum = 10;
+	logical_replication->apply_error_callback_arg.remote_xid =
+		FirstNormalTransactionId;
+	logical_replication->apply_error_callback_arg.finish_lsn = 42;
+	logical_replication->apply_error_callback_arg.origin_name =
+		pstrdup("origin");
+	logical_replication->my_parallel_shared =
+		(ParallelApplyWorkerShared *) &fake_backend;
+	logical_replication->my_subscription = (Subscription *) &fake_backend;
+	logical_replication->my_subscription_valid = true;
+	logical_replication->my_logical_rep_worker =
+		(LogicalRepWorker *) &fake_backend;
+	logical_replication->on_commit_wakeup_workers_subids = list_make1_int(1);
+	logical_replication->copybuf = makeStringInfo();
+	appendStringInfoString(logical_replication->copybuf, "copy");
+	logical_replication->table_states_not_ready = list_make1_int(2);
+	logical_replication->seqinfos = list_make1_int(3);
+	logical_replication->slotsync_observed_primary_conninfo =
+		pstrdup("conninfo");
+	logical_replication->slotsync_observed_primary_slotname =
+		pstrdup("slotname");
+	logical_replication->parallel_apply_txn_hash =
+		hash_create("test parallel apply txn hash", 8, &hash_ctl,
+					HASH_ELEM | HASH_BLOBS);
+	logical_replication->parallel_apply_worker_pool = list_make1_int(4);
+	logical_replication->stream_apply_worker =
+		(ParallelApplyWorkerInfo *) &fake_backend;
+	logical_replication->parallel_apply_subxactlist = list_make1_int(5);
+
+	xlog->wal_debug_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test wal debug context",
+							  ALLOCSET_SMALL_SIZES);
+	xlog->btree_xlog_op_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test btree xlog context",
+							  ALLOCSET_SMALL_SIZES);
+	xlog->gin_xlog_op_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test gin xlog context",
+							  ALLOCSET_SMALL_SIZES);
+	xlog->gist_xlog_op_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test gist xlog context",
+							  ALLOCSET_SMALL_SIZES);
+	xlog->spgist_xlog_op_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test spgist xlog context",
+							  ALLOCSET_SMALL_SIZES);
+
+	maintenance_worker->arch_module_errdetail_string =
+		pstrdup("archive detail");
+	maintenance_worker->archive_callbacks =
+		(const struct ArchiveModuleCallbacks *) &fake_backend;
+	maintenance_worker->archive_module_state =
+		(struct ArchiveModuleState *) palloc0(8);
+	maintenance_worker->archive_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test archive context",
+							  ALLOCSET_SMALL_SIZES);
+	maintenance_worker->loaded_archive_library = pstrdup("archive_library");
+	maintenance_worker->pgarch_files = palloc0(8);
+
+	autovacuum->autovac_mem_cxt =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test autovacuum context",
+							  ALLOCSET_SMALL_SIZES);
+	autovacuum->database_list_cxt =
+		AllocSetContextCreate(autovacuum->autovac_mem_cxt,
+							  "test database list context",
+							  ALLOCSET_SMALL_SIZES);
+	dlist_init(&autovacuum->database_list);
+	autovacuum->avl_dbase_array = (struct avl_dbase *) &fake_backend;
+	autovacuum->my_worker_info = (struct WorkerInfoData *) &fake_backend;
+
+	aio->my_backend = (struct PgAioBackend *) &fake_backend;
+	aio->my_io_worker_id = 4;
+	aio->my_uring_context = (struct PgAioUringContext *) &fake_backend;
 
 	utility->notify_interrupt_pending = true;
 	utility->injection_point_cache =
@@ -7669,6 +7800,65 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 
 	PgBackendResetClosedState(&fake_backend);
 
+	ok = ok && walsender->uploaded_manifest == NULL;
+	ok = ok && walsender->uploaded_manifest_mcxt == NULL;
+	ok = ok && walsender->output_message.data == NULL;
+	ok = ok && walsender->reply_message.data == NULL;
+	ok = ok && walsender->tmpbuf.data == NULL;
+	ok = ok && walsender->replication_cmd_context == NULL;
+	ok = ok && walsender->lag_tracker == NULL;
+	ok = ok && replication->walreceiver_recv_file == -1;
+	ok = ok && replication->walreceiver_reply_message.data == NULL;
+	ok = ok && logical_replication->subxact_data.subxacts == NULL;
+	ok = ok && logical_replication->subxact_data.nsubxacts == 0;
+	ok = ok && logical_replication->subxact_data.nsubxacts_max == 0;
+	ok = ok && logical_replication->subxact_data.subxact_last ==
+		InvalidTransactionId;
+	ok = ok && logical_replication->apply_context == NULL;
+	ok = ok && logical_replication->apply_error_callback_arg.rel == NULL;
+	ok = ok && logical_replication->apply_error_callback_arg.remote_attnum == -1;
+	ok = ok && logical_replication->apply_error_callback_arg.remote_xid ==
+		InvalidTransactionId;
+	ok = ok && logical_replication->apply_error_callback_arg.finish_lsn ==
+		InvalidXLogRecPtr;
+	ok = ok && logical_replication->apply_error_callback_arg.origin_name ==
+		NULL;
+	ok = ok && logical_replication->my_parallel_shared == NULL;
+	ok = ok && logical_replication->my_subscription == NULL;
+	ok = ok && !logical_replication->my_subscription_valid;
+	ok = ok && logical_replication->my_logical_rep_worker == NULL;
+	ok = ok && logical_replication->on_commit_wakeup_workers_subids == NIL;
+	ok = ok && logical_replication->copybuf == NULL;
+	ok = ok && logical_replication->table_states_not_ready == NIL;
+	ok = ok && logical_replication->seqinfos == NIL;
+	ok = ok && logical_replication->slotsync_observed_primary_conninfo == NULL;
+	ok = ok && logical_replication->slotsync_observed_primary_slotname == NULL;
+	ok = ok && logical_replication->launcher_last_start_times_dsa == NULL;
+	ok = ok && logical_replication->launcher_last_start_times == NULL;
+	ok = ok && logical_replication->parallel_apply_txn_hash == NULL;
+	ok = ok && logical_replication->parallel_apply_worker_pool == NIL;
+	ok = ok && logical_replication->stream_apply_worker == NULL;
+	ok = ok && logical_replication->parallel_apply_subxactlist == NIL;
+	ok = ok && xlog->open_log_file == -1;
+	ok = ok && xlog->wal_debug_context == NULL;
+	ok = ok && xlog->btree_xlog_op_context == NULL;
+	ok = ok && xlog->gin_xlog_op_context == NULL;
+	ok = ok && xlog->gist_xlog_op_context == NULL;
+	ok = ok && xlog->spgist_xlog_op_context == NULL;
+	ok = ok && maintenance_worker->arch_module_errdetail_string == NULL;
+	ok = ok && maintenance_worker->archive_callbacks == NULL;
+	ok = ok && maintenance_worker->archive_module_state == NULL;
+	ok = ok && maintenance_worker->archive_context == NULL;
+	ok = ok && maintenance_worker->loaded_archive_library == NULL;
+	ok = ok && maintenance_worker->pgarch_files == NULL;
+	ok = ok && autovacuum->autovac_mem_cxt == NULL;
+	ok = ok && autovacuum->database_list_cxt == NULL;
+	ok = ok && autovacuum->avl_dbase_array == NULL;
+	ok = ok && autovacuum->my_worker_info == NULL;
+	ok = ok && dlist_is_empty(&autovacuum->database_list);
+	ok = ok && aio->my_backend == NULL;
+	ok = ok && aio->my_io_worker_id == -1;
+	ok = ok && aio->my_uring_context == NULL;
 	ok = ok && utility->notify_interrupt_pending;
 	ok = ok && utility->injection_point_cache == NULL;
 	ok = ok && utility->dch_cache[0] == NULL;
