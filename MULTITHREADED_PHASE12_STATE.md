@@ -13582,3 +13582,20 @@ Validation for the global-lifetime scanner tightening slice:
 - full incremental `gmake -j8` passed when rerun by itself after an earlier
   self-inflicted parallel invocation raced with the forced `src/fe_utils`
   clean/rebuild over `libpgfeutils.a`.
+
+## Gate E2 Lifecycle Acceleration Rule Refresh
+
+Before the next implementation batch, apply the lifecycle simplification rule
+as an acceleration tactic, not just a safety checklist. If the next Phase
+12/Gate E2 task is slow because setup, early adoption, reset, teardown, or
+manifest bookkeeping would be repetitive, add or reuse the checked lifecycle
+primitive first: a `PG_RUNTIME_*` action, `PG_RUNTIME_DEFINE_*` helper,
+bucket `.def` rule, owner-map metadata, generated/declarative table, or
+`check_runtime_lifecycles.pl` validation.
+
+The intended workflow is to improve the checked lifecycle vocabulary, then
+move a larger coherent batch through it. Do not respond to repetitive
+lifecycle mechanics by splitting the same work into smaller handwritten
+commits. Semantic cleanup, ordering-sensitive destruction, pointer rebasing,
+and subsystem ownership assertions still remain handwritten and
+owner-adjacent.

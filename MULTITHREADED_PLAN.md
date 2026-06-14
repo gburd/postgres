@@ -878,6 +878,14 @@ Phase 14 will make backend ownership bugs harder to isolate.
 
 Gate E2 requires:
 
+- standing lifecycle-acceleration rule: when a remaining Phase 12/Gate E2
+  task feels slow because lifecycle setup, adoption, reset, teardown, or
+  manifest bookkeeping is repetitive, treat that as missing infrastructure.
+  Add or reuse the checked `PG_RUNTIME_*` action, `PG_RUNTIME_DEFINE_*`
+  helper, bucket `.def` rule, owner-map metadata, generated/declarative table,
+  or `check_runtime_lifecycles.pl` rule first, then move a larger coherent
+  batch through that mechanism. This is the preferred way to move faster while
+  preserving lifecycle rigor;
 - the next broad Gate E2 implementation slice starts with lifecycle
   ergonomics/refactor work before more large state migrations or teardown
   hardening. The intended order is: simplify checked lifecycle mechanics,
