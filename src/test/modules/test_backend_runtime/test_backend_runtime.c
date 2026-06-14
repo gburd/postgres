@@ -12533,6 +12533,82 @@ test_execution_catalog_cache_state_is_execution_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_execution_relmap_state_is_execution_local);
+Datum
+test_execution_relmap_state_is_execution_local(PG_FUNCTION_ARGS)
+{
+	PgExecution *saved_execution;
+	PgExecution fake_execution1;
+	PgExecution fake_execution2;
+	bool		ok = true;
+
+	saved_execution = CurrentPgExecution;
+	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
+	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+
+	PG_TRY();
+	{
+		CurrentPgExecution = &fake_execution1;
+		PgCurrentRelMapActiveSharedUpdatesRef()->num_mappings = 1;
+		PgCurrentRelMapActiveSharedUpdatesRef()->mappings[0].mapoid = 101;
+		PgCurrentRelMapActiveSharedUpdatesRef()->mappings[0].mapfilenumber =
+			102;
+		PgCurrentRelMapActiveLocalUpdatesRef()->num_mappings = 2;
+		PgCurrentRelMapPendingSharedUpdatesRef()->num_mappings = 3;
+		PgCurrentRelMapPendingLocalUpdatesRef()->num_mappings = 4;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && PgCurrentRelMapActiveSharedUpdatesRef()->num_mappings == 0;
+		ok = ok && PgCurrentRelMapActiveLocalUpdatesRef()->num_mappings == 0;
+		ok = ok &&
+			PgCurrentRelMapPendingSharedUpdatesRef()->num_mappings == 0;
+		ok = ok && PgCurrentRelMapPendingLocalUpdatesRef()->num_mappings == 0;
+
+		PgCurrentRelMapActiveSharedUpdatesRef()->num_mappings = 5;
+		PgCurrentRelMapActiveSharedUpdatesRef()->mappings[0].mapoid = 201;
+		PgCurrentRelMapActiveSharedUpdatesRef()->mappings[0].mapfilenumber =
+			202;
+		PgCurrentRelMapActiveLocalUpdatesRef()->num_mappings = 6;
+		PgCurrentRelMapPendingSharedUpdatesRef()->num_mappings = 7;
+		PgCurrentRelMapPendingLocalUpdatesRef()->num_mappings = 8;
+
+		CurrentPgExecution = &fake_execution1;
+		ok = ok && PgCurrentRelMapActiveSharedUpdatesRef()->num_mappings == 1;
+		ok = ok &&
+			PgCurrentRelMapActiveSharedUpdatesRef()->mappings[0].mapoid == 101;
+		ok = ok &&
+			PgCurrentRelMapActiveSharedUpdatesRef()->mappings[0].mapfilenumber ==
+			102;
+		ok = ok && PgCurrentRelMapActiveLocalUpdatesRef()->num_mappings == 2;
+		ok = ok && PgCurrentRelMapPendingSharedUpdatesRef()->num_mappings == 3;
+		ok = ok && PgCurrentRelMapPendingLocalUpdatesRef()->num_mappings == 4;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && PgCurrentRelMapActiveSharedUpdatesRef()->num_mappings == 5;
+		ok = ok &&
+			PgCurrentRelMapActiveSharedUpdatesRef()->mappings[0].mapoid == 201;
+		ok = ok &&
+			PgCurrentRelMapActiveSharedUpdatesRef()->mappings[0].mapfilenumber ==
+			202;
+		ok = ok && PgCurrentRelMapActiveLocalUpdatesRef()->num_mappings == 6;
+		ok = ok && PgCurrentRelMapPendingSharedUpdatesRef()->num_mappings == 7;
+		ok = ok && PgCurrentRelMapPendingLocalUpdatesRef()->num_mappings == 8;
+
+		CurrentPgExecution = saved_execution;
+	}
+	PG_CATCH();
+	{
+		CurrentPgExecution = saved_execution;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "relation mapper execution state was not execution-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_execution_async_state_is_execution_local);
 Datum
 test_execution_async_state_is_execution_local(PG_FUNCTION_ARGS)

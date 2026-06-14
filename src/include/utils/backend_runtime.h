@@ -32,6 +32,7 @@
 #include "miscadmin.h"
 #include "nodes/pg_list.h"
 #include "pgtime.h"
+#include "port/pg_crc32c.h"
 #include "port/atomics.h"
 #include "replication/origin.h"
 #include "storage/buf.h"
@@ -796,6 +797,7 @@ typedef struct PgBackendTransactionState
 
 #define PG_EXECUTION_ERRORDATA_STACK_SIZE 5
 #define PG_EXECUTION_RELCACHE_MAX_EOXACT_LIST 32
+#define PG_EXECUTION_RELMAPPER_MAX_MAPPINGS 64
 
 typedef struct PgExecutionDebugState
 {
@@ -1045,6 +1047,28 @@ typedef struct PgExecutionCatalogCacheState
 	int			relcache_next_eoxact_tupledesc_num;
 	int			relcache_eoxact_tupledesc_array_len;
 } PgExecutionCatalogCacheState;
+
+typedef struct PgExecutionRelMapping
+{
+	Oid			mapoid;
+	RelFileNumber mapfilenumber;
+} PgExecutionRelMapping;
+
+typedef struct PgExecutionRelMapFile
+{
+	int32		magic;
+	int32		num_mappings;
+	PgExecutionRelMapping mappings[PG_EXECUTION_RELMAPPER_MAX_MAPPINGS];
+	pg_crc32c	crc;
+} PgExecutionRelMapFile;
+
+typedef struct PgExecutionRelMapState
+{
+	PgExecutionRelMapFile active_shared_updates;
+	PgExecutionRelMapFile active_local_updates;
+	PgExecutionRelMapFile pending_shared_updates;
+	PgExecutionRelMapFile pending_local_updates;
+} PgExecutionRelMapState;
 
 typedef struct PgExecutionRegexState
 {
@@ -1888,6 +1912,7 @@ struct PgExecution
 	PgExecutionAsyncState async;
 	PgExecutionCatalogState catalog;
 	PgExecutionCatalogCacheState catalog_cache;
+	PgExecutionRelMapState relmap;
 	PgExecutionRegexState regex;
 	PgExecutionValgrindState valgrind;
 	PgExecutionSnapBuildState snapbuild;
@@ -2270,6 +2295,10 @@ extern bool *PgCurrentRelcacheEOXactListOverflowedRef(void);
 extern TupleDesc **PgCurrentRelcacheEOXactTupleDescArrayRef(void);
 extern int *PgCurrentRelcacheNextEOXactTupleDescNumRef(void);
 extern int *PgCurrentRelcacheEOXactTupleDescArrayLenRef(void);
+extern PgExecutionRelMapFile *PgCurrentRelMapActiveSharedUpdatesRef(void);
+extern PgExecutionRelMapFile *PgCurrentRelMapActiveLocalUpdatesRef(void);
+extern PgExecutionRelMapFile *PgCurrentRelMapPendingSharedUpdatesRef(void);
+extern PgExecutionRelMapFile *PgCurrentRelMapPendingLocalUpdatesRef(void);
 extern dclist_head *PgCurrentMultiXactCacheRef(void);
 extern bool *PgCurrentMultiXactCacheInitializedRef(void);
 extern MemoryContext *PgCurrentMultiXactContextRef(void);

@@ -52,6 +52,7 @@
 #include "pgstat.h"
 #include "storage/fd.h"
 #include "storage/lwlock.h"
+#include "utils/backend_runtime.h"
 #include "utils/inval.h"
 #include "utils/relmapper.h"
 #include "utils/wait_event.h"
@@ -79,21 +80,10 @@
  * now, we just pick a round number that is modestly larger than the expected
  * number of mappings.
  */
-#define MAX_MAPPINGS			64
+#define MAX_MAPPINGS			PG_EXECUTION_RELMAPPER_MAX_MAPPINGS
 
-typedef struct RelMapping
-{
-	Oid			mapoid;			/* OID of a catalog */
-	RelFileNumber mapfilenumber;	/* its rel file number */
-} RelMapping;
-
-typedef struct RelMapFile
-{
-	int32		magic;			/* always RELMAPPER_FILEMAGIC */
-	int32		num_mappings;	/* number of valid RelMapping entries */
-	RelMapping	mappings[MAX_MAPPINGS];
-	pg_crc32c	crc;			/* CRC of all above */
-} RelMapFile;
+typedef PgExecutionRelMapping RelMapping;
+typedef PgExecutionRelMapFile RelMapFile;
 
 /*
  * State for serializing local and shared relmappings for parallel workers
@@ -101,8 +91,8 @@ typedef struct RelMapFile
  */
 typedef struct SerializedActiveRelMaps
 {
-	RelMapFile	active_shared_updates;
-	RelMapFile	active_local_updates;
+	RelMapFile	serialized_active_shared_updates;
+	RelMapFile	serialized_active_local_updates;
 } SerializedActiveRelMaps;
 
 /*
@@ -129,10 +119,10 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION RelMapFile local_map;
  * Active shared and active local updates are serialized by the parallel
  * infrastructure, and deserialized within parallel workers.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION RelMapFile active_shared_updates;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION RelMapFile active_local_updates;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION RelMapFile pending_shared_updates;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION RelMapFile pending_local_updates;
+#define active_shared_updates	(*PgCurrentRelMapActiveSharedUpdatesRef())
+#define active_local_updates	(*PgCurrentRelMapActiveLocalUpdatesRef())
+#define pending_shared_updates	(*PgCurrentRelMapPendingSharedUpdatesRef())
+#define pending_local_updates	(*PgCurrentRelMapPendingLocalUpdatesRef())
 
 
 /* non-export function prototypes */
@@ -729,8 +719,8 @@ SerializeRelationMap(Size maxSize, char *startAddress)
 	Assert(maxSize >= EstimateRelationMapSpace());
 
 	relmaps = (SerializedActiveRelMaps *) startAddress;
-	relmaps->active_shared_updates = active_shared_updates;
-	relmaps->active_local_updates = active_local_updates;
+	relmaps->serialized_active_shared_updates = active_shared_updates;
+	relmaps->serialized_active_local_updates = active_local_updates;
 }
 
 /*
@@ -750,8 +740,8 @@ RestoreRelationMap(char *startAddress)
 		elog(ERROR, "parallel worker has existing mappings");
 
 	relmaps = (SerializedActiveRelMaps *) startAddress;
-	active_shared_updates = relmaps->active_shared_updates;
-	active_local_updates = relmaps->active_local_updates;
+	active_shared_updates = relmaps->serialized_active_shared_updates;
+	active_local_updates = relmaps->serialized_active_local_updates;
 }
 
 /*

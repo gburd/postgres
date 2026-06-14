@@ -579,6 +579,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionCatalogState early_executi
 	.currently_reindexed_index = InvalidOid
 };
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionCatalogCacheState early_execution_catalog_cache;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionRelMapState early_execution_relmap;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionRegexState early_execution_regex;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionValgrindState early_execution_valgrind;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionSnapBuildState early_execution_snapbuild;
@@ -788,6 +789,8 @@ static void PgExecutionInitializeCatalogState(PgExecutionCatalogState *catalog);
 static void PgExecutionAdoptEarlyCatalogState(PgExecution *execution);
 static void PgExecutionInitializeCatalogCacheState(PgExecutionCatalogCacheState *catalog_cache);
 static void PgExecutionAdoptEarlyCatalogCacheState(PgExecution *execution);
+static void PgExecutionInitializeRelMapState(PgExecutionRelMapState *relmap);
+static void PgExecutionAdoptEarlyRelMapState(PgExecution *execution);
 static void PgExecutionInitializeRegexState(PgExecutionRegexState *regex);
 static void PgExecutionAdoptEarlyRegexState(PgExecution *execution);
 static void PgExecutionInitializeValgrindState(PgExecutionValgrindState *valgrind);
@@ -856,6 +859,7 @@ static PgExecutionGUCErrorState *PgCurrentExecutionGUCErrorState(void);
 static PgExecutionAsyncState *PgCurrentExecutionAsyncState(void);
 static PgExecutionCatalogState *PgCurrentExecutionCatalogState(void);
 static PgExecutionCatalogCacheState *PgCurrentExecutionCatalogCacheState(void);
+static PgExecutionRelMapState *PgCurrentExecutionRelMapState(void);
 static PgExecutionRegexState *PgCurrentExecutionRegexState(void);
 static PgExecutionValgrindState *PgCurrentExecutionValgrindState(void);
 static PgExecutionSnapBuildState *PgCurrentExecutionSnapBuildState(void);
@@ -3289,6 +3293,23 @@ PgExecutionAdoptEarlyCatalogCacheState(PgExecution *execution)
 }
 
 static void
+PgExecutionInitializeRelMapState(PgExecutionRelMapState *relmap)
+{
+	Assert(relmap != NULL);
+
+	MemSet(relmap, 0, sizeof(*relmap));
+}
+
+static void
+PgExecutionAdoptEarlyRelMapState(PgExecution *execution)
+{
+	Assert(execution != NULL);
+
+	execution->relmap = early_execution_relmap;
+	PgExecutionInitializeRelMapState(&early_execution_relmap);
+}
+
+static void
 PgExecutionInitializeRegexState(PgExecutionRegexState *regex)
 {
 	Assert(regex != NULL);
@@ -3366,6 +3387,7 @@ PgExecutionAdoptEarlyState(PgExecution *execution)
 	PgExecutionAdoptEarlyAsyncState(execution);
 	PgExecutionAdoptEarlyCatalogState(execution);
 	PgExecutionAdoptEarlyCatalogCacheState(execution);
+	PgExecutionAdoptEarlyRelMapState(execution);
 	PgExecutionAdoptEarlyRegexState(execution);
 	PgExecutionAdoptEarlyValgrindState(execution);
 	PgExecutionAdoptEarlySnapBuildState(execution);
@@ -3581,6 +3603,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgExecutionInitializeAsyncState(&state->execution.async);
 	PgExecutionInitializeCatalogState(&state->execution.catalog);
 	PgExecutionInitializeCatalogCacheState(&state->execution.catalog_cache);
+	PgExecutionInitializeRelMapState(&state->execution.relmap);
 	PgExecutionInitializeRegexState(&state->execution.regex);
 	PgExecutionInitializeValgrindState(&state->execution.valgrind);
 	PgExecutionInitializeSnapBuildState(&state->execution.snapbuild);
@@ -7552,6 +7575,39 @@ int *
 PgCurrentRelcacheEOXactTupleDescArrayLenRef(void)
 {
 	return &PgCurrentExecutionCatalogCacheState()->relcache_eoxact_tupledesc_array_len;
+}
+
+static PgExecutionRelMapState *
+PgCurrentExecutionRelMapState(void)
+{
+	if (CurrentPgExecution == NULL)
+		return &early_execution_relmap;
+
+	return &CurrentPgExecution->relmap;
+}
+
+PgExecutionRelMapFile *
+PgCurrentRelMapActiveSharedUpdatesRef(void)
+{
+	return &PgCurrentExecutionRelMapState()->active_shared_updates;
+}
+
+PgExecutionRelMapFile *
+PgCurrentRelMapActiveLocalUpdatesRef(void)
+{
+	return &PgCurrentExecutionRelMapState()->active_local_updates;
+}
+
+PgExecutionRelMapFile *
+PgCurrentRelMapPendingSharedUpdatesRef(void)
+{
+	return &PgCurrentExecutionRelMapState()->pending_shared_updates;
+}
+
+PgExecutionRelMapFile *
+PgCurrentRelMapPendingLocalUpdatesRef(void)
+{
+	return &PgCurrentExecutionRelMapState()->pending_local_updates;
 }
 
 static PgExecutionRegexState *

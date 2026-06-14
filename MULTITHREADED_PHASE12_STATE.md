@@ -8517,3 +8517,43 @@ Validation for this slice:
   `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
   87 tests with patched macOS install names;
 - `git diff --check` passed.
+
+## Relation Mapper Execution State
+
+The next Phase 12 relation-mapper slice moves the active and pending relation
+map update files into `PgExecutionRelMapState`:
+
+- `active_shared_updates`;
+- `active_local_updates`;
+- `pending_shared_updates`;
+- `pending_local_updates`.
+
+The session-visible `shared_map` and `local_map` files remain session-local
+state. The new execution bucket owns only transaction-local relation-map
+updates that become visible at command-counter boundaries and are cleared or
+committed by the existing relmapper CCI/EOXact paths. The map files are inline
+scalar storage, so adoption copies them by value and then resets the early
+fallback bucket. Parallel worker restore keeps the existing safety rule: it
+errors if any active or pending map already exists before replacing the active
+maps from serialized leader state.
+
+This also reduces the remaining execution-local scan by four declarations
+without changing relmapper behavior in process mode.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `relmapper.o`, and
+  `test_backend_runtime.o`;
+- `gmake check-runtime-lifecycles` passed with 131 fields classified;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and 35 execution-local declarations;
+- full `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed, including
+  `test_execution_relmap_state_is_execution_local()`;
+- after forcing rebuild of `launch_backend.o` and the touched runtime/cache/test
+  objects, full `gmake -j8`, `gmake -j8 install DESTDIR="$PWD/tmp_install"`,
+  and reinstalling `src/test/modules/test_backend_runtime` passed;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with patched macOS install names;
+- `gmake -C contrib -j8` passed.
