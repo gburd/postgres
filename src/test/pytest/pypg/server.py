@@ -430,7 +430,7 @@ class PostgresServer:
         initdb_template = os.environ.get("INITDB_TEMPLATE")
         if (
             initdb_template
-            and os.path.isdir(initdb_template)
+            and pathlib.Path(initdb_template).is_dir()
             and not extra
             and not force_initdb
         ):
@@ -550,7 +550,7 @@ class PostgresServer:
                 )
             ) from exc
         # Read the PID file to get the postmaster PID
-        with open(os.path.join(self.datadir, "postmaster.pid"), encoding="utf-8") as f:
+        with open(self.datadir / "postmaster.pid", encoding="utf-8") as f:
             self.pid = int(f.readline().strip())
         return True
 
@@ -728,15 +728,10 @@ class PostgresServer:
             if "=" in key:
                 raise ValueError("= not permitted in replication option name")
             cmd += ["--option", "{}={}".format(key, value)]
-        proc = subprocess.run(
+        proc = self._run_text(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            encoding="utf-8",
-            errors="replace",
             env=self._connenv(),
             timeout=timeout_secs,
-            check=False,
         )
         if proc.returncode != 0:
             raise PgServerError(
@@ -848,7 +843,7 @@ class PostgresServer:
 
     def psql(self, *args):
         """Run psql with the given arguments."""
-        self._run(os.path.join(self._bindir, "psql"), "-w", *args)
+        self._run(self._bindir / "psql", "-w", *args)
 
     def psql_capture(
         self,
@@ -889,15 +884,10 @@ class PostgresServer:
             cmd += ["--set", "ON_ERROR_STOP=1"]
         if extra_params:
             cmd += [str(p) for p in extra_params]
-        proc = subprocess.run(
+        proc = self._run_text(
             cmd,
             input=query,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            encoding="utf-8",
-            errors="replace",
             env=self._connenv(),
-            check=False,
             timeout=timeout,
         )
         # Match Cluster->psql, which chomps a single trailing newline off each.
@@ -946,15 +936,10 @@ class PostgresServer:
             "--dbname",
             connstr,
         ]
-        proc = subprocess.run(
+        proc = self._run_text(
             cmd,
             input=query,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            encoding="utf-8",
-            errors="replace",
             env=self._connenv(**(extra_env or {})),
-            check=False,
             timeout=timeout,
         )
         if proc.returncode != 0:
@@ -1031,14 +1016,7 @@ class PostgresServer:
         stripped); with no arguments the full pg_config output is returned.
         """
         cmd = [str(self._bindir / "pg_config")] + [str(a) for a in args]
-        proc = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            encoding="utf-8",
-            errors="replace",
-            check=True,
-        )
+        proc = self._run_text(cmd, check=True)
         return proc.stdout.rstrip("\n")
 
     def _check_log_patterns(self, test_name, offset, log_like, log_unlike):
@@ -1213,15 +1191,10 @@ class PostgresServer:
         max_attempts = 10 * test_timeout_default()
         stdout = stderr = ""
         for _ in range(max_attempts):
-            proc = subprocess.run(
+            proc = self._run_text(
                 cmd,
                 input=query,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                encoding="utf-8",
-                errors="replace",
                 env=self._connenv(),
-                check=False,
             )
             stdout = proc.stdout.strip()
             stderr = proc.stderr.strip()
@@ -1565,7 +1538,7 @@ class PostgresServer:
                 ) from exc
             self._check_log_patterns("restart", offset, log_like, log_unlike)
             return False
-        with open(os.path.join(self.datadir, "postmaster.pid"), encoding="utf-8") as f:
+        with open(self.datadir / "postmaster.pid", encoding="utf-8") as f:
             self.pid = int(f.readline().strip())
         self._check_log_patterns("restart", offset, log_like, log_unlike)
         return True
@@ -1821,6 +1794,28 @@ class PostgresServer:
         subenv = self._connenv(**(addenv or {}))
         run(cmd, *args, env=subenv)
 
+    @staticmethod
+    def _run_text(cmd, *, input=None, env=None, timeout=None, check=False):
+        """Run *cmd*, capturing decoded stdout/stderr; the framework's single
+        text-capturing subprocess call.
+
+        Returns the completed process (with str .stdout/.stderr). Decoding uses
+        utf-8 with replacement so a stray non-UTF8 byte never crashes capture.
+        With check=True a nonzero exit raises CalledProcessError.
+        """
+        # pylint: disable=redefined-builtin  # 'input' matches subprocess.run
+        return subprocess.run(
+            cmd,
+            input=input,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            timeout=timeout,
+            check=check,
+        )
+
     def create_users(self, *userkeys: str):
         """Create test users and register them for cleanup."""
         usermap = {}
@@ -1934,7 +1929,7 @@ class PostgresServer:
 
         Co-authored-by: Andrew Dunstan <andrew@dunslane.net>
         """
-        self._run(os.path.join(self._bindir, "pg_ctl"), "kill", signame, str(pid))
+        self._run(self._bindir / "pg_ctl", "kill", signame, str(pid))
 
     def kill9(self):
         """Hard-kill the postmaster (cf. PostgreSQL::Test::Cluster->kill9).
@@ -1945,7 +1940,7 @@ class PostgresServer:
 
         Co-authored-by: Andrew Dunstan <andrew@dunslane.net>
         """
-        pidfile = os.path.join(self.datadir, "postmaster.pid")
+        pidfile = self.datadir / "postmaster.pid"
         try:
             with open(pidfile, encoding="utf-8") as fh:
                 pid = int(fh.readline().strip())
