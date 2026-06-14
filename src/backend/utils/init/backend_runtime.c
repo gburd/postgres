@@ -4050,6 +4050,8 @@ PgSessionInitializeRuntimeObject(PgSession *session,
 	session->backend = backend;
 	session->connection = connection;
 	session->execution = execution;
+	session->legacy_session = NULL;
+	session->legacy_session_context = NULL;
 	MemSet(&session->database, 0, sizeof(session->database));
 	PgSessionInitializeLoopState(&session->loop_state);
 	PgSessionInitializeTcopState(&session->tcop);
@@ -4103,6 +4105,8 @@ PgSessionInitializeRuntimeObject(PgSession *session,
 	PgSessionInitializePlanCacheState(&session->plan_cache);
 	PgSessionInitializeNamespaceState(&session->namespace_state);
 	PgSessionInitializeLocaleState(&session->locale);
+	session->dynamic_library_context = NULL;
+	session->dynamic_library_inits = NIL;
 }
 
 static void
@@ -4806,6 +4810,16 @@ PgSessionResetClosedState(PgSession *session)
 		SPI_freeplan(session->catalog_lookup.ruleutils_view_rule_plan);
 		session->catalog_lookup.ruleutils_view_rule_plan = NULL;
 	}
+	MemSet(session->catalog_lookup.sys_cache, 0,
+		   sizeof(session->catalog_lookup.sys_cache));
+	session->catalog_lookup.sys_cache_initialized = false;
+	MemSet(session->catalog_lookup.sys_cache_relation_oid, 0,
+		   sizeof(session->catalog_lookup.sys_cache_relation_oid));
+	session->catalog_lookup.sys_cache_relation_oid_size = 0;
+	MemSet(session->catalog_lookup.sys_cache_supporting_rel_oid, 0,
+		   sizeof(session->catalog_lookup.sys_cache_supporting_rel_oid));
+	session->catalog_lookup.sys_cache_supporting_rel_oid_size = 0;
+	session->catalog_lookup.cat_cache_header = NULL;
 	PgSessionInitializeInvalidationCallbackState(&session->invalidation_callbacks);
 
 	if (session->ri_globals.constraint_cache != NULL)
@@ -6179,6 +6193,48 @@ HTAB **
 PgCurrentCFuncHashRef(void)
 {
 	return &PgCurrentSessionFunctionManagerState()->c_func_hash;
+}
+
+CatCache **
+PgCurrentSysCacheArray(void)
+{
+	return PgCurrentSessionCatalogLookupState()->sys_cache;
+}
+
+bool *
+PgCurrentSysCacheInitializedRef(void)
+{
+	return &PgCurrentSessionCatalogLookupState()->sys_cache_initialized;
+}
+
+Oid *
+PgCurrentSysCacheRelationOidArray(void)
+{
+	return PgCurrentSessionCatalogLookupState()->sys_cache_relation_oid;
+}
+
+int *
+PgCurrentSysCacheRelationOidSizeRef(void)
+{
+	return &PgCurrentSessionCatalogLookupState()->sys_cache_relation_oid_size;
+}
+
+Oid *
+PgCurrentSysCacheSupportingRelOidArray(void)
+{
+	return PgCurrentSessionCatalogLookupState()->sys_cache_supporting_rel_oid;
+}
+
+int *
+PgCurrentSysCacheSupportingRelOidSizeRef(void)
+{
+	return &PgCurrentSessionCatalogLookupState()->sys_cache_supporting_rel_oid_size;
+}
+
+CatCacheHeader **
+PgCurrentCatCacheHeaderRef(void)
+{
+	return &PgCurrentSessionCatalogLookupState()->cat_cache_header;
 }
 
 void **

@@ -1682,9 +1682,15 @@ current binding, so threaded backend installation no longer changes the
 postmaster's runtime view, and moved runtime-global reserved GUC prefixes out
 of session `GUCMemoryContext` storage into a `TopMemoryContext` child guarded
 by the temporary GUC lock. This keeps PL/pgSQL prefix reservation valid after
-threaded backend FATAL cleanup. The global-lifetime scan now reports 141
-session-local declarations, down from 149, with zero new unclassified mutable
-globals, and the lifecycle manifest now classifies 146 runtime fields.
+threaded backend FATAL cleanup. Subsequent session-cache batches moved portal
+manager roots, compiled-regexp cache roots, syscache root arrays, and the
+catcache header behind `PgSession`. The global-lifetime scan now reports 130
+session-local declarations, down from 149 at the central GUC slice and down
+from 137 before the syscache/catcache root batch, with zero new unclassified
+mutable globals. The lifecycle manifest now classifies 147 runtime fields.
+Remaining cache-state Phase 12 targets include `CacheMemoryContext`, relcache,
+typcache, `funccache.c`, and JIT/provider caches, each of which needs an
+explicit reset/destroy rule before leaving Gate E2.
 
 ## Phase 13: Scheduler-Aware Wait Boundary
 

@@ -82,7 +82,7 @@ typedef struct CatCInProgress
 #endif
 
 /* Cache management header --- pointer is NULL until created */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION CatCacheHeader *CacheHdr = NULL;
+#define CacheHdr (*PgCurrentCatCacheHeaderRef())
 
 static inline HeapTuple SearchCatCacheInternal(CatCache *cache,
 											   int nkeys,

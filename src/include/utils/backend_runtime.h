@@ -82,6 +82,8 @@ typedef struct Subscription Subscription;
 typedef struct BufFile BufFile;
 typedef struct LargeObjectDesc LargeObjectDesc;
 typedef struct EventTriggerQueryState EventTriggerQueryState;
+typedef struct catcache CatCache;
+typedef struct catcacheheader CatCacheHeader;
 typedef struct CatCInProgress CatCInProgress;
 typedef struct inprogressent InProgressEnt;
 typedef struct TSParserCacheEntry TSParserCacheEntry;
@@ -1600,6 +1602,13 @@ typedef struct PgSessionExtensionModuleState
 
 typedef struct PgSessionCatalogLookupState
 {
+	CatCache   *sys_cache[SysCacheSize];
+	bool		sys_cache_initialized;
+	Oid			sys_cache_relation_oid[SysCacheSize];
+	int			sys_cache_relation_oid_size;
+	Oid			sys_cache_supporting_rel_oid[SysCacheSize * 2];
+	int			sys_cache_supporting_rel_oid_size;
+	CatCacheHeader *cat_cache_header;
 	HTAB	   *attopt_cache_hash;
 	HTAB	   *relfilenumber_map_hash;
 	ScanKeyData relfilenumber_skey[2];
@@ -2437,6 +2446,13 @@ extern bool *PgCurrentUseSemiNewlineNewlineRef(void);
 extern MemoryContext *PgCurrentRowDescriptionContextRef(void);
 extern StringInfoData *PgCurrentRowDescriptionBufRef(void);
 extern HTAB **PgCurrentCFuncHashRef(void);
+extern CatCache **PgCurrentSysCacheArray(void);
+extern bool *PgCurrentSysCacheInitializedRef(void);
+extern Oid *PgCurrentSysCacheRelationOidArray(void);
+extern int *PgCurrentSysCacheRelationOidSizeRef(void);
+extern Oid *PgCurrentSysCacheSupportingRelOidArray(void);
+extern int *PgCurrentSysCacheSupportingRelOidSizeRef(void);
+extern CatCacheHeader **PgCurrentCatCacheHeaderRef(void);
 extern HTAB **PgCurrentAttoptCacheHashRef(void);
 extern HTAB **PgCurrentRelfilenumberMapHashRef(void);
 extern ScanKeyData *PgCurrentRelfilenumberScanKeyArray(void);

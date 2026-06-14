@@ -947,6 +947,14 @@ Important current files:
   count, and ctype cache list behind runtime accessors. Session reset deletes
   the compiled-regexp cache context, clears the inline array/count, and frees
   the ctype cache list.
+- Syscache and catcache session roots now live in
+  `PgSessionCatalogLookupState`. `syscache.c` keeps `SysCache[]`, the
+  initialization flag, and relation/supporting-relation OID arrays behind
+  runtime accessors; `catcache.c` keeps `CacheHdr` behind a runtime accessor.
+  Session reset clears those roots, while catcache entry memory still belongs
+  to the broader `CacheMemoryContext` ownership split. Do not move
+  `funccache.c`'s hash root without adding a real iterator/destructor for
+  copied tuple descriptors and language-specific cached-function state.
 - Do not shallow-copy live `dlist_head` or `dclist_head` values when moving
   fallback state into a real runtime object. Use the runtime list-head move
   helpers so moved list nodes' back-links point at the destination head. This
@@ -1175,6 +1183,14 @@ Important current files:
   used the old `PgBackend` layout. Treat that as stale-object fallout: kill the
   stuck temp bootstrap, run the backend clean plus generated-file recovery,
   rebuild with `gmake -j8`, and reinstall before rerunning temp-instance tests.
+
+  The same rule applies when adding fields to embedded `PgSession` state. One
+  observed stale-object symptom after expanding `PgSessionCatalogLookupState`
+  was threaded `CREATE EXTENSION test_backend_runtime_threaded` crashing in
+  `list_member_ptr()` from `dfmgr.c` while recording `_PG_init()` session
+  state. Rebuild at least `src/backend/utils/fmgr/dfmgr.o` and reinstall the
+  temp tree; prefer a full backend clean plus generated-file recovery when the
+  layout change is broad.
 
 - When moving WAL/XLog state out of `src/backend/access/transam/xlog.c`, avoid
   object-like compatibility macros that reuse names of shared WAL struct

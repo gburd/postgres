@@ -3048,6 +3048,13 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 	PgSession  *saved_session;
 	PgSession	fake_session1;
 	PgSession	fake_session2;
+	CatCache   *saved_sys_cache[SysCacheSize];
+	bool		saved_sys_cache_initialized;
+	Oid			saved_sys_cache_relation_oid[SysCacheSize];
+	int			saved_sys_cache_relation_oid_size;
+	Oid			saved_sys_cache_supporting_rel_oid[SysCacheSize * 2];
+	int			saved_sys_cache_supporting_rel_oid_size;
+	CatCacheHeader *saved_cat_cache_header;
 	HTAB	   *saved_attopt_cache_hash;
 	HTAB	   *saved_relfilenumber_map_hash;
 	ScanKeyData saved_relfilenumber_skey[2];
@@ -3063,9 +3070,25 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 	MemoryContext session2_context_marker;
 	struct _SPI_plan *session1_plan_marker;
 	struct _SPI_plan *session2_plan_marker;
+	CatCache   *session1_syscache_marker;
+	CatCache   *session2_syscache_marker;
+	CatCacheHeader *session1_catcache_header_marker;
+	CatCacheHeader *session2_catcache_header_marker;
 	bool		ok = true;
 
 	saved_session = CurrentPgSession;
+	memcpy(saved_sys_cache, PgCurrentSysCacheArray(),
+		   sizeof(saved_sys_cache));
+	saved_sys_cache_initialized = *PgCurrentSysCacheInitializedRef();
+	memcpy(saved_sys_cache_relation_oid, PgCurrentSysCacheRelationOidArray(),
+		   sizeof(saved_sys_cache_relation_oid));
+	saved_sys_cache_relation_oid_size = *PgCurrentSysCacheRelationOidSizeRef();
+	memcpy(saved_sys_cache_supporting_rel_oid,
+		   PgCurrentSysCacheSupportingRelOidArray(),
+		   sizeof(saved_sys_cache_supporting_rel_oid));
+	saved_sys_cache_supporting_rel_oid_size =
+		*PgCurrentSysCacheSupportingRelOidSizeRef();
+	saved_cat_cache_header = *PgCurrentCatCacheHeaderRef();
 	saved_attopt_cache_hash = *PgCurrentAttoptCacheHashRef();
 	saved_relfilenumber_map_hash = *PgCurrentRelfilenumberMapHashRef();
 	memcpy(saved_relfilenumber_skey, PgCurrentRelfilenumberScanKeyArray(),
@@ -3087,10 +3110,21 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 	session2_context_marker = (MemoryContext) &fake_session2;
 	session1_plan_marker = (struct _SPI_plan *) &fake_session1;
 	session2_plan_marker = (struct _SPI_plan *) &fake_session2;
+	session1_syscache_marker = (CatCache *) &fake_session1;
+	session2_syscache_marker = (CatCache *) &fake_session2;
+	session1_catcache_header_marker = (CatCacheHeader *) &fake_session1;
+	session2_catcache_header_marker = (CatCacheHeader *) &fake_session2;
 
 	PG_TRY();
 	{
 		PgSetCurrentSession(&fake_session1);
+		ok = ok && PgCurrentSysCacheArray()[0] == NULL;
+		ok = ok && *PgCurrentSysCacheInitializedRef() == false;
+		ok = ok && PgCurrentSysCacheRelationOidArray()[0] == InvalidOid;
+		ok = ok && *PgCurrentSysCacheRelationOidSizeRef() == 0;
+		ok = ok && PgCurrentSysCacheSupportingRelOidArray()[0] == InvalidOid;
+		ok = ok && *PgCurrentSysCacheSupportingRelOidSizeRef() == 0;
+		ok = ok && *PgCurrentCatCacheHeaderRef() == NULL;
 		ok = ok && *PgCurrentAttoptCacheHashRef() == NULL;
 		ok = ok && *PgCurrentRelfilenumberMapHashRef() == NULL;
 		ok = ok && PgCurrentRelfilenumberScanKeyArray()[0].sk_attno == 0;
@@ -3100,6 +3134,13 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentEventTriggerCacheStateRef() == 0;
 		ok = ok && *PgCurrentRuleutilsRuleByOidPlanRef() == NULL;
 		ok = ok && *PgCurrentRuleutilsViewRulePlanRef() == NULL;
+		PgCurrentSysCacheArray()[0] = session1_syscache_marker;
+		*PgCurrentSysCacheInitializedRef() = true;
+		PgCurrentSysCacheRelationOidArray()[0] = 11;
+		*PgCurrentSysCacheRelationOidSizeRef() = 1;
+		PgCurrentSysCacheSupportingRelOidArray()[0] = 12;
+		*PgCurrentSysCacheSupportingRelOidSizeRef() = 1;
+		*PgCurrentCatCacheHeaderRef() = session1_catcache_header_marker;
 		*PgCurrentAttoptCacheHashRef() = session1_hash_marker;
 		*PgCurrentRelfilenumberMapHashRef() = session1_hash_marker;
 		PgCurrentRelfilenumberScanKeyArray()[0].sk_attno = 11;
@@ -3112,6 +3153,13 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		*PgCurrentRuleutilsViewRulePlanRef() = session1_plan_marker;
 
 		PgSetCurrentSession(&fake_session2);
+		ok = ok && PgCurrentSysCacheArray()[0] == NULL;
+		ok = ok && *PgCurrentSysCacheInitializedRef() == false;
+		ok = ok && PgCurrentSysCacheRelationOidArray()[0] == InvalidOid;
+		ok = ok && *PgCurrentSysCacheRelationOidSizeRef() == 0;
+		ok = ok && PgCurrentSysCacheSupportingRelOidArray()[0] == InvalidOid;
+		ok = ok && *PgCurrentSysCacheSupportingRelOidSizeRef() == 0;
+		ok = ok && *PgCurrentCatCacheHeaderRef() == NULL;
 		ok = ok && *PgCurrentAttoptCacheHashRef() == NULL;
 		ok = ok && *PgCurrentRelfilenumberMapHashRef() == NULL;
 		ok = ok && PgCurrentRelfilenumberScanKeyArray()[0].sk_attno == 0;
@@ -3121,6 +3169,13 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentEventTriggerCacheStateRef() == 0;
 		ok = ok && *PgCurrentRuleutilsRuleByOidPlanRef() == NULL;
 		ok = ok && *PgCurrentRuleutilsViewRulePlanRef() == NULL;
+		PgCurrentSysCacheArray()[0] = session2_syscache_marker;
+		*PgCurrentSysCacheInitializedRef() = true;
+		PgCurrentSysCacheRelationOidArray()[0] = 21;
+		*PgCurrentSysCacheRelationOidSizeRef() = 1;
+		PgCurrentSysCacheSupportingRelOidArray()[0] = 22;
+		*PgCurrentSysCacheSupportingRelOidSizeRef() = 1;
+		*PgCurrentCatCacheHeaderRef() = session2_catcache_header_marker;
 		*PgCurrentAttoptCacheHashRef() = session2_hash_marker;
 		*PgCurrentRelfilenumberMapHashRef() = session2_hash_marker;
 		PgCurrentRelfilenumberScanKeyArray()[0].sk_attno = 21;
@@ -3133,6 +3188,14 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		*PgCurrentRuleutilsViewRulePlanRef() = session2_plan_marker;
 
 		PgSetCurrentSession(&fake_session1);
+		ok = ok && PgCurrentSysCacheArray()[0] == session1_syscache_marker;
+		ok = ok && *PgCurrentSysCacheInitializedRef() == true;
+		ok = ok && PgCurrentSysCacheRelationOidArray()[0] == 11;
+		ok = ok && *PgCurrentSysCacheRelationOidSizeRef() == 1;
+		ok = ok && PgCurrentSysCacheSupportingRelOidArray()[0] == 12;
+		ok = ok && *PgCurrentSysCacheSupportingRelOidSizeRef() == 1;
+		ok = ok && *PgCurrentCatCacheHeaderRef() ==
+			session1_catcache_header_marker;
 		ok = ok && *PgCurrentAttoptCacheHashRef() == session1_hash_marker;
 		ok = ok && *PgCurrentRelfilenumberMapHashRef() == session1_hash_marker;
 		ok = ok && PgCurrentRelfilenumberScanKeyArray()[0].sk_attno == 11;
@@ -3145,6 +3208,14 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentRuleutilsViewRulePlanRef() == session1_plan_marker;
 
 		PgSetCurrentSession(&fake_session2);
+		ok = ok && PgCurrentSysCacheArray()[0] == session2_syscache_marker;
+		ok = ok && *PgCurrentSysCacheInitializedRef() == true;
+		ok = ok && PgCurrentSysCacheRelationOidArray()[0] == 21;
+		ok = ok && *PgCurrentSysCacheRelationOidSizeRef() == 1;
+		ok = ok && PgCurrentSysCacheSupportingRelOidArray()[0] == 22;
+		ok = ok && *PgCurrentSysCacheSupportingRelOidSizeRef() == 1;
+		ok = ok && *PgCurrentCatCacheHeaderRef() ==
+			session2_catcache_header_marker;
 		ok = ok && *PgCurrentAttoptCacheHashRef() == session2_hash_marker;
 		ok = ok && *PgCurrentRelfilenumberMapHashRef() == session2_hash_marker;
 		ok = ok && PgCurrentRelfilenumberScanKeyArray()[0].sk_attno == 21;
@@ -3157,6 +3228,20 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentRuleutilsViewRulePlanRef() == session2_plan_marker;
 
 		PgSetCurrentSession(saved_session);
+		memcpy(PgCurrentSysCacheArray(), saved_sys_cache,
+			   sizeof(saved_sys_cache));
+		*PgCurrentSysCacheInitializedRef() = saved_sys_cache_initialized;
+		memcpy(PgCurrentSysCacheRelationOidArray(),
+			   saved_sys_cache_relation_oid,
+			   sizeof(saved_sys_cache_relation_oid));
+		*PgCurrentSysCacheRelationOidSizeRef() =
+			saved_sys_cache_relation_oid_size;
+		memcpy(PgCurrentSysCacheSupportingRelOidArray(),
+			   saved_sys_cache_supporting_rel_oid,
+			   sizeof(saved_sys_cache_supporting_rel_oid));
+		*PgCurrentSysCacheSupportingRelOidSizeRef() =
+			saved_sys_cache_supporting_rel_oid_size;
+		*PgCurrentCatCacheHeaderRef() = saved_cat_cache_header;
 		*PgCurrentAttoptCacheHashRef() = saved_attopt_cache_hash;
 		*PgCurrentRelfilenumberMapHashRef() = saved_relfilenumber_map_hash;
 		memcpy(PgCurrentRelfilenumberScanKeyArray(), saved_relfilenumber_skey,
@@ -3171,6 +3256,20 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 	PG_CATCH();
 	{
 		PgSetCurrentSession(saved_session);
+		memcpy(PgCurrentSysCacheArray(), saved_sys_cache,
+			   sizeof(saved_sys_cache));
+		*PgCurrentSysCacheInitializedRef() = saved_sys_cache_initialized;
+		memcpy(PgCurrentSysCacheRelationOidArray(),
+			   saved_sys_cache_relation_oid,
+			   sizeof(saved_sys_cache_relation_oid));
+		*PgCurrentSysCacheRelationOidSizeRef() =
+			saved_sys_cache_relation_oid_size;
+		memcpy(PgCurrentSysCacheSupportingRelOidArray(),
+			   saved_sys_cache_supporting_rel_oid,
+			   sizeof(saved_sys_cache_supporting_rel_oid));
+		*PgCurrentSysCacheSupportingRelOidSizeRef() =
+			saved_sys_cache_supporting_rel_oid_size;
+		*PgCurrentCatCacheHeaderRef() = saved_cat_cache_header;
 		*PgCurrentAttoptCacheHashRef() = saved_attopt_cache_hash;
 		*PgCurrentRelfilenumberMapHashRef() = saved_relfilenumber_map_hash;
 		memcpy(PgCurrentRelfilenumberScanKeyArray(), saved_relfilenumber_skey,

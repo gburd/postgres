@@ -33,6 +33,7 @@
 #include "miscadmin.h"
 #include "storage/lmgr.h"
 #include "storage/lock.h"
+#include "utils/backend_runtime.h"
 #include "utils/catcache.h"
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
@@ -84,17 +85,17 @@ struct cachedesc
 StaticAssertDecl(lengthof(cacheinfo) == SysCacheSize,
 				 "SysCacheSize does not match syscache.c's array");
 
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION CatCache *SysCache[SysCacheSize];
+#define SysCache (PgCurrentSysCacheArray())
 
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool CacheInitialized = false;
+#define CacheInitialized (*PgCurrentSysCacheInitializedRef())
 
 /* Sorted array of OIDs of tables that have caches on them */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid SysCacheRelationOid[SysCacheSize];
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION int SysCacheRelationOidSize;
+#define SysCacheRelationOid (PgCurrentSysCacheRelationOidArray())
+#define SysCacheRelationOidSize (*PgCurrentSysCacheRelationOidSizeRef())
 
 /* Sorted array of OIDs of tables and indexes used by caches */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid SysCacheSupportingRelOid[SysCacheSize * 2];
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION int SysCacheSupportingRelOidSize;
+#define SysCacheSupportingRelOid (PgCurrentSysCacheSupportingRelOidArray())
+#define SysCacheSupportingRelOidSize (*PgCurrentSysCacheSupportingRelOidSizeRef())
 
 static int	oid_compare(const void *a, const void *b);
 
@@ -146,8 +147,8 @@ InitCatalogCache(void)
 		Assert(!RelationInvalidatesSnapshotsOnly(cacheinfo[cacheId].reloid));
 	}
 
-	Assert(SysCacheRelationOidSize <= lengthof(SysCacheRelationOid));
-	Assert(SysCacheSupportingRelOidSize <= lengthof(SysCacheSupportingRelOid));
+	Assert(SysCacheRelationOidSize <= SysCacheSize);
+	Assert(SysCacheSupportingRelOidSize <= SysCacheSize * 2);
 
 	/* Sort and de-dup OID arrays, so we can use binary search. */
 	qsort(SysCacheRelationOid, SysCacheRelationOidSize,

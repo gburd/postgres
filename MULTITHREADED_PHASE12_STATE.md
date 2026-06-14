@@ -9650,3 +9650,40 @@ sleeping until the next timeout.
 
 This is part of Gate E2 because it tightens PMChild/thread-backend
 synchronization rather than adding a new scheduling feature.
+
+## Syscache And Catcache Session Roots
+
+The next Phase 12 cache-state batch moves the syscache and catcache root
+storage behind `PgSessionCatalogLookupState`:
+
+- `syscache.c` now stores the `SysCache[]` array, initialization flag, and
+  relation/supporting-relation OID arrays in `PgSession`;
+- `catcache.c` now stores the `CacheHdr` root pointer in `PgSession`.
+
+Both files keep their historic local names as macros over runtime accessors.
+The catcache entries, bucket arrays, copied tuples, and cache descriptors
+still live under `CacheMemoryContext`; this slice moves the session-visible
+roots that select a logical session's catalog-cache universe. It deliberately
+does not move `CacheMemoryContext`, relcache roots, typcache roots, or
+`funccache.c` yet. `funccache.c` needs an explicit iterator/destructor before
+its hash root can move safely, because hash entries can own copied tuple
+descriptors and language-specific cached-function state.
+
+The lifecycle rule is explicit. Early fallback adoption moves the root arrays
+and header pointer as part of `PgSessionCatalogLookupState`. Session reset
+clears those roots after destroying the smaller catalog lookup hash/context
+roots and retained ruleutils SPI plans; entry memory remains owned by the
+broader `CacheMemoryContext` ownership split that is still a Phase 12 cache
+work item. These root pointers must not be shallow-copied between concurrently
+live sessions.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `syscache.o`,
+  `catcache.o`, and `test_backend_runtime.o`;
+- `test_session_catalog_lookup_state_is_session_local()` now covers syscache
+  arrays, syscache OID-array counters, and the catcache header pointer across
+  fake-session switching;
+- `gmake check-runtime-lifecycles` passed with 147 runtime fields classified;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and session-local declarations reduced from 137 to 130.
