@@ -922,6 +922,12 @@ Gate E2 requires:
   operations the batch repeats, decide whether an existing checked helper
   covers them, add a reusable helper/table/checker rule first if not, and only
   then move the batch through that path;
+- that lifecycle-ergonomics checkpoint must produce an explicit preflight note
+  before the next object-state migration or teardown batch begins. The note
+  must either name the existing bucket rows/macros/checker rules being reused,
+  or name the framework extension landed before the migration. This is meant to
+  keep larger Phase 12 batches fast without losing manifest-checked lifecycle
+  discipline;
 - future lifecycle ergonomics work should prefer reusable checked mechanisms
   over local one-off helpers. The desired shape is one manifest row and one
   checked bucket-definition row per migrated field, with `PG_RUNTIME_DEFINE_*`

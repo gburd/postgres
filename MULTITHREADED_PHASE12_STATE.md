@@ -10936,6 +10936,11 @@ Lifecycle ergonomics operational checkpoint:
   when no new helper is needed, so future agents can see why the batch used the
   existing mechanism instead of adding another macro/table/checker rule.
 
+Documentation update: the lifecycle preflight is now a required Gate E2 work
+rule, not just a preference. Before the next object-state migration or
+teardown batch starts, the state log must record either the existing checked
+mechanism being reused or the macro/`.def`/checker extension landed first.
+
 Execution closed-reset hardening slice completed:
 
 - lifecycle preflight result: the existing execution bucket `.def` rows and

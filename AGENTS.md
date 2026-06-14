@@ -312,6 +312,13 @@ Important current files:
   rows/checker rules cover them, add a reusable checked helper first if they do
   not, then migrate the batch through that mechanism. Record the decision in
   the Phase 12 state log even when the existing framework is sufficient.
+- This lifecycle preflight is mandatory before the next code batch that moves
+  object-owned globals or adds reset/destroy behavior. The preflight note must
+  say one of: "existing lifecycle mechanism is sufficient" with the specific
+  bucket rows/macros named, or "framework extended first" with the new macro,
+  `.def` rule, or checker validation named. Do not start by writing another
+  handwritten helper list if a small checked macro/table rule would cover the
+  repeated pattern.
 - When adding another runtime root object or moving more fields into an
   existing root, extend the checked lifecycle framework first if the existing
   macros and `.def` rows do not make the lifecycle obvious. The default should
