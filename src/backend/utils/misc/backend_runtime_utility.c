@@ -68,6 +68,20 @@ PgCurrentInjectionPointCacheRef(void)
 	return &PgCurrentBackendUtilityState()->injection_point_cache;
 }
 
+MemoryContext
+PgCurrentUtilityCacheMemoryContext(void)
+{
+	PgBackendUtilityState *utility = PgCurrentBackendUtilityState();
+
+	if (utility->utility_cache_context == NULL)
+		utility->utility_cache_context =
+			AllocSetContextCreate(TopMemoryContext,
+								  "utility cache backend state",
+								  ALLOCSET_SMALL_SIZES);
+
+	return utility->utility_cache_context;
+}
+
 ReservoirStateData *
 PgCurrentSamplingOldReservoirRef(void)
 {

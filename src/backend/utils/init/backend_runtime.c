@@ -3063,6 +3063,7 @@ PgBackendAdoptEarlyUtilityState(PgBackend *backend)
 	Assert(backend != NULL);
 	Assert(early_backend_utility.extension_sibling_list == NULL);
 	Assert(early_backend_utility.injection_point_cache == NULL);
+	Assert(early_backend_utility.utility_cache_context == NULL);
 	Assert(early_backend_utility.resource_release_callbacks == NULL);
 	Assert(early_backend_utility.libxml_context == NULL);
 	Assert(early_backend_utility.missing_attr_cache == NULL);
@@ -4603,6 +4604,12 @@ PgBackendResetUtilityClosedState(PgBackendUtilityState *utility)
 	{
 		hash_destroy(utility->missing_attr_cache);
 		utility->missing_attr_cache = NULL;
+	}
+
+	if (utility->utility_cache_context != NULL)
+	{
+		MemoryContextDelete(utility->utility_cache_context);
+		utility->utility_cache_context = NULL;
 	}
 }
 

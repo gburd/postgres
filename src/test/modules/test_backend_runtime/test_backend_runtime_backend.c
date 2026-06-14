@@ -915,9 +915,16 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	utility->num_seq_scans = 2;
 	RegisterResourceReleaseCallback(test_backend_runtime_resource_release_callback,
 									NULL);
+	utility->utility_cache_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test utility cache context",
+							  ALLOCSET_SMALL_SIZES);
+	hash_ctl.hcxt = utility->utility_cache_context;
 	utility->injection_point_cache =
 		hash_create("test injection point cache", 8, &hash_ctl,
-					HASH_ELEM | HASH_BLOBS);
+					HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	ok = ok && MemoryContextGetParent(GetMemoryChunkContext(utility->injection_point_cache)) ==
+		utility->utility_cache_context;
 	utility->format_cache_context =
 		AllocSetContextCreate(TopMemoryContext,
 							  "test format cache context",
@@ -944,7 +951,9 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 							  ALLOCSET_SMALL_SIZES);
 	utility->missing_attr_cache =
 		hash_create("test missing attr cache", 8, &hash_ctl,
-					HASH_ELEM | HASH_BLOBS);
+					HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	ok = ok && MemoryContextGetParent(GetMemoryChunkContext(utility->missing_attr_cache)) ==
+		utility->utility_cache_context;
 
 	PgBackendResetClosedState(&fake_backend);
 
@@ -1042,6 +1051,7 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && utility->num_seq_scans == 0;
 	ok = ok && utility->resource_release_callbacks == NULL;
 	ok = ok && utility->injection_point_cache == NULL;
+	ok = ok && utility->utility_cache_context == NULL;
 	ok = ok && utility->dch_cache[0] == NULL;
 	ok = ok && utility->dch_cache[1] == NULL;
 	ok = ok && utility->n_dch_cache == 0;

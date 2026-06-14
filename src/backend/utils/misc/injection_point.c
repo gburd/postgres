@@ -91,8 +91,8 @@ typedef struct InjectionPointsCtl
 PG_GLOBAL_SHMEM NON_EXEC_STATIC InjectionPointsCtl *ActiveInjectionPoints;
 
 /*
- * Backend local cache of injection callbacks already loaded, stored in
- * TopMemoryContext.
+ * Backend local cache of injection callbacks already loaded, stored in the
+ * current backend's utility cache context.
  */
 typedef struct InjectionPointCacheEntry
 {
@@ -136,7 +136,7 @@ injection_point_cache_add(const char *name,
 
 		hash_ctl.keysize = sizeof(char[INJ_NAME_MAXLEN]);
 		hash_ctl.entrysize = sizeof(InjectionPointCacheEntry);
-		hash_ctl.hcxt = TopMemoryContext;
+		hash_ctl.hcxt = PgCurrentUtilityCacheMemoryContext();
 
 		InjectionPointCache = hash_create("InjectionPoint cache hash",
 										  MAX_INJECTION_POINTS,

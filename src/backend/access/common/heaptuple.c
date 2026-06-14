@@ -130,7 +130,7 @@ init_missing_cache(void)
 
 	hash_ctl.keysize = sizeof(missing_cache_key);
 	hash_ctl.entrysize = sizeof(missing_cache_key);
-	hash_ctl.hcxt = TopMemoryContext;
+	hash_ctl.hcxt = PgCurrentUtilityCacheMemoryContext();
 	hash_ctl.hash = missing_hash;
 	hash_ctl.match = missing_match;
 	missing_cache =

@@ -1717,6 +1717,11 @@ allocation under a backend-owned `FormatCacheContext`. The cache lookup and
 aging semantics remain unchanged, but closed-backend reset now reclaims the
 formatting cache allocation family through the backend utility bucket instead
 of leaving entries as direct `TopMemoryContext` children.
+Follow-up utility-cache hardening moved the injection-point callback cache and
+missing-attribute cache hash tables under a backend-owned
+`UtilityCacheContext`, keeping the existing hash reset semantics while
+removing two more direct utility-cache allocation families from the retained
+`TopMemoryContext` tree.
 Follow-up session teardown hardening added `PgSessionResetClosedState()`.
 `dfmgr.c` now allocates the per-session dynamic-library `_PG_init()` replay
 list under `PgSession.dynamic_library_context` instead of `TopMemoryContext`,

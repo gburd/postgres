@@ -611,6 +611,7 @@ typedef struct PgBackendUtilityState
 	bool		async_unlisten_exit_registered;
 	struct ExtensionSiblingCache *extension_sibling_list;
 	HTAB	   *injection_point_cache;
+	MemoryContext utility_cache_context;
 	ReservoirStateData sampling_old_reservoir;
 	bool		sampling_old_reservoir_initialized;
 	HTAB	   *seq_scan_tables[PG_BACKEND_MAX_SEQ_SCANS];
@@ -2402,6 +2403,7 @@ extern volatile sig_atomic_t *PgCurrentNotifyInterruptPendingRef(void);
 extern bool *PgCurrentAsyncUnlistenExitRegisteredRef(void);
 extern struct ExtensionSiblingCache **PgCurrentExtensionSiblingListRef(void);
 extern HTAB **PgCurrentInjectionPointCacheRef(void);
+extern MemoryContext PgCurrentUtilityCacheMemoryContext(void);
 extern ReservoirStateData *PgCurrentSamplingOldReservoirRef(void);
 extern bool *PgCurrentSamplingOldReservoirInitializedRef(void);
 extern Oid *PgCurrentSuperuserLastRoleIdRef(void);

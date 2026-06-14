@@ -11537,3 +11537,56 @@ Validation for the backend formatting-cache allocation-context slice:
   `002_threaded_bgworker_crash.pl`, 131 tests total, with the documented
   local `IPC::Run` `PERL5LIB` and patched temporary-install install-name
   paths.
+
+Backend utility-cache allocation-context preflight:
+
+- target root and bucket: `PgBackend.utility`;
+- repeated lifecycle operations: one backend-owned parent allocation context
+  for utility-local hash-table caches, with closed-backend reset destroying
+  the child hash tables before deleting the parent context;
+- lifecycle preflight result: the existing `PG_BACKEND_BUCKET(utility, ...)`
+  checked row and owner-adjacent utility accessors are sufficient. This slice
+  reuses the existing semantic `PgBackendResetUtilityClosedState()` helper
+  because injection-point and missing-attribute caches are reset in that
+  bucket already; no new generic lifecycle action is needed.
+
+Backend utility-cache allocation-context slice completed:
+
+- `PgBackendUtilityState` now includes `utility_cache_context`, and
+  `PgCurrentUtilityCacheMemoryContext()` lazily creates a backend-owned parent
+  context for utility hash-table caches;
+- the local injection-point callback cache and missing-attribute value cache
+  now create their dynahash private contexts under `UtilityCacheContext`
+  instead of directly under `TopMemoryContext`;
+- early fallback adoption keeps asserting the injection-point cache,
+  missing-attribute cache, and `utility_cache_context` are empty before
+  runtime install;
+- `PgBackendResetClosedState()` destroys the injection-point and
+  missing-attribute hash tables through their existing paths, then deletes
+  `utility_cache_context`;
+- `MULTITHREADED_RUNTIME_OWNERS.tsv` maps `InjectionPointCache`,
+  `MissingAttrCache`, and `UtilityCacheContext` to `PgBackend.utility`;
+- `test_backend_reset_closed_state()` verifies both hash tables are allocated
+  in dynahash contexts parented by `UtilityCacheContext` and that
+  closed-backend reset clears both cache pointers and the parent context slot.
+
+Validation for the backend utility-cache allocation-context slice:
+
+- touched-object builds passed for `backend_runtime_utility.o`,
+  `injection_point.o`, `heaptuple.o`, `backend_runtime.o`, and
+  `test_backend_runtime_backend.o`;
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 27 reset definitions checked, and 166 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- after the installed `backend_runtime.h` layout change, the documented
+  backend clean/generated-header recovery path completed and full `gmake -j8`
+  passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed
+  after the clean rebuild;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with the documented
+  local `IPC::Run` `PERL5LIB` and patched temporary-install install-name
+  paths.
