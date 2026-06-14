@@ -10429,6 +10429,26 @@ Acceptance criteria for the refactor slice:
 - docs and `AGENTS.md` tell future agents where new runtime buckets and tests
   should go, so new work does not default back to the giant central files.
 
+Lifecycle bucket definition framework slice completed:
+
+- `src/backend/utils/init/backend_runtime_backend_buckets.def`,
+  `backend_runtime_session_buckets.def`,
+  `backend_runtime_connection_buckets.def`, and
+  `backend_runtime_execution_buckets.def` now define one checked row for each
+  `PgBackend`, `PgSession`, `PgConnection`, and `PgExecution` field;
+- each row names constructor, early-adoption, and closed-reset expressions;
+- `check_runtime_lifecycles.pl` validates the bucket definitions against the
+  root-object fields and `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`, and confirms
+  every referenced runtime lifecycle function is present in the checked source
+  set;
+- `backend_runtime.c` includes the rows for constructor setup and early
+  fallback adoption. Backend, connection, and execution closed-reset
+  orchestration includes the same rows directly;
+- session closed reset remains a handwritten semantic cleanup path for now
+  because its teardown order differs from early-adoption order. Close this
+  remaining reset asymmetry with an order-aware reset definition, not by
+  blindly reusing the adoption order.
+
 First refactor slice completed:
 
 - `src/backend/libpq/backend_runtime_connection.c` now owns

@@ -30,24 +30,32 @@ my @sources = (
 	'src/backend/storage/lmgr/backend_runtime_lmgr.c',
 	'src/backend/storage/ipc/backend_runtime_ipc.c',
 	'src/backend/storage/ipc/ipc.c');
+my @bucket_defs = (
+	'src/backend/utils/init/backend_runtime_backend_buckets.def',
+	'src/backend/utils/init/backend_runtime_session_buckets.def',
+	'src/backend/utils/init/backend_runtime_connection_buckets.def',
+	'src/backend/utils/init/backend_runtime_execution_buckets.def');
 my $help = 0;
 
 GetOptions(
 	'header=s' => \$header,
 	'manifest=s' => \$manifest,
 	'source=s' => \@sources,
+	'bucket-def=s' => \@bucket_defs,
 	'help' => \$help,
 ) or usage(2);
 
 usage(0) if $help;
 
+my @errors;
 my @fields = read_runtime_fields($header);
 my %header_fields = map { field_key($_) => $_ } @fields;
 my @manifest_rows = read_manifest($manifest);
+my @bucket_rows = read_bucket_defs(@bucket_defs);
 my $source_text = read_sources(@sources);
 my %source_functions = defined_functions($source_text);
 my %manifest_fields;
-my @errors;
+my %bucket_fields;
 
 foreach my $row (@manifest_rows)
 {
@@ -89,6 +97,52 @@ foreach my $field (@fields)
 	  unless exists $manifest_fields{$key};
 }
 
+foreach my $row (@bucket_rows)
+{
+	my $key = field_key($row);
+
+	if (exists $bucket_fields{$key})
+	{
+		push @errors,
+		  "$row->{file}:$row->{line}: duplicate bucket definition for $key";
+		next;
+	}
+
+	$bucket_fields{$key} = $row;
+
+	if (!exists $header_fields{$key})
+	{
+		push @errors,
+		  "$row->{file}:$row->{line}: stale bucket definition for $key";
+	}
+
+	if (!exists $manifest_fields{$key})
+	{
+		push @errors,
+		  "$row->{file}:$row->{line}: bucket definition for $key has no lifecycle manifest row";
+	}
+
+	foreach my $column (qw(initializer early_adoption reset_destroy))
+	{
+		foreach my $function (runtime_function_refs($row->{$column}))
+		{
+			if (!exists $source_functions{$function})
+			{
+				push @errors,
+				  "$row->{file}:$row->{line}: $column references $function(), but no definition was found in the checked runtime sources";
+			}
+		}
+	}
+}
+
+foreach my $field (@fields)
+{
+	my $key = field_key($field);
+
+	push @errors, "missing bucket definition for $key"
+	  unless exists $bucket_fields{$key};
+}
+
 push @errors, require_function_calls(
 	'InitializePgProcessRuntime',
 	[qw(PgBackendInitializeRuntimeObject
@@ -121,8 +175,8 @@ if (@errors)
 	exit 1;
 }
 
-printf "runtime lifecycle check passed: %d fields classified\n",
-  scalar @fields;
+printf "runtime lifecycle check passed: %d fields classified, %d bucket definitions checked\n",
+  scalar @fields, scalar @bucket_rows;
 exit 0;
 
 sub usage
@@ -136,6 +190,7 @@ Options:
   --header FILE     backend_runtime.h path
   --manifest FILE   lifecycle manifest path
   --source FILE     runtime source path to scan for lifecycle functions
+  --bucket-def FILE root-object bucket definition file to validate
   --help            show this help
 USAGE
 
@@ -233,6 +288,92 @@ sub runtime_function_refs
 	}
 
 	return sort keys %refs;
+}
+
+sub read_bucket_defs
+{
+	my (@files) = @_;
+	my @rows;
+	my %objects = (
+		BACKEND => 'PgBackend',
+		SESSION => 'PgSession',
+		CONNECTION => 'PgConnection',
+		EXECUTION => 'PgExecution',
+	);
+
+	foreach my $file (@files)
+	{
+		open my $fh, '<', $file or die "could not open $file: $!";
+
+		while (my $line = <$fh>)
+		{
+			chomp $line;
+			next if $line =~ /^\s*$/;
+			next if $line =~ /^\s*(?:\/\*|\*)/;
+
+			if ($line !~ /^\s*PG_(BACKEND|SESSION|CONNECTION|EXECUTION)_BUCKET\s*\((.*)\)\s*$/)
+			{
+				push @errors, "$file:$.: expected PG_*_BUCKET(...) row";
+				next;
+			}
+
+			my $object = $objects{$1};
+			my @args = split_macro_args($2);
+			if (@args != 4)
+			{
+				push @errors,
+				  "$file:$.: expected 4 bucket definition arguments, got " . scalar(@args);
+				next;
+			}
+
+			push @rows,
+			  {
+				object => $object,
+				field => $args[0],
+				initializer => $args[1],
+				early_adoption => $args[2],
+				reset_destroy => $args[3],
+				file => $file,
+				line => $.,
+			  };
+		}
+	}
+
+	return @rows;
+}
+
+sub split_macro_args
+{
+	my ($text) = @_;
+	my @args;
+	my $current = '';
+	my $depth = 0;
+
+	foreach my $char (split //, $text)
+	{
+		if ($char eq ',' && $depth == 0)
+		{
+			push @args, trim($current);
+			$current = '';
+			next;
+		}
+
+		$current .= $char;
+		$depth++ if $char eq '(' || $char eq '[' || $char eq '{';
+		$depth-- if $char eq ')' || $char eq ']' || $char eq '}';
+	}
+
+	push @args, trim($current);
+	return @args;
+}
+
+sub trim
+{
+	my ($value) = @_;
+
+	$value =~ s/^\s+//;
+	$value =~ s/\s+$//;
+	return $value;
 }
 
 sub require_function_calls

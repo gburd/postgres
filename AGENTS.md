@@ -237,6 +237,14 @@ Important current files:
   optional polish. Prefer checked `.def` bucket files included from the
   top-level runtime constructors/adoption/reset orchestration before adding
   more handwritten init/adopt/reset lists.
+- The first lifecycle framework slice uses
+  `src/backend/utils/init/backend_runtime_*_buckets.def`. The checker validates
+  one bucket-definition row for every `PgBackend`, `PgSession`, `PgConnection`,
+  and `PgExecution` field. Backend, connection, and execution constructor,
+  adoption, and closed-reset orchestration include those rows directly.
+  Session constructor/adoption includes the rows; session closed reset remains
+  handwritten for now because its teardown order is intentionally different
+  from early-adoption order.
 - Do not attempt thread launch until the thread-safety floor is in place:
   backend-local globals must not be shared plain process globals, backend exit
   must not terminate the whole runtime, and timeout/interrupt delivery must be

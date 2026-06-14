@@ -1110,17 +1110,21 @@ PgConnectionAdoptEarlySecurityState(PgConnection *connection)
 	MemSet(&early_connection_security, 0, sizeof(early_connection_security));
 }
 
-void
-PgConnectionResetClosedState(PgConnection *connection)
+static void
+PgConnectionResetIdentityClosedState(PgConnection *connection)
 {
-	PgConnectionSecurityState *security;
-
 	Assert(connection != NULL);
 
 	connection->identity.port = NULL;
 	MemSet(connection->identity.cancel_key, 0,
 		   sizeof(connection->identity.cancel_key));
 	connection->identity.cancel_key_length = 0;
+}
+
+static void
+PgConnectionResetSocketIOClosedState(PgConnection *connection)
+{
+	Assert(connection != NULL);
 
 	/*
 	 * socket_close() releases the palloc-backed send buffer and wait set.
@@ -1128,9 +1132,22 @@ PgConnectionResetClosedState(PgConnection *connection)
 	 * at resources that no longer exist.
 	 */
 	MemSet(&connection->socket_io, 0, sizeof(connection->socket_io));
+}
+
+static void
+PgConnectionResetProtocolClosedState(PgConnection *connection)
+{
+	Assert(connection != NULL);
+
 	connection->protocol.comm_methods = NULL;
 	connection->protocol.fe_be_wait_set = NULL;
 	connection->protocol.frontend_protocol = 0;
+}
+
+static void
+PgConnectionResetStartupClosedState(PgConnection *connection)
+{
+	Assert(connection != NULL);
 
 	connection->startup.client_auth_in_progress = false;
 	connection->startup.client_socket = NULL;
@@ -1139,6 +1156,14 @@ PgConnectionResetClosedState(PgConnection *connection)
 	connection->startup.connection_warnings_emitted = false;
 	connection->startup.connection_warning_messages = NIL;
 	connection->startup.connection_warning_details = NIL;
+}
+
+static void
+PgConnectionResetSecurityClosedState(PgConnection *connection)
+{
+	PgConnectionSecurityState *security;
+
+	Assert(connection != NULL);
 
 	/*
 	 * GSSAPI connection buffers are malloc-backed in be-secure-gssapi.c.
@@ -1153,21 +1178,26 @@ PgConnectionResetClosedState(PgConnection *connection)
 }
 
 void
+PgConnectionResetClosedState(PgConnection *connection)
+{
+	Assert(connection != NULL);
+
+#define PG_CONNECTION_BUCKET(field, init, adopt, reset) \
+	do { reset; } while (0);
+#include "backend_runtime_connection_buckets.def"
+#undef PG_CONNECTION_BUCKET
+}
+
+void
 PgConnectionAdoptEarlyState(PgConnection *connection,
 							struct Port *preserved_port)
 {
 	Assert(connection != NULL);
 
-	PgConnectionAdoptEarlyIdentity(connection);
-	if (preserved_port != NULL)
-		connection->identity.port = preserved_port;
-	PgConnectionAdoptEarlySocketIO(connection);
-	PgConnectionAdoptEarlyProtocolState(connection);
-	PgConnectionAdoptEarlyOutputState(connection);
-	PgConnectionAdoptEarlyInterruptState(connection);
-	PgConnectionAdoptEarlyStartupState(connection);
-	PgConnectionAdoptEarlyClientConnectionInfo(connection);
-	PgConnectionAdoptEarlySecurityState(connection);
+#define PG_CONNECTION_BUCKET(field, init, adopt, reset) \
+	do { adopt; } while (0);
+#include "backend_runtime_connection_buckets.def"
+#undef PG_CONNECTION_BUCKET
 }
 
 static void
@@ -2664,61 +2694,10 @@ PgSessionAdoptEarlyState(PgSession *session)
 {
 	Assert(session != NULL);
 
-	PgSessionAdoptEarlyLoopState(session);
-	PgSessionAdoptEarlyTcopState(session);
-	PgSessionAdoptEarlyDatabaseState(session);
-	PgSessionAdoptEarlyTablespaceState(session);
-	PgSessionAdoptEarlyBinaryUpgradeState(session);
-	PgSessionAdoptEarlyGUCState(session);
-	PgSessionAdoptEarlyDateTimeState(session);
-	PgSessionAdoptEarlyTextSearchState(session);
-	PgSessionAdoptEarlyConnectionGUCState(session);
-	PgSessionAdoptEarlyParserState(session);
-	PgSessionAdoptEarlyVacuumState(session);
-	PgSessionAdoptEarlyBufferIOState(session);
-	PgSessionAdoptEarlyXactDefaultState(session);
-	PgSessionAdoptEarlyLockWaitState(session);
-	PgSessionAdoptEarlyLoggingState(session);
-	PgSessionAdoptEarlyMiscGUCState(session);
-	PgSessionAdoptEarlyPgStatState(session);
-	PgSessionAdoptEarlyQueryIdState(session);
-	PgSessionAdoptEarlyStorageGUCState(session);
-	PgSessionAdoptEarlyUserGUCState(session);
-	PgSessionAdoptEarlyUserIdentityState(session);
-	PgSessionAdoptEarlyCommandGUCState(session);
-	PgSessionAdoptEarlyReplicationGUCState(session);
-	PgSessionAdoptEarlyLogicalReplicationState(session);
-	PgSessionAdoptEarlyGeneralGUCState(session);
-	PgSessionAdoptEarlyAccessWalGUCState(session);
-	PgSessionAdoptEarlyJitGUCState(session);
-	PgSessionAdoptEarlyJitProviderState(session);
-	PgSessionAdoptEarlyLLVMJitState(session);
-	PgSessionAdoptEarlySortGUCState(session);
-	PgSessionAdoptEarlyQueryMemoryState(session);
-	PgSessionAdoptEarlyPlannerCostState(session);
-	PgSessionAdoptEarlyPlannerMethodState(session);
-	PgSessionAdoptEarlyFunctionManagerState(session);
-	PgSessionAdoptEarlyExtensionModuleState(session);
-	PgSessionAdoptEarlyCatalogLookupState(session);
-	PgSessionAdoptEarlyInvalidationCallbackState(session);
-	PgSessionAdoptEarlyRIGlobalsState(session);
-	PgSessionAdoptEarlyRelMapState(session);
-	PgSessionAdoptEarlyPreparedStatementState(session);
-	PgSessionAdoptEarlyOnCommitState(session);
-	PgSessionAdoptEarlySequenceState(session);
-	PgSessionAdoptEarlyXactCallbackState(session);
-	PgSessionAdoptEarlyBackupState(session);
-	PgSessionAdoptEarlyRegexState(session);
-	PgSessionAdoptEarlyPortalManagerState(session);
-	PgSessionAdoptEarlyLargeObjectState(session);
-	PgSessionAdoptEarlyAsyncState(session);
-	PgSessionAdoptEarlyEncodingState(session);
-	PgSessionAdoptEarlyTempFileState(session);
-	PgSessionAdoptEarlyRandomState(session);
-	PgSessionAdoptEarlyOptimizerState(session);
-	PgSessionAdoptEarlyPlanCacheState(session);
-	PgSessionAdoptEarlyNamespaceState(session);
-	PgSessionAdoptEarlyLocaleState(session);
+#define PG_SESSION_BUCKET(field, init, adopt, reset) \
+	do { adopt; } while (0);
+#include "backend_runtime_session_buckets.def"
+#undef PG_SESSION_BUCKET
 }
 
 static void
@@ -3498,39 +3477,10 @@ PgBackendAdoptEarlyState(PgBackend *backend)
 {
 	Assert(backend != NULL);
 
-	PgBackendAdoptEarlyCoreState(backend);
-	PgBackendAdoptEarlyCommandState(backend);
-	PgBackendAdoptEarlyLogState(backend);
-	PgBackendAdoptEarlyExprInterpState(backend);
-	PgBackendAdoptEarlyMyProc(backend);
-	PgBackendAdoptEarlyProcNumberState(backend);
-	PgBackendAdoptEarlyMyBEEntry(backend);
-	PgBackendAdoptEarlyMyBgworkerEntry(backend);
-	PgBackendAdoptEarlyAuxProcessResourceOwner(backend);
-	PgBackendAdoptEarlyPgStatPendingState(backend);
-	PgBackendAdoptEarlyActivityState(backend);
-	PgBackendAdoptEarlyMemoryManagerState(backend);
-	PgBackendAdoptEarlyUtilityState(backend);
-	PgBackendAdoptEarlyParallelState(backend);
-	PgBackendAdoptEarlyInstrumentationState(backend);
-	PgBackendAdoptEarlyBufferState(backend);
-	PgBackendAdoptEarlyStorageState(backend);
-	PgBackendAdoptEarlyLockState(backend);
-	PgBackendAdoptEarlyIPCState(backend);
-	PgBackendAdoptEarlyWaitState(backend);
-	PgBackendAdoptEarlyTransactionState(backend);
-	PgBackendAdoptEarlyTimeoutState(backend);
-	PgBackendAdoptEarlyWalSenderState(backend);
-	PgBackendAdoptEarlyReplicationState(backend);
-	PgBackendAdoptEarlyLogicalReplicationState(backend);
-	PgBackendAdoptEarlyXLogState(backend);
-	PgBackendAdoptEarlyRecoveryState(backend);
-	PgBackendAdoptEarlyMaintenanceWorkerState(backend);
-	PgBackendAdoptEarlyAutovacuumState(backend);
-	PgBackendAdoptEarlyRepackState(backend);
-	PgBackendAdoptEarlyAioState(backend);
-	PgBackendAdoptEarlyPendingInterrupts(backend);
-	PgBackendAdoptEarlyInterruptHoldoffs(backend);
+#define PG_BACKEND_BUCKET(field, init, adopt, reset) \
+	do { adopt; } while (0);
+#include "backend_runtime_backend_buckets.def"
+#undef PG_BACKEND_BUCKET
 }
 
 static void
@@ -4024,35 +3974,10 @@ PgExecutionAdoptEarlyState(PgExecution *execution)
 {
 	Assert(execution != NULL);
 
-	PgExecutionAdoptEarlyDebugState(execution);
-	PgExecutionAdoptEarlyErrorState(execution);
-	PgExecutionAdoptEarlyMemoryContexts(execution);
-	PgExecutionAdoptEarlyResourceOwners(execution);
-	PgExecutionAdoptEarlySPIState(execution);
-	PgExecutionAdoptEarlyPortalState(execution);
-	PgExecutionAdoptEarlyVacuumState(execution);
-	PgExecutionAdoptEarlyNodeIOState(execution);
-	PgExecutionAdoptEarlyBaseBackupState(execution);
-	PgExecutionAdoptEarlyAnalyzeState(execution);
-	PgExecutionAdoptEarlyExtensionState(execution);
-	PgExecutionAdoptEarlyMatViewState(execution);
-	PgExecutionAdoptEarlySnapshotState(execution);
-	PgExecutionAdoptEarlyComboCidState(execution);
-	PgExecutionAdoptEarlyXLogInsertState(execution);
-	PgExecutionAdoptEarlyXactState(execution);
-	PgExecutionAdoptEarlyTransactionCleanupState(execution);
-	PgExecutionAdoptEarlyReplicationScratchState(execution);
-	PgExecutionAdoptEarlyGUCErrorState(execution);
-	PgExecutionAdoptEarlyAsyncState(execution);
-	PgExecutionAdoptEarlyCatalogState(execution);
-	PgExecutionAdoptEarlyCatalogCacheState(execution);
-	PgExecutionAdoptEarlyRelMapState(execution);
-	PgExecutionAdoptEarlyInvalidationState(execution);
-	PgExecutionAdoptEarlyTwoPhaseRecordState(execution);
-	PgExecutionAdoptEarlyTriggerState(execution);
-	PgExecutionAdoptEarlyRegexState(execution);
-	PgExecutionAdoptEarlyValgrindState(execution);
-	PgExecutionAdoptEarlySnapBuildState(execution);
+#define PG_EXECUTION_BUCKET(field, init, adopt, reset) \
+	do { adopt; } while (0);
+#include "backend_runtime_execution_buckets.def"
+#undef PG_EXECUTION_BUCKET
 }
 
 static void
@@ -4067,44 +3992,10 @@ PgBackendInitializeRuntimeObject(PgBackend *backend,
 {
 	Assert(backend != NULL);
 
-	backend->runtime = runtime;
-	backend->id = PgBackendAssignId();
-	backend->carrier = carrier;
-	backend->session = session;
-	backend->connection = connection;
-	backend->execution = execution;
-	backend->backend_type = backend_type;
-	PgBackendInitializeProcNumberState(backend);
-	PgBackendInitializeInterrupts(backend);
-	PgBackendResetCoreState(&backend->core);
-	PgBackendInitializeCommandState(&backend->command);
-	PgBackendInitializeLogState(&backend->log_state);
-	PgBackendInitializeExprInterpState(&backend->expr_interp);
-	PgBackendInitializePgStatPendingState(&backend->pgstat_pending);
-	PgBackendInitializeActivityState(&backend->activity);
-	PgBackendInitializeMemoryManagerState(&backend->memory_manager);
-	PgBackendInitializeUtilityState(&backend->utility);
-	PgBackendInitializeParallelState(&backend->parallel);
-	PgBackendInitializeInstrumentationState(&backend->instrumentation);
-	PgBackendInitializeBufferState(&backend->buffers);
-	PgBackendInitializeStorageState(&backend->storage);
-	PgBackendInitializeLockState(&backend->locks);
-	PgBackendInitializeIPCState(&backend->ipc);
-	PgBackendInitializeWaitState(&backend->wait_state);
-	PgBackendInitializeTransactionState(&backend->transaction);
-	PgBackendInitializeTimeoutState(&backend->timeout);
-	PgBackendInitializeWalSenderState(&backend->walsender);
-	PgBackendInitializeReplicationState(&backend->replication);
-	PgBackendInitializeLogicalReplicationState(&backend->logical_replication);
-	PgBackendInitializeXLogState(&backend->xlog);
-	PgBackendInitializeRecoveryState(&backend->recovery);
-	PgBackendInitializeMaintenanceWorkerState(&backend->maintenance_worker);
-	PgBackendInitializeAutovacuumState(&backend->autovacuum);
-	PgBackendInitializeRepackState(&backend->repack);
-	PgBackendInitializeAioState(&backend->aio);
-	PgBackendSetInterruptLatch(backend, interrupt_latch);
-	dlist_init(&backend->dsm_segment_list);
-	PgBackendInitializeExitState(&backend->exit_state);
+#define PG_BACKEND_BUCKET(field, init, adopt, reset) \
+	do { init; } while (0);
+#include "backend_runtime_backend_buckets.def"
+#undef PG_BACKEND_BUCKET
 }
 
 static void
@@ -4115,68 +4006,10 @@ PgSessionInitializeRuntimeObject(PgSession *session,
 {
 	Assert(session != NULL);
 
-	session->backend = backend;
-	session->connection = connection;
-	session->execution = execution;
-	session->legacy_session = NULL;
-	session->legacy_session_context = NULL;
-	MemSet(&session->database, 0, sizeof(session->database));
-	PgSessionInitializeLoopState(&session->loop_state);
-	PgSessionInitializeTcopState(&session->tcop);
-	PgSessionInitializeTablespaceState(&session->tablespace);
-	PgSessionInitializeBinaryUpgradeState(&session->binary_upgrade);
-	PgSessionInitializeDateTimeState(&session->datetime);
-	PgSessionInitializeTextSearchState(&session->text_search);
-	PgSessionInitializeConnectionGUCState(&session->connection_guc);
-	PgSessionInitializeParserState(&session->parser);
-	PgSessionInitializeVacuumState(&session->vacuum);
-	PgSessionInitializeBufferIOState(&session->buffer_io);
-	PgSessionInitializeXactDefaultState(&session->xact_defaults);
-	PgSessionInitializeLockWaitState(&session->lock_wait);
-	PgSessionInitializeLoggingState(&session->logging);
-	PgSessionInitializeMiscGUCState(&session->misc_guc);
-	PgSessionInitializeGUCState(&session->guc);
-	PgSessionInitializePgStatState(&session->pgstat);
-	PgSessionInitializeQueryIdState(&session->query_id);
-	PgSessionInitializeStorageGUCState(&session->storage_guc);
-	PgSessionInitializeUserGUCState(&session->user_guc);
-	PgSessionInitializeUserIdentityState(&session->user_identity);
-	PgSessionInitializeCommandGUCState(&session->command_guc);
-	PgSessionInitializeReplicationGUCState(&session->replication_guc);
-	PgSessionInitializeLogicalReplicationState(&session->logical_replication);
-	PgSessionInitializeGeneralGUCState(&session->general_guc);
-	PgSessionInitializeAccessWalGUCState(&session->access_wal_guc);
-	PgSessionInitializeJitGUCState(&session->jit_guc);
-	PgSessionInitializeJitProviderState(&session->jit_provider_state);
-	PgSessionInitializeLLVMJitState(&session->llvm_jit);
-	PgSessionInitializeSortGUCState(&session->sort_guc);
-	PgSessionInitializeQueryMemoryState(&session->query_memory);
-	PgSessionInitializePlannerCostState(&session->planner_cost);
-	PgSessionInitializePlannerMethodState(&session->planner_method);
-	PgSessionInitializeFunctionManagerState(&session->function_manager);
-	PgSessionInitializeExtensionModuleState(&session->extension_modules);
-	PgSessionInitializeCatalogLookupState(&session->catalog_lookup);
-	PgSessionInitializeInvalidationCallbackState(&session->invalidation_callbacks);
-	PgSessionInitializeRIGlobalsState(&session->ri_globals);
-	PgSessionInitializeRelMapState(&session->relmap);
-	PgSessionInitializePreparedStatementState(&session->prepared_statement);
-	PgSessionInitializeOnCommitState(&session->on_commit);
-	PgSessionInitializeSequenceState(&session->sequence);
-	PgSessionInitializeXactCallbackState(&session->xact_callbacks);
-	PgSessionInitializeBackupState(&session->backup);
-	PgSessionInitializeRegexState(&session->regex);
-	PgSessionInitializePortalManagerState(&session->portal_manager);
-	PgSessionInitializeLargeObjectState(&session->large_object);
-	PgSessionInitializeAsyncState(&session->async);
-	PgSessionInitializeEncodingState(&session->encoding);
-	PgSessionInitializeTempFileState(&session->temp_file);
-	PgSessionInitializeRandomState(&session->random);
-	PgSessionInitializeOptimizerState(&session->optimizer);
-	PgSessionInitializePlanCacheState(&session->plan_cache);
-	PgSessionInitializeNamespaceState(&session->namespace_state);
-	PgSessionInitializeLocaleState(&session->locale);
-	session->dynamic_library_context = NULL;
-	session->dynamic_library_inits = NIL;
+#define PG_SESSION_BUCKET(field, init, adopt, reset) \
+	do { init; } while (0);
+#include "backend_runtime_session_buckets.def"
+#undef PG_SESSION_BUCKET
 }
 
 static void
@@ -4187,18 +4020,10 @@ PgConnectionInitializeRuntimeObject(PgConnection *connection,
 {
 	Assert(connection != NULL);
 
-	connection->backend = backend;
-	connection->session = session;
-	MemSet(&connection->identity, 0, sizeof(connection->identity));
-	connection->identity.port = port;
-	MemSet(&connection->socket_io, 0, sizeof(connection->socket_io));
-	MemSet(&connection->protocol, 0, sizeof(connection->protocol));
-	PgConnectionInitializeOutputState(&connection->output);
-	MemSet(&connection->interrupts, 0, sizeof(connection->interrupts));
-	PgConnectionInitializeStartupState(&connection->startup);
-	MemSet(&connection->client_connection_info, 0,
-		   sizeof(connection->client_connection_info));
-	MemSet(&connection->security, 0, sizeof(connection->security));
+#define PG_CONNECTION_BUCKET(field, init, adopt, reset) \
+	do { init; } while (0);
+#include "backend_runtime_connection_buckets.def"
+#undef PG_CONNECTION_BUCKET
 }
 
 static void
@@ -4209,34 +4034,10 @@ PgExecutionInitializeRuntimeObject(PgExecution *execution,
 {
 	Assert(execution != NULL);
 
-	execution->backend = backend;
-	execution->session = session;
-	execution->carrier = carrier;
-	PgExecutionInitializeErrorState(&execution->error);
-	PgExecutionInitializeSPIState(&execution->spi);
-	PgExecutionInitializeVacuumState(&execution->vacuum);
-	PgExecutionInitializeNodeIOState(&execution->node_io);
-	PgExecutionInitializeBaseBackupState(&execution->basebackup);
-	PgExecutionInitializeAnalyzeState(&execution->analyze);
-	PgExecutionInitializeExtensionState(&execution->extension);
-	PgExecutionInitializeMatViewState(&execution->matview);
-	PgExecutionInitializeSnapshotState(&execution->snapshot);
-	PgExecutionInitializeComboCidState(&execution->combo_cid);
-	PgExecutionInitializeXLogInsertState(&execution->xloginsert);
-	PgExecutionInitializeXactState(&execution->xact);
-	PgExecutionInitializeTransactionCleanupState(&execution->transaction_cleanup);
-	PgExecutionInitializeReplicationScratchState(&execution->replication_scratch);
-	PgExecutionInitializeGUCErrorState(&execution->guc_error);
-	PgExecutionInitializeAsyncState(&execution->async);
-	PgExecutionInitializeCatalogState(&execution->catalog);
-	PgExecutionInitializeCatalogCacheState(&execution->catalog_cache);
-	PgExecutionInitializeRelMapState(&execution->relmap);
-	PgExecutionInitializeInvalidationState(&execution->invalidation);
-	PgExecutionInitializeTwoPhaseRecordState(&execution->two_phase_records);
-	PgExecutionInitializeTriggerState(&execution->trigger);
-	PgExecutionInitializeRegexState(&execution->regex);
-	PgExecutionInitializeValgrindState(&execution->valgrind);
-	PgExecutionInitializeSnapBuildState(&execution->snapbuild);
+#define PG_EXECUTION_BUCKET(field, init, adopt, reset) \
+	do { init; } while (0);
+#include "backend_runtime_execution_buckets.def"
+#undef PG_EXECUTION_BUCKET
 }
 
 static void
@@ -4733,15 +4534,10 @@ PgBackendResetClosedState(PgBackend *backend)
 	if (backend == NULL)
 		return;
 
-	PgBackendResetWalSenderClosedState(&backend->walsender);
-	PgBackendResetReplicationClosedState(&backend->replication);
-	PgBackendResetLogicalReplicationClosedState(&backend->logical_replication);
-	PgBackendResetXLogClosedState(&backend->xlog);
-	PgBackendResetMaintenanceWorkerClosedState(&backend->maintenance_worker);
-	PgBackendResetAutovacuumClosedState(&backend->autovacuum);
-	PgBackendResetAioClosedState(&backend->aio);
-	PgBackendResetMemoryManagerClosedState(&backend->memory_manager);
-	PgBackendResetUtilityClosedState(&backend->utility);
+#define PG_BACKEND_BUCKET(field, init, adopt, reset) \
+	do { reset; } while (0);
+#include "backend_runtime_backend_buckets.def"
+#undef PG_BACKEND_BUCKET
 }
 
 MemoryContext
@@ -5134,15 +4930,33 @@ PgSessionResetClosedState(PgSession *session)
 	}
 }
 
+static void
+PgExecutionResetDebugClosedState(PgExecution *execution)
+{
+	Assert(execution != NULL);
+
+	execution->debug.debug_query_string = NULL;
+}
+
+static void
+PgExecutionResetMemoryContextsClosedState(PgExecution *execution)
+{
+	Assert(execution != NULL);
+
+	MemSet(&execution->memory_contexts, 0,
+		   sizeof(execution->memory_contexts));
+}
+
 void
 PgExecutionResetClosedState(PgExecution *execution)
 {
 	if (execution == NULL)
 		return;
 
-	execution->debug.debug_query_string = NULL;
-	MemSet(&execution->memory_contexts, 0,
-		   sizeof(execution->memory_contexts));
+#define PG_EXECUTION_BUCKET(field, init, adopt, reset) \
+	do { reset; } while (0);
+#include "backend_runtime_execution_buckets.def"
+#undef PG_EXECUTION_BUCKET
 }
 
 Session *
