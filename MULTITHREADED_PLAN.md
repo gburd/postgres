@@ -1497,6 +1497,18 @@ and scalar flags. The lifecycle manifest records the borrowed-pointer rules
 and centralized early fallback adoption through `PgExecutionAdoptEarlyState()`.
 The global-lifetime scan now reports 60 execution-local declarations, down
 from 67, with zero new unclassified mutable globals.
+The following execution-scratch batch moved `elog.c`'s error-data stack and
+timestamp cache into `PgExecutionErrorState`, and event-trigger query state,
+replication-origin transaction state, logical apply error-context stack,
+logical apply message context, and logical streaming context into
+`PgExecutionReplicationScratchState`. The moved pointer slots remain borrowed
+from their existing error, event-trigger, and logical-apply cleanup paths,
+while replication-origin transaction state is copied scalar state. The
+lifecycle manifest records the copied-scalar and borrowed-pointer rules, and
+centralized early fallback adoption reaches the bucket through
+`PgExecutionAdoptEarlyState()`. The global-lifetime scan now reports 47
+execution-local declarations, down from 60, with zero new unclassified mutable
+globals.
 The lifecycle audit is now also mechanically checked. The root
 `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` manifest records owner/lifetime,
 initializer, early-adoption, reset/destroy, and copy/adoption rules for every

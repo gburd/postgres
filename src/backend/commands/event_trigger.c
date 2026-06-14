@@ -49,6 +49,7 @@
 #include "tcop/deparse_utility.h"
 #include "tcop/utility.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/evtcache.h"
 #include "utils/fmgroids.h"
@@ -82,7 +83,7 @@ typedef struct EventTriggerQueryState
 	struct EventTriggerQueryState *previous;
 } EventTriggerQueryState;
 
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION EventTriggerQueryState *currentEventTriggerState = NULL;
+#define currentEventTriggerState (*PgCurrentEventTriggerQueryStateRef())
 
 /* Support for dropped objects */
 typedef struct SQLDropObject

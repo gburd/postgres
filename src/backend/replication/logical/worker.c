@@ -453,12 +453,8 @@ typedef struct RetainDeadTuplesData
 #define apply_error_callback_arg \
 	(PgCurrentLogicalReplicationState()->apply_error_callback_arg)
 
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ErrorContextCallback *apply_error_context_stack = NULL;
-
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext ApplyMessageContext = NULL;
-
 /* per stream context for streaming transactions */
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION MemoryContext LogicalStreamingContext = NULL;
+#define LogicalStreamingContext (*PgCurrentLogicalStreamingContextRef())
 
 #define MySubscriptionValid \
 	(PgCurrentLogicalReplicationState()->my_subscription_valid)

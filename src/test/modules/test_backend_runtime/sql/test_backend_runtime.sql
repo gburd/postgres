@@ -98,6 +98,7 @@ SELECT test_execution_snapshot_combo_state_is_execution_local();
 SELECT test_execution_xloginsert_state_is_execution_local();
 SELECT test_execution_xact_state_is_execution_local();
 SELECT test_execution_transaction_cleanup_state_is_execution_local();
+SELECT test_execution_reporting_replication_state_is_execution_local();
 SELECT test_execution_guc_error_state_is_execution_local();
 SELECT test_execution_catalog_state_is_execution_local();
 SELECT test_execution_async_state_is_execution_local();

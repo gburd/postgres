@@ -539,7 +539,9 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionLocaleState early_session_loca
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendPendingInterruptState early_pending_interrupts;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInterruptHoldoffState early_interrupt_holdoffs;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionDebugState early_execution_debug;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionErrorState early_execution_error;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionErrorState early_execution_error = {
+	.errordata_stack_depth = -1
+};
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionMemoryContextState early_execution_memory_contexts;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionResourceOwnerState early_execution_resource_owners;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionSPIState early_execution_spi = {
@@ -563,6 +565,13 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionXactState early_execution_
 	.check_xid_alive = InvalidTransactionId
 };
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionTransactionCleanupState early_execution_transaction_cleanup;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionReplicationScratchState early_execution_replication_scratch = {
+	.replorigin_xact = {
+		.origin = InvalidReplOriginId,
+		.origin_lsn = InvalidXLogRecPtr,
+		.origin_timestamp = 0
+	}
+};
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionGUCErrorState early_execution_guc_error;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionAsyncState early_execution_async;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionCatalogState early_execution_catalog = {
@@ -739,6 +748,7 @@ static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
 static void PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend);
 static BackendType *PgCurrentBackendTypeRef(void);
 static void PgExecutionAdoptEarlyDebugState(PgExecution *execution);
+static void PgExecutionInitializeErrorState(PgExecutionErrorState *error);
 static void PgExecutionAdoptEarlyErrorState(PgExecution *execution);
 static void PgExecutionAdoptEarlyMemoryContexts(PgExecution *execution);
 static void PgExecutionAdoptEarlyResourceOwners(PgExecution *execution);
@@ -767,6 +777,8 @@ static void PgExecutionInitializeXactState(PgExecutionXactState *xact);
 static void PgExecutionAdoptEarlyXactState(PgExecution *execution);
 static void PgExecutionInitializeTransactionCleanupState(PgExecutionTransactionCleanupState *transaction_cleanup);
 static void PgExecutionAdoptEarlyTransactionCleanupState(PgExecution *execution);
+static void PgExecutionInitializeReplicationScratchState(PgExecutionReplicationScratchState *replication_scratch);
+static void PgExecutionAdoptEarlyReplicationScratchState(PgExecution *execution);
 static void PgExecutionInitializeGUCErrorState(PgExecutionGUCErrorState *guc_error);
 static void PgExecutionAdoptEarlyGUCErrorState(PgExecution *execution);
 static void PgExecutionInitializeAsyncState(PgExecutionAsyncState *async);
@@ -836,6 +848,7 @@ static PgExecutionComboCidState *PgCurrentExecutionComboCidState(void);
 static PgExecutionXLogInsertState *PgCurrentExecutionXLogInsertState(void);
 static PgExecutionXactState *PgCurrentExecutionXactState(void);
 static PgExecutionTransactionCleanupState *PgCurrentExecutionTransactionCleanupState(void);
+static PgExecutionReplicationScratchState *PgCurrentExecutionReplicationScratchState(void);
 static PgExecutionGUCErrorState *PgCurrentExecutionGUCErrorState(void);
 static PgExecutionAsyncState *PgCurrentExecutionAsyncState(void);
 static PgExecutionCatalogState *PgCurrentExecutionCatalogState(void);
@@ -2918,12 +2931,21 @@ PgExecutionAdoptEarlyDebugState(PgExecution *execution)
 }
 
 static void
+PgExecutionInitializeErrorState(PgExecutionErrorState *error)
+{
+	Assert(error != NULL);
+
+	MemSet(error, 0, sizeof(*error));
+	error->errordata_stack_depth = -1;
+}
+
+static void
 PgExecutionAdoptEarlyErrorState(PgExecution *execution)
 {
 	Assert(execution != NULL);
 
 	execution->error = early_execution_error;
-	MemSet(&early_execution_error, 0, sizeof(early_execution_error));
+	PgExecutionInitializeErrorState(&early_execution_error);
 }
 
 static void
@@ -3173,6 +3195,26 @@ PgExecutionAdoptEarlyTransactionCleanupState(PgExecution *execution)
 }
 
 static void
+PgExecutionInitializeReplicationScratchState(PgExecutionReplicationScratchState *replication_scratch)
+{
+	Assert(replication_scratch != NULL);
+
+	MemSet(replication_scratch, 0, sizeof(*replication_scratch));
+	replication_scratch->replorigin_xact.origin = InvalidReplOriginId;
+	replication_scratch->replorigin_xact.origin_lsn = InvalidXLogRecPtr;
+	replication_scratch->replorigin_xact.origin_timestamp = 0;
+}
+
+static void
+PgExecutionAdoptEarlyReplicationScratchState(PgExecution *execution)
+{
+	Assert(execution != NULL);
+
+	execution->replication_scratch = early_execution_replication_scratch;
+	PgExecutionInitializeReplicationScratchState(&early_execution_replication_scratch);
+}
+
+static void
 PgExecutionInitializeGUCErrorState(PgExecutionGUCErrorState *guc_error)
 {
 	Assert(guc_error != NULL);
@@ -3298,6 +3340,7 @@ PgExecutionAdoptEarlyState(PgExecution *execution)
 	PgExecutionAdoptEarlyXLogInsertState(execution);
 	PgExecutionAdoptEarlyXactState(execution);
 	PgExecutionAdoptEarlyTransactionCleanupState(execution);
+	PgExecutionAdoptEarlyReplicationScratchState(execution);
 	PgExecutionAdoptEarlyGUCErrorState(execution);
 	PgExecutionAdoptEarlyAsyncState(execution);
 	PgExecutionAdoptEarlyCatalogState(execution);
@@ -3498,6 +3541,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	state->execution.backend = &state->backend;
 	state->execution.session = &state->session;
 	state->execution.carrier = &state->carrier;
+	PgExecutionInitializeErrorState(&state->execution.error);
 	PgExecutionInitializeSPIState(&state->execution.spi);
 	PgExecutionInitializeVacuumState(&state->execution.vacuum);
 	PgExecutionInitializeNodeIOState(&state->execution.node_io);
@@ -3510,6 +3554,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgExecutionInitializeXLogInsertState(&state->execution.xloginsert);
 	PgExecutionInitializeXactState(&state->execution.xact);
 	PgExecutionInitializeTransactionCleanupState(&state->execution.transaction_cleanup);
+	PgExecutionInitializeReplicationScratchState(&state->execution.replication_scratch);
 	PgExecutionInitializeGUCErrorState(&state->execution.guc_error);
 	PgExecutionInitializeAsyncState(&state->execution.async);
 	PgExecutionInitializeCatalogState(&state->execution.catalog);
@@ -6415,6 +6460,42 @@ PgCurrentExceptionStackRef(void)
 	return &PgCurrentExecutionErrorState()->exception_stack;
 }
 
+ErrorData *
+PgCurrentErrorDataArray(void)
+{
+	return PgCurrentExecutionErrorState()->errordata;
+}
+
+int *
+PgCurrentErrorDataStackDepthRef(void)
+{
+	return &PgCurrentExecutionErrorState()->errordata_stack_depth;
+}
+
+int *
+PgCurrentErrorRecursionDepthRef(void)
+{
+	return &PgCurrentExecutionErrorState()->recursion_depth;
+}
+
+struct timeval *
+PgCurrentSavedTimevalRef(void)
+{
+	return &PgCurrentExecutionErrorState()->saved_timeval;
+}
+
+bool *
+PgCurrentSavedTimevalSetRef(void)
+{
+	return &PgCurrentExecutionErrorState()->saved_timeval_set;
+}
+
+char *
+PgCurrentFormattedLogTime(void)
+{
+	return PgCurrentExecutionErrorState()->formatted_log_time;
+}
+
 static PgExecutionMemoryContextState *
 PgCurrentExecutionMemoryContexts(void)
 {
@@ -7163,6 +7244,45 @@ bool *
 PgCurrentRIFastPathCallbackRegisteredRef(void)
 {
 	return &PgCurrentExecutionTransactionCleanupState()->ri_fastpath_callback_registered;
+}
+
+static PgExecutionReplicationScratchState *
+PgCurrentExecutionReplicationScratchState(void)
+{
+	if (CurrentPgExecution == NULL)
+		return &early_execution_replication_scratch;
+
+	return &CurrentPgExecution->replication_scratch;
+}
+
+EventTriggerQueryState **
+PgCurrentEventTriggerQueryStateRef(void)
+{
+	return &PgCurrentExecutionReplicationScratchState()->event_trigger_query_state;
+}
+
+ReplOriginXactState *
+PgCurrentReplOriginXactStateRef(void)
+{
+	return &PgCurrentExecutionReplicationScratchState()->replorigin_xact;
+}
+
+ErrorContextCallback **
+PgCurrentApplyErrorContextStackRef(void)
+{
+	return &PgCurrentExecutionReplicationScratchState()->apply_error_context_stack;
+}
+
+MemoryContext *
+PgCurrentApplyMessageContextRef(void)
+{
+	return &PgCurrentExecutionReplicationScratchState()->apply_message_context;
+}
+
+MemoryContext *
+PgCurrentLogicalStreamingContextRef(void)
+{
+	return &PgCurrentExecutionReplicationScratchState()->logical_streaming_context;
 }
 
 static PgExecutionGUCErrorState *

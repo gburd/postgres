@@ -8433,3 +8433,49 @@ Validation for this slice:
   globals and 60 execution-local declarations;
 - `gmake -C contrib -j8` passed;
 - `git diff --check` passed.
+
+## Execution Error And Replication Scratch State
+
+The next Phase 12 execution-scratch slice moves reporting and logical
+replication scratch slots into `PgExecution`:
+
+- `PgExecutionErrorState` now owns the `elog.c` error-data stack, stack depth,
+  recursion depth, saved timestamp cache, and formatted log-time buffer, in
+  addition to the existing error/exception stack pointers;
+- `PgExecutionReplicationScratchState` owns the event-trigger query-state
+  pointer, replication-origin transaction state, logical apply error-context
+  stack, logical apply message memory context, and logical streaming memory
+  context.
+
+This is another slot-ownership move, not a destructor rewrite. `ErrorData`
+string contents and callback-owned context state remain managed by the
+existing error cleanup paths. Event-trigger query state remains owned by the
+existing command/event-trigger context lifecycle. Logical apply message and
+streaming memory contexts remain owned by logical apply worker startup and
+cleanup paths. Replication-origin transaction state is copied scalar state.
+The lifecycle manifest records the copied-scalar and borrowed-pointer rules,
+and both process initialization and threaded runtime installation reach the
+new bucket through centralized `PgExecutionAdoptEarlyState()`.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `elog.o`,
+  `event_trigger.o`, `origin.o`, `worker.o`, and
+  `test_backend_runtime.o`;
+- full `gmake -j8` passed after rebuilding stale backend objects that still
+  referenced the removed logical apply, replication-origin, and runtime-layout
+  symbols;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed, followed by
+  rebuilding and reinstalling `src/test/modules/test_backend_runtime`;
+- `gmake -C src/test/modules/test_backend_runtime check` passed, including
+  `test_execution_reporting_replication_state_is_execution_local()`;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths, explicit
+  `PG_REGRESS`, patched macOS install names, and a freshly recreated
+  `tmp_install`;
+- `gmake check-runtime-lifecycles` passed with 129 fields classified;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and 47 execution-local declarations;
+- `gmake -C contrib -j8` passed;
+- `git diff --check` passed.

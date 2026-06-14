@@ -164,13 +164,6 @@ typedef struct ReplicationStateCtl
 	ReplicationState states[FLEXIBLE_ARRAY_MEMBER];
 } ReplicationStateCtl;
 
-/* Global variable for per-transaction replication origin state */
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ReplOriginXactState replorigin_xact_state = {
-	.origin = InvalidReplOriginId,	/* assumed identity */
-	.origin_lsn = InvalidXLogRecPtr,
-	.origin_timestamp = 0
-};
-
 /*
  * Base address into a shared memory array of replication states of size
  * max_active_replication_origins.

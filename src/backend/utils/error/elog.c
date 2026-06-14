@@ -147,23 +147,21 @@ static PG_GLOBAL_RUNTIME HANDLE backtrace_process = NULL;
 #endif
 
 /* We provide a small stack of ErrorData records for re-entrant cases */
-#define ERRORDATA_STACK_SIZE  5
-
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION ErrorData errordata[ERRORDATA_STACK_SIZE];
-
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int errordata_stack_depth = -1; /* index of topmost active frame */
-
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int recursion_depth = 0;	/* to detect actual recursion */
+#define ERRORDATA_STACK_SIZE PG_EXECUTION_ERRORDATA_STACK_SIZE
+#define errordata (PgCurrentErrorDataArray())
+#define errordata_stack_depth (*PgCurrentErrorDataStackDepthRef())
+#define recursion_depth (*PgCurrentErrorRecursionDepthRef())
 
 /*
  * Saved timeval and buffers for formatted timestamps that might be used by
  * log_line_prefix, csv logs and JSON logs.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION struct timeval saved_timeval;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool saved_timeval_set = false;
+/* These values are cached for the duration of one error report. */
+#define saved_timeval (*PgCurrentSavedTimevalRef())
+#define saved_timeval_set (*PgCurrentSavedTimevalSetRef())
 
 #define FORMATTED_TS_LEN PG_BACKEND_FORMATTED_TS_LEN
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION char formatted_log_time[FORMATTED_TS_LEN];
+#define formatted_log_time (PgCurrentFormattedLogTime())
 
 
 /* Macro for checking errordata_stack_depth is reasonable */

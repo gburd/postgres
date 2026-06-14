@@ -12109,6 +12109,139 @@ test_execution_transaction_cleanup_state_is_execution_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_execution_reporting_replication_state_is_execution_local);
+Datum
+test_execution_reporting_replication_state_is_execution_local(PG_FUNCTION_ARGS)
+{
+	PgExecution *saved_execution;
+	PgExecution fake_execution1;
+	PgExecution fake_execution2;
+	ErrorContextCallback callback1;
+	ErrorContextCallback callback2;
+	bool		ok = true;
+
+	saved_execution = CurrentPgExecution;
+	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
+	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+	MemSet(&callback1, 0, sizeof(callback1));
+	MemSet(&callback2, 0, sizeof(callback2));
+	fake_execution1.error.errordata_stack_depth = -1;
+	fake_execution1.replication_scratch.replorigin_xact.origin =
+		InvalidReplOriginId;
+	fake_execution1.replication_scratch.replorigin_xact.origin_lsn =
+		InvalidXLogRecPtr;
+	fake_execution2.error.errordata_stack_depth = -1;
+	fake_execution2.replication_scratch.replorigin_xact.origin =
+		InvalidReplOriginId;
+	fake_execution2.replication_scratch.replorigin_xact.origin_lsn =
+		InvalidXLogRecPtr;
+
+	PG_TRY();
+	{
+		CurrentPgExecution = &fake_execution1;
+		*PgCurrentErrorDataStackDepthRef() = 1;
+		*PgCurrentErrorRecursionDepthRef() = 2;
+		PgCurrentErrorDataArray()[1].elevel = ERROR;
+		PgCurrentSavedTimevalRef()->tv_sec = 101;
+		PgCurrentSavedTimevalRef()->tv_usec = 102;
+		*PgCurrentSavedTimevalSetRef() = true;
+		strcpy(PgCurrentFormattedLogTime(), "time-one");
+		*PgCurrentEventTriggerQueryStateRef() =
+			(EventTriggerQueryState *) &fake_execution1;
+		PgCurrentReplOriginXactStateRef()->origin = 11;
+		PgCurrentReplOriginXactStateRef()->origin_lsn = 12;
+		PgCurrentReplOriginXactStateRef()->origin_timestamp = 13;
+		*PgCurrentApplyErrorContextStackRef() = &callback1;
+		*PgCurrentApplyMessageContextRef() = (MemoryContext) &fake_execution1;
+		*PgCurrentLogicalStreamingContextRef() = (MemoryContext) &fake_execution1;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && *PgCurrentErrorDataStackDepthRef() == -1;
+		ok = ok && *PgCurrentErrorRecursionDepthRef() == 0;
+		ok = ok && PgCurrentErrorDataArray()[0].elevel == 0;
+		ok = ok && PgCurrentSavedTimevalRef()->tv_sec == 0;
+		ok = ok && PgCurrentSavedTimevalRef()->tv_usec == 0;
+		ok = ok && !*PgCurrentSavedTimevalSetRef();
+		ok = ok && PgCurrentFormattedLogTime()[0] == '\0';
+		ok = ok && *PgCurrentEventTriggerQueryStateRef() == NULL;
+		ok = ok && PgCurrentReplOriginXactStateRef()->origin ==
+			InvalidReplOriginId;
+		ok = ok && PgCurrentReplOriginXactStateRef()->origin_lsn ==
+			InvalidXLogRecPtr;
+		ok = ok && PgCurrentReplOriginXactStateRef()->origin_timestamp == 0;
+		ok = ok && *PgCurrentApplyErrorContextStackRef() == NULL;
+		ok = ok && *PgCurrentApplyMessageContextRef() == NULL;
+		ok = ok && *PgCurrentLogicalStreamingContextRef() == NULL;
+
+		*PgCurrentErrorDataStackDepthRef() = 0;
+		*PgCurrentErrorRecursionDepthRef() = 3;
+		PgCurrentErrorDataArray()[0].elevel = WARNING;
+		PgCurrentSavedTimevalRef()->tv_sec = 201;
+		PgCurrentSavedTimevalRef()->tv_usec = 202;
+		*PgCurrentSavedTimevalSetRef() = false;
+		strcpy(PgCurrentFormattedLogTime(), "time-two");
+		*PgCurrentEventTriggerQueryStateRef() =
+			(EventTriggerQueryState *) &fake_execution2;
+		PgCurrentReplOriginXactStateRef()->origin = 21;
+		PgCurrentReplOriginXactStateRef()->origin_lsn = 22;
+		PgCurrentReplOriginXactStateRef()->origin_timestamp = 23;
+		*PgCurrentApplyErrorContextStackRef() = &callback2;
+		*PgCurrentApplyMessageContextRef() = (MemoryContext) &fake_execution2;
+		*PgCurrentLogicalStreamingContextRef() = (MemoryContext) &fake_execution2;
+
+		CurrentPgExecution = &fake_execution1;
+		ok = ok && *PgCurrentErrorDataStackDepthRef() == 1;
+		ok = ok && *PgCurrentErrorRecursionDepthRef() == 2;
+		ok = ok && PgCurrentErrorDataArray()[1].elevel == ERROR;
+		ok = ok && PgCurrentSavedTimevalRef()->tv_sec == 101;
+		ok = ok && PgCurrentSavedTimevalRef()->tv_usec == 102;
+		ok = ok && *PgCurrentSavedTimevalSetRef();
+		ok = ok && strcmp(PgCurrentFormattedLogTime(), "time-one") == 0;
+		ok = ok && *PgCurrentEventTriggerQueryStateRef() ==
+			(EventTriggerQueryState *) &fake_execution1;
+		ok = ok && PgCurrentReplOriginXactStateRef()->origin == 11;
+		ok = ok && PgCurrentReplOriginXactStateRef()->origin_lsn == 12;
+		ok = ok && PgCurrentReplOriginXactStateRef()->origin_timestamp == 13;
+		ok = ok && *PgCurrentApplyErrorContextStackRef() == &callback1;
+		ok = ok && *PgCurrentApplyMessageContextRef() ==
+			(MemoryContext) &fake_execution1;
+		ok = ok && *PgCurrentLogicalStreamingContextRef() ==
+			(MemoryContext) &fake_execution1;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && *PgCurrentErrorDataStackDepthRef() == 0;
+		ok = ok && *PgCurrentErrorRecursionDepthRef() == 3;
+		ok = ok && PgCurrentErrorDataArray()[0].elevel == WARNING;
+		ok = ok && PgCurrentSavedTimevalRef()->tv_sec == 201;
+		ok = ok && PgCurrentSavedTimevalRef()->tv_usec == 202;
+		ok = ok && !*PgCurrentSavedTimevalSetRef();
+		ok = ok && strcmp(PgCurrentFormattedLogTime(), "time-two") == 0;
+		ok = ok && *PgCurrentEventTriggerQueryStateRef() ==
+			(EventTriggerQueryState *) &fake_execution2;
+		ok = ok && PgCurrentReplOriginXactStateRef()->origin == 21;
+		ok = ok && PgCurrentReplOriginXactStateRef()->origin_lsn == 22;
+		ok = ok && PgCurrentReplOriginXactStateRef()->origin_timestamp == 23;
+		ok = ok && *PgCurrentApplyErrorContextStackRef() == &callback2;
+		ok = ok && *PgCurrentApplyMessageContextRef() ==
+			(MemoryContext) &fake_execution2;
+		ok = ok && *PgCurrentLogicalStreamingContextRef() ==
+			(MemoryContext) &fake_execution2;
+
+		CurrentPgExecution = saved_execution;
+	}
+	PG_CATCH();
+	{
+		CurrentPgExecution = saved_execution;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "reporting/replication execution state was not execution-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_execution_guc_error_state_is_execution_local);
 Datum
 test_execution_guc_error_state_is_execution_local(PG_FUNCTION_ARGS)

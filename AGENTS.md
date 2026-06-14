@@ -208,6 +208,17 @@ Important current files:
   `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`; after changing this bridge, run
   touched-object builds plus `gmake check-runtime-lifecycles` and
   `gmake check-global-lifetimes` before trusting TAP.
+- Execution error and replication/apply scratch state now lives under
+  `PgExecution`: `PgExecutionErrorState` owns the `elog.c` error-data stack,
+  recursion depth, saved timestamp cache, and formatted log-time buffer;
+  `PgExecutionReplicationScratchState` owns the event-trigger query-state
+  pointer, replication-origin transaction state, logical apply error-context
+  stack, apply message context, and logical streaming context. The moved
+  pointer slots are borrowed from existing error, event-trigger, and logical
+  apply cleanup paths; replication-origin state is copied scalar state. After
+  changing this bridge, rebuild touched logical replication, event-trigger, and
+  error-reporting objects, then run `gmake check-runtime-lifecycles` and
+  `gmake check-global-lifetimes` before trusting TAP.
 - `AuxProcessResourceOwner` is now routed through `PgBackend` via
   `PgCurrentAuxProcessResourceOwnerRef()` and the `AuxProcessResourceOwner`
   lvalue macro. After changing `src/include/utils/resowner.h` or this backend
@@ -986,6 +997,20 @@ Important current files:
   startup corrupting adjacent `BackendThreadStart` timezone fields and
   segfaulting in `StartupXLOG()` before readiness. Use the backend clean plus
   generated-file recovery above, then rebuild with `gmake -j8`.
+
+  Another observed failure after expanding `PgThreadBackendRuntimeState` was
+  `001_threaded_runtime.pl` failing to start a thread-model background worker
+  with `could not access file "": No such file or directory`; stale
+  `src/backend/postmaster/launch_backend.o` had allocated the old embedded
+  runtime-state size, so initialization overwrote the background-worker
+  startup data. At minimum remove and rebuild
+  `src/backend/postmaster/launch_backend.o`, then rerun `gmake -j8`. Header
+  changes that remove execution globals may also need stale users removed and
+  rebuilt, including `src/backend/access/transam/xact.o`,
+  `src/backend/access/transam/twophase.o`,
+  `src/backend/access/transam/xloginsert.o`,
+  `src/backend/replication/logical/applyparallelworker.o`, and
+  `src/backend/replication/logical/tablesync.o`.
 
   The same rule applies when adding fields to `PgBackend` itself. A stale
   incremental build after adding AIO runtime state linked, but `initdb`

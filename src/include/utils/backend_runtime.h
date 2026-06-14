@@ -32,6 +32,7 @@
 #include "nodes/pg_list.h"
 #include "pgtime.h"
 #include "port/atomics.h"
+#include "replication/origin.h"
 #include "storage/buf.h"
 #include "storage/checksum.h"
 #include "storage/ipc.h"
@@ -42,6 +43,7 @@
 #include "tcop/dest.h"
 #include "utils/backend_id.h"
 #include "utils/backend_status.h"
+#include "utils/elog.h"
 #include "utils/global_lifetime.h"
 #include "utils/hsearch.h"
 #include "utils/palloc.h"
@@ -74,6 +76,7 @@ typedef struct ParallelApplyWorkerShared ParallelApplyWorkerShared;
 typedef struct Subscription Subscription;
 typedef struct BufFile BufFile;
 typedef struct LargeObjectDesc LargeObjectDesc;
+typedef struct EventTriggerQueryState EventTriggerQueryState;
 typedef struct dsa_area dsa_area;
 typedef struct dshash_table dshash_table;
 typedef struct XLogReaderState XLogReaderState;
@@ -788,6 +791,8 @@ typedef struct PgBackendTransactionState
 	long		xidcache_slow_answer;
 } PgBackendTransactionState;
 
+#define PG_EXECUTION_ERRORDATA_STACK_SIZE 5
+
 typedef struct PgExecutionDebugState
 {
 	const char *debug_query_string;
@@ -797,6 +802,12 @@ typedef struct PgExecutionErrorState
 {
 	struct ErrorContextCallback *context_stack;
 	sigjmp_buf *exception_stack;
+	ErrorData	errordata[PG_EXECUTION_ERRORDATA_STACK_SIZE];
+	int			errordata_stack_depth;
+	int			recursion_depth;
+	struct timeval saved_timeval;
+	bool		saved_timeval_set;
+	char		formatted_log_time[PG_BACKEND_FORMATTED_TS_LEN];
 } PgExecutionErrorState;
 
 typedef struct PgExecutionMemoryContextState
@@ -961,6 +972,15 @@ typedef struct PgExecutionTransactionCleanupState
 	HTAB	   *ri_fastpath_cache;
 	bool		ri_fastpath_callback_registered;
 } PgExecutionTransactionCleanupState;
+
+typedef struct PgExecutionReplicationScratchState
+{
+	EventTriggerQueryState *event_trigger_query_state;
+	ReplOriginXactState replorigin_xact;
+	ErrorContextCallback *apply_error_context_stack;
+	MemoryContext apply_message_context;
+	MemoryContext logical_streaming_context;
+} PgExecutionReplicationScratchState;
 
 typedef struct PgExecutionGUCErrorState
 {
@@ -1845,6 +1865,7 @@ struct PgExecution
 	PgExecutionXLogInsertState xloginsert;
 	PgExecutionXactState xact;
 	PgExecutionTransactionCleanupState transaction_cleanup;
+	PgExecutionReplicationScratchState replication_scratch;
 	PgExecutionGUCErrorState guc_error;
 	PgExecutionAsyncState async;
 	PgExecutionCatalogState catalog;
@@ -2379,6 +2400,11 @@ extern bool *PgCurrentHaveXactTemporaryFilesRef(void);
 extern PgStat_SubXactStatus **PgCurrentPgStatXactStackRef(void);
 extern HTAB **PgCurrentRIFastPathCacheRef(void);
 extern bool *PgCurrentRIFastPathCallbackRegisteredRef(void);
+extern EventTriggerQueryState **PgCurrentEventTriggerQueryStateRef(void);
+extern ReplOriginXactState *PgCurrentReplOriginXactStateRef(void);
+extern ErrorContextCallback **PgCurrentApplyErrorContextStackRef(void);
+extern MemoryContext *PgCurrentApplyMessageContextRef(void);
+extern MemoryContext *PgCurrentLogicalStreamingContextRef(void);
 extern int *PgCurrentGUCCheckErrcodeValueRef(void);
 extern char **PgCurrentGUCCheckErrmsgStringRef(void);
 extern char **PgCurrentGUCCheckErrdetailStringRef(void);

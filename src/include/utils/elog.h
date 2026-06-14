@@ -15,6 +15,7 @@
 #define ELOG_H
 
 #include <setjmp.h>
+#include <sys/time.h>
 
 #include "lib/stringinfo.h"
 #include "utils/global_lifetime.h"
@@ -470,6 +471,12 @@ typedef struct ErrorData
 } ErrorData;
 
 extern void EmitErrorReport(void);
+extern ErrorData *PgCurrentErrorDataArray(void);
+extern int *PgCurrentErrorDataStackDepthRef(void);
+extern int *PgCurrentErrorRecursionDepthRef(void);
+extern struct timeval *PgCurrentSavedTimevalRef(void);
+extern bool *PgCurrentSavedTimevalSetRef(void);
+extern char *PgCurrentFormattedLogTime(void);
 extern ErrorData *CopyErrorData(void);
 extern void FreeErrorData(ErrorData *edata);
 extern void FlushErrorState(void);

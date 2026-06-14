@@ -1062,6 +1062,21 @@ check-runtime-lifecycles`, `gmake check-global-lifetimes`, `gmake -C contrib
 execution-local declarations with zero new unclassified mutable globals, down
 from 67 before this slice.
 
+The following execution-scratch slice moved `elog.c`'s error-data stack,
+recursion depth, saved timestamp cache, and formatted log-time buffer into
+`PgExecutionErrorState`, and event-trigger query state, replication-origin
+transaction state, logical apply error-context stack, logical apply message
+context, and logical streaming context into
+`PgExecutionReplicationScratchState`. The pointer-bearing fields are recorded
+as borrowed slots whose storage remains owned by existing error,
+event-trigger, and logical-apply cleanup paths; replication-origin transaction
+state is copied scalar state. Validation included touched-object builds, full
+`gmake -j8`, install, `test_backend_runtime` regression, direct threaded TAP,
+`gmake check-runtime-lifecycles`, the required global-lifetime scan, contrib
+build, and `git diff --check`. The global-lifetime scan now reports 47
+execution-local declarations with zero new unclassified mutable globals, down
+from 60 before this slice.
+
 ## Bottom Line
 
 The branch is on track only if the current debt is treated as Phase 12
