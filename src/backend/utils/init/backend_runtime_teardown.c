@@ -130,6 +130,36 @@ PgBackendResetParallelClosedState(PgBackendParallelState *parallel)
 }
 
 static void
+PgBackendResetPgStatPendingClosedState(PgBackendPgStatPendingState *pgstat_pending)
+{
+	Assert(pgstat_pending != NULL);
+	Assert(pgstat_pending->entry_ref_hash == NULL);
+	Assert(dlist_is_empty(&pgstat_pending->pending));
+	Assert(pgstat_pending->local.shared_hash == NULL);
+	Assert(pgstat_pending->local.dsa == NULL);
+
+	/*
+	 * Normal pgstat shutdown owns flushing, shared-entry release, and DSA
+	 * detach.  Closed-backend reset only reclaims retained local contexts and
+	 * restores constructor defaults for reuse.
+	 */
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(pgstat_pending->local.snapshot.context);
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(pgstat_pending->shared_ref_context);
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(pgstat_pending->entry_ref_hash_context);
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(pgstat_pending->pending_context);
+
+	PgBackendInitializePgStatPendingState(pgstat_pending);
+}
+
+static void
+PgBackendResetWaitClosedState(PgBackendWaitState *wait_state)
+{
+	Assert(wait_state != NULL);
+
+	PgBackendInitializeWaitState(wait_state);
+}
+
+static void
 PgBackendResetBufferClosedState(PgBackendBufferState *buffers)
 {
 	Assert(buffers != NULL);
@@ -696,6 +726,14 @@ PgSessionResetExtensionModuleClosedState(PgSession *session)
 		item->callback(item->arg);
 	list_free_deep(session->extension_modules.reset_callbacks);
 	PgSessionInitializeExtensionModuleState(&session->extension_modules);
+}
+
+static void
+PgSessionResetPgStatClosedState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	PgSessionInitializePgStatState(&session->pgstat);
 }
 
 static void

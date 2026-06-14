@@ -749,6 +749,9 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	PgBackendTransactionState *transaction;
 	PgBackendRecoveryState *recovery;
 	PgBackendRepackState *repack;
+	PgBackendPgStatPendingState *pgstat_pending;
+	PgBackendWaitState *wait_state;
+	PgBackend  *saved_backend;
 	HASHCTL		hash_ctl;
 	bool		ok = true;
 
@@ -771,6 +774,8 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	transaction = &fake_backend.transaction;
 	recovery = &fake_backend.recovery;
 	repack = &fake_backend.repack;
+	pgstat_pending = &fake_backend.pgstat_pending;
+	wait_state = &fake_backend.wait_state;
 	replication->walreceiver_recv_file = -1;
 	xlog->open_log_file = -1;
 	parallel->worker_number = -1;
@@ -785,6 +790,8 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	recovery->standby_wait_us = PG_BACKEND_STANDBY_INITIAL_WAIT_US;
 	repack->repacked_rel_locator.relNumber = InvalidOid;
 	repack->repacked_rel_toast_locator.relNumber = InvalidOid;
+	dlist_init(&pgstat_pending->pending);
+	pg_atomic_init_u32(&wait_state->waiting, 0);
 
 	MemSet(&hash_ctl, 0, sizeof(hash_ctl));
 	hash_ctl.keysize = sizeof(Oid);
@@ -1104,6 +1111,52 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	repack->repacked_rel_toast_locator.dbOid = 22;
 	repack->repacked_rel_toast_locator.relNumber = 23;
 
+	pgstat_pending->local.snapshot.context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test pgstat snapshot context",
+							  ALLOCSET_SMALL_SIZES);
+	pgstat_pending->local.snapshot.stats =
+		(struct pgstat_snapshot_hash *) &fake_backend;
+	pgstat_pending->local.snapshot.mode = PGSTAT_FETCH_CONSISTENCY_CACHE;
+	pgstat_pending->shared_ref_age = 24;
+	pgstat_pending->shared_ref_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test pgstat shared ref context",
+							  ALLOCSET_SMALL_SIZES);
+	pgstat_pending->entry_ref_hash_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test pgstat entry ref hash context",
+							  ALLOCSET_SMALL_SIZES);
+	pgstat_pending->pending_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test pgstat pending context",
+							  ALLOCSET_SMALL_SIZES);
+	pgstat_pending->pending_bgwriter.buf_alloc = 25;
+	pgstat_pending->pending_checkpointer.num_requested = 26;
+	pgstat_pending->io_stats_pending = true;
+	pgstat_pending->slru_stats_pending = true;
+	pgstat_pending->lock_stats_pending = true;
+	pgstat_pending->backend_io_stats_pending = true;
+	pgstat_pending->report_fixed = true;
+	pgstat_pending->force_next_flush = true;
+	pgstat_pending->force_snapshot_clear = true;
+	pgstat_pending->is_initialized = true;
+	pgstat_pending->is_shutdown = true;
+	pgstat_pending->xact_commit = 27;
+	pgstat_pending->xact_rollback = 28;
+	pgstat_pending->block_read_time = 29;
+	pgstat_pending->block_write_time = 30;
+	pgstat_pending->active_time = 31;
+	pgstat_pending->transaction_idle_time = 32;
+	INSTR_TIME_SET_CURRENT(pgstat_pending->func_total_time);
+
+	wait_state->spec.kind = PG_WAIT_KIND_EVENT_SET;
+	wait_state->spec.wait_event_info = 0x01020304;
+	wait_state->spec.wake_events = 33;
+	wait_state->spec.timeout = 34;
+	wait_state->local_wait_event_info = 0x05060708;
+	pg_atomic_write_u32(&wait_state->waiting, 1);
+
 	fake_backend.memory_manager.log_memory_context_in_progress = true;
 
 	utility->notify_interrupt_pending = true;
@@ -1155,6 +1208,8 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 		utility->utility_cache_context;
 
 	PgBackendResetClosedState(&fake_backend);
+	saved_backend = CurrentPgBackend;
+	CurrentPgBackend = &fake_backend;
 
 	ok = ok && walsender->uploaded_manifest == NULL;
 	ok = ok && walsender->uploaded_manifest_mcxt == NULL;
@@ -1368,6 +1423,42 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && repack->worker_dsm_segment == NULL;
 	ok = ok && !OidIsValid(repack->repacked_rel_locator.relNumber);
 	ok = ok && !OidIsValid(repack->repacked_rel_toast_locator.relNumber);
+	ok = ok && pgstat_pending->local.snapshot.context == NULL;
+	ok = ok && pgstat_pending->local.snapshot.stats == NULL;
+	ok = ok && pgstat_pending->local.snapshot.mode ==
+		PGSTAT_FETCH_CONSISTENCY_NONE;
+	ok = ok && pgstat_pending->entry_ref_hash == NULL;
+	ok = ok && pgstat_pending->shared_ref_age == 0;
+	ok = ok && pgstat_pending->shared_ref_context == NULL;
+	ok = ok && pgstat_pending->entry_ref_hash_context == NULL;
+	ok = ok && pgstat_pending->pending_context == NULL;
+	ok = ok && dlist_is_empty(&pgstat_pending->pending);
+	ok = ok && pgstat_pending->pending_bgwriter.buf_alloc == 0;
+	ok = ok && pgstat_pending->pending_checkpointer.num_requested == 0;
+	ok = ok && !pgstat_pending->io_stats_pending;
+	ok = ok && !pgstat_pending->slru_stats_pending;
+	ok = ok && !pgstat_pending->lock_stats_pending;
+	ok = ok && !pgstat_pending->backend_io_stats_pending;
+	ok = ok && !pgstat_pending->report_fixed;
+	ok = ok && !pgstat_pending->force_next_flush;
+	ok = ok && !pgstat_pending->force_snapshot_clear;
+	ok = ok && !pgstat_pending->is_initialized;
+	ok = ok && !pgstat_pending->is_shutdown;
+	ok = ok && pgstat_pending->xact_commit == 0;
+	ok = ok && pgstat_pending->xact_rollback == 0;
+	ok = ok && pgstat_pending->block_read_time == 0;
+	ok = ok && pgstat_pending->block_write_time == 0;
+	ok = ok && pgstat_pending->active_time == 0;
+	ok = ok && pgstat_pending->transaction_idle_time == 0;
+	ok = ok && wait_state->spec.kind == PG_WAIT_KIND_NONE;
+	ok = ok && wait_state->spec.wait_event_info == 0;
+	ok = ok && wait_state->spec.wake_events == 0;
+	ok = ok && wait_state->spec.timeout == 0;
+	ok = ok && wait_state->local_wait_event_info == 0;
+	ok = ok && *PgCurrentMyWaitEventInfoRef() ==
+		&wait_state->local_wait_event_info;
+	ok = ok && pg_atomic_read_u32(&wait_state->waiting) == 0;
+	CurrentPgBackend = saved_backend;
 	ok = ok && !fake_backend.memory_manager.log_memory_context_in_progress;
 	ok = ok && utility->notify_interrupt_pending;
 	ok = ok && utility->seq_scan_tables[0] == NULL;

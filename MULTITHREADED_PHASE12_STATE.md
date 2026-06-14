@@ -12191,3 +12191,58 @@ Validation for the session closed-state reset batch:
   `002_threaded_bgworker_crash.pl`, 131 tests total, with the documented
   local `IPC::Run` `PERL5LIB` and patched temporary-install install-name
   paths.
+
+## Pgstat And Wait Closed-State Reset Batch
+
+Lifecycle preflight:
+
+- target: Gate E2 lifecycle rows still carrying vague shutdown-owner text for
+  `PgBackend.pgstat_pending`, `PgBackend.wait_state`, and
+  `PgSession.pgstat`;
+- repeated lifecycle operations: three reset-through-initializer rows. The
+  backend wait and session pgstat buckets are direct reinitialization cases;
+  backend pending pgstat first reclaims retained local contexts after normal
+  pgstat shutdown owns live entry-ref/pending-list cleanup;
+- preflight result: the existing checked bucket `.def` rows, ordered session
+  reset rows, and explicit handwritten reset helper are sufficient. No new
+  generic lifecycle primitive is needed for this batch because the only
+  nontrivial cleanup is pgstat-specific and must assert the normal shutdown
+  boundary before reclaiming retained contexts.
+
+Pgstat/wait reset slice:
+
+- `backend_runtime_backend_buckets.def` now routes
+  `PgBackend.pgstat_pending` and `PgBackend.wait_state` through checked
+  closed-backend reset rows;
+- `backend_runtime_session_reset_buckets.def` now includes an ordered
+  `PgSession.pgstat` reset row after GUC reset;
+- `PgBackendResetPgStatPendingClosedState()` asserts the pending list is empty
+  and the entry-ref hash, shared hash, and DSA mapping are already released,
+  deletes retained local snapshot, shared-ref, entry-ref-hash, and pending
+  contexts, then reinitializes the bucket;
+- `PgBackendResetWaitClosedState()` reinitializes the wait spec and restores
+  `my_wait_event_info` to the backend-local storage slot;
+- `PgSessionResetPgStatClosedState()` restores pgstat tracking, fetch
+  consistency, activity tracking, session-end cause, and session-report
+  timestamp defaults;
+- `test_backend_reset_closed_state()` and
+  `test_session_reset_closed_state()` now cover these reset paths through the
+  top-level runtime-object reset entry points.
+
+Validation for the pgstat/wait closed-state reset batch:
+
+- `gmake -C src/backend/utils/init backend_runtime.o
+  backend_runtime_teardown.o` passed;
+- `gmake -C src/test/modules/test_backend_runtime
+  test_backend_runtime_backend.o test_backend_runtime_session.o` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 176 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- full incremental `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with the documented
+  local `IPC::Run` `PERL5LIB` and patched temporary-install install-name
+  paths.

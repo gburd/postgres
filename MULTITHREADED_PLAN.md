@@ -1245,9 +1245,15 @@ session-cleanup rows: `vacuum`, `lock_wait`, `large_object`, `temp_file`,
 `PgSessionResetClosedState()` rows. The reset path restores scalar GUC/default
 state for vacuum and lock waits, clears large-object relation slots after
 large-object cleanup, resets temp-file counters/table-space slots after fd.c
-cleanup, asserts plan-cache lists are empty after plancache cleanup owns
-plan destruction, and deletes the namespace search-path cache context while
-leaving `namespace_search_path` ownership with GUC reset.
+cleanup, asserts plan-cache lists are empty after plancache cleanup owns plan
+destruction, and deletes the namespace search-path cache context while leaving
+`namespace_search_path` ownership with GUC reset.
+The follow-up pgstat/wait closed-reset batch routes `PgBackend.pgstat_pending`,
+`PgBackend.wait_state`, and `PgSession.pgstat` through explicit checked reset
+rows. Pending pgstat reset now asserts pgstat shutdown drained live refs,
+detached shared hash/DSA mappings, reclaims retained local pgstat contexts,
+and reinitializes the bucket; wait reset repairs the backend-local wait-event
+pointer; session pgstat reset restores the tracking/fetch/session-end defaults.
 The deadlock detector workspace batch now stores `visitedProcs`,
 `nVisitedProcs`, `topoProcs`, `beforeConstraints`, `afterConstraints`,
 `waitOrders`, `nWaitOrders`, `waitOrderProcs`, `curConstraints`,

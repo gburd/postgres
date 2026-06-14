@@ -705,7 +705,7 @@ static void PgSessionAdoptEarlyLoggingState(PgSession *session);
 static void PgSessionInitializeMiscGUCState(PgSessionMiscGUCState *misc_guc);
 static void PgSessionAdoptEarlyMiscGUCState(PgSession *session);
 static void PgSessionAdoptEarlyGUCState(PgSession *session);
-static void PgSessionInitializePgStatState(PgSessionPgStatState *pgstat);
+void PgSessionInitializePgStatState(PgSessionPgStatState *pgstat);
 static void PgSessionAdoptEarlyPgStatState(PgSession *session);
 static void PgSessionInitializeQueryIdState(PgSessionQueryIdState *query_id);
 static void PgSessionAdoptEarlyQueryIdState(PgSession *session);
@@ -798,7 +798,7 @@ static void PgBackendAdoptEarlyProcNumberState(PgBackend *backend);
 static void PgBackendAdoptEarlyMyBEEntry(PgBackend *backend);
 static void PgBackendAdoptEarlyMyBgworkerEntry(PgBackend *backend);
 static void PgBackendAdoptEarlyAuxProcessResourceOwner(PgBackend *backend);
-static void PgBackendInitializePgStatPendingState(PgBackendPgStatPendingState *pgstat_pending);
+void PgBackendInitializePgStatPendingState(PgBackendPgStatPendingState *pgstat_pending);
 static void PgBackendAdoptEarlyPgStatPendingState(PgBackend *backend);
 static void PgBackendInitializeActivityState(PgBackendActivityState *activity);
 static void PgBackendAdoptEarlyActivityState(PgBackend *backend);
@@ -817,7 +817,7 @@ static void PgBackendAdoptEarlyLockState(PgBackend *backend);
 void PgBackendInitializeIPCState(PgBackendIPCState *ipc);
 static void PgBackendAdoptEarlyIPCState(PgBackend *backend);
 static void PgBackendEnsureWaitStateInitialized(PgBackendWaitState *wait_state);
-static void PgBackendInitializeWaitState(PgBackendWaitState *wait_state);
+void PgBackendInitializeWaitState(PgBackendWaitState *wait_state);
 static void PgBackendAdoptEarlyWaitState(PgBackend *backend);
 void PgBackendInitializeTransactionState(PgBackendTransactionState *transaction);
 static void PgBackendAdoptEarlyTransactionState(PgBackend *backend);
@@ -1679,7 +1679,7 @@ PgSessionAdoptEarlyGUCState(PgSession *session)
 	PgSessionInitializeGUCState(&early_session_guc);
 }
 
-static void
+void
 PgSessionInitializePgStatState(PgSessionPgStatState *pgstat)
 {
 	Assert(pgstat != NULL);
@@ -2940,7 +2940,7 @@ PgSessionAdoptEarlyTcopState(PgSession *session)
 	PgSessionInitializeTcopState(&early_session_tcop);
 }
 
-static void
+void
 PgBackendInitializePgStatPendingState(PgBackendPgStatPendingState *pgstat_pending)
 {
 	Assert(pgstat_pending != NULL);
@@ -3166,7 +3166,7 @@ PgBackendEnsureWaitStateInitialized(PgBackendWaitState *wait_state)
 		wait_state->my_wait_event_info = &wait_state->local_wait_event_info;
 }
 
-static void
+void
 PgBackendInitializeWaitState(PgBackendWaitState *wait_state)
 {
 	Assert(wait_state != NULL);

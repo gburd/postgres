@@ -3210,6 +3210,13 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	fake_session.lock_wait.initialized = true;
 	fake_session.lock_wait.deadlock_timeout_ms = 9999;
 	fake_session.lock_wait.log_lock_waits_value = false;
+	fake_session.pgstat.initialized = true;
+	fake_session.pgstat.track_counts = false;
+	fake_session.pgstat.track_functions = TRACK_FUNC_ALL;
+	fake_session.pgstat.fetch_consistency = PGSTAT_FETCH_CONSISTENCY_NONE;
+	fake_session.pgstat.track_activities = false;
+	fake_session.pgstat.session_end_cause = DISCONNECT_KILLED;
+	fake_session.pgstat.last_session_report_time = 12345;
 	fake_session.temp_file.initialized = true;
 	fake_session.temp_file.temporary_files_size = 98765;
 	fake_session.temp_file.temp_file_counter = 99;
@@ -3344,6 +3351,14 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && fake_session.lock_wait.initialized;
 	ok = ok && fake_session.lock_wait.deadlock_timeout_ms == 1000;
 	ok = ok && fake_session.lock_wait.log_lock_waits_value;
+	ok = ok && fake_session.pgstat.initialized;
+	ok = ok && fake_session.pgstat.track_counts;
+	ok = ok && fake_session.pgstat.track_functions == TRACK_FUNC_OFF;
+	ok = ok && fake_session.pgstat.fetch_consistency ==
+		PGSTAT_FETCH_CONSISTENCY_CACHE;
+	ok = ok && fake_session.pgstat.track_activities;
+	ok = ok && fake_session.pgstat.session_end_cause == DISCONNECT_NORMAL;
+	ok = ok && fake_session.pgstat.last_session_report_time == 0;
 	ok = ok && fake_session.large_object.heap_relation == NULL;
 	ok = ok && fake_session.large_object.index_relation == NULL;
 	ok = ok && fake_session.temp_file.initialized;
