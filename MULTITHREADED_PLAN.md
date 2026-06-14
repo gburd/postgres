@@ -915,6 +915,10 @@ Gate E2 requires:
   copy/adopt, zero-reset, and destructor-call cases. If a migration cannot be
   expressed clearly through that path, document why and keep the semantic
   cleanup handwritten near the owning subsystem;
+- `MULTITHREADED_RUNTIME_OWNERS.tsv` remains synchronized with the lifecycle
+  manifest and runtime accessors. `check-runtime-lifecycles` must reject owner
+  rows that point at a non-manifest bucket, a missing owner source, a duplicate
+  legacy symbol, or an accessor not found in the owner source/runtime header;
 - the Phase 12 runtime and test scaffolding is refactored before additional
   Gate E2 state migration or Phase 13 scheduler-aware wait work begins.
   `src/backend/utils/init/backend_runtime.c` must remain the orchestration
@@ -977,6 +981,9 @@ carrier lifecycle checker slice then added `PgCarrier` to the same manifest
 discipline: `backend_runtime_carrier_buckets.def` now covers every carrier
 field, and `check-runtime-lifecycles` verifies process and thread runtime
 construction both call `PgCarrierInitializeRuntimeObject()`.
+The owner-map hardening slice also made `check-runtime-lifecycles` validate
+`MULTITHREADED_RUNTIME_OWNERS.tsv`, so symbol-level mappings cannot drift away
+from checked lifecycle buckets or owner-adjacent accessors.
 
 Current Gate E2 progress: `gmake check-global-lifetimes` is now a required
 target, and postmaster signal/wakeup routing no longer dereferences a

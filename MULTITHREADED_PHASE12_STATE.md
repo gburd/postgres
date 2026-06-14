@@ -10881,3 +10881,24 @@ Validation for this carrier lifecycle checker slice:
 - `gmake -C src/test/modules/test_backend_runtime check` passed;
 - full `gmake -j8` passed;
 - `git diff --check` passed.
+
+Owner map checker hardening completed:
+
+- `MULTITHREADED_RUNTIME_OWNERS.tsv` carrier rows now use the checked
+  `PgCarrier` lifecycle fields as their buckets instead of pseudo-buckets such
+  as `launch`, `wait_event`, and `stack`;
+- `check_runtime_lifecycles.pl` now reads the owner map by default and checks
+  that each row has the expected schema, a unique legacy symbol, a
+  `root_object.bucket` pair present in `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`,
+  an existing owner source file, and an accessor present in either the runtime
+  header or that owner source;
+- the top-level `gmake check-runtime-lifecycles` target passes
+  `MULTITHREADED_RUNTIME_OWNERS.tsv` explicitly, making the owner map part of
+  the required Gate E2 lifecycle check.
+
+Validation for this owner map checker hardening:
+
+- `perl -c src/tools/runtime_lifecycle/check_runtime_lifecycles.pl` passed;
+- `gmake check-runtime-lifecycles` passed with 164 runtime fields classified,
+  164 bucket definitions checked, 25 reset definitions checked, and 135 owner
+  mappings checked.

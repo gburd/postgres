@@ -142,6 +142,7 @@ check-runtime-lifecycles:
 	$(PERL) $(top_srcdir)/src/tools/runtime_lifecycle/check_runtime_lifecycles.pl \
 		--header $(top_srcdir)/src/include/utils/backend_runtime.h \
 		--manifest $(top_srcdir)/MULTITHREADED_RUNTIME_LIFECYCLE.tsv \
+		--owner-map $(top_srcdir)/MULTITHREADED_RUNTIME_OWNERS.tsv \
 		--source $(top_srcdir)/src/backend/utils/init/backend_runtime.c \
 		--source $(top_srcdir)/src/backend/utils/init/backend_runtime_session.c \
 		--source $(top_srcdir)/src/backend/utils/cache/backend_runtime_cache.c \

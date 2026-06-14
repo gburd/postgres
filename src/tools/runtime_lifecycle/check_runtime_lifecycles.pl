@@ -17,6 +17,7 @@ use Getopt::Long qw(GetOptions);
 
 my $header = 'src/include/utils/backend_runtime.h';
 my $manifest = 'MULTITHREADED_RUNTIME_LIFECYCLE.tsv';
+my $owner_map = 'MULTITHREADED_RUNTIME_OWNERS.tsv';
 my @sources = (
 	'src/backend/utils/init/backend_runtime.c',
 	'src/backend/utils/init/backend_runtime_session.c',
@@ -46,6 +47,7 @@ my $help = 0;
 GetOptions(
 	'header=s' => \$header,
 	'manifest=s' => \$manifest,
+	'owner-map=s' => \$owner_map,
 	'source=s' => \@sources,
 	'bucket-def=s' => \@bucket_defs,
 	'reset-def=s' => \@reset_defs,
@@ -58,6 +60,7 @@ my @errors;
 my @fields = read_runtime_fields($header);
 my %header_fields = map { field_key($_) => $_ } @fields;
 my @manifest_rows = read_manifest($manifest);
+my @owner_rows = read_owner_map($owner_map);
 my @bucket_rows = read_bucket_defs(@bucket_defs);
 my @reset_rows = read_reset_defs(@reset_defs);
 my $source_text = read_sources(@sources);
@@ -105,6 +108,8 @@ foreach my $field (@fields)
 	push @errors, "missing lifecycle row for $key"
 	  unless exists $manifest_fields{$key};
 }
+
+validate_owner_map(\@owner_rows, \%manifest_fields, $header);
 
 foreach my $row (@bucket_rows)
 {
@@ -221,8 +226,8 @@ if (@errors)
 	exit 1;
 }
 
-printf "runtime lifecycle check passed: %d fields classified, %d bucket definitions checked, %d reset definitions checked\n",
-  scalar @fields, scalar @bucket_rows, scalar @reset_rows;
+printf "runtime lifecycle check passed: %d fields classified, %d bucket definitions checked, %d reset definitions checked, %d owner mappings checked\n",
+  scalar @fields, scalar @bucket_rows, scalar @reset_rows, scalar @owner_rows;
 exit 0;
 
 sub usage
@@ -238,6 +243,7 @@ Options:
   --source FILE     runtime source path to scan for lifecycle functions
   --bucket-def FILE root-object bucket definition file to validate
   --reset-def FILE  ordered reset definition file to validate
+  --owner-map FILE  symbol-level owner map path
   --help            show this help
 USAGE
 
@@ -311,6 +317,15 @@ sub read_sources
 	}
 
 	return $text;
+}
+
+sub read_file
+{
+	my ($file) = @_;
+
+	open my $fh, '<', $file or die "could not open $file: $!";
+	local $/;
+	return <$fh>;
 }
 
 sub defined_functions
@@ -439,6 +454,106 @@ sub read_reset_defs
 	}
 
 	return @rows;
+}
+
+sub read_owner_map
+{
+	my ($file) = @_;
+
+	open my $fh, '<', $file or die "could not open $file: $!";
+
+	my $header = <$fh>;
+	chomp $header if defined $header;
+	if (!defined $header ||
+		$header ne "legacy_symbol\troot_object\tbucket\tmember\taccessor\towner_source\tnotes")
+	{
+		push @errors,
+		  "$file:1: expected owner-map header legacy_symbol/root_object/bucket/member/accessor/owner_source/notes";
+		return ();
+	}
+
+	my @rows;
+	while (my $line = <$fh>)
+	{
+		chomp $line;
+		next if $line =~ /^\s*$/;
+
+		my @columns = split /\t/, $line, 7;
+		if (@columns != 7)
+		{
+			push @errors,
+			  "$file:$.: expected 7 tab-separated owner-map columns, got " . scalar(@columns);
+			next;
+		}
+
+		push @rows,
+		  {
+			legacy_symbol => $columns[0],
+			object => $columns[1],
+			field => $columns[2],
+			member => $columns[3],
+			accessor => $columns[4],
+			owner_source => $columns[5],
+			notes => $columns[6],
+			file => $file,
+			line => $.,
+		  };
+	}
+
+	return @rows;
+}
+
+sub validate_owner_map
+{
+	my ($rows, $manifest_fields, $header_file) = @_;
+	my %symbols;
+	my %accessor_text_cache;
+
+	foreach my $row (@{$rows})
+	{
+		my $location = "$row->{file}:$row->{line}";
+		my $key = field_key($row);
+
+		foreach my $column (qw(legacy_symbol object field member accessor owner_source notes))
+		{
+			push @errors, "$location: owner-map column $column must not be empty"
+			  if $row->{$column} eq '';
+		}
+
+		if (exists $symbols{$row->{legacy_symbol}})
+		{
+			push @errors,
+			  "$location: duplicate owner-map legacy symbol $row->{legacy_symbol}";
+		}
+		$symbols{$row->{legacy_symbol}} = 1;
+
+		if (!exists $manifest_fields->{$key})
+		{
+			push @errors,
+			  "$location: owner-map bucket $key has no lifecycle manifest row";
+		}
+
+		if (!-f $row->{owner_source})
+		{
+			push @errors,
+			  "$location: owner source $row->{owner_source} does not exist";
+			next;
+		}
+
+		my $text_key = "$header_file\0$row->{owner_source}";
+		my $text = $accessor_text_cache{$text_key};
+		if (!defined $text)
+		{
+			$text = read_file($header_file) . "\n" . read_file($row->{owner_source});
+			$accessor_text_cache{$text_key} = $text;
+		}
+
+		if ($text !~ /\b\Q$row->{accessor}\E\b/)
+		{
+			push @errors,
+			  "$location: accessor $row->{accessor} was not found in $header_file or $row->{owner_source}";
+		}
+	}
 }
 
 sub split_macro_args

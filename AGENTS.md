@@ -39,7 +39,10 @@ the code evolves.
   `PgExecution`.
 - [MULTITHREADED_RUNTIME_OWNERS.tsv](MULTITHREADED_RUNTIME_OWNERS.tsv) maps
   migrated legacy symbols to runtime object buckets, members, accessors, and
-  owner source files. Extend it when moving globals behind runtime objects.
+  owner source files. Extend it when moving globals behind runtime objects;
+  `gmake check-runtime-lifecycles` validates that each owner-map bucket points
+  at a checked lifecycle row, each owner source exists, and each accessor is
+  present in the owner source or runtime header.
 - [MULTITHREADED_THREADING_REVIEW.md](MULTITHREADED_THREADING_REVIEW.md)
   records the critical branch review findings and the Phase 12 exit-gate
   rationale.
@@ -326,19 +329,19 @@ Important current files:
   `pgwin32_noblock` bridge is covered by shared connection-object tests here,
   but `src/backend/port/win32/socket.c` still needs Windows compile coverage.
 - Before leaving Phase 12, perform the Gate E2 object-lifecycle audit. Every
-  backend/session/connection/execution state bucket needs a documented
+  carrier/backend/session/connection/execution state bucket needs a documented
   initializer, early-adoption behavior or proof that early adoption is
   impossible, reset/destroy behavior, owner/lifetime, and copy/adoption rule
   for pointer, list, memory-context, socket, hash-table, and opaque-pointer
   fields. Keep `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` synchronized with
   `src/include/utils/backend_runtime.h`, and run
   `gmake check-runtime-lifecycles` after adding, renaming, or removing
-  `PgBackend`, `PgSession`, `PgConnection`, or `PgExecution` fields. Manual
-  process/thread init/adopt asymmetries must be centralized or explicitly
-  justified. The checker also verifies the manifest's runtime lifecycle
-  function references and the required process/thread constructor and
-  top-level adoption calls; update the checker deliberately if the object
-  construction shape changes.
+  `PgCarrier`, `PgBackend`, `PgSession`, `PgConnection`, or `PgExecution`
+  fields. Manual process/thread init/adopt asymmetries must be centralized or
+  explicitly justified. The checker also verifies the manifest's runtime
+  lifecycle function references, owner-map references, and the required
+  process/thread constructor and top-level adoption calls; update the checker
+  deliberately if the object construction shape changes.
 - When closing a lifecycle row for a memory-context or compatibility bridge,
   make the reset order explicit in code and docs. If cleanup only clears
   pointer slots while existing transaction/main-loop cleanup still owns the
