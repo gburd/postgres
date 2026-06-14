@@ -25,6 +25,12 @@ PgCurrentSeqScanTables(void)
 	return PgCurrentBackendUtilityState()->seq_scan_tables;
 }
 
+char **
+PgCurrentStackBasePtrRef(void)
+{
+	return &PgCurrentCarrierState()->stack_base_ptr;
+}
+
 int *
 PgCurrentSeqScanLevels(void)
 {
@@ -218,4 +224,3 @@ PgCurrentMissingAttrCacheRef(void)
 {
 	return &PgCurrentBackendUtilityState()->missing_attr_cache;
 }
-

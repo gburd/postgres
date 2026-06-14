@@ -976,6 +976,13 @@ is carrier-owned instead of standalone carrier TLS. This does not remove the
 temporary process-wide GUC mutex or close the broader GUC adoption/rebind
 blocker; it only makes the current bridge's carrier-local state explicit and
 covered by backend-runtime tests.
+The wait-event signal/self-pipe descriptors, WaitLatch `waiting` flag,
+stack-depth base pointer, and opaque backend-thread launch record also now
+live in `PgCarrier`, with owner-adjacent accessors in `backend_runtime_ipc.c`,
+`backend_runtime_utility.c`, and the core runtime orchestration file. This
+preserves the old descriptor sentinels while removing these raw carrier-local
+TLS globals from their subsystem files. `IsUnderPostmaster` remains a
+deliberate carrier-local process-context flag outside `PgCarrier`.
 The generic main-loop interrupt flags `ConfigReloadPending` and
 `ShutdownRequestPending` now live in `PgBackendPendingInterruptState` behind
 their existing lvalue names, so config reload and cooperative shutdown state

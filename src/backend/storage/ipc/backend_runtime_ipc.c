@@ -90,3 +90,33 @@ PgCurrentLocalLatchData(void)
 {
 	return &PgCurrentBackendIPCState()->local_latch_data;
 }
+
+volatile sig_atomic_t *
+PgCurrentWaitEventWaitingRef(void)
+{
+	return &PgCurrentCarrierState()->wait_event_waiting;
+}
+
+int *
+PgCurrentWaitEventSignalFdRef(void)
+{
+	return &PgCurrentCarrierState()->wait_event_signal_fd;
+}
+
+int *
+PgCurrentWaitEventSelfPipeReadFdRef(void)
+{
+	return &PgCurrentCarrierState()->wait_event_selfpipe_readfd;
+}
+
+int *
+PgCurrentWaitEventSelfPipeWriteFdRef(void)
+{
+	return &PgCurrentCarrierState()->wait_event_selfpipe_writefd;
+}
+
+int *
+PgCurrentWaitEventSelfPipeOwnerPidRef(void)
+{
+	return &PgCurrentCarrierState()->wait_event_selfpipe_owner_pid;
+}

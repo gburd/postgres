@@ -10317,6 +10317,46 @@ Validation for this slice:
   tests and `002_threaded_bgworker_crash.pl` with 6 tests using the local
   `IPC::Run` `PERL5LIB` and patched temporary-install dynamic library names.
 
+## Carrier Wait/Stack/Launch State
+
+This Phase 12 carrier-state slice moves the targeted wait/stack/launch
+carrier-local TLS globals into `PgCarrier`:
+
+- `CurrentBackendThreadStart` is now an opaque `backend_thread_start` pointer
+  in `PgCarrier`, reached through `PgCurrentBackendThreadStartRef()`;
+- wait-event signal/self-pipe state (`waiting`, `signal_fd`,
+  `selfpipe_readfd`, `selfpipe_writefd`, and `selfpipe_owner_pid`) now lives in
+  `PgCarrier` behind IPC-owned accessors in
+  `src/backend/storage/ipc/backend_runtime_ipc.c`;
+- `stack_base_ptr` now lives in `PgCarrier` behind
+  `PgCurrentStackBasePtrRef()` in
+  `src/backend/utils/misc/backend_runtime_utility.c`;
+- carrier initialization explicitly preserves the legacy `-1` descriptor
+  sentinels for both process and thread carriers.
+
+The backend-thread entry path installs the prebuilt thread carrier before
+recording `backend_thread_start`, so early thread startup state does not fall
+back to the process carrier before full `InstallPgThreadBackendRuntimeState()`.
+`test_carrier_misc_state_is_carrier_local()` switches between fake carriers and
+verifies that wait-event descriptors, wait state, stack base, and launch
+record pointers remain carrier-local.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`,
+  `backend_runtime_ipc.o`, `waiteventset.o`, `backend_runtime_utility.o`,
+  `stack_depth.o`, and `launch_backend.o`;
+- the LLVM-enabled full `gmake -j8` build passed;
+- `gmake check-runtime-lifecycles` passed with 149 runtime fields classified;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and carrier-local declarations reduced from 31 to 24;
+- `gmake -C src/test/modules/test_backend_runtime clean all` passed after the
+  main `postgres` binary was rebuilt with the new carrier accessors;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` with 88
+  tests and `002_threaded_bgworker_crash.pl` with 6 tests using the local
+  `IPC::Run` `PERL5LIB` and patched temporary-install dynamic library names.
+
 ## Gate E2 Maintainability Refactor Blocker
 
 Before continuing with additional Gate E2 state migration or starting Phase 13

@@ -4239,11 +4239,20 @@ PgExecutionInitializeRuntimeObject(PgExecution *execution,
 	PgExecutionInitializeSnapBuildState(&execution->snapbuild);
 }
 
+static void
+PgCarrierInitializeRuntimeObject(PgCarrier *carrier)
+{
+	MemSet(carrier, 0, sizeof(*carrier));
+	carrier->wait_event_signal_fd = -1;
+	carrier->wait_event_selfpipe_readfd = -1;
+	carrier->wait_event_selfpipe_writefd = -1;
+}
+
 void
 InitializePgProcessRuntime(void)
 {
 	MemSet(&process_runtime, 0, sizeof(process_runtime));
-	MemSet(&process_carrier, 0, sizeof(process_carrier));
+	PgCarrierInitializeRuntimeObject(&process_carrier);
 	MemSet(&process_backend, 0, sizeof(process_backend));
 	MemSet(&process_session, 0, sizeof(process_session));
 	MemSet(&process_connection, 0, sizeof(process_connection));
@@ -4322,6 +4331,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	Assert(thread_runtime_initialized);
 
 	MemSet(state, 0, sizeof(*state));
+	PgCarrierInitializeRuntimeObject(&state->carrier);
 
 	state->carrier.kind = PG_CARRIER_THREAD;
 	state->carrier.runtime = &thread_runtime;
@@ -7250,6 +7260,24 @@ PgCurrentThreadedGUCMutexDepthRef(void)
 		return &CurrentPgCarrier->threaded_guc_mutex_depth;
 
 	return &process_carrier.threaded_guc_mutex_depth;
+}
+
+void **
+PgCurrentBackendThreadStartRef(void)
+{
+	if (CurrentPgCarrier != NULL)
+		return &CurrentPgCarrier->backend_thread_start;
+
+	return &process_carrier.backend_thread_start;
+}
+
+PgCarrier *
+PgCurrentCarrierState(void)
+{
+	if (CurrentPgCarrier == NULL)
+		return &process_carrier;
+
+	return CurrentPgCarrier;
 }
 
 static PgBackendActivityState *

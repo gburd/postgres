@@ -180,21 +180,21 @@ typedef struct WaitEventSetWaitArgs
 
 #ifndef WIN32
 /* Are we currently in WaitLatch? The signal handler would like to know. */
-static PG_THREAD_LOCAL PG_GLOBAL_CARRIER volatile sig_atomic_t waiting = false;
+#define waiting (*PgCurrentWaitEventWaitingRef())
 #endif
 
 #ifdef WAIT_USE_SIGNALFD
 /* On Linux, we'll receive SIGURG via a signalfd file descriptor. */
-static PG_THREAD_LOCAL PG_GLOBAL_CARRIER int signal_fd = -1;
+#define signal_fd (*PgCurrentWaitEventSignalFdRef())
 #endif
 
 #ifdef WAIT_USE_SELF_PIPE
 /* Read and write ends of the self-pipe */
-static PG_THREAD_LOCAL PG_GLOBAL_CARRIER int selfpipe_readfd = -1;
-static PG_THREAD_LOCAL PG_GLOBAL_CARRIER int selfpipe_writefd = -1;
+#define selfpipe_readfd (*PgCurrentWaitEventSelfPipeReadFdRef())
+#define selfpipe_writefd (*PgCurrentWaitEventSelfPipeWriteFdRef())
 
 /* Process owning the self-pipe --- needed for checking purposes */
-static PG_THREAD_LOCAL PG_GLOBAL_CARRIER int selfpipe_owner_pid = 0;
+#define selfpipe_owner_pid (*PgCurrentWaitEventSelfPipeOwnerPidRef())
 
 /* Private function prototypes */
 static void latch_sigurg_handler(SIGNAL_ARGS);

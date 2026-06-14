@@ -7,6 +7,7 @@ SELECT test_backend_thread_create_join();
 SELECT test_backend_thread_exit_join();
 SELECT test_backend_thread_runtime_state();
 SELECT test_carrier_threaded_guc_lock_depth_is_carrier_local();
+SELECT test_carrier_misc_state_is_carrier_local();
 SELECT test_thread_install_adopts_backend_fallback_state();
 SELECT test_thread_install_adopts_session_execution_fallback_state();
 SELECT test_thread_install_adopts_connection_fallback_state();

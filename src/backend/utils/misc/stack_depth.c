@@ -19,6 +19,7 @@
 #include <sys/resource.h>
 
 #include "miscadmin.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc_hooks.h"
 
 
@@ -29,7 +30,7 @@
  * Stack base pointer -- initialized by set_stack_base(), which
  * should be called from main().
  */
-static PG_THREAD_LOCAL PG_GLOBAL_CARRIER char *stack_base_ptr = NULL;
+#define stack_base_ptr (*PgCurrentStackBasePtrRef())
 
 
 /*

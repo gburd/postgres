@@ -235,9 +235,13 @@ Important current files:
 - Raw `PG_THREAD_LOCAL PG_GLOBAL_BACKEND`, `PG_GLOBAL_SESSION`,
   `PG_GLOBAL_CONNECTION`, and `PG_GLOBAL_EXECUTION` declarations should now be
   confined to `src/backend/utils/init/backend_runtime.c` early-fallback
-  storage. If a new in-tree module needs cached shared registry data, prefer
-  `PG_GLOBAL_RUNTIME`; if it needs backend/session/execution state, add an
-  explicit runtime-object bucket instead.
+  storage. Raw `PG_GLOBAL_CARRIER` declarations should be limited to the
+  runtime current pointers and narrowly documented process-context flags such
+  as `IsUnderPostmaster`; wait-event self-pipe/signalfd state,
+  `stack_base_ptr`, backend-thread launch state, and threaded GUC mutex depth
+  live in `PgCarrier`. If a new in-tree module needs cached shared registry
+  data, prefer `PG_GLOBAL_RUNTIME`; if it needs backend/session/execution or
+  carrier state, add an explicit runtime-object bucket instead.
 - Windows-only Phase 12 edits made from this macOS checkout must be marked as
   best-effort until a Windows build validates them. The current
   `pgwin32_noblock` bridge is covered by shared connection-object tests here,

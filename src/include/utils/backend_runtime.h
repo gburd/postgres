@@ -2038,6 +2038,13 @@ struct PgCarrier
 	PgBackend  *current_backend;
 	PgSession  *current_session;
 	PgExecution *current_execution;
+	void	   *backend_thread_start;
+	volatile sig_atomic_t wait_event_waiting;
+	int			wait_event_signal_fd;
+	int			wait_event_selfpipe_readfd;
+	int			wait_event_selfpipe_writefd;
+	int			wait_event_selfpipe_owner_pid;
+	char	   *stack_base_ptr;
 	int			threaded_guc_mutex_depth;
 };
 
@@ -2332,6 +2339,13 @@ extern slist_head *PgCurrentGUCReportListRef(void);
 extern bool *PgCurrentGUCReportingEnabledRef(void);
 extern int *PgCurrentGUCNestLevelRef(void);
 extern int *PgCurrentThreadedGUCMutexDepthRef(void);
+extern void **PgCurrentBackendThreadStartRef(void);
+extern volatile sig_atomic_t *PgCurrentWaitEventWaitingRef(void);
+extern int *PgCurrentWaitEventSignalFdRef(void);
+extern int *PgCurrentWaitEventSelfPipeReadFdRef(void);
+extern int *PgCurrentWaitEventSelfPipeWriteFdRef(void);
+extern int *PgCurrentWaitEventSelfPipeOwnerPidRef(void);
+extern char **PgCurrentStackBasePtrRef(void);
 extern bool *PgCurrentPgStatTrackCountsRef(void);
 extern int *PgCurrentPgStatTrackFunctionsRef(void);
 extern int *PgCurrentPgStatFetchConsistencyRef(void);

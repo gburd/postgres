@@ -211,7 +211,6 @@ typedef struct BackendThreadStart
 	bool		startup_gate_held;
 } BackendThreadStart;
 
-static PG_THREAD_LOCAL PG_GLOBAL_CARRIER BackendThreadStart *CurrentBackendThreadStart = NULL;
 static PG_GLOBAL_RUNTIME bool postmaster_thread_carriers_started = false;
 
 #ifndef WIN32
@@ -233,6 +232,8 @@ static bool postmaster_backend_thread_launch(PMChild *pmchild,
 static void backend_thread_entry(void *arg);
 static void backend_thread_run_backend(BackendThreadStart *thread_start);
 static void backend_thread_run_worker(BackendThreadStart *thread_start);
+static BackendThreadStart *backend_thread_current_start(void);
+static void backend_thread_set_current_start(BackendThreadStart *thread_start);
 static void backend_thread_wait_until_registered(BackendThreadStart *thread_start);
 static bool backend_thread_requires_startup_gate(BackendType child_type);
 static void backend_thread_enter_startup_gate(BackendThreadStart *thread_start);
@@ -484,7 +485,8 @@ backend_thread_entry(void *arg)
 {
 	BackendThreadStart *thread_start = (BackendThreadStart *) arg;
 
-	CurrentBackendThreadStart = thread_start;
+	CurrentPgCarrier = &thread_start->runtime_state.carrier;
+	backend_thread_set_current_start(thread_start);
 	backend_thread_wait_until_registered(thread_start);
 
 	MyBackendType = thread_start->child_type;
@@ -569,6 +571,18 @@ backend_thread_run_worker(BackendThreadStart *thread_start)
 	else
 		child_process_kinds[thread_start->child_type].main_fn(NULL, 0);
 	pg_unreachable();
+}
+
+static BackendThreadStart *
+backend_thread_current_start(void)
+{
+	return (BackendThreadStart *) *PgCurrentBackendThreadStartRef();
+}
+
+static void
+backend_thread_set_current_start(BackendThreadStart *thread_start)
+{
+	*PgCurrentBackendThreadStartRef() = thread_start;
 }
 
 static bool
@@ -664,18 +678,20 @@ backend_thread_leave_startup_gate(BackendThreadStart *thread_start)
 void
 ThreadedBackendStartupComplete(void)
 {
-	if (CurrentBackendThreadStart == NULL)
+	BackendThreadStart *thread_start = backend_thread_current_start();
+
+	if (thread_start == NULL)
 		return;
 
-	PostmasterChildPublishThreadStartupComplete(CurrentBackendThreadStart->pmchild,
-												CurrentBackendThreadStart->postmaster_latch);
-	backend_thread_leave_startup_gate(CurrentBackendThreadStart);
+	PostmasterChildPublishThreadStartupComplete(thread_start->pmchild,
+												thread_start->postmaster_latch);
+	backend_thread_leave_startup_gate(thread_start);
 }
 
 static void
 backend_thread_exit(int code)
 {
-	if (CurrentBackendThreadStart == NULL)
+	if (backend_thread_current_start() == NULL)
 		pg_thread_exit();
 
 	backend_thread_finish(code);
@@ -684,7 +700,7 @@ backend_thread_exit(int code)
 static void
 backend_thread_finish(int code)
 {
-	BackendThreadStart *thread_start = CurrentBackendThreadStart;
+	BackendThreadStart *thread_start = backend_thread_current_start();
 	int			exitstatus;
 	Size		top_memory_allocated = 0;
 
@@ -713,7 +729,7 @@ backend_thread_finish(int code)
 									 top_memory_allocated,
 									 thread_start->postmaster_latch);
 
-	CurrentBackendThreadStart = NULL;
+	backend_thread_set_current_start(NULL);
 	free(thread_start);
 	pg_thread_exit();
 }

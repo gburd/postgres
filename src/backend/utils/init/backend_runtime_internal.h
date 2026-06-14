@@ -19,6 +19,7 @@
 
 #include "utils/backend_runtime.h"
 
+extern PgCarrier *PgCurrentCarrierState(void);
 extern PgSessionCatalogLookupState *PgCurrentSessionCatalogLookupState(void);
 extern PgSessionConnectionGUCState *PgCurrentSessionConnectionGUCState(void);
 extern PgSessionDateTimeState *PgCurrentSessionDateTimeState(void);
