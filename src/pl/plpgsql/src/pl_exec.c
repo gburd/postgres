@@ -1388,13 +1388,18 @@ copy_plpgsql_datums(PLpgSQL_execstate *estate,
 				ws_next += MAXALIGN(sizeof(PLpgSQL_rec));
 				break;
 
-			case PLPGSQL_DTYPE_ROW:
 			case PLPGSQL_DTYPE_RECFIELD:
+				outdatum = (PLpgSQL_datum *) ws_next;
+				memcpy(outdatum, indatum, sizeof(PLpgSQL_recfield));
+				((PLpgSQL_recfield *) outdatum)->rectupledescid =
+					INVALID_TUPLEDESC_IDENTIFIER;
+				ws_next += MAXALIGN(sizeof(PLpgSQL_recfield));
+				break;
 
+			case PLPGSQL_DTYPE_ROW:
 				/*
 				 * These datum records are read-only at runtime, so no need to
-				 * copy them (well, RECFIELD contains cached data, but we'd
-				 * just as soon centralize the caching anyway).
+				 * copy them.
 				 */
 				outdatum = indatum;
 				break;

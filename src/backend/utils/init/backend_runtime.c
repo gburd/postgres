@@ -85,6 +85,7 @@
 #include "utils/ps_status.h"
 #include "utils/resowner.h"
 #include "utils/rls.h"
+#include "utils/typcache.h"
 #include "utils/xml.h"
 
 /*
@@ -2334,7 +2335,8 @@ PgSessionInitializeCatalogLookupState(PgSessionCatalogLookupState *catalog_looku
 	Assert(catalog_lookup != NULL);
 
 	MemSet(catalog_lookup, 0, sizeof(*catalog_lookup));
-	catalog_lookup->typcache_tupledesc_id_counter = (uint64) 1;
+	catalog_lookup->typcache_tupledesc_id_counter =
+		INVALID_TUPLEDESC_IDENTIFIER;
 }
 
 static void
@@ -2342,6 +2344,14 @@ PgSessionAdoptEarlyCatalogLookupState(PgSession *session)
 {
 	Assert(session != NULL);
 
+	/*
+	 * Early fallback state can be adopted before typcache paths have forced
+	 * fallback initialization.  Keep copied sessions out of the reserved
+	 * tupledesc-ID range.
+	 */
+	if (early_session_catalog_lookup.typcache_tupledesc_id_counter == 0)
+		early_session_catalog_lookup.typcache_tupledesc_id_counter =
+			INVALID_TUPLEDESC_IDENTIFIER;
 	session->catalog_lookup = early_session_catalog_lookup;
 	PgSessionInitializeCatalogLookupState(&early_session_catalog_lookup);
 }
@@ -4860,7 +4870,8 @@ PgSessionResetCatalogLookupClosedState(PgSession *session)
 	session->catalog_lookup.typcache_record_cache_array = NULL;
 	session->catalog_lookup.typcache_record_cache_array_len = 0;
 	session->catalog_lookup.typcache_next_record_typmod = 0;
-	session->catalog_lookup.typcache_tupledesc_id_counter = (uint64) 1;
+	session->catalog_lookup.typcache_tupledesc_id_counter =
+		INVALID_TUPLEDESC_IDENTIFIER;
 }
 
 static void

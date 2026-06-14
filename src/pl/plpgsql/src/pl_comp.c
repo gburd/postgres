@@ -2266,6 +2266,9 @@ plpgsql_finish_datums(PLpgSQL_function *function)
 			case PLPGSQL_DTYPE_REC:
 				copiable_size += MAXALIGN(sizeof(PLpgSQL_rec));
 				break;
+			case PLPGSQL_DTYPE_RECFIELD:
+				copiable_size += MAXALIGN(sizeof(PLpgSQL_recfield));
+				break;
 			default:
 				break;
 		}

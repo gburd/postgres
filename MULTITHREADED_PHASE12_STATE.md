@@ -11859,3 +11859,56 @@ preflight:
   src/tools/runtime_lifecycle/check_runtime_lifecycles.pl`,
   `gmake check-runtime-lifecycles`, and `gmake check-global-lifetimes` before
   relying on the new pattern for further state movement.
+
+## PL/pgSQL Trigger Record Type Repair
+
+PL/pgSQL trigger validation found a concrete Phase 12 regression in the
+session-owned typcache bridge:
+
+- a trigger function that used `NEW.id`/`NEW.val` as SQL parameters failed
+  during first execution with `cache lookup failed for type 0`;
+- verbose error location showed `parse_type.c:typeOrDomainTypeRelid()`;
+- temporary instrumentation showed the active `NEW` expanded record had
+  `er_tupdesc_id == INVALID_TUPLEDESC_IDENTIFIER`, because
+  `PgSessionAdoptEarlyCatalogLookupState()` copied zeroed early fallback
+  catalog-lookup state before the fallback initializer had seeded the
+  tupledesc identifier counter;
+- PL/pgSQL `RECFIELD` datums also contain mutable cached field metadata, so
+  the execution copy now owns a per-execution copy of each recfield datum and
+  resets `rectupledescid` to `INVALID_TUPLEDESC_IDENTIFIER` before lookup.
+
+The permanent fix:
+
+- `PgSessionInitializeCatalogLookupState()` and closed-session reset now seed
+  `typcache_tupledesc_id_counter` with `INVALID_TUPLEDESC_IDENTIFIER`;
+- `PgSessionAdoptEarlyCatalogLookupState()` repairs a never-initialized early
+  fallback counter before copying it into the real session;
+- `copy_plpgsql_datums()` copies `PLPGSQL_DTYPE_RECFIELD` datums into the
+  execution workspace and invalidates their cached tuple descriptor ID;
+- `plpgsql_finish_datums()` includes recfield datums in `copiable_size`;
+- `plpgsql_trigger` regression now includes an AFTER trigger that inserts
+  `NEW` record fields through a nested SQL statement inside one transaction.
+
+Validation for this repair:
+
+- `git diff --check` passed before the final documentation update;
+- touched-object builds passed for `backend_runtime.o` and the full PL/pgSQL
+  module;
+- full incremental `gmake -j8` and `gmake -j8 install
+  DESTDIR="$PWD/tmp_install"` passed;
+- the original failing PL/pgSQL AFTER-trigger smoke passed;
+- focused `gmake -C src/pl/plpgsql/src check REGRESS=plpgsql_trigger` passed;
+- full `gmake -C src/pl/plpgsql/src check` passed all 13 PL/pgSQL regression
+  tests;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 28 reset definitions checked, and 176 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total.
+
+Validation note: an attempted parallel run of PL/pgSQL regression and
+`test_backend_runtime` checks failed before SQL started because both targets
+owned and recreated `$PWD/tmp_install`. The checks were rerun sequentially.
