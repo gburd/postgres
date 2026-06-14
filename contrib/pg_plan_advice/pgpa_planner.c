@@ -94,7 +94,7 @@ static planner_setup_hook_type prev_planner_setup = NULL;
 static planner_shutdown_hook_type prev_planner_shutdown = NULL;
 
 /* Other global variables */
-PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int pgpa_planner_generate_advice = 0;
+PG_THREAD_LOCAL PG_GLOBAL_SESSION int pgpa_planner_generate_advice = 0;
 static int	planner_extension_id = -1;
 
 /* Function prototypes. */

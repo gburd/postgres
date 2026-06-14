@@ -48,6 +48,7 @@
 #include "rewrite/rewriteManip.h"
 #include "storage/lmgr.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/guc_hooks.h"
@@ -62,7 +63,7 @@
 
 
 /* How many levels deep into trigger execution are we? */
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int MyTriggerDepth = 0;
+#define MyTriggerDepth (*PgCurrentTriggerDepthRef())
 
 /* Local function prototypes */
 static void renametrig_internal(Relation tgrel, Relation targetrel,
@@ -3946,7 +3947,23 @@ typedef struct AfterTriggerCallbackItem
 	void	   *arg;
 } AfterTriggerCallbackItem;
 
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION AfterTriggersData afterTriggers;
+static AfterTriggersData *GetCurrentAfterTriggersData(void);
+
+#define afterTriggers (*GetCurrentAfterTriggersData())
+
+static AfterTriggersData *
+GetCurrentAfterTriggersData(void)
+{
+	void	  **after_triggers_data;
+
+	after_triggers_data = PgCurrentAfterTriggersDataRef();
+	if (*after_triggers_data == NULL)
+		*after_triggers_data =
+			MemoryContextAllocZero(TopMemoryContext,
+								   sizeof(AfterTriggersData));
+
+	return (AfterTriggersData *) *after_triggers_data;
+}
 
 static void AfterTriggerExecute(EState *estate,
 								AfterTriggerEvent event,

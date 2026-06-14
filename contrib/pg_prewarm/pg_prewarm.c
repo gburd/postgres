@@ -43,8 +43,6 @@ typedef enum
 	PREWARM_BUFFER,
 } PrewarmType;
 
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PGIOAlignedBlock blockbuffer;
-
 /*
  * pg_prewarm(regclass, mode text, fork text,
  *			  first_block int8, last_block int8)
@@ -76,6 +74,7 @@ pg_prewarm(PG_FUNCTION_ARGS)
 	AclResult	aclresult;
 	char		relkind;
 	Oid			privOid;
+	PGIOAlignedBlock blockbuffer;
 
 	/* Basic sanity checking. */
 	if (PG_ARGISNULL(0))

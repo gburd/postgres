@@ -74,7 +74,7 @@ typedef struct pgpa_planner_info
  * generated during query planning even in the absence of obvious reasons to
  * do so. See pg_plan_advice_request_advice_generation().
  */
-extern PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int pgpa_planner_generate_advice;
+extern PG_THREAD_LOCAL PG_GLOBAL_SESSION int pgpa_planner_generate_advice;
 
 /* Must be exported for use by test_plan_advice */
 extern PGDLLEXPORT void pgpa_planner_feedback_warning(List *feedback);

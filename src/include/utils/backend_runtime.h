@@ -1095,6 +1095,12 @@ typedef struct PgExecutionTwoPhaseRecordState
 	uint32		total_len;
 } PgExecutionTwoPhaseRecordState;
 
+typedef struct PgExecutionTriggerState
+{
+	int			depth;
+	void	   *after_triggers_data;
+} PgExecutionTriggerState;
+
 typedef struct PgExecutionRegexState
 {
 	void	   *regex_locale;
@@ -1940,6 +1946,7 @@ struct PgExecution
 	PgExecutionRelMapState relmap;
 	PgExecutionInvalidationState invalidation;
 	PgExecutionTwoPhaseRecordState two_phase_records;
+	PgExecutionTriggerState trigger;
 	PgExecutionRegexState regex;
 	PgExecutionValgrindState valgrind;
 	PgExecutionSnapBuildState snapbuild;
@@ -2330,6 +2337,8 @@ extern PgExecutionInvalMessageArray *PgCurrentInvalMessageArrays(void);
 extern struct TransInvalidationInfo **PgCurrentTransInvalInfoRef(void);
 extern struct InvalidationInfo **PgCurrentInplaceInvalInfoRef(void);
 extern PgExecutionTwoPhaseRecordState *PgCurrentTwoPhaseRecordStateRef(void);
+extern int *PgCurrentTriggerDepthRef(void);
+extern void **PgCurrentAfterTriggersDataRef(void);
 extern dclist_head *PgCurrentMultiXactCacheRef(void);
 extern bool *PgCurrentMultiXactCacheInitializedRef(void);
 extern MemoryContext *PgCurrentMultiXactContextRef(void);

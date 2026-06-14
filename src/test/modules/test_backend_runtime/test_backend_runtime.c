@@ -557,6 +557,8 @@ test_thread_install_adopts_session_execution_fallback_state(PG_FUNCTION_ARGS)
 		*PgCurrentSignalPidsRef() = (int32 *) &execution;
 		*PgCurrentSignalProcnosRef() = (ProcNumber *) &execution;
 		*PgCurrentTryAdvanceTailRef() = true;
+		*PgCurrentTriggerDepthRef() = 88;
+		*PgCurrentAfterTriggersDataRef() = &execution;
 		*PgCurrentValgrindOldErrorCountRef() = 77;
 
 		PgSessionAdoptEarlyState(&session);
@@ -584,6 +586,8 @@ test_thread_install_adopts_session_execution_fallback_state(PG_FUNCTION_ARGS)
 		ok = ok && execution.async.signal_pids == (int32 *) &execution;
 		ok = ok && execution.async.signal_procnos == (ProcNumber *) &execution;
 		ok = ok && execution.async.try_advance_tail;
+		ok = ok && execution.trigger.depth == 88;
+		ok = ok && execution.trigger.after_triggers_data == &execution;
 		ok = ok && execution.valgrind.old_error_count == 77;
 
 		ok = ok && !*PgCurrentDoingCommandReadRef();
@@ -605,6 +609,8 @@ test_thread_install_adopts_session_execution_fallback_state(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentSignalPidsRef() == NULL;
 		ok = ok && *PgCurrentSignalProcnosRef() == NULL;
 		ok = ok && !*PgCurrentTryAdvanceTailRef();
+		ok = ok && *PgCurrentTriggerDepthRef() == 0;
+		ok = ok && *PgCurrentAfterTriggersDataRef() == NULL;
 		ok = ok && *PgCurrentValgrindOldErrorCountRef() == 0;
 
 		PgSetCurrentSession(saved_session);
@@ -12829,6 +12835,8 @@ test_execution_misc_scratch_state_is_execution_local(PG_FUNCTION_ARGS)
 	{
 		CurrentPgExecution = &fake_execution1;
 		*PgCurrentArrayAnalyzeExtraDataRef() = &fake_execution1;
+		*PgCurrentTriggerDepthRef() = 101;
+		*PgCurrentAfterTriggersDataRef() = &fake_execution1;
 		*PgCurrentRegexLocaleRef() = &fake_execution1;
 		*PgCurrentValgrindOldErrorCountRef() = 101;
 		*PgCurrentSnapBuildSavedResourceOwnerDuringExportRef() =
@@ -12837,6 +12845,8 @@ test_execution_misc_scratch_state_is_execution_local(PG_FUNCTION_ARGS)
 
 		CurrentPgExecution = &fake_execution2;
 		ok = ok && *PgCurrentArrayAnalyzeExtraDataRef() == NULL;
+		ok = ok && *PgCurrentTriggerDepthRef() == 0;
+		ok = ok && *PgCurrentAfterTriggersDataRef() == NULL;
 		ok = ok && *PgCurrentRegexLocaleRef() == NULL;
 		ok = ok && *PgCurrentValgrindOldErrorCountRef() == 0;
 		ok = ok && *PgCurrentSnapBuildSavedResourceOwnerDuringExportRef() ==
@@ -12844,6 +12854,8 @@ test_execution_misc_scratch_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && !*PgCurrentSnapBuildExportInProgressRef();
 
 		*PgCurrentArrayAnalyzeExtraDataRef() = &fake_execution2;
+		*PgCurrentTriggerDepthRef() = 201;
+		*PgCurrentAfterTriggersDataRef() = &fake_execution2;
 		*PgCurrentRegexLocaleRef() = &fake_execution2;
 		*PgCurrentValgrindOldErrorCountRef() = 201;
 		*PgCurrentSnapBuildSavedResourceOwnerDuringExportRef() =
@@ -12852,6 +12864,8 @@ test_execution_misc_scratch_state_is_execution_local(PG_FUNCTION_ARGS)
 
 		CurrentPgExecution = &fake_execution1;
 		ok = ok && *PgCurrentArrayAnalyzeExtraDataRef() == &fake_execution1;
+		ok = ok && *PgCurrentTriggerDepthRef() == 101;
+		ok = ok && *PgCurrentAfterTriggersDataRef() == &fake_execution1;
 		ok = ok && *PgCurrentRegexLocaleRef() == &fake_execution1;
 		ok = ok && *PgCurrentValgrindOldErrorCountRef() == 101;
 		ok = ok && *PgCurrentSnapBuildSavedResourceOwnerDuringExportRef() ==
@@ -12860,6 +12874,8 @@ test_execution_misc_scratch_state_is_execution_local(PG_FUNCTION_ARGS)
 
 		CurrentPgExecution = &fake_execution2;
 		ok = ok && *PgCurrentArrayAnalyzeExtraDataRef() == &fake_execution2;
+		ok = ok && *PgCurrentTriggerDepthRef() == 201;
+		ok = ok && *PgCurrentAfterTriggersDataRef() == &fake_execution2;
 		ok = ok && *PgCurrentRegexLocaleRef() == &fake_execution2;
 		ok = ok && *PgCurrentValgrindOldErrorCountRef() == 201;
 		ok = ok && *PgCurrentSnapBuildSavedResourceOwnerDuringExportRef() ==

@@ -8597,3 +8597,53 @@ Validation for this slice:
   `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
   87 tests with patched macOS install names;
 - `gmake -C contrib -j8` passed.
+
+## Trigger Execution State And pg_prewarm Scratch
+
+The next Phase 12 execution-scratch slice moves trigger execution state out of
+plain execution-local TLS and removes one contrib execution-local scratch
+global:
+
+- `MyTriggerDepth`;
+- the after-trigger transaction/query state previously held in `afterTriggers`;
+- `pg_prewarm`'s read-mode `blockbuffer`.
+
+`PgExecutionTriggerState` owns the trigger nesting depth and an opaque pointer
+to the private `AfterTriggersData` object. The pointer remains opaque so
+`backend_runtime.h` does not expose trigger-internal structs, lists, event
+chunks, tuplestores, or callback items. `trigger.c` lazily allocates that
+private object in `TopMemoryContext` for the current execution bridge; the
+internal memory contexts, query stacks, transition tuplestores, event lists,
+and callback lists remain owned and reset by the existing trigger
+transaction/subtransaction cleanup paths.
+
+`pg_prewarm` no longer needs runtime state for read-mode scratch. Its aligned
+block buffer is now a stack local inside `pg_prewarm()`, because it is only
+used while one function invocation reads blocks synchronously.
+
+The remaining contrib `pg_plan_advice` advice-generation counter is not an
+execution-local value: the exported API requests advice generation for future
+planning until the caller revokes it. This slice therefore reclassifies
+`pgpa_planner_generate_advice` as session-local instead of moving it into
+`PgExecution`.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `trigger.o`,
+  `pg_prewarm.o`, `pgpa_planner.o`, and `test_backend_runtime.o`;
+- `gmake check-runtime-lifecycles` passed with 134 fields classified;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and 32 execution-local declarations;
+- direct `PG_GLOBAL_EXECUTION` scan now reports only the runtime bridge/early
+  fallback objects plus the two `xact.c` transaction-stack roots;
+- full `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- `gmake -C contrib -j8` passed after cleaning stale `pg_plan_advice` and
+  `pg_prewarm` objects that still referenced prior exported-global symbols;
+- after forcing rebuild of `launch_backend.o` and the touched
+  runtime/trigger/contrib/test objects, full `gmake -j8`,
+  `gmake -j8 install DESTDIR="$PWD/tmp_install"`, and reinstalling
+  `src/test/modules/test_backend_runtime` passed;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with patched macOS install names.

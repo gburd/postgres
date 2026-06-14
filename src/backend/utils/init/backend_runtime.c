@@ -584,6 +584,8 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionInvalidationState
 			early_execution_invalidation;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionTwoPhaseRecordState
 			early_execution_two_phase_records;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionTriggerState
+			early_execution_trigger;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionRegexState early_execution_regex;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionValgrindState early_execution_valgrind;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionSnapBuildState early_execution_snapbuild;
@@ -801,6 +803,8 @@ static void PgExecutionAdoptEarlyInvalidationState(PgExecution *execution);
 static void PgExecutionInitializeTwoPhaseRecordState(PgExecutionTwoPhaseRecordState
 													 *two_phase_records);
 static void PgExecutionAdoptEarlyTwoPhaseRecordState(PgExecution *execution);
+static void PgExecutionInitializeTriggerState(PgExecutionTriggerState *trigger);
+static void PgExecutionAdoptEarlyTriggerState(PgExecution *execution);
 static void PgExecutionInitializeRegexState(PgExecutionRegexState *regex);
 static void PgExecutionAdoptEarlyRegexState(PgExecution *execution);
 static void PgExecutionInitializeValgrindState(PgExecutionValgrindState *valgrind);
@@ -3358,6 +3362,23 @@ PgExecutionAdoptEarlyTwoPhaseRecordState(PgExecution *execution)
 }
 
 static void
+PgExecutionInitializeTriggerState(PgExecutionTriggerState *trigger)
+{
+	Assert(trigger != NULL);
+
+	MemSet(trigger, 0, sizeof(*trigger));
+}
+
+static void
+PgExecutionAdoptEarlyTriggerState(PgExecution *execution)
+{
+	Assert(execution != NULL);
+
+	execution->trigger = early_execution_trigger;
+	PgExecutionInitializeTriggerState(&early_execution_trigger);
+}
+
+static void
 PgExecutionInitializeRegexState(PgExecutionRegexState *regex)
 {
 	Assert(regex != NULL);
@@ -3438,6 +3459,7 @@ PgExecutionAdoptEarlyState(PgExecution *execution)
 	PgExecutionAdoptEarlyRelMapState(execution);
 	PgExecutionAdoptEarlyInvalidationState(execution);
 	PgExecutionAdoptEarlyTwoPhaseRecordState(execution);
+	PgExecutionAdoptEarlyTriggerState(execution);
 	PgExecutionAdoptEarlyRegexState(execution);
 	PgExecutionAdoptEarlyValgrindState(execution);
 	PgExecutionAdoptEarlySnapBuildState(execution);
@@ -3656,6 +3678,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgExecutionInitializeRelMapState(&state->execution.relmap);
 	PgExecutionInitializeInvalidationState(&state->execution.invalidation);
 	PgExecutionInitializeTwoPhaseRecordState(&state->execution.two_phase_records);
+	PgExecutionInitializeTriggerState(&state->execution.trigger);
 	PgExecutionInitializeRegexState(&state->execution.regex);
 	PgExecutionInitializeValgrindState(&state->execution.valgrind);
 	PgExecutionInitializeSnapBuildState(&state->execution.snapbuild);
@@ -7702,6 +7725,27 @@ PgExecutionTwoPhaseRecordState *
 PgCurrentTwoPhaseRecordStateRef(void)
 {
 	return PgCurrentExecutionTwoPhaseRecordState();
+}
+
+static PgExecutionTriggerState *
+PgCurrentExecutionTriggerState(void)
+{
+	if (CurrentPgExecution == NULL)
+		return &early_execution_trigger;
+
+	return &CurrentPgExecution->trigger;
+}
+
+int *
+PgCurrentTriggerDepthRef(void)
+{
+	return &PgCurrentExecutionTriggerState()->depth;
+}
+
+void **
+PgCurrentAfterTriggersDataRef(void)
+{
+	return &PgCurrentExecutionTriggerState()->after_triggers_data;
 }
 
 static PgExecutionRegexState *
