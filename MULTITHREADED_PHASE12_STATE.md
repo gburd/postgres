@@ -188,7 +188,7 @@ Validation for this slice:
 - `perl -c src/tools/runtime_lifecycle/check_runtime_lifecycles.pl` passed;
 - direct `perl src/tools/runtime_lifecycle/check_runtime_lifecycles.pl
   --header src/include/utils/backend_runtime.h --manifest
-  MULTITHREADED_RUNTIME_LIFECYCLE.tsv` passed with 124 fields classified;
+  MULTITHREADED_RUNTIME_LIFECYCLE.tsv` passed with 125 fields classified;
 - `gmake check-runtime-lifecycles` passed after regenerating the local
   configured `GNUmakefile`;
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
@@ -8212,3 +8212,43 @@ Validation for this slice:
 
 - touched-object builds passed for `backend_runtime.o`, `pqcomm.o`, and
   `test_backend_runtime.o`;
+
+## Session Dynamic Library Init Cleanup
+
+The one-hundred-seventy-fourth Phase 12 slice closes a concrete session reset
+rule from the Gate E2 lifecycle manifest:
+
+- `PgSession` now owns a `dynamic_library_context` for the per-session
+  `dynamic_library_inits` replay list used by threaded extension `_PG_init()`
+  handling;
+- `remember_module_session_init()` now allocates replay-list cells in that
+  session-owned context instead of `TopMemoryContext`;
+- `PgSessionResetClosedState()` deletes the session-owned dynamic-library
+  context and clears `dynamic_library_inits`, with a legacy fallback that frees
+  pre-existing list cells if no context exists;
+- `PgBackendExitCleanup()` calls `PgSessionResetClosedState()` after existing
+  `on_proc_exit` callbacks, preserving callback access to session state while
+  still releasing the per-session replay list before threaded backend teardown
+  accounting;
+- `test_session_reset_closed_state()` verifies both the session-context cleanup
+  path and the legacy list-free fallback.
+
+This does not close the full session destructor model. It converts one
+list-bearing `PgSession` field from a pending lifecycle row into an explicit
+reset/destroy path and keeps process mode behavior compatible.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `dfmgr.o`, `ipc.o`,
+  and `test_backend_runtime.o`;
+- `gmake check-runtime-lifecycles` passed with 125 fields classified;
+- `gmake -C src/test/modules/test_backend_runtime check` passed, including
+  `test_session_reset_closed_state()`;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and
+  patched macOS install names;
+- full `gmake -j8` passed;
+- `gmake -C contrib -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals.

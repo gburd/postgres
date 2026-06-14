@@ -2503,6 +2503,60 @@ test_session_prepared_statement_state_is_session_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_session_reset_closed_state);
+Datum
+test_session_reset_closed_state(PG_FUNCTION_ARGS)
+{
+	PgSession	fake_session;
+	MemoryContext oldcontext;
+	MemoryContext dynamic_library_context;
+	bool		ok = true;
+
+	MemSet(&fake_session, 0, sizeof(fake_session));
+
+	dynamic_library_context =
+		PgSessionGetDynamicLibraryMemoryContext(&fake_session);
+	ok = ok && dynamic_library_context != NULL;
+	ok = ok && fake_session.dynamic_library_context ==
+		dynamic_library_context;
+
+	oldcontext = MemoryContextSwitchTo(dynamic_library_context);
+	fake_session.dynamic_library_inits =
+		lappend(fake_session.dynamic_library_inits, &fake_session);
+	MemoryContextSwitchTo(oldcontext);
+
+	ok = ok && fake_session.dynamic_library_inits != NIL;
+	ok = ok && GetMemoryChunkContext(fake_session.dynamic_library_inits) ==
+		dynamic_library_context;
+
+	PgSessionResetClosedState(&fake_session);
+
+	ok = ok && fake_session.dynamic_library_context == NULL;
+	ok = ok && fake_session.dynamic_library_inits == NIL;
+
+	/*
+	 * Also cover the legacy fallback where a list exists before the dedicated
+	 * session context has been created.
+	 */
+	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+	fake_session.dynamic_library_inits =
+		lappend(fake_session.dynamic_library_inits, &fake_session);
+	MemoryContextSwitchTo(oldcontext);
+
+	ok = ok && fake_session.dynamic_library_context == NULL;
+	ok = ok && fake_session.dynamic_library_inits != NIL;
+
+	PgSessionResetClosedState(&fake_session);
+
+	ok = ok && fake_session.dynamic_library_context == NULL;
+	ok = ok && fake_session.dynamic_library_inits == NIL;
+
+	if (!ok)
+		elog(ERROR, "closed session runtime state was not reset");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_runtime_server_guc_state_is_runtime_local);
 Datum
 test_runtime_server_guc_state_is_runtime_local(PG_FUNCTION_ARGS)

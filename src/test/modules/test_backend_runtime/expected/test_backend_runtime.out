@@ -107,6 +107,12 @@ SELECT test_session_prepared_statement_state_is_session_local();
  t
 (1 row)
 
+SELECT test_session_reset_closed_state();
+ test_session_reset_closed_state 
+---------------------------------
+ t
+(1 row)
+
 SELECT test_session_on_commit_state_is_session_local();
  test_session_on_commit_state_is_session_local 
 -----------------------------------------------

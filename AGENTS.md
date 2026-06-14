@@ -693,6 +693,12 @@ Important current files:
   the malloc-backed GSS buffers. Keep
   `test_connection_reset_closed_state()` current when changing connection
   teardown ownership.
+- `PgSessionResetClosedState()` is the first retained-session cleanup
+  companion. It deletes `PgSession.dynamic_library_context`, which owns the
+  `dynamic_library_inits` list cells used for per-session dynamic-library
+  `_PG_init()` replay, and clears the list pointer after `on_proc_exit`
+  callbacks have run. Keep `test_session_reset_closed_state()` current when
+  changing extension module replay or session teardown ownership.
 - Thread-backed auxiliary workers receive postmaster `SIGQUIT`, `SIGKILL`,
   and `SIGABRT` as logical `PG_BACKEND_INTERRUPT_PROC_DIE` mailbox events, not
   as process signal handlers that can `_exit()`. Any custom auxiliary
@@ -760,12 +766,12 @@ Important current files:
   encoding object rather than a direct `char *` field in `PgSession`.
 - Custom extension GUCs in threaded sessions rely on per-session `_PG_init()`
   invocation for already-loaded dynamic libraries. `dfmgr.c` records loaded
-  module init state in `PgSession.dynamic_library_inits`; when a second
-  threaded session reuses a process-loaded module, `_PG_init()` must run again
-  so that session's GUC table receives the custom GUC definitions. A focused
-  custom-GUC smoke should use `LOAD 'test_backend_runtime_threaded'` plus
-  `SHOW`, so it validates module/GUC behavior without depending on catalog
-  writes.
+  module init state in `PgSession.dynamic_library_inits`, with list storage
+  allocated under `PgSession.dynamic_library_context`; when a second threaded
+  session reuses a process-loaded module, `_PG_init()` must run again so that
+  session's GUC table receives the custom GUC definitions. A focused custom-GUC
+  smoke should use `LOAD 'test_backend_runtime_threaded'` plus `SHOW`, so it
+  validates module/GUC behavior without depending on catalog writes.
 - Threaded catalog-writing DDL previously crashed in `XLogInsert()` during
   `CREATE TABLE` because the derived `wal_consistency_checking` bool array was
   NULL in the installed `PgSession`. Keep the threaded

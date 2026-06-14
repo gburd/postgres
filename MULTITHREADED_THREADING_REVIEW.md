@@ -875,6 +875,14 @@ retained connection socket/protocol/startup/security buckets and frees the
 malloc-backed GSS buffers. This closes one concrete connection reset/destroy
 rule; the complete destructor tree and `TopMemoryContext` ownership model
 remain blockers.
+Another teardown slice added `PgSessionResetClosedState()` for the
+per-session dynamic-library `_PG_init()` replay list. `dfmgr.c` now allocates
+the `dynamic_library_inits` list cells under a session-owned
+`dynamic_library_context`, and backend exit deletes that context only after
+`on_proc_exit` callbacks run. This closes one concrete list-bearing
+`PgSession` reset/destroy rule, but it is still a partial Gate E2 closure; the
+full session destructor model and remaining pending manifest rows are still
+blockers.
 Further hardening made the object-lifecycle audit mechanically enforceable:
 `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` now records owner/lifetime, initializer,
 early-adoption, reset/destroy, and copy/adoption rules for every current

@@ -408,7 +408,8 @@ remember_module_session_init(DynamicFileList *file_scanner)
 	if (list_member_ptr(CurrentPgSession->dynamic_library_inits, file_scanner))
 		return;
 
-	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+	oldcontext = MemoryContextSwitchTo(
+		PgSessionGetDynamicLibraryMemoryContext(CurrentPgSession));
 	CurrentPgSession->dynamic_library_inits =
 		lappend(CurrentPgSession->dynamic_library_inits, file_scanner);
 	MemoryContextSwitchTo(oldcontext);

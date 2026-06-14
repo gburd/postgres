@@ -1454,6 +1454,13 @@ security buckets and frees the malloc-backed GSS buffers. This closes one
 concrete Gate E2 reset/destroy rule for connection state, but the complete
 backend/session/connection/execution destructor tree and `TopMemoryContext`
 ownership model remain Phase 12 blockers.
+Follow-up session teardown hardening added `PgSessionResetClosedState()`.
+`dfmgr.c` now allocates the per-session dynamic-library `_PG_init()` replay
+list under `PgSession.dynamic_library_context` instead of `TopMemoryContext`,
+and backend exit deletes that context after `on_proc_exit` callbacks have had
+their chance to use session state. This closes one concrete list-bearing
+`PgSession` reset/destroy rule, while the broader session destructor model and
+remaining pending lifecycle rows remain Phase 12 blockers.
 The lifecycle audit is now also mechanically checked. The root
 `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` manifest records owner/lifetime,
 initializer, early-adoption, reset/destroy, and copy/adoption rules for every

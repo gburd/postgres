@@ -3498,6 +3498,37 @@ PgCurrentSessionOwnsPointer(const void *ptr)
 	return address >= session_start && address < session_end;
 }
 
+MemoryContext
+PgSessionGetDynamicLibraryMemoryContext(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (session->dynamic_library_context == NULL)
+		session->dynamic_library_context =
+			AllocSetContextCreate(TopMemoryContext,
+								  "dynamic library session state",
+								  ALLOCSET_SMALL_SIZES);
+
+	return session->dynamic_library_context;
+}
+
+void
+PgSessionResetClosedState(PgSession *session)
+{
+	if (session == NULL)
+		return;
+
+	if (session->dynamic_library_context != NULL)
+	{
+		MemoryContextDelete(session->dynamic_library_context);
+		session->dynamic_library_context = NULL;
+	}
+	else if (session->dynamic_library_inits != NIL)
+		list_free(session->dynamic_library_inits);
+
+	session->dynamic_library_inits = NIL;
+}
+
 Session *
 PgSessionGetLegacySession(PgSession *session)
 {
