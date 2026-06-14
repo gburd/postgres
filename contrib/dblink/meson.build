@@ -41,4 +41,9 @@ tests += {
       't/001_auth_scram.pl',
     ],
   },
+  'pytest': {
+    'tests': [
+      'pyt/test_001_auth_scram.py',
+    ],
+  },
 }
