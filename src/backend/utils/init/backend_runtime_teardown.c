@@ -305,6 +305,8 @@ PgExecutionResetReplicationScratchClosedState(PgExecutionReplicationScratchState
 
 	EventTriggerResetQueryStateStack(&replication_scratch->event_trigger_query_state);
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(replication_scratch->event_trigger_context);
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(replication_scratch->apply_message_context);
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(replication_scratch->logical_streaming_context);
 	PgExecutionInitializeReplicationScratchState(replication_scratch);
 }
 

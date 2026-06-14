@@ -12598,3 +12598,55 @@ Validation for the maintenance-worker context slice:
 - direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
   `002_threaded_bgworker_crash.pl`, 131 tests total, with `PG_REGRESS`,
   temp-install `PATH`, and the repo-local `.perl5` `PERL5LIB`.
+
+## Execution Context Closed-Reset Ownership
+
+Lifecycle/preflight note:
+
+- target: close more Gate E2 retained execution-memory gaps by making
+  close-time reset reclaim owned execution contexts that can survive an
+  interrupted command or worker exit;
+- repeated lifecycle operations: five execution buckets needed the same
+  delete-and-null context pattern before restoring constructor defaults. The
+  existing checked `PG_RUNTIME_DELETE_MEMORY_CONTEXT` action covers that
+  pattern, so no new lifecycle primitive is needed;
+- retained invariant: normal ANALYZE, WAL insertion, transaction abort,
+  large-object, and logical replication paths still own their live cleanup.
+  Closed-execution reset only reclaims contexts still retained in the runtime
+  object after those normal paths have not completed.
+
+Execution-context closed-reset slice:
+
+- `PgExecution.analyze` closed reset now deletes any retained ANALYZE context
+  before reinitializing the bucket;
+- `PgExecution.xloginsert` closed reset now deletes the WAL record
+  construction context, reclaiming retained registered-buffer, rdata, and
+  header scratch arrays;
+- `PgExecution.xact` closed reset now deletes retained
+  `TransactionAbortContext` before restoring transaction execution defaults;
+- `PgExecution.transaction_cleanup` closed reset now deletes the retained
+  large-object cleanup context before clearing LO cleanup bridge state;
+- `PgExecution.replication_scratch` closed reset now deletes retained logical
+  apply message and streaming contexts alongside the existing event-trigger
+  context cleanup;
+- `test_execution_reset_closed_state()` now uses real memory contexts for
+  these fields so the reset test exercises the delete path rather than only
+  clearing fake pointer sentinels;
+- `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` records the new close-time ownership
+  rules for the five execution buckets.
+
+Validation for the execution-context closed-reset slice:
+
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 194 owner
+  mappings checked;
+- `git diff --check` passed;
+- touched-object builds passed for `backend_runtime.o`,
+  `backend_runtime_teardown.o`, and `test_backend_runtime_execution.o`;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- full incremental `gmake -j8` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with `PG_REGRESS`,
+  temp-install `PATH`, and the repo-local `.perl5` `PERL5LIB`.

@@ -510,9 +510,13 @@ test_execution_reset_closed_state(PG_FUNCTION_ARGS)
 		fake_execution.basebackup.backup_started_in_recovery = true;
 		fake_execution.basebackup.total_checksum_failures = 7;
 		fake_execution.basebackup.noverify_checksums = true;
-		fake_execution.analyze.context = (MemoryContext) &fake_execution;
+		fake_execution.analyze.context =
+			AllocSetContextCreate(TopMemoryContext,
+								  "test analyze context",
+								  ALLOCSET_SMALL_SIZES);
 		fake_execution.analyze.strategy = (BufferAccessStrategy) &fake_tuptable;
-		fake_execution.analyze.array_extra_data = &fake_error_context;
+		fake_execution.analyze.array_extra_data =
+			MemoryContextAlloc(fake_execution.analyze.context, sizeof(int));
 		fake_execution.extension.creating = true;
 		fake_execution.extension.current_object = 1234;
 		fake_execution.matview.maintenance_depth = 2;
@@ -525,13 +529,17 @@ test_execution_reset_closed_state(PG_FUNCTION_ARGS)
 		fake_execution.combo_cid.cids = &fake_error_context;
 		fake_execution.combo_cid.used = 1;
 		fake_execution.combo_cid.size = 2;
-		fake_execution.xloginsert.registered_buffers = &fake_tuptable;
+		fake_execution.xloginsert.context =
+			AllocSetContextCreate(TopMemoryContext,
+								  "test WAL construction context",
+								  ALLOCSET_SMALL_SIZES);
+		fake_execution.xloginsert.registered_buffers =
+			MemoryContextAlloc(fake_execution.xloginsert.context, sizeof(int));
 		fake_execution.xloginsert.max_registered_buffers = 4;
 		fake_execution.xloginsert.mainrdata_head = (XLogRecData *) &fake_execution;
 		fake_execution.xloginsert.mainrdata_last = (XLogRecData *) &fake_tuptable;
 		fake_execution.xloginsert.mainrdata_len = 5;
 		fake_execution.xloginsert.begininsert_called = true;
-		fake_execution.xloginsert.context = (MemoryContext) &fake_error_context;
 		fake_execution.xact.iso_level = XACT_SERIALIZABLE;
 		fake_execution.xact.read_only = true;
 		fake_execution.xact.check_xid_alive = 789;
@@ -543,13 +551,21 @@ test_execution_reset_closed_state(PG_FUNCTION_ARGS)
 		fake_execution.xact.current_command_id = 42;
 		fake_execution.xact.prepare_gid = (char *) "gid";
 		fake_execution.xact.transaction_abort_context =
-			(MemoryContext) &fake_tuptable;
+			AllocSetContextCreate(TopMemoryContext,
+								  "test transaction abort context",
+								  ALLOCSET_SMALL_SIZES);
 		fake_execution.transaction_cleanup.lo_cookies =
-			(LargeObjectDesc **) &fake_execution;
+			NULL;
 		fake_execution.transaction_cleanup.lo_cookies_size = 3;
 		fake_execution.transaction_cleanup.lo_cleanup_needed = true;
 		fake_execution.transaction_cleanup.lo_context =
-			(MemoryContext) &fake_error_context;
+			AllocSetContextCreate(TopMemoryContext,
+								  "test large object context",
+								  ALLOCSET_SMALL_SIZES);
+		fake_execution.transaction_cleanup.lo_cookies =
+			(LargeObjectDesc **)
+			MemoryContextAlloc(fake_execution.transaction_cleanup.lo_context,
+							   sizeof(LargeObjectDesc *));
 		fake_execution.transaction_cleanup.have_xact_temporary_files = true;
 		fake_execution.transaction_cleanup.pgstat_xact_stack =
 			(PgStat_SubXactStatus *) &fake_tuptable;
@@ -561,9 +577,13 @@ test_execution_reset_closed_state(PG_FUNCTION_ARGS)
 		fake_execution.replication_scratch.apply_error_context_stack =
 			&fake_error_context;
 		fake_execution.replication_scratch.apply_message_context =
-			(MemoryContext) &fake_tuptable;
+			AllocSetContextCreate(TopMemoryContext,
+								  "test apply message context",
+								  ALLOCSET_SMALL_SIZES);
 		fake_execution.replication_scratch.logical_streaming_context =
-			(MemoryContext) &fake_portal;
+			AllocSetContextCreate(TopMemoryContext,
+								  "test logical streaming context",
+								  ALLOCSET_SMALL_SIZES);
 		fake_execution.guc_error.check_errcode_value = 1;
 		fake_execution.guc_error.check_errmsg_string = (char *) "msg";
 		fake_execution.guc_error.format_errnumber = 2;
