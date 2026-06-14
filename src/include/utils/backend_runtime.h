@@ -2038,6 +2038,7 @@ struct PgCarrier
 	PgBackend  *current_backend;
 	PgSession  *current_session;
 	PgExecution *current_execution;
+	int			threaded_guc_mutex_depth;
 };
 
 struct PgBackend
@@ -2330,6 +2331,7 @@ extern slist_head *PgCurrentGUCStackListRef(void);
 extern slist_head *PgCurrentGUCReportListRef(void);
 extern bool *PgCurrentGUCReportingEnabledRef(void);
 extern int *PgCurrentGUCNestLevelRef(void);
+extern int *PgCurrentThreadedGUCMutexDepthRef(void);
 extern bool *PgCurrentPgStatTrackCountsRef(void);
 extern int *PgCurrentPgStatTrackFunctionsRef(void);
 extern int *PgCurrentPgStatFetchConsistencyRef(void);

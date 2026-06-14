@@ -35,6 +35,12 @@ SELECT test_backend_thread_runtime_state();
  t
 (1 row)
 
+SELECT test_carrier_threaded_guc_lock_depth_is_carrier_local();
+ test_carrier_threaded_guc_lock_depth_is_carrier_local 
+-------------------------------------------------------
+ t
+(1 row)
+
 SELECT test_thread_install_adopts_backend_fallback_state();
  test_thread_install_adopts_backend_fallback_state 
 ---------------------------------------------------

@@ -104,7 +104,7 @@ static PG_GLOBAL_RUNTIME MemoryContext GUCReservedPrefixMemoryContext = NULL;
 
 #ifndef WIN32
 static PG_GLOBAL_RUNTIME pthread_mutex_t ThreadedGUCMutex = PTHREAD_MUTEX_INITIALIZER;
-static PG_THREAD_LOCAL PG_GLOBAL_CARRIER int ThreadedGUCMutexDepth = 0;
+#define ThreadedGUCMutexDepth (*PgCurrentThreadedGUCMutexDepthRef())
 #endif
 
 static bool

@@ -935,6 +935,12 @@ storage.
 The Windows socket emulation flag `pgwin32_noblock` also now lives in
 `PgConnection.socket_io`; this is validated through the shared connection
 runtime tests here, with explicit Windows build coverage still required.
+The temporary threaded GUC critical-section reentrancy counter now lives in
+`PgCarrier` behind `PgCurrentThreadedGUCMutexDepthRef()`, so nested lock depth
+is carrier-owned instead of standalone carrier TLS. This does not remove the
+temporary process-wide GUC mutex or close the broader GUC adoption/rebind
+blocker; it only makes the current bridge's carrier-local state explicit and
+covered by backend-runtime tests.
 The generic main-loop interrupt flags `ConfigReloadPending` and
 `ShutdownRequestPending` now live in `PgBackendPendingInterruptState` behind
 their existing lvalue names, so config reload and cooperative shutdown state

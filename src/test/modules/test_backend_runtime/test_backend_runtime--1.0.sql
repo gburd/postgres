@@ -27,6 +27,10 @@ CREATE FUNCTION test_backend_thread_runtime_state()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;
 
+CREATE FUNCTION test_carrier_threaded_guc_lock_depth_is_carrier_local()
+	RETURNS pg_catalog.bool
+	AS 'MODULE_PATHNAME' LANGUAGE C;
+
 CREATE FUNCTION test_thread_install_adopts_backend_fallback_state()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;

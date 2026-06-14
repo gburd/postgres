@@ -7243,6 +7243,15 @@ PgCurrentGUCNestLevelRef(void)
 	return &PgCurrentSessionGUCState()->nest_level;
 }
 
+int *
+PgCurrentThreadedGUCMutexDepthRef(void)
+{
+	if (CurrentPgCarrier != NULL)
+		return &CurrentPgCarrier->threaded_guc_mutex_depth;
+
+	return &process_carrier.threaded_guc_mutex_depth;
+}
+
 static PgBackendActivityState *
 PgCurrentBackendActivityState(void)
 {

@@ -10282,3 +10282,37 @@ Validation for this slice:
 - direct backend-runtime TAP passed for `001_threaded_runtime.pl` with 88
   tests and `002_threaded_bgworker_crash.pl` with 6 tests using the local
   `IPC::Run` `PERL5LIB` and patched temporary-install dynamic library names.
+
+## Carrier GUC Critical-Section Depth
+
+This Phase 12 carrier-state slice moves the temporary threaded GUC
+critical-section reentrancy depth into the `PgCarrier` object:
+
+- `PgCarrier` now owns `threaded_guc_mutex_depth`;
+- `guc.c` preserves the local `ThreadedGUCMutexDepth` name as a macro over
+  `PgCurrentThreadedGUCMutexDepthRef()`;
+- the process-wide `ThreadedGUCMutex` remains runtime-global and unchanged;
+- `test_carrier_threaded_guc_lock_depth_is_carrier_local()` verifies that two
+  fake carriers do not share nested GUC lock depth.
+
+This is an ownership cleanup for the current Gate E2 bridge, not the final GUC
+architecture. Threaded GUC setup, mutation, and display still use the
+temporary process-wide mutex while copied GUC metadata, direct-pointer
+variables, check hooks, assign hooks, show hooks, database/role settings, and
+custom extension GUC behavior continue to be audited. The systematic
+per-session adoption/rebind model remains a Gate E2 blocker.
+
+Validation for this slice:
+
+- touched-object builds passed for `guc.o`, `backend_runtime.o`, and
+  `test_backend_runtime.o`;
+- the LLVM-enabled full `gmake -j8` build passed after force-rebuilding stale
+  `src/backend/postmaster/launch_backend.o` for the
+  `PgThreadBackendRuntimeState` layout change;
+- `gmake check-runtime-lifecycles` passed with 149 runtime fields classified;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and carrier-local declarations reduced from 32 to 31;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` with 88
+  tests and `002_threaded_bgworker_crash.pl` with 6 tests using the local
+  `IPC::Run` `PERL5LIB` and patched temporary-install dynamic library names.

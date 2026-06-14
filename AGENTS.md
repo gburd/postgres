@@ -967,6 +967,9 @@ Important current files:
   correctness bridge while copied GUC metadata and check/assign/show hooks
   still have process-era assumptions. Narrowing it requires focused threaded
   smokes for concurrent GUC replay, `SET`, `SHOW`, and custom extension GUCs.
+  The reentrancy depth for this bridge lives in `PgCarrier`, not standalone
+  TLS; tests that swap fake carriers and touch `PgCurrentThreadedGUCMutexDepthRef()`
+  must preserve and restore `CurrentPgCarrier`.
 - Threaded `read_nondefault_variables()` skips `PGC_POSTMASTER` and
   `PGC_INTERNAL` records. Thread carriers share the postmaster address space,
   so process-global postmaster/internal GUCs are already present and must not
@@ -1229,6 +1232,14 @@ Important current files:
   `src/backend/access/transam/xloginsert.o`,
   `src/backend/replication/logical/applyparallelworker.o`, and
   `src/backend/replication/logical/tablesync.o`.
+
+  Another observed failure after adding a field to `PgCarrier` was
+  `001_threaded_runtime.pl` failing at `pg_ctl start`, with lldb showing
+  `PgBackendGetSignalPid()` dereferencing address `0x1`. Stale
+  `src/backend/postmaster/launch_backend.o` had passed a `PgBackend *` offset
+  from the old embedded `PgThreadBackendRuntimeState` layout into
+  `PostmasterChildSetThreadBackend()`. Force-rebuild that object before
+  reinstalling and rerunning threaded TAP.
 
   The same rule applies when adding fields to `PgBackend` itself. A stale
   incremental build after adding AIO runtime state linked, but `initdb`

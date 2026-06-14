@@ -509,6 +509,48 @@ test_backend_thread_runtime_state(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_carrier_threaded_guc_lock_depth_is_carrier_local);
+Datum
+test_carrier_threaded_guc_lock_depth_is_carrier_local(PG_FUNCTION_ARGS)
+{
+	PgCarrier  *saved_carrier;
+	PgCarrier	fake_carrier1;
+	PgCarrier	fake_carrier2;
+	bool		ok = true;
+
+	saved_carrier = CurrentPgCarrier;
+	MemSet(&fake_carrier1, 0, sizeof(fake_carrier1));
+	MemSet(&fake_carrier2, 0, sizeof(fake_carrier2));
+	fake_carrier1.kind = PG_CARRIER_THREAD;
+	fake_carrier2.kind = PG_CARRIER_THREAD;
+
+	PG_TRY();
+	{
+		CurrentPgCarrier = &fake_carrier1;
+		*PgCurrentThreadedGUCMutexDepthRef() = 1;
+		CurrentPgCarrier = &fake_carrier2;
+		ok = ok && *PgCurrentThreadedGUCMutexDepthRef() == 0;
+		*PgCurrentThreadedGUCMutexDepthRef() = 2;
+		CurrentPgCarrier = &fake_carrier1;
+		ok = ok && *PgCurrentThreadedGUCMutexDepthRef() == 1;
+		CurrentPgCarrier = &fake_carrier2;
+		ok = ok && *PgCurrentThreadedGUCMutexDepthRef() == 2;
+
+		CurrentPgCarrier = saved_carrier;
+	}
+	PG_CATCH();
+	{
+		CurrentPgCarrier = saved_carrier;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "threaded GUC mutex depth was not carrier-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_thread_install_adopts_backend_fallback_state);
 Datum
 test_thread_install_adopts_backend_fallback_state(PG_FUNCTION_ARGS)
