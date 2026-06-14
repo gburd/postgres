@@ -1610,9 +1610,9 @@ contrib set (`hstore`, `pg_trgm`, `btree_gist`, and `pageinspect`) in threaded
 mode. That proves extension DDL plus C extension entry points across
 types/operators, GiST opclasses, and page inspection. Those modules now
 explicitly opt in to the thread-per-session backend model; `pg_trgm` first
-moved its custom GUC backing variables to session-local TLS storage. Phase 16
-still owns contrib-wide threaded regression, including the modules that need a
-broader state/export audit before thread opt-in.
+moved its custom GUC backing variables into `PgSession.extension_modules`.
+Phase 16 still owns contrib-wide threaded regression, including the modules
+that need a broader state/export audit before thread opt-in.
 The focused `test_backend_runtime` regression is runnable again as a
 process-mode validation control for runtime-state, state-migration, and
 PMChild helper coverage after fake thread-runtime tests were changed to

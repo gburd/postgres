@@ -11112,3 +11112,34 @@ Lifecycle action-vocabulary first slice completed:
   migration batches to add further checked actions for reset-through-init,
   scalar copy/adopt, whole-bucket copy/adopt, and owner-adjacent destroy cases
   without growing more handwritten lifecycle lists.
+
+pg_trgm custom-GUC lifecycle preflight:
+
+- target root and bucket: `PgSession.extension_modules`;
+- repeated lifecycle operations: scalar default initialization, whole-bucket
+  early fallback adoption, and closed-session reset through the existing
+  `PgSessionResetExtensionModuleClosedState()` ordered reset bucket;
+- lifecycle preflight result: the existing session bucket row, ordered session
+  reset row, and manifest checker are sufficient. The state being moved is
+  three scalar custom-GUC backing doubles, so no new lifecycle action is needed
+  for this batch. The existing `PG_RUNTIME_NOOP` action remains the only new
+  checked vocabulary item; semantic extension-module cleanup stays in the
+  handwritten reset helper.
+
+pg_trgm custom-GUC object migration completed:
+
+- the `pg_trgm` `similarity_threshold`,
+  `word_similarity_threshold`, and `strict_word_similarity_threshold` backing
+  values no longer live in contrib-local `PG_THREAD_LOCAL` globals;
+- `PgSession.extension_modules` now owns those three scalar values alongside
+  other in-tree extension session state, with defaults restored by
+  `PgSessionInitializeExtensionModuleState()` and
+  `PgSessionResetExtensionModuleClosedState()`;
+- `trgm.h` exposes compatibility macros that route existing pg_trgm code and
+  custom-GUC registration through `PgCurrentSessionExtensionModuleState()`;
+- `MULTITHREADED_RUNTIME_OWNERS.tsv` maps the three legacy symbols to the
+  `PgSession.extension_modules` fields, and `check-runtime-lifecycles`
+  verifies those owner rows;
+- `test_session_extension_module_state_is_session_local()` now verifies the
+  pg_trgm backing scalars switch with `CurrentPgSession` and reset to defaults
+  on closed-session reset.

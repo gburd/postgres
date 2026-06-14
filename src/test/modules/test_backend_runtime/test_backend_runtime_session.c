@@ -2601,6 +2601,7 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 	int			session2_private;
 	int			session1_reset_count = 0;
 	int			session2_reset_count = 0;
+	PgSessionExtensionModuleState *extension_modules;
 	bool		ok = true;
 
 	saved_session = CurrentPgSession;
@@ -2611,13 +2612,36 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
+		fake_session1.extension_modules.pg_trgm_similarity_threshold = 0.3;
+		fake_session1.extension_modules.pg_trgm_word_similarity_threshold = 0.6;
+		fake_session1.extension_modules.pg_trgm_strict_word_similarity_threshold = 0.5;
+		fake_session2.extension_modules.pg_trgm_similarity_threshold = 0.3;
+		fake_session2.extension_modules.pg_trgm_word_similarity_threshold = 0.6;
+		fake_session2.extension_modules.pg_trgm_strict_word_similarity_threshold = 0.5;
+
 		PgSetCurrentSession(&fake_session1);
+		extension_modules = PgCurrentSessionExtensionModuleState();
+		ok = ok && extension_modules->pg_trgm_similarity_threshold == 0.3;
+		ok = ok && extension_modules->pg_trgm_word_similarity_threshold == 0.6;
+		ok = ok && extension_modules->pg_trgm_strict_word_similarity_threshold == 0.5;
+		extension_modules->pg_trgm_similarity_threshold = 0.11;
+		extension_modules->pg_trgm_word_similarity_threshold = 0.12;
+		extension_modules->pg_trgm_strict_word_similarity_threshold = 0.13;
+
 		ok = ok && *PgCurrentPLpgSQLSessionStateRef() == NULL;
 		*PgCurrentPLpgSQLSessionStateRef() = &session1_private;
 		PgSessionRegisterResetCallback(test_backend_runtime_session_reset_callback,
 									   &session1_reset_count);
 
 		PgSetCurrentSession(&fake_session2);
+		extension_modules = PgCurrentSessionExtensionModuleState();
+		ok = ok && extension_modules->pg_trgm_similarity_threshold == 0.3;
+		ok = ok && extension_modules->pg_trgm_word_similarity_threshold == 0.6;
+		ok = ok && extension_modules->pg_trgm_strict_word_similarity_threshold == 0.5;
+		extension_modules->pg_trgm_similarity_threshold = 0.21;
+		extension_modules->pg_trgm_word_similarity_threshold = 0.22;
+		extension_modules->pg_trgm_strict_word_similarity_threshold = 0.23;
+
 		ok = ok && *PgCurrentPLpgSQLSessionStateRef() == NULL;
 		*PgCurrentPLpgSQLSessionStateRef() = &session2_private;
 		PgSessionRegisterResetCallback(test_backend_runtime_session_reset_callback,
@@ -2625,9 +2649,17 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 
 		PgSetCurrentSession(&fake_session1);
 		ok = ok && *PgCurrentPLpgSQLSessionStateRef() == &session1_private;
+		extension_modules = PgCurrentSessionExtensionModuleState();
+		ok = ok && extension_modules->pg_trgm_similarity_threshold == 0.11;
+		ok = ok && extension_modules->pg_trgm_word_similarity_threshold == 0.12;
+		ok = ok && extension_modules->pg_trgm_strict_word_similarity_threshold == 0.13;
 
 		PgSetCurrentSession(&fake_session2);
 		ok = ok && *PgCurrentPLpgSQLSessionStateRef() == &session2_private;
+		extension_modules = PgCurrentSessionExtensionModuleState();
+		ok = ok && extension_modules->pg_trgm_similarity_threshold == 0.21;
+		ok = ok && extension_modules->pg_trgm_word_similarity_threshold == 0.22;
+		ok = ok && extension_modules->pg_trgm_strict_word_similarity_threshold == 0.23;
 
 		PgSetCurrentSession(saved_session);
 		PgSessionResetClosedState(&fake_session1);
@@ -2635,13 +2667,22 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && session2_reset_count == 0;
 		ok = ok && fake_session1.extension_modules.plpgsql_state == NULL;
 		ok = ok && fake_session1.extension_modules.reset_callbacks == NIL;
+		ok = ok && fake_session1.extension_modules.pg_trgm_similarity_threshold == 0.3;
+		ok = ok && fake_session1.extension_modules.pg_trgm_word_similarity_threshold == 0.6;
+		ok = ok && fake_session1.extension_modules.pg_trgm_strict_word_similarity_threshold == 0.5;
 		ok = ok && fake_session2.extension_modules.plpgsql_state == &session2_private;
 		ok = ok && fake_session2.extension_modules.reset_callbacks != NIL;
+		ok = ok && fake_session2.extension_modules.pg_trgm_similarity_threshold == 0.21;
+		ok = ok && fake_session2.extension_modules.pg_trgm_word_similarity_threshold == 0.22;
+		ok = ok && fake_session2.extension_modules.pg_trgm_strict_word_similarity_threshold == 0.23;
 
 		PgSessionResetClosedState(&fake_session2);
 		ok = ok && session2_reset_count == 1;
 		ok = ok && fake_session2.extension_modules.plpgsql_state == NULL;
 		ok = ok && fake_session2.extension_modules.reset_callbacks == NIL;
+		ok = ok && fake_session2.extension_modules.pg_trgm_similarity_threshold == 0.3;
+		ok = ok && fake_session2.extension_modules.pg_trgm_word_similarity_threshold == 0.6;
+		ok = ok && fake_session2.extension_modules.pg_trgm_strict_word_similarity_threshold == 0.5;
 	}
 	PG_CATCH();
 	{

@@ -1771,9 +1771,9 @@ Important current files:
   `pg_trgm`, `btree_gist`, and `pageinspect`. Keep this as a Gate E2
   representative extension smoke. These modules opt in with
   thread-per-session backend-model metadata; `pg_trgm` also moves its custom
-  GUC backing variables to session-local TLS storage before opting in. Future
-  contrib opt-ins need the same mutable-state audit. Phase 16 still owns
-  contrib-wide threaded regression.
+  GUC backing variables into `PgSession.extension_modules` before opting in.
+  Future contrib opt-ins need the same mutable-state audit. Phase 16 still
+  owns contrib-wide threaded regression.
 
 - The backend-runtime state/PMChild regression is expected to be runnable as a
   focused process-mode control after the same module install. The fake

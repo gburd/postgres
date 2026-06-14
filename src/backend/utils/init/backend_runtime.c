@@ -96,6 +96,9 @@
  * intent from forgotten lifecycle work.
  */
 #define PG_RUNTIME_NOOP ((void) 0)
+#define PG_TRGM_SIMILARITY_THRESHOLD_DEFAULT 0.3
+#define PG_TRGM_WORD_SIMILARITY_THRESHOLD_DEFAULT 0.6
+#define PG_TRGM_STRICT_WORD_SIMILARITY_THRESHOLD_DEFAULT 0.5
 
 PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgRuntime *CurrentPgRuntime = NULL;
 PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgCarrier *CurrentPgCarrier = NULL;
@@ -568,7 +571,11 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPlannerMethodState early_sessi
 	.join_collapse_limit_value = 8
 };
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionFunctionManagerState early_session_function_manager;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionExtensionModuleState early_session_extension_modules;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionExtensionModuleState early_session_extension_modules = {
+	.pg_trgm_similarity_threshold = PG_TRGM_SIMILARITY_THRESHOLD_DEFAULT,
+	.pg_trgm_word_similarity_threshold = PG_TRGM_WORD_SIMILARITY_THRESHOLD_DEFAULT,
+	.pg_trgm_strict_word_similarity_threshold = PG_TRGM_STRICT_WORD_SIMILARITY_THRESHOLD_DEFAULT
+};
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionCatalogLookupState early_session_catalog_lookup;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionInvalidationCallbackState early_session_invalidation_callbacks;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionRIGlobalsState early_session_ri_globals;
@@ -2281,6 +2288,12 @@ PgSessionInitializeExtensionModuleState(PgSessionExtensionModuleState *extension
 
 	extension_modules->plpgsql_state = NULL;
 	extension_modules->reset_callbacks = NIL;
+	extension_modules->pg_trgm_similarity_threshold =
+		PG_TRGM_SIMILARITY_THRESHOLD_DEFAULT;
+	extension_modules->pg_trgm_word_similarity_threshold =
+		PG_TRGM_WORD_SIMILARITY_THRESHOLD_DEFAULT;
+	extension_modules->pg_trgm_strict_word_similarity_threshold =
+		PG_TRGM_STRICT_WORD_SIMILARITY_THRESHOLD_DEFAULT;
 }
 
 static void
@@ -4693,8 +4706,7 @@ PgSessionResetExtensionModuleClosedState(PgSession *session)
 				session->extension_modules.reset_callbacks)
 		item->callback(item->arg);
 	list_free_deep(session->extension_modules.reset_callbacks);
-	session->extension_modules.reset_callbacks = NIL;
-	session->extension_modules.plpgsql_state = NULL;
+	PgSessionInitializeExtensionModuleState(&session->extension_modules);
 }
 
 static void

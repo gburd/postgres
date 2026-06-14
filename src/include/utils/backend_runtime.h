@@ -1623,6 +1623,9 @@ typedef struct PgSessionExtensionModuleState
 {
 	void	   *plpgsql_state;
 	List	   *reset_callbacks;
+	double		pg_trgm_similarity_threshold;
+	double		pg_trgm_word_similarity_threshold;
+	double		pg_trgm_strict_word_similarity_threshold;
 } PgSessionExtensionModuleState;
 
 typedef struct PgSessionCatalogLookupState
@@ -2838,6 +2841,7 @@ extern bool PgCurrentSessionOwnsPointer(const void *ptr);
 extern void PgBackendResetClosedState(PgBackend *backend);
 extern MemoryContext PgSessionGetDynamicLibraryMemoryContext(PgSession *session);
 extern void **PgCurrentPLpgSQLSessionStateRef(void);
+extern PgSessionExtensionModuleState *PgCurrentSessionExtensionModuleState(void);
 extern void PgSessionRegisterResetCallback(PgSessionResetCallback callback,
 										   void *arg);
 extern void PgSessionResetClosedState(PgSession *session);
