@@ -1535,6 +1535,11 @@ typedef struct PgSessionPlannerMethodState
 	int			join_collapse_limit_value;
 } PgSessionPlannerMethodState;
 
+typedef struct PgSessionFunctionManagerState
+{
+	HTAB	   *c_func_hash;
+} PgSessionFunctionManagerState;
+
 typedef struct PgSessionPreparedStatementState
 {
 	HTAB	   *prepared_queries;
@@ -1901,6 +1906,7 @@ struct PgSession
 	PgSessionQueryMemoryState query_memory;
 	PgSessionPlannerCostState planner_cost;
 	PgSessionPlannerMethodState planner_method;
+	PgSessionFunctionManagerState function_manager;
 	PgSessionPreparedStatementState prepared_statement;
 	PgSessionOnCommitState on_commit;
 	PgSessionSequenceState sequence;
@@ -2226,6 +2232,7 @@ extern int *PgCurrentLogStatementRef(void);
 extern int *PgCurrentPostAuthDelayRef(void);
 extern char **PgCurrentRestrictNonsystemRelationKindStringRef(void);
 extern int *PgCurrentRestrictNonsystemRelationKindRef(void);
+extern HTAB **PgCurrentCFuncHashRef(void);
 extern HTAB **PgCurrentPreparedQueriesRef(void);
 extern List **PgCurrentOnCommitActionsRef(void);
 extern HTAB **PgCurrentSequenceHashTableRef(void);

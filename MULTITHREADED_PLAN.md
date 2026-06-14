@@ -1564,6 +1564,15 @@ object, while `PgSessionResetClosedState()` now invalidates cached role OIDs
 and frees the copied membership lists. The global-lifetime scan now reports
 188 session-local declarations and 30 execution-local declarations with zero
 new unclassified mutable globals.
+The following function-manager cache batch moved `fmgr.c`'s external C
+function lookup hash behind `PgSessionFunctionManagerState`. `fmgr.c` keeps
+the historic `CFuncHash` name through a file-local macro over the current
+session object, and `PgSessionResetClosedState()` now destroys the hash while
+leaving dynamic library handles runtime-owned. The scanner count remains 188
+session-local declarations because the standalone TLS hash was replaced by the
+early fallback session bucket, but the cache itself is now a checked
+object-owned field and the runtime lifecycle manifest now classifies 136
+fields.
 
 ## Phase 13: Scheduler-Aware Wait Boundary
 

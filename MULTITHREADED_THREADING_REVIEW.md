@@ -1133,6 +1133,14 @@ check-runtime-lifecycles`, and the required global-lifetime scan. The
 global-lifetime scan now reports 188 session-local declarations and 30
 execution-local declarations with zero new unclassified mutable globals.
 
+The following function-manager cache slice moved `fmgr.c`'s external C
+function lookup hash behind `PgSessionFunctionManagerState`. The hash entries
+remain borrowed metadata references into fmgr/dynamic-loader state; the
+session reset path owns hash destruction, not dynamic library handles. The
+global-lifetime scan count remains 188 session-local declarations because the
+standalone TLS hash was replaced by the early fallback session bucket, while
+`gmake check-runtime-lifecycles` now checks 136 runtime fields.
+
 ## Bottom Line
 
 The branch is on track only if the current debt is treated as Phase 12

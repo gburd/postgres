@@ -28,6 +28,7 @@
 #include "nodes/nodeFuncs.h"
 #include "pgstat.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/fmgrtab.h"
 #include "utils/guc.h"
@@ -54,7 +55,7 @@ typedef struct
 	const Pg_finfo_record *inforec; /* address of its info record */
 } CFuncHashTabEntry;
 
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *CFuncHash = NULL;
+#define CFuncHash (*PgCurrentCFuncHashRef())
 
 
 static void fmgr_info_cxt_security(Oid functionId, FmgrInfo *finfo, MemoryContext mcxt,

@@ -232,6 +232,13 @@ Important current files:
   `PgSessionResetClosedState()`. After changing this bridge, rebuild `acl.o`,
   `backend_runtime.o`, and `test_backend_runtime.o`, then run
   `gmake check-runtime-lifecycles` and `gmake check-global-lifetimes`.
+- The fmgr external C-function lookup hash now lives under
+  `PgSessionFunctionManagerState`. `fmgr.c` keeps `CFuncHash` as a file-local
+  macro over `PgCurrentCFuncHashRef()`. `PgSessionResetClosedState()` destroys
+  the hash; dynamic library handles and `Pg_finfo_record` metadata remain
+  runtime/dynamic-loader owned. After changing this bridge, rebuild
+  `fmgr.o`, `backend_runtime.o`, and `test_backend_runtime.o`, then run
+  `gmake check-runtime-lifecycles` and `gmake check-global-lifetimes`.
 - Transaction cleanup slots now live under
   `PgExecutionTransactionCleanupState`: large-object descriptor cleanup slots,
   the transaction temporary-file cleanup flag, the pgstat subtransaction stack,

@@ -541,6 +541,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPlannerMethodState early_sessi
 	.from_collapse_limit_value = 8,
 	.join_collapse_limit_value = 8
 };
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionFunctionManagerState early_session_function_manager;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPreparedStatementState early_session_prepared_statement;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionOnCommitState early_session_on_commit;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionSequenceState early_session_sequence;
@@ -692,6 +693,8 @@ static void PgSessionInitializePlannerCostState(PgSessionPlannerCostState *plann
 static void PgSessionAdoptEarlyPlannerCostState(PgSession *session);
 static void PgSessionInitializePlannerMethodState(PgSessionPlannerMethodState *planner_method);
 static void PgSessionAdoptEarlyPlannerMethodState(PgSession *session);
+static void PgSessionInitializeFunctionManagerState(PgSessionFunctionManagerState *function_manager);
+static void PgSessionAdoptEarlyFunctionManagerState(PgSession *session);
 static void PgSessionInitializePreparedStatementState(PgSessionPreparedStatementState *prepared_statement);
 static void PgSessionAdoptEarlyPreparedStatementState(PgSession *session);
 static void PgSessionInitializeOnCommitState(PgSessionOnCommitState *on_commit);
@@ -867,6 +870,7 @@ static PgSessionSortGUCState *PgCurrentSessionSortGUCState(void);
 static PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
 static PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
 static PgSessionPlannerMethodState *PgCurrentSessionPlannerMethodState(void);
+static PgSessionFunctionManagerState *PgCurrentSessionFunctionManagerState(void);
 static PgSessionPreparedStatementState *PgCurrentSessionPreparedStatementState(void);
 static PgSessionOnCommitState *PgCurrentSessionOnCommitState(void);
 static PgSessionSequenceState *PgCurrentSessionSequenceState(void);
@@ -1915,6 +1919,23 @@ PgSessionAdoptEarlyPlannerMethodState(PgSession *session)
 }
 
 static void
+PgSessionInitializeFunctionManagerState(PgSessionFunctionManagerState *function_manager)
+{
+	Assert(function_manager != NULL);
+
+	function_manager->c_func_hash = NULL;
+}
+
+static void
+PgSessionAdoptEarlyFunctionManagerState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	session->function_manager = early_session_function_manager;
+	PgSessionInitializeFunctionManagerState(&early_session_function_manager);
+}
+
+static void
 PgSessionInitializePreparedStatementState(PgSessionPreparedStatementState *prepared_statement)
 {
 	Assert(prepared_statement != NULL);
@@ -2262,6 +2283,7 @@ PgSessionAdoptEarlyState(PgSession *session)
 	PgSessionAdoptEarlyQueryMemoryState(session);
 	PgSessionAdoptEarlyPlannerCostState(session);
 	PgSessionAdoptEarlyPlannerMethodState(session);
+	PgSessionAdoptEarlyFunctionManagerState(session);
 	PgSessionAdoptEarlyPreparedStatementState(session);
 	PgSessionAdoptEarlyOnCommitState(session);
 	PgSessionAdoptEarlySequenceState(session);
@@ -3682,6 +3704,7 @@ PgSessionInitializeRuntimeObject(PgSession *session,
 	PgSessionInitializeQueryMemoryState(&session->query_memory);
 	PgSessionInitializePlannerCostState(&session->planner_cost);
 	PgSessionInitializePlannerMethodState(&session->planner_method);
+	PgSessionInitializeFunctionManagerState(&session->function_manager);
 	PgSessionInitializePreparedStatementState(&session->prepared_statement);
 	PgSessionInitializeOnCommitState(&session->on_commit);
 	PgSessionInitializeSequenceState(&session->sequence);
@@ -4300,6 +4323,12 @@ PgSessionResetClosedState(PgSession *session)
 	}
 	session->async.registered_listener = false;
 
+	if (session->function_manager.c_func_hash != NULL)
+	{
+		hash_destroy(session->function_manager.c_func_hash);
+		session->function_manager.c_func_hash = NULL;
+	}
+
 	for (int i = 0; i < lengthof(session->user_identity.cached_roles); i++)
 	{
 		session->user_identity.cached_role[i] = InvalidOid;
@@ -4915,6 +4944,15 @@ PgCurrentSessionPlannerMethodState(void)
 	return planner_method;
 }
 
+static PgSessionFunctionManagerState *
+PgCurrentSessionFunctionManagerState(void)
+{
+	if (CurrentPgSession == NULL)
+		return &early_session_function_manager;
+
+	return &CurrentPgSession->function_manager;
+}
+
 static PgSessionPreparedStatementState *
 PgCurrentSessionPreparedStatementState(void)
 {
@@ -5430,6 +5468,12 @@ int *
 PgCurrentRestrictNonsystemRelationKindRef(void)
 {
 	return &PgCurrentSessionConnectionGUCState()->restrict_nonsystem_relation_kind_value;
+}
+
+HTAB **
+PgCurrentCFuncHashRef(void)
+{
+	return &PgCurrentSessionFunctionManagerState()->c_func_hash;
 }
 
 HTAB **
