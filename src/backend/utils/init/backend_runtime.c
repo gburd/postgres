@@ -222,19 +222,25 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackend early_backend_fallback = {
 #define early_backend_parallel early_backend_fallback.parallel
 #define early_pending_interrupts early_backend_fallback.pending_interrupts
 #define early_interrupt_holdoffs early_backend_fallback.interrupt_holdoffs
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionIdentityState early_connection_identity;
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionSocketIOState early_connection_socket_io;
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionProtocolState early_connection_protocol;
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionOutputState early_connection_output = {
-	.where_to_send_output = DestDebug
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnection early_connection_fallback = {
+	.output = {
+		.where_to_send_output = DestDebug
+	},
+	.startup = {
+		.timing.ready_for_use = TIMESTAMP_MINUS_INFINITY
+	}
 };
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionInterruptState early_connection_interrupts;
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionStartupState early_connection_startup = {
-	.timing.ready_for_use = TIMESTAMP_MINUS_INFINITY
-};
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionClientConnectionInfoState early_client_connection_info;
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION bool early_client_connection_info_authn_id_owned;
-static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionSecurityState early_connection_security;
+#define early_connection_identity early_connection_fallback.identity
+#define early_connection_socket_io early_connection_fallback.socket_io
+#define early_connection_protocol early_connection_fallback.protocol
+#define early_connection_output early_connection_fallback.output
+#define early_connection_interrupts early_connection_fallback.interrupts
+#define early_connection_startup early_connection_fallback.startup
+#define early_client_connection_info \
+	early_connection_fallback.client_connection_info
+#define early_client_connection_info_authn_id_owned \
+	early_connection_fallback.client_connection_info_authn_id_owned
+#define early_connection_security early_connection_fallback.security
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSession early_session_fallback = {
 	.tablespace = {
 		.initialized = true,

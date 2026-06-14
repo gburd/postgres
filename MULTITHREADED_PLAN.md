@@ -853,11 +853,14 @@ runtime roots. The backend fallback consolidation replaced the standalone
 backend-local fallback TLS slots with one `PgBackend early_backend_fallback`;
 the follow-up session/execution consolidation replaced the standalone
 `early_session_*` and `early_execution_*` TLS slots with one `PgSession
-early_session_fallback` and one `PgExecution early_execution_fallback`. The
-existing checked init/adopt/reset helpers still own per-bucket semantics, and
-source-local compatibility macros keep the helper bodies stable while the
-global-lifetime scan now reports only 2 session-local and 2 execution-local
-fallback declarations in this area.
+early_session_fallback` and one `PgExecution early_execution_fallback`, and
+the connection consolidation replaced the standalone `early_connection_*`
+and `early_client_connection_info*` TLS slots with one `PgConnection
+early_connection_fallback`. The existing checked init/adopt/reset helpers
+still own per-bucket semantics, and source-local compatibility macros keep
+the helper bodies stable while the global-lifetime scan now reports only 2
+session-local, 2 execution-local, and 2 connection-local fallback
+declarations in this area.
 
 Validation:
 

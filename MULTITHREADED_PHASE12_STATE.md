@@ -13285,6 +13285,58 @@ Validation for the small contrib custom-GUC session-state slice:
   `002_threaded_bgworker_crash.pl`, 131 tests total, with patched macOS
   install-name paths and the repo-local `.perl5` `PERL5LIB`.
 
+## Connection Early-Fallback TLS Consolidation
+
+Lifecycle/preflight note:
+
+- target root and buckets: `PgConnection` early fallback object in
+  `backend_runtime.c`;
+- state to move: the connection early-fallback TLS buckets and authn-id-owned
+  flag currently declared as independent `early_connection_*` and
+  `early_client_connection_info*` globals;
+- owner source file: `src/backend/utils/init/backend_runtime.c`;
+- repeated lifecycle operations: existing connection init, early adoption,
+  closed-state reset, and pointer cleanup helpers already use checked
+  connection bucket definitions and helper macros. This slice should change
+  only the early fallback storage container, replacing the standalone TLS
+  slots with one `PgConnection early_connection_fallback` plus source-local
+  compatibility macros. No new lifecycle primitive is needed because the
+  existing checked helper path still owns the per-bucket semantics;
+- retained invariant: early connection fallback remains carrier/TLS-local
+  until a real connection object is installed, and the default output
+  destination plus startup ready timestamp must stay aligned with
+  `PgConnectionInitializeOutputState()` and
+  `PgConnectionInitializeStartupState()`.
+
+Slice:
+
+- replaced the individual connection early fallback bucket declarations with
+  a single `PgConnection early_connection_fallback` root object;
+- preserved source compatibility inside `backend_runtime.c` with local macros
+  for the historical `early_connection_*` and
+  `early_client_connection_info*` names;
+- kept all existing connection adopt/reset helper bodies and checked
+  lifecycle rows in force;
+- reduced the live `check-global-lifetimes` connection-local declaration
+  count from 10 to 2 in this checkout.
+
+Validation for the connection early-fallback consolidation slice:
+
+- `git diff --check` passed;
+- `gmake -C src/backend/utils/init backend_runtime.o` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 222 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations. The scan reported 1125
+  declarations and 2 connection-local declarations, down from 1133
+  declarations and 10 connection-local declarations before this slice;
+- full incremental `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with patched macOS
+  install-name paths and the repo-local `.perl5` `PERL5LIB`.
+
 ## basic_archive Backend GUC State
 
 Lifecycle/preflight note:
