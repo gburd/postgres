@@ -10408,6 +10408,11 @@ Acceptance criteria for the refactor slice:
   manifest for `PgBackend`, `PgSession`, `PgConnection`, and `PgExecution`.
   Use that as the single source of truth for constructor, early-adoption, and
   reset/destroy call lists before the remaining teardown work continues;
+- implement this lifecycle framework as the next Gate E2 slice. Prefer
+  checked `.def` bucket files that are included by the top-level runtime
+  constructors/adoption/reset orchestration, so adding a bucket requires one
+  manifest row and one checked bucket-definition row rather than updating
+  several handwritten call lists by memory;
 - keep semantic cleanup/destructor functions handwritten and close to the
   owning subsystem. The generated or macro-driven layer should cover only
   repetitive coverage and call-list mechanics;

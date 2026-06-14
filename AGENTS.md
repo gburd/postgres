@@ -233,6 +233,10 @@ Important current files:
   and call-list mechanics. Extend `check_runtime_lifecycles.pl` to validate
   the bucket definitions against `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` and to
   reject unintentional process/thread lifecycle asymmetry.
+- Treat that lifecycle framework as the next Gate E2 implementation slice, not
+  optional polish. Prefer checked `.def` bucket files included from the
+  top-level runtime constructors/adoption/reset orchestration before adding
+  more handwritten init/adopt/reset lists.
 - Do not attempt thread launch until the thread-safety floor is in place:
   backend-local globals must not be shared plain process globals, backend exit
   must not terminate the whole runtime, and timeout/interrupt delivery must be
