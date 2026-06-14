@@ -339,6 +339,11 @@ Important current files:
   checker rejects anonymous no-op cells and unknown `PG_RUNTIME_*` action
   names. Extend this vocabulary before adding another family of repetitive
   lifecycle helper bodies.
+- If the lifecycle process itself feels slow or repetitive, stop and improve
+  the checked lifecycle vocabulary before continuing the migration. The
+  preferred fix is a small named action, helper macro, table row, or checker
+  rule that makes the next batch easier and keeps the manifest as the source
+  of truth; do not paper over the friction with another manual helper list.
 - Session GUC direct-variable rebinding in `src/backend/utils/misc/guc.c`
   is table-driven by `threaded_session_guc_rebinds[]`. Add new migrated
   built-in direct-pointer GUCs to that table instead of extending
@@ -1599,6 +1604,13 @@ Important current files:
   previously patched `psql` can become unpatched again. If that target fails
   before SQL starts with a `dyld` `libpq.5.dylib` loader error, patch the new
   temp-install binaries and rerun the equivalent `pg_regress` command directly.
+
+  Do not run two `gmake ... check` targets that create a temp install in
+  parallel from the same checkout. They share `$PWD/tmp_install`, and parallel
+  temp-install setup can fail before SQL starts with `rm: ... tmp_install:
+  Directory not empty` or a missing `tmp_install/log/install.log`. Run those
+  regression targets sequentially, or use a separate checkout/build directory
+  for parallel test work.
 
   Top-level `gmake check-world` and recursive targets such as
   `gmake -C src/test check` also recreate `tmp_install` on this checkout. They

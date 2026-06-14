@@ -34,12 +34,8 @@ PG_MODULE_MAGIC_EXT(
 					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
 );
 
-/* GUC variables */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION char *pg_plan_advice_advice = NULL;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool pg_plan_advice_always_store_advice_details = false;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool pg_plan_advice_always_explain_supplied_advice = true;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool pg_plan_advice_feedback_warnings = false;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool pg_plan_advice_trace_mask = false;
+#define pg_plan_advice_always_explain_supplied_advice \
+	(PgCurrentSessionExtensionModuleState()->pg_plan_advice_always_explain_supplied_advice)
 
 /* Saved hook value */
 static explain_per_plan_hook_type prev_explain_per_plan = NULL;

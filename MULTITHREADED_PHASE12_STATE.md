@@ -11143,3 +11143,39 @@ pg_trgm custom-GUC object migration completed:
 - `test_session_extension_module_state_is_session_local()` now verifies the
   pg_trgm backing scalars switch with `CurrentPgSession` and reset to defaults
   on closed-session reset.
+
+pg_plan_advice session-state lifecycle preflight:
+
+- target root and bucket: `PgSession.extension_modules`;
+- repeated lifecycle operations: scalar/string default initialization,
+  whole-bucket early fallback adoption, and closed-session reset through the
+  existing ordered session reset mechanism;
+- lifecycle preflight result: the existing session bucket row and manifest
+  checker are sufficient, but the ordered reset path needs a small ordering
+  correction before adding a string-backed custom GUC to this bucket. GUC
+  cleanup must run while `pg_plan_advice.advice` still points at its
+  session-owned string slot; only then should
+  `PgSessionResetExtensionModuleClosedState()` restore extension-module
+  defaults. No new lifecycle action is needed.
+
+pg_plan_advice session-state object migration completed:
+
+- `pg_plan_advice_advice`,
+  `pg_plan_advice_always_store_advice_details`,
+  `pg_plan_advice_always_explain_supplied_advice`,
+  `pg_plan_advice_feedback_warnings`, `pg_plan_advice_trace_mask`, and
+  `pgpa_planner_generate_advice` no longer live in contrib-local
+  `PG_THREAD_LOCAL` globals;
+- `PgSession.extension_modules` owns the custom-GUC backing variables and the
+  exported advice-generation request counter used by dependent modules;
+- `pg_plan_advice.h` and `pgpa_planner.h` expose compatibility macros that
+  route existing contrib code and dependent in-tree modules through
+  `PgCurrentSessionExtensionModuleState()`;
+- the ordered session reset list now runs GUC cleanup before extension-module
+  reset so string-backed custom GUCs can be cleaned while their backing slot is
+  still intact, then restored to defaults by
+  `PgSessionResetExtensionModuleClosedState()`;
+- `MULTITHREADED_RUNTIME_OWNERS.tsv` maps all six legacy symbols to
+  `PgSession.extension_modules`, and
+  `test_session_extension_module_state_is_session_local()` verifies they
+  switch with `CurrentPgSession` and reset to defaults.

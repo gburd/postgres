@@ -14,6 +14,7 @@
 
 #include "commands/explain_state.h"
 #include "nodes/pathnodes.h"
+#include "utils/backend_runtime.h"
 
 /*
  * Flags used in plan advice feedback.
@@ -52,10 +53,14 @@ typedef char *(*pg_plan_advice_advisor_hook) (PlannerGlobal *glob,
 											  ExplainState *es);
 
 /* GUC variables */
-extern PG_THREAD_LOCAL PG_GLOBAL_SESSION char *pg_plan_advice_advice;
-extern PG_THREAD_LOCAL PG_GLOBAL_SESSION bool pg_plan_advice_always_store_advice_details;
-extern PG_THREAD_LOCAL PG_GLOBAL_SESSION bool pg_plan_advice_feedback_warnings;
-extern PG_THREAD_LOCAL PG_GLOBAL_SESSION bool pg_plan_advice_trace_mask;
+#define pg_plan_advice_advice \
+	(PgCurrentSessionExtensionModuleState()->pg_plan_advice_advice)
+#define pg_plan_advice_always_store_advice_details \
+	(PgCurrentSessionExtensionModuleState()->pg_plan_advice_always_store_advice_details)
+#define pg_plan_advice_feedback_warnings \
+	(PgCurrentSessionExtensionModuleState()->pg_plan_advice_feedback_warnings)
+#define pg_plan_advice_trace_mask \
+	(PgCurrentSessionExtensionModuleState()->pg_plan_advice_trace_mask)
 
 /* Function prototypes (for use by pg_plan_advice itself) */
 extern MemoryContext pg_plan_advice_get_mcxt(void);

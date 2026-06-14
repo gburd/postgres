@@ -1626,6 +1626,12 @@ typedef struct PgSessionExtensionModuleState
 	double		pg_trgm_similarity_threshold;
 	double		pg_trgm_word_similarity_threshold;
 	double		pg_trgm_strict_word_similarity_threshold;
+	char	   *pg_plan_advice_advice;
+	bool		pg_plan_advice_always_store_advice_details;
+	bool		pg_plan_advice_always_explain_supplied_advice;
+	bool		pg_plan_advice_feedback_warnings;
+	bool		pg_plan_advice_trace_mask;
+	int			pg_plan_advice_generate_advice;
 } PgSessionExtensionModuleState;
 
 typedef struct PgSessionCatalogLookupState

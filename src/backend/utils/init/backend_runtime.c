@@ -99,6 +99,7 @@
 #define PG_TRGM_SIMILARITY_THRESHOLD_DEFAULT 0.3
 #define PG_TRGM_WORD_SIMILARITY_THRESHOLD_DEFAULT 0.6
 #define PG_TRGM_STRICT_WORD_SIMILARITY_THRESHOLD_DEFAULT 0.5
+#define PG_PLAN_ADVICE_ALWAYS_EXPLAIN_SUPPLIED_ADVICE_DEFAULT true
 
 PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgRuntime *CurrentPgRuntime = NULL;
 PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgCarrier *CurrentPgCarrier = NULL;
@@ -574,7 +575,8 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionFunctionManagerState early_ses
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionExtensionModuleState early_session_extension_modules = {
 	.pg_trgm_similarity_threshold = PG_TRGM_SIMILARITY_THRESHOLD_DEFAULT,
 	.pg_trgm_word_similarity_threshold = PG_TRGM_WORD_SIMILARITY_THRESHOLD_DEFAULT,
-	.pg_trgm_strict_word_similarity_threshold = PG_TRGM_STRICT_WORD_SIMILARITY_THRESHOLD_DEFAULT
+	.pg_trgm_strict_word_similarity_threshold = PG_TRGM_STRICT_WORD_SIMILARITY_THRESHOLD_DEFAULT,
+	.pg_plan_advice_always_explain_supplied_advice = PG_PLAN_ADVICE_ALWAYS_EXPLAIN_SUPPLIED_ADVICE_DEFAULT
 };
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionCatalogLookupState early_session_catalog_lookup;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionInvalidationCallbackState early_session_invalidation_callbacks;
@@ -2294,6 +2296,13 @@ PgSessionInitializeExtensionModuleState(PgSessionExtensionModuleState *extension
 		PG_TRGM_WORD_SIMILARITY_THRESHOLD_DEFAULT;
 	extension_modules->pg_trgm_strict_word_similarity_threshold =
 		PG_TRGM_STRICT_WORD_SIMILARITY_THRESHOLD_DEFAULT;
+	extension_modules->pg_plan_advice_advice = NULL;
+	extension_modules->pg_plan_advice_always_store_advice_details = false;
+	extension_modules->pg_plan_advice_always_explain_supplied_advice =
+		PG_PLAN_ADVICE_ALWAYS_EXPLAIN_SUPPLIED_ADVICE_DEFAULT;
+	extension_modules->pg_plan_advice_feedback_warnings = false;
+	extension_modules->pg_plan_advice_trace_mask = false;
+	extension_modules->pg_plan_advice_generate_advice = 0;
 }
 
 static void

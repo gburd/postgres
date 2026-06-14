@@ -607,7 +607,9 @@ Likely changes:
   - the bundled `pg_stash_advice` persistence worker has an initial
     thread-carrier slice through explicit background-worker backend-model
     metadata, with its `pg_plan_advice` dependency marked for the same
-    backend model.
+    backend model. `pg_plan_advice` session-local custom-GUC backing state and
+    advice-generation request state now live in `PgSession.extension_modules`
+    rather than contrib-local TLS globals.
 - Require generic background workers to declare
   `BgWorkerBackendThreadPerSession` before they can run on thread carriers.
   The zero/default registration value remains process-only, so existing
@@ -957,6 +959,11 @@ Gate E2 requires:
   cells or unknown `PG_RUNTIME_*` action names. Future vocabulary extensions
   should follow the same pattern: named bucket-row action, C expansion, and
   checker validation;
+- lifecycle-process friction is itself a Gate E2 signal. If state migration or
+  teardown work starts requiring another repeated manual init/adopt/reset/
+  destroy helper list, extend the checked lifecycle vocabulary first with a
+  named action, helper macro, table row, or checker rule, then run the batch
+  through that mechanism;
 - `MULTITHREADED_RUNTIME_OWNERS.tsv` remains synchronized with the lifecycle
   manifest and runtime accessors. `check-runtime-lifecycles` must reject owner
   rows that point at a non-manifest bucket, a missing owner source, a duplicate
