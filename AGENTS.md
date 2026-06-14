@@ -1893,6 +1893,11 @@ Important current files:
 
 - `guc_privs` is not a core `src/test/regress` test. It lives under
   `src/test/modules/unsafe_tests`.
+- Built-in GUCs whose direct backing variables moved into `PgSession` must
+  carry `threaded_accessor => 'PgCurrent...Ref'` in
+  `src/backend/utils/misc/guc_parameters.dat`. Do not add a hand-written
+  rebind row in `guc.c`; `gen_guc_tables.pl` emits
+  `ThreadedSessionGUCRebinds` from the data file.
 - `analyze` is not a core `src/test/regress` test file in this checkout. For
   focused sampling/ANALYZE validation, use a live temp-cluster smoke that
   creates a table, inserts enough rows, runs `ANALYZE`, and verifies visible
@@ -2024,24 +2029,24 @@ Important current files:
   cpan -T -i IPC::Run
   ```
 
-  Until that succeeds, keep
-  `PERL5LIB="/Users/samwillis/.cpan/build/IPC-Run-20260402.0-5/blib/lib:$PWD/src/test/perl"`
-  in direct TAP commands. This checkout is still configured without
-  `--enable-tap-tests`, so recursive `gmake ... check` targets report `TAP
-  tests not enabled`. Do not treat that configure-time message as a reason to
-  skip TAP coverage; run the direct `prove` command with the local `PERL5LIB`
-  path. Direct `prove` runs also need the same harness environment that
+  Until that succeeds, keep the repo-local `.perl5` paths in direct TAP
+  commands. This checkout is still configured without `--enable-tap-tests`, so
+  recursive `gmake ... check` targets report `TAP tests not enabled`. Do not
+  treat that configure-time message as a reason to skip TAP coverage; run the
+  direct `prove` command with the local `PERL5LIB` path. Direct `prove` runs
+  also need the same harness environment that
   `gmake check` supplies, especially `PG_REGRESS`; if `PG_REGRESS` is missing,
   `PostgreSQL::Test::Cluster->init` can call `system_or_bail()` with an
   undefined command and `prove` may report an empty skip reason before the
   server starts. A minimal direct environment is:
 
   ```sh
-  PERL5LIB="/Users/samwillis/.cpan/build/IPC-Run-20260402.0-5/blib/lib:$PWD/src/test/perl" \
-  PATH="$PWD/tmp_install/usr/local/pgsql/bin:$PATH" \
+  PATH="/opt/homebrew/bin:$PWD/tmp_install/usr/local/pgsql/bin:$PATH" \
+  GMAKE="/opt/homebrew/bin/gmake" \
   DYLD_LIBRARY_PATH="$PWD/tmp_install/usr/local/pgsql/lib" \
   INITDB_TEMPLATE="$PWD/tmp_install/initdb-template" \
   PG_REGRESS="$PWD/src/test/regress/pg_regress" \
+  PERL5LIB="$PWD/.perl5/lib/perl5:$PWD/.perl5/lib/perl5/darwin-thread-multi-2level:$PWD/src/test/perl" \
   prove -I src/test/perl src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl
   ```
 

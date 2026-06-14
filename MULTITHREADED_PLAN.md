@@ -888,7 +888,10 @@ Gate E2 requires:
   current smokes. The model must cover postmaster/runtime defaults,
   database/role settings, startup options, direct-pointer variables, assign
   hooks, reset/default semantics, and extension/custom GUC behavior expected in
-  thread-per-session mode;
+  thread-per-session mode. Built-in direct-variable GUC rebinds are generated
+  from `threaded_accessor` metadata in `guc_parameters.dat`; future built-in
+  GUC migrations should extend that metadata path, not add a hand-maintained
+  runtime table;
 - the broad threaded startup serialization gate is removed or narrowed to a
   precisely documented critical section with an explicit removal plan. The
   remaining gate, if any, must not serialize normal post-bootstrap SQL

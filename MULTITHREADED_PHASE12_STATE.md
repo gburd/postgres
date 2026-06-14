@@ -12402,3 +12402,51 @@ Validation for the reset-through-initializer action slice:
   `002_threaded_bgworker_crash.pl`, 131 tests total, with the documented
   local `IPC::Run` `PERL5LIB` and patched temporary-install install-name
   paths.
+
+## Generated Built-In GUC Rebind Registry
+
+Lifecycle/GUC preflight:
+
+- target: Gate E2 systematic threaded GUC adoption and rebind model;
+- repeated lifecycle operations: 227 built-in GUC direct-variable rebind rows
+  were maintained as a large hand-written table in `guc.c`, separate from the
+  generated GUC definitions and easy to miss during future GUC migrations;
+- preflight result: move the built-in rebind registry into the generated GUC
+  metadata path. This is a checked framework improvement rather than another
+  per-GUC migration: each session-backed built-in GUC now records its
+  `PgCurrent...Ref` accessor beside the GUC's `variable` field in
+  `guc_parameters.dat`, and `gen_guc_tables.pl` emits the typed rebind table.
+
+Generated GUC rebind slice:
+
+- `guc_parameters.dat` accepts `threaded_accessor` for built-in GUCs whose
+  direct backing variables live in `PgSession` state;
+- `gen_guc_tables.pl` emits `ThreadedSessionGUCRebinds` and
+  `NumThreadedSessionGUCRebinds` from those metadata rows using typed
+  `PG_SESSION_GUC_*` initializers;
+- `guc.c` no longer owns the 227-entry built-in rebind table. It only applies
+  and validates the generated table;
+- `guc_tables.h` exports the generated rebind table type and declarations so
+  `guc.c` and tests share the same generated registry;
+- `AGENTS.md` now tells future agents to add `threaded_accessor` in
+  `guc_parameters.dat` instead of adding hand-written GUC rebind rows.
+
+Validation for the generated GUC rebind slice:
+
+- `perl -c src/backend/utils/misc/gen_guc_tables.pl` passed;
+- `gmake -C src/backend/utils guc_tables.inc.c` regenerated the generated
+  include from `guc_parameters.dat`;
+- `gmake -C src/backend/utils/misc guc.o guc_tables.o` passed;
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 194 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- `gmake -C src/test/modules/test_backend_runtime clean all` passed;
+- full incremental `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with `PG_REGRESS`,
+  patched temp-install install-name paths, and the repo-local `.perl5`
+  `PERL5LIB`.

@@ -29,6 +29,22 @@ enum config_type
 	PGC_ENUM,
 };
 
+typedef union ThreadedSessionGUCVariableAccessor
+{
+	bool		*(*bool_ref) (void);
+	int		   *(*int_ref) (void);
+	double	   *(*real_ref) (void);
+	char	  **(*string_ref) (void);
+	int		   *(*enum_ref) (void);
+} ThreadedSessionGUCVariableAccessor;
+
+typedef struct ThreadedSessionGUCRebind
+{
+	const char *name;
+	enum config_type vartype;
+	ThreadedSessionGUCVariableAccessor accessor;
+} ThreadedSessionGUCRebind;
+
 union config_var_val
 {
 	bool		boolval;
@@ -309,6 +325,9 @@ extern PGDLLIMPORT PG_GLOBAL_IMMUTABLE const char *const GucSource_Names[];
 
 /* data array defining all the built-in GUC variables */
 extern PGDLLIMPORT PG_GLOBAL_IMMUTABLE struct config_generic ConfigureNames[];
+extern PGDLLIMPORT PG_GLOBAL_IMMUTABLE const ThreadedSessionGUCRebind
+			ThreadedSessionGUCRebinds[];
+extern PGDLLIMPORT PG_GLOBAL_IMMUTABLE const int NumThreadedSessionGUCRebinds;
 
 /* lookup GUC variables, returning config_generic pointers */
 extern struct config_generic *find_option(const char *name,

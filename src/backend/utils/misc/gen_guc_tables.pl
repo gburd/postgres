@@ -27,6 +27,7 @@ open my $ofh, '>', $output_fname or die;
 print_boilerplate($ofh, $output_fname, 'GUC tables');
 print_table($ofh);
 print_variable_pointer_rebind($ofh);
+print_threaded_session_guc_rebinds($ofh);
 
 close $ofh;
 
@@ -60,7 +61,7 @@ sub validate_guc_entry
 		@required_common,
 		qw(long_desc flags ifdef min max options
 		  check_hook assign_hook show_hook
-		  line_number));
+		  threaded_accessor line_number));
 
 	for my $f (sort keys %$entry)
 	{
@@ -206,6 +207,69 @@ sub print_variable_pointer_rebind
 
 	print $ofh "\tAssert(variables[i].name == NULL);\n";
 	print $ofh "}\n";
+
+	return;
+}
+
+sub threaded_session_guc_macro
+{
+	my ($type) = @_;
+
+	my %macro_by_type = (
+		bool => 'PG_SESSION_GUC_BOOL',
+		int => 'PG_SESSION_GUC_INT',
+		real => 'PG_SESSION_GUC_REAL',
+		string => 'PG_SESSION_GUC_STRING',
+		enum => 'PG_SESSION_GUC_ENUM',
+	);
+
+	return $macro_by_type{$type}
+	  // die "unexpected GUC type \"$type\" while generating threaded rebinds";
+}
+
+sub print_threaded_session_guc_rebinds
+{
+	my ($ofh) = @_;
+	my $count = 0;
+
+	print $ofh "\n\n";
+	print $ofh "#define PG_SESSION_GUC_BOOL(name, accessor) \\\n";
+	print $ofh "\t{name, PGC_BOOL, {.bool_ref = accessor}}\n";
+	print $ofh "#define PG_SESSION_GUC_INT(name, accessor) \\\n";
+	print $ofh "\t{name, PGC_INT, {.int_ref = accessor}}\n";
+	print $ofh "#define PG_SESSION_GUC_REAL(name, accessor) \\\n";
+	print $ofh "\t{name, PGC_REAL, {.real_ref = accessor}}\n";
+	print $ofh "#define PG_SESSION_GUC_STRING(name, accessor) \\\n";
+	print $ofh "\t{name, PGC_STRING, {.string_ref = accessor}}\n";
+	print $ofh "#define PG_SESSION_GUC_ENUM(name, accessor) \\\n";
+	print $ofh "\t{name, PGC_ENUM, {.enum_ref = accessor}}\n";
+	print $ofh "\n";
+	print $ofh "PG_GLOBAL_IMMUTABLE const ThreadedSessionGUCRebind ThreadedSessionGUCRebinds[] =\n";
+	print $ofh "{\n";
+
+	foreach my $entry (@{$parse})
+	{
+		next unless $entry->{threaded_accessor};
+
+		print $ofh "#ifdef $entry->{ifdef}\n" if $entry->{ifdef};
+		printf $ofh "\t%s(%s, %s),\n",
+		  threaded_session_guc_macro($entry->{type}),
+		  dquote($entry->{name}),
+		  $entry->{threaded_accessor};
+		print $ofh "#endif\n" if $entry->{ifdef};
+		$count++;
+	}
+
+	print $ofh "};\n\n";
+	printf $ofh "PG_GLOBAL_IMMUTABLE const int NumThreadedSessionGUCRebinds = lengthof(ThreadedSessionGUCRebinds);\n";
+	print $ofh "\n";
+	print $ofh "#undef PG_SESSION_GUC_BOOL\n";
+	print $ofh "#undef PG_SESSION_GUC_INT\n";
+	print $ofh "#undef PG_SESSION_GUC_REAL\n";
+	print $ofh "#undef PG_SESSION_GUC_STRING\n";
+	print $ofh "#undef PG_SESSION_GUC_ENUM\n";
+
+	die "no threaded session GUC rebinds generated" if $count == 0;
 
 	return;
 }
