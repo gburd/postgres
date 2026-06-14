@@ -80,6 +80,11 @@ macro/table/checker improvement would make the whole slice simpler and safer.
   init/adopt/reset/destroy helpers, first add or extend a checked lifecycle
   primitive: a `PG_RUNTIME_*` bucket action, `PG_RUNTIME_DEFINE_*` helper,
   bucket `.def` rule, or `check_runtime_lifecycles.pl` validation.
+- Treat that preflight as an implementation step, not a note to self. The
+  expected answer is either "the existing checked macro/table/checker path is
+  sufficient" with the exact mechanism named, or "extend the lifecycle
+  framework first" with the new macro, action, `.def` pattern, or checker rule
+  landed before the state migration.
 - Record the preflight decision in
   [MULTITHREADED_PHASE12_STATE.md](MULTITHREADED_PHASE12_STATE.md) before
   editing code. The note must either name the existing bucket rows/macros/

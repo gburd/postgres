@@ -1018,6 +1018,11 @@ Gate E2 requires:
   checker validation before moving the state, unless the cleanup has genuinely
   different ordering or ownership semantics. Record that preflight decision in
   `MULTITHREADED_PHASE12_STATE.md`;
+- the preflight is a required implementation decision. It must not be left as
+  an abstract reminder: either name the existing checked macro/table/checker
+  path that makes the batch safe, or land the missing lifecycle primitive
+  before the state migration. The purpose is to make larger batches faster
+  without growing manual call lists or weakening the manifest gate;
 - use that rule aggressively for the remaining Gate E2 work. If lifecycle
   code starts to feel like clerical bookkeeping, that is a signal to add a
   checked primitive first, then move the larger batch through the primitive.
