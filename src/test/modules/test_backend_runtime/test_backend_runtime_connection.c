@@ -155,6 +155,7 @@ Datum
 test_connection_reset_closed_state(PG_FUNCTION_ARGS)
 {
 	PgConnection connection;
+	PgConnection *saved_connection;
 	PgConnectionSocketIOState *socket_io;
 	PgConnectionSecurityState *security;
 	const PQcommMethods methods = {0};
@@ -164,6 +165,7 @@ test_connection_reset_closed_state(PG_FUNCTION_ARGS)
 	MemoryContext warning_context;
 	bool		ok = true;
 
+	saved_connection = CurrentPgConnection;
 	MemSet(&connection, 0, sizeof(connection));
 	MemSet(&fake_client_socket, 0, sizeof(fake_client_socket));
 	fake_wait_set = (WaitEventSet *) &connection;
@@ -189,6 +191,9 @@ test_connection_reset_closed_state(PG_FUNCTION_ARGS)
 	connection.protocol.comm_methods = &methods;
 	connection.protocol.fe_be_wait_set = fake_wait_set;
 	connection.protocol.frontend_protocol = PG_PROTOCOL(3, 2);
+	connection.output.where_to_send_output = DestRemote;
+	connection.interrupts.check_client_connection_pending = true;
+	connection.interrupts.client_connection_lost = true;
 	connection.startup.client_auth_in_progress = true;
 	connection.startup.client_socket = &fake_client_socket;
 	connection.startup.connection_warnings_emitted = true;
@@ -232,52 +237,73 @@ test_connection_reset_closed_state(PG_FUNCTION_ARGS)
 		elog(ERROR, "out of memory");
 	}
 
-	PgConnectionResetClosedState(&connection);
+	PG_TRY();
+	{
+		CurrentPgConnection = &connection;
+		client_connection_check_interval = 99;
+		CurrentPgConnection = saved_connection;
 
-	ok = ok && connection.identity.port == NULL;
-	ok = ok && connection.identity.cancel_key[0] == 0;
-	ok = ok && connection.identity.cancel_key_length == 0;
+		PgConnectionResetClosedState(&connection);
 
-	socket_io = &connection.socket_io;
-	ok = ok && socket_io->send_buffer == NULL;
-	ok = ok && socket_io->send_buffer_size == 0;
-	ok = ok && socket_io->send_pointer == 0;
-	ok = ok && socket_io->send_start == 0;
-	ok = ok && socket_io->recv_buffer[0] == '\0';
-	ok = ok && socket_io->recv_pointer == 0;
-	ok = ok && socket_io->recv_length == 0;
-	ok = ok && !socket_io->comm_busy;
-	ok = ok && !socket_io->comm_reading_msg;
-	ok = ok && socket_io->win32_noblock == 0;
+		ok = ok && connection.identity.port == NULL;
+		ok = ok && connection.identity.cancel_key[0] == 0;
+		ok = ok && connection.identity.cancel_key_length == 0;
 
-	ok = ok && connection.protocol.comm_methods == NULL;
-	ok = ok && connection.protocol.fe_be_wait_set == NULL;
-	ok = ok && connection.protocol.frontend_protocol == 0;
-	ok = ok && !connection.startup.client_auth_in_progress;
-	ok = ok && connection.startup.client_socket == NULL;
-	ok = ok && !connection.startup.connection_warnings_emitted;
-	ok = ok && connection.startup.connection_warning_context == NULL;
-	ok = ok && connection.startup.connection_warning_messages == NIL;
-	ok = ok && connection.startup.connection_warning_details == NIL;
-	ok = ok && connection.client_connection_info.authn_id == NULL;
-	ok = ok && connection.client_connection_info.auth_method == uaReject;
-	ok = ok && !connection.client_connection_info_authn_id_owned;
+		socket_io = &connection.socket_io;
+		ok = ok && socket_io->send_buffer == NULL;
+		ok = ok && socket_io->send_buffer_size == 0;
+		ok = ok && socket_io->send_pointer == 0;
+		ok = ok && socket_io->send_start == 0;
+		ok = ok && socket_io->recv_buffer[0] == '\0';
+		ok = ok && socket_io->recv_pointer == 0;
+		ok = ok && socket_io->recv_length == 0;
+		ok = ok && !socket_io->comm_busy;
+		ok = ok && !socket_io->comm_reading_msg;
+		ok = ok && socket_io->win32_noblock == 0;
 
-	security = &connection.security;
-	ok = ok && !security->ssl_loaded_verify_locations;
-	ok = ok && security->gss_send_buffer == NULL;
-	ok = ok && security->gss_send_length == 0;
-	ok = ok && security->gss_send_next == 0;
-	ok = ok && security->gss_send_consumed == 0;
-	ok = ok && security->gss_recv_buffer == NULL;
-	ok = ok && security->gss_recv_length == 0;
-	ok = ok && security->gss_result_buffer == NULL;
-	ok = ok && security->gss_result_length == 0;
-	ok = ok && security->gss_result_next == 0;
-	ok = ok && security->gss_max_packet_size == 0;
-	ok = ok && security->pam_password == NULL;
-	ok = ok && security->pam_port == NULL;
-	ok = ok && !security->pam_no_password;
+		ok = ok && connection.protocol.comm_methods == NULL;
+		ok = ok && connection.protocol.fe_be_wait_set == NULL;
+		ok = ok && connection.protocol.frontend_protocol == 0;
+		ok = ok && connection.output.where_to_send_output == DestDebug;
+		CurrentPgConnection = &connection;
+		ok = ok && client_connection_check_interval == 0;
+		CurrentPgConnection = saved_connection;
+		ok = ok && !connection.interrupts.check_client_connection_pending;
+		ok = ok && !connection.interrupts.client_connection_lost;
+		ok = ok && !connection.startup.client_auth_in_progress;
+		ok = ok && connection.startup.client_socket == NULL;
+		ok = ok && !connection.startup.connection_warnings_emitted;
+		ok = ok && connection.startup.connection_warning_context == NULL;
+		ok = ok && connection.startup.connection_warning_messages == NIL;
+		ok = ok && connection.startup.connection_warning_details == NIL;
+		ok = ok && connection.client_connection_info.authn_id == NULL;
+		ok = ok && connection.client_connection_info.auth_method == uaReject;
+		ok = ok && !connection.client_connection_info_authn_id_owned;
+
+		security = &connection.security;
+		ok = ok && !security->ssl_loaded_verify_locations;
+		ok = ok && security->gss_send_buffer == NULL;
+		ok = ok && security->gss_send_length == 0;
+		ok = ok && security->gss_send_next == 0;
+		ok = ok && security->gss_send_consumed == 0;
+		ok = ok && security->gss_recv_buffer == NULL;
+		ok = ok && security->gss_recv_length == 0;
+		ok = ok && security->gss_result_buffer == NULL;
+		ok = ok && security->gss_result_length == 0;
+		ok = ok && security->gss_result_next == 0;
+		ok = ok && security->gss_max_packet_size == 0;
+		ok = ok && security->pam_password == NULL;
+		ok = ok && security->pam_port == NULL;
+		ok = ok && !security->pam_no_password;
+
+		CurrentPgConnection = saved_connection;
+	}
+	PG_CATCH();
+	{
+		CurrentPgConnection = saved_connection;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 
 	if (!ok)
 		elog(ERROR, "closed connection runtime state was not reset");

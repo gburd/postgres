@@ -10970,3 +10970,17 @@ Execution closed-reset sweep completed:
 - `test_execution_reset_closed_state()` now seeds representative non-default
   fields across the full execution bucket set and verifies that the reset path
   returns them to initializer defaults.
+
+Connection closed-reset completion slice:
+
+- lifecycle preflight result: the existing `PG_CONNECTION_BUCKET` reset column
+  is sufficient for this batch. Output state already has a default initializer,
+  interrupt flags are plain scalar state, and the authenticated-id ownership
+  bit is paired with the existing client-info reset;
+- `PgConnectionResetClosedState()` now resets every current connection-owned
+  bucket that has close-time state: identity, socket I/O, protocol, output,
+  interrupts, startup, client info, the client-info ownership bit, and
+  security state;
+- `test_connection_reset_closed_state()` now covers output routing defaults
+  and client-connection interrupt flags in addition to the existing connection
+  resource reset checks.
