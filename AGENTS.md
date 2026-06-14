@@ -373,6 +373,14 @@ Important current files:
   checked action names, or declarative bucket rules would make the batch
   simpler. If yes, land that lifecycle-framework improvement first, then move
   the globals through the checked path.
+- Lifecycle macro decision rule: if a planned Phase 12/Gate E2 batch would
+  add two or more structurally similar lifecycle helpers or repeat a known
+  lifecycle pattern across multiple buckets, the default next step is to add a
+  reusable checked `PG_RUNTIME_*` action, `PG_RUNTIME_DEFINE_*` macro, bucket
+  `.def` rule, or checker validation first. Only skip that framework step when
+  the repetition is accidental or the cleanup order/ownership semantics are
+  genuinely different, and record that decision in
+  `MULTITHREADED_PHASE12_STATE.md`.
 - Treat lifecycle-helper repetition as implementation work, not documentation
   debt. If a Phase 12/Gate E2 slice would add two or more similar
   init/adopt/reset/destroy helpers, first add or extend the checked

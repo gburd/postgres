@@ -982,6 +982,14 @@ Gate E2 requires:
   Phase 12 batch, land the checked action/macro/checker extension before the
   state movement so future agents can express the same ownership rule through
   the manifest and bucket `.def` row;
+- lifecycle macro decision rule: when a Phase 12/Gate E2 batch would add two
+  or more similar lifecycle helpers or repeat an already recognized
+  init/adopt/reset/destroy pattern across multiple buckets, assume the correct
+  first step is a small checked lifecycle primitive. Add a named
+  `PG_RUNTIME_*` action, `PG_RUNTIME_DEFINE_*` macro, bucket `.def` rule, or
+  checker validation before moving the state, unless the cleanup has genuinely
+  different ordering or ownership semantics. Record that preflight decision in
+  `MULTITHREADED_PHASE12_STATE.md`;
 - the first concrete target for that simplification should be the
   object-owned allocation-context pattern now recurring in execution/session
   cleanup slices: create-on-demand context accessor, delete-and-null reset,

@@ -11837,3 +11837,25 @@ Validation for the memory-context lifecycle action slice:
   `002_threaded_bgworker_crash.pl`, 131 tests total, with the documented
   local `IPC::Run` `PERL5LIB` and patched temporary-install install-name
   paths.
+
+## Lifecycle Macro Decision Rule
+
+Before the next large Phase 12/Gate E2 batch, use this rule during the
+preflight:
+
+- if the batch would add two or more structurally similar lifecycle helper
+  bodies, or repeat a known pattern such as zero init/reset, scalar or whole
+  bucket adoption, copy/adopt-then-reset, reset-through-initializer, list/hash
+  reset, clear-pointer reset, or delete-and-null teardown, first add a small
+  checked lifecycle primitive;
+- the primitive should be a named `PG_RUNTIME_*` bucket action,
+  `PG_RUNTIME_DEFINE_*` macro, declarative bucket `.def` row pattern, or
+  `check_runtime_lifecycles.pl` validation that keeps the manifest and bucket
+  definitions as the source of truth;
+- skip the framework step only when the cleanup has genuinely different
+  ordering, conditional ownership, or owner-adjacent resource semantics, and
+  document that decision in this state log before moving the globals;
+- after adding the primitive, run `perl -c
+  src/tools/runtime_lifecycle/check_runtime_lifecycles.pl`,
+  `gmake check-runtime-lifecycles`, and `gmake check-global-lifetimes` before
+  relying on the new pattern for further state movement.
