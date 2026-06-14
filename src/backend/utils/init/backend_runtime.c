@@ -4156,6 +4156,17 @@ PgBackendResetAioClosedState(PgBackendAioState *aio)
 }
 
 static void
+PgBackendResetMemoryManagerClosedState(PgBackendMemoryManagerState *memory_manager)
+{
+	if (memory_manager == NULL)
+		return;
+
+	AllocSetFreeContextFreelists(memory_manager->context_freelists,
+								 PG_BACKEND_ALLOCSET_NUM_FREELISTS);
+	memory_manager->log_memory_context_in_progress = false;
+}
+
+static void
 PgBackendResetUtilityClosedState(PgBackendUtilityState *utility)
 {
 	int			i;
@@ -4222,6 +4233,7 @@ PgBackendResetClosedState(PgBackend *backend)
 	PgBackendResetMaintenanceWorkerClosedState(&backend->maintenance_worker);
 	PgBackendResetAutovacuumClosedState(&backend->autovacuum);
 	PgBackendResetAioClosedState(&backend->aio);
+	PgBackendResetMemoryManagerClosedState(&backend->memory_manager);
 	PgBackendResetUtilityClosedState(&backend->utility);
 }
 

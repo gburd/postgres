@@ -2073,6 +2073,8 @@ extern LocalPgBackendStatus **PgCurrentLocalBackendStatusTableRef(void);
 extern int *PgCurrentLocalNumBackendsRef(void);
 extern MemoryContext *PgCurrentBackendStatusSnapContextRef(void);
 extern PgBackendAllocSetFreeList *PgCurrentAllocSetContextFreeLists(void);
+extern void AllocSetFreeContextFreelists(PgBackendAllocSetFreeList *freelists,
+										 int nfreelists);
 extern bool *PgCurrentLogMemoryContextInProgressRef(void);
 extern HTAB **PgCurrentSeqScanTables(void);
 extern int *PgCurrentSeqScanLevels(void);

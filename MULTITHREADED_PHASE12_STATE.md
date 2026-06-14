@@ -534,6 +534,41 @@ Validation for this slice:
   `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
   87 tests, including the postmaster-child-count checks and clean shutdown.
 
+## Backend Memory-Manager Freelist Closure
+
+The backend memory-manager lifecycle row is now narrowed to the state it
+actually owns. `PgBackendMemoryManagerState` contains AllocSet context
+freelists and the log-memory-context-in-progress flag; it does not own
+`TopMemoryContext` itself.
+
+`aset.c` now exposes `AllocSetFreeContextFreelists()`, which frees every
+retained AllocSet context header/keeper block in an explicit freelist array.
+`PgBackendResetClosedState()` calls that helper for the backend memory-manager
+bucket and clears the log-memory-context flag. This gives the bucket a concrete
+reset/destroy rule while keeping the broader retained `TopMemoryContext`
+ownership/reclamation problem visible as separate Phase 12 work.
+
+The regression module extends the backend memory-manager locality test by
+creating and deleting a real small AllocSet context, proving it enters the
+current backend freelist, flushing the freelists, and verifying both freelist
+slots are empty. The closed-state reset test also verifies the memory-manager
+log flag is cleared by `PgBackendResetClosedState()`.
+
+Validation for this slice:
+
+- touched-object builds passed for `aset.o`, `backend_runtime.o`, and
+  `test_backend_runtime.o`;
+- full `gmake -j8` passed;
+- `git diff --check` passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed with a fresh
+  temp install;
+- `gmake check-runtime-lifecycles` passed with 134 fields classified;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests.
+
 ## Runtime Lifecycle Manifest
 
 The one-hundred-seventy-third Phase 12 slice makes the Gate E2 object-lifecycle

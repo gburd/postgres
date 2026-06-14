@@ -254,6 +254,34 @@ typedef PgBackendAllocSetFreeList AllocSetFreeList;
 #define context_freelists \
 	(PgCurrentAllocSetContextFreeLists())
 
+void
+AllocSetFreeContextFreelists(PgBackendAllocSetFreeList *freelists,
+							 int nfreelists)
+{
+	Assert(freelists != NULL);
+	Assert(nfreelists >= 0);
+
+	for (int i = 0; i < nfreelists; i++)
+	{
+		AllocSetFreeList *freelist = &freelists[i];
+
+		while (freelist->first_free != NULL)
+		{
+			AllocSetContext *oldset = freelist->first_free;
+
+			freelist->first_free = (AllocSetContext *) oldset->header.nextchild;
+			freelist->num_free--;
+
+			/* Destroy the context's vpool --- see notes in AllocSetDelete(). */
+			VALGRIND_DESTROY_MEMPOOL(oldset);
+
+			/* All that remains is to free the header/initial block. */
+			free(oldset);
+		}
+		Assert(freelist->num_free == 0);
+	}
+}
+
 /* ----------
  * AllocSetFreeIndex -
  *

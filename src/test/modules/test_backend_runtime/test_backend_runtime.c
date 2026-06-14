@@ -7450,6 +7450,26 @@ test_backend_memory_manager_state_is_backend_local(PG_FUNCTION_ARGS)
 	}
 	PG_END_TRY();
 
+	{
+		PgBackendAllocSetFreeList *freelists;
+		MemoryContext context;
+
+		freelists = PgCurrentAllocSetContextFreeLists();
+		context = AllocSetContextCreate(TopMemoryContext,
+										"test backend memory manager freelist",
+										ALLOCSET_SMALL_SIZES);
+		MemoryContextDelete(context);
+		ok = ok && freelists[1].num_free > 0;
+		ok = ok && freelists[1].first_free != NULL;
+
+		AllocSetFreeContextFreelists(freelists,
+									 PG_BACKEND_ALLOCSET_NUM_FREELISTS);
+		ok = ok && freelists[0].num_free == 0;
+		ok = ok && freelists[0].first_free == NULL;
+		ok = ok && freelists[1].num_free == 0;
+		ok = ok && freelists[1].first_free == NULL;
+	}
+
 	if (!ok)
 		elog(ERROR, "backend memory manager state was not backend-local");
 
@@ -7810,6 +7830,8 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	aio->my_io_worker_id = 4;
 	aio->my_uring_context = (struct PgAioUringContext *) &fake_backend;
 
+	fake_backend.memory_manager.log_memory_context_in_progress = true;
+
 	utility->notify_interrupt_pending = true;
 	utility->seq_scan_tables[0] = (HTAB *) &fake_backend;
 	utility->seq_scan_tables[1] = (HTAB *) &fake_backend;
@@ -7898,6 +7920,7 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && aio->my_backend == NULL;
 	ok = ok && aio->my_io_worker_id == -1;
 	ok = ok && aio->my_uring_context == NULL;
+	ok = ok && !fake_backend.memory_manager.log_memory_context_in_progress;
 	ok = ok && utility->notify_interrupt_pending;
 	ok = ok && utility->seq_scan_tables[0] == NULL;
 	ok = ok && utility->seq_scan_tables[1] == NULL;
