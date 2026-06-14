@@ -222,6 +222,8 @@ test_backend_runtime_session_reset_callback(void *arg)
 static void
 test_copy_current_user_identity(PgSession *session)
 {
+	PgSession  *saved_session;
+
 	Assert(session != NULL);
 
 	session->user_identity = *PgCurrentUserIdentityState();
@@ -231,6 +233,18 @@ test_copy_current_user_identity(PgSession *session)
 		session->user_identity.cached_roles[i] = NIL;
 	}
 	session->user_identity.cached_db_hash = 0;
+
+	/*
+	 * Many runtime tests use partial fake sessions and then exercise GUC APIs.
+	 * Once the GUC registry is PgSession-owned, those fake sessions need their
+	 * own variable array/hash instead of falling through to the live backend's
+	 * registry.
+	 */
+	saved_session = CurrentPgSession;
+	PgSetCurrentSession(session);
+	InitializeThreadedSessionGUCOptions();
+	InitializeThreadedSessionRequiredGUCOptions();
+	PgSetCurrentSession(saved_session);
 }
 
 static void
@@ -245,13 +259,15 @@ PG_FUNCTION_INFO_V1(test_backend_exit_runtime_continuation);
 Datum
 test_backend_exit_runtime_continuation(PG_FUNCTION_ARGS)
 {
+	PgRuntime  *runtime;
 	PgBackendExitContinuation saved_exit_backend;
 	volatile bool continued;
 
 	if (CurrentPgRuntime == NULL)
 		elog(ERROR, "current backend runtime is not initialized");
 
-	saved_exit_backend = CurrentPgRuntime->exit_backend;
+	runtime = CurrentPgRuntime;
+	saved_exit_backend = runtime->exit_backend;
 	exit_continuation_seen = false;
 	exit_continuation_code = 0;
 	continued = false;
@@ -261,12 +277,12 @@ test_backend_exit_runtime_continuation(PG_FUNCTION_ARGS)
 	 * PgBackendExit() here would run backend cleanup and then jump back into a
 	 * backend stack that had already been torn down.
 	 */
-	CurrentPgRuntime->exit_backend = test_exit_backend;
+	runtime->exit_backend = test_exit_backend;
 	if (sigsetjmp(exit_continuation_jmp, 1) == 0)
 		PgBackendExitComplete(17);
 	else
 		continued = true;
-	CurrentPgRuntime->exit_backend = saved_exit_backend;
+	runtime->exit_backend = saved_exit_backend;
 
 	if (!continued)
 		elog(ERROR, "backend exit continuation did not transfer control");
@@ -1362,8 +1378,10 @@ test_session_tablespace_state_is_session_local(PG_FUNCTION_ARGS)
 	PG_TRY();
 	{
 		PgSetCurrentSession(&fake_session1);
-		ok = ok && default_tablespace == NULL;
-		ok = ok && temp_tablespaces == NULL;
+		ok = ok && default_tablespace != NULL;
+		ok = ok && default_tablespace[0] == '\0';
+		ok = ok && temp_tablespaces != NULL;
+		ok = ok && temp_tablespaces[0] == '\0';
 		ok = ok && !allow_in_place_tablespaces;
 		ok = ok && binary_upgrade_next_pg_tablespace_oid == InvalidOid;
 		SetConfigOption("default_tablespace", "pg_default",
@@ -1379,8 +1397,10 @@ test_session_tablespace_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && binary_upgrade_next_pg_tablespace_oid == 12345;
 
 		PgSetCurrentSession(&fake_session2);
-		ok = ok && default_tablespace == NULL;
-		ok = ok && temp_tablespaces == NULL;
+		ok = ok && default_tablespace != NULL;
+		ok = ok && default_tablespace[0] == '\0';
+		ok = ok && temp_tablespaces != NULL;
+		ok = ok && temp_tablespaces[0] == '\0';
 		ok = ok && !allow_in_place_tablespaces;
 		ok = ok && binary_upgrade_next_pg_tablespace_oid == InvalidOid;
 		SetConfigOption("default_tablespace", "",
@@ -2403,7 +2423,8 @@ test_session_temp_file_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentTemporaryFilesSizeRef() == 0;
 		ok = ok && *PgCurrentTempFileCounterRef() == 0;
 		ok = ok && *PgCurrentTempTableSpaceOidsRef() == NULL;
-		ok = ok && !TempTablespacesAreSet();
+		ok = ok && TempTablespacesAreSet();
+		ok = ok && *PgCurrentNumTempTableSpacesRef() == 0;
 		ok = ok && *PgCurrentNextTempTableSpaceRef() == 0;
 		*PgCurrentTemporaryFilesSizeRef() = 1234;
 		*PgCurrentTempFileCounterRef() = 42;
@@ -2418,7 +2439,8 @@ test_session_temp_file_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentTemporaryFilesSizeRef() == 0;
 		ok = ok && *PgCurrentTempFileCounterRef() == 0;
 		ok = ok && *PgCurrentTempTableSpaceOidsRef() == NULL;
-		ok = ok && !TempTablespacesAreSet();
+		ok = ok && TempTablespacesAreSet();
+		ok = ok && *PgCurrentNumTempTableSpacesRef() == 0;
 		ok = ok && *PgCurrentNextTempTableSpaceRef() == 0;
 		*PgCurrentTemporaryFilesSizeRef() = 9876;
 		*PgCurrentTempFileCounterRef() = 84;
@@ -2698,7 +2720,7 @@ test_session_namespace_state_is_session_local(PG_FUNCTION_ARGS)
 		namespace_state = PgCurrentNamespaceState();
 		ok = ok && namespace_state->initialized;
 		ok = ok && namespace_state->active_path_generation == 1;
-		ok = ok && namespace_state->base_search_path_valid;
+		ok = ok && !namespace_state->base_search_path_valid;
 		ok = ok && namespace_state->my_temp_namespace == InvalidOid;
 		namespace_state->active_search_path = session1_path;
 		namespace_state->active_creation_namespace = 11;
@@ -2722,10 +2744,12 @@ test_session_namespace_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && namespace_state->initialized;
 		ok = ok && namespace_state->active_search_path == NIL;
 		ok = ok && namespace_state->active_path_generation == 1;
-		ok = ok && namespace_state->base_search_path_valid;
+		ok = ok && !namespace_state->base_search_path_valid;
 		ok = ok && !namespace_state->search_path_cache_valid;
 		ok = ok && namespace_state->my_temp_namespace == InvalidOid;
-		ok = ok && namespace_state->namespace_search_path_value == NULL;
+		ok = ok && namespace_state->namespace_search_path_value != NULL;
+		ok = ok && strcmp(namespace_state->namespace_search_path_value,
+						  "\"$user\", public") == 0;
 		namespace_state->active_search_path = session2_path;
 		namespace_state->active_creation_namespace = 21;
 		namespace_state->active_path_generation = 202;
@@ -6429,8 +6453,8 @@ test_session_access_wal_guc_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && wal_compression == WAL_COMPRESSION_NONE;
 		ok = ok && wal_init_zero;
 		ok = ok && wal_recycle;
-		ok = ok && wal_consistency_checking_string == NULL;
-		ok = ok && wal_consistency_checking == NULL;
+		ok = ok && strcmp(wal_consistency_checking_string, "") == 0;
+		ok = ok && wal_consistency_checking != NULL;
 		ok = ok && CommitDelay == 0;
 		ok = ok && CommitSiblings == 5;
 		ok = ok && !track_wal_io_timing;
@@ -6479,8 +6503,8 @@ test_session_access_wal_guc_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && wal_compression == WAL_COMPRESSION_NONE;
 		ok = ok && wal_init_zero;
 		ok = ok && wal_recycle;
-		ok = ok && wal_consistency_checking_string == NULL;
-		ok = ok && wal_consistency_checking == NULL;
+		ok = ok && strcmp(wal_consistency_checking_string, "") == 0;
+		ok = ok && wal_consistency_checking != NULL;
 		ok = ok && CommitDelay == 0;
 		ok = ok && CommitSiblings == 5;
 		ok = ok && !track_wal_io_timing;
@@ -6647,9 +6671,12 @@ test_session_misc_guc_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && !allowSystemTableMods;
 		ok = ok && max_stack_depth == 100;
 		ok = ok && *PgCurrentMaxStackDepthBytesRef() == 100 * (ssize_t) 1024;
-		ok = ok && session_preload_libraries_string == NULL;
-		ok = ok && local_preload_libraries_string == NULL;
-		ok = ok && Dynamic_library_path == NULL;
+		ok = ok && session_preload_libraries_string != NULL &&
+			session_preload_libraries_string[0] == '\0';
+		ok = ok && local_preload_libraries_string != NULL &&
+			local_preload_libraries_string[0] == '\0';
+		ok = ok && Dynamic_library_path != NULL &&
+			strcmp(Dynamic_library_path, "$libdir") == 0;
 		ok = ok && strcmp(Extension_control_path, "$system") == 0;
 		ok = ok && update_process_title == DEFAULT_UPDATE_PROCESS_TITLE;
 
@@ -6782,6 +6809,124 @@ test_session_misc_guc_state_is_session_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "session miscellaneous GUC state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_session_guc_state_is_session_local);
+Datum
+test_session_guc_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	dlist_node	nondef1;
+	dlist_node	nondef2;
+	slist_node	stack1;
+	slist_node	stack2;
+	slist_node	report1;
+	slist_node	report2;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(NULL);
+		*PgCurrentGUCMemoryContextRef() = (MemoryContext) &fake_session1;
+		*PgCurrentGUCVariablesRef() =
+			(struct config_generic *) &fake_session1;
+		*PgCurrentNumGUCVariablesRef() = 11;
+		*PgCurrentGUCHashTableRef() = (HTAB *) &fake_session1;
+		dlist_push_head(PgCurrentGUCNondefListRef(), &nondef1);
+		slist_push_head(PgCurrentGUCStackListRef(), &stack1);
+		slist_push_head(PgCurrentGUCReportListRef(), &report1);
+		*PgCurrentGUCReportingEnabledRef() = true;
+		*PgCurrentGUCNestLevelRef() = 3;
+
+		PgSessionAdoptEarlyState(&fake_session1);
+		ok = ok && fake_session1.guc.memory_context ==
+			(MemoryContext) &fake_session1;
+		ok = ok && fake_session1.guc.variables ==
+			(struct config_generic *) &fake_session1;
+		ok = ok && fake_session1.guc.num_variables == 11;
+		ok = ok && fake_session1.guc.hash_table == (HTAB *) &fake_session1;
+		ok = ok && !dlist_is_empty(&fake_session1.guc.nondef_list);
+		ok = ok && dlist_head_node(&fake_session1.guc.nondef_list) ==
+			&nondef1;
+		ok = ok && !slist_is_empty(&fake_session1.guc.stack_list);
+		ok = ok && slist_head_node(&fake_session1.guc.stack_list) == &stack1;
+		ok = ok && !slist_is_empty(&fake_session1.guc.report_list);
+		ok = ok && slist_head_node(&fake_session1.guc.report_list) ==
+			&report1;
+		ok = ok && fake_session1.guc.reporting_enabled;
+		ok = ok && fake_session1.guc.nest_level == 3;
+		ok = ok && *PgCurrentNumGUCVariablesRef() == 0;
+		ok = ok && dlist_is_empty(PgCurrentGUCNondefListRef());
+		ok = ok && slist_is_empty(PgCurrentGUCStackListRef());
+		ok = ok && slist_is_empty(PgCurrentGUCReportListRef());
+
+		CurrentPgSession = &fake_session2;
+		ok = ok && *PgCurrentGUCMemoryContextRef() == NULL;
+		ok = ok && *PgCurrentGUCVariablesRef() == NULL;
+		ok = ok && *PgCurrentNumGUCVariablesRef() == 0;
+		ok = ok && *PgCurrentGUCHashTableRef() == NULL;
+		ok = ok && dlist_is_empty(PgCurrentGUCNondefListRef());
+		ok = ok && slist_is_empty(PgCurrentGUCStackListRef());
+		ok = ok && slist_is_empty(PgCurrentGUCReportListRef());
+		ok = ok && !*PgCurrentGUCReportingEnabledRef();
+		ok = ok && *PgCurrentGUCNestLevelRef() == 0;
+
+		*PgCurrentGUCMemoryContextRef() = (MemoryContext) &fake_session2;
+		*PgCurrentGUCVariablesRef() =
+			(struct config_generic *) &fake_session2;
+		*PgCurrentNumGUCVariablesRef() = 22;
+		*PgCurrentGUCHashTableRef() = (HTAB *) &fake_session2;
+		dlist_push_head(PgCurrentGUCNondefListRef(), &nondef2);
+		slist_push_head(PgCurrentGUCStackListRef(), &stack2);
+		slist_push_head(PgCurrentGUCReportListRef(), &report2);
+		*PgCurrentGUCReportingEnabledRef() = false;
+		*PgCurrentGUCNestLevelRef() = 4;
+
+		CurrentPgSession = &fake_session1;
+		ok = ok && *PgCurrentGUCMemoryContextRef() ==
+			(MemoryContext) &fake_session1;
+		ok = ok && *PgCurrentGUCVariablesRef() ==
+			(struct config_generic *) &fake_session1;
+		ok = ok && *PgCurrentNumGUCVariablesRef() == 11;
+		ok = ok && *PgCurrentGUCHashTableRef() == (HTAB *) &fake_session1;
+		ok = ok && dlist_head_node(PgCurrentGUCNondefListRef()) == &nondef1;
+		ok = ok && slist_head_node(PgCurrentGUCStackListRef()) == &stack1;
+		ok = ok && slist_head_node(PgCurrentGUCReportListRef()) == &report1;
+		ok = ok && *PgCurrentGUCReportingEnabledRef();
+		ok = ok && *PgCurrentGUCNestLevelRef() == 3;
+
+		CurrentPgSession = &fake_session2;
+		ok = ok && *PgCurrentGUCMemoryContextRef() ==
+			(MemoryContext) &fake_session2;
+		ok = ok && *PgCurrentGUCVariablesRef() ==
+			(struct config_generic *) &fake_session2;
+		ok = ok && *PgCurrentNumGUCVariablesRef() == 22;
+		ok = ok && *PgCurrentGUCHashTableRef() == (HTAB *) &fake_session2;
+		ok = ok && dlist_head_node(PgCurrentGUCNondefListRef()) == &nondef2;
+		ok = ok && slist_head_node(PgCurrentGUCStackListRef()) == &stack2;
+		ok = ok && slist_head_node(PgCurrentGUCReportListRef()) == &report2;
+		ok = ok && !*PgCurrentGUCReportingEnabledRef();
+		ok = ok && *PgCurrentGUCNestLevelRef() == 4;
+
+		PgSetCurrentSession(saved_session);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session GUC state was not session-local");
 
 	PG_RETURN_BOOL(true);
 }

@@ -494,6 +494,13 @@ backend_thread_entry(void *arg)
 	session_timezone = thread_start->startup_session_timezone;
 	log_timezone = thread_start->startup_log_timezone;
 
+	/*
+	 * Phase 12 still has process-era startup code that mutates or replays
+	 * backend-local state through early fallback buckets and early backend
+	 * initialization.  Hold the startup gate until the backend publishes startup
+	 * completion, or until exit cleanup if startup fails.
+	 */
+	backend_thread_enter_startup_gate(thread_start);
 	InitializeWaitEventSupport();
 	InitProcessLocalLatch();
 	MemoryContextInit();

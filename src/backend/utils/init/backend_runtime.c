@@ -83,7 +83,7 @@
 #include "utils/rls.h"
 #include "utils/xml.h"
 
-PG_GLOBAL_RUNTIME PgRuntime *CurrentPgRuntime = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgRuntime *CurrentPgRuntime = NULL;
 PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgCarrier *CurrentPgCarrier = NULL;
 PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgBackend *CurrentPgBackend = NULL;
 PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgSession *CurrentPgSession = NULL;
@@ -362,6 +362,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionMiscGUCState early_session_mis
 	.dynamic_library_path_value = NULL,
 	.extension_control_path_value = "$system"
 };
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionGUCState early_session_guc;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPgStatState early_session_pgstat = {
 	.initialized = true,
 	.track_counts = true,
@@ -677,6 +678,8 @@ static void PgSessionInitializeLoggingState(PgSessionLoggingState *logging);
 static void PgSessionAdoptEarlyLoggingState(PgSession *session);
 static void PgSessionInitializeMiscGUCState(PgSessionMiscGUCState *misc_guc);
 static void PgSessionAdoptEarlyMiscGUCState(PgSession *session);
+static void PgSessionInitializeGUCState(PgSessionGUCState *guc);
+static void PgSessionAdoptEarlyGUCState(PgSession *session);
 static void PgSessionInitializePgStatState(PgSessionPgStatState *pgstat);
 static void PgSessionAdoptEarlyPgStatState(PgSession *session);
 static void PgSessionInitializeQueryIdState(PgSessionQueryIdState *query_id);
@@ -693,6 +696,8 @@ static void PgSessionInitializeReplicationGUCState(PgSessionReplicationGUCState 
 static void PgSessionAdoptEarlyReplicationGUCState(PgSession *session);
 static void PgSessionInitializeLogicalReplicationState(PgSessionLogicalReplicationState *logical_replication);
 static void PgSessionAdoptEarlyLogicalReplicationState(PgSession *session);
+static void PgMoveDListHead(dlist_head *dst, dlist_head *src);
+static void PgMoveDCListHead(dclist_head *dst, dclist_head *src);
 static void PgSessionInitializeGeneralGUCState(PgSessionGeneralGUCState *general_guc);
 static void PgSessionAdoptEarlyGeneralGUCState(PgSession *session);
 static void PgSessionInitializeAccessWalGUCState(PgSessionAccessWalGUCState *access_wal_guc);
@@ -886,6 +891,7 @@ static PgSessionXactDefaultState *PgCurrentSessionXactDefaultState(void);
 static PgSessionLockWaitState *PgCurrentSessionLockWaitState(void);
 static PgSessionLoggingState *PgCurrentSessionLoggingState(void);
 static PgSessionMiscGUCState *PgCurrentSessionMiscGUCState(void);
+static PgSessionGUCState *PgCurrentSessionGUCState(void);
 static PgSessionPgStatState *PgCurrentSessionPgStatState(void);
 static PgSessionQueryIdState *PgCurrentSessionQueryIdState(void);
 static PgSessionStorageGUCState *PgCurrentSessionStorageGUCState(void);
@@ -1231,6 +1237,24 @@ PgSessionInitializeDateTimeState(PgSessionDateTimeState *datetime)
 }
 
 static void
+PgSessionResetEarlyDateTimeState(PgSessionDateTimeState *datetime)
+{
+	Assert(datetime != NULL);
+
+	datetime->initialized = false;
+	datetime->date_style = USE_ISO_DATES;
+	datetime->date_order = DATEORDER_MDY;
+	datetime->interval_style = INTSTYLE_POSTGRES;
+	datetime->timezone_string_value = NULL;
+	datetime->log_timezone_string_value = NULL;
+	datetime->session_timezone_value = NULL;
+	datetime->log_timezone_value = NULL;
+	datetime->timezone_abbrev_table = NULL;
+	MemSet(datetime->timezone_abbrev_cache, 0,
+		   sizeof(datetime->timezone_abbrev_cache));
+}
+
+static void
 PgSessionAdoptEarlyDateTimeState(PgSession *session)
 {
 	Assert(session != NULL);
@@ -1239,7 +1263,7 @@ PgSessionAdoptEarlyDateTimeState(PgSession *session)
 		PgSessionInitializeDateTimeState(&early_session_datetime);
 
 	session->datetime = early_session_datetime;
-	PgSessionInitializeDateTimeState(&early_session_datetime);
+	PgSessionResetEarlyDateTimeState(&early_session_datetime);
 }
 
 static void
@@ -1254,6 +1278,16 @@ PgSessionInitializeTextSearchState(PgSessionTextSearchState *text_search)
 }
 
 static void
+PgSessionResetEarlyTextSearchState(PgSessionTextSearchState *text_search)
+{
+	Assert(text_search != NULL);
+
+	MemSet(text_search, 0, sizeof(*text_search));
+	text_search->initialized = false;
+	text_search->current_config_cache = InvalidOid;
+}
+
+static void
 PgSessionAdoptEarlyTextSearchState(PgSession *session)
 {
 	Assert(session != NULL);
@@ -1262,7 +1296,7 @@ PgSessionAdoptEarlyTextSearchState(PgSession *session)
 		PgSessionInitializeTextSearchState(&early_session_text_search);
 
 	session->text_search = early_session_text_search;
-	PgSessionInitializeTextSearchState(&early_session_text_search);
+	PgSessionResetEarlyTextSearchState(&early_session_text_search);
 }
 
 static void
@@ -1285,6 +1319,24 @@ PgSessionInitializeConnectionGUCState(PgSessionConnectionGUCState *connection_gu
 }
 
 static void
+PgSessionResetEarlyConnectionGUCState(PgSessionConnectionGUCState *connection_guc)
+{
+	Assert(connection_guc != NULL);
+
+	connection_guc->initialized = false;
+	connection_guc->application_name_value = NULL;
+	connection_guc->tcp_keepalives_idle_value = 0;
+	connection_guc->tcp_keepalives_interval_value = 0;
+	connection_guc->tcp_keepalives_count_value = 0;
+	connection_guc->tcp_user_timeout_value = 0;
+	connection_guc->log_disconnections_value = false;
+	connection_guc->log_statement_value = 0;
+	connection_guc->post_auth_delay_seconds = 0;
+	connection_guc->restrict_nonsystem_relation_kind_string_value = NULL;
+	connection_guc->restrict_nonsystem_relation_kind_value = 0;
+}
+
+static void
 PgSessionAdoptEarlyConnectionGUCState(PgSession *session)
 {
 	Assert(session != NULL);
@@ -1293,7 +1345,7 @@ PgSessionAdoptEarlyConnectionGUCState(PgSession *session)
 		PgSessionInitializeConnectionGUCState(&early_session_connection_guc);
 
 	session->connection_guc = early_session_connection_guc;
-	PgSessionInitializeConnectionGUCState(&early_session_connection_guc);
+	PgSessionResetEarlyConnectionGUCState(&early_session_connection_guc);
 }
 
 static void
@@ -1523,6 +1575,37 @@ PgSessionAdoptEarlyMiscGUCState(PgSession *session)
 }
 
 static void
+PgSessionInitializeGUCState(PgSessionGUCState *guc)
+{
+	Assert(guc != NULL);
+
+	guc->initialized = true;
+	guc->memory_context = NULL;
+	guc->variables = NULL;
+	guc->num_variables = 0;
+	guc->hash_table = NULL;
+	dlist_init(&guc->nondef_list);
+	slist_init(&guc->stack_list);
+	slist_init(&guc->report_list);
+	guc->reporting_enabled = false;
+	guc->nest_level = 0;
+}
+
+static void
+PgSessionAdoptEarlyGUCState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (!early_session_guc.initialized)
+		PgSessionInitializeGUCState(&early_session_guc);
+
+	session->guc = early_session_guc;
+	PgMoveDListHead(&session->guc.nondef_list,
+					&early_session_guc.nondef_list);
+	PgSessionInitializeGUCState(&early_session_guc);
+}
+
+static void
 PgSessionInitializePgStatState(PgSessionPgStatState *pgstat)
 {
 	Assert(pgstat != NULL);
@@ -1728,6 +1811,41 @@ PgSessionAdoptEarlyLogicalReplicationState(PgSession *session)
 
 	PgSessionInitializeLogicalReplicationState(&session->logical_replication);
 	PgSessionInitializeLogicalReplicationState(&early_session_logical_replication);
+}
+
+static void
+PgMoveDListHead(dlist_head *dst, dlist_head *src)
+{
+	Assert(dst != NULL);
+	Assert(src != NULL);
+
+	if (dlist_is_empty(src))
+	{
+		dlist_init(dst);
+		return;
+	}
+
+	*dst = *src;
+	dst->head.next->prev = &dst->head;
+	dst->head.prev->next = &dst->head;
+}
+
+static void
+PgMoveDCListHead(dclist_head *dst, dclist_head *src)
+{
+	Assert(dst != NULL);
+	Assert(src != NULL);
+
+	if (dclist_is_empty(src))
+	{
+		dclist_init(dst);
+		return;
+	}
+
+	dst->dlist = src->dlist;
+	dst->count = src->count;
+	dst->dlist.head.next->prev = &dst->dlist.head;
+	dst->dlist.head.prev->next = &dst->dlist.head;
 }
 
 static void
@@ -2074,6 +2192,8 @@ PgSessionAdoptEarlyRIGlobalsState(PgSession *session)
 		PgSessionInitializeRIGlobalsState(&early_session_ri_globals);
 
 	session->ri_globals = early_session_ri_globals;
+	PgMoveDCListHead(&session->ri_globals.constraint_cache_valid_list,
+					 &early_session_ri_globals.constraint_cache_valid_list);
 	PgSessionInitializeRIGlobalsState(&early_session_ri_globals);
 }
 
@@ -2457,6 +2577,7 @@ PgSessionAdoptEarlyState(PgSession *session)
 	PgSessionAdoptEarlyDatabaseState(session);
 	PgSessionAdoptEarlyTablespaceState(session);
 	PgSessionAdoptEarlyBinaryUpgradeState(session);
+	PgSessionAdoptEarlyGUCState(session);
 	PgSessionAdoptEarlyDateTimeState(session);
 	PgSessionAdoptEarlyTextSearchState(session);
 	PgSessionAdoptEarlyConnectionGUCState(session);
@@ -3917,6 +4038,7 @@ PgSessionInitializeRuntimeObject(PgSession *session,
 	PgSessionInitializeLockWaitState(&session->lock_wait);
 	PgSessionInitializeLoggingState(&session->logging);
 	PgSessionInitializeMiscGUCState(&session->misc_guc);
+	PgSessionInitializeGUCState(&session->guc);
 	PgSessionInitializePgStatState(&session->pgstat);
 	PgSessionInitializeQueryIdState(&session->query_id);
 	PgSessionInitializeStorageGUCState(&session->storage_guc);
@@ -4154,7 +4276,8 @@ void
 PgSetCurrentSession(PgSession *session)
 {
 	CurrentPgSession = session;
-	RebindSessionGUCVariablePointers();
+	if (CurrentPgSession != NULL)
+		RebindSessionGUCVariablePointers();
 }
 
 bool
@@ -4420,8 +4543,21 @@ PgBackendResetMemoryManagerClosedState(PgBackendMemoryManagerState *memory_manag
 	if (memory_manager == NULL)
 		return;
 
-	AllocSetFreeContextFreelists(memory_manager->context_freelists,
-								 PG_BACKEND_ALLOCSET_NUM_FREELISTS);
+	/*
+	 * Threaded backends still retain their TopMemoryContext tree until the
+	 * final thread handoff.  The AllocSet freelist can contain context headers
+	 * linked from that retained teardown path, so walking and freeing it here
+	 * can double-free headers that cleanup has already returned to the freelist.
+	 * Keep this conservative until threaded TopMemoryContext ownership is fully
+	 * reclaimed; process-mode cleanup may still free the retained freelists.
+	 */
+	if (CurrentPgRuntime == NULL ||
+		CurrentPgRuntime->kind != PG_RUNTIME_THREAD_PER_SESSION)
+		AllocSetFreeContextFreelists(memory_manager->context_freelists,
+									 PG_BACKEND_ALLOCSET_NUM_FREELISTS);
+
+	MemSet(memory_manager->context_freelists, 0,
+		   sizeof(memory_manager->context_freelists));
 	memory_manager->log_memory_context_in_progress = false;
 }
 
@@ -4664,6 +4800,13 @@ PgSessionResetClosedState(PgSession *session)
 	session->ri_globals.debug_discard_caches_value = DEFAULT_DEBUG_DISCARD_CACHES;
 
 	PgSessionInitializeRelMapState(&session->relmap);
+
+	if (session->guc.memory_context != NULL)
+	{
+		MemoryContextDelete(session->guc.memory_context);
+		session->guc.memory_context = NULL;
+	}
+	PgSessionInitializeGUCState(&session->guc);
 
 	if (session->logical_replication.logical_rep_relmap_context != NULL)
 	{
@@ -5085,6 +5228,22 @@ PgCurrentSessionMiscGUCState(void)
 		PgSessionInitializeMiscGUCState(misc_guc);
 
 	return misc_guc;
+}
+
+static PgSessionGUCState *
+PgCurrentSessionGUCState(void)
+{
+	PgSessionGUCState *guc;
+
+	if (CurrentPgSession == NULL)
+		guc = &early_session_guc;
+	else
+		guc = &CurrentPgSession->guc;
+
+	if (!guc->initialized)
+		PgSessionInitializeGUCState(guc);
+
+	return guc;
 }
 
 static PgSessionPgStatState *
@@ -6844,6 +7003,69 @@ bool *
 PgCurrentUpdateProcessTitleRef(void)
 {
 	return &PgCurrentSessionMiscGUCState()->update_process_title_value;
+}
+
+MemoryContext *
+PgCurrentGUCMemoryContextRef(void)
+{
+	PgSessionGUCState *guc = PgCurrentSessionGUCState();
+
+	if (CurrentPgSession == NULL &&
+		guc->memory_context == NULL &&
+		TopMemoryContext != NULL)
+		guc->memory_context = AllocSetContextCreate(TopMemoryContext,
+													"early GUC fallback state",
+													ALLOCSET_DEFAULT_SIZES);
+
+	return &guc->memory_context;
+}
+
+struct config_generic **
+PgCurrentGUCVariablesRef(void)
+{
+	return &PgCurrentSessionGUCState()->variables;
+}
+
+int *
+PgCurrentNumGUCVariablesRef(void)
+{
+	return &PgCurrentSessionGUCState()->num_variables;
+}
+
+HTAB **
+PgCurrentGUCHashTableRef(void)
+{
+	return &PgCurrentSessionGUCState()->hash_table;
+}
+
+dlist_head *
+PgCurrentGUCNondefListRef(void)
+{
+	return &PgCurrentSessionGUCState()->nondef_list;
+}
+
+slist_head *
+PgCurrentGUCStackListRef(void)
+{
+	return &PgCurrentSessionGUCState()->stack_list;
+}
+
+slist_head *
+PgCurrentGUCReportListRef(void)
+{
+	return &PgCurrentSessionGUCState()->report_list;
+}
+
+bool *
+PgCurrentGUCReportingEnabledRef(void)
+{
+	return &PgCurrentSessionGUCState()->reporting_enabled;
+}
+
+int *
+PgCurrentGUCNestLevelRef(void)
+{
+	return &PgCurrentSessionGUCState()->nest_level;
 }
 
 bool *

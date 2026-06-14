@@ -9468,3 +9468,116 @@ Validation for this slice:
   `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
   `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`
   passed all 94 tests.
+
+## Central GUC Registry Session State
+
+The next Phase 12 GUC-state batch moves the central `guc.c` registry and
+transaction/reporting state behind `PgSession`:
+
+- `GUCMemoryContext`;
+- the copied built-in/custom GUC record array and count;
+- the GUC name hash table;
+- the non-default, stack, and report list heads;
+- `reporting_enabled`;
+- `GUCNestLevel`.
+
+`guc.c` keeps its historical local names as lvalue macros over runtime
+accessors. The generated built-in GUC table and custom extension definitions
+therefore attach to the current logical session's registry instead of a raw
+thread-local process bucket.
+
+The lifecycle rule is explicit. `PgSessionResetClosedState()` deletes the
+session's `GUCMemoryContext`, which owns the copied GUC records, hash table,
+custom variable records, stack entries, and GUC list nodes, then reinitializes
+the bucket. Early fallback adoption transfers the owning GUC context before
+the GUC-backed datetime, text-search, and connection string buckets are copied,
+so those copied string pointers stay owned by the destination session. After
+that transfer, the detached early datetime/text-search/connection string
+buckets are left uninitialized and NULL rather than allocating new strings
+while runtime installation is still in progress. A fresh fallback GUC context
+is only created on demand if later pre-session code explicitly allocates
+through the GUC fallback again. This also prevents later GUC metadata paths
+from freeing non-owned fallback default strings.
+
+Threaded GUC setup, mutation, and display now run under a temporary
+process-wide GUC critical section. This is a Phase 12 correctness bridge while
+copied GUC metadata and check/assign/show hooks still include process-era
+assumptions. It should be narrowed only after the remaining GUC-backed
+session/execution globals have explicit owners and direct concurrent GUC
+mutation/display smokes are in place.
+
+Threaded nondefault replay skips `PGC_POSTMASTER` and `PGC_INTERNAL` records.
+Those values are already present in runtime-global storage because thread
+carriers share the postmaster address space. Replaying them through a session
+GUC context can replace or free strings owned by the postmaster's GUC context,
+while session/backend/user GUCs still need replay to match forked-child
+semantics.
+
+This slice also fixes a previously hidden shallow-copy hazard: fallback dlist
+and dclist heads are retargeted when moved. The GUC non-default dlist and the
+RI valid-entry dclist no longer retain self-pointers to the old fallback head
+after adoption.
+
+Validation of the threaded TAP exposed a separate teardown hazard in the
+backend memory-manager bucket. Startup threads can return AllocSet contexts to
+their backend-local freelists while the thread's `TopMemoryContext` tree is
+still retained for post-exit accounting. Freeing those freelists during
+threaded `PgBackendResetClosedState()` can therefore double-free retained
+context headers. The reset path now remains destructive in process mode, but
+threaded mode clears the freelist bucket and leaves full retained
+`TopMemoryContext` reclamation as the explicit follow-up owner.
+
+The same validation also found that the startup serialization gate had been
+too narrow: thread carriers were running `MemoryContextInit()`, per-session GUC
+table setup, serialized nondefault GUC replay, wait-set initialization, and
+runtime installation concurrently through early fallback buckets. The gate now
+covers thread carrier startup from `backend_thread_entry()` until
+`ThreadedBackendStartupComplete()`, with exit cleanup releasing it if startup
+fails. This is deliberately conservative; narrowing it again requires proving
+the remaining backend initialization and config replay paths no longer share
+process-era mutable state.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `guc.o`, and
+  `test_backend_runtime.o`;
+- clean full `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed, including
+  `test_session_guc_state_is_session_local()`;
+- `gmake check-runtime-lifecycles` passed with 146 fields classified after
+  adding the `PgSession.guc` lifecycle row;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and session-local declarations reduced from 149 to 141;
+- `git diff --check` passed.
+
+## Central GUC Registry Follow-Up Hardening
+
+Follow-up Gate E2 validation of the central GUC-registry batch found two
+adjacent lifecycle bugs.
+
+First, `CurrentPgRuntime` was still a process-global current binding while the
+other current runtime objects were carrier/thread local. Installing a threaded
+backend could therefore change the postmaster main thread's current-runtime
+view. The binding is now carrier/thread local; the process and threaded
+runtime objects remain runtime-global.
+
+Second, `reserved_class_prefix` is runtime-global extension metadata, not
+session GUC registry state. After `GUCMemoryContext` moved into `PgSession`,
+`MarkGUCPrefixReserved()` was allocating runtime-global list cells in whichever
+session loaded an extension module. A threaded backend FATAL could destroy
+that session context, leaving PL/pgSQL's later GUC prefix reservation with a
+list head pointing into freed memory. Reserved GUC prefix nodes now live in a
+dedicated `TopMemoryContext` child and `MarkGUCPrefixReserved()` mutates that
+global list under the temporary threaded GUC critical section.
+
+Validation for this follow-up:
+
+- the PL/pgSQL-after-FATAL crash was reproduced under lldb, with the fault in
+  `MarkGUCPrefixReserved()` -> `lappend()` -> `repalloc()`;
+- touched-object build for `guc.o` passed;
+- full `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct `prove` over
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`
+  passed all 94 tests after the fix.

@@ -898,6 +898,53 @@ Important current files:
   to a growing whitelist. `client_encoding` remains the only post-install
   compatibility exception because its authoritative state is the session
   encoding object rather than a direct `char *` field in `PgSession`.
+- The central GUC registry is now `PgSession` state, not an independent
+  process/thread-global bucket. `PgSessionGUCState` owns `GUCMemoryContext`,
+  the copied GUC records, the GUC hash table, non-default/stack/report lists,
+  reporting state, and `GUCNestLevel`. Any fake `PgSession` used by tests that
+  call `SetConfigOption()`, `GetConfigOption()`, or `RebindSessionGUCVariablePointers()`
+  needs a real per-session GUC table from `InitializeThreadedSessionGUCOptions()`;
+  otherwise `guc_hashtab` will be NULL or a test sentinel and `find_option()`
+  can crash. `test_backend_runtime` centralizes this in
+  `test_copy_current_user_identity()`.
+- Early GUC owner adoption must run before copying GUC-backed string buckets
+  such as datetime, text search, and connection GUC state. The copied strings
+  are owned by the transferred `GUCMemoryContext`; resetting the detached
+  early datetime/text-search/connection string buckets leaves them
+  uninitialized with NULL string pointers so partial runtime installation does
+  not allocate new fallback-owned strings or free non-owned fallback defaults.
+  Do not move `PgSessionAdoptEarlyGUCState()` later in
+  `PgSessionAdoptEarlyState()`.
+- Threaded GUC setup, mutation, and display currently use a temporary
+  process-wide GUC critical section in `guc.c`. Treat it as a Gate E2
+  correctness bridge while copied GUC metadata and check/assign/show hooks
+  still have process-era assumptions. Narrowing it requires focused threaded
+  smokes for concurrent GUC replay, `SET`, `SHOW`, and custom extension GUCs.
+- Threaded `read_nondefault_variables()` skips `PGC_POSTMASTER` and
+  `PGC_INTERNAL` records. Thread carriers share the postmaster address space,
+  so process-global postmaster/internal GUCs are already present and must not
+  be replayed through a session `GUCMemoryContext`.
+- Runtime-global GUC metadata must not allocate from a session
+  `GUCMemoryContext`. `reserved_class_prefix` is process/runtime metadata used
+  by extension module initialization such as PL/pgSQL's GUC prefix
+  reservation, so `MarkGUCPrefixReserved()` uses its own `TopMemoryContext`
+  child and the temporary threaded GUC lock.
+- Do not shallow-copy live `dlist_head` or `dclist_head` values when moving
+  fallback state into a real runtime object. Use the runtime list-head move
+  helpers so moved list nodes' back-links point at the destination head. This
+  currently matters for the GUC non-default list and RI valid-entry dclist.
+- Threaded backend cleanup currently retains each thread's `TopMemoryContext`
+  tree for post-exit accounting. Do not free AllocSet context freelists during
+  threaded `PgBackendResetClosedState()` until full `TopMemoryContext`
+  reclamation is implemented; thread-mode reset clears the memory-manager
+  freelist bucket, while process-mode reset still calls
+  `AllocSetFreeContextFreelists()`.
+- The current threaded startup gate deliberately covers thread-carrier startup
+  from `backend_thread_entry()` until `ThreadedBackendStartupComplete()`
+  publishes startup completion, with exit cleanup releasing the gate if startup
+  fails. Keep it this broad until early fallback state, GUC replay, runtime
+  installation, backend initialization, and worker initialization are all
+  proven per-backend.
 - Custom extension GUCs in threaded sessions rely on per-session `_PG_init()`
   invocation for already-loaded dynamic libraries. `dfmgr.c` records loaded
   module init state in `PgSession.dynamic_library_inits`, with list storage
@@ -1540,13 +1587,17 @@ Important current files:
   ```
 
   Prefer removing only detached shared-memory segments (`NATTCH` is zero in
-  `ipcs -ma`). If there is no live server to preserve, clear stale IPC objects
-  owned by the current user:
+  `ipcs -ma`). Do not remove attached segments from unrelated running
+  PostgreSQL instances. Start with detached shared memory owned by the current
+  user:
 
   ```sh
   for id in $(ipcs -ma | awk '$1 == "m" && $9 == 0 && $5 == "'$USER'" {print $2}'); do ipcrm -m "$id" || true; done
-  for id in $(ipcs -s | awk '$5 == "'$USER'" {print $2}'); do ipcrm -s "$id" || true; done
   ```
+
+  Remove semaphore sets only after identifying them as stale test leftovers;
+  they do not expose attachment counts in the same way as shared-memory
+  segments.
 
 - This shell is zsh. Cleanup commands with unmatched globs, such as
   `rm -rf tmp_check_*`, can fail with `no matches found` before the test command

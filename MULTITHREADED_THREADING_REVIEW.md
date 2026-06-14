@@ -1235,6 +1235,48 @@ install, contrib build, backend-runtime regression, direct threaded runtime
 TAP, `gmake check-runtime-lifecycles`, `gmake check-global-lifetimes`, and
 `git diff --check`.
 
+The following central GUC-registry slice added `PgSessionGUCState`, moving
+`GUCMemoryContext`, copied GUC records, the GUC hash table,
+non-default/stack/report list heads, reporting state, and `GUCNestLevel` into
+`PgSession`. Threaded and test fake sessions now build their own per-session
+GUC registry instead of relying on a shared process-global hash table. The
+owner bucket is adopted before GUC-backed string buckets, so early fallback
+strings copied into datetime, text-search, and connection state remain owned by
+the destination session's GUC context. This slice also hardened copy/adopt
+rules by retargeting moved dlist/dclist heads, including the GUC non-default
+list and RI valid-entry dclist. Detached early string buckets are left
+uninitialized and NULL after owner transfer, so startup-thread cleanup neither
+allocates fresh fallback GUC-owned strings nor frees non-owned fallback
+defaults while runtime installation is only partially complete. Validation
+exposed a separate retained-memory teardown issue:
+threaded backend cleanup can see AllocSet freelist entries that belong to the
+retained `TopMemoryContext` accounting path. Thread-mode memory-manager reset
+now clears that bucket instead of freeing retained context headers; process
+mode keeps the destructive freelist cleanup. The batch also adds a temporary
+process-wide GUC critical section around threaded session GUC setup, mutation,
+and display while copied GUC metadata, check hooks, assign hooks, and show
+hooks still carry process-era assumptions; it should be narrowed once the
+remaining GUC-backed globals are session-owned. Threaded nondefault replay now
+skips `PGC_POSTMASTER` and `PGC_INTERNAL` records so thread carriers do not
+replace/free process-global strings already inherited from the postmaster
+address space. It also exposed that startup
+serialization had been narrowed too far: each thread carrier now holds the
+temporary startup gate from `backend_thread_entry()` until
+`ThreadedBackendStartupComplete()` publishes startup completion, with exit
+cleanup releasing the gate if startup fails. That is intentionally conservative
+until early fallback state, GUC replay, runtime installation, backend
+initialization, and worker initialization are all proven per-backend.
+Follow-up validation made `CurrentPgRuntime` a carrier/thread-local current
+binding, matching the other current runtime objects, and moved
+`reserved_class_prefix` allocation out of session `GUCMemoryContext` storage
+into a runtime-lifetime `TopMemoryContext` child under the temporary GUC lock.
+This closes the PL/pgSQL-after-FATAL crash where runtime-global prefix
+metadata pointed into a destroyed backend/session context.
+Validation included clean full build, backend-runtime regression,
+`gmake check-runtime-lifecycles`, `gmake check-global-lifetimes`, and
+`git diff --check`. The global-lifetime scan now reports 141 session-local
+declarations with zero new unclassified mutable globals.
+
 ## Bottom Line
 
 The branch is on track only if the current debt is treated as Phase 12

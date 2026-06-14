@@ -26,6 +26,9 @@
 
 #include <limits.h>
 #include <math.h>
+#ifndef WIN32
+#include <pthread.h>
+#endif
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -86,8 +89,93 @@
 #define GUC_SAFE_SEARCH_PATH "pg_catalog, pg_temp"
 
 #define GUC_check_errcode_value (*PgCurrentGUCCheckErrcodeValueRef())
+#define GUCMemoryContext (*PgCurrentGUCMemoryContextRef())
+#define guc_variables (*PgCurrentGUCVariablesRef())
+#define num_guc_variables (*PgCurrentNumGUCVariablesRef())
+#define guc_hashtab (*PgCurrentGUCHashTableRef())
+#define guc_nondef_list (*PgCurrentGUCNondefListRef())
+#define guc_stack_list (*PgCurrentGUCStackListRef())
+#define guc_report_list (*PgCurrentGUCReportListRef())
+#define reporting_enabled (*PgCurrentGUCReportingEnabledRef())
+#define GUCNestLevel (*PgCurrentGUCNestLevelRef())
 
 static PG_GLOBAL_RUNTIME List *reserved_class_prefix = NIL;
+static PG_GLOBAL_RUNTIME MemoryContext GUCReservedPrefixMemoryContext = NULL;
+
+#ifndef WIN32
+static PG_GLOBAL_RUNTIME pthread_mutex_t ThreadedGUCMutex = PTHREAD_MUTEX_INITIALIZER;
+static PG_THREAD_LOCAL PG_GLOBAL_CARRIER int ThreadedGUCMutexDepth = 0;
+#endif
+
+static bool
+ThreadedGUCLock(void)
+{
+#ifndef WIN32
+	int			rc;
+
+	if (!multithreaded)
+		return false;
+	if (ThreadedGUCMutexDepth++ > 0)
+		return false;
+
+	rc = pthread_mutex_lock(&ThreadedGUCMutex);
+	if (rc != 0)
+	{
+		ThreadedGUCMutexDepth--;
+		errno = rc;
+		ereport(FATAL,
+				(errmsg("could not enter threaded GUC critical section: %m")));
+	}
+
+	return true;
+#else
+	return false;
+#endif
+}
+
+static void
+ThreadedGUCUnlock(bool locked)
+{
+#ifndef WIN32
+	int			rc;
+
+	if (!multithreaded)
+		return;
+
+	Assert(ThreadedGUCMutexDepth > 0);
+	ThreadedGUCMutexDepth--;
+
+	if (!locked)
+		return;
+
+	rc = pthread_mutex_unlock(&ThreadedGUCMutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not leave threaded GUC critical section: %m");
+	}
+#else
+	(void) locked;
+#endif
+}
+
+static MemoryContext
+GUCReservedPrefixContext(void)
+{
+	if (GUCReservedPrefixMemoryContext == NULL)
+	{
+		if (TopMemoryContext == NULL)
+			elog(FATAL,
+				 "cannot reserve GUC prefix before TopMemoryContext exists");
+
+		GUCReservedPrefixMemoryContext =
+			AllocSetContextCreate(TopMemoryContext,
+								  "reserved GUC prefixes",
+								  ALLOCSET_DEFAULT_SIZES);
+	}
+
+	return GUCReservedPrefixMemoryContext;
+}
 
 
 /*
@@ -202,18 +290,12 @@ static PG_GLOBAL_IMMUTABLE const char *const map_old_guc_names[] = {
 };
 
 
-/* Memory context holding all GUC-related data */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION MemoryContext GUCMemoryContext;
-
 /*
  * Per-session copy of the built-in GUC record template.  ConfigureNames[]
  * remains the immutable static template generated from guc_parameters.dat;
  * guc.c mutates the copy so GUC stack/reset/report state is not shared by
  * threaded logical backends.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION struct config_generic *guc_variables;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION int num_guc_variables;
-
 /*
  * We use a dynahash table to look up GUCs by name, or to iterate through
  * all the GUCs.  The gucname field is redundant with gucvar->name, but
@@ -225,8 +307,6 @@ typedef struct
 	struct config_generic *gucvar;	/* -> GUC's defining structure */
 } GUCHashEntry;
 
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *guc_hashtab;
-
 /*
  * In addition to the hash table, variables having certain properties are
  * linked into these lists, so that we can find them without scanning the
@@ -235,15 +315,10 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *guc_hashtab;
  * and report lists is stylized enough that they can be slists, but the
  * nondef list has to be a dlist to avoid O(N) deletes in common cases.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION dlist_head guc_nondef_list;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION slist_head guc_stack_list;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION slist_head guc_report_list;
 
 /* true to enable GUC_REPORT */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool reporting_enabled;
 
 /* 1 when in main transaction */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION int GUCNestLevel = 0;
 
 
 static int	guc_var_compare(const void *a, const void *b);
@@ -255,6 +330,18 @@ static const void *GUCOptionVariablePointer(struct config_generic *gconf);
 static void InitializeThreadedSessionReboundGUCOptions(
 													const void **initial_variables);
 static void InitializeThreadedSessionCompatibilityGUCOptions(void);
+static bool ThreadedGUCLock(void);
+static void ThreadedGUCUnlock(bool locked);
+static MemoryContext GUCReservedPrefixContext(void);
+static int	set_config_with_handle_internal(const char *name,
+											config_handle *handle,
+											const char *value,
+											GucContext context,
+											GucSource source, Oid srole,
+											GucAction action, bool changeVal,
+											int elevel, bool is_reload);
+static char *ShowGUCOptionInternal(const struct config_generic *record,
+								   bool use_units);
 static void RemoveGUCFromLists(struct config_generic *gconf);
 static void set_guc_source(struct config_generic *gconf, GucSource newsource);
 static void pg_timezone_abbrev_initialize(void);
@@ -1499,6 +1586,7 @@ void
 InitializeThreadedSessionGUCOptions(void)
 {
 	const void **initial_variables;
+	bool		locked;
 
 	/*
 	 * Thread entry initializes GUC state before runtime installation so early
@@ -1508,17 +1596,31 @@ InitializeThreadedSessionGUCOptions(void)
 	if (guc_hashtab != NULL)
 		return;
 
-	build_guc_variables();
+	locked = ThreadedGUCLock();
+	PG_TRY();
+	{
+		if (guc_hashtab != NULL)
+			goto done;
 
-	initial_variables = palloc_array(const void *, num_guc_variables);
-	for (int i = 0; i < num_guc_variables; i++)
-		initial_variables[i] = GUCOptionVariablePointer(&guc_variables[i]);
+		build_guc_variables();
 
-	RebindSessionGUCVariablePointers();
-	InitializeThreadedSessionReboundGUCOptions(initial_variables);
-	pfree(initial_variables);
+		initial_variables = palloc_array(const void *, num_guc_variables);
+		for (int i = 0; i < num_guc_variables; i++)
+			initial_variables[i] = GUCOptionVariablePointer(&guc_variables[i]);
 
-	InitializeThreadedSessionCompatibilityGUCOptions();
+		RebindSessionGUCVariablePointers();
+		InitializeThreadedSessionReboundGUCOptions(initial_variables);
+		pfree(initial_variables);
+
+		InitializeThreadedSessionCompatibilityGUCOptions();
+done:
+		;
+	}
+	PG_FINALLY();
+	{
+		ThreadedGUCUnlock(locked);
+	}
+	PG_END_TRY();
 }
 
 void
@@ -1527,10 +1629,14 @@ InitializeThreadedSessionRequiredGUCOptions(void)
 	static const char *const compatibility_options[] = {
 		"client_encoding",
 	};
+	bool		locked;
 
 	if (guc_hashtab == NULL)
 		return;
 
+	locked = ThreadedGUCLock();
+	PG_TRY();
+	{
 	/*
 	 * RebindSessionGUCVariablePointers() can be called before the final
 	 * PgSession is installed, so the pointer-change pass used during early GUC
@@ -1568,6 +1674,12 @@ InitializeThreadedSessionRequiredGUCOptions(void)
 		if (*gconf->_string.variable == NULL)
 			InitializeOneGUCOption(gconf);
 	}
+	}
+	PG_FINALLY();
+	{
+		ThreadedGUCUnlock(locked);
+	}
+	PG_END_TRY();
 }
 
 static const void *
@@ -4399,6 +4511,33 @@ set_config_with_handle(const char *name, config_handle *handle,
 					   GucAction action, bool changeVal, int elevel,
 					   bool is_reload)
 {
+	int			result;
+	bool		locked;
+
+	locked = ThreadedGUCLock();
+	PG_TRY();
+	{
+		result = set_config_with_handle_internal(name, handle, value,
+												 context, source, srole,
+												 action, changeVal, elevel,
+												 is_reload);
+	}
+	PG_FINALLY();
+	{
+		ThreadedGUCUnlock(locked);
+	}
+	PG_END_TRY();
+
+	return result;
+}
+
+static int
+set_config_with_handle_internal(const char *name, config_handle *handle,
+								const char *value,
+								GucContext context, GucSource source,
+								Oid srole, GucAction action, bool changeVal,
+								int elevel, bool is_reload)
+{
 	struct config_generic *record;
 	union config_var_val newval_union;
 	void	   *newextra = NULL;
@@ -6274,42 +6413,52 @@ MarkGUCPrefixReserved(const char *className)
 	HASH_SEQ_STATUS status;
 	GUCHashEntry *hentry;
 	MemoryContext oldcontext;
+	bool		locked;
 
-	/*
-	 * Check for existing placeholders.  We must actually remove invalid
-	 * placeholders, else future parallel worker startups will fail.
-	 */
-	hash_seq_init(&status, guc_hashtab);
-	while ((hentry = (GUCHashEntry *) hash_seq_search(&status)) != NULL)
+	locked = ThreadedGUCLock();
+	PG_TRY();
 	{
-		struct config_generic *var = hentry->gucvar;
-
-		if ((var->flags & GUC_CUSTOM_PLACEHOLDER) != 0 &&
-			strncmp(className, var->name, classLen) == 0 &&
-			var->name[classLen] == GUC_QUALIFIER_SEPARATOR)
+		/*
+		 * Check for existing placeholders.  We must actually remove invalid
+		 * placeholders, else future parallel worker startups will fail.
+		 */
+		hash_seq_init(&status, guc_hashtab);
+		while ((hentry = (GUCHashEntry *) hash_seq_search(&status)) != NULL)
 		{
-			ereport(WARNING,
-					(errcode(ERRCODE_INVALID_NAME),
-					 errmsg("invalid configuration parameter name \"%s\", removing it",
-							var->name),
-					 errdetail("\"%s\" is now a reserved prefix.",
-							   className)));
-			/* Remove it from the hash table */
-			hash_search(guc_hashtab,
-						&var->name,
-						HASH_REMOVE,
-						NULL);
-			/* Remove it from any lists it's in, too */
-			RemoveGUCFromLists(var);
-			/* And free it */
-			free_placeholder(var);
-		}
-	}
+			struct config_generic *var = hentry->gucvar;
 
-	/* And remember the name so we can prevent future mistakes. */
-	oldcontext = MemoryContextSwitchTo(GUCMemoryContext);
-	reserved_class_prefix = lappend(reserved_class_prefix, pstrdup(className));
-	MemoryContextSwitchTo(oldcontext);
+			if ((var->flags & GUC_CUSTOM_PLACEHOLDER) != 0 &&
+				strncmp(className, var->name, classLen) == 0 &&
+				var->name[classLen] == GUC_QUALIFIER_SEPARATOR)
+			{
+				ereport(WARNING,
+						(errcode(ERRCODE_INVALID_NAME),
+						 errmsg("invalid configuration parameter name \"%s\", removing it",
+								var->name),
+						 errdetail("\"%s\" is now a reserved prefix.",
+								   className)));
+				/* Remove it from the hash table */
+				hash_search(guc_hashtab,
+							&var->name,
+							HASH_REMOVE,
+							NULL);
+				/* Remove it from any lists it's in, too */
+				RemoveGUCFromLists(var);
+				/* And free it */
+				free_placeholder(var);
+			}
+		}
+
+		/* And remember the name so we can prevent future mistakes. */
+		oldcontext = MemoryContextSwitchTo(GUCReservedPrefixContext());
+		reserved_class_prefix = lappend(reserved_class_prefix, pstrdup(className));
+		MemoryContextSwitchTo(oldcontext);
+	}
+	PG_FINALLY();
+	{
+		ThreadedGUCUnlock(locked);
+	}
+	PG_END_TRY();
 }
 
 
@@ -6455,6 +6604,26 @@ GetConfigOptionByName(const char *name, const char **varname, bool missing_ok)
  */
 char *
 ShowGUCOption(const struct config_generic *record, bool use_units)
+{
+	char	   *result;
+	bool		locked;
+
+	locked = ThreadedGUCLock();
+	PG_TRY();
+	{
+		result = ShowGUCOptionInternal(record, use_units);
+	}
+	PG_FINALLY();
+	{
+		ThreadedGUCUnlock(locked);
+	}
+	PG_END_TRY();
+
+	return result;
+}
+
+static char *
+ShowGUCOptionInternal(const struct config_generic *record, bool use_units)
 {
 	char		buffer[256];
 	const char *val;
@@ -6758,10 +6927,13 @@ read_nondefault_variables(void)
 
 	for (;;)
 	{
+		struct config_generic *record;
+
 		if ((varname = read_string_with_null(fp)) == NULL)
 			break;
 
-		if (find_option(varname, true, false, FATAL) == NULL)
+		record = find_option(varname, true, false, FATAL);
+		if (record == NULL)
 			elog(FATAL, "failed to locate variable \"%s\" in exec config params file", varname);
 
 		if ((varvalue = read_string_with_null(fp)) == NULL)
@@ -6776,6 +6948,25 @@ read_nondefault_variables(void)
 			elog(FATAL, "invalid format of exec config params file");
 		if (fread(&varsrole, 1, sizeof(varsrole), fp) != sizeof(varsrole))
 			elog(FATAL, "invalid format of exec config params file");
+
+		/*
+		 * Threaded backends share the postmaster address space.  Postmaster
+		 * and internal GUCs are already present in runtime-global storage; a
+		 * thread carrier must not replay them through a session GUC context,
+		 * because doing so can replace/free strings owned by the postmaster's
+		 * GUC context.  Still replay backend/session/user settings so logical
+		 * backends see the same effective configuration as forked children.
+		 */
+		if (multithreaded &&
+			IsUnderPostmaster &&
+			(record->context == PGC_POSTMASTER ||
+			 record->context == PGC_INTERNAL))
+		{
+			guc_free(varname);
+			guc_free(varvalue);
+			guc_free(varsourcefile);
+			continue;
+		}
 
 		(void) set_config_option_ext(varname, varvalue,
 									 varscontext, varsource, varsrole,

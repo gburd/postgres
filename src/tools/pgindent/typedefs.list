@@ -2321,6 +2321,7 @@ PgSession
 PgSessionBackupState
 PgSessionCatalogLookupState
 PgSessionExtensionModuleState
+PgSessionGUCState
 PgSessionLoopState
 PgSessionLogicalReplicationState
 PgSessionRelMapState

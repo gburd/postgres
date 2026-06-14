@@ -1340,6 +1340,20 @@ typedef struct PgSessionMiscGUCState
 	bool		update_process_title_value;
 } PgSessionMiscGUCState;
 
+typedef struct PgSessionGUCState
+{
+	bool		initialized;
+	MemoryContext memory_context;
+	struct config_generic *variables;
+	int			num_variables;
+	HTAB	   *hash_table;
+	dlist_head	nondef_list;
+	slist_head	stack_list;
+	slist_head	report_list;
+	bool		reporting_enabled;
+	int			nest_level;
+} PgSessionGUCState;
+
 typedef struct PgSessionPgStatState
 {
 	bool		initialized;
@@ -2023,6 +2037,7 @@ struct PgSession
 	PgSessionLockWaitState lock_wait;
 	PgSessionLoggingState logging;
 	PgSessionMiscGUCState misc_guc;
+	PgSessionGUCState guc;
 	PgSessionPgStatState pgstat;
 	PgSessionQueryIdState query_id;
 	PgSessionStorageGUCState storage_guc;
@@ -2124,7 +2139,7 @@ typedef struct PgThreadBackendRuntimeState
 	PgExecution execution;
 } PgThreadBackendRuntimeState;
 
-extern PGDLLIMPORT PG_GLOBAL_RUNTIME PgRuntime *CurrentPgRuntime;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgRuntime *CurrentPgRuntime;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgCarrier *CurrentPgCarrier;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgBackend *CurrentPgBackend;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgSession *CurrentPgSession;
@@ -2224,6 +2239,15 @@ extern char **PgCurrentLocalPreloadLibrariesRef(void);
 extern char **PgCurrentDynamicLibraryPathRef(void);
 extern char **PgCurrentExtensionControlPathRef(void);
 extern bool *PgCurrentUpdateProcessTitleRef(void);
+extern MemoryContext *PgCurrentGUCMemoryContextRef(void);
+extern struct config_generic **PgCurrentGUCVariablesRef(void);
+extern int *PgCurrentNumGUCVariablesRef(void);
+extern HTAB **PgCurrentGUCHashTableRef(void);
+extern dlist_head *PgCurrentGUCNondefListRef(void);
+extern slist_head *PgCurrentGUCStackListRef(void);
+extern slist_head *PgCurrentGUCReportListRef(void);
+extern bool *PgCurrentGUCReportingEnabledRef(void);
+extern int *PgCurrentGUCNestLevelRef(void);
 extern bool *PgCurrentPgStatTrackCountsRef(void);
 extern int *PgCurrentPgStatTrackFunctionsRef(void);
 extern int *PgCurrentPgStatFetchConsistencyRef(void);
