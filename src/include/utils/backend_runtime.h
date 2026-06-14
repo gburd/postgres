@@ -83,6 +83,7 @@ struct LogicalRepRelMapEntry;
 struct SeqTableData;
 struct pg_ctype_cache;
 struct RelationData;
+struct PendingRelDelete;
 struct avl_dbase;
 struct WorkerInfoData;
 struct DecodingWorker;
@@ -945,6 +946,18 @@ typedef struct PgExecutionGUCErrorState
 	sigjmp_buf *flex_fatal_jmp;
 } PgExecutionGUCErrorState;
 
+typedef struct PgExecutionCatalogState
+{
+	HTAB	   *uncommitted_enum_types;
+	HTAB	   *uncommitted_enum_values;
+	Oid			currently_reindexed_heap;
+	Oid			currently_reindexed_index;
+	List	   *pending_reindexed_indexes;
+	int			reindexing_nest_level;
+	struct PendingRelDelete *pending_rel_deletes;
+	HTAB	   *pending_sync_hash;
+} PgExecutionCatalogState;
+
 typedef struct PgExecutionRegexState
 {
 	void	   *regex_locale;
@@ -1782,6 +1795,7 @@ struct PgExecution
 	PgExecutionXLogInsertState xloginsert;
 	PgExecutionXactState xact;
 	PgExecutionGUCErrorState guc_error;
+	PgExecutionCatalogState catalog;
 	PgExecutionRegexState regex;
 	PgExecutionValgrindState valgrind;
 	PgExecutionSnapBuildState snapbuild;
@@ -2146,6 +2160,14 @@ extern FullTransactionId *PgCurrentTwoPhaseCachedFxidRef(void);
 extern void **PgCurrentTwoPhaseCachedGxactRef(void);
 extern int *PgCurrentSlruErrorCauseRef(void);
 extern int *PgCurrentSlruErrnoRef(void);
+extern HTAB **PgCurrentUncommittedEnumTypesRef(void);
+extern HTAB **PgCurrentUncommittedEnumValuesRef(void);
+extern Oid *PgCurrentReindexedHeapRef(void);
+extern Oid *PgCurrentReindexedIndexRef(void);
+extern List **PgCurrentPendingReindexedIndexesRef(void);
+extern int *PgCurrentReindexingNestLevelRef(void);
+extern struct PendingRelDelete **PgCurrentPendingRelDeletesRef(void);
+extern HTAB **PgCurrentPendingSyncHashRef(void);
 extern dclist_head *PgCurrentMultiXactCacheRef(void);
 extern bool *PgCurrentMultiXactCacheInitializedRef(void);
 extern MemoryContext *PgCurrentMultiXactContextRef(void);

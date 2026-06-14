@@ -32,6 +32,7 @@
 #include "storage/freespace.h"
 #include "storage/proc.h"
 #include "storage/smgr.h"
+#include "utils/backend_runtime.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -77,8 +78,8 @@ typedef struct PendingRelSync
 } PendingRelSync;
 
 /* Head of linked list. */
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PendingRelDelete *pendingDeletes = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION HTAB *pendingSyncHash = NULL;
+#define pendingDeletes (*PgCurrentPendingRelDeletesRef())
+#define pendingSyncHash (*PgCurrentPendingSyncHashRef())
 
 
 /*

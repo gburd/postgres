@@ -883,6 +883,13 @@ the `dynamic_library_inits` list cells under a session-owned
 `PgSession` reset/destroy rule, but it is still a partial Gate E2 closure; the
 full session destructor model and remaining pending manifest rows are still
 blockers.
+The next state-migration batch added `PgExecutionCatalogState` and moved seven
+catalog execution globals into it: uncommitted enum hash pointers, REINDEX
+suppression state, and pending smgr delete/sync state. Existing enum, reindex,
+and smgr transaction cleanup remains authoritative for the pointed-to
+hash/list storage; the runtime object now owns the carrier-independent pointer
+slots. The global-lifetime scan now reports 88 execution-local declarations,
+down from 95, with zero new unclassified mutable globals.
 Further hardening made the object-lifecycle audit mechanically enforceable:
 `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` now records owner/lifetime, initializer,
 early-adoption, reset/destroy, and copy/adoption rules for every current

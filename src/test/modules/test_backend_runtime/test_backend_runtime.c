@@ -11983,6 +11983,108 @@ test_execution_guc_error_state_is_execution_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_execution_catalog_state_is_execution_local);
+Datum
+test_execution_catalog_state_is_execution_local(PG_FUNCTION_ARGS)
+{
+	PgExecution *saved_execution;
+	PgExecution fake_execution1;
+	PgExecution fake_execution2;
+	MemoryContext oldcontext;
+	bool		ok = true;
+
+	saved_execution = CurrentPgExecution;
+	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
+	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+	fake_execution1.catalog.currently_reindexed_heap = InvalidOid;
+	fake_execution1.catalog.currently_reindexed_index = InvalidOid;
+	fake_execution2.catalog.currently_reindexed_heap = InvalidOid;
+	fake_execution2.catalog.currently_reindexed_index = InvalidOid;
+
+	PG_TRY();
+	{
+		CurrentPgExecution = &fake_execution1;
+		*PgCurrentUncommittedEnumTypesRef() = (HTAB *) &fake_execution1;
+		*PgCurrentUncommittedEnumValuesRef() = (HTAB *) &fake_execution1;
+		*PgCurrentReindexedHeapRef() = 101;
+		*PgCurrentReindexedIndexRef() = 102;
+		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+		*PgCurrentPendingReindexedIndexesRef() =
+			list_make1_oid(103);
+		MemoryContextSwitchTo(oldcontext);
+		*PgCurrentReindexingNestLevelRef() = 3;
+		*PgCurrentPendingRelDeletesRef() =
+			(struct PendingRelDelete *) &fake_execution1;
+		*PgCurrentPendingSyncHashRef() = (HTAB *) &fake_execution1;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && *PgCurrentUncommittedEnumTypesRef() == NULL;
+		ok = ok && *PgCurrentUncommittedEnumValuesRef() == NULL;
+		ok = ok && *PgCurrentReindexedHeapRef() == InvalidOid;
+		ok = ok && *PgCurrentReindexedIndexRef() == InvalidOid;
+		ok = ok && *PgCurrentPendingReindexedIndexesRef() == NIL;
+		ok = ok && *PgCurrentReindexingNestLevelRef() == 0;
+		ok = ok && *PgCurrentPendingRelDeletesRef() == NULL;
+		ok = ok && *PgCurrentPendingSyncHashRef() == NULL;
+
+		*PgCurrentUncommittedEnumTypesRef() = (HTAB *) &fake_execution2;
+		*PgCurrentUncommittedEnumValuesRef() = (HTAB *) &fake_execution2;
+		*PgCurrentReindexedHeapRef() = 201;
+		*PgCurrentReindexedIndexRef() = 202;
+		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+		*PgCurrentPendingReindexedIndexesRef() =
+			list_make1_oid(203);
+		MemoryContextSwitchTo(oldcontext);
+		*PgCurrentReindexingNestLevelRef() = 4;
+		*PgCurrentPendingRelDeletesRef() =
+			(struct PendingRelDelete *) &fake_execution2;
+		*PgCurrentPendingSyncHashRef() = (HTAB *) &fake_execution2;
+
+		CurrentPgExecution = &fake_execution1;
+		ok = ok && *PgCurrentUncommittedEnumTypesRef() ==
+			(HTAB *) &fake_execution1;
+		ok = ok && *PgCurrentUncommittedEnumValuesRef() ==
+			(HTAB *) &fake_execution1;
+		ok = ok && *PgCurrentReindexedHeapRef() == 101;
+		ok = ok && *PgCurrentReindexedIndexRef() == 102;
+		ok = ok && list_member_oid(*PgCurrentPendingReindexedIndexesRef(),
+								   103);
+		ok = ok && *PgCurrentReindexingNestLevelRef() == 3;
+		ok = ok && *PgCurrentPendingRelDeletesRef() ==
+			(struct PendingRelDelete *) &fake_execution1;
+		ok = ok && *PgCurrentPendingSyncHashRef() ==
+			(HTAB *) &fake_execution1;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && *PgCurrentUncommittedEnumTypesRef() ==
+			(HTAB *) &fake_execution2;
+		ok = ok && *PgCurrentUncommittedEnumValuesRef() ==
+			(HTAB *) &fake_execution2;
+		ok = ok && *PgCurrentReindexedHeapRef() == 201;
+		ok = ok && *PgCurrentReindexedIndexRef() == 202;
+		ok = ok && list_member_oid(*PgCurrentPendingReindexedIndexesRef(),
+								   203);
+		ok = ok && *PgCurrentReindexingNestLevelRef() == 4;
+		ok = ok && *PgCurrentPendingRelDeletesRef() ==
+			(struct PendingRelDelete *) &fake_execution2;
+		ok = ok && *PgCurrentPendingSyncHashRef() ==
+			(HTAB *) &fake_execution2;
+
+		CurrentPgExecution = saved_execution;
+	}
+	PG_CATCH();
+	{
+		CurrentPgExecution = saved_execution;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "catalog execution state was not execution-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_execution_misc_scratch_state_is_execution_local);
 Datum
 test_execution_misc_scratch_state_is_execution_local(PG_FUNCTION_ARGS)

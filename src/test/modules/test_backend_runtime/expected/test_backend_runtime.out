@@ -587,6 +587,12 @@ SELECT test_execution_guc_error_state_is_execution_local();
  t
 (1 row)
 
+SELECT test_execution_catalog_state_is_execution_local();
+ test_execution_catalog_state_is_execution_local 
+-------------------------------------------------
+ t
+(1 row)
+
 SELECT test_execution_misc_scratch_state_is_execution_local();
  test_execution_misc_scratch_state_is_execution_local 
 ------------------------------------------------------

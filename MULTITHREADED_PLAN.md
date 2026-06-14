@@ -1461,6 +1461,13 @@ and backend exit deletes that context after `on_proc_exit` callbacks have had
 their chance to use session state. This closes one concrete list-bearing
 `PgSession` reset/destroy rule, while the broader session destructor model and
 remaining pending lifecycle rows remain Phase 12 blockers.
+The next state-migration batch moved catalog transaction/execution scratch
+state into `PgExecutionCatalogState`: uncommitted enum type/value hash
+pointers, REINDEX suppression state, and pending smgr relation delete/sync
+state. This removed seven raw `PG_GLOBAL_EXECUTION` declarations while keeping
+the existing enum/reindex/smgr transaction cleanup ownership intact. The
+global-lifetime scan now reports 88 execution-local declarations, down from
+95, with zero new unclassified mutable globals.
 The lifecycle audit is now also mechanically checked. The root
 `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` manifest records owner/lifetime,
 initializer, early-adoption, reset/destroy, and copy/adoption rules for every

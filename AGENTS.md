@@ -181,6 +181,14 @@ Important current files:
   memory contexts, hash tables, sockets, or heap allocations. After changing
   these runtime structs or accessors, use the installed-header/layout clean
   rebuild path before trusting TAP or extension results.
+- Catalog transaction/execution scratch state now lives under
+  `PgExecutionCatalogState`: uncommitted enum type/value hash pointers,
+  REINDEX suppression state, and pending storage delete/sync state. The
+  catalog files keep their historic local variable names as macros over
+  runtime accessors. If a local struct field has the same name as one of those
+  macros, rename the field; this was required for `SerializedReindexState`.
+  The actual hash/list storage is still owned by existing transaction cleanup
+  paths such as enum, reindex, and smgr end-of-transaction cleanup.
 - `AuxProcessResourceOwner` is now routed through `PgBackend` via
   `PgCurrentAuxProcessResourceOwnerRef()` and the `AuxProcessResourceOwner`
   lvalue macro. After changing `src/include/utils/resowner.h` or this backend

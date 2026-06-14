@@ -563,6 +563,10 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionXactState early_execution_
 	.check_xid_alive = InvalidTransactionId
 };
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionGUCErrorState early_execution_guc_error;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionCatalogState early_execution_catalog = {
+	.currently_reindexed_heap = InvalidOid,
+	.currently_reindexed_index = InvalidOid
+};
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionRegexState early_execution_regex;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionValgrindState early_execution_valgrind;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionSnapBuildState early_execution_snapbuild;
@@ -759,6 +763,8 @@ static void PgExecutionInitializeXactState(PgExecutionXactState *xact);
 static void PgExecutionAdoptEarlyXactState(PgExecution *execution);
 static void PgExecutionInitializeGUCErrorState(PgExecutionGUCErrorState *guc_error);
 static void PgExecutionAdoptEarlyGUCErrorState(PgExecution *execution);
+static void PgExecutionInitializeCatalogState(PgExecutionCatalogState *catalog);
+static void PgExecutionAdoptEarlyCatalogState(PgExecution *execution);
 static void PgExecutionInitializeRegexState(PgExecutionRegexState *regex);
 static void PgExecutionAdoptEarlyRegexState(PgExecution *execution);
 static void PgExecutionInitializeValgrindState(PgExecutionValgrindState *valgrind);
@@ -822,6 +828,7 @@ static PgExecutionComboCidState *PgCurrentExecutionComboCidState(void);
 static PgExecutionXLogInsertState *PgCurrentExecutionXLogInsertState(void);
 static PgExecutionXactState *PgCurrentExecutionXactState(void);
 static PgExecutionGUCErrorState *PgCurrentExecutionGUCErrorState(void);
+static PgExecutionCatalogState *PgCurrentExecutionCatalogState(void);
 static PgExecutionRegexState *PgCurrentExecutionRegexState(void);
 static PgExecutionValgrindState *PgCurrentExecutionValgrindState(void);
 static PgExecutionSnapBuildState *PgCurrentExecutionSnapBuildState(void);
@@ -3155,6 +3162,25 @@ PgExecutionAdoptEarlyGUCErrorState(PgExecution *execution)
 }
 
 static void
+PgExecutionInitializeCatalogState(PgExecutionCatalogState *catalog)
+{
+	Assert(catalog != NULL);
+
+	MemSet(catalog, 0, sizeof(*catalog));
+	catalog->currently_reindexed_heap = InvalidOid;
+	catalog->currently_reindexed_index = InvalidOid;
+}
+
+static void
+PgExecutionAdoptEarlyCatalogState(PgExecution *execution)
+{
+	Assert(execution != NULL);
+
+	execution->catalog = early_execution_catalog;
+	PgExecutionInitializeCatalogState(&early_execution_catalog);
+}
+
+static void
 PgExecutionInitializeRegexState(PgExecutionRegexState *regex)
 {
 	Assert(regex != NULL);
@@ -3227,6 +3253,7 @@ PgExecutionAdoptEarlyState(PgExecution *execution)
 	PgExecutionAdoptEarlyXLogInsertState(execution);
 	PgExecutionAdoptEarlyXactState(execution);
 	PgExecutionAdoptEarlyGUCErrorState(execution);
+	PgExecutionAdoptEarlyCatalogState(execution);
 	PgExecutionAdoptEarlyRegexState(execution);
 	PgExecutionAdoptEarlyValgrindState(execution);
 	PgExecutionAdoptEarlySnapBuildState(execution);
@@ -3436,6 +3463,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgExecutionInitializeXLogInsertState(&state->execution.xloginsert);
 	PgExecutionInitializeXactState(&state->execution.xact);
 	PgExecutionInitializeGUCErrorState(&state->execution.guc_error);
+	PgExecutionInitializeCatalogState(&state->execution.catalog);
 	PgExecutionInitializeRegexState(&state->execution.regex);
 	PgExecutionInitializeValgrindState(&state->execution.valgrind);
 	PgExecutionInitializeSnapBuildState(&state->execution.snapbuild);
@@ -7008,6 +7036,63 @@ sigjmp_buf **
 PgCurrentGUCFlexFatalJmpRef(void)
 {
 	return &PgCurrentExecutionGUCErrorState()->flex_fatal_jmp;
+}
+
+static PgExecutionCatalogState *
+PgCurrentExecutionCatalogState(void)
+{
+	if (CurrentPgExecution == NULL)
+		return &early_execution_catalog;
+
+	return &CurrentPgExecution->catalog;
+}
+
+HTAB **
+PgCurrentUncommittedEnumTypesRef(void)
+{
+	return &PgCurrentExecutionCatalogState()->uncommitted_enum_types;
+}
+
+HTAB **
+PgCurrentUncommittedEnumValuesRef(void)
+{
+	return &PgCurrentExecutionCatalogState()->uncommitted_enum_values;
+}
+
+Oid *
+PgCurrentReindexedHeapRef(void)
+{
+	return &PgCurrentExecutionCatalogState()->currently_reindexed_heap;
+}
+
+Oid *
+PgCurrentReindexedIndexRef(void)
+{
+	return &PgCurrentExecutionCatalogState()->currently_reindexed_index;
+}
+
+List **
+PgCurrentPendingReindexedIndexesRef(void)
+{
+	return &PgCurrentExecutionCatalogState()->pending_reindexed_indexes;
+}
+
+int *
+PgCurrentReindexingNestLevelRef(void)
+{
+	return &PgCurrentExecutionCatalogState()->reindexing_nest_level;
+}
+
+struct PendingRelDelete **
+PgCurrentPendingRelDeletesRef(void)
+{
+	return &PgCurrentExecutionCatalogState()->pending_rel_deletes;
+}
+
+HTAB **
+PgCurrentPendingSyncHashRef(void)
+{
+	return &PgCurrentExecutionCatalogState()->pending_sync_hash;
 }
 
 static PgExecutionRegexState *

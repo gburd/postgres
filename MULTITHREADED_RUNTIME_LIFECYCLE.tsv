@@ -121,6 +121,7 @@ PgExecution	combo_cid	execution owned	PgExecutionInitializeComboCidState()	PgExe
 PgExecution	xloginsert	execution owned	PgExecutionInitializeXLogInsertState()	PgExecutionAdoptEarlyState()	XLog insert cleanup owns buffers/scratch	whole bucket adoption	XLog insertion execution state.
 PgExecution	xact	execution owned	PgExecutionInitializeXactState()	PgExecutionAdoptEarlyState()	transaction cleanup owns execution xact state	whole bucket adoption	Transaction execution state.
 PgExecution	guc_error	execution owned	PgExecutionInitializeGUCErrorState()	PgExecutionAdoptEarlyState()	GUC error cleanup owns strings	whole bucket adoption	GUC error reporting state.
+PgExecution	catalog	execution owned	PgExecutionInitializeCatalogState()	PgExecutionAdoptEarlyState()	enum/reindex/smgr transaction cleanup owns hash/list state	whole bucket adoption; serialized parallel-worker restore rebuilds local lists/hashes	Catalog execution state for enum safety, reindex suppression, and pending storage cleanup.
 PgExecution	regex	execution owned	PgExecutionInitializeRegexState()	PgExecutionAdoptEarlyState()	regex execution cleanup pending	whole bucket adoption	Execution regex state.
 PgExecution	valgrind	execution owned	PgExecutionInitializeValgrindState()	PgExecutionAdoptEarlyState()	no dynamic destroy currently	scalar whole bucket adoption	Valgrind error-count state.
 PgExecution	snapbuild	execution owned	PgExecutionInitializeSnapBuildState()	PgExecutionAdoptEarlyState()	snapbuild cleanup owns export state	whole bucket adoption	Logical decoding snapbuild state.

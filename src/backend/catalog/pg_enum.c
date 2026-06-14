@@ -25,6 +25,7 @@
 #include "miscadmin.h"
 #include "nodes/value.h"
 #include "storage/lmgr.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/catcache.h"
 #include "utils/fmgroids.h"
@@ -56,8 +57,8 @@
  * pg_dump.  We could track subtransaction nesting of the commands to
  * analyze things more precisely, but for now we don't bother.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION HTAB *uncommitted_enum_types = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION HTAB *uncommitted_enum_values = NULL;
+#define uncommitted_enum_types (*PgCurrentUncommittedEnumTypesRef())
+#define uncommitted_enum_values (*PgCurrentUncommittedEnumValuesRef())
 
 static void init_uncommitted_enum_types(void);
 static void init_uncommitted_enum_values(void);

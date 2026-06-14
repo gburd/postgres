@@ -160,6 +160,49 @@ Validation for this slice:
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals.
 
+## Catalog Execution State
+
+The one-hundred-seventy-fifth Phase 12 slice moves a coherent catalog
+transaction/execution batch under `PgExecution`:
+
+- new `PgExecutionCatalogState` owns the carrier-independent pointer/scalar
+  slots for uncommitted enum tracking, REINDEX suppression, and pending smgr
+  relation delete/sync state;
+- `pg_enum.c` now routes `uncommitted_enum_types` and
+  `uncommitted_enum_values` through `PgCurrentUncommittedEnumTypesRef()` and
+  `PgCurrentUncommittedEnumValuesRef()`;
+- `index.c` now routes `currentlyReindexedHeap`,
+  `currentlyReindexedIndex`, `pendingReindexedIndexes`, and
+  `reindexingNestLevel` through `PgExecutionCatalogState`;
+- `storage.c` now routes `pendingDeletes` and `pendingSyncHash` through
+  `PgExecutionCatalogState`;
+- `SerializedReindexState` local fields were renamed so the compatibility
+  macros do not rewrite `sistate->field` references;
+- `test_execution_catalog_state_is_execution_local()` switches fake execution
+  objects and verifies the seven moved catalog state slots are isolated.
+
+This removes seven raw `PG_GLOBAL_EXECUTION` declarations from the global
+lifetime scan. The pointed-to hash tables and lists still use their existing
+transaction-lifespan ownership: enum, reindex, and smgr cleanup continue to
+clear or release the active state at transaction boundaries. This is not a
+full execution memory-context ownership split.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `pg_enum.o`,
+  `index.o`, `storage.o`, and `test_backend_runtime.o`;
+- full `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed, including
+  `test_execution_catalog_state_is_execution_local()`;
+- `gmake check-runtime-lifecycles` passed with 126 fields classified;
+- `gmake check-global-lifetimes` passed with 88 execution-local declarations
+  and zero new unclassified mutable globals;
+- `gmake -C contrib -j8` passed;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and
+  patched macOS install names.
+
 ## Runtime Lifecycle Manifest
 
 The one-hundred-seventy-third Phase 12 slice makes the Gate E2 object-lifecycle
