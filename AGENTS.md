@@ -954,10 +954,14 @@ Important current files:
   Relcache root hashes, critical-cache flags, and the relcache invalidation
   counter also live in this bucket; `relcache.h` keeps the historical critical
   flag names as accessor macros for `relcache.c`, `catcache.c`, and
-  `postinit.c`. Session reset clears those roots and scalars, while cache entry
-  memory still belongs to the broader `CacheMemoryContext` ownership split. Do
-  not move `funccache.c`'s hash root without adding a real iterator/destructor
-  for copied tuple descriptors and language-specific cached-function state.
+  `postinit.c`. Typcache root hashes, the domain list, in-progress stack
+  pointer/counters, record-cache array/counters, and tupledesc ID counter also
+  live in this bucket; `typcache.c` keeps the historical local names as
+  accessor macros. Session reset clears those roots and scalars, while cache
+  entry memory still belongs to the broader `CacheMemoryContext` ownership
+  split. Do not move `funccache.c`'s hash root without adding a real
+  iterator/destructor for copied tuple descriptors and language-specific
+  cached-function state.
 - After changing the relcache critical-cache flags from exported TLS variables
   to `relcache.h` accessor macros, stale objects may still reference the old
   linker symbols even when GNU make thinks they are up to date. If the backend

@@ -1278,11 +1278,12 @@ Validation included clean full build, backend-runtime regression,
 `gmake check-runtime-lifecycles`, `gmake check-global-lifetimes`, and
 `git diff --check`. Subsequent Gate E2 session-cache batches moved portal
 manager roots, compiled-regexp cache roots, syscache root arrays, the catcache
-header, and relcache root hashes/flags/counters behind `PgSession`. The
-global-lifetime scan now reports 123 session-local declarations with zero new
-unclassified mutable globals. Remaining cache-state blockers include
-`CacheMemoryContext`, typcache, `funccache.c`, and JIT/provider caches, each of
-which needs an explicit lifecycle rule before Phase 12 closes.
+header, relcache root hashes/flags/counters, and typcache root
+hashes/stacks/counters behind `PgSession`. The global-lifetime scan now
+reports 112 session-local declarations with zero new unclassified mutable
+globals. Remaining cache-state blockers include `CacheMemoryContext`,
+`funccache.c`, and JIT/provider caches, each of which needs an explicit
+lifecycle rule before Phase 12 closes.
 
 ## Bottom Line
 

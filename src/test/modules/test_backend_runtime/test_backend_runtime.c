@@ -1293,6 +1293,8 @@ test_session_database_state_is_session_local(PG_FUNCTION_ARGS)
 	saved_database_path = DatabasePath;
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	fake_session1.catalog_lookup.typcache_tupledesc_id_counter = (uint64) 1;
+	fake_session2.catalog_lookup.typcache_tupledesc_id_counter = (uint64) 1;
 	test_copy_current_user_identity(&fake_session1);
 	test_copy_current_user_identity(&fake_session2);
 
@@ -2053,6 +2055,8 @@ test_session_sequence_state_is_session_local(PG_FUNCTION_ARGS)
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
 	test_copy_current_user_identity(&fake_session1);
 	test_copy_current_user_identity(&fake_session2);
+	fake_session1.catalog_lookup.typcache_tupledesc_id_counter = (uint64) 1;
+	fake_session2.catalog_lookup.typcache_tupledesc_id_counter = (uint64) 1;
 	session1_hash_marker = (HTAB *) &fake_session1;
 	session2_hash_marker = (HTAB *) &fake_session2;
 	session1_last_marker = (struct SeqTableData *) &fake_session1;
@@ -3060,6 +3064,17 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 	bool		saved_critical_shared_relcaches_built;
 	long		saved_relcache_invals_received;
 	HTAB	   *saved_opclass_cache;
+	HTAB	   *saved_type_cache_hash;
+	HTAB	   *saved_relid_to_typeid_cache_hash;
+	TypeCacheEntry *saved_first_domain_type_entry;
+	Oid		   *saved_typcache_in_progress_list;
+	int			saved_typcache_in_progress_list_len;
+	int			saved_typcache_in_progress_list_maxlen;
+	HTAB	   *saved_record_cache_hash;
+	RecordCacheArrayEntry *saved_record_cache_array;
+	int32		saved_record_cache_array_len;
+	int32		saved_next_record_typmod;
+	uint64		saved_tupledesc_id_counter;
 	HTAB	   *saved_attopt_cache_hash;
 	HTAB	   *saved_relfilenumber_map_hash;
 	ScanKeyData saved_relfilenumber_skey[2];
@@ -3083,6 +3098,12 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 	HTAB	   *session2_relcache_marker;
 	HTAB	   *session1_opclass_marker;
 	HTAB	   *session2_opclass_marker;
+	TypeCacheEntry *session1_typentry_marker;
+	TypeCacheEntry *session2_typentry_marker;
+	Oid		   *session1_oid_array_marker;
+	Oid		   *session2_oid_array_marker;
+	RecordCacheArrayEntry *session1_record_array_marker;
+	RecordCacheArrayEntry *session2_record_array_marker;
 	bool		ok = true;
 
 	saved_session = CurrentPgSession;
@@ -3104,6 +3125,19 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		*PgCurrentCriticalSharedRelcachesBuiltRef();
 	saved_relcache_invals_received = *PgCurrentRelcacheInvalsReceivedRef();
 	saved_opclass_cache = *PgCurrentOpClassCacheRef();
+	saved_type_cache_hash = *PgCurrentTypeCacheHashRef();
+	saved_relid_to_typeid_cache_hash = *PgCurrentRelIdToTypeIdCacheHashRef();
+	saved_first_domain_type_entry = *PgCurrentFirstDomainTypeEntryRef();
+	saved_typcache_in_progress_list = *PgCurrentTypCacheInProgressListRef();
+	saved_typcache_in_progress_list_len =
+		*PgCurrentTypCacheInProgressListLenRef();
+	saved_typcache_in_progress_list_maxlen =
+		*PgCurrentTypCacheInProgressListMaxLenRef();
+	saved_record_cache_hash = *PgCurrentRecordCacheHashRef();
+	saved_record_cache_array = *PgCurrentRecordCacheArrayRef();
+	saved_record_cache_array_len = *PgCurrentRecordCacheArrayLenRef();
+	saved_next_record_typmod = *PgCurrentNextRecordTypmodRef();
+	saved_tupledesc_id_counter = *PgCurrentTupleDescIdCounterRef();
 	saved_attopt_cache_hash = *PgCurrentAttoptCacheHashRef();
 	saved_relfilenumber_map_hash = *PgCurrentRelfilenumberMapHashRef();
 	memcpy(saved_relfilenumber_skey, PgCurrentRelfilenumberScanKeyArray(),
@@ -3119,6 +3153,8 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 	MemSet(&fake_session2, 0, sizeof(fake_session2));
 	test_copy_current_user_identity(&fake_session1);
 	test_copy_current_user_identity(&fake_session2);
+	fake_session1.catalog_lookup.typcache_tupledesc_id_counter = (uint64) 1;
+	fake_session2.catalog_lookup.typcache_tupledesc_id_counter = (uint64) 1;
 	session1_hash_marker = (HTAB *) &fake_session1;
 	session2_hash_marker = (HTAB *) &fake_session2;
 	session1_context_marker = (MemoryContext) &fake_session1;
@@ -3133,6 +3169,12 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 	session2_relcache_marker = (HTAB *) &fake_session2;
 	session1_opclass_marker = (HTAB *) &fake_session1;
 	session2_opclass_marker = (HTAB *) &fake_session2;
+	session1_typentry_marker = (TypeCacheEntry *) &fake_session1;
+	session2_typentry_marker = (TypeCacheEntry *) &fake_session2;
+	session1_oid_array_marker = (Oid *) &fake_session1;
+	session2_oid_array_marker = (Oid *) &fake_session2;
+	session1_record_array_marker = (RecordCacheArrayEntry *) &fake_session1;
+	session2_record_array_marker = (RecordCacheArrayEntry *) &fake_session2;
 
 	PG_TRY();
 	{
@@ -3149,6 +3191,17 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentCriticalSharedRelcachesBuiltRef() == false;
 		ok = ok && *PgCurrentRelcacheInvalsReceivedRef() == 0;
 		ok = ok && *PgCurrentOpClassCacheRef() == NULL;
+		ok = ok && *PgCurrentTypeCacheHashRef() == NULL;
+		ok = ok && *PgCurrentRelIdToTypeIdCacheHashRef() == NULL;
+		ok = ok && *PgCurrentFirstDomainTypeEntryRef() == NULL;
+		ok = ok && *PgCurrentTypCacheInProgressListRef() == NULL;
+		ok = ok && *PgCurrentTypCacheInProgressListLenRef() == 0;
+		ok = ok && *PgCurrentTypCacheInProgressListMaxLenRef() == 0;
+		ok = ok && *PgCurrentRecordCacheHashRef() == NULL;
+		ok = ok && *PgCurrentRecordCacheArrayRef() == NULL;
+		ok = ok && *PgCurrentRecordCacheArrayLenRef() == 0;
+		ok = ok && *PgCurrentNextRecordTypmodRef() == 0;
+		ok = ok && *PgCurrentTupleDescIdCounterRef() == (uint64) 1;
 		ok = ok && *PgCurrentAttoptCacheHashRef() == NULL;
 		ok = ok && *PgCurrentRelfilenumberMapHashRef() == NULL;
 		ok = ok && PgCurrentRelfilenumberScanKeyArray()[0].sk_attno == 0;
@@ -3170,6 +3223,17 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		*PgCurrentCriticalSharedRelcachesBuiltRef() = true;
 		*PgCurrentRelcacheInvalsReceivedRef() = 11;
 		*PgCurrentOpClassCacheRef() = session1_opclass_marker;
+		*PgCurrentTypeCacheHashRef() = session1_hash_marker;
+		*PgCurrentRelIdToTypeIdCacheHashRef() = session1_hash_marker;
+		*PgCurrentFirstDomainTypeEntryRef() = session1_typentry_marker;
+		*PgCurrentTypCacheInProgressListRef() = session1_oid_array_marker;
+		*PgCurrentTypCacheInProgressListLenRef() = 1;
+		*PgCurrentTypCacheInProgressListMaxLenRef() = 2;
+		*PgCurrentRecordCacheHashRef() = session1_hash_marker;
+		*PgCurrentRecordCacheArrayRef() = session1_record_array_marker;
+		*PgCurrentRecordCacheArrayLenRef() = 3;
+		*PgCurrentNextRecordTypmodRef() = 4;
+		*PgCurrentTupleDescIdCounterRef() = 5;
 		*PgCurrentAttoptCacheHashRef() = session1_hash_marker;
 		*PgCurrentRelfilenumberMapHashRef() = session1_hash_marker;
 		PgCurrentRelfilenumberScanKeyArray()[0].sk_attno = 11;
@@ -3194,6 +3258,17 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentCriticalSharedRelcachesBuiltRef() == false;
 		ok = ok && *PgCurrentRelcacheInvalsReceivedRef() == 0;
 		ok = ok && *PgCurrentOpClassCacheRef() == NULL;
+		ok = ok && *PgCurrentTypeCacheHashRef() == NULL;
+		ok = ok && *PgCurrentRelIdToTypeIdCacheHashRef() == NULL;
+		ok = ok && *PgCurrentFirstDomainTypeEntryRef() == NULL;
+		ok = ok && *PgCurrentTypCacheInProgressListRef() == NULL;
+		ok = ok && *PgCurrentTypCacheInProgressListLenRef() == 0;
+		ok = ok && *PgCurrentTypCacheInProgressListMaxLenRef() == 0;
+		ok = ok && *PgCurrentRecordCacheHashRef() == NULL;
+		ok = ok && *PgCurrentRecordCacheArrayRef() == NULL;
+		ok = ok && *PgCurrentRecordCacheArrayLenRef() == 0;
+		ok = ok && *PgCurrentNextRecordTypmodRef() == 0;
+		ok = ok && *PgCurrentTupleDescIdCounterRef() == (uint64) 1;
 		ok = ok && *PgCurrentAttoptCacheHashRef() == NULL;
 		ok = ok && *PgCurrentRelfilenumberMapHashRef() == NULL;
 		ok = ok && PgCurrentRelfilenumberScanKeyArray()[0].sk_attno == 0;
@@ -3215,6 +3290,17 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		*PgCurrentCriticalSharedRelcachesBuiltRef() = false;
 		*PgCurrentRelcacheInvalsReceivedRef() = 22;
 		*PgCurrentOpClassCacheRef() = session2_opclass_marker;
+		*PgCurrentTypeCacheHashRef() = session2_hash_marker;
+		*PgCurrentRelIdToTypeIdCacheHashRef() = session2_hash_marker;
+		*PgCurrentFirstDomainTypeEntryRef() = session2_typentry_marker;
+		*PgCurrentTypCacheInProgressListRef() = session2_oid_array_marker;
+		*PgCurrentTypCacheInProgressListLenRef() = 11;
+		*PgCurrentTypCacheInProgressListMaxLenRef() = 12;
+		*PgCurrentRecordCacheHashRef() = session2_hash_marker;
+		*PgCurrentRecordCacheArrayRef() = session2_record_array_marker;
+		*PgCurrentRecordCacheArrayLenRef() = 13;
+		*PgCurrentNextRecordTypmodRef() = 14;
+		*PgCurrentTupleDescIdCounterRef() = 15;
 		*PgCurrentAttoptCacheHashRef() = session2_hash_marker;
 		*PgCurrentRelfilenumberMapHashRef() = session2_hash_marker;
 		PgCurrentRelfilenumberScanKeyArray()[0].sk_attno = 21;
@@ -3240,6 +3326,19 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentCriticalSharedRelcachesBuiltRef() == true;
 		ok = ok && *PgCurrentRelcacheInvalsReceivedRef() == 11;
 		ok = ok && *PgCurrentOpClassCacheRef() == session1_opclass_marker;
+		ok = ok && *PgCurrentTypeCacheHashRef() == session1_hash_marker;
+		ok = ok && *PgCurrentRelIdToTypeIdCacheHashRef() == session1_hash_marker;
+		ok = ok && *PgCurrentFirstDomainTypeEntryRef() == session1_typentry_marker;
+		ok = ok && *PgCurrentTypCacheInProgressListRef() ==
+			session1_oid_array_marker;
+		ok = ok && *PgCurrentTypCacheInProgressListLenRef() == 1;
+		ok = ok && *PgCurrentTypCacheInProgressListMaxLenRef() == 2;
+		ok = ok && *PgCurrentRecordCacheHashRef() == session1_hash_marker;
+		ok = ok && *PgCurrentRecordCacheArrayRef() ==
+			session1_record_array_marker;
+		ok = ok && *PgCurrentRecordCacheArrayLenRef() == 3;
+		ok = ok && *PgCurrentNextRecordTypmodRef() == 4;
+		ok = ok && *PgCurrentTupleDescIdCounterRef() == 5;
 		ok = ok && *PgCurrentAttoptCacheHashRef() == session1_hash_marker;
 		ok = ok && *PgCurrentRelfilenumberMapHashRef() == session1_hash_marker;
 		ok = ok && PgCurrentRelfilenumberScanKeyArray()[0].sk_attno == 11;
@@ -3265,6 +3364,19 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentCriticalSharedRelcachesBuiltRef() == false;
 		ok = ok && *PgCurrentRelcacheInvalsReceivedRef() == 22;
 		ok = ok && *PgCurrentOpClassCacheRef() == session2_opclass_marker;
+		ok = ok && *PgCurrentTypeCacheHashRef() == session2_hash_marker;
+		ok = ok && *PgCurrentRelIdToTypeIdCacheHashRef() == session2_hash_marker;
+		ok = ok && *PgCurrentFirstDomainTypeEntryRef() == session2_typentry_marker;
+		ok = ok && *PgCurrentTypCacheInProgressListRef() ==
+			session2_oid_array_marker;
+		ok = ok && *PgCurrentTypCacheInProgressListLenRef() == 11;
+		ok = ok && *PgCurrentTypCacheInProgressListMaxLenRef() == 12;
+		ok = ok && *PgCurrentRecordCacheHashRef() == session2_hash_marker;
+		ok = ok && *PgCurrentRecordCacheArrayRef() ==
+			session2_record_array_marker;
+		ok = ok && *PgCurrentRecordCacheArrayLenRef() == 13;
+		ok = ok && *PgCurrentNextRecordTypmodRef() == 14;
+		ok = ok && *PgCurrentTupleDescIdCounterRef() == 15;
 		ok = ok && *PgCurrentAttoptCacheHashRef() == session2_hash_marker;
 		ok = ok && *PgCurrentRelfilenumberMapHashRef() == session2_hash_marker;
 		ok = ok && PgCurrentRelfilenumberScanKeyArray()[0].sk_attno == 21;
@@ -3297,6 +3409,19 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 			saved_critical_shared_relcaches_built;
 		*PgCurrentRelcacheInvalsReceivedRef() = saved_relcache_invals_received;
 		*PgCurrentOpClassCacheRef() = saved_opclass_cache;
+		*PgCurrentTypeCacheHashRef() = saved_type_cache_hash;
+		*PgCurrentRelIdToTypeIdCacheHashRef() = saved_relid_to_typeid_cache_hash;
+		*PgCurrentFirstDomainTypeEntryRef() = saved_first_domain_type_entry;
+		*PgCurrentTypCacheInProgressListRef() = saved_typcache_in_progress_list;
+		*PgCurrentTypCacheInProgressListLenRef() =
+			saved_typcache_in_progress_list_len;
+		*PgCurrentTypCacheInProgressListMaxLenRef() =
+			saved_typcache_in_progress_list_maxlen;
+		*PgCurrentRecordCacheHashRef() = saved_record_cache_hash;
+		*PgCurrentRecordCacheArrayRef() = saved_record_cache_array;
+		*PgCurrentRecordCacheArrayLenRef() = saved_record_cache_array_len;
+		*PgCurrentNextRecordTypmodRef() = saved_next_record_typmod;
+		*PgCurrentTupleDescIdCounterRef() = saved_tupledesc_id_counter;
 		*PgCurrentAttoptCacheHashRef() = saved_attopt_cache_hash;
 		*PgCurrentRelfilenumberMapHashRef() = saved_relfilenumber_map_hash;
 		memcpy(PgCurrentRelfilenumberScanKeyArray(), saved_relfilenumber_skey,
@@ -3331,6 +3456,19 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 			saved_critical_shared_relcaches_built;
 		*PgCurrentRelcacheInvalsReceivedRef() = saved_relcache_invals_received;
 		*PgCurrentOpClassCacheRef() = saved_opclass_cache;
+		*PgCurrentTypeCacheHashRef() = saved_type_cache_hash;
+		*PgCurrentRelIdToTypeIdCacheHashRef() = saved_relid_to_typeid_cache_hash;
+		*PgCurrentFirstDomainTypeEntryRef() = saved_first_domain_type_entry;
+		*PgCurrentTypCacheInProgressListRef() = saved_typcache_in_progress_list;
+		*PgCurrentTypCacheInProgressListLenRef() =
+			saved_typcache_in_progress_list_len;
+		*PgCurrentTypCacheInProgressListMaxLenRef() =
+			saved_typcache_in_progress_list_maxlen;
+		*PgCurrentRecordCacheHashRef() = saved_record_cache_hash;
+		*PgCurrentRecordCacheArrayRef() = saved_record_cache_array;
+		*PgCurrentRecordCacheArrayLenRef() = saved_record_cache_array_len;
+		*PgCurrentNextRecordTypmodRef() = saved_next_record_typmod;
+		*PgCurrentTupleDescIdCounterRef() = saved_tupledesc_id_counter;
 		*PgCurrentAttoptCacheHashRef() = saved_attopt_cache_hash;
 		*PgCurrentRelfilenumberMapHashRef() = saved_relfilenumber_map_hash;
 		memcpy(PgCurrentRelfilenumberScanKeyArray(), saved_relfilenumber_skey,

@@ -64,6 +64,7 @@
 #include "port/pg_bitutils.h"
 #include "storage/lwlock.h"
 #include "utils/builtins.h"
+#include "utils/backend_runtime.h"
 #include "utils/catcache.h"
 #include "utils/fmgroids.h"
 #include "utils/injection_point.h"
@@ -76,7 +77,7 @@
 
 
 /* The main type cache hashtable searched by lookup_type_cache */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *TypeCacheHash = NULL;
+#define TypeCacheHash (*PgCurrentTypeCacheHashRef())
 
 /*
  * The mapping of relation's OID to the corresponding composite type OID.
@@ -84,7 +85,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *TypeCacheHash = NULL;
  * to clear i.e it has either TCFLAGS_HAVE_PG_TYPE_DATA, or
  * TCFLAGS_OPERATOR_FLAGS, or tupdesc.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *RelIdToTypeIdCacheHash = NULL;
+#define RelIdToTypeIdCacheHash (*PgCurrentRelIdToTypeIdCacheHashRef())
 
 typedef struct RelIdToTypeIdCacheEntry
 {
@@ -93,7 +94,7 @@ typedef struct RelIdToTypeIdCacheEntry
 } RelIdToTypeIdCacheEntry;
 
 /* List of type cache entries for domain types */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION TypeCacheEntry *firstDomainTypeEntry = NULL;
+#define firstDomainTypeEntry (*PgCurrentFirstDomainTypeEntryRef())
 
 /* Private flag bits in the TypeCacheEntry.flags field */
 #define TCFLAGS_HAVE_PG_TYPE_DATA			0x000001
@@ -223,9 +224,9 @@ typedef struct SharedTypmodTableEntry
 	dsa_pointer shared_tupdesc;
 } SharedTypmodTableEntry;
 
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION Oid *in_progress_list;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION int in_progress_list_len;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION int in_progress_list_maxlen;
+#define in_progress_list (*PgCurrentTypCacheInProgressListRef())
+#define in_progress_list_len (*PgCurrentTypCacheInProgressListLenRef())
+#define in_progress_list_maxlen (*PgCurrentTypCacheInProgressListMaxLenRef())
 
 /*
  * A comparator function for SharedRecordTableKey.
@@ -292,25 +293,25 @@ static const dshash_parameters srtr_typmod_table_params = {
 };
 
 /* hashtable for recognizing registered record types */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *RecordCacheHash = NULL;
+#define RecordCacheHash (*PgCurrentRecordCacheHashRef())
 
-typedef struct RecordCacheArrayEntry
+struct RecordCacheArrayEntry
 {
 	uint64		id;
 	TupleDesc	tupdesc;
-} RecordCacheArrayEntry;
+};
 
 /* array of info about registered record types, indexed by assigned typmod */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION RecordCacheArrayEntry *RecordCacheArray = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION int32 RecordCacheArrayLen = 0;	/* allocated length of above array */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION int32 NextRecordTypmod = 0;	/* number of entries used */
+#define RecordCacheArray (*PgCurrentRecordCacheArrayRef())
+#define RecordCacheArrayLen (*PgCurrentRecordCacheArrayLenRef())
+#define NextRecordTypmod (*PgCurrentNextRecordTypmodRef())
 
 /*
  * Process-wide counter for generating unique tupledesc identifiers.
  * Zero and one (INVALID_TUPLEDESC_IDENTIFIER) aren't allowed to be chosen
  * as identifiers, so we start the counter at INVALID_TUPLEDESC_IDENTIFIER.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION uint64 tupledesc_id_counter = INVALID_TUPLEDESC_IDENTIFIER;
+#define tupledesc_id_counter (*PgCurrentTupleDescIdCounterRef())
 
 static void load_typcache_tupdesc(TypeCacheEntry *typentry);
 static void load_rangetype_info(TypeCacheEntry *typentry);

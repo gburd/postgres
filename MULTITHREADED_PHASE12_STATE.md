@@ -9730,3 +9730,55 @@ Validation for this slice:
 - `gmake check-runtime-lifecycles` passed with 147 runtime fields classified;
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals and session-local declarations reduced from 130 to 123.
+
+## Typcache Session Roots
+
+The next Phase 12 cache-state batch moves typcache root storage and counters
+behind `PgSessionCatalogLookupState`:
+
+- `TypeCacheHash` now resolves through `PgCurrentTypeCacheHashRef()`;
+- `RelIdToTypeIdCacheHash` now resolves through
+  `PgCurrentRelIdToTypeIdCacheHashRef()`;
+- `firstDomainTypeEntry` now resolves through
+  `PgCurrentFirstDomainTypeEntryRef()`;
+- the typcache in-progress OID stack pointer, length, and capacity now resolve
+  through `PgCurrentTypCacheInProgressList*` accessors;
+- `RecordCacheHash`, `RecordCacheArray`, `RecordCacheArrayLen`, and
+  `NextRecordTypmod` now resolve through record-cache accessors;
+- `tupledesc_id_counter` now resolves through
+  `PgCurrentTupleDescIdCounterRef()`, with
+  `PgSessionInitializeCatalogLookupState()` preserving the historical
+  `INVALID_TUPLEDESC_IDENTIFIER` starting value.
+
+This slice removes typcache's direct `PG_GLOBAL_SESSION` declarations and
+keeps `typcache.c` source-local names as runtime accessor macros. It moves the
+session-visible root pointers and scalar counters only. The type-cache entries,
+record-cache entries, tuple descriptors, domain constraint caches, in-progress
+array allocation, and fmgr/hash subsidiary allocations continue to live under
+`CacheMemoryContext` or existing typcache-specific reference-count rules. That
+is intentional for this batch and remains part of the broader
+`CacheMemoryContext` destructor split before Gate E2 can close.
+
+The lifecycle rule is explicit. Early fallback adoption moves the whole
+`PgSessionCatalogLookupState` bucket, including these typcache fields. Session
+reset clears the typcache roots, stack pointer/counters, record-cache
+array/counters, and resets the tupledesc counter to its historical sentinel.
+The hash, domain-list, in-progress-array, and record-array pointers must not be
+shallow-copied between concurrently live sessions.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `typcache.o`, and
+  `test_backend_runtime.o`;
+- `gmake -j8` passed;
+- `test_session_catalog_lookup_state_is_session_local()` now covers typcache
+  root hashes, domain-list pointer, in-progress stack pointer/counters,
+  record-cache pointer/counters, and tupledesc counter across fake-session
+  switching;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl` with 94 tests;
+- `gmake check-runtime-lifecycles` passed with 147 runtime fields classified;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and session-local declarations reduced from 123 to 112.
+- `git diff --check` passed.

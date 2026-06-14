@@ -2146,6 +2146,7 @@ PgSessionInitializeCatalogLookupState(PgSessionCatalogLookupState *catalog_looku
 	Assert(catalog_lookup != NULL);
 
 	MemSet(catalog_lookup, 0, sizeof(*catalog_lookup));
+	catalog_lookup->typcache_tupledesc_id_counter = (uint64) 1;
 }
 
 static void
@@ -4825,6 +4826,17 @@ PgSessionResetClosedState(PgSession *session)
 	session->catalog_lookup.relcache_critical_shared_built = false;
 	session->catalog_lookup.relcache_invals_received = 0;
 	session->catalog_lookup.relcache_opclass_cache = NULL;
+	session->catalog_lookup.typcache_type_cache_hash = NULL;
+	session->catalog_lookup.typcache_relid_to_typeid_hash = NULL;
+	session->catalog_lookup.typcache_first_domain_type_entry = NULL;
+	session->catalog_lookup.typcache_in_progress_list = NULL;
+	session->catalog_lookup.typcache_in_progress_list_len = 0;
+	session->catalog_lookup.typcache_in_progress_list_maxlen = 0;
+	session->catalog_lookup.typcache_record_cache_hash = NULL;
+	session->catalog_lookup.typcache_record_cache_array = NULL;
+	session->catalog_lookup.typcache_record_cache_array_len = 0;
+	session->catalog_lookup.typcache_next_record_typmod = 0;
+	session->catalog_lookup.typcache_tupledesc_id_counter = (uint64) 1;
 	PgSessionInitializeInvalidationCallbackState(&session->invalidation_callbacks);
 
 	if (session->ri_globals.constraint_cache != NULL)
@@ -6270,6 +6282,72 @@ HTAB **
 PgCurrentOpClassCacheRef(void)
 {
 	return &PgCurrentSessionCatalogLookupState()->relcache_opclass_cache;
+}
+
+HTAB **
+PgCurrentTypeCacheHashRef(void)
+{
+	return &PgCurrentSessionCatalogLookupState()->typcache_type_cache_hash;
+}
+
+HTAB **
+PgCurrentRelIdToTypeIdCacheHashRef(void)
+{
+	return &PgCurrentSessionCatalogLookupState()->typcache_relid_to_typeid_hash;
+}
+
+TypeCacheEntry **
+PgCurrentFirstDomainTypeEntryRef(void)
+{
+	return &PgCurrentSessionCatalogLookupState()->typcache_first_domain_type_entry;
+}
+
+Oid **
+PgCurrentTypCacheInProgressListRef(void)
+{
+	return &PgCurrentSessionCatalogLookupState()->typcache_in_progress_list;
+}
+
+int *
+PgCurrentTypCacheInProgressListLenRef(void)
+{
+	return &PgCurrentSessionCatalogLookupState()->typcache_in_progress_list_len;
+}
+
+int *
+PgCurrentTypCacheInProgressListMaxLenRef(void)
+{
+	return &PgCurrentSessionCatalogLookupState()->typcache_in_progress_list_maxlen;
+}
+
+HTAB **
+PgCurrentRecordCacheHashRef(void)
+{
+	return &PgCurrentSessionCatalogLookupState()->typcache_record_cache_hash;
+}
+
+RecordCacheArrayEntry **
+PgCurrentRecordCacheArrayRef(void)
+{
+	return &PgCurrentSessionCatalogLookupState()->typcache_record_cache_array;
+}
+
+int32 *
+PgCurrentRecordCacheArrayLenRef(void)
+{
+	return &PgCurrentSessionCatalogLookupState()->typcache_record_cache_array_len;
+}
+
+int32 *
+PgCurrentNextRecordTypmodRef(void)
+{
+	return &PgCurrentSessionCatalogLookupState()->typcache_next_record_typmod;
+}
+
+uint64 *
+PgCurrentTupleDescIdCounterRef(void)
+{
+	return &PgCurrentSessionCatalogLookupState()->typcache_tupledesc_id_counter;
 }
 
 void **
