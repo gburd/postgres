@@ -2043,6 +2043,7 @@ struct PgCarrier
 	PgSession  *current_session;
 	PgExecution *current_execution;
 	void	   *backend_thread_start;
+	bool		is_under_postmaster;
 	volatile sig_atomic_t wait_event_waiting;
 	int			wait_event_signal_fd;
 	int			wait_event_selfpipe_readfd;
@@ -2237,6 +2238,7 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgSession *CurrentPgSession
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgConnection *CurrentPgConnection;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgExecution *CurrentPgExecution;
 
+extern bool *PgCurrentIsUnderPostmasterRef(void);
 extern bool *PgCurrentDoingCommandReadRef(void);
 extern MemoryContext *PgTopMemoryContextRef(void);
 extern MemoryContext *PgCurrentMemoryContextRef(void);

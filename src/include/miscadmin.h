@@ -235,7 +235,8 @@ do { \
  */
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME pid_t PostmasterPid;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool IsPostmasterEnvironment;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER bool IsUnderPostmaster;
+extern bool *PgCurrentIsUnderPostmasterRef(void);
+#define IsUnderPostmaster (*PgCurrentIsUnderPostmasterRef())
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool IsBinaryUpgrade;
 
 extern bool *PgCurrentExitOnAnyErrorRef(void);

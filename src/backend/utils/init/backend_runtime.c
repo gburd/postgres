@@ -3955,7 +3955,11 @@ PgExecutionInitializeRuntimeObject(PgExecution *execution,
 static void
 PgCarrierInitializeRuntimeObject(PgCarrier *carrier)
 {
+	bool		is_under_postmaster;
+
+	is_under_postmaster = carrier->is_under_postmaster;
 	MemSet(carrier, 0, sizeof(*carrier));
+	carrier->is_under_postmaster = is_under_postmaster;
 	carrier->wait_event_signal_fd = -1;
 	carrier->wait_event_selfpipe_readfd = -1;
 	carrier->wait_event_selfpipe_writefd = -1;
@@ -6521,6 +6525,12 @@ PgCurrentBackendThreadStartRef(void)
 		return &CurrentPgCarrier->backend_thread_start;
 
 	return &process_carrier.backend_thread_start;
+}
+
+bool *
+PgCurrentIsUnderPostmasterRef(void)
+{
+	return &PgCurrentCarrierState()->is_under_postmaster;
 }
 
 PgCarrier *

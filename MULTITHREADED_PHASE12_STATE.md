@@ -10451,6 +10451,15 @@ Acceptance criteria for the refactor slice:
 - docs and `AGENTS.md` tell future agents where new runtime buckets and tests
   should go, so new work does not default back to the giant central files.
 
+Current lifecycle ergonomics rule:
+
+- before the next boilerplate-heavy Phase 12 migration batch, improve the
+  checked lifecycle helper layer first. Add or extend `PG_RUNTIME_DEFINE_*`
+  helper macros, `.def` bucket rows, declarative lifecycle rules, and checker
+  validation so the batch moves through one checked path instead of several
+  hand-maintained init/adopt/reset/destroy lists. Keep nontrivial destructor
+  ordering and ownership cleanup handwritten in the owning subsystem.
+
 Lifecycle bucket definition framework slice completed:
 
 - `src/backend/utils/init/backend_runtime_backend_buckets.def`,
@@ -10801,3 +10810,42 @@ Validation for this DSM segment-list lifecycle fix:
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals;
 - `git diff --check` passed.
+
+Carrier `IsUnderPostmaster` migration completed:
+
+- `IsUnderPostmaster` is now an lvalue macro over
+  `PgCurrentIsUnderPostmasterRef()` and is stored in `PgCarrier` as
+  `is_under_postmaster`, removing another raw carrier-local TLS global from
+  `globals.c`;
+- `PgCarrierInitializeRuntimeObject()` preserves the existing
+  `is_under_postmaster` value across carrier reinitialization. This keeps the
+  `InitPostmasterChild()` early assignment alive when process-mode runtime
+  setup later initializes `process_carrier`;
+- thread-backed startup already installs `CurrentPgCarrier` before assigning
+  `IsUnderPostmaster = true`, so threaded backend startup writes the flag into
+  the thread carrier object;
+- `test_carrier_misc_state_is_carrier_local()` now verifies that
+  `IsUnderPostmaster` switches with `CurrentPgCarrier` alongside the existing
+  carrier-local wait-event and thread-start fields;
+- this is a carrier-object migration rather than a
+  `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` row. The current lifecycle manifest
+  covers `PgBackend`, `PgSession`, `PgConnection`, and `PgExecution`; carrier
+  fields are covered by explicit initialization tests and the global lifetime
+  scan for now.
+
+Validation for this carrier migration:
+
+- regenerated backend-side utility and node generated headers after
+  `src/backend` clean;
+- full `gmake -j8` passed, proving no stale object still links against a
+  standalone `_IsUnderPostmaster` symbol;
+- `gmake check-runtime-lifecycles` passed with 150 runtime fields classified,
+  150 bucket definitions checked, and 25 reset definitions checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- `git diff --check` passed;
+- the raw lifetime-annotation sweep no longer reports `IsUnderPostmaster`.
+  Remaining raw annotations outside runtime/test/checker code are the known
+  Windows carrier globals and the standalone `S_LOCK_TEST`
+  `my_wait_event_info` fallback.

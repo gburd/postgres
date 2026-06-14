@@ -304,9 +304,11 @@ test_carrier_misc_state_is_carrier_local(PG_FUNCTION_ARGS)
 	char		stack_marker2;
 	void	   *thread_start1 = &fake_carrier1;
 	void	   *thread_start2 = &fake_carrier2;
+	bool		saved_is_under_postmaster;
 	bool		ok = true;
 
 	saved_carrier = CurrentPgCarrier;
+	saved_is_under_postmaster = IsUnderPostmaster;
 	MemSet(&fake_carrier1, 0, sizeof(fake_carrier1));
 	MemSet(&fake_carrier2, 0, sizeof(fake_carrier2));
 	fake_carrier1.kind = PG_CARRIER_THREAD;
@@ -328,6 +330,7 @@ test_carrier_misc_state_is_carrier_local(PG_FUNCTION_ARGS)
 		*PgCurrentWaitEventSelfPipeOwnerPidRef() = 14;
 		*PgCurrentStackBasePtrRef() = &stack_marker1;
 		*PgCurrentBackendThreadStartRef() = thread_start1;
+		IsUnderPostmaster = true;
 
 		CurrentPgCarrier = &fake_carrier2;
 		ok = ok && *PgCurrentWaitEventWaitingRef() == false;
@@ -337,6 +340,7 @@ test_carrier_misc_state_is_carrier_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentWaitEventSelfPipeOwnerPidRef() == 0;
 		ok = ok && *PgCurrentStackBasePtrRef() == NULL;
 		ok = ok && *PgCurrentBackendThreadStartRef() == NULL;
+		ok = ok && !IsUnderPostmaster;
 		*PgCurrentWaitEventWaitingRef() = false;
 		*PgCurrentWaitEventSignalFdRef() = 21;
 		*PgCurrentWaitEventSelfPipeReadFdRef() = 22;
@@ -344,6 +348,7 @@ test_carrier_misc_state_is_carrier_local(PG_FUNCTION_ARGS)
 		*PgCurrentWaitEventSelfPipeOwnerPidRef() = 24;
 		*PgCurrentStackBasePtrRef() = &stack_marker2;
 		*PgCurrentBackendThreadStartRef() = thread_start2;
+		IsUnderPostmaster = false;
 
 		CurrentPgCarrier = &fake_carrier1;
 		ok = ok && *PgCurrentWaitEventWaitingRef() == true;
@@ -353,6 +358,7 @@ test_carrier_misc_state_is_carrier_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentWaitEventSelfPipeOwnerPidRef() == 14;
 		ok = ok && *PgCurrentStackBasePtrRef() == &stack_marker1;
 		ok = ok && *PgCurrentBackendThreadStartRef() == thread_start1;
+		ok = ok && IsUnderPostmaster;
 
 		CurrentPgCarrier = &fake_carrier2;
 		ok = ok && *PgCurrentWaitEventWaitingRef() == false;
@@ -362,12 +368,15 @@ test_carrier_misc_state_is_carrier_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentWaitEventSelfPipeOwnerPidRef() == 24;
 		ok = ok && *PgCurrentStackBasePtrRef() == &stack_marker2;
 		ok = ok && *PgCurrentBackendThreadStartRef() == thread_start2;
+		ok = ok && !IsUnderPostmaster;
 
 		CurrentPgCarrier = saved_carrier;
+		IsUnderPostmaster = saved_is_under_postmaster;
 	}
 	PG_CATCH();
 	{
 		CurrentPgCarrier = saved_carrier;
+		IsUnderPostmaster = saved_is_under_postmaster;
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
