@@ -9533,12 +9533,13 @@ The same validation originally suggested widening the startup serialization
 gate around thread-carrier startup, but the broad gate was rejected after TAP
 validation showed that it can deadlock normal threaded startup behind worker
 paths that have not reached `ThreadedBackendStartupComplete()`. Startup
-serialization is now helper-controlled rather than unconditional: a backend
-type may opt in through `backend_thread_requires_startup_gate()` only when it
-has a named shared-state dependency and a stress test proving that the gate is
-released. The remaining early fallback, GUC replay, runtime installation, and
-backend initialization paths therefore remain Gate E2 audit targets instead of
-being hidden behind a process-wide startup lock.
+serialization was later narrowed to no backend-type users and removed rather
+than retained as a no-op helper. Any future startup gate must name the
+shared-state dependency, use a narrow critical section, and include stress
+coverage proving that the gate releases. The remaining early fallback, GUC
+replay, runtime installation, and backend initialization paths therefore remain
+Gate E2 audit targets instead of being hidden behind a process-wide startup
+lock.
 
 Validation for this slice:
 
@@ -12470,3 +12471,55 @@ ordering handwritten near the owning subsystem.
 Each remaining Gate E2 slice should record a preflight note here naming either
 the existing checked rows/macros/checker rules being reused or the new
 primitive added first.
+
+## Threaded Startup Gate Removal
+
+Lifecycle/preflight note:
+
+- target: close the Gate E2 startup-serialization blocker now that every
+  backend type had already been narrowed out of the temporary startup gate;
+- repeated lifecycle operations: none. This slice removes dead one-off
+  synchronization scaffolding rather than adding init/adopt/reset/destroy
+  bookkeeping, so no new `PG_RUNTIME_*` action, helper macro, bucket rule, or
+  lifecycle checker extension is needed;
+- retained invariant: startup publication still goes through
+  `ThreadedBackendStartupComplete()` and
+  `PostmasterChildPublishThreadStartupComplete()`; only the unused mutex,
+  held flag, no-op policy helper, and enter/leave helpers are removed.
+
+Startup-gate removal slice:
+
+- `BackendThreadStart` no longer carries `startup_gate_held`;
+- `ThreadedBackendStartupMutex` and the unused
+  `backend_thread_requires_startup_gate()`,
+  `backend_thread_enter_startup_gate()`, and
+  `backend_thread_leave_startup_gate()` helpers are removed;
+- backend and worker thread entry no longer consult a policy helper that
+  always returned false;
+- `ThreadedBackendStartupComplete()` now only publishes startup completion to
+  the PMChild state, matching the current no-gate runtime;
+- `AGENTS.md`, `MULTITHREADED_PLAN.md`, and
+  `MULTITHREADED_THREADING_REVIEW.md` now describe the current state as no
+  threaded startup serialization gate. Any future gate must name the exact
+  shared-state dependency, use a narrow critical section, and include release
+  and stress coverage.
+
+Validation for the startup-gate removal slice:
+
+- stale-symbol scan found no remaining `startup_gate_held`,
+  `ThreadedBackendStartupMutex`, `backend_thread_requires_startup_gate()`,
+  `backend_thread_enter_startup_gate()`, or
+  `backend_thread_leave_startup_gate()` references in `launch_backend.c` or
+  active docs;
+- `git diff --check` passed;
+- `gmake -C src/backend/postmaster launch_backend.o` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 194 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- full incremental `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with `PG_REGRESS`,
+  temp-install `PATH`, and the repo-local `.perl5` `PERL5LIB`.

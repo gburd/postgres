@@ -2046,12 +2046,13 @@ not replay process-global strings through a session GUC context. The same
 validation tested a broader startup serialization gate, but an unconditional
 `backend_thread_entry()` gate was rejected because it can block normal threaded
 startup behind worker paths that have not reached
-`ThreadedBackendStartupComplete()`. Startup serialization is now
-helper-controlled behind `backend_thread_requires_startup_gate()` and requires
-a named shared-state dependency plus a release/stress test for any backend type
-that opts in. Early fallback state, GUC replay, runtime installation, backend
-initialization, and worker initialization remain explicit Gate E2 audit targets
-rather than being hidden behind a process-wide startup lock. The same follow-up
+`ThreadedBackendStartupComplete()`. The remaining no-op startup-gate helper was
+then removed: there is no current threaded startup serialization gate, and any
+future gate must name the shared-state dependency, use the narrowest possible
+critical section, and include a release/stress test. Early fallback state, GUC
+replay, runtime installation, backend initialization, and worker initialization
+remain explicit Gate E2 audit targets rather than being hidden behind a
+process-wide startup lock. The same follow-up
 validation made `CurrentPgRuntime` a carrier/thread-local
 current binding, so threaded backend installation no longer changes the
 postmaster's runtime view, and moved runtime-global reserved GUC prefixes out

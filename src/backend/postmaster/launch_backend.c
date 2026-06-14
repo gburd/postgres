@@ -208,20 +208,9 @@ typedef struct BackendThreadStart
 	pg_tz	   *startup_session_timezone;
 	pg_tz	   *startup_log_timezone;
 	pg_atomic_uint32 launch_registered;
-	bool		startup_gate_held;
 } BackendThreadStart;
 
 static PG_GLOBAL_RUNTIME bool postmaster_thread_carriers_started = false;
-
-#ifndef WIN32
-/*
- * Temporary Phase 10 guard: the startup path now reaches catalog/cache-heavy
- * initialization, but those backend-local caches are not yet safe for
- * concurrent carriers in the same address space.  Serialize the threaded
- * startup path until the cache/global migration work can remove this gate.
- */
-static PG_GLOBAL_RUNTIME pthread_mutex_t ThreadedBackendStartupMutex = PTHREAD_MUTEX_INITIALIZER;
-#endif
 
 static bool postmaster_backend_thread_launch(PMChild *pmchild,
 											 BackendType child_type,
@@ -235,9 +224,6 @@ static void backend_thread_run_worker(BackendThreadStart *thread_start);
 static BackendThreadStart *backend_thread_current_start(void);
 static void backend_thread_set_current_start(BackendThreadStart *thread_start);
 static void backend_thread_wait_until_registered(BackendThreadStart *thread_start);
-static bool backend_thread_requires_startup_gate(BackendType child_type);
-static void backend_thread_enter_startup_gate(BackendThreadStart *thread_start);
-static void backend_thread_leave_startup_gate(BackendThreadStart *thread_start);
 static void backend_thread_init_random_state(void);
 pg_noreturn static void backend_thread_exit(int code);
 pg_noreturn static void backend_thread_finish(int code);
@@ -442,7 +428,6 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 	thread_start->startup_session_timezone = session_timezone;
 	thread_start->startup_log_timezone = log_timezone;
 	pg_atomic_init_u32(&thread_start->launch_registered, 0);
-	thread_start->startup_gate_held = false;
 
 	if (child_type == B_BACKEND && thread_start->client_sock.sock < 0)
 	{
@@ -526,9 +511,6 @@ backend_thread_run_backend(BackendThreadStart *thread_start)
 	conn_timing.fork_start = thread_start->startup_data.fork_started;
 	conn_timing.fork_end = GetCurrentTimestamp();
 
-	if (backend_thread_requires_startup_gate(thread_start->child_type))
-		backend_thread_enter_startup_gate(thread_start);
-
 	BackendMainWithStartupData(&thread_start->startup_data,
 							   &thread_start->client_sock,
 							   BACKEND_STARTUP_THREAD);
@@ -543,12 +525,8 @@ backend_thread_run_worker(BackendThreadStart *thread_start)
 							 PostmasterChildName(thread_start->child_type))));
 
 	/*
-	 * Only carriers proven not to perform database/session startup and not to
-	 * race with backend startup can bypass the temporary serialized startup
-	 * section.  Keep the rest guarded until their shared-state startup
-	 * dependencies are isolated and covered by worker-specific threaded
-	 * catalog-startup smokes.  Thread-compatible background workers publish
-	 * their postmaster-visible startup only after
+	 * Thread-compatible background workers publish their postmaster-visible
+	 * startup only after
 	 * ThreadedBackendStartupComplete(), so dynamic waiters cannot terminate
 	 * them while InitProcess(), BaseInit(), or function lookup are still in
 	 * progress.  The autovacuum launcher performs backend initialization
@@ -560,11 +538,8 @@ backend_thread_run_worker(BackendThreadStart *thread_start)
 	 * archiver, WAL receiver, and WAL summarizer follow the auxiliary-process
 	 * common startup path, publish their wakeup/progress state in shared
 	 * memory, and keep their per-loop work state backend-local, so they can
-	 * use the same narrow bypass class as the writer-style auxiliary workers.
+	 * start without a serialized startup section.
 	 */
-	if (backend_thread_requires_startup_gate(thread_start->child_type))
-		backend_thread_enter_startup_gate(thread_start);
-
 	if (thread_start->child_type == B_BG_WORKER)
 		child_process_kinds[thread_start->child_type].main_fn(&thread_start->bgworker_startup_data,
 															  sizeof(BackgroundWorker));
@@ -583,31 +558,6 @@ static void
 backend_thread_set_current_start(BackendThreadStart *thread_start)
 {
 	*PgCurrentBackendThreadStartRef() = thread_start;
-}
-
-static bool
-backend_thread_requires_startup_gate(BackendType child_type)
-{
-	switch (child_type)
-	{
-		case B_ARCHIVER:
-		case B_BACKEND:
-		case B_AUTOVAC_LAUNCHER:
-		case B_AUTOVAC_WORKER:
-		case B_BG_WRITER:
-		case B_CHECKPOINTER:
-		case B_IO_WORKER:
-		case B_LOGGER:
-		case B_SLOTSYNC_WORKER:
-		case B_STARTUP:
-		case B_WAL_RECEIVER:
-		case B_WAL_SUMMARIZER:
-		case B_WAL_WRITER:
-			return false;
-
-		default:
-			return false;
-	}
 }
 
 static void
@@ -633,48 +583,6 @@ backend_thread_init_random_state(void)
 	}
 }
 
-static void
-backend_thread_enter_startup_gate(BackendThreadStart *thread_start)
-{
-#ifndef WIN32
-	int			rc;
-
-	Assert(thread_start != NULL);
-	Assert(!thread_start->startup_gate_held);
-
-	rc = pthread_mutex_lock(&ThreadedBackendStartupMutex);
-	if (rc != 0)
-	{
-		errno = rc;
-		ereport(FATAL,
-				(errmsg("could not enter threaded backend startup gate: %m")));
-	}
-
-	thread_start->startup_gate_held = true;
-#endif
-}
-
-static void
-backend_thread_leave_startup_gate(BackendThreadStart *thread_start)
-{
-#ifndef WIN32
-	int			rc;
-
-	Assert(thread_start != NULL);
-
-	if (!thread_start->startup_gate_held)
-		return;
-
-	thread_start->startup_gate_held = false;
-	rc = pthread_mutex_unlock(&ThreadedBackendStartupMutex);
-	if (rc != 0)
-	{
-		errno = rc;
-		elog(LOG, "could not leave threaded backend startup gate: %m");
-	}
-#endif
-}
-
 void
 ThreadedBackendStartupComplete(void)
 {
@@ -685,7 +593,6 @@ ThreadedBackendStartupComplete(void)
 
 	PostmasterChildPublishThreadStartupComplete(thread_start->pmchild,
 												thread_start->postmaster_latch);
-	backend_thread_leave_startup_gate(thread_start);
 }
 
 static void
@@ -713,7 +620,6 @@ backend_thread_finish(int code)
 		closesocket(thread_start->client_sock.sock);
 		thread_start->client_sock.sock = PGINVALID_SOCKET;
 	}
-	backend_thread_leave_startup_gate(thread_start);
 
 	/*
 	 * Stop publishing the logical backend before the final exit handoff.  This

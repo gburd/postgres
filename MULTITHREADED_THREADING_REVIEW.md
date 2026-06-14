@@ -801,9 +801,10 @@ backend.
 Thread-backed auxiliary loops that use the logical interrupt mailbox now
 honor `ProcDiePending`, fixing the basic immediate-shutdown smoke for
 background writer, checkpointer, autovacuum launcher, and WAL writer thread
-carriers. The temporary threaded startup serialization gate is also now behind
-an explicit backend-type helper and has no remaining backend-type users.
-Regular client backend startup can bypass it after moving the recursive
+carriers. The temporary threaded startup serialization gate was narrowed to no
+remaining backend-type users and then removed instead of being retained as a
+no-op helper. Regular client backend startup can run without serialization
+after moving the recursive
 VACUUM/ANALYZE guard from a function-local static into
 `PgExecutionVacuumState`; a 32-connection threaded
 startup/catalog/temp-table/ANALYZE stress validated the no-gate path. The
@@ -1262,12 +1263,12 @@ replace/free process-global strings already inherited from the postmaster
 address space. It also tested a broader startup serialization gate, but an
 unconditional `backend_thread_entry()` gate was rejected because it can block
 normal threaded startup behind worker paths that have not reached
-`ThreadedBackendStartupComplete()`. Startup serialization is now
-helper-controlled behind `backend_thread_requires_startup_gate()` and requires
-a named shared-state dependency plus a release/stress test for any backend type
-that opts in. Early fallback state, GUC replay, runtime installation, backend
-initialization, and worker initialization remain explicit Gate E2 audit targets
-rather than being hidden behind a process-wide startup lock. Follow-up
+`ThreadedBackendStartupComplete()`. The remaining no-op startup-gate helper was
+removed rather than retained; any future startup serialization must name the
+shared-state dependency, use a narrow critical section, and include a
+release/stress test. Early fallback state, GUC replay, runtime installation,
+backend initialization, and worker initialization remain explicit Gate E2 audit
+targets rather than being hidden behind a process-wide startup lock. Follow-up
 validation made `CurrentPgRuntime` a carrier/thread-local current
 binding, matching the other current runtime objects, and moved
 `reserved_class_prefix` allocation out of session `GUCMemoryContext` storage

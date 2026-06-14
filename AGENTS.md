@@ -1208,12 +1208,12 @@ Important current files:
   interrupt loop that calls `PgCurrentBackendApplyInterrupts()` must explicitly
   handle `ProcDiePending`, or immediate shutdown can leave thread carriers
   waiting for SIGKILL escalation.
-- The temporary threaded startup serialization gate is helper-controlled, not
-  unconditional. Do not reintroduce a broad `backend_thread_entry()` gate: it
-  can block normal client startup behind long-running worker initialization or
-  a worker path that has not reached `ThreadedBackendStartupComplete()`. Add a
-  backend type to `backend_thread_requires_startup_gate()` only with a named
-  shared-state dependency and a stress test that proves the gate releases.
+- There is no threaded startup serialization gate. Do not reintroduce a broad
+  `backend_thread_entry()` gate: it can block normal client startup behind
+  long-running worker initialization or a worker path that has not reached
+  `ThreadedBackendStartupComplete()`. Any future startup serialization must
+  name the shared-state dependency, use the narrowest possible critical
+  section, and include a stress test that proves the gate releases.
 - Thread-backed startup/exit publication must tolerate a missing postmaster
   latch during startup-era handoff. Startup carriers can finish before
   `ServerLoop()` has configured `postmaster_pmsignal_latch`; PMChild
@@ -1351,12 +1351,12 @@ Important current files:
   reclamation is implemented; thread-mode reset clears the memory-manager
   freelist bucket, while process-mode reset still calls
   `AllocSetFreeContextFreelists()`.
-- Threaded startup serialization is deliberately not a broad
-  `backend_thread_entry()` gate. A broad gate can block normal threaded startup
-  behind worker paths that have not reached `ThreadedBackendStartupComplete()`.
-  Keep startup gating helper-controlled through
-  `backend_thread_requires_startup_gate()`, and require a named shared-state
-  dependency plus a release/stress test for any backend type that opts in.
+- Threaded startup serialization has been removed rather than kept as a no-op
+  helper. A broad `backend_thread_entry()` gate can block normal threaded
+  startup behind worker paths that have not reached
+  `ThreadedBackendStartupComplete()`. Any future startup gate must name the
+  exact shared-state dependency, use a narrow critical section, and include a
+  release/stress test.
 - Backend timeout state now has a closed-backend reset:
   `PgBackendResetTimeoutClosedState()` lives beside timeout semantics in
   `src/backend/utils/misc/timeout.c`, and `check-runtime-lifecycles` scans
