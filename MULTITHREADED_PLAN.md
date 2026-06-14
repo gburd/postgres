@@ -1228,6 +1228,17 @@ The Gate E2 timeout closed-state slice now routes `PgBackend.timeout` through
 scans that owner source by default. The reset is intentionally distinct from
 `disable_all_timeouts()`: it clears retained closed-backend timeout arrays,
 handler registrations, signal flags, and stale backend/execution targets.
+The next Gate E2 backend closed-state batch removes six more ambiguous no-op
+reset rows: `parallel`, `buffers`, `ipc`, `transaction`, `recovery`, and
+`repack` now route through explicit checked reset helpers. These helpers make
+the normal-cleanup boundary concrete: active parallel contexts, live buffer
+pins, multixact entries, proc-signal/sinval shared slots, recovery virtual
+transaction cleanup, and live repack decoding workers remain owned by their
+normal subsystem cleanup callbacks, while retained backend-local scratch is
+cleared or reclaimed. Buffer reset is process-exit aware because late
+process-mode `proc_exit` can run after private-refcount hash context ownership
+is no longer safe to destroy; non-exit retained-backend reset still reclaims
+the local-buffer and private-refcount allocations directly.
 The deadlock detector workspace batch now stores `visitedProcs`,
 `nVisitedProcs`, `topoProcs`, `beforeConstraints`, `afterConstraints`,
 `waitOrders`, `nWaitOrders`, `waitOrderProcs`, `curConstraints`,

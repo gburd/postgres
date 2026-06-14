@@ -743,6 +743,12 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	PgBackendActivityState *activity;
 	PgBackendStorageState *storage;
 	PgBackendTimeoutState *timeout;
+	PgBackendParallelState *parallel;
+	PgBackendBufferState *buffers;
+	PgBackendIPCState *ipc;
+	PgBackendTransactionState *transaction;
+	PgBackendRecoveryState *recovery;
+	PgBackendRepackState *repack;
 	HASHCTL		hash_ctl;
 	bool		ok = true;
 
@@ -759,8 +765,26 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	activity = &fake_backend.activity;
 	storage = &fake_backend.storage;
 	timeout = &fake_backend.timeout;
+	parallel = &fake_backend.parallel;
+	buffers = &fake_backend.buffers;
+	ipc = &fake_backend.ipc;
+	transaction = &fake_backend.transaction;
+	recovery = &fake_backend.recovery;
+	repack = &fake_backend.repack;
 	replication->walreceiver_recv_file = -1;
 	xlog->open_log_file = -1;
+	parallel->worker_number = -1;
+	parallel->pq_mq_parallel_leader_proc_number = INVALID_PROC_NUMBER;
+	buffers->reserved_ref_count_slot = -1;
+	buffers->private_ref_count_entry_last = -1;
+	transaction->cached_fetch_xid = InvalidTransactionId;
+	transaction->two_phase_cached_fxid = InvalidFullTransactionId;
+	transaction->procarray_cached_xid_not_in_progress = InvalidTransactionId;
+	transaction->compute_xid_horizons_result_last_xmin = InvalidTransactionId;
+	dclist_init(&transaction->multixact_cache);
+	recovery->standby_wait_us = PG_BACKEND_STANDBY_INITIAL_WAIT_US;
+	repack->repacked_rel_locator.relNumber = InvalidOid;
+	repack->repacked_rel_toast_locator.relNumber = InvalidOid;
 
 	MemSet(&hash_ctl, 0, sizeof(hash_ctl));
 	hash_ctl.keysize = sizeof(Oid);
@@ -973,6 +997,113 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	timeout->firing_timeout_execution = (PgExecution *) &fake_backend;
 	timeout->signal_delivery = true;
 
+	parallel->message_pending = true;
+	parallel->initializing_worker = true;
+	parallel->fixed_parallel_state = &fake_backend;
+	dlist_init(&parallel->context_list);
+	parallel->context_list_initialized = true;
+	parallel->leader_pid = 11;
+	parallel->pq_mq_busy = true;
+	parallel->pq_mq_parallel_leader_pid = 12;
+	parallel->pq_mq_parallel_leader_proc_number = 13;
+
+	buffers->pin_count_wait_buf = (BufferDesc *) &fake_backend;
+	buffers->nlocbuffer = 2;
+	buffers->local_buffer_descriptors = malloc(8);
+	buffers->local_buffer_block_pointers = malloc(8);
+	buffers->local_ref_count = malloc(8);
+	buffers->next_free_local_buf_id = 1;
+	buffers->local_buf_hash =
+		hash_create("test local buffer hash", 8, &hash_ctl,
+					HASH_ELEM | HASH_BLOBS);
+	buffers->local_buffer_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test local buffer context",
+							  ALLOCSET_SMALL_SIZES);
+	buffers->local_buffer_cur_block =
+		MemoryContextAlloc(buffers->local_buffer_context, 8);
+	buffers->local_buffer_next_buf_in_block = 1;
+	buffers->local_buffer_num_bufs_in_block = 2;
+	buffers->local_buffer_total_bufs_allocated = 3;
+	buffers->backend_writeback_context = palloc0(8);
+	buffers->private_ref_count_array_keys = palloc0(8);
+	buffers->private_ref_count_array = palloc0(8);
+	buffers->private_ref_count_hash =
+		hash_create("test private refcount hash", 8, &hash_ctl,
+					HASH_ELEM | HASH_BLOBS);
+	buffers->private_ref_count_clock = 4;
+	buffers->reserved_ref_count_slot = 5;
+	buffers->private_ref_count_entry_last = 6;
+	buffers->max_proportional_pins = 7;
+
+	ipc->proc_signal_slot = &fake_backend;
+	ipc->shared_invalid_message_counter = 8;
+	ipc->catchup_interrupt_pending = true;
+	ipc->shared_invalidation_messages = &fake_backend;
+	ipc->shared_invalidation_next_msg = 9;
+	ipc->shared_invalidation_num_msgs = 10;
+	ipc->dsm_init_done = true;
+	ipc->next_local_transaction_id = 11;
+
+	transaction->cached_fetch_xid = FirstNormalTransactionId;
+	transaction->cached_fetch_xid_status = 1;
+	transaction->cached_commit_lsn = 12;
+	transaction->two_phase_locked_gxact = &fake_backend;
+	transaction->two_phase_exit_registered = true;
+	transaction->two_phase_cached_fxid =
+		FullTransactionIdFromEpochAndXid(1, FirstNormalTransactionId);
+	transaction->two_phase_cached_gxact = &fake_backend;
+	transaction->slru_error_cause = 13;
+	transaction->slru_errno_value = 14;
+	transaction->multixact_cache_initialized = true;
+	transaction->multixact_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test multixact context",
+							  ALLOCSET_SMALL_SIZES);
+	transaction->multixact_debug_string = pstrdup("mxact");
+	transaction->procarray_cached_xid_not_in_progress =
+		FirstNormalTransactionId;
+	transaction->compute_xid_horizons_result_last_xmin =
+		FirstNormalTransactionId;
+	transaction->xidcache_by_recent_xmin = 1;
+	transaction->xidcache_by_known_xact = 2;
+	transaction->xidcache_by_my_xact = 3;
+	transaction->xidcache_by_latest_xid = 4;
+	transaction->xidcache_by_main_xid = 5;
+	transaction->xidcache_by_child_xid = 6;
+	transaction->xidcache_by_known_assigned = 7;
+	transaction->xidcache_no_overflow = 8;
+	transaction->xidcache_slow_answer = 9;
+
+	recovery->startup_got_sighup = true;
+	recovery->startup_shutdown_requested = true;
+	recovery->startup_promote_signaled = true;
+	recovery->startup_in_restore_command = true;
+	recovery->startup_progress_phase_start_time = 15;
+	recovery->startup_progress_timer_expired = true;
+	recovery->local_hot_standby_active = true;
+	recovery->local_promote_is_triggered = true;
+	recovery->recovery_lock_hash =
+		hash_create("test recovery lock hash", 8, &hash_ctl,
+					HASH_ELEM | HASH_BLOBS);
+	recovery->recovery_lock_xid_hash =
+		hash_create("test recovery lock xid hash", 8, &hash_ctl,
+					HASH_ELEM | HASH_BLOBS);
+	recovery->got_standby_deadlock_timeout = true;
+	recovery->got_standby_delay_timeout = true;
+	recovery->got_standby_lock_timeout = true;
+	recovery->standby_wait_us = 16;
+
+	repack->message_pending = true;
+	repack->am_repack_worker = true;
+	repack->current_segment = 17;
+	repack->repacked_rel_locator.spcOid = 18;
+	repack->repacked_rel_locator.dbOid = 19;
+	repack->repacked_rel_locator.relNumber = 20;
+	repack->repacked_rel_toast_locator.spcOid = 21;
+	repack->repacked_rel_toast_locator.dbOid = 22;
+	repack->repacked_rel_toast_locator.relNumber = 23;
+
 	fake_backend.memory_manager.log_memory_context_in_progress = true;
 
 	utility->notify_interrupt_pending = true;
@@ -1145,6 +1276,98 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && timeout->firing_timeout_target == NULL;
 	ok = ok && timeout->firing_timeout_execution == NULL;
 	ok = ok && !timeout->signal_delivery;
+	ok = ok && parallel->worker_number == -1;
+	ok = ok && !parallel->message_pending;
+	ok = ok && !parallel->initializing_worker;
+	ok = ok && parallel->fixed_parallel_state == NULL;
+	ok = ok && !parallel->context_list_initialized;
+	ok = ok && parallel->leader_pid == 0;
+	ok = ok && parallel->pq_mq_handle == NULL;
+	ok = ok && !parallel->pq_mq_busy;
+	ok = ok && parallel->pq_mq_parallel_leader_pid == 0;
+	ok = ok && parallel->pq_mq_parallel_leader_proc_number ==
+		INVALID_PROC_NUMBER;
+	ok = ok && buffers->pin_count_wait_buf == NULL;
+	ok = ok && buffers->nlocbuffer == 0;
+	ok = ok && buffers->local_buffer_descriptors == NULL;
+	ok = ok && buffers->local_buffer_block_pointers == NULL;
+	ok = ok && buffers->local_ref_count == NULL;
+	ok = ok && buffers->next_free_local_buf_id == 0;
+	ok = ok && buffers->local_buf_hash == NULL;
+	ok = ok && buffers->n_local_pinned_buffers == 0;
+	ok = ok && buffers->local_buffer_cur_block == NULL;
+	ok = ok && buffers->local_buffer_next_buf_in_block == 0;
+	ok = ok && buffers->local_buffer_num_bufs_in_block == 0;
+	ok = ok && buffers->local_buffer_total_bufs_allocated == 0;
+	ok = ok && buffers->local_buffer_context == NULL;
+	ok = ok && buffers->backend_writeback_context == NULL;
+	ok = ok && buffers->private_ref_count_array_keys == NULL;
+	ok = ok && buffers->private_ref_count_array == NULL;
+	ok = ok && buffers->private_ref_count_hash == NULL;
+	ok = ok && buffers->private_ref_count_overflowed == 0;
+	ok = ok && buffers->private_ref_count_clock == 0;
+	ok = ok && buffers->reserved_ref_count_slot == -1;
+	ok = ok && buffers->private_ref_count_entry_last == -1;
+	ok = ok && buffers->max_proportional_pins == 0;
+	ok = ok && ipc->proc_signal_slot == NULL;
+	ok = ok && ipc->shared_invalid_message_counter == 0;
+	ok = ok && !ipc->catchup_interrupt_pending;
+	ok = ok && ipc->shared_invalidation_messages == NULL;
+	ok = ok && ipc->shared_invalidation_next_msg == 0;
+	ok = ok && ipc->shared_invalidation_num_msgs == 0;
+	ok = ok && !ipc->dsm_init_done;
+	ok = ok && ipc->dsm_registry_dsa == NULL;
+	ok = ok && ipc->dsm_registry_table == NULL;
+	ok = ok && ipc->next_local_transaction_id == 0;
+	ok = ok && ipc->latch_wait_set == NULL;
+	ok = ok && transaction->cached_fetch_xid == InvalidTransactionId;
+	ok = ok && transaction->cached_fetch_xid_status == 0;
+	ok = ok && transaction->cached_commit_lsn == 0;
+	ok = ok && transaction->two_phase_locked_gxact == NULL;
+	ok = ok && !transaction->two_phase_exit_registered;
+	ok = ok && FullTransactionIdEquals(transaction->two_phase_cached_fxid,
+									   InvalidFullTransactionId);
+	ok = ok && transaction->two_phase_cached_gxact == NULL;
+	ok = ok && transaction->slru_error_cause == 0;
+	ok = ok && transaction->slru_errno_value == 0;
+	ok = ok && dclist_is_empty(&transaction->multixact_cache);
+	ok = ok && !transaction->multixact_cache_initialized;
+	ok = ok && transaction->multixact_context == NULL;
+	ok = ok && transaction->multixact_debug_string == NULL;
+	ok = ok && transaction->procarray_cached_xid_not_in_progress ==
+		InvalidTransactionId;
+	ok = ok && transaction->compute_xid_horizons_result_last_xmin ==
+		InvalidTransactionId;
+	ok = ok && transaction->xidcache_by_recent_xmin == 0;
+	ok = ok && transaction->xidcache_by_known_xact == 0;
+	ok = ok && transaction->xidcache_by_my_xact == 0;
+	ok = ok && transaction->xidcache_by_latest_xid == 0;
+	ok = ok && transaction->xidcache_by_main_xid == 0;
+	ok = ok && transaction->xidcache_by_child_xid == 0;
+	ok = ok && transaction->xidcache_by_known_assigned == 0;
+	ok = ok && transaction->xidcache_no_overflow == 0;
+	ok = ok && transaction->xidcache_slow_answer == 0;
+	ok = ok && !recovery->startup_got_sighup;
+	ok = ok && !recovery->startup_shutdown_requested;
+	ok = ok && !recovery->startup_promote_signaled;
+	ok = ok && !recovery->startup_in_restore_command;
+	ok = ok && recovery->startup_progress_phase_start_time == 0;
+	ok = ok && !recovery->startup_progress_timer_expired;
+	ok = ok && !recovery->local_hot_standby_active;
+	ok = ok && !recovery->local_promote_is_triggered;
+	ok = ok && recovery->recovery_lock_hash == NULL;
+	ok = ok && recovery->recovery_lock_xid_hash == NULL;
+	ok = ok && !recovery->got_standby_deadlock_timeout;
+	ok = ok && !recovery->got_standby_delay_timeout;
+	ok = ok && !recovery->got_standby_lock_timeout;
+	ok = ok && recovery->standby_wait_us == PG_BACKEND_STANDBY_INITIAL_WAIT_US;
+	ok = ok && repack->decoding_worker == NULL;
+	ok = ok && !repack->message_pending;
+	ok = ok && !repack->am_repack_worker;
+	ok = ok && repack->current_segment == 0;
+	ok = ok && repack->worker_dsm_segment == NULL;
+	ok = ok && !OidIsValid(repack->repacked_rel_locator.relNumber);
+	ok = ok && !OidIsValid(repack->repacked_rel_toast_locator.relNumber);
 	ok = ok && !fake_backend.memory_manager.log_memory_context_in_progress;
 	ok = ok && utility->notify_interrupt_pending;
 	ok = ok && utility->seq_scan_tables[0] == NULL;

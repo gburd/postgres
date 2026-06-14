@@ -806,20 +806,20 @@ static void PgBackendInitializeMemoryManagerState(PgBackendMemoryManagerState *m
 static void PgBackendAdoptEarlyMemoryManagerState(PgBackend *backend);
 static void PgBackendInitializeUtilityState(PgBackendUtilityState *utility);
 static void PgBackendAdoptEarlyUtilityState(PgBackend *backend);
-static void PgBackendInitializeParallelState(PgBackendParallelState *parallel);
+void PgBackendInitializeParallelState(PgBackendParallelState *parallel);
 static void PgBackendAdoptEarlyParallelState(PgBackend *backend);
 static void PgBackendInitializeInstrumentationState(PgBackendInstrumentationState *instrumentation);
 static void PgBackendAdoptEarlyInstrumentationState(PgBackend *backend);
-static void PgBackendInitializeBufferState(PgBackendBufferState *buffers);
+void PgBackendInitializeBufferState(PgBackendBufferState *buffers);
 static void PgBackendAdoptEarlyBufferState(PgBackend *backend);
 static void PgBackendAdoptEarlyStorageState(PgBackend *backend);
 static void PgBackendAdoptEarlyLockState(PgBackend *backend);
-static void PgBackendInitializeIPCState(PgBackendIPCState *ipc);
+void PgBackendInitializeIPCState(PgBackendIPCState *ipc);
 static void PgBackendAdoptEarlyIPCState(PgBackend *backend);
 static void PgBackendEnsureWaitStateInitialized(PgBackendWaitState *wait_state);
 static void PgBackendInitializeWaitState(PgBackendWaitState *wait_state);
 static void PgBackendAdoptEarlyWaitState(PgBackend *backend);
-static void PgBackendInitializeTransactionState(PgBackendTransactionState *transaction);
+void PgBackendInitializeTransactionState(PgBackendTransactionState *transaction);
 static void PgBackendAdoptEarlyTransactionState(PgBackend *backend);
 static void PgBackendInitializeTimeoutState(PgBackendTimeoutState *timeout);
 static void PgBackendAdoptEarlyTimeoutState(PgBackend *backend);
@@ -831,13 +831,13 @@ static void PgBackendInitializeLogicalReplicationState(PgBackendLogicalReplicati
 static void PgBackendAdoptEarlyLogicalReplicationState(PgBackend *backend);
 static void PgBackendInitializeXLogState(PgBackendXLogState *xlog);
 static void PgBackendAdoptEarlyXLogState(PgBackend *backend);
-static void PgBackendInitializeRecoveryState(PgBackendRecoveryState *recovery);
+void PgBackendInitializeRecoveryState(PgBackendRecoveryState *recovery);
 static void PgBackendAdoptEarlyRecoveryState(PgBackend *backend);
 static void PgBackendInitializeMaintenanceWorkerState(PgBackendMaintenanceWorkerState *maintenance_worker);
 static void PgBackendAdoptEarlyMaintenanceWorkerState(PgBackend *backend);
 static void PgBackendInitializeAutovacuumState(PgBackendAutovacuumState *autovacuum);
 static void PgBackendAdoptEarlyAutovacuumState(PgBackend *backend);
-static void PgBackendInitializeRepackState(PgBackendRepackState *repack);
+void PgBackendInitializeRepackState(PgBackendRepackState *repack);
 static void PgBackendAdoptEarlyRepackState(PgBackend *backend);
 static void PgBackendInitializeAioState(PgBackendAioState *aio);
 static void PgBackendAdoptEarlyAioState(PgBackend *backend);
@@ -3030,7 +3030,7 @@ PgBackendAdoptEarlyUtilityState(PgBackend *backend)
 	PgBackendInitializeUtilityState(&early_backend_utility);
 }
 
-static void
+void
 PgBackendInitializeParallelState(PgBackendParallelState *parallel)
 {
 	Assert(parallel != NULL);
@@ -3072,7 +3072,7 @@ PgBackendAdoptEarlyInstrumentationState(PgBackend *backend)
 	PgBackendInitializeInstrumentationState(&early_backend_instrumentation);
 }
 
-static void
+void
 PgBackendInitializeBufferState(PgBackendBufferState *buffers)
 {
 	Assert(buffers != NULL);
@@ -3133,7 +3133,7 @@ PgBackendAdoptEarlyLockState(PgBackend *backend)
 	PgBackendInitializeLockState(&early_backend_locks);
 }
 
-static void
+void
 PgBackendInitializeIPCState(PgBackendIPCState *ipc)
 {
 	Assert(ipc != NULL);
@@ -3192,7 +3192,7 @@ PgBackendAdoptEarlyWaitState(PgBackend *backend)
 	PgBackendInitializeWaitState(&early_backend_wait_state);
 }
 
-static void
+void
 PgBackendInitializeTransactionState(PgBackendTransactionState *transaction)
 {
 	Assert(transaction != NULL);
@@ -3373,7 +3373,7 @@ PgBackendAdoptEarlyXLogState(PgBackend *backend)
 	PgBackendInitializeXLogState(&early_backend_xlog);
 }
 
-static void
+void
 PgBackendInitializeRecoveryState(PgBackendRecoveryState *recovery)
 {
 	Assert(recovery != NULL);
@@ -3447,7 +3447,7 @@ PgBackendAdoptEarlyAutovacuumState(PgBackend *backend)
 	PgBackendInitializeAutovacuumState(&early_backend_autovacuum);
 }
 
-static void
+void
 PgBackendInitializeRepackState(PgBackendRepackState *repack)
 {
 	Assert(repack != NULL);

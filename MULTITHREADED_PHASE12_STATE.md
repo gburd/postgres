@@ -11482,6 +11482,74 @@ Validation for the backend timeout closed-state reset slice:
   local `IPC::Run` `PERL5LIB` and patched temporary-install install-name
   paths.
 
+## Backend Lifecycle No-Op Reset Batch
+
+Lifecycle preflight:
+
+- target: Gate E2 no-op backend reset rows that still own or point at retained
+  backend-local scratch: `PgBackend.parallel`, `PgBackend.buffers`,
+  `PgBackend.ipc`, `PgBackend.transaction`, `PgBackend.recovery`, and
+  `PgBackend.repack`;
+- repeated lifecycle operations: six checked backend bucket reset rows that
+  mostly reset through their constructor initializers after normal subsystem
+  cleanup has run;
+- preflight result: the existing backend bucket `.def` reset column and
+  handwritten `backend_runtime_teardown.c` helpers are sufficient. No new
+  lifecycle primitive is needed because the resource ownership rules differ by
+  bucket: parallel asserts empty active-context lists, buffers has a
+  process-exit split, IPC detaches local DSM/latch attachments, transaction
+  asserts empty multixact lists, recovery destroys HTABs, and repack preserves
+  live-worker cleanup ownership.
+
+Backend no-op reset hardening slice:
+
+- `PG_BACKEND_BUCKET(parallel, ...)` now calls
+  `PgBackendResetParallelClosedState()`, which asserts active parallel
+  contexts have already been cleaned up, detaches any lingering pqmq handle,
+  and restores constructor defaults;
+- `PG_BACKEND_BUCKET(buffers, ...)` now calls
+  `PgBackendResetBufferClosedState()`, which asserts no retained pins or
+  overflow refs remain. In process-mode `proc_exit`, it reinitializes defaults
+  without destroying context-owned private-refcount hash storage because late
+  exit ordering can make that unsafe; outside process exit, it frees
+  local-buffer arrays/context, private refcount arrays/hash, and backend
+  writeback context;
+- `PG_BACKEND_BUCKET(ipc, ...)` now calls `PgBackendResetIPCClosedState()`,
+  detaching retained DSM registry dshash/DSA mappings, freeing the latch wait
+  set, and clearing proc-signal/sinval scratch after shared-slot callbacks own
+  normal release;
+- `PG_BACKEND_BUCKET(transaction, ...)` now calls
+  `PgBackendResetTransactionClosedState()`, asserting the multixact list is
+  empty, deleting multixact context/debug string, and clearing cached
+  transaction state;
+- `PG_BACKEND_BUCKET(recovery, ...)` now calls
+  `PgBackendResetRecoveryClosedState()`, destroying retained recovery lock
+  HTABs and clearing startup/recovery conflict signal state;
+- `PG_BACKEND_BUCKET(repack, ...)` now calls
+  `PgBackendResetRepackClosedState()`, asserting the live decoding worker has
+  already been stopped, detaching a lingering worker DSM segment, and clearing
+  repack worker/locator state;
+- `test_backend_reset_closed_state()` now seeds and verifies all six buckets
+  through the top-level backend closed-state reset path.
+
+Validation for the backend lifecycle no-op reset batch:
+
+- `gmake -C src/backend/utils/init backend_runtime.o
+  backend_runtime_teardown.o` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all` passed;
+- `gmake check-runtime-lifecycles` passed;
+- `gmake check-global-lifetimes` passed;
+- `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with the documented
+  local `IPC::Run` `PERL5LIB` and patched temporary-install install-name
+  paths;
+- bootstrap temp-install probe passed with all six reset rows enabled after
+  making buffer reset process-exit aware:
+  `tmp_install/usr/local/pgsql/bin/initdb --auth trust --no-sync
+  --no-instructions --lc-messages=C --no-clean tmp_probe_initdb`.
+
 Session xact-callback allocation-context preflight:
 
 - target root and bucket: `PgSession.xact_callbacks`;

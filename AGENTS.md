@@ -1308,6 +1308,15 @@ Important current files:
   `PgBackend`/`PgExecution` target pointers. Do not substitute
   `disable_all_timeouts()` for closed-backend teardown; that API is for live
   backends and preserves timeout registrations.
+- Gate E2 backend closed-state reset now covers the parallel, buffer, IPC,
+  transaction, recovery, and repack buckets through
+  `backend_runtime_backend_buckets.def`. Buffer reset has an important
+  process-mode caveat: at late `proc_exit`, buffer callbacks have already
+  checked semantic cleanup and some private-refcount hash storage may live in
+  contexts that are no longer safe to destroy. In that path,
+  `PgBackendResetBufferClosedState()` reinitializes constructor defaults and
+  lets process exit reclaim storage. Only non-exit retained-backend reset
+  frees the local-buffer/private-refcount allocations directly.
 - Custom extension GUCs in threaded sessions rely on per-session `_PG_init()`
   invocation for already-loaded dynamic libraries. `dfmgr.c` records loaded
   module init state in `PgSession.dynamic_library_inits`, with list storage

@@ -35,7 +35,11 @@
 #include "replication/slotsync.h"
 #include "replication/walreceiver.h"
 #include "storage/buffile.h"
+#include "storage/dsm.h"
 #include "storage/fd.h"
+#include "storage/ipc.h"
+#include "storage/shm_mq.h"
+#include "storage/waiteventset.h"
 #include "tsearch/ts_cache.h"
 #include "utils/backend_runtime.h"
 #include "backend_runtime_internal.h"
@@ -105,6 +109,117 @@ PgBackendResetExtensionModuleClosedState(PgBackendExtensionModuleState *extensio
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(extension_modules->pg_stash_advice_context);
 
 	PgBackendInitializeExtensionModuleState(extension_modules);
+}
+
+static void
+PgBackendResetParallelClosedState(PgBackendParallelState *parallel)
+{
+	Assert(parallel != NULL);
+
+	if (parallel->context_list_initialized)
+		Assert(dlist_is_empty(&parallel->context_list));
+
+	if (parallel->pq_mq_handle != NULL)
+	{
+		shm_mq_detach((shm_mq_handle *) parallel->pq_mq_handle);
+		pfree(parallel->pq_mq_handle);
+		parallel->pq_mq_handle = NULL;
+	}
+
+	PgBackendInitializeParallelState(parallel);
+}
+
+static void
+PgBackendResetBufferClosedState(PgBackendBufferState *buffers)
+{
+	Assert(buffers != NULL);
+	Assert(buffers->n_local_pinned_buffers == 0);
+	Assert(buffers->private_ref_count_overflowed == 0);
+
+	/*
+	 * During process-mode proc_exit(), normal buffer callbacks have already
+	 * checked semantic cleanup, and some context-owned buffer helper storage
+	 * can already be invalid.  Process exit will reclaim it.  Non-exit resets
+	 * are retained-logical-backend cleanup and may reclaim owned allocations.
+	 */
+	if (PgBackendExitInProgress())
+	{
+		PgBackendInitializeBufferState(buffers);
+		return;
+	}
+
+	if (buffers->local_buffer_descriptors != NULL)
+		free(buffers->local_buffer_descriptors);
+	if (buffers->local_buffer_block_pointers != NULL)
+		free(buffers->local_buffer_block_pointers);
+	if (buffers->local_ref_count != NULL)
+		free(buffers->local_ref_count);
+
+	PG_RUNTIME_DESTROY_HASH(buffers->local_buf_hash);
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(buffers->local_buffer_context);
+
+	if (buffers->backend_writeback_context != NULL)
+		pfree(buffers->backend_writeback_context);
+
+	if (buffers->private_ref_count_array_keys != NULL)
+		pfree(buffers->private_ref_count_array_keys);
+	if (buffers->private_ref_count_array != NULL)
+		pfree(buffers->private_ref_count_array);
+	PG_RUNTIME_DESTROY_HASH(buffers->private_ref_count_hash);
+
+	PgBackendInitializeBufferState(buffers);
+}
+
+static void
+PgBackendResetIPCClosedState(PgBackendIPCState *ipc)
+{
+	Assert(ipc != NULL);
+
+	if (ipc->dsm_registry_table != NULL)
+		dshash_detach((dshash_table *) ipc->dsm_registry_table);
+	if (ipc->dsm_registry_dsa != NULL)
+		dsa_detach((dsa_area *) ipc->dsm_registry_dsa);
+	if (ipc->latch_wait_set != NULL)
+		FreeWaitEventSet(ipc->latch_wait_set);
+
+	PgBackendInitializeIPCState(ipc);
+}
+
+static void
+PgBackendResetTransactionClosedState(PgBackendTransactionState *transaction)
+{
+	Assert(transaction != NULL);
+	Assert(!transaction->multixact_cache_initialized ||
+		   dclist_is_empty(&transaction->multixact_cache));
+
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(transaction->multixact_context);
+	if (transaction->multixact_debug_string != NULL)
+		pfree(transaction->multixact_debug_string);
+
+	PgBackendInitializeTransactionState(transaction);
+}
+
+static void
+PgBackendResetRecoveryClosedState(PgBackendRecoveryState *recovery)
+{
+	Assert(recovery != NULL);
+
+	PG_RUNTIME_DESTROY_HASH(recovery->recovery_lock_hash);
+	PG_RUNTIME_DESTROY_HASH(recovery->recovery_lock_xid_hash);
+
+	PgBackendInitializeRecoveryState(recovery);
+}
+
+static void
+PgBackendResetRepackClosedState(PgBackendRepackState *repack)
+{
+	Assert(repack != NULL);
+	Assert(repack->decoding_worker == NULL);
+
+	if (repack->worker_dsm_segment != NULL)
+		dsm_detach(repack->worker_dsm_segment);
+
+	PgBackendInitializeRepackState(repack);
 }
 
 static void
