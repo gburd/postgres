@@ -11599,6 +11599,12 @@ Current lifecycle-framework standing instruction:
   helpers, add or extend a reusable `PG_RUNTIME_DEFINE_*` helper, named
   `PG_RUNTIME_*` bucket action, `.def` rule, or
   `check_runtime_lifecycles.pl` validation before moving the state;
+- near-term TODO: turn the next repeated allocation-context/delete-and-null,
+  list/hash reset, pointer-clear, copy/adopt-then-reset, or
+  reset-through-initializer pattern into a checked lifecycle action or helper
+  before migrating that batch. The goal is that later batches can add one
+  manifest row and one bucket `.def` row instead of duplicating another C
+  helper body;
 - record the decision as a preflight note in this file before the behavior
   change. The note should either name the existing checked mechanism being
   reused, or name the new macro/action/rule/checker validation landed first;

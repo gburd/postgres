@@ -971,6 +971,11 @@ Gate E2 requires:
   more of these in parallel helper bodies, add the named `PG_RUNTIME_*`
   action, `PG_RUNTIME_DEFINE_*` helper, bucket `.def` rule, and checker
   validation first, then migrate the state through that checked path;
+- near-term lifecycle simplification is an explicit Gate E2 work item, not
+  optional cleanup. The next time one of those repeated patterns appears in a
+  Phase 12 batch, land the checked action/macro/checker extension before the
+  state movement so future agents can express the same ownership rule through
+  the manifest and bucket `.def` row;
 - lifecycle-process friction is itself a Gate E2 signal. If state migration or
   teardown work starts requiring another repeated manual init/adopt/reset/
   destroy helper list, extend the checked lifecycle vocabulary first with a

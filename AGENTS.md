@@ -371,6 +371,13 @@ Important current files:
   bucket action, `.def` row pattern, or `check_runtime_lifecycles.pl`
   validation. Only continue with handwritten helpers when the cleanup has
   real ordering or ownership semantics that need owner-adjacent code.
+- Near-term lifecycle ergonomics TODO: when the next Phase 12 batch repeats an
+  object-owned allocation-context, delete-and-null, list/hash reset, pointer
+  clear, copy/adopt-then-reset, or reset-through-initializer pattern, stop and
+  add the checked action/macro/checker support first. The intended deliverable
+  is a named `PG_RUNTIME_*` action or `PG_RUNTIME_DEFINE_*` helper that lets
+  future batches update the manifest and bucket `.def` row instead of copying
+  another helper body.
 - Do this lifecycle-ergonomics preflight before any further large Gate E2
   teardown or state-migration batch, including PMChild/thread-backend cleanup
   work if it starts adding repeated reset/destroy glue. The expected outcome is
