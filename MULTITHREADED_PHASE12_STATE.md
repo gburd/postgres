@@ -9376,6 +9376,51 @@ Validation for this slice:
   `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`
   passed all 94 tests.
 
+## RI Cache, Loaded Relmap, And Session Flag State
+
+The next larger Phase 12 session-cache batch moves these remaining
+session-owned globals behind `PgSession`:
+
+- RI trigger constraint/query/compare cache roots and valid-entry list from
+  `ri_triggers.c`;
+- the `debug_discard_caches` GUC backing variable from `inval.c`;
+- relation mapper loaded shared/local map files from `relmapper.c`;
+- the `update_process_title` GUC backing variable from `ps_status.c`.
+
+The active and pending relation-map transaction update files remain in
+`PgExecutionRelMapState`; this slice only moves the loaded shared/local maps
+that are session cache state. Existing source names remain lvalue macros over
+runtime accessors, including the generated GUC-table bindings for
+`debug_discard_caches` and `update_process_title`.
+
+The lifecycle rule is explicit. `PgSessionResetClosedState()` destroys the RI
+hash roots, reinitializes the RI valid-entry list, resets
+`debug_discard_caches`, and resets the loaded relation maps to unloaded empty
+state. The RI query cache may point to saved SPI plans whose memory remains
+part of the broader SPI/cache-memory ownership split; that limitation is
+recorded in `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` rather than hidden as an
+implicit shallow-copy rule.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `ri_triggers.o`,
+  `inval.o`, `relmapper.o`, `ps_status.o`, and `test_backend_runtime.o`;
+- after the installed `backend_runtime.h` change, backend generated headers
+  were regenerated and a clean full `gmake -j8` passed;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"` and `gmake -C contrib -j8`
+  passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed with the new
+  RI/session relmap helpers and still reported TAP disabled by configure;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`
+  passed all 94 tests with the local `IPC::Run` Perl dependency;
+- `gmake check-runtime-lifecycles` passed with 145 fields classified after
+  adding the `PgSession.ri_globals` and `PgSession.relmap` lifecycle rows;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and session-local declarations reduced from 157 to 149;
+- `git diff --check` passed.
+
 ## Xact Callback And SQL Backup Session State
 
 The next Phase 12 session-state batch moves two utility/session-lifecycle

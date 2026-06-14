@@ -1635,6 +1635,16 @@ callback registration list heads and SQL backup state from `xlogfuncs.c` plus
 `xlog.c`'s session backup status into `PgSession`. Session-close reset now
 frees leftover callback list nodes and aborts/deletes leftover SQL backup
 state explicitly.
+The following session cache/flag batch moved RI trigger cache roots and
+valid-list state, `debug_discard_caches`, loaded relation-map shared/local
+files, and `update_process_title` into `PgSession`. Active/pending relmap
+transaction update files remain execution-owned. The global-lifetime scan now
+reports 149 session-local declarations, down from 157, with zero new
+unclassified mutable globals, and the lifecycle manifest now classifies 145
+runtime fields. Validation included touched-object builds, clean full build,
+install, contrib build, backend-runtime regression, direct threaded runtime
+TAP, `gmake check-runtime-lifecycles`, `gmake check-global-lifetimes`, and
+`git diff --check`.
 
 ## Phase 13: Scheduler-Aware Wait Boundary
 

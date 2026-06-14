@@ -1337,6 +1337,7 @@ typedef struct PgSessionMiscGUCState
 	char	   *local_preload_libraries_value;
 	char	   *dynamic_library_path_value;
 	char	   *extension_control_path_value;
+	bool		update_process_title_value;
 } PgSessionMiscGUCState;
 
 typedef struct PgSessionPgStatState
@@ -1630,6 +1631,22 @@ typedef struct PgSessionInvalidationCallbackState
 	PgSessionRelSyncCallback relsync_callback_list[PG_SESSION_MAX_RELSYNC_CALLBACKS];
 	int			relsync_callback_count;
 } PgSessionInvalidationCallbackState;
+
+typedef struct PgSessionRIGlobalsState
+{
+	HTAB	   *constraint_cache;
+	HTAB	   *query_cache;
+	HTAB	   *compare_cache;
+	dclist_head constraint_cache_valid_list;
+	bool		debug_discard_caches_initialized;
+	int			debug_discard_caches_value;
+} PgSessionRIGlobalsState;
+
+typedef struct PgSessionRelMapState
+{
+	PgExecutionRelMapFile shared_map;
+	PgExecutionRelMapFile local_map;
+} PgSessionRelMapState;
 
 typedef struct PgSessionPreparedStatementState
 {
@@ -2027,6 +2044,8 @@ struct PgSession
 	PgSessionExtensionModuleState extension_modules;
 	PgSessionCatalogLookupState catalog_lookup;
 	PgSessionInvalidationCallbackState invalidation_callbacks;
+	PgSessionRIGlobalsState ri_globals;
+	PgSessionRelMapState relmap;
 	PgSessionPreparedStatementState prepared_statement;
 	PgSessionOnCommitState on_commit;
 	PgSessionSequenceState sequence;
@@ -2204,6 +2223,7 @@ extern char **PgCurrentSessionPreloadLibrariesRef(void);
 extern char **PgCurrentLocalPreloadLibrariesRef(void);
 extern char **PgCurrentDynamicLibraryPathRef(void);
 extern char **PgCurrentExtensionControlPathRef(void);
+extern bool *PgCurrentUpdateProcessTitleRef(void);
 extern bool *PgCurrentPgStatTrackCountsRef(void);
 extern int *PgCurrentPgStatTrackFunctionsRef(void);
 extern int *PgCurrentPgStatFetchConsistencyRef(void);
@@ -2380,6 +2400,13 @@ extern int *PgCurrentEventTriggerCacheStateRef(void);
 extern struct _SPI_plan **PgCurrentRuleutilsRuleByOidPlanRef(void);
 extern struct _SPI_plan **PgCurrentRuleutilsViewRulePlanRef(void);
 extern PgSessionInvalidationCallbackState *PgCurrentInvalidationCallbackState(void);
+extern HTAB **PgCurrentRIConstraintCacheRef(void);
+extern HTAB **PgCurrentRIQueryCacheRef(void);
+extern HTAB **PgCurrentRICompareCacheRef(void);
+extern dclist_head *PgCurrentRIConstraintCacheValidListRef(void);
+extern int *PgCurrentDebugDiscardCachesRef(void);
+extern PgExecutionRelMapFile *PgCurrentRelMapSharedMapRef(void);
+extern PgExecutionRelMapFile *PgCurrentRelMapLocalMapRef(void);
 extern HTAB **PgCurrentPreparedQueriesRef(void);
 extern List **PgCurrentOnCommitActionsRef(void);
 extern HTAB **PgCurrentSequenceHashTableRef(void);

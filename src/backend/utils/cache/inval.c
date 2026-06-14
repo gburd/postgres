@@ -258,9 +258,6 @@ typedef struct TransInvalidationInfo
 
 #define inplaceInvalInfo		(*PgCurrentInplaceInvalInfoRef())
 
-/* GUC storage */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION int debug_discard_caches = 0;
-
 /*
  * Dynamically-registered callback functions.  Current implementation
  * assumes there won't be enough of these to justify a dynamically resizable

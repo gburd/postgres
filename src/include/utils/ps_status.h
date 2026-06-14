@@ -21,7 +21,9 @@
 #define DEFAULT_UPDATE_PROCESS_TITLE true
 #endif
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION bool update_process_title;
+extern bool *PgCurrentUpdateProcessTitleRef(void);
+
+#define update_process_title (*PgCurrentUpdateProcessTitleRef())
 
 extern char **save_ps_display_args(int argc, char **argv);
 

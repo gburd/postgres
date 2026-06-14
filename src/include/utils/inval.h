@@ -20,7 +20,9 @@
 #include "utils/global_lifetime.h"
 #include "utils/relcache.h"
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION int debug_discard_caches;
+extern int *PgCurrentDebugDiscardCachesRef(void);
+
+#define debug_discard_caches (*PgCurrentDebugDiscardCachesRef())
 
 #define MIN_DEBUG_DISCARD_CACHES 0
 

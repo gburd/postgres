@@ -1223,6 +1223,18 @@ leftover callback list nodes, aborts a still-running SQL backup through the
 existing WAL cleanup path, deletes the backup memory context, and clears the
 payload/status slots.
 
+The following session cache and flag slice added `PgSessionRIGlobalsState`
+and `PgSessionRelMapState`, moving RI trigger cache roots, the RI valid-entry
+list, `debug_discard_caches`, loaded relation-map files, and
+`update_process_title` into `PgSession`. The active/pending relation-map
+transaction update files remain execution-owned. This slice deliberately
+records the remaining RI saved-SPI-plan memory limitation in the lifecycle
+manifest while still removing eight raw session-local globals from independent
+TLS storage. Validation included touched-object builds, clean full build,
+install, contrib build, backend-runtime regression, direct threaded runtime
+TAP, `gmake check-runtime-lifecycles`, `gmake check-global-lifetimes`, and
+`git diff --check`.
+
 ## Bottom Line
 
 The branch is on track only if the current debt is treated as Phase 12

@@ -255,10 +255,10 @@ typedef struct RI_FastPathEntry
 /*
  * Local data
  */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *ri_constraint_cache = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *ri_query_cache = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *ri_compare_cache = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION dclist_head ri_constraint_cache_valid_list;
+#define ri_constraint_cache (*PgCurrentRIConstraintCacheRef())
+#define ri_query_cache (*PgCurrentRIQueryCacheRef())
+#define ri_compare_cache (*PgCurrentRICompareCacheRef())
+#define ri_constraint_cache_valid_list (*PgCurrentRIConstraintCacheValidListRef())
 
 #define ri_fastpath_cache (*PgCurrentRIFastPathCacheRef())
 #define ri_fastpath_callback_registered (*PgCurrentRIFastPathCallbackRegisteredRef())

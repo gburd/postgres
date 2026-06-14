@@ -2323,6 +2323,8 @@ PgSessionCatalogLookupState
 PgSessionExtensionModuleState
 PgSessionLoopState
 PgSessionLogicalReplicationState
+PgSessionRelMapState
+PgSessionRIGlobalsState
 PgSessionResetCallbackItem
 PgSessionTcopState
 PgSessionXactCallbackState

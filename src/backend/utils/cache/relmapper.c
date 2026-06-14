@@ -100,8 +100,8 @@ typedef struct SerializedActiveRelMaps
  * local map file are stored here.  These can be reloaded from disk
  * immediately whenever we receive an update sinval message.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION RelMapFile shared_map;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION RelMapFile local_map;
+#define shared_map				(*PgCurrentRelMapSharedMapRef())
+#define local_map				(*PgCurrentRelMapLocalMapRef())
 
 /*
  * We use the same RelMapFile data structure to track uncommitted local

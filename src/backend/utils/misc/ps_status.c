@@ -27,9 +27,6 @@
 extern PG_GLOBAL_RUNTIME char **environ;
 #endif
 
-/* GUC variable */
-PG_THREAD_LOCAL PG_GLOBAL_SESSION bool update_process_title = DEFAULT_UPDATE_PROCESS_TITLE;
-
 /*
  * Alternative ways of updating ps display:
  *

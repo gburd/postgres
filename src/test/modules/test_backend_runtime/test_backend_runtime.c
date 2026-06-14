@@ -88,6 +88,7 @@
 #include "utils/pg_locale.h"
 #include "utils/pgstat_internal.h"
 #include "utils/plancache.h"
+#include "utils/ps_status.h"
 #include "utils/resowner.h"
 #include "utils/rls.h"
 #include "utils/wait_event.h"
@@ -3266,6 +3267,162 @@ test_session_invalidation_callback_state_is_session_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "invalidation callback state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_session_ri_globals_state_is_session_local);
+Datum
+test_session_ri_globals_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(NULL);
+		*PgCurrentRIConstraintCacheRef() = (HTAB *) &fake_session1;
+		*PgCurrentRIQueryCacheRef() = (HTAB *) &fake_session1;
+		*PgCurrentRICompareCacheRef() = (HTAB *) &fake_session1;
+		*PgCurrentDebugDiscardCachesRef() = 3;
+
+		PgSessionAdoptEarlyState(&fake_session1);
+
+		ok = ok && fake_session1.ri_globals.constraint_cache ==
+			(HTAB *) &fake_session1;
+		ok = ok && fake_session1.ri_globals.query_cache ==
+			(HTAB *) &fake_session1;
+		ok = ok && fake_session1.ri_globals.compare_cache ==
+			(HTAB *) &fake_session1;
+		ok = ok && fake_session1.ri_globals.debug_discard_caches_value == 3;
+		ok = ok && *PgCurrentRIConstraintCacheRef() == NULL;
+		ok = ok && *PgCurrentRIQueryCacheRef() == NULL;
+		ok = ok && *PgCurrentRICompareCacheRef() == NULL;
+		ok = ok && *PgCurrentDebugDiscardCachesRef() ==
+			DEFAULT_DEBUG_DISCARD_CACHES;
+		ok = ok && dclist_is_empty(PgCurrentRIConstraintCacheValidListRef());
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && *PgCurrentRIConstraintCacheRef() == NULL;
+		ok = ok && *PgCurrentRIQueryCacheRef() == NULL;
+		ok = ok && *PgCurrentRICompareCacheRef() == NULL;
+		ok = ok && *PgCurrentDebugDiscardCachesRef() ==
+			DEFAULT_DEBUG_DISCARD_CACHES;
+		*PgCurrentRIConstraintCacheRef() = (HTAB *) &fake_session2;
+		*PgCurrentRIQueryCacheRef() = (HTAB *) &fake_session2;
+		*PgCurrentRICompareCacheRef() = (HTAB *) &fake_session2;
+		*PgCurrentDebugDiscardCachesRef() = 4;
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && *PgCurrentRIConstraintCacheRef() ==
+			(HTAB *) &fake_session1;
+		ok = ok && *PgCurrentRIQueryCacheRef() == (HTAB *) &fake_session1;
+		ok = ok && *PgCurrentRICompareCacheRef() == (HTAB *) &fake_session1;
+		ok = ok && *PgCurrentDebugDiscardCachesRef() == 3;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && *PgCurrentRIConstraintCacheRef() ==
+			(HTAB *) &fake_session2;
+		ok = ok && *PgCurrentRIQueryCacheRef() == (HTAB *) &fake_session2;
+		ok = ok && *PgCurrentRICompareCacheRef() == (HTAB *) &fake_session2;
+		ok = ok && *PgCurrentDebugDiscardCachesRef() == 4;
+
+		PgSetCurrentSession(saved_session);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session RI globals state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_session_relmap_state_is_session_local);
+Datum
+test_session_relmap_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(NULL);
+		PgCurrentRelMapSharedMapRef()->magic = 11;
+		PgCurrentRelMapSharedMapRef()->num_mappings = 1;
+		PgCurrentRelMapSharedMapRef()->mappings[0].mapoid = 101;
+		PgCurrentRelMapSharedMapRef()->mappings[0].mapfilenumber = 201;
+		PgCurrentRelMapLocalMapRef()->magic = 12;
+		PgCurrentRelMapLocalMapRef()->num_mappings = 2;
+
+		PgSessionAdoptEarlyState(&fake_session1);
+
+		ok = ok && fake_session1.relmap.shared_map.magic == 11;
+		ok = ok && fake_session1.relmap.shared_map.num_mappings == 1;
+		ok = ok && fake_session1.relmap.shared_map.mappings[0].mapoid == 101;
+		ok = ok && fake_session1.relmap.shared_map.mappings[0].mapfilenumber == 201;
+		ok = ok && fake_session1.relmap.local_map.magic == 12;
+		ok = ok && fake_session1.relmap.local_map.num_mappings == 2;
+		ok = ok && PgCurrentRelMapSharedMapRef()->magic == 0;
+		ok = ok && PgCurrentRelMapSharedMapRef()->num_mappings == 0;
+		ok = ok && PgCurrentRelMapLocalMapRef()->magic == 0;
+		ok = ok && PgCurrentRelMapLocalMapRef()->num_mappings == 0;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && PgCurrentRelMapSharedMapRef()->magic == 0;
+		ok = ok && PgCurrentRelMapLocalMapRef()->magic == 0;
+		PgCurrentRelMapSharedMapRef()->magic = 21;
+		PgCurrentRelMapSharedMapRef()->num_mappings = 3;
+		PgCurrentRelMapSharedMapRef()->mappings[0].mapoid = 301;
+		PgCurrentRelMapSharedMapRef()->mappings[0].mapfilenumber = 401;
+		PgCurrentRelMapLocalMapRef()->magic = 22;
+		PgCurrentRelMapLocalMapRef()->num_mappings = 4;
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && PgCurrentRelMapSharedMapRef()->magic == 11;
+		ok = ok && PgCurrentRelMapSharedMapRef()->num_mappings == 1;
+		ok = ok && PgCurrentRelMapLocalMapRef()->magic == 12;
+		ok = ok && PgCurrentRelMapLocalMapRef()->num_mappings == 2;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && PgCurrentRelMapSharedMapRef()->magic == 21;
+		ok = ok && PgCurrentRelMapSharedMapRef()->num_mappings == 3;
+		ok = ok && PgCurrentRelMapSharedMapRef()->mappings[0].mapoid == 301;
+		ok = ok && PgCurrentRelMapSharedMapRef()->mappings[0].mapfilenumber == 401;
+		ok = ok && PgCurrentRelMapLocalMapRef()->magic == 22;
+		ok = ok && PgCurrentRelMapLocalMapRef()->num_mappings == 4;
+
+		PgSetCurrentSession(saved_session);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session relmap state was not session-local");
 
 	PG_RETURN_BOOL(true);
 }
@@ -6494,6 +6651,7 @@ test_session_misc_guc_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && local_preload_libraries_string == NULL;
 		ok = ok && Dynamic_library_path == NULL;
 		ok = ok && strcmp(Extension_control_path, "$system") == 0;
+		ok = ok && update_process_title == DEFAULT_UPDATE_PROCESS_TITLE;
 
 		SetConfigOption("allow_system_table_mods", "on",
 						PGC_SUSET, PGC_S_SESSION);
@@ -6507,6 +6665,7 @@ test_session_misc_guc_state_is_session_local(PG_FUNCTION_ARGS)
 						PGC_SUSET, PGC_S_SESSION);
 		SetConfigOption("extension_control_path", "$system:/tmp/session1",
 						PGC_SUSET, PGC_S_SESSION);
+		update_process_title = !DEFAULT_UPDATE_PROCESS_TITLE;
 		ok = ok && allowSystemTableMods;
 		ok = ok && max_stack_depth == 101;
 		ok = ok && *PgCurrentMaxStackDepthBytesRef() == 101 * (ssize_t) 1024;
@@ -6518,12 +6677,14 @@ test_session_misc_guc_state_is_session_local(PG_FUNCTION_ARGS)
 			strcmp(Dynamic_library_path, "$libdir/plugins") == 0;
 		ok = ok && strcmp(Extension_control_path,
 						  "$system:/tmp/session1") == 0;
+		ok = ok && update_process_title == !DEFAULT_UPDATE_PROCESS_TITLE;
 
 		PgSetCurrentSession(&fake_session2);
 		ok = ok && !allowSystemTableMods;
 		ok = ok && max_stack_depth == 100;
 		ok = ok && *PgCurrentMaxStackDepthBytesRef() == 100 * (ssize_t) 1024;
 		ok = ok && strcmp(Extension_control_path, "$system") == 0;
+		ok = ok && update_process_title == DEFAULT_UPDATE_PROCESS_TITLE;
 		SetConfigOption("allow_system_table_mods", "off",
 						PGC_SUSET, PGC_S_SESSION);
 		SetConfigOption("max_stack_depth", "102",
@@ -6536,6 +6697,7 @@ test_session_misc_guc_state_is_session_local(PG_FUNCTION_ARGS)
 						PGC_SUSET, PGC_S_SESSION);
 		SetConfigOption("extension_control_path", "$system:/tmp/session2",
 						PGC_SUSET, PGC_S_SESSION);
+		update_process_title = DEFAULT_UPDATE_PROCESS_TITLE;
 		ok = ok && !allowSystemTableMods;
 		ok = ok && max_stack_depth == 102;
 		ok = ok && *PgCurrentMaxStackDepthBytesRef() == 102 * (ssize_t) 1024;
@@ -6547,6 +6709,7 @@ test_session_misc_guc_state_is_session_local(PG_FUNCTION_ARGS)
 			strcmp(Dynamic_library_path, "$libdir") == 0;
 		ok = ok && strcmp(Extension_control_path,
 						  "$system:/tmp/session2") == 0;
+		ok = ok && update_process_title == DEFAULT_UPDATE_PROCESS_TITLE;
 
 		PgSetCurrentSession(&fake_session1);
 		ok = ok && allowSystemTableMods;
@@ -6560,6 +6723,7 @@ test_session_misc_guc_state_is_session_local(PG_FUNCTION_ARGS)
 			strcmp(Dynamic_library_path, "$libdir/plugins") == 0;
 		ok = ok && strcmp(Extension_control_path,
 						  "$system:/tmp/session1") == 0;
+		ok = ok && update_process_title == !DEFAULT_UPDATE_PROCESS_TITLE;
 
 		PgSetCurrentSession(&fake_session2);
 		ok = ok && !allowSystemTableMods;
@@ -6573,6 +6737,7 @@ test_session_misc_guc_state_is_session_local(PG_FUNCTION_ARGS)
 			strcmp(Dynamic_library_path, "$libdir") == 0;
 		ok = ok && strcmp(Extension_control_path,
 						  "$system:/tmp/session2") == 0;
+		ok = ok && update_process_title == DEFAULT_UPDATE_PROCESS_TITLE;
 
 		PgSetCurrentSession(saved_session);
 		SetConfigOption("allow_system_table_mods",

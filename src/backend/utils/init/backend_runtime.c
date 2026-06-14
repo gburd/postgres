@@ -78,6 +78,7 @@
 #include "utils/memutils.h"
 #include "utils/pgstat_internal.h"
 #include "utils/plancache.h"
+#include "utils/ps_status.h"
 #include "utils/resowner.h"
 #include "utils/rls.h"
 #include "utils/xml.h"
@@ -549,6 +550,8 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionFunctionManagerState early_ses
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionExtensionModuleState early_session_extension_modules;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionCatalogLookupState early_session_catalog_lookup;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionInvalidationCallbackState early_session_invalidation_callbacks;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionRIGlobalsState early_session_ri_globals;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionRelMapState early_session_relmap;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPreparedStatementState early_session_prepared_statement;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionOnCommitState early_session_on_commit;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionSequenceState early_session_sequence;
@@ -712,6 +715,10 @@ static void PgSessionInitializeCatalogLookupState(PgSessionCatalogLookupState *c
 static void PgSessionAdoptEarlyCatalogLookupState(PgSession *session);
 static void PgSessionInitializeInvalidationCallbackState(PgSessionInvalidationCallbackState *invalidation_callbacks);
 static void PgSessionAdoptEarlyInvalidationCallbackState(PgSession *session);
+static void PgSessionInitializeRIGlobalsState(PgSessionRIGlobalsState *ri_globals);
+static void PgSessionAdoptEarlyRIGlobalsState(PgSession *session);
+static void PgSessionInitializeRelMapState(PgSessionRelMapState *relmap);
+static void PgSessionAdoptEarlyRelMapState(PgSession *session);
 static void PgSessionInitializePreparedStatementState(PgSessionPreparedStatementState *prepared_statement);
 static void PgSessionAdoptEarlyPreparedStatementState(PgSession *session);
 static void PgSessionInitializeOnCommitState(PgSessionOnCommitState *on_commit);
@@ -898,6 +905,8 @@ static PgSessionFunctionManagerState *PgCurrentSessionFunctionManagerState(void)
 static PgSessionExtensionModuleState *PgCurrentSessionExtensionModuleState(void);
 static PgSessionCatalogLookupState *PgCurrentSessionCatalogLookupState(void);
 static PgSessionInvalidationCallbackState *PgCurrentSessionInvalidationCallbackState(void);
+static PgSessionRIGlobalsState *PgCurrentSessionRIGlobalsState(void);
+static PgSessionRelMapState *PgCurrentSessionRelMapState(void);
 static PgSessionPreparedStatementState *PgCurrentSessionPreparedStatementState(void);
 static PgSessionOnCommitState *PgCurrentSessionOnCommitState(void);
 static PgSessionSequenceState *PgCurrentSessionSequenceState(void);
@@ -1498,6 +1507,7 @@ PgSessionInitializeMiscGUCState(PgSessionMiscGUCState *misc_guc)
 	misc_guc->local_preload_libraries_value = NULL;
 	misc_guc->dynamic_library_path_value = NULL;
 	misc_guc->extension_control_path_value = "$system";
+	misc_guc->update_process_title_value = DEFAULT_UPDATE_PROCESS_TITLE;
 }
 
 static void
@@ -2043,6 +2053,48 @@ PgSessionAdoptEarlyInvalidationCallbackState(PgSession *session)
 }
 
 static void
+PgSessionInitializeRIGlobalsState(PgSessionRIGlobalsState *ri_globals)
+{
+	Assert(ri_globals != NULL);
+
+	ri_globals->constraint_cache = NULL;
+	ri_globals->query_cache = NULL;
+	ri_globals->compare_cache = NULL;
+	dclist_init(&ri_globals->constraint_cache_valid_list);
+	ri_globals->debug_discard_caches_initialized = true;
+	ri_globals->debug_discard_caches_value = DEFAULT_DEBUG_DISCARD_CACHES;
+}
+
+static void
+PgSessionAdoptEarlyRIGlobalsState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (!early_session_ri_globals.debug_discard_caches_initialized)
+		PgSessionInitializeRIGlobalsState(&early_session_ri_globals);
+
+	session->ri_globals = early_session_ri_globals;
+	PgSessionInitializeRIGlobalsState(&early_session_ri_globals);
+}
+
+static void
+PgSessionInitializeRelMapState(PgSessionRelMapState *relmap)
+{
+	Assert(relmap != NULL);
+
+	MemSet(relmap, 0, sizeof(*relmap));
+}
+
+static void
+PgSessionAdoptEarlyRelMapState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	session->relmap = early_session_relmap;
+	PgSessionInitializeRelMapState(&early_session_relmap);
+}
+
+static void
 PgSessionInitializePreparedStatementState(PgSessionPreparedStatementState *prepared_statement)
 {
 	Assert(prepared_statement != NULL);
@@ -2434,6 +2486,8 @@ PgSessionAdoptEarlyState(PgSession *session)
 	PgSessionAdoptEarlyExtensionModuleState(session);
 	PgSessionAdoptEarlyCatalogLookupState(session);
 	PgSessionAdoptEarlyInvalidationCallbackState(session);
+	PgSessionAdoptEarlyRIGlobalsState(session);
+	PgSessionAdoptEarlyRelMapState(session);
 	PgSessionAdoptEarlyPreparedStatementState(session);
 	PgSessionAdoptEarlyOnCommitState(session);
 	PgSessionAdoptEarlySequenceState(session);
@@ -3882,6 +3936,8 @@ PgSessionInitializeRuntimeObject(PgSession *session,
 	PgSessionInitializeExtensionModuleState(&session->extension_modules);
 	PgSessionInitializeCatalogLookupState(&session->catalog_lookup);
 	PgSessionInitializeInvalidationCallbackState(&session->invalidation_callbacks);
+	PgSessionInitializeRIGlobalsState(&session->ri_globals);
+	PgSessionInitializeRelMapState(&session->relmap);
 	PgSessionInitializePreparedStatementState(&session->prepared_statement);
 	PgSessionInitializeOnCommitState(&session->on_commit);
 	PgSessionInitializeSequenceState(&session->sequence);
@@ -4588,6 +4644,27 @@ PgSessionResetClosedState(PgSession *session)
 	}
 	PgSessionInitializeInvalidationCallbackState(&session->invalidation_callbacks);
 
+	if (session->ri_globals.constraint_cache != NULL)
+	{
+		hash_destroy(session->ri_globals.constraint_cache);
+		session->ri_globals.constraint_cache = NULL;
+	}
+	if (session->ri_globals.query_cache != NULL)
+	{
+		hash_destroy(session->ri_globals.query_cache);
+		session->ri_globals.query_cache = NULL;
+	}
+	if (session->ri_globals.compare_cache != NULL)
+	{
+		hash_destroy(session->ri_globals.compare_cache);
+		session->ri_globals.compare_cache = NULL;
+	}
+	dclist_init(&session->ri_globals.constraint_cache_valid_list);
+	session->ri_globals.debug_discard_caches_initialized = true;
+	session->ri_globals.debug_discard_caches_value = DEFAULT_DEBUG_DISCARD_CACHES;
+
+	PgSessionInitializeRelMapState(&session->relmap);
+
 	if (session->logical_replication.logical_rep_relmap_context != NULL)
 	{
 		MemoryContextDelete(session->logical_replication.logical_rep_relmap_context);
@@ -5285,6 +5362,31 @@ PgCurrentSessionInvalidationCallbackState(void)
 	return &CurrentPgSession->invalidation_callbacks;
 }
 
+static PgSessionRIGlobalsState *
+PgCurrentSessionRIGlobalsState(void)
+{
+	PgSessionRIGlobalsState *ri_globals;
+
+	if (CurrentPgSession == NULL)
+		ri_globals = &early_session_ri_globals;
+	else
+		ri_globals = &CurrentPgSession->ri_globals;
+
+	if (!ri_globals->debug_discard_caches_initialized)
+		PgSessionInitializeRIGlobalsState(ri_globals);
+
+	return ri_globals;
+}
+
+static PgSessionRelMapState *
+PgCurrentSessionRelMapState(void)
+{
+	if (CurrentPgSession == NULL)
+		return &early_session_relmap;
+
+	return &CurrentPgSession->relmap;
+}
+
 static PgSessionPreparedStatementState *
 PgCurrentSessionPreparedStatementState(void)
 {
@@ -5960,6 +6062,48 @@ PgSessionInvalidationCallbackState *
 PgCurrentInvalidationCallbackState(void)
 {
 	return PgCurrentSessionInvalidationCallbackState();
+}
+
+HTAB **
+PgCurrentRIConstraintCacheRef(void)
+{
+	return &PgCurrentSessionRIGlobalsState()->constraint_cache;
+}
+
+HTAB **
+PgCurrentRIQueryCacheRef(void)
+{
+	return &PgCurrentSessionRIGlobalsState()->query_cache;
+}
+
+HTAB **
+PgCurrentRICompareCacheRef(void)
+{
+	return &PgCurrentSessionRIGlobalsState()->compare_cache;
+}
+
+dclist_head *
+PgCurrentRIConstraintCacheValidListRef(void)
+{
+	return &PgCurrentSessionRIGlobalsState()->constraint_cache_valid_list;
+}
+
+int *
+PgCurrentDebugDiscardCachesRef(void)
+{
+	return &PgCurrentSessionRIGlobalsState()->debug_discard_caches_value;
+}
+
+PgExecutionRelMapFile *
+PgCurrentRelMapSharedMapRef(void)
+{
+	return &PgCurrentSessionRelMapState()->shared_map;
+}
+
+PgExecutionRelMapFile *
+PgCurrentRelMapLocalMapRef(void)
+{
+	return &PgCurrentSessionRelMapState()->local_map;
 }
 
 HTAB **
@@ -6694,6 +6838,12 @@ char **
 PgCurrentExtensionControlPathRef(void)
 {
 	return &PgCurrentSessionMiscGUCState()->extension_control_path_value;
+}
+
+bool *
+PgCurrentUpdateProcessTitleRef(void)
+{
+	return &PgCurrentSessionMiscGUCState()->update_process_title_value;
 }
 
 bool *
