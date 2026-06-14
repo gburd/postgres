@@ -282,6 +282,7 @@ SetDatabasePath(const char *path)
 	/* This should happen only once per process */
 	Assert(!DatabasePath);
 	DatabasePath = MemoryContextStrdup(TopMemoryContext, path);
+	*PgCurrentDatabasePathOwnedRef() = true;
 }
 
 /*
@@ -894,6 +895,7 @@ InitializeSystemUser(const char *authn_id, const char *auth_method)
 
 	/* Store SystemUser in long-lived storage */
 	SystemUser = MemoryContextStrdup(TopMemoryContext, system_user);
+	PgCurrentUserIdentityState()->system_user_owned = true;
 	pfree(system_user);
 }
 
@@ -1102,8 +1104,12 @@ RestoreClientConnectionInfo(char *conninfo)
 	memcpy(&serialized, conninfo, sizeof(serialized));
 
 	/* Copy the fields back into place */
+	if (*PgCurrentClientConnectionInfoAuthnIdOwnedRef() &&
+		MyClientConnectionInfo.authn_id != NULL)
+		pfree((void *) MyClientConnectionInfo.authn_id);
 	MyClientConnectionInfo.authn_id = NULL;
 	MyClientConnectionInfo.auth_method = serialized.auth_method;
+	*PgCurrentClientConnectionInfoAuthnIdOwnedRef() = false;
 
 	if (serialized.authn_id_len >= 0)
 	{
@@ -1112,6 +1118,7 @@ RestoreClientConnectionInfo(char *conninfo)
 		authn_id = conninfo + sizeof(serialized);
 		MyClientConnectionInfo.authn_id = MemoryContextStrdup(TopMemoryContext,
 															  authn_id);
+		*PgCurrentClientConnectionInfoAuthnIdOwnedRef() = true;
 	}
 }
 

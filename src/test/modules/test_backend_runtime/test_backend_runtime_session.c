@@ -44,6 +44,7 @@ test_copy_current_user_identity(PgSession *session)
 	Assert(session != NULL);
 
 	session->user_identity = *PgCurrentUserIdentityState();
+	session->user_identity.system_user_owned = false;
 	for (int i = 0; i < lengthof(session->user_identity.cached_roles); i++)
 	{
 		session->user_identity.cached_role[i] = InvalidOid;
@@ -3000,6 +3001,7 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	hash_ctl.entrysize = sizeof(Oid);
 
 	fake_session.database.database_path = pstrdup("base/1");
+	fake_session.database.database_path_owned = true;
 	fake_session.prepared_statement.prepared_queries =
 		hash_create("test prepared statement cache", 8, &hash_ctl,
 					HASH_ELEM | HASH_BLOBS);
@@ -3032,6 +3034,8 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 		test_backend_runtime_relsync_callback;
 	fake_session.user_identity.cached_role[0] = BOOLOID;
 	fake_session.user_identity.cached_roles[0] = list_make1_oid(BOOLOID);
+	fake_session.user_identity.system_user = pstrdup("trust:test");
+	fake_session.user_identity.system_user_owned = true;
 	fake_session.user_identity.cached_db_hash = 12345;
 
 	hash_ctl.entrysize = sizeof(TSParserCacheEntry);
@@ -3115,6 +3119,7 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && fake_session.dynamic_library_context == NULL;
 	ok = ok && fake_session.dynamic_library_inits == NIL;
 	ok = ok && fake_session.database.database_path == NULL;
+	ok = ok && !fake_session.database.database_path_owned;
 	ok = ok && fake_session.prepared_statement.prepared_queries == NULL;
 	ok = ok && fake_session.on_commit.on_commits == NIL;
 	ok = ok && fake_session.parser.operator_lookup_cache == NULL;
@@ -3130,6 +3135,8 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && fake_session.invalidation_callbacks.relsync_callback_count == 0;
 	ok = ok && fake_session.user_identity.cached_role[0] == InvalidOid;
 	ok = ok && fake_session.user_identity.cached_roles[0] == NIL;
+	ok = ok && fake_session.user_identity.system_user == NULL;
+	ok = ok && !fake_session.user_identity.system_user_owned;
 	ok = ok && fake_session.user_identity.cached_db_hash == 0;
 	ok = ok && fake_session.text_search.parser_cache_hash == NULL;
 	ok = ok && fake_session.text_search.last_used_parser == NULL;

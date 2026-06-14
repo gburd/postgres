@@ -1148,6 +1148,7 @@ typedef struct PgSessionDatabaseState
 	 * directory in the default tablespace.
 	 */
 	char	   *database_path;
+	bool		database_path_owned;
 } PgSessionDatabaseState;
 
 typedef struct PgSessionTablespaceState
@@ -1409,6 +1410,7 @@ typedef struct PgSessionUserIdentityState
 	Oid			outer_user_id;
 	Oid			current_user_id;
 	const char *system_user;
+	bool		system_user_owned;
 	bool		session_user_is_superuser;
 	int			security_restriction_context;
 	bool		set_role_is_active;
@@ -2177,6 +2179,7 @@ struct PgConnection
 	PgConnectionInterruptState interrupts;
 	PgConnectionStartupState startup;
 	PgConnectionClientConnectionInfoState client_connection_info;
+	bool		client_connection_info_authn_id_owned;
 	PgConnectionSecurityState security;
 };
 
@@ -2644,6 +2647,7 @@ extern char **PgCurrentLocaleNumericRef(void);
 extern char **PgCurrentLocaleTimeRef(void);
 extern int *PgCurrentIcuValidationLevelRef(void);
 extern PgSessionUserIdentityState *PgCurrentUserIdentityState(void);
+extern bool *PgCurrentDatabasePathOwnedRef(void);
 extern int *PgCurrentNLocBufferRef(void);
 extern void **PgCurrentLocalBufferDescriptorsRef(void);
 extern void **PgCurrentLocalBufferBlockPointersRef(void);
@@ -2952,6 +2956,7 @@ extern struct ClientSocket **PgConnectionClientSocketRef(PgConnection *connectio
 extern struct ClientSocket **PgCurrentClientSocketRef(void);
 extern void *PgConnectionClientConnectionInfoRef(PgConnection *connection);
 extern void *PgCurrentClientConnectionInfoRef(void);
+extern bool *PgCurrentClientConnectionInfoAuthnIdOwnedRef(void);
 extern PgConnectionSecurityState *PgConnectionSecurityStateRef(PgConnection *connection);
 extern PgConnectionSecurityState *PgCurrentConnectionSecurityStateRef(void);
 extern PgBackendLaunchModel PgRuntimeGetBackendLaunchModel(BackendType backend_type);

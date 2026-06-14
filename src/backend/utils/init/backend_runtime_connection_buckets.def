@@ -12,5 +12,6 @@ PG_CONNECTION_BUCKET(protocol, MemSet(&connection->protocol, 0, sizeof(connectio
 PG_CONNECTION_BUCKET(output, PgConnectionInitializeOutputState(&connection->output), PgConnectionAdoptEarlyOutputState(connection), (void) 0)
 PG_CONNECTION_BUCKET(interrupts, MemSet(&connection->interrupts, 0, sizeof(connection->interrupts)), PgConnectionAdoptEarlyInterruptState(connection), (void) 0)
 PG_CONNECTION_BUCKET(startup, PgConnectionInitializeStartupState(&connection->startup), PgConnectionAdoptEarlyStartupState(connection), PgConnectionResetStartupClosedState(connection))
-PG_CONNECTION_BUCKET(client_connection_info, MemSet(&connection->client_connection_info, 0, sizeof(connection->client_connection_info)), PgConnectionAdoptEarlyClientConnectionInfo(connection), (void) 0)
+PG_CONNECTION_BUCKET(client_connection_info, MemSet(&connection->client_connection_info, 0, sizeof(connection->client_connection_info)), PgConnectionAdoptEarlyClientConnectionInfo(connection), PgConnectionResetClientConnectionInfoClosedState(connection))
+PG_CONNECTION_BUCKET(client_connection_info_authn_id_owned, connection->client_connection_info_authn_id_owned = false, PgConnectionAdoptEarlyClientConnectionInfoAuthnIdOwned(connection), (void) 0)
 PG_CONNECTION_BUCKET(security, MemSet(&connection->security, 0, sizeof(connection->security)), PgConnectionAdoptEarlySecurityState(connection), PgConnectionResetSecurityClosedState(connection))

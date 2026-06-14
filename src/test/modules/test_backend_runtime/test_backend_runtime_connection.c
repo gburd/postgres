@@ -194,6 +194,9 @@ test_connection_reset_closed_state(PG_FUNCTION_ARGS)
 		list_make1(pstrdup("test warning"));
 	connection.startup.connection_warning_details =
 		list_make1(pstrdup("test detail"));
+	connection.client_connection_info.authn_id = pstrdup("owned-authn");
+	connection.client_connection_info.auth_method = uaSCRAM;
+	connection.client_connection_info_authn_id_owned = true;
 
 	security = &connection.security;
 	security->ssl_loaded_verify_locations = true;
@@ -247,6 +250,9 @@ test_connection_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && !connection.startup.connection_warnings_emitted;
 	ok = ok && connection.startup.connection_warning_messages == NIL;
 	ok = ok && connection.startup.connection_warning_details == NIL;
+	ok = ok && connection.client_connection_info.authn_id == NULL;
+	ok = ok && connection.client_connection_info.auth_method == uaReject;
+	ok = ok && !connection.client_connection_info_authn_id_owned;
 
 	security = &connection.security;
 	ok = ok && !security->ssl_loaded_verify_locations;

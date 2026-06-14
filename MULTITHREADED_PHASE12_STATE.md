@@ -10681,3 +10681,36 @@ Validation for this GUC rebind validation slice:
   globals;
 - direct focused `src/test/regress` `guc` regression passed against the fresh
   temp install.
+
+Owned identity-string reset slice completed:
+
+- `DatabasePath` now has an explicit session-local ownership bit next to the
+  runtime-object pointer. `SetDatabasePath()` marks the copied path as owned,
+  while `PgSessionResetClosedState()` frees it only when that bit is set;
+- `SystemUser` now has the same explicit session-local ownership rule.
+  `InitializeSystemUser()` marks the copied `auth_method:authn_id` string as
+  owned, and closed-session reset frees the owned copy while leaving borrowed
+  test/bridge pointers alone;
+- restored serialized `MyClientConnectionInfo.authn_id` now has a connection
+  ownership bit. Normal authentication strings remain PortContext-owned, while
+  `RestoreClientConnectionInfo()` marks its TopMemoryContext copy as
+  runtime-owned and `PgConnectionResetClosedState()` releases it;
+- the connection ownership bit is part of `PgConnection`, has a lifecycle
+  manifest row, participates in early fallback adoption, and is checked by the
+  bucket-definition lifecycle gate.
+
+Validation for this owned identity-string reset slice:
+
+- touched-object builds passed for `backend_runtime.o`,
+  `backend_runtime_session.o`, `miscinit.o`, `backend_runtime_connection.o`,
+  and `auth.o`;
+- `gmake -C src/test/modules/test_backend_runtime clean all` passed after the
+  installed runtime headers changed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- full `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed, including the
+  extended closed-state reset coverage. TAP remains disabled in this
+  configured build;
+- `gmake check-runtime-lifecycles` passed with 150 runtime fields classified,
+  150 bucket definitions checked, and 25 reset definitions checked.

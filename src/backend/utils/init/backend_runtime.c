@@ -198,6 +198,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionStartupState early_conne
 	.timing.ready_for_use = TIMESTAMP_MINUS_INFINITY
 };
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionClientConnectionInfoState early_client_connection_info;
+static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION bool early_client_connection_info_authn_id_owned;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionSecurityState early_connection_security;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionDatabaseState early_session_database;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionTablespaceState early_session_tablespace = {
@@ -660,6 +661,8 @@ static void PgConnectionInitializeStartupState(PgConnectionStartupState *startup
 static void PgConnectionAdoptEarlyInterruptState(PgConnection *connection);
 static void PgConnectionAdoptEarlyStartupState(PgConnection *connection);
 static void PgConnectionAdoptEarlyClientConnectionInfo(PgConnection *connection);
+static void PgConnectionAdoptEarlyClientConnectionInfoAuthnIdOwned(PgConnection *connection);
+static void PgConnectionResetClientConnectionInfoClosedState(PgConnection *connection);
 static void PgConnectionAdoptEarlySecurityState(PgConnection *connection);
 static void PgSessionAdoptEarlyDatabaseState(PgSession *session);
 static void PgSessionInitializeTablespaceState(PgSessionTablespaceState *tablespace);
@@ -1100,6 +1103,30 @@ PgConnectionAdoptEarlyClientConnectionInfo(PgConnection *connection)
 
 	connection->client_connection_info = early_client_connection_info;
 	MemSet(&early_client_connection_info, 0, sizeof(early_client_connection_info));
+}
+
+static void
+PgConnectionAdoptEarlyClientConnectionInfoAuthnIdOwned(PgConnection *connection)
+{
+	Assert(connection != NULL);
+
+	connection->client_connection_info_authn_id_owned =
+		early_client_connection_info_authn_id_owned;
+	early_client_connection_info_authn_id_owned = false;
+}
+
+static void
+PgConnectionResetClientConnectionInfoClosedState(PgConnection *connection)
+{
+	Assert(connection != NULL);
+
+	if (connection->client_connection_info_authn_id_owned &&
+		connection->client_connection_info.authn_id != NULL)
+		pfree((void *) connection->client_connection_info.authn_id);
+
+	MemSet(&connection->client_connection_info, 0,
+		   sizeof(connection->client_connection_info));
+	connection->client_connection_info_authn_id_owned = false;
 }
 
 static void
@@ -1770,6 +1797,7 @@ PgSessionInitializeUserIdentityState(PgSessionUserIdentityState *user_identity)
 	user_identity->outer_user_id = InvalidOid;
 	user_identity->current_user_id = InvalidOid;
 	user_identity->system_user = NULL;
+	user_identity->system_user_owned = false;
 	user_identity->session_user_is_superuser = false;
 	user_identity->security_restriction_context = 0;
 	user_identity->set_role_is_active = false;
@@ -4732,6 +4760,11 @@ PgSessionResetUserIdentityClosedState(PgSession *session)
 		list_free(session->user_identity.cached_roles[i]);
 		session->user_identity.cached_roles[i] = NIL;
 	}
+	if (session->user_identity.system_user_owned &&
+		session->user_identity.system_user != NULL)
+		pfree((void *) session->user_identity.system_user);
+	session->user_identity.system_user = NULL;
+	session->user_identity.system_user_owned = false;
 	session->user_identity.cached_db_hash = 0;
 }
 
@@ -4798,9 +4831,11 @@ PgSessionResetDatabaseClosedState(PgSession *session)
 
 	if (session->database.database_path != NULL)
 	{
-		pfree(session->database.database_path);
+		if (session->database.database_path_owned)
+			pfree(session->database.database_path);
 		session->database.database_path = NULL;
 	}
+	session->database.database_path_owned = false;
 }
 
 static void
@@ -7804,6 +7839,15 @@ PgConnectionClientConnectionInfoStateRef(PgConnection *connection)
 		return &early_client_connection_info;
 
 	return &connection->client_connection_info;
+}
+
+bool *
+PgConnectionClientConnectionInfoAuthnIdOwnedRef(PgConnection *connection)
+{
+	if (connection == NULL)
+		return &early_client_connection_info_authn_id_owned;
+
+	return &connection->client_connection_info_authn_id_owned;
 }
 
 PgConnectionSecurityState *

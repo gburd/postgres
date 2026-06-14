@@ -430,6 +430,7 @@ extern void PreventCommandDuringRecovery(const char *cmdname);
 #define SECURITY_NOFORCE_RLS			0x0004
 
 extern char **PgCurrentDatabasePathRef(void);
+extern bool *PgCurrentDatabasePathOwnedRef(void);
 #define DatabasePath (*PgCurrentDatabasePathRef())
 
 /* now in utils/init/miscinit.c */

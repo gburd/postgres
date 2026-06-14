@@ -223,6 +223,12 @@ PgCurrentClientConnectionInfoRef(void)
 	return PgConnectionClientConnectionInfoRef(CurrentPgConnection);
 }
 
+bool *
+PgCurrentClientConnectionInfoAuthnIdOwnedRef(void)
+{
+	return PgConnectionClientConnectionInfoAuthnIdOwnedRef(CurrentPgConnection);
+}
+
 PgConnectionSecurityState *
 PgConnectionSecurityStateRef(PgConnection *connection)
 {

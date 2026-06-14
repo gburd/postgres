@@ -355,6 +355,7 @@ set_authn_id(Port *port, const char *id)
 	MyClientConnectionInfo.authn_id =
 		MemoryContextStrdup(GetMemoryChunkContext(port), id);
 	MyClientConnectionInfo.auth_method = port->hba->auth_method;
+	*PgCurrentClientConnectionInfoAuthnIdOwnedRef() = false;
 
 	if (log_connections & LOG_CONNECTION_AUTHENTICATION)
 	{

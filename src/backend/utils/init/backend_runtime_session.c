@@ -97,6 +97,12 @@ PgCurrentDatabasePathRef(void)
 	return &PgCurrentSessionDatabaseState()->database_path;
 }
 
+bool *
+PgCurrentDatabasePathOwnedRef(void)
+{
+	return &PgCurrentSessionDatabaseState()->database_path_owned;
+}
+
 char **
 PgCurrentDefaultTablespaceRef(void)
 {
