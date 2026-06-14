@@ -2020,6 +2020,13 @@ PgSessionInitializeExtensionModuleState(PgSessionExtensionModuleState *extension
 	extension_modules->plpgsql_state = NULL;
 	extension_modules->plpython_procedure_cache = NULL;
 	extension_modules->plpython_reset_registered = false;
+	extension_modules->pltcl_start_proc = NULL;
+	extension_modules->pltclu_start_proc = NULL;
+	extension_modules->pltcl_hold_interp = NULL;
+	extension_modules->pltcl_interp_hash = NULL;
+	extension_modules->pltcl_proc_hash = NULL;
+	extension_modules->pltcl_current_call_state = NULL;
+	extension_modules->pltcl_reset_registered = false;
 	extension_modules->reset_callbacks = NIL;
 	extension_modules->auto_explain_log_min_duration =
 		AUTO_EXPLAIN_LOG_MIN_DURATION_DEFAULT;

@@ -1705,6 +1705,21 @@ Important current files:
   full non-Python build here, then use a Python-enabled build before claiming
   PL/Python runtime coverage for Gate E2.
 
+- This checkout is currently configured with `with_tcl = no`. A direct
+  `gmake -C src/pl/tcl pltcl.o` can still compile the PL/Tcl source on this
+  machine, but top-level install omits the `pltcl` extension and
+  `gmake -C src/pl/tcl check` fails at SQL startup with
+  `extension "pltcl" is not available`. For PL/Tcl-only Phase 12 migrations,
+  use runtime lifecycle checks, global lifetime scans, source review,
+  stale-symbol scans, the `pltcl.o` object build, and the full non-Tcl build
+  here, then use a Tcl-enabled build before claiming PL/Tcl runtime coverage
+  for Gate E2.
+
+- This checkout is currently configured with `with_perl = no`. Direct PL/Perl
+  builds and regression tests under `src/pl/plperl` are not available in this
+  configuration. Use a Perl-enabled build before claiming PL/Perl runtime
+  coverage for Gate E2.
+
 - This checkout is currently validated with LLVM enabled for Phase 12 JIT
   provider work:
 

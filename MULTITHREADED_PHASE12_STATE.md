@@ -13038,3 +13038,71 @@ Validation for the PL/Python procedure-cache session-state slice:
   background psql sessions. The server log ended after the representative
   contrib-extension smoke and did not load PL/Python. Treat this as an
   existing threaded-runtime validation blocker, not PL/Python coverage.
+
+## PL/Tcl Interpreter Session State
+
+Lifecycle/preflight note:
+
+- target root and bucket: `PgSession.extension_modules`;
+- state moved: PL/Tcl's trusted/untrusted start-procedure custom GUC backing
+  strings, dummy hold interpreter pointer, interpreter hash, procedure hash,
+  and current call-state pointer;
+- repeated lifecycle operations: multiple opaque pointer slots plus one
+  reset-registration flag. The existing session extension-module reset
+  callback mechanism is sufficient because PL/Tcl owns Tcl interpreter
+  teardown, query hash iteration, saved SPI plan cleanup, and procedure
+  descriptor reference counts. No new generic lifecycle macro is appropriate
+  for this batch because teardown ordering is semantic and PL/Tcl-specific;
+- retained invariant: PL/Tcl process-wide Tcl notifier setup remains guarded
+  by `pltcl_pm_init_done`, while custom GUC definition and interpreter/cache
+  initialization run once per logical session through dfmgr's per-session
+  `_PG_init()` replay path.
+
+PL/Tcl session-state slice:
+
+- `PgSessionExtensionModuleState` now owns the PL/Tcl custom GUC string slots,
+  interpreter/procedure cache pointers, current call-state pointer, and reset
+  registration flag;
+- `src/pl/tcl/pltcl.c` keeps the historical local names as source-local lvalue
+  compatibility macros over the current session object;
+- `_PG_init()` now separates process-wide Tcl notifier setup from per-session
+  custom GUC definition and session cache initialization;
+- PL/Tcl registers a per-session reset callback that destroys procedure and
+  interpreter hashes, deletes Tcl interpreters, frees saved SPI plans and their
+  plan contexts, clears runtime slots, and clears the registration flag;
+- `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` and
+  `MULTITHREADED_RUNTIME_OWNERS.tsv` record the PL/Tcl session ownership.
+
+Validation limitation: this checkout is configured with `with_tcl = no`, so
+full PL/Tcl install/regression coverage is not available in this build. A
+direct `pltcl.o` object build is available here, but top-level install omits
+the `pltcl` extension. Use a Tcl-enabled build for runtime PL/Tcl coverage
+before claiming bundled language completeness for Gate E2.
+
+Validation for the PL/Tcl interpreter session-state slice:
+
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 212 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- stale-symbol scan found no remaining raw `static char *pltcl_start_proc`,
+  `static char *pltclu_start_proc`, `static Tcl_Interp *pltcl_hold_interp`,
+  `static HTAB *pltcl_interp_htab`, `static HTAB *pltcl_proc_htab`, or
+  `static pltcl_call_state *pltcl_current_call_state` declarations in
+  `src/pl/tcl/pltcl.c`;
+- touched-object builds passed:
+  `gmake -C src/backend/utils/init backend_runtime.o backend_runtime_session.o`,
+  `gmake -C src/test/modules/test_backend_runtime test_backend_runtime_session.o`,
+  and `gmake -C src/pl/tcl pltcl.o`;
+- after the installed `backend_runtime.h` layout change, the documented
+  backend clean and generated-file recovery path was run and full `gmake -j8`
+  passed from that clean backend state;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with patched macOS
+  install-name paths and the repo-local `.perl5` `PERL5LIB`;
+- `gmake -C src/pl/tcl check` is blocked in this checkout by the configured
+  non-Tcl install: the regression reached SQL startup and then failed because
+  `CREATE EXTENSION pltcl` reported `extension "pltcl" is not available`.

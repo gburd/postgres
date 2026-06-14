@@ -2734,6 +2734,13 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && strcmp(extension_modules->pg_stash_advice_stash_name, "") == 0;
 		ok = ok && extension_modules->plpython_procedure_cache == NULL;
 		ok = ok && !extension_modules->plpython_reset_registered;
+		ok = ok && extension_modules->pltcl_start_proc == NULL;
+		ok = ok && extension_modules->pltclu_start_proc == NULL;
+		ok = ok && extension_modules->pltcl_hold_interp == NULL;
+		ok = ok && extension_modules->pltcl_interp_hash == NULL;
+		ok = ok && extension_modules->pltcl_proc_hash == NULL;
+		ok = ok && extension_modules->pltcl_current_call_state == NULL;
+		ok = ok && !extension_modules->pltcl_reset_registered;
 		ok = ok && extension_modules->dblink_persistent_connection == NULL;
 		ok = ok && extension_modules->dblink_remote_conn_hash == NULL;
 		ok = ok && !extension_modules->dblink_reset_registered;
@@ -2768,6 +2775,13 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		extension_modules->auto_explain_extension_options = &session1_private;
 		extension_modules->plpython_procedure_cache = &session1_private;
 		extension_modules->plpython_reset_registered = true;
+		extension_modules->pltcl_start_proc = session1_advice;
+		extension_modules->pltclu_start_proc = session1_stash;
+		extension_modules->pltcl_hold_interp = &session1_private;
+		extension_modules->pltcl_interp_hash = &session1_reset_count;
+		extension_modules->pltcl_proc_hash = session1_auto_explain_options;
+		extension_modules->pltcl_current_call_state = &session1_private;
+		extension_modules->pltcl_reset_registered = true;
 		extension_modules->dblink_persistent_connection = &session1_private;
 		extension_modules->dblink_remote_conn_hash = &session1_reset_count;
 		extension_modules->dblink_reset_registered = true;
@@ -2800,6 +2814,13 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && strcmp(extension_modules->pg_stash_advice_stash_name, "") == 0;
 		ok = ok && extension_modules->plpython_procedure_cache == NULL;
 		ok = ok && !extension_modules->plpython_reset_registered;
+		ok = ok && extension_modules->pltcl_start_proc == NULL;
+		ok = ok && extension_modules->pltclu_start_proc == NULL;
+		ok = ok && extension_modules->pltcl_hold_interp == NULL;
+		ok = ok && extension_modules->pltcl_interp_hash == NULL;
+		ok = ok && extension_modules->pltcl_proc_hash == NULL;
+		ok = ok && extension_modules->pltcl_current_call_state == NULL;
+		ok = ok && !extension_modules->pltcl_reset_registered;
 		ok = ok && extension_modules->dblink_persistent_connection == NULL;
 		ok = ok && extension_modules->dblink_remote_conn_hash == NULL;
 		ok = ok && !extension_modules->dblink_reset_registered;
@@ -2834,6 +2855,13 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		extension_modules->auto_explain_extension_options = &session2_private;
 		extension_modules->plpython_procedure_cache = &session2_private;
 		extension_modules->plpython_reset_registered = true;
+		extension_modules->pltcl_start_proc = session2_advice;
+		extension_modules->pltclu_start_proc = session2_stash;
+		extension_modules->pltcl_hold_interp = &session2_private;
+		extension_modules->pltcl_interp_hash = &session2_reset_count;
+		extension_modules->pltcl_proc_hash = session2_auto_explain_options;
+		extension_modules->pltcl_current_call_state = &session2_private;
+		extension_modules->pltcl_reset_registered = true;
 		extension_modules->dblink_persistent_connection = &session2_private;
 		extension_modules->dblink_remote_conn_hash = &session2_reset_count;
 		extension_modules->dblink_reset_registered = true;
@@ -2888,6 +2916,18 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && extension_modules->plpython_procedure_cache ==
 			&session1_private;
 		ok = ok && extension_modules->plpython_reset_registered;
+		ok = ok && strcmp(extension_modules->pltcl_start_proc,
+						  "session1 advice") == 0;
+		ok = ok && strcmp(extension_modules->pltclu_start_proc,
+						  "session1_stash") == 0;
+		ok = ok && extension_modules->pltcl_hold_interp == &session1_private;
+		ok = ok && extension_modules->pltcl_interp_hash ==
+			&session1_reset_count;
+		ok = ok && extension_modules->pltcl_proc_hash ==
+			session1_auto_explain_options;
+		ok = ok && extension_modules->pltcl_current_call_state ==
+			&session1_private;
+		ok = ok && extension_modules->pltcl_reset_registered;
 		ok = ok && extension_modules->dblink_persistent_connection ==
 			&session1_private;
 		ok = ok && extension_modules->dblink_remote_conn_hash ==
@@ -2940,6 +2980,18 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && extension_modules->plpython_procedure_cache ==
 			&session2_private;
 		ok = ok && extension_modules->plpython_reset_registered;
+		ok = ok && strcmp(extension_modules->pltcl_start_proc,
+						  "session2 advice") == 0;
+		ok = ok && strcmp(extension_modules->pltclu_start_proc,
+						  "session2_stash") == 0;
+		ok = ok && extension_modules->pltcl_hold_interp == &session2_private;
+		ok = ok && extension_modules->pltcl_interp_hash ==
+			&session2_reset_count;
+		ok = ok && extension_modules->pltcl_proc_hash ==
+			session2_auto_explain_options;
+		ok = ok && extension_modules->pltcl_current_call_state ==
+			&session2_private;
+		ok = ok && extension_modules->pltcl_reset_registered;
 		ok = ok && extension_modules->dblink_persistent_connection ==
 			&session2_private;
 		ok = ok && extension_modules->dblink_remote_conn_hash ==
@@ -2963,6 +3015,13 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && fake_session1.extension_modules.plpgsql_state == NULL;
 		ok = ok && fake_session1.extension_modules.plpython_procedure_cache == NULL;
 		ok = ok && !fake_session1.extension_modules.plpython_reset_registered;
+		ok = ok && fake_session1.extension_modules.pltcl_start_proc == NULL;
+		ok = ok && fake_session1.extension_modules.pltclu_start_proc == NULL;
+		ok = ok && fake_session1.extension_modules.pltcl_hold_interp == NULL;
+		ok = ok && fake_session1.extension_modules.pltcl_interp_hash == NULL;
+		ok = ok && fake_session1.extension_modules.pltcl_proc_hash == NULL;
+		ok = ok && fake_session1.extension_modules.pltcl_current_call_state == NULL;
+		ok = ok && !fake_session1.extension_modules.pltcl_reset_registered;
 		ok = ok && fake_session1.extension_modules.reset_callbacks == NIL;
 		ok = ok && fake_session1.extension_modules.pg_trgm_similarity_threshold == 0.3;
 		ok = ok && fake_session1.extension_modules.pg_trgm_word_similarity_threshold == 0.6;
@@ -2984,6 +3043,19 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && fake_session2.extension_modules.plpython_procedure_cache ==
 			&session2_private;
 		ok = ok && fake_session2.extension_modules.plpython_reset_registered;
+		ok = ok && strcmp(fake_session2.extension_modules.pltcl_start_proc,
+						  "session2 advice") == 0;
+		ok = ok && strcmp(fake_session2.extension_modules.pltclu_start_proc,
+						  "session2_stash") == 0;
+		ok = ok && fake_session2.extension_modules.pltcl_hold_interp ==
+			&session2_private;
+		ok = ok && fake_session2.extension_modules.pltcl_interp_hash ==
+			&session2_reset_count;
+		ok = ok && fake_session2.extension_modules.pltcl_proc_hash ==
+			session2_auto_explain_options;
+		ok = ok && fake_session2.extension_modules.pltcl_current_call_state ==
+			&session2_private;
+		ok = ok && fake_session2.extension_modules.pltcl_reset_registered;
 		ok = ok && fake_session2.extension_modules.reset_callbacks != NIL;
 		ok = ok && fake_session2.extension_modules.pg_trgm_similarity_threshold == 0.21;
 		ok = ok && fake_session2.extension_modules.pg_trgm_word_similarity_threshold == 0.22;
@@ -3036,6 +3108,13 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && fake_session2.extension_modules.plpgsql_state == NULL;
 		ok = ok && fake_session2.extension_modules.plpython_procedure_cache == NULL;
 		ok = ok && !fake_session2.extension_modules.plpython_reset_registered;
+		ok = ok && fake_session2.extension_modules.pltcl_start_proc == NULL;
+		ok = ok && fake_session2.extension_modules.pltclu_start_proc == NULL;
+		ok = ok && fake_session2.extension_modules.pltcl_hold_interp == NULL;
+		ok = ok && fake_session2.extension_modules.pltcl_interp_hash == NULL;
+		ok = ok && fake_session2.extension_modules.pltcl_proc_hash == NULL;
+		ok = ok && fake_session2.extension_modules.pltcl_current_call_state == NULL;
+		ok = ok && !fake_session2.extension_modules.pltcl_reset_registered;
 		ok = ok && fake_session2.extension_modules.reset_callbacks == NIL;
 		ok = ok && fake_session2.extension_modules.pg_trgm_similarity_threshold == 0.3;
 		ok = ok && fake_session2.extension_modules.pg_trgm_word_similarity_threshold == 0.6;

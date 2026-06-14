@@ -355,6 +355,48 @@ PgCurrentPLpythonResetRegisteredRef(void)
 	return &PgCurrentSessionExtensionModuleState()->plpython_reset_registered;
 }
 
+char **
+PgCurrentPLTclStartProcRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->pltcl_start_proc;
+}
+
+char **
+PgCurrentPLTclUStartProcRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->pltclu_start_proc;
+}
+
+void **
+PgCurrentPLTclHoldInterpRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->pltcl_hold_interp;
+}
+
+void **
+PgCurrentPLTclInterpHashRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->pltcl_interp_hash;
+}
+
+void **
+PgCurrentPLTclProcHashRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->pltcl_proc_hash;
+}
+
+void **
+PgCurrentPLTclCurrentCallStateRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->pltcl_current_call_state;
+}
+
+bool *
+PgCurrentPLTclResetRegisteredRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->pltcl_reset_registered;
+}
+
 void **
 PgCurrentDblinkPersistentConnectionRef(void)
 {
