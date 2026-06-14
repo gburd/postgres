@@ -29,6 +29,7 @@
 #include "common/pg_prng.h"
 #include "commands/async.h"
 #include "commands/event_trigger.h"
+#include "commands/explain_state.h"
 #include "commands/extension.h"
 #include "commands/repack.h"
 #include "commands/tablespace.h"

@@ -61,6 +61,11 @@ copy-adopt-reset patterns. Record the preflight decision in
 
 ## Active Phase 12 Gate E2 Rule
 
+- Default ordering for the next substantial Gate E2 work: lifecycle
+  ergonomics/refactor first, then the remaining teardown, PMChild/thread
+  synchronization, systematic GUC adoption, startup-serialization narrowing,
+  and large state-migration batches. Treat lifecycle friction as implementation
+  work, not documentation debt.
 - Before the next repetitive Phase 12/Gate E2 lifecycle batch, do a short
   lifecycle-ergonomics preflight. If the batch would add two or more similar
   init/adopt/reset/destroy helpers, first add or extend a checked lifecycle

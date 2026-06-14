@@ -11438,6 +11438,57 @@ Validation for the execution ResourceOwner allocation-context slice:
   local `IPC::Run` `PERL5LIB` and patched temporary-install install-name
   paths.
 
+## auto_explain Session And Execution State
+
+Lifecycle preflight:
+
+- target: migrate bundled `auto_explain` custom-GUC backing variables and
+  executor sampling/nesting state out of contrib-local mutable statics;
+- repeated lifecycle operations: scalar/default custom-GUC initialization,
+  one parsed-GUC extra pointer slot, and scalar execution sampling/nesting
+  reset;
+- preflight result: the existing checked lifecycle mechanism is sufficient.
+  The batch reuses `PgSession.extension_modules` for the session custom-GUC
+  state and parsed option pointer, and `PgExecution.extension` for executor
+  nesting/sample state. Both buckets already have checked constructor,
+  early-adoption, and closed-reset rows, so no new generic lifecycle action is
+  needed.
+
+auto_explain state migration slice:
+
+- `PgSessionExtensionModuleState` now owns
+  `auto_explain.log_min_duration`,
+  `auto_explain.log_parameter_max_length`, the boolean/enum/real
+  `auto_explain` GUC backing slots, `auto_explain.log_extension_options`, and
+  the parsed `log_extension_options` extra pointer;
+- `PgExecutionExtensionState` now owns the auto_explain executor nesting depth
+  and current-query sampled flag;
+- `contrib/auto_explain` keeps its existing local source names through
+  compatibility macros over the current session/execution runtime buckets;
+- `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` and
+  `MULTITHREADED_RUNTIME_OWNERS.tsv` record the new session and execution
+  ownership rows;
+- backend-runtime tests cover auto_explain session isolation, closed-session
+  reset to defaults, and execution-local sampling/nesting state.
+
+Validation for the auto_explain session/execution state slice:
+
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 194 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with no new unclassified mutable
+  globals and no local runtime boundary violations;
+- `git diff --check` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- `gmake -C contrib/auto_explain clean all check` passed;
+- direct `contrib/auto_explain/t/001_auto_explain.pl` TAP passed, 22 tests,
+  using the repo-local `IPC::Run` `PERL5LIB` and patched temporary-install
+  install-name paths;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with the same local
+  `IPC::Run` `PERL5LIB` and patched temporary-install install-name paths;
+- `gmake -j8` passed.
+
 ## Backend Timeout Closed-State Reset
 
 Lifecycle preflight:
@@ -11979,6 +12030,15 @@ preflight result here. The most likely useful primitives are object-owned
 allocation-context setup/reset, reset-through-initializer, delete-and-null
 memory-context cleanup, list/hash cleanup, and copy/adopt-then-reset fallback
 adoption.
+
+Gate E2 ordering update: do lifecycle ergonomics/refactor work before the next
+broad teardown or state-migration batch. The preferred order is to simplify the
+checked lifecycle path first, then use that path while closing backend
+teardown, PMChild/thread-backend synchronization, systematic GUC adoption,
+startup-serialization narrowing, and remaining object-migration work. This is
+required Gate E2 work because the macro/action/checker layer should make later
+batches faster and less error-prone, not merely document the current manual
+process.
 
 Docs refresh: `AGENTS.md` now carries this as a top-level Phase 12/Gate E2
 workflow instruction so continuation agents see it before coding. The next

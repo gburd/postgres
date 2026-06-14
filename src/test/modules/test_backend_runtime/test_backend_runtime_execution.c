@@ -1225,11 +1225,17 @@ test_execution_extension_state_is_execution_local(PG_FUNCTION_ARGS)
 	PgExecution fake_execution2;
 	bool		saved_creating_extension;
 	Oid			saved_current_extension_object;
+	int			saved_auto_explain_nesting_level;
+	bool		saved_auto_explain_current_query_sampled;
 	bool		ok = true;
 
 	saved_execution = CurrentPgExecution;
 	saved_creating_extension = creating_extension;
 	saved_current_extension_object = CurrentExtensionObject;
+	saved_auto_explain_nesting_level =
+		PgCurrentExecutionExtensionState()->auto_explain_nesting_level;
+	saved_auto_explain_current_query_sampled =
+		PgCurrentExecutionExtensionState()->auto_explain_current_query_sampled;
 	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
 	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
 	test_backend_runtime_seed_execution_memory_contexts(&fake_execution1);
@@ -1240,29 +1246,46 @@ test_execution_extension_state_is_execution_local(PG_FUNCTION_ARGS)
 		CurrentPgExecution = &fake_execution1;
 		creating_extension = true;
 		CurrentExtensionObject = 12345;
+		PgCurrentExecutionExtensionState()->auto_explain_nesting_level = 3;
+		PgCurrentExecutionExtensionState()->auto_explain_current_query_sampled = true;
 
 		CurrentPgExecution = &fake_execution2;
 		ok = ok && !creating_extension;
 		ok = ok && CurrentExtensionObject == InvalidOid;
+		ok = ok && PgCurrentExecutionExtensionState()->auto_explain_nesting_level == 0;
+		ok = ok && !PgCurrentExecutionExtensionState()->auto_explain_current_query_sampled;
 		CurrentExtensionObject = 67890;
+		PgCurrentExecutionExtensionState()->auto_explain_nesting_level = 7;
 
 		CurrentPgExecution = &fake_execution1;
 		ok = ok && creating_extension;
 		ok = ok && CurrentExtensionObject == 12345;
+		ok = ok && PgCurrentExecutionExtensionState()->auto_explain_nesting_level == 3;
+		ok = ok && PgCurrentExecutionExtensionState()->auto_explain_current_query_sampled;
 
 		CurrentPgExecution = &fake_execution2;
 		ok = ok && !creating_extension;
 		ok = ok && CurrentExtensionObject == 67890;
+		ok = ok && PgCurrentExecutionExtensionState()->auto_explain_nesting_level == 7;
+		ok = ok && !PgCurrentExecutionExtensionState()->auto_explain_current_query_sampled;
 
 		CurrentPgExecution = saved_execution;
 		creating_extension = saved_creating_extension;
 		CurrentExtensionObject = saved_current_extension_object;
+		PgCurrentExecutionExtensionState()->auto_explain_nesting_level =
+			saved_auto_explain_nesting_level;
+		PgCurrentExecutionExtensionState()->auto_explain_current_query_sampled =
+			saved_auto_explain_current_query_sampled;
 	}
 	PG_CATCH();
 	{
 		CurrentPgExecution = saved_execution;
 		creating_extension = saved_creating_extension;
 		CurrentExtensionObject = saved_current_extension_object;
+		PgCurrentExecutionExtensionState()->auto_explain_nesting_level =
+			saved_auto_explain_nesting_level;
+		PgCurrentExecutionExtensionState()->auto_explain_current_query_sampled =
+			saved_auto_explain_current_query_sampled;
 		PG_RE_THROW();
 	}
 	PG_END_TRY();

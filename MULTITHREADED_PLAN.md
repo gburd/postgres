@@ -606,6 +606,10 @@ Likely changes:
     backend-model metadata, and the autoprewarm shared-state attachment
     pointer now lives in `PgBackend.extension_modules` rather than
     contrib-local TLS;
+  - the bundled `auto_explain` custom-GUC backing variables now live in
+    `PgSession.extension_modules`, and its executor nesting/sampling state now
+    lives in `PgExecution.extension`, leaving only runtime-global hook-chain
+    pointers as module-local static state;
   - the bundled `pg_stash_advice` persistence worker has an initial
     thread-carrier slice through explicit background-worker backend-model
     metadata, with its `pg_plan_advice` dependency marked for the same
@@ -860,6 +864,13 @@ Phase 14 will make backend ownership bugs harder to isolate.
 
 Gate E2 requires:
 
+- the next broad Gate E2 implementation slice starts with lifecycle
+  ergonomics/refactor work before more large state migrations or teardown
+  hardening. The intended order is: simplify checked lifecycle mechanics,
+  then close teardown, PMChild/thread synchronization, systematic GUC adoption,
+  startup-serialization narrowing, and remaining global/object migration work.
+  This is a Gate E2 blocker because it keeps the rest of the phase agent-safe
+  and avoids growing more parallel handwritten init/adopt/reset/destroy lists;
 - threaded backend exit and teardown are safe: normal disconnect, abandoned
   clients, `FATAL`, administrator termination, and worker exit must clean up or
   explicitly account for backend/session/connection/execution memory and

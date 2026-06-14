@@ -926,6 +926,8 @@ typedef struct PgExecutionExtensionState
 {
 	bool		creating;
 	Oid			current_object;
+	int			auto_explain_nesting_level;
+	bool		auto_explain_current_query_sampled;
 } PgExecutionExtensionState;
 
 typedef struct PgExecutionMatViewState
@@ -1640,6 +1642,22 @@ typedef struct PgSessionExtensionModuleState
 {
 	void	   *plpgsql_state;
 	List	   *reset_callbacks;
+	int			auto_explain_log_min_duration;
+	int			auto_explain_log_parameter_max_length;
+	bool		auto_explain_log_analyze;
+	bool		auto_explain_log_verbose;
+	bool		auto_explain_log_buffers;
+	bool		auto_explain_log_io;
+	bool		auto_explain_log_wal;
+	bool		auto_explain_log_triggers;
+	bool		auto_explain_log_timing;
+	bool		auto_explain_log_settings;
+	int			auto_explain_log_format;
+	int			auto_explain_log_level;
+	bool		auto_explain_log_nested_statements;
+	double		auto_explain_sample_rate;
+	char	   *auto_explain_log_extension_options;
+	void	   *auto_explain_extension_options;
 	double		pg_trgm_similarity_threshold;
 	double		pg_trgm_word_similarity_threshold;
 	double		pg_trgm_strict_word_similarity_threshold;
@@ -2877,6 +2895,7 @@ extern void PgBackendResetClosedState(PgBackend *backend);
 extern MemoryContext PgSessionGetDynamicLibraryMemoryContext(PgSession *session);
 extern void **PgCurrentPLpgSQLSessionStateRef(void);
 extern PgSessionExtensionModuleState *PgCurrentSessionExtensionModuleState(void);
+extern PgExecutionExtensionState *PgCurrentExecutionExtensionState(void);
 extern void PgSessionRegisterResetCallback(PgSessionResetCallback callback,
 										   void *arg);
 extern void PgSessionResetClosedState(PgSession *session);

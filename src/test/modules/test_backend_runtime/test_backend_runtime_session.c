@@ -49,6 +49,38 @@ test_backend_runtime_session_reset_callback(void *arg)
 	(*counter)++;
 }
 
+static void
+test_backend_runtime_seed_auto_explain_defaults(PgSessionExtensionModuleState *extension_modules)
+{
+	extension_modules->auto_explain_log_min_duration = -1;
+	extension_modules->auto_explain_log_parameter_max_length = -1;
+	extension_modules->auto_explain_log_timing = true;
+	extension_modules->auto_explain_log_format = EXPLAIN_FORMAT_TEXT;
+	extension_modules->auto_explain_log_level = LOG;
+	extension_modules->auto_explain_sample_rate = 1.0;
+}
+
+static bool
+test_backend_runtime_auto_explain_defaults_ok(PgSessionExtensionModuleState *extension_modules)
+{
+	return extension_modules->auto_explain_log_min_duration == -1 &&
+		extension_modules->auto_explain_log_parameter_max_length == -1 &&
+		!extension_modules->auto_explain_log_analyze &&
+		!extension_modules->auto_explain_log_verbose &&
+		!extension_modules->auto_explain_log_buffers &&
+		!extension_modules->auto_explain_log_io &&
+		!extension_modules->auto_explain_log_wal &&
+		!extension_modules->auto_explain_log_triggers &&
+		extension_modules->auto_explain_log_timing &&
+		!extension_modules->auto_explain_log_settings &&
+		extension_modules->auto_explain_log_format == EXPLAIN_FORMAT_TEXT &&
+		extension_modules->auto_explain_log_level == LOG &&
+		!extension_modules->auto_explain_log_nested_statements &&
+		extension_modules->auto_explain_sample_rate == 1.0 &&
+		extension_modules->auto_explain_log_extension_options == NULL &&
+		extension_modules->auto_explain_extension_options == NULL;
+}
+
 void
 test_copy_current_user_identity(PgSession *session)
 {
@@ -2650,6 +2682,8 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 	char		session2_advice[] = "session2 advice";
 	char		session1_stash[] = "session1_stash";
 	char		session2_stash[] = "session2_stash";
+	char		session1_auto_explain_options[] = "debug";
+	char		session2_auto_explain_options[] = "range_table";
 	bool		ok = true;
 
 	saved_session = CurrentPgSession;
@@ -2665,11 +2699,13 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		fake_session1.extension_modules.pg_trgm_strict_word_similarity_threshold = 0.5;
 		fake_session1.extension_modules.pg_plan_advice_always_explain_supplied_advice = true;
 		fake_session1.extension_modules.pg_stash_advice_stash_name = "";
+		test_backend_runtime_seed_auto_explain_defaults(&fake_session1.extension_modules);
 		fake_session2.extension_modules.pg_trgm_similarity_threshold = 0.3;
 		fake_session2.extension_modules.pg_trgm_word_similarity_threshold = 0.6;
 		fake_session2.extension_modules.pg_trgm_strict_word_similarity_threshold = 0.5;
 		fake_session2.extension_modules.pg_plan_advice_always_explain_supplied_advice = true;
 		fake_session2.extension_modules.pg_stash_advice_stash_name = "";
+		test_backend_runtime_seed_auto_explain_defaults(&fake_session2.extension_modules);
 
 		PgSetCurrentSession(&fake_session1);
 		extension_modules = PgCurrentSessionExtensionModuleState();
@@ -2683,6 +2719,7 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && !extension_modules->pg_plan_advice_trace_mask;
 		ok = ok && extension_modules->pg_plan_advice_generate_advice == 0;
 		ok = ok && strcmp(extension_modules->pg_stash_advice_stash_name, "") == 0;
+		ok = ok && test_backend_runtime_auto_explain_defaults_ok(extension_modules);
 		extension_modules->pg_trgm_similarity_threshold = 0.11;
 		extension_modules->pg_trgm_word_similarity_threshold = 0.12;
 		extension_modules->pg_trgm_strict_word_similarity_threshold = 0.13;
@@ -2693,6 +2730,23 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		extension_modules->pg_plan_advice_trace_mask = true;
 		extension_modules->pg_plan_advice_generate_advice = 1;
 		extension_modules->pg_stash_advice_stash_name = session1_stash;
+		extension_modules->auto_explain_log_min_duration = 10;
+		extension_modules->auto_explain_log_parameter_max_length = 64;
+		extension_modules->auto_explain_log_analyze = true;
+		extension_modules->auto_explain_log_verbose = true;
+		extension_modules->auto_explain_log_buffers = true;
+		extension_modules->auto_explain_log_io = true;
+		extension_modules->auto_explain_log_wal = true;
+		extension_modules->auto_explain_log_triggers = true;
+		extension_modules->auto_explain_log_timing = false;
+		extension_modules->auto_explain_log_settings = true;
+		extension_modules->auto_explain_log_format = EXPLAIN_FORMAT_JSON;
+		extension_modules->auto_explain_log_level = WARNING;
+		extension_modules->auto_explain_log_nested_statements = true;
+		extension_modules->auto_explain_sample_rate = 0.25;
+		extension_modules->auto_explain_log_extension_options =
+			session1_auto_explain_options;
+		extension_modules->auto_explain_extension_options = &session1_private;
 
 		ok = ok && *PgCurrentPLpgSQLSessionStateRef() == NULL;
 		*PgCurrentPLpgSQLSessionStateRef() = &session1_private;
@@ -2711,6 +2765,7 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && !extension_modules->pg_plan_advice_trace_mask;
 		ok = ok && extension_modules->pg_plan_advice_generate_advice == 0;
 		ok = ok && strcmp(extension_modules->pg_stash_advice_stash_name, "") == 0;
+		ok = ok && test_backend_runtime_auto_explain_defaults_ok(extension_modules);
 		extension_modules->pg_trgm_similarity_threshold = 0.21;
 		extension_modules->pg_trgm_word_similarity_threshold = 0.22;
 		extension_modules->pg_trgm_strict_word_similarity_threshold = 0.23;
@@ -2721,6 +2776,23 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		extension_modules->pg_plan_advice_trace_mask = true;
 		extension_modules->pg_plan_advice_generate_advice = 2;
 		extension_modules->pg_stash_advice_stash_name = session2_stash;
+		extension_modules->auto_explain_log_min_duration = 20;
+		extension_modules->auto_explain_log_parameter_max_length = 128;
+		extension_modules->auto_explain_log_analyze = false;
+		extension_modules->auto_explain_log_verbose = true;
+		extension_modules->auto_explain_log_buffers = false;
+		extension_modules->auto_explain_log_io = true;
+		extension_modules->auto_explain_log_wal = false;
+		extension_modules->auto_explain_log_triggers = true;
+		extension_modules->auto_explain_log_timing = true;
+		extension_modules->auto_explain_log_settings = false;
+		extension_modules->auto_explain_log_format = EXPLAIN_FORMAT_XML;
+		extension_modules->auto_explain_log_level = NOTICE;
+		extension_modules->auto_explain_log_nested_statements = false;
+		extension_modules->auto_explain_sample_rate = 0.75;
+		extension_modules->auto_explain_log_extension_options =
+			session2_auto_explain_options;
+		extension_modules->auto_explain_extension_options = &session2_private;
 
 		ok = ok && *PgCurrentPLpgSQLSessionStateRef() == NULL;
 		*PgCurrentPLpgSQLSessionStateRef() = &session2_private;
@@ -2742,6 +2814,24 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && extension_modules->pg_plan_advice_generate_advice == 1;
 		ok = ok && strcmp(extension_modules->pg_stash_advice_stash_name,
 						  "session1_stash") == 0;
+		ok = ok && extension_modules->auto_explain_log_min_duration == 10;
+		ok = ok && extension_modules->auto_explain_log_parameter_max_length == 64;
+		ok = ok && extension_modules->auto_explain_log_analyze;
+		ok = ok && extension_modules->auto_explain_log_verbose;
+		ok = ok && extension_modules->auto_explain_log_buffers;
+		ok = ok && extension_modules->auto_explain_log_io;
+		ok = ok && extension_modules->auto_explain_log_wal;
+		ok = ok && extension_modules->auto_explain_log_triggers;
+		ok = ok && !extension_modules->auto_explain_log_timing;
+		ok = ok && extension_modules->auto_explain_log_settings;
+		ok = ok && extension_modules->auto_explain_log_format == EXPLAIN_FORMAT_JSON;
+		ok = ok && extension_modules->auto_explain_log_level == WARNING;
+		ok = ok && extension_modules->auto_explain_log_nested_statements;
+		ok = ok && extension_modules->auto_explain_sample_rate == 0.25;
+		ok = ok && strcmp(extension_modules->auto_explain_log_extension_options,
+						  "debug") == 0;
+		ok = ok && extension_modules->auto_explain_extension_options ==
+			&session1_private;
 
 		PgSetCurrentSession(&fake_session2);
 		ok = ok && *PgCurrentPLpgSQLSessionStateRef() == &session2_private;
@@ -2758,6 +2848,24 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && extension_modules->pg_plan_advice_generate_advice == 2;
 		ok = ok && strcmp(extension_modules->pg_stash_advice_stash_name,
 						  "session2_stash") == 0;
+		ok = ok && extension_modules->auto_explain_log_min_duration == 20;
+		ok = ok && extension_modules->auto_explain_log_parameter_max_length == 128;
+		ok = ok && !extension_modules->auto_explain_log_analyze;
+		ok = ok && extension_modules->auto_explain_log_verbose;
+		ok = ok && !extension_modules->auto_explain_log_buffers;
+		ok = ok && extension_modules->auto_explain_log_io;
+		ok = ok && !extension_modules->auto_explain_log_wal;
+		ok = ok && extension_modules->auto_explain_log_triggers;
+		ok = ok && extension_modules->auto_explain_log_timing;
+		ok = ok && !extension_modules->auto_explain_log_settings;
+		ok = ok && extension_modules->auto_explain_log_format == EXPLAIN_FORMAT_XML;
+		ok = ok && extension_modules->auto_explain_log_level == NOTICE;
+		ok = ok && !extension_modules->auto_explain_log_nested_statements;
+		ok = ok && extension_modules->auto_explain_sample_rate == 0.75;
+		ok = ok && strcmp(extension_modules->auto_explain_log_extension_options,
+						  "range_table") == 0;
+		ok = ok && extension_modules->auto_explain_extension_options ==
+			&session2_private;
 
 		PgSetCurrentSession(saved_session);
 		PgSessionResetClosedState(&fake_session1);
@@ -2776,6 +2884,7 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && fake_session1.extension_modules.pg_plan_advice_generate_advice == 0;
 		ok = ok && strcmp(fake_session1.extension_modules.pg_stash_advice_stash_name,
 						  "") == 0;
+		ok = ok && test_backend_runtime_auto_explain_defaults_ok(&fake_session1.extension_modules);
 		ok = ok && fake_session2.extension_modules.plpgsql_state == &session2_private;
 		ok = ok && fake_session2.extension_modules.reset_callbacks != NIL;
 		ok = ok && fake_session2.extension_modules.pg_trgm_similarity_threshold == 0.21;
@@ -2790,6 +2899,24 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && fake_session2.extension_modules.pg_plan_advice_generate_advice == 2;
 		ok = ok && strcmp(fake_session2.extension_modules.pg_stash_advice_stash_name,
 						  "session2_stash") == 0;
+		ok = ok && fake_session2.extension_modules.auto_explain_log_min_duration == 20;
+		ok = ok && fake_session2.extension_modules.auto_explain_log_parameter_max_length == 128;
+		ok = ok && !fake_session2.extension_modules.auto_explain_log_analyze;
+		ok = ok && fake_session2.extension_modules.auto_explain_log_verbose;
+		ok = ok && !fake_session2.extension_modules.auto_explain_log_buffers;
+		ok = ok && fake_session2.extension_modules.auto_explain_log_io;
+		ok = ok && !fake_session2.extension_modules.auto_explain_log_wal;
+		ok = ok && fake_session2.extension_modules.auto_explain_log_triggers;
+		ok = ok && fake_session2.extension_modules.auto_explain_log_timing;
+		ok = ok && !fake_session2.extension_modules.auto_explain_log_settings;
+		ok = ok && fake_session2.extension_modules.auto_explain_log_format == EXPLAIN_FORMAT_XML;
+		ok = ok && fake_session2.extension_modules.auto_explain_log_level == NOTICE;
+		ok = ok && !fake_session2.extension_modules.auto_explain_log_nested_statements;
+		ok = ok && fake_session2.extension_modules.auto_explain_sample_rate == 0.75;
+		ok = ok && strcmp(fake_session2.extension_modules.auto_explain_log_extension_options,
+						  "range_table") == 0;
+		ok = ok && fake_session2.extension_modules.auto_explain_extension_options ==
+			&session2_private;
 
 		PgSessionResetClosedState(&fake_session2);
 		ok = ok && session2_reset_count == 1;
@@ -2806,6 +2933,7 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && fake_session2.extension_modules.pg_plan_advice_generate_advice == 0;
 		ok = ok && strcmp(fake_session2.extension_modules.pg_stash_advice_stash_name,
 						  "") == 0;
+		ok = ok && test_backend_runtime_auto_explain_defaults_ok(&fake_session2.extension_modules);
 	}
 	PG_CATCH();
 	{

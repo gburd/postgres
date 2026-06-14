@@ -30,6 +30,7 @@
 #include "commands/async.h"
 #include "commands/event_trigger.h"
 #include "commands/extension.h"
+#include "commands/explain_state.h"
 #include "commands/prepare.h"
 #include "commands/repack.h"
 #include "commands/tablespace.h"
@@ -92,6 +93,12 @@
 #define PG_TRGM_WORD_SIMILARITY_THRESHOLD_DEFAULT 0.6
 #define PG_TRGM_STRICT_WORD_SIMILARITY_THRESHOLD_DEFAULT 0.5
 #define PG_PLAN_ADVICE_ALWAYS_EXPLAIN_SUPPLIED_ADVICE_DEFAULT true
+#define AUTO_EXPLAIN_LOG_MIN_DURATION_DEFAULT (-1)
+#define AUTO_EXPLAIN_LOG_PARAMETER_MAX_LENGTH_DEFAULT (-1)
+#define AUTO_EXPLAIN_LOG_TIMING_DEFAULT true
+#define AUTO_EXPLAIN_LOG_FORMAT_DEFAULT EXPLAIN_FORMAT_TEXT
+#define AUTO_EXPLAIN_LOG_LEVEL_DEFAULT LOG
+#define AUTO_EXPLAIN_SAMPLE_RATE_DEFAULT 1.0
 
 PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgRuntime *CurrentPgRuntime = NULL;
 PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgCarrier *CurrentPgCarrier = NULL;
@@ -566,6 +573,12 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPlannerMethodState early_sessi
 };
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionFunctionManagerState early_session_function_manager;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionExtensionModuleState early_session_extension_modules = {
+	.auto_explain_log_min_duration = AUTO_EXPLAIN_LOG_MIN_DURATION_DEFAULT,
+	.auto_explain_log_parameter_max_length = AUTO_EXPLAIN_LOG_PARAMETER_MAX_LENGTH_DEFAULT,
+	.auto_explain_log_timing = AUTO_EXPLAIN_LOG_TIMING_DEFAULT,
+	.auto_explain_log_format = AUTO_EXPLAIN_LOG_FORMAT_DEFAULT,
+	.auto_explain_log_level = AUTO_EXPLAIN_LOG_LEVEL_DEFAULT,
+	.auto_explain_sample_rate = AUTO_EXPLAIN_SAMPLE_RATE_DEFAULT,
 	.pg_trgm_similarity_threshold = PG_TRGM_SIMILARITY_THRESHOLD_DEFAULT,
 	.pg_trgm_word_similarity_threshold = PG_TRGM_WORD_SIMILARITY_THRESHOLD_DEFAULT,
 	.pg_trgm_strict_word_similarity_threshold = PG_TRGM_STRICT_WORD_SIMILARITY_THRESHOLD_DEFAULT,
@@ -936,7 +949,6 @@ static PgExecutionVacuumState *PgCurrentExecutionVacuumState(void);
 static PgExecutionNodeIOState *PgCurrentExecutionNodeIOState(void);
 static PgExecutionBaseBackupState *PgCurrentExecutionBaseBackupState(void);
 static PgExecutionAnalyzeState *PgCurrentExecutionAnalyzeState(void);
-static PgExecutionExtensionState *PgCurrentExecutionExtensionState(void);
 static PgExecutionMatViewState *PgCurrentExecutionMatViewState(void);
 static PgExecutionSnapshotState *PgCurrentExecutionSnapshotState(void);
 static PgExecutionComboCidState *PgCurrentExecutionComboCidState(void);
@@ -2239,6 +2251,28 @@ PgSessionInitializeExtensionModuleState(PgSessionExtensionModuleState *extension
 
 	extension_modules->plpgsql_state = NULL;
 	extension_modules->reset_callbacks = NIL;
+	extension_modules->auto_explain_log_min_duration =
+		AUTO_EXPLAIN_LOG_MIN_DURATION_DEFAULT;
+	extension_modules->auto_explain_log_parameter_max_length =
+		AUTO_EXPLAIN_LOG_PARAMETER_MAX_LENGTH_DEFAULT;
+	extension_modules->auto_explain_log_analyze = false;
+	extension_modules->auto_explain_log_verbose = false;
+	extension_modules->auto_explain_log_buffers = false;
+	extension_modules->auto_explain_log_io = false;
+	extension_modules->auto_explain_log_wal = false;
+	extension_modules->auto_explain_log_triggers = false;
+	extension_modules->auto_explain_log_timing =
+		AUTO_EXPLAIN_LOG_TIMING_DEFAULT;
+	extension_modules->auto_explain_log_settings = false;
+	extension_modules->auto_explain_log_format =
+		AUTO_EXPLAIN_LOG_FORMAT_DEFAULT;
+	extension_modules->auto_explain_log_level =
+		AUTO_EXPLAIN_LOG_LEVEL_DEFAULT;
+	extension_modules->auto_explain_log_nested_statements = false;
+	extension_modules->auto_explain_sample_rate =
+		AUTO_EXPLAIN_SAMPLE_RATE_DEFAULT;
+	extension_modules->auto_explain_log_extension_options = NULL;
+	extension_modules->auto_explain_extension_options = NULL;
 	extension_modules->pg_trgm_similarity_threshold =
 		PG_TRGM_SIMILARITY_THRESHOLD_DEFAULT;
 	extension_modules->pg_trgm_word_similarity_threshold =
@@ -3658,6 +3692,8 @@ PgExecutionInitializeExtensionState(PgExecutionExtensionState *extension)
 
 	extension->creating = false;
 	extension->current_object = InvalidOid;
+	extension->auto_explain_nesting_level = 0;
+	extension->auto_explain_current_query_sampled = false;
 }
 
 static void
@@ -6139,7 +6175,7 @@ PgCurrentArrayAnalyzeExtraDataRef(void)
 	return &PgCurrentExecutionAnalyzeState()->array_extra_data;
 }
 
-static PgExecutionExtensionState *
+PgExecutionExtensionState *
 PgCurrentExecutionExtensionState(void)
 {
 	if (CurrentPgExecution == NULL)

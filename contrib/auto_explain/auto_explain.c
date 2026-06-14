@@ -24,6 +24,7 @@
 #include "nodes/makefuncs.h"
 #include "nodes/value.h"
 #include "parser/scansup.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
 #include "utils/varlena.h"
 
@@ -31,23 +32,6 @@ PG_MODULE_MAGIC_EXT(
 					.name = "auto_explain",
 					.version = PG_VERSION
 );
-
-/* GUC variables */
-static int	auto_explain_log_min_duration = -1; /* msec or -1 */
-static int	auto_explain_log_parameter_max_length = -1; /* bytes or -1 */
-static bool auto_explain_log_analyze = false;
-static bool auto_explain_log_verbose = false;
-static bool auto_explain_log_buffers = false;
-static bool auto_explain_log_io = false;
-static bool auto_explain_log_wal = false;
-static bool auto_explain_log_triggers = false;
-static bool auto_explain_log_timing = true;
-static bool auto_explain_log_settings = false;
-static int	auto_explain_log_format = EXPLAIN_FORMAT_TEXT;
-static int	auto_explain_log_level = LOG;
-static bool auto_explain_log_nested_statements = false;
-static double auto_explain_sample_rate = 1;
-static char *auto_explain_log_extension_options = NULL;
 
 /*
  * Parsed form of one option from auto_explain.log_extension_options.
@@ -71,7 +55,47 @@ typedef struct auto_explain_extension_options
 	/* a null-terminated copy of the GUC string follows the array */
 } auto_explain_extension_options;
 
-static auto_explain_extension_options *extension_options = NULL;
+#define auto_explain_log_min_duration \
+	(PgCurrentSessionExtensionModuleState()->auto_explain_log_min_duration)
+#define auto_explain_log_parameter_max_length \
+	(PgCurrentSessionExtensionModuleState()->auto_explain_log_parameter_max_length)
+#define auto_explain_log_analyze \
+	(PgCurrentSessionExtensionModuleState()->auto_explain_log_analyze)
+#define auto_explain_log_verbose \
+	(PgCurrentSessionExtensionModuleState()->auto_explain_log_verbose)
+#define auto_explain_log_buffers \
+	(PgCurrentSessionExtensionModuleState()->auto_explain_log_buffers)
+#define auto_explain_log_io \
+	(PgCurrentSessionExtensionModuleState()->auto_explain_log_io)
+#define auto_explain_log_wal \
+	(PgCurrentSessionExtensionModuleState()->auto_explain_log_wal)
+#define auto_explain_log_triggers \
+	(PgCurrentSessionExtensionModuleState()->auto_explain_log_triggers)
+#define auto_explain_log_timing \
+	(PgCurrentSessionExtensionModuleState()->auto_explain_log_timing)
+#define auto_explain_log_settings \
+	(PgCurrentSessionExtensionModuleState()->auto_explain_log_settings)
+#define auto_explain_log_format \
+	(PgCurrentSessionExtensionModuleState()->auto_explain_log_format)
+#define auto_explain_log_level \
+	(PgCurrentSessionExtensionModuleState()->auto_explain_log_level)
+#define auto_explain_log_nested_statements \
+	(PgCurrentSessionExtensionModuleState()->auto_explain_log_nested_statements)
+#define auto_explain_sample_rate \
+	(PgCurrentSessionExtensionModuleState()->auto_explain_sample_rate)
+#define auto_explain_log_extension_options \
+	(PgCurrentSessionExtensionModuleState()->auto_explain_log_extension_options)
+#define nesting_level \
+	(PgCurrentExecutionExtensionState()->auto_explain_nesting_level)
+#define current_query_sampled \
+	(PgCurrentExecutionExtensionState()->auto_explain_current_query_sampled)
+
+static auto_explain_extension_options *
+current_auto_explain_extension_options(void)
+{
+	return (auto_explain_extension_options *)
+		PgCurrentSessionExtensionModuleState()->auto_explain_extension_options;
+}
 
 static const struct config_enum_entry format_options[] = {
 	{"text", EXPLAIN_FORMAT_TEXT, false},
@@ -94,12 +118,6 @@ static const struct config_enum_entry loglevel_options[] = {
 	{"log", LOG, false},
 	{NULL, 0, false}
 };
-
-/* Current nesting depth of ExecutorRun calls */
-static int	nesting_level = 0;
-
-/* Is the current top-level query to be sampled? */
-static bool current_query_sampled = false;
 
 #define auto_explain_enabled() \
 	(auto_explain_log_min_duration >= 0 && \
@@ -449,7 +467,7 @@ explain_ExecutorEnd(QueryDesc *queryDesc)
 			es->format = auto_explain_log_format;
 			es->settings = auto_explain_log_settings;
 
-			apply_extension_options(es, extension_options);
+			apply_extension_options(es, current_auto_explain_extension_options());
 
 			ExplainBeginOutput(es);
 			ExplainQueryText(es, queryDesc);
@@ -580,7 +598,8 @@ retry:
 static void
 assign_log_extension_options(const char *newval, void *extra)
 {
-	extension_options = (auto_explain_extension_options *) extra;
+	PgCurrentSessionExtensionModuleState()->auto_explain_extension_options =
+		extra;
 }
 
 /*
