@@ -105,6 +105,19 @@ tests += {
       't/040_pg_createsubscriber.pl',
     ],
   },
+  'pytest': {
+    'env': {'GZIP_PROGRAM': gzip.found() ? gzip.full_path() : '',
+            'TAR': tar.found() ? tar.full_path() : '',
+            'LZ4': program_lz4.found() ? program_lz4.full_path() : '',
+    },
+    'tests': [
+      'pyt/test_010_pg_basebackup.py',
+      'pyt/test_011_in_place_tablespace.py',
+      'pyt/test_020_pg_receivewal.py',
+      'pyt/test_030_pg_recvlogical.py',
+      'pyt/test_040_pg_createsubscriber.py',
+    ],
+  },
 }
 
 subdir('po', if_found: libintl)
