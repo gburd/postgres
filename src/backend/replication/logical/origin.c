@@ -90,6 +90,7 @@
 #include "storage/lmgr.h"
 #include "storage/subsystems.h"
 #include "utils/builtins.h"
+#include "utils/backend_runtime.h"
 #include "utils/fmgroids.h"
 #include "utils/guc.h"
 #include "utils/pg_lsn.h"
@@ -191,7 +192,7 @@ static PG_GLOBAL_SHMEM ReplicationStateCtl *replication_states_ctl;
  * remote commit.  (Ownership of a backend's own entry can only be changed by
  * that backend.)
  */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION ReplicationState *session_replication_state = NULL;
+#define session_replication_state (*PgCurrentReplicationOriginSessionStateRef())
 
 /* Magic for on disk files. */
 #define REPLICATION_STATE_MAGIC ((uint32) 0x1257DADE)

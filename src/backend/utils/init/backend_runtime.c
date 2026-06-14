@@ -415,6 +415,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionReplicationGUCState early_sess
 	.debug_logical_replication_streaming_value =
 		DEBUG_LOGICAL_REP_STREAMING_BUFFERED
 };
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionLogicalReplicationState early_session_logical_replication;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionGeneralGUCState early_session_general_guc = {
 	.initialized = true,
 	.allow_alter_system_value = true,
@@ -681,6 +682,8 @@ static void PgSessionInitializeCommandGUCState(PgSessionCommandGUCState *command
 static void PgSessionAdoptEarlyCommandGUCState(PgSession *session);
 static void PgSessionInitializeReplicationGUCState(PgSessionReplicationGUCState *replication_guc);
 static void PgSessionAdoptEarlyReplicationGUCState(PgSession *session);
+static void PgSessionInitializeLogicalReplicationState(PgSessionLogicalReplicationState *logical_replication);
+static void PgSessionAdoptEarlyLogicalReplicationState(PgSession *session);
 static void PgSessionInitializeGeneralGUCState(PgSessionGeneralGUCState *general_guc);
 static void PgSessionAdoptEarlyGeneralGUCState(PgSession *session);
 static void PgSessionInitializeAccessWalGUCState(PgSessionAccessWalGUCState *access_wal_guc);
@@ -867,6 +870,7 @@ static PgSessionUserGUCState *PgCurrentSessionUserGUCState(void);
 static PgSessionUserIdentityState *PgCurrentSessionUserIdentityState(void);
 static PgSessionCommandGUCState *PgCurrentSessionCommandGUCState(void);
 static PgSessionReplicationGUCState *PgCurrentSessionReplicationGUCState(void);
+static PgSessionLogicalReplicationState *PgCurrentSessionLogicalReplicationState(void);
 static PgSessionGeneralGUCState *PgCurrentSessionGeneralGUCState(void);
 static PgSessionAccessWalGUCState *PgCurrentSessionAccessWalGUCState(void);
 static PgSessionJitGUCState *PgCurrentSessionJitGUCState(void);
@@ -1674,6 +1678,31 @@ PgSessionAdoptEarlyReplicationGUCState(PgSession *session)
 }
 
 static void
+PgSessionInitializeLogicalReplicationState(PgSessionLogicalReplicationState *logical_replication)
+{
+	Assert(logical_replication != NULL);
+
+	MemSet(logical_replication, 0, sizeof(*logical_replication));
+}
+
+static void
+PgSessionAdoptEarlyLogicalReplicationState(PgSession *session)
+{
+	Assert(session != NULL);
+	Assert(early_session_logical_replication.session_replication_state == NULL);
+	Assert(early_session_logical_replication.logical_rep_relmap_context == NULL);
+	Assert(early_session_logical_replication.logical_rep_relmap == NULL);
+	Assert(early_session_logical_replication.logical_rep_partmap_context == NULL);
+	Assert(early_session_logical_replication.logical_rep_partmap == NULL);
+	Assert(!early_session_logical_replication.pgoutput_publications_valid);
+	Assert(early_session_logical_replication.pgoutput_relation_sync_cache == NULL);
+	Assert(early_session_logical_replication.syncing_relations_state == 0);
+
+	PgSessionInitializeLogicalReplicationState(&session->logical_replication);
+	PgSessionInitializeLogicalReplicationState(&early_session_logical_replication);
+}
+
+static void
 PgSessionInitializeGeneralGUCState(PgSessionGeneralGUCState *general_guc)
 {
 	Assert(general_guc != NULL);
@@ -2301,6 +2330,7 @@ PgSessionAdoptEarlyState(PgSession *session)
 	PgSessionAdoptEarlyUserIdentityState(session);
 	PgSessionAdoptEarlyCommandGUCState(session);
 	PgSessionAdoptEarlyReplicationGUCState(session);
+	PgSessionAdoptEarlyLogicalReplicationState(session);
 	PgSessionAdoptEarlyGeneralGUCState(session);
 	PgSessionAdoptEarlyAccessWalGUCState(session);
 	PgSessionAdoptEarlyJitGUCState(session);
@@ -3723,6 +3753,7 @@ PgSessionInitializeRuntimeObject(PgSession *session,
 	PgSessionInitializeUserIdentityState(&session->user_identity);
 	PgSessionInitializeCommandGUCState(&session->command_guc);
 	PgSessionInitializeReplicationGUCState(&session->replication_guc);
+	PgSessionInitializeLogicalReplicationState(&session->logical_replication);
 	PgSessionInitializeGeneralGUCState(&session->general_guc);
 	PgSessionInitializeAccessWalGUCState(&session->access_wal_guc);
 	PgSessionInitializeJitGUCState(&session->jit_guc);
@@ -4357,6 +4388,38 @@ PgSessionResetClosedState(PgSession *session)
 	}
 	PgSessionInitializeInvalidationCallbackState(&session->invalidation_callbacks);
 
+	if (session->logical_replication.logical_rep_relmap_context != NULL)
+	{
+		MemoryContextDelete(session->logical_replication.logical_rep_relmap_context);
+		session->logical_replication.logical_rep_relmap_context = NULL;
+		session->logical_replication.logical_rep_relmap = NULL;
+	}
+	else if (session->logical_replication.logical_rep_relmap != NULL)
+	{
+		hash_destroy(session->logical_replication.logical_rep_relmap);
+		session->logical_replication.logical_rep_relmap = NULL;
+	}
+
+	if (session->logical_replication.logical_rep_partmap_context != NULL)
+	{
+		MemoryContextDelete(session->logical_replication.logical_rep_partmap_context);
+		session->logical_replication.logical_rep_partmap_context = NULL;
+		session->logical_replication.logical_rep_partmap = NULL;
+	}
+	else if (session->logical_replication.logical_rep_partmap != NULL)
+	{
+		hash_destroy(session->logical_replication.logical_rep_partmap);
+		session->logical_replication.logical_rep_partmap = NULL;
+	}
+
+	if (session->logical_replication.pgoutput_relation_sync_cache != NULL)
+	{
+		hash_destroy(session->logical_replication.pgoutput_relation_sync_cache);
+		session->logical_replication.pgoutput_relation_sync_cache = NULL;
+	}
+	session->logical_replication.pgoutput_publications_valid = false;
+	session->logical_replication.syncing_relations_state = 0;
+
 	for (int i = 0; i < lengthof(session->user_identity.cached_roles); i++)
 	{
 		session->user_identity.cached_role[i] = InvalidOid;
@@ -4858,6 +4921,15 @@ PgCurrentSessionReplicationGUCState(void)
 		PgSessionInitializeReplicationGUCState(replication_guc);
 
 	return replication_guc;
+}
+
+static PgSessionLogicalReplicationState *
+PgCurrentSessionLogicalReplicationState(void)
+{
+	if (CurrentPgSession == NULL)
+		return &early_session_logical_replication;
+
+	return &CurrentPgSession->logical_replication;
 }
 
 static PgSessionGeneralGUCState *
@@ -6700,6 +6772,54 @@ PgCurrentDebugLogicalReplicationStreamingRef(void)
 
 	replication_guc = PgCurrentSessionReplicationGUCState();
 	return &replication_guc->debug_logical_replication_streaming_value;
+}
+
+struct ReplicationState **
+PgCurrentReplicationOriginSessionStateRef(void)
+{
+	return &PgCurrentSessionLogicalReplicationState()->session_replication_state;
+}
+
+MemoryContext *
+PgCurrentLogicalRepRelMapContextRef(void)
+{
+	return &PgCurrentSessionLogicalReplicationState()->logical_rep_relmap_context;
+}
+
+HTAB **
+PgCurrentLogicalRepRelMapRef(void)
+{
+	return &PgCurrentSessionLogicalReplicationState()->logical_rep_relmap;
+}
+
+MemoryContext *
+PgCurrentLogicalRepPartMapContextRef(void)
+{
+	return &PgCurrentSessionLogicalReplicationState()->logical_rep_partmap_context;
+}
+
+HTAB **
+PgCurrentLogicalRepPartMapRef(void)
+{
+	return &PgCurrentSessionLogicalReplicationState()->logical_rep_partmap;
+}
+
+bool *
+PgCurrentPgOutputPublicationsValidRef(void)
+{
+	return &PgCurrentSessionLogicalReplicationState()->pgoutput_publications_valid;
+}
+
+HTAB **
+PgCurrentPgOutputRelationSyncCacheRef(void)
+{
+	return &PgCurrentSessionLogicalReplicationState()->pgoutput_relation_sync_cache;
+}
+
+int *
+PgCurrentLogicalRepSyncingRelationsStateRef(void)
+{
+	return &PgCurrentSessionLogicalReplicationState()->syncing_relations_state;
 }
 
 bool *

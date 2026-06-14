@@ -9150,3 +9150,42 @@ Validation for this slice:
   globals;
 - full `gmake -j8`, `test_backend_runtime` regression, contrib build, and
   direct threaded runtime TAP were run before commit.
+
+## Session Logical Replication Caches
+
+The next session-cache batch moves logical replication's remaining
+session-local cache roots into `PgSessionLogicalReplicationState`:
+
+- replication-origin's borrowed `ReplicationState` pointer;
+- subscriber relation-map and partition-map memory contexts and hashes;
+- `pgoutput` publication validity and relation sync hash;
+- sync-worker relation-state validity.
+
+The relation-map contexts own their hash tables and cache entries, and
+`PgSessionResetClosedState()` deletes those contexts or fallback hashes on
+session close. The `pgoutput` relation sync hash remains a session cache and is
+destroyed on either output-plugin shutdown or closed-session reset. The
+replication-origin pointer is different: it is a borrowed shared-memory slot
+with refcount semantics, so cleanup remains owned by
+`replorigin_session_reset()` and `ReplicationOriginExitCleanup()` rather than
+being silently cleared by the generic session reset path.
+
+Early adoption for this bucket asserts all pointer/hash/context slots are
+empty. That keeps startup adoption explicit and prevents silently carrying
+logical-replication caches that were accidentally populated before a real
+session object existed. `test_session_datetime_state_is_session_local()` now
+also switches fake sessions and verifies the logical-replication pointer/hash
+slots do not leak between logical sessions.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `origin.o`,
+  `relation.o`, `syncutils.o`, `pgoutput.o`, and `test_backend_runtime.o`;
+- `gmake check-runtime-lifecycles` passed with 138 fields classified after
+  adding the logical-replication lifecycle row;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and session-local declarations reduced from 180 to 173;
+- clean backend rebuild plus full `gmake -j8` passed after changing
+  `PgSession` layout;
+- `gmake -C contrib -j8`, `gmake -C src/test/modules/test_backend_runtime
+  check`, and direct threaded runtime TAP all passed before commit.

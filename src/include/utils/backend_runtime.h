@@ -1406,6 +1406,18 @@ typedef struct PgSessionReplicationGUCState
 	int			debug_logical_replication_streaming_value;
 } PgSessionReplicationGUCState;
 
+typedef struct PgSessionLogicalReplicationState
+{
+	struct ReplicationState *session_replication_state;
+	MemoryContext logical_rep_relmap_context;
+	HTAB	   *logical_rep_relmap;
+	MemoryContext logical_rep_partmap_context;
+	HTAB	   *logical_rep_partmap;
+	bool		pgoutput_publications_valid;
+	HTAB	   *pgoutput_relation_sync_cache;
+	int			syncing_relations_state;
+} PgSessionLogicalReplicationState;
+
 typedef struct PgSessionGeneralGUCState
 {
 	bool		initialized;
@@ -1944,6 +1956,7 @@ struct PgSession
 	PgSessionUserIdentityState user_identity;
 	PgSessionCommandGUCState command_guc;
 	PgSessionReplicationGUCState replication_guc;
+	PgSessionLogicalReplicationState logical_replication;
 	PgSessionGeneralGUCState general_guc;
 	PgSessionAccessWalGUCState access_wal_guc;
 	PgSessionJitGUCState jit_guc;
@@ -2209,6 +2222,14 @@ extern bool *PgCurrentLogReplicationCommandsRef(void);
 extern int *PgCurrentWalReceiverTimeoutRef(void);
 extern int *PgCurrentLogicalDecodingWorkMemRef(void);
 extern int *PgCurrentDebugLogicalReplicationStreamingRef(void);
+extern struct ReplicationState **PgCurrentReplicationOriginSessionStateRef(void);
+extern MemoryContext *PgCurrentLogicalRepRelMapContextRef(void);
+extern HTAB **PgCurrentLogicalRepRelMapRef(void);
+extern MemoryContext *PgCurrentLogicalRepPartMapContextRef(void);
+extern HTAB **PgCurrentLogicalRepPartMapRef(void);
+extern bool *PgCurrentPgOutputPublicationsValidRef(void);
+extern HTAB **PgCurrentPgOutputRelationSyncCacheRef(void);
+extern int *PgCurrentLogicalRepSyncingRelationsStateRef(void);
 extern bool *PgCurrentAllowAlterSystemRef(void);
 extern bool *PgCurrentRowSecurityRef(void);
 extern bool *PgCurrentCheckFunctionBodiesRef(void);

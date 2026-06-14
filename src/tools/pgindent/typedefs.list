@@ -2318,6 +2318,7 @@ PgIfAddrCallback
 PgRuntime
 PgSession
 PgSessionLoopState
+PgSessionLogicalReplicationState
 PgSessionTzAbbrevCache
 PgStepBudget
 PgStepResult

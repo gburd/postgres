@@ -1592,6 +1592,12 @@ The table pointer is a borrowed GUC extra value, while the inline cache is
 session scratch reset by the existing timezone-abbreviation and timezone
 assign paths. This removes two more session TLS declarations while keeping the
 lifecycle rule explicit in `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`.
+The following logical-replication session-cache batch moved replication-origin
+session state, logical relation/partition map roots, `pgoutput` relation sync
+state, and sync-worker relation validity into `PgSessionLogicalReplicationState`.
+The bucket has null-asserted early adoption and explicit closed-session cleanup
+for owned contexts/hashes; replication-origin refcount release remains owned by
+the origin subsystem reset/exit path.
 
 ## Phase 13: Scheduler-Aware Wait Boundary
 

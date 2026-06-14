@@ -627,6 +627,16 @@ Important current files:
   `ClearTimeZoneAbbrevCache()`. After changing this bridge, rebuild
   `backend_runtime.o`, `datetime.o`, and `test_backend_runtime.o`, then run
   `gmake check-runtime-lifecycles` and `gmake check-global-lifetimes`.
+- Logical replication session-cache roots now live in
+  `PgSessionLogicalReplicationState`: `origin.c`, `relation.c`, `syncutils.c`,
+  and `pgoutput.c` keep local names through runtime accessors. Relation-map
+  contexts own their hashes and entries; `pgoutput` owns its relation sync
+  hash; the replication-origin slot is a borrowed shared-memory pointer whose
+  refcount is still released by `replorigin_session_reset()`/exit cleanup.
+  After changing this bridge, rebuild `backend_runtime.o`, `origin.o`,
+  `relation.o`, `syncutils.o`, `pgoutput.o`, and
+  `test_backend_runtime.o`, then run the lifecycle/global scans and the
+  `test_backend_runtime` regression.
 - Utility command/cache state in `PgBackendUtilityState` now also covers
   async notify pending and exit-registration flags, the extension sibling cache
   head, the injection-point callback cache, and the legacy sampling reservoir

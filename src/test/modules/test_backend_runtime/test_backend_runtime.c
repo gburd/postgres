@@ -1416,6 +1416,14 @@ test_session_datetime_state_is_session_local(PG_FUNCTION_ARGS)
 			strcmp(pg_get_timezone_name(log_timezone), "GMT") == 0;
 		ok = ok && *PgCurrentTimeZoneAbbrevTableRef() == NULL;
 		ok = ok && PgCurrentTimeZoneAbbrevCache()[0].abbrev[0] == '\0';
+		ok = ok && *PgCurrentReplicationOriginSessionStateRef() == NULL;
+		ok = ok && *PgCurrentLogicalRepRelMapContextRef() == NULL;
+		ok = ok && *PgCurrentLogicalRepRelMapRef() == NULL;
+		ok = ok && *PgCurrentLogicalRepPartMapContextRef() == NULL;
+		ok = ok && *PgCurrentLogicalRepPartMapRef() == NULL;
+		ok = ok && !*PgCurrentPgOutputPublicationsValidRef();
+		ok = ok && *PgCurrentPgOutputRelationSyncCacheRef() == NULL;
+		ok = ok && *PgCurrentLogicalRepSyncingRelationsStateRef() == 0;
 		DateStyle = USE_SQL_DATES;
 		DateOrder = DATEORDER_DMY;
 		SetConfigOption("IntervalStyle", "sql_standard",
@@ -1436,6 +1444,15 @@ test_session_datetime_state_is_session_local(PG_FUNCTION_ARGS)
 		PgCurrentTimeZoneAbbrevCache()[0].ftype = TZ;
 		PgCurrentTimeZoneAbbrevCache()[0].offset = 11;
 		PgCurrentTimeZoneAbbrevCache()[0].tz = (pg_tz *) &fake_session1;
+		*PgCurrentReplicationOriginSessionStateRef() =
+			(struct ReplicationState *) &fake_session1;
+		*PgCurrentLogicalRepRelMapContextRef() = (MemoryContext) &fake_session1;
+		*PgCurrentLogicalRepRelMapRef() = (HTAB *) &fake_session1;
+		*PgCurrentLogicalRepPartMapContextRef() = (MemoryContext) &fake_session1;
+		*PgCurrentLogicalRepPartMapRef() = (HTAB *) &fake_session1;
+		*PgCurrentPgOutputPublicationsValidRef() = true;
+		*PgCurrentPgOutputRelationSyncCacheRef() = (HTAB *) &fake_session1;
+		*PgCurrentLogicalRepSyncingRelationsStateRef() = 17;
 
 		PgSetCurrentSession(&fake_session2);
 		ok = ok && DateStyle == USE_ISO_DATES;
@@ -1449,6 +1466,14 @@ test_session_datetime_state_is_session_local(PG_FUNCTION_ARGS)
 			strcmp(pg_get_timezone_name(log_timezone), "GMT") == 0;
 		ok = ok && *PgCurrentTimeZoneAbbrevTableRef() == NULL;
 		ok = ok && PgCurrentTimeZoneAbbrevCache()[0].abbrev[0] == '\0';
+		ok = ok && *PgCurrentReplicationOriginSessionStateRef() == NULL;
+		ok = ok && *PgCurrentLogicalRepRelMapContextRef() == NULL;
+		ok = ok && *PgCurrentLogicalRepRelMapRef() == NULL;
+		ok = ok && *PgCurrentLogicalRepPartMapContextRef() == NULL;
+		ok = ok && *PgCurrentLogicalRepPartMapRef() == NULL;
+		ok = ok && !*PgCurrentPgOutputPublicationsValidRef();
+		ok = ok && *PgCurrentPgOutputRelationSyncCacheRef() == NULL;
+		ok = ok && *PgCurrentLogicalRepSyncingRelationsStateRef() == 0;
 		DateStyle = USE_GERMAN_DATES;
 		DateOrder = DATEORDER_YMD;
 		SetConfigOption("IntervalStyle", "iso_8601",
@@ -1469,6 +1494,15 @@ test_session_datetime_state_is_session_local(PG_FUNCTION_ARGS)
 		PgCurrentTimeZoneAbbrevCache()[0].ftype = DYNTZ;
 		PgCurrentTimeZoneAbbrevCache()[0].offset = 22;
 		PgCurrentTimeZoneAbbrevCache()[0].tz = (pg_tz *) &fake_session2;
+		*PgCurrentReplicationOriginSessionStateRef() =
+			(struct ReplicationState *) &fake_session2;
+		*PgCurrentLogicalRepRelMapContextRef() = (MemoryContext) &fake_session2;
+		*PgCurrentLogicalRepRelMapRef() = (HTAB *) &fake_session2;
+		*PgCurrentLogicalRepPartMapContextRef() = (MemoryContext) &fake_session2;
+		*PgCurrentLogicalRepPartMapRef() = (HTAB *) &fake_session2;
+		*PgCurrentPgOutputPublicationsValidRef() = true;
+		*PgCurrentPgOutputRelationSyncCacheRef() = (HTAB *) &fake_session2;
+		*PgCurrentLogicalRepSyncingRelationsStateRef() = 23;
 
 		PgSetCurrentSession(&fake_session1);
 		ok = ok && DateStyle == USE_SQL_DATES;
@@ -1486,6 +1520,20 @@ test_session_datetime_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && PgCurrentTimeZoneAbbrevCache()[0].offset == 11;
 		ok = ok && PgCurrentTimeZoneAbbrevCache()[0].tz ==
 			(pg_tz *) &fake_session1;
+		ok = ok && *PgCurrentReplicationOriginSessionStateRef() ==
+			(struct ReplicationState *) &fake_session1;
+		ok = ok && *PgCurrentLogicalRepRelMapContextRef() ==
+			(MemoryContext) &fake_session1;
+		ok = ok && *PgCurrentLogicalRepRelMapRef() ==
+			(HTAB *) &fake_session1;
+		ok = ok && *PgCurrentLogicalRepPartMapContextRef() ==
+			(MemoryContext) &fake_session1;
+		ok = ok && *PgCurrentLogicalRepPartMapRef() ==
+			(HTAB *) &fake_session1;
+		ok = ok && *PgCurrentPgOutputPublicationsValidRef();
+		ok = ok && *PgCurrentPgOutputRelationSyncCacheRef() ==
+			(HTAB *) &fake_session1;
+		ok = ok && *PgCurrentLogicalRepSyncingRelationsStateRef() == 17;
 
 		PgSetCurrentSession(&fake_session2);
 		ok = ok && DateStyle == USE_GERMAN_DATES;
@@ -1503,6 +1551,20 @@ test_session_datetime_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && PgCurrentTimeZoneAbbrevCache()[0].offset == 22;
 		ok = ok && PgCurrentTimeZoneAbbrevCache()[0].tz ==
 			(pg_tz *) &fake_session2;
+		ok = ok && *PgCurrentReplicationOriginSessionStateRef() ==
+			(struct ReplicationState *) &fake_session2;
+		ok = ok && *PgCurrentLogicalRepRelMapContextRef() ==
+			(MemoryContext) &fake_session2;
+		ok = ok && *PgCurrentLogicalRepRelMapRef() ==
+			(HTAB *) &fake_session2;
+		ok = ok && *PgCurrentLogicalRepPartMapContextRef() ==
+			(MemoryContext) &fake_session2;
+		ok = ok && *PgCurrentLogicalRepPartMapRef() ==
+			(HTAB *) &fake_session2;
+		ok = ok && *PgCurrentPgOutputPublicationsValidRef();
+		ok = ok && *PgCurrentPgOutputRelationSyncCacheRef() ==
+			(HTAB *) &fake_session2;
+		ok = ok && *PgCurrentLogicalRepSyncingRelationsStateRef() == 23;
 
 		PgSetCurrentSession(saved_session);
 		DateStyle = saved_date_style;

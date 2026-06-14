@@ -1166,6 +1166,16 @@ storage, and the inline cache is session scratch reset by
 session-local runtime test now switches fake sessions and verifies both the
 borrowed pointer slot and cache entry remain isolated.
 
+The next logical-replication session-cache slice moved replication-origin's
+borrowed session slot, subscriber relation-map and partition-map roots,
+`pgoutput` relation sync state, and sync-worker relation validity into
+`PgSessionLogicalReplicationState`. This bucket is still a bridge, but it has
+an explicit lifecycle rule: early adoption asserts all pointer/hash/context
+slots are empty, closed-session reset deletes owned relation-map contexts and
+hashes, and replication-origin refcount release remains with
+`replorigin_session_reset()`/exit cleanup instead of being hidden inside the
+generic session destructor.
+
 ## Bottom Line
 
 The branch is on track only if the current debt is treated as Phase 12
