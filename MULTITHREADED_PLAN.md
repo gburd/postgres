@@ -1693,13 +1693,24 @@ by the temporary GUC lock. This keeps PL/pgSQL prefix reservation valid after
 threaded backend FATAL cleanup. Subsequent session-cache batches moved portal
 manager roots, compiled-regexp cache roots, syscache root arrays, the catcache
 header, relcache root hashes/flags/counters, and typcache root
-hashes/stacks/counters behind `PgSession`. The global-lifetime scan now
-reports 112 session-local declarations, down from 149 at the central GUC slice
-and down from 123 before the typcache root batch, with zero new unclassified
-mutable globals. The lifecycle manifest now classifies 147 runtime fields.
-Remaining cache-state Phase 12 targets include `CacheMemoryContext`,
-`funccache.c`, and JIT/provider caches, each of which needs an explicit
-reset/destroy rule before leaving Gate E2.
+hashes/stacks/counters behind `PgSession`. The global-lifetime scan reported
+112 session-local declarations after that batch, down from 149 at the central
+GUC slice and down from 123 before the typcache root batch, with zero new
+unclassified mutable globals. The lifecycle manifest now classifies 147
+runtime fields.
+Follow-up cache work moved the exported `CacheMemoryContext` pointer slot
+under `PgSessionCatalogLookupState` and kept the historical name as an lvalue
+macro through `PgCacheMemoryContextRef()`, implemented in
+`backend_runtime_cache.c`. This closes the most immediate cache-context
+ownership gap for the moved syscache/catcache/relcache/typcache roots. Active
+backend teardown clears the slot but deliberately does not delete the live
+cache context until the broader `TopMemoryContext` ownership and full
+cache-entry destructor audit
+remain Gate E2 blockers. Remaining cache-state Phase 12 targets include
+`funccache.c` and JIT/provider caches, each of which needs an explicit
+reset/destroy rule before leaving Gate E2. The global-lifetime scan now
+reports 109 session-local declarations with zero new unclassified mutable
+globals.
 
 ## Phase 13: Scheduler-Aware Wait Boundary
 

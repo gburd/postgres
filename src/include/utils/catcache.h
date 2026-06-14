@@ -191,8 +191,11 @@ typedef struct catcacheheader
 } CatCacheHeader;
 
 
-/* this extern duplicates utils/memutils.h... */
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION MemoryContext CacheMemoryContext;
+/* this compatibility macro duplicates utils/memutils.h... */
+#ifndef CacheMemoryContext
+extern MemoryContext *PgCacheMemoryContextRef(void);
+#define CacheMemoryContext (*PgCacheMemoryContextRef())
+#endif
 
 extern void CreateCacheMemoryContext(void);
 

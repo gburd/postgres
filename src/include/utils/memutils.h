@@ -60,7 +60,8 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION MemoryContext TopMemoryCont
 extern MemoryContext *PgErrorContextRef(void);
 #define ErrorContext (*PgErrorContextRef())
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME MemoryContext PostmasterContext;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_SESSION MemoryContext CacheMemoryContext;
+extern MemoryContext *PgCacheMemoryContextRef(void);
+#define CacheMemoryContext (*PgCacheMemoryContextRef())
 extern MemoryContext *PgMessageContextRef(void);
 #define MessageContext (*PgMessageContextRef())
 extern MemoryContext *PgTopTransactionContextRef(void);

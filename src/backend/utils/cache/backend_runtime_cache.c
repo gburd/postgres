@@ -16,7 +16,14 @@
 #include "postgres.h"
 
 #include "utils/backend_runtime.h"
+#include "utils/memutils.h"
 #include "../init/backend_runtime_internal.h"
+
+MemoryContext *
+PgCacheMemoryContextRef(void)
+{
+	return &PgCurrentSessionCatalogLookupState()->cache_memory_context;
+}
 
 CatCache **
 PgCurrentSysCacheArray(void)

@@ -9825,3 +9825,44 @@ Validation for this slice:
 - `gmake -C src/test/modules/test_backend_runtime check` passed;
 - direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
   `002_threaded_bgworker_crash.pl` with 94 tests.
+
+## CacheMemoryContext Session Slot
+
+The next Phase 12 cache-state slice moves the exported `CacheMemoryContext`
+pointer slot behind `PgSessionCatalogLookupState`:
+
+- `PgSessionCatalogLookupState` now owns `cache_memory_context`;
+- `utils/memutils.h` and `utils/catcache.h` preserve the historical
+  `CacheMemoryContext` lvalue name as a macro over `PgCacheMemoryContextRef()`;
+- `backend_runtime_cache.c`, the cache-owned runtime bridge, implements the
+  accessor instead of growing `backend_runtime.c`;
+- `mcxt.c` no longer defines an independent session-local
+  `CacheMemoryContext` TLS global;
+- `PgSessionResetClosedState()` clears the active session cache-context slot after the
+  dependent cache roots and retained plans handled earlier in the reset path
+  have been cleared; non-current offline session reset can delete the context,
+  but active backend teardown still leaves physical reclamation to the retained
+  `TopMemoryContext` tree until that Gate E2 blocker is closed.
+
+This is still a pointer-slot migration, not a full `TopMemoryContext` split.
+The cache memory context remains an ordinary memory context under the existing
+memory-context tree, but the pointer that selects a logical session's cache
+allocation arena now follows `PgSession` alongside the syscache, catcache,
+relcache, and typcache roots. `MULTITHREADED_RUNTIME_OWNERS.tsv` records the
+symbol-level owner mapping for future rebases.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime_cache.o`, `mcxt.o`,
+  `backend_runtime.o`, and `test_backend_runtime.o`;
+- a clean backend rebuild plus generated-header recovery and full `gmake -j8`
+  passed after changing the installed `memutils.h`/`catcache.h` declarations;
+- stale PL/pgSQL initially failed temp-install `initdb` by referencing the
+  removed `_CacheMemoryContext` symbol, matching the documented installed
+  header rebuild hazard; `gmake -C src/pl/plpgsql/src clean all` fixed it;
+- `gmake check-runtime-lifecycles` passed with 147 runtime fields classified;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and session-local declarations reduced from 112 to 109;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl` with 94 tests.

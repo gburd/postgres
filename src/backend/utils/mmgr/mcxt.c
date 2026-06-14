@@ -161,7 +161,6 @@ static const MemoryContextMethods mcxt_methods[] = {
  */
 PG_THREAD_LOCAL PG_GLOBAL_SESSION MemoryContext TopMemoryContext = NULL;
 PG_GLOBAL_RUNTIME MemoryContext PostmasterContext = NULL;
-PG_THREAD_LOCAL PG_GLOBAL_SESSION MemoryContext CacheMemoryContext = NULL;
 
 /* Is memory context logging currently in progress? */
 #define LogMemoryContextInProgress \

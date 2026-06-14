@@ -1604,6 +1604,7 @@ typedef struct PgSessionExtensionModuleState
 
 typedef struct PgSessionCatalogLookupState
 {
+	MemoryContext cache_memory_context;
 	CatCache   *sys_cache[SysCacheSize];
 	bool		sys_cache_initialized;
 	Oid			sys_cache_relation_oid[SysCacheSize];

@@ -4811,6 +4811,16 @@ PgSessionResetClosedState(PgSession *session)
 		SPI_freeplan(session->catalog_lookup.ruleutils_view_rule_plan);
 		session->catalog_lookup.ruleutils_view_rule_plan = NULL;
 	}
+	if (session->catalog_lookup.cache_memory_context != NULL)
+	{
+		if (session != CurrentPgSession)
+		{
+			if (CurrentMemoryContext == session->catalog_lookup.cache_memory_context)
+				MemoryContextSwitchTo(TopMemoryContext);
+			MemoryContextDelete(session->catalog_lookup.cache_memory_context);
+		}
+		session->catalog_lookup.cache_memory_context = NULL;
+	}
 	MemSet(session->catalog_lookup.sys_cache, 0,
 		   sizeof(session->catalog_lookup.sys_cache));
 	session->catalog_lookup.sys_cache_initialized = false;

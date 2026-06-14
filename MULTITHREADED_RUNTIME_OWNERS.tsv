@@ -1,4 +1,5 @@
 legacy_symbol	root_object	bucket	member	accessor	owner_source	notes
+CacheMemoryContext	PgSession	catalog_lookup	cache_memory_context	PgCacheMemoryContextRef	src/backend/utils/cache/backend_runtime_cache.c	session cache memory context pointer; active backend teardown clears the slot while offline session reset can delete the context until full TopMemoryContext reclamation is safe
 SysCache	PgSession	catalog_lookup	sys_cache	PgCurrentSysCacheArray	src/backend/utils/cache/backend_runtime_cache.c	syscache root array; pointed cache entries remain CacheMemoryContext-owned
 SysCacheInitialized	PgSession	catalog_lookup	sys_cache_initialized	PgCurrentSysCacheInitializedRef	src/backend/utils/cache/backend_runtime_cache.c	syscache initialization flag
 SysCacheRelationOid	PgSession	catalog_lookup	sys_cache_relation_oid	PgCurrentSysCacheRelationOidArray	src/backend/utils/cache/backend_runtime_cache.c	inline syscache relation OID array

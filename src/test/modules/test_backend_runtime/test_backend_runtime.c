@@ -3052,6 +3052,7 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 	PgSession  *saved_session;
 	PgSession	fake_session1;
 	PgSession	fake_session2;
+	MemoryContext saved_cache_memory_context;
 	CatCache   *saved_sys_cache[SysCacheSize];
 	bool		saved_sys_cache_initialized;
 	Oid			saved_sys_cache_relation_oid[SysCacheSize];
@@ -3107,6 +3108,7 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 	bool		ok = true;
 
 	saved_session = CurrentPgSession;
+	saved_cache_memory_context = CacheMemoryContext;
 	memcpy(saved_sys_cache, PgCurrentSysCacheArray(),
 		   sizeof(saved_sys_cache));
 	saved_sys_cache_initialized = *PgCurrentSysCacheInitializedRef();
@@ -3179,6 +3181,7 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 	PG_TRY();
 	{
 		PgSetCurrentSession(&fake_session1);
+		ok = ok && CacheMemoryContext == NULL;
 		ok = ok && PgCurrentSysCacheArray()[0] == NULL;
 		ok = ok && *PgCurrentSysCacheInitializedRef() == false;
 		ok = ok && PgCurrentSysCacheRelationOidArray()[0] == InvalidOid;
@@ -3211,6 +3214,7 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentEventTriggerCacheStateRef() == 0;
 		ok = ok && *PgCurrentRuleutilsRuleByOidPlanRef() == NULL;
 		ok = ok && *PgCurrentRuleutilsViewRulePlanRef() == NULL;
+		CacheMemoryContext = session1_context_marker;
 		PgCurrentSysCacheArray()[0] = session1_syscache_marker;
 		*PgCurrentSysCacheInitializedRef() = true;
 		PgCurrentSysCacheRelationOidArray()[0] = 11;
@@ -3246,6 +3250,7 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		*PgCurrentRuleutilsViewRulePlanRef() = session1_plan_marker;
 
 		PgSetCurrentSession(&fake_session2);
+		ok = ok && CacheMemoryContext == NULL;
 		ok = ok && PgCurrentSysCacheArray()[0] == NULL;
 		ok = ok && *PgCurrentSysCacheInitializedRef() == false;
 		ok = ok && PgCurrentSysCacheRelationOidArray()[0] == InvalidOid;
@@ -3278,6 +3283,7 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentEventTriggerCacheStateRef() == 0;
 		ok = ok && *PgCurrentRuleutilsRuleByOidPlanRef() == NULL;
 		ok = ok && *PgCurrentRuleutilsViewRulePlanRef() == NULL;
+		CacheMemoryContext = session2_context_marker;
 		PgCurrentSysCacheArray()[0] = session2_syscache_marker;
 		*PgCurrentSysCacheInitializedRef() = true;
 		PgCurrentSysCacheRelationOidArray()[0] = 21;
@@ -3313,6 +3319,7 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		*PgCurrentRuleutilsViewRulePlanRef() = session2_plan_marker;
 
 		PgSetCurrentSession(&fake_session1);
+		ok = ok && CacheMemoryContext == session1_context_marker;
 		ok = ok && PgCurrentSysCacheArray()[0] == session1_syscache_marker;
 		ok = ok && *PgCurrentSysCacheInitializedRef() == true;
 		ok = ok && PgCurrentSysCacheRelationOidArray()[0] == 11;
@@ -3351,6 +3358,7 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentRuleutilsViewRulePlanRef() == session1_plan_marker;
 
 		PgSetCurrentSession(&fake_session2);
+		ok = ok && CacheMemoryContext == session2_context_marker;
 		ok = ok && PgCurrentSysCacheArray()[0] == session2_syscache_marker;
 		ok = ok && *PgCurrentSysCacheInitializedRef() == true;
 		ok = ok && PgCurrentSysCacheRelationOidArray()[0] == 21;
@@ -3389,6 +3397,7 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentRuleutilsViewRulePlanRef() == session2_plan_marker;
 
 		PgSetCurrentSession(saved_session);
+		CacheMemoryContext = saved_cache_memory_context;
 		memcpy(PgCurrentSysCacheArray(), saved_sys_cache,
 			   sizeof(saved_sys_cache));
 		*PgCurrentSysCacheInitializedRef() = saved_sys_cache_initialized;
@@ -3436,6 +3445,7 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 	PG_CATCH();
 	{
 		PgSetCurrentSession(saved_session);
+		CacheMemoryContext = saved_cache_memory_context;
 		memcpy(PgCurrentSysCacheArray(), saved_sys_cache,
 			   sizeof(saved_sys_cache));
 		*PgCurrentSysCacheInitializedRef() = saved_sys_cache_initialized;
