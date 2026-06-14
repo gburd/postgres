@@ -271,37 +271,20 @@ PG_THREAD_LOCAL PG_GLOBAL_SESSION int debug_discard_caches = 0;
  * The link values are syscache_callback_list[] index plus 1, or 0 for none.
  */
 
-#define MAX_SYSCACHE_CALLBACKS 64
-#define MAX_RELCACHE_CALLBACKS 10
-#define MAX_RELSYNC_CALLBACKS 10
-
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION struct SYSCACHECALLBACK
-{
-	int16		id;				/* cache number */
-	int16		link;			/* next callback index+1 for same cache */
-	SyscacheCallbackFunction function;
-	Datum		arg;
-}			syscache_callback_list[MAX_SYSCACHE_CALLBACKS];
-
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION int16 syscache_callback_links[SysCacheSize];
-
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION int syscache_callback_count = 0;
-
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION struct RELCACHECALLBACK
-{
-	RelcacheCallbackFunction function;
-	Datum		arg;
-}			relcache_callback_list[MAX_RELCACHE_CALLBACKS];
-
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION int relcache_callback_count = 0;
-
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION struct RELSYNCCALLBACK
-{
-	RelSyncCallbackFunction function;
-	Datum		arg;
-}			relsync_callback_list[MAX_RELSYNC_CALLBACKS];
-
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION int relsync_callback_count = 0;
+#define syscache_callback_list \
+	(PgCurrentInvalidationCallbackState()->syscache_callback_list)
+#define syscache_callback_links \
+	(PgCurrentInvalidationCallbackState()->syscache_callback_links)
+#define syscache_callback_count \
+	(PgCurrentInvalidationCallbackState()->syscache_callback_count)
+#define relcache_callback_list \
+	(PgCurrentInvalidationCallbackState()->relcache_callback_list)
+#define relcache_callback_count \
+	(PgCurrentInvalidationCallbackState()->relcache_callback_count)
+#define relsync_callback_list \
+	(PgCurrentInvalidationCallbackState()->relsync_callback_list)
+#define relsync_callback_count \
+	(PgCurrentInvalidationCallbackState()->relsync_callback_count)
 
 
 /* ----------------------------------------------------------------
@@ -794,21 +777,21 @@ InvalidateSystemCachesExtended(bool debug_discard)
 
 	for (i = 0; i < syscache_callback_count; i++)
 	{
-		struct SYSCACHECALLBACK *ccitem = syscache_callback_list + i;
+		PgSessionSyscacheCallback *ccitem = syscache_callback_list + i;
 
 		ccitem->function(ccitem->arg, ccitem->id, 0);
 	}
 
 	for (i = 0; i < relcache_callback_count; i++)
 	{
-		struct RELCACHECALLBACK *ccitem = relcache_callback_list + i;
+		PgSessionRelcacheCallback *ccitem = relcache_callback_list + i;
 
 		ccitem->function(ccitem->arg, InvalidOid);
 	}
 
 	for (i = 0; i < relsync_callback_count; i++)
 	{
-		struct RELSYNCCALLBACK *ccitem = relsync_callback_list + i;
+		PgSessionRelSyncCallback *ccitem = relsync_callback_list + i;
 
 		ccitem->function(ccitem->arg, InvalidOid);
 	}
@@ -859,7 +842,7 @@ LocalExecuteInvalidationMessage(SharedInvalidationMessage *msg)
 
 			for (i = 0; i < relcache_callback_count; i++)
 			{
-				struct RELCACHECALLBACK *ccitem = relcache_callback_list + i;
+				PgSessionRelcacheCallback *ccitem = relcache_callback_list + i;
 
 				ccitem->function(ccitem->arg, msg->rc.relId);
 			}
@@ -1818,7 +1801,7 @@ CacheRegisterSyscacheCallback(SysCacheIdentifier cacheid,
 {
 	if (cacheid < 0 || cacheid >= SysCacheSize)
 		elog(FATAL, "invalid cache ID: %d", cacheid);
-	if (syscache_callback_count >= MAX_SYSCACHE_CALLBACKS)
+	if (syscache_callback_count >= PG_SESSION_MAX_SYSCACHE_CALLBACKS)
 		elog(FATAL, "out of syscache_callback_list slots");
 
 	if (syscache_callback_links[cacheid] == 0)
@@ -1857,7 +1840,7 @@ void
 CacheRegisterRelcacheCallback(RelcacheCallbackFunction func,
 							  Datum arg)
 {
-	if (relcache_callback_count >= MAX_RELCACHE_CALLBACKS)
+	if (relcache_callback_count >= PG_SESSION_MAX_RELCACHE_CALLBACKS)
 		elog(FATAL, "out of relcache_callback_list slots");
 
 	relcache_callback_list[relcache_callback_count].function = func;
@@ -1878,7 +1861,7 @@ void
 CacheRegisterRelSyncCallback(RelSyncCallbackFunction func,
 							 Datum arg)
 {
-	if (relsync_callback_count >= MAX_RELSYNC_CALLBACKS)
+	if (relsync_callback_count >= PG_SESSION_MAX_RELSYNC_CALLBACKS)
 		elog(FATAL, "out of relsync_callback_list slots");
 
 	relsync_callback_list[relsync_callback_count].function = func;
@@ -1904,7 +1887,7 @@ CallSyscacheCallbacks(SysCacheIdentifier cacheid, uint32 hashvalue)
 	i = syscache_callback_links[cacheid] - 1;
 	while (i >= 0)
 	{
-		struct SYSCACHECALLBACK *ccitem = syscache_callback_list + i;
+		PgSessionSyscacheCallback *ccitem = syscache_callback_list + i;
 
 		Assert(ccitem->id == cacheid);
 		ccitem->function(ccitem->arg, cacheid, hashvalue);
@@ -1920,7 +1903,7 @@ CallRelSyncCallbacks(Oid relid)
 {
 	for (int i = 0; i < relsync_callback_count; i++)
 	{
-		struct RELSYNCCALLBACK *ccitem = relsync_callback_list + i;
+		PgSessionRelSyncCallback *ccitem = relsync_callback_list + i;
 
 		ccitem->function(ccitem->arg, relid);
 	}

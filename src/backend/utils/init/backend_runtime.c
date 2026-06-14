@@ -542,6 +542,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPlannerMethodState early_sessi
 	.join_collapse_limit_value = 8
 };
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionFunctionManagerState early_session_function_manager;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionInvalidationCallbackState early_session_invalidation_callbacks;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPreparedStatementState early_session_prepared_statement;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionOnCommitState early_session_on_commit;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionSequenceState early_session_sequence;
@@ -695,6 +696,8 @@ static void PgSessionInitializePlannerMethodState(PgSessionPlannerMethodState *p
 static void PgSessionAdoptEarlyPlannerMethodState(PgSession *session);
 static void PgSessionInitializeFunctionManagerState(PgSessionFunctionManagerState *function_manager);
 static void PgSessionAdoptEarlyFunctionManagerState(PgSession *session);
+static void PgSessionInitializeInvalidationCallbackState(PgSessionInvalidationCallbackState *invalidation_callbacks);
+static void PgSessionAdoptEarlyInvalidationCallbackState(PgSession *session);
 static void PgSessionInitializePreparedStatementState(PgSessionPreparedStatementState *prepared_statement);
 static void PgSessionAdoptEarlyPreparedStatementState(PgSession *session);
 static void PgSessionInitializeOnCommitState(PgSessionOnCommitState *on_commit);
@@ -871,6 +874,7 @@ static PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
 static PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
 static PgSessionPlannerMethodState *PgCurrentSessionPlannerMethodState(void);
 static PgSessionFunctionManagerState *PgCurrentSessionFunctionManagerState(void);
+static PgSessionInvalidationCallbackState *PgCurrentSessionInvalidationCallbackState(void);
 static PgSessionPreparedStatementState *PgCurrentSessionPreparedStatementState(void);
 static PgSessionOnCommitState *PgCurrentSessionOnCommitState(void);
 static PgSessionSequenceState *PgCurrentSessionSequenceState(void);
@@ -1936,6 +1940,23 @@ PgSessionAdoptEarlyFunctionManagerState(PgSession *session)
 }
 
 static void
+PgSessionInitializeInvalidationCallbackState(PgSessionInvalidationCallbackState *invalidation_callbacks)
+{
+	Assert(invalidation_callbacks != NULL);
+
+	MemSet(invalidation_callbacks, 0, sizeof(*invalidation_callbacks));
+}
+
+static void
+PgSessionAdoptEarlyInvalidationCallbackState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	session->invalidation_callbacks = early_session_invalidation_callbacks;
+	PgSessionInitializeInvalidationCallbackState(&early_session_invalidation_callbacks);
+}
+
+static void
 PgSessionInitializePreparedStatementState(PgSessionPreparedStatementState *prepared_statement)
 {
 	Assert(prepared_statement != NULL);
@@ -2284,6 +2305,7 @@ PgSessionAdoptEarlyState(PgSession *session)
 	PgSessionAdoptEarlyPlannerCostState(session);
 	PgSessionAdoptEarlyPlannerMethodState(session);
 	PgSessionAdoptEarlyFunctionManagerState(session);
+	PgSessionAdoptEarlyInvalidationCallbackState(session);
 	PgSessionAdoptEarlyPreparedStatementState(session);
 	PgSessionAdoptEarlyOnCommitState(session);
 	PgSessionAdoptEarlySequenceState(session);
@@ -3705,6 +3727,7 @@ PgSessionInitializeRuntimeObject(PgSession *session,
 	PgSessionInitializePlannerCostState(&session->planner_cost);
 	PgSessionInitializePlannerMethodState(&session->planner_method);
 	PgSessionInitializeFunctionManagerState(&session->function_manager);
+	PgSessionInitializeInvalidationCallbackState(&session->invalidation_callbacks);
 	PgSessionInitializePreparedStatementState(&session->prepared_statement);
 	PgSessionInitializeOnCommitState(&session->on_commit);
 	PgSessionInitializeSequenceState(&session->sequence);
@@ -4328,6 +4351,7 @@ PgSessionResetClosedState(PgSession *session)
 		hash_destroy(session->function_manager.c_func_hash);
 		session->function_manager.c_func_hash = NULL;
 	}
+	PgSessionInitializeInvalidationCallbackState(&session->invalidation_callbacks);
 
 	for (int i = 0; i < lengthof(session->user_identity.cached_roles); i++)
 	{
@@ -4953,6 +4977,15 @@ PgCurrentSessionFunctionManagerState(void)
 	return &CurrentPgSession->function_manager;
 }
 
+static PgSessionInvalidationCallbackState *
+PgCurrentSessionInvalidationCallbackState(void)
+{
+	if (CurrentPgSession == NULL)
+		return &early_session_invalidation_callbacks;
+
+	return &CurrentPgSession->invalidation_callbacks;
+}
+
 static PgSessionPreparedStatementState *
 PgCurrentSessionPreparedStatementState(void)
 {
@@ -5474,6 +5507,12 @@ HTAB **
 PgCurrentCFuncHashRef(void)
 {
 	return &PgCurrentSessionFunctionManagerState()->c_func_hash;
+}
+
+PgSessionInvalidationCallbackState *
+PgCurrentInvalidationCallbackState(void)
+{
+	return PgCurrentSessionInvalidationCallbackState();
 }
 
 HTAB **

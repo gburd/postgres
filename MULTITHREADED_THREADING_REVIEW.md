@@ -1141,6 +1141,22 @@ global-lifetime scan count remains 188 session-local declarations because the
 standalone TLS hash was replaced by the early fallback session bucket, while
 `gmake check-runtime-lifecycles` now checks 136 runtime fields.
 
+The following invalidation-callback slice moved `inval.c`'s syscache,
+relcache, and relsync callback registries behind
+`PgSessionInvalidationCallbackState`. Callback entries are function pointers
+plus `Datum` arguments; the target cache storage remains owned by the
+registering subsystem. `PgSessionResetClosedState()` clears the registry after
+dependent session caches are destroyed, so callback registrations do not leak
+across logical session close/reuse. The runtime lifecycle checker now covers
+137 object fields.
+
+The same slice hardened PMChild/thread-backend synchronization by moving the
+thread-start postmaster latch capture to immediately after thread runtime-state
+initialization, adding a fallback to the current local latch data, and
+asserting the payload latch is non-NULL before creating the carrier. This
+prevents threaded startup completion and exit publication from calling
+`SetLatch(NULL)` if `MyLatch` is not yet visible through the runtime wrapper.
+
 ## Bottom Line
 
 The branch is on track only if the current debt is treated as Phase 12

@@ -18,6 +18,7 @@ SELECT test_session_binary_upgrade_state_is_session_local();
 SELECT test_session_datetime_state_is_session_local();
 SELECT test_session_text_search_state_is_session_local();
 SELECT test_session_prepared_statement_state_is_session_local();
+SELECT test_session_invalidation_callback_state_is_session_local();
 SELECT test_session_reset_closed_state();
 SELECT test_session_on_commit_state_is_session_local();
 SELECT test_session_sequence_state_is_session_local();

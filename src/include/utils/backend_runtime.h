@@ -48,6 +48,7 @@
 #include "utils/elog.h"
 #include "utils/global_lifetime.h"
 #include "utils/hsearch.h"
+#include "utils/inval.h"
 #include "utils/palloc.h"
 #include "utils/pgstat_internal.h"
 #include "utils/sampling.h"
@@ -1540,6 +1541,41 @@ typedef struct PgSessionFunctionManagerState
 	HTAB	   *c_func_hash;
 } PgSessionFunctionManagerState;
 
+#define PG_SESSION_MAX_SYSCACHE_CALLBACKS 64
+#define PG_SESSION_MAX_RELCACHE_CALLBACKS 10
+#define PG_SESSION_MAX_RELSYNC_CALLBACKS 10
+
+typedef struct PgSessionSyscacheCallback
+{
+	int16		id;
+	int16		link;
+	SyscacheCallbackFunction function;
+	Datum		arg;
+} PgSessionSyscacheCallback;
+
+typedef struct PgSessionRelcacheCallback
+{
+	RelcacheCallbackFunction function;
+	Datum		arg;
+} PgSessionRelcacheCallback;
+
+typedef struct PgSessionRelSyncCallback
+{
+	RelSyncCallbackFunction function;
+	Datum		arg;
+} PgSessionRelSyncCallback;
+
+typedef struct PgSessionInvalidationCallbackState
+{
+	PgSessionSyscacheCallback syscache_callback_list[PG_SESSION_MAX_SYSCACHE_CALLBACKS];
+	int16		syscache_callback_links[SysCacheSize];
+	int			syscache_callback_count;
+	PgSessionRelcacheCallback relcache_callback_list[PG_SESSION_MAX_RELCACHE_CALLBACKS];
+	int			relcache_callback_count;
+	PgSessionRelSyncCallback relsync_callback_list[PG_SESSION_MAX_RELSYNC_CALLBACKS];
+	int			relsync_callback_count;
+} PgSessionInvalidationCallbackState;
+
 typedef struct PgSessionPreparedStatementState
 {
 	HTAB	   *prepared_queries;
@@ -1907,6 +1943,7 @@ struct PgSession
 	PgSessionPlannerCostState planner_cost;
 	PgSessionPlannerMethodState planner_method;
 	PgSessionFunctionManagerState function_manager;
+	PgSessionInvalidationCallbackState invalidation_callbacks;
 	PgSessionPreparedStatementState prepared_statement;
 	PgSessionOnCommitState on_commit;
 	PgSessionSequenceState sequence;
@@ -2233,6 +2270,7 @@ extern int *PgCurrentPostAuthDelayRef(void);
 extern char **PgCurrentRestrictNonsystemRelationKindStringRef(void);
 extern int *PgCurrentRestrictNonsystemRelationKindRef(void);
 extern HTAB **PgCurrentCFuncHashRef(void);
+extern PgSessionInvalidationCallbackState *PgCurrentInvalidationCallbackState(void);
 extern HTAB **PgCurrentPreparedQueriesRef(void);
 extern List **PgCurrentOnCommitActionsRef(void);
 extern HTAB **PgCurrentSequenceHashTableRef(void);

@@ -438,7 +438,6 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 		MemSet(&thread_start->client_sock, 0, sizeof(thread_start->client_sock));
 		thread_start->client_sock.sock = PGINVALID_SOCKET;
 	}
-	thread_start->postmaster_latch = MyLatch;
 	thread_start->startup_session_timezone = session_timezone;
 	thread_start->startup_log_timezone = log_timezone;
 	pg_atomic_init_u32(&thread_start->launch_registered, 0);
@@ -456,6 +455,11 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 	InitializePgThreadBackendRuntimeState(&thread_start->runtime_state,
 										  thread_start->child_type, NULL,
 										  NULL);
+	thread_start->postmaster_latch = MyLatch;
+	if (thread_start->postmaster_latch == NULL)
+		thread_start->postmaster_latch = PgCurrentLocalLatchData();
+	Assert(thread_start->postmaster_latch != NULL);
+
 	rc = pg_thread_create(&thread, "postgres backend",
 						  backend_thread_entry, thread_start);
 	if (rc != 0)

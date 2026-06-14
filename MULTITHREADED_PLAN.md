@@ -1573,6 +1573,19 @@ session-local declarations because the standalone TLS hash was replaced by the
 early fallback session bucket, but the cache itself is now a checked
 object-owned field and the runtime lifecycle manifest now classifies 136
 fields.
+The following invalidation-callback batch moved the syscache, relcache, and
+relsync callback registries into `PgSessionInvalidationCallbackState`.
+`inval.c` now routes its existing registry names through the current session,
+and `PgSessionResetClosedState()` clears callback registrations after
+dependent session caches have been destroyed. This makes future cache
+migrations safer because callbacks no longer silently survive a logical
+session close. The runtime lifecycle manifest now classifies 137 fields.
+The same hardening pass fixed the threaded postmaster notification latch
+handoff in `launch_backend.c`: the thread-start payload now records the
+postmaster latch after runtime-state initialization, falls back to the current
+local latch data if `MyLatch` is not populated through the runtime wrapper, and
+asserts the published latch is non-NULL before carrier creation. This preserves
+the PMChild startup/exit wakeup path used by threaded workers.
 
 ## Phase 13: Scheduler-Aware Wait Boundary
 

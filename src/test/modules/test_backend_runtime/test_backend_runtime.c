@@ -83,6 +83,7 @@
 #include "utils/fmgrprotos.h"
 #include "utils/guc.h"
 #include "utils/hsearch.h"
+#include "utils/inval.h"
 #include "utils/memutils.h"
 #include "utils/pg_locale.h"
 #include "utils/pgstat_internal.h"
@@ -98,6 +99,11 @@ static sigjmp_buf exit_continuation_jmp;
 static volatile bool exit_continuation_seen;
 static volatile int exit_continuation_code;
 static void test_backend_runtime_exit_callback(int code, Datum arg);
+static void test_backend_runtime_syscache_callback(Datum arg,
+												   SysCacheIdentifier cacheid,
+												   uint32 hashvalue);
+static void test_backend_runtime_relcache_callback(Datum arg, Oid relid);
+static void test_backend_runtime_relsync_callback(Datum arg, Oid relid);
 
 typedef struct TestBoolGUCSetting
 {
@@ -185,6 +191,22 @@ test_pmchild_thread_backend_reader_routine(void *arg)
 			pg_atomic_fetch_add_u32(&state->hits, 1);
 		(void) PostmasterChildWakeThreadBackend(state->pmchild);
 	}
+}
+
+static void
+test_backend_runtime_syscache_callback(Datum arg, SysCacheIdentifier cacheid,
+									   uint32 hashvalue)
+{
+}
+
+static void
+test_backend_runtime_relcache_callback(Datum arg, Oid relid)
+{
+}
+
+static void
+test_backend_runtime_relsync_callback(Datum arg, Oid relid)
+{
 }
 
 static void
@@ -2611,6 +2633,84 @@ test_session_prepared_statement_state_is_session_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_session_invalidation_callback_state_is_session_local);
+Datum
+test_session_invalidation_callback_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	PgSessionInvalidationCallbackState saved_invalidation_callbacks;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	saved_invalidation_callbacks = *PgCurrentInvalidationCallbackState();
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && PgCurrentInvalidationCallbackState()->syscache_callback_count == 0;
+		ok = ok && PgCurrentInvalidationCallbackState()->relcache_callback_count == 0;
+		ok = ok && PgCurrentInvalidationCallbackState()->relsync_callback_count == 0;
+		CacheRegisterSyscacheCallback(ATTNUM,
+									  test_backend_runtime_syscache_callback,
+									  UInt32GetDatum(11));
+		CacheRegisterRelcacheCallback(test_backend_runtime_relcache_callback,
+									  UInt32GetDatum(12));
+		CacheRegisterRelSyncCallback(test_backend_runtime_relsync_callback,
+									 UInt32GetDatum(13));
+		ok = ok && PgCurrentInvalidationCallbackState()->syscache_callback_count == 1;
+		ok = ok && PgCurrentInvalidationCallbackState()->syscache_callback_links[ATTNUM] == 1;
+		ok = ok && PgCurrentInvalidationCallbackState()->syscache_callback_list[0].function ==
+			test_backend_runtime_syscache_callback;
+		ok = ok && DatumGetUInt32(PgCurrentInvalidationCallbackState()->syscache_callback_list[0].arg) == 11;
+		ok = ok && PgCurrentInvalidationCallbackState()->relcache_callback_count == 1;
+		ok = ok && PgCurrentInvalidationCallbackState()->relcache_callback_list[0].function ==
+			test_backend_runtime_relcache_callback;
+		ok = ok && DatumGetUInt32(PgCurrentInvalidationCallbackState()->relcache_callback_list[0].arg) == 12;
+		ok = ok && PgCurrentInvalidationCallbackState()->relsync_callback_count == 1;
+		ok = ok && PgCurrentInvalidationCallbackState()->relsync_callback_list[0].function ==
+			test_backend_runtime_relsync_callback;
+		ok = ok && DatumGetUInt32(PgCurrentInvalidationCallbackState()->relsync_callback_list[0].arg) == 13;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && PgCurrentInvalidationCallbackState()->syscache_callback_count == 0;
+		ok = ok && PgCurrentInvalidationCallbackState()->relcache_callback_count == 0;
+		ok = ok && PgCurrentInvalidationCallbackState()->relsync_callback_count == 0;
+		CacheRegisterSyscacheCallback(PROCOID,
+									  test_backend_runtime_syscache_callback,
+									  UInt32GetDatum(21));
+		ok = ok && PgCurrentInvalidationCallbackState()->syscache_callback_count == 1;
+		ok = ok && PgCurrentInvalidationCallbackState()->syscache_callback_links[PROCOID] == 1;
+		ok = ok && PgCurrentInvalidationCallbackState()->syscache_callback_links[ATTNUM] == 0;
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && PgCurrentInvalidationCallbackState()->syscache_callback_count == 1;
+		ok = ok && PgCurrentInvalidationCallbackState()->syscache_callback_links[ATTNUM] == 1;
+		ok = ok && PgCurrentInvalidationCallbackState()->relcache_callback_count == 1;
+		ok = ok && PgCurrentInvalidationCallbackState()->relsync_callback_count == 1;
+
+		PgSetCurrentSession(saved_session);
+		*PgCurrentInvalidationCallbackState() = saved_invalidation_callbacks;
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		*PgCurrentInvalidationCallbackState() = saved_invalidation_callbacks;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "invalidation callback state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_session_reset_closed_state);
 Datum
 test_session_reset_closed_state(PG_FUNCTION_ARGS)
@@ -2652,6 +2752,17 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 		hash_create("test async channel cache", 8, &hash_ctl,
 					HASH_ELEM | HASH_BLOBS);
 	fake_session.async.registered_listener = true;
+	fake_session.invalidation_callbacks.syscache_callback_count = 1;
+	fake_session.invalidation_callbacks.syscache_callback_links[ATTNUM] = 1;
+	fake_session.invalidation_callbacks.syscache_callback_list[0].id = ATTNUM;
+	fake_session.invalidation_callbacks.syscache_callback_list[0].function =
+		test_backend_runtime_syscache_callback;
+	fake_session.invalidation_callbacks.relcache_callback_count = 1;
+	fake_session.invalidation_callbacks.relcache_callback_list[0].function =
+		test_backend_runtime_relcache_callback;
+	fake_session.invalidation_callbacks.relsync_callback_count = 1;
+	fake_session.invalidation_callbacks.relsync_callback_list[0].function =
+		test_backend_runtime_relsync_callback;
 	fake_session.user_identity.cached_role[0] = BOOLOID;
 	fake_session.user_identity.cached_roles[0] = list_make1_oid(BOOLOID);
 	fake_session.user_identity.cached_db_hash = 12345;
@@ -2744,6 +2855,10 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && fake_session.sequence.last_used_seq == NULL;
 	ok = ok && fake_session.async.local_channel_table == NULL;
 	ok = ok && !fake_session.async.registered_listener;
+	ok = ok && fake_session.invalidation_callbacks.syscache_callback_count == 0;
+	ok = ok && fake_session.invalidation_callbacks.syscache_callback_links[ATTNUM] == 0;
+	ok = ok && fake_session.invalidation_callbacks.relcache_callback_count == 0;
+	ok = ok && fake_session.invalidation_callbacks.relsync_callback_count == 0;
 	ok = ok && fake_session.user_identity.cached_role[0] == InvalidOid;
 	ok = ok && fake_session.user_identity.cached_roles[0] == NIL;
 	ok = ok && fake_session.user_identity.cached_db_hash == 0;

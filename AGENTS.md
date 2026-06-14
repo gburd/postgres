@@ -239,6 +239,13 @@ Important current files:
   runtime/dynamic-loader owned. After changing this bridge, rebuild
   `fmgr.o`, `backend_runtime.o`, and `test_backend_runtime.o`, then run
   `gmake check-runtime-lifecycles` and `gmake check-global-lifetimes`.
+- Syscache, relcache, and relsync invalidation callback registries now live
+  under `PgSessionInvalidationCallbackState`. `inval.c` keeps the historic
+  registry names as file-local macros over `PgCurrentInvalidationCallbackState()`.
+  `PgSessionResetClosedState()` clears callback registrations after dependent
+  session caches have been destroyed. After changing this bridge, rebuild
+  `inval.o`, `backend_runtime.o`, and `test_backend_runtime.o`, then run
+  `gmake check-runtime-lifecycles` and `gmake check-global-lifetimes`.
 - Transaction cleanup slots now live under
   `PgExecutionTransactionCleanupState`: large-object descriptor cleanup slots,
   the transaction temporary-file cleanup flag, the pgstat subtransaction stack,
