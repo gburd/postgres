@@ -1648,6 +1648,8 @@ typedef struct PgSessionResetCallbackItem
 typedef struct PgSessionExtensionModuleState
 {
 	void	   *plpgsql_state;
+	void	   *plpython_procedure_cache;
+	bool		plpython_reset_registered;
 	List	   *reset_callbacks;
 	int			auto_explain_log_min_duration;
 	int			auto_explain_log_parameter_max_length;
@@ -2914,6 +2916,8 @@ extern void PgBackendResetClosedState(PgBackend *backend);
 extern MemoryContext PgSessionGetDynamicLibraryMemoryContext(PgSession *session);
 extern void **PgCurrentPLpgSQLSessionStateRef(void);
 extern PgSessionExtensionModuleState *PgCurrentSessionExtensionModuleState(void);
+extern void **PgCurrentPLpythonProcedureCacheRef(void);
+extern bool *PgCurrentPLpythonResetRegisteredRef(void);
 extern void **PgCurrentDblinkPersistentConnectionRef(void);
 extern void **PgCurrentDblinkRemoteConnHashRef(void);
 extern bool *PgCurrentDblinkResetRegisteredRef(void);

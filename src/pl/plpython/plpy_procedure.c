@@ -14,14 +14,17 @@
 #include "plpy_main.h"
 #include "plpy_procedure.h"
 #include "plpy_util.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/syscache.h"
 
-static HTAB *PLy_procedure_cache = NULL;
+#define PLy_procedure_cache (*(HTAB **) PgCurrentPLpythonProcedureCacheRef())
+#define PLy_procedure_reset_registered (*PgCurrentPLpythonResetRegisteredRef())
 
 static PLyProcedure *PLy_procedure_create(HeapTuple procTup, Oid fn_oid, PLyTrigType is_trigger);
+static void PLy_procedure_cache_reset_callback(void *arg);
 static bool PLy_procedure_valid(PLyProcedure *proc, HeapTuple procTup);
 static char *PLy_procedure_munge_source(const char *name, const char *src);
 
@@ -31,10 +34,20 @@ init_procedure_caches(void)
 {
 	HASHCTL		hash_ctl;
 
+	if (PLy_procedure_cache != NULL)
+		return;
+
 	hash_ctl.keysize = sizeof(PLyProcedureKey);
 	hash_ctl.entrysize = sizeof(PLyProcedureEntry);
 	PLy_procedure_cache = hash_create("PL/Python procedures", 32, &hash_ctl,
 									  HASH_ELEM | HASH_BLOBS);
+
+	if (!PLy_procedure_reset_registered)
+	{
+		PgSessionRegisterResetCallback(PLy_procedure_cache_reset_callback,
+									   NULL);
+		PLy_procedure_reset_registered = true;
+	}
 }
 
 /*
@@ -422,6 +435,29 @@ PLy_procedure_delete(PLyProcedure *proc)
 	Py_XDECREF(proc->statics);
 	Py_XDECREF(proc->globals);
 	MemoryContextDelete(proc->mcxt);
+}
+
+static void
+PLy_procedure_cache_reset_callback(void *arg)
+{
+	HASH_SEQ_STATUS scan;
+	PLyProcedureEntry *entry;
+
+	(void) arg;
+
+	if (PLy_procedure_cache != NULL)
+	{
+		hash_seq_init(&scan, PLy_procedure_cache);
+		while ((entry = (PLyProcedureEntry *) hash_seq_search(&scan)) != NULL)
+		{
+			if (entry->proc != NULL)
+				PLy_procedure_delete(entry->proc);
+		}
+		hash_destroy(PLy_procedure_cache);
+		PLy_procedure_cache = NULL;
+	}
+
+	PLy_procedure_reset_registered = false;
 }
 
 /*

@@ -12970,3 +12970,65 @@ Validation for the postgres_fdw session-state slice:
   `static HTAB *ShippableCacheHash`, `static unsigned int cursor_number`,
   `static unsigned int prep_stmt_number`, `static bool xact_got_connection`,
   or `static int read_only_level` declarations in postgres_fdw.
+
+## PL/Python Procedure Cache Session State
+
+Lifecycle/preflight note:
+
+- target root and bucket: `PgSession.extension_modules`;
+- state moved: PL/Python's procedure cache `PLy_procedure_cache`;
+- repeated lifecycle operations: one opaque hash pointer plus one
+  reset-registration flag. The existing session extension-module reset
+  callback mechanism is sufficient because PL/Python owns the `PLyProcedure`
+  layout, Python reference cleanup, and per-procedure memory contexts. No new
+  generic lifecycle macro is needed for this single-cache batch;
+- retained invariant: PL/Python remains responsible for walking cached
+  procedures, `Py_DECREF`ing procedure-owned objects through
+  `PLy_procedure_delete()`, deleting the procedure memory contexts, and
+  destroying the private hash. The runtime owns only the session-local hash
+  pointer and callback-registration flag.
+
+PL/Python session-state slice:
+
+- `PgSessionExtensionModuleState` now owns the PL/Python procedure-cache
+  pointer and reset-registration flag;
+- `src/pl/plpython/plpy_procedure.c` keeps the historical
+  `PLy_procedure_cache` name as a source-local lvalue compatibility macro over
+  the current session object;
+- `init_procedure_caches()` now creates the cache once per logical session and
+  registers a per-session reset callback once. The callback deletes each cached
+  `PLyProcedure`, destroys the private hash, clears the runtime slot, and
+  clears the registration flag;
+- `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` and
+  `MULTITHREADED_RUNTIME_OWNERS.tsv` record the PL/Python session ownership.
+
+Validation limitation: this checkout is configured with `with_python = no`, so
+PL/Python compile/regression coverage is not available in this build. Use a
+Python-enabled build for runtime PL/Python coverage before claiming bundled
+language completeness for Gate E2.
+
+Validation for the PL/Python procedure-cache session-state slice:
+
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 206 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- stale-symbol scan found no remaining `static HTAB *PLy_procedure_cache`
+  declaration under `src/pl/plpython`;
+- touched runtime objects passed:
+  `gmake -C src/backend/utils/init backend_runtime.o backend_runtime_session.o`
+  and
+  `gmake -C src/test/modules/test_backend_runtime test_backend_runtime_session.o`;
+- `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- `gmake -C src/pl/plpython plpy_procedure.o` is blocked in this checkout by
+  the configured non-Python build: `plpython_system.h` cannot find `Python.h`;
+- direct backend-runtime TAP was run twice with patched macOS install-name
+  paths. `002_threaded_bgworker_crash.pl` passed, but
+  `001_threaded_runtime.pl` repeatedly exited nonzero after its first 12
+  visible assertions because the threaded postmaster disappeared while opening
+  background psql sessions. The server log ended after the representative
+  contrib-extension smoke and did not load PL/Python. Treat this as an
+  existing threaded-runtime validation blocker, not PL/Python coverage.

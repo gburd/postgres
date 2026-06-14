@@ -344,6 +344,18 @@ PgCurrentPLpgSQLSessionStateRef(void)
 }
 
 void **
+PgCurrentPLpythonProcedureCacheRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->plpython_procedure_cache;
+}
+
+bool *
+PgCurrentPLpythonResetRegisteredRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->plpython_reset_registered;
+}
+
+void **
 PgCurrentDblinkPersistentConnectionRef(void)
 {
 	return &PgCurrentSessionExtensionModuleState()->dblink_persistent_connection;

@@ -1694,6 +1694,13 @@ Important current files:
   coverage plus a full non-SSL build here, and use an SSL-enabled build when
   compile coverage for that file is required.
 
+- This checkout is currently configured with `with_python = no`. Direct
+  PL/Python builds and regression tests under `src/pl/plpython` are not
+  available in this configuration. For PL/Python-only Phase 12 migrations,
+  use runtime lifecycle checks, global lifetime scans, source review, and the
+  full non-Python build here, then use a Python-enabled build before claiming
+  PL/Python runtime coverage for Gate E2.
+
 - This checkout is currently validated with LLVM enabled for Phase 12 JIT
   provider work:
 

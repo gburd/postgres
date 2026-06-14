@@ -2018,6 +2018,8 @@ PgSessionInitializeExtensionModuleState(PgSessionExtensionModuleState *extension
 	Assert(extension_modules != NULL);
 
 	extension_modules->plpgsql_state = NULL;
+	extension_modules->plpython_procedure_cache = NULL;
+	extension_modules->plpython_reset_registered = false;
 	extension_modules->reset_callbacks = NIL;
 	extension_modules->auto_explain_log_min_duration =
 		AUTO_EXPLAIN_LOG_MIN_DURATION_DEFAULT;
