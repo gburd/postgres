@@ -11265,3 +11265,53 @@ small checked lifecycle vocabulary item, macro, `.def` rule, or checker
 validation that lets the batch move through the manifest-backed path. Record
 that decision here before the behavior change so future agents can reuse the
 same pattern.
+
+PMChild reaping stress coverage preflight:
+
+- target: Gate E2 real-server PMChild/thread-backend teardown evidence in
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl`;
+- repeated lifecycle operations: none. This slice adds end-to-end TAP coverage
+  for existing cleanup/reaping paths rather than new init/adopt/reset/destroy
+  helpers;
+- lifecycle preflight result: the existing lifecycle framework is sufficient.
+  No new `PG_RUNTIME_DEFINE_*` helper, bucket `.def` row, or checker rule is
+  needed because this batch does not introduce lifecycle implementation
+  boilerplate.
+
+PMChild reaping stress coverage slice added:
+
+- the threaded runtime TAP now runs three mixed teardown cycles that combine
+  abandoned clients holding advisory locks and temp tables, actively sleeping
+  sessions terminated through `pg_terminate_backend()`, and backend-local
+  FATAL exits from `test_backend_runtime_emit_fatal()`;
+- each cycle verifies that all victim logical backend IDs leave
+  `pg_stat_activity`, abandoned-client advisory locks are released, and the
+  threaded server remains usable afterward;
+- on Unix, the fixture snapshots the postmaster child count before the stress
+  and verifies it is unchanged afterward, giving Gate E2 a broader
+  real-server PMChild reaping check rather than only C-level PMChild API
+  coverage.
+
+Validation for the PMChild reaping stress coverage slice:
+
+- `PERL5LIB="/Users/samwillis/.cpan/build/IPC-Run-20260402.0-5/blib/lib:$PWD/src/test/perl" perl -c src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl`
+  passed;
+- `gmake -C src/test/modules/test_backend_runtime all` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 27 reset definitions checked, and 151 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode `test_backend_runtime` regression. As expected for this
+  checkout, the recursive make target still reports that TAP tests are not
+  enabled;
+- direct TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed
+  all 125 tests, including the new PMChild reaping stress cycles, after
+  refreshing `tmp_install`, applying the documented macOS install-name fixes,
+  and setting the local `IPC::Run` `PERL5LIB`;
+- direct TAP
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`
+  passed all 6 tests with the same local TAP environment;
+- `git diff --check` passed.

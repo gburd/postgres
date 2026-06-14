@@ -96,6 +96,36 @@ sub postmaster_child_command_count
 	return $count;
 }
 
+sub wait_for_pids_to_leave_pg_stat_activity
+{
+	my ($pids, $label) = @_;
+	my $pid_list = join(',', map { int($_) } @$pids);
+
+	$node->poll_query_until(
+		'postgres',
+		"SELECT NOT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid IN ($pid_list));",
+		't') || die "timed out waiting for $label";
+	pass($label);
+}
+
+sub wait_for_advisory_lock_count
+{
+	my ($low, $high, $expected, $label) = @_;
+
+	for (1 .. 100)
+	{
+		last
+		  if $node->safe_psql(
+			'postgres',
+			"SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted AND objid BETWEEN $low AND $high;") eq $expected;
+		usleep(100_000);
+	}
+	is($node->safe_psql(
+			'postgres',
+			"SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted AND objid BETWEEN $low AND $high;"),
+		$expected, $label);
+}
+
 install_contrib_extensions();
 
 $node->init;
@@ -744,6 +774,107 @@ is($node->safe_psql(
 	'0', 'mixed teardown stress abandoned backends released advisory locks');
 is($node->safe_psql('postgres', 'SELECT 42;'), '42',
 	'threaded server remains usable after mixed teardown stress');
+
+my $pmchild_reap_children_before =
+  $^O eq 'MSWin32' ? undef : postmaster_child_count();
+for my $cycle (1 .. 3)
+{
+	my @reap_abandoned_stress;
+	my @reap_abandoned_pids;
+	my @reap_terminate_stress;
+	my @reap_terminate_pids;
+	my @reap_fatal_stress;
+	my @reap_fatal_pids;
+	my $lock_base = 990000 + $cycle * 100;
+	my $lock_low = $lock_base + 1;
+	my $lock_high = $lock_base + 3;
+
+	for my $i (1 .. 3)
+	{
+		my $session = $node->background_psql('postgres',
+			on_error_stop => 0, timeout => 30);
+		my $pid = $session->query_safe('SELECT pg_backend_pid();',
+			verbose => 0);
+
+		$session->query_safe(
+			"BEGIN; SELECT pg_advisory_lock($lock_base + $i); CREATE TEMP TABLE threaded_reap_abandoned_${cycle}_${i}(id int); INSERT INTO threaded_reap_abandoned_${cycle}_${i} VALUES ($i);",
+			verbose => 0);
+		push @reap_abandoned_stress, $session;
+		push @reap_abandoned_pids, $pid;
+	}
+
+	for my $i (1 .. 3)
+	{
+		my $session = start_psql_script(
+			"SELECT pg_backend_pid();\nSELECT pg_sleep(30);\n",
+			45);
+
+		ok(pump_until($session->{run}, $session->{timer},
+				$session->{stdout}, qr/^\d+\s*$/m),
+			"PMChild reaping stress cycle $cycle terminate backend reported logical backend id");
+		my ($pid) = ${ $session->{stdout} } =~ /^(\d+)\s*$/m;
+		push @reap_terminate_stress, $session;
+		push @reap_terminate_pids, $pid;
+	}
+
+	for my $i (1 .. 2)
+	{
+		my $fatal = start_psql_script(
+			"SELECT pg_backend_pid();\nSELECT test_backend_runtime_emit_fatal();\n",
+			45);
+
+		ok(pump_until($fatal->{run}, $fatal->{timer},
+				$fatal->{stdout}, qr/^\d+\s*$/m),
+			"PMChild reaping stress cycle $cycle FATAL backend reported logical backend id");
+		my ($pid) = ${ $fatal->{stdout} } =~ /^(\d+)\s*$/m;
+		push @reap_fatal_stress, $fatal;
+		push @reap_fatal_pids, $pid;
+	}
+
+	wait_for_advisory_lock_count($lock_low, $lock_high, '3',
+		"PMChild reaping stress cycle $cycle acquired abandoned-client advisory locks");
+	is($node->safe_psql(
+			'postgres',
+			"SELECT bool_and(pg_terminate_backend(pid, 5000)) FROM unnest(ARRAY["
+			  . join(',', @reap_terminate_pids)
+			  . "]) AS p(pid);"),
+		't',
+		"PMChild reaping stress cycle $cycle accepted active terminate requests");
+
+	foreach my $session (@reap_abandoned_stress)
+	{
+		$session->{run}->kill_kill;
+		eval { $session->{run}->finish; };
+	}
+	foreach my $fatal (@reap_fatal_stress)
+	{
+		ok(pump_until($fatal->{run}, $fatal->{timer},
+				$fatal->{stderr}, qr/test_backend_runtime requested FATAL/),
+			"PMChild reaping stress cycle $cycle FATAL backend reported test FATAL");
+		eval { $fatal->{run}->finish; };
+	}
+	foreach my $session (@reap_terminate_stress)
+	{
+		eval { $session->{run}->finish; };
+	}
+
+	wait_for_pids_to_leave_pg_stat_activity(
+		[ @reap_abandoned_pids, @reap_terminate_pids, @reap_fatal_pids ],
+		"PMChild reaping stress cycle $cycle cleaned up all logical backends");
+	wait_for_advisory_lock_count($lock_low, $lock_high, '0',
+		"PMChild reaping stress cycle $cycle released abandoned-client advisory locks");
+	is($node->safe_psql('postgres', 'SELECT 42;'), '42',
+		"threaded server remains usable after PMChild reaping stress cycle $cycle");
+}
+
+SKIP:
+{
+	skip 'postmaster child counting smoke is Unix-specific', 1
+	  if $^O eq 'MSWin32';
+
+	is(postmaster_child_count(), $pmchild_reap_children_before,
+		'PMChild reaping stress did not leak postmaster child processes');
+}
 
 my $reconnect_ok = 1;
 for my $i (1 .. 30)
