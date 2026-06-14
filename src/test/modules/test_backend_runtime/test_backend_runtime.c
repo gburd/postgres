@@ -470,6 +470,8 @@ test_thread_install_adopts_backend_fallback_state(PG_FUNCTION_ARGS)
 		PgCurrentAutovacuumState()->av_storage_param_cost_limit = 106;
 		PgCurrentRepackState()->current_segment = 107;
 		PgCurrentAioState()->my_io_worker_id = 108;
+		PgCurrentBackendExtensionModuleState()->pg_stash_advice_state =
+			(struct pgsa_shared_state *) &state;
 		InterruptPending = true;
 		InterruptHoldoffCount = 109;
 
@@ -508,6 +510,8 @@ test_thread_install_adopts_backend_fallback_state(PG_FUNCTION_ARGS)
 		ok = ok && dlist_is_empty(&PgCurrentAutovacuumState()->database_list);
 		ok = ok && PgCurrentRepackState()->current_segment == 0;
 		ok = ok && PgCurrentAioState()->my_io_worker_id == -1;
+		ok = ok &&
+			PgCurrentBackendExtensionModuleState()->pg_stash_advice_state == NULL;
 		ok = ok && !InterruptPending;
 		ok = ok && InterruptHoldoffCount == 0;
 

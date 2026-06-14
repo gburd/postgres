@@ -197,6 +197,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendRepackState early_backend_repa
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendAioState early_backend_aio = {
 	.my_io_worker_id = -1
 };
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendExtensionModuleState early_backend_extension_modules;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendActivityState early_backend_activity;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendUtilityState early_backend_utility;
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendParallelState early_backend_parallel = {
@@ -576,7 +577,8 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionExtensionModuleState early_ses
 	.pg_trgm_similarity_threshold = PG_TRGM_SIMILARITY_THRESHOLD_DEFAULT,
 	.pg_trgm_word_similarity_threshold = PG_TRGM_WORD_SIMILARITY_THRESHOLD_DEFAULT,
 	.pg_trgm_strict_word_similarity_threshold = PG_TRGM_STRICT_WORD_SIMILARITY_THRESHOLD_DEFAULT,
-	.pg_plan_advice_always_explain_supplied_advice = PG_PLAN_ADVICE_ALWAYS_EXPLAIN_SUPPLIED_ADVICE_DEFAULT
+	.pg_plan_advice_always_explain_supplied_advice = PG_PLAN_ADVICE_ALWAYS_EXPLAIN_SUPPLIED_ADVICE_DEFAULT,
+	.pg_stash_advice_stash_name = ""
 };
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionCatalogLookupState early_session_catalog_lookup;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionInvalidationCallbackState early_session_invalidation_callbacks;
@@ -857,6 +859,11 @@ static void PgBackendInitializeRepackState(PgBackendRepackState *repack);
 static void PgBackendAdoptEarlyRepackState(PgBackend *backend);
 static void PgBackendInitializeAioState(PgBackendAioState *aio);
 static void PgBackendAdoptEarlyAioState(PgBackend *backend);
+static void PgBackendInitializeExtensionModuleState(PgBackendExtensionModuleState
+													*extension_modules);
+static void PgBackendAdoptEarlyExtensionModuleState(PgBackend *backend);
+static void PgBackendResetExtensionModuleClosedState(PgBackendExtensionModuleState
+													 *extension_modules);
 static void PgBackendAdoptEarlyPendingInterrupts(PgBackend *backend);
 static void PgBackendAdoptEarlyInterruptHoldoffs(PgBackend *backend);
 static BackendType *PgCurrentBackendTypeRef(void);
@@ -2303,6 +2310,7 @@ PgSessionInitializeExtensionModuleState(PgSessionExtensionModuleState *extension
 	extension_modules->pg_plan_advice_feedback_warnings = false;
 	extension_modules->pg_plan_advice_trace_mask = false;
 	extension_modules->pg_plan_advice_generate_advice = 0;
+	extension_modules->pg_stash_advice_stash_name = "";
 }
 
 static void
@@ -3562,6 +3570,40 @@ PgBackendAdoptEarlyAioState(PgBackend *backend)
 
 	backend->aio = early_backend_aio;
 	PgBackendInitializeAioState(&early_backend_aio);
+}
+
+static void
+PgBackendInitializeExtensionModuleState(PgBackendExtensionModuleState *extension_modules)
+{
+	Assert(extension_modules != NULL);
+
+	MemSet(extension_modules, 0, sizeof(*extension_modules));
+}
+
+static void
+PgBackendAdoptEarlyExtensionModuleState(PgBackend *backend)
+{
+	Assert(backend != NULL);
+
+	backend->extension_modules = early_backend_extension_modules;
+	PgBackendInitializeExtensionModuleState(&early_backend_extension_modules);
+}
+
+static void
+PgBackendResetExtensionModuleClosedState(PgBackendExtensionModuleState *extension_modules)
+{
+	Assert(extension_modules != NULL);
+
+	if (extension_modules->pg_stash_advice_entry_dshash != NULL)
+		dshash_detach(extension_modules->pg_stash_advice_entry_dshash);
+	if (extension_modules->pg_stash_advice_stash_dshash != NULL)
+		dshash_detach(extension_modules->pg_stash_advice_stash_dshash);
+	if (extension_modules->pg_stash_advice_dsa_area != NULL)
+		dsa_detach(extension_modules->pg_stash_advice_dsa_area);
+	if (extension_modules->pg_stash_advice_context != NULL)
+		MemoryContextDelete(extension_modules->pg_stash_advice_context);
+
+	PgBackendInitializeExtensionModuleState(extension_modules);
 }
 
 static void
@@ -8463,6 +8505,15 @@ struct PgAioBackend **
 PgCurrentAioBackendRef(void)
 {
 	return &PgCurrentAioState()->my_backend;
+}
+
+PgBackendExtensionModuleState *
+PgCurrentBackendExtensionModuleState(void)
+{
+	if (CurrentPgBackend == NULL)
+		return &early_backend_extension_modules;
+
+	return &CurrentPgBackend->extension_modules;
 }
 
 static PgBackendTransactionState *

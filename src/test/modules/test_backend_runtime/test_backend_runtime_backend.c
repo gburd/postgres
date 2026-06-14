@@ -3724,3 +3724,89 @@ test_backend_aio_state_is_backend_local(PG_FUNCTION_ARGS)
 
 	PG_RETURN_BOOL(true);
 }
+
+PG_FUNCTION_INFO_V1(test_backend_extension_module_state_is_backend_local);
+Datum
+test_backend_extension_module_state_is_backend_local(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgBackend	fake_backend1;
+	PgBackend	fake_backend2;
+	PgBackend	fake_backend_reset;
+	PgBackendExtensionModuleState *extension_modules;
+	bool		ok = true;
+
+	saved_backend = CurrentPgBackend;
+	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
+	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+	MemSet(&fake_backend_reset, 0, sizeof(fake_backend_reset));
+
+	PG_TRY();
+	{
+		CurrentPgBackend = &fake_backend1;
+		extension_modules = PgCurrentBackendExtensionModuleState();
+		ok = ok && extension_modules->pg_stash_advice_state == NULL;
+		ok = ok && extension_modules->pg_stash_advice_dsa_area == NULL;
+		ok = ok && extension_modules->pg_stash_advice_stash_dshash == NULL;
+		ok = ok && extension_modules->pg_stash_advice_entry_dshash == NULL;
+		ok = ok && extension_modules->pg_stash_advice_context == NULL;
+		extension_modules->pg_stash_advice_state =
+			(struct pgsa_shared_state *) &fake_backend1;
+		extension_modules->pg_stash_advice_dsa_area =
+			(dsa_area *) &fake_backend1;
+		extension_modules->pg_stash_advice_stash_dshash =
+			(dshash_table *) &fake_backend1;
+		extension_modules->pg_stash_advice_entry_dshash =
+			(dshash_table *) &fake_backend1;
+		extension_modules->pg_stash_advice_context =
+			(MemoryContext) &fake_backend1;
+
+		CurrentPgBackend = &fake_backend2;
+		extension_modules = PgCurrentBackendExtensionModuleState();
+		ok = ok && extension_modules->pg_stash_advice_state == NULL;
+		ok = ok && extension_modules->pg_stash_advice_dsa_area == NULL;
+		ok = ok && extension_modules->pg_stash_advice_stash_dshash == NULL;
+		ok = ok && extension_modules->pg_stash_advice_entry_dshash == NULL;
+		ok = ok && extension_modules->pg_stash_advice_context == NULL;
+		extension_modules->pg_stash_advice_state =
+			(struct pgsa_shared_state *) &fake_backend2;
+
+		CurrentPgBackend = &fake_backend1;
+		extension_modules = PgCurrentBackendExtensionModuleState();
+		ok = ok && extension_modules->pg_stash_advice_state ==
+			(struct pgsa_shared_state *) &fake_backend1;
+		ok = ok && extension_modules->pg_stash_advice_dsa_area ==
+			(dsa_area *) &fake_backend1;
+		ok = ok && extension_modules->pg_stash_advice_stash_dshash ==
+			(dshash_table *) &fake_backend1;
+		ok = ok && extension_modules->pg_stash_advice_entry_dshash ==
+			(dshash_table *) &fake_backend1;
+		ok = ok && extension_modules->pg_stash_advice_context ==
+			(MemoryContext) &fake_backend1;
+
+		CurrentPgBackend = &fake_backend2;
+		extension_modules = PgCurrentBackendExtensionModuleState();
+		ok = ok && extension_modules->pg_stash_advice_state ==
+			(struct pgsa_shared_state *) &fake_backend2;
+		ok = ok && extension_modules->pg_stash_advice_dsa_area == NULL;
+
+		fake_backend_reset.extension_modules.pg_stash_advice_state =
+			(struct pgsa_shared_state *) &fake_backend_reset;
+		PgBackendResetClosedState(&fake_backend_reset);
+		ok = ok &&
+			fake_backend_reset.extension_modules.pg_stash_advice_state == NULL;
+
+		CurrentPgBackend = saved_backend;
+	}
+	PG_CATCH();
+	{
+		CurrentPgBackend = saved_backend;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "backend extension module state was not backend-local");
+
+	PG_RETURN_BOOL(true);
+}

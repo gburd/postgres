@@ -11179,3 +11179,54 @@ pg_plan_advice session-state object migration completed:
   `PgSession.extension_modules`, and
   `test_session_extension_module_state_is_session_local()` verifies they
   switch with `CurrentPgSession` and reset to defaults.
+
+pg_stash_advice lifecycle preflight:
+
+- target roots and buckets: `PgSession.extension_modules` for the
+  `pg_stash_advice.stash_name` custom-GUC backing string, and the new
+  `PgBackend.extension_modules` bucket for per-backend DSM/DSA/dshash
+  attachment state;
+- repeated lifecycle operations: session scalar/string default initialization,
+  whole-bucket session early adoption, backend whole-bucket early adoption,
+  and close-time cleanup of backend-local attachment handles;
+- lifecycle preflight result: the existing session bucket row and ordered
+  session reset mechanism are sufficient for the stash-name GUC. The backend
+  attachment pointers need a dedicated `PgBackend.extension_modules` row so
+  lifecycle ownership is manifest-visible rather than hidden inside
+  unrelated worker buckets. No new generic lifecycle action is needed because
+  the close reset has semantic ordering: detach dshash handles, detach the
+  DSA mapping, delete the local attachment memory context, and then clear the
+  fixed shared-state pointer. Shared DSM contents remain owned by the DSM
+  registry/shared memory.
+
+pg_stash_advice object migration completed:
+
+- `pg_stash_advice_stash_name` no longer lives in a contrib-local
+  `PG_THREAD_LOCAL` session global; it is now a compatibility macro over
+  `PgSession.extension_modules.pg_stash_advice_stash_name`;
+- `pgsa_state`, `pgsa_dsa_area`, `pgsa_stash_dshash`,
+  `pgsa_entry_dshash`, and `pg_stash_advice_mcxt` now live in
+  `PgBackend.extension_modules` behind compatibility macros;
+- the two mutable `dshash_parameters` templates were removed from global
+  storage entirely and are now local stack parameters inside `pgsa_attach()`;
+- `PgBackendResetClosedState()` reaches
+  `PgBackendResetExtensionModuleClosedState()` through the checked backend
+  bucket row, detaching local pg_stash_advice attachment handles before
+  reinitializing the bucket;
+- `MULTITHREADED_RUNTIME_OWNERS.tsv` maps all six migrated pg_stash_advice
+  legacy symbols to their runtime fields, and
+  `test_backend_extension_module_state_is_backend_local()` plus
+  `test_session_extension_module_state_is_session_local()` cover backend and
+  session switching/reset behavior.
+
+Current lifecycle-ergonomics instruction:
+
+- before the next boilerplate-heavy Phase 12 migration batch, explicitly
+  decide whether lifecycle helper macros, checked action names, or declarative
+  bucket rules would make the work simpler;
+- if the answer is yes, land the lifecycle-framework improvement first and
+  move the globals through that checked mechanism instead of adding another
+  handwritten init/adopt/reset helper family;
+- if the existing bucket rows, `PG_RUNTIME_DEFINE_*` helpers, and
+  `check-runtime-lifecycles` rules are sufficient, record that in the
+  migration preflight before editing code.

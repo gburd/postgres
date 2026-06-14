@@ -50,5 +50,6 @@ PG_BACKEND_BUCKET(maintenance_worker, PgBackendInitializeMaintenanceWorkerState(
 PG_BACKEND_BUCKET(autovacuum, PgBackendInitializeAutovacuumState(&backend->autovacuum), PgBackendAdoptEarlyAutovacuumState(backend), PgBackendResetAutovacuumClosedState(&backend->autovacuum))
 PG_BACKEND_BUCKET(repack, PgBackendInitializeRepackState(&backend->repack), PgBackendAdoptEarlyRepackState(backend), PG_RUNTIME_NOOP)
 PG_BACKEND_BUCKET(aio, PgBackendInitializeAioState(&backend->aio), PgBackendAdoptEarlyAioState(backend), PgBackendResetAioClosedState(&backend->aio))
+PG_BACKEND_BUCKET(extension_modules, PgBackendInitializeExtensionModuleState(&backend->extension_modules), PgBackendAdoptEarlyExtensionModuleState(backend), PgBackendResetExtensionModuleClosedState(&backend->extension_modules))
 PG_BACKEND_BUCKET(pending_interrupts, PG_RUNTIME_NOOP, PgBackendAdoptEarlyPendingInterrupts(backend), PG_RUNTIME_NOOP)
 PG_BACKEND_BUCKET(interrupt_holdoffs, PG_RUNTIME_NOOP, PgBackendAdoptEarlyInterruptHoldoffs(backend), PG_RUNTIME_NOOP)

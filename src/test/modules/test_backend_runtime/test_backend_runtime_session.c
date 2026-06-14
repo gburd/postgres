@@ -2604,6 +2604,8 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 	PgSessionExtensionModuleState *extension_modules;
 	char		session1_advice[] = "session1 advice";
 	char		session2_advice[] = "session2 advice";
+	char		session1_stash[] = "session1_stash";
+	char		session2_stash[] = "session2_stash";
 	bool		ok = true;
 
 	saved_session = CurrentPgSession;
@@ -2618,10 +2620,12 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		fake_session1.extension_modules.pg_trgm_word_similarity_threshold = 0.6;
 		fake_session1.extension_modules.pg_trgm_strict_word_similarity_threshold = 0.5;
 		fake_session1.extension_modules.pg_plan_advice_always_explain_supplied_advice = true;
+		fake_session1.extension_modules.pg_stash_advice_stash_name = "";
 		fake_session2.extension_modules.pg_trgm_similarity_threshold = 0.3;
 		fake_session2.extension_modules.pg_trgm_word_similarity_threshold = 0.6;
 		fake_session2.extension_modules.pg_trgm_strict_word_similarity_threshold = 0.5;
 		fake_session2.extension_modules.pg_plan_advice_always_explain_supplied_advice = true;
+		fake_session2.extension_modules.pg_stash_advice_stash_name = "";
 
 		PgSetCurrentSession(&fake_session1);
 		extension_modules = PgCurrentSessionExtensionModuleState();
@@ -2634,6 +2638,7 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && !extension_modules->pg_plan_advice_feedback_warnings;
 		ok = ok && !extension_modules->pg_plan_advice_trace_mask;
 		ok = ok && extension_modules->pg_plan_advice_generate_advice == 0;
+		ok = ok && strcmp(extension_modules->pg_stash_advice_stash_name, "") == 0;
 		extension_modules->pg_trgm_similarity_threshold = 0.11;
 		extension_modules->pg_trgm_word_similarity_threshold = 0.12;
 		extension_modules->pg_trgm_strict_word_similarity_threshold = 0.13;
@@ -2643,6 +2648,7 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		extension_modules->pg_plan_advice_feedback_warnings = true;
 		extension_modules->pg_plan_advice_trace_mask = true;
 		extension_modules->pg_plan_advice_generate_advice = 1;
+		extension_modules->pg_stash_advice_stash_name = session1_stash;
 
 		ok = ok && *PgCurrentPLpgSQLSessionStateRef() == NULL;
 		*PgCurrentPLpgSQLSessionStateRef() = &session1_private;
@@ -2660,6 +2666,7 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && !extension_modules->pg_plan_advice_feedback_warnings;
 		ok = ok && !extension_modules->pg_plan_advice_trace_mask;
 		ok = ok && extension_modules->pg_plan_advice_generate_advice == 0;
+		ok = ok && strcmp(extension_modules->pg_stash_advice_stash_name, "") == 0;
 		extension_modules->pg_trgm_similarity_threshold = 0.21;
 		extension_modules->pg_trgm_word_similarity_threshold = 0.22;
 		extension_modules->pg_trgm_strict_word_similarity_threshold = 0.23;
@@ -2669,6 +2676,7 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		extension_modules->pg_plan_advice_feedback_warnings = false;
 		extension_modules->pg_plan_advice_trace_mask = true;
 		extension_modules->pg_plan_advice_generate_advice = 2;
+		extension_modules->pg_stash_advice_stash_name = session2_stash;
 
 		ok = ok && *PgCurrentPLpgSQLSessionStateRef() == NULL;
 		*PgCurrentPLpgSQLSessionStateRef() = &session2_private;
@@ -2688,6 +2696,8 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && extension_modules->pg_plan_advice_feedback_warnings;
 		ok = ok && extension_modules->pg_plan_advice_trace_mask;
 		ok = ok && extension_modules->pg_plan_advice_generate_advice == 1;
+		ok = ok && strcmp(extension_modules->pg_stash_advice_stash_name,
+						  "session1_stash") == 0;
 
 		PgSetCurrentSession(&fake_session2);
 		ok = ok && *PgCurrentPLpgSQLSessionStateRef() == &session2_private;
@@ -2702,6 +2712,8 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && !extension_modules->pg_plan_advice_feedback_warnings;
 		ok = ok && extension_modules->pg_plan_advice_trace_mask;
 		ok = ok && extension_modules->pg_plan_advice_generate_advice == 2;
+		ok = ok && strcmp(extension_modules->pg_stash_advice_stash_name,
+						  "session2_stash") == 0;
 
 		PgSetCurrentSession(saved_session);
 		PgSessionResetClosedState(&fake_session1);
@@ -2718,6 +2730,8 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && !fake_session1.extension_modules.pg_plan_advice_feedback_warnings;
 		ok = ok && !fake_session1.extension_modules.pg_plan_advice_trace_mask;
 		ok = ok && fake_session1.extension_modules.pg_plan_advice_generate_advice == 0;
+		ok = ok && strcmp(fake_session1.extension_modules.pg_stash_advice_stash_name,
+						  "") == 0;
 		ok = ok && fake_session2.extension_modules.plpgsql_state == &session2_private;
 		ok = ok && fake_session2.extension_modules.reset_callbacks != NIL;
 		ok = ok && fake_session2.extension_modules.pg_trgm_similarity_threshold == 0.21;
@@ -2730,6 +2744,8 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && !fake_session2.extension_modules.pg_plan_advice_feedback_warnings;
 		ok = ok && fake_session2.extension_modules.pg_plan_advice_trace_mask;
 		ok = ok && fake_session2.extension_modules.pg_plan_advice_generate_advice == 2;
+		ok = ok && strcmp(fake_session2.extension_modules.pg_stash_advice_stash_name,
+						  "session2_stash") == 0;
 
 		PgSessionResetClosedState(&fake_session2);
 		ok = ok && session2_reset_count == 1;
@@ -2744,6 +2760,8 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && !fake_session2.extension_modules.pg_plan_advice_feedback_warnings;
 		ok = ok && !fake_session2.extension_modules.pg_plan_advice_trace_mask;
 		ok = ok && fake_session2.extension_modules.pg_plan_advice_generate_advice == 0;
+		ok = ok && strcmp(fake_session2.extension_modules.pg_stash_advice_stash_name,
+						  "") == 0;
 	}
 	PG_CATCH();
 	{

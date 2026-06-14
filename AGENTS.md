@@ -344,6 +344,11 @@ Important current files:
   preferred fix is a small named action, helper macro, table row, or checker
   rule that makes the next batch easier and keeps the manifest as the source
   of truth; do not paper over the friction with another manual helper list.
+- Current Phase 12 standing instruction: before the next boilerplate-heavy
+  migration batch, explicitly decide whether lifecycle helper macros,
+  checked action names, or declarative bucket rules would make the batch
+  simpler. If yes, land that lifecycle-framework improvement first, then move
+  the globals through the checked path.
 - Session GUC direct-variable rebinding in `src/backend/utils/misc/guc.c`
   is table-driven by `threaded_session_guc_rebinds[]`. Add new migrated
   built-in direct-pointer GUCs to that table instead of extending

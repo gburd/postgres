@@ -120,6 +120,7 @@ struct PgAioBackend;
 struct PgAioUringContext;
 struct AllocSetContext;
 struct ClientSocket;
+struct pgsa_shared_state;
 typedef struct dsm_segment dsm_segment;
 typedef void (*PgBackendExitContinuation) (int code);
 typedef int (*PgSuspendCallback) (void *callback_arg);
@@ -532,6 +533,15 @@ typedef struct PgBackendAioState
 	int			my_io_worker_id;
 	struct PgAioUringContext *my_uring_context;
 } PgBackendAioState;
+
+typedef struct PgBackendExtensionModuleState
+{
+	struct pgsa_shared_state *pg_stash_advice_state;
+	dsa_area   *pg_stash_advice_dsa_area;
+	dshash_table *pg_stash_advice_stash_dshash;
+	dshash_table *pg_stash_advice_entry_dshash;
+	MemoryContext pg_stash_advice_context;
+} PgBackendExtensionModuleState;
 
 typedef struct PgBackendPgStatPendingState
 {
@@ -1632,6 +1642,7 @@ typedef struct PgSessionExtensionModuleState
 	bool		pg_plan_advice_feedback_warnings;
 	bool		pg_plan_advice_trace_mask;
 	int			pg_plan_advice_generate_advice;
+	char	   *pg_stash_advice_stash_name;
 } PgSessionExtensionModuleState;
 
 typedef struct PgSessionCatalogLookupState
@@ -2089,6 +2100,7 @@ struct PgBackend
 	PgBackendAutovacuumState autovacuum;
 	PgBackendRepackState repack;
 	PgBackendAioState aio;
+	PgBackendExtensionModuleState extension_modules;
 	PgBackendPgStatPendingState pgstat_pending;
 	PgBackendActivityState activity;
 	PgBackendMemoryManagerState memory_manager;
@@ -2722,6 +2734,7 @@ extern PgBackendRepackState *PgCurrentRepackState(void);
 extern volatile sig_atomic_t *PgCurrentRepackMessagePendingRef(void);
 extern PgBackendAioState *PgCurrentAioState(void);
 extern struct PgAioBackend **PgCurrentAioBackendRef(void);
+extern PgBackendExtensionModuleState *PgCurrentBackendExtensionModuleState(void);
 extern TransactionId *PgCurrentCachedFetchXidRef(void);
 extern int *PgCurrentCachedFetchXidStatusRef(void);
 extern XLogRecPtr *PgCurrentCachedCommitLSNRef(void);

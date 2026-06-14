@@ -609,7 +609,9 @@ Likely changes:
     metadata, with its `pg_plan_advice` dependency marked for the same
     backend model. `pg_plan_advice` session-local custom-GUC backing state and
     advice-generation request state now live in `PgSession.extension_modules`
-    rather than contrib-local TLS globals.
+    rather than contrib-local TLS globals. `pg_stash_advice` stash-name GUC
+    state now lives in `PgSession.extension_modules`, and its backend-local
+    DSM/DSA/dshash attachment pointers live in `PgBackend.extension_modules`.
 - Require generic background workers to declare
   `BgWorkerBackendThreadPerSession` before they can run on thread carriers.
   The zero/default registration value remains process-only, so existing

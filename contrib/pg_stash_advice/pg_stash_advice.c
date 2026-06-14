@@ -29,38 +29,13 @@ PG_MODULE_MAGIC_EXT(
 					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
 );
 
-/* Shared memory hash table parameters */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND dshash_parameters pgsa_stash_dshash_parameters = {
-	NAMEDATALEN,
-	sizeof(pgsa_stash),
-	dshash_strcmp,
-	dshash_strhash,
-	dshash_strcpy,
-	LWTRANCHE_INVALID			/* gets set at runtime */
-};
-
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND dshash_parameters pgsa_entry_dshash_parameters = {
-	sizeof(pgsa_entry_key),
-	sizeof(pgsa_entry),
-	dshash_memcmp,
-	dshash_memhash,
-	dshash_memcpy,
-	LWTRANCHE_INVALID			/* gets set at runtime */
-};
-
 /* GUC variables */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION char *pg_stash_advice_stash_name = "";
 PG_GLOBAL_RUNTIME bool pg_stash_advice_persist = true;
 PG_GLOBAL_RUNTIME int pg_stash_advice_persist_interval = 30;
 
-/* Shared memory pointers */
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND pgsa_shared_state *pgsa_state;
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND dsa_area *pgsa_dsa_area;
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND dshash_table *pgsa_stash_dshash;
-PG_THREAD_LOCAL PG_GLOBAL_BACKEND dshash_table *pgsa_entry_dshash;
-
-/* Other global variables */
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND MemoryContext pg_stash_advice_mcxt;
+/* Backend-local memory context. */
+#define pg_stash_advice_mcxt \
+	(PgCurrentBackendExtensionModuleState()->pg_stash_advice_context)
 
 /* Function prototypes */
 static char *pgsa_advisor(PlannerGlobal *glob,
@@ -227,6 +202,22 @@ pgsa_attach(void)
 {
 	bool		found;
 	MemoryContext oldcontext;
+	dshash_parameters pgsa_stash_dshash_parameters = {
+		NAMEDATALEN,
+		sizeof(pgsa_stash),
+		dshash_strcmp,
+		dshash_strhash,
+		dshash_strcpy,
+		LWTRANCHE_INVALID		/* gets set at runtime */
+	};
+	dshash_parameters pgsa_entry_dshash_parameters = {
+		sizeof(pgsa_entry_key),
+		sizeof(pgsa_entry),
+		dshash_memcmp,
+		dshash_memhash,
+		dshash_memcpy,
+		LWTRANCHE_INVALID		/* gets set at runtime */
+	};
 
 	/*
 	 * Create a memory context to make sure that any control structures

@@ -21,6 +21,7 @@
 
 #include "lib/dshash.h"
 #include "storage/lwlock.h"
+#include "utils/backend_runtime.h"
 
 #define PGSA_DUMP_FILE		"pg_stash_advice.tsv"
 
@@ -85,11 +86,19 @@ typedef struct pgsa_stash_name
 #define SH_DECLARE
 #include "lib/simplehash.h"
 
-/* Shared memory pointers */
-extern PG_THREAD_LOCAL PG_GLOBAL_BACKEND pgsa_shared_state *pgsa_state;
-extern PG_THREAD_LOCAL PG_GLOBAL_BACKEND dsa_area *pgsa_dsa_area;
-extern PG_THREAD_LOCAL PG_GLOBAL_BACKEND dshash_table *pgsa_stash_dshash;
-extern PG_THREAD_LOCAL PG_GLOBAL_BACKEND dshash_table *pgsa_entry_dshash;
+/* Backend-local attachment state. */
+#define pgsa_state \
+	(PgCurrentBackendExtensionModuleState()->pg_stash_advice_state)
+#define pgsa_dsa_area \
+	(PgCurrentBackendExtensionModuleState()->pg_stash_advice_dsa_area)
+#define pgsa_stash_dshash \
+	(PgCurrentBackendExtensionModuleState()->pg_stash_advice_stash_dshash)
+#define pgsa_entry_dshash \
+	(PgCurrentBackendExtensionModuleState()->pg_stash_advice_entry_dshash)
+
+/* Session-local custom GUC backing state. */
+#define pg_stash_advice_stash_name \
+	(PgCurrentSessionExtensionModuleState()->pg_stash_advice_stash_name)
 
 /* GUC variables */
 extern PG_GLOBAL_RUNTIME bool pg_stash_advice_persist;
