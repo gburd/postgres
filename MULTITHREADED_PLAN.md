@@ -932,6 +932,9 @@ backend-owned mutable state. A raw scan for
 `PG_GLOBAL_CONNECTION`, and `PG_GLOBAL_EXECUTION` declarations now finds no
 matches outside `src/backend/utils/init/backend_runtime.c` early-fallback
 storage.
+The Windows socket emulation flag `pgwin32_noblock` also now lives in
+`PgConnection.socket_io`; this is validated through the shared connection
+runtime tests here, with explicit Windows build coverage still required.
 The generic main-loop interrupt flags `ConfigReloadPending` and
 `ShutdownRequestPending` now live in `PgBackendPendingInterruptState` behind
 their existing lvalue names, so config reload and cooperative shutdown state

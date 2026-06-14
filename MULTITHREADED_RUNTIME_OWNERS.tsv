@@ -125,4 +125,5 @@ CurrentSession	PgSession	legacy_session	legacy_session	PgCurrentLegacySessionRef
 ConnectionWarningsEmitted	PgConnection	startup	connection_warnings_emitted	PgCurrentConnectionWarningsEmittedRef	src/backend/utils/init/postinit.c	connection warning emit guard
 ConnectionWarningMessages	PgConnection	startup	connection_warning_messages	PgCurrentConnectionWarningMessagesRef	src/backend/utils/init/postinit.c	saved connection warning messages
 ConnectionWarningDetails	PgConnection	startup	connection_warning_details	PgCurrentConnectionWarningDetailsRef	src/backend/utils/init/postinit.c	saved connection warning details
+pgwin32_noblock	PgConnection	socket_io	win32_noblock	PgCurrentPgwin32NoBlockRef	src/backend/port/win32/socket.c	Win32 socket emulated nonblocking flag; Windows build validation still required
 ri_fastpath_xact_callback_registered	PgSession	ri_globals	fastpath_xact_callback_registered	PgCurrentRIFastPathXactCallbackRegisteredRef	src/backend/utils/adt/ri_triggers.c	RI fast-path xact callback registration guard

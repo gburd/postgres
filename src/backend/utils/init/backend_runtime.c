@@ -9684,6 +9684,12 @@ PgCurrentConnectionSocketIORef(void)
 	return PgConnectionSocketIORef(CurrentPgConnection);
 }
 
+int *
+PgCurrentPgwin32NoBlockRef(void)
+{
+	return &PgCurrentConnectionSocketIORef()->win32_noblock;
+}
+
 const PQcommMethods **
 PgConnectionPqCommMethodsRef(PgConnection *connection)
 {

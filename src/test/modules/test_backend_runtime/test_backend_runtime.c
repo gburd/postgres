@@ -15254,6 +15254,7 @@ test_connection_socket_io_is_connection_local(PG_FUNCTION_ARGS)
 		socket_io->recv_length = 9;
 		socket_io->comm_busy = true;
 		socket_io->comm_reading_msg = true;
+		socket_io->win32_noblock = 1;
 
 		CurrentPgConnection = &fake_connection2;
 		socket_io = PgCurrentConnectionSocketIORef();
@@ -15265,8 +15266,10 @@ test_connection_socket_io_is_connection_local(PG_FUNCTION_ARGS)
 		ok = ok && socket_io->recv_length == 0;
 		ok = ok && !socket_io->comm_busy;
 		ok = ok && !socket_io->comm_reading_msg;
+		ok = ok && socket_io->win32_noblock == 0;
 		socket_io->send_buffer = (char *) "fake connection two";
 		socket_io->comm_busy = true;
+		socket_io->win32_noblock = 2;
 
 		CurrentPgConnection = &fake_connection1;
 		socket_io = PgCurrentConnectionSocketIORef();
@@ -15278,12 +15281,14 @@ test_connection_socket_io_is_connection_local(PG_FUNCTION_ARGS)
 		ok = ok && socket_io->recv_length == 9;
 		ok = ok && socket_io->comm_busy;
 		ok = ok && socket_io->comm_reading_msg;
+		ok = ok && socket_io->win32_noblock == 1;
 
 		CurrentPgConnection = &fake_connection2;
 		socket_io = PgCurrentConnectionSocketIORef();
 		ok = ok && strcmp(socket_io->send_buffer, "fake connection two") == 0;
 		ok = ok && socket_io->comm_busy;
 		ok = ok && !socket_io->comm_reading_msg;
+		ok = ok && socket_io->win32_noblock == 2;
 
 		CurrentPgConnection = saved_connection;
 	}
@@ -15394,6 +15399,7 @@ test_connection_reset_closed_state(PG_FUNCTION_ARGS)
 	socket_io->recv_length = 9;
 	socket_io->comm_busy = true;
 	socket_io->comm_reading_msg = true;
+	socket_io->win32_noblock = 1;
 
 	connection.protocol.comm_methods = &methods;
 	connection.protocol.fe_be_wait_set = fake_wait_set;
@@ -15448,6 +15454,7 @@ test_connection_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && socket_io->recv_length == 0;
 	ok = ok && !socket_io->comm_busy;
 	ok = ok && !socket_io->comm_reading_msg;
+	ok = ok && socket_io->win32_noblock == 0;
 
 	ok = ok && connection.protocol.comm_methods == NULL;
 	ok = ok && connection.protocol.fe_be_wait_set == NULL;

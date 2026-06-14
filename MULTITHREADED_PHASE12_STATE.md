@@ -10245,3 +10245,40 @@ Validation for this slice:
   globals;
 - the focused raw TLS scan outside `backend_runtime.c` found no remaining
   matches.
+
+## Win32 Socket Nonblocking Flag
+
+This Phase 12 connection-state slice moves the Win32 socket emulation
+nonblocking flag behind the `PgConnection.socket_io` bucket:
+
+- `PgConnectionSocketIOState` now owns `win32_noblock`;
+- `win32_port.h` preserves the historical `pgwin32_noblock` lvalue as a macro
+  over `PgCurrentPgwin32NoBlockRef()`;
+- `src/backend/port/win32/socket.c` no longer defines separate
+  `PG_GLOBAL_CONNECTION` storage for the flag;
+- the existing connection socket-I/O runtime tests now verify that the field
+  switches with `CurrentPgConnection` and is cleared by
+  `PgConnectionResetClosedState()`;
+- `MULTITHREADED_RUNTIME_OWNERS.tsv` records the symbol-level mapping, and
+  `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` expands the socket-I/O bucket
+  lifecycle note.
+
+This is a best-effort Windows-port migration from the macOS build. The shared
+runtime object, accessors, manifests, and non-Windows tests are validated here,
+but the `win32_port.h` macro expansion and `src/backend/port/win32/socket.c`
+compile path still need a Windows build before Phase 12 can claim platform
+coverage for this specific symbol.
+
+Validation for this slice:
+
+- pending Windows build validation for `src/backend/port/win32/socket.c`;
+- touched-object builds passed for `backend_runtime.o` and
+  `test_backend_runtime.o`;
+- `gmake -j8` passed on the LLVM-enabled macOS build;
+- `gmake check-runtime-lifecycles` passed with 149 runtime fields classified;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and connection-local declarations reduced from 11 to 9;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` with 88
+  tests and `002_threaded_bgworker_crash.pl` with 6 tests using the local
+  `IPC::Run` `PERL5LIB` and patched temporary-install dynamic library names.

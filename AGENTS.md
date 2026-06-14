@@ -179,6 +179,10 @@ Important current files:
   storage. If a new in-tree module needs cached shared registry data, prefer
   `PG_GLOBAL_RUNTIME`; if it needs backend/session/execution state, add an
   explicit runtime-object bucket instead.
+- Windows-only Phase 12 edits made from this macOS checkout must be marked as
+  best-effort until a Windows build validates them. The current
+  `pgwin32_noblock` bridge is covered by shared connection-object tests here,
+  but `src/backend/port/win32/socket.c` still needs Windows compile coverage.
 - Before leaving Phase 12, perform the Gate E2 object-lifecycle audit. Every
   backend/session/connection/execution state bucket needs a documented
   initializer, early-adoption behavior or proof that early adoption is

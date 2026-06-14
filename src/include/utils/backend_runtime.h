@@ -1904,6 +1904,7 @@ typedef struct PgConnectionSocketIOState
 	int			recv_length;
 	bool		comm_busy;
 	bool		comm_reading_msg;
+	int			win32_noblock;
 } PgConnectionSocketIOState;
 
 typedef struct PgConnectionProtocolState
@@ -2895,6 +2896,7 @@ extern struct ResourceOwnerData **PgCurrentSnapBuildSavedResourceOwnerDuringExpo
 extern bool *PgCurrentSnapBuildExportInProgressRef(void);
 extern PgConnectionSocketIOState *PgConnectionSocketIORef(PgConnection *connection);
 extern PgConnectionSocketIOState *PgCurrentConnectionSocketIORef(void);
+extern int *PgCurrentPgwin32NoBlockRef(void);
 extern const PQcommMethods **PgConnectionPqCommMethodsRef(PgConnection *connection);
 extern const PQcommMethods **PgCurrentPqCommMethodsRef(void);
 extern WaitEventSet **PgConnectionFeBeWaitSetRef(PgConnection *connection);
