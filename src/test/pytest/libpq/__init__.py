@@ -17,6 +17,7 @@ from ._core import (
     connect,
     connstr,
     load_libpq_handle,
+    libpq_abi_skip_reason,
     register_type_info,
 )
 
@@ -31,5 +32,6 @@ __all__ = [
     "connect",
     "connstr",
     "load_libpq_handle",
+    "libpq_abi_skip_reason",
     "register_type_info",
 ]

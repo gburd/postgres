@@ -13,13 +13,15 @@ import json
 import platform
 import os
 import uuid
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, NoReturn, Optional
 
 from .errors import LibpqError
 
 
 # PG_DIAG field identifiers from postgres_ext.h
 class DiagField(enum.IntEnum):
+    """PG_DIAG_* field identifiers used with PQresultErrorField()."""
+
     SEVERITY = ord("S")
     SEVERITY_NONLOCALIZED = ord("V")
     SQLSTATE = ord("C")
@@ -74,6 +76,63 @@ class _PGresult(ctypes.Structure):
 
 _PGconn_p = ctypes.POINTER(_PGconn)
 _PGresult_p = ctypes.POINTER(_PGresult)
+
+
+def _libpq_path(libdir, bindir):
+    """Return the platform-specific full path to libpq for this build."""
+    system = platform.system()
+    if system in ("Linux", "FreeBSD", "NetBSD", "OpenBSD"):
+        # On Windows, libpq.dll is confusingly in bindir, not libdir.
+        return os.path.join(libdir, "libpq.so.5")
+    if system == "Darwin":
+        return os.path.join(libdir, "libpq.5.dylib")
+    if system == "Windows":
+        return os.path.join(bindir, "libpq.dll")
+    raise AssertionError("the libpq fixture must be updated for {}".format(system))
+
+
+def _elf_class(path):
+    """Return 1 (ELFCLASS32), 2 (ELFCLASS64), or None if path is not ELF."""
+    try:
+        with open(path, "rb") as fh:
+            ident = fh.read(5)
+    except OSError:
+        return None
+    if ident[:4] != b"\x7fELF":
+        return None
+    return ident[4]  # e_ident[EI_CLASS]: 1 = 32-bit, 2 = 64-bit
+
+
+def libpq_abi_skip_reason(libdir, bindir):
+    """Return a reason to skip if this Python cannot load the build's libpq.
+
+    The framework loads libpq in-process via ctypes, so the interpreter and the
+    library must share an ABI. The common mismatch is a 64-bit Python against a
+    32-bit libpq (meson's -m32 build), which otherwise fails every test with
+    OSError: wrong ELF class. Detect it by reading the library's ELF header
+    rather than dlopen()ing it -- a trial dlopen of an ASan-instrumented libpq
+    would abort the process, not raise. Returns None when the ABI matches, when
+    libpq cannot be located, or when the file is not ELF (macOS/Windows).
+
+    Co-authored-by: Andrew Dunstan <andrew@dunslane.net>
+    """
+    try:
+        path = _libpq_path(libdir, bindir)
+    except AssertionError:
+        return None
+    elf_class = _elf_class(path)
+    if elf_class is None:
+        return None
+    py_bits = ctypes.sizeof(ctypes.c_void_p) * 8
+    lib_bits = 64 if elf_class == 2 else 32
+    if py_bits != lib_bits:
+        return (
+            "{py}-bit Python cannot load {lib}-bit libpq ({path}); the "
+            "in-process libpq framework needs a {lib}-bit interpreter".format(
+                py=py_bits, lib=lib_bits, path=path
+            )
+        )
+    return None
 
 
 def load_libpq_handle(libdir, bindir):
@@ -189,7 +248,7 @@ def _parse_array(value: str, elem_oid: int):
                 current_element.append(next_char)
                 pos += 2
                 continue
-            elif char == '"':
+            if char == '"':
                 in_quotes = False
             else:
                 current_element.append(char)
@@ -281,9 +340,10 @@ def simplify_query_results(results) -> Any:
 class PGresult(contextlib.AbstractContextManager):
     """Wraps a raw _PGresult_p with a more friendly interface."""
 
-    def __init__(self, lib: ctypes.CDLL, res: _PGresult_p):
+    def __init__(self, lib: ctypes.CDLL, res: _PGresult_p):  # type: ignore[valid-type]
         self._lib = lib
-        self._res = res
+        # Cleared to None on __exit__ once the result has been freed.
+        self._res: Optional[_PGresult_p] = res  # type: ignore[valid-type]
 
     def __exit__(self, *exc):
         self._lib.PQclear(self._res)
@@ -302,7 +362,7 @@ class PGresult(contextlib.AbstractContextManager):
         val = self._lib.PQresultErrorField(self._res, int(field))
         return val.decode() if val else None
 
-    def raise_error(self) -> None:
+    def raise_error(self) -> NoReturn:
         """
         Raises LibpqError with diagnostic information from the result.
         """
@@ -374,25 +434,26 @@ class PGconn(contextlib.AbstractContextManager):
     def __init__(
         self,
         lib: ctypes.CDLL,
-        handle: _PGconn_p,
+        handle: _PGconn_p,  # type: ignore[valid-type]
         stack: contextlib.ExitStack,
     ):
         self._lib = lib
-        self._handle = handle
+        # Cleared to None on __exit__ once the connection has been finished.
+        self._handle: Optional[_PGconn_p] = handle  # type: ignore[valid-type]
         self._stack = stack
 
     def __exit__(self, *exc):
         self._lib.PQfinish(self._handle)
         self._handle = None
 
-    def exec(self, query: str):
+    def exec(self, query: str) -> PGresult:
         """
         Executes a query via PQexec() and returns a PGresult.
         """
         res = self._lib.PQexec(self._handle, query.encode())
         return self._stack.enter_context(PGresult(self._lib, res))
 
-    def sql(self, query: str):
+    def sql(self, query: str):  # pylint: disable=inconsistent-return-statements
         """
         Executes a query and raises an exception if it fails.
         Returns the query results with automatic type conversion and simplification.
@@ -409,15 +470,13 @@ class PGconn(contextlib.AbstractContextManager):
         res = self.exec(query)
         status = res.status()
 
-        if status == ExecStatus.PGRES_FATAL_ERROR:
-            res.raise_error()
-        elif status == ExecStatus.PGRES_COMMAND_OK:
+        if status == ExecStatus.PGRES_COMMAND_OK:
             return None
-        elif status == ExecStatus.PGRES_TUPLES_OK:
+        if status == ExecStatus.PGRES_TUPLES_OK:
             results = res.fetch_all()
             return simplify_query_results(results)
-        else:
-            res.raise_error()
+        # PGRES_FATAL_ERROR and anything else: raise (raise_error is NoReturn).
+        res.raise_error()
 
 
 def connstr(opts: Dict[str, Any]) -> str:

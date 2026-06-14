@@ -76,14 +76,23 @@ def pytest_configure(config):
     Hijacks the standard streams as soon as possible during pytest startup. The
     pytest-formatted output gets logged to file instead, and we'll use the
     original sys.__stdout__/__stderr__ streams for the TAP protocol.
+
+    When TESTLOGDIR is unset (a standalone pytest run outside the meson/testwrap
+    harness) we leave the streams alone rather than failing, and creating the
+    log directory tolerates its prior existence -- the harness may have made it,
+    and an unconditional makedirs would raise FileExistsError (a pytest
+    INTERNALERROR, reported by meson as a generic ERROR rather than a test
+    result).
     """
     logdir = os.getenv("TESTLOGDIR")
     if not logdir:
-        raise RuntimeError("pgtap requires the TESTLOGDIR envvar to be set")
+        return
 
-    os.makedirs(logdir)
+    os.makedirs(logdir, exist_ok=True)
     logpath = os.path.join(logdir, "pytest.log")
-    sys.stdout = sys.stderr = open(logpath, "a", buffering=1)
+    sys.stdout = sys.stderr = open(  # pylint: disable=consider-using-with
+        logpath, "a", buffering=1, encoding="utf-8"
+    )
 
 
 @pytest.hookimpl(trylast=True)

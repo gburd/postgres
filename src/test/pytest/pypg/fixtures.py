@@ -12,12 +12,36 @@ import pytest
 from ._env import test_timeout_default
 from .util import capture
 from .server import PostgresServer
+from .rewind import RewindTest
+from .command import PgBin
 
-from libpq import load_libpq_handle, connect as libpq_connect
+from libpq import (
+    load_libpq_handle,
+    libpq_abi_skip_reason,
+    connect as libpq_connect,
+)
 
 
 # Stash key for tracking servers for log reporting.
 _servers_key = pytest.StashKey[List[PostgresServer]]()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _check_libpq_abi(libdir, bindir):
+    """Skip the suite when this Python cannot load the build's libpq.
+
+    The in-process libpq layer is loaded via ctypes, so the interpreter must
+    match libpq's ABI. A 64-bit Python cannot dlopen the 32-bit libpq from a
+    -m32 build, which would otherwise fail every test; skip with a clear reason
+    instead. (The 64-bit ASan build is handled separately by preloading the
+    ASan runtime in CI -- see the Test world step in pg-ci.yml.) See
+    libpq.libpq_abi_skip_reason.
+
+    Co-authored-by: Andrew Dunstan <andrew@dunslane.net>
+    """
+    reason = libpq_abi_skip_reason(libdir, bindir)
+    if reason:
+        pytest.skip(reason)
 
 
 def _record_server_for_log_reporting(request, server):
@@ -72,6 +96,22 @@ def libpq_handle(libdir, bindir):
             # with a 64-bit Python
             pytest.skip("libpq architecture does not match Python interpreter")
         raise
+
+
+@pytest.fixture(scope="session")
+def pg_bin(bindir):
+    """
+    A PgBin for running PostgreSQL client programs and asserting on their
+    results, with bindir on PATH. Use for program-level checks that don't need
+    a specific server connection (e.g. pg_bin.program_help_ok("pg_ctl")).
+    """
+    return PgBin(bindir)
+
+
+@pytest.fixture
+def rewind_test(create_pg, pg_bin, tmp_path):
+    """A RewindTest driver bound to this test's create_pg/pg_bin/tmp_path."""
+    return RewindTest(create_pg, pg_bin, tmp_path)
 
 
 @pytest.fixture
@@ -129,11 +169,8 @@ def tmp_check(tmp_path_factory) -> pathlib.Path:
     """
     d = os.getenv("TESTDATADIR")
     if d:
-        d = pathlib.Path(d)
-    else:
-        d = tmp_path_factory.mktemp("tmp_check")
-
-    return d
+        return pathlib.Path(d)
+    return tmp_path_factory.mktemp("tmp_check")
 
 
 @pytest.fixture(scope="session")
@@ -244,7 +281,7 @@ def create_pg(request, bindir, sockdir, libpq_handle, tmp_check, remaining_timeo
     """
     servers = []
 
-    def _create(name=None, **kwargs):
+    def _create(name=None, *, start=True, **kwargs):
         if name is None:
             count = len(servers) + 1
             name = f"pg{count}"
@@ -254,7 +291,8 @@ def create_pg(request, bindir, sockdir, libpq_handle, tmp_check, remaining_timeo
         servers.append(server)
         _record_server_for_log_reporting(request, server)
         server.set_timeout(remaining_timeout)
-        server.start()
+        if start:
+            server.start()
         return server
 
     yield _create
@@ -295,7 +333,7 @@ def create_pg_module(
             return [create_pg_module() for _ in range(3)]
     """
 
-    def _create(name=None, **kwargs):
+    def _create(name=None, *, start=True, **kwargs):
         if name is None:
             count = len(_module_scoped_servers) + 1
             name = f"pg{count}"
@@ -304,7 +342,8 @@ def create_pg_module(
         _module_scoped_servers.append(server)
         _record_server_for_log_reporting(request, server)
         server.set_timeout(remaining_timeout_module)
-        server.start()
+        if start:
+            server.start()
         return server
 
     yield _create

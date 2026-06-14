@@ -11,6 +11,7 @@ tests += {
   'pytest': {
     'tests': [
       'pyt/test_errors.py',
+      'pyt/test_fake.py',
       'pyt/test_libpq.py',
       'pyt/test_multi_server.py',
       'pyt/test_query_helpers.py',

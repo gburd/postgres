@@ -37,7 +37,7 @@ def require_test_extras(*keys: str):
         pytestmark = pypg.require_test_extra("ssl", "kerberos")
     """
     return pytest.mark.skipif(
-        not all([_has_test_extra(k) for k in keys]),
+        not all(_has_test_extra(k) for k in keys),
         reason=_test_extra_skip_reason(*keys),
     )
 
@@ -52,7 +52,7 @@ def skip_unless_test_extras(*keys: str):
             skip_unless_test_extras("ldap")
             ...
     """
-    if not all([_has_test_extra(k) for k in keys]):
+    if not all(_has_test_extra(k) for k in keys):
         pytest.skip(_test_extra_skip_reason(*keys))
 
 
@@ -68,5 +68,5 @@ def test_timeout_default() -> int:
     try:
         return int(default)
     except ValueError as v:
-        logger.warning("PG_TEST_TIMEOUT_DEFAULT could not be parsed: " + str(v))
+        logger.warning("PG_TEST_TIMEOUT_DEFAULT could not be parsed: %s", v)
         return 180

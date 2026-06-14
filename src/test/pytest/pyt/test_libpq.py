@@ -118,7 +118,7 @@ def local_server(sockdir, remaining_timeout):
                         sock.settimeout(remaining_timeout())
                         fn(sock)
 
-                except Exception as e:
+                except Exception as e:  # pylint: disable=broad-exception-caught
                     # Save the exception for re-raising on the main thread.
                     self._thread_exc = e
 
@@ -139,6 +139,7 @@ def local_server(sockdir, remaining_timeout):
             # racing against the test's own use of remaining_timeout(). (It's
             # preferable to let tests report timeouts; the stack traces will
             # help with debugging.)
+            assert self._thread is not None  # set by background()
             self._thread.join(remaining_timeout() + 1)
             if self._thread.is_alive():
                 raise TimeoutError("background thread is still running after timeout")
