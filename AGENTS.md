@@ -347,6 +347,11 @@ Important current files:
   checker rejects anonymous no-op cells and unknown `PG_RUNTIME_*` action
   names. Extend this vocabulary before adding another family of repetitive
   lifecycle helper bodies.
+- `PG_RUNTIME_DELETE_MEMORY_CONTEXT(context)` is the checked action for the
+  routine memory-context delete-and-null pattern. Use it in bucket `.def` rows
+  and local reset helpers when the context has no extra semantic teardown.
+  Leave ordered cleanup, conditional ownership, and companion pointer/list/hash
+  reset handwritten near the owning subsystem.
 - The next lifecycle-framework simplification should cover the patterns now
   recurring in Gate E2: object-owned allocation contexts, delete-and-null
   memory-context teardown, free/reset list heads, clear-pointer-slot reset,

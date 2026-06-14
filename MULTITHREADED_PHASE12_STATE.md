@@ -11793,3 +11793,47 @@ Follow-up validation note:
   trigger-tuple/runtime issue rather than a regression from this context
   ownership change, but it remains a separate Phase 12/Gate E2 validation
   risk because bundled PL/pgSQL must eventually work in threaded mode.
+
+Memory-context lifecycle action preflight:
+
+- target: lifecycle-framework simplification for the repeated
+  delete-and-null memory-context teardown pattern;
+- repeated lifecycle operations: delete a `MemoryContext` when present, clear
+  the owning slot, and optionally run an existing bucket initializer after
+  teardown;
+- lifecycle preflight result: extend the checked lifecycle vocabulary before
+  more state migration. The action should be small, should not hide semantic
+  cleanup ordering, and should be accepted by `check_runtime_lifecycles.pl`
+  only when named explicitly in a bucket `.def` row.
+
+Memory-context lifecycle action slice:
+
+- `PG_RUNTIME_DELETE_MEMORY_CONTEXT(context)` is now the checked action for
+  routine memory-context delete-and-null cleanup in
+  `backend_runtime_*_buckets.def`;
+- `check_runtime_lifecycles.pl` recognizes the new action alongside
+  `PG_RUNTIME_NOOP`, so unknown `PG_RUNTIME_*` names still fail the Gate E2
+  lifecycle check;
+- the execution `async` and `trigger` bucket reset rows now use the action
+  directly and then reinitialize their buckets, removing two narrow bespoke
+  reset helpers;
+- nearby closed-reset helpers now use the same primitive for routine
+  memory-context slots while preserving handwritten code for ordered cleanup,
+  fallback hash/list teardown, and companion pointer resets.
+
+Validation for the memory-context lifecycle action slice:
+
+- `git diff --check` passed;
+- `perl -c src/tools/runtime_lifecycle/check_runtime_lifecycles.pl` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 28 reset definitions checked, and 176 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- `gmake -C src/backend/utils/init backend_runtime.o` passed;
+- full incremental `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with the documented
+  local `IPC::Run` `PERL5LIB` and patched temporary-install install-name
+  paths.

@@ -96,6 +96,14 @@
  * intent from forgotten lifecycle work.
  */
 #define PG_RUNTIME_NOOP ((void) 0)
+#define PG_RUNTIME_DELETE_MEMORY_CONTEXT(context) \
+	do { \
+		if ((context) != NULL) \
+		{ \
+			MemoryContextDelete(context); \
+			(context) = NULL; \
+		} \
+	} while (0)
 #define PG_TRGM_SIMILARITY_THRESHOLD_DEFAULT 0.3
 #define PG_TRGM_WORD_SIMILARITY_THRESHOLD_DEFAULT 0.6
 #define PG_TRGM_STRICT_WORD_SIMILARITY_THRESHOLD_DEFAULT 0.5
@@ -910,7 +918,6 @@ static void PgExecutionInitializeGUCErrorState(PgExecutionGUCErrorState *guc_err
 static void PgExecutionAdoptEarlyGUCErrorState(PgExecution *execution);
 static void PgExecutionInitializeAsyncState(PgExecutionAsyncState *async);
 static void PgExecutionAdoptEarlyAsyncState(PgExecution *execution);
-static void PgExecutionResetAsyncClosedState(PgExecutionAsyncState *async);
 static void PgExecutionInitializeCatalogState(PgExecutionCatalogState *catalog);
 static void PgExecutionAdoptEarlyCatalogState(PgExecution *execution);
 static void PgExecutionInitializeCatalogCacheState(PgExecutionCatalogCacheState *catalog_cache);
@@ -1220,8 +1227,7 @@ PgConnectionResetStartupClosedState(PgConnection *connection)
 	{
 		if (CurrentMemoryContext == connection->startup.connection_warning_context)
 			MemoryContextSwitchTo(TopMemoryContext);
-		MemoryContextDelete(connection->startup.connection_warning_context);
-		connection->startup.connection_warning_context = NULL;
+		PG_RUNTIME_DELETE_MEMORY_CONTEXT(connection->startup.connection_warning_context);
 	}
 	else
 	{
@@ -3597,8 +3603,7 @@ PgBackendResetExtensionModuleClosedState(PgBackendExtensionModuleState *extensio
 		dshash_detach(extension_modules->pg_stash_advice_stash_dshash);
 	if (extension_modules->pg_stash_advice_dsa_area != NULL)
 		dsa_detach(extension_modules->pg_stash_advice_dsa_area);
-	if (extension_modules->pg_stash_advice_context != NULL)
-		MemoryContextDelete(extension_modules->pg_stash_advice_context);
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(extension_modules->pg_stash_advice_context);
 
 	PgBackendInitializeExtensionModuleState(extension_modules);
 }
@@ -3934,11 +3939,7 @@ PgExecutionResetReplicationScratchClosedState(PgExecutionReplicationScratchState
 	Assert(replication_scratch != NULL);
 
 	EventTriggerResetQueryStateStack(&replication_scratch->event_trigger_query_state);
-	if (replication_scratch->event_trigger_context != NULL)
-	{
-		MemoryContextDelete(replication_scratch->event_trigger_context);
-		replication_scratch->event_trigger_context = NULL;
-	}
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(replication_scratch->event_trigger_context);
 	PgExecutionInitializeReplicationScratchState(replication_scratch);
 }
 
@@ -3954,17 +3955,6 @@ PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgExecutionAdoptEarlyAsyncState,
 										PgExecution, execution, async,
 										early_execution_async,
 										PgExecutionInitializeAsyncState)
-
-static void
-PgExecutionResetAsyncClosedState(PgExecutionAsyncState *async)
-{
-	Assert(async != NULL);
-
-	if (async->signal_context != NULL)
-		MemoryContextDelete(async->signal_context);
-
-	PgExecutionInitializeAsyncState(async);
-}
 
 static void
 PgExecutionInitializeCatalogState(PgExecutionCatalogState *catalog)
@@ -4025,20 +4015,6 @@ PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgExecutionAdoptEarlyTriggerState,
 										PgExecution, execution, trigger,
 										early_execution_trigger,
 										PgExecutionInitializeTriggerState)
-
-static void
-PgExecutionResetTriggerClosedState(PgExecutionTriggerState *trigger)
-{
-	Assert(trigger != NULL);
-
-	if (trigger->after_triggers_context != NULL)
-	{
-		MemoryContextDelete(trigger->after_triggers_context);
-		trigger->after_triggers_context = NULL;
-	}
-
-	PgExecutionInitializeTriggerState(trigger);
-}
 
 PG_RUNTIME_DEFINE_ZERO_INIT(PgExecutionInitializeRegexState,
 							PgExecutionRegexState, regex)
@@ -4615,17 +4591,9 @@ PgBackendResetUtilityClosedState(PgBackendUtilityState *utility)
 	utility->n_num_cache = 0;
 	utility->num_counter = 0;
 
-	if (utility->format_cache_context != NULL)
-	{
-		MemoryContextDelete(utility->format_cache_context);
-		utility->format_cache_context = NULL;
-	}
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(utility->format_cache_context);
 
-	if (utility->libxml_context != NULL)
-	{
-		MemoryContextDelete(utility->libxml_context);
-		utility->libxml_context = NULL;
-	}
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(utility->libxml_context);
 
 	if (utility->missing_attr_cache != NULL)
 	{
@@ -4633,11 +4601,7 @@ PgBackendResetUtilityClosedState(PgBackendUtilityState *utility)
 		utility->missing_attr_cache = NULL;
 	}
 
-	if (utility->utility_cache_context != NULL)
-	{
-		MemoryContextDelete(utility->utility_cache_context);
-		utility->utility_cache_context = NULL;
-	}
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(utility->utility_cache_context);
 }
 
 void
@@ -4680,8 +4644,7 @@ PgSessionResetTcopClosedState(PgSession *session)
 	}
 	if (session->tcop.row_description_context != NULL)
 	{
-		MemoryContextDelete(session->tcop.row_description_context);
-		session->tcop.row_description_context = NULL;
+		PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->tcop.row_description_context);
 		MemSet(&session->tcop.row_description_buf, 0,
 			   sizeof(session->tcop.row_description_buf));
 	}
@@ -4735,11 +4698,7 @@ PgSessionResetXactCallbackClosedState(PgSession *session)
 	ResetXactCallbackState();
 	CurrentPgSession = saved_session;
 
-	if (session->xact_callbacks.xact_callback_context != NULL)
-	{
-		MemoryContextDelete(session->xact_callbacks.xact_callback_context);
-		session->xact_callbacks.xact_callback_context = NULL;
-	}
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->xact_callbacks.xact_callback_context);
 }
 
 static void
@@ -4765,11 +4724,7 @@ PgSessionResetBackupClosedState(PgSession *session)
 		}
 		PG_END_TRY();
 	}
-	if (session->backup.backup_context != NULL)
-	{
-		MemoryContextDelete(session->backup.backup_context);
-		session->backup.backup_context = NULL;
-	}
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->backup.backup_context);
 	session->backup.backup_state = NULL;
 	session->backup.tablespace_map = NULL;
 	session->backup.session_backup_state = SESSION_BACKUP_NONE;
@@ -4822,11 +4777,7 @@ PgSessionResetEncodingClosedState(PgSession *session)
 {
 	Assert(session != NULL);
 
-	if (session->encoding.encoding_cache_context != NULL)
-	{
-		MemoryContextDelete(session->encoding.encoding_cache_context);
-		session->encoding.encoding_cache_context = NULL;
-	}
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->encoding.encoding_cache_context);
 
 	PgSessionInitializeEncodingState(&session->encoding);
 }
@@ -4855,8 +4806,7 @@ PgSessionResetCatalogLookupClosedState(PgSession *session)
 	}
 	if (session->catalog_lookup.event_trigger_cache_context != NULL)
 	{
-		MemoryContextDelete(session->catalog_lookup.event_trigger_cache_context);
-		session->catalog_lookup.event_trigger_cache_context = NULL;
+		PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->catalog_lookup.event_trigger_cache_context);
 		session->catalog_lookup.event_trigger_cache = NULL;
 	}
 	else if (session->catalog_lookup.event_trigger_cache != NULL)
@@ -4881,7 +4831,7 @@ PgSessionResetCatalogLookupClosedState(PgSession *session)
 		{
 			if (CurrentMemoryContext == session->catalog_lookup.cache_memory_context)
 				MemoryContextSwitchTo(TopMemoryContext);
-			MemoryContextDelete(session->catalog_lookup.cache_memory_context);
+			PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->catalog_lookup.cache_memory_context);
 		}
 		session->catalog_lookup.cache_memory_context = NULL;
 	}
@@ -4960,11 +4910,7 @@ PgSessionResetGUCClosedState(PgSession *session)
 {
 	Assert(session != NULL);
 
-	if (session->guc.memory_context != NULL)
-	{
-		MemoryContextDelete(session->guc.memory_context);
-		session->guc.memory_context = NULL;
-	}
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->guc.memory_context);
 	PgSessionInitializeGUCState(&session->guc);
 }
 
@@ -4975,8 +4921,7 @@ PgSessionResetLogicalReplicationClosedState(PgSession *session)
 
 	if (session->logical_replication.logical_rep_relmap_context != NULL)
 	{
-		MemoryContextDelete(session->logical_replication.logical_rep_relmap_context);
-		session->logical_replication.logical_rep_relmap_context = NULL;
+		PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->logical_replication.logical_rep_relmap_context);
 		session->logical_replication.logical_rep_relmap = NULL;
 	}
 	else if (session->logical_replication.logical_rep_relmap != NULL)
@@ -4987,8 +4932,7 @@ PgSessionResetLogicalReplicationClosedState(PgSession *session)
 
 	if (session->logical_replication.logical_rep_partmap_context != NULL)
 	{
-		MemoryContextDelete(session->logical_replication.logical_rep_partmap_context);
-		session->logical_replication.logical_rep_partmap_context = NULL;
+		PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->logical_replication.logical_rep_partmap_context);
 		session->logical_replication.logical_rep_partmap = NULL;
 	}
 	else if (session->logical_replication.logical_rep_partmap != NULL)
@@ -5112,11 +5056,7 @@ PgSessionResetDynamicLibraryContextClosedState(PgSession *session)
 {
 	Assert(session != NULL);
 
-	if (session->dynamic_library_context != NULL)
-	{
-		MemoryContextDelete(session->dynamic_library_context);
-		session->dynamic_library_context = NULL;
-	}
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->dynamic_library_context);
 }
 
 static void
@@ -5149,11 +5089,7 @@ PgSessionResetRegexClosedState(PgSession *session)
 {
 	Assert(session != NULL);
 
-	if (session->regex.regexp_cache_context != NULL)
-	{
-		MemoryContextDelete(session->regex.regexp_cache_context);
-		session->regex.regexp_cache_context = NULL;
-	}
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->regex.regexp_cache_context);
 	pg_free_regex_ctype_cache_list(session->regex.ctype_cache_list);
 	PgSessionInitializeRegexState(&session->regex);
 }
@@ -5163,11 +5099,7 @@ PgSessionResetPortalManagerClosedState(PgSession *session)
 {
 	Assert(session != NULL);
 
-	if (session->portal_manager.top_portal_context != NULL)
-	{
-		MemoryContextDelete(session->portal_manager.top_portal_context);
-		session->portal_manager.top_portal_context = NULL;
-	}
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->portal_manager.top_portal_context);
 	PgSessionInitializePortalManagerState(&session->portal_manager);
 }
 
@@ -5197,8 +5129,7 @@ PgSessionResetLocaleClosedState(PgSession *session)
 
 	if (session->locale.collation_cache_context != NULL)
 	{
-		MemoryContextDelete(session->locale.collation_cache_context);
-		session->locale.collation_cache_context = NULL;
+		PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->locale.collation_cache_context);
 		session->locale.collation_cache = NULL;
 		session->locale.last_collation_cache_oid = InvalidOid;
 		session->locale.last_collation_cache_locale = NULL;
@@ -5220,8 +5151,7 @@ PgSessionResetLegacySessionContextClosedState(PgSession *session)
 		if (CurrentPgSession == session &&
 			CurrentSession == session->legacy_session)
 			CurrentSession = NULL;
-		MemoryContextDelete(session->legacy_session_context);
-		session->legacy_session_context = NULL;
+		PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->legacy_session_context);
 	}
 }
 

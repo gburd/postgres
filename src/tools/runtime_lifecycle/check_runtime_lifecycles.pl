@@ -379,7 +379,9 @@ sub validate_lifecycle_action_cell
 {
 	my ($row, $column) = @_;
 	my $text = $row->{$column};
-	my %known_actions = map { $_ => 1 } qw(PG_RUNTIME_NOOP);
+	my %known_actions = map { $_ => 1 } qw(
+	  PG_RUNTIME_NOOP
+	  PG_RUNTIME_DELETE_MEMORY_CONTEXT);
 
 	if ($text =~ /^\(void\)\s*0$/)
 	{

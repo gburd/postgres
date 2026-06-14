@@ -963,6 +963,12 @@ Gate E2 requires:
   cells or unknown `PG_RUNTIME_*` action names. Future vocabulary extensions
   should follow the same pattern: named bucket-row action, C expansion, and
   checker validation;
+- the memory-context lifecycle action slice is also in place:
+  `PG_RUNTIME_DELETE_MEMORY_CONTEXT(context)` is a checked bucket-row action
+  for the common delete-and-null pattern. Use it for routine context teardown
+  in lifecycle rows and nearby reset helpers; keep handwritten owner-adjacent
+  cleanup for cases that require ordering, conditional destruction, or
+  additional pointer/list/hash cleanup;
 - the next lifecycle-framework improvement should target the patterns now
   recurring in Gate E2: create an object-owned allocation context,
   delete-and-null a memory context, free/reset list heads, clear pointer slots
