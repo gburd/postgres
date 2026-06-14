@@ -1692,10 +1692,32 @@ typedef struct PgSessionBackupState
 	uint8		session_backup_state;
 } PgSessionBackupState;
 
+#define PG_SESSION_MAX_CACHED_REGEX 32
+
+typedef struct PgSessionRegexCachedEntry
+{
+	MemoryContext cre_context;
+	char	   *cre_pat;
+	int			cre_pat_len;
+	int			cre_flags;
+	Oid			cre_collation;
+	regex_t		cre_re;
+} PgSessionRegexCachedEntry;
+
 typedef struct PgSessionRegexState
 {
+	MemoryContext regexp_cache_context;
+	int			num_cached_res;
+	PgSessionRegexCachedEntry cached_res[PG_SESSION_MAX_CACHED_REGEX];
 	struct pg_ctype_cache *ctype_cache_list;
 } PgSessionRegexState;
+
+typedef struct PgSessionPortalManagerState
+{
+	MemoryContext top_portal_context;
+	HTAB	   *portal_hash_table;
+	unsigned int unnamed_portal_count;
+} PgSessionPortalManagerState;
 
 typedef struct PgSessionLargeObjectState
 {
@@ -2067,6 +2089,7 @@ struct PgSession
 	PgSessionXactCallbackState xact_callbacks;
 	PgSessionBackupState backup;
 	PgSessionRegexState regex;
+	PgSessionPortalManagerState portal_manager;
 	PgSessionLargeObjectState large_object;
 	PgSessionAsyncState async;
 	PgSessionEncodingState encoding;
@@ -2443,6 +2466,12 @@ extern MemoryContext *PgCurrentBackupContextRef(void);
 extern uint8 *PgCurrentSessionBackupStateRef(void);
 extern HTAB **PgCurrentOperatorLookupCacheRef(void);
 extern struct pg_ctype_cache **PgCurrentRegexCtypeCacheListRef(void);
+extern MemoryContext *PgCurrentRegexpCacheMemoryContextRef(void);
+extern int *PgCurrentRegexpNumCachedResRef(void);
+extern PgSessionRegexCachedEntry *PgCurrentRegexpCachedResArray(void);
+extern MemoryContext *PgCurrentTopPortalContextRef(void);
+extern HTAB **PgCurrentPortalHashTableRef(void);
+extern unsigned int *PgCurrentUnnamedPortalCountRef(void);
 extern struct RelationData **PgCurrentLargeObjectHeapRelationRef(void);
 extern struct RelationData **PgCurrentLargeObjectIndexRelationRef(void);
 extern HTAB **PgCurrentAsyncLocalChannelTableRef(void);

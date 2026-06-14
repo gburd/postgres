@@ -23,6 +23,7 @@
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "storage/ipc.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
@@ -53,7 +54,7 @@ typedef struct portalhashent
 	Portal		portal;
 } PortalHashEnt;
 
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION HTAB *PortalHashTable = NULL;
+#define PortalHashTable (*PgCurrentPortalHashTableRef())
 
 #define PortalHashTableLookup(NAME, PORTAL) \
 do { \
@@ -90,7 +91,8 @@ do { \
 		elog(WARNING, "trying to delete portal name that does not exist"); \
 } while(0)
 
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION MemoryContext TopPortalContext = NULL;
+#define TopPortalContext (*PgCurrentTopPortalContextRef())
+#define unnamed_portal_count (*PgCurrentUnnamedPortalCountRef())
 
 
 /* ----------------------------------------------------------------
@@ -236,8 +238,6 @@ CreatePortal(const char *name, bool allowDup, bool dupSilent)
 Portal
 CreateNewPortal(void)
 {
-	static unsigned int unnamed_portal_count = 0;
-
 	char		portalname[MAX_PORTALNAME_LEN];
 
 	/* Select a nonconflicting name */

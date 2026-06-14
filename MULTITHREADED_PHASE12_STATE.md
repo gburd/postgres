@@ -9527,15 +9527,16 @@ context headers. The reset path now remains destructive in process mode, but
 threaded mode clears the freelist bucket and leaves full retained
 `TopMemoryContext` reclamation as the explicit follow-up owner.
 
-The same validation also found that the startup serialization gate had been
-too narrow: thread carriers were running `MemoryContextInit()`, per-session GUC
-table setup, serialized nondefault GUC replay, wait-set initialization, and
-runtime installation concurrently through early fallback buckets. The gate now
-covers thread carrier startup from `backend_thread_entry()` until
-`ThreadedBackendStartupComplete()`, with exit cleanup releasing it if startup
-fails. This is deliberately conservative; narrowing it again requires proving
-the remaining backend initialization and config replay paths no longer share
-process-era mutable state.
+The same validation originally suggested widening the startup serialization
+gate around thread-carrier startup, but the broad gate was rejected after TAP
+validation showed that it can deadlock normal threaded startup behind worker
+paths that have not reached `ThreadedBackendStartupComplete()`. Startup
+serialization is now helper-controlled rather than unconditional: a backend
+type may opt in through `backend_thread_requires_startup_gate()` only when it
+has a named shared-state dependency and a stress test proving that the gate is
+released. The remaining early fallback, GUC replay, runtime installation, and
+backend initialization paths therefore remain Gate E2 audit targets instead of
+being hidden behind a process-wide startup lock.
 
 Validation for this slice:
 
@@ -9581,3 +9582,71 @@ Validation for this follow-up:
   `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
   `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`
   passed all 94 tests after the fix.
+
+## Portal And Regex Session Cache State
+
+The next Phase 12 session-cache batch moves another coherent group of
+session-owned cache roots out of standalone TLS and behind `PgSession`:
+
+- `portalmem.c` now stores `TopPortalContext`, the portal hash table, and the
+  unnamed-portal name counter in `PgSessionPortalManagerState`;
+- `regexp.c` now stores the compiled-regexp cache context, fixed cached-entry
+  array, cached-entry count, and existing regex ctype cache list in
+  `PgSessionRegexState`.
+
+Both source files keep their historic local names as lvalue macros over
+runtime accessors. That keeps the behavioral code largely unchanged while the
+owning storage moves with the logical session instead of the carrier thread.
+
+The lifecycle rule is explicit. `PgSessionResetClosedState()` deletes the
+compiled-regexp cache context before resetting the inline compiled-regexp
+array/count and freeing the ctype cache list. It also deletes
+`TopPortalContext`, which owns portal structs, portal contexts, hold contexts,
+and the portal hash table, then clears the unnamed-portal counter. Early
+fallback adoption moves both buckets as whole objects and reinitializes the
+fallback storage; these pointer-bearing buckets must not be shallow-copied
+between concurrently live sessions.
+
+This leaves the heavier catalog cache groups as the main remaining
+session-cache migration surface: `syscache.c`, `catcache.c`, `relcache.c`,
+`typcache.c`, and the LLVM/JIT provider caches. Those should be handled in
+larger subsystem batches because their reset rules involve invalidation,
+cache-memory-context ownership, and backend startup ordering.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `portalmem.o`, and
+  `regexp.o`, and postmaster startup-publication object coverage passed for
+  `launch_backend.o`, `pmchild.o`, and `postmaster.o`;
+- full `gmake -j8` passed;
+- `test_session_regex_portal_state_is_session_local()` covers the new
+  `PgSession` accessors for fake sessions;
+- `gmake check-runtime-lifecycles` passed with 147 runtime fields classified;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and session-local declarations reduced from 141 to 137;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct `prove` over
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`
+  passed all 94 tests after the startup-publication fix and after rejecting
+  the broad startup gate.
+
+## Thread Startup Publication Latch Race
+
+The portal/regex validation pass also exposed a Gate E2 synchronization bug in
+the startup handoff path. A startup-era thread carrier can reach
+`ThreadedBackendStartupComplete()` before the postmaster has configured its
+server-loop wait set and recorded a postmaster latch pointer for direct wakeup.
+The previous PMChild publication helper asserted and called `SetLatch()` on
+that pointer, so threaded normal startup could crash in `SetLatch(NULL)`
+immediately after logging "starting startup thread carrier".
+
+PMChild startup/exit publication is now NULL-latch tolerant. It always records
+the atomic startup/exit state, wakes the supplied latch when one exists, and
+falls back to the postmaster signal wake path otherwise. The postmaster server
+loop now drains thread startup and exit publications before each blocking wait,
+so a publication that happened before the wait set existed is consumed without
+sleeping until the next timeout.
+
+This is part of Gate E2 because it tightens PMChild/thread-backend
+synchronization rather than adding a new scheduling feature.

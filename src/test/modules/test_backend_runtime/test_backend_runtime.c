@@ -2175,6 +2175,114 @@ test_session_large_object_state_is_session_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_session_regex_portal_state_is_session_local);
+Datum
+test_session_regex_portal_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	MemoryContext saved_regex_context;
+	int			saved_regex_count;
+	MemoryContext saved_portal_context;
+	HTAB	   *saved_portal_hash;
+	unsigned int saved_unnamed_count;
+	MemoryContext session1_regex_context;
+	MemoryContext session2_regex_context;
+	MemoryContext session1_portal_context;
+	MemoryContext session2_portal_context;
+	HTAB	   *session1_portal_hash;
+	HTAB	   *session2_portal_hash;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	saved_regex_context = *PgCurrentRegexpCacheMemoryContextRef();
+	saved_regex_count = *PgCurrentRegexpNumCachedResRef();
+	saved_portal_context = *PgCurrentTopPortalContextRef();
+	saved_portal_hash = *PgCurrentPortalHashTableRef();
+	saved_unnamed_count = *PgCurrentUnnamedPortalCountRef();
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+	test_copy_current_user_identity(&fake_session1);
+	test_copy_current_user_identity(&fake_session2);
+	session1_regex_context = (MemoryContext) &fake_session1;
+	session2_regex_context = (MemoryContext) &fake_session2;
+	session1_portal_context = (MemoryContext) &fake_session1.portal_manager;
+	session2_portal_context = (MemoryContext) &fake_session2.portal_manager;
+	session1_portal_hash = (HTAB *) &fake_session1;
+	session2_portal_hash = (HTAB *) &fake_session2;
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && *PgCurrentRegexpCacheMemoryContextRef() == NULL;
+		ok = ok && *PgCurrentRegexpNumCachedResRef() == 0;
+		ok = ok && PgCurrentRegexpCachedResArray() ==
+			fake_session1.regex.cached_res;
+		ok = ok && *PgCurrentTopPortalContextRef() == NULL;
+		ok = ok && *PgCurrentPortalHashTableRef() == NULL;
+		ok = ok && *PgCurrentUnnamedPortalCountRef() == 0;
+		*PgCurrentRegexpCacheMemoryContextRef() = session1_regex_context;
+		*PgCurrentRegexpNumCachedResRef() = 7;
+		*PgCurrentTopPortalContextRef() = session1_portal_context;
+		*PgCurrentPortalHashTableRef() = session1_portal_hash;
+		*PgCurrentUnnamedPortalCountRef() = 11;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && *PgCurrentRegexpCacheMemoryContextRef() == NULL;
+		ok = ok && *PgCurrentRegexpNumCachedResRef() == 0;
+		ok = ok && PgCurrentRegexpCachedResArray() ==
+			fake_session2.regex.cached_res;
+		ok = ok && *PgCurrentTopPortalContextRef() == NULL;
+		ok = ok && *PgCurrentPortalHashTableRef() == NULL;
+		ok = ok && *PgCurrentUnnamedPortalCountRef() == 0;
+		*PgCurrentRegexpCacheMemoryContextRef() = session2_regex_context;
+		*PgCurrentRegexpNumCachedResRef() = 13;
+		*PgCurrentTopPortalContextRef() = session2_portal_context;
+		*PgCurrentPortalHashTableRef() = session2_portal_hash;
+		*PgCurrentUnnamedPortalCountRef() = 17;
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && *PgCurrentRegexpCacheMemoryContextRef() ==
+			session1_regex_context;
+		ok = ok && *PgCurrentRegexpNumCachedResRef() == 7;
+		ok = ok && *PgCurrentTopPortalContextRef() == session1_portal_context;
+		ok = ok && *PgCurrentPortalHashTableRef() == session1_portal_hash;
+		ok = ok && *PgCurrentUnnamedPortalCountRef() == 11;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && *PgCurrentRegexpCacheMemoryContextRef() ==
+			session2_regex_context;
+		ok = ok && *PgCurrentRegexpNumCachedResRef() == 13;
+		ok = ok && *PgCurrentTopPortalContextRef() == session2_portal_context;
+		ok = ok && *PgCurrentPortalHashTableRef() == session2_portal_hash;
+		ok = ok && *PgCurrentUnnamedPortalCountRef() == 17;
+
+		PgSetCurrentSession(saved_session);
+		*PgCurrentRegexpCacheMemoryContextRef() = saved_regex_context;
+		*PgCurrentRegexpNumCachedResRef() = saved_regex_count;
+		*PgCurrentTopPortalContextRef() = saved_portal_context;
+		*PgCurrentPortalHashTableRef() = saved_portal_hash;
+		*PgCurrentUnnamedPortalCountRef() = saved_unnamed_count;
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		*PgCurrentRegexpCacheMemoryContextRef() = saved_regex_context;
+		*PgCurrentRegexpNumCachedResRef() = saved_regex_count;
+		*PgCurrentTopPortalContextRef() = saved_portal_context;
+		*PgCurrentPortalHashTableRef() = saved_portal_hash;
+		*PgCurrentUnnamedPortalCountRef() = saved_unnamed_count;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "regex/portal manager state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_session_async_state_is_session_local);
 Datum
 test_session_async_state_is_session_local(PG_FUNCTION_ARGS)

@@ -2324,6 +2324,8 @@ PgSessionExtensionModuleState
 PgSessionGUCState
 PgSessionLoopState
 PgSessionLogicalReplicationState
+PgSessionPortalManagerState
+PgSessionRegexCachedEntry
 PgSessionRelMapState
 PgSessionRIGlobalsState
 PgSessionResetCallbackItem

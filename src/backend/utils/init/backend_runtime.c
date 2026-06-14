@@ -559,6 +559,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionSequenceState early_session_se
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionXactCallbackState early_session_xact_callbacks;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionBackupState early_session_backup;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionRegexState early_session_regex;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPortalManagerState early_session_portal_manager;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionLargeObjectState early_session_large_object;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionAsyncState early_session_async;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionEncodingState early_session_encoding;
@@ -736,6 +737,8 @@ static void PgSessionInitializeBackupState(PgSessionBackupState *backup);
 static void PgSessionAdoptEarlyBackupState(PgSession *session);
 static void PgSessionInitializeRegexState(PgSessionRegexState *regex);
 static void PgSessionAdoptEarlyRegexState(PgSession *session);
+static void PgSessionInitializePortalManagerState(PgSessionPortalManagerState *portal_manager);
+static void PgSessionAdoptEarlyPortalManagerState(PgSession *session);
 static void PgSessionInitializeLargeObjectState(PgSessionLargeObjectState *large_object);
 static void PgSessionAdoptEarlyLargeObjectState(PgSession *session);
 static void PgSessionInitializeAsyncState(PgSessionAsyncState *async);
@@ -917,6 +920,7 @@ static PgSessionPreparedStatementState *PgCurrentSessionPreparedStatementState(v
 static PgSessionOnCommitState *PgCurrentSessionOnCommitState(void);
 static PgSessionSequenceState *PgCurrentSessionSequenceState(void);
 static PgSessionRegexState *PgCurrentSessionRegexState(void);
+static PgSessionPortalManagerState *PgCurrentSessionPortalManagerState(void);
 static PgSessionLargeObjectState *PgCurrentSessionLargeObjectState(void);
 static PgSessionAsyncState *PgCurrentSessionAsyncState(void);
 static PgSessionEncodingState *PgCurrentSessionEncodingState(void);
@@ -2309,6 +2313,9 @@ PgSessionInitializeRegexState(PgSessionRegexState *regex)
 {
 	Assert(regex != NULL);
 
+	regex->regexp_cache_context = NULL;
+	regex->num_cached_res = 0;
+	MemSet(regex->cached_res, 0, sizeof(regex->cached_res));
 	regex->ctype_cache_list = NULL;
 }
 
@@ -2319,6 +2326,25 @@ PgSessionAdoptEarlyRegexState(PgSession *session)
 
 	session->regex = early_session_regex;
 	PgSessionInitializeRegexState(&early_session_regex);
+}
+
+static void
+PgSessionInitializePortalManagerState(PgSessionPortalManagerState *portal_manager)
+{
+	Assert(portal_manager != NULL);
+
+	portal_manager->top_portal_context = NULL;
+	portal_manager->portal_hash_table = NULL;
+	portal_manager->unnamed_portal_count = 0;
+}
+
+static void
+PgSessionAdoptEarlyPortalManagerState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	session->portal_manager = early_session_portal_manager;
+	PgSessionInitializePortalManagerState(&early_session_portal_manager);
 }
 
 static void
@@ -2615,6 +2641,7 @@ PgSessionAdoptEarlyState(PgSession *session)
 	PgSessionAdoptEarlyXactCallbackState(session);
 	PgSessionAdoptEarlyBackupState(session);
 	PgSessionAdoptEarlyRegexState(session);
+	PgSessionAdoptEarlyPortalManagerState(session);
 	PgSessionAdoptEarlyLargeObjectState(session);
 	PgSessionAdoptEarlyAsyncState(session);
 	PgSessionAdoptEarlyEncodingState(session);
@@ -4066,6 +4093,7 @@ PgSessionInitializeRuntimeObject(PgSession *session,
 	PgSessionInitializeXactCallbackState(&session->xact_callbacks);
 	PgSessionInitializeBackupState(&session->backup);
 	PgSessionInitializeRegexState(&session->regex);
+	PgSessionInitializePortalManagerState(&session->portal_manager);
 	PgSessionInitializeLargeObjectState(&session->large_object);
 	PgSessionInitializeAsyncState(&session->async);
 	PgSessionInitializeEncodingState(&session->encoding);
@@ -4927,8 +4955,20 @@ PgSessionResetClosedState(PgSession *session)
 	}
 	session->sequence.last_used_seq = NULL;
 
+	if (session->regex.regexp_cache_context != NULL)
+	{
+		MemoryContextDelete(session->regex.regexp_cache_context);
+		session->regex.regexp_cache_context = NULL;
+	}
 	pg_free_regex_ctype_cache_list(session->regex.ctype_cache_list);
-	session->regex.ctype_cache_list = NULL;
+	PgSessionInitializeRegexState(&session->regex);
+
+	if (session->portal_manager.top_portal_context != NULL)
+	{
+		MemoryContextDelete(session->portal_manager.top_portal_context);
+		session->portal_manager.top_portal_context = NULL;
+	}
+	PgSessionInitializePortalManagerState(&session->portal_manager);
 
 	if (session->optimizer.planner_extension_names != NULL)
 	{
@@ -5580,6 +5620,15 @@ PgCurrentSessionRegexState(void)
 		return &early_session_regex;
 
 	return &CurrentPgSession->regex;
+}
+
+static PgSessionPortalManagerState *
+PgCurrentSessionPortalManagerState(void)
+{
+	if (CurrentPgSession == NULL)
+		return &early_session_portal_manager;
+
+	return &CurrentPgSession->portal_manager;
 }
 
 static PgSessionLargeObjectState *
@@ -6365,6 +6414,42 @@ struct pg_ctype_cache **
 PgCurrentRegexCtypeCacheListRef(void)
 {
 	return &PgCurrentSessionRegexState()->ctype_cache_list;
+}
+
+MemoryContext *
+PgCurrentRegexpCacheMemoryContextRef(void)
+{
+	return &PgCurrentSessionRegexState()->regexp_cache_context;
+}
+
+int *
+PgCurrentRegexpNumCachedResRef(void)
+{
+	return &PgCurrentSessionRegexState()->num_cached_res;
+}
+
+PgSessionRegexCachedEntry *
+PgCurrentRegexpCachedResArray(void)
+{
+	return PgCurrentSessionRegexState()->cached_res;
+}
+
+MemoryContext *
+PgCurrentTopPortalContextRef(void)
+{
+	return &PgCurrentSessionPortalManagerState()->top_portal_context;
+}
+
+HTAB **
+PgCurrentPortalHashTableRef(void)
+{
+	return &PgCurrentSessionPortalManagerState()->portal_hash_table;
+}
+
+unsigned int *
+PgCurrentUnnamedPortalCountRef(void)
+{
+	return &PgCurrentSessionPortalManagerState()->unnamed_portal_count;
 }
 
 struct RelationData **

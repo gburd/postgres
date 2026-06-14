@@ -1668,14 +1668,16 @@ remaining GUC-backed globals become session-owned. Threaded
 `read_nondefault_variables()` also skips `PGC_POSTMASTER` and `PGC_INTERNAL`
 records, because thread carriers share the postmaster address space and must
 not replay process-global strings through a session GUC context. The same
-validation proved that the startup
-serialization gate had been narrowed too far: thread-carrier startup now holds
-the temporary gate from `backend_thread_entry()` until
-`ThreadedBackendStartupComplete()` publishes startup completion, with exit
-cleanup releasing the gate if startup fails. That is deliberately conservative
-until early fallback state, GUC replay, runtime installation, backend
-initialization, and worker initialization are all proven per-backend. The
-same follow-up validation made `CurrentPgRuntime` a carrier/thread-local
+validation tested a broader startup serialization gate, but an unconditional
+`backend_thread_entry()` gate was rejected because it can block normal threaded
+startup behind worker paths that have not reached
+`ThreadedBackendStartupComplete()`. Startup serialization is now
+helper-controlled behind `backend_thread_requires_startup_gate()` and requires
+a named shared-state dependency plus a release/stress test for any backend type
+that opts in. Early fallback state, GUC replay, runtime installation, backend
+initialization, and worker initialization remain explicit Gate E2 audit targets
+rather than being hidden behind a process-wide startup lock. The same follow-up
+validation made `CurrentPgRuntime` a carrier/thread-local
 current binding, so threaded backend installation no longer changes the
 postmaster's runtime view, and moved runtime-global reserved GUC prefixes out
 of session `GUCMemoryContext` storage into a `TopMemoryContext` child guarded

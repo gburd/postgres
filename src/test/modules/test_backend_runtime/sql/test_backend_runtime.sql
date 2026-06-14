@@ -28,6 +28,7 @@ SELECT test_session_reset_closed_state();
 SELECT test_session_on_commit_state_is_session_local();
 SELECT test_session_sequence_state_is_session_local();
 SELECT test_session_large_object_state_is_session_local();
+SELECT test_session_regex_portal_state_is_session_local();
 SELECT test_session_async_state_is_session_local();
 SELECT test_session_encoding_state_is_session_local();
 SELECT test_session_temp_file_state_is_session_local();

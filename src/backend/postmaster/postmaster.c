@@ -1720,6 +1720,16 @@ ServerLoop(void)
 	{
 		time_t		now;
 
+		/*
+		 * A startup-era thread carrier can publish completion before the
+		 * postmaster has finished creating the wait set and recorded a latch
+		 * pointer for direct wakeups.  Drain thread handoff state before
+		 * blocking so such early publications cannot sleep until the next
+		 * timeout.
+		 */
+		process_pm_thread_startup_complete();
+		process_pm_thread_exit();
+
 		nevents = WaitEventSetWait(pm_wait_set,
 								   DetermineSleepTime(),
 								   events,

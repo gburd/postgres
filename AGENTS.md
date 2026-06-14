@@ -839,11 +839,18 @@ Important current files:
   interrupt loop that calls `PgCurrentBackendApplyInterrupts()` must explicitly
   handle `ProcDiePending`, or immediate shutdown can leave thread carriers
   waiting for SIGKILL escalation.
-- The temporary threaded startup serialization gate currently has no remaining
-  backend-type users. Regular client backend startup bypass is validated by a
-  32-connection threaded startup/catalog/temp-table/ANALYZE stress after
-  moving VACUUM/ANALYZE recursive execution state into `PgExecutionVacuumState`.
-  Process-model background workers are still rejected in threaded mode.
+- The temporary threaded startup serialization gate is helper-controlled, not
+  unconditional. Do not reintroduce a broad `backend_thread_entry()` gate: it
+  can block normal client startup behind long-running worker initialization or
+  a worker path that has not reached `ThreadedBackendStartupComplete()`. Add a
+  backend type to `backend_thread_requires_startup_gate()` only with a named
+  shared-state dependency and a stress test that proves the gate releases.
+- Thread-backed startup/exit publication must tolerate a missing postmaster
+  latch during startup-era handoff. Startup carriers can finish before
+  `ServerLoop()` has configured `postmaster_pmsignal_latch`; PMChild
+  publication records the atomic state even with a NULL latch, and the
+  postmaster drains thread startup/exit state before each blocking wait.
+- Process-model background workers are still rejected in threaded mode.
   Thread-compatible dynamic background workers publish their shared bgworker
   started state only after the worker reaches
   `ThreadedBackendStartupComplete()`, so dynamic waiters cannot terminate the
@@ -929,6 +936,17 @@ Important current files:
   by extension module initialization such as PL/pgSQL's GUC prefix
   reservation, so `MarkGUCPrefixReserved()` uses its own `TopMemoryContext`
   child and the temporary threaded GUC lock.
+- Portal manager session state now lives in `PgSessionPortalManagerState`.
+  `portalmem.c` keeps `TopPortalContext`, `PortalHashTable`, and the unnamed
+  portal counter as local macros over runtime accessors. The lifecycle rule is
+  destructive at session close: `PgSessionResetClosedState()` deletes
+  `TopPortalContext`, which owns portal structs, portal contexts, hold
+  contexts, and the portal hash table, then clears the counter.
+- Regex session cache state now lives in `PgSessionRegexState`. `regexp.c`
+  keeps the compiled-regexp context, fixed cached-entry array, cached-entry
+  count, and ctype cache list behind runtime accessors. Session reset deletes
+  the compiled-regexp cache context, clears the inline array/count, and frees
+  the ctype cache list.
 - Do not shallow-copy live `dlist_head` or `dclist_head` values when moving
   fallback state into a real runtime object. Use the runtime list-head move
   helpers so moved list nodes' back-links point at the destination head. This
@@ -939,12 +957,12 @@ Important current files:
   reclamation is implemented; thread-mode reset clears the memory-manager
   freelist bucket, while process-mode reset still calls
   `AllocSetFreeContextFreelists()`.
-- The current threaded startup gate deliberately covers thread-carrier startup
-  from `backend_thread_entry()` until `ThreadedBackendStartupComplete()`
-  publishes startup completion, with exit cleanup releasing the gate if startup
-  fails. Keep it this broad until early fallback state, GUC replay, runtime
-  installation, backend initialization, and worker initialization are all
-  proven per-backend.
+- Threaded startup serialization is deliberately not a broad
+  `backend_thread_entry()` gate. A broad gate can block normal threaded startup
+  behind worker paths that have not reached `ThreadedBackendStartupComplete()`.
+  Keep startup gating helper-controlled through
+  `backend_thread_requires_startup_gate()`, and require a named shared-state
+  dependency plus a release/stress test for any backend type that opts in.
 - Custom extension GUCs in threaded sessions rely on per-session `_PG_init()`
   invocation for already-loaded dynamic libraries. `dfmgr.c` records loaded
   module init state in `PgSession.dynamic_library_inits`, with list storage

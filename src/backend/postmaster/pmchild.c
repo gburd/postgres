@@ -444,11 +444,13 @@ PostmasterChildPublishThreadStartupComplete(PMChild *pmchild,
 											Latch *postmaster_latch)
 {
 	Assert(PostmasterChildIsThread(pmchild));
-	Assert(postmaster_latch != NULL);
 
 	pg_memory_barrier();
 	pg_atomic_write_u32(&pmchild->thread_startup_complete, 1);
-	SetLatch(postmaster_latch);
+	if (postmaster_latch != NULL)
+		SetLatch(postmaster_latch);
+	else
+		PostmasterSignalPMSignal();
 }
 
 bool
@@ -466,7 +468,6 @@ PostmasterChildPublishThreadExit(PMChild *pmchild, int exitstatus,
 								 Latch *postmaster_latch)
 {
 	Assert(PostmasterChildIsThread(pmchild));
-	Assert(postmaster_latch != NULL);
 
 	/*
 	 * Thread exit publication owns the handoff from the exiting carrier to the
@@ -491,7 +492,10 @@ PostmasterChildPublishThreadExit(PMChild *pmchild, int exitstatus,
 	 */
 	pg_memory_barrier();
 	pg_atomic_write_u32(&pmchild->thread_exited, 1);
-	SetLatch(postmaster_latch);
+	if (postmaster_latch != NULL)
+		SetLatch(postmaster_latch);
+	else
+		PostmasterSignalPMSignal();
 }
 
 bool

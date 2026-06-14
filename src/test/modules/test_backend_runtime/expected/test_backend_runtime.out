@@ -167,6 +167,12 @@ SELECT test_session_large_object_state_is_session_local();
  t
 (1 row)
 
+SELECT test_session_regex_portal_state_is_session_local();
+ test_session_regex_portal_state_is_session_local 
+--------------------------------------------------
+ t
+(1 row)
+
 SELECT test_session_async_state_is_session_local();
  test_session_async_state_is_session_local 
 -------------------------------------------

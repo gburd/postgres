@@ -1259,14 +1259,16 @@ hooks still carry process-era assumptions; it should be narrowed once the
 remaining GUC-backed globals are session-owned. Threaded nondefault replay now
 skips `PGC_POSTMASTER` and `PGC_INTERNAL` records so thread carriers do not
 replace/free process-global strings already inherited from the postmaster
-address space. It also exposed that startup
-serialization had been narrowed too far: each thread carrier now holds the
-temporary startup gate from `backend_thread_entry()` until
-`ThreadedBackendStartupComplete()` publishes startup completion, with exit
-cleanup releasing the gate if startup fails. That is intentionally conservative
-until early fallback state, GUC replay, runtime installation, backend
-initialization, and worker initialization are all proven per-backend.
-Follow-up validation made `CurrentPgRuntime` a carrier/thread-local current
+address space. It also tested a broader startup serialization gate, but an
+unconditional `backend_thread_entry()` gate was rejected because it can block
+normal threaded startup behind worker paths that have not reached
+`ThreadedBackendStartupComplete()`. Startup serialization is now
+helper-controlled behind `backend_thread_requires_startup_gate()` and requires
+a named shared-state dependency plus a release/stress test for any backend type
+that opts in. Early fallback state, GUC replay, runtime installation, backend
+initialization, and worker initialization remain explicit Gate E2 audit targets
+rather than being hidden behind a process-wide startup lock. Follow-up
+validation made `CurrentPgRuntime` a carrier/thread-local current
 binding, matching the other current runtime objects, and moved
 `reserved_class_prefix` allocation out of session `GUCMemoryContext` storage
 into a runtime-lifetime `TopMemoryContext` child under the temporary GUC lock.
