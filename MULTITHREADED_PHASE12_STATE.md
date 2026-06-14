@@ -10428,6 +10428,13 @@ Acceptance criteria for the refactor slice:
   annoyance. When the call-list mechanics start dominating the work, batch the
   related root-object or subsystem buckets and add the missing helper
   macro/table rule/checker validation before migrating the batch;
+- before starting another large Phase 12 migration batch, explicitly check
+  whether the lifecycle framework should be improved first. If the batch would
+  repeat init/adopt/reset/destroy boilerplate, add or extend checked helper
+  macros, `.def` bucket rows, or declarative lifecycle rules before migrating
+  the globals. This is part of the Gate E2 closeout strategy: larger batches
+  are encouraged, but they should go through a simpler checked path rather than
+  more hand-maintained call lists;
 - keep semantic cleanup/destructor functions handwritten and close to the
   owning subsystem. The generated or macro-driven layer should cover only
   repetitive coverage and call-list mechanics;

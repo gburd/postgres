@@ -279,6 +279,12 @@ Important current files:
   design signal. Batch related buckets by root object or subsystem, add the
   missing helper macro/table rule/checker validation first, and then migrate the
   batch through that mechanism instead of making several narrow one-off edits.
+- Before taking another large Phase 12 migration batch, explicitly consider
+  whether the lifecycle work can be simplified first. If the batch would add
+  repetitive init/adopt/reset/destroy code, add or extend checked helper macros,
+  `.def` rows, or declarative lifecycle rules before moving the state. The goal
+  is faster large-batch migration with the same manifest-checked discipline,
+  not more manual bookkeeping.
 - Session GUC direct-variable rebinding in `src/backend/utils/misc/guc.c`
   is table-driven by `threaded_session_guc_rebinds[]`. Add new migrated
   built-in direct-pointer GUCs to that table instead of extending

@@ -899,6 +899,12 @@ Gate E2 requires:
   as a prompt to improve the framework: batch related buckets, add the missing
   helper macro/table rule/checker validation, and then move the batch through
   that checked path rather than landing several narrow one-off lifecycle edits;
+- before each remaining large Phase 12 migration batch, review whether the
+  lifecycle mechanics should be simplified first. If the next batch would add
+  repetitive init/adopt/reset/destroy glue, extend the checked macro,
+  `.def`-row, or declarative-rule layer before moving the globals. This is a
+  Gate E2 work item because it keeps large-batch state migration fast while
+  preserving manifest-checked lifecycle coverage;
 - the Phase 12 runtime and test scaffolding is refactored before additional
   Gate E2 state migration or Phase 13 scheduler-aware wait work begins.
   `src/backend/utils/init/backend_runtime.c` must remain the orchestration
