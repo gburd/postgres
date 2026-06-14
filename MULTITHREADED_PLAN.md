@@ -930,61 +930,38 @@ Gate E2 requires:
   as a prompt to improve the framework: batch related buckets, add the missing
   helper macro/table rule/checker validation, and then move the batch through
   that checked path rather than landing several narrow one-off lifecycle edits;
-- before each remaining large Phase 12 migration batch, review whether the
-  lifecycle mechanics should be simplified first. If the next batch would add
-  repetitive init/adopt/reset/destroy glue, extend the checked macro,
-  `.def`-row, or declarative-rule layer before moving the globals. This is a
-  Gate E2 work item because it keeps large-batch state migration fast while
-  preserving manifest-checked lifecycle coverage. If lifecycle bookkeeping is
-  the thing slowing progress, treat that as evidence that the checked
-  vocabulary is still too weak: add the missing macro, action, table rule, or
-  checker validation first, then use it to move a larger coherent batch;
-- apply the same simplification review to every remaining Gate E2 blocker, not
-  only raw state migration. Threaded teardown, PMChild/thread synchronization,
-  startup-gate removal, systematic GUC adoption, and owner-map hardening should
-  each begin by deciding whether a small checked macro, lifecycle action,
-  bucket/table rule, or checker extension would reduce repeated bookkeeping.
-  If it would, land that primitive first and then move the larger blocker
-  through the checked path;
-- the lifecycle-ergonomics review is a required Gate E2 checkpoint. For each
-  boilerplate-heavy Phase 12 batch, document whether the existing
-  `PG_RUNTIME_DEFINE_*` macros, checked bucket `.def` files, and lifecycle
-  checker rules are sufficient. If they are not, extend the checked mechanism
-  before migrating the state, then record the chosen pattern in
-  `MULTITHREADED_PHASE12_STATE.md`. The operational checklist for this
-  checkpoint is: identify the root object and bucket rows, list the lifecycle
-  operations the batch repeats, decide whether an existing checked helper
-  covers them, add a reusable helper/table/checker rule first if not, and only
-  then move the batch through that path;
-- that lifecycle-ergonomics checkpoint must produce an explicit preflight note
-  before the next object-state migration or teardown batch begins. The note
-  must either name the existing bucket rows/macros/checker rules being reused,
-  or name the framework extension landed before the migration. This is meant to
-  keep larger Phase 12 batches fast without losing manifest-checked lifecycle
-  discipline;
-- future lifecycle ergonomics work should prefer reusable checked mechanisms
-  over local one-off helpers. The desired shape is one manifest row and one
-  checked bucket-definition row per migrated field, with `PG_RUNTIME_DEFINE_*`
-  or equivalent macros for routine zero-init, scalar copy/adopt, whole-bucket
-  copy/adopt, zero-reset, and destructor-call cases. If a migration cannot be
-  expressed clearly through that path, document why and keep the semantic
-  cleanup handwritten near the owning subsystem;
-- Gate E2 lifecycle ergonomics should keep moving toward a small checked
-  action vocabulary rather than long handwritten helper lists. Candidate
-  actions include zero-init, zero-reset, copy/adopt, copy/adopt-with-reinit,
-  reset-through-initializer, and explicit destroy actions for memory contexts,
-  lists, hash tables, sockets, and other owned resources. The checker should
-  grow with the vocabulary, including rejecting stale or unexplained `(void) 0`
-  lifecycle cells for buckets whose manifest row says they own pointer-like or
-  teardown-sensitive state;
-- before the next repetitive Phase 12 state batch, decide whether this checked
-  action vocabulary should be implemented first. If the batch would require
-  multiple nearly identical init/adopt/reset helpers, add the action names,
-  `PG_RUNTIME_DEFINE_*` wrappers or equivalent table rules, and
-  `check_runtime_lifecycles.pl` validation first, then move the batch through
-  that mechanism. The exit criterion is that future agents can add routine
-  lifecycle buckets by editing the manifest and bucket-definition row, without
-  remembering several parallel call lists;
+- lifecycle ergonomics are a required Gate E2 implementation checkpoint, not a
+  documentation preference. Before each remaining large Phase 12 migration or
+  teardown/synchronization batch, record a preflight note in
+  `MULTITHREADED_PHASE12_STATE.md` that identifies the root object and bucket
+  rows, lists the repeated lifecycle operations, and says either which
+  existing checked rows/macros/checker rules cover them or which new
+  primitive was landed first. This applies to raw state migration and to the
+  remaining Gate E2 blockers: threaded teardown, PMChild/thread
+  synchronization, startup-gate cleanup, systematic GUC adoption, and
+  owner-map hardening;
+- when that preflight finds two or more structurally similar
+  init/adopt/reset/destroy helpers, add the checked lifecycle primitive before
+  moving the state. Prefer a named `PG_RUNTIME_*` bucket action,
+  `PG_RUNTIME_DEFINE_*` helper, bucket `.def` rule, generated/declarative
+  table, or `check_runtime_lifecycles.pl` validation over another handwritten
+  helper list. The desired routine shape is one manifest row and one checked
+  bucket-definition row per migrated field, with macros/actions covering
+  zero-init, scalar or whole-bucket copy/adopt, copy/adopt-with-reinit,
+  zero-reset, reset-through-initializer, and destructor-call cases;
+- lifecycle-process friction is itself a Gate E2 signal. If the manual
+  bookkeeping is what makes a batch slow, treat the checked lifecycle
+  vocabulary as too weak: add the missing macro, action, table rule, or
+  checker validation first, then move a larger coherent batch through that
+  mechanism. Keep semantic cleanup, pointer rebasing, ordering-sensitive
+  destruction, and ownership assertions handwritten near the owning subsystem;
+- candidate near-term primitives are object-owned allocation-context
+  setup/reset, delete-and-null memory-context cleanup, list/hash cleanup,
+  socket or wait-set teardown, clear-after-owner-cleanup pointer slots, and
+  copy/adopt-then-reset fallback adoption. The first concrete target remains
+  the recurring object-owned allocation-context pattern: create-on-demand
+  context accessor, fallback adoption, manifest-checked bucket ownership, and
+  close-time delete-and-null reset;
 - the first lifecycle action vocabulary slice is in place:
   `PG_RUNTIME_NOOP` replaces bare no-op expressions in checked bucket
   definitions, and `check_runtime_lifecycles.pl` rejects anonymous `(void) 0`
