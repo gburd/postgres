@@ -7,6 +7,7 @@ SELECT test_backend_thread_create_join();
 SELECT test_backend_thread_exit_join();
 SELECT test_backend_thread_runtime_state();
 SELECT test_thread_install_adopts_backend_fallback_state();
+SELECT test_thread_install_adopts_session_execution_fallback_state();
 SELECT test_backend_pgproc_has_logical_id();
 SELECT test_backend_thread_ids_are_logical();
 SELECT test_session_loop_state_is_session_local();

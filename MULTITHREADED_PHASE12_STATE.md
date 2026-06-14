@@ -7962,6 +7962,47 @@ Validation for this slice:
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals.
 
+## Session And Execution Early Adoption Symmetry
+
+The one-hundred-seventieth Phase 12 slice extends the Gate E2 adoption-list
+hardening to `PgSession` and `PgExecution`:
+
+- `PgSessionAdoptEarlyState()` now owns the complete list of session early
+  fallback buckets;
+- `PgExecutionAdoptEarlyState()` now owns the complete list of execution early
+  fallback buckets;
+- `InitializePgProcessRuntime()` and `InstallPgThreadBackendRuntimeState()`
+  both call those aggregate helpers instead of maintaining parallel manual
+  session/execution lists;
+- `test_thread_install_adopts_session_execution_fallback_state()` verifies
+  representative session and execution fallback values are adopted into a
+  target object and the early fallback buckets are reset to their defaults.
+
+This is another Gate E2 hardening step, not the full lifecycle audit. It
+prevents newly migrated session/execution buckets from being added to only one
+runtime path, while leaving connection fallback adoption explicit: process
+mode still adopts early connection state, but threaded backend construction
+receives the live `Port` during initialization and should not blindly copy all
+process-mode connection fallbacks without a separate connection-lifetime
+classification.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o` and
+  `test_backend_runtime.o`;
+- static scan of `backend_runtime.c` confirmed process and thread install now
+  call only `PgSessionAdoptEarlyState()` and `PgExecutionAdoptEarlyState()`
+  for session/execution early adoption;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and
+  patched macOS install names;
+- full `gmake -j8` passed;
+- `gmake -C contrib -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals.
+
 ## Backend Parallel State Bridge
 
 The one-hundred-forty-second Phase 12 slice moves a parallel-query and

@@ -520,6 +520,78 @@ test_thread_install_adopts_backend_fallback_state(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_thread_install_adopts_session_execution_fallback_state);
+Datum
+test_thread_install_adopts_session_execution_fallback_state(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgExecution *saved_execution;
+	PgSession	session;
+	PgExecution execution;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	saved_execution = CurrentPgExecution;
+	MemSet(&session, 0, sizeof(session));
+	MemSet(&execution, 0, sizeof(execution));
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(NULL);
+		CurrentPgExecution = NULL;
+		*PgCurrentDoingCommandReadRef() = true;
+		*PgCurrentClientEncodingRef() = &pg_enc2name_tbl[PG_UTF8];
+		*PgCurrentPendingClientEncodingRef() = PG_UTF8;
+		*PgCurrentPseudoRandomSeedSetRef() = true;
+		*PgCurrentDebugQueryStringRef() = "aggregate execution fallback";
+		*PgCurrentSPIConnectedRef() = 17;
+		*PgCurrentXactIsoLevelRef() = XACT_SERIALIZABLE;
+		*PgCurrentGUCCheckErrcodeValueRef() = 503;
+		*PgCurrentValgrindOldErrorCountRef() = 77;
+
+		PgSessionAdoptEarlyState(&session);
+		PgExecutionAdoptEarlyState(&execution);
+
+		ok = ok && session.loop_state.doing_command_read;
+		ok = ok && session.encoding.client_encoding == &pg_enc2name_tbl[PG_UTF8];
+		ok = ok && session.encoding.pending_client_encoding == PG_UTF8;
+		ok = ok && session.random.prng_seed_set;
+		ok = ok && strcmp(*PgExecutionDebugQueryStringRef(&execution),
+						  "aggregate execution fallback") == 0;
+		ok = ok && execution.spi.connected == 17;
+		ok = ok && execution.xact.iso_level == XACT_SERIALIZABLE;
+		ok = ok && execution.guc_error.check_errcode_value == 503;
+		ok = ok && execution.valgrind.old_error_count == 77;
+
+		ok = ok && !*PgCurrentDoingCommandReadRef();
+		ok = ok && *PgCurrentClientEncodingRef() ==
+			&pg_enc2name_tbl[PG_SQL_ASCII];
+		ok = ok && *PgCurrentPendingClientEncodingRef() == PG_SQL_ASCII;
+		ok = ok && !*PgCurrentPseudoRandomSeedSetRef();
+		ok = ok && *PgCurrentDebugQueryStringRef() == NULL;
+		ok = ok && *PgCurrentSPIConnectedRef() == -1;
+		ok = ok && *PgCurrentXactIsoLevelRef() == XACT_READ_COMMITTED;
+		ok = ok && *PgCurrentGUCCheckErrcodeValueRef() == 0;
+		ok = ok && *PgCurrentValgrindOldErrorCountRef() == 0;
+
+		PgSetCurrentSession(saved_session);
+		CurrentPgExecution = saved_execution;
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		CurrentPgExecution = saved_execution;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR,
+			 "thread backend install did not adopt session/execution fallback state");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_backend_pgproc_has_logical_id);
 Datum
 test_backend_pgproc_has_logical_id(PG_FUNCTION_ARGS)

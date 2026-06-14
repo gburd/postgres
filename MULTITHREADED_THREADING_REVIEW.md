@@ -857,6 +857,15 @@ database list and reinitializing the adopted backend list head instead of
 copying a fallback `dlist_head` self-pointer. This is a partial Gate E2
 closure only; the full bucket lifecycle audit, session/execution completion,
 legacy `Session` endpoint, and destructor/reset model remain blockers.
+Further hardening centralized the session and execution counterparts in
+`PgSessionAdoptEarlyState()` and `PgExecutionAdoptEarlyState()`, so process
+runtime initialization and thread backend installation no longer maintain
+parallel manual lists for those object families either. Focused regression
+coverage now verifies representative session/execution fallback adoption and
+reset. Connection fallback adoption is still intentionally explicit because
+thread backend initialization receives the active `Port` directly; classifying
+which connection fallbacks can be adopted in threaded mode remains part of the
+connection-lifetime audit.
 The latest state-migration slice moved wait-event storage into
 `PgBackendWaitState` and the shared-invalidation local transaction ID counter
 into `PgBackendIPCState`. Validation included touched-object builds, a clean

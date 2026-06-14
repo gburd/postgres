@@ -2084,6 +2084,54 @@ PgSessionAdoptEarlyLocaleState(PgSession *session)
 	PgSessionInitializeLocaleState(&early_session_locale);
 }
 
+void
+PgSessionAdoptEarlyState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	PgSessionAdoptEarlyLoopState(session);
+	PgSessionAdoptEarlyDatabaseState(session);
+	PgSessionAdoptEarlyTablespaceState(session);
+	PgSessionAdoptEarlyBinaryUpgradeState(session);
+	PgSessionAdoptEarlyDateTimeState(session);
+	PgSessionAdoptEarlyTextSearchState(session);
+	PgSessionAdoptEarlyConnectionGUCState(session);
+	PgSessionAdoptEarlyParserState(session);
+	PgSessionAdoptEarlyVacuumState(session);
+	PgSessionAdoptEarlyBufferIOState(session);
+	PgSessionAdoptEarlyXactDefaultState(session);
+	PgSessionAdoptEarlyLockWaitState(session);
+	PgSessionAdoptEarlyLoggingState(session);
+	PgSessionAdoptEarlyMiscGUCState(session);
+	PgSessionAdoptEarlyPgStatState(session);
+	PgSessionAdoptEarlyQueryIdState(session);
+	PgSessionAdoptEarlyStorageGUCState(session);
+	PgSessionAdoptEarlyUserGUCState(session);
+	PgSessionAdoptEarlyUserIdentityState(session);
+	PgSessionAdoptEarlyCommandGUCState(session);
+	PgSessionAdoptEarlyReplicationGUCState(session);
+	PgSessionAdoptEarlyGeneralGUCState(session);
+	PgSessionAdoptEarlyAccessWalGUCState(session);
+	PgSessionAdoptEarlyJitGUCState(session);
+	PgSessionAdoptEarlySortGUCState(session);
+	PgSessionAdoptEarlyQueryMemoryState(session);
+	PgSessionAdoptEarlyPlannerCostState(session);
+	PgSessionAdoptEarlyPlannerMethodState(session);
+	PgSessionAdoptEarlyPreparedStatementState(session);
+	PgSessionAdoptEarlyOnCommitState(session);
+	PgSessionAdoptEarlySequenceState(session);
+	PgSessionAdoptEarlyRegexState(session);
+	PgSessionAdoptEarlyLargeObjectState(session);
+	PgSessionAdoptEarlyAsyncState(session);
+	PgSessionAdoptEarlyEncodingState(session);
+	PgSessionAdoptEarlyTempFileState(session);
+	PgSessionAdoptEarlyRandomState(session);
+	PgSessionAdoptEarlyOptimizerState(session);
+	PgSessionAdoptEarlyPlanCacheState(session);
+	PgSessionAdoptEarlyNamespaceState(session);
+	PgSessionAdoptEarlyLocaleState(session);
+}
+
 static void
 PgBackendResetCoreState(PgBackendCoreState *core)
 {
@@ -3108,6 +3156,33 @@ PgExecutionAdoptEarlySnapBuildState(PgExecution *execution)
 }
 
 void
+PgExecutionAdoptEarlyState(PgExecution *execution)
+{
+	Assert(execution != NULL);
+
+	PgExecutionAdoptEarlyDebugState(execution);
+	PgExecutionAdoptEarlyErrorState(execution);
+	PgExecutionAdoptEarlyMemoryContexts(execution);
+	PgExecutionAdoptEarlyResourceOwners(execution);
+	PgExecutionAdoptEarlySPIState(execution);
+	PgExecutionAdoptEarlyPortalState(execution);
+	PgExecutionAdoptEarlyVacuumState(execution);
+	PgExecutionAdoptEarlyNodeIOState(execution);
+	PgExecutionAdoptEarlyBaseBackupState(execution);
+	PgExecutionAdoptEarlyAnalyzeState(execution);
+	PgExecutionAdoptEarlyExtensionState(execution);
+	PgExecutionAdoptEarlyMatViewState(execution);
+	PgExecutionAdoptEarlySnapshotState(execution);
+	PgExecutionAdoptEarlyComboCidState(execution);
+	PgExecutionAdoptEarlyXLogInsertState(execution);
+	PgExecutionAdoptEarlyXactState(execution);
+	PgExecutionAdoptEarlyGUCErrorState(execution);
+	PgExecutionAdoptEarlyRegexState(execution);
+	PgExecutionAdoptEarlyValgrindState(execution);
+	PgExecutionAdoptEarlySnapBuildState(execution);
+}
+
+void
 InitializePgProcessRuntime(void)
 {
 	MemSet(&process_runtime, 0, sizeof(process_runtime));
@@ -3146,47 +3221,7 @@ InitializePgProcessRuntime(void)
 	process_session.backend = &process_backend;
 	process_session.connection = &process_connection;
 	process_session.execution = &process_execution;
-	PgSessionAdoptEarlyLoopState(&process_session);
-	PgSessionAdoptEarlyDatabaseState(&process_session);
-	PgSessionAdoptEarlyTablespaceState(&process_session);
-	PgSessionAdoptEarlyBinaryUpgradeState(&process_session);
-	PgSessionAdoptEarlyDateTimeState(&process_session);
-	PgSessionAdoptEarlyTextSearchState(&process_session);
-	PgSessionAdoptEarlyConnectionGUCState(&process_session);
-	PgSessionAdoptEarlyParserState(&process_session);
-	PgSessionAdoptEarlyVacuumState(&process_session);
-	PgSessionAdoptEarlyBufferIOState(&process_session);
-	PgSessionAdoptEarlyXactDefaultState(&process_session);
-	PgSessionAdoptEarlyLockWaitState(&process_session);
-	PgSessionAdoptEarlyLoggingState(&process_session);
-	PgSessionAdoptEarlyMiscGUCState(&process_session);
-	PgSessionAdoptEarlyPgStatState(&process_session);
-	PgSessionAdoptEarlyQueryIdState(&process_session);
-	PgSessionAdoptEarlyStorageGUCState(&process_session);
-	PgSessionAdoptEarlyUserGUCState(&process_session);
-	PgSessionAdoptEarlyUserIdentityState(&process_session);
-	PgSessionAdoptEarlyCommandGUCState(&process_session);
-	PgSessionAdoptEarlyReplicationGUCState(&process_session);
-	PgSessionAdoptEarlyGeneralGUCState(&process_session);
-	PgSessionAdoptEarlyAccessWalGUCState(&process_session);
-	PgSessionAdoptEarlyJitGUCState(&process_session);
-	PgSessionAdoptEarlySortGUCState(&process_session);
-	PgSessionAdoptEarlyQueryMemoryState(&process_session);
-	PgSessionAdoptEarlyPlannerCostState(&process_session);
-	PgSessionAdoptEarlyPlannerMethodState(&process_session);
-	PgSessionAdoptEarlyPreparedStatementState(&process_session);
-	PgSessionAdoptEarlyOnCommitState(&process_session);
-	PgSessionAdoptEarlySequenceState(&process_session);
-	PgSessionAdoptEarlyRegexState(&process_session);
-	PgSessionAdoptEarlyLargeObjectState(&process_session);
-	PgSessionAdoptEarlyAsyncState(&process_session);
-	PgSessionAdoptEarlyEncodingState(&process_session);
-	PgSessionAdoptEarlyTempFileState(&process_session);
-	PgSessionAdoptEarlyRandomState(&process_session);
-	PgSessionAdoptEarlyOptimizerState(&process_session);
-	PgSessionAdoptEarlyPlanCacheState(&process_session);
-	PgSessionAdoptEarlyNamespaceState(&process_session);
-	PgSessionAdoptEarlyLocaleState(&process_session);
+	PgSessionAdoptEarlyState(&process_session);
 
 	process_connection.backend = &process_backend;
 	process_connection.session = &process_session;
@@ -3203,26 +3238,7 @@ InitializePgProcessRuntime(void)
 	process_execution.session = &process_session;
 	process_execution.carrier = &process_carrier;
 	PgExecutionInitializeSPIState(&process_execution.spi);
-	PgExecutionAdoptEarlyDebugState(&process_execution);
-	PgExecutionAdoptEarlyErrorState(&process_execution);
-	PgExecutionAdoptEarlyMemoryContexts(&process_execution);
-	PgExecutionAdoptEarlyResourceOwners(&process_execution);
-	PgExecutionAdoptEarlySPIState(&process_execution);
-	PgExecutionAdoptEarlyPortalState(&process_execution);
-	PgExecutionAdoptEarlyVacuumState(&process_execution);
-	PgExecutionAdoptEarlyNodeIOState(&process_execution);
-	PgExecutionAdoptEarlyBaseBackupState(&process_execution);
-	PgExecutionAdoptEarlyAnalyzeState(&process_execution);
-	PgExecutionAdoptEarlyExtensionState(&process_execution);
-	PgExecutionAdoptEarlyMatViewState(&process_execution);
-	PgExecutionAdoptEarlySnapshotState(&process_execution);
-	PgExecutionAdoptEarlyComboCidState(&process_execution);
-	PgExecutionAdoptEarlyXLogInsertState(&process_execution);
-	PgExecutionAdoptEarlyXactState(&process_execution);
-	PgExecutionAdoptEarlyGUCErrorState(&process_execution);
-	PgExecutionAdoptEarlyRegexState(&process_execution);
-	PgExecutionAdoptEarlyValgrindState(&process_execution);
-	PgExecutionAdoptEarlySnapBuildState(&process_execution);
+	PgExecutionAdoptEarlyState(&process_execution);
 
 	CurrentPgRuntime = &process_runtime;
 	CurrentPgCarrier = &process_carrier;
@@ -3391,66 +3407,8 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	state->carrier.current_session = &state->session;
 	state->carrier.current_execution = &state->execution;
 	PgBackendAdoptEarlyState(&state->backend);
-	PgSessionAdoptEarlyLoopState(&state->session);
-	PgSessionAdoptEarlyDatabaseState(&state->session);
-	PgSessionAdoptEarlyTablespaceState(&state->session);
-	PgSessionAdoptEarlyBinaryUpgradeState(&state->session);
-	PgSessionAdoptEarlyDateTimeState(&state->session);
-	PgSessionAdoptEarlyTextSearchState(&state->session);
-	PgSessionAdoptEarlyConnectionGUCState(&state->session);
-	PgSessionAdoptEarlyParserState(&state->session);
-	PgSessionAdoptEarlyVacuumState(&state->session);
-	PgSessionAdoptEarlyBufferIOState(&state->session);
-	PgSessionAdoptEarlyXactDefaultState(&state->session);
-	PgSessionAdoptEarlyLockWaitState(&state->session);
-	PgSessionAdoptEarlyLoggingState(&state->session);
-	PgSessionAdoptEarlyMiscGUCState(&state->session);
-	PgSessionAdoptEarlyPgStatState(&state->session);
-	PgSessionAdoptEarlyQueryIdState(&state->session);
-	PgSessionAdoptEarlyStorageGUCState(&state->session);
-	PgSessionAdoptEarlyUserGUCState(&state->session);
-	PgSessionAdoptEarlyUserIdentityState(&state->session);
-	PgSessionAdoptEarlyCommandGUCState(&state->session);
-	PgSessionAdoptEarlyReplicationGUCState(&state->session);
-	PgSessionAdoptEarlyGeneralGUCState(&state->session);
-	PgSessionAdoptEarlyAccessWalGUCState(&state->session);
-	PgSessionAdoptEarlyJitGUCState(&state->session);
-	PgSessionAdoptEarlySortGUCState(&state->session);
-	PgSessionAdoptEarlyQueryMemoryState(&state->session);
-	PgSessionAdoptEarlyPlannerCostState(&state->session);
-	PgSessionAdoptEarlyPlannerMethodState(&state->session);
-	PgSessionAdoptEarlyPreparedStatementState(&state->session);
-	PgSessionAdoptEarlyOnCommitState(&state->session);
-	PgSessionAdoptEarlySequenceState(&state->session);
-	PgSessionAdoptEarlyRegexState(&state->session);
-	PgSessionAdoptEarlyLargeObjectState(&state->session);
-	PgSessionAdoptEarlyAsyncState(&state->session);
-	PgSessionAdoptEarlyEncodingState(&state->session);
-	PgSessionAdoptEarlyTempFileState(&state->session);
-	PgSessionAdoptEarlyRandomState(&state->session);
-	PgSessionAdoptEarlyOptimizerState(&state->session);
-	PgSessionAdoptEarlyPlanCacheState(&state->session);
-	PgSessionAdoptEarlyNamespaceState(&state->session);
-	PgSessionAdoptEarlyLocaleState(&state->session);
-	PgExecutionAdoptEarlyErrorState(&state->execution);
-	PgExecutionAdoptEarlyMemoryContexts(&state->execution);
-	PgExecutionAdoptEarlyResourceOwners(&state->execution);
-	PgExecutionAdoptEarlySPIState(&state->execution);
-	PgExecutionAdoptEarlyPortalState(&state->execution);
-	PgExecutionAdoptEarlyVacuumState(&state->execution);
-	PgExecutionAdoptEarlyNodeIOState(&state->execution);
-	PgExecutionAdoptEarlyBaseBackupState(&state->execution);
-	PgExecutionAdoptEarlyAnalyzeState(&state->execution);
-	PgExecutionAdoptEarlyExtensionState(&state->execution);
-	PgExecutionAdoptEarlyMatViewState(&state->execution);
-	PgExecutionAdoptEarlySnapshotState(&state->execution);
-	PgExecutionAdoptEarlyComboCidState(&state->execution);
-	PgExecutionAdoptEarlyXLogInsertState(&state->execution);
-	PgExecutionAdoptEarlyXactState(&state->execution);
-	PgExecutionAdoptEarlyGUCErrorState(&state->execution);
-	PgExecutionAdoptEarlyRegexState(&state->execution);
-	PgExecutionAdoptEarlyValgrindState(&state->execution);
-	PgExecutionAdoptEarlySnapBuildState(&state->execution);
+	PgSessionAdoptEarlyState(&state->session);
+	PgExecutionAdoptEarlyState(&state->execution);
 	CurrentPgRuntime = &thread_runtime;
 	CurrentPgCarrier = &state->carrier;
 	CurrentPgBackend = &state->backend;

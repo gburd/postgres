@@ -31,6 +31,10 @@ CREATE FUNCTION test_thread_install_adopts_backend_fallback_state()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;
 
+CREATE FUNCTION test_thread_install_adopts_session_execution_fallback_state()
+	RETURNS pg_catalog.bool
+	AS 'MODULE_PATHNAME' LANGUAGE C;
+
 CREATE FUNCTION test_backend_pgproc_has_logical_id()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;

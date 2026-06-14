@@ -1429,6 +1429,17 @@ the adopted backend's list head. Validation included touched-object builds,
 the `test_backend_runtime` regression, direct threaded TAP, full `gmake -j8`,
 contrib build, and `gmake check-global-lifetimes` with zero new unclassified
 mutable globals.
+Follow-up hardening centralized the matching session and execution adoption
+lists in `PgSessionAdoptEarlyState()` and `PgExecutionAdoptEarlyState()`.
+Process runtime initialization and thread backend installation now use those
+helpers instead of parallel manual lists, and
+`test_thread_install_adopts_session_execution_fallback_state()` covers
+representative session/execution fallback adoption plus fallback reset.
+Connection fallback adoption remains explicit pending a separate
+connection-lifetime classification because thread backend initialization
+receives the live `Port` directly. Validation included touched-object builds,
+the backend-runtime regression, direct threaded TAP, full `gmake -j8`, contrib
+build, and `gmake check-global-lifetimes`.
 
 ## Phase 13: Scheduler-Aware Wait Boundary
 
