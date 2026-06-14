@@ -9328,3 +9328,50 @@ Validation for this slice:
 
 - `gmake check-runtime-lifecycles` passed with 140 fields classified after the
   checker was tightened.
+
+## Tcop Session Protocol State
+
+The next Phase 12 session-state batch moves the remaining `postgres.c`
+session-local command/protocol storage into a new `PgSessionTcopState` bucket:
+
+- the unnamed prepared statement plan-source pointer;
+- the interactive `-E` query echo switch;
+- the interactive `-j` semicolon/newline mode switch;
+- the reused `RowDescriptionContext` and `StringInfoData` buffer used by
+  Describe/RowDescription messages.
+
+`postgres.c` keeps its historical local names as lvalue macros over runtime
+accessors. The switch accessors support early fallback storage because
+single-user startup can parse `-E` and `-j` before a `PgSession` is installed.
+`PgSessionAdoptEarlyTcopState()` transfers those scalar fallback values into
+the session and asserts that plan/buffer/context pointers are still empty
+before early adoption. Normal SQL startup creates the row-description context
+under the installed session state.
+
+The lifecycle rule is explicit. `PgSessionResetClosedState()` drops any
+leftover unnamed cached plan and deletes the row-description context, clearing
+the retained buffer afterward. The context/buffer and unnamed plan pointer are
+session-owned pointer slots and must never be shallow-copied between live
+sessions.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `postgres.o`, and
+  `test_backend_runtime.o`;
+- because `backend_runtime.h` changed installed backend-state declarations, the
+  backend clean plus generated-header recovery path was used before the clean
+  rebuild;
+- clean full `gmake -j8` passed;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed;
+- `gmake -C contrib -j8` passed;
+- `gmake check-runtime-lifecycles` passed with 141 fields classified after
+  adding the `PgSession.tcop` lifecycle row;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- `git diff --check` passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed, including
+  `test_session_tcop_state_is_session_local()`;
+- direct `prove` over
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`
+  passed all 94 tests.

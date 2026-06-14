@@ -2323,6 +2323,7 @@ PgSessionExtensionModuleState
 PgSessionLoopState
 PgSessionLogicalReplicationState
 PgSessionResetCallbackItem
+PgSessionTcopState
 PgSessionTzAbbrevCache
 PgStepBudget
 PgStepResult

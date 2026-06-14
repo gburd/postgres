@@ -1019,6 +1019,94 @@ test_session_loop_state_is_session_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_session_tcop_state_is_session_local);
+Datum
+test_session_tcop_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(NULL);
+		*PgCurrentEchoQueryRef() = true;
+		*PgCurrentUseSemiNewlineNewlineRef() = true;
+
+		PgSessionAdoptEarlyState(&fake_session1);
+
+		ok = ok && fake_session1.tcop.echo_query;
+		ok = ok && fake_session1.tcop.use_semi_newline_newline;
+		ok = ok && !*PgCurrentEchoQueryRef();
+		ok = ok && !*PgCurrentUseSemiNewlineNewlineRef();
+
+		PgSetCurrentSession(&fake_session1);
+		*PgCurrentUnnamedStmtPsrcRef() =
+			(CachedPlanSource *) &fake_session1;
+		*PgCurrentEchoQueryRef() = false;
+		*PgCurrentUseSemiNewlineNewlineRef() = true;
+		*PgCurrentRowDescriptionContextRef() =
+			(MemoryContext) &fake_session1;
+		PgCurrentRowDescriptionBufRef()->data = (char *) "session one";
+		PgCurrentRowDescriptionBufRef()->len = 11;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && *PgCurrentUnnamedStmtPsrcRef() == NULL;
+		ok = ok && !*PgCurrentEchoQueryRef();
+		ok = ok && !*PgCurrentUseSemiNewlineNewlineRef();
+		ok = ok && *PgCurrentRowDescriptionContextRef() == NULL;
+		ok = ok && PgCurrentRowDescriptionBufRef()->data == NULL;
+		*PgCurrentUnnamedStmtPsrcRef() =
+			(CachedPlanSource *) &fake_session2;
+		*PgCurrentEchoQueryRef() = true;
+		*PgCurrentUseSemiNewlineNewlineRef() = false;
+		*PgCurrentRowDescriptionContextRef() =
+			(MemoryContext) &fake_session2;
+		PgCurrentRowDescriptionBufRef()->data = (char *) "session two";
+		PgCurrentRowDescriptionBufRef()->len = 22;
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && *PgCurrentUnnamedStmtPsrcRef() ==
+			(CachedPlanSource *) &fake_session1;
+		ok = ok && !*PgCurrentEchoQueryRef();
+		ok = ok && *PgCurrentUseSemiNewlineNewlineRef();
+		ok = ok && *PgCurrentRowDescriptionContextRef() ==
+			(MemoryContext) &fake_session1;
+		ok = ok && strcmp(PgCurrentRowDescriptionBufRef()->data,
+						  "session one") == 0;
+		ok = ok && PgCurrentRowDescriptionBufRef()->len == 11;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && *PgCurrentUnnamedStmtPsrcRef() ==
+			(CachedPlanSource *) &fake_session2;
+		ok = ok && *PgCurrentEchoQueryRef();
+		ok = ok && !*PgCurrentUseSemiNewlineNewlineRef();
+		ok = ok && *PgCurrentRowDescriptionContextRef() ==
+			(MemoryContext) &fake_session2;
+		ok = ok && strcmp(PgCurrentRowDescriptionBufRef()->data,
+						  "session two") == 0;
+		ok = ok && PgCurrentRowDescriptionBufRef()->len == 22;
+
+		PgSetCurrentSession(saved_session);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session tcop state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_session_database_state_is_session_local);
 Datum
 test_session_database_state_is_session_local(PG_FUNCTION_ARGS)

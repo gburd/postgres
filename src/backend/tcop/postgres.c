@@ -144,16 +144,16 @@ typedef struct BindParamCbData
  * We keep it separate from the hashtable kept by commands/prepare.c
  * in order to reduce overhead for short-lived queries.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION CachedPlanSource *unnamed_stmt_psrc = NULL;
+#define unnamed_stmt_psrc (*PgCurrentUnnamedStmtPsrcRef())
 
 /* assorted command-line switches */
 #define userDoption (*PgCurrentUserDOptionRef())	/* -D switch */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool EchoQuery = false;	/* -E switch */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool UseSemiNewlineNewline = false;	/* -j switch */
+#define EchoQuery (*PgCurrentEchoQueryRef())	/* -E switch */
+#define UseSemiNewlineNewline (*PgCurrentUseSemiNewlineNewlineRef())	/* -j switch */
 
 /* reused buffer to pass to SendRowDescriptionMessage() */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION MemoryContext row_description_context = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION StringInfoData row_description_buf;
+#define row_description_context (*PgCurrentRowDescriptionContextRef())
+#define row_description_buf (*PgCurrentRowDescriptionBufRef())
 
 /* ----------------------------------------------------------------
  *		decls for routines only used in this file

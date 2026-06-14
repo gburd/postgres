@@ -311,6 +311,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionLockWaitState early_session_lo
 	.trace_lwlocks_value = false
 };
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionLoopState early_session_loop_state;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionTcopState early_session_tcop;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionLoggingState early_session_logging = {
 	.initialized = true,
 	.debug_print_plan_value = false,
@@ -745,6 +746,8 @@ static void PgBackendInitializeExprInterpState(PgBackendExprInterpState *expr_in
 static void PgBackendAdoptEarlyExprInterpState(PgBackend *backend);
 static void PgSessionInitializeLoopState(PgSessionLoopState *loop_state);
 static void PgSessionAdoptEarlyLoopState(PgSession *session);
+static void PgSessionInitializeTcopState(PgSessionTcopState *tcop);
+static void PgSessionAdoptEarlyTcopState(PgSession *session);
 static void PgBackendInitializeProcNumberState(PgBackend *backend);
 static void PgBackendAdoptEarlyCoreState(PgBackend *backend);
 static void PgBackendAdoptEarlyMyProc(PgBackend *backend);
@@ -2354,6 +2357,7 @@ PgSessionAdoptEarlyState(PgSession *session)
 	Assert(session != NULL);
 
 	PgSessionAdoptEarlyLoopState(session);
+	PgSessionAdoptEarlyTcopState(session);
 	PgSessionAdoptEarlyDatabaseState(session);
 	PgSessionAdoptEarlyTablespaceState(session);
 	PgSessionAdoptEarlyBinaryUpgradeState(session);
@@ -2576,6 +2580,26 @@ PgSessionAdoptEarlyLoopState(PgSession *session)
 	if (!session->loop_state.send_ready_for_query)
 		session->loop_state.send_ready_for_query = true;
 	PgSessionInitializeLoopState(&early_session_loop_state);
+}
+
+static void
+PgSessionInitializeTcopState(PgSessionTcopState *tcop)
+{
+	Assert(tcop != NULL);
+
+	MemSet(tcop, 0, sizeof(*tcop));
+}
+
+static void
+PgSessionAdoptEarlyTcopState(PgSession *session)
+{
+	Assert(session != NULL);
+	Assert(early_session_tcop.unnamed_stmt_psrc == NULL);
+	Assert(early_session_tcop.row_description_context == NULL);
+	Assert(early_session_tcop.row_description_buf.data == NULL);
+
+	session->tcop = early_session_tcop;
+	PgSessionInitializeTcopState(&early_session_tcop);
 }
 
 static void
@@ -3780,6 +3804,7 @@ PgSessionInitializeRuntimeObject(PgSession *session,
 	session->execution = execution;
 	MemSet(&session->database, 0, sizeof(session->database));
 	PgSessionInitializeLoopState(&session->loop_state);
+	PgSessionInitializeTcopState(&session->tcop);
 	PgSessionInitializeTablespaceState(&session->tablespace);
 	PgSessionInitializeBinaryUpgradeState(&session->binary_upgrade);
 	PgSessionInitializeDateTimeState(&session->datetime);
@@ -4390,6 +4415,21 @@ PgSessionResetClosedState(PgSession *session)
 		return;
 
 	saved_session = CurrentPgSession;
+
+	if (session->tcop.unnamed_stmt_psrc != NULL)
+	{
+		CachedPlanSource *psrc = session->tcop.unnamed_stmt_psrc;
+
+		session->tcop.unnamed_stmt_psrc = NULL;
+		DropCachedPlan(psrc);
+	}
+	if (session->tcop.row_description_context != NULL)
+	{
+		MemoryContextDelete(session->tcop.row_description_context);
+		session->tcop.row_description_context = NULL;
+		MemSet(&session->tcop.row_description_buf, 0,
+			   sizeof(session->tcop.row_description_buf));
+	}
 
 	if (session->prepared_statement.prepared_queries != NULL)
 	{
@@ -5702,6 +5742,51 @@ int *
 PgCurrentRestrictNonsystemRelationKindRef(void)
 {
 	return &PgCurrentSessionConnectionGUCState()->restrict_nonsystem_relation_kind_value;
+}
+
+CachedPlanSource **
+PgCurrentUnnamedStmtPsrcRef(void)
+{
+	if (CurrentPgSession == NULL)
+		return &early_session_tcop.unnamed_stmt_psrc;
+
+	return &CurrentPgSession->tcop.unnamed_stmt_psrc;
+}
+
+bool *
+PgCurrentEchoQueryRef(void)
+{
+	if (CurrentPgSession == NULL)
+		return &early_session_tcop.echo_query;
+
+	return &CurrentPgSession->tcop.echo_query;
+}
+
+bool *
+PgCurrentUseSemiNewlineNewlineRef(void)
+{
+	if (CurrentPgSession == NULL)
+		return &early_session_tcop.use_semi_newline_newline;
+
+	return &CurrentPgSession->tcop.use_semi_newline_newline;
+}
+
+MemoryContext *
+PgCurrentRowDescriptionContextRef(void)
+{
+	if (CurrentPgSession == NULL)
+		return &early_session_tcop.row_description_context;
+
+	return &CurrentPgSession->tcop.row_description_context;
+}
+
+StringInfoData *
+PgCurrentRowDescriptionBufRef(void)
+{
+	if (CurrentPgSession == NULL)
+		return &early_session_tcop.row_description_buf;
+
+	return &CurrentPgSession->tcop.row_description_buf;
 }
 
 HTAB **

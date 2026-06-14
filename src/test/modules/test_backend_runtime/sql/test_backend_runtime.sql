@@ -12,6 +12,7 @@ SELECT test_thread_install_adopts_connection_fallback_state();
 SELECT test_backend_pgproc_has_logical_id();
 SELECT test_backend_thread_ids_are_logical();
 SELECT test_session_loop_state_is_session_local();
+SELECT test_session_tcop_state_is_session_local();
 SELECT test_session_database_state_is_session_local();
 SELECT test_session_tablespace_state_is_session_local();
 SELECT test_session_binary_upgrade_state_is_session_local();

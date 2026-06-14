@@ -1207,6 +1207,14 @@ frees cached cast expressions and leftover simple-expression roots before
 bundled extension-owned session state without exposing PL/pgSQL internals in
 `backend_runtime.h`; contrib-wide opt-in and regression remain Phase 16 work.
 
+The next tcop session-state slice added `PgSessionTcopState` and moved
+`postgres.c`'s unnamed prepared statement pointer, interactive `-E`/`-j`
+switches, and reused row-description context/buffer into it. The switch
+accessors retain early fallback storage for single-user option parsing before
+a session object exists; adoption asserts the pointer-bearing plan/context
+slots are still empty. Closed-session reset now drops any leftover unnamed
+cached plan and deletes the row-description context explicitly.
+
 ## Bottom Line
 
 The branch is on track only if the current debt is treated as Phase 12

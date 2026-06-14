@@ -774,7 +774,9 @@ Valgrind, and snapshot-builder scratch-state bridge through `PgExecution`,
 plus the attribute-options, relfilenumber, tablespace-options, event-trigger,
 ruleutils SPI-plan, and ICU converter catalog lookup/cache bridge through
 `PgSession`, plus the PL/pgSQL in-tree extension private-state bridge and
-per-session reset callback route through `PgSession`.
+per-session reset callback route through `PgSession`, plus the `postgres.c`
+unnamed-statement, interactive-switch, and row-description protocol scratch
+bridge through `PgSessionTcopState`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.
@@ -1622,6 +1624,11 @@ behind an opaque `PgSessionExtensionModuleState` private pointer. A per-session
 reset-callback list now lets PL/pgSQL release its private roots before
 `dynamic_library_context` is deleted, establishing the intended in-tree route
 for extension-owned session state without exposing PL/pgSQL internals in core.
+The following tcop session-state batch moved `postgres.c`'s unnamed prepared
+statement pointer, interactive command-line switches, and reused row-description
+message context/buffer into `PgSessionTcopState`. Early fallback adoption covers
+the `-E`/`-j` switches parsed before a session exists, while session-close reset
+drops leftover unnamed plans and deletes the row-description context.
 
 ## Phase 13: Scheduler-Aware Wait Boundary
 

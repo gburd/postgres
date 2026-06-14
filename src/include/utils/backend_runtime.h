@@ -88,6 +88,7 @@ typedef struct TSParserCacheEntry TSParserCacheEntry;
 typedef struct TSDictionaryCacheEntry TSDictionaryCacheEntry;
 typedef struct TSConfigCacheEntry TSConfigCacheEntry;
 typedef struct TransactionStateData TransactionStateData;
+typedef struct CachedPlanSource CachedPlanSource;
 typedef struct dsa_area dsa_area;
 typedef struct dshash_table dshash_table;
 typedef struct XLogReaderState XLogReaderState;
@@ -1883,6 +1884,15 @@ typedef struct PgSessionLoopState
 	bool		transaction_started;
 } PgSessionLoopState;
 
+typedef struct PgSessionTcopState
+{
+	CachedPlanSource *unnamed_stmt_psrc;
+	bool		echo_query;
+	bool		use_semi_newline_newline;
+	MemoryContext row_description_context;
+	StringInfoData row_description_buf;
+} PgSessionTcopState;
+
 struct PgRuntime
 {
 	PgRuntimeKind kind;
@@ -1968,6 +1978,7 @@ struct PgSession
 	Session    *legacy_session;
 	MemoryContext legacy_session_context;
 	PgSessionLoopState loop_state;
+	PgSessionTcopState tcop;
 	PgSessionDatabaseState database;
 	PgSessionTablespaceState tablespace;
 	PgSessionBinaryUpgradeState binary_upgrade;
@@ -2335,6 +2346,11 @@ extern int *PgCurrentLogStatementRef(void);
 extern int *PgCurrentPostAuthDelayRef(void);
 extern char **PgCurrentRestrictNonsystemRelationKindStringRef(void);
 extern int *PgCurrentRestrictNonsystemRelationKindRef(void);
+extern CachedPlanSource **PgCurrentUnnamedStmtPsrcRef(void);
+extern bool *PgCurrentEchoQueryRef(void);
+extern bool *PgCurrentUseSemiNewlineNewlineRef(void);
+extern MemoryContext *PgCurrentRowDescriptionContextRef(void);
+extern StringInfoData *PgCurrentRowDescriptionBufRef(void);
 extern HTAB **PgCurrentCFuncHashRef(void);
 extern HTAB **PgCurrentAttoptCacheHashRef(void);
 extern HTAB **PgCurrentRelfilenumberMapHashRef(void);
