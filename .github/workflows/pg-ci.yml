@@ -668,6 +668,15 @@ jobs:
 
       - name: Test world
         shell: *su_postgres_shell
+        # The pytest suite loads libpq in-process via ctypes. Here libpq is
+        # AddressSanitizer-instrumented, and ASan must come first in the link
+        # order; dlopening it into an otherwise uninstrumented python aborts
+        # with "ASan runtime does not come first". Preload the ASan runtime for
+        # the test run to satisfy that (a no-op for the already-instrumented
+        # server/client binaries). Scoped to this step so the build is
+        # unaffected; detect_leaks is already disabled via ASAN_OPTIONS.
+        env:
+          ADDITIONAL_SETUP: export LD_PRELOAD="$(gcc -print-file-name=libasan.so)"
         run: *meson_test_world_cmd
 
       - *linux_collect_cores_step
