@@ -931,7 +931,11 @@ in `test_backend_runtime.c`, and threaded extension entry points kept in
 `test_backend_runtime_threaded.c`. The runtime bridge also moved buffer,
 fd/storage, lock-manager, IPC, and frontend/backend connection compatibility
 accessors into owner-adjacent `backend_runtime_*.c` files, and the lifecycle
-checker default source set now includes those split files.
+checker default source set now includes those split files. The first lifecycle
+ergonomics cleanup also added checked `PG_RUNTIME_DEFINE_*` helper macros for
+routine zero-init and whole-bucket early fallback copy/adopt functions, so
+simple lifecycle boilerplate can move behind macros without weakening manifest
+validation.
 
 Current Gate E2 progress: `gmake check-global-lifetimes` is now a required
 target, and postmaster signal/wakeup routing no longer dereferences a

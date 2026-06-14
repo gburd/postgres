@@ -3483,6 +3483,32 @@ PgBackendAdoptEarlyState(PgBackend *backend)
 #undef PG_BACKEND_BUCKET
 }
 
+#define PG_RUNTIME_DEFINE_ZERO_INIT(function_name, state_type, state_arg) \
+static void \
+function_name(state_type *state_arg) \
+{ \
+	Assert(state_arg != NULL); \
+	MemSet(state_arg, 0, sizeof(*state_arg)); \
+}
+
+#define PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(function_name, object_type, object_arg, field_name, early_state, init_function) \
+static void \
+function_name(object_type *object_arg) \
+{ \
+	Assert(object_arg != NULL); \
+	object_arg->field_name = early_state; \
+	init_function(&early_state); \
+}
+
+#define PG_RUNTIME_DEFINE_ADOPT_EARLY_ZERO(function_name, object_type, object_arg, field_name, early_state) \
+static void \
+function_name(object_type *object_arg) \
+{ \
+	Assert(object_arg != NULL); \
+	object_arg->field_name = early_state; \
+	MemSet(&early_state, 0, sizeof(early_state)); \
+}
+
 static void
 PgExecutionAdoptEarlyDebugState(PgExecution *execution)
 {
@@ -3512,25 +3538,12 @@ PgExecutionAdoptEarlyErrorState(PgExecution *execution)
 	PgExecutionInitializeErrorState(&early_execution_error);
 }
 
-static void
-PgExecutionAdoptEarlyMemoryContexts(PgExecution *execution)
-{
-	Assert(execution != NULL);
-
-	execution->memory_contexts = early_execution_memory_contexts;
-	MemSet(&early_execution_memory_contexts, 0,
-		   sizeof(early_execution_memory_contexts));
-}
-
-static void
-PgExecutionAdoptEarlyResourceOwners(PgExecution *execution)
-{
-	Assert(execution != NULL);
-
-	execution->resource_owners = early_execution_resource_owners;
-	MemSet(&early_execution_resource_owners, 0,
-		   sizeof(early_execution_resource_owners));
-}
+PG_RUNTIME_DEFINE_ADOPT_EARLY_ZERO(PgExecutionAdoptEarlyMemoryContexts,
+								   PgExecution, execution, memory_contexts,
+								   early_execution_memory_contexts)
+PG_RUNTIME_DEFINE_ADOPT_EARLY_ZERO(PgExecutionAdoptEarlyResourceOwners,
+								   PgExecution, execution, resource_owners,
+								   early_execution_resource_owners)
 
 static void
 PgExecutionInitializeSPIState(PgExecutionSPIState *spi)
@@ -3550,82 +3563,34 @@ PgExecutionAdoptEarlySPIState(PgExecution *execution)
 	PgExecutionInitializeSPIState(&early_execution_spi);
 }
 
-static void
-PgExecutionAdoptEarlyPortalState(PgExecution *execution)
-{
-	Assert(execution != NULL);
+PG_RUNTIME_DEFINE_ADOPT_EARLY_ZERO(PgExecutionAdoptEarlyPortalState,
+								   PgExecution, execution, portal,
+								   early_execution_portal)
 
-	execution->portal = early_execution_portal;
-	MemSet(&early_execution_portal, 0, sizeof(early_execution_portal));
-}
-
-static void
-PgExecutionInitializeVacuumState(PgExecutionVacuumState *vacuum)
-{
-	Assert(vacuum != NULL);
-
-	MemSet(vacuum, 0, sizeof(*vacuum));
-}
-
-static void
-PgExecutionAdoptEarlyVacuumState(PgExecution *execution)
-{
-	Assert(execution != NULL);
-
-	execution->vacuum = early_execution_vacuum;
-	PgExecutionInitializeVacuumState(&early_execution_vacuum);
-}
-
-static void
-PgExecutionInitializeNodeIOState(PgExecutionNodeIOState *node_io)
-{
-	Assert(node_io != NULL);
-
-	MemSet(node_io, 0, sizeof(*node_io));
-}
-
-static void
-PgExecutionAdoptEarlyNodeIOState(PgExecution *execution)
-{
-	Assert(execution != NULL);
-
-	execution->node_io = early_execution_node_io;
-	PgExecutionInitializeNodeIOState(&early_execution_node_io);
-}
-
-static void
-PgExecutionInitializeBaseBackupState(PgExecutionBaseBackupState *basebackup)
-{
-	Assert(basebackup != NULL);
-
-	MemSet(basebackup, 0, sizeof(*basebackup));
-}
-
-static void
-PgExecutionAdoptEarlyBaseBackupState(PgExecution *execution)
-{
-	Assert(execution != NULL);
-
-	execution->basebackup = early_execution_basebackup;
-	PgExecutionInitializeBaseBackupState(&early_execution_basebackup);
-}
-
-static void
-PgExecutionInitializeAnalyzeState(PgExecutionAnalyzeState *analyze)
-{
-	Assert(analyze != NULL);
-
-	MemSet(analyze, 0, sizeof(*analyze));
-}
-
-static void
-PgExecutionAdoptEarlyAnalyzeState(PgExecution *execution)
-{
-	Assert(execution != NULL);
-
-	execution->analyze = early_execution_analyze;
-	PgExecutionInitializeAnalyzeState(&early_execution_analyze);
-}
+PG_RUNTIME_DEFINE_ZERO_INIT(PgExecutionInitializeVacuumState,
+							PgExecutionVacuumState, vacuum)
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgExecutionAdoptEarlyVacuumState,
+										PgExecution, execution, vacuum,
+										early_execution_vacuum,
+										PgExecutionInitializeVacuumState)
+PG_RUNTIME_DEFINE_ZERO_INIT(PgExecutionInitializeNodeIOState,
+							PgExecutionNodeIOState, node_io)
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgExecutionAdoptEarlyNodeIOState,
+										PgExecution, execution, node_io,
+										early_execution_node_io,
+										PgExecutionInitializeNodeIOState)
+PG_RUNTIME_DEFINE_ZERO_INIT(PgExecutionInitializeBaseBackupState,
+							PgExecutionBaseBackupState, basebackup)
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgExecutionAdoptEarlyBaseBackupState,
+										PgExecution, execution, basebackup,
+										early_execution_basebackup,
+										PgExecutionInitializeBaseBackupState)
+PG_RUNTIME_DEFINE_ZERO_INIT(PgExecutionInitializeAnalyzeState,
+							PgExecutionAnalyzeState, analyze)
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgExecutionAdoptEarlyAnalyzeState,
+										PgExecution, execution, analyze,
+										early_execution_analyze,
+										PgExecutionInitializeAnalyzeState)
 
 static void
 PgExecutionInitializeExtensionState(PgExecutionExtensionState *extension)
@@ -3681,22 +3646,12 @@ PgExecutionAdoptEarlySnapshotState(PgExecution *execution)
 	PgExecutionInitializeSnapshotState(&early_execution_snapshot);
 }
 
-static void
-PgExecutionInitializeComboCidState(PgExecutionComboCidState *combo_cid)
-{
-	Assert(combo_cid != NULL);
-
-	MemSet(combo_cid, 0, sizeof(*combo_cid));
-}
-
-static void
-PgExecutionAdoptEarlyComboCidState(PgExecution *execution)
-{
-	Assert(execution != NULL);
-
-	execution->combo_cid = early_execution_combo_cid;
-	PgExecutionInitializeComboCidState(&early_execution_combo_cid);
-}
+PG_RUNTIME_DEFINE_ZERO_INIT(PgExecutionInitializeComboCidState,
+							PgExecutionComboCidState, combo_cid)
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgExecutionAdoptEarlyComboCidState,
+										PgExecution, execution, combo_cid,
+										early_execution_combo_cid,
+										PgExecutionInitializeComboCidState)
 
 static void
 PgExecutionInitializeXLogInsertState(PgExecutionXLogInsertState *xloginsert)
@@ -3741,22 +3696,14 @@ PgExecutionAdoptEarlyXactState(PgExecution *execution)
 	PgExecutionInitializeXactState(&early_execution_xact);
 }
 
-static void
-PgExecutionInitializeTransactionCleanupState(PgExecutionTransactionCleanupState *transaction_cleanup)
-{
-	Assert(transaction_cleanup != NULL);
-
-	MemSet(transaction_cleanup, 0, sizeof(*transaction_cleanup));
-}
-
-static void
-PgExecutionAdoptEarlyTransactionCleanupState(PgExecution *execution)
-{
-	Assert(execution != NULL);
-
-	execution->transaction_cleanup = early_execution_transaction_cleanup;
-	PgExecutionInitializeTransactionCleanupState(&early_execution_transaction_cleanup);
-}
+PG_RUNTIME_DEFINE_ZERO_INIT(PgExecutionInitializeTransactionCleanupState,
+							PgExecutionTransactionCleanupState,
+							transaction_cleanup)
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgExecutionAdoptEarlyTransactionCleanupState,
+										PgExecution, execution,
+										transaction_cleanup,
+										early_execution_transaction_cleanup,
+										PgExecutionInitializeTransactionCleanupState)
 
 static void
 PgExecutionInitializeReplicationScratchState(PgExecutionReplicationScratchState *replication_scratch)
@@ -3778,39 +3725,18 @@ PgExecutionAdoptEarlyReplicationScratchState(PgExecution *execution)
 	PgExecutionInitializeReplicationScratchState(&early_execution_replication_scratch);
 }
 
-static void
-PgExecutionInitializeGUCErrorState(PgExecutionGUCErrorState *guc_error)
-{
-	Assert(guc_error != NULL);
-
-	MemSet(guc_error, 0, sizeof(*guc_error));
-}
-
-static void
-PgExecutionAdoptEarlyGUCErrorState(PgExecution *execution)
-{
-	Assert(execution != NULL);
-
-	execution->guc_error = early_execution_guc_error;
-	PgExecutionInitializeGUCErrorState(&early_execution_guc_error);
-}
-
-static void
-PgExecutionInitializeAsyncState(PgExecutionAsyncState *async)
-{
-	Assert(async != NULL);
-
-	MemSet(async, 0, sizeof(*async));
-}
-
-static void
-PgExecutionAdoptEarlyAsyncState(PgExecution *execution)
-{
-	Assert(execution != NULL);
-
-	execution->async = early_execution_async;
-	PgExecutionInitializeAsyncState(&early_execution_async);
-}
+PG_RUNTIME_DEFINE_ZERO_INIT(PgExecutionInitializeGUCErrorState,
+							PgExecutionGUCErrorState, guc_error)
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgExecutionAdoptEarlyGUCErrorState,
+										PgExecution, execution, guc_error,
+										early_execution_guc_error,
+										PgExecutionInitializeGUCErrorState)
+PG_RUNTIME_DEFINE_ZERO_INIT(PgExecutionInitializeAsyncState,
+							PgExecutionAsyncState, async)
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgExecutionAdoptEarlyAsyncState,
+										PgExecution, execution, async,
+										early_execution_async,
+										PgExecutionInitializeAsyncState)
 
 static void
 PgExecutionInitializeCatalogState(PgExecutionCatalogState *catalog)
@@ -3831,143 +3757,62 @@ PgExecutionAdoptEarlyCatalogState(PgExecution *execution)
 	PgExecutionInitializeCatalogState(&early_execution_catalog);
 }
 
-static void
-PgExecutionInitializeCatalogCacheState(PgExecutionCatalogCacheState *catalog_cache)
-{
-	Assert(catalog_cache != NULL);
+PG_RUNTIME_DEFINE_ZERO_INIT(PgExecutionInitializeCatalogCacheState,
+							PgExecutionCatalogCacheState, catalog_cache)
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgExecutionAdoptEarlyCatalogCacheState,
+										PgExecution, execution, catalog_cache,
+										early_execution_catalog_cache,
+										PgExecutionInitializeCatalogCacheState)
+PG_RUNTIME_DEFINE_ZERO_INIT(PgExecutionInitializeRelMapState,
+							PgExecutionRelMapState, relmap)
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgExecutionAdoptEarlyRelMapState,
+										PgExecution, execution, relmap,
+										early_execution_relmap,
+										PgExecutionInitializeRelMapState)
 
-	MemSet(catalog_cache, 0, sizeof(*catalog_cache));
-}
+PG_RUNTIME_DEFINE_ZERO_INIT(PgExecutionInitializeInvalidationState,
+							PgExecutionInvalidationState, invalidation)
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgExecutionAdoptEarlyInvalidationState,
+										PgExecution, execution, invalidation,
+										early_execution_invalidation,
+										PgExecutionInitializeInvalidationState)
+PG_RUNTIME_DEFINE_ZERO_INIT(PgExecutionInitializeTwoPhaseRecordState,
+							PgExecutionTwoPhaseRecordState,
+							two_phase_records)
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgExecutionAdoptEarlyTwoPhaseRecordState,
+										PgExecution, execution,
+										two_phase_records,
+										early_execution_two_phase_records,
+										PgExecutionInitializeTwoPhaseRecordState)
 
-static void
-PgExecutionAdoptEarlyCatalogCacheState(PgExecution *execution)
-{
-	Assert(execution != NULL);
+PG_RUNTIME_DEFINE_ZERO_INIT(PgExecutionInitializeTriggerState,
+							PgExecutionTriggerState, trigger)
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgExecutionAdoptEarlyTriggerState,
+										PgExecution, execution, trigger,
+										early_execution_trigger,
+										PgExecutionInitializeTriggerState)
+PG_RUNTIME_DEFINE_ZERO_INIT(PgExecutionInitializeRegexState,
+							PgExecutionRegexState, regex)
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgExecutionAdoptEarlyRegexState,
+										PgExecution, execution, regex,
+										early_execution_regex,
+										PgExecutionInitializeRegexState)
+PG_RUNTIME_DEFINE_ZERO_INIT(PgExecutionInitializeValgrindState,
+							PgExecutionValgrindState, valgrind)
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgExecutionAdoptEarlyValgrindState,
+										PgExecution, execution, valgrind,
+										early_execution_valgrind,
+										PgExecutionInitializeValgrindState)
+PG_RUNTIME_DEFINE_ZERO_INIT(PgExecutionInitializeSnapBuildState,
+							PgExecutionSnapBuildState, snapbuild)
+PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgExecutionAdoptEarlySnapBuildState,
+										PgExecution, execution, snapbuild,
+										early_execution_snapbuild,
+										PgExecutionInitializeSnapBuildState)
 
-	execution->catalog_cache = early_execution_catalog_cache;
-	PgExecutionInitializeCatalogCacheState(&early_execution_catalog_cache);
-}
-
-static void
-PgExecutionInitializeRelMapState(PgExecutionRelMapState *relmap)
-{
-	Assert(relmap != NULL);
-
-	MemSet(relmap, 0, sizeof(*relmap));
-}
-
-static void
-PgExecutionAdoptEarlyRelMapState(PgExecution *execution)
-{
-	Assert(execution != NULL);
-
-	execution->relmap = early_execution_relmap;
-	PgExecutionInitializeRelMapState(&early_execution_relmap);
-}
-
-static void
-PgExecutionInitializeInvalidationState(PgExecutionInvalidationState
-									   *invalidation)
-{
-	Assert(invalidation != NULL);
-
-	MemSet(invalidation, 0, sizeof(*invalidation));
-}
-
-static void
-PgExecutionAdoptEarlyInvalidationState(PgExecution *execution)
-{
-	Assert(execution != NULL);
-
-	execution->invalidation = early_execution_invalidation;
-	PgExecutionInitializeInvalidationState(&early_execution_invalidation);
-}
-
-static void
-PgExecutionInitializeTwoPhaseRecordState(PgExecutionTwoPhaseRecordState
-										 *two_phase_records)
-{
-	Assert(two_phase_records != NULL);
-
-	MemSet(two_phase_records, 0, sizeof(*two_phase_records));
-}
-
-static void
-PgExecutionAdoptEarlyTwoPhaseRecordState(PgExecution *execution)
-{
-	Assert(execution != NULL);
-
-	execution->two_phase_records = early_execution_two_phase_records;
-	PgExecutionInitializeTwoPhaseRecordState(&early_execution_two_phase_records);
-}
-
-static void
-PgExecutionInitializeTriggerState(PgExecutionTriggerState *trigger)
-{
-	Assert(trigger != NULL);
-
-	MemSet(trigger, 0, sizeof(*trigger));
-}
-
-static void
-PgExecutionAdoptEarlyTriggerState(PgExecution *execution)
-{
-	Assert(execution != NULL);
-
-	execution->trigger = early_execution_trigger;
-	PgExecutionInitializeTriggerState(&early_execution_trigger);
-}
-
-static void
-PgExecutionInitializeRegexState(PgExecutionRegexState *regex)
-{
-	Assert(regex != NULL);
-
-	MemSet(regex, 0, sizeof(*regex));
-}
-
-static void
-PgExecutionAdoptEarlyRegexState(PgExecution *execution)
-{
-	Assert(execution != NULL);
-
-	execution->regex = early_execution_regex;
-	PgExecutionInitializeRegexState(&early_execution_regex);
-}
-
-static void
-PgExecutionInitializeValgrindState(PgExecutionValgrindState *valgrind)
-{
-	Assert(valgrind != NULL);
-
-	MemSet(valgrind, 0, sizeof(*valgrind));
-}
-
-static void
-PgExecutionAdoptEarlyValgrindState(PgExecution *execution)
-{
-	Assert(execution != NULL);
-
-	execution->valgrind = early_execution_valgrind;
-	PgExecutionInitializeValgrindState(&early_execution_valgrind);
-}
-
-static void
-PgExecutionInitializeSnapBuildState(PgExecutionSnapBuildState *snapbuild)
-{
-	Assert(snapbuild != NULL);
-
-	MemSet(snapbuild, 0, sizeof(*snapbuild));
-}
-
-static void
-PgExecutionAdoptEarlySnapBuildState(PgExecution *execution)
-{
-	Assert(execution != NULL);
-
-	execution->snapbuild = early_execution_snapbuild;
-	PgExecutionInitializeSnapBuildState(&early_execution_snapbuild);
-}
+#undef PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT
+#undef PG_RUNTIME_DEFINE_ADOPT_EARLY_ZERO
+#undef PG_RUNTIME_DEFINE_ZERO_INIT
 
 void
 PgExecutionAdoptEarlyState(PgExecution *execution)

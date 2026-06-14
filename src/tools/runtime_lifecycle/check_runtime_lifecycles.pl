@@ -315,6 +315,11 @@ sub defined_functions
 		$functions{$1} = 1;
 	}
 
+	while ($text =~ /^\s*PG_RUNTIME_DEFINE_[A-Z0-9_]+\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,/mg)
+	{
+		$functions{$1} = 1;
+	}
+
 	return %functions;
 }
 

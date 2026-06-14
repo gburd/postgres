@@ -253,6 +253,12 @@ Important current files:
   teardown order is intentionally different from early-adoption order; keep
   semantic cleanup in handwritten helper functions and add ordered reset rows
   for new non-noop session reset buckets.
+- For routine lifecycle helper functions in `backend_runtime.c`, use the
+  local `PG_RUNTIME_DEFINE_*` helper macros where they fit. The lifecycle
+  checker recognizes those macro-defined functions, so use them for ordinary
+  zero-init, copy/adopt plus reinit, and copy/adopt plus zero-reset helpers.
+  Do not hide exceptional destructor ordering or ownership semantics behind
+  these macros.
 - Do not attempt thread launch until the thread-safety floor is in place:
   backend-local globals must not be shared plain process globals, backend exit
   must not terminate the whole runtime, and timeout/interrupt delivery must be

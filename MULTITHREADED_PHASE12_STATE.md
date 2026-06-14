@@ -10532,3 +10532,25 @@ Validation for this refactor slice:
   also needs `PG_REGRESS=$PWD/src/test/regress/pg_regress` when run outside
   the configured TAP make target, and stale `tmp_check` TAP scratch
   directories must be removed before rerun after a failed harness setup.
+
+Lifecycle ergonomics slice completed:
+
+- `src/backend/utils/init/backend_runtime.c` now has local lifecycle helper
+  macros for routine zero-initializer functions, whole-bucket early fallback
+  copy/adopt plus reinitialization, and whole-bucket early fallback copy/adopt
+  plus zero reset;
+- a batch of simple `PgExecution` lifecycle helpers now uses those macros
+  instead of handwritten near-identical functions. The converted buckets cover
+  memory-context/resource-owner/portal whole-bucket adoption, plus vacuum,
+  node I/O, basebackup, ANALYZE, combo CID, transaction cleanup, GUC error,
+  async, catalog-cache, relmap, invalidation, two-phase record, trigger,
+  regex, valgrind, and snapbuild zero-init/copy-adopt helpers;
+- `check_runtime_lifecycles.pl` recognizes `PG_RUNTIME_DEFINE_*` helper macros
+  as defining checked lifecycle functions, so the manifest and bucket
+  definition validation stays strict after boilerplate moves behind macros.
+
+Validation for this lifecycle ergonomics slice:
+
+- `perl -c src/tools/runtime_lifecycle/check_runtime_lifecycles.pl` passed;
+- `gmake -C src/backend/utils/init backend_runtime.o` passed;
+- `gmake check-runtime-lifecycles` passed with 149 runtime fields classified.
