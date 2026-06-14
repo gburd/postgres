@@ -10404,6 +10404,17 @@ more explicit:
 Acceptance criteria for the refactor slice:
 
 - no intended behavior change;
+- add lifecycle bucket definition files, X-macros, or an equivalent checked
+  manifest for `PgBackend`, `PgSession`, `PgConnection`, and `PgExecution`.
+  Use that as the single source of truth for constructor, early-adoption, and
+  reset/destroy call lists before the remaining teardown work continues;
+- keep semantic cleanup/destructor functions handwritten and close to the
+  owning subsystem. The generated or macro-driven layer should cover only
+  repetitive coverage and call-list mechanics;
+- extend `check_runtime_lifecycles.pl` so it verifies the bucket definitions
+  against `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`, confirms every referenced
+  lifecycle function exists, and rejects process/thread constructor,
+  adoption, or reset asymmetry that is not explicit;
 - `gmake check-runtime-lifecycles` still verifies every manifest-referenced
   function after the split;
 - `gmake check-global-lifetimes` still reports zero new unclassified mutable

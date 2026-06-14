@@ -224,6 +224,15 @@ Important current files:
   owner-specific runtime accessors to adjacent `backend_runtime_*.c` files and
   backend-runtime tests to the object-family test files instead of rebuilding
   the old monoliths.
+- Before pushing deeper into Gate E2 teardown, add a small lifecycle
+  framework: root-object bucket definition files, X-macros, or an equivalent
+  checked manifest for `PgBackend`, `PgSession`, `PgConnection`, and
+  `PgExecution`. Use it as the single source of truth for constructor,
+  early-adoption, and reset/destroy call lists. Keep semantic cleanup
+  functions handwritten and owner-adjacent; generate only repetitive coverage
+  and call-list mechanics. Extend `check_runtime_lifecycles.pl` to validate
+  the bucket definitions against `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` and to
+  reject unintentional process/thread lifecycle asymmetry.
 - Do not attempt thread launch until the thread-safety floor is in place:
   backend-local globals must not be shared plain process globals, backend exit
   must not terminate the whole runtime, and timeout/interrupt delivery must be
