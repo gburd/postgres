@@ -887,7 +887,12 @@ Gate E2 requires:
   this is the next Gate E2 implementation slice before more state migration,
   and checked `.def` bucket files included by the top-level runtime
   orchestration are the preferred first implementation unless the code proves a
-  different mechanism is simpler;
+  different mechanism is simpler. The same slice should make ordinary
+  lifecycle work easier for future agents: add small macros, templates, or
+  declarative rule columns for common copied-scalar, zero-reset, whole-bucket
+  copy/adopt, and destructor-call cases so new buckets do not require updating
+  several handwritten lists by memory. Keep nontrivial destructor and ordering
+  semantics handwritten and owner-adjacent;
 - the Phase 12 runtime and test scaffolding is refactored before additional
   Gate E2 state migration or Phase 13 scheduler-aware wait work begins.
   `src/backend/utils/init/backend_runtime.c` must remain the orchestration

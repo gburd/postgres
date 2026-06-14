@@ -10413,6 +10413,11 @@ Acceptance criteria for the refactor slice:
   constructors/adoption/reset orchestration, so adding a bucket requires one
   manifest row and one checked bucket-definition row rather than updating
   several handwritten call lists by memory;
+- make the lifecycle framework ergonomic enough for large-batch migration.
+  Add small helper macros, templates, or declarative rule columns for common
+  copied-scalar, zero-reset, whole-bucket copy/adopt, and destructor-call
+  cases. The goal is to remove repetitive manual lifecycle boilerplate while
+  keeping exceptional ordering and semantic cleanup explicit;
 - keep semantic cleanup/destructor functions handwritten and close to the
   owning subsystem. The generated or macro-driven layer should cover only
   repetitive coverage and call-list mechanics;

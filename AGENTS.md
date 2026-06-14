@@ -237,6 +237,12 @@ Important current files:
   optional polish. Prefer checked `.def` bucket files included from the
   top-level runtime constructors/adoption/reset orchestration before adding
   more handwritten init/adopt/reset lists.
+- Make the lifecycle framework reduce manual work. Add small macros,
+  templates, or declarative rule columns for routine copied-scalar,
+  zero-reset, whole-bucket copy/adopt, and destructor-call cases, so future
+  agents can move larger batches without maintaining several call lists by
+  hand. Keep exceptional ordering and semantic cleanup handwritten near the
+  owning subsystem.
 - The first lifecycle framework slice uses
   `src/backend/utils/init/backend_runtime_*_buckets.def`. The checker validates
   one bucket-definition row for every `PgBackend`, `PgSession`, `PgConnection`,
