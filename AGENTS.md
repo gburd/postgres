@@ -340,9 +340,10 @@ Important current files:
   tool for large batches: prefer a checked `PG_RUNTIME_*` action,
   `PG_RUNTIME_DEFINE_*` helper, bucket `.def` row pattern, or checker rule over
   another bespoke helper pair. The next likely candidates are object-owned
-  allocation contexts, reset-through-initializer buckets, delete-and-null
-  memory contexts, list/hash cleanup, and copy/adopt-then-reset fallback
-  buckets.
+  allocation contexts, delete-and-null memory contexts, list/hash cleanup, and
+  copy/adopt-then-reset fallback buckets. For reset-through-initializer
+  buckets, use the checked `PG_RUNTIME_RESET_THROUGH_INITIALIZER(init_expr)`
+  action instead of raw initializer calls in reset columns.
 - Keep improving lifecycle ergonomics when the pattern becomes repetitive. Good
   candidates are checked action names in the bucket `.def` files for common
   cases such as zero-init, zero-reset, copy/adopt, copy/adopt-with-reinit,

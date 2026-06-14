@@ -12246,3 +12246,50 @@ Validation for the pgstat/wait closed-state reset batch:
   `002_threaded_bgworker_crash.pl`, 131 tests total, with the documented
   local `IPC::Run` `PERL5LIB` and patched temporary-install install-name
   paths.
+
+## Reset-Through-Initializer Lifecycle Action
+
+Lifecycle preflight:
+
+- target: Gate E2 lifecycle ergonomics for reset cells whose only close-time
+  work is restoring constructor defaults through the existing bucket
+  initializer;
+- repeated lifecycle operations: execution bucket closed resets had many raw
+  initializer calls, and connection output had the same pattern. Async and
+  trigger execution reset also combine a checked memory-context delete with
+  the same initializer-reset pattern;
+- preflight result: add a checked lifecycle action first, then convert the
+  repeated rows. This keeps the bucket `.def` files as the source of truth
+  while making the reset intent explicit to `check-runtime-lifecycles`.
+
+Reset-through-initializer action slice:
+
+- `PG_RUNTIME_RESET_THROUGH_INITIALIZER(init_expr)` is now part of the
+  checked lifecycle action vocabulary in `backend_runtime_internal.h`;
+- `check_runtime_lifecycles.pl` recognizes the new action and continues to
+  reject unknown `PG_RUNTIME_*` names in bucket/reset definition rows;
+- `backend_runtime_execution_buckets.def` uses the checked action for the
+  initializer-only closed-reset buckets, including the initializer step after
+  async signal-context and after-trigger context deletion;
+- `backend_runtime_connection_buckets.def` uses the checked action for the
+  connection output reset.
+
+Validation for the reset-through-initializer action slice:
+
+- `perl -c src/tools/runtime_lifecycle/check_runtime_lifecycles.pl` passed;
+- `gmake -C src/backend/utils/init backend_runtime.o
+  backend_runtime_teardown.o` passed;
+- `gmake -C src/test/modules/test_backend_runtime
+  test_backend_runtime_execution.o test_backend_runtime_connection.o` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 176 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- `git diff --check` passed;
+- full incremental `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with the documented
+  local `IPC::Run` `PERL5LIB` and patched temporary-install install-name
+  paths.

@@ -386,6 +386,7 @@ sub validate_lifecycle_action_cell
 	my %known_actions = map { $_ => 1 } qw(
 	  PG_RUNTIME_NOOP
 	  PG_RUNTIME_DELETE_MEMORY_CONTEXT
+	  PG_RUNTIME_RESET_THROUGH_INITIALIZER
 	  PG_RUNTIME_DESTROY_HASH
 	  PG_RUNTIME_LIST_FREE
 	  PG_RUNTIME_LIST_FREE_DEEP);

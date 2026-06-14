@@ -41,6 +41,10 @@
 			(context) = NULL; \
 		} \
 	} while (0)
+#define PG_RUNTIME_RESET_THROUGH_INITIALIZER(init_expr) \
+	do { \
+		init_expr; \
+	} while (0)
 #define PG_RUNTIME_DESTROY_HASH(hash) \
 	do { \
 		if ((hash) != NULL) \

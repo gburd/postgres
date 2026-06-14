@@ -980,14 +980,21 @@ Gate E2 requires:
   ordered session reset table as well as root bucket definition files. Use
   those actions for routine clear-after-cleanup cases while keeping
   owner-adjacent detach, fallback, and ordering-sensitive cleanup handwritten;
+- the reset-through-initializer lifecycle vocabulary slice is in place:
+  `PG_RUNTIME_RESET_THROUGH_INITIALIZER(init_expr)` is a checked action for
+  bucket reset cells whose only close-time work is restoring constructor
+  defaults through the same initializer. Use it instead of raw initializer
+  calls in reset columns, including after a separate checked destructor action
+  such as `PG_RUNTIME_DELETE_MEMORY_CONTEXT(context)`;
 - the next lifecycle-framework improvement should target the patterns now
   recurring in Gate E2: create an object-owned allocation context,
   delete-and-null a memory context, free/reset list heads, clear pointer slots
   after owner-adjacent cleanup, copy/adopt a bucket then reset the fallback,
-  and reset a bucket through its initializer. If a Phase 12 batch needs two or
-  more of these in parallel helper bodies, add the named `PG_RUNTIME_*`
-  action, `PG_RUNTIME_DEFINE_*` helper, bucket `.def` rule, and checker
-  validation first, then migrate the state through that checked path;
+  and other repeated reset/destructor forms not already covered by the checked
+  action vocabulary. If a Phase 12 batch needs two or more of these in
+  parallel helper bodies, add the named `PG_RUNTIME_*` action,
+  `PG_RUNTIME_DEFINE_*` helper, bucket `.def` rule, and checker validation
+  first, then migrate the state through that checked path;
 - near-term lifecycle simplification is an explicit Gate E2 work item, not
   optional cleanup. The next time one of those repeated patterns appears in a
   Phase 12 batch, land the checked action/macro/checker extension before the
@@ -1005,8 +1012,8 @@ Gate E2 requires:
   code starts to feel like clerical bookkeeping, that is a signal to add a
   checked primitive first, then move the larger batch through the primitive.
   Candidate primitives are object-owned allocation-context setup/reset,
-  reset-through-initializer, delete-and-null memory-context cleanup,
-  list/hash cleanup, and copy/adopt-then-reset fallback adoption;
+  delete-and-null memory-context cleanup, list/hash cleanup, and
+  copy/adopt-then-reset fallback adoption;
 - the first concrete target for that simplification should be the
   object-owned allocation-context pattern now recurring in execution/session
   cleanup slices: create-on-demand context accessor, delete-and-null reset,
