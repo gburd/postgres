@@ -42,6 +42,7 @@
 #include "parser/parser.h"
 #include "parser/parse_expr.h"
 #include "postmaster/interrupt.h"
+#include "regex/regex.h"
 #include "replication/reorderbuffer.h"
 #include "replication/logicalworker.h"
 #include "replication/slotsync.h"
@@ -60,6 +61,7 @@
 #include "utils/elog.h"
 #include "utils/float.h"
 #include "utils/guc.h"
+#include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/pgstat_internal.h"
 #include "utils/plancache.h"
@@ -1026,6 +1028,11 @@ PgConnectionResetClosedState(PgConnection *connection)
 	PgConnectionSecurityState *security;
 
 	Assert(connection != NULL);
+
+	connection->identity.port = NULL;
+	MemSet(connection->identity.cancel_key, 0,
+		   sizeof(connection->identity.cancel_key));
+	connection->identity.cancel_key_length = 0;
 
 	/*
 	 * socket_close() releases the palloc-backed send buffer and wait set.
@@ -3820,6 +3827,12 @@ PgSessionResetClosedState(PgSession *session)
 	if (session == NULL)
 		return;
 
+	if (session->database.database_path != NULL)
+	{
+		pfree(session->database.database_path);
+		session->database.database_path = NULL;
+	}
+
 	if (session->dynamic_library_context != NULL)
 	{
 		MemoryContextDelete(session->dynamic_library_context);
@@ -3829,6 +3842,44 @@ PgSessionResetClosedState(PgSession *session)
 		list_free(session->dynamic_library_inits);
 
 	session->dynamic_library_inits = NIL;
+
+	if (session->parser.operator_lookup_cache != NULL)
+	{
+		hash_destroy(session->parser.operator_lookup_cache);
+		session->parser.operator_lookup_cache = NULL;
+	}
+
+	if (session->sequence.seqhashtab != NULL)
+	{
+		hash_destroy(session->sequence.seqhashtab);
+		session->sequence.seqhashtab = NULL;
+	}
+	session->sequence.last_used_seq = NULL;
+
+	pg_free_regex_ctype_cache_list(session->regex.ctype_cache_list);
+	session->regex.ctype_cache_list = NULL;
+
+	if (session->optimizer.planner_extension_names != NULL)
+	{
+		pfree(session->optimizer.planner_extension_names);
+		session->optimizer.planner_extension_names = NULL;
+	}
+	session->optimizer.planner_extension_names_assigned = 0;
+	session->optimizer.planner_extension_names_allocated = 0;
+	if (session->optimizer.opr_proof_cache_hash != NULL)
+	{
+		hash_destroy(session->optimizer.opr_proof_cache_hash);
+		session->optimizer.opr_proof_cache_hash = NULL;
+	}
+
+	if (session->locale.collation_cache_context != NULL)
+	{
+		MemoryContextDelete(session->locale.collation_cache_context);
+		session->locale.collation_cache_context = NULL;
+		session->locale.collation_cache = NULL;
+		session->locale.last_collation_cache_oid = InvalidOid;
+		session->locale.last_collation_cache_locale = NULL;
+	}
 }
 
 Session *

@@ -237,6 +237,44 @@ Validation for this slice:
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals.
 
+## Session Cache Teardown
+
+The next Gate E2 hardening slice gives `PgSessionResetClosedState()` and
+`PgConnectionResetClosedState()` concrete reset coverage for resource-owning
+runtime buckets:
+
+- `PgConnectionResetClosedState()` now clears the borrowed `Port` pointer and
+  cancel key from `PgConnection.identity`, in addition to the existing socket,
+  protocol, startup, and security resets;
+- `PgSessionResetClosedState()` frees the copied `database_path`, destroys the
+  parser operator lookup hash, destroys the sequence hash and clears
+  `last_used_seq`, frees the regex ctype cache list through a regex-owned
+  helper, frees the planner-extension name array while leaving the borrowed
+  strings alone, destroys the operator proof hash, and deletes the collation
+  cache memory context;
+- `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` now records those rows as owning real
+  reset behavior instead of `GateE2 pending` placeholders.
+
+This does not finish the whole destructor tree. It deliberately does not claim
+ownership of GUC strings, legacy `Session`, backend worker buckets,
+TopMemoryContext split work, or execution memory-context state. Those remain
+Phase 12/Gate E2 blockers.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `regcomp.o`, and
+  `test_backend_runtime.o`;
+- `gmake check-runtime-lifecycles` passed with 134 fields classified;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- full `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed after fixing
+  an initial bootstrap crash from an unconditional `pfree(NULL)` in the new
+  reset path;
+- direct `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl`
+  passed all 87 tests with the local `/Users/samwillis/perl5` `PERL5LIB`
+  paths and an explicit `PG_REGRESS`.
+
 ## Runtime Lifecycle Manifest
 
 The one-hundred-seventy-third Phase 12 slice makes the Gate E2 object-lifecycle

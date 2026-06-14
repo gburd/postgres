@@ -220,6 +220,20 @@ typedef struct pg_ctype_cache
  */
 #define pg_ctype_cache_list (*PgCurrentRegexCtypeCacheListRef())
 
+void
+pg_free_regex_ctype_cache_list(pg_ctype_cache *list)
+{
+	while (list != NULL)
+	{
+		pg_ctype_cache *next = list->next;
+
+		free(list->cv.chrs);
+		free(list->cv.ranges);
+		free(list);
+		list = next;
+	}
+}
+
 /*
  * Add a chr or range to pcc->cv; return false if run out of memory
  */

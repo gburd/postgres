@@ -81,6 +81,7 @@
 #include "utils/fmgroids.h"
 #include "utils/fmgrprotos.h"
 #include "utils/guc.h"
+#include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/pg_locale.h"
 #include "utils/pgstat_internal.h"
@@ -2547,11 +2548,40 @@ Datum
 test_session_reset_closed_state(PG_FUNCTION_ARGS)
 {
 	PgSession	fake_session;
+	HASHCTL		hash_ctl;
 	MemoryContext oldcontext;
 	MemoryContext dynamic_library_context;
 	bool		ok = true;
 
 	MemSet(&fake_session, 0, sizeof(fake_session));
+	MemSet(&hash_ctl, 0, sizeof(hash_ctl));
+	hash_ctl.keysize = sizeof(Oid);
+	hash_ctl.entrysize = sizeof(Oid);
+
+	fake_session.database.database_path = pstrdup("base/1");
+	fake_session.parser.operator_lookup_cache =
+		hash_create("test operator lookup cache", 8, &hash_ctl,
+					HASH_ELEM | HASH_BLOBS);
+	fake_session.sequence.seqhashtab =
+		hash_create("test sequence cache", 8, &hash_ctl,
+					HASH_ELEM | HASH_BLOBS);
+	fake_session.sequence.last_used_seq =
+		(struct SeqTableData *) &fake_session;
+	fake_session.optimizer.planner_extension_names =
+		(const char **) palloc(sizeof(char *));
+	fake_session.optimizer.planner_extension_names[0] = "test";
+	fake_session.optimizer.planner_extension_names_assigned = 1;
+	fake_session.optimizer.planner_extension_names_allocated = 1;
+	fake_session.optimizer.opr_proof_cache_hash =
+		hash_create("test operator proof cache", 8, &hash_ctl,
+					HASH_ELEM | HASH_BLOBS);
+	fake_session.locale.collation_cache_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test collation cache",
+							  ALLOCSET_SMALL_SIZES);
+	fake_session.locale.collation_cache = &fake_session;
+	fake_session.locale.last_collation_cache_oid = BOOLOID;
+	fake_session.locale.last_collation_cache_locale = &fake_session;
 
 	dynamic_library_context =
 		PgSessionGetDynamicLibraryMemoryContext(&fake_session);
@@ -2572,6 +2602,19 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 
 	ok = ok && fake_session.dynamic_library_context == NULL;
 	ok = ok && fake_session.dynamic_library_inits == NIL;
+	ok = ok && fake_session.database.database_path == NULL;
+	ok = ok && fake_session.parser.operator_lookup_cache == NULL;
+	ok = ok && fake_session.sequence.seqhashtab == NULL;
+	ok = ok && fake_session.sequence.last_used_seq == NULL;
+	ok = ok && fake_session.regex.ctype_cache_list == NULL;
+	ok = ok && fake_session.optimizer.planner_extension_names == NULL;
+	ok = ok && fake_session.optimizer.planner_extension_names_assigned == 0;
+	ok = ok && fake_session.optimizer.planner_extension_names_allocated == 0;
+	ok = ok && fake_session.optimizer.opr_proof_cache_hash == NULL;
+	ok = ok && fake_session.locale.collation_cache_context == NULL;
+	ok = ok && fake_session.locale.collation_cache == NULL;
+	ok = ok && fake_session.locale.last_collation_cache_oid == InvalidOid;
+	ok = ok && fake_session.locale.last_collation_cache_locale == NULL;
 
 	/*
 	 * Also cover the legacy fallback where a list exists before the dedicated
@@ -13065,6 +13108,12 @@ test_connection_reset_closed_state(PG_FUNCTION_ARGS)
 	MemSet(&fake_client_socket, 0, sizeof(fake_client_socket));
 	fake_wait_set = (WaitEventSet *) &connection;
 
+	connection.identity.port = (struct Port *) &connection;
+	MemSet(connection.identity.cancel_key, 0x7a,
+		   sizeof(connection.identity.cancel_key));
+	connection.identity.cancel_key_length =
+		sizeof(connection.identity.cancel_key);
+
 	socket_io = &connection.socket_io;
 	socket_io->send_buffer = (char *) "released by socket_close";
 	socket_io->send_buffer_size = 128;
@@ -13109,6 +13158,10 @@ test_connection_reset_closed_state(PG_FUNCTION_ARGS)
 	}
 
 	PgConnectionResetClosedState(&connection);
+
+	ok = ok && connection.identity.port == NULL;
+	ok = ok && connection.identity.cancel_key[0] == 0;
+	ok = ok && connection.identity.cancel_key_length == 0;
 
 	socket_io = &connection.socket_io;
 	ok = ok && socket_io->send_buffer == NULL;
