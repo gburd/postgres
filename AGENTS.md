@@ -103,6 +103,12 @@ macro/table/checker improvement would make the whole slice simpler and safer.
   code, add the missing checked lifecycle primitive first. The likely next
   useful primitive is an allocation-context helper/table rule that covers
   create-on-demand context ownership plus checked close-time deletion.
+- Operational reminder for future agents: when planning a larger Phase 12
+  batch, start by deciding whether lifecycle macros, bucket `.def` rows,
+  declarative tables, or checker rules would make the batch simpler. If yes,
+  land that lifecycle-framework improvement before moving the globals or
+  teardown code. The intended speed-up is larger object-migration batches with
+  less handwritten lifecycle bookkeeping, not smaller manual slices.
 
 ## Working Assumptions
 

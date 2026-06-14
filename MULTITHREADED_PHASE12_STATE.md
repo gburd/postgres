@@ -12771,3 +12771,16 @@ Validation for the parallel message-context slice:
   `002_threaded_bgworker_crash.pl`, 131 tests total, with `PG_REGRESS`,
   temp-install `PATH`, patched temp-install install-name paths, and the
   repo-local `.perl5` `PERL5LIB`.
+
+## Lifecycle Macro Planning Reminder
+
+Before the next larger Phase 12/Gate E2 implementation batch, explicitly check
+whether lifecycle macros, bucket `.def` rows, declarative source tables, or
+`check_runtime_lifecycles.pl` rules would make the batch easier and safer. If
+the answer is yes, land that checked lifecycle-framework improvement first,
+then move the globals or teardown state through the new path.
+
+This is now an operating rule for the remaining Gate E2 work, not a cleanup
+preference: the branch should move faster by batching more state at once while
+reducing repeated handwritten init/adopt/reset/destroy code. Record the
+preflight result in this file before editing the code for the batch.
