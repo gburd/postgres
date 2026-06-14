@@ -103,6 +103,7 @@ SELECT test_execution_guc_error_state_is_execution_local();
 SELECT test_execution_catalog_state_is_execution_local();
 SELECT test_execution_catalog_cache_state_is_execution_local();
 SELECT test_execution_relmap_state_is_execution_local();
+SELECT test_execution_inval_twophase_state_is_execution_local();
 SELECT test_execution_async_state_is_execution_local();
 SELECT test_execution_misc_scratch_state_is_execution_local();
 SELECT test_execution_resource_owners_are_execution_local();

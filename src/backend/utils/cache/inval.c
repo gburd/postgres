@@ -123,6 +123,7 @@
 #include "storage/procnumber.h"
 #include "storage/sinval.h"
 #include "storage/smgr.h"
+#include "utils/backend_runtime.h"
 #include "utils/catcache.h"
 #include "utils/injection_point.h"
 #include "utils/inval.h"
@@ -178,7 +179,8 @@ typedef struct InvalMessageArray
 	int			maxmsgs;		/* current allocated size of array */
 } InvalMessageArray;
 
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION InvalMessageArray InvalMessageArrays[2];
+#define InvalMessageArrays \
+	((InvalMessageArray *) PgCurrentInvalMessageArrays())
 
 /* Control information for one logical group of messages */
 typedef struct InvalidationMsgsGroup
@@ -252,9 +254,9 @@ typedef struct TransInvalidationInfo
 	int			my_level;
 } TransInvalidationInfo;
 
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION TransInvalidationInfo *transInvalInfo = NULL;
+#define transInvalInfo			(*PgCurrentTransInvalInfoRef())
 
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION InvalidationInfo *inplaceInvalInfo = NULL;
+#define inplaceInvalInfo		(*PgCurrentInplaceInvalInfoRef())
 
 /* GUC storage */
 PG_THREAD_LOCAL PG_GLOBAL_SESSION int debug_discard_caches = 0;

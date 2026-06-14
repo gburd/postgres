@@ -90,8 +90,11 @@ typedef struct _SPI_connection _SPI_connection;
 struct LogicalRepRelMapEntry;
 struct SeqTableData;
 struct pg_ctype_cache;
+struct InvalidationInfo;
+struct TransInvalidationInfo;
 struct RelationData;
 struct PendingRelDelete;
+struct StateFileChunk;
 struct avl_dbase;
 struct WorkerInfoData;
 struct DecodingWorker;
@@ -1070,6 +1073,28 @@ typedef struct PgExecutionRelMapState
 	PgExecutionRelMapFile pending_local_updates;
 } PgExecutionRelMapState;
 
+typedef struct PgExecutionInvalMessageArray
+{
+	void	   *msgs;
+	int			maxmsgs;
+} PgExecutionInvalMessageArray;
+
+typedef struct PgExecutionInvalidationState
+{
+	PgExecutionInvalMessageArray message_arrays[2];
+	struct TransInvalidationInfo *trans_info;
+	struct InvalidationInfo *inplace_info;
+} PgExecutionInvalidationState;
+
+typedef struct PgExecutionTwoPhaseRecordState
+{
+	struct StateFileChunk *head;
+	struct StateFileChunk *tail;
+	uint32		num_chunks;
+	uint32		bytes_free;
+	uint32		total_len;
+} PgExecutionTwoPhaseRecordState;
+
 typedef struct PgExecutionRegexState
 {
 	void	   *regex_locale;
@@ -1913,6 +1938,8 @@ struct PgExecution
 	PgExecutionCatalogState catalog;
 	PgExecutionCatalogCacheState catalog_cache;
 	PgExecutionRelMapState relmap;
+	PgExecutionInvalidationState invalidation;
+	PgExecutionTwoPhaseRecordState two_phase_records;
 	PgExecutionRegexState regex;
 	PgExecutionValgrindState valgrind;
 	PgExecutionSnapBuildState snapbuild;
@@ -2299,6 +2326,10 @@ extern PgExecutionRelMapFile *PgCurrentRelMapActiveSharedUpdatesRef(void);
 extern PgExecutionRelMapFile *PgCurrentRelMapActiveLocalUpdatesRef(void);
 extern PgExecutionRelMapFile *PgCurrentRelMapPendingSharedUpdatesRef(void);
 extern PgExecutionRelMapFile *PgCurrentRelMapPendingLocalUpdatesRef(void);
+extern PgExecutionInvalMessageArray *PgCurrentInvalMessageArrays(void);
+extern struct TransInvalidationInfo **PgCurrentTransInvalInfoRef(void);
+extern struct InvalidationInfo **PgCurrentInplaceInvalInfoRef(void);
+extern PgExecutionTwoPhaseRecordState *PgCurrentTwoPhaseRecordStateRef(void);
 extern dclist_head *PgCurrentMultiXactCacheRef(void);
 extern bool *PgCurrentMultiXactCacheInitializedRef(void);
 extern MemoryContext *PgCurrentMultiXactContextRef(void);

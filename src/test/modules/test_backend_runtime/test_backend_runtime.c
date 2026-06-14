@@ -12609,6 +12609,110 @@ test_execution_relmap_state_is_execution_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_execution_inval_twophase_state_is_execution_local);
+Datum
+test_execution_inval_twophase_state_is_execution_local(PG_FUNCTION_ARGS)
+{
+	PgExecution *saved_execution;
+	PgExecution fake_execution1;
+	PgExecution fake_execution2;
+	SharedInvalidationMessage invalmsg1;
+	SharedInvalidationMessage invalmsg2;
+	bool		ok = true;
+
+	saved_execution = CurrentPgExecution;
+	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
+	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+	MemSet(&invalmsg1, 0, sizeof(invalmsg1));
+	MemSet(&invalmsg2, 0, sizeof(invalmsg2));
+
+	PG_TRY();
+	{
+		CurrentPgExecution = &fake_execution1;
+		PgCurrentInvalMessageArrays()[0].msgs = &invalmsg1;
+		PgCurrentInvalMessageArrays()[0].maxmsgs = 101;
+		*PgCurrentTransInvalInfoRef() =
+			(struct TransInvalidationInfo *) &fake_execution1;
+		*PgCurrentInplaceInvalInfoRef() =
+			(struct InvalidationInfo *) &fake_execution1;
+		PgCurrentTwoPhaseRecordStateRef()->head =
+			(struct StateFileChunk *) &fake_execution1;
+		PgCurrentTwoPhaseRecordStateRef()->tail =
+			(struct StateFileChunk *) &fake_execution1;
+		PgCurrentTwoPhaseRecordStateRef()->num_chunks = 102;
+		PgCurrentTwoPhaseRecordStateRef()->bytes_free = 103;
+		PgCurrentTwoPhaseRecordStateRef()->total_len = 104;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && PgCurrentInvalMessageArrays()[0].msgs == NULL;
+		ok = ok && PgCurrentInvalMessageArrays()[0].maxmsgs == 0;
+		ok = ok && *PgCurrentTransInvalInfoRef() == NULL;
+		ok = ok && *PgCurrentInplaceInvalInfoRef() == NULL;
+		ok = ok && PgCurrentTwoPhaseRecordStateRef()->head == NULL;
+		ok = ok && PgCurrentTwoPhaseRecordStateRef()->tail == NULL;
+		ok = ok && PgCurrentTwoPhaseRecordStateRef()->num_chunks == 0;
+		ok = ok && PgCurrentTwoPhaseRecordStateRef()->bytes_free == 0;
+		ok = ok && PgCurrentTwoPhaseRecordStateRef()->total_len == 0;
+
+		PgCurrentInvalMessageArrays()[1].msgs = &invalmsg2;
+		PgCurrentInvalMessageArrays()[1].maxmsgs = 201;
+		*PgCurrentTransInvalInfoRef() =
+			(struct TransInvalidationInfo *) &fake_execution2;
+		*PgCurrentInplaceInvalInfoRef() =
+			(struct InvalidationInfo *) &fake_execution2;
+		PgCurrentTwoPhaseRecordStateRef()->head =
+			(struct StateFileChunk *) &fake_execution2;
+		PgCurrentTwoPhaseRecordStateRef()->tail =
+			(struct StateFileChunk *) &fake_execution2;
+		PgCurrentTwoPhaseRecordStateRef()->num_chunks = 202;
+		PgCurrentTwoPhaseRecordStateRef()->bytes_free = 203;
+		PgCurrentTwoPhaseRecordStateRef()->total_len = 204;
+
+		CurrentPgExecution = &fake_execution1;
+		ok = ok && PgCurrentInvalMessageArrays()[0].msgs == &invalmsg1;
+		ok = ok && PgCurrentInvalMessageArrays()[0].maxmsgs == 101;
+		ok = ok && *PgCurrentTransInvalInfoRef() ==
+			(struct TransInvalidationInfo *) &fake_execution1;
+		ok = ok && *PgCurrentInplaceInvalInfoRef() ==
+			(struct InvalidationInfo *) &fake_execution1;
+		ok = ok && PgCurrentTwoPhaseRecordStateRef()->head ==
+			(struct StateFileChunk *) &fake_execution1;
+		ok = ok && PgCurrentTwoPhaseRecordStateRef()->tail ==
+			(struct StateFileChunk *) &fake_execution1;
+		ok = ok && PgCurrentTwoPhaseRecordStateRef()->num_chunks == 102;
+		ok = ok && PgCurrentTwoPhaseRecordStateRef()->bytes_free == 103;
+		ok = ok && PgCurrentTwoPhaseRecordStateRef()->total_len == 104;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && PgCurrentInvalMessageArrays()[1].msgs == &invalmsg2;
+		ok = ok && PgCurrentInvalMessageArrays()[1].maxmsgs == 201;
+		ok = ok && *PgCurrentTransInvalInfoRef() ==
+			(struct TransInvalidationInfo *) &fake_execution2;
+		ok = ok && *PgCurrentInplaceInvalInfoRef() ==
+			(struct InvalidationInfo *) &fake_execution2;
+		ok = ok && PgCurrentTwoPhaseRecordStateRef()->head ==
+			(struct StateFileChunk *) &fake_execution2;
+		ok = ok && PgCurrentTwoPhaseRecordStateRef()->tail ==
+			(struct StateFileChunk *) &fake_execution2;
+		ok = ok && PgCurrentTwoPhaseRecordStateRef()->num_chunks == 202;
+		ok = ok && PgCurrentTwoPhaseRecordStateRef()->bytes_free == 203;
+		ok = ok && PgCurrentTwoPhaseRecordStateRef()->total_len == 204;
+
+		CurrentPgExecution = saved_execution;
+	}
+	PG_CATCH();
+	{
+		CurrentPgExecution = saved_execution;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "invalidation/two-phase state was not execution-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_execution_async_state_is_execution_local);
 Datum
 test_execution_async_state_is_execution_local(PG_FUNCTION_ARGS)

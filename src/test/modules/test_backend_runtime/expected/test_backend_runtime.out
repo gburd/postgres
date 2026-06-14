@@ -617,6 +617,12 @@ SELECT test_execution_relmap_state_is_execution_local();
  t
 (1 row)
 
+SELECT test_execution_inval_twophase_state_is_execution_local();
+ test_execution_inval_twophase_state_is_execution_local 
+--------------------------------------------------------
+ t
+(1 row)
+
 SELECT test_execution_async_state_is_execution_local();
  test_execution_async_state_is_execution_local 
 -----------------------------------------------

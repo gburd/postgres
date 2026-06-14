@@ -580,6 +580,10 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionCatalogState early_executi
 };
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionCatalogCacheState early_execution_catalog_cache;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionRelMapState early_execution_relmap;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionInvalidationState
+			early_execution_invalidation;
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionTwoPhaseRecordState
+			early_execution_two_phase_records;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionRegexState early_execution_regex;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionValgrindState early_execution_valgrind;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionSnapBuildState early_execution_snapbuild;
@@ -791,6 +795,12 @@ static void PgExecutionInitializeCatalogCacheState(PgExecutionCatalogCacheState 
 static void PgExecutionAdoptEarlyCatalogCacheState(PgExecution *execution);
 static void PgExecutionInitializeRelMapState(PgExecutionRelMapState *relmap);
 static void PgExecutionAdoptEarlyRelMapState(PgExecution *execution);
+static void PgExecutionInitializeInvalidationState(PgExecutionInvalidationState
+												   *invalidation);
+static void PgExecutionAdoptEarlyInvalidationState(PgExecution *execution);
+static void PgExecutionInitializeTwoPhaseRecordState(PgExecutionTwoPhaseRecordState
+													 *two_phase_records);
+static void PgExecutionAdoptEarlyTwoPhaseRecordState(PgExecution *execution);
 static void PgExecutionInitializeRegexState(PgExecutionRegexState *regex);
 static void PgExecutionAdoptEarlyRegexState(PgExecution *execution);
 static void PgExecutionInitializeValgrindState(PgExecutionValgrindState *valgrind);
@@ -860,6 +870,8 @@ static PgExecutionAsyncState *PgCurrentExecutionAsyncState(void);
 static PgExecutionCatalogState *PgCurrentExecutionCatalogState(void);
 static PgExecutionCatalogCacheState *PgCurrentExecutionCatalogCacheState(void);
 static PgExecutionRelMapState *PgCurrentExecutionRelMapState(void);
+static PgExecutionInvalidationState *PgCurrentExecutionInvalidationState(void);
+static PgExecutionTwoPhaseRecordState *PgCurrentExecutionTwoPhaseRecordState(void);
 static PgExecutionRegexState *PgCurrentExecutionRegexState(void);
 static PgExecutionValgrindState *PgCurrentExecutionValgrindState(void);
 static PgExecutionSnapBuildState *PgCurrentExecutionSnapBuildState(void);
@@ -3310,6 +3322,42 @@ PgExecutionAdoptEarlyRelMapState(PgExecution *execution)
 }
 
 static void
+PgExecutionInitializeInvalidationState(PgExecutionInvalidationState
+									   *invalidation)
+{
+	Assert(invalidation != NULL);
+
+	MemSet(invalidation, 0, sizeof(*invalidation));
+}
+
+static void
+PgExecutionAdoptEarlyInvalidationState(PgExecution *execution)
+{
+	Assert(execution != NULL);
+
+	execution->invalidation = early_execution_invalidation;
+	PgExecutionInitializeInvalidationState(&early_execution_invalidation);
+}
+
+static void
+PgExecutionInitializeTwoPhaseRecordState(PgExecutionTwoPhaseRecordState
+										 *two_phase_records)
+{
+	Assert(two_phase_records != NULL);
+
+	MemSet(two_phase_records, 0, sizeof(*two_phase_records));
+}
+
+static void
+PgExecutionAdoptEarlyTwoPhaseRecordState(PgExecution *execution)
+{
+	Assert(execution != NULL);
+
+	execution->two_phase_records = early_execution_two_phase_records;
+	PgExecutionInitializeTwoPhaseRecordState(&early_execution_two_phase_records);
+}
+
+static void
 PgExecutionInitializeRegexState(PgExecutionRegexState *regex)
 {
 	Assert(regex != NULL);
@@ -3388,6 +3436,8 @@ PgExecutionAdoptEarlyState(PgExecution *execution)
 	PgExecutionAdoptEarlyCatalogState(execution);
 	PgExecutionAdoptEarlyCatalogCacheState(execution);
 	PgExecutionAdoptEarlyRelMapState(execution);
+	PgExecutionAdoptEarlyInvalidationState(execution);
+	PgExecutionAdoptEarlyTwoPhaseRecordState(execution);
 	PgExecutionAdoptEarlyRegexState(execution);
 	PgExecutionAdoptEarlyValgrindState(execution);
 	PgExecutionAdoptEarlySnapBuildState(execution);
@@ -3604,6 +3654,8 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgExecutionInitializeCatalogState(&state->execution.catalog);
 	PgExecutionInitializeCatalogCacheState(&state->execution.catalog_cache);
 	PgExecutionInitializeRelMapState(&state->execution.relmap);
+	PgExecutionInitializeInvalidationState(&state->execution.invalidation);
+	PgExecutionInitializeTwoPhaseRecordState(&state->execution.two_phase_records);
 	PgExecutionInitializeRegexState(&state->execution.regex);
 	PgExecutionInitializeValgrindState(&state->execution.valgrind);
 	PgExecutionInitializeSnapBuildState(&state->execution.snapbuild);
@@ -7608,6 +7660,48 @@ PgExecutionRelMapFile *
 PgCurrentRelMapPendingLocalUpdatesRef(void)
 {
 	return &PgCurrentExecutionRelMapState()->pending_local_updates;
+}
+
+static PgExecutionInvalidationState *
+PgCurrentExecutionInvalidationState(void)
+{
+	if (CurrentPgExecution == NULL)
+		return &early_execution_invalidation;
+
+	return &CurrentPgExecution->invalidation;
+}
+
+PgExecutionInvalMessageArray *
+PgCurrentInvalMessageArrays(void)
+{
+	return PgCurrentExecutionInvalidationState()->message_arrays;
+}
+
+struct TransInvalidationInfo **
+PgCurrentTransInvalInfoRef(void)
+{
+	return &PgCurrentExecutionInvalidationState()->trans_info;
+}
+
+struct InvalidationInfo **
+PgCurrentInplaceInvalInfoRef(void)
+{
+	return &PgCurrentExecutionInvalidationState()->inplace_info;
+}
+
+static PgExecutionTwoPhaseRecordState *
+PgCurrentExecutionTwoPhaseRecordState(void)
+{
+	if (CurrentPgExecution == NULL)
+		return &early_execution_two_phase_records;
+
+	return &CurrentPgExecution->two_phase_records;
+}
+
+PgExecutionTwoPhaseRecordState *
+PgCurrentTwoPhaseRecordStateRef(void)
+{
+	return PgCurrentExecutionTwoPhaseRecordState();
 }
 
 static PgExecutionRegexState *
