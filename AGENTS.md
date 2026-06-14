@@ -325,6 +325,15 @@ Important current files:
   be one manifest row plus one checked bucket-definition row per field, with
   helper macros covering routine init/adopt/reset cases and handwritten code
   reserved for real ownership semantics.
+- The next time a Phase 12 batch would add several similar lifecycle helpers,
+  implement a checked lifecycle action vocabulary before moving the state. The
+  intended direction is a small set of named actions in the bucket `.def` rows
+  for zero-init, zero-reset, scalar copy/adopt, whole-bucket copy/adopt,
+  copy/adopt-with-reinit, reset-through-initializer, and explicit
+  owner-adjacent destroy calls. Teach `check_runtime_lifecycles.pl` to verify
+  those actions against `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` and reject
+  unexplained no-op lifecycle cells for buckets that own pointers, lists,
+  memory contexts, sockets, or other close-time resources.
 - Session GUC direct-variable rebinding in `src/backend/utils/misc/guc.c`
   is table-driven by `threaded_session_guc_rebinds[]`. Add new migrated
   built-in direct-pointer GUCs to that table instead of extending

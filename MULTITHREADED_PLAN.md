@@ -943,6 +943,14 @@ Gate E2 requires:
   grow with the vocabulary, including rejecting stale or unexplained `(void) 0`
   lifecycle cells for buckets whose manifest row says they own pointer-like or
   teardown-sensitive state;
+- before the next repetitive Phase 12 state batch, decide whether this checked
+  action vocabulary should be implemented first. If the batch would require
+  multiple nearly identical init/adopt/reset helpers, add the action names,
+  `PG_RUNTIME_DEFINE_*` wrappers or equivalent table rules, and
+  `check_runtime_lifecycles.pl` validation first, then move the batch through
+  that mechanism. The exit criterion is that future agents can add routine
+  lifecycle buckets by editing the manifest and bucket-definition row, without
+  remembering several parallel call lists;
 - `MULTITHREADED_RUNTIME_OWNERS.tsv` remains synchronized with the lifecycle
   manifest and runtime accessors. `check-runtime-lifecycles` must reject owner
   rows that point at a non-manifest bucket, a missing owner source, a duplicate

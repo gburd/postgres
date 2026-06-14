@@ -11080,3 +11080,20 @@ Global runtime-local boundary hardening slice:
   addition to the existing unclassified-global baseline check. This turns the
   current "only runtime bridge locals remain" evidence into a Gate E2 guardrail
   for future Phase 12 work.
+
+Lifecycle action-vocabulary follow-up:
+
+- before the next Phase 12 batch that would add multiple similar lifecycle
+  helpers, pause and extend the checked lifecycle framework first;
+- preferred implementation: add named lifecycle actions to the bucket `.def`
+  rows for zero-init, zero-reset, scalar copy/adopt, whole-bucket copy/adopt,
+  copy/adopt-with-reinit, reset-through-initializer, and explicit
+  owner-adjacent destroy calls, with `PG_RUNTIME_DEFINE_*` wrappers or
+  equivalent table rules generating routine helper bodies;
+- extend `check_runtime_lifecycles.pl` so those action names are validated
+  against `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`, and so unexplained no-op
+  lifecycle cells are rejected for buckets that own pointers, lists, memory
+  contexts, sockets, hash tables, or other close-time resources;
+- record the action-vocabulary decision in this state log before moving the
+  next large batch. The point is to make larger migrations faster without
+  weakening manifest-checked lifecycle discipline.
