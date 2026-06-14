@@ -612,7 +612,13 @@ test_execution_reset_closed_state(PG_FUNCTION_ARGS)
 			(struct StateFileChunk *) &fake_tuptable;
 		fake_execution.two_phase_records.num_chunks = 2;
 		fake_execution.trigger.depth = 3;
-		fake_execution.trigger.after_triggers_data = &fake_execution;
+		fake_execution.trigger.after_triggers_context =
+			AllocSetContextCreate(TopMemoryContext,
+								  "test after trigger state",
+								  ALLOCSET_SMALL_SIZES);
+		fake_execution.trigger.after_triggers_data =
+			MemoryContextAlloc(fake_execution.trigger.after_triggers_context,
+							   sizeof(int));
 		fake_execution.regex.regex_locale = &fake_tuptable;
 		fake_execution.valgrind.old_error_count = 99;
 		fake_execution.snapbuild.saved_resource_owner_during_export =
@@ -760,6 +766,7 @@ test_execution_reset_closed_state(PG_FUNCTION_ARGS)
 		ok = ok && fake_execution.two_phase_records.num_chunks == 0;
 		ok = ok && fake_execution.trigger.depth == 0;
 		ok = ok && fake_execution.trigger.after_triggers_data == NULL;
+		ok = ok && fake_execution.trigger.after_triggers_context == NULL;
 		ok = ok && fake_execution.regex.regex_locale == NULL;
 		ok = ok && fake_execution.valgrind.old_error_count == 0;
 		ok = ok &&
@@ -2609,6 +2616,8 @@ test_execution_misc_scratch_state_is_execution_local(PG_FUNCTION_ARGS)
 	PgExecution *saved_execution;
 	PgExecution fake_execution1;
 	PgExecution fake_execution2;
+	MemoryContext after_triggers_context1;
+	MemoryContext after_triggers_context2;
 	bool		ok = true;
 
 	saved_execution = CurrentPgExecution;
@@ -2622,7 +2631,9 @@ test_execution_misc_scratch_state_is_execution_local(PG_FUNCTION_ARGS)
 		CurrentPgExecution = &fake_execution1;
 		*PgCurrentArrayAnalyzeExtraDataRef() = &fake_execution1;
 		*PgCurrentTriggerDepthRef() = 101;
-		*PgCurrentAfterTriggersDataRef() = &fake_execution1;
+		after_triggers_context1 = PgCurrentAfterTriggersMemoryContext();
+		*PgCurrentAfterTriggersDataRef() =
+			MemoryContextAlloc(after_triggers_context1, sizeof(int));
 		*PgCurrentRegexLocaleRef() = &fake_execution1;
 		*PgCurrentValgrindOldErrorCountRef() = 101;
 		*PgCurrentSnapBuildSavedResourceOwnerDuringExportRef() =
@@ -2633,6 +2644,7 @@ test_execution_misc_scratch_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentArrayAnalyzeExtraDataRef() == NULL;
 		ok = ok && *PgCurrentTriggerDepthRef() == 0;
 		ok = ok && *PgCurrentAfterTriggersDataRef() == NULL;
+		ok = ok && *PgCurrentAfterTriggersMemoryContextRef() == NULL;
 		ok = ok && *PgCurrentRegexLocaleRef() == NULL;
 		ok = ok && *PgCurrentValgrindOldErrorCountRef() == 0;
 		ok = ok && *PgCurrentSnapBuildSavedResourceOwnerDuringExportRef() ==
@@ -2641,7 +2653,9 @@ test_execution_misc_scratch_state_is_execution_local(PG_FUNCTION_ARGS)
 
 		*PgCurrentArrayAnalyzeExtraDataRef() = &fake_execution2;
 		*PgCurrentTriggerDepthRef() = 201;
-		*PgCurrentAfterTriggersDataRef() = &fake_execution2;
+		after_triggers_context2 = PgCurrentAfterTriggersMemoryContext();
+		*PgCurrentAfterTriggersDataRef() =
+			MemoryContextAlloc(after_triggers_context2, sizeof(int));
 		*PgCurrentRegexLocaleRef() = &fake_execution2;
 		*PgCurrentValgrindOldErrorCountRef() = 201;
 		*PgCurrentSnapBuildSavedResourceOwnerDuringExportRef() =
@@ -2651,7 +2665,9 @@ test_execution_misc_scratch_state_is_execution_local(PG_FUNCTION_ARGS)
 		CurrentPgExecution = &fake_execution1;
 		ok = ok && *PgCurrentArrayAnalyzeExtraDataRef() == &fake_execution1;
 		ok = ok && *PgCurrentTriggerDepthRef() == 101;
-		ok = ok && *PgCurrentAfterTriggersDataRef() == &fake_execution1;
+		ok = ok && *PgCurrentAfterTriggersMemoryContextRef() ==
+			after_triggers_context1;
+		ok = ok && *PgCurrentAfterTriggersDataRef() != NULL;
 		ok = ok && *PgCurrentRegexLocaleRef() == &fake_execution1;
 		ok = ok && *PgCurrentValgrindOldErrorCountRef() == 101;
 		ok = ok && *PgCurrentSnapBuildSavedResourceOwnerDuringExportRef() ==
@@ -2661,7 +2677,9 @@ test_execution_misc_scratch_state_is_execution_local(PG_FUNCTION_ARGS)
 		CurrentPgExecution = &fake_execution2;
 		ok = ok && *PgCurrentArrayAnalyzeExtraDataRef() == &fake_execution2;
 		ok = ok && *PgCurrentTriggerDepthRef() == 201;
-		ok = ok && *PgCurrentAfterTriggersDataRef() == &fake_execution2;
+		ok = ok && *PgCurrentAfterTriggersMemoryContextRef() ==
+			after_triggers_context2;
+		ok = ok && *PgCurrentAfterTriggersDataRef() != NULL;
 		ok = ok && *PgCurrentRegexLocaleRef() == &fake_execution2;
 		ok = ok && *PgCurrentValgrindOldErrorCountRef() == 201;
 		ok = ok && *PgCurrentSnapBuildSavedResourceOwnerDuringExportRef() ==
@@ -2672,10 +2690,19 @@ test_execution_misc_scratch_state_is_execution_local(PG_FUNCTION_ARGS)
 	}
 	PG_CATCH();
 	{
+		if (fake_execution1.trigger.after_triggers_context != NULL)
+			MemoryContextDelete(fake_execution1.trigger.after_triggers_context);
+		if (fake_execution2.trigger.after_triggers_context != NULL)
+			MemoryContextDelete(fake_execution2.trigger.after_triggers_context);
 		CurrentPgExecution = saved_execution;
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
+
+	if (fake_execution1.trigger.after_triggers_context != NULL)
+		MemoryContextDelete(fake_execution1.trigger.after_triggers_context);
+	if (fake_execution2.trigger.after_triggers_context != NULL)
+		MemoryContextDelete(fake_execution2.trigger.after_triggers_context);
 
 	if (!ok)
 		elog(ERROR, "miscellaneous execution scratch state was not execution-local");

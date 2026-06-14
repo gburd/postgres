@@ -3959,7 +3959,7 @@ GetCurrentAfterTriggersData(void)
 	after_triggers_data = PgCurrentAfterTriggersDataRef();
 	if (*after_triggers_data == NULL)
 		*after_triggers_data =
-			MemoryContextAllocZero(TopMemoryContext,
+			MemoryContextAllocZero(PgCurrentAfterTriggersMemoryContext(),
 								   sizeof(AfterTriggersData));
 
 	return (AfterTriggersData *) *after_triggers_data;

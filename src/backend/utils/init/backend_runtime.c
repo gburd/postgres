@@ -4013,12 +4013,33 @@ PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgExecutionAdoptEarlyTwoPhaseRecordState
 										early_execution_two_phase_records,
 										PgExecutionInitializeTwoPhaseRecordState)
 
-PG_RUNTIME_DEFINE_ZERO_INIT(PgExecutionInitializeTriggerState,
-							PgExecutionTriggerState, trigger)
+static void
+PgExecutionInitializeTriggerState(PgExecutionTriggerState *trigger)
+{
+	Assert(trigger != NULL);
+
+	MemSet(trigger, 0, sizeof(*trigger));
+}
+
 PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgExecutionAdoptEarlyTriggerState,
 										PgExecution, execution, trigger,
 										early_execution_trigger,
 										PgExecutionInitializeTriggerState)
+
+static void
+PgExecutionResetTriggerClosedState(PgExecutionTriggerState *trigger)
+{
+	Assert(trigger != NULL);
+
+	if (trigger->after_triggers_context != NULL)
+	{
+		MemoryContextDelete(trigger->after_triggers_context);
+		trigger->after_triggers_context = NULL;
+	}
+
+	PgExecutionInitializeTriggerState(trigger);
+}
+
 PG_RUNTIME_DEFINE_ZERO_INIT(PgExecutionInitializeRegexState,
 							PgExecutionRegexState, regex)
 PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgExecutionAdoptEarlyRegexState,
@@ -8080,6 +8101,28 @@ void **
 PgCurrentAfterTriggersDataRef(void)
 {
 	return &PgCurrentExecutionTriggerState()->after_triggers_data;
+}
+
+MemoryContext
+PgCurrentAfterTriggersMemoryContext(void)
+{
+	PgExecutionTriggerState *trigger;
+
+	trigger = PgCurrentExecutionTriggerState();
+
+	if (trigger->after_triggers_context == NULL)
+		trigger->after_triggers_context =
+			AllocSetContextCreate(TopMemoryContext,
+								  "after trigger execution state",
+								  ALLOCSET_SMALL_SIZES);
+
+	return trigger->after_triggers_context;
+}
+
+MemoryContext *
+PgCurrentAfterTriggersMemoryContextRef(void)
+{
+	return &PgCurrentExecutionTriggerState()->after_triggers_context;
 }
 
 static PgExecutionRegexState *

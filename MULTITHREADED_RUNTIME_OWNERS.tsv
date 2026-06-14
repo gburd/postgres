@@ -132,6 +132,9 @@ TopMemoryContext	PgExecution	memory_contexts	top_context	PgTopMemoryContextRef	s
 ResourceOwnerContext	PgExecution	resource_owners	resource_owner_context	PgCurrentResourceOwnerMemoryContext	src/include/utils/backend_runtime.h	execution-owned allocation context for ResourceOwner objects and expandable hash arrays
 currentEventTriggerState	PgExecution	replication_scratch	event_trigger_query_state	PgCurrentEventTriggerQueryStateRef	src/backend/commands/event_trigger.c	active event-trigger complete-query state stack root
 EventTriggerQueryContext	PgExecution	replication_scratch	event_trigger_context	PgCurrentEventTriggerMemoryContext	src/backend/commands/event_trigger.c	execution-owned parent context for event-trigger complete-query state contexts
+MyTriggerDepth	PgExecution	trigger	depth	PgCurrentTriggerDepthRef	src/backend/commands/trigger.c	trigger nesting depth for the current execution
+afterTriggers	PgExecution	trigger	after_triggers_data	PgCurrentAfterTriggersDataRef	src/backend/commands/trigger.c	opaque after-trigger transaction/query state object
+AfterTriggersContext	PgExecution	trigger	after_triggers_context	PgCurrentAfterTriggersMemoryContext	src/backend/commands/trigger.c	execution-owned parent context for the opaque after-trigger state object
 CurrentSession	PgSession	legacy_session	legacy_session	PgCurrentLegacySessionRef	src/backend/access/common/session.c	legacy access/session.h compatibility pointer
 ConnectionWarningsEmitted	PgConnection	startup	connection_warnings_emitted	PgCurrentConnectionWarningsEmittedRef	src/backend/utils/init/postinit.c	connection warning emit guard
 ConnectionWarningMessages	PgConnection	startup	connection_warning_messages	PgCurrentConnectionWarningMessagesRef	src/backend/utils/init/postinit.c	saved connection warning messages

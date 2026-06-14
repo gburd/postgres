@@ -1138,6 +1138,7 @@ typedef struct PgExecutionTriggerState
 {
 	int			depth;
 	void	   *after_triggers_data;
+	MemoryContext after_triggers_context;
 } PgExecutionTriggerState;
 
 typedef struct PgExecutionRegexState
@@ -2785,6 +2786,8 @@ extern struct InvalidationInfo **PgCurrentInplaceInvalInfoRef(void);
 extern PgExecutionTwoPhaseRecordState *PgCurrentTwoPhaseRecordStateRef(void);
 extern int *PgCurrentTriggerDepthRef(void);
 extern void **PgCurrentAfterTriggersDataRef(void);
+extern MemoryContext PgCurrentAfterTriggersMemoryContext(void);
+extern MemoryContext *PgCurrentAfterTriggersMemoryContextRef(void);
 extern dclist_head *PgCurrentMultiXactCacheRef(void);
 extern bool *PgCurrentMultiXactCacheInitializedRef(void);
 extern MemoryContext *PgCurrentMultiXactContextRef(void);

@@ -11724,3 +11724,72 @@ Validation for the event-trigger execution-context lifecycle slice:
   `002_threaded_bgworker_crash.pl`, 131 tests total, with the documented
   local `IPC::Run` `PERL5LIB` and patched temporary-install install-name
   paths.
+
+After-trigger execution-context lifecycle preflight:
+
+- target root and bucket: `PgExecution.trigger`;
+- repeated lifecycle operations: one execution-owned parent allocation context
+  for the opaque `AfterTriggersData` state object plus closed-execution
+  delete-and-null reset;
+- lifecycle preflight result: the existing
+  `PG_EXECUTION_BUCKET(trigger, ...)` checked reset row and owner-map checker
+  are sufficient. No new generic lifecycle action is needed because this is a
+  single semantic trigger-state family. The reset remains handwritten because
+  normal `AfterTriggerEndXact()` owns the internal event/query/subtransaction
+  pointers and the closed-execution reset only owns the parent object slot.
+
+After-trigger execution-context lifecycle slice:
+
+- `PgExecutionTriggerState` now includes `after_triggers_context`, the
+  execution-owned parent context for the opaque after-trigger transaction/query
+  state object;
+- `GetCurrentAfterTriggersData()` now allocates `AfterTriggersData` under
+  `PgCurrentAfterTriggersMemoryContext()` instead of directly under
+  `TopMemoryContext`;
+- `PgExecutionResetClosedState()` deletes `after_triggers_context` and
+  reinitializes the trigger bucket, while normal trigger transaction cleanup
+  remains responsible for event contexts, query stacks, transition tuplestores,
+  and callback lists;
+- `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` and
+  `MULTITHREADED_RUNTIME_OWNERS.tsv` record `MyTriggerDepth`, the opaque
+  `afterTriggers` state pointer, and the parent context as
+  `PgExecution.trigger` state;
+- backend-runtime execution tests now verify both fake-execution locality for
+  distinct after-trigger contexts and closed-execution deletion of the parent
+  context.
+
+Validation for the after-trigger execution-context lifecycle slice:
+
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 28 reset definitions checked, and 176 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- touched object builds for `trigger.o`, `backend_runtime.o`, and
+  `test_backend_runtime_execution.o` passed;
+- after the installed `backend_runtime.h` layout change, the documented
+  backend clean/generated-header recovery path completed and full `gmake -j8`
+  passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with the documented
+  local `IPC::Run` `PERL5LIB` and patched temporary-install install-name
+  paths;
+- a focused live-cluster AFTER-trigger smoke passed after reinstalling the
+  updated binaries into `tmp_install`: an immediate AFTER trigger fired twice
+  inside one transaction, using the execution-owned after-trigger parent
+  context.
+
+Follow-up validation note:
+
+- a broader direct regression prefix intended to reach `triggers` crashed in
+  `tstypes` before the trigger test ran, so it was not used as evidence for
+  this slice;
+- a PL/pgSQL AFTER-trigger smoke that dereferenced `NEW.id`/`NEW.val` failed
+  with `cache lookup failed for type 0` both with the new execution-owned
+  after-trigger context and after temporarily restoring the original direct
+  `TopMemoryContext` allocation. That appears to be an existing PL/pgSQL
+  trigger-tuple/runtime issue rather than a regression from this context
+  ownership change, but it remains a separate Phase 12/Gate E2 validation
+  risk because bundled PL/pgSQL must eventually work in threaded mode.
