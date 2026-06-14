@@ -126,83 +126,102 @@ static PG_GLOBAL_BACKEND PgBackend process_backend;
 static PG_GLOBAL_SESSION PgSession process_session;
 static PG_GLOBAL_CONNECTION PgConnection process_connection;
 static PG_GLOBAL_EXECUTION PgExecution process_execution;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendCoreState early_backend_core = {
-	.mode = InitProcessing
+static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackend early_backend_fallback = {
+	.core = {
+		.mode = InitProcessing
+	},
+	.timeout = {0},
+	.replication = {
+		.sync_rep_wait_mode = -1,
+		.walreceiver_recv_file = -1,
+		.walreceiver_primary_has_standby_xmin = true
+	},
+	.logical_replication = {
+		.apply_error_callback_arg.remote_attnum = -1,
+		.apply_error_callback_arg.remote_xid = InvalidTransactionId,
+		.apply_error_callback_arg.finish_lsn = InvalidXLogRecPtr,
+		.subxact_data.subxact_last = InvalidTransactionId,
+		.remote_final_lsn = InvalidXLogRecPtr,
+		.stream_xid = InvalidTransactionId,
+		.skip_xact_finish_lsn = InvalidXLogRecPtr,
+		.last_flushpos = InvalidXLogRecPtr,
+		.slotsync_sleep_ms = PG_BACKEND_SLOTSYNC_INITIAL_SLEEP_MS
+	},
+	.xlog = {
+		.local_recovery_in_progress = true,
+		.local_xlog_insert_allowed = -1,
+		.proc_last_rec_ptr = InvalidXLogRecPtr,
+		.xact_last_rec_end = InvalidXLogRecPtr,
+		.xact_last_commit_end = InvalidXLogRecPtr,
+		.redo_rec_ptr = InvalidXLogRecPtr,
+		.open_log_file = -1,
+		.local_min_recovery_point = InvalidXLogRecPtr,
+		.update_min_recovery_point = true
+	},
+	.recovery = {
+		.standby_wait_us = PG_BACKEND_STANDBY_INITIAL_WAIT_US
+	},
+	.maintenance_worker = {
+		.bgwriter_last_snapshot_lsn = InvalidXLogRecPtr,
+		.walsummarizer_sleep_quanta = 1,
+		.walsummarizer_redo_pointer_at_last_summary_removal = InvalidXLogRecPtr
+	},
+	.autovacuum = {
+		.av_storage_param_cost_delay = -1,
+		.av_storage_param_cost_limit = -1
+	},
+	.repack = {
+		.repacked_rel_locator.relNumber = InvalidOid,
+		.repacked_rel_toast_locator.relNumber = InvalidOid
+	},
+	.aio = {
+		.my_io_worker_id = -1
+	},
+	.parallel = {
+		.worker_number = -1,
+		.pq_mq_parallel_leader_proc_number = INVALID_PROC_NUMBER
+	},
+	.my_proc_number = INVALID_PROC_NUMBER,
+	.parallel_leader_proc_number = INVALID_PROC_NUMBER,
+	.backend_type = B_INVALID
 };
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendCommandState early_backend_command;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendLogState early_backend_log;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendExprInterpState early_backend_expr_interp;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND BackendType early_backend_type = B_INVALID;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PGPROC *early_my_proc = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ProcNumber early_my_proc_number = INVALID_PROC_NUMBER;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ProcNumber early_parallel_leader_proc_number = INVALID_PROC_NUMBER;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendStatus *early_my_beentry = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND BackgroundWorker *early_my_bgworker_entry = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND ResourceOwner early_aux_process_resource_owner = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendPgStatPendingState early_backend_pgstat_pending;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInstrumentationState early_backend_instrumentation;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendBufferState early_backend_buffers;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendStorageState early_backend_storage;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendLockState early_backend_locks;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendIPCState early_backend_ipc;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendWaitState early_backend_wait_state;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendTransactionState early_backend_transaction;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendMemoryManagerState early_backend_memory_manager;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendTimeoutState early_backend_timeout;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendWalSenderState early_backend_walsender;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendReplicationState early_backend_replication = {
-	.sync_rep_wait_mode = -1,
-	.walreceiver_recv_file = -1,
-	.walreceiver_primary_has_standby_xmin = true
-};
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendLogicalReplicationState early_backend_logical_replication = {
-	.apply_error_callback_arg.remote_attnum = -1,
-	.apply_error_callback_arg.remote_xid = InvalidTransactionId,
-	.apply_error_callback_arg.finish_lsn = InvalidXLogRecPtr,
-	.subxact_data.subxact_last = InvalidTransactionId,
-	.remote_final_lsn = InvalidXLogRecPtr,
-	.stream_xid = InvalidTransactionId,
-	.skip_xact_finish_lsn = InvalidXLogRecPtr,
-	.last_flushpos = InvalidXLogRecPtr,
-	.slotsync_sleep_ms = PG_BACKEND_SLOTSYNC_INITIAL_SLEEP_MS
-};
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendXLogState early_backend_xlog = {
-	.local_recovery_in_progress = true,
-	.local_xlog_insert_allowed = -1,
-	.proc_last_rec_ptr = InvalidXLogRecPtr,
-	.xact_last_rec_end = InvalidXLogRecPtr,
-	.xact_last_commit_end = InvalidXLogRecPtr,
-	.redo_rec_ptr = InvalidXLogRecPtr,
-	.open_log_file = -1,
-	.local_min_recovery_point = InvalidXLogRecPtr,
-	.update_min_recovery_point = true
-};
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendRecoveryState early_backend_recovery = {
-	.standby_wait_us = PG_BACKEND_STANDBY_INITIAL_WAIT_US
-};
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendMaintenanceWorkerState early_backend_maintenance_worker = {
-	.bgwriter_last_snapshot_lsn = InvalidXLogRecPtr,
-	.walsummarizer_sleep_quanta = 1,
-	.walsummarizer_redo_pointer_at_last_summary_removal = InvalidXLogRecPtr
-};
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendAutovacuumState early_backend_autovacuum = {
-	.av_storage_param_cost_delay = -1,
-	.av_storage_param_cost_limit = -1
-};
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendRepackState early_backend_repack = {
-	.repacked_rel_locator.relNumber = InvalidOid,
-	.repacked_rel_toast_locator.relNumber = InvalidOid
-};
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendAioState early_backend_aio = {
-	.my_io_worker_id = -1
-};
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendExtensionModuleState early_backend_extension_modules;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendActivityState early_backend_activity;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendUtilityState early_backend_utility;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendParallelState early_backend_parallel = {
-	.worker_number = -1,
-	.pq_mq_parallel_leader_proc_number = INVALID_PROC_NUMBER
-};
+
+#define early_backend_core early_backend_fallback.core
+#define early_backend_command early_backend_fallback.command
+#define early_backend_log early_backend_fallback.log_state
+#define early_backend_expr_interp early_backend_fallback.expr_interp
+#define early_backend_type early_backend_fallback.backend_type
+#define early_my_proc early_backend_fallback.my_proc
+#define early_my_proc_number early_backend_fallback.my_proc_number
+#define early_parallel_leader_proc_number early_backend_fallback.parallel_leader_proc_number
+#define early_my_beentry early_backend_fallback.my_beentry
+#define early_my_bgworker_entry early_backend_fallback.my_bgworker_entry
+#define early_aux_process_resource_owner early_backend_fallback.aux_process_resource_owner
+#define early_backend_pgstat_pending early_backend_fallback.pgstat_pending
+#define early_backend_instrumentation early_backend_fallback.instrumentation
+#define early_backend_buffers early_backend_fallback.buffers
+#define early_backend_storage early_backend_fallback.storage
+#define early_backend_locks early_backend_fallback.locks
+#define early_backend_ipc early_backend_fallback.ipc
+#define early_backend_wait_state early_backend_fallback.wait_state
+#define early_backend_transaction early_backend_fallback.transaction
+#define early_backend_memory_manager early_backend_fallback.memory_manager
+#define early_backend_timeout early_backend_fallback.timeout
+#define early_backend_walsender early_backend_fallback.walsender
+#define early_backend_replication early_backend_fallback.replication
+#define early_backend_logical_replication early_backend_fallback.logical_replication
+#define early_backend_xlog early_backend_fallback.xlog
+#define early_backend_recovery early_backend_fallback.recovery
+#define early_backend_maintenance_worker early_backend_fallback.maintenance_worker
+#define early_backend_autovacuum early_backend_fallback.autovacuum
+#define early_backend_repack early_backend_fallback.repack
+#define early_backend_aio early_backend_fallback.aio
+#define early_backend_extension_modules early_backend_fallback.extension_modules
+#define early_backend_activity early_backend_fallback.activity
+#define early_backend_utility early_backend_fallback.utility
+#define early_backend_parallel early_backend_fallback.parallel
+#define early_pending_interrupts early_backend_fallback.pending_interrupts
+#define early_interrupt_holdoffs early_backend_fallback.interrupt_holdoffs
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionIdentityState early_connection_identity;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionSocketIOState early_connection_socket_io;
 static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnectionProtocolState early_connection_protocol;
@@ -615,8 +634,6 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionLocaleState early_session_loca
 	.icu_validation_level_value = WARNING,
 	.last_collation_cache_oid = InvalidOid
 };
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendPendingInterruptState early_pending_interrupts;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackendInterruptHoldoffState early_interrupt_holdoffs;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionDebugState early_execution_debug;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionErrorState early_execution_error = {
 	.errordata_stack_depth = -1

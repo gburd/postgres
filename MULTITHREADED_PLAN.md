@@ -1796,6 +1796,14 @@ the adopted backend's list head. Validation included touched-object builds,
 the `test_backend_runtime` regression, direct threaded TAP, full `gmake -j8`,
 contrib build, and `gmake check-global-lifetimes` with zero new unclassified
 mutable globals.
+Follow-up backend early-fallback consolidation made the fallback storage
+object-shaped: the many standalone backend `early_backend_*`, `early_my_*`,
+pending-interrupt, and interrupt-holdoff TLS declarations in
+`backend_runtime.c` are now fields of one `PgBackend early_backend_fallback`
+object, with source-local compatibility macros preserving the existing checked
+adopt/reset helper bodies. The live `check-global-lifetimes` report now shows
+backend-local declarations reduced from 40 to 5 for this checkout, with zero
+new unclassified mutable globals or local-runtime-boundary violations.
 Follow-up hardening centralized the matching session and execution adoption
 lists in `PgSessionAdoptEarlyState()` and `PgExecutionAdoptEarlyState()`.
 Process runtime initialization and thread backend installation now use those

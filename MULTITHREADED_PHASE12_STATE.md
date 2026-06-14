@@ -13326,3 +13326,55 @@ Validation for the basic_archive backend GUC slice:
 - direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
   `002_threaded_bgworker_crash.pl`, 131 tests total, with patched macOS
   install-name paths and the repo-local `.perl5` `PERL5LIB`.
+
+## Backend Early-Fallback TLS Consolidation
+
+Lifecycle/preflight note:
+
+- target root and bucket: `PgBackend` early fallback object in
+  `backend_runtime.c`;
+- state moved: the backend early-fallback TLS buckets and scalar slots
+  formerly declared as individual `early_backend_*`, `early_my_*`,
+  `early_pending_interrupts`, and `early_interrupt_holdoffs` globals;
+- owner source file: `src/backend/utils/init/backend_runtime.c`;
+- repeated lifecycle operations: existing init/adopt/reset helpers remain
+  unchanged and already flow through checked bucket definitions and helper
+  macros. This slice changes only the early fallback storage container,
+  replacing many standalone TLS slots with one `PgBackend
+  early_backend_fallback` plus source-local compatibility macros. No new
+  lifecycle primitive is needed because the existing checked helper path still
+  owns per-bucket initialization, adoption, pointer rebasing, and reset
+  semantics;
+- retained invariant: early fallback remains carrier/TLS-local until a real
+  backend object is installed, but the fallback is now object-shaped. This
+  reduces standalone backend-local TLS declarations and makes the next
+  session/execution fallback consolidation mechanically similar.
+
+Slice:
+
+- replaced the individual backend early fallback bucket declarations with a
+  single `PgBackend early_backend_fallback` root object;
+- preserved source compatibility inside `backend_runtime.c` with local macros
+  for the historical `early_backend_*`, `early_my_*`, pending-interrupt, and
+  interrupt-holdoff names;
+- kept all existing backend adopt/reset helper bodies and checked lifecycle
+  rows in force;
+- reduced the live `check-global-lifetimes` backend-local declaration count
+  from 40 to 5 in this checkout.
+
+Validation for the backend early-fallback consolidation slice:
+
+- `git diff --check` passed;
+- `gmake -C src/backend/utils/init backend_runtime.o` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 222 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations. The scan reported 1215
+  declarations and 5 backend-local declarations, down from 1250 declarations
+  and 40 backend-local declarations before this slice;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- full incremental `gmake -j8` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with patched macOS
+  install-name paths and the repo-local `.perl5` `PERL5LIB`.
