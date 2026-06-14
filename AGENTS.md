@@ -189,6 +189,17 @@ Important current files:
   macros, rename the field; this was required for `SerializedReindexState`.
   The actual hash/list storage is still owned by existing transaction cleanup
   paths such as enum, reindex, and smgr end-of-transaction cleanup.
+- Catalog cache execution scratch state now lives under
+  `PgExecutionCatalogCacheState`: catcache's create-in-progress stack pointer,
+  relcache's `RelationBuildDesc()` in-progress list pointer/length/capacity,
+  relcache's EOXact relation OID list/length/overflow flag, and relcache's
+  EOXact tupledesc array pointer/index/capacity. The runtime object owns the
+  slots and inline OID array; pointed-to catcache stack entries, relcache
+  in-progress storage, and tupledesc arrays remain owned by existing stack,
+  `CacheMemoryContext`, and relcache EOXact cleanup paths. After changing this
+  bridge, rebuild `backend_runtime.o`, `catcache.o`, `relcache.o`, and
+  `test_backend_runtime.o`, then run `gmake check-runtime-lifecycles` and
+  `gmake check-global-lifetimes`.
 - LISTEN/NOTIFY transaction scratch state now lives under
   `PgExecutionAsyncState`: pending LISTEN/UNLISTEN actions, pending NOTIFY
   lists, pending listen hash state, queue head snapshots used by

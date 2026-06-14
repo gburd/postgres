@@ -578,6 +578,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionCatalogState early_executi
 	.currently_reindexed_heap = InvalidOid,
 	.currently_reindexed_index = InvalidOid
 };
+static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionCatalogCacheState early_execution_catalog_cache;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionRegexState early_execution_regex;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionValgrindState early_execution_valgrind;
 static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION PgExecutionSnapBuildState early_execution_snapbuild;
@@ -785,6 +786,8 @@ static void PgExecutionInitializeAsyncState(PgExecutionAsyncState *async);
 static void PgExecutionAdoptEarlyAsyncState(PgExecution *execution);
 static void PgExecutionInitializeCatalogState(PgExecutionCatalogState *catalog);
 static void PgExecutionAdoptEarlyCatalogState(PgExecution *execution);
+static void PgExecutionInitializeCatalogCacheState(PgExecutionCatalogCacheState *catalog_cache);
+static void PgExecutionAdoptEarlyCatalogCacheState(PgExecution *execution);
 static void PgExecutionInitializeRegexState(PgExecutionRegexState *regex);
 static void PgExecutionAdoptEarlyRegexState(PgExecution *execution);
 static void PgExecutionInitializeValgrindState(PgExecutionValgrindState *valgrind);
@@ -852,6 +855,7 @@ static PgExecutionReplicationScratchState *PgCurrentExecutionReplicationScratchS
 static PgExecutionGUCErrorState *PgCurrentExecutionGUCErrorState(void);
 static PgExecutionAsyncState *PgCurrentExecutionAsyncState(void);
 static PgExecutionCatalogState *PgCurrentExecutionCatalogState(void);
+static PgExecutionCatalogCacheState *PgCurrentExecutionCatalogCacheState(void);
 static PgExecutionRegexState *PgCurrentExecutionRegexState(void);
 static PgExecutionValgrindState *PgCurrentExecutionValgrindState(void);
 static PgExecutionSnapBuildState *PgCurrentExecutionSnapBuildState(void);
@@ -3268,6 +3272,23 @@ PgExecutionAdoptEarlyCatalogState(PgExecution *execution)
 }
 
 static void
+PgExecutionInitializeCatalogCacheState(PgExecutionCatalogCacheState *catalog_cache)
+{
+	Assert(catalog_cache != NULL);
+
+	MemSet(catalog_cache, 0, sizeof(*catalog_cache));
+}
+
+static void
+PgExecutionAdoptEarlyCatalogCacheState(PgExecution *execution)
+{
+	Assert(execution != NULL);
+
+	execution->catalog_cache = early_execution_catalog_cache;
+	PgExecutionInitializeCatalogCacheState(&early_execution_catalog_cache);
+}
+
+static void
 PgExecutionInitializeRegexState(PgExecutionRegexState *regex)
 {
 	Assert(regex != NULL);
@@ -3344,6 +3365,7 @@ PgExecutionAdoptEarlyState(PgExecution *execution)
 	PgExecutionAdoptEarlyGUCErrorState(execution);
 	PgExecutionAdoptEarlyAsyncState(execution);
 	PgExecutionAdoptEarlyCatalogState(execution);
+	PgExecutionAdoptEarlyCatalogCacheState(execution);
 	PgExecutionAdoptEarlyRegexState(execution);
 	PgExecutionAdoptEarlyValgrindState(execution);
 	PgExecutionAdoptEarlySnapBuildState(execution);
@@ -3558,6 +3580,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	PgExecutionInitializeGUCErrorState(&state->execution.guc_error);
 	PgExecutionInitializeAsyncState(&state->execution.async);
 	PgExecutionInitializeCatalogState(&state->execution.catalog);
+	PgExecutionInitializeCatalogCacheState(&state->execution.catalog_cache);
 	PgExecutionInitializeRegexState(&state->execution.regex);
 	PgExecutionInitializeValgrindState(&state->execution.valgrind);
 	PgExecutionInitializeSnapBuildState(&state->execution.snapbuild);
@@ -7460,6 +7483,75 @@ HTAB **
 PgCurrentPendingSyncHashRef(void)
 {
 	return &PgCurrentExecutionCatalogState()->pending_sync_hash;
+}
+
+static PgExecutionCatalogCacheState *
+PgCurrentExecutionCatalogCacheState(void)
+{
+	if (CurrentPgExecution == NULL)
+		return &early_execution_catalog_cache;
+
+	return &CurrentPgExecution->catalog_cache;
+}
+
+CatCInProgress **
+PgCurrentCatCacheInProgressStackRef(void)
+{
+	return &PgCurrentExecutionCatalogCacheState()->catcache_in_progress_stack;
+}
+
+InProgressEnt **
+PgCurrentRelcacheInProgressListRef(void)
+{
+	return &PgCurrentExecutionCatalogCacheState()->relcache_in_progress_list;
+}
+
+int *
+PgCurrentRelcacheInProgressListLenRef(void)
+{
+	return &PgCurrentExecutionCatalogCacheState()->relcache_in_progress_list_len;
+}
+
+int *
+PgCurrentRelcacheInProgressListMaxLenRef(void)
+{
+	return &PgCurrentExecutionCatalogCacheState()->relcache_in_progress_list_maxlen;
+}
+
+Oid *
+PgCurrentRelcacheEOXactList(void)
+{
+	return PgCurrentExecutionCatalogCacheState()->relcache_eoxact_list;
+}
+
+int *
+PgCurrentRelcacheEOXactListLenRef(void)
+{
+	return &PgCurrentExecutionCatalogCacheState()->relcache_eoxact_list_len;
+}
+
+bool *
+PgCurrentRelcacheEOXactListOverflowedRef(void)
+{
+	return &PgCurrentExecutionCatalogCacheState()->relcache_eoxact_list_overflowed;
+}
+
+TupleDesc **
+PgCurrentRelcacheEOXactTupleDescArrayRef(void)
+{
+	return &PgCurrentExecutionCatalogCacheState()->relcache_eoxact_tupledesc_array;
+}
+
+int *
+PgCurrentRelcacheNextEOXactTupleDescNumRef(void)
+{
+	return &PgCurrentExecutionCatalogCacheState()->relcache_next_eoxact_tupledesc_num;
+}
+
+int *
+PgCurrentRelcacheEOXactTupleDescArrayLenRef(void)
+{
+	return &PgCurrentExecutionCatalogCacheState()->relcache_eoxact_tupledesc_array_len;
 }
 
 static PgExecutionRegexState *

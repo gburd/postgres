@@ -12430,6 +12430,109 @@ test_execution_catalog_state_is_execution_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_execution_catalog_cache_state_is_execution_local);
+Datum
+test_execution_catalog_cache_state_is_execution_local(PG_FUNCTION_ARGS)
+{
+	PgExecution *saved_execution;
+	PgExecution fake_execution1;
+	PgExecution fake_execution2;
+	TupleDesc	tupledesc_array1[1];
+	TupleDesc	tupledesc_array2[1];
+	bool		ok = true;
+
+	saved_execution = CurrentPgExecution;
+	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
+	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
+	MemSet(tupledesc_array1, 0, sizeof(tupledesc_array1));
+	MemSet(tupledesc_array2, 0, sizeof(tupledesc_array2));
+
+	PG_TRY();
+	{
+		CurrentPgExecution = &fake_execution1;
+		*PgCurrentCatCacheInProgressStackRef() =
+			(CatCInProgress *) &fake_execution1;
+		*PgCurrentRelcacheInProgressListRef() =
+			(InProgressEnt *) &fake_execution1;
+		*PgCurrentRelcacheInProgressListLenRef() = 1;
+		*PgCurrentRelcacheInProgressListMaxLenRef() = 2;
+		PgCurrentRelcacheEOXactList()[0] = 101;
+		*PgCurrentRelcacheEOXactListLenRef() = 1;
+		*PgCurrentRelcacheEOXactListOverflowedRef() = true;
+		*PgCurrentRelcacheEOXactTupleDescArrayRef() = tupledesc_array1;
+		*PgCurrentRelcacheNextEOXactTupleDescNumRef() = 3;
+		*PgCurrentRelcacheEOXactTupleDescArrayLenRef() = 4;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && *PgCurrentCatCacheInProgressStackRef() == NULL;
+		ok = ok && *PgCurrentRelcacheInProgressListRef() == NULL;
+		ok = ok && *PgCurrentRelcacheInProgressListLenRef() == 0;
+		ok = ok && *PgCurrentRelcacheInProgressListMaxLenRef() == 0;
+		ok = ok && PgCurrentRelcacheEOXactList()[0] == InvalidOid;
+		ok = ok && *PgCurrentRelcacheEOXactListLenRef() == 0;
+		ok = ok && !*PgCurrentRelcacheEOXactListOverflowedRef();
+		ok = ok && *PgCurrentRelcacheEOXactTupleDescArrayRef() == NULL;
+		ok = ok && *PgCurrentRelcacheNextEOXactTupleDescNumRef() == 0;
+		ok = ok && *PgCurrentRelcacheEOXactTupleDescArrayLenRef() == 0;
+
+		*PgCurrentCatCacheInProgressStackRef() =
+			(CatCInProgress *) &fake_execution2;
+		*PgCurrentRelcacheInProgressListRef() =
+			(InProgressEnt *) &fake_execution2;
+		*PgCurrentRelcacheInProgressListLenRef() = 5;
+		*PgCurrentRelcacheInProgressListMaxLenRef() = 6;
+		PgCurrentRelcacheEOXactList()[0] = 201;
+		*PgCurrentRelcacheEOXactListLenRef() = 7;
+		*PgCurrentRelcacheEOXactListOverflowedRef() = false;
+		*PgCurrentRelcacheEOXactTupleDescArrayRef() = tupledesc_array2;
+		*PgCurrentRelcacheNextEOXactTupleDescNumRef() = 8;
+		*PgCurrentRelcacheEOXactTupleDescArrayLenRef() = 9;
+
+		CurrentPgExecution = &fake_execution1;
+		ok = ok && *PgCurrentCatCacheInProgressStackRef() ==
+			(CatCInProgress *) &fake_execution1;
+		ok = ok && *PgCurrentRelcacheInProgressListRef() ==
+			(InProgressEnt *) &fake_execution1;
+		ok = ok && *PgCurrentRelcacheInProgressListLenRef() == 1;
+		ok = ok && *PgCurrentRelcacheInProgressListMaxLenRef() == 2;
+		ok = ok && PgCurrentRelcacheEOXactList()[0] == 101;
+		ok = ok && *PgCurrentRelcacheEOXactListLenRef() == 1;
+		ok = ok && *PgCurrentRelcacheEOXactListOverflowedRef();
+		ok = ok && *PgCurrentRelcacheEOXactTupleDescArrayRef() ==
+			tupledesc_array1;
+		ok = ok && *PgCurrentRelcacheNextEOXactTupleDescNumRef() == 3;
+		ok = ok && *PgCurrentRelcacheEOXactTupleDescArrayLenRef() == 4;
+
+		CurrentPgExecution = &fake_execution2;
+		ok = ok && *PgCurrentCatCacheInProgressStackRef() ==
+			(CatCInProgress *) &fake_execution2;
+		ok = ok && *PgCurrentRelcacheInProgressListRef() ==
+			(InProgressEnt *) &fake_execution2;
+		ok = ok && *PgCurrentRelcacheInProgressListLenRef() == 5;
+		ok = ok && *PgCurrentRelcacheInProgressListMaxLenRef() == 6;
+		ok = ok && PgCurrentRelcacheEOXactList()[0] == 201;
+		ok = ok && *PgCurrentRelcacheEOXactListLenRef() == 7;
+		ok = ok && !*PgCurrentRelcacheEOXactListOverflowedRef();
+		ok = ok && *PgCurrentRelcacheEOXactTupleDescArrayRef() ==
+			tupledesc_array2;
+		ok = ok && *PgCurrentRelcacheNextEOXactTupleDescNumRef() == 8;
+		ok = ok && *PgCurrentRelcacheEOXactTupleDescArrayLenRef() == 9;
+
+		CurrentPgExecution = saved_execution;
+	}
+	PG_CATCH();
+	{
+		CurrentPgExecution = saved_execution;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "catalog cache execution state was not execution-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_execution_async_state_is_execution_local);
 Datum
 test_execution_async_state_is_execution_local(PG_FUNCTION_ARGS)

@@ -1509,6 +1509,14 @@ centralized early fallback adoption reaches the bucket through
 `PgExecutionAdoptEarlyState()`. The global-lifetime scan now reports 47
 execution-local declarations, down from 60, with zero new unclassified mutable
 globals.
+The following catalog-cache batch moved catcache's create-in-progress stack
+and relcache's build-in-progress list, EOXact relation OID list, and EOXact
+tupledesc array slots into `PgExecutionCatalogCacheState`. The runtime object
+owns the slots and inline OID array; the pointed-to catcache stack entries,
+relcache in-progress list, and tupledesc array remain borrowed from existing
+stack, `CacheMemoryContext`, and relcache EOXact cleanup ownership. The
+global-lifetime scan now reports 38 execution-local declarations, down from
+47, with zero new unclassified mutable globals.
 The lifecycle audit is now also mechanically checked. The root
 `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` manifest records owner/lifetime,
 initializer, early-adoption, reset/destroy, and copy/adoption rules for every

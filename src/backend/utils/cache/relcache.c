@@ -80,6 +80,7 @@
 #include "storage/lock.h"
 #include "storage/smgr.h"
 #include "utils/array.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/catcache.h"
 #include "utils/datum.h"
@@ -169,10 +170,6 @@ typedef struct inprogressent
 	bool		invalidated;	/* whether an invalidation arrived for it */
 } InProgressEnt;
 
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION InProgressEnt *in_progress_list;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int in_progress_list_len;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int in_progress_list_maxlen;
-
 /*
  * eoxact_list[] stores the OIDs of relations that (might) need AtEOXact
  * cleanup work.  This list intentionally has limited size; if it overflows,
@@ -183,10 +180,16 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int in_progress_list_maxlen;
  * EOXactListAdd() does not bother to prevent duplicate list entries, so the
  * cleanup processing must be idempotent.
  */
-#define MAX_EOXACT_LIST 32
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION Oid eoxact_list[MAX_EOXACT_LIST];
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int eoxact_list_len = 0;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool eoxact_list_overflowed = false;
+#define MAX_EOXACT_LIST PG_EXECUTION_RELCACHE_MAX_EOXACT_LIST
+#define in_progress_list (*PgCurrentRelcacheInProgressListRef())
+#define in_progress_list_len (*PgCurrentRelcacheInProgressListLenRef())
+#define in_progress_list_maxlen (*PgCurrentRelcacheInProgressListMaxLenRef())
+#define eoxact_list (PgCurrentRelcacheEOXactList())
+#define eoxact_list_len (*PgCurrentRelcacheEOXactListLenRef())
+#define eoxact_list_overflowed (*PgCurrentRelcacheEOXactListOverflowedRef())
+#define EOXactTupleDescArray (*PgCurrentRelcacheEOXactTupleDescArrayRef())
+#define NextEOXactTupleDescNum (*PgCurrentRelcacheNextEOXactTupleDescNumRef())
+#define EOXactTupleDescArrayLen (*PgCurrentRelcacheEOXactTupleDescArrayLenRef())
 
 #define EOXactListAdd(rel) \
 	do { \
@@ -201,9 +204,6 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION bool eoxact_list_overflowed = false;
  * cleanup work.  The array expands as needed; there is no hashtable because
  * we don't need to access individual items except at EOXact.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION TupleDesc *EOXactTupleDescArray;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int NextEOXactTupleDescNum = 0;
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION int EOXactTupleDescArrayLen = 0;
 
 /*
  *		macros to manipulate the lookup hashtable

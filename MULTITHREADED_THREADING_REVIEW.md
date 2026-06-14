@@ -1077,6 +1077,19 @@ build, and `git diff --check`. The global-lifetime scan now reports 47
 execution-local declarations with zero new unclassified mutable globals, down
 from 60 before this slice.
 
+The following catalog-cache slice moved catcache's create-in-progress stack
+and relcache's build-in-progress list, EOXact relation OID list, and EOXact
+tupledesc array slots into `PgExecutionCatalogCacheState`. The lifecycle
+manifest records the inline OID list as object-owned scalar storage and the
+catcache/relcache pointer slots as borrowed from existing stack,
+`CacheMemoryContext`, and relcache EOXact cleanup ownership. Validation
+included touched-object builds, full `gmake -j8`, `test_backend_runtime`
+regression, `gmake check-runtime-lifecycles`, the required global-lifetime
+scan, contrib build, and direct threaded runtime TAP after forcing the
+runtime-layout rebuild path for stale `launch_backend.o`. The global-lifetime
+scan now reports 38 execution-local declarations with zero new unclassified
+mutable globals, down from 47 before this slice.
+
 ## Bottom Line
 
 The branch is on track only if the current debt is treated as Phase 12

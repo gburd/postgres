@@ -8479,3 +8479,41 @@ Validation for this slice:
   globals and 47 execution-local declarations;
 - `gmake -C contrib -j8` passed;
 - `git diff --check` passed.
+
+## Catalog Cache Execution State
+
+The next Phase 12 catalog-cache slice moves relcache and catcache execution
+scratch slots into `PgExecutionCatalogCacheState`:
+
+- catcache's create-in-progress stack pointer;
+- relcache's `RelationBuildDesc()` in-progress list pointer, length, and
+  allocated length;
+- relcache's EOXact relation OID list, length, and overflow flag;
+- relcache's EOXact tuple descriptor array pointer, next index, and allocated
+  length.
+
+This keeps source-local names in `catcache.c` and `relcache.c` as
+compatibility macros over runtime accessors. The runtime object owns the
+slots and inline EOXact OID list. The pointed-to catcache stack entries remain
+borrowed stack objects, the relcache in-progress list remains allocated in
+`CacheMemoryContext`, and the tuple descriptor array remains owned by existing
+relcache EOXact cleanup.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `catcache.o`,
+  `relcache.o`, and `test_backend_runtime.o`;
+- full `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed, including
+  `test_execution_catalog_cache_state_is_execution_local()`;
+- `gmake check-runtime-lifecycles` passed with 130 fields classified;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and 38 execution-local declarations;
+- `gmake -C contrib -j8` passed;
+- direct threaded-runtime TAP initially exposed stale runtime-layout objects:
+  `001_threaded_runtime.pl` saw one postmaster child and shutdown stuck until
+  `launch_backend.o` and the touched runtime/cache/test objects were rebuilt.
+  After reinstalling into `tmp_install`, direct
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with patched macOS install names;
+- `git diff --check` passed.

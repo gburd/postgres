@@ -17,6 +17,7 @@
 #include <sys/time.h>
 
 #include "access/session.h"
+#include "access/tupdesc.h"
 #include "access/transam.h"
 #include "access/xlogdefs.h"
 #include "access/xlog_internal.h"
@@ -77,6 +78,8 @@ typedef struct Subscription Subscription;
 typedef struct BufFile BufFile;
 typedef struct LargeObjectDesc LargeObjectDesc;
 typedef struct EventTriggerQueryState EventTriggerQueryState;
+typedef struct CatCInProgress CatCInProgress;
+typedef struct inprogressent InProgressEnt;
 typedef struct dsa_area dsa_area;
 typedef struct dshash_table dshash_table;
 typedef struct XLogReaderState XLogReaderState;
@@ -792,6 +795,7 @@ typedef struct PgBackendTransactionState
 } PgBackendTransactionState;
 
 #define PG_EXECUTION_ERRORDATA_STACK_SIZE 5
+#define PG_EXECUTION_RELCACHE_MAX_EOXACT_LIST 32
 
 typedef struct PgExecutionDebugState
 {
@@ -1027,6 +1031,20 @@ typedef struct PgExecutionCatalogState
 	struct PendingRelDelete *pending_rel_deletes;
 	HTAB	   *pending_sync_hash;
 } PgExecutionCatalogState;
+
+typedef struct PgExecutionCatalogCacheState
+{
+	CatCInProgress *catcache_in_progress_stack;
+	InProgressEnt *relcache_in_progress_list;
+	int			relcache_in_progress_list_len;
+	int			relcache_in_progress_list_maxlen;
+	Oid			relcache_eoxact_list[PG_EXECUTION_RELCACHE_MAX_EOXACT_LIST];
+	int			relcache_eoxact_list_len;
+	bool		relcache_eoxact_list_overflowed;
+	TupleDesc  *relcache_eoxact_tupledesc_array;
+	int			relcache_next_eoxact_tupledesc_num;
+	int			relcache_eoxact_tupledesc_array_len;
+} PgExecutionCatalogCacheState;
 
 typedef struct PgExecutionRegexState
 {
@@ -1869,6 +1887,7 @@ struct PgExecution
 	PgExecutionGUCErrorState guc_error;
 	PgExecutionAsyncState async;
 	PgExecutionCatalogState catalog;
+	PgExecutionCatalogCacheState catalog_cache;
 	PgExecutionRegexState regex;
 	PgExecutionValgrindState valgrind;
 	PgExecutionSnapBuildState snapbuild;
@@ -2241,6 +2260,16 @@ extern List **PgCurrentPendingReindexedIndexesRef(void);
 extern int *PgCurrentReindexingNestLevelRef(void);
 extern struct PendingRelDelete **PgCurrentPendingRelDeletesRef(void);
 extern HTAB **PgCurrentPendingSyncHashRef(void);
+extern CatCInProgress **PgCurrentCatCacheInProgressStackRef(void);
+extern InProgressEnt **PgCurrentRelcacheInProgressListRef(void);
+extern int *PgCurrentRelcacheInProgressListLenRef(void);
+extern int *PgCurrentRelcacheInProgressListMaxLenRef(void);
+extern Oid *PgCurrentRelcacheEOXactList(void);
+extern int *PgCurrentRelcacheEOXactListLenRef(void);
+extern bool *PgCurrentRelcacheEOXactListOverflowedRef(void);
+extern TupleDesc **PgCurrentRelcacheEOXactTupleDescArrayRef(void);
+extern int *PgCurrentRelcacheNextEOXactTupleDescNumRef(void);
+extern int *PgCurrentRelcacheEOXactTupleDescArrayLenRef(void);
 extern dclist_head *PgCurrentMultiXactCacheRef(void);
 extern bool *PgCurrentMultiXactCacheInitializedRef(void);
 extern MemoryContext *PgCurrentMultiXactContextRef(void);

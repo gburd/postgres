@@ -30,6 +30,7 @@
 #include "storage/ipc.h"		/* for on_proc_exit */
 #endif
 #include "storage/lmgr.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/catcache.h"
 #include "utils/datum.h"
@@ -58,7 +59,7 @@ typedef struct CatCInProgress
 	struct CatCInProgress *next;
 } CatCInProgress;
 
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION CatCInProgress *catcache_in_progress_stack = NULL;
+#define catcache_in_progress_stack (*PgCurrentCatCacheInProgressStackRef())
 
  /* #define CACHEDEBUG */	/* turns DEBUG elogs on */
 
