@@ -36,6 +36,9 @@ the code evolves.
 - [MULTITHREADED_RUNTIME_LIFECYCLE.tsv](MULTITHREADED_RUNTIME_LIFECYCLE.tsv)
   is the Gate E2 lifecycle manifest for `PgBackend`, `PgSession`,
   `PgConnection`, and `PgExecution` fields.
+- [MULTITHREADED_RUNTIME_OWNERS.tsv](MULTITHREADED_RUNTIME_OWNERS.tsv) maps
+  migrated legacy symbols to runtime object buckets, members, accessors, and
+  owner source files. Extend it when moving globals behind runtime objects.
 - [MULTITHREADED_THREADING_REVIEW.md](MULTITHREADED_THREADING_REVIEW.md)
   records the critical branch review findings and the Phase 12 exit-gate
   rationale.
@@ -78,6 +81,13 @@ Important current files:
   existing `Session` abstraction for session-scoped DSM/DSA state. Treat this
   as a seed for the broader session object unless there is a strong reason not
   to.
+- `src/backend/utils/cache/backend_runtime_cache.c`: fork-owned runtime bridge
+  accessors for session-owned cache roots. Add future catalog/cache accessor
+  shims here rather than growing `backend_runtime.c`.
+- `src/backend/utils/init/backend_runtime_internal.h`: backend-private runtime
+  declarations shared by fork-owned runtime support files. Do not expose these
+  helpers in installed headers unless an upstream-owned caller truly needs
+  them.
 - `src/include/miscadmin.h`: widely visible process/session globals and the
   interrupt macros.
 - `src/backend/storage/ipc/procsignal.c`: process-signal-style backend
@@ -139,6 +149,11 @@ Important current files:
 - For Phase 12 state migration, prefer larger coherent batches when the state
   has the same owner and validation surface. Avoid one-variable commits unless
   the variable sits on a fragile lifecycle path where a narrow proof is needed.
+- Keep `src/backend/utils/init/backend_runtime.c` focused on root runtime
+  construction, current-pointer installation, process/thread symmetry, and
+  top-level adoption/reset orchestration. New domain-specific accessors and
+  simple lifecycle helpers should live in fork-owned adjacent subsystem files,
+  with `check-runtime-lifecycles` taught to scan those files.
 - Do not attempt thread launch until the thread-safety floor is in place:
   backend-local globals must not be shared plain process globals, backend exit
   must not terminate the whole runtime, and timeout/interrupt delivery must be

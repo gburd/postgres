@@ -2,6 +2,7 @@
 
 backend_sources += files(
   'attoptcache.c',
+  'backend_runtime_cache.c',
   'catcache.c',
   'evtcache.c',
   'funccache.c',

@@ -912,7 +912,7 @@ static PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
 static PgSessionPlannerMethodState *PgCurrentSessionPlannerMethodState(void);
 static PgSessionFunctionManagerState *PgCurrentSessionFunctionManagerState(void);
 static PgSessionExtensionModuleState *PgCurrentSessionExtensionModuleState(void);
-static PgSessionCatalogLookupState *PgCurrentSessionCatalogLookupState(void);
+PgSessionCatalogLookupState *PgCurrentSessionCatalogLookupState(void);
 static PgSessionInvalidationCallbackState *PgCurrentSessionInvalidationCallbackState(void);
 static PgSessionRIGlobalsState *PgCurrentSessionRIGlobalsState(void);
 static PgSessionRelMapState *PgCurrentSessionRelMapState(void);
@@ -5574,7 +5574,7 @@ PgCurrentSessionExtensionModuleState(void)
 	return &CurrentPgSession->extension_modules;
 }
 
-static PgSessionCatalogLookupState *
+PgSessionCatalogLookupState *
 PgCurrentSessionCatalogLookupState(void)
 {
 	if (CurrentPgSession == NULL)
@@ -6212,144 +6212,6 @@ PgCurrentCFuncHashRef(void)
 	return &PgCurrentSessionFunctionManagerState()->c_func_hash;
 }
 
-CatCache **
-PgCurrentSysCacheArray(void)
-{
-	return PgCurrentSessionCatalogLookupState()->sys_cache;
-}
-
-bool *
-PgCurrentSysCacheInitializedRef(void)
-{
-	return &PgCurrentSessionCatalogLookupState()->sys_cache_initialized;
-}
-
-Oid *
-PgCurrentSysCacheRelationOidArray(void)
-{
-	return PgCurrentSessionCatalogLookupState()->sys_cache_relation_oid;
-}
-
-int *
-PgCurrentSysCacheRelationOidSizeRef(void)
-{
-	return &PgCurrentSessionCatalogLookupState()->sys_cache_relation_oid_size;
-}
-
-Oid *
-PgCurrentSysCacheSupportingRelOidArray(void)
-{
-	return PgCurrentSessionCatalogLookupState()->sys_cache_supporting_rel_oid;
-}
-
-int *
-PgCurrentSysCacheSupportingRelOidSizeRef(void)
-{
-	return &PgCurrentSessionCatalogLookupState()->sys_cache_supporting_rel_oid_size;
-}
-
-CatCacheHeader **
-PgCurrentCatCacheHeaderRef(void)
-{
-	return &PgCurrentSessionCatalogLookupState()->cat_cache_header;
-}
-
-HTAB **
-PgCurrentRelationIdCacheRef(void)
-{
-	return &PgCurrentSessionCatalogLookupState()->relcache_relation_id_cache;
-}
-
-bool *
-PgCurrentCriticalRelcachesBuiltRef(void)
-{
-	return &PgCurrentSessionCatalogLookupState()->relcache_critical_built;
-}
-
-bool *
-PgCurrentCriticalSharedRelcachesBuiltRef(void)
-{
-	return &PgCurrentSessionCatalogLookupState()->relcache_critical_shared_built;
-}
-
-long *
-PgCurrentRelcacheInvalsReceivedRef(void)
-{
-	return &PgCurrentSessionCatalogLookupState()->relcache_invals_received;
-}
-
-HTAB **
-PgCurrentOpClassCacheRef(void)
-{
-	return &PgCurrentSessionCatalogLookupState()->relcache_opclass_cache;
-}
-
-HTAB **
-PgCurrentTypeCacheHashRef(void)
-{
-	return &PgCurrentSessionCatalogLookupState()->typcache_type_cache_hash;
-}
-
-HTAB **
-PgCurrentRelIdToTypeIdCacheHashRef(void)
-{
-	return &PgCurrentSessionCatalogLookupState()->typcache_relid_to_typeid_hash;
-}
-
-TypeCacheEntry **
-PgCurrentFirstDomainTypeEntryRef(void)
-{
-	return &PgCurrentSessionCatalogLookupState()->typcache_first_domain_type_entry;
-}
-
-Oid **
-PgCurrentTypCacheInProgressListRef(void)
-{
-	return &PgCurrentSessionCatalogLookupState()->typcache_in_progress_list;
-}
-
-int *
-PgCurrentTypCacheInProgressListLenRef(void)
-{
-	return &PgCurrentSessionCatalogLookupState()->typcache_in_progress_list_len;
-}
-
-int *
-PgCurrentTypCacheInProgressListMaxLenRef(void)
-{
-	return &PgCurrentSessionCatalogLookupState()->typcache_in_progress_list_maxlen;
-}
-
-HTAB **
-PgCurrentRecordCacheHashRef(void)
-{
-	return &PgCurrentSessionCatalogLookupState()->typcache_record_cache_hash;
-}
-
-RecordCacheArrayEntry **
-PgCurrentRecordCacheArrayRef(void)
-{
-	return &PgCurrentSessionCatalogLookupState()->typcache_record_cache_array;
-}
-
-int32 *
-PgCurrentRecordCacheArrayLenRef(void)
-{
-	return &PgCurrentSessionCatalogLookupState()->typcache_record_cache_array_len;
-}
-
-int32 *
-PgCurrentNextRecordTypmodRef(void)
-{
-	return &PgCurrentSessionCatalogLookupState()->typcache_next_record_typmod;
-}
-
-uint64 *
-PgCurrentTupleDescIdCounterRef(void)
-{
-	return &PgCurrentSessionCatalogLookupState()->typcache_tupledesc_id_counter;
-}
-
 void **
 PgCurrentPLpgSQLSessionStateRef(void)
 {
@@ -6379,60 +6241,6 @@ PgSessionRegisterResetCallback(PgSessionResetCallback callback, void *arg)
 		lappend(extension_modules->reset_callbacks, item);
 
 	MemoryContextSwitchTo(oldcontext);
-}
-
-HTAB **
-PgCurrentAttoptCacheHashRef(void)
-{
-	return &PgCurrentSessionCatalogLookupState()->attopt_cache_hash;
-}
-
-HTAB **
-PgCurrentRelfilenumberMapHashRef(void)
-{
-	return &PgCurrentSessionCatalogLookupState()->relfilenumber_map_hash;
-}
-
-ScanKeyData *
-PgCurrentRelfilenumberScanKeyArray(void)
-{
-	return PgCurrentSessionCatalogLookupState()->relfilenumber_skey;
-}
-
-HTAB **
-PgCurrentTableSpaceCacheHashRef(void)
-{
-	return &PgCurrentSessionCatalogLookupState()->tablespace_cache_hash;
-}
-
-HTAB **
-PgCurrentEventTriggerCacheRef(void)
-{
-	return &PgCurrentSessionCatalogLookupState()->event_trigger_cache;
-}
-
-MemoryContext *
-PgCurrentEventTriggerCacheContextRef(void)
-{
-	return &PgCurrentSessionCatalogLookupState()->event_trigger_cache_context;
-}
-
-int *
-PgCurrentEventTriggerCacheStateRef(void)
-{
-	return &PgCurrentSessionCatalogLookupState()->event_trigger_cache_state;
-}
-
-struct _SPI_plan **
-PgCurrentRuleutilsRuleByOidPlanRef(void)
-{
-	return &PgCurrentSessionCatalogLookupState()->ruleutils_rule_by_oid_plan;
-}
-
-struct _SPI_plan **
-PgCurrentRuleutilsViewRulePlanRef(void)
-{
-	return &PgCurrentSessionCatalogLookupState()->ruleutils_view_rule_plan;
 }
 
 PgSessionInvalidationCallbackState *

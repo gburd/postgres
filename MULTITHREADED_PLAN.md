@@ -798,6 +798,14 @@ Likely workstreams:
 - fd cache into session-owned state plus runtime fd budget.
 - cache state either session-owned or explicitly synchronized.
 
+Phase 12 organization rule: `backend_runtime.c` remains the core
+runtime/orchestration file for root construction, current-pointer installation,
+process/thread symmetry, and top-level adoption/reset orchestration. New
+domain-specific accessors and trivial lifecycle helpers should move into
+fork-owned adjacent subsystem files, with `check-runtime-lifecycles` updated
+to scan those files and `MULTITHREADED_RUNTIME_OWNERS.tsv` extended with the
+symbol-level mapping from legacy global to runtime bucket/member/accessor.
+
 Validation:
 
 - targeted tests per subsystem;

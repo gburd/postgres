@@ -9782,3 +9782,46 @@ Validation for this slice:
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals and session-local declarations reduced from 123 to 112.
 - `git diff --check` passed.
+
+## Runtime Source Ownership Split
+
+The next Phase 12 maintenance slice starts reducing `backend_runtime.c`
+conflict concentration without changing behavior:
+
+- cache/catalog compatibility accessors moved from
+  `src/backend/utils/init/backend_runtime.c` to the fork-owned adjacent file
+  `src/backend/utils/cache/backend_runtime_cache.c`;
+- `backend_runtime.c` still owns root runtime construction, current-pointer
+  installation, process/thread symmetry, and top-level adoption/reset
+  orchestration;
+- `src/backend/utils/init/backend_runtime_internal.h` exposes the small
+  backend-private current-bucket helper needed by adjacent fork-owned runtime
+  files, avoiding new installed-header surface for internal plumbing;
+- `src/backend/utils/cache/Makefile` and `src/backend/utils/cache/meson.build`
+  include the new source file;
+- `check-runtime-lifecycles` now passes an explicit checked source list and the
+  checker default source list includes `backend_runtime_cache.c`;
+- `MULTITHREADED_RUNTIME_OWNERS.tsv` starts the symbol-level maintenance map
+  from legacy globals to runtime object buckets, members, accessors, and owner
+  source files.
+
+This is a no-behavior-change organization proof. Future Phase 12 migrations
+should put domain-specific accessors and simple lifecycle helpers in
+fork-owned adjacent subsystem files, then extend the checked runtime source
+list and owner map in the same commit. Semantic reset/destruction code should
+remain handwritten near the subsystem that owns the resource and must still be
+covered by `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime_cache.o` and
+  `backend_runtime.o`;
+- `perl -c src/tools/runtime_lifecycle/check_runtime_lifecycles.pl` passed;
+- `gmake -j8` passed;
+- `gmake check-runtime-lifecycles` passed with the explicit source list
+  including `backend_runtime_cache.c`;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and session-local declarations unchanged at 112;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl` with 94 tests.
