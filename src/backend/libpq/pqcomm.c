@@ -369,6 +369,7 @@ socket_comm_reset(void)
 static void
 socket_close(int code, Datum arg)
 {
+	PgConnection *connection = CurrentPgConnection;
 	MemoryContext port_context = NULL;
 
 	if (FeBeWaitSet != NULL)
@@ -436,6 +437,9 @@ socket_close(int code, Datum arg)
 			MemoryContextDelete(port_context);
 		}
 	}
+
+	if (connection != NULL)
+		PgConnectionResetClosedState(connection);
 }
 
 

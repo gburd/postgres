@@ -605,6 +605,12 @@ SELECT test_connection_protocol_state_is_connection_local();
  t
 (1 row)
 
+SELECT test_connection_reset_closed_state();
+ test_connection_reset_closed_state 
+------------------------------------
+ t
+(1 row)
+
 SELECT test_connection_output_state_is_connection_local();
  test_connection_output_state_is_connection_local 
 --------------------------------------------------

@@ -967,6 +967,38 @@ PgConnectionAdoptEarlySecurityState(PgConnection *connection)
 }
 
 void
+PgConnectionResetClosedState(PgConnection *connection)
+{
+	PgConnectionSecurityState *security;
+
+	Assert(connection != NULL);
+
+	/*
+	 * socket_close() releases the palloc-backed send buffer and wait set.
+	 * This reset makes the retained logical connection object stop pointing
+	 * at resources that no longer exist.
+	 */
+	MemSet(&connection->socket_io, 0, sizeof(connection->socket_io));
+	connection->protocol.comm_methods = NULL;
+	connection->protocol.fe_be_wait_set = NULL;
+	connection->protocol.frontend_protocol = 0;
+
+	connection->startup.client_auth_in_progress = false;
+	connection->startup.client_socket = NULL;
+
+	/*
+	 * GSSAPI connection buffers are malloc-backed in be-secure-gssapi.c.
+	 * PAM fields are borrowed authentication-time pointers, so reset them but
+	 * do not free them here.
+	 */
+	security = &connection->security;
+	free(security->gss_send_buffer);
+	free(security->gss_recv_buffer);
+	free(security->gss_result_buffer);
+	MemSet(security, 0, sizeof(*security));
+}
+
+void
 PgConnectionAdoptEarlyState(PgConnection *connection,
 							struct Port *preserved_port)
 {

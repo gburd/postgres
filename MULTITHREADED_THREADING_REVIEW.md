@@ -868,7 +868,13 @@ backend installation. That closes the immediate process/thread adoption-list
 asymmetry across backend, session, connection, and execution objects. The
 broader connection-lifetime audit remains open because connection state owns
 or borrows pointer-bearing resources such as send buffers, wait sets, security
-buffers, and authentication strings.
+buffers, and authentication strings. A later Gate E2 teardown slice added
+`PgConnectionResetClosedState()`: `socket_close()` releases the palloc-backed
+send buffer and frontend/backend wait set, then the runtime helper scrubs the
+retained connection socket/protocol/startup/security buckets and frees the
+malloc-backed GSS buffers. This closes one concrete connection reset/destroy
+rule; the complete destructor tree and `TopMemoryContext` ownership model
+remain blockers.
 The latest state-migration slice moved wait-event storage into
 `PgBackendWaitState` and the shared-invalidation local transaction ID counter
 into `PgBackendIPCState`. Validation included touched-object builds, a clean

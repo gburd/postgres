@@ -1443,6 +1443,14 @@ provided `Port` so the live frontend connection survives adoption.
 connection fallback adoption plus fallback reset. Validation included
 touched-object builds, the backend-runtime regression, direct threaded TAP,
 full `gmake -j8`, contrib build, and `gmake check-global-lifetimes`.
+Follow-up connection teardown hardening added
+`PgConnectionResetClosedState()`. `socket_close()` still owns freeing the
+palloc-backed send buffer and frontend/backend `WaitEventSet`, while the
+runtime helper scrubs the retained `PgConnection` socket/protocol/startup/
+security buckets and frees the malloc-backed GSS buffers. This closes one
+concrete Gate E2 reset/destroy rule for connection state, but the complete
+backend/session/connection/execution destructor tree and `TopMemoryContext`
+ownership model remain Phase 12 blockers.
 
 ## Phase 13: Scheduler-Aware Wait Boundary
 

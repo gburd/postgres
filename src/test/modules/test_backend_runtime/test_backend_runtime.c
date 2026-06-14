@@ -12132,6 +12132,106 @@ test_connection_protocol_state_is_connection_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_connection_reset_closed_state);
+Datum
+test_connection_reset_closed_state(PG_FUNCTION_ARGS)
+{
+	PgConnection connection;
+	PgConnectionSocketIOState *socket_io;
+	PgConnectionSecurityState *security;
+	const PQcommMethods methods = {0};
+	struct ClientSocket fake_client_socket;
+	WaitEventSet *fake_wait_set;
+	bool		ok = true;
+
+	MemSet(&connection, 0, sizeof(connection));
+	MemSet(&fake_client_socket, 0, sizeof(fake_client_socket));
+	fake_wait_set = (WaitEventSet *) &connection;
+
+	socket_io = &connection.socket_io;
+	socket_io->send_buffer = (char *) "released by socket_close";
+	socket_io->send_buffer_size = 128;
+	socket_io->send_pointer = 64;
+	socket_io->send_start = 32;
+	socket_io->recv_buffer[0] = 'x';
+	socket_io->recv_pointer = 7;
+	socket_io->recv_length = 9;
+	socket_io->comm_busy = true;
+	socket_io->comm_reading_msg = true;
+
+	connection.protocol.comm_methods = &methods;
+	connection.protocol.fe_be_wait_set = fake_wait_set;
+	connection.protocol.frontend_protocol = PG_PROTOCOL(3, 2);
+	connection.startup.client_auth_in_progress = true;
+	connection.startup.client_socket = &fake_client_socket;
+
+	security = &connection.security;
+	security->ssl_loaded_verify_locations = true;
+	security->gss_send_buffer = malloc(8);
+	security->gss_send_length = 1;
+	security->gss_send_next = 2;
+	security->gss_send_consumed = 3;
+	security->gss_recv_buffer = malloc(8);
+	security->gss_recv_length = 4;
+	security->gss_result_buffer = malloc(8);
+	security->gss_result_length = 5;
+	security->gss_result_next = 6;
+	security->gss_max_packet_size = 7;
+	security->pam_password = "borrowed";
+	security->pam_port = (struct Port *) &connection;
+	security->pam_no_password = true;
+
+	if (security->gss_send_buffer == NULL ||
+		security->gss_recv_buffer == NULL ||
+		security->gss_result_buffer == NULL)
+	{
+		free(security->gss_send_buffer);
+		free(security->gss_recv_buffer);
+		free(security->gss_result_buffer);
+		elog(ERROR, "out of memory");
+	}
+
+	PgConnectionResetClosedState(&connection);
+
+	socket_io = &connection.socket_io;
+	ok = ok && socket_io->send_buffer == NULL;
+	ok = ok && socket_io->send_buffer_size == 0;
+	ok = ok && socket_io->send_pointer == 0;
+	ok = ok && socket_io->send_start == 0;
+	ok = ok && socket_io->recv_buffer[0] == '\0';
+	ok = ok && socket_io->recv_pointer == 0;
+	ok = ok && socket_io->recv_length == 0;
+	ok = ok && !socket_io->comm_busy;
+	ok = ok && !socket_io->comm_reading_msg;
+
+	ok = ok && connection.protocol.comm_methods == NULL;
+	ok = ok && connection.protocol.fe_be_wait_set == NULL;
+	ok = ok && connection.protocol.frontend_protocol == 0;
+	ok = ok && !connection.startup.client_auth_in_progress;
+	ok = ok && connection.startup.client_socket == NULL;
+
+	security = &connection.security;
+	ok = ok && !security->ssl_loaded_verify_locations;
+	ok = ok && security->gss_send_buffer == NULL;
+	ok = ok && security->gss_send_length == 0;
+	ok = ok && security->gss_send_next == 0;
+	ok = ok && security->gss_send_consumed == 0;
+	ok = ok && security->gss_recv_buffer == NULL;
+	ok = ok && security->gss_recv_length == 0;
+	ok = ok && security->gss_result_buffer == NULL;
+	ok = ok && security->gss_result_length == 0;
+	ok = ok && security->gss_result_next == 0;
+	ok = ok && security->gss_max_packet_size == 0;
+	ok = ok && security->pam_password == NULL;
+	ok = ok && security->pam_port == NULL;
+	ok = ok && !security->pam_no_password;
+
+	if (!ok)
+		elog(ERROR, "closed connection runtime state was not reset");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_connection_output_state_is_connection_local);
 Datum
 test_connection_output_state_is_connection_local(PG_FUNCTION_ARGS)

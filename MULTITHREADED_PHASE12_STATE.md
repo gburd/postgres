@@ -149,6 +149,16 @@ Validation for this slice:
 
 - touched-object builds passed for `backend_runtime.o`, `pqcomm.o`, and
   `test_backend_runtime.o`;
+- `gmake -C src/test/modules/test_backend_runtime check` passed, including
+  `test_connection_reset_closed_state()`;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and
+  patched macOS install names;
+- full `gmake -j8` passed;
+- `gmake -C contrib -j8` passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals.
 - an incremental full build initially left stale backend objects with old
   `PgThreadBackendRuntimeState` layout assumptions. Threaded TAP then crashed
   during startup before readiness. The recovery was a backend clean plus
@@ -8127,3 +8137,33 @@ Validation for this slice:
   `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
   87 tests with the local `/Users/samwillis/perl5` `PERL5LIB` paths and an
   explicit `PG_REGRESS` environment.
+
+## Connection Closed-State Reset
+
+The one-hundred-seventy-second Phase 12 slice makes one Gate E2 lifecycle
+cleanup boundary explicit for retained connection runtime objects:
+
+- new `PgConnectionResetClosedState()` resets the connection socket I/O bucket,
+  protocol dispatch/wait-set fields, startup client-auth pointer state, and
+  security scratch fields after connection close;
+- the helper frees the malloc-backed GSS send, receive, and result buffers
+  allocated by `be-secure-gssapi.c`;
+- it intentionally does not free the palloc-backed libpq send buffer or
+  `WaitEventSet`, because `socket_close()` already owns those release calls;
+- `socket_close()` now captures the current `PgConnection` and calls the reset
+  helper after releasing the wait set, send buffer, secure/socket state, and
+  `PortContext`;
+- `test_connection_reset_closed_state()` exercises the reset directly with
+  malloc-backed fake GSS buffers and verifies stale socket/protocol/startup/
+  security pointers and counters are scrubbed.
+
+This closes a concrete connection bucket reset/destroy rule from the Gate E2
+object-lifecycle review. It is not the full threaded teardown solution:
+carrier `TopMemoryContext` reclamation, a complete backend/session/connection/
+execution destructor tree, and the remaining bucket-by-bucket lifecycle audit
+remain Gate E2 blockers before Phase 12 can close.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `pqcomm.o`, and
+  `test_backend_runtime.o`;

@@ -679,6 +679,13 @@ Important current files:
   matrix current when changing backend libpq socket I/O or `Port` ownership
   state, because normal disconnect, abandoned clients, `FATAL`, and
   administrator termination all exercise this callback.
+- `PgConnectionResetClosedState()` is the retained-object cleanup companion to
+  `socket_close()`. `socket_close()` remains responsible for freeing the
+  palloc-backed send buffer and `WaitEventSet`; the runtime helper scrubs the
+  retained `PgConnection` socket/protocol/startup/security buckets and frees
+  the malloc-backed GSS buffers. Keep
+  `test_connection_reset_closed_state()` current when changing connection
+  teardown ownership.
 - Thread-backed auxiliary workers receive postmaster `SIGQUIT`, `SIGKILL`,
   and `SIGABRT` as logical `PG_BACKEND_INTERRUPT_PROC_DIE` mailbox events, not
   as process signal handlers that can `_exit()`. Any custom auxiliary
