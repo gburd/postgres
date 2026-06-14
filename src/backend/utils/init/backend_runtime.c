@@ -4312,6 +4312,15 @@ PgSessionResetClosedState(PgSession *session)
 	}
 }
 
+void
+PgExecutionResetClosedState(PgExecution *execution)
+{
+	if (execution == NULL)
+		return;
+
+	execution->debug.debug_query_string = NULL;
+}
+
 Session *
 PgSessionGetLegacySession(PgSession *session)
 {

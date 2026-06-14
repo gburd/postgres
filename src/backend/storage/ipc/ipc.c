@@ -293,6 +293,7 @@ PgBackendExitCleanup(int code)
 
 	exit_state->on_proc_exit_index = 0;
 
+	PgExecutionResetClosedState(CurrentPgExecution);
 	PgSessionResetClosedState(CurrentPgSession);
 	PgBackendResetClosedState(CurrentPgBackend);
 }

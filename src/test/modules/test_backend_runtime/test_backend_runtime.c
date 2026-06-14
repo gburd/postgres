@@ -11213,6 +11213,11 @@ test_execution_debug_query_string_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && strcmp(debug_query_string, "fake execution two") == 0;
 		debug_query_string = NULL;
 
+		CurrentPgExecution = &fake_execution1;
+		debug_query_string = "reset me";
+		PgExecutionResetClosedState(&fake_execution1);
+		ok = ok && debug_query_string == NULL;
+
 		CurrentPgExecution = saved_execution;
 		debug_query_string = saved_debug_query_string;
 	}

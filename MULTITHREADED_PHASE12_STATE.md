@@ -569,6 +569,35 @@ Validation for this slice:
   `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
   87 tests.
 
+## Execution Debug Pointer Reset
+
+The execution debug lifecycle row now has an explicit reset rule.
+`debug_query_string` remains a borrowed pointer to query text owned elsewhere;
+the execution bucket must clear it but must not free it. Existing
+`PostgresMain()` command, error, and exit paths already clear the pointer when
+the current command text may be clobbered. `PgExecutionResetClosedState()` now
+also clears the execution object's debug pointer, and `PgBackendExitCleanup()`
+calls it with the other object closed-state resets.
+
+The regression module extends
+`test_execution_debug_query_string_is_execution_local()` to set a fake
+execution's debug pointer and prove `PgExecutionResetClosedState()` clears it.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `ipc.o`, and
+  `test_backend_runtime.o`;
+- full `gmake -j8` passed;
+- `git diff --check` passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed with a fresh
+  temp install;
+- `gmake check-runtime-lifecycles` passed with 134 fields classified;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests.
+
 ## Runtime Lifecycle Manifest
 
 The one-hundred-seventy-third Phase 12 slice makes the Gate E2 object-lifecycle

@@ -2430,6 +2430,7 @@ extern bool PgCurrentSessionOwnsPointer(const void *ptr);
 extern void PgBackendResetClosedState(PgBackend *backend);
 extern MemoryContext PgSessionGetDynamicLibraryMemoryContext(PgSession *session);
 extern void PgSessionResetClosedState(PgSession *session);
+extern void PgExecutionResetClosedState(PgExecution *execution);
 extern Session *PgSessionGetLegacySession(PgSession *session);
 extern void PgSessionSetLegacySession(PgSession *session,
 									   Session *legacy_session);
