@@ -8647,3 +8647,50 @@ Validation for this slice:
 - direct threaded-runtime TAP
   `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
   87 tests with patched macOS install names.
+
+## Transaction Stack Execution State
+
+The next Phase 12 transaction-stack slice moves the last non-runtime
+`PG_GLOBAL_EXECUTION` declarations out of `xact.c`:
+
+- `TopTransactionStateData`;
+- `CurrentTransactionState`.
+
+`TransactionStateData` remains private to `xact.c`. `PgExecutionXactState`
+stores only opaque root/current pointers, and `xact.c` exposes its historical
+names as compatibility macros over private helper functions. The top
+transaction state is allocated lazily in `TopMemoryContext` for the current
+execution bridge; subtransaction entries remain allocated by the existing
+`PushTransaction()` path under `TopTransactionContext`.
+
+This preserves the transaction manager's internal type boundary while making
+the transaction-stack root and current pointer part of the explicit execution
+object. The full teardown story is still tied to the broader Gate E2 destroy
+audit: today the top transaction state has the same practical lifetime as the
+old process-global static object, while subtransaction nodes continue to be
+owned by transaction cleanup.
+
+Validation for this slice:
+
+- touched-object builds passed for `xact.o`, `backend_runtime.o`, and
+  `test_backend_runtime.o`;
+- `gmake check-runtime-lifecycles` passed with 134 fields classified after
+  updating the lifecycle manifest for the new opaque transaction-stack
+  pointers;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- direct `rg` confirmed no remaining non-runtime `PG_GLOBAL_EXECUTION`
+  declarations under `src/backend/access/transam/xact.c`;
+- full `gmake -j8` passed after explicitly rebuilding stale objects removed
+  during forced layout validation;
+- `gmake -C src/test/modules/test_backend_runtime check` passed, including
+  the expanded `test_execution_xact_state_is_execution_local()` checks for the
+  top/current transaction-state pointers;
+- `gmake -C contrib -j8` passed;
+- forced object rebuild/install passed for `launch_backend.o`,
+  `backend_runtime.o`, `xact.o`, and `test_backend_runtime.o`, followed by
+  `gmake -j8 install DESTDIR="$PWD/tmp_install"` and reinstalling
+  `src/test/modules/test_backend_runtime`;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with patched macOS install names.

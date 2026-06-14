@@ -204,6 +204,9 @@ typedef struct TransactionStateData
 
 typedef TransactionStateData *TransactionState;
 
+static TransactionStateData *GetTopTransactionStateData(void);
+static TransactionState *GetCurrentTransactionStateRef(void);
+
 /*
  * Serialized representation used to transmit transaction state to parallel
  * workers through shared memory.
@@ -228,11 +231,7 @@ typedef struct SerializedTransactionState
  * block.  It will point to TopTransactionStateData when not in a
  * transaction at all, or when in a top-level transaction.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION TransactionStateData TopTransactionStateData = {
-	.state = TRANS_DEFAULT,
-	.blockState = TBLOCK_DEFAULT,
-	.topXidLogged = false,
-};
+#define TopTransactionStateData (*GetTopTransactionStateData())
 
 /*
  * unreportedXids holds XIDs of all subtransactions that have not yet been
@@ -241,7 +240,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION TransactionStateData TopTransactionSt
 #define nUnreportedXids (*PgCurrentNUnreportedXidsRef())
 #define unreportedXids (PgCurrentUnreportedXids())
 
-static PG_THREAD_LOCAL PG_GLOBAL_EXECUTION TransactionState CurrentTransactionState;
+#define CurrentTransactionState (*GetCurrentTransactionStateRef())
 
 /*
  * The subtransaction ID and command ID assignment counters are global
@@ -359,16 +358,47 @@ static const char *TransStateAsString(TransState state);
  */
 
 /*
- * Initialize per-thread transaction state.  The historical static initializer
- * made CurrentTransactionState point at TopTransactionStateData, but C does
- * not allow a thread-local pointer to be initialized with the address of
- * another thread-local object.
+ * Initialize per-execution transaction state.  The historical static
+ * initializer made CurrentTransactionState point at TopTransactionStateData;
+ * the runtime-backed bridge installs that relationship after the memory
+ * context system and current execution object exist.
  */
 void
 InitializeTransactionState(void)
 {
 	if (CurrentTransactionState == NULL)
 		CurrentTransactionState = &TopTransactionStateData;
+}
+
+static TransactionStateData *
+GetTopTransactionStateData(void)
+{
+	TransactionStateData **top_transaction_state;
+
+	top_transaction_state = PgCurrentTopTransactionStateDataRef();
+	if (*top_transaction_state == NULL)
+	{
+		*top_transaction_state =
+			MemoryContextAllocZero(TopMemoryContext,
+								   sizeof(TransactionStateData));
+		(*top_transaction_state)->state = TRANS_DEFAULT;
+		(*top_transaction_state)->blockState = TBLOCK_DEFAULT;
+		(*top_transaction_state)->topXidLogged = false;
+	}
+
+	return *top_transaction_state;
+}
+
+static TransactionState *
+GetCurrentTransactionStateRef(void)
+{
+	TransactionState *current_transaction_state;
+
+	current_transaction_state = PgCurrentTransactionStateRef();
+	if (*current_transaction_state == NULL)
+		*current_transaction_state = GetTopTransactionStateData();
+
+	return current_transaction_state;
 }
 
 /*

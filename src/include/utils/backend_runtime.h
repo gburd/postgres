@@ -81,6 +81,7 @@ typedef struct LargeObjectDesc LargeObjectDesc;
 typedef struct EventTriggerQueryState EventTriggerQueryState;
 typedef struct CatCInProgress CatCInProgress;
 typedef struct inprogressent InProgressEnt;
+typedef struct TransactionStateData TransactionStateData;
 typedef struct dsa_area dsa_area;
 typedef struct dshash_table dshash_table;
 typedef struct XLogReaderState XLogReaderState;
@@ -968,6 +969,8 @@ typedef struct PgExecutionXactState
 	char	   *prepare_gid;
 	bool		force_sync_commit;
 	MemoryContext transaction_abort_context;
+	TransactionStateData *top_transaction_state_data;
+	TransactionStateData *current_transaction_state;
 } PgExecutionXactState;
 
 typedef struct PgExecutionTransactionCleanupState
@@ -2490,6 +2493,8 @@ extern TimestampTz *PgCurrentXactStopTimestampRef(void);
 extern char **PgCurrentPrepareGIDRef(void);
 extern bool *PgCurrentForceSyncCommitRef(void);
 extern MemoryContext *PgCurrentTransactionAbortContextRef(void);
+extern TransactionStateData **PgCurrentTopTransactionStateDataRef(void);
+extern TransactionStateData **PgCurrentTransactionStateRef(void);
 extern LargeObjectDesc ***PgCurrentLargeObjectCookiesRef(void);
 extern int *PgCurrentLargeObjectCookiesSizeRef(void);
 extern bool *PgCurrentLargeObjectCleanupNeededRef(void);

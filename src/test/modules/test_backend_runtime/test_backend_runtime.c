@@ -11903,6 +11903,10 @@ test_execution_xact_state_is_execution_local(PG_FUNCTION_ARGS)
 		*PgCurrentForceSyncCommitRef() = true;
 		*PgCurrentTransactionAbortContextRef() =
 			(MemoryContext) &fake_execution1;
+		*PgCurrentTopTransactionStateDataRef() =
+			(TransactionStateData *) &fake_execution1;
+		*PgCurrentTransactionStateRef() =
+			(TransactionStateData *) &fake_execution1;
 
 		CurrentPgExecution = &fake_execution2;
 		ok = ok && XactIsoLevel == 0;
@@ -11928,6 +11932,8 @@ test_execution_xact_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentPrepareGIDRef() == NULL;
 		ok = ok && !*PgCurrentForceSyncCommitRef();
 		ok = ok && *PgCurrentTransactionAbortContextRef() == NULL;
+		ok = ok && *PgCurrentTopTransactionStateDataRef() == NULL;
+		ok = ok && *PgCurrentTransactionStateRef() == NULL;
 
 		XactIsoLevel = XACT_REPEATABLE_READ;
 		XactReadOnly = false;
@@ -11954,6 +11960,10 @@ test_execution_xact_state_is_execution_local(PG_FUNCTION_ARGS)
 		*PgCurrentForceSyncCommitRef() = false;
 		*PgCurrentTransactionAbortContextRef() =
 			(MemoryContext) &fake_execution2;
+		*PgCurrentTopTransactionStateDataRef() =
+			(TransactionStateData *) &fake_execution2;
+		*PgCurrentTransactionStateRef() =
+			(TransactionStateData *) &fake_execution2;
 
 		CurrentPgExecution = &fake_execution1;
 		ok = ok && XactIsoLevel == XACT_SERIALIZABLE;
@@ -11982,6 +11992,10 @@ test_execution_xact_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentForceSyncCommitRef();
 		ok = ok && *PgCurrentTransactionAbortContextRef() ==
 			(MemoryContext) &fake_execution1;
+		ok = ok && *PgCurrentTopTransactionStateDataRef() ==
+			(TransactionStateData *) &fake_execution1;
+		ok = ok && *PgCurrentTransactionStateRef() ==
+			(TransactionStateData *) &fake_execution1;
 
 		CurrentPgExecution = &fake_execution2;
 		ok = ok && XactIsoLevel == XACT_REPEATABLE_READ;
@@ -12010,6 +12024,10 @@ test_execution_xact_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && !*PgCurrentForceSyncCommitRef();
 		ok = ok && *PgCurrentTransactionAbortContextRef() ==
 			(MemoryContext) &fake_execution2;
+		ok = ok && *PgCurrentTopTransactionStateDataRef() ==
+			(TransactionStateData *) &fake_execution2;
+		ok = ok && *PgCurrentTransactionStateRef() ==
+			(TransactionStateData *) &fake_execution2;
 
 		CurrentPgExecution = saved_execution;
 	}

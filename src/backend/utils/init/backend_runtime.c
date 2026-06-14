@@ -7310,6 +7310,18 @@ PgCurrentTransactionAbortContextRef(void)
 	return &PgCurrentExecutionXactState()->transaction_abort_context;
 }
 
+TransactionStateData **
+PgCurrentTopTransactionStateDataRef(void)
+{
+	return &PgCurrentExecutionXactState()->top_transaction_state_data;
+}
+
+TransactionStateData **
+PgCurrentTransactionStateRef(void)
+{
+	return &PgCurrentExecutionXactState()->current_transaction_state;
+}
+
 static PgExecutionTransactionCleanupState *
 PgCurrentExecutionTransactionCleanupState(void)
 {
