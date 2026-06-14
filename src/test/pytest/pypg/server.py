@@ -19,6 +19,7 @@ from ._env import test_timeout_default
 from .command import PgBin, ProgramResult
 from .bgpsql import BackgroundPsql
 from .errors import PgServerError, PgSqlError
+from .modes import CatchupMode, SlotCatchupMode, StopMode
 from .sqlresult import SqlResult
 from .interactive import InteractivePsql
 from .util import append_to_file, eprint, run, slurp_file
@@ -745,7 +746,9 @@ class PostgresServer:
             )
         return proc.stdout
 
-    def wait_for_slot_catchup(self, slot_name, mode="restart", target_lsn=None):
+    def wait_for_slot_catchup(
+        self, slot_name, mode=SlotCatchupMode.RESTART, target_lsn=None
+    ):
         """Wait until slot_name's <mode>_lsn passes target_lsn.
 
         Mirrors Cluster->wait_for_slot_catchup. mode is 'restart' or
@@ -753,6 +756,7 @@ class PostgresServer:
         """
         if mode not in ("restart", "confirmed_flush"):
             raise ValueError("valid modes are restart, confirmed_flush")
+        mode = SlotCatchupMode(mode).value
         if target_lsn is None:
             raise ValueError("target lsn must be specified")
         assert self.poll_query_until(
@@ -1267,14 +1271,16 @@ class PostgresServer:
         append_to_file(self.datadir / filename, text + "\n")
 
     def adjust_conf(
-        self, setting, value, filename="postgresql.conf", skip_equals=False
+        self, setting, value, *, filename="postgresql.conf", skip_equals=False
     ):
         """Rewrite a config file, replacing or removing a setting in place.
 
         Mirrors PostgreSQL::Test::Cluster->adjust_conf: every line that sets
         `setting` is dropped; if `value` is not None a single new line setting
         it is written in its place (other lines preserved). The file mode is
-        reset to match the data dir's group accessibility.
+        reset to match the data dir's group accessibility. `filename` and
+        `skip_equals` are keyword-only so the (setting, value) order is
+        unambiguous.
         """
         conffile = self.datadir / filename
         eq = "" if skip_equals else "= "
@@ -1537,18 +1543,21 @@ class PostgresServer:
         if self.datadir.exists():
             shutil.rmtree(self.datadir)
 
-    def restart(self, mode="fast", fail_ok=False, log_like=None, log_unlike=None):
+    def restart(
+        self, mode=StopMode.FAST, fail_ok=False, log_like=None, log_unlike=None
+    ):
         """Restart the server via pg_ctl restart and refresh the postmaster PID.
 
-        Mirrors PostgreSQL::Test::Cluster->restart. With fail_ok=True a failed
-        restart returns False (1 in Perl maps to True here for success) instead
-        of raising, and log_like/log_unlike (lists of regexes) are asserted
-        against the log emitted during the restart attempt. Returns True on a
-        successful restart, False on failure (only when fail_ok).
+        Mirrors PostgreSQL::Test::Cluster->restart. *mode* is a StopMode (or the
+        equivalent string). With fail_ok=True a failed restart returns False
+        instead of raising, and log_like/log_unlike (lists of regexes) are
+        asserted against the log emitted during the restart attempt. Returns
+        True on a successful restart, False on failure (only when fail_ok).
         """
+        mode = StopMode(mode)
         offset = self.current_log_position()
         try:
-            self.pg_ctl("restart", "--mode", mode)
+            self.pg_ctl("restart", "--mode", mode.value)
         except subprocess.CalledProcessError as exc:
             if not fail_ok:
                 raise PgServerError(
@@ -1612,7 +1621,7 @@ class PostgresServer:
         source = node if node is not None else self
         self.wait_for_catchup(standby, "replay", source.lsn("flush"))
 
-    def wait_for_catchup(self, standby, mode="replay", target_lsn=None):
+    def wait_for_catchup(self, standby, mode=CatchupMode.REPLAY, target_lsn=None):
         """
         Wait until a standby has caught up to target_lsn (default: this node's
         current write/replay LSN), by polling pg_stat_replication. Mirrors
@@ -1623,6 +1632,7 @@ class PostgresServer:
         valid_modes = ("sent", "write", "flush", "replay")
         if mode not in valid_modes:
             raise ValueError("unknown mode {!r} for wait_for_catchup".format(mode))
+        mode = CatchupMode(mode).value
 
         standby_name = standby.name if isinstance(standby, PostgresServer) else standby
 
@@ -1900,14 +1910,16 @@ class PostgresServer:
             self._cleanup_stack.__exit__(None, None, None)
             self._cleanup_stack = old_stack
 
-    def stop(self, mode="fast"):
+    def stop(self, mode=StopMode.FAST):
         """
         Stop the PostgreSQL server instance.
 
-        Ignores failures if the server is already stopped.
+        *mode* is a StopMode (or the equivalent string). Ignores failures if the
+        server is already stopped.
         """
+        mode = StopMode(mode)
         try:
-            self.pg_ctl("stop", "--mode", mode)
+            self.pg_ctl("stop", "--mode", mode.value)
         except subprocess.CalledProcessError:
             # Server may have already been stopped
             pass

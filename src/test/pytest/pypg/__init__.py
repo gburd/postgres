@@ -8,6 +8,7 @@ from ._env import (
 from .command import CommandResult, PgBin, ProgramResult
 from .errors import PgError, PgServerError, PgSqlError, LibpqError
 from .fake import faker, meaningful_text, rand_str
+from .modes import CatchupMode, SlotCatchupMode, StopMode
 from .kerberos import KerberosServer
 from .server import PostgresServer
 from .sqlresult import SqlResult
@@ -34,6 +35,9 @@ __all__ = [
     "KerberosServer",
     "PostgresServer",
     "SqlResult",
+    "StopMode",
+    "CatchupMode",
+    "SlotCatchupMode",
     "PgBin",
     "CommandResult",
     "ProgramResult",
