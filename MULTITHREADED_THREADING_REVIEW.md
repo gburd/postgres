@@ -1304,10 +1304,19 @@ files proving the intended direction:
   cache/function-manager accessors;
 - `src/backend/utils/activity/backend_runtime_pgstat.c` owns migrated pgstat
   backend/session accessors;
-- `src/backend/jit/backend_runtime_jit.c` owns provider-independent JIT
-  session accessors.
+- `src/backend/jit/backend_runtime_jit.c` owns provider-independent and
+  LLVM-provider JIT session accessors.
 - `src/backend/utils/misc/backend_runtime_guc.c` owns migrated GUC
   compatibility accessors.
+
+Subsequent Phase 12 JIT work moved the provider-independent callback cache
+and LLVM provider-private type/template/module/context cache into `PgSession`.
+The LLVM provider cache was validated with an LLVM 21.1.8 build, including an
+explicit JIT smoke that produced leader and parallel-worker JIT functions. The
+same slice fixed the JIT IR memory-context switch to call
+`PgCurrentMemoryContextRef()` instead of resolving the removed
+`CurrentMemoryContext` global. The global-lifetime scan now reports 61
+session-local declarations with zero new unclassified mutable globals.
 
 `backend_runtime.c` should remain focused on root runtime construction,
 current-object installation, process/thread symmetry, and top-level

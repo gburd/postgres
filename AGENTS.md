@@ -92,8 +92,9 @@ Important current files:
   buckets. Add future GUC backing-variable shims here rather than growing
   `backend_runtime.c` or `guc_tables.c`.
 - `src/backend/jit/backend_runtime_jit.c`: fork-owned runtime bridge accessors
-  for provider-independent JIT session state. Keep LLVM-provider-private
-  lifecycle work under `src/backend/jit/llvm` when that state is migrated.
+  for provider-independent and LLVM-provider JIT session state. Keep
+  LLVM-provider-private semantic lifecycle work under `src/backend/jit/llvm`
+  when that state needs provider-specific cleanup.
 - `src/backend/utils/init/backend_runtime_internal.h`: backend-private runtime
   declarations shared by fork-owned runtime support files. Do not expose these
   helpers in installed headers unless an upstream-owned caller truly needs
@@ -1287,12 +1288,26 @@ Important current files:
   coverage plus a full non-SSL build here, and use an SSL-enabled build when
   compile coverage for that file is required.
 
-- This checkout is currently configured with `with_llvm = no`. Direct builds
-  under `src/backend/jit/llvm` fail before reaching project changes because
-  the LLVM Makefile requires an LLVM-enabled configuration. For LLVM-only
-  source annotations, use static lifetime scan coverage plus a full non-LLVM
-  build here, and use an LLVM-enabled build when compile or runtime JIT
-  coverage for those files is required.
+- This checkout is currently validated with LLVM enabled for Phase 12 JIT
+  provider work:
+
+  ```sh
+  ./configure --without-icu --disable-rpath --with-llvm LLVM_CONFIG=/opt/homebrew/opt/llvm@21/bin/llvm-config
+  ```
+
+  After switching LLVM configuration or changing installed runtime/JIT
+  headers, do not trust stale incremental objects. Use the backend clean plus
+  generated-file recovery above before a full `gmake -j8`; otherwise
+  `llvmjit.dylib` can fail to link or runtime JIT smoke can crash against an
+  older `postgres` binary missing new runtime accessors such as
+  `PgCurrentLLVMJitState`.
+
+  LLVM 21 headers collide with PostgreSQL's short historical macros. Keep the
+  macro cleanup in `src/include/jit/llvmjit.h` for LLVM C headers and in
+  `src/backend/jit/llvm/llvmjit_inline.cpp` for later LLVM C++ headers. If
+  a clean LLVM provider build fails inside LLVM headers with names such as
+  `Mode`, `PM`, `AM`, or `TZ`, fix the boundary cleanup rather than patching
+  generated LLVM headers.
 
 - This checkout is currently configured without `--enable-injection-points`.
   `src/test/modules/injection_points` intentionally skips checks in that

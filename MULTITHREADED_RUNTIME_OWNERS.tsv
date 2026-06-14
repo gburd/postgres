@@ -39,6 +39,43 @@ prevWalUsage	PgBackend	pgstat_pending	wal_prev_usage	PgCurrentPgStatPrevWalUsage
 provider	PgSession	jit_provider_state	provider	PgCurrentJitProviderCallbacksRef	src/backend/jit/backend_runtime_jit.c	JIT provider callback table; provider dynamic library handle is dfmgr-owned
 provider_successfully_loaded	PgSession	jit_provider_state	provider_successfully_loaded	PgCurrentJitProviderSuccessfullyLoadedRef	src/backend/jit/backend_runtime_jit.c	JIT provider successful-load cache flag
 provider_failed_loading	PgSession	jit_provider_state	provider_failed_loading	PgCurrentJitProviderFailedLoadingRef	src/backend/jit/backend_runtime_jit.c	JIT provider failed-load cache flag
+TypeParamBool	PgSession	llvm_jit	type_param_bool	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider bool-return type reference
+TypePGFunction	PgSession	llvm_jit	type_pg_function	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider PGFunction type reference
+TypeSizeT	PgSession	llvm_jit	type_size_t	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider size_t type reference
+TypeDatum	PgSession	llvm_jit	type_datum	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider Datum type reference
+TypeStorageBool	PgSession	llvm_jit	type_storage_bool	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider storage bool type reference
+StructNullableDatum	PgSession	llvm_jit	struct_nullable_datum	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider NullableDatum struct reference
+StructTupleDescData	PgSession	llvm_jit	struct_tuple_desc_data	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider TupleDescData struct reference
+StructHeapTupleData	PgSession	llvm_jit	struct_heap_tuple_data	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider HeapTupleData struct reference
+StructHeapTupleHeaderData	PgSession	llvm_jit	struct_heap_tuple_header_data	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider HeapTupleHeaderData struct reference
+StructMinimalTupleData	PgSession	llvm_jit	struct_minimal_tuple_data	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider MinimalTupleData struct reference
+StructTupleTableSlot	PgSession	llvm_jit	struct_tuple_table_slot	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider TupleTableSlot struct reference
+StructHeapTupleTableSlot	PgSession	llvm_jit	struct_heap_tuple_table_slot	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider HeapTupleTableSlot struct reference
+StructMinimalTupleTableSlot	PgSession	llvm_jit	struct_minimal_tuple_table_slot	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider MinimalTupleTableSlot struct reference
+StructMemoryContextData	PgSession	llvm_jit	struct_memory_context_data	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider MemoryContextData struct reference
+StructFunctionCallInfoData	PgSession	llvm_jit	struct_function_call_info_data	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider FunctionCallInfoData struct reference
+StructExprContext	PgSession	llvm_jit	struct_expr_context	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider ExprContext struct reference
+StructExprEvalStep	PgSession	llvm_jit	struct_expr_eval_step	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider ExprEvalStep struct reference
+StructExprState	PgSession	llvm_jit	struct_expr_state	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider ExprState struct reference
+StructAggState	PgSession	llvm_jit	struct_agg_state	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider AggState struct reference
+StructAggStatePerTransData	PgSession	llvm_jit	struct_agg_state_per_trans_data	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider AggStatePerTransData struct reference
+StructAggStatePerGroupData	PgSession	llvm_jit	struct_agg_state_per_group_data	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider AggStatePerGroupData struct reference
+StructPlanState	PgSession	llvm_jit	struct_plan_state	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider PlanState struct reference
+AttributeTemplate	PgSession	llvm_jit	attribute_template	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider attribute template function reference
+ExecEvalBoolSubroutineTemplate	PgSession	llvm_jit	exec_eval_bool_subroutine_template	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider bool subroutine template function reference
+ExecEvalSubroutineTemplate	PgSession	llvm_jit	exec_eval_subroutine_template	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider subroutine template function reference
+llvm_types_module	PgSession	llvm_jit	types_module	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider bitcode type module
+llvm_session_initialized	PgSession	llvm_jit	session_initialized	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider per-session initialization flag
+llvm_generation	PgSession	llvm_jit	generation	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider generated-module counter
+llvm_jit_context_in_use_count	PgSession	llvm_jit	jit_context_in_use_count	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider active JitContext counter
+llvm_llvm_context_reuse_count	PgSession	llvm_jit	llvm_context_reuse_count	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM context reuse counter
+llvm_triple	PgSession	llvm_jit	triple	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM target triple string
+llvm_layout	PgSession	llvm_jit	layout	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM data layout string
+llvm_context	PgSession	llvm_jit	context	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider context
+llvm_targetref	PgSession	llvm_jit	targetref	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM target reference
+llvm_ts_context	PgSession	llvm_jit	ts_context	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM ORC thread-safe context
+llvm_opt0_orc	PgSession	llvm_jit	opt0_orc	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM ORC JIT instance for opt0
+llvm_opt3_orc	PgSession	llvm_jit	opt3_orc	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM ORC JIT instance for opt3
 default_with_oids	PgSession	general_guc	default_with_oids_value	PgCurrentDefaultWithOidsRef	src/backend/utils/misc/backend_runtime_guc.c	backward-compatibility GUC backing value
 standard_conforming_strings	PgSession	general_guc	standard_conforming_strings_value	PgCurrentStandardConformingStringsRef	src/backend/utils/misc/backend_runtime_guc.c	backward-compatibility GUC backing value
 phony_random_seed	PgSession	general_guc	phony_random_seed_value	PgCurrentPhonyRandomSeedRef	src/backend/utils/misc/backend_runtime_guc.c	seed GUC compatibility backing value; real PRNG state lives elsewhere

@@ -479,6 +479,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionJitGUCState early_session_jit_
 	.jit_optimize_above_cost_value = 500000
 };
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionJitProviderState early_session_jit_provider;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionLLVMJitState early_session_llvm_jit;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionSortGUCState early_session_sort_guc = {
 	.initialized = true,
 	.trace_sort_value = false,
@@ -712,6 +713,8 @@ static void PgSessionInitializeJitGUCState(PgSessionJitGUCState *jit_guc);
 static void PgSessionAdoptEarlyJitGUCState(PgSession *session);
 static void PgSessionInitializeJitProviderState(PgSessionJitProviderState *jit_provider_state);
 static void PgSessionAdoptEarlyJitProviderState(PgSession *session);
+static void PgSessionInitializeLLVMJitState(PgSessionLLVMJitState *llvm_jit);
+static void PgSessionAdoptEarlyLLVMJitState(PgSession *session);
 static void PgSessionInitializeSortGUCState(PgSessionSortGUCState *sort_guc);
 static void PgSessionAdoptEarlySortGUCState(PgSession *session);
 static void PgSessionInitializeQueryMemoryState(PgSessionQueryMemoryState *query_memory);
@@ -914,6 +917,7 @@ PgSessionGeneralGUCState *PgCurrentSessionGeneralGUCState(void);
 static PgSessionAccessWalGUCState *PgCurrentSessionAccessWalGUCState(void);
 static PgSessionJitGUCState *PgCurrentSessionJitGUCState(void);
 PgSessionJitProviderState *PgCurrentSessionJitProviderState(void);
+PgSessionLLVMJitState *PgCurrentSessionLLVMJitState(void);
 static PgSessionSortGUCState *PgCurrentSessionSortGUCState(void);
 static PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
 static PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
@@ -1995,6 +1999,23 @@ PgSessionAdoptEarlyJitProviderState(PgSession *session)
 }
 
 static void
+PgSessionInitializeLLVMJitState(PgSessionLLVMJitState *llvm_jit)
+{
+	Assert(llvm_jit != NULL);
+
+	MemSet(llvm_jit, 0, sizeof(*llvm_jit));
+}
+
+static void
+PgSessionAdoptEarlyLLVMJitState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	session->llvm_jit = early_session_llvm_jit;
+	PgSessionInitializeLLVMJitState(&early_session_llvm_jit);
+}
+
+static void
 PgSessionInitializeSortGUCState(PgSessionSortGUCState *sort_guc)
 {
 	Assert(sort_guc != NULL);
@@ -2665,6 +2686,7 @@ PgSessionAdoptEarlyState(PgSession *session)
 	PgSessionAdoptEarlyAccessWalGUCState(session);
 	PgSessionAdoptEarlyJitGUCState(session);
 	PgSessionAdoptEarlyJitProviderState(session);
+	PgSessionAdoptEarlyLLVMJitState(session);
 	PgSessionAdoptEarlySortGUCState(session);
 	PgSessionAdoptEarlyQueryMemoryState(session);
 	PgSessionAdoptEarlyPlannerCostState(session);
@@ -4120,6 +4142,7 @@ PgSessionInitializeRuntimeObject(PgSession *session,
 	PgSessionInitializeAccessWalGUCState(&session->access_wal_guc);
 	PgSessionInitializeJitGUCState(&session->jit_guc);
 	PgSessionInitializeJitProviderState(&session->jit_provider_state);
+	PgSessionInitializeLLVMJitState(&session->llvm_jit);
 	PgSessionInitializeSortGUCState(&session->sort_guc);
 	PgSessionInitializeQueryMemoryState(&session->query_memory);
 	PgSessionInitializePlannerCostState(&session->planner_cost);
@@ -5554,6 +5577,15 @@ PgCurrentSessionJitProviderState(void)
 		return &early_session_jit_provider;
 
 	return &CurrentPgSession->jit_provider_state;
+}
+
+PgSessionLLVMJitState *
+PgCurrentSessionLLVMJitState(void)
+{
+	if (CurrentPgSession == NULL)
+		return &early_session_llvm_jit;
+
+	return &CurrentPgSession->llvm_jit;
 }
 
 static PgSessionSortGUCState *

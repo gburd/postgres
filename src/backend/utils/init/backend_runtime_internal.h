@@ -26,6 +26,7 @@ extern PgSessionEncodingState *PgCurrentSessionEncodingState(void);
 extern PgSessionFunctionManagerState *PgCurrentSessionFunctionManagerState(void);
 extern PgSessionGeneralGUCState *PgCurrentSessionGeneralGUCState(void);
 extern PgSessionJitProviderState *PgCurrentSessionJitProviderState(void);
+extern PgSessionLLVMJitState *PgCurrentSessionLLVMJitState(void);
 extern PgSessionPgStatState *PgCurrentSessionPgStatState(void);
 extern PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
 

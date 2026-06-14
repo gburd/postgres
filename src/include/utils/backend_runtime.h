@@ -27,6 +27,7 @@
 #include "executor/instrument.h"
 #include "fmgr.h"
 #include "jit/jit.h"
+#include "jit/llvmjit_runtime.h"
 #include "lib/ilist.h"
 #include "lib/stringinfo.h"
 #include "libpq/hba.h"
@@ -2118,6 +2119,7 @@ struct PgSession
 	PgSessionAccessWalGUCState access_wal_guc;
 	PgSessionJitGUCState jit_guc;
 	PgSessionJitProviderState jit_provider_state;
+	PgSessionLLVMJitState llvm_jit;
 	PgSessionSortGUCState sort_guc;
 	PgSessionTextSearchState text_search;
 	PgSessionConnectionGUCState connection_guc;

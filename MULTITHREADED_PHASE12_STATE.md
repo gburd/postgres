@@ -9999,6 +9999,71 @@ Validation for this slice:
   `IPC::Run` `PERL5LIB` and explicit `PG_REGRESS` harness environment;
 - `gmake -C contrib -j8` passed after the installed runtime-header change.
 
+## LLVM Provider Session Cache
+
+The next Phase 12 JIT state-migration slice moves the LLVM provider-private
+session cache into `PgSession`:
+
+- `PgSessionLLVMJitState` now owns LLVM type refs, template refs,
+  `llvmjit_types.bc` module metadata, context reuse counters, target/triple
+  data, the reusable LLVM context, thread-safe context, and ORC JIT instances;
+- `src/include/jit/llvmjit_runtime.h` provides the lightweight LLVM-facing
+  state definition and `PgCurrentLLVMJitState()` declaration without exposing
+  the large `backend_runtime.h` installed header to LLVM C/C++ headers;
+- `llvmjit.h` preserves the historical type/template names as macros over the
+  current session's LLVM state bucket, while `llvmjit.c` preserves its private
+  provider names through local macros;
+- `src/backend/jit/backend_runtime_jit.c` owns the public
+  `PgCurrentLLVMJitState()` accessor, matching the provider-independent JIT
+  bridge pattern and keeping this domain accessor out of `backend_runtime.c`;
+- `backend_runtime.c` initializes and adopts the LLVM bucket alongside other
+  `PgSession` buckets, with a single early fallback bucket for pre-session
+  provider use;
+- `MULTITHREADED_RUNTIME_OWNERS.tsv` maps the public type/template refs and
+  private `llvm_*` provider cache names to `PgSession.llvm_jit`;
+- `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` records the bucket's pointer-heavy
+  copy/adoption rule: LLVM handles, modules, contexts, target refs, and
+  type/template refs must not be shallow-copied between concurrently live
+  sessions, and provider callbacks remain responsible for normal shutdown and
+  context release.
+
+The LLVM-enabled validation exposed one additional required compatibility
+fix. JIT-generated IR still emitted a reference to the historical
+`CurrentMemoryContext` global, but this branch now exposes it as an accessor
+over runtime-owned state. `l_mcxt_switch()` now emits a call to
+`PgCurrentMemoryContextRef()` and load/stores through the returned slot instead
+of asking LLVM to resolve a removed global symbol.
+
+LLVM 21 also requires keeping PostgreSQL's short historical macros out of
+LLVM headers. `llvmjit.h` now undefines `AM`, `PM`, `TZ`, and `Mode` before
+including LLVM C headers, and `llvmjit_inline.cpp` keeps its local guard for
+LLVM C++ headers. The current LLVM validation configuration is:
+
+```sh
+./configure --without-icu --disable-rpath --with-llvm LLVM_CONFIG=/opt/homebrew/opt/llvm@21/bin/llvm-config
+```
+
+Validation for this slice:
+
+- clean backend rebuild plus generated utility/node-header recovery passed
+  after enabling LLVM;
+- full `gmake -j8` passed;
+- clean `gmake -C src/backend/jit/llvm all` passed with LLVM 21.1.8 and
+  rebuilt `llvmjit.dylib` plus `llvmjit_types.bc`;
+- `gmake -C src/pl/plpgsql/src clean all` and
+  `gmake -C src/test/modules/test_backend_runtime clean all` passed after the
+  installed runtime-header change;
+- `gmake check-runtime-lifecycles` passed with 149 runtime fields classified;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and session-local declarations reduced from 97 to 61;
+- `gmake -C src/test/modules/test_backend_runtime check` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` with 88
+  tests and `002_threaded_bgworker_crash.pl` with 6 tests using the local
+  `IPC::Run` `PERL5LIB` and patched build-tree `pg_regress` install name;
+- an explicit LLVM smoke passed: `LOAD 'llvmjit'`, forced zero JIT thresholds,
+  and a table-backed aggregate produced a plan with JIT functions in both the
+  leader and a parallel worker.
+
 ## Compatibility GUC Session State
 
 The next Phase 12 state-migration slice moves another GUC compatibility batch

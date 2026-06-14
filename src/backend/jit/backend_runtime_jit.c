@@ -36,3 +36,11 @@ PgCurrentJitProviderFailedLoadingRef(void)
 {
 	return &PgCurrentSessionJitProviderState()->provider_failed_loading;
 }
+
+#ifdef USE_LLVM
+PgSessionLLVMJitState *
+PgCurrentLLVMJitState(void)
+{
+	return PgCurrentSessionLLVMJitState();
+}
+#endif

@@ -44,6 +44,7 @@ extern "C"
 
 /* Avoid macro clash with LLVM's C++ headers */
 #undef Min
+#undef Mode
 
 #include <llvm/ADT/SetVector.h>
 #include <llvm/ADT/StringSet.h>

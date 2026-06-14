@@ -777,7 +777,9 @@ ruleutils SPI-plan, and ICU converter catalog lookup/cache bridge through
 per-session reset callback route through `PgSession`, plus the `postgres.c`
 unnamed-statement, interactive-switch, and row-description protocol scratch
 bridge through `PgSessionTcopState`, plus transaction callback registration
-and SQL backup session-state bridges through `PgSession`.
+and SQL backup session-state bridges through `PgSession`, plus the
+provider-independent JIT callback cache and LLVM provider-private
+type/template/module/context cache through `PgSession`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.
@@ -809,7 +811,8 @@ The first owner files proving this direction are
 `src/backend/utils/cache/backend_runtime_cache.c` for cache/function-manager
 accessors and `src/backend/utils/activity/backend_runtime_pgstat.c` for
 pgstat/backend-status accessors, followed by
-`src/backend/jit/backend_runtime_jit.c` for provider-independent JIT state and
+`src/backend/jit/backend_runtime_jit.c` for provider-independent and
+LLVM-provider JIT state accessors and
 `src/backend/utils/misc/backend_runtime_guc.c` for GUC compatibility backing
 variables.
 Future Phase 12 bucket additions should pick an adjacent owner file first;
@@ -1719,10 +1722,15 @@ destructor audit remain Gate E2 blockers. Follow-up cache work moved
 `funccache.c`'s cached-function hash root into
 `PgSessionFunctionManagerState`, with the compatibility accessor in
 `backend_runtime_cache.c` and the tuple-descriptor/language-callback destructor
-handwritten in `funccache.c`. Remaining cache-state Phase 12 targets include
-JIT/provider caches, each of which needs an explicit reset/destroy rule before
-leaving Gate E2. The global-lifetime scan now reports 108 session-local
-declarations with zero new unclassified mutable globals.
+handwritten in `funccache.c`. Follow-up JIT work moved the
+provider-independent callback/load-status cache into `PgSessionJitProviderState`
+and then moved the LLVM provider-private type/template/module/context cache
+into `PgSessionLLVMJitState` under an LLVM-enabled build. The LLVM smoke forced
+zero JIT thresholds and produced leader/parallel-worker JIT functions after
+fixing the generated-IR memory-context switch to call
+`PgCurrentMemoryContextRef()` instead of resolving the removed
+`CurrentMemoryContext` global. The global-lifetime scan now reports 61
+session-local declarations with zero new unclassified mutable globals.
 
 ## Phase 13: Scheduler-Aware Wait Boundary
 
