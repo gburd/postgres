@@ -98,6 +98,7 @@
 #include "storage/spin.h"
 #include "storage/subsystems.h"
 #include "storage/sync.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc_hooks.h"
 #include "utils/guc_tables.h"
 #include "utils/injection_point.h"
@@ -385,7 +386,7 @@ typedef union WALInsertLockPadded
  * Session status of running backup, used for sanity checks in SQL-callable
  * functions to start and stop backups.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION SessionBackupState sessionBackupState = SESSION_BACKUP_NONE;
+#define sessionBackupState (*PgCurrentSessionBackupStateRef())
 
 /*
  * Shared state data for WAL insertion.

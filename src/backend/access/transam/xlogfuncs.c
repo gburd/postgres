@@ -28,6 +28,7 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "replication/walreceiver.h"
 #include "storage/fd.h"
 #include "storage/latch.h"
@@ -41,11 +42,11 @@
 /*
  * Backup-related variables.
  */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION BackupState *backup_state = NULL;
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION StringInfo tablespace_map = NULL;
+#define backup_state (*PgCurrentBackupStateRef())
+#define tablespace_map (*PgCurrentTablespaceMapRef())
 
 /* Session-level context for the SQL-callable backup functions */
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION MemoryContext backupcontext = NULL;
+#define backupcontext (*PgCurrentBackupContextRef())
 
 
 /*

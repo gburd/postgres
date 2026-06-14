@@ -2318,12 +2318,14 @@ PgFdwScanState
 PgIfAddrCallback
 PgRuntime
 PgSession
+PgSessionBackupState
 PgSessionCatalogLookupState
 PgSessionExtensionModuleState
 PgSessionLoopState
 PgSessionLogicalReplicationState
 PgSessionResetCallbackItem
 PgSessionTcopState
+PgSessionXactCallbackState
 PgSessionTzAbbrevCache
 PgStepBudget
 PgStepResult

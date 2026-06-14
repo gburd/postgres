@@ -1215,6 +1215,14 @@ a session object exists; adoption asserts the pointer-bearing plan/context
 slots are still empty. Closed-session reset now drops any leftover unnamed
 cached plan and deletes the row-description context explicitly.
 
+The following session utility-state slice added `PgSessionXactCallbackState`
+and `PgSessionBackupState`, moving `xact.c` callback list heads, SQL backup
+payload pointers, backup context, and WAL session backup status behind
+`PgSession`. This slice includes explicit teardown: closed-session reset frees
+leftover callback list nodes, aborts a still-running SQL backup through the
+existing WAL cleanup path, deletes the backup memory context, and clears the
+payload/status slots.
+
 ## Bottom Line
 
 The branch is on track only if the current debt is treated as Phase 12

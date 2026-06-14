@@ -552,6 +552,8 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionInvalidationCallbackState earl
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionPreparedStatementState early_session_prepared_statement;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionOnCommitState early_session_on_commit;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionSequenceState early_session_sequence;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionXactCallbackState early_session_xact_callbacks;
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionBackupState early_session_backup;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionRegexState early_session_regex;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionLargeObjectState early_session_large_object;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSessionAsyncState early_session_async;
@@ -716,6 +718,10 @@ static void PgSessionInitializeOnCommitState(PgSessionOnCommitState *on_commit);
 static void PgSessionAdoptEarlyOnCommitState(PgSession *session);
 static void PgSessionInitializeSequenceState(PgSessionSequenceState *sequence);
 static void PgSessionAdoptEarlySequenceState(PgSession *session);
+static void PgSessionInitializeXactCallbackState(PgSessionXactCallbackState *xact_callbacks);
+static void PgSessionAdoptEarlyXactCallbackState(PgSession *session);
+static void PgSessionInitializeBackupState(PgSessionBackupState *backup);
+static void PgSessionAdoptEarlyBackupState(PgSession *session);
 static void PgSessionInitializeRegexState(PgSessionRegexState *regex);
 static void PgSessionAdoptEarlyRegexState(PgSession *session);
 static void PgSessionInitializeLargeObjectState(PgSessionLargeObjectState *large_object);
@@ -2089,6 +2095,44 @@ PgSessionAdoptEarlySequenceState(PgSession *session)
 }
 
 static void
+PgSessionInitializeXactCallbackState(PgSessionXactCallbackState *xact_callbacks)
+{
+	Assert(xact_callbacks != NULL);
+
+	xact_callbacks->xact_callbacks = NULL;
+	xact_callbacks->subxact_callbacks = NULL;
+}
+
+static void
+PgSessionAdoptEarlyXactCallbackState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	session->xact_callbacks = early_session_xact_callbacks;
+	PgSessionInitializeXactCallbackState(&early_session_xact_callbacks);
+}
+
+static void
+PgSessionInitializeBackupState(PgSessionBackupState *backup)
+{
+	Assert(backup != NULL);
+
+	backup->backup_state = NULL;
+	backup->tablespace_map = NULL;
+	backup->backup_context = NULL;
+	backup->session_backup_state = SESSION_BACKUP_NONE;
+}
+
+static void
+PgSessionAdoptEarlyBackupState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	session->backup = early_session_backup;
+	PgSessionInitializeBackupState(&early_session_backup);
+}
+
+static void
 PgSessionInitializeRegexState(PgSessionRegexState *regex)
 {
 	Assert(regex != NULL);
@@ -2393,6 +2437,8 @@ PgSessionAdoptEarlyState(PgSession *session)
 	PgSessionAdoptEarlyPreparedStatementState(session);
 	PgSessionAdoptEarlyOnCommitState(session);
 	PgSessionAdoptEarlySequenceState(session);
+	PgSessionAdoptEarlyXactCallbackState(session);
+	PgSessionAdoptEarlyBackupState(session);
 	PgSessionAdoptEarlyRegexState(session);
 	PgSessionAdoptEarlyLargeObjectState(session);
 	PgSessionAdoptEarlyAsyncState(session);
@@ -3839,6 +3885,8 @@ PgSessionInitializeRuntimeObject(PgSession *session,
 	PgSessionInitializePreparedStatementState(&session->prepared_statement);
 	PgSessionInitializeOnCommitState(&session->on_commit);
 	PgSessionInitializeSequenceState(&session->sequence);
+	PgSessionInitializeXactCallbackState(&session->xact_callbacks);
+	PgSessionInitializeBackupState(&session->backup);
 	PgSessionInitializeRegexState(&session->regex);
 	PgSessionInitializeLargeObjectState(&session->large_object);
 	PgSessionInitializeAsyncState(&session->async);
@@ -4451,6 +4499,34 @@ PgSessionResetClosedState(PgSession *session)
 
 	list_free_deep(session->on_commit.on_commits);
 	session->on_commit.on_commits = NIL;
+
+	CurrentPgSession = session;
+	ResetXactCallbackState();
+	CurrentPgSession = saved_session;
+
+	if (session->backup.session_backup_state != SESSION_BACKUP_NONE)
+	{
+		CurrentPgSession = session;
+		PG_TRY();
+		{
+			do_pg_abort_backup(0, BoolGetDatum(false));
+			CurrentPgSession = saved_session;
+		}
+		PG_CATCH();
+		{
+			CurrentPgSession = saved_session;
+			PG_RE_THROW();
+		}
+		PG_END_TRY();
+	}
+	if (session->backup.backup_context != NULL)
+	{
+		MemoryContextDelete(session->backup.backup_context);
+		session->backup.backup_context = NULL;
+	}
+	session->backup.backup_state = NULL;
+	session->backup.tablespace_map = NULL;
+	session->backup.session_backup_state = SESSION_BACKUP_NONE;
 
 	if (session->async.local_channel_table != NULL)
 	{
@@ -5908,6 +5984,60 @@ struct SeqTableData **
 PgCurrentLastUsedSequenceRef(void)
 {
 	return &PgCurrentSessionSequenceState()->last_used_seq;
+}
+
+XactCallbackItem **
+PgCurrentXactCallbacksRef(void)
+{
+	if (CurrentPgSession == NULL)
+		return &early_session_xact_callbacks.xact_callbacks;
+
+	return &CurrentPgSession->xact_callbacks.xact_callbacks;
+}
+
+SubXactCallbackItem **
+PgCurrentSubXactCallbacksRef(void)
+{
+	if (CurrentPgSession == NULL)
+		return &early_session_xact_callbacks.subxact_callbacks;
+
+	return &CurrentPgSession->xact_callbacks.subxact_callbacks;
+}
+
+struct BackupState **
+PgCurrentBackupStateRef(void)
+{
+	if (CurrentPgSession == NULL)
+		return &early_session_backup.backup_state;
+
+	return &CurrentPgSession->backup.backup_state;
+}
+
+StringInfo *
+PgCurrentTablespaceMapRef(void)
+{
+	if (CurrentPgSession == NULL)
+		return &early_session_backup.tablespace_map;
+
+	return &CurrentPgSession->backup.tablespace_map;
+}
+
+MemoryContext *
+PgCurrentBackupContextRef(void)
+{
+	if (CurrentPgSession == NULL)
+		return &early_session_backup.backup_context;
+
+	return &CurrentPgSession->backup.backup_context;
+}
+
+uint8 *
+PgCurrentSessionBackupStateRef(void)
+{
+	if (CurrentPgSession == NULL)
+		return &early_session_backup.session_backup_state;
+
+	return &CurrentPgSession->backup.session_backup_state;
 }
 
 bool *

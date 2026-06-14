@@ -1107,6 +1107,152 @@ test_session_tcop_state_is_session_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_session_xact_callback_state_is_session_local);
+Datum
+test_session_xact_callback_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(NULL);
+		*PgCurrentXactCallbacksRef() = (XactCallbackItem *) &fake_session1;
+		*PgCurrentSubXactCallbacksRef() =
+			(SubXactCallbackItem *) &fake_session1;
+
+		PgSessionAdoptEarlyState(&fake_session1);
+
+		ok = ok && fake_session1.xact_callbacks.xact_callbacks ==
+			(XactCallbackItem *) &fake_session1;
+		ok = ok && fake_session1.xact_callbacks.subxact_callbacks ==
+			(SubXactCallbackItem *) &fake_session1;
+		ok = ok && *PgCurrentXactCallbacksRef() == NULL;
+		ok = ok && *PgCurrentSubXactCallbacksRef() == NULL;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && *PgCurrentXactCallbacksRef() == NULL;
+		ok = ok && *PgCurrentSubXactCallbacksRef() == NULL;
+		*PgCurrentXactCallbacksRef() = (XactCallbackItem *) &fake_session2;
+		*PgCurrentSubXactCallbacksRef() =
+			(SubXactCallbackItem *) &fake_session2;
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && *PgCurrentXactCallbacksRef() ==
+			(XactCallbackItem *) &fake_session1;
+		ok = ok && *PgCurrentSubXactCallbacksRef() ==
+			(SubXactCallbackItem *) &fake_session1;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && *PgCurrentXactCallbacksRef() ==
+			(XactCallbackItem *) &fake_session2;
+		ok = ok && *PgCurrentSubXactCallbacksRef() ==
+			(SubXactCallbackItem *) &fake_session2;
+
+		PgSetCurrentSession(saved_session);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session xact callback state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_session_backup_state_is_session_local);
+Datum
+test_session_backup_state_is_session_local(PG_FUNCTION_ARGS)
+{
+	PgSession  *saved_session;
+	PgSession	fake_session1;
+	PgSession	fake_session2;
+	bool		ok = true;
+
+	saved_session = CurrentPgSession;
+	MemSet(&fake_session1, 0, sizeof(fake_session1));
+	MemSet(&fake_session2, 0, sizeof(fake_session2));
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(NULL);
+		*PgCurrentBackupStateRef() = (struct BackupState *) &fake_session1;
+		*PgCurrentTablespaceMapRef() = (StringInfo) &fake_session1;
+		*PgCurrentBackupContextRef() = (MemoryContext) &fake_session1;
+		*PgCurrentSessionBackupStateRef() = SESSION_BACKUP_RUNNING;
+
+		PgSessionAdoptEarlyState(&fake_session1);
+
+		ok = ok && fake_session1.backup.backup_state ==
+			(struct BackupState *) &fake_session1;
+		ok = ok && fake_session1.backup.tablespace_map ==
+			(StringInfo) &fake_session1;
+		ok = ok && fake_session1.backup.backup_context ==
+			(MemoryContext) &fake_session1;
+		ok = ok && fake_session1.backup.session_backup_state ==
+			SESSION_BACKUP_RUNNING;
+		ok = ok && *PgCurrentBackupStateRef() == NULL;
+		ok = ok && *PgCurrentTablespaceMapRef() == NULL;
+		ok = ok && *PgCurrentBackupContextRef() == NULL;
+		ok = ok && *PgCurrentSessionBackupStateRef() ==
+			SESSION_BACKUP_NONE;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && *PgCurrentBackupStateRef() == NULL;
+		ok = ok && *PgCurrentTablespaceMapRef() == NULL;
+		ok = ok && *PgCurrentBackupContextRef() == NULL;
+		ok = ok && *PgCurrentSessionBackupStateRef() ==
+			SESSION_BACKUP_NONE;
+		*PgCurrentBackupStateRef() = (struct BackupState *) &fake_session2;
+		*PgCurrentTablespaceMapRef() = (StringInfo) &fake_session2;
+		*PgCurrentBackupContextRef() = (MemoryContext) &fake_session2;
+		*PgCurrentSessionBackupStateRef() = SESSION_BACKUP_RUNNING;
+
+		PgSetCurrentSession(&fake_session1);
+		ok = ok && *PgCurrentBackupStateRef() ==
+			(struct BackupState *) &fake_session1;
+		ok = ok && *PgCurrentTablespaceMapRef() ==
+			(StringInfo) &fake_session1;
+		ok = ok && *PgCurrentBackupContextRef() ==
+			(MemoryContext) &fake_session1;
+		ok = ok && *PgCurrentSessionBackupStateRef() ==
+			SESSION_BACKUP_RUNNING;
+
+		PgSetCurrentSession(&fake_session2);
+		ok = ok && *PgCurrentBackupStateRef() ==
+			(struct BackupState *) &fake_session2;
+		ok = ok && *PgCurrentTablespaceMapRef() ==
+			(StringInfo) &fake_session2;
+		ok = ok && *PgCurrentBackupContextRef() ==
+			(MemoryContext) &fake_session2;
+		ok = ok && *PgCurrentSessionBackupStateRef() ==
+			SESSION_BACKUP_RUNNING;
+
+		PgSetCurrentSession(saved_session);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentSession(saved_session);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "session backup state was not session-local");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_session_database_state_is_session_local);
 Datum
 test_session_database_state_is_session_local(PG_FUNCTION_ARGS)

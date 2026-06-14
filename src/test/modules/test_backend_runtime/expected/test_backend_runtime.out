@@ -77,6 +77,18 @@ SELECT test_session_tcop_state_is_session_local();
  t
 (1 row)
 
+SELECT test_session_xact_callback_state_is_session_local();
+ test_session_xact_callback_state_is_session_local 
+---------------------------------------------------
+ t
+(1 row)
+
+SELECT test_session_backup_state_is_session_local();
+ test_session_backup_state_is_session_local 
+--------------------------------------------
+ t
+(1 row)
+
 SELECT test_session_database_state_is_session_local();
  test_session_database_state_is_session_local 
 ----------------------------------------------

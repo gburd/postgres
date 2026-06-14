@@ -66,6 +66,7 @@
 #include "utils/combocid.h"
 #include "utils/guc.h"
 #include "utils/inval.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "utils/relmapper.h"
 #include "utils/snapmgr.h"
@@ -285,26 +286,26 @@ typedef struct SerializedTransactionState
 /*
  * List of add-on start- and end-of-xact callbacks
  */
-typedef struct XactCallbackItem
+struct XactCallbackItem
 {
 	struct XactCallbackItem *next;
 	XactCallback callback;
 	void	   *arg;
-} XactCallbackItem;
+};
 
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION XactCallbackItem *Xact_callbacks = NULL;
+#define Xact_callbacks (*PgCurrentXactCallbacksRef())
 
 /*
  * List of add-on start- and end-of-subxact callbacks
  */
-typedef struct SubXactCallbackItem
+struct SubXactCallbackItem
 {
 	struct SubXactCallbackItem *next;
 	SubXactCallback callback;
 	void	   *arg;
-} SubXactCallbackItem;
+};
 
-static PG_THREAD_LOCAL PG_GLOBAL_SESSION SubXactCallbackItem *SubXact_callbacks = NULL;
+#define SubXact_callbacks (*PgCurrentSubXactCallbacksRef())
 
 
 /* local function prototypes */
@@ -3964,6 +3965,25 @@ UnregisterSubXactCallback(SubXactCallback callback, void *arg)
 			pfree(item);
 			break;
 		}
+	}
+}
+
+void
+ResetXactCallbackState(void)
+{
+	XactCallbackItem *xact_item;
+	SubXactCallbackItem *subxact_item;
+
+	while ((xact_item = Xact_callbacks) != NULL)
+	{
+		Xact_callbacks = xact_item->next;
+		pfree(xact_item);
+	}
+
+	while ((subxact_item = SubXact_callbacks) != NULL)
+	{
+		SubXact_callbacks = subxact_item->next;
+		pfree(subxact_item);
 	}
 }
 

@@ -89,6 +89,8 @@ typedef struct TSDictionaryCacheEntry TSDictionaryCacheEntry;
 typedef struct TSConfigCacheEntry TSConfigCacheEntry;
 typedef struct TransactionStateData TransactionStateData;
 typedef struct CachedPlanSource CachedPlanSource;
+typedef struct XactCallbackItem XactCallbackItem;
+typedef struct SubXactCallbackItem SubXactCallbackItem;
 typedef struct dsa_area dsa_area;
 typedef struct dshash_table dshash_table;
 typedef struct XLogReaderState XLogReaderState;
@@ -1645,6 +1647,20 @@ typedef struct PgSessionSequenceState
 	struct SeqTableData *last_used_seq;
 } PgSessionSequenceState;
 
+typedef struct PgSessionXactCallbackState
+{
+	XactCallbackItem *xact_callbacks;
+	SubXactCallbackItem *subxact_callbacks;
+} PgSessionXactCallbackState;
+
+typedef struct PgSessionBackupState
+{
+	struct BackupState *backup_state;
+	StringInfo	tablespace_map;
+	MemoryContext backup_context;
+	uint8		session_backup_state;
+} PgSessionBackupState;
+
 typedef struct PgSessionRegexState
 {
 	struct pg_ctype_cache *ctype_cache_list;
@@ -2014,6 +2030,8 @@ struct PgSession
 	PgSessionPreparedStatementState prepared_statement;
 	PgSessionOnCommitState on_commit;
 	PgSessionSequenceState sequence;
+	PgSessionXactCallbackState xact_callbacks;
+	PgSessionBackupState backup;
 	PgSessionRegexState regex;
 	PgSessionLargeObjectState large_object;
 	PgSessionAsyncState async;
@@ -2366,6 +2384,12 @@ extern HTAB **PgCurrentPreparedQueriesRef(void);
 extern List **PgCurrentOnCommitActionsRef(void);
 extern HTAB **PgCurrentSequenceHashTableRef(void);
 extern struct SeqTableData **PgCurrentLastUsedSequenceRef(void);
+extern XactCallbackItem **PgCurrentXactCallbacksRef(void);
+extern SubXactCallbackItem **PgCurrentSubXactCallbacksRef(void);
+extern struct BackupState **PgCurrentBackupStateRef(void);
+extern StringInfo *PgCurrentTablespaceMapRef(void);
+extern MemoryContext *PgCurrentBackupContextRef(void);
+extern uint8 *PgCurrentSessionBackupStateRef(void);
 extern HTAB **PgCurrentOperatorLookupCacheRef(void);
 extern struct pg_ctype_cache **PgCurrentRegexCtypeCacheListRef(void);
 extern struct RelationData **PgCurrentLargeObjectHeapRelationRef(void);

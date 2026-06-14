@@ -9375,3 +9375,51 @@ Validation for this slice:
   `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
   `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`
   passed all 94 tests.
+
+## Xact Callback And SQL Backup Session State
+
+The next Phase 12 session-state batch moves two utility/session-lifecycle
+groups behind `PgSession`:
+
+- add-on transaction and subtransaction callback list heads from `xact.c`;
+- SQL-callable online backup state from `xlogfuncs.c` and the matching
+  session backup status from `xlog.c`.
+
+`xact.c`, `xlogfuncs.c`, and `xlog.c` keep their historical source-local
+names as lvalue macros over runtime accessors. Early fallback storage remains
+available before a `PgSession` is installed and is transferred by
+`PgSessionAdoptEarlyState()`.
+
+The lifecycle rule is explicit. `PgSessionResetClosedState()` calls
+`ResetXactCallbackState()` with the closing session installed, freeing any
+remaining callback list nodes allocated in `TopMemoryContext`. Callback
+arguments remain owned by the registering subsystem. For SQL backup state,
+closed-session reset aborts a running backup through `do_pg_abort_backup()`,
+then deletes `backup_context` and clears the retained `backup_state`,
+`tablespace_map`, and status fields. The backup context owns the backup
+payload pointers; the status field is scalar session state mirrored with
+shared WAL backup counters.
+
+Validation for this slice:
+
+- touched-object builds passed for `backend_runtime.o`, `xact.o`, `xlog.o`,
+  `xlogfuncs.o`, and `test_backend_runtime.o`;
+- `gmake check-runtime-lifecycles` passed with 143 fields classified after
+  adding the `PgSession.xact_callbacks` and `PgSession.backup` lifecycle
+  rows;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and session-local declarations reduced from 161 to 157;
+- `git diff --check` passed;
+- because `backend_runtime.h` changed installed backend-state declarations, the
+  backend clean plus generated-header recovery path was used before the clean
+  rebuild;
+- clean full `gmake -j8` passed;
+- `gmake -j8 install DESTDIR="$PWD/tmp_install"` passed;
+- `gmake -C contrib -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed, including
+  `test_session_xact_callback_state_is_session_local()` and
+  `test_session_backup_state_is_session_local()`;
+- direct `prove` over
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` and
+  `src/test/modules/test_backend_runtime/t/002_threaded_bgworker_crash.pl`
+  passed all 94 tests.

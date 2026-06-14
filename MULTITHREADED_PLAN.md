@@ -776,7 +776,8 @@ ruleutils SPI-plan, and ICU converter catalog lookup/cache bridge through
 `PgSession`, plus the PL/pgSQL in-tree extension private-state bridge and
 per-session reset callback route through `PgSession`, plus the `postgres.c`
 unnamed-statement, interactive-switch, and row-description protocol scratch
-bridge through `PgSessionTcopState`.
+bridge through `PgSessionTcopState`, plus transaction callback registration
+and SQL backup session-state bridges through `PgSession`.
 
 Goal: reduce reliance on thread-local globals so sessions can eventually move
 between carriers.
@@ -1629,6 +1630,11 @@ statement pointer, interactive command-line switches, and reused row-description
 message context/buffer into `PgSessionTcopState`. Early fallback adoption covers
 the `-E`/`-j` switches parsed before a session exists, while session-close reset
 drops leftover unnamed plans and deletes the row-description context.
+The following session utility-state batch moved `xact.c`'s xact/subxact
+callback registration list heads and SQL backup state from `xlogfuncs.c` plus
+`xlog.c`'s session backup status into `PgSession`. Session-close reset now
+frees leftover callback list nodes and aborts/deletes leftover SQL backup
+state explicitly.
 
 ## Phase 13: Scheduler-Aware Wait Boundary
 
