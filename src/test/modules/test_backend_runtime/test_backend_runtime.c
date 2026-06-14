@@ -7632,6 +7632,14 @@ test_backend_utility_state_is_backend_local(PG_FUNCTION_ARGS)
 }
 
 PG_FUNCTION_INFO_V1(test_backend_reset_closed_state);
+static void
+test_backend_runtime_resource_release_callback(ResourceReleasePhase phase,
+											  bool isCommit,
+											  bool isTopLevel,
+											  void *arg)
+{
+}
+
 Datum
 test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 {
@@ -7779,6 +7787,13 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	aio->my_uring_context = (struct PgAioUringContext *) &fake_backend;
 
 	utility->notify_interrupt_pending = true;
+	utility->seq_scan_tables[0] = (HTAB *) &fake_backend;
+	utility->seq_scan_tables[1] = (HTAB *) &fake_backend;
+	utility->seq_scan_levels[0] = 1;
+	utility->seq_scan_levels[1] = 2;
+	utility->num_seq_scans = 2;
+	RegisterResourceReleaseCallback(test_backend_runtime_resource_release_callback,
+									NULL);
 	utility->injection_point_cache =
 		hash_create("test injection point cache", 8, &hash_ctl,
 					HASH_ELEM | HASH_BLOBS);
@@ -7860,6 +7875,12 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && aio->my_io_worker_id == -1;
 	ok = ok && aio->my_uring_context == NULL;
 	ok = ok && utility->notify_interrupt_pending;
+	ok = ok && utility->seq_scan_tables[0] == NULL;
+	ok = ok && utility->seq_scan_tables[1] == NULL;
+	ok = ok && utility->seq_scan_levels[0] == 0;
+	ok = ok && utility->seq_scan_levels[1] == 0;
+	ok = ok && utility->num_seq_scans == 0;
+	ok = ok && utility->resource_release_callbacks == NULL;
 	ok = ok && utility->injection_point_cache == NULL;
 	ok = ok && utility->dch_cache[0] == NULL;
 	ok = ok && utility->dch_cache[1] == NULL;

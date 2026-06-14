@@ -399,6 +399,23 @@ ext_sibling_callback(Datum arg, SysCacheIdentifier cacheid, uint32 hashvalue)
 	}
 }
 
+void
+ResetExtensionSiblingCache(void)
+{
+	ExtensionSiblingCache *cache_entry;
+
+	cache_entry = ext_sibling_list;
+	while (cache_entry != NULL)
+	{
+		ExtensionSiblingCache *next = cache_entry->next;
+
+		pfree(cache_entry);
+		cache_entry = next;
+	}
+
+	ext_sibling_list = NULL;
+}
+
 /*
  * Utility functions to check validity of extension and version names
  */

@@ -57,6 +57,7 @@ extern Oid	get_extension_schema(Oid ext_oid);
 extern bool extension_file_exists(const char *extensionName);
 
 extern Oid	get_function_sibling_type(Oid funcoid, const char *typname);
+extern void ResetExtensionSiblingCache(void);
 
 extern ObjectAddress AlterExtensionNamespace(const char *extensionName, const char *newschema,
 											 Oid *oldschema);

@@ -470,14 +470,23 @@ teardown without double-disconnecting or double-freeing normal-path state.
 The reset still does not claim ownership of shared control-plane state such as
 WAL sender shared slots, replication slots, logical worker slots, or stream
 filesets. Those remain owned by existing callback paths. The memory-manager
-`TopMemoryContext` split and the residual utility extension/resource-callback
-audit remain separate Gate E2 blockers.
+`TopMemoryContext` split remains a separate Gate E2 blocker.
+
+The following utility pass then closes the residual utility row:
+
+- `ResetExtensionSiblingCache()` frees private extension sibling cache nodes
+  inside `extension.c`, leaving the backend-local syscache callback with an
+  empty list;
+- `ResetResourceReleaseCallbacks()` frees backend-local dynamic resource
+  callback registrations inside `resowner.c`;
+- `PgBackendResetClosedState()` clears dynahash sequential-scan tracking slots
+  and levels along with the existing utility caches.
 
 Validation for this slice:
 
 - touched-object builds passed for `backend_runtime.o`, `pgarch.o`,
-  `walsender.o`, `walreceiver.o`, `launcher.o`, and
-  `test_backend_runtime.o`;
+  `extension.o`, `resowner.o`, `walsender.o`, `walreceiver.o`, `launcher.o`,
+  and `test_backend_runtime.o`;
 - `gmake -C src/test/modules/test_backend_runtime check` passed with the
   expanded `test_backend_reset_closed_state()` fixture;
 - `gmake check-runtime-lifecycles`, `gmake check-global-lifetimes`,

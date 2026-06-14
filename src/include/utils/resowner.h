@@ -160,6 +160,7 @@ extern void RegisterResourceReleaseCallback(ResourceReleaseCallback callback,
 											void *arg);
 extern void UnregisterResourceReleaseCallback(ResourceReleaseCallback callback,
 											  void *arg);
+extern void ResetResourceReleaseCallbacks(void);
 
 extern void CreateAuxProcessResourceOwner(void);
 extern void ReleaseAuxProcessResources(bool isCommit);

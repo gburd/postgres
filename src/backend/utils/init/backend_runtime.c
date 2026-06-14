@@ -27,6 +27,7 @@
 #include "catalog/binary_upgrade.h"
 #include "catalog/storage.h"
 #include "commands/async.h"
+#include "commands/extension.h"
 #include "commands/repack.h"
 #include "commands/tablespace.h"
 #include "commands/trigger.h"
@@ -4162,11 +4163,22 @@ PgBackendResetUtilityClosedState(PgBackendUtilityState *utility)
 	if (utility == NULL)
 		return;
 
+	ResetExtensionSiblingCache();
+
 	if (utility->injection_point_cache != NULL)
 	{
 		hash_destroy(utility->injection_point_cache);
 		utility->injection_point_cache = NULL;
 	}
+
+	for (i = 0; i < utility->num_seq_scans; i++)
+	{
+		utility->seq_scan_tables[i] = NULL;
+		utility->seq_scan_levels[i] = 0;
+	}
+	utility->num_seq_scans = 0;
+
+	ResetResourceReleaseCallbacks();
 
 	for (i = 0; i < utility->n_dch_cache; i++)
 	{

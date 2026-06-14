@@ -989,6 +989,23 @@ UnregisterResourceReleaseCallback(ResourceReleaseCallback callback, void *arg)
 	}
 }
 
+void
+ResetResourceReleaseCallbacks(void)
+{
+	ResourceReleaseCallbackItem *item;
+
+	item = ResourceRelease_callbacks;
+	while (item != NULL)
+	{
+		ResourceReleaseCallbackItem *next = item->next;
+
+		pfree(item);
+		item = next;
+	}
+
+	ResourceRelease_callbacks = NULL;
+}
+
 /*
  * Establish an AuxProcessResourceOwner for the current process.
  */
