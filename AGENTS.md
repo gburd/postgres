@@ -1302,6 +1302,18 @@ Important current files:
   `auto_explain`, `tablefunc`, and several `src/test/modules` tests. Clean and
   reinstall any of those modules before testing them after PRNG TLS changes.
 
+  After changing `src/include/utils/backend_runtime.h`, clean and relink
+  `src/test/modules/test_backend_runtime` before running its regression check.
+  The extension allocates runtime structs by value, so a stale
+  `test_backend_runtime.dylib` can crash during early tests even when the
+  backend itself rebuilt successfully:
+
+  ```sh
+  gmake -C src/test/modules/test_backend_runtime clean
+  gmake -C src/test/modules/test_backend_runtime all
+  gmake -C src/test/modules/test_backend_runtime check
+  ```
+
   Pending interrupt globals such as `InterruptPending` can be referenced from
   server-side common objects and loadable modules. After converting one of
   these exported names to an object-backed compatibility macro, rebuild

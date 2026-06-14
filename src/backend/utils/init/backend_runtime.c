@@ -881,6 +881,7 @@ static void PgExecutionInitializeGUCErrorState(PgExecutionGUCErrorState *guc_err
 static void PgExecutionAdoptEarlyGUCErrorState(PgExecution *execution);
 static void PgExecutionInitializeAsyncState(PgExecutionAsyncState *async);
 static void PgExecutionAdoptEarlyAsyncState(PgExecution *execution);
+static void PgExecutionResetAsyncClosedState(PgExecutionAsyncState *async);
 static void PgExecutionInitializeCatalogState(PgExecutionCatalogState *catalog);
 static void PgExecutionAdoptEarlyCatalogState(PgExecution *execution);
 static void PgExecutionInitializeCatalogCacheState(PgExecutionCatalogCacheState *catalog_cache);
@@ -3848,6 +3849,17 @@ PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgExecutionAdoptEarlyAsyncState,
 										PgExecution, execution, async,
 										early_execution_async,
 										PgExecutionInitializeAsyncState)
+
+static void
+PgExecutionResetAsyncClosedState(PgExecutionAsyncState *async)
+{
+	Assert(async != NULL);
+
+	if (async->signal_context != NULL)
+		MemoryContextDelete(async->signal_context);
+
+	PgExecutionInitializeAsyncState(async);
+}
 
 static void
 PgExecutionInitializeCatalogState(PgExecutionCatalogState *catalog)
@@ -7606,6 +7618,20 @@ PgExecutionAsyncQueuePosition *
 PgCurrentQueueHeadAfterWriteRef(void)
 {
 	return &PgCurrentExecutionAsyncState()->queue_head_after_write;
+}
+
+MemoryContext
+PgCurrentAsyncSignalWorkspaceContext(void)
+{
+	PgExecutionAsyncState *async = PgCurrentExecutionAsyncState();
+
+	if (async->signal_context == NULL)
+		async->signal_context =
+			AllocSetContextCreate(TopMemoryContext,
+								  "LISTEN/NOTIFY signal workspace",
+								  ALLOCSET_SMALL_SIZES);
+
+	return async->signal_context;
 }
 
 int32 **

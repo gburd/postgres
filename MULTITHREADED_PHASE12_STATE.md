@@ -10941,6 +10941,31 @@ rule, not just a preference. Before the next object-state migration or
 teardown batch starts, the state log must record either the existing checked
 mechanism being reused or the macro/`.def`/checker extension landed first.
 
+Async signal workspace lifecycle preflight:
+
+- target root and bucket: `PgExecution.async`;
+- repeated lifecycle operations: zero initialization, whole-bucket early
+  fallback adoption, and closed-execution reset with one owned memory context;
+- lifecycle preflight result: the existing `PG_RUNTIME_DEFINE_ZERO_INIT()`,
+  `PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT()`, and checked
+  `backend_runtime_execution_buckets.def` row are sufficient. The only
+  semantic ownership operation is deleting the async signal workspace context,
+  so that remains a handwritten `PgExecutionResetAsyncClosedState()` helper
+  referenced by the checked bucket row rather than a new generic macro.
+
+Async signal workspace lifecycle slice completed:
+
+- LISTEN/NOTIFY `SignalBackends()` workspace arrays now allocate under
+  `PgExecution.async.signal_context` through
+  `PgCurrentAsyncSignalWorkspaceContext()` instead of directly under
+  `TopMemoryContext`;
+- `PgExecutionResetClosedState()` deletes that context through the checked
+  `PgExecution.async` bucket reset, then zeroes the async bucket;
+- `test_execution_reset_closed_state()` covers deletion/zeroing of the async
+  signal context and arrays, while
+  `test_execution_async_state_is_execution_local()` verifies the workspace
+  context follows the current execution.
+
 Execution closed-reset hardening slice completed:
 
 - lifecycle preflight result: the existing execution bucket `.def` rows and

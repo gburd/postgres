@@ -1267,11 +1267,11 @@ PreCommit_Notify(void)
 
 		/* Preallocate workspace that will be needed by SignalBackends() */
 		if (signalPids == NULL)
-			signalPids = MemoryContextAlloc(TopMemoryContext,
+			signalPids = MemoryContextAlloc(PgCurrentAsyncSignalWorkspaceContext(),
 											MaxBackends * sizeof(int32));
 
 		if (signalProcnos == NULL)
-			signalProcnos = MemoryContextAlloc(TopMemoryContext,
+			signalProcnos = MemoryContextAlloc(PgCurrentAsyncSignalWorkspaceContext(),
 											   MaxBackends * sizeof(ProcNumber));
 
 		/*

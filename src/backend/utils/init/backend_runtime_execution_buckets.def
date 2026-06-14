@@ -26,7 +26,7 @@ PG_EXECUTION_BUCKET(xact, PgExecutionInitializeXactState(&execution->xact), PgEx
 PG_EXECUTION_BUCKET(transaction_cleanup, PgExecutionInitializeTransactionCleanupState(&execution->transaction_cleanup), PgExecutionAdoptEarlyTransactionCleanupState(execution), PgExecutionInitializeTransactionCleanupState(&execution->transaction_cleanup))
 PG_EXECUTION_BUCKET(replication_scratch, PgExecutionInitializeReplicationScratchState(&execution->replication_scratch), PgExecutionAdoptEarlyReplicationScratchState(execution), PgExecutionInitializeReplicationScratchState(&execution->replication_scratch))
 PG_EXECUTION_BUCKET(guc_error, PgExecutionInitializeGUCErrorState(&execution->guc_error), PgExecutionAdoptEarlyGUCErrorState(execution), PgExecutionInitializeGUCErrorState(&execution->guc_error))
-PG_EXECUTION_BUCKET(async, PgExecutionInitializeAsyncState(&execution->async), PgExecutionAdoptEarlyAsyncState(execution), PgExecutionInitializeAsyncState(&execution->async))
+PG_EXECUTION_BUCKET(async, PgExecutionInitializeAsyncState(&execution->async), PgExecutionAdoptEarlyAsyncState(execution), PgExecutionResetAsyncClosedState(&execution->async))
 PG_EXECUTION_BUCKET(catalog, PgExecutionInitializeCatalogState(&execution->catalog), PgExecutionAdoptEarlyCatalogState(execution), PgExecutionInitializeCatalogState(&execution->catalog))
 PG_EXECUTION_BUCKET(catalog_cache, PgExecutionInitializeCatalogCacheState(&execution->catalog_cache), PgExecutionAdoptEarlyCatalogCacheState(execution), PgExecutionInitializeCatalogCacheState(&execution->catalog_cache))
 PG_EXECUTION_BUCKET(relmap, PgExecutionInitializeRelMapState(&execution->relmap), PgExecutionAdoptEarlyRelMapState(execution), PgExecutionInitializeRelMapState(&execution->relmap))

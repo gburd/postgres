@@ -569,8 +569,16 @@ test_execution_reset_closed_state(PG_FUNCTION_ARGS)
 		fake_execution.async.pending_listen_actions = (HTAB *) &fake_tuptable;
 		fake_execution.async.pending_notifies =
 			(struct NotificationList *) &fake_portal;
-		fake_execution.async.signal_pids = (int32 *) &fake_error_context;
-		fake_execution.async.signal_procnos = (ProcNumber *) &fake_execution;
+		fake_execution.async.signal_context =
+			AllocSetContextCreate(TopMemoryContext,
+								  "test async signal workspace",
+								  ALLOCSET_SMALL_SIZES);
+		fake_execution.async.signal_pids =
+			MemoryContextAlloc(fake_execution.async.signal_context,
+							   sizeof(int32));
+		fake_execution.async.signal_procnos =
+			MemoryContextAlloc(fake_execution.async.signal_context,
+							   sizeof(ProcNumber));
 		fake_execution.async.try_advance_tail = true;
 		fake_execution.catalog.uncommitted_enum_types = (HTAB *) &fake_execution;
 		fake_execution.catalog.currently_reindexed_heap = 555;
@@ -716,6 +724,7 @@ test_execution_reset_closed_state(PG_FUNCTION_ARGS)
 		ok = ok && fake_execution.async.pending_actions == NULL;
 		ok = ok && fake_execution.async.pending_listen_actions == NULL;
 		ok = ok && fake_execution.async.pending_notifies == NULL;
+		ok = ok && fake_execution.async.signal_context == NULL;
 		ok = ok && fake_execution.async.signal_pids == NULL;
 		ok = ok && fake_execution.async.signal_procnos == NULL;
 		ok = ok && !fake_execution.async.try_advance_tail;
@@ -2412,6 +2421,9 @@ test_execution_async_state_is_execution_local(PG_FUNCTION_ARGS)
 		PgCurrentQueueHeadBeforeWriteRef()->offset = 102;
 		PgCurrentQueueHeadAfterWriteRef()->page = 103;
 		PgCurrentQueueHeadAfterWriteRef()->offset = 104;
+		ok = ok &&
+			PgCurrentAsyncSignalWorkspaceContext() ==
+			fake_execution1.async.signal_context;
 		*PgCurrentSignalPidsRef() = (int32 *) &fake_execution1;
 		*PgCurrentSignalProcnosRef() = (ProcNumber *) &fake_execution1;
 		*PgCurrentTryAdvanceTailRef() = true;
@@ -2424,6 +2436,7 @@ test_execution_async_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && PgCurrentQueueHeadBeforeWriteRef()->offset == 0;
 		ok = ok && PgCurrentQueueHeadAfterWriteRef()->page == 0;
 		ok = ok && PgCurrentQueueHeadAfterWriteRef()->offset == 0;
+		ok = ok && fake_execution2.async.signal_context == NULL;
 		ok = ok && *PgCurrentSignalPidsRef() == NULL;
 		ok = ok && *PgCurrentSignalProcnosRef() == NULL;
 		ok = ok && !*PgCurrentTryAdvanceTailRef();
@@ -2436,6 +2449,9 @@ test_execution_async_state_is_execution_local(PG_FUNCTION_ARGS)
 		PgCurrentQueueHeadBeforeWriteRef()->offset = 202;
 		PgCurrentQueueHeadAfterWriteRef()->page = 203;
 		PgCurrentQueueHeadAfterWriteRef()->offset = 204;
+		ok = ok &&
+			PgCurrentAsyncSignalWorkspaceContext() ==
+			fake_execution2.async.signal_context;
 		*PgCurrentSignalPidsRef() = (int32 *) &fake_execution2;
 		*PgCurrentSignalProcnosRef() = (ProcNumber *) &fake_execution2;
 		*PgCurrentTryAdvanceTailRef() = false;
@@ -2451,6 +2467,10 @@ test_execution_async_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && PgCurrentQueueHeadBeforeWriteRef()->offset == 102;
 		ok = ok && PgCurrentQueueHeadAfterWriteRef()->page == 103;
 		ok = ok && PgCurrentQueueHeadAfterWriteRef()->offset == 104;
+		ok = ok && fake_execution1.async.signal_context != NULL;
+		ok = ok &&
+			fake_execution1.async.signal_context !=
+			fake_execution2.async.signal_context;
 		ok = ok && *PgCurrentSignalPidsRef() == (int32 *) &fake_execution1;
 		ok = ok && *PgCurrentSignalProcnosRef() ==
 			(ProcNumber *) &fake_execution1;
@@ -2467,16 +2487,25 @@ test_execution_async_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && PgCurrentQueueHeadBeforeWriteRef()->offset == 202;
 		ok = ok && PgCurrentQueueHeadAfterWriteRef()->page == 203;
 		ok = ok && PgCurrentQueueHeadAfterWriteRef()->offset == 204;
+		ok = ok && fake_execution2.async.signal_context != NULL;
 		ok = ok && *PgCurrentSignalPidsRef() == (int32 *) &fake_execution2;
 		ok = ok && *PgCurrentSignalProcnosRef() ==
 			(ProcNumber *) &fake_execution2;
 		ok = ok && !*PgCurrentTryAdvanceTailRef();
 
 		CurrentPgExecution = saved_execution;
+		if (fake_execution1.async.signal_context != NULL)
+			MemoryContextDelete(fake_execution1.async.signal_context);
+		if (fake_execution2.async.signal_context != NULL)
+			MemoryContextDelete(fake_execution2.async.signal_context);
 	}
 	PG_CATCH();
 	{
 		CurrentPgExecution = saved_execution;
+		if (fake_execution1.async.signal_context != NULL)
+			MemoryContextDelete(fake_execution1.async.signal_context);
+		if (fake_execution2.async.signal_context != NULL)
+			MemoryContextDelete(fake_execution2.async.signal_context);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();

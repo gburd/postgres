@@ -1042,6 +1042,7 @@ typedef struct PgExecutionAsyncState
 	struct NotificationList *pending_notifies;
 	PgExecutionAsyncQueuePosition queue_head_before_write;
 	PgExecutionAsyncQueuePosition queue_head_after_write;
+	MemoryContext signal_context;
 	int32	   *signal_pids;
 	ProcNumber *signal_procnos;
 	bool		try_advance_tail;
@@ -2937,6 +2938,7 @@ extern HTAB **PgCurrentPendingListenActionsRef(void);
 extern struct NotificationList **PgCurrentPendingNotifiesRef(void);
 extern PgExecutionAsyncQueuePosition *PgCurrentQueueHeadBeforeWriteRef(void);
 extern PgExecutionAsyncQueuePosition *PgCurrentQueueHeadAfterWriteRef(void);
+extern MemoryContext PgCurrentAsyncSignalWorkspaceContext(void);
 extern int32 **PgCurrentSignalPidsRef(void);
 extern ProcNumber **PgCurrentSignalProcnosRef(void);
 extern bool *PgCurrentTryAdvanceTailRef(void);
