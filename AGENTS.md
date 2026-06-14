@@ -354,6 +354,10 @@ Important current files:
   Phase 12 batch needs two or more parallel helper bodies for these patterns,
   add the checked `PG_RUNTIME_*` action, `PG_RUNTIME_DEFINE_*` helper, bucket
   `.def` rule, and checker validation before moving the state.
+- Treat the object-owned allocation-context pattern as the first concrete
+  lifecycle-ergonomics target. The next time a batch repeats create-on-demand
+  context accessors plus delete-and-null reset helpers, add a reusable checked
+  primitive for that pattern before moving more state through one-off helpers.
 - If the lifecycle process itself feels slow or repetitive, stop and improve
   the checked lifecycle vocabulary before continuing the migration. The
   preferred fix is a small named action, helper macro, table row, or checker

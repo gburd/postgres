@@ -976,6 +976,12 @@ Gate E2 requires:
   Phase 12 batch, land the checked action/macro/checker extension before the
   state movement so future agents can express the same ownership rule through
   the manifest and bucket `.def` row;
+- the first concrete target for that simplification should be the
+  object-owned allocation-context pattern now recurring in execution/session
+  cleanup slices: create-on-demand context accessor, delete-and-null reset,
+  fallback adoption, and manifest-checked bucket reset. If the next batch
+  repeats that pattern, add a small checked primitive for it first rather than
+  writing another bespoke helper pair;
 - lifecycle-process friction is itself a Gate E2 signal. If state migration or
   teardown work starts requiring another repeated manual init/adopt/reset/
   destroy helper list, extend the checked lifecycle vocabulary first with a
