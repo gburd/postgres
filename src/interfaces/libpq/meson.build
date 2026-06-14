@@ -157,6 +157,8 @@ tests += {
     'tests': [
       't/001_uri.pl',
       't/002_api.pl',
+      't/003_load_balance_host_list.pl',
+      't/004_load_balance_dns.pl',
       't/005_negotiate_encryption.pl',
       't/006_service.pl',
     ],
@@ -170,7 +172,17 @@ tests += {
   'pytest': {
     'tests': [
       'pyt/test_load_balance.py',
+      'pyt/test_002_api.py',
+      'pyt/test_001_uri.py',
+      'pyt/test_005_negotiate_encryption.py',
+      'pyt/test_006_service.py',
     ],
+    'env': {
+      'with_ssl': ssl_library,
+      'with_gssapi': gssapi.found() ? 'yes' : 'no',
+      'with_krb_srvnam': 'postgres',
+    },
+    'deps': libpq_test_deps,
   },
 }
 

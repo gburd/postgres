@@ -78,7 +78,7 @@ def load_balance_nodes_dns(create_pg_module):
         hosts_path = "/etc/hosts"
 
     try:
-        with open(hosts_path) as f:
+        with open(hosts_path, encoding="utf-8") as f:
             hosts_content = f.read()
     except (OSError, IOError):
         pytest.skip(f"Could not read hosts file: {hosts_path}")
@@ -97,9 +97,9 @@ def load_balance_nodes_dns(create_pg_module):
     # Allow trust authentication for TCP connections from loopback
     for node in nodes:
         hba_path = node.datadir / "pg_hba.conf"
-        with open(hba_path, "r") as f:
+        with open(hba_path, "r", encoding="utf-8") as f:
             original_content = f.read()
-        with open(hba_path, "w") as f:
+        with open(hba_path, "w", encoding="utf-8") as f:
             f.write("host all all 127.0.0.0/8 trust\n")
             f.write(original_content)
         node.pg_ctl("reload")
