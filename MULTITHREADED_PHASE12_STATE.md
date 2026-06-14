@@ -13492,3 +13492,48 @@ Validation for the session/execution early-fallback consolidation slice:
 - direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
   `002_threaded_bgworker_crash.pl`, 131 tests total, with patched macOS
   install-name paths and the repo-local `.perl5` `PERL5LIB`.
+
+## Delete-Memory-Context-And-Reset Lifecycle Action
+
+Lifecycle/preflight note:
+
+- target root and buckets: `PgExecution` buckets whose closed-reset action
+  deletes one owned memory context and then restores constructor defaults;
+- owner source files: `src/backend/utils/init/backend_runtime_internal.h`,
+  `src/backend/utils/init/backend_runtime_execution_buckets.def`, and
+  `src/tools/runtime_lifecycle/check_runtime_lifecycles.pl`;
+- repeated lifecycle operations: six execution bucket rows repeated
+  `PG_RUNTIME_DELETE_MEMORY_CONTEXT(context);` followed by
+  `PG_RUNTIME_RESET_THROUGH_INITIALIZER(init_expr)`. The documented Gate E2
+  ergonomics rule says this is lifecycle friction, so this slice adds one
+  checked combined action before more teardown migration work;
+- retained invariant: the action is only for routine delete-and-null followed
+  by constructor reset. Semantic cleanup, ownership-sensitive ordering, and
+  multi-resource teardown remain handwritten in owner-adjacent reset helpers.
+
+Slice:
+
+- added `PG_RUNTIME_DELETE_MEMORY_CONTEXT_AND_RESET(context, init_expr)` to
+  the checked lifecycle action vocabulary;
+- taught `check_runtime_lifecycles.pl` to recognize the new action;
+- converted the repeated execution reset rows for ANALYZE, XLog insert,
+  transaction abort context, large-object cleanup context, async signal
+  context, and after-trigger context to use the combined action.
+
+Validation for the delete-memory-context-and-reset lifecycle action slice:
+- `git diff --check` passed;
+- `perl -c src/tools/runtime_lifecycle/check_runtime_lifecycles.pl` passed;
+- `gmake -C src/backend/utils/init backend_runtime.o backend_runtime_teardown.o`
+  passed;
+- `gmake -C src/test/modules/test_backend_runtime test_backend_runtime_execution.o`
+  passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 222 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- full incremental `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with patched macOS
+  install-name paths and the repo-local `.perl5` `PERL5LIB`.

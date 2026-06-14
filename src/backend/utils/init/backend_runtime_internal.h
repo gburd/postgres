@@ -45,6 +45,11 @@
 	do { \
 		init_expr; \
 	} while (0)
+#define PG_RUNTIME_DELETE_MEMORY_CONTEXT_AND_RESET(context, init_expr) \
+	do { \
+		PG_RUNTIME_DELETE_MEMORY_CONTEXT(context); \
+		PG_RUNTIME_RESET_THROUGH_INITIALIZER(init_expr); \
+	} while (0)
 #define PG_RUNTIME_DESTROY_HASH(hash) \
 	do { \
 		if ((hash) != NULL) \

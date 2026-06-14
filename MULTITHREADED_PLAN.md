@@ -1005,8 +1005,10 @@ Gate E2 requires:
   `PG_RUNTIME_RESET_THROUGH_INITIALIZER(init_expr)` is a checked action for
   bucket reset cells whose only close-time work is restoring constructor
   defaults through the same initializer. Use it instead of raw initializer
-  calls in reset columns, including after a separate checked destructor action
-  such as `PG_RUNTIME_DELETE_MEMORY_CONTEXT(context)`;
+  calls in reset columns. When a bucket reset only deletes an owned memory
+  context and then restores constructor defaults, use the combined checked
+  `PG_RUNTIME_DELETE_MEMORY_CONTEXT_AND_RESET(context, init_expr)` action
+  instead of spelling two actions by hand;
 - routine lifecycle helper macros are centralized in
   `backend_runtime_internal.h`: `PG_RUNTIME_DEFINE_ZERO_INIT`,
   `PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT`,

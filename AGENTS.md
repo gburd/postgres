@@ -107,6 +107,10 @@ init/adopt/reset/destroy lists.
   code, add the missing checked lifecycle primitive first. The likely next
   useful primitive is an allocation-context helper/table rule that covers
   create-on-demand context ownership plus checked close-time deletion.
+- Use `PG_RUNTIME_DELETE_MEMORY_CONTEXT_AND_RESET(context, init_expr)` when a
+  bucket reset only deletes an owned memory context and then restores
+  constructor defaults. Add new checked `PG_RUNTIME_*` actions the same way
+  when another repeated teardown/reset shape appears.
 - Operational reminder for future agents: when planning a larger Phase 12
   batch, start by deciding whether lifecycle macros, bucket `.def` rows,
   declarative tables, or checker rules would make the batch simpler. If yes,
