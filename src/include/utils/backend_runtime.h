@@ -1812,6 +1812,7 @@ typedef struct PgSessionAsyncState
 typedef struct PgSessionEncodingState
 {
 	List	   *conv_proc_list;
+	MemoryContext encoding_cache_context;
 	FmgrInfo   *to_server_conv_proc;
 	FmgrInfo   *to_client_conv_proc;
 	FmgrInfo   *utf8_to_server_conv_proc;
@@ -2650,6 +2651,7 @@ extern struct RelationData **PgCurrentLargeObjectIndexRelationRef(void);
 extern HTAB **PgCurrentAsyncLocalChannelTableRef(void);
 extern bool *PgCurrentAsyncRegisteredListenerRef(void);
 extern List **PgCurrentEncodingConvProcListRef(void);
+extern MemoryContext PgCurrentEncodingCacheMemoryContext(void);
 extern FmgrInfo **PgCurrentToServerConvProcRef(void);
 extern FmgrInfo **PgCurrentToClientConvProcRef(void);
 extern FmgrInfo **PgCurrentUtf8ToServerConvProcRef(void);

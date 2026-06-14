@@ -52,7 +52,9 @@
  * settings because we must be able to restore a previous setting during
  * transaction rollback, without doing any fresh catalog accesses.)
  *
- * Since we'll never release this data, we just keep it in TopMemoryContext.
+ * The cache entries live in a session-owned context, so transaction rollback
+ * can still restore old settings without catalog access while closed-session
+ * reset can release the cache with the logical session.
  */
 typedef struct ConvProcInfo
 {
@@ -151,6 +153,7 @@ PrepareClientEncoding(int encoding)
 		Oid			to_server_proc,
 					to_client_proc;
 		ConvProcInfo *convinfo;
+		MemoryContext encoding_context;
 		MemoryContext oldcontext;
 
 		to_server_proc = FindDefaultConversionProc(encoding,
@@ -163,19 +166,21 @@ PrepareClientEncoding(int encoding)
 			return -1;
 
 		/*
-		 * Load the fmgr info into TopMemoryContext (could still fail here)
+		 * Load the fmgr info into the session encoding cache context
+		 * (could still fail here).
 		 */
-		convinfo = (ConvProcInfo *) MemoryContextAlloc(TopMemoryContext,
+		encoding_context = PgCurrentEncodingCacheMemoryContext();
+		convinfo = (ConvProcInfo *) MemoryContextAlloc(encoding_context,
 													   sizeof(ConvProcInfo));
 		convinfo->s_encoding = current_server_encoding;
 		convinfo->c_encoding = encoding;
 		fmgr_info_cxt(to_server_proc, &convinfo->to_server_info,
-					  TopMemoryContext);
+					  encoding_context);
 		fmgr_info_cxt(to_client_proc, &convinfo->to_client_info,
-					  TopMemoryContext);
+					  encoding_context);
 
 		/* Attach new info to head of list */
-		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+		oldcontext = MemoryContextSwitchTo(encoding_context);
 		ConvProcList = lcons(convinfo, ConvProcList);
 		MemoryContextSwitchTo(oldcontext);
 
@@ -329,11 +334,13 @@ InitializeClientEncoding(void)
 		if (OidIsValid(utf8_to_server_proc))
 		{
 			FmgrInfo   *finfo;
+			MemoryContext encoding_context;
 
-			finfo = (FmgrInfo *) MemoryContextAlloc(TopMemoryContext,
+			encoding_context = PgCurrentEncodingCacheMemoryContext();
+			finfo = (FmgrInfo *) MemoryContextAlloc(encoding_context,
 													sizeof(FmgrInfo));
 			fmgr_info_cxt(utf8_to_server_proc, finfo,
-						  TopMemoryContext);
+						  encoding_context);
 			/* Set Utf8ToServerConvProc only after data is fully valid */
 			Utf8ToServerConvProc = finfo;
 		}

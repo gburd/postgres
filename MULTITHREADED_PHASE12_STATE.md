@@ -11605,3 +11605,63 @@ Current lifecycle-framework standing instruction:
 - keep semantic cleanup handwritten and owner-adjacent when ordering or real
   ownership decisions matter. The framework should remove repetitive
   lifecycle plumbing, not hide destruction semantics.
+
+Session encoding conversion-cache lifecycle preflight:
+
+- target root and bucket: `PgSession.encoding`;
+- repeated lifecycle operations: one session-owned allocation context for the
+  encoding conversion cache, plus an ordered closed-session reset that deletes
+  the context and reinitializes the encoding bucket;
+- lifecycle preflight result: the existing `PG_SESSION_BUCKET(encoding, ...)`
+  constructor/adoption row, ordered `PG_SESSION_RESET_BUCKET(encoding, ...)`
+  reset row, and lifecycle manifest checker are sufficient. No new generic
+  lifecycle action is needed because this is one semantic cache family, not a
+  repeated helper family. The reset stays handwritten because it must preserve
+  the existing GUC ownership boundary for the client/server encoding display
+  strings while deleting only the conversion cache context.
+
+Session encoding conversion-cache lifecycle slice:
+
+- `PgSessionEncodingState` now includes `encoding_cache_context`, and
+  `PgCurrentEncodingCacheMemoryContext()` lazily creates a session-owned
+  context for client/server encoding conversion cache allocations;
+- `PrepareClientEncoding()` now allocates `ConvProcInfo` entries, embedded
+  fmgr lookup state, and list cells in that session-owned context instead of
+  directly under `TopMemoryContext`;
+- `InitializeClientEncoding()` now allocates the optional UTF8-to-server
+  conversion `FmgrInfo` in the same session-owned context;
+- `PgSessionResetClosedState()` now has an ordered encoding reset row that
+  deletes `encoding_cache_context` and reinitializes the encoding bucket;
+- `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` records that the conversion cache
+  context and pointer slots move with the logical session and must not be
+  shallow-copied between live sessions;
+- `MULTITHREADED_RUNTIME_OWNERS.tsv` maps the encoding cache context,
+  conversion list, and active conversion pointers to `PgSession.encoding`;
+- `test_session_encoding_state_is_session_local()` now verifies that fake
+  sessions get distinct encoding cache contexts, allocations land in the
+  active session's context, and switching back to the saved session preserves
+  its encoding cache context pointer.
+
+Validation for the session encoding conversion-cache lifecycle slice:
+
+- touched-object builds passed for `mbutils.o`, `backend_runtime.o`, and
+  `test_backend_runtime_session.o`;
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 28 reset definitions checked, and 171 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- after the installed `backend_runtime.h` layout change, the documented
+  backend clean/generated-header recovery path completed and full `gmake -j8`
+  passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed
+  after the clean rebuild;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with the documented
+  local `IPC::Run` `PERL5LIB` and patched temporary-install install-name
+  paths;
+- a standalone direct `pg_regress encoding conversion` run failed because the
+  `conversion` test assumes the earlier `test_setup` public-schema grant
+  fixture. The corrected focused run with `test_setup encoding conversion`
+  passed all three tests.

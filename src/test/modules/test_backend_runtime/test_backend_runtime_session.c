@@ -1477,6 +1477,10 @@ test_session_encoding_state_is_session_local(PG_FUNCTION_ARGS)
 	int			saved_pending_client_encoding;
 	List	   *session1_list_marker;
 	List	   *session2_list_marker;
+	MemoryContext session1_encoding_context = NULL;
+	MemoryContext session2_encoding_context = NULL;
+	void	   *session1_context_marker;
+	void	   *session2_context_marker;
 	FmgrInfo   *session1_to_server_marker;
 	FmgrInfo   *session1_to_client_marker;
 	FmgrInfo   *session1_utf8_marker;
@@ -1512,6 +1516,7 @@ test_session_encoding_state_is_session_local(PG_FUNCTION_ARGS)
 	{
 		PgSetCurrentSession(&fake_session1);
 		ok = ok && *PgCurrentEncodingConvProcListRef() == NIL;
+		ok = ok && fake_session1.encoding.encoding_cache_context == NULL;
 		ok = ok && *PgCurrentToServerConvProcRef() == NULL;
 		ok = ok && *PgCurrentToClientConvProcRef() == NULL;
 		ok = ok && *PgCurrentUtf8ToServerConvProcRef() == NULL;
@@ -1532,6 +1537,7 @@ test_session_encoding_state_is_session_local(PG_FUNCTION_ARGS)
 
 		PgSetCurrentSession(&fake_session2);
 		ok = ok && *PgCurrentEncodingConvProcListRef() == NIL;
+		ok = ok && fake_session2.encoding.encoding_cache_context == NULL;
 		ok = ok && *PgCurrentToServerConvProcRef() == NULL;
 		ok = ok && *PgCurrentToClientConvProcRef() == NULL;
 		ok = ok && *PgCurrentUtf8ToServerConvProcRef() == NULL;
@@ -1552,6 +1558,14 @@ test_session_encoding_state_is_session_local(PG_FUNCTION_ARGS)
 
 		PgSetCurrentSession(&fake_session1);
 		ok = ok && *PgCurrentEncodingConvProcListRef() == session1_list_marker;
+		session1_encoding_context = PgCurrentEncodingCacheMemoryContext();
+		session1_context_marker =
+			MemoryContextAlloc(session1_encoding_context, 8);
+		ok = ok && session1_encoding_context != TopMemoryContext;
+		ok = ok && MemoryContextGetParent(session1_encoding_context) ==
+			TopMemoryContext;
+		ok = ok && GetMemoryChunkContext(session1_context_marker) ==
+			session1_encoding_context;
 		ok = ok && *PgCurrentToServerConvProcRef() == session1_to_server_marker;
 		ok = ok && *PgCurrentToClientConvProcRef() == session1_to_client_marker;
 		ok = ok && *PgCurrentUtf8ToServerConvProcRef() == session1_utf8_marker;
@@ -1563,6 +1577,14 @@ test_session_encoding_state_is_session_local(PG_FUNCTION_ARGS)
 
 		PgSetCurrentSession(&fake_session2);
 		ok = ok && *PgCurrentEncodingConvProcListRef() == session2_list_marker;
+		session2_encoding_context = PgCurrentEncodingCacheMemoryContext();
+		session2_context_marker =
+			MemoryContextAlloc(session2_encoding_context, 8);
+		ok = ok && session2_encoding_context != session1_encoding_context;
+		ok = ok && MemoryContextGetParent(session2_encoding_context) ==
+			TopMemoryContext;
+		ok = ok && GetMemoryChunkContext(session2_context_marker) ==
+			session2_encoding_context;
 		ok = ok && *PgCurrentToServerConvProcRef() == session2_to_server_marker;
 		ok = ok && *PgCurrentToClientConvProcRef() == session2_to_client_marker;
 		ok = ok && *PgCurrentUtf8ToServerConvProcRef() == session2_utf8_marker;
@@ -1586,6 +1608,10 @@ test_session_encoding_state_is_session_local(PG_FUNCTION_ARGS)
 	PG_CATCH();
 	{
 		PgSetCurrentSession(saved_session);
+		if (session1_encoding_context != NULL)
+			MemoryContextDelete(session1_encoding_context);
+		if (session2_encoding_context != NULL)
+			MemoryContextDelete(session2_encoding_context);
 		*PgCurrentEncodingConvProcListRef() = saved_conv_proc_list;
 		*PgCurrentToServerConvProcRef() = saved_to_server_conv_proc;
 		*PgCurrentToClientConvProcRef() = saved_to_client_conv_proc;
@@ -1598,6 +1624,11 @@ test_session_encoding_state_is_session_local(PG_FUNCTION_ARGS)
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
+
+	if (session1_encoding_context != NULL)
+		MemoryContextDelete(session1_encoding_context);
+	if (session2_encoding_context != NULL)
+		MemoryContextDelete(session2_encoding_context);
 
 	if (!ok)
 		elog(ERROR, "encoding state was not session-local");

@@ -2574,6 +2574,7 @@ PgSessionInitializeEncodingState(PgSessionEncodingState *encoding)
 	Assert(encoding != NULL);
 
 	encoding->conv_proc_list = NIL;
+	encoding->encoding_cache_context = NULL;
 	encoding->to_server_conv_proc = NULL;
 	encoding->to_client_conv_proc = NULL;
 	encoding->utf8_to_server_conv_proc = NULL;
@@ -4791,6 +4792,20 @@ PgSessionResetExtensionModuleClosedState(PgSession *session)
 }
 
 static void
+PgSessionResetEncodingClosedState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (session->encoding.encoding_cache_context != NULL)
+	{
+		MemoryContextDelete(session->encoding.encoding_cache_context);
+		session->encoding.encoding_cache_context = NULL;
+	}
+
+	PgSessionInitializeEncodingState(&session->encoding);
+}
+
+static void
 PgSessionResetCatalogLookupClosedState(PgSession *session)
 {
 	Assert(session != NULL);
@@ -6167,6 +6182,22 @@ List **
 PgCurrentEncodingConvProcListRef(void)
 {
 	return &PgCurrentSessionEncodingState()->conv_proc_list;
+}
+
+MemoryContext
+PgCurrentEncodingCacheMemoryContext(void)
+{
+	PgSessionEncodingState *encoding;
+
+	encoding = PgCurrentSessionEncodingState();
+
+	if (encoding->encoding_cache_context == NULL)
+		encoding->encoding_cache_context =
+			AllocSetContextCreate(TopMemoryContext,
+								  "encoding conversion cache",
+								  ALLOCSET_SMALL_SIZES);
+
+	return encoding->encoding_cache_context;
 }
 
 FmgrInfo **
