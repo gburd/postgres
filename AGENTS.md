@@ -218,6 +218,13 @@ Important current files:
   remaining async local-channel hash. Keep that cleanup after `shmem_exit()`
   and `on_proc_exit` callbacks; async shared listener cleanup still belongs to
   the existing proc-exit callback path.
+- Text-search parser, dictionary, and configuration caches now live under
+  `PgSessionTextSearchState` with the `default_text_search_config` value and
+  OID cache. The reset path owns parser/config hash destruction, dictionary
+  private memory-context deletion, config map-array frees, and last-used
+  pointer clearing. After changing this bridge, rebuild `backend_runtime.o`,
+  `ts_cache.o`, and `test_backend_runtime.o`, then run
+  `gmake check-runtime-lifecycles` and `gmake check-global-lifetimes`.
 - Transaction cleanup slots now live under
   `PgExecutionTransactionCleanupState`: large-object descriptor cleanup slots,
   the transaction temporary-file cleanup flag, the pgstat subtransaction stack,

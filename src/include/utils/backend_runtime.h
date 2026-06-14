@@ -81,6 +81,9 @@ typedef struct LargeObjectDesc LargeObjectDesc;
 typedef struct EventTriggerQueryState EventTriggerQueryState;
 typedef struct CatCInProgress CatCInProgress;
 typedef struct inprogressent InProgressEnt;
+typedef struct TSParserCacheEntry TSParserCacheEntry;
+typedef struct TSDictionaryCacheEntry TSDictionaryCacheEntry;
+typedef struct TSConfigCacheEntry TSConfigCacheEntry;
 typedef struct TransactionStateData TransactionStateData;
 typedef struct dsa_area dsa_area;
 typedef struct dshash_table dshash_table;
@@ -1177,6 +1180,12 @@ typedef struct PgSessionTextSearchState
 	bool		initialized;
 	char	   *current_config_value;
 	Oid			current_config_cache;
+	HTAB	   *parser_cache_hash;
+	TSParserCacheEntry *last_used_parser;
+	HTAB	   *dictionary_cache_hash;
+	TSDictionaryCacheEntry *last_used_dictionary;
+	HTAB	   *config_cache_hash;
+	TSConfigCacheEntry *last_used_config;
 } PgSessionTextSearchState;
 
 typedef struct PgSessionConnectionGUCState
@@ -2194,6 +2203,12 @@ extern bool *PgCurrentOptimizeBoundedSortRef(void);
 #endif
 extern char **PgCurrentTSCurrentConfigRef(void);
 extern Oid *PgCurrentTSCurrentConfigCacheRef(void);
+extern HTAB **PgCurrentTSParserCacheHashRef(void);
+extern TSParserCacheEntry **PgCurrentTSLastUsedParserRef(void);
+extern HTAB **PgCurrentTSDictionaryCacheHashRef(void);
+extern TSDictionaryCacheEntry **PgCurrentTSLastUsedDictionaryRef(void);
+extern HTAB **PgCurrentTSConfigCacheHashRef(void);
+extern TSConfigCacheEntry **PgCurrentTSLastUsedConfigRef(void);
 extern char **PgCurrentTimeZoneStringRef(void);
 extern char **PgCurrentLogTimeZoneStringRef(void);
 extern pg_tz **PgCurrentSessionTimeZoneRef(void);

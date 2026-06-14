@@ -1113,6 +1113,17 @@ runtime-layout rebuild path for stale `launch_backend.o`. The global-lifetime
 scan now reports 38 execution-local declarations with zero new unclassified
 mutable globals, down from 47 before this slice.
 
+The following session-cache slice moved the text-search parser, dictionary,
+and configuration cache hashes plus their last-used entry pointers into
+`PgSessionTextSearchState`. This closes a representative pointer/hash-bearing
+session-cache bucket rather than only scalar GUC state: closed-session reset
+now destroys parser/config hash tables, dictionary private memory contexts,
+config map arrays, and last-used pointers explicitly. Validation included
+touched-object builds, `gmake check-runtime-lifecycles`, and the required
+global-lifetime scan. The global-lifetime scan now reports 191 session-local
+declarations and 30 execution-local declarations with zero new unclassified
+mutable globals.
+
 ## Bottom Line
 
 The branch is on track only if the current debt is treated as Phase 12

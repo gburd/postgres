@@ -1548,6 +1548,15 @@ field currently declared in `PgBackend`, `PgSession`, `PgConnection`, and
 the manifest contains a stale entry. This makes the Gate E2 bucket-lifecycle
 audit enforceable; any future unknown or pending lifecycle row is a Phase 12
 blocker until it is resolved or deliberately documented as a long-lived owner.
+The following session-cache batch moved the text-search parser, dictionary,
+and configuration cache hashes plus their last-used entry pointers into
+`PgSessionTextSearchState`, alongside the already migrated
+`default_text_search_config` value and OID cache. The reset path now destroys
+the parser/config hash tables, dictionary private memory contexts, config map
+arrays, and last-used pointers explicitly, and the lifecycle manifest records
+the pointer/hash ownership rule. The global-lifetime scan now reports 191
+session-local declarations and 30 execution-local declarations with zero new
+unclassified mutable globals.
 
 ## Phase 13: Scheduler-Aware Wait Boundary
 

@@ -15,6 +15,7 @@
 
 #include "fmgr.h"
 #include "utils/global_lifetime.h"
+#include "utils/hsearch.h"
 
 
 /*
@@ -69,7 +70,7 @@ typedef struct
 	Oid		   *dictIds;
 } ListDictionary;
 
-typedef struct
+typedef struct TSConfigCacheEntry
 {
 	/* cfgId is the hash lookup key and MUST BE FIRST */
 	Oid			cfgId;
@@ -87,6 +88,12 @@ typedef struct
  */
 extern char **PgCurrentTSCurrentConfigRef(void);
 extern Oid *PgCurrentTSCurrentConfigCacheRef(void);
+extern HTAB **PgCurrentTSParserCacheHashRef(void);
+extern TSParserCacheEntry **PgCurrentTSLastUsedParserRef(void);
+extern HTAB **PgCurrentTSDictionaryCacheHashRef(void);
+extern TSDictionaryCacheEntry **PgCurrentTSLastUsedDictionaryRef(void);
+extern HTAB **PgCurrentTSConfigCacheHashRef(void);
+extern TSConfigCacheEntry **PgCurrentTSLastUsedConfigRef(void);
 #define TSCurrentConfig (*PgCurrentTSCurrentConfigRef())
 
 

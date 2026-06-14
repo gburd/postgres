@@ -1501,22 +1501,70 @@ test_session_text_search_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && strcmp(TSCurrentConfig, "pg_catalog.english") == 0;
 		ok = ok && !OidIsValid(*PgCurrentTSCurrentConfigCacheRef());
 		*PgCurrentTSCurrentConfigCacheRef() = 12345;
+		*PgCurrentTSParserCacheHashRef() = (HTAB *) &fake_session1;
+		*PgCurrentTSLastUsedParserRef() =
+			(TSParserCacheEntry *) &fake_session1;
+		*PgCurrentTSDictionaryCacheHashRef() = (HTAB *) &fake_session1;
+		*PgCurrentTSLastUsedDictionaryRef() =
+			(TSDictionaryCacheEntry *) &fake_session1;
+		*PgCurrentTSConfigCacheHashRef() = (HTAB *) &fake_session1;
+		*PgCurrentTSLastUsedConfigRef() =
+			(TSConfigCacheEntry *) &fake_session1;
 
 		PgSetCurrentSession(&fake_session2);
 		ok = ok && strcmp(TSCurrentConfig, "pg_catalog.simple") == 0;
 		ok = ok && !OidIsValid(*PgCurrentTSCurrentConfigCacheRef());
+		ok = ok && *PgCurrentTSParserCacheHashRef() == NULL;
+		ok = ok && *PgCurrentTSLastUsedParserRef() == NULL;
+		ok = ok && *PgCurrentTSDictionaryCacheHashRef() == NULL;
+		ok = ok && *PgCurrentTSLastUsedDictionaryRef() == NULL;
+		ok = ok && *PgCurrentTSConfigCacheHashRef() == NULL;
+		ok = ok && *PgCurrentTSLastUsedConfigRef() == NULL;
 		SetConfigOption("default_text_search_config", "pg_catalog.simple",
 						PGC_USERSET, PGC_S_SESSION);
 		ok = ok && strcmp(TSCurrentConfig, "pg_catalog.simple") == 0;
 		*PgCurrentTSCurrentConfigCacheRef() = 67890;
+		*PgCurrentTSParserCacheHashRef() = (HTAB *) &fake_session2;
+		*PgCurrentTSLastUsedParserRef() =
+			(TSParserCacheEntry *) &fake_session2;
+		*PgCurrentTSDictionaryCacheHashRef() = (HTAB *) &fake_session2;
+		*PgCurrentTSLastUsedDictionaryRef() =
+			(TSDictionaryCacheEntry *) &fake_session2;
+		*PgCurrentTSConfigCacheHashRef() = (HTAB *) &fake_session2;
+		*PgCurrentTSLastUsedConfigRef() =
+			(TSConfigCacheEntry *) &fake_session2;
 
 		PgSetCurrentSession(&fake_session1);
 		ok = ok && strcmp(TSCurrentConfig, "pg_catalog.english") == 0;
 		ok = ok && *PgCurrentTSCurrentConfigCacheRef() == 12345;
+		ok = ok && *PgCurrentTSParserCacheHashRef() ==
+			(HTAB *) &fake_session1;
+		ok = ok && *PgCurrentTSLastUsedParserRef() ==
+			(TSParserCacheEntry *) &fake_session1;
+		ok = ok && *PgCurrentTSDictionaryCacheHashRef() ==
+			(HTAB *) &fake_session1;
+		ok = ok && *PgCurrentTSLastUsedDictionaryRef() ==
+			(TSDictionaryCacheEntry *) &fake_session1;
+		ok = ok && *PgCurrentTSConfigCacheHashRef() ==
+			(HTAB *) &fake_session1;
+		ok = ok && *PgCurrentTSLastUsedConfigRef() ==
+			(TSConfigCacheEntry *) &fake_session1;
 
 		PgSetCurrentSession(&fake_session2);
 		ok = ok && strcmp(TSCurrentConfig, "pg_catalog.simple") == 0;
 		ok = ok && *PgCurrentTSCurrentConfigCacheRef() == 67890;
+		ok = ok && *PgCurrentTSParserCacheHashRef() ==
+			(HTAB *) &fake_session2;
+		ok = ok && *PgCurrentTSLastUsedParserRef() ==
+			(TSParserCacheEntry *) &fake_session2;
+		ok = ok && *PgCurrentTSDictionaryCacheHashRef() ==
+			(HTAB *) &fake_session2;
+		ok = ok && *PgCurrentTSLastUsedDictionaryRef() ==
+			(TSDictionaryCacheEntry *) &fake_session2;
+		ok = ok && *PgCurrentTSConfigCacheHashRef() ==
+			(HTAB *) &fake_session2;
+		ok = ok && *PgCurrentTSLastUsedConfigRef() ==
+			(TSConfigCacheEntry *) &fake_session2;
 
 		PgSetCurrentSession(saved_session);
 		SetConfigOption("default_text_search_config",
@@ -2554,6 +2602,11 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	MemoryContext oldcontext;
 	MemoryContext dynamic_library_context;
 	Session    *legacy_session;
+	TSParserCacheEntry *parser_entry;
+	TSDictionaryCacheEntry *dictionary_entry;
+	TSConfigCacheEntry *config_entry;
+	Oid			test_key = BOOLOID;
+	bool		found;
 	bool		ok = true;
 
 	MemSet(&fake_session, 0, sizeof(fake_session));
@@ -2578,6 +2631,51 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 		hash_create("test async channel cache", 8, &hash_ctl,
 					HASH_ELEM | HASH_BLOBS);
 	fake_session.async.registered_listener = true;
+
+	hash_ctl.entrysize = sizeof(TSParserCacheEntry);
+	fake_session.text_search.parser_cache_hash =
+		hash_create("test text-search parser cache", 8, &hash_ctl,
+					HASH_ELEM | HASH_BLOBS);
+	parser_entry = hash_search(fake_session.text_search.parser_cache_hash,
+							   &test_key, HASH_ENTER, &found);
+	parser_entry->prsId = test_key;
+	parser_entry->isvalid = true;
+	fake_session.text_search.last_used_parser = parser_entry;
+
+	hash_ctl.entrysize = sizeof(TSDictionaryCacheEntry);
+	fake_session.text_search.dictionary_cache_hash =
+		hash_create("test text-search dictionary cache", 8, &hash_ctl,
+					HASH_ELEM | HASH_BLOBS);
+	dictionary_entry =
+		hash_search(fake_session.text_search.dictionary_cache_hash,
+					&test_key, HASH_ENTER, &found);
+	dictionary_entry->dictId = test_key;
+	dictionary_entry->isvalid = true;
+	dictionary_entry->dictCtx =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test text-search dictionary",
+							  ALLOCSET_SMALL_SIZES);
+	dictionary_entry->dictData =
+		MemoryContextAlloc(dictionary_entry->dictCtx, 8);
+	fake_session.text_search.last_used_dictionary = dictionary_entry;
+
+	hash_ctl.entrysize = sizeof(TSConfigCacheEntry);
+	fake_session.text_search.config_cache_hash =
+		hash_create("test text-search config cache", 8, &hash_ctl,
+					HASH_ELEM | HASH_BLOBS);
+	config_entry = hash_search(fake_session.text_search.config_cache_hash,
+							   &test_key, HASH_ENTER, &found);
+	config_entry->cfgId = test_key;
+	config_entry->isvalid = true;
+	config_entry->lenmap = 1;
+	config_entry->map = palloc0(sizeof(ListDictionary));
+	config_entry->map[0].len = 1;
+	config_entry->map[0].dictIds = palloc(sizeof(Oid));
+	config_entry->map[0].dictIds[0] = test_key;
+	fake_session.text_search.last_used_config = config_entry;
+	fake_session.text_search.current_config_cache = test_key;
+
+	hash_ctl.entrysize = sizeof(Oid);
 	fake_session.optimizer.planner_extension_names =
 		(const char **) palloc(sizeof(char *));
 	fake_session.optimizer.planner_extension_names[0] = "test";
@@ -2621,6 +2719,13 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && fake_session.sequence.last_used_seq == NULL;
 	ok = ok && fake_session.async.local_channel_table == NULL;
 	ok = ok && !fake_session.async.registered_listener;
+	ok = ok && fake_session.text_search.parser_cache_hash == NULL;
+	ok = ok && fake_session.text_search.last_used_parser == NULL;
+	ok = ok && fake_session.text_search.dictionary_cache_hash == NULL;
+	ok = ok && fake_session.text_search.last_used_dictionary == NULL;
+	ok = ok && fake_session.text_search.config_cache_hash == NULL;
+	ok = ok && fake_session.text_search.last_used_config == NULL;
+	ok = ok && fake_session.text_search.current_config_cache == InvalidOid;
 	ok = ok && fake_session.regex.ctype_cache_list == NULL;
 	ok = ok && fake_session.optimizer.planner_extension_names == NULL;
 	ok = ok && fake_session.optimizer.planner_extension_names_assigned == 0;

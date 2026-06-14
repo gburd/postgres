@@ -65,6 +65,7 @@
 #include "storage/proc.h"
 #include "storage/procsignal.h"
 #include "storage/sinval.h"
+#include "tsearch/ts_cache.h"
 #include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/bytea.h"
@@ -1203,6 +1204,7 @@ PgSessionInitializeTextSearchState(PgSessionTextSearchState *text_search)
 {
 	Assert(text_search != NULL);
 
+	MemSet(text_search, 0, sizeof(*text_search));
 	text_search->initialized = true;
 	text_search->current_config_value = guc_strdup(FATAL, "pg_catalog.simple");
 	text_search->current_config_cache = InvalidOid;
@@ -4291,6 +4293,56 @@ PgSessionResetClosedState(PgSession *session)
 	}
 	session->async.registered_listener = false;
 
+	if (session->text_search.parser_cache_hash != NULL)
+	{
+		hash_destroy(session->text_search.parser_cache_hash);
+		session->text_search.parser_cache_hash = NULL;
+	}
+	session->text_search.last_used_parser = NULL;
+
+	if (session->text_search.dictionary_cache_hash != NULL)
+	{
+		HASH_SEQ_STATUS status;
+		TSDictionaryCacheEntry *entry;
+
+		hash_seq_init(&status, session->text_search.dictionary_cache_hash);
+		while ((entry = (TSDictionaryCacheEntry *) hash_seq_search(&status)) != NULL)
+		{
+			if (entry->dictCtx != NULL)
+			{
+				MemoryContextDelete(entry->dictCtx);
+				entry->dictCtx = NULL;
+				entry->dictData = NULL;
+			}
+		}
+		hash_destroy(session->text_search.dictionary_cache_hash);
+		session->text_search.dictionary_cache_hash = NULL;
+	}
+	session->text_search.last_used_dictionary = NULL;
+
+	if (session->text_search.config_cache_hash != NULL)
+	{
+		HASH_SEQ_STATUS status;
+		TSConfigCacheEntry *entry;
+
+		hash_seq_init(&status, session->text_search.config_cache_hash);
+		while ((entry = (TSConfigCacheEntry *) hash_seq_search(&status)) != NULL)
+		{
+			if (entry->map != NULL)
+			{
+				for (int i = 0; i < entry->lenmap; i++)
+					pfree(entry->map[i].dictIds);
+				pfree(entry->map);
+				entry->map = NULL;
+				entry->lenmap = 0;
+			}
+		}
+		hash_destroy(session->text_search.config_cache_hash);
+		session->text_search.config_cache_hash = NULL;
+	}
+	session->text_search.last_used_config = NULL;
+	session->text_search.current_config_cache = InvalidOid;
+
 	if (session->database.database_path != NULL)
 	{
 		pfree(session->database.database_path);
@@ -5231,6 +5283,42 @@ Oid *
 PgCurrentTSCurrentConfigCacheRef(void)
 {
 	return &PgCurrentSessionTextSearchState()->current_config_cache;
+}
+
+HTAB **
+PgCurrentTSParserCacheHashRef(void)
+{
+	return &PgCurrentSessionTextSearchState()->parser_cache_hash;
+}
+
+TSParserCacheEntry **
+PgCurrentTSLastUsedParserRef(void)
+{
+	return &PgCurrentSessionTextSearchState()->last_used_parser;
+}
+
+HTAB **
+PgCurrentTSDictionaryCacheHashRef(void)
+{
+	return &PgCurrentSessionTextSearchState()->dictionary_cache_hash;
+}
+
+TSDictionaryCacheEntry **
+PgCurrentTSLastUsedDictionaryRef(void)
+{
+	return &PgCurrentSessionTextSearchState()->last_used_dictionary;
+}
+
+HTAB **
+PgCurrentTSConfigCacheHashRef(void)
+{
+	return &PgCurrentSessionTextSearchState()->config_cache_hash;
+}
+
+TSConfigCacheEntry **
+PgCurrentTSLastUsedConfigRef(void)
+{
+	return &PgCurrentSessionTextSearchState()->last_used_config;
 }
 
 char **
