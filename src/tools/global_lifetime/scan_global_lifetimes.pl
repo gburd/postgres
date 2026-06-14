@@ -34,6 +34,7 @@ my $write_baseline;
 my $report_file;
 my $show_classified = 0;
 my $all_unclassified = 0;
+my $enforce_local_runtime_boundary = 0;
 my $help = 0;
 
 GetOptions(
@@ -42,6 +43,7 @@ GetOptions(
 	'report=s' => \$report_file,
 	'show-classified' => \$show_classified,
 	'all-unclassified' => \$all_unclassified,
+	'enforce-local-runtime-boundary' => \$enforce_local_runtime_boundary,
 	'help' => \$help,
 ) or usage(2);
 
@@ -131,6 +133,20 @@ if (defined $baseline_file)
 	print "\nnew unclassified mutable globals: 0\n";
 }
 
+if ($enforce_local_runtime_boundary)
+{
+	my @violations = grep { local_runtime_boundary_violation($_) } @classified;
+
+	if (@violations)
+	{
+		print "\nlocal runtime boundary violations:\n";
+		print_record($_) foreach @violations;
+		exit 1;
+	}
+
+	print "local runtime boundary violations: 0\n";
+}
+
 exit 0;
 
 sub usage
@@ -146,6 +162,9 @@ Options:
   --report FILE          Write a TSV report
   --show-classified      Print/write classified declarations too
   --all-unclassified     Print all current unclassified declarations
+  --enforce-local-runtime-boundary
+                         Fail if backend/session/execution/connection/carrier
+                         local globals appear outside the runtime bridge
   --help                 Show this help
 USAGE
 
@@ -517,6 +536,38 @@ sub print_summary
 	{
 		printf "  %-20s %d\n", $owner . ':', $counts->{$owner};
 	}
+}
+
+sub local_runtime_boundary_violation
+{
+	my ($record) = @_;
+	my %local_owners = map { $_ => 1 } qw(
+	  backend-local carrier-local connection-local execution-local session-local
+	);
+	my $file = $record->{file};
+
+	return 0 unless $local_owners{ $record->{owner} };
+
+	# The remaining core local globals should be either the runtime bridge's
+	# process objects/current pointers/early fallback storage, or explicitly
+	# documented platform/test shims that cannot use the runtime object path.
+	return 0 if $file eq 'src/backend/utils/init/backend_runtime.c';
+	return 0 if $file eq 'src/include/utils/backend_runtime.h';
+
+	# Standalone spinlock test wait-event storage.
+	return 0
+	  if $record->{owner} eq 'backend-local'
+	  && ($file eq 'src/backend/storage/lmgr/s_lock.c'
+		  || $file eq 'src/include/utils/wait_event.h');
+
+	# Windows carrier signal/timer shims.
+	return 0
+	  if $record->{owner} eq 'carrier-local'
+	  && ($file eq 'src/backend/port/win32/signal.c'
+		  || $file eq 'src/backend/port/win32/timer.c'
+		  || $file eq 'src/include/port/win32_port.h');
+
+	return 1;
 }
 
 sub print_records

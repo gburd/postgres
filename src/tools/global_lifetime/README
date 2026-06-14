@@ -21,6 +21,14 @@ Check that no new unclassified mutable globals have appeared:
     perl src/tools/global_lifetime/scan_global_lifetimes.pl \
       --baseline src/tools/global_lifetime/global_lifetime_baseline.tsv
 
+For the Phase 12/Gate E2 runtime-local boundary, also reject new
+backend/session/execution/connection/carrier-local declarations outside the
+runtime bridge and the documented platform/test shims:
+
+    perl src/tools/global_lifetime/scan_global_lifetimes.pl \
+      --baseline src/tools/global_lifetime/global_lifetime_baseline.tsv \
+      --enforce-local-runtime-boundary
+
 From a configured tree, the same Gate E2 validation is available as:
 
     gmake check-global-lifetimes

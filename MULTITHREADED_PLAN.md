@@ -874,7 +874,11 @@ Gate E2 requires:
   execution and must be justified by identified shared state;
 - `gmake check-global-lifetimes` is run as a required gate check with the
   checked baseline, and any new mutable global either has an explicit lifetime
-  annotation or a deliberate baseline update;
+  annotation or a deliberate baseline update. The check also enforces the
+  Phase 12 runtime-local boundary: core backend/session/execution/connection/
+  carrier-local globals must stay in the runtime bridge or a documented
+  platform/test shim, so future scattered local globals fail the gate instead
+  of silently growing the migration backlog;
 - `gmake check-runtime-lifecycles` is run as a required gate check with
   `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`, so every runtime-root field has a
   checked lifecycle row. The checked roots currently include `PgCarrier`,

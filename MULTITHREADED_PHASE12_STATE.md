@@ -11004,3 +11004,22 @@ Session reset manifest hardening slice:
 - `gmake check-runtime-lifecycles` now reports 27 ordered session reset
   definitions, covering every current session bucket whose manifest row claims
   `PgSessionResetClosedState()` cleanup.
+
+Global runtime-local boundary hardening slice:
+
+- lifecycle/global preflight result: no new object migration was needed for
+  this batch. The classified lifetime report shows that remaining core
+  backend/session/execution/connection local declarations are the runtime
+  bridge's process objects, current pointers, and early fallback storage, plus
+  the standalone `S_LOCK_TEST` wait-event shim. Remaining carrier-local
+  declarations outside the runtime bridge are the documented Windows
+  signal/timer shims;
+- `scan_global_lifetimes.pl` now has
+  `--enforce-local-runtime-boundary`, which fails if core
+  backend/session/execution/connection/carrier-local declarations appear
+  outside `backend_runtime.c`, `backend_runtime.h`, or the documented
+  platform/test shim files;
+- top-level `gmake check-global-lifetimes` now runs that stricter check in
+  addition to the existing unclassified-global baseline check. This turns the
+  current "only runtime bridge locals remain" evidence into a Gate E2 guardrail
+  for future Phase 12 work.
