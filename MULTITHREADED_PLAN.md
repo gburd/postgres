@@ -1001,6 +1001,12 @@ Gate E2 requires:
   checker validation before moving the state, unless the cleanup has genuinely
   different ordering or ownership semantics. Record that preflight decision in
   `MULTITHREADED_PHASE12_STATE.md`;
+- use that rule aggressively for the remaining Gate E2 work. If lifecycle
+  code starts to feel like clerical bookkeeping, that is a signal to add a
+  checked primitive first, then move the larger batch through the primitive.
+  Candidate primitives are object-owned allocation-context setup/reset,
+  reset-through-initializer, delete-and-null memory-context cleanup,
+  list/hash cleanup, and copy/adopt-then-reset fallback adoption;
 - the first concrete target for that simplification should be the
   object-owned allocation-context pattern now recurring in execution/session
   cleanup slices: create-on-demand context accessor, delete-and-null reset,

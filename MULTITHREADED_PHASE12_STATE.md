@@ -11860,6 +11860,14 @@ preflight:
   `gmake check-runtime-lifecycles`, and `gmake check-global-lifetimes` before
   relying on the new pattern for further state movement.
 
+Current standing instruction: apply this rule before the next repetitive
+Phase 12/Gate E2 code batch. If the batch would otherwise add two similar
+helper bodies, first land the checked lifecycle primitive and document the
+preflight result here. The most likely useful primitives are object-owned
+allocation-context setup/reset, reset-through-initializer, delete-and-null
+memory-context cleanup, list/hash cleanup, and copy/adopt-then-reset fallback
+adoption.
+
 ## PL/pgSQL Trigger Record Type Repair
 
 PL/pgSQL trigger validation found a concrete Phase 12 regression in the

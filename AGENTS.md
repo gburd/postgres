@@ -310,6 +310,13 @@ Important current files:
   `PG_RUNTIME_DEFINE_*` macros, bucket `.def` files, and checker rules are
   enough. If not, extend that framework first and record the chosen pattern in
   `MULTITHREADED_PHASE12_STATE.md` so future agents follow the same path.
+- Practical rule: if a planned Phase 12 or Gate E2 slice would write the same
+  init/adopt/reset/destroy shape twice, stop and make that shape declarative
+  first. Prefer a checked `PG_RUNTIME_*` action, `PG_RUNTIME_DEFINE_*` helper,
+  bucket `.def` row pattern, or checker rule over another bespoke helper pair.
+  The next likely candidates are object-owned allocation contexts,
+  reset-through-initializer buckets, delete-and-null memory contexts, list/hash
+  cleanup, and copy/adopt-then-reset fallback buckets.
 - Keep improving lifecycle ergonomics when the pattern becomes repetitive. Good
   candidates are checked action names in the bucket `.def` files for common
   cases such as zero-init, zero-reset, copy/adopt, copy/adopt-with-reinit,
