@@ -249,6 +249,8 @@ PgBackendResetRepackClosedState(PgBackendRepackState *repack)
 	if (repack->worker_dsm_segment != NULL)
 		dsm_detach(repack->worker_dsm_segment);
 
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(repack->message_context);
+
 	PgBackendInitializeRepackState(repack);
 }
 
@@ -451,6 +453,8 @@ PgBackendResetLogicalReplicationClosedState(PgBackendLogicalReplicationState *lo
 	logical_replication->parallel_apply_worker_pool = NIL;
 	logical_replication->stream_apply_worker = NULL;
 	logical_replication->parallel_apply_subxactlist = NIL;
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(
+		logical_replication->parallel_apply_message_context);
 }
 
 static void

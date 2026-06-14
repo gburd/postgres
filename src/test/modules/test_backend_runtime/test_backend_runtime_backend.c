@@ -861,6 +861,10 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	logical_replication->stream_apply_worker =
 		(ParallelApplyWorkerInfo *) &fake_backend;
 	logical_replication->parallel_apply_subxactlist = list_make1_int(5);
+	logical_replication->parallel_apply_message_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test parallel apply message context",
+							  ALLOCSET_SMALL_SIZES);
 
 	xlog->wal_debug_context =
 		AllocSetContextCreate(TopMemoryContext,
@@ -1126,6 +1130,10 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	repack->repacked_rel_toast_locator.spcOid = 21;
 	repack->repacked_rel_toast_locator.dbOid = 22;
 	repack->repacked_rel_toast_locator.relNumber = 23;
+	repack->message_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test repack message context",
+							  ALLOCSET_SMALL_SIZES);
 
 	pgstat_pending->local.snapshot.context =
 		AllocSetContextCreate(TopMemoryContext,
@@ -1289,6 +1297,7 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && logical_replication->parallel_apply_worker_pool == NIL;
 	ok = ok && logical_replication->stream_apply_worker == NULL;
 	ok = ok && logical_replication->parallel_apply_subxactlist == NIL;
+	ok = ok && logical_replication->parallel_apply_message_context == NULL;
 	ok = ok && xlog->open_log_file == -1;
 	ok = ok && xlog->wal_debug_context == NULL;
 	ok = ok && xlog->btree_xlog_op_context == NULL;
@@ -1443,6 +1452,7 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && repack->worker_dsm_segment == NULL;
 	ok = ok && !OidIsValid(repack->repacked_rel_locator.relNumber);
 	ok = ok && !OidIsValid(repack->repacked_rel_toast_locator.relNumber);
+	ok = ok && repack->message_context == NULL;
 	ok = ok && pgstat_pending->local.snapshot.context == NULL;
 	ok = ok && pgstat_pending->local.snapshot.stats == NULL;
 	ok = ok && pgstat_pending->local.snapshot.mode ==

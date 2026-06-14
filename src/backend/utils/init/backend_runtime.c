@@ -3040,6 +3040,8 @@ PgBackendAdoptEarlyLogicalReplicationState(PgBackend *backend)
 	Assert(early_backend_logical_replication.parallel_apply_worker_pool == NIL);
 	Assert(early_backend_logical_replication.stream_apply_worker == NULL);
 	Assert(early_backend_logical_replication.parallel_apply_subxactlist == NIL);
+	Assert(early_backend_logical_replication.parallel_apply_message_context ==
+		   NULL);
 
 	backend->logical_replication = early_backend_logical_replication;
 	dlist_init(&backend->logical_replication.lsn_mapping);
@@ -3172,6 +3174,7 @@ PgBackendAdoptEarlyRepackState(PgBackend *backend)
 	Assert(backend != NULL);
 	Assert(early_backend_repack.decoding_worker == NULL);
 	Assert(early_backend_repack.worker_dsm_segment == NULL);
+	Assert(early_backend_repack.message_context == NULL);
 
 	backend->repack = early_backend_repack;
 	PgBackendInitializeRepackState(&early_backend_repack);

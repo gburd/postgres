@@ -253,6 +253,8 @@ typedef struct ParallelApplyWorkerEntry
 /* A list to maintain subtransactions, if any. */
 #define subxactlist \
 	(PgCurrentLogicalReplicationState()->parallel_apply_subxactlist)
+#define hpam_context \
+	(PgCurrentLogicalReplicationState()->parallel_apply_message_context)
 
 static bool ParallelApplyWorkerThreadedRuntime(void);
 static void pa_free_worker_info(ParallelApplyWorkerInfo *winfo);
@@ -1093,8 +1095,6 @@ ProcessParallelApplyMessages(void)
 {
 	ListCell   *lc;
 	MemoryContext oldcontext;
-
-	static MemoryContext hpam_context = NULL;
 
 	/*
 	 * This is invoked from ProcessInterrupts(), and since some of the

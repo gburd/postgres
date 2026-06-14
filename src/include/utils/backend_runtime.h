@@ -419,6 +419,7 @@ typedef struct PgBackendLogicalReplicationState
 	List	   *parallel_apply_worker_pool;
 	ParallelApplyWorkerInfo *stream_apply_worker;
 	List	   *parallel_apply_subxactlist;
+	MemoryContext parallel_apply_message_context;
 } PgBackendLogicalReplicationState;
 
 typedef struct PgBackendXLogWriteResult
@@ -530,6 +531,7 @@ typedef struct PgBackendRepackState
 	dsm_segment *worker_dsm_segment;
 	RelFileLocator repacked_rel_locator;
 	RelFileLocator repacked_rel_toast_locator;
+	MemoryContext message_context;
 } PgBackendRepackState;
 
 typedef struct PgBackendAioState

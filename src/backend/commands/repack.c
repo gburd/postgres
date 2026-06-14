@@ -146,6 +146,8 @@ typedef struct DecodingWorker
 /* Pointer to currently running decoding worker. */
 #define decoding_worker \
 	(PgCurrentRepackState()->decoding_worker)
+#define hpm_context \
+	(PgCurrentRepackState()->message_context)
 
 /*
  * Is there a message sent by a repack worker that the backend needs to
@@ -3666,7 +3668,6 @@ void
 ProcessRepackMessages(void)
 {
 	MemoryContext oldcontext;
-	static MemoryContext hpm_context = NULL;
 
 	/*
 	 * Nothing to do if we haven't launched the worker yet or have already

@@ -12650,3 +12650,63 @@ Validation for the execution-context closed-reset slice:
 - direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
   `002_threaded_bgworker_crash.pl`, 131 tests total, with `PG_REGRESS`,
   temp-install `PATH`, and the repo-local `.perl5` `PERL5LIB`.
+
+## Repack And Parallel-Apply Message Context Ownership
+
+Lifecycle/preflight note:
+
+- target: close two Gate E2 retained `TopMemoryContext` scratch-context gaps
+  in interrupt-driven worker-message handling: logical parallel apply
+  `ProcessParallelApplyMessages()` and repack `ProcessRepackMessages()`;
+- repeated lifecycle operations: two backend-owned message contexts use the
+  same create-on-demand, reset-between-uses, close-time delete-and-null
+  pattern. The existing checked `PG_RUNTIME_DELETE_MEMORY_CONTEXT` action
+  covers the close-time ownership rule, so no new lifecycle primitive is
+  needed;
+- retained invariant: both handlers still reset their scratch context before
+  and after processing queued worker messages. The ownership change only moves
+  the retained context pointer from a static process-local slot into the
+  logical backend object so closed-backend reset can reclaim it.
+
+Message-context ownership slice:
+
+- `PgBackendLogicalReplicationState` now owns
+  `parallel_apply_message_context`, replacing the static `hpam_context` in
+  `applyparallelworker.c`;
+- `PgBackendRepackState` now owns `message_context`, replacing the static
+  `hpm_context` in `repack.c`;
+- early backend fallback adoption asserts both context slots are empty before
+  copying fallback state into a real backend object;
+- `PgBackendResetLogicalReplicationClosedState()` and
+  `PgBackendResetRepackClosedState()` delete the retained message contexts
+  through `PG_RUNTIME_DELETE_MEMORY_CONTEXT`;
+- `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` and
+  `MULTITHREADED_RUNTIME_OWNERS.tsv` record the new ownership rules and legacy
+  symbol mapping;
+- `test_backend_reset_closed_state()` now verifies closed-backend reset deletes
+  both message contexts.
+
+Validation for the message-context ownership slice:
+
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 196 owner
+  mappings checked;
+- touched-object builds passed for `applyparallelworker.o`, `repack.o`,
+  `backend_runtime.o`, `backend_runtime_teardown.o`, and
+  `test_backend_runtime_backend.o`;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- after the installed `backend_runtime.h` layout change, an incremental
+  `test_backend_runtime` check failed during bootstrap `initdb` with invalid
+  `pfree`, matching the documented stale backend-object failure mode after a
+  runtime layout edit;
+- the documented backend clean and generated-file recovery path was run:
+  backend generated utility files and node headers were regenerated, include
+  symlinks were rebuilt, and full `gmake -j8` passed from that clean backend
+  state;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed
+  after the clean rebuild;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with `PG_REGRESS`,
+  temp-install `PATH`, patched temp-install install-name paths, and the
+  repo-local `.perl5` `PERL5LIB`.
