@@ -165,6 +165,14 @@ Important current files:
   top-level adoption/reset orchestration. New domain-specific accessors and
   simple lifecycle helpers should live in fork-owned adjacent subsystem files,
   with `check-runtime-lifecycles` taught to scan those files.
+- Before continuing with additional Gate E2 state migration or starting Phase
+  13 scheduler-aware wait work, complete the documented maintainability
+  refactor: split owner-specific runtime bridge code out of
+  `backend_runtime.c` where practical, make every manifest-referenced split
+  source part of the default lifecycle checker input, and split
+  `src/test/modules/test_backend_runtime/test_backend_runtime.c` into smaller
+  object/lifetime-focused test sources while preserving the same extension,
+  SQL, expected output, and TAP surface.
 - Do not attempt thread launch until the thread-safety floor is in place:
   backend-local globals must not be shared plain process globals, backend exit
   must not terminate the whole runtime, and timeout/interrupt delivery must be

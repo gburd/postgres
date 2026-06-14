@@ -10316,3 +10316,59 @@ Validation for this slice:
 - direct backend-runtime TAP passed for `001_threaded_runtime.pl` with 88
   tests and `002_threaded_bgworker_crash.pl` with 6 tests using the local
   `IPC::Run` `PERL5LIB` and patched temporary-install dynamic library names.
+
+## Gate E2 Maintainability Refactor Blocker
+
+Before continuing with additional Gate E2 state migration or starting Phase 13
+scheduler-aware wait work, do a no-behavior-change maintainability split of
+the runtime bridge and backend-runtime tests. The current central files are
+large enough to slow review and increase rebase conflict concentration:
+
+- `src/backend/utils/init/backend_runtime.c` is still the core runtime
+  orchestration file, but it should not keep accumulating per-subsystem
+  lifecycle helpers and compatibility accessors;
+- `src/test/modules/test_backend_runtime/test_backend_runtime.c` contains the
+  focused C-level coverage for most migrated buckets, but its object families
+  should be split into separate test sources before more buckets are added.
+
+Existing fork-owned split files already point in the right direction:
+
+- `src/backend/utils/cache/backend_runtime_cache.c` owns cache and
+  function-manager compatibility accessors;
+- `src/backend/utils/activity/backend_runtime_pgstat.c` owns pgstat
+  compatibility accessors;
+- `src/backend/utils/misc/backend_runtime_guc.c` owns GUC compatibility
+  backing-variable accessors;
+- `src/backend/jit/backend_runtime_jit.c` owns provider-independent and LLVM
+  JIT runtime bridges.
+
+The refactor should preserve behavior and test surface while making ownership
+more explicit:
+
+- keep `backend_runtime.c` focused on root process/thread runtime
+  construction, current-pointer installation, process/thread symmetry,
+  top-level adoption/reset orchestration, and unavoidable early fallback
+  storage;
+- move remaining owner-specific lifecycle helpers/accessors to adjacent
+  fork-owned files, such as IPC, lmgr/lock, buffer/storage, and additional GUC
+  bridge files where appropriate;
+- update the lifecycle checker so every owner-adjacent `backend_runtime_*.c`
+  file that contains manifest-referenced functions is part of the default
+  checked source set, or introduce an explicit checked source manifest before
+  adding more split files;
+- split `test_backend_runtime.c` by object/lifetime family while keeping the
+  same `test_backend_runtime` extension, SQL file, expected output, and TAP
+  entry points. Suggested first files are backend/carrier, session,
+  connection, execution, PMChild, and shared test helpers.
+
+Acceptance criteria for the refactor slice:
+
+- no intended behavior change;
+- `gmake check-runtime-lifecycles` still verifies every manifest-referenced
+  function after the split;
+- `gmake check-global-lifetimes` still reports zero new unclassified mutable
+  globals;
+- `gmake -C src/test/modules/test_backend_runtime check` and direct
+  backend-runtime TAP still pass;
+- docs and `AGENTS.md` tell future agents where new runtime buckets and tests
+  should go, so new work does not default back to the giant central files.

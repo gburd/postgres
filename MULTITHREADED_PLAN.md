@@ -868,6 +868,15 @@ Gate E2 requires:
 - `gmake check-runtime-lifecycles` is run as a required gate check with
   `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`, so every `PgBackend`, `PgSession`,
   `PgConnection`, and `PgExecution` field has a checked lifecycle row;
+- the Phase 12 runtime and test scaffolding is refactored before additional
+  Gate E2 state migration or Phase 13 scheduler-aware wait work begins.
+  `src/backend/utils/init/backend_runtime.c` must remain the orchestration
+  file rather than the permanent home for every lifecycle helper/accessor,
+  owner-adjacent `backend_runtime_*.c` files must be included in the checked
+  runtime source set, and
+  `src/test/modules/test_backend_runtime/test_backend_runtime.c` must be split
+  into smaller object-focused test sources while preserving the same extension
+  and regression surface;
 - every backend/session/connection/execution state bucket has an explicit
   lifecycle classification before Phase 12 closes: initializer, early-adoption
   behavior or proof that early adoption is impossible, reset/destroy behavior,
