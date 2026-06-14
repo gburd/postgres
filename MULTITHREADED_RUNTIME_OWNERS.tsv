@@ -200,6 +200,10 @@ pltcl_hold_interp	PgSession	extension_modules	pltcl_hold_interp	PgCurrentPLTclHo
 pltcl_interp_htab	PgSession	extension_modules	pltcl_interp_hash	PgCurrentPLTclInterpHashRef	src/include/utils/backend_runtime.h	PL/Tcl session interpreter hash
 pltcl_proc_htab	PgSession	extension_modules	pltcl_proc_hash	PgCurrentPLTclProcHashRef	src/include/utils/backend_runtime.h	PL/Tcl procedure descriptor hash
 pltcl_current_call_state	PgSession	extension_modules	pltcl_current_call_state	PgCurrentPLTclCurrentCallStateRef	src/include/utils/backend_runtime.h	PL/Tcl current call-state pointer
+FPlans	PgSession	extension_modules	refint_foreign_plans	PgCurrentRefintForeignPlansRef	src/include/utils/backend_runtime.h	refint cached foreign-key SPI plan array
+nFPlans	PgSession	extension_modules	refint_num_foreign_plans	PgCurrentRefintNumForeignPlansRef	src/include/utils/backend_runtime.h	refint cached foreign-key SPI plan count
+PPlans	PgSession	extension_modules	refint_primary_plans	PgCurrentRefintPrimaryPlansRef	src/include/utils/backend_runtime.h	refint cached primary-key SPI plan array
+nPPlans	PgSession	extension_modules	refint_num_primary_plans	PgCurrentRefintNumPrimaryPlansRef	src/include/utils/backend_runtime.h	refint cached primary-key SPI plan count
 pconn	PgSession	extension_modules	dblink_persistent_connection	PgCurrentDblinkPersistentConnectionRef	src/include/utils/backend_runtime.h	dblink unnamed persistent connection
 remoteConnHash	PgSession	extension_modules	dblink_remote_conn_hash	PgCurrentDblinkRemoteConnHashRef	src/include/utils/backend_runtime.h	dblink named persistent connection hash
 ConnectionHash	PgSession	extension_modules	postgres_fdw_connection_hash	PgCurrentPostgresFdwConnectionHashRef	src/include/utils/backend_runtime.h	postgres_fdw connection cache hash

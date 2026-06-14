@@ -13113,3 +13113,70 @@ Validation for the PL/Tcl interpreter session-state slice:
 - `gmake -C src/pl/tcl check` is blocked in this checkout by the configured
   non-Tcl install: the regression reached SQL startup and then failed because
   `CREATE EXTENSION pltcl` reported `extension "pltcl" is not available`.
+
+## SPI Contrib Session State
+
+Lifecycle/preflight note:
+
+- target root and bucket: `PgSession.extension_modules`;
+- state moved: `contrib/spi/refint.c` prepared SPI plan caches
+  `FPlans`, `nFPlans`, `PPlans`, and `nPPlans`;
+- owner source files: `contrib/spi/refint.c` plus stateless module metadata in
+  `contrib/spi/autoinc.c`, `contrib/spi/insert_username.c`, and
+  `contrib/spi/moddatetime.c`;
+- repeated lifecycle operations: two opaque pointer/count pairs plus one
+  reset-registration flag. The existing session extension-module reset
+  callback mechanism is sufficient because `refint` owns semantic destruction
+  of cached SPI plans, plan arrays, and identifiers. No new generic lifecycle
+  primitive is appropriate for this batch because `SPI_freeplan()` ordering and
+  per-cache iteration are extension-specific;
+- retained invariant: SPI plan preparation/execution remains local to the
+  trigger functions. The runtime owns only the session-local cache slots and
+  callback-registration flag.
+
+SPI contrib session-state slice:
+
+- `PgSessionExtensionModuleState` now owns `refint`'s foreign-key and
+  primary-key SPI plan cache pointer/count pairs plus a reset-registration
+  flag;
+- `contrib/spi/refint.c` keeps the historical `FPlans`, `nFPlans`, `PPlans`,
+  and `nPPlans` names as source-local lvalue compatibility macros over the
+  current session object;
+- `refint` registers a per-session reset callback on first cache use. The
+  callback frees cached SPI plans with `SPI_freeplan()`, frees plan arrays and
+  identifiers, clears the runtime slots, and clears the registration flag;
+- `contrib/spi/autoinc.c`, `insert_username.c`, `moddatetime.c`, and
+  `refint.c` now advertise
+  `PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION`, moving this in-tree SPI
+  contrib group onto the threaded-extension path;
+- `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` and
+  `MULTITHREADED_RUNTIME_OWNERS.tsv` record the `refint` session ownership.
+
+Validation for the SPI contrib session-state slice:
+
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 216 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- stale-symbol scan found no remaining raw `static EPlan *FPlans`,
+  `static int nFPlans`, `static EPlan *PPlans`, or `static int nPPlans`
+  declarations in `contrib/spi/refint.c`;
+- touched-object builds passed:
+  `gmake -C src/backend/utils/init backend_runtime.o backend_runtime_session.o`,
+  `gmake -C src/test/modules/test_backend_runtime test_backend_runtime_session.o`,
+  and
+  `gmake -C contrib/spi refint.o autoinc.o insert_username.o moddatetime.o`;
+- after the installed `backend_runtime.h` layout change, the documented
+  backend clean and generated-file recovery path was run and full `gmake -j8`
+  passed from that clean backend state;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- `gmake -C contrib/spi clean all check` passed for `autoinc` and `refint`;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with patched macOS
+  install-name paths and the repo-local `.perl5` `PERL5LIB`;
+- an initial parallel attempt to run both temp-install based check targets at
+  once failed because both targets recreated the shared repository
+  `tmp_install`. The checks passed when rerun sequentially, and `AGENTS.md`
+  now documents that temp-install checks should not be parallelized.

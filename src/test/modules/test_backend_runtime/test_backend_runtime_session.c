@@ -94,6 +94,16 @@ test_backend_runtime_postgres_fdw_defaults_ok(PgSessionExtensionModuleState *ext
 		!extension_modules->postgres_fdw_shippable_callbacks_registered;
 }
 
+static bool
+test_backend_runtime_refint_defaults_ok(PgSessionExtensionModuleState *extension_modules)
+{
+	return extension_modules->refint_foreign_plans == NULL &&
+		extension_modules->refint_num_foreign_plans == 0 &&
+		extension_modules->refint_primary_plans == NULL &&
+		extension_modules->refint_num_primary_plans == 0 &&
+		!extension_modules->refint_reset_registered;
+}
+
 void
 test_copy_current_user_identity(PgSession *session)
 {
@@ -2697,6 +2707,10 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 	char		session2_stash[] = "session2_stash";
 	char		session1_auto_explain_options[] = "debug";
 	char		session2_auto_explain_options[] = "range_table";
+	int			session1_refint_foreign;
+	int			session1_refint_primary;
+	int			session2_refint_foreign;
+	int			session2_refint_primary;
 	bool		ok = true;
 
 	saved_session = CurrentPgSession;
@@ -2741,6 +2755,7 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && extension_modules->pltcl_proc_hash == NULL;
 		ok = ok && extension_modules->pltcl_current_call_state == NULL;
 		ok = ok && !extension_modules->pltcl_reset_registered;
+		ok = ok && test_backend_runtime_refint_defaults_ok(extension_modules);
 		ok = ok && extension_modules->dblink_persistent_connection == NULL;
 		ok = ok && extension_modules->dblink_remote_conn_hash == NULL;
 		ok = ok && !extension_modules->dblink_reset_registered;
@@ -2782,6 +2797,11 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		extension_modules->pltcl_proc_hash = session1_auto_explain_options;
 		extension_modules->pltcl_current_call_state = &session1_private;
 		extension_modules->pltcl_reset_registered = true;
+		extension_modules->refint_foreign_plans = &session1_refint_foreign;
+		extension_modules->refint_num_foreign_plans = 31;
+		extension_modules->refint_primary_plans = &session1_refint_primary;
+		extension_modules->refint_num_primary_plans = 32;
+		extension_modules->refint_reset_registered = true;
 		extension_modules->dblink_persistent_connection = &session1_private;
 		extension_modules->dblink_remote_conn_hash = &session1_reset_count;
 		extension_modules->dblink_reset_registered = true;
@@ -2821,6 +2841,7 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && extension_modules->pltcl_proc_hash == NULL;
 		ok = ok && extension_modules->pltcl_current_call_state == NULL;
 		ok = ok && !extension_modules->pltcl_reset_registered;
+		ok = ok && test_backend_runtime_refint_defaults_ok(extension_modules);
 		ok = ok && extension_modules->dblink_persistent_connection == NULL;
 		ok = ok && extension_modules->dblink_remote_conn_hash == NULL;
 		ok = ok && !extension_modules->dblink_reset_registered;
@@ -2862,6 +2883,11 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		extension_modules->pltcl_proc_hash = session2_auto_explain_options;
 		extension_modules->pltcl_current_call_state = &session2_private;
 		extension_modules->pltcl_reset_registered = true;
+		extension_modules->refint_foreign_plans = &session2_refint_foreign;
+		extension_modules->refint_num_foreign_plans = 41;
+		extension_modules->refint_primary_plans = &session2_refint_primary;
+		extension_modules->refint_num_primary_plans = 42;
+		extension_modules->refint_reset_registered = true;
 		extension_modules->dblink_persistent_connection = &session2_private;
 		extension_modules->dblink_remote_conn_hash = &session2_reset_count;
 		extension_modules->dblink_reset_registered = true;
@@ -2928,6 +2954,13 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && extension_modules->pltcl_current_call_state ==
 			&session1_private;
 		ok = ok && extension_modules->pltcl_reset_registered;
+		ok = ok && extension_modules->refint_foreign_plans ==
+			&session1_refint_foreign;
+		ok = ok && extension_modules->refint_num_foreign_plans == 31;
+		ok = ok && extension_modules->refint_primary_plans ==
+			&session1_refint_primary;
+		ok = ok && extension_modules->refint_num_primary_plans == 32;
+		ok = ok && extension_modules->refint_reset_registered;
 		ok = ok && extension_modules->dblink_persistent_connection ==
 			&session1_private;
 		ok = ok && extension_modules->dblink_remote_conn_hash ==
@@ -2992,6 +3025,13 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && extension_modules->pltcl_current_call_state ==
 			&session2_private;
 		ok = ok && extension_modules->pltcl_reset_registered;
+		ok = ok && extension_modules->refint_foreign_plans ==
+			&session2_refint_foreign;
+		ok = ok && extension_modules->refint_num_foreign_plans == 41;
+		ok = ok && extension_modules->refint_primary_plans ==
+			&session2_refint_primary;
+		ok = ok && extension_modules->refint_num_primary_plans == 42;
+		ok = ok && extension_modules->refint_reset_registered;
 		ok = ok && extension_modules->dblink_persistent_connection ==
 			&session2_private;
 		ok = ok && extension_modules->dblink_remote_conn_hash ==
@@ -3022,6 +3062,7 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && fake_session1.extension_modules.pltcl_proc_hash == NULL;
 		ok = ok && fake_session1.extension_modules.pltcl_current_call_state == NULL;
 		ok = ok && !fake_session1.extension_modules.pltcl_reset_registered;
+		ok = ok && test_backend_runtime_refint_defaults_ok(&fake_session1.extension_modules);
 		ok = ok && fake_session1.extension_modules.reset_callbacks == NIL;
 		ok = ok && fake_session1.extension_modules.pg_trgm_similarity_threshold == 0.3;
 		ok = ok && fake_session1.extension_modules.pg_trgm_word_similarity_threshold == 0.6;
@@ -3056,6 +3097,13 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && fake_session2.extension_modules.pltcl_current_call_state ==
 			&session2_private;
 		ok = ok && fake_session2.extension_modules.pltcl_reset_registered;
+		ok = ok && fake_session2.extension_modules.refint_foreign_plans ==
+			&session2_refint_foreign;
+		ok = ok && fake_session2.extension_modules.refint_num_foreign_plans == 41;
+		ok = ok && fake_session2.extension_modules.refint_primary_plans ==
+			&session2_refint_primary;
+		ok = ok && fake_session2.extension_modules.refint_num_primary_plans == 42;
+		ok = ok && fake_session2.extension_modules.refint_reset_registered;
 		ok = ok && fake_session2.extension_modules.reset_callbacks != NIL;
 		ok = ok && fake_session2.extension_modules.pg_trgm_similarity_threshold == 0.21;
 		ok = ok && fake_session2.extension_modules.pg_trgm_word_similarity_threshold == 0.22;
@@ -3115,6 +3163,7 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && fake_session2.extension_modules.pltcl_proc_hash == NULL;
 		ok = ok && fake_session2.extension_modules.pltcl_current_call_state == NULL;
 		ok = ok && !fake_session2.extension_modules.pltcl_reset_registered;
+		ok = ok && test_backend_runtime_refint_defaults_ok(&fake_session2.extension_modules);
 		ok = ok && fake_session2.extension_modules.reset_callbacks == NIL;
 		ok = ok && fake_session2.extension_modules.pg_trgm_similarity_threshold == 0.3;
 		ok = ok && fake_session2.extension_modules.pg_trgm_word_similarity_threshold == 0.6;

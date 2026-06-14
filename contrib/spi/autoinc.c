@@ -13,7 +13,8 @@
 
 PG_MODULE_MAGIC_EXT(
 					.name = "autoinc",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
 );
 
 PG_FUNCTION_INFO_V1(autoinc);

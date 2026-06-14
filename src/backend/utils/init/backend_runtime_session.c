@@ -398,6 +398,36 @@ PgCurrentPLTclResetRegisteredRef(void)
 }
 
 void **
+PgCurrentRefintForeignPlansRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->refint_foreign_plans;
+}
+
+int *
+PgCurrentRefintNumForeignPlansRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->refint_num_foreign_plans;
+}
+
+void **
+PgCurrentRefintPrimaryPlansRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->refint_primary_plans;
+}
+
+int *
+PgCurrentRefintNumPrimaryPlansRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->refint_num_primary_plans;
+}
+
+bool *
+PgCurrentRefintResetRegisteredRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->refint_reset_registered;
+}
+
+void **
 PgCurrentDblinkPersistentConnectionRef(void)
 {
 	return &PgCurrentSessionExtensionModuleState()->dblink_persistent_connection;
