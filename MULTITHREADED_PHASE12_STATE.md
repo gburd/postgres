@@ -10769,3 +10769,35 @@ Validation for this lock closed-reset ownership slice:
   run was interrupted cleanly; no test diff was produced. This remains a local
   temp-instance validation blocker rather than evidence from the lock reset
   SQL itself.
+
+DSM segment-list lifecycle fix completed:
+
+- the pre-SQL `test_backend_runtime` stall was not a local macOS DSM
+  configuration problem. Sampling showed the backend spinning at
+  `dsm_attach +100`, which maps to the initial `dlist_foreach()` over the
+  backend-local DSM segment list;
+- `PgBackend.dsm_segment_list` now has explicit lifecycle helpers owned by
+  `storage/ipc/dsm.c`: `PgBackendInitializeDsmSegmentList()`,
+  `PgBackendAdoptEarlyDsmSegmentList()`, and
+  `PgBackendResetDsmSegmentList()`;
+- early fallback DSM segment nodes are moved node-by-node into the backend
+  list during adoption. The runtime never shallow-copies the `dlist_head`;
+- closed-backend reset now detaches any outstanding DSM mappings through the
+  DSM owner helper and reinitializes the list head;
+- `check-runtime-lifecycles` now scans `src/backend/storage/ipc/dsm.c` by
+  default, and the lifecycle manifest records the DSM list init/adopt/reset
+  rule.
+
+Validation for this DSM segment-list lifecycle fix:
+
+- touched-object builds passed for `dsm.o`, `backend_runtime_ipc.o`, and
+  `backend_runtime.o`;
+- `perl -c src/tools/runtime_lifecycle/check_runtime_lifecycles.pl` passed;
+- `gmake check-runtime-lifecycles` passed with 150 runtime fields classified,
+  150 bucket definitions checked, and 25 reset definitions checked;
+- full `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime check` passed again, proving
+  the earlier authentication/pgstat/DSM startup stall is fixed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- `git diff --check` passed.

@@ -31,6 +31,7 @@ my @sources = (
 	'src/backend/storage/file/backend_runtime_file.c',
 	'src/backend/storage/lmgr/backend_runtime_lmgr.c',
 	'src/backend/storage/ipc/backend_runtime_ipc.c',
+	'src/backend/storage/ipc/dsm.c',
 	'src/backend/storage/ipc/ipc.c');
 my @bucket_defs = (
 	'src/backend/utils/init/backend_runtime_backend_buckets.def',

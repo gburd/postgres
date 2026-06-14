@@ -156,6 +156,45 @@ CurrentDsmSegmentList(void)
 	return &early_dsm_segment_list;
 }
 
+void
+PgBackendInitializeDsmSegmentList(dlist_head *dsm_segment_list)
+{
+	Assert(dsm_segment_list != NULL);
+
+	dlist_init(dsm_segment_list);
+}
+
+void
+PgBackendAdoptEarlyDsmSegmentList(dlist_head *dsm_segment_list)
+{
+	Assert(dsm_segment_list != NULL);
+
+	dlist_init(dsm_segment_list);
+	while (!dlist_is_empty(&early_dsm_segment_list))
+	{
+		dlist_node *node;
+
+		node = dlist_pop_head_node(&early_dsm_segment_list);
+		dlist_push_tail(dsm_segment_list, node);
+	}
+}
+
+void
+PgBackendResetDsmSegmentList(dlist_head *dsm_segment_list)
+{
+	Assert(dsm_segment_list != NULL);
+
+	while (!dlist_is_empty(dsm_segment_list))
+	{
+		dsm_segment *seg;
+
+		seg = dlist_head_element(dsm_segment, node, dsm_segment_list);
+		dsm_detach(seg);
+	}
+
+	dlist_init(dsm_segment_list);
+}
+
 /*
  * Control segment information.
  *

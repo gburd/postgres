@@ -59,6 +59,7 @@
 #include "storage/buf_internals.h"
 #include "storage/buffile.h"
 #include "storage/copydir.h"
+#include "storage/dsm.h"
 #include "storage/fd.h"
 #include "storage/latch.h"
 #include "storage/large_object.h"

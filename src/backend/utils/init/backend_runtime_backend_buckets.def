@@ -36,6 +36,7 @@ PG_BACKEND_BUCKET(instrumentation, PgBackendInitializeInstrumentationState(&back
 PG_BACKEND_BUCKET(buffers, PgBackendInitializeBufferState(&backend->buffers), PgBackendAdoptEarlyBufferState(backend), (void) 0)
 PG_BACKEND_BUCKET(storage, PgBackendInitializeStorageState(&backend->storage), PgBackendAdoptEarlyStorageState(backend), (void) 0)
 PG_BACKEND_BUCKET(locks, PgBackendInitializeLockState(&backend->locks), PgBackendAdoptEarlyLockState(backend), PgBackendResetLockClosedState(&backend->locks))
+PG_BACKEND_BUCKET(dsm_segment_list, PgBackendInitializeDsmSegmentList(&backend->dsm_segment_list), PgBackendAdoptEarlyDsmSegmentList(&backend->dsm_segment_list), PgBackendResetDsmSegmentList(&backend->dsm_segment_list))
 PG_BACKEND_BUCKET(ipc, PgBackendInitializeIPCState(&backend->ipc), PgBackendAdoptEarlyIPCState(backend), (void) 0)
 PG_BACKEND_BUCKET(wait_state, PgBackendInitializeWaitState(&backend->wait_state), PgBackendAdoptEarlyWaitState(backend), (void) 0)
 PG_BACKEND_BUCKET(transaction, PgBackendInitializeTransactionState(&backend->transaction), PgBackendAdoptEarlyTransactionState(backend), (void) 0)
@@ -51,4 +52,3 @@ PG_BACKEND_BUCKET(repack, PgBackendInitializeRepackState(&backend->repack), PgBa
 PG_BACKEND_BUCKET(aio, PgBackendInitializeAioState(&backend->aio), PgBackendAdoptEarlyAioState(backend), PgBackendResetAioClosedState(&backend->aio))
 PG_BACKEND_BUCKET(pending_interrupts, (void) 0, PgBackendAdoptEarlyPendingInterrupts(backend), (void) 0)
 PG_BACKEND_BUCKET(interrupt_holdoffs, (void) 0, PgBackendAdoptEarlyInterruptHoldoffs(backend), (void) 0)
-PG_BACKEND_BUCKET(dsm_segment_list, dlist_init(&backend->dsm_segment_list), (void) 0, (void) 0)

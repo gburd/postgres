@@ -155,6 +155,7 @@ check-runtime-lifecycles:
 		--source $(top_srcdir)/src/backend/storage/file/backend_runtime_file.c \
 		--source $(top_srcdir)/src/backend/storage/lmgr/backend_runtime_lmgr.c \
 		--source $(top_srcdir)/src/backend/storage/ipc/backend_runtime_ipc.c \
+		--source $(top_srcdir)/src/backend/storage/ipc/dsm.c \
 		--source $(top_srcdir)/src/backend/storage/ipc/ipc.c
 
 .PHONY: dist distcheck docs install-docs world check-world install-world installcheck-world headerscheck cpluspluscheck check-global-lifetimes check-runtime-lifecycles
