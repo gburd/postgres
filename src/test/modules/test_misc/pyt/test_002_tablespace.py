@@ -12,11 +12,11 @@ import os
 
 
 def _ok(node, sql, msg):
-    assert node.psql_capture(sql).rc == 0, msg
+    assert node.psql_capture(sql).exit_code == 0, msg
 
 
 def _fail(node, sql, msg):
-    assert node.psql_capture(sql).rc != 0, msg
+    assert node.psql_capture(sql).exit_code != 0, msg
 
 
 def test_002_tablespace(create_pg):

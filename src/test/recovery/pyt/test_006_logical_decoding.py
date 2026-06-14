@@ -120,7 +120,7 @@ def _otherdb_phase(node):
             "SELECT lsn FROM pg_logical_slot_peek_changes('test_slot', NULL, NULL) "
             "ORDER BY lsn DESC LIMIT 1;",
             dbname="otherdb",
-        ).rc
+        ).exit_code
         == 3
     ), "replaying logical slot from another database fails"
     node.safe_psql(
@@ -149,7 +149,7 @@ def _otherdb_phase(node):
                 dbname="otherdb",
             ), "slot never became active"
             assert (
-                node.psql_capture("DROP DATABASE otherdb").rc == 3
+                node.psql_capture("DROP DATABASE otherdb").exit_code == 3
             ), "dropping a DB with active logical slots fails"
         finally:
             recv.terminate()
@@ -163,7 +163,7 @@ def _otherdb_phase(node):
         dbname="otherdb",
     ), "slot never became inactive"
     assert (
-        node.psql_capture("DROP DATABASE otherdb").rc == 0
+        node.psql_capture("DROP DATABASE otherdb").exit_code == 0
     ), "dropping a DB with inactive logical slots succeeds"
     assert (
         node.slot("otherdb_slot")["plugin"] == ""
@@ -187,7 +187,7 @@ def _advance_and_stats_phase(node):
             "SELECT pg_replication_slot_advance('{}', '{}'::pg_lsn);".format(
                 logical_slot, current_lsn
             )
-        ).rc
+        ).exit_code
         == 0
     ), "slot advancing with logical slot"
     pre = node.safe_psql(

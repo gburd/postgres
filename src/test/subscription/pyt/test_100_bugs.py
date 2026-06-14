@@ -54,13 +54,13 @@ def _test_temp_unlogged_for_all_tables(publisher, subscriber):
     assert (
         publisher.psql_capture(
             "CREATE TEMPORARY TABLE tt1 AS SELECT 1 AS a; UPDATE tt1 SET a = 2;"
-        ).rc
+        ).exit_code
         == 0
     ), "update to temporary table without replica identity"
     assert (
         publisher.psql_capture(
             "CREATE UNLOGGED TABLE tu1 AS SELECT 1 AS a; UPDATE tu1 SET a = 2;"
-        ).rc
+        ).exit_code
         == 0
     ), "update to unlogged table without replica identity"
     publisher.safe_psql("DROP PUBLICATION pub")
@@ -322,7 +322,7 @@ def _test_replication_slot_commands(publisher, subscriber):
         extra_params=["-d", connstr_db],
         timeout=pypg.test_timeout_default(),
     )
-    assert result.rc == 0, "create and immediate drop of replication slot"
+    assert result.exit_code == 0, "create and immediate drop of replication slot"
     publisher.stop("fast")
     subscriber.stop("fast")
 
@@ -401,7 +401,7 @@ def _test_drop_subscription_deadlock(publisher):
         "PUBLICATION regress_pub WITH (connect=false);".format(connstr)
     )
     result = publisher.psql_capture("DROP SUBSCRIPTION regress_sub1")
-    assert result.rc != 0, "replication slot does not exist: exit code not 0"
+    assert result.exit_code != 0, "replication slot does not exist: exit code not 0"
     assert (
         'ERROR:  could not drop replication slot "regress_sub1" on publisher'
         in result.stderr

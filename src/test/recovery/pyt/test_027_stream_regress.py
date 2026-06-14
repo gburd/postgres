@@ -30,7 +30,7 @@ def test_027_stream_regress(create_pg, pg_bin):
     assert (
         primary.psql_capture(
             "SELECT pg_create_physical_replication_slot('standby_1');"
-        ).rc
+        ).exit_code
         == 0
     ), "physical slot created on primary"
     backup_name = "my_backup"

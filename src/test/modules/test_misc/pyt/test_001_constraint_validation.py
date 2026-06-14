@@ -27,7 +27,7 @@ def test_001_constraint_validation(create_pg):
         """Run a SQL command and return psql's stderr (including debug
         messages), mirroring the Perl run_sql_command sub (on_error_die)."""
         result = node.psql_capture(sql, on_error_stop=True)
-        assert result.rc == 0, "psql failed: {}".format(result.stderr)
+        assert result.exit_code == 0, "psql failed: {}".format(result.stderr)
         return result.stderr
 
     def is_table_verified(output):

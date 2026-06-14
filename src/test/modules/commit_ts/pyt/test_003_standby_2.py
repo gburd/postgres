@@ -35,7 +35,9 @@ def test_003_standby_2(create_pg):
     result = standby.psql_capture(
         "SELECT ts.* FROM pg_class, pg_xact_commit_timestamp(xmin) AS ts WHERE relname = 't10'"
     )
-    assert result.rc == 3, "expect error when getting commit timestamp after restart"
+    assert (
+        result.exit_code == 3
+    ), "expect error when getting commit timestamp after restart"
     assert result.stdout == "", "standby does not return a value after restart"
     assert re.search(
         r"""could not get commit timestamp data""",

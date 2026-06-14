@@ -19,6 +19,6 @@ def test_004_test_parser_perf(pg_bin, tmp_path):
     fname = tmp_path / "perf.json"
     fname.write_text("[" + contents + ("," + contents) * 49 + "]", encoding="utf-8")
     result = pg_bin.result(["test_json_parser_perf", "1", str(fname)])
-    assert result.rc == 0, "perf test runs with recursive descent parser"
+    assert result.exit_code == 0, "perf test runs with recursive descent parser"
     result = pg_bin.result(["test_json_parser_perf", "-i", "1", str(fname)])
-    assert result.rc == 0, "perf test runs with table driven parser"
+    assert result.exit_code == 0, "perf test runs with table driven parser"

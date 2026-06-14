@@ -203,7 +203,7 @@ def _trigger_battery(node, wl, copy_file):
     node.stop("immediate")
     node.start()
     res = node.psql_capture("INSERT INTO idx_hint VALUES (2);")
-    assert res.rc == 3, "wal_level = {}, unique index LP_DEAD".format(wl)
+    assert res.exit_code == 3, "wal_level = {}, unique index LP_DEAD".format(wl)
     assert re.search(
         r"violates unique", res.stderr
     ), "wal_level = {}, unique index LP_DEAD message".format(wl)

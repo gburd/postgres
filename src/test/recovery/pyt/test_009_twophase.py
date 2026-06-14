@@ -36,7 +36,7 @@ def _configure_and_reload(node, parameter):
 
 def _issue(node, body):
     """Run a multi-statement block with on_error_stop off; return rc."""
-    return node.psql_capture(body, on_error_stop=False).rc
+    return node.psql_capture(body, on_error_stop=False).exit_code
 
 
 def test_009_twophase(create_pg):

@@ -25,18 +25,22 @@ def _mark_invalid_checks(node):
     )
 
     result = node.psql_capture("", dbname="regression_invalid")
-    assert result.rc == 2, "can't connect to invalid database - error code"
+    assert result.exit_code == 2, "can't connect to invalid database - error code"
     assert re.search(
         r'FATAL:\s+cannot connect to invalid database "regression_invalid"',
         result.stderr,
     ), "can't connect to invalid database - error message"
 
     assert (
-        node.psql_capture("ALTER DATABASE regression_invalid CONNECTION LIMIT 10").rc
+        node.psql_capture(
+            "ALTER DATABASE regression_invalid CONNECTION LIMIT 10"
+        ).exit_code
         == 2
     ), "can't ALTER invalid database"
     assert (
-        node.psql_capture("CREATE DATABASE copy_invalid TEMPLATE regression_invalid").rc
+        node.psql_capture(
+            "CREATE DATABASE copy_invalid TEMPLATE regression_invalid"
+        ).exit_code
         == 3
     ), "can't use invalid database as template"
 
@@ -53,10 +57,10 @@ def _mark_invalid_checks(node):
     ), "invalid databases are ignored by vac_truncate_clog"
 
     assert (
-        node.psql_capture("DROP DATABASE regression_invalid").rc == 0
+        node.psql_capture("DROP DATABASE regression_invalid").exit_code == 0
     ), "can DROP invalid database"
     assert (
-        node.psql_capture("DROP DATABASE regression_invalid").rc == 3
+        node.psql_capture("DROP DATABASE regression_invalid").exit_code == 3
     ), "can't drop already dropped database"
 
 
@@ -96,7 +100,7 @@ def test_invalid_database(create_pg):
     bgpsql.clear()
 
     assert (
-        node.psql_capture("", dbname="regression_invalid_interrupt").rc == 2
+        node.psql_capture("", dbname="regression_invalid_interrupt").exit_code == 2
     ), "can't connect to invalid_interrupt database"
 
     # Release the lock and drop the database for real.

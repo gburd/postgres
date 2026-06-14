@@ -106,7 +106,7 @@ def _test_with_cert(node, common_connstr):
     result = node.psql_capture(
         "SELECT ssl_client_dn_field('invalid');", connstr=common_connstr
     )
-    assert result.rc == 3, "ssl_client_dn_field() for an invalid field"
+    assert result.exit_code == 3, "ssl_client_dn_field() for an invalid field"
 
     assert (
         node.safe_psql(

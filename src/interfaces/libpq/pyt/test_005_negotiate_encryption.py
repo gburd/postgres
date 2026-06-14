@@ -212,7 +212,7 @@ def _connect_test(env, connstr, expected_events_and_outcome):
         on_error_stop=False,
         extra_params=["--no-password", "--command", "SELECT current_enc()"],
     )
-    outcome = result.stdout if result.rc == 0 else "fail"
+    outcome = result.stdout if result.exit_code == 0 else "fail"
 
     log_contents = slurp_file(node.log, log_location)
     events = _parse_log_events(log_contents)

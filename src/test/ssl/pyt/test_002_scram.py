@@ -38,7 +38,7 @@ def test_002_scram(create_pg, tmp_path):
         supports_rsapss_certs = False
 
     node = create_pg("primary", hostaddr=SERVERHOSTADDR, start=True)
-    md5_works = node.psql_capture("select md5('')").rc == 0
+    md5_works = node.psql_capture("select md5('')").exit_code == 0
 
     ssl_server.configure_test_server_for_ssl(
         node,

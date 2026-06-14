@@ -63,5 +63,5 @@ def test_041_checkpoint_at_promote(create_pg):
     killme.quit()
     assert standby.poll_query_until("", ""), "server back up after crash recovery"
     res = standby.psql_capture("select 1")
-    assert res.rc == 0, "psql connect success"
+    assert res.exit_code == 0, "psql connect success"
     assert res.stdout == "1", "psql select 1"

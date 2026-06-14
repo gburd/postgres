@@ -133,5 +133,5 @@ def test_001_extension_control_path(create_pg):
         "empty extension_control_path"
     )
     res = node.psql_capture("CREATE EXTENSION invalid")
-    assert res.rc == 3, "error creating an extension that does not exist"
+    assert res.exit_code == 3, "error creating an extension that does not exist"
     assert re.search(r'ERROR:  extension "invalid" is not available', res.stderr)

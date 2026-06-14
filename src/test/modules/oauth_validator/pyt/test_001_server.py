@@ -502,7 +502,9 @@ def _phase_call_count(node, common):
         connstr=_encode_connstr(common, stage="token", retries=2),
         on_error_stop=False,
     )
-    assert result.rc == 0, "call count connection succeeds\n{}".format(result.stderr)
+    assert result.exit_code == 0, "call count connection succeeds\n{}".format(
+        result.stderr
+    )
     assert re.search(_VISIT, result.stderr), "call count: stderr matches"
 
     match = re.search(r"\[libpq\] total number of polls: (\d+)", result.stderr)

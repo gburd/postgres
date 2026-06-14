@@ -296,7 +296,7 @@ def test_001_uri(pg_bin: PgBin):
         result = _run_uri(pg_bin, uri, envvars)
 
         expected_exit = 0 if expected_stderr == "" else 1
-        actual_exit = 0 if result.rc == 0 else 1
+        actual_exit = 0 if result.exit_code == 0 else 1
         assert actual_exit == expected_exit, "{}: exit status".format(uri)
         assert result.stdout == expected_stdout, "{}: stdout".format(uri)
         assert result.stderr == expected_stderr, "{}: stderr".format(uri)

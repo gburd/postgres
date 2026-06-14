@@ -56,7 +56,7 @@ def test_standby_login_event_trigger(create_pg):
     # A login to that DB on the standby must not try to clear the flag (which
     # would need AccessExclusiveLock, forbidden during recovery).
     result = standby.psql_capture("SELECT 1", dbname="regress_login_evt")
-    assert result.rc == 0, "standby accepts connection to DB with dangling flag"
+    assert result.exit_code == 0, "standby accepts connection to DB with dangling flag"
     assert not re.search(
         r"cannot acquire lock mode AccessExclusiveLock", result.stderr
     ), "no AccessExclusiveLock FATAL on standby login"

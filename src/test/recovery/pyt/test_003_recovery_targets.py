@@ -174,7 +174,7 @@ def _test_conflicting_targets(pg_bin, create_pg, primary, m):
     result = pg_bin.result(
         ["pg_ctl", "--pgdata", standby.datadir, "--log", standby.log, "start"]
     )
-    assert result.rc != 0, "invalid recovery startup fails"
+    assert result.exit_code != 0, "invalid recovery startup fails"
     assert re.search(
         r"multiple recovery targets specified", pypg.slurp_file(standby.log)
     ), "multiple conflicting settings"

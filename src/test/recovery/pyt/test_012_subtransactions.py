@@ -85,7 +85,7 @@ def test_012_subtransactions(create_pg):
     primary, standby = standby, primary
     standby.enable_streaming(primary)
     standby.start()
-    assert primary.psql_capture("COMMIT PREPARED 'xact_012_1'").rc == 0, (
+    assert primary.psql_capture("COMMIT PREPARED 'xact_012_1'").exit_code == 0, (
         "Restore of PGPROC_MAX_CACHED_SUBXIDS+ prepared transaction on promoted "
         "standby"
     )
@@ -102,7 +102,7 @@ def test_012_subtransactions(create_pg):
     primary, standby = standby, primary
     standby.enable_streaming(primary)
     standby.start()
-    assert primary.psql_capture("ROLLBACK PREPARED 'xact_012_1'").rc == 0, (
+    assert primary.psql_capture("ROLLBACK PREPARED 'xact_012_1'").exit_code == 0, (
         "Rollback of PGPROC_MAX_CACHED_SUBXIDS+ prepared transaction on promoted "
         "standby"
     )

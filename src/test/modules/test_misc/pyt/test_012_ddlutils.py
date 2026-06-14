@@ -145,7 +145,7 @@ def test_012_ddlutils(create_pg):
 
     # Non-existent role (should error)
     res = node.psql_capture("SELECT * FROM pg_get_role_ddl(9999999::oid)")
-    assert res.rc != 0, "non-existent role errors"
+    assert res.exit_code != 0, "non-existent role errors"
     like(res.stderr, r"does not exist", "non-existent role error message")
 
     # NULL input (should return no rows)
@@ -162,7 +162,7 @@ def test_012_ddlutils(create_pg):
         "SET ROLE regress_role_ddl_noaccess;\n"
         "\t  SELECT * FROM pg_get_role_ddl('regress_role_ddl_test1')"
     )
-    assert res.rc != 0, "role DDL denied without pg_authid access"
+    assert res.exit_code != 0, "role DDL denied without pg_authid access"
     node.safe_psql(
         """
 \tGRANT SELECT ON pg_authid TO PUBLIC"""
@@ -186,7 +186,7 @@ def test_012_ddlutils(create_pg):
     res = node.psql_capture(
         "SELECT * FROM pg_get_database_ddl('regression_no_such_db')"
     )
-    assert res.rc != 0, "non-existent database errors"
+    assert res.exit_code != 0, "non-existent database errors"
 
     # NULL input
     result = node.safe_psql("SELECT count(*) FROM pg_get_database_ddl(NULL)")
@@ -196,7 +196,7 @@ def test_012_ddlutils(create_pg):
     res = node.psql_capture(
         "SELECT * FROM pg_get_database_ddl('regression_ddlutils_test', 'owner', 'invalid')"
     )
-    assert res.rc != 0, "invalid boolean option errors"
+    assert res.exit_code != 0, "invalid boolean option errors"
     like(res.stderr, r"invalid value", "invalid option error message")
 
     # Duplicate option
@@ -204,7 +204,7 @@ def test_012_ddlutils(create_pg):
         "SELECT * FROM pg_get_database_ddl('regression_ddlutils_test',\n"
         "\t  'owner', 'false', 'owner', 'true')"
     )
-    assert res.rc != 0, "duplicate option errors"
+    assert res.exit_code != 0, "duplicate option errors"
 
     # Basic output (without locale details)
     result = _ddl_filter(
@@ -251,7 +251,7 @@ def test_012_ddlutils(create_pg):
         "SET ROLE regress_role_ddl_noaccess;\n"
         "\t  SELECT * FROM pg_get_database_ddl('regression_ddlutils_test')"
     )
-    assert res.rc != 0, "database DDL denied without CONNECT"
+    assert res.exit_code != 0, "database DDL denied without CONNECT"
     node.safe_psql(
         """
 \tGRANT CONNECT ON DATABASE regression_ddlutils_test TO PUBLIC"""
@@ -265,11 +265,11 @@ def test_012_ddlutils(create_pg):
     res = node.psql_capture(
         "SELECT * FROM pg_get_tablespace_ddl('regress_nonexistent_tblsp')"
     )
-    assert res.rc != 0, "non-existent tablespace errors"
+    assert res.exit_code != 0, "non-existent tablespace errors"
 
     # Non-existent tablespace by OID
     res = node.psql_capture("SELECT * FROM pg_get_tablespace_ddl(0::oid)")
-    assert res.rc != 0, "non-existent tablespace OID errors"
+    assert res.exit_code != 0, "non-existent tablespace OID errors"
 
     # NULL input (name and OID variants)
     result = node.safe_psql("SELECT count(*) FROM pg_get_tablespace_ddl(NULL::name)")
@@ -346,7 +346,7 @@ def test_012_ddlutils(create_pg):
         "SET ROLE regress_role_ddl_noaccess;\n"
         "\t  SELECT * FROM pg_get_tablespace_ddl('regress_allopt_tblsp')"
     )
-    assert res.rc != 0, "tablespace DDL denied without pg_tablespace access"
+    assert res.exit_code != 0, "tablespace DDL denied without pg_tablespace access"
     node.safe_psql(
         """
 \tGRANT SELECT ON pg_tablespace TO PUBLIC"""

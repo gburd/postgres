@@ -68,7 +68,7 @@ def test_005_pitr(create_pg):
     result = replica.psql_capture(
         "{}; SELECT bt_index_parent_check('not_leftmost_pk', true)".format(debug)
     )
-    assert result.rc == 0, "bt_index_parent_check passes"
+    assert result.exit_code == 0, "bt_index_parent_check passes"
     assert (
         "interrupted page deletion detected" in result.stderr
     ), "bt_index_parent_check: interrupted page deletion detected"
@@ -76,4 +76,4 @@ def test_005_pitr(create_pg):
     result = replica.psql_capture(
         "{}; SELECT bt_index_check('not_leftmost_pk', true)".format(debug)
     )
-    assert result.rc == 0, "bt_index_check passes"
+    assert result.exit_code == 0, "bt_index_check passes"

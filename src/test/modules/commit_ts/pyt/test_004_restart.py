@@ -18,16 +18,16 @@ def test_004_restart(create_pg):
     node_primary.append_conf("track_commit_timestamp = on")
     node_primary.start()
     result = node_primary.psql_capture("SELECT pg_xact_commit_timestamp('0');")
-    assert result.rc == 3, "getting ts of InvalidTransactionId reports error"
+    assert result.exit_code == 3, "getting ts of InvalidTransactionId reports error"
     assert re.search(
         r"""cannot retrieve commit timestamp for transaction""",
         result.stderr,
     ), "expected error from InvalidTransactionId"
     result = node_primary.psql_capture("SELECT pg_xact_commit_timestamp('1');")
-    assert result.rc == 0, "getting ts of BootstrapTransactionId succeeds"
+    assert result.exit_code == 0, "getting ts of BootstrapTransactionId succeeds"
     assert result.stdout == "", "timestamp of BootstrapTransactionId is null"
     result = node_primary.psql_capture("SELECT pg_xact_commit_timestamp('2');")
-    assert result.rc == 0, "getting ts of FrozenTransactionId succeeds"
+    assert result.exit_code == 0, "getting ts of FrozenTransactionId succeeds"
     assert result.stdout == "", "timestamp of FrozenTransactionId is null"
     assert (
         node_primary.safe_psql("SELECT pg_xact_commit_timestamp('3');") == ""
@@ -71,7 +71,7 @@ def test_004_restart(create_pg):
     result = node_primary.psql_capture(
         "SELECT pg_xact_commit_timestamp('" + str(xid) + "');"
     )
-    assert result.rc == 3, "no commit timestamp from enable tx when cts disabled"
+    assert result.exit_code == 3, "no commit timestamp from enable tx when cts disabled"
     assert re.search(
         r"""could not get commit timestamp data""",
         result.stderr,
@@ -82,7 +82,7 @@ def test_004_restart(create_pg):
     result = node_primary.psql_capture(
         "SELECT pg_xact_commit_timestamp('" + str(xid_disabled) + "');"
     )
-    assert result.rc == 3, "no commit timestamp when disabled"
+    assert result.exit_code == 3, "no commit timestamp when disabled"
     assert re.search(
         r"""could not get commit timestamp data""",
         result.stderr,

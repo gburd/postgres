@@ -420,8 +420,8 @@ def _delegation_fails(node, sql, connstr, msg):
     stdout.
     """
     result = node.psql_capture(sql, connstr=connstr)
-    assert result.rc == 3, "{}: expected exit 3, got {}\n{}".format(
-        msg, result.rc, result.stderr
+    assert result.exit_code == 3, "{}: expected exit 3, got {}\n{}".format(
+        msg, result.exit_code, result.stderr
     )
     assert re.search(
         r"password or GSSAPI delegated credentials required", result.stderr

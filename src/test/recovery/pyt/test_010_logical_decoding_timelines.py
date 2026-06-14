@@ -66,7 +66,7 @@ def test_010_logical_decoding_timelines(create_pg):
     replica.append_conf("primary_slot_name = 'phys_slot'")
     replica.start()
     assert (
-        primary.psql_capture("DROP DATABASE dropme").rc == 0
+        primary.psql_capture("DROP DATABASE dropme").exit_code == 0
     ), "dropped DB with logical slot OK on primary"
     primary.wait_for_catchup(replica)
     assert (
@@ -108,7 +108,7 @@ def test_010_logical_decoding_timelines(create_pg):
         "SELECT data FROM pg_logical_slot_peek_changes('after_basebackup', NULL, "
         "NULL, 'include-xids', '0', 'skip-empty-xacts', '1');"
     )
-    assert res.rc == 3, "replaying from after_basebackup slot fails"
+    assert res.exit_code == 3, "replaying from after_basebackup slot fails"
     assert re.search(
         r'replication slot "after_basebackup" does not exist', res.stderr
     ), "after_basebackup slot missing"
@@ -117,7 +117,7 @@ def test_010_logical_decoding_timelines(create_pg):
         "NULL, 'include-xids', '0', 'skip-empty-xacts', '1');",
         timeout=pypg.test_timeout_default(),
     )
-    assert res.rc == 0, "replay from slot before_basebackup succeeds"
+    assert res.exit_code == 0, "replay from slot before_basebackup succeeds"
     assert res.stdout == _EXPECTED, "decoded expected data from slot before_basebackup"
     assert res.stderr == "", "replay from slot before_basebackup produces no stderr"
     endpos = replica.safe_psql(

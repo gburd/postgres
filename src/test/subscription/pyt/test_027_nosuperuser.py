@@ -190,7 +190,7 @@ def _password_required(create_pg):
             "SET SESSION AUTHORIZATION regress_test_user;\n"
             "ALTER SUBSCRIPTION regress_test_sub REFRESH PUBLICATION;"
         )
-        assert result.rc != 0, "non-superuser owner without password fails"
+        assert result.exit_code != 0, "non-superuser owner without password fails"
         assert re.search(
             r"DETAIL:  Non-superusers must provide a password in the connection "
             r"string\.",
@@ -207,7 +207,7 @@ def _password_required(create_pg):
         "ALTER SUBSCRIPTION regress_test_sub CONNECTION '{}';\n"
         "ALTER SUBSCRIPTION regress_test_sub REFRESH PUBLICATION;".format(connstr2)
     )
-    assert result.rc == 0, "refresh succeeds once the password is supplied"
+    assert result.exit_code == 0, "refresh succeeds once the password is supplied"
 
 
 def test_nosuperuser(create_pg):

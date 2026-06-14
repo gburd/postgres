@@ -179,7 +179,7 @@ def _test_backup_mode(primary):
         "SELECT pg_backup_stop();"
         "SELECT pg_backup_start(repeat('x', 1026))"
     )
-    assert result.rc == 3, "psql fails correctly"
+    assert result.exit_code == 3, "psql fails correctly"
     assert re.search(
         r"backup label too long", result.stderr
     ), "pg_backup_start fails gracefully"

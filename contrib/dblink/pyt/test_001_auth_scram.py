@@ -137,7 +137,9 @@ def _test_scram_keys_not_overwritten(node, db, fdw):
             "(user '{user}', {opt} 'key');".format(user=_USER, fdw=fdw, opt=opt),
             connstr=_u_connstr(node, db),
         )
-        assert res.rc == 3, "user mapping creation fails when using {}".format(opt)
+        assert res.exit_code == 3, "user mapping creation fails when using {}".format(
+            opt
+        )
         assert re.search(r'ERROR:  invalid option "{}"'.format(opt), res.stderr)
 
 
@@ -146,7 +148,7 @@ def _test_invalid_overwritten_require_auth(node1, fdw):
         "select * from dblink('{}', 'select * from t') as t(a int, b int)".format(fdw),
         connstr=_u_connstr(node1, _DB0),
     )
-    assert res.rc == 3, "loopback trust fails when overwriting require_auth"
+    assert res.exit_code == 3, "loopback trust fails when overwriting require_auth"
     assert re.search(
         r"password or GSSAPI delegated credentials required", res.stderr
     ), "expected error when connecting to a fdw overwriting the require_auth"
@@ -163,7 +165,7 @@ def _test_disabled_passthrough(node1, fdw):
         "select * from dblink('{}', 'select * from t') as t(a int, b int)".format(fdw),
         connstr=connstr,
     )
-    assert res.rc == 3, "SCRAM passthrough disabled on user mapping should fail"
+    assert res.exit_code == 3, "SCRAM passthrough disabled on user mapping should fail"
     assert re.search(
         r"password", res.stderr, re.IGNORECASE
     ), "expected password-related error when scram passthrough disabled"
@@ -189,7 +191,7 @@ def _test_loopback_rejections(node1, node2, fdw_server, fdw_server2):
         ),
         connstr=_u_connstr(node1, _DB0),
     )
-    assert res.rc == 3, "loopback trust fails on the same cluster"
+    assert res.exit_code == 3, "loopback trust fails on the same cluster"
     assert re.search(
         r'failed: authentication method requirement "scram-sha-256" failed: '
         r"server did not complete authentication",
@@ -201,7 +203,7 @@ def _test_loopback_rejections(node1, node2, fdw_server, fdw_server2):
         ),
         connstr=_u_connstr(node1, _DB0),
     )
-    assert res.rc == 3, "loopback password fails on a different cluster"
+    assert res.exit_code == 3, "loopback password fails on a different cluster"
     assert re.search(
         r'authentication method requirement "scram-sha-256" failed: '
         r"server requested a cleartext password",

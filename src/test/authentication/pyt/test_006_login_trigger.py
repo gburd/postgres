@@ -30,7 +30,9 @@ def _psql_command(
     err_exact=None,
 ):
     res = node.psql_capture(sql, connstr=connstr, on_error_stop=False)
-    assert res.rc == expected_ret, "{}: exit code {}".format(test_name, expected_ret)
+    assert res.exit_code == expected_ret, "{}: exit code {}".format(
+        test_name, expected_ret
+    )
     out, err = res.stdout, res.stderr
     for rx in log_like or []:
         assert re.search(rx, out), "{}: log matches".format(test_name)

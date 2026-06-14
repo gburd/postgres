@@ -60,6 +60,6 @@ def test_002_cic(create_pg):
     result = node.psql_capture(
         "SELECT bt_index_parent_check('oscar', heapallindexed => true)"
     )
-    assert result.rc == 0, "bt_index_parent_check for CIC after removed row"
+    assert result.exit_code == 0, "bt_index_parent_check for CIC after removed row"
     in_progress_h.quit()
     node.stop()

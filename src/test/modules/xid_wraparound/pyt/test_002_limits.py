@@ -41,7 +41,7 @@ def test_002_limits(create_pg):
     warn_limit = 0
     for _ in range(1, 16):
         res = node.psql_capture("SELECT consume_xids(10000000)")
-        assert res.rc == 0  # on_error_die => 1
+        assert res.exit_code == 0  # on_error_die => 1
         if re.search(
             r'WARNING:  database "postgres" must be vacuumed within [0-9]+ transactions',
             res.stderr,

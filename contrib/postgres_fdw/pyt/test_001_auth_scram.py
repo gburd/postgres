@@ -151,7 +151,7 @@ def _passthrough_off(node1, db0, fdw3):
     res = node1.psql_capture(
         "SELECT count(1) FROM override_t", dbname=db0, connstr=connstr
     )
-    assert res.rc == 3, "SCRAM passthrough disabled on user mapping should fail"
+    assert res.exit_code == 3, "SCRAM passthrough disabled on user mapping should fail"
     assert re.search(
         r"password", res.stderr, re.I
     ), "expected password-related error when scram passthrough disabled"
@@ -174,12 +174,12 @@ def _loopback_rejections(node1, node2, db0):
     node2.restart()
     connstr = node1.connstr(db0) + " user={}".format(USER)
     res = node1.psql_capture("select count(1) from t", dbname=db0, connstr=connstr)
-    assert res.rc == 3, "loopback trust fails on the same cluster"
+    assert res.exit_code == 3, "loopback trust fails on the same cluster"
     assert re.search(
         r'failed: authentication method requirement "scram-sha-256"', res.stderr
     ), "expected error from loopback trust (same cluster)"
     res = node1.psql_capture("select count(1) from t2", dbname=db0, connstr=connstr)
-    assert res.rc == 3, "loopback password fails on a different cluster"
+    assert res.exit_code == 3, "loopback password fails on a different cluster"
     assert re.search(
         r'failed: authentication method requirement "scram-sha-256"', res.stderr
     ), "expected error from loopback password (different cluster)"

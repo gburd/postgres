@@ -15,4 +15,4 @@ def test_001_oauth(pg_bin):
     result = pg_bin.result(["oauth_tests"])
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
-    assert result.rc == 0, "oauth_tests returned {}".format(result.rc)
+    assert result.exit_code == 0, "oauth_tests returned {}".format(result.exit_code)

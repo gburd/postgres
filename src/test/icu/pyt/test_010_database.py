@@ -48,19 +48,19 @@ def test_010_database(create_pg):
     assert (
         node1.psql_capture(
             "CREATE DATABASE dbicu1 LOCALE_PROVIDER icu LOCALE 'C' TEMPLATE template0 ENCODING UTF8"
-        ).rc
+        ).exit_code
         == 0
     ), "C locale works for ICU"
     assert (
         node1.psql_capture(
             "CREATE DATABASE dbicu2 LOCALE_PROVIDER icu LOCALE '@colStrength=primary'\n          LC_COLLATE='C' LC_CTYPE='C' TEMPLATE template0 ENCODING UTF8"
-        ).rc
+        ).exit_code
         == 0
     ), "LOCALE works for ICU locales if LC_COLLATE and LC_CTYPE are specified"
     result = node1.psql_capture(
         "CREATE DATABASE dbicu3 LOCALE_PROVIDER builtin LOCALE 'C' TEMPLATE dbicu"
     )
-    assert result.rc != 0, "locale provider must match template: exit code not 0"
+    assert result.exit_code != 0, "locale provider must match template: exit code not 0"
     assert re.search(
         r"""ERROR:  new locale provider \(builtin\) does not match locale provider of the template database \(icu\)""",
         result.stderr,

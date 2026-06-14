@@ -44,10 +44,10 @@ def test_003_cic_2pc(create_pg):
     node.safe_psql("CREATE TABLE tbl(i int, j jsonb)")
     _build_indexes_with_2pc(node)
     assert (
-        node.psql_capture("SELECT bt_index_check('idx',true)").rc == 0
+        node.psql_capture("SELECT bt_index_check('idx',true)").exit_code == 0
     ), "bt_index_check after overlapping 2PC"
     assert (
-        node.psql_capture("SELECT gin_index_check('ginidx')").rc == 0
+        node.psql_capture("SELECT gin_index_check('ginidx')").exit_code == 0
     ), "gin_index_check after overlapping 2PC"
     node.safe_psql(
         "BEGIN;\nINSERT INTO tbl VALUES(0, "
@@ -67,10 +67,10 @@ def test_003_cic_2pc(create_pg):
     node.safe_psql("COMMIT PREPARED 'spans_restart'")
     reindex_h.quit()
     assert (
-        node.psql_capture("SELECT bt_index_check('idx',true)").rc == 0
+        node.psql_capture("SELECT bt_index_check('idx',true)").exit_code == 0
     ), "bt_index_check after 2PC and restart"
     assert (
-        node.psql_capture("SELECT gin_index_check('ginidx')").rc == 0
+        node.psql_capture("SELECT gin_index_check('ginidx')").exit_code == 0
     ), "gin_index_check after 2PC and restart"
     node.safe_psql("REINDEX TABLE tbl;")
     node.pgbench(

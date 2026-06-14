@@ -151,7 +151,7 @@ def _create_password_roles(node, md5_works):
         node.psql_capture(
             "SET password_encryption='scram-sha-256'; "
             "CREATE ROLE scram_role LOGIN PASSWORD 'pass';"
-        ).rc
+        ).exit_code
         == 0
     ), "created user with SCRAM password"
     expected_md5_rc = 0 if md5_works else 3
@@ -159,7 +159,7 @@ def _create_password_roles(node, md5_works):
         node.psql_capture(
             "SET password_encryption='md5'; "
             "CREATE ROLE md5_role LOGIN PASSWORD 'pass';"
-        ).rc
+        ).exit_code
         == expected_md5_rc
     ), "created user with md5 password"
 
@@ -843,7 +843,7 @@ def test_001_password(create_pg, tmp_path):
     _test_log_connections(node)
 
     # md5 could fail in FIPS mode.
-    md5_works = node.psql_capture("select md5('')").rc == 0
+    md5_works = node.psql_capture("select md5('')").exit_code == 0
 
     _create_password_roles(node, md5_works)
     _test_password_command(node)

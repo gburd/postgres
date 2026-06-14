@@ -20,7 +20,7 @@ def test_001_test_escape(create_pg, pg_bin):
     )
     conninfo = node.connstr() + " dbname=db_sql_ascii"
     result = pg_bin.result(["test_escape", "--conninfo", conninfo])
-    assert result.rc == 0, "test_escape returns 0"
+    assert result.exit_code == 0, "test_escape returns 0"
     assert result.stderr == "", "test_escape stderr is empty"
     for line in result.stdout.split("\n"):
         if re.match(r"^ok \d+ ?(.*)", line):

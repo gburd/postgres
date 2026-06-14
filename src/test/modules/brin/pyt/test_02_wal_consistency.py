@@ -18,7 +18,7 @@ def test_02_wal_consistency(create_pg):
     assert (
         whiskey.psql_capture(
             "SELECT pg_create_physical_replication_slot('standby_1');"
-        ).rc
+        ).exit_code
         == 0
     ), "physical slot created on primary"
     backup_name = "brinbkp"

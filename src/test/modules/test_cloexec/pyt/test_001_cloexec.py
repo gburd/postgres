@@ -17,6 +17,6 @@ def test_001_cloexec(pg_bin):
     if platform.system() != "Windows":
         pytest.skip("test is Windows-specific")
     result = pg_bin.result(["test_cloexec"])
-    assert result.rc == 0 and re.search(
+    assert result.exit_code == 0 and re.search(
         r"SUCCESS.*O_CLOEXEC behavior verified", result.stdout, re.DOTALL
     ), "O_CLOEXEC prevents handle inheritance"

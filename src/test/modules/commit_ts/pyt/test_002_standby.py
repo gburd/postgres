@@ -45,7 +45,7 @@ def test_002_standby(create_pg):
     result = standby.psql_capture(
         "select ts.* from pg_class, pg_xact_commit_timestamp(xmin) ts where relname = 't10'"
     )
-    assert result.rc == 3, "standby errors when primary turned feature off"
+    assert result.exit_code == 3, "standby errors when primary turned feature off"
     assert result.stdout == "", "standby gives no value when primary turned feature off"
     assert re.search(
         r"""could not get commit timestamp data""",

@@ -51,7 +51,7 @@ def test_001_testfunc(create_pg):
     result = node.bin.run_command(
         ["pg_ctl", "--pgdata", str(node.datadir), "--log", str(node.log), "start"]
     )
-    assert result.rc != 0, "pg_ctl fails with bad passphrase"
+    assert result.exit_code != 0, "pg_ctl fails with bad passphrase"
     assert not os.path.exists(
         "{}/postmaster.pid".format(ddir)
     ), "postgres not started with bad passphrase"

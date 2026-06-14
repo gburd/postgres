@@ -88,10 +88,10 @@ def _check_sequences(primary, standby1, standby2):
         == "t"
     ), "pg_sequence_last_value() on unlogged sequence on standby 1"
     assert (
-        standby1.psql_capture("INSERT INTO tab_int VALUES (1)").rc == 3
+        standby1.psql_capture("INSERT INTO tab_int VALUES (1)").exit_code == 3
     ), "read-only queries on standby 1"
     assert (
-        standby2.psql_capture("INSERT INTO tab_int VALUES (1)").rc == 3
+        standby2.psql_capture("INSERT INTO tab_int VALUES (1)").exit_code == 3
     ), "read-only queries on standby 2"
 
 
@@ -106,14 +106,14 @@ def _tsa(node1, node2, target, mode, status):
         on_error_stop=False,
     )
     if status == 0:
-        assert res.rc == 0 and res.stdout.strip() == str(
+        assert res.exit_code == 0 and res.stdout.strip() == str(
             target.port
         ), 'connect with mode "{}" and {},{} listed'.format(
             mode, node1.name, node2.name
         )
     else:
         assert (
-            res.rc == status and target is None
+            res.exit_code == status and target is None
         ), 'fail to connect with mode "{}"'.format(mode)
 
 
@@ -148,13 +148,13 @@ def _show_and_read_slot(primary):
     for connstr, label in ((rep, "physical"), (db, "logical")):
         for sql in ("SHOW ALL;", "SHOW work_mem;", "SHOW primary_conninfo;"):
             assert (
-                primary.psql_capture(sql, connstr=connstr).rc == 0
+                primary.psql_capture(sql, connstr=connstr).exit_code == 0
             ), "{} over {} replication".format(sql, label)
     slotname = "test_read_replication_slot_physical"
     res = primary.psql_capture(
         "READ_REPLICATION_SLOT non_existent_slot;", connstr=rep, on_error_stop=False
     )
-    assert res.rc == 0, "READ_REPLICATION_SLOT exit code 0 on success"
+    assert res.exit_code == 0, "READ_REPLICATION_SLOT exit code 0 on success"
     assert re.search(
         r"^\|\|$", res.stdout.strip(), re.M
     ), "READ_REPLICATION_SLOT returns NULL values if slot does not exist"
@@ -164,7 +164,7 @@ def _show_and_read_slot(primary):
     res = primary.psql_capture(
         "READ_REPLICATION_SLOT {};".format(slotname), connstr=rep
     )
-    assert res.rc == 0, "READ_REPLICATION_SLOT success with existing slot"
+    assert res.exit_code == 0, "READ_REPLICATION_SLOT success with existing slot"
     assert re.search(
         r"^physical\|[^|]*\|1$", res.stdout.strip(), re.M
     ), "READ_REPLICATION_SLOT returns tuple with slot information"
@@ -190,7 +190,7 @@ def _slot_xmins(primary, standby1, standby2):
     assert (
         primary.psql_capture(
             "SELECT pg_create_physical_replication_slot('standby_1');"
-        ).rc
+        ).exit_code
         == 0
     ), "physical slot created on primary"
     standby1.append_conf("primary_slot_name = standby_1")
@@ -200,7 +200,7 @@ def _slot_xmins(primary, standby1, standby2):
     assert (
         standby1.psql_capture(
             "SELECT pg_create_physical_replication_slot('standby_2');"
-        ).rc
+        ).exit_code
         == 0
     ), "physical slot created on intermediate replica"
     standby2.append_conf("primary_slot_name = standby_2")
@@ -312,7 +312,7 @@ def _physical_slot_advance(primary, standby1, standby2):
             "SELECT pg_replication_slot_advance('{}', '{}'::pg_lsn);".format(
                 phys_slot, current_lsn
             )
-        ).rc
+        ).exit_code
         == 0
     ), "slot advancing with physical slot"
     pre = primary.safe_psql(
