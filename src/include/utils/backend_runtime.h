@@ -543,6 +543,7 @@ typedef struct PgBackendAioState
 
 typedef struct PgBackendExtensionModuleState
 {
+	char	   *basic_archive_archive_directory;
 	struct AutoPrewarmSharedState *pg_prewarm_autoprewarm_state;
 	struct pgsa_shared_state *pg_stash_advice_state;
 	dsa_area   *pg_stash_advice_dsa_area;
@@ -2805,6 +2806,7 @@ extern volatile sig_atomic_t *PgCurrentRepackMessagePendingRef(void);
 extern PgBackendAioState *PgCurrentAioState(void);
 extern struct PgAioBackend **PgCurrentAioBackendRef(void);
 extern PgBackendExtensionModuleState *PgCurrentBackendExtensionModuleState(void);
+extern char **PgCurrentBasicArchiveDirectoryRef(void);
 extern TransactionId *PgCurrentCachedFetchXidRef(void);
 extern int *PgCurrentCachedFetchXidStatusRef(void);
 extern XLogRecPtr *PgCurrentCachedCommitLSNRef(void);

@@ -24,6 +24,10 @@ This is especially important before the remaining Gate E2 blockers: threaded
 teardown, PMChild/thread synchronization, startup-gate removal, and any
 remaining object migration should each start by asking whether a small
 macro/table/checker improvement would make the whole slice simpler and safer.
+The macro/checker improvement is not a side quest: when repeated lifecycle
+mechanics appear, it is the fastest safe path for Phase 12 because it lets the
+next migration move more globals at once without adding parallel handwritten
+init/adopt/reset/destroy lists.
 
 ## Project Docs
 

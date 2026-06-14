@@ -12501,6 +12501,12 @@ helper, bucket `.def` rule, owner-map metadata, generated table, or
 `check_runtime_lifecycles.pl` validation first, then use it to move a larger
 coherent group of state.
 
+Practical acceleration rule: macro/checker work is the preferred way to make
+larger Phase 12 strides. If a batch would repeat lifecycle plumbing, improve
+the checked lifecycle vocabulary first and then migrate the larger group
+through that path, rather than splitting the same work into many smaller
+manual commits.
+
 ## Threaded Startup Gate Removal
 
 Lifecycle/preflight note:
@@ -13268,6 +13274,55 @@ Validation for the small contrib custom-GUC session-state slice:
   `prove -I ../../src/test/perl t/001_basic.pl` passed with explicit
   `PG_REGRESS`, repo-local `.perl5` `PERL5LIB`, and absolute
   `TESTDATADIR`/`TESTLOGDIR`;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with patched macOS
+  install-name paths and the repo-local `.perl5` `PERL5LIB`.
+
+## basic_archive Backend GUC State
+
+Lifecycle/preflight note:
+
+- target root and bucket: `PgBackend.extension_modules`;
+- state moved: custom-GUC backing slot for
+  `basic_archive.archive_directory`;
+- owner source file: `contrib/basic_archive/basic_archive.c`;
+- repeated lifecycle operations: one backend-owned string GUC slot in an
+  existing whole-bucket backend extension state. The existing
+  `PgBackendInitializeExtensionModuleState()` and
+  `PgBackendAdoptEarlyState()` checked lifecycle path is sufficient; no new
+  lifecycle primitive is needed because the GUC machinery owns string
+  allocation and the bucket initializer restores the default pointer;
+- retained invariant: `basic_archive` is an archive module used by the
+  archiver backend/worker, so the backing slot belongs to the logical backend
+  object rather than ordinary SQL session state. The archive callbacks remain
+  process/runtime-static.
+
+Slice:
+
+- `contrib/basic_archive` now keeps `archive_directory` as a source-local
+  lvalue macro over `PgCurrentBasicArchiveDirectoryRef()`;
+- `PgBackend.extension_modules` initializes the slot to the upstream default
+  empty string, and the runtime manifest/owner map track the field under
+  `PgBackend.extension_modules`;
+- `basic_archive` opts into the in-tree threaded extension backend model with
+  `PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION`;
+- `test_backend_runtime` now verifies that the basic-archive backing slot is
+  backend-local and is restored by closed-backend reset.
+
+Validation for the basic_archive backend GUC slice:
+
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 222 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- touched object builds passed for `backend_runtime.o`,
+  `test_backend_runtime_backend.o`, and `basic_archive.o`;
+- backend clean/generated-header recovery followed by full `gmake -j8`
+  passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- `gmake -C contrib/basic_archive clean all check` passed;
 - direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
   `002_threaded_bgworker_crash.pl`, 131 tests total, with patched macOS
   install-name paths and the repo-local `.perl5` `PERL5LIB`.

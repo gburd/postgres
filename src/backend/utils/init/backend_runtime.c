@@ -3237,6 +3237,7 @@ PgBackendInitializeExtensionModuleState(PgBackendExtensionModuleState *extension
 	Assert(extension_modules != NULL);
 
 	MemSet(extension_modules, 0, sizeof(*extension_modules));
+	extension_modules->basic_archive_archive_directory = "";
 }
 
 static void
@@ -7258,6 +7259,12 @@ PgCurrentBackendExtensionModuleState(void)
 		return &early_backend_extension_modules;
 
 	return &CurrentPgBackend->extension_modules;
+}
+
+char **
+PgCurrentBasicArchiveDirectoryRef(void)
+{
+	return &PgCurrentBackendExtensionModuleState()->basic_archive_archive_directory;
 }
 
 static PgBackendTransactionState *
