@@ -35,4 +35,20 @@ tests += {
       't/009_fpi.pl',
     ],
   },
+  'pytest': {
+    'env': {
+       'enable_injection_points': get_option('injection_points') ? 'yes' : 'no',
+	},
+    'tests': [
+      'pyt/test_001_basic.py',
+      'pyt/test_002_restarts.py',
+      'pyt/test_003_standby_restarts.py',
+      'pyt/test_004_offline.py',
+      'pyt/test_005_injection.py',
+      'pyt/test_006_pgbench_single.py',
+      'pyt/test_007_pgbench_standby.py',
+      'pyt/test_008_pitr.py',
+      'pyt/test_009_fpi.py',
+    ],
+  },
 }
