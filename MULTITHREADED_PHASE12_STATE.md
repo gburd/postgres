@@ -8694,3 +8694,42 @@ Validation for this slice:
 - direct threaded-runtime TAP
   `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
   87 tests with patched macOS install names.
+
+## Thread Runtime Object Initialization Lists
+
+The next Gate E2 hardening slice removes the large duplicated initialization
+lists from `InitializePgThreadBackendRuntimeState()`:
+
+- `PgBackendInitializeRuntimeObject()` wires a backend into its runtime,
+  carrier, session, connection, and execution, then initializes every backend
+  bucket through the same per-bucket helper functions used elsewhere;
+- `PgSessionInitializeRuntimeObject()` wires the session and initializes the
+  full session bucket set, including list-bearing state such as plan-cache
+  lists;
+- `PgConnectionInitializeRuntimeObject()` wires the connection, preserves the
+  constructor `Port`, and initializes socket/protocol/output/startup/security
+  buckets;
+- `PgExecutionInitializeRuntimeObject()` wires the execution and initializes
+  the execution bucket set.
+
+Thread backend installation still calls `PgBackendAdoptEarlyState()`,
+`PgSessionAdoptEarlyState()`, `PgConnectionAdoptEarlyState()`, and
+`PgExecutionAdoptEarlyState()` after the constructor. That keeps early fallback
+adoption centralized in the adoption helpers while avoiding a separate
+constructor-side list that can drift as new runtime buckets are added.
+
+Validation for this slice:
+
+- touched-object build passed for `backend_runtime.o`;
+- `gmake check-runtime-lifecycles` passed with 134 fields classified;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals;
+- `gmake -C src/test/modules/test_backend_runtime check` passed, covering the
+  existing thread-install adoption tests for backend, session/execution, and
+  connection fallback state;
+- full `gmake -j8` passed;
+- `gmake -C contrib -j8` passed;
+- direct threaded-runtime TAP
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl` passed all
+  87 tests with patched macOS install names after cleaning a stranded failed
+  `tmp_check`/`log` run.
