@@ -493,6 +493,12 @@ PgCurrentPLTclResetRegisteredRef(void)
 	return &PgCurrentSessionExtensionModuleState()->pltcl_reset_registered;
 }
 
+MemoryContext *
+PgCurrentPLsampleMemoryContextRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->plsample_memory_context;
+}
+
 void **
 PgCurrentRefintForeignPlansRef(void)
 {

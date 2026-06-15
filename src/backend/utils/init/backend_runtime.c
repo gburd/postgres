@@ -2132,6 +2132,7 @@ PgSessionInitializeExtensionModuleState(PgSessionExtensionModuleState *extension
 	extension_modules->pltcl_proc_hash = NULL;
 	extension_modules->pltcl_current_call_state = NULL;
 	extension_modules->pltcl_reset_registered = false;
+	extension_modules->plsample_memory_context = NULL;
 	extension_modules->refint_foreign_plans = NULL;
 	extension_modules->refint_num_foreign_plans = 0;
 	extension_modules->refint_primary_plans = NULL;

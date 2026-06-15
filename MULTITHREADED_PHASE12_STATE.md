@@ -15833,3 +15833,71 @@ Validation for the pg_stash_advice context allocation helper slice:
   macOS install names, direct threaded-runtime TAP passed for
   `001_threaded_runtime.pl` and `002_threaded_bgworker_crash.pl`, 131 tests
   total.
+
+## PL/Sample Allocation Context Parent
+
+Lifecycle/preflight note:
+
+- target: close the direct `TopMemoryContext` allocation in the in-tree
+  `plsample` test procedural-language handler;
+- touched root/bucket: `PgSession.extension_modules`, specifically a new
+  PL/Sample allocation parent context;
+- owner source files: `src/include/utils/backend_runtime.h`,
+  `src/backend/utils/init/backend_runtime.c`,
+  `src/backend/utils/init/backend_runtime_session.c`,
+  `src/backend/utils/init/backend_runtime_teardown.c`,
+  `src/test/modules/plsample/plsample.c`,
+  `src/test/modules/test_backend_runtime/test_backend_runtime_session.c`,
+  `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, and this state log;
+- legacy symbols/accessors: PL/Sample per-function `proc_cxt` allocations and
+  new `PgCurrentPLsampleMemoryContextRef()`. The module metadata switches from
+  plain `PG_MODULE_MAGIC` to thread-per-session `PG_MODULE_MAGIC_EXT` once the
+  retained session parent context is runtime-owned;
+- repeated lifecycle operations expected in this slice: one session-owned
+  procedural-language allocation parent context plus a child function context
+  below it. Existing `PgRuntimeGetOwnedMemoryContextWithSizes()` and
+  `PG_RUNTIME_DELETE_MEMORY_CONTEXT` cover the lifecycle mechanics;
+- checked primitive decision: no new lifecycle primitive is needed. This
+  reuses the existing `PgSession.extension_modules` language-context reset
+  path added for PL/Python, PL/Perl, and PL/Tcl. The future runtime/module
+  extension bucket remains separate work for module-wide hook state such as
+  `pg_plan_advice`.
+
+Implementation result:
+
+- `PgSession.extension_modules.plsample_memory_context` now owns the
+  PL/Sample session parent allocation context, reached through
+  `PgCurrentPLsampleMemoryContextRef()`;
+- `plsample_func_handler()` creates per-function contexts below that session
+  parent context instead of directly below `TopMemoryContext`;
+- PL/Sample now advertises
+  `PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION`, and the threaded runtime
+  TAP installs, creates, and calls a PL/Sample function under
+  `multithreaded = on`;
+- `PgSessionResetExtensionModuleClosedState()` deletes the PL/Sample parent
+  context before reinitializing the extension-module bucket, and
+  `test_backend_runtime` proves fake-session isolation and closed-session reset
+  for the new slot;
+- `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` and
+  `MULTITHREADED_RUNTIME_OWNERS.tsv` now record the bucket lifecycle and
+  symbol-level owner mapping.
+
+Validation for the PL/Sample allocation parent slice:
+
+- touched object builds passed for `backend_runtime.o`,
+  `backend_runtime_session.o`, `backend_runtime_teardown.o`, `plsample.o`, and
+  `test_backend_runtime_session.o`;
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 166 fields classified, 166
+  bucket definitions checked, 35 reset definitions checked, and 308 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with 0 new unclassified mutable globals
+  and 0 local runtime boundary violations;
+- after backend clean/generated-header recovery, full `gmake -j8` passed;
+- clean `gmake -C src/test/modules/plsample clean all check` passed;
+- clean `gmake -C src/test/modules/test_backend_runtime clean all check`
+  passed;
+- with repo-local `.perl5` `IPC::Run`, direct backend-runtime TAP passed for
+  `001_threaded_runtime.pl` and `002_threaded_bgworker_crash.pl`, 132 tests
+  total.

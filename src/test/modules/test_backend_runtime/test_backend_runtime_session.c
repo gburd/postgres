@@ -2780,9 +2780,11 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 	MemoryContext session1_plpython_context = NULL;
 	MemoryContext session1_plperl_context = NULL;
 	MemoryContext session1_pltcl_context = NULL;
+	MemoryContext session1_plsample_context = NULL;
 	MemoryContext session2_plpython_context = NULL;
 	MemoryContext session2_plperl_context = NULL;
 	MemoryContext session2_pltcl_context = NULL;
+	MemoryContext session2_plsample_context = NULL;
 	bool		ok = true;
 
 	saved_session = CurrentPgSession;
@@ -2829,6 +2831,7 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && extension_modules->pltcl_proc_hash == NULL;
 		ok = ok && extension_modules->pltcl_current_call_state == NULL;
 		ok = ok && !extension_modules->pltcl_reset_registered;
+		ok = ok && extension_modules->plsample_memory_context == NULL;
 		ok = ok && test_backend_runtime_refint_defaults_ok(extension_modules);
 		ok = ok && test_backend_runtime_small_contrib_defaults_ok(extension_modules);
 		ok = ok && extension_modules->dblink_persistent_connection == NULL;
@@ -2857,6 +2860,10 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		session1_pltcl_context =
 			AllocSetContextCreate(TopMemoryContext,
 								  "test session1 PL/Tcl context",
+								  ALLOCSET_SMALL_SIZES);
+		session1_plsample_context =
+			AllocSetContextCreate(TopMemoryContext,
+								  "test session1 PL/Sample context",
 								  ALLOCSET_SMALL_SIZES);
 		extension_modules->auto_explain_log_min_duration = 10;
 		extension_modules->auto_explain_log_parameter_max_length = 64;
@@ -2887,6 +2894,8 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		extension_modules->pltcl_proc_hash = session1_auto_explain_options;
 		extension_modules->pltcl_current_call_state = &session1_private;
 		extension_modules->pltcl_reset_registered = true;
+		extension_modules->plsample_memory_context =
+			session1_plsample_context;
 		extension_modules->refint_foreign_plans = &session1_refint_foreign;
 		extension_modules->refint_num_foreign_plans = 31;
 		extension_modules->refint_primary_plans = &session1_refint_primary;
@@ -2965,6 +2974,10 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 			AllocSetContextCreate(TopMemoryContext,
 								  "test session2 PL/Tcl context",
 								  ALLOCSET_SMALL_SIZES);
+		session2_plsample_context =
+			AllocSetContextCreate(TopMemoryContext,
+								  "test session2 PL/Sample context",
+								  ALLOCSET_SMALL_SIZES);
 		extension_modules->auto_explain_log_min_duration = 20;
 		extension_modules->auto_explain_log_parameter_max_length = 128;
 		extension_modules->auto_explain_log_analyze = false;
@@ -2994,6 +3007,8 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		extension_modules->pltcl_proc_hash = session2_auto_explain_options;
 		extension_modules->pltcl_current_call_state = &session2_private;
 		extension_modules->pltcl_reset_registered = true;
+		extension_modules->plsample_memory_context =
+			session2_plsample_context;
 		extension_modules->refint_foreign_plans = &session2_refint_foreign;
 		extension_modules->refint_num_foreign_plans = 41;
 		extension_modules->refint_primary_plans = &session2_refint_primary;
@@ -3068,6 +3083,8 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 						  "session1_stash") == 0;
 		ok = ok && extension_modules->pltcl_memory_context ==
 			session1_pltcl_context;
+		ok = ok && extension_modules->plsample_memory_context ==
+			session1_plsample_context;
 		ok = ok && extension_modules->pltcl_hold_interp == &session1_private;
 		ok = ok && extension_modules->pltcl_interp_hash ==
 			&session1_reset_count;
@@ -3152,6 +3169,8 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 						  "session2_stash") == 0;
 		ok = ok && extension_modules->pltcl_memory_context ==
 			session2_pltcl_context;
+		ok = ok && extension_modules->plsample_memory_context ==
+			session2_plsample_context;
 		ok = ok && extension_modules->pltcl_hold_interp == &session2_private;
 		ok = ok && extension_modules->pltcl_interp_hash ==
 			&session2_reset_count;
@@ -3195,6 +3214,7 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		session1_plpython_context = NULL;
 		session1_plperl_context = NULL;
 		session1_pltcl_context = NULL;
+		session1_plsample_context = NULL;
 		ok = ok && session1_reset_count == 1;
 		ok = ok && session2_reset_count == 0;
 		ok = ok && fake_session1.extension_modules.plpgsql_state == NULL;
@@ -3205,6 +3225,8 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && fake_session1.extension_modules.pltcl_start_proc == NULL;
 		ok = ok && fake_session1.extension_modules.pltclu_start_proc == NULL;
 		ok = ok && fake_session1.extension_modules.pltcl_memory_context == NULL;
+		ok = ok && fake_session1.extension_modules.plsample_memory_context ==
+			NULL;
 		ok = ok && fake_session1.extension_modules.pltcl_hold_interp == NULL;
 		ok = ok && fake_session1.extension_modules.pltcl_interp_hash == NULL;
 		ok = ok && fake_session1.extension_modules.pltcl_proc_hash == NULL;
@@ -3243,6 +3265,8 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 						  "session2_stash") == 0;
 		ok = ok && fake_session2.extension_modules.pltcl_memory_context ==
 			session2_pltcl_context;
+		ok = ok && fake_session2.extension_modules.plsample_memory_context ==
+			session2_plsample_context;
 		ok = ok && fake_session2.extension_modules.pltcl_hold_interp ==
 			&session2_private;
 		ok = ok && fake_session2.extension_modules.pltcl_interp_hash ==
@@ -3317,6 +3341,7 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		session2_plpython_context = NULL;
 		session2_plperl_context = NULL;
 		session2_pltcl_context = NULL;
+		session2_plsample_context = NULL;
 		ok = ok && session2_reset_count == 1;
 		ok = ok && fake_session2.extension_modules.plpgsql_state == NULL;
 		ok = ok && fake_session2.extension_modules.plpython_procedure_cache == NULL;
@@ -3326,6 +3351,8 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && fake_session2.extension_modules.pltcl_start_proc == NULL;
 		ok = ok && fake_session2.extension_modules.pltclu_start_proc == NULL;
 		ok = ok && fake_session2.extension_modules.pltcl_memory_context == NULL;
+		ok = ok && fake_session2.extension_modules.plsample_memory_context ==
+			NULL;
 		ok = ok && fake_session2.extension_modules.pltcl_hold_interp == NULL;
 		ok = ok && fake_session2.extension_modules.pltcl_interp_hash == NULL;
 		ok = ok && fake_session2.extension_modules.pltcl_proc_hash == NULL;
@@ -3360,12 +3387,16 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 			MemoryContextDelete(session1_plperl_context);
 		if (session1_pltcl_context != NULL)
 			MemoryContextDelete(session1_pltcl_context);
+		if (session1_plsample_context != NULL)
+			MemoryContextDelete(session1_plsample_context);
 		if (session2_plpython_context != NULL)
 			MemoryContextDelete(session2_plpython_context);
 		if (session2_plperl_context != NULL)
 			MemoryContextDelete(session2_plperl_context);
 		if (session2_pltcl_context != NULL)
 			MemoryContextDelete(session2_pltcl_context);
+		if (session2_plsample_context != NULL)
+			MemoryContextDelete(session2_plsample_context);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();

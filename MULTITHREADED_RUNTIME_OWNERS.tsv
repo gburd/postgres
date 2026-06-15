@@ -286,6 +286,7 @@ pltcl_hold_interp	PgSession	extension_modules	pltcl_hold_interp	PgCurrentPLTclHo
 pltcl_interp_htab	PgSession	extension_modules	pltcl_interp_hash	PgCurrentPLTclInterpHashRef	src/include/utils/backend_runtime.h	PL/Tcl session interpreter hash
 pltcl_proc_htab	PgSession	extension_modules	pltcl_proc_hash	PgCurrentPLTclProcHashRef	src/include/utils/backend_runtime.h	PL/Tcl procedure descriptor hash
 pltcl_current_call_state	PgSession	extension_modules	pltcl_current_call_state	PgCurrentPLTclCurrentCallStateRef	src/include/utils/backend_runtime.h	PL/Tcl current call-state pointer
+PL/Sample session context	PgSession	extension_modules	plsample_memory_context	PgCurrentPLsampleMemoryContextRef	src/include/utils/backend_runtime.h	PL/Sample session-owned parent context for function and procedure call contexts
 FPlans	PgSession	extension_modules	refint_foreign_plans	PgCurrentRefintForeignPlansRef	src/include/utils/backend_runtime.h	refint cached foreign-key SPI plan array
 nFPlans	PgSession	extension_modules	refint_num_foreign_plans	PgCurrentRefintNumForeignPlansRef	src/include/utils/backend_runtime.h	refint cached foreign-key SPI plan count
 PPlans	PgSession	extension_modules	refint_primary_plans	PgCurrentRefintPrimaryPlansRef	src/include/utils/backend_runtime.h	refint cached primary-key SPI plan array

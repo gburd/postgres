@@ -25,6 +25,10 @@ sub install_contrib_extensions
 			$gmake, '-C', "$repo_root/contrib/$dir",
 			"DESTDIR=$repo_root/tmp_install", 'install');
 	}
+
+	system_or_bail(
+		$gmake, '-C', "$repo_root/src/test/modules/plsample",
+		"DESTDIR=$repo_root/tmp_install", 'install');
 }
 
 sub start_psql_script
@@ -355,6 +359,18 @@ $$;
 });
 is($node->safe_psql('postgres', 'SELECT threaded_plpgsql_add(20, 22);'),
 	'42', 'PL/pgSQL runs in threaded runtime');
+
+$node->safe_psql(
+	'postgres',
+	q{
+CREATE EXTENSION plsample;
+CREATE FUNCTION threaded_plsample_echo(a text)
+RETURNS text
+AS $$threaded plsample ok$$ LANGUAGE plsample;
+});
+is($node->safe_psql('postgres',
+		"SELECT threaded_plsample_echo('argument');"),
+	'threaded plsample ok', 'PL/Sample runs in threaded runtime');
 
 $node->safe_psql(
 	'postgres',

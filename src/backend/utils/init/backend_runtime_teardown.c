@@ -767,6 +767,8 @@ PgSessionResetExtensionModuleClosedState(PgSession *session)
 		session->extension_modules.plperl_memory_context);
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(
 		session->extension_modules.pltcl_memory_context);
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(
+		session->extension_modules.plsample_memory_context);
 	PgSessionInitializeExtensionModuleState(&session->extension_modules);
 }
 

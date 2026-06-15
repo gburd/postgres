@@ -1679,6 +1679,7 @@ typedef struct PgSessionExtensionModuleState
 	void	   *pltcl_proc_hash;
 	void	   *pltcl_current_call_state;
 	bool		pltcl_reset_registered;
+	MemoryContext plsample_memory_context;
 	void	   *refint_foreign_plans;
 	int			refint_num_foreign_plans;
 	void	   *refint_primary_plans;
@@ -2996,6 +2997,7 @@ extern void **PgCurrentPLTclInterpHashRef(void);
 extern void **PgCurrentPLTclProcHashRef(void);
 extern void **PgCurrentPLTclCurrentCallStateRef(void);
 extern bool *PgCurrentPLTclResetRegisteredRef(void);
+extern MemoryContext *PgCurrentPLsampleMemoryContextRef(void);
 extern void **PgCurrentRefintForeignPlansRef(void);
 extern int *PgCurrentRefintNumForeignPlansRef(void);
 extern void **PgCurrentRefintPrimaryPlansRef(void);
