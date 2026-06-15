@@ -874,13 +874,14 @@ Validation:
 
 Exit gate:
 
-Gate E2 is part of Phase 12 completion. Before leaving Phase 12 and starting
-scheduler-aware wait work, close the thread-per-session lifecycle and state
-ownership gaps identified in
+Gate E2-Core is part of Phase 12 completion. Before leaving Phase 12 and
+starting scheduler-aware wait work, close the core thread-per-session
+lifecycle and state ownership gaps identified in
 `MULTITHREADED_THREADING_REVIEW.md`. This gate exists because Phase 13 and
-Phase 14 will make backend ownership bugs harder to isolate.
+Phase 14 will make backend ownership bugs harder to isolate. It is deliberately
+not the bundled-extension completeness gate.
 
-Gate E2 requires:
+Gate E2-Core requires:
 
 - standing lifecycle-acceleration rule: when a remaining Phase 12/Gate E2
   task feels slow because lifecycle setup, adoption, reset, teardown, or
@@ -927,13 +928,17 @@ Gate E2 requires:
   contract with no unsynchronized use-after-free-prone pointer handoff;
 - threaded GUC initialization uses a systematic per-session adoption/rebind
   model rather than a growing hard-coded whitelist of options reached by the
-  current smokes. The model must cover postmaster/runtime defaults,
-  database/role settings, startup options, direct-pointer variables, assign
-  hooks, reset/default semantics, and extension/custom GUC behavior expected in
-  thread-per-session mode. Built-in direct-variable GUC rebinds are generated
-  from `threaded_accessor` metadata in `guc_parameters.dat`; future built-in
-  GUC migrations should extend that metadata path, not add a hand-maintained
-  runtime table;
+  current smokes. For Gate E2-Core, the model must cover core PostgreSQL
+  behavior: postmaster/runtime defaults, database/role settings, startup
+  options, direct-pointer variables, assign hooks reached by core built-ins,
+  and reset/default semantics for built-in GUCs. Built-in direct-variable GUC
+  rebinds are generated from `threaded_accessor` metadata in
+  `guc_parameters.dat`; future built-in GUC migrations should extend that
+  metadata path, not add a hand-maintained runtime table. Full contrib/custom
+  extension GUC semantics are deferred to Phase 16 / Gate E2-Extensions,
+  except for the minimal thread-compatible test module and PL/pgSQL/runtime
+  metadata paths needed to prove safe loading, safe rejection, and core
+  teardown;
 - the broad threaded startup serialization gate is removed or narrowed to a
   precisely documented critical section with an explicit removal plan. The
   remaining gate, if any, must not serialize normal post-bootstrap SQL
@@ -1168,6 +1173,19 @@ Gate E2 requires:
 - process-mode behavior remains the control group, with at least core
   regression coverage and targeted tests for subsystems touched during Phase
   12 cleanup.
+
+Explicitly out of scope for Gate E2-Core:
+
+- contrib-wide threaded-mode support;
+- bundled procedural languages beyond PL/pgSQL;
+- proving every custom/extension GUC hook path is concurrent in threaded mode;
+- changing modules only because a raw lifetime scan finds extension-local
+  state without teardown, retained-root, or core-threaded-runtime evidence.
+
+Those items move to Phase 16 / Gate E2-Extensions. Until then, threaded mode
+must continue to reject unsafe process-only extensions and background workers,
+while PL/pgSQL and the `test_backend_runtime_threaded` module remain the core
+proof points for safe in-tree module loading and teardown.
 
 Gate E2 maintainability progress: the backend-runtime test extension has been
 split by object family while preserving the same extension, SQL regression,
@@ -2372,15 +2390,20 @@ Validation:
 - no executor state corruption across yields;
 - performance comparison against thread-per-session mode.
 
-## Phase 16: Contrib Extension Completion And Hardening
+## Phase 16: Bundled Extension Completion And Hardening
 
-Goal: make threaded mode debuggable, credible, and complete for in-tree
-extensions, including contrib.
+Goal: close Gate E2-Extensions after the core threaded runtime is working.
+Threaded mode should become credible and complete for bundled in-tree modules,
+procedural languages, and contrib extensions without delaying Phase 13
+scheduler work.
 
 Likely work:
 
 - migrate every contrib extension to explicit backend model metadata;
 - make every contrib extension support thread-per-session mode by default;
+- complete bundled procedural-language support beyond PL/pgSQL, or explicitly
+  mark any temporary exception as process-only with a release-blocking note;
+- finish custom/extension GUC ownership and hook semantics for threaded mode;
 - add session/runtime APIs needed by contrib modules that currently rely on
   process-global mutable state;
 - run contrib regression tests in process mode and threaded mode;
@@ -2396,10 +2419,11 @@ Likely work:
 
 Exit gate:
 
-- Gate G is part of Phase 16 completion and may need to run repeatedly during
-  hardening. Before considering Phase 16 complete, run the Gate G checks from
-  the Test Strategy section: feasible sanitizers, repeated full suites,
-  threaded contrib regression for every contrib extension, stress tests,
+- Gate E2-Extensions / Gate G is part of Phase 16 completion and may need to
+  run repeatedly during hardening. Before considering Phase 16 complete, run
+  the Gate G checks from the Test Strategy section: feasible sanitizers,
+  repeated full suites, threaded contrib regression for every contrib
+  extension, bundled procedural-language checks, custom/extension GUC stress,
   crash/FATAL behavior tests, and performance baselines.
 
 ## PL/pgSQL And In-Tree Modules Plan
@@ -2499,6 +2523,23 @@ Gate E, after Phase 11:
   and crash-escalation paths remain documented process-lifetime exceptions;
 - run full process-mode tests and the threaded-mode worker subset.
 
+Gate E2-Core, after Phase 12:
+
+- core thread-per-session lifecycle and state ownership are coherent enough to
+  start scheduler-aware wait work;
+- run `gmake check-runtime-lifecycles` and `gmake check-global-lifetimes`;
+- run a full build, focused process-mode backend-runtime regression, direct
+  threaded runtime TAP, PL/pgSQL coverage, and focused core regression smokes
+  for GUCs, teardown, cancellation, termination, reconnect, and worker
+  handoff;
+- verify the threaded TAP log guard has no crash/corruption signatures and no
+  retained `TopMemoryContext` accounting warnings;
+- verify process-only extensions/background workers are still rejected in
+  threaded mode and PL/pgSQL still works;
+- do not require contrib-wide threaded regression, bundled languages beyond
+  PL/pgSQL, or the full custom/extension GUC matrix here. Those are
+  Gate E2-Extensions / Gate G work in Phase 16.
+
 Gate F, after Phase 14:
 
 - scheduler-aware waits and pooled carriers exist;
@@ -2510,7 +2551,8 @@ Gate G, during and before completing Phase 16:
 
 - hardening and release-readiness gate;
 - run sanitizers where feasible, repeated full suites, threaded contrib
-  regression tests for every contrib extension, stress tests for
+  regression tests for every contrib extension, bundled procedural-language
+  checks, custom/extension GUC stress, stress tests for
   interrupts/waits/cancellation/teardown, crash and `FATAL` behavior tests, and
   performance baselines.
 

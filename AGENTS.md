@@ -133,14 +133,24 @@ state group, then rerun the threaded runtime TAP.
 - [refs/pgconf-2025-multithreading-transcript.md](refs/pgconf-2025-multithreading-transcript.md)
   is the local transcript of the PgConf.dev 2025 talk that motivates this work.
 
-## Active Phase 12 Gate E2 Rule
+## Active Phase 12 Gate E2-Core Rule
 
-- Default ordering for the next substantial Gate E2 work: lifecycle
+- Default ordering for the next substantial Gate E2-Core work: lifecycle
   ergonomics/refactor first, then the remaining teardown, PMChild/thread
   synchronization, systematic GUC adoption, startup-serialization narrowing,
   and large state-migration batches. Treat lifecycle friction as implementation
   work, not documentation debt.
-- Before the next repetitive Phase 12/Gate E2 lifecycle batch, do a short
+- Gate E2-Core is the Phase 12 exit gate for the core threaded runtime. It is
+  not the bundled-extension completion gate. Do not continue sweeping contrib
+  or hard extensions unless a teardown probe, raw lifetime scan, retained
+  `TopMemoryContext` warning, or threaded TAP failure shows they directly block
+  core backend/session/connection/execution cleanup.
+- Phase 16 / Gate E2-Extensions owns contrib-wide threaded support, bundled
+  procedural languages beyond PL/pgSQL, and the full custom/extension GUC
+  matrix. PL/pgSQL and `test_backend_runtime_threaded` remain in Phase 12 as
+  the proof points for safe in-tree module loading, GUC prefix reservation,
+  and safe rejection of process-only modules.
+- Before the next repetitive Phase 12/Gate E2-Core lifecycle batch, do a short
   lifecycle-ergonomics preflight. If the batch would add two or more similar
   init/adopt/reset/destroy helpers, first add or extend a checked lifecycle
   primitive: a `PG_RUNTIME_*` bucket action, `PG_RUNTIME_DEFINE_*` helper,
@@ -162,7 +172,7 @@ state group, then rerun the threaded runtime TAP.
 - Keep exceptional ownership, ordering, and subsystem cleanup handwritten and
   owner-adjacent. Use macros/tables only for repeated lifecycle mechanics so
   large batches move faster without weakening the manifest gate.
-- Apply that rule before each remaining Gate E2 blocker, not only before raw
+- Apply that rule before each remaining Gate E2-Core blocker, not only before raw
   global migration. If teardown, PMChild synchronization, startup-gate cleanup,
   or owner-map hardening would require repeated bookkeeping, first land the
   small checked macro/table/checker primitive and then do the larger slice
@@ -644,7 +654,7 @@ Important current files:
   is a named `PG_RUNTIME_*` action or `PG_RUNTIME_DEFINE_*` helper that lets
   future batches update the manifest and bucket `.def` row instead of copying
   another helper body.
-- Do this lifecycle-ergonomics preflight before any further large Gate E2
+- Do this lifecycle-ergonomics preflight before any further large Gate E2-Core
   teardown or state-migration batch, including PMChild/thread-backend cleanup
   work if it starts adding repeated reset/destroy glue. The expected outcome is
   either a short state-log note naming the existing checked mechanism being
@@ -656,8 +666,10 @@ Important current files:
   `RebindSessionGUCVariablePointers()` with handwritten `find_option()` blocks.
   `ValidateSessionGUCVariableRebinds()` and
   `test_session_guc_rebind_table_matches_registry()` verify that the table
-  matches the live GUC registry. Keep custom/extension GUC semantics covered
-  by tests when changing this path.
+  matches the live GUC registry. In Phase 12, keep custom/extension GUC
+  testing to the minimal thread-compatible test module and PL/pgSQL/runtime
+  metadata paths needed for Gate E2-Core; broader custom/extension GUC
+  semantics are Phase 16 / Gate E2-Extensions work.
 - Do not attempt thread launch until the thread-safety floor is in place:
   backend-local globals must not be shared plain process globals, backend exit
   must not terminate the whole runtime, and timeout/interrupt delivery must be
@@ -1481,10 +1493,13 @@ Important current files:
   Do not move `PgSessionAdoptEarlyGUCState()` later in
   `PgSessionAdoptEarlyState()`.
 - Threaded GUC setup, mutation, and display currently use a temporary
-  process-wide GUC critical section in `guc.c`. Treat it as a Gate E2
-  correctness bridge while copied GUC metadata and check/assign/show hooks
-  still have process-era assumptions. Narrowing it requires focused threaded
-  smokes for concurrent GUC replay, `SET`, `SHOW`, and custom extension GUCs.
+  process-wide GUC critical section in `guc.c`. For Gate E2-Core, narrow or
+  justify it for core PostgreSQL behavior: postmaster/runtime defaults,
+  database/role settings, startup options, direct-pointer built-in variables,
+  built-in assign hooks, and reset/default semantics. Full custom/extension GUC
+  hook coverage is Phase 16 / Gate E2-Extensions work, except for the minimal
+  thread-compatible test module and PL/pgSQL/runtime metadata paths needed to
+  prove safe loading, safe rejection, and core teardown.
   The reentrancy depth for this bridge lives in `PgCarrier`, not standalone
   TLS; tests that swap fake carriers and touch `PgCurrentThreadedGUCMutexDepthRef()`
   must preserve and restore `CurrentPgCarrier`.
@@ -1495,8 +1510,8 @@ Important current files:
 - Runtime-global GUC metadata must not allocate from a session
   `GUCMemoryContext`. `reserved_class_prefix` is process/runtime metadata used
   by extension module initialization such as PL/pgSQL's GUC prefix
-  reservation, so `MarkGUCPrefixReserved()` uses its own `TopMemoryContext`
-  child and the temporary threaded GUC lock.
+  reservation, so `MarkGUCPrefixReserved()` uses the runtime-owned extension
+  module memory context and the temporary threaded GUC lock.
 - Portal manager session state now lives in `PgSessionPortalManagerState`.
   `portalmem.c` keeps `TopPortalContext`, `PortalHashTable`, and the unnamed
   portal counter as local macros over runtime accessors. The lifecycle rule is

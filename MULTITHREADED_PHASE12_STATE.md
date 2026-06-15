@@ -16488,6 +16488,22 @@ Validation for the local-global tail audit:
 - `/usr/bin/perl src/tools/global_lifetime/scan_global_lifetimes.pl
   --show-classified --report /tmp/global_lifetime_report.tsv` completed and
   showed the local-global tail described above;
+
+## Gate E2-Core Scope Split
+
+Phase 12 is now explicitly scoped to Gate E2-Core: close the core
+thread-per-session lifecycle before scheduler-aware wait work. That includes
+backend/session/connection/execution teardown, PMChild/thread synchronization,
+carrier `TopMemoryContext` reclamation/accounting, core GUC adoption/rebind
+semantics, startup-gate removal, lifecycle/global-lifetime checks, PL/pgSQL,
+and safe rejection of process-only extensions/background workers.
+
+Contrib-wide threaded support, bundled procedural languages beyond PL/pgSQL,
+and the full custom/extension GUC matrix move to Phase 16 / Gate
+E2-Extensions. Further Phase 12 work should not continue extension sweeping
+unless a teardown probe, raw lifetime scan, retained `TopMemoryContext`
+warning, or threaded TAP failure shows the module directly blocks core
+backend/session/connection/execution cleanup.
 - `gmake check-global-lifetimes` had already passed in the PMChild slice with
   zero new unclassified mutable globals and zero local-runtime-boundary
   violations.
