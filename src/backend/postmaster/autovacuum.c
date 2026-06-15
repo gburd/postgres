@@ -493,9 +493,10 @@ AutoVacLauncherMain(const void *startup_data, size_t startup_data_len)
 	 * that we can reset the context during error recovery and thereby avoid
 	 * possible memory leaks.
 	 */
-	AutovacMemCxt = AllocSetContextCreate(TopMemoryContext,
-										  "Autovacuum Launcher",
-										  ALLOCSET_DEFAULT_SIZES);
+	AutovacMemCxt =
+		PgRuntimeGetOwnedMemoryContextWithSizes(&AutovacMemCxt,
+												"Autovacuum Launcher",
+												ALLOCSET_DEFAULT_SIZES);
 	MemoryContextSwitchTo(AutovacMemCxt);
 	dlist_init(&DatabaseList);
 
@@ -2020,9 +2021,10 @@ do_autovacuum(void)
 	 * switch to other contexts.  We need this one to keep the list of
 	 * relations to vacuum/analyze across transactions.
 	 */
-	AutovacMemCxt = AllocSetContextCreate(TopMemoryContext,
-										  "Autovacuum worker",
-										  ALLOCSET_DEFAULT_SIZES);
+	AutovacMemCxt =
+		PgRuntimeGetOwnedMemoryContextWithSizes(&AutovacMemCxt,
+												"Autovacuum worker",
+												ALLOCSET_DEFAULT_SIZES);
 	MemoryContextSwitchTo(AutovacMemCxt);
 
 	/* Start a transaction so our commands have one to play into. */

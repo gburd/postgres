@@ -136,9 +136,10 @@ BackgroundWriterMain(const void *startup_data, size_t startup_data_len)
 	 * possible memory leaks.  Formerly this code just ran in
 	 * TopMemoryContext, but resetting that would be a really bad idea.
 	 */
-	bgwriter_context = AllocSetContextCreate(TopMemoryContext,
-											 "Background Writer",
-											 ALLOCSET_DEFAULT_SIZES);
+	bgwriter_context =
+		PgRuntimeGetOwnedMemoryContextWithSizes(&bgwriter_context,
+												"Background Writer",
+												ALLOCSET_DEFAULT_SIZES);
 	MemoryContextSwitchTo(bgwriter_context);
 
 	WritebackContextInit(&wb_context, &bgwriter_flush_after);

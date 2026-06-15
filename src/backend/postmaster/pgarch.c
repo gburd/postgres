@@ -296,9 +296,10 @@ PgArchiverMain(const void *startup_data, size_t startup_data_len)
 												 ready_file_comparator, NULL);
 
 	/* Initialize our memory context. */
-	archive_context = AllocSetContextCreate(TopMemoryContext,
-											"archiver",
-											ALLOCSET_DEFAULT_SIZES);
+	archive_context =
+		PgRuntimeGetOwnedMemoryContextWithSizes(&archive_context,
+												"archiver",
+												ALLOCSET_DEFAULT_SIZES);
 
 	/* Load the archive_library. */
 	LoadArchiveLibrary();

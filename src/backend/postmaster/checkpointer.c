@@ -273,9 +273,10 @@ CheckpointerMain(const void *startup_data, size_t startup_data_len)
 	 * possible memory leaks.  Formerly this code just ran in
 	 * TopMemoryContext, but resetting that would be a really bad idea.
 	 */
-	checkpointer_context = AllocSetContextCreate(TopMemoryContext,
-												 "Checkpointer",
-												 ALLOCSET_DEFAULT_SIZES);
+	checkpointer_context =
+		PgRuntimeGetOwnedMemoryContextWithSizes(&checkpointer_context,
+												"Checkpointer",
+												ALLOCSET_DEFAULT_SIZES);
 	MemoryContextSwitchTo(checkpointer_context);
 
 	/*

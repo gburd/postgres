@@ -1923,6 +1923,14 @@ use it, and expanded the owner map for the central session GUC registry,
 LISTEN/NOTIFY signal workspace context, legacy session compatibility context,
 and dynamic-library replay context. This reduces handwritten allocation
 branches before the remaining Gate E2 teardown and migration work.
+Follow-up server-owned worker context hardening moved archiver, background
+writer, WAL writer, checkpointer, WAL summarizer, and autovacuum work-context
+creation through `PgBackend.maintenance_worker`/`PgBackend.autovacuum` slots
+using `PgRuntimeGetOwnedMemoryContextWithSizes()`. Their error-recovery reset
+semantics remain unchanged, while closed-backend reset now owns those context
+families through checked worker lifecycle rows and the owner map. The archiver
+library-name string intentionally remains outside `archive_context` because
+the archiver resets that work context during its main loop.
 Follow-up session xact-callback hardening moved transaction and
 subtransaction callback list-node allocation under a session-owned
 `XactCallbackContext`. The registration/unregistration APIs and callback

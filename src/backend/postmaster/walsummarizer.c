@@ -271,9 +271,10 @@ WalSummarizerMain(const void *startup_data, size_t startup_data_len)
 	LWLockRelease(WALSummarizerLock);
 
 	/* Create and switch to a memory context that we can reset on error. */
-	walsummarizer_context = AllocSetContextCreate(TopMemoryContext,
-												  "Wal Summarizer",
-												  ALLOCSET_DEFAULT_SIZES);
+	walsummarizer_context =
+		PgRuntimeGetOwnedMemoryContextWithSizes(&walsummarizer_context,
+												"Wal Summarizer",
+												ALLOCSET_DEFAULT_SIZES);
 	MemoryContextSwitchTo(walsummarizer_context);
 
 	/*

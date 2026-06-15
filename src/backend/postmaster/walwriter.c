@@ -130,9 +130,10 @@ WalWriterMain(const void *startup_data, size_t startup_data_len)
 	 * possible memory leaks.  Formerly this code just ran in
 	 * TopMemoryContext, but resetting that would be a really bad idea.
 	 */
-	walwriter_context = AllocSetContextCreate(TopMemoryContext,
-											  "Wal Writer",
-											  ALLOCSET_DEFAULT_SIZES);
+	walwriter_context =
+		PgRuntimeGetOwnedMemoryContextWithSizes(&walwriter_context,
+												"Wal Writer",
+												ALLOCSET_DEFAULT_SIZES);
 	MemoryContextSwitchTo(walwriter_context);
 
 	/*

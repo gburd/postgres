@@ -15157,3 +15157,81 @@ Validation for the runtime owned-context helper and GUC owner-index slice:
   after-trigger context allocation, event-trigger query context allocation,
   and LISTEN/NOTIFY signal workspace allocation;
 - direct core `pg_regress` for `guc` passed.
+
+## Server-Owned Worker Context Allocation
+
+Lifecycle/preflight note:
+
+- target: close direct `TopMemoryContext` allocations for server-owned worker
+  work contexts that already live in `PgBackend` runtime buckets;
+- touched root/bucket: `PgBackend.maintenance_worker`, specifically
+  `archive_context`, `bgwriter_context`, `walwriter_context`,
+  `checkpointer_context`, and `walsummarizer_context`, plus
+  `PgBackend.autovacuum.autovac_mem_cxt`;
+- owner source files: `src/backend/postmaster/pgarch.c`,
+  `src/backend/postmaster/bgwriter.c`,
+  `src/backend/postmaster/walwriter.c`,
+  `src/backend/postmaster/checkpointer.c`,
+  `src/backend/postmaster/walsummarizer.c`,
+  `src/backend/postmaster/autovacuum.c`,
+  `src/backend/utils/init/backend_runtime_teardown.c`,
+  `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, `MULTITHREADED_PLAN.md`, and this state
+  log;
+- legacy symbols/accessors: `archive_context`, `bgwriter_context`,
+  `walwriter_context`, `checkpointer_context`, `walsummarizer_context`,
+  `AutovacMemCxt`, `PgCurrentMaintenanceWorkerState()`, and
+  `PgCurrentAutovacuumState()`;
+- repeated lifecycle operations expected in this slice: six
+  create-on-demand context setups with default allocation sizes and existing
+  checked close-time deletion through `PG_RUNTIME_DELETE_MEMORY_CONTEXT`.
+  The previous slice's `PgRuntimeGetOwnedMemoryContextWithSizes()` helper
+  covers the allocation side, so no new lifecycle primitive is needed;
+- checked primitive decision: reuse
+  `PgRuntimeGetOwnedMemoryContextWithSizes()` for all worker context creation
+  sites and the existing checked memory-context delete actions in the backend
+  reset helper. Keep `loaded_archive_library` allocated outside
+  `archive_context` because the archiver resets `archive_context` during its
+  loop and the library-name string must survive those resets;
+- validation impact: run touched object builds for the six worker source
+  files plus teardown/test objects, then `git diff --check`,
+  `gmake check-runtime-lifecycles`, `gmake check-global-lifetimes`, full
+  `gmake -j8`, backend-runtime regression/TAP, and focused live smokes that
+  start enough server infrastructure to cover at least autovacuum/checkpointer
+  and normal auxiliary-worker startup paths.
+
+Slice result:
+
+- `archive_context`, `bgwriter_context`, `walwriter_context`,
+  `checkpointer_context`, `walsummarizer_context`, and both autovacuum
+  `AutovacMemCxt` creation sites now use
+  `PgRuntimeGetOwnedMemoryContextWithSizes(..., ALLOCSET_DEFAULT_SIZES)`
+  instead of directly creating `TopMemoryContext` children;
+- the owner map now records all six worker contexts under
+  `PgBackend.maintenance_worker` or `PgBackend.autovacuum`;
+- `loaded_archive_library` intentionally remains outside `archive_context`
+  because the archiver resets `archive_context` during its loop and the
+  library-name string must survive those resets.
+
+Validation for the server-owned worker context allocation slice:
+
+- touched-object builds passed for `pgarch.o`, `bgwriter.o`, `walwriter.o`,
+  `checkpointer.o`, `walsummarizer.o`, `autovacuum.o`,
+  `backend_runtime_teardown.o`, and `test_backend_runtime_backend.o`;
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 166 fields classified, 166
+  bucket definitions checked, 35 reset definitions checked, and 284 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- full incremental `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- after patching the recreated macOS temp-install install names, direct
+  backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total;
+- a focused live worker-context smoke passed with `autovacuum = on`,
+  `archive_mode = on`, `archive_command = 'true'`, and `summarize_wal = on`:
+  `pg_stat_activity` showed the archiver, autovacuum launcher, background
+  writer, checkpointer, and WAL writer; `pg_get_wal_summarizer_state()`
+  reported an active summarizer PID; and `VACUUM ANALYZE` plus `CHECKPOINT`
+  completed against a temp table.
