@@ -2963,6 +2963,8 @@ PgBackendAdoptEarlyUtilityState(PgBackend *backend)
 	int			i;
 
 	Assert(backend != NULL);
+	Assert(early_backend_utility.async_global_channel_table == NULL);
+	Assert(early_backend_utility.async_global_channel_dsa == NULL);
 	Assert(early_backend_utility.extension_sibling_list == NULL);
 	Assert(early_backend_utility.injection_point_cache == NULL);
 	Assert(early_backend_utility.utility_cache_context == NULL);

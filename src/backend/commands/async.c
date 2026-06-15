@@ -408,8 +408,8 @@ typedef struct GlobalChannelEntry
 	int			allocatedListeners; /* Allocated size of array */
 } GlobalChannelEntry;
 
-static PG_GLOBAL_RUNTIME dshash_table *globalChannelTable = NULL;
-static PG_GLOBAL_RUNTIME dsa_area *globalChannelDSA = NULL;
+#define globalChannelTable (*PgCurrentAsyncGlobalChannelTableRef())
+#define globalChannelDSA (*PgCurrentAsyncGlobalChannelDSARef())
 
 /*
  * localChannelTable caches the channel names this backend is listening on

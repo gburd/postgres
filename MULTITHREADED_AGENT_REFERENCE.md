@@ -620,10 +620,11 @@ Important current files:
   ```
 
   It runs `src/test/regress/parallel_schedule` with the same threaded temp
-  config. This target is expected to fail until the threaded full-regression
-  blockers in `MULTITHREADED_PHASE12_STATE.md` are retired. Its purpose is to
-  keep the failure count and first failing surfaces visible without requiring
-  callers to pass `TEMP_CONFIG` by hand.
+  config. Current baseline: `gmake check-threaded MAX_CONNECTIONS=1` completes
+  all 245 core regression tests in threaded mode. The target uses alternate
+  expected files for intentional threaded-mode differences where regular
+  parallel workers are not launched and where `plpgsql` has already reserved
+  its GUC prefix in the shared runtime before the later `guc` test.
 
   The interim 150-pass threaded visibility target is:
 
@@ -633,12 +634,8 @@ Important current files:
 
   It runs `src/test/regress/threaded_150_schedule` with the same threaded temp
   config. The schedule is intentionally narrower than full `check-threaded`:
-  it keeps the validated full-regression prefix, skips the currently crashing
-  members of the next group, and adds independent later tests. At the time
-  this note was added it completed 153 tests with 150 passes and three known
-  failures: `transactions`, `object_address`, and `tidscan`. Keep `matview`
-  in the full `check-threaded` target for now; audit reruns showed it can fail
-  on the same threaded read-node text surface as other broader-suite blockers.
+  it is retained as a quick historical visibility target, but the authoritative
+  core-regression threaded baseline is now the full `check-threaded` target.
 
   The interim 200-pass threaded visibility target is:
 
@@ -649,10 +646,8 @@ Important current files:
   It runs `src/test/regress/threaded_200_schedule` with the same threaded temp
   config. The schedule is serialized: one test per schedule line. This keeps
   threaded backend startup/teardown and later SQL feature surfaces visible
-  while avoiding the current parallel pg_regress read-node/GUC crash frontiers.
-  Current status: it completes 208 tests with 207 passes. The only known
-  failure is `tidscan`, where the expected tuple `SIReadLock` is not visible in
-  `pg_locks` for the current backend.
+  with a shorter run than the full target, but the authoritative
+  core-regression threaded baseline is now the full `check-threaded` target.
 
   If the same recursive target needs to be rerun, patch the build-tree binaries
   that are copied into each recreated temp install before rerunning. This has

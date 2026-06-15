@@ -17615,3 +17615,57 @@ Lifecycle/preflight note:
 - validation impact: threaded sessions should report non-empty `config_file`,
   `hba_file`, and `ident_file`; threaded `sysviews` should survive
   `select count(*) >= 0 from pg_file_settings`.
+
+## Threaded Async Stale-Queue Listener Startup
+
+Lifecycle/preflight note:
+
+- target: make a threaded backend survive the first `LISTEN` after an earlier
+  session has queued notifications, preserving async listener registration,
+  stale-queue advancement, and later session teardown.
+- touched roots/buckets: existing `PgSession.async` local channel/listener
+  state, `PgBackend.utility` async exit-registration flag, `PgExecution.async`
+  signal workspace, and shared async queue/listener tables.
+- owner source files: `src/backend/commands/async.c`,
+  `src/backend/utils/init/backend_runtime_teardown.c`,
+  `src/include/commands/async.h`, `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`, and
+  this Phase 12 state note as needed.
+- legacy symbols/accessors: `localChannelTable`, `amRegisteredListener`,
+  `unlistenExitRegistered`, `Async_UnlistenOnExit()`,
+  `CleanupListenersOnExit()`, `asyncQueueUnregister()`,
+  `BecomeRegisteredListener()`, and `asyncQueueReadAllNotifications()`.
+- repeated lifecycle operations: listener unregister, local-channel-table
+  destruction, async exit-callback state reset, and execution signal-workspace
+  reset.
+- checked primitive decision: reuse existing async bucket rows and reset
+  helpers unless the fix requires repeating listener cleanup outside async.c;
+  in that case add an owner-adjacent async cleanup helper instead of duplicating
+  shared-listener teardown in backend-runtime reset code.
+- validation impact: the reduced threaded regression sequence
+  `test_setup async guc` should pass instead of terminating the postmaster
+  during `LISTEN foo_event`; full serial threaded `make check` should advance
+  past `guc` without a connection-refused cascade.
+
+## Threaded Backend Stats PID Lookup
+
+Lifecycle/preflight note:
+
+- target: make SQL-visible backend IDs returned by `pg_backend_pid()` resolve
+  to the active backend's `PGPROC` for backend WAL/IO stats fetch and reset
+  functions in threaded mode.
+- touched roots/buckets: `PgBackend.id`, `PGPROC.backendId`, backend-status
+  slots keyed by `ProcNumber`, and backend pgstat entries keyed by
+  `ProcNumber`.
+- owner source files: `src/backend/utils/activity/pgstat_backend.c` and this
+  Phase 12 state note.
+- legacy symbols/accessors: `pgstat_fetch_stat_backend_by_pid()`,
+  `pg_stat_reset_backend_stats()`, `BackendPidGetProc()`,
+  `BackendSignalPidGetProc()`, `MyProcNumber`, and `pg_backend_pid()`.
+- repeated lifecycle operations: none; this is lookup consistency across
+  existing backend-status and pgstat lifetimes.
+- checked primitive decision: reuse the existing threaded-aware
+  `BackendSignalPidGetProc()` resolver rather than adding another mapping
+  table or duplicating ProcArray scans.
+- validation impact: focused threaded `stats` should set backend WAL/IO `\gset`
+  variables instead of returning no row, and reset its own backend IO stats;
+  full serial threaded `make check` should lose the `stats` failure.

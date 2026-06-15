@@ -103,7 +103,7 @@ pgstat_fetch_stat_backend_by_pid(int pid, BackendType *bktype)
 	ProcNumber	procNumber;
 	PgStat_Backend *backend_stats;
 
-	proc = BackendPidGetProc(pid);
+	proc = BackendSignalPidGetProc(pid);
 	if (bktype)
 		*bktype = B_INVALID;
 

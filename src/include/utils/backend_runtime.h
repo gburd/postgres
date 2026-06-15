@@ -618,6 +618,8 @@ typedef struct PgBackendUtilityState
 {
 	volatile sig_atomic_t notify_interrupt_pending;
 	bool		async_unlisten_exit_registered;
+	dshash_table *async_global_channel_table;
+	struct dsa_area *async_global_channel_dsa;
 	struct ExtensionSiblingCache *extension_sibling_list;
 	HTAB	   *injection_point_cache;
 	MemoryContext utility_cache_context;
@@ -2563,6 +2565,8 @@ extern int *PgCurrentSeqScanLevels(void);
 extern int *PgCurrentNumSeqScansRef(void);
 extern volatile sig_atomic_t *PgCurrentNotifyInterruptPendingRef(void);
 extern bool *PgCurrentAsyncUnlistenExitRegisteredRef(void);
+extern dshash_table **PgCurrentAsyncGlobalChannelTableRef(void);
+extern struct dsa_area **PgCurrentAsyncGlobalChannelDSARef(void);
 extern struct ExtensionSiblingCache **PgCurrentExtensionSiblingListRef(void);
 extern HTAB **PgCurrentInjectionPointCacheRef(void);
 extern MemoryContext PgCurrentUtilityCacheMemoryContext(void);

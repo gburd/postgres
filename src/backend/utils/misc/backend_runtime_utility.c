@@ -56,6 +56,18 @@ PgCurrentAsyncUnlistenExitRegisteredRef(void)
 	return &PgCurrentBackendUtilityState()->async_unlisten_exit_registered;
 }
 
+dshash_table **
+PgCurrentAsyncGlobalChannelTableRef(void)
+{
+	return &PgCurrentBackendUtilityState()->async_global_channel_table;
+}
+
+struct dsa_area **
+PgCurrentAsyncGlobalChannelDSARef(void)
+{
+	return &PgCurrentBackendUtilityState()->async_global_channel_dsa;
+}
+
 struct ExtensionSiblingCache **
 PgCurrentExtensionSiblingListRef(void)
 {

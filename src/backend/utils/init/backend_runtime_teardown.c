@@ -571,6 +571,13 @@ PgBackendResetUtilityClosedState(PgBackendUtilityState *utility)
 	if (utility == NULL)
 		return;
 
+	if (utility->async_global_channel_table != NULL)
+		dshash_detach(utility->async_global_channel_table);
+	if (utility->async_global_channel_dsa != NULL)
+		dsa_detach(utility->async_global_channel_dsa);
+	utility->async_global_channel_table = NULL;
+	utility->async_global_channel_dsa = NULL;
+
 	ResetExtensionSiblingCache();
 
 	PG_RUNTIME_DESTROY_HASH(utility->injection_point_cache);

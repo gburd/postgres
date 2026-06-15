@@ -2029,7 +2029,7 @@ pg_stat_reset_backend_stats(PG_FUNCTION_ARGS)
 	ProcNumber	procNumber;
 	int			backend_pid = PG_GETARG_INT32(0);
 
-	proc = BackendPidGetProc(backend_pid);
+	proc = BackendSignalPidGetProc(backend_pid);
 
 	/* This could be an auxiliary process */
 	if (!proc)
