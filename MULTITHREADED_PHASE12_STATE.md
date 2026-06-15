@@ -15989,3 +15989,88 @@ rule, or `check_runtime_lifecycles.pl` validation. Handwritten owner-adjacent
 cleanup remains correct for ordering-sensitive subsystem code, but repeated
 clerical lifecycle mechanics should move behind checked infrastructure before
 more state is migrated.
+
+## Dblink And Postgres FDW Session Extension State
+
+Lifecycle/preflight note:
+
+- target: move the remaining dblink persistent-connection allocation and
+  postgres_fdw option/GUC state away from raw `TopMemoryContext` or module
+  globals and into `PgSession.extension_modules`;
+- touched root/bucket: `PgSession.extension_modules`, specifically dblink's
+  persistent connection parent context and postgres_fdw's option-table context,
+  option-table pointer, and `postgres_fdw.application_name` custom GUC backing
+  variable;
+- owner source files: `src/include/utils/backend_runtime.h`,
+  `src/backend/utils/init/backend_runtime.c`,
+  `src/backend/utils/init/backend_runtime_session.c`,
+  `src/backend/utils/init/backend_runtime_teardown.c`,
+  `contrib/dblink/dblink.c`, `contrib/postgres_fdw/option.c`,
+  `contrib/postgres_fdw/postgres_fdw.h`,
+  `contrib/postgres_fdw/connection.c`,
+  `src/test/modules/test_backend_runtime/test_backend_runtime_session.c`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, and this state log;
+- legacy symbols/accessors: `pconn`, `remoteConnHash`,
+  `dblink_reset_registered`, `postgres_fdw_options`, and
+  `pgfdw_application_name` through `PgCurrentDblink*Ref()` and
+  `PgCurrentPostgresFdw*Ref()` accessors;
+- repeated lifecycle operations expected in this slice: two session-owned
+  extension memory contexts deleted at closed-session reset, plus scalar and
+  pointer fields reset through the existing extension-module initializer;
+- checked primitive decision: no new lifecycle primitive is needed. Reuse the
+  checked `PgSession.extension_modules` lifecycle row, the ordered
+  `PgSessionResetExtensionModuleClosedState()` reset path, and the existing
+  `PG_RUNTIME_DELETE_MEMORY_CONTEXT` action. This is owner-adjacent extension
+  cleanup, not a new generic teardown shape.
+
+Implementation result:
+
+- `PgSession.extension_modules` now owns a dblink parent context and
+  postgres_fdw option-table context, option-table pointer, and
+  `postgres_fdw.application_name` custom-GUC backing string;
+- dblink's unnamed persistent connection and named-connection hash now allocate
+  under the session-owned dblink context instead of `TopMemoryContext`;
+- postgres_fdw's valid option table and copied libpq option keywords now
+  allocate under the session-owned postgres_fdw option context, while the
+  historical `postgres_fdw_options` and `pgfdw_application_name` names remain
+  source-compatible through runtime accessors;
+- the backend-runtime session regression now verifies the added dblink and
+  postgres_fdw fields are session-local and are cleared by closed-session
+  reset;
+- validation of the full postgres_fdw regression exposed an unrelated
+  closed-session text-search teardown bug: `TSConfigCacheEntry.map[i].dictIds`
+  can be NULL, so `PgSessionResetTextSearchClosedState()` now skips NULL
+  `dictIds` entries instead of calling `pfree(NULL)` during backend exit.
+
+Validation for the dblink/postgres_fdw extension-state slice:
+
+- `git diff --check` passed;
+- touched-object builds passed for `backend_runtime.o`,
+  `backend_runtime_session.o`, `backend_runtime_teardown.o`, `dblink.o`,
+  postgres_fdw `option.o`/`connection.o`, and
+  `test_backend_runtime_session.o`;
+- `gmake check-runtime-lifecycles` passed with 172 fields classified, 172
+  bucket definitions checked, 35 reset definitions checked, and 314 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- full incremental `gmake -j8` passed after the text-search teardown fix;
+- clean `gmake -C src/test/modules/test_backend_runtime clean all check`
+  passed;
+- clean `gmake -C contrib/dblink clean all check` rebuilt dblink, then failed
+  before SQL behavior because the recreated temp-installed `dblink.dylib`
+  still pointed at `/usr/local/pgsql/lib/libpq.5.dylib`; after patching that
+  install name, the direct dblink regression passed;
+- clean `gmake -C contrib/postgres_fdw clean all check` rebuilt postgres_fdw,
+  then failed before SQL behavior for the same temp-installed extension
+  library install-name issue. After patching `postgres_fdw.dylib`, the broad
+  postgres_fdw regression progressed past the earlier backend-exit crash and
+  later stalled in the already-documented abort/connection-cleanup section
+  around `SELECT * FROM remt2`, with the local backend waiting on
+  `PostgresFdwGetResult`, a remote backend waiting on a transactionid lock,
+  and another remote backend idle in transaction;
+- a focused live postgres_fdw smoke passed after patching the temp-installed
+  library: it loaded `postgres_fdw`, created a loopback foreign server over a
+  known Unix socket, set `postgres_fdw.application_name`, selected through a
+  foreign table, observed a valid cached connection through
+  `postgres_fdw_get_connections()`, and ran `postgres_fdw_disconnect_all()`.

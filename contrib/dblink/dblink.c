@@ -140,9 +140,11 @@ static void appendSCRAMKeysInfo(StringInfo buf);
 static bool is_valid_dblink_fdw_option(const PQconninfoOption *options, const char *option,
 									   Oid context);
 static bool dblink_connstr_has_required_scram_options(const char *connstr);
+static MemoryContext dblink_get_context(void);
 static void dblink_reset_session_state(void *arg);
 
 /* Session-local state, exposed through compatibility macros. */
+#define dblink_context (*PgCurrentDblinkContextRef())
 #define pconn (*(remoteConn **) PgCurrentDblinkPersistentConnectionRef())
 #define remoteConnHash (*(HTAB **) PgCurrentDblinkRemoteConnHashRef())
 #define dblink_reset_registered (*PgCurrentDblinkResetRegisteredRef())
@@ -273,7 +275,8 @@ dblink_init(void)
 		if (dblink_we_get_result == 0)
 			dblink_we_get_result = WaitEventExtensionNew("DblinkGetResult");
 
-		pconn = (remoteConn *) MemoryContextAlloc(TopMemoryContext, sizeof(remoteConn));
+		pconn = (remoteConn *) MemoryContextAlloc(dblink_get_context(),
+												  sizeof(remoteConn));
 		pconn->conn = NULL;
 		pconn->openCursorCount = 0;
 		pconn->newXactForCursor = false;
@@ -2565,9 +2568,21 @@ createConnHash(void)
 
 	ctl.keysize = NAMEDATALEN;
 	ctl.entrysize = sizeof(remoteConnHashEnt);
+	ctl.hcxt = dblink_get_context();
 
 	return hash_create("Remote Con hash", NUMCONN, &ctl,
-					   HASH_ELEM | HASH_STRINGS);
+					   HASH_ELEM | HASH_STRINGS | HASH_CONTEXT);
+}
+
+static MemoryContext
+dblink_get_context(void)
+{
+	if (dblink_context == NULL)
+		dblink_context =
+			PgRuntimeGetOwnedMemoryContext(PgCurrentDblinkContextRef(),
+										   "dblink session");
+
+	return dblink_context;
 }
 
 static remoteConn *

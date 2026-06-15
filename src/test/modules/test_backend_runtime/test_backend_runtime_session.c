@@ -84,7 +84,10 @@ test_backend_runtime_auto_explain_defaults_ok(PgSessionExtensionModuleState *ext
 static bool
 test_backend_runtime_postgres_fdw_defaults_ok(PgSessionExtensionModuleState *extension_modules)
 {
-	return extension_modules->postgres_fdw_connection_hash == NULL &&
+	return extension_modules->postgres_fdw_options_context == NULL &&
+		extension_modules->postgres_fdw_options == NULL &&
+		extension_modules->postgres_fdw_application_name == NULL &&
+		extension_modules->postgres_fdw_connection_hash == NULL &&
 		extension_modules->postgres_fdw_shippable_cache_hash == NULL &&
 		extension_modules->postgres_fdw_cursor_number == 0 &&
 		extension_modules->postgres_fdw_prep_stmt_number == 0 &&
@@ -2773,18 +2776,26 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 	char		session1_shell_role[] = "session1role";
 	char		session2_shell_command[] = "session2cmd";
 	char		session2_shell_role[] = "session2role";
+	char		session1_pgfdw_appname[] = "session1fdw";
+	char		session2_pgfdw_appname[] = "session2fdw";
 	int			session1_refint_foreign;
 	int			session1_refint_primary;
 	int			session2_refint_foreign;
 	int			session2_refint_primary;
+	int			session1_pgfdw_options;
+	int			session2_pgfdw_options;
 	MemoryContext session1_plpython_context = NULL;
 	MemoryContext session1_plperl_context = NULL;
 	MemoryContext session1_pltcl_context = NULL;
 	MemoryContext session1_plsample_context = NULL;
+	MemoryContext session1_dblink_context = NULL;
+	MemoryContext session1_pgfdw_options_context = NULL;
 	MemoryContext session2_plpython_context = NULL;
 	MemoryContext session2_plperl_context = NULL;
 	MemoryContext session2_pltcl_context = NULL;
 	MemoryContext session2_plsample_context = NULL;
+	MemoryContext session2_dblink_context = NULL;
+	MemoryContext session2_pgfdw_options_context = NULL;
 	bool		ok = true;
 
 	saved_session = CurrentPgSession;
@@ -2834,6 +2845,7 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && extension_modules->plsample_memory_context == NULL;
 		ok = ok && test_backend_runtime_refint_defaults_ok(extension_modules);
 		ok = ok && test_backend_runtime_small_contrib_defaults_ok(extension_modules);
+		ok = ok && extension_modules->dblink_context == NULL;
 		ok = ok && extension_modules->dblink_persistent_connection == NULL;
 		ok = ok && extension_modules->dblink_remote_conn_hash == NULL;
 		ok = ok && !extension_modules->dblink_reset_registered;
@@ -2864,6 +2876,14 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		session1_plsample_context =
 			AllocSetContextCreate(TopMemoryContext,
 								  "test session1 PL/Sample context",
+								  ALLOCSET_SMALL_SIZES);
+		session1_dblink_context =
+			AllocSetContextCreate(TopMemoryContext,
+								  "test session1 dblink context",
+								  ALLOCSET_SMALL_SIZES);
+		session1_pgfdw_options_context =
+			AllocSetContextCreate(TopMemoryContext,
+								  "test session1 postgres_fdw options context",
 								  ALLOCSET_SMALL_SIZES);
 		extension_modules->auto_explain_log_min_duration = 10;
 		extension_modules->auto_explain_log_parameter_max_length = 64;
@@ -2906,9 +2926,15 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		extension_modules->basebackup_to_shell_required_role = session1_shell_role;
 		extension_modules->isn_weak = true;
 		extension_modules->passwordcheck_min_password_length = 32;
+		extension_modules->dblink_context = session1_dblink_context;
 		extension_modules->dblink_persistent_connection = &session1_private;
 		extension_modules->dblink_remote_conn_hash = &session1_reset_count;
 		extension_modules->dblink_reset_registered = true;
+		extension_modules->postgres_fdw_options_context =
+			session1_pgfdw_options_context;
+		extension_modules->postgres_fdw_options = &session1_pgfdw_options;
+		extension_modules->postgres_fdw_application_name =
+			session1_pgfdw_appname;
 		extension_modules->postgres_fdw_connection_hash = &session1_private;
 		extension_modules->postgres_fdw_shippable_cache_hash =
 			&session1_reset_count;
@@ -3019,9 +3045,23 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		extension_modules->basebackup_to_shell_required_role = session2_shell_role;
 		extension_modules->isn_weak = true;
 		extension_modules->passwordcheck_min_password_length = 42;
+		session2_dblink_context =
+			AllocSetContextCreate(TopMemoryContext,
+								  "test session2 dblink context",
+								  ALLOCSET_SMALL_SIZES);
+		session2_pgfdw_options_context =
+			AllocSetContextCreate(TopMemoryContext,
+								  "test session2 postgres_fdw options context",
+								  ALLOCSET_SMALL_SIZES);
+		extension_modules->dblink_context = session2_dblink_context;
 		extension_modules->dblink_persistent_connection = &session2_private;
 		extension_modules->dblink_remote_conn_hash = &session2_reset_count;
 		extension_modules->dblink_reset_registered = true;
+		extension_modules->postgres_fdw_options_context =
+			session2_pgfdw_options_context;
+		extension_modules->postgres_fdw_options = &session2_pgfdw_options;
+		extension_modules->postgres_fdw_application_name =
+			session2_pgfdw_appname;
 		extension_modules->postgres_fdw_connection_hash = &session2_private;
 		extension_modules->postgres_fdw_shippable_cache_hash =
 			&session2_reset_count;
@@ -3107,11 +3147,19 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 						  "session1role") == 0;
 		ok = ok && extension_modules->isn_weak;
 		ok = ok && extension_modules->passwordcheck_min_password_length == 32;
+		ok = ok && extension_modules->dblink_context ==
+			session1_dblink_context;
 		ok = ok && extension_modules->dblink_persistent_connection ==
 			&session1_private;
 		ok = ok && extension_modules->dblink_remote_conn_hash ==
 			&session1_reset_count;
 		ok = ok && extension_modules->dblink_reset_registered;
+		ok = ok && extension_modules->postgres_fdw_options_context ==
+			session1_pgfdw_options_context;
+		ok = ok && extension_modules->postgres_fdw_options ==
+			&session1_pgfdw_options;
+		ok = ok && strcmp(extension_modules->postgres_fdw_application_name,
+						  "session1fdw") == 0;
 		ok = ok && extension_modules->postgres_fdw_connection_hash ==
 			&session1_private;
 		ok = ok && extension_modules->postgres_fdw_shippable_cache_hash ==
@@ -3193,11 +3241,19 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 						  "session2role") == 0;
 		ok = ok && extension_modules->isn_weak;
 		ok = ok && extension_modules->passwordcheck_min_password_length == 42;
+		ok = ok && extension_modules->dblink_context ==
+			session2_dblink_context;
 		ok = ok && extension_modules->dblink_persistent_connection ==
 			&session2_private;
 		ok = ok && extension_modules->dblink_remote_conn_hash ==
 			&session2_reset_count;
 		ok = ok && extension_modules->dblink_reset_registered;
+		ok = ok && extension_modules->postgres_fdw_options_context ==
+			session2_pgfdw_options_context;
+		ok = ok && extension_modules->postgres_fdw_options ==
+			&session2_pgfdw_options;
+		ok = ok && strcmp(extension_modules->postgres_fdw_application_name,
+						  "session2fdw") == 0;
 		ok = ok && extension_modules->postgres_fdw_connection_hash ==
 			&session2_private;
 		ok = ok && extension_modules->postgres_fdw_shippable_cache_hash ==
@@ -3215,6 +3271,8 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		session1_plperl_context = NULL;
 		session1_pltcl_context = NULL;
 		session1_plsample_context = NULL;
+		session1_dblink_context = NULL;
+		session1_pgfdw_options_context = NULL;
 		ok = ok && session1_reset_count == 1;
 		ok = ok && session2_reset_count == 0;
 		ok = ok && fake_session1.extension_modules.plpgsql_state == NULL;
@@ -3246,6 +3304,7 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && fake_session1.extension_modules.pg_plan_advice_generate_advice == 0;
 		ok = ok && strcmp(fake_session1.extension_modules.pg_stash_advice_stash_name,
 						  "") == 0;
+		ok = ok && fake_session1.extension_modules.dblink_context == NULL;
 		ok = ok && fake_session1.extension_modules.dblink_persistent_connection == NULL;
 		ok = ok && fake_session1.extension_modules.dblink_remote_conn_hash == NULL;
 		ok = ok && !fake_session1.extension_modules.dblink_reset_registered;
@@ -3323,9 +3382,17 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 			&session2_private;
 		ok = ok && fake_session2.extension_modules.dblink_persistent_connection ==
 			&session2_private;
+		ok = ok && fake_session2.extension_modules.dblink_context ==
+			session2_dblink_context;
 		ok = ok && fake_session2.extension_modules.dblink_remote_conn_hash ==
 			&session2_reset_count;
 		ok = ok && fake_session2.extension_modules.dblink_reset_registered;
+		ok = ok && fake_session2.extension_modules.postgres_fdw_options_context ==
+			session2_pgfdw_options_context;
+		ok = ok && fake_session2.extension_modules.postgres_fdw_options ==
+			&session2_pgfdw_options;
+		ok = ok && strcmp(fake_session2.extension_modules.postgres_fdw_application_name,
+						  "session2fdw") == 0;
 		ok = ok && fake_session2.extension_modules.postgres_fdw_connection_hash ==
 			&session2_private;
 		ok = ok && fake_session2.extension_modules.postgres_fdw_shippable_cache_hash ==
@@ -3342,6 +3409,8 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		session2_plperl_context = NULL;
 		session2_pltcl_context = NULL;
 		session2_plsample_context = NULL;
+		session2_dblink_context = NULL;
+		session2_pgfdw_options_context = NULL;
 		ok = ok && session2_reset_count == 1;
 		ok = ok && fake_session2.extension_modules.plpgsql_state == NULL;
 		ok = ok && fake_session2.extension_modules.plpython_procedure_cache == NULL;
@@ -3372,6 +3441,7 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && fake_session2.extension_modules.pg_plan_advice_generate_advice == 0;
 		ok = ok && strcmp(fake_session2.extension_modules.pg_stash_advice_stash_name,
 						  "") == 0;
+		ok = ok && fake_session2.extension_modules.dblink_context == NULL;
 		ok = ok && fake_session2.extension_modules.dblink_persistent_connection == NULL;
 		ok = ok && fake_session2.extension_modules.dblink_remote_conn_hash == NULL;
 		ok = ok && !fake_session2.extension_modules.dblink_reset_registered;
@@ -3389,6 +3459,10 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 			MemoryContextDelete(session1_pltcl_context);
 		if (session1_plsample_context != NULL)
 			MemoryContextDelete(session1_plsample_context);
+		if (session1_dblink_context != NULL)
+			MemoryContextDelete(session1_dblink_context);
+		if (session1_pgfdw_options_context != NULL)
+			MemoryContextDelete(session1_pgfdw_options_context);
 		if (session2_plpython_context != NULL)
 			MemoryContextDelete(session2_plpython_context);
 		if (session2_plperl_context != NULL)
@@ -3397,6 +3471,10 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 			MemoryContextDelete(session2_pltcl_context);
 		if (session2_plsample_context != NULL)
 			MemoryContextDelete(session2_plsample_context);
+		if (session2_dblink_context != NULL)
+			MemoryContextDelete(session2_dblink_context);
+		if (session2_pgfdw_options_context != NULL)
+			MemoryContextDelete(session2_pgfdw_options_context);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();

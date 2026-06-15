@@ -20,6 +20,7 @@
 #include "commands/extension.h"
 #include "libpq/libpq-be.h"
 #include "postgres_fdw.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/varlena.h"
@@ -38,17 +39,15 @@ typedef struct PgFdwOption
  * Valid options for postgres_fdw.
  * Allocated and filled in InitPgFdwOptions.
  */
-static PgFdwOption *postgres_fdw_options;
-
-/*
- * GUC parameters
- */
-char	   *pgfdw_application_name = NULL;
+#define postgres_fdw_options \
+	(*(PgFdwOption **) PgCurrentPostgresFdwOptionsRef())
+#define postgres_fdw_options_context (*PgCurrentPostgresFdwOptionsContextRef())
 
 /*
  * Helper functions
  */
 static void InitPgFdwOptions(void);
+static MemoryContext postgres_fdw_get_options_context(void);
 static bool is_valid_option(const char *keyword, Oid context);
 static bool is_libpq_option(const char *keyword);
 
@@ -236,6 +235,7 @@ static void
 InitPgFdwOptions(void)
 {
 	int			num_libpq_opts;
+	MemoryContext options_context;
 	PQconninfoOption *libpq_options;
 	PQconninfoOption *lopt;
 	PgFdwOption *popt;
@@ -308,8 +308,7 @@ InitPgFdwOptions(void)
 	 * Get list of valid libpq options.
 	 *
 	 * To avoid unnecessary work, we get the list once and use it throughout
-	 * the lifetime of this backend process.  Hence, we'll allocate it in
-	 * TopMemoryContext.
+	 * the lifetime of this session.
 	 */
 	libpq_options = PQconndefaults();
 	if (!libpq_options)			/* assume reason for failure is OOM */
@@ -327,8 +326,9 @@ InitPgFdwOptions(void)
 	 * Construct an array which consists of all valid options for
 	 * postgres_fdw, by appending FDW-specific options to libpq options.
 	 */
+	options_context = postgres_fdw_get_options_context();
 	postgres_fdw_options = (PgFdwOption *)
-		MemoryContextAlloc(TopMemoryContext,
+		MemoryContextAlloc(options_context,
 						   sizeof(PgFdwOption) * num_libpq_opts +
 						   sizeof(non_libpq_options));
 
@@ -348,7 +348,7 @@ InitPgFdwOptions(void)
 		if (strncmp(lopt->keyword, "oauth_", strlen("oauth_")) == 0)
 			continue;
 
-		popt->keyword = MemoryContextStrdup(TopMemoryContext,
+		popt->keyword = MemoryContextStrdup(options_context,
 											lopt->keyword);
 
 		/*
@@ -369,6 +369,17 @@ InitPgFdwOptions(void)
 
 	/* Append FDW-specific options and dummy terminator. */
 	memcpy(popt, non_libpq_options, sizeof(non_libpq_options));
+}
+
+static MemoryContext
+postgres_fdw_get_options_context(void)
+{
+	if (postgres_fdw_options_context == NULL)
+		postgres_fdw_options_context =
+			PgRuntimeGetOwnedMemoryContext(PgCurrentPostgresFdwOptionsContextRef(),
+										   "postgres_fdw options");
+
+	return postgres_fdw_options_context;
 }
 
 /*

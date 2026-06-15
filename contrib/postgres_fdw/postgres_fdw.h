@@ -18,6 +18,7 @@
 #include "libpq/libpq-be-fe.h"
 #include "nodes/execnodes.h"
 #include "nodes/pathnodes.h"
+#include "utils/backend_runtime.h"
 #include "utils/relcache.h"
 
 /*
@@ -178,7 +179,7 @@ extern int	ExtractConnectionOptions(List *defelems,
 extern List *ExtractExtensionList(const char *extensionsString,
 								  bool warnOnMissing);
 extern char *process_pgfdw_appname(const char *appname);
-extern char *pgfdw_application_name;
+#define pgfdw_application_name (*PgCurrentPostgresFdwApplicationNameRef())
 
 /* in deparse.c */
 extern void classifyConditions(PlannerInfo *root,

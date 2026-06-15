@@ -1925,6 +1925,17 @@ Important current files:
   install_name_tool -change /usr/local/pgsql/lib/libpq.5.dylib "$PWD/tmp_install/usr/local/pgsql/lib/libpq.5.dylib" "$PWD/tmp_install/usr/local/pgsql/lib/libpqwalreceiver.dylib" || true
   ```
 
+  Contrib extensions linked against libpq can have the same stale install name
+  in their temp-installed `.dylib`. If `CREATE EXTENSION dblink` or
+  `CREATE EXTENSION postgres_fdw` fails before SQL behavior with
+  `Library not loaded: /usr/local/pgsql/lib/libpq.5.dylib`, patch the
+  recreated extension library and rerun the direct driver:
+
+  ```sh
+  install_name_tool -change /usr/local/pgsql/lib/libpq.5.dylib "$PWD/tmp_install/usr/local/pgsql/lib/libpq.5.dylib" "$PWD/tmp_install/usr/local/pgsql/lib/dblink.dylib" || true
+  install_name_tool -change /usr/local/pgsql/lib/libpq.5.dylib "$PWD/tmp_install/usr/local/pgsql/lib/libpq.5.dylib" "$PWD/tmp_install/usr/local/pgsql/lib/postgres_fdw.dylib" || true
+  ```
+
   Do not run two `gmake ... check` targets that recreate the repository-level
   `tmp_install` in parallel. They race on `rm -rf tmp_install` and temp-install
   creation, producing misleading failures such as `Directory not empty` while

@@ -769,6 +769,10 @@ PgSessionResetExtensionModuleClosedState(PgSession *session)
 		session->extension_modules.pltcl_memory_context);
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(
 		session->extension_modules.plsample_memory_context);
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(
+		session->extension_modules.dblink_context);
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(
+		session->extension_modules.postgres_fdw_options_context);
 	PgSessionInitializeExtensionModuleState(&session->extension_modules);
 }
 
@@ -918,7 +922,10 @@ PgSessionResetTextSearchClosedState(PgSession *session)
 			if (entry->map != NULL)
 			{
 				for (int i = 0; i < entry->lenmap; i++)
-					pfree(entry->map[i].dictIds);
+				{
+					if (entry->map[i].dictIds != NULL)
+						pfree(entry->map[i].dictIds);
+				}
 				pfree(entry->map);
 				entry->map = NULL;
 				entry->lenmap = 0;

@@ -2201,9 +2201,13 @@ PgSessionInitializeExtensionModuleState(PgSessionExtensionModuleState *extension
 	extension_modules->pg_plan_advice_trace_mask = false;
 	extension_modules->pg_plan_advice_generate_advice = 0;
 	extension_modules->pg_stash_advice_stash_name = "";
+	extension_modules->dblink_context = NULL;
 	extension_modules->dblink_persistent_connection = NULL;
 	extension_modules->dblink_remote_conn_hash = NULL;
 	extension_modules->dblink_reset_registered = false;
+	extension_modules->postgres_fdw_options_context = NULL;
+	extension_modules->postgres_fdw_options = NULL;
+	extension_modules->postgres_fdw_application_name = NULL;
 	extension_modules->postgres_fdw_connection_hash = NULL;
 	extension_modules->postgres_fdw_shippable_cache_hash = NULL;
 	extension_modules->postgres_fdw_cursor_number = 0;

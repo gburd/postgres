@@ -559,6 +559,12 @@ PgCurrentPasswordcheckMinPasswordLengthRef(void)
 	return &PgCurrentSessionExtensionModuleState()->passwordcheck_min_password_length;
 }
 
+MemoryContext *
+PgCurrentDblinkContextRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->dblink_context;
+}
+
 void **
 PgCurrentDblinkPersistentConnectionRef(void)
 {
@@ -575,6 +581,24 @@ bool *
 PgCurrentDblinkResetRegisteredRef(void)
 {
 	return &PgCurrentSessionExtensionModuleState()->dblink_reset_registered;
+}
+
+MemoryContext *
+PgCurrentPostgresFdwOptionsContextRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->postgres_fdw_options_context;
+}
+
+void **
+PgCurrentPostgresFdwOptionsRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->postgres_fdw_options;
+}
+
+char **
+PgCurrentPostgresFdwApplicationNameRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->postgres_fdw_application_name;
 }
 
 void **
