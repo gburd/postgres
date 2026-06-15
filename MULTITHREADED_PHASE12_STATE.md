@@ -13645,3 +13645,53 @@ Validation for the connection closed-state exit backstop slice:
   `002_threaded_bgworker_crash.pl`, 131 tests total, with patched macOS
   install-name paths, repo-local `.perl5` `PERL5LIB`, and explicit
   `PG_REGRESS=src/test/regress/pg_regress`.
+
+## Thread TopMemoryContext Reclamation Probe
+
+Lifecycle/preflight note:
+
+- target: Gate E2 threaded backend teardown, specifically removing the
+  dependency on retained carrier `TopMemoryContext` accounting at thread exit;
+- root and buckets: `PgExecution.memory_contexts` and
+  `PgBackend.memory_manager`;
+- owner source files: `src/backend/utils/init/backend_runtime_teardown.c`,
+  `src/backend/postmaster/launch_backend.c`, and
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl`;
+- repeated lifecycle operations: one ordering-sensitive final destructor path,
+  not a repeated helper pattern. Existing checked lifecycle rows remain the
+  right mechanism; no new `PG_RUNTIME_*` action is needed because deleting the
+  root memory context must happen after all other execution bucket reset
+  actions have run;
+- retained invariant: process-mode exit still leaves memory reclamation to
+  process death. Thread-per-session exit may not delete the whole execution
+  top context until every pointer that can survive session/backend reset has a
+  migrated owner or explicit borrowed-lifetime rule.
+
+Probe result:
+
+- a local probe deleted the saved thread execution `TopMemoryContext` after
+  execution bucket reset and then drained backend AllocSet freelists;
+- focused object builds, lifecycle checks, global-lifetime checks, the
+  backend-runtime extension build/check, and full incremental `gmake -j8`
+  passed;
+- direct `001_threaded_runtime.pl` TAP then hung after early success because
+  follow-on backend starts failed repeatedly with `unsupported byval length:
+  0` and `could not find tuple for opclass 112`;
+- conclusion: wholesale root context deletion is not yet safe. The failure is
+  evidence that some catalog/cache or other pointer-bearing state can still
+  survive closed-state reset while pointing into the deleted top-context tree.
+
+Required follow-up before retrying root context reclamation:
+
+- treat the failure as a Gate E2 ownership blocker, not as a TAP flake;
+- inspect the type/opclass/cache paths implicated by the error strings and
+  identify any remaining process-global, session-global, or borrowed cache
+  pointers allocated under backend `TopMemoryContext`;
+- apply the lifecycle simplification rule before moving the next group: if
+  several cache/state buckets need the same init/adopt/reset/delete pattern,
+  first add or reuse a checked `PG_RUNTIME_*` action,
+  `PG_RUNTIME_DEFINE_*` helper, bucket `.def` rule, owner-map metadata, or
+  `check_runtime_lifecycles.pl` validation;
+- only after the implicated owners are migrated or explicitly proven safe
+  should the branch retry a thread-mode root-context deletion test in
+  `001_threaded_runtime.pl`.

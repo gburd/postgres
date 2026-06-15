@@ -29,6 +29,16 @@ mechanics appear, it is the fastest safe path for Phase 12 because it lets the
 next migration move more globals at once without adding parallel handwritten
 init/adopt/reset/destroy lists.
 
+Do not retry wholesale thread-exit `TopMemoryContext` deletion as a narrow
+cleanup. A Phase 12 probe that deleted the thread execution top context after
+bucket reset caused follow-on backend failures (`unsupported byval length: 0`
+and `could not find tuple for opclass 112`), which points at remaining
+process-global or insufficiently migrated catalog/cache pointers. Before
+attempting root context reclamation again, first use the lifecycle preflight
+rule: identify the still-retained cache/state owners, add any missing checked
+lifecycle macro/action/table/checker primitive, migrate the larger coherent
+state group, then rerun the threaded runtime TAP.
+
 ## Project Docs
 
 - [MULTITHREADED_ARCHITECTURE.md](MULTITHREADED_ARCHITECTURE.md) describes the
