@@ -15973,3 +15973,19 @@ Validation for the PgRuntime extension-module state slice:
   `001_threaded_runtime.pl` and `002_threaded_bgworker_crash.pl`, 133 tests
   total. The pg_plan_advice TAP smoke uses `LOAD 'pg_plan_advice'` because
   pg_plan_advice is a loadable module, not a SQL extension with a control file.
+
+## Gate E2 Lifecycle Simplification Reminder
+
+Before the next large Phase 12 state migration or teardown hardening slice,
+actively check whether the lifecycle work should be simplified first. The
+current candidates are owned memory-context creation/deletion, list or hash
+teardown after owner-adjacent cleanup, pointer-slot clearing,
+copy/adopt-then-reset fallback buckets, and reset-through-initializer buckets.
+
+If the planned batch touches two or more instances of the same lifecycle
+shape, land the smallest checked primitive first: a named `PG_RUNTIME_*`
+action, `PG_RUNTIME_DEFINE_*` helper, bucket `.def` row, owner/source manifest
+rule, or `check_runtime_lifecycles.pl` validation. Handwritten owner-adjacent
+cleanup remains correct for ordering-sensitive subsystem code, but repeated
+clerical lifecycle mechanics should move behind checked infrastructure before
+more state is migrated.

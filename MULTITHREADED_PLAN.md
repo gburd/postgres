@@ -1062,6 +1062,13 @@ Gate E2 requires:
   Phase 12 batch, land the checked action/macro/checker extension before the
   state movement so future agents can express the same ownership rule through
   the manifest and bucket `.def` row;
+- lifecycle simplification candidates to check before the next large Phase 12
+  batch are, in priority order:
+  owned memory-context creation/deletion, list or hash teardown after
+  owner-adjacent cleanup, pointer-slot clearing, copy/adopt-then-reset fallback
+  buckets, and reset-through-initializer buckets. If a planned batch touches
+  two or more instances of one shape, add the smallest checked primitive first
+  rather than expanding handwritten lifecycle helpers;
 - lifecycle macro decision rule: when a Phase 12/Gate E2 batch would add two
   or more similar lifecycle helpers or repeat an already recognized
   init/adopt/reset/destroy pattern across multiple buckets, assume the correct
