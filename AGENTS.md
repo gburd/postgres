@@ -36,6 +36,10 @@ If the answer is unclear, bias toward a small checked lifecycle-framework
 commit first. The desired artifact is a reusable primitive that makes the
 following migration batch shorter and more mechanical, not another prose-only
 reminder.
+When the user asks to take larger Phase 12 steps, apply this rule more
+aggressively rather than skipping it. Larger batches should usually mean more
+state moved through checked lifecycle primitives, not larger handwritten
+init/adopt/reset/destroy lists.
 This is especially important before the remaining Gate E2 blockers: threaded
 teardown, PMChild/thread synchronization, startup-gate removal, and any
 remaining object migration should each start by asking whether a small
