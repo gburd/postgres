@@ -1024,7 +1024,7 @@ PgSessionNamespaceState *PgCurrentSessionNamespaceState(void);
 PgSessionLocaleState *PgCurrentSessionLocaleState(void);
 static PgExecutionErrorState *PgCurrentExecutionErrorState(void);
 PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
-static PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
+PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
 static PgExecutionSPIState *PgCurrentExecutionSPIState(void);
 static PgExecutionPortalState *PgCurrentExecutionPortalState(void);
 static PgExecutionVacuumState *PgCurrentExecutionVacuumState(void);
@@ -5875,42 +5875,13 @@ PgCurrentDoingCommandReadRef(void)
 }
 
 
-static PgExecutionResourceOwnerState *
+PgExecutionResourceOwnerState *
 PgCurrentExecutionResourceOwners(void)
 {
 	if (CurrentPgExecution == NULL)
 		return &early_execution_resource_owners;
 
 	return &CurrentPgExecution->resource_owners;
-}
-
-ResourceOwner *
-PgCurrentResourceOwnerRef(void)
-{
-	return &PgCurrentExecutionResourceOwners()->current_owner;
-}
-
-ResourceOwner *
-PgCurTransactionResourceOwnerRef(void)
-{
-	return &PgCurrentExecutionResourceOwners()->cur_transaction_owner;
-}
-
-ResourceOwner *
-PgTopTransactionResourceOwnerRef(void)
-{
-	return &PgCurrentExecutionResourceOwners()->top_transaction_owner;
-}
-
-MemoryContext
-PgCurrentResourceOwnerMemoryContext(void)
-{
-	PgExecutionResourceOwnerState *resource_owners;
-
-	resource_owners = PgCurrentExecutionResourceOwners();
-	return PgRuntimeGetOwnedMemoryContextWithSizes(&resource_owners->resource_owner_context,
-												  "ResourceOwnerContext",
-												  ALLOCSET_DEFAULT_SIZES);
 }
 
 static PgExecutionSPIState *

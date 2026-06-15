@@ -18239,3 +18239,31 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o` and `backend_runtime_memory.o`,
   rerun lifecycle/global scans, a focused backend-runtime check, and
   `git diff --check`.
+
+## Resource Owner Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move execution resource-owner compatibility accessors out of
+  `src/backend/utils/init/backend_runtime.c` and into a new owner-adjacent
+  `src/backend/utils/resowner/backend_runtime_resowner.c` bridge file.
+- touched roots/buckets: no runtime root ownership changes; existing
+  `PgExecution.resource_owners` bucket only.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  current-pointer and early fallback owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for the internal
+  current execution-resource-owner helper, `src/backend/utils/resowner/Makefile`,
+  and `src/backend/utils/resowner/backend_runtime_resowner.c`.
+- legacy symbols/accessors: `PgCurrentExecutionResourceOwners()`,
+  `PgCurrentResourceOwnerRef()`, `PgCurTransactionResourceOwnerRef()`,
+  `PgTopTransactionResourceOwnerRef()`, and
+  `PgCurrentResourceOwnerMemoryContext()`.
+- repeated lifecycle operations: none; this only relocates pointer and owned
+  memory-context accessors and leaves init/adopt/reset/destroy behavior
+  unchanged.
+- checked primitive decision: no lifecycle primitive is needed because the
+  existing `PgExecution.resource_owners` lifecycle rows and owner map continue
+  to cover the bucket.
+- validation impact: rebuild `backend_runtime.o`, `backend_runtime_resowner.o`,
+  and the backend link; rerun lifecycle/global scans, a focused
+  backend-runtime check, and `git diff --check`.
