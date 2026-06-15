@@ -13695,3 +13695,56 @@ Required follow-up before retrying root context reclamation:
 - only after the implicated owners are migrated or explicitly proven safe
   should the branch retry a thread-mode root-context deletion test in
   `001_threaded_runtime.pl`.
+
+## Catalog Lookup Reset Ownership Split
+
+Lifecycle/preflight note:
+
+- target: Gate E2 catalog/type/opclass cache ownership after the failed
+  `TopMemoryContext` reclamation probe;
+- root and buckets: `PgSession.catalog_lookup`, specifically the catcache,
+  relcache, typcache, event-trigger, table-space, relfilenumber, attribute
+  options, and ruleutils plan reset paths;
+- owner source files: `src/backend/utils/cache/backend_runtime_cache.c`,
+  `src/backend/utils/init/backend_runtime_teardown.c`, and
+  `src/backend/utils/init/backend_runtime_internal.h`;
+- repeated lifecycle operations: none new. This slice preserves the existing
+  checked `PgSessionResetCatalogLookupClosedState(session)` reset hook and
+  moves its implementation beside the cache accessors. No new
+  `PG_RUNTIME_*` action is needed because the cache bucket still contains a
+  mix of hash roots, memory contexts, SPI plans, scalar flags, and active
+  `CacheMemoryContext` deletion constraints;
+- retained invariant: active-session `CacheMemoryContext` is still not
+  deleted during closed-state reset. Whole-root deletion remains unsafe until
+  the cache owners implicated by the type/opclass corruption probe are
+  migrated or proven to have no surviving process-global pointers.
+
+Slice:
+
+- `PgSessionResetCatalogLookupClosedState()` now lives in
+  `backend_runtime_cache.c`, the fork-owned owner-adjacent file that already
+  owns catalog, relcache, typcache, and ruleutils compatibility accessors;
+- `backend_runtime_teardown.c` no longer carries the large catalog lookup
+  reset body, keeping generic teardown focused on ordered root-object reset
+  orchestration and teardown helpers that do not yet have a more specific
+  owner file;
+- `backend_runtime_internal.h` declares the reset helper for the session reset
+  bucket list, and `check-runtime-lifecycles` continues to verify the
+  manifest-referenced reset function through the default checked source set.
+
+Validation for the catalog lookup reset ownership split:
+
+- `git diff --check` passed;
+- touched-object builds passed for `backend_runtime_cache.o` and
+  `backend_runtime_teardown.o`;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 222 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- full incremental `gmake -j8` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with patched macOS
+  install-name paths, repo-local `.perl5` `PERL5LIB`, and explicit
+  `PG_REGRESS=src/test/regress/pg_regress`.

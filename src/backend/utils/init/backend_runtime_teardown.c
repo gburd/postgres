@@ -26,7 +26,6 @@
 #include "commands/extension.h"
 #include "commands/prepare.h"
 #include "commands/trigger.h"
-#include "executor/spi.h"
 #include "lib/dshash.h"
 #include "postmaster/pgarch.h"
 #include "regex/regex.h"
@@ -781,75 +780,6 @@ PgSessionResetEncodingClosedState(PgSession *session)
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->encoding.encoding_cache_context);
 
 	PgSessionInitializeEncodingState(&session->encoding);
-}
-
-static void
-PgSessionResetCatalogLookupClosedState(PgSession *session)
-{
-	Assert(session != NULL);
-
-	PG_RUNTIME_DESTROY_HASH(session->catalog_lookup.attopt_cache_hash);
-	PG_RUNTIME_DESTROY_HASH(session->catalog_lookup.relfilenumber_map_hash);
-	MemSet(session->catalog_lookup.relfilenumber_skey, 0,
-		   sizeof(session->catalog_lookup.relfilenumber_skey));
-	PG_RUNTIME_DESTROY_HASH(session->catalog_lookup.tablespace_cache_hash);
-	if (session->catalog_lookup.event_trigger_cache_context != NULL)
-	{
-		PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->catalog_lookup.event_trigger_cache_context);
-		session->catalog_lookup.event_trigger_cache = NULL;
-	}
-	else if (session->catalog_lookup.event_trigger_cache != NULL)
-	{
-		PG_RUNTIME_DESTROY_HASH(session->catalog_lookup.event_trigger_cache);
-	}
-	session->catalog_lookup.event_trigger_cache_state = 0;
-	if (session->catalog_lookup.ruleutils_rule_by_oid_plan != NULL)
-	{
-		SPI_freeplan(session->catalog_lookup.ruleutils_rule_by_oid_plan);
-		session->catalog_lookup.ruleutils_rule_by_oid_plan = NULL;
-	}
-	if (session->catalog_lookup.ruleutils_view_rule_plan != NULL)
-	{
-		SPI_freeplan(session->catalog_lookup.ruleutils_view_rule_plan);
-		session->catalog_lookup.ruleutils_view_rule_plan = NULL;
-	}
-	if (session->catalog_lookup.cache_memory_context != NULL)
-	{
-		if (session != CurrentPgSession)
-		{
-			if (CurrentMemoryContext == session->catalog_lookup.cache_memory_context)
-				MemoryContextSwitchTo(TopMemoryContext);
-			PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->catalog_lookup.cache_memory_context);
-		}
-		session->catalog_lookup.cache_memory_context = NULL;
-	}
-	MemSet(session->catalog_lookup.sys_cache, 0,
-		   sizeof(session->catalog_lookup.sys_cache));
-	session->catalog_lookup.sys_cache_initialized = false;
-	MemSet(session->catalog_lookup.sys_cache_relation_oid, 0,
-		   sizeof(session->catalog_lookup.sys_cache_relation_oid));
-	session->catalog_lookup.sys_cache_relation_oid_size = 0;
-	MemSet(session->catalog_lookup.sys_cache_supporting_rel_oid, 0,
-		   sizeof(session->catalog_lookup.sys_cache_supporting_rel_oid));
-	session->catalog_lookup.sys_cache_supporting_rel_oid_size = 0;
-	session->catalog_lookup.cat_cache_header = NULL;
-	session->catalog_lookup.relcache_relation_id_cache = NULL;
-	session->catalog_lookup.relcache_critical_built = false;
-	session->catalog_lookup.relcache_critical_shared_built = false;
-	session->catalog_lookup.relcache_invals_received = 0;
-	session->catalog_lookup.relcache_opclass_cache = NULL;
-	session->catalog_lookup.typcache_type_cache_hash = NULL;
-	session->catalog_lookup.typcache_relid_to_typeid_hash = NULL;
-	session->catalog_lookup.typcache_first_domain_type_entry = NULL;
-	session->catalog_lookup.typcache_in_progress_list = NULL;
-	session->catalog_lookup.typcache_in_progress_list_len = 0;
-	session->catalog_lookup.typcache_in_progress_list_maxlen = 0;
-	session->catalog_lookup.typcache_record_cache_hash = NULL;
-	session->catalog_lookup.typcache_record_cache_array = NULL;
-	session->catalog_lookup.typcache_record_cache_array_len = 0;
-	session->catalog_lookup.typcache_next_record_typmod = 0;
-	session->catalog_lookup.typcache_tupledesc_id_counter =
-		INVALID_TUPLEDESC_IDENTIFIER;
 }
 
 static void

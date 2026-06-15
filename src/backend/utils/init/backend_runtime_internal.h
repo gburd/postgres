@@ -188,6 +188,7 @@ extern void PgSessionInitializeLockWaitState(PgSessionLockWaitState *lock_wait);
 extern void PgSessionInitializeGUCState(PgSessionGUCState *guc);
 extern void PgSessionInitializePgStatState(PgSessionPgStatState *pgstat);
 extern void PgSessionInitializeExtensionModuleState(PgSessionExtensionModuleState *extension_modules);
+extern void PgSessionResetCatalogLookupClosedState(PgSession *session);
 extern void PgSessionInitializeInvalidationCallbackState(PgSessionInvalidationCallbackState *invalidation_callbacks);
 extern void PgSessionInitializeRelMapState(PgSessionRelMapState *relmap);
 extern void PgSessionInitializeRegexState(PgSessionRegexState *regex);
