@@ -345,3 +345,37 @@ def test_array_with_null(conn):
 
     result = conn.sql("SELECT ARRAY[1, NULL, 3]")
     assert result == [1, None, 3]
+
+
+def test_query_returns_result_data(conn):
+    """conn.query() returns a structured ResultData with column metadata."""
+    data = conn.query("SELECT 1 AS a, 'x'::text AS b")
+    assert data.names == ["a", "b"]
+    assert data.types == [23, 25]  # int4, text OIDs
+    assert data.rows == [(1, "x")]
+
+
+def test_query_no_simplification(conn):
+    """query() never collapses shape: a single scalar stays a 1x1 row list."""
+    data = conn.query("SELECT 42")
+    assert data.rows == [(42,)]
+    assert data.names == ["?column?"]
+
+
+def test_listen_notify(conn):
+    """The libpq channel can receive asynchronous LISTEN/NOTIFY messages."""
+    conn.sql("LISTEN chan")
+    conn.sql("NOTIFY chan, 'hello'")
+    notify = conn.get_notification()
+    assert notify is not None
+    assert notify["channel"] == "chan"
+    assert notify["payload"] == "hello"
+    assert isinstance(notify["pid"], int)
+
+
+def test_get_all_notifications(conn):
+    """get_all_notifications drains every pending notification in order."""
+    conn.sql("LISTEN chan")
+    conn.sql("NOTIFY chan, 'a'; NOTIFY chan, 'b'")
+    payloads = [n["payload"] for n in conn.get_all_notifications()]
+    assert payloads == ["a", "b"]

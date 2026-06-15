@@ -6,7 +6,25 @@ from ._env import (
     test_timeout_default,
 )
 from .command import CommandResult, PgBin, ProgramResult
-from .errors import PgError, PgServerError, PgSqlError, LibpqError
+from .errors import (
+    PgError,
+    PgServerError,
+    PgSqlError,
+    LibpqError,
+    QueryCanceled,
+    UniqueViolation,
+    ForeignKeyViolation,
+    CheckViolation,
+    NotNullViolation,
+    InsufficientPrivilege,
+    UndefinedTable,
+    UndefinedColumn,
+    SerializationFailure,
+    DeadlockDetected,
+    AdminShutdown,
+    CrashShutdown,
+    CannotConnectNow,
+)
 from .fake import faker, meaningful_text, rand_str
 from .modes import CatchupMode, SlotCatchupMode, StopMode
 from .kerberos import KerberosServer
@@ -14,6 +32,7 @@ from .server import PostgresServer
 from .sqlresult import SqlResult
 from .util import (
     wait_for_file,
+    wait_until,
     compare_files,
     check_pg_config,
     scan_server_header,
@@ -45,6 +64,19 @@ __all__ = [
     "PgServerError",
     "PgSqlError",
     "LibpqError",
+    "QueryCanceled",
+    "UniqueViolation",
+    "ForeignKeyViolation",
+    "CheckViolation",
+    "NotNullViolation",
+    "InsufficientPrivilege",
+    "UndefinedTable",
+    "UndefinedColumn",
+    "SerializationFailure",
+    "DeadlockDetected",
+    "AdminShutdown",
+    "CrashShutdown",
+    "CannotConnectNow",
     "append_to_file",
     "check_mode_recursive",
     "chmod_recursive",
@@ -55,4 +87,5 @@ __all__ = [
     "scan_server_header",
     "compare_files",
     "wait_for_file",
+    "wait_until",
 ]

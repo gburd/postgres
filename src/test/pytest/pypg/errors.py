@@ -19,7 +19,22 @@ inspect ``sqlstate`` / ``sqlstate_class`` instead of regex-matching messages.
 
 from __future__ import annotations
 
-from libpq.errors import LibpqError
+from libpq.errors import (
+    LibpqError,
+    QueryCanceled,
+    UniqueViolation,
+    ForeignKeyViolation,
+    CheckViolation,
+    NotNullViolation,
+    InsufficientPrivilege,
+    UndefinedTable,
+    UndefinedColumn,
+    SerializationFailure,
+    DeadlockDetected,
+    AdminShutdown,
+    CrashShutdown,
+    CannotConnectNow,
+)
 
 # A failed SQL statement, regardless of execution channel (libpq or psql).
 PgSqlError = LibpqError
@@ -39,4 +54,22 @@ class PgServerError(PgError):
     """
 
 
-__all__ = ["PgError", "PgServerError", "PgSqlError", "LibpqError"]
+__all__ = [
+    "PgError",
+    "PgServerError",
+    "PgSqlError",
+    "LibpqError",
+    "QueryCanceled",
+    "UniqueViolation",
+    "ForeignKeyViolation",
+    "CheckViolation",
+    "NotNullViolation",
+    "InsufficientPrivilege",
+    "UndefinedTable",
+    "UndefinedColumn",
+    "SerializationFailure",
+    "DeadlockDetected",
+    "AdminShutdown",
+    "CrashShutdown",
+    "CannotConnectNow",
+]

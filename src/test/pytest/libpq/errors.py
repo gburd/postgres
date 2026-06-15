@@ -59,3 +59,102 @@ class LibpqError(RuntimeError):
         if self.sqlstate and len(self.sqlstate) >= 2:
             return self.sqlstate[:2]
         return None
+
+
+# Named subclasses for the SQLSTATEs tests most often assert on, so a test can
+# write ``with pytest.raises(QueryCanceled):`` instead of catching the generic
+# LibpqError and then checking ``.sqlstate``. Each maps to its five-character
+# SQLSTATE; for_sqlstate() picks the right class when an error is raised.
+class SyntaxErrorState(LibpqError):
+    """42601 -- syntax_error. (Trailing underscore avoids the builtin.)"""
+
+
+class UndefinedTable(LibpqError):
+    """42P01 -- undefined_table."""
+
+
+class UndefinedColumn(LibpqError):
+    """42703 -- undefined_column."""
+
+
+class InsufficientPrivilege(LibpqError):
+    """42501 -- insufficient_privilege."""
+
+
+class UniqueViolation(LibpqError):
+    """23505 -- unique_violation."""
+
+
+class ForeignKeyViolation(LibpqError):
+    """23503 -- foreign_key_violation."""
+
+
+class NotNullViolation(LibpqError):
+    """23502 -- not_null_violation."""
+
+
+class CheckViolation(LibpqError):
+    """23514 -- check_violation."""
+
+
+class SerializationFailure(LibpqError):
+    """40001 -- serialization_failure."""
+
+
+class DeadlockDetected(LibpqError):
+    """40P01 -- deadlock_detected."""
+
+
+class QueryCanceled(LibpqError):
+    """57014 -- query_canceled."""
+
+
+class AdminShutdown(LibpqError):
+    """57P01 -- admin_shutdown."""
+
+
+class CrashShutdown(LibpqError):
+    """57P02 -- crash_shutdown."""
+
+
+class CannotConnectNow(LibpqError):
+    """57P03 -- cannot_connect_now."""
+
+
+class ReadOnlySqlTransaction(LibpqError):
+    """25006 -- read_only_sql_transaction."""
+
+
+class ObjectInUse(LibpqError):
+    """55006 -- object_in_use."""
+
+
+# SQLSTATE -> exception subclass. Anything not listed raises a plain LibpqError.
+_SQLSTATE_EXCEPTIONS = {
+    "42601": SyntaxErrorState,
+    "42P01": UndefinedTable,
+    "42703": UndefinedColumn,
+    "42501": InsufficientPrivilege,
+    "23505": UniqueViolation,
+    "23503": ForeignKeyViolation,
+    "23502": NotNullViolation,
+    "23514": CheckViolation,
+    "40001": SerializationFailure,
+    "40P01": DeadlockDetected,
+    "57014": QueryCanceled,
+    "57P01": AdminShutdown,
+    "57P02": CrashShutdown,
+    "57P03": CannotConnectNow,
+    "25006": ReadOnlySqlTransaction,
+    "55006": ObjectInUse,
+}
+
+
+def for_sqlstate(sqlstate: Optional[str]) -> type:
+    """Return the LibpqError subclass for *sqlstate*, or LibpqError itself.
+
+    Used when raising a SQL error so callers can match on the specific
+    condition (e.g. ``pytest.raises(QueryCanceled)``) while still catching the
+    base LibpqError/PgSqlError when they want any failure.
+    """
+    return _SQLSTATE_EXCEPTIONS.get(sqlstate or "", LibpqError)
