@@ -11,7 +11,6 @@ and pg_verifybackup is expected to fail with the matching message.
 """
 
 import re
-import tempfile
 
 
 # (kind, description, manifest_contents). kind: 'parse' -> "could not parse
@@ -159,17 +158,15 @@ _CASES = [
 ]
 
 
-def test_005_bad_manifest(create_pg):
+def test_005_bad_manifest(pg_bin, tmp_path):
     """pg_verifybackup reports the right diagnostic for each malformed manifest."""
-    primary = create_pg("primary")
-    tempdir = tempfile.mkdtemp(prefix="badmf_")
+    manifest = tmp_path / "backup_manifest"
     for kind, desc, contents in _CASES:
-        with open("{}/backup_manifest".format(tempdir), "w", encoding="utf-8") as fh:
-            fh.write(contents)
+        manifest.write_text(contents, encoding="utf-8")
         if kind == "parse":
             pattern = r"could not parse backup manifest: " + re.escape(desc)
         elif kind == "fatal":
             pattern = r"error: " + re.escape(desc)
         else:
             pattern = desc
-        primary.command_fails_like(["pg_verifybackup", tempdir], pattern, desc)
+        pg_bin.command_fails_like(["pg_verifybackup", str(tmp_path)], pattern, desc)

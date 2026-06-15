@@ -8,7 +8,10 @@ reconnection test where the streaming consumer is terminated server-side and
 resumes, ultimately writing both committed INSERTs to its output file.
 """
 
+import os
+import platform
 import signal
+import stat
 
 import pypg
 
@@ -200,3 +203,60 @@ def _reconnect_test(node):
     outfiledata = pypg.slurp_file(outfile)
     count = outfiledata.count("INSERT")
     assert count == 2, "pg_recvlogical has received and written two INSERTs"
+
+    # pg_recvlogical derives output-file permissions from the source cluster.
+    # Unix-style permissions are not supported on Windows (cf. the Perl SKIP).
+    if platform.system() != "Windows":
+        # The cluster was initialized without group access, so the output file
+        # should be 0600.
+        mode = stat.S_IMODE(os.stat(outfile).st_mode)
+        assert mode == 0o600, (
+            "pg_recvlogical output file has no group permissions (0600), "
+            "got {:04o}".format(mode)
+        )
+
+        # Enable group access on the source cluster and restart so
+        # pg_recvlogical observes the updated source-cluster permissions.
+        node.stop()
+        pypg.chmod_recursive(node.datadir, 0o750, 0o640)
+        node.start()
+
+        group_outfile = "{}/group_access.out".format(node.basedir)
+        group_cmd = [
+            "pg_recvlogical",
+            "--slot",
+            "reconnect_test",
+            "--dbname",
+            _cs(node),
+            "--start",
+            "--file",
+            group_outfile,
+            "--fsync-interval",
+            "1",
+        ]
+        group_recv = node.bin.popen(group_cmd)
+        try:
+            node.safe_psql("INSERT INTO test_table VALUES (3)")
+            pypg.wait_for_file(group_outfile, r"INSERT")
+        finally:
+            group_recv.send_signal(signal.SIGTERM)
+            group_recv.wait()
+
+        # With group access on the source cluster, the output file is 0640.
+        mode = stat.S_IMODE(os.stat(group_outfile).st_mode)
+        assert mode == 0o640, (
+            "pg_recvlogical output file respects group permissions (0640), "
+            "got {:04o}".format(mode)
+        )
+
+    node.command_ok(
+        [
+            "pg_recvlogical",
+            "--slot",
+            "reconnect_test",
+            "--dbname",
+            _cs(node),
+            "--drop-slot",
+        ],
+        "reconnect_test slot dropped",
+    )

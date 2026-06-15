@@ -24,7 +24,10 @@ def _get_block_lsn(path, blocksize):
     with open(path, "rb") as fh:
         block = fh.read(blocksize)
     assert len(block) == blocksize, "could not read block"
-    lsn_hi, lsn_lo = struct.unpack("<II", block[:8])
+    # pd_lsn is stored in host (native) byte order on disk; the Perl original
+    # uses unpack('LL', ...) (native), so use the native struct format here too
+    # rather than forcing little-endian, which would byte-swap on big-endian.
+    lsn_hi, lsn_lo = struct.unpack("=II", block[:8])
     return "{:08X}".format(lsn_hi), "{:08X}".format(lsn_lo)
 
 

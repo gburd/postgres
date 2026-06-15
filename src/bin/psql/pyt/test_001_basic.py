@@ -320,7 +320,7 @@ def _g_pipe(node, tmp_path):
 def _pipelines(node):
     aborts = r"COPY in a pipeline is not supported, aborting connection"
     node.safe_psql("CREATE TABLE psql_pipeline()")
-    log_location = node.log.stat().st_size
+    log_location = node.current_log_position()
 
     _psql_fails_like(
         node,

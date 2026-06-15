@@ -310,8 +310,15 @@ def _run_compress_cmd(node, run, spec):
         return False
     full = [program]
     for arg in compress["args"]:
-        matches = globmod.glob(arg)
-        full += matches if matches else [arg]
+        if globmod.has_magic(arg):
+            # A glob pattern: include its matches, and drop it entirely when it
+            # matches nothing (Perl's glob() returns an empty list, so unmatched
+            # patterns like blobs_*.toc are silently dropped -- never passed
+            # through literally with the '*' intact).
+            full += globmod.glob(arg)
+        else:
+            # A flag or concrete path: always pass it through unchanged.
+            full.append(arg)
     result = subprocess.run(full, capture_output=True, check=False)
     assert result.returncode == 0, "{}: compression commands\n{}".format(
         run, result.stderr.decode("utf-8", "replace")

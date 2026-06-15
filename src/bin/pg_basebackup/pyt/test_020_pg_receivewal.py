@@ -13,6 +13,8 @@ import glob
 import os
 import re
 
+import pytest
+
 import pypg
 
 
@@ -22,9 +24,23 @@ def _glob1(pattern, msg):
     return matches[0]
 
 
+@pytest.fixture(autouse=True)
+def _restrictive_umask():
+    """Run this test under a 0o077 umask, restoring the previous value after.
+
+    The Perl original sets umask 0077 so pg_receivewal's output files have
+    predictable permissions. pytest runs many tests in one process, so the
+    umask must be restored or it leaks into later tests' permission checks.
+    """
+    prev_mask = os.umask(0o077)
+    try:
+        yield
+    finally:
+        os.umask(prev_mask)
+
+
 def test_020_pg_receivewal(create_pg, pg_bin):
     """pg_receivewal usage, slots, compression, restart_lsn, and timeline jump."""
-    os.umask(0o077)
     pg_bin.program_help_ok("pg_receivewal")
     pg_bin.program_version_ok("pg_receivewal")
     pg_bin.program_options_handling_ok("pg_receivewal")

@@ -17,6 +17,7 @@ and --exit-on-abort / --continue-on-error.
 
 import os
 import re
+import warnings
 
 _RE_EMPTY = r"^$"
 
@@ -111,8 +112,16 @@ def _test_init_and_basic(node, ts_name):
                 "001_pgbench_vacuum_ddl_target@1": "VACUUM ddl_target;",
             },
         )
-    except AssertionError:
-        pass
+    except AssertionError as exc:
+        # Mirrors the Perl original's todo_start('PROC_IN_VACUUM scan breakage'):
+        # under PROC_IN_VACUUM, concurrent VACUUM cannot finish MVCC scans
+        # consistently, so this case fails rarely and the failure is tolerated.
+        # Surface it as a warning (rather than swallowing it silently) so a
+        # genuine regression in this path is still observable.
+        warnings.warn(
+            "concurrent GRANT/VACUUM pgbench check failed (tolerated, "
+            "PROC_IN_VACUUM scan breakage): {}".format(exc)
+        )
 
     node.pgbench(
         "no-such-database",

@@ -12,6 +12,8 @@ command-line connection parameters.
 import os
 import subprocess
 
+import pytest
+
 # Source/destination bootstrap superusers (plain ASCII).
 _SRC_SUPER = "regress_postgres"
 _DST_SUPER = "boot"
@@ -71,7 +73,9 @@ def _latin1_env(node, **extra):
 
 def _config_auth_roles(node, super_user, roles):
     """Run pg_regress --config-auth creating the given roles (bytes-safe)."""
-    pg_regress = os.environ["PG_REGRESS"]
+    pg_regress = os.environ.get("PG_REGRESS")
+    if not pg_regress:
+        pytest.skip("PG_REGRESS not set")
     roles_arg = b",".join(roles)
     subprocess.run(
         [
@@ -119,7 +123,7 @@ def _dumpall_roles_only(node, dbname, username, no_sync, msg, discard):
     )
 
 
-def _restore_full_dump(create_pg, name, plain, restore_super):
+def _restore_full_dump(create_pg, name, restore_super):
     """Init a fresh LATIN1 node, create the restore super, return the node."""
     node = create_pg(
         name,
@@ -279,9 +283,7 @@ def test_010_dump_connstr(create_pg, pg_bin):
     restore_super = "regress_a'b\\c=d\\ne\"f"
 
     # Restore through psql using environment variables for connection params.
-    envar_node = _restore_full_dump(
-        create_pg, "destination_envar", plain, restore_super
-    )
+    envar_node = _restore_full_dump(create_pg, "destination_envar", restore_super)
     result = pg_bin.result(
         ["psql", "--no-psqlrc", "--file", plain],
         extra_env=_envar_restore_env(envar_node, restore_super),
@@ -292,9 +294,7 @@ def test_010_dump_connstr(create_pg, pg_bin):
     assert result.stderr == "", "no dump errors"
 
     # Restore through psql using command-line connection params.
-    cmdline_node = _restore_full_dump(
-        create_pg, "destination_cmdline", plain, restore_super
-    )
+    cmdline_node = _restore_full_dump(create_pg, "destination_cmdline", restore_super)
     result = pg_bin.result(
         [
             "psql",

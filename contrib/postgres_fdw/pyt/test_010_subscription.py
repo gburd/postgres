@@ -34,7 +34,7 @@ def test_010_subscription(create_pg):
     node_subscriber.safe_psql(
         "CREATE SUBSCRIPTION tap_sub SERVER tap_server PUBLICATION tap_pub WITH (password_required=false)"
     )
-    node_subscriber.wait_for_subscription_sync()
+    node_subscriber.wait_for_subscription_sync(node_publisher, "tap_sub")
     result = node_subscriber.safe_psql("SELECT MAX(a) FROM tab_ins")
     assert result == "1002", "check that initial data was copied to subscriber"
     node_publisher.safe_psql(

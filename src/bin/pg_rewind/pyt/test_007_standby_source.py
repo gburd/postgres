@@ -10,12 +10,11 @@ so C rejoins A's history and continues replaying A's later changes through B.
 
 import os
 import shutil
-import tempfile
 
 
-def test_007_standby_source(rewind_test, create_pg):
+def test_007_standby_source(rewind_test, create_pg, tmp_path):
     """pg_rewind uses a (cascading) standby as its source server."""
-    tmp_folder = tempfile.mkdtemp(prefix="standbysrc_")
+    tmp_folder = str(tmp_path)
     rewind_test.setup_cluster("a")
     rewind_test.start_primary()
     node_a = rewind_test.primary
