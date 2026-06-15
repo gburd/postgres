@@ -16655,6 +16655,36 @@ E2-Core closeout claim: broader full-build/process-mode regression coverage,
 resource-leak auditing, and any remaining hardening items still belong to the
 Gate E2-Core validation and cleanup path before Phase 13.
 
+## Threaded Core Regression Smoke Target
+
+`gmake check-threaded-smoke` now provides a repeatable pg_regress-based
+threaded smoke from the repository root. It starts the temporary regression
+cluster with `src/test/regress/threaded_smoke.conf`, which enables
+`multithreaded = on` and disables background activity that would add noise to
+this smoke, then runs `src/test/regress/threaded_schedule`.
+
+The initial schedule is deliberately helper-free and currently includes
+`boolean`, `name`, `oid`, `float4`, `bit`, `txid`, `enum`, `money`, `pg_lsn`,
+and `regproc`. That gives a clean pg_regress pass/fail count for a real
+thread-per-session temporary server while avoiding the current full
+`gmake check TEMP_CONFIG=...` cascade from `test_setup`.
+
+Deferred with invariant: tests that require `test_setup.sql` tables or
+`src/test/regress/regress.dylib` stay outside this first smoke because the
+regression helper library is still correctly rejected in threaded mode with a
+backend-model mismatch. The invariant is that this smoke only admits tests
+that either have no dependency on that helper path or have had the dependency
+audited and marked thread-compatible. If the invariant is wrong, pg_regress
+will fail the added test with normal diffs or a backend-model mismatch before
+the schedule is accepted. Broader regression-helper audit and full threaded
+regression coverage remain Gate E2-Core/Phase 16 follow-up work depending on
+whether the blocker is core test infrastructure or extension-like helper
+coverage.
+
+Validation:
+
+- `gmake check-threaded-smoke` passed and reported `All 10 tests passed`.
+
 ## Gate E2 Stack-Depth Runtime Reinstallation
 
 Lifecycle/preflight note:

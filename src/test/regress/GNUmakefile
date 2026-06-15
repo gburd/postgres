@@ -75,7 +75,8 @@ regress_data_files = \
 	$(wildcard $(srcdir)/sql/*.sql) \
 	$(wildcard $(srcdir)/expected/*.out) \
 	$(wildcard $(srcdir)/data/*.data) \
-	$(srcdir)/parallel_schedule $(srcdir)/resultmap
+	$(srcdir)/parallel_schedule $(srcdir)/threaded_schedule \
+	$(srcdir)/threaded_smoke.conf $(srcdir)/resultmap
 
 install-tests: all install install-lib installdirs-tests
 	$(MAKE) -C $(top_builddir)/contrib/spi install
@@ -94,11 +95,17 @@ installdirs-tests: installdirs
 REGRESS_OPTS = --dlpath=. --max-concurrent-tests=20 \
 	$(EXTRA_REGRESS_OPTS)
 
+THREAD_REGRESS_CONFIG = $(srcdir)/threaded_smoke.conf
+THREAD_REGRESS_SCHEDULE = $(srcdir)/threaded_schedule
+
 check: all
 	$(pg_regress_check) $(REGRESS_OPTS) --schedule=$(srcdir)/parallel_schedule $(MAXCONNOPT) $(EXTRA_TESTS)
 
 check-tests: all | temp-install
 	$(pg_regress_check) $(REGRESS_OPTS) $(MAXCONNOPT) $(TESTS) $(EXTRA_TESTS)
+
+check-threaded-smoke: all | temp-install
+	$(pg_regress_check) --temp-config=$(THREAD_REGRESS_CONFIG) $(REGRESS_OPTS) --schedule=$(THREAD_REGRESS_SCHEDULE) $(MAXCONNOPT) $(EXTRA_TESTS)
 
 installcheck: all
 	$(pg_regress_installcheck) $(REGRESS_OPTS) --schedule=$(srcdir)/parallel_schedule --max-connections=1 $(EXTRA_TESTS)

@@ -592,6 +592,25 @@ Important current files:
   ./pg_regress --temp-instance=./tmp_check --inputdir=. --bindir= --dlpath=. --schedule=./parallel_schedule
   ```
 
+  The focused threaded core-regression smoke is available from the repository
+  root:
+
+  ```sh
+  gmake check-threaded-smoke
+  ```
+
+  It uses `src/test/regress/threaded_smoke.conf` to start the pg_regress temp
+  cluster with `multithreaded = on` and runs
+  `src/test/regress/threaded_schedule`. The initial schedule is intentionally
+  helper-free: it excludes `test_setup` and any SQL tests that depend on
+  `src/test/regress/regress.dylib`, because a full threaded `gmake check
+  TEMP_CONFIG=...` currently fails at setup with the expected backend-model
+  mismatch for that process-only regression helper library. Grow
+  `threaded_schedule` when a candidate test either has no helper/setup
+  dependency or the dependency has been audited for thread-per-session mode.
+  `pg_regress` prints the useful pass/fail count directly, e.g. `All 10 tests
+  passed` for the first helper-free schedule.
+
   If the same recursive target needs to be rerun, patch the build-tree binaries
   that are copied into each recreated temp install before rerunning. This has
   allowed recursive checks such as
