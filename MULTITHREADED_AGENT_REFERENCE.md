@@ -611,6 +611,18 @@ Important current files:
   `pg_regress` prints the useful pass/fail count directly, e.g. `All 10 tests
   passed` for the first helper-free schedule.
 
+  The full threaded core-regression visibility target is:
+
+  ```sh
+  gmake check-threaded
+  ```
+
+  It runs `src/test/regress/parallel_schedule` with the same threaded temp
+  config. This target is expected to fail until the threaded full-regression
+  blockers in `MULTITHREADED_PHASE12_STATE.md` are retired. Its purpose is to
+  keep the failure count and first failing surfaces visible without requiring
+  callers to pass `TEMP_CONFIG` by hand.
+
   If the same recursive target needs to be rerun, patch the build-tree binaries
   that are copied into each recreated temp install before rerunning. This has
   allowed recursive checks such as

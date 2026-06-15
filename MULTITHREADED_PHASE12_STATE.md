@@ -16685,6 +16685,91 @@ Validation:
 
 - `gmake check-threaded-smoke` passed and reported `All 10 tests passed`.
 
+## Threaded Full Regression Visibility Baseline
+
+Lifecycle/preflight note:
+
+- target: unblock the full threaded `src/test/regress/parallel_schedule` from
+  the initial `test_setup` backend-model mismatch so pg_regress can produce a
+  meaningful pass/fail baseline under thread-per-session backends.
+- touched roots/buckets: no runtime roots or lifecycle buckets; this slice
+  changes only the in-tree regression helper module's dynamic-library backend
+  model metadata and records the resulting validation baseline.
+- owner source files: `src/test/regress/regress.c`,
+  `src/test/regress/parallel_schedule`,
+  `MULTITHREADED_PHASE12_STATE.md`, and
+  `MULTITHREADED_AGENT_REFERENCE.md`.
+- legacy symbols/accessors: `PG_MODULE_MAGIC_EXT`,
+  `PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION`,
+  `test_setup.sql`, and `regress.dylib`.
+- repeated lifecycle operations: none.
+- checked primitive decision: no new lifecycle primitive; the safety boundary
+  is the existing backend-model loader check plus the full threaded
+  pg_regress run.
+- validation impact: full threaded `parallel_schedule` should get past
+  `test_setup`; failures after that are classified as runtime bugs,
+  output/session-state diffs, test-infrastructure assumptions, or remaining
+  unsupported threaded surfaces.
+
+Implementation:
+
+- `src/test/regress/regress.c` now marks the in-tree `regress` helper library
+  with `PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION`. This is a test
+  fixture admission, not a general third-party extension compatibility claim.
+  The helper audit found mostly per-call SQL/C support functions plus a few
+  process-affecting test helpers (`regress_setenv`, `get_environ`,
+  `wait_pid`, and NLS setup) that remain guarded by pg_regress schedules and
+  output comparisons.
+- `gmake check-threaded` now runs the full `parallel_schedule` with
+  `src/test/regress/threaded_smoke.conf`, so the full threaded baseline is a
+  repeatable make target. `gmake check-threaded-smoke` remains the short
+  helper-free green smoke.
+
+Full threaded baseline:
+
+- `gmake check TEMP_CONFIG=$PWD/src/test/regress/threaded_smoke.conf` reached
+  `test_setup` and passed it. That confirms the old `regress.dylib`
+  backend-model mismatch is no longer the first blocker.
+- The full threaded `parallel_schedule` baseline was 245 scheduled tests, 17
+  passing and 228 failing. The passing tests were `test_setup`, `boolean`,
+  `char`, `name`, `varchar`, `text`, `int2`, `int4`, `int8`, `oid`, `float4`,
+  `bit`, `txid`, `enum`, `money`, `pg_lsn`, and `regproc`.
+- Most of the 228 failures are not yet independently meaningful: after the
+  first parallel group the postmaster was gone, later psql clients failed with
+  connection-refused errors, and pg_regress could not stop the already-dead
+  postmaster. The postmaster log did not include a PANIC/FATAL/SIGSEGV marker
+  before it ended.
+- The first output-only bucket is `float8`: threaded output used the more
+  precise float formatting path in sections that expect shorter rounded
+  values, and one round-trip query failed on an out-of-range float literal
+  after formatting `1.79769313486232e+308`.
+- The first runtime blocker is reproducible without the full schedule:
+  `gmake check-tests TESTS=numeric
+  TEMP_CONFIG=$PWD/src/test/regress/threaded_smoke.conf` loses the server at
+  the second parallel variance query:
+
+  ```sql
+  BEGIN;
+  ALTER TABLE num_variance SET (parallel_workers = 4);
+  SET LOCAL parallel_setup_cost = 0;
+  SET LOCAL max_parallel_workers_per_gather = 4;
+  SELECT variance(a) FROM num_variance;
+  ```
+
+  In the focused run, psql reported `server closed the connection
+  unexpectedly`, the postmaster process was left defunct, and pg_regress hung
+  in `pg_ctl stop` until the harness process tree was terminated.
+
+Current full-regression blocker order:
+
+1. Reproduce and debug the threaded `numeric` parallel aggregate postmaster
+   death. Until this is fixed, full `parallel_schedule` pass-rate data after
+   the first group is mostly cascade noise.
+2. Classify the `float8` output/GUC formatting difference. This is visible
+   before the postmaster death and appears separate from the crash.
+3. Re-run `gmake check-threaded` after the numeric crash is fixed to expose the
+   next real failing group; only then classify later connection-refused tests.
+
 ## Gate E2 Stack-Depth Runtime Reinstallation
 
 Lifecycle/preflight note:

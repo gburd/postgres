@@ -104,6 +104,9 @@ check: all
 check-tests: all | temp-install
 	$(pg_regress_check) $(REGRESS_OPTS) $(MAXCONNOPT) $(TESTS) $(EXTRA_TESTS)
 
+check-threaded: all | temp-install
+	$(pg_regress_check) --temp-config=$(THREAD_REGRESS_CONFIG) $(REGRESS_OPTS) --schedule=$(srcdir)/parallel_schedule $(MAXCONNOPT) $(EXTRA_TESTS)
+
 check-threaded-smoke: all | temp-install
 	$(pg_regress_check) --temp-config=$(THREAD_REGRESS_CONFIG) $(REGRESS_OPTS) --schedule=$(THREAD_REGRESS_SCHEDULE) $(MAXCONNOPT) $(EXTRA_TESTS)
 
