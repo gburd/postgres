@@ -50,6 +50,12 @@ Quick lifecycle-ergonomics checklist for each substantial Phase 12 batch:
 If the answer to any of these is yes, implement that small lifecycle primitive
 first, then use it for the larger migration in the same slice.
 
+Do this proactively. When lifecycle mechanics are the drag on a Phase 12/Gate
+E2 batch, the right next step is usually a checked macro, X-macro/table row, or
+checker rule, not a smaller manual batch. Commit the helper and the state moved
+through it as one coherent slice unless the helper is useful and complete on
+its own.
+
 Do not retry wholesale thread-exit `TopMemoryContext` deletion as a narrow
 cleanup. A Phase 12 probe that deleted the thread execution top context after
 bucket reset caused follow-on backend failures (`unsupported byval length: 0`
