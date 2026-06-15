@@ -16594,3 +16594,14 @@ Validation for this smoke-path split:
   mappings checked;
 - `gmake check-global-lifetimes` passed with zero new unclassified mutable
   globals and zero local runtime boundary violations.
+
+Follow-up validation registration:
+
+- `src/test/modules/test_backend_runtime/meson.build` now registers
+  `t/002_threaded_bgworker_crash.pl` alongside `001` and `003`, so Meson-driven
+  TAP runs keep the thread-backed background-worker crash escalation fixture in
+  the backend-runtime test surface. The Makefile TAP harness already discovers
+  all `t/*.pl` tests when configured with `--enable-tap-tests`.
+- direct `prove -v -I "$ROOT/src/test/perl" -I "$TESTDIR"
+  t/001_threaded_runtime.pl t/002_threaded_bgworker_crash.pl
+  t/003_milestone_w_core_smoke.pl` passed all 162 tests.
