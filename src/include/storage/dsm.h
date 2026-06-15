@@ -29,6 +29,7 @@ extern void dsm_detach_all(void);
 extern void PgBackendInitializeDsmSegmentList(dlist_head *dsm_segment_list);
 extern void PgBackendAdoptEarlyDsmSegmentList(dlist_head *dsm_segment_list);
 extern void PgBackendResetDsmSegmentList(dlist_head *dsm_segment_list);
+extern void PgBackendResetDsmStateAfterFork(void);
 
 #ifdef EXEC_BACKEND
 extern void dsm_set_control_handle(dsm_handle h);

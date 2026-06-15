@@ -1901,6 +1901,22 @@ destroys the prepared-query hash, frees any leftover `ON COMMIT` action list,
 and destroys the remaining async local-channel hash after proc-exit async
 callbacks have had their chance to clean shared listener state. These buckets
 no longer depend on resetting the whole carrier `TopMemoryContext`.
+Follow-up exit-state hardening made retained top-memory accounting survive
+the closed-execution reset that clears `PgExecution.memory_contexts`: backend
+exit/cleanup now capture the first live `TopMemoryContext` pointer in
+`PgBackend.exit_state` before cleanup clears runtime slots, and thread-finish
+uses that retained pointer when publishing the PMChild exit payload. This is
+accounting, not reclamation; full carrier `TopMemoryContext` teardown remains
+a Gate E2 ownership blocker.
+The same validation run exposed that forked process-mode children could carry
+the postmaster's runtime current pointers and copied backend-local runtime
+objects far enough to use the wrong runtime-backed `MyProcPid`/`MyLatch` state
+or inherited DSM mapping-list links during worker startup. Process fork now
+calls `PgRuntimeResetAfterFork()` before reseeding `MyProcPid`; the helper
+clears current runtime pointers, resets the copied static process runtime
+objects, and drops inherited early DSM list links without detaching mappings.
+Process-mode children then start from clean early fallback state until
+`BaseInit()` constructs their own process runtime object.
 There are no `GateE2 pending` lifecycle manifest rows left; the broader
 `TopMemoryContext` ownership split remains tracked as a separate memory
 ownership problem rather than an unclassified bucket.

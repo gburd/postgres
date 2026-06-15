@@ -1192,6 +1192,9 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	pg_atomic_write_u32(&wait_state->waiting, 1);
 
 	fake_backend.memory_manager.log_memory_context_in_progress = true;
+	fake_backend.exit_state.retained_top_memory_context =
+		(MemoryContext) &fake_backend;
+	fake_backend.exit_state.proc_exit_done = true;
 
 	utility->notify_interrupt_pending = true;
 	utility->seq_scan_tables[0] = (HTAB *) &fake_backend;
@@ -1524,6 +1527,9 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && utility->format_cache_context == NULL;
 	ok = ok && utility->libxml_context == NULL;
 	ok = ok && utility->missing_attr_cache == NULL;
+	ok = ok && fake_backend.exit_state.retained_top_memory_context ==
+		(MemoryContext) &fake_backend;
+	ok = ok && fake_backend.exit_state.proc_exit_done;
 
 	if (!ok)
 		elog(ERROR, "closed backend runtime state was not reset");

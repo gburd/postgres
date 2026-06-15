@@ -32,6 +32,7 @@
 #include "storage/lwlock.h"
 #include "tcop/tcopprot.h"
 #include "utils/backend_runtime.h"
+#include "utils/memutils.h"
 
 
 /*
@@ -43,6 +44,7 @@ static PG_GLOBAL_RUNTIME bool atexit_callback_setup = false;
 /* local functions */
 pg_noreturn static void PgBackendExitProcess(int code);
 static PgBackendExitState *CurrentBackendExitState(void);
+static void PgBackendRememberRetainedTopMemoryContext(void);
 
 
 /* ----------------------------------------------------------------
@@ -107,6 +109,16 @@ PgBackendShmemExitInProgress(void)
 	return shmem_exit_inprogress;
 }
 
+static void
+PgBackendRememberRetainedTopMemoryContext(void)
+{
+	PgBackendExitState *exit_state = CurrentBackendExitState();
+
+	if (exit_state->retained_top_memory_context == NULL &&
+		TopMemoryContext != NULL)
+		exit_state->retained_top_memory_context = TopMemoryContext;
+}
+
 
 /* ----------------------------------------------------------------
  *		PgBackendExit
@@ -129,9 +141,15 @@ PgBackendShmemExitInProgress(void)
 void
 PgBackendExit(int code)
 {
+	int			current_pid = (int) getpid();
+
 	/* not safe if forked by system(), etc. */
-	if (MyProcPid != (int) getpid())
+	if (MyProcPid != 0 && MyProcPid != current_pid)
 		elog(PANIC, "PgBackendExit() called in child process");
+	if (MyProcPid == 0)
+		MyProcPid = current_pid;
+
+	PgBackendRememberRetainedTopMemoryContext();
 
 	/* Clean up everything that must be cleaned up */
 	PgBackendExitCleanup(code);
@@ -240,11 +258,23 @@ PgBackendExitCleanup(int code)
 	PgBackendExitState *exit_state = CurrentBackendExitState();
 	PgBackendExitCallback *callback;
 
+	if (exit_state->proc_exit_done)
+		return;
+
 	/*
 	 * Once we set this flag, we are committed to exit.  Any ereport() will
 	 * NOT send control back to the main loop, but right back here.
 	 */
 	proc_exit_inprogress = true;
+
+	/*
+	 * Threaded backend finish publishes retained carrier memory after closed
+	 * execution reset has cleared the TopMemoryContext slot.  Capture the
+	 * first live pointer before any cleanup callback can reset execution
+	 * memory-context state.  Reentrant cleanup must preserve that first
+	 * pointer because later calls may already have cleared the slot.
+	 */
+	PgBackendRememberRetainedTopMemoryContext();
 
 	/*
 	 * Forget any pending cancel or die requests; we're doing our best to
@@ -305,6 +335,8 @@ PgBackendExitCleanup(int code)
 	PgSessionResetClosedState(CurrentPgSession);
 	PgBackendResetClosedState(CurrentPgBackend);
 	PgExecutionResetClosedState(CurrentPgExecution);
+
+	exit_state->proc_exit_done = true;
 }
 
 /* ------------------

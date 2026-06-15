@@ -195,6 +195,18 @@ PgBackendResetDsmSegmentList(dlist_head *dsm_segment_list)
 	dlist_init(dsm_segment_list);
 }
 
+void
+PgBackendResetDsmStateAfterFork(void)
+{
+	/*
+	 * fork() copies backend-local DSM descriptors from the postmaster into the
+	 * child.  The child did not attach those mappings as its own logical
+	 * backend, so it must not detach them or adjust refcounts; it only needs a
+	 * clean local list for mappings established after backend startup.
+	 */
+	dlist_init(&early_dsm_segment_list);
+}
+
 /*
  * Control segment information.
  *

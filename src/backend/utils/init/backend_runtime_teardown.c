@@ -549,18 +549,13 @@ PgBackendResetMemoryManagerClosedState(PgBackendMemoryManagerState *memory_manag
 		return;
 
 	/*
-	 * Threaded backends still retain their TopMemoryContext tree until the
-	 * final thread handoff.  The AllocSet freelist can contain context headers
-	 * linked from that retained teardown path, so walking and freeing it here
-	 * can double-free headers that cleanup has already returned to the freelist.
-	 * Keep this conservative until threaded TopMemoryContext ownership is fully
-	 * reclaimed; process-mode cleanup may still free the retained freelists.
+	 * The AllocSet freelist is tied to memory-context ownership, not the
+	 * backend bookkeeping bucket.  At process exit the operating system
+	 * reclaims it, and in threaded mode the retained TopMemoryContext tree is
+	 * still accounted through PMChild until full carrier-context teardown is
+	 * safe.  Do not walk freelist links here: by closed-state reset time they
+	 * may already point into memory-context teardown state.
 	 */
-	if (CurrentPgRuntime == NULL ||
-		CurrentPgRuntime->kind != PG_RUNTIME_THREAD_PER_SESSION)
-		AllocSetFreeContextFreelists(memory_manager->context_freelists,
-									 PG_BACKEND_ALLOCSET_NUM_FREELISTS);
-
 	MemSet(memory_manager->context_freelists, 0,
 		   sizeof(memory_manager->context_freelists));
 	memory_manager->log_memory_context_in_progress = false;

@@ -36,11 +36,13 @@ typedef struct PgBackendExitState
 	PgBackendExitCallback on_proc_exit_list[PG_BACKEND_MAX_ON_EXITS];
 	PgBackendExitCallback on_shmem_exit_list[PG_BACKEND_MAX_ON_EXITS];
 	PgBackendExitCallback before_shmem_exit_list[PG_BACKEND_MAX_ON_EXITS];
+	MemoryContext retained_top_memory_context;
 	int			on_proc_exit_index;
 	int			on_shmem_exit_index;
 	int			before_shmem_exit_index;
 	bool		proc_exit_active;
 	bool		shmem_exit_active;
+	bool		proc_exit_done;
 } PgBackendExitState;
 
 /*----------

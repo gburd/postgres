@@ -14096,6 +14096,10 @@ through it.
 This is an implementation-order rule for Gate E2, not optional cleanup. The
 goal is to keep taking larger Phase 12 strides while avoiding parallel
 handwritten lifecycle lists that future agents have to remember to update.
+When resuming implementation, do not skip this because the next state move
+looks obvious. The first code decision for the batch should be either:
+"existing checked primitive X covers this" or "add checked primitive X first,"
+with that answer recorded in this file before touching the migration code.
 
 ## Active CacheMemoryContext Closed-Session Reclamation
 
@@ -14152,6 +14156,112 @@ Validation for the active CacheMemoryContext reclamation slice:
   globals and zero local-runtime-boundary violations;
 - `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
 - full incremental `gmake -j8` passed;
+- after patching the recreated macOS temp-install install names, direct
+  backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with repo-local `.perl5`
+  `PERL5LIB` and explicit `PG_REGRESS=src/test/regress/pg_regress`.
+
+## Retained TopMemoryContext Accounting Handoff
+
+Lifecycle/preflight note:
+
+- target: harden Gate E2 threaded backend teardown accounting after discovering
+  that `PgExecutionResetClosedState()` clears the `TopMemoryContext` pointer
+  slot before `backend_thread_finish()` computes PMChild retained-memory
+  accounting;
+- touched roots/buckets: `PgBackend.exit_state` and
+  `PgExecution.memory_contexts`;
+- owner source files: `src/include/storage/ipc.h`,
+  `src/backend/storage/ipc/ipc.c`,
+  `src/backend/postmaster/launch_backend.c`,
+  `src/test/modules/test_backend_runtime/test_backend_runtime_backend.c`,
+  `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`, `MULTITHREADED_PLAN.md`, and
+  `AGENTS.md`;
+- legacy symbols/accessors: `TopMemoryContext`,
+  `PgCurrentBackendExitStateRef()`, `PgBackendExit()`,
+  `PgBackendExitCleanup()`, and `PgExecutionResetClosedState()`;
+- repeated lifecycle operations: none. This is a single borrowed-pointer
+  accounting handoff, and the existing `PgBackend.exit_state` lifecycle row is
+  the right owner because exit-state already survives until thread-finish;
+- checked primitive decision: no new lifecycle primitive is needed. The
+  manifest row documents that `retained_top_memory_context` is borrowed and
+  must not be freed through the exit-state bucket;
+- validation impact: run touched object builds for `ipc.o`,
+  `launch_backend.o`, and `test_backend_runtime_backend.o`, then
+  `git diff --check`, `gmake check-runtime-lifecycles`,
+  `gmake check-global-lifetimes`, full `gmake -j8`,
+  `test_backend_runtime`, and direct threaded backend-runtime TAP.
+
+Slice:
+
+- `PgBackendExitState` now carries a borrowed
+  `retained_top_memory_context` pointer;
+- `PgBackendExit()` and `PgBackendExitCleanup()` capture the first live
+  `TopMemoryContext` pointer before cleanup clears runtime slots;
+- `backend_thread_finish()` accounts retained top memory from that saved
+  pointer after `PgExecutionResetClosedState()` has cleared the execution
+  memory-context slots;
+- `test_backend_reset_closed_state()` verifies that
+  `PgBackendResetClosedState()` preserves the retained pointer for the
+  thread-finish handoff.
+
+This is deliberately accounting, not reclamation. It restores the PMChild
+retained-memory evidence needed while full carrier `TopMemoryContext`
+teardown remains a Gate E2 ownership blocker.
+
+## Process-Fork Runtime Pointer Reset
+
+The first validation rerun for retained top-memory accounting passed bootstrap
+but then failed to start the focused process-mode regression postmaster:
+auxiliary workers logged `cannot wait on a latch owned by another process`
+with backend pid `0`. That showed a separate Gate E2 lifecycle gap in the
+process-mode path: after `fork_process()`, the child still had inherited
+runtime current pointers from the postmaster, so runtime-backed process-local
+globals such as `MyProcPid` and `MyLatch` could be read or written through the
+wrong object before `BaseInit()` installed the child's process runtime.
+
+Slice:
+
+- `PgRuntimeResetAfterFork()` clears inherited current runtime/carrier/
+  backend/session/connection/execution pointers, resets the copied static
+  process runtime/backend/session/connection/execution objects, and
+  reinitializes the early backend core state with the child pid;
+- `PgBackendResetDsmStateAfterFork()` drops inherited early DSM list links
+  without detaching mappings or changing refcounts, because those descriptors
+  were copied by `fork()` rather than attached by the child logical backend;
+- `fork_process()` calls that helper immediately in the child before reseeding
+  `MyProcPid`;
+- process-mode children now use early fallback storage for runtime-backed
+  process-local globals until `InitializePgProcessRuntime()` constructs the
+  child-owned process runtime in `BaseInit()`.
+
+The same validation sequence then found a bootstrap segfault in
+`PgBackendResetMemoryManagerClosedState()` while walking AllocSet freelists at
+closed-state reset. The memory-manager bucket now clears freelist bookkeeping
+without freeing through those links. Freelist storage is owned by
+memory-context teardown or by process exit; threaded retained top-context
+accounting remains separate.
+
+The bootstrap path then reached normal shutdown but failed during the atexit
+cleanup backstop. `PgBackendExitCleanup()` is now explicitly idempotent: it
+sets `PgBackend.exit_state.proc_exit_done` only after the full cleanup path
+finishes, so reentrant cleanup during an error can still continue through the
+existing callback-index discipline, while the normal second atexit pass returns
+without running closed-state reset twice.
+
+Validation for the retained top-memory/fork-reset slice:
+
+- touched-object builds passed for `ipc.o`, `dsm.o`, `fork_process.o`,
+  `launch_backend.o`, `backend_runtime.o`, and
+  `test_backend_runtime_backend.o`;
+- full incremental `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 225 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
 - after patching the recreated macOS temp-install install names, direct
   backend-runtime TAP passed for `001_threaded_runtime.pl` and
   `002_threaded_bgworker_crash.pl`, 131 tests total, with repo-local `.perl5`

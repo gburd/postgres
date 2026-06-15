@@ -25,6 +25,10 @@ X-macro table, generated/declarative source table, or checker rule would make
 the lifecycle work easier. If the answer is yes, that lifecycle-framework
 improvement is the next implementation step, not optional cleanup after the
 state migration.
+If the answer is unclear, bias toward a small checked lifecycle-framework
+commit first. The desired artifact is a reusable primitive that makes the
+following migration batch shorter and more mechanical, not another prose-only
+reminder.
 This is especially important before the remaining Gate E2 blockers: threaded
 teardown, PMChild/thread synchronization, startup-gate removal, and any
 remaining object migration should each start by asking whether a small
@@ -1252,15 +1256,27 @@ Important current files:
   PMChild active and re-publish the claimed thread-exit report for retry; do
   not release or reuse a slot whose native carrier was not joined.
 - Threaded backend exit currently reports retained carrier `TopMemoryContext`
-  bytes through PMChild exit accounting. Do not remove or bypass this
-  accounting until thread-exit memory/resource cleanup has a stronger
-  replacement. A direct attempt to reset the exiting carrier's top memory tree
-  after `PgBackendExitCleanup()` crashed a parallel threaded reconnect smoke,
-  so treat full `TopMemoryContext` reclamation as an unresolved Gate E2 blocker.
-  The `TopMemoryContext` pointer slot itself now lives in
+  bytes through PMChild exit accounting. `PgBackendExit()` and
+  `PgBackendExitCleanup()` capture the first live top-context pointer in
+  `PgBackend.exit_state` before cleanup clears runtime slots, because
+  `PgExecutionResetClosedState()` clears the execution memory-context slots
+  before `backend_thread_finish()` publishes the PMChild exit payload. Do not
+  remove or bypass this accounting until thread-exit memory/resource cleanup
+  has a stronger replacement. A direct attempt to reset the exiting carrier's
+  top memory tree after `PgBackendExitCleanup()` crashed a parallel threaded
+  reconnect smoke, so treat full `TopMemoryContext` reclamation as an
+  unresolved Gate E2 blocker. The `TopMemoryContext` pointer slot itself lives in
   `PgExecution.memory_contexts.top_context`; that is only a pointer-slot
   migration and must not be treated as proof that the top context tree can be
   deleted safely.
+- Forked process-mode children must detach inherited runtime current pointers
+  and reset copied backend-local runtime objects before touching
+  runtime-backed process-local globals. `fork_process()` calls
+  `PgRuntimeResetAfterFork()` before reseeding `MyProcPid`; without that,
+  child workers can inherit the postmaster's current backend/latch or copied
+  DSM mapping lists and fail startup with messages such as `cannot wait on a
+  latch owned by another process` or spin while walking inherited DSM list
+  links.
 - `test_backend_runtime_emit_fatal()` in
   `test_backend_runtime_threaded` is the focused threaded backend `FATAL`
   fixture. Run it through

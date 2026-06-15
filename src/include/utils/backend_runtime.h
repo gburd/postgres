@@ -2329,6 +2329,8 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgSession *CurrentPgSession
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgConnection *CurrentPgConnection;
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgExecution *CurrentPgExecution;
 
+extern void PgRuntimeResetAfterFork(void);
+
 extern bool *PgCurrentIsUnderPostmasterRef(void);
 extern bool *PgCurrentDoingCommandReadRef(void);
 extern MemoryContext *PgTopMemoryContextRef(void);

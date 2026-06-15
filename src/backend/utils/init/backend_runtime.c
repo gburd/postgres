@@ -15,6 +15,8 @@
  */
 #include "postgres.h"
 
+#include <unistd.h>
+
 #include "access/gin.h"
 #include "access/parallel.h"
 #include "access/session.h"
@@ -3753,6 +3755,32 @@ PgCarrierInitializeRuntimeObject(PgCarrier *carrier)
 	do { init; } while (0);
 #include "backend_runtime_carrier_buckets.def"
 #undef PG_CARRIER_BUCKET
+}
+
+void
+PgRuntimeResetAfterFork(void)
+{
+	PgBackendResetDsmStateAfterFork();
+
+	CurrentPgRuntime = NULL;
+	CurrentPgCarrier = NULL;
+	CurrentPgBackend = NULL;
+	CurrentPgSession = NULL;
+	CurrentPgConnection = NULL;
+	CurrentPgExecution = NULL;
+
+	MemSet(&process_runtime, 0, sizeof(process_runtime));
+	PgCarrierInitializeRuntimeObject(&process_carrier);
+	PgBackendInitializeRuntimeObject(&process_backend, NULL, NULL, NULL,
+									 NULL, NULL, B_INVALID, NULL);
+	PgSessionInitializeRuntimeObject(&process_session, NULL, NULL, NULL);
+	PgConnectionInitializeRuntimeObject(&process_connection, NULL, NULL,
+										NULL);
+	PgExecutionInitializeRuntimeObject(&process_execution, NULL, NULL, NULL);
+
+	PgBackendInitializeRuntimeObject(&early_backend_fallback, NULL, NULL,
+									 NULL, NULL, NULL, B_INVALID, NULL);
+	early_backend_core.proc_pid = (int) getpid();
 }
 
 void

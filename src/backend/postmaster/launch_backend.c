@@ -608,11 +608,15 @@ static void
 backend_thread_finish(int code)
 {
 	BackendThreadStart *thread_start = backend_thread_current_start();
+	PgBackendExitState *exit_state;
+	MemoryContext retained_top_context;
 	int			exitstatus;
 	Size		top_memory_allocated = 0;
 
 	Assert(thread_start != NULL);
 
+	exit_state = PgCurrentBackendExitStateRef();
+	retained_top_context = exit_state->retained_top_memory_context;
 	exitstatus = backend_thread_exitstatus(code);
 	MyClientSocket = NULL;
 	if (thread_start->client_sock.sock != PGINVALID_SOCKET)
@@ -629,8 +633,9 @@ backend_thread_finish(int code)
 	 * that ownership model is safe.
 	 */
 	PostmasterChildDetachThreadBackend(thread_start->pmchild);
-	if (TopMemoryContext != NULL)
-		top_memory_allocated = MemoryContextMemAllocated(TopMemoryContext, true);
+	if (retained_top_context != NULL)
+		top_memory_allocated =
+			MemoryContextMemAllocated(retained_top_context, true);
 	PostmasterChildPublishThreadExit(thread_start->pmchild, exitstatus,
 									 top_memory_allocated,
 									 thread_start->postmaster_latch);
