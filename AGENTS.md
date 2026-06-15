@@ -16,6 +16,15 @@ is object-owned allocation contexts and related delete-and-null/list/hash/
 copy-adopt-reset patterns. Record the preflight decision in
 `MULTITHREADED_PHASE12_STATE.md` before editing code.
 
+Hard requirement for the next resumed Phase 12 implementation slice: if the
+slice would add multiple similar object-owned context accessors, reset helpers,
+copy/adopt fallback helpers, list/hash cleanup helpers, or manifest rows, stop
+and implement the reusable checked lifecycle primitive first. The primitive can
+be a `PG_RUNTIME_*` action, `PG_RUNTIME_DEFINE_*` macro, bucket `.def` row
+pattern, owner-map/source table, or checker rule. Only continue with direct
+handwritten helpers when the preflight explains that the operations have
+different ordering, ownership, or subsystem-specific semantics.
+
 Concrete Phase 12 workflow rule: if the next batch would need two or more
 similar lifecycle helper bodies, do the lifecycle-framework improvement first.
 That means adding the macro, X-macro row, checked `PG_RUNTIME_*` action,

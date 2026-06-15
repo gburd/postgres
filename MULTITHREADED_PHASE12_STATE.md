@@ -14629,3 +14629,19 @@ Validation for the localized time cache context ownership slice:
 - direct core date/time regression passed for `date`, `time`, `timetz`,
   `timestamp`, `timestamptz`, `interval`, and `horology`, exercising localized
   time formatting through SQL.
+
+## Lifecycle Primitive Before Repeated Helpers
+
+Documentation update: the next resumed Phase 12/Gate E2 implementation slice
+must treat repeated lifecycle mechanics as implementation work, not planning
+debt. If a proposed batch would add multiple similar object-owned context
+accessors, delete-and-null resets, copy/adopt fallback helpers, list/hash
+cleanup helpers, or matching manifest rows, the first code change should be the
+small reusable checked primitive that makes the batch mechanical.
+
+Accepted primitive forms include a named `PG_RUNTIME_*` lifecycle action, a
+`PG_RUNTIME_DEFINE_*` helper macro, a bucket `.def` row pattern, an owner-map or
+source table, or a `check_runtime_lifecycles.pl` validation rule. Direct
+handwritten helpers remain acceptable only when the Phase 12 preflight records
+that the cleanup has different ordering, ownership, or subsystem-specific
+semantics.
