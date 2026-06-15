@@ -1023,7 +1023,7 @@ static PgSessionPlanCacheState *PgCurrentSessionPlanCacheState(void);
 PgSessionNamespaceState *PgCurrentSessionNamespaceState(void);
 PgSessionLocaleState *PgCurrentSessionLocaleState(void);
 static PgExecutionErrorState *PgCurrentExecutionErrorState(void);
-static PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
+PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
 static PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
 static PgExecutionSPIState *PgCurrentExecutionSPIState(void);
 static PgExecutionPortalState *PgCurrentExecutionPortalState(void);
@@ -5868,25 +5868,13 @@ PgCurrentFormattedLogTime(void)
 	return PgCurrentExecutionErrorState()->formatted_log_time;
 }
 
-static PgExecutionMemoryContextState *
+PgExecutionMemoryContextState *
 PgCurrentExecutionMemoryContexts(void)
 {
 	if (CurrentPgExecution == NULL)
 		return &early_execution_memory_contexts;
 
 	return &CurrentPgExecution->memory_contexts;
-}
-
-MemoryContext *
-PgTopMemoryContextRef(void)
-{
-	return &PgCurrentExecutionMemoryContexts()->top_context;
-}
-
-MemoryContext *
-PgCurrentMemoryContextRef(void)
-{
-	return &PgCurrentExecutionMemoryContexts()->current_context;
 }
 
 bool *
@@ -5898,35 +5886,6 @@ PgCurrentDoingCommandReadRef(void)
 	return &CurrentPgSession->loop_state.doing_command_read;
 }
 
-MemoryContext *
-PgErrorContextRef(void)
-{
-	return &PgCurrentExecutionMemoryContexts()->error_context;
-}
-
-MemoryContext *
-PgMessageContextRef(void)
-{
-	return &PgCurrentExecutionMemoryContexts()->message_context;
-}
-
-MemoryContext *
-PgTopTransactionContextRef(void)
-{
-	return &PgCurrentExecutionMemoryContexts()->top_transaction_context;
-}
-
-MemoryContext *
-PgCurTransactionContextRef(void)
-{
-	return &PgCurrentExecutionMemoryContexts()->cur_transaction_context;
-}
-
-MemoryContext *
-PgPortalContextRef(void)
-{
-	return &PgCurrentExecutionMemoryContexts()->portal_context;
-}
 
 static PgExecutionResourceOwnerState *
 PgCurrentExecutionResourceOwners(void)

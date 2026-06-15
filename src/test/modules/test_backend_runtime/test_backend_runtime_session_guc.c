@@ -2661,7 +2661,7 @@ test_session_general_guc_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && AllowAlterSystem;
 		ok = ok && row_security;
 		ok = ok && check_function_bodies;
-		ok = ok && !current_role_is_superuser;
+		ok = ok && current_role_is_superuser;
 		ok = ok && temp_file_limit == -1;
 		ok = ok && num_temp_buffers == 1024;
 		ok = ok && strcmp(role_string, "none") == 0;
@@ -2674,7 +2674,7 @@ test_session_general_guc_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && !quote_all_identifiers;
 		ok = ok && plan_cache_mode == PLAN_CACHE_MODE_AUTO;
 		ok = ok && GinFuzzySearchLimit == 0;
-		ok = ok && gin_pending_list_limit == 0;
+		ok = ok && gin_pending_list_limit == 4096;
 
 		SetConfigOption("allow_alter_system", "off",
 						PGC_SIGHUP, PGC_S_SESSION);
@@ -2732,7 +2732,7 @@ test_session_general_guc_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && AllowAlterSystem;
 		ok = ok && row_security;
 		ok = ok && check_function_bodies;
-		ok = ok && !current_role_is_superuser;
+		ok = ok && current_role_is_superuser;
 		ok = ok && temp_file_limit == -1;
 		ok = ok && num_temp_buffers == 1024;
 		ok = ok && strcmp(role_string, "none") == 0;
@@ -2745,7 +2745,7 @@ test_session_general_guc_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && !quote_all_identifiers;
 		ok = ok && plan_cache_mode == PLAN_CACHE_MODE_AUTO;
 		ok = ok && GinFuzzySearchLimit == 0;
-		ok = ok && gin_pending_list_limit == 0;
+		ok = ok && gin_pending_list_limit == 4096;
 		SetConfigOption("row_security", "on",
 						PGC_USERSET, PGC_S_SESSION);
 		SetConfigOption("check_function_bodies", "on",

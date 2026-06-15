@@ -545,6 +545,9 @@ assign_timezone_abbreviations(const char *newval, void *extra)
 bool
 check_transaction_read_only(bool *newval, void **extra, GucSource source)
 {
+	if (source == PGC_S_DEFAULT)
+		return true;
+
 	if (*newval == false && XactReadOnly && IsTransactionState() && !InitializingParallelWorker)
 	{
 		/* Can't go to r/w mode inside a r/o transaction */
@@ -587,6 +590,9 @@ check_transaction_isolation(int *newval, void **extra, GucSource source)
 {
 	int			newXactIsoLevel = *newval;
 
+	if (source == PGC_S_DEFAULT)
+		return true;
+
 	if (newXactIsoLevel != XactIsoLevel &&
 		IsTransactionState() && !InitializingParallelWorker)
 	{
@@ -623,6 +629,9 @@ check_transaction_isolation(int *newval, void **extra, GucSource source)
 bool
 check_transaction_deferrable(bool *newval, void **extra, GucSource source)
 {
+	if (source == PGC_S_DEFAULT)
+		return true;
+
 	/* Just accept the value when restoring state in a parallel worker */
 	if (InitializingParallelWorker)
 		return true;

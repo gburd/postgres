@@ -187,7 +187,7 @@ EventTriggerCacheContext	PgSession	catalog_lookup	event_trigger_cache_context	Pg
 EventTriggerCacheState	PgSession	catalog_lookup	event_trigger_cache_state	PgCurrentEventTriggerCacheStateRef	src/backend/utils/cache/backend_runtime_cache.c	event trigger cache state flag
 ruleutils_rule_by_oid_plan	PgSession	catalog_lookup	ruleutils_rule_by_oid_plan	PgCurrentRuleutilsRuleByOidPlanRef	src/backend/utils/cache/backend_runtime_cache.c	retained ruleutils SPI plan
 ruleutils_view_rule_plan	PgSession	catalog_lookup	ruleutils_view_rule_plan	PgCurrentRuleutilsViewRulePlanRef	src/backend/utils/cache/backend_runtime_cache.c	retained ruleutils SPI plan
-TopMemoryContext	PgExecution	memory_contexts	top_context	PgTopMemoryContextRef	src/backend/utils/mmgr/mcxt.c	standard top memory context pointer; physical tree reclamation remains Gate E2 work
+TopMemoryContext	PgExecution	memory_contexts	top_context	PgTopMemoryContextRef	src/backend/utils/mmgr/backend_runtime_memory.c	standard top memory context pointer; physical tree reclamation remains Gate E2 work
 ResourceOwnerContext	PgExecution	resource_owners	resource_owner_context	PgCurrentResourceOwnerMemoryContext	src/include/utils/backend_runtime.h	execution-owned allocation context for ResourceOwner objects and expandable hash arrays
 currentEventTriggerState	PgExecution	replication_scratch	event_trigger_query_state	PgCurrentEventTriggerQueryStateRef	src/backend/commands/event_trigger.c	active event-trigger complete-query state stack root
 EventTriggerQueryContext	PgExecution	replication_scratch	event_trigger_context	PgCurrentEventTriggerMemoryContext	src/backend/commands/event_trigger.c	execution-owned parent context for event-trigger complete-query state contexts
@@ -195,7 +195,7 @@ SignalBackendsContext	PgExecution	async	signal_context	PgCurrentAsyncSignalWorks
 MyTriggerDepth	PgExecution	trigger	depth	PgCurrentTriggerDepthRef	src/backend/commands/trigger.c	trigger nesting depth for the current execution
 afterTriggers	PgExecution	trigger	after_triggers_data	PgCurrentAfterTriggersDataRef	src/backend/commands/trigger.c	opaque after-trigger transaction/query state object
 AfterTriggersContext	PgExecution	trigger	after_triggers_context	PgCurrentAfterTriggersMemoryContext	src/backend/commands/trigger.c	execution-owned parent context for the opaque after-trigger state object
-MessageContext	PgExecution	memory_contexts	message_context	PgMessageContextRef	src/backend/utils/init/backend_runtime.c	execution-owned protocol-loop scratch context allocated in PostgresMain() and reset each command-message iteration
+MessageContext	PgExecution	memory_contexts	message_context	PgMessageContextRef	src/backend/utils/mmgr/backend_runtime_memory.c	execution-owned protocol-loop scratch context allocated in PostgresMain() and reset each command-message iteration
 row_description_context	PgSession	tcop	row_description_context	PgCurrentRowDescriptionContextRef	src/backend/utils/init/backend_runtime_session.c	session-owned reusable RowDescription context allocated in PostgresMain() and deleted on closed-session reset
 row_description_buf	PgSession	tcop	row_description_buf	PgCurrentRowDescriptionBufRef	src/backend/utils/init/backend_runtime_session.c	StringInfoData storage initialized under row_description_context and reused for RowDescription/ParameterDescription messages
 MyProcPort	PgConnection	identity	port	PgCurrentProcPortRef	src/backend/libpq/backend_runtime_connection.c	frontend/backend Port pointer allocated in PortContext by pq_init() or borrowed in preserved-port runtime initialization

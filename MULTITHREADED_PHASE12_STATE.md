@@ -17935,3 +17935,68 @@ Evidence:
 - Full `gmake check-threaded` passed all 245 core regression tests.
 - Full `gmake check-threaded-workers` passed all 245 core regression tests
   with `io_method = worker` and `summarize_wal = on`.
+
+## Execution Memory-Context Runtime Bridge Split
+
+Lifecycle/preflight note:
+
+- target: move the execution memory-context compatibility accessors out of
+  `backend_runtime.c` into a `utils/mmgr` owner-adjacent runtime bridge file,
+  leaving only the fallback-aware current execution memory-context bucket
+  selector in the core runtime orchestration file.
+- touched roots/buckets: existing `PgExecution.memory_contexts` only; no new
+  root fields, bucket rows, ownership, or reset behavior.
+- owner source files: `src/backend/utils/init/backend_runtime.c`,
+  `src/backend/utils/init/backend_runtime_internal.h`,
+  `src/backend/utils/mmgr/backend_runtime_memory.c`,
+  `src/backend/utils/mmgr/Makefile`,
+  `src/tools/runtime_lifecycle/check_runtime_lifecycles.pl`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, and this Phase 12 state note.
+- legacy symbols/accessors: `PgTopMemoryContextRef()`,
+  `PgCurrentMemoryContextRef()`, `PgErrorContextRef()`,
+  `PgMessageContextRef()`, `PgTopTransactionContextRef()`,
+  `PgCurTransactionContextRef()`, and `PgPortalContextRef()`.
+- repeated lifecycle operations: none; this is a pure accessor relocation and
+  does not add init/adopt/reset/destroy logic.
+- checked primitive decision: no new lifecycle primitive is needed. Reuse the
+  existing `PgExecution.memory_contexts` lifecycle bucket row and expose the
+  fallback-aware `PgCurrentExecutionMemoryContexts()` selector through
+  `backend_runtime_internal.h`; add the new owner-adjacent source to the
+  lifecycle checker source set so owner-map coverage remains enforced.
+- validation impact: touched-object build for `backend_runtime.o` and the new
+  `backend_runtime_memory.o`, `gmake check-runtime-lifecycles`,
+  `gmake check-global-lifetimes`, focused `test_backend_runtime` control, and
+  `git diff --check` should remain clean.
+
+## Threaded GUC Reset Metadata Transaction Checks
+
+Lifecycle/preflight note:
+
+- target: let threaded/fake-session GUC registry bootstrap initialize
+  transaction-mode reset/default metadata after the caller has already run a
+  query, without treating boot default metadata setup as an interactive
+  `SET TRANSACTION` command.
+- touched roots/buckets: existing `PgSession.guc` table/hash/list metadata and
+  existing `PgExecution.xact` direct-variable bindings only; no new lifecycle
+  ownership.
+- owner source files: `src/backend/commands/variable.c`,
+  `src/backend/utils/misc/guc.c` as the evidence source for
+  `InitializeOneGUCOptionResetMetadata()`,
+  `src/test/modules/test_backend_runtime/test_backend_runtime_session.c` as
+  the focused failure trigger, and this Phase 12 state note.
+- legacy symbols/accessors: `transaction_isolation`,
+  `transaction_read_only`, `transaction_deferrable`,
+  `InitializeThreadedSessionGUCOptions()`,
+  `InitializeOneGUCOptionResetMetadata()`, `XactReadOnly`,
+  `XactDeferrable`, `FirstSnapshotSet`, and `InitializingParallelWorker`.
+- repeated lifecycle operations: none; this is check-hook semantics during GUC
+  metadata initialization, not init/adopt/reset/destroy boilerplate.
+- checked primitive decision: no new lifecycle primitive is needed. Reuse the
+  existing session GUC bucket ownership and GUC rebind validation; the fix is
+  owner-adjacent hook behavior that treats `PGC_S_DEFAULT` as bootstrap/reset
+  metadata setup rather than an SQL transaction-mode change.
+- validation impact: focused `test_backend_runtime` should no longer FATAL in
+  `test_session_database_state_is_session_local()`, while ordinary runtime
+  `SET TRANSACTION` checks remain enforced for non-default sources. Re-run
+  touched-object builds, lifecycle/global scans, backend-runtime regression,
+  and `git diff --check`.

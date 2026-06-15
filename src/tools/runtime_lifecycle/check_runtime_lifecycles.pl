@@ -28,6 +28,7 @@ my @sources = (
 	'src/backend/utils/misc/backend_runtime_guc.c',
 	'src/backend/utils/misc/backend_runtime_utility.c',
 	'src/backend/utils/misc/timeout.c',
+	'src/backend/utils/mmgr/backend_runtime_memory.c',
 	'src/backend/commands/event_trigger.c',
 	'src/backend/jit/backend_runtime_jit.c',
 	'src/backend/access/transam/backend_runtime_parallel.c',
