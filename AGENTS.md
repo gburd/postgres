@@ -162,6 +162,27 @@ claim. The preflight note must explain why existing checked lifecycle
 infrastructure is enough, or it must point at the lifecycle-framework commit
 that made it enough.
 
+Use this preflight note shape in `MULTITHREADED_PHASE12_STATE.md` before the
+code changes:
+
+```text
+Lifecycle/preflight note:
+
+- target:
+- touched roots/buckets:
+- owner source files:
+- legacy symbols/accessors:
+- repeated lifecycle operations:
+- checked primitive decision:
+- validation impact:
+```
+
+The `checked primitive decision` entry must name the existing macro/action/
+table/checker path being reused, or name the new checked primitive that will be
+landed before moving state. If the work is deliberately handwritten because it
+is semantic or ordering-sensitive, say that explicitly and still identify any
+surrounding clerical lifecycle mechanics covered by existing primitives.
+
 When resuming Phase 12 after an interruption, compaction, or branch review,
 run this checklist before choosing the next globals or teardown target. The
 default next step is not "move another symbol"; it is to decide whether the

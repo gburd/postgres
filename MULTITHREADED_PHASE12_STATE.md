@@ -12514,6 +12514,29 @@ checked lifecycle macro, action, table rule, owner-map rule, or checker
 extension. If it does, land that primitive first and then move the larger
 batch through the checked path.
 
+Use this required preflight note template before each substantial remaining
+Gate E2 implementation slice:
+
+```text
+Lifecycle/preflight note:
+
+- target:
+- touched roots/buckets:
+- owner source files:
+- legacy symbols/accessors:
+- repeated lifecycle operations:
+- checked primitive decision:
+- validation impact:
+```
+
+The `checked primitive decision` line is the forcing function. It must name
+the existing checked `PG_RUNTIME_*` action, `PG_RUNTIME_DEFINE_*` helper,
+bucket `.def` rule, owner-map rule, or `check_runtime_lifecycles.pl`
+validation being reused, or it must name the new primitive to land before the
+state migration. If the cleanup is semantic or ordering-sensitive and should
+remain handwritten, say so directly and still list any surrounding clerical
+lifecycle mechanics handled by checked primitives.
+
 ## Threaded Startup Gate Removal
 
 Lifecycle/preflight note:
