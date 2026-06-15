@@ -632,9 +632,11 @@ Important current files:
   It runs `src/test/regress/threaded_150_schedule` with the same threaded temp
   config. The schedule is intentionally narrower than full `check-threaded`:
   it keeps the validated full-regression prefix, skips the currently crashing
-  members of the next group, and adds one independent later test. At the time
+  members of the next group, and adds independent later tests. At the time
   this note was added it completed 153 tests with 150 passes and three known
-  failures: `transactions`, `object_address`, and `tidscan`.
+  failures: `transactions`, `object_address`, and `tidscan`. Keep `matview`
+  in the full `check-threaded` target for now; audit reruns showed it can fail
+  on the same threaded read-node text surface as other broader-suite blockers.
 
   If the same recursive target needs to be rerun, patch the build-tree binaries
   that are copied into each recreated temp install before rerunning. This has

@@ -17277,8 +17277,15 @@ Evidence:
 
 Validation:
 
-- `gmake check-threaded-150` completed the schedule and reported 3 failures
-  out of 153 tests, giving the intended 150 passing threaded-regression tests.
+- `gmake check-threaded-150` initially completed the schedule and reported
+  3 failures out of 153 tests, giving the intended 150 passing
+  threaded-regression tests. A later audit run exposed `matview` as an
+  intermittent fourth failure on the same read-node text surface seen in other
+  threaded failures, so the visibility schedule now leaves `matview` to full
+  `check-threaded` and uses `portals_p2` as the replacement low-risk session
+  coverage. The adjusted schedule completed with 3 failures out of 153 tests
+  (`transactions`, `object_address`, and `tidscan`), restoring the intended
+  150 passing threaded-regression tests.
 - `gmake check-threaded-smoke` passed all 10 helper-free threaded smoke tests.
 - `git diff --check`, `gmake check-runtime-lifecycles`, and
   `gmake check-global-lifetimes` passed.

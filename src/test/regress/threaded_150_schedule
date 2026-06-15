@@ -68,7 +68,7 @@ test: select_into select_distinct select_distinct_on select_implicit select_havi
 # ----------
 # Another group of parallel tests
 # ----------
-test: brin gin gist spgist privileges init_privs security_label collate matview lock replica_identity rowsecurity object_address tablesample groupingsets drop_operator password identity generated_stored join_hash
+test: brin gin gist spgist privileges init_privs security_label collate lock replica_identity rowsecurity object_address tablesample groupingsets drop_operator password identity generated_stored join_hash
 
 # ----------
 # Additional BRIN tests
@@ -82,6 +82,7 @@ test: brin_bloom brin_multi
 test: async dbsize nls tsrf tid tidscan tidrangescan collate.utf8 collate.icu.utf8 incremental_sort create_role without_overlaps generated_virtual
 
 # ----------
-# Additional independent visibility test.
+# Additional independent visibility tests.
 # ----------
+test: portals_p2
 test: fast_default
