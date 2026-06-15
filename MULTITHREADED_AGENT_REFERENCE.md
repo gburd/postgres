@@ -632,6 +632,19 @@ Important current files:
   shim is `guc_0.out`, where `plpgsql` has already reserved its GUC prefix in
   the shared runtime before the later `guc` test.
 
+  The worker-settings threaded core-regression visibility target is:
+
+  ```sh
+  gmake check-threaded-workers
+  ```
+
+  It also runs the full `src/test/regress/parallel_schedule`, but uses
+  `src/test/regress/threaded_workers.conf`: `multithreaded = on`,
+  `io_method = worker`, and `summarize_wal = on`. Use it to expose AIO worker
+  and WAL summarizer startup/teardown issues that the stable
+  `check-threaded` baseline intentionally avoids with `io_method = sync` and
+  `summarize_wal = off`.
+
   The interim 150-pass threaded visibility target is:
 
   ```sh

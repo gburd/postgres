@@ -17808,3 +17808,40 @@ Evidence:
 - Full `gmake check-threaded` passed all 245 core regression tests with
   dynamic parallel workers admitted and without
   `expected/select_parallel_0.out`.
+
+## Threaded Worker-Settings Regression Target
+
+Lifecycle/preflight note:
+
+- target: add a second full core threaded pg_regress target that keeps
+  `check-threaded` as the stable full baseline while also exercising more
+  realistic worker settings with `io_method = worker` and
+  `summarize_wal = on`.
+- touched roots/buckets: no new runtime roots; this changes pg_regress
+  temp-cluster startup configuration and test-target wiring. Runtime surfaces
+  exercised by the target include AIO worker launch/teardown, WAL summarizer
+  launch/teardown, dynamic parallel worker launch/teardown, and normal
+  backend/session cleanup under the full `parallel_schedule`.
+- owner source files: top-level `GNUmakefile.in`,
+  `src/test/regress/GNUmakefile`, new
+  `src/test/regress/threaded_workers.conf`,
+  `MULTITHREADED_AGENT_REFERENCE.md`, and this Phase 12 state note.
+- legacy symbols/accessors: `multithreaded`, `io_method`,
+  `summarize_wal`, `pgaio_worker_ops`, `WalsummarizerMain()`,
+  `LaunchParallelWorkers()`, and pg_regress temp-cluster config loading.
+- repeated lifecycle operations: none. If validation exposes repeated
+  worker startup/adopt/reset boilerplate, move that into checked lifecycle
+  helpers or bucket rows before migrating more worker state.
+- checked primitive decision: no new lifecycle primitive for the target
+  wiring itself; use existing lifecycle/global checks as guardrails after
+  any runtime fix needed to make the target useful.
+- validation impact: `gmake check-threaded-workers` should run the full 245
+  core regression tests in thread-per-session mode while allowing AIO worker
+  and WAL summarizer startup paths that `threaded_smoke.conf` deliberately
+  suppresses.
+
+Evidence:
+
+- `gmake check-threaded-workers` passed all 245 core regression tests using
+  `src/test/regress/threaded_workers.conf`, which sets `multithreaded = on`,
+  `io_method = worker`, and `summarize_wal = on`.
