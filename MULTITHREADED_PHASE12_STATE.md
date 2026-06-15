@@ -16760,15 +16760,75 @@ Full threaded baseline:
   unexpectedly`, the postmaster process was left defunct, and pg_regress hung
   in `pg_ctl stop` until the harness process tree was terminated.
 
-Current full-regression blocker order:
+Current threaded-regression blocker order:
 
-1. Reproduce and debug the threaded `numeric` parallel aggregate postmaster
-   death. Until this is fixed, full `parallel_schedule` pass-rate data after
-   the first group is mostly cascade noise.
-2. Classify the `float8` output/GUC formatting difference. This is visible
-   before the postmaster death and appears separate from the crash.
-3. Re-run `gmake check-threaded` after the numeric crash is fixed to expose the
-   next real failing group; only then classify later connection-refused tests.
+1. Treat dynamic parallel workers as deferred in thread-per-session mode until
+   worker cache/memory ownership is audited. Focused `numeric` now passes in
+   leader-only fallback, and the reduced concurrent `numeric`+`rangetypes`
+   schedule no longer kills the postmaster.
+2. Classify first-three-groups SQL/output failures now that the
+   connection-refused cascade is gone. The current visible failures are
+   `float8`, `uuid`, `rangetypes`, `box`, `inet`, `geometry`, `tstypes`,
+   `opr_sanity`, `stats_import`, and `euc_kr`.
+3. Expand the visibility surface beyond the first three `parallel_schedule`
+   groups once these buckets are triaged enough that later failures are not
+   dominated by known output-only or deliberately rejected extension/library
+   behavior.
+
+## Gate E2 Threaded Parallel-Worker Deferral
+
+Lifecycle/preflight note:
+
+- target: stop threaded `pg_regress` from launching dynamic parallel worker
+  thread carriers until parallel workers have cache/memory-context ownership
+  coverage strong enough to run beside concurrent catalog/type DDL.
+- touched roots/buckets: `PgBackendParallelState` launch bookkeeping and
+  per-query parallel worker error queues; no new runtime root migration.
+- owner source files: `src/backend/access/transam/parallel.c`.
+- legacy symbols/accessors: `CurrentPgRuntime`,
+  `PG_RUNTIME_THREAD_PER_SESSION`, `LaunchParallelWorkers()`.
+- repeated lifecycle operations: detach all budgeted parallel error queues
+  when the threaded runtime declines worker launch; reuse existing
+  `shm_mq_detach()` cleanup shape from the registration-failure path.
+- checked primitive decision: no new lifecycle primitive; this is a deliberate
+  Milestone W deferral guard around an unsupported worker family, not a state
+  migration.
+- validation impact: focused threaded `numeric` and the reduced
+  `numeric`+`rangetypes` schedule should no longer kill the postmaster.
+  `check-threaded` should produce first-three-group SQL/output failures
+  instead of a connection-refused cascade. If leader-only fallback is wrong,
+  the affected parallel SQL tests will fail deterministically without
+  postmaster death. Full parallel worker support remains owned by a later
+  Gate E2/Phase 16 worker-hardening slice.
+
+Implementation:
+
+- `LaunchParallelWorkers()` now declines worker launch in
+  `PG_RUNTIME_THREAD_PER_SESSION`, detaches the budgeted worker error queues,
+  and leaves the plan to run in the leader without advertising dynamic
+  parallel-worker support. This mirrors PostgreSQL's existing tolerance for
+  launching fewer workers than planned while avoiding unsafe threaded
+  background-worker execution.
+
+Validation:
+
+- `gmake check-tests TESTS=numeric
+  TEMP_CONFIG=$PWD/src/test/regress/threaded_smoke.conf` passed.
+- The reduced repro schedule
+  `test: test_setup` / `test: numeric rangetypes` no longer loses the server:
+  `numeric` passed, and `rangetypes` failed only on plan-output diffs.
+- A generated first-three-groups schedule from `parallel_schedule` completed
+  cleanly through 60 tests: 50 passed and 10 failed. There were no
+  `server closed the connection unexpectedly`, connection-refused,
+  `could not stop postmaster`, `FATAL`, or `PANIC` signatures, and the
+  postmaster shut down cleanly.
+- First-three failure buckets:
+  `float8` precision/output formatting; `uuid` output diff;
+  `rangetypes`, `box`, `inet`, and `geometry` plan/output diffs;
+  `tstypes`, `opr_sanity`, and `stats_import` expected threaded
+  backend-model rejections for process-only libraries such as
+  `dict_snowball.dylib` and `cyrillic.dylib`; `euc_kr` encoding/output
+  difference.
 
 ## Gate E2 Stack-Depth Runtime Reinstallation
 

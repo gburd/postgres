@@ -600,6 +600,28 @@ LaunchParallelWorkers(ParallelContext *pcxt)
 	if (pcxt->nworkers == 0 || pcxt->nworkers_to_launch == 0)
 		return;
 
+	/*
+	 * Parallel workers still share too much catalog/cache and memory-context
+	 * surface to be safe in the thread-per-session runtime.  Let the leader
+	 * run the plan without workers for Milestone W; later worker hardening can
+	 * remove this guard once parallel bgworkers have checked ownership.
+	 */
+	if (CurrentPgRuntime != NULL &&
+		CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION)
+	{
+		for (i = 0; i < pcxt->nworkers_to_launch; ++i)
+		{
+			pcxt->worker[i].bgwhandle = NULL;
+			if (pcxt->worker[i].error_mqh != NULL)
+			{
+				shm_mq_detach(pcxt->worker[i].error_mqh);
+				pcxt->worker[i].error_mqh = NULL;
+			}
+		}
+		pcxt->nworkers_to_launch = 0;
+		return;
+	}
+
 	/* We need to be a lock group leader. */
 	BecomeLockGroupLeader();
 
