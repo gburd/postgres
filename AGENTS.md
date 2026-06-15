@@ -49,6 +49,20 @@ mechanics appear, it is the fastest safe path for Phase 12 because it lets the
 next migration move more globals at once without adding parallel handwritten
 init/adopt/reset/destroy lists.
 
+Operationally, before a lifecycle-heavy Phase 12 batch, write the answer down
+in `MULTITHREADED_PHASE12_STATE.md` before editing code:
+
+- touched root object and bucket rows;
+- legacy globals/state owners being moved;
+- repeated lifecycle operations expected in the slice;
+- the existing checked `PG_RUNTIME_*` action, `PG_RUNTIME_DEFINE_*` helper,
+  bucket `.def` row, declarative table, or checker rule that covers them; or
+- the new checked primitive that will be landed first.
+
+If the slice needs two or more similar helper bodies and no checked primitive
+exists yet, create the primitive first. Do not treat a prose note or narrower
+batch split as a substitute for making the lifecycle mechanism easier.
+
 Do not retry wholesale thread-exit `TopMemoryContext` deletion as a narrow
 cleanup. A Phase 12 probe that deleted the thread execution top context after
 bucket reset caused follow-on backend failures (`unsupported byval length: 0`
@@ -1825,16 +1839,18 @@ Important current files:
   here, then use a Tcl-enabled build before claiming PL/Tcl runtime coverage
   for Gate E2.
 
-- This checkout is currently configured with `with_perl = no`. Direct PL/Perl
-  builds and regression tests under `src/pl/plperl` are not available in this
-  configuration. Use a Perl-enabled build before claiming PL/Perl runtime
-  coverage for Gate E2.
+- This checkout is currently configured and validated with `with_perl = yes`.
+  Direct PL/Perl builds and regression tests under `src/pl/plperl` are
+  available here and should be used for PL/Perl or bundled-language Phase 12
+  work. After `gmake -C src/pl/plperl check`, the shared `tmp_install` can be
+  recreated; reinstall any test module needed by later direct TAP commands
+  before rerunning those TAP checks.
 
-- This checkout is currently validated with LLVM enabled for Phase 12 JIT
-  provider work:
+- This checkout is currently validated with LLVM and Perl enabled for Phase 12
+  JIT provider and bundled-language work:
 
   ```sh
-  ./configure --without-icu --disable-rpath --with-llvm LLVM_CONFIG=/opt/homebrew/opt/llvm@21/bin/llvm-config
+  ./configure --without-icu --disable-rpath --with-llvm --with-perl LLVM_CONFIG=/opt/homebrew/opt/llvm@21/bin/llvm-config
   ```
 
   After switching LLVM configuration or changing installed runtime/JIT
@@ -2186,10 +2202,12 @@ Important current files:
   thread-backed worker that consumed logical interrupts without routing
   shutdown requests through `ProcessMainLoopInterrupts()`.
 
-- PostgreSQL TAP tests require the non-core Perl module `IPC::Run`. The system
-  Perl on this checkout does not provide it. CPAN attempts to install through
-  the normal system/local-lib path have stalled while installing `IO::Tty`, but
-  the unpacked pure-Perl IPC::Run build is usable directly from:
+- PostgreSQL TAP tests require the non-core Perl module `IPC::Run`. Use the
+  repo-local `.perl5` paths in direct TAP commands; this checkout currently has
+  a usable `IPC::Run` there. The system Perl may not provide `IPC::Run`, and
+  older CPAN attempts through the normal system/local-lib path stalled while
+  installing `IO::Tty`. If the repo-local path is unavailable, the unpacked
+  pure-Perl IPC::Run build can also be used directly from:
 
   ```sh
   /Users/samwillis/.cpan/build/IPC-Run-20260402.0-5/blib/lib
@@ -2204,8 +2222,8 @@ Important current files:
   cpan -T -i IPC::Run
   ```
 
-  Until that succeeds, keep the repo-local `.perl5` paths in direct TAP
-  commands. This checkout is still configured without `--enable-tap-tests`, so
+  Keep the repo-local `.perl5` paths in direct TAP commands. This checkout is
+  still configured without `--enable-tap-tests`, so
   recursive `gmake ... check` targets report `TAP tests not enabled`. Do not
   treat that configure-time message as a reason to skip TAP coverage; run the
   direct `prove` command with the local `PERL5LIB` path. Direct `prove` runs
