@@ -4034,9 +4034,9 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	CurrentPgRuntime = &thread_runtime;
 	CurrentPgCarrier = &state->carrier;
 	CurrentPgBackend = &state->backend;
-	PgSetCurrentSession(&state->session);
 	CurrentPgConnection = &state->connection;
 	CurrentPgExecution = &state->execution;
+	PgSetCurrentSession(&state->session);
 	InitializeThreadedSessionRequiredGUCOptions();
 }
 

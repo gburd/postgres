@@ -17466,3 +17466,39 @@ Validation:
 - `gmake check-threaded-smoke` passed all 10 helper-free threaded smoke tests.
 - `git diff --check`, `gmake check-runtime-lifecycles`, and
   `gmake check-global-lifetimes` passed.
+
+## Active Transaction GUC Rebinds
+
+Lifecycle/preflight note:
+
+- target: make the active `transaction_isolation`,
+  `transaction_read_only`, and `transaction_deferrable` GUC records follow the
+  current execution-owned transaction state in threaded backends, so the
+  threaded `transactions` regression can validate SET TRANSACTION, SHOW, and
+  COMMIT/ROLLBACK AND CHAIN behavior without stale GUC variable pointers.
+- touched roots/buckets: existing `PgExecution.xact` bucket and generated
+  built-in GUC rebind registry only.
+- owner source files: `src/backend/utils/init/backend_runtime.c`,
+  `src/backend/utils/misc/guc_parameters.dat`, generated GUC table output,
+  and this Phase 12 state note.
+- legacy symbols/accessors: `XactIsoLevel`, `XactReadOnly`,
+  `XactDeferrable`, `PgCurrentXactIsoLevelRef()`,
+  `PgCurrentXactReadOnlyRef()`, and `PgCurrentXactDeferrableRef()`.
+- repeated lifecycle operations: none; this reuses the existing generated
+  `threaded_accessor`/`RebindSessionGUCVariablePointers()` machinery.
+- checked primitive decision: no new lifecycle primitive. The existing
+  generated rebind primitive is the checked mechanism for built-in GUC backing
+  variables that live behind runtime-local accessors.
+- validation impact: the focused threaded `transactions` regression should stop
+  leaking read-only/isolation/deferrable state across transaction boundaries.
+  `ValidateSessionGUCVariableRebinds()` and the threaded regression failure
+  surface should catch stale-pointer regressions.
+
+Validation:
+
+- `gmake check-threaded-200` improved from 5 failures out of 208 tests to
+  2 failures out of 208 tests. `transactions`, `sequence`, and `largeobject`
+  now pass; remaining failures are `object_address` and `tidscan`.
+- `gmake check-threaded-smoke` passed all 10 helper-free threaded smoke tests.
+- `git diff --check`, `gmake check-runtime-lifecycles`, and
+  `gmake check-global-lifetimes` passed.
