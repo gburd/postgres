@@ -638,6 +638,20 @@ Important current files:
   in the full `check-threaded` target for now; audit reruns showed it can fail
   on the same threaded read-node text surface as other broader-suite blockers.
 
+  The interim 200-pass threaded visibility target is:
+
+  ```sh
+  gmake check-threaded-200
+  ```
+
+  It runs `src/test/regress/threaded_200_schedule` with the same threaded temp
+  config. The schedule is serialized: one test per schedule line. This keeps
+  threaded backend startup/teardown and later SQL feature surfaces visible
+  while avoiding the current parallel pg_regress read-node/GUC crash frontiers.
+  At the time this note was added it completed 208 tests with 203 passes. The
+  known failures were `transactions`, `object_address`, `tidscan`, `sequence`,
+  and `largeobject`.
+
   If the same recursive target needs to be rerun, patch the build-tree binaries
   that are copied into each recreated temp install before rerunning. This has
   allowed recursive checks such as

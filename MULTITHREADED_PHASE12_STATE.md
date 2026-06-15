@@ -17394,3 +17394,75 @@ Validation:
   infinite_recurse`.
 - `git diff --check`, `gmake check-runtime-lifecycles`, and
   `gmake check-global-lifetimes` passed.
+
+## Rejected Threaded Node Reader Cleanup Probe
+
+Lifecycle/preflight note:
+
+- target: stop an ERROR during node text deserialization from leaving the
+  execution-local `pg_strtok` cursor pointed into an aborted read, which can
+  corrupt later `stringToNode()` calls in the same threaded backend and shows
+  up as `did not find '}' at end of input node` in `triggers`/`matview`
+  regression probes.
+- touched roots/buckets: existing `PgExecution.node_io` bucket only.
+- owner source files: `src/backend/nodes/read.c` and this Phase 12 state note.
+- legacy symbols/accessors: `pg_strtok_ptr`,
+  `PgCurrentNodeReadStrtokPtrRef()`, `restore_location_fields`, and
+  `PgCurrentNodeRestoreLocationFieldsRef()`.
+- repeated lifecycle operations: none; this reuses the already checked
+  execution-owned node I/O bucket.
+- checked primitive decision: no new lifecycle primitive. The bucket already
+  classifies the tokenizer pointer as borrowed scalar state; the missing piece
+  is error-safe owner-adjacent restoration while `stringToNodeInternal()` owns
+  the cursor.
+- validation impact: the threaded 200-pass probe should no longer poison later
+  node reads after a node deserialization ERROR. If the corruption has another
+  owner, the same `triggers`/`matview` regression surfaces should keep failing
+  and the 150 visibility smoke should still catch the stable frontier.
+
+Validation:
+
+- A `PG_FINALLY()` cleanup around `stringToNodeInternal()` restoration compiled
+  and passed `gmake check-runtime-lifecycles`, but it regressed
+  `gmake check-threaded-150` to 4 failures out of 153 by adding an
+  `aggregates` failure on the same node text surface. The code probe was
+  backed out; this note remains to record that the corruption is not solved by
+  simply making tokenizer restoration error-safe inside `read.c`.
+
+## Threaded 200-Test Regression Visibility Target
+
+Lifecycle/preflight note:
+
+- target: make a 200-plus passing threaded core-regression frontier
+  reproducible while full `check-threaded` remains the broader parallel
+  failure/cascade target.
+- touched roots/buckets: no runtime roots or lifecycle buckets; this adds only
+  regression schedule/makefile plumbing.
+- owner source files: `GNUmakefile.in`, `src/test/regress/GNUmakefile`,
+  `src/test/regress/threaded_200_schedule`,
+  `MULTITHREADED_AGENT_REFERENCE.md`, and this Phase 12 state note.
+- legacy symbols/accessors: none.
+- repeated lifecycle operations: none.
+- checked primitive decision: no lifecycle primitive; the schedule is
+  serialized to keep the existing threaded temp-instance configuration while
+  separating feature-surface pass-rate visibility from current parallel
+  read-node/GUC crash frontiers.
+- validation impact: `gmake check-threaded-200` should run a fixed 208-test
+  threaded schedule that currently yields 203 passing tests and five known
+  failures (`transactions`, `object_address`, `tidscan`, `sequence`, and
+  `largeobject`). It intentionally excludes `guc`, `select_parallel`, and
+  `subscription`; full `check-threaded` and later Gate E2 hardening still own
+  those surfaces.
+
+Evidence:
+
+- A direct serialized pg_regress probe with `multithreaded = on` completed
+  208 tests with 5 failures, giving 203 passing threaded-regression tests.
+
+Validation:
+
+- `gmake check-threaded-200` completed the in-tree schedule and reported
+  5 failures out of 208 tests, giving 203 passing threaded-regression tests.
+- `gmake check-threaded-smoke` passed all 10 helper-free threaded smoke tests.
+- `git diff --check`, `gmake check-runtime-lifecycles`, and
+  `gmake check-global-lifetimes` passed.
