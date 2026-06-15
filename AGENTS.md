@@ -52,6 +52,16 @@ Quick lifecycle-ergonomics checklist for each substantial Phase 12 batch:
 If the answer to any of these is yes, implement that small lifecycle primitive
 first, then use it for the larger migration in the same slice.
 
+Standing instruction for resumed Phase 12 work: do not wait for another user
+prompt before applying this rule. When lifecycle bookkeeping is the limiting
+factor, inspect `src/backend/utils/init/backend_runtime_lifecycle.h`, the
+runtime bucket `.def` files, `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`,
+`MULTITHREADED_RUNTIME_OWNERS.tsv`, and
+`src/tools/runtime_lifecycle/check_runtime_lifecycles.pl` first. If a small
+macro, X-macro/table row, owner-map rule, or checker extension would let the
+next migration move a larger coherent group safely, make that lifecycle
+primitive the first code change in the slice and then migrate state through it.
+
 Before starting the next substantive Gate E2 coding slice, explicitly record
 the answer in `MULTITHREADED_PHASE12_STATE.md` under that slice's preflight.
 Do not start by moving another set of globals unless the preflight names the
