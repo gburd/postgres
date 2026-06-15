@@ -17207,6 +17207,82 @@ Validation:
 - `git diff --check`, `gmake check-runtime-lifecycles`, and
   `gmake check-global-lifetimes` passed.
 
+## Threaded Regression Two-Phase Deferral
+
+Lifecycle/preflight note:
+
+- target: keep full threaded `parallel_schedule` visibility moving past the
+  deterministic `prepared_xacts` hang while two-phase/SSI prepared transaction
+  correctness remains outside Milestone W.
+- touched roots/buckets: no runtime roots or lifecycle buckets; this changes
+  only `threaded_smoke.conf` startup policy for pg_regress temp clusters.
+- owner source files: `src/test/regress/threaded_smoke.conf`,
+  `src/test/regress/sql/prepared_xacts.sql`, and this Phase 12 state note.
+- legacy symbols/accessors: `max_prepared_transactions`,
+  `pg_prepared_xacts`, `PREPARE TRANSACTION`, `ROLLBACK PREPARED`, and
+  relation locks held by prepared transactions.
+- repeated lifecycle operations: none.
+- checked primitive decision: no new lifecycle primitive; use the existing
+  `prepared_xacts.sql` skip guard when `max_prepared_transactions < 2`.
+- validation impact: `gmake check-threaded` should no longer block forever on
+  `DROP TABLE pxtest1` after threaded mode allows `regress_foo5` to prepare
+  where process-mode SSI rejects it. If this deferral hides a Milestone W
+  dependency, ordinary SQL/transaction/reconnect smoke or later regression
+  groups will still fail without requiring prepared transactions. Full
+  two-phase prepared transaction support remains a later Gate E2 hardening
+  slice before the threaded runtime can claim broader PostgreSQL feature
+  parity.
+
+Evidence:
+
+- A full threaded regression run reached test 97 and then waited in
+  `prepared_xacts` on `DROP TABLE pxtest1`. Live inspection showed
+  `regress_foo5` still present in `pg_prepared_xacts`, holding relation locks
+  with no backend PID, which is normal for a prepared transaction.
+- Manually running `ROLLBACK PREPARED 'regress_foo5'` let that run continue
+  through later groups, proving the immediate frontier was the unsupported
+  two-phase/SSI prepared-transaction path rather than generic backend startup
+  or reconnect failure.
+
+## Threaded 150-Test Regression Visibility Target
+
+Lifecycle/preflight note:
+
+- target: make the current 150-passing-test threaded core-regression frontier
+  reproducible with a checked make target while the full `check-threaded`
+  target remains the broader failing visibility run.
+- touched roots/buckets: no runtime roots or lifecycle buckets; this adds only
+  regression schedule/makefile plumbing.
+- owner source files: `GNUmakefile`, `src/test/regress/GNUmakefile`,
+  `src/test/regress/threaded_150_schedule`,
+  `src/test/regress/threaded_smoke.conf`, and this Phase 12 state note.
+- legacy symbols/accessors: none.
+- repeated lifecycle operations: none.
+- checked primitive decision: no lifecycle primitive; this is test harness
+  plumbing around the existing threaded temp-instance configuration.
+- validation impact: `gmake check-threaded-150` should run a fixed 153-test
+  threaded schedule that currently yields 150 passing tests and three known
+  failures (`transactions`, `object_address`, and `tidscan`). If later runtime
+  changes regress teardown/startup/catalog state earlier than the current
+  frontier, this target should lose passes before the full `check-threaded`
+  target reaches the later postmaster-death cascade.
+
+Evidence:
+
+- A direct pg_regress run with the same schedule shape completed all 153 tests
+  with three failures: `transactions`, `object_address`, and `tidscan`.
+- The default full `gmake check-threaded` no longer hangs in `prepared_xacts`
+  with `max_prepared_transactions = 0`, and currently reaches 141 passing tests
+  before the later server-death cascade.
+
+Validation:
+
+- `gmake check-threaded-150` completed the schedule and reported 3 failures
+  out of 153 tests, giving the intended 150 passing threaded-regression tests.
+- `gmake check-threaded-smoke` passed all 10 helper-free threaded smoke tests.
+- `git diff --check`, `gmake check-runtime-lifecycles`, and
+  `gmake check-global-lifetimes` passed.
+
 ## Threaded Dynamic Library Init List Accessor
 
 Lifecycle/preflight note:

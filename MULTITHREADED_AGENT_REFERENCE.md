@@ -623,6 +623,19 @@ Important current files:
   keep the failure count and first failing surfaces visible without requiring
   callers to pass `TEMP_CONFIG` by hand.
 
+  The interim 150-pass threaded visibility target is:
+
+  ```sh
+  gmake check-threaded-150
+  ```
+
+  It runs `src/test/regress/threaded_150_schedule` with the same threaded temp
+  config. The schedule is intentionally narrower than full `check-threaded`:
+  it keeps the validated full-regression prefix, skips the currently crashing
+  members of the next group, and adds one independent later test. At the time
+  this note was added it completed 153 tests with 150 passes and three known
+  failures: `transactions`, `object_address`, and `tidscan`.
+
   If the same recursive target needs to be rerun, patch the build-tree binaries
   that are copied into each recreated temp install before rerunning. This has
   allowed recursive checks such as
