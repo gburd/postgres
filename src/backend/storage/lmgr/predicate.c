@@ -1562,18 +1562,25 @@ int
 GetSafeSnapshotBlockingPids(int blocked_pid, int *output, int output_size)
 {
 	int			num_written = 0;
+	PGPROC	   *blocked_proc;
+	ProcNumber	blocked_pgprocno;
 	dlist_iter	iter;
 	SERIALIZABLEXACT *blocking_sxact = NULL;
 
+	blocked_proc = BackendSignalPidGetProc(blocked_pid);
+	if (blocked_proc == NULL)
+		return 0;				/* session gone: definitely unblocked */
+	blocked_pgprocno = GetNumberFromPGProc(blocked_proc);
+
 	LWLockAcquire(SerializableXactHashLock, LW_SHARED);
 
-	/* Find blocked_pid's SERIALIZABLEXACT by linear search. */
+	/* Find the blocked backend's SERIALIZABLEXACT by linear search. */
 	dlist_foreach(iter, &PredXact->activeList)
 	{
 		SERIALIZABLEXACT *sxact =
 			dlist_container(SERIALIZABLEXACT, xactLink, iter.cur);
 
-		if (sxact->pid == blocked_pid)
+		if (sxact->pgprocno == blocked_pgprocno)
 		{
 			blocking_sxact = sxact;
 			break;

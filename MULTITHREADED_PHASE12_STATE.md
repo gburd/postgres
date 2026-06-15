@@ -18032,15 +18032,18 @@ Discovery/classification:
   documented direct `prove` commands in `MULTITHREADED_AGENT_REFERENCE.md`.
 - defer with invariant: full `src/test/isolation check
   TEMP_CONFIG=.../threaded_workers.conf` is excluded from this first stable
-  target because the discovery run hung after `read-only-anomaly` and
-  `read-only-anomaly-2`. This is safe for the core threaded runtime target
-  because the existing core regression `transactions`, `prepared_xacts`, and
-  backend-runtime TAP teardown/reconnect/cancel/terminate/FATAL guards still
-  cover the Gate E2-Core transaction and lifecycle invariants. If the
-  exclusion is wrong, the focused threaded TAP log guard, lifecycle checker,
-  global-lifetime scan, or core regression transaction tests should expose the
-  core failure. Focused isolation triage remains Phase 12/Gate E2-Core
-  follow-up before closeout, but not a prerequisite for this stable target.
+  target. Initial discovery hung in `read-only-anomaly-3`; the later
+  safe-snapshot blocker fix moved the full schedule forward, and the current
+  remaining stall is `deadlock-parallel`. This is safe for the core threaded
+  runtime target because the existing core regression `transactions`,
+  `prepared_xacts`, and backend-runtime TAP teardown/reconnect/cancel/
+  terminate/FATAL guards still cover the Gate E2-Core transaction and
+  lifecycle invariants, while the remaining stall is isolated to parallel
+  deadlock resolution. If the exclusion is wrong, the focused threaded TAP log
+  guard, lifecycle checker, global-lifetime scan, or core regression
+  transaction tests should expose the core failure. Focused
+  `deadlock-parallel` triage remains Phase 12/Gate E2-Core follow-up before
+  closeout, but not a prerequisite for this stable target.
 - defer with invariant: running the process-only
   `test_backend_runtime` SQL extension under threaded temp config is excluded
   because backend-model metadata correctly rejects it with "backend model
@@ -18071,3 +18074,53 @@ Validation:
   `MULTITHREADED_AGENT_REFERENCE.md` for TAP-capable validation.
 - The target is intentionally sequential and should not be run in parallel
   with other temp-install users.
+
+## Threaded Safe-Snapshot Isolation Wait Detection
+
+Lifecycle/preflight note:
+
+- target: fix the focused `read-only-anomaly-3` isolation hang under
+  `threaded_workers.conf` by making safe-snapshot blocker detection resolve
+  SQL-visible logical backend ids to `PGPROC`/`pgprocno`, matching the
+  thread-aware lock-manager blocker paths.
+- touched roots/buckets: no runtime root ownership changes; existing
+  `PgBackend` logical id / signal pid mapping and shared predicate-lock
+  `SERIALIZABLEXACT.pgprocno` state only.
+- owner source files: `src/backend/storage/lmgr/predicate.c`,
+  `src/backend/utils/adt/waitfuncs.c` as the SQL caller,
+  `src/backend/storage/lmgr/lock.c` and `src/backend/storage/ipc/procarray.c`
+  as the existing thread-aware blocker-resolution pattern, this Phase 12
+  state note, and validation docs if the result changes world-core
+  classification.
+- legacy symbols/accessors: `GetSafeSnapshotBlockingPids()`,
+  `pg_isolation_test_session_is_blocked()`, `BackendSignalPidGetProc()`,
+  `GetNumberFromPGProc()`, `PgCurrentBackendSignalPid()`,
+  `SERIALIZABLEXACT.pid`, and `SERIALIZABLEXACT.pgprocno`.
+- repeated lifecycle operations: none; this is blocker lookup semantics over
+  existing shared predicate-lock state, not init/adopt/reset/destroy logic.
+- checked primitive decision: no lifecycle primitive is needed. Reuse the
+  existing `PGPROC` logical-id mapping instead of adding runtime state or
+  checker exceptions.
+- validation impact: focused `read-only-anomaly-3` with
+  `TEMP_CONFIG=src/test/regress/threaded_workers.conf` should complete and
+  print the expected `<waiting ...>` step; rerun `gmake check-threaded-world-core`,
+  lifecycle/global scans, and `git diff --check`.
+
+Evidence:
+
+- Focused `read-only-anomaly-3` under `threaded_workers.conf` originally
+  timed out after `s1c`, where expected output should have reported
+  `s3r ... <waiting ...>`.
+- Live inspection showed the `s3` backend was in
+  `ProcWaitForSignal(WAIT_EVENT_SAFE_SNAPSHOT)`, but
+  `pg_isolation_test_session_is_blocked()` returned false for the SQL-visible
+  logical backend id.
+- `pg_isolation_test_session_is_blocked()` now resolves the blocked id with
+  `BackendSignalPidGetProc()`, and `GetSafeSnapshotBlockingPids()` matches the
+  corresponding `SERIALIZABLEXACT` by `pgprocno`.
+- Focused `read-only-anomaly-3` under `threaded_workers.conf` passed.
+- Full `src/test/isolation check TEMP_CONFIG=.../threaded_workers.conf` now
+  progresses past `read-only-anomaly-3` and later stalls at
+  `deadlock-parallel`, with blocker detection reporting the parallel
+  deadlock-participant sessions as blocked. That is the next focused
+  isolation/parallel-deadlock evidence item, not this safe-snapshot fix.

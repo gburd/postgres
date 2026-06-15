@@ -662,9 +662,10 @@ Important current files:
   threaded TAP log guard, retained-root warnings, lifecycle checker, or global
   lifetime scan exposes a core runtime dependency. Full
   `src/test/isolation check TEMP_CONFIG=.../threaded_workers.conf` is also
-  outside this target for now; the discovery run hung after the first two
-  specs, so it needs focused triage before it can become a stable Gate E2-Core
-  guard.
+  outside this target for now; the safe-snapshot hang in `read-only-anomaly-3`
+  is fixed, but the full schedule now reaches and stalls at
+  `deadlock-parallel`, so it needs focused parallel-deadlock triage before it
+  can become a stable Gate E2-Core guard.
 
   The interim 150-pass threaded visibility target is:
 
