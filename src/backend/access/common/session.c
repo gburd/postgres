@@ -52,13 +52,8 @@ void
 InitializeSession(void)
 {
 	CurrentSession = PgCurrentLegacySession();
-	if (CurrentSession == NULL)
-	{
-		CurrentSession = MemoryContextAllocZero(TopMemoryContext, sizeof(Session));
-		PgSessionSetLegacySession(CurrentPgSession, CurrentSession);
-	}
-	else
-		MemSet(CurrentSession, 0, sizeof(Session));
+	Assert(CurrentSession != NULL);
+	MemSet(CurrentSession, 0, sizeof(Session));
 }
 
 /*

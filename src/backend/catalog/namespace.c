@@ -51,6 +51,7 @@
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/catcache.h"
 #include "utils/guc_hooks.h"
@@ -322,12 +323,17 @@ CurrentLastSearchPathCacheEntryRef(void)
 static MemoryContext
 NamespaceSearchPathContext(void)
 {
-	if (SearchPathContext == NULL)
-		SearchPathContext = AllocSetContextCreate(TopMemoryContext,
-												  "namespace search path",
-												  ALLOCSET_DEFAULT_SIZES);
+	return PgRuntimeGetOwnedMemoryContextWithSizes(&SearchPathContext,
+												   "namespace search path",
+												   ALLOCSET_DEFAULT_SIZES);
+}
 
-	return SearchPathContext;
+static MemoryContext
+NamespaceSearchPathCacheContext(void)
+{
+	return PgRuntimeGetOwnedMemoryContextWithSizes(&SearchPathCacheContext,
+												   "search_path processing cache",
+												   ALLOCSET_DEFAULT_SIZES);
 }
 
 #define SearchPathCache (*CurrentSearchPathCacheRef())
@@ -356,9 +362,7 @@ spcache_init(void)
 	if (SearchPathCacheContext == NULL)
 	{
 		/* Make the context we'll keep search path cache hashtable in */
-		SearchPathCacheContext = AllocSetContextCreate(TopMemoryContext,
-													   "search_path processing cache",
-													   ALLOCSET_DEFAULT_SIZES);
+		(void) NamespaceSearchPathCacheContext();
 	}
 	else
 	{

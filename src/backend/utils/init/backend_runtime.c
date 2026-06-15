@@ -4014,18 +4014,17 @@ PgSessionGetLegacySession(PgSession *session)
 	return session->legacy_session;
 }
 
-void
-PgSessionSetLegacySession(PgSession *session, Session *legacy_session)
-{
-	if (session == NULL)
-		return;
-
-	session->legacy_session = legacy_session;
-}
-
 Session *
 PgCurrentLegacySession(void)
 {
+	if (CurrentPgSession == NULL)
+	{
+		if (TopMemoryContext == NULL)
+			return process_session.legacy_session;
+
+		return PgSessionGetLegacySession(&process_session);
+	}
+
 	return PgSessionGetLegacySession(CurrentPgSession);
 }
 

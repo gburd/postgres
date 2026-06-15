@@ -1957,9 +1957,11 @@ removing two more direct utility-cache allocation families from the retained
 `TopMemoryContext` tree.
 Follow-up namespace hardening moved derived search-path list cells from direct
 `TopMemoryContext` allocation into a session-owned namespace path context.
-Closed-session reset now deletes both the derived path-list context and the
-search-path cache context, so ordinary search-path recomputation no longer
-depends on retaining those list cells in the carrier top-memory tree.
+The namespace path context and search-path cache context are now both created
+through `PgRuntimeGetOwnedMemoryContextWithSizes()` and deleted by the checked
+`PgSession.namespace_state` closed-reset path, so ordinary search-path
+recomputation no longer depends on retaining those list/cache allocation
+families in the carrier top-memory tree.
 Follow-up session teardown hardening added `PgSessionResetClosedState()`.
 `dfmgr.c` now allocates the per-session dynamic-library `_PG_init()` replay
 list under `PgSession.dynamic_library_context` instead of `TopMemoryContext`,
@@ -1968,10 +1970,12 @@ their chance to use session state. This closes one concrete list-bearing
 `PgSession` reset/destroy rule. Follow-up bridge hardening moved the legacy
 `access/session.h` payload allocation behind `PgSessionGetLegacySession()`,
 records the dedicated `PgSession.legacy_session_context` in the lifecycle
-manifest, and deletes that context during `PgSessionResetClosedState()` after
-DSM/DSA detach paths have run. A matching execution cleanup slice now clears
-the retained `PgExecution.memory_contexts` slots at the end of backend-exit
-cleanup, after session/backend reset still has usable memory-context state.
+manifest, makes the process-session fallback use the same object-backed
+context path, and deletes that context during `PgSessionResetClosedState()`
+after DSM/DSA detach paths have run. A matching execution cleanup slice now
+clears the retained `PgExecution.memory_contexts` slots at the end of
+backend-exit cleanup, after session/backend reset still has usable
+memory-context state.
 Follow-up session cache teardown now also drops prepared statements and
 destroys the prepared-query hash, frees any leftover `ON COMMIT` action list,
 and destroys the remaining async local-channel hash after proc-exit async

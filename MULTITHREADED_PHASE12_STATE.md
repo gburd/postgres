@@ -15344,3 +15344,82 @@ cleanup, or fallback copy/adopt/reset pattern, land that checked primitive
 first and use it in the same coherent migration. Handwritten owner-adjacent
 code remains right for ordering-sensitive subsystem cleanup, but repeated
 clerical lifecycle mechanics should not grow another manual helper pair.
+
+## Namespace And Legacy Session Context Allocation
+
+Lifecycle/preflight note:
+
+- target: close three retained session-owned `TopMemoryContext` allocation
+  sites by routing namespace search-path contexts and the legacy
+  `access/session.h` compatibility payload through existing `PgSession`
+  object-owned context helpers;
+- touched roots/buckets: `PgSession.namespace_state` and
+  `PgSession.legacy_session_context`;
+- owner source files: `src/backend/catalog/namespace.c`,
+  `src/backend/access/common/session.c`,
+  `src/backend/utils/init/backend_runtime.c`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, `MULTITHREADED_PLAN.md`, and this state
+  log;
+- legacy symbols/accessors: `SearchPathContext`,
+  `SearchPathCacheContext`, `CurrentSession`, `LegacySessionContext`,
+  `PgCurrentNamespaceState()`, `PgCurrentLegacySession()`,
+  `PgCurrentLegacySessionRef()`, and `PgSessionGetLegacySession()`;
+- repeated lifecycle operations expected in this slice: three
+  create-on-demand object-owned memory contexts with existing checked
+  close-time deletion. The previous
+  `PgRuntimeGetOwnedMemoryContextWithSizes()` helper covers the two namespace
+  contexts, while `PgRuntimeGetOwnedMemoryContext()` already covers the
+  legacy session context;
+- checked primitive decision: no new lifecycle primitive is needed. Reuse the
+  existing owned-context helpers and the checked
+  `PG_RUNTIME_DELETE_MEMORY_CONTEXT` resets for
+  `PgSession.namespace_state.search_path_context`,
+  `PgSession.namespace_state.search_path_cache_context`, and
+  `PgSession.legacy_session_context`. Keep namespace cache reset and legacy
+  `Session` DSM/DSA detach semantics handwritten in the existing owner
+  files;
+- validation impact: run touched object builds for `namespace.o`,
+  `session.o`, runtime helper/teardown objects, and backend-runtime session
+  tests, then `git diff --check`, `gmake check-runtime-lifecycles`,
+  `gmake check-global-lifetimes`, full incremental `gmake -j8`,
+  backend-runtime regression/TAP, and a focused namespace/session smoke.
+
+Slice result:
+
+- `NamespaceSearchPathContext()` now creates the session-owned namespace path
+  context through `PgRuntimeGetOwnedMemoryContextWithSizes()`;
+- the search-path cache context is created through the same helper via
+  `NamespaceSearchPathCacheContext()`, while active cache resets still use the
+  existing `MemoryContextReset()` path;
+- `InitializeSession()` now always obtains the legacy `Session` payload
+  through `PgCurrentLegacySession()` and asserts the bridge exists before
+  clearing it;
+- `PgCurrentLegacySession()` now uses the `process_session` object fallback
+  when there is no current `PgSession`, so the no-current compatibility path
+  also allocates under `PgSession.legacy_session_context`;
+- the unused `PgSessionSetLegacySession()` setter was removed to keep legacy
+  payload ownership single-path;
+- the owner map now records `SearchPathContext`, `SearchPathCacheContext`,
+  and the object-backed `CurrentSession` fallback.
+
+Validation for the namespace and legacy session context allocation slice:
+
+- touched-object builds passed for `namespace.o`, `session.o`,
+  `backend_runtime.o`, `backend_runtime_teardown.o`, and
+  `test_backend_runtime_session.o`;
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 166 fields classified, 166
+  bucket definitions checked, 35 reset definitions checked, and 296 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- full incremental `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- after patching the recreated macOS temp-install install names and using the
+  repo-local `.perl5` `IPC::Run`, direct backend-runtime TAP passed for
+  `001_threaded_runtime.pl` and `002_threaded_bgworker_crash.pl`, 131 tests
+  total;
+- a focused live namespace/session smoke passed: it churned `search_path` more
+  than the cache reset threshold, resolved objects through the session-owned
+  path context, created and read a temporary table to exercise temp namespace
+  state, and ran a parallel-query-oriented table scan.

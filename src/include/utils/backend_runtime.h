@@ -3016,8 +3016,6 @@ extern void PgSessionResetClosedState(PgSession *session);
 extern void PgExecutionResetClosedState(PgExecution *execution);
 extern MemoryContext PgCurrentResourceOwnerMemoryContext(void);
 extern Session *PgSessionGetLegacySession(PgSession *session);
-extern void PgSessionSetLegacySession(PgSession *session,
-									   Session *legacy_session);
 extern Session *PgCurrentLegacySession(void);
 extern Session **PgCurrentLegacySessionRef(void);
 extern struct Port **PgConnectionProcPortRef(PgConnection *connection);
