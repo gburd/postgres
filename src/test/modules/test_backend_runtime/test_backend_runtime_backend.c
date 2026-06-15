@@ -4283,6 +4283,7 @@ test_backend_extension_module_state_is_backend_local(PG_FUNCTION_ARGS)
 	PgBackendExtensionModuleState *extension_modules;
 	char		backend1_archive_directory[] = "backend1_archive";
 	char		reset_archive_directory[] = "reset_archive";
+	MemoryContext reset_pg_stash_context = NULL;
 	bool		ok = true;
 
 	saved_backend = CurrentPgBackend;
@@ -4360,9 +4361,16 @@ test_backend_extension_module_state_is_backend_local(PG_FUNCTION_ARGS)
 			(struct AutoPrewarmSharedState *) &fake_backend_reset;
 		fake_backend_reset.extension_modules.pg_stash_advice_state =
 			(struct pgsa_shared_state *) &fake_backend_reset;
+		reset_pg_stash_context =
+			AllocSetContextCreate(TopMemoryContext,
+								  "test pg_stash_advice context",
+								  ALLOCSET_SMALL_SIZES);
+		fake_backend_reset.extension_modules.pg_stash_advice_context =
+			reset_pg_stash_context;
 		fake_backend_reset.extension_modules.basic_archive_archive_directory =
 			reset_archive_directory;
 		PgBackendResetClosedState(&fake_backend_reset);
+		reset_pg_stash_context = NULL;
 		ok = ok &&
 			strcmp(fake_backend_reset.extension_modules.basic_archive_archive_directory,
 				   "") == 0;
@@ -4370,12 +4378,16 @@ test_backend_extension_module_state_is_backend_local(PG_FUNCTION_ARGS)
 			fake_backend_reset.extension_modules.pg_prewarm_autoprewarm_state == NULL;
 		ok = ok &&
 			fake_backend_reset.extension_modules.pg_stash_advice_state == NULL;
+		ok = ok &&
+			fake_backend_reset.extension_modules.pg_stash_advice_context == NULL;
 
 		CurrentPgBackend = saved_backend;
 	}
 	PG_CATCH();
 	{
 		CurrentPgBackend = saved_backend;
+		if (reset_pg_stash_context != NULL)
+			MemoryContextDelete(reset_pg_stash_context);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();

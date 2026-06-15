@@ -15774,3 +15774,62 @@ Validation for the procedural-language allocation context parent slice:
   modules, direct threaded-runtime TAP passed for
   `001_threaded_runtime.pl` and `002_threaded_bgworker_crash.pl`, 131 tests
   total.
+
+## pg_stash_advice Context Allocation Helper
+
+Lifecycle/preflight note:
+
+- target: close the direct `TopMemoryContext` allocation for the
+  backend-local `pg_stash_advice` attachment context;
+- touched root/bucket: existing `PgBackend.extension_modules`, specifically
+  `pg_stash_advice_context`;
+- owner source files: `contrib/pg_stash_advice/pg_stash_advice.c`,
+  `src/test/modules/test_backend_runtime/test_backend_runtime_backend.c`, and
+  this state log;
+- legacy symbols/accessors: `pg_stash_advice_mcxt` through the existing
+  `PgCurrentBackendExtensionModuleState()` compatibility macro;
+- repeated lifecycle operations expected in this slice: one existing
+  backend-owned memory context. Existing
+  `PgRuntimeGetOwnedMemoryContextWithSizes()` covers create-on-demand
+  allocation, and the existing `PgBackendResetExtensionModuleClosedState()`
+  reset path already deletes the context after detaching pg_stash_advice
+  dshash/DSA attachments;
+- checked primitive decision: no new lifecycle primitive is needed because the
+  field, owner-map row, lifecycle row, and delete-on-reset path already exist.
+  This slice only routes the allocation through the checked owner slot and
+  strengthens the backend-runtime reset test with a real context;
+- `pg_plan_advice` was deliberately not included in this backend-owned batch.
+  Its remaining `pgpa_memory_context` backs a module-wide advisor hook list,
+  so the correct future owner is a runtime/module extension bucket rather than
+  a backend or session bucket.
+
+Slice result:
+
+- `pgsa_attach()` now creates `pg_stash_advice_mcxt` through
+  `PgRuntimeGetOwnedMemoryContextWithSizes(&pg_stash_advice_mcxt, ...)`,
+  preserving the historical local name while routing the context through the
+  manifest-checked `PgBackend.extension_modules.pg_stash_advice_context`
+  owner slot;
+- the backend-runtime extension-module test now gives the closed-backend reset
+  path a real temporary `pg_stash_advice` context and proves reset deletes and
+  clears it.
+
+Validation for the pg_stash_advice context allocation helper slice:
+
+- touched-object builds passed for `contrib/pg_stash_advice/pg_stash_advice.o`
+  and `test_backend_runtime_backend.o`;
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 166 fields classified, 166
+  bucket definitions checked, 35 reset definitions checked, and 307 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- full incremental `gmake -j8` passed;
+- `gmake -C contrib/pg_stash_advice clean all check` passed both regression
+  tests;
+- clean `gmake -C src/test/modules/test_backend_runtime clean all check`
+  passed;
+- after installing the rebuilt test module into `tmp_install` and patching
+  macOS install names, direct threaded-runtime TAP passed for
+  `001_threaded_runtime.pl` and `002_threaded_bgworker_crash.pl`, 131 tests
+  total.

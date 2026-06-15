@@ -223,10 +223,10 @@ pgsa_attach(void)
 	 * Create a memory context to make sure that any control structures
 	 * allocated in local memory are sufficiently persistent.
 	 */
-	if (pg_stash_advice_mcxt == NULL)
-		pg_stash_advice_mcxt = AllocSetContextCreate(TopMemoryContext,
-													 "pg_stash_advice",
-													 ALLOCSET_DEFAULT_SIZES);
+	pg_stash_advice_mcxt =
+		PgRuntimeGetOwnedMemoryContextWithSizes(&pg_stash_advice_mcxt,
+												"pg_stash_advice",
+												ALLOCSET_DEFAULT_SIZES);
 	oldcontext = MemoryContextSwitchTo(pg_stash_advice_mcxt);
 
 	/* Attach to the fixed-size state object if not already done. */
