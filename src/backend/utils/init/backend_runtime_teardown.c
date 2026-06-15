@@ -735,6 +735,8 @@ PgSessionResetFunctionManagerClosedState(PgSession *session)
 		DestroyCachedFunctionHash(session->function_manager.cached_function_hash);
 		session->function_manager.cached_function_hash = NULL;
 	}
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(
+		session->function_manager.function_manager_context);
 }
 
 static void

@@ -68,6 +68,25 @@ PgCurrentCatCacheHeaderRef(void)
 	return &PgCurrentSessionCatalogLookupState()->cat_cache_header;
 }
 
+MemoryContext *
+PgCurrentFunctionManagerMemoryContextRef(void)
+{
+	return &PgCurrentSessionFunctionManagerState()->function_manager_context;
+}
+
+MemoryContext
+PgCurrentFunctionManagerMemoryContext(void)
+{
+	MemoryContext *context = PgCurrentFunctionManagerMemoryContextRef();
+
+	if (*context == NULL)
+		*context = AllocSetContextCreate(TopMemoryContext,
+										 "FunctionManagerMemoryContext",
+										 ALLOCSET_DEFAULT_SIZES);
+
+	return *context;
+}
+
 HTAB **
 PgCurrentCFuncHashRef(void)
 {

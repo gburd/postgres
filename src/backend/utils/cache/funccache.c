@@ -31,6 +31,7 @@
 #include "utils/backend_runtime.h"
 #include "utils/funccache.h"
 #include "utils/hsearch.h"
+#include "utils/memutils.h"
 #include "utils/syscache.h"
 
 
@@ -55,7 +56,8 @@ static void delete_function_storage(CachedFunction *func);
 /*
  * Initialize the hash table on first use.
  *
- * The hash table will be in TopMemoryContext regardless of caller's context.
+ * The hash table is session-owned and allocated in the function-manager
+ * memory context regardless of caller's context.
  */
 static void
 cfunc_hashtable_init(void)
@@ -69,10 +71,12 @@ cfunc_hashtable_init(void)
 	ctl.entrysize = sizeof(CachedFunctionHashEntry);
 	ctl.hash = cfunc_hash;
 	ctl.match = cfunc_match;
+	ctl.hcxt = PgCurrentFunctionManagerMemoryContext();
 	cfunc_hashtable = hash_create("Cached function hash",
 								  FUNCS_PER_USER,
 								  &ctl,
-								  HASH_ELEM | HASH_FUNCTION | HASH_COMPARE);
+								  HASH_ELEM | HASH_FUNCTION | HASH_COMPARE |
+								  HASH_CONTEXT);
 }
 
 /*
@@ -183,13 +187,16 @@ cfunc_hashtable_insert(CachedFunction *function,
 		elog(WARNING, "trying to insert a function that already exists");
 
 	/*
-	 * If there's a callResultType, copy it into TopMemoryContext.  If we're
-	 * unlucky enough for that to fail, leave the entry with null
-	 * callResultType, which will probably never match anything.
+	 * If there's a callResultType, copy it into the session function-manager
+	 * context.  If we're unlucky enough for that to fail, leave the entry with
+	 * null callResultType, which will probably never match anything.
 	 */
 	if (func_key->callResultType)
 	{
-		MemoryContext oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+		MemoryContext oldcontext;
+
+		oldcontext =
+			MemoryContextSwitchTo(PgCurrentFunctionManagerMemoryContext());
 
 		hentry->key.callResultType = NULL;
 		hentry->key.callResultType = CreateTupleDescCopy(func_key->callResultType);
@@ -614,14 +621,15 @@ recheck:
 
 		/*
 		 * Create the new function struct, if not done already.  The function
-		 * cache entry will be kept for the life of the backend, so put it in
-		 * TopMemoryContext.
+		 * cache entry is session-owned, so allocate the wrapper in the
+		 * function-manager memory context.
 		 */
 		Assert(cacheEntrySize >= sizeof(CachedFunction));
 		if (function == NULL)
 		{
 			function = (CachedFunction *)
-				MemoryContextAllocZero(TopMemoryContext, cacheEntrySize);
+				MemoryContextAllocZero(PgCurrentFunctionManagerMemoryContext(),
+									   cacheEntrySize);
 			new_function = true;
 		}
 		else

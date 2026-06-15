@@ -3264,14 +3264,18 @@ test_session_prepared_statement_state_is_session_local(PG_FUNCTION_ARGS)
 	PgSession	fake_session1;
 	PgSession	fake_session2;
 	HTAB	   *saved_prepared_queries;
+	MemoryContext saved_function_manager_context;
 	HTAB	   *saved_c_func_hash;
 	HTAB	   *saved_cached_function_hash;
 	HTAB	   *session1_marker;
 	HTAB	   *session2_marker;
+	MemoryContext session1_context_marker;
+	MemoryContext session2_context_marker;
 	bool		ok = true;
 
 	saved_session = CurrentPgSession;
 	saved_prepared_queries = *PgCurrentPreparedQueriesRef();
+	saved_function_manager_context = *PgCurrentFunctionManagerMemoryContextRef();
 	saved_c_func_hash = *PgCurrentCFuncHashRef();
 	saved_cached_function_hash = *PgCurrentCachedFunctionHashRef();
 	MemSet(&fake_session1, 0, sizeof(fake_session1));
@@ -3280,43 +3284,54 @@ test_session_prepared_statement_state_is_session_local(PG_FUNCTION_ARGS)
 	test_copy_current_user_identity(&fake_session2);
 	session1_marker = (HTAB *) &fake_session1;
 	session2_marker = (HTAB *) &fake_session2;
+	session1_context_marker = (MemoryContext) &fake_session1;
+	session2_context_marker = (MemoryContext) &fake_session2;
 
 	PG_TRY();
 	{
 		PgSetCurrentSession(&fake_session1);
 		ok = ok && *PgCurrentPreparedQueriesRef() == NULL;
+		ok = ok && *PgCurrentFunctionManagerMemoryContextRef() == NULL;
 		ok = ok && *PgCurrentCFuncHashRef() == NULL;
 		ok = ok && *PgCurrentCachedFunctionHashRef() == NULL;
 		*PgCurrentPreparedQueriesRef() = session1_marker;
+		*PgCurrentFunctionManagerMemoryContextRef() = session1_context_marker;
 		*PgCurrentCFuncHashRef() = session1_marker;
 		*PgCurrentCachedFunctionHashRef() = session1_marker;
 		ok = ok && *PgCurrentPreparedQueriesRef() == session1_marker;
+		ok = ok && *PgCurrentFunctionManagerMemoryContextRef() == session1_context_marker;
 		ok = ok && *PgCurrentCFuncHashRef() == session1_marker;
 		ok = ok && *PgCurrentCachedFunctionHashRef() == session1_marker;
 
 		PgSetCurrentSession(&fake_session2);
 		ok = ok && *PgCurrentPreparedQueriesRef() == NULL;
+		ok = ok && *PgCurrentFunctionManagerMemoryContextRef() == NULL;
 		ok = ok && *PgCurrentCFuncHashRef() == NULL;
 		ok = ok && *PgCurrentCachedFunctionHashRef() == NULL;
 		*PgCurrentPreparedQueriesRef() = session2_marker;
+		*PgCurrentFunctionManagerMemoryContextRef() = session2_context_marker;
 		*PgCurrentCFuncHashRef() = session2_marker;
 		*PgCurrentCachedFunctionHashRef() = session2_marker;
 		ok = ok && *PgCurrentPreparedQueriesRef() == session2_marker;
+		ok = ok && *PgCurrentFunctionManagerMemoryContextRef() == session2_context_marker;
 		ok = ok && *PgCurrentCFuncHashRef() == session2_marker;
 		ok = ok && *PgCurrentCachedFunctionHashRef() == session2_marker;
 
 		PgSetCurrentSession(&fake_session1);
 		ok = ok && *PgCurrentPreparedQueriesRef() == session1_marker;
+		ok = ok && *PgCurrentFunctionManagerMemoryContextRef() == session1_context_marker;
 		ok = ok && *PgCurrentCFuncHashRef() == session1_marker;
 		ok = ok && *PgCurrentCachedFunctionHashRef() == session1_marker;
 
 		PgSetCurrentSession(&fake_session2);
 		ok = ok && *PgCurrentPreparedQueriesRef() == session2_marker;
+		ok = ok && *PgCurrentFunctionManagerMemoryContextRef() == session2_context_marker;
 		ok = ok && *PgCurrentCFuncHashRef() == session2_marker;
 		ok = ok && *PgCurrentCachedFunctionHashRef() == session2_marker;
 
 		PgSetCurrentSession(saved_session);
 		*PgCurrentPreparedQueriesRef() = saved_prepared_queries;
+		*PgCurrentFunctionManagerMemoryContextRef() = saved_function_manager_context;
 		*PgCurrentCFuncHashRef() = saved_c_func_hash;
 		*PgCurrentCachedFunctionHashRef() = saved_cached_function_hash;
 	}
@@ -3324,6 +3339,7 @@ test_session_prepared_statement_state_is_session_local(PG_FUNCTION_ARGS)
 	{
 		PgSetCurrentSession(saved_session);
 		*PgCurrentPreparedQueriesRef() = saved_prepared_queries;
+		*PgCurrentFunctionManagerMemoryContextRef() = saved_function_manager_context;
 		*PgCurrentCFuncHashRef() = saved_c_func_hash;
 		*PgCurrentCachedFunctionHashRef() = saved_cached_function_hash;
 		PG_RE_THROW();
@@ -3611,9 +3627,15 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	fake_session.parser.operator_lookup_cache =
 		hash_create("test operator lookup cache", 8, &hash_ctl,
 					HASH_ELEM | HASH_BLOBS);
+	fake_session.function_manager.function_manager_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test function manager cache context",
+							  ALLOCSET_SMALL_SIZES);
+	hash_ctl.hcxt = fake_session.function_manager.function_manager_context;
 	fake_session.function_manager.c_func_hash =
 		hash_create("test C function cache", 8, &hash_ctl,
-					HASH_ELEM | HASH_BLOBS);
+					HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	hash_ctl.hcxt = NULL;
 	fake_session.sequence.seqhashtab =
 		hash_create("test sequence cache", 8, &hash_ctl,
 					HASH_ELEM | HASH_BLOBS);
@@ -3827,6 +3849,7 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && fake_session.xact_callbacks.subxact_callbacks == NULL;
 	ok = ok && fake_session.xact_callbacks.xact_callback_context == NULL;
 	ok = ok && fake_session.parser.operator_lookup_cache == NULL;
+	ok = ok && fake_session.function_manager.function_manager_context == NULL;
 	ok = ok && fake_session.function_manager.c_func_hash == NULL;
 	ok = ok && fake_session.function_manager.cached_function_hash == NULL;
 	ok = ok && fake_session.sequence.seqhashtab == NULL;

@@ -2074,6 +2074,7 @@ PgSessionInitializeFunctionManagerState(PgSessionFunctionManagerState *function_
 {
 	Assert(function_manager != NULL);
 
+	function_manager->function_manager_context = NULL;
 	function_manager->c_func_hash = NULL;
 	function_manager->cached_function_hash = NULL;
 }

@@ -1634,6 +1634,7 @@ typedef struct PgSessionPlannerMethodState
 
 typedef struct PgSessionFunctionManagerState
 {
+	MemoryContext function_manager_context;
 	HTAB	   *c_func_hash;
 	HTAB	   *cached_function_hash;
 } PgSessionFunctionManagerState;
@@ -2643,6 +2644,8 @@ extern bool *PgCurrentEchoQueryRef(void);
 extern bool *PgCurrentUseSemiNewlineNewlineRef(void);
 extern MemoryContext *PgCurrentRowDescriptionContextRef(void);
 extern StringInfoData *PgCurrentRowDescriptionBufRef(void);
+extern MemoryContext *PgCurrentFunctionManagerMemoryContextRef(void);
+extern MemoryContext PgCurrentFunctionManagerMemoryContext(void);
 extern HTAB **PgCurrentCFuncHashRef(void);
 extern HTAB **PgCurrentCachedFunctionHashRef(void);
 extern CatCache **PgCurrentSysCacheArray(void);

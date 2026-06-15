@@ -13771,3 +13771,86 @@ Validation for the catalog lookup reset ownership split:
   `002_threaded_bgworker_crash.pl`, 131 tests total, with patched macOS
   install-name paths, repo-local `.perl5` `PERL5LIB`, and explicit
   `PG_REGRESS=src/test/regress/pg_regress`.
+
+## Function Manager Session Context Ownership
+
+Lifecycle/preflight note:
+
+- target: Gate E2 retained `TopMemoryContext` ownership in the function-manager
+  caches after the failed root-context reclamation probe;
+- touched roots/buckets: `PgSession.function_manager`, specifically the fmgr
+  C-function hash, funccache hash, copied funccache tuple descriptors, and
+  cached-function wrapper allocations;
+- owner source files: `src/backend/utils/cache/backend_runtime_cache.c`,
+  `src/backend/utils/cache/funccache.c`, `src/backend/utils/fmgr/fmgr.c`,
+  `src/backend/utils/init/backend_runtime.c`,
+  `src/backend/utils/init/backend_runtime_teardown.c`, and
+  `src/test/modules/test_backend_runtime/test_backend_runtime_session.c`;
+- legacy symbols/accessors: `CFuncHash`, `cfunc_hashtable`,
+  `PgCurrentCFuncHashRef()`, `PgCurrentCachedFunctionHashRef()`, and the new
+  function-manager memory-context accessor;
+- repeated lifecycle operations: one object-owned allocation context plus two
+  hash roots. The existing checked `PgSessionResetClosedState()` session reset
+  bucket and `PG_RUNTIME_DELETE_MEMORY_CONTEXT` teardown action cover the
+  close-time lifecycle. The allocation sites remain handwritten in fmgr and
+  funccache because language-specific compile callbacks deliberately keep
+  their current-context semantics;
+- checked primitive decision: no new generic primitive is needed for this
+  single owner-specific context. Reuse the existing checked session reset
+  bucket row, the lifecycle manifest, and `PG_RUNTIME_DELETE_MEMORY_CONTEXT`;
+- validation impact: run touched object builds for the cache/fmgr/runtime/test
+  objects, `gmake check-runtime-lifecycles`, `gmake
+  check-global-lifetimes`, `test_backend_runtime`, full incremental build, and
+  the threaded backend-runtime TAP.
+
+Slice:
+
+- `PgSession.function_manager` now carries a dedicated
+  `function_manager_context` and `backend_runtime_cache.c` exposes
+  `PgCurrentFunctionManagerMemoryContextRef()` plus the create-on-demand
+  `PgCurrentFunctionManagerMemoryContext()` accessor;
+- `fmgr.c` creates the external C-function hash under that session-owned
+  context instead of as a direct `TopMemoryContext` child;
+- `funccache.c` creates the cached-function hash under the same context and
+  allocates copied call-result tuple descriptors plus `CachedFunction` wrapper
+  structs there. Language-specific compile callbacks deliberately keep their
+  existing current-context semantics because PL/pgSQL and SQL-language cache
+  callbacks build their own child contexts;
+- closed-session reset destroys the two hash roots and then deletes the
+  function-manager context, leaving dynamic-library handles/runtime-owned
+  metadata outside the bucket;
+- the lifecycle manifest and owner map now record the function-manager context
+  as the owner for fmgr/funccache hash storage, copied tuple descriptors, and
+  cached-function wrappers;
+- the backend-runtime session tests now verify that the context pointer is
+  session-local and that closed-session reset deletes a real context-backed
+  C-function hash.
+
+Validation for the function-manager session context ownership slice:
+
+- `git diff --check` passed;
+- touched-object builds passed for `backend_runtime_cache.o`, `funccache.o`,
+  `fmgr.o`, `backend_runtime.o`, `backend_runtime_teardown.o`, and
+  `test_backend_runtime_session.o`;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 223 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- full incremental `gmake -j8` passed;
+- the first direct threaded TAP run after the installed-header layout change
+  crashed in `lappend()` while loading `test_backend_runtime_threaded`;
+  `lldb` showed the crash in `remember_module_session_init()` when appending
+  to `CurrentPgSession->dynamic_library_inits`. This matched the documented
+  stale-object risk after `backend_runtime.h` layout changes rather than a new
+  function-manager ownership bug;
+- the backend clean/generated-header recovery from `AGENTS.md` was run
+  (`gmake -C src/backend clean`, backend utility generated outputs, node
+  support/header symlinks, then `gmake -j8`);
+- after the clean rebuild, `gmake check-runtime-lifecycles`, `gmake
+  check-global-lifetimes`, and `gmake -C
+  src/test/modules/test_backend_runtime clean all check` passed;
+- after patching the recreated macOS temp-install install names, direct
+  backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with repo-local `.perl5`
+  `PERL5LIB` and explicit `PG_REGRESS=src/test/regress/pg_regress`.

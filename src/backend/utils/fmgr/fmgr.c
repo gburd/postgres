@@ -553,10 +553,11 @@ record_C_func(HeapTuple procedureTuple,
 
 		hash_ctl.keysize = sizeof(Oid);
 		hash_ctl.entrysize = sizeof(CFuncHashTabEntry);
+		hash_ctl.hcxt = PgCurrentFunctionManagerMemoryContext();
 		CFuncHash = hash_create("CFuncHash",
 								100,
 								&hash_ctl,
-								HASH_ELEM | HASH_BLOBS);
+								HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	}
 
 	entry = (CFuncHashTabEntry *)
