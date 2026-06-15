@@ -1889,6 +1889,11 @@ missing-attribute cache hash tables under a backend-owned
 `UtilityCacheContext`, keeping the existing hash reset semantics while
 removing two more direct utility-cache allocation families from the retained
 `TopMemoryContext` tree.
+Follow-up namespace hardening moved derived search-path list cells from direct
+`TopMemoryContext` allocation into a session-owned namespace path context.
+Closed-session reset now deletes both the derived path-list context and the
+search-path cache context, so ordinary search-path recomputation no longer
+depends on retaining those list cells in the carrier top-memory tree.
 Follow-up session teardown hardening added `PgSessionResetClosedState()`.
 `dfmgr.c` now allocates the per-session dynamic-library `_PG_init()` replay
 list under `PgSession.dynamic_library_context` instead of `TopMemoryContext`,

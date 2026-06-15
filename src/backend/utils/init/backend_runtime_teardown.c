@@ -1080,8 +1080,11 @@ PgSessionResetNamespaceClosedState(PgSession *session)
 	/*
 	 * Normal namespace cleanup owns temp-namespace relation removal and GUC
 	 * cleanup owns namespace_search_path_value.  Closed-session reset only
-	 * releases the search-path cache context and clears the remaining slots.
+	 * releases the derived search-path storage/cache contexts and clears the
+	 * remaining slots.
 	 */
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(
+		session->namespace_state.search_path_context);
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(
 		session->namespace_state.search_path_cache_context);
 	PgSessionInitializeNamespaceState(&session->namespace_state);

@@ -1943,6 +1943,7 @@ typedef struct PgSessionNamespaceState
 	Oid			namespace_user;
 	bool		base_search_path_valid;
 	bool		search_path_cache_valid;
+	MemoryContext search_path_context;
 	MemoryContext search_path_cache_context;
 	Oid			my_temp_namespace;
 	Oid			my_temp_toast_namespace;

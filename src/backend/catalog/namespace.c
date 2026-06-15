@@ -123,7 +123,8 @@
  * we have to be willing to recompute the path when current userid changes.
  * namespaceUser is the userid the path has been computed for.
  *
- * Note: all data pointed to by these List variables is in TopMemoryContext.
+ * Note: all data pointed to by these List variables is in the current
+ * session's namespace search-path context.
  *
  * activePathGeneration is incremented whenever the effective values of
  * activeSearchPath/activeCreationNamespace/activeTempCreationPending change.
@@ -170,6 +171,8 @@
  */
 #define searchPathCacheValid \
 	(PgCurrentNamespaceState()->search_path_cache_valid)
+#define SearchPathContext \
+	(PgCurrentNamespaceState()->search_path_context)
 #define SearchPathCacheContext \
 	(PgCurrentNamespaceState()->search_path_cache_context)
 
@@ -314,6 +317,17 @@ CurrentLastSearchPathCacheEntryRef(void)
 {
 	return (SearchPathCacheEntry **)
 		&PgCurrentNamespaceState()->last_search_path_cache_entry;
+}
+
+static MemoryContext
+NamespaceSearchPathContext(void)
+{
+	if (SearchPathContext == NULL)
+		SearchPathContext = AllocSetContextCreate(TopMemoryContext,
+												  "namespace search path",
+												  ALLOCSET_DEFAULT_SIZES);
+
+	return SearchPathContext;
 }
 
 #define SearchPathCache (*CurrentSearchPathCacheRef())
@@ -4412,8 +4426,8 @@ recomputeNamespacePath(void)
 
 		pathChanged = true;
 
-		/* Must save OID list in permanent storage. */
-		oldcxt = MemoryContextSwitchTo(TopMemoryContext);
+		/* Must save OID list in session-owned storage. */
+		oldcxt = MemoryContextSwitchTo(NamespaceSearchPathContext());
 		newpath = list_copy(entry->finalPath);
 		MemoryContextSwitchTo(oldcxt);
 
@@ -4834,7 +4848,7 @@ InitializeSearchPath(void)
 		 */
 		MemoryContext oldcxt;
 
-		oldcxt = MemoryContextSwitchTo(TopMemoryContext);
+		oldcxt = MemoryContextSwitchTo(NamespaceSearchPathContext());
 		baseSearchPath = list_make1_oid(PG_CATALOG_NAMESPACE);
 		MemoryContextSwitchTo(oldcxt);
 		baseCreationNamespace = PG_CATALOG_NAMESPACE;

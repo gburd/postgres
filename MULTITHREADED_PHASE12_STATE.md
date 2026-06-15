@@ -14398,3 +14398,76 @@ Validation for the threaded SHOW GUC lock narrowing slice:
   backend-runtime TAP passed for `001_threaded_runtime.pl` and
   `002_threaded_bgworker_crash.pl`, 131 tests total, with repo-local `.perl5`
   `PERL5LIB` and explicit `PG_REGRESS=src/test/regress/pg_regress`.
+
+## Namespace Search-Path Context Ownership
+
+Lifecycle/preflight note:
+
+- target: close another concrete Gate E2 retained `TopMemoryContext`
+  allocation family by moving derived namespace search-path lists into
+  `PgSession.namespace_state`;
+- touched roots/buckets: `PgSession.namespace_state`, specifically the
+  derived active/base search-path list storage and the namespace closed-reset
+  path;
+- owner source files: `src/backend/catalog/namespace.c`,
+  `src/backend/utils/init/backend_runtime.c`,
+  `src/backend/utils/init/backend_runtime_teardown.c`,
+  `src/test/modules/test_backend_runtime/test_backend_runtime_session.c`,
+  `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, `MULTITHREADED_PLAN.md`, and this state
+  log;
+- legacy symbols/accessors: `baseSearchPath`, `activeSearchPath`,
+  `TopMemoryContext`, `PgCurrentNamespaceState()`, and
+  `PgSessionResetNamespaceClosedState()`;
+- repeated lifecycle operations: one session-owned memory context that owns
+  derived namespace path lists and is deleted during closed-session reset. The
+  existing `PG_RUNTIME_DELETE_MEMORY_CONTEXT` action covers the close-time
+  delete-and-null rule, and the allocation/replacement ordering remains
+  namespace-specific;
+- checked primitive decision: reuse the existing `PgSession.namespace_state`
+  lifecycle row, ordered session reset table, and owner-map validation. No new
+  lifecycle primitive is needed because this is one semantic namespace bucket,
+  not a family of repeated helper bodies;
+- validation impact: run touched object builds for `namespace.o`,
+  `backend_runtime.o`, `backend_runtime_teardown.o`, and
+  `test_backend_runtime_session.o`, then `git diff --check`,
+  `gmake check-runtime-lifecycles`, `gmake check-global-lifetimes`, full
+  `gmake -j8`, the backend-runtime regression, and direct threaded
+  backend-runtime TAP.
+
+Slice:
+
+- `PgSessionNamespaceState` now owns `search_path_context`, a session-owned
+  parent for derived namespace search-path list cells;
+- `recomputeNamespacePath()` and bootstrap `InitializeSearchPath()` allocate
+  `baseSearchPath` list cells in that context instead of directly in
+  `TopMemoryContext`;
+- `PgSessionAdoptEarlyNamespaceState()` deletes any early fallback namespace
+  path/cache contexts before resetting fallback storage, so early derived
+  state cannot be silently stranded;
+- `PgSessionResetNamespaceClosedState()` deletes both the derived path-list
+  context and the search-path cache context before reinitializing the
+  namespace bucket;
+- `test_session_reset_closed_state()` now allocates its fake active/base path
+  list inside a namespace path context and verifies closed-session reset clears
+  that context slot;
+- the lifecycle manifest and owner map record `baseSearchPath`/`activeSearchPath`
+  list-cell ownership under `PgSession.namespace_state`.
+
+Validation for the namespace search-path context ownership slice:
+
+- touched-object builds passed for `namespace.o`, `backend_runtime.o`,
+  `backend_runtime_teardown.o`, and `test_backend_runtime_session.o`;
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 238 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- after backend clean and generated-header recovery for the installed
+  `backend_runtime.h` layout change, full `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- after patching the recreated macOS temp-install install names, direct
+  backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with repo-local `.perl5`
+  `PERL5LIB` and explicit `PG_REGRESS=src/test/regress/pg_regress`.

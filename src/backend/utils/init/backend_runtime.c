@@ -2519,6 +2519,7 @@ PgSessionInitializeNamespaceState(PgSessionNamespaceState *namespace_state)
 	namespace_state->namespace_user = InvalidOid;
 	namespace_state->base_search_path_valid = true;
 	namespace_state->search_path_cache_valid = false;
+	namespace_state->search_path_context = NULL;
 	namespace_state->search_path_cache_context = NULL;
 	namespace_state->my_temp_namespace = InvalidOid;
 	namespace_state->my_temp_toast_namespace = InvalidOid;
@@ -2540,6 +2541,9 @@ PgSessionAdoptEarlyNamespaceState(PgSession *session)
 		PgSessionInitializeNamespaceState(&early_session_namespace);
 
 	namespace_search_path_value = early_session_namespace.namespace_search_path_value;
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(early_session_namespace.search_path_context);
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(
+		early_session_namespace.search_path_cache_context);
 	PgSessionInitializeNamespaceState(&session->namespace_state);
 	session->namespace_state.namespace_search_path_value =
 		namespace_search_path_value;

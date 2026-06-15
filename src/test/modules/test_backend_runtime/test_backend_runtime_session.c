@@ -3748,7 +3748,14 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	dlist_init(&fake_session.plan_cache.saved_plan_list);
 	dlist_init(&fake_session.plan_cache.cached_expression_list);
 	fake_session.namespace_state.initialized = true;
+	fake_session.namespace_state.search_path_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test namespace search path",
+							  ALLOCSET_SMALL_SIZES);
+	oldcontext = MemoryContextSwitchTo(
+		fake_session.namespace_state.search_path_context);
 	fake_session.namespace_state.active_search_path = list_make1_oid(BOOLOID);
+	MemoryContextSwitchTo(oldcontext);
 	fake_session.namespace_state.active_creation_namespace = BOOLOID;
 	fake_session.namespace_state.active_path_generation = 42;
 	fake_session.namespace_state.base_search_path =
@@ -3900,6 +3907,7 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && fake_session.namespace_state.namespace_user == InvalidOid;
 	ok = ok && fake_session.namespace_state.base_search_path_valid;
 	ok = ok && !fake_session.namespace_state.search_path_cache_valid;
+	ok = ok && fake_session.namespace_state.search_path_context == NULL;
 	ok = ok && fake_session.namespace_state.search_path_cache_context == NULL;
 	ok = ok && fake_session.namespace_state.my_temp_namespace == InvalidOid;
 	ok = ok && fake_session.namespace_state.my_temp_toast_namespace == InvalidOid;
