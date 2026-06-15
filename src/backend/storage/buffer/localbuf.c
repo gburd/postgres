@@ -937,9 +937,8 @@ GetLocalBufferStorage(void)
 		 */
 		if (LocalBufferContext == NULL)
 			LocalBufferContext =
-				AllocSetContextCreate(TopMemoryContext,
-									  "LocalBufferContext",
-									  ALLOCSET_DEFAULT_SIZES);
+				PgRuntimeGetOwnedMemoryContext(PgCurrentLocalBufferContextRef(),
+											   "LocalBufferContext");
 
 		/* Start with a 16-buffer request; subsequent ones double each time */
 		num_bufs = Max(localBufferNumBufsInBlock * 2, 16);

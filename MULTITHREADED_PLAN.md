@@ -1898,6 +1898,11 @@ context creation through the execution-owned `PgExecution.transaction_cleanup`
 remain unchanged, while the descriptor array and LO descriptor storage now use
 the same checked owned-context path that closed-execution reset already
 deletes.
+Follow-up local-buffer hardening moved `LocalBufferContext` creation through
+the backend-owned `PgBackend.buffers` context slot. Temporary table local
+buffer allocation still uses the existing local-buffer cursor/block semantics,
+but the storage context is now part of the checked backend buffer lifecycle
+and owner map instead of being an untracked direct `TopMemoryContext` child.
 Follow-up session xact-callback hardening moved transaction and
 subtransaction callback list-node allocation under a session-owned
 `XactCallbackContext`. The registration/unregistration APIs and callback

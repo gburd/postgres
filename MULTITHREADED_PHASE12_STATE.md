@@ -14919,3 +14919,77 @@ Validation for the large-object execution context allocation slice:
 - a focused live-cluster large-object smoke passed: it created a large object,
   opened it read/write, wrote and read `phase12-large-object-smoke`, closed
   the descriptor, committed, and unlinked the object.
+
+## Local Buffer Context Allocation
+
+Lifecycle/preflight note:
+
+- target: close the remaining direct `TopMemoryContext` allocation in
+  `GetLocalBufferStorage()` by creating `LocalBufferContext` through the
+  backend-owned buffer bucket's context slot;
+- touched root/bucket: `PgBackend.buffers`, specifically
+  `local_buffer_context`, `local_buffer_cur_block`,
+  `local_buffer_next_buf_in_block`, `local_buffer_num_bufs_in_block`, and
+  `local_buffer_total_bufs_allocated`;
+- owner source files: `src/backend/storage/buffer/localbuf.c`,
+  `src/backend/storage/buffer/backend_runtime_buffer.c`,
+  `src/backend/utils/init/backend_runtime_teardown.c`,
+  `src/include/utils/backend_runtime.h`,
+  `src/test/modules/test_backend_runtime/test_backend_runtime_backend.c`,
+  `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, `MULTITHREADED_PLAN.md`, and this state
+  log;
+- legacy symbols/accessors: `LocalBufferContext`, `localBufferCurBlock`,
+  `localBufferNextBufInBlock`, `localBufferNumBufsInBlock`,
+  `localBufferTotalBufsAllocated`, and
+  `PgCurrentLocalBufferContextRef()`;
+- repeated lifecycle operations expected in this slice: one object-owned
+  allocation context plus existing checked delete-and-reset in the backend
+  buffer closed-state path. The existing `PgRuntimeGetOwnedMemoryContext()`
+  macro and checked `PG_RUNTIME_DELETE_MEMORY_CONTEXT` reset action cover this
+  pattern;
+- checked primitive decision: no new lifecycle primitive is needed because
+  this is one allocation site in an already migrated bucket with a checked
+  reset helper. The missing pieces are allocation-site parentage and owner-map
+  coverage;
+- validation impact: run touched object builds for `localbuf.o`,
+  `backend_runtime_buffer.o`, `backend_runtime_teardown.o`, and
+  `test_backend_runtime_backend.o`, then `git diff --check`,
+  `gmake check-runtime-lifecycles`, `gmake check-global-lifetimes`, full
+  `gmake -j8`, backend-runtime regression/TAP, and a focused temp-table SQL
+  smoke that forces local-buffer allocation.
+
+Slice result:
+
+- `GetLocalBufferStorage()` now creates `LocalBufferContext` with
+  `PgRuntimeGetOwnedMemoryContext(PgCurrentLocalBufferContextRef(),
+  "LocalBufferContext")` instead of directly creating a
+  `TopMemoryContext` child;
+- local-buffer allocation cursor semantics are unchanged: new blocks are still
+  allocated with `MemoryContextAllocAligned(LocalBufferContext, ...)`, and
+  normal buffer cleanup still owns pin/refcount semantics before retained
+  backend reset;
+- the owner map now records `LocalBufferContext`, `localBufferCurBlock`,
+  `localBufferNextBufInBlock`, `localBufferNumBufsInBlock`, and
+  `localBufferTotalBufsAllocated` under `PgBackend.buffers`.
+
+Validation for the local-buffer context allocation slice:
+
+- `git diff --check` passed;
+- touched-object builds passed for `localbuf.o`,
+  `backend_runtime_buffer.o`, `backend_runtime_teardown.o`, and
+  `test_backend_runtime_backend.o`;
+- `gmake check-runtime-lifecycles` passed with 166 fields classified, 166
+  bucket definitions checked, 35 reset definitions checked, and 262 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- full incremental `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- after patching the recreated macOS temp-install install names, direct
+  backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total;
+- a focused live-cluster temp-table smoke passed: it set `temp_buffers`,
+  inserted 4000 wide rows into a temporary table to force local-buffer
+  storage, verified count/min/max/payload length, updated rows, and verified
+  the update count.
