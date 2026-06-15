@@ -46,9 +46,17 @@ Quick lifecycle-ergonomics checklist for each substantial Phase 12 batch:
   mechanically checkable?
 - Can `check_runtime_lifecycles.pl` enforce the rule so future agents cannot
   forget it?
+- Would a small macro, X-macro/table entry, declarative manifest rule, or
+  checker extension let the next batch move more state safely in one go?
 
 If the answer to any of these is yes, implement that small lifecycle primitive
 first, then use it for the larger migration in the same slice.
+
+Before starting the next substantive Gate E2 coding slice, explicitly record
+the answer in `MULTITHREADED_PHASE12_STATE.md` under that slice's preflight.
+Do not start by moving another set of globals unless the preflight names the
+checked lifecycle machinery being reused or the new helper/checker/table rule
+that will be added first.
 
 Do this proactively. When lifecycle mechanics are the drag on a Phase 12/Gate
 E2 batch, the right next step is usually a checked macro, X-macro/table row, or

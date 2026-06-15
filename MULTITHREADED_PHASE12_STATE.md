@@ -16074,3 +16074,21 @@ Validation for the dblink/postgres_fdw extension-state slice:
   known Unix socket, set `postgres_fdw.application_name`, selected through a
   foreign table, observed a valid cached connection through
   `postgres_fdw_get_connections()`, and ran `postgres_fdw_disconnect_all()`.
+
+## Next Gate E2 Lifecycle Simplification Check
+
+Before the next substantive Phase 12/Gate E2 implementation batch, run the
+lifecycle helper-first decision explicitly rather than treating it as background
+guidance. The preflight for that batch must answer whether a small
+`PG_RUNTIME_*` action, `PG_RUNTIME_DEFINE_*` helper, bucket `.def`/X-macro row,
+owner/source manifest rule, or `check_runtime_lifecycles.pl` validation rule
+would make the batch easier and allow a larger coherent migration.
+
+If the answer is yes, the lifecycle primitive is the first implementation item
+for the batch and should be used by the migrated state in the same coherent
+slice. If the answer is no, the preflight must say which existing checked
+lifecycle row, owner map, reset ordering, or subsystem-specific handwritten
+cleanup rule is sufficient. This applies before more global-to-object
+migration, threaded teardown hardening, PMChild/thread synchronization, GUC
+adoption, startup-gate narrowing, or another attempt at root memory-context
+reclamation.
