@@ -2225,6 +2225,19 @@ Important current files:
   prove -I src/test/perl src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl
   ```
 
+  If another check, such as `gmake -C src/pl/plperl check`, recreates
+  `tmp_install` before direct backend-runtime TAP, reinstall
+  `test_backend_runtime` into that temp install first:
+
+  ```sh
+  gmake -C src/test/modules/test_backend_runtime DESTDIR="$PWD/tmp_install" install
+  ```
+
+  Otherwise `001_threaded_runtime.pl` can start the server but fail at
+  `CREATE EXTENSION test_backend_runtime_threaded`, and
+  `002_threaded_bgworker_crash.pl` can fail to load
+  `test_backend_runtime_threaded`.
+
   Module TAP tests that normally run through `prove_check` may need the full
   makefile harness environment. For worker SPI, run from the module directory
   after refreshing `tmp_install` and patching the temp-install dynamic library

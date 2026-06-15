@@ -13855,6 +13855,68 @@ Validation for the function-manager session context ownership slice:
   `002_threaded_bgworker_crash.pl`, 131 tests total, with repo-local `.perl5`
   `PERL5LIB` and explicit `PG_REGRESS=src/test/regress/pg_regress`.
 
+## PL/Perl Session Extension State
+
+Lifecycle/preflight note:
+
+- target root and bucket: `PgSession.extension_modules`;
+- state moved: PL/Perl's session module initialization guard, interpreter
+  hash, procedure hash, active and held interpreter pointers, custom GUC
+  backing variables, shutdown flag, current call data pointer, and reset
+  callback registration flag;
+- repeated lifecycle operations: multiple opaque pointer slots, string/scalar
+  GUC slots, and one reset-registration flag. The existing
+  `PgSession.extension_modules` reset-callback mechanism is the right checked
+  lifecycle primitive because PL/Perl owns Perl interpreter teardown, query
+  hash iteration, saved SPI plan cleanup, procedure descriptor reference
+  counts, and Perl opcode/runtime state. No new generic lifecycle macro is
+  appropriate for this batch because teardown ordering is semantic and
+  PL/Perl-specific;
+- retained invariant: process/module-level Perl opcode state remains
+  file-local static state, while per-session custom GUC definition and
+  interpreter/cache initialization run once per logical session through
+  dfmgr's per-session `_PG_init()` replay path.
+
+PL/Perl session-state slice:
+
+- `PgSessionExtensionModuleState` now owns the PL/Perl custom GUC backing
+  variables, interpreter/procedure cache pointers, current call-data pointer,
+  and per-session initialization/reset flags;
+- `src/pl/plperl/plperl.c` keeps the historical local names as source-local
+  lvalue compatibility macros over the current session object;
+- `_PG_init()` now uses a session-owned initialization guard so already-loaded
+  PL/Perl can bind its custom GUC variables to each logical session when
+  dfmgr replays module initialization in thread-per-session mode;
+- PL/Perl registers a per-session reset callback that releases procedure
+  descriptor references, destroys saved SPI plan/query cache state, destroys
+  Perl interpreters, destroys private hashes, and clears runtime slots;
+- `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` and
+  `MULTITHREADED_RUNTIME_OWNERS.tsv` record the PL/Perl session ownership.
+
+Validation for the PL/Perl session-state slice:
+
+- `git diff --check` passed;
+- touched-object builds passed for `plperl.o`, `plperl.dylib`,
+  `backend_runtime.o`, `backend_runtime_session.o`,
+  `backend_runtime_teardown.o`, and `test_backend_runtime_session.o`;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 237 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- after the `backend_runtime.h` layout change, the documented backend clean,
+  generated-header recovery, and full `gmake -j8` rebuild passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed
+  after the clean rebuild;
+- `gmake -C src/pl/plperl check` passed all 15 PL/Perl regression tests in
+  this Perl-enabled checkout;
+- after PL/Perl regression recreated `tmp_install`, the test backend runtime
+  extension was reinstalled into that temp install, the macOS install names
+  were patched, and direct backend-runtime TAP passed for
+  `001_threaded_runtime.pl` and `002_threaded_bgworker_crash.pl`, 131 tests
+  total, with repo-local `.perl5` `PERL5LIB`, explicit `PG_REGRESS`, and the
+  full direct TAP harness environment from `AGENTS.md`.
+
 ## Text Search Before Catalog Cache Reset And Active CacheMemoryContext Probe
 
 Lifecycle/preflight note:

@@ -27,6 +27,7 @@
 #include "parser/parse_type.h"
 #include "storage/ipc.h"
 #include "tcop/tcopprot.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/guc.h"
@@ -223,25 +224,30 @@ typedef struct plperl_array_info
  * Global data
  **********************************************************************/
 
-static HTAB *plperl_interp_hash = NULL;
-static HTAB *plperl_proc_hash = NULL;
-static plperl_interp_desc *plperl_active_interp = NULL;
+#define plperl_inited (*PgCurrentPLperlInitedRef())
+#define plperl_interp_hash (*(HTAB **) PgCurrentPLperlInterpHashRef())
+#define plperl_proc_hash (*(HTAB **) PgCurrentPLperlProcHashRef())
+#define plperl_active_interp \
+	(*(plperl_interp_desc **) PgCurrentPLperlActiveInterpRef())
 
 /* If we have an unassigned "held" interpreter, it's stored here */
-static PerlInterpreter *plperl_held_interp = NULL;
+#define plperl_held_interp \
+	(*(PerlInterpreter **) PgCurrentPLperlHeldInterpRef())
 
 /* GUC variables */
-static bool plperl_use_strict = false;
-static char *plperl_on_init = NULL;
-static char *plperl_on_plperl_init = NULL;
-static char *plperl_on_plperlu_init = NULL;
+#define plperl_use_strict (*PgCurrentPLperlUseStrictRef())
+#define plperl_on_init (*PgCurrentPLperlOnInitRef())
+#define plperl_on_plperl_init (*PgCurrentPLperlOnPLperlInitRef())
+#define plperl_on_plperlu_init (*PgCurrentPLperlOnPLperluInitRef())
 
-static bool plperl_ending = false;
+#define plperl_ending (*PgCurrentPLperlEndingRef())
 static OP  *(*pp_require_orig) (pTHX) = NULL;
 static char plperl_opmask[MAXO];
 
 /* this is saved and restored by plperl_call_handler */
-static plperl_call_data *current_call_data = NULL;
+#define current_call_data \
+	(*(plperl_call_data **) PgCurrentPLperlCurrentCallDataRef())
+#define plperl_reset_registered (*PgCurrentPLperlResetRegisteredRef())
 
 /**********************************************************************
  * Forward declarations
@@ -250,6 +256,8 @@ static plperl_call_data *current_call_data = NULL;
 static PerlInterpreter *plperl_init_interp(void);
 static void plperl_destroy_interp(PerlInterpreter **interp);
 static void plperl_fini(int code, Datum arg);
+static void plperl_destroy_session_state(void);
+static void plperl_session_reset_callback(void *arg);
 static void set_interp_require(bool trusted);
 
 static Datum plperl_func_handler(PG_FUNCTION_ARGS);
@@ -257,6 +265,7 @@ static Datum plperl_trigger_handler(PG_FUNCTION_ARGS);
 static void plperl_event_trigger_handler(PG_FUNCTION_ARGS);
 
 static void free_plperl_function(plperl_proc_desc *prodesc);
+static void free_plperl_query_desc(plperl_query_desc *qdesc);
 
 static plperl_proc_desc *compile_plperl_function(Oid fn_oid,
 												 bool is_trigger,
@@ -390,12 +399,15 @@ _PG_init(void)
 	 * If initialization fails due to, e.g., plperl_init_interp() throwing an
 	 * exception, then we'll return here on the next usage and the user will
 	 * get a rather cryptic: ERROR:  attempt to redefine parameter
-	 * "plperl.use_strict"
+	 * "plperl.use_strict".
+	 *
+	 * The guard is session-owned rather than process-static so a threaded
+	 * session can re-run _PG_init() for an already loaded module and bind its
+	 * custom GUC variables to that session's runtime object.
 	 */
-	static bool inited = false;
 	HASHCTL		hash_ctl;
 
-	if (inited)
+	if (plperl_inited)
 		return;
 
 	/*
@@ -487,7 +499,13 @@ _PG_init(void)
 	 */
 	plperl_held_interp = plperl_init_interp();
 
-	inited = true;
+	if (!plperl_reset_registered)
+	{
+		PgSessionRegisterResetCallback(plperl_session_reset_callback, NULL);
+		plperl_reset_registered = true;
+	}
+
+	plperl_inited = true;
 }
 
 
@@ -513,9 +531,6 @@ set_interp_require(bool trusted)
 static void
 plperl_fini(int code, Datum arg)
 {
-	HASH_SEQ_STATUS hash_seq;
-	plperl_interp_desc *interp_desc;
-
 	elog(DEBUG3, "plperl_fini");
 
 	/*
@@ -533,21 +548,95 @@ plperl_fini(int code, Datum arg)
 		return;
 	}
 
-	/* Zap the "held" interpreter, if we still have it */
-	plperl_destroy_interp(&plperl_held_interp);
-
-	/* Zap any fully-initialized interpreters */
-	hash_seq_init(&hash_seq, plperl_interp_hash);
-	while ((interp_desc = hash_seq_search(&hash_seq)) != NULL)
-	{
-		if (interp_desc->interp)
-		{
-			activate_interpreter(interp_desc);
-			plperl_destroy_interp(&interp_desc->interp);
-		}
-	}
+	plperl_destroy_session_state();
 
 	elog(DEBUG3, "plperl_fini: done");
+}
+
+static void
+free_plperl_query_desc(plperl_query_desc *qdesc)
+{
+	SPIPlanPtr	plan;
+
+	if (qdesc == NULL)
+		return;
+
+	plan = qdesc->plan;
+	if (qdesc->plan_cxt != NULL)
+		MemoryContextDelete(qdesc->plan_cxt);
+	if (plan != NULL)
+		SPI_freeplan(plan);
+}
+
+static void
+plperl_destroy_session_state(void)
+{
+	HASH_SEQ_STATUS hash_seq;
+	plperl_proc_ptr *proc_ptr;
+	plperl_interp_desc *interp_desc;
+
+	if (plperl_proc_hash != NULL)
+	{
+		hash_seq_init(&hash_seq, plperl_proc_hash);
+		while ((proc_ptr = hash_seq_search(&hash_seq)) != NULL)
+		{
+			if (proc_ptr->proc_ptr != NULL)
+			{
+				decrement_prodesc_refcount(proc_ptr->proc_ptr);
+				proc_ptr->proc_ptr = NULL;
+			}
+		}
+		hash_destroy(plperl_proc_hash);
+		plperl_proc_hash = NULL;
+	}
+
+	/* Zap the "held" interpreter, if we still have it. */
+	plperl_destroy_interp(&plperl_held_interp);
+
+	if (plperl_interp_hash != NULL)
+	{
+		hash_seq_init(&hash_seq, plperl_interp_hash);
+		while ((interp_desc = hash_seq_search(&hash_seq)) != NULL)
+		{
+			if (interp_desc->query_hash != NULL)
+			{
+				HASH_SEQ_STATUS query_seq;
+				plperl_query_entry *query_entry;
+
+				hash_seq_init(&query_seq, interp_desc->query_hash);
+				while ((query_entry = hash_seq_search(&query_seq)) != NULL)
+				{
+					free_plperl_query_desc(query_entry->query_data);
+					query_entry->query_data = NULL;
+				}
+				hash_destroy(interp_desc->query_hash);
+				interp_desc->query_hash = NULL;
+			}
+
+			if (interp_desc->interp)
+			{
+				activate_interpreter(interp_desc);
+				plperl_destroy_interp(&interp_desc->interp);
+			}
+		}
+		hash_destroy(plperl_interp_hash);
+		plperl_interp_hash = NULL;
+	}
+
+	plperl_active_interp = NULL;
+	current_call_data = NULL;
+	plperl_ending = false;
+	plperl_inited = false;
+	plperl_reset_registered = false;
+}
+
+static void
+plperl_session_reset_callback(void *arg)
+{
+	(void) arg;
+
+	plperl_ending = true;
+	plperl_destroy_session_state();
 }
 
 

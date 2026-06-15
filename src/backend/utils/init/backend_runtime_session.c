@@ -355,6 +355,78 @@ PgCurrentPLpythonResetRegisteredRef(void)
 	return &PgCurrentSessionExtensionModuleState()->plpython_reset_registered;
 }
 
+bool *
+PgCurrentPLperlInitedRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->plperl_inited;
+}
+
+void **
+PgCurrentPLperlInterpHashRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->plperl_interp_hash;
+}
+
+void **
+PgCurrentPLperlProcHashRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->plperl_proc_hash;
+}
+
+void **
+PgCurrentPLperlActiveInterpRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->plperl_active_interp;
+}
+
+void **
+PgCurrentPLperlHeldInterpRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->plperl_held_interp;
+}
+
+bool *
+PgCurrentPLperlUseStrictRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->plperl_use_strict;
+}
+
+char **
+PgCurrentPLperlOnInitRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->plperl_on_init;
+}
+
+char **
+PgCurrentPLperlOnPLperlInitRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->plperl_on_plperl_init;
+}
+
+char **
+PgCurrentPLperlOnPLperluInitRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->plperl_on_plperlu_init;
+}
+
+bool *
+PgCurrentPLperlEndingRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->plperl_ending;
+}
+
+void **
+PgCurrentPLperlCurrentCallDataRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->plperl_current_call_data;
+}
+
+bool *
+PgCurrentPLperlResetRegisteredRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->plperl_reset_registered;
+}
+
 char **
 PgCurrentPLTclStartProcRef(void)
 {

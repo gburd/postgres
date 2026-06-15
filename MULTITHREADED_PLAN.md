@@ -1797,6 +1797,11 @@ explicitly opt in to the thread-per-session backend model; `pg_trgm` first
 moved its custom GUC backing variables into `PgSession.extension_modules`.
 Phase 16 still owns contrib-wide threaded regression, including the modules
 that need a broader state/export audit before thread opt-in.
+Gate E2 language-state work now also includes PL/Perl session migration:
+PL/Perl's custom GUC backing variables, interpreter/procedure caches,
+current-call pointer, and per-session init/reset flags live under
+`PgSession.extension_modules`, with PL/Perl retaining owner-adjacent
+interpreter and SPI-plan teardown through the session reset callback path.
 The focused `test_backend_runtime` regression is runnable again as a
 process-mode validation control for runtime-state, state-migration, and
 PMChild helper coverage after fake thread-runtime tests were changed to
