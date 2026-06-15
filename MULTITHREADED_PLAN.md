@@ -895,6 +895,11 @@ Gate E2 requires:
   bucket table row, owner/source manifest rule, or checker extension would
   make the batch safer or larger. If yes, land that checked primitive first
   and use it in the same slice;
+- acceleration should come from lifecycle simplification before smaller
+  batching. When repeated lifecycle bookkeeping is the limiting factor, add a
+  macro, X-macro/table row, manifest rule, or checker primitive that makes the
+  larger migration mechanically safe, then move the state through that checked
+  path;
 - the next broad Gate E2 implementation slice starts with lifecycle
   ergonomics/refactor work before more large state migrations or teardown
   hardening. The intended order is: simplify checked lifecycle mechanics,

@@ -31,6 +31,12 @@ the remaining Gate E2 blockers: threaded teardown, PMChild/thread
 synchronization, startup-gate narrowing/removal, systematic GUC adoption, and
 remaining object migration.
 
+When deciding how to make faster progress, first ask whether lifecycle
+bookkeeping can be made macroable or table-driven. Prefer adding a small
+checked lifecycle primitive that lets a larger batch move safely over splitting
+the same repeated init/adopt/reset/destroy work into smaller handwritten
+patches.
+
 If repetition is discovered after a Phase 12 slice has already started, pause
 the state movement and add the missing checked helper/action/table/checker
 support before continuing. Do not finish a boilerplate-heavy migration by hand
