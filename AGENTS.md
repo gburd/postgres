@@ -62,6 +62,10 @@ in `MULTITHREADED_PHASE12_STATE.md` before editing code:
 If the slice needs two or more similar helper bodies and no checked primitive
 exists yet, create the primitive first. Do not treat a prose note or narrower
 batch split as a substitute for making the lifecycle mechanism easier.
+When several possible primitives would help, implement the smallest one that
+lets `check-runtime-lifecycles` validate the pattern in the same commit, then
+use it immediately in the migration or teardown slice. Do not defer the helper
+work as documentation-only debt.
 
 Do not retry wholesale thread-exit `TopMemoryContext` deletion as a narrow
 cleanup. A Phase 12 probe that deleted the thread execution top context after

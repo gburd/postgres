@@ -1053,6 +1053,11 @@ Gate E2 requires:
   path that makes the batch safe, or land the missing lifecycle primitive
   before the state migration. The purpose is to make larger batches faster
   without growing manual call lists or weakening the manifest gate;
+- when more than one lifecycle simplification could apply, choose the smallest
+  helper/action/table/checker primitive that can be implemented, validated by
+  `check-runtime-lifecycles`, and used in the same coherent slice. Do not
+  record lifecycle simplification as documentation-only debt when repeated
+  helper bodies are the thing slowing the batch;
 - the operational form of that decision is the Phase 12 lifecycle preflight
   checklist in `AGENTS.md`. Each substantial Gate E2 slice must list the
   touched root object, bucket rows, legacy symbols, owner sources, and repeated

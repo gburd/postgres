@@ -14346,6 +14346,11 @@ by landing smaller handwritten batches. Record the preflight answer in this
 file before touching the migration code: either name the existing checked
 primitive being reused, or name the new primitive added first.
 
+If multiple candidate helpers would reduce the same boilerplate, choose the
+smallest checker-backed primitive that can be landed and used in the same
+coherent slice. The required artifact is code plus validation, not a
+documentation-only TODO.
+
 ## Threaded SHOW GUC Lock Narrowing
 
 Lifecycle/preflight note:
