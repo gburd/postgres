@@ -101,6 +101,8 @@ CurrentLocaleConvRef(void)
 #define CurrentLCTimeValid \
 	(PgCurrentLocaleState()->locale_time_valid)
 #define CurrentLocaleConv (*CurrentLocaleConvRef())
+#define CurrentLocaleConvContext \
+	(PgCurrentLocaleState()->locale_conv_context)
 #define CurrentLocaleConvAllocated \
 	(PgCurrentLocaleState()->current_locale_conv_allocated)
 
@@ -506,6 +508,20 @@ db_encoding_convert(int encoding, char **str)
 	pfree(pstr);
 }
 
+void
+PgSessionResetLocaleConv(PgSessionLocaleState *locale)
+{
+	Assert(locale != NULL);
+
+	if (locale->current_locale_conv_allocated &&
+		locale->current_locale_conv != NULL)
+		free_struct_lconv((struct lconv *) locale->current_locale_conv);
+
+	locale->current_locale_conv = NULL;
+	locale->current_locale_conv_allocated = false;
+	locale->locale_conv_valid = false;
+}
+
 
 /*
  * Return the POSIX lconv struct (contains number/money formatting
@@ -519,8 +535,16 @@ PGLC_localeconv(void)
 	struct lconv worklconv = {0};
 
 	if (CurrentLocaleConv == NULL)
-		CurrentLocaleConv = MemoryContextAllocZero(TopMemoryContext,
+	{
+		if (CurrentLocaleConvContext == NULL)
+			CurrentLocaleConvContext =
+				AllocSetContextCreate(TopMemoryContext,
+									  "localeconv cache",
+									  ALLOCSET_SMALL_SIZES);
+
+		CurrentLocaleConv = MemoryContextAllocZero(CurrentLocaleConvContext,
 												   sizeof(struct lconv));
+	}
 
 	/* Did we do it already? */
 	if (CurrentLocaleConvValid)

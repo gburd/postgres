@@ -1968,6 +1968,7 @@ typedef struct PgSessionLocaleState
 	void	   *default_locale;
 	bool		locale_conv_valid;
 	bool		locale_time_valid;
+	MemoryContext locale_conv_context;
 	void	   *current_locale_conv;
 	bool		current_locale_conv_allocated;
 	MemoryContext collation_cache_context;

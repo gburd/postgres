@@ -2571,6 +2571,7 @@ PgSessionInitializeLocaleState(PgSessionLocaleState *locale)
 	locale->default_locale = NULL;
 	locale->locale_conv_valid = false;
 	locale->locale_time_valid = false;
+	locale->locale_conv_context = NULL;
 	locale->current_locale_conv = NULL;
 	locale->current_locale_conv_allocated = false;
 	locale->collation_cache_context = NULL;

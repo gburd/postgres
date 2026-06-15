@@ -63,6 +63,7 @@ extern char *pg_perm_setlocale(int category, const char *locale);
  * information) with locale information for all categories.
  */
 extern struct lconv *PGLC_localeconv(void);
+extern void PgSessionResetLocaleConv(PgSessionLocaleState *locale);
 
 extern void cache_locale_time(void);
 

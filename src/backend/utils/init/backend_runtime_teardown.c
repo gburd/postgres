@@ -47,6 +47,7 @@
 #include "utils/guc.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
+#include "utils/pg_locale.h"
 #include "utils/plancache.h"
 #include "utils/resowner.h"
 #include "utils/typcache.h"
@@ -982,6 +983,9 @@ static void
 PgSessionResetLocaleClosedState(PgSession *session)
 {
 	Assert(session != NULL);
+
+	PgSessionResetLocaleConv(&session->locale);
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->locale.locale_conv_context);
 
 	if (session->locale.collation_cache_context != NULL)
 	{
