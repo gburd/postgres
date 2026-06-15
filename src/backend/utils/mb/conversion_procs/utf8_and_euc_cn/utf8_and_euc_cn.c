@@ -19,7 +19,8 @@
 
 PG_MODULE_MAGIC_EXT(
 					.name = "utf8_and_euc_cn",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
 );
 
 PG_FUNCTION_INFO_V1(euc_cn_to_utf8);

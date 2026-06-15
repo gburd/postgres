@@ -16997,3 +16997,68 @@ Validation:
 - first-three threaded `parallel_schedule` rerun passed 57/60 tests after the
   SQLSTATE scratch fix. `point` passed in the concurrent group; the remaining
   failures stayed limited to `tstypes`, `opr_sanity`, and `stats_import`.
+
+## Threaded Lock Status SQL-Visible PIDs
+
+Lifecycle/preflight note:
+
+- target: make `pg_locks.pid` and `pg_blocking_pids()` use the same
+  SQL-visible backend identifier as `pg_backend_pid()` in thread-per-session
+  mode, so lock self-inspection works for logical backend threads sharing one
+  OS process.
+- touched roots/buckets: no runtime roots; lock-status snapshots translate
+  existing `PGPROC` identity fields (`pid`, `backendId`) at reporting time.
+- owner source files: `src/backend/storage/lmgr/lock.c` and this Phase 12
+  state note.
+- legacy symbols/accessors: `PGPROC.pid`, `PGPROC.backendId`,
+  `PostmasterPid`, `BackendSignalPidGetProcWithLock()`,
+  `GetLockStatusData()`, `GetBlockerStatusData()`, and
+  `GetSingleProcBlockerStatusData()`.
+- repeated lifecycle operations: none; no init/adopt/reset/delete pattern is
+  introduced.
+- checked primitive decision: add a small lock-status helper near the lock
+  owner code rather than storing duplicate pid state in a runtime root.
+- validation impact: threaded `stats_import` should stop losing
+  `ShareUpdateExclusiveLock` rows when filtering `pg_locks` by
+  `pg_backend_pid()`, and process-mode `pg_locks` output should remain
+  unchanged.
+
+Validation:
+
+- focused threaded `stats_import` rerun no longer showed `pg_locks` /
+  `pg_backend_pid()` self-inspection diffs. Its remaining failure began at
+  `ANALYZE stats_import.test` with the intentional `dict_snowball.dylib`
+  process-only backend-model rejection, followed by downstream extended-stats
+  differences.
+
+## Threaded Built-in Conversion Admission
+
+Lifecycle/preflight note:
+
+- target: admit audited built-in encoding conversion modules needed by core
+  `opr_sanity` conversion checks without weakening general process-only module
+  rejection.
+- touched roots/buckets: no runtime roots; conversion module metadata only.
+- owner source files: `src/backend/utils/mb/conversion_procs/*/*.c` module
+  magic rows with `PG_MODULE_MAGIC_EXT`, and this Phase 12 state note.
+- legacy symbols/accessors: `PG_MODULE_MAGIC_EXT`,
+  `PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION`, `local2local()`,
+  `LocalToUtf()`, `UtfToLocal()`, and conversion-family local helpers.
+- repeated lifecycle operations: none; the audited modules use immutable lookup
+  tables/generated maps and conversion helper routines, and have no mutable
+  static state, callbacks, hooks, memory contexts, or backend-local teardown.
+- checked primitive decision: reuse backend-model metadata for these audited
+  in-tree conversion modules only. Do not add a conversion-proc wildcard, do
+  not relax the dynamic loader guard, and do not admit `dict_snowball`.
+- validation impact: threaded `opr_sanity` should stop failing on built-in
+  conversion modules, while `tstypes` and `stats_import` should continue to
+  prove process-only rejection for `dict_snowball.dylib`.
+
+Validation:
+
+- focused threaded `opr_sanity` passed after admitting the audited built-in
+  conversion modules.
+- first-three threaded `parallel_schedule` rerun passed 58/60 tests.
+  `opr_sanity` passed, `stats_import` no longer had lock-status diffs, and the
+  two remaining failures were `tstypes` and `stats_import` on the intentional
+  `dict_snowball.dylib` process-only backend-model rejection.

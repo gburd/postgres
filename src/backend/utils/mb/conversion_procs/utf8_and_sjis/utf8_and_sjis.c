@@ -19,7 +19,8 @@
 
 PG_MODULE_MAGIC_EXT(
 					.name = "utf8_and_sjis",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
 );
 
 PG_FUNCTION_INFO_V1(sjis_to_utf8);

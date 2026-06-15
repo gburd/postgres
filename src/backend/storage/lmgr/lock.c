@@ -431,6 +431,7 @@ static void LockRefindAndRelease(LockMethod lockMethodTable, PGPROC *proc,
 								 bool decrement_strong_lock_count);
 static void GetSingleProcBlockerStatusData(PGPROC *blocked_proc,
 										   BlockedProcsData *data);
+static int	LockStatusProcSignalPid(PGPROC *proc);
 
 
 /*
@@ -3844,8 +3845,8 @@ GetLockStatusData(void)
 				instance->waitLockMode = NoLock;
 				instance->vxid.procNumber = proc->vxid.procNumber;
 				instance->vxid.localTransactionId = proc->vxid.lxid;
-				instance->pid = proc->pid;
-				instance->leaderPid = proc->pid;
+				instance->pid = LockStatusProcSignalPid(proc);
+				instance->leaderPid = instance->pid;
 				instance->fastpath = true;
 
 				/*
@@ -3879,8 +3880,8 @@ GetLockStatusData(void)
 			instance->waitLockMode = NoLock;
 			instance->vxid.procNumber = proc->vxid.procNumber;
 			instance->vxid.localTransactionId = proc->vxid.lxid;
-			instance->pid = proc->pid;
-			instance->leaderPid = proc->pid;
+			instance->pid = LockStatusProcSignalPid(proc);
+			instance->leaderPid = instance->pid;
 			instance->fastpath = true;
 			instance->waitStart = 0;
 
@@ -3932,8 +3933,8 @@ GetLockStatusData(void)
 			instance->waitLockMode = NoLock;
 		instance->vxid.procNumber = proc->vxid.procNumber;
 		instance->vxid.localTransactionId = proc->vxid.lxid;
-		instance->pid = proc->pid;
-		instance->leaderPid = proclock->groupLeader->pid;
+		instance->pid = LockStatusProcSignalPid(proc);
+		instance->leaderPid = LockStatusProcSignalPid(proclock->groupLeader);
 		instance->fastpath = false;
 		instance->waitStart = (TimestampTz) pg_atomic_read_u64(&proc->waitStart);
 
@@ -3953,6 +3954,25 @@ GetLockStatusData(void)
 	Assert(el == data->nelements);
 
 	return data;
+}
+
+/*
+ * Return the SQL-visible backend identifier for a PGPROC.
+ *
+ * Process-mode backends expose their OS pid. Threaded backends share the
+ * postmaster process pid, so SQL-facing views and functions expose their
+ * logical backend id instead.
+ */
+static int
+LockStatusProcSignalPid(PGPROC *proc)
+{
+	if (proc->pid == 0)
+		return 0;
+
+	if (proc->pid == PostmasterPid && proc->backendId != 0)
+		return (int) proc->backendId;
+
+	return proc->pid;
 }
 
 /*
@@ -4012,7 +4032,7 @@ GetBlockerStatusData(int blocked_pid)
 	 */
 	LWLockAcquire(ProcArrayLock, LW_SHARED);
 
-	proc = BackendPidGetProcWithLock(blocked_pid);
+	proc = BackendSignalPidGetProcWithLock(blocked_pid);
 
 	/* Nothing to do if it's gone */
 	if (proc != NULL)
@@ -4074,7 +4094,7 @@ GetSingleProcBlockerStatusData(PGPROC *blocked_proc, BlockedProcsData *data)
 
 	/* Set up a procs[] element */
 	bproc = &data->procs[data->nprocs++];
-	bproc->pid = blocked_proc->pid;
+	bproc->pid = LockStatusProcSignalPid(blocked_proc);
 	bproc->first_lock = data->nlocks;
 	bproc->first_waiter = data->npids;
 
@@ -4108,8 +4128,8 @@ GetSingleProcBlockerStatusData(PGPROC *blocked_proc, BlockedProcsData *data)
 			instance->waitLockMode = NoLock;
 		instance->vxid.procNumber = proc->vxid.procNumber;
 		instance->vxid.localTransactionId = proc->vxid.lxid;
-		instance->pid = proc->pid;
-		instance->leaderPid = proclock->groupLeader->pid;
+		instance->pid = LockStatusProcSignalPid(proc);
+		instance->leaderPid = LockStatusProcSignalPid(proclock->groupLeader);
 		instance->fastpath = false;
 		data->nlocks++;
 	}
@@ -4133,7 +4153,7 @@ GetSingleProcBlockerStatusData(PGPROC *blocked_proc, BlockedProcsData *data)
 
 		if (queued_proc == blocked_proc)
 			break;
-		data->waiter_pids[data->npids++] = queued_proc->pid;
+		data->waiter_pids[data->npids++] = LockStatusProcSignalPid(queued_proc);
 	}
 
 	bproc->num_locks = data->nlocks - bproc->first_lock;
