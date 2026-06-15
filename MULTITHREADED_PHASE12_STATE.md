@@ -17845,3 +17845,47 @@ Evidence:
 - `gmake check-threaded-workers` passed all 245 core regression tests using
   `src/test/regress/threaded_workers.conf`, which sets `multithreaded = on`,
   `io_method = worker`, and `summarize_wal = on`.
+
+## Process Runtime Transaction GUC Rebind Ordering
+
+Lifecycle/preflight note:
+
+- target: restore normal process-mode transaction GUC behavior by ensuring
+  execution-owned GUC records bind to the live process `PgExecution` instead
+  of early execution fallback storage.
+- touched roots/buckets: process runtime installation order only; affected
+  roots are `PgSession`, `PgExecution`, and generated GUC direct-variable
+  rebinds for active transaction state.
+- owner source files: `src/backend/utils/init/backend_runtime.c`,
+  `src/backend/utils/misc/guc.c`, generated GUC metadata from
+  `src/backend/utils/misc/guc_parameters.dat`, and this Phase 12 state note.
+- legacy symbols/accessors: `InitializePgProcessRuntime()`,
+  `PgSetCurrentSession()`, `RebindSessionGUCVariablePointers()`,
+  `PgCurrentXactIsoLevelRef()`, `PgCurrentXactReadOnlyRef()`, and
+  `PgCurrentXactDeferrableRef()`.
+- repeated lifecycle operations: none; this should be a pointer-installation
+  ordering fix, not a new manual init/adopt/reset list.
+- checked primitive decision: keep this owner-adjacent. Add a lifecycle
+  checker primitive only if validation shows more execution-owned GUCs can be
+  rebound before `CurrentPgExecution` is installed.
+- validation impact: focused process-mode `transactions`, `prepared_xacts`,
+  `tidscan`, `sequence`, and `largeobject` regressions should recover their
+  read-only/isolation/deferrable behavior, and full process-mode `gmake check`
+  should pass under normal settings.
+
+Evidence:
+
+- A prior full process-mode `gmake check` failed in `transactions`,
+  `prepared_xacts`, `tidscan`, `sequence`, and `largeobject` because active
+  transaction GUC records were rebound before `CurrentPgExecution` pointed at
+  the process execution root. The records wrote `early_execution_xact` storage
+  while transaction code read `process_execution.xact`.
+- Installing `CurrentPgExecution` before `PgSetCurrentSession()` makes
+  `RebindSessionGUCVariablePointers()` bind `transaction_isolation`,
+  `transaction_read_only`, and `transaction_deferrable` to the live process
+  execution state.
+- Full process-mode `gmake check` passed all 245 core regression tests.
+- Full `gmake check-threaded` passed all 245 core regression tests after the
+  ordering change.
+- `gmake check-runtime-lifecycles`, `gmake check-global-lifetimes`, and
+  `git diff --check` passed.

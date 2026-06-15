@@ -3973,9 +3973,9 @@ InitializePgProcessRuntime(void)
 	CurrentPgRuntime = &process_runtime;
 	CurrentPgCarrier = &process_carrier;
 	CurrentPgBackend = &process_backend;
-	PgSetCurrentSession(&process_session);
 	CurrentPgConnection = &process_connection;
 	CurrentPgExecution = &process_execution;
+	PgSetCurrentSession(&process_session);
 
 	if (MyProc != NULL && MyProc->backendId == 0)
 		MyProc->backendId = process_backend.id;
