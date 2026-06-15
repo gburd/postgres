@@ -685,9 +685,8 @@ newLOfd(void)
 
 	lo_cleanup_needed = true;
 	if (fscxt == NULL)
-		fscxt = AllocSetContextCreate(TopMemoryContext,
-									  "Filesystem",
-									  ALLOCSET_DEFAULT_SIZES);
+		fscxt = PgRuntimeGetOwnedMemoryContext(PgCurrentLargeObjectContextRef(),
+											   "Filesystem");
 
 	/* Try to find a free slot */
 	for (i = 0; i < cookies_size; i++)

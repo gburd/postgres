@@ -113,6 +113,10 @@ MyClientConnectionInfo.authn_id	PgConnection	client_connection_info	authn_id	PgC
 ClientConnectionInfoContext	PgConnection	client_connection_info_context	client_connection_info_context	PgCurrentClientConnectionInfoContextRef	src/backend/libpq/backend_runtime_connection.c	connection-owned context for restored authenticated-client info strings
 PqSendBuffer	PgConnection	socket_io	send_buffer	PgCurrentConnectionSocketIORef	src/backend/libpq/backend_runtime_connection.c	frontend/backend socket send buffer allocated in SocketIOContext
 SocketIOContext	PgConnection	socket_io	socket_io_context	PgCurrentConnectionSocketIOContextRef	src/backend/libpq/backend_runtime_connection.c	connection-owned context for socket send buffer storage
+cookies	PgExecution	transaction_cleanup	lo_cookies	PgCurrentLargeObjectCookiesRef	src/backend/utils/init/backend_runtime.c	large-object descriptor array allocated in LargeObjectContext and released by large-object transaction cleanup or closed-execution reset
+cookies_size	PgExecution	transaction_cleanup	lo_cookies_size	PgCurrentLargeObjectCookiesSizeRef	src/backend/utils/init/backend_runtime.c	large-object descriptor array capacity paired with cookies
+lo_cleanup_needed	PgExecution	transaction_cleanup	lo_cleanup_needed	PgCurrentLargeObjectCleanupNeededRef	src/backend/utils/init/backend_runtime.c	transaction cleanup flag for open large-object descriptors
+fscxt	PgExecution	transaction_cleanup	lo_context	PgCurrentLargeObjectContextRef	src/backend/utils/init/backend_runtime.c	execution-owned large-object descriptor memory context allocated through PgRuntimeGetOwnedMemoryContext
 SysCache	PgSession	catalog_lookup	sys_cache	PgCurrentSysCacheArray	src/backend/utils/cache/backend_runtime_cache.c	syscache root array; pointed cache entries remain CacheMemoryContext-owned
 SysCacheInitialized	PgSession	catalog_lookup	sys_cache_initialized	PgCurrentSysCacheInitializedRef	src/backend/utils/cache/backend_runtime_cache.c	syscache initialization flag
 SysCacheRelationOid	PgSession	catalog_lookup	sys_cache_relation_oid	PgCurrentSysCacheRelationOidArray	src/backend/utils/cache/backend_runtime_cache.c	inline syscache relation OID array

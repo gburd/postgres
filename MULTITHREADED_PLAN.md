@@ -1892,6 +1892,12 @@ under the retained top-memory tree. If stale owner slots are still present at
 closed reset, the reset remains conservative and clears the slots without
 blindly deleting live owner memory; that keeps resource-release bugs visible
 for the broader teardown audit.
+Follow-up large-object cleanup hardening moved the `newLOfd()` filesystem
+context creation through the execution-owned `PgExecution.transaction_cleanup`
+`lo_context` slot. Large-object transaction/subtransaction cleanup semantics
+remain unchanged, while the descriptor array and LO descriptor storage now use
+the same checked owned-context path that closed-execution reset already
+deletes.
 Follow-up session xact-callback hardening moved transaction and
 subtransaction callback list-node allocation under a session-owned
 `XactCallbackContext`. The registration/unregistration APIs and callback

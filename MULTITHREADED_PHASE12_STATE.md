@@ -14841,3 +14841,81 @@ This rule is now intentionally recorded in both `AGENTS.md` and
 documentation-only reminder. A preflight entry should say either which existing
 checked primitive covers the slice, or which missing primitive was added before
 the state movement.
+
+## Large Object Execution Context Allocation
+
+Lifecycle/preflight note:
+
+- target: close the remaining direct `TopMemoryContext` allocation in
+  `newLOfd()` by creating the large-object cleanup context through the
+  execution-owned transaction-cleanup context slot;
+- touched root/bucket: `PgExecution.transaction_cleanup`, specifically
+  `lo_context`, `lo_cookies`, `lo_cookies_size`, and
+  `lo_cleanup_needed`;
+- owner source files: `src/backend/libpq/be-fsstubs.c`,
+  `src/backend/utils/init/backend_runtime.c`,
+  `src/include/utils/backend_runtime.h`,
+  `src/backend/utils/init/backend_runtime_execution_buckets.def`,
+  `src/test/modules/test_backend_runtime/test_backend_runtime_execution.c`,
+  `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, `MULTITHREADED_PLAN.md`, and this state
+  log;
+- legacy symbols/accessors: `fscxt`, `cookies`, `cookies_size`,
+  `lo_cleanup_needed`, `PgCurrentLargeObjectContextRef()`,
+  `PgCurrentLargeObjectCookiesRef()`,
+  `PgCurrentLargeObjectCookiesSizeRef()`, and
+  `PgCurrentLargeObjectCleanupNeededRef()`;
+- repeated lifecycle operations expected in this slice: one object-owned
+  allocation context plus existing checked delete-and-reset. The current
+  `PgRuntimeGetOwnedMemoryContext()` macro,
+  `PgRuntimeDeleteOwnedMemoryContext()` helper, and checked
+  `PG_RUNTIME_DELETE_MEMORY_CONTEXT_AND_RESET` bucket row cover this pattern;
+- checked primitive decision: no new lifecycle primitive is needed because
+  this slice has one semantic allocation site and the reset path is already
+  enforced through `backend_runtime_execution_buckets.def` and
+  `check-runtime-lifecycles`. The missing piece is the allocation-site parent
+  and owner-map coverage, not a new helper family;
+- validation impact: run touched object builds for `be-fsstubs.o`,
+  `backend_runtime.o`, `backend_runtime_teardown.o`, and
+  `test_backend_runtime_execution.o`, then `git diff --check`,
+  `gmake check-runtime-lifecycles`, `gmake check-global-lifetimes`, full
+  `gmake -j8`, backend-runtime regression/TAP, and a focused large-object SQL
+  smoke.
+
+Slice result:
+
+- `newLOfd()` now creates `fscxt` with
+  `PgRuntimeGetOwnedMemoryContext(PgCurrentLargeObjectContextRef(),
+  "Filesystem")` instead of directly creating a `TopMemoryContext` child;
+- `AtEOXact_LargeObject()` and the existing close-time reset semantics remain
+  unchanged. Normal transaction cleanup still deletes `fscxt`; retained
+  execution reset still deletes the same context through the checked
+  `PG_RUNTIME_DELETE_MEMORY_CONTEXT_AND_RESET` bucket row;
+- the owner map now records `cookies`, `cookies_size`, `lo_cleanup_needed`,
+  and `fscxt` under `PgExecution.transaction_cleanup`, giving future rebases a
+  symbol-level map for the large-object cleanup bridge.
+
+Validation for the large-object execution context allocation slice:
+
+- `git diff --check` passed;
+- touched-object builds passed for `be-fsstubs.o`, `backend_runtime.o`,
+  `backend_runtime_teardown.o`, and `test_backend_runtime_execution.o`;
+- `gmake check-runtime-lifecycles` passed with 166 fields classified, 166
+  bucket definitions checked, 35 reset definitions checked, and 257 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- full incremental `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- after patching the recreated macOS temp-install install names, direct
+  backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total;
+- standalone `largeobject` regression reached SQL but failed because direct
+  execution omitted required fixture state (`fipshash()` and read-only
+  transaction setup). A follow-up direct `test_setup transactions largeobject`
+  run also failed in the fixture `transactions` test before it could provide a
+  reliable large-object result, so neither run is counted as coverage for this
+  slice;
+- a focused live-cluster large-object smoke passed: it created a large object,
+  opened it read/write, wrote and read `phase12-large-object-smoke`, closed
+  the descriptor, committed, and unlinked the object.
