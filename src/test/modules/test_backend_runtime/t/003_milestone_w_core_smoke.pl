@@ -115,6 +115,30 @@ SELECT count(*) FROM threaded_w_core WHERE id = 10000;
 }),
 	'0', 'Milestone W smoke preserves transaction rollback');
 
+$node->psql(
+	'postgres',
+	'SELECT 1 / 0;',
+	on_error_stop => 1,
+	stdout => \my $error_stdout,
+	stderr => \my $error_stderr);
+like($error_stderr, qr/division by zero/,
+	'Milestone W smoke reports SQL ERROR');
+is($node->safe_psql('postgres', 'SELECT 42;'), '42',
+	'Milestone W smoke remains usable after SQL ERROR');
+
+my ($abort_ret, $abort_stdout, $abort_stderr) = $node->psql(
+	'postgres',
+	'BEGIN; SELECT pg_advisory_xact_lock(991000); SELECT 1 / 0;',
+	on_error_stop => 1);
+isnt($abort_ret, 0,
+	'Milestone W smoke transaction abort fixture failed as expected');
+like($abort_stderr, qr/division by zero/,
+	'Milestone W smoke transaction abort fixture reported SQL ERROR');
+is($node->safe_psql(
+		'postgres',
+		"SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted AND objid = 991000;"),
+	'0', 'Milestone W smoke transaction abort released advisory lock');
+
 $node->safe_psql(
 	'postgres',
 	q{
@@ -240,6 +264,19 @@ foreach my $session (@sessions)
 }
 wait_for_pids_to_leave_pg_stat_activity(\@normal_pids,
 	'Milestone W smoke cleaned up normal disconnects');
+
+my $cancel_psql = start_psql_script(
+	"SELECT pg_backend_pid();\nSELECT pg_sleep(30);\n", 30);
+ok(pump_until($cancel_psql->{run}, $cancel_psql->{timer},
+		$cancel_psql->{stdout}, qr/^\d+\s*$/m),
+	'Milestone W smoke active cancel backend reported logical backend id');
+my ($cancel_pid) = ${ $cancel_psql->{stdout} } =~ /^(\d+)\s*$/m;
+is($node->safe_psql('postgres', "SELECT pg_cancel_backend($cancel_pid);"),
+	't', 'Milestone W smoke accepted active cancel request');
+ok(pump_until($cancel_psql->{run}, $cancel_psql->{timer},
+		$cancel_psql->{stderr}, qr/canceling statement due to user request/),
+	'Milestone W smoke active backend observed query cancel');
+eval { $cancel_psql->{run}->finish; };
 
 my $abandoned = $node->background_psql('postgres',
 	on_error_stop => 0, timeout => 20);
