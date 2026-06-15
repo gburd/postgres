@@ -387,6 +387,7 @@ static uint32 guc_name_hash(const void *key, Size keysize);
 static int	guc_name_match(const void *key1, const void *key2, Size keysize);
 static void InitializeGUCOptionsFromEnvironment(void);
 static void InitializeOneGUCOption(struct config_generic *gconf);
+static void InitializeOneGUCOptionResetMetadata(struct config_generic *gconf);
 static const void *GUCOptionVariablePointer(struct config_generic *gconf);
 static void InitializeThreadedSessionReboundGUCOptions(
 													const void **initial_variables);
@@ -1771,9 +1772,14 @@ InitializeThreadedSessionReboundGUCOptions(const void **initial_variables)
 	for (int i = 0; i < num_guc_variables; i++)
 	{
 		struct config_generic *gconf = &guc_variables[i];
+		const void *variable = GUCOptionVariablePointer(gconf);
 
-		if (GUCOptionVariablePointer(gconf) == initial_variables[i])
+		if (variable == initial_variables[i] &&
+			!PgCurrentOrEarlySessionOwnsPointer(variable))
+		{
+			InitializeOneGUCOptionResetMetadata(gconf);
 			continue;
+		}
 
 		InitializeOneGUCOption(gconf);
 	}
@@ -2058,6 +2064,108 @@ InitializeOneGUCOption(struct config_generic *gconf)
 	}
 
 	gconf->extra = gconf->reset_extra = extra;
+}
+
+/*
+ * Initialize reset/default metadata for a GUC record without writing the live
+ * backing variable.  Threaded backend sessions build a private GUC registry in
+ * a process that already has postmaster/runtime GUC variables.  Records whose
+ * variables are not session-owned still need valid reset values for RESET and
+ * pg_settings, but initializing them with InitializeOneGUCOption() would
+ * overwrite shared process/runtime state.
+ */
+static void
+InitializeOneGUCOptionResetMetadata(struct config_generic *gconf)
+{
+	void	   *extra = NULL;
+
+	gconf->status = 0;
+	gconf->source = PGC_S_DEFAULT;
+	gconf->reset_source = PGC_S_DEFAULT;
+	gconf->scontext = PGC_INTERNAL;
+	gconf->reset_scontext = PGC_INTERNAL;
+	gconf->srole = BOOTSTRAP_SUPERUSERID;
+	gconf->reset_srole = BOOTSTRAP_SUPERUSERID;
+	gconf->stack = NULL;
+	gconf->extra = NULL;
+	gconf->last_reported = NULL;
+	gconf->sourcefile = NULL;
+	gconf->sourceline = 0;
+
+	switch (gconf->vartype)
+	{
+		case PGC_BOOL:
+			{
+				struct config_bool *conf = &gconf->_bool;
+				bool		newval = conf->boot_val;
+
+				if (!call_bool_check_hook(gconf, &newval, &extra,
+										  PGC_S_DEFAULT, LOG))
+					elog(FATAL, "failed to initialize %s reset value to %d",
+						 gconf->name, (int) newval);
+				conf->reset_val = newval;
+				break;
+			}
+		case PGC_INT:
+			{
+				struct config_int *conf = &gconf->_int;
+				int			newval = conf->boot_val;
+
+				Assert(newval >= conf->min);
+				Assert(newval <= conf->max);
+				if (!call_int_check_hook(gconf, &newval, &extra,
+										 PGC_S_DEFAULT, LOG))
+					elog(FATAL, "failed to initialize %s reset value to %d",
+						 gconf->name, newval);
+				conf->reset_val = newval;
+				break;
+			}
+		case PGC_REAL:
+			{
+				struct config_real *conf = &gconf->_real;
+				double		newval = conf->boot_val;
+
+				Assert(newval >= conf->min);
+				Assert(newval <= conf->max);
+				if (!call_real_check_hook(gconf, &newval, &extra,
+										  PGC_S_DEFAULT, LOG))
+					elog(FATAL, "failed to initialize %s reset value to %g",
+						 gconf->name, newval);
+				conf->reset_val = newval;
+				break;
+			}
+		case PGC_STRING:
+			{
+				struct config_string *conf = &gconf->_string;
+				char	   *newval;
+
+				if (conf->boot_val != NULL)
+					newval = guc_strdup(FATAL, conf->boot_val);
+				else
+					newval = NULL;
+
+				if (!call_string_check_hook(gconf, &newval, &extra,
+											PGC_S_DEFAULT, LOG))
+					elog(FATAL, "failed to initialize %s reset value to \"%s\"",
+						 gconf->name, newval ? newval : "");
+				conf->reset_val = newval;
+				break;
+			}
+		case PGC_ENUM:
+			{
+				struct config_enum *conf = &gconf->_enum;
+				int			newval = conf->boot_val;
+
+				if (!call_enum_check_hook(gconf, &newval, &extra,
+										  PGC_S_DEFAULT, LOG))
+					elog(FATAL, "failed to initialize %s reset value to %d",
+						 gconf->name, newval);
+				conf->reset_val = newval;
+				break;
+			}
+	}
+
+	gconf->reset_extra = extra;
 }
 
 /*

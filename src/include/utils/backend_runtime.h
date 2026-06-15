@@ -3035,6 +3035,7 @@ extern void InitializePgThreadBackendRuntime(PgThreadBackendRuntimeState *state,
 											 struct Latch *interrupt_latch);
 extern void PgSetCurrentSession(PgSession *session);
 extern bool PgCurrentSessionOwnsPointer(const void *ptr);
+extern bool PgCurrentOrEarlySessionOwnsPointer(const void *ptr);
 extern void PgBackendResetClosedState(PgBackend *backend);
 extern MemoryContext PgSessionGetDynamicLibraryMemoryContext(PgSession *session);
 extern PgRuntimeExtensionModuleState *PgCurrentRuntimeExtensionModuleState(void);

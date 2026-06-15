@@ -16873,3 +16873,91 @@ Validation:
   `t/001_threaded_runtime.pl`, `t/002_threaded_bgworker_crash.pl`, and
   `t/003_milestone_w_core_smoke.pl` with repo-local `.perl5` `IPC::Run`,
   temp-install `PATH`, patched macOS install names, and explicit `PG_REGRESS`.
+
+## Threaded Early GUC Reset Metadata
+
+Lifecycle/preflight note:
+
+- target: initialize reset/default metadata for built-in GUC records whose
+  backing variables already point at the thread-local early `PgSession` during
+  threaded backend startup, so `RESET` restores compiled defaults and
+  `pg_settings` can render enum/default fields correctly.
+- touched roots/buckets: `PgSession.guc` live registry and early
+  `PgSession`-owned GUC backing-variable buckets such as `general_guc`,
+  `logging`, and planner-method state.
+- owner source files: `src/backend/utils/misc/guc.c`,
+  `src/backend/utils/init/backend_runtime.c`, and
+  `src/include/utils/backend_runtime.h`.
+- legacy symbols/accessors: `InitializeThreadedSessionGUCOptions()`,
+  `InitializeThreadedSessionReboundGUCOptions()`,
+  `PgCurrentSessionOwnsPointer()`, `extra_float_digits`, and generated
+  `ThreadedSessionGUCRebinds`.
+- repeated lifecycle operations: no new bucket lifecycle shape; this broadens
+  the existing checked generated GUC rebind initialization pass to cover early
+  session-owned pointers that do not change across `build_guc_variables()` and
+  `RebindSessionGUCVariablePointers()`.
+- checked primitive decision: add a small pointer-ownership helper rather than
+  hand-listing affected GUCs. The generated rebind table remains the ownership
+  source for future direct-pointer GUC additions.
+- validation impact: threaded probes for `RESET extra_float_digits` and
+  `pg_settings` should match process mode, `float8` should stop failing on
+  post-`RESET` output formatting, and the first-three threaded regression
+  surface should gain real pass-rate signal instead of reset-metadata noise.
+
+Validation:
+
+- focused threaded reset probe for `extra_float_digits` now matches the
+  compiled default after `RESET`, and `pg_settings` can render
+  `extra_float_digits` metadata without the earlier enum reset-value error.
+- focused threaded `test_setup` plus `float8` passed, proving the reset
+  metadata fix removes the `float8` formatting failure from the first
+  regression groups.
+- threaded first-three `parallel_schedule` run improved from 50/60 to 51/60
+  with `float8` passing; the remaining plan-shape failures were then
+  reproduced in process mode when using `autovacuum = off`, so they were smoke
+  configuration artifacts rather than threaded runtime failures.
+
+## Threaded Regression Smoke Visibility
+
+Lifecycle/preflight note:
+
+- target: make the threaded regression smoke a realistic pass-rate signal for
+  Milestone W by keeping in-tree autovacuum behavior enabled and admitting only
+  the audited immutable `utf8_and_euc_kr` core conversion module.
+- touched roots/buckets: no runtime roots; `threaded_smoke.conf` startup
+  coverage and `utf8_and_euc_kr` module metadata only.
+- owner source files:
+  `src/test/regress/threaded_smoke.conf` and
+  `src/backend/utils/mb/conversion_procs/utf8_and_euc_kr/utf8_and_euc_kr.c`.
+- legacy symbols/accessors: `PG_MODULE_MAGIC_EXT`,
+  `PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION`, `euc_kr_to_utf8()`, and
+  `utf8_to_euc_kr()`.
+- repeated lifecycle operations: none; the conversion module has no mutable
+  static lifecycle, hooks, callbacks, or backend-local teardown.
+- checked primitive decision: reuse backend-model metadata. Do not add a broad
+  conversion-proc exception or weaken process-only module rejection; leave
+  unaudited modules such as `dict_snowball` and `cyrillic` process-only until
+  Phase 16 / Gate E2-Extensions owns their admission.
+- validation impact: first-three threaded `parallel_schedule` should retain
+  autovacuum-visible planner/statistics behavior, `euc_kr` should pass after
+  module admission, and remaining process-only module rejections should still
+  appear in `tstypes`, `opr_sanity`, or `stats_import`.
+
+Validation:
+
+- focused threaded `test_setup` plus `euc_kr` passed after marking the audited
+  immutable `utf8_and_euc_kr` conversion module as thread-per-session capable.
+- first-three threaded `parallel_schedule` rerun with
+  `threaded_smoke.conf` passed 57/60 tests. The removed failures were the
+  autovacuum-off planner/statistics artifacts, `float8` reset-metadata noise,
+  and the EUC_KR conversion-module rejection.
+- remaining first-three failures are `tstypes`, `opr_sanity`, and
+  `stats_import`; `tstypes` and `opr_sanity` still prove process-only module
+  rejection through `dict_snowball.dylib` and `cyrillic.dylib`, while
+  `stats_import` still has threaded lock/reporting differences plus the
+  expected `dict_snowball.dylib` rejection.
+- one first-three run observed an intermittent `expressions` failure with
+  `compressed pglz data is corrupt`, but focused threaded `test_setup` plus
+  `expressions` passed and the immediate first-three rerun passed
+  `expressions`; keep it as a runtime-watch item for future repeated
+  threaded-regression runs rather than masking it in expected output.
