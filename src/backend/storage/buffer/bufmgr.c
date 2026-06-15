@@ -4177,6 +4177,8 @@ AtEOXact_Buffers(bool isCommit)
 void
 InitBufferManagerAccess(void)
 {
+	MemoryContext buffer_context = PgBackendBufferAllocationContext();
+
 	/*
 	 * An advisory limit on the number of pins each backend should hold, based
 	 * on shared_buffers and the maximum number of connections possible.
@@ -4187,7 +4189,7 @@ InitBufferManagerAccess(void)
 	MaxProportionalPins = NBuffers / (MaxBackends + NUM_AUXILIARY_PROCS);
 
 	if (PrivateRefCountArray == NULL)
-		PrivateRefCountArray = MemoryContextAllocZero(TopMemoryContext,
+		PrivateRefCountArray = MemoryContextAllocZero(buffer_context,
 													  sizeof(PrivateRefCountEntry) *
 													  REFCOUNT_ARRAY_ENTRIES);
 	else
@@ -4195,7 +4197,7 @@ InitBufferManagerAccess(void)
 			   sizeof(PrivateRefCountEntry) * REFCOUNT_ARRAY_ENTRIES);
 
 	if (PrivateRefCountArrayKeys == NULL)
-		PrivateRefCountArrayKeys = MemoryContextAllocZero(TopMemoryContext,
+		PrivateRefCountArrayKeys = MemoryContextAllocZero(buffer_context,
 														  sizeof(Buffer) *
 														  REFCOUNT_ARRAY_ENTRIES);
 	else

@@ -15235,3 +15235,96 @@ Validation for the server-owned worker context allocation slice:
   writer, checkpointer, and WAL writer; `pg_get_wal_summarizer_state()`
   reported an active summarizer PID; and `VACUUM ANALYZE` plus `CHECKPOINT`
   completed against a temp table.
+
+## Shared Buffer Private Refcount Allocation Context
+
+Lifecycle/preflight note:
+
+- target: close the direct `TopMemoryContext` allocations for shared-buffer
+  private refcount arrays and make the backend writeback helper allocation use
+  the same checked backend-buffer allocation context;
+- touched root/bucket: `PgBackend.buffers`, specifically the new
+  `buffer_context` slot plus `backend_writeback_context`,
+  `private_ref_count_array_keys`, `private_ref_count_array`,
+  `private_ref_count_hash`, and the private-refcount scalar bookkeeping
+  fields;
+- owner source files: `src/backend/storage/buffer/bufmgr.c`,
+  `src/backend/storage/buffer/backend_runtime_buffer.c`,
+  `src/backend/utils/init/backend_runtime.c`,
+  `src/backend/utils/init/backend_runtime_teardown.c`,
+  `src/include/utils/backend_runtime.h`,
+  `src/test/modules/test_backend_runtime/test_backend_runtime_backend.c`,
+  `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, `MULTITHREADED_PLAN.md`, and this state
+  log;
+- legacy symbols/accessors: `BackendWritebackContext`,
+  `PrivateRefCountArrayKeys`, `PrivateRefCountArray`,
+  `PrivateRefCountHash`, `PrivateRefCountOverflowed`,
+  `PrivateRefCountClock`, `ReservedRefCountSlot`,
+  `PrivateRefCountEntryLast`, `MaxProportionalPins`,
+  `PgCurrentBackendWritebackContextRef()`,
+  `PgCurrentPrivateRefCountArrayKeysRef()`,
+  `PgCurrentPrivateRefCountArrayRef()`,
+  `PgCurrentPrivateRefCountHashRef()`,
+  `PgCurrentPrivateRefCountOverflowedRef()`,
+  `PgCurrentPrivateRefCountClockRef()`,
+  `PgCurrentReservedRefCountSlotRef()`,
+  `PgCurrentPrivateRefCountEntryLastRef()`, and
+  `PgCurrentMaxProportionalPinsRef()`;
+- repeated lifecycle operations expected in this slice: one object-owned
+  allocation context with several allocations under it, plus existing explicit
+  child cleanup and checked delete-and-null context reset. The previous
+  `PgRuntimeGetOwnedMemoryContextWithSizes()` helper and
+  `PG_RUNTIME_DELETE_MEMORY_CONTEXT` action cover the repeated lifecycle
+  mechanics;
+- checked primitive decision: no new lifecycle primitive is needed. Use a
+  dedicated `PgBackend.buffers.buffer_context` created through
+  `PgRuntimeGetOwnedMemoryContextWithSizes()`, keep buffer-manager semantic
+  cleanup handwritten in `PgBackendResetBufferClosedState()`, and add owner
+  rows for the buffer helper context and private-refcount state;
+- validation impact: because this changes `PgBackend` layout and an installed
+  runtime header, run touched object builds, clean backend rebuild if needed,
+  `git diff --check`, `gmake check-runtime-lifecycles`,
+  `gmake check-global-lifetimes`, full `gmake -j8`, backend-runtime
+  regression/TAP, and a focused buffer smoke that exercises shared-buffer pins
+  and temporary/local-buffer paths.
+
+Slice result:
+
+- `PgBackendBufferState` now has a `buffer_context` slot used by
+  `PgBackendBufferAllocationContext()` once `TopMemoryContext` exists;
+- `BackendWritebackContext`, `PrivateRefCountArrayKeys`, and
+  `PrivateRefCountArray` now allocate under `BackendBufferContext` instead of
+  directly under `TopMemoryContext`;
+- `PgBackendBufferAllocationContext()` deliberately preserves the pre-existing
+  fallback to `CurrentMemoryContext` before `TopMemoryContext` exists;
+- `PgBackendResetBufferClosedState()` still performs explicit child cleanup
+  for writeback/private-refcount pointers and the private-refcount hash, then
+  deletes `BackendBufferContext` as the owning allocation family;
+- the owner map now records `BackendBufferContext`, `BackendWritebackContext`,
+  private-refcount array/hash/scalar symbols, and `MaxProportionalPins`.
+
+Validation for the shared buffer private refcount allocation context slice:
+
+- touched-object builds passed for `bufmgr.o`, `backend_runtime_buffer.o`,
+  `backend_runtime.o`, `backend_runtime_teardown.o`, and
+  `test_backend_runtime_backend.o`;
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 166 fields classified, 166
+  bucket definitions checked, 35 reset definitions checked, and 294 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- because this changed `PgBackend` layout and an installed runtime header,
+  `gmake -C src/backend clean` was run, generated backend utility/node files
+  and include symlinks were regenerated, and full `gmake -j8` passed;
+- `gmake -C src/pl/plpgsql/src clean all` passed;
+- `gmake -C contrib all` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- after patching the recreated macOS temp-install install names, direct
+  backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total;
+- a focused live buffer smoke passed: it created and scanned a regular table,
+  used a cursor to hold/release shared-buffer pins, created and scanned a
+  temporary table to exercise local-buffer paths, and completed `VACUUM
+  ANALYZE` plus `CHECKPOINT`.

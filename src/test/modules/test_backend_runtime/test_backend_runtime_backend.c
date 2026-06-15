@@ -1062,9 +1062,16 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	buffers->local_buffer_next_buf_in_block = 1;
 	buffers->local_buffer_num_bufs_in_block = 2;
 	buffers->local_buffer_total_bufs_allocated = 3;
-	buffers->backend_writeback_context = palloc0(8);
-	buffers->private_ref_count_array_keys = palloc0(8);
-	buffers->private_ref_count_array = palloc0(8);
+	buffers->buffer_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test buffer context",
+							  ALLOCSET_SMALL_SIZES);
+	buffers->backend_writeback_context =
+		MemoryContextAllocZero(buffers->buffer_context, 8);
+	buffers->private_ref_count_array_keys =
+		MemoryContextAllocZero(buffers->buffer_context, 8);
+	buffers->private_ref_count_array =
+		MemoryContextAllocZero(buffers->buffer_context, 8);
 	buffers->private_ref_count_hash =
 		hash_create("test private refcount hash", 8, &hash_ctl,
 					HASH_ELEM | HASH_BLOBS);
@@ -1401,6 +1408,7 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && buffers->local_buffer_num_bufs_in_block == 0;
 	ok = ok && buffers->local_buffer_total_bufs_allocated == 0;
 	ok = ok && buffers->local_buffer_context == NULL;
+	ok = ok && buffers->buffer_context == NULL;
 	ok = ok && buffers->backend_writeback_context == NULL;
 	ok = ok && buffers->private_ref_count_array_keys == NULL;
 	ok = ok && buffers->private_ref_count_array == NULL;

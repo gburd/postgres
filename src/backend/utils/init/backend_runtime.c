@@ -7205,8 +7205,12 @@ PgCurrentBackendBufferState(void)
 MemoryContext
 PgBackendBufferAllocationContext(void)
 {
+	PgBackendBufferState *buffers = PgCurrentBackendBufferState();
+
 	if (TopMemoryContext != NULL)
-		return TopMemoryContext;
+		return PgRuntimeGetOwnedMemoryContextWithSizes(&buffers->buffer_context,
+													   "BackendBufferContext",
+													   ALLOCSET_DEFAULT_SIZES);
 	if (CurrentMemoryContext != NULL)
 		return CurrentMemoryContext;
 

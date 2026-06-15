@@ -693,6 +693,7 @@ typedef struct PgBackendBufferState
 	int			local_buffer_num_bufs_in_block;
 	int			local_buffer_total_bufs_allocated;
 	MemoryContext local_buffer_context;
+	MemoryContext buffer_context;
 	WritebackContext *backend_writeback_context;
 	void	   *private_ref_count_array_keys;
 	void	   *private_ref_count_array;
@@ -3151,6 +3152,7 @@ extern PgBackendLaunchModel PgRuntimeGetBackendLaunchModel(BackendType backend_t
 extern bool PgRuntimeShouldThreadBackend(BackendType backend_type);
 extern PgBackendModel PgRuntimeGetExtensionBackendModel(void);
 extern void PgRuntimeSetExtensionBackendModel(PgBackendModel backend_model);
+extern MemoryContext PgBackendBufferAllocationContext(void);
 #define PgRuntimeGetOwnedMemoryContextWithSizes(context, name, ...) \
 	((*(context) != NULL) ? *(context) : \
 	 (*(context) = AllocSetContextCreate(TopMemoryContext, (name), \

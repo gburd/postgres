@@ -207,6 +207,7 @@ PgBackendResetBufferClosedState(PgBackendBufferState *buffers)
 	if (buffers->private_ref_count_array != NULL)
 		pfree(buffers->private_ref_count_array);
 	PG_RUNTIME_DESTROY_HASH(buffers->private_ref_count_hash);
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(buffers->buffer_context);
 
 	PgBackendInitializeBufferState(buffers);
 }

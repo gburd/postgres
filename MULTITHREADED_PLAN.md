@@ -1910,6 +1910,14 @@ the backend-owned `PgBackend.buffers` context slot. Temporary table local
 buffer allocation still uses the existing local-buffer cursor/block semantics,
 but the storage context is now part of the checked backend buffer lifecycle
 and owner map instead of being an untracked direct `TopMemoryContext` child.
+Follow-up shared-buffer refcount hardening added a backend-owned
+`BackendBufferContext` slot to `PgBackend.buffers` and moved
+`BackendWritebackContext`, `PrivateRefCountArrayKeys`, and
+`PrivateRefCountArray` allocation under that context. The buffer manager still
+owns semantic pin cleanup through `AtEOXact_Buffers()` and
+`AtProcExit_Buffers()`, but retained logical-backend reset now has one checked
+buffer allocation family to delete after explicit child cleanup instead of
+leaving those helpers as raw top-memory allocations.
 Follow-up storage-manager hardening moved `MdCxt` and `pendingOpsCxt`
 creation through backend-owned `PgBackend.storage` context slots. The smgr
 descriptor-vector allocations and pending-sync hash/list storage keep their
