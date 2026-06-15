@@ -14993,3 +14993,74 @@ Validation for the local-buffer context allocation slice:
   inserted 4000 wide rows into a temporary table to force local-buffer
   storage, verified count/min/max/payload length, updated rows, and verified
   the update count.
+
+## Storage Manager Context Allocation
+
+Lifecycle/preflight note:
+
+- target: close direct `TopMemoryContext` allocation for the storage-manager
+  context and pending sync operations context by creating them through the
+  backend-owned storage bucket slots;
+- touched root/bucket: `PgBackend.storage`, specifically `md_context`,
+  `sync_pending_ops_context`, `sync_pending_ops`, and
+  `sync_pending_unlinks`;
+- owner source files: `src/backend/storage/smgr/md.c`,
+  `src/backend/storage/sync/sync.c`,
+  `src/backend/storage/file/backend_runtime_file.c`,
+  `src/backend/utils/init/backend_runtime_teardown.c`,
+  `src/test/modules/test_backend_runtime/test_backend_runtime_backend.c`,
+  `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, `MULTITHREADED_PLAN.md`, and this state
+  log;
+- legacy symbols/accessors: `MdCxt`, `pendingOps`, `pendingUnlinks`,
+  `pendingOpsCxt`, `PgCurrentMdContextRef()`,
+  `PgCurrentSyncPendingOpsRef()`, `PgCurrentSyncPendingUnlinksRef()`, and
+  `PgCurrentSyncPendingOpsContextRef()`;
+- repeated lifecycle operations expected in this slice: two object-owned
+  allocation contexts that already have checked close-time deletion in the
+  `PgBackend.storage` reset path. The existing
+  `PgRuntimeGetOwnedMemoryContext()` macro and checked
+  `PG_RUNTIME_DELETE_MEMORY_CONTEXT` reset action cover this pattern;
+- checked primitive decision: no new lifecycle primitive is needed because
+  this slice only changes allocation-site parentage for fields that are
+  already in the storage lifecycle row and owner-adjacent reset helper. The
+  missing piece is owner-map coverage for the legacy storage symbols;
+- validation impact: run touched object builds for `md.o`, `sync.o`,
+  `backend_runtime_file.o`, `backend_runtime_teardown.o`, and
+  `test_backend_runtime_backend.o`, then `git diff --check`,
+  `gmake check-runtime-lifecycles`, `gmake check-global-lifetimes`, full
+  `gmake -j8`, backend-runtime regression/TAP, and a focused live storage
+  smoke that creates, writes, checkpoints, and reads a regular table.
+
+Slice result:
+
+- `mdinit()` now creates `MdCxt` with
+  `PgRuntimeGetOwnedMemoryContext(PgCurrentMdContextRef(), "MdSmgr")`
+  instead of directly allocating a `TopMemoryContext` child;
+- `InitSync()` now creates `pendingOpsCxt` with
+  `PgRuntimeGetOwnedMemoryContext(PgCurrentSyncPendingOpsContextRef(),
+  "Pending ops context")`, while preserving the critical-section allowance,
+  hash-table context ownership, and pending-unlink list semantics;
+- the owner map now records `MdCxt`, `pendingOps`, `pendingUnlinks`, and
+  `pendingOpsCxt` under `PgBackend.storage`.
+
+Validation for the storage manager context allocation slice:
+
+- `git diff --check` passed;
+- touched-object builds passed for `md.o`, `sync.o`,
+  `backend_runtime_file.o`, `backend_runtime_teardown.o`, and
+  `test_backend_runtime_backend.o`;
+- `gmake check-runtime-lifecycles` passed with 166 fields classified, 166
+  bucket definitions checked, 35 reset definitions checked, and 266 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- full incremental `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- after patching the recreated macOS temp-install install names, direct
+  backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total;
+- a focused live-cluster storage smoke passed: it created a regular table,
+  inserted 5000 rows, forced `CHECKPOINT`, verified count/min/max/payload
+  length, updated five rows, forced another `CHECKPOINT`, and verified the
+  updated row count.

@@ -143,9 +143,9 @@ InitSync(void)
 		 * Fortunately the hash table is small so that's unlikely to happen in
 		 * practice.
 		 */
-		pendingOpsCxt = AllocSetContextCreate(TopMemoryContext,
-											  "Pending ops context",
-											  ALLOCSET_DEFAULT_SIZES);
+		pendingOpsCxt =
+			PgRuntimeGetOwnedMemoryContext(PgCurrentSyncPendingOpsContextRef(),
+										   "Pending ops context");
 		MemoryContextAllowInCriticalSection(pendingOpsCxt, true);
 
 		hash_ctl.keysize = sizeof(FileTag);

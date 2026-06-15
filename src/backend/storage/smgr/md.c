@@ -191,9 +191,8 @@ _mdfd_open_flags(void)
 void
 mdinit(void)
 {
-	MdCxt = AllocSetContextCreate(TopMemoryContext,
-								  "MdSmgr",
-								  ALLOCSET_DEFAULT_SIZES);
+	MdCxt = PgRuntimeGetOwnedMemoryContext(PgCurrentMdContextRef(),
+										   "MdSmgr");
 }
 
 /*

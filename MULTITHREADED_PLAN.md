@@ -1903,6 +1903,12 @@ the backend-owned `PgBackend.buffers` context slot. Temporary table local
 buffer allocation still uses the existing local-buffer cursor/block semantics,
 but the storage context is now part of the checked backend buffer lifecycle
 and owner map instead of being an untracked direct `TopMemoryContext` child.
+Follow-up storage-manager hardening moved `MdCxt` and `pendingOpsCxt`
+creation through backend-owned `PgBackend.storage` context slots. The smgr
+descriptor-vector allocations and pending-sync hash/list storage keep their
+existing subsystem semantics, while closed-backend reset now owns both context
+families through the checked storage lifecycle row and owner map instead of
+leaving them as direct `TopMemoryContext` children.
 Follow-up session xact-callback hardening moved transaction and
 subtransaction callback list-node allocation under a session-owned
 `XactCallbackContext`. The registration/unregistration APIs and callback
