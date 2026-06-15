@@ -36,14 +36,14 @@ PG_MODULE_MAGIC_EXT(
 
 #define pg_plan_advice_always_explain_supplied_advice \
 	(PgCurrentSessionExtensionModuleState()->pg_plan_advice_always_explain_supplied_advice)
+#define pgpa_memory_context (*PgCurrentPgPlanAdviceContextRef())
+#define advisor_hook_list (*PgCurrentPgPlanAdviceAdvisorHookListRef())
 
 /* Saved hook value */
 static explain_per_plan_hook_type prev_explain_per_plan = NULL;
 
 /* Other file-level globals */
 static int	es_extension_id;
-static MemoryContext pgpa_memory_context = NULL;
-static List *advisor_hook_list = NIL;
 
 static void pg_plan_advice_explain_option_handler(ExplainState *es,
 												  DefElem *opt,
@@ -142,12 +142,10 @@ _PG_init(void)
 MemoryContext
 pg_plan_advice_get_mcxt(void)
 {
-	if (pgpa_memory_context == NULL)
-		pgpa_memory_context = AllocSetContextCreate(TopMemoryContext,
-													"pg_plan_advice",
-													ALLOCSET_DEFAULT_SIZES);
-
-	return pgpa_memory_context;
+	return PgRuntimeGetOwnedMemoryContextWithSizes(
+		PgCurrentPgPlanAdviceContextRef(),
+		"pg_plan_advice",
+		ALLOCSET_DEFAULT_SIZES);
 }
 
 /*

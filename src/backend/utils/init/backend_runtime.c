@@ -123,6 +123,7 @@ static PG_GLOBAL_RUNTIME PgRuntimeServerGUCState early_runtime_server_guc = {
 	.hosts_file_name = NULL,
 	.external_pid_file_value = NULL
 };
+static PG_GLOBAL_RUNTIME PgRuntimeExtensionModuleState early_runtime_extension_modules;
 static PG_GLOBAL_CARRIER PgCarrier process_carrier;
 static PG_GLOBAL_BACKEND PgBackend process_backend;
 static PG_GLOBAL_SESSION PgSession process_session;
@@ -755,6 +756,8 @@ static PgBackendId PgBackendAssignId(void);
 static void PgBackendWakeForInterrupt(PgBackend *backend);
 static void PgRuntimeInitializeServerGUCState(PgRuntimeServerGUCState *server_guc);
 static void PgRuntimeAdoptEarlyServerGUCState(PgRuntime *runtime);
+static void PgRuntimeInitializeExtensionModuleState(PgRuntimeExtensionModuleState *extension_modules);
+static void PgRuntimeAdoptEarlyExtensionModuleState(PgRuntime *runtime);
 PgRuntimeServerGUCState *PgCurrentRuntimeServerGUCState(void);
 static void PgConnectionAdoptEarlyIdentity(PgConnection *connection);
 static void PgConnectionAdoptEarlySocketIO(PgConnection *connection);
@@ -1091,6 +1094,24 @@ PgRuntimeAdoptEarlyServerGUCState(PgRuntime *runtime)
 
 	runtime->server_guc = early_runtime_server_guc;
 	PgRuntimeInitializeServerGUCState(&early_runtime_server_guc);
+}
+
+static void
+PgRuntimeInitializeExtensionModuleState(PgRuntimeExtensionModuleState *extension_modules)
+{
+	Assert(extension_modules != NULL);
+
+	extension_modules->pg_plan_advice_context = NULL;
+	extension_modules->pg_plan_advice_advisor_hook_list = NIL;
+}
+
+static void
+PgRuntimeAdoptEarlyExtensionModuleState(PgRuntime *runtime)
+{
+	Assert(runtime != NULL);
+
+	runtime->extension_modules = early_runtime_extension_modules;
+	PgRuntimeInitializeExtensionModuleState(&early_runtime_extension_modules);
 }
 
 PG_RUNTIME_DEFINE_ADOPT_EARLY_ZERO(PgConnectionAdoptEarlyIdentity,
@@ -3720,6 +3741,17 @@ PgExecutionAdoptEarlyState(PgExecution *execution)
 }
 
 static void
+PgRuntimeInitializeRuntimeObject(PgRuntime *runtime)
+{
+	Assert(runtime != NULL);
+
+#define PG_RUNTIME_BUCKET(field, init, adopt, reset) \
+	do { init; } while (0);
+#include "backend_runtime_runtime_buckets.def"
+#undef PG_RUNTIME_BUCKET
+}
+
+static void
 PgBackendInitializeRuntimeObject(PgBackend *backend,
 								 PgRuntime *runtime,
 								 PgCarrier *carrier,
@@ -3807,6 +3839,7 @@ PgRuntimeResetAfterFork(void)
 	CurrentPgExecution = NULL;
 
 	MemSet(&process_runtime, 0, sizeof(process_runtime));
+	PgRuntimeInitializeRuntimeObject(&process_runtime);
 	PgCarrierInitializeRuntimeObject(&process_carrier);
 	PgBackendInitializeRuntimeObject(&process_backend, NULL, NULL, NULL,
 									 NULL, NULL, B_INVALID, NULL);
@@ -3824,6 +3857,7 @@ void
 InitializePgProcessRuntime(void)
 {
 	MemSet(&process_runtime, 0, sizeof(process_runtime));
+	PgRuntimeInitializeRuntimeObject(&process_runtime);
 	PgCarrierInitializeRuntimeObject(&process_carrier);
 	MemSet(&process_backend, 0, sizeof(process_backend));
 	MemSet(&process_session, 0, sizeof(process_session));
@@ -3834,6 +3868,7 @@ InitializePgProcessRuntime(void)
 	process_runtime.current_carrier = &process_carrier;
 	process_runtime.extension_backend_model = PG_BACKEND_MODEL_PROCESS;
 	PgRuntimeAdoptEarlyServerGUCState(&process_runtime);
+	PgRuntimeAdoptEarlyExtensionModuleState(&process_runtime);
 
 	process_carrier.kind = PG_CARRIER_PROCESS;
 	process_carrier.runtime = &process_runtime;
@@ -3878,6 +3913,7 @@ InitializePgThreadRuntime(PgBackendExitContinuation exit_backend)
 	if (!thread_runtime_initialized)
 	{
 		MemSet(&thread_runtime, 0, sizeof(thread_runtime));
+		PgRuntimeInitializeRuntimeObject(&thread_runtime);
 
 		thread_runtime.kind = PG_RUNTIME_THREAD_PER_SESSION;
 		thread_runtime.extension_backend_model =
@@ -3886,6 +3922,7 @@ InitializePgThreadRuntime(PgBackendExitContinuation exit_backend)
 			thread_runtime.server_guc = process_runtime.server_guc;
 		else
 			PgRuntimeInitializeServerGUCState(&thread_runtime.server_guc);
+		thread_runtime.extension_modules = process_runtime.extension_modules;
 		PgBackendInitializeIdCounter();
 		thread_runtime_initialized = true;
 	}
@@ -4069,6 +4106,30 @@ PgCurrentRuntimeServerGUCState(void)
 		PgRuntimeInitializeServerGUCState(server_guc);
 
 	return server_guc;
+}
+
+PgRuntimeExtensionModuleState *
+PgCurrentRuntimeExtensionModuleState(void)
+{
+	if (CurrentPgRuntime == NULL)
+		return &early_runtime_extension_modules;
+
+	return &CurrentPgRuntime->extension_modules;
+}
+
+MemoryContext *
+PgCurrentPgPlanAdviceContextRef(void)
+{
+	return &PgCurrentRuntimeExtensionModuleState()->pg_plan_advice_context;
+}
+
+List **
+PgCurrentPgPlanAdviceAdvisorHookListRef(void)
+{
+	PgRuntimeExtensionModuleState *extension_modules;
+
+	extension_modules = PgCurrentRuntimeExtensionModuleState();
+	return &extension_modules->pg_plan_advice_advisor_hook_list;
 }
 
 PgSessionTablespaceState *

@@ -39,6 +39,7 @@ my @sources = (
 	'src/backend/storage/ipc/dsm.c',
 	'src/backend/storage/ipc/ipc.c');
 my @bucket_defs = (
+	'src/backend/utils/init/backend_runtime_runtime_buckets.def',
 	'src/backend/utils/init/backend_runtime_backend_buckets.def',
 	'src/backend/utils/init/backend_runtime_carrier_buckets.def',
 	'src/backend/utils/init/backend_runtime_session_buckets.def',
@@ -287,11 +288,11 @@ sub read_runtime_fields
 	my $object;
 	my $in_object = 0;
 	my %objects = map { $_ => 1 }
-	  qw(PgCarrier PgBackend PgSession PgConnection PgExecution);
+	  qw(PgRuntime PgCarrier PgBackend PgSession PgConnection PgExecution);
 
 	while (my $line = <$fh>)
 	{
-		if ($line =~ /^struct\s+(PgCarrier|PgBackend|PgSession|PgConnection|PgExecution)\s*$/)
+		if ($line =~ /^struct\s+(PgRuntime|PgCarrier|PgBackend|PgSession|PgConnection|PgExecution)\s*$/)
 		{
 			$object = $1;
 			$in_object = 1;
@@ -414,6 +415,7 @@ sub read_bucket_defs
 	my (@files) = @_;
 	my @rows;
 	my %objects = (
+		RUNTIME => 'PgRuntime',
 		BACKEND => 'PgBackend',
 		CARRIER => 'PgCarrier',
 		SESSION => 'PgSession',
@@ -431,7 +433,7 @@ sub read_bucket_defs
 			next if $line =~ /^\s*$/;
 			next if $line =~ /^\s*(?:\/\*|\*)/;
 
-			if ($line !~ /^\s*PG_(BACKEND|CARRIER|SESSION|CONNECTION|EXECUTION)_BUCKET\s*\((.*)\)\s*$/)
+			if ($line !~ /^\s*PG_(RUNTIME|BACKEND|CARRIER|SESSION|CONNECTION|EXECUTION)_BUCKET\s*\((.*)\)\s*$/)
 			{
 				push @errors, "$file:$.: expected PG_*_BUCKET(...) row";
 				next;

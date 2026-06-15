@@ -215,6 +215,96 @@ test_runtime_server_guc_state_is_runtime_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_runtime_extension_module_state_is_runtime_local);
+Datum
+test_runtime_extension_module_state_is_runtime_local(PG_FUNCTION_ARGS)
+{
+	PgRuntime  *saved_runtime;
+	PgRuntime	fake_runtime1;
+	PgRuntime	fake_runtime2;
+	PgRuntimeExtensionModuleState *extension_modules;
+	MemoryContext runtime1_context = NULL;
+	MemoryContext runtime2_context = NULL;
+	List	   *runtime1_advisors = (List *) &fake_runtime1;
+	List	   *runtime2_advisors = (List *) &fake_runtime2;
+	const char *stage = "initial";
+	bool		ok = true;
+
+	saved_runtime = CurrentPgRuntime;
+	MemSet(&fake_runtime1, 0, sizeof(fake_runtime1));
+	MemSet(&fake_runtime2, 0, sizeof(fake_runtime2));
+
+	PG_TRY();
+	{
+		stage = "runtime1 default";
+		CurrentPgRuntime = &fake_runtime1;
+		extension_modules = PgCurrentRuntimeExtensionModuleState();
+		ok = ok && extension_modules->pg_plan_advice_context == NULL;
+		ok = ok && extension_modules->pg_plan_advice_advisor_hook_list == NIL;
+
+		stage = "runtime1 set";
+		runtime1_context =
+			AllocSetContextCreate(TopMemoryContext,
+								  "test runtime1 pg_plan_advice context",
+								  ALLOCSET_SMALL_SIZES);
+		*PgCurrentPgPlanAdviceContextRef() = runtime1_context;
+		*PgCurrentPgPlanAdviceAdvisorHookListRef() = runtime1_advisors;
+		extension_modules = PgCurrentRuntimeExtensionModuleState();
+		ok = ok && extension_modules->pg_plan_advice_context == runtime1_context;
+		ok = ok && extension_modules->pg_plan_advice_advisor_hook_list ==
+			runtime1_advisors;
+
+		stage = "runtime2 default";
+		CurrentPgRuntime = &fake_runtime2;
+		extension_modules = PgCurrentRuntimeExtensionModuleState();
+		ok = ok && extension_modules->pg_plan_advice_context == NULL;
+		ok = ok && extension_modules->pg_plan_advice_advisor_hook_list == NIL;
+
+		stage = "runtime2 set";
+		runtime2_context =
+			AllocSetContextCreate(TopMemoryContext,
+								  "test runtime2 pg_plan_advice context",
+								  ALLOCSET_SMALL_SIZES);
+		*PgCurrentPgPlanAdviceContextRef() = runtime2_context;
+		*PgCurrentPgPlanAdviceAdvisorHookListRef() = runtime2_advisors;
+		extension_modules = PgCurrentRuntimeExtensionModuleState();
+		ok = ok && extension_modules->pg_plan_advice_context == runtime2_context;
+		ok = ok && extension_modules->pg_plan_advice_advisor_hook_list ==
+			runtime2_advisors;
+
+		stage = "runtime1 restore";
+		CurrentPgRuntime = &fake_runtime1;
+		extension_modules = PgCurrentRuntimeExtensionModuleState();
+		ok = ok && extension_modules->pg_plan_advice_context == runtime1_context;
+		ok = ok && extension_modules->pg_plan_advice_advisor_hook_list ==
+			runtime1_advisors;
+
+		CurrentPgRuntime = saved_runtime;
+	}
+	PG_CATCH();
+	{
+		CurrentPgRuntime = saved_runtime;
+		if (runtime1_context != NULL)
+			MemoryContextDelete(runtime1_context);
+		if (runtime2_context != NULL)
+			MemoryContextDelete(runtime2_context);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	CurrentPgRuntime = saved_runtime;
+	if (runtime1_context != NULL)
+		MemoryContextDelete(runtime1_context);
+	if (runtime2_context != NULL)
+		MemoryContextDelete(runtime2_context);
+
+	if (!ok)
+		elog(ERROR, "runtime extension module state was not runtime-local at %s",
+			 stage);
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_session_guc_rebind_table_matches_registry);
 Datum
 test_session_guc_rebind_table_matches_registry(PG_FUNCTION_ARGS)

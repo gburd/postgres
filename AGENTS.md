@@ -88,8 +88,8 @@ state group, then rerun the threaded runtime TAP.
   explicit runtime/session objects.
 - [MULTITHREADED_RUNTIME_LIFECYCLE.tsv](MULTITHREADED_RUNTIME_LIFECYCLE.tsv)
   is the Gate E2 lifecycle manifest for runtime-root fields, currently
-  including `PgCarrier`, `PgBackend`, `PgSession`, `PgConnection`, and
-  `PgExecution`.
+  including `PgRuntime`, `PgCarrier`, `PgBackend`, `PgSession`,
+  `PgConnection`, and `PgExecution`.
 - [MULTITHREADED_RUNTIME_OWNERS.tsv](MULTITHREADED_RUNTIME_OWNERS.tsv) maps
   migrated legacy symbols to runtime object buckets, members, accessors, and
   owner source files. Extend it when moving globals behind runtime objects;
@@ -2138,10 +2138,17 @@ Important current files:
 
 - The direct threaded backend-runtime TAP also installs representative contrib
   modules into `tmp_install` before starting its threaded node: `hstore`,
-  `pg_trgm`, `btree_gist`, and `pageinspect`. Keep this as a Gate E2
-  representative extension smoke. These modules opt in with
+  `pg_trgm`, `btree_gist`, `pageinspect`, and `pg_plan_advice`. Keep this as
+  a Gate E2 representative extension smoke. These modules opt in with
   thread-per-session backend-model metadata; `pg_trgm` also moves its custom
-  GUC backing variables into `PgSession.extension_modules` before opting in.
+  GUC backing variables into `PgSession.extension_modules`, and
+  `pg_plan_advice` routes its module-wide context/hook-list state through
+  `PgRuntime.extension_modules` before opting in. `pg_plan_advice` is a
+  loadable module, not a SQL extension with a control file, so TAP coverage
+  must use `LOAD 'pg_plan_advice'`. Keep that load near the end of
+  `001_threaded_runtime.pl` until its planner-hook behavior with threaded
+  parallel query has a dedicated audit; loading it before the parallel-query
+  smoke has caused the server connection to drop during that later smoke.
   Future contrib opt-ins need the same mutable-state audit. Phase 16 still
   owns contrib-wide threaded regression.
 

@@ -1999,6 +1999,12 @@ typedef struct PgRuntimeServerGUCState
 	char	   *external_pid_file_value;
 } PgRuntimeServerGUCState;
 
+typedef struct PgRuntimeExtensionModuleState
+{
+	MemoryContext pg_plan_advice_context;
+	List	   *pg_plan_advice_advisor_hook_list;
+} PgRuntimeExtensionModuleState;
+
 #define PG_CONNECTION_SEND_BUFFER_SIZE 8192
 #define PG_CONNECTION_RECV_BUFFER_SIZE 8192
 #define PG_CONNECTION_CANCEL_KEY_LENGTH 32
@@ -2141,6 +2147,7 @@ struct PgRuntime
 	PgCarrier  *current_carrier;
 	PgBackendModel extension_backend_model;
 	PgRuntimeServerGUCState server_guc;
+	PgRuntimeExtensionModuleState extension_modules;
 
 	/*
 	 * Optional continuation used after PgBackendExitCleanup().  Process mode
@@ -2971,6 +2978,9 @@ extern void PgSetCurrentSession(PgSession *session);
 extern bool PgCurrentSessionOwnsPointer(const void *ptr);
 extern void PgBackendResetClosedState(PgBackend *backend);
 extern MemoryContext PgSessionGetDynamicLibraryMemoryContext(PgSession *session);
+extern PgRuntimeExtensionModuleState *PgCurrentRuntimeExtensionModuleState(void);
+extern MemoryContext *PgCurrentPgPlanAdviceContextRef(void);
+extern List **PgCurrentPgPlanAdviceAdvisorHookListRef(void);
 extern void **PgCurrentPLpgSQLSessionStateRef(void);
 extern PgSessionExtensionModuleState *PgCurrentSessionExtensionModuleState(void);
 extern void **PgCurrentPLpythonProcedureCacheRef(void);

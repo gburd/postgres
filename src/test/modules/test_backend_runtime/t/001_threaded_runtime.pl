@@ -16,7 +16,8 @@ my $node = PostgreSQL::Test::Cluster->new('threaded_runtime');
 
 sub install_contrib_extensions
 {
-	my @contrib_dirs = qw(hstore pg_trgm btree_gist pageinspect);
+	my @contrib_dirs =
+	  qw(hstore pg_trgm btree_gist pageinspect pg_plan_advice);
 	my $gmake = $ENV{GMAKE} || 'gmake';
 
 	foreach my $dir (@contrib_dirs)
@@ -921,6 +922,16 @@ is($node->safe_psql(
 	't', 'threaded extension DDL drops thread-compatible extension');
 is($node->safe_psql('postgres', 'SELECT 42;'), '42',
 	'threaded server remains usable after threaded extension drop');
+
+is($node->safe_psql(
+		'postgres',
+		q{
+LOAD 'pg_plan_advice';
+SET pg_plan_advice.advice = 'SEQ_SCAN(threaded_runtime_stress)';
+SELECT current_setting('pg_plan_advice.advice') =
+       'SEQ_SCAN(threaded_runtime_stress)';
+}),
+	't', 'threaded runtime loads pg_plan_advice module state');
 
 SKIP:
 {

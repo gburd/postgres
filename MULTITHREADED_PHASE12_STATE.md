@@ -15901,3 +15901,75 @@ Validation for the PL/Sample allocation parent slice:
 - with repo-local `.perl5` `IPC::Run`, direct backend-runtime TAP passed for
   `001_threaded_runtime.pl` and `002_threaded_bgworker_crash.pl`, 132 tests
   total.
+
+## PgRuntime Extension Module State
+
+Lifecycle/preflight note:
+
+- target: close the remaining raw module-wide state in `pg_plan_advice`, where
+  `pgpa_memory_context` and `advisor_hook_list` are not session state and
+  should not be reset on backend/session close;
+- touched root/bucket: new checked `PgRuntime.extension_modules`, specifically
+  `pg_plan_advice_context` and `pg_plan_advice_advisor_hook_list`;
+- owner source files: `src/include/utils/backend_runtime.h`,
+  `src/backend/utils/init/backend_runtime.c`,
+  `src/backend/utils/init/backend_runtime_runtime_buckets.def`,
+  `contrib/pg_plan_advice/pg_plan_advice.c`,
+  `src/test/modules/test_backend_runtime/test_backend_runtime_session_guc.c`,
+  `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, and this state log;
+- legacy symbols/accessors: `pgpa_memory_context` and `advisor_hook_list`
+  through `PgCurrentPgPlanAdviceContextRef()` and
+  `PgCurrentPgPlanAdviceAdvisorHookListRef()`;
+- repeated lifecycle operations expected in this slice: one runtime-owned
+  extension-module bucket with constructor initialization and early fallback
+  adoption. This is the first checked `PgRuntime` bucket table, so the slice
+  adds `backend_runtime_runtime_buckets.def` and teaches
+  `check_runtime_lifecycles.pl` to verify `PgRuntime` rows rather than adding
+  another ad hoc init/adopt list by hand;
+- checked primitive decision: add the `PG_RUNTIME_BUCKET` table first, then
+  route the pg_plan_advice module-wide slots through that checked runtime
+  bucket. No close-time destroy action is added because this state has runtime
+  lifetime and currently mirrors the historical module-global lifetime.
+
+Implementation result:
+
+- `PgRuntime` is now a lifecycle-checked root in
+  `MULTITHREADED_RUNTIME_LIFECYCLE.tsv` alongside carrier, backend, session,
+  connection, and execution;
+- `InitializePgProcessRuntime()` and `InitializePgThreadRuntime()` initialize
+  the runtime object through the `PG_RUNTIME_BUCKET` table, and process runtime
+  startup adopts any early extension-module fallback state;
+- the thread-per-session runtime copies process-runtime extension-module slots
+  during first initialization, preserving preloaded module-wide extension state
+  for threaded backends;
+- `pg_plan_advice_get_mcxt()` now creates the module context through
+  `PgRuntimeGetOwnedMemoryContextWithSizes(PgCurrentPgPlanAdviceContextRef(),
+  ...)`, and the advisor hook list is reached through the runtime bucket
+  accessor;
+- the backend-runtime SQL regression now proves `PgRuntime.extension_modules`
+  is runtime-local across fake runtime objects;
+- the threaded-runtime TAP installs and loads `pg_plan_advice` under
+  `multithreaded = on` and verifies its custom GUC path near the end of the
+  test. Keep this after the parallel-query smoke until pg_plan_advice planner
+  hook behavior under threaded parallel query has been audited separately.
+
+Validation for the PgRuntime extension-module state slice:
+
+- `git diff --check` passed;
+- touched-object builds passed for `backend_runtime.o`, `pg_plan_advice.o`,
+  and `test_backend_runtime_session_guc.o`;
+- `gmake check-runtime-lifecycles` passed with 172 fields classified, 172
+  bucket definitions checked, 35 reset definitions checked, and 310 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- after backend clean/generated-header recovery, full `gmake -j8` passed;
+- clean `gmake -C contrib/pg_plan_advice clean all check` passed all nine
+  pg_plan_advice regression tests;
+- clean `gmake -C src/test/modules/test_backend_runtime clean all check`
+  passed after updating the expected EOF blank line emitted by pg_regress;
+- with repo-local `.perl5` `IPC::Run`, direct backend-runtime TAP passed for
+  `001_threaded_runtime.pl` and `002_threaded_bgworker_crash.pl`, 133 tests
+  total. The pg_plan_advice TAP smoke uses `LOAD 'pg_plan_advice'` because
+  pg_plan_advice is a loadable module, not a SQL extension with a control file.
