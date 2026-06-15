@@ -2274,6 +2274,8 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 	bool		saved_critical_relcaches_built;
 	bool		saved_critical_shared_relcaches_built;
 	long		saved_relcache_invals_received;
+	TupleDesc	saved_pg_class_descriptor;
+	TupleDesc	saved_pg_index_descriptor;
 	HTAB	   *saved_opclass_cache;
 	HTAB	   *saved_type_cache_hash;
 	HTAB	   *saved_relid_to_typeid_cache_hash;
@@ -2307,6 +2309,10 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 	CatCacheHeader *session2_catcache_header_marker;
 	HTAB	   *session1_relcache_marker;
 	HTAB	   *session2_relcache_marker;
+	TupleDesc	session1_pg_class_descriptor_marker;
+	TupleDesc	session2_pg_class_descriptor_marker;
+	TupleDesc	session1_pg_index_descriptor_marker;
+	TupleDesc	session2_pg_index_descriptor_marker;
 	HTAB	   *session1_opclass_marker;
 	HTAB	   *session2_opclass_marker;
 	TypeCacheEntry *session1_typentry_marker;
@@ -2336,6 +2342,8 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 	saved_critical_shared_relcaches_built =
 		*PgCurrentCriticalSharedRelcachesBuiltRef();
 	saved_relcache_invals_received = *PgCurrentRelcacheInvalsReceivedRef();
+	saved_pg_class_descriptor = *PgCurrentPgClassDescriptorRef();
+	saved_pg_index_descriptor = *PgCurrentPgIndexDescriptorRef();
 	saved_opclass_cache = *PgCurrentOpClassCacheRef();
 	saved_type_cache_hash = *PgCurrentTypeCacheHashRef();
 	saved_relid_to_typeid_cache_hash = *PgCurrentRelIdToTypeIdCacheHashRef();
@@ -2379,6 +2387,10 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 	session2_catcache_header_marker = (CatCacheHeader *) &fake_session2;
 	session1_relcache_marker = (HTAB *) &fake_session1;
 	session2_relcache_marker = (HTAB *) &fake_session2;
+	session1_pg_class_descriptor_marker = (TupleDesc) &fake_session1;
+	session2_pg_class_descriptor_marker = (TupleDesc) &fake_session2;
+	session1_pg_index_descriptor_marker = (TupleDesc) &session1_hash_marker;
+	session2_pg_index_descriptor_marker = (TupleDesc) &session2_hash_marker;
 	session1_opclass_marker = (HTAB *) &fake_session1;
 	session2_opclass_marker = (HTAB *) &fake_session2;
 	session1_typentry_marker = (TypeCacheEntry *) &fake_session1;
@@ -2403,6 +2415,8 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentCriticalRelcachesBuiltRef() == false;
 		ok = ok && *PgCurrentCriticalSharedRelcachesBuiltRef() == false;
 		ok = ok && *PgCurrentRelcacheInvalsReceivedRef() == 0;
+		ok = ok && *PgCurrentPgClassDescriptorRef() == NULL;
+		ok = ok && *PgCurrentPgIndexDescriptorRef() == NULL;
 		ok = ok && *PgCurrentOpClassCacheRef() == NULL;
 		ok = ok && *PgCurrentTypeCacheHashRef() == NULL;
 		ok = ok && *PgCurrentRelIdToTypeIdCacheHashRef() == NULL;
@@ -2436,6 +2450,8 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		*PgCurrentCriticalRelcachesBuiltRef() = true;
 		*PgCurrentCriticalSharedRelcachesBuiltRef() = true;
 		*PgCurrentRelcacheInvalsReceivedRef() = 11;
+		*PgCurrentPgClassDescriptorRef() = session1_pg_class_descriptor_marker;
+		*PgCurrentPgIndexDescriptorRef() = session1_pg_index_descriptor_marker;
 		*PgCurrentOpClassCacheRef() = session1_opclass_marker;
 		*PgCurrentTypeCacheHashRef() = session1_hash_marker;
 		*PgCurrentRelIdToTypeIdCacheHashRef() = session1_hash_marker;
@@ -2472,6 +2488,8 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentCriticalRelcachesBuiltRef() == false;
 		ok = ok && *PgCurrentCriticalSharedRelcachesBuiltRef() == false;
 		ok = ok && *PgCurrentRelcacheInvalsReceivedRef() == 0;
+		ok = ok && *PgCurrentPgClassDescriptorRef() == NULL;
+		ok = ok && *PgCurrentPgIndexDescriptorRef() == NULL;
 		ok = ok && *PgCurrentOpClassCacheRef() == NULL;
 		ok = ok && *PgCurrentTypeCacheHashRef() == NULL;
 		ok = ok && *PgCurrentRelIdToTypeIdCacheHashRef() == NULL;
@@ -2505,6 +2523,8 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		*PgCurrentCriticalRelcachesBuiltRef() = true;
 		*PgCurrentCriticalSharedRelcachesBuiltRef() = false;
 		*PgCurrentRelcacheInvalsReceivedRef() = 22;
+		*PgCurrentPgClassDescriptorRef() = session2_pg_class_descriptor_marker;
+		*PgCurrentPgIndexDescriptorRef() = session2_pg_index_descriptor_marker;
 		*PgCurrentOpClassCacheRef() = session2_opclass_marker;
 		*PgCurrentTypeCacheHashRef() = session2_hash_marker;
 		*PgCurrentRelIdToTypeIdCacheHashRef() = session2_hash_marker;
@@ -2542,6 +2562,10 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentCriticalRelcachesBuiltRef() == true;
 		ok = ok && *PgCurrentCriticalSharedRelcachesBuiltRef() == true;
 		ok = ok && *PgCurrentRelcacheInvalsReceivedRef() == 11;
+		ok = ok && *PgCurrentPgClassDescriptorRef() ==
+			session1_pg_class_descriptor_marker;
+		ok = ok && *PgCurrentPgIndexDescriptorRef() ==
+			session1_pg_index_descriptor_marker;
 		ok = ok && *PgCurrentOpClassCacheRef() == session1_opclass_marker;
 		ok = ok && *PgCurrentTypeCacheHashRef() == session1_hash_marker;
 		ok = ok && *PgCurrentRelIdToTypeIdCacheHashRef() == session1_hash_marker;
@@ -2581,6 +2605,10 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentCriticalRelcachesBuiltRef() == true;
 		ok = ok && *PgCurrentCriticalSharedRelcachesBuiltRef() == false;
 		ok = ok && *PgCurrentRelcacheInvalsReceivedRef() == 22;
+		ok = ok && *PgCurrentPgClassDescriptorRef() ==
+			session2_pg_class_descriptor_marker;
+		ok = ok && *PgCurrentPgIndexDescriptorRef() ==
+			session2_pg_index_descriptor_marker;
 		ok = ok && *PgCurrentOpClassCacheRef() == session2_opclass_marker;
 		ok = ok && *PgCurrentTypeCacheHashRef() == session2_hash_marker;
 		ok = ok && *PgCurrentRelIdToTypeIdCacheHashRef() == session2_hash_marker;
@@ -2627,6 +2655,8 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		*PgCurrentCriticalSharedRelcachesBuiltRef() =
 			saved_critical_shared_relcaches_built;
 		*PgCurrentRelcacheInvalsReceivedRef() = saved_relcache_invals_received;
+		*PgCurrentPgClassDescriptorRef() = saved_pg_class_descriptor;
+		*PgCurrentPgIndexDescriptorRef() = saved_pg_index_descriptor;
 		*PgCurrentOpClassCacheRef() = saved_opclass_cache;
 		*PgCurrentTypeCacheHashRef() = saved_type_cache_hash;
 		*PgCurrentRelIdToTypeIdCacheHashRef() = saved_relid_to_typeid_cache_hash;
@@ -2675,6 +2705,8 @@ test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
 		*PgCurrentCriticalSharedRelcachesBuiltRef() =
 			saved_critical_shared_relcaches_built;
 		*PgCurrentRelcacheInvalsReceivedRef() = saved_relcache_invals_received;
+		*PgCurrentPgClassDescriptorRef() = saved_pg_class_descriptor;
+		*PgCurrentPgIndexDescriptorRef() = saved_pg_index_descriptor;
 		*PgCurrentOpClassCacheRef() = saved_opclass_cache;
 		*PgCurrentTypeCacheHashRef() = saved_type_cache_hash;
 		*PgCurrentRelIdToTypeIdCacheHashRef() = saved_relid_to_typeid_cache_hash;
@@ -3639,6 +3671,12 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	fake_session.catalog_lookup.relcache_opclass_cache =
 		hash_create("test opclass cache", 8, &hash_ctl,
 					HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	fake_session.catalog_lookup.relcache_pg_class_descriptor =
+		(TupleDesc) MemoryContextAlloc(
+			fake_session.catalog_lookup.cache_memory_context, 8);
+	fake_session.catalog_lookup.relcache_pg_index_descriptor =
+		(TupleDesc) MemoryContextAlloc(
+			fake_session.catalog_lookup.cache_memory_context, 8);
 	fake_session.catalog_lookup.typcache_type_cache_hash =
 		hash_create("test typcache cache", 8, &hash_ctl,
 					HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
@@ -3875,6 +3913,8 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && fake_session.catalog_lookup.cache_memory_context == NULL;
 	ok = ok && fake_session.catalog_lookup.relcache_relation_id_cache == NULL;
 	ok = ok && fake_session.catalog_lookup.relcache_opclass_cache == NULL;
+	ok = ok && fake_session.catalog_lookup.relcache_pg_class_descriptor == NULL;
+	ok = ok && fake_session.catalog_lookup.relcache_pg_index_descriptor == NULL;
 	ok = ok && fake_session.catalog_lookup.typcache_type_cache_hash == NULL;
 	ok = ok && fake_session.catalog_lookup.typcache_relid_to_typeid_hash == NULL;
 	ok = ok && fake_session.catalog_lookup.typcache_record_cache_hash == NULL;

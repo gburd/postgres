@@ -1723,6 +1723,8 @@ typedef struct PgSessionCatalogLookupState
 	bool		relcache_critical_built;
 	bool		relcache_critical_shared_built;
 	long		relcache_invals_received;
+	TupleDesc	relcache_pg_class_descriptor;
+	TupleDesc	relcache_pg_index_descriptor;
 	HTAB	   *relcache_opclass_cache;
 	HTAB	   *typcache_type_cache_hash;
 	HTAB	   *typcache_relid_to_typeid_hash;
@@ -2659,6 +2661,8 @@ extern HTAB **PgCurrentRelationIdCacheRef(void);
 extern bool *PgCurrentCriticalRelcachesBuiltRef(void);
 extern bool *PgCurrentCriticalSharedRelcachesBuiltRef(void);
 extern long *PgCurrentRelcacheInvalsReceivedRef(void);
+extern TupleDesc *PgCurrentPgClassDescriptorRef(void);
+extern TupleDesc *PgCurrentPgIndexDescriptorRef(void);
 extern HTAB **PgCurrentOpClassCacheRef(void);
 extern HTAB **PgCurrentTypeCacheHashRef(void);
 extern HTAB **PgCurrentRelIdToTypeIdCacheHashRef(void);

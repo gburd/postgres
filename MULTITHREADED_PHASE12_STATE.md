@@ -13942,6 +13942,75 @@ Validation for the retained text-search/catalog reset-order slice:
   `002_threaded_bgworker_crash.pl`, 131 tests total, with repo-local `.perl5`
   `PERL5LIB` and explicit `PG_REGRESS=src/test/regress/pg_regress`.
 
+## Hardcoded Relcache Descriptor Session Ownership
+
+Lifecycle/preflight note:
+
+- target: remove another retained process-global relcache root that can point
+  at `CacheMemoryContext` storage before retrying active/current-session
+  `CacheMemoryContext` deletion;
+- touched roots/buckets: `PgSession.catalog_lookup`, specifically the
+  hardcoded `pg_class` and `pg_index` tuple descriptors used while relcache is
+  being rebuilt before normal syscaches are available;
+- owner source files: `src/backend/utils/cache/relcache.c`,
+  `src/backend/utils/cache/backend_runtime_cache.c`,
+  `src/include/utils/backend_runtime.h`,
+  `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, and this phase state log;
+- legacy symbols/accessors: function-local static `pgclassdesc`,
+  function-local static `pgindexdesc`,
+  `PgCurrentPgClassDescriptorRef()`, and
+  `PgCurrentPgIndexDescriptorRef()`;
+- repeated lifecycle operations: two pointer slots follow the existing
+  catalog lookup ownership pattern. They are built once on demand under the
+  current session's `CacheMemoryContext` and are cleared by the existing
+  catalog lookup reset path after dependent cleanup;
+- checked primitive decision: no new lifecycle primitive is needed because
+  the slice adds fields to the existing `PgSession.catalog_lookup` lifecycle
+  row. The existing catalog lookup reset is handwritten because it has
+  ordering-sensitive `CacheMemoryContext` handling, and these slots are simple
+  root pointers into that same context;
+- validation impact: this changes installed header layout, so use the
+  backend-clean/generated-header recovery before trusting threaded TAP. Run
+  touched-object builds, `gmake check-runtime-lifecycles`,
+  `gmake check-global-lifetimes`, a clean full build, `test_backend_runtime`,
+  and direct backend-runtime TAP.
+
+Slice:
+
+- `PgSession.catalog_lookup` now owns the hardcoded `pg_class` and
+  `pg_index` tuple descriptor root pointers that `relcache.c` uses before
+  normal syscaches are available;
+- `GetPgClassDescriptor()` and `GetPgIndexDescriptor()` now lazy-build into
+  session-owned compatibility slots instead of function-local static
+  variables;
+- catalog lookup closed-session reset clears those descriptor slots together
+  with the other relcache roots after the owning `CacheMemoryContext` path has
+  been handled;
+- the runtime owner map records the migrated legacy `pgclassdesc` and
+  `pgindexdesc` symbols, and the lifecycle manifest documents that those
+  descriptors are `CacheMemoryContext`-owned relcache roots;
+- `test_backend_runtime` now checks that the descriptor slots are
+  session-local and that closed-session reset clears them.
+
+Validation for the hardcoded relcache descriptor ownership slice:
+
+- `git diff --check` passed;
+- touched-object builds passed for `relcache.o`, `backend_runtime_cache.o`,
+  and `test_backend_runtime_session.o`;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 225 owner
+  mappings checked;
+- after the installed-header layout change, backend clean/generated-header
+  recovery was run, followed by clean full `gmake -j8`, which passed;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- after patching the recreated macOS temp-install install names, direct
+  backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with repo-local `.perl5`
+  `PERL5LIB` and explicit `PG_REGRESS=src/test/regress/pg_regress`.
+
 ## Relcache And Typcache CacheMemoryContext Hash Ownership
 
 Lifecycle/preflight note:

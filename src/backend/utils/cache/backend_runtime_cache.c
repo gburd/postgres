@@ -123,6 +123,18 @@ PgCurrentRelcacheInvalsReceivedRef(void)
 	return &PgCurrentSessionCatalogLookupState()->relcache_invals_received;
 }
 
+TupleDesc *
+PgCurrentPgClassDescriptorRef(void)
+{
+	return &PgCurrentSessionCatalogLookupState()->relcache_pg_class_descriptor;
+}
+
+TupleDesc *
+PgCurrentPgIndexDescriptorRef(void)
+{
+	return &PgCurrentSessionCatalogLookupState()->relcache_pg_index_descriptor;
+}
+
 HTAB **
 PgCurrentOpClassCacheRef(void)
 {
@@ -303,6 +315,8 @@ PgSessionResetCatalogLookupClosedState(PgSession *session)
 	session->catalog_lookup.relcache_critical_built = false;
 	session->catalog_lookup.relcache_critical_shared_built = false;
 	session->catalog_lookup.relcache_invals_received = 0;
+	session->catalog_lookup.relcache_pg_class_descriptor = NULL;
+	session->catalog_lookup.relcache_pg_index_descriptor = NULL;
 	session->catalog_lookup.relcache_opclass_cache = NULL;
 	session->catalog_lookup.typcache_type_cache_hash = NULL;
 	session->catalog_lookup.typcache_relid_to_typeid_hash = NULL;

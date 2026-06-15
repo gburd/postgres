@@ -157,6 +157,8 @@ typedef struct relidcacheent
  * might already be obsolete.
  */
 #define relcacheInvalsReceived (*PgCurrentRelcacheInvalsReceivedRef())
+#define pgclassdesc (*PgCurrentPgClassDescriptorRef())
+#define pgindexdesc (*PgCurrentPgIndexDescriptorRef())
 
 /*
  * in_progress_list is a stack of ongoing RelationBuildDesc() calls.  CREATE
@@ -4465,8 +4467,6 @@ BuildHardcodedDescriptor(int natts, const FormData_pg_attribute *attrs)
 static TupleDesc
 GetPgClassDescriptor(void)
 {
-	static TupleDesc pgclassdesc = NULL;
-
 	/* Already done? */
 	if (pgclassdesc == NULL)
 		pgclassdesc = BuildHardcodedDescriptor(Natts_pg_class,
@@ -4478,8 +4478,6 @@ GetPgClassDescriptor(void)
 static TupleDesc
 GetPgIndexDescriptor(void)
 {
-	static TupleDesc pgindexdesc = NULL;
-
 	/* Already done? */
 	if (pgindexdesc == NULL)
 		pgindexdesc = BuildHardcodedDescriptor(Natts_pg_index,
