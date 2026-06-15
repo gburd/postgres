@@ -661,6 +661,14 @@ BaseInit(void)
 	if (CurrentPgRuntime == NULL ||
 		CurrentPgRuntime->kind == PG_RUNTIME_PROCESS)
 		InitializePgProcessRuntime();
+
+	/*
+	 * main() installs an early stack-depth base before the process runtime
+	 * exists.  Process runtime initialization owns PgCarrier state and clears
+	 * that early value, so reinstall it once the real carrier is current.
+	 */
+	(void) set_stack_base();
+
 	InitializeTransactionState();
 
 	/*

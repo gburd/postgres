@@ -16654,3 +16654,47 @@ This audit supports the Milestone W core-runtime target. It is not a Gate
 E2-Core closeout claim: broader full-build/process-mode regression coverage,
 resource-leak auditing, and any remaining hardening items still belong to the
 Gate E2-Core validation and cleanup path before Phase 13.
+
+## Gate E2 Stack-Depth Runtime Reinstallation
+
+Lifecycle/preflight note:
+
+- target: restore carrier-local `stack_base_ptr` installation after process or
+  thread backend runtime setup so recursive stack-depth checks fail with
+  `stack depth limit exceeded` instead of reaching SIGSEGV.
+- touched roots/buckets: `PgCarrier.stack_base_ptr`; process carrier setup in
+  `BaseInit()`; thread carrier setup in `backend_thread_entry()`.
+- owner source files: `src/backend/utils/init/postinit.c`,
+  `src/backend/postmaster/launch_backend.c`, and
+  `src/backend/utils/misc/stack_depth.c`.
+- legacy symbols/accessors: `set_stack_base()`, `stack_is_too_deep()`,
+  `PgCurrentStackBasePtrRef()`.
+- repeated lifecycle operations: reinstall one carrier-owned stack base after
+  carrier runtime initialization/installation; no new reset helper needed
+  because `PgCarrier.stack_base_ptr` remains carrier-local and is initialized
+  through the existing bucket row.
+- checked primitive decision: reuse the existing `PG_CARRIER_BUCKET` row for
+  `stack_base_ptr`; do not introduce a new lifecycle primitive for this
+  one-field carrier-local installation point.
+- validation impact: isolated `infinite_recurse` should return SQLSTATE
+  `54001`, JSON recursion checks should again hit stack-depth guard, and core
+  `gmake check` should no longer trigger postmaster crash recovery from
+  `select infinite_recurse();`.
+
+Validation:
+
+- refreshed `tmp_install`, patched the local macOS `libpq.5.dylib`
+  install-name references, and ran direct `pg_regress` for
+  `infinite_recurse`; the test passed and returned the expected stack-depth
+  error instead of losing the server connection.
+- full `gmake check` reached the core parallel group containing
+  `infinite_recurse`; `infinite_recurse`, `constraints`, `triggers`,
+  `inherit`, and `updatable_views` all passed, proving the prior postmaster
+  crash cascade is gone. The run was interrupted later after `prepared_xacts`
+  waited on `DROP TABLE pxtest1` behind a prepared-transaction relation lock,
+  which is a separate follow-up from the stack-depth crash.
+- `gmake check-runtime-lifecycles` and `gmake check-global-lifetimes` passed.
+- direct backend-runtime TAP passed all 174 tests across
+  `t/001_threaded_runtime.pl`, `t/002_threaded_bgworker_crash.pl`, and
+  `t/003_milestone_w_core_smoke.pl` with repo-local `.perl5` `IPC::Run`,
+  temp-install `PATH`, patched macOS install names, and explicit `PG_REGRESS`.

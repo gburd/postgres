@@ -489,6 +489,7 @@ backend_thread_entry(void *arg)
 	read_nondefault_variables();
 	InitializeLatchWaitSet();
 	InstallPgThreadBackendRuntimeState(&thread_start->runtime_state);
+	(void) set_stack_base();
 	PgBackendSetInterruptLatch(CurrentPgBackend, MyLatch);
 
 	MyStartTimestamp = GetCurrentTimestamp();
