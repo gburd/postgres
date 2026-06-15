@@ -16539,3 +16539,58 @@ not block core threaded startup, teardown, GUC behavior, PL/pgSQL, or
 scheduler-readiness evidence. Any such deferral must name the invariant or
 runtime guard that would catch the assumption if wrong and the later phase or
 gate that owns completion.
+
+## Milestone W Core Smoke Path
+
+The direct threaded runtime TAP now has two complementary proof paths:
+
+- `t/001_threaded_runtime.pl` remains the broad Gate E2 fixture. It covers the
+  Milestone W core path plus representative contrib modules, PL/Sample,
+  thread-model background-worker restart, parallel query, and heavier PMChild
+  reaping stress.
+- `t/003_milestone_w_core_smoke.pl` is the short-path Milestone W smoke. It
+  starts a threaded server, runs normal SQL, transaction rollback, catalog
+  writes, PL/pgSQL, core database/role/startup/stacked GUC semantics,
+  process-only module and process-model background-worker rejection, normal
+  disconnect, abandoned-client cleanup, active termination, backend-local
+  `FATAL`, repeated reconnect, postmaster child-count checks on Unix, and the
+  retained `TopMemoryContext`/crash log guard.
+
+Current Milestone W blockers, in priority order, are now evidence-driven:
+
+1. Any failure in `003_milestone_w_core_smoke.pl`, because that is the minimum
+   working core threaded runtime contract.
+2. Lifecycle/global-lifetime checker failures, because Milestone W requires
+   the checked runtime-root lifecycle and local-global guardrails to pass.
+3. Failures in the Milestone W portions of `001_threaded_runtime.pl`, especially
+   GUC stress, mixed teardown, PMChild reaping, reconnect, or retained-root log
+   checks.
+4. Representative contrib, PL/Sample, and broader custom/extension GUC issues
+   in `001_threaded_runtime.pl`. These are useful Gate E2 evidence when they
+   expose retained-root or teardown bugs, but completion belongs to Phase 16 /
+   Gate E2-Extensions unless the focused Milestone W smoke or runtime guards
+   show they block the core threaded runtime.
+
+Validation for this smoke-path split:
+
+- direct `prove -v -I "$ROOT/src/test/perl" -I "$TESTDIR"
+  t/001_threaded_runtime.pl` passed all 127 tests before adding the focused
+  smoke.
+- direct `prove -v -I "$ROOT/src/test/perl" -I "$TESTDIR"
+  t/003_milestone_w_core_smoke.pl` passed all 29 tests;
+- after `gmake -C src/test/modules/test_backend_runtime check` refreshed
+  `tmp_install`, patching the build-tree `src/test/regress/pg_regress`
+  install-name reference back to the temp-install `libpq.5.dylib` allowed the
+  direct combined TAP path to pass all 156 tests across
+  `t/001_threaded_runtime.pl` and `t/003_milestone_w_core_smoke.pl`;
+- `gmake -C src/test/modules/test_backend_runtime check` passed the
+  process-mode backend-runtime SQL regression. This checkout is still
+  configured without `--enable-tap-tests`, so the Makefile harness reported the
+  expected `TAP tests not enabled` message and the direct `prove` command above
+  remains the threaded TAP evidence;
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 172 fields classified, 172
+  bucket definitions checked, 35 reset definitions checked, and 358 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local runtime boundary violations.

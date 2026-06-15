@@ -49,6 +49,7 @@ tests += {
   'tap': {
     'tests': [
       't/001_threaded_runtime.pl',
+      't/003_milestone_w_core_smoke.pl',
     ],
   },
 }
