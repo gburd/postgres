@@ -88,6 +88,10 @@ datestyle_string	PgSession	datetime	datestyle_string_value	PgCurrentDateStyleStr
 timezone_abbreviations_string	PgSession	datetime	timezone_abbreviations_string_value	PgCurrentTimeZoneAbbreviationsStringRef	src/backend/utils/misc/backend_runtime_guc.c	timezone_abbreviations GUC string owned through GUC machinery
 client_encoding_string	PgSession	encoding	client_encoding_string_value	PgCurrentClientEncodingStringRef	src/backend/utils/misc/backend_runtime_guc.c	client_encoding display string owned through GUC machinery
 server_encoding_string	PgSession	encoding	server_encoding_string_value	PgCurrentServerEncodingStringRef	src/backend/utils/misc/backend_runtime_guc.c	server_encoding display string owned through GUC machinery
+DatabasePath	PgSession	database	database_path	PgCurrentDatabasePathRef	src/backend/utils/init/backend_runtime_session.c	current database path string allocated in DatabasePathContext
+DatabasePathContext	PgSession	database	database_path_context	PgCurrentDatabasePathContextRef	src/backend/utils/init/backend_runtime_session.c	session-owned context for the current database path string
+SystemUser	PgSession	user_identity	system_user	PgCurrentUserIdentityState	src/backend/utils/init/backend_runtime.c	system_user string allocated in SystemUserContext
+SystemUserContext	PgSession	user_identity	system_user_context	PgCurrentSystemUserContextRef	src/backend/utils/init/backend_runtime.c	session-owned context for the system_user string
 EncodingCacheContext	PgSession	encoding	encoding_cache_context	PgCurrentEncodingCacheMemoryContext	src/backend/utils/init/backend_runtime.c	session-owned parent context for encoding conversion cache entries
 ConvProcList	PgSession	encoding	conv_proc_list	PgCurrentEncodingConvProcListRef	src/backend/utils/init/backend_runtime.c	encoding conversion cache list cells owned by EncodingCacheContext
 ToServerConvProc	PgSession	encoding	to_server_conv_proc	PgCurrentToServerConvProcRef	src/backend/utils/init/backend_runtime.c	active client-to-server conversion function pointer into ConvProcList cache entries
@@ -105,6 +109,8 @@ localized_full_months	PgSession	locale	localized_full_months_values	PgCurrentLoc
 CurrentLocaleTimeContext	PgSession	locale	locale_time_context	PgCurrentLocaleState	src/backend/utils/adt/pg_locale.c	session-owned localized-time string cache memory context deleted on closed-session reset
 CurrentLocaleConv	PgSession	locale	current_locale_conv	PgCurrentLocaleState	src/backend/utils/adt/pg_locale.c	per-session localeconv cache object allocated in locale_conv_context
 CurrentLocaleConvContext	PgSession	locale	locale_conv_context	PgCurrentLocaleState	src/backend/utils/adt/pg_locale.c	session-owned localeconv cache memory context deleted on closed-session reset after malloc strings are freed
+MyClientConnectionInfo.authn_id	PgConnection	client_connection_info	authn_id	PgCurrentClientConnectionInfoRef	src/backend/libpq/backend_runtime_connection.c	authenticated-client authn_id pointer; restored strings are allocated in ClientConnectionInfoContext while normal authentication strings remain PortContext-owned
+ClientConnectionInfoContext	PgConnection	client_connection_info_context	client_connection_info_context	PgCurrentClientConnectionInfoContextRef	src/backend/libpq/backend_runtime_connection.c	connection-owned context for restored authenticated-client info strings
 SysCache	PgSession	catalog_lookup	sys_cache	PgCurrentSysCacheArray	src/backend/utils/cache/backend_runtime_cache.c	syscache root array; pointed cache entries remain CacheMemoryContext-owned
 SysCacheInitialized	PgSession	catalog_lookup	sys_cache_initialized	PgCurrentSysCacheInitializedRef	src/backend/utils/cache/backend_runtime_cache.c	syscache initialization flag
 SysCacheRelationOid	PgSession	catalog_lookup	sys_cache_relation_oid	PgCurrentSysCacheRelationOidArray	src/backend/utils/cache/backend_runtime_cache.c	inline syscache relation OID array

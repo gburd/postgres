@@ -3662,7 +3662,14 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	hash_ctl.keysize = sizeof(Oid);
 	hash_ctl.entrysize = sizeof(Oid);
 
+	fake_session.database.database_path_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test database path state",
+							  ALLOCSET_SMALL_SIZES);
+	oldcontext = MemoryContextSwitchTo(
+		fake_session.database.database_path_context);
 	fake_session.database.database_path = pstrdup("base/1");
+	MemoryContextSwitchTo(oldcontext);
 	fake_session.database.database_path_owned = true;
 	fake_session.prepared_statement.prepared_queries =
 		hash_create("test prepared statement cache", 8, &hash_ctl,
@@ -3731,7 +3738,14 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 		test_backend_runtime_relsync_callback;
 	fake_session.user_identity.cached_role[0] = BOOLOID;
 	fake_session.user_identity.cached_roles[0] = list_make1_oid(BOOLOID);
+	fake_session.user_identity.system_user_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test system user state",
+							  ALLOCSET_SMALL_SIZES);
+	oldcontext = MemoryContextSwitchTo(
+		fake_session.user_identity.system_user_context);
 	fake_session.user_identity.system_user = pstrdup("trust:test");
+	MemoryContextSwitchTo(oldcontext);
 	fake_session.user_identity.system_user_owned = true;
 	fake_session.user_identity.cached_db_hash = 12345;
 	fake_session.vacuum.initialized = true;
@@ -3901,6 +3915,7 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && fake_session.dynamic_library_context == NULL;
 	ok = ok && fake_session.dynamic_library_inits == NIL;
 	ok = ok && fake_session.database.database_path == NULL;
+	ok = ok && fake_session.database.database_path_context == NULL;
 	ok = ok && !fake_session.database.database_path_owned;
 	ok = ok && fake_session.prepared_statement.prepared_queries == NULL;
 	ok = ok && fake_session.vacuum.initialized;
@@ -3973,6 +3988,7 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && fake_session.user_identity.cached_role[0] == InvalidOid;
 	ok = ok && fake_session.user_identity.cached_roles[0] == NIL;
 	ok = ok && fake_session.user_identity.system_user == NULL;
+	ok = ok && fake_session.user_identity.system_user_context == NULL;
 	ok = ok && !fake_session.user_identity.system_user_owned;
 	ok = ok && fake_session.user_identity.cached_db_hash == 0;
 	ok = ok && fake_session.text_search.parser_cache_hash == NULL;

@@ -52,6 +52,7 @@
 #include "utils/elog.h"
 #include "utils/global_lifetime.h"
 #include "utils/hsearch.h"
+#include "utils/memutils.h"
 #include "utils/inval.h"
 #include "utils/palloc.h"
 #include "utils/pgstat_internal.h"
@@ -1178,6 +1179,7 @@ typedef struct PgSessionDatabaseState
 	 * directory in the default tablespace.
 	 */
 	char	   *database_path;
+	MemoryContext database_path_context;
 	bool		database_path_owned;
 } PgSessionDatabaseState;
 
@@ -1440,6 +1442,7 @@ typedef struct PgSessionUserIdentityState
 	Oid			outer_user_id;
 	Oid			current_user_id;
 	const char *system_user;
+	MemoryContext system_user_context;
 	bool		system_user_owned;
 	bool		session_user_is_superuser;
 	int			security_restriction_context;
@@ -2288,6 +2291,7 @@ struct PgConnection
 	PgConnectionInterruptState interrupts;
 	PgConnectionStartupState startup;
 	PgConnectionClientConnectionInfoState client_connection_info;
+	MemoryContext client_connection_info_context;
 	bool		client_connection_info_authn_id_owned;
 	PgConnectionSecurityState security;
 };
@@ -2769,6 +2773,8 @@ extern char **PgCurrentLocaleNumericRef(void);
 extern char **PgCurrentLocaleTimeRef(void);
 extern int *PgCurrentIcuValidationLevelRef(void);
 extern PgSessionUserIdentityState *PgCurrentUserIdentityState(void);
+extern MemoryContext *PgCurrentSystemUserContextRef(void);
+extern MemoryContext *PgCurrentDatabasePathContextRef(void);
 extern bool *PgCurrentDatabasePathOwnedRef(void);
 extern int *PgCurrentNLocBufferRef(void);
 extern void **PgCurrentLocalBufferDescriptorsRef(void);
@@ -3132,6 +3138,9 @@ extern struct ClientSocket **PgConnectionClientSocketRef(PgConnection *connectio
 extern struct ClientSocket **PgCurrentClientSocketRef(void);
 extern void *PgConnectionClientConnectionInfoRef(PgConnection *connection);
 extern void *PgCurrentClientConnectionInfoRef(void);
+extern MemoryContext *PgConnectionClientConnectionInfoContextRef(PgConnection *
+																connection);
+extern MemoryContext *PgCurrentClientConnectionInfoContextRef(void);
 extern bool *PgCurrentClientConnectionInfoAuthnIdOwnedRef(void);
 extern PgConnectionSecurityState *PgConnectionSecurityStateRef(PgConnection *connection);
 extern PgConnectionSecurityState *PgCurrentConnectionSecurityStateRef(void);
@@ -3139,6 +3148,11 @@ extern PgBackendLaunchModel PgRuntimeGetBackendLaunchModel(BackendType backend_t
 extern bool PgRuntimeShouldThreadBackend(BackendType backend_type);
 extern PgBackendModel PgRuntimeGetExtensionBackendModel(void);
 extern void PgRuntimeSetExtensionBackendModel(PgBackendModel backend_model);
+#define PgRuntimeGetOwnedMemoryContext(context, name) \
+	((*(context) != NULL) ? *(context) : \
+	 (*(context) = AllocSetContextCreate(TopMemoryContext, (name), \
+										 ALLOCSET_SMALL_SIZES)))
+extern void PgRuntimeDeleteOwnedMemoryContext(MemoryContext *context);
 extern void PgBackendInitializeInterrupts(PgBackend *backend);
 extern void PgBackendAdoptEarlyState(PgBackend *backend);
 extern void PgSessionAdoptEarlyState(PgSession *session);

@@ -240,6 +240,8 @@ static PG_THREAD_LOCAL PG_GLOBAL_CONNECTION PgConnection early_connection_fallba
 #define early_connection_startup early_connection_fallback.startup
 #define early_client_connection_info \
 	early_connection_fallback.client_connection_info
+#define early_client_connection_info_context \
+	early_connection_fallback.client_connection_info_context
 #define early_client_connection_info_authn_id_owned \
 	early_connection_fallback.client_connection_info_authn_id_owned
 #define early_connection_security early_connection_fallback.security
@@ -763,6 +765,7 @@ static void PgConnectionInitializeStartupState(PgConnectionStartupState *startup
 static void PgConnectionAdoptEarlyInterruptState(PgConnection *connection);
 static void PgConnectionAdoptEarlyStartupState(PgConnection *connection);
 static void PgConnectionAdoptEarlyClientConnectionInfo(PgConnection *connection);
+static void PgConnectionAdoptEarlyClientConnectionInfoContext(PgConnection *connection);
 static void PgConnectionAdoptEarlyClientConnectionInfoAuthnIdOwned(PgConnection *connection);
 static void PgConnectionResetClientConnectionInfoClosedState(PgConnection *connection);
 static void PgConnectionAdoptEarlySecurityState(PgConnection *connection);
@@ -1134,6 +1137,10 @@ PG_RUNTIME_DEFINE_ADOPT_EARLY_ZERO(PgConnectionAdoptEarlyClientConnectionInfo,
 								   PgConnection, connection,
 								   client_connection_info,
 								   early_client_connection_info)
+PG_RUNTIME_DEFINE_ADOPT_EARLY_ZERO(PgConnectionAdoptEarlyClientConnectionInfoContext,
+								   PgConnection, connection,
+								   client_connection_info_context,
+								   early_client_connection_info_context)
 
 static void
 PgConnectionAdoptEarlyClientConnectionInfoAuthnIdOwned(PgConnection *connection)
@@ -1151,7 +1158,8 @@ PgConnectionResetClientConnectionInfoClosedState(PgConnection *connection)
 	Assert(connection != NULL);
 
 	if (connection->client_connection_info_authn_id_owned &&
-		connection->client_connection_info.authn_id != NULL)
+		connection->client_connection_info.authn_id != NULL &&
+		connection->client_connection_info_context == NULL)
 		pfree((void *) connection->client_connection_info.authn_id);
 
 	MemSet(&connection->client_connection_info, 0,
@@ -1720,6 +1728,7 @@ PgSessionInitializeUserIdentityState(PgSessionUserIdentityState *user_identity)
 	user_identity->outer_user_id = InvalidOid;
 	user_identity->current_user_id = InvalidOid;
 	user_identity->system_user = NULL;
+	user_identity->system_user_context = NULL;
 	user_identity->system_user_owned = false;
 	user_identity->session_user_is_superuser = false;
 	user_identity->security_restriction_context = 0;
@@ -3962,6 +3971,20 @@ PgCurrentSessionOwnsPointer(const void *ptr)
 	return address >= session_start && address < session_end;
 }
 
+void
+PgRuntimeDeleteOwnedMemoryContext(MemoryContext *context)
+{
+	Assert(context != NULL);
+
+	if (*context == NULL)
+		return;
+
+	if (CurrentMemoryContext == *context)
+		MemoryContextSwitchTo(TopMemoryContext);
+	MemoryContextDelete(*context);
+	*context = NULL;
+}
+
 MemoryContext
 PgSessionGetDynamicLibraryMemoryContext(PgSession *session)
 {
@@ -4337,6 +4360,12 @@ PgSessionUserIdentityState *
 PgCurrentUserIdentityState(void)
 {
 	return PgCurrentSessionUserIdentityState();
+}
+
+MemoryContext *
+PgCurrentSystemUserContextRef(void)
+{
+	return &PgCurrentSessionUserIdentityState()->system_user_context;
 }
 
 PgSessionCommandGUCState *
@@ -6927,6 +6956,15 @@ PgConnectionClientConnectionInfoStateRef(PgConnection *connection)
 		return &early_client_connection_info;
 
 	return &connection->client_connection_info;
+}
+
+MemoryContext *
+PgConnectionClientConnectionInfoContextRef(PgConnection *connection)
+{
+	if (connection == NULL)
+		return &early_client_connection_info_context;
+
+	return &connection->client_connection_info_context;
 }
 
 bool *

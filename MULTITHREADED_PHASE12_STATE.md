@@ -14645,3 +14645,105 @@ source table, or a `check_runtime_lifecycles.pl` validation rule. Direct
 handwritten helpers remain acceptable only when the Phase 12 preflight records
 that the cleanup has different ordering, ownership, or subsystem-specific
 semantics.
+
+## Owned Identity/Path String Contexts
+
+Lifecycle/preflight note:
+
+- target: close three retained Gate E2 `TopMemoryContext` string allocations
+  in `miscinit.c` by giving restored database-path, system-user, and
+  authenticated-client identity strings explicit runtime-object-owned contexts;
+- touched roots/buckets: `PgSession.database`, `PgSession.user_identity`,
+  `PgConnection.client_connection_info`, and the new
+  `PgConnection.client_connection_info_context` bucket;
+- owner source files: `src/backend/utils/init/miscinit.c`,
+  `src/backend/utils/init/backend_runtime.c`,
+  `src/backend/utils/init/backend_runtime_session.c`,
+  `src/backend/libpq/backend_runtime_connection.c`,
+  `src/backend/utils/init/backend_runtime_teardown.c`,
+  `src/include/utils/backend_runtime.h`,
+  `src/backend/utils/init/backend_runtime_internal.h`,
+  `src/test/modules/test_backend_runtime/test_backend_runtime_session.c`,
+  `src/test/modules/test_backend_runtime/test_backend_runtime_connection.c`,
+  `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, `MULTITHREADED_PLAN.md`, and this state
+  log;
+- legacy symbols/accessors: `DatabasePath`, `SystemUser`,
+  `MyClientConnectionInfo.authn_id`, `PgCurrentDatabasePathRef()`,
+  `PgCurrentUserIdentityState()`, `PgCurrentClientConnectionInfoRef()`, and
+  their ownership/context refs;
+- repeated lifecycle operations expected in this slice: create-on-demand
+  runtime-owned allocation contexts, delete-and-null retained contexts, and
+  fallback adoption for a connection-owned context slot. This is exactly the
+  repeated object-owned context pattern called out by the Gate E2 helper-first
+  rule;
+- checked primitive decision: add a reusable
+  `PgRuntimeGetOwnedMemoryContext(context, name)` macro and
+  `PgRuntimeDeleteOwnedMemoryContext()` helper first, then route the existing
+  checked `PG_RUNTIME_DELETE_MEMORY_CONTEXT` action through the delete helper.
+  The getter remains a macro so PostgreSQL's compile-time constant memory
+  context name check still applies at call sites. The three migrated
+  allocations use the getter instead of repeating
+  `AllocSetContextCreate(TopMemoryContext, ...)` locally. Existing fallback
+  `pfree` paths remain for pre-helper/test-owned strings whose context slot is
+  NULL;
+- validation impact: run touched object builds for `miscinit.o`,
+  `backend_runtime.o`, `backend_runtime_session.o`,
+  `backend_runtime_teardown.o`, `backend_runtime_connection.o`,
+  `test_backend_runtime_session.o`, and `test_backend_runtime_connection.o`,
+  then `git diff --check`, `gmake check-runtime-lifecycles`,
+  `gmake check-global-lifetimes`, full `gmake -j8`, the backend-runtime
+  regression, direct threaded backend-runtime TAP, and focused SQL smokes for
+  database path/system-user/client-connection identity behavior where practical.
+
+Slice:
+
+- `PgRuntimeGetOwnedMemoryContext(context, name)` now provides the common
+  create-on-demand object-owned context pattern, and
+  `PgRuntimeDeleteOwnedMemoryContext()` centralizes delete-and-null behavior;
+- the existing checked `PG_RUNTIME_DELETE_MEMORY_CONTEXT` lifecycle action now
+  calls `PgRuntimeDeleteOwnedMemoryContext()`, so lifecycle rows keep using the
+  manifest-checked action while sharing one implementation;
+- `SetDatabasePath()` now allocates `DatabasePath` in
+  `PgSession.database.database_path_context`;
+- `InitializeSystemUser()` now allocates `SystemUser` in
+  `PgSession.user_identity.system_user_context`;
+- `RestoreClientConnectionInfo()` now allocates restored
+  `MyClientConnectionInfo.authn_id` in
+  `PgConnection.client_connection_info_context` and deletes any previous
+  context before replacing an owned restored string;
+- closed-session and closed-connection reset paths delete the new contexts and
+  retain fallback `pfree` cleanup for old/test strings whose context slot is
+  NULL;
+- the lifecycle manifest now tracks
+  `PgConnection.client_connection_info_context`, and the owner map records
+  `DatabasePath`, `SystemUser`, `MyClientConnectionInfo.authn_id`, and their
+  context owners.
+
+Validation for the owned identity/path string context slice:
+
+- touched-object builds passed for `miscinit.o`, `backend_runtime.o`,
+  `backend_runtime_session.o`, `backend_runtime_teardown.o`,
+  `backend_runtime_connection.o`, `test_backend_runtime_session.o`, and
+  `test_backend_runtime_connection.o`;
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 166 fields classified, 166
+  bucket definitions checked, 35 reset definitions checked, and 251 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- after backend clean and generated-header recovery for the installed
+  `backend_runtime.h` layout change, full `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- after patching the recreated macOS temp-install install names, direct
+  backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total;
+- direct core regression passed for the schedule prefix through
+  `select_parallel`, exercising parallel worker startup and client connection
+  info restore;
+- standalone `src/test/authentication/t/001_password.pl` did not start
+  PostgreSQL in this invocation. It exited in test harness setup with an
+  uninitialized make/test command and a skip report before any node init, so it
+  is not counted as coverage for this slice. The existing authentication TAP
+  remains a useful future check when run through the make-provided TAP
+  environment.

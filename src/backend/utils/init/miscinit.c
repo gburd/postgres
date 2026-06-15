@@ -279,9 +279,15 @@ GetBackendTypeDesc(BackendType backendType)
 void
 SetDatabasePath(const char *path)
 {
+	MemoryContext *database_path_context;
+
 	/* This should happen only once per process */
 	Assert(!DatabasePath);
-	DatabasePath = MemoryContextStrdup(TopMemoryContext, path);
+	database_path_context = PgCurrentDatabasePathContextRef();
+	DatabasePath = MemoryContextStrdup(
+		PgRuntimeGetOwnedMemoryContext(database_path_context,
+									   "database path session state"),
+		path);
 	*PgCurrentDatabasePathOwnedRef() = true;
 }
 
@@ -880,6 +886,7 @@ InitializeSessionUserIdStandalone(void)
 void
 InitializeSystemUser(const char *authn_id, const char *auth_method)
 {
+	MemoryContext *system_user_context;
 	char	   *system_user;
 
 	/* call only once */
@@ -894,7 +901,11 @@ InitializeSystemUser(const char *authn_id, const char *auth_method)
 	system_user = psprintf("%s:%s", auth_method, authn_id);
 
 	/* Store SystemUser in long-lived storage */
-	SystemUser = MemoryContextStrdup(TopMemoryContext, system_user);
+	system_user_context = PgCurrentSystemUserContextRef();
+	SystemUser = MemoryContextStrdup(
+		PgRuntimeGetOwnedMemoryContext(system_user_context,
+									   "system user session state"),
+		system_user);
 	PgCurrentUserIdentityState()->system_user_owned = true;
 	pfree(system_user);
 }
@@ -1099,12 +1110,16 @@ SerializeClientConnectionInfo(Size maxsize PG_USED_FOR_ASSERTS_ONLY,
 void
 RestoreClientConnectionInfo(char *conninfo)
 {
+	MemoryContext *authn_id_context;
 	SerializedClientConnectionInfo serialized;
 
 	memcpy(&serialized, conninfo, sizeof(serialized));
+	authn_id_context = PgCurrentClientConnectionInfoContextRef();
 
 	/* Copy the fields back into place */
-	if (*PgCurrentClientConnectionInfoAuthnIdOwnedRef() &&
+	if (*authn_id_context != NULL)
+		PgRuntimeDeleteOwnedMemoryContext(authn_id_context);
+	else if (*PgCurrentClientConnectionInfoAuthnIdOwnedRef() &&
 		MyClientConnectionInfo.authn_id != NULL)
 		pfree((void *) MyClientConnectionInfo.authn_id);
 	MyClientConnectionInfo.authn_id = NULL;
@@ -1116,8 +1131,10 @@ RestoreClientConnectionInfo(char *conninfo)
 		char	   *authn_id;
 
 		authn_id = conninfo + sizeof(serialized);
-		MyClientConnectionInfo.authn_id = MemoryContextStrdup(TopMemoryContext,
-															  authn_id);
+		MyClientConnectionInfo.authn_id = MemoryContextStrdup(
+			PgRuntimeGetOwnedMemoryContext(authn_id_context,
+										   "client connection info state"),
+			authn_id);
 		*PgCurrentClientConnectionInfoAuthnIdOwnedRef() = true;
 	}
 }

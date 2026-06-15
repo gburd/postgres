@@ -97,6 +97,12 @@ PgCurrentDatabasePathRef(void)
 	return &PgCurrentSessionDatabaseState()->database_path;
 }
 
+MemoryContext *
+PgCurrentDatabasePathContextRef(void)
+{
+	return &PgCurrentSessionDatabaseState()->database_path_context;
+}
+
 bool *
 PgCurrentDatabasePathOwnedRef(void)
 {

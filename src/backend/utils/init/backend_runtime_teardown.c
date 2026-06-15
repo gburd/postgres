@@ -860,8 +860,10 @@ PgSessionResetUserIdentityClosedState(PgSession *session)
 		PG_RUNTIME_LIST_FREE(session->user_identity.cached_roles[i]);
 	}
 	if (session->user_identity.system_user_owned &&
-		session->user_identity.system_user != NULL)
+		session->user_identity.system_user != NULL &&
+		session->user_identity.system_user_context == NULL)
 		pfree((void *) session->user_identity.system_user);
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->user_identity.system_user_context);
 	session->user_identity.system_user = NULL;
 	session->user_identity.system_user_owned = false;
 	session->user_identity.cached_db_hash = 0;
@@ -926,10 +928,12 @@ PgSessionResetDatabaseClosedState(PgSession *session)
 
 	if (session->database.database_path != NULL)
 	{
-		if (session->database.database_path_owned)
+		if (session->database.database_path_owned &&
+			session->database.database_path_context == NULL)
 			pfree(session->database.database_path);
 		session->database.database_path = NULL;
 	}
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->database.database_path_context);
 	session->database.database_path_owned = false;
 }
 

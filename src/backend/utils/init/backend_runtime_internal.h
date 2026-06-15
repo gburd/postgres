@@ -32,15 +32,7 @@
  */
 #define PG_RUNTIME_NOOP ((void) 0)
 #define PG_RUNTIME_DELETE_MEMORY_CONTEXT(context) \
-	do { \
-		if ((context) != NULL) \
-		{ \
-			if (CurrentMemoryContext == (context)) \
-				MemoryContextSwitchTo(TopMemoryContext); \
-			MemoryContextDelete(context); \
-			(context) = NULL; \
-		} \
-	} while (0)
+	PgRuntimeDeleteOwnedMemoryContext(&(context))
 #define PG_RUNTIME_RESET_THROUGH_INITIALIZER(init_expr) \
 	do { \
 		init_expr; \

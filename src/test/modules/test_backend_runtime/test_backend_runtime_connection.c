@@ -207,7 +207,13 @@ test_connection_reset_closed_state(PG_FUNCTION_ARGS)
 	connection.startup.connection_warning_details =
 		list_make1(pstrdup("test detail"));
 	MemoryContextSwitchTo(oldcontext);
+	connection.client_connection_info_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test client connection info state",
+							  ALLOCSET_SMALL_SIZES);
+	oldcontext = MemoryContextSwitchTo(connection.client_connection_info_context);
 	connection.client_connection_info.authn_id = pstrdup("owned-authn");
+	MemoryContextSwitchTo(oldcontext);
 	connection.client_connection_info.auth_method = uaSCRAM;
 	connection.client_connection_info_authn_id_owned = true;
 
@@ -277,6 +283,7 @@ test_connection_reset_closed_state(PG_FUNCTION_ARGS)
 		ok = ok && connection.startup.connection_warning_messages == NIL;
 		ok = ok && connection.startup.connection_warning_details == NIL;
 		ok = ok && connection.client_connection_info.authn_id == NULL;
+		ok = ok && connection.client_connection_info_context == NULL;
 		ok = ok && connection.client_connection_info.auth_method == uaReject;
 		ok = ok && !connection.client_connection_info_authn_id_owned;
 
@@ -305,6 +312,7 @@ test_connection_reset_closed_state(PG_FUNCTION_ARGS)
 		ok = ok && connection.startup.connection_warning_context == NULL;
 		ok = ok && connection.startup.connection_warning_messages == NIL;
 		ok = ok && connection.client_connection_info.authn_id == NULL;
+		ok = ok && connection.client_connection_info_context == NULL;
 		ok = ok && !connection.client_connection_info_authn_id_owned;
 		ok = ok && connection.security.gss_send_buffer == NULL;
 		ok = ok && connection.security.gss_recv_buffer == NULL;
