@@ -16238,6 +16238,45 @@ Validation for the pgcrypto DES session cache slice:
   gmake -C contrib/pgcrypto clean all check` passed all 25 pgcrypto
   regression tests.
 
+## Gate E2 `pq_mq` Detach Ownership Fix
+
+Lifecycle/preflight note:
+
+- target: harden the Gate E2 closed-backend teardown path for parallel
+  protocol redirection state after review flagged a likely double free;
+- touched root/bucket rows: `PgBackend.parallel`, specifically the
+  `pq_mq_handle` slot reset by `PgBackendResetParallelClosedState()`;
+- legacy state owners: `pq_mq_handle` in `pqmq.c` and the runtime-backed
+  `PgBackend.parallel.pq_mq_handle`;
+- checked primitive decision: no new lifecycle primitive is needed. This is a
+  semantic owner fix: `shm_mq_detach()` already frees the
+  `shm_mq_handle`, so closed-backend reset and interrupt-time MQ detach must
+  only clear their owning pointer after detaching.
+
+Implementation result:
+
+- `PgBackendResetParallelClosedState()` no longer calls `pfree()` after
+  `shm_mq_detach()`;
+- `mq_putmessage_noblock()` no longer calls `pfree()` after interrupt-time
+  `shm_mq_detach()`;
+- the DSM-detach callback in `pq_cleanup_redirect_to_shm_mq()` is unchanged:
+  it does not call `shm_mq_detach()` and only releases the local handle when
+  DSM cleanup owns the detach notification path.
+
+Validation for the `pq_mq` detach ownership fix:
+
+- `git diff --check` passed;
+- touched-object builds passed for `backend_runtime_teardown.o`, `pqmq.o`,
+  and `test_backend_runtime_backend.o`;
+- `gmake check-runtime-lifecycles` passed with 172 fields classified, 172
+  bucket definitions checked, 35 reset definitions checked, and 357 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- clean `gmake -C src/test/modules/test_backend_runtime clean all check`
+  passed;
+- full incremental `gmake -j8` passed.
+
 ## Pgcrypto Execution Debug Handler And Const Tables Batch
 
 Lifecycle/preflight note:

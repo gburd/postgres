@@ -131,7 +131,6 @@ PgBackendResetParallelClosedState(PgBackendParallelState *parallel)
 	if (parallel->pq_mq_handle != NULL)
 	{
 		shm_mq_detach((shm_mq_handle *) parallel->pq_mq_handle);
-		pfree(parallel->pq_mq_handle);
 		parallel->pq_mq_handle = NULL;
 	}
 
