@@ -105,6 +105,8 @@ CurrentLocaleConvRef(void)
 	(PgCurrentLocaleState()->locale_conv_context)
 #define CurrentLocaleConvAllocated \
 	(PgCurrentLocaleState()->current_locale_conv_allocated)
+#define CurrentLocaleTimeContext \
+	(PgCurrentLocaleState()->locale_time_context)
 
 static PG_GLOBAL_IMMUTABLE struct pg_locale_struct c_locale = {
 	.deterministic = true,
@@ -721,13 +723,35 @@ cache_single_string(char **dst, const char *src, int encoding)
 
 	/* Store the string in long-lived storage, replacing any previous value */
 	olddst = *dst;
-	*dst = MemoryContextStrdup(TopMemoryContext, ptr);
+	if (CurrentLocaleTimeContext == NULL)
+		CurrentLocaleTimeContext =
+			AllocSetContextCreate(TopMemoryContext,
+								  "localized time cache",
+								  ALLOCSET_SMALL_SIZES);
+
+	*dst = MemoryContextStrdup(CurrentLocaleTimeContext, ptr);
 	if (olddst)
 		pfree(olddst);
 
 	/* Might as well clean up any palloc'd conversion result, too */
 	if (ptr != src)
 		pfree(ptr);
+}
+
+void
+PgSessionResetLocaleTime(PgSessionLocaleState *locale)
+{
+	Assert(locale != NULL);
+
+	memset(locale->localized_abbrev_days_values, 0,
+		   sizeof(locale->localized_abbrev_days_values));
+	memset(locale->localized_full_days_values, 0,
+		   sizeof(locale->localized_full_days_values));
+	memset(locale->localized_abbrev_months_values, 0,
+		   sizeof(locale->localized_abbrev_months_values));
+	memset(locale->localized_full_months_values, 0,
+		   sizeof(locale->localized_full_months_values));
+	locale->locale_time_valid = false;
 }
 
 /*

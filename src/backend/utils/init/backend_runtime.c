@@ -2568,6 +2568,7 @@ PgSessionInitializeLocaleState(PgSessionLocaleState *locale)
 		   sizeof(locale->localized_abbrev_months_values));
 	memset(locale->localized_full_months_values, 0,
 		   sizeof(locale->localized_full_months_values));
+	locale->locale_time_context = NULL;
 	locale->default_locale = NULL;
 	locale->locale_conv_valid = false;
 	locale->locale_time_valid = false;

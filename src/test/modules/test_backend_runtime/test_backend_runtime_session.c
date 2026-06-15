@@ -2164,6 +2164,7 @@ test_session_locale_state_is_session_local(PG_FUNCTION_ARGS)
 		locale_state->localized_full_days_values[0] = "SundayA";
 		locale_state->localized_abbrev_months_values[0] = "JanA";
 		locale_state->localized_full_months_values[0] = "JanuaryA";
+		locale_state->locale_time_context = (MemoryContext) &fake_session1;
 		locale_state->locale_conv_valid = true;
 		locale_state->locale_time_valid = true;
 		locale_state->locale_conv_context = (MemoryContext) &fake_session1;
@@ -2185,6 +2186,7 @@ test_session_locale_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && locale_state->icu_validation_level_value == WARNING;
 		ok = ok && !locale_state->locale_conv_valid;
 		ok = ok && !locale_state->locale_time_valid;
+		ok = ok && locale_state->locale_time_context == NULL;
 		ok = ok && locale_state->locale_conv_context == NULL;
 		ok = ok && locale_state->last_collation_cache_oid == InvalidOid;
 		locale_state->locale_messages_value = "locale_messages_b";
@@ -2196,6 +2198,7 @@ test_session_locale_state_is_session_local(PG_FUNCTION_ARGS)
 		locale_state->localized_full_days_values[0] = "SundayB";
 		locale_state->localized_abbrev_months_values[0] = "JanB";
 		locale_state->localized_full_months_values[0] = "JanuaryB";
+		locale_state->locale_time_context = (MemoryContext) &fake_session2;
 		locale_state->locale_conv_context = (MemoryContext) &fake_session2;
 		locale_state->current_locale_conv = &fake_session2;
 		locale_state->collation_cache_context = (MemoryContext) &fake_session2;
@@ -2217,6 +2220,7 @@ test_session_locale_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && strcmp(localized_full_months[0], "JanuaryA") == 0;
 		ok = ok && locale_state->locale_conv_valid;
 		ok = ok && locale_state->locale_time_valid;
+		ok = ok && locale_state->locale_time_context == (MemoryContext) &fake_session1;
 		ok = ok && locale_state->locale_conv_context == (MemoryContext) &fake_session1;
 		ok = ok && locale_state->current_locale_conv == &fake_session1;
 		ok = ok && locale_state->current_locale_conv_allocated;
@@ -2237,6 +2241,7 @@ test_session_locale_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && strcmp(localized_full_days[0], "SundayB") == 0;
 		ok = ok && strcmp(localized_abbrev_months[0], "JanB") == 0;
 		ok = ok && strcmp(localized_full_months[0], "JanuaryB") == 0;
+		ok = ok && locale_state->locale_time_context == (MemoryContext) &fake_session2;
 		ok = ok && locale_state->locale_conv_context == (MemoryContext) &fake_session2;
 		ok = ok && locale_state->current_locale_conv == &fake_session2;
 		ok = ok && locale_state->collation_cache_context == (MemoryContext) &fake_session2;
@@ -3841,6 +3846,19 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 		AllocSetContextCreate(TopMemoryContext,
 							  "test localeconv cache",
 							  ALLOCSET_SMALL_SIZES);
+	fake_session.locale.locale_time_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test localized time cache",
+							  ALLOCSET_SMALL_SIZES);
+	fake_session.locale.localized_abbrev_days_values[0] =
+		MemoryContextStrdup(fake_session.locale.locale_time_context, "Sun");
+	fake_session.locale.localized_full_days_values[0] =
+		MemoryContextStrdup(fake_session.locale.locale_time_context, "Sunday");
+	fake_session.locale.localized_abbrev_months_values[0] =
+		MemoryContextStrdup(fake_session.locale.locale_time_context, "Jan");
+	fake_session.locale.localized_full_months_values[0] =
+		MemoryContextStrdup(fake_session.locale.locale_time_context, "January");
+	fake_session.locale.locale_time_valid = true;
 	fake_session.locale.current_locale_conv =
 		MemoryContextAllocZero(fake_session.locale.locale_conv_context,
 							   sizeof(struct lconv));
@@ -3969,6 +3987,12 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && fake_session.optimizer.planner_extension_names_assigned == 0;
 	ok = ok && fake_session.optimizer.planner_extension_names_allocated == 0;
 	ok = ok && fake_session.optimizer.opr_proof_cache_hash == NULL;
+	ok = ok && fake_session.locale.locale_time_context == NULL;
+	ok = ok && fake_session.locale.localized_abbrev_days_values[0] == NULL;
+	ok = ok && fake_session.locale.localized_full_days_values[0] == NULL;
+	ok = ok && fake_session.locale.localized_abbrev_months_values[0] == NULL;
+	ok = ok && fake_session.locale.localized_full_months_values[0] == NULL;
+	ok = ok && !fake_session.locale.locale_time_valid;
 	ok = ok && fake_session.locale.locale_conv_context == NULL;
 	ok = ok && fake_session.locale.current_locale_conv == NULL;
 	ok = ok && !fake_session.locale.locale_conv_valid;

@@ -64,6 +64,7 @@ extern char *pg_perm_setlocale(int category, const char *locale);
  */
 extern struct lconv *PGLC_localeconv(void);
 extern void PgSessionResetLocaleConv(PgSessionLocaleState *locale);
+extern void PgSessionResetLocaleTime(PgSessionLocaleState *locale);
 
 extern void cache_locale_time(void);
 

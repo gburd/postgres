@@ -984,6 +984,9 @@ PgSessionResetLocaleClosedState(PgSession *session)
 {
 	Assert(session != NULL);
 
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->locale.locale_time_context);
+	PgSessionResetLocaleTime(&session->locale);
+
 	PgSessionResetLocaleConv(&session->locale);
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->locale.locale_conv_context);
 

@@ -731,8 +731,8 @@ extension-ID and predicate proof-cache state bridge through `PgSession`, plus
 the saved-plan and cached-expression plan-cache list bridge through
 `PgSession`, plus the namespace/search-path, temporary namespace, and
 search-path cache bridge through `PgSession`, plus the locale GUC,
-localization, localeconv cache/context, and collation-cache bridge through
-`PgSession`, plus
+localized-time string cache/context, localeconv cache/context, and
+collation-cache bridge through `PgSession`, plus
 the authenticated/session/outer/current user identity and security context
 bridge through `PgSession`, plus the SSL/GSS connection security-state bridge
 through `PgConnection`, plus the PAM authentication scratch-state bridge

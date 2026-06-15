@@ -1965,6 +1965,7 @@ typedef struct PgSessionLocaleState
 	char	   *localized_full_days_values[7 + 1];
 	char	   *localized_abbrev_months_values[12 + 1];
 	char	   *localized_full_months_values[12 + 1];
+	MemoryContext locale_time_context;
 	void	   *default_locale;
 	bool		locale_conv_valid;
 	bool		locale_time_valid;

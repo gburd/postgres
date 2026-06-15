@@ -14553,3 +14553,79 @@ Validation for the localeconv cache context ownership slice:
   `PERL5LIB` and explicit `PG_REGRESS=src/test/regress/pg_regress`;
 - direct core `money` regression passed against the temp install, exercising
   the localeconv cache path through SQL.
+
+## Localized Time Cache Context Ownership
+
+Lifecycle/preflight note:
+
+- target: close another retained Gate E2 `TopMemoryContext` allocation family
+  in the session locale bucket by moving localized day/month string copies
+  into an explicit session-owned context;
+- touched roots/buckets: `PgSession.locale`, specifically the localized
+  day/month arrays, `locale_time_valid`, and the new localized-time context
+  slot;
+- owner source files: `src/backend/utils/adt/pg_locale.c`,
+  `src/backend/utils/init/backend_runtime.c`,
+  `src/backend/utils/init/backend_runtime_teardown.c`,
+  `src/test/modules/test_backend_runtime/test_backend_runtime_session.c`,
+  `src/include/utils/backend_runtime.h`, `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, `MULTITHREADED_PLAN.md`, and this state
+  log;
+- legacy symbols/accessors: `localized_abbrev_days`,
+  `localized_full_days`, `localized_abbrev_months`,
+  `localized_full_months`, `CurrentLCTimeValid`,
+  `PgCurrentLocaleState()`, and `cache_locale_time()`;
+- repeated lifecycle operations: one session-owned allocation context whose
+  payload is entirely palloc-owned strings. The existing
+  `PG_RUNTIME_DELETE_MEMORY_CONTEXT` action covers close-time deletion, while
+  `pg_locale.c` owns the semantic array clearing;
+- checked primitive decision: reuse the existing `PgSession.locale` lifecycle
+  row, ordered session reset table, owner-map validation, and
+  `PG_RUNTIME_DELETE_MEMORY_CONTEXT`. No new lifecycle primitive is needed
+  because this is one owner-adjacent locale cache;
+- validation impact: run touched object builds for `pg_locale.o`,
+  `backend_runtime.o`, `backend_runtime_teardown.o`, and
+  `test_backend_runtime_session.o`, then `git diff --check`,
+  `gmake check-runtime-lifecycles`, `gmake check-global-lifetimes`, full
+  `gmake -j8`, the backend-runtime regression, direct threaded
+  backend-runtime TAP, and a core date/time formatting smoke.
+
+Slice:
+
+- `PgSessionLocaleState` now owns `locale_time_context`, the allocation
+  context for localized abbreviated/full day and month strings cached by
+  `cache_locale_time()`;
+- `cache_single_string()` creates that context on first localized-time cache
+  fill and copies strings there instead of directly into `TopMemoryContext`;
+- `pg_locale.c` now provides `PgSessionResetLocaleTime()`, which clears the
+  localized-time arrays and invalidates the `lc_time` cache after the session
+  reset path deletes the context;
+- `PgSessionResetLocaleClosedState()` deletes the localized-time context and
+  clears the arrays before resetting localeconv and collation-cache state;
+- `test_session_locale_state_is_session_local()` verifies the localized-time
+  context follows the active `PgSession`, and `test_session_reset_closed_state()`
+  verifies closed-session reset clears the context, cached strings, and
+  validity flag;
+- the lifecycle manifest and owner map now record the four localized-time
+  arrays and `CurrentLocaleTimeContext` under `PgSession.locale`.
+
+Validation for the localized time cache context ownership slice:
+
+- touched-object builds passed for `pg_locale.o`, `backend_runtime.o`,
+  `backend_runtime_teardown.o`, and `test_backend_runtime_session.o`;
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 245 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- after backend clean and generated-header recovery for the installed
+  `backend_runtime.h` layout change, full `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- after patching the recreated macOS temp-install install names, direct
+  backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with repo-local `.perl5`
+  `PERL5LIB` and explicit `PG_REGRESS=src/test/regress/pg_regress`;
+- direct core date/time regression passed for `date`, `time`, `timetz`,
+  `timestamp`, `timestamptz`, `interval`, and `horology`, exercising localized
+  time formatting through SQL.
