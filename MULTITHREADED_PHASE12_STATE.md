@@ -18324,3 +18324,29 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o`, `backend_runtime_xact.o`,
   and the backend link; rerun lifecycle/global scans, transaction-heavy
   regression coverage, and `git diff --check`.
+
+## Executor Instrumentation Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move executor instrumentation compatibility accessors out of
+  `src/backend/utils/init/backend_runtime.c` and into the executor-owned
+  `src/backend/executor/backend_runtime_executor.c` bridge file.
+- touched roots/buckets: no runtime root ownership changes; existing
+  `PgBackend.instrumentation` bucket only.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  current-pointer and early fallback owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for internal current
+  instrumentation helper visibility, and
+  `src/backend/executor/backend_runtime_executor.c`.
+- legacy symbols/accessors: `PgCurrentBackendInstrumentationState()`,
+  `PgCurrentBufferUsageRef()`, `PgCurrentSavedBufferUsageRef()`,
+  `PgCurrentWalUsageRef()`, and `PgCurrentSavedWalUsageRef()`.
+- repeated lifecycle operations: none; this only relocates pointer accessors
+  and leaves instrumentation init/adopt/reset behavior unchanged.
+- checked primitive decision: no lifecycle primitive is needed because the
+  existing `PgBackend.instrumentation` lifecycle rows and owner-map entries
+  continue to cover the bucket.
+- validation impact: rebuild `backend_runtime.o`, `backend_runtime_executor.o`,
+  and the backend link; rerun lifecycle/global scans, threaded regression
+  coverage, and `git diff --check`.

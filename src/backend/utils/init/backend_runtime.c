@@ -1049,7 +1049,7 @@ static PgExecutionRegexState *PgCurrentExecutionRegexState(void);
 static PgExecutionValgrindState *PgCurrentExecutionValgrindState(void);
 static PgExecutionSnapBuildState *PgCurrentExecutionSnapBuildState(void);
 PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
-static PgBackendInstrumentationState *PgCurrentBackendInstrumentationState(void);
+PgBackendInstrumentationState *PgCurrentBackendInstrumentationState(void);
 PgBackendTransactionState *PgCurrentBackendTransactionState(void);
 static PgBackendPendingInterruptState *PgCurrentPendingInterrupts(void);
 static PgBackendInterruptHoldoffState *PgCurrentInterruptHoldoffs(void);
@@ -7103,37 +7103,13 @@ PgCurrentBackendPgStatPendingState(void)
 	return &CurrentPgBackend->pgstat_pending;
 }
 
-static PgBackendInstrumentationState *
+PgBackendInstrumentationState *
 PgCurrentBackendInstrumentationState(void)
 {
 	if (CurrentPgBackend == NULL)
 		return &early_backend_instrumentation;
 
 	return &CurrentPgBackend->instrumentation;
-}
-
-BufferUsage *
-PgCurrentBufferUsageRef(void)
-{
-	return &PgCurrentBackendInstrumentationState()->buffer_usage;
-}
-
-BufferUsage *
-PgCurrentSavedBufferUsageRef(void)
-{
-	return &PgCurrentBackendInstrumentationState()->saved_buffer_usage;
-}
-
-WalUsage *
-PgCurrentWalUsageRef(void)
-{
-	return &PgCurrentBackendInstrumentationState()->wal_usage;
-}
-
-WalUsage *
-PgCurrentSavedWalUsageRef(void)
-{
-	return &PgCurrentBackendInstrumentationState()->saved_wal_usage;
 }
 
 PgBackendBufferState *

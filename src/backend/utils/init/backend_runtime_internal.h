@@ -167,6 +167,7 @@ extern PgConnectionStartupState *PgConnectionStartupStateRef(PgConnection *conne
 extern PgConnectionClientConnectionInfoState *PgConnectionClientConnectionInfoStateRef(PgConnection *connection);
 extern bool *PgConnectionClientConnectionInfoAuthnIdOwnedRef(PgConnection *connection);
 extern PgConnectionSecurityState *PgConnectionRuntimeSecurityStateRef(PgConnection *connection);
+extern PgBackendInstrumentationState *PgCurrentBackendInstrumentationState(void);
 extern PgBackendBufferState *PgCurrentBackendBufferState(void);
 extern MemoryContext PgBackendBufferAllocationContext(void);
 extern PgBackendStorageState *PgCurrentBackendStorageState(void);

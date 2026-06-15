@@ -56,3 +56,27 @@ PgCurrentSPIConnectedRef(void)
 {
 	return &PgCurrentExecutionSPIState()->connected;
 }
+
+BufferUsage *
+PgCurrentBufferUsageRef(void)
+{
+	return &PgCurrentBackendInstrumentationState()->buffer_usage;
+}
+
+BufferUsage *
+PgCurrentSavedBufferUsageRef(void)
+{
+	return &PgCurrentBackendInstrumentationState()->saved_buffer_usage;
+}
+
+WalUsage *
+PgCurrentWalUsageRef(void)
+{
+	return &PgCurrentBackendInstrumentationState()->wal_usage;
+}
+
+WalUsage *
+PgCurrentSavedWalUsageRef(void)
+{
+	return &PgCurrentBackendInstrumentationState()->saved_wal_usage;
+}
