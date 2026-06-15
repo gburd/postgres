@@ -272,3 +272,41 @@ def wait_for_file(filename, regexp, offset=0):
     raise TimeoutError(
         "timed out waiting for file {} contents to match: {}".format(filename, regexp)
     )
+
+
+def wait_until(error_message="condition not met", timeout=None, interval=0.1):
+    """Poll for a condition, yielding once per attempt until it holds.
+
+    A general-purpose alternative to poll_query_until for conditions that are
+    not a single query comparing equal to a fixed string -- for example,
+    waiting for a crashed server to accept connections again while swallowing
+    the connection errors::
+
+        for _ in wait_until("server did not come back after crash", timeout=180):
+            try:
+                node.sql("SELECT 1")
+                break
+            except PgSqlError:
+                pass
+
+    The loop runs until ``break`` (success) or *timeout* seconds elapse, at
+    which point a TimeoutError carrying *error_message* is raised. *timeout*
+    defaults to PG_TEST_TIMEOUT_DEFAULT. Progress is logged every 5s for long
+    waits.
+    """
+    import time as _time  # pylint: disable=import-outside-toplevel
+    from ._env import test_timeout_default  # pylint: disable=import-outside-toplevel
+
+    if timeout is None:
+        timeout = test_timeout_default()
+    start = _time.monotonic()
+    end = start + timeout
+    last_progress = start
+    while _time.monotonic() < end:
+        now = _time.monotonic()
+        if timeout > 5 and now - last_progress > 5:
+            last_progress = now
+            print("{} after {:.0f}s - will retry".format(error_message, now - start))
+        yield
+        _time.sleep(interval)
+    raise TimeoutError(error_message + " in time")
