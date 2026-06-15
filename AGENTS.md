@@ -16,6 +16,13 @@ is object-owned allocation contexts and related delete-and-null/list/hash/
 copy-adopt-reset patterns. Record the preflight decision in
 `MULTITHREADED_PHASE12_STATE.md` before editing code.
 
+Concrete Phase 12 workflow rule: if the next batch would need two or more
+similar lifecycle helper bodies, do the lifecycle-framework improvement first.
+That means adding the macro, X-macro row, checked `PG_RUNTIME_*` action,
+declarative source table, or checker rule before moving the globals. Then move
+the larger batch through that checked path. Do not split the migration into
+smaller handwritten slices just to avoid improving the lifecycle machinery.
+
 If lifecycle bookkeeping itself is making Phase 12 slow, treat that as a code
 smell in the lifecycle framework. Do not keep grinding through repeated manual
 helpers. Add the missing macro, bucket-row action, declarative table pattern, or

@@ -14266,3 +14266,20 @@ Validation for the retained top-memory/fork-reset slice:
   backend-runtime TAP passed for `001_threaded_runtime.pl` and
   `002_threaded_bgworker_crash.pl`, 131 tests total, with repo-local `.perl5`
   `PERL5LIB` and explicit `PG_REGRESS=src/test/regress/pg_regress`.
+
+## Gate E2 Lifecycle Helper-First Rule
+
+Before the next substantive Phase 12/Gate E2 implementation slice, check
+whether the work would create repeated lifecycle mechanics. If two or more
+similar init/adopt/reset/destroy helpers, memory-context delete-and-reset
+patterns, list/hash cleanup blocks, fallback copy/reset paths, owner-map rows,
+or checker exceptions would be needed, the first deliverable is the lifecycle
+framework improvement: a checked `PG_RUNTIME_*` action,
+`PG_RUNTIME_DEFINE_*` helper, bucket `.def`/X-macro row, declarative source
+table, or `check_runtime_lifecycles.pl` rule.
+
+Only after that primitive exists should the state be moved. The purpose is to
+take larger Phase 12 strides safely, not to compensate for lifecycle friction
+by landing smaller handwritten batches. Record the preflight answer in this
+file before touching the migration code: either name the existing checked
+primitive being reused, or name the new primitive added first.
