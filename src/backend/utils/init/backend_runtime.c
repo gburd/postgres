@@ -3530,6 +3530,7 @@ PgExecutionInitializeExtensionState(PgExecutionExtensionState *extension)
 	extension->current_object = InvalidOid;
 	extension->auto_explain_nesting_level = 0;
 	extension->auto_explain_current_query_sampled = false;
+	extension->pgcrypto_debug_handler = NULL;
 }
 
 static void
@@ -6090,6 +6091,12 @@ PgCurrentExecutionExtensionState(void)
 		return &early_execution_extension;
 
 	return &CurrentPgExecution->extension;
+}
+
+PgExecutionDebugHandler *
+PgCurrentPgcryptoDebugHandlerRef(void)
+{
+	return &PgCurrentExecutionExtensionState()->pgcrypto_debug_handler;
 }
 
 bool *

@@ -16237,3 +16237,69 @@ Validation for the pgcrypto DES session cache slice:
   SHLIB_LINK="-L/opt/homebrew/opt/openssl@3/lib -lcrypto"
   gmake -C contrib/pgcrypto clean all check` passed all 25 pgcrypto
   regression tests.
+
+## Pgcrypto Execution Debug Handler And Const Tables Batch
+
+Lifecycle/preflight note:
+
+- target: remove pgcrypto's shared mutable debug callback and narrow remaining
+  pgcrypto file-static mutability by marking read-only lookup tables `const`;
+- touched root/bucket rows: `PgExecution.extension` for the PGP debug callback
+  installed temporarily by `pgp-pgsql.c`, plus source-local immutable tables in
+  `crypt-blowfish.c` and `crypt-gensalt.c`;
+- legacy state owners: `debug_handler` in `px.c`, `BF_magic_w`,
+  `BF_init_state`, `BF_itoa64`, `BF_atoi64`, and `_crypt_itoa64`;
+- repeated lifecycle operations expected in this slice: a single execution
+  callback pointer reset through `PgExecutionInitializeExtensionState()`, plus
+  source-local `const` qualification for immutable lookup data. No context,
+  hash, list, or destructor path is involved;
+- checked primitive decision: no new lifecycle primitive is needed. The
+  existing `PgExecution.extension` bucket already uses the checked
+  `PG_RUNTIME_RESET_THROUGH_INITIALIZER(PgExecutionInitializeExtensionState())`
+  reset path, and owner-map validation can cover the moved callback pointer.
+
+Implementation result:
+
+- `PgExecution.extension` now owns pgcrypto's temporary PGP debug callback
+  pointer through `pgcrypto_debug_handler`, reached by
+  `PgCurrentPgcryptoDebugHandlerRef()`;
+- `px.c` keeps the historical `debug_handler` name as a file-local lvalue
+  macro over the current execution object, so a PGP debug callback installed
+  for one execution is not shared with another execution in the same address
+  space;
+- `crypt-blowfish.c` and `crypt-gensalt.c` now mark their immutable lookup
+  tables `static const`, removing those source-local entries from the mutable
+  global set;
+- `test_backend_runtime_execution` now verifies that the pgcrypto debug
+  callback is execution-local and that
+  `PgExecutionInitializeExtensionState()` clears it. The test deliberately
+  checks the extension bucket initializer rather than using full fake
+  execution teardown here, because this assertion is about the checked
+  `PgExecution.extension` reset path and not about unrelated execution
+  resource cleanup.
+
+Validation for the pgcrypto execution debug handler and const-table slice:
+
+- `git diff --check` passed;
+- touched-object builds passed for `backend_runtime.o`,
+  `test_backend_runtime_execution.o`, `px.o`, `crypt-blowfish.o`, and
+  `crypt-gensalt.o`;
+- `gmake check-runtime-lifecycles` passed with 172 fields classified, 172
+  bucket definitions checked, 35 reset definitions checked, and 357 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- static scan of `contrib/pgcrypto` found no remaining mutable declarations
+  matching the old `debug_handler`, Blowfish lookup table, or gensalt lookup
+  table patterns moved or const-qualified by this batch;
+- clean `gmake -C src/test/modules/test_backend_runtime clean all check`
+  passed after changing the new reset assertion to target
+  `PgExecutionInitializeExtensionState()`;
+- after the installed runtime header changed, the backend was cleaned,
+  generated backend/include headers were regenerated, and full `gmake -j8`
+  passed;
+- `PG_CPPFLAGS="-I/opt/homebrew/opt/openssl@3/include"
+  PG_LDFLAGS="-L/opt/homebrew/opt/openssl@3/lib"
+  SHLIB_LINK="-L/opt/homebrew/opt/openssl@3/lib -lcrypto"
+  gmake -C contrib/pgcrypto clean all check` passed all 25 pgcrypto
+  regression tests.

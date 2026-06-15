@@ -933,12 +933,15 @@ typedef struct PgExecutionAnalyzeState
 	void	   *array_extra_data;
 } PgExecutionAnalyzeState;
 
+typedef void (*PgExecutionDebugHandler) (const char *message);
+
 typedef struct PgExecutionExtensionState
 {
 	bool		creating;
 	Oid			current_object;
 	int			auto_explain_nesting_level;
 	bool		auto_explain_current_query_sampled;
+	PgExecutionDebugHandler pgcrypto_debug_handler;
 } PgExecutionExtensionState;
 
 typedef struct PgExecutionMatViewState
@@ -3090,6 +3093,8 @@ extern int *PgCurrentPostgresFdwReadOnlyLevelRef(void);
 extern bool *PgCurrentPostgresFdwConnectionCallbacksRegisteredRef(void);
 extern bool *PgCurrentPostgresFdwShippableCallbacksRegisteredRef(void);
 extern PgExecutionExtensionState *PgCurrentExecutionExtensionState(void);
+extern void PgExecutionInitializeExtensionState(PgExecutionExtensionState *extension);
+extern PgExecutionDebugHandler *PgCurrentPgcryptoDebugHandlerRef(void);
 extern void PgSessionRegisterResetCallback(PgSessionResetCallback callback,
 										   void *arg);
 extern void PgSessionResetClosedState(PgSession *session);
