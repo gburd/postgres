@@ -9,6 +9,7 @@ data directory and checks default and group-access file permissions.
 
 import os
 import platform
+import time
 
 import pytest
 
@@ -60,6 +61,12 @@ def test_start_stop(pg_bin, tmp_path, sockdir):
         r"(?s)done.*server started",
         "pg_ctl start",
     )
+
+    if platform.system() == "Windows":
+        # Mirror the Perl original's `sleep 3 if ($windows_os)`: give the
+        # postmaster time to write postmaster.pid so the next pg_ctl start does
+        # not race wait_for_postmaster() against a stale/absent pid file.
+        time.sleep(3)
 
     pg_bin.command_fails(
         ["pg_ctl", "start", "--pgdata", data], "second pg_ctl start fails"

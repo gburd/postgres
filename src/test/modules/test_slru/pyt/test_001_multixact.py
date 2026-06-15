@@ -21,7 +21,7 @@ def test_001_multixact(create_pg):
     node.safe_psql("CREATE EXTENSION injection_points")
     node.safe_psql("CREATE EXTENSION test_slru")
     bg_psql = node.background_psql("postgres")
-    multi1 = bg_psql.query("SELECT test_create_multixact();")
+    multi1 = bg_psql.query_safe("SELECT test_create_multixact();")
     node.safe_psql(
         "SELECT injection_points_attach('multixact-create-from-members','wait');"
     )

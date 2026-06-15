@@ -35,20 +35,20 @@ def test_01_workitems(create_pg):
         "insert into journal select * from generate_series(timestamp '1976-08-01', '1976-10-28', '1 day')"
     )
     time.sleep(1)
-    node.poll_query_until(
+    assert node.poll_query_until(
         "select count(*) > 1 from brin_page_items(get_raw_page('brin_wi_idx', 2), 'brin_wi_idx'::regclass)",
         expected="t",
-    )
+    ), "brin_wi_idx summarization completed"
     count = node.safe_psql(
         "select count(*) from brin_page_items(get_raw_page('brin_wi_idx', 2), 'brin_wi_idx'::regclass)\n\t where not placeholder;"
     )
-    assert int(count) > 1, "$count brin_wi_idx ranges got summarized"
-    node.poll_query_until(
+    assert int(count) > 1, f"{count} brin_wi_idx ranges got summarized"
+    assert node.poll_query_until(
         "select count(*) > 1 from brin_page_items(get_raw_page('brin_packdate_idx', 2), 'brin_packdate_idx'::regclass)",
         expected="t",
-    )
+    ), "brin_packdate_idx summarization completed"
     count = node.safe_psql(
         "select count(*) from brin_page_items(get_raw_page('brin_packdate_idx', 2), 'brin_packdate_idx'::regclass)\n\t where not placeholder;"
     )
-    assert int(count) > 1, "$count brin_packdate_idx ranges got summarized"
+    assert int(count) > 1, f"{count} brin_packdate_idx ranges got summarized"
     node.stop()

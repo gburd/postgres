@@ -10,6 +10,7 @@ null-separated result per size. Each valid input must succeed at every chunk
 size with no stderr; each invalid input must fail with the expected error.
 """
 
+import os
 import re
 import subprocess
 
@@ -111,7 +112,7 @@ def _split_nul(text):
     return parts
 
 
-def _run_case(exe, name, json_bytes, error, tmp_path):
+def _run_case(exe, name, json_bytes, error, tmp_path, env):
     """Run one inline case across all chunk sizes and check each result."""
     chunk = min(len(json_bytes), 64)
     fname = tmp_path / "inline.json"
@@ -120,6 +121,7 @@ def _run_case(exe, name, json_bytes, error, tmp_path):
         exe + ["-r", str(chunk), str(fname)],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=env,
         check=False,
     )
     stdout = _split_nul(proc.stdout.decode("latin-1"))
@@ -143,8 +145,12 @@ def _run_case(exe, name, json_bytes, error, tmp_path):
             )
 
 
-def test_002_inline(tmp_path):
+def test_002_inline(tmp_path, bindir):
     """Every inline JSON case parses correctly at all chunk sizes, all variants."""
+    # Resolve the test_json_parser_incremental* binaries against the build's
+    # bindir (they are not on the ambient PATH in a build-tree run).
+    env = dict(os.environ)
+    env["PATH"] = str(bindir) + os.pathsep + env.get("PATH", "")
     for exe in _EXES:
         for name, json_bytes, error in _CASES:
-            _run_case(exe, name, json_bytes, error, tmp_path)
+            _run_case(exe, name, json_bytes, error, tmp_path, env)

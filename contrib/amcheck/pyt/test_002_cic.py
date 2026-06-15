@@ -54,7 +54,7 @@ def test_002_cic(create_pg):
     node.safe_psql("CREATE TABLE quebec(i int primary key)")
     node.safe_psql("INSERT INTO quebec SELECT i FROM generate_series(1, 2) s(i);")
     in_progress_h = node.background_psql("postgres")
-    in_progress_h.query("BEGIN; SELECT pg_current_xact_id();")
+    in_progress_h.query_safe("BEGIN; SELECT pg_current_xact_id();")
     node.safe_psql("DELETE FROM quebec WHERE i = 1;")
     node.safe_psql("CREATE INDEX CONCURRENTLY oscar ON quebec(i);")
     result = node.psql_capture(

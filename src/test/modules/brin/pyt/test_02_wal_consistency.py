@@ -44,4 +44,4 @@ def test_02_wal_consistency(create_pg):
         + "')\n\twhere resource_manager = 'BRIN' AND\n\trecord_type ILIKE '%revmap%'"
     )
     assert int(result.stdout) >= 1
-    whiskey.wait_for_catchup(charlie)
+    whiskey.wait_for_replay_catchup(charlie)

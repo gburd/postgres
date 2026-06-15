@@ -33,7 +33,7 @@ def test_007_catcache_inval(create_pg):
     )
     psql_session = node.background_psql("postgres")
     psql_session2 = node.background_psql("postgres")
-    psql_session.query(
+    psql_session.query_safe(
         "SELECT injection_points_set_local();\n    SELECT injection_points_attach('catcache-list-miss-systable-scan-started', 'wait');"
     )
     psql_session.query_until(
@@ -43,9 +43,9 @@ def test_007_catcache_inval(create_pg):
     node.safe_psql(
         "CREATE FUNCTION foofunc() RETURNS integer AS $$ SELECT 123 $$ LANGUAGE SQL"
     )
-    psql_session2.query(
+    psql_session2.query_safe(
         "SELECT injection_points_wakeup('catcache-list-miss-systable-scan-started');\n    SELECT injection_points_detach('catcache-list-miss-systable-scan-started');"
     )
-    psql_session.query("SELECT foofunc();")
+    psql_session.query_safe("SELECT foofunc();")
     assert psql_session.quit() == 0, ""
     assert psql_session2.quit() == 0, ""

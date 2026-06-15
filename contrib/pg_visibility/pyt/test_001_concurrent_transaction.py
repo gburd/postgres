@@ -20,7 +20,7 @@ def test_001_concurrent_transaction(create_pg):
     standby.start()
     node.safe_psql("CREATE DATABASE other_database;")
     bsession = node.background_psql("other_database")
-    bsession.query("BEGIN;\n\tSELECT txid_current();")
+    bsession.query_safe("BEGIN;\n\tSELECT txid_current();")
     node.safe_psql(
         "CREATE EXTENSION pg_visibility;\nCREATE TABLE vacuum_test AS SELECT 42 i;\nVACUUM (disable_page_skipping) vacuum_test;"
     )
@@ -29,7 +29,7 @@ def test_001_concurrent_transaction(create_pg):
     node.wait_for_catchup(standby)
     result = standby.safe_psql("SELECT * FROM pg_check_visible('vacuum_test');")
     assert result == "", "pg_check_visible() detects no errors"
-    bsession.query("COMMIT;")
+    bsession.query_safe("COMMIT;")
     bsession.quit()
     node.stop()
     standby.stop()

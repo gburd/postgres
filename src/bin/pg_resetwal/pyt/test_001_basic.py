@@ -159,6 +159,11 @@ def _test_control_overrides(pg_bin, node):
     mult = 32 * blcksz // 8
     cmd += [
         "--multixact-ids",
+        # The Perl original writes hex($files[0] * $mult) for the "old" value
+        # (numify the hex string in decimal, then hex()), which is an apparent
+        # quirk; we deliberately parse-as-hex then multiply (consistent with the
+        # pg_xact case). The two differ only when files[0] != "0000", which does
+        # not occur on a freshly-initialized cluster, so the value matches there.
         "{},{}".format(
             (int(files[-1], 16) + 1) * mult,
             1 if int(files[0], 16) == 0 else int(files[0], 16) * mult,

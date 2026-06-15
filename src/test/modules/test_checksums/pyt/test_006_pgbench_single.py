@@ -12,7 +12,6 @@ injection-points build.
 import os
 import random
 import re
-import subprocess
 
 import pytest
 
@@ -46,12 +45,10 @@ def _start_bg_pgbench(node):
     if extended and dcu.cointoss():
         cmd.append("-C")
     cmd.append("postgres")
-    return subprocess.Popen(  # pylint: disable=consider-using-with
-        cmd,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    # Resolve pgbench against the node's bindir and pass its connection env, so
+    # the just-built pgbench is found (it is not on the ambient PATH) and a
+    # launch failure is not silently swallowed by the discarded stderr.
+    return node.bin.popen(cmd)
 
 
 def _flip_data_checksums(node, state):

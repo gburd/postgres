@@ -33,7 +33,7 @@ def test_001_worker_spi(create_pg):
     result = node.safe_psql(
         "SELECT count(*) > 0 from pg_wait_events where type = 'Extension' and name = 'WorkerSpiMain';"
     )
-    assert result, '"WorkerSpiMain" is reported in pg_wait_events'
+    assert result == "t", '"WorkerSpiMain" is reported in pg_wait_events'
     node.safe_psql("CREATE DATABASE mydb;")
     node.safe_psql("CREATE ROLE myrole SUPERUSER LOGIN;")
     node.safe_psql("CREATE EXTENSION worker_spi;", dbname="mydb")

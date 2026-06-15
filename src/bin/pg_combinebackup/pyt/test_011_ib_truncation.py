@@ -10,7 +10,9 @@ Generated from the Perl original via .agent/gen_golden.py.
 
 def test_011_ib_truncation(create_pg):
     """Incremental backup reconstructs a relation truncated between backups."""
-    primary = create_pg("primary", allows_streaming=True, start=False)
+    primary = create_pg(
+        "primary", allows_streaming=True, has_archiving=True, start=False
+    )
     primary.append_conf("summarize_wal = on")
     primary.start()
     backup_path = primary.backup_dir

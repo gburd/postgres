@@ -10,6 +10,8 @@ target/source and its --dry-run. Exercised for 'local', 'remote', and
 'archive' source modes.
 """
 
+import platform
+
 import pypg
 
 
@@ -99,9 +101,12 @@ def _check_results(rt):
     )
     rt.check_query("SELECT count(*) FROM tail_tbl", "10001", "tail-copy")
     rt.check_query("SELECT * FROM drop_tbl", "in primary", "drop")
-    assert pypg.check_mode_recursive(
-        rt.primary.datadir, 0o700, 0o600
-    ), "check PGDATA permissions"
+    if platform.system() != "Windows":
+        # unix-style permissions are not supported on Windows (cf. the SKIP
+        # block in the Perl original).
+        assert pypg.check_mode_recursive(
+            rt.primary.datadir, 0o700, 0o600
+        ), "check PGDATA permissions"
 
 
 def _run_test(rt, pg_bin, test_mode):

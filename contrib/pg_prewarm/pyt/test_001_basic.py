@@ -31,7 +31,9 @@ def test_001_basic(pg_bin, create_pg):
         result,
     ), "buffer mode succeeded"
     result = node.psql_capture("SELECT pg_prewarm('test', 'prefetch');")
-    assert re.search(r"""^[1-9][0-9]*$""", result.stdout), "prefetch mode succeeded"
+    assert re.search(r"""^[1-9][0-9]*$""", result.stdout) or re.search(
+        r"""prefetch is not supported by this build""", result.stderr
+    ), "prefetch mode succeeded"
     result = node.psql_capture(
         "SELECT pg_prewarm('test');", extra_params=["--username", "test_user"]
     )
@@ -45,15 +47,19 @@ def test_001_basic(pg_bin, create_pg):
         r"""permission denied for index test_idx""", result.stderr
     ), "pg_prewarm failed as expected"
     node.safe_psql("GRANT SELECT ON test TO test_user;")
-    result = node.safe_psql("SELECT pg_prewarm('test');")
+    result = node.psql_capture(
+        "SELECT pg_prewarm('test');", extra_params=["--username", "test_user"]
+    )
     assert re.search(
         r"""^[1-9][0-9]*$""",
-        result,
+        result.stdout,
     ), "pg_prewarm succeeded as expected"
-    result = node.safe_psql("SELECT pg_prewarm('test_idx');")
+    result = node.psql_capture(
+        "SELECT pg_prewarm('test_idx');", extra_params=["--username", "test_user"]
+    )
     assert re.search(
         r"""^[1-9][0-9]*$""",
-        result,
+        result.stdout,
     ), "pg_prewarm succeeded as expected"
     result = node.safe_psql("SELECT autoprewarm_dump_now();")
     assert re.search(

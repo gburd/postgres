@@ -64,6 +64,10 @@ def test_009_extract(create_pg):
         )
         unsupported = tc.get("possibly_unsupported")
         if result.rc != 0 and unsupported and re.search(unsupported, result.stderr):
+            # Remove the (partial) backup before skipping, like the Perl
+            # original's unconditional rmtree: the next iteration reuses the
+            # same backup_path and pg_basebackup requires an empty target.
+            shutil.rmtree(backup_path, ignore_errors=True)
             continue
         assert result.rc == 0, "backup done, compression {}".format(method)
         primary.command_ok(

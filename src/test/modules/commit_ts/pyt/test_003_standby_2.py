@@ -52,4 +52,4 @@ def test_003_standby_2(create_pg):
     standby_ts = standby.safe_psql(
         "SELECT ts.* FROM pg_class, pg_xact_commit_timestamp(xmin) AS ts WHERE relname = 't11'"
     )
-    assert standby_ts != "", "standby gives valid value ($standby_ts) after promotion"
+    assert standby_ts != "", f"standby gives valid value ({standby_ts}) after promotion"

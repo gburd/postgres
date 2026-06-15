@@ -13,8 +13,8 @@ def test_006_options(pg_bin, tmp_path):
     pg_bin.program_help_ok("pg_rewind")
     pg_bin.program_version_ok("pg_rewind")
     pg_bin.program_options_handling_ok("pg_rewind")
-    primary_pgdata = tmp_path
-    standby_pgdata = tmp_path
+    primary_pgdata = tmp_path / "primary"
+    standby_pgdata = tmp_path / "standby"
     pg_bin.command_fails(
         [
             "pg_rewind",

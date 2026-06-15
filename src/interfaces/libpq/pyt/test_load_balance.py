@@ -168,3 +168,8 @@ def test_load_balance_hosts_failover(load_balance_nodes):
     with nodes[2].log_contains("connection received", times=5):
         for _ in range(5):
             connect(load_balance_hosts="random")
+
+    # Restart the nodes stopped above so the module-scoped fixture is left in a
+    # consistent state and this test is not coupled to running last.
+    nodes[0].start()
+    nodes[1].start()
