@@ -293,12 +293,9 @@ PgSessionResetCatalogLookupClosedState(PgSession *session)
 	}
 	if (session->catalog_lookup.cache_memory_context != NULL)
 	{
-		if (session != CurrentPgSession)
-		{
-			if (CurrentMemoryContext == session->catalog_lookup.cache_memory_context)
-				MemoryContextSwitchTo(TopMemoryContext);
-			PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->catalog_lookup.cache_memory_context);
-		}
+		if (CurrentMemoryContext == session->catalog_lookup.cache_memory_context)
+			MemoryContextSwitchTo(TopMemoryContext);
+		PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->catalog_lookup.cache_memory_context);
 		session->catalog_lookup.cache_memory_context = NULL;
 	}
 	MemSet(session->catalog_lookup.sys_cache, 0,

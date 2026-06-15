@@ -3630,9 +3630,11 @@ Datum
 test_session_reset_closed_state(PG_FUNCTION_ARGS)
 {
 	PgSession	fake_session;
+	PgSession	active_session;
 	PgSession  *saved_session;
 	HASHCTL		hash_ctl;
 	MemoryContext oldcontext;
+	MemoryContext saved_context;
 	MemoryContext dynamic_library_context;
 	MemoryContext xact_callback_context;
 	Session    *legacy_session;
@@ -3988,6 +3990,31 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && fake_session.dynamic_library_inits == NIL;
 	ok = ok && fake_session.legacy_session_context == NULL;
 	ok = ok && fake_session.legacy_session == NULL;
+
+	MemSet(&active_session, 0, sizeof(active_session));
+	active_session.catalog_lookup.cache_memory_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test active catalog lookup cache context",
+							  ALLOCSET_SMALL_SIZES);
+
+	PgSetCurrentSession(&active_session);
+	saved_context = CurrentMemoryContext;
+	PG_TRY();
+	{
+		MemoryContextSwitchTo(active_session.catalog_lookup.cache_memory_context);
+		PgSessionResetClosedState(&active_session);
+		ok = ok && active_session.catalog_lookup.cache_memory_context == NULL;
+		ok = ok && CurrentMemoryContext == TopMemoryContext;
+		MemoryContextSwitchTo(saved_context);
+		PgSetCurrentSession(saved_session);
+	}
+	PG_CATCH();
+	{
+		MemoryContextSwitchTo(saved_context);
+		PgSetCurrentSession(saved_session);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 
 	if (!ok)
 		elog(ERROR, "closed session runtime state was not reset");

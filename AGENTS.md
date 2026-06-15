@@ -707,13 +707,15 @@ Important current files:
 - Catalog lookup cache roots for attribute options, relfilenumber mapping,
   tablespace options, event triggers, ruleutils SPI plans, and the ICU
   converter now live under `PgSessionCatalogLookupState`. The bucket owns the
-  root slots and reset closes/destroys the roots that can be safely reclaimed,
-  but pointed allocations under `CacheMemoryContext` remain part of the
-  broader memory-context ownership split. After changing this bridge, rebuild
-  `backend_runtime.o`, `attoptcache.o`, `relfilenumbermap.o`, `spccache.o`,
-  `evtcache.o`, `ruleutils.o`, `pg_locale_icu.o`, and
-  `test_backend_runtime.o`, then run `gmake check-runtime-lifecycles` and
-  `gmake check-global-lifetimes`.
+  root slots and reset closes/destroys the roots that can be safely reclaimed.
+  Active backend teardown now deletes the session-owned `CacheMemoryContext`
+  after dependent roots have been cleared, switching to `TopMemoryContext`
+  first if that cache context is current. Full carrier `TopMemoryContext`
+  reclamation remains a separate Gate E2 ownership audit. After changing this
+  bridge, rebuild `backend_runtime.o`, `attoptcache.o`,
+  `relfilenumbermap.o`, `spccache.o`, `evtcache.o`, `ruleutils.o`,
+  `pg_locale_icu.o`, and `test_backend_runtime.o`, then run
+  `gmake check-runtime-lifecycles` and `gmake check-global-lifetimes`.
 - PL/pgSQL's custom-GUC, compile, namespace, plugin, simple-expression, and
   cast-cache session state now lives behind an opaque private pointer in
   `PgSessionExtensionModuleState`. PL/pgSQL registers a session reset callback
@@ -1432,10 +1434,10 @@ Important current files:
   pointer/counters, record-cache array/counters, and tupledesc ID counter also
   live in this bucket; `typcache.c` keeps the historical local names as
   accessor macros. Session reset clears those roots and scalars, while cache
-  entry memory still belongs to the broader `CacheMemoryContext` ownership
-  split. Do not move `funccache.c`'s hash root without adding a real
-  iterator/destructor for copied tuple descriptors and language-specific
-  cached-function state.
+  entry memory is reclaimed with the session-owned `CacheMemoryContext` after
+  dependent buckets reset. Do not move `funccache.c`'s hash root without
+  adding a real iterator/destructor for copied tuple descriptors and
+  language-specific cached-function state.
 - After changing the relcache critical-cache flags from exported TLS variables
   to `relcache.h` accessor macros, stale objects may still reference the old
   linker symbols even when GNU make thinks they are up to date. If the backend

@@ -14096,3 +14096,63 @@ through it.
 This is an implementation-order rule for Gate E2, not optional cleanup. The
 goal is to keep taking larger Phase 12 strides while avoiding parallel
 handwritten lifecycle lists that future agents have to remember to update.
+
+## Active CacheMemoryContext Closed-Session Reclamation
+
+Lifecycle/preflight note:
+
+- target: close the Gate E2 active-session `CacheMemoryContext` teardown gap
+  after relcache descriptors and relcache/typcache hash roots were moved under
+  the session-owned cache context;
+- touched roots/buckets: `PgSession.catalog_lookup`, specifically the
+  `cache_memory_context` owner slot and catalog lookup closed-reset path;
+- owner source files: `src/backend/utils/cache/backend_runtime_cache.c`,
+  `src/test/modules/test_backend_runtime/test_backend_runtime_session.c`,
+  `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, `MULTITHREADED_PLAN.md`, and
+  `AGENTS.md`;
+- legacy symbols/accessors: `CacheMemoryContext`,
+  `PgCacheMemoryContextRef()`, and `PgSessionResetClosedState()`;
+- repeated lifecycle operations: one ordering-sensitive context deletion. The
+  existing `PG_RUNTIME_DELETE_MEMORY_CONTEXT` action and checked session reset
+  table are sufficient because the work removes a conservative current-session
+  guard rather than adding a new family of lifecycle helpers;
+- checked primitive decision: reuse the existing checked catalog lookup
+  lifecycle row, ordered session reset table, and owner-map validation. No new
+  lifecycle primitive is needed for this single guarded-delete change;
+- validation impact: run focused object builds, `git diff --check`,
+  `gmake check-runtime-lifecycles`, `gmake check-global-lifetimes`, full
+  `gmake -j8`, `test_backend_runtime`, and direct threaded backend-runtime TAP.
+
+Slice:
+
+- `PgSessionResetCatalogLookupClosedState()` now deletes the session-owned
+  `CacheMemoryContext` for active/current sessions as well as offline fake
+  sessions;
+- when `CurrentMemoryContext` is the cache context being deleted, reset first
+  switches to `TopMemoryContext`, so teardown does not leave the backend
+  pointing into freed memory;
+- `test_session_reset_closed_state()` now covers this active-session path by
+  installing a fake current session, switching into its cache context, running
+  full `PgSessionResetClosedState()`, and verifying both the cleared slot and
+  `TopMemoryContext` switch;
+- lifecycle and owner docs now distinguish the completed session cache-context
+  reclamation from the still-open broader carrier `TopMemoryContext`
+  reclamation audit.
+
+Validation for the active CacheMemoryContext reclamation slice:
+
+- touched-object builds passed for `backend_runtime_cache.o` and
+  `test_backend_runtime_session.o`;
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 225 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- full incremental `gmake -j8` passed;
+- after patching the recreated macOS temp-install install names, direct
+  backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with repo-local `.perl5`
+  `PERL5LIB` and explicit `PG_REGRESS=src/test/regress/pg_regress`.

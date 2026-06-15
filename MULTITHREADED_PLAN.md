@@ -2110,9 +2110,10 @@ under `PgSessionCatalogLookupState` and kept the historical name as an lvalue
 macro through `PgCacheMemoryContextRef()`, implemented in
 `backend_runtime_cache.c`. This closes the most immediate cache-context
 ownership gap for the moved syscache/catcache/relcache/typcache roots. Active
-backend teardown clears the slot but deliberately does not delete the live
-cache context; the broader `TopMemoryContext` ownership and full cache-entry
-destructor audit remain Gate E2 blockers. Follow-up cache work moved
+backend teardown now deletes the live cache context after dependent session
+cache roots are cleared, switching to `TopMemoryContext` first when the cache
+context is current; the broader carrier `TopMemoryContext` ownership audit
+remains a Gate E2 blocker. Follow-up cache work moved
 `funccache.c`'s cached-function hash root into
 `PgSessionFunctionManagerState`, with the compatibility accessor in
 `backend_runtime_cache.c` and the tuple-descriptor/language-callback destructor
