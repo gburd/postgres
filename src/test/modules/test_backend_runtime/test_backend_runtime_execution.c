@@ -128,6 +128,7 @@ test_execution_debug_query_string_is_execution_local(PG_FUNCTION_ARGS)
 
 		CurrentPgExecution = &fake_execution1;
 		debug_query_string = "reset me";
+		fake_execution1.memory_contexts.message_context = NULL;
 		PgExecutionResetClosedState(&fake_execution1);
 		ok = ok && debug_query_string == NULL;
 
@@ -219,6 +220,7 @@ test_execution_memory_contexts_are_execution_local(PG_FUNCTION_ARGS)
 	MemoryContext saved_top_transaction_context;
 	MemoryContext saved_cur_transaction_context;
 	MemoryContext saved_portal_context;
+	MemoryContext reset_message_context;
 	MemoryContext fake_context1 = (MemoryContext) &fake_execution1;
 	MemoryContext fake_context2 = (MemoryContext) &fake_execution2;
 	MemoryContext fake_context3 = (MemoryContext) &saved_execution;
@@ -232,6 +234,10 @@ test_execution_memory_contexts_are_execution_local(PG_FUNCTION_ARGS)
 	saved_top_transaction_context = TopTransactionContext;
 	saved_cur_transaction_context = CurTransactionContext;
 	saved_portal_context = PortalContext;
+	reset_message_context =
+		AllocSetContextCreate(saved_top_memory_context,
+							  "test reset message context",
+							  ALLOCSET_SMALL_SIZES);
 	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
 	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
 
@@ -280,7 +286,9 @@ test_execution_memory_contexts_are_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && CurTransactionContext == fake_context1;
 		ok = ok && PortalContext == fake_context2;
 
+		MessageContext = reset_message_context;
 		PgExecutionResetClosedState(&fake_execution2);
+		reset_message_context = NULL;
 		ok = ok && TopMemoryContext == NULL;
 		ok = ok && CurrentMemoryContext == NULL;
 		ok = ok && ErrorContext == NULL;
@@ -297,6 +305,8 @@ test_execution_memory_contexts_are_execution_local(PG_FUNCTION_ARGS)
 		TopTransactionContext = saved_top_transaction_context;
 		CurTransactionContext = saved_cur_transaction_context;
 		PortalContext = saved_portal_context;
+		if (reset_message_context != NULL)
+			MemoryContextDelete(reset_message_context);
 	}
 	PG_CATCH();
 	{
@@ -308,6 +318,8 @@ test_execution_memory_contexts_are_execution_local(PG_FUNCTION_ARGS)
 		TopTransactionContext = saved_top_transaction_context;
 		CurTransactionContext = saved_cur_transaction_context;
 		PortalContext = saved_portal_context;
+		if (reset_message_context != NULL)
+			MemoryContextDelete(reset_message_context);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -459,11 +471,17 @@ test_execution_reset_closed_state(PG_FUNCTION_ARGS)
 	PortalData	fake_portal;
 	ResourceOwner test_owner;
 	MemoryContext resource_owner_context;
+	MemoryContext message_context;
 	bool		ok = true;
 
 	saved_execution = CurrentPgExecution;
 	MemSet(&fake_execution, 0, sizeof(fake_execution));
 	test_backend_runtime_seed_execution_memory_contexts(&fake_execution);
+	message_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test execution message context",
+							  ALLOCSET_SMALL_SIZES);
+	fake_execution.memory_contexts.message_context = message_context;
 	MemSet(&fake_error_context, 0, sizeof(fake_error_context));
 	MemSet(&fake_tuptable, 0, sizeof(fake_tuptable));
 	MemSet(&fake_portal, 0, sizeof(fake_portal));
@@ -646,6 +664,7 @@ test_execution_reset_closed_state(PG_FUNCTION_ARGS)
 		fake_execution.snapbuild.export_in_progress = true;
 
 		PgExecutionResetClosedState(&fake_execution);
+		message_context = NULL;
 
 		ok = ok && debug_query_string == NULL;
 		ok = ok && error_context_stack == NULL;
@@ -800,6 +819,8 @@ test_execution_reset_closed_state(PG_FUNCTION_ARGS)
 	}
 	PG_CATCH();
 	{
+		if (message_context != NULL)
+			MemoryContextDelete(message_context);
 		CurrentPgExecution = saved_execution;
 		PG_RE_THROW();
 	}
@@ -857,6 +878,7 @@ test_execution_event_trigger_query_state_reset(PG_FUNCTION_ARGS)
 		fake_execution.replication_scratch.event_trigger_context =
 			fake_event_trigger_context;
 		CurrentPgExecution = &fake_execution;
+		fake_execution.memory_contexts.message_context = NULL;
 		PgExecutionResetClosedState(&fake_execution);
 		fake_event_trigger_context = NULL;
 		ok = ok && *PgCurrentEventTriggerMemoryContextRef() == NULL;

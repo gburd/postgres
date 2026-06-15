@@ -987,6 +987,12 @@ Gate E2 requires:
   checker validation first, then move a larger coherent batch through that
   mechanism. Keep semantic cleanup, pointer rebasing, ordering-sensitive
   destruction, and ownership assertions handwritten near the owning subsystem;
+- if repeated lifecycle mechanics are discovered after a Gate E2 state
+  migration has already started, stop the manual migration at the next coherent
+  point and add the missing checked helper/action/table/checker support before
+  moving more state. Do not finish several parallel handwritten helpers and
+  defer the simplification as cleanup; the lifecycle simplification is part of
+  the same Phase 12 implementation slice;
 - candidate near-term primitives are object-owned allocation-context
   setup/reset, delete-and-null memory-context cleanup, list/hash cleanup,
   socket or wait-set teardown, clear-after-owner-cleanup pointer slots, and
@@ -2149,7 +2155,13 @@ The following tcop session-state batch moved `postgres.c`'s unnamed prepared
 statement pointer, interactive command-line switches, and reused row-description
 message context/buffer into `PgSessionTcopState`. Early fallback adoption covers
 the `-E`/`-j` switches parsed before a session exists, while session-close reset
-drops leftover unnamed plans and deletes the row-description context.
+drops leftover unnamed plans and deletes the row-description context. A later
+tcop main-loop context ownership batch made `PostgresMain()` create
+`MessageContext` through the execution-owned `PgExecution.memory_contexts`
+slot and create `RowDescriptionContext` through the session-owned tcop slot.
+Closed-execution reset now deletes the retained `MessageContext`; the broader
+`TopMemoryContext`, current/error context, portal, and transaction-context
+ownership split remains separate Gate E2 work.
 The following session utility-state batch moved `xact.c`'s xact/subxact
 callback registration list heads and SQL backup state from `xlogfuncs.c` plus
 `xlog.c`'s session backup status into `PgSession`. Session-close reset now

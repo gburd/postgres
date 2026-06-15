@@ -5157,9 +5157,9 @@ PgSessionBootstrap(const char *dbname, const char *username)
 	 * MessageContext is reset once per iteration of the main loop, ie, upon
 	 * completion of processing of each command message from the client.
 	 */
-	MessageContext = AllocSetContextCreate(TopMemoryContext,
-										   "MessageContext",
-										   ALLOCSET_DEFAULT_SIZES);
+	PgRuntimeGetOwnedMemoryContextWithSizes(PgMessageContextRef(),
+											"MessageContext",
+											ALLOCSET_DEFAULT_SIZES);
 
 	/*
 	 * Create memory context and buffer used for RowDescription messages. As
@@ -5167,9 +5167,10 @@ PgSessionBootstrap(const char *dbname, const char *username)
 	 * frequently executed for every single statement, we don't want to
 	 * allocate a separate buffer every time.
 	 */
-	row_description_context = AllocSetContextCreate(TopMemoryContext,
-													"RowDescriptionContext",
-													ALLOCSET_DEFAULT_SIZES);
+	PgRuntimeGetOwnedMemoryContextWithSizes(
+		PgCurrentRowDescriptionContextRef(),
+		"RowDescriptionContext",
+		ALLOCSET_DEFAULT_SIZES);
 	MemoryContextSwitchTo(row_description_context);
 	initStringInfo(&row_description_buf);
 	MemoryContextSwitchTo(TopMemoryContext);

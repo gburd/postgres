@@ -1128,6 +1128,8 @@ PgExecutionResetMemoryContextsClosedState(PgExecution *execution)
 {
 	Assert(execution != NULL);
 
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(execution->memory_contexts.message_context);
+
 	MemSet(&execution->memory_contexts, 0,
 		   sizeof(execution->memory_contexts));
 }

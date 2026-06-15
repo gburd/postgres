@@ -31,6 +31,12 @@ the remaining Gate E2 blockers: threaded teardown, PMChild/thread
 synchronization, startup-gate narrowing/removal, systematic GUC adoption, and
 remaining object migration.
 
+If repetition is discovered after a Phase 12 slice has already started, pause
+the state movement and add the missing checked helper/action/table/checker
+support before continuing. Do not finish a boilerplate-heavy migration by hand
+and leave the lifecycle simplification as later cleanup; the simplification is
+part of the same Gate E2 implementation work.
+
 Do not retry wholesale thread-exit `TopMemoryContext` deletion as a narrow
 cleanup. A Phase 12 probe that deleted the thread execution top context after
 bucket reset caused follow-on backend failures (`unsupported byval length: 0`

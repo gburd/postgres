@@ -15599,3 +15599,87 @@ Validation for the pgstat backend context ownership batch:
   scanned a table, forced the next stats flush, cleared the stats snapshot,
   observed the table through `pg_stat_all_tables`, and confirmed the current
   backend was visible through `pg_stat_activity`.
+
+## Tcop Main Loop Context Ownership
+
+Lifecycle/preflight note:
+
+- target: close the retained `TopMemoryContext` allocation sites for the core
+  frontend/backend protocol loop's `MessageContext` and reused
+  `RowDescriptionContext`;
+- touched roots/buckets: `PgExecution.memory_contexts` for `message_context`
+  and `PgSession.tcop` for `row_description_context` /
+  `row_description_buf`;
+- owner source files: `src/backend/tcop/postgres.c`,
+  `src/backend/utils/init/backend_runtime_teardown.c`,
+  `src/include/utils/backend_runtime.h`,
+  `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, `MULTITHREADED_PLAN.md`, and this state
+  log;
+- legacy symbols/accessors: `MessageContext`, `PgMessageContextRef()`,
+  `row_description_context`, `row_description_buf`,
+  `PgCurrentRowDescriptionContextRef()`, and
+  `PgCurrentRowDescriptionBufRef()`;
+- repeated lifecycle operations expected in this slice: two object-owned
+  allocation contexts with different owners. Existing
+  `PgRuntimeGetOwnedMemoryContextWithSizes()` covers allocation, and
+  `PG_RUNTIME_DELETE_MEMORY_CONTEXT` covers close-time deletion for both
+  buckets. No new helper is needed;
+- checked primitive decision: use the existing object-owned memory-context
+  helpers. `PgSessionResetTcopClosedState()` already deletes
+  `row_description_context`; this slice extends
+  `PgExecutionResetMemoryContextsClosedState()` to delete `MessageContext`
+  before clearing the execution memory-context slot. The broader
+  `TopMemoryContext`, portal, transaction, current-context, and error-context
+  ownership split remains separate Gate E2 work;
+- validation impact: run touched object builds for `postgres.o` and
+  `backend_runtime_teardown.o`, then `git diff --check`, `gmake
+  check-runtime-lifecycles`, `gmake check-global-lifetimes`, full `gmake -j8`,
+  backend-runtime regression/TAP, and a focused protocol smoke that exercises
+  parse/bind/describe/execute paths.
+
+Slice result:
+
+- `PostgresMain()` now creates `MessageContext` through
+  `PgRuntimeGetOwnedMemoryContextWithSizes(PgMessageContextRef(), ...)`,
+  making the protocol-loop scratch context explicit
+  `PgExecution.memory_contexts.message_context` state;
+- `PostgresMain()` now creates `RowDescriptionContext` through
+  `PgRuntimeGetOwnedMemoryContextWithSizes(PgCurrentRowDescriptionContextRef(),
+  ...)`, keeping the reused row-description buffer under the session-owned
+  tcop bucket;
+- `PgExecutionResetMemoryContextsClosedState()` deletes the retained
+  `MessageContext` before clearing execution memory-context slots. The helper
+  switches away from the deleted context when needed;
+- the execution reset tests now use real temporary message contexts only when
+  exercising deletion, and they null the seeded live `MessageContext` slot
+  before unrelated full closed-reset probes;
+- lifecycle and owner manifests now record `MessageContext`,
+  `row_description_context`, and `row_description_buf`.
+
+Validation for the tcop main loop context ownership slice:
+
+- touched-object builds passed for `postgres.o`,
+  `backend_runtime_teardown.o`, and `test_backend_runtime_execution.o`;
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 166 fields classified, 166
+  bucket definitions checked, 35 reset definitions checked, and 304 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- full incremental `gmake -j8` passed;
+- the first backend-runtime regression run crashed after the test harness fed
+  the live backend `MessageContext` into full closed reset; the test was
+  corrected to use temporary contexts only for intentional delete coverage and
+  to null seeded live message-context slots for unrelated reset probes;
+- after that correction, `gmake -C src/test/modules/test_backend_runtime clean
+  all check` passed;
+- after patching the recreated macOS temp-install install names and using the
+  repo-local `.perl5` `IPC::Run`, direct backend-runtime TAP passed for
+  `001_threaded_runtime.pl` and `002_threaded_bgworker_crash.pl`, 131 tests
+  total;
+- a focused live tcop/protocol smoke passed: it initialized and started a temp
+  cluster from `tmp_install`, created and populated a table, prepared and
+  executed a statement, queried `pg_prepared_statements`, deallocated the
+  statement, selected wide row-description output, and made 20 additional
+  client connections running simple protocol-loop queries.
