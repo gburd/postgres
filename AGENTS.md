@@ -8,80 +8,28 @@ Implementation is now underway. Keep the plan and architecture notes current as
 the code evolves.
 
 Current Phase 12/Gate E2 default: move state in larger coherent batches, but
-do not let lifecycle boilerplate grow by hand. Before a batch that would repeat
-init/adopt/reset/destroy helper shapes, first add or reuse a checked
-`PG_RUNTIME_*` action, `PG_RUNTIME_DEFINE_*` helper, bucket `.def` rule, or
-`check_runtime_lifecycles.pl` validation. The next likely simplification target
-is object-owned allocation contexts and related delete-and-null/list/hash/
-copy-adopt-reset patterns. Record the preflight decision in
-`MULTITHREADED_PHASE12_STATE.md` before editing code.
+do not let lifecycle boilerplate grow by hand. Before every substantial Gate
+E2 slice, record a lifecycle preflight in `MULTITHREADED_PHASE12_STATE.md`
+that names the touched root/bucket rows, legacy state owners, repeated
+lifecycle operations, and the checked primitive being reused or added.
 
-Hard requirement for the next resumed Phase 12 implementation slice: if the
-slice would add multiple similar object-owned context accessors, reset helpers,
-copy/adopt fallback helpers, list/hash cleanup helpers, or manifest rows, stop
-and implement the reusable checked lifecycle primitive first. The primitive can
-be a `PG_RUNTIME_*` action, `PG_RUNTIME_DEFINE_*` macro, bucket `.def` row
-pattern, owner-map/source table, or checker rule. Only continue with direct
-handwritten helpers when the preflight explains that the operations have
-different ordering, ownership, or subsystem-specific semantics.
+If the slice would repeat init/adopt/reset/destroy helper shapes, object-owned
+context allocation, delete-and-null cleanup, list/hash cleanup, fallback
+copy/adopt/reset, owner-map bookkeeping, or checker exceptions, add or reuse
+the checked lifecycle machinery first. Acceptable primitives include named
+`PG_RUNTIME_*` actions, `PG_RUNTIME_DEFINE_*` helpers, bucket `.def` rows,
+declarative owner/source tables, and `check_runtime_lifecycles.pl` rules.
+Only continue with handwritten helpers when the preflight explains the
+operations have different ordering, ownership, or subsystem-specific
+semantics.
 
-Concrete Phase 12 workflow rule: if the next batch would need two or more
-similar lifecycle helper bodies, do the lifecycle-framework improvement first.
-That means adding the macro, X-macro row, checked `PG_RUNTIME_*` action,
-declarative source table, or checker rule before moving the globals. Then move
-the larger batch through that checked path. Do not split the migration into
-smaller handwritten slices just to avoid improving the lifecycle machinery.
-
-If lifecycle bookkeeping itself is making Phase 12 slow, treat that as a code
-smell in the lifecycle framework. Do not keep grinding through repeated manual
-helpers. Add the missing macro, bucket-row action, declarative table pattern, or
-checker rule first, then move a larger coherent batch through the checked path.
-When considering the next Phase 12 batch, explicitly ask whether a macro,
-X-macro table, generated/declarative source table, or checker rule would make
-the lifecycle work easier. If the answer is yes, that lifecycle-framework
-improvement is the next implementation step, not optional cleanup after the
-state migration.
-If the answer is unclear, bias toward a small checked lifecycle-framework
-commit first. The desired artifact is a reusable primitive that makes the
-following migration batch shorter and more mechanical, not another prose-only
-reminder.
-When the user asks to take larger Phase 12 steps, apply this rule more
-aggressively rather than skipping it. Larger batches should usually mean more
-state moved through checked lifecycle primitives, not larger handwritten
-init/adopt/reset/destroy lists.
-This is especially important before the remaining Gate E2 blockers: threaded
-teardown, PMChild/thread synchronization, startup-gate removal, and any
-remaining object migration should each start by asking whether a small
-macro/table/checker improvement would make the whole slice simpler and safer.
-The macro/checker improvement is not a side quest: when repeated lifecycle
-mechanics appear, it is the fastest safe path for Phase 12 because it lets the
-next migration move more globals at once without adding parallel handwritten
-init/adopt/reset/destroy lists.
-
-Operationally, before a lifecycle-heavy Phase 12 batch, write the answer down
-in `MULTITHREADED_PHASE12_STATE.md` before editing code:
-
-- touched root object and bucket rows;
-- legacy globals/state owners being moved;
-- repeated lifecycle operations expected in the slice;
-- the existing checked `PG_RUNTIME_*` action, `PG_RUNTIME_DEFINE_*` helper,
-  bucket `.def` row, declarative table, or checker rule that covers them; or
-- the new checked primitive that will be landed first.
-
-Phase 12 lifecycle ergonomics checklist: at the start of each Gate E2 slice,
-explicitly ask whether a small macro, X-macro row, declarative owner/source
-table, or checker rule would let the batch move more state at once with less
-manual lifecycle code. If yes, that lifecycle primitive is the next coding
-task. Treat this as required implementation work, not a planning note or
-post-migration cleanup.
-
-If the slice needs two or more similar helper bodies and no checked primitive
-exists yet, create the primitive first. Do not treat a prose note or narrower
-batch split as a substitute for making the lifecycle mechanism easier.
-When several possible primitives would help, implement the smallest one that
-lets `check-runtime-lifecycles` validate the pattern in the same commit, then
-use it immediately in the migration or teardown slice. Do not defer the helper
-work as documentation-only debt.
+Treat lifecycle friction as implementation work, not documentation debt. If a
+larger Phase 12 batch feels slow because lifecycle bookkeeping is repetitive,
+the next coding task is the missing macro/table/checker primitive; then move
+the larger batch through that checked path. This applies especially before
+the remaining Gate E2 blockers: threaded teardown, PMChild/thread
+synchronization, startup-gate narrowing/removal, systematic GUC adoption, and
+remaining object migration.
 
 Do not retry wholesale thread-exit `TopMemoryContext` deletion as a narrow
 cleanup. A Phase 12 probe that deleted the thread execution top context after
