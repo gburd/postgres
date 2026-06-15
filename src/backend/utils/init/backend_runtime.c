@@ -757,6 +757,7 @@ static void PgBackendWakeForInterrupt(PgBackend *backend);
 static void PgRuntimeInitializeServerGUCState(PgRuntimeServerGUCState *server_guc);
 static void PgRuntimeAdoptEarlyServerGUCState(PgRuntime *runtime);
 static void PgRuntimeInitializeExtensionModuleState(PgRuntimeExtensionModuleState *extension_modules);
+static MemoryContext PgRuntimeEnsureExtensionModuleMemoryContext(PgRuntimeExtensionModuleState *extension_modules);
 static void PgRuntimeAdoptEarlyExtensionModuleState(PgRuntime *runtime);
 PgRuntimeServerGUCState *PgCurrentRuntimeServerGUCState(void);
 static void PgConnectionAdoptEarlyIdentity(PgConnection *connection);
@@ -1101,9 +1102,32 @@ PgRuntimeInitializeExtensionModuleState(PgRuntimeExtensionModuleState *extension
 {
 	Assert(extension_modules != NULL);
 
+	extension_modules->memory_context = NULL;
 	extension_modules->pg_plan_advice_context = NULL;
 	extension_modules->pg_plan_advice_advisor_hook_list = NIL;
 	extension_modules->bloom_context = NULL;
+	extension_modules->rendezvous_hash = NULL;
+}
+
+static MemoryContext
+PgRuntimeEnsureExtensionModuleMemoryContext(PgRuntimeExtensionModuleState *extension_modules)
+{
+	Assert(extension_modules != NULL);
+
+	if (extension_modules->memory_context == NULL)
+	{
+		if (CurrentPgRuntime != NULL &&
+			CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION)
+			elog(ERROR,
+				 "thread runtime extension module memory context is not initialized");
+
+		extension_modules->memory_context =
+			AllocSetContextCreate(TopMemoryContext,
+								  "RuntimeExtensionModules",
+								  ALLOCSET_DEFAULT_SIZES);
+	}
+
+	return extension_modules->memory_context;
 }
 
 static void
@@ -3943,6 +3967,7 @@ InitializePgThreadRuntime(PgBackendExitContinuation exit_backend)
 		else
 			PgRuntimeInitializeServerGUCState(&thread_runtime.server_guc);
 		thread_runtime.extension_modules = process_runtime.extension_modules;
+		PgRuntimeEnsureExtensionModuleMemoryContext(&thread_runtime.extension_modules);
 		PgBackendInitializeIdCounter();
 		thread_runtime_initialized = true;
 	}
@@ -4137,6 +4162,12 @@ PgCurrentRuntimeExtensionModuleState(void)
 	return &CurrentPgRuntime->extension_modules;
 }
 
+MemoryContext
+PgCurrentRuntimeExtensionModuleMemoryContext(void)
+{
+	return PgRuntimeEnsureExtensionModuleMemoryContext(PgCurrentRuntimeExtensionModuleState());
+}
+
 MemoryContext *
 PgCurrentPgPlanAdviceContextRef(void)
 {
@@ -4156,6 +4187,12 @@ MemoryContext *
 PgCurrentBloomContextRef(void)
 {
 	return &PgCurrentRuntimeExtensionModuleState()->bloom_context;
+}
+
+HTAB **
+PgCurrentRendezvousHashRef(void)
+{
+	return &PgCurrentRuntimeExtensionModuleState()->rendezvous_hash;
 }
 
 PgSessionPgcryptoDesState *

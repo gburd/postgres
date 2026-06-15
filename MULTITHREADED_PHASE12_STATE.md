@@ -16342,3 +16342,74 @@ Validation for the pgcrypto execution debug handler and const-table slice:
   SHLIB_LINK="-L/opt/homebrew/opt/openssl@3/lib -lcrypto"
   gmake -C contrib/pgcrypto clean all check` passed all 25 pgcrypto
   regression tests.
+
+## Gate E2 Carrier TopMemoryContext Reclamation Probe
+
+Lifecycle/preflight note:
+
+- target: switch threaded backend exit from retained root-context accounting
+  toward real closed-backend reclamation by deleting the exiting carrier's
+  saved `TopMemoryContext` after `PgBackendExitCleanup()` has reset
+  connection, execution, session, and backend closed state;
+- touched root/bucket rows: `PgRuntime.extension_modules` for runtime-wide
+  extension registries and `PgSession.guc` for the explicit boundary between
+  session-owned GUC state and runtime-global reserved-prefix storage;
+- legacy state owners: the dynamic-library rendezvous-variable hash and
+  `GUCReservedPrefixMemoryContext`/`reserved_class_prefix`;
+- checked primitive decision: no new lifecycle primitive is needed for this
+  slice. The remaining work is semantic ownership: lifetime-global registries
+  must be allocated under an address-space runtime owner before carrier
+  threads run, not under whichever logical backend first touches them.
+
+Probe findings:
+
+- after enabling `MemoryContextDelete(retained_top_context)` in
+  `backend_thread_finish()`, the threaded runtime TAP first exposed
+  `find_rendezvous_variable()` as a stale owner. Its process-static hash
+  pointer survived backend exit while the hash itself had been allocated under
+  the first backend carrier's `TopMemoryContext`;
+- moving the hash pointer into `PgRuntime.extension_modules.rendezvous_hash`
+  was not sufficient on its own. The hash allocation also needed an explicit
+  runtime-owned memory context, because the dynahash table lifetime is the
+  address-space runtime lifetime, not the current backend lifetime;
+- after that fix, the same TAP exposed PL/pgSQL prefix reservation as the
+  next stale owner. `MarkGUCPrefixReserved()` appended to a list whose backing
+  context had been deleted with the previous backend carrier root. The
+  reserved-prefix context now uses the same runtime-owned extension-module
+  memory context.
+
+Implementation result:
+
+- `backend_thread_finish()` now deletes the retained carrier
+  `TopMemoryContext` after closed-backend cleanup and publishes zero retained
+  bytes to the postmaster reaper on that path;
+- `PgRuntime.extension_modules` now has a runtime-owned memory context and a
+  runtime-owned rendezvous hash slot;
+- `InitializePgThreadRuntime()` ensures the runtime-owned extension-module
+  memory context exists before backend carriers can lazily allocate
+  runtime-global extension registries;
+- `find_rendezvous_variable()` allocates its dynahash table in the runtime
+  extension-module memory context through `HASH_CONTEXT`;
+- `GUCReservedPrefixContext()` allocates reserved GUC prefix storage in the
+  runtime extension-module memory context instead of the current backend
+  carrier's `TopMemoryContext`;
+- the `pq_mq` detach ownership fix from the previous slice is part of this
+  same proof: the backend closed-state reset path no longer double-frees an
+  `shm_mq_handle` after `shm_mq_detach()`.
+
+Validation for the carrier `TopMemoryContext` reclamation probe:
+
+- stale unattached SysV shared-memory segments left by earlier crash-debug
+  runs were removed with `ipcrm -m` only for segments whose `NATTCH` was zero;
+- touched-object builds passed for `launch_backend.o`, `backend_runtime.o`,
+  `dfmgr.o`, and `guc.o`;
+- full incremental `gmake -j8` passed;
+- `gmake DESTDIR="$PWD/tmp_install" install` and
+  `gmake -C src/test/modules/test_backend_runtime DESTDIR="$PWD/tmp_install"
+  install` passed;
+- after patching refreshed macOS temp-install dylib references, direct
+  `prove -v -I "$ROOT/src/test/perl" -I "$TESTDIR"
+  t/001_threaded_runtime.pl` passed all 127 tests with carrier root-context
+  deletion enabled, including PL/pgSQL, representative contrib extensions,
+  FATAL cleanup, abandoned-client cleanup, mixed teardown stress, and PMChild
+  reaping stress.

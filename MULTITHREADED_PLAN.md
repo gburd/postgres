@@ -2251,9 +2251,12 @@ process-wide startup lock. The same follow-up
 validation made `CurrentPgRuntime` a carrier/thread-local
 current binding, so threaded backend installation no longer changes the
 postmaster's runtime view, and moved runtime-global reserved GUC prefixes out
-of session `GUCMemoryContext` storage into a `TopMemoryContext` child guarded
-by the temporary GUC lock. This keeps PL/pgSQL prefix reservation valid after
-threaded backend FATAL cleanup. Subsequent session-cache batches moved portal
+of session `GUCMemoryContext` storage. Later carrier-root reclamation testing
+proved that a direct carrier `TopMemoryContext` child was still unsafe, so the
+reserved prefix list now uses the runtime-owned extension-module memory context
+that is initialized before threaded carriers run. This keeps PL/pgSQL prefix
+reservation valid after threaded backend FATAL cleanup. Subsequent
+session-cache batches moved portal
 manager roots, compiled-regexp cache roots, syscache root arrays, the catcache
 header, relcache root hashes/flags/counters, and typcache root
 hashes/stacks/counters behind `PgSession`. The global-lifetime scan reported

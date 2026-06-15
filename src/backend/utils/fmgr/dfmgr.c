@@ -87,6 +87,7 @@ pg_noreturn static void incompatible_module_backend_model_error(const char *libn
 static DynamicFileList *find_loaded_module_by_handle(void *handle);
 static char *expand_dynamic_library_name(const char *name);
 static void check_restricted_library_name(const char *name);
+static HTAB *create_rendezvous_hash(void);
 
 /* ABI values that module needs to match to be accepted */
 static const Pg_abi_values magic_data = PG_MODULE_ABI_DATA;
@@ -881,26 +882,17 @@ find_in_path(const char *basename, const char *path, const char *path_param,
 void	  **
 find_rendezvous_variable(const char *varName)
 {
-	static PG_GLOBAL_RUNTIME HTAB *rendezvousHash = NULL;
-
+	HTAB	  **rendezvous_hash;
 	rendezvousHashEntry *hentry;
 	bool		found;
 
 	/* Create a hashtable if we haven't already done so in this process */
-	if (rendezvousHash == NULL)
-	{
-		HASHCTL		ctl;
-
-		ctl.keysize = NAMEDATALEN;
-		ctl.entrysize = sizeof(rendezvousHashEntry);
-		rendezvousHash = hash_create("Rendezvous variable hash",
-									 16,
-									 &ctl,
-									 HASH_ELEM | HASH_STRINGS);
-	}
+	rendezvous_hash = PgCurrentRendezvousHashRef();
+	if (*rendezvous_hash == NULL)
+		*rendezvous_hash = create_rendezvous_hash();
 
 	/* Find or create the hashtable entry for this varName */
-	hentry = (rendezvousHashEntry *) hash_search(rendezvousHash,
+	hentry = (rendezvousHashEntry *) hash_search(*rendezvous_hash,
 												 varName,
 												 HASH_ENTER,
 												 &found);
@@ -910,6 +902,27 @@ find_rendezvous_variable(const char *varName)
 		hentry->varValue = NULL;
 
 	return &hentry->varValue;
+}
+
+static HTAB *
+create_rendezvous_hash(void)
+{
+	HASHCTL		ctl;
+
+	ctl.keysize = NAMEDATALEN;
+	ctl.entrysize = sizeof(rendezvousHashEntry);
+	ctl.hcxt = PgCurrentRuntimeExtensionModuleMemoryContext();
+
+	/*
+	 * Rendezvous variables last for the life of the address-space runtime.
+	 * In threaded mode, this table must not be allocated under the first
+	 * backend carrier's TopMemoryContext, because that root is deleted when
+	 * the logical backend exits.
+	 */
+	return hash_create("Rendezvous variable hash",
+					   16,
+					   &ctl,
+					   HASH_ELEM | HASH_STRINGS | HASH_CONTEXT);
 }
 
 /*

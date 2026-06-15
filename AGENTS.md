@@ -2318,6 +2318,23 @@ Important current files:
   cpan -T -i IPC::Run
   ```
 
+  A currently verified local install uses
+  `$HOME/.local/perl5-postgres-tests`. If system `cpan` hangs while installing
+  `IO::Tty`, reuse the unpacked CPAN build directories with local
+  `INSTALL_BASE`:
+
+  ```sh
+  PERL_PREFIX="$HOME/.local/perl5-postgres-tests"
+  cd "$HOME/.cpan/build/IO-Tty-1.31-7"
+  /usr/bin/perl Makefile.PL INSTALL_BASE="$PERL_PREFIX"
+  /usr/bin/make
+  /usr/bin/make install
+  cd "$HOME/.cpan/build/IPC-Run-20260402.0-7"
+  PERL5LIB="$PERL_PREFIX/lib/perl5/darwin-thread-multi-2level:$PERL_PREFIX/lib/perl5" /usr/bin/perl Makefile.PL INSTALL_BASE="$PERL_PREFIX"
+  PERL5LIB="$PERL_PREFIX/lib/perl5/darwin-thread-multi-2level:$PERL_PREFIX/lib/perl5" /usr/bin/make
+  PERL5LIB="$PERL_PREFIX/lib/perl5/darwin-thread-multi-2level:$PERL_PREFIX/lib/perl5" /usr/bin/make install
+  ```
+
   Keep the repo-local `.perl5` paths in direct TAP commands. This checkout is
   still configured without `--enable-tap-tests`, so
   recursive `gmake ... check` targets report `TAP tests not enabled`. Do not
@@ -2337,6 +2354,31 @@ Important current files:
   PG_REGRESS="$PWD/src/test/regress/pg_regress" \
   PERL5LIB="$PWD/.perl5/lib/perl5:$PWD/.perl5/lib/perl5/darwin-thread-multi-2level:$PWD/src/test/perl" \
   prove -I src/test/perl src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl
+  ```
+
+  The direct threaded backend-runtime TAP can be run with the verified local
+  install like this after installing `test_backend_runtime` into `tmp_install`
+  and patching the temp-install dylib paths:
+
+  ```sh
+  PERL_PREFIX="$HOME/.local/perl5-postgres-tests"
+  ROOT="$PWD"
+  TESTDIR="$ROOT/src/test/modules/test_backend_runtime"
+  rm -rf "$TESTDIR/tmp_check"
+  mkdir -p "$TESTDIR/tmp_check/log"
+  cd "$TESTDIR"
+  export PERL5LIB="$PERL_PREFIX/lib/perl5/darwin-thread-multi-2level:$PERL_PREFIX/lib/perl5:$ROOT/src/test/perl:$TESTDIR"
+  export PATH="$ROOT/tmp_install/usr/local/pgsql/bin:$TESTDIR:/opt/homebrew/bin:$PATH"
+  export DYLD_LIBRARY_PATH="$ROOT/tmp_install/usr/local/pgsql/lib"
+  export INITDB_TEMPLATE="$ROOT/tmp_install/initdb-template"
+  export TESTLOGDIR="$TESTDIR/tmp_check/log"
+  export TESTDATADIR="$TESTDIR/tmp_check"
+  export PGPORT=65432
+  export top_builddir="$ROOT"
+  export PG_REGRESS="$ROOT/src/test/regress/pg_regress"
+  export share_contrib_dir="$ROOT/tmp_install/usr/local/pgsql/share/extension"
+  export GMAKE=/opt/homebrew/bin/gmake
+  prove -v -I "$ROOT/src/test/perl" -I "$TESTDIR" t/001_threaded_runtime.pl
   ```
 
   If another check, such as `gmake -C src/pl/plperl check`, recreates

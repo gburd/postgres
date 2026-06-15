@@ -2056,9 +2056,11 @@ typedef struct PgRuntimeServerGUCState
 
 typedef struct PgRuntimeExtensionModuleState
 {
+	MemoryContext memory_context;
 	MemoryContext pg_plan_advice_context;
 	List	   *pg_plan_advice_advisor_hook_list;
 	MemoryContext bloom_context;
+	HTAB	   *rendezvous_hash;
 } PgRuntimeExtensionModuleState;
 
 #define PG_CONNECTION_SEND_BUFFER_SIZE 8192
@@ -3036,9 +3038,11 @@ extern bool PgCurrentSessionOwnsPointer(const void *ptr);
 extern void PgBackendResetClosedState(PgBackend *backend);
 extern MemoryContext PgSessionGetDynamicLibraryMemoryContext(PgSession *session);
 extern PgRuntimeExtensionModuleState *PgCurrentRuntimeExtensionModuleState(void);
+extern MemoryContext PgCurrentRuntimeExtensionModuleMemoryContext(void);
 extern MemoryContext *PgCurrentPgPlanAdviceContextRef(void);
 extern List **PgCurrentPgPlanAdviceAdvisorHookListRef(void);
 extern MemoryContext *PgCurrentBloomContextRef(void);
+extern HTAB **PgCurrentRendezvousHashRef(void);
 extern void **PgCurrentPLpgSQLSessionStateRef(void);
 extern PgSessionExtensionModuleState *PgCurrentSessionExtensionModuleState(void);
 extern PgSessionPgcryptoDesState *PgCurrentPgcryptoDesState(void);

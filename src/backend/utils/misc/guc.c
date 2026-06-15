@@ -229,12 +229,8 @@ GUCReservedPrefixContext(void)
 {
 	if (GUCReservedPrefixMemoryContext == NULL)
 	{
-		if (TopMemoryContext == NULL)
-			elog(FATAL,
-				 "cannot reserve GUC prefix before TopMemoryContext exists");
-
 		GUCReservedPrefixMemoryContext =
-			AllocSetContextCreate(TopMemoryContext,
+			AllocSetContextCreate(PgCurrentRuntimeExtensionModuleMemoryContext(),
 								  "reserved GUC prefixes",
 								  ALLOCSET_DEFAULT_SIZES);
 	}

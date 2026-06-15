@@ -634,8 +634,19 @@ backend_thread_finish(int code)
 	 */
 	PostmasterChildDetachThreadBackend(thread_start->pmchild);
 	if (retained_top_context != NULL)
-		top_memory_allocated =
-			MemoryContextMemAllocated(retained_top_context, true);
+	{
+		/*
+		 * PgBackendExitCleanup() has run the closed connection/session/backend
+		 * and execution reset paths, including clearing the live execution
+		 * memory-context slots.  At this point the exiting carrier owns the
+		 * saved root context exclusively and can release it before publishing
+		 * PMChild exit.  If this is wrong, teardown stress should expose a
+		 * remaining cross-backend owner as a crash or corruption signature.
+		 */
+		MemoryContextDelete(retained_top_context);
+		exit_state->retained_top_memory_context = NULL;
+		top_memory_allocated = 0;
+	}
 	PostmasterChildPublishThreadExit(thread_start->pmchild, exitstatus,
 									 top_memory_allocated,
 									 thread_start->postmaster_latch);
