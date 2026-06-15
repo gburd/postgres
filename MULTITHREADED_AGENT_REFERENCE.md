@@ -620,11 +620,14 @@ Important current files:
   ```
 
   It runs `src/test/regress/parallel_schedule` with the same threaded temp
-  config. Current baseline: `gmake check-threaded MAX_CONNECTIONS=1` completes
-  all 245 core regression tests in threaded mode. The target uses alternate
-  expected files for intentional threaded-mode differences where regular
-  parallel workers are not launched and where `plpgsql` has already reserved
-  its GUC prefix in the shared runtime before the later `guc` test.
+  config. Current baseline: `gmake check-threaded` completes all 245 core
+  regression tests in threaded mode with default pg_regress concurrency.
+  Prepared transactions are enabled through pg_regress' normal temporary
+  instance configuration and `prepared_xacts` is admitted to the threaded
+  schedule. The target uses alternate expected files for intentional
+  threaded-mode differences where regular parallel workers are not launched
+  and where `plpgsql` has already reserved its GUC prefix in the shared runtime
+  before the later `guc` test.
 
   The interim 150-pass threaded visibility target is:
 

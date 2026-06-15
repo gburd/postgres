@@ -17279,6 +17279,9 @@ Evidence:
   through later groups, proving the immediate frontier was the unsupported
   two-phase/SSI prepared-transaction path rather than generic backend startup
   or reconnect failure.
+- This deferral was removed by the later "Threaded Prepared Transaction
+  Regression Re-admission" slice after current threaded validation stopped
+  reproducing the hang.
 
 ## Threaded 150-Test Regression Visibility Target
 
@@ -17705,3 +17708,38 @@ Lifecycle/preflight note:
 - validation impact: focused threaded `stats` should set backend WAL/IO `\gset`
   variables instead of returning no row, and reset its own backend IO stats;
   full serial threaded `make check` should lose the `stats` failure.
+
+## Threaded Prepared Transaction Regression Re-admission
+
+Lifecycle/preflight note:
+
+- target: remove the temporary `prepared_xacts` threaded-regression deferral
+  after current runtime validation showed the two-phase prepared transaction
+  schedule no longer hangs.
+- touched roots/buckets: no runtime roots or lifecycle buckets; this changes
+  only pg_regress threaded temp-cluster configuration and regression SQL
+  expectations.
+- owner source files: `src/test/regress/threaded_smoke.conf`,
+  `src/test/regress/sql/prepared_xacts.sql`,
+  `src/test/regress/expected/prepared_xacts.out`,
+  `src/test/regress/expected/prepared_xacts_1.out`, and this Phase 12 state
+  note.
+- legacy symbols/accessors: `max_prepared_transactions`,
+  `pg_prepared_xacts`, `PREPARE TRANSACTION`, `ROLLBACK PREPARED`, and
+  relation locks held by prepared transactions.
+- repeated lifecycle operations: none.
+- checked primitive decision: no lifecycle primitive; this is removal of a
+  test-harness deferral, not a state migration.
+- validation impact: `gmake check-threaded` should run `prepared_xacts` with
+  pg_regress' normal temporary `max_prepared_transactions = 2` setting instead
+  of skipping it. If two-phase prepared transaction state regresses again, the
+  focused `prepared_xacts` test or full threaded core regression should fail
+  directly instead of silently excluding the surface.
+
+Evidence:
+
+- A focused threaded `prepared_xacts` pg_regress run passed with
+  pg_regress' normal temporary `max_prepared_transactions = 2` setting.
+- The exact checked-in `gmake check-threaded` target passed all 245 core
+  regression tests after removing `max_prepared_transactions = 0` from
+  `threaded_smoke.conf`, including `prepared_xacts`.
