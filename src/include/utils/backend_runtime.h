@@ -1656,7 +1656,9 @@ typedef struct PgSessionExtensionModuleState
 {
 	void	   *plpgsql_state;
 	void	   *plpython_procedure_cache;
+	MemoryContext plpython_memory_context;
 	bool		plpython_reset_registered;
+	MemoryContext plperl_memory_context;
 	bool		plperl_inited;
 	void	   *plperl_interp_hash;
 	void	   *plperl_proc_hash;
@@ -1669,6 +1671,7 @@ typedef struct PgSessionExtensionModuleState
 	bool		plperl_ending;
 	void	   *plperl_current_call_data;
 	bool		plperl_reset_registered;
+	MemoryContext pltcl_memory_context;
 	char	   *pltcl_start_proc;
 	char	   *pltclu_start_proc;
 	void	   *pltcl_hold_interp;
@@ -2970,7 +2973,9 @@ extern MemoryContext PgSessionGetDynamicLibraryMemoryContext(PgSession *session)
 extern void **PgCurrentPLpgSQLSessionStateRef(void);
 extern PgSessionExtensionModuleState *PgCurrentSessionExtensionModuleState(void);
 extern void **PgCurrentPLpythonProcedureCacheRef(void);
+extern MemoryContext *PgCurrentPLpythonMemoryContextRef(void);
 extern bool *PgCurrentPLpythonResetRegisteredRef(void);
+extern MemoryContext *PgCurrentPLperlMemoryContextRef(void);
 extern bool *PgCurrentPLperlInitedRef(void);
 extern void **PgCurrentPLperlInterpHashRef(void);
 extern void **PgCurrentPLperlProcHashRef(void);
@@ -2983,6 +2988,7 @@ extern char **PgCurrentPLperlOnPLperluInitRef(void);
 extern bool *PgCurrentPLperlEndingRef(void);
 extern void **PgCurrentPLperlCurrentCallDataRef(void);
 extern bool *PgCurrentPLperlResetRegisteredRef(void);
+extern MemoryContext *PgCurrentPLTclMemoryContextRef(void);
 extern char **PgCurrentPLTclStartProcRef(void);
 extern char **PgCurrentPLTclUStartProcRef(void);
 extern void **PgCurrentPLTclHoldInterpRef(void);

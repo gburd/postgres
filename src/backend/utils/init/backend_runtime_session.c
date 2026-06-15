@@ -355,10 +355,22 @@ PgCurrentPLpythonProcedureCacheRef(void)
 	return &PgCurrentSessionExtensionModuleState()->plpython_procedure_cache;
 }
 
+MemoryContext *
+PgCurrentPLpythonMemoryContextRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->plpython_memory_context;
+}
+
 bool *
 PgCurrentPLpythonResetRegisteredRef(void)
 {
 	return &PgCurrentSessionExtensionModuleState()->plpython_reset_registered;
+}
+
+MemoryContext *
+PgCurrentPLperlMemoryContextRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->plperl_memory_context;
 }
 
 bool *
@@ -431,6 +443,12 @@ bool *
 PgCurrentPLperlResetRegisteredRef(void)
 {
 	return &PgCurrentSessionExtensionModuleState()->plperl_reset_registered;
+}
+
+MemoryContext *
+PgCurrentPLTclMemoryContextRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->pltcl_memory_context;
 }
 
 char **

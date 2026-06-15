@@ -20,6 +20,7 @@
 #include "plpy_procedure.h"
 #include "plpy_subxactobject.h"
 #include "plpy_util.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -236,9 +237,13 @@ plpython3_inline_handler(PG_FUNCTION_ARGS)
 	flinfo.fn_mcxt = CurrentMemoryContext;
 
 	MemSet(&proc, 0, sizeof(PLyProcedure));
-	proc.mcxt = AllocSetContextCreate(TopMemoryContext,
-									  "__plpython_inline_block",
-									  ALLOCSET_DEFAULT_SIZES);
+	proc.mcxt = AllocSetContextCreate(
+		PgRuntimeGetOwnedMemoryContextWithSizes(
+			PgCurrentPLpythonMemoryContextRef(),
+			"PL/Python session",
+			ALLOCSET_DEFAULT_SIZES),
+		"__plpython_inline_block",
+		ALLOCSET_DEFAULT_SIZES);
 	proc.pyname = MemoryContextStrdup(proc.mcxt, "__plpython_inline_block");
 	proc.langid = codeblock->langOid;
 

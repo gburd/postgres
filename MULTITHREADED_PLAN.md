@@ -1111,6 +1111,13 @@ Gate E2 requires:
   once. The likely next useful primitive is an allocation-context helper/table
   rule that exposes create-on-demand context ownership and close-time
   delete-and-null cleanup to `check-runtime-lifecycles`;
+- make the owned-memory-context helper/table rule the default next
+  lifecycle-framework improvement if another Phase 12 slice adds multiple
+  context parent fields or repeated memory-context reset code. The target
+  shape is: a bucket field owns a context created on demand, early fallback
+  adoption transfers the field or proves it cannot be populated, close-state
+  reset deletes/nullifies it, and the manifest/checker can verify the rule
+  without another handwritten list;
 - do that lifecycle simplification before continuing with another
   boilerplate-heavy Gate E2 migration. In practice, the next Phase 12 batch
   should start by deciding whether an allocation-context, list/hash cleanup,
@@ -1840,6 +1847,15 @@ PL/Perl's custom GUC backing variables, interpreter/procedure caches,
 current-call pointer, and per-session init/reset flags live under
 `PgSession.extension_modules`, with PL/Perl retaining owner-adjacent
 interpreter and SPI-plan teardown through the session reset callback path.
+Follow-up procedural-language allocation work added explicit session-owned
+parent contexts for PL/Python, PL/Perl, and PL/Tcl under
+`PgSession.extension_modules`. Procedure descriptors, SPI plans, PL/Python
+cursors, and inline PL/Python blocks now allocate their long-lived child
+contexts below those language parents instead of directly below
+`TopMemoryContext`, while each language keeps its existing object-specific
+deallocation/invalidation paths. Session-close reset runs registered language
+callbacks first, then deletes any remaining language parent contexts before
+restoring extension-module defaults.
 The focused `test_backend_runtime` regression is runnable again as a
 process-mode validation control for runtime-state, state-migration, and
 PMChild helper coverage after fake thread-runtime tests were changed to

@@ -15683,3 +15683,94 @@ Validation for the tcop main loop context ownership slice:
   executed a statement, queried `pg_prepared_statements`, deallocated the
   statement, selected wide row-description output, and made 20 additional
   client connections running simple protocol-loop queries.
+
+## Procedural Language Allocation Context Parents
+
+Lifecycle/preflight note:
+
+- target: close the remaining direct `TopMemoryContext` allocation sites for
+  in-tree procedural-language procedure, plan, and cursor contexts by adding
+  explicit per-session allocation parents under `PgSession.extension_modules`;
+- touched root/bucket: `PgSession.extension_modules`, specifically new
+  PL/Python, PL/Perl, and PL/Tcl allocation parent contexts;
+- owner source files: `src/include/utils/backend_runtime.h`,
+  `src/backend/utils/init/backend_runtime.c`,
+  `src/backend/utils/init/backend_runtime_session.c`,
+  `src/backend/utils/init/backend_runtime_teardown.c`,
+  `src/pl/plpython/plpy_procedure.c`, `src/pl/plpython/plpy_spi.c`,
+  `src/pl/plpython/plpy_cursorobject.c`, `src/pl/plpython/plpy_main.c`,
+  `src/pl/plperl/plperl.c`, `src/pl/tcl/pltcl.c`,
+  `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, `MULTITHREADED_PLAN.md`, and this state
+  log;
+- legacy symbols/accessors: PL/Python procedure, SPI plan, cursor, and inline
+  block contexts; PL/Perl procedure and SPI plan contexts; PL/Tcl procedure
+  and SPI plan contexts; new `PgCurrentPLpythonMemoryContextRef()`,
+  `PgCurrentPLperlMemoryContextRef()`, and
+  `PgCurrentPLTclMemoryContextRef()` accessors;
+- repeated lifecycle operations expected in this slice: three session-owned
+  object allocation parent contexts plus multiple child context allocation
+  sites below them. Existing `PgRuntimeGetOwnedMemoryContextWithSizes()` and
+  `PG_RUNTIME_DELETE_MEMORY_CONTEXT` cover the repeated lifecycle mechanics;
+- checked primitive decision: no new lifecycle primitive is needed. Add three
+  explicit parent context slots to the existing extension_modules bucket,
+  allocate child contexts under those parents, and delete the parents after
+  registered language reset callbacks run. Keep per-procedure/per-plan
+  deletion handwritten in each language because those objects already own
+  their child context lifetimes and invalidation/dealloc paths;
+- lifecycle simplification carry-forward: this slice is allowed to reuse the
+  existing memory-context helpers because all three parents live in one
+  existing bucket and share one reset path. If a later slice adds another
+  group of owned context parents or repeated delete/nullify reset code, promote
+  this pattern into a checked lifecycle action/table/helper first instead of
+  adding another manual field-and-reset batch;
+- validation impact: this changes an installed runtime header, so run touched
+  language object builds, lifecycle/global scans, a clean backend rebuild with
+  generated-header recovery, full `gmake -j8`, backend-runtime checks, and
+  focused PL/Python, PL/Perl, and PL/Tcl build/regression smoke where the
+  local configuration supports those languages.
+
+Slice result:
+
+- `PgSession.extension_modules` now owns explicit PL/Python, PL/Perl, and
+  PL/Tcl allocation parent contexts;
+- PL/Python procedure, SPI plan, cursor, and inline block contexts now
+  allocate below the PL/Python session parent instead of directly below
+  `TopMemoryContext`;
+- PL/Perl procedure descriptor and SPI plan contexts now allocate below the
+  PL/Perl session parent;
+- PL/Tcl procedure descriptor and SPI plan contexts now allocate below the
+  PL/Tcl session parent;
+- session close still runs registered language/extension reset callbacks
+  first, then deletes any remaining procedural-language parent contexts before
+  restoring the extension-module bucket defaults;
+- the backend-runtime session regression now seeds real fake-session language
+  parent contexts and proves `PgSessionResetClosedState()` deletes and clears
+  the session-local slots without disturbing another fake session.
+
+Validation for the procedural-language allocation context parent slice:
+
+- touched-object builds passed for `backend_runtime.o`,
+  `backend_runtime_session.o`, `backend_runtime_teardown.o`, `plperl.o`,
+  `pltcl.o`, and `test_backend_runtime_session.o`;
+- because this checkout has `with_python = no`, PL/Python runtime regression
+  was not available here. Object-level PL/Python compile coverage passed after
+  forcing `plpy_procedure.o`, `plpy_spi.o`, `plpy_cursorobject.o`, and
+  `plpy_main.o` to rebuild with `CPPFLAGS="$(python3-config --includes)"`;
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 166 fields classified, 166
+  bucket definitions checked, 35 reset definitions checked, and 307 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- full incremental `gmake -j8` passed;
+- clean `gmake -C contrib clean && gmake -C contrib -j8` passed after the
+  installed runtime-header layout change;
+- clean `gmake -C src/test/modules/test_backend_runtime clean all check`
+  passed;
+- `gmake -C src/pl/plperl check` passed all 15 PL/Perl regression tests;
+- after installing the rebuilt test module into `tmp_install`, patching macOS
+  install names, and letting the TAP install rebuilt representative contrib
+  modules, direct threaded-runtime TAP passed for
+  `001_threaded_runtime.pl` and `002_threaded_bgworker_crash.pl`, 131 tests
+  total.

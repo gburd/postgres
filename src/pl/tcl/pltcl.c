@@ -1741,9 +1741,13 @@ compile_pltcl_function(Oid fn_oid, Oid tgreloid,
 		/************************************************************
 		 * Allocate a context that will hold all PG data for the procedure.
 		 ************************************************************/
-		proc_cxt = AllocSetContextCreate(TopMemoryContext,
-										 "PL/Tcl function",
-										 ALLOCSET_SMALL_SIZES);
+		proc_cxt = AllocSetContextCreate(
+			PgRuntimeGetOwnedMemoryContextWithSizes(
+				PgCurrentPLTclMemoryContextRef(),
+				"PL/Tcl session",
+				ALLOCSET_DEFAULT_SIZES),
+			"PL/Tcl function",
+			ALLOCSET_SMALL_SIZES);
 
 		/************************************************************
 		 * Allocate and fill a new procedure description block.
@@ -2828,9 +2832,13 @@ pltcl_SPI_prepare(ClientData cdata, Tcl_Interp *interp,
 	 * function is recompiled for whatever reason, permanent memory leaks
 	 * occur.  FIXME someday.
 	 ************************************************************/
-	plan_cxt = AllocSetContextCreate(TopMemoryContext,
-									 "PL/Tcl spi_prepare query",
-									 ALLOCSET_SMALL_SIZES);
+	plan_cxt = AllocSetContextCreate(
+		PgRuntimeGetOwnedMemoryContextWithSizes(
+			PgCurrentPLTclMemoryContextRef(),
+			"PL/Tcl session",
+			ALLOCSET_DEFAULT_SIZES),
+		"PL/Tcl spi_prepare query",
+		ALLOCSET_SMALL_SIZES);
 	MemoryContextSwitchTo(plan_cxt);
 	qdesc = palloc0_object(pltcl_query_desc);
 	snprintf(qdesc->qname, sizeof(qdesc->qname), "%p", qdesc);

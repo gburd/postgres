@@ -2883,9 +2883,13 @@ compile_plperl_function(Oid fn_oid, bool is_trigger, bool is_event_trigger)
 		/************************************************************
 		 * Allocate a context that will hold all PG data for the procedure.
 		 ************************************************************/
-		proc_cxt = AllocSetContextCreate(TopMemoryContext,
-										 "PL/Perl function",
-										 ALLOCSET_SMALL_SIZES);
+		proc_cxt = AllocSetContextCreate(
+			PgRuntimeGetOwnedMemoryContextWithSizes(
+				PgCurrentPLperlMemoryContextRef(),
+				"PL/Perl session",
+				ALLOCSET_DEFAULT_SIZES),
+			"PL/Perl function",
+			ALLOCSET_SMALL_SIZES);
 
 		/************************************************************
 		 * Allocate and fill a new procedure description block.
@@ -3687,9 +3691,13 @@ plperl_spi_prepare(char *query, int argc, SV **argv)
 		 * The qdesc struct, as well as all its subsidiary data, lives in its
 		 * plan_cxt.  But note that the SPIPlan does not.
 		 ************************************************************/
-		plan_cxt = AllocSetContextCreate(TopMemoryContext,
-										 "PL/Perl spi_prepare query",
-										 ALLOCSET_SMALL_SIZES);
+		plan_cxt = AllocSetContextCreate(
+			PgRuntimeGetOwnedMemoryContextWithSizes(
+				PgCurrentPLperlMemoryContextRef(),
+				"PL/Perl session",
+				ALLOCSET_DEFAULT_SIZES),
+			"PL/Perl spi_prepare query",
+			ALLOCSET_SMALL_SIZES);
 		MemoryContextSwitchTo(plan_cxt);
 		qdesc = palloc0_object(plperl_query_desc);
 		snprintf(qdesc->qname, sizeof(qdesc->qname), "%p", qdesc);

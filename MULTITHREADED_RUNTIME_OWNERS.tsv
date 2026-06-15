@@ -265,7 +265,9 @@ pgsa_stash_dshash	PgBackend	extension_modules	pg_stash_advice_stash_dshash	PgCur
 pgsa_entry_dshash	PgBackend	extension_modules	pg_stash_advice_entry_dshash	PgCurrentBackendExtensionModuleState	src/include/utils/backend_runtime.h	pg_stash_advice stash-entry dshash attachment
 pg_stash_advice_mcxt	PgBackend	extension_modules	pg_stash_advice_context	PgCurrentBackendExtensionModuleState	src/include/utils/backend_runtime.h	pg_stash_advice backend-local attachment memory context
 PLy_procedure_cache	PgSession	extension_modules	plpython_procedure_cache	PgCurrentPLpythonProcedureCacheRef	src/include/utils/backend_runtime.h	PL/Python procedure cache hash
+PL/Python session context	PgSession	extension_modules	plpython_memory_context	PgCurrentPLpythonMemoryContextRef	src/include/utils/backend_runtime.h	PL/Python session-owned parent context for procedure, SPI plan, cursor, and inline block contexts
 plperl_inited	PgSession	extension_modules	plperl_inited	PgCurrentPLperlInitedRef	src/include/utils/backend_runtime.h	PL/Perl per-session module initialization flag
+PL/Perl session context	PgSession	extension_modules	plperl_memory_context	PgCurrentPLperlMemoryContextRef	src/include/utils/backend_runtime.h	PL/Perl session-owned parent context for procedure descriptor and SPI plan contexts
 plperl_interp_hash	PgSession	extension_modules	plperl_interp_hash	PgCurrentPLperlInterpHashRef	src/include/utils/backend_runtime.h	PL/Perl session interpreter hash
 plperl_proc_hash	PgSession	extension_modules	plperl_proc_hash	PgCurrentPLperlProcHashRef	src/include/utils/backend_runtime.h	PL/Perl procedure descriptor hash
 plperl_active_interp	PgSession	extension_modules	plperl_active_interp	PgCurrentPLperlActiveInterpRef	src/include/utils/backend_runtime.h	PL/Perl active interpreter pointer
@@ -277,6 +279,7 @@ plperl_on_plperlu_init	PgSession	extension_modules	plperl_on_plperlu_init	PgCurr
 plperl_ending	PgSession	extension_modules	plperl_ending	PgCurrentPLperlEndingRef	src/include/utils/backend_runtime.h	PL/Perl per-session shutdown flag
 current_call_data	PgSession	extension_modules	plperl_current_call_data	PgCurrentPLperlCurrentCallDataRef	src/include/utils/backend_runtime.h	PL/Perl current call data pointer
 plperl_reset_registered	PgSession	extension_modules	plperl_reset_registered	PgCurrentPLperlResetRegisteredRef	src/include/utils/backend_runtime.h	PL/Perl per-session reset callback registration flag
+PL/Tcl session context	PgSession	extension_modules	pltcl_memory_context	PgCurrentPLTclMemoryContextRef	src/include/utils/backend_runtime.h	PL/Tcl session-owned parent context for procedure descriptor and SPI plan contexts
 pltcl_start_proc	PgSession	extension_modules	pltcl_start_proc	PgCurrentPLTclStartProcRef	src/include/utils/backend_runtime.h	PL/Tcl trusted start-procedure custom GUC backing string
 pltclu_start_proc	PgSession	extension_modules	pltclu_start_proc	PgCurrentPLTclUStartProcRef	src/include/utils/backend_runtime.h	PL/Tcl untrusted start-procedure custom GUC backing string
 pltcl_hold_interp	PgSession	extension_modules	pltcl_hold_interp	PgCurrentPLTclHoldInterpRef	src/include/utils/backend_runtime.h	PL/Tcl session dummy hold interpreter pointer

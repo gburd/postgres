@@ -158,6 +158,12 @@ state group, then rerun the threaded runtime TAP.
   the same create/adopt/reset/destroy shape, bias toward landing the checked
   macro/table/checker primitive first rather than adding another manual helper
   pair.
+- The current concrete lifecycle-simplification candidate is owned memory
+  context state: a bucket field that is created on demand, may be copied from
+  the early fallback bucket, and is deleted/nullified during close-state reset.
+  If another Phase 12 batch adds multiple owned context parents or repeated
+  context-delete reset code, first add a checked action/table/helper for that
+  shape and then move the larger batch through it.
 
 ## Phase 12 Lifecycle Preflight Checklist
 
@@ -1822,7 +1828,14 @@ Important current files:
   available in this configuration. For PL/Python-only Phase 12 migrations,
   use runtime lifecycle checks, global lifetime scans, source review, and the
   full non-Python build here, then use a Python-enabled build before claiming
-  PL/Python runtime coverage for Gate E2.
+  PL/Python runtime coverage for Gate E2. If local Python headers are
+  installed through Homebrew, object-level compile coverage is still possible
+  with:
+
+  ```sh
+  PYINCLUDES="$(python3-config --includes)"
+  gmake -C src/pl/plpython plpy_procedure.o plpy_spi.o plpy_cursorobject.o plpy_main.o CPPFLAGS="$PYINCLUDES"
+  ```
 
 - This checkout is currently configured with `with_tcl = no`. A direct
   `gmake -C src/pl/tcl pltcl.o` can still compile the PL/Tcl source on this

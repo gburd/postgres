@@ -184,9 +184,13 @@ PLy_procedure_create(HeapTuple procTup, Oid fn_oid, PLyTrigType is_trigger)
 	}
 
 	/* Create long-lived context that all procedure info will live in */
-	cxt = AllocSetContextCreate(TopMemoryContext,
-								"PL/Python function",
-								ALLOCSET_DEFAULT_SIZES);
+	cxt = AllocSetContextCreate(
+		PgRuntimeGetOwnedMemoryContextWithSizes(
+			PgCurrentPLpythonMemoryContextRef(),
+			"PL/Python session",
+			ALLOCSET_DEFAULT_SIZES),
+		"PL/Python function",
+		ALLOCSET_DEFAULT_SIZES);
 
 	oldcxt = MemoryContextSwitchTo(cxt);
 

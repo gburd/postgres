@@ -2109,7 +2109,9 @@ PgSessionInitializeExtensionModuleState(PgSessionExtensionModuleState *extension
 
 	extension_modules->plpgsql_state = NULL;
 	extension_modules->plpython_procedure_cache = NULL;
+	extension_modules->plpython_memory_context = NULL;
 	extension_modules->plpython_reset_registered = false;
+	extension_modules->plperl_memory_context = NULL;
 	extension_modules->plperl_inited = false;
 	extension_modules->plperl_interp_hash = NULL;
 	extension_modules->plperl_proc_hash = NULL;
@@ -2122,6 +2124,7 @@ PgSessionInitializeExtensionModuleState(PgSessionExtensionModuleState *extension
 	extension_modules->plperl_ending = false;
 	extension_modules->plperl_current_call_data = NULL;
 	extension_modules->plperl_reset_registered = false;
+	extension_modules->pltcl_memory_context = NULL;
 	extension_modules->pltcl_start_proc = NULL;
 	extension_modules->pltclu_start_proc = NULL;
 	extension_modules->pltcl_hold_interp = NULL;

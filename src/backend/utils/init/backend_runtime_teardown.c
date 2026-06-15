@@ -761,6 +761,12 @@ PgSessionResetExtensionModuleClosedState(PgSession *session)
 	PG_END_TRY();
 
 	list_free_deep(session->extension_modules.reset_callbacks);
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(
+		session->extension_modules.plpython_memory_context);
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(
+		session->extension_modules.plperl_memory_context);
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(
+		session->extension_modules.pltcl_memory_context);
 	PgSessionInitializeExtensionModuleState(&session->extension_modules);
 }
 
