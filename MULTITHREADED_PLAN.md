@@ -872,6 +872,43 @@ Validation:
 - process-mode and thread-per-session mode stay working;
 - static global report shrinks over time.
 
+Working version milestone:
+
+Milestone W is the short-path target before Gate E2-Core and Phase 13. It is a
+working core threaded runtime, not a complete extension-compatible runtime.
+
+Milestone W requires:
+
+- threaded server starts and accepts normal SQL sessions;
+- regular SQL, transactions, catalog writes, and representative parallel query
+  keep working in thread-per-session mode;
+- PL/pgSQL works in threaded mode;
+- process-only extensions and process-model background workers are rejected in
+  threaded mode with clear errors;
+- normal disconnect, abandoned clients, `FATAL`, administrator termination,
+  repeated reconnect, and worker handoff paths do not corrupt later carrier
+  startups;
+- carrier `TopMemoryContext` deletion remains enabled, and the threaded TAP
+  log guard reports no retained `TopMemoryContext` accounting warnings;
+- core built-in GUC defaults, database/role settings, startup options,
+  `SET`, `RESET`, and `SET LOCAL` semantics pass focused threaded checks;
+- `gmake check-runtime-lifecycles` and `gmake check-global-lifetimes` pass;
+- no new mutable local globals appear outside the runtime bridge, documented
+  platform shims, or test shims.
+
+Milestone W explicitly does not require contrib-wide threaded regression,
+bundled procedural languages beyond PL/pgSQL, removal of every documented
+platform/test shim, or the full custom/extension GUC matrix. Use runtime
+assertions, retained-root warnings, lifecycle checks, and TAP log guards to
+drive the next core fix instead of migrating every suspected owner
+proactively.
+
+Treat deferral as an explicit engineering decision, not a loose TODO. A
+deferred owner is acceptable for Milestone W only when the note names why it
+does not block the working core runtime, what invariant or runtime guard would
+catch it if that assumption is wrong, and which later phase or gate owns the
+completion work.
+
 Exit gate:
 
 Gate E2-Core is part of Phase 12 completion. Before leaving Phase 12 and
@@ -949,7 +986,11 @@ Gate E2-Core requires:
   Phase 12 runtime-local boundary: core backend/session/execution/connection/
   carrier-local globals must stay in the runtime bridge or a documented
   platform/test shim, so future scattered local globals fail the gate instead
-  of silently growing the migration backlog;
+  of silently growing the migration backlog. This scan is a guardrail and
+  triage aid, not a demand that every classified legacy owner be migrated
+  before Milestone W. Migrate the owners that runtime evidence, lifecycle
+  checks, retained-root accounting, or TAP failures show are blocking core
+  teardown and scheduler-readiness;
 - `gmake check-runtime-lifecycles` is run as a required gate check with
   `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`, so every runtime-root field has a
   checked lifecycle row. The checked roots currently include `PgCarrier`,
@@ -2474,6 +2515,24 @@ Every phase end should run:
 Full-suite gates should run after groups of phases, not after every phase.
 These gates should use `check-world` or a documented near-equivalent when local
 platform/tooling issues make literal `check-world` noisy.
+
+Phase 12 validation cadence:
+
+- documentation-only scope or planning commits: `git diff --check`;
+- small source slices: touched-object build, focused subsystem test, and
+  `git diff --check`;
+- runtime-object, lifecycle, or owner-map changes:
+  `gmake check-runtime-lifecycles`, `gmake check-global-lifetimes`, touched
+  object builds, and the focused backend-runtime regression;
+- teardown, PMChild/thread synchronization, GUC initialization/mutation, or
+  main-loop changes: direct threaded runtime TAP in addition to the focused
+  checks;
+- Milestone W / Gate E2-Core closeout: full build, direct threaded runtime TAP,
+  process-mode backend-runtime regression, PL/pgSQL coverage, focused core
+  GUC/teardown/cancel/terminate/reconnect smokes, lifecycle/global-lifetime
+  checks, and a broader regression/check-world-equivalent run if local
+  platform tooling is usable. Deferred items are acceptable only when they
+  carry a named invariant/guard and a later phase owner.
 
 Gate A, after Phase 3:
 

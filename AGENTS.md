@@ -150,6 +150,26 @@ state group, then rerun the threaded runtime TAP.
   matrix. PL/pgSQL and `test_backend_runtime_threaded` remain in Phase 12 as
   the proof points for safe in-tree module loading, GUC prefix reservation,
   and safe rejection of process-only modules.
+- Milestone W is the short-path target before Gate E2-Core: a working core
+  threaded runtime. It requires threaded startup, normal SQL, PL/pgSQL,
+  process-only extension/background-worker rejection, core GUC semantics,
+  clean disconnect/abandoned/FATAL/terminate/reconnect teardown, no retained
+  `TopMemoryContext` warning in threaded TAP, and passing lifecycle/global
+  scans. It does not require contrib-wide threaded regression, bundled
+  languages beyond PL/pgSQL, every platform/test shim removal, or the full
+  custom/extension GUC matrix.
+- Use evidence-driven fixes for remaining Phase 12 work. Runtime assertions,
+  retained-root warnings, lifecycle checks, raw lifetime scans, and threaded
+  TAP failures should drive the next migration. Do not migrate every suspected
+  owner proactively just because it appears in a broad static search.
+- Treat `gmake check-global-lifetimes` as a guardrail and triage input, not a
+  standalone TODO list. Classified legacy owners may remain for Milestone W
+  when they do not block core threaded startup, teardown, GUC behavior,
+  PL/pgSQL, or scheduler-readiness evidence.
+- Use "defer with invariant" for any Phase 12 item intentionally left outside
+  Milestone W: name why it is safe for the working core runtime, name the
+  runtime assertion/log guard/lifecycle check/TAP failure that would catch the
+  assumption if wrong, and name the later phase or gate that owns completion.
 - Before the next repetitive Phase 12/Gate E2-Core lifecycle batch, do a short
   lifecycle-ergonomics preflight. If the batch would add two or more similar
   init/adopt/reset/destroy helpers, first add or extend a checked lifecycle

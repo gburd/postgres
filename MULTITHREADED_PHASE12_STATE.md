@@ -16504,6 +16504,38 @@ E2-Extensions. Further Phase 12 work should not continue extension sweeping
 unless a teardown probe, raw lifetime scan, retained `TopMemoryContext`
 warning, or threaded TAP failure shows the module directly blocks core
 backend/session/connection/execution cleanup.
+
+Validation:
+
 - `gmake check-global-lifetimes` had already passed in the PMChild slice with
   zero new unclassified mutable globals and zero local-runtime-boundary
   violations.
+
+## Milestone W Acceleration Target
+
+Phase 12 now has a short-path working-version target before Gate E2-Core:
+Milestone W. The goal is to get a usable core threaded runtime before closing
+every deferred hardening concern. Milestone W requires threaded startup, normal
+SQL, PL/pgSQL, process-only extension/background-worker rejection, core GUC
+semantics, clean disconnect/abandoned/FATAL/terminate/reconnect teardown, no
+retained `TopMemoryContext` warning in threaded TAP, and passing
+lifecycle/global scans.
+
+Milestone W does not require contrib-wide threaded regression, bundled
+languages beyond PL/pgSQL, every documented platform/test shim removal, or the
+full custom/extension GUC matrix. Future Phase 12 fixes should be
+evidence-driven: runtime assertions, retained-root warnings, lifecycle checks,
+raw lifetime scans, and threaded TAP failures should identify the next owner to
+migrate. Validation is also tiered by risk: docs-only commits need
+`git diff --check`; small source slices need touched-object builds and focused
+tests; lifecycle/runtime-object changes need lifecycle/global scans and
+backend-runtime regression; teardown, PMChild, GUC, and main-loop changes need
+direct threaded TAP; Milestone W / Gate E2-Core closeout needs the broader
+core validation set.
+
+Use `check-global-lifetimes` as a guardrail and triage aid, not a standalone
+TODO list. A classified owner can remain deferred for Milestone W when it does
+not block core threaded startup, teardown, GUC behavior, PL/pgSQL, or
+scheduler-readiness evidence. Any such deferral must name the invariant or
+runtime guard that would catch the assumption if wrong and the later phase or
+gate that owns completion.
