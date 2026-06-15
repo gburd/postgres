@@ -16383,6 +16383,10 @@ Implementation result:
 - `backend_thread_finish()` now deletes the retained carrier
   `TopMemoryContext` after closed-backend cleanup and publishes zero retained
   bytes to the postmaster reaper on that path;
+- the postmaster reaper now emits a warning if a thread-backed child exits
+  with nonzero retained `TopMemoryContext` byte accounting. The threaded TAP
+  log guard treats that warning as a teardown regression, so future stale
+  owners fail the Gate E2 probe instead of being hidden in DEBUG output;
 - `PgRuntime.extension_modules` now has a runtime-owned memory context and a
   runtime-owned rendezvous hash slot;
 - `InitializePgThreadRuntime()` ensures the runtime-owned extension-module
@@ -16412,7 +16416,8 @@ Validation for the carrier `TopMemoryContext` reclamation probe:
   t/001_threaded_runtime.pl` passed all 127 tests with carrier root-context
   deletion enabled, including PL/pgSQL, representative contrib extensions,
   FATAL cleanup, abandoned-client cleanup, mixed teardown stress, and PMChild
-  reaping stress.
+  reaping stress. The final log guard now also checks that no thread-backed
+  child reported retained `TopMemoryContext` bytes at exit.
 
 ## Gate E2 PMChild Thread Join Boundary
 

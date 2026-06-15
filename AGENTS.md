@@ -1329,20 +1329,15 @@ Important current files:
   boundary before child cleanup and slot release. If join fails, leave the
   PMChild active and re-publish the claimed thread-exit report for retry; do
   not release or reuse a slot whose native carrier was not joined.
-- Threaded backend exit currently reports retained carrier `TopMemoryContext`
-  bytes through PMChild exit accounting. `PgBackendExit()` and
-  `PgBackendExitCleanup()` capture the first live top-context pointer in
-  `PgBackend.exit_state` before cleanup clears runtime slots, because
-  `PgExecutionResetClosedState()` clears the execution memory-context slots
-  before `backend_thread_finish()` publishes the PMChild exit payload. Do not
-  remove or bypass this accounting until thread-exit memory/resource cleanup
-  has a stronger replacement. A direct attempt to reset the exiting carrier's
-  top memory tree after `PgBackendExitCleanup()` crashed a parallel threaded
-  reconnect smoke, so treat full `TopMemoryContext` reclamation as an
-  unresolved Gate E2 blocker. The `TopMemoryContext` pointer slot itself lives in
-  `PgExecution.memory_contexts.top_context`; that is only a pointer-slot
-  migration and must not be treated as proof that the top context tree can be
-  deleted safely.
+- Threaded backend exit captures the live carrier `TopMemoryContext` pointer in
+  `PgBackend.exit_state` before cleanup clears runtime slots. After
+  `PgBackendExitCleanup()` runs closed connection/session/backend/execution
+  reset, `backend_thread_finish()` deletes that retained root and publishes
+  zero retained bytes through PMChild exit accounting. If a future thread exit
+  reports nonzero retained `TopMemoryContext` bytes, the postmaster logs a
+  warning and the threaded TAP log guard treats it as a Gate E2 teardown
+  regression. Keep that accounting path until an equally strong replacement
+  exists.
 - Forked process-mode children must detach inherited runtime current pointers
   and reset copied backend-local runtime objects before touching
   runtime-backed process-local globals. `fork_process()` calls
@@ -1539,12 +1534,12 @@ Important current files:
   fallback state into a real runtime object. Use the runtime list-head move
   helpers so moved list nodes' back-links point at the destination head. This
   currently matters for the GUC non-default list and RI valid-entry dclist.
-- Threaded backend cleanup currently retains each thread's `TopMemoryContext`
-  tree for post-exit accounting. Do not free AllocSet context freelists during
-  threaded `PgBackendResetClosedState()` until full `TopMemoryContext`
-  reclamation is implemented; thread-mode reset clears the memory-manager
-  freelist bucket, while process-mode reset still calls
-  `AllocSetFreeContextFreelists()`.
+- Threaded backend cleanup deletes each exiting carrier's retained
+  `TopMemoryContext` in `backend_thread_finish()`. Do not free AllocSet context
+  freelists during threaded `PgBackendResetClosedState()` because the retained
+  root-context deletion owns that memory-context teardown; thread-mode reset
+  clears the memory-manager freelist bucket, while process-mode reset still
+  calls `AllocSetFreeContextFreelists()`.
 - Background writer, WAL writer, checkpointer, and WAL summarizer work
   contexts are owned through `PgBackend.maintenance_worker`, not local-only
   variables. Preserve that ownership when changing those loops: the worker

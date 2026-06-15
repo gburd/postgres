@@ -944,8 +944,8 @@ SKIP:
 
 unlike(
 	slurp_file($node->logfile),
-	qr/PANIC|segmentation|unsupported byval|could not find tuple|server process .* was terminated|was terminated by signal/,
-	'server log has no threaded-runtime crash/corruption signatures');
+	qr/PANIC|segmentation|unsupported byval|could not find tuple|server process .* was terminated|was terminated by signal|retained \d+ bytes in TopMemoryContext at exit/,
+	'server log has no threaded-runtime crash/corruption or retained TopMemoryContext signatures');
 
 $node->stop('fast');
 

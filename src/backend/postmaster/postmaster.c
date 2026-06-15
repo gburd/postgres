@@ -2565,7 +2565,7 @@ process_pm_thread_exit(void)
 			continue;
 
 		if (top_memory_allocated > 0)
-			ereport(DEBUG2,
+			ereport(WARNING,
 					(errmsg_internal("thread-backed child %d retained %zu bytes in TopMemoryContext at exit",
 									 signal_pid, top_memory_allocated)));
 

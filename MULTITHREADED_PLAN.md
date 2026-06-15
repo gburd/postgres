@@ -1227,7 +1227,9 @@ runs through `PostmasterChildJoinThread()`, keeping the handle inside the
 PMChild helper API boundary. Thread exit now deletes the retained carrier
 `TopMemoryContext` after closed backend/session/connection/execution cleanup;
 any remaining nonzero retained byte accounting would be evidence for an
-intentional longer-lived runtime owner or a new teardown blocker. Backend
+intentional longer-lived runtime owner or a new teardown blocker. That
+accounting is now warning-level in the postmaster and is rejected by the
+threaded TAP log guard. Backend
 libpq connection teardown now frees the frontend/backend wait set and
 dynamically sized send buffer in `socket_close()`, and `Port` plus most
 startup packet/remote-host

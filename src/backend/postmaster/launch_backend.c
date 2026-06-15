@@ -628,9 +628,9 @@ backend_thread_finish(int code)
 	/*
 	 * Stop publishing the logical backend before the final exit handoff.  This
 	 * keeps later signal routing from observing a backend pointer after the
-	 * carrier has committed to teardown.  Full TopMemoryContext reclamation is
-	 * still a separate lifecycle problem; keep reporting retained memory until
-	 * that ownership model is safe.
+	 * carrier has committed to teardown.  Retained TopMemoryContext accounting
+	 * is kept as a postmaster-side regression probe; normal thread teardown
+	 * must delete the saved root before publishing PMChild exit.
 	 */
 	PostmasterChildDetachThreadBackend(thread_start->pmchild);
 	if (retained_top_context != NULL)
