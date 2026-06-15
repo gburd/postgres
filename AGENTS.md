@@ -68,6 +68,13 @@ in `MULTITHREADED_PHASE12_STATE.md` before editing code:
   bucket `.def` row, declarative table, or checker rule that covers them; or
 - the new checked primitive that will be landed first.
 
+Phase 12 lifecycle ergonomics checklist: at the start of each Gate E2 slice,
+explicitly ask whether a small macro, X-macro row, declarative owner/source
+table, or checker rule would let the batch move more state at once with less
+manual lifecycle code. If yes, that lifecycle primitive is the next coding
+task. Treat this as required implementation work, not a planning note or
+post-migration cleanup.
+
 If the slice needs two or more similar helper bodies and no checked primitive
 exists yet, create the primitive first. Do not treat a prose note or narrower
 batch split as a substitute for making the lifecycle mechanism easier.

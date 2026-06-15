@@ -290,7 +290,10 @@ pq_init(ClientSocket *client_sock)
 	/* initialize state variables */
 	PqCommMethods = &PqCommSocketMethods;
 	PqSendBufferSize = PQ_SEND_BUFFER_SIZE;
-	PqSendBuffer = MemoryContextAlloc(TopMemoryContext, PqSendBufferSize);
+	PqSendBuffer = MemoryContextAlloc(
+		PgRuntimeGetOwnedMemoryContext(PgCurrentConnectionSocketIOContextRef(),
+									   "socket I/O connection state"),
+		PqSendBufferSize);
 	PqSendPointer = PqSendStart = PqRecvPointer = PqRecvLength = 0;
 	PqCommBusy = false;
 	PqCommReadingMsg = false;
@@ -371,6 +374,7 @@ socket_close(int code, Datum arg)
 {
 	PgConnection *connection = CurrentPgConnection;
 	MemoryContext port_context = NULL;
+	MemoryContext *socket_io_context = PgCurrentConnectionSocketIOContextRef();
 
 	if (FeBeWaitSet != NULL)
 	{
@@ -378,7 +382,14 @@ socket_close(int code, Datum arg)
 		FeBeWaitSet = NULL;
 	}
 
-	if (PqSendBuffer != NULL)
+	if (*socket_io_context != NULL)
+	{
+		PgRuntimeDeleteOwnedMemoryContext(socket_io_context);
+		PqSendBuffer = NULL;
+		PqSendBufferSize = 0;
+		PqSendPointer = PqSendStart = 0;
+	}
+	else if (PqSendBuffer != NULL)
 	{
 		pfree(PqSendBuffer);
 		PqSendBuffer = NULL;

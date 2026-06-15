@@ -177,7 +177,13 @@ test_connection_reset_closed_state(PG_FUNCTION_ARGS)
 		sizeof(connection.identity.cancel_key);
 
 	socket_io = &connection.socket_io;
-	socket_io->send_buffer = (char *) "released by socket_close";
+	socket_io->socket_io_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test socket I/O state",
+							  ALLOCSET_SMALL_SIZES);
+	oldcontext = MemoryContextSwitchTo(socket_io->socket_io_context);
+	socket_io->send_buffer = pstrdup("released by socket reset");
+	MemoryContextSwitchTo(oldcontext);
 	socket_io->send_buffer_size = 128;
 	socket_io->send_pointer = 64;
 	socket_io->send_start = 32;
@@ -257,6 +263,7 @@ test_connection_reset_closed_state(PG_FUNCTION_ARGS)
 
 		socket_io = &connection.socket_io;
 		ok = ok && socket_io->send_buffer == NULL;
+		ok = ok && socket_io->socket_io_context == NULL;
 		ok = ok && socket_io->send_buffer_size == 0;
 		ok = ok && socket_io->send_pointer == 0;
 		ok = ok && socket_io->send_start == 0;

@@ -2007,6 +2007,7 @@ typedef struct PgConnectionIdentityState
 typedef struct PgConnectionSocketIOState
 {
 	char	   *send_buffer;
+	MemoryContext socket_io_context;
 	int			send_buffer_size;
 	size_t		send_pointer;
 	size_t		send_start;
@@ -3121,6 +3122,8 @@ extern struct ResourceOwnerData **PgCurrentSnapBuildSavedResourceOwnerDuringExpo
 extern bool *PgCurrentSnapBuildExportInProgressRef(void);
 extern PgConnectionSocketIOState *PgConnectionSocketIORef(PgConnection *connection);
 extern PgConnectionSocketIOState *PgCurrentConnectionSocketIORef(void);
+extern MemoryContext *PgConnectionSocketIOContextRef(PgConnection *connection);
+extern MemoryContext *PgCurrentConnectionSocketIOContextRef(void);
 extern int *PgCurrentPgwin32NoBlockRef(void);
 extern const PQcommMethods **PgConnectionPqCommMethodsRef(PgConnection *connection);
 extern const PQcommMethods **PgCurrentPqCommMethodsRef(void);

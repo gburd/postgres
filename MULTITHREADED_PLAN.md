@@ -1086,6 +1086,12 @@ Gate E2 requires:
   destroy helper list, extend the checked lifecycle vocabulary first with a
   named action, helper macro, table row, or checker rule, then run the batch
   through that mechanism;
+- before each remaining Gate E2 implementation slice, perform the same
+  lifecycle-ergonomics check that is now documented in `AGENTS.md`: decide
+  whether a small macro, X-macro row, declarative owner/source table, or
+  checker rule would let the batch move more state at once with less manual
+  lifecycle code. If yes, land that primitive first and use it in the same
+  coherent slice;
 - the concrete lifecycle-framework TODO is to add checked primitives for
   repeated object-owned allocation-context ownership, list/hash cleanup, and
   copy-adopt-reset fallback patterns when the next batch needs them more than
@@ -1870,7 +1876,11 @@ security buckets and frees the malloc-backed GSS buffers. Follow-up connection
 startup cleanup moved deferred connection warning list cells and message/detail
 strings into `PgConnection.startup.connection_warning_context`, so normal
 warning emission and retained connection reset no longer depend on
-`TopMemoryContext` allocations for that path. This closes concrete Gate E2
+`TopMemoryContext` allocations for that path. Follow-up socket I/O cleanup
+moved `PqSendBuffer` into a `PgConnection.socket_io` allocation context, so
+normal socket send-buffer allocation and closed-connection reset now follow
+the connection runtime object instead of retaining another direct
+`TopMemoryContext` allocation. This closes concrete Gate E2
 reset/destroy rules for connection state, but the complete
 backend/session/connection/execution destructor tree and `TopMemoryContext`
 ownership model remain Phase 12 blockers.

@@ -1192,6 +1192,7 @@ PgConnectionResetSocketIOClosedState(PgConnection *connection)
 	 * This reset makes the retained logical connection object stop pointing
 	 * at resources that no longer exist.
 	 */
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(connection->socket_io.socket_io_context);
 	MemSet(&connection->socket_io, 0, sizeof(connection->socket_io));
 }
 

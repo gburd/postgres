@@ -67,6 +67,18 @@ PgCurrentConnectionSocketIORef(void)
 	return PgConnectionSocketIORef(CurrentPgConnection);
 }
 
+MemoryContext *
+PgConnectionSocketIOContextRef(PgConnection *connection)
+{
+	return &PgConnectionSocketIORef(connection)->socket_io_context;
+}
+
+MemoryContext *
+PgCurrentConnectionSocketIOContextRef(void)
+{
+	return PgConnectionSocketIOContextRef(CurrentPgConnection);
+}
+
 int *
 PgCurrentPgwin32NoBlockRef(void)
 {

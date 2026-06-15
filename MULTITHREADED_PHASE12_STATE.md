@@ -14747,3 +14747,97 @@ Validation for the owned identity/path string context slice:
   is not counted as coverage for this slice. The existing authentication TAP
   remains a useful future check when run through the make-provided TAP
   environment.
+
+## Connection Socket Send Buffer Context
+
+Lifecycle/preflight note:
+
+- target: close the retained Gate E2 `TopMemoryContext` allocation for
+  `PqSendBuffer` by giving the socket send buffer an explicit
+  `PgConnection.socket_io` allocation context;
+- touched roots/buckets: `PgConnection.socket_io`, specifically
+  `send_buffer`, `send_buffer_size`, send cursor state, and the new
+  `socket_io_context` slot;
+- owner source files: `src/backend/libpq/pqcomm.c`,
+  `src/backend/libpq/backend_runtime_connection.c`,
+  `src/backend/utils/init/backend_runtime.c`,
+  `src/include/utils/backend_runtime.h`,
+  `src/test/modules/test_backend_runtime/test_backend_runtime_connection.c`,
+  `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, `MULTITHREADED_PLAN.md`, and this state
+  log;
+- legacy symbols/accessors: `PqSendBuffer`, `PqSendBufferSize`,
+  `PqSendPointer`, `PqSendStart`, `PgCurrentConnectionSocketIORef()`, and the
+  new socket I/O context ref;
+- repeated lifecycle operations expected in this slice: one object-owned
+  allocation context and delete-and-null reset. The existing
+  `PgRuntimeGetOwnedMemoryContext()` macro,
+  `PgRuntimeDeleteOwnedMemoryContext()` helper, and checked
+  `PG_RUNTIME_DELETE_MEMORY_CONTEXT` action cover this pattern;
+- checked primitive decision: no new lifecycle primitive is needed because the
+  previous identity/path slice added the reusable context getter/deleter.
+  This slice uses that primitive rather than hand-writing another
+  `AllocSetContextCreate(TopMemoryContext, ...)`/delete path;
+- validation impact: run touched object builds for `pqcomm.o`,
+  `backend_runtime_connection.o`, `backend_runtime.o`, and
+  `test_backend_runtime_connection.o`, then `git diff --check`,
+  `gmake check-runtime-lifecycles`, `gmake check-global-lifetimes`, full
+  `gmake -j8`, the backend-runtime regression, direct threaded
+  backend-runtime TAP, and a focused libpq/protocol SQL smoke.
+
+Slice result:
+
+- `PqSendBuffer` is now allocated under the new
+  `PgConnection.socket_io.socket_io_context` with
+  `PgRuntimeGetOwnedMemoryContext()`;
+- `socket_close()` deletes the owned socket I/O context when present, while
+  retaining the previous direct `pfree()` fallback for old/test send buffers
+  that do not have an owned context;
+- closed-connection reset deletes the socket I/O context through the checked
+  `PG_RUNTIME_DELETE_MEMORY_CONTEXT` action before zeroing the socket I/O
+  bucket;
+- `PgConnectionSocketIOContextRef()` and
+  `PgCurrentConnectionSocketIOContextRef()` expose the context slot for
+  owner-adjacent socket code without making callers know the bucket layout;
+- `test_connection_reset_closed_state()` now verifies that an owned socket
+  send buffer context is deleted and nulled during retained connection reset;
+- the lifecycle manifest and owner map now record `PqSendBuffer` and the
+  socket I/O context owner under `PgConnection.socket_io`.
+
+Validation for the connection socket send-buffer context slice:
+
+- `git diff --check` passed;
+- touched-object builds passed for `pqcomm.o`,
+  `backend_runtime_connection.o`, `backend_runtime.o`, and
+  `test_backend_runtime_connection.o`;
+- `gmake check-runtime-lifecycles` passed with 166 fields classified, 166
+  bucket definitions checked, 35 reset definitions checked, and 253 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- after the prior clean backend rebuild and generated-header recovery for the
+  `backend_runtime.h` layout change, full incremental `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- after patching the recreated macOS temp-install install names, direct
+  backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total;
+- a narrow direct protocol smoke through `select` reached SQL but failed on
+  expected plan/order differences because the fixture prefix omitted the
+  indexes/statistics expected by `select`;
+- the broader direct protocol smoke with the regression fixture prefix through
+  `create_index`, `triggers`, `select`, `vacuum`, and `sanity_check` passed,
+  27 tests total.
+
+## Gate E2 Lifecycle Ergonomics Implementation Rule
+
+Before every remaining Phase 12/Gate E2 implementation slice, ask whether a
+small macro, X-macro row, declarative owner/source table, or checker rule would
+make the lifecycle work easier and allow a larger coherent state migration. If
+the answer is yes, land that checked lifecycle primitive first and use it in
+the same slice.
+
+This rule is now intentionally recorded in both `AGENTS.md` and
+`MULTITHREADED_PLAN.md`. It is a coding-order requirement for Gate E2, not a
+documentation-only reminder. A preflight entry should say either which existing
+checked primitive covers the slice, or which missing primitive was added before
+the state movement.
