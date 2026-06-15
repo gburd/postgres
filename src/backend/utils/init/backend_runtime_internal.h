@@ -173,6 +173,7 @@ extern PgBackendLockState *PgCurrentBackendLockState(void);
 extern PgBackendIPCState *PgCurrentBackendIPCState(void);
 extern void PgBackendResetTimeoutClosedState(PgBackendTimeoutState *timeout);
 extern PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
+extern PgBackendMemoryManagerState *PgCurrentBackendMemoryManagerState(void);
 extern PgBackendUtilityState *PgCurrentBackendUtilityState(void);
 extern PgBackendParallelState *PgCurrentBackendParallelState(void);
 

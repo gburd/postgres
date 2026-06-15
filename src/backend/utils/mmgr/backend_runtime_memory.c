@@ -1,7 +1,7 @@
 /*-------------------------------------------------------------------------
  *
  * backend_runtime_memory.c
- *	  Runtime bridge accessors for execution-owned memory-context state.
+ *	  Runtime bridge accessors for memory-manager and memory-context state.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  *
@@ -14,6 +14,18 @@
 #include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "../init/backend_runtime_internal.h"
+
+PgBackendAllocSetFreeList *
+PgCurrentAllocSetContextFreeLists(void)
+{
+	return PgCurrentBackendMemoryManagerState()->context_freelists;
+}
+
+bool *
+PgCurrentLogMemoryContextInProgressRef(void)
+{
+	return &PgCurrentBackendMemoryManagerState()->log_memory_context_in_progress;
+}
 
 MemoryContext *
 PgTopMemoryContextRef(void)

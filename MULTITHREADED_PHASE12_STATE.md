@@ -18214,3 +18214,28 @@ Evidence:
   `SendProcSignal()` fallback.
 - Full `src/test/isolation` under `threaded_workers.conf` then passed all 129
   specs, clearing the previous world-core isolation deferral.
+
+## Memory Runtime Accessor Refactor Follow-up
+
+Lifecycle/preflight note:
+
+- target: move the remaining memory-manager compatibility accessors out of
+  `src/backend/utils/init/backend_runtime.c` and into the owner-adjacent
+  `src/backend/utils/mmgr/backend_runtime_memory.c` bridge file.
+- touched roots/buckets: no runtime root ownership changes; existing
+  `PgBackend.memory_manager` and `PgExecution.memory_contexts` buckets only.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  current-pointer owner, `src/backend/utils/init/backend_runtime_internal.h`
+  for internal current-bucket helper visibility, and
+  `src/backend/utils/mmgr/backend_runtime_memory.c` as the mmgr-owned bridge.
+- legacy symbols/accessors: `PgCurrentBackendMemoryManagerState()`,
+  `PgCurrentAllocSetContextFreeLists()`, and
+  `PgCurrentLogMemoryContextInProgressRef()`.
+- repeated lifecycle operations: none; this only relocates pointer accessors
+  and keeps init/adopt/reset/destroy behavior unchanged.
+- checked primitive decision: no lifecycle primitive is needed because bucket
+  lifecycle remains covered by the existing memory-manager rows and helper
+  definitions.
+- validation impact: rebuild `backend_runtime.o` and `backend_runtime_memory.o`,
+  rerun lifecycle/global scans, a focused backend-runtime check, and
+  `git diff --check`.

@@ -5748,25 +5748,13 @@ PgCurrentBackendStatusSnapContextRef(void)
 	return &PgCurrentBackendActivityState()->backend_status_context;
 }
 
-static PgBackendMemoryManagerState *
+PgBackendMemoryManagerState *
 PgCurrentBackendMemoryManagerState(void)
 {
 	if (CurrentPgBackend == NULL)
 		return &early_backend_memory_manager;
 
 	return &CurrentPgBackend->memory_manager;
-}
-
-PgBackendAllocSetFreeList *
-PgCurrentAllocSetContextFreeLists(void)
-{
-	return PgCurrentBackendMemoryManagerState()->context_freelists;
-}
-
-bool *
-PgCurrentLogMemoryContextInProgressRef(void)
-{
-	return &PgCurrentBackendMemoryManagerState()->log_memory_context_in_progress;
 }
 
 PgBackendUtilityState *
