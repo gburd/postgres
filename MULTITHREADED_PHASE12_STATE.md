@@ -16612,3 +16612,45 @@ Follow-up validation registration:
   t/003_milestone_w_core_smoke.pl` passed all 174 tests after the focused
   smoke gained SQL-error recovery, transaction-abort cleanup, active
   cancellation, worker-handoff, and parallel-query coverage.
+
+## Milestone W Current Evidence Audit
+
+Current audit against the explicit Milestone W requirement list:
+
+- threaded server startup and normal SQL sessions: proved by
+  `t/003_milestone_w_core_smoke.pl`, which starts `multithreaded = on`, checks
+  `SHOW multithreaded`, opens concurrent threaded sessions, and runs later SQL
+  after teardown and reconnect cycles;
+- regular SQL, transactions, catalog writes, and representative parallel
+  query: proved by the focused smoke's table create/insert/update/delete,
+  rollback check, forced parallel query result, and parallel-worker thread
+  carrier log check;
+- PL/pgSQL: proved by the focused smoke's `threaded_w_plpgsql_add()` function;
+- process-only extension and process-model background-worker rejection: proved
+  by the focused smoke's `LOAD 'test_backend_runtime'` backend-model mismatch
+  check and `test_backend_runtime_rejects_process_bgworker()` check;
+- disconnect, abandoned-client cleanup, `FATAL`, administrator termination,
+  repeated reconnect, and worker handoff: proved by the focused smoke's normal
+  session quit cleanup, killed-client advisory-lock cleanup, backend-local
+  `FATAL` cleanup, active `pg_terminate_backend()` cleanup, reconnect loop,
+  thread-model background-worker handoff, and post-teardown SQL checks;
+- retained `TopMemoryContext` accounting: proved by the focused smoke's server
+  log guard and the broader `001` threaded-runtime log guard, both of which
+  reject retained root-context warnings and crash/corruption signatures;
+- core GUC semantics: proved by the focused smoke's database default, role
+  defaults, startup packet option, `SET`, `SET LOCAL`, `COMMIT`, and `RESET`
+  checks, with broader concurrent GUC stress still covered by `001`;
+- lifecycle/global guardrails: `gmake check-runtime-lifecycles` passed with
+  172 fields classified, 172 bucket definitions checked, 35 reset definitions
+  checked, and 358 owner mappings checked; `gmake check-global-lifetimes`
+  passed with zero new unclassified mutable globals and zero local runtime
+  boundary violations;
+- full backend-runtime threaded TAP surface: direct `prove -v -I
+  "$ROOT/src/test/perl" -I "$TESTDIR" t/001_threaded_runtime.pl
+  t/002_threaded_bgworker_crash.pl t/003_milestone_w_core_smoke.pl` passed all
+  174 tests from the current branch state.
+
+This audit supports the Milestone W core-runtime target. It is not a Gate
+E2-Core closeout claim: broader full-build/process-mode regression coverage,
+resource-leak auditing, and any remaining hardening items still belong to the
+Gate E2-Core validation and cleanup path before Phase 13.
