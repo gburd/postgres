@@ -17,6 +17,7 @@
 #include "common/hashfn.h"
 #include "sepgsql.h"
 #include "storage/ipc.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 
@@ -49,16 +50,22 @@ typedef struct
 /*
  * Declaration of static variables
  */
-#define AVC_NUM_SLOTS		512
+#define AVC_NUM_SLOTS		PG_SESSION_SEPGSQL_AVC_NUM_SLOTS
 #define AVC_NUM_RECLAIM		16
 #define AVC_DEF_THRESHOLD	384
 
-static MemoryContext avc_mem_cxt;
-static List *avc_slots[AVC_NUM_SLOTS];	/* avc's hash buckets */
-static int	avc_num_caches;		/* number of caches currently used */
-static int	avc_lru_hint;		/* index of the buckets to be reclaimed next */
-static int	avc_threshold;		/* threshold to launch cache-reclaiming  */
-static char *avc_unlabeled;		/* system 'unlabeled' label */
+#define avc_mem_cxt \
+	(PgCurrentSessionExtensionModuleState()->sepgsql_avc_context)
+#define avc_slots \
+	(PgCurrentSessionExtensionModuleState()->sepgsql_avc_slots)
+#define avc_num_caches \
+	(PgCurrentSessionExtensionModuleState()->sepgsql_avc_num_caches)
+#define avc_lru_hint \
+	(PgCurrentSessionExtensionModuleState()->sepgsql_avc_lru_hint)
+#define avc_threshold \
+	(PgCurrentSessionExtensionModuleState()->sepgsql_avc_threshold)
+#define avc_unlabeled \
+	(PgCurrentSessionExtensionModuleState()->sepgsql_avc_unlabeled)
 
 /*
  * Hash function
@@ -492,9 +499,9 @@ sepgsql_avc_init(void)
 	/*
 	 * All the avc stuff shall be allocated in avc_mem_cxt
 	 */
-	avc_mem_cxt = AllocSetContextCreate(TopMemoryContext,
-										"userspace access vector cache",
-										ALLOCSET_DEFAULT_SIZES);
+	avc_mem_cxt = PgRuntimeGetOwnedMemoryContext(
+		&PgCurrentSessionExtensionModuleState()->sepgsql_avc_context,
+		"userspace access vector cache");
 	memset(avc_slots, 0, sizeof(avc_slots));
 	avc_num_caches = 0;
 	avc_lru_hint = 0;

@@ -20,6 +20,7 @@
 #include "commands/vacuum.h"
 #include "storage/bufmgr.h"
 #include "storage/indexfsm.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "varatt.h"
 
@@ -70,8 +71,11 @@ _PG_init(void)
 						  "Number of bits generated for each index column",
 						  DEFAULT_BLOOM_BITS, 1, MAX_BLOOM_BITS,
 						  AccessExclusiveLock);
-		bl_relopt_tab[i + 1].optname = MemoryContextStrdup(TopMemoryContext,
-														   buf);
+		bl_relopt_tab[i + 1].optname =
+			MemoryContextStrdup(PgRuntimeGetOwnedMemoryContext(
+									PgCurrentBloomContextRef(),
+									"bloom relation options"),
+								buf);
 		bl_relopt_tab[i + 1].opttype = RELOPT_TYPE_INT;
 		bl_relopt_tab[i + 1].offset = offsetof(BloomOptions, bitSize[0]) + sizeof(int) * i;
 	}

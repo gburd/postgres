@@ -134,6 +134,11 @@ state group, then rerun the threaded runtime TAP.
   sufficient" with the exact mechanism named, or "extend the lifecycle
   framework first" with the new macro, action, `.def` pattern, or checker rule
   landed before the state migration.
+- When Phase 12 progress feels slow because lifecycle bookkeeping is
+  repetitive, do not just split the migration into smaller manual batches.
+  First consider whether a macro, X-macro/bucket table, owner-map rule, or
+  checker extension would let a larger batch move safely. If it would, add that
+  checked primitive and use it in the same implementation slice.
 - Record the preflight decision in
   [MULTITHREADED_PHASE12_STATE.md](MULTITHREADED_PHASE12_STATE.md) before
   editing code. The note must either name the existing bucket rows/macros/
@@ -1849,6 +1854,16 @@ Important current files:
   `pg_config.h`. For OpenSSL-only source annotations, use static lifetime scan
   coverage plus a full non-SSL build here, and use an SSL-enabled build when
   compile coverage for that file is required.
+
+- This macOS checkout is not a normal compile target for `contrib/sepgsql`.
+  PostgreSQL builds `sepgsql` only with SELinux support, Meson disables the
+  SELinux dependency automatically when the host system is not Linux, and this
+  machine does not currently have Homebrew `libselinux` headers. A direct
+  `gmake -C contrib/sepgsql label.o uavc.o` can fail before reaching project
+  changes with `fatal error: 'selinux/label.h' file not found`. For sepgsql
+  Phase 12 state migrations here, use static lifetime scan coverage,
+  manifest/lifecycle checks, source review against the owning files, and a
+  Linux SELinux-enabled build for compile/runtime coverage.
 
 - This checkout is currently configured with `with_python = no`. Direct
   PL/Python builds and regression tests under `src/pl/plpython` are not

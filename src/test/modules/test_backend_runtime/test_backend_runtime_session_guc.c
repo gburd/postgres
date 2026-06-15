@@ -224,7 +224,9 @@ test_runtime_extension_module_state_is_runtime_local(PG_FUNCTION_ARGS)
 	PgRuntime	fake_runtime2;
 	PgRuntimeExtensionModuleState *extension_modules;
 	MemoryContext runtime1_context = NULL;
+	MemoryContext runtime1_bloom_context = NULL;
 	MemoryContext runtime2_context = NULL;
+	MemoryContext runtime2_bloom_context = NULL;
 	List	   *runtime1_advisors = (List *) &fake_runtime1;
 	List	   *runtime2_advisors = (List *) &fake_runtime2;
 	const char *stage = "initial";
@@ -241,36 +243,50 @@ test_runtime_extension_module_state_is_runtime_local(PG_FUNCTION_ARGS)
 		extension_modules = PgCurrentRuntimeExtensionModuleState();
 		ok = ok && extension_modules->pg_plan_advice_context == NULL;
 		ok = ok && extension_modules->pg_plan_advice_advisor_hook_list == NIL;
+		ok = ok && extension_modules->bloom_context == NULL;
 
 		stage = "runtime1 set";
 		runtime1_context =
 			AllocSetContextCreate(TopMemoryContext,
 								  "test runtime1 pg_plan_advice context",
 								  ALLOCSET_SMALL_SIZES);
+		runtime1_bloom_context =
+			AllocSetContextCreate(TopMemoryContext,
+								  "test runtime1 bloom context",
+								  ALLOCSET_SMALL_SIZES);
 		*PgCurrentPgPlanAdviceContextRef() = runtime1_context;
 		*PgCurrentPgPlanAdviceAdvisorHookListRef() = runtime1_advisors;
+		*PgCurrentBloomContextRef() = runtime1_bloom_context;
 		extension_modules = PgCurrentRuntimeExtensionModuleState();
 		ok = ok && extension_modules->pg_plan_advice_context == runtime1_context;
 		ok = ok && extension_modules->pg_plan_advice_advisor_hook_list ==
 			runtime1_advisors;
+		ok = ok && extension_modules->bloom_context == runtime1_bloom_context;
 
 		stage = "runtime2 default";
 		CurrentPgRuntime = &fake_runtime2;
 		extension_modules = PgCurrentRuntimeExtensionModuleState();
 		ok = ok && extension_modules->pg_plan_advice_context == NULL;
 		ok = ok && extension_modules->pg_plan_advice_advisor_hook_list == NIL;
+		ok = ok && extension_modules->bloom_context == NULL;
 
 		stage = "runtime2 set";
 		runtime2_context =
 			AllocSetContextCreate(TopMemoryContext,
 								  "test runtime2 pg_plan_advice context",
 								  ALLOCSET_SMALL_SIZES);
+		runtime2_bloom_context =
+			AllocSetContextCreate(TopMemoryContext,
+								  "test runtime2 bloom context",
+								  ALLOCSET_SMALL_SIZES);
 		*PgCurrentPgPlanAdviceContextRef() = runtime2_context;
 		*PgCurrentPgPlanAdviceAdvisorHookListRef() = runtime2_advisors;
+		*PgCurrentBloomContextRef() = runtime2_bloom_context;
 		extension_modules = PgCurrentRuntimeExtensionModuleState();
 		ok = ok && extension_modules->pg_plan_advice_context == runtime2_context;
 		ok = ok && extension_modules->pg_plan_advice_advisor_hook_list ==
 			runtime2_advisors;
+		ok = ok && extension_modules->bloom_context == runtime2_bloom_context;
 
 		stage = "runtime1 restore";
 		CurrentPgRuntime = &fake_runtime1;
@@ -278,6 +294,7 @@ test_runtime_extension_module_state_is_runtime_local(PG_FUNCTION_ARGS)
 		ok = ok && extension_modules->pg_plan_advice_context == runtime1_context;
 		ok = ok && extension_modules->pg_plan_advice_advisor_hook_list ==
 			runtime1_advisors;
+		ok = ok && extension_modules->bloom_context == runtime1_bloom_context;
 
 		CurrentPgRuntime = saved_runtime;
 	}
@@ -286,8 +303,12 @@ test_runtime_extension_module_state_is_runtime_local(PG_FUNCTION_ARGS)
 		CurrentPgRuntime = saved_runtime;
 		if (runtime1_context != NULL)
 			MemoryContextDelete(runtime1_context);
+		if (runtime1_bloom_context != NULL)
+			MemoryContextDelete(runtime1_bloom_context);
 		if (runtime2_context != NULL)
 			MemoryContextDelete(runtime2_context);
+		if (runtime2_bloom_context != NULL)
+			MemoryContextDelete(runtime2_bloom_context);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -295,8 +316,12 @@ test_runtime_extension_module_state_is_runtime_local(PG_FUNCTION_ARGS)
 	CurrentPgRuntime = saved_runtime;
 	if (runtime1_context != NULL)
 		MemoryContextDelete(runtime1_context);
+	if (runtime1_bloom_context != NULL)
+		MemoryContextDelete(runtime1_bloom_context);
 	if (runtime2_context != NULL)
 		MemoryContextDelete(runtime2_context);
+	if (runtime2_bloom_context != NULL)
+		MemoryContextDelete(runtime2_bloom_context);
 
 	if (!ok)
 		elog(ERROR, "runtime extension module state was not runtime-local at %s",

@@ -28,6 +28,7 @@
 #include "libpq/libpq-be.h"
 #include "miscadmin.h"
 #include "sepgsql.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/guc.h"
@@ -55,18 +56,28 @@ static fmgr_hook_type next_fmgr_hook = NULL;
  * we use the list client_label_pending of pending_label to keep track of which
  * labels were set during the (sub-)transactions.
  */
-static char *client_label_peer = NULL;	/* set by getpeercon(3) */
-static List *client_label_pending = NIL;	/* pending list being set by
-											 * sepgsql_setcon() */
-static char *client_label_committed = NULL; /* set by sepgsql_setcon(), and
-											 * already committed */
-static char *client_label_func = NULL;	/* set by trusted procedure */
+#define client_label_peer \
+	(PgCurrentSessionExtensionModuleState()->sepgsql_client_label_peer)
+#define client_label_pending \
+	(PgCurrentSessionExtensionModuleState()->sepgsql_client_label_pending)
+#define client_label_committed \
+	(PgCurrentSessionExtensionModuleState()->sepgsql_client_label_committed)
+#define client_label_func \
+	(PgCurrentSessionExtensionModuleState()->sepgsql_client_label_func)
 
 typedef struct
 {
 	SubTransactionId subid;
 	char	   *label;
 } pending_label;
+
+static MemoryContext
+sepgsql_session_context(void)
+{
+	return PgRuntimeGetOwnedMemoryContext(
+		&PgCurrentSessionExtensionModuleState()->sepgsql_context,
+		"SEPostgreSQL session");
+}
 
 /*
  * sepgsql_get_client_label
@@ -171,7 +182,7 @@ sepgsql_xact_callback(XactEvent event, void *arg)
 			char	   *new_label;
 
 			if (plabel->label)
-				new_label = MemoryContextStrdup(TopMemoryContext,
+				new_label = MemoryContextStrdup(sepgsql_session_context(),
 												plabel->label);
 			else
 				new_label = NULL;
@@ -241,10 +252,20 @@ sepgsql_client_auth(Port *port, int status)
 	/*
 	 * Getting security label of the peer process using API of libselinux.
 	 */
-	if (getpeercon_raw(port->sock, &client_label_peer) < 0)
-		ereport(FATAL,
-				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("SELinux: unable to get peer label: %m")));
+	{
+		char	   *raw_label;
+
+		if (getpeercon_raw(port->sock, &raw_label) < 0)
+			ereport(FATAL,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("SELinux: unable to get peer label: %m")));
+
+		if (client_label_peer)
+			pfree(client_label_peer);
+		client_label_peer = MemoryContextStrdup(sepgsql_session_context(),
+												raw_label);
+		freecon(raw_label);
+	}
 
 	/*
 	 * Switch the current performing mode from INTERNAL to either DEFAULT or
@@ -412,10 +433,20 @@ sepgsql_init_client_label(void)
 	 * In this case, the process is always hooked on post-authentication, and
 	 * we can initialize the sepgsql_mode and client_label correctly.
 	 */
-	if (getcon_raw(&client_label_peer) < 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("SELinux: failed to get server security label: %m")));
+	{
+		char	   *raw_label;
+
+		if (getcon_raw(&raw_label) < 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("SELinux: failed to get server security label: %m")));
+
+		if (client_label_peer)
+			pfree(client_label_peer);
+		client_label_peer = MemoryContextStrdup(sepgsql_session_context(),
+												raw_label);
+		freecon(raw_label);
+	}
 
 	/* Client authentication hook */
 	next_client_auth_hook = ClientAuthentication_hook;

@@ -16092,3 +16092,84 @@ cleanup rule is sufficient. This applies before more global-to-object
 migration, threaded teardown hardening, PMChild/thread synchronization, GUC
 adoption, startup-gate narrowing, or another attempt at root memory-context
 reclamation.
+
+Macro/checker acceleration note: if lifecycle setup is the source of friction,
+the next implementation step should be the smallest checked primitive that lets
+a larger batch move safely, not a narrower manual batch. Consider a named
+`PG_RUNTIME_*` action, `PG_RUNTIME_DEFINE_*` macro, bucket `.def`/X-macro row,
+owner-map/source rule, or `check_runtime_lifecycles.pl` validation first, then
+use that primitive in the same coherent Gate E2 slice.
+
+## Contrib Extension Context And AVC State Batch
+
+Lifecycle/preflight note:
+
+- target: remove another group of in-tree extension `TopMemoryContext` and
+  process-global assumptions by moving `sepgsql` per-client label/AVC state
+  into `PgSession.extension_modules` and `bloom` relation-option name storage
+  into `PgRuntime.extension_modules`;
+- touched root/bucket rows: `PgSession.extension_modules` for the SELinux
+  client label, pending label list, function override, userspace AVC context,
+  slots, counters, and unlabeled cache; `PgRuntime.extension_modules` for the
+  bloom reloption name allocation context;
+- legacy state owners: `client_label_peer`, `client_label_pending`,
+  `client_label_committed`, `client_label_func`, `avc_mem_cxt`,
+  `avc_slots`, `avc_num_caches`, `avc_lru_hint`, `avc_threshold`,
+  `avc_unlabeled`, and bloom's `bl_relopt_tab[i].optname` allocations;
+- repeated lifecycle operations expected in this slice: two object-owned
+  allocation contexts plus scalar/list/pointer fields reset through existing
+  bucket initialization. The existing `PgRuntimeGetOwnedMemoryContext()` and
+  `PG_RUNTIME_DELETE_MEMORY_CONTEXT` primitives cover the context lifecycle,
+  while `PgSessionInitializeExtensionModuleState()` and
+  `PgRuntimeInitializeExtensionModuleState()` cover the scalar/list reset
+  shape;
+- checked primitive decision: no new lifecycle primitive is needed. This batch
+  reuses the existing checked extension-module bucket rows and owner-map
+  validation. `pgcrypto` OpenSSL handle allocations are intentionally not part
+  of this batch because they are ResourceOwner-backed execution resources and
+  need a separate execution/resource-owner ownership decision, not the
+  session-extension reset path used here.
+
+Implementation result:
+
+- `PgRuntime.extension_modules` now owns a `bloom_context`, and bloom relation
+  option name copies allocate under that runtime-owned context instead of
+  `TopMemoryContext`;
+- `PgSession.extension_modules` now owns the `sepgsql` client-label context,
+  userspace AVC context, pending/committed/function label pointers, AVC slots,
+  counters, reclaim hint, threshold, and unlabeled cache pointer;
+- `sepgsql` preserves the historical source-local names through compatibility
+  macros over `PgCurrentSessionExtensionModuleState()`. Labels returned by
+  libselinux are copied into the session-owned context and released with
+  `freecon()`, while transaction-pending label entries remain
+  `CurTransactionContext` owned as before;
+- session closed reset deletes both `sepgsql` contexts before reinitializing
+  the extension-module bucket. The AVC context intentionally stays separate
+  from the client-label context because `sepgsql_avc_reset()` resets the AVC
+  context during normal operation;
+- `PgRuntime.exit_backend` moved before the mutable runtime extension bucket
+  in `PgRuntime` so adding extension-owned runtime fields is less likely to
+  shift the ABI-sensitive exit-continuation offset used across core/test
+  module boundaries.
+
+Validation for the contrib extension context and AVC state slice:
+
+- the backend was cleaned, generated backend/include headers were regenerated,
+  and full `gmake -j8` passed after the runtime layout change;
+- clean `gmake -C src/test/modules/test_backend_runtime clean all check`
+  passed, including the runtime extension-module and session extension-module
+  ownership checks for bloom and sepgsql state;
+- `gmake check-runtime-lifecycles` passed with 172 fields classified, 172
+  bucket definitions checked, 35 reset definitions checked, and 326 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- clean `gmake -C contrib/bloom clean all check` passed;
+- direct `gmake -C contrib/sepgsql label.o uavc.o` still fails before reaching
+  project changes on this macOS checkout because `<selinux/label.h>` is not
+  available. PostgreSQL's Meson build disables the SELinux dependency
+  automatically off Linux, and Homebrew did not expose a local `libselinux`
+  package here. The sepgsql changes are therefore covered locally by source
+  review, manifest/lifecycle checks, backend-runtime object tests, and global
+  lifetime scanning; compile/runtime coverage remains a Linux
+  SELinux-enabled validation item.
