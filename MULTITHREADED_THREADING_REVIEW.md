@@ -829,20 +829,18 @@ A broader attempted bypass for other
 non-session auxiliary workers reproduced an abrupt postmaster death during a
 threaded `pg_class` catalog scan, so future startup-gate reintroduction still
 requires a named shared-state dependency and catalog-startup stress coverage.
-These are partial Gate E2 closures only: the full thread teardown,
-`TopMemoryContext` ownership/reclamation, real-server PMChild
-termination/reaping stress coverage, and broader threaded stress coverage
-remain blockers before Phase 13 scheduler-aware wait work. Representative
-threaded contrib coverage now installs and exercises `hstore`, `pg_trgm`,
-`btree_gist`, and `pageinspect` in the threaded TAP. Those modules now carry
-thread-per-session backend-model metadata, with `pg_trgm`'s custom GUC backing
-variables moved to session-local TLS storage before opt-in. Phase 16 still
-owns contrib-wide threaded regression and modules that need a broader
-state/export audit before thread opt-in. A direct attempt to reset the exiting
-carrier's top memory tree after backend cleanup crashed a parallel threaded
-reconnect smoke, confirming that memory reclamation still needs systematic
-ownership separation
-rather than a terminal reset.
+These were partial Gate E2 closures at the time of the first review. Later
+work added real-server PMChild termination/reaping stress coverage, moved the
+stale runtime-global rendezvous hash and reserved GUC prefix storage under
+`PgRuntime.extension_modules`, and enabled deletion of the exiting carrier's
+`TopMemoryContext` after closed backend/session/connection/execution cleanup.
+The direct threaded runtime TAP now passes with that reclamation path enabled.
+Representative threaded contrib coverage now installs and exercises `hstore`,
+`pg_trgm`, `btree_gist`, and `pageinspect` in the threaded TAP. Those modules
+now carry thread-per-session backend-model metadata, with `pg_trgm`'s custom
+GUC backing variables moved to session-local TLS storage before opt-in. Phase
+16 still owns contrib-wide threaded regression and modules that need a broader
+state/export audit before thread opt-in.
 A follow-up object-model review keeps the current direction but raises one
 additional Gate E2 hardening requirement: `PgBackend`, `PgSession`,
 `PgConnection`, `PgExecution`, and `PgThreadBackendRuntimeState` now form a
@@ -901,9 +899,10 @@ session/backend reset has finished using live memory-context state. This
 closes the previously pending lifecycle manifest rows. Further session-cache
 teardown now drops prepared statements, destroys the prepared-query hash,
 frees leftover `ON COMMIT` list cells, and destroys any remaining async
-local-channel hash after proc-exit async callbacks have run. The broader
-`TopMemoryContext` ownership split remains a separate memory ownership
-problem.
+local-channel hash after proc-exit async callbacks have run. The later
+carrier-root reclamation probe now deletes the retained `TopMemoryContext`
+after closed-state cleanup; remaining memory findings should name a concrete
+runtime owner or teardown bug instead of relying on retained-root accounting.
 The next state-migration batch added `PgExecutionCatalogState` and moved seven
 catalog execution globals into it: uncommitted enum hash pointers, REINDEX
 suppression state, and pending smgr delete/sync state. Existing enum, reindex,
@@ -1272,8 +1271,8 @@ targets rather than being hidden behind a process-wide startup lock. Follow-up
 validation made `CurrentPgRuntime` a carrier/thread-local current
 binding, matching the other current runtime objects, and moved
 `reserved_class_prefix` allocation out of session `GUCMemoryContext` storage
-into a runtime-lifetime `TopMemoryContext` child under the temporary GUC lock.
-This closes the PL/pgSQL-after-FATAL crash where runtime-global prefix
+into runtime-owned extension-module storage. This closes the PL/pgSQL after
+backend `FATAL` crash where runtime-global prefix
 metadata pointed into a destroyed backend/session context.
 Validation included clean full build, backend-runtime regression,
 `gmake check-runtime-lifecycles`, `gmake check-global-lifetimes`, and

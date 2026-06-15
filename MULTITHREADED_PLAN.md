@@ -1222,11 +1222,15 @@ publication now clears the backend pointer, stores the exit status, and wakes
 the postmaster through one PMChild helper. The postmaster now treats
 successful native thread join as the boundary before PMChild cleanup and slot
 release; if `pg_thread_join()` fails, the claimed exit report is restored and
-the PMChild remains active for a later retry. Thread exit also reports retained
-carrier `TopMemoryContext` bytes to the postmaster reaper as explicit
-accounting for the currently retained top context. Backend libpq connection
-teardown now frees the frontend/backend wait set and dynamically sized send
-buffer in `socket_close()`, and `Port` plus most startup packet/remote-host
+the PMChild remains active for a later retry. The native thread join now also
+runs through `PostmasterChildJoinThread()`, keeping the handle inside the
+PMChild helper API boundary. Thread exit now deletes the retained carrier
+`TopMemoryContext` after closed backend/session/connection/execution cleanup;
+any remaining nonzero retained byte accounting would be evidence for an
+intentional longer-lived runtime owner or a new teardown blocker. Backend
+libpq connection teardown now frees the frontend/backend wait set and
+dynamically sized send buffer in `socket_close()`, and `Port` plus most
+startup packet/remote-host
 strings now live in a dedicated `PortContext` that `socket_close()` deletes
 during backend exit. `PortContext` is now an explicit
 `PgConnection.identity.port_context` slot, so the context moves with early
@@ -1785,14 +1789,13 @@ auxiliary workers reproduced an abrupt postmaster death during a threaded
 `pg_class` catalog scan; later worker-specific fixes and the
 `PgExecutionVacuumState` migration removed the remaining startup-gate users,
 so future gate reintroduction must be tied to a named shared-state dependency
-and concurrent catalog-startup stress. The remaining PMChild and teardown
-blockers are full resource cleanup or deliberate long-lived ownership, broader
-real-server reaping stress for termination and abandoned-client races, broader
-custom/extension GUC semantics, and broader stress coverage for teardown
-races. A direct attempt to reset the exiting carrier's `TopMemoryContext`
-children after backend cleanup caused an abrupt postmaster exit during a
-parallel threaded reconnect smoke, so `TopMemoryContext` reclamation remains a
-Gate E2 blocker rather than a safe cleanup path. Follow-up extension-GUC work found
+and concurrent catalog-startup stress. The remaining Gate E2 teardown focus is
+resource-leak auditing and documenting any deliberate long-lived runtime
+ownership, not leaving the carrier root context retained. A later reclamation
+probe exposed two stale runtime-global owners, the dynamic-library rendezvous
+hash and reserved GUC prefix storage; both now live under
+`PgRuntime.extension_modules`, and the threaded-runtime TAP passes with
+carrier `TopMemoryContext` deletion enabled. Follow-up extension-GUC work found
 that some generated GUC records are already rebound while the per-thread table
 is constructed, so the "changed pointer" pass alone is not a complete startup
 initializer. Threaded runtime installation now runs a narrow required
@@ -1848,9 +1851,9 @@ stress: each cycle combines abandoned clients with temp tables and advisory
 locks, actively sleeping sessions terminated through `pg_terminate_backend()`,
 and backend-local `FATAL`, then verifies all logical backend ids leave
 `pg_stat_activity`, advisory locks are released, the server remains usable,
-and the Unix postmaster child count is unchanged. Full lifecycle resource
-cleanup, deliberate long-lived ownership accounting, and broader resource-leak
-auditing remain Gate E2 blockers before Phase 13.
+and the Unix postmaster child count is unchanged. Full resource-leak auditing
+and deliberate long-lived ownership accounting remain Gate E2 validation work
+before Phase 13.
 Follow-up threaded TAP coverage now installs and exercises a representative
 contrib set (`hstore`, `pg_trgm`, `btree_gist`, and `pageinspect`) in threaded
 mode. That proves extension DDL plus C extension entry points across
@@ -2034,9 +2037,10 @@ Follow-up exit-state hardening made retained top-memory accounting survive
 the closed-execution reset that clears `PgExecution.memory_contexts`: backend
 exit/cleanup now capture the first live `TopMemoryContext` pointer in
 `PgBackend.exit_state` before cleanup clears runtime slots, and thread-finish
-uses that retained pointer when publishing the PMChild exit payload. This is
-accounting, not reclamation; full carrier `TopMemoryContext` teardown remains
-a Gate E2 ownership blocker.
+uses that retained pointer after cleanup. A later Gate E2 probe switched this
+from accounting to reclamation: `backend_thread_finish()` now deletes the
+retained carrier root context after cleanup and publishes zero retained bytes
+on the validated path.
 The same validation run exposed that forked process-mode children could carry
 the postmaster's runtime current pointers and copied backend-local runtime
 objects far enough to use the wrong runtime-backed `MyProcPid`/`MyLatch` state
@@ -2046,9 +2050,10 @@ clears current runtime pointers, resets the copied static process runtime
 objects, and drops inherited early DSM list links without detaching mappings.
 Process-mode children then start from clean early fallback state until
 `BaseInit()` constructs their own process runtime object.
-There are no `GateE2 pending` lifecycle manifest rows left; the broader
-`TopMemoryContext` ownership split remains tracked as a separate memory
-ownership problem rather than an unclassified bucket.
+There are no `GateE2 pending` lifecycle manifest rows left. The carrier
+`TopMemoryContext` reclamation path is now enabled in threaded backend exit;
+future retained-memory findings should identify a concrete runtime owner or a
+new teardown bug rather than relying on the old retained-root accounting path.
 The next state-migration batch moved catalog transaction/execution scratch
 state into `PgExecutionCatalogState`: uncommitted enum type/value hash
 pointers, REINDEX suppression state, and pending smgr relation delete/sync

@@ -16458,3 +16458,31 @@ Validation for the PMChild thread join boundary:
   `prove -v -I "$ROOT/src/test/perl" -I "$TESTDIR"
   t/001_threaded_runtime.pl` passed all 127 tests, including mixed teardown
   stress and the repeated PMChild reaping stress block.
+
+## Gate E2 Local-Global Tail Audit
+
+Audit result after carrier root-context reclamation and PMChild join-boundary
+hardening:
+
+- `scan_global_lifetimes.pl --show-classified --report` reports the remaining
+  backend/session/execution/connection/carrier-local declarations as the
+  runtime bridge itself (`CurrentPg*`, `process_*`, and `early_*` fallback
+  objects), Windows carrier-local signal/timer platform shims, and the
+  standalone `S_LOCK_TEST` wait-event storage shim;
+- the normal Unix backend wait-event path already routes `my_wait_event_info`
+  through `PgBackend.wait_state` via `PgCurrentMyWaitEventInfoRef()`, and
+  `PgBackend.wait_state` is already manifest-checked with early fallback
+  pointer repair;
+- this audit does not justify more extension sweeping. Further Phase 12
+  migration work should target concrete teardown/resource evidence,
+  platform-specific carrier shims that can be validated, or scheduler-relevant
+  bridge reduction rather than chasing already-migrated wait-event state.
+
+Validation for the local-global tail audit:
+
+- `/usr/bin/perl src/tools/global_lifetime/scan_global_lifetimes.pl
+  --show-classified --report /tmp/global_lifetime_report.tsv` completed and
+  showed the local-global tail described above;
+- `gmake check-global-lifetimes` had already passed in the PMChild slice with
+  zero new unclassified mutable globals and zero local-runtime-boundary
+  violations.
