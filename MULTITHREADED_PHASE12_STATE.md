@@ -14081,3 +14081,18 @@ Validation for the relcache/typcache CacheMemoryContext hash ownership slice:
   backend-runtime TAP passed for `001_threaded_runtime.pl` and
   `002_threaded_bgworker_crash.pl`, 131 tests total, with repo-local `.perl5`
   `PERL5LIB` and explicit `PG_REGRESS=src/test/regress/pg_regress`.
+
+## Gate E2 Lifecycle Ergonomics Reminder
+
+Before the next substantial Phase 12/Gate E2 code batch, decide whether the
+lifecycle work itself can be made easier with a macro, X-macro table,
+generated/declarative source table, owner-map rule, or
+`check_runtime_lifecycles.pl` validation. If a batch would repeat
+init/adopt/reset/destroy, delete-and-null, list/hash cleanup, fallback
+copy/reset, or manifest bookkeeping patterns, land that checked lifecycle
+framework improvement first and then move the larger coherent state batch
+through it.
+
+This is an implementation-order rule for Gate E2, not optional cleanup. The
+goal is to keep taking larger Phase 12 strides while avoiding parallel
+handwritten lifecycle lists that future agents have to remember to update.

@@ -20,6 +20,11 @@ If lifecycle bookkeeping itself is making Phase 12 slow, treat that as a code
 smell in the lifecycle framework. Do not keep grinding through repeated manual
 helpers. Add the missing macro, bucket-row action, declarative table pattern, or
 checker rule first, then move a larger coherent batch through the checked path.
+When considering the next Phase 12 batch, explicitly ask whether a macro,
+X-macro table, generated/declarative source table, or checker rule would make
+the lifecycle work easier. If the answer is yes, that lifecycle-framework
+improvement is the next implementation step, not optional cleanup after the
+state migration.
 This is especially important before the remaining Gate E2 blockers: threaded
 teardown, PMChild/thread synchronization, startup-gate removal, and any
 remaining object migration should each start by asking whether a small
