@@ -17031,6 +17031,42 @@ Validation:
   process-only backend-model rejection, followed by downstream extended-stats
   differences.
 
+## Threaded PGLZ Compression Scratch
+
+Lifecycle/preflight note:
+
+- target: prevent concurrent threaded pglz compression from sharing one
+  process-global history workspace and producing corrupt compressed catalog
+  datums.
+- touched roots/buckets: no runtime roots; fixed-size pglz compression scratch
+  becomes thread-local for the initial thread-per-session runtime.
+- owner source files: `src/common/pg_lzcompress.c` and this Phase 12 state
+  note.
+- legacy symbols/accessors: `hist_start`, `hist_entries`, `pglz_compress()`,
+  `pglz_find_match()`, and `pglz_hist_add`.
+- repeated lifecycle operations: none; the arrays are reset on every
+  compression call and have no adoption, reset, or teardown work.
+- checked primitive decision: use the existing `PG_THREAD_LOCAL` bridge for
+  large per-thread scratch instead of adding runtime-root fields. A later
+  pooled-scheduler pass can replace TLS scratch with carrier/execution-owned
+  workspace if carriers run multiple sessions concurrently.
+- validation impact: concurrent threaded catalog writes that toast
+  `pg_node_tree` values, especially `pg_rewrite.ev_action`, should no longer
+  create compressed data that later fails with `compressed pglz data is
+  corrupt`; full threaded `make check` at `MAX_CONNECTIONS=4` should keep
+  `returning` stable while rules/views are created concurrently with other
+  catalog-writing tests.
+
+Validation:
+
+- lifecycle/global guardrails passed after making the pglz compression history
+  workspace thread-local.
+- the original full threaded regression failure was `returning` reporting
+  `compressed pglz data is corrupt` while creating rules/views under
+  `MAX_CONNECTIONS=4`; after the scratch fix, the focused late regression group
+  kept `returning` stable and the exact full
+  `gmake check-threaded MAX_CONNECTIONS=4` target passed all 245 tests.
+
 ## Threaded Built-in Conversion Admission
 
 Lifecycle/preflight note:
