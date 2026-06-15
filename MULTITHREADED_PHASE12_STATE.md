@@ -18295,3 +18295,32 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o`, `backend_runtime_executor.o`,
   and the backend link; rerun lifecycle/global scans, threaded PL/pgSQL or
   world-core validation, and `git diff --check`.
+
+## Transam Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move pure transaction/XID compatibility accessors out of
+  `src/backend/utils/init/backend_runtime.c` and into a new transam-owned
+  `src/backend/access/transam/backend_runtime_xact.c` bridge file.
+- touched roots/buckets: no runtime root ownership changes; existing
+  `PgExecution.xact` and `PgBackend.transaction` buckets only.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  current-pointer and early fallback owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for internal current
+  transaction helper visibility, `src/backend/access/transam/Makefile`, and
+  `src/backend/access/transam/backend_runtime_xact.c`.
+- legacy symbols/accessors: `PgCurrentExecutionXactState()`,
+  `PgCurrentBackendTransactionState()`, `PgCurrentXact*Ref()`,
+  `PgCurrent*Xid*Ref()`, `PgCurrentTwoPhase*Ref()`,
+  `PgCurrentSlru*Ref()`, `PgCurrentMultiXact*Ref()`,
+  `PgCurrentProcArrayCachedXidNotInProgressRef()`,
+  `PgCurrentGlobalVis*Ref()`, and xid-cache counter accessors.
+- repeated lifecycle operations: none; this only relocates pointer accessors
+  and leaves transaction init/adopt/reset/teardown behavior unchanged.
+- checked primitive decision: no lifecycle primitive is needed because the
+  existing `PgExecution.xact` and `PgBackend.transaction` lifecycle rows and
+  owner-map entries continue to cover the buckets.
+- validation impact: rebuild `backend_runtime.o`, `backend_runtime_xact.o`,
+  and the backend link; rerun lifecycle/global scans, transaction-heavy
+  regression coverage, and `git diff --check`.

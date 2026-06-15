@@ -156,6 +156,7 @@ extern PgSessionGUCState *PgCurrentSessionGUCState(void);
 extern PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
 extern PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
 extern PgExecutionSPIState *PgCurrentExecutionSPIState(void);
+extern PgExecutionXactState *PgCurrentExecutionXactState(void);
 extern PgExecutionGUCErrorState *PgCurrentExecutionGUCErrorState(void);
 extern PgConnectionIdentityState *PgConnectionIdentityStateRef(PgConnection *connection);
 extern PgConnectionSocketIOState *PgConnectionSocketIOStateRef(PgConnection *connection);
@@ -176,6 +177,7 @@ extern PgBackendIPCState *PgCurrentBackendIPCState(void);
 extern void PgBackendResetTimeoutClosedState(PgBackendTimeoutState *timeout);
 extern PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
 extern PgBackendMemoryManagerState *PgCurrentBackendMemoryManagerState(void);
+extern PgBackendTransactionState *PgCurrentBackendTransactionState(void);
 extern PgBackendUtilityState *PgCurrentBackendUtilityState(void);
 extern PgBackendParallelState *PgCurrentBackendParallelState(void);
 
