@@ -37,6 +37,19 @@ support before continuing. Do not finish a boilerplate-heavy migration by hand
 and leave the lifecycle simplification as later cleanup; the simplification is
 part of the same Gate E2 implementation work.
 
+Quick lifecycle-ergonomics checklist for each substantial Phase 12 batch:
+
+- Can two or more fields use the same init/adopt/reset/destroy shape?
+- Can a `PG_RUNTIME_*` action or `PG_RUNTIME_DEFINE_*` helper remove repeated
+  boilerplate?
+- Can a bucket `.def` row or owner/source manifest make the update
+  mechanically checkable?
+- Can `check_runtime_lifecycles.pl` enforce the rule so future agents cannot
+  forget it?
+
+If the answer to any of these is yes, implement that small lifecycle primitive
+first, then use it for the larger migration in the same slice.
+
 Do not retry wholesale thread-exit `TopMemoryContext` deletion as a narrow
 cleanup. A Phase 12 probe that deleted the thread execution top context after
 bucket reset caused follow-on backend failures (`unsupported byval length: 0`

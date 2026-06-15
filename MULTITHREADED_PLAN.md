@@ -890,6 +890,11 @@ Gate E2 requires:
   or `check_runtime_lifecycles.pl` rule first, then move a larger coherent
   batch through that mechanism. This is the preferred way to move faster while
   preserving lifecycle rigor;
+- lifecycle macro/checker preflight is mandatory for each substantial Gate E2
+  slice. Before moving more state, answer whether a small helper macro,
+  bucket table row, owner/source manifest rule, or checker extension would
+  make the batch safer or larger. If yes, land that checked primitive first
+  and use it in the same slice;
 - the next broad Gate E2 implementation slice starts with lifecycle
   ergonomics/refactor work before more large state migrations or teardown
   hardening. The intended order is: simplify checked lifecycle mechanics,
