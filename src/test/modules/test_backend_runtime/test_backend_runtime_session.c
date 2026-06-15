@@ -3627,6 +3627,29 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	fake_session.parser.operator_lookup_cache =
 		hash_create("test operator lookup cache", 8, &hash_ctl,
 					HASH_ELEM | HASH_BLOBS);
+
+	fake_session.catalog_lookup.cache_memory_context =
+		AllocSetContextCreate(TopMemoryContext,
+							  "test catalog lookup cache context",
+							  ALLOCSET_SMALL_SIZES);
+	hash_ctl.hcxt = fake_session.catalog_lookup.cache_memory_context;
+	fake_session.catalog_lookup.relcache_relation_id_cache =
+		hash_create("test relcache relation cache", 8, &hash_ctl,
+					HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	fake_session.catalog_lookup.relcache_opclass_cache =
+		hash_create("test opclass cache", 8, &hash_ctl,
+					HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	fake_session.catalog_lookup.typcache_type_cache_hash =
+		hash_create("test typcache cache", 8, &hash_ctl,
+					HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	fake_session.catalog_lookup.typcache_relid_to_typeid_hash =
+		hash_create("test typcache relid cache", 8, &hash_ctl,
+					HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	fake_session.catalog_lookup.typcache_record_cache_hash =
+		hash_create("test record cache", 8, &hash_ctl,
+					HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	hash_ctl.hcxt = NULL;
+
 	fake_session.function_manager.function_manager_context =
 		AllocSetContextCreate(TopMemoryContext,
 							  "test function manager cache context",
@@ -3849,6 +3872,12 @@ test_session_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && fake_session.xact_callbacks.subxact_callbacks == NULL;
 	ok = ok && fake_session.xact_callbacks.xact_callback_context == NULL;
 	ok = ok && fake_session.parser.operator_lookup_cache == NULL;
+	ok = ok && fake_session.catalog_lookup.cache_memory_context == NULL;
+	ok = ok && fake_session.catalog_lookup.relcache_relation_id_cache == NULL;
+	ok = ok && fake_session.catalog_lookup.relcache_opclass_cache == NULL;
+	ok = ok && fake_session.catalog_lookup.typcache_type_cache_hash == NULL;
+	ok = ok && fake_session.catalog_lookup.typcache_relid_to_typeid_hash == NULL;
+	ok = ok && fake_session.catalog_lookup.typcache_record_cache_hash == NULL;
 	ok = ok && fake_session.function_manager.function_manager_context == NULL;
 	ok = ok && fake_session.function_manager.c_func_hash == NULL;
 	ok = ok && fake_session.function_manager.cached_function_hash == NULL;

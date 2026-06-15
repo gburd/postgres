@@ -1679,8 +1679,10 @@ LookupOpclassInfo(Oid operatorClassOid,
 
 		ctl.keysize = sizeof(Oid);
 		ctl.entrysize = sizeof(OpClassCacheEnt);
+		ctl.hcxt = CacheMemoryContext;
 		OpClassCache = hash_create("Operator class cache", 64,
-								   &ctl, HASH_ELEM | HASH_BLOBS);
+								   &ctl,
+								   HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	}
 
 	opcentry = (OpClassCacheEnt *) hash_search(OpClassCache,
@@ -4019,8 +4021,9 @@ RelationCacheInitialize(void)
 	 */
 	ctl.keysize = sizeof(Oid);
 	ctl.entrysize = sizeof(RelIdCacheEnt);
+	ctl.hcxt = CacheMemoryContext;
 	RelationIdCache = hash_create("Relcache by OID", INITRELCACHESIZE,
-								  &ctl, HASH_ELEM | HASH_BLOBS);
+								  &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 
 	/*
 	 * reserve enough in_progress_list slots for many cases

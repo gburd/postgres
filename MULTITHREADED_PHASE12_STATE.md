@@ -13854,3 +13854,74 @@ Validation for the function-manager session context ownership slice:
   backend-runtime TAP passed for `001_threaded_runtime.pl` and
   `002_threaded_bgworker_crash.pl`, 131 tests total, with repo-local `.perl5`
   `PERL5LIB` and explicit `PG_REGRESS=src/test/regress/pg_regress`.
+
+## Relcache And Typcache CacheMemoryContext Hash Ownership
+
+Lifecycle/preflight note:
+
+- target: Gate E2 retained `TopMemoryContext` ownership in catalog lookup
+  caches after the failed root-context reclamation probe reported an opclass
+  cache lookup failure;
+- touched roots/buckets: `PgSession.catalog_lookup`, specifically
+  `RelationIdCache`, `OpClassCache`, `TypeCacheHash`,
+  `RelIdToTypeIdCacheHash`, `RecordCacheHash`, and the existing
+  `CacheMemoryContext` owner slot;
+- owner source files: `src/backend/utils/cache/relcache.c`,
+  `src/backend/utils/cache/typcache.c`,
+  `src/backend/utils/cache/backend_runtime_cache.c`,
+  `src/test/modules/test_backend_runtime/test_backend_runtime_session.c`,
+  `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`, and
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`;
+- legacy symbols/accessors: `RelationIdCache`, `OpClassCache`,
+  `TypeCacheHash`, `RelIdToTypeIdCacheHash`, `RecordCacheHash`,
+  `CacheMemoryContext`, `PgCurrentRelationIdCacheRef()`,
+  `PgCurrentOpClassCacheRef()`, `PgCurrentTypeCacheHashRef()`,
+  `PgCurrentRelIdToTypeIdCacheHashRef()`,
+  `PgCurrentRecordCacheHashRef()`, and `PgCurrentCacheMemoryContextRef()`;
+- repeated lifecycle operations: five hash roots need the same source-local
+  `HASH_CONTEXT` parent assignment after ensuring `CacheMemoryContext` exists.
+  The existing checked `PgSession.catalog_lookup` lifecycle row and
+  `PG_RUNTIME_DELETE_MEMORY_CONTEXT` cleanup cover closed-session teardown, so
+  no new reset helper is needed for this batch;
+- checked primitive decision: reuse the existing catalog lookup lifecycle row,
+  owner-map rows, `CacheMemoryContext` owner slot, and
+  `check-runtime-lifecycles` validation. This is local hash allocation
+  plumbing under one existing session-owned cache context rather than a new
+  lifecycle shape;
+- validation impact: run touched object builds for `relcache.o`,
+  `typcache.o`, `backend_runtime_cache.o`, and
+  `test_backend_runtime_session.o`, plus `gmake check-runtime-lifecycles`,
+  `gmake check-global-lifetimes`, full incremental `gmake -j8`,
+  `test_backend_runtime`, and direct backend-runtime TAP.
+
+Slice:
+
+- `relcache.c` now creates the relation-OID relcache hash and opclass cache
+  hash with `HASH_CONTEXT` under the current session's `CacheMemoryContext`;
+- `typcache.c` now creates the type cache, relid-to-typeid map, and record
+  cache hash with `HASH_CONTEXT` under `CacheMemoryContext`, creating that
+  context before the hash roots are allocated;
+- the closed-session runtime reset fixture now seeds real context-backed
+  catalog lookup hashes and verifies that offline session reset deletes the
+  cache context and clears the relcache/typcache root pointers;
+- the lifecycle manifest and owner map now record that the relcache/opclass
+  and typcache/record dynahash private contexts are `CacheMemoryContext`-
+  owned, leaving active-session `CacheMemoryContext` reclamation as the
+  remaining conservative Gate E2 step.
+
+Validation for the relcache/typcache CacheMemoryContext hash ownership slice:
+
+- `git diff --check` passed;
+- touched-object builds passed for `relcache.o`, `typcache.o`,
+  `backend_runtime_cache.o`, and `test_backend_runtime_session.o`;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 223 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- full incremental `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- after patching the recreated macOS temp-install install names, direct
+  backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with repo-local `.perl5`
+  `PERL5LIB` and explicit `PG_REGRESS=src/test/regress/pg_regress`.

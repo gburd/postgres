@@ -399,8 +399,13 @@ lookup_type_cache(Oid type_id, int flags)
 		HASHCTL		ctl;
 		int			allocsize;
 
+		/* Also make sure CacheMemoryContext exists */
+		if (!CacheMemoryContext)
+			CreateCacheMemoryContext();
+
 		ctl.keysize = sizeof(Oid);
 		ctl.entrysize = sizeof(TypeCacheEntry);
+		ctl.hcxt = CacheMemoryContext;
 
 		/*
 		 * TypeCacheEntry takes hash value from the system cache. For
@@ -410,24 +415,22 @@ lookup_type_cache(Oid type_id, int flags)
 		ctl.hash = type_cache_syshash;
 
 		TypeCacheHash = hash_create("Type information cache", 64,
-									&ctl, HASH_ELEM | HASH_FUNCTION);
+									&ctl,
+									HASH_ELEM | HASH_FUNCTION | HASH_CONTEXT);
 
 		Assert(RelIdToTypeIdCacheHash == NULL);
 
 		ctl.keysize = sizeof(Oid);
 		ctl.entrysize = sizeof(RelIdToTypeIdCacheEntry);
 		RelIdToTypeIdCacheHash = hash_create("Map from relid to OID of cached composite type", 64,
-											 &ctl, HASH_ELEM | HASH_BLOBS);
+											 &ctl,
+											 HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 
 		/* Also set up callbacks for SI invalidations */
 		CacheRegisterRelcacheCallback(TypeCacheRelCallback, (Datum) 0);
 		CacheRegisterSyscacheCallback(TYPEOID, TypeCacheTypCallback, (Datum) 0);
 		CacheRegisterSyscacheCallback(CLAOID, TypeCacheOpcCallback, (Datum) 0);
 		CacheRegisterSyscacheCallback(CONSTROID, TypeCacheConstrCallback, (Datum) 0);
-
-		/* Also make sure CacheMemoryContext exists */
-		if (!CacheMemoryContext)
-			CreateCacheMemoryContext();
 
 		/*
 		 * reserve enough in_progress_list slots for many cases
@@ -2079,17 +2082,18 @@ assign_record_type_typmod(TupleDesc tupDesc)
 		/* First time through: initialize the hash table */
 		HASHCTL		ctl;
 
+		/* Also make sure CacheMemoryContext exists */
+		if (!CacheMemoryContext)
+			CreateCacheMemoryContext();
+
 		ctl.keysize = sizeof(TupleDesc);	/* just the pointer */
 		ctl.entrysize = sizeof(RecordCacheEntry);
 		ctl.hash = record_type_typmod_hash;
 		ctl.match = record_type_typmod_compare;
+		ctl.hcxt = CacheMemoryContext;
 		RecordCacheHash = hash_create("Record information cache", 64,
 									  &ctl,
-									  HASH_ELEM | HASH_FUNCTION | HASH_COMPARE);
-
-		/* Also make sure CacheMemoryContext exists */
-		if (!CacheMemoryContext)
-			CreateCacheMemoryContext();
+									  HASH_ELEM | HASH_FUNCTION | HASH_COMPARE | HASH_CONTEXT);
 	}
 
 	/*
