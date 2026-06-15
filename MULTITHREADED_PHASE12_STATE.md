@@ -17206,3 +17206,108 @@ Validation:
   timestamp timestamptz interval horology tstypes stats_import`.
 - `git diff --check`, `gmake check-runtime-lifecycles`, and
   `gmake check-global-lifetimes` passed.
+
+## Threaded Dynamic Library Init List Accessor
+
+Lifecycle/preflight note:
+
+- target: stop `dfmgr.c` from reading the session-owned
+  `dynamic_library_inits` replay list through direct `CurrentPgSession` field
+  offsets while loading already-seen C libraries in threaded regression.
+- touched roots/buckets: `PgSession.dynamic_library_inits` and
+  `PgSession.dynamic_library_context` only; no new runtime root or lifecycle
+  bucket.
+- owner source files: `src/backend/utils/fmgr/dfmgr.c`,
+  `src/backend/utils/init/backend_runtime.c`,
+  `src/include/utils/backend_runtime.h`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, and this Phase 12 state note.
+- legacy symbols/accessors: `CurrentPgSession`, `dynamic_library_inits`,
+  `PgSessionGetDynamicLibraryMemoryContext()`, `module_needs_session_init()`,
+  `remember_module_session_init()`, and `_PG_init()` replay.
+- repeated lifecycle operations: reuse the existing session-owned list and
+  dynamic-library memory context; no new reset or teardown shape is added.
+- checked primitive decision: add an owner-adjacent pointer-slot accessor for
+  the checked `PgSession.dynamic_library_inits` bucket, mirroring the existing
+  dynamic-library context helper instead of adding handwritten list ownership
+  in `dfmgr.c`.
+- validation impact: the full threaded regression prefix should get past the
+  `create_table` C-function creation crash in `internal_load_library()`.
+  If the session replay list is still corrupt or shared, the focused
+  `create_table` frontier or lifecycle owner checks should fail before the
+  branch can claim 80 passing threaded tests.
+
+Validation:
+
+- `gmake check-threaded` got past the prior `create_table` crash and passed
+  `create_table`, `create_type`, and `create_schema`.
+
+## Threaded Event Trigger Cache Teardown Guard
+
+Lifecycle/preflight note:
+
+- target: stop closed-session catalog lookup reset from calling
+  `hash_destroy()` on a stale `event_trigger_cache` pointer after threaded
+  `create_table` exits and the next regression group starts.
+- touched roots/buckets: `PgSession.catalog_lookup.event_trigger_cache`,
+  `PgSession.catalog_lookup.event_trigger_cache_context`, and
+  `PgSession.catalog_lookup.event_trigger_cache_state`.
+- owner source files: `src/backend/utils/cache/backend_runtime_cache.c`,
+  `src/backend/utils/cache/evtcache.c`,
+  `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`, and this Phase 12 state note.
+- legacy symbols/accessors: `EventTriggerCache`, `EventTriggerCacheContext`,
+  `EventTriggerCacheState`, `BuildEventTriggerCache()`,
+  `InvalidateEventCacheCallback()`, and
+  `PgSessionResetCatalogLookupClosedState()`.
+- repeated lifecycle operations: reuse the existing owner-adjacent catalog
+  lookup reset; no new lifecycle bucket or generic cleanup primitive is needed.
+- checked primitive decision: keep event-trigger cache teardown inside the
+  checked `PgSession.catalog_lookup` bucket and encode the existing
+  context-owned hash invariant directly in the owner reset path.
+- validation impact: the full threaded regression prefix should get past the
+  backend-exit crash in `PgSessionResetCatalogLookupClosedState()` after
+  `create_table`, and lifecycle/global scans should continue to guard the
+  catalog lookup bucket ownership.
+
+Validation:
+
+- `gmake check-threaded` passed the full create-index group after clearing
+  stale event-trigger cache pointers as context-owned state.
+
+## Threaded Backend Stack Depth Guard
+
+Lifecycle/preflight note:
+
+- target: make the `infinite_recurse` regression test hit PostgreSQL's
+  `max_stack_depth` ERROR in backend threads instead of overflowing a smaller
+  platform pthread stack and aborting the rest of the threaded regression
+  group.
+- touched roots/buckets: existing `PgCarrier.stack_base_ptr` only; no new
+  runtime root or lifecycle bucket.
+- owner source files: `src/backend/port/pg_thread.c`,
+  `src/include/port/pg_thread.h`, and this Phase 12 state note.
+- legacy symbols/accessors: `set_stack_base()`, `stack_is_too_deep()`,
+  `max_stack_depth`, `get_stack_depth_rlimit()`, and the backend-thread
+  `pg_thread_create()` wrapper.
+- repeated lifecycle operations: reuse the carrier-local stack-base pointer;
+  thread stack memory remains owned by the platform thread implementation.
+- checked primitive decision: keep stack-base lifecycle in the existing
+  checked `PgCarrier.stack_base_ptr` row and add a thread-creation sizing
+  invariant rather than a new reset/destroy primitive.
+- validation impact: the first eight threaded regression groups should no
+  longer lose the postmaster during `infinite_recurse`, allowing at least the
+  first 80 tests to complete with meaningful pass/fail output.
+
+Validation:
+
+- `gmake check-threaded` passed through test 97, including
+  `create_aggregate`, `create_function_sql`, and `infinite_recurse`.  The run
+  was manually interrupted after hanging in the following group; the next
+  frontier is after the Milestone W visibility target of 80 passing tests.
+- `gmake check-threaded-smoke` passed all 10 helper-free threaded smoke tests.
+- process-mode focused regression passed `test_setup create_function_c
+  create_misc create_operator create_procedure create_table create_type
+  create_schema create_index create_index_spgist create_view index_including
+  index_including_gist create_aggregate create_function_sql
+  infinite_recurse`.
+- `git diff --check`, `gmake check-runtime-lifecycles`, and
+  `gmake check-global-lifetimes` passed.

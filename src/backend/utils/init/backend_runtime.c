@@ -4118,6 +4118,14 @@ PgSessionGetDynamicLibraryMemoryContext(PgSession *session)
 										  "dynamic library session state");
 }
 
+List **
+PgCurrentSessionDynamicLibraryInitsRef(void)
+{
+	Assert(CurrentPgSession != NULL);
+
+	return &CurrentPgSession->dynamic_library_inits;
+}
+
 Session *
 PgSessionGetLegacySession(PgSession *session)
 {

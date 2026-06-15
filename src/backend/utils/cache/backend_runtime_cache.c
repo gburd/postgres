@@ -275,7 +275,12 @@ PgSessionResetCatalogLookupClosedState(PgSession *session)
 	}
 	else if (session->catalog_lookup.event_trigger_cache != NULL)
 	{
-		PG_RUNTIME_DESTROY_HASH(session->catalog_lookup.event_trigger_cache);
+		/*
+		 * BuildEventTriggerCache() always allocates the hash under
+		 * EventTriggerCacheContext.  Without that context, a remaining hash
+		 * pointer is stale closed-session state rather than a valid owner.
+		 */
+		session->catalog_lookup.event_trigger_cache = NULL;
 	}
 	session->catalog_lookup.event_trigger_cache_state = 0;
 	if (session->catalog_lookup.ruleutils_rule_by_oid_plan != NULL)

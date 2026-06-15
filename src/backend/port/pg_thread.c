@@ -22,6 +22,15 @@
 
 #define PG_THREAD_NAME_MAX 64
 
+#ifndef WIN32
+/*
+ * Secondary pthread stacks can be much smaller than the process stack limit
+ * used by max_stack_depth.  Keep backend threads large enough for PostgreSQL's
+ * existing stack-depth guard to error before the platform stack is exhausted.
+ */
+#define PG_THREAD_STACK_SIZE ((size_t) 8 * 1024 * 1024)
+#endif
+
 typedef struct PgThreadStartData
 {
 	PgThreadRoutine routine;
@@ -66,9 +75,21 @@ pg_thread_create(PgThread *thread, const char *name,
 	}
 #else
 	{
+		pthread_attr_t attr;
 		int			rc;
 
-		rc = pthread_create(&thread->thread, NULL, pg_thread_start, start_data);
+		rc = pthread_attr_init(&attr);
+		if (rc != 0)
+		{
+			free(start_data);
+			return rc;
+		}
+
+		rc = pthread_attr_setstacksize(&attr, PG_THREAD_STACK_SIZE);
+		if (rc == 0)
+			rc = pthread_create(&thread->thread, &attr, pg_thread_start,
+								start_data);
+		(void) pthread_attr_destroy(&attr);
 		if (rc != 0)
 		{
 			free(start_data);

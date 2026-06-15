@@ -3044,6 +3044,7 @@ extern bool PgCurrentSessionOwnsPointer(const void *ptr);
 extern bool PgCurrentOrEarlySessionOwnsPointer(const void *ptr);
 extern void PgBackendResetClosedState(PgBackend *backend);
 extern MemoryContext PgSessionGetDynamicLibraryMemoryContext(PgSession *session);
+extern List **PgCurrentSessionDynamicLibraryInitsRef(void);
 extern PgRuntimeExtensionModuleState *PgCurrentRuntimeExtensionModuleState(void);
 extern MemoryContext PgCurrentRuntimeExtensionModuleMemoryContext(void);
 extern MemoryContext *PgCurrentPgPlanAdviceContextRef(void);

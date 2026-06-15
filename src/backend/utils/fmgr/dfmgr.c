@@ -387,18 +387,21 @@ call_module_init_function(DynamicFileList *file_scanner)
 static bool
 module_needs_session_init(DynamicFileList *file_scanner)
 {
+	List	  **dynamic_library_inits;
+
 	if (CurrentPgRuntime == NULL ||
 		CurrentPgRuntime->kind != PG_RUNTIME_THREAD_PER_SESSION ||
 		CurrentPgSession == NULL)
 		return false;
 
-	return !list_member_ptr(CurrentPgSession->dynamic_library_inits,
-							file_scanner);
+	dynamic_library_inits = PgCurrentSessionDynamicLibraryInitsRef();
+	return !list_member_ptr(*dynamic_library_inits, file_scanner);
 }
 
 static void
 remember_module_session_init(DynamicFileList *file_scanner)
 {
+	List	  **dynamic_library_inits;
 	MemoryContext oldcontext;
 
 	if (CurrentPgRuntime == NULL ||
@@ -406,13 +409,13 @@ remember_module_session_init(DynamicFileList *file_scanner)
 		CurrentPgSession == NULL)
 		return;
 
-	if (list_member_ptr(CurrentPgSession->dynamic_library_inits, file_scanner))
+	dynamic_library_inits = PgCurrentSessionDynamicLibraryInitsRef();
+	if (list_member_ptr(*dynamic_library_inits, file_scanner))
 		return;
 
 	oldcontext = MemoryContextSwitchTo(
 		PgSessionGetDynamicLibraryMemoryContext(CurrentPgSession));
-	CurrentPgSession->dynamic_library_inits =
-		lappend(CurrentPgSession->dynamic_library_inits, file_scanner);
+	*dynamic_library_inits = lappend(*dynamic_library_inits, file_scanner);
 	MemoryContextSwitchTo(oldcontext);
 }
 
