@@ -17889,3 +17889,49 @@ Evidence:
   ordering change.
 - `gmake check-runtime-lifecycles`, `gmake check-global-lifetimes`, and
   `git diff --check` passed.
+
+## Simple Built-in SET GUC Lock Narrowing
+
+Lifecycle/preflight note:
+
+- target: narrow the remaining temporary threaded GUC mutex for ordinary
+  built-in `SET` operations now that full process-mode and threaded core
+  regression baselines pass.
+- touched roots/buckets: `PgSession.guc` copied GUC table/hash/list state and
+  `PgCarrier.threaded_guc_mutex_depth`; no new runtime root ownership.
+- owner source files: `src/backend/utils/misc/guc.c`,
+  `src/backend/utils/init/backend_runtime.c` only if a new local-ownership
+  helper is needed, and this Phase 12 state note.
+- legacy symbols/accessors: `set_config_with_handle()`,
+  `set_config_with_handle_internal()`, `find_option()`,
+  `ThreadedGUCLock()`, `ThreadedGUCUnlock()`,
+  `GUCRecordIsCurrentSessionBuiltin()`, and
+  `GUCRecordVariableIsCurrentSessionOwned()`.
+- repeated lifecycle operations: none; this is a lock predicate change around
+  existing per-session GUC metadata.
+- checked primitive decision: no lifecycle primitive is needed if the fast
+  path is limited to current-session built-in records with session-owned
+  direct-variable storage and no check/assign hooks. Keep custom/extension,
+  hook-backed, execution-owned, process-global, and placeholder paths under
+  the existing mutex.
+- validation impact: full process-mode `gmake check`, full
+  `gmake check-threaded`, lifecycle/global scans, and `git diff --check`
+  should pass. The `guc` regression should continue to cover ordinary SET,
+  RESET, SHOW, function `SET` options, and GUC stack behavior.
+
+Evidence:
+
+- `set_config_with_handle()` now skips the temporary process-wide GUC mutex
+  only for already-known built-in records in the current session's copied GUC
+  table whose direct variable lives in `PgSession` and whose record has no
+  check or assign hook.
+- Unknown names, custom placeholders, extension/custom records, hook-backed
+  records, execution-owned active transaction GUCs, and records still backed
+  by process-global direct variables continue to use the existing mutex.
+- Touched-object build passed for `src/backend/utils/misc/guc.o`.
+- `git diff --check`, `gmake check-runtime-lifecycles`, and
+  `gmake check-global-lifetimes` passed.
+- Full process-mode `gmake check` passed all 245 core regression tests.
+- Full `gmake check-threaded` passed all 245 core regression tests.
+- Full `gmake check-threaded-workers` passed all 245 core regression tests
+  with `io_method = worker` and `summarize_wal = on`.

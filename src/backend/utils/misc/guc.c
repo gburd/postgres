@@ -182,7 +182,7 @@ GUCRecordIsCurrentSessionBuiltin(const struct config_generic *record)
 }
 
 static bool
-GUCRecordVariableIsCurrentSessionOwned(struct config_generic *record)
+GUCRecordVariableIsCurrentSessionOwned(const struct config_generic *record)
 {
 	const void *variable;
 
@@ -211,6 +211,31 @@ GUCRecordVariableIsCurrentSessionOwned(struct config_generic *record)
 }
 
 static bool
+GUCRecordHasCheckOrAssignHook(const struct config_generic *record)
+{
+	switch (record->vartype)
+	{
+		case PGC_BOOL:
+			return record->_bool.check_hook != NULL ||
+				record->_bool.assign_hook != NULL;
+		case PGC_INT:
+			return record->_int.check_hook != NULL ||
+				record->_int.assign_hook != NULL;
+		case PGC_REAL:
+			return record->_real.check_hook != NULL ||
+				record->_real.assign_hook != NULL;
+		case PGC_STRING:
+			return record->_string.check_hook != NULL ||
+				record->_string.assign_hook != NULL;
+		case PGC_ENUM:
+			return record->_enum.check_hook != NULL ||
+				record->_enum.assign_hook != NULL;
+	}
+
+	pg_unreachable();
+}
+
+static bool
 GUCRecordHasShowHook(const struct config_generic *record)
 {
 	switch (record->vartype)
@@ -228,6 +253,32 @@ GUCRecordHasShowHook(const struct config_generic *record)
 	}
 
 	pg_unreachable();
+}
+
+static bool
+GUCSetOptionNeedsThreadedLock(const struct config_generic *record)
+{
+	if (!multithreaded)
+		return false;
+
+	/*
+	 * The copied built-in GUC table, hash, non-default list, stack list, and
+	 * report list are PgSession-owned.  A simple built-in GUC whose direct
+	 * variable also lives in PgSession and has no hooks mutates only this
+	 * logical backend's GUC state, so it does not need the temporary
+	 * process-wide GUC mutex.
+	 *
+	 * Keep all ambiguous paths serialized: custom/extension records,
+	 * placeholders, hook-backed records, execution-owned active transaction
+	 * GUCs, and records whose direct variable still points at process-global
+	 * storage.
+ */
+	if (GUCRecordIsCurrentSessionBuiltin(record) &&
+		GUCRecordVariableIsCurrentSessionOwned(record) &&
+		!GUCRecordHasCheckOrAssignHook(record))
+		return false;
+
+	return true;
 }
 
 static bool
@@ -423,6 +474,7 @@ static void InitializeThreadedSessionReboundGUCOptions(
 static void InitializeThreadedSessionCompatibilityGUCOptions(void);
 static bool ThreadedGUCLock(void);
 static void ThreadedGUCUnlock(bool locked);
+static bool GUCSetOptionNeedsThreadedLock(const struct config_generic *record);
 static bool GUCShowOptionNeedsThreadedLock(const struct config_generic *record);
 static MemoryContext GUCReservedPrefixContext(void);
 static int	set_config_with_handle_internal(const char *name,
@@ -3890,6 +3942,20 @@ set_config_with_handle(const char *name, config_handle *handle,
 {
 	int			result;
 	bool		locked;
+
+	if (multithreaded)
+	{
+		struct config_generic *record = handle;
+
+		if (record == NULL)
+			record = find_option(name, false, true, 0);
+
+		if (record != NULL && !GUCSetOptionNeedsThreadedLock(record))
+			return set_config_with_handle_internal(name, record, value,
+												   context, source, srole,
+												   action, changeVal, elevel,
+												   is_reload);
+	}
 
 	locked = ThreadedGUCLock();
 	PG_TRY();
