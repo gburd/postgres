@@ -1647,12 +1647,46 @@ typedef struct PgSessionFunctionManagerState
 typedef void (*PgSessionResetCallback) (void *arg);
 
 #define PG_SESSION_SEPGSQL_AVC_NUM_SLOTS 512
+#define PG_SESSION_PGCRYPTO_DES_OUTPUT_SIZE 21
 
 typedef struct PgSessionResetCallbackItem
 {
 	PgSessionResetCallback callback;
 	void	   *arg;
 } PgSessionResetCallbackItem;
+
+typedef struct PgSessionPgcryptoDesState
+{
+	uint8		inv_key_perm[64];
+	uint8		u_key_perm[56];
+	uint8		inv_comp_perm[56];
+	uint8		u_sbox[8][64];
+	uint8		un_pbox[32];
+	uint32		saltbits;
+	long		old_salt;
+	const uint32 *bits28;
+	const uint32 *bits24;
+	uint8		init_perm[64];
+	uint8		final_perm[64];
+	uint32		en_keysl[16];
+	uint32		en_keysr[16];
+	uint32		de_keysl[16];
+	uint32		de_keysr[16];
+	int			des_initialised;
+	uint8		m_sbox[4][4096];
+	uint32		psbox[4][256];
+	uint32		ip_maskl[8][256];
+	uint32		ip_maskr[8][256];
+	uint32		fp_maskl[8][256];
+	uint32		fp_maskr[8][256];
+	uint32		key_perm_maskl[8][128];
+	uint32		key_perm_maskr[8][128];
+	uint32		comp_maskl[8][128];
+	uint32		comp_maskr[8][128];
+	uint32		old_rawkey0;
+	uint32		old_rawkey1;
+	char		output[PG_SESSION_PGCRYPTO_DES_OUTPUT_SIZE];
+} PgSessionPgcryptoDesState;
 
 typedef struct PgSessionExtensionModuleState
 {
@@ -1730,6 +1764,7 @@ typedef struct PgSessionExtensionModuleState
 	int			sepgsql_avc_lru_hint;
 	int			sepgsql_avc_threshold;
 	char	   *sepgsql_avc_unlabeled;
+	PgSessionPgcryptoDesState pgcrypto_des;
 	MemoryContext dblink_context;
 	void	   *dblink_persistent_connection;
 	void	   *dblink_remote_conn_hash;
@@ -3003,6 +3038,7 @@ extern List **PgCurrentPgPlanAdviceAdvisorHookListRef(void);
 extern MemoryContext *PgCurrentBloomContextRef(void);
 extern void **PgCurrentPLpgSQLSessionStateRef(void);
 extern PgSessionExtensionModuleState *PgCurrentSessionExtensionModuleState(void);
+extern PgSessionPgcryptoDesState *PgCurrentPgcryptoDesState(void);
 extern void **PgCurrentPLpythonProcedureCacheRef(void);
 extern MemoryContext *PgCurrentPLpythonMemoryContextRef(void);
 extern bool *PgCurrentPLpythonResetRegisteredRef(void);

@@ -1865,6 +1865,18 @@ Important current files:
   coverage plus a full non-SSL build here, and use an SSL-enabled build when
   compile coverage for that file is required.
 
+  `contrib/pgcrypto` is different: this makefile still builds OpenSSL-backed
+  object files even when the core tree is configured `with_ssl = no`. On this
+  macOS checkout, use Homebrew OpenSSL explicitly for focused pgcrypto builds
+  and checks:
+
+  ```sh
+  PG_CPPFLAGS="-I/opt/homebrew/opt/openssl@3/include" \
+  PG_LDFLAGS="-L/opt/homebrew/opt/openssl@3/lib" \
+  SHLIB_LINK="-L/opt/homebrew/opt/openssl@3/lib -lcrypto" \
+  gmake -C contrib/pgcrypto clean all check
+  ```
+
 - This macOS checkout is not a normal compile target for `contrib/sepgsql`.
   PostgreSQL builds `sepgsql` only with SELinux support, Meson disables the
   SELinux dependency automatically when the host system is not Linux, and this

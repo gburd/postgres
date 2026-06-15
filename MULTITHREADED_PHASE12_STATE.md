@@ -16173,3 +16173,67 @@ Validation for the contrib extension context and AVC state slice:
   review, manifest/lifecycle checks, backend-runtime object tests, and global
   lifetime scanning; compile/runtime coverage remains a Linux
   SELinux-enabled validation item.
+
+## Pgcrypto DES Session Cache Batch
+
+Lifecycle/preflight note:
+
+- target: remove the shared mutable DES crypt cache and generated lookup
+  tables from `contrib/pgcrypto/crypt-des.c` by moving them into
+  `PgSession.extension_modules`;
+- touched root/bucket rows: `PgSession.extension_modules`, specifically the
+  DES generated-permutation tables, key schedule caches, salt/key cache
+  scalars, initialization flag, and fixed output buffer used by
+  `px_crypt_des()`;
+- legacy state owners: `inv_key_perm`, `u_key_perm`, `inv_comp_perm`,
+  `u_sbox`, `un_pbox`, `saltbits`, `old_salt`, `bits28`, `bits24`,
+  `init_perm`, `final_perm`, `en_keysl`, `en_keysr`, `de_keysl`,
+  `de_keysr`, `des_initialised`, `m_sbox`, `psbox`, `ip_maskl`,
+  `ip_maskr`, `fp_maskl`, `fp_maskr`, `key_perm_maskl`,
+  `key_perm_maskr`, `comp_maskl`, `comp_maskr`, `old_rawkey0`,
+  `old_rawkey1`, and the old function-static DES output buffer;
+- repeated lifecycle operations expected in this slice: scalar and fixed-array
+  zero/reset through `PgSessionInitializeExtensionModuleState()`, with no
+  memory-context allocation or destroy path. Existing session bucket
+  initialization/reset ordering is sufficient;
+- checked primitive decision: no new lifecycle primitive is needed. The
+  existing checked `PgSession.extension_modules` lifecycle row and owner-map
+  validation cover this state. The pgcrypto OpenSSL digest/cipher allocations
+  remain excluded because they are ResourceOwner-backed execution resources
+  and need a separate execution/resource-owner ownership decision.
+
+Implementation result:
+
+- `PgSession.extension_modules` now owns the pgcrypto DES generated lookup
+  tables, key schedule caches, salt/key cache scalars, initialization flag, and
+  fixed `px_crypt_des()` output buffer through `PgSessionPgcryptoDesState`;
+- `crypt-des.c` preserves the old local names through file-local macros over
+  `PgCurrentPgcryptoDesState()`, while immutable DES lookup tables are now
+  `static const`;
+- `PgSessionInitializeExtensionModuleState()` zeros the DES cache state as
+  part of the existing checked session extension-module lifecycle. Session
+  close/reuse therefore drops the cached salt/key schedule and generated
+  tables without a separate destructor path.
+
+Validation for the pgcrypto DES session cache slice:
+
+- touched-object builds passed for `backend_runtime.o`, `crypt-des.o`, and
+  `test_backend_runtime_session.o`;
+- after the installed runtime header changed, the backend was cleaned,
+  generated backend/include headers were regenerated, and full `gmake -j8`
+  passed;
+- clean `gmake -C src/test/modules/test_backend_runtime clean all check`
+  passed, including fake-session isolation checks for pgcrypto DES state;
+- `gmake check-runtime-lifecycles` passed with 172 fields classified, 172
+  bucket definitions checked, 35 reset definitions checked, and 356 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- static scan of `contrib/pgcrypto/crypt-des.c` found no remaining mutable
+  file-static DES state, function-static output buffer, or `TopMemoryContext`
+  allocation in the moved code;
+- `PG_CPPFLAGS="-I/opt/homebrew/opt/openssl@3/include"
+  PG_LDFLAGS="-L/opt/homebrew/opt/openssl@3/lib"
+  SHLIB_LINK="-L/opt/homebrew/opt/openssl@3/lib -lcrypto"
+  gmake -C contrib/pgcrypto clean all check` passed all 25 pgcrypto
+  regression tests.
