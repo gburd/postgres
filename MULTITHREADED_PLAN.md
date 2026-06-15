@@ -2095,6 +2095,11 @@ process-wide GUC critical section around session GUC setup, mutation, and
 display while copied GUC metadata, check hooks, assign hooks, and show hooks
 still contain process-era assumptions; later phases should narrow it as
 remaining GUC-backed globals become session-owned. Threaded
+`SHOW`/`current_setting()` display has since been narrowed for ordinary
+built-in GUC records: records copied into the current session's built-in GUC
+table and having no `show_hook` no longer enter the temporary process-wide GUC
+mutex, while hook-backed and custom/extension records stay serialized until
+their ownership and module-lifecycle rules are explicit. Threaded
 `read_nondefault_variables()` also skips `PGC_POSTMASTER` and `PGC_INTERNAL`
 records, because thread carriers share the postmaster address space and must
 not replay process-global strings through a session GUC context. The same

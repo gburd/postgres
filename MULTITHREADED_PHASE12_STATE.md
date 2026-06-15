@@ -14283,3 +14283,56 @@ take larger Phase 12 strides safely, not to compensate for lifecycle friction
 by landing smaller handwritten batches. Record the preflight answer in this
 file before touching the migration code: either name the existing checked
 primitive being reused, or name the new primitive added first.
+
+## Threaded SHOW GUC Lock Narrowing
+
+Lifecycle/preflight note:
+
+- target: narrow the Gate E2 temporary GUC serialization boundary for ordinary
+  GUC display without weakening hook-backed or extension/custom GUC behavior;
+- touched roots/buckets: `PgSession.guc`, `PgCarrier` threaded GUC mutex-depth
+  state, and the runtime-global `ThreadedGUCMutex`;
+- owner source files: `src/backend/utils/misc/guc.c`,
+  `MULTITHREADED_PLAN.md`, and this state log;
+- legacy symbols/accessors: `ShowGUCOption()`, `ThreadedGUCLock()`,
+  `ThreadedGUCUnlock()`, `ThreadedGUCMutexDepth`, `guc_variables`, and
+  `num_guc_variables`;
+- repeated lifecycle operations: none. This slice changes the lock predicate
+  only and does not add object fields, lifecycle rows, adoption helpers, or
+  reset/destructor paths;
+- checked primitive decision: no new lifecycle primitive is needed. Existing
+  `PgSession.guc` lifecycle and owner-map rows still cover the session-owned
+  built-in GUC table, and the slice deliberately avoids adding parallel
+  lifecycle mechanics;
+- validation impact: run the touched GUC object build, `git diff --check`,
+  `gmake check-runtime-lifecycles`, `gmake check-global-lifetimes`, full
+  `gmake -j8`, `test_backend_runtime`, and direct threaded backend-runtime
+  TAP.
+
+Slice:
+
+- `ShowGUCOption()` now skips the temporary process-wide GUC mutex for records
+  that are in the current session's copied built-in GUC table and have no
+  `show_hook`;
+- hook-backed built-in records and custom/extension records still take the
+  mutex because show hooks can inspect subsystem state and custom records can
+  depend on shared extension/module lifecycle;
+- this narrows normal `SHOW`/`current_setting()` serialization for simple
+  session-owned built-in settings while keeping mutation, setup, hooks, and
+  extension/custom records under the existing conservative lock.
+
+Validation for the threaded SHOW GUC lock narrowing slice:
+
+- `git diff --check` passed;
+- touched-object build passed for `guc.o`;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 225 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- full incremental `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- after patching the recreated macOS temp-install install names, direct
+  backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with repo-local `.perl5`
+  `PERL5LIB` and explicit `PG_REGRESS=src/test/regress/pg_regress`.

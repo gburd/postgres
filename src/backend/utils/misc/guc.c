@@ -159,6 +159,71 @@ ThreadedGUCUnlock(bool locked)
 #endif
 }
 
+static bool
+GUCRecordIsCurrentSessionBuiltin(const struct config_generic *record)
+{
+	uintptr_t	record_addr;
+	uintptr_t	start_addr;
+	uintptr_t	end_addr;
+	Size		offset;
+
+	if (guc_variables == NULL || num_guc_variables <= 0)
+		return false;
+
+	record_addr = (uintptr_t) record;
+	start_addr = (uintptr_t) guc_variables;
+	end_addr = start_addr + sizeof(struct config_generic) * num_guc_variables;
+
+	if (record_addr < start_addr || record_addr >= end_addr)
+		return false;
+
+	offset = record_addr - start_addr;
+	return (offset % sizeof(struct config_generic)) == 0;
+}
+
+static bool
+GUCRecordHasShowHook(const struct config_generic *record)
+{
+	switch (record->vartype)
+	{
+		case PGC_BOOL:
+			return record->_bool.show_hook != NULL;
+		case PGC_INT:
+			return record->_int.show_hook != NULL;
+		case PGC_REAL:
+			return record->_real.show_hook != NULL;
+		case PGC_STRING:
+			return record->_string.show_hook != NULL;
+		case PGC_ENUM:
+			return record->_enum.show_hook != NULL;
+	}
+
+	pg_unreachable();
+}
+
+static bool
+GUCShowOptionNeedsThreadedLock(const struct config_generic *record)
+{
+	if (!multithreaded)
+		return false;
+
+	/*
+	 * Ordinary built-in GUC records are copied into each PgSession and their
+	 * direct-variable slots are rebound to session/execution state. Showing
+	 * such a record reads only this logical backend's copy, so it need not
+	 * serialize with other threaded sessions.
+	 *
+	 * Keep hook-backed and custom/extension records under the runtime GUC
+	 * mutex. Show hooks can inspect subsystem state, and custom records may
+	 * still depend on extension code or shared module lifecycle.
+	 */
+	if (GUCRecordIsCurrentSessionBuiltin(record) &&
+		!GUCRecordHasShowHook(record))
+		return false;
+
+	return true;
+}
+
 static MemoryContext
 GUCReservedPrefixContext(void)
 {
@@ -332,6 +397,7 @@ static void InitializeThreadedSessionReboundGUCOptions(
 static void InitializeThreadedSessionCompatibilityGUCOptions(void);
 static bool ThreadedGUCLock(void);
 static void ThreadedGUCUnlock(bool locked);
+static bool GUCShowOptionNeedsThreadedLock(const struct config_generic *record);
 static MemoryContext GUCReservedPrefixContext(void);
 static int	set_config_with_handle_internal(const char *name,
 											config_handle *handle,
@@ -5783,16 +5849,20 @@ char *
 ShowGUCOption(const struct config_generic *record, bool use_units)
 {
 	char	   *result;
-	bool		locked;
+	bool		locked = false;
+	bool		needs_lock;
 
-	locked = ThreadedGUCLock();
+	needs_lock = GUCShowOptionNeedsThreadedLock(record);
+	if (needs_lock)
+		locked = ThreadedGUCLock();
 	PG_TRY();
 	{
 		result = ShowGUCOptionInternal(record, use_units);
 	}
 	PG_FINALLY();
 	{
-		ThreadedGUCUnlock(locked);
+		if (needs_lock)
+			ThreadedGUCUnlock(locked);
 	}
 	PG_END_TRY();
 
