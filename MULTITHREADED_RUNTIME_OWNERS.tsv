@@ -97,6 +97,15 @@ datestyle_string	PgSession	datetime	datestyle_string_value	PgCurrentDateStyleStr
 timezone_abbreviations_string	PgSession	datetime	timezone_abbreviations_string_value	PgCurrentTimeZoneAbbreviationsStringRef	src/backend/utils/misc/backend_runtime_guc.c	timezone_abbreviations GUC string owned through GUC machinery
 client_encoding_string	PgSession	encoding	client_encoding_string_value	PgCurrentClientEncodingStringRef	src/backend/utils/misc/backend_runtime_guc.c	client_encoding display string owned through GUC machinery
 server_encoding_string	PgSession	encoding	server_encoding_string_value	PgCurrentServerEncodingStringRef	src/backend/utils/misc/backend_runtime_guc.c	server_encoding display string owned through GUC machinery
+GUCMemoryContext	PgSession	guc	memory_context	PgCurrentGUCMemoryContextRef	src/backend/utils/misc/backend_runtime_guc.c	session-owned central GUC registry context; owns copied GUC records, hash storage, custom variables, stack entries, and reporting list entries
+guc_variables	PgSession	guc	variables	PgCurrentGUCVariablesRef	src/backend/utils/misc/backend_runtime_guc.c	session-owned copied GUC variable array allocated in GUCMemoryContext
+num_guc_variables	PgSession	guc	num_variables	PgCurrentNumGUCVariablesRef	src/backend/utils/misc/backend_runtime_guc.c	session GUC variable count
+guc_hashtab	PgSession	guc	hash_table	PgCurrentGUCHashTableRef	src/backend/utils/misc/backend_runtime_guc.c	session GUC name hash table allocated in GUCMemoryContext
+guc_nondef_list	PgSession	guc	nondef_list	PgCurrentGUCNondefListRef	src/backend/utils/misc/backend_runtime_guc.c	session list of GUC records with non-default state
+guc_stack_list	PgSession	guc	stack_list	PgCurrentGUCStackListRef	src/backend/utils/misc/backend_runtime_guc.c	session list of transactional GUC stack entries
+guc_report_list	PgSession	guc	report_list	PgCurrentGUCReportListRef	src/backend/utils/misc/backend_runtime_guc.c	session list of GUC records pending protocol reporting
+reporting_enabled	PgSession	guc	reporting_enabled	PgCurrentGUCReportingEnabledRef	src/backend/utils/misc/backend_runtime_guc.c	session flag enabling GUC reporting to the client
+GUCNestLevel	PgSession	guc	nest_level	PgCurrentGUCNestLevelRef	src/backend/utils/misc/backend_runtime_guc.c	session GUC nesting level
 DatabasePath	PgSession	database	database_path	PgCurrentDatabasePathRef	src/backend/utils/init/backend_runtime_session.c	current database path string allocated in DatabasePathContext
 DatabasePathContext	PgSession	database	database_path_context	PgCurrentDatabasePathContextRef	src/backend/utils/init/backend_runtime_session.c	session-owned context for the current database path string
 SystemUser	PgSession	user_identity	system_user	PgCurrentUserIdentityState	src/backend/utils/init/backend_runtime.c	system_user string allocated in SystemUserContext
@@ -164,10 +173,13 @@ TopMemoryContext	PgExecution	memory_contexts	top_context	PgTopMemoryContextRef	s
 ResourceOwnerContext	PgExecution	resource_owners	resource_owner_context	PgCurrentResourceOwnerMemoryContext	src/include/utils/backend_runtime.h	execution-owned allocation context for ResourceOwner objects and expandable hash arrays
 currentEventTriggerState	PgExecution	replication_scratch	event_trigger_query_state	PgCurrentEventTriggerQueryStateRef	src/backend/commands/event_trigger.c	active event-trigger complete-query state stack root
 EventTriggerQueryContext	PgExecution	replication_scratch	event_trigger_context	PgCurrentEventTriggerMemoryContext	src/backend/commands/event_trigger.c	execution-owned parent context for event-trigger complete-query state contexts
+SignalBackendsContext	PgExecution	async	signal_context	PgCurrentAsyncSignalWorkspaceContext	src/backend/utils/init/backend_runtime.c	execution-owned workspace context for LISTEN/NOTIFY SignalBackends arrays
 MyTriggerDepth	PgExecution	trigger	depth	PgCurrentTriggerDepthRef	src/backend/commands/trigger.c	trigger nesting depth for the current execution
 afterTriggers	PgExecution	trigger	after_triggers_data	PgCurrentAfterTriggersDataRef	src/backend/commands/trigger.c	opaque after-trigger transaction/query state object
 AfterTriggersContext	PgExecution	trigger	after_triggers_context	PgCurrentAfterTriggersMemoryContext	src/backend/commands/trigger.c	execution-owned parent context for the opaque after-trigger state object
 CurrentSession	PgSession	legacy_session	legacy_session	PgCurrentLegacySessionRef	src/backend/access/common/session.c	legacy access/session.h compatibility pointer
+LegacySessionContext	PgSession	legacy_session_context	legacy_session_context	PgSessionGetLegacySession	src/backend/utils/init/backend_runtime.c	session-owned compatibility context for the legacy access/session.h payload
+DynamicLibraryContext	PgSession	dynamic_library_context	dynamic_library_context	PgSessionGetDynamicLibraryMemoryContext	src/backend/utils/init/backend_runtime.c	session-owned context for per-session dynamic-library replay metadata
 ConnectionWarningsEmitted	PgConnection	startup	connection_warnings_emitted	PgCurrentConnectionWarningsEmittedRef	src/backend/utils/init/postinit.c	connection warning emit guard
 ConnectionWarningMessages	PgConnection	startup	connection_warning_messages	PgCurrentConnectionWarningMessagesRef	src/backend/utils/init/postinit.c	saved connection warning messages
 ConnectionWarningDetails	PgConnection	startup	connection_warning_details	PgCurrentConnectionWarningDetailsRef	src/backend/utils/init/postinit.c	saved connection warning details

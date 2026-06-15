@@ -1050,9 +1050,10 @@ build_guc_variables(void)
 	 * Create the memory context that will hold all GUC-related data.
 	 */
 	Assert(GUCMemoryContext == NULL);
-	GUCMemoryContext = AllocSetContextCreate(TopMemoryContext,
-											 "GUCMemoryContext",
-											 ALLOCSET_DEFAULT_SIZES);
+	GUCMemoryContext =
+		PgRuntimeGetOwnedMemoryContextWithSizes(PgCurrentGUCMemoryContextRef(),
+												"GUCMemoryContext",
+												ALLOCSET_DEFAULT_SIZES);
 
 	/*
 	 * Count all the built-in variables.

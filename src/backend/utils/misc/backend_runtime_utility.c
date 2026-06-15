@@ -73,13 +73,8 @@ PgCurrentUtilityCacheMemoryContext(void)
 {
 	PgBackendUtilityState *utility = PgCurrentBackendUtilityState();
 
-	if (utility->utility_cache_context == NULL)
-		utility->utility_cache_context =
-			AllocSetContextCreate(TopMemoryContext,
-								  "utility cache backend state",
-								  ALLOCSET_SMALL_SIZES);
-
-	return utility->utility_cache_context;
+	return PgRuntimeGetOwnedMemoryContext(&utility->utility_cache_context,
+										  "utility cache backend state");
 }
 
 ReservoirStateData *
@@ -233,13 +228,8 @@ PgCurrentFormatCacheMemoryContext(void)
 {
 	PgBackendUtilityState *utility = PgCurrentBackendUtilityState();
 
-	if (utility->format_cache_context == NULL)
-		utility->format_cache_context =
-			AllocSetContextCreate(TopMemoryContext,
-								  "format cache backend state",
-								  ALLOCSET_SMALL_SIZES);
-
-	return utility->format_cache_context;
+	return PgRuntimeGetOwnedMemoryContext(&utility->format_cache_context,
+										  "format cache backend state");
 }
 
 MemoryContext *

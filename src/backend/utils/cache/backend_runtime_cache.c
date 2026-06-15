@@ -79,12 +79,9 @@ PgCurrentFunctionManagerMemoryContext(void)
 {
 	MemoryContext *context = PgCurrentFunctionManagerMemoryContextRef();
 
-	if (*context == NULL)
-		*context = AllocSetContextCreate(TopMemoryContext,
-										 "FunctionManagerMemoryContext",
-										 ALLOCSET_DEFAULT_SIZES);
-
-	return *context;
+	return PgRuntimeGetOwnedMemoryContextWithSizes(context,
+												  "FunctionManagerMemoryContext",
+												  ALLOCSET_DEFAULT_SIZES);
 }
 
 HTAB **

@@ -15064,3 +15064,96 @@ Validation for the storage manager context allocation slice:
   inserted 5000 rows, forced `CHECKPOINT`, verified count/min/max/payload
   length, updated five rows, forced another `CHECKPOINT`, and verified the
   updated row count.
+
+## Runtime Owned Context Helper And GUC Owner Index
+
+Lifecycle/preflight note:
+
+- target: reduce repeated object-owned context allocation boilerplate in
+  runtime helper accessors and fill the owner-map gap for the central
+  session GUC registry fields;
+- touched root/bucket: `PgBackend.utility`, `PgSession.function_manager`,
+  `PgSession.guc`, `PgSession.legacy_session_context`,
+  `PgSession.dynamic_library_context`, `PgSession.xact_callbacks`,
+  `PgSession.encoding`, `PgExecution.resource_owners`,
+  `PgExecution.replication_scratch`, `PgExecution.async`, and
+  `PgExecution.trigger`;
+- owner source files: `src/include/utils/backend_runtime.h`,
+  `src/backend/utils/cache/backend_runtime_cache.c`,
+  `src/backend/utils/misc/backend_runtime_guc.c`,
+  `src/backend/utils/misc/guc.c`,
+  `src/backend/utils/misc/backend_runtime_utility.c`,
+  `src/backend/utils/init/backend_runtime.c`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, `MULTITHREADED_PLAN.md`, and this state
+  log;
+- legacy symbols/accessors: `FunctionManagerMemoryContext`,
+  `GUCMemoryContext`, `guc_variables`, `num_guc_variables`, `guc_hashtab`,
+  `guc_nondef_list`, `guc_stack_list`, `guc_report_list`,
+  `reporting_enabled`, `GUCNestLevel`, `UtilityCacheContext`,
+  `FormatCacheContext`, `CurrentSession`, `XactCallbackContext`,
+  `EncodingCacheContext`, `ResourceOwnerContext`,
+  `EventTriggerQueryContext`, `SignalBackends` workspace context, and
+  `AfterTriggersContext`;
+- repeated lifecycle operations expected in this slice: multiple helper
+  accessors perform the same create-on-demand allocation into an object-owned
+  `MemoryContext` slot, differing mainly by allocation-size macro and context
+  name. Several already have checked close-time deletion through lifecycle
+  rows, but the setup side is still hand-written;
+- checked primitive decision: extend the owned-context helper first by adding
+  a size-parameterized `PgRuntimeGetOwnedMemoryContextWithSizes()` macro, then
+  express the existing `PgRuntimeGetOwnedMemoryContext()` as the small-size
+  wrapper. Use the size-parameterized macro for all repeated helper accessors
+  in this batch. This keeps semantic cleanup handwritten in owner reset
+  functions while making the allocation side less repetitive;
+- validation impact: run touched object builds for the runtime helper sources
+  and backend-runtime test objects, then `git diff --check`,
+  `gmake check-runtime-lifecycles`, `gmake check-global-lifetimes`, full
+  `gmake -j8`, backend-runtime regression/TAP, and focused GUC/format/trigger
+  smoke coverage where practical.
+
+Slice result:
+
+- `PgRuntimeGetOwnedMemoryContextWithSizes()` is now the size-parameterized
+  helper for create-on-demand object-owned contexts, and
+  `PgRuntimeGetOwnedMemoryContext()` is the small-context wrapper over it;
+- repeated helper bodies in function-manager, GUC, utility/format cache,
+  dynamic-library, legacy-session, xact-callback, encoding, resource-owner,
+  event-trigger, async signal, and after-trigger context setup now use the
+  shared helper path instead of hand-writing the allocation branch;
+- normal `build_guc_variables()` now creates `GUCMemoryContext` through
+  `PgRuntimeGetOwnedMemoryContextWithSizes(PgCurrentGUCMemoryContextRef(),
+  "GUCMemoryContext", ALLOCSET_DEFAULT_SIZES)`;
+- the owner map now records the central GUC registry symbols
+  `GUCMemoryContext`, `guc_variables`, `num_guc_variables`, `guc_hashtab`,
+  `guc_nondef_list`, `guc_stack_list`, `guc_report_list`,
+  `reporting_enabled`, and `GUCNestLevel`, plus
+  `SignalBackendsContext`, `LegacySessionContext`, and
+  `DynamicLibraryContext`.
+
+Validation for the runtime owned-context helper and GUC owner-index slice:
+
+- initial focused object builds exposed that allocation-size macros expand to
+  comma-separated arguments, so `PgRuntimeGetOwnedMemoryContextWithSizes()`
+  was corrected to a variadic macro before validation continued;
+- touched-object builds passed for `backend_runtime_cache.o`,
+  `backend_runtime_guc.o`, `backend_runtime_utility.o`, `guc.o`,
+  `backend_runtime.o`, `test_backend_runtime_backend.o`,
+  `test_backend_runtime_session_guc.o`, and
+  `test_backend_runtime_execution.o`;
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 166 fields classified, 166
+  bucket definitions checked, 35 reset definitions checked, and 278 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- full incremental `gmake -j8` passed after the installed runtime header
+  change;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- after patching the recreated macOS temp-install install names, direct
+  backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total;
+- a focused live-cluster context-helper smoke passed: it exercised GUC
+  `SET`/`SET LOCAL`, date/time format cache allocation through `to_char`,
+  after-trigger context allocation, event-trigger query context allocation,
+  and LISTEN/NOTIFY signal workspace allocation;
+- direct core `pg_regress` for `guc` passed.

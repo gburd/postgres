@@ -3991,13 +3991,8 @@ PgSessionGetDynamicLibraryMemoryContext(PgSession *session)
 {
 	Assert(session != NULL);
 
-	if (session->dynamic_library_context == NULL)
-		session->dynamic_library_context =
-			AllocSetContextCreate(TopMemoryContext,
-								  "dynamic library session state",
-								  ALLOCSET_SMALL_SIZES);
-
-	return session->dynamic_library_context;
+	return PgRuntimeGetOwnedMemoryContext(&session->dynamic_library_context,
+										  "dynamic library session state");
 }
 
 Session *
@@ -4009,10 +4004,8 @@ PgSessionGetLegacySession(PgSession *session)
 	if (session->legacy_session == NULL)
 	{
 		Assert(session->legacy_session_context == NULL);
-		session->legacy_session_context =
-			AllocSetContextCreate(TopMemoryContext,
-								  "legacy session compatibility state",
-								  ALLOCSET_SMALL_SIZES);
+		(void) PgRuntimeGetOwnedMemoryContext(&session->legacy_session_context,
+											  "legacy session compatibility state");
 		session->legacy_session =
 			MemoryContextAllocZero(session->legacy_session_context,
 								   sizeof(Session));
@@ -4804,13 +4797,8 @@ PgCurrentXactCallbackMemoryContext(void)
 	else
 		xact_callbacks = &CurrentPgSession->xact_callbacks;
 
-	if (xact_callbacks->xact_callback_context == NULL)
-		xact_callbacks->xact_callback_context =
-			AllocSetContextCreate(TopMemoryContext,
-								  "transaction callback session state",
-								  ALLOCSET_SMALL_SIZES);
-
-	return xact_callbacks->xact_callback_context;
+	return PgRuntimeGetOwnedMemoryContext(&xact_callbacks->xact_callback_context,
+										  "transaction callback session state");
 }
 
 struct BackupState **
@@ -4946,13 +4934,8 @@ PgCurrentEncodingCacheMemoryContext(void)
 
 	encoding = PgCurrentSessionEncodingState();
 
-	if (encoding->encoding_cache_context == NULL)
-		encoding->encoding_cache_context =
-			AllocSetContextCreate(TopMemoryContext,
-								  "encoding conversion cache",
-								  ALLOCSET_SMALL_SIZES);
-
-	return encoding->encoding_cache_context;
+	return PgRuntimeGetOwnedMemoryContext(&encoding->encoding_cache_context,
+										  "encoding conversion cache");
 }
 
 FmgrInfo **
@@ -5779,13 +5762,9 @@ PgCurrentResourceOwnerMemoryContext(void)
 	PgExecutionResourceOwnerState *resource_owners;
 
 	resource_owners = PgCurrentExecutionResourceOwners();
-	if (resource_owners->resource_owner_context == NULL)
-		resource_owners->resource_owner_context =
-			AllocSetContextCreate(TopMemoryContext,
-								  "ResourceOwnerContext",
-								  ALLOCSET_DEFAULT_SIZES);
-
-	return resource_owners->resource_owner_context;
+	return PgRuntimeGetOwnedMemoryContextWithSizes(&resource_owners->resource_owner_context,
+												  "ResourceOwnerContext",
+												  ALLOCSET_DEFAULT_SIZES);
 }
 
 static PgExecutionSPIState *
@@ -6491,13 +6470,8 @@ PgCurrentEventTriggerMemoryContext(void)
 
 	replication_scratch = PgCurrentExecutionReplicationScratchState();
 
-	if (replication_scratch->event_trigger_context == NULL)
-		replication_scratch->event_trigger_context =
-			AllocSetContextCreate(TopMemoryContext,
-								  "event trigger execution state",
-								  ALLOCSET_SMALL_SIZES);
-
-	return replication_scratch->event_trigger_context;
+	return PgRuntimeGetOwnedMemoryContext(&replication_scratch->event_trigger_context,
+										  "event trigger execution state");
 }
 
 MemoryContext *
@@ -6583,13 +6557,8 @@ PgCurrentAsyncSignalWorkspaceContext(void)
 {
 	PgExecutionAsyncState *async = PgCurrentExecutionAsyncState();
 
-	if (async->signal_context == NULL)
-		async->signal_context =
-			AllocSetContextCreate(TopMemoryContext,
-								  "LISTEN/NOTIFY signal workspace",
-								  ALLOCSET_SMALL_SIZES);
-
-	return async->signal_context;
+	return PgRuntimeGetOwnedMemoryContext(&async->signal_context,
+										  "LISTEN/NOTIFY signal workspace");
 }
 
 int32 **
@@ -6839,13 +6808,8 @@ PgCurrentAfterTriggersMemoryContext(void)
 
 	trigger = PgCurrentExecutionTriggerState();
 
-	if (trigger->after_triggers_context == NULL)
-		trigger->after_triggers_context =
-			AllocSetContextCreate(TopMemoryContext,
-								  "after trigger execution state",
-								  ALLOCSET_SMALL_SIZES);
-
-	return trigger->after_triggers_context;
+	return PgRuntimeGetOwnedMemoryContext(&trigger->after_triggers_context,
+										  "after trigger execution state");
 }
 
 MemoryContext *

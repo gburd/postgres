@@ -3151,10 +3151,13 @@ extern PgBackendLaunchModel PgRuntimeGetBackendLaunchModel(BackendType backend_t
 extern bool PgRuntimeShouldThreadBackend(BackendType backend_type);
 extern PgBackendModel PgRuntimeGetExtensionBackendModel(void);
 extern void PgRuntimeSetExtensionBackendModel(PgBackendModel backend_model);
-#define PgRuntimeGetOwnedMemoryContext(context, name) \
+#define PgRuntimeGetOwnedMemoryContextWithSizes(context, name, ...) \
 	((*(context) != NULL) ? *(context) : \
 	 (*(context) = AllocSetContextCreate(TopMemoryContext, (name), \
-										 ALLOCSET_SMALL_SIZES)))
+										 __VA_ARGS__)))
+#define PgRuntimeGetOwnedMemoryContext(context, name) \
+	PgRuntimeGetOwnedMemoryContextWithSizes((context), (name), \
+											ALLOCSET_SMALL_SIZES)
 extern void PgRuntimeDeleteOwnedMemoryContext(MemoryContext *context);
 extern void PgBackendInitializeInterrupts(PgBackend *backend);
 extern void PgBackendAdoptEarlyState(PgBackend *backend);

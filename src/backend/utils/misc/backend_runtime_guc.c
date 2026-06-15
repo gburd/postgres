@@ -314,9 +314,9 @@ PgCurrentGUCMemoryContextRef(void)
 	if (CurrentPgSession == NULL &&
 		guc->memory_context == NULL &&
 		TopMemoryContext != NULL)
-		guc->memory_context = AllocSetContextCreate(TopMemoryContext,
-													"early GUC fallback state",
-													ALLOCSET_DEFAULT_SIZES);
+		(void) PgRuntimeGetOwnedMemoryContextWithSizes(&guc->memory_context,
+													   "early GUC fallback state",
+													   ALLOCSET_DEFAULT_SIZES);
 
 	return &guc->memory_context;
 }

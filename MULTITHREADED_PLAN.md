@@ -1006,6 +1006,13 @@ Gate E2 requires:
   in lifecycle rows and nearby reset helpers; keep handwritten owner-adjacent
   cleanup for cases that require ordering, conditional destruction, or
   additional pointer/list/hash cleanup;
+- the owned-context setup helper slice is in place:
+  `PgRuntimeGetOwnedMemoryContextWithSizes(context, name, ...)` is the
+  size-parameterized create-on-demand helper for object-owned memory-context
+  slots, and `PgRuntimeGetOwnedMemoryContext(context, name)` is the
+  small-context wrapper. Use these for repeated runtime helper accessors
+  instead of hand-writing another `if NULL,
+  AllocSetContextCreate(TopMemoryContext, ...)` branch;
 - the teardown-owner lifecycle vocabulary slice is in place:
   `PG_RUNTIME_DESTROY_HASH(hash)`, `PG_RUNTIME_LIST_FREE(list_head)`, and
   `PG_RUNTIME_LIST_FREE_DEEP(list_head)` are recognized checked actions, and
@@ -1909,6 +1916,13 @@ descriptor-vector allocations and pending-sync hash/list storage keep their
 existing subsystem semantics, while closed-backend reset now owns both context
 families through the checked storage lifecycle row and owner map instead of
 leaving them as direct `TopMemoryContext` children.
+Follow-up runtime-helper hardening added the size-parameterized
+`PgRuntimeGetOwnedMemoryContextWithSizes()` helper, converted repeated
+object-owned context setup in backend/session/execution helper accessors to
+use it, and expanded the owner map for the central session GUC registry,
+LISTEN/NOTIFY signal workspace context, legacy session compatibility context,
+and dynamic-library replay context. This reduces handwritten allocation
+branches before the remaining Gate E2 teardown and migration work.
 Follow-up session xact-callback hardening moved transaction and
 subtransaction callback list-node allocation under a session-owned
 `XactCallbackContext`. The registration/unregistration APIs and callback

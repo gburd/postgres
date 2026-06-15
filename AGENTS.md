@@ -175,6 +175,12 @@ state group, then rerun the threaded runtime TAP.
   bucket reset only deletes an owned memory context and then restores
   constructor defaults. Add new checked `PG_RUNTIME_*` actions the same way
   when another repeated teardown/reset shape appears.
+- Use `PgRuntimeGetOwnedMemoryContextWithSizes(context, name, ...)` for
+  repeated create-on-demand object-owned memory-context setup where allocation
+  sizes matter, and `PgRuntimeGetOwnedMemoryContext(context, name)` for the
+  common small-context case. Do not open-code another `if NULL,
+  AllocSetContextCreate(TopMemoryContext, ...)` helper branch without first
+  explaining why the shared helper does not fit.
 - Operational reminder for future agents: when planning a larger Phase 12
   batch, start by deciding whether lifecycle macros, bucket `.def` rows,
   declarative tables, or checker rules would make the batch simpler. If yes,
