@@ -1237,6 +1237,11 @@ typedef struct PgSessionDateTimeState
 	pg_tz	   *log_timezone_value;
 	TimeZoneAbbrevTable *timezone_abbrev_table;
 	PgSessionTzAbbrevCache timezone_abbrev_cache[PG_BACKEND_MAX_DATE_FIELDS];
+	TimestampTz current_time_cache_ts;
+	pg_tz	   *current_time_cache_timezone;
+	struct pg_tm current_time_cache_tm;
+	fsec_t		current_time_cache_fsec;
+	int			current_time_cache_tz;
 } PgSessionDateTimeState;
 
 typedef struct PgSessionTextSearchState
@@ -2715,6 +2720,7 @@ extern char **PgCurrentTimeZoneStringRef(void);
 extern char **PgCurrentLogTimeZoneStringRef(void);
 extern char **PgCurrentDateStyleStringRef(void);
 extern char **PgCurrentTimeZoneAbbreviationsStringRef(void);
+extern PgSessionDateTimeState *PgCurrentSessionDateTimeState(void);
 extern pg_tz **PgCurrentSessionTimeZoneRef(void);
 extern pg_tz **PgCurrentLogTimeZoneRef(void);
 extern TimeZoneAbbrevTable **PgCurrentTimeZoneAbbrevTableRef(void);

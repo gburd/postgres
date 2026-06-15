@@ -20,6 +20,7 @@
 
 #include "datatype/timestamp.h"
 #include "pgtz.h"
+#include "utils/global_lifetime.h"
 
 #include "private.h"
 #include "tzfile.h"
@@ -101,7 +102,7 @@ static bool typesequiv(struct state const *sp, int a, int b);
  * Thanks to Paul Eggert for noting this.
  */
 
-static struct pg_tm tm;
+static PG_THREAD_LOCAL struct pg_tm tm;
 
 /* Initialize *S to a value based on UTOFF, ISDST, and DESIGIDX.  */
 static void

@@ -17062,3 +17062,147 @@ Validation:
   `opr_sanity` passed, `stats_import` no longer had lock-status diffs, and the
   two remaining failures were `tstypes` and `stats_import` on the intentional
   `dict_snowball.dylib` process-only backend-model rejection.
+
+## Threaded Snowball Dictionary Admission
+
+Lifecycle/preflight note:
+
+- target: admit the audited in-tree Snowball text-search dictionary module so
+  threaded core regression can exercise the normal `english` dictionary path
+  instead of stopping at the loader guard.
+- touched roots/buckets: no runtime roots; `dict_snowball` module metadata
+  only.
+- owner source files: `src/backend/snowball/dict_snowball.c`,
+  `src/include/snowball/snowball_runtime.h`,
+  `src/backend/snowball/libstemmer/api.c`,
+  `src/backend/snowball/libstemmer/utilities.c`, generated
+  `src/backend/snowball/libstemmer/stem_*.c` files, and this Phase 12 state
+  note.
+- legacy symbols/accessors: `PG_MODULE_MAGIC_EXT`,
+  `PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION`, `DictSnowball`,
+  `SN_env`, `SN_new_env()`, `SN_delete_env()`, `SN_set_current()`,
+  `d->dictCtx`, and generated stemmer entry points.
+- repeated lifecycle operations: none; dictionaries already allocate one
+  `DictSnowball` and one `SN_env` per dictionary instance, and Snowball
+  allocation is redirected through PostgreSQL `palloc`/`pfree` so cached
+  stemmer storage belongs to the dictionary memory context.
+- checked primitive decision: reuse explicit backend-model metadata for this
+  audited in-tree core dictionary module. Do not relax process-only module
+  rejection and do not admit bundled procedural languages or contrib-wide
+  extension modules here.
+- validation impact: focused threaded `tstypes` and `stats_import`, plus the
+  first-three threaded `parallel_schedule`, should no longer fail on
+  `dict_snowball.dylib`. If the per-dictionary Snowball state is not isolated,
+  those threaded tests should expose wrong lexemes, extended-stats drift, or
+  teardown/retained-context warnings.
+
+Validation:
+
+- focused threaded `test_setup` plus `tstypes` and `stats_import` passed after
+  admitting `dict_snowball`, proving the core Snowball dictionary path can
+  load and execute in thread-per-session mode.
+
+## Threaded Current Timestamp Cache Isolation
+
+Lifecycle/preflight note:
+
+- target: move `GetCurrentTimeUsec()`'s process-static broken-down
+  transaction timestamp cache into the existing session datetime bucket so
+  concurrent threaded regression sessions cannot share or race timezone-shaped
+  cached results.
+- touched roots/buckets: `PgSession.datetime` only; no new runtime root or
+  lifecycle bucket.
+- owner source files: `src/include/utils/backend_runtime.h`,
+  `src/backend/utils/init/backend_runtime.c`,
+  `src/backend/utils/adt/datetime.c`, and this Phase 12 state note.
+- legacy symbols/accessors: `GetCurrentTimeUsec()`,
+  `PgCurrentSessionDateTimeState()`, `session_timezone`, `cache_ts`,
+  `cache_timezone`, `cache_tm`, `cache_fsec`, and `cache_tz`.
+- repeated lifecycle operations: reuse `PgSessionInitializeDateTimeState()` and
+  `PgSessionResetEarlyDateTimeState()` to clear the inline cache with the rest
+  of session datetime state.
+- checked primitive decision: extend the existing checked `PgSession.datetime`
+  bucket instead of adding thread-local statics or a new handwritten lifetime
+  path.
+- validation impact: the second and third first-three threaded schedule groups
+  should stop producing one-hour `timestamptz`/`horology` drift when run in
+  parallel with other date/time tests. Focused process-mode date/time
+  regression should remain unchanged.
+
+Validation:
+
+- first-three threaded `parallel_schedule` reruns no longer showed the earlier
+  one-hour `timestamptz`/`horology` drift after moving the current-time cache
+  into `PgSession.datetime`.
+
+## Threaded `pg_localtime()` Scratch Buffer Isolation
+
+Lifecycle/preflight note:
+
+- target: make the `pg_localtime()`/`pg_gmtime()` static return buffer
+  carrier-thread-local so concurrent backend sessions cannot overwrite one
+  another's broken-down timezone conversion result between conversion and
+  caller-side copy/formatting.
+- touched roots/buckets: no runtime root; timezone library static scratch
+  storage only.
+- owner source files: `src/timezone/localtime.c`,
+  `src/include/utils/global_lifetime.h`, `src/backend/utils/adt/timestamp.c`,
+  `src/backend/utils/error/elog.c`, and this Phase 12 state note.
+- legacy symbols/accessors: `pg_localtime()`, `pg_gmtime()`, `localsub()`,
+  `gmtsub()`, `timesub()`, static `tm`, `session_timezone`, and
+  `log_timezone`.
+- repeated lifecycle operations: none; this preserves the existing static
+  return-buffer API while narrowing the mutable scratch lifetime from process
+  global to carrier thread.
+- checked primitive decision: reuse `PG_THREAD_LOCAL` for the timezone scratch
+  buffer. Do not change all `pg_localtime()` callers or introduce new per-call
+  allocation in the date/time hot path.
+- validation impact: threaded date/time regression should stop showing
+  cross-session timestamp years/timezones, postmaster log timestamps should not
+  flip to another backend's timezone/date, and process-mode regression should
+  be unchanged.
+
+Validation:
+
+- first-three threaded `parallel_schedule` reruns no longer showed
+  cross-session timestamp years/timezones or log timestamp timezone flips
+  after making the `pg_localtime()`/`pg_gmtime()` scratch buffer
+  `PG_THREAD_LOCAL`.
+
+## Threaded Localeconv Cache Validity Guard
+
+Lifecycle/preflight note:
+
+- target: harden the session-owned `PGLC_localeconv()` cache so threaded
+  callers never receive a valid-flagged `struct lconv` whose required string
+  fields are NULL, as exposed by a threaded `cash_in()` crash in the
+  first-three regression schedule.
+- touched roots/buckets: `PgSession.locale` only; no new runtime root or
+  lifecycle bucket.
+- owner source files: `src/backend/utils/adt/pg_locale.c`,
+  `src/backend/utils/init/backend_runtime.c`,
+  `src/include/utils/backend_runtime.h`, and this Phase 12 state note.
+- legacy symbols/accessors: `PGLC_localeconv()`, `PgCurrentLocaleState()`,
+  `CurrentLocaleConvValid`, `CurrentLocaleConvAllocated`,
+  `CurrentLocaleConvContext`, `current_locale_conv`, and
+  `struct_lconv_is_valid()`.
+- repeated lifecycle operations: reuse `PgSessionResetLocaleConv()` and the
+  existing locale cache context; no new cleanup list is needed.
+- checked primitive decision: keep the cache in the existing checked
+  `PgSession.locale` bucket, but validate the cached object before the fast
+  return and rebuild it if the valid flag and object contents diverge.
+- validation impact: threaded `money` casts in the first-three regression
+  schedule should stop crashing in `cash_in()`, while malformed localeconv
+  cache state would be caught by the validity guard and rebuilt before use.
+
+Validation:
+
+- a fresh generated first-three threaded `parallel_schedule` run passed all
+  60 tests. This includes `money`, the date/time tests, `geometry`,
+  `horology`, `tstypes`, `opr_sanity`, `stats_import`, and `euc_kr`, and it
+  did not reproduce the `cash_in()` NULL `mon_decimal_point` crash.
+- `gmake check-threaded-smoke` passed all 10 helper-free threaded smoke tests.
+- process-mode focused regression passed `test_setup date time timetz
+  timestamp timestamptz interval horology tstypes stats_import`.
+- `git diff --check`, `gmake check-runtime-lifecycles`, and
+  `gmake check-global-lifetimes` passed.

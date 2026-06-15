@@ -1390,6 +1390,12 @@ PgSessionInitializeDateTimeState(PgSessionDateTimeState *datetime)
 	datetime->timezone_abbrev_table = NULL;
 	MemSet(datetime->timezone_abbrev_cache, 0,
 		   sizeof(datetime->timezone_abbrev_cache));
+	datetime->current_time_cache_ts = 0;
+	datetime->current_time_cache_timezone = NULL;
+	MemSet(&datetime->current_time_cache_tm, 0,
+		   sizeof(datetime->current_time_cache_tm));
+	datetime->current_time_cache_fsec = 0;
+	datetime->current_time_cache_tz = 0;
 }
 
 static void
@@ -1410,6 +1416,12 @@ PgSessionResetEarlyDateTimeState(PgSessionDateTimeState *datetime)
 	datetime->timezone_abbrev_table = NULL;
 	MemSet(datetime->timezone_abbrev_cache, 0,
 		   sizeof(datetime->timezone_abbrev_cache));
+	datetime->current_time_cache_ts = 0;
+	datetime->current_time_cache_timezone = NULL;
+	MemSet(&datetime->current_time_cache_tm, 0,
+		   sizeof(datetime->current_time_cache_tm));
+	datetime->current_time_cache_fsec = 0;
+	datetime->current_time_cache_tz = 0;
 }
 
 PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED_WITH_RESET(PgSessionAdoptEarlyDateTimeState,
@@ -2662,6 +2674,7 @@ PgSessionInitializeLocaleState(PgSessionLocaleState *locale)
 	locale->collation_cache = NULL;
 	locale->last_collation_cache_oid = InvalidOid;
 	locale->last_collation_cache_locale = NULL;
+	locale->icu_converter = NULL;
 	locale->initialized = true;
 }
 

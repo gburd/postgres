@@ -395,6 +395,7 @@ void
 GetCurrentTimeUsec(struct pg_tm *tm, fsec_t *fsec, int *tzp)
 {
 	TimestampTz cur_ts = GetCurrentTransactionStartTimestamp();
+	PgSessionDateTimeState *datetime = PgCurrentSessionDateTimeState();
 
 	/*
 	 * The cache key must include both current time and current timezone.  By
@@ -404,40 +405,37 @@ GetCurrentTimeUsec(struct pg_tm *tm, fsec_t *fsec, int *tzp)
 	 * however, it might need another look if we ever allow entries in that
 	 * hash to be recycled.
 	 */
-	static TimestampTz cache_ts = 0;
-	static pg_tz *cache_timezone = NULL;
-	static struct pg_tm cache_tm;
-	static fsec_t cache_fsec;
-	static int	cache_tz;
-
-	if (cur_ts != cache_ts || session_timezone != cache_timezone)
+	if (cur_ts != datetime->current_time_cache_ts ||
+		session_timezone != datetime->current_time_cache_timezone)
 	{
 		/*
 		 * Make sure cache is marked invalid in case of error after partial
 		 * update within timestamp2tm.
 		 */
-		cache_timezone = NULL;
+		datetime->current_time_cache_timezone = NULL;
 
 		/*
 		 * Perform the computation, storing results into cache.  We do not
 		 * really expect any error here, since current time surely ought to be
 		 * within range, but check just for sanity's sake.
 		 */
-		if (timestamp2tm(cur_ts, &cache_tz, &cache_tm, &cache_fsec,
-						 NULL, session_timezone) != 0)
+		if (timestamp2tm(cur_ts, &datetime->current_time_cache_tz,
+						 &datetime->current_time_cache_tm,
+						 &datetime->current_time_cache_fsec, NULL,
+						 session_timezone) != 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
 					 errmsg("timestamp out of range")));
 
 		/* OK, so mark the cache valid. */
-		cache_ts = cur_ts;
-		cache_timezone = session_timezone;
+		datetime->current_time_cache_ts = cur_ts;
+		datetime->current_time_cache_timezone = session_timezone;
 	}
 
-	*tm = cache_tm;
-	*fsec = cache_fsec;
+	*tm = datetime->current_time_cache_tm;
+	*fsec = datetime->current_time_cache_fsec;
 	if (tzp != NULL)
-		*tzp = cache_tz;
+		*tzp = datetime->current_time_cache_tz;
 }
 
 

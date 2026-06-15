@@ -532,31 +532,41 @@ PgSessionResetLocaleConv(PgSessionLocaleState *locale)
 struct lconv *
 PGLC_localeconv(void)
 {
+	PgSessionLocaleState *locale = PgCurrentLocaleState();
+	struct lconv *current_locale_conv;
 	struct lconv *extlconv;
 	struct lconv tmp;
 	struct lconv worklconv = {0};
 
-	if (CurrentLocaleConv == NULL)
+	current_locale_conv = (struct lconv *) locale->current_locale_conv;
+	if (current_locale_conv == NULL)
 	{
-		if (CurrentLocaleConvContext == NULL)
-			CurrentLocaleConvContext =
+		if (locale->locale_conv_context == NULL)
+			locale->locale_conv_context =
 				AllocSetContextCreate(TopMemoryContext,
 									  "localeconv cache",
 									  ALLOCSET_SMALL_SIZES);
 
-		CurrentLocaleConv = MemoryContextAllocZero(CurrentLocaleConvContext,
-												   sizeof(struct lconv));
+		current_locale_conv = MemoryContextAllocZero(locale->locale_conv_context,
+													 sizeof(struct lconv));
+		locale->current_locale_conv = current_locale_conv;
 	}
 
 	/* Did we do it already? */
-	if (CurrentLocaleConvValid)
-		return CurrentLocaleConv;
+	if (locale->locale_conv_valid)
+	{
+		if (struct_lconv_is_valid(current_locale_conv))
+			return current_locale_conv;
+
+		locale->locale_conv_valid = false;
+	}
 
 	/* Free any already-allocated storage */
-	if (CurrentLocaleConvAllocated)
+	if (locale->current_locale_conv_allocated)
 	{
-		free_struct_lconv(CurrentLocaleConv);
-		CurrentLocaleConvAllocated = false;
+		free_struct_lconv(current_locale_conv);
+		MemSet(current_locale_conv, 0, sizeof(struct lconv));
+		locale->current_locale_conv_allocated = false;
 	}
 
 	/*
@@ -642,10 +652,10 @@ PGLC_localeconv(void)
 	/*
 	 * Everything is good, so save the results.
 	 */
-	*CurrentLocaleConv = worklconv;
-	CurrentLocaleConvAllocated = true;
-	CurrentLocaleConvValid = true;
-	return CurrentLocaleConv;
+	*current_locale_conv = worklconv;
+	locale->current_locale_conv_allocated = true;
+	locale->locale_conv_valid = true;
+	return current_locale_conv;
 }
 
 #ifdef WIN32
