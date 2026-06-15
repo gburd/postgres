@@ -293,6 +293,15 @@ PgBackendExitCleanup(int code)
 
 	exit_state->on_proc_exit_index = 0;
 
+	/*
+	 * on_proc_exit callbacks, notably socket_close(), own live connection
+	 * shutdown.  Reset the retained connection object here as a final
+	 * closed-state backstop for early-exit and non-socket paths, and rely on
+	 * PgConnectionResetClosedState() being idempotent when socket_close()
+	 * already ran.
+	 */
+	if (CurrentPgConnection != NULL)
+		PgConnectionResetClosedState(CurrentPgConnection);
 	PgSessionResetClosedState(CurrentPgSession);
 	PgBackendResetClosedState(CurrentPgBackend);
 	PgExecutionResetClosedState(CurrentPgExecution);

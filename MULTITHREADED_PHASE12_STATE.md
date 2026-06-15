@@ -13599,3 +13599,49 @@ lifecycle mechanics by splitting the same work into smaller handwritten
 commits. Semantic cleanup, ordering-sensitive destruction, pointer rebasing,
 and subsystem ownership assertions still remain handwritten and
 owner-adjacent.
+
+## Connection Closed-State Exit Backstop
+
+Lifecycle/preflight note:
+
+- target: Gate E2 threaded backend teardown and connection lifecycle symmetry;
+- root and buckets: `PgConnection` checked bucket reset rows, plus the common
+  `PgBackendExitCleanup()` path in `src/backend/storage/ipc/ipc.c`;
+- owner source files: `src/backend/storage/ipc/ipc.c`,
+  `src/backend/utils/init/backend_runtime.c`, and
+  `src/test/modules/test_backend_runtime/test_backend_runtime_connection.c`;
+- repeated lifecycle operations: none. This slice reuses the existing checked
+  `PgConnectionResetClosedState()` bucket reset path. No new lifecycle
+  primitive is needed because the semantic change is one final backstop call
+  after `on_proc_exit` callbacks;
+- retained invariant: `socket_close()` still owns live socket and libpq
+  shutdown. The common exit path only resets the retained `PgConnection`
+  object after callbacks have run, and the connection reset routine must be
+  idempotent because `socket_close()` may already have reset it.
+
+Slice:
+
+- `PgBackendExitCleanup()` now calls `PgConnectionResetClosedState()` when a
+  current connection object exists, before resetting session/backend/execution
+  closed state;
+- `test_connection_reset_closed_state()` now invokes connection closed-state
+  reset twice and checks key pointer, memory-context, GUC, client-info, and
+  security slots stay cleared.
+
+Validation for the connection closed-state exit backstop slice:
+
+- `git diff --check` passed;
+- `gmake -C src/backend/storage/ipc ipc.o` passed;
+- `gmake -C src/test/modules/test_backend_runtime
+  test_backend_runtime_connection.o` passed;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 222 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- full incremental `gmake -j8` passed;
+- direct backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with patched macOS
+  install-name paths, repo-local `.perl5` `PERL5LIB`, and explicit
+  `PG_REGRESS=src/test/regress/pg_regress`.

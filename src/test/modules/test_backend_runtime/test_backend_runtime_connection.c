@@ -296,6 +296,20 @@ test_connection_reset_closed_state(PG_FUNCTION_ARGS)
 		ok = ok && security->pam_port == NULL;
 		ok = ok && !security->pam_no_password;
 
+		PgConnectionResetClosedState(&connection);
+		CurrentPgConnection = &connection;
+		ok = ok && client_connection_check_interval == 0;
+		CurrentPgConnection = saved_connection;
+		ok = ok && connection.identity.port == NULL;
+		ok = ok && connection.protocol.comm_methods == NULL;
+		ok = ok && connection.startup.connection_warning_context == NULL;
+		ok = ok && connection.startup.connection_warning_messages == NIL;
+		ok = ok && connection.client_connection_info.authn_id == NULL;
+		ok = ok && !connection.client_connection_info_authn_id_owned;
+		ok = ok && connection.security.gss_send_buffer == NULL;
+		ok = ok && connection.security.gss_recv_buffer == NULL;
+		ok = ok && connection.security.gss_result_buffer == NULL;
+
 		CurrentPgConnection = saved_connection;
 	}
 	PG_CATCH();
