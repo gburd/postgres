@@ -1176,6 +1176,11 @@ PgConnectionResetIdentityClosedState(PgConnection *connection)
 {
 	Assert(connection != NULL);
 
+	if (CurrentPgConnection == connection &&
+		MyProcPort == connection->identity.port)
+		MyProcPort = NULL;
+
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(connection->identity.port_context);
 	connection->identity.port = NULL;
 	MemSet(connection->identity.cancel_key, 0,
 		   sizeof(connection->identity.cancel_key));

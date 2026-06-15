@@ -31,6 +31,18 @@ PgCurrentProcPortRef(void)
 	return PgConnectionProcPortRef(CurrentPgConnection);
 }
 
+MemoryContext *
+PgConnectionPortContextRef(PgConnection *connection)
+{
+	return &PgConnectionIdentityStateRef(connection)->port_context;
+}
+
+MemoryContext *
+PgCurrentPortContextRef(void)
+{
+	return PgConnectionPortContextRef(CurrentPgConnection);
+}
+
 uint8 *
 PgConnectionCancelKey(PgConnection *connection)
 {

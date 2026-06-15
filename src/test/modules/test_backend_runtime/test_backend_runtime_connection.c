@@ -162,6 +162,7 @@ test_connection_reset_closed_state(PG_FUNCTION_ARGS)
 	struct ClientSocket fake_client_socket;
 	WaitEventSet *fake_wait_set;
 	MemoryContext oldcontext;
+	MemoryContext port_context;
 	MemoryContext warning_context;
 	bool		ok = true;
 
@@ -170,7 +171,13 @@ test_connection_reset_closed_state(PG_FUNCTION_ARGS)
 	MemSet(&fake_client_socket, 0, sizeof(fake_client_socket));
 	fake_wait_set = (WaitEventSet *) &connection;
 
-	connection.identity.port = (struct Port *) &connection;
+	port_context = AllocSetContextCreate(TopMemoryContext,
+										 "test port state",
+										 ALLOCSET_SMALL_SIZES);
+	connection.identity.port_context = port_context;
+	oldcontext = MemoryContextSwitchTo(port_context);
+	connection.identity.port = palloc0_object(Port);
+	MemoryContextSwitchTo(oldcontext);
 	MemSet(connection.identity.cancel_key, 0x7a,
 		   sizeof(connection.identity.cancel_key));
 	connection.identity.cancel_key_length =
@@ -258,6 +265,7 @@ test_connection_reset_closed_state(PG_FUNCTION_ARGS)
 		PgConnectionResetClosedState(&connection);
 
 		ok = ok && connection.identity.port == NULL;
+		ok = ok && connection.identity.port_context == NULL;
 		ok = ok && connection.identity.cancel_key[0] == 0;
 		ok = ok && connection.identity.cancel_key_length == 0;
 
@@ -315,6 +323,7 @@ test_connection_reset_closed_state(PG_FUNCTION_ARGS)
 		ok = ok && client_connection_check_interval == 0;
 		CurrentPgConnection = saved_connection;
 		ok = ok && connection.identity.port == NULL;
+		ok = ok && connection.identity.port_context == NULL;
 		ok = ok && connection.protocol.comm_methods == NULL;
 		ok = ok && connection.startup.connection_warning_context == NULL;
 		ok = ok && connection.startup.connection_warning_messages == NIL;
@@ -487,12 +496,14 @@ test_connection_identity_state_is_connection_local(PG_FUNCTION_ARGS)
 	Port	   *saved_port;
 	Port		fake_port1;
 	Port		fake_port2;
+	MemoryContext saved_port_context;
 	uint8		saved_cancel_key[PG_CONNECTION_CANCEL_KEY_LENGTH];
 	int			saved_cancel_key_length;
 	bool		ok = true;
 
 	saved_connection = CurrentPgConnection;
 	saved_port = MyProcPort;
+	saved_port_context = *PgCurrentPortContextRef();
 	saved_cancel_key_length = MyCancelKeyLength;
 	memcpy(saved_cancel_key, MyCancelKey, sizeof(saved_cancel_key));
 	MemSet(&fake_connection1, 0, sizeof(fake_connection1));
@@ -504,14 +515,17 @@ test_connection_identity_state_is_connection_local(PG_FUNCTION_ARGS)
 	{
 		CurrentPgConnection = &fake_connection1;
 		MyProcPort = &fake_port1;
+		*PgCurrentPortContextRef() = TopMemoryContext;
 		MyCancelKey[0] = 1;
 		MyCancelKey[1] = 2;
 		MyCancelKeyLength = 2;
 
 		CurrentPgConnection = &fake_connection2;
 		ok = ok && MyProcPort == NULL;
+		ok = ok && *PgCurrentPortContextRef() == NULL;
 		ok = ok && MyCancelKeyLength == 0;
 		MyProcPort = &fake_port2;
+		*PgCurrentPortContextRef() = ErrorContext;
 		MyCancelKey[0] = 7;
 		MyCancelKey[1] = 8;
 		MyCancelKey[2] = 9;
@@ -519,12 +533,14 @@ test_connection_identity_state_is_connection_local(PG_FUNCTION_ARGS)
 
 		CurrentPgConnection = &fake_connection1;
 		ok = ok && MyProcPort == &fake_port1;
+		ok = ok && *PgCurrentPortContextRef() == TopMemoryContext;
 		ok = ok && MyCancelKeyLength == 2;
 		ok = ok && MyCancelKey[0] == 1;
 		ok = ok && MyCancelKey[1] == 2;
 
 		CurrentPgConnection = &fake_connection2;
 		ok = ok && MyProcPort == &fake_port2;
+		ok = ok && *PgCurrentPortContextRef() == ErrorContext;
 		ok = ok && MyCancelKeyLength == 3;
 		ok = ok && MyCancelKey[0] == 7;
 		ok = ok && MyCancelKey[1] == 8;
@@ -532,6 +548,7 @@ test_connection_identity_state_is_connection_local(PG_FUNCTION_ARGS)
 
 		CurrentPgConnection = saved_connection;
 		MyProcPort = saved_port;
+		*PgCurrentPortContextRef() = saved_port_context;
 		memcpy(MyCancelKey, saved_cancel_key, sizeof(saved_cancel_key));
 		MyCancelKeyLength = saved_cancel_key_length;
 	}
@@ -539,6 +556,7 @@ test_connection_identity_state_is_connection_local(PG_FUNCTION_ARGS)
 	{
 		CurrentPgConnection = saved_connection;
 		MyProcPort = saved_port;
+		*PgCurrentPortContextRef() = saved_port_context;
 		memcpy(MyCancelKey, saved_cancel_key, sizeof(saved_cancel_key));
 		MyCancelKeyLength = saved_cancel_key_length;
 		PG_RE_THROW();

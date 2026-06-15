@@ -2001,6 +2001,7 @@ typedef struct PgRuntimeServerGUCState
 typedef struct PgConnectionIdentityState
 {
 	struct Port *port;
+	MemoryContext port_context;
 	uint8		cancel_key[PG_CONNECTION_CANCEL_KEY_LENGTH];
 	int			cancel_key_length;
 } PgConnectionIdentityState;
@@ -3020,6 +3021,8 @@ extern Session *PgCurrentLegacySession(void);
 extern Session **PgCurrentLegacySessionRef(void);
 extern struct Port **PgConnectionProcPortRef(PgConnection *connection);
 extern struct Port **PgCurrentProcPortRef(void);
+extern MemoryContext *PgConnectionPortContextRef(PgConnection *connection);
+extern MemoryContext *PgCurrentPortContextRef(void);
 extern uint8 *PgConnectionCancelKey(PgConnection *connection);
 extern uint8 *PgCurrentCancelKey(void);
 extern int *PgConnectionCancelKeyLengthRef(PgConnection *connection);

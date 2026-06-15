@@ -1198,11 +1198,15 @@ accounting for the currently retained top context. Backend libpq connection
 teardown now frees the frontend/backend wait set and dynamically sized send
 buffer in `socket_close()`, and `Port` plus most startup packet/remote-host
 strings now live in a dedicated `PortContext` that `socket_close()` deletes
-during backend exit. Follow-up work moved the connection authentication
-identity, forward-confirmed remote hostname, and implicit reject HBA record
-into the same context. SSL/GSS connection-owned identity state now follows the
-same lifetime: `pg_gssinfo`, GSS principal strings, and SSL peer certificate
-names are allocated in `PortContext`. This removes another concrete
+during backend exit. `PortContext` is now an explicit
+`PgConnection.identity.port_context` slot, so the context moves with early
+connection fallback adoption and is visible to the checked connection reset
+path instead of being discovered only through the `Port` chunk's parent
+context. Follow-up work moved the connection authentication identity,
+forward-confirmed remote hostname, and implicit reject HBA record into the
+same context. SSL/GSS connection-owned identity state now follows the same
+lifetime: `pg_gssinfo`, GSS principal strings, and SSL peer certificate names
+are allocated in `PortContext`. This removes another concrete
 connection-owned allocation group from the retained top-memory bucket before
 PMChild exit accounting runs. `AuxProcessResourceOwner` is now stored inside
 `PgBackend` behind the existing lvalue compatibility name, with an early

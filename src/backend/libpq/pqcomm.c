@@ -185,9 +185,8 @@ pq_init(ClientSocket *client_sock)
 	int			latch_pos PG_USED_FOR_ASSERTS_ONLY;
 
 	/* allocate the Port struct and copy the ClientSocket contents to it */
-	port_context = AllocSetContextCreate(TopMemoryContext,
-										 "PortContext",
-										 ALLOCSET_DEFAULT_SIZES);
+	port_context = PgRuntimeGetOwnedMemoryContextWithSizes(
+		PgCurrentPortContextRef(), "PortContext", ALLOCSET_DEFAULT_SIZES);
 	oldcontext = MemoryContextSwitchTo(port_context);
 	port = palloc0_object(Port);
 	MemoryContextSwitchTo(oldcontext);
@@ -374,6 +373,7 @@ socket_close(int code, Datum arg)
 {
 	PgConnection *connection = CurrentPgConnection;
 	MemoryContext port_context = NULL;
+	MemoryContext *port_context_ref = PgCurrentPortContextRef();
 	MemoryContext *socket_io_context = PgCurrentConnectionSocketIOContextRef();
 
 	if (FeBeWaitSet != NULL)
@@ -400,7 +400,9 @@ socket_close(int code, Datum arg)
 	/* Nothing to do in a standalone backend, where MyProcPort is NULL. */
 	if (MyProcPort != NULL)
 	{
-		port_context = GetMemoryChunkContext(MyProcPort);
+		port_context = *port_context_ref;
+		if (port_context == NULL)
+			port_context = GetMemoryChunkContext(MyProcPort);
 
 #ifdef ENABLE_GSS
 		/*
@@ -445,7 +447,10 @@ socket_close(int code, Datum arg)
 		if (port_context != NULL && port_context != TopMemoryContext)
 		{
 			MyProcPort = NULL;
-			MemoryContextDelete(port_context);
+			if (*port_context_ref == port_context)
+				PgRuntimeDeleteOwnedMemoryContext(port_context_ref);
+			else
+				MemoryContextDelete(port_context);
 		}
 	}
 

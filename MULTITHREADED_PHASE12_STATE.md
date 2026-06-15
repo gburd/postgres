@@ -15345,6 +15345,14 @@ first and use it in the same coherent migration. Handwritten owner-adjacent
 code remains right for ordering-sensitive subsystem cleanup, but repeated
 clerical lifecycle mechanics should not grow another manual helper pair.
 
+For the next substantial migration, make this an active design step: scan the
+planned batch for a lifecycle helper opportunity before moving state. If two
+or more touched owners need the same object-owned memory-context creation,
+delete-and-null teardown, init/adopt/reset body, source-list update, or
+owner-map/checker bookkeeping, add the smallest checked macro, action, table
+row, or `check_runtime_lifecycles.pl` rule first and use it in the same
+coherent slice.
+
 ## Namespace And Legacy Session Context Allocation
 
 Lifecycle/preflight note:
@@ -15423,3 +15431,80 @@ Validation for the namespace and legacy session context allocation slice:
   than the cache reset threshold, resolved objects through the session-owned
   path context, created and read a temporary table to exercise temp namespace
   state, and ran a parallel-query-oriented table scan.
+
+## Connection PortContext Ownership
+
+Lifecycle/preflight note:
+
+- target: make the frontend/backend `PortContext` an explicit
+  `PgConnection.identity` allocation context instead of a child context that
+  is only discoverable by asking the `Port` chunk for its owning context;
+- touched root/bucket: `PgConnection.identity`, specifically the `Port *`
+  pointer and the new port allocation context slot;
+- owner source files: `src/backend/libpq/pqcomm.c`,
+  `src/backend/libpq/backend_runtime_connection.c`,
+  `src/backend/utils/init/backend_runtime.c`,
+  `src/include/utils/backend_runtime.h`,
+  `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, `MULTITHREADED_PLAN.md`, and this state
+  log;
+- legacy symbols/accessors: `MyProcPort`, `PortContext`,
+  `PgCurrentProcPortRef()`, and the new connection-owned port-context
+  accessor;
+- repeated lifecycle operations expected in this slice: one object-owned
+  memory context allocated on demand and deleted at connection close. The
+  existing `PgRuntimeGetOwnedMemoryContextWithSizes()` helper covers
+  allocation, and `PgRuntimeDeleteOwnedMemoryContext()` covers checked
+  delete-and-null cleanup;
+- checked primitive decision: no new lifecycle primitive is needed. This is a
+  single connection identity context whose cleanup must remain ordered after
+  SSL/GSS/socket shutdown in `socket_close()`. The bucket reset path should
+  also delete the context defensively for tests and abnormal cleanup that
+  reaches `PgConnectionResetClosedState()` directly;
+- validation impact: because this changes `PgConnection` layout and an
+  installed header, run touched object builds, `git diff --check`,
+  `gmake check-runtime-lifecycles`, `gmake check-global-lifetimes`, full
+  `gmake -j8`, backend-runtime regression/TAP, and a focused connection smoke.
+
+Slice result:
+
+- `PgConnection.identity` now owns an explicit `port_context` slot alongside
+  the `Port *` pointer;
+- `pq_init()` creates `PortContext` through
+  `PgRuntimeGetOwnedMemoryContextWithSizes(PgCurrentPortContextRef(), ...)`
+  instead of allocating an untracked `TopMemoryContext` child;
+- `socket_close()` deletes the stored connection-owned port context after the
+  existing SSL/GSS/socket cleanup, while retaining a legacy fallback that
+  discovers the context from `MyProcPort` when no stored slot exists;
+- `PgConnectionResetClosedState()` defensively clears `MyProcPort` when it
+  points at the connection being reset, deletes the owned port context, and
+  clears the `Port *` pointer;
+- the lifecycle and owner manifests now record `PortContext` as
+  `PgConnection.identity.port_context` with the new connection-owned accessor.
+
+Validation for the connection PortContext ownership slice:
+
+- touched-object builds passed for `pqcomm.o`,
+  `backend_runtime_connection.o`, `backend_runtime.o`, and
+  `test_backend_runtime_connection.o`;
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 166 fields classified, 166
+  bucket definitions checked, 35 reset definitions checked, and 298 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- full incremental `gmake -j8` passed;
+- because this changed the installed `PgConnection` layout, a stale-object
+  bootstrap crash during backend-runtime temp-install setup was resolved by
+  cleaning `src/backend`, regenerating generated backend/include headers, and
+  rebuilding with full `gmake -j8`;
+- after the clean rebuild, `gmake -C src/test/modules/test_backend_runtime
+  clean all check` passed;
+- after patching the recreated macOS temp-install install names and using the
+  repo-local `.perl5` `IPC::Run`, direct backend-runtime TAP passed for
+  `001_threaded_runtime.pl` and `002_threaded_bgworker_crash.pl`, 131 tests
+  total;
+- a focused live connection smoke passed: it initialized and started a temp
+  cluster from `tmp_install`, made 30 separate `psql` connections over a Unix
+  socket, ran simple SQL through each connection, then created, populated, and
+  queried a table before clean shutdown.

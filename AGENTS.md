@@ -205,6 +205,14 @@ next coherent batch needs a small lifecycle macro/action/table/checker
 improvement first, land that improvement if needed, and then move the larger
 batch through the checked path.
 
+Before the next non-trivial Gate E2 migration, actively look for a
+macroable/checker-enforceable lifecycle pattern rather than waiting until the
+batch becomes painful. The first useful candidates to consider are repeated
+object-owned memory-context creation/reset, repeated delete-and-null teardown,
+parallel init/adopt/reset helper bodies, and owner-map/source-list
+bookkeeping. If any candidate has two or more call sites in the planned batch,
+make the helper/checker improvement part of that same implementation slice.
+
 ## Working Assumptions
 
 - Use Heikki Linnakangas's multithreading branch as reference material, not as
