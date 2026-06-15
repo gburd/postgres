@@ -2569,7 +2569,7 @@ process_pm_thread_exit(void)
 					(errmsg_internal("thread-backed child %d retained %zu bytes in TopMemoryContext at exit",
 									 signal_pid, top_memory_allocated)));
 
-		join_rc = pg_thread_join(&pmchild->thread);
+		join_rc = PostmasterChildJoinThread(pmchild);
 		if (join_rc != 0)
 		{
 			errno = join_rc;

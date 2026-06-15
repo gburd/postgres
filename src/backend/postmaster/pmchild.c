@@ -68,6 +68,21 @@ static void PMChildThreadBackendLock(void);
 static void PMChildThreadBackendUnlock(void);
 
 /*
+ * Thread-backed PMChild ownership contract:
+ *
+ * - ActiveChildList membership, slot assignment/release, carrier_kind, bkend
+ *   type, bgworker metadata, and native-thread join are owned by the
+ *   postmaster main thread.
+ * - thread_backend, signal_pid, and thread-exit payload fields are the
+ *   cross-thread publication surface between the backend carrier and the
+ *   postmaster.  They must be read or written only by the helper APIs in this
+ *   file while holding PMChildThreadBackendMutex.
+ * - thread_startup_complete and thread_exited are publication flags.  The
+ *   publishing side writes payload first, issues a memory barrier, then sets
+ *   the flag and wakes the postmaster.
+ */
+
+/*
  * List of active child processes.  This includes dead-end children.
  */
 PG_GLOBAL_RUNTIME dlist_head ActiveChildList;
@@ -533,6 +548,20 @@ PostmasterChildRetryThreadExit(PMChild *pmchild)
 	 */
 	pg_memory_barrier();
 	pg_atomic_write_u32(&pmchild->thread_exited, 1);
+}
+
+int
+PostmasterChildJoinThread(PMChild *pmchild)
+{
+	Assert(PostmasterChildIsThread(pmchild));
+
+	/*
+	 * The native thread handle is postmaster-owned: SetThread stores it before
+	 * the carrier can publish startup or exit, and slot release happens only
+	 * after a successful join.  Keep the join behind the PMChild API boundary
+	 * so callers do not grow direct access to thread-carrier fields.
+	 */
+	return pg_thread_join(&pmchild->thread);
 }
 
 /*

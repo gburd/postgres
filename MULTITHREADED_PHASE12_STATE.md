@@ -16413,3 +16413,48 @@ Validation for the carrier `TopMemoryContext` reclamation probe:
   deletion enabled, including PL/pgSQL, representative contrib extensions,
   FATAL cleanup, abandoned-client cleanup, mixed teardown stress, and PMChild
   reaping stress.
+
+## Gate E2 PMChild Thread Join Boundary
+
+Lifecycle/preflight note:
+
+- target: continue closing the Gate E2 PMChild/thread-backed backend ownership
+  contract after carrier root-context reclamation;
+- touched owner surface: `PMChild` thread-carrier fields in
+  `postmaster.h`/`pmchild.c`, specifically the native thread handle handoff
+  between `PostmasterChildSetThread()` and postmaster reaping;
+- legacy direct access: `process_pm_thread_exit()` joined
+  `pmchild->thread` directly in `postmaster.c`;
+- repeated lifecycle operations expected: none. This is a single
+  synchronization-boundary cleanup, not a repeated init/adopt/reset pattern,
+  so no new lifecycle primitive is needed.
+
+Implementation result:
+
+- `pmchild.c` now documents the thread-backed PMChild ownership contract:
+  postmaster-owned slot/list/native-thread fields stay in the postmaster main
+  thread, while `thread_backend`, `signal_pid`, and thread-exit payload fields
+  are the locked cross-thread publication surface;
+- `PostmasterChildJoinThread()` is the PMChild API boundary for joining a
+  native thread carrier, keeping the thread handle next to the rest of the
+  PMChild thread-carrier helpers;
+- `process_pm_thread_exit()` no longer reaches into `pmchild->thread`
+  directly when reaping a thread-backed child.
+
+Validation for the PMChild thread join boundary:
+
+- touched-object builds passed for `pmchild.o` and `postmaster.o`;
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 172 fields classified, 172
+  bucket definitions checked, 35 reset definitions checked, and 358 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- clean `gmake -C src/test/modules/test_backend_runtime clean all check`
+  passed, including the focused PMChild signal API and native-thread
+  publication race helpers;
+- full incremental `gmake -j8` passed;
+- after patching refreshed macOS temp-install dylib references, direct
+  `prove -v -I "$ROOT/src/test/perl" -I "$TESTDIR"
+  t/001_threaded_runtime.pl` passed all 127 tests, including mixed teardown
+  stress and the repeated PMChild reaping stress block.
