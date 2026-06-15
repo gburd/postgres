@@ -433,6 +433,14 @@ with_temp_install = \
 	INITDB_TEMPLATE='$(abs_top_builddir)'/tmp_install/initdb-template \
 	$(with_temp_install_extra)
 
+define fix_temp_install_darwin_libpq
+	if test x'$(PORTNAME)' = xdarwin && \
+	   test -f '$(abs_top_builddir)'/tmp_install$(libdir)/libpqwalreceiver$(DLSUFFIX) && \
+	   otool -L '$(abs_top_builddir)'/tmp_install$(libdir)/libpqwalreceiver$(DLSUFFIX) | grep -q '$(libdir)/libpq.5$(DLSUFFIX)'; then \
+	  install_name_tool -change '$(libdir)/libpq.5$(DLSUFFIX)' '@loader_path/libpq.5$(DLSUFFIX)' '$(abs_top_builddir)'/tmp_install$(libdir)/libpqwalreceiver$(DLSUFFIX); \
+	fi
+endef
+
 temp-install: | submake-generated-headers
 ifndef NO_TEMP_INSTALL
 ifneq ($(abs_top_builddir),)
@@ -441,6 +449,7 @@ ifeq ($(MAKELEVEL),0)
 	$(MKDIR_P) '$(abs_top_builddir)'/tmp_install/log
 	$(MAKE) -C '$(top_builddir)' DESTDIR='$(abs_top_builddir)'/tmp_install install >'$(abs_top_builddir)'/tmp_install/log/install.log 2>&1
 	$(MAKE) -j1 $(if $(CHECKPREP_TOP),-C $(CHECKPREP_TOP),) checkprep >>'$(abs_top_builddir)'/tmp_install/log/install.log 2>&1
+	$(fix_temp_install_darwin_libpq)
 
 	$(with_temp_install) initdb --auth trust --no-sync --no-instructions --lc-messages=C --no-clean '$(abs_top_builddir)'/tmp_install/initdb-template >>'$(abs_top_builddir)'/tmp_install/log/initdb-template.log 2>&1
 endif

@@ -12,8 +12,8 @@
 # - guc: currently reaches a server-terminating failure in the settings flag
 #   portion of the test.
 # - select_parallel: currently fails parallel-worker plan/output expectations.
-# - subscription: currently hits local libpqwalreceiver install-name friction in
-#   tmp_install before it can be useful Milestone W evidence.
+# - subscription: left to full check-threaded coverage; Darwin temp installs now
+#   rewrite libpqwalreceiver's libpq dependency before initdb.
 # ----------
 
 test: test_setup

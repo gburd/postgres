@@ -497,15 +497,16 @@ Important current files:
   SQL starts.
 
 - Some `gmake ... check` runs fail on macOS because temporary-install binaries
-  still refer to `/usr/local/pgsql/lib/libpq.5.dylib`. Patch the temp install
-  before running direct `pg_regress` commands:
+  still refer to `/usr/local/pgsql/lib/libpq.5.dylib`. The repository-level
+  `temp-install` rule now rewrites `libpqwalreceiver.dylib` to load libpq from
+  its own directory on Darwin. For hand-built/direct `tmp_install` runs, patch
+  remaining frontend binaries before running direct `pg_regress` commands:
 
   ```sh
   install_name_tool -change /usr/local/pgsql/lib/libpq.5.dylib "$PWD/tmp_install/usr/local/pgsql/lib/libpq.5.dylib" "$PWD/tmp_install/usr/local/pgsql/bin/initdb" || true
   install_name_tool -change /usr/local/pgsql/lib/libpq.5.dylib "$PWD/tmp_install/usr/local/pgsql/lib/libpq.5.dylib" "$PWD/tmp_install/usr/local/pgsql/bin/psql"
   install_name_tool -change /usr/local/pgsql/lib/libpq.5.dylib "$PWD/tmp_install/usr/local/pgsql/lib/libpq.5.dylib" "$PWD/tmp_install/usr/local/pgsql/bin/pg_ctl" || true
   install_name_tool -change /usr/local/pgsql/lib/libpq.5.dylib "$PWD/tmp_install/usr/local/pgsql/lib/libpq.5.dylib" "$PWD/tmp_install/usr/local/pgsql/bin/pg_basebackup" || true
-  install_name_tool -change /usr/local/pgsql/lib/libpq.5.dylib "$PWD/tmp_install/usr/local/pgsql/lib/libpq.5.dylib" "$PWD/tmp_install/usr/local/pgsql/lib/libpqwalreceiver.dylib" || true
   ```
 
   Contrib extensions linked against libpq can have the same stale install name
@@ -526,9 +527,10 @@ Important current files:
   checks sequentially, or give one check an isolated temp-install root if the
   make target supports it.
 
-  Tests that create subscriptions can reach `libpqwalreceiver.dylib`; patch it
-  along with the frontend binaries after reinstalling or recreating
-  `tmp_install`.
+  Tests that create subscriptions can reach `libpqwalreceiver.dylib` in normal
+  recursive checks. If a direct custom temp install bypasses the repository
+  `temp-install` rule, patch that module's libpq dependency before trusting
+  subscription failures as threaded runtime signal.
 
   After rebuilding backend/postmaster code, reinstall before direct TAP runs
   that use `tmp_install`; otherwise an old `postgres` binary can run with new
@@ -648,9 +650,9 @@ Important current files:
   config. The schedule is serialized: one test per schedule line. This keeps
   threaded backend startup/teardown and later SQL feature surfaces visible
   while avoiding the current parallel pg_regress read-node/GUC crash frontiers.
-  At the time this note was added it completed 208 tests with 203 passes. The
-  known failures were `transactions`, `object_address`, `tidscan`, `sequence`,
-  and `largeobject`.
+  Current status: it completes 208 tests with 207 passes. The only known
+  failure is `tidscan`, where the expected tuple `SIReadLock` is not visible in
+  `pg_locks` for the current backend.
 
   If the same recursive target needs to be rerun, patch the build-tree binaries
   that are copied into each recreated temp install before rerunning. This has
