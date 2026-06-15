@@ -1141,6 +1141,38 @@ AuxiliaryPidGetProc(int pid)
 	return result;
 }
 
+/*
+ * AuxiliarySignalPidGetProc -- get PGPROC for an auxiliary process given its
+ * SQL-visible signal target ID.
+ *
+ * In process mode this is the same as AuxiliaryPidGetProc().  In
+ * thread-per-session mode auxiliary workers can share the postmaster's real
+ * PID, so SQL-facing views expose their logical backend ID instead.
+ */
+PGPROC *
+AuxiliarySignalPidGetProc(int pid)
+{
+	PGPROC	   *result = NULL;
+	int			index;
+
+	if (pid == 0)				/* never match dummy PGPROCs */
+		return NULL;
+
+	for (index = 0; index < NUM_AUXILIARY_PROCS; index++)
+	{
+		PGPROC	   *proc = &AuxiliaryProcs[index];
+
+		if (proc->pid == pid ||
+			(proc->pid == PostmasterPid &&
+			 proc->backendId == (PgBackendId) pid))
+		{
+			result = proc;
+			break;
+		}
+	}
+	return result;
+}
+
 
 /*
  * JoinWaitQueue -- join the wait queue on the specified lock

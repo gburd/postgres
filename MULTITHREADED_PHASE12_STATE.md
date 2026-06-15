@@ -17540,3 +17540,53 @@ Validation:
   were backed out; this note remains to record that simply skipping those
   `hash_destroy()` calls is not a valid fix for the full-parallel catalog
   lookup reset crash.
+
+## Predicate Lock SQL-Visible Backend IDs
+
+Lifecycle/preflight note:
+
+- target: make predicate-lock reporting use the same SQL-visible backend ID as
+  `pg_backend_pid()`, regular `pg_locks` rows, BackendKeyData, and backend
+  signal functions, so threaded serializable transactions do not hide their
+  `SIReadLock` rows behind the shared postmaster process PID.
+- touched roots/buckets: existing `PgBackend.locks` predicate-lock fields
+  (`my_serializable_xact`, `local_predicate_lock_hash`, and related SSI state)
+  only; no new lifecycle ownership.
+- owner source files: `src/backend/storage/lmgr/predicate.c` and this Phase 12
+  state note.
+- legacy symbols/accessors: `MyProcPid`, `PgCurrentBackendSignalPid()`,
+  `MySerializableXact`, and `SERIALIZABLEXACT.pid`.
+- repeated lifecycle operations: none; this changes the published identifier
+  stored with an existing shared predicate-lock transaction record.
+- checked primitive decision: no new lifecycle primitive. The runtime invariant
+  is that SQL-visible lock/safe-snapshot APIs compare and return
+  `PgCurrentBackendSignalPid()` values in threaded mode while process mode
+  remains equal to `MyProcPid`.
+- validation impact: threaded `tidscan` should see the tuple `SIReadLock`
+  through `pg_locks WHERE pid = pg_backend_pid()`. Process-mode predicate-lock
+  behavior should be unchanged because `PgCurrentBackendSignalPid()` returns
+  `MyProcPid` outside thread-per-session runtime.
+
+## Memory Context Logging SQL-Visible Backend IDs
+
+Lifecycle/preflight note:
+
+- target: make `pg_log_backend_memory_contexts(pid)` accept the same
+  SQL-visible backend IDs published by `pg_backend_pid()` and
+  `pg_stat_activity.pid`, while still supporting auxiliary process OS PIDs.
+- touched roots/buckets: existing ProcArray/ProcSignal lookup and delivery
+  state only; no new runtime-owned memory.
+- owner source files: `src/backend/utils/adt/mcxtfuncs.c`,
+  `src/backend/storage/lmgr/proc.c`, `src/include/storage/proc.h`, and this
+  Phase 12 state note.
+- legacy symbols/accessors: `BackendPidGetProc()`,
+  `BackendSignalPidGetProc()`, `AuxiliaryPidGetProc()`,
+  `AuxiliarySignalPidGetProc()`, `SendProcSignal()`, and `PGPROC.pid`.
+- repeated lifecycle operations: none; this changes signal-target resolution,
+  not allocation or teardown.
+- checked primitive decision: no new lifecycle primitive. The invariant is
+  that SQL-callable backend signal functions should resolve SQL-visible
+  backend IDs first, then signal the resolved `PGPROC`'s real process slot.
+- validation impact: threaded `misc_functions` should no longer warn that
+  `pg_backend_pid()` or checkpointer `pg_stat_activity.pid` is not a
+  PostgreSQL server process.

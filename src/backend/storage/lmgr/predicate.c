@@ -1793,7 +1793,7 @@ GetSerializableTransactionSnapshotInt(Snapshot snapshot,
 	sxact->topXid = GetTopTransactionIdIfAny();
 	sxact->finishedBefore = InvalidTransactionId;
 	sxact->xmin = snapshot->xmin;
-	sxact->pid = MyProcPid;
+	sxact->pid = PgCurrentBackendSignalPid();
 	sxact->pgprocno = MyProcNumber;
 	dlist_init(&sxact->predicateLocks);
 	dlist_node_init(&sxact->finishedLink);
