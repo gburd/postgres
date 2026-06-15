@@ -15328,3 +15328,19 @@ Validation for the shared buffer private refcount allocation context slice:
   used a cursor to hold/release shared-buffer pins, created and scanned a
   temporary table to exercise local-buffer paths, and completed `VACUUM
   ANALYZE` plus `CHECKPOINT`.
+
+## Gate E2 Helper-First Resumption Note
+
+The next resumed Phase 12/Gate E2 coding batch must run the lifecycle
+helper-first check before selecting the next migration target. Inspect the
+existing helper surface (`backend_runtime_lifecycle.h`, bucket `.def` files,
+`MULTITHREADED_RUNTIME_OWNERS.tsv`, and `check_runtime_lifecycles.pl`) and
+decide whether a small checked macro, bucket-table row, owner-map rule, or
+checker validation would simplify the batch.
+
+If two or more remaining owners would need the same create/adopt/reset/destroy
+shape, object-owned memory-context setup, delete-and-null cleanup, list/hash
+cleanup, or fallback copy/adopt/reset pattern, land that checked primitive
+first and use it in the same coherent migration. Handwritten owner-adjacent
+code remains right for ordering-sensitive subsystem cleanup, but repeated
+clerical lifecycle mechanics should not grow another manual helper pair.

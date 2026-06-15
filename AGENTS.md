@@ -145,6 +145,13 @@ state group, then rerun the threaded runtime TAP.
   checked `PG_RUNTIME_*` action, `PG_RUNTIME_DEFINE_*` macro, declarative
   bucket-table rule, owner-map metadata, or checker validation, then migrate
   the larger group through that mechanism.
+- On resumption, do this helper-first check before choosing the next concrete
+  migration target. Quickly inspect the existing lifecycle helper surface
+  (`backend_runtime_lifecycle.h`, bucket `.def` files, the owner map, and
+  `check_runtime_lifecycles.pl`). If two or more remaining owners would use
+  the same create/adopt/reset/destroy shape, bias toward landing the checked
+  macro/table/checker primitive first rather than adding another manual helper
+  pair.
 
 ## Phase 12 Lifecycle Preflight Checklist
 
