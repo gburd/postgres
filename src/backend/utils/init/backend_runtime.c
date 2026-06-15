@@ -756,6 +756,7 @@ static PgBackendId PgBackendAssignId(void);
 static void PgBackendWakeForInterrupt(PgBackend *backend);
 static void PgRuntimeInitializeServerGUCState(PgRuntimeServerGUCState *server_guc);
 static void PgRuntimeAdoptEarlyServerGUCState(PgRuntime *runtime);
+static bool PgRuntimeServerGUCStateHasConfigPaths(PgRuntimeServerGUCState *server_guc);
 static void PgRuntimeInitializeExtensionModuleState(PgRuntimeExtensionModuleState *extension_modules);
 static MemoryContext PgRuntimeEnsureExtensionModuleMemoryContext(PgRuntimeExtensionModuleState *extension_modules);
 static void PgRuntimeAdoptEarlyExtensionModuleState(PgRuntime *runtime);
@@ -1093,8 +1094,22 @@ PgRuntimeAdoptEarlyServerGUCState(PgRuntime *runtime)
 	if (!early_runtime_server_guc.initialized)
 		PgRuntimeInitializeServerGUCState(&early_runtime_server_guc);
 
+	/*
+	 * Runtime server GUC strings describe address-space state selected during
+	 * postmaster startup.  Auxiliary threads can initialize process runtime
+	 * state more than once, so keep the early fallback as a persistent mirror
+	 * rather than consuming it on first adoption.
+	 */
 	runtime->server_guc = early_runtime_server_guc;
-	PgRuntimeInitializeServerGUCState(&early_runtime_server_guc);
+}
+
+static bool
+PgRuntimeServerGUCStateHasConfigPaths(PgRuntimeServerGUCState *server_guc)
+{
+	return server_guc != NULL &&
+		server_guc->initialized &&
+		server_guc->config_file_name != NULL &&
+		server_guc->config_file_name[0] != '\0';
 }
 
 static void
@@ -3975,7 +3990,11 @@ InitializePgThreadRuntime(PgBackendExitContinuation exit_backend)
 		thread_runtime.kind = PG_RUNTIME_THREAD_PER_SESSION;
 		thread_runtime.extension_backend_model =
 			PG_BACKEND_MODEL_THREAD_PER_SESSION;
-		if (process_runtime.server_guc.initialized)
+		if (PgRuntimeServerGUCStateHasConfigPaths(&process_runtime.server_guc))
+			thread_runtime.server_guc = process_runtime.server_guc;
+		else if (PgRuntimeServerGUCStateHasConfigPaths(&early_runtime_server_guc))
+			thread_runtime.server_guc = early_runtime_server_guc;
+		else if (process_runtime.server_guc.initialized)
 			thread_runtime.server_guc = process_runtime.server_guc;
 		else
 			PgRuntimeInitializeServerGUCState(&thread_runtime.server_guc);

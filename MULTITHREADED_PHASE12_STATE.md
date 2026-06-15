@@ -17590,3 +17590,28 @@ Lifecycle/preflight note:
 - validation impact: threaded `misc_functions` should no longer warn that
   `pg_backend_pid()` or checkpointer `pg_stat_activity.pid` is not a
   PostgreSQL server process.
+
+## Runtime Server GUC Fallback Reuse
+
+Lifecycle/preflight note:
+
+- target: keep postmaster-selected server GUC paths (`config_file`,
+  `hba_file`, and `ident_file`) visible to later threaded backend sessions
+  after auxiliary thread process-runtime initialization.
+- touched roots/buckets: existing `PgRuntime.server_guc` bucket and the
+  early server-GUC fallback only; no new lifecycle ownership.
+- owner source files: `src/backend/utils/init/backend_runtime.c`,
+  `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`, and this Phase 12 state note.
+- legacy symbols/accessors: `PgRuntimeAdoptEarlyServerGUCState()`,
+  `early_runtime_server_guc`, `process_runtime.server_guc`,
+  `thread_runtime.server_guc`, `ConfigFileName`, `HbaFileName`, and
+  `IdentFileName`.
+- repeated lifecycle operations: whole-bucket server-GUC adoption during
+  process and thread runtime initialization.
+- checked primitive decision: no new lifecycle primitive. The invariant is
+  that the early fallback mirrors runtime-wide server GUC strings for the
+  address space instead of being consumed by the first process-runtime
+  initialization.
+- validation impact: threaded sessions should report non-empty `config_file`,
+  `hba_file`, and `ident_file`; threaded `sysviews` should survive
+  `select count(*) >= 0 from pg_file_settings`.
