@@ -154,6 +154,7 @@ PgBackendResetPgStatPendingClosedState(PgBackendPgStatPendingState *pgstat_pendi
 	 * detach.  Closed-backend reset only reclaims retained local contexts and
 	 * restores constructor defaults for reuse.
 	 */
+	PG_RUNTIME_DELETE_MEMORY_CONTEXT(pgstat_pending->fixed_snapshot_context);
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(pgstat_pending->local.snapshot.context);
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(pgstat_pending->shared_ref_context);
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(pgstat_pending->entry_ref_hash_context);

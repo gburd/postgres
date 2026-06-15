@@ -1409,11 +1409,17 @@ activity/pgstat shared-ref slice then moved the local backend-status snapshot
 table pointer, snapshot count, and snapshot memory context into
 `PgBackendActivityState`, and moved the pgstat shared-entry reference-cache
 pointer, shared-reference age, and reference-cache memory contexts into
-`PgBackendPgStatPendingState` behind private pgstat accessors. `pgStatLocal`
-remains a dedicated follow-up because its type depends on internal pgstat
-snapshot state. Both slices passed clean full build/install, process-mode
-backend-runtime regression, direct threaded runtime TAP, contrib build, and
-required global-lifetime scans with zero new unclassified mutable globals.
+`PgBackendPgStatPendingState` behind private pgstat accessors. A later
+pgstat backend-context ownership batch kept `pgStatLocal` as the internal
+pgstat anchor but moved its retained snapshot hash context and fixed custom
+snapshot payload ownership under `PgBackendPgStatPendingState`, alongside the
+pending-entry, shared-reference, entry-reference-hash, and backend-status
+snapshot contexts. Both original slices passed clean full build/install,
+process-mode backend-runtime regression, direct threaded runtime TAP, contrib
+build, and required global-lifetime scans with zero new unclassified mutable
+globals; the later ownership batch passed the same clean rebuild,
+backend-runtime regression/TAP, lifecycle/global-lifetime gates, and a live
+pgstat/backend-status smoke.
 The always-built LWLock state slice moved the held-LWLock count, fixed
 held-LWLock handle array, and backend-local user-defined tranche count into
 `PgBackendLockState`, preserving the existing `lwlock.c` source names behind

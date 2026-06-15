@@ -621,8 +621,9 @@ typedef struct PgStat_Snapshot
 
 	/*
 	 * Data in snapshot for custom fixed-numbered statistics, indexed by
-	 * (PgStat_Kind - PGSTAT_KIND_CUSTOM_MIN).  Each entry is allocated in
-	 * TopMemoryContext, for a size of PgStat_KindInfo->shared_data_len.
+	 * (PgStat_Kind - PGSTAT_KIND_CUSTOM_MIN).  Each entry is allocated in the
+	 * current backend's fixed snapshot context, for a size of
+	 * PgStat_KindInfo->shared_data_len.
 	 */
 	bool		custom_valid[PGSTAT_KIND_CUSTOM_SIZE];
 	void	   *custom_data[PGSTAT_KIND_CUSTOM_SIZE];
@@ -872,6 +873,7 @@ extern void pgstat_create_transactional(PgStat_Kind kind, Oid dboid, uint64 obji
 /* Backend-local stats state */
 extern PgStat_LocalState *PgCurrentPgStatLocalState(void);
 #define pgStatLocal (*PgCurrentPgStatLocalState())
+extern MemoryContext *PgCurrentPgStatFixedSnapshotContextRef(void);
 extern MemoryContext *PgCurrentPgStatPendingContextRef(void);
 extern dlist_head *PgCurrentPgStatPendingListRef(void);
 extern void **PgCurrentPgStatEntryRefHashRef(void);

@@ -15,6 +15,7 @@
 #include "pgstat.h"
 #include "storage/shmem.h"
 #include "storage/subsystems.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "utils/pgstat_internal.h"
 
@@ -1184,14 +1185,10 @@ pgstat_reset_entries_of_kind(PgStat_Kind kind, TimestampTz ts)
 static void
 pgstat_setup_memcxt(void)
 {
-	if (unlikely(!pgStatSharedRefContext))
-		pgStatSharedRefContext =
-			AllocSetContextCreate(TopMemoryContext,
-								  "PgStat Shared Ref",
-								  ALLOCSET_SMALL_SIZES);
-	if (unlikely(!pgStatEntryRefHashContext))
-		pgStatEntryRefHashContext =
-			AllocSetContextCreate(TopMemoryContext,
-								  "PgStat Shared Ref Hash",
-								  ALLOCSET_SMALL_SIZES);
+	PgRuntimeGetOwnedMemoryContextWithSizes(&pgStatSharedRefContext,
+											"PgStat Shared Ref",
+											ALLOCSET_SMALL_SIZES);
+	PgRuntimeGetOwnedMemoryContextWithSizes(&pgStatEntryRefHashContext,
+											"PgStat Shared Ref Hash",
+											ALLOCSET_SMALL_SIZES);
 }

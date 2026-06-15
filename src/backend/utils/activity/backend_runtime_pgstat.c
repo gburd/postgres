@@ -63,6 +63,12 @@ PgCurrentPgStatLocalState(void)
 	return &PgCurrentBackendPgStatPendingState()->local;
 }
 
+MemoryContext *
+PgCurrentPgStatFixedSnapshotContextRef(void)
+{
+	return &PgCurrentBackendPgStatPendingState()->fixed_snapshot_context;
+}
+
 PgStat_BgWriterStats *
 PgCurrentPendingBgWriterStatsRef(void)
 {

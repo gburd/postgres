@@ -528,10 +528,9 @@ PgBackendResetActivityClosedState(PgBackendActivityState *activity)
 static void
 pgstat_setup_backend_status_context(void)
 {
-	if (!backendStatusSnapContext)
-		backendStatusSnapContext = AllocSetContextCreate(TopMemoryContext,
-														 "Backend Status Snapshot",
-														 ALLOCSET_SMALL_SIZES);
+	PgRuntimeGetOwnedMemoryContextWithSizes(&backendStatusSnapContext,
+											"Backend Status Snapshot",
+											ALLOCSET_SMALL_SIZES);
 }
 
 

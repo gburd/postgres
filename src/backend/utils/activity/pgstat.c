@@ -110,6 +110,7 @@
 #include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/lwlock.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc_hooks.h"
 #include "utils/memutils.h"
 #include "utils/pgstat_internal.h"
@@ -1080,6 +1081,8 @@ pgstat_snapshot_fixed(PgStat_Kind kind)
 static void
 pgstat_init_snapshot_fixed(void)
 {
+	MemoryContext fixed_snapshot_context = NULL;
+
 	/*
 	 * Initialize fixed-numbered statistics data in snapshots, only for custom
 	 * stats kinds.
@@ -1091,8 +1094,14 @@ pgstat_init_snapshot_fixed(void)
 		if (!kind_info || !kind_info->fixed_amount)
 			continue;
 
+		if (fixed_snapshot_context == NULL)
+			fixed_snapshot_context = PgRuntimeGetOwnedMemoryContext(
+				PgCurrentPgStatFixedSnapshotContextRef(),
+				"PgStat Fixed Snapshot");
+
 		pgStatLocal.snapshot.custom_data[kind - PGSTAT_KIND_CUSTOM_MIN] =
-			MemoryContextAlloc(TopMemoryContext, kind_info->shared_data_len);
+			MemoryContextAlloc(fixed_snapshot_context,
+							   kind_info->shared_data_len);
 	}
 }
 
@@ -1106,10 +1115,9 @@ pgstat_prep_snapshot(void)
 		pgStatLocal.snapshot.stats != NULL)
 		return;
 
-	if (!pgStatLocal.snapshot.context)
-		pgStatLocal.snapshot.context = AllocSetContextCreate(TopMemoryContext,
-															 "PgStat Snapshot",
-															 ALLOCSET_SMALL_SIZES);
+	PgRuntimeGetOwnedMemoryContextWithSizes(&pgStatLocal.snapshot.context,
+											"PgStat Snapshot",
+											ALLOCSET_SMALL_SIZES);
 
 	pgStatLocal.snapshot.stats =
 		pgstat_snapshot_create(pgStatLocal.snapshot.context,
@@ -1270,13 +1278,9 @@ pgstat_prep_pending_entry(PgStat_Kind kind, Oid dboid, uint64 objid, bool *creat
 	/* need to be able to flush out */
 	Assert(pgstat_get_kind_info(kind)->flush_pending_cb != NULL);
 
-	if (unlikely(!pgStatPendingContext))
-	{
-		pgStatPendingContext =
-			AllocSetContextCreate(TopMemoryContext,
-								  "PgStat Pending",
-								  ALLOCSET_SMALL_SIZES);
-	}
+	PgRuntimeGetOwnedMemoryContextWithSizes(&pgStatPendingContext,
+											"PgStat Pending",
+											ALLOCSET_SMALL_SIZES);
 
 	entry_ref = pgstat_get_entry_ref(kind, dboid, objid,
 									 true, created_entry);

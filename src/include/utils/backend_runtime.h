@@ -556,6 +556,7 @@ typedef struct PgBackendExtensionModuleState
 typedef struct PgBackendPgStatPendingState
 {
 	PgStat_LocalState local;
+	MemoryContext fixed_snapshot_context;
 	void	   *entry_ref_hash;
 	int			shared_ref_age;
 	MemoryContext shared_ref_context;

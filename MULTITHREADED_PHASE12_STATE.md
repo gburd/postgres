@@ -15508,3 +15508,94 @@ Validation for the connection PortContext ownership slice:
   cluster from `tmp_install`, made 30 separate `psql` connections over a Unix
   socket, ran simple SQL through each connection, then created, populated, and
   queried a table before clean shutdown.
+
+## Pgstat Backend Context Ownership Batch
+
+Lifecycle/preflight note:
+
+- target: close a larger group of retained backend-local pgstat/backend-status
+  `TopMemoryContext` allocation sites by routing them through
+  `PgBackend.pgstat_pending` and `PgBackend.activity` owned context slots;
+- touched roots/buckets: `PgBackend.pgstat_pending` and
+  `PgBackend.activity`, specifically pgstat snapshot, fixed custom snapshot,
+  pending-entry, shared-reference, entry-reference-hash, and backend-status
+  snapshot contexts;
+- owner source files: `src/backend/utils/activity/pgstat.c`,
+  `src/backend/utils/activity/pgstat_shmem.c`,
+  `src/backend/utils/activity/backend_status.c`,
+  `src/backend/utils/activity/backend_runtime_pgstat.c`,
+  `src/backend/utils/init/backend_runtime_teardown.c`,
+  `src/include/utils/backend_runtime.h`,
+  `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, `MULTITHREADED_PLAN.md`, and this state
+  log;
+- legacy symbols/accessors: `pgStatLocal.snapshot.context`,
+  `pgStatLocal.snapshot.custom_data`, `pgStatPendingContext`,
+  `pgStatSharedRefContext`, `pgStatEntryRefHashContext`,
+  `backendStatusSnapContext`, existing pgstat/backend-status context accessors,
+  and the new fixed-snapshot context accessor;
+- repeated lifecycle operations expected in this slice: five object-owned
+  backend-local memory contexts plus one new context slot for fixed custom
+  snapshot payloads. This is the same create-on-demand and checked
+  delete-and-null lifecycle shape already covered by
+  `PgRuntimeGetOwnedMemoryContext*()` and `PG_RUNTIME_DELETE_MEMORY_CONTEXT`;
+- checked primitive decision: no new lifecycle primitive is needed. This batch
+  deliberately uses the existing object-owned memory-context helper and the
+  existing checked `PgBackend.pgstat_pending` and `PgBackend.activity` closed
+  reset rows. The only new slot is fixed custom snapshot data, which shares
+  the pgstat pending bucket reset and must remain separate from
+  `pgStatLocal.snapshot.context` because ordinary `pgstat_clear_snapshot()`
+  deletes the per-snapshot hash context;
+- validation impact: run touched object builds for `pgstat.o`,
+  `pgstat_shmem.o`, `backend_status.o`, `backend_runtime_pgstat.o`,
+  `backend_runtime_teardown.o`, and `test_backend_runtime_backend.o`, then
+  `git diff --check`, `gmake check-runtime-lifecycles`, `gmake
+  check-global-lifetimes`, full `gmake -j8`, backend-runtime regression/TAP,
+  and a focused pgstat/backend-status live smoke.
+
+Slice result:
+
+- `PgBackendPgStatPendingState` now has a `fixed_snapshot_context` slot for
+  fixed custom pgstat snapshot payloads stored in
+  `pgStatLocal.snapshot.custom_data`;
+- `pgstat_init_snapshot_fixed()` allocates those fixed custom snapshot
+  payloads under the backend-owned fixed snapshot context instead of
+  `TopMemoryContext`;
+- `pgstat_prep_snapshot()`, `pgstat_prep_pending_entry()`, and
+  `pgstat_setup_memcxt()` now create the per-snapshot hash, pending-entry,
+  shared-reference, and entry-reference-hash contexts through
+  `PgRuntimeGetOwnedMemoryContextWithSizes()`;
+- `pgstat_setup_backend_status_context()` now creates the local
+  backend-status snapshot context through the same owned-context helper;
+- `PgBackendResetPgStatPendingClosedState()` deletes the fixed snapshot
+  context before reinitializing the pgstat pending bucket, so fixed custom
+  snapshot payloads are reclaimed with the logical backend;
+- the pgstat internal comment, lifecycle manifest, owner map, and plan now
+  distinguish fixed snapshot payload ownership from ordinary snapshot hash
+  ownership.
+
+Validation for the pgstat backend context ownership batch:
+
+- touched-object builds passed for `pgstat.o`, `pgstat_shmem.o`,
+  `backend_status.o`, `backend_runtime_pgstat.o`,
+  `backend_runtime_teardown.o`, and `test_backend_runtime_backend.o`;
+- `git diff --check` passed;
+- `gmake check-runtime-lifecycles` passed with 166 fields classified, 166
+  bucket definitions checked, 35 reset definitions checked, and 301 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- because this changed the installed `PgBackend` layout, `src/backend` was
+  cleaned, generated backend/include headers were regenerated, and full
+  `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- after patching the recreated macOS temp-install install names and using the
+  repo-local `.perl5` `IPC::Run`, direct backend-runtime TAP passed for
+  `001_threaded_runtime.pl` and `002_threaded_bgworker_crash.pl`, 131 tests
+  total;
+- a focused live pgstat/backend-status smoke passed: it initialized and
+  started a temp cluster from `tmp_install`, read `pg_stat_activity` and
+  `pg_stat_database` in snapshot mode, switched to cache mode, created and
+  scanned a table, forced the next stats flush, cleared the stats snapshot,
+  observed the table through `pg_stat_all_tables`, and confirmed the current
+  backend was visible through `pg_stat_activity`.
