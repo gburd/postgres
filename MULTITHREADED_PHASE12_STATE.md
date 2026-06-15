@@ -13855,6 +13855,93 @@ Validation for the function-manager session context ownership slice:
   `002_threaded_bgworker_crash.pl`, 131 tests total, with repo-local `.perl5`
   `PERL5LIB` and explicit `PG_REGRESS=src/test/regress/pg_regress`.
 
+## Text Search Before Catalog Cache Reset And Active CacheMemoryContext Probe
+
+Lifecycle/preflight note:
+
+- target: prepare catalog-cache teardown for future active
+  `CacheMemoryContext` reclamation and test whether active/current-session
+  deletion is now safe after the relcache/typcache hash context migration;
+- touched roots/buckets: `PgSession.catalog_lookup` and
+  `PgSession.text_search`, specifically the ordered closed-session reset path
+  for text-search hash entries and the catalog lookup
+  `CacheMemoryContext` slot;
+- owner source files:
+  `src/backend/utils/init/backend_runtime_session_reset_buckets.def`,
+  `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, and
+  `MULTITHREADED_PHASE12_STATE.md`;
+- legacy symbols/accessors: `CacheMemoryContext`,
+  `PgSessionResetCatalogLookupClosedState()`,
+  `PgSessionResetTextSearchClosedState()`, `TSParserCacheHash`,
+  `TSDictionaryCacheHash`, `TSConfigCacheHash`, and
+  `PgCacheMemoryContextRef()`;
+- repeated lifecycle operations: one reset-order dependency. The cleanup is
+  ordering-sensitive because text-search dictionary/config entries can own
+  data and child contexts under `CacheMemoryContext`, so the text-search
+  bucket must reset before the catalog bucket can safely delete the cache
+  context;
+- checked primitive decision: reuse the checked session reset table and the
+  existing `PG_RUNTIME_DELETE_MEMORY_CONTEXT` action. No new generic
+  lifecycle primitive is needed for the retained reset-order change because
+  the slice only reorders existing checked reset buckets;
+- validation impact: run touched object builds for `backend_runtime_cache.o`
+  and `test_backend_runtime_session.o` if the implementation files changed,
+  `gmake check-runtime-lifecycles`, `gmake check-global-lifetimes`, full
+  incremental `gmake -j8`, `test_backend_runtime`, and direct backend-runtime
+  TAP.
+
+Slice:
+
+- the checked closed-session reset order now runs text-search cleanup before
+  catalog lookup cleanup so parser/dictionary/config cache entries are
+  destroyed before offline catalog lookup reset may delete
+  `CacheMemoryContext`;
+- the lifecycle and owner manifests now document that
+  `CacheMemoryContext` deletion is still limited to non-current offline
+  session cleanup and only happens after dependent text-search entries are
+  gone;
+- a local active-deletion probe deleted the current session
+  `CacheMemoryContext` in `PgSessionResetCatalogLookupClosedState()` after
+  the reset-order change. That probe was not retained: direct threaded TAP
+  failed on the next backend with `FATAL: unsupported byval length: 0` after
+  the first threaded connection succeeded. In
+  `001_threaded_runtime.pl`, the failure happened at the extension/autovacuum
+  worker request step; in `002_threaded_bgworker_crash.pl`, it happened at
+  the threaded crash-function setup step.
+
+Conclusion:
+
+- text-search-before-catalog reset ordering is a safe prerequisite and should
+  remain;
+- active/current-session `CacheMemoryContext` reclamation is still a Gate E2
+  blocker. Before retrying it, find and migrate the remaining cache/type/state
+  owner that survives across logical backend teardown;
+- if that follow-up requires repeated context setup, delete-and-null reset,
+  list/hash cleanup, or copy-adopt-reset boilerplate, land the checked
+  lifecycle macro/action/table/checker primitive first, then move the larger
+  state batch through that mechanism. This lifecycle simplification is part
+  of Gate E2 implementation work, not optional cleanup.
+
+Validation for the retained text-search/catalog reset-order slice:
+
+- `git diff --check` passed;
+- no private test calls to `PgSessionInitializeTextSearchState()` or
+  `PgSessionInitializeCatalogLookupState()` remain;
+- touched-object builds passed for `backend_runtime_cache.o` and
+  `test_backend_runtime_session.o`;
+- `gmake check-runtime-lifecycles` passed with 165 fields classified, 165
+  bucket definitions checked, 35 reset definitions checked, and 223 owner
+  mappings checked;
+- `gmake check-global-lifetimes` passed with zero new unclassified mutable
+  globals and zero local-runtime-boundary violations;
+- full incremental `gmake -j8` passed;
+- `gmake -C src/test/modules/test_backend_runtime clean all check` passed;
+- after patching the recreated macOS temp-install install names, direct
+  backend-runtime TAP passed for `001_threaded_runtime.pl` and
+  `002_threaded_bgworker_crash.pl`, 131 tests total, with repo-local `.perl5`
+  `PERL5LIB` and explicit `PG_REGRESS=src/test/regress/pg_regress`.
+
 ## Relcache And Typcache CacheMemoryContext Hash Ownership
 
 Lifecycle/preflight note:

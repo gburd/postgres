@@ -1083,6 +1083,12 @@ Gate E2 requires:
   once. The likely next useful primitive is an allocation-context helper/table
   rule that exposes create-on-demand context ownership and close-time
   delete-and-null cleanup to `check-runtime-lifecycles`;
+- do that lifecycle simplification before continuing with another
+  boilerplate-heavy Gate E2 migration. In practice, the next Phase 12 batch
+  should start by deciding whether an allocation-context, list/hash cleanup,
+  or copy-adopt-reset macro/action/checker rule would cover multiple moved
+  owners. If yes, land that checked lifecycle vocabulary slice first, then
+  use it to move the larger group of globals or teardown owners;
 - `MULTITHREADED_RUNTIME_OWNERS.tsv` remains synchronized with the lifecycle
   manifest and runtime accessors. `check-runtime-lifecycles` must reject owner
   rows that point at a non-manifest bucket, a missing owner source, a duplicate
