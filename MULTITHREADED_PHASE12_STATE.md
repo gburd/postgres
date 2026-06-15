@@ -17502,3 +17502,41 @@ Validation:
 - `gmake check-threaded-smoke` passed all 10 helper-free threaded smoke tests.
 - `git diff --check`, `gmake check-runtime-lifecycles`, and
   `gmake check-global-lifetimes` passed.
+
+## Rejected Catalog Lookup Closed-Session Hash Reset Probe
+
+Lifecycle/preflight note:
+
+- target: stop threaded backend exit from crashing in
+  `PgSessionResetCatalogLookupClosedState()` while destroying catalog lookup
+  hash roots after the full parallel threaded regression reaches the
+  DDL-heavy group.
+- touched roots/buckets: existing `PgSession.catalog_lookup` bucket only.
+- owner source files: `src/backend/utils/cache/backend_runtime_cache.c`,
+  `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, and this Phase 12 state note.
+- legacy symbols/accessors: `AttoptCacheHash`, `RelfilenumberMapHash`,
+  `TableSpaceCacheHash`, `PgCurrentAttoptCacheHashRef()`,
+  `PgCurrentRelfilenumberMapHashRef()`, and
+  `PgCurrentTableSpaceCacheHashRef()`.
+- repeated lifecycle operations: clearing context-owned dynahash roots before
+  deleting `CacheMemoryContext`.
+- checked primitive decision: no new primitive; this is owner-adjacent
+  catalog-cache teardown and updates the checked lifecycle/owner text to
+  describe clear-and-context-delete semantics instead of independent
+  `hash_destroy()` ownership.
+- validation impact: the full `gmake check-threaded` crash should move past
+  the catalog lookup reset stack, or a later crash report/TAP failure should
+  identify the next teardown owner.
+
+Validation:
+
+- The probe changed `PgSessionResetCatalogLookupClosedState()` to clear the
+  attribute-options, relfilenumber, and tablespace hash roots and rely on
+  `CacheMemoryContext` deletion for storage reclamation.
+- `gmake check-threaded-200` regressed from the stable 206/208 result to a
+  server-loss cascade after `graph_table`, with `postmaster.log` ending in
+  `FATAL: pfree called with invalid pointer ...`. The code and manifest edits
+  were backed out; this note remains to record that simply skipping those
+  `hash_destroy()` calls is not a valid fix for the full-parallel catalog
+  lookup reset crash.
