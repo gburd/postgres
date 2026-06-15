@@ -123,15 +123,16 @@ class BackgroundPsql:
         interval = 0.0005
         while True:
             with self._lock:
-                ok_out = rx_out is None or rx_out.search(self._stdout)
-                ok_err = rx_err is None or rx_err.search(self._stderr)
+                stdout, stderr = self._stdout, self._stderr
+                ok_out = rx_out is None or rx_out.search(stdout)
+                ok_err = rx_err is None or rx_err.search(stderr)
             if ok_out and ok_err:
                 return
             if time.monotonic() > deadline:
                 raise TimeoutError(
                     "background psql timed out waiting for "
                     "out={!r} err={!r}\nstdout:\n{}\nstderr:\n{}".format(
-                        want_out, want_err, self._stdout, self._stderr
+                        want_out, want_err, stdout, stderr
                     )
                 )
             time.sleep(interval)
@@ -165,13 +166,14 @@ class BackgroundPsql:
         return output
 
     def query_safe(self, query):
-        """Run query and return its output, raising if psql reported an error.
+        """Run query and return its output, raising if psql wrote any stderr.
 
-        Mirrors PostgreSQL::Test::BackgroundPsql->query_safe: any ERROR/FATAL/
-        PANIC on stderr from the statement is fatal to the test.
+        Mirrors PostgreSQL::Test::BackgroundPsql->query_safe, which dies on any
+        non-empty stderr from the statement (so a WARNING/NOTICE is fatal too,
+        not only ERROR/FATAL/PANIC).
         """
         output = self.query(query)
-        if re.search(r"^(?:ERROR|FATAL|PANIC):", self._last_stderr, re.MULTILINE):
+        if self._last_stderr != "":
             raise RuntimeError(
                 "query_safe failed: {}\nquery was: {}".format(
                     self._last_stderr.strip(), query

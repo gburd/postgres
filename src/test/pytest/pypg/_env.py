@@ -34,7 +34,7 @@ def require_test_extras(*keys: str):
 
     To skip an entire module:
 
-        pytestmark = pypg.require_test_extra("ssl", "kerberos")
+        pytestmark = pypg.require_test_extras("ssl", "kerberos")
     """
     return pytest.mark.skipif(
         not all(_has_test_extra(k) for k in keys),

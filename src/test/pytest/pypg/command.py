@@ -15,6 +15,7 @@ import subprocess
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence
 
+from ._env import test_timeout_default
 from .util import run_captured
 
 
@@ -152,7 +153,7 @@ class PgBin:
             env.update(extra_env)
         return env
 
-    def result(self, cmd: Sequence, *, extra_env=None) -> CommandResult:
+    def result(self, cmd: Sequence, *, extra_env=None, timeout=None) -> CommandResult:
         """Run cmd, capturing output. Never raises on a nonzero exit.
 
         Output is captured through temporary files rather than subprocess pipes
@@ -160,9 +161,17 @@ class PgBin:
         pg_basebackup or pg_ctl start -- leaves a postmaster holding the pipe's
         write end open, which would deadlock a pipe read to EOF.
 
+        A timeout (defaulting to PG_TEST_TIMEOUT_DEFAULT) bounds the run so a
+        hung client program fails fast instead of stalling the whole test, the
+        same way server.psql/safe_psql and bgpsql are bounded.
+
         Co-authored-by: Andrew Dunstan <andrew@dunslane.net>
         """
-        returncode, stdout, stderr = run_captured(_argv(cmd), env=self._env(extra_env))
+        if timeout is None:
+            timeout = test_timeout_default()
+        returncode, stdout, stderr = run_captured(
+            _argv(cmd), env=self._env(extra_env), timeout=timeout
+        )
         return ProgramResult(returncode, stdout, stderr)
 
     def popen(self, cmd: Sequence, *, extra_env=None) -> subprocess.Popen:
@@ -320,7 +329,9 @@ class PgBin:
         Mirrors PostgreSQL::Test::Utils::check_pg_config (the pattern is
         anchored at the start of the line).
         """
-        includedir = self.result(["pg_config", "--includedir"]).stdout.strip()
+        result = self.result(["pg_config", "--includedir"])
+        assert result.ok, "pg_config --includedir failed:\n{}".format(result)
+        includedir = result.stdout.strip()
         header = os.path.join(includedir, "pg_config.h")
         with open(header, encoding="utf-8", errors="replace") as f:
             return any(re.match(regexp, line) for line in f)

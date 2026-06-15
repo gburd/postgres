@@ -10,7 +10,7 @@ All raise the SQLSTATE-specific :class:`LibpqError` subclass on failure.
 
 import contextlib
 import ctypes
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Optional
 
 from .constants import ConnectionStatus, ExecStatus, _PGconn_p
 from .errors import LibpqError
@@ -32,6 +32,9 @@ class PGconn(contextlib.AbstractContextManager):
         # Cleared to None on __exit__ once the connection has been finished.
         self._handle = handle
         self._stack = stack
+        # The most recent result, cleared when the next exec() runs so a long
+        # polling loop on one connection does not accumulate unfreed PGresults.
+        self._last_result: Optional[PGresult] = None
 
     def __exit__(self, *exc):
         self._lib.PQfinish(self._handle)
@@ -40,9 +43,18 @@ class PGconn(contextlib.AbstractContextManager):
     def exec(self, query: str) -> PGresult:
         """
         Executes a query via PQexec() and returns a PGresult.
+
+        The previous result from this connection is cleared first, so issuing
+        many queries on one connection (e.g. a poll loop) frees each PGresult
+        promptly rather than deferring all of them to end-of-test cleanup.
         """
+        if self._last_result is not None:
+            self._last_result.close()
+            self._last_result = None
         res = self._lib.PQexec(self._handle, query.encode())
-        return self._stack.enter_context(PGresult(self._lib, res))
+        result = self._stack.enter_context(PGresult(self._lib, res))
+        self._last_result = result
+        return result
 
     def sql(self, query: str):  # pylint: disable=inconsistent-return-statements
         """
@@ -161,7 +173,8 @@ def connect(
 
     # Check connection status before adding to stack
     if libpq_handle.PQstatus(conn_p) != ConnectionStatus.CONNECTION_OK:
-        error_msg = libpq_handle.PQerrorMessage(conn_p).decode()
+        msg = libpq_handle.PQerrorMessage(conn_p)
+        error_msg = msg.decode() if msg else "connection failed (out of memory?)"
         # Manually close the failed connection
         libpq_handle.PQfinish(conn_p)
         raise LibpqError(error_msg)

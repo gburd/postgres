@@ -45,10 +45,20 @@ class PGresult(contextlib.AbstractContextManager):
         self._res: Optional[_PGresult_p] = res  # type: ignore[valid-type]
 
     def __exit__(self, *exc):
-        self._lib.PQclear(self._res)
-        self._res = None
+        self.close()
+
+    def close(self):
+        """Free the underlying PGresult; idempotent."""
+        if self._res is not None:
+            self._lib.PQclear(self._res)
+            self._res = None
 
     def status(self) -> ExecStatus:
+        # A NULL PGresult (PQexec on OOM / lost connection) has no status; report
+        # FATAL_ERROR so callers route it to raise_error() instead of mistaking
+        # PQresultStatus(NULL)==0 for an empty query and silently returning None.
+        if not self._res:
+            return ExecStatus.PGRES_FATAL_ERROR
         return ExecStatus(self._lib.PQresultStatus(self._res))
 
     def error_message(self):
