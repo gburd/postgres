@@ -16551,10 +16551,11 @@ The direct threaded runtime TAP now has two complementary proof paths:
 - `t/003_milestone_w_core_smoke.pl` is the short-path Milestone W smoke. It
   starts a threaded server, runs normal SQL, transaction rollback, catalog
   writes, PL/pgSQL, core database/role/startup/stacked GUC semantics,
-  process-only module and process-model background-worker rejection, normal
-  disconnect, abandoned-client cleanup, active termination, backend-local
-  `FATAL`, repeated reconnect, postmaster child-count checks on Unix, and the
-  retained `TopMemoryContext`/crash log guard.
+  process-only module and process-model background-worker rejection,
+  thread-model background-worker handoff, representative parallel query,
+  normal disconnect, abandoned-client cleanup, active termination,
+  backend-local `FATAL`, repeated reconnect, postmaster child-count checks on
+  Unix, and the retained `TopMemoryContext`/crash log guard.
 
 Current Milestone W blockers, in priority order, are now evidence-driven:
 
@@ -16577,7 +16578,9 @@ Validation for this smoke-path split:
   t/001_threaded_runtime.pl` passed all 127 tests before adding the focused
   smoke.
 - direct `prove -v -I "$ROOT/src/test/perl" -I "$TESTDIR"
-  t/003_milestone_w_core_smoke.pl` passed all 29 tests;
+  t/003_milestone_w_core_smoke.pl` passed all 33 tests after adding
+  thread-model background-worker handoff and representative parallel-query
+  coverage;
 - after `gmake -C src/test/modules/test_backend_runtime check` refreshed
   `tmp_install`, patching the build-tree `src/test/regress/pg_regress`
   install-name reference back to the temp-install `libpq.5.dylib` allowed the
@@ -16604,4 +16607,5 @@ Follow-up validation registration:
   all `t/*.pl` tests when configured with `--enable-tap-tests`.
 - direct `prove -v -I "$ROOT/src/test/perl" -I "$TESTDIR"
   t/001_threaded_runtime.pl t/002_threaded_bgworker_crash.pl
-  t/003_milestone_w_core_smoke.pl` passed all 162 tests.
+  t/003_milestone_w_core_smoke.pl` passed all 166 tests after the focused
+  smoke gained worker-handoff and parallel-query coverage.

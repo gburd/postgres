@@ -188,6 +188,40 @@ is($node->safe_psql(
 is($node->safe_psql('postgres', 'SELECT 42;'), '42',
 	'Milestone W smoke remains usable after background-worker rejection');
 
+like(
+	$node->safe_psql(
+		'postgres',
+		'SELECT test_backend_runtime_launch_thread_bgworker();'),
+	qr/^\d+$/,
+	'Milestone W smoke starts and stops a thread-model background worker');
+like(
+	slurp_file($node->logfile),
+	qr/starting background worker thread carrier/,
+	'Milestone W smoke uses a thread carrier for worker handoff');
+
+is($node->safe_psql(
+		'postgres',
+		q{
+SET debug_parallel_query = on;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET max_parallel_workers_per_gather = 4;
+CREATE TEMP TABLE threaded_w_parallel AS
+SELECT i, i % 10 AS g FROM generate_series(1, 20000) AS i;
+ALTER TABLE threaded_w_parallel SET (parallel_workers = 4);
+ANALYZE threaded_w_parallel;
+SELECT sum(i)::text || '|' || count(*)::text
+FROM threaded_w_parallel
+WHERE g >= 0;
+}),
+	'200010000|20000',
+	'Milestone W smoke runs representative parallel query');
+like(
+	slurp_file($node->logfile),
+	qr/starting background worker thread carrier "parallel worker/,
+	'Milestone W smoke uses thread carriers for parallel query workers');
+
 my @sessions;
 my @normal_pids;
 for my $i (1 .. 3)
