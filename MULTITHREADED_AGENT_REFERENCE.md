@@ -652,6 +652,7 @@ Important current files:
   ```
 
   It composes the worker-settings core regression baseline, PL/pgSQL
+  regression under `threaded_workers.conf`, full `src/test/isolation`
   regression under `threaded_workers.conf`,
   `src/test/modules/test_backend_runtime` process-mode regression plus its
   TAP hook when the checkout is configured with TAP, and the lifecycle/global
@@ -660,12 +661,9 @@ Important current files:
   broad `src/bin`/interfaces/TAP coverage, and the full custom/extension GUC
   matrix remain Phase 16 / Gate E2-Extensions unless the focused target,
   threaded TAP log guard, retained-root warnings, lifecycle checker, or global
-  lifetime scan exposes a core runtime dependency. Full
-  `src/test/isolation check TEMP_CONFIG=.../threaded_workers.conf` is also
-  outside this target for now; the safe-snapshot hang in `read-only-anomaly-3`
-  is fixed, but the full schedule now reaches and stalls at
-  `deadlock-parallel`, so it needs focused parallel-deadlock triage before it
-  can become a stable Gate E2-Core guard.
+  lifetime scan exposes a core runtime dependency. Isolation is included after
+  clearing the threaded safe-snapshot wait, parallel-deadlock timeout, and
+  async notification routing blockers found during world-core discovery.
 
   The interim 150-pass threaded visibility target is:
 

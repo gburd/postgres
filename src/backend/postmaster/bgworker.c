@@ -829,7 +829,10 @@ BackgroundWorkerMain(const void *startup_data, size_t startup_data_len)
 		pqsignal(SIGHUP, PG_SIG_IGN);
 	}
 
-	InitializeTimeouts();		/* establishes SIGALRM handler */
+	if (threaded_worker)
+		InitializeLogicalTimeouts();
+	else
+		InitializeTimeouts();	/* establishes SIGALRM handler */
 
 	if (!threaded_worker)
 	{

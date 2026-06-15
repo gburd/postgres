@@ -218,7 +218,7 @@ typedef struct AsyncQueueEntry
 	int			length;			/* total allocated length of entry */
 	Oid			dboid;			/* sender's database OID */
 	TransactionId xid;			/* sender's XID */
-	int32		srcPid;			/* sender's PID */
+	int32		srcPid;			/* sender's SQL-visible signal target id */
 	char		data[NAMEDATALEN + NOTIFY_PAYLOAD_MAX_LENGTH];
 } AsyncQueueEntry;
 
@@ -1478,7 +1478,7 @@ BecomeRegisteredListener(void)
 			prevListener = i;
 	}
 	QUEUE_BACKEND_POS(MyProcNumber) = max;
-	QUEUE_BACKEND_PID(MyProcNumber) = MyProcPid;
+	QUEUE_BACKEND_PID(MyProcNumber) = PgCurrentBackendSignalPid();
 	QUEUE_BACKEND_DBOID(MyProcNumber) = MyDatabaseId;
 	QUEUE_BACKEND_WAKEUP_PENDING(MyProcNumber) = false;
 	QUEUE_BACKEND_IS_ADVANCING(MyProcNumber) = false;
@@ -2008,7 +2008,7 @@ asyncQueueNotificationToEntry(Notification *n, AsyncQueueEntry *qe)
 	qe->length = entryLength;
 	qe->dboid = MyDatabaseId;
 	qe->xid = GetCurrentTransactionId();
-	qe->srcPid = MyProcPid;
+	qe->srcPid = PgCurrentBackendSignalPid();
 	memcpy(qe->data, n->data, channellen + payloadlen + 2);
 }
 
@@ -2255,6 +2255,7 @@ static void
 SignalBackends(void)
 {
 	int			count;
+	int32		my_signal_pid;
 
 	/* Can't get here without PreCommit_Notify having made the global table */
 	Assert(globalChannelTable != NULL);
@@ -2374,15 +2375,17 @@ SignalBackends(void)
 	LWLockRelease(NotifyQueueLock);
 
 	/* Now send signals */
+	my_signal_pid = PgCurrentBackendSignalPid();
+
 	for (int i = 0; i < count; i++)
 	{
 		int32		pid = signalPids[i];
 
 		/*
-		 * If we are signaling our own process, no need to involve the kernel;
-		 * just set the flag directly.
+		 * If we are signaling our own backend, no need to go through
+		 * procsignal; just set the flag directly.
 		 */
-		if (pid == MyProcPid)
+		if (pid == my_signal_pid)
 		{
 			PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_NOTIFY);
 			notifyInterruptPending = true;
@@ -2395,7 +2398,9 @@ SignalBackends(void)
 		 * NotifyQueueLock; which is unlikely but certainly possible. So we
 		 * just log a low-level debug message if it happens.
 		 */
-		if (SendProcSignal(pid, PROCSIG_NOTIFY_INTERRUPT, signalProcnos[i]) < 0)
+		if (SendBackendInterrupt(pid, PG_BACKEND_INTERRUPT_NOTIFY,
+								 my_signal_pid, getuid()) < 0 &&
+			SendProcSignal(pid, PROCSIG_NOTIFY_INTERRUPT, signalProcnos[i]) < 0)
 			elog(DEBUG3, "could not signal backend with PID %d: %m", pid);
 	}
 }
@@ -2601,7 +2606,7 @@ asyncQueueReadAllNotifications(void)
 	 */
 	LWLockAcquire(NotifyQueueLock, LW_SHARED);
 	/* Assert checks that we have a valid state entry */
-	Assert(MyProcPid == QUEUE_BACKEND_PID(MyProcNumber));
+	Assert(PgCurrentBackendSignalPid() == QUEUE_BACKEND_PID(MyProcNumber));
 	QUEUE_BACKEND_WAKEUP_PENDING(MyProcNumber) = false;
 	pos = QUEUE_BACKEND_POS(MyProcNumber);
 	head = QUEUE_HEAD;

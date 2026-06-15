@@ -76,6 +76,7 @@ check-threaded-world-core: submake-generated-headers
 check-threaded-world-core:
 	$(MAKE) -C src/test/regress check-threaded-workers
 	$(MAKE) -C src/pl/plpgsql/src check TEMP_CONFIG=$(THREADED_WORLD_CORE_CONFIG)
+	$(MAKE) -C src/test/isolation check TEMP_CONFIG=$(THREADED_WORLD_CORE_CONFIG)
 	$(MAKE) -C src/test/modules/test_backend_runtime DESTDIR=$(abs_top_builddir)/tmp_install install
 	$(MAKE) -C src/test/modules/test_backend_runtime check
 	$(MAKE) check-runtime-lifecycles

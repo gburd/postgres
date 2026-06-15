@@ -18017,6 +18017,10 @@ Included scope:
 - `src/pl/plpgsql/src check` with
   `src/test/regress/threaded_workers.conf`, covering the bundled procedural
   language that Gate E2-Core owns;
+- `src/test/isolation check` with
+  `src/test/regress/threaded_workers.conf`, covering 129 isolation specs under
+  threaded backend sessions, including serializable safe-snapshot waits,
+  parallel deadlock detection, and async LISTEN/NOTIFY delivery;
 - `src/test/modules/test_backend_runtime check` as the process-mode runtime
   bridge control plus the Makefile TAP hook for checkouts configured with TAP;
 - `gmake check-runtime-lifecycles` and `gmake check-global-lifetimes`.
@@ -18030,20 +18034,14 @@ Discovery/classification:
   the owner-adjacent runtime bridge control. Its direct threaded TAP remains
   the threaded runtime evidence path in TAP-enabled checkouts and by the
   documented direct `prove` commands in `MULTITHREADED_AGENT_REFERENCE.md`.
-- defer with invariant: full `src/test/isolation check
-  TEMP_CONFIG=.../threaded_workers.conf` is excluded from this first stable
-  target. Initial discovery hung in `read-only-anomaly-3`; the later
-  safe-snapshot blocker fix moved the full schedule forward, and the current
-  remaining stall is `deadlock-parallel`. This is safe for the core threaded
-  runtime target because the existing core regression `transactions`,
-  `prepared_xacts`, and backend-runtime TAP teardown/reconnect/cancel/
-  terminate/FATAL guards still cover the Gate E2-Core transaction and
-  lifecycle invariants, while the remaining stall is isolated to parallel
-  deadlock resolution. If the exclusion is wrong, the focused threaded TAP log
-  guard, lifecycle checker, global-lifetime scan, or core regression
-  transaction tests should expose the core failure. Focused
-  `deadlock-parallel` triage remains Phase 12/Gate E2-Core follow-up before
-  closeout, but not a prerequisite for this stable target.
+- include: full isolation under `threaded_workers.conf` now belongs in the
+  target. Discovery first exposed the safe-snapshot logical-id blocker in
+  `read-only-anomaly-3`, then generic threaded background-worker timeout
+  initialization in `deadlock-parallel`, then async notification source-id and
+  wakeup routing in `async-notify`. After those fixes, the full 129-spec
+  schedule passed and provides broader Gate E2-Core evidence for lock waits,
+  predicate waits, parallel worker deadlock handling, and LISTEN/NOTIFY
+  cross-session delivery.
 - defer with invariant: running the process-only
   `test_backend_runtime` SQL extension under threaded temp config is excluded
   because backend-model metadata correctly rejects it with "backend model
@@ -18065,10 +18063,10 @@ Validation:
 
 - `gmake check-threaded-world-core` passed from the repository root. It ran
   the 245-test worker-settings threaded core regression target, the 13-test
-  PL/pgSQL regression target under `threaded_workers.conf`, the process-mode
-  backend-runtime SQL regression after installing that test module into the
-  active `tmp_install`, `gmake check-runtime-lifecycles`, and
-  `gmake check-global-lifetimes`.
+  PL/pgSQL regression target under `threaded_workers.conf`, the full 129-spec
+  threaded isolation schedule, the process-mode backend-runtime SQL regression
+  after installing that test module into the active `tmp_install`,
+  `gmake check-runtime-lifecycles`, and `gmake check-global-lifetimes`.
 - The Makefile TAP harness reported `TAP tests not enabled` in this checkout;
   direct threaded backend-runtime TAP remains documented in
   `MULTITHREADED_AGENT_REFERENCE.md` for TAP-capable validation.
@@ -18124,3 +18122,95 @@ Evidence:
   `deadlock-parallel`, with blocker detection reporting the parallel
   deadlock-participant sessions as blocked. That is the next focused
   isolation/parallel-deadlock evidence item, not this safe-snapshot fix.
+
+## Threaded Background Worker Logical Timeout Initialization
+
+Lifecycle/preflight note:
+
+- target: fix the focused `deadlock-parallel` isolation stall under
+  `threaded_workers.conf` by making generic threaded background workers,
+  including dynamic parallel workers, use logical timeout delivery instead of
+  process-global SIGALRM timeout delivery.
+- touched roots/buckets: no runtime root ownership changes; existing
+  `PgBackend.timeout` state and per-backend logical timeout polling are reused.
+- owner source files: `src/backend/postmaster/bgworker.c` as the generic
+  background-worker entry point, `src/backend/access/transam/parallel.c` as
+  the dynamic parallel worker caller that exposes the failure,
+  `src/backend/utils/misc/timeout.c` and
+  `src/backend/storage/ipc/waiteventset.c` as the existing logical-timeout
+  machinery, and this Phase 12 state note.
+- legacy symbols/accessors: `BackgroundWorkerMain()`,
+  `BackgroundWorkerThreadedRuntime()`, `InitializeTimeouts()`,
+  `InitializeLogicalTimeouts()`, `CheckDeadLockAlert()`,
+  `get_logical_timeout_delay_ms()`, `process_due_logical_timeouts()`, and
+  `PgCurrentTimeoutState()`.
+- repeated lifecycle operations: none; this changes timeout delivery mode
+  selection for existing backend-local timeout state and does not add
+  init/adopt/reset/destroy helper shapes.
+- checked primitive decision: no lifecycle primitive is needed. Reuse the
+  existing `PgBackend.timeout` bucket, runtime lifecycle rows, and logical
+  timeout polling path that regular threaded backends, startup, and
+  autovacuum workers already use.
+- validation impact: focused `deadlock-parallel` with
+  `TEMP_CONFIG=src/test/regress/threaded_workers.conf` should complete; rerun
+  relevant touched builds, lifecycle/global scans, `gmake check-threaded-world-core`,
+  and `git diff --check`.
+
+Evidence:
+
+- Focused `deadlock-parallel` under `threaded_workers.conf` stalled with d1,
+  d2, e1, and e2 in the expected parallel lock-group wait cycle.
+- `pg_blocking_pids()` and `pg_isolation_test_session_is_blocked()` reported
+  the expected logical leader blockers, so blocker graph reporting was not the
+  remaining failure.
+- The postmaster log showed no deadlock-timeout resolution after the 10ms d2
+  timeout. Generic background workers still initialized process-global
+  `SIGALRM` timeout delivery even when `threaded_worker` was true, unlike
+  regular threaded backends, startup, and autovacuum workers.
+- Focused `deadlock-parallel` under `threaded_workers.conf` passed after the
+  timeout initialization fix.
+- Full threaded isolation then progressed through `deadlock-parallel` and
+  failed only `async-notify`, where notification source ids used the shared
+  postmaster OS pid and cross-thread listener delivery was suppressed.
+
+## Threaded Async Notify Logical Backend IDs
+
+Lifecycle/preflight note:
+
+- target: fix threaded `async-notify` isolation behavior by storing and
+  comparing SQL-visible logical backend ids in the async notification queue
+  and listener table instead of the shared OS pid.
+- touched roots/buckets: no runtime root ownership changes; existing
+  `PgBackend` logical signal id mapping and async shared-memory queue/listener
+  state only.
+- owner source files: `src/backend/commands/async.c` as the LISTEN/NOTIFY
+  owner, `src/backend/storage/ipc/procsignal.c` and
+  `src/backend/storage/ipc/procarray.c` as the existing logical signal-id
+  routing and lookup owners, this Phase 12 state note, and validation docs if
+  full threaded isolation classification changes.
+- legacy symbols/accessors: `AsyncQueueEntry.srcPid`,
+  `QUEUE_BACKEND_PID()`, `NotifyMyFrontEnd()`, `SignalBackends()`,
+  `SendProcSignal()`, `MyProcPid`, and `PgCurrentBackendSignalPid()`.
+- repeated lifecycle operations: none; this is SQL-visible id/wakeup routing
+  semantics over existing shared async state, not init/adopt/reset/destroy
+  logic.
+- checked primitive decision: no lifecycle primitive is needed. Reuse the
+  existing `PgBackend` logical signal-id accessor and procsignal routing
+  rather than adding runtime state or checker exceptions.
+- validation impact: focused `async-notify` and full isolation under
+  `threaded_workers.conf` should pass; rerun world-core, lifecycle/global
+  scans, and `git diff --check`.
+
+Evidence:
+
+- Full threaded isolation passed 128 of 129 specs after the background-worker
+  logical-timeout fix.
+- The sole failure was `async-notify`: self-notify output showed the shared
+  postmaster OS pid, and cross-session notification rows were missing because
+  sibling threaded backends compared equal by `MyProcPid`.
+- Focused `async-notify` under `threaded_workers.conf` passed after storing
+  logical backend ids in the async queue/listener state and routing
+  cross-thread wakeups through `SendBackendInterrupt()` with the existing
+  `SendProcSignal()` fallback.
+- Full `src/test/isolation` under `threaded_workers.conf` then passed all 129
+  specs, clearing the previous world-core isolation deferral.
