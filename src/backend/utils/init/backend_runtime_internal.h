@@ -155,6 +155,7 @@ extern PgSessionMiscGUCState *PgCurrentSessionMiscGUCState(void);
 extern PgSessionGUCState *PgCurrentSessionGUCState(void);
 extern PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
 extern PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
+extern PgExecutionSPIState *PgCurrentExecutionSPIState(void);
 extern PgExecutionGUCErrorState *PgCurrentExecutionGUCErrorState(void);
 extern PgConnectionIdentityState *PgConnectionIdentityStateRef(PgConnection *connection);
 extern PgConnectionSocketIOState *PgConnectionSocketIOStateRef(PgConnection *connection);

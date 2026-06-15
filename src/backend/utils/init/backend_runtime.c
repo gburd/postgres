@@ -1025,7 +1025,7 @@ PgSessionLocaleState *PgCurrentSessionLocaleState(void);
 static PgExecutionErrorState *PgCurrentExecutionErrorState(void);
 PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
 PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
-static PgExecutionSPIState *PgCurrentExecutionSPIState(void);
+PgExecutionSPIState *PgCurrentExecutionSPIState(void);
 static PgExecutionPortalState *PgCurrentExecutionPortalState(void);
 static PgExecutionVacuumState *PgCurrentExecutionVacuumState(void);
 static PgExecutionNodeIOState *PgCurrentExecutionNodeIOState(void);
@@ -5884,55 +5884,13 @@ PgCurrentExecutionResourceOwners(void)
 	return &CurrentPgExecution->resource_owners;
 }
 
-static PgExecutionSPIState *
+PgExecutionSPIState *
 PgCurrentExecutionSPIState(void)
 {
 	if (CurrentPgExecution == NULL)
 		return &early_execution_spi;
 
 	return &CurrentPgExecution->spi;
-}
-
-uint64 *
-PgCurrentSPIProcessedRef(void)
-{
-	return &PgCurrentExecutionSPIState()->processed;
-}
-
-SPITupleTable **
-PgCurrentSPITuptableRef(void)
-{
-	return &PgCurrentExecutionSPIState()->tuptable;
-}
-
-int *
-PgCurrentSPIResultRef(void)
-{
-	return &PgCurrentExecutionSPIState()->result;
-}
-
-_SPI_connection **
-PgCurrentSPIStackRef(void)
-{
-	return &PgCurrentExecutionSPIState()->stack;
-}
-
-_SPI_connection **
-PgCurrentSPICurrentRef(void)
-{
-	return &PgCurrentExecutionSPIState()->current;
-}
-
-int *
-PgCurrentSPIStackDepthRef(void)
-{
-	return &PgCurrentExecutionSPIState()->stack_depth;
-}
-
-int *
-PgCurrentSPIConnectedRef(void)
-{
-	return &PgCurrentExecutionSPIState()->connected;
 }
 
 static PgExecutionPortalState *

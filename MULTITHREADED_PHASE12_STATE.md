@@ -18267,3 +18267,31 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o`, `backend_runtime_resowner.o`,
   and the backend link; rerun lifecycle/global scans, a focused
   backend-runtime check, and `git diff --check`.
+
+## Executor SPI Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move SPI execution compatibility accessors out of
+  `src/backend/utils/init/backend_runtime.c` and into a new executor-owned
+  `src/backend/executor/backend_runtime_executor.c` bridge file.
+- touched roots/buckets: no runtime root ownership changes; existing
+  `PgExecution.spi` bucket only.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  current-pointer and early fallback owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for the internal current
+  SPI helper, `src/backend/executor/Makefile`, and
+  `src/backend/executor/backend_runtime_executor.c`.
+- legacy symbols/accessors: `PgCurrentExecutionSPIState()`,
+  `PgCurrentSPIProcessedRef()`, `PgCurrentSPITuptableRef()`,
+  `PgCurrentSPIResultRef()`, `PgCurrentSPIStackRef()`,
+  `PgCurrentSPICurrentRef()`, `PgCurrentSPIStackDepthRef()`, and
+  `PgCurrentSPIConnectedRef()`.
+- repeated lifecycle operations: none; this only relocates pointer accessors
+  and leaves SPI init/adopt/reset behavior unchanged.
+- checked primitive decision: no lifecycle primitive is needed because the
+  existing `PgExecution.spi` lifecycle rows and owner map continue to cover
+  the bucket.
+- validation impact: rebuild `backend_runtime.o`, `backend_runtime_executor.o`,
+  and the backend link; rerun lifecycle/global scans, threaded PL/pgSQL or
+  world-core validation, and `git diff --check`.
