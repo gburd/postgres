@@ -3645,12 +3645,12 @@ log_status_format(StringInfo buf, const char *format, ErrorData *edata)
 
 /*
  * Unpack MAKE_SQLSTATE code. Note that this returns a pointer to a
- * static buffer.
+ * thread-local static buffer.
  */
 char *
 unpack_sql_state(int sql_state)
 {
-	static char buf[12];
+	static PG_THREAD_LOCAL char buf[12];
 	int			i;
 
 	for (i = 0; i < 5; i++)

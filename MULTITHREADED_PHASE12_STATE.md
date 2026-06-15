@@ -16961,3 +16961,39 @@ Validation:
   `expressions` passed and the immediate first-three rerun passed
   `expressions`; keep it as a runtime-watch item for future repeated
   threaded-regression runs rather than masking it in expected output.
+
+## Threaded SQLSTATE Formatting Scratch
+
+Lifecycle/preflight note:
+
+- target: make SQLSTATE formatting deterministic under concurrent threaded
+  error reporting by preventing `unpack_sql_state()` callers from sharing one
+  process-global scratch buffer.
+- touched roots/buckets: no runtime roots; one scalar static formatting buffer
+  becomes thread-local scratch while thread-per-session remains the active
+  scheduler model.
+- owner source files: `src/backend/utils/error/elog.c` and this Phase 12 state
+  note.
+- legacy symbols/accessors: `unpack_sql_state()`.
+- repeated lifecycle operations: none; the buffer is a fixed-size scratch
+  array with no initialization, adoption, reset, or teardown work.
+- checked primitive decision: use the existing `PG_THREAD_LOCAL` bridge for
+  scratch state. Do not add a runtime-root field for this short-lived
+  formatting buffer until a later pooled-scheduler pass removes TLS bridges.
+- validation impact: concurrent threaded calls to `pg_input_error_info()` and
+  error log formatting should no longer borrow SQLSTATE text from another
+  backend thread; the first-three threaded regression run should not
+  intermittently fail `point` with the correct message and the wrong
+  SQLSTATE.
+
+Validation:
+
+- current-state first-three threaded `parallel_schedule` rerun exposed the
+  race as a `point` failure where `pg_input_error_info('1,y', 'point')`
+  returned the correct point input message but SQLSTATE `22008` from a
+  concurrent date/time soft-error path.
+- focused threaded `test_setup` plus `point` passed after making the
+  `unpack_sql_state()` scratch buffer thread-local.
+- first-three threaded `parallel_schedule` rerun passed 57/60 tests after the
+  SQLSTATE scratch fix. `point` passed in the concurrent group; the remaining
+  failures stayed limited to `tstypes`, `opr_sanity`, and `stats_import`.
