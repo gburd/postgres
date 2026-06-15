@@ -182,6 +182,35 @@ GUCRecordIsCurrentSessionBuiltin(const struct config_generic *record)
 }
 
 static bool
+GUCRecordVariableIsCurrentSessionOwned(struct config_generic *record)
+{
+	const void *variable;
+
+	switch (record->vartype)
+	{
+		case PGC_BOOL:
+			variable = record->_bool.variable;
+			break;
+		case PGC_INT:
+			variable = record->_int.variable;
+			break;
+		case PGC_REAL:
+			variable = record->_real.variable;
+			break;
+		case PGC_STRING:
+			variable = record->_string.variable;
+			break;
+		case PGC_ENUM:
+			variable = record->_enum.variable;
+			break;
+		default:
+			pg_unreachable();
+	}
+
+	return PgCurrentSessionOwnsPointer(variable);
+}
+
+static bool
 GUCRecordHasShowHook(const struct config_generic *record)
 {
 	switch (record->vartype)
@@ -6366,7 +6395,18 @@ can_skip_gucvar(struct config_generic *gconf)
 	 * saves lots of work.  On the worker side, this means we don't need to
 	 * reset the GUC to default because it already has that value.  See
 	 * comments in RestoreGUCState for more info.
+	 *
+	 * Threaded workers share an address space with the leader and postmaster.
+	 * Until every shippable GUC has PgSession-owned backing storage, do not
+	 * reset or replay records whose direct variable slot is still
+	 * process-global.  Process-mode workers keep the historical behavior
+	 * because their address-space copy makes those writes private.
 	 */
+	if (multithreaded &&
+		IsUnderPostmaster &&
+		!GUCRecordVariableIsCurrentSessionOwned(gconf))
+		return true;
+
 	return gconf->context == PGC_POSTMASTER ||
 		gconf->context == PGC_INTERNAL ||
 		gconf->source == PGC_S_DEFAULT;

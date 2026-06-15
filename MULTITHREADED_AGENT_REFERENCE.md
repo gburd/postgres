@@ -624,10 +624,13 @@ Important current files:
   regression tests in threaded mode with default pg_regress concurrency.
   Prepared transactions are enabled through pg_regress' normal temporary
   instance configuration and `prepared_xacts` is admitted to the threaded
-  schedule. The target uses alternate expected files for intentional
-  threaded-mode differences where regular parallel workers are not launched
-  and where `plpgsql` has already reserved its GUC prefix in the shared runtime
-  before the later `guc` test.
+  schedule. Regular dynamic parallel workers are admitted; `select_parallel`
+  should match the normal expected output, not a leader-only threaded
+  alternate. Anonymous temp-file names include the logical backend id in
+  threaded mode so parallel worker threads with the same OS PID cannot truncate
+  each other's private spill files. The remaining threaded expected-output
+  shim is `guc_0.out`, where `plpgsql` has already reserved its GUC prefix in
+  the shared runtime before the later `guc` test.
 
   The interim 150-pass threaded visibility target is:
 

@@ -1874,8 +1874,15 @@ OpenTemporaryFileInTablespace(Oid tblspcOid, bool rejectError)
 	 * Generate a tempfile name that should be unique within the current
 	 * database instance.
 	 */
-	snprintf(tempfilepath, sizeof(tempfilepath), "%s/%s%d.%ld",
-			 tempdirpath, PG_TEMP_FILE_PREFIX, MyProcPid, tempFileCounter++);
+	if (multithreaded && CurrentPgBackend != NULL)
+		snprintf(tempfilepath, sizeof(tempfilepath),
+				 "%s/%s%d." UINT64_FORMAT ".%ld",
+				 tempdirpath, PG_TEMP_FILE_PREFIX, MyProcPid,
+				 PgCurrentBackendId(), tempFileCounter++);
+	else
+		snprintf(tempfilepath, sizeof(tempfilepath), "%s/%s%d.%ld",
+				 tempdirpath, PG_TEMP_FILE_PREFIX, MyProcPid,
+				 tempFileCounter++);
 
 	/*
 	 * Open the file.  Note: we don't use O_EXCL, in case there is an orphaned

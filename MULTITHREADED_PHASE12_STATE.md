@@ -17743,3 +17743,68 @@ Evidence:
 - The exact checked-in `gmake check-threaded` target passed all 245 core
   regression tests after removing `max_prepared_transactions = 0` from
   `threaded_smoke.conf`, including `prepared_xacts`.
+
+## Threaded Parallel Worker GUC Restore
+
+Lifecycle/preflight note:
+
+- target: re-admit dynamic parallel workers in thread-per-session mode by
+  fixing the threaded parallel worker `RestoreGUCState()` crash, then remove
+  the leader-only `select_parallel` expected output if focused validation
+  proves real worker launch is stable.
+- touched roots/buckets: `PgSessionGUCState` metadata, per-session direct GUC
+  backing slots, `PgSessionTempFileState` temp-file naming counters,
+  `PgCarrier` GUC mutex-depth state, parallel worker serialized GUC state,
+  background-worker thread-carrier runtime startup, and
+  `PgBackendParallelState` launch bookkeeping.
+- owner source files: `src/backend/utils/misc/guc.c`,
+  `src/backend/utils/init/backend_runtime.c`,
+  `src/backend/access/transam/parallel.c`,
+  `src/backend/storage/file/fd.c`,
+  `src/test/regress/expected/select_parallel_0.out`,
+  `MULTITHREADED_AGENT_REFERENCE.md`, and this Phase 12 state note.
+- legacy symbols/accessors: `InitializeThreadedSessionGUCOptions()`,
+  `RebindSessionGUCVariablePointers()`, `RestoreGUCState()`,
+  `SerializeGUCState()`, `CurrentPgSession`, `PgSetCurrentSession()`,
+  `ThreadedGUCLock()`, `LaunchParallelWorkers()`, and
+  `ParallelWorkerMain()`, `OpenTemporaryFileInTablespace()`,
+  `tempFileCounter`, `MyProcPid`, and `PgCurrentBackendId()`.
+- repeated lifecycle operations: resetting GUC subsidiary fields during
+  `RestoreGUCState()` already has one owner-adjacent cleanup loop; avoid
+  adding a second manual cleanup list. If worker startup needs a distinct
+  GUC metadata adoption operation, put it behind a named helper rather than
+  duplicating reset/free steps.
+- checked primitive decision: start with owner-adjacent GUC helper changes.
+  Add a lifecycle manifest/checker row only if the fix creates a new runtime
+  root or repeated adopt/reset primitive; pure GUC metadata rebinding should
+  remain covered by existing session GUC bucket ownership and backend-runtime
+  GUC tests.
+- validation impact: with the `LaunchParallelWorkers()` guard removed,
+  focused threaded `vacuum` and `select_parallel` should launch worker thread
+  carriers without a postmaster crash. Full `check-threaded` should no longer
+  need `select_parallel_0.out` for leader-only plans.
+
+Evidence:
+
+- Direct crash investigation with the `LaunchParallelWorkers()` guard removed
+  found threaded parallel workers crashing in `RestoreGUCState()` while
+  resetting/replaying GUC records backed by process-global direct variable
+  slots. Skipping those non-session-owned direct slots in threaded workers
+  keeps process-mode worker behavior unchanged while preventing worker threads
+  from freeing or replacing shared process-global GUC values.
+- A focused threaded pg_regress prefix through `vacuum`, `guc`, `sysviews`,
+  and `select_parallel` passed all 30 tests with `threaded_smoke.conf`.
+- The resulting `select_parallel` output matched the normal
+  `expected/select_parallel.out`; `expected/select_parallel_0.out` is no
+  longer needed as a leader-only threaded alternate.
+- Full `gmake check-threaded` then reached 244/245 with the only failure in
+  `join_hash`: threaded parallel hash workers corrupted private anonymous
+  temporary files because `OpenTemporaryFileInTablespace()` named files with
+  shared `MyProcPid` plus a session temp counter that can be shared by
+  attached worker threads.
+- Adding the current logical backend id to anonymous temp-file names only in
+  threaded mode preserved process-mode names and made a 78-test threaded
+  dependency slice through `join_hash` pass.
+- Full `gmake check-threaded` passed all 245 core regression tests with
+  dynamic parallel workers admitted and without
+  `expected/select_parallel_0.out`.
