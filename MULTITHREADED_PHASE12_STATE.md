@@ -18000,3 +18000,74 @@ Lifecycle/preflight note:
   `SET TRANSACTION` checks remain enforced for non-default sources. Re-run
   touched-object builds, lifecycle/global scans, backend-runtime regression,
   and `git diff --check`.
+
+## Threaded World-Core Validation Target
+
+This slice adds the first stable broader threaded validation target:
+
+```sh
+gmake check-threaded-world-core
+```
+
+Included scope:
+
+- `src/test/regress check-threaded-workers`, which keeps the full 245-test
+  core regression suite under `multithreaded = on`, `io_method = worker`, and
+  `summarize_wal = on`;
+- `src/pl/plpgsql/src check` with
+  `src/test/regress/threaded_workers.conf`, covering the bundled procedural
+  language that Gate E2-Core owns;
+- `src/test/modules/test_backend_runtime check` as the process-mode runtime
+  bridge control plus the Makefile TAP hook for checkouts configured with TAP;
+- `gmake check-runtime-lifecycles` and `gmake check-global-lifetimes`.
+
+Discovery/classification:
+
+- include: PL/pgSQL regression under `threaded_workers.conf` passed all 13
+  tests and belongs in the target because PL/pgSQL is part of the Gate E2-Core
+  working-runtime contract.
+- include: backend-runtime process-mode regression belongs in the target as
+  the owner-adjacent runtime bridge control. Its direct threaded TAP remains
+  the threaded runtime evidence path in TAP-enabled checkouts and by the
+  documented direct `prove` commands in `MULTITHREADED_AGENT_REFERENCE.md`.
+- defer with invariant: full `src/test/isolation check
+  TEMP_CONFIG=.../threaded_workers.conf` is excluded from this first stable
+  target because the discovery run hung after `read-only-anomaly` and
+  `read-only-anomaly-2`. This is safe for the core threaded runtime target
+  because the existing core regression `transactions`, `prepared_xacts`, and
+  backend-runtime TAP teardown/reconnect/cancel/terminate/FATAL guards still
+  cover the Gate E2-Core transaction and lifecycle invariants. If the
+  exclusion is wrong, the focused threaded TAP log guard, lifecycle checker,
+  global-lifetime scan, or core regression transaction tests should expose the
+  core failure. Focused isolation triage remains Phase 12/Gate E2-Core
+  follow-up before closeout, but not a prerequisite for this stable target.
+- defer with invariant: running the process-only
+  `test_backend_runtime` SQL extension under threaded temp config is excluded
+  because backend-model metadata correctly rejects it with "backend model
+  mismatch". This is safe because the rejection itself is a Gate E2-Core
+  invariant covered by the threaded backend-runtime TAP; if it regresses,
+  threaded TAP or process-only module rejection smokes fail. Phase 16 /
+  Gate E2-Extensions owns broader extension admission.
+- defer with invariant: contrib-wide threaded regression, bundled procedural
+  languages beyond PL/pgSQL, broad `src/bin`/interfaces/tool TAP, and the full
+  custom/extension GUC matrix remain outside world-core. This is safe because
+  Gate E2-Core owns core backend/session/connection/execution lifecycle,
+  PL/pgSQL, process-only rejection, and lifecycle/global guardrails; retained
+  `TopMemoryContext` warnings, threaded TAP crash/corruption guards,
+  lifecycle/global scans, and the worker-settings core regression target would
+  expose a core dependency. Completion belongs to Phase 16 /
+  Gate E2-Extensions unless those guards show a core blocker.
+
+Validation:
+
+- `gmake check-threaded-world-core` passed from the repository root. It ran
+  the 245-test worker-settings threaded core regression target, the 13-test
+  PL/pgSQL regression target under `threaded_workers.conf`, the process-mode
+  backend-runtime SQL regression after installing that test module into the
+  active `tmp_install`, `gmake check-runtime-lifecycles`, and
+  `gmake check-global-lifetimes`.
+- The Makefile TAP harness reported `TAP tests not enabled` in this checkout;
+  direct threaded backend-runtime TAP remains documented in
+  `MULTITHREADED_AGENT_REFERENCE.md` for TAP-capable validation.
+- The target is intentionally sequential and should not be run in parallel
+  with other temp-install users.

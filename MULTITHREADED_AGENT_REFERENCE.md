@@ -645,6 +645,27 @@ Important current files:
   `check-threaded` baseline intentionally avoids with `io_method = sync` and
   `summarize_wal = off`.
 
+  The broader Phase 12 world-core threaded validation target is:
+
+  ```sh
+  gmake check-threaded-world-core
+  ```
+
+  It composes the worker-settings core regression baseline, PL/pgSQL
+  regression under `threaded_workers.conf`,
+  `src/test/modules/test_backend_runtime` process-mode regression plus its
+  TAP hook when the checkout is configured with TAP, and the lifecycle/global
+  guardrails. It deliberately does not recurse through all of `check-world`:
+  contrib-wide threaded support, bundled procedural languages beyond PL/pgSQL,
+  broad `src/bin`/interfaces/TAP coverage, and the full custom/extension GUC
+  matrix remain Phase 16 / Gate E2-Extensions unless the focused target,
+  threaded TAP log guard, retained-root warnings, lifecycle checker, or global
+  lifetime scan exposes a core runtime dependency. Full
+  `src/test/isolation check TEMP_CONFIG=.../threaded_workers.conf` is also
+  outside this target for now; the discovery run hung after the first two
+  specs, so it needs focused triage before it can become a stable Gate E2-Core
+  guard.
+
   The interim 150-pass threaded visibility target is:
 
   ```sh
