@@ -20982,3 +20982,57 @@ startup-complete assertion:
   (`001_threaded_runtime.pl`, `002_threaded_bgworker_crash.pl`, and
   `003_milestone_w_core_smoke.pl`) with 174 TAP assertions, lifecycle scans,
   and global-lifetime scans.
+
+## Gate E2 Threaded Teardown Reclaimed-Root Accounting
+
+Lifecycle/preflight note:
+
+- target: strengthen retained-resource accounting by publishing and checking
+  the number of bytes reclaimed when `backend_thread_finish()` deletes the
+  exiting carrier's retained `TopMemoryContext`, and fix the threaded client
+  `proc_exit()` buffer reset path so `calloc()` local-buffer arrays are
+  reclaimed before the retained root is deleted.  Preserve the existing
+  nonzero-retained-byte warning as the regression guard.
+- touched roots/buckets: `PMChild` thread-exit payload fields and
+  `PgBackend.exit_state.retained_top_memory_context`; `PgBackend.buffers`
+  closed-state reset for thread-backed client backend exit.
+- owner source files: `src/include/postmaster/postmaster.h`,
+  `src/backend/postmaster/pmchild.c`,
+  `src/backend/postmaster/postmaster.c`,
+  `src/backend/postmaster/launch_backend.c`,
+  `src/backend/utils/init/backend_runtime_teardown.c`,
+  `src/test/modules/test_backend_runtime/test_backend_runtime_backend.c`,
+  `src/test/modules/test_backend_runtime/test_backend_runtime_pmchild.c`,
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl`,
+  `src/test/modules/test_backend_runtime/t/003_milestone_w_core_smoke.pl`,
+  and this state note.
+- legacy symbols/accessors: `PostmasterChildPublishThreadExit()`,
+  `PostmasterChildHasExitedThread()`, `backend_thread_finish()`, and PMChild
+  thread-exit payload fields; `PgBackendResetBufferClosedState()`,
+  `PgBackendExitInProgress()`, and `PgBackend.buffers` local-buffer fields.
+- repeated lifecycle operations: none; the slice adds accounting to the
+  existing PMChild helper API and uses the existing buffer closed-state reset
+  hook rather than adding another lifecycle list.
+- checked primitive decision: reuse the PMChild helper API boundary and the
+  existing retained-root TAP log guard; no lifecycle bucket row or checker
+  primitive is needed because this is publication/accounting, not runtime-root
+  lifecycle ownership.
+- validation impact: rebuild postmaster objects and backend-runtime tests, run
+  focused backend-runtime SQL plus direct threaded TAP/world-core, lifecycle
+  and global scans, process/threaded core baselines, and `git diff --check`.
+
+Validation for this reclaimed-root accounting slice:
+
+- `gmake check` passed for the process-mode 245-test core regression suite.
+- `gmake check-threaded` passed for the threaded 245-test core regression
+  suite.
+- `gmake check-threaded-workers` passed for the threaded worker 245-test core
+  regression suite.
+- `gmake check-runtime-lifecycles` passed with 172 classified fields, 172
+  bucket definitions, 35 reset definitions, and 431 owner mappings checked.
+- `gmake check-global-lifetimes` passed with 1128 declarations scanned, no new
+  unclassified mutable globals, and no local runtime-boundary violations.
+- `gmake check-threaded-world-core` passed, covering threaded worker core
+  regression, PL/pgSQL, isolation, backend-runtime SQL, threaded runtime TAP,
+  lifecycle checks, and global-lifetime checks.
+- `git diff --check` passed before the full validation pass.

@@ -180,11 +180,27 @@ PgBackendResetBufferClosedState(PgBackendBufferState *buffers)
 	/*
 	 * During process-mode proc_exit(), normal buffer callbacks have already
 	 * checked semantic cleanup, and some context-owned buffer helper storage
-	 * can already be invalid.  Process exit will reclaim it.  Non-exit resets
-	 * are retained-logical-backend cleanup and may reclaim owned allocations.
+	 * can already be invalid.  Process exit will reclaim it.  Threaded client
+	 * backend proc_exit() reuses this reset path without process teardown, so
+	 * it must reclaim local-buffer arrays allocated with calloc(); context-
+	 * owned buffer helper storage remains under the retained TopMemoryContext
+	 * and is reclaimed when backend_thread_finish() deletes that root.
 	 */
 	if (PgBackendExitInProgress())
 	{
+		if (CurrentPgRuntime != NULL &&
+			CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION &&
+			CurrentPgBackend != NULL &&
+			CurrentPgBackend->backend_type == B_BACKEND)
+		{
+			if (buffers->local_buffer_descriptors != NULL)
+				free(buffers->local_buffer_descriptors);
+			if (buffers->local_buffer_block_pointers != NULL)
+				free(buffers->local_buffer_block_pointers);
+			if (buffers->local_ref_count != NULL)
+				free(buffers->local_ref_count);
+		}
+
 		PgBackendInitializeBufferState(buffers);
 		return;
 	}

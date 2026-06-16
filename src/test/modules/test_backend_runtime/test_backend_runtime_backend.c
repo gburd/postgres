@@ -752,10 +752,17 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	PgBackendPgStatPendingState *pgstat_pending;
 	PgBackendWaitState *wait_state;
 	PgBackend  *saved_backend;
+	PgRuntime	fake_runtime;
+	PgRuntime  *saved_runtime;
+	bool		saved_proc_exit_active;
 	HASHCTL		hash_ctl;
 	bool		ok = true;
 
 	MemSet(&fake_backend, 0, sizeof(fake_backend));
+	MemSet(&fake_runtime, 0, sizeof(fake_runtime));
+	fake_runtime.kind = PG_RUNTIME_THREAD_PER_SESSION;
+	fake_backend.runtime = &fake_runtime;
+	fake_backend.backend_type = B_BACKEND;
 	utility = &fake_backend.utility;
 	walsender = &fake_backend.walsender;
 	replication = &fake_backend.replication;
@@ -1251,8 +1258,27 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && MemoryContextGetParent(GetMemoryChunkContext(utility->missing_attr_cache)) ==
 		utility->utility_cache_context;
 
-	PgBackendResetClosedState(&fake_backend);
+	saved_runtime = CurrentPgRuntime;
+	saved_proc_exit_active = proc_exit_inprogress;
 	saved_backend = CurrentPgBackend;
+	PG_TRY();
+	{
+		CurrentPgRuntime = &fake_runtime;
+		CurrentPgBackend = &fake_backend;
+		proc_exit_inprogress = true;
+		PgBackendResetClosedState(&fake_backend);
+	}
+	PG_CATCH();
+	{
+		proc_exit_inprogress = saved_proc_exit_active;
+		CurrentPgBackend = saved_backend;
+		CurrentPgRuntime = saved_runtime;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	proc_exit_inprogress = saved_proc_exit_active;
+	CurrentPgBackend = saved_backend;
+	CurrentPgRuntime = saved_runtime;
 	CurrentPgBackend = &fake_backend;
 
 	ok = ok && walsender->uploaded_manifest == NULL;

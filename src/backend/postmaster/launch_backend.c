@@ -613,6 +613,7 @@ backend_thread_finish(int code)
 	MemoryContext retained_top_context;
 	int			exitstatus;
 	Size		top_memory_allocated = 0;
+	Size		top_memory_reclaimed = 0;
 
 	Assert(thread_start != NULL);
 
@@ -644,12 +645,15 @@ backend_thread_finish(int code)
 		 * PMChild exit.  If this is wrong, teardown stress should expose a
 		 * remaining cross-backend owner as a crash or corruption signature.
 		 */
+		top_memory_reclaimed = MemoryContextMemAllocated(retained_top_context,
+														 true);
 		MemoryContextDelete(retained_top_context);
 		exit_state->retained_top_memory_context = NULL;
 		top_memory_allocated = 0;
 	}
 	PostmasterChildPublishThreadExit(thread_start->pmchild, exitstatus,
 									 top_memory_allocated,
+									 top_memory_reclaimed,
 									 thread_start->postmaster_latch);
 
 	backend_thread_set_current_start(NULL);

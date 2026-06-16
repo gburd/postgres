@@ -942,8 +942,24 @@ SKIP:
 		'threaded runtime still has no postmaster child processes after worker activity');
 }
 
+my $top_reclaim_re =
+  qr/thread-backed child \d+ reclaimed [1-9]\d* bytes from TopMemoryContext at exit/;
+my $final_log;
+
+for (1 .. 100)
+{
+	$final_log = slurp_file($node->logfile);
+	last if $final_log =~ $top_reclaim_re;
+	usleep(100_000);
+}
+
+like(
+	$final_log,
+	$top_reclaim_re,
+	'server log records reclaimed TopMemoryContext accounting');
+
 unlike(
-	slurp_file($node->logfile),
+	$final_log,
 	qr/PANIC|segmentation|unsupported byval|could not find tuple|server process .* was terminated|was terminated by signal|retained \d+ bytes in TopMemoryContext at exit/,
 	'server log has no threaded-runtime crash/corruption or retained TopMemoryContext signatures');
 

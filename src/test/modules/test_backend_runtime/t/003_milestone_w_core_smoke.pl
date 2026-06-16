@@ -362,8 +362,24 @@ SKIP:
 		'Milestone W smoke did not leak postmaster child processes');
 }
 
+my $top_reclaim_re =
+  qr/thread-backed child \d+ reclaimed [1-9]\d* bytes from TopMemoryContext at exit/;
+my $final_log;
+
+for (1 .. 100)
+{
+	$final_log = slurp_file($node->logfile);
+	last if $final_log =~ $top_reclaim_re;
+	usleep(100_000);
+}
+
+like(
+	$final_log,
+	$top_reclaim_re,
+	'Milestone W smoke log records reclaimed TopMemoryContext accounting');
+
 unlike(
-	slurp_file($node->logfile),
+	$final_log,
 	qr/PANIC|segmentation|unsupported byval|could not find tuple|server process .* was terminated|was terminated by signal|retained \d+ bytes in TopMemoryContext at exit/,
 	'Milestone W smoke log has no crash/corruption or retained TopMemoryContext signatures');
 

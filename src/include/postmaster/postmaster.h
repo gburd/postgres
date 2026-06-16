@@ -59,6 +59,7 @@ typedef struct
 	int			thread_exitstatus;	/* waitpid-style status for threads */
 	pid_t		thread_exit_signal_pid;	/* signal/stat id captured at exit */
 	Size		thread_exit_top_memory_allocated;	/* retained top memory */
+	Size		thread_exit_top_memory_reclaimed;	/* freed top memory */
 	pg_atomic_uint32 thread_startup_complete; /* set when startup completes */
 	pg_atomic_uint32 thread_exited;	/* set when a thread carrier exits */
 	int			child_slot;		/* PMChildSlot for this backend, if any */
@@ -172,9 +173,11 @@ extern void PostmasterChildPublishThreadStartupComplete(PMChild *pmchild,
 extern bool PostmasterChildHasStartupComplete(PMChild *pmchild);
 extern void PostmasterChildPublishThreadExit(PMChild *pmchild, int exitstatus,
 											 Size top_memory_allocated,
+											 Size top_memory_reclaimed,
 											 struct Latch *postmaster_latch);
 extern bool PostmasterChildHasExitedThread(PMChild *pmchild, int *exitstatus,
 										   Size *top_memory_allocated,
+										   Size *top_memory_reclaimed,
 										   pid_t *signal_pid);
 extern void PostmasterChildRetryThreadExit(PMChild *pmchild);
 extern int	PostmasterChildJoinThread(PMChild *pmchild);

@@ -58,6 +58,7 @@ test_pmchild_thread_backend_signal_api(PG_FUNCTION_ARGS)
 	int			exitstatus;
 	pid_t		exit_signal_pid;
 	Size		top_memory_allocated;
+	Size		top_memory_reclaimed;
 	bool		ok = true;
 
 	MemSet(&fake_runtime, 0, sizeof(fake_runtime));
@@ -72,6 +73,7 @@ test_pmchild_thread_backend_signal_api(PG_FUNCTION_ARGS)
 	fake_pmchild.signal_pid = 54321;
 	fake_pmchild.thread_exitstatus = 99;
 	fake_pmchild.thread_exit_top_memory_allocated = 16384;
+	fake_pmchild.thread_exit_top_memory_reclaimed = 32768;
 	fake_pmchild.carrier_kind = PM_CHILD_CARRIER_THREAD;
 	InitLatch(&fake_latch);
 
@@ -83,6 +85,7 @@ test_pmchild_thread_backend_signal_api(PG_FUNCTION_ARGS)
 	ok = ok && !PostmasterChildHasStartupComplete(&fake_pmchild);
 	ok = ok && !PostmasterChildHasExitedThread(&fake_pmchild, &exitstatus,
 											   &top_memory_allocated,
+											   &top_memory_reclaimed,
 											   &exit_signal_pid);
 
 	PostmasterChildSetThreadBackend(&fake_pmchild, &fake_backend);
@@ -92,26 +95,33 @@ test_pmchild_thread_backend_signal_api(PG_FUNCTION_ARGS)
 	pending = PgBackendConsumeInterrupts(&fake_backend);
 	ok = ok && (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_QUERY_CANCEL));
 
-	PostmasterChildPublishThreadExit(&fake_pmchild, 17, 8192, &fake_latch);
+	PostmasterChildPublishThreadExit(&fake_pmchild, 17, 8192, 32768,
+									 &fake_latch);
 	ok = ok && PostmasterChildSignalPid(&fake_pmchild) == 0;
 	ok = ok && PostmasterChildHasExitedThread(&fake_pmchild, &exitstatus,
 											  &top_memory_allocated,
+											  &top_memory_reclaimed,
 											  &exit_signal_pid);
 	ok = ok && exitstatus == 17;
 	ok = ok && exit_signal_pid == 12345;
 	ok = ok && top_memory_allocated == 8192;
+	ok = ok && top_memory_reclaimed == 32768;
 	ok = ok && !PostmasterChildHasExitedThread(&fake_pmchild, &exitstatus,
 											   &top_memory_allocated,
+											   &top_memory_reclaimed,
 											   &exit_signal_pid);
 	PostmasterChildRetryThreadExit(&fake_pmchild);
 	ok = ok && PostmasterChildHasExitedThread(&fake_pmchild, &exitstatus,
 											  &top_memory_allocated,
+											  &top_memory_reclaimed,
 											  &exit_signal_pid);
 	ok = ok && exitstatus == 17;
 	ok = ok && exit_signal_pid == 12345;
 	ok = ok && top_memory_allocated == 8192;
+	ok = ok && top_memory_reclaimed == 32768;
 	ok = ok && !PostmasterChildHasExitedThread(&fake_pmchild, &exitstatus,
 											   &top_memory_allocated,
+											   &top_memory_reclaimed,
 											   &exit_signal_pid);
 	ok = ok && !PostmasterChildRaiseThreadInterrupt(&fake_pmchild,
 													PG_BACKEND_INTERRUPT_QUERY_CANCEL);
@@ -123,13 +133,16 @@ test_pmchild_thread_backend_signal_api(PG_FUNCTION_ARGS)
 	ok = ok && PostmasterChildSignalPid(&fake_pmchild) == 0;
 	ok = ok && !PostmasterChildRaiseThreadInterrupt(&fake_pmchild,
 													PG_BACKEND_INTERRUPT_QUERY_CANCEL);
-	PostmasterChildPublishThreadExit(&fake_pmchild, 23, 4096, &fake_latch);
+	PostmasterChildPublishThreadExit(&fake_pmchild, 23, 4096, 2048,
+									 &fake_latch);
 	ok = ok && PostmasterChildHasExitedThread(&fake_pmchild, &exitstatus,
 											  &top_memory_allocated,
+											  &top_memory_reclaimed,
 											  &exit_signal_pid);
 	ok = ok && exitstatus == 23;
 	ok = ok && exit_signal_pid == 12345;
 	ok = ok && top_memory_allocated == 4096;
+	ok = ok && top_memory_reclaimed == 2048;
 
 	if (!ok)
 		elog(ERROR, "PMChild thread-backend signal API failed");
@@ -180,6 +193,7 @@ test_pmchild_thread_backend_publication_race(PG_FUNCTION_ARGS)
 		int			exitstatus;
 		pid_t		exit_signal_pid;
 		Size		top_memory_allocated;
+		Size		top_memory_reclaimed;
 
 		PostmasterChildSetThread(&fake_pmchild, &fake_pmthread);
 
@@ -217,13 +231,16 @@ test_pmchild_thread_backend_publication_race(PG_FUNCTION_ARGS)
 			}
 			PostmasterChildDetachThreadBackend(&fake_pmchild);
 			PostmasterChildPublishThreadExit(&fake_pmchild, i,
-											 (Size) i * 16, &fake_latch);
+											 (Size) i * 16,
+											 (Size) i * 32, &fake_latch);
 			ok = ok && PostmasterChildHasExitedThread(&fake_pmchild,
 													  &exitstatus,
 													  &top_memory_allocated,
+													  &top_memory_reclaimed,
 													  &exit_signal_pid);
 			ok = ok && exitstatus == i;
 			ok = ok && top_memory_allocated == (Size) i * 16;
+			ok = ok && top_memory_reclaimed == (Size) i * 32;
 			ok = ok && exit_signal_pid == 12345;
 			(void) PgBackendConsumeInterrupts(&fake_backend);
 			PostmasterChildSetThread(&fake_pmchild, &fake_pmthread);

@@ -216,6 +216,7 @@ InitPostmasterChildSlots(void)
 			slots[slotno].thread_exitstatus = 0;
 			slots[slotno].thread_exit_signal_pid = 0;
 			slots[slotno].thread_exit_top_memory_allocated = 0;
+			slots[slotno].thread_exit_top_memory_reclaimed = 0;
 			pg_atomic_init_u32(&slots[slotno].thread_startup_complete, 0);
 			pg_atomic_init_u32(&slots[slotno].thread_exited, 0);
 			slots[slotno].child_slot = slotno + 1;
@@ -261,6 +262,7 @@ AssignPostmasterChildSlot(BackendType btype)
 	pmchild->thread_exitstatus = 0;
 	pmchild->thread_exit_signal_pid = 0;
 	pmchild->thread_exit_top_memory_allocated = 0;
+	pmchild->thread_exit_top_memory_reclaimed = 0;
 	pg_atomic_write_u32(&pmchild->thread_startup_complete, 0);
 	pg_atomic_write_u32(&pmchild->thread_exited, 0);
 	pmchild->bkend_type = btype;
@@ -311,6 +313,7 @@ AllocDeadEndChild(void)
 		pmchild->thread_exitstatus = 0;
 		pmchild->thread_exit_signal_pid = 0;
 		pmchild->thread_exit_top_memory_allocated = 0;
+		pmchild->thread_exit_top_memory_reclaimed = 0;
 		pg_atomic_init_u32(&pmchild->thread_startup_complete, 0);
 		pg_atomic_init_u32(&pmchild->thread_exited, 0);
 		pmchild->child_slot = 0;
@@ -366,6 +369,7 @@ PostmasterChildSetProcess(PMChild *pmchild, pid_t pid)
 	pmchild->thread_exitstatus = 0;
 	pmchild->thread_exit_signal_pid = 0;
 	pmchild->thread_exit_top_memory_allocated = 0;
+	pmchild->thread_exit_top_memory_reclaimed = 0;
 	PMChildThreadBackendUnlock();
 	pg_atomic_write_u32(&pmchild->thread_startup_complete, 0);
 	pg_atomic_write_u32(&pmchild->thread_exited, 0);
@@ -385,6 +389,7 @@ PostmasterChildSetThread(PMChild *pmchild, const PgThread *thread)
 	pmchild->thread_exitstatus = 0;
 	pmchild->thread_exit_signal_pid = 0;
 	pmchild->thread_exit_top_memory_allocated = 0;
+	pmchild->thread_exit_top_memory_reclaimed = 0;
 	pmchild->thread_backend = NULL;
 	PMChildThreadBackendUnlock();
 	pg_atomic_write_u32(&pmchild->thread_startup_complete, 0);
@@ -480,6 +485,7 @@ PostmasterChildHasStartupComplete(PMChild *pmchild)
 void
 PostmasterChildPublishThreadExit(PMChild *pmchild, int exitstatus,
 								 Size top_memory_allocated,
+								 Size top_memory_reclaimed,
 								 Latch *postmaster_latch)
 {
 	Assert(PostmasterChildIsThread(pmchild));
@@ -499,6 +505,7 @@ PostmasterChildPublishThreadExit(PMChild *pmchild, int exitstatus,
 	}
 	pmchild->thread_exitstatus = exitstatus;
 	pmchild->thread_exit_top_memory_allocated = top_memory_allocated;
+	pmchild->thread_exit_top_memory_reclaimed = top_memory_reclaimed;
 	PMChildThreadBackendUnlock();
 
 	/*
@@ -516,6 +523,7 @@ PostmasterChildPublishThreadExit(PMChild *pmchild, int exitstatus,
 bool
 PostmasterChildHasExitedThread(PMChild *pmchild, int *exitstatus,
 							   Size *top_memory_allocated,
+							   Size *top_memory_reclaimed,
 							   pid_t *signal_pid)
 {
 	if (!PostmasterChildIsThread(pmchild))
@@ -528,6 +536,8 @@ PostmasterChildHasExitedThread(PMChild *pmchild, int *exitstatus,
 	*exitstatus = pmchild->thread_exitstatus;
 	if (top_memory_allocated != NULL)
 		*top_memory_allocated = pmchild->thread_exit_top_memory_allocated;
+	if (top_memory_reclaimed != NULL)
+		*top_memory_reclaimed = pmchild->thread_exit_top_memory_reclaimed;
 	if (signal_pid != NULL)
 		*signal_pid = pmchild->thread_exit_signal_pid;
 	PMChildThreadBackendUnlock();
@@ -582,6 +592,7 @@ ReleasePostmasterChildSlot(PMChild *pmchild)
 	pmchild->thread_exitstatus = 0;
 	pmchild->thread_exit_signal_pid = 0;
 	pmchild->thread_exit_top_memory_allocated = 0;
+	pmchild->thread_exit_top_memory_reclaimed = 0;
 	PMChildThreadBackendUnlock();
 	pg_atomic_write_u32(&pmchild->thread_startup_complete, 0);
 	pg_atomic_write_u32(&pmchild->thread_exited, 0);

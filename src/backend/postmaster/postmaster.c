@@ -2558,9 +2558,11 @@ process_pm_thread_exit(void)
 		int			join_rc;
 		pid_t		signal_pid;
 		Size		top_memory_allocated;
+		Size		top_memory_reclaimed;
 
 		if (!PostmasterChildHasExitedThread(pmchild, &exitstatus,
 											&top_memory_allocated,
+											&top_memory_reclaimed,
 											&signal_pid))
 			continue;
 
@@ -2568,6 +2570,10 @@ process_pm_thread_exit(void)
 			ereport(WARNING,
 					(errmsg_internal("thread-backed child %d retained %zu bytes in TopMemoryContext at exit",
 									 signal_pid, top_memory_allocated)));
+		if (top_memory_reclaimed > 0)
+			ereport(DEBUG1,
+					(errmsg_internal("thread-backed child %d reclaimed %zu bytes from TopMemoryContext at exit",
+									 signal_pid, top_memory_reclaimed)));
 
 		join_rc = PostmasterChildJoinThread(pmchild);
 		if (join_rc != 0)
