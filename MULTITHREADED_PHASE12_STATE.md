@@ -19018,3 +19018,29 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o`, `backend_runtime_nodes.o`,
   and the backend link; rerun lifecycle/global scans, focused
   backend-runtime coverage, and `git diff --check`.
+
+## Materialized View Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move the materialized-view maintenance-depth execution compatibility
+  accessor out of `src/backend/utils/init/backend_runtime.c` and into a new
+  owner-adjacent `src/backend/commands/backend_runtime_matview.c` bridge file.
+- touched roots/buckets: no runtime root ownership changes; existing
+  `PgExecution.matview` bucket only.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  current-pointer and early fallback owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for internal current
+  matview helper visibility, `src/backend/commands/backend_runtime_matview.c`,
+  `src/backend/commands/Makefile`, `src/backend/commands/meson.build`, and
+  `MULTITHREADED_AGENT_REFERENCE.md` for source-orientation documentation.
+- legacy symbols/accessors: `PgCurrentExecutionMatViewState()` and
+  `PgCurrentMatViewMaintenanceDepthRef()`.
+- repeated lifecycle operations: none; this only relocates a pointer accessor
+  and leaves materialized-view init/adopt/reset behavior unchanged.
+- checked primitive decision: no lifecycle primitive is needed because the
+  existing `PgExecution.matview` lifecycle row and execution bucket definition
+  continue to cover the bucket; no owner-map row exists for this scalar field.
+- validation impact: rebuild `backend_runtime.o`,
+  `backend_runtime_matview.o`, and the backend link; rerun lifecycle/global
+  scans, focused backend-runtime coverage, and `git diff --check`.

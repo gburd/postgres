@@ -174,6 +174,7 @@ extern PgExecutionVacuumState *PgCurrentExecutionVacuumState(void);
 extern PgExecutionAnalyzeState *PgCurrentExecutionAnalyzeState(void);
 extern PgExecutionNodeIOState *PgCurrentExecutionNodeIOState(void);
 extern PgExecutionBaseBackupState *PgCurrentExecutionBaseBackupState(void);
+extern PgExecutionMatViewState *PgCurrentExecutionMatViewState(void);
 extern PgExecutionCatalogState *PgCurrentExecutionCatalogState(void);
 extern PgExecutionCatalogCacheState *PgCurrentExecutionCatalogCacheState(void);
 extern PgExecutionRelMapState *PgCurrentExecutionRelMapState(void);

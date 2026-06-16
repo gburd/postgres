@@ -1033,7 +1033,7 @@ PgExecutionVacuumState *PgCurrentExecutionVacuumState(void);
 PgExecutionNodeIOState *PgCurrentExecutionNodeIOState(void);
 PgExecutionBaseBackupState *PgCurrentExecutionBaseBackupState(void);
 PgExecutionAnalyzeState *PgCurrentExecutionAnalyzeState(void);
-static PgExecutionMatViewState *PgCurrentExecutionMatViewState(void);
+PgExecutionMatViewState *PgCurrentExecutionMatViewState(void);
 PgExecutionSnapshotState *PgCurrentExecutionSnapshotState(void);
 PgExecutionComboCidState *PgCurrentExecutionComboCidState(void);
 PgExecutionXLogInsertState *PgCurrentExecutionXLogInsertState(void);
@@ -5262,19 +5262,13 @@ PgCurrentExtensionObjectRef(void)
 	return &PgCurrentExecutionExtensionState()->current_object;
 }
 
-static PgExecutionMatViewState *
+PgExecutionMatViewState *
 PgCurrentExecutionMatViewState(void)
 {
 	if (CurrentPgExecution == NULL)
 		return &early_execution_matview;
 
 	return &CurrentPgExecution->matview;
-}
-
-int *
-PgCurrentMatViewMaintenanceDepthRef(void)
-{
-	return &PgCurrentExecutionMatViewState()->maintenance_depth;
 }
 
 PgExecutionSnapshotState *
