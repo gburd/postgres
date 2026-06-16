@@ -166,12 +166,18 @@ Important current files:
 - `src/test/modules/test_backend_runtime/test_backend_runtime.h`: shared
   declarations for the backend runtime test extension.
 - `src/test/modules/test_backend_runtime/test_backend_runtime_backend.c`:
-  broad backend bucket tests that have not yet earned a narrower owner file.
+  backend pgstat-pending, activity, memory-manager, utility, and reset-state
+  tests that have not yet earned a narrower owner file.
 - `src/test/modules/test_backend_runtime/test_backend_runtime_backend_core.c`:
   core backend identity, command/log, expression-interpreter, and latch
   interrupt tests.
 - `src/test/modules/test_backend_runtime/test_backend_runtime_backend_interrupt.c`:
   backend interrupt-holdoff, pending-interrupt, and exit-state tests.
+- `src/test/modules/test_backend_runtime/test_backend_runtime_backend_subsystems.c`:
+  backend parallel, instrumentation, buffer, storage, lock, IPC, wait,
+  transaction, timeout, replication, recovery, maintenance-worker,
+  autovacuum, repack, AIO, and extension-module tests split from the broad
+  backend test family.
 - `src/test/modules/test_backend_runtime/test_backend_runtime_pmchild.c`:
   PMChild thread-backend signal and publication-race tests.
 - `src/test/modules/test_backend_runtime/test_backend_runtime_session.c`:

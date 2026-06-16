@@ -8,6 +8,7 @@ OBJS = \
 	test_backend_runtime_backend.o \
 	test_backend_runtime_backend_core.o \
 	test_backend_runtime_backend_interrupt.o \
+	test_backend_runtime_backend_subsystems.o \
 	test_backend_runtime_carrier.o \
 	test_backend_runtime_connection.o \
 	test_backend_runtime_dsm.o \
