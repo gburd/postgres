@@ -21181,3 +21181,95 @@ Validation for the reclaimed-root count evidence slice:
   `check-threaded-workers` for all 245 core tests, PL/pgSQL for all 13 tests,
   full isolation for all 129 specs, backend-runtime SQL, direct threaded TAP
   with 178 assertions, lifecycle checks, and global-lifetime checks.
+
+## Gate E2-Core Closeout Audit Refresh
+
+Current audit against the Gate E2-Core requirement list after PMChild
+publication hardening, reclaimed-root accounting, reclaimed-root count
+evidence, and the latest `check-threaded-world-core` validation:
+
+- lifecycle acceleration/refactor: proved for the current Gate E2-Core shape.
+  `backend_runtime.c` is 414 lines and remains focused on root runtime
+  construction, current-pointer installation, process/thread symmetry, and
+  top-level lifecycle orchestration. Owner-specific compatibility accessors
+  and lifecycle helpers live in owner-adjacent backend_runtime files and the
+  backend-runtime SQL tests are split into object-family files. The latest
+  lifecycle and global-lifetime scans passed, so further refactor is not a
+  Gate E2-Core blocker unless new runtime evidence points at it.
+- threaded startup and normal SQL: proved for the current core runtime by
+  `gmake check-threaded`, `gmake check-threaded-world-core`, and the direct
+  threaded TAP smokes. The world-core target reruns worker-settings threaded
+  core regression, PL/pgSQL, full isolation, backend-runtime SQL, direct
+  threaded TAP, lifecycle checks, and global-lifetime checks.
+- PL/pgSQL: proved by the world-core PL/pgSQL regression run and by direct
+  threaded TAP coverage that creates and executes PL/pgSQL functions.
+- process-only extension and background-worker rejection: proved for
+  Gate E2-Core by threaded TAP checks that reject the process-only
+  `test_backend_runtime` module and process-model background workers with
+  clear backend-model mismatch errors, then verify the threaded server remains
+  usable. Broader extension admission remains Phase 16 /
+  Gate E2-Extensions work.
+- core GUC semantics: proved for the current core surface by threaded core
+  regression, worker regression, threaded TAP database/role/startup-option
+  checks, built-in `SET`/`RESET`/`SET LOCAL` stack checks, startup-source
+  reset checks, custom-GUC smoke coverage through the thread-compatible test
+  module, and GUC-heavy concurrent stress in `001_threaded_runtime.pl`. The
+  remaining temporary process-wide GUC critical section covers ambiguous
+  startup, hook, custom, extension, and process-global-backed paths. This is
+  deferred with invariant for Gate E2-Core: it is safe because ordinary
+  current-session-owned built-in `SET`/`SHOW` paths are narrowed, generated
+  built-in direct-pointer metadata is validated, and the world-core target,
+  threaded GUC stress, process-only rejection checks, retained-root log guard,
+  lifecycle scan, and global-lifetime scan would expose a core crash,
+  corruption, retained-root warning, or semantic mismatch. Full
+  custom/extension GUC hook completeness belongs to Phase 16 /
+  Gate E2-Extensions unless those guards show a core dependency.
+- startup serialization: proved closed for the broad Gate E2-Core blocker.
+  There is no broad threaded backend startup serialization gate. Remaining
+  startup publication is the explicit PMChild
+  `ThreadedBackendStartupComplete()`/`PostmasterChildHasStartupComplete()`
+  boundary; the PMChild helper regression now asserts startup-complete
+  publish/consume semantics and stale publication reset.
+- threaded teardown and retained memory: proved for the current Gate E2-Core
+  runtime evidence target. Direct threaded TAP covers normal disconnects,
+  abandoned clients, SQL ERROR recovery, query cancel, administrator
+  termination, `FATAL`, repeated reconnects, worker handoff, mixed teardown
+  stress, repeated PMChild reaping stress, reclaimed-root count accounting,
+  and crash/corruption/retained-root log guards. The postmaster-side
+  nonzero-retained-byte warning remains the invariant; the latest TAP requires
+  at least 24 reclaimed `TopMemoryContext` log entries from the repeated
+  PMChild reaping cohort and multiple reclaimed-root entries from the
+  Milestone W teardown cases.
+- PMChild/thread synchronization: proved for the current Gate E2-Core surface.
+  The C regression test covers helper API signal routing, startup-complete
+  publish/consume, exit payload publish/consume/retry, stale-payload clearing
+  across process/thread reassignment, and a multi-reader publication race.
+  Direct threaded TAP covers real postmaster reaping cycles that combine
+  abandoned clients, active termination, and `FATAL`, then verify logical
+  backend ids leave `pg_stat_activity`, advisory locks are released,
+  reclaimed-root accounting is published, the server remains usable, and Unix
+  postmaster child counts do not increase.
+- remaining object migration: no current Gate E2-Core evidence demands
+  another broad state migration. `check-global-lifetimes`,
+  `check-runtime-lifecycles`, direct threaded TAP, and world-core did not
+  report a crash, hang, retained-root warning, corruption signature, lifecycle
+  gap, global-lifetime violation, or local runtime-boundary violation pointing
+  at a specific remaining owner. Future migration should remain evidence
+  driven by those guards.
+
+Current blocker selection:
+
+- Do not continue runtime bridge or backend-runtime test refactor as the
+  primary Gate E2-Core task; the current owner-adjacent shape is sufficient
+  for closeout evidence.
+- Do not open another GUC/startup/PMChild-startup-complete code slice unless a
+  fresh threaded TAP, world-core, lifecycle, or global-lifetime failure points
+  there.
+- No runtime-evidenced Gate E2-Core blocker remains open in the current audit.
+  The next useful action is final Gate E2-Core closeout verification and
+  keeping the required baselines green, not speculative migration or full
+  `check-world` burn-down. Excluded contrib-wide threaded support, bundled
+  procedural languages beyond PL/pgSQL, broad tool/interface TAP coverage, and
+  the full custom/extension GUC matrix remain deferred with invariant to
+  Phase 16 / Gate E2-Extensions as documented in the world-core target
+  classification.
