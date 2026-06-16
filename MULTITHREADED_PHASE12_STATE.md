@@ -18378,3 +18378,31 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o`, `backend_runtime_error.o`,
   and the backend link; rerun lifecycle/global scans, threaded regression
   coverage, and `git diff --check`.
+
+## Regex Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move regex compatibility accessors out of
+  `src/backend/utils/init/backend_runtime.c` and into a new owner-adjacent
+  `src/backend/regex/backend_runtime_regex.c` bridge file.
+- touched roots/buckets: no runtime root ownership changes; existing
+  `PgSession.regex` and `PgExecution.regex` buckets only.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  current-pointer and early fallback owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for internal current
+  regex helper visibility, `src/backend/regex/Makefile`, and
+  `src/backend/regex/backend_runtime_regex.c`.
+- legacy symbols/accessors: `PgCurrentSessionRegexState()`,
+  `PgCurrentExecutionRegexState()`, `PgCurrentRegexCtypeCacheListRef()`,
+  `PgCurrentRegexpCacheMemoryContextRef()`,
+  `PgCurrentRegexpNumCachedResRef()`, `PgCurrentRegexpCachedResArray()`, and
+  `PgCurrentRegexLocaleRef()`.
+- repeated lifecycle operations: none; this only relocates pointer accessors
+  and leaves regex init/adopt/reset behavior unchanged.
+- checked primitive decision: no lifecycle primitive is needed because the
+  existing `PgSession.regex` and `PgExecution.regex` lifecycle rows and
+  owner-map entries continue to cover the buckets.
+- validation impact: rebuild `backend_runtime.o`, `backend_runtime_regex.o`,
+  and the backend link; rerun lifecycle/global scans, threaded regression
+  coverage, and `git diff --check`.

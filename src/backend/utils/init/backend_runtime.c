@@ -1011,7 +1011,7 @@ PgSessionRelMapState *PgCurrentSessionRelMapState(void);
 PgSessionPreparedStatementState *PgCurrentSessionPreparedStatementState(void);
 PgSessionOnCommitState *PgCurrentSessionOnCommitState(void);
 PgSessionSequenceState *PgCurrentSessionSequenceState(void);
-static PgSessionRegexState *PgCurrentSessionRegexState(void);
+PgSessionRegexState *PgCurrentSessionRegexState(void);
 static PgSessionPortalManagerState *PgCurrentSessionPortalManagerState(void);
 static PgSessionLargeObjectState *PgCurrentSessionLargeObjectState(void);
 static PgSessionAsyncState *PgCurrentSessionAsyncState(void);
@@ -1045,7 +1045,7 @@ static PgExecutionCatalogCacheState *PgCurrentExecutionCatalogCacheState(void);
 static PgExecutionRelMapState *PgCurrentExecutionRelMapState(void);
 static PgExecutionInvalidationState *PgCurrentExecutionInvalidationState(void);
 static PgExecutionTwoPhaseRecordState *PgCurrentExecutionTwoPhaseRecordState(void);
-static PgExecutionRegexState *PgCurrentExecutionRegexState(void);
+PgExecutionRegexState *PgCurrentExecutionRegexState(void);
 static PgExecutionValgrindState *PgCurrentExecutionValgrindState(void);
 static PgExecutionSnapBuildState *PgCurrentExecutionSnapBuildState(void);
 PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
@@ -4820,7 +4820,7 @@ PgCurrentSessionSequenceState(void)
 	return &CurrentPgSession->sequence;
 }
 
-static PgSessionRegexState *
+PgSessionRegexState *
 PgCurrentSessionRegexState(void)
 {
 	if (CurrentPgSession == NULL)
@@ -5052,30 +5052,6 @@ HTAB **
 PgCurrentOperatorLookupCacheRef(void)
 {
 	return &PgCurrentSessionParserState()->operator_lookup_cache;
-}
-
-struct pg_ctype_cache **
-PgCurrentRegexCtypeCacheListRef(void)
-{
-	return &PgCurrentSessionRegexState()->ctype_cache_list;
-}
-
-MemoryContext *
-PgCurrentRegexpCacheMemoryContextRef(void)
-{
-	return &PgCurrentSessionRegexState()->regexp_cache_context;
-}
-
-int *
-PgCurrentRegexpNumCachedResRef(void)
-{
-	return &PgCurrentSessionRegexState()->num_cached_res;
-}
-
-PgSessionRegexCachedEntry *
-PgCurrentRegexpCachedResArray(void)
-{
-	return PgCurrentSessionRegexState()->cached_res;
 }
 
 MemoryContext *
@@ -6713,19 +6689,13 @@ PgCurrentAfterTriggersMemoryContextRef(void)
 	return &PgCurrentExecutionTriggerState()->after_triggers_context;
 }
 
-static PgExecutionRegexState *
+PgExecutionRegexState *
 PgCurrentExecutionRegexState(void)
 {
 	if (CurrentPgExecution == NULL)
 		return &early_execution_regex;
 
 	return &CurrentPgExecution->regex;
-}
-
-void **
-PgCurrentRegexLocaleRef(void)
-{
-	return &PgCurrentExecutionRegexState()->regex_locale;
 }
 
 static PgExecutionValgrindState *
