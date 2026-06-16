@@ -10,6 +10,7 @@ test_backend_runtime_sources = files(
   'test_backend_runtime_pmchild.c',
   'test_backend_runtime_session.c',
   'test_backend_runtime_session_guc.c',
+  'test_backend_runtime_thread.c',
 )
 
 if host_system == 'windows'

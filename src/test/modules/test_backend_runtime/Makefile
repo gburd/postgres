@@ -12,6 +12,7 @@ OBJS = \
 	test_backend_runtime_pmchild.o \
 	test_backend_runtime_session.o \
 	test_backend_runtime_session_guc.o \
+	test_backend_runtime_thread.o \
 	test_backend_runtime.o
 PGFILEDESC = "test_backend_runtime - test code for backend runtime scaffolding"
 
