@@ -20,6 +20,30 @@
 #include "utils/backend_runtime.h"
 #include "../utils/init/backend_runtime_internal.h"
 
+PgSessionVacuumState *
+PgCurrentSessionVacuumState(void)
+{
+	PgSessionVacuumState *vacuum;
+
+	vacuum = &PgCurrentOrEarlySession()->vacuum;
+	if (!vacuum->initialized)
+		PgSessionInitializeVacuumState(vacuum);
+
+	return vacuum;
+}
+
+PgExecutionVacuumState *
+PgCurrentExecutionVacuumState(void)
+{
+	return &PgCurrentOrEarlyExecution()->vacuum;
+}
+
+PgExecutionAnalyzeState *
+PgCurrentExecutionAnalyzeState(void)
+{
+	return &PgCurrentOrEarlyExecution()->analyze;
+}
+
 int *
 PgCurrentVacuumBufferUsageLimitRef(void)
 {

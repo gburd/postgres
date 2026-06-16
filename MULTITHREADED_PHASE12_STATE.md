@@ -20028,3 +20028,33 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o` and
   `backend_runtime_portal.o`, run lifecycle/global scans, focused
   backend-runtime control, and `git diff --check`.
+
+## Vacuum Analyze Selector Refactor
+
+Lifecycle/preflight note:
+
+- target: move the fallback-aware `PgCurrentSessionVacuumState()`,
+  `PgCurrentExecutionVacuumState()`, and `PgCurrentExecutionAnalyzeState()`
+  selectors out of `backend_runtime.c` and into the owner-adjacent
+  `src/backend/commands/backend_runtime_vacuum.c` bridge beside vacuum,
+  analyze, and parallel-vacuum compatibility accessors.
+- touched roots/buckets: existing `PgSession.vacuum`, `PgExecution.vacuum`,
+  and `PgExecution.analyze` buckets only; no new runtime roots.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  session/execution object construction and early-adoption owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for shared
+  current-or-early helpers and the existing vacuum initializer export,
+  `src/backend/commands/backend_runtime_vacuum.c`, and this state note.
+- legacy symbols/accessors: `PgCurrentSessionVacuumState()`,
+  vacuum/analyze/parallel-vacuum pointer accessors,
+  `PgCurrentExecutionVacuumState()`, and
+  `PgCurrentExecutionAnalyzeState()`.
+- repeated lifecycle operations: none; the move reuses the existing lazy
+  session vacuum initialization plus execution bucket initialization and
+  early-adoption paths.
+- checked primitive decision: reuse the checked session/execution bucket rows
+  and existing vacuum bridge source coverage; no new lifecycle primitive or
+  initializer export is needed.
+- validation impact: rebuild `backend_runtime.o` and
+  `backend_runtime_vacuum.o`, run lifecycle/global scans, focused
+  backend-runtime control, and `git diff --check`.

@@ -71,9 +71,10 @@ Important current files:
   and resource-owner callback state. Add small utility compatibility shims here
   rather than growing `backend_runtime.c`.
 - `src/backend/commands/backend_runtime_vacuum.c`: fork-owned runtime bridge
-  accessors for vacuum/analyze session and execution state. Add future
-  vacuum, analyze, and parallel-vacuum compatibility shims here rather than
-  growing `backend_runtime.c`.
+  accessors for vacuum/analyze session and execution state, including the
+  fallback-aware lazy session vacuum and execution vacuum/analyze selectors.
+  Add future vacuum, analyze, and parallel-vacuum compatibility shims here
+  rather than growing `backend_runtime.c`.
 - `src/backend/commands/backend_runtime_async.c`: fork-owned runtime bridge
   accessors for LISTEN/NOTIFY async session and execution state. Add future
   async compatibility shims here rather than growing `backend_runtime.c`.

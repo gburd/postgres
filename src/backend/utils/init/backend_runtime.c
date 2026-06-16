@@ -4298,22 +4298,6 @@ PgCurrentSessionConnectionGUCState(void)
 	return connection_guc;
 }
 
-PgSessionVacuumState *
-PgCurrentSessionVacuumState(void)
-{
-	PgSessionVacuumState *vacuum;
-
-	if (CurrentPgSession == NULL)
-		vacuum = &early_session_vacuum;
-	else
-		vacuum = &CurrentPgSession->vacuum;
-
-	if (!vacuum->initialized)
-		PgSessionInitializeVacuumState(vacuum);
-
-	return vacuum;
-}
-
 PgSessionBufferIOState *
 PgCurrentSessionBufferIOState(void)
 {
@@ -4967,15 +4951,6 @@ PgCurrentExecutionErrorState(void)
 	return &CurrentPgExecution->error;
 }
 
-PgExecutionVacuumState *
-PgCurrentExecutionVacuumState(void)
-{
-	if (CurrentPgExecution == NULL)
-		return &early_execution_vacuum;
-
-	return &CurrentPgExecution->vacuum;
-}
-
 PgExecutionNodeIOState *
 PgCurrentExecutionNodeIOState(void)
 {
@@ -4992,15 +4967,6 @@ PgCurrentExecutionBaseBackupState(void)
 		return &early_execution_basebackup;
 
 	return &CurrentPgExecution->basebackup;
-}
-
-PgExecutionAnalyzeState *
-PgCurrentExecutionAnalyzeState(void)
-{
-	if (CurrentPgExecution == NULL)
-		return &early_execution_analyze;
-
-	return &CurrentPgExecution->analyze;
 }
 
 PgExecutionExtensionState *
