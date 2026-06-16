@@ -19816,3 +19816,31 @@ Lifecycle/preflight note:
   `backend_runtime_ri.o`, and the backend link; rerun lifecycle/global scans,
   focused backend-runtime coverage, core/threaded regressions if the batch
   remains staged, and `git diff --check`.
+
+## Post-Refactor World-Core And TAP Validation
+
+After the encoding, regex, and RI owner-adjacent refactors, the broader
+threaded validation and focused teardown smoke still pass.
+
+Validation:
+
+- `gmake check-threaded-world-core` passed from the repository root. It ran
+  the 245-test worker-settings threaded core regression target, the 13-test
+  PL/pgSQL regression target under `threaded_workers.conf`, the full 129-spec
+  threaded isolation schedule, the process-mode backend-runtime SQL
+  regression after installing `test_backend_runtime` into the active
+  `tmp_install`, `gmake check-runtime-lifecycles`, and
+  `gmake check-global-lifetimes`.
+- Direct Milestone W threaded TAP passed with the documented local Perl
+  environment:
+  `prove -v -I "$ROOT/src/test/perl" -I "$TESTDIR" t/003_milestone_w_core_smoke.pl`.
+  It passed all 41 tests covering threaded startup, catalog-writing SQL,
+  transaction abort cleanup, PL/pgSQL, database/role/startup GUC defaults,
+  process-only module and background-worker rejection, thread-model worker
+  handoff, representative parallel query workers, normal disconnect,
+  cancellation, abandoned-client cleanup, terminate, FATAL, reconnect, and the
+  log guard for crash/corruption or retained `TopMemoryContext` signatures.
+- The configured recursive TAP hook still reports `TAP tests not enabled`
+  because this checkout was configured without `--enable-tap-tests`; direct
+  `prove` remains the evidence path for TAP-only threaded teardown and
+  Milestone W smokes in this local environment.

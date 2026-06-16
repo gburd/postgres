@@ -25,10 +25,11 @@ Important current files:
 - `src/backend/utils/init/backend_runtime_session.c`: fork-owned runtime
   bridge accessors for broad session-owned compatibility state that does not
   yet have a narrower owner file, including namespace, locale, database,
-  tablespace, binary-upgrade, text-search, extension, invalidation, RI,
-  relmap, prepared-statement, on-commit, and sequence shims. Keep
-  fallback-aware current-bucket selectors in `backend_runtime.c` and expose
-  them only through `backend_runtime_internal.h`.
+  tablespace, binary-upgrade, text-search, extension, invalidation, relmap,
+  prepared-statement, on-commit, and sequence shims. Keep fallback-aware
+  current-bucket selectors in `backend_runtime.c` or the narrower
+  owner-adjacent bridge, and expose shared current-or-early helpers only
+  through `backend_runtime_internal.h`.
 - `src/backend/utils/init/backend_runtime_teardown.c`: fork-owned closed-state
   reset/teardown owner for `PgBackend`, `PgSession`, and `PgExecution`.
   Keep root object construction, current-pointer installation, and early
@@ -41,7 +42,11 @@ Important current files:
   accessors for error-reporting, logging, and elog-owned compatibility state.
   Keep fallback-aware current-bucket selectors in `backend_runtime.c`.
 - `src/backend/utils/adt/backend_runtime_ri.c`: fork-owned runtime bridge
-  accessors for RI trigger execution cleanup state. Add future RI trigger
+  accessors for RI trigger session globals and execution cleanup state. Add
+  future RI trigger compatibility shims here rather than growing
+  `backend_runtime.c` or `backend_runtime_session.c`.
+- `src/backend/regex/backend_runtime_regex.c`: owner-adjacent runtime bridge
+  for session and execution regex compatibility state. Add future regex
   compatibility shims here rather than growing `backend_runtime.c`.
 - `src/backend/utils/adt/backend_runtime_pseudorandom.c`: fork-owned runtime
   bridge accessors for SQL random-function session state. Add future
@@ -178,8 +183,8 @@ Important current files:
   private to `method_io_uring.c`; the runtime header should only
   forward-declare its struct tag.
 - `src/backend/utils/mb/backend_runtime_mb.c`: owner-adjacent runtime bridge
-  for session encoding conversion cache accessors. `backend_runtime.c` still
-  owns the fallback-aware current encoding bucket selector.
+  for session encoding conversion cache accessors and the fallback-aware
+  current encoding bucket selector.
 - `src/backend/postmaster/launch_backend.c` and
   `src/backend/postmaster/postmaster.c`: backend launch and supervision.
 - `src/backend/postmaster/autovacuum.c`,
