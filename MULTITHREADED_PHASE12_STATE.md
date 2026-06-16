@@ -18585,3 +18585,30 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o`, `backend_runtime_xact.o`,
   and the backend link; rerun lifecycle/global scans, threaded regression
   coverage, and `git diff --check`.
+
+## Parser Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move parser session compatibility accessors out of
+  `src/backend/utils/init/backend_runtime.c` and into a new owner-adjacent
+  `src/backend/parser/backend_runtime_parser.c` bridge file.
+- touched roots/buckets: no runtime root ownership changes; existing
+  `PgSession.parser` bucket only.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  current-pointer and early fallback owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for internal current
+  parser helper visibility, `src/backend/parser/Makefile`,
+  `src/backend/parser/meson.build`, and
+  `src/backend/parser/backend_runtime_parser.c`.
+- legacy symbols/accessors: `PgCurrentSessionParserState()`,
+  `PgCurrentTransformNullEqualsRef()`, `PgCurrentBackslashQuoteRef()`, and
+  `PgCurrentOperatorLookupCacheRef()`.
+- repeated lifecycle operations: none; this only relocates pointer accessors
+  and leaves parser init/adopt/reset behavior unchanged.
+- checked primitive decision: no lifecycle primitive is needed because the
+  existing `PgSession.parser` lifecycle row and session bucket definition
+  continue to cover the bucket.
+- validation impact: rebuild `backend_runtime.o`,
+  `backend_runtime_parser.o`, and the backend link; rerun lifecycle/global
+  scans, threaded regression coverage, and `git diff --check`.

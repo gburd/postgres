@@ -977,7 +977,7 @@ PgSessionBinaryUpgradeState *PgCurrentSessionBinaryUpgradeState(void);
 PgSessionDateTimeState *PgCurrentSessionDateTimeState(void);
 PgSessionTextSearchState *PgCurrentSessionTextSearchState(void);
 PgSessionConnectionGUCState *PgCurrentSessionConnectionGUCState(void);
-static PgSessionParserState *PgCurrentSessionParserState(void);
+PgSessionParserState *PgCurrentSessionParserState(void);
 static PgSessionVacuumState *PgCurrentSessionVacuumState(void);
 static PgSessionBufferIOState *PgCurrentSessionBufferIOState(void);
 static PgSessionXactDefaultState *PgCurrentSessionXactDefaultState(void);
@@ -4344,7 +4344,7 @@ PgCurrentSessionConnectionGUCState(void)
 	return connection_guc;
 }
 
-static PgSessionParserState *
+PgSessionParserState *
 PgCurrentSessionParserState(void)
 {
 	PgSessionParserState *parser;
@@ -4986,24 +4986,6 @@ PgCurrentSessionLocaleState(void)
 		PgSessionInitializeLocaleState(locale);
 
 	return locale;
-}
-
-bool *
-PgCurrentTransformNullEqualsRef(void)
-{
-	return &PgCurrentSessionParserState()->transform_null_equals_value;
-}
-
-int *
-PgCurrentBackslashQuoteRef(void)
-{
-	return &PgCurrentSessionParserState()->backslash_quote_value;
-}
-
-HTAB **
-PgCurrentOperatorLookupCacheRef(void)
-{
-	return &PgCurrentSessionParserState()->operator_lookup_cache;
 }
 
 HTAB **
