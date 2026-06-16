@@ -115,6 +115,16 @@ function_name(object_type *object_arg) \
 }
 
 extern PgCarrier *PgCurrentCarrierState(void);
+extern void PgBackendInitializeIdCounter(void);
+extern void PgBackendInitializeRuntimeObject(PgBackend *backend,
+											 PgRuntime *runtime,
+											 PgCarrier *carrier,
+											 PgSession *session,
+											 PgConnection *connection,
+											 PgExecution *execution,
+											 BackendType backend_type,
+											 struct Latch *interrupt_latch);
+extern void PgBackendResetEarlyFallbackAfterFork(int proc_pid);
 extern PgSession *PgCurrentOrEarlySession(void);
 extern void PgSessionInitializeRuntimeObject(PgSession *session,
 											 PgBackend *backend,

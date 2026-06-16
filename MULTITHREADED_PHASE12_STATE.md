@@ -20438,3 +20438,57 @@ Validation evidence after the backend-runtime connection adoption test split:
   `threaded_smoke.conf`.
 - `gmake check-threaded-workers` passed all 245 core regression tests under
   `threaded_workers.conf`.
+
+## Backend Runtime Backend Lifecycle Refactor
+
+Lifecycle/preflight note:
+
+- target: move the backend early fallback, backend bucket construction/adoption,
+  backend current-state accessors, backend ID counter, and backend signal/interrupt
+  helpers out of root `backend_runtime.c` into a backend-owned runtime bridge
+  companion while leaving root runtime construction and thread/process
+  orchestration in `backend_runtime.c`.
+- touched roots/buckets: `PgBackend` and
+  `backend_runtime_backend_buckets.def`; no bucket row semantics change is
+  intended.
+- owner source files: `src/backend/utils/init/backend_runtime.c`, new
+  `src/backend/utils/init/backend_runtime_backend.c`,
+  `src/backend/utils/init/backend_runtime_internal.h`,
+  `src/backend/utils/init/Makefile`, lifecycle/global scanner source lists,
+  owner-map coverage if required, and this state note.
+- legacy symbols/accessors: backend compatibility accessors including
+  `PgCurrentCoreState`, `PgCurrentBackend*State`, `PgCurrentMyProcRef`,
+  `PgCurrentMyBackendTypeRef`, `PgCurrentPendingInterrupts`,
+  `PgCurrentInterruptHoldoffs`, backend ID/signal helpers, and backend
+  interrupt latch initialization.
+- repeated lifecycle operations: the existing checked
+  `backend_runtime_backend_buckets.def` rows continue to drive constructor,
+  early-adopt, and closed-reset coverage; this batch should move their owner
+  source, not duplicate handwritten bucket loops.
+- checked primitive decision: reuse the existing `PG_BACKEND_BUCKET` lifecycle
+  table and lifecycle checker source coverage; add no new primitive unless the
+  move exposes an unclassified repeated lifecycle shape.
+- validation impact: rebuild touched runtime objects and backend, run
+  lifecycle/global scans, focused backend-runtime regression control,
+  `git diff --check`, and then the required process/threaded core baselines
+  after the slice is mechanically clean.
+
+Validation evidence after the backend runtime backend lifecycle refactor:
+
+- `gmake -C src/backend/utils/init backend_runtime.o backend_runtime_backend.o`
+  rebuilt the root and backend runtime bridge objects.
+- `gmake -C src/backend postgres` linked the backend with
+  `backend_runtime_backend.o`.
+- `gmake check-runtime-lifecycles` passed with
+  `backend_runtime_backend.c` included in the checked source list.
+- `gmake check-global-lifetimes` passed with no new unclassified mutable
+  globals and no local runtime boundary violations.
+- `gmake -C src/test/modules/test_backend_runtime check` passed the focused
+  SQL regression control; TAP tests were not enabled in this build
+  configuration.
+- `git diff --check` passed.
+- `gmake check` passed all 245 core regression tests.
+- `gmake check-threaded` passed all 245 core regression tests under
+  `threaded_smoke.conf`.
+- `gmake check-threaded-workers` passed all 245 core regression tests under
+  `threaded_workers.conf`.

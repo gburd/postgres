@@ -554,6 +554,9 @@ sub local_runtime_boundary_violation
 	return 0 if $file eq 'src/backend/utils/init/backend_runtime.c';
 	return 0 if $file eq 'src/include/utils/backend_runtime.h';
 	return 0
+	  if $record->{owner} eq 'backend-local'
+	  && $file eq 'src/backend/utils/init/backend_runtime_backend.c';
+	return 0
 	  if $record->{owner} eq 'connection-local'
 	  && $file eq 'src/backend/libpq/backend_runtime_connection.c';
 	return 0

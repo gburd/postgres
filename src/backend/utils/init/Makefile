@@ -14,6 +14,7 @@ include $(top_builddir)/src/Makefile.global
 
 OBJS = \
 	backend_runtime.o \
+	backend_runtime_backend.o \
 	backend_runtime_session.o \
 	backend_runtime_teardown.o \
 	globals.o \
@@ -21,12 +22,13 @@ OBJS = \
 	postinit.o \
 	usercontext.o
 
-backend_runtime.o: backend_runtime_backend_buckets.def \
-	backend_runtime_carrier_buckets.def \
+backend_runtime.o: backend_runtime_carrier_buckets.def \
 	backend_runtime_connection_buckets.def \
 	backend_runtime_execution_buckets.def \
 	backend_runtime_session_buckets.def \
 	backend_runtime_session_reset_buckets.def
+
+backend_runtime_backend.o: backend_runtime_backend_buckets.def
 
 backend_runtime_teardown.o: backend_runtime_backend_buckets.def \
 	backend_runtime_execution_buckets.def \
