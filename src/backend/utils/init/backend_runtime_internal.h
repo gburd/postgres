@@ -126,6 +126,7 @@ extern PgSessionConnectionGUCState *PgCurrentSessionConnectionGUCState(void);
 extern PgSessionDateTimeState *PgCurrentSessionDateTimeState(void);
 extern PgSessionEncodingState *PgCurrentSessionEncodingState(void);
 extern PgSessionParserState *PgCurrentSessionParserState(void);
+extern PgSessionLockWaitState *PgCurrentSessionLockWaitState(void);
 extern PgSessionNamespaceState *PgCurrentSessionNamespaceState(void);
 extern PgSessionLocaleState *PgCurrentSessionLocaleState(void);
 extern PgSessionExtensionModuleState *PgCurrentSessionExtensionModuleState(void);

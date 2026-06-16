@@ -18660,3 +18660,37 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o`,
   `backend_runtime_error.o`, and the backend link; rerun lifecycle/global
   scans, threaded regression coverage, and `git diff --check`.
+
+## Lock-Wait Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move lock-wait session compatibility accessors out of
+  `src/backend/utils/init/backend_runtime.c` and into the owner-adjacent
+  `src/backend/storage/lmgr/backend_runtime_lmgr.c` bridge file.
+- touched roots/buckets: no runtime root ownership changes; existing
+  `PgSession.lock_wait` bucket only.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  current-pointer and early fallback owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for internal current
+  lock-wait helper visibility, and
+  `src/backend/storage/lmgr/backend_runtime_lmgr.c`.
+- legacy symbols/accessors: `PgCurrentSessionLockWaitState()`,
+  `PgCurrentDeadlockTimeoutRef()`, `PgCurrentStatementTimeoutRef()`,
+  `PgCurrentLockTimeoutRef()`,
+  `PgCurrentIdleInTransactionSessionTimeoutRef()`,
+  `PgCurrentTransactionTimeoutRef()`,
+  `PgCurrentIdleSessionTimeoutRef()`,
+  `PgCurrentLogLockWaitsRef()`, `PgCurrentLogLockFailuresRef()`,
+  `PgCurrentTraceLockOidMinRef()`, `PgCurrentTraceLocksRef()`,
+  `PgCurrentTraceUserlocksRef()`, `PgCurrentTraceLockTableRef()`,
+  `PgCurrentDebugDeadlocksRef()`, and
+  `PgCurrentTraceLwlocksRef()`.
+- repeated lifecycle operations: none; this only relocates pointer accessors
+  and leaves lock-wait init/adopt/reset behavior unchanged.
+- checked primitive decision: no lifecycle primitive is needed because the
+  existing `PgSession.lock_wait` lifecycle row and session bucket definition
+  continue to cover the bucket.
+- validation impact: rebuild `backend_runtime.o`,
+  `backend_runtime_lmgr.o`, and the backend link; rerun lifecycle/global
+  scans, threaded regression coverage, and `git diff --check`.

@@ -19,6 +19,90 @@
 #include "utils/memutils.h"
 #include "../../utils/init/backend_runtime_internal.h"
 
+int *
+PgCurrentDeadlockTimeoutRef(void)
+{
+	return &PgCurrentSessionLockWaitState()->deadlock_timeout_ms;
+}
+
+int *
+PgCurrentStatementTimeoutRef(void)
+{
+	return &PgCurrentSessionLockWaitState()->statement_timeout_ms;
+}
+
+int *
+PgCurrentLockTimeoutRef(void)
+{
+	return &PgCurrentSessionLockWaitState()->lock_timeout_ms;
+}
+
+int *
+PgCurrentIdleInTransactionSessionTimeoutRef(void)
+{
+	return &PgCurrentSessionLockWaitState()->idle_in_transaction_session_timeout_ms;
+}
+
+int *
+PgCurrentTransactionTimeoutRef(void)
+{
+	return &PgCurrentSessionLockWaitState()->transaction_timeout_ms;
+}
+
+int *
+PgCurrentIdleSessionTimeoutRef(void)
+{
+	return &PgCurrentSessionLockWaitState()->idle_session_timeout_ms;
+}
+
+bool *
+PgCurrentLogLockWaitsRef(void)
+{
+	return &PgCurrentSessionLockWaitState()->log_lock_waits_value;
+}
+
+bool *
+PgCurrentLogLockFailuresRef(void)
+{
+	return &PgCurrentSessionLockWaitState()->log_lock_failures_value;
+}
+
+int *
+PgCurrentTraceLockOidMinRef(void)
+{
+	return &PgCurrentSessionLockWaitState()->trace_lock_oidmin_value;
+}
+
+bool *
+PgCurrentTraceLocksRef(void)
+{
+	return &PgCurrentSessionLockWaitState()->trace_locks_value;
+}
+
+bool *
+PgCurrentTraceUserlocksRef(void)
+{
+	return &PgCurrentSessionLockWaitState()->trace_userlocks_value;
+}
+
+int *
+PgCurrentTraceLockTableRef(void)
+{
+	return &PgCurrentSessionLockWaitState()->trace_lock_table_value;
+}
+
+bool *
+PgCurrentDebugDeadlocksRef(void)
+{
+	return &PgCurrentSessionLockWaitState()->debug_deadlocks_value;
+}
+
+bool *
+PgCurrentTraceLwlocksRef(void)
+{
+	return &PgCurrentSessionLockWaitState()->trace_lwlocks_value;
+}
+
 void **
 PgCurrentFastPathLocalUseCountsRef(void)
 {
