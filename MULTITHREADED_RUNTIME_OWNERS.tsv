@@ -1,4 +1,7 @@
 legacy_symbol	root_object	bucket	member	accessor	owner_source	notes
+formatted_start_time	PgBackend	log_state	formatted_start_time	PgCurrentFormattedStartTimeBuffer	src/backend/utils/error/backend_runtime_error.c	backend log prefix cached formatted process start time
+log_line_number	PgBackend	log_state	line_number	PgCurrentLogLineNumberRef	src/backend/utils/error/backend_runtime_error.c	backend log line counter used by elog prefix formatting
+log_line_pid	PgBackend	log_state	line_pid	PgCurrentLogLinePidRef	src/backend/utils/error/backend_runtime_error.c	backend log prefix cached process PID
 pgstat_track_counts	PgSession	pgstat	track_counts	PgCurrentPgStatTrackCountsRef	src/backend/utils/activity/backend_runtime_pgstat.c	pgstat track-counts GUC backing value
 pgstat_track_functions	PgSession	pgstat	track_functions	PgCurrentPgStatTrackFunctionsRef	src/backend/utils/activity/backend_runtime_pgstat.c	pgstat track-functions GUC backing value
 pgstat_fetch_consistency	PgSession	pgstat	fetch_consistency	PgCurrentPgStatFetchConsistencyRef	src/backend/utils/activity/backend_runtime_pgstat.c	pgstat fetch-consistency GUC backing value

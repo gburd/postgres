@@ -37,6 +37,9 @@ Important current files:
 - `src/backend/utils/activity/backend_runtime_pgstat.c`: fork-owned runtime
   bridge accessors for pgstat-owned backend/session state. Add future pgstat
   accessor shims here rather than growing `backend_runtime.c`.
+- `src/backend/utils/error/backend_runtime_error.c`: fork-owned runtime bridge
+  accessors for error-reporting, logging, and elog-owned compatibility state.
+  Keep fallback-aware current-bucket selectors in `backend_runtime.c`.
 - `src/backend/utils/adt/backend_runtime_ri.c`: fork-owned runtime bridge
   accessors for RI trigger execution cleanup state. Add future RI trigger
   compatibility shims here rather than growing `backend_runtime.c`.

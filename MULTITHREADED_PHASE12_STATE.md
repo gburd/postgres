@@ -19312,6 +19312,39 @@ Lifecycle/preflight note:
   lifecycle/global scans, focused backend-runtime coverage, and
   `git diff --check`.
 
+## Backend Log Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move backend log-line compatibility leaf accessors out of
+  `backend_runtime.c` and into the existing owner-adjacent `utils/error`
+  runtime bridge used by `elog.c`.
+- touched roots/buckets: existing `PgBackend.log_state` bucket and early
+  backend fallback only; no new runtime roots.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  fallback-aware backend log-state selector owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for internal
+  `PgCurrentBackendLogState()` visibility,
+  `src/backend/utils/error/backend_runtime_error.c`,
+  `src/backend/utils/error/meson.build`, `GNUmakefile.in`,
+  `src/tools/runtime_lifecycle/check_runtime_lifecycles.pl`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, and
+  `MULTITHREADED_AGENT_REFERENCE.md`.
+- legacy symbols/accessors: `PgCurrentBackendLogState()`,
+  `PgCurrentFormattedStartTimeBuffer()`,
+  `PgCurrentLogLineNumberRef()`, and `PgCurrentLogLinePidRef()`.
+- repeated lifecycle operations: none; this only relocates borrowed pointer
+  accessors and leaves backend log-state initialization, early fallback
+  adoption, and closed-backend reset unchanged.
+- checked primitive decision: reuse the existing `PgBackend.log_state`
+  lifecycle row and backend bucket definition; add
+  `backend_runtime_error.c` to lifecycle-checker source coverage and add
+  owner-map rows so the moved `elog.c` bridge accessors are checked against
+  the owner-adjacent bridge file.
+- validation impact: rebuild `backend_runtime.o`,
+  `backend_runtime_error.o`, and the backend link; rerun lifecycle/global
+  scans, focused backend-runtime coverage, and `git diff --check`.
+
 ## Tcop Runtime Accessor Refactor
 
 Lifecycle/preflight note:

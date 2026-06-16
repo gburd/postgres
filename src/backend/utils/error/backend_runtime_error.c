@@ -63,6 +63,24 @@ PgCurrentFormattedLogTime(void)
 	return PgCurrentExecutionErrorState()->formatted_log_time;
 }
 
+char *
+PgCurrentFormattedStartTimeBuffer(void)
+{
+	return PgCurrentBackendLogState()->formatted_start_time;
+}
+
+long *
+PgCurrentLogLineNumberRef(void)
+{
+	return &PgCurrentBackendLogState()->line_number;
+}
+
+int *
+PgCurrentLogLinePidRef(void)
+{
+	return &PgCurrentBackendLogState()->line_pid;
+}
+
 bool *
 PgCurrentDebugPrintPlanRef(void)
 {

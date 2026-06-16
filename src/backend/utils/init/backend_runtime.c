@@ -5474,31 +5474,13 @@ PgCurrentUsageSaveTimevalRef(void)
 	return &PgCurrentBackendCommandState()->save_timeval;
 }
 
-static PgBackendLogState *
+PgBackendLogState *
 PgCurrentBackendLogState(void)
 {
 	if (CurrentPgBackend == NULL)
 		return &early_backend_log;
 
 	return &CurrentPgBackend->log_state;
-}
-
-char *
-PgCurrentFormattedStartTimeBuffer(void)
-{
-	return PgCurrentBackendLogState()->formatted_start_time;
-}
-
-long *
-PgCurrentLogLineNumberRef(void)
-{
-	return &PgCurrentBackendLogState()->line_number;
-}
-
-int *
-PgCurrentLogLinePidRef(void)
-{
-	return &PgCurrentBackendLogState()->line_pid;
 }
 
 PgBackendExprInterpState *
