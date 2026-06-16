@@ -37,3 +37,21 @@ PgCurrentSessionBackupStateRef(void)
 {
 	return &PgCurrentSessionBackupState()->session_backup_state;
 }
+
+bool *
+PgCurrentBaseBackupStartedInRecoveryRef(void)
+{
+	return &PgCurrentExecutionBaseBackupState()->backup_started_in_recovery;
+}
+
+long long int *
+PgCurrentBaseBackupTotalChecksumFailuresRef(void)
+{
+	return &PgCurrentExecutionBaseBackupState()->total_checksum_failures;
+}
+
+bool *
+PgCurrentBaseBackupNoVerifyChecksumsRef(void)
+{
+	return &PgCurrentExecutionBaseBackupState()->noverify_checksums;
+}

@@ -1031,7 +1031,7 @@ PgExecutionSPIState *PgCurrentExecutionSPIState(void);
 static PgExecutionPortalState *PgCurrentExecutionPortalState(void);
 PgExecutionVacuumState *PgCurrentExecutionVacuumState(void);
 static PgExecutionNodeIOState *PgCurrentExecutionNodeIOState(void);
-static PgExecutionBaseBackupState *PgCurrentExecutionBaseBackupState(void);
+PgExecutionBaseBackupState *PgCurrentExecutionBaseBackupState(void);
 PgExecutionAnalyzeState *PgCurrentExecutionAnalyzeState(void);
 static PgExecutionMatViewState *PgCurrentExecutionMatViewState(void);
 PgExecutionSnapshotState *PgCurrentExecutionSnapshotState(void);
@@ -5235,31 +5235,13 @@ PgCurrentNodeRestoreLocationFieldsRef(void)
 	return &PgCurrentExecutionNodeIOState()->restore_location_fields;
 }
 
-static PgExecutionBaseBackupState *
+PgExecutionBaseBackupState *
 PgCurrentExecutionBaseBackupState(void)
 {
 	if (CurrentPgExecution == NULL)
 		return &early_execution_basebackup;
 
 	return &CurrentPgExecution->basebackup;
-}
-
-bool *
-PgCurrentBaseBackupStartedInRecoveryRef(void)
-{
-	return &PgCurrentExecutionBaseBackupState()->backup_started_in_recovery;
-}
-
-long long int *
-PgCurrentBaseBackupTotalChecksumFailuresRef(void)
-{
-	return &PgCurrentExecutionBaseBackupState()->total_checksum_failures;
-}
-
-bool *
-PgCurrentBaseBackupNoVerifyChecksumsRef(void)
-{
-	return &PgCurrentExecutionBaseBackupState()->noverify_checksums;
 }
 
 PgExecutionAnalyzeState *
