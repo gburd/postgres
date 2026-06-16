@@ -57,6 +57,12 @@ PgCurrentPgStatLastSessionReportTimeRef(void)
 	return &PgCurrentSessionPgStatState()->last_session_report_time;
 }
 
+PgStat_SubXactStatus **
+PgCurrentPgStatXactStackRef(void)
+{
+	return &PgCurrentExecutionTransactionCleanupState()->pgstat_xact_stack;
+}
+
 PgStat_LocalState *
 PgCurrentPgStatLocalState(void)
 {

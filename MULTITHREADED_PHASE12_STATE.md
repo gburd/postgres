@@ -19177,3 +19177,69 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o`,
   `backend_runtime_xact.o`, and the backend link; rerun lifecycle/global
   scans, focused backend-runtime coverage, and `git diff --check`.
+
+## Transaction Cleanup Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move remaining transaction-cleanup compatibility accessors out of
+  `src/backend/utils/init/backend_runtime.c` and into owner-adjacent bridge
+  files for fd/temp-file, pgstat, and RI trigger state.
+- touched roots/buckets: no runtime root ownership changes; existing
+  `PgExecution.transaction_cleanup` scalar/pointer fields only.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  current-pointer and early fallback owner,
+  `src/backend/utils/init/backend_runtime_internal.h` already exposing the
+  current transaction-cleanup helper,
+  `src/backend/storage/file/backend_runtime_file.c`,
+  `src/backend/utils/activity/backend_runtime_pgstat.c`,
+  `src/backend/utils/adt/backend_runtime_ri.c`,
+  `src/backend/utils/adt/Makefile`, `src/backend/utils/adt/meson.build`,
+  `GNUmakefile.in`, `src/tools/runtime_lifecycle/check_runtime_lifecycles.pl`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, and
+  `MULTITHREADED_AGENT_REFERENCE.md` for source-orientation documentation.
+- legacy symbols/accessors: `PgCurrentExecutionTransactionCleanupState()`,
+  `PgCurrentHaveXactTemporaryFilesRef()`,
+  `PgCurrentPgStatXactStackRef()`, `PgCurrentRIFastPathCacheRef()`, and
+  `PgCurrentRIFastPathCallbackRegisteredRef()`.
+- repeated lifecycle operations: none; this only relocates pointer/scalar
+  accessors and leaves transaction-cleanup init/adopt/reset behavior
+  unchanged.
+- checked primitive decision: no lifecycle primitive is needed because the
+  existing `PgExecution.transaction_cleanup` lifecycle row and execution
+  bucket definition continue to cover this bucket; owner-map source rows and
+  lifecycle checker source lists are updated to keep the moved bridges checked.
+- validation impact: rebuild `backend_runtime.o`,
+  `backend_runtime_file.o`, `backend_runtime_pgstat.o`,
+  `backend_runtime_ri.o`, and the backend link; rerun lifecycle/global scans,
+  focused backend-runtime coverage, and `git diff --check`.
+
+## Threaded GUC Mutex Interrupt Holdoff
+
+Lifecycle/preflight note:
+
+- target: fix the Gate E2 threaded-regression hang where concurrent
+  publication/subscription tests left backend threads blocked in
+  `ThreadedGUCLock()` after a logical replication worker received FATAL while
+  running `RESET min_parallel_index_scan_size`.
+- touched roots/buckets: no runtime root ownership changes; existing
+  `PgCarrier.threaded_guc_mutex_depth` and backend interrupt holdoff state
+  only.
+- owner source files: `src/backend/utils/misc/guc.c` for the threaded GUC
+  mutex primitive and `src/backend/utils/init/backend_runtime.c` /
+  `src/backend/utils/misc/backend_runtime_guc.c` as the current carrier state
+  owners already supplying the depth field.
+- legacy symbols/accessors: `ThreadedGUCLock()`, `ThreadedGUCUnlock()`,
+  `PgCurrentThreadedGUCMutexDepthRef()`, `HOLD_INTERRUPTS()`, and
+  `RESUME_INTERRUPTS()`.
+- repeated lifecycle operations: none; this does not add runtime roots or
+  cleanup lists. It hardens the existing lock/unlock primitive against
+  asynchronous die/FATAL delivery while the process-wide GUC mutex is owned.
+- checked primitive decision: reuse the existing PostgreSQL interrupt holdoff
+  primitive around the existing mutex rather than adding a new lifecycle
+  checker row; the runtime invariant is that a backend may not process cancel
+  or die interrupts while it owns the process-wide threaded GUC mutex.
+- validation impact: rebuild `guc.o` and the backend link; rerun
+  `gmake check-threaded` to reproduce the former publication/subscription
+  stress point, then rerun lifecycle/global scans and required threaded
+  baselines.

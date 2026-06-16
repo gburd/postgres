@@ -118,10 +118,17 @@ ThreadedGUCLock(void)
 	if (ThreadedGUCMutexDepth++ > 0)
 		return false;
 
+	/*
+	 * A die interrupt while this process-wide mutex is held can strand other
+	 * backend threads in GUC startup or SET/RESET.  Match PostgreSQL lock
+	 * primitives by deferring interrupts until the outermost unlock.
+	 */
+	HOLD_INTERRUPTS();
 	rc = pthread_mutex_lock(&ThreadedGUCMutex);
 	if (rc != 0)
 	{
 		ThreadedGUCMutexDepth--;
+		RESUME_INTERRUPTS();
 		errno = rc;
 		ereport(FATAL,
 				(errmsg("could not enter threaded GUC critical section: %m")));
@@ -149,6 +156,7 @@ ThreadedGUCUnlock(bool locked)
 		return;
 
 	rc = pthread_mutex_unlock(&ThreadedGUCMutex);
+	RESUME_INTERRUPTS();
 	if (rc != 0)
 	{
 		errno = rc;

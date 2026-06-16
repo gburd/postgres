@@ -75,6 +75,12 @@ PgCurrentTemporaryFilesAllowedRef(void)
 	return &PgCurrentBackendStorageState()->temporary_files_allowed;
 }
 
+bool *
+PgCurrentHaveXactTemporaryFilesRef(void)
+{
+	return &PgCurrentExecutionTransactionCleanupState()->have_xact_temporary_files;
+}
+
 int *
 PgCurrentNumAllocatedDescsRef(void)
 {

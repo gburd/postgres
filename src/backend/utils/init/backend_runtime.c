@@ -5316,30 +5316,6 @@ PgCurrentExecutionTransactionCleanupState(void)
 	return &CurrentPgExecution->transaction_cleanup;
 }
 
-bool *
-PgCurrentHaveXactTemporaryFilesRef(void)
-{
-	return &PgCurrentExecutionTransactionCleanupState()->have_xact_temporary_files;
-}
-
-PgStat_SubXactStatus **
-PgCurrentPgStatXactStackRef(void)
-{
-	return &PgCurrentExecutionTransactionCleanupState()->pgstat_xact_stack;
-}
-
-HTAB **
-PgCurrentRIFastPathCacheRef(void)
-{
-	return &PgCurrentExecutionTransactionCleanupState()->ri_fastpath_cache;
-}
-
-bool *
-PgCurrentRIFastPathCallbackRegisteredRef(void)
-{
-	return &PgCurrentExecutionTransactionCleanupState()->ri_fastpath_callback_registered;
-}
-
 PgExecutionReplicationScratchState *
 PgCurrentExecutionReplicationScratchState(void)
 {
