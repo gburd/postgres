@@ -19938,6 +19938,84 @@ Validation:
 - `gmake check-threaded-workers` passed all 245 core regression tests under
   `threaded_workers.conf`.
 
+## Connection Runtime Lifecycle Refactor
+
+Lifecycle/preflight note:
+
+- target: move connection early fallback state, bucket state refs, constructor
+  initialization, early adoption, and closed-state reset helpers out of
+  `backend_runtime.c` and into the owner-adjacent
+  `src/backend/libpq/backend_runtime_connection.c` bridge.
+- touched roots/buckets: existing `PgConnection` buckets only; no new runtime
+  roots.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  top-level process/thread runtime orchestrator,
+  `src/backend/libpq/backend_runtime_connection.c` as the connection lifecycle
+  owner, `src/backend/utils/init/backend_runtime_internal.h` for the internal
+  constructor declaration, and this state note.
+- legacy symbols/accessors: `CurrentPgConnection`,
+  `PgConnectionInitializeRuntimeObject()`, `PgConnectionAdoptEarlyState()`,
+  `PgConnectionResetClosedState()`, and connection bucket state ref helpers.
+- repeated lifecycle operations: reuse `backend_runtime_connection_buckets.def`
+  and existing `PG_RUNTIME_DEFINE_ADOPT_EARLY_*` helpers; no new handwritten
+  lifecycle list.
+- checked primitive decision: keep using the checked connection bucket `.def`
+  rows and lifecycle macros; no new primitive or checker rule is needed for
+  this owner-adjacent source move.
+- validation impact: rebuild `backend_runtime.o` and
+  `backend_runtime_connection.o`, run lifecycle/global scans, focused
+  backend-runtime tests, the core process/thread baselines as needed, and
+  `git diff --check`.
+
+## Session Runtime Lifecycle Refactor
+
+Lifecycle/preflight note:
+
+- target: move session early fallback state, session bucket constructor
+  initialization, early adoption helpers, and session current-state selectors
+  out of `backend_runtime.c` and into
+  `src/backend/utils/init/backend_runtime_session.c`.
+- touched roots/buckets: existing `PgSession` buckets only; no new runtime
+  roots.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  top-level process/thread runtime orchestrator,
+  `src/backend/utils/init/backend_runtime_session.c` as the session lifecycle
+  owner, `src/backend/utils/init/backend_runtime_internal.h` for internal
+  constructor/adoption declarations, and this state note.
+- legacy symbols/accessors: `PgSessionInitializeRuntimeObject()`,
+  `PgSessionAdoptEarlyState()`, `PgCurrentOrEarlySession()`, and
+  `PgCurrentSession*` compatibility selectors.
+- repeated lifecycle operations: reuse `backend_runtime_session_buckets.def`
+  and existing checked `PG_RUNTIME_DEFINE_ADOPT_EARLY_*` helpers; keep
+  semantic cleanup in teardown owner files.
+- checked primitive decision: keep using the checked session bucket `.def`
+  rows and lifecycle macros; no new primitive or checker rule is needed for
+  this owner-adjacent source move.
+- validation impact: rebuild `backend_runtime.o` and
+  `backend_runtime_session.o`, run lifecycle/global scans, focused
+  backend-runtime tests, the core process/thread baselines once for the
+  combined connection/session batch, and `git diff --check`.
+
+Validation evidence after the connection/session runtime lifecycle refactor:
+
+- `gmake -C src/backend/utils/init backend_runtime.o backend_runtime_session.o`
+  and `gmake -C src/backend/libpq backend_runtime_connection.o` rebuilt the
+  touched runtime bridge objects.
+- `gmake -C src/backend postgres` linked the backend after the owner-adjacent
+  connection/session moves.
+- `gmake check-runtime-lifecycles` passed.
+- `gmake check-global-lifetimes` passed with no new unclassified mutable
+  globals and no local runtime boundary violations after narrowing the
+  lifetime scanner allowlist to the connection and session owner bridge files.
+- `gmake -C src/test/modules/test_backend_runtime check` passed the focused
+  SQL regression test; TAP tests were not enabled in this build configuration.
+- `git diff --check` passed before the broad baselines.
+- `gmake check` passed all 245 core regression tests.
+- `gmake check-threaded` passed all 245 core regression tests under
+  `threaded_smoke.conf`.
+- `gmake check-threaded-workers` passed all 245 core regression tests under
+  `threaded_workers.conf`.
+
 ## Backend Runtime Remaining Test Split
 
 Lifecycle/preflight note:

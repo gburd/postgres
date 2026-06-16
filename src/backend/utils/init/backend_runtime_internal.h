@@ -116,6 +116,11 @@ function_name(object_type *object_arg) \
 
 extern PgCarrier *PgCurrentCarrierState(void);
 extern PgSession *PgCurrentOrEarlySession(void);
+extern void PgSessionInitializeRuntimeObject(PgSession *session,
+											 PgBackend *backend,
+											 PgConnection *connection,
+											 PgExecution *execution);
+extern void PgSessionAdoptEarlyState(PgSession *session);
 extern PgExecution *PgCurrentOrEarlyExecution(void);
 extern PgRuntimeServerGUCState *PgCurrentRuntimeServerGUCState(void);
 extern PgSessionLoopState *PgCurrentSessionLoopState(void);
@@ -214,6 +219,10 @@ extern PgConnectionStartupState *PgConnectionStartupStateRef(PgConnection *conne
 extern PgConnectionClientConnectionInfoState *PgConnectionClientConnectionInfoStateRef(PgConnection *connection);
 extern bool *PgConnectionClientConnectionInfoAuthnIdOwnedRef(PgConnection *connection);
 extern PgConnectionSecurityState *PgConnectionRuntimeSecurityStateRef(PgConnection *connection);
+extern void PgConnectionInitializeRuntimeObject(PgConnection *connection,
+												PgBackend *backend,
+												PgSession *session,
+												struct Port *port);
 extern PgBackendCoreState *PgCurrentCoreState(void);
 extern PgBackendInstrumentationState *PgCurrentBackendInstrumentationState(void);
 extern PgBackendBufferState *PgCurrentBackendBufferState(void);

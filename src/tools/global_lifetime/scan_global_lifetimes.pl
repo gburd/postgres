@@ -553,6 +553,12 @@ sub local_runtime_boundary_violation
 	# documented platform/test shims that cannot use the runtime object path.
 	return 0 if $file eq 'src/backend/utils/init/backend_runtime.c';
 	return 0 if $file eq 'src/include/utils/backend_runtime.h';
+	return 0
+	  if $record->{owner} eq 'connection-local'
+	  && $file eq 'src/backend/libpq/backend_runtime_connection.c';
+	return 0
+	  if $record->{owner} eq 'session-local'
+	  && $file eq 'src/backend/utils/init/backend_runtime_session.c';
 
 	# Standalone spinlock test wait-event storage.
 	return 0
