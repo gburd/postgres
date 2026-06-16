@@ -419,6 +419,12 @@ PgSetCurrentSession(PgSession *session)
 		RebindSessionGUCVariablePointers();
 }
 
+PgSession *
+PgProcessSessionState(void)
+{
+	return &process_session;
+}
+
 
 void
 PgRuntimeDeleteOwnedMemoryContext(MemoryContext *context)
@@ -432,65 +438,6 @@ PgRuntimeDeleteOwnedMemoryContext(MemoryContext *context)
 		MemoryContextSwitchTo(TopMemoryContext);
 	MemoryContextDelete(*context);
 	*context = NULL;
-}
-
-MemoryContext
-PgSessionGetDynamicLibraryMemoryContext(PgSession *session)
-{
-	Assert(session != NULL);
-
-	return PgRuntimeGetOwnedMemoryContext(&session->dynamic_library_context,
-										  "dynamic library session state");
-}
-
-List **
-PgCurrentSessionDynamicLibraryInitsRef(void)
-{
-	Assert(CurrentPgSession != NULL);
-
-	return &CurrentPgSession->dynamic_library_inits;
-}
-
-Session *
-PgSessionGetLegacySession(PgSession *session)
-{
-	if (session == NULL)
-		return NULL;
-
-	if (session->legacy_session == NULL)
-	{
-		Assert(session->legacy_session_context == NULL);
-		(void) PgRuntimeGetOwnedMemoryContext(&session->legacy_session_context,
-											  "legacy session compatibility state");
-		session->legacy_session =
-			MemoryContextAllocZero(session->legacy_session_context,
-								   sizeof(Session));
-	}
-
-	return session->legacy_session;
-}
-
-Session *
-PgCurrentLegacySession(void)
-{
-	if (CurrentPgSession == NULL)
-	{
-		if (TopMemoryContext == NULL)
-			return process_session.legacy_session;
-
-		return PgSessionGetLegacySession(&process_session);
-	}
-
-	return PgSessionGetLegacySession(CurrentPgSession);
-}
-
-Session **
-PgCurrentLegacySessionRef(void)
-{
-	if (CurrentPgSession == NULL)
-		return &process_session.legacy_session;
-
-	return &CurrentPgSession->legacy_session;
 }
 
 PgRuntimeServerGUCState *
@@ -599,44 +546,4 @@ PgRuntimeSetExtensionBackendModel(PgBackendModel backend_model)
 
 	check_loaded_modules_backend_model(backend_model);
 	CurrentPgRuntime->extension_backend_model = backend_model;
-}
-
-
-int
-PgSuspend(const PgWaitSpec *wait_spec, PgSuspendCallback callback,
-		  void *callback_arg)
-{
-	PgBackend  *backend = CurrentPgBackend;
-	int			result = 0;
-
-	Assert(callback != NULL);
-
-	if (backend != NULL && wait_spec != NULL)
-	{
-		backend->wait_state.spec = *wait_spec;
-		pg_atomic_write_membarrier_u32(&backend->wait_state.waiting, 1);
-	}
-
-	PG_TRY();
-	{
-		result = callback(callback_arg);
-	}
-	PG_CATCH();
-	{
-		if (backend != NULL)
-		{
-			pg_atomic_write_u32(&backend->wait_state.waiting, 0);
-			backend->wait_state.spec.kind = PG_WAIT_KIND_NONE;
-		}
-		PG_RE_THROW();
-	}
-	PG_END_TRY();
-
-	if (backend != NULL)
-	{
-		pg_atomic_write_u32(&backend->wait_state.waiting, 0);
-		backend->wait_state.spec.kind = PG_WAIT_KIND_NONE;
-	}
-
-	return result;
 }

@@ -125,6 +125,7 @@ extern void PgBackendInitializeRuntimeObject(PgBackend *backend,
 											 BackendType backend_type,
 											 struct Latch *interrupt_latch);
 extern void PgBackendResetEarlyFallbackAfterFork(int proc_pid);
+extern PgSession *PgProcessSessionState(void);
 extern PgSession *PgCurrentOrEarlySession(void);
 extern void PgSessionInitializeRuntimeObject(PgSession *session,
 											 PgBackend *backend,

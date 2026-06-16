@@ -2058,6 +2058,67 @@ PgCurrentOrEarlySession(void)
 	return CurrentPgSession;
 }
 
+MemoryContext
+PgSessionGetDynamicLibraryMemoryContext(PgSession *session)
+{
+	Assert(session != NULL);
+
+	return PgRuntimeGetOwnedMemoryContext(&session->dynamic_library_context,
+										  "dynamic library session state");
+}
+
+List **
+PgCurrentSessionDynamicLibraryInitsRef(void)
+{
+	Assert(CurrentPgSession != NULL);
+
+	return &CurrentPgSession->dynamic_library_inits;
+}
+
+Session *
+PgSessionGetLegacySession(PgSession *session)
+{
+	if (session == NULL)
+		return NULL;
+
+	if (session->legacy_session == NULL)
+	{
+		Assert(session->legacy_session_context == NULL);
+		(void) PgRuntimeGetOwnedMemoryContext(&session->legacy_session_context,
+											  "legacy session compatibility state");
+		session->legacy_session =
+			MemoryContextAllocZero(session->legacy_session_context,
+								   sizeof(Session));
+	}
+
+	return session->legacy_session;
+}
+
+Session *
+PgCurrentLegacySession(void)
+{
+	if (CurrentPgSession == NULL)
+	{
+		PgSession  *process_session = PgProcessSessionState();
+
+		if (TopMemoryContext == NULL)
+			return process_session->legacy_session;
+
+		return PgSessionGetLegacySession(process_session);
+	}
+
+	return PgSessionGetLegacySession(CurrentPgSession);
+}
+
+Session **
+PgCurrentLegacySessionRef(void)
+{
+	if (CurrentPgSession == NULL)
+		return &PgProcessSessionState()->legacy_session;
+
+	return &CurrentPgSession->legacy_session;
+}
+
 
 bool
 PgCurrentSessionOwnsPointer(const void *ptr)

@@ -20580,3 +20580,54 @@ core and worker suites, PL/pgSQL coverage, full threaded isolation, focused
 backend-runtime checks, lifecycle scanning, and global-lifetime scanning.
 Phase 16 / Gate E2-Extensions owns the contrib-wide extension and language
 completion pass.
+
+## Backend Runtime Owner-Adjacent Accessor Cleanup
+
+Lifecycle/preflight note:
+
+- target: move the remaining session compatibility accessors and backend
+  suspend/wait-state helper out of root `backend_runtime.c` into their
+  owner-adjacent bridge files, while keeping only the process-session fallback
+  pointer helper in root for static process object access.
+- touched roots/buckets: `PgSession` legacy/dynamic-library compatibility
+  buckets and `PgBackend` wait state; no bucket row semantics or lifecycle
+  ordering change is intended.
+- owner source files: `src/backend/utils/init/backend_runtime.c`,
+  `src/backend/utils/init/backend_runtime_session.c`,
+  `src/backend/utils/init/backend_runtime_backend.c`,
+  `src/backend/utils/init/backend_runtime_internal.h`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, and this state note.
+- legacy symbols/accessors: `PgSessionGetDynamicLibraryMemoryContext`,
+  `PgCurrentSessionDynamicLibraryInitsRef`, `PgSessionGetLegacySession`,
+  `PgCurrentLegacySession`, `PgCurrentLegacySessionRef`, and `PgSuspend`.
+- repeated lifecycle operations: none added; existing session reset buckets
+  still own dynamic-library and legacy-session cleanup, and backend wait-state
+  initialization remains covered by the backend wait-state accessor path.
+- checked primitive decision: reuse the existing session reset bucket rows and
+  backend wait-state helper; no new checked primitive is required for this
+  accessor-only move.
+- validation impact: rebuild touched runtime objects and backend, run
+  lifecycle/global scans, focused backend-runtime regression control,
+  `git diff --check`, and then the required process/threaded baselines for the
+  combined owner-adjacent cleanup.
+
+Validation evidence after the backend runtime owner-adjacent accessor cleanup:
+
+- `gmake -C src/backend/utils/init backend_runtime.o backend_runtime_session.o
+  backend_runtime_backend.o` rebuilt the root, session, and backend runtime
+  bridge objects.
+- `gmake -C src/backend postgres` linked the backend with the moved accessors.
+- `gmake check-runtime-lifecycles` passed with 172 fields classified, 172
+  bucket definitions checked, 35 reset definitions checked, and 431 owner
+  mappings checked.
+- `gmake check-global-lifetimes` passed with no new unclassified mutable
+  globals and no local runtime boundary violations.
+- `gmake -C src/test/modules/test_backend_runtime check` passed the focused
+  SQL regression control; TAP tests were not enabled in this build
+  configuration.
+- `git diff --check` passed.
+- `gmake check` passed all 245 core regression tests.
+- `gmake check-threaded` passed all 245 core regression tests under
+  `threaded_smoke.conf`.
+- `gmake check-threaded-workers` passed all 245 core regression tests under
+  `threaded_workers.conf`.
