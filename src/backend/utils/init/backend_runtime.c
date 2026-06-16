@@ -979,7 +979,7 @@ PgSessionTextSearchState *PgCurrentSessionTextSearchState(void);
 PgSessionConnectionGUCState *PgCurrentSessionConnectionGUCState(void);
 PgSessionParserState *PgCurrentSessionParserState(void);
 static PgSessionVacuumState *PgCurrentSessionVacuumState(void);
-static PgSessionBufferIOState *PgCurrentSessionBufferIOState(void);
+PgSessionBufferIOState *PgCurrentSessionBufferIOState(void);
 static PgSessionXactDefaultState *PgCurrentSessionXactDefaultState(void);
 PgSessionLockWaitState *PgCurrentSessionLockWaitState(void);
 PgSessionLoggingState *PgCurrentSessionLoggingState(void);
@@ -4376,7 +4376,7 @@ PgCurrentSessionVacuumState(void)
 	return vacuum;
 }
 
-static PgSessionBufferIOState *
+PgSessionBufferIOState *
 PgCurrentSessionBufferIOState(void)
 {
 	PgSessionBufferIOState *buffer_io;
@@ -5142,48 +5142,6 @@ int *
 PgCurrentLocalVacuumCostLimitRef(void)
 {
 	return &PgCurrentSessionVacuumState()->local_vacuum_cost_limit_value;
-}
-
-bool *
-PgCurrentZeroDamagedPagesRef(void)
-{
-	return &PgCurrentSessionBufferIOState()->zero_damaged_pages_value;
-}
-
-bool *
-PgCurrentTrackIOTimingRef(void)
-{
-	return &PgCurrentSessionBufferIOState()->track_io_timing_value;
-}
-
-int *
-PgCurrentEffectiveIOConcurrencyRef(void)
-{
-	return &PgCurrentSessionBufferIOState()->effective_io_concurrency_value;
-}
-
-int *
-PgCurrentMaintenanceIOConcurrencyRef(void)
-{
-	return &PgCurrentSessionBufferIOState()->maintenance_io_concurrency_value;
-}
-
-int *
-PgCurrentIOCombineLimitRef(void)
-{
-	return &PgCurrentSessionBufferIOState()->io_combine_limit_value;
-}
-
-int *
-PgCurrentIOCombineLimitGUCRef(void)
-{
-	return &PgCurrentSessionBufferIOState()->io_combine_limit_guc_value;
-}
-
-int *
-PgCurrentBackendFlushAfterRef(void)
-{
-	return &PgCurrentSessionBufferIOState()->backend_flush_after_value;
 }
 
 int *

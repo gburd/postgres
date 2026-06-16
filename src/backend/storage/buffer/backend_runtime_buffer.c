@@ -1,11 +1,11 @@
 /*-------------------------------------------------------------------------
  *
  * backend_runtime_buffer.c
- *	  Runtime bridge accessors for backend-local buffer state.
+ *	  Runtime bridge accessors for buffer state.
  *
  * These accessors keep buffer-manager compatibility globals mapped onto the
- * current PgBackend while leaving runtime construction and early fallback
- * ownership in utils/init/backend_runtime.c.
+ * current runtime objects while leaving runtime construction and early
+ * fallback ownership in utils/init/backend_runtime.c.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  *
@@ -18,6 +18,48 @@
 #include "storage/buf_internals.h"
 #include "utils/memutils.h"
 #include "../../utils/init/backend_runtime_internal.h"
+
+bool *
+PgCurrentZeroDamagedPagesRef(void)
+{
+	return &PgCurrentSessionBufferIOState()->zero_damaged_pages_value;
+}
+
+bool *
+PgCurrentTrackIOTimingRef(void)
+{
+	return &PgCurrentSessionBufferIOState()->track_io_timing_value;
+}
+
+int *
+PgCurrentEffectiveIOConcurrencyRef(void)
+{
+	return &PgCurrentSessionBufferIOState()->effective_io_concurrency_value;
+}
+
+int *
+PgCurrentMaintenanceIOConcurrencyRef(void)
+{
+	return &PgCurrentSessionBufferIOState()->maintenance_io_concurrency_value;
+}
+
+int *
+PgCurrentIOCombineLimitRef(void)
+{
+	return &PgCurrentSessionBufferIOState()->io_combine_limit_value;
+}
+
+int *
+PgCurrentIOCombineLimitGUCRef(void)
+{
+	return &PgCurrentSessionBufferIOState()->io_combine_limit_guc_value;
+}
+
+int *
+PgCurrentBackendFlushAfterRef(void)
+{
+	return &PgCurrentSessionBufferIOState()->backend_flush_after_value;
+}
 
 int *
 PgCurrentNLocBufferRef(void)
