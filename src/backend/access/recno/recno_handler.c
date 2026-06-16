@@ -2473,7 +2473,7 @@ recno_tuple_insert_speculative(Relation relation, TupleTableSlot *slot,
 			buf = ReadBuffer(relation, P_NEW);
 			LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
 			page = BufferGetPage(buf);
-			PageInit(page, BLCKSZ, 0);
+			RecnoInitPage(page, BufferGetPageSize(buf));
 		}
 	}
 
@@ -2493,7 +2493,7 @@ recno_tuple_insert_speculative(Relation relation, TupleTableSlot *slot,
 		buf = ReadBuffer(relation, P_NEW);
 		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
 		page = BufferGetPage(buf);
-		PageInit(page, BLCKSZ, 0);
+		RecnoInitPage(page, BufferGetPageSize(buf));
 
 		offnum = PageAddItem(page, tuple->t_data, tuple_size,
 							 InvalidOffsetNumber, false, false);
