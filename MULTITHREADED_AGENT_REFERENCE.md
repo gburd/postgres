@@ -66,6 +66,10 @@ Important current files:
 - `src/backend/access/transam/backend_runtime_parallel.c`: fork-owned runtime
   bridge accessors for backend-local parallel-query state. Add parallel-query
   compatibility shims here rather than growing `backend_runtime.c`.
+- `src/backend/access/transam/backend_runtime_xact.c`: fork-owned runtime
+  bridge accessors for transaction and two-phase execution/session state. Add
+  future transaction compatibility shims here rather than growing
+  `backend_runtime.c`.
 - `src/backend/jit/backend_runtime_jit.c`: fork-owned runtime bridge accessors
   for provider-independent and LLVM-provider JIT session state. Keep
   LLVM-provider-private semantic lifecycle work under `src/backend/jit/llvm`

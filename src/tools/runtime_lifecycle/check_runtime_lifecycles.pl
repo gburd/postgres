@@ -35,6 +35,7 @@ my @sources = (
 	'src/backend/replication/logical/backend_runtime_logical.c',
 	'src/backend/jit/backend_runtime_jit.c',
 	'src/backend/access/transam/backend_runtime_parallel.c',
+	'src/backend/access/transam/backend_runtime_xact.c',
 	'src/backend/libpq/backend_runtime_connection.c',
 	'src/backend/storage/buffer/backend_runtime_buffer.c',
 	'src/backend/storage/file/backend_runtime_file.c',

@@ -197,6 +197,12 @@ PgCurrentTransactionStateRef(void)
 	return &PgCurrentExecutionXactState()->current_transaction_state;
 }
 
+PgExecutionTwoPhaseRecordState *
+PgCurrentTwoPhaseRecordStateRef(void)
+{
+	return PgCurrentExecutionTwoPhaseRecordState();
+}
+
 TransactionId *
 PgCurrentCachedFetchXidRef(void)
 {

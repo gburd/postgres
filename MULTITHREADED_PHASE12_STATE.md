@@ -19147,3 +19147,33 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o`,
   `backend_runtime_logical.o`, and the backend link; rerun lifecycle/global
   scans, focused backend-runtime coverage, and `git diff --check`.
+
+## Two-Phase Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move the two-phase record execution compatibility accessor out of
+  `src/backend/utils/init/backend_runtime.c` and into the existing
+  owner-adjacent `src/backend/access/transam/backend_runtime_xact.c` bridge
+  file.
+- touched roots/buckets: no runtime root ownership changes; existing
+  `PgExecution.two_phase_records` bucket only.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  current-pointer and early fallback owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for internal current
+  two-phase helper visibility,
+  `src/backend/access/transam/backend_runtime_xact.c`, `GNUmakefile.in`,
+  `src/tools/runtime_lifecycle/check_runtime_lifecycles.pl`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, and
+  `MULTITHREADED_AGENT_REFERENCE.md` for source-orientation documentation.
+- legacy symbols/accessors: `PgCurrentExecutionTwoPhaseRecordState()` and
+  `PgCurrentTwoPhaseRecordStateRef()`.
+- repeated lifecycle operations: none; this only relocates a pointer accessor
+  and leaves two-phase init/adopt/reset behavior unchanged.
+- checked primitive decision: no lifecycle primitive is needed because the
+  existing `PgExecution.two_phase_records` lifecycle row and execution bucket
+  definition continue to cover the bucket; the owner-map source row and
+  lifecycle checker source list are updated to keep the moved bridge checked.
+- validation impact: rebuild `backend_runtime.o`,
+  `backend_runtime_xact.o`, and the backend link; rerun lifecycle/global
+  scans, focused backend-runtime coverage, and `git diff --check`.

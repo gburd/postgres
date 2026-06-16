@@ -1046,7 +1046,7 @@ PgExecutionCatalogState *PgCurrentExecutionCatalogState(void);
 PgExecutionCatalogCacheState *PgCurrentExecutionCatalogCacheState(void);
 PgExecutionRelMapState *PgCurrentExecutionRelMapState(void);
 PgExecutionInvalidationState *PgCurrentExecutionInvalidationState(void);
-static PgExecutionTwoPhaseRecordState *PgCurrentExecutionTwoPhaseRecordState(void);
+PgExecutionTwoPhaseRecordState *PgCurrentExecutionTwoPhaseRecordState(void);
 PgExecutionRegexState *PgCurrentExecutionRegexState(void);
 static PgExecutionValgrindState *PgCurrentExecutionValgrindState(void);
 PgExecutionSnapBuildState *PgCurrentExecutionSnapBuildState(void);
@@ -5403,19 +5403,13 @@ PgCurrentExecutionInvalidationState(void)
 	return &CurrentPgExecution->invalidation;
 }
 
-static PgExecutionTwoPhaseRecordState *
+PgExecutionTwoPhaseRecordState *
 PgCurrentExecutionTwoPhaseRecordState(void)
 {
 	if (CurrentPgExecution == NULL)
 		return &early_execution_two_phase_records;
 
 	return &CurrentPgExecution->two_phase_records;
-}
-
-PgExecutionTwoPhaseRecordState *
-PgCurrentTwoPhaseRecordStateRef(void)
-{
-	return PgCurrentExecutionTwoPhaseRecordState();
 }
 
 PgExecutionTriggerState *
