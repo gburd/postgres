@@ -18694,3 +18694,38 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o`,
   `backend_runtime_lmgr.o`, and the backend link; rerun lifecycle/global
   scans, threaded regression coverage, and `git diff --check`.
+
+## Encoding Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move encoding/session conversion compatibility accessors out of
+  `src/backend/utils/init/backend_runtime.c` and into a new owner-adjacent
+  `src/backend/utils/mb/backend_runtime_mb.c` bridge file.
+- touched roots/buckets: no runtime root ownership changes; existing
+  `PgSession.encoding` bucket only.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  current-pointer and early fallback owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for existing internal
+  current encoding helper visibility, `src/backend/utils/mb/Makefile`,
+  `src/backend/utils/mb/meson.build`, and
+  `src/backend/utils/mb/backend_runtime_mb.c`.
+- legacy symbols/accessors: `PgCurrentSessionEncodingState()`,
+  `PgCurrentEncodingConvProcListRef()`,
+  `PgCurrentEncodingCacheMemoryContext()`,
+  `PgCurrentToServerConvProcRef()`,
+  `PgCurrentToClientConvProcRef()`,
+  `PgCurrentUtf8ToServerConvProcRef()`,
+  `PgCurrentClientEncodingRef()`,
+  `PgCurrentDatabaseEncodingRef()`,
+  `PgCurrentMessageEncodingRef()`,
+  `PgCurrentEncodingStartupCompleteRef()`, and
+  `PgCurrentPendingClientEncodingRef()`.
+- repeated lifecycle operations: none; this only relocates pointer accessors
+  and leaves encoding init/adopt/reset behavior unchanged.
+- checked primitive decision: no lifecycle primitive is needed because the
+  existing `PgSession.encoding` lifecycle row and session bucket definition
+  continue to cover the bucket.
+- validation impact: rebuild `backend_runtime.o`,
+  `backend_runtime_mb.o`, and the backend link; rerun lifecycle/global scans,
+  threaded regression coverage, and `git diff --check`.
