@@ -19686,3 +19686,36 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o`,
   `backend_runtime_tcop.o`, and the backend link; rerun lifecycle/global
   scans, focused backend-runtime coverage, and `git diff --check`.
+
+## Encoding Runtime Owner-Map Check Coverage
+
+Lifecycle/preflight note:
+
+- target: correct the checked owner source for session encoding conversion
+  accessors that already live in owner-adjacent
+  `src/backend/utils/mb/backend_runtime_mb.c`, and add that bridge to
+  lifecycle-checker source coverage.
+- touched roots/buckets: existing `PgSession.encoding` bucket only; no new
+  runtime roots.
+- owner source files: `src/backend/utils/mb/backend_runtime_mb.c`,
+  `src/backend/utils/init/backend_runtime.c` as the fallback-aware
+  `PgCurrentSessionEncodingState()` selector owner,
+  `GNUmakefile.in`, `src/tools/runtime_lifecycle/check_runtime_lifecycles.pl`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, `MULTITHREADED_AGENT_REFERENCE.md`, and
+  this state note.
+- legacy symbols/accessors: `EncodingCacheContext`, `ConvProcList`,
+  `ToServerConvProc`, `ToClientConvProc`, `Utf8ToServerConvProc`,
+  `PgCurrentEncodingCacheMemoryContext()`,
+  `PgCurrentEncodingConvProcListRef()`, `PgCurrentToServerConvProcRef()`,
+  `PgCurrentToClientConvProcRef()`, and
+  `PgCurrentUtf8ToServerConvProcRef()`.
+- repeated lifecycle operations: none; this is metadata/checker coverage for
+  accessors that were already moved, with encoding initialization, early
+  fallback adoption, lazy context creation, and closed-session reset left
+  unchanged.
+- checked primitive decision: reuse the existing `PgSession.encoding`
+  lifecycle row and bucket definitions; add the owner-adjacent bridge source
+  to checker coverage so lifecycle scans read the file named by the owner map.
+- validation impact: rerun lifecycle/global scans, `gmake -C
+  src/backend/utils/mb backend_runtime_mb.o`, focused backend-runtime
+  coverage, and `git diff --check`.

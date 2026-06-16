@@ -33,6 +33,7 @@ my @sources = (
 	'src/backend/utils/misc/backend_runtime_guc.c',
 	'src/backend/utils/misc/backend_runtime_utility.c',
 	'src/backend/utils/misc/timeout.c',
+	'src/backend/utils/mb/backend_runtime_mb.c',
 	'src/backend/utils/mmgr/backend_runtime_memory.c',
 	'src/backend/utils/mmgr/backend_runtime_portal.c',
 	'src/backend/optimizer/util/backend_runtime_optimizer.c',

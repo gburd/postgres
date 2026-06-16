@@ -177,6 +177,9 @@ Important current files:
   `src/backend/storage/aio/method_io_uring.c`. Keep `PgAioUringContext`
   private to `method_io_uring.c`; the runtime header should only
   forward-declare its struct tag.
+- `src/backend/utils/mb/backend_runtime_mb.c`: owner-adjacent runtime bridge
+  for session encoding conversion cache accessors. `backend_runtime.c` still
+  owns the fallback-aware current encoding bucket selector.
 - `src/backend/postmaster/launch_backend.c` and
   `src/backend/postmaster/postmaster.c`: backend launch and supervision.
 - `src/backend/postmaster/autovacuum.c`,
