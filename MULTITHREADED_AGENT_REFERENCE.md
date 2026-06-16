@@ -47,6 +47,9 @@ Important current files:
   accessors for vacuum/analyze session and execution state. Add future
   vacuum, analyze, and parallel-vacuum compatibility shims here rather than
   growing `backend_runtime.c`.
+- `src/backend/commands/backend_runtime_async.c`: fork-owned runtime bridge
+  accessors for LISTEN/NOTIFY async execution state. Add future async
+  compatibility shims here rather than growing `backend_runtime.c`.
 - `src/backend/access/transam/backend_runtime_parallel.c`: fork-owned runtime
   bridge accessors for backend-local parallel-query state. Add parallel-query
   compatibility shims here rather than growing `backend_runtime.c`.

@@ -18902,3 +18902,30 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o`,
   `backend_runtime_cache.o`, and the backend link; rerun lifecycle/global
   scans, threaded regression coverage, and `git diff --check`.
+
+## Async Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move LISTEN/NOTIFY execution compatibility accessors out of
+  `src/backend/utils/init/backend_runtime.c` and into a new owner-adjacent
+  `src/backend/commands/backend_runtime_async.c` bridge file.
+- touched roots/buckets: no runtime root ownership changes; existing
+  `PgExecution.async` bucket only.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  current-pointer and early fallback owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for internal current
+  async helper visibility, `src/backend/commands/Makefile`,
+  `src/backend/commands/meson.build`, and
+  `src/backend/commands/backend_runtime_async.c`.
+- legacy symbols/accessors: pending action/listen/notify accessors, async
+  queue-head accessors, LISTEN/NOTIFY signal workspace accessor, signal
+  PID/ProcNumber arrays, and async tail-advance flag accessor.
+- repeated lifecycle operations: none; this only relocates pointer accessors
+  and leaves async init/adopt/reset behavior unchanged.
+- checked primitive decision: no lifecycle primitive is needed because the
+  existing `PgExecution.async` lifecycle row and bucket definition continue to
+  cover the bucket; the new commands bridge owns no lifecycle actions.
+- validation impact: rebuild `backend_runtime.o`,
+  `backend_runtime_async.o`, and the backend link; rerun lifecycle/global
+  scans, threaded regression coverage, and `git diff --check`.

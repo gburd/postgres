@@ -6,6 +6,7 @@ backend_sources += files(
   'amcmds.c',
   'analyze.c',
   'async.c',
+  'backend_runtime_async.c',
   'backend_runtime_vacuum.c',
   'collationcmds.c',
   'comment.c',

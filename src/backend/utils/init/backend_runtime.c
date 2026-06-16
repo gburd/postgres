@@ -1041,7 +1041,7 @@ PgExecutionXactState *PgCurrentExecutionXactState(void);
 static PgExecutionTransactionCleanupState *PgCurrentExecutionTransactionCleanupState(void);
 static PgExecutionReplicationScratchState *PgCurrentExecutionReplicationScratchState(void);
 PgExecutionGUCErrorState *PgCurrentExecutionGUCErrorState(void);
-static PgExecutionAsyncState *PgCurrentExecutionAsyncState(void);
+PgExecutionAsyncState *PgCurrentExecutionAsyncState(void);
 PgExecutionCatalogState *PgCurrentExecutionCatalogState(void);
 PgExecutionCatalogCacheState *PgCurrentExecutionCatalogCacheState(void);
 PgExecutionRelMapState *PgCurrentExecutionRelMapState(void);
@@ -5471,70 +5471,13 @@ PgCurrentExecutionGUCErrorState(void)
 	return &CurrentPgExecution->guc_error;
 }
 
-static PgExecutionAsyncState *
+PgExecutionAsyncState *
 PgCurrentExecutionAsyncState(void)
 {
 	if (CurrentPgExecution == NULL)
 		return &early_execution_async;
 
 	return &CurrentPgExecution->async;
-}
-
-struct ActionList **
-PgCurrentPendingActionsRef(void)
-{
-	return &PgCurrentExecutionAsyncState()->pending_actions;
-}
-
-HTAB **
-PgCurrentPendingListenActionsRef(void)
-{
-	return &PgCurrentExecutionAsyncState()->pending_listen_actions;
-}
-
-struct NotificationList **
-PgCurrentPendingNotifiesRef(void)
-{
-	return &PgCurrentExecutionAsyncState()->pending_notifies;
-}
-
-PgExecutionAsyncQueuePosition *
-PgCurrentQueueHeadBeforeWriteRef(void)
-{
-	return &PgCurrentExecutionAsyncState()->queue_head_before_write;
-}
-
-PgExecutionAsyncQueuePosition *
-PgCurrentQueueHeadAfterWriteRef(void)
-{
-	return &PgCurrentExecutionAsyncState()->queue_head_after_write;
-}
-
-MemoryContext
-PgCurrentAsyncSignalWorkspaceContext(void)
-{
-	PgExecutionAsyncState *async = PgCurrentExecutionAsyncState();
-
-	return PgRuntimeGetOwnedMemoryContext(&async->signal_context,
-										  "LISTEN/NOTIFY signal workspace");
-}
-
-int32 **
-PgCurrentSignalPidsRef(void)
-{
-	return &PgCurrentExecutionAsyncState()->signal_pids;
-}
-
-ProcNumber **
-PgCurrentSignalProcnosRef(void)
-{
-	return &PgCurrentExecutionAsyncState()->signal_procnos;
-}
-
-bool *
-PgCurrentTryAdvanceTailRef(void)
-{
-	return &PgCurrentExecutionAsyncState()->try_advance_tail;
 }
 
 PgExecutionCatalogState *

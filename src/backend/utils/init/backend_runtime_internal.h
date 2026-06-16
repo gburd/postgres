@@ -176,6 +176,7 @@ extern PgExecutionCatalogState *PgCurrentExecutionCatalogState(void);
 extern PgExecutionCatalogCacheState *PgCurrentExecutionCatalogCacheState(void);
 extern PgExecutionRelMapState *PgCurrentExecutionRelMapState(void);
 extern PgExecutionInvalidationState *PgCurrentExecutionInvalidationState(void);
+extern PgExecutionAsyncState *PgCurrentExecutionAsyncState(void);
 extern PgExecutionXactState *PgCurrentExecutionXactState(void);
 extern PgExecutionGUCErrorState *PgCurrentExecutionGUCErrorState(void);
 extern PgExecutionSnapshotState *PgCurrentExecutionSnapshotState(void);
