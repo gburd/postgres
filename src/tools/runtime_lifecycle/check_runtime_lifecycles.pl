@@ -22,6 +22,7 @@ my @sources = (
 	'src/backend/utils/init/backend_runtime.c',
 	'src/backend/utils/init/backend_runtime_session.c',
 	'src/backend/utils/init/backend_runtime_teardown.c',
+	'src/backend/tcop/backend_runtime_tcop.c',
 	'src/backend/utils/cache/backend_runtime_cache.c',
 	'src/backend/utils/activity/backend_runtime_pgstat.c',
 	'src/backend/utils/activity/backend_status.c',

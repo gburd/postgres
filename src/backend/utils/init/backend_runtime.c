@@ -1048,7 +1048,6 @@ PgExecutionRelMapState *PgCurrentExecutionRelMapState(void);
 PgExecutionInvalidationState *PgCurrentExecutionInvalidationState(void);
 PgExecutionTwoPhaseRecordState *PgCurrentExecutionTwoPhaseRecordState(void);
 PgExecutionRegexState *PgCurrentExecutionRegexState(void);
-static PgExecutionValgrindState *PgCurrentExecutionValgrindState(void);
 PgExecutionSnapBuildState *PgCurrentExecutionSnapBuildState(void);
 PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
 PgBackendInstrumentationState *PgCurrentBackendInstrumentationState(void);
@@ -5406,19 +5405,13 @@ PgCurrentExecutionRegexState(void)
 	return &CurrentPgExecution->regex;
 }
 
-static PgExecutionValgrindState *
+PgExecutionValgrindState *
 PgCurrentExecutionValgrindState(void)
 {
 	if (CurrentPgExecution == NULL)
 		return &early_execution_valgrind;
 
 	return &CurrentPgExecution->valgrind;
-}
-
-unsigned int *
-PgCurrentValgrindOldErrorCountRef(void)
-{
-	return &PgCurrentExecutionValgrindState()->old_error_count;
 }
 
 PgExecutionSnapBuildState *

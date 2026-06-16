@@ -19243,3 +19243,30 @@ Lifecycle/preflight note:
   `gmake check-threaded` to reproduce the former publication/subscription
   stress point, then rerun lifecycle/global scans and required threaded
   baselines.
+
+## Valgrind Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move the Valgrind old-error-count compatibility accessor used by
+  the top-level backend command loop out of `backend_runtime.c` and into an
+  owner-adjacent `tcop` runtime bridge.
+- touched roots/buckets: existing `PgExecution.valgrind` bucket and early
+  execution fallback only; no new root lifecycle.
+- owner source files: `src/backend/utils/init/backend_runtime.c`,
+  `src/backend/utils/init/backend_runtime_internal.h`,
+  `src/backend/tcop/backend_runtime_tcop.c`, `src/backend/tcop/Makefile`,
+  `src/backend/tcop/meson.build`, `GNUmakefile.in`,
+  `src/tools/runtime_lifecycle/check_runtime_lifecycles.pl`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, and
+  `MULTITHREADED_AGENT_REFERENCE.md`.
+- legacy symbols/accessors: `PgCurrentExecutionValgrindState()` and
+  `PgCurrentValgrindOldErrorCountRef()`.
+- repeated lifecycle operations: none; this is a scalar accessor move and
+  leaves the existing Valgrind initialize/adopt/reset behavior unchanged.
+- checked primitive decision: reuse the existing `PgExecution.valgrind`
+  lifecycle row and execution bucket definition; update owner-map and
+  lifecycle checker source lists so the moved accessor stays checked.
+- validation impact: rebuild `backend_runtime.o`,
+  `backend_runtime_tcop.o`, and the backend link; rerun lifecycle/global
+  scans, focused backend-runtime coverage, and `git diff --check`.

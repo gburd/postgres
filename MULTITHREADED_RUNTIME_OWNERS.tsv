@@ -157,6 +157,7 @@ have_xact_temporary_files	PgExecution	transaction_cleanup	have_xact_temporary_fi
 pgStatXactStack	PgExecution	transaction_cleanup	pgstat_xact_stack	PgCurrentPgStatXactStackRef	src/backend/utils/activity/backend_runtime_pgstat.c	pgstat subtransaction stack root borrowed from transaction memory context cleanup
 ri_fastpath_cache	PgExecution	transaction_cleanup	ri_fastpath_cache	PgCurrentRIFastPathCacheRef	src/backend/utils/adt/backend_runtime_ri.c	RI fast-path cache hash owned by active transaction cleanup callbacks
 ri_fastpath_callback_registered	PgExecution	transaction_cleanup	ri_fastpath_callback_registered	PgCurrentRIFastPathCallbackRegisteredRef	src/backend/utils/adt/backend_runtime_ri.c	RI fast-path transaction callback registration flag paired with the cache
+old_valgrind_error_count	PgExecution	valgrind	old_error_count	PgCurrentValgrindOldErrorCountRef	src/backend/tcop/backend_runtime_tcop.c	Valgrind error-count baseline used by the top-level command loop when reporting query execution errors
 SysCache	PgSession	catalog_lookup	sys_cache	PgCurrentSysCacheArray	src/backend/utils/cache/backend_runtime_cache.c	syscache root array; pointed cache entries remain CacheMemoryContext-owned
 SysCacheInitialized	PgSession	catalog_lookup	sys_cache_initialized	PgCurrentSysCacheInitializedRef	src/backend/utils/cache/backend_runtime_cache.c	syscache initialization flag
 SysCacheRelationOid	PgSession	catalog_lookup	sys_cache_relation_oid	PgCurrentSysCacheRelationOidArray	src/backend/utils/cache/backend_runtime_cache.c	inline syscache relation OID array

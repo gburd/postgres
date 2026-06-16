@@ -10,6 +10,9 @@ Important current files:
 
 - `src/backend/tcop/postgres.c`: `PostgresMain()`, the top-level backend loop,
   error recovery, command read, command dispatch, and `ProcessInterrupts()`.
+- `src/backend/tcop/backend_runtime_tcop.c`: fork-owned runtime bridge
+  accessors for top-level command-loop state. Add future `tcop/postgres.c`
+  compatibility shims here rather than growing `backend_runtime.c`.
 - `src/include/access/session.h` and `src/backend/access/common/session.c`:
   existing `Session` abstraction for session-scoped DSM/DSA state. Treat this
   as a seed for the broader session object unless there is a strong reason not
