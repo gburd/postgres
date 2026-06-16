@@ -10,6 +10,8 @@ use Test::More;
 use Time::HiRes qw(usleep);
 
 my $node = PostgreSQL::Test::Cluster->new('threaded_milestone_w');
+my $top_reclaim_re =
+  qr/thread-backed child \d+ reclaimed [1-9]\d* bytes from TopMemoryContext at exit/;
 
 sub start_psql_script
 {
@@ -67,6 +69,33 @@ sub wait_for_pids_to_leave_pg_stat_activity
 		"SELECT NOT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid IN ($pid_list));",
 		't') || die "timed out waiting for $label";
 	pass($label);
+}
+
+sub reclaimed_top_memory_context_log_count
+{
+	my ($log) = @_;
+
+	return scalar(() = $log =~ /$top_reclaim_re/g);
+}
+
+sub wait_for_reclaimed_top_memory_context_logs
+{
+	my ($minimum, $label) = @_;
+	my $log;
+	my $count = 0;
+
+	for (1 .. 100)
+	{
+		$log = slurp_file($node->logfile);
+		$count = reclaimed_top_memory_context_log_count($log);
+		last if $count >= $minimum;
+		usleep(100_000);
+	}
+
+	ok($count >= $minimum, $label)
+	  || diag("observed $count reclaimed TopMemoryContext log entries, expected at least $minimum");
+
+	return $log;
 }
 
 $node->init;
@@ -248,6 +277,8 @@ like(
 
 my @sessions;
 my @normal_pids;
+my $teardown_reclaim_logs_before =
+  reclaimed_top_memory_context_log_count(slurp_file($node->logfile));
 for my $i (1 .. 3)
 {
 	my $session = $node->background_psql('postgres', timeout => 20);
@@ -333,6 +364,8 @@ wait_for_pids_to_leave_pg_stat_activity([$fatal_pid],
 	'Milestone W smoke cleaned up FATAL backend');
 is($node->safe_psql('postgres', 'SELECT 42;'), '42',
 	'Milestone W smoke remains usable after teardown cases');
+wait_for_reclaimed_top_memory_context_logs($teardown_reclaim_logs_before + 6,
+	'Milestone W smoke log records reclaimed TopMemoryContext accounting for explicit teardown cases');
 
 my $reconnect_ok = 1;
 for my $i (1 .. 20)
@@ -362,20 +395,7 @@ SKIP:
 		'Milestone W smoke did not leak postmaster child processes');
 }
 
-my $top_reclaim_re =
-  qr/thread-backed child \d+ reclaimed [1-9]\d* bytes from TopMemoryContext at exit/;
-my $final_log;
-
-for (1 .. 100)
-{
-	$final_log = slurp_file($node->logfile);
-	last if $final_log =~ $top_reclaim_re;
-	usleep(100_000);
-}
-
-like(
-	$final_log,
-	$top_reclaim_re,
+my $final_log = wait_for_reclaimed_top_memory_context_logs(1,
 	'Milestone W smoke log records reclaimed TopMemoryContext accounting');
 
 unlike(

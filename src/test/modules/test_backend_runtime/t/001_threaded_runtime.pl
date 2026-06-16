@@ -13,6 +13,8 @@ use Time::HiRes qw(usleep);
 
 my $repo_root = abs_path("$FindBin::Bin/../../../../..");
 my $node = PostgreSQL::Test::Cluster->new('threaded_runtime');
+my $top_reclaim_re =
+  qr/thread-backed child \d+ reclaimed [1-9]\d* bytes from TopMemoryContext at exit/;
 
 sub install_contrib_extensions
 {
@@ -129,6 +131,33 @@ sub wait_for_advisory_lock_count
 			'postgres',
 			"SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted AND objid BETWEEN $low AND $high;"),
 		$expected, $label);
+}
+
+sub reclaimed_top_memory_context_log_count
+{
+	my ($log) = @_;
+
+	return scalar(() = $log =~ /$top_reclaim_re/g);
+}
+
+sub wait_for_reclaimed_top_memory_context_logs
+{
+	my ($minimum, $label) = @_;
+	my $log;
+	my $count = 0;
+
+	for (1 .. 100)
+	{
+		$log = slurp_file($node->logfile);
+		$count = reclaimed_top_memory_context_log_count($log);
+		last if $count >= $minimum;
+		usleep(100_000);
+	}
+
+	ok($count >= $minimum, $label)
+	  || diag("observed $count reclaimed TopMemoryContext log entries, expected at least $minimum");
+
+	return $log;
 }
 
 install_contrib_extensions();
@@ -794,6 +823,9 @@ is($node->safe_psql('postgres', 'SELECT 42;'), '42',
 
 my $pmchild_reap_children_before =
   $^O eq 'MSWin32' ? undef : postmaster_child_count();
+my $pmchild_reap_reclaim_logs_before =
+  reclaimed_top_memory_context_log_count(slurp_file($node->logfile));
+my $pmchild_reap_expected_reclaims = 3 * (3 + 3 + 2);
 for my $cycle (1 .. 3)
 {
 	my @reap_abandoned_stress;
@@ -884,6 +916,10 @@ for my $cycle (1 .. 3)
 		"threaded server remains usable after PMChild reaping stress cycle $cycle");
 }
 
+wait_for_reclaimed_top_memory_context_logs(
+	$pmchild_reap_reclaim_logs_before + $pmchild_reap_expected_reclaims,
+	'PMChild reaping stress logged reclaimed TopMemoryContext accounting for repeated exits');
+
 SKIP:
 {
 	skip 'postmaster child counting smoke is Unix-specific', 1
@@ -942,20 +978,7 @@ SKIP:
 		'threaded runtime still has no postmaster child processes after worker activity');
 }
 
-my $top_reclaim_re =
-  qr/thread-backed child \d+ reclaimed [1-9]\d* bytes from TopMemoryContext at exit/;
-my $final_log;
-
-for (1 .. 100)
-{
-	$final_log = slurp_file($node->logfile);
-	last if $final_log =~ $top_reclaim_re;
-	usleep(100_000);
-}
-
-like(
-	$final_log,
-	$top_reclaim_re,
+my $final_log = wait_for_reclaimed_top_memory_context_logs(1,
 	'server log records reclaimed TopMemoryContext accounting');
 
 unlike(

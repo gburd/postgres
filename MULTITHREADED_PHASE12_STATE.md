@@ -21135,3 +21135,49 @@ batch:
 - `gmake check-global-lifetimes` passed with 1128 declarations scanned, no new
   unclassified mutable globals, and no local runtime-boundary violations.
 - `git diff --check` passed before the full validation pass.
+
+## Threaded Teardown Reclaimed-Root Count Evidence
+
+Lifecycle/preflight note:
+
+- target: strengthen Gate E2-Core teardown/resource-accounting evidence by
+  requiring direct threaded TAP to observe multiple reclaimed
+  `TopMemoryContext` exit publications after repeated PMChild reaping and
+  Milestone W teardown paths, rather than accepting one reclaimed-root log
+  line from any earlier disconnect.
+- touched roots/buckets: none; this is TAP evidence for existing PMChild
+  thread-exit payload accounting and postmaster reclaimed-root logging.
+- owner source files:
+  `src/test/modules/test_backend_runtime/t/001_threaded_runtime.pl`,
+  `src/test/modules/test_backend_runtime/t/003_milestone_w_core_smoke.pl`, and
+  this state note.
+- legacy symbols/accessors: existing
+  `PostmasterChildPublishThreadExit()`,
+  `PostmasterChildHasExitedThread()`, `backend_thread_finish()`, and the
+  postmaster DEBUG1 reclaimed-root log message.
+- repeated lifecycle operations: none.
+- checked primitive decision: reuse the existing PMChild helper API, retained
+  root deletion path, and TAP log guard; no lifecycle bucket row or checker
+  primitive is needed because this slice adds runtime evidence only.
+- validation impact: run direct threaded runtime TAP first because the changed
+  surface is TAP-only; then run lifecycle/global scans, `git diff --check`,
+  and preserve the full process/thread/world-core baselines at the commit
+  boundary.
+
+Validation for the reclaimed-root count evidence slice:
+
+- `gmake check-threaded-world-core-tap` passed with 178 direct threaded TAP
+  assertions.  The TAP now requires the repeated PMChild reaping cohort to
+  publish at least 24 reclaimed `TopMemoryContext` log entries and requires
+  the Milestone W teardown cases to publish multiple reclaimed-root entries.
+- `gmake check-runtime-lifecycles` passed with 172 classified fields, 172
+  bucket definitions, 35 reset definitions, and 431 owner mappings checked.
+- `gmake check-global-lifetimes` passed with 1128 declarations scanned, no new
+  unclassified mutable globals, and no local runtime-boundary violations.
+- `git diff --check` passed before the full validation pass.
+- `gmake check` passed all 245 process-mode core regression tests.
+- `gmake check-threaded` passed all 245 threaded core regression tests.
+- `gmake check-threaded-world-core` passed end-to-end. It reran
+  `check-threaded-workers` for all 245 core tests, PL/pgSQL for all 13 tests,
+  full isolation for all 129 specs, backend-runtime SQL, direct threaded TAP
+  with 178 assertions, lifecycle checks, and global-lifetime checks.
