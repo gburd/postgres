@@ -86,6 +86,11 @@ Important current files:
 - `src/backend/commands/backend_runtime_trigger.c`: fork-owned runtime bridge
   accessors for trigger execution state. Add future trigger compatibility
   shims here rather than growing `backend_runtime.c`.
+- `src/backend/executor/backend_runtime_executor.c`: fork-owned runtime bridge
+  accessors for executor-owned SPI state, including the fallback-aware SPI
+  execution bucket selector, plus executor instrumentation compatibility
+  shims. Add future executor compatibility shims here rather than growing
+  `backend_runtime.c`.
 - `src/backend/replication/logical/backend_runtime_logical.c`: fork-owned
   runtime bridge accessors for logical-replication execution scratch and
   snapbuild export state. Add future logical-replication compatibility shims
@@ -105,8 +110,16 @@ Important current files:
   accessors for frontend/backend connection state. Add backend libpq,
   protocol, startup, and client-connection compatibility accessors here rather
   than growing `backend_runtime.c`.
+- `src/backend/utils/mmgr/backend_runtime_memory.c`: fork-owned runtime bridge
+  accessors for memory-manager and execution memory-context state, including
+  the fallback-aware execution memory-context selector. Add memory-context
+  compatibility shims here rather than growing `backend_runtime.c`.
 - `src/backend/utils/mmgr/backend_runtime_portal.c`: fork-owned runtime
   bridge accessors for portal manager and active-portal state. Add portal
+  compatibility shims here rather than growing `backend_runtime.c`.
+- `src/backend/utils/resowner/backend_runtime_resowner.c`: fork-owned runtime
+  bridge accessors for execution resource-owner state, including the
+  fallback-aware resource-owner execution bucket selector. Add resource-owner
   compatibility shims here rather than growing `backend_runtime.c`.
 - `src/backend/nodes/backend_runtime_nodes.c`: fork-owned runtime bridge
   accessors for node read/write execution state. Add node serializer/parser

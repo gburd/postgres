@@ -15,6 +15,12 @@
 #include "utils/backend_runtime.h"
 #include "../utils/init/backend_runtime_internal.h"
 
+PgExecutionSPIState *
+PgCurrentExecutionSPIState(void)
+{
+	return &PgCurrentOrEarlyExecution()->spi;
+}
+
 uint64 *
 PgCurrentSPIProcessedRef(void)
 {

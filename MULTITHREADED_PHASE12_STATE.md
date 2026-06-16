@@ -19942,3 +19942,35 @@ Validation:
   check-runtime-lifecycles`, `gmake check-global-lifetimes`,
   `gmake -C src/test/modules/test_backend_runtime check`, and
   `git diff --check`.
+
+## Execution Memory ResourceOwner SPI Selector Refactor
+
+Lifecycle/preflight note:
+
+- target: move the fallback-aware `PgCurrentExecutionMemoryContexts()`,
+  `PgCurrentExecutionResourceOwners()`, and `PgCurrentExecutionSPIState()`
+  selectors out of `backend_runtime.c` and into their owner-adjacent runtime
+  bridge files beside the memory-context, resource-owner, and SPI
+  compatibility accessors.
+- touched roots/buckets: existing `PgExecution.memory_contexts`,
+  `PgExecution.resource_owners`, and `PgExecution.spi` buckets only; no new
+  runtime roots.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  execution object construction and early-adoption owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for the shared
+  current-or-early execution helper, `src/backend/utils/mmgr/backend_runtime_memory.c`,
+  `src/backend/utils/resowner/backend_runtime_resowner.c`,
+  `src/backend/executor/backend_runtime_executor.c`, and this state note.
+- legacy symbols/accessors: `PgCurrentExecutionMemoryContexts()` and memory
+  context pointer accessors, `PgCurrentExecutionResourceOwners()` and
+  resource-owner pointer accessors, `PgCurrentExecutionSPIState()` and SPI
+  stack/status accessors.
+- repeated lifecycle operations: none; the move reuses the existing execution
+  bucket initialization and early-adoption paths.
+- checked primitive decision: reuse the checked execution bucket rows and
+  existing owner-adjacent source coverage; keep the existing SPI initializer
+  export for closed-state reset, but add no new lifecycle primitive.
+- validation impact: rebuild `backend_runtime.o`,
+  `backend_runtime_memory.o`, `backend_runtime_resowner.o`, and
+  `backend_runtime_executor.o`; run lifecycle/global scans, focused
+  backend-runtime control, and `git diff --check`.

@@ -4976,33 +4976,6 @@ PgCurrentExecutionErrorState(void)
 	return &CurrentPgExecution->error;
 }
 
-PgExecutionMemoryContextState *
-PgCurrentExecutionMemoryContexts(void)
-{
-	if (CurrentPgExecution == NULL)
-		return &early_execution_memory_contexts;
-
-	return &CurrentPgExecution->memory_contexts;
-}
-
-PgExecutionResourceOwnerState *
-PgCurrentExecutionResourceOwners(void)
-{
-	if (CurrentPgExecution == NULL)
-		return &early_execution_resource_owners;
-
-	return &CurrentPgExecution->resource_owners;
-}
-
-PgExecutionSPIState *
-PgCurrentExecutionSPIState(void)
-{
-	if (CurrentPgExecution == NULL)
-		return &early_execution_spi;
-
-	return &CurrentPgExecution->spi;
-}
-
 PgExecutionPortalState *
 PgCurrentExecutionPortalState(void)
 {

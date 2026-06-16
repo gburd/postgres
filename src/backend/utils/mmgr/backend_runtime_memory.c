@@ -15,6 +15,12 @@
 #include "utils/memutils.h"
 #include "../init/backend_runtime_internal.h"
 
+PgExecutionMemoryContextState *
+PgCurrentExecutionMemoryContexts(void)
+{
+	return &PgCurrentOrEarlyExecution()->memory_contexts;
+}
+
 PgBackendAllocSetFreeList *
 PgCurrentAllocSetContextFreeLists(void)
 {

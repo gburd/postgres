@@ -16,6 +16,12 @@
 #include "utils/resowner.h"
 #include "../init/backend_runtime_internal.h"
 
+PgExecutionResourceOwnerState *
+PgCurrentExecutionResourceOwners(void)
+{
+	return &PgCurrentOrEarlyExecution()->resource_owners;
+}
+
 ResourceOwner *
 PgCurrentResourceOwnerRef(void)
 {
