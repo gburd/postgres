@@ -1034,7 +1034,7 @@ static PgExecutionAnalyzeState *PgCurrentExecutionAnalyzeState(void);
 static PgExecutionMatViewState *PgCurrentExecutionMatViewState(void);
 PgExecutionSnapshotState *PgCurrentExecutionSnapshotState(void);
 PgExecutionComboCidState *PgCurrentExecutionComboCidState(void);
-static PgExecutionXLogInsertState *PgCurrentExecutionXLogInsertState(void);
+PgExecutionXLogInsertState *PgCurrentExecutionXLogInsertState(void);
 PgExecutionXactState *PgCurrentExecutionXactState(void);
 static PgExecutionTransactionCleanupState *PgCurrentExecutionTransactionCleanupState(void);
 static PgExecutionReplicationScratchState *PgCurrentExecutionReplicationScratchState(void);
@@ -6016,97 +6016,13 @@ PgCurrentExecutionComboCidState(void)
 	return &CurrentPgExecution->combo_cid;
 }
 
-static PgExecutionXLogInsertState *
+PgExecutionXLogInsertState *
 PgCurrentExecutionXLogInsertState(void)
 {
 	if (CurrentPgExecution == NULL)
 		return &early_execution_xloginsert;
 
 	return &CurrentPgExecution->xloginsert;
-}
-
-void **
-PgCurrentXLogInsertRegisteredBuffersRef(void)
-{
-	return &PgCurrentExecutionXLogInsertState()->registered_buffers;
-}
-
-int *
-PgCurrentXLogInsertMaxRegisteredBuffersRef(void)
-{
-	return &PgCurrentExecutionXLogInsertState()->max_registered_buffers;
-}
-
-int *
-PgCurrentXLogInsertMaxRegisteredBlockIdRef(void)
-{
-	return &PgCurrentExecutionXLogInsertState()->max_registered_block_id;
-}
-
-XLogRecData **
-PgCurrentXLogInsertMainRDataHeadRef(void)
-{
-	return &PgCurrentExecutionXLogInsertState()->mainrdata_head;
-}
-
-XLogRecData **
-PgCurrentXLogInsertMainRDataLastRef(void)
-{
-	return &PgCurrentExecutionXLogInsertState()->mainrdata_last;
-}
-
-uint64 *
-PgCurrentXLogInsertMainRDataLenRef(void)
-{
-	return &PgCurrentExecutionXLogInsertState()->mainrdata_len;
-}
-
-uint8 *
-PgCurrentXLogInsertFlagsRef(void)
-{
-	return &PgCurrentExecutionXLogInsertState()->curinsert_flags;
-}
-
-XLogRecData *
-PgCurrentXLogInsertHeaderRecordDataRef(void)
-{
-	return &PgCurrentExecutionXLogInsertState()->hdr_rdt;
-}
-
-char **
-PgCurrentXLogInsertHeaderScratchRef(void)
-{
-	return &PgCurrentExecutionXLogInsertState()->hdr_scratch;
-}
-
-XLogRecData **
-PgCurrentXLogInsertRDatasRef(void)
-{
-	return &PgCurrentExecutionXLogInsertState()->rdatas;
-}
-
-int *
-PgCurrentXLogInsertNumRDatasRef(void)
-{
-	return &PgCurrentExecutionXLogInsertState()->num_rdatas;
-}
-
-int *
-PgCurrentXLogInsertMaxRDatasRef(void)
-{
-	return &PgCurrentExecutionXLogInsertState()->max_rdatas;
-}
-
-bool *
-PgCurrentXLogInsertBeginCalledRef(void)
-{
-	return &PgCurrentExecutionXLogInsertState()->begininsert_called;
-}
-
-MemoryContext *
-PgCurrentXLogInsertContextRef(void)
-{
-	return &PgCurrentExecutionXLogInsertState()->context;
 }
 
 PgExecutionXactState *

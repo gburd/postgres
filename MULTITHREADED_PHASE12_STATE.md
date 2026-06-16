@@ -18495,3 +18495,40 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o`, `backend_runtime_time.o`,
   and the backend link; rerun lifecycle/global scans, threaded regression
   coverage, and `git diff --check`.
+
+## XLog Insert Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move XLog insert execution compatibility accessors out of
+  `src/backend/utils/init/backend_runtime.c` and into a new owner-adjacent
+  `src/backend/access/transam/backend_runtime_xlog.c` bridge file.
+- touched roots/buckets: no runtime root ownership changes; existing
+  `PgExecution.xloginsert` bucket only.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  current-pointer and early fallback owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for internal current
+  XLog-insert helper visibility, `src/backend/access/transam/Makefile`, and
+  `src/backend/access/transam/backend_runtime_xlog.c`.
+- legacy symbols/accessors: `PgCurrentExecutionXLogInsertState()`,
+  `PgCurrentXLogInsertRegisteredBuffersRef()`,
+  `PgCurrentXLogInsertMaxRegisteredBuffersRef()`,
+  `PgCurrentXLogInsertMaxRegisteredBlockIdRef()`,
+  `PgCurrentXLogInsertMainRDataHeadRef()`,
+  `PgCurrentXLogInsertMainRDataLastRef()`,
+  `PgCurrentXLogInsertMainRDataLenRef()`,
+  `PgCurrentXLogInsertFlagsRef()`,
+  `PgCurrentXLogInsertHeaderRecordDataRef()`,
+  `PgCurrentXLogInsertHeaderScratchRef()`,
+  `PgCurrentXLogInsertRDatasRef()`, `PgCurrentXLogInsertNumRDatasRef()`,
+  `PgCurrentXLogInsertMaxRDatasRef()`,
+  `PgCurrentXLogInsertBeginCalledRef()`, and
+  `PgCurrentXLogInsertContextRef()`.
+- repeated lifecycle operations: none; this only relocates pointer accessors
+  and leaves XLog insert init/adopt/reset behavior unchanged.
+- checked primitive decision: no lifecycle primitive is needed because the
+  existing `PgExecution.xloginsert` lifecycle row and execution bucket
+  definition continue to cover the bucket.
+- validation impact: rebuild `backend_runtime.o`, `backend_runtime_xlog.o`,
+  and the backend link; rerun lifecycle/global scans, threaded regression
+  coverage, and `git diff --check`.
