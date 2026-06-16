@@ -18461,3 +18461,37 @@ Lifecycle/preflight note:
   `backend_runtime_large_object.o`, and the backend link; rerun
   lifecycle/global scans, threaded regression coverage, and `git diff
   --check`.
+
+## Snapshot And Combo CID Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move snapshot and combo-CID execution compatibility accessors out
+  of `src/backend/utils/init/backend_runtime.c` and into a new
+  owner-adjacent `src/backend/utils/time/backend_runtime_time.c` bridge file.
+- touched roots/buckets: no runtime root ownership changes; existing
+  `PgExecution.snapshot` and `PgExecution.combo_cid` buckets only.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  current-pointer and early fallback owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for internal current
+  snapshot/combo-CID helper visibility, `src/backend/utils/time/Makefile`,
+  and `src/backend/utils/time/backend_runtime_time.c`.
+- legacy symbols/accessors: `PgCurrentExecutionSnapshotState()`,
+  `PgCurrentExecutionComboCidState()`, `PgCurrentSnapshotDataRef()`,
+  `PgCurrentSecondarySnapshotDataRef()`, `PgCurrentCatalogSnapshotDataRef()`,
+  `PgCurrentSnapshotRef()`, `PgCurrentSecondarySnapshotRef()`,
+  `PgCurrentCatalogSnapshotRef()`, `PgCurrentHistoricSnapshotRef()`,
+  `PgCurrentTransactionXminRef()`, `PgCurrentRecentXminRef()`,
+  `PgCurrentTupleCidDataRef()`, `PgCurrentActiveSnapshotRef()`,
+  `PgCurrentRegisteredSnapshotsRef()`, `PgCurrentFirstSnapshotSetRef()`,
+  `PgCurrentFirstXactSnapshotRef()`, `PgCurrentExportedSnapshotsRef()`,
+  `PgCurrentComboCidHashRef()`, `PgCurrentComboCidsRef()`,
+  `PgCurrentUsedComboCidsRef()`, and `PgCurrentSizeComboCidsRef()`.
+- repeated lifecycle operations: none; this only relocates pointer accessors
+  and leaves snapshot/combo-CID init/adopt/reset behavior unchanged.
+- checked primitive decision: no lifecycle primitive is needed because the
+  existing `PgExecution.snapshot` and `PgExecution.combo_cid` lifecycle rows
+  and execution bucket definitions continue to cover the buckets.
+- validation impact: rebuild `backend_runtime.o`, `backend_runtime_time.o`,
+  and the backend link; rerun lifecycle/global scans, threaded regression
+  coverage, and `git diff --check`.

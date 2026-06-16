@@ -1032,8 +1032,8 @@ static PgExecutionNodeIOState *PgCurrentExecutionNodeIOState(void);
 static PgExecutionBaseBackupState *PgCurrentExecutionBaseBackupState(void);
 static PgExecutionAnalyzeState *PgCurrentExecutionAnalyzeState(void);
 static PgExecutionMatViewState *PgCurrentExecutionMatViewState(void);
-static PgExecutionSnapshotState *PgCurrentExecutionSnapshotState(void);
-static PgExecutionComboCidState *PgCurrentExecutionComboCidState(void);
+PgExecutionSnapshotState *PgCurrentExecutionSnapshotState(void);
+PgExecutionComboCidState *PgCurrentExecutionComboCidState(void);
 static PgExecutionXLogInsertState *PgCurrentExecutionXLogInsertState(void);
 PgExecutionXactState *PgCurrentExecutionXactState(void);
 static PgExecutionTransactionCleanupState *PgCurrentExecutionTransactionCleanupState(void);
@@ -5998,7 +5998,7 @@ PgCurrentMatViewMaintenanceDepthRef(void)
 	return &PgCurrentExecutionMatViewState()->maintenance_depth;
 }
 
-static PgExecutionSnapshotState *
+PgExecutionSnapshotState *
 PgCurrentExecutionSnapshotState(void)
 {
 	if (CurrentPgExecution == NULL)
@@ -6007,127 +6007,13 @@ PgCurrentExecutionSnapshotState(void)
 	return &CurrentPgExecution->snapshot;
 }
 
-SnapshotData *
-PgCurrentSnapshotDataRef(void)
-{
-	return &PgCurrentExecutionSnapshotState()->current_snapshot_data;
-}
-
-SnapshotData *
-PgCurrentSecondarySnapshotDataRef(void)
-{
-	return &PgCurrentExecutionSnapshotState()->secondary_snapshot_data;
-}
-
-SnapshotData *
-PgCurrentCatalogSnapshotDataRef(void)
-{
-	return &PgCurrentExecutionSnapshotState()->catalog_snapshot_data;
-}
-
-Snapshot *
-PgCurrentSnapshotRef(void)
-{
-	return &PgCurrentExecutionSnapshotState()->current_snapshot;
-}
-
-Snapshot *
-PgCurrentSecondarySnapshotRef(void)
-{
-	return &PgCurrentExecutionSnapshotState()->secondary_snapshot;
-}
-
-Snapshot *
-PgCurrentCatalogSnapshotRef(void)
-{
-	return &PgCurrentExecutionSnapshotState()->catalog_snapshot;
-}
-
-Snapshot *
-PgCurrentHistoricSnapshotRef(void)
-{
-	return &PgCurrentExecutionSnapshotState()->historic_snapshot;
-}
-
-TransactionId *
-PgCurrentTransactionXminRef(void)
-{
-	return &PgCurrentExecutionSnapshotState()->transaction_xmin;
-}
-
-TransactionId *
-PgCurrentRecentXminRef(void)
-{
-	return &PgCurrentExecutionSnapshotState()->recent_xmin;
-}
-
-HTAB **
-PgCurrentTupleCidDataRef(void)
-{
-	return &PgCurrentExecutionSnapshotState()->tuplecid_data;
-}
-
-void **
-PgCurrentActiveSnapshotRef(void)
-{
-	return &PgCurrentExecutionSnapshotState()->active_snapshot;
-}
-
-pairingheap *
-PgCurrentRegisteredSnapshotsRef(void)
-{
-	return &PgCurrentExecutionSnapshotState()->registered_snapshots;
-}
-
-bool *
-PgCurrentFirstSnapshotSetRef(void)
-{
-	return &PgCurrentExecutionSnapshotState()->first_snapshot_set;
-}
-
-Snapshot *
-PgCurrentFirstXactSnapshotRef(void)
-{
-	return &PgCurrentExecutionSnapshotState()->first_xact_snapshot;
-}
-
-List **
-PgCurrentExportedSnapshotsRef(void)
-{
-	return &PgCurrentExecutionSnapshotState()->exported_snapshots;
-}
-
-static PgExecutionComboCidState *
+PgExecutionComboCidState *
 PgCurrentExecutionComboCidState(void)
 {
 	if (CurrentPgExecution == NULL)
 		return &early_execution_combo_cid;
 
 	return &CurrentPgExecution->combo_cid;
-}
-
-HTAB **
-PgCurrentComboCidHashRef(void)
-{
-	return &PgCurrentExecutionComboCidState()->hash;
-}
-
-void **
-PgCurrentComboCidsRef(void)
-{
-	return &PgCurrentExecutionComboCidState()->cids;
-}
-
-int *
-PgCurrentUsedComboCidsRef(void)
-{
-	return &PgCurrentExecutionComboCidState()->used;
-}
-
-int *
-PgCurrentSizeComboCidsRef(void)
-{
-	return &PgCurrentExecutionComboCidState()->size;
 }
 
 static PgExecutionXLogInsertState *

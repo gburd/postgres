@@ -162,6 +162,8 @@ extern PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
 extern PgExecutionSPIState *PgCurrentExecutionSPIState(void);
 extern PgExecutionXactState *PgCurrentExecutionXactState(void);
 extern PgExecutionGUCErrorState *PgCurrentExecutionGUCErrorState(void);
+extern PgExecutionSnapshotState *PgCurrentExecutionSnapshotState(void);
+extern PgExecutionComboCidState *PgCurrentExecutionComboCidState(void);
 extern PgExecutionRegexState *PgCurrentExecutionRegexState(void);
 extern PgConnectionIdentityState *PgConnectionIdentityStateRef(PgConnection *connection);
 extern PgConnectionSocketIOState *PgConnectionSocketIOStateRef(PgConnection *connection);
