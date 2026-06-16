@@ -15,6 +15,30 @@
 #include "utils/backend_runtime.h"
 #include "../../utils/init/backend_runtime_internal.h"
 
+PgExecutionXLogInsertState *
+PgCurrentExecutionXLogInsertState(void)
+{
+	return &PgCurrentOrEarlyExecution()->xloginsert;
+}
+
+PgExecutionXactState *
+PgCurrentExecutionXactState(void)
+{
+	return &PgCurrentOrEarlyExecution()->xact;
+}
+
+PgExecutionTransactionCleanupState *
+PgCurrentExecutionTransactionCleanupState(void)
+{
+	return &PgCurrentOrEarlyExecution()->transaction_cleanup;
+}
+
+PgExecutionTwoPhaseRecordState *
+PgCurrentExecutionTwoPhaseRecordState(void)
+{
+	return &PgCurrentOrEarlyExecution()->two_phase_records;
+}
+
 int *
 PgCurrentDefaultXactIsoLevelRef(void)
 {

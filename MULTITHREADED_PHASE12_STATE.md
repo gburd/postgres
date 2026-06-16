@@ -20071,3 +20071,37 @@ portal, and vacuum/analyze selector refactor commits:
   rebuilds, backend link, `gmake check-runtime-lifecycles`, `gmake
   check-global-lifetimes`, `gmake -C src/test/modules/test_backend_runtime
   check`, and `git diff --check`.
+
+## Transam Execution Selector Refactor
+
+Lifecycle/preflight note:
+
+- target: move the fallback-aware `PgCurrentExecutionXLogInsertState()`,
+  `PgCurrentExecutionXactState()`,
+  `PgCurrentExecutionTransactionCleanupState()`, and
+  `PgCurrentExecutionTwoPhaseRecordState()` selectors out of
+  `backend_runtime.c` and into the owner-adjacent
+  `src/backend/access/transam/backend_runtime_xact.c` bridge beside
+  transaction and two-phase compatibility accessors.
+- touched roots/buckets: existing `PgExecution.xloginsert`,
+  `PgExecution.xact`, `PgExecution.transaction_cleanup`, and
+  `PgExecution.two_phase_records` buckets only; no new runtime roots.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  execution object construction and early-adoption owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for the shared
+  current-or-early execution helper,
+  `src/backend/access/transam/backend_runtime_xact.c`, and this state note.
+- legacy symbols/accessors: `PgCurrentExecutionXLogInsertState()`,
+  XLog-insert pointer accessors, `PgCurrentExecutionXactState()`,
+  transaction pointer accessors,
+  `PgCurrentExecutionTransactionCleanupState()`, cleanup pointer accessors,
+  `PgCurrentExecutionTwoPhaseRecordState()`, and two-phase record pointer
+  accessors.
+- repeated lifecycle operations: none; the move reuses existing execution
+  bucket initialization and early-adoption paths.
+- checked primitive decision: reuse the checked execution bucket rows and
+  existing transam bridge source coverage; no new lifecycle primitive or
+  initializer export is needed.
+- validation impact: rebuild `backend_runtime.o` and
+  `backend_runtime_xact.o`, run lifecycle/global scans, focused
+  backend-runtime control, and `git diff --check`.

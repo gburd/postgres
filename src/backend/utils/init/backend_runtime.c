@@ -4987,33 +4987,6 @@ PgCurrentExecutionMatViewState(void)
 	return &CurrentPgExecution->matview;
 }
 
-PgExecutionXLogInsertState *
-PgCurrentExecutionXLogInsertState(void)
-{
-	if (CurrentPgExecution == NULL)
-		return &early_execution_xloginsert;
-
-	return &CurrentPgExecution->xloginsert;
-}
-
-PgExecutionXactState *
-PgCurrentExecutionXactState(void)
-{
-	if (CurrentPgExecution == NULL)
-		return &early_execution_xact;
-
-	return &CurrentPgExecution->xact;
-}
-
-PgExecutionTransactionCleanupState *
-PgCurrentExecutionTransactionCleanupState(void)
-{
-	if (CurrentPgExecution == NULL)
-		return &early_execution_transaction_cleanup;
-
-	return &CurrentPgExecution->transaction_cleanup;
-}
-
 PgExecutionReplicationScratchState *
 PgCurrentExecutionReplicationScratchState(void)
 {
@@ -5075,15 +5048,6 @@ PgCurrentExecutionInvalidationState(void)
 		return &early_execution_invalidation;
 
 	return &CurrentPgExecution->invalidation;
-}
-
-PgExecutionTwoPhaseRecordState *
-PgCurrentExecutionTwoPhaseRecordState(void)
-{
-	if (CurrentPgExecution == NULL)
-		return &early_execution_two_phase_records;
-
-	return &CurrentPgExecution->two_phase_records;
 }
 
 PgExecutionTriggerState *
