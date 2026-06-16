@@ -177,7 +177,11 @@ Important current files:
 - `src/test/modules/test_backend_runtime/test_backend_runtime_session.c`:
   core session, cache, identity, and session-reset test functions.
 - `src/test/modules/test_backend_runtime/test_backend_runtime_session_guc.c`:
-  runtime/server GUC, session GUC, and generated GUC rebind test functions.
+  runtime/server GUC, session GUC, and generated GUC rebind test functions
+  outside the planner/JIT GUC subfamily.
+- `src/test/modules/test_backend_runtime/test_backend_runtime_session_guc_planner.c`:
+  session sort, JIT, query-memory, planner-cost, and planner-method GUC-state
+  tests split out of the broader session GUC test family.
 - `src/test/modules/test_backend_runtime/test_backend_runtime_connection.c`:
   connection, socket, protocol, startup, and security test functions.
 - `src/test/modules/test_backend_runtime/test_backend_runtime_execution.c`:

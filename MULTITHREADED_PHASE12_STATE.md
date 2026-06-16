@@ -19981,6 +19981,57 @@ Validation evidence after adding direct TAP to world-core:
 - `gmake check-threaded` passed all 245 core regression tests under
   `threaded_smoke.conf`.
 
+## Backend Runtime Session Planner GUC Test Split
+
+Lifecycle/preflight note:
+
+- target: split the sort/JIT/provider/query-memory/planner GUC test tail out
+  of the oversized `test_backend_runtime_session_guc.c` file into a narrower
+  owner-family `test_backend_runtime_session_guc_planner.c` source while
+  preserving the same SQL-visible test functions.
+- touched roots/buckets: no runtime roots or lifecycle buckets change; this is
+  a backend-runtime test organization refactor only.
+- owner source files:
+  `src/test/modules/test_backend_runtime/test_backend_runtime_session_guc.c`,
+  new
+  `src/test/modules/test_backend_runtime/test_backend_runtime_session_guc_planner.c`,
+  `src/test/modules/test_backend_runtime/Makefile`,
+  `src/test/modules/test_backend_runtime/meson.build`,
+  `MULTITHREADED_AGENT_REFERENCE.md`, and this state note.
+- legacy symbols/accessors: SQL-visible C functions
+  `test_session_sort_guc_state_is_session_local`,
+  `test_session_jit_guc_state_is_session_local`,
+  `test_session_jit_provider_state_is_session_local`,
+  `test_session_query_memory_state_is_session_local`,
+  `test_session_planner_cost_state_is_session_local`, and
+  `test_session_planner_method_state_is_session_local`.
+- repeated lifecycle operations: none added; the split preserves existing test
+  bodies and restores GUC settings exactly as before.
+- checked primitive decision: no lifecycle primitive or checker rule needed
+  because this is a mechanical test-source split.
+- validation impact: rebuild `src/test/modules/test_backend_runtime`, run its
+  SQL regression control, run `git diff --check`, and then the required
+  process/threaded/lifecycle/global baselines for the committed batch.
+
+Validation evidence after the planner GUC split:
+
+- `gmake -C src/test/modules/test_backend_runtime` rebuilt the module and
+  linked `test_backend_runtime_session_guc_planner.o` into
+  `test_backend_runtime.dylib`.
+- `gmake -C src/test/modules/test_backend_runtime check` passed the module SQL
+  regression after the split.
+- `gmake check-runtime-lifecycles` passed with 172 classified fields, 172
+  bucket definitions, 35 reset definitions, and 431 owner mappings.
+- `gmake check-global-lifetimes` passed with no new unclassified mutable
+  globals and no local runtime-boundary violations.
+- `git diff --check` passed.
+- `gmake check` passed all 245 process-mode core regression tests.
+- `gmake check-threaded` passed all 245 threaded core regression tests.
+- `gmake check-threaded-world-core` passed `check-threaded-workers` all 245
+  tests, PL/pgSQL all 13 tests, isolation all 129 tests, backend-runtime SQL,
+  direct threaded TAP all 174 assertions, `check-runtime-lifecycles`, and
+  `check-global-lifetimes`.
+
 ## Connection Runtime Lifecycle Refactor
 
 Lifecycle/preflight note:
