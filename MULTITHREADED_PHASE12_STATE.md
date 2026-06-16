@@ -19271,6 +19271,53 @@ Lifecycle/preflight note:
   `backend_runtime_tcop.o`, and the backend link; rerun lifecycle/global
   scans, focused backend-runtime coverage, and `git diff --check`.
 
+## Backend Interrupt Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move backend pending-interrupt and interrupt-holdoff compatibility
+  accessors, plus the logical backend interrupt mailbox helpers, out of
+  `backend_runtime.c` and into owner-adjacent `postmaster/interrupt.c`.
+- touched roots/buckets: existing `PgBackend.pending_interrupts` and
+  `PgBackend.interrupt_holdoffs` buckets and their early backend fallbacks;
+  no new runtime roots.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  fallback-aware pending/holdoff selector owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for internal
+  `PgCurrentPendingInterrupts()` and `PgCurrentInterruptHoldoffs()`
+  visibility, `src/backend/postmaster/interrupt.c`, `GNUmakefile.in`,
+  `src/tools/runtime_lifecycle/check_runtime_lifecycles.pl`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, and
+  `MULTITHREADED_AGENT_REFERENCE.md`.
+- legacy symbols/accessors: `InterruptPending`, `QueryCancelPending`,
+  `ProcDiePending`, `ProcDieSenderPid`, `ProcDieSenderUid`,
+  `IdleInTransactionSessionTimeoutPending`, `TransactionTimeoutPending`,
+  `IdleSessionTimeoutPending`, `ProcSignalBarrierPending`,
+  `LogMemoryContextPending`, `IdleStatsUpdateTimeoutPending`,
+  `ConfigReloadPending`, `ShutdownRequestPending`, `WakeupStopPending`,
+  `AutoVacLauncherPending`, `CheckpointerShutdownXLOGPending`,
+  `InterruptHoldoffCount`, `QueryCancelHoldoffCount`, `CritSectionCount`,
+  `PgCurrentPendingInterrupts()`, `PgCurrentPendingInterruptStateRef()`,
+  `PgCurrentInterruptHoldoffs()`, `PgCurrentInterruptHoldoffCountRef()`,
+  `PgCurrentQueryCancelHoldoffCountRef()`,
+  `PgCurrentCritSectionCountRef()`, `PgBackendWakeup()`,
+  `PgBackendRaiseInterrupt()`, `PgCurrentBackendRaiseInterrupt()`,
+  `PgBackendRaiseProcDieInterrupt()`,
+  `PgCurrentBackendRaiseProcDieInterrupt()`,
+  `PgBackendConsumeInterrupts()`, `PgBackendConsumeProcDieSender()`,
+  `PgCurrentBackendHasPendingInterrupts()`, and
+  `PgCurrentBackendApplyInterrupts()`.
+- repeated lifecycle operations: none; this only relocates accessors and
+  owner-adjacent interrupt mailbox logic while leaving pending/holdoff early
+  adoption and backend reset semantics unchanged.
+- checked primitive decision: reuse the existing backend bucket definitions;
+  add `postmaster/interrupt.c` to lifecycle-checker source coverage and add
+  owner-map rows for the moved pending/holdoff compatibility accessors.
+- validation impact: rebuild `backend_runtime.o`, `interrupt.o`, and the
+  backend link; rerun lifecycle/global scans, focused backend-runtime
+  coverage, threaded worker/near-world interrupt coverage, and
+  `git diff --check`.
+
 ## Backend Wait Runtime Accessor Refactor
 
 Lifecycle/preflight note:

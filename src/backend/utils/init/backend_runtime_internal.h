@@ -228,6 +228,8 @@ extern PgBackendMemoryManagerState *PgCurrentBackendMemoryManagerState(void);
 extern PgBackendTransactionState *PgCurrentBackendTransactionState(void);
 extern PgBackendUtilityState *PgCurrentBackendUtilityState(void);
 extern PgBackendParallelState *PgCurrentBackendParallelState(void);
+extern PgBackendPendingInterruptState *PgCurrentPendingInterrupts(void);
+extern PgBackendInterruptHoldoffState *PgCurrentInterruptHoldoffs(void);
 
 extern void PgSessionInitializeVacuumState(PgSessionVacuumState *vacuum);
 extern void PgSessionInitializeLockWaitState(PgSessionLockWaitState *lock_wait);

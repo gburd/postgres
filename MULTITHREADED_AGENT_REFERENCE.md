@@ -119,6 +119,9 @@ Important current files:
 - `src/backend/storage/ipc/backend_runtime_ipc.c`: fork-owned runtime bridge
   accessors for backend-local IPC, sinval, DSM, and latch state. Add IPC
   compatibility accessors here rather than growing `backend_runtime.c`.
+- `src/backend/postmaster/interrupt.c`: owner-adjacent runtime bridge for
+  backend pending-interrupt and interrupt-holdoff compatibility accessors plus
+  the logical backend interrupt mailbox helpers.
 - `src/backend/utils/init/backend_runtime_internal.h`: backend-private runtime
   declarations shared by fork-owned runtime support files. Do not expose these
   helpers in installed headers unless an upstream-owned caller truly needs
