@@ -1013,7 +1013,7 @@ PgSessionOnCommitState *PgCurrentSessionOnCommitState(void);
 PgSessionSequenceState *PgCurrentSessionSequenceState(void);
 PgSessionRegexState *PgCurrentSessionRegexState(void);
 PgSessionPortalManagerState *PgCurrentSessionPortalManagerState(void);
-static PgSessionLargeObjectState *PgCurrentSessionLargeObjectState(void);
+PgSessionLargeObjectState *PgCurrentSessionLargeObjectState(void);
 static PgSessionAsyncState *PgCurrentSessionAsyncState(void);
 PgSessionEncodingState *PgCurrentSessionEncodingState(void);
 static PgSessionTempFileState *PgCurrentSessionTempFileState(void);
@@ -4838,7 +4838,7 @@ PgCurrentSessionPortalManagerState(void)
 	return &CurrentPgSession->portal_manager;
 }
 
-static PgSessionLargeObjectState *
+PgSessionLargeObjectState *
 PgCurrentSessionLargeObjectState(void)
 {
 	if (CurrentPgSession == NULL)
@@ -5052,18 +5052,6 @@ HTAB **
 PgCurrentOperatorLookupCacheRef(void)
 {
 	return &PgCurrentSessionParserState()->operator_lookup_cache;
-}
-
-struct RelationData **
-PgCurrentLargeObjectHeapRelationRef(void)
-{
-	return &PgCurrentSessionLargeObjectState()->heap_relation;
-}
-
-struct RelationData **
-PgCurrentLargeObjectIndexRelationRef(void)
-{
-	return &PgCurrentSessionLargeObjectState()->index_relation;
 }
 
 HTAB **
