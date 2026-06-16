@@ -20473,26 +20473,6 @@ Lifecycle/preflight note:
   `git diff --check`, and then the required process/threaded core baselines
   after the slice is mechanically clean.
 
-Validation evidence after the backend runtime execution lifecycle refactor:
-
-- `gmake -C src/backend/utils/init backend_runtime.o backend_runtime_execution.o`
-  rebuilt the root and execution runtime bridge objects.
-- `gmake -C src/backend postgres` linked the backend with
-  `backend_runtime_execution.o`.
-- `gmake check-runtime-lifecycles` passed with
-  `backend_runtime_execution.c` included in the checked source list.
-- `gmake check-global-lifetimes` passed with no new unclassified mutable
-  globals and no local runtime boundary violations.
-- `gmake -C src/test/modules/test_backend_runtime check` passed the focused
-  SQL regression control; TAP tests were not enabled in this build
-  configuration.
-- `git diff --check` passed.
-- `gmake check` passed all 245 core regression tests.
-- `gmake check-threaded` passed all 245 core regression tests under
-  `threaded_smoke.conf`.
-- `gmake check-threaded-workers` passed all 245 core regression tests under
-  `threaded_workers.conf`.
-
 Validation evidence after the backend runtime backend lifecycle refactor:
 
 - `gmake -C src/backend/utils/init backend_runtime.o backend_runtime_backend.o`
@@ -20545,3 +20525,58 @@ Lifecycle/preflight note:
   lifecycle/global scans, focused backend-runtime regression control,
   `git diff --check`, and then the required process/threaded core baselines
   after the slice is mechanically clean.
+
+Validation evidence after the backend runtime execution lifecycle refactor:
+
+- `gmake -C src/backend/utils/init backend_runtime.o backend_runtime_execution.o`
+  rebuilt the root and execution runtime bridge objects.
+- `gmake -C src/backend postgres` linked the backend with
+  `backend_runtime_execution.o`.
+- `gmake check-runtime-lifecycles` passed with
+  `backend_runtime_execution.c` included in the checked source list.
+- `gmake check-global-lifetimes` passed with no new unclassified mutable
+  globals and no local runtime boundary violations.
+- `gmake -C src/test/modules/test_backend_runtime check` passed the focused
+  SQL regression control; TAP tests were not enabled in this build
+  configuration.
+- `git diff --check` passed.
+- `gmake check` passed all 245 core regression tests.
+- `gmake check-threaded` passed all 245 core regression tests under
+  `threaded_smoke.conf`.
+- `gmake check-threaded-workers` passed all 245 core regression tests under
+  `threaded_workers.conf`.
+
+## Post-Refactor Threaded World-Core Evidence
+
+Validation evidence after the backend/session/connection/execution runtime
+bridge refactor slices:
+
+- `gmake check-threaded-world-core` passed end-to-end.
+- The target reran `src/test/regress` through `check-threaded-workers`; all
+  245 core regression tests passed under `threaded_workers.conf`.
+- The target ran PL/pgSQL regression under `threaded_workers.conf`; all 13
+  tests passed.
+- The target ran the full isolation suite under `threaded_workers.conf`; all
+  129 specs passed.
+- The target installed and ran `src/test/modules/test_backend_runtime check`;
+  SQL regression passed and TAP tests were not enabled in this checkout.
+- The target reran `gmake check-runtime-lifecycles`; the split backend and
+  execution bridge files were covered by the checked source list.
+- The target reran `gmake check-global-lifetimes`; no new unclassified
+  mutable globals or local runtime boundary violations were reported.
+
+Runtime evidence conclusion: the broader near-world threaded target did not
+surface a new Gate E2-Core crash, hang, corruption, lifecycle regression, or
+global-lifetime regression after the refactor slices. The next blocker should
+therefore continue from retained-memory/threaded-teardown or PMChild/thread
+synchronization evidence unless a later world-core run reports retained
+`TopMemoryContext` warnings or thread/postmaster synchronization failures.
+
+The existing world-core exclusion classification remains deferred with
+invariant: Phase 12 keeps extension, language, and custom-GUC completeness out
+of the target because Milestone W is core runtime focused; regressions that
+would affect the core runtime are guarded by the process core suite, threaded
+core and worker suites, PL/pgSQL coverage, full threaded isolation, focused
+backend-runtime checks, lifecycle scanning, and global-lifetime scanning.
+Phase 16 / Gate E2-Extensions owns the contrib-wide extension and language
+completion pass.
