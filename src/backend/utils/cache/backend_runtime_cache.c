@@ -20,6 +20,30 @@
 #include "utils/memutils.h"
 #include "../init/backend_runtime_internal.h"
 
+PgExecutionCatalogState *
+PgCurrentExecutionCatalogState(void)
+{
+	return &PgCurrentOrEarlyExecution()->catalog;
+}
+
+PgExecutionCatalogCacheState *
+PgCurrentExecutionCatalogCacheState(void)
+{
+	return &PgCurrentOrEarlyExecution()->catalog_cache;
+}
+
+PgExecutionRelMapState *
+PgCurrentExecutionRelMapState(void)
+{
+	return &PgCurrentOrEarlyExecution()->relmap;
+}
+
+PgExecutionInvalidationState *
+PgCurrentExecutionInvalidationState(void)
+{
+	return &PgCurrentOrEarlyExecution()->invalidation;
+}
+
 dlist_head *
 PgCurrentSavedPlanListRef(void)
 {

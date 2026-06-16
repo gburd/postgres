@@ -5014,42 +5014,6 @@ PgCurrentExecutionAsyncState(void)
 	return &CurrentPgExecution->async;
 }
 
-PgExecutionCatalogState *
-PgCurrentExecutionCatalogState(void)
-{
-	if (CurrentPgExecution == NULL)
-		return &early_execution_catalog;
-
-	return &CurrentPgExecution->catalog;
-}
-
-PgExecutionCatalogCacheState *
-PgCurrentExecutionCatalogCacheState(void)
-{
-	if (CurrentPgExecution == NULL)
-		return &early_execution_catalog_cache;
-
-	return &CurrentPgExecution->catalog_cache;
-}
-
-PgExecutionRelMapState *
-PgCurrentExecutionRelMapState(void)
-{
-	if (CurrentPgExecution == NULL)
-		return &early_execution_relmap;
-
-	return &CurrentPgExecution->relmap;
-}
-
-PgExecutionInvalidationState *
-PgCurrentExecutionInvalidationState(void)
-{
-	if (CurrentPgExecution == NULL)
-		return &early_execution_invalidation;
-
-	return &CurrentPgExecution->invalidation;
-}
-
 PgExecutionTriggerState *
 PgCurrentExecutionTriggerState(void)
 {

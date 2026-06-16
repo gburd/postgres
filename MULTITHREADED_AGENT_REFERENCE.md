@@ -20,8 +20,10 @@ Important current files:
   as a seed for the broader session object unless there is a strong reason not
   to.
 - `src/backend/utils/cache/backend_runtime_cache.c`: fork-owned runtime bridge
-  accessors for session- and execution-owned catalog/cache roots. Add future
-  catalog/cache accessor shims here rather than growing `backend_runtime.c`.
+  accessors for session- and execution-owned catalog/cache roots, including
+  the fallback-aware execution catalog, catcache, relmap, and invalidation
+  selectors. Add future catalog/cache accessor shims here rather than growing
+  `backend_runtime.c`.
 - `src/backend/utils/init/backend_runtime_session.c`: fork-owned runtime
   bridge accessors for broad session-owned compatibility state that does not
   yet have a narrower owner file, including datetime/timezone, namespace,
