@@ -1018,7 +1018,7 @@ PgSessionPortalManagerState *PgCurrentSessionPortalManagerState(void);
 PgSessionLargeObjectState *PgCurrentSessionLargeObjectState(void);
 static PgSessionAsyncState *PgCurrentSessionAsyncState(void);
 PgSessionEncodingState *PgCurrentSessionEncodingState(void);
-static PgSessionTempFileState *PgCurrentSessionTempFileState(void);
+PgSessionTempFileState *PgCurrentSessionTempFileState(void);
 static PgSessionRandomState *PgCurrentSessionRandomState(void);
 static PgSessionOptimizerState *PgCurrentSessionOptimizerState(void);
 static PgSessionPlanCacheState *PgCurrentSessionPlanCacheState(void);
@@ -4890,7 +4890,7 @@ PgCurrentSessionEncodingState(void)
 	return encoding;
 }
 
-static PgSessionTempFileState *
+PgSessionTempFileState *
 PgCurrentSessionTempFileState(void)
 {
 	PgSessionTempFileState *temp_file;
@@ -4998,36 +4998,6 @@ bool *
 PgCurrentAsyncRegisteredListenerRef(void)
 {
 	return &PgCurrentSessionAsyncState()->registered_listener;
-}
-
-uint64 *
-PgCurrentTemporaryFilesSizeRef(void)
-{
-	return &PgCurrentSessionTempFileState()->temporary_files_size;
-}
-
-long *
-PgCurrentTempFileCounterRef(void)
-{
-	return &PgCurrentSessionTempFileState()->temp_file_counter;
-}
-
-Oid **
-PgCurrentTempTableSpaceOidsRef(void)
-{
-	return &PgCurrentSessionTempFileState()->temp_table_spaces;
-}
-
-int *
-PgCurrentNumTempTableSpacesRef(void)
-{
-	return &PgCurrentSessionTempFileState()->num_temp_table_spaces;
-}
-
-int *
-PgCurrentNextTempTableSpaceRef(void)
-{
-	return &PgCurrentSessionTempFileState()->next_temp_table_space;
 }
 
 pg_prng_state *

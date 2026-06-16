@@ -21,6 +21,36 @@
 #include "utils/memutils.h"
 #include "../../utils/init/backend_runtime_internal.h"
 
+uint64 *
+PgCurrentTemporaryFilesSizeRef(void)
+{
+	return &PgCurrentSessionTempFileState()->temporary_files_size;
+}
+
+long *
+PgCurrentTempFileCounterRef(void)
+{
+	return &PgCurrentSessionTempFileState()->temp_file_counter;
+}
+
+Oid **
+PgCurrentTempTableSpaceOidsRef(void)
+{
+	return &PgCurrentSessionTempFileState()->temp_table_spaces;
+}
+
+int *
+PgCurrentNumTempTableSpacesRef(void)
+{
+	return &PgCurrentSessionTempFileState()->num_temp_table_spaces;
+}
+
+int *
+PgCurrentNextTempTableSpaceRef(void)
+{
+	return &PgCurrentSessionTempFileState()->next_temp_table_space;
+}
+
 void **
 PgCurrentVfdCacheRef(void)
 {
