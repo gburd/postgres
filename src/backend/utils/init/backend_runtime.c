@@ -1038,7 +1038,7 @@ PgExecutionSnapshotState *PgCurrentExecutionSnapshotState(void);
 PgExecutionComboCidState *PgCurrentExecutionComboCidState(void);
 PgExecutionXLogInsertState *PgCurrentExecutionXLogInsertState(void);
 PgExecutionXactState *PgCurrentExecutionXactState(void);
-static PgExecutionTransactionCleanupState *PgCurrentExecutionTransactionCleanupState(void);
+PgExecutionTransactionCleanupState *PgCurrentExecutionTransactionCleanupState(void);
 static PgExecutionReplicationScratchState *PgCurrentExecutionReplicationScratchState(void);
 PgExecutionGUCErrorState *PgCurrentExecutionGUCErrorState(void);
 PgExecutionAsyncState *PgCurrentExecutionAsyncState(void);
@@ -5331,37 +5331,13 @@ PgCurrentExecutionXactState(void)
 	return &CurrentPgExecution->xact;
 }
 
-static PgExecutionTransactionCleanupState *
+PgExecutionTransactionCleanupState *
 PgCurrentExecutionTransactionCleanupState(void)
 {
 	if (CurrentPgExecution == NULL)
 		return &early_execution_transaction_cleanup;
 
 	return &CurrentPgExecution->transaction_cleanup;
-}
-
-LargeObjectDesc ***
-PgCurrentLargeObjectCookiesRef(void)
-{
-	return &PgCurrentExecutionTransactionCleanupState()->lo_cookies;
-}
-
-int *
-PgCurrentLargeObjectCookiesSizeRef(void)
-{
-	return &PgCurrentExecutionTransactionCleanupState()->lo_cookies_size;
-}
-
-bool *
-PgCurrentLargeObjectCleanupNeededRef(void)
-{
-	return &PgCurrentExecutionTransactionCleanupState()->lo_cleanup_needed;
-}
-
-MemoryContext *
-PgCurrentLargeObjectContextRef(void)
-{
-	return &PgCurrentExecutionTransactionCleanupState()->lo_context;
 }
 
 bool *

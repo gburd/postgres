@@ -25,3 +25,27 @@ PgCurrentLargeObjectIndexRelationRef(void)
 {
 	return &PgCurrentSessionLargeObjectState()->index_relation;
 }
+
+LargeObjectDesc ***
+PgCurrentLargeObjectCookiesRef(void)
+{
+	return &PgCurrentExecutionTransactionCleanupState()->lo_cookies;
+}
+
+int *
+PgCurrentLargeObjectCookiesSizeRef(void)
+{
+	return &PgCurrentExecutionTransactionCleanupState()->lo_cookies_size;
+}
+
+bool *
+PgCurrentLargeObjectCleanupNeededRef(void)
+{
+	return &PgCurrentExecutionTransactionCleanupState()->lo_cleanup_needed;
+}
+
+MemoryContext *
+PgCurrentLargeObjectContextRef(void)
+{
+	return &PgCurrentExecutionTransactionCleanupState()->lo_context;
+}

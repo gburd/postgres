@@ -18956,3 +18956,36 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o`,
   `backend_runtime_backup.o`, and the backend link; rerun lifecycle/global
   scans, focused backend-runtime coverage, and `git diff --check`.
+
+## Large Object Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move large-object execution cleanup compatibility accessors out of
+  `src/backend/utils/init/backend_runtime.c` and into the existing
+  owner-adjacent
+  `src/backend/storage/large_object/backend_runtime_large_object.c` bridge
+  file.
+- touched roots/buckets: no runtime root ownership changes; existing
+  `PgExecution.transaction_cleanup` large-object fields only.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  current-pointer and early fallback owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for internal current
+  transaction-cleanup helper visibility,
+  `src/backend/storage/large_object/backend_runtime_large_object.c`, and
+  `GNUmakefile.in` for the checked lifecycle source list.
+- legacy symbols/accessors: `PgCurrentExecutionTransactionCleanupState()`,
+  `PgCurrentLargeObjectCookiesRef()`,
+  `PgCurrentLargeObjectCookiesSizeRef()`,
+  `PgCurrentLargeObjectCleanupNeededRef()`, and
+  `PgCurrentLargeObjectContextRef()`.
+- repeated lifecycle operations: none; this only relocates pointer accessors
+  and leaves transaction-cleanup init/adopt/reset behavior unchanged.
+- checked primitive decision: no lifecycle primitive is needed because the
+  existing `PgExecution.transaction_cleanup` lifecycle row and bucket
+  definition continue to cover the moved fields; the owner map and checker
+  source list will keep their accessor source checked.
+- validation impact: rebuild `backend_runtime.o`,
+  `backend_runtime_large_object.o`, and the backend link; rerun
+  lifecycle/global scans, focused backend-runtime coverage, and
+  `git diff --check`.
