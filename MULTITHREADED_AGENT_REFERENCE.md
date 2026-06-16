@@ -86,6 +86,9 @@ Important current files:
   accessors for frontend/backend connection state. Add backend libpq,
   protocol, startup, and client-connection compatibility accessors here rather
   than growing `backend_runtime.c`.
+- `src/backend/utils/mmgr/backend_runtime_portal.c`: fork-owned runtime
+  bridge accessors for portal manager and active-portal state. Add portal
+  compatibility shims here rather than growing `backend_runtime.c`.
 - `src/backend/nodes/backend_runtime_nodes.c`: fork-owned runtime bridge
   accessors for node read/write execution state. Add node serializer/parser
   compatibility shims here rather than growing `backend_runtime.c`.

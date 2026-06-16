@@ -1029,7 +1029,7 @@ PgExecutionErrorState *PgCurrentExecutionErrorState(void);
 PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
 PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
 PgExecutionSPIState *PgCurrentExecutionSPIState(void);
-static PgExecutionPortalState *PgCurrentExecutionPortalState(void);
+PgExecutionPortalState *PgCurrentExecutionPortalState(void);
 PgExecutionVacuumState *PgCurrentExecutionVacuumState(void);
 PgExecutionNodeIOState *PgCurrentExecutionNodeIOState(void);
 PgExecutionBaseBackupState *PgCurrentExecutionBaseBackupState(void);
@@ -5183,19 +5183,13 @@ PgCurrentExecutionSPIState(void)
 	return &CurrentPgExecution->spi;
 }
 
-static PgExecutionPortalState *
+PgExecutionPortalState *
 PgCurrentExecutionPortalState(void)
 {
 	if (CurrentPgExecution == NULL)
 		return &early_execution_portal;
 
 	return &CurrentPgExecution->portal;
-}
-
-Portal *
-PgCurrentActivePortalRef(void)
-{
-	return &PgCurrentExecutionPortalState()->active;
 }
 
 PgExecutionVacuumState *

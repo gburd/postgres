@@ -14,6 +14,12 @@
 #include "utils/backend_runtime.h"
 #include "../init/backend_runtime_internal.h"
 
+Portal *
+PgCurrentActivePortalRef(void)
+{
+	return &PgCurrentExecutionPortalState()->active;
+}
+
 MemoryContext *
 PgCurrentTopPortalContextRef(void)
 {

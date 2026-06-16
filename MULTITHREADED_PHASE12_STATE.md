@@ -19305,3 +19305,35 @@ Lifecycle/preflight note:
   `backend_runtime_session.o`, `backend_runtime_tcop.o`, and the backend
   link; rerun lifecycle/global scans, focused backend-runtime coverage, and
   `git diff --check`.
+
+## Portal Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move the active portal execution compatibility accessor out of
+  `backend_runtime.c` into the existing owner-adjacent portal memory-manager
+  runtime bridge and bring that bridge under lifecycle checker source
+  coverage.
+- touched roots/buckets: existing `PgExecution.portal` and
+  `PgSession.portal_manager` buckets only; no new runtime roots.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  fallback-aware current execution owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for internal
+  `PgCurrentExecutionPortalState()` visibility,
+  `src/backend/utils/mmgr/backend_runtime_portal.c`, `GNUmakefile.in`,
+  `src/tools/runtime_lifecycle/check_runtime_lifecycles.pl`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, and
+  `MULTITHREADED_AGENT_REFERENCE.md`.
+- legacy symbols/accessors: `PgCurrentExecutionPortalState()`,
+  `PgCurrentActivePortalRef()`, `PgCurrentTopPortalContextRef()`,
+  `PgCurrentPortalHashTableRef()`, and
+  `PgCurrentUnnamedPortalCountRef()`.
+- repeated lifecycle operations: none; this only relocates accessors and
+  leaves portal manager and active-portal init/adopt/reset behavior unchanged.
+- checked primitive decision: reuse the existing `PgExecution.portal` and
+  `PgSession.portal_manager` lifecycle rows and bucket definitions; add owner
+  map rows and checker source coverage so the portal bridge is checked like
+  other owner-adjacent runtime files.
+- validation impact: rebuild `backend_runtime.o`,
+  `backend_runtime_portal.o`, and the backend link; rerun lifecycle/global
+  scans, focused backend-runtime coverage, and `git diff --check`.
