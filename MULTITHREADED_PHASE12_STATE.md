@@ -19108,3 +19108,42 @@ Lifecycle/preflight note:
   `backend_runtime_event_trigger.o`, and the backend link; rerun
   lifecycle/global scans, focused backend-runtime coverage, and
   `git diff --check`.
+
+## Logical Replication Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move logical-replication execution compatibility accessors out of
+  `src/backend/utils/init/backend_runtime.c` and into a new owner-adjacent
+  `src/backend/replication/logical/backend_runtime_logical.c` bridge file.
+- touched roots/buckets: no runtime root ownership changes; existing
+  `PgExecution.replication_scratch` logical-replication fields and existing
+  `PgExecution.snapbuild` bucket only.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  current-pointer and early fallback owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for internal current
+  snapbuild helper visibility,
+  `src/backend/replication/logical/backend_runtime_logical.c`,
+  `src/backend/replication/logical/Makefile`,
+  `src/backend/replication/logical/meson.build`, `GNUmakefile.in`,
+  `src/tools/runtime_lifecycle/check_runtime_lifecycles.pl`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, and
+  `MULTITHREADED_AGENT_REFERENCE.md` for source-orientation documentation.
+- legacy symbols/accessors: `PgCurrentExecutionReplicationScratchState()`,
+  `PgCurrentExecutionSnapBuildState()`, `PgCurrentReplOriginXactStateRef()`,
+  `PgCurrentApplyErrorContextStackRef()`,
+  `PgCurrentApplyMessageContextRef()`,
+  `PgCurrentLogicalStreamingContextRef()`,
+  `PgCurrentSnapBuildSavedResourceOwnerDuringExportRef()`, and
+  `PgCurrentSnapBuildExportInProgressRef()`.
+- repeated lifecycle operations: none; this only relocates pointer/scalar
+  accessors and leaves replication-scratch and snapbuild init/adopt/reset
+  behavior unchanged.
+- checked primitive decision: no lifecycle primitive is needed because the
+  existing `PgExecution.replication_scratch` and `PgExecution.snapbuild`
+  lifecycle rows and execution bucket definitions continue to cover these
+  fields; owner-map source rows and lifecycle checker source lists are updated
+  to keep the moved bridge checked.
+- validation impact: rebuild `backend_runtime.o`,
+  `backend_runtime_logical.o`, and the backend link; rerun lifecycle/global
+  scans, focused backend-runtime coverage, and `git diff --check`.

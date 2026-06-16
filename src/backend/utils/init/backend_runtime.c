@@ -1049,7 +1049,7 @@ PgExecutionInvalidationState *PgCurrentExecutionInvalidationState(void);
 static PgExecutionTwoPhaseRecordState *PgCurrentExecutionTwoPhaseRecordState(void);
 PgExecutionRegexState *PgCurrentExecutionRegexState(void);
 static PgExecutionValgrindState *PgCurrentExecutionValgrindState(void);
-static PgExecutionSnapBuildState *PgCurrentExecutionSnapBuildState(void);
+PgExecutionSnapBuildState *PgCurrentExecutionSnapBuildState(void);
 PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
 PgBackendInstrumentationState *PgCurrentBackendInstrumentationState(void);
 PgBackendTransactionState *PgCurrentBackendTransactionState(void);
@@ -5349,30 +5349,6 @@ PgCurrentExecutionReplicationScratchState(void)
 	return &CurrentPgExecution->replication_scratch;
 }
 
-ReplOriginXactState *
-PgCurrentReplOriginXactStateRef(void)
-{
-	return &PgCurrentExecutionReplicationScratchState()->replorigin_xact;
-}
-
-ErrorContextCallback **
-PgCurrentApplyErrorContextStackRef(void)
-{
-	return &PgCurrentExecutionReplicationScratchState()->apply_error_context_stack;
-}
-
-MemoryContext *
-PgCurrentApplyMessageContextRef(void)
-{
-	return &PgCurrentExecutionReplicationScratchState()->apply_message_context;
-}
-
-MemoryContext *
-PgCurrentLogicalStreamingContextRef(void)
-{
-	return &PgCurrentExecutionReplicationScratchState()->logical_streaming_context;
-}
-
 PgExecutionGUCErrorState *
 PgCurrentExecutionGUCErrorState(void)
 {
@@ -5475,25 +5451,13 @@ PgCurrentValgrindOldErrorCountRef(void)
 	return &PgCurrentExecutionValgrindState()->old_error_count;
 }
 
-static PgExecutionSnapBuildState *
+PgExecutionSnapBuildState *
 PgCurrentExecutionSnapBuildState(void)
 {
 	if (CurrentPgExecution == NULL)
 		return &early_execution_snapbuild;
 
 	return &CurrentPgExecution->snapbuild;
-}
-
-struct ResourceOwnerData **
-PgCurrentSnapBuildSavedResourceOwnerDuringExportRef(void)
-{
-	return &PgCurrentExecutionSnapBuildState()->saved_resource_owner_during_export;
-}
-
-bool *
-PgCurrentSnapBuildExportInProgressRef(void)
-{
-	return &PgCurrentExecutionSnapBuildState()->export_in_progress;
 }
 
 PgConnectionSocketIOState *

@@ -32,6 +32,7 @@ my @sources = (
 	'src/backend/commands/event_trigger.c',
 	'src/backend/commands/backend_runtime_event_trigger.c',
 	'src/backend/commands/backend_runtime_trigger.c',
+	'src/backend/replication/logical/backend_runtime_logical.c',
 	'src/backend/jit/backend_runtime_jit.c',
 	'src/backend/access/transam/backend_runtime_parallel.c',
 	'src/backend/libpq/backend_runtime_connection.c',
