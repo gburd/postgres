@@ -3,9 +3,9 @@
  * backend_runtime_utility.c
  *	  Runtime bridge accessors for backend-local utility state.
  *
- * These accessors keep utility, formatting, sampling, superuser, and
- * resource-owner compatibility globals mapped onto the current PgBackend
- * while leaving runtime construction and early fallback ownership in
+ * These accessors keep miscadmin core, utility, formatting, sampling,
+ * superuser, and resource-owner compatibility globals mapped onto the current
+ * PgBackend while leaving runtime construction and early fallback ownership in
  * utils/init/backend_runtime.c.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
@@ -19,6 +19,60 @@
 #include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "../init/backend_runtime_internal.h"
+
+bool *
+PgCurrentExitOnAnyErrorRef(void)
+{
+	return &PgCurrentCoreState()->exit_on_any_error;
+}
+
+int *
+PgCurrentMyProcPidRef(void)
+{
+	return &PgCurrentCoreState()->proc_pid;
+}
+
+pg_time_t *
+PgCurrentMyStartTimeRef(void)
+{
+	return &PgCurrentCoreState()->start_time;
+}
+
+TimestampTz *
+PgCurrentMyStartTimestampRef(void)
+{
+	return &PgCurrentCoreState()->start_timestamp;
+}
+
+struct Latch **
+PgCurrentMyLatchRef(void)
+{
+	return &PgCurrentCoreState()->latch;
+}
+
+int *
+PgCurrentMyPMChildSlotRef(void)
+{
+	return &PgCurrentCoreState()->pm_child_slot;
+}
+
+char *
+PgCurrentOutputFileNameRef(void)
+{
+	return PgCurrentCoreState()->output_file_name;
+}
+
+ProcessingMode *
+PgCurrentProcessingModeRef(void)
+{
+	return &PgCurrentCoreState()->mode;
+}
+
+bool *
+PgCurrentIgnoreSystemIndexesRef(void)
+{
+	return &PgCurrentCoreState()->ignore_system_indexes;
+}
 
 HTAB **
 PgCurrentSeqScanTables(void)

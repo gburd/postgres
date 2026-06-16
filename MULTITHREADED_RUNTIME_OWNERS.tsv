@@ -2,6 +2,15 @@ legacy_symbol	root_object	bucket	member	accessor	owner_source	notes
 formatted_start_time	PgBackend	log_state	formatted_start_time	PgCurrentFormattedStartTimeBuffer	src/backend/utils/error/backend_runtime_error.c	backend log prefix cached formatted process start time
 log_line_number	PgBackend	log_state	line_number	PgCurrentLogLineNumberRef	src/backend/utils/error/backend_runtime_error.c	backend log line counter used by elog prefix formatting
 log_line_pid	PgBackend	log_state	line_pid	PgCurrentLogLinePidRef	src/backend/utils/error/backend_runtime_error.c	backend log prefix cached process PID
+ExitOnAnyError	PgBackend	core	exit_on_any_error	PgCurrentExitOnAnyErrorRef	src/backend/utils/misc/backend_runtime_utility.c	backend-local switch forcing ERROR to FATAL during bootstrap and transaction cleanup critical paths
+MyProcPid	PgBackend	core	proc_pid	PgCurrentMyProcPidRef	src/backend/utils/misc/backend_runtime_utility.c	backend-local process or thread-visible PID identifier used by logging, latch, and status paths
+MyStartTime	PgBackend	core	start_time	PgCurrentMyStartTimeRef	src/backend/utils/misc/backend_runtime_utility.c	backend-local process start time used by log prefix and session identity formatting
+MyStartTimestamp	PgBackend	core	start_timestamp	PgCurrentMyStartTimestampRef	src/backend/utils/misc/backend_runtime_utility.c	backend-local process start timestamp used by SQL-visible backend metadata
+MyLatch	PgBackend	core	latch	PgCurrentMyLatchRef	src/backend/utils/misc/backend_runtime_utility.c	backend-local latch pointer installed during backend startup and reset during backend teardown
+MyPMChildSlot	PgBackend	core	pm_child_slot	PgCurrentMyPMChildSlotRef	src/backend/utils/misc/backend_runtime_utility.c	backend-local PMChild slot identifier used for postmaster child bookkeeping
+OutputFileName	PgBackend	core	output_file_name	PgCurrentOutputFileNameRef	src/backend/utils/misc/backend_runtime_utility.c	backend-local output filename buffer used by standalone/bootstrap output paths
+Mode	PgBackend	core	mode	PgCurrentProcessingModeRef	src/backend/utils/misc/backend_runtime_utility.c	backend-local processing mode for bootstrap/init/normal phase checks
+IgnoreSystemIndexes	PgBackend	core	ignore_system_indexes	PgCurrentIgnoreSystemIndexesRef	src/backend/utils/misc/backend_runtime_utility.c	backend-local flag allowing emergency catalog access without system indexes
 userDoption	PgBackend	command	user_d_option	PgCurrentUserDOptionRef	src/backend/tcop/backend_runtime_tcop.c	backend command-line -D data directory option pointer
 Save_r	PgBackend	command	save_rusage	PgCurrentUsageSaveRusageRef	src/backend/tcop/backend_runtime_tcop.c	backend command-loop saved rusage snapshot
 Save_t	PgBackend	command	save_timeval	PgCurrentUsageSaveTimevalRef	src/backend/tcop/backend_runtime_tcop.c	backend command-loop saved timeval snapshot

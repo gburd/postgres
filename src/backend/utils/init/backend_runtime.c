@@ -968,7 +968,7 @@ static void PgExecutionAdoptEarlyTriggerState(PgExecution *execution);
 static void PgExecutionAdoptEarlyRegexState(PgExecution *execution);
 static void PgExecutionAdoptEarlyValgrindState(PgExecution *execution);
 static void PgExecutionAdoptEarlySnapBuildState(PgExecution *execution);
-static PgBackendCoreState *PgCurrentCoreState(void);
+PgBackendCoreState *PgCurrentCoreState(void);
 PgSessionLoopState *PgCurrentSessionLoopState(void);
 PgSessionTcopState *PgCurrentSessionTcopState(void);
 PgSessionDatabaseState *PgCurrentSessionDatabaseState(void);
@@ -5378,7 +5378,7 @@ PgConnectionRuntimeSecurityStateRef(PgConnection *connection)
 	return &connection->security;
 }
 
-static PgBackendCoreState *
+PgBackendCoreState *
 PgCurrentCoreState(void)
 {
 	if (CurrentPgBackend == NULL)
@@ -5474,48 +5474,6 @@ PgCurrentExprInterpState(void)
 	return &CurrentPgBackend->expr_interp;
 }
 
-bool *
-PgCurrentExitOnAnyErrorRef(void)
-{
-	return &PgCurrentCoreState()->exit_on_any_error;
-}
-
-int *
-PgCurrentMyProcPidRef(void)
-{
-	return &PgCurrentCoreState()->proc_pid;
-}
-
-pg_time_t *
-PgCurrentMyStartTimeRef(void)
-{
-	return &PgCurrentCoreState()->start_time;
-}
-
-TimestampTz *
-PgCurrentMyStartTimestampRef(void)
-{
-	return &PgCurrentCoreState()->start_timestamp;
-}
-
-struct Latch **
-PgCurrentMyLatchRef(void)
-{
-	return &PgCurrentCoreState()->latch;
-}
-
-int *
-PgCurrentMyPMChildSlotRef(void)
-{
-	return &PgCurrentCoreState()->pm_child_slot;
-}
-
-char *
-PgCurrentOutputFileNameRef(void)
-{
-	return PgCurrentCoreState()->output_file_name;
-}
-
 static BackendType *
 PgCurrentBackendTypeRef(void)
 {
@@ -5529,18 +5487,6 @@ BackendType *
 PgCurrentMyBackendTypeRef(void)
 {
 	return PgCurrentBackendTypeRef();
-}
-
-ProcessingMode *
-PgCurrentProcessingModeRef(void)
-{
-	return &PgCurrentCoreState()->mode;
-}
-
-bool *
-PgCurrentIgnoreSystemIndexesRef(void)
-{
-	return &PgCurrentCoreState()->ignore_system_indexes;
 }
 
 PgBackendPgStatPendingState *
