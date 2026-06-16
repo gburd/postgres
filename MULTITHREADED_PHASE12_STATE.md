@@ -1,7 +1,12 @@
 # Phase 12 State Migration Notes
 
-Phase 12 is in progress. The goal is to reduce reliance on thread-local
-globals so sessions and executions can eventually move between carriers.
+This file is the archival chronological ledger for Phase 12 state migration and
+Gate E2-Core validation evidence. The concise Phase 12 closeout summary is in
+`MULTITHREADED_PLAN.md`; treat that plan section, not this ledger, as the
+current source of truth for what Phase 12 delivered and what later phases own.
+Append here only when investigating a Phase 12 regression, recording validation
+that changes the closeout evidence, or deliberately reopening a scoped Phase 12
+blocker.
 
 ## CurrentSession Compatibility Bridge
 
