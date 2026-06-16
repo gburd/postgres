@@ -16,6 +16,7 @@ test_backend_runtime_sources = files(
   'test_backend_runtime_session.c',
   'test_backend_runtime_session_cache.c',
   'test_backend_runtime_session_guc.c',
+  'test_backend_runtime_session_guc_core.c',
   'test_backend_runtime_session_guc_planner.c',
   'test_backend_runtime_thread.c',
 )

@@ -188,8 +188,12 @@ Important current files:
   RI, relmap, and session-reset tests split from the broader session test
   family.
 - `src/test/modules/test_backend_runtime/test_backend_runtime_session_guc.c`:
-  runtime/server GUC, session GUC, and generated GUC rebind test functions
-  outside the planner/JIT GUC subfamily.
+  runtime/server GUC, generated GUC rebind, connection, parser, vacuum,
+  buffer, xact-default, lock-wait, and logging GUC tests.
+- `src/test/modules/test_backend_runtime/test_backend_runtime_session_guc_core.c`:
+  session pgstat, query-id, storage, user, command, replication, general,
+  compatibility, access/WAL, miscellaneous, and aggregate GUC-state tests split
+  from the broader session GUC test family.
 - `src/test/modules/test_backend_runtime/test_backend_runtime_session_guc_planner.c`:
   session sort, JIT, query-memory, planner-cost, and planner-method GUC-state
   tests split out of the broader session GUC test family.

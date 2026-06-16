@@ -18,6 +18,7 @@ OBJS = \
 	test_backend_runtime_session.o \
 	test_backend_runtime_session_cache.o \
 	test_backend_runtime_session_guc.o \
+	test_backend_runtime_session_guc_core.o \
 	test_backend_runtime_session_guc_planner.o \
 	test_backend_runtime_thread.o \
 	test_backend_runtime.o
