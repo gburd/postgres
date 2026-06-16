@@ -18989,3 +18989,32 @@ Lifecycle/preflight note:
   `backend_runtime_large_object.o`, and the backend link; rerun
   lifecycle/global scans, focused backend-runtime coverage, and
   `git diff --check`.
+
+## Node I/O Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move node read/write execution compatibility accessors out of
+  `src/backend/utils/init/backend_runtime.c` and into a new owner-adjacent
+  `src/backend/nodes/backend_runtime_nodes.c` bridge file.
+- touched roots/buckets: no runtime root ownership changes; existing
+  `PgExecution.node_io` bucket only.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  current-pointer and early fallback owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for internal current
+  node-I/O helper visibility, `src/backend/nodes/backend_runtime_nodes.c`,
+  `src/backend/nodes/Makefile`, `src/backend/nodes/meson.build`, and
+  `MULTITHREADED_AGENT_REFERENCE.md` for source-orientation documentation.
+- legacy symbols/accessors: `PgCurrentExecutionNodeIOState()`,
+  `PgCurrentNodeWriteLocationFieldsRef()`,
+  `PgCurrentNodeReadStrtokPtrRef()`, and
+  `PgCurrentNodeRestoreLocationFieldsRef()`.
+- repeated lifecycle operations: none; this only relocates pointer accessors
+  and leaves node-I/O init/adopt/reset behavior unchanged.
+- checked primitive decision: no lifecycle primitive is needed because the
+  existing `PgExecution.node_io` lifecycle row and execution bucket definition
+  continue to cover the bucket; no owner-map rows exist for these scalar and
+  borrowed-pointer fields.
+- validation impact: rebuild `backend_runtime.o`, `backend_runtime_nodes.o`,
+  and the backend link; rerun lifecycle/global scans, focused
+  backend-runtime coverage, and `git diff --check`.

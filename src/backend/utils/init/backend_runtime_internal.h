@@ -172,6 +172,7 @@ extern PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
 extern PgExecutionSPIState *PgCurrentExecutionSPIState(void);
 extern PgExecutionVacuumState *PgCurrentExecutionVacuumState(void);
 extern PgExecutionAnalyzeState *PgCurrentExecutionAnalyzeState(void);
+extern PgExecutionNodeIOState *PgCurrentExecutionNodeIOState(void);
 extern PgExecutionBaseBackupState *PgCurrentExecutionBaseBackupState(void);
 extern PgExecutionCatalogState *PgCurrentExecutionCatalogState(void);
 extern PgExecutionCatalogCacheState *PgCurrentExecutionCatalogCacheState(void);

@@ -1030,7 +1030,7 @@ PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
 PgExecutionSPIState *PgCurrentExecutionSPIState(void);
 static PgExecutionPortalState *PgCurrentExecutionPortalState(void);
 PgExecutionVacuumState *PgCurrentExecutionVacuumState(void);
-static PgExecutionNodeIOState *PgCurrentExecutionNodeIOState(void);
+PgExecutionNodeIOState *PgCurrentExecutionNodeIOState(void);
 PgExecutionBaseBackupState *PgCurrentExecutionBaseBackupState(void);
 PgExecutionAnalyzeState *PgCurrentExecutionAnalyzeState(void);
 static PgExecutionMatViewState *PgCurrentExecutionMatViewState(void);
@@ -5208,31 +5208,13 @@ PgCurrentExecutionVacuumState(void)
 	return &CurrentPgExecution->vacuum;
 }
 
-static PgExecutionNodeIOState *
+PgExecutionNodeIOState *
 PgCurrentExecutionNodeIOState(void)
 {
 	if (CurrentPgExecution == NULL)
 		return &early_execution_node_io;
 
 	return &CurrentPgExecution->node_io;
-}
-
-bool *
-PgCurrentNodeWriteLocationFieldsRef(void)
-{
-	return &PgCurrentExecutionNodeIOState()->write_location_fields;
-}
-
-const char **
-PgCurrentNodeReadStrtokPtrRef(void)
-{
-	return &PgCurrentExecutionNodeIOState()->strtok_ptr;
-}
-
-bool *
-PgCurrentNodeRestoreLocationFieldsRef(void)
-{
-	return &PgCurrentExecutionNodeIOState()->restore_location_fields;
 }
 
 PgExecutionBaseBackupState *
