@@ -148,6 +148,8 @@ extern PgSessionRegexState *PgCurrentSessionRegexState(void);
 extern PgSessionPortalManagerState *PgCurrentSessionPortalManagerState(void);
 extern PgSessionLargeObjectState *PgCurrentSessionLargeObjectState(void);
 extern PgSessionAsyncState *PgCurrentSessionAsyncState(void);
+extern PgSessionRandomState *PgCurrentSessionRandomState(void);
+extern PgSessionOptimizerState *PgCurrentSessionOptimizerState(void);
 extern PgSessionFunctionManagerState *PgCurrentSessionFunctionManagerState(void);
 extern PgSessionGeneralGUCState *PgCurrentSessionGeneralGUCState(void);
 extern PgSessionQueryIdState *PgCurrentSessionQueryIdState(void);

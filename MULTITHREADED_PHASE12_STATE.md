@@ -19401,3 +19401,45 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o`,
   `backend_runtime_async.o`, and the backend link; rerun lifecycle/global
   scans, focused backend-runtime coverage, and `git diff --check`.
+
+## Random And Optimizer Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move session random-function and optimizer compatibility accessors
+  out of `backend_runtime.c` and into owner-adjacent bridge files for
+  `utils/adt` pseudorandom functions and optimizer utility code.
+- touched roots/buckets: existing `PgSession.random` and
+  `PgSession.optimizer` buckets only; no new runtime roots.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  fallback-aware current session owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for internal
+  `PgCurrentSessionRandomState()` and `PgCurrentSessionOptimizerState()`
+  visibility, `src/backend/utils/adt/backend_runtime_pseudorandom.c`,
+  `src/backend/optimizer/util/backend_runtime_optimizer.c`,
+  `src/backend/utils/adt/Makefile`,
+  `src/backend/utils/adt/meson.build`,
+  `src/backend/optimizer/util/Makefile`,
+  `src/backend/optimizer/util/meson.build`, `GNUmakefile.in`,
+  `src/tools/runtime_lifecycle/check_runtime_lifecycles.pl`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, and
+  `MULTITHREADED_AGENT_REFERENCE.md`.
+- legacy symbols/accessors: `PgCurrentSessionRandomState()`,
+  `PgCurrentSessionOptimizerState()`, `PgCurrentPseudoRandomStateRef()`,
+  `PgCurrentPseudoRandomSeedSetRef()`,
+  `PgCurrentPlannerExtensionNameArrayRef()`,
+  `PgCurrentPlannerExtensionNamesAssignedRef()`,
+  `PgCurrentPlannerExtensionNamesAllocatedRef()`, and
+  `PgCurrentOprProofCacheHashRef()`.
+- repeated lifecycle operations: none; this only relocates pointer/scalar
+  accessors and leaves random and optimizer session init, adoption, and
+  closed-session cleanup unchanged.
+- checked primitive decision: reuse the existing `PgSession.random` and
+  `PgSession.optimizer` lifecycle rows and bucket definitions; add the new
+  owner-adjacent bridge sources to lifecycle-checker coverage and add owner
+  map rows so the moved accessors are checked against their owning
+  subsystems.
+- validation impact: rebuild `backend_runtime.o`,
+  `backend_runtime_pseudorandom.o`, `backend_runtime_optimizer.o`, and the
+  backend link; rerun lifecycle/global scans, focused backend-runtime
+  coverage, and `git diff --check`.

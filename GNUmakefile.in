@@ -165,12 +165,14 @@ check-runtime-lifecycles:
 		--source $(top_srcdir)/src/backend/utils/cache/backend_runtime_cache.c \
 		--source $(top_srcdir)/src/backend/utils/activity/backend_runtime_pgstat.c \
 		--source $(top_srcdir)/src/backend/utils/activity/backend_status.c \
+		--source $(top_srcdir)/src/backend/utils/adt/backend_runtime_pseudorandom.c \
 		--source $(top_srcdir)/src/backend/utils/adt/backend_runtime_ri.c \
 		--source $(top_srcdir)/src/backend/utils/misc/backend_runtime_guc.c \
 		--source $(top_srcdir)/src/backend/utils/misc/backend_runtime_utility.c \
 		--source $(top_srcdir)/src/backend/utils/misc/timeout.c \
 		--source $(top_srcdir)/src/backend/utils/mmgr/backend_runtime_memory.c \
 		--source $(top_srcdir)/src/backend/utils/mmgr/backend_runtime_portal.c \
+		--source $(top_srcdir)/src/backend/optimizer/util/backend_runtime_optimizer.c \
 		--source $(top_srcdir)/src/backend/commands/backend_runtime_async.c \
 		--source $(top_srcdir)/src/backend/commands/event_trigger.c \
 		--source $(top_srcdir)/src/backend/commands/backend_runtime_event_trigger.c \

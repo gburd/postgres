@@ -1020,8 +1020,8 @@ PgSessionLargeObjectState *PgCurrentSessionLargeObjectState(void);
 PgSessionAsyncState *PgCurrentSessionAsyncState(void);
 PgSessionEncodingState *PgCurrentSessionEncodingState(void);
 PgSessionTempFileState *PgCurrentSessionTempFileState(void);
-static PgSessionRandomState *PgCurrentSessionRandomState(void);
-static PgSessionOptimizerState *PgCurrentSessionOptimizerState(void);
+PgSessionRandomState *PgCurrentSessionRandomState(void);
+PgSessionOptimizerState *PgCurrentSessionOptimizerState(void);
 PgSessionPlanCacheState *PgCurrentSessionPlanCacheState(void);
 PgSessionNamespaceState *PgCurrentSessionNamespaceState(void);
 PgSessionLocaleState *PgCurrentSessionLocaleState(void);
@@ -4906,7 +4906,7 @@ PgCurrentSessionTempFileState(void)
 	return temp_file;
 }
 
-static PgSessionRandomState *
+PgSessionRandomState *
 PgCurrentSessionRandomState(void)
 {
 	PgSessionRandomState *random;
@@ -4922,7 +4922,7 @@ PgCurrentSessionRandomState(void)
 	return random;
 }
 
-static PgSessionOptimizerState *
+PgSessionOptimizerState *
 PgCurrentSessionOptimizerState(void)
 {
 	if (CurrentPgSession == NULL)
@@ -4995,42 +4995,6 @@ PgCurrentSessionLocaleState(void)
 		PgSessionInitializeLocaleState(locale);
 
 	return locale;
-}
-
-pg_prng_state *
-PgCurrentPseudoRandomStateRef(void)
-{
-	return &PgCurrentSessionRandomState()->prng_state;
-}
-
-bool *
-PgCurrentPseudoRandomSeedSetRef(void)
-{
-	return &PgCurrentSessionRandomState()->prng_seed_set;
-}
-
-const char ***
-PgCurrentPlannerExtensionNameArrayRef(void)
-{
-	return &PgCurrentSessionOptimizerState()->planner_extension_names;
-}
-
-int *
-PgCurrentPlannerExtensionNamesAssignedRef(void)
-{
-	return &PgCurrentSessionOptimizerState()->planner_extension_names_assigned;
-}
-
-int *
-PgCurrentPlannerExtensionNamesAllocatedRef(void)
-{
-	return &PgCurrentSessionOptimizerState()->planner_extension_names_allocated;
-}
-
-HTAB **
-PgCurrentOprProofCacheHashRef(void)
-{
-	return &PgCurrentSessionOptimizerState()->opr_proof_cache_hash;
 }
 
 void **

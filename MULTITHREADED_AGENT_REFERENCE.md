@@ -40,6 +40,13 @@ Important current files:
 - `src/backend/utils/adt/backend_runtime_ri.c`: fork-owned runtime bridge
   accessors for RI trigger execution cleanup state. Add future RI trigger
   compatibility shims here rather than growing `backend_runtime.c`.
+- `src/backend/utils/adt/backend_runtime_pseudorandom.c`: fork-owned runtime
+  bridge accessors for SQL random-function session state. Add future
+  pseudorandom-function compatibility shims here rather than growing
+  `backend_runtime.c`.
+- `src/backend/optimizer/util/backend_runtime_optimizer.c`: fork-owned
+  runtime bridge accessors for optimizer session state. Add future optimizer
+  compatibility shims here rather than growing `backend_runtime.c`.
 - `src/backend/utils/misc/backend_runtime_guc.c`: fork-owned runtime bridge
   accessors for GUC compatibility state that lives in session/backend/runtime
   buckets, including server/runtime GUCs, connection GUCs, core GUC registry
