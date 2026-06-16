@@ -504,6 +504,24 @@ if lime.found()
     'output': ['@BASENAME@.c', '@BASENAME@.h'],
     'command': lime_cmd,
   }
+  # Snapshot variant (non-AOT): plain codegen PLUS the runtime
+  # snapshot builder (lime -n).  Used for the backend grammar when
+  # AOT is disabled, so the runtime grammar-extension framework still
+  # has <prefix>BuildSnapshot() available.
+  lime_snapshot_cmd = [python, lime_wrapper,
+    '--builddir', '@BUILD_ROOT@',
+    '--srcdir', '@SOURCE_ROOT@',
+    '--privatedir', '@PRIVATE_DIR@',
+    '--lime', lime,
+    '--snapshot',
+    '-i', '@INPUT@',
+    '-c', '@OUTPUT0@', '-H', '@OUTPUT1@',
+    '--snapshot-output', '@OUTPUT2@',
+  ]
+  lime_snapshot_kw = {
+    'output': ['@BASENAME@.c', '@BASENAME@.h', '@BASENAME@_snapshot.c'],
+    'command': lime_snapshot_cmd,
+  }
   # AOT variant: also produces <basename>_aot.c via lime -j.
   # The generated file contains a switch-based
   # yy_find_shift_action_aot() that the C compiler optimises into
@@ -522,6 +540,30 @@ if lime.found()
   lime_aot_kw = {
     'output': ['@BASENAME@.c', '@BASENAME@.h', '@BASENAME@_aot.c'],
     'command': lime_aot_cmd,
+  }
+  # AOT + snapshot variant: AOT codegen PLUS the runtime snapshot
+  # builder (lime -n -> <basename>_snapshot.c).  The snapshot file
+  # provides <prefix>BuildSnapshot(), which returns a ParserSnapshot
+  # built from the generator-emitted tables with the original grammar
+  # text embedded.  Used by the runtime grammar-extension framework
+  # (parser_extension.c) to compose extension grammars in-process via
+  # lime_compile_grammar_in_process() -- no subprocess, no cc.
+  lime_aot_snapshot_cmd = [python, lime_wrapper,
+    '--builddir', '@BUILD_ROOT@',
+    '--srcdir', '@SOURCE_ROOT@',
+    '--privatedir', '@PRIVATE_DIR@',
+    '--lime', lime,
+    '--aot',
+    '--snapshot',
+    '-i', '@INPUT@',
+    '-c', '@OUTPUT0@', '-H', '@OUTPUT1@',
+    '--aot-output', '@OUTPUT2@',
+    '--snapshot-output', '@OUTPUT3@',
+  ]
+  lime_aot_snapshot_kw = {
+    'output': ['@BASENAME@.c', '@BASENAME@.h', '@BASENAME@_aot.c',
+               '@BASENAME@_snapshot.c'],
+    'command': lime_aot_snapshot_cmd,
   }
   # Lime v0.2.2+ lexer subsystem -- compile .lex sources via
   # `lime -X`.  Output naming convention: foo.lex -> foo_lex.c +
