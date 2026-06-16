@@ -19784,3 +19784,35 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o`, `backend_runtime_regex.o`,
   and the backend link; rerun lifecycle/global scans, focused
   backend-runtime coverage, and `git diff --check`.
+
+## RI Runtime Bridge Refactor
+
+Lifecycle/preflight note:
+
+- target: move the fallback-aware `PgCurrentSessionRIGlobalsState()` selector
+  and RI session compatibility accessors out of generic runtime files and into
+  `src/backend/utils/adt/backend_runtime_ri.c`, next to the existing RI
+  execution fast-path accessors.
+- touched roots/buckets: existing `PgSession.ri_globals` and
+  `PgExecution.transaction_cleanup` RI fields only; no new runtime roots.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the RI
+  globals initializer/adoption owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for the exported
+  initializer declaration, `src/backend/utils/init/backend_runtime_session.c`,
+  `src/backend/utils/adt/backend_runtime_ri.c`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, and this state note.
+- legacy symbols/accessors: `PgCurrentSessionRIGlobalsState()`,
+  `PgCurrentRIConstraintCacheRef()`, `PgCurrentRIQueryCacheRef()`,
+  `PgCurrentRICompareCacheRef()`, `PgCurrentRIConstraintCacheValidListRef()`,
+  `PgCurrentRIFastPathXactCallbackRegisteredRef()`, and
+  `PgCurrentDebugDiscardCachesRef()`.
+- repeated lifecycle operations: none; the move reuses the existing
+  `PgSession.ri_globals` bucket initialization, early adoption, reset, and
+  closed-session cleanup paths.
+- checked primitive decision: reuse the checked session/execution bucket rows
+  and existing `backend_runtime_ri.c` lifecycle source coverage; export only
+  the RI globals initializer needed to preserve selector lazy initialization.
+- validation impact: rebuild `backend_runtime.o`, `backend_runtime_session.o`,
+  `backend_runtime_ri.o`, and the backend link; rerun lifecycle/global scans,
+  focused backend-runtime coverage, core/threaded regressions if the batch
+  remains staged, and `git diff --check`.

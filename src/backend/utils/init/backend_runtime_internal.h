@@ -240,6 +240,7 @@ extern void PgSessionInitializePgStatState(PgSessionPgStatState *pgstat);
 extern void PgSessionInitializeExtensionModuleState(PgSessionExtensionModuleState *extension_modules);
 extern void PgSessionResetCatalogLookupClosedState(PgSession *session);
 extern void PgSessionInitializeInvalidationCallbackState(PgSessionInvalidationCallbackState *invalidation_callbacks);
+extern void PgSessionInitializeRIGlobalsState(PgSessionRIGlobalsState *ri_globals);
 extern void PgSessionInitializeRelMapState(PgSessionRelMapState *relmap);
 extern void PgSessionInitializeRegexState(PgSessionRegexState *regex);
 extern void PgSessionInitializePortalManagerState(PgSessionPortalManagerState *portal_manager);

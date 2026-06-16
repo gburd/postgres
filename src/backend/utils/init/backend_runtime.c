@@ -840,7 +840,6 @@ static void PgSessionAdoptEarlyExtensionModuleState(PgSession *session);
 static void PgSessionInitializeCatalogLookupState(PgSessionCatalogLookupState *catalog_lookup);
 static void PgSessionAdoptEarlyCatalogLookupState(PgSession *session);
 static void PgSessionAdoptEarlyInvalidationCallbackState(PgSession *session);
-static void PgSessionInitializeRIGlobalsState(PgSessionRIGlobalsState *ri_globals);
 static void PgSessionAdoptEarlyRIGlobalsState(PgSession *session);
 static void PgSessionAdoptEarlyRelMapState(PgSession *session);
 static void PgSessionInitializePreparedStatementState(PgSessionPreparedStatementState *prepared_statement);
@@ -1005,7 +1004,6 @@ PgSessionFunctionManagerState *PgCurrentSessionFunctionManagerState(void);
 PgSessionExtensionModuleState *PgCurrentSessionExtensionModuleState(void);
 PgSessionCatalogLookupState *PgCurrentSessionCatalogLookupState(void);
 PgSessionInvalidationCallbackState *PgCurrentSessionInvalidationCallbackState(void);
-PgSessionRIGlobalsState *PgCurrentSessionRIGlobalsState(void);
 PgSessionRelMapState *PgCurrentSessionRelMapState(void);
 PgSessionPreparedStatementState *PgCurrentSessionPreparedStatementState(void);
 PgSessionOnCommitState *PgCurrentSessionOnCommitState(void);
@@ -2329,7 +2327,7 @@ PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgSessionAdoptEarlyInvalidationCallbackS
 										early_session_invalidation_callbacks,
 										PgSessionInitializeInvalidationCallbackState)
 
-static void
+void
 PgSessionInitializeRIGlobalsState(PgSessionRIGlobalsState *ri_globals)
 {
 	Assert(ri_globals != NULL);
@@ -4743,22 +4741,6 @@ PgCurrentSessionInvalidationCallbackState(void)
 		return &early_session_invalidation_callbacks;
 
 	return &CurrentPgSession->invalidation_callbacks;
-}
-
-PgSessionRIGlobalsState *
-PgCurrentSessionRIGlobalsState(void)
-{
-	PgSessionRIGlobalsState *ri_globals;
-
-	if (CurrentPgSession == NULL)
-		ri_globals = &early_session_ri_globals;
-	else
-		ri_globals = &CurrentPgSession->ri_globals;
-
-	if (!ri_globals->debug_discard_caches_initialized)
-		PgSessionInitializeRIGlobalsState(ri_globals);
-
-	return ri_globals;
 }
 
 PgSessionRelMapState *

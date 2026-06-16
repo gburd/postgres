@@ -650,42 +650,6 @@ PgCurrentInvalidationCallbackState(void)
 	return PgCurrentSessionInvalidationCallbackState();
 }
 
-HTAB **
-PgCurrentRIConstraintCacheRef(void)
-{
-	return &PgCurrentSessionRIGlobalsState()->constraint_cache;
-}
-
-HTAB **
-PgCurrentRIQueryCacheRef(void)
-{
-	return &PgCurrentSessionRIGlobalsState()->query_cache;
-}
-
-HTAB **
-PgCurrentRICompareCacheRef(void)
-{
-	return &PgCurrentSessionRIGlobalsState()->compare_cache;
-}
-
-dclist_head *
-PgCurrentRIConstraintCacheValidListRef(void)
-{
-	return &PgCurrentSessionRIGlobalsState()->constraint_cache_valid_list;
-}
-
-bool *
-PgCurrentRIFastPathXactCallbackRegisteredRef(void)
-{
-	return &PgCurrentSessionRIGlobalsState()->fastpath_xact_callback_registered;
-}
-
-int *
-PgCurrentDebugDiscardCachesRef(void)
-{
-	return &PgCurrentSessionRIGlobalsState()->debug_discard_caches_value;
-}
-
 PgExecutionRelMapFile *
 PgCurrentRelMapSharedMapRef(void)
 {

@@ -18,6 +18,54 @@
 #include "utils/backend_runtime.h"
 #include "../init/backend_runtime_internal.h"
 
+PgSessionRIGlobalsState *
+PgCurrentSessionRIGlobalsState(void)
+{
+	PgSessionRIGlobalsState *ri_globals;
+
+	ri_globals = &PgCurrentOrEarlySession()->ri_globals;
+	if (!ri_globals->debug_discard_caches_initialized)
+		PgSessionInitializeRIGlobalsState(ri_globals);
+
+	return ri_globals;
+}
+
+HTAB **
+PgCurrentRIConstraintCacheRef(void)
+{
+	return &PgCurrentSessionRIGlobalsState()->constraint_cache;
+}
+
+HTAB **
+PgCurrentRIQueryCacheRef(void)
+{
+	return &PgCurrentSessionRIGlobalsState()->query_cache;
+}
+
+HTAB **
+PgCurrentRICompareCacheRef(void)
+{
+	return &PgCurrentSessionRIGlobalsState()->compare_cache;
+}
+
+dclist_head *
+PgCurrentRIConstraintCacheValidListRef(void)
+{
+	return &PgCurrentSessionRIGlobalsState()->constraint_cache_valid_list;
+}
+
+bool *
+PgCurrentRIFastPathXactCallbackRegisteredRef(void)
+{
+	return &PgCurrentSessionRIGlobalsState()->fastpath_xact_callback_registered;
+}
+
+int *
+PgCurrentDebugDiscardCachesRef(void)
+{
+	return &PgCurrentSessionRIGlobalsState()->debug_discard_caches_value;
+}
+
 HTAB **
 PgCurrentRIFastPathCacheRef(void)
 {
