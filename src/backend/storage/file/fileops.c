@@ -1017,10 +1017,11 @@ FileOpsSetXattr(const char *path, const char *name,
 	Assert(!IsInParallelMode());
 
 	/*
-	 * Capture existing xattr value for UNDO before overwriting. If the
-	 * attribute doesn't exist, had_value stays false.
+	 * Capture existing xattr value before overwriting.  This is needed by the
+	 * abort-time pending op (clean rollback) regardless of wal_level, so it
+	 * must run unconditionally -- not gated on XLogIsNeeded() like the WAL/UNDO
+	 * emission below.  If the attribute doesn't exist, had_value stays false.
 	 */
-	if (XLogIsNeeded())
 	{
 		ssize_t		vlen;
 
@@ -1156,10 +1157,11 @@ FileOpsRemoveXattr(const char *path, const char *name)
 	Assert(!IsInParallelMode());
 
 	/*
-	 * Capture existing xattr value for UNDO before removal. We need this to
-	 * restore the attribute on rollback.
+	 * Capture existing xattr value before removal.  This is needed by the
+	 * abort-time pending op (clean rollback) regardless of wal_level, so it
+	 * must run unconditionally -- not gated on XLogIsNeeded() like the WAL/UNDO
+	 * emission below.  We need it to restore the attribute on rollback.
 	 */
-	if (XLogIsNeeded())
 	{
 		ssize_t		vlen;
 
@@ -1186,7 +1188,10 @@ FileOpsRemoveXattr(const char *path, const char *name)
 	if (pg_removexattr(path, name) < 0)
 	{
 		if (saved_value)
+		{
 			pfree(saved_value);
+			saved_value = NULL;
+		}
 
 		if (errno == ENOTSUP)
 			ereport(WARNING,
