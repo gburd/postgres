@@ -8,6 +8,7 @@ backend_sources += files(
   'async.c',
   'backend_runtime_async.c',
   'backend_runtime_matview.c',
+  'backend_runtime_trigger.c',
   'backend_runtime_vacuum.c',
   'collationcmds.c',
   'comment.c',

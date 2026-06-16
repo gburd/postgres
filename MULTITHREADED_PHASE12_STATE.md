@@ -19044,3 +19044,34 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o`,
   `backend_runtime_matview.o`, and the backend link; rerun lifecycle/global
   scans, focused backend-runtime coverage, and `git diff --check`.
+
+## Trigger Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move trigger execution compatibility accessors out of
+  `src/backend/utils/init/backend_runtime.c` and into a new owner-adjacent
+  `src/backend/commands/backend_runtime_trigger.c` bridge file.
+- touched roots/buckets: no runtime root ownership changes; existing
+  `PgExecution.trigger` bucket only.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  current-pointer and early fallback owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for internal current
+  trigger helper visibility, `src/backend/commands/backend_runtime_trigger.c`,
+  `src/backend/commands/Makefile`, `src/backend/commands/meson.build`,
+  `GNUmakefile.in`, `src/tools/runtime_lifecycle/check_runtime_lifecycles.pl`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, and
+  `MULTITHREADED_AGENT_REFERENCE.md` for source-orientation documentation.
+- legacy symbols/accessors: `PgCurrentExecutionTriggerState()`,
+  `PgCurrentTriggerDepthRef()`, `PgCurrentAfterTriggersDataRef()`,
+  `PgCurrentAfterTriggersMemoryContext()`, and
+  `PgCurrentAfterTriggersMemoryContextRef()`.
+- repeated lifecycle operations: none; this only relocates pointer/context
+  accessors and leaves trigger init/adopt/reset behavior unchanged.
+- checked primitive decision: no lifecycle primitive is needed because the
+  existing `PgExecution.trigger` lifecycle row and execution bucket definition
+  continue to cover the bucket; the owner-map source rows and lifecycle checker
+  source list are updated to keep the moved bridge checked.
+- validation impact: rebuild `backend_runtime.o`,
+  `backend_runtime_trigger.o`, and the backend link; rerun lifecycle/global
+  scans, focused backend-runtime coverage, and `git diff --check`.

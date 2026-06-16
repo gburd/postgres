@@ -53,6 +53,9 @@ Important current files:
 - `src/backend/commands/backend_runtime_matview.c`: fork-owned runtime bridge
   accessors for materialized-view execution state. Add future materialized-view
   compatibility shims here rather than growing `backend_runtime.c`.
+- `src/backend/commands/backend_runtime_trigger.c`: fork-owned runtime bridge
+  accessors for trigger execution state. Add future trigger compatibility
+  shims here rather than growing `backend_runtime.c`.
 - `src/backend/access/transam/backend_runtime_parallel.c`: fork-owned runtime
   bridge accessors for backend-local parallel-query state. Add parallel-query
   compatibility shims here rather than growing `backend_runtime.c`.

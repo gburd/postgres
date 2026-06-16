@@ -192,9 +192,9 @@ ResourceOwnerContext	PgExecution	resource_owners	resource_owner_context	PgCurren
 currentEventTriggerState	PgExecution	replication_scratch	event_trigger_query_state	PgCurrentEventTriggerQueryStateRef	src/backend/commands/event_trigger.c	active event-trigger complete-query state stack root
 EventTriggerQueryContext	PgExecution	replication_scratch	event_trigger_context	PgCurrentEventTriggerMemoryContext	src/backend/commands/event_trigger.c	execution-owned parent context for event-trigger complete-query state contexts
 SignalBackendsContext	PgExecution	async	signal_context	PgCurrentAsyncSignalWorkspaceContext	src/backend/utils/init/backend_runtime.c	execution-owned workspace context for LISTEN/NOTIFY SignalBackends arrays
-MyTriggerDepth	PgExecution	trigger	depth	PgCurrentTriggerDepthRef	src/backend/commands/trigger.c	trigger nesting depth for the current execution
-afterTriggers	PgExecution	trigger	after_triggers_data	PgCurrentAfterTriggersDataRef	src/backend/commands/trigger.c	opaque after-trigger transaction/query state object
-AfterTriggersContext	PgExecution	trigger	after_triggers_context	PgCurrentAfterTriggersMemoryContext	src/backend/commands/trigger.c	execution-owned parent context for the opaque after-trigger state object
+MyTriggerDepth	PgExecution	trigger	depth	PgCurrentTriggerDepthRef	src/backend/commands/backend_runtime_trigger.c	trigger nesting depth for the current execution
+afterTriggers	PgExecution	trigger	after_triggers_data	PgCurrentAfterTriggersDataRef	src/backend/commands/backend_runtime_trigger.c	opaque after-trigger transaction/query state object
+AfterTriggersContext	PgExecution	trigger	after_triggers_context	PgCurrentAfterTriggersMemoryContext	src/backend/commands/backend_runtime_trigger.c	execution-owned parent context for the opaque after-trigger state object
 MessageContext	PgExecution	memory_contexts	message_context	PgMessageContextRef	src/backend/utils/mmgr/backend_runtime_memory.c	execution-owned protocol-loop scratch context allocated in PostgresMain() and reset each command-message iteration
 row_description_context	PgSession	tcop	row_description_context	PgCurrentRowDescriptionContextRef	src/backend/utils/init/backend_runtime_session.c	session-owned reusable RowDescription context allocated in PostgresMain() and deleted on closed-session reset
 row_description_buf	PgSession	tcop	row_description_buf	PgCurrentRowDescriptionBufRef	src/backend/utils/init/backend_runtime_session.c	StringInfoData storage initialized under row_description_context and reused for RowDescription/ParameterDescription messages

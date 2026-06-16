@@ -5465,42 +5465,13 @@ PgCurrentTwoPhaseRecordStateRef(void)
 	return PgCurrentExecutionTwoPhaseRecordState();
 }
 
-static PgExecutionTriggerState *
+PgExecutionTriggerState *
 PgCurrentExecutionTriggerState(void)
 {
 	if (CurrentPgExecution == NULL)
 		return &early_execution_trigger;
 
 	return &CurrentPgExecution->trigger;
-}
-
-int *
-PgCurrentTriggerDepthRef(void)
-{
-	return &PgCurrentExecutionTriggerState()->depth;
-}
-
-void **
-PgCurrentAfterTriggersDataRef(void)
-{
-	return &PgCurrentExecutionTriggerState()->after_triggers_data;
-}
-
-MemoryContext
-PgCurrentAfterTriggersMemoryContext(void)
-{
-	PgExecutionTriggerState *trigger;
-
-	trigger = PgCurrentExecutionTriggerState();
-
-	return PgRuntimeGetOwnedMemoryContext(&trigger->after_triggers_context,
-										  "after trigger execution state");
-}
-
-MemoryContext *
-PgCurrentAfterTriggersMemoryContextRef(void)
-{
-	return &PgCurrentExecutionTriggerState()->after_triggers_context;
 }
 
 PgExecutionRegexState *
