@@ -64,6 +64,14 @@ distclean:
 	rm -f config.cache config.log config.status GNUmakefile
 
 THREADED_WORLD_CORE_CONFIG = $(abs_top_srcdir)/src/test/regress/threaded_workers.conf
+THREADED_WORLD_CORE_TAP_DIR = $(abs_top_srcdir)/src/test/modules/test_backend_runtime
+THREADED_WORLD_CORE_TAP_TESTS = \
+	t/001_threaded_runtime.pl \
+	t/002_threaded_bgworker_crash.pl \
+	t/003_milestone_w_core_smoke.pl
+THREADED_WORLD_CORE_TAP_PERL5LIB = \
+	$(abs_top_builddir)/.perl5/lib/perl5:$(abs_top_builddir)/.perl5/lib/perl5/darwin-thread-multi-2level:$(abs_top_srcdir)/src/test/perl:$(THREADED_WORLD_CORE_TAP_DIR)
+THREADED_WORLD_CORE_PROVE = $(if $(PROVE),$(PROVE),prove)
 
 check-tests check-threaded check-threaded-workers check-threaded-smoke check-threaded-150 check-threaded-200: | temp-install
 check check-tests check-threaded check-threaded-workers check-threaded-smoke check-threaded-150 check-threaded-200 installcheck installcheck-parallel installcheck-tests: CHECKPREP_TOP=src/test/regress
@@ -79,8 +87,30 @@ check-threaded-world-core:
 	$(MAKE) -C src/test/isolation check TEMP_CONFIG=$(THREADED_WORLD_CORE_CONFIG)
 	$(MAKE) -C src/test/modules/test_backend_runtime DESTDIR=$(abs_top_builddir)/tmp_install install
 	$(MAKE) -C src/test/modules/test_backend_runtime check
+	$(MAKE) check-threaded-world-core-tap
 	$(MAKE) check-runtime-lifecycles
 	$(MAKE) check-global-lifetimes
+
+check-threaded-world-core-tap: CHECKPREP_TOP=src/test/regress
+check-threaded-world-core-tap: | temp-install
+check-threaded-world-core-tap: submake-generated-headers
+check-threaded-world-core-tap:
+	$(MAKE) -C src/test/modules/test_backend_runtime DESTDIR=$(abs_top_builddir)/tmp_install install
+	rm -rf '$(THREADED_WORLD_CORE_TAP_DIR)'/tmp_check
+	$(MKDIR_P) '$(THREADED_WORLD_CORE_TAP_DIR)'/tmp_check/log
+	cd '$(THREADED_WORLD_CORE_TAP_DIR)' && \
+	  TESTLOGDIR='$(THREADED_WORLD_CORE_TAP_DIR)'/tmp_check/log \
+	  TESTDATADIR='$(THREADED_WORLD_CORE_TAP_DIR)'/tmp_check \
+	  PATH='$(abs_top_builddir)'/tmp_install$(bindir):'$(THREADED_WORLD_CORE_TAP_DIR)':$$PATH \
+	  $(call add_to_path,$(strip $(ld_library_path_var)),$(abs_top_builddir)/tmp_install$(libdir)) \
+	  INITDB_TEMPLATE='$(abs_top_builddir)'/tmp_install/initdb-template \
+	  PGPORT=65432 \
+	  top_builddir='$(abs_top_builddir)' \
+	  PG_REGRESS='$(abs_top_builddir)'/src/test/regress/pg_regress \
+	  share_contrib_dir='$(abs_top_builddir)'/tmp_install$(datadir)/$(datamoduledir) \
+	  GMAKE='$(MAKE)' \
+	  PERL5LIB='$(THREADED_WORLD_CORE_TAP_PERL5LIB)':$${PERL5LIB} \
+	  $(THREADED_WORLD_CORE_PROVE) -I '$(abs_top_srcdir)'/src/test/perl -I '$(THREADED_WORLD_CORE_TAP_DIR)' $(PROVE_FLAGS) $(THREADED_WORLD_CORE_TAP_TESTS)
 
 $(call recurse,check-world,src/test src/pl src/interfaces contrib src/bin src/tools/pg_bsd_indent,check)
 $(call recurse,checkprep,  src/test src/pl src/interfaces contrib src/bin)
@@ -197,4 +227,4 @@ check-runtime-lifecycles:
 		--source $(top_srcdir)/src/backend/storage/ipc/dsm.c \
 		--source $(top_srcdir)/src/backend/storage/ipc/ipc.c
 
-.PHONY: dist distcheck docs install-docs world check-world install-world installcheck-world headerscheck cpluspluscheck check-global-lifetimes check-runtime-lifecycles check-threaded-world-core
+.PHONY: dist distcheck docs install-docs world check-world install-world installcheck-world headerscheck cpluspluscheck check-global-lifetimes check-runtime-lifecycles check-threaded-world-core check-threaded-world-core-tap

@@ -19938,6 +19938,49 @@ Validation:
 - `gmake check-threaded-workers` passed all 245 core regression tests under
   `threaded_workers.conf`.
 
+## Threaded World-Core Direct TAP Coverage
+
+Lifecycle/preflight note:
+
+- target: make `gmake check-threaded-world-core` run the direct
+  `src/test/modules/test_backend_runtime` threaded TAP files in this checkout,
+  instead of relying on recursive TAP integration that is disabled by the
+  current configure options.
+- touched roots/buckets: no runtime roots or lifecycle buckets change; this is
+  validation-target plumbing for the existing threaded runtime TAP fixtures.
+- owner source files: `GNUmakefile.in`, `MULTITHREADED_AGENT_REFERENCE.md`,
+  and this state note.
+- legacy symbols/accessors: none.
+- repeated lifecycle operations: none.
+- checked primitive decision: no lifecycle primitive needed; the change should
+  reuse the existing TAP harness environment variables and repo-local Perl
+  module path documented in the agent reference.
+- validation impact: run `gmake check-threaded-world-core` from a clean enough
+  temp install, confirm the direct threaded TAP files execute, rerun
+  lifecycle/global scans through the target, and keep `git diff --check`
+  clean.
+
+Validation evidence after adding direct TAP to world-core:
+
+- `gmake check-threaded-world-core-tap` passed as a focused harness check; it
+  installed `src/test/modules/test_backend_runtime` into a fresh `tmp_install`
+  and ran `001_threaded_runtime.pl`, `002_threaded_bgworker_crash.pl`, and
+  `003_milestone_w_core_smoke.pl` directly through `prove`, with all 174 TAP
+  assertions passing.
+- `gmake check-threaded-world-core` passed end-to-end after the target change.
+  The target ran `check-threaded-workers` over all 245 core regression tests,
+  PL/pgSQL's 13 threaded regression tests, all 129 threaded isolation specs,
+  the `src/test/modules/test_backend_runtime` SQL regression control, the same
+  three direct threaded TAP files with all 174 assertions passing,
+  `gmake check-runtime-lifecycles`, and `gmake check-global-lifetimes`.
+- The direct TAP leg's log guards reported no threaded-runtime
+  crash/corruption signatures and no retained `TopMemoryContext` accounting
+  warnings.
+- `git diff --check` passed.
+- `gmake check` passed all 245 process-mode core regression tests.
+- `gmake check-threaded` passed all 245 core regression tests under
+  `threaded_smoke.conf`.
+
 ## Connection Runtime Lifecycle Refactor
 
 Lifecycle/preflight note:

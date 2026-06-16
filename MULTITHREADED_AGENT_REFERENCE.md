@@ -749,9 +749,13 @@ Important current files:
   It composes the worker-settings core regression baseline, PL/pgSQL
   regression under `threaded_workers.conf`, full `src/test/isolation`
   regression under `threaded_workers.conf`,
-  `src/test/modules/test_backend_runtime` process-mode regression plus its
-  TAP hook when the checkout is configured with TAP, and the lifecycle/global
-  guardrails. It deliberately does not recurse through all of `check-world`:
+  `src/test/modules/test_backend_runtime` process-mode regression plus direct
+  `001_threaded_runtime.pl`, `002_threaded_bgworker_crash.pl`, and
+  `003_milestone_w_core_smoke.pl` TAP runs, and the lifecycle/global
+  guardrails. The direct TAP leg uses the repo-local `.perl5` module path so
+  the target still exercises threaded TAP in checkouts configured without
+  `--enable-tap-tests`. It deliberately does not recurse through all of
+  `check-world`:
   contrib-wide threaded support, bundled procedural languages beyond PL/pgSQL,
   broad `src/bin`/interfaces/TAP coverage, and the full custom/extension GUC
   matrix remain Phase 16 / Gate E2-Extensions unless the focused target,
