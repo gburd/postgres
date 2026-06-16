@@ -2,12 +2,15 @@
 
 test_backend_runtime_sources = files(
   'test_backend_runtime.c',
+  'test_backend_runtime_adoption.c',
   'test_backend_runtime_backend.c',
   'test_backend_runtime_backend_core.c',
   'test_backend_runtime_backend_interrupt.c',
   'test_backend_runtime_carrier.c',
   'test_backend_runtime_connection.c',
+  'test_backend_runtime_dsm.c',
   'test_backend_runtime_execution.c',
+  'test_backend_runtime_exit.c',
   'test_backend_runtime_pmchild.c',
   'test_backend_runtime_session.c',
   'test_backend_runtime_session_guc.c',

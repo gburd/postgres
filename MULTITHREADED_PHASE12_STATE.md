@@ -19938,6 +19938,54 @@ Validation:
 - `gmake check-threaded-workers` passed all 245 core regression tests under
   `threaded_workers.conf`.
 
+## Backend Runtime Remaining Test Split
+
+Lifecycle/preflight note:
+
+- target: finish splitting the remaining executable test bodies out of
+  `test_backend_runtime.c`, leaving it as the module anchor only. Move exit
+  continuation/event-trigger scaffolding to `test_backend_runtime_exit.c`,
+  DSM ownership testing to `test_backend_runtime_dsm.c`, and the remaining
+  thread-install fallback adoption tests to `test_backend_runtime_adoption.c`.
+- touched roots/buckets: none; this is a test-module source split only.
+- owner source files: `src/test/modules/test_backend_runtime/test_backend_runtime.c`,
+  new `src/test/modules/test_backend_runtime/test_backend_runtime_exit.c`,
+  new `src/test/modules/test_backend_runtime/test_backend_runtime_dsm.c`,
+  new `src/test/modules/test_backend_runtime/test_backend_runtime_adoption.c`,
+  `src/test/modules/test_backend_runtime/Makefile`,
+  `src/test/modules/test_backend_runtime/meson.build`, and this state note.
+- legacy symbols/accessors: SQL-callable test functions
+  `test_backend_runtime_noop_event_trigger`,
+  `test_backend_exit_runtime_continuation`,
+  `test_backend_dsm_shutdown_is_backend_local`,
+  `test_thread_install_adopts_backend_fallback_state`, and
+  `test_thread_install_adopts_session_execution_fallback_state`; runtime
+  accessors and adoption helpers stay unchanged.
+- repeated lifecycle operations: none; the moved tests keep their existing
+  save/restore and PG_TRY cleanup structure.
+- checked primitive decision: no new lifecycle primitive, bucket row, or
+  checker rule is needed for a mechanical test-source split.
+- validation impact: rebuild and run `src/test/modules/test_backend_runtime`,
+  run lifecycle/global scans, run the three core regression baselines once for
+  the combined batch, and run `git diff --check`.
+
+Validation evidence after the backend-runtime remaining test split:
+
+- `gmake -C src/test/modules/test_backend_runtime` rebuilt and linked the test
+  module with `test_backend_runtime_adoption.o`,
+  `test_backend_runtime_dsm.o`, and `test_backend_runtime_exit.o`.
+- `gmake -C src/test/modules/test_backend_runtime check` passed the focused
+  SQL regression test; TAP tests were not enabled in this build configuration.
+- `gmake check-runtime-lifecycles` passed.
+- `gmake check-global-lifetimes` passed with no new unclassified mutable
+  globals and no local runtime boundary violations.
+- `git diff --check` passed before the broad baselines.
+- `gmake check` passed all 245 core regression tests.
+- `gmake check-threaded` passed all 245 core regression tests under
+  `threaded_smoke.conf`.
+- `gmake check-threaded-workers` passed all 245 core regression tests under
+  `threaded_workers.conf`.
+
 - The focused selector-refactor validation also passed before the broad
   baselines: touched object rebuilds, backend link, `gmake
   check-runtime-lifecycles`, `gmake check-global-lifetimes`,

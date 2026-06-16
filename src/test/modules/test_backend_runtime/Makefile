@@ -4,12 +4,15 @@ MODULE_big = test_backend_runtime
 MODULES = test_backend_runtime_threaded
 OBJS = \
 	$(WIN32RES) \
+	test_backend_runtime_adoption.o \
 	test_backend_runtime_backend.o \
 	test_backend_runtime_backend_core.o \
 	test_backend_runtime_backend_interrupt.o \
 	test_backend_runtime_carrier.o \
 	test_backend_runtime_connection.o \
+	test_backend_runtime_dsm.o \
 	test_backend_runtime_execution.o \
+	test_backend_runtime_exit.o \
 	test_backend_runtime_pmchild.o \
 	test_backend_runtime_session.o \
 	test_backend_runtime_session_guc.o \
