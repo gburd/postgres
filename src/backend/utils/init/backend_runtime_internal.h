@@ -137,7 +137,14 @@ extern void PgExecutionInitializeRuntimeObject(PgExecution *execution,
 											   PgBackend *backend,
 											   PgSession *session,
 											   PgCarrier *carrier);
+extern void PgRuntimeInitializeServerGUCState(PgRuntimeServerGUCState *server_guc);
+extern void PgRuntimeAdoptEarlyServerGUCState(PgRuntime *runtime);
+extern bool PgRuntimeServerGUCStateHasConfigPaths(PgRuntimeServerGUCState *server_guc);
+extern PgRuntimeServerGUCState *PgEarlyRuntimeServerGUCState(void);
 extern PgRuntimeServerGUCState *PgCurrentRuntimeServerGUCState(void);
+extern void PgRuntimeInitializeExtensionModuleState(PgRuntimeExtensionModuleState *extension_modules);
+extern void PgRuntimeAdoptEarlyExtensionModuleState(PgRuntime *runtime);
+extern PgRuntimeExtensionModuleState *PgCurrentRuntimeExtensionModuleState(void);
 extern PgSessionLoopState *PgCurrentSessionLoopState(void);
 extern PgSessionTcopState *PgCurrentSessionTcopState(void);
 extern PgSessionDatabaseState *PgCurrentSessionDatabaseState(void);

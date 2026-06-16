@@ -21036,3 +21036,102 @@ Validation for this reclaimed-root accounting slice:
   regression, PL/pgSQL, isolation, backend-runtime SQL, threaded runtime TAP,
   lifecycle checks, and global-lifetime checks.
 - `git diff --check` passed before the full validation pass.
+
+## PMChild Thread Publication Reset Hardening
+
+Lifecycle/preflight note:
+
+- target: centralize PMChild thread-publication field reset and strengthen
+  regression coverage so stale startup/exit payloads cannot survive process
+  assignment, thread assignment, release, retry, or slot reuse.  This advances
+  the Gate E2 PMChild/thread synchronization blocker with checked owner-local
+  invariants rather than another small teardown probe.
+- touched roots/buckets: `PMChild` thread-publication fields only:
+  `signal_pid`, `thread_backend`, `thread_exitstatus`,
+  `thread_exit_signal_pid`, `thread_exit_top_memory_allocated`,
+  `thread_exit_top_memory_reclaimed`, `thread_startup_complete`, and
+  `thread_exited`.
+- owner source files: `src/backend/postmaster/pmchild.c`,
+  `src/test/modules/test_backend_runtime/test_backend_runtime_pmchild.c`, and
+  this state note.
+- legacy symbols/accessors: `PostmasterChildSetProcess()`,
+  `PostmasterChildSetThread()`, `PostmasterChildSetThreadBackend()`,
+  `PostmasterChildDetachThreadBackend()`,
+  `PostmasterChildPublishThreadStartupComplete()`,
+  `PostmasterChildPublishThreadExit()`, `PostmasterChildRetryThreadExit()`,
+  `PostmasterChildHasExitedThread()`, and `ReleasePostmasterChildSlot()`.
+- repeated lifecycle operations: repeated clearing of the same PMChild
+  thread-publication fields exists in assignment/release paths; add a static
+  owner-local helper in `pmchild.c` first, then route all reset paths through
+  it.
+- checked primitive decision: no manifest row is needed because `PMChild`
+  remains postmaster-owned rather than a runtime root.  The checked primitive
+  for this batch is the owner-local reset helper plus
+  `test_backend_runtime_pmchild` coverage for stale-payload clearing.
+- validation impact: rebuild and run `src/test/modules/test_backend_runtime`,
+  run direct threaded TAP if publication behavior changes visible runtime
+  logs, then `git diff --check`; defer full `check-threaded-world-core` until
+  the next commit boundary unless focused validation exposes a runtime
+  regression.
+
+## Runtime Owner-Adjacent Helper Extraction
+
+Lifecycle/preflight note:
+
+- target: continue the owner-adjacent backend-runtime refactor by moving the
+  remaining server-GUC, extension-module, and generic memory-context helper
+  bodies out of `backend_runtime.c`.  Keep `backend_runtime.c` focused on root
+  runtime construction, current-pointer installation, process/thread symmetry,
+  and top-level lifecycle orchestration.
+- touched roots/buckets: `PgRuntime.server_guc`,
+  `PgRuntime.extension_modules`, early runtime server-GUC fallback state, early
+  runtime extension-module fallback state, and generic owned memory-context
+  cleanup helper.
+- owner source files: `src/backend/utils/init/backend_runtime.c`,
+  `src/backend/utils/init/backend_runtime_internal.h`,
+  `src/backend/utils/misc/backend_runtime_guc.c`,
+  `src/backend/utils/fmgr/backend_runtime_extension.c`,
+  `src/backend/utils/mmgr/backend_runtime_memory.c`, and this state note.
+- legacy symbols/accessors: `PgCurrentRuntimeServerGUCState()`,
+  `PgRuntimeAdoptEarlyServerGUCState()`,
+  `PgRuntimeServerGUCStateHasConfigPaths()`,
+  `PgCurrentRuntimeExtensionModuleState()`,
+  `PgRuntimeAdoptEarlyExtensionModuleState()`,
+  `PgRuntimeEnsureExtensionModuleMemoryContext()`, and
+  `PgRuntimeDeleteOwnedMemoryContext()`.
+- repeated lifecycle operations: no new lifecycle operation is introduced; the
+  slice moves existing helper bodies to their owner-adjacent subsystem files
+  and exposes only the internal declarations needed by root runtime
+  construction.
+- checked primitive decision: reuse existing runtime lifecycle definitions and
+  owner-map checks.  No new bucket `.def` row or checker rule is needed
+  because field ownership and reset semantics are unchanged.
+- validation impact: rebuild `backend_runtime.o`, `backend_runtime_guc.o`,
+  `backend_runtime_extension.o`, and `backend_runtime_memory.o`; rerun focused
+  backend-runtime regression, lifecycle/global scans, and `git diff --check`;
+  save full process/thread/world-core baselines for the commit boundary.
+
+Validation for the PMChild publication reset and runtime helper extraction
+batch:
+
+- Focused object/link validation passed: `gmake -C
+  src/backend/utils/init backend_runtime.o`, `gmake -C
+  src/backend/utils/misc backend_runtime_guc.o`, `gmake -C
+  src/backend/utils/fmgr backend_runtime_extension.o`, `gmake -C
+  src/backend/utils/mmgr backend_runtime_memory.o`, `gmake -C
+  src/backend/postmaster pmchild.o`, and `gmake -C src/backend -j8`.
+- Focused backend-runtime regression passed with the new
+  `test_pmchild_thread_backend_reset_api()` coverage.
+- Direct threaded runtime TAP passed via `gmake check-threaded-world-core-tap`
+  with 176 assertions.
+- `gmake check` passed for process-mode core regression.
+- `gmake check-threaded` passed for threaded core regression.
+- `gmake check-threaded-workers` passed for threaded worker core regression.
+- `gmake check-threaded-world-core` passed, covering threaded worker core
+  regression, PL/pgSQL, isolation, backend-runtime SQL, threaded runtime TAP,
+  lifecycle checks, and global-lifetime checks.
+- `gmake check-runtime-lifecycles` passed with 172 classified fields, 172
+  bucket definitions, 35 reset definitions, and 431 owner mappings checked.
+- `gmake check-global-lifetimes` passed with 1128 declarations scanned, no new
+  unclassified mutable globals, and no local runtime-boundary violations.
+- `git diff --check` passed before the full validation pass.

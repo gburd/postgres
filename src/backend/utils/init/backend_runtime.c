@@ -101,115 +101,17 @@ PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgExecution *CurrentPgExecution = NULL;
 static PG_GLOBAL_RUNTIME PgRuntime process_runtime;
 static PG_GLOBAL_RUNTIME PgRuntime thread_runtime;
 static PG_GLOBAL_RUNTIME bool thread_runtime_initialized = false;
-static PG_GLOBAL_RUNTIME PgRuntimeServerGUCState early_runtime_server_guc = {
-	.initialized = true,
-	.cluster_name_value = "",
-	.config_file_name = NULL,
-	.hba_file_name = NULL,
-	.ident_file_name = NULL,
-	.hosts_file_name = NULL,
-	.external_pid_file_value = NULL
-};
-static PG_GLOBAL_RUNTIME PgRuntimeExtensionModuleState early_runtime_extension_modules;
 static PG_GLOBAL_CARRIER PgCarrier process_carrier;
 static PG_GLOBAL_BACKEND PgBackend process_backend;
 static PG_GLOBAL_SESSION PgSession process_session;
 static PG_GLOBAL_CONNECTION PgConnection process_connection;
 static PG_GLOBAL_EXECUTION PgExecution process_execution;
 
-static void PgRuntimeInitializeServerGUCState(PgRuntimeServerGUCState *server_guc);
-static void PgRuntimeAdoptEarlyServerGUCState(PgRuntime *runtime);
-static bool PgRuntimeServerGUCStateHasConfigPaths(PgRuntimeServerGUCState *server_guc);
-static void PgRuntimeInitializeExtensionModuleState(PgRuntimeExtensionModuleState *extension_modules);
-static void PgRuntimeAdoptEarlyExtensionModuleState(PgRuntime *runtime);
 PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
 PgBackendInstrumentationState *PgCurrentBackendInstrumentationState(void);
 PgBackendTransactionState *PgCurrentBackendTransactionState(void);
 PgBackendPendingInterruptState *PgCurrentPendingInterrupts(void);
 PgBackendInterruptHoldoffState *PgCurrentInterruptHoldoffs(void);
-
-
-static void
-PgRuntimeInitializeServerGUCState(PgRuntimeServerGUCState *server_guc)
-{
-	Assert(server_guc != NULL);
-
-	server_guc->initialized = true;
-	server_guc->cluster_name_value = guc_strdup(FATAL, "");
-	server_guc->config_file_name = NULL;
-	server_guc->hba_file_name = NULL;
-	server_guc->ident_file_name = NULL;
-	server_guc->hosts_file_name = NULL;
-	server_guc->external_pid_file_value = NULL;
-}
-
-static void
-PgRuntimeAdoptEarlyServerGUCState(PgRuntime *runtime)
-{
-	Assert(runtime != NULL);
-
-	if (!early_runtime_server_guc.initialized)
-		PgRuntimeInitializeServerGUCState(&early_runtime_server_guc);
-
-	/*
-	 * Runtime server GUC strings describe address-space state selected during
-	 * postmaster startup.  Auxiliary threads can initialize process runtime
-	 * state more than once, so keep the early fallback as a persistent mirror
-	 * rather than consuming it on first adoption.
-	 */
-	runtime->server_guc = early_runtime_server_guc;
-}
-
-static bool
-PgRuntimeServerGUCStateHasConfigPaths(PgRuntimeServerGUCState *server_guc)
-{
-	return server_guc != NULL &&
-		server_guc->initialized &&
-		server_guc->config_file_name != NULL &&
-		server_guc->config_file_name[0] != '\0';
-}
-
-static void
-PgRuntimeInitializeExtensionModuleState(PgRuntimeExtensionModuleState *extension_modules)
-{
-	Assert(extension_modules != NULL);
-
-	extension_modules->memory_context = NULL;
-	extension_modules->pg_plan_advice_context = NULL;
-	extension_modules->pg_plan_advice_advisor_hook_list = NIL;
-	extension_modules->bloom_context = NULL;
-	extension_modules->rendezvous_hash = NULL;
-}
-
-MemoryContext
-PgRuntimeEnsureExtensionModuleMemoryContext(PgRuntimeExtensionModuleState *extension_modules)
-{
-	Assert(extension_modules != NULL);
-
-	if (extension_modules->memory_context == NULL)
-	{
-		if (CurrentPgRuntime != NULL &&
-			CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION)
-			elog(ERROR,
-				 "thread runtime extension module memory context is not initialized");
-
-		extension_modules->memory_context =
-			AllocSetContextCreate(TopMemoryContext,
-								  "RuntimeExtensionModules",
-								  ALLOCSET_DEFAULT_SIZES);
-	}
-
-	return extension_modules->memory_context;
-}
-
-static void
-PgRuntimeAdoptEarlyExtensionModuleState(PgRuntime *runtime)
-{
-	Assert(runtime != NULL);
-
-	runtime->extension_modules = early_runtime_extension_modules;
-	PgRuntimeInitializeExtensionModuleState(&early_runtime_extension_modules);
-}
 
 
 
@@ -325,16 +227,19 @@ InitializePgThreadRuntime(PgBackendExitContinuation exit_backend)
 {
 	if (!thread_runtime_initialized)
 	{
+		PgRuntimeServerGUCState *early_server_guc;
+
 		MemSet(&thread_runtime, 0, sizeof(thread_runtime));
 		PgRuntimeInitializeRuntimeObject(&thread_runtime);
 
 		thread_runtime.kind = PG_RUNTIME_THREAD_PER_SESSION;
 		thread_runtime.extension_backend_model =
 			PG_BACKEND_MODEL_THREAD_PER_SESSION;
+		early_server_guc = PgEarlyRuntimeServerGUCState();
 		if (PgRuntimeServerGUCStateHasConfigPaths(&process_runtime.server_guc))
 			thread_runtime.server_guc = process_runtime.server_guc;
-		else if (PgRuntimeServerGUCStateHasConfigPaths(&early_runtime_server_guc))
-			thread_runtime.server_guc = early_runtime_server_guc;
+		else if (PgRuntimeServerGUCStateHasConfigPaths(early_server_guc))
+			thread_runtime.server_guc = *early_server_guc;
 		else if (process_runtime.server_guc.initialized)
 			thread_runtime.server_guc = process_runtime.server_guc;
 		else
@@ -423,46 +328,6 @@ PgSession *
 PgProcessSessionState(void)
 {
 	return &process_session;
-}
-
-
-void
-PgRuntimeDeleteOwnedMemoryContext(MemoryContext *context)
-{
-	Assert(context != NULL);
-
-	if (*context == NULL)
-		return;
-
-	if (CurrentMemoryContext == *context)
-		MemoryContextSwitchTo(TopMemoryContext);
-	MemoryContextDelete(*context);
-	*context = NULL;
-}
-
-PgRuntimeServerGUCState *
-PgCurrentRuntimeServerGUCState(void)
-{
-	PgRuntimeServerGUCState *server_guc;
-
-	if (CurrentPgRuntime == NULL)
-		server_guc = &early_runtime_server_guc;
-	else
-		server_guc = &CurrentPgRuntime->server_guc;
-
-	if (!server_guc->initialized)
-		PgRuntimeInitializeServerGUCState(server_guc);
-
-	return server_guc;
-}
-
-PgRuntimeExtensionModuleState *
-PgCurrentRuntimeExtensionModuleState(void)
-{
-	if (CurrentPgRuntime == NULL)
-		return &early_runtime_extension_modules;
-
-	return &CurrentPgRuntime->extension_modules;
 }
 
 

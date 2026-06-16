@@ -16,7 +16,61 @@
 #include "postgres.h"
 
 #include "utils/backend_runtime.h"
+#include "utils/memutils.h"
 #include "../init/backend_runtime_internal.h"
+
+static PG_GLOBAL_RUNTIME PgRuntimeExtensionModuleState early_runtime_extension_modules;
+
+void
+PgRuntimeInitializeExtensionModuleState(PgRuntimeExtensionModuleState *extension_modules)
+{
+	Assert(extension_modules != NULL);
+
+	extension_modules->memory_context = NULL;
+	extension_modules->pg_plan_advice_context = NULL;
+	extension_modules->pg_plan_advice_advisor_hook_list = NIL;
+	extension_modules->bloom_context = NULL;
+	extension_modules->rendezvous_hash = NULL;
+}
+
+MemoryContext
+PgRuntimeEnsureExtensionModuleMemoryContext(PgRuntimeExtensionModuleState *extension_modules)
+{
+	Assert(extension_modules != NULL);
+
+	if (extension_modules->memory_context == NULL)
+	{
+		if (CurrentPgRuntime != NULL &&
+			CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION)
+			elog(ERROR,
+				 "thread runtime extension module memory context is not initialized");
+
+		extension_modules->memory_context =
+			AllocSetContextCreate(TopMemoryContext,
+								  "RuntimeExtensionModules",
+								  ALLOCSET_DEFAULT_SIZES);
+	}
+
+	return extension_modules->memory_context;
+}
+
+void
+PgRuntimeAdoptEarlyExtensionModuleState(PgRuntime *runtime)
+{
+	Assert(runtime != NULL);
+
+	runtime->extension_modules = early_runtime_extension_modules;
+	PgRuntimeInitializeExtensionModuleState(&early_runtime_extension_modules);
+}
+
+PgRuntimeExtensionModuleState *
+PgCurrentRuntimeExtensionModuleState(void)
+{
+	if (CurrentPgRuntime == NULL)
+		return &early_runtime_extension_modules;
+
+	return &CurrentPgRuntime->extension_modules;
+}
 
 PgExecutionExtensionState *
 PgCurrentExecutionExtensionState(void)

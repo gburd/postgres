@@ -21,8 +21,81 @@
 #include "optimizer/paths.h"
 #include "optimizer/planmain.h"
 #include "utils/backend_runtime.h"
+#include "utils/guc.h"
 #include "utils/memutils.h"
 #include "../init/backend_runtime_internal.h"
+
+static PG_GLOBAL_RUNTIME PgRuntimeServerGUCState early_runtime_server_guc = {
+	.initialized = true,
+	.cluster_name_value = "",
+	.config_file_name = NULL,
+	.hba_file_name = NULL,
+	.ident_file_name = NULL,
+	.hosts_file_name = NULL,
+	.external_pid_file_value = NULL
+};
+
+void
+PgRuntimeInitializeServerGUCState(PgRuntimeServerGUCState *server_guc)
+{
+	Assert(server_guc != NULL);
+
+	server_guc->initialized = true;
+	server_guc->cluster_name_value = guc_strdup(FATAL, "");
+	server_guc->config_file_name = NULL;
+	server_guc->hba_file_name = NULL;
+	server_guc->ident_file_name = NULL;
+	server_guc->hosts_file_name = NULL;
+	server_guc->external_pid_file_value = NULL;
+}
+
+void
+PgRuntimeAdoptEarlyServerGUCState(PgRuntime *runtime)
+{
+	Assert(runtime != NULL);
+
+	if (!early_runtime_server_guc.initialized)
+		PgRuntimeInitializeServerGUCState(&early_runtime_server_guc);
+
+	/*
+	 * Runtime server GUC strings describe address-space state selected during
+	 * postmaster startup.  Auxiliary threads can initialize process runtime
+	 * state more than once, so keep the early fallback as a persistent mirror
+	 * rather than consuming it on first adoption.
+	 */
+	runtime->server_guc = early_runtime_server_guc;
+}
+
+bool
+PgRuntimeServerGUCStateHasConfigPaths(PgRuntimeServerGUCState *server_guc)
+{
+	return server_guc != NULL &&
+		server_guc->initialized &&
+		server_guc->config_file_name != NULL &&
+		server_guc->config_file_name[0] != '\0';
+}
+
+PgRuntimeServerGUCState *
+PgEarlyRuntimeServerGUCState(void)
+{
+	return &early_runtime_server_guc;
+}
+
+PgRuntimeServerGUCState *
+PgCurrentRuntimeServerGUCState(void)
+{
+	PgRuntimeServerGUCState *server_guc;
+
+	if (CurrentPgRuntime == NULL)
+		server_guc = &early_runtime_server_guc;
+	else
+		server_guc = &CurrentPgRuntime->server_guc;
+
+	if (!server_guc->initialized)
+		PgRuntimeInitializeServerGUCState(server_guc);
+
+	return server_guc;
+}
 
 PgExecutionGUCErrorState *
 PgCurrentExecutionGUCErrorState(void)

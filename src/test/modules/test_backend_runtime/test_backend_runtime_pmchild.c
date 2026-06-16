@@ -24,6 +24,49 @@ typedef struct TestPMChildThreadBackendRace
 } TestPMChildThreadBackendRace;
 
 static void
+test_pmchild_install_stale_thread_payload(PMChild *pmchild,
+										  PgBackend *backend)
+{
+	pmchild->signal_pid = 44444;
+	pmchild->thread_backend = backend;
+	pmchild->thread_exitstatus = 99;
+	pmchild->thread_exit_signal_pid = 55555;
+	pmchild->thread_exit_top_memory_allocated = 16384;
+	pmchild->thread_exit_top_memory_reclaimed = 32768;
+	pg_atomic_write_u32(&pmchild->thread_startup_complete, 1);
+	pg_atomic_write_u32(&pmchild->thread_exited, 1);
+}
+
+static bool
+test_pmchild_thread_payload_is_clear(PMChild *pmchild)
+{
+	int			exitstatus;
+	pid_t		exit_signal_pid;
+	Size		top_memory_allocated;
+	Size		top_memory_reclaimed;
+
+	if (pmchild->thread_backend != NULL)
+		return false;
+	if (pmchild->thread_exitstatus != 0)
+		return false;
+	if (pmchild->thread_exit_signal_pid != 0)
+		return false;
+	if (pmchild->thread_exit_top_memory_allocated != 0)
+		return false;
+	if (pmchild->thread_exit_top_memory_reclaimed != 0)
+		return false;
+	if (PostmasterChildHasStartupComplete(pmchild))
+		return false;
+	if (PostmasterChildHasExitedThread(pmchild, &exitstatus,
+									   &top_memory_allocated,
+									   &top_memory_reclaimed,
+									   &exit_signal_pid))
+		return false;
+
+	return true;
+}
+
+static void
 test_pmchild_thread_backend_reader_routine(void *arg)
 {
 	TestPMChildThreadBackendRace *state = (TestPMChildThreadBackendRace *) arg;
@@ -146,6 +189,69 @@ test_pmchild_thread_backend_signal_api(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "PMChild thread-backend signal API failed");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_pmchild_thread_backend_reset_api);
+Datum
+test_pmchild_thread_backend_reset_api(PG_FUNCTION_ARGS)
+{
+	PgRuntime	fake_runtime;
+	PgBackend	fake_backend;
+	PMChild		fake_pmchild;
+	PgThread	fake_thread;
+	Latch		fake_latch;
+	int			exitstatus;
+	pid_t		exit_signal_pid;
+	Size		top_memory_allocated;
+	Size		top_memory_reclaimed;
+	bool		ok = true;
+
+	MemSet(&fake_runtime, 0, sizeof(fake_runtime));
+	MemSet(&fake_backend, 0, sizeof(fake_backend));
+	MemSet(&fake_pmchild, 0, sizeof(fake_pmchild));
+	MemSet(&fake_thread, 0, sizeof(fake_thread));
+
+	fake_runtime.kind = PG_RUNTIME_THREAD_PER_SESSION;
+	fake_backend.id = 12345;
+	fake_backend.runtime = &fake_runtime;
+	PgBackendInitializeInterrupts(&fake_backend);
+	fake_pmchild.carrier_kind = PM_CHILD_CARRIER_THREAD;
+	InitLatch(&fake_latch);
+
+	test_pmchild_install_stale_thread_payload(&fake_pmchild, &fake_backend);
+	PostmasterChildSetProcess(&fake_pmchild, 24680);
+	ok = ok && PostmasterChildIsProcess(&fake_pmchild);
+	ok = ok && PostmasterChildSignalPid(&fake_pmchild) == 24680;
+	ok = ok && test_pmchild_thread_payload_is_clear(&fake_pmchild);
+
+	test_pmchild_install_stale_thread_payload(&fake_pmchild, &fake_backend);
+	PostmasterChildSetThread(&fake_pmchild, &fake_thread);
+	ok = ok && PostmasterChildIsThread(&fake_pmchild);
+	ok = ok && PostmasterChildSignalPid(&fake_pmchild) == 0;
+	ok = ok && test_pmchild_thread_payload_is_clear(&fake_pmchild);
+
+	PostmasterChildSetThreadBackend(&fake_pmchild, &fake_backend);
+	PostmasterChildPublishThreadStartupComplete(&fake_pmchild, &fake_latch);
+	PostmasterChildPublishThreadExit(&fake_pmchild, 17, 8192, 32768,
+									 &fake_latch);
+	ok = ok && PostmasterChildHasStartupComplete(&fake_pmchild);
+	ok = ok && PostmasterChildHasExitedThread(&fake_pmchild, &exitstatus,
+											  &top_memory_allocated,
+											  &top_memory_reclaimed,
+											  &exit_signal_pid);
+	ok = ok && exitstatus == 17;
+	ok = ok && exit_signal_pid == 12345;
+	ok = ok && top_memory_allocated == 8192;
+	ok = ok && top_memory_reclaimed == 32768;
+
+	PostmasterChildSetThread(&fake_pmchild, &fake_thread);
+	ok = ok && PostmasterChildSignalPid(&fake_pmchild) == 0;
+	ok = ok && test_pmchild_thread_payload_is_clear(&fake_pmchild);
+
+	if (!ok)
+		elog(ERROR, "PMChild thread-backend reset API failed");
 
 	PG_RETURN_BOOL(true);
 }

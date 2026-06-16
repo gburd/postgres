@@ -15,6 +15,20 @@
 #include "utils/memutils.h"
 #include "../init/backend_runtime_internal.h"
 
+void
+PgRuntimeDeleteOwnedMemoryContext(MemoryContext *context)
+{
+	Assert(context != NULL);
+
+	if (*context == NULL)
+		return;
+
+	if (CurrentMemoryContext == *context)
+		MemoryContextSwitchTo(TopMemoryContext);
+	MemoryContextDelete(*context);
+	*context = NULL;
+}
+
 PgExecutionMemoryContextState *
 PgCurrentExecutionMemoryContexts(void)
 {

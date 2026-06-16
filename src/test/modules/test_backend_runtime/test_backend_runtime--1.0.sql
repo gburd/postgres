@@ -391,6 +391,10 @@ CREATE FUNCTION test_pmchild_thread_backend_signal_api()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;
 
+CREATE FUNCTION test_pmchild_thread_backend_reset_api()
+	RETURNS pg_catalog.bool
+	AS 'MODULE_PATHNAME' LANGUAGE C;
+
 CREATE FUNCTION test_pmchild_thread_backend_publication_race()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;
