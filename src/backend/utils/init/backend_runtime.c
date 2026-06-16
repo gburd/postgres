@@ -970,6 +970,7 @@ static void PgExecutionAdoptEarlyRegexState(PgExecution *execution);
 static void PgExecutionAdoptEarlyValgrindState(PgExecution *execution);
 static void PgExecutionAdoptEarlySnapBuildState(PgExecution *execution);
 static PgBackendCoreState *PgCurrentCoreState(void);
+PgSessionLoopState *PgCurrentSessionLoopState(void);
 PgSessionTcopState *PgCurrentSessionTcopState(void);
 PgSessionDatabaseState *PgCurrentSessionDatabaseState(void);
 PgSessionTablespaceState *PgCurrentSessionTablespaceState(void);
@@ -4955,6 +4956,15 @@ PgCurrentSessionTcopState(void)
 	return &CurrentPgSession->tcop;
 }
 
+PgSessionLoopState *
+PgCurrentSessionLoopState(void)
+{
+	if (CurrentPgSession == NULL)
+		return &early_session_loop_state;
+
+	return &CurrentPgSession->loop_state;
+}
+
 PgSessionNamespaceState *
 PgCurrentSessionNamespaceState(void)
 {
@@ -5154,16 +5164,6 @@ PgCurrentExecutionMemoryContexts(void)
 
 	return &CurrentPgExecution->memory_contexts;
 }
-
-bool *
-PgCurrentDoingCommandReadRef(void)
-{
-	if (CurrentPgSession == NULL)
-		return &early_session_loop_state.doing_command_read;
-
-	return &CurrentPgSession->loop_state.doing_command_read;
-}
-
 
 PgExecutionResourceOwnerState *
 PgCurrentExecutionResourceOwners(void)

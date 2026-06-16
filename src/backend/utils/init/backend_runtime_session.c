@@ -313,36 +313,6 @@ PgCurrentTSLastUsedConfigRef(void)
 	return &PgCurrentSessionTextSearchState()->last_used_config;
 }
 
-CachedPlanSource **
-PgCurrentUnnamedStmtPsrcRef(void)
-{
-	return &PgCurrentSessionTcopState()->unnamed_stmt_psrc;
-}
-
-bool *
-PgCurrentEchoQueryRef(void)
-{
-	return &PgCurrentSessionTcopState()->echo_query;
-}
-
-bool *
-PgCurrentUseSemiNewlineNewlineRef(void)
-{
-	return &PgCurrentSessionTcopState()->use_semi_newline_newline;
-}
-
-MemoryContext *
-PgCurrentRowDescriptionContextRef(void)
-{
-	return &PgCurrentSessionTcopState()->row_description_context;
-}
-
-StringInfoData *
-PgCurrentRowDescriptionBufRef(void)
-{
-	return &PgCurrentSessionTcopState()->row_description_buf;
-}
-
 void **
 PgCurrentPLpgSQLSessionStateRef(void)
 {

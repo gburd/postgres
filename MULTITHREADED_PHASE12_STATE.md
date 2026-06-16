@@ -19270,3 +19270,38 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o`,
   `backend_runtime_tcop.o`, and the backend link; rerun lifecycle/global
   scans, focused backend-runtime coverage, and `git diff --check`.
+
+## Tcop Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move remaining top-level command-loop compatibility accessors for
+  command read state, unnamed prepared statement state, interactive switches,
+  and reusable RowDescription storage into the owner-adjacent `tcop` runtime
+  bridge.
+- touched roots/buckets: existing `PgSession.loop_state` and
+  `PgSession.tcop` buckets only; no new runtime roots.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  fallback-aware current session owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for internal
+  `PgCurrentSessionLoopState()` visibility,
+  `src/backend/utils/init/backend_runtime_session.c`,
+  `src/backend/tcop/backend_runtime_tcop.c`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, and
+  `MULTITHREADED_AGENT_REFERENCE.md`.
+- legacy symbols/accessors: `PgCurrentSessionLoopState()`,
+  `PgCurrentDoingCommandReadRef()`, `PgCurrentUnnamedStmtPsrcRef()`,
+  `PgCurrentEchoQueryRef()`, `PgCurrentUseSemiNewlineNewlineRef()`,
+  `PgCurrentRowDescriptionContextRef()`, and
+  `PgCurrentRowDescriptionBufRef()`.
+- repeated lifecycle operations: none; this only relocates pointer/scalar
+  accessors and leaves session loop/tcop init, adoption, and closed reset
+  unchanged.
+- checked primitive decision: reuse the existing `PgSession.loop_state` and
+  `PgSession.tcop` lifecycle rows and bucket definitions; update owner-map
+  source rows so RowDescription ownership remains checked against the new
+  owner-adjacent bridge file.
+- validation impact: rebuild `backend_runtime.o`,
+  `backend_runtime_session.o`, `backend_runtime_tcop.o`, and the backend
+  link; rerun lifecycle/global scans, focused backend-runtime coverage, and
+  `git diff --check`.

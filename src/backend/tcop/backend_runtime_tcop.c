@@ -18,6 +18,42 @@
 #include "utils/backend_runtime.h"
 #include "../utils/init/backend_runtime_internal.h"
 
+bool *
+PgCurrentDoingCommandReadRef(void)
+{
+	return &PgCurrentSessionLoopState()->doing_command_read;
+}
+
+CachedPlanSource **
+PgCurrentUnnamedStmtPsrcRef(void)
+{
+	return &PgCurrentSessionTcopState()->unnamed_stmt_psrc;
+}
+
+bool *
+PgCurrentEchoQueryRef(void)
+{
+	return &PgCurrentSessionTcopState()->echo_query;
+}
+
+bool *
+PgCurrentUseSemiNewlineNewlineRef(void)
+{
+	return &PgCurrentSessionTcopState()->use_semi_newline_newline;
+}
+
+MemoryContext *
+PgCurrentRowDescriptionContextRef(void)
+{
+	return &PgCurrentSessionTcopState()->row_description_context;
+}
+
+StringInfoData *
+PgCurrentRowDescriptionBufRef(void)
+{
+	return &PgCurrentSessionTcopState()->row_description_buf;
+}
+
 unsigned int *
 PgCurrentValgrindOldErrorCountRef(void)
 {

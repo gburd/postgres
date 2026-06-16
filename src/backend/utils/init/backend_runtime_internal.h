@@ -116,6 +116,7 @@ function_name(object_type *object_arg) \
 
 extern PgCarrier *PgCurrentCarrierState(void);
 extern PgRuntimeServerGUCState *PgCurrentRuntimeServerGUCState(void);
+extern PgSessionLoopState *PgCurrentSessionLoopState(void);
 extern PgSessionTcopState *PgCurrentSessionTcopState(void);
 extern PgSessionDatabaseState *PgCurrentSessionDatabaseState(void);
 extern PgSessionTablespaceState *PgCurrentSessionTablespaceState(void);

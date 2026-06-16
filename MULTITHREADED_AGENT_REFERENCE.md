@@ -11,8 +11,10 @@ Important current files:
 - `src/backend/tcop/postgres.c`: `PostgresMain()`, the top-level backend loop,
   error recovery, command read, command dispatch, and `ProcessInterrupts()`.
 - `src/backend/tcop/backend_runtime_tcop.c`: fork-owned runtime bridge
-  accessors for top-level command-loop state. Add future `tcop/postgres.c`
-  compatibility shims here rather than growing `backend_runtime.c`.
+  accessors for top-level command-loop state, including session `tcop` state,
+  command-read state, and query-error Valgrind state. Add future
+  `tcop/postgres.c` compatibility shims here rather than growing
+  `backend_runtime.c`.
 - `src/include/access/session.h` and `src/backend/access/common/session.c`:
   existing `Session` abstraction for session-scoped DSM/DSA state. Treat this
   as a seed for the broader session object unless there is a strong reason not
@@ -23,7 +25,7 @@ Important current files:
 - `src/backend/utils/init/backend_runtime_session.c`: fork-owned runtime
   bridge accessors for broad session-owned compatibility state that does not
   yet have a narrower owner file, including namespace, locale, database,
-  tablespace, binary-upgrade, text-search, tcop, extension, invalidation, RI,
+  tablespace, binary-upgrade, text-search, extension, invalidation, RI,
   relmap, prepared-statement, on-commit, and sequence shims. Keep
   fallback-aware current-bucket selectors in `backend_runtime.c` and expose
   them only through `backend_runtime_internal.h`.
