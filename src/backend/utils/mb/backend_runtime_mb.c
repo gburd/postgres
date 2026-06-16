@@ -16,6 +16,18 @@
 #include "utils/memutils.h"
 #include "../init/backend_runtime_internal.h"
 
+PgSessionEncodingState *
+PgCurrentSessionEncodingState(void)
+{
+	PgSessionEncodingState *encoding;
+
+	encoding = &PgCurrentOrEarlySession()->encoding;
+	if (encoding->client_encoding == NULL)
+		PgSessionInitializeEncodingState(encoding);
+
+	return encoding;
+}
+
 List **
 PgCurrentEncodingConvProcListRef(void)
 {

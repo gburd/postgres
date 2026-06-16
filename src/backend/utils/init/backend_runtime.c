@@ -1016,7 +1016,6 @@ PgSessionRegexState *PgCurrentSessionRegexState(void);
 PgSessionPortalManagerState *PgCurrentSessionPortalManagerState(void);
 PgSessionLargeObjectState *PgCurrentSessionLargeObjectState(void);
 PgSessionAsyncState *PgCurrentSessionAsyncState(void);
-PgSessionEncodingState *PgCurrentSessionEncodingState(void);
 PgSessionTempFileState *PgCurrentSessionTempFileState(void);
 PgSessionRandomState *PgCurrentSessionRandomState(void);
 PgSessionOptimizerState *PgCurrentSessionOptimizerState(void);
@@ -4081,6 +4080,15 @@ PgSetCurrentSession(PgSession *session)
 		RebindSessionGUCVariablePointers();
 }
 
+PgSession *
+PgCurrentOrEarlySession(void)
+{
+	if (CurrentPgSession == NULL)
+		return &early_session_fallback;
+
+	return CurrentPgSession;
+}
+
 bool
 PgCurrentSessionOwnsPointer(const void *ptr)
 {
@@ -4834,20 +4842,6 @@ PgCurrentSessionAsyncState(void)
 		return &early_session_async;
 
 	return &CurrentPgSession->async;
-}
-
-PgSessionEncodingState *
-PgCurrentSessionEncodingState(void)
-{
-	PgSessionEncodingState *encoding;
-
-	if (CurrentPgSession == NULL)
-		encoding = &early_session_encoding;
-	else
-		encoding = &CurrentPgSession->encoding;
-
-	PgSessionEnsureEncodingStateInitialized(encoding);
-	return encoding;
 }
 
 PgSessionTempFileState *

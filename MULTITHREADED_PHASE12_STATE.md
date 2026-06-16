@@ -19719,3 +19719,37 @@ Lifecycle/preflight note:
 - validation impact: rerun lifecycle/global scans, `gmake -C
   src/backend/utils/mb backend_runtime_mb.o`, focused backend-runtime
   coverage, and `git diff --check`.
+
+## Encoding Runtime Selector Refactor
+
+Lifecycle/preflight note:
+
+- target: move the fallback-aware `PgCurrentSessionEncodingState()` selector
+  out of `backend_runtime.c` and into the owner-adjacent
+  `src/backend/utils/mb/backend_runtime_mb.c` bridge that already owns the
+  encoding compatibility accessors.
+- touched roots/buckets: existing `PgSession.encoding` bucket and the
+  `early_session_fallback` root only; no new runtime roots.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  current-session pointer and early-session fallback owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for the internal
+  `PgCurrentOrEarlySession()` helper,
+  `src/backend/utils/mb/backend_runtime_mb.c`, and this state note.
+- legacy symbols/accessors: `PgCurrentSessionEncodingState()` and the
+  existing encoding accessors that call it:
+  `PgCurrentEncodingCacheMemoryContext()`,
+  `PgCurrentEncodingConvProcListRef()`, `PgCurrentToServerConvProcRef()`,
+  `PgCurrentToClientConvProcRef()`, `PgCurrentUtf8ToServerConvProcRef()`,
+  `PgCurrentClientEncodingRef()`, `PgCurrentDatabaseEncodingRef()`,
+  `PgCurrentMessageEncodingRef()`, `PgCurrentEncodingStartupCompleteRef()`,
+  and `PgCurrentPendingClientEncodingRef()`.
+- repeated lifecycle operations: none; this relocates the selector and reuses
+  existing `PgSessionInitializeEncodingState()` lazy initialization. Early
+  adoption and closed-session reset remain unchanged.
+- checked primitive decision: reuse the existing `PgSession.encoding`
+  lifecycle row and the already-checked `backend_runtime_mb.c` source
+  coverage; add only the narrow internal current-or-early session helper
+  needed for owner-adjacent selectors to avoid exposing current-pointer TLS.
+- validation impact: rebuild `backend_runtime.o`, `backend_runtime_mb.o`, and
+  the backend link; rerun lifecycle/global scans, focused backend-runtime
+  coverage, and `git diff --check`.
