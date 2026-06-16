@@ -18841,3 +18841,34 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o`,
   `backend_runtime_xact.o`, and the backend link; rerun lifecycle/global
   scans, threaded regression coverage, and `git diff --check`.
+
+## Vacuum And Analyze Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move vacuum/analyze session and execution compatibility accessors
+  out of `src/backend/utils/init/backend_runtime.c` and into a new
+  owner-adjacent `src/backend/commands/backend_runtime_vacuum.c` bridge file.
+- touched roots/buckets: no runtime root ownership changes; existing
+  `PgSession.vacuum`, `PgExecution.vacuum`, and `PgExecution.analyze`
+  buckets only.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  current-pointer and early fallback owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for internal current
+  vacuum/analyze helper visibility, `src/backend/commands/Makefile`,
+  `src/backend/commands/meson.build`, and
+  `src/backend/commands/backend_runtime_vacuum.c`.
+- legacy symbols/accessors: `PgCurrentSessionVacuumState()`,
+  `PgCurrentExecutionVacuumState()`, `PgCurrentExecutionAnalyzeState()`,
+  vacuum cost/freeze/failsafe/default-statistics accessors,
+  `PgCurrentVacuumInProgressRef()`, parallel vacuum cost accessors,
+  and analyze context/strategy/extra-data accessors.
+- repeated lifecycle operations: none; this only relocates pointer accessors
+  and leaves vacuum/analyze init/adopt/reset behavior unchanged.
+- checked primitive decision: no lifecycle primitive is needed because the
+  existing `PgSession.vacuum`, `PgExecution.vacuum`, and
+  `PgExecution.analyze` lifecycle rows and bucket definitions continue to
+  cover the buckets; the new commands bridge owns no lifecycle actions.
+- validation impact: rebuild `backend_runtime.o`,
+  `backend_runtime_vacuum.o`, and the backend link; rerun lifecycle/global
+  scans, threaded regression coverage, and `git diff --check`.

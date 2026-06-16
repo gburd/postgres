@@ -43,6 +43,10 @@ Important current files:
   bridge accessors for backend-local utility, formatting, sampling, superuser,
   and resource-owner callback state. Add small utility compatibility shims here
   rather than growing `backend_runtime.c`.
+- `src/backend/commands/backend_runtime_vacuum.c`: fork-owned runtime bridge
+  accessors for vacuum/analyze session and execution state. Add future
+  vacuum, analyze, and parallel-vacuum compatibility shims here rather than
+  growing `backend_runtime.c`.
 - `src/backend/access/transam/backend_runtime_parallel.c`: fork-owned runtime
   bridge accessors for backend-local parallel-query state. Add parallel-query
   compatibility shims here rather than growing `backend_runtime.c`.
