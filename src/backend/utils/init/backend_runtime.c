@@ -1022,7 +1022,7 @@ static PgSessionOptimizerState *PgCurrentSessionOptimizerState(void);
 static PgSessionPlanCacheState *PgCurrentSessionPlanCacheState(void);
 PgSessionNamespaceState *PgCurrentSessionNamespaceState(void);
 PgSessionLocaleState *PgCurrentSessionLocaleState(void);
-static PgExecutionErrorState *PgCurrentExecutionErrorState(void);
+PgExecutionErrorState *PgCurrentExecutionErrorState(void);
 PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
 PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
 PgExecutionSPIState *PgCurrentExecutionSPIState(void);
@@ -5799,61 +5799,13 @@ PgCurrentDebugQueryStringRef(void)
 	return PgExecutionDebugQueryStringRef(CurrentPgExecution);
 }
 
-static PgExecutionErrorState *
+PgExecutionErrorState *
 PgCurrentExecutionErrorState(void)
 {
 	if (CurrentPgExecution == NULL)
 		return &early_execution_error;
 
 	return &CurrentPgExecution->error;
-}
-
-ErrorContextCallback **
-PgCurrentErrorContextStackRef(void)
-{
-	return &PgCurrentExecutionErrorState()->context_stack;
-}
-
-sigjmp_buf **
-PgCurrentExceptionStackRef(void)
-{
-	return &PgCurrentExecutionErrorState()->exception_stack;
-}
-
-ErrorData *
-PgCurrentErrorDataArray(void)
-{
-	return PgCurrentExecutionErrorState()->errordata;
-}
-
-int *
-PgCurrentErrorDataStackDepthRef(void)
-{
-	return &PgCurrentExecutionErrorState()->errordata_stack_depth;
-}
-
-int *
-PgCurrentErrorRecursionDepthRef(void)
-{
-	return &PgCurrentExecutionErrorState()->recursion_depth;
-}
-
-struct timeval *
-PgCurrentSavedTimevalRef(void)
-{
-	return &PgCurrentExecutionErrorState()->saved_timeval;
-}
-
-bool *
-PgCurrentSavedTimevalSetRef(void)
-{
-	return &PgCurrentExecutionErrorState()->saved_timeval_set;
-}
-
-char *
-PgCurrentFormattedLogTime(void)
-{
-	return PgCurrentExecutionErrorState()->formatted_log_time;
 }
 
 PgExecutionMemoryContextState *
