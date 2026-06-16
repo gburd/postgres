@@ -18532,3 +18532,30 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o`, `backend_runtime_xlog.o`,
   and the backend link; rerun lifecycle/global scans, threaded regression
   coverage, and `git diff --check`.
+
+## Backup Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move backup session compatibility accessors out of
+  `src/backend/utils/init/backend_runtime.c` and into a new owner-adjacent
+  `src/backend/backup/backend_runtime_backup.c` bridge file.
+- touched roots/buckets: no runtime root ownership changes; existing
+  `PgSession.backup` bucket only.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  current-pointer and early fallback owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for internal current
+  backup helper visibility, `src/backend/backup/Makefile`, and
+  `src/backend/backup/backend_runtime_backup.c`.
+- legacy symbols/accessors: `PgCurrentSessionBackupState()`,
+  `PgCurrentBackupStateRef()`, `PgCurrentTablespaceMapRef()`,
+  `PgCurrentBackupContextRef()`, and
+  `PgCurrentSessionBackupStateRef()`.
+- repeated lifecycle operations: none; this only relocates pointer accessors
+  and leaves backup init/adopt/reset/teardown behavior unchanged.
+- checked primitive decision: no lifecycle primitive is needed because the
+  existing `PgSession.backup` lifecycle row and session bucket definition
+  continue to cover the bucket.
+- validation impact: rebuild `backend_runtime.o`,
+  `backend_runtime_backup.o`, and the backend link; rerun lifecycle/global
+  scans, threaded regression coverage, and `git diff --check`.

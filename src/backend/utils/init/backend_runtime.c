@@ -1011,6 +1011,7 @@ PgSessionRelMapState *PgCurrentSessionRelMapState(void);
 PgSessionPreparedStatementState *PgCurrentSessionPreparedStatementState(void);
 PgSessionOnCommitState *PgCurrentSessionOnCommitState(void);
 PgSessionSequenceState *PgCurrentSessionSequenceState(void);
+PgSessionBackupState *PgCurrentSessionBackupState(void);
 PgSessionRegexState *PgCurrentSessionRegexState(void);
 PgSessionPortalManagerState *PgCurrentSessionPortalManagerState(void);
 PgSessionLargeObjectState *PgCurrentSessionLargeObjectState(void);
@@ -4820,6 +4821,15 @@ PgCurrentSessionSequenceState(void)
 	return &CurrentPgSession->sequence;
 }
 
+PgSessionBackupState *
+PgCurrentSessionBackupState(void)
+{
+	if (CurrentPgSession == NULL)
+		return &early_session_backup;
+
+	return &CurrentPgSession->backup;
+}
+
 PgSessionRegexState *
 PgCurrentSessionRegexState(void)
 {
@@ -4998,42 +5008,6 @@ PgCurrentXactCallbackMemoryContext(void)
 
 	return PgRuntimeGetOwnedMemoryContext(&xact_callbacks->xact_callback_context,
 										  "transaction callback session state");
-}
-
-struct BackupState **
-PgCurrentBackupStateRef(void)
-{
-	if (CurrentPgSession == NULL)
-		return &early_session_backup.backup_state;
-
-	return &CurrentPgSession->backup.backup_state;
-}
-
-StringInfo *
-PgCurrentTablespaceMapRef(void)
-{
-	if (CurrentPgSession == NULL)
-		return &early_session_backup.tablespace_map;
-
-	return &CurrentPgSession->backup.tablespace_map;
-}
-
-MemoryContext *
-PgCurrentBackupContextRef(void)
-{
-	if (CurrentPgSession == NULL)
-		return &early_session_backup.backup_context;
-
-	return &CurrentPgSession->backup.backup_context;
-}
-
-uint8 *
-PgCurrentSessionBackupStateRef(void)
-{
-	if (CurrentPgSession == NULL)
-		return &early_session_backup.session_backup_state;
-
-	return &CurrentPgSession->backup.session_backup_state;
 }
 
 bool *
