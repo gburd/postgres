@@ -135,6 +135,7 @@ extern PgSessionInvalidationCallbackState *PgCurrentSessionInvalidationCallbackS
 extern PgSessionRIGlobalsState *PgCurrentSessionRIGlobalsState(void);
 extern PgSessionRelMapState *PgCurrentSessionRelMapState(void);
 extern PgSessionPreparedStatementState *PgCurrentSessionPreparedStatementState(void);
+extern PgSessionPlanCacheState *PgCurrentSessionPlanCacheState(void);
 extern PgSessionOnCommitState *PgCurrentSessionOnCommitState(void);
 extern PgSessionSequenceState *PgCurrentSessionSequenceState(void);
 extern PgSessionXactCallbackState *PgCurrentSessionXactCallbackState(void);

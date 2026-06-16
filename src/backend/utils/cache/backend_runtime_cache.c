@@ -20,6 +20,18 @@
 #include "utils/memutils.h"
 #include "../init/backend_runtime_internal.h"
 
+dlist_head *
+PgCurrentSavedPlanListRef(void)
+{
+	return &PgCurrentSessionPlanCacheState()->saved_plan_list;
+}
+
+dlist_head *
+PgCurrentCachedExpressionListRef(void)
+{
+	return &PgCurrentSessionPlanCacheState()->cached_expression_list;
+}
+
 MemoryContext *
 PgCacheMemoryContextRef(void)
 {

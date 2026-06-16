@@ -18758,3 +18758,29 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o`,
   `backend_runtime_file.o`, and the backend link; rerun lifecycle/global
   scans, threaded regression coverage, and `git diff --check`.
+
+## Plan-Cache Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move plan-cache session compatibility accessors out of
+  `src/backend/utils/init/backend_runtime.c` and into the owner-adjacent
+  `src/backend/utils/cache/backend_runtime_cache.c` bridge file.
+- touched roots/buckets: no runtime root ownership changes; existing
+  `PgSession.plan_cache` bucket only.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  current-pointer and early fallback owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for internal current
+  plan-cache helper visibility, and
+  `src/backend/utils/cache/backend_runtime_cache.c`.
+- legacy symbols/accessors: `PgCurrentSessionPlanCacheState()`,
+  `PgCurrentSavedPlanListRef()`, and
+  `PgCurrentCachedExpressionListRef()`.
+- repeated lifecycle operations: none; this only relocates pointer accessors
+  and leaves plan-cache init/adopt/reset behavior unchanged.
+- checked primitive decision: no lifecycle primitive is needed because the
+  existing `PgSession.plan_cache` lifecycle row and session bucket definition
+  continue to cover the bucket.
+- validation impact: rebuild `backend_runtime.o`,
+  `backend_runtime_cache.o`, and the backend link; rerun lifecycle/global
+  scans, threaded regression coverage, and `git diff --check`.

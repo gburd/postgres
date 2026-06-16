@@ -1021,7 +1021,7 @@ PgSessionEncodingState *PgCurrentSessionEncodingState(void);
 PgSessionTempFileState *PgCurrentSessionTempFileState(void);
 static PgSessionRandomState *PgCurrentSessionRandomState(void);
 static PgSessionOptimizerState *PgCurrentSessionOptimizerState(void);
-static PgSessionPlanCacheState *PgCurrentSessionPlanCacheState(void);
+PgSessionPlanCacheState *PgCurrentSessionPlanCacheState(void);
 PgSessionNamespaceState *PgCurrentSessionNamespaceState(void);
 PgSessionLocaleState *PgCurrentSessionLocaleState(void);
 PgExecutionErrorState *PgCurrentExecutionErrorState(void);
@@ -4931,7 +4931,7 @@ PgCurrentSessionOptimizerState(void)
 	return &CurrentPgSession->optimizer;
 }
 
-static PgSessionPlanCacheState *
+PgSessionPlanCacheState *
 PgCurrentSessionPlanCacheState(void)
 {
 	PgSessionPlanCacheState *plan_cache;
@@ -5034,18 +5034,6 @@ HTAB **
 PgCurrentOprProofCacheHashRef(void)
 {
 	return &PgCurrentSessionOptimizerState()->opr_proof_cache_hash;
-}
-
-dlist_head *
-PgCurrentSavedPlanListRef(void)
-{
-	return &PgCurrentSessionPlanCacheState()->saved_plan_list;
-}
-
-dlist_head *
-PgCurrentCachedExpressionListRef(void)
-{
-	return &PgCurrentSessionPlanCacheState()->cached_expression_list;
 }
 
 int *
