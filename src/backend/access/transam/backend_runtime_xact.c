@@ -11,8 +11,33 @@
  */
 #include "postgres.h"
 
+#include "access/xact.h"
 #include "utils/backend_runtime.h"
 #include "../../utils/init/backend_runtime_internal.h"
+
+int *
+PgCurrentDefaultXactIsoLevelRef(void)
+{
+	return &PgCurrentSessionXactDefaultState()->default_xact_iso_level;
+}
+
+bool *
+PgCurrentDefaultXactReadOnlyRef(void)
+{
+	return &PgCurrentSessionXactDefaultState()->default_xact_read_only;
+}
+
+bool *
+PgCurrentDefaultXactDeferrableRef(void)
+{
+	return &PgCurrentSessionXactDefaultState()->default_xact_deferrable;
+}
+
+int *
+PgCurrentSynchronousCommitRef(void)
+{
+	return &PgCurrentSessionXactDefaultState()->synchronous_commit_value;
+}
 
 XactCallbackItem **
 PgCurrentXactCallbacksRef(void)

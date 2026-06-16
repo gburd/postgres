@@ -980,7 +980,7 @@ PgSessionConnectionGUCState *PgCurrentSessionConnectionGUCState(void);
 PgSessionParserState *PgCurrentSessionParserState(void);
 static PgSessionVacuumState *PgCurrentSessionVacuumState(void);
 PgSessionBufferIOState *PgCurrentSessionBufferIOState(void);
-static PgSessionXactDefaultState *PgCurrentSessionXactDefaultState(void);
+PgSessionXactDefaultState *PgCurrentSessionXactDefaultState(void);
 PgSessionLockWaitState *PgCurrentSessionLockWaitState(void);
 PgSessionLoggingState *PgCurrentSessionLoggingState(void);
 PgSessionMiscGUCState *PgCurrentSessionMiscGUCState(void);
@@ -4391,7 +4391,7 @@ PgCurrentSessionBufferIOState(void)
 	return buffer_io;
 }
 
-static PgSessionXactDefaultState *
+PgSessionXactDefaultState *
 PgCurrentSessionXactDefaultState(void)
 {
 	PgSessionXactDefaultState *xact_defaults;
@@ -5142,30 +5142,6 @@ int *
 PgCurrentLocalVacuumCostLimitRef(void)
 {
 	return &PgCurrentSessionVacuumState()->local_vacuum_cost_limit_value;
-}
-
-int *
-PgCurrentDefaultXactIsoLevelRef(void)
-{
-	return &PgCurrentSessionXactDefaultState()->default_xact_iso_level;
-}
-
-bool *
-PgCurrentDefaultXactReadOnlyRef(void)
-{
-	return &PgCurrentSessionXactDefaultState()->default_xact_read_only;
-}
-
-bool *
-PgCurrentDefaultXactDeferrableRef(void)
-{
-	return &PgCurrentSessionXactDefaultState()->default_xact_deferrable;
-}
-
-int *
-PgCurrentSynchronousCommitRef(void)
-{
-	return &PgCurrentSessionXactDefaultState()->synchronous_commit_value;
 }
 
 void **
