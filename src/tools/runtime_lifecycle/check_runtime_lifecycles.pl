@@ -32,6 +32,7 @@ my @sources = (
 	'src/backend/utils/misc/timeout.c',
 	'src/backend/utils/mmgr/backend_runtime_memory.c',
 	'src/backend/utils/mmgr/backend_runtime_portal.c',
+	'src/backend/commands/backend_runtime_async.c',
 	'src/backend/commands/event_trigger.c',
 	'src/backend/commands/backend_runtime_event_trigger.c',
 	'src/backend/commands/backend_runtime_trigger.c',

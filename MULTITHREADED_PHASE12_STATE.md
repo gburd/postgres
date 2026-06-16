@@ -19368,3 +19368,36 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o`,
   `backend_runtime_pgstat.o`, and the backend link; rerun lifecycle/global
   scans, focused backend-runtime coverage, and `git diff --check`.
+
+## Async Runtime Session Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move remaining session LISTEN/NOTIFY compatibility accessors out
+  of `backend_runtime.c` into the existing owner-adjacent async runtime
+  bridge, and correct async bridge lifecycle source coverage.
+- touched roots/buckets: existing `PgSession.async` and `PgExecution.async`
+  buckets only; no new runtime roots.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  fallback-aware current session/execution owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for internal
+  `PgCurrentSessionAsyncState()` visibility,
+  `src/backend/commands/backend_runtime_async.c`, `GNUmakefile.in`,
+  `src/tools/runtime_lifecycle/check_runtime_lifecycles.pl`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, and
+  `MULTITHREADED_AGENT_REFERENCE.md`.
+- legacy symbols/accessors: `PgCurrentSessionAsyncState()`,
+  `PgCurrentAsyncLocalChannelTableRef()`,
+  `PgCurrentAsyncRegisteredListenerRef()`, and
+  `PgCurrentAsyncSignalWorkspaceContext()`.
+- repeated lifecycle operations: none; this only relocates pointer/scalar
+  accessors and leaves async session/execution init, adoption, and cleanup
+  unchanged.
+- checked primitive decision: reuse the existing `PgSession.async` and
+  `PgExecution.async` lifecycle rows and bucket definitions; add
+  `backend_runtime_async.c` to lifecycle-checker source coverage and update
+  owner-map rows so both session and execution async bridge accessors are
+  checked against the owner-adjacent file.
+- validation impact: rebuild `backend_runtime.o`,
+  `backend_runtime_async.o`, and the backend link; rerun lifecycle/global
+  scans, focused backend-runtime coverage, and `git diff --check`.

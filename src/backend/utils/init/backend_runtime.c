@@ -1017,7 +1017,7 @@ PgSessionBackupState *PgCurrentSessionBackupState(void);
 PgSessionRegexState *PgCurrentSessionRegexState(void);
 PgSessionPortalManagerState *PgCurrentSessionPortalManagerState(void);
 PgSessionLargeObjectState *PgCurrentSessionLargeObjectState(void);
-static PgSessionAsyncState *PgCurrentSessionAsyncState(void);
+PgSessionAsyncState *PgCurrentSessionAsyncState(void);
 PgSessionEncodingState *PgCurrentSessionEncodingState(void);
 PgSessionTempFileState *PgCurrentSessionTempFileState(void);
 static PgSessionRandomState *PgCurrentSessionRandomState(void);
@@ -4867,7 +4867,7 @@ PgCurrentSessionLargeObjectState(void)
 	return &CurrentPgSession->large_object;
 }
 
-static PgSessionAsyncState *
+PgSessionAsyncState *
 PgCurrentSessionAsyncState(void)
 {
 	if (CurrentPgSession == NULL)
@@ -4995,18 +4995,6 @@ PgCurrentSessionLocaleState(void)
 		PgSessionInitializeLocaleState(locale);
 
 	return locale;
-}
-
-HTAB **
-PgCurrentAsyncLocalChannelTableRef(void)
-{
-	return &PgCurrentSessionAsyncState()->local_channel_table;
-}
-
-bool *
-PgCurrentAsyncRegisteredListenerRef(void)
-{
-	return &PgCurrentSessionAsyncState()->registered_listener;
 }
 
 pg_prng_state *

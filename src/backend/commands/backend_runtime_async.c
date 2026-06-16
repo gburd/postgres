@@ -19,6 +19,18 @@
 #include "utils/backend_runtime.h"
 #include "../utils/init/backend_runtime_internal.h"
 
+HTAB **
+PgCurrentAsyncLocalChannelTableRef(void)
+{
+	return &PgCurrentSessionAsyncState()->local_channel_table;
+}
+
+bool *
+PgCurrentAsyncRegisteredListenerRef(void)
+{
+	return &PgCurrentSessionAsyncState()->registered_listener;
+}
+
 struct ActionList **
 PgCurrentPendingActionsRef(void)
 {
