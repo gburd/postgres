@@ -19337,3 +19337,34 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o`,
   `backend_runtime_portal.o`, and the backend link; rerun lifecycle/global
   scans, focused backend-runtime coverage, and `git diff --check`.
+
+## Backend Activity Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move backend-status snapshot compatibility accessors out of
+  `backend_runtime.c` into the existing owner-adjacent pgstat/activity runtime
+  bridge.
+- touched roots/buckets: existing `PgBackend.activity` bucket only; no new
+  runtime roots.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  fallback-aware current backend owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for internal
+  `PgCurrentBackendActivityState()` visibility,
+  `src/backend/utils/activity/backend_runtime_pgstat.c`, and
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`.
+- legacy symbols/accessors: `PgCurrentBackendActivityState()`,
+  `PgCurrentLocalBackendStatusTableRef()`,
+  `PgCurrentLocalNumBackendsRef()`, and
+  `PgCurrentBackendStatusSnapContextRef()`.
+- repeated lifecycle operations: none; this only relocates pointer accessors
+  and leaves backend activity initialization, adoption, and closed-backend
+  reset unchanged.
+- checked primitive decision: reuse the existing `PgBackend.activity`
+  lifecycle row and bucket definition plus existing
+  `backend_runtime_pgstat.c` lifecycle-checker source coverage; update owner
+  map source rows so backend-status snapshot ownership is checked against the
+  owner-adjacent bridge file.
+- validation impact: rebuild `backend_runtime.o`,
+  `backend_runtime_pgstat.o`, and the backend link; rerun lifecycle/global
+  scans, focused backend-runtime coverage, and `git diff --check`.

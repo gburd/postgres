@@ -57,6 +57,24 @@ PgCurrentPgStatLastSessionReportTimeRef(void)
 	return &PgCurrentSessionPgStatState()->last_session_report_time;
 }
 
+LocalPgBackendStatus **
+PgCurrentLocalBackendStatusTableRef(void)
+{
+	return &PgCurrentBackendActivityState()->backend_status_table;
+}
+
+int *
+PgCurrentLocalNumBackendsRef(void)
+{
+	return &PgCurrentBackendActivityState()->num_backends;
+}
+
+MemoryContext *
+PgCurrentBackendStatusSnapContextRef(void)
+{
+	return &PgCurrentBackendActivityState()->backend_status_context;
+}
+
 PgStat_SubXactStatus **
 PgCurrentPgStatXactStackRef(void)
 {

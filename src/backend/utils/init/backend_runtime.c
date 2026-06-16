@@ -5069,31 +5069,13 @@ PgCurrentCarrierState(void)
 	return CurrentPgCarrier;
 }
 
-static PgBackendActivityState *
+PgBackendActivityState *
 PgCurrentBackendActivityState(void)
 {
 	if (CurrentPgBackend == NULL)
 		return &early_backend_activity;
 
 	return &CurrentPgBackend->activity;
-}
-
-LocalPgBackendStatus **
-PgCurrentLocalBackendStatusTableRef(void)
-{
-	return &PgCurrentBackendActivityState()->backend_status_table;
-}
-
-int *
-PgCurrentLocalNumBackendsRef(void)
-{
-	return &PgCurrentBackendActivityState()->num_backends;
-}
-
-MemoryContext *
-PgCurrentBackendStatusSnapContextRef(void)
-{
-	return &PgCurrentBackendActivityState()->backend_status_context;
 }
 
 PgBackendMemoryManagerState *

@@ -167,6 +167,7 @@ extern PgSessionPlannerMethodState *PgCurrentSessionPlannerMethodState(void);
 extern PgSessionPgStatState *PgCurrentSessionPgStatState(void);
 extern PgSessionMiscGUCState *PgCurrentSessionMiscGUCState(void);
 extern PgSessionGUCState *PgCurrentSessionGUCState(void);
+extern PgBackendActivityState *PgCurrentBackendActivityState(void);
 extern PgExecutionErrorState *PgCurrentExecutionErrorState(void);
 extern PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
 extern PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
