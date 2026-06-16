@@ -19937,6 +19937,7 @@ Validation:
   `threaded_smoke.conf`.
 - `gmake check-threaded-workers` passed all 245 core regression tests under
   `threaded_workers.conf`.
+
 - The focused selector-refactor validation also passed before the broad
   baselines: touched object rebuilds, backend link, `gmake
   check-runtime-lifecycles`, `gmake check-global-lifetimes`,
@@ -20067,6 +20068,7 @@ portal, and vacuum/analyze selector refactor commits:
   `threaded_smoke.conf`.
 - `gmake check-threaded-workers` passed all 245 core regression tests under
   `threaded_workers.conf`.
+
 - Focused validation for the individual slices also passed: touched object
   rebuilds, backend link, `gmake check-runtime-lifecycles`, `gmake
   check-global-lifetimes`, `gmake -C src/test/modules/test_backend_runtime
@@ -20186,6 +20188,7 @@ refactor commits:
   `threaded_smoke.conf`.
 - `gmake check-threaded-workers` passed all 245 core regression tests under
   `threaded_workers.conf`.
+
 - Focused validation for the remaining-selector batch also passed: touched
   object rebuilds, backend link, `gmake check-runtime-lifecycles`, `gmake
   check-global-lifetimes`, `gmake -C src/test/modules/test_backend_runtime
@@ -20219,6 +20222,46 @@ Validation evidence after the backend-runtime thread test split:
 
 - `gmake -C src/test/modules/test_backend_runtime` rebuilt and linked the test
   module with `test_backend_runtime_thread.o`.
+- `gmake -C src/test/modules/test_backend_runtime check` passed the focused
+  SQL regression test; TAP tests were not enabled in this build configuration.
+- `gmake check-runtime-lifecycles` passed.
+- `gmake check-global-lifetimes` passed with no new unclassified mutable
+  globals and no local runtime boundary violations.
+- `git diff --check` passed.
+- `gmake check` passed all 245 core regression tests.
+- `gmake check-threaded` passed all 245 core regression tests under
+  `threaded_smoke.conf`.
+- `gmake check-threaded-workers` passed all 245 core regression tests under
+  `threaded_workers.conf`.
+
+## Backend Runtime Carrier Test Split
+
+Lifecycle/preflight note:
+
+- target: move carrier-local miscellaneous state and threaded GUC mutex depth
+  tests out of the remaining `test_backend_runtime.c` monolith and into a
+  dedicated `test_backend_runtime_carrier.c` test source.
+- touched roots/buckets: none; this is a test-module source split only.
+- owner source files: `src/test/modules/test_backend_runtime/test_backend_runtime.c`,
+  new `src/test/modules/test_backend_runtime/test_backend_runtime_carrier.c`,
+  `src/test/modules/test_backend_runtime/Makefile`,
+  `src/test/modules/test_backend_runtime/meson.build`, and this state note.
+- legacy symbols/accessors: SQL-callable test functions
+  `test_carrier_misc_state_is_carrier_local` and
+  `test_carrier_threaded_guc_lock_depth_is_carrier_local`; carrier current
+  accessors stay unchanged.
+- repeated lifecycle operations: none; the moved tests keep their existing
+  save/restore and PG_TRY cleanup structure.
+- checked primitive decision: no new lifecycle primitive, bucket row, or
+  checker rule is needed for a mechanical test-source split.
+- validation impact: rebuild and run `src/test/modules/test_backend_runtime`,
+  run lifecycle/global scans, run the three core regression baselines, and run
+  `git diff --check`.
+
+Validation evidence after the backend-runtime carrier test split:
+
+- `gmake -C src/test/modules/test_backend_runtime` rebuilt and linked the test
+  module with `test_backend_runtime_carrier.o`.
 - `gmake -C src/test/modules/test_backend_runtime check` passed the focused
   SQL regression test; TAP tests were not enabled in this build configuration.
 - `gmake check-runtime-lifecycles` passed.
