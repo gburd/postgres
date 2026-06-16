@@ -660,7 +660,7 @@ have_page:
 		buffer = ReadBuffer(relation, P_NEW);
 		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 		page = BufferGetPage(buffer);
-		PageInit(page, BLCKSZ, 0);
+		RecnoInitPage(page, BufferGetPageSize(buffer));
 
 		offnum = RecnoPageAddTuple(page, recno_tuple, tuple_size);
 		if (offnum == InvalidOffsetNumber)

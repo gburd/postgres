@@ -398,6 +398,8 @@ RecnoStoreOverflowColumn(Relation rel, Datum value, int attnum,
 				buffer = ReadBufferExtended(rel, MAIN_FORKNUM, P_NEW,
 											RBM_NORMAL, NULL);
 				target_block = BufferGetBlockNumber(buffer);
+				LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+				RecnoInitPage(BufferGetPage(buffer), BufferGetPageSize(buffer));
 			}
 			else
 			{
