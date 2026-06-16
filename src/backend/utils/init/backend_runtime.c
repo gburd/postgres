@@ -783,7 +783,6 @@ static void PgSessionInitializeTextSearchState(PgSessionTextSearchState *text_se
 static void PgSessionAdoptEarlyTextSearchState(PgSession *session);
 static void PgSessionInitializeConnectionGUCState(PgSessionConnectionGUCState *connection_guc);
 static void PgSessionAdoptEarlyConnectionGUCState(PgSession *session);
-static void PgSessionInitializeParserState(PgSessionParserState *parser);
 static void PgSessionAdoptEarlyParserState(PgSession *session);
 void PgSessionInitializeVacuumState(PgSessionVacuumState *vacuum);
 static void PgSessionAdoptEarlyVacuumState(PgSession *session);
@@ -1516,7 +1515,7 @@ PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED_WITH_RESET(PgSessionAdoptEarlyConnecti
 													 PgSessionInitializeConnectionGUCState,
 													 PgSessionResetEarlyConnectionGUCState)
 
-static void
+void
 PgSessionInitializeParserState(PgSessionParserState *parser)
 {
 	Assert(parser != NULL);
@@ -4315,22 +4314,6 @@ PgCurrentSessionConnectionGUCState(void)
 		PgSessionInitializeConnectionGUCState(connection_guc);
 
 	return connection_guc;
-}
-
-PgSessionParserState *
-PgCurrentSessionParserState(void)
-{
-	PgSessionParserState *parser;
-
-	if (CurrentPgSession == NULL)
-		parser = &early_session_parser;
-	else
-		parser = &CurrentPgSession->parser;
-
-	if (!parser->initialized)
-		PgSessionInitializeParserState(parser);
-
-	return parser;
 }
 
 PgSessionVacuumState *

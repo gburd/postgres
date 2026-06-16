@@ -111,6 +111,10 @@ Important current files:
 - `src/backend/nodes/backend_runtime_nodes.c`: fork-owned runtime bridge
   accessors for node read/write execution state. Add node serializer/parser
   compatibility shims here rather than growing `backend_runtime.c`.
+- `src/backend/parser/backend_runtime_parser.c`: fork-owned runtime bridge
+  accessors for parser-owned session state, including the fallback-aware
+  parser bucket selector. Add future parser compatibility shims here rather
+  than growing `backend_runtime.c`.
 - `src/backend/storage/buffer/backend_runtime_buffer.c`: fork-owned runtime
   bridge accessors for backend-local buffer state. Add buffer-manager
   compatibility accessors here rather than growing `backend_runtime.c`.

@@ -16,6 +16,19 @@
 #include "utils/backend_runtime.h"
 #include "../utils/init/backend_runtime_internal.h"
 
+PgSessionParserState *
+PgCurrentSessionParserState(void)
+{
+	PgSessionParserState *parser;
+
+	parser = &PgCurrentOrEarlySession()->parser;
+
+	if (!parser->initialized)
+		PgSessionInitializeParserState(parser);
+
+	return parser;
+}
+
 bool *
 PgCurrentTransformNullEqualsRef(void)
 {

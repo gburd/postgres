@@ -19867,3 +19867,30 @@ retained-root warning in the threaded TAP teardown matrix after the saved
 TopMemoryContext root is deleted before PMChild exit publication. Continue to
 treat the TAP log guards plus the postmaster-side retained-root warning as the
 active invariant while the remaining Phase 12 blockers are narrowed.
+
+## Parser Runtime Selector Refactor
+
+Lifecycle/preflight note:
+
+- target: move the fallback-aware `PgCurrentSessionParserState()` selector out
+  of `backend_runtime.c` and into the owner-adjacent
+  `src/backend/parser/backend_runtime_parser.c` bridge, beside parser-owned
+  compatibility accessors.
+- touched roots/buckets: existing `PgSession.parser` bucket only; no new
+  runtime roots.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  session object construction and early-adoption owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for the exported parser
+  initializer declaration, `src/backend/parser/backend_runtime_parser.c`, and
+  this state note.
+- legacy symbols/accessors: `PgCurrentSessionParserState()`,
+  `PgCurrentTransformNullEqualsRef()`, `PgCurrentBackslashQuoteRef()`, and
+  `PgCurrentOperatorLookupCacheRef()`.
+- repeated lifecycle operations: none; the move reuses the existing
+  `PgSession.parser` initialization and early-adoption paths.
+- checked primitive decision: reuse the checked session bucket row and the
+  existing parser bridge source coverage; export only the parser initializer
+  needed by the owner-adjacent selector.
+- validation impact: rebuild `backend_runtime.o` and
+  `backend_runtime_parser.o`, run lifecycle/global scans, focused
+  backend-runtime control, and `git diff --check`.
