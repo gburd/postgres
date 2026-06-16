@@ -20001,3 +20001,30 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o` and
   `backend_runtime_time.o`, run lifecycle/global scans, focused
   backend-runtime control, and `git diff --check`.
+
+## Portal Selector Refactor
+
+Lifecycle/preflight note:
+
+- target: move the fallback-aware `PgCurrentSessionPortalManagerState()` and
+  `PgCurrentExecutionPortalState()` selectors out of `backend_runtime.c` and
+  into the owner-adjacent `src/backend/utils/mmgr/backend_runtime_portal.c`
+  bridge beside portal-manager and active-portal compatibility accessors.
+- touched roots/buckets: existing `PgSession.portal_manager` and
+  `PgExecution.portal` buckets only; no new runtime roots.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  session/execution object construction and early-adoption owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for the shared
+  current-or-early helpers, `src/backend/utils/mmgr/backend_runtime_portal.c`,
+  and this state note.
+- legacy symbols/accessors: `PgCurrentSessionPortalManagerState()`,
+  portal-manager pointer accessors, `PgCurrentExecutionPortalState()`, and
+  active-portal pointer accessors.
+- repeated lifecycle operations: none; the move reuses the existing session
+  and execution bucket initialization and early-adoption paths.
+- checked primitive decision: reuse the checked session/execution bucket rows
+  and existing portal bridge source coverage; no new lifecycle primitive or
+  initializer export is needed.
+- validation impact: rebuild `backend_runtime.o` and
+  `backend_runtime_portal.o`, run lifecycle/global scans, focused
+  backend-runtime control, and `git diff --check`.

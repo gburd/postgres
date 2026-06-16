@@ -4762,15 +4762,6 @@ PgCurrentSessionBackupState(void)
 	return &CurrentPgSession->backup;
 }
 
-PgSessionPortalManagerState *
-PgCurrentSessionPortalManagerState(void)
-{
-	if (CurrentPgSession == NULL)
-		return &early_session_portal_manager;
-
-	return &CurrentPgSession->portal_manager;
-}
-
 PgSessionLargeObjectState *
 PgCurrentSessionLargeObjectState(void)
 {
@@ -4974,15 +4965,6 @@ PgCurrentExecutionErrorState(void)
 		return &early_execution_error;
 
 	return &CurrentPgExecution->error;
-}
-
-PgExecutionPortalState *
-PgCurrentExecutionPortalState(void)
-{
-	if (CurrentPgExecution == NULL)
-		return &early_execution_portal;
-
-	return &CurrentPgExecution->portal;
 }
 
 PgExecutionVacuumState *

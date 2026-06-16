@@ -14,6 +14,18 @@
 #include "utils/backend_runtime.h"
 #include "../init/backend_runtime_internal.h"
 
+PgSessionPortalManagerState *
+PgCurrentSessionPortalManagerState(void)
+{
+	return &PgCurrentOrEarlySession()->portal_manager;
+}
+
+PgExecutionPortalState *
+PgCurrentExecutionPortalState(void)
+{
+	return &PgCurrentOrEarlyExecution()->portal;
+}
+
 Portal *
 PgCurrentActivePortalRef(void)
 {

@@ -115,8 +115,9 @@ Important current files:
   the fallback-aware execution memory-context selector. Add memory-context
   compatibility shims here rather than growing `backend_runtime.c`.
 - `src/backend/utils/mmgr/backend_runtime_portal.c`: fork-owned runtime
-  bridge accessors for portal manager and active-portal state. Add portal
-  compatibility shims here rather than growing `backend_runtime.c`.
+  bridge accessors for portal manager and active-portal state, including the
+  fallback-aware session portal-manager and execution portal selectors. Add
+  portal compatibility shims here rather than growing `backend_runtime.c`.
 - `src/backend/utils/resowner/backend_runtime_resowner.c`: fork-owned runtime
   bridge accessors for execution resource-owner state, including the
   fallback-aware resource-owner execution bucket selector. Add resource-owner
