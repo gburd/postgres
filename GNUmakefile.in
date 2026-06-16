@@ -169,6 +169,7 @@ check-runtime-lifecycles:
 		--source $(top_srcdir)/src/backend/utils/misc/timeout.c \
 		--source $(top_srcdir)/src/backend/utils/mmgr/backend_runtime_memory.c \
 		--source $(top_srcdir)/src/backend/commands/event_trigger.c \
+		--source $(top_srcdir)/src/backend/commands/backend_runtime_event_trigger.c \
 		--source $(top_srcdir)/src/backend/commands/backend_runtime_trigger.c \
 		--source $(top_srcdir)/src/backend/jit/backend_runtime_jit.c \
 		--source $(top_srcdir)/src/backend/access/transam/backend_runtime_parallel.c \

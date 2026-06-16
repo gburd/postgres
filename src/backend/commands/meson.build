@@ -7,6 +7,7 @@ backend_sources += files(
   'analyze.c',
   'async.c',
   'backend_runtime_async.c',
+  'backend_runtime_event_trigger.c',
   'backend_runtime_matview.c',
   'backend_runtime_trigger.c',
   'backend_runtime_vacuum.c',

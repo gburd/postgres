@@ -1039,7 +1039,7 @@ PgExecutionComboCidState *PgCurrentExecutionComboCidState(void);
 PgExecutionXLogInsertState *PgCurrentExecutionXLogInsertState(void);
 PgExecutionXactState *PgCurrentExecutionXactState(void);
 PgExecutionTransactionCleanupState *PgCurrentExecutionTransactionCleanupState(void);
-static PgExecutionReplicationScratchState *PgCurrentExecutionReplicationScratchState(void);
+PgExecutionReplicationScratchState *PgCurrentExecutionReplicationScratchState(void);
 PgExecutionGUCErrorState *PgCurrentExecutionGUCErrorState(void);
 PgExecutionAsyncState *PgCurrentExecutionAsyncState(void);
 PgExecutionCatalogState *PgCurrentExecutionCatalogState(void);
@@ -5340,36 +5340,13 @@ PgCurrentRIFastPathCallbackRegisteredRef(void)
 	return &PgCurrentExecutionTransactionCleanupState()->ri_fastpath_callback_registered;
 }
 
-static PgExecutionReplicationScratchState *
+PgExecutionReplicationScratchState *
 PgCurrentExecutionReplicationScratchState(void)
 {
 	if (CurrentPgExecution == NULL)
 		return &early_execution_replication_scratch;
 
 	return &CurrentPgExecution->replication_scratch;
-}
-
-EventTriggerQueryState **
-PgCurrentEventTriggerQueryStateRef(void)
-{
-	return &PgCurrentExecutionReplicationScratchState()->event_trigger_query_state;
-}
-
-MemoryContext
-PgCurrentEventTriggerMemoryContext(void)
-{
-	PgExecutionReplicationScratchState *replication_scratch;
-
-	replication_scratch = PgCurrentExecutionReplicationScratchState();
-
-	return PgRuntimeGetOwnedMemoryContext(&replication_scratch->event_trigger_context,
-										  "event trigger execution state");
-}
-
-MemoryContext *
-PgCurrentEventTriggerMemoryContextRef(void)
-{
-	return &PgCurrentExecutionReplicationScratchState()->event_trigger_context;
 }
 
 ReplOriginXactState *

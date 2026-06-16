@@ -19075,3 +19075,36 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o`,
   `backend_runtime_trigger.o`, and the backend link; rerun lifecycle/global
   scans, focused backend-runtime coverage, and `git diff --check`.
+
+## Event Trigger Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move event-trigger execution compatibility accessors out of
+  `src/backend/utils/init/backend_runtime.c` and into a new owner-adjacent
+  `src/backend/commands/backend_runtime_event_trigger.c` bridge file.
+- touched roots/buckets: no runtime root ownership changes; existing
+  `PgExecution.replication_scratch` event-trigger fields only.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  current-pointer and early fallback owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for internal current
+  replication-scratch helper visibility,
+  `src/backend/commands/backend_runtime_event_trigger.c`,
+  `src/backend/commands/Makefile`, `src/backend/commands/meson.build`,
+  `GNUmakefile.in`, `src/tools/runtime_lifecycle/check_runtime_lifecycles.pl`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, and
+  `MULTITHREADED_AGENT_REFERENCE.md` for source-orientation documentation.
+- legacy symbols/accessors: `PgCurrentExecutionReplicationScratchState()`,
+  `PgCurrentEventTriggerQueryStateRef()`,
+  `PgCurrentEventTriggerMemoryContext()`, and
+  `PgCurrentEventTriggerMemoryContextRef()`.
+- repeated lifecycle operations: none; this only relocates pointer/context
+  accessors and leaves replication-scratch init/adopt/reset behavior unchanged.
+- checked primitive decision: no lifecycle primitive is needed because the
+  existing `PgExecution.replication_scratch` lifecycle row and execution bucket
+  definition continue to cover these fields; the owner-map source rows and
+  lifecycle checker source list are updated to keep the moved bridge checked.
+- validation impact: rebuild `backend_runtime.o`,
+  `backend_runtime_event_trigger.o`, and the backend link; rerun
+  lifecycle/global scans, focused backend-runtime coverage, and
+  `git diff --check`.

@@ -188,6 +188,7 @@ extern PgExecutionXLogInsertState *PgCurrentExecutionXLogInsertState(void);
 extern PgExecutionTransactionCleanupState *PgCurrentExecutionTransactionCleanupState(void);
 extern PgExecutionRegexState *PgCurrentExecutionRegexState(void);
 extern PgExecutionTriggerState *PgCurrentExecutionTriggerState(void);
+extern PgExecutionReplicationScratchState *PgCurrentExecutionReplicationScratchState(void);
 extern PgConnectionIdentityState *PgConnectionIdentityStateRef(PgConnection *connection);
 extern PgConnectionSocketIOState *PgConnectionSocketIOStateRef(PgConnection *connection);
 extern PgConnectionProtocolState *PgConnectionProtocolStateRef(PgConnection *connection);

@@ -50,6 +50,9 @@ Important current files:
 - `src/backend/commands/backend_runtime_async.c`: fork-owned runtime bridge
   accessors for LISTEN/NOTIFY async execution state. Add future async
   compatibility shims here rather than growing `backend_runtime.c`.
+- `src/backend/commands/backend_runtime_event_trigger.c`: fork-owned runtime
+  bridge accessors for event-trigger execution state. Add future event-trigger
+  compatibility shims here rather than growing `backend_runtime.c`.
 - `src/backend/commands/backend_runtime_matview.c`: fork-owned runtime bridge
   accessors for materialized-view execution state. Add future materialized-view
   compatibility shims here rather than growing `backend_runtime.c`.
