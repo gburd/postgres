@@ -20273,3 +20273,42 @@ Validation evidence after the backend-runtime carrier test split:
   `threaded_smoke.conf`.
 - `gmake check-threaded-workers` passed all 245 core regression tests under
   `threaded_workers.conf`.
+
+## Backend Runtime Connection Adoption Test Split
+
+Lifecycle/preflight note:
+
+- target: move the connection early-fallback adoption test out of the remaining
+  `test_backend_runtime.c` monolith and into
+  `test_backend_runtime_connection.c` beside the connection-owned state tests.
+- touched roots/buckets: none; this is a test-module source split only.
+- owner source files: `src/test/modules/test_backend_runtime/test_backend_runtime.c`,
+  `src/test/modules/test_backend_runtime/test_backend_runtime_connection.c`,
+  and this state note.
+- legacy symbols/accessors: SQL-callable test function
+  `test_thread_install_adopts_connection_fallback_state` and connection
+  compatibility accessors used by that test; runtime accessors stay unchanged.
+- repeated lifecycle operations: none; the moved test keeps its existing
+  save/restore and PG_TRY cleanup structure.
+- checked primitive decision: no new lifecycle primitive, bucket row, or
+  checker rule is needed for a mechanical owner-adjacent test-source move.
+- validation impact: rebuild and run `src/test/modules/test_backend_runtime`,
+  run lifecycle/global scans, run the three core regression baselines, and run
+  `git diff --check`.
+
+Validation evidence after the backend-runtime connection adoption test split:
+
+- `gmake -C src/test/modules/test_backend_runtime` rebuilt and linked the test
+  module after moving `test_thread_install_adopts_connection_fallback_state`
+  into `test_backend_runtime_connection.c`.
+- `gmake -C src/test/modules/test_backend_runtime check` passed the focused
+  SQL regression test; TAP tests were not enabled in this build configuration.
+- `gmake check-runtime-lifecycles` passed.
+- `gmake check-global-lifetimes` passed with no new unclassified mutable
+  globals and no local runtime boundary violations.
+- `git diff --check` passed.
+- `gmake check` passed all 245 core regression tests.
+- `gmake check-threaded` passed all 245 core regression tests under
+  `threaded_smoke.conf`.
+- `gmake check-threaded-workers` passed all 245 core regression tests under
+  `threaded_workers.conf`.
