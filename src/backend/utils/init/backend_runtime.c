@@ -1026,6 +1026,7 @@ PgSessionPlanCacheState *PgCurrentSessionPlanCacheState(void);
 PgSessionNamespaceState *PgCurrentSessionNamespaceState(void);
 PgSessionLocaleState *PgCurrentSessionLocaleState(void);
 PgExecutionErrorState *PgCurrentExecutionErrorState(void);
+PgExecutionDebugState *PgCurrentExecutionDebugState(void);
 PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
 PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
 PgExecutionSPIState *PgCurrentExecutionSPIState(void);
@@ -5075,10 +5076,13 @@ PgExecutionDebugQueryStringRef(PgExecution *execution)
 	return &execution->debug.debug_query_string;
 }
 
-const char **
-PgCurrentDebugQueryStringRef(void)
+PgExecutionDebugState *
+PgCurrentExecutionDebugState(void)
 {
-	return PgExecutionDebugQueryStringRef(CurrentPgExecution);
+	if (CurrentPgExecution == NULL)
+		return &early_execution_debug;
+
+	return &CurrentPgExecution->debug;
 }
 
 PgExecutionErrorState *

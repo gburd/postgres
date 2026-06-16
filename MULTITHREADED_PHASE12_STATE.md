@@ -19443,3 +19443,32 @@ Lifecycle/preflight note:
   `backend_runtime_pseudorandom.o`, `backend_runtime_optimizer.o`, and the
   backend link; rerun lifecycle/global scans, focused backend-runtime
   coverage, and `git diff --check`.
+
+## Debug Query Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move the current `debug_query_string` compatibility accessor used
+  by `tcop/postgres.c` out of `backend_runtime.c` and into the existing
+  owner-adjacent `tcop` runtime bridge.
+- touched roots/buckets: existing `PgExecution.debug` bucket and early
+  execution fallback only; no new runtime roots.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  fallback-aware execution owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for internal
+  `PgCurrentExecutionDebugState()` visibility,
+  `src/backend/tcop/backend_runtime_tcop.c`, and
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`.
+- legacy symbols/accessors: `PgExecutionDebugQueryStringRef()`,
+  `PgCurrentExecutionDebugState()`, and `PgCurrentDebugQueryStringRef()`.
+- repeated lifecycle operations: none; this only relocates a borrowed pointer
+  accessor and leaves debug-query init, early adoption, and closed-execution
+  cleanup unchanged.
+- checked primitive decision: reuse the existing `PgExecution.debug`
+  lifecycle row and execution bucket definition plus existing
+  `backend_runtime_tcop.c` lifecycle-checker source coverage; add an owner-map
+  row so the moved `debug_query_string` accessor is checked against the
+  owner-adjacent bridge file.
+- validation impact: rebuild `backend_runtime.o`,
+  `backend_runtime_tcop.o`, and the backend link; rerun lifecycle/global
+  scans, focused backend-runtime coverage, and `git diff --check`.

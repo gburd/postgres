@@ -172,6 +172,7 @@ extern PgSessionMiscGUCState *PgCurrentSessionMiscGUCState(void);
 extern PgSessionGUCState *PgCurrentSessionGUCState(void);
 extern PgBackendActivityState *PgCurrentBackendActivityState(void);
 extern PgExecutionErrorState *PgCurrentExecutionErrorState(void);
+extern PgExecutionDebugState *PgCurrentExecutionDebugState(void);
 extern PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
 extern PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
 extern PgExecutionSPIState *PgCurrentExecutionSPIState(void);

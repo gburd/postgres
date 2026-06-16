@@ -18,6 +18,12 @@
 #include "utils/backend_runtime.h"
 #include "../utils/init/backend_runtime_internal.h"
 
+const char **
+PgCurrentDebugQueryStringRef(void)
+{
+	return &PgCurrentExecutionDebugState()->debug_query_string;
+}
+
 bool *
 PgCurrentDoingCommandReadRef(void)
 {
