@@ -160,6 +160,7 @@ check-runtime-lifecycles:
 		--owner-map $(top_srcdir)/MULTITHREADED_RUNTIME_OWNERS.tsv \
 		--source $(top_srcdir)/src/backend/utils/init/backend_runtime.c \
 		--source $(top_srcdir)/src/backend/utils/init/backend_runtime_backend.c \
+		--source $(top_srcdir)/src/backend/utils/init/backend_runtime_execution.c \
 		--source $(top_srcdir)/src/backend/utils/init/backend_runtime_session.c \
 		--source $(top_srcdir)/src/backend/utils/init/backend_runtime_teardown.c \
 		--source $(top_srcdir)/src/backend/tcop/backend_runtime_tcop.c \

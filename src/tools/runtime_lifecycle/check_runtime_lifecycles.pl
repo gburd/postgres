@@ -21,6 +21,7 @@ my $owner_map = 'MULTITHREADED_RUNTIME_OWNERS.tsv';
 my @sources = (
 	'src/backend/utils/init/backend_runtime.c',
 	'src/backend/utils/init/backend_runtime_backend.c',
+	'src/backend/utils/init/backend_runtime_execution.c',
 	'src/backend/utils/init/backend_runtime_session.c',
 	'src/backend/utils/init/backend_runtime_teardown.c',
 	'src/backend/tcop/backend_runtime_tcop.c',

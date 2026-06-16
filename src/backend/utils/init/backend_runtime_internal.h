@@ -132,6 +132,10 @@ extern void PgSessionInitializeRuntimeObject(PgSession *session,
 											 PgExecution *execution);
 extern void PgSessionAdoptEarlyState(PgSession *session);
 extern PgExecution *PgCurrentOrEarlyExecution(void);
+extern void PgExecutionInitializeRuntimeObject(PgExecution *execution,
+											   PgBackend *backend,
+											   PgSession *session,
+											   PgCarrier *carrier);
 extern PgRuntimeServerGUCState *PgCurrentRuntimeServerGUCState(void);
 extern PgSessionLoopState *PgCurrentSessionLoopState(void);
 extern PgSessionTcopState *PgCurrentSessionTcopState(void);

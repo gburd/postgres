@@ -20473,6 +20473,26 @@ Lifecycle/preflight note:
   `git diff --check`, and then the required process/threaded core baselines
   after the slice is mechanically clean.
 
+Validation evidence after the backend runtime execution lifecycle refactor:
+
+- `gmake -C src/backend/utils/init backend_runtime.o backend_runtime_execution.o`
+  rebuilt the root and execution runtime bridge objects.
+- `gmake -C src/backend postgres` linked the backend with
+  `backend_runtime_execution.o`.
+- `gmake check-runtime-lifecycles` passed with
+  `backend_runtime_execution.c` included in the checked source list.
+- `gmake check-global-lifetimes` passed with no new unclassified mutable
+  globals and no local runtime boundary violations.
+- `gmake -C src/test/modules/test_backend_runtime check` passed the focused
+  SQL regression control; TAP tests were not enabled in this build
+  configuration.
+- `git diff --check` passed.
+- `gmake check` passed all 245 core regression tests.
+- `gmake check-threaded` passed all 245 core regression tests under
+  `threaded_smoke.conf`.
+- `gmake check-threaded-workers` passed all 245 core regression tests under
+  `threaded_workers.conf`.
+
 Validation evidence after the backend runtime backend lifecycle refactor:
 
 - `gmake -C src/backend/utils/init backend_runtime.o backend_runtime_backend.o`
@@ -20492,3 +20512,36 @@ Validation evidence after the backend runtime backend lifecycle refactor:
   `threaded_smoke.conf`.
 - `gmake check-threaded-workers` passed all 245 core regression tests under
   `threaded_workers.conf`.
+
+## Backend Runtime Execution Lifecycle Refactor
+
+Lifecycle/preflight note:
+
+- target: move execution early fallback, execution bucket
+  construction/adoption, and generic execution fallback accessors out of root
+  `backend_runtime.c` into an execution-owned runtime bridge companion while
+  leaving root runtime construction and thread/process orchestration in
+  `backend_runtime.c`.
+- touched roots/buckets: `PgExecution` and
+  `backend_runtime_execution_buckets.def`; no bucket row semantics change is
+  intended.
+- owner source files: `src/backend/utils/init/backend_runtime.c`, new
+  `src/backend/utils/init/backend_runtime_execution.c`,
+  `src/backend/utils/init/backend_runtime_internal.h`,
+  `src/backend/utils/init/Makefile`, lifecycle/global scanner source lists,
+  and this state note.
+- legacy symbols/accessors: generic execution compatibility helpers including
+  `PgCurrentOrEarlyExecution`, `PgExecutionDebugQueryStringRef`,
+  `PgExecutionInitialize*State`, `PgExecutionAdoptEarlyState`, and
+  `PgExecutionInitializeRuntimeObject`.
+- repeated lifecycle operations: the existing checked
+  `backend_runtime_execution_buckets.def` rows continue to drive constructor,
+  early-adopt, and closed-reset coverage; this batch should move their owner
+  source, not duplicate handwritten bucket loops.
+- checked primitive decision: reuse the existing `PG_EXECUTION_BUCKET`
+  lifecycle table and lifecycle checker source coverage; add no new primitive
+  unless the move exposes an unclassified repeated lifecycle shape.
+- validation impact: rebuild touched runtime objects and backend, run
+  lifecycle/global scans, focused backend-runtime regression control,
+  `git diff --check`, and then the required process/threaded core baselines
+  after the slice is mechanically clean.

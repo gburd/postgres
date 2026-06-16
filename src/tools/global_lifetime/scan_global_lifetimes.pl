@@ -560,6 +560,9 @@ sub local_runtime_boundary_violation
 	  if $record->{owner} eq 'connection-local'
 	  && $file eq 'src/backend/libpq/backend_runtime_connection.c';
 	return 0
+	  if $record->{owner} eq 'execution-local'
+	  && $file eq 'src/backend/utils/init/backend_runtime_execution.c';
+	return 0
 	  if $record->{owner} eq 'session-local'
 	  && $file eq 'src/backend/utils/init/backend_runtime_session.c';
 
