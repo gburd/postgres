@@ -152,6 +152,7 @@ extern PgSessionAccessWalGUCState *PgCurrentSessionAccessWalGUCState(void);
 extern PgSessionJitGUCState *PgCurrentSessionJitGUCState(void);
 extern PgSessionJitProviderState *PgCurrentSessionJitProviderState(void);
 extern PgSessionLLVMJitState *PgCurrentSessionLLVMJitState(void);
+extern PgSessionLoggingState *PgCurrentSessionLoggingState(void);
 extern PgSessionSortGUCState *PgCurrentSessionSortGUCState(void);
 extern PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
 extern PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);

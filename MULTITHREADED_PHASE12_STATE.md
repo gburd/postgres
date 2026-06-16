@@ -18612,3 +18612,51 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o`,
   `backend_runtime_parser.o`, and the backend link; rerun lifecycle/global
   scans, threaded regression coverage, and `git diff --check`.
+
+## Logging Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move logging/error session compatibility accessors out of
+  `src/backend/utils/init/backend_runtime.c` and into the owner-adjacent
+  `src/backend/utils/error/backend_runtime_error.c` bridge file.
+- touched roots/buckets: no runtime root ownership changes; existing
+  `PgSession.logging` bucket only.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  current-pointer and early fallback owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for internal current
+  logging helper visibility, and
+  `src/backend/utils/error/backend_runtime_error.c`.
+- legacy symbols/accessors: `PgCurrentSessionLoggingState()`,
+  `PgCurrentDebugPrintPlanRef()`, `PgCurrentDebugPrintParseRef()`,
+  `PgCurrentDebugPrintRawParseRef()`,
+  `PgCurrentDebugPrintRewrittenRef()`,
+  `PgCurrentDebugPrettyPrintRef()`,
+  `PgCurrentLogParserStatsRef()`, `PgCurrentLogPlannerStatsRef()`,
+  `PgCurrentLogExecutorStatsRef()`,
+  `PgCurrentLogStatementStatsRef()`,
+  `PgCurrentLogBtreeBuildStatsRef()`, `PgCurrentEventSourceRef()`,
+  `PgCurrentLogDurationRef()`,
+  `PgCurrentLogErrorVerbosityRef()`,
+  `PgCurrentLogParameterMaxLengthRef()`,
+  `PgCurrentLogParameterMaxLengthOnErrorRef()`,
+  `PgCurrentLogMinErrorStatementRef()`,
+  `PgCurrentLogMinMessagesArrayRef()`,
+  `PgCurrentLogMinMessagesStringRef()`,
+  `PgCurrentClientMinMessagesRef()`,
+  `PgCurrentLogMinDurationSampleRef()`,
+  `PgCurrentLogMinDurationStatementRef()`,
+  `PgCurrentLogTempFilesRef()`,
+  `PgCurrentLogStatementSampleRateRef()`,
+  `PgCurrentLogXactSampleRateRef()`,
+  `PgCurrentBacktraceFunctionsRef()`, and
+  `PgCurrentBacktraceFunctionListRef()`; debug-node-only logging refs move
+  with the same block when `DEBUG_NODE_TESTS_ENABLED` is defined.
+- repeated lifecycle operations: none; this only relocates pointer accessors
+  and leaves logging init/adopt/reset behavior unchanged.
+- checked primitive decision: no lifecycle primitive is needed because the
+  existing `PgSession.logging` lifecycle row and session bucket definition
+  continue to cover the bucket.
+- validation impact: rebuild `backend_runtime.o`,
+  `backend_runtime_error.o`, and the backend link; rerun lifecycle/global
+  scans, threaded regression coverage, and `git diff --check`.
