@@ -19974,3 +19974,30 @@ Lifecycle/preflight note:
   `backend_runtime_memory.o`, `backend_runtime_resowner.o`, and
   `backend_runtime_executor.o`; run lifecycle/global scans, focused
   backend-runtime control, and `git diff --check`.
+
+## Execution Snapshot Combo-CID Selector Refactor
+
+Lifecycle/preflight note:
+
+- target: move the fallback-aware `PgCurrentExecutionSnapshotState()` and
+  `PgCurrentExecutionComboCidState()` selectors out of `backend_runtime.c` and
+  into the owner-adjacent `src/backend/utils/time/backend_runtime_time.c`
+  bridge beside snapshot and combo-CID compatibility accessors.
+- touched roots/buckets: existing `PgExecution.snapshot` and
+  `PgExecution.combo_cid` buckets only; no new runtime roots.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  execution object construction and early-adoption owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for the shared
+  current-or-early execution helper, `src/backend/utils/time/backend_runtime_time.c`,
+  and this state note.
+- legacy symbols/accessors: `PgCurrentExecutionSnapshotState()`,
+  snapshot pointer accessors, `PgCurrentExecutionComboCidState()`, and
+  combo-CID pointer accessors.
+- repeated lifecycle operations: none; the move reuses the existing execution
+  bucket initialization and early-adoption paths.
+- checked primitive decision: reuse the checked execution bucket rows and
+  existing time bridge source coverage; no new lifecycle primitive or
+  initializer export is needed.
+- validation impact: rebuild `backend_runtime.o` and
+  `backend_runtime_time.o`, run lifecycle/global scans, focused
+  backend-runtime control, and `git diff --check`.

@@ -14,6 +14,18 @@
 #include "utils/backend_runtime.h"
 #include "../init/backend_runtime_internal.h"
 
+PgExecutionSnapshotState *
+PgCurrentExecutionSnapshotState(void)
+{
+	return &PgCurrentOrEarlyExecution()->snapshot;
+}
+
+PgExecutionComboCidState *
+PgCurrentExecutionComboCidState(void)
+{
+	return &PgCurrentOrEarlyExecution()->combo_cid;
+}
+
 SnapshotData *
 PgCurrentSnapshotDataRef(void)
 {

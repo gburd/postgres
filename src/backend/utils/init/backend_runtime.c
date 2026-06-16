@@ -5039,24 +5039,6 @@ PgCurrentExecutionMatViewState(void)
 	return &CurrentPgExecution->matview;
 }
 
-PgExecutionSnapshotState *
-PgCurrentExecutionSnapshotState(void)
-{
-	if (CurrentPgExecution == NULL)
-		return &early_execution_snapshot;
-
-	return &CurrentPgExecution->snapshot;
-}
-
-PgExecutionComboCidState *
-PgCurrentExecutionComboCidState(void)
-{
-	if (CurrentPgExecution == NULL)
-		return &early_execution_combo_cid;
-
-	return &CurrentPgExecution->combo_cid;
-}
-
 PgExecutionXLogInsertState *
 PgCurrentExecutionXLogInsertState(void)
 {

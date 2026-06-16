@@ -121,6 +121,11 @@ Important current files:
   bridge accessors for execution resource-owner state, including the
   fallback-aware resource-owner execution bucket selector. Add resource-owner
   compatibility shims here rather than growing `backend_runtime.c`.
+- `src/backend/utils/time/backend_runtime_time.c`: fork-owned runtime bridge
+  accessors for execution snapshot and combo-CID state, including the
+  fallback-aware snapshot and combo-CID execution bucket selectors. Add
+  snapshot and combo-CID compatibility shims here rather than growing
+  `backend_runtime.c`.
 - `src/backend/nodes/backend_runtime_nodes.c`: fork-owned runtime bridge
   accessors for node read/write execution state. Add node serializer/parser
   compatibility shims here rather than growing `backend_runtime.c`.
