@@ -19924,3 +19924,21 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o` and
   `backend_runtime_session.o`, run lifecycle/global scans, focused
   backend-runtime control, and `git diff --check`.
+
+## Post-Selector-Refactor Baseline Validation
+
+After moving the parser, datetime, and locale fallback-aware selectors into
+owner-adjacent bridge files, the required regression baselines still pass.
+
+Validation:
+
+- `gmake check` passed all 245 core regression tests.
+- `gmake check-threaded` passed all 245 core regression tests under
+  `threaded_smoke.conf`.
+- `gmake check-threaded-workers` passed all 245 core regression tests under
+  `threaded_workers.conf`.
+- The focused selector-refactor validation also passed before the broad
+  baselines: touched object rebuilds, backend link, `gmake
+  check-runtime-lifecycles`, `gmake check-global-lifetimes`,
+  `gmake -C src/test/modules/test_backend_runtime check`, and
+  `git diff --check`.
