@@ -19844,3 +19844,26 @@ Validation:
   because this checkout was configured without `--enable-tap-tests`; direct
   `prove` remains the evidence path for TAP-only threaded teardown and
   Milestone W smokes in this local environment.
+
+## Post-Refactor Full Threaded TAP Stress
+
+After the post-refactor `check-threaded-world-core` and Milestone W TAP runs,
+the broader direct threaded TAP stress also passed with the documented local
+Perl environment:
+`prove -v -I "$ROOT/src/test/perl" -I "$TESTDIR" t/001_threaded_runtime.pl`.
+
+It passed all 127 tests covering threaded extension/custom GUC loading,
+autovacuum and IO worker thread carriers, representative contrib extensions,
+concurrent threaded sessions, cancel, terminate, SQL `ERROR`, `FATAL`,
+PL/pgSQL, PL/Sample, database/role/startup GUCs, custom GUC stress,
+process-only module and background-worker rejection, thread-model background
+workers, parallel workers, abandoned-client cleanup, mixed teardown stress,
+PMChild reaping stress, reconnect loops, extension drop, postmaster child leak
+checks, and the log guard for crash/corruption or retained `TopMemoryContext`
+signatures.
+
+Current Gate E2-Core evidence from this run: the branch no longer reproduces a
+retained-root warning in the threaded TAP teardown matrix after the saved
+TopMemoryContext root is deleted before PMChild exit publication. Continue to
+treat the TAP log guards plus the postmaster-side retained-root warning as the
+active invariant while the remaining Phase 12 blockers are narrowed.
