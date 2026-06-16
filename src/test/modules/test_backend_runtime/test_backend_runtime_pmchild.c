@@ -77,6 +77,10 @@ test_pmchild_thread_backend_signal_api(PG_FUNCTION_ARGS)
 
 	PostmasterChildSetThread(&fake_pmchild, &fake_thread);
 	ok = ok && PostmasterChildSignalPid(&fake_pmchild) == 0;
+	ok = ok && !PostmasterChildHasStartupComplete(&fake_pmchild);
+	PostmasterChildPublishThreadStartupComplete(&fake_pmchild, &fake_latch);
+	ok = ok && PostmasterChildHasStartupComplete(&fake_pmchild);
+	ok = ok && !PostmasterChildHasStartupComplete(&fake_pmchild);
 	ok = ok && !PostmasterChildHasExitedThread(&fake_pmchild, &exitstatus,
 											   &top_memory_allocated,
 											   &exit_signal_pid);
@@ -262,4 +266,3 @@ test_pmchild_thread_backend_publication_race(PG_FUNCTION_ARGS)
 #undef TEST_PMCHILD_READER_THREADS
 #undef TEST_PMCHILD_PUBLICATION_CYCLES
 }
-

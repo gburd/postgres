@@ -20855,3 +20855,130 @@ Validation evidence after the backend runtime owner-adjacent accessor cleanup:
   `threaded_smoke.conf`.
 - `gmake check-threaded-workers` passed all 245 core regression tests under
   `threaded_workers.conf`.
+
+## Gate E2-Core Closeout Audit
+
+Current audit against the Gate E2-Core requirement list after the
+owner-adjacent runtime bridge refactor and the first `check-threaded-world-core`
+target:
+
+- lifecycle acceleration/refactor: proved for the current bridge shape.
+  `backend_runtime.c` is now limited to root runtime construction,
+  current-pointer installation, process/thread symmetry, and top-level
+  lifecycle orchestration. Backend, session, connection, execution, cache,
+  GUC, memory, portal, resource-owner, transaction, IPC, storage, lock,
+  executor, parser, tcop, error, extension, and other owner-specific accessors
+  are in owner-adjacent `backend_runtime_*.c` files. Lifecycle/global scans
+  passed after the final owner-adjacent cleanup, so further refactor is not a
+  Gate E2-Core blocker unless new runtime evidence points at it.
+- threaded startup and normal SQL: proved for the current core target by
+  `gmake check-threaded`, `gmake check-threaded-workers`, and
+  `gmake check-threaded-world-core`. The world-core target runs the threaded
+  worker core regression suite, PL/pgSQL, full isolation, backend-runtime SQL,
+  direct threaded TAP, lifecycle checks, and global-lifetime checks.
+- PL/pgSQL: proved by the world-core PL/pgSQL regression run and by direct
+  threaded TAP coverage that creates and executes PL/pgSQL functions.
+- process-only extension and background-worker rejection: proved for
+  Gate E2-Core by threaded TAP checks that reject the process-only
+  `test_backend_runtime` module and process-model background workers with
+  clear errors, then verify the threaded server remains usable. Broader
+  extension admission remains Phase 16 / Gate E2-Extensions work.
+- core GUC semantics: proved for the current core surface by threaded core
+  regression, worker regression, threaded TAP database/role/startup-option
+  checks, built-in `SET`/`RESET`/`SET LOCAL` stack checks, and GUC-heavy
+  threaded stress in `001_threaded_runtime.pl`. Weak but not currently
+  blocking Gate E2-Core: the temporary process-wide GUC critical section still
+  covers ambiguous startup, hook, custom, extension, and process-global-backed
+  paths. This is acceptable for the current core closeout only while built-in
+  direct-pointer metadata, postmaster/runtime defaults, database/role settings,
+  startup options, and representative built-in assign hooks stay covered by
+  TAP/runtime evidence. Full custom/extension GUC hook completeness remains
+  deferred with invariant to Phase 16 / Gate E2-Extensions: if that deferral is
+  wrong for the core runtime, the threaded GUC stress, process-only rejection
+  checks, retained-root log guard, lifecycle/global scans, or world-core target
+  should expose a crash, corruption, retained-root warning, or semantic
+  mismatch.
+- startup serialization: proved closed for the original broad blocker. The
+  workflow guide and code now describe no broad `backend_thread_entry()` gate;
+  remaining startup-complete publication is a PMChild synchronization concern,
+  not a process-wide startup serialization gate. Any future startup gate must
+  name a precise shared-state dependency and include a release/stress test.
+- threaded teardown and retained memory: mostly proved for Milestone W and
+  partly proved for Gate E2-Core. Direct threaded TAP covers normal
+  disconnects, abandoned clients, `FATAL`, administrator termination,
+  repeated reconnects, worker handoff, mixed teardown stress, and retained
+  `TopMemoryContext` warning guards. The postmaster-side retained-root warning
+  remains the invariant. Weak Gate E2-Core proof point: full resource-leak
+  auditing and deliberate long-lived ownership accounting are still weaker
+  than the functional/no-warning TAP evidence.
+- PMChild/thread synchronization: partly proved. The C regression test covers
+  PMChild helper API signal routing and a publication race; direct threaded TAP
+  covers real-server PMChild reaping cycles that combine abandoned clients,
+  active termination, and `FATAL`, then verify logical backend ids leave
+  `pg_stat_activity`, advisory locks are released, the server remains usable,
+  and Unix postmaster child counts do not increase. Weak proof point: the
+  startup-complete publication flag is part of the same PMChild helper
+  contract and should be asserted beside the signal/exit helper API test.
+- remaining object migration: no current Gate E2-Core evidence demands another
+  broad migration batch. `check-global-lifetimes`, `check-runtime-lifecycles`,
+  direct threaded TAP, and world-core did not report a crash, hang, retained
+  root warning, corruption signature, or local runtime-boundary violation that
+  points at a specific remaining owner. Continue to migrate only owners driven
+  by runtime evidence, lifecycle/global failures, retained-root accounting, or
+  TAP failures.
+
+Current blocker selection:
+
+- Do not continue cosmetic bridge-file or test-file refactor as the primary
+  task. The refactor now serves the closeout work.
+- Treat PMChild/thread synchronization plus threaded teardown/resource
+  accounting as the highest-value remaining Gate E2-Core area. The next small
+  evidence slice is to strengthen PMChild helper coverage for
+  startup-complete publication. The next larger implementation/evidence slice
+  should target retained-resource accounting rather than full `check-world` or
+  Phase 16 extension/language/custom-GUC completeness.
+
+Lifecycle/preflight note:
+
+- target: strengthen focused PMChild/thread synchronization evidence by
+  asserting startup-complete publication in the existing PMChild helper API
+  regression test.
+- touched roots/buckets: none; this is test-only coverage for PMChild helper
+  publication semantics.
+- owner source files:
+  `src/test/modules/test_backend_runtime/test_backend_runtime_pmchild.c` and
+  this state note.
+- legacy symbols/accessors: `PostmasterChildPublishThreadStartupComplete()`,
+  `PostmasterChildHasStartupComplete()`, and the existing
+  `test_pmchild_thread_backend_signal_api()` SQL-callable test function.
+- repeated lifecycle operations: none.
+- checked primitive decision: no new lifecycle primitive, bucket row, or
+  checker rule is needed because this slice does not add lifecycle state or
+  repeated init/adopt/reset/destroy mechanics.
+- validation impact: rebuild and run the focused backend-runtime regression,
+  run lifecycle/global scans, `git diff --check`, and then preserve the
+  required process/threaded/world-core baselines for the coherent blocker
+  batch.
+
+Validation evidence after the Gate E2-Core closeout audit and PMChild
+startup-complete assertion:
+
+- `gmake -C src/test/modules/test_backend_runtime check` rebuilt and ran the
+  focused backend-runtime SQL regression successfully; the plain module check
+  still reports TAP tests disabled in this checkout.
+- `gmake check-runtime-lifecycles` passed with 172 fields classified, 172
+  bucket definitions checked, 35 reset definitions checked, and 431 owner
+  mappings checked.
+- `gmake check-global-lifetimes` passed with no new unclassified mutable
+  globals and no local runtime boundary violations.
+- `git diff --check` passed after the validation summary was added.
+- `gmake check` passed all 245 process-mode core regression tests.
+- The first `gmake check-threaded` run was externally interrupted after the
+  temporary threaded server received a smart shutdown request. A clean rerun
+  passed all 245 threaded core regression tests under `threaded_smoke.conf`.
+- `gmake check-threaded-world-core` passed end-to-end. It reran
+  `check-threaded-workers` for all 245 core tests, PL/pgSQL for all 13 tests,
+  full isolation for all 129 specs, backend-runtime SQL, direct threaded TAP
+  (`001_threaded_runtime.pl`, `002_threaded_bgworker_crash.pl`, and
+  `003_milestone_w_core_smoke.pl`) with 174 TAP assertions, lifecycle scans,
+  and global-lifetime scans.
