@@ -5447,31 +5447,13 @@ PgCurrentGlobalPrngStateRef(void)
 	return &PgCurrentCoreState()->global_prng_state;
 }
 
-static PgBackendCommandState *
+PgBackendCommandState *
 PgCurrentBackendCommandState(void)
 {
 	if (CurrentPgBackend == NULL)
 		return &early_backend_command;
 
 	return &CurrentPgBackend->command;
-}
-
-const char **
-PgCurrentUserDOptionRef(void)
-{
-	return &PgCurrentBackendCommandState()->user_d_option;
-}
-
-struct rusage *
-PgCurrentUsageSaveRusageRef(void)
-{
-	return &PgCurrentBackendCommandState()->save_rusage;
-}
-
-struct timeval *
-PgCurrentUsageSaveTimevalRef(void)
-{
-	return &PgCurrentBackendCommandState()->save_timeval;
 }
 
 PgBackendLogState *

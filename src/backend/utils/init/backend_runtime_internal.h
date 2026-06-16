@@ -170,6 +170,7 @@ extern PgSessionPlannerMethodState *PgCurrentSessionPlannerMethodState(void);
 extern PgSessionPgStatState *PgCurrentSessionPgStatState(void);
 extern PgSessionMiscGUCState *PgCurrentSessionMiscGUCState(void);
 extern PgSessionGUCState *PgCurrentSessionGUCState(void);
+extern PgBackendCommandState *PgCurrentBackendCommandState(void);
 extern PgBackendActivityState *PgCurrentBackendActivityState(void);
 extern PgBackendLogState *PgCurrentBackendLogState(void);
 extern MemoryContext PgRuntimeEnsureExtensionModuleMemoryContext(PgRuntimeExtensionModuleState *extension_modules);

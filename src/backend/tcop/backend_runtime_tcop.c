@@ -48,6 +48,24 @@ PgCurrentUseSemiNewlineNewlineRef(void)
 	return &PgCurrentSessionTcopState()->use_semi_newline_newline;
 }
 
+const char **
+PgCurrentUserDOptionRef(void)
+{
+	return &PgCurrentBackendCommandState()->user_d_option;
+}
+
+struct rusage *
+PgCurrentUsageSaveRusageRef(void)
+{
+	return &PgCurrentBackendCommandState()->save_rusage;
+}
+
+struct timeval *
+PgCurrentUsageSaveTimevalRef(void)
+{
+	return &PgCurrentBackendCommandState()->save_timeval;
+}
+
 MemoryContext *
 PgCurrentRowDescriptionContextRef(void)
 {

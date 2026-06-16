@@ -19345,6 +19345,36 @@ Lifecycle/preflight note:
   `backend_runtime_error.o`, and the backend link; rerun lifecycle/global
   scans, focused backend-runtime coverage, and `git diff --check`.
 
+## Backend Command Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move backend command-loop compatibility leaf accessors used by
+  `tcop/postgres.c` out of `backend_runtime.c` and into the existing
+  owner-adjacent `tcop` runtime bridge.
+- touched roots/buckets: existing `PgBackend.command` bucket and early
+  backend fallback only; no new runtime roots.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  fallback-aware backend command-state selector owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for internal
+  `PgCurrentBackendCommandState()` visibility,
+  `src/backend/tcop/backend_runtime_tcop.c`, and
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`.
+- legacy symbols/accessors: `PgCurrentBackendCommandState()`,
+  `PgCurrentUserDOptionRef()`, `PgCurrentUsageSaveRusageRef()`, and
+  `PgCurrentUsageSaveTimevalRef()`.
+- repeated lifecycle operations: none; this only relocates borrowed/inline
+  field accessors and leaves backend command-state initialization, early
+  fallback adoption, and closed-backend reset unchanged.
+- checked primitive decision: reuse the existing `PgBackend.command`
+  lifecycle row and backend bucket definition plus existing
+  `backend_runtime_tcop.c` lifecycle-checker source coverage; add owner-map
+  rows so the moved `tcop/postgres.c` bridge accessors are checked against
+  the owner-adjacent bridge file.
+- validation impact: rebuild `backend_runtime.o`,
+  `backend_runtime_tcop.o`, and the backend link; rerun lifecycle/global
+  scans, focused backend-runtime coverage, and `git diff --check`.
+
 ## Tcop Runtime Accessor Refactor
 
 Lifecycle/preflight note:
