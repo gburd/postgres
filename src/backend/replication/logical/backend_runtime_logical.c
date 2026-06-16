@@ -18,6 +18,18 @@
 #include "utils/backend_runtime.h"
 #include "../../utils/init/backend_runtime_internal.h"
 
+PgExecutionReplicationScratchState *
+PgCurrentExecutionReplicationScratchState(void)
+{
+	return &PgCurrentOrEarlyExecution()->replication_scratch;
+}
+
+PgExecutionSnapBuildState *
+PgCurrentExecutionSnapBuildState(void)
+{
+	return &PgCurrentOrEarlyExecution()->snapbuild;
+}
+
 ReplOriginXactState *
 PgCurrentReplOriginXactStateRef(void)
 {

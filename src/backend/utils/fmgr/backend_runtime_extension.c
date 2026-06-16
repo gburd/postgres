@@ -18,6 +18,12 @@
 #include "utils/backend_runtime.h"
 #include "../init/backend_runtime_internal.h"
 
+PgExecutionExtensionState *
+PgCurrentExecutionExtensionState(void)
+{
+	return &PgCurrentOrEarlyExecution()->extension;
+}
+
 MemoryContext
 PgCurrentRuntimeExtensionModuleMemoryContext(void)
 {

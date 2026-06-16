@@ -19,6 +19,12 @@
 #include "utils/backend_runtime.h"
 #include "../utils/init/backend_runtime_internal.h"
 
+PgExecutionMatViewState *
+PgCurrentExecutionMatViewState(void)
+{
+	return &PgCurrentOrEarlyExecution()->matview;
+}
+
 int *
 PgCurrentMatViewMaintenanceDepthRef(void)
 {

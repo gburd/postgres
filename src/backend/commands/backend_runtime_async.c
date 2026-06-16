@@ -19,6 +19,12 @@
 #include "utils/backend_runtime.h"
 #include "../utils/init/backend_runtime_internal.h"
 
+PgExecutionAsyncState *
+PgCurrentExecutionAsyncState(void)
+{
+	return &PgCurrentOrEarlyExecution()->async;
+}
+
 HTAB **
 PgCurrentAsyncLocalChannelTableRef(void)
 {

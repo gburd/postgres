@@ -12,9 +12,9 @@ Important current files:
   error recovery, command read, command dispatch, and `ProcessInterrupts()`.
 - `src/backend/tcop/backend_runtime_tcop.c`: fork-owned runtime bridge
   accessors for top-level command-loop state, including session `tcop` state,
-  command-read state, and query-error Valgrind state. Add future
-  `tcop/postgres.c` compatibility shims here rather than growing
-  `backend_runtime.c`.
+  command-read state, current debug-query-string state, and query-error
+  Valgrind state. Add future `tcop/postgres.c` compatibility shims here rather
+  than growing `backend_runtime.c`.
 - `src/include/access/session.h` and `src/backend/access/common/session.c`:
   existing `Session` abstraction for session-scoped DSM/DSA state. Treat this
   as a seed for the broader session object unless there is a strong reason not
@@ -41,8 +41,8 @@ Important current files:
   bridge accessors for pgstat-owned backend/session state. Add future pgstat
   accessor shims here rather than growing `backend_runtime.c`.
 - `src/backend/utils/error/backend_runtime_error.c`: fork-owned runtime bridge
-  accessors for error-reporting, logging, and elog-owned compatibility state.
-  Keep fallback-aware current-bucket selectors in `backend_runtime.c`.
+  accessors for error-reporting, logging, and elog-owned compatibility state,
+  including the fallback-aware execution error selector.
 - `src/backend/utils/adt/backend_runtime_ri.c`: fork-owned runtime bridge
   accessors for RI trigger session globals and execution cleanup state. Add
   future RI trigger compatibility shims here rather than growing
@@ -55,9 +55,9 @@ Important current files:
   pseudorandom-function compatibility shims here rather than growing
   `backend_runtime.c`.
 - `src/backend/utils/fmgr/backend_runtime_extension.c`: fork-owned runtime
-  bridge accessors for extension and dynamic-library module state. Keep
-  root runtime/session/execution selection and extension-module lifecycle
-  orchestration in `backend_runtime.c`.
+  bridge accessors for extension and dynamic-library module state, including
+  the fallback-aware execution extension selector. Keep root runtime/session
+  selection and extension-module lifecycle orchestration in `backend_runtime.c`.
 - `src/backend/optimizer/util/backend_runtime_optimizer.c`: fork-owned
   runtime bridge accessors for optimizer session state. Add future optimizer
   compatibility shims here rather than growing `backend_runtime.c`.
@@ -65,9 +65,9 @@ Important current files:
   accessors for GUC compatibility state that lives in session/backend/runtime
   buckets, including server/runtime GUCs, connection GUCs, core GUC registry
   pointers/lists, miscellaneous GUCs, threaded GUC mutex depth, and GUC
-  error-reporting state. Add future GUC backing-variable shims here rather
-  than growing `backend_runtime.c` or `guc_tables.c`; keep only
-  fallback-aware current-bucket selectors in `backend_runtime.c`.
+  error-reporting state, including the fallback-aware execution GUC-error
+  selector. Add future GUC backing-variable shims here rather than growing
+  `backend_runtime.c` or `guc_tables.c`.
 - `src/backend/utils/misc/backend_runtime_utility.c`: fork-owned runtime
   bridge accessors for backend-local utility, formatting, sampling, superuser,
   and resource-owner callback state. Add small utility compatibility shims here
@@ -78,17 +78,21 @@ Important current files:
   Add future vacuum, analyze, and parallel-vacuum compatibility shims here
   rather than growing `backend_runtime.c`.
 - `src/backend/commands/backend_runtime_async.c`: fork-owned runtime bridge
-  accessors for LISTEN/NOTIFY async session and execution state. Add future
-  async compatibility shims here rather than growing `backend_runtime.c`.
+  accessors for LISTEN/NOTIFY async session and execution state, including the
+  fallback-aware execution async selector. Add future async compatibility
+  shims here rather than growing `backend_runtime.c`.
 - `src/backend/commands/backend_runtime_event_trigger.c`: fork-owned runtime
   bridge accessors for event-trigger execution state. Add future event-trigger
   compatibility shims here rather than growing `backend_runtime.c`.
 - `src/backend/commands/backend_runtime_matview.c`: fork-owned runtime bridge
-  accessors for materialized-view execution state. Add future materialized-view
-  compatibility shims here rather than growing `backend_runtime.c`.
+  accessors for materialized-view execution state, including the
+  fallback-aware materialized-view execution selector. Add future
+  materialized-view compatibility shims here rather than growing
+  `backend_runtime.c`.
 - `src/backend/commands/backend_runtime_trigger.c`: fork-owned runtime bridge
-  accessors for trigger execution state. Add future trigger compatibility
-  shims here rather than growing `backend_runtime.c`.
+  accessors for trigger execution state, including the fallback-aware trigger
+  execution selector. Add future trigger compatibility shims here rather than
+  growing `backend_runtime.c`.
 - `src/backend/executor/backend_runtime_executor.c`: fork-owned runtime bridge
   accessors for executor-owned SPI state, including the fallback-aware SPI
   execution bucket selector, plus executor instrumentation compatibility
@@ -96,8 +100,9 @@ Important current files:
   `backend_runtime.c`.
 - `src/backend/replication/logical/backend_runtime_logical.c`: fork-owned
   runtime bridge accessors for logical-replication execution scratch and
-  snapbuild export state. Add future logical-replication compatibility shims
-  here rather than growing `backend_runtime.c`.
+  snapbuild export state, including the fallback-aware replication scratch and
+  snapbuild execution selectors. Add future logical-replication compatibility
+  shims here rather than growing `backend_runtime.c`.
 - `src/backend/access/transam/backend_runtime_parallel.c`: fork-owned runtime
   bridge accessors for backend-local parallel-query state. Add parallel-query
   compatibility shims here rather than growing `backend_runtime.c`.

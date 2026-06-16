@@ -20138,3 +20138,42 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o` and
   `backend_runtime_cache.o`, run lifecycle/global scans, focused
   backend-runtime control, and `git diff --check`.
+
+## Remaining Execution Selector Refactor
+
+Lifecycle/preflight note:
+
+- target: move the remaining fallback-aware current-execution selectors out
+  of `backend_runtime.c` and into existing owner-adjacent runtime bridge
+  files: tcop, error, nodes, backup, extension/fmgr, matview, logical
+  replication, GUC, async, and trigger.
+- touched roots/buckets: existing `PgExecution.debug`,
+  `PgExecution.error`, `PgExecution.node_io`, `PgExecution.basebackup`,
+  `PgExecution.extension`, `PgExecution.matview`,
+  `PgExecution.replication_scratch`, `PgExecution.guc_error`,
+  `PgExecution.async`, `PgExecution.trigger`, `PgExecution.valgrind`, and
+  `PgExecution.snapbuild` buckets only; no new runtime roots.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  execution object construction and early-adoption owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for the shared
+  current-or-early execution helper, the existing owner-adjacent
+  `backend_runtime_*.c` bridge files listed above, and this state note.
+- legacy symbols/accessors: `PgCurrentExecutionDebugState()`,
+  `PgCurrentExecutionErrorState()`,
+  `PgCurrentExecutionNodeIOState()`,
+  `PgCurrentExecutionBaseBackupState()`,
+  `PgCurrentExecutionExtensionState()`,
+  `PgCurrentExecutionMatViewState()`,
+  `PgCurrentExecutionReplicationScratchState()`,
+  `PgCurrentExecutionGUCErrorState()`, `PgCurrentExecutionAsyncState()`,
+  `PgCurrentExecutionTriggerState()`, `PgCurrentExecutionValgrindState()`,
+  `PgCurrentExecutionSnapBuildState()`, and their owner-adjacent pointer
+  accessors.
+- repeated lifecycle operations: none; the move reuses existing execution
+  bucket initialization and early-adoption paths.
+- checked primitive decision: reuse the checked execution bucket rows and
+  existing bridge source coverage; no new lifecycle primitive, owner-map row,
+  or checker source is needed.
+- validation impact: rebuild `backend_runtime.o` plus touched owner bridge
+  objects, run lifecycle/global scans, focused backend-runtime control, and
+  `git diff --check`.

@@ -14,6 +14,12 @@
 #include "utils/backend_runtime.h"
 #include "../utils/init/backend_runtime_internal.h"
 
+PgExecutionNodeIOState *
+PgCurrentExecutionNodeIOState(void)
+{
+	return &PgCurrentOrEarlyExecution()->node_io;
+}
+
 bool *
 PgCurrentNodeWriteLocationFieldsRef(void)
 {

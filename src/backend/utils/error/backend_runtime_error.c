@@ -15,6 +15,12 @@
 #include "utils/elog.h"
 #include "../init/backend_runtime_internal.h"
 
+PgExecutionErrorState *
+PgCurrentExecutionErrorState(void)
+{
+	return &PgCurrentOrEarlyExecution()->error;
+}
+
 ErrorContextCallback **
 PgCurrentErrorContextStackRef(void)
 {

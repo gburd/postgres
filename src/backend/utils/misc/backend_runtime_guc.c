@@ -24,6 +24,12 @@
 #include "utils/memutils.h"
 #include "../init/backend_runtime_internal.h"
 
+PgExecutionGUCErrorState *
+PgCurrentExecutionGUCErrorState(void)
+{
+	return &PgCurrentOrEarlyExecution()->guc_error;
+}
+
 char **
 PgCurrentClusterNameRef(void)
 {

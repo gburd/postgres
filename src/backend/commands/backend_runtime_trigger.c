@@ -19,6 +19,12 @@
 #include "utils/backend_runtime.h"
 #include "../utils/init/backend_runtime_internal.h"
 
+PgExecutionTriggerState *
+PgCurrentExecutionTriggerState(void)
+{
+	return &PgCurrentOrEarlyExecution()->trigger;
+}
+
 int *
 PgCurrentTriggerDepthRef(void)
 {

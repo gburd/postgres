@@ -18,6 +18,18 @@
 #include "utils/backend_runtime.h"
 #include "../utils/init/backend_runtime_internal.h"
 
+PgExecutionDebugState *
+PgCurrentExecutionDebugState(void)
+{
+	return &PgCurrentOrEarlyExecution()->debug;
+}
+
+PgExecutionValgrindState *
+PgCurrentExecutionValgrindState(void)
+{
+	return &PgCurrentOrEarlyExecution()->valgrind;
+}
+
 const char **
 PgCurrentDebugQueryStringRef(void)
 {

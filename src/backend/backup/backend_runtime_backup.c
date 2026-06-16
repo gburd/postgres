@@ -14,6 +14,12 @@
 #include "utils/backend_runtime.h"
 #include "../utils/init/backend_runtime_internal.h"
 
+PgExecutionBaseBackupState *
+PgCurrentExecutionBaseBackupState(void)
+{
+	return &PgCurrentOrEarlyExecution()->basebackup;
+}
+
 struct BackupState **
 PgCurrentBackupStateRef(void)
 {
