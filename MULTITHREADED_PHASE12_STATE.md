@@ -19271,6 +19271,34 @@ Lifecycle/preflight note:
   `backend_runtime_tcop.o`, and the backend link; rerun lifecycle/global
   scans, focused backend-runtime coverage, and `git diff --check`.
 
+## Backend Wait Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move backend-local wait-event compatibility accessors out of
+  `backend_runtime.c` and into the existing owner-adjacent IPC runtime bridge.
+- touched roots/buckets: existing `PgBackend.wait_state` bucket and early
+  backend wait fallback only; no new runtime roots.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  fallback-aware backend wait-state selector owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for internal
+  `PgCurrentBackendWaitState()` visibility,
+  `src/backend/storage/ipc/backend_runtime_ipc.c`, and
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`.
+- legacy symbols/accessors: `PgCurrentBackendWaitState()`,
+  `PgCurrentMyWaitEventInfoRef()`, and
+  `PgCurrentLocalWaitEventInfoRef()`.
+- repeated lifecycle operations: none; this only relocates pointer/scalar
+  accessors and leaves wait-state initialization, early fallback adoption, and
+  backend reset semantics unchanged.
+- checked primitive decision: reuse the existing `PgBackend.wait_state`
+  lifecycle row and backend bucket definition plus existing
+  `backend_runtime_ipc.c` lifecycle-checker source coverage; add owner-map
+  rows so the moved wait-event accessors are checked against the IPC bridge.
+- validation impact: rebuild `backend_runtime.o`,
+  `backend_runtime_ipc.o`, and the backend link; rerun lifecycle/global
+  scans, focused backend-runtime coverage, and `git diff --check`.
+
 ## Extension Module Runtime Accessor Refactor
 
 Lifecycle/preflight note:

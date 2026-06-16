@@ -91,6 +91,18 @@ PgCurrentLocalLatchData(void)
 	return &PgCurrentBackendIPCState()->local_latch_data;
 }
 
+uint32 **
+PgCurrentMyWaitEventInfoRef(void)
+{
+	return &PgCurrentBackendWaitState()->my_wait_event_info;
+}
+
+uint32 *
+PgCurrentLocalWaitEventInfoRef(void)
+{
+	return &PgCurrentBackendWaitState()->local_wait_event_info;
+}
+
 volatile sig_atomic_t *
 PgCurrentWaitEventWaitingRef(void)
 {

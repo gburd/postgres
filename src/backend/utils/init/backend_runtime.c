@@ -5613,7 +5613,7 @@ PgCurrentBackendIPCState(void)
 	return &CurrentPgBackend->ipc;
 }
 
-static PgBackendWaitState *
+PgBackendWaitState *
 PgCurrentBackendWaitState(void)
 {
 	if (CurrentPgBackend == NULL)
@@ -5624,18 +5624,6 @@ PgCurrentBackendWaitState(void)
 
 	PgBackendEnsureWaitStateInitialized(&CurrentPgBackend->wait_state);
 	return &CurrentPgBackend->wait_state;
-}
-
-uint32 **
-PgCurrentMyWaitEventInfoRef(void)
-{
-	return &PgCurrentBackendWaitState()->my_wait_event_info;
-}
-
-uint32 *
-PgCurrentLocalWaitEventInfoRef(void)
-{
-	return &PgCurrentBackendWaitState()->local_wait_event_info;
 }
 
 PgBackendTimeoutState *
