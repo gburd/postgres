@@ -14,6 +14,18 @@
 #include "utils/backend_runtime.h"
 #include "../utils/init/backend_runtime_internal.h"
 
+PgSessionRegexState *
+PgCurrentSessionRegexState(void)
+{
+	return &PgCurrentOrEarlySession()->regex;
+}
+
+PgExecutionRegexState *
+PgCurrentExecutionRegexState(void)
+{
+	return &PgCurrentOrEarlyExecution()->regex;
+}
+
 struct pg_ctype_cache **
 PgCurrentRegexCtypeCacheListRef(void)
 {

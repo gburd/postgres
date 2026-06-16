@@ -1012,7 +1012,6 @@ PgSessionOnCommitState *PgCurrentSessionOnCommitState(void);
 PgSessionSequenceState *PgCurrentSessionSequenceState(void);
 PgSessionXactCallbackState *PgCurrentSessionXactCallbackState(void);
 PgSessionBackupState *PgCurrentSessionBackupState(void);
-PgSessionRegexState *PgCurrentSessionRegexState(void);
 PgSessionPortalManagerState *PgCurrentSessionPortalManagerState(void);
 PgSessionLargeObjectState *PgCurrentSessionLargeObjectState(void);
 PgSessionAsyncState *PgCurrentSessionAsyncState(void);
@@ -1046,7 +1045,6 @@ PgExecutionCatalogCacheState *PgCurrentExecutionCatalogCacheState(void);
 PgExecutionRelMapState *PgCurrentExecutionRelMapState(void);
 PgExecutionInvalidationState *PgCurrentExecutionInvalidationState(void);
 PgExecutionTwoPhaseRecordState *PgCurrentExecutionTwoPhaseRecordState(void);
-PgExecutionRegexState *PgCurrentExecutionRegexState(void);
 PgExecutionSnapBuildState *PgCurrentExecutionSnapBuildState(void);
 PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
 PgBackendInstrumentationState *PgCurrentBackendInstrumentationState(void);
@@ -4089,6 +4087,15 @@ PgCurrentOrEarlySession(void)
 	return CurrentPgSession;
 }
 
+PgExecution *
+PgCurrentOrEarlyExecution(void)
+{
+	if (CurrentPgExecution == NULL)
+		return &early_execution_fallback;
+
+	return CurrentPgExecution;
+}
+
 bool
 PgCurrentSessionOwnsPointer(const void *ptr)
 {
@@ -4808,15 +4815,6 @@ PgCurrentSessionBackupState(void)
 	return &CurrentPgSession->backup;
 }
 
-PgSessionRegexState *
-PgCurrentSessionRegexState(void)
-{
-	if (CurrentPgSession == NULL)
-		return &early_session_regex;
-
-	return &CurrentPgSession->regex;
-}
-
 PgSessionPortalManagerState *
 PgCurrentSessionPortalManagerState(void)
 {
@@ -5261,15 +5259,6 @@ PgCurrentExecutionTriggerState(void)
 		return &early_execution_trigger;
 
 	return &CurrentPgExecution->trigger;
-}
-
-PgExecutionRegexState *
-PgCurrentExecutionRegexState(void)
-{
-	if (CurrentPgExecution == NULL)
-		return &early_execution_regex;
-
-	return &CurrentPgExecution->regex;
 }
 
 PgExecutionValgrindState *

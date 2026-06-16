@@ -19753,3 +19753,34 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o`, `backend_runtime_mb.o`, and
   the backend link; rerun lifecycle/global scans, focused backend-runtime
   coverage, and `git diff --check`.
+
+## Regex Runtime Selector Refactor
+
+Lifecycle/preflight note:
+
+- target: move the fallback-aware session and execution regex selectors out
+  of `backend_runtime.c` and into the owner-adjacent
+  `src/backend/regex/backend_runtime_regex.c` bridge that already owns the
+  regex compatibility accessors.
+- touched roots/buckets: existing `PgSession.regex` and `PgExecution.regex`
+  buckets plus their early fallback roots only; no new runtime roots.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  current-pointer and early-fallback owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for the narrow
+  current-or-early execution helper, `src/backend/regex/backend_runtime_regex.c`,
+  `GNUmakefile.in`, `src/tools/runtime_lifecycle/check_runtime_lifecycles.pl`,
+  and this state note.
+- legacy symbols/accessors: `PgCurrentSessionRegexState()`,
+  `PgCurrentExecutionRegexState()`, `PgCurrentRegexCtypeCacheListRef()`,
+  `PgCurrentRegexpCacheMemoryContextRef()`,
+  `PgCurrentRegexpNumCachedResRef()`, `PgCurrentRegexpCachedResArray()`, and
+  `PgCurrentRegexLocaleRef()`.
+- repeated lifecycle operations: none; the move reuses the existing
+  session/execution regex bucket initialization, adoption, reset, and closed
+  session cleanup paths.
+- checked primitive decision: reuse the checked `PgSession.regex` and
+  `PgExecution.regex` bucket rows; add `backend_runtime_regex.c` to lifecycle
+  source coverage because it will now own selectors for checked buckets.
+- validation impact: rebuild `backend_runtime.o`, `backend_runtime_regex.o`,
+  and the backend link; rerun lifecycle/global scans, focused
+  backend-runtime coverage, and `git diff --check`.

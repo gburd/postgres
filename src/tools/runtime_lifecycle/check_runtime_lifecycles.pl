@@ -36,6 +36,7 @@ my @sources = (
 	'src/backend/utils/mb/backend_runtime_mb.c',
 	'src/backend/utils/mmgr/backend_runtime_memory.c',
 	'src/backend/utils/mmgr/backend_runtime_portal.c',
+	'src/backend/regex/backend_runtime_regex.c',
 	'src/backend/optimizer/util/backend_runtime_optimizer.c',
 	'src/backend/commands/backend_runtime_async.c',
 	'src/backend/commands/event_trigger.c',
