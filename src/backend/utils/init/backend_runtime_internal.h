@@ -135,6 +135,7 @@ extern PgSessionPreparedStatementState *PgCurrentSessionPreparedStatementState(v
 extern PgSessionOnCommitState *PgCurrentSessionOnCommitState(void);
 extern PgSessionSequenceState *PgCurrentSessionSequenceState(void);
 extern PgSessionRegexState *PgCurrentSessionRegexState(void);
+extern PgSessionPortalManagerState *PgCurrentSessionPortalManagerState(void);
 extern PgSessionFunctionManagerState *PgCurrentSessionFunctionManagerState(void);
 extern PgSessionGeneralGUCState *PgCurrentSessionGeneralGUCState(void);
 extern PgSessionQueryIdState *PgCurrentSessionQueryIdState(void);

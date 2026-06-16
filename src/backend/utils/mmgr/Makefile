@@ -16,6 +16,7 @@ OBJS = \
 	alignedalloc.o \
 	aset.o \
 	backend_runtime_memory.o \
+	backend_runtime_portal.o \
 	bump.o \
 	dsa.o \
 	freepage.o \

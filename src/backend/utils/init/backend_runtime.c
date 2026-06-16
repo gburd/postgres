@@ -1012,7 +1012,7 @@ PgSessionPreparedStatementState *PgCurrentSessionPreparedStatementState(void);
 PgSessionOnCommitState *PgCurrentSessionOnCommitState(void);
 PgSessionSequenceState *PgCurrentSessionSequenceState(void);
 PgSessionRegexState *PgCurrentSessionRegexState(void);
-static PgSessionPortalManagerState *PgCurrentSessionPortalManagerState(void);
+PgSessionPortalManagerState *PgCurrentSessionPortalManagerState(void);
 static PgSessionLargeObjectState *PgCurrentSessionLargeObjectState(void);
 static PgSessionAsyncState *PgCurrentSessionAsyncState(void);
 PgSessionEncodingState *PgCurrentSessionEncodingState(void);
@@ -4829,7 +4829,7 @@ PgCurrentSessionRegexState(void)
 	return &CurrentPgSession->regex;
 }
 
-static PgSessionPortalManagerState *
+PgSessionPortalManagerState *
 PgCurrentSessionPortalManagerState(void)
 {
 	if (CurrentPgSession == NULL)
@@ -5052,24 +5052,6 @@ HTAB **
 PgCurrentOperatorLookupCacheRef(void)
 {
 	return &PgCurrentSessionParserState()->operator_lookup_cache;
-}
-
-MemoryContext *
-PgCurrentTopPortalContextRef(void)
-{
-	return &PgCurrentSessionPortalManagerState()->top_portal_context;
-}
-
-HTAB **
-PgCurrentPortalHashTableRef(void)
-{
-	return &PgCurrentSessionPortalManagerState()->portal_hash_table;
-}
-
-unsigned int *
-PgCurrentUnnamedPortalCountRef(void)
-{
-	return &PgCurrentSessionPortalManagerState()->unnamed_portal_count;
 }
 
 struct RelationData **
