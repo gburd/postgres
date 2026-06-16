@@ -20075,6 +20075,50 @@ Validation evidence after the backend subsystem split:
   direct threaded TAP all 174 assertions, `check-runtime-lifecycles`, and
   `check-global-lifetimes`.
 
+## Backend Runtime Session Cache Test Split
+
+Lifecycle/preflight note:
+
+- target: split the catalog/cache/module/prepared/invalidation/RI/relmap/reset
+  tail out of the oversized `test_backend_runtime_session.c` file into a
+  narrower `test_backend_runtime_session_cache.c` source while preserving the
+  same SQL-visible test functions and keeping the shared
+  `test_copy_current_user_identity()` helper in the original session source.
+- touched roots/buckets: no runtime roots or lifecycle buckets change; this is
+  a backend-runtime test organization refactor only.
+- owner source files:
+  `src/test/modules/test_backend_runtime/test_backend_runtime_session.c`, new
+  `src/test/modules/test_backend_runtime/test_backend_runtime_session_cache.c`,
+  `src/test/modules/test_backend_runtime/Makefile`,
+  `src/test/modules/test_backend_runtime/meson.build`,
+  `MULTITHREADED_AGENT_REFERENCE.md`, and this state note.
+- legacy symbols/accessors: SQL-visible C functions from
+  `test_session_catalog_lookup_state_is_session_local` through
+  `test_session_reset_closed_state`, plus the static callback/default helpers
+  used only by that moved test family.
+- repeated lifecycle operations: none added; the split preserves existing test
+  bodies and reset cleanup exactly as before.
+- checked primitive decision: no lifecycle primitive or checker rule needed
+  because this is a mechanical test-source split.
+- validation impact: rebuild `src/test/modules/test_backend_runtime`, run its
+  SQL regression control, run `git diff --check`, and then rerun the required
+  process/threaded/lifecycle/global baselines before commit.
+
+Validation evidence after the session cache split:
+
+- `gmake -C src/test/modules/test_backend_runtime` rebuilt the module and
+  linked `test_backend_runtime_session_cache.o` into
+  `test_backend_runtime.dylib`.
+- `gmake -C src/test/modules/test_backend_runtime check` passed the module SQL
+  regression after the split.
+- `git diff --check` passed.
+- `gmake check` passed all 245 process-mode core regression tests.
+- `gmake check-threaded` passed all 245 threaded core regression tests.
+- `gmake check-threaded-world-core` passed `check-threaded-workers` all 245
+  tests, PL/pgSQL all 13 tests, isolation all 129 tests, backend-runtime SQL,
+  direct threaded TAP all 174 assertions, `check-runtime-lifecycles`, and
+  `check-global-lifetimes`.
+
 ## Connection Runtime Lifecycle Refactor
 
 Lifecycle/preflight note:

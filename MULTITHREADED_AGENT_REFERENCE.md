@@ -181,7 +181,12 @@ Important current files:
 - `src/test/modules/test_backend_runtime/test_backend_runtime_pmchild.c`:
   PMChild thread-backend signal and publication-race tests.
 - `src/test/modules/test_backend_runtime/test_backend_runtime_session.c`:
-  core session, cache, identity, and session-reset test functions.
+  core session, SQL loop, tcop, xact callback, database, tablespace, locale,
+  and shared user-identity helper test functions.
+- `src/test/modules/test_backend_runtime/test_backend_runtime_session_cache.c`:
+  session catalog/cache, extension-module, prepared-statement, invalidation,
+  RI, relmap, and session-reset tests split from the broader session test
+  family.
 - `src/test/modules/test_backend_runtime/test_backend_runtime_session_guc.c`:
   runtime/server GUC, session GUC, and generated GUC rebind test functions
   outside the planner/JIT GUC subfamily.

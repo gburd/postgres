@@ -16,6 +16,7 @@ OBJS = \
 	test_backend_runtime_exit.o \
 	test_backend_runtime_pmchild.o \
 	test_backend_runtime_session.o \
+	test_backend_runtime_session_cache.o \
 	test_backend_runtime_session_guc.o \
 	test_backend_runtime_session_guc_planner.o \
 	test_backend_runtime_thread.o \
