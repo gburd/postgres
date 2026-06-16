@@ -20177,3 +20177,16 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o` plus touched owner bridge
   objects, run lifecycle/global scans, focused backend-runtime control, and
   `git diff --check`.
+
+Validation evidence after the transam, cache, and remaining execution selector
+refactor commits:
+
+- `gmake check` passed all 245 core regression tests.
+- `gmake check-threaded` passed all 245 core regression tests under
+  `threaded_smoke.conf`.
+- `gmake check-threaded-workers` passed all 245 core regression tests under
+  `threaded_workers.conf`.
+- Focused validation for the remaining-selector batch also passed: touched
+  object rebuilds, backend link, `gmake check-runtime-lifecycles`, `gmake
+  check-global-lifetimes`, `gmake -C src/test/modules/test_backend_runtime
+  check`, and `git diff --check`.
