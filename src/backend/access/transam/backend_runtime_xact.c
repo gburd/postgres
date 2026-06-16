@@ -14,6 +14,26 @@
 #include "utils/backend_runtime.h"
 #include "../../utils/init/backend_runtime_internal.h"
 
+XactCallbackItem **
+PgCurrentXactCallbacksRef(void)
+{
+	return &PgCurrentSessionXactCallbackState()->xact_callbacks;
+}
+
+SubXactCallbackItem **
+PgCurrentSubXactCallbacksRef(void)
+{
+	return &PgCurrentSessionXactCallbackState()->subxact_callbacks;
+}
+
+MemoryContext
+PgCurrentXactCallbackMemoryContext(void)
+{
+	return PgRuntimeGetOwnedMemoryContext(
+		&PgCurrentSessionXactCallbackState()->xact_callback_context,
+		"transaction callback session state");
+}
+
 int *
 PgCurrentXactIsoLevelRef(void)
 {

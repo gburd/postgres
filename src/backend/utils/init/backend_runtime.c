@@ -1011,6 +1011,7 @@ PgSessionRelMapState *PgCurrentSessionRelMapState(void);
 PgSessionPreparedStatementState *PgCurrentSessionPreparedStatementState(void);
 PgSessionOnCommitState *PgCurrentSessionOnCommitState(void);
 PgSessionSequenceState *PgCurrentSessionSequenceState(void);
+PgSessionXactCallbackState *PgCurrentSessionXactCallbackState(void);
 PgSessionBackupState *PgCurrentSessionBackupState(void);
 PgSessionRegexState *PgCurrentSessionRegexState(void);
 PgSessionPortalManagerState *PgCurrentSessionPortalManagerState(void);
@@ -4821,6 +4822,15 @@ PgCurrentSessionSequenceState(void)
 	return &CurrentPgSession->sequence;
 }
 
+PgSessionXactCallbackState *
+PgCurrentSessionXactCallbackState(void)
+{
+	if (CurrentPgSession == NULL)
+		return &early_session_xact_callbacks;
+
+	return &CurrentPgSession->xact_callbacks;
+}
+
 PgSessionBackupState *
 PgCurrentSessionBackupState(void)
 {
@@ -4976,38 +4986,6 @@ PgCurrentSessionLocaleState(void)
 		PgSessionInitializeLocaleState(locale);
 
 	return locale;
-}
-
-XactCallbackItem **
-PgCurrentXactCallbacksRef(void)
-{
-	if (CurrentPgSession == NULL)
-		return &early_session_xact_callbacks.xact_callbacks;
-
-	return &CurrentPgSession->xact_callbacks.xact_callbacks;
-}
-
-SubXactCallbackItem **
-PgCurrentSubXactCallbacksRef(void)
-{
-	if (CurrentPgSession == NULL)
-		return &early_session_xact_callbacks.subxact_callbacks;
-
-	return &CurrentPgSession->xact_callbacks.subxact_callbacks;
-}
-
-MemoryContext
-PgCurrentXactCallbackMemoryContext(void)
-{
-	PgSessionXactCallbackState *xact_callbacks;
-
-	if (CurrentPgSession == NULL)
-		xact_callbacks = &early_session_xact_callbacks;
-	else
-		xact_callbacks = &CurrentPgSession->xact_callbacks;
-
-	return PgRuntimeGetOwnedMemoryContext(&xact_callbacks->xact_callback_context,
-										  "transaction callback session state");
 }
 
 bool *

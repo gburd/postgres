@@ -134,6 +134,7 @@ extern PgSessionRelMapState *PgCurrentSessionRelMapState(void);
 extern PgSessionPreparedStatementState *PgCurrentSessionPreparedStatementState(void);
 extern PgSessionOnCommitState *PgCurrentSessionOnCommitState(void);
 extern PgSessionSequenceState *PgCurrentSessionSequenceState(void);
+extern PgSessionXactCallbackState *PgCurrentSessionXactCallbackState(void);
 extern PgSessionBackupState *PgCurrentSessionBackupState(void);
 extern PgSessionRegexState *PgCurrentSessionRegexState(void);
 extern PgSessionPortalManagerState *PgCurrentSessionPortalManagerState(void);

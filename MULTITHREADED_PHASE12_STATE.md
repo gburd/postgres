@@ -18559,3 +18559,29 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o`,
   `backend_runtime_backup.o`, and the backend link; rerun lifecycle/global
   scans, threaded regression coverage, and `git diff --check`.
+
+## Transaction Callback Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move transaction callback session compatibility accessors out of
+  `src/backend/utils/init/backend_runtime.c` and into the owner-adjacent
+  `src/backend/access/transam/backend_runtime_xact.c` bridge file.
+- touched roots/buckets: no runtime root ownership changes; existing
+  `PgSession.xact_callbacks` bucket only.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  current-pointer and early fallback owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for internal current
+  transaction callback helper visibility, and
+  `src/backend/access/transam/backend_runtime_xact.c`.
+- legacy symbols/accessors: `PgCurrentSessionXactCallbackState()`,
+  `PgCurrentXactCallbacksRef()`, `PgCurrentSubXactCallbacksRef()`, and
+  `PgCurrentXactCallbackMemoryContext()`.
+- repeated lifecycle operations: none; this only relocates pointer accessors
+  and leaves callback init/adopt/reset/teardown behavior unchanged.
+- checked primitive decision: no lifecycle primitive is needed because the
+  existing `PgSession.xact_callbacks` lifecycle row and session bucket
+  definition continue to cover the bucket.
+- validation impact: rebuild `backend_runtime.o`, `backend_runtime_xact.o`,
+  and the backend link; rerun lifecycle/global scans, threaded regression
+  coverage, and `git diff --check`.
