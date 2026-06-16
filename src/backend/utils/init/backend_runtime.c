@@ -758,7 +758,6 @@ static void PgRuntimeInitializeServerGUCState(PgRuntimeServerGUCState *server_gu
 static void PgRuntimeAdoptEarlyServerGUCState(PgRuntime *runtime);
 static bool PgRuntimeServerGUCStateHasConfigPaths(PgRuntimeServerGUCState *server_guc);
 static void PgRuntimeInitializeExtensionModuleState(PgRuntimeExtensionModuleState *extension_modules);
-static MemoryContext PgRuntimeEnsureExtensionModuleMemoryContext(PgRuntimeExtensionModuleState *extension_modules);
 static void PgRuntimeAdoptEarlyExtensionModuleState(PgRuntime *runtime);
 PgRuntimeServerGUCState *PgCurrentRuntimeServerGUCState(void);
 static void PgConnectionAdoptEarlyIdentity(PgConnection *connection);
@@ -1127,7 +1126,7 @@ PgRuntimeInitializeExtensionModuleState(PgRuntimeExtensionModuleState *extension
 	extension_modules->rendezvous_hash = NULL;
 }
 
-static MemoryContext
+MemoryContext
 PgRuntimeEnsureExtensionModuleMemoryContext(PgRuntimeExtensionModuleState *extension_modules)
 {
 	Assert(extension_modules != NULL);
@@ -4226,45 +4225,6 @@ PgCurrentRuntimeExtensionModuleState(void)
 	return &CurrentPgRuntime->extension_modules;
 }
 
-MemoryContext
-PgCurrentRuntimeExtensionModuleMemoryContext(void)
-{
-	return PgRuntimeEnsureExtensionModuleMemoryContext(PgCurrentRuntimeExtensionModuleState());
-}
-
-MemoryContext *
-PgCurrentPgPlanAdviceContextRef(void)
-{
-	return &PgCurrentRuntimeExtensionModuleState()->pg_plan_advice_context;
-}
-
-List **
-PgCurrentPgPlanAdviceAdvisorHookListRef(void)
-{
-	PgRuntimeExtensionModuleState *extension_modules;
-
-	extension_modules = PgCurrentRuntimeExtensionModuleState();
-	return &extension_modules->pg_plan_advice_advisor_hook_list;
-}
-
-MemoryContext *
-PgCurrentBloomContextRef(void)
-{
-	return &PgCurrentRuntimeExtensionModuleState()->bloom_context;
-}
-
-HTAB **
-PgCurrentRendezvousHashRef(void)
-{
-	return &PgCurrentRuntimeExtensionModuleState()->rendezvous_hash;
-}
-
-PgSessionPgcryptoDesState *
-PgCurrentPgcryptoDesState(void)
-{
-	return &PgCurrentSessionExtensionModuleState()->pgcrypto_des;
-}
-
 PgSessionTablespaceState *
 PgCurrentSessionTablespaceState(void)
 {
@@ -5173,24 +5133,6 @@ PgCurrentExecutionExtensionState(void)
 		return &early_execution_extension;
 
 	return &CurrentPgExecution->extension;
-}
-
-PgExecutionDebugHandler *
-PgCurrentPgcryptoDebugHandlerRef(void)
-{
-	return &PgCurrentExecutionExtensionState()->pgcrypto_debug_handler;
-}
-
-bool *
-PgCurrentCreatingExtensionRef(void)
-{
-	return &PgCurrentExecutionExtensionState()->creating;
-}
-
-Oid *
-PgCurrentExtensionObjectRef(void)
-{
-	return &PgCurrentExecutionExtensionState()->current_object;
 }
 
 PgExecutionMatViewState *

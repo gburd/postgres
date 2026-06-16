@@ -19271,6 +19271,47 @@ Lifecycle/preflight note:
   `backend_runtime_tcop.o`, and the backend link; rerun lifecycle/global
   scans, focused backend-runtime coverage, and `git diff --check`.
 
+## Extension Module Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move extension-module compatibility leaf accessors out of
+  `backend_runtime.c` and into an owner-adjacent `utils/fmgr` runtime bridge
+  while leaving runtime/session/execution current-state selection and runtime
+  extension-module memory-context construction in `backend_runtime.c`.
+- touched roots/buckets: existing `PgRuntime.extension_modules`,
+  `PgSession.extension_modules`, and `PgExecution.extension` buckets only; no
+  new runtime roots.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  fallback-aware root/session/execution selector owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for internal extension
+  selector/helper visibility, `src/backend/utils/fmgr/backend_runtime_extension.c`,
+  `src/backend/utils/fmgr/Makefile`, `src/backend/utils/fmgr/meson.build`,
+  `GNUmakefile.in`, `src/tools/runtime_lifecycle/check_runtime_lifecycles.pl`,
+  `MULTITHREADED_RUNTIME_OWNERS.tsv`, and
+  `MULTITHREADED_AGENT_REFERENCE.md`.
+- legacy symbols/accessors: `PgCurrentRuntimeExtensionModuleState()`,
+  `PgRuntimeEnsureExtensionModuleMemoryContext()`,
+  `PgCurrentRuntimeExtensionModuleMemoryContext()`,
+  `PgCurrentPgPlanAdviceContextRef()`,
+  `PgCurrentPgPlanAdviceAdvisorHookListRef()`,
+  `PgCurrentBloomContextRef()`, `PgCurrentRendezvousHashRef()`,
+  `PgCurrentPgcryptoDesState()`, `PgCurrentExecutionExtensionState()`,
+  `PgCurrentPgcryptoDebugHandlerRef()`,
+  `PgCurrentCreatingExtensionRef()`, and
+  `PgCurrentExtensionObjectRef()`.
+- repeated lifecycle operations: none; this only relocates borrowed pointer
+  accessors and keeps extension-module initialization, early adoption,
+  memory-context creation, session reset, and execution reset unchanged.
+- checked primitive decision: reuse the existing extension lifecycle rows and
+  bucket definitions; add `backend_runtime_extension.c` to lifecycle-checker
+  source coverage and update owner-map rows so moved accessors are checked
+  against the owner-adjacent bridge.
+- validation impact: rebuild `backend_runtime.o`,
+  `backend_runtime_extension.o`, and the backend link; rerun
+  lifecycle/global scans, focused backend-runtime coverage, and
+  `git diff --check`.
+
 ## Tcop Runtime Accessor Refactor
 
 Lifecycle/preflight note:

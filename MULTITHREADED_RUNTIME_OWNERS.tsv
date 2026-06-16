@@ -282,7 +282,9 @@ auto_explain_log_extension_options	PgSession	extension_modules	auto_explain_log_
 extension_options	PgSession	extension_modules	auto_explain_extension_options	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	auto_explain parsed custom GUC extra pointer
 nesting_level	PgExecution	extension	auto_explain_nesting_level	PgCurrentExecutionExtensionState	src/include/utils/backend_runtime.h	auto_explain executor nesting depth
 current_query_sampled	PgExecution	extension	auto_explain_current_query_sampled	PgCurrentExecutionExtensionState	src/include/utils/backend_runtime.h	auto_explain top-level query sampling flag
-debug_handler	PgExecution	extension	pgcrypto_debug_handler	PgCurrentPgcryptoDebugHandlerRef	src/include/utils/backend_runtime.h	pgcrypto PGP temporary debug callback
+debug_handler	PgExecution	extension	pgcrypto_debug_handler	PgCurrentPgcryptoDebugHandlerRef	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto PGP temporary debug callback
+creating_extension	PgExecution	extension	creating	PgCurrentCreatingExtensionRef	src/backend/utils/fmgr/backend_runtime_extension.c	current extension-creation state for extension dependency tracking
+current_extension_object	PgExecution	extension	current_object	PgCurrentExtensionObjectRef	src/backend/utils/fmgr/backend_runtime_extension.c	current extension object OID for extension dependency tracking
 similarity_threshold	PgSession	extension_modules	pg_trgm_similarity_threshold	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	pg_trgm custom GUC backing scalar
 word_similarity_threshold	PgSession	extension_modules	pg_trgm_word_similarity_threshold	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	pg_trgm custom GUC backing scalar
 strict_word_similarity_threshold	PgSession	extension_modules	pg_trgm_strict_word_similarity_threshold	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	pg_trgm custom GUC backing scalar
@@ -292,10 +294,10 @@ pg_plan_advice_always_explain_supplied_advice	PgSession	extension_modules	pg_pla
 pg_plan_advice_feedback_warnings	PgSession	extension_modules	pg_plan_advice_feedback_warnings	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	pg_plan_advice custom GUC backing bool
 pg_plan_advice_trace_mask	PgSession	extension_modules	pg_plan_advice_trace_mask	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	pg_plan_advice custom GUC backing bool
 pgpa_planner_generate_advice	PgSession	extension_modules	pg_plan_advice_generate_advice	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	pg_plan_advice request counter
-pgpa_memory_context	PgRuntime	extension_modules	pg_plan_advice_context	PgCurrentPgPlanAdviceContextRef	src/include/utils/backend_runtime.h	pg_plan_advice runtime-wide advisor memory context
-advisor_hook_list	PgRuntime	extension_modules	pg_plan_advice_advisor_hook_list	PgCurrentPgPlanAdviceAdvisorHookListRef	src/include/utils/backend_runtime.h	pg_plan_advice runtime-wide advisor hook list
-bloom relation option context	PgRuntime	extension_modules	bloom_context	PgCurrentBloomContextRef	src/include/utils/backend_runtime.h	bloom runtime-wide relation-option name allocation context
-rendezvousHash	PgRuntime	extension_modules	rendezvous_hash	PgCurrentRendezvousHashRef	src/include/utils/backend_runtime.h	runtime-owned dynamic-library rendezvous-variable hash allocated in PgRuntime.extension_modules.memory_context so thread backend TopMemoryContext reclamation does not invalidate the registry
+pgpa_memory_context	PgRuntime	extension_modules	pg_plan_advice_context	PgCurrentPgPlanAdviceContextRef	src/backend/utils/fmgr/backend_runtime_extension.c	pg_plan_advice runtime-wide advisor memory context
+advisor_hook_list	PgRuntime	extension_modules	pg_plan_advice_advisor_hook_list	PgCurrentPgPlanAdviceAdvisorHookListRef	src/backend/utils/fmgr/backend_runtime_extension.c	pg_plan_advice runtime-wide advisor hook list
+bloom relation option context	PgRuntime	extension_modules	bloom_context	PgCurrentBloomContextRef	src/backend/utils/fmgr/backend_runtime_extension.c	bloom runtime-wide relation-option name allocation context
+rendezvousHash	PgRuntime	extension_modules	rendezvous_hash	PgCurrentRendezvousHashRef	src/backend/utils/fmgr/backend_runtime_extension.c	runtime-owned dynamic-library rendezvous-variable hash allocated in PgRuntime.extension_modules.memory_context so thread backend TopMemoryContext reclamation does not invalidate the registry
 archive_directory	PgBackend	extension_modules	basic_archive_archive_directory	PgCurrentBasicArchiveDirectoryRef	src/include/utils/backend_runtime.h	basic_archive custom GUC backing string
 apw_state	PgBackend	extension_modules	pg_prewarm_autoprewarm_state	PgCurrentBackendExtensionModuleState	src/include/utils/backend_runtime.h	pg_prewarm autoprewarm borrowed shared-state attachment pointer
 pg_stash_advice_stash_name	PgSession	extension_modules	pg_stash_advice_stash_name	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	pg_stash_advice custom GUC backing string
@@ -315,36 +317,36 @@ avc_num_caches	PgSession	extension_modules	sepgsql_avc_num_caches	PgCurrentSessi
 avc_lru_hint	PgSession	extension_modules	sepgsql_avc_lru_hint	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	sepgsql userspace AVC reclaim pointer
 avc_threshold	PgSession	extension_modules	sepgsql_avc_threshold	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	sepgsql userspace AVC reclaim threshold
 avc_unlabeled	PgSession	extension_modules	sepgsql_avc_unlabeled	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	sepgsql cached unlabeled SELinux label
-pgcrypto DES state	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/include/utils/backend_runtime.h	pgcrypto DES crypt generated lookup tables and per-session key/salt/output cache
-inv_key_perm	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/include/utils/backend_runtime.h	pgcrypto DES inverted key permutation table
-u_key_perm	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/include/utils/backend_runtime.h	pgcrypto DES key permutation table
-inv_comp_perm	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/include/utils/backend_runtime.h	pgcrypto DES inverted compression permutation table
-u_sbox	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/include/utils/backend_runtime.h	pgcrypto DES generated S-box table
-un_pbox	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/include/utils/backend_runtime.h	pgcrypto DES inverted P-box table
-saltbits	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/include/utils/backend_runtime.h	pgcrypto DES current salt cache bits
-old_salt	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/include/utils/backend_runtime.h	pgcrypto DES previous salt cache key
-bits28	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/include/utils/backend_runtime.h	pgcrypto DES 28-bit mask pointer
-bits24	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/include/utils/backend_runtime.h	pgcrypto DES 24-bit mask pointer
-init_perm	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/include/utils/backend_runtime.h	pgcrypto DES initial permutation table
-final_perm	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/include/utils/backend_runtime.h	pgcrypto DES final permutation table
-en_keysl	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/include/utils/backend_runtime.h	pgcrypto DES encryption key schedule left halves
-en_keysr	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/include/utils/backend_runtime.h	pgcrypto DES encryption key schedule right halves
-de_keysl	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/include/utils/backend_runtime.h	pgcrypto DES decryption key schedule left halves
-de_keysr	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/include/utils/backend_runtime.h	pgcrypto DES decryption key schedule right halves
-des_initialised	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/include/utils/backend_runtime.h	pgcrypto DES generated table initialization flag
-m_sbox	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/include/utils/backend_runtime.h	pgcrypto DES merged S-box table
-psbox	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/include/utils/backend_runtime.h	pgcrypto DES P-box output masks
-ip_maskl	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/include/utils/backend_runtime.h	pgcrypto DES initial permutation left masks
-ip_maskr	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/include/utils/backend_runtime.h	pgcrypto DES initial permutation right masks
-fp_maskl	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/include/utils/backend_runtime.h	pgcrypto DES final permutation left masks
-fp_maskr	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/include/utils/backend_runtime.h	pgcrypto DES final permutation right masks
-key_perm_maskl	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/include/utils/backend_runtime.h	pgcrypto DES key permutation left masks
-key_perm_maskr	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/include/utils/backend_runtime.h	pgcrypto DES key permutation right masks
-comp_maskl	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/include/utils/backend_runtime.h	pgcrypto DES compression left masks
-comp_maskr	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/include/utils/backend_runtime.h	pgcrypto DES compression right masks
-old_rawkey0	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/include/utils/backend_runtime.h	pgcrypto DES previous raw key high word
-old_rawkey1	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/include/utils/backend_runtime.h	pgcrypto DES previous raw key low word
-crypt DES output	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/include/utils/backend_runtime.h	pgcrypto DES fixed output buffer returned by px_crypt_des
+pgcrypto DES state	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES crypt generated lookup tables and per-session key/salt/output cache
+inv_key_perm	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES inverted key permutation table
+u_key_perm	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES key permutation table
+inv_comp_perm	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES inverted compression permutation table
+u_sbox	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES generated S-box table
+un_pbox	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES inverted P-box table
+saltbits	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES current salt cache bits
+old_salt	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES previous salt cache key
+bits28	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES 28-bit mask pointer
+bits24	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES 24-bit mask pointer
+init_perm	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES initial permutation table
+final_perm	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES final permutation table
+en_keysl	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES encryption key schedule left halves
+en_keysr	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES encryption key schedule right halves
+de_keysl	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES decryption key schedule left halves
+de_keysr	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES decryption key schedule right halves
+des_initialised	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES generated table initialization flag
+m_sbox	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES merged S-box table
+psbox	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES P-box output masks
+ip_maskl	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES initial permutation left masks
+ip_maskr	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES initial permutation right masks
+fp_maskl	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES final permutation left masks
+fp_maskr	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES final permutation right masks
+key_perm_maskl	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES key permutation left masks
+key_perm_maskr	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES key permutation right masks
+comp_maskl	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES compression left masks
+comp_maskr	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES compression right masks
+old_rawkey0	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES previous raw key high word
+old_rawkey1	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES previous raw key low word
+crypt DES output	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES fixed output buffer returned by px_crypt_des
 PLy_procedure_cache	PgSession	extension_modules	plpython_procedure_cache	PgCurrentPLpythonProcedureCacheRef	src/include/utils/backend_runtime.h	PL/Python procedure cache hash
 PL/Python session context	PgSession	extension_modules	plpython_memory_context	PgCurrentPLpythonMemoryContextRef	src/include/utils/backend_runtime.h	PL/Python session-owned parent context for procedure, SPI plan, cursor, and inline block contexts
 plperl_inited	PgSession	extension_modules	plperl_inited	PgCurrentPLperlInitedRef	src/include/utils/backend_runtime.h	PL/Perl per-session module initialization flag

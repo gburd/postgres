@@ -28,6 +28,7 @@ my @sources = (
 	'src/backend/utils/activity/backend_status.c',
 	'src/backend/utils/adt/backend_runtime_pseudorandom.c',
 	'src/backend/utils/adt/backend_runtime_ri.c',
+	'src/backend/utils/fmgr/backend_runtime_extension.c',
 	'src/backend/utils/misc/backend_runtime_guc.c',
 	'src/backend/utils/misc/backend_runtime_utility.c',
 	'src/backend/utils/misc/timeout.c',

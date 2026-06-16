@@ -44,6 +44,10 @@ Important current files:
   bridge accessors for SQL random-function session state. Add future
   pseudorandom-function compatibility shims here rather than growing
   `backend_runtime.c`.
+- `src/backend/utils/fmgr/backend_runtime_extension.c`: fork-owned runtime
+  bridge accessors for extension and dynamic-library module state. Keep
+  root runtime/session/execution selection and extension-module lifecycle
+  orchestration in `backend_runtime.c`.
 - `src/backend/optimizer/util/backend_runtime_optimizer.c`: fork-owned
   runtime bridge accessors for optimizer session state. Add future optimizer
   compatibility shims here rather than growing `backend_runtime.c`.
