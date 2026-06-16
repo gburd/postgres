@@ -233,6 +233,7 @@ extern PgBackendParallelState *PgCurrentBackendParallelState(void);
 extern PgBackendPendingInterruptState *PgCurrentPendingInterrupts(void);
 extern PgBackendInterruptHoldoffState *PgCurrentInterruptHoldoffs(void);
 
+extern void PgSessionInitializeDateTimeState(PgSessionDateTimeState *datetime);
 extern void PgSessionInitializeVacuumState(PgSessionVacuumState *vacuum);
 extern void PgSessionInitializeLockWaitState(PgSessionLockWaitState *lock_wait);
 extern void PgSessionInitializeParserState(PgSessionParserState *parser);
@@ -250,6 +251,7 @@ extern void PgSessionInitializeEncodingState(PgSessionEncodingState *encoding);
 extern void PgSessionInitializeTempFileState(PgSessionTempFileState *temp_file);
 extern void PgSessionInitializePlanCacheState(PgSessionPlanCacheState *plan_cache);
 extern void PgSessionInitializeNamespaceState(PgSessionNamespaceState *namespace_state);
+extern void PgSessionInitializeLocaleState(PgSessionLocaleState *locale);
 extern void PgBackendInitializeParallelState(PgBackendParallelState *parallel);
 extern void PgBackendInitializeBufferState(PgBackendBufferState *buffers);
 extern void PgBackendInitializeStorageState(PgBackendStorageState *storage);

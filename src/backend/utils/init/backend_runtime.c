@@ -777,7 +777,6 @@ static void PgSessionInitializeTablespaceState(PgSessionTablespaceState *tablesp
 static void PgSessionAdoptEarlyTablespaceState(PgSession *session);
 static void PgSessionInitializeBinaryUpgradeState(PgSessionBinaryUpgradeState *binary_upgrade);
 static void PgSessionAdoptEarlyBinaryUpgradeState(PgSession *session);
-static void PgSessionInitializeDateTimeState(PgSessionDateTimeState *datetime);
 static void PgSessionAdoptEarlyDateTimeState(PgSession *session);
 static void PgSessionInitializeTextSearchState(PgSessionTextSearchState *text_search);
 static void PgSessionAdoptEarlyTextSearchState(PgSession *session);
@@ -869,7 +868,6 @@ void PgSessionInitializePlanCacheState(PgSessionPlanCacheState *plan_cache);
 static void PgSessionAdoptEarlyPlanCacheState(PgSession *session);
 void PgSessionInitializeNamespaceState(PgSessionNamespaceState *namespace_state);
 static void PgSessionAdoptEarlyNamespaceState(PgSession *session);
-static void PgSessionInitializeLocaleState(PgSessionLocaleState *locale);
 static void PgSessionAdoptEarlyLocaleState(PgSession *session);
 static void PgBackendResetCoreState(PgBackendCoreState *core);
 static void PgBackendInitializeCommandState(PgBackendCommandState *command);
@@ -1382,7 +1380,7 @@ PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED(PgSessionAdoptEarlyBinaryUpgradeState,
 										  early_session_binary_upgrade,
 										  PgSessionInitializeBinaryUpgradeState)
 
-static void
+void
 PgSessionInitializeDateTimeState(PgSessionDateTimeState *datetime)
 {
 	Assert(datetime != NULL);
@@ -2655,7 +2653,7 @@ PgSessionAdoptEarlyNamespaceState(PgSession *session)
 	PgSessionInitializeNamespaceState(&early_session_namespace);
 }
 
-static void
+void
 PgSessionInitializeLocaleState(PgSessionLocaleState *locale)
 {
 	Assert(locale != NULL);
@@ -4268,22 +4266,6 @@ PgCurrentSessionBinaryUpgradeState(void)
 	return binary_upgrade;
 }
 
-PgSessionDateTimeState *
-PgCurrentSessionDateTimeState(void)
-{
-	PgSessionDateTimeState *datetime;
-
-	if (CurrentPgSession == NULL)
-		datetime = &early_session_datetime;
-	else
-		datetime = &CurrentPgSession->datetime;
-
-	if (!datetime->initialized)
-		PgSessionInitializeDateTimeState(datetime);
-
-	return datetime;
-}
-
 PgSessionTextSearchState *
 PgCurrentSessionTextSearchState(void)
 {
@@ -4896,22 +4878,6 @@ PgCurrentSessionNamespaceState(void)
 		PgSessionInitializeNamespaceState(namespace_state);
 
 	return namespace_state;
-}
-
-PgSessionLocaleState *
-PgCurrentSessionLocaleState(void)
-{
-	PgSessionLocaleState *locale;
-
-	if (CurrentPgSession == NULL)
-		locale = &early_session_locale;
-	else
-		locale = &CurrentPgSession->locale;
-
-	if (!locale->initialized)
-		PgSessionInitializeLocaleState(locale);
-
-	return locale;
 }
 
 void **

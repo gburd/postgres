@@ -19894,3 +19894,33 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o` and
   `backend_runtime_parser.o`, run lifecycle/global scans, focused
   backend-runtime control, and `git diff --check`.
+
+## Session DateTime And Locale Selector Refactor
+
+Lifecycle/preflight note:
+
+- target: move the fallback-aware `PgCurrentSessionDateTimeState()` and
+  `PgCurrentSessionLocaleState()` selectors out of `backend_runtime.c` and
+  into the broad session-owned `backend_runtime_session.c` bridge beside the
+  legacy datetime/timezone and locale accessors that already use them.
+- touched roots/buckets: existing `PgSession.datetime` and `PgSession.locale`
+  buckets only; no new runtime roots.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  session object construction and early-adoption owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for exported initializer
+  declarations, `src/backend/utils/init/backend_runtime_session.c`, and this
+  state note.
+- legacy symbols/accessors: `PgCurrentSessionDateTimeState()`,
+  `PgCurrentDateStyleRef()`, `PgCurrentDateOrderRef()`,
+  `PgCurrentIntervalStyleRef()`, timezone accessors,
+  `PgCurrentSessionLocaleState()`, `PgCurrentLocaleState()`, and locale/ICU
+  compatibility accessors.
+- repeated lifecycle operations: none; the move reuses the existing
+  datetime/locale initialization, early reset, adoption, and closed-state
+  cleanup paths.
+- checked primitive decision: reuse the checked session bucket rows and the
+  existing session bridge source coverage; export only the initializers needed
+  by the owner-adjacent selectors.
+- validation impact: rebuild `backend_runtime.o` and
+  `backend_runtime_session.o`, run lifecycle/global scans, focused
+  backend-runtime control, and `git diff --check`.

@@ -3,9 +3,9 @@
  * backend_runtime_session.c
  *	  Runtime bridge accessors for session-owned compatibility state.
  *
- * These accessors keep session-facing legacy names mapped onto the current
- * PgSession while leaving fallback selection, construction, and top-level
- * lifecycle orchestration in backend_runtime.c.
+ * These accessors keep session-facing legacy names mapped onto the current or
+ * early PgSession while leaving construction and top-level lifecycle
+ * orchestration in backend_runtime.c.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  *
@@ -19,6 +19,19 @@
 #include "utils/memutils.h"
 #include "backend_runtime_internal.h"
 
+PgSessionDateTimeState *
+PgCurrentSessionDateTimeState(void)
+{
+	PgSessionDateTimeState *datetime;
+
+	datetime = &PgCurrentOrEarlySession()->datetime;
+
+	if (!datetime->initialized)
+		PgSessionInitializeDateTimeState(datetime);
+
+	return datetime;
+}
+
 PgSessionNamespaceState *
 PgCurrentNamespaceState(void)
 {
@@ -29,6 +42,19 @@ char **
 PgCurrentNamespaceSearchPathRef(void)
 {
 	return &PgCurrentSessionNamespaceState()->namespace_search_path_value;
+}
+
+PgSessionLocaleState *
+PgCurrentSessionLocaleState(void)
+{
+	PgSessionLocaleState *locale;
+
+	locale = &PgCurrentOrEarlySession()->locale;
+
+	if (!locale->initialized)
+		PgSessionInitializeLocaleState(locale);
+
+	return locale;
 }
 
 PgSessionLocaleState *

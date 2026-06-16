@@ -24,12 +24,12 @@ Important current files:
   catalog/cache accessor shims here rather than growing `backend_runtime.c`.
 - `src/backend/utils/init/backend_runtime_session.c`: fork-owned runtime
   bridge accessors for broad session-owned compatibility state that does not
-  yet have a narrower owner file, including namespace, locale, database,
-  tablespace, binary-upgrade, text-search, extension, invalidation, relmap,
-  prepared-statement, on-commit, and sequence shims. Keep fallback-aware
-  current-bucket selectors in `backend_runtime.c` or the narrower
-  owner-adjacent bridge, and expose shared current-or-early helpers only
-  through `backend_runtime_internal.h`.
+  yet have a narrower owner file, including datetime/timezone, namespace,
+  locale, database, tablespace, binary-upgrade, text-search, extension,
+  invalidation, relmap, prepared-statement, on-commit, and sequence shims. Keep
+  fallback-aware current-bucket selectors here only for the broad session
+  bridge or in narrower owner-adjacent files, and expose shared
+  current-or-early helpers only through `backend_runtime_internal.h`.
 - `src/backend/utils/init/backend_runtime_teardown.c`: fork-owned closed-state
   reset/teardown owner for `PgBackend`, `PgSession`, and `PgExecution`.
   Keep root object construction, current-pointer installation, and early
