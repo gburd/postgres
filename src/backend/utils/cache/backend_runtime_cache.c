@@ -1,11 +1,11 @@
 /*-------------------------------------------------------------------------
  *
  * backend_runtime_cache.c
- *	  Runtime bridge accessors for session-owned cache state.
+ *	  Runtime bridge accessors for cache state.
  *
  * These accessors keep legacy cache subsystem names mapped onto the current
- * PgSession while leaving runtime construction and top-level orchestration in
- * utils/init/backend_runtime.c.
+ * PgSession/PgExecution while leaving runtime construction and top-level
+ * orchestration in utils/init/backend_runtime.c.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  *
@@ -256,6 +256,156 @@ int *
 PgCurrentEventTriggerCacheStateRef(void)
 {
 	return &PgCurrentSessionCatalogLookupState()->event_trigger_cache_state;
+}
+
+HTAB **
+PgCurrentUncommittedEnumTypesRef(void)
+{
+	return &PgCurrentExecutionCatalogState()->uncommitted_enum_types;
+}
+
+HTAB **
+PgCurrentUncommittedEnumValuesRef(void)
+{
+	return &PgCurrentExecutionCatalogState()->uncommitted_enum_values;
+}
+
+Oid *
+PgCurrentReindexedHeapRef(void)
+{
+	return &PgCurrentExecutionCatalogState()->currently_reindexed_heap;
+}
+
+Oid *
+PgCurrentReindexedIndexRef(void)
+{
+	return &PgCurrentExecutionCatalogState()->currently_reindexed_index;
+}
+
+List **
+PgCurrentPendingReindexedIndexesRef(void)
+{
+	return &PgCurrentExecutionCatalogState()->pending_reindexed_indexes;
+}
+
+int *
+PgCurrentReindexingNestLevelRef(void)
+{
+	return &PgCurrentExecutionCatalogState()->reindexing_nest_level;
+}
+
+struct PendingRelDelete **
+PgCurrentPendingRelDeletesRef(void)
+{
+	return &PgCurrentExecutionCatalogState()->pending_rel_deletes;
+}
+
+HTAB **
+PgCurrentPendingSyncHashRef(void)
+{
+	return &PgCurrentExecutionCatalogState()->pending_sync_hash;
+}
+
+CatCInProgress **
+PgCurrentCatCacheInProgressStackRef(void)
+{
+	return &PgCurrentExecutionCatalogCacheState()->catcache_in_progress_stack;
+}
+
+InProgressEnt **
+PgCurrentRelcacheInProgressListRef(void)
+{
+	return &PgCurrentExecutionCatalogCacheState()->relcache_in_progress_list;
+}
+
+int *
+PgCurrentRelcacheInProgressListLenRef(void)
+{
+	return &PgCurrentExecutionCatalogCacheState()->relcache_in_progress_list_len;
+}
+
+int *
+PgCurrentRelcacheInProgressListMaxLenRef(void)
+{
+	return &PgCurrentExecutionCatalogCacheState()->relcache_in_progress_list_maxlen;
+}
+
+Oid *
+PgCurrentRelcacheEOXactList(void)
+{
+	return PgCurrentExecutionCatalogCacheState()->relcache_eoxact_list;
+}
+
+int *
+PgCurrentRelcacheEOXactListLenRef(void)
+{
+	return &PgCurrentExecutionCatalogCacheState()->relcache_eoxact_list_len;
+}
+
+bool *
+PgCurrentRelcacheEOXactListOverflowedRef(void)
+{
+	return &PgCurrentExecutionCatalogCacheState()->relcache_eoxact_list_overflowed;
+}
+
+TupleDesc **
+PgCurrentRelcacheEOXactTupleDescArrayRef(void)
+{
+	return &PgCurrentExecutionCatalogCacheState()->relcache_eoxact_tupledesc_array;
+}
+
+int *
+PgCurrentRelcacheNextEOXactTupleDescNumRef(void)
+{
+	return &PgCurrentExecutionCatalogCacheState()->relcache_next_eoxact_tupledesc_num;
+}
+
+int *
+PgCurrentRelcacheEOXactTupleDescArrayLenRef(void)
+{
+	return &PgCurrentExecutionCatalogCacheState()->relcache_eoxact_tupledesc_array_len;
+}
+
+PgExecutionRelMapFile *
+PgCurrentRelMapActiveSharedUpdatesRef(void)
+{
+	return &PgCurrentExecutionRelMapState()->active_shared_updates;
+}
+
+PgExecutionRelMapFile *
+PgCurrentRelMapActiveLocalUpdatesRef(void)
+{
+	return &PgCurrentExecutionRelMapState()->active_local_updates;
+}
+
+PgExecutionRelMapFile *
+PgCurrentRelMapPendingSharedUpdatesRef(void)
+{
+	return &PgCurrentExecutionRelMapState()->pending_shared_updates;
+}
+
+PgExecutionRelMapFile *
+PgCurrentRelMapPendingLocalUpdatesRef(void)
+{
+	return &PgCurrentExecutionRelMapState()->pending_local_updates;
+}
+
+PgExecutionInvalMessageArray *
+PgCurrentInvalMessageArrays(void)
+{
+	return PgCurrentExecutionInvalidationState()->message_arrays;
+}
+
+struct TransInvalidationInfo **
+PgCurrentTransInvalInfoRef(void)
+{
+	return &PgCurrentExecutionInvalidationState()->trans_info;
+}
+
+struct InvalidationInfo **
+PgCurrentInplaceInvalInfoRef(void)
+{
+	return &PgCurrentExecutionInvalidationState()->inplace_info;
 }
 
 struct _SPI_plan **

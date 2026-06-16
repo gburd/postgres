@@ -18872,3 +18872,33 @@ Lifecycle/preflight note:
 - validation impact: rebuild `backend_runtime.o`,
   `backend_runtime_vacuum.o`, and the backend link; rerun lifecycle/global
   scans, threaded regression coverage, and `git diff --check`.
+
+## Execution Cache Runtime Accessor Refactor
+
+Lifecycle/preflight note:
+
+- target: move execution-owned catalog/cache/relmap/invalidation compatibility
+  accessors out of `src/backend/utils/init/backend_runtime.c` and into the
+  existing owner-adjacent
+  `src/backend/utils/cache/backend_runtime_cache.c` bridge file.
+- touched roots/buckets: no runtime root ownership changes; existing
+  `PgExecution.catalog`, `PgExecution.catalog_cache`, `PgExecution.relmap`,
+  and `PgExecution.invalidation` buckets only.
+- owner source files: `src/backend/utils/init/backend_runtime.c` as the
+  current-pointer and early fallback owner,
+  `src/backend/utils/init/backend_runtime_internal.h` for internal current
+  execution cache helper visibility, and
+  `src/backend/utils/cache/backend_runtime_cache.c` for the relocated bridge
+  accessors.
+- legacy symbols/accessors: uncommitted enum, reindex/pending rel-delete,
+  pending sync, catcache/relcache in-progress and EOXact accessors, execution
+  relmapper update accessors, and invalidation message/info accessors.
+- repeated lifecycle operations: none; this only relocates pointer accessors
+  and leaves execution cache initialization/adoption/reset behavior unchanged.
+- checked primitive decision: no lifecycle primitive is needed because the
+  existing execution catalog/cache/relmap/invalidation lifecycle rows and
+  bucket definitions continue to cover the buckets; the cache bridge owns no
+  lifecycle actions.
+- validation impact: rebuild `backend_runtime.o`,
+  `backend_runtime_cache.o`, and the backend link; rerun lifecycle/global
+  scans, threaded regression coverage, and `git diff --check`.

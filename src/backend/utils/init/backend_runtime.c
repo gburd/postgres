@@ -1042,10 +1042,10 @@ static PgExecutionTransactionCleanupState *PgCurrentExecutionTransactionCleanupS
 static PgExecutionReplicationScratchState *PgCurrentExecutionReplicationScratchState(void);
 PgExecutionGUCErrorState *PgCurrentExecutionGUCErrorState(void);
 static PgExecutionAsyncState *PgCurrentExecutionAsyncState(void);
-static PgExecutionCatalogState *PgCurrentExecutionCatalogState(void);
-static PgExecutionCatalogCacheState *PgCurrentExecutionCatalogCacheState(void);
-static PgExecutionRelMapState *PgCurrentExecutionRelMapState(void);
-static PgExecutionInvalidationState *PgCurrentExecutionInvalidationState(void);
+PgExecutionCatalogState *PgCurrentExecutionCatalogState(void);
+PgExecutionCatalogCacheState *PgCurrentExecutionCatalogCacheState(void);
+PgExecutionRelMapState *PgCurrentExecutionRelMapState(void);
+PgExecutionInvalidationState *PgCurrentExecutionInvalidationState(void);
 static PgExecutionTwoPhaseRecordState *PgCurrentExecutionTwoPhaseRecordState(void);
 PgExecutionRegexState *PgCurrentExecutionRegexState(void);
 static PgExecutionValgrindState *PgCurrentExecutionValgrindState(void);
@@ -5537,7 +5537,7 @@ PgCurrentTryAdvanceTailRef(void)
 	return &PgCurrentExecutionAsyncState()->try_advance_tail;
 }
 
-static PgExecutionCatalogState *
+PgExecutionCatalogState *
 PgCurrentExecutionCatalogState(void)
 {
 	if (CurrentPgExecution == NULL)
@@ -5546,55 +5546,7 @@ PgCurrentExecutionCatalogState(void)
 	return &CurrentPgExecution->catalog;
 }
 
-HTAB **
-PgCurrentUncommittedEnumTypesRef(void)
-{
-	return &PgCurrentExecutionCatalogState()->uncommitted_enum_types;
-}
-
-HTAB **
-PgCurrentUncommittedEnumValuesRef(void)
-{
-	return &PgCurrentExecutionCatalogState()->uncommitted_enum_values;
-}
-
-Oid *
-PgCurrentReindexedHeapRef(void)
-{
-	return &PgCurrentExecutionCatalogState()->currently_reindexed_heap;
-}
-
-Oid *
-PgCurrentReindexedIndexRef(void)
-{
-	return &PgCurrentExecutionCatalogState()->currently_reindexed_index;
-}
-
-List **
-PgCurrentPendingReindexedIndexesRef(void)
-{
-	return &PgCurrentExecutionCatalogState()->pending_reindexed_indexes;
-}
-
-int *
-PgCurrentReindexingNestLevelRef(void)
-{
-	return &PgCurrentExecutionCatalogState()->reindexing_nest_level;
-}
-
-struct PendingRelDelete **
-PgCurrentPendingRelDeletesRef(void)
-{
-	return &PgCurrentExecutionCatalogState()->pending_rel_deletes;
-}
-
-HTAB **
-PgCurrentPendingSyncHashRef(void)
-{
-	return &PgCurrentExecutionCatalogState()->pending_sync_hash;
-}
-
-static PgExecutionCatalogCacheState *
+PgExecutionCatalogCacheState *
 PgCurrentExecutionCatalogCacheState(void)
 {
 	if (CurrentPgExecution == NULL)
@@ -5603,67 +5555,7 @@ PgCurrentExecutionCatalogCacheState(void)
 	return &CurrentPgExecution->catalog_cache;
 }
 
-CatCInProgress **
-PgCurrentCatCacheInProgressStackRef(void)
-{
-	return &PgCurrentExecutionCatalogCacheState()->catcache_in_progress_stack;
-}
-
-InProgressEnt **
-PgCurrentRelcacheInProgressListRef(void)
-{
-	return &PgCurrentExecutionCatalogCacheState()->relcache_in_progress_list;
-}
-
-int *
-PgCurrentRelcacheInProgressListLenRef(void)
-{
-	return &PgCurrentExecutionCatalogCacheState()->relcache_in_progress_list_len;
-}
-
-int *
-PgCurrentRelcacheInProgressListMaxLenRef(void)
-{
-	return &PgCurrentExecutionCatalogCacheState()->relcache_in_progress_list_maxlen;
-}
-
-Oid *
-PgCurrentRelcacheEOXactList(void)
-{
-	return PgCurrentExecutionCatalogCacheState()->relcache_eoxact_list;
-}
-
-int *
-PgCurrentRelcacheEOXactListLenRef(void)
-{
-	return &PgCurrentExecutionCatalogCacheState()->relcache_eoxact_list_len;
-}
-
-bool *
-PgCurrentRelcacheEOXactListOverflowedRef(void)
-{
-	return &PgCurrentExecutionCatalogCacheState()->relcache_eoxact_list_overflowed;
-}
-
-TupleDesc **
-PgCurrentRelcacheEOXactTupleDescArrayRef(void)
-{
-	return &PgCurrentExecutionCatalogCacheState()->relcache_eoxact_tupledesc_array;
-}
-
-int *
-PgCurrentRelcacheNextEOXactTupleDescNumRef(void)
-{
-	return &PgCurrentExecutionCatalogCacheState()->relcache_next_eoxact_tupledesc_num;
-}
-
-int *
-PgCurrentRelcacheEOXactTupleDescArrayLenRef(void)
-{
-	return &PgCurrentExecutionCatalogCacheState()->relcache_eoxact_tupledesc_array_len;
-}
-
-static PgExecutionRelMapState *
+PgExecutionRelMapState *
 PgCurrentExecutionRelMapState(void)
 {
 	if (CurrentPgExecution == NULL)
@@ -5672,55 +5564,13 @@ PgCurrentExecutionRelMapState(void)
 	return &CurrentPgExecution->relmap;
 }
 
-PgExecutionRelMapFile *
-PgCurrentRelMapActiveSharedUpdatesRef(void)
-{
-	return &PgCurrentExecutionRelMapState()->active_shared_updates;
-}
-
-PgExecutionRelMapFile *
-PgCurrentRelMapActiveLocalUpdatesRef(void)
-{
-	return &PgCurrentExecutionRelMapState()->active_local_updates;
-}
-
-PgExecutionRelMapFile *
-PgCurrentRelMapPendingSharedUpdatesRef(void)
-{
-	return &PgCurrentExecutionRelMapState()->pending_shared_updates;
-}
-
-PgExecutionRelMapFile *
-PgCurrentRelMapPendingLocalUpdatesRef(void)
-{
-	return &PgCurrentExecutionRelMapState()->pending_local_updates;
-}
-
-static PgExecutionInvalidationState *
+PgExecutionInvalidationState *
 PgCurrentExecutionInvalidationState(void)
 {
 	if (CurrentPgExecution == NULL)
 		return &early_execution_invalidation;
 
 	return &CurrentPgExecution->invalidation;
-}
-
-PgExecutionInvalMessageArray *
-PgCurrentInvalMessageArrays(void)
-{
-	return PgCurrentExecutionInvalidationState()->message_arrays;
-}
-
-struct TransInvalidationInfo **
-PgCurrentTransInvalInfoRef(void)
-{
-	return &PgCurrentExecutionInvalidationState()->trans_info;
-}
-
-struct InvalidationInfo **
-PgCurrentInplaceInvalInfoRef(void)
-{
-	return &PgCurrentExecutionInvalidationState()->inplace_info;
 }
 
 static PgExecutionTwoPhaseRecordState *
