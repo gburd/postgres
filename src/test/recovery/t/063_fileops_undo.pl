@@ -203,5 +203,89 @@ $result = $node->safe_psql('postgres',
 	qq{SELECT test_fileops_file_size('$datadir/mixed.dat')});
 is($result, '32', 'Test 8: FILEOPS committed truncate persists');
 
+# ================================================================
+# Test 9: FileOpsLink + ABORT removes the new link
+# ================================================================
+
+# Hard-link an existing file inside an aborted txn; the new path must be
+# gone after UNDO reverses the link.
+$node->safe_psql('postgres',
+	qq{SELECT test_fileops_create_tempfile('link_src.dat')});
+
+$node->safe_psql('postgres', qq(
+BEGIN;
+SELECT test_fileops_link('$datadir/link_src.dat', '$datadir/link_dst.dat');
+ABORT;
+));
+
+$result = $node->safe_psql('postgres',
+	qq{SELECT test_fileops_file_exists('$datadir/link_dst.dat')});
+is($result, 'f', 'Test 9: link reversed by UNDO after ABORT');
+
+# COMMIT keeps the link.
+$node->safe_psql('postgres', qq(
+BEGIN;
+SELECT test_fileops_link('$datadir/link_src.dat', '$datadir/link_dst.dat');
+COMMIT;
+));
+$result = $node->safe_psql('postgres',
+	qq{SELECT test_fileops_file_exists('$datadir/link_dst.dat')});
+is($result, 't', 'Test 9: committed link persists');
+
+# ================================================================
+# Test 10: FileOpsSetXattr + ABORT restores prior xattr state
+# ================================================================
+
+# Setting a previously-absent xattr inside an aborted txn must leave the
+# attribute absent after UNDO.  Skip gracefully if the filesystem does not
+# support xattrs (setxattr returns false on ENOTSUP/EPERM).
+my $xattr_ok = $node->safe_psql('postgres',
+	qq{SELECT test_fileops_setxattr('$datadir/undo1.dat', 'user.recno_probe', 'committed')});
+
+SKIP:
+{
+	skip 'filesystem does not support xattrs', 4 if $xattr_ok ne 't';
+
+	# Probe set+committed above; confirm it is present and committed.
+	$result = $node->safe_psql('postgres',
+		qq{SELECT test_fileops_getxattr('$datadir/undo1.dat', 'user.recno_probe')});
+	is($result, 'committed', 'Test 10: baseline xattr committed');
+
+	# Overwrite the existing xattr inside an aborted txn -> original restored.
+	$node->safe_psql('postgres', qq(
+BEGIN;
+SELECT test_fileops_setxattr('$datadir/undo1.dat', 'user.recno_probe', 'rolledback');
+ABORT;
+));
+	$result = $node->safe_psql('postgres',
+		qq{SELECT test_fileops_getxattr('$datadir/undo1.dat', 'user.recno_probe')});
+	is($result, 'committed',
+		'Test 10: setxattr overwrite reversed to original value');
+
+	# Set a brand-new xattr inside an aborted txn -> attribute absent again.
+	$node->safe_psql('postgres', qq(
+BEGIN;
+SELECT test_fileops_setxattr('$datadir/undo1.dat', 'user.recno_new', 'transient');
+ABORT;
+));
+	$result = $node->safe_psql('postgres',
+		qq{SELECT test_fileops_getxattr('$datadir/undo1.dat', 'user.recno_new')});
+	is($result, '', 'Test 10: setxattr of new attr reversed (attr absent)');
+
+	# ============================================================
+	# Test 11: FileOpsRemoveXattr + ABORT restores the attribute
+	# ============================================================
+
+	# Remove the committed xattr inside an aborted txn -> value restored.
+	$node->safe_psql('postgres', qq(
+BEGIN;
+SELECT test_fileops_removexattr('$datadir/undo1.dat', 'user.recno_probe');
+ABORT;
+));
+	$result = $node->safe_psql('postgres',
+		qq{SELECT test_fileops_getxattr('$datadir/undo1.dat', 'user.recno_probe')});
+	is($result, 'committed', 'Test 11: removexattr reversed by UNDO after ABORT');
+}
+
 $node->stop;
 done_testing();
