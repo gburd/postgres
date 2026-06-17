@@ -953,7 +953,7 @@ CREATE TABLE tab_settings_flags AS SELECT name, category,
 SELECT name FROM tab_settings_flags
   WHERE category = 'Developer Options' AND NOT not_in_sample
   ORDER BY 1;
- name
+ name 
 ------
 (0 rows)
 
