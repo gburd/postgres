@@ -22548,3 +22548,23 @@ Lifecycle/preflight note:
 - validation impact: rebuild, fresh `initdb`, backend-runtime regression, and
   rerun vanilla 19 beta 1 process/threaded c1 `SELECT 1` and `pgbench -S`
   comparisons.
+
+## Threaded pg_stat_activity Signal-PID Wait Events
+
+Lifecycle/preflight note:
+
+- target: make `pg_stat_activity` wait-event lookups follow the SQL-visible
+  backend signal pid used by threaded sessions, matching `pg_locks`, signal
+  functions, and `pg_backend_pid()`.
+- touched roots/buckets: no lifecycle ownership movement; this uses existing
+  `PGPROC.wait_event_info` and `PgBackend` logical backend identifiers.
+- owner source files: `src/backend/utils/adt/pgstatfuncs.c` and this state note.
+- legacy symbols/accessors: none.  Existing `BackendSignalPidGetProc()` handles
+  process-mode OS pids and thread-mode logical backend ids.
+- repeated lifecycle operations: none.  Startup, adoption, reset, and shutdown
+  paths remain unchanged.
+- checked primitive decision: use the existing signal-pid PGPROC lookup rather
+  than reasserting wait-event storage or adding another runtime-current hook.
+- validation impact: rebuild/install, restart branch process/threaded clusters,
+  rerun hot-row and builtin TPC-B prepared c8 probes to separate observability
+  fixes from any remaining lock/WAL wakeup latency.
