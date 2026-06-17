@@ -2542,21 +2542,12 @@ FileSize(File file)
 	}
 
 	/*
-	 * In threaded mode, relation descriptors can be used concurrently in one
-	 * process.  Avoid mutating the kernel file offset while asking for the file
-	 * length.  Process mode keeps the historical lseek() path, which is cheaper
-	 * on the Linux Docker benchmark baseline.
+	 * File values index the current backend's VFD cache.  In threaded mode the
+	 * cache, smgr relation table, and md segment descriptors live in
+	 * PgBackendStorageState, so this lseek() only changes this logical backend's
+	 * open file description.  Normal relation reads and writes are positioned
+	 * I/O, matching the historical process-mode behavior here.
 	 */
-	if (multithreaded)
-	{
-		struct stat statbuf;
-
-		if (fstat(VfdCache[file].fd, &statbuf) < 0)
-			return (pgoff_t) -1;
-
-		return statbuf.st_size;
-	}
-
 	returnCode = lseek(VfdCache[file].fd, 0, SEEK_END);
 	if (returnCode < 0)
 		return (pgoff_t) -1;

@@ -8,6 +8,30 @@ Append here only when investigating a Phase 12 regression, recording validation
 that changes the closeout evidence, or deliberately reopening a scoped Phase 12
 blocker.
 
+## Linux Threaded FileSize VFD Offset Recheck
+
+Lifecycle/preflight note:
+
+- target: recheck the conservative threaded `FileSize()` `fstat()` path now
+  that Linux profiling shows relation-size calls remain visible in simple
+  SELECT workloads, and restore the historical `lseek(SEEK_END)` path if the
+  VFD ownership proof holds.
+- touched roots/buckets: no runtime roots or buckets move; this relies on
+  existing current-backend `PgBackendStorageState` ownership for VFD, smgr, and
+  md caches.
+- owner source files: `src/backend/storage/file/fd.c` and this state note.
+- legacy symbols/accessors: `FileSize()`, `VfdCache`,
+  `PgCurrentVfdCacheRef()`, and `PgCurrentSMgrRelationHashRef()` retain their
+  public contracts.
+- repeated lifecycle operations: none.
+- checked primitive decision: treat `File` values as indexes into the current
+  backend's VFD cache, matching the existing threaded runtime storage split;
+  normal relation I/O remains positioned (`preadv`/`pwritev`), so `lseek()`
+  affects only this logical backend's open file description.
+- validation impact: rebuild in the Linux Docker image, run the focused c8
+  simple SELECT benchmark against the same vanilla baseline, and run threaded
+  regression checks if retained.
+
 ## Linux Process Runtime Wait-Event Adoption
 
 Lifecycle/preflight note:
@@ -36,7 +60,7 @@ Lifecycle/preflight note:
 Lifecycle/preflight note:
 
 - target: reduce Linux threaded select-only benchmark contention caused by
-  repeated relation-size checks using `lseek(SEEK_END)` on file descriptors
+  repeated relation-size checks using ``lseek(SEEK_END)`` on file descriptors
   shared by all backend threads in one process.
 - touched roots/buckets: no runtime roots or buckets move; storage fd size
   lookup implementation only.
@@ -6980,7 +7004,7 @@ Validation for this slice:
 
 The one-hundred-twenty-ninth Phase 12 slice moves a coherent storage-owned
 backend-local state group from standalone backend-local TLS into
-`PgBackendStorageState`:
+``PgBackendStorageState``:
 
 - pending file-sync/unlink state from `sync.c`: `pendingOps`,
   `pendingUnlinks`, `pendingOpsCxt`, `sync_cycle_ctr`,
@@ -7053,11 +7077,11 @@ by `PgCurrentVfdCacheRef()`, `PgCurrentSizeVfdCacheRef()`,
 `PgCurrentNFileRef()`, `PgCurrentTemporaryFilesAllowedRef()`,
 `PgCurrentNumAllocatedDescsRef()`, `PgCurrentMaxAllocatedDescsRef()`,
 `PgCurrentAllocatedDescsRef()`, and `PgCurrentNumExternalFDsRef()`.
-`PgBackendStorageState` stores the private `fd.c` pointer-typed arrays as
+``PgBackendStorageState`` stores the private `fd.c` pointer-typed arrays as
 opaque `void *` fields so `Vfd` and `AllocateDesc` stay local to `fd.c`.
 
 This slice also fixes a thread-runtime adoption gap exposed by moving
-descriptor counts into `PgBackendStorageState`. Thread startup performs latch
+descriptor counts into ``PgBackendStorageState``. Thread startup performs latch
 and wait-set initialization before `InstallPgThreadBackendRuntimeState()`, and
 those paths can reserve file descriptors through the early backend fallback
 state. The install path now calls `PgBackendAdoptEarlyStorageState()` so that
