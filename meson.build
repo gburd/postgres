@@ -426,9 +426,9 @@ lime = find_program(get_option('LIME'), native: true, required: false)
 # the context-sensitive token-admissibility oracle
 # (lime_token_admissible_in_state) used for multi-grammar keyword
 # disambiguation).
-lime_runtime_dep = dependency('lime', required: false, version: '>=1.5.3')
+lime_runtime_dep = dependency('lime', required: false, version: '>=1.6.1')
 lime_compiler_dep = dependency('lime-compiler', required: false,
-                                version: '>=1.5.3')
+                                version: '>=1.6.1')
 sed = find_program(get_option('SED'), 'sed', native: true, required: false)
 prove = find_program(get_option('PROVE'), native: true, required: false)
 tar = find_program(get_option('TAR'), native: true, required: false)
@@ -514,6 +514,7 @@ if lime.found()
     '--privatedir', '@PRIVATE_DIR@',
     '--lime', lime,
     '--snapshot',
+    '--host-reduce',
     '-i', '@INPUT@',
     '-c', '@OUTPUT0@', '-H', '@OUTPUT1@',
     '--snapshot-output', '@OUTPUT2@',
@@ -555,6 +556,7 @@ if lime.found()
     '--lime', lime,
     '--aot',
     '--snapshot',
+    '--host-reduce',
     '-i', '@INPUT@',
     '-c', '@OUTPUT0@', '-H', '@OUTPUT1@',
     '--aot-output', '@OUTPUT2@',

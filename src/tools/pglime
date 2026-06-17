@@ -60,6 +60,12 @@ parser.add_argument('--snapshot-output', dest='output_snapshot',
                     type=abspath, default=None,
                     help='destination for the generated _snapshot.c '
                     '(required when --snapshot is set)')
+parser.add_argument('--host-reduce', action='store_true',
+                    help='with --snapshot, pass `lime --host-reduce` so the '
+                    'generated <Name>HostReduce wrapper runs the base '
+                    'grammar reduce actions over a runtime snapshot '
+                    '(threads the extra-argument, e.g. yyscanner, from the '
+                    'host_reduce user pointer); requires Lime v1.6.1+')
 
 parser.add_argument('lime_flags', nargs='*',
                     help='flags passed on to lime (e.g. -s, -T template)')
@@ -77,6 +83,8 @@ if args.aot:
     command += ['-j']
 if args.snapshot:
     command += ['-n']
+if args.host_reduce:
+    command += ['--host-reduce']
 command += args.lime_flags
 command += [args.input_file]
 

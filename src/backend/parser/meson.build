@@ -81,6 +81,18 @@ if lime_runtime_dep.found()
     kwargs: internal_lib_args,
   )
   backend_link_with += gram_snapshot_lib
+
+  # Track B push-parse driver.  Needs Lime's runtime headers (parse_begin
+  # / parse_token / parse_end / snapshot), so it is compiled in its own
+  # library with the Lime include directory -- kept off the rest of the
+  # backend, which uses PostgreSQL's own snapshot.h.
+  parser_pushparse_lib = static_library('parser_pushparse',
+    files('parser_pushparse.c'),
+    dependencies: [backend_code, lime_runtime_dep],
+    include_directories: [include_directories('.'), lime_runtime_incdir],
+    kwargs: internal_lib_args,
+  )
+  backend_link_with += parser_pushparse_lib
 endif
 
 # Lime-generated scanner.  Compiled into the parser lib below alongside
