@@ -399,22 +399,41 @@ static bool slog_has_shared_entries = false;	/* any non-local_only entries? */
  *
  * For top-level transactions (no active savepoint), local-only INSERT
  * entries are tracked in per-relid sparsemaps instead of the linked list.
- * This reduces memory from ~136 bytes/row to ~1 bit/row for sequential
- * TIDs, preventing OOM on bulk INSERT...SELECT with 10M+ rows.
+ * The sparsemap run-length compresses contiguous runs of set bits, so a
+ * bulk INSERT into freshly extended pages collapses to a handful of runs
+ * regardless of row count (measured: 300k sequential rows use 24 bytes,
+ * 3M rows stay flat), preventing the multi-GB per-backend growth that the
+ * earlier shifted encoding produced under bulk INSERT...SELECT.
  *
- * TID encoding: ((uint64)blkno << 16) | (uint64)offnum
- * This packs BlockNumber (32-bit) + OffsetNumber (16-bit) into 48 bits.
+ * TID encoding: blkno * MaxRecnoItemsPerPage + (offnum - 1)
+ *
+ * This maps each (blkno, offnum) pair to a dense, contiguous index: page
+ * N's offsets occupy [N*D, N*D + D), immediately followed by page N+1's,
+ * with no gaps between pages.  Contiguity is what lets the sparsemap RLE
+ * compress sequential inserts.  The earlier ((blkno << 16) | offnum)
+ * scheme left a ~65000-index hole between each page's offnum run (offnums
+ * use only ~9 of the 16 reserved bits), defeating RLE and bloating the map.
+ *
+ * Losslessness invariant: every tracked TID is a RECNO table-page TID, and a
+ * RECNO page can hold no more than MaxRecnoItemsPerPage line pointers (the
+ * RECNO-true analogue of MaxHeapTuplesPerPage -- larger than the heap bound
+ * because RECNO pages mix full tuples with small overflow-continuation
+ * records and RecnoPageAddTuple omits PAI_IS_HEAP).  Thus
+ * offnum <= MaxRecnoItemsPerPage always holds and the divisor never aliases
+ * two pages' TIDs onto the same index.  A check at each encode site enforces
+ * this; an out-of-range offset is a corruption bug, not a recoverable
+ * condition, so it raises ERROR even in production builds.
  *
  * Subtransaction entries still use the linked list because subtxn abort
  * needs per-entry subxid filtering.
  * ----------------------------------------------------------------
  */
 #define SLOG_ENCODE_TID(blkno, offnum) \
-	(((uint64)(blkno) << 16) | (uint64)(offnum))
+	((uint64) (blkno) * MaxRecnoItemsPerPage + (uint64) ((offnum) - 1))
 #define SLOG_DECODE_BLKNO(encoded) \
-	((BlockNumber)((encoded) >> 16))
+	((BlockNumber) ((encoded) / MaxRecnoItemsPerPage))
 #define SLOG_DECODE_OFFNUM(encoded) \
-	((OffsetNumber)((encoded) & 0xFFFF))
+	((OffsetNumber) ((encoded) % MaxRecnoItemsPerPage + 1))
 
 /* Initial sparsemap buffer size: 4KB, grows geometrically via sm_add_grow */
 #define SLOG_INSERT_MAP_INIT_SIZE	4096
@@ -2673,8 +2692,12 @@ SLogTupleIsInsertedByMe(Oid relid, ItemPointer tid)
 		SLogInsertMap *im;
 		BlockNumber blkno = ItemPointerGetBlockNumber(tid);
 		OffsetNumber offnum = ItemPointerGetOffsetNumber(tid);
-		uint64		encoded = SLOG_ENCODE_TID(blkno, offnum);
+		uint64		encoded;
 
+		if (offnum > MaxRecnoItemsPerPage)
+			elog(ERROR, "RECNO offset %u exceeds page item limit %d in sLog TID encoding",
+				 offnum, MaxRecnoItemsPerPage);
+		encoded = SLOG_ENCODE_TID(blkno, offnum);
 		for (im = slog_insert_maps; im != NULL; im = im->next)
 		{
 			if (im->relid == relid && sm_contains(im->map, encoded))
@@ -3176,9 +3199,12 @@ SLogTupleTrackKey(SLogTupleKey key, TransactionId xid, TransactionId subxid,
  *
  * OOM optimization: When not inside a subtransaction, uses a compact
  * sparsemap (1 bit per TID, RLE-compressed) instead of a 136-byte linked
- * list node.  This reduces memory for 10M sequential INSERTs from ~1.3 GB
- * to ~2-5 MB.  Subtransaction entries still use the linked list because
- * subtxn abort needs per-entry subxid filtering.
+ * list node.  With the dense TID encoding (see SLOG_ENCODE_TID), a bulk
+ * sequential INSERT collapses to a few run-length entries: 300k rows
+ * measured at 24 bytes, and the map stays flat into the millions of rows,
+ * versus the ~1.3 GB the linked list consumed at 10M rows.  Subtransaction
+ * entries still use the linked list because subtxn abort needs per-entry
+ * subxid filtering.
  */
 void
 SLogTupleTrackLocalOnly(Oid relid, ItemPointer tid,
@@ -3196,8 +3222,12 @@ SLogTupleTrackLocalOnly(Oid relid, ItemPointer tid,
 		SLogInsertMap *im;
 		BlockNumber blkno = ItemPointerGetBlockNumber(tid);
 		OffsetNumber offnum = ItemPointerGetOffsetNumber(tid);
-		uint64		encoded = SLOG_ENCODE_TID(blkno, offnum);
+		uint64		encoded;
 
+		if (offnum > MaxRecnoItemsPerPage)
+			elog(ERROR, "RECNO offset %u exceeds page item limit %d in sLog TID encoding",
+				 offnum, MaxRecnoItemsPerPage);
+		encoded = SLOG_ENCODE_TID(blkno, offnum);
 		oldcxt = MemoryContextSwitchTo(TopTransactionContext);
 
 		/* Find or create the insert map for this relid */
@@ -3290,9 +3320,13 @@ SLogTupleUntrackLocalOnly(Oid relid, ItemPointer tid)
 	SLogInsertMap *im;
 	BlockNumber blkno = ItemPointerGetBlockNumber(tid);
 	OffsetNumber offnum = ItemPointerGetOffsetNumber(tid);
-	uint64		encoded = SLOG_ENCODE_TID(blkno, offnum);
+	uint64		encoded;
 	SLogTrackedKey **link;
 
+	if (offnum > MaxRecnoItemsPerPage)
+		elog(ERROR, "RECNO offset %u exceeds page item limit %d in sLog TID encoding",
+			 offnum, MaxRecnoItemsPerPage);
+	encoded = SLOG_ENCODE_TID(blkno, offnum);
 	/* Fast path: clear the sparsemap bit if present. */
 	for (im = slog_insert_maps; im != NULL; im = im->next)
 	{
