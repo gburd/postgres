@@ -109,8 +109,8 @@
 #if defined(WAIT_USE_POLL) || defined(WAIT_USE_EPOLL)
 #if defined(WAIT_USE_SELF_PIPE) || defined(WAIT_USE_SIGNALFD)
 /* don't overwrite manual choice */
-#elif defined(WAIT_USE_EPOLL) && defined(HAVE_SYS_SIGNALFD_H)
-#define WAIT_USE_SIGNALFD
+#elif defined(WAIT_USE_EPOLL)
+#define WAIT_USE_SELF_PIPE
 #else
 #define WAIT_USE_SELF_PIPE
 #endif

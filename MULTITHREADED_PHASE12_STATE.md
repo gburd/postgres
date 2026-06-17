@@ -22568,3 +22568,29 @@ Lifecycle/preflight note:
 - validation impact: rebuild/install, restart branch process/threaded clusters,
   rerun hot-row and builtin TPC-B prepared c8 probes to separate observability
   fixes from any remaining lock/WAL wakeup latency.
+
+
+## Linux Threaded Latch Self-Pipe Wake Probe
+
+Lifecycle/preflight note:
+
+- target: test whether Linux threaded lock-handoff latency is dominated by
+  sibling backend threads falling back to `pthread_kill(SIGURG)` because the
+  epoll/signalfd wait primitive has no direct per-thread wake fd.
+- touched roots/buckets: existing wait-event carrier fd state only; no runtime
+  ownership movement and no new lifecycle bucket.
+- owner source files: `src/backend/storage/ipc/waiteventset.c` and this state
+  note.
+- legacy symbols/accessors: existing `GetWaitEventSetLatchWakeupFd()` and
+  `WakeupOtherProcFd()` become active on Linux epoll builds by selecting the
+  self-pipe wake primitive instead of signalfd.
+- repeated lifecycle operations: none.  Startup still initializes per-carrier
+  wait-event support, latch ownership still records the current wake fd, and
+  shutdown paths are unchanged.
+- checked primitive decision: try the direct fd wake path because the measured
+  hot-row wake-to-return gap is about 80 us in branch process mode but about
+  852 us average / 12 ms p99 in threaded mode, and the current signalfd path
+  forces sibling backend threads through `pthread_kill()`.
+- validation impact: rebuild/install, restart branch process/threaded clusters,
+  rerun `kv_hot_update_tx` normal/sync-off focused benchmarks and sanity-check
+  clean startup/shutdown before deciding whether to keep the primitive change.
