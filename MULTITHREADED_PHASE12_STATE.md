@@ -8,6 +8,46 @@ Append here only when investigating a Phase 12 regression, recording validation
 that changes the closeout evidence, or deliberately reopening a scoped Phase 12
 blocker.
 
+## Linux Simple-Query Runtime-Current Hot Paths
+
+Lifecycle/preflight note:
+
+- target: reduce the remaining Linux threaded c8 simple-query CPU gap by moving
+  high-frequency backend-local predicate runtime-current lookups from the
+  generic fast-bucket accessor path to the existing hot-field bridge.
+- touched roots/buckets: no runtime root ownership changes; the probe only
+  caches addresses into the current backend's lock and storage state.
+- owner source files: `src/include/utils/backend_runtime_hot_fields.def`,
+  `src/backend/storage/lmgr/predicate.c`, and this state note.
+- legacy symbols/accessors: `PgCurrentMySerializableXactRef()`,
+  `PgCurrentMyXactDidWriteRef()`, `PgCurrentSavedSerializableXactRef()`, and
+  `PgCurrentLocalPredicateLockHashRef()` remain the fallback contracts.
+- repeated lifecycle operations: none.
+- validation impact: rebuild, run the focused vanilla-pgbench simple SELECT c8
+  benchmark, and keep the change only if the measured direction is useful.
+
+Validation follow-up:
+
+- clean-build note: adding generated hot-field slots changes
+  `PgRuntimeCurrentBridge` layout; incremental builds can leave stale field
+  offsets in older objects and produce invalid threaded smoke-test failures.
+- discarded scope: the initial VFD-cache hot-field probe was narrowed out before
+  clean-build validation, so this checkpoint does not claim any fd.c/VFD
+  improvement.
+- Docker validation: clean `make`, `make install` passed after the narrowed
+  predicate-only change.
+- native WSL focused workload: vanilla REL_19_BETA1 pgbench client,
+  `pgbench -n -S -M simple -c 8 -j 8 -T 10`, scale 10, same ext4 storage and
+  server settings (`max_connections = 100`, `shared_buffers = 128MB`).
+- three-way result: vanilla process averaged 20967.7 TPS (min 20356.7, max
+  21468.1), branch process averaged 19694.5 TPS (min 19416.0, max 19960.0),
+  and branch threaded averaged 18717.7 TPS (min 18149.2, max 19333.1).
+  Threaded was 89.3% of vanilla and 95.0% of branch process in this short run.
+- threaded-only A/B: predicate hot refs averaged 19191.9 TPS (19641.7,
+  18709.9, 19224.1) versus the reverted baseline at 18771.5 TPS (19493.8,
+  18859.7, 17961.0), a noisy but positive 2.2% direction on the focused
+  workload.
+
 ## Linux Simple-Query Perf Checkpoint
 
 Evidence checkpoint:

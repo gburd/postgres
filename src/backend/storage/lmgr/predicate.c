@@ -421,12 +421,16 @@ static const PREDICATELOCKTARGETTAG ScratchTargetTag = {0, 0, 0, 0};
 static PG_GLOBAL_RUNTIME uint32 ScratchTargetTagHash;
 static PG_GLOBAL_SHMEM LWLock *ScratchPartitionLock;
 
+#define PredicateBackendHotFieldRef(variable, fallback) \
+	PG_RUNTIME_CURRENT_HOT_FIELD_REF(variable, CurrentPgBackend, fallback)
+
 /*
  * The local hash table used to determine when to combine multiple fine-
  * grained locks into a single courser-grained lock.
  */
 #define LocalPredicateLockHash \
-	(*PgCurrentLocalPredicateLockHashRef())
+	(*PredicateBackendHotFieldRef(PgCurrentLocalPredicateLockHashHotRef, \
+								  PgCurrentLocalPredicateLockHashRef))
 
 /*
  * Keep a pointer to the currently-running serializable transaction (if any)
@@ -434,9 +438,12 @@ static PG_GLOBAL_SHMEM LWLock *ScratchPartitionLock;
  * cause a rw-conflict.
  */
 #define MySerializableXact \
-	(*(SERIALIZABLEXACT **) PgCurrentMySerializableXactRef())
+	(*(SERIALIZABLEXACT **) \
+	 PredicateBackendHotFieldRef(PgCurrentMySerializableXactHotRef, \
+								 PgCurrentMySerializableXactRef))
 #define MyXactDidWrite \
-	(*PgCurrentMyXactDidWriteRef())
+	(*PredicateBackendHotFieldRef(PgCurrentMyXactDidWriteHotRef, \
+								  PgCurrentMyXactDidWriteRef))
 
 /*
  * The SXACT_FLAG_RO_UNSAFE optimization might lead us to release
@@ -446,7 +453,9 @@ static PG_GLOBAL_SHMEM LWLock *ScratchPartitionLock;
  * case, the leader stores it here.
  */
 #define SavedSerializableXact \
-	(*(SERIALIZABLEXACT **) PgCurrentSavedSerializableXactRef())
+	(*(SERIALIZABLEXACT **) \
+	 PredicateBackendHotFieldRef(PgCurrentSavedSerializableXactHotRef, \
+								 PgCurrentSavedSerializableXactRef))
 
 static PG_GLOBAL_RUNTIME int64 max_serializable_xacts;
 

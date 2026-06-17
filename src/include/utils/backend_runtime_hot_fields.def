@@ -113,6 +113,26 @@ PG_RUNTIME_HOT_FIELD(PgCurrentNumHeldLWLocksHotRef,
 					 int,
 					 CurrentPgBackend != NULL ?
 					 &CurrentPgBackend->locks.num_held_lwlocks : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentLocalPredicateLockHashHotRef,
+					 backend,
+					 struct HTAB *,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->locks.local_predicate_lock_hash : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentMySerializableXactHotRef,
+					 backend,
+					 void *,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->locks.my_serializable_xact : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentMyXactDidWriteHotRef,
+					 backend,
+					 bool,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->locks.my_xact_did_write : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentSavedSerializableXactHotRef,
+					 backend,
+					 void *,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->locks.saved_serializable_xact : NULL)
 PG_RUNTIME_HOT_FIELD(PgCurrentPendingInterruptStateHotRef,
 					 backend,
 					 PgBackendPendingInterruptState,
