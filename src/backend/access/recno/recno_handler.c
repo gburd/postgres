@@ -74,7 +74,6 @@ static bool recno_scan_bitmap_next_tuple(TableScanDesc scan,
 										 uint64 *lossy_pages,
 										 uint64 *exact_pages);
 static MinimalTuple minimal_tuple_from_recno_tuple(RecnoTuple rtuple, TupleDesc tupdesc);
-static RecnoTuple recno_tuple_from_slot(TupleTableSlot *slot);
 
 /* Include operations from other modules */
 extern void recno_tuple_insert(Relation relation, TupleTableSlot *slot, CommandId cid,
@@ -91,7 +90,6 @@ extern void recno_multi_insert(Relation relation, TupleTableSlot **slots, int nt
 							   CommandId cid, uint32 options, BulkInsertState bistate);
 extern void recno_relation_vacuum(Relation onerel, const VacuumParams *params,
 								  BufferAccessStrategy bstrategy);
-extern RecnoTuple RecnoFormTupleFromSlot(TupleTableSlot *slot);
 
 /*
  * Read stream callback for sequential scan prefetching.
@@ -2427,7 +2425,7 @@ recno_tuple_insert_speculative(Relation relation, TupleTableSlot *slot,
 			UnlockReleaseBuffer(overflow_buffers.buffers[i].buffer);
 			pfree(overflow_buffers.buffers[i].record_data);
 		}
-		pfree(tuple);
+		RecnoFreeTuple(tuple);
 		elog(ERROR, "RECNO failed to allocate page for speculative insertion");
 	}
 
@@ -2451,7 +2449,7 @@ recno_tuple_insert_speculative(Relation relation, TupleTableSlot *slot,
 				UnlockReleaseBuffer(overflow_buffers.buffers[i].buffer);
 				pfree(overflow_buffers.buffers[i].record_data);
 			}
-			pfree(tuple);
+			RecnoFreeTuple(tuple);
 			elog(ERROR, "RECNO failed to allocate page for speculative insertion after retry");
 		}
 
@@ -2605,7 +2603,7 @@ recno_tuple_insert_speculative(Relation relation, TupleTableSlot *slot,
 		pfree(overflow_buffers.buffers[i].record_data);
 	}
 
-	pfree(tuple);
+	RecnoFreeTuple(tuple);
 }
 
 /*
@@ -4374,33 +4372,6 @@ minimal_tuple_from_recno_tuple(RecnoTuple rtuple, TupleDesc tupdesc)
 	return result;
 }
 
-static RecnoTuple
-pg_attribute_unused()
-recno_tuple_from_slot(TupleTableSlot *slot)
-{
-	RecnoTuple	tuple;
-	Size		tuple_size;
-
-	if (slot == NULL || slot->tts_tupleDescriptor == NULL)
-		return NULL;
-
-	/* Create basic RECNO tuple structure */
-	tuple_size = sizeof(RecnoTupleData) + sizeof(RecnoTupleHeader);
-	tuple = (RecnoTuple) palloc0(tuple_size);
-
-	tuple->t_len = sizeof(RecnoTupleHeader);
-	tuple->t_data = (RecnoTupleHeader *) ((char *) tuple + sizeof(RecnoTupleData));
-	tuple->t_tableOid = slot->tts_tableOid;
-	ItemPointerCopy(&slot->tts_tid, &tuple->t_self);
-
-	/* Initialize basic header */
-	tuple->t_data->t_flags = 0;
-	tuple->t_data->t_commit_ts = RecnoGetCommitTimestamp();
-	ItemPointerCopy(&slot->tts_tid, &tuple->t_data->t_ctid);
-
-	return tuple;
-}
-
 /*
  * ------------------------------------------------------------------------
  * Main table AM routine structure for RECNO
@@ -4541,7 +4512,7 @@ recno_analyze_accumulate_sample(RecnoScanDesc rscan, TupleTableSlot *slot)
 	TupleDesc	tupdesc = RelationGetDescr(rscan->rs_base.rs_rd);
 	Datum		value;
 	bool		isnull;
-	struct varlena *detoasted;
+	struct varlena *flattened;
 	Size		len;
 
 	/* Only when an ANALYZE-driven refresh could actually act on the result. */
@@ -4584,12 +4555,12 @@ recno_analyze_accumulate_sample(RecnoScanDesc rscan, TupleTableSlot *slot)
 	if (isnull)
 		return;
 
-	detoasted = (struct varlena *) PG_DETOAST_DATUM(value);
-	len = VARSIZE_ANY_EXHDR(detoasted);
+	flattened = (struct varlena *) PG_DETOAST_DATUM(value);
+	len = VARSIZE_ANY_EXHDR(flattened);
 	if (len == 0)
 	{
-		if ((Pointer) detoasted != DatumGetPointer(value))
-			pfree(detoasted);
+		if ((Pointer) flattened != DatumGetPointer(value))
+			pfree(flattened);
 		return;
 	}
 
@@ -4617,18 +4588,18 @@ recno_analyze_accumulate_sample(RecnoScanDesc rscan, TupleTableSlot *slot)
 
 	if (rscan->rs_dict_total + len > rscan->rs_dict_cap)
 	{
-		if ((Pointer) detoasted != DatumGetPointer(value))
-			pfree(detoasted);
+		if ((Pointer) flattened != DatumGetPointer(value))
+			pfree(flattened);
 		return;
 	}
 
 	memcpy(rscan->rs_dict_samplebuf + rscan->rs_dict_total,
-		   VARDATA_ANY(detoasted), len);
+		   VARDATA_ANY(flattened), len);
 	rscan->rs_dict_sizes[rscan->rs_dict_nsamples++] = len;
 	rscan->rs_dict_total += len;
 
-	if ((Pointer) detoasted != DatumGetPointer(value))
-		pfree(detoasted);
+	if ((Pointer) flattened != DatumGetPointer(value))
+		pfree(flattened);
 #endif
 }
 
@@ -4796,7 +4767,7 @@ recno_scan_analyze_next_tuple(TableScanDesc scan,
 			/*
 			 * Opportunistically feed the dictionary-refresh corpus from the
 			 * same sampled tuple.  Done after the unlock so any overflow-column
-			 * detoast can lock this page safely.
+			 * fetch can lock this page safely.
 			 */
 			if (scan->rs_flags & SO_TYPE_ANALYZE)
 				recno_analyze_accumulate_sample(rscan, slot);

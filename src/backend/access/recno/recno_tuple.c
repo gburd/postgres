@@ -944,60 +944,6 @@ RecnoPageIndexTupleDelete(Page page, OffsetNumber offnum)
 }
 
 /*
- * RecnoFormTupleFromSlot
- *
- * Extract all attributes from a TupleTableSlot and form a RECNO tuple.
- * This is a convenience wrapper around slot_getallattrs() + RecnoFormTuple().
- *
- * Parameters:
- *   slot - the TupleTableSlot containing the data to convert
- *
- * Returns a palloc'd RecnoTuple.  Caller must free with RecnoFreeTuple().
- */
-RecnoTuple
-RecnoFormTupleFromSlot(TupleTableSlot *slot)
-{
-	TupleDesc	tupdesc = slot->tts_tupleDescriptor;
-	Datum	   *values;
-	bool	   *isnull;
-
-	values = palloc(tupdesc->natts * sizeof(Datum));
-	isnull = palloc(tupdesc->natts * sizeof(bool));
-
-	slot_getallattrs(slot);
-	memcpy(values, slot->tts_values, tupdesc->natts * sizeof(Datum));
-	memcpy(isnull, slot->tts_isnull, tupdesc->natts * sizeof(bool));
-
-	return RecnoFormTuple(tupdesc, values, isnull, NULL, NULL);
-}
-
-/*
- * Compute the size needed for a tuple from a TupleTableSlot
- */
-Size
-RecnoComputeSlotSize(TupleTableSlot *slot)
-{
-	TupleDesc	tupdesc = slot->tts_tupleDescriptor;
-	Datum	   *values;
-	bool	   *isnull;
-	Size		result;
-
-	values = palloc(tupdesc->natts * sizeof(Datum));
-	isnull = palloc(tupdesc->natts * sizeof(bool));
-
-	slot_getallattrs(slot);
-	memcpy(values, slot->tts_values, tupdesc->natts * sizeof(Datum));
-	memcpy(isnull, slot->tts_isnull, tupdesc->natts * sizeof(bool));
-
-	result = RecnoComputeDataSize(tupdesc, values, isnull);
-
-	pfree(values);
-	pfree(isnull);
-
-	return result;
-}
-
-/*
  * Convert a RECNO tuple to a TupleTableSlot
  *
  * This is the primary retrieval path used during sequential scans.
