@@ -158,10 +158,10 @@ SELECT
     (SELECT SUM(length(data)) FROM recno_cfull_comp_on) =
     (SELECT SUM(length(data)) FROM recno_cfull_comp_off) AS data_lengths_match;
 
--- Size comparison: compressed should be smaller (or equal for stub impls)
+-- Size comparison: compressed should be smaller (or equal for stub impls).
+-- Emit only the relationship; raw byte counts drift with page packing and
+-- carry no signal beyond the comparison itself.
 SELECT
-    pg_relation_size('recno_cfull_comp_on') AS compressed_bytes,
-    pg_relation_size('recno_cfull_comp_off') AS uncompressed_bytes,
     pg_relation_size('recno_cfull_comp_on') <= pg_relation_size('recno_cfull_comp_off') AS comp_not_larger;
 
 DROP TABLE recno_cfull_comp_on;
