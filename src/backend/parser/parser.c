@@ -44,6 +44,18 @@ static char *str_udeescape(const char *str, char escape,
  */
 int			(*base_yyparse_fn) (core_yyscan_t yyscanner) = base_yyparse;
 
+/*
+ * Track B push-parse driver (parser_pushparse.c).  Kept in a separate
+ * TU so Lime's runtime headers stay off this file's include path.
+ */
+extern bool raw_parser_lime_pushparse(core_yyscan_t yyscanner,
+									  base_yy_extra_type *yyextra,
+									  List **result);
+
+/* Probe gate: PG_LIME_PUSHPARSE in the environment selects the push path. */
+#define RAW_PARSER_LIME_PUSHPARSE_ENABLED() \
+	(getenv("PG_LIME_PUSHPARSE") != NULL)
+
 
 /*
  * raw_parser
@@ -92,6 +104,23 @@ raw_parser(const char *str, RawParseMode mode)
 
 	/* initialize the bison parser */
 	parser_init(&yyextra);
+
+	/*
+	 * Track B probe: when PG_LIME_PUSHPARSE is set, drive the Lime runtime
+	 * push parser over the snapshot (running base reduce actions through the
+	 * host-reduce wrapper) instead of the static pull parser.  Default path
+	 * is unchanged.  This validates the in-process Track B parse against the
+	 * pull parser before it becomes the extension-active default.
+	 */
+	if (RAW_PARSER_LIME_PUSHPARSE_ENABLED())
+	{
+		List	   *pushtree;
+		bool		ok;
+
+		ok = raw_parser_lime_pushparse(yyscanner, &yyextra, &pushtree);
+		scanner_finish(yyscanner);
+		return ok ? pushtree : NIL;
+	}
 
 	/* Parse! */
 	yyresult = (*base_yyparse_fn) (yyscanner);

@@ -87,16 +87,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1781560659,
-        "narHash": "sha256-S2vVbWbZDL91LZB+JqetvxhKHvScYFs+yko4GLpPjgY=",
-        "ref": "refs/tags/v1.5.3",
-        "rev": "9e731818456c12aafc727b79568025f6490af6a7",
-        "revCount": 455,
+        "lastModified": 1781697799,
+        "narHash": "sha256-W2NrjsfrPPzqVTopePv4HG6BYifUImCxcWVFBsFQrcQ=",
+        "ref": "refs/tags/v1.6.1",
+        "rev": "a429219366ce173dde23332f085c74084f13f233",
+        "revCount": 459,
         "type": "git",
         "url": "https://codeberg.org/gregburd/lime.git"
       },
       "original": {
-        "ref": "refs/tags/v1.5.3",
+        "ref": "refs/tags/v1.6.1",
         "type": "git",
         "url": "https://codeberg.org/gregburd/lime.git"
       }
