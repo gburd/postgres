@@ -474,18 +474,37 @@ typedef struct TableAmRoutine
 	 * that tuple. Index AMs can use that to avoid returning that tid in
 	 * future searches.
 	 *
-	 * If a tuple is returned and the table AM reached it by walking a HOT
-	 * chain that crossed a HOT-selectively-updated (HOT/SIU) hop after the
-	 * arriving entry's own tuple, it sets scan->xs_hot_indexed_recheck (see
-	 * struct IndexFetchTableData) to tell the index-access layer to recheck
-	 * the arriving leaf key against the live tuple.  AMs without such update
-	 * chains leave it false.
+	 * If a tuple is returned, the table AM may have reached it by walking
+	 * private update-chain state (for heap, a HOT-selectively-updated hop
+	 * after the arriving entry's own tuple) that leaves the arriving entry's
+	 * stored key possibly disagreeing with the live tuple.  Whether that is
+	 * so for a particular index is reported separately, on demand, via
+	 * index_entry_needs_recheck; how the AM records it is the AM's private
+	 * business.  AMs without such update chains need not track anything.
 	 */
 	bool		(*index_fetch_tuple) (struct IndexFetchTableData *scan,
 									  ItemPointer tid,
 									  Snapshot snapshot,
 									  TupleTableSlot *slot,
 									  bool *call_again, bool *all_dead);
+
+	/*
+	 * After index_fetch_tuple returned a tuple, report whether the arriving
+	 * index entry (from indexRelation) may fail to exactly identify the live
+	 * tuple's current key, so a scan requiring exact agreement must skip it.
+	 *
+	 * The table AM decides this from its own private per-fetch state (for
+	 * heap, whether the chain walk crossed a HOT/SIU hop that changed a
+	 * column indexRelation covers).  If indexRelation is NULL, report the
+	 * AM's raw "the walk crossed such a hop at all" signal without narrowing
+	 * it to any particular index (used by unique-check callers that perform
+	 * their own key comparison).
+	 *
+	 * AMs without such update chains may leave this NULL; the wrapper then
+	 * reports false.
+	 */
+	bool		(*index_entry_needs_recheck) (struct IndexFetchTableData *scan,
+										  Relation indexRelation);
 
 
 	/* ------------------------------------------------------------------------
@@ -1326,6 +1345,25 @@ table_index_fetch_tuple(struct IndexFetchTableData *scan,
 	return scan->rel->rd_tableam->index_fetch_tuple(scan, tid, snapshot,
 													slot, call_again,
 													all_dead);
+}
+
+/*
+ * After table_index_fetch_tuple returned a tuple, ask the table AM whether
+ * the arriving index entry (from indexRelation) may fail to exactly identify
+ * the live tuple's current key, so a scan requiring exact agreement must skip
+ * it.  Pass indexRelation NULL to get the AM's raw "the walk crossed such a
+ * hop at all" signal, un-narrowed to any index.  AMs without such update
+ * chains leave the callback NULL; we then report false.
+ */
+static inline bool
+table_index_entry_needs_recheck(struct IndexFetchTableData *scan,
+								Relation indexRelation)
+{
+	if (scan->rel->rd_tableam->index_entry_needs_recheck == NULL)
+		return false;
+
+	return scan->rel->rd_tableam->index_entry_needs_recheck(scan,
+															indexRelation);
 }
 
 /*

@@ -242,19 +242,33 @@ bool
 table_index_fetch_tuple_check(Relation rel,
 							  ItemPointer tid,
 							  Snapshot snapshot,
-							  bool *all_dead)
+							  bool *all_dead,
+							  bool *entry_needs_recheck,
+							  TupleTableSlot *keep_slot)
 {
 	IndexFetchTableData *scan;
 	TupleTableSlot *slot;
 	bool		call_again = false;
 	bool		found;
 
-	slot = table_slot_create(rel, NULL);
+	slot = keep_slot ? keep_slot : table_slot_create(rel, NULL);
 	scan = table_index_fetch_begin(rel, SO_NONE);
 	found = table_index_fetch_tuple(scan, tid, snapshot, slot, &call_again,
 									all_dead);
+
+	/*
+	 * Surface the table AM's raw recheck signal to the caller (a unique-check
+	 * caller that performs its own key comparison); the scan is freed below,
+	 * so read it out now.  indexRelation NULL means "the walk crossed such a
+	 * hop at all", un-narrowed to any particular index.
+	 */
+	if (entry_needs_recheck != NULL)
+		*entry_needs_recheck = found &&
+			table_index_entry_needs_recheck(scan, NULL);
+
 	table_index_fetch_end(scan);
-	ExecDropSingleTupleTableSlot(slot);
+	if (keep_slot == NULL)
+		ExecDropSingleTupleTableSlot(slot);
 
 	return found;
 }
@@ -361,8 +375,8 @@ void
 simple_table_tuple_update(Relation rel, ItemPointer otid,
 						  TupleTableSlot *slot,
 						  Snapshot snapshot,
-						  const Bitmapset *modified_idx_attrs,
-						  TU_UpdateIndexes *update_indexes)
+						  const Bitmapset *modified_attrs,
+						  bool *row_moved)
 {
 	TM_Result	result;
 	TM_FailureData tmfd;
@@ -373,8 +387,7 @@ simple_table_tuple_update(Relation rel, ItemPointer otid,
 								0, snapshot, InvalidSnapshot,
 								true /* wait for commit */ ,
 								&tmfd, &lockmode,
-								modified_idx_attrs,
-								update_indexes);
+								modified_attrs, row_moved);
 
 	switch (result)
 	{

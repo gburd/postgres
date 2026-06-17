@@ -132,6 +132,18 @@ typedef struct IndexFetchTableData
 	 * permitted.
 	 */
 	uint32		flags;
+
+	/*
+	 * Set by the table AM when it returns a tuple: true iff every chain
+	 * member the walk skipped before reaching the returned (visible) tuple is
+	 * dead to all transactions (below the global xmin horizon).  Combined
+	 * with a stale verdict (the crossed-attribute bitmap overlapped the
+	 * index's key columns), this lets the index-access layer
+	 * kill the arriving leaf: no snapshot can reach a matching version
+	 * through it, so it is redundant.  AMs without such chains leave it
+	 * false.
+	 */
+	bool		xs_prefix_all_dead;
 } IndexFetchTableData;
 
 struct IndexScanInstrumentation;
@@ -152,6 +164,13 @@ typedef struct IndexScanDescData
 	struct ScanKeyData *keyData;	/* array of index qualifier descriptors */
 	struct ScanKeyData *orderByData;	/* array of ordering op descriptors */
 	bool		xs_want_itup;	/* caller requests index tuples */
+	bool		xs_index_only;	/* caller is an index-only scan that may
+								 * return tuples without fetching the heap;
+								 * AMs must retain leaf-page pins for such
+								 * scans (VM all-visible / TID-recycle race),
+								 * whereas a plain scan that sets xs_want_itup
+								 * only to inspect the index tuple still
+								 * fetches the heap and may drop pins */
 	bool		xs_temp_snap;	/* unregister snapshot at scan end? */
 
 	/* signaling to index AM about killing index tuples */
@@ -186,6 +205,21 @@ typedef struct IndexScanDescData
 	IndexFetchTableData *xs_heapfetch;
 
 	bool		xs_recheck;		/* T means scan keys must be rechecked */
+
+	/*
+	 * T means the table AM determined that the entry that led here may not
+	 * represent the live tuple's current key: the walk to the live tuple
+	 * crossed AM-private state (for heap, a HOT-selectively-updated hop that
+	 * changed a column this index covers) such that the arriving entry's
+	 * stored key may no longer agree with the live tuple.  Consumers that
+	 * require exact key agreement must skip such an entry; the row is
+	 * re-supplied by the fresh entry inserted for the new value.  Unlike
+	 * xs_recheck (set by lossy AMs such as GiST and GIN), this verdict is
+	 * produced by the table AM via table_index_entry_needs_recheck(); the
+	 * index-access layer only carries it, and how the AM decides is its own
+	 * business.
+	 */
+	bool		xs_entry_needs_recheck;
 
 	/*
 	 * When fetching with an ordering operator, the values of the ORDER BY

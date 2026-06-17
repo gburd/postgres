@@ -128,8 +128,8 @@ based and identical across sizes, so a smaller bitmap simply ORs into the low
 bytes of a larger crossed-attribute accumulator.  DROP COLUMN keeps the attnum
 slot (it never renumbers), so existing bitmaps stay aligned.
 
-After the update, table_tuple_update reports update_all_indexes = false (the
-tuple is heap-only).  The executor then maintains indexes selectively:
+After the update, table_tuple_update reports row_moved = false (the tuple is
+heap-only).  The executor then maintains indexes selectively:
 ExecSetIndexUnchanged marks each index whose key attributes did not change as
 unchanged, and ExecInsertIndexTuples inserts a fresh entry only into the
 indexes that did change.  Each such entry points at the new tuple's own TID.
@@ -157,15 +157,21 @@ heap_hot_search_buffer walks the chain from the entry's target to the live
 visible tuple.  Each hop it crosses after the entry's own target -- a live
 HOT-indexed member, a collapse-survivor stub, or a collapsed (redirected)
 prefix -- contributes that hop's inline modified-attrs bitmap to a running
-union, IndexFetchTableData.xs_hot_indexed_crossed, and sets
-*hot_indexed_recheck to flag that the walk crossed at least one such hop.
+union.  The heap keeps that union in its own private per-scan state
+(IndexFetchHeapData) together with a flag recording that the walk crossed at
+least one such hop; neither is exposed on the generic scan descriptors.
 
-The index-access layer (index_fetch_heap) tests that union against the
-arriving index's key columns.  Any overlap means a crossed hop changed one of
-this index's inputs, so the entry's stored key no longer matches the live
-tuple: IndexScanDesc.xs_hot_indexed_stale is set, and IndexScan,
-IndexOnlyScan, CLUSTER, and the logical-replication replica-identity lookups
-drop the tuple.  If the union is disjoint from the index's key columns, none
+The generic index-access layer (index_fetch_heap) does not interpret that
+heap state.  Instead it asks the table AM, through the
+index_entry_needs_recheck callback, whether the arriving entry may fail to
+identify the live tuple's current key, passing the index relation so the AM
+can narrow the answer.  The heap's callback tests its private crossed-attr
+union against the arriving index's key columns: any overlap means a crossed
+hop changed one of this index's inputs, so the entry's stored key no longer
+matches the live tuple.  The layer records the AM's verdict in the
+AM-neutral IndexScanDesc.xs_entry_needs_recheck, and IndexScan, IndexOnlyScan,
+CLUSTER, and the logical-replication replica-identity lookups drop the tuple
+when it is set.  If the union is disjoint from the index's key columns, none
 of the index's inputs changed across the chain, so the entry is current and
 the row is returned.
 
