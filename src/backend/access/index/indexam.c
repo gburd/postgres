@@ -607,6 +607,15 @@ index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	Assert(TransactionIdIsValid(RecentXmin));
 
 	/*
+	 * Reset the HOT-indexed recheck flag: it is set by the heap AM during
+	 * index_fetch_heap and is per-fetched-tuple, not per-index-entry. For
+	 * IndexOnlyScan, which may skip index_fetch_heap when the VM says the
+	 * entry is visible-to-all, this ensures we don't carry a stale value from
+	 * a previous entry.
+	 */
+	scan->xs_entry_needs_recheck = false;
+
+	/*
 	 * The AM's amgettuple proc finds the next index entry matching the scan
 	 * keys, and puts the TID into scan->xs_heaptid.  It should also set
 	 * scan->xs_recheck and possibly scan->xs_itup/scan->xs_hitup, though we
@@ -667,14 +676,64 @@ index_fetch_heap(IndexScanDesc scan, TupleTableSlot *slot)
 		pgstat_count_heap_fetch(scan->indexRelation);
 
 	/*
+	 * Ask the table AM whether the arriving index entry (identified by this
+	 * index relation) may fail to exactly identify the live tuple's current
+	 * key.  For heap, the fetch walked the HOT chain and may have crossed a
+	 * HOT-selectively-updated hop after the entry's own tuple, changing a
+	 * column this index covers; the AM narrows that to this index and returns
+	 * the verdict.  The overlap must be judged behind this callback (not in
+	 * index_fetch_tuple) because IndexFetchTableData carries the heap
+	 * relation, not the index, so the fetch alone lacks the index's attrs.
+	 * AMs without such update chains always report false.
+	 *
+	 * Dropping such an entry is correct even under ABA key cycling: the
+	 * update that restored the value maintained this index and planted a
+	 * fresh entry pointing at its own live tuple, whose walk crosses no later
+	 * key-changing hop, so that fresh entry uniquely supplies the row while
+	 * this stale ancestor entry is dropped.
+	 */
+	scan->xs_entry_needs_recheck =
+		found && table_index_entry_needs_recheck(scan->xs_heapfetch,
+												 scan->indexRelation);
+
+	/*
 	 * If we scanned a whole HOT chain and found only dead tuples, tell index
 	 * AM to kill its entry for that TID (this will take effect in the next
 	 * amgettuple call, in index_getnext_tid).  We do not do this when in
 	 * recovery because it may violate MVCC to do so.  See comments in
 	 * RelationGetIndexScan().
+	 *
+	 * Additionally kill a stale HOT-indexed leaf (one whose key the live
+	 * tuple no longer holds) when every chain member skipped before the
+	 * returned tuple is dead to all transactions (xs_prefix_all_dead): no
+	 * snapshot can reach a matching version through this leaf, so it is
+	 * redundant and reclaiming it bounds the index bloat HOT-indexed updates
+	 * create.
+	 *
+	 * Two independent conditions make this safe:
+	 *
+	 *  - The surely-dead prefix gate (xs_prefix_all_dead) means no snapshot,
+	 *    including older ones still running, can reach a version through this
+	 *    leaf whose key matches: every member ahead of the live tuple is dead
+	 *    to all.  This is what makes it MVCC-safe, exactly as for the
+	 *    all_dead case.
+	 *
+	 *  - The leaf is genuinely redundant, not the row's only entry.  A stale
+	 *    verdict means the crossed-hop union overlaps this index's columns,
+	 *    i.e. one of this index's attributes changed on a hop after this
+	 *    leaf's target.  The update that made that change maintained this
+	 *    index (its attribute changed), so it planted a fresh entry pointing
+	 *    at its own live tuple; that fresh entry crosses no later
+	 *    key-changing hop and uniquely supplies the row.  Dropping the stale
+	 *    ancestor therefore never removes the row's last reachable entry.
+	 *    This holds even under ABA key cycling (X -> Y -> X): the X-restoring
+	 *    update changed this index's column (Y -> X) and so planted the fresh
+	 *    entry.
 	 */
 	if (!scan->xactStartedInRecovery)
-		scan->kill_prior_tuple = all_dead;
+		scan->kill_prior_tuple =
+			all_dead ||
+			(scan->xs_entry_needs_recheck && scan->xs_heapfetch->xs_prefix_all_dead);
 
 	return found;
 }

@@ -257,14 +257,14 @@ table_index_fetch_tuple_check(Relation rel,
 									all_dead);
 
 	/*
-	 * No in-core table AM can currently reach a tuple whose index key differs
-	 * from the arriving entry's key: an AM either stores the new version at a
-	 * new TID (fresh entries for every index) or leaves every indexed
-	 * attribute unchanged (heap's HOT).  So a found tuple never needs a key
-	 * recheck.
+	 * Surface the table AM's raw recheck signal to the caller (a unique-check
+	 * caller that performs its own key comparison); the scan is freed below,
+	 * so read it out now.  indexRelation NULL means "the walk crossed such a
+	 * hop at all", un-narrowed to any particular index.
 	 */
 	if (entry_needs_recheck != NULL)
-		*entry_needs_recheck = false;
+		*entry_needs_recheck = found &&
+			table_index_entry_needs_recheck(scan, NULL);
 
 	table_index_fetch_end(scan);
 	if (keep_slot == NULL)
@@ -387,8 +387,7 @@ simple_table_tuple_update(Relation rel, ItemPointer otid,
 								0, snapshot, InvalidSnapshot,
 								true /* wait for commit */ ,
 								&tmfd, &lockmode,
-								modified_attrs,
-								row_moved);
+								modified_attrs, row_moved);
 
 	switch (result)
 	{
