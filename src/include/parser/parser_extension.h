@@ -224,6 +224,24 @@ extern int pg_grammar_ext_resolve_reduce(int ext_rule_index,
 extern int pg_grammar_ext_pending_fragments(const char ***frags_out);
 
 /*
+ * Callback for pg_grammar_ext_foreach_token: receives one registered
+ * extension token's symbolic name, source lexeme, and keyword category.
+ */
+typedef void (*PgGrammarExtTokenCB) (const char *name,
+									 const char *lexeme,
+									 PgGrammarExtKeywordCategory category,
+									 void *cb_arg);
+
+/*
+ * pg_grammar_ext_foreach_token
+ *	  Enumerate every registered extension token (name, lexeme,
+ *	  category) so the scanner-keyword map can resolve each name to its
+ *	  external code in the composed snapshot.  Tokens with no lexeme are
+ *	  skipped.
+ */
+extern void pg_grammar_ext_foreach_token(PgGrammarExtTokenCB cb, void *cb_arg);
+
+/*
  * pg_grammar_ext_set_precedence
  *	  Set or override the precedence of a symbol.
  *

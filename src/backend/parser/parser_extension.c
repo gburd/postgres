@@ -848,3 +848,29 @@ pg_grammar_ext_pending_fragments(const char ***frags_out)
 	*frags_out = frag_array;
 	return npending;
 }
+
+/*
+ * pg_grammar_ext_foreach_token
+ *	  Invoke `cb(name, lexeme, category, cb_arg)` once for every token
+ *	  registered by every loaded grammar extension.  Used by the push-parse
+ *	  driver to build the scanner keyword map (resolving each extension
+ *	  token's NAME to its external code in the composed snapshot via
+ *	  lime_snapshot_token_code).  Tokens with no lexeme (purely internal
+ *	  symbolic tokens) are skipped -- only keyword-shaped tokens with a
+ *	  source lexeme are scanner-relevant.
+ */
+void
+pg_grammar_ext_foreach_token(PgGrammarExtTokenCB cb, void *cb_arg)
+{
+	for (int i = 0; i < npending; i++)
+	{
+		PgGrammarExtension *ext = pending[i].ext;
+
+		for (ExtToken *tok = ext->tokens; tok != NULL; tok = tok->next)
+		{
+			if (tok->lexeme == NULL || tok->lexeme[0] == '\0')
+				continue;
+			cb(tok->name, tok->lexeme, tok->category, cb_arg);
+		}
+	}
+}

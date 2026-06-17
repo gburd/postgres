@@ -31,6 +31,7 @@
 #include "parser/parser_extension.h"
 #include "parser/scanner.h"
 #include "lib/stringinfo.h"
+#include "utils/memutils.h"
 
 #include <lime/lime_compiler.h>
 #include <lime/parse_context.h>
@@ -50,6 +51,17 @@ extern ParserSnapshot *base_yyBuildSnapshot(void);
 extern int	base_yyHostReduce(void *user, int ruleno,
 							  const void *rhs_values, const int *rhs_locs,
 							  int nrhs, void *lhs_out, int *lhs_loc_out);
+
+/*
+ * lime_snapshot_token_code (Lime v1.7.0) maps a token NAME to its
+ * external code in a snapshot, or -1.  Declared in <lime/parser.h>, but
+ * that header's include guard (PARSER_H) collides with PostgreSQL's
+ * parser/parser.h, so we forward-declare it here.  The symbol lives in
+ * liblime_parser.a.  (Reported to the Lime team: parser.h should use a
+ * LIME_-prefixed guard.)
+ */
+extern int	lime_snapshot_token_code(const ParserSnapshot *snap,
+								 const char *name);
 
 extern bool raw_parser_lime_pushparse(core_yyscan_t yyscanner,
 									  base_yy_extra_type *yyextra,
@@ -96,6 +108,8 @@ pushparse_host_reduce(void *user, int ruleno,
 										 (const void *const *) rhs_values,
 										 rhs_locs, lhs_out);
 }
+
+static void pushparse_build_keyword_map(void);
 
 /*
  * pg_grammar_compose_install
@@ -170,7 +184,87 @@ pg_grammar_compose_install(unsigned int *base_nrule_out, char **errmsg_out)
 	/* Route base/extension reduces through the composed dispatcher. */
 	snap->host_reduce = pushparse_host_reduce;
 	composed_snapshot = snap;
+
+	/* Build the scanner keyword map (lexeme -> composed token code). */
+	pushparse_build_keyword_map();
 	return true;
+}
+
+/*
+ * Scanner keyword map: lexeme (lowercase source text) -> external token
+ * code in the composed snapshot.  Built once after compose by resolving
+ * each registered extension token's NAME via lime_snapshot_token_code.
+ * scan.c consults it (through pg_grammar_ext_keyword_hook) so an
+ * extension keyword lexeme resolves to its composed token code.
+ */
+typedef struct PushparseKwEntry
+{
+	char	   *lexeme;			/* lowercase, NUL-terminated */
+	int			code;			/* external token code in composed snapshot */
+} PushparseKwEntry;
+
+static PushparseKwEntry *kw_map = NULL;
+static int	kw_map_count = 0;
+static int	kw_map_capacity = 0;
+
+static void
+pushparse_kw_add(const char *name, const char *lexeme,
+				 PgGrammarExtKeywordCategory category, void *cb_arg)
+{
+	int			code;
+
+	(void) category;
+	(void) cb_arg;
+
+	if (composed_snapshot == NULL)
+		return;
+
+	/* Resolve the token NAME to its external code in the composed snapshot. */
+	code = lime_snapshot_token_code(composed_snapshot, name);
+	if (code < 0)
+		return;					/* token absent from composed grammar */
+
+	if (kw_map_count == kw_map_capacity)
+	{
+		int			newcap = kw_map_capacity ? kw_map_capacity * 2 : 8;
+
+		if (kw_map == NULL)
+			kw_map = MemoryContextAlloc(TopMemoryContext,
+										sizeof(PushparseKwEntry) * newcap);
+		else
+			kw_map = repalloc(kw_map, sizeof(PushparseKwEntry) * newcap);
+		kw_map_capacity = newcap;
+	}
+	kw_map[kw_map_count].lexeme = MemoryContextStrdup(TopMemoryContext, lexeme);
+	kw_map[kw_map_count].code = code;
+	kw_map_count++;
+}
+
+/*
+ * pushparse_keyword_hook
+ *	  Published to scan.c (pg_grammar_ext_keyword_hook).  Given a
+ *	  lowercased identifier lexeme, return the extension token code if the
+ *	  lexeme matches a registered extension keyword, else -1.  Linear scan
+ *	  -- the registered-extension keyword set is small.
+ */
+static int
+pushparse_keyword_hook(const char *lower_lexeme)
+{
+	for (int i = 0; i < kw_map_count; i++)
+	{
+		if (strcmp(kw_map[i].lexeme, lower_lexeme) == 0)
+			return kw_map[i].code;
+	}
+	return -1;
+}
+
+static void
+pushparse_build_keyword_map(void)
+{
+	kw_map_count = 0;			/* rebuilt fresh each compose */
+	pg_grammar_ext_foreach_token(pushparse_kw_add, NULL);
+	if (kw_map_count > 0)
+		pg_grammar_ext_keyword_hook = pushparse_keyword_hook;
 }
 
 /*
