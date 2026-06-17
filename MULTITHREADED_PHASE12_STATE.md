@@ -1,3 +1,28 @@
+## PgStat Activity Hot Current
+
+Lifecycle/preflight note:
+
+- target: remove a remaining threaded-mode current-session accessor leaf from
+  the simple-query activity reporting path by caching
+  PgSession.pgstat.track_activities in the generated hot-field bridge.
+- touched roots/buckets: existing session-owned PgSessionPgStatState only;
+  no owner lifetime, allocation, or reset ordering changes.
+- owner source files: src/include/utils/backend_runtime.h,
+  src/include/utils/backend_runtime_hot_fields.def,
+  src/include/utils/backend_status.h, and this state note.
+- legacy symbols/accessors: preserve PgCurrentPgStatTrackActivitiesRef() as
+  the fallback and GUC table storage hook while routing the compatibility
+  lvalue through PG_RUNTIME_CURRENT_HOT_FIELD_REF() where possible.
+- repeated lifecycle operations: none.  The generated bridge is refreshed by
+  the existing current-work install/clear path.
+- checked primitive decision: use a single generated hot field because perf
+  still reports PgCurrentPgStatTrackActivitiesRef() under threaded c8 simple
+  SELECT; do not broaden pgstat migration unless this targeted alias moves the
+  profile and benchmark in the right direction.
+- validation impact: clean rebuild because the bridge layout changes, smoke
+  process/threaded startup, then rerun only the vanilla pgbench client
+  pgbench -S -M simple -c 8 -j 8 comparison.
+
 # Phase 12 State Migration Notes
 
 This file is the archival chronological ledger for Phase 12 state migration and

@@ -118,6 +118,11 @@ PG_RUNTIME_HOT_FIELD(PgCurrentLocalPredicateLockHashHotRef,
 					 struct HTAB *,
 					 CurrentPgBackend != NULL ?
 					 &CurrentPgBackend->locks.local_predicate_lock_hash : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentPgStatTrackActivitiesHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->pgstat.track_activities : NULL)
 PG_RUNTIME_HOT_FIELD(PgCurrentMySerializableXactHotRef,
 					 backend,
 					 void *,
