@@ -51,6 +51,7 @@ extern int	base_yyHostReduce(void *user, int ruleno,
 extern bool raw_parser_lime_pushparse(core_yyscan_t yyscanner,
 									  base_yy_extra_type *yyextra,
 									  List **result);
+extern char *raw_parser_lime_compose_probe(const char *extra_rule);
 
 /*
  * The base snapshot, built once per backend on first use.  When grammar

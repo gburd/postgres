@@ -40,6 +40,24 @@ subdir('po', if_found: libintl)
 backend_link_args = []
 backend_link_depends = []
 
+# Track B: the backend's runtime grammar-extension path composes
+# extension grammars in-process via lime_compile_grammar_in_process().
+# That symbol is a weak no-op stub in liblime_parser.a and the real
+# in-process compiler in liblime_compiler.a; force the compiler archive
+# whole so its strong definition wins (otherwise the backend silently
+# falls back to the subprocess pipeline -- which Track B removes).  Same
+# pattern as src/test/modules/lime_in_process_smoke.
+if lime_runtime_dep.found() and lime_compiler_dep.found()
+  backend_build_deps += [lime_runtime_dep, lime_compiler_dep]
+  backend_link_args += [
+    '-Wl,--push-state',
+    '-Wl,--whole-archive',
+    '-llime_compiler',
+    '-Wl,--no-whole-archive',
+    '-Wl,--pop-state',
+  ]
+endif
+
 
 # On Windows also make the backend depend on dbghelp, for backtrace support
 if host_system == 'windows' and cc.get_id() == 'msvc'
