@@ -40,7 +40,7 @@
  *	     custom varlena wrapper that fetches overflow pages on demand,
  *	     releasing page pins after each chunk is consumed.  This would
  *	     require integration with PostgreSQL's VARATT_EXTERNAL infrastructure
- *	     or a custom external toast pointer type for RECNO.
+ *	     or a custom external varlena pointer type for RECNO.
  *
  *	  2. Row-level overflow:
  *	     When a row's total serialized size exceeds page capacity even after
@@ -958,8 +958,7 @@ RecnoDeleteOverflowChain(Relation rel, BlockNumber first_block,
 		 * cleanup is an idempotent operation that can be safely deferred. The
 		 * parent tuple's modification is already WAL-logged, which ensures
 		 * consistency.  If we crash before overflow cleanup completes, the
-		 * orphaned overflow records will be cleaned up by VACUUM. This is
-		 * similar to PostgreSQL's TOAST cleanup strategy.
+		 * orphaned overflow records will be cleaned up by VACUUM.
 		 */
 
 		/* Update FSM */

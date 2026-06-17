@@ -1871,7 +1871,7 @@ build_zstd_dict_for_attribute(PG_FUNCTION_ARGS)
 	{
 		Datum		value;
 		bool		isnull;
-		struct varlena *detoasted;
+		struct varlena *flattened;
 		Size		len;
 
 		CHECK_FOR_INTERRUPTS();
@@ -1880,29 +1880,29 @@ build_zstd_dict_for_attribute(PG_FUNCTION_ARGS)
 		if (isnull)
 			continue;
 
-		detoasted = (struct varlena *) PG_DETOAST_DATUM(value);
-		len = VARSIZE_ANY_EXHDR(detoasted);
+		flattened = (struct varlena *) PG_DETOAST_DATUM(value);
+		len = VARSIZE_ANY_EXHDR(flattened);
 
 		if (len == 0)
 		{
-			if ((Pointer) detoasted != DatumGetPointer(value))
-				pfree(detoasted);
+			if ((Pointer) flattened != DatumGetPointer(value))
+				pfree(flattened);
 			continue;
 		}
 
 		if (total + len > sample_cap || nsamples >= max_samples)
 		{
-			if ((Pointer) detoasted != DatumGetPointer(value))
-				pfree(detoasted);
+			if ((Pointer) flattened != DatumGetPointer(value))
+				pfree(flattened);
 			break;
 		}
 
-		memcpy(sample_buf + total, VARDATA_ANY(detoasted), len);
+		memcpy(sample_buf + total, VARDATA_ANY(flattened), len);
 		sample_sizes[nsamples++] = len;
 		total += len;
 
-		if ((Pointer) detoasted != DatumGetPointer(value))
-			pfree(detoasted);
+		if ((Pointer) flattened != DatumGetPointer(value))
+			pfree(flattened);
 	}
 
 	table_endscan(scan);

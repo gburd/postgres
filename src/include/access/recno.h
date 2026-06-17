@@ -190,7 +190,8 @@ typedef RecnoTupleData *RecnoTuple;
  * pointer to the next chunk (or InvalidBlockNumber if this is the last).
  *
  * This approach stores overflow data on regular pages that can also hold
- * normal tuples, unlike TOAST which uses a separate relation.
+ * normal tuples, within the same relation -- no separate out-of-line
+ * relation is created.
  */
 
 /*
@@ -517,6 +518,20 @@ typedef struct IndexFetchRecnoData
 #define RECNO_OVERFLOW_THRESHOLD (RECNO_MAX_TUPLE_SIZE / 4)
 
 /*
+ * Hard ceiling on the number of line pointers a RECNO page can hold.  Unlike
+ * heap, RECNO pages mix full tuples with small overflow-continuation records,
+ * and RecnoPageAddTuple deliberately omits PAI_IS_HEAP so PageAddItemExtended
+ * does not clamp offsets to MaxHeapTuplesPerPage.  The smallest storable item
+ * is an overflow-record header, so the densest possible packing is bounded by
+ * that item size plus its line pointer.  This is the RECNO-true analogue of
+ * MaxHeapTuplesPerPage and must be used for dense TID encoding so that every
+ * valid offset maps to a distinct index without aliasing into the next block.
+ */
+#define MaxRecnoItemsPerPage \
+	((int) ((BLCKSZ - RECNO_PAGE_OVERHEAD) / \
+			(RECNO_OVERFLOW_RECORD_OVERHEAD + sizeof(ItemIdData))))
+
+/*
  * Fill factor support.  Default is 100 (pack pages fully), matching heap.
  * Lower values reserve space on each page for in-place updates.
  */
@@ -549,8 +564,6 @@ extern RecnoTuple RecnoFormTuple(TupleDesc tupdesc, Datum *values, bool *isnull,
 extern RecnoTuple RecnoFormTupleForceShrink(TupleDesc tupdesc, Datum *values,
 											bool *isnull, Relation rel,
 											RecnoOverflowBuffers *overflow_buffers);
-extern RecnoTuple RecnoFormTupleFromSlot(TupleTableSlot *slot);
-extern Size RecnoComputeSlotSize(TupleTableSlot *slot);
 extern void RecnoDeformTuple(Relation rel, RecnoTuple tuple, TupleDesc tupdesc, Datum *values, bool *isnull);
 extern void RecnoFreeTuple(RecnoTuple tuple);
 extern bool RecnoTupleToSlot(RecnoTupleHeader *tuple_header, TupleTableSlot *slot);
@@ -610,15 +623,9 @@ extern void RecnoMaybeRefreshDict(Relation rel, const char *sample_buf,
 								  Size total);
 
 /* Free space management */
-extern void RecnoInitFSM(Relation rel);
 extern BlockNumber RecnoGetPageWithFreeSpace(Relation rel, Size needed);
 extern void RecnoRecordFreeSpace(Relation rel, BlockNumber page, Size freespace);
-extern void RecnoMarkPageForDefrag(Relation rel, BlockNumber page);
-extern void RecnoOpportunisticDefrag(Relation rel);
 extern void RecnoVacuumFSM(Relation rel, BlockNumber new_nblocks);
-extern void RecnoGetFSMStats(Relation rel, int64 *total_pages, int64 *free_pages,
-							 double *avg_free_space, int64 *defrag_needed);
-extern void RecnoBatchDefrag(Relation rel, int max_pages);
 
 /* Visibility Map management */
 extern void RecnoVMInit(Relation rel);

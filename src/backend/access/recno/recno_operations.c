@@ -849,7 +849,7 @@ have_page:
 							GetTopTransactionId(),
 							GetCurrentSubTransactionId());
 
-	pfree(recno_tuple);
+	RecnoFreeTuple(recno_tuple);
 }
 
 /*
@@ -1562,9 +1562,8 @@ recno_tuple_delete(Relation relation, ItemPointer tid, CommandId cid,
 		 * after modification) 2. Expensive on hot paths (extra buffer I/O +
 		 * locking) 3. Complex to WAL-log correctly
 		 *
-		 * Instead, overflow cleanup is deferred to VACUUM (like PostgreSQL's
-		 * TOAST). When VACUUM prunes deleted tuples, it will also reclaim
-		 * orphaned overflow pages.
+		 * Instead, overflow cleanup is deferred to VACUUM.  When VACUUM prunes
+		 * deleted tuples, it will also reclaim orphaned overflow pages.
 		 *
 		 * Future enhancement: Log overflow block/offset in WAL DELETE record
 		 * so UNDO log pruning can also clean up overflow chains.
@@ -2008,8 +2007,7 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 								RecnoTupleWriterUnlock(old_tuple_hdr);
 								LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 								ReleaseBuffer(buffer);
-								pfree(cas_new_tuple->t_data);
-								pfree(cas_new_tuple);
+								RecnoFreeTuple(cas_new_tuple);
 
 								/* Set output TID */
 								ItemPointerSet(&slot->tts_tid, blkno, offnum);
@@ -2310,8 +2308,7 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 								/* Mark this block dirty for the scan-path sLog bypass */
 								RecnoDirtyMapMark(RelationGetRelid(relation), blkno);
 
-								pfree(cas_new_tuple->t_data);
-								pfree(cas_new_tuple);
+								RecnoFreeTuple(cas_new_tuple);
 								return TM_Ok;
 							}	/* end else (revalidated) */
 						}
@@ -2327,8 +2324,7 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 		/* Release shared lock, fall through to exclusive path */
 		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 		ReleaseBuffer(buffer);
-		pfree(cas_new_tuple->t_data);
-		pfree(cas_new_tuple);
+		RecnoFreeTuple(cas_new_tuple);
 	}
 
 	/* Read the page containing the old tuple */
@@ -3200,7 +3196,7 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 			if (!ItemIdIsNormal(itemid))
 			{
 				UnlockReleaseBuffer(buffer);
-				pfree(new_tuple);
+				RecnoFreeTuple(new_tuple);
 				RECNO_RELEASE_TUPLOCK();
 				return TM_Invisible;
 			}
@@ -3363,7 +3359,7 @@ retry_fit:
 					recno_release_update_overflow_buffers(&update_overflow_buffers,
 														  buffer);
 					UnlockReleaseBuffer(buffer);
-					pfree(new_tuple);
+					RecnoFreeTuple(new_tuple);
 					ereport(ERROR,
 							(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 							 errmsg("updated recno tuple does not fit on page after defragmentation"),
@@ -3379,7 +3375,7 @@ retry_fit:
 				recno_release_update_overflow_buffers(&update_overflow_buffers,
 													  buffer);
 				UnlockReleaseBuffer(buffer);
-				pfree(new_tuple);
+				RecnoFreeTuple(new_tuple);
 				ereport(ERROR,
 						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 						 errmsg("updated recno tuple does not fit on page"),
@@ -3395,7 +3391,7 @@ retry_fit:
 			recno_release_update_overflow_buffers(&update_overflow_buffers,
 												  buffer);
 			UnlockReleaseBuffer(buffer);
-			pfree(new_tuple);
+			RecnoFreeTuple(new_tuple);
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 					 errmsg("updated recno tuple does not fit on page"),
@@ -3422,7 +3418,7 @@ force_shrink_retry:
 		{
 			bool		relock_already_locked = false;
 
-			pfree(new_tuple);
+			RecnoFreeTuple(new_tuple);
 
 			/* Release the main buffer lock before re-forming with overflow. */
 			LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
@@ -3462,7 +3458,7 @@ force_shrink_retry:
 				recno_release_update_overflow_buffers(&update_overflow_buffers,
 													  buffer);
 				UnlockReleaseBuffer(buffer);
-				pfree(new_tuple);
+				RecnoFreeTuple(new_tuple);
 				RECNO_RELEASE_TUPLOCK();
 				return TM_Invisible;
 			}
@@ -3481,7 +3477,7 @@ force_shrink_retry:
 				recno_release_update_overflow_buffers(&update_overflow_buffers,
 													  buffer);
 				UnlockReleaseBuffer(buffer);
-				pfree(new_tuple);
+				RecnoFreeTuple(new_tuple);
 				RECNO_RELEASE_TUPLOCK();
 				return TM_Deleted;
 			}
@@ -3927,11 +3923,6 @@ force_shrink_retry:
 		*update_indexes = recno_compute_index_update(relation,
 													 old_tuple_for_inplace_wal,
 													 slot);
-
-	/*
-	 * Buffer lock is already released above (after VM and free-space
-	 * capture).  Continue with sLog registration and cleanup.
-	 */
 	{
 		/*
 		 * sLog registration was done above (before buffer release). The
@@ -3953,9 +3944,8 @@ force_shrink_retry:
 		 * after in-place modification) 2. Expensive on hot paths (extra
 		 * buffer I/O + locking during UPDATE) 3. Complex to WAL-log correctly
 		 *
-		 * Instead, overflow cleanup is deferred to VACUUM (like PostgreSQL's
-		 * TOAST). When VACUUM prunes deleted tuples, it will also reclaim
-		 * orphaned overflow pages.
+		 * Instead, overflow cleanup is deferred to VACUUM.  When VACUUM prunes
+		 * deleted tuples, it will also reclaim orphaned overflow pages.
 		 *
 		 * Future enhancement: Log overflow block/offset in WAL UPDATE record
 		 * so UNDO log pruning can also clean up overflow chains.
@@ -3963,8 +3953,7 @@ force_shrink_retry:
 		(void) old_has_overflow;	/* Suppress unused variable warning */
 	}
 
-	if (update_indexes)
-		pfree(new_tuple);
+	RecnoFreeTuple(new_tuple);
 
 	RECNO_RELEASE_TUPLOCK();
 	return TM_Ok;
@@ -4064,7 +4053,7 @@ recno_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 		if (needs_single_insert[ndone])
 		{
 			recno_tuple_insert(relation, slots[ndone], cid, options, bistate);
-			pfree(formed_tuples[ndone]);
+			RecnoFreeTuple(formed_tuples[ndone]);
 			ndone++;
 			continue;
 		}
@@ -4081,7 +4070,7 @@ recno_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 		{
 			/* Fall back to single insert */
 			recno_tuple_insert(relation, slots[ndone], cid, options, bistate);
-			pfree(formed_tuples[ndone]);
+			RecnoFreeTuple(formed_tuples[ndone]);
 			ndone++;
 			continue;
 		}
@@ -4196,7 +4185,7 @@ recno_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 
 		/* Free formed tuples in this batch */
 		for (i = batch_start; i < batch_start + batch_count; i++)
-			pfree(formed_tuples[i]);
+			RecnoFreeTuple(formed_tuples[i]);
 	}
 
 	pfree(formed_tuples);
