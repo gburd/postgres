@@ -9,6 +9,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include "mb/pg_wchar.h"
@@ -21,6 +22,10 @@ PgCurrentSessionEncodingState(void)
 {
 	PgSessionEncodingState *encoding;
 
+	if (likely(CurrentPgSessionEncodingRuntimeState != NULL &&
+			   CurrentPgSessionEncodingRuntimeState->client_encoding != NULL))
+		return CurrentPgSessionEncodingRuntimeState;
+
 	encoding = &PgCurrentOrEarlySession()->encoding;
 	if (encoding->client_encoding == NULL)
 		PgSessionInitializeEncodingState(encoding);
@@ -31,7 +36,7 @@ PgCurrentSessionEncodingState(void)
 List **
 PgCurrentEncodingConvProcListRef(void)
 {
-	return &PgCurrentSessionEncodingState()->conv_proc_list;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionEncodingRuntimeState, PgCurrentSessionEncodingState)->conv_proc_list;
 }
 
 MemoryContext
@@ -48,47 +53,47 @@ PgCurrentEncodingCacheMemoryContext(void)
 FmgrInfo **
 PgCurrentToServerConvProcRef(void)
 {
-	return &PgCurrentSessionEncodingState()->to_server_conv_proc;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionEncodingRuntimeState, PgCurrentSessionEncodingState)->to_server_conv_proc;
 }
 
 FmgrInfo **
 PgCurrentToClientConvProcRef(void)
 {
-	return &PgCurrentSessionEncodingState()->to_client_conv_proc;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionEncodingRuntimeState, PgCurrentSessionEncodingState)->to_client_conv_proc;
 }
 
 FmgrInfo **
 PgCurrentUtf8ToServerConvProcRef(void)
 {
-	return &PgCurrentSessionEncodingState()->utf8_to_server_conv_proc;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionEncodingRuntimeState, PgCurrentSessionEncodingState)->utf8_to_server_conv_proc;
 }
 
 const pg_enc2name **
 PgCurrentClientEncodingRef(void)
 {
-	return &PgCurrentSessionEncodingState()->client_encoding;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionEncodingRuntimeState, PgCurrentSessionEncodingState)->client_encoding;
 }
 
 const pg_enc2name **
 PgCurrentDatabaseEncodingRef(void)
 {
-	return &PgCurrentSessionEncodingState()->database_encoding;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionEncodingRuntimeState, PgCurrentSessionEncodingState)->database_encoding;
 }
 
 const pg_enc2name **
 PgCurrentMessageEncodingRef(void)
 {
-	return &PgCurrentSessionEncodingState()->message_encoding;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionEncodingRuntimeState, PgCurrentSessionEncodingState)->message_encoding;
 }
 
 bool *
 PgCurrentEncodingStartupCompleteRef(void)
 {
-	return &PgCurrentSessionEncodingState()->backend_startup_complete;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionEncodingRuntimeState, PgCurrentSessionEncodingState)->backend_startup_complete;
 }
 
 int *
 PgCurrentPendingClientEncodingRef(void)
 {
-	return &PgCurrentSessionEncodingState()->pending_client_encoding;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionEncodingRuntimeState, PgCurrentSessionEncodingState)->pending_client_encoding;
 }

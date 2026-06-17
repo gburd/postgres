@@ -37,9 +37,18 @@
  */
 
 #define MAXINVALMSGS 32
-#define sinvalMessages (*(SharedInvalidationMessage **) PgCurrentSharedInvalidationMessagesRef())
-#define nextmsg (*PgCurrentSharedInvalidationNextMsgRef())
-#define nummsgs (*PgCurrentSharedInvalidationNumMsgsRef())
+#define sinvalMessages \
+	(*(SharedInvalidationMessage **) PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentSharedInvalidationMessagesHotRef, \
+																	  CurrentPgBackend, \
+																	  PgCurrentSharedInvalidationMessagesRef))
+#define nextmsg \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentSharedInvalidationNextMsgHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentSharedInvalidationNextMsgRef))
+#define nummsgs \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentSharedInvalidationNumMsgsHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentSharedInvalidationNumMsgsRef))
 
 
 /*

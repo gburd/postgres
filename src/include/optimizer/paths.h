@@ -15,6 +15,7 @@
 #define PATHS_H
 
 #include "nodes/pathnodes.h"
+#include "utils/backend_runtime_current.h"
 #include "utils/global_lifetime.h"
 
 
@@ -29,14 +30,34 @@ extern int *PgCurrentMinParallelTableScanSizeRef(void);
 extern int *PgCurrentMinParallelIndexScanSizeRef(void);
 extern bool *PgCurrentEnableGroupByReorderingRef(void);
 
-#define enable_geqo (*PgCurrentEnableGeqoRef())
-#define enable_eager_aggregate (*PgCurrentEnableEagerAggregateRef())
-#define geqo_threshold (*PgCurrentGeqoThresholdRef())
-#define min_eager_agg_group_size (*PgCurrentMinEagerAggGroupSizeRef())
-#define min_parallel_table_scan_size (*PgCurrentMinParallelTableScanSizeRef())
-#define min_parallel_index_scan_size (*PgCurrentMinParallelIndexScanSizeRef())
+#define enable_geqo \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEnableGeqoHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentEnableGeqoRef))
+#define enable_eager_aggregate \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEnableEagerAggregateHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentEnableEagerAggregateRef))
+#define geqo_threshold \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentGeqoThresholdHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentGeqoThresholdRef))
+#define min_eager_agg_group_size \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentMinEagerAggGroupSizeHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentMinEagerAggGroupSizeRef))
+#define min_parallel_table_scan_size \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentMinParallelTableScanSizeHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentMinParallelTableScanSizeRef))
+#define min_parallel_index_scan_size \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentMinParallelIndexScanSizeHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentMinParallelIndexScanSizeRef))
 #define enable_group_by_reordering \
-	(*PgCurrentEnableGroupByReorderingRef())
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEnableGroupByReorderingHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentEnableGroupByReorderingRef))
 
 /* Hooks for plugins to get control in set_rel_pathlist() */
 typedef void (*join_path_setup_hook_type) (PlannerInfo *root,

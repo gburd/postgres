@@ -28,7 +28,7 @@ test_connection_socket_io_is_connection_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgConnection = &fake_connection1;
+		PgSetCurrentConnection(&fake_connection1);
 		socket_io = PgCurrentConnectionSocketIORef();
 		socket_io->send_buffer = (char *) "fake connection one";
 		socket_io->send_buffer_size = 11;
@@ -40,7 +40,7 @@ test_connection_socket_io_is_connection_local(PG_FUNCTION_ARGS)
 		socket_io->comm_reading_msg = true;
 		socket_io->win32_noblock = 1;
 
-		CurrentPgConnection = &fake_connection2;
+		PgSetCurrentConnection(&fake_connection2);
 		socket_io = PgCurrentConnectionSocketIORef();
 		ok = ok && socket_io->send_buffer == NULL;
 		ok = ok && socket_io->send_buffer_size == 0;
@@ -55,7 +55,7 @@ test_connection_socket_io_is_connection_local(PG_FUNCTION_ARGS)
 		socket_io->comm_busy = true;
 		socket_io->win32_noblock = 2;
 
-		CurrentPgConnection = &fake_connection1;
+		PgSetCurrentConnection(&fake_connection1);
 		socket_io = PgCurrentConnectionSocketIORef();
 		ok = ok && strcmp(socket_io->send_buffer, "fake connection one") == 0;
 		ok = ok && socket_io->send_buffer_size == 11;
@@ -67,18 +67,18 @@ test_connection_socket_io_is_connection_local(PG_FUNCTION_ARGS)
 		ok = ok && socket_io->comm_reading_msg;
 		ok = ok && socket_io->win32_noblock == 1;
 
-		CurrentPgConnection = &fake_connection2;
+		PgSetCurrentConnection(&fake_connection2);
 		socket_io = PgCurrentConnectionSocketIORef();
 		ok = ok && strcmp(socket_io->send_buffer, "fake connection two") == 0;
 		ok = ok && socket_io->comm_busy;
 		ok = ok && !socket_io->comm_reading_msg;
 		ok = ok && socket_io->win32_noblock == 2;
 
-		CurrentPgConnection = saved_connection;
+		PgSetCurrentConnection(saved_connection);
 	}
 	PG_CATCH();
 	{
-		CurrentPgConnection = saved_connection;
+		PgSetCurrentConnection(saved_connection);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -113,31 +113,31 @@ test_connection_protocol_state_is_connection_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgConnection = &fake_connection1;
+		PgSetCurrentConnection(&fake_connection1);
 		PqCommMethods = &methods1;
 		FeBeWaitSet = wait_set1;
 
-		CurrentPgConnection = &fake_connection2;
+		PgSetCurrentConnection(&fake_connection2);
 		ok = ok && PqCommMethods == NULL;
 		ok = ok && FeBeWaitSet == NULL;
 		PqCommMethods = &methods2;
 		FeBeWaitSet = wait_set2;
 
-		CurrentPgConnection = &fake_connection1;
+		PgSetCurrentConnection(&fake_connection1);
 		ok = ok && PqCommMethods == &methods1;
 		ok = ok && FeBeWaitSet == wait_set1;
 
-		CurrentPgConnection = &fake_connection2;
+		PgSetCurrentConnection(&fake_connection2);
 		ok = ok && PqCommMethods == &methods2;
 		ok = ok && FeBeWaitSet == wait_set2;
 
-		CurrentPgConnection = saved_connection;
+		PgSetCurrentConnection(saved_connection);
 		PqCommMethods = saved_comm_methods;
 		FeBeWaitSet = saved_wait_set;
 	}
 	PG_CATCH();
 	{
-		CurrentPgConnection = saved_connection;
+		PgSetCurrentConnection(saved_connection);
 		PqCommMethods = saved_comm_methods;
 		FeBeWaitSet = saved_wait_set;
 		PG_RE_THROW();
@@ -258,9 +258,9 @@ test_connection_reset_closed_state(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgConnection = &connection;
+		PgSetCurrentConnection(&connection);
 		client_connection_check_interval = 99;
-		CurrentPgConnection = saved_connection;
+		PgSetCurrentConnection(saved_connection);
 
 		PgConnectionResetClosedState(&connection);
 
@@ -286,9 +286,9 @@ test_connection_reset_closed_state(PG_FUNCTION_ARGS)
 		ok = ok && connection.protocol.fe_be_wait_set == NULL;
 		ok = ok && connection.protocol.frontend_protocol == 0;
 		ok = ok && connection.output.where_to_send_output == DestDebug;
-		CurrentPgConnection = &connection;
+		PgSetCurrentConnection(&connection);
 		ok = ok && client_connection_check_interval == 0;
-		CurrentPgConnection = saved_connection;
+		PgSetCurrentConnection(saved_connection);
 		ok = ok && !connection.interrupts.check_client_connection_pending;
 		ok = ok && !connection.interrupts.client_connection_lost;
 		ok = ok && !connection.startup.client_auth_in_progress;
@@ -319,9 +319,9 @@ test_connection_reset_closed_state(PG_FUNCTION_ARGS)
 		ok = ok && !security->pam_no_password;
 
 		PgConnectionResetClosedState(&connection);
-		CurrentPgConnection = &connection;
+		PgSetCurrentConnection(&connection);
 		ok = ok && client_connection_check_interval == 0;
-		CurrentPgConnection = saved_connection;
+		PgSetCurrentConnection(saved_connection);
 		ok = ok && connection.identity.port == NULL;
 		ok = ok && connection.identity.port_context == NULL;
 		ok = ok && connection.protocol.comm_methods == NULL;
@@ -334,11 +334,11 @@ test_connection_reset_closed_state(PG_FUNCTION_ARGS)
 		ok = ok && connection.security.gss_recv_buffer == NULL;
 		ok = ok && connection.security.gss_result_buffer == NULL;
 
-		CurrentPgConnection = saved_connection;
+		PgSetCurrentConnection(saved_connection);
 	}
 	PG_CATCH();
 	{
-		CurrentPgConnection = saved_connection;
+		PgSetCurrentConnection(saved_connection);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -402,11 +402,11 @@ test_connection_warning_state_is_connection_local(PG_FUNCTION_ARGS)
 		ok = ok && strcmp((char *) linitial(fake_connection1->startup.connection_warning_messages),
 						  "warning one") == 0;
 
-		CurrentPgConnection = saved_connection;
+		PgSetCurrentConnection(saved_connection);
 	}
 	PG_CATCH();
 	{
-		CurrentPgConnection = saved_connection;
+		PgSetCurrentConnection(saved_connection);
 		PgConnectionResetClosedState(fake_connection1);
 		PgConnectionResetClosedState(fake_connection2);
 		PG_RE_THROW();
@@ -449,31 +449,31 @@ test_connection_output_state_is_connection_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgConnection = &fake_connection1;
+		PgSetCurrentConnection(&fake_connection1);
 		whereToSendOutput = DestRemote;
 		client_connection_check_interval = 11;
 
-		CurrentPgConnection = &fake_connection2;
+		PgSetCurrentConnection(&fake_connection2);
 		ok = ok && whereToSendOutput == DestDebug;
 		ok = ok && client_connection_check_interval == 0;
 		whereToSendOutput = DestNone;
 		client_connection_check_interval = 22;
 
-		CurrentPgConnection = &fake_connection1;
+		PgSetCurrentConnection(&fake_connection1);
 		ok = ok && whereToSendOutput == DestRemote;
 		ok = ok && client_connection_check_interval == 11;
 
-		CurrentPgConnection = &fake_connection2;
+		PgSetCurrentConnection(&fake_connection2);
 		ok = ok && whereToSendOutput == DestNone;
 		ok = ok && client_connection_check_interval == 22;
 
-		CurrentPgConnection = saved_connection;
+		PgSetCurrentConnection(saved_connection);
 		whereToSendOutput = saved_where_to_send_output;
 		client_connection_check_interval = saved_client_connection_check_interval;
 	}
 	PG_CATCH();
 	{
-		CurrentPgConnection = saved_connection;
+		PgSetCurrentConnection(saved_connection);
 		whereToSendOutput = saved_where_to_send_output;
 		client_connection_check_interval = saved_client_connection_check_interval;
 		PG_RE_THROW();
@@ -513,14 +513,14 @@ test_connection_identity_state_is_connection_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgConnection = &fake_connection1;
+		PgSetCurrentConnection(&fake_connection1);
 		MyProcPort = &fake_port1;
 		*PgCurrentPortContextRef() = TopMemoryContext;
 		MyCancelKey[0] = 1;
 		MyCancelKey[1] = 2;
 		MyCancelKeyLength = 2;
 
-		CurrentPgConnection = &fake_connection2;
+		PgSetCurrentConnection(&fake_connection2);
 		ok = ok && MyProcPort == NULL;
 		ok = ok && *PgCurrentPortContextRef() == NULL;
 		ok = ok && MyCancelKeyLength == 0;
@@ -531,14 +531,14 @@ test_connection_identity_state_is_connection_local(PG_FUNCTION_ARGS)
 		MyCancelKey[2] = 9;
 		MyCancelKeyLength = 3;
 
-		CurrentPgConnection = &fake_connection1;
+		PgSetCurrentConnection(&fake_connection1);
 		ok = ok && MyProcPort == &fake_port1;
 		ok = ok && *PgCurrentPortContextRef() == TopMemoryContext;
 		ok = ok && MyCancelKeyLength == 2;
 		ok = ok && MyCancelKey[0] == 1;
 		ok = ok && MyCancelKey[1] == 2;
 
-		CurrentPgConnection = &fake_connection2;
+		PgSetCurrentConnection(&fake_connection2);
 		ok = ok && MyProcPort == &fake_port2;
 		ok = ok && *PgCurrentPortContextRef() == ErrorContext;
 		ok = ok && MyCancelKeyLength == 3;
@@ -546,7 +546,7 @@ test_connection_identity_state_is_connection_local(PG_FUNCTION_ARGS)
 		ok = ok && MyCancelKey[1] == 8;
 		ok = ok && MyCancelKey[2] == 9;
 
-		CurrentPgConnection = saved_connection;
+		PgSetCurrentConnection(saved_connection);
 		MyProcPort = saved_port;
 		*PgCurrentPortContextRef() = saved_port_context;
 		memcpy(MyCancelKey, saved_cancel_key, sizeof(saved_cancel_key));
@@ -554,7 +554,7 @@ test_connection_identity_state_is_connection_local(PG_FUNCTION_ARGS)
 	}
 	PG_CATCH();
 	{
-		CurrentPgConnection = saved_connection;
+		PgSetCurrentConnection(saved_connection);
 		MyProcPort = saved_port;
 		*PgCurrentPortContextRef() = saved_port_context;
 		memcpy(MyCancelKey, saved_cancel_key, sizeof(saved_cancel_key));
@@ -588,31 +588,31 @@ test_connection_interrupt_state_is_connection_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgConnection = &fake_connection1;
+		PgSetCurrentConnection(&fake_connection1);
 		CheckClientConnectionPending = true;
 		ClientConnectionLost = false;
 
-		CurrentPgConnection = &fake_connection2;
+		PgSetCurrentConnection(&fake_connection2);
 		ok = ok && !CheckClientConnectionPending;
 		ok = ok && !ClientConnectionLost;
 		CheckClientConnectionPending = false;
 		ClientConnectionLost = true;
 
-		CurrentPgConnection = &fake_connection1;
+		PgSetCurrentConnection(&fake_connection1);
 		ok = ok && CheckClientConnectionPending;
 		ok = ok && !ClientConnectionLost;
 
-		CurrentPgConnection = &fake_connection2;
+		PgSetCurrentConnection(&fake_connection2);
 		ok = ok && !CheckClientConnectionPending;
 		ok = ok && ClientConnectionLost;
 
-		CurrentPgConnection = saved_connection;
+		PgSetCurrentConnection(saved_connection);
 		CheckClientConnectionPending = saved_check_client_connection_pending;
 		ClientConnectionLost = saved_client_connection_lost;
 	}
 	PG_CATCH();
 	{
-		CurrentPgConnection = saved_connection;
+		PgSetCurrentConnection(saved_connection);
 		CheckClientConnectionPending = saved_check_client_connection_pending;
 		ClientConnectionLost = saved_client_connection_lost;
 		PG_RE_THROW();
@@ -642,25 +642,25 @@ test_connection_frontend_protocol_is_connection_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgConnection = &fake_connection1;
+		PgSetCurrentConnection(&fake_connection1);
 		FrontendProtocol = PG_PROTOCOL(3, 0);
 
-		CurrentPgConnection = &fake_connection2;
+		PgSetCurrentConnection(&fake_connection2);
 		ok = ok && FrontendProtocol == 0;
 		FrontendProtocol = PG_PROTOCOL(3, 2);
 
-		CurrentPgConnection = &fake_connection1;
+		PgSetCurrentConnection(&fake_connection1);
 		ok = ok && FrontendProtocol == PG_PROTOCOL(3, 0);
 
-		CurrentPgConnection = &fake_connection2;
+		PgSetCurrentConnection(&fake_connection2);
 		ok = ok && FrontendProtocol == PG_PROTOCOL(3, 2);
 
-		CurrentPgConnection = saved_connection;
+		PgSetCurrentConnection(saved_connection);
 		FrontendProtocol = saved_frontend_protocol;
 	}
 	PG_CATCH();
 	{
-		CurrentPgConnection = saved_connection;
+		PgSetCurrentConnection(saved_connection);
 		FrontendProtocol = saved_frontend_protocol;
 		PG_RE_THROW();
 	}
@@ -707,7 +707,7 @@ test_connection_startup_state_is_connection_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgConnection = &fake_connection1;
+		PgSetCurrentConnection(&fake_connection1);
 		ClientAuthInProgress = true;
 		MyClientSocket = fake_client_socket1;
 		conn_timing.socket_create = 11;
@@ -720,7 +720,7 @@ test_connection_startup_state_is_connection_local(PG_FUNCTION_ARGS)
 		*PgCurrentConnectionWarningMessagesRef() = warning_messages1;
 		*PgCurrentConnectionWarningDetailsRef() = warning_details1;
 
-		CurrentPgConnection = &fake_connection2;
+		PgSetCurrentConnection(&fake_connection2);
 		ok = ok && !ClientAuthInProgress;
 		ok = ok && MyClientSocket == NULL;
 		ok = ok && conn_timing.socket_create == 0;
@@ -744,7 +744,7 @@ test_connection_startup_state_is_connection_local(PG_FUNCTION_ARGS)
 		*PgCurrentConnectionWarningMessagesRef() = warning_messages2;
 		*PgCurrentConnectionWarningDetailsRef() = warning_details2;
 
-		CurrentPgConnection = &fake_connection1;
+		PgSetCurrentConnection(&fake_connection1);
 		ok = ok && ClientAuthInProgress;
 		ok = ok && MyClientSocket == fake_client_socket1;
 		ok = ok && conn_timing.socket_create == 11;
@@ -759,7 +759,7 @@ test_connection_startup_state_is_connection_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentConnectionWarningDetailsRef() ==
 			warning_details1;
 
-		CurrentPgConnection = &fake_connection2;
+		PgSetCurrentConnection(&fake_connection2);
 		ok = ok && !ClientAuthInProgress;
 		ok = ok && MyClientSocket == fake_client_socket2;
 		ok = ok && conn_timing.socket_create == 21;
@@ -774,14 +774,14 @@ test_connection_startup_state_is_connection_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentConnectionWarningDetailsRef() ==
 			warning_details2;
 
-		CurrentPgConnection = saved_connection;
+		PgSetCurrentConnection(saved_connection);
 		ClientAuthInProgress = saved_client_auth_in_progress;
 		MyClientSocket = saved_client_socket;
 		conn_timing = saved_timing;
 	}
 	PG_CATCH();
 	{
-		CurrentPgConnection = saved_connection;
+		PgSetCurrentConnection(saved_connection);
 		ClientAuthInProgress = saved_client_auth_in_progress;
 		MyClientSocket = saved_client_socket;
 		conn_timing = saved_timing;
@@ -823,32 +823,32 @@ test_client_connection_info_is_connection_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgConnection = &fake_connection1;
+		PgSetCurrentConnection(&fake_connection1);
 		MyClientConnectionInfo.authn_id = "connection-one";
 		MyClientConnectionInfo.auth_method = uaTrust;
 
-		CurrentPgConnection = &fake_connection2;
+		PgSetCurrentConnection(&fake_connection2);
 		ok = ok && MyClientConnectionInfo.authn_id == NULL;
 		MyClientConnectionInfo.authn_id = "connection-two";
 		MyClientConnectionInfo.auth_method = uaSCRAM;
 
-		CurrentPgConnection = &fake_connection1;
+		PgSetCurrentConnection(&fake_connection1);
 		ok = ok && strcmp(MyClientConnectionInfo.authn_id,
 						  "connection-one") == 0;
 		ok = ok && MyClientConnectionInfo.auth_method == uaTrust;
 
-		CurrentPgConnection = &fake_connection2;
+		PgSetCurrentConnection(&fake_connection2);
 		ok = ok && strcmp(MyClientConnectionInfo.authn_id,
 						  "connection-two") == 0;
 		ok = ok && MyClientConnectionInfo.auth_method == uaSCRAM;
 
-		CurrentPgConnection = saved_connection;
+		PgSetCurrentConnection(saved_connection);
 		MyClientConnectionInfo.authn_id = saved_authn_id;
 		MyClientConnectionInfo.auth_method = saved_auth_method;
 	}
 	PG_CATCH();
 	{
-		CurrentPgConnection = saved_connection;
+		PgSetCurrentConnection(saved_connection);
 		MyClientConnectionInfo.authn_id = saved_authn_id;
 		MyClientConnectionInfo.auth_method = saved_auth_method;
 		PG_RE_THROW();
@@ -877,7 +877,7 @@ test_connection_security_state_is_connection_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgConnection = &fake_connection1;
+		PgSetCurrentConnection(&fake_connection1);
 		security = PgCurrentConnectionSecurityStateRef();
 		ok = ok && !security->ssl_loaded_verify_locations;
 		ok = ok && security->gss_send_buffer == NULL;
@@ -903,7 +903,7 @@ test_connection_security_state_is_connection_local(PG_FUNCTION_ARGS)
 		security->pam_port = (struct Port *) &fake_connection1;
 		security->pam_no_password = true;
 
-		CurrentPgConnection = &fake_connection2;
+		PgSetCurrentConnection(&fake_connection2);
 		security = PgCurrentConnectionSecurityStateRef();
 		ok = ok && !security->ssl_loaded_verify_locations;
 		ok = ok && security->gss_send_buffer == NULL;
@@ -929,7 +929,7 @@ test_connection_security_state_is_connection_local(PG_FUNCTION_ARGS)
 		security->pam_port = (struct Port *) &fake_connection2;
 		security->pam_no_password = false;
 
-		CurrentPgConnection = &fake_connection1;
+		PgSetCurrentConnection(&fake_connection1);
 		security = PgCurrentConnectionSecurityStateRef();
 		ok = ok && security->ssl_loaded_verify_locations;
 		ok = ok && security->gss_send_buffer == (char *) &fake_connection1;
@@ -946,7 +946,7 @@ test_connection_security_state_is_connection_local(PG_FUNCTION_ARGS)
 		ok = ok && security->pam_port == (struct Port *) &fake_connection1;
 		ok = ok && security->pam_no_password;
 
-		CurrentPgConnection = &fake_connection2;
+		PgSetCurrentConnection(&fake_connection2);
 		security = PgCurrentConnectionSecurityStateRef();
 		ok = ok && !security->ssl_loaded_verify_locations;
 		ok = ok && security->gss_send_buffer == (char *) &fake_connection2;
@@ -963,11 +963,11 @@ test_connection_security_state_is_connection_local(PG_FUNCTION_ARGS)
 		ok = ok && security->pam_port == (struct Port *) &fake_connection2;
 		ok = ok && !security->pam_no_password;
 
-		CurrentPgConnection = saved_connection;
+		PgSetCurrentConnection(saved_connection);
 	}
 	PG_CATCH();
 	{
-		CurrentPgConnection = saved_connection;
+		PgSetCurrentConnection(saved_connection);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -1000,7 +1000,7 @@ test_thread_install_adopts_connection_fallback_state(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgConnection = NULL;
+		PgSetCurrentConnection(NULL);
 		MyProcPort = &fallback_port;
 		MyCancelKey[0] = 11;
 		MyCancelKeyLength = 1;
@@ -1030,7 +1030,7 @@ test_thread_install_adopts_connection_fallback_state(PG_FUNCTION_ARGS)
 
 		PgConnectionAdoptEarlyState(&connection, &preserved_port);
 
-		CurrentPgConnection = &connection;
+		PgSetCurrentConnection(&connection);
 		ok = ok && MyProcPort == &preserved_port;
 		ok = ok && MyCancelKey[0] == 11;
 		ok = ok && MyCancelKeyLength == 1;
@@ -1061,7 +1061,7 @@ test_thread_install_adopts_connection_fallback_state(PG_FUNCTION_ARGS)
 			&fallback_port;
 		ok = ok && PgCurrentConnectionSecurityStateRef()->pam_no_password;
 
-		CurrentPgConnection = NULL;
+		PgSetCurrentConnection(NULL);
 		ok = ok && MyProcPort == NULL;
 		ok = ok && MyCancelKeyLength == 0;
 		ok = ok && PgCurrentConnectionSocketIORef()->send_buffer == NULL;
@@ -1082,11 +1082,11 @@ test_thread_install_adopts_connection_fallback_state(PG_FUNCTION_ARGS)
 		ok = ok && PgCurrentConnectionSecurityStateRef()->gss_send_buffer == NULL;
 		ok = ok && PgCurrentConnectionSecurityStateRef()->pam_password == NULL;
 
-		CurrentPgConnection = saved_connection;
+		PgSetCurrentConnection(saved_connection);
 	}
 	PG_CATCH();
 	{
-		CurrentPgConnection = saved_connection;
+		PgSetCurrentConnection(saved_connection);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();

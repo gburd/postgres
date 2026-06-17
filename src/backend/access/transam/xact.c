@@ -395,7 +395,10 @@ GetCurrentTransactionStateRef(void)
 {
 	TransactionState *current_transaction_state;
 
-	current_transaction_state = PgCurrentTransactionStateRef();
+	current_transaction_state =
+		PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentTransactionStateHotRef,
+										 CurrentPgExecution,
+										 PgCurrentTransactionStateRef);
 	if (*current_transaction_state == NULL)
 		*current_transaction_state = GetTopTransactionStateData();
 

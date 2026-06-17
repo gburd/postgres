@@ -13,6 +13,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include "lib/ilist.h"
@@ -54,109 +55,109 @@ PgCurrentNextTempTableSpaceRef(void)
 void **
 PgCurrentVfdCacheRef(void)
 {
-	return &PgCurrentBackendStorageState()->vfd_cache;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendStorageRuntimeState, PgCurrentBackendStorageState)->vfd_cache;
 }
 
 Size *
 PgCurrentSizeVfdCacheRef(void)
 {
-	return &PgCurrentBackendStorageState()->size_vfd_cache;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendStorageRuntimeState, PgCurrentBackendStorageState)->size_vfd_cache;
 }
 
 int *
 PgCurrentNFileRef(void)
 {
-	return &PgCurrentBackendStorageState()->nfile;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendStorageRuntimeState, PgCurrentBackendStorageState)->nfile;
 }
 
 bool *
 PgCurrentTemporaryFilesAllowedRef(void)
 {
-	return &PgCurrentBackendStorageState()->temporary_files_allowed;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendStorageRuntimeState, PgCurrentBackendStorageState)->temporary_files_allowed;
 }
 
 bool *
 PgCurrentHaveXactTemporaryFilesRef(void)
 {
-	return &PgCurrentExecutionTransactionCleanupState()->have_xact_temporary_files;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentExecutionTransactionCleanupState)->have_xact_temporary_files;
 }
 
 int *
 PgCurrentNumAllocatedDescsRef(void)
 {
-	return &PgCurrentBackendStorageState()->num_allocated_descs;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendStorageRuntimeState, PgCurrentBackendStorageState)->num_allocated_descs;
 }
 
 int *
 PgCurrentMaxAllocatedDescsRef(void)
 {
-	return &PgCurrentBackendStorageState()->max_allocated_descs;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendStorageRuntimeState, PgCurrentBackendStorageState)->max_allocated_descs;
 }
 
 void **
 PgCurrentAllocatedDescsRef(void)
 {
-	return &PgCurrentBackendStorageState()->allocated_descs;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendStorageRuntimeState, PgCurrentBackendStorageState)->allocated_descs;
 }
 
 int *
 PgCurrentNumExternalFDsRef(void)
 {
-	return &PgCurrentBackendStorageState()->num_external_fds;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendStorageRuntimeState, PgCurrentBackendStorageState)->num_external_fds;
 }
 
 HTAB **
 PgCurrentSyncPendingOpsRef(void)
 {
-	return &PgCurrentBackendStorageState()->sync_pending_ops;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendStorageRuntimeState, PgCurrentBackendStorageState)->sync_pending_ops;
 }
 
 List **
 PgCurrentSyncPendingUnlinksRef(void)
 {
-	return &PgCurrentBackendStorageState()->sync_pending_unlinks;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendStorageRuntimeState, PgCurrentBackendStorageState)->sync_pending_unlinks;
 }
 
 MemoryContext *
 PgCurrentSyncPendingOpsContextRef(void)
 {
-	return &PgCurrentBackendStorageState()->sync_pending_ops_context;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendStorageRuntimeState, PgCurrentBackendStorageState)->sync_pending_ops_context;
 }
 
 uint16 *
 PgCurrentSyncCycleCounterRef(void)
 {
-	return &PgCurrentBackendStorageState()->sync_cycle_counter;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendStorageRuntimeState, PgCurrentBackendStorageState)->sync_cycle_counter;
 }
 
 uint16 *
 PgCurrentSyncCheckpointCycleCounterRef(void)
 {
-	return &PgCurrentBackendStorageState()->sync_checkpoint_cycle_counter;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendStorageRuntimeState, PgCurrentBackendStorageState)->sync_checkpoint_cycle_counter;
 }
 
 bool *
 PgCurrentSyncInProgressRef(void)
 {
-	return &PgCurrentBackendStorageState()->sync_in_progress;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendStorageRuntimeState, PgCurrentBackendStorageState)->sync_in_progress;
 }
 
 HTAB **
 PgCurrentSMgrRelationHashRef(void)
 {
-	return &PgCurrentBackendStorageState()->smgr_relation_hash;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendStorageRuntimeState, PgCurrentBackendStorageState)->smgr_relation_hash;
 }
 
 dlist_head *
 PgCurrentSMgrUnpinnedRelationsRef(void)
 {
-	return &PgCurrentBackendStorageState()->smgr_unpinned_relations;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendStorageRuntimeState, PgCurrentBackendStorageState)->smgr_unpinned_relations;
 }
 
 MemoryContext *
 PgCurrentMdContextRef(void)
 {
-	return &PgCurrentBackendStorageState()->md_context;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendStorageRuntimeState, PgCurrentBackendStorageState)->md_context;
 }
 
 void

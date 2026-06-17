@@ -9,6 +9,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include "utils/backend_runtime.h"
@@ -17,23 +18,24 @@
 PgExecutionNodeIOState *
 PgCurrentExecutionNodeIOState(void)
 {
-	return &PgCurrentOrEarlyExecution()->node_io;
+	PG_RUNTIME_RETURN_CURRENT_EXECUTION_BUCKET(CurrentPgExecutionNodeIORuntimeState,
+											   node_io);
 }
 
 bool *
 PgCurrentNodeWriteLocationFieldsRef(void)
 {
-	return &PgCurrentExecutionNodeIOState()->write_location_fields;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionNodeIORuntimeState, PgCurrentExecutionNodeIOState)->write_location_fields;
 }
 
 const char **
 PgCurrentNodeReadStrtokPtrRef(void)
 {
-	return &PgCurrentExecutionNodeIOState()->strtok_ptr;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionNodeIORuntimeState, PgCurrentExecutionNodeIOState)->strtok_ptr;
 }
 
 bool *
 PgCurrentNodeRestoreLocationFieldsRef(void)
 {
-	return &PgCurrentExecutionNodeIOState()->restore_location_fields;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionNodeIORuntimeState, PgCurrentExecutionNodeIOState)->restore_location_fields;
 }

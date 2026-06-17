@@ -14,6 +14,9 @@
 #define INSTRUMENT_H
 
 #include "portability/instr_time.h"
+#ifndef FRONTEND
+#include "utils/backend_runtime_current.h"
+#endif
 #include "utils/global_lifetime.h"
 
 
@@ -131,10 +134,29 @@ extern BufferUsage *PgCurrentSavedBufferUsageRef(void);
 extern WalUsage *PgCurrentWalUsageRef(void);
 extern WalUsage *PgCurrentSavedWalUsageRef(void);
 
+#ifndef FRONTEND
+#define pgBufferUsage \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentBufferUsageHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentBufferUsageRef))
+#define save_pgBufferUsage \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentSavedBufferUsageHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentSavedBufferUsageRef))
+#define pgWalUsage \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentWalUsageHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentWalUsageRef))
+#define save_pgWalUsage \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentSavedWalUsageHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentSavedWalUsageRef))
+#else
 #define pgBufferUsage (*PgCurrentBufferUsageRef())
 #define save_pgBufferUsage (*PgCurrentSavedBufferUsageRef())
 #define pgWalUsage (*PgCurrentWalUsageRef())
 #define save_pgWalUsage (*PgCurrentSavedWalUsageRef())
+#endif
 
 extern Instrumentation *InstrAlloc(int instrument_options);
 extern void InstrInitOptions(Instrumentation *instr, int instrument_options);

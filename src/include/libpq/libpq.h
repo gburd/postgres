@@ -45,7 +45,10 @@ struct PQcommMethods
 	void		(*putmessage_noblock) (char msgtype, const char *s, size_t len);
 };
 
-#define PqCommMethods (*PgCurrentPqCommMethodsRef())
+#define PqCommMethods \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentPqCommMethodsHotRef, \
+									   CurrentPgConnection, \
+									   PgCurrentPqCommMethodsRef))
 
 #define pq_comm_reset() (PqCommMethods->comm_reset())
 #define pq_flush() (PqCommMethods->flush())
@@ -78,6 +81,7 @@ extern void RemoveSocketFiles(void);
 extern Port *pq_init(ClientSocket *client_sock);
 extern int	pq_getbytes(void *b, size_t len);
 extern void pq_startmsgread(void);
+extern int	pq_startmsgread_getbyte(void);
 extern void pq_endmsgread(void);
 extern bool pq_is_reading_msg(void);
 extern int	pq_getmessage(StringInfo s, int maxlen);

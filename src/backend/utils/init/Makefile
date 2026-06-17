@@ -27,7 +27,9 @@ backend_runtime.o: backend_runtime_carrier_buckets.def \
 	backend_runtime_connection_buckets.def \
 	backend_runtime_execution_buckets.def \
 	backend_runtime_session_buckets.def \
-	backend_runtime_session_reset_buckets.def
+	backend_runtime_session_reset_buckets.def \
+	$(top_srcdir)/src/include/utils/backend_runtime_hot_buckets.def \
+	$(top_srcdir)/src/include/utils/backend_runtime_hot_fields.def
 
 backend_runtime_backend.o: backend_runtime_backend_buckets.def
 

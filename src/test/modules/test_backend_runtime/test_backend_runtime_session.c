@@ -56,13 +56,13 @@ test_session_loop_state_is_session_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgSession = &fake_session1;
+		PgSetCurrentSession(&fake_session1);
 		CurrentPgSession->loop_state.send_ready_for_query = true;
 		CurrentPgSession->loop_state.idle_in_transaction_timeout_enabled = true;
 		CurrentPgSession->loop_state.doing_extended_query_message = true;
 		CurrentPgSession->loop_state.transaction_started = true;
 
-		CurrentPgSession = &fake_session2;
+		PgSetCurrentSession(&fake_session2);
 		ok = ok && !CurrentPgSession->loop_state.send_ready_for_query;
 		ok = ok && !CurrentPgSession->loop_state.idle_in_transaction_timeout_enabled;
 		ok = ok && !CurrentPgSession->loop_state.doing_extended_query_message;
@@ -72,7 +72,7 @@ test_session_loop_state_is_session_local(PG_FUNCTION_ARGS)
 		CurrentPgSession->loop_state.ignore_till_sync = true;
 		CurrentPgSession->loop_state.step_error_boundary_active = true;
 
-		CurrentPgSession = &fake_session1;
+		PgSetCurrentSession(&fake_session1);
 		ok = ok && CurrentPgSession->loop_state.send_ready_for_query;
 		ok = ok && CurrentPgSession->loop_state.idle_in_transaction_timeout_enabled;
 		ok = ok && !CurrentPgSession->loop_state.idle_session_timeout_enabled;
@@ -81,7 +81,7 @@ test_session_loop_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && !CurrentPgSession->loop_state.step_error_boundary_active;
 		ok = ok && CurrentPgSession->loop_state.transaction_started;
 
-		CurrentPgSession = &fake_session2;
+		PgSetCurrentSession(&fake_session2);
 		ok = ok && CurrentPgSession->loop_state.send_ready_for_query;
 		ok = ok && !CurrentPgSession->loop_state.idle_in_transaction_timeout_enabled;
 		ok = ok && CurrentPgSession->loop_state.idle_session_timeout_enabled;
@@ -90,11 +90,11 @@ test_session_loop_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && CurrentPgSession->loop_state.step_error_boundary_active;
 		ok = ok && !CurrentPgSession->loop_state.transaction_started;
 
-		CurrentPgSession = saved_session;
+		PgSetCurrentSession(saved_session);
 	}
 	PG_CATCH();
 	{
-		CurrentPgSession = saved_session;
+		PgSetCurrentSession(saved_session);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -367,13 +367,13 @@ test_session_database_state_is_session_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgSession = &fake_session1;
+		PgSetCurrentSession(&fake_session1);
 		MyDatabaseId = 1111;
 		MyDatabaseTableSpace = 2222;
 		MyDatabaseHasLoginEventTriggers = true;
 		DatabasePath = fake_path1;
 
-		CurrentPgSession = &fake_session2;
+		PgSetCurrentSession(&fake_session2);
 		ok = ok && MyDatabaseId == InvalidOid;
 		ok = ok && MyDatabaseTableSpace == InvalidOid;
 		ok = ok && !MyDatabaseHasLoginEventTriggers;
@@ -383,19 +383,19 @@ test_session_database_state_is_session_local(PG_FUNCTION_ARGS)
 		MyDatabaseHasLoginEventTriggers = false;
 		DatabasePath = fake_path2;
 
-		CurrentPgSession = &fake_session1;
+		PgSetCurrentSession(&fake_session1);
 		ok = ok && MyDatabaseId == 1111;
 		ok = ok && MyDatabaseTableSpace == 2222;
 		ok = ok && MyDatabaseHasLoginEventTriggers;
 		ok = ok && DatabasePath == fake_path1;
 
-		CurrentPgSession = &fake_session2;
+		PgSetCurrentSession(&fake_session2);
 		ok = ok && MyDatabaseId == 3333;
 		ok = ok && MyDatabaseTableSpace == 4444;
 		ok = ok && !MyDatabaseHasLoginEventTriggers;
 		ok = ok && DatabasePath == fake_path2;
 
-		CurrentPgSession = saved_session;
+		PgSetCurrentSession(saved_session);
 		MyDatabaseId = saved_database_id;
 		MyDatabaseTableSpace = saved_database_tablespace;
 		MyDatabaseHasLoginEventTriggers =
@@ -404,7 +404,7 @@ test_session_database_state_is_session_local(PG_FUNCTION_ARGS)
 	}
 	PG_CATCH();
 	{
-		CurrentPgSession = saved_session;
+		PgSetCurrentSession(saved_session);
 		MyDatabaseId = saved_database_id;
 		MyDatabaseTableSpace = saved_database_tablespace;
 		MyDatabaseHasLoginEventTriggers =

@@ -29,6 +29,7 @@
 
 #include "datatype/timestamp.h"
 #include "libpq/pg-gssapi.h"
+#include "utils/backend_runtime_current.h"
 #include "utils/global_lifetime.h"
 #include "utils/global_lifetime.h"
 
@@ -361,7 +362,10 @@ extern ssize_t be_gssapi_write(Port *port, const void *ptr, size_t len);
 #endif							/* ENABLE_GSS */
 
 extern uint32 *PgCurrentFrontendProtocolRef(void);
-#define FrontendProtocol (*((ProtocolVersion *) PgCurrentFrontendProtocolRef()))
+#define FrontendProtocol \
+	(*((ProtocolVersion *) PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentFrontendProtocolHotRef, \
+															CurrentPgConnection, \
+															PgCurrentFrontendProtocolRef)))
 extern void *PgCurrentClientConnectionInfoRef(void);
 extern bool *PgCurrentClientConnectionInfoAuthnIdOwnedRef(void);
 #define MyClientConnectionInfo (*((ClientConnectionInfo *) PgCurrentClientConnectionInfoRef()))

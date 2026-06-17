@@ -27,6 +27,7 @@
 #include "nodes/pathnodes.h"
 #include "optimizer/extendplan.h"
 #include "optimizer/geqo_gene.h"
+#include "utils/backend_runtime_current.h"
 #include "utils/global_lifetime.h"
 
 
@@ -76,12 +77,30 @@ extern int *PgCurrentGeqoPlannerExtensionIdRef(void);
 /* 0 .. 1 */
 extern double *PgCurrentGeqoSeedRef(void);
 
-#define Geqo_effort (*PgCurrentGeqoEffortRef())
-#define Geqo_pool_size (*PgCurrentGeqoPoolSizeRef())
-#define Geqo_generations (*PgCurrentGeqoGenerationsRef())
-#define Geqo_selection_bias (*PgCurrentGeqoSelectionBiasRef())
-#define Geqo_planner_extension_id (*PgCurrentGeqoPlannerExtensionIdRef())
-#define Geqo_seed (*PgCurrentGeqoSeedRef())
+#define Geqo_effort \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentGeqoEffortHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentGeqoEffortRef))
+#define Geqo_pool_size \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentGeqoPoolSizeHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentGeqoPoolSizeRef))
+#define Geqo_generations \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentGeqoGenerationsHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentGeqoGenerationsRef))
+#define Geqo_selection_bias \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentGeqoSelectionBiasHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentGeqoSelectionBiasRef))
+#define Geqo_planner_extension_id \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentGeqoPlannerExtensionIdHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentGeqoPlannerExtensionIdRef))
+#define Geqo_seed \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentGeqoSeedHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentGeqoSeedRef))
 
 
 /*

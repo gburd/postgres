@@ -27,7 +27,7 @@ test_thread_install_adopts_backend_fallback_state(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgBackend = NULL;
+		PgSetCurrentBackend(NULL);
 		PgCurrentWalSenderState()->is_walsender = true;
 		PgCurrentReplicationState()->sync_rep_wait_mode = 101;
 		PgCurrentLogicalReplicationState()->slotsync_sleep_ms = 102;
@@ -82,11 +82,11 @@ test_thread_install_adopts_backend_fallback_state(PG_FUNCTION_ARGS)
 		ok = ok && !InterruptPending;
 		ok = ok && InterruptHoldoffCount == 0;
 
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 	}
 	PG_CATCH();
 	{
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -129,7 +129,7 @@ test_thread_install_adopts_session_execution_fallback_state(PG_FUNCTION_ARGS)
 	PG_TRY();
 	{
 		PgSetCurrentSession(NULL);
-		CurrentPgExecution = NULL;
+		PgSetCurrentExecution(NULL);
 		TopMemoryContext = saved_top_memory_context;
 		CurrentMemoryContext = saved_current_memory_context;
 		ErrorContext = saved_error_context;
@@ -226,12 +226,12 @@ test_thread_install_adopts_session_execution_fallback_state(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentValgrindOldErrorCountRef() == 0;
 
 		PgSetCurrentSession(saved_session);
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 	}
 	PG_CATCH();
 	{
 		PgSetCurrentSession(saved_session);
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		TopMemoryContext = saved_top_memory_context;
 		CurrentMemoryContext = saved_current_memory_context;
 		ErrorContext = saved_error_context;

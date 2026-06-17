@@ -27,12 +27,12 @@ test_backend_interrupt_holdoffs_are_backend_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		HOLD_INTERRUPTS();
 		HOLD_CANCEL_INTERRUPTS();
 		START_CRIT_SECTION();
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		ok = ok && InterruptHoldoffCount == 0;
 		ok = ok && QueryCancelHoldoffCount == 0;
 		ok = ok && CritSectionCount == 0;
@@ -40,7 +40,7 @@ test_backend_interrupt_holdoffs_are_backend_local(PG_FUNCTION_ARGS)
 		QueryCancelHoldoffCount = 4;
 		CritSectionCount = 5;
 
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		ok = ok && InterruptHoldoffCount == 1;
 		ok = ok && QueryCancelHoldoffCount == 1;
 		ok = ok && CritSectionCount == 1;
@@ -51,16 +51,16 @@ test_backend_interrupt_holdoffs_are_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && QueryCancelHoldoffCount == 0;
 		ok = ok && CritSectionCount == 0;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		ok = ok && InterruptHoldoffCount == 3;
 		ok = ok && QueryCancelHoldoffCount == 4;
 		ok = ok && CritSectionCount == 5;
 
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 	}
 	PG_CATCH();
 	{
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -121,7 +121,7 @@ test_backend_pending_interrupts_are_backend_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		InterruptPending = true;
 		QueryCancelPending = true;
 		ProcDiePending = true;
@@ -139,7 +139,7 @@ test_backend_pending_interrupts_are_backend_local(PG_FUNCTION_ARGS)
 		AutoVacLauncherPending = true;
 		CheckpointerShutdownXLOGPending = true;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		ok = ok && !InterruptPending;
 		ok = ok && !QueryCancelPending;
 		ok = ok && !ProcDiePending;
@@ -174,7 +174,7 @@ test_backend_pending_interrupts_are_backend_local(PG_FUNCTION_ARGS)
 		AutoVacLauncherPending = false;
 		CheckpointerShutdownXLOGPending = false;
 
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		ok = ok && InterruptPending;
 		ok = ok && QueryCancelPending;
 		ok = ok && ProcDiePending;
@@ -192,7 +192,7 @@ test_backend_pending_interrupts_are_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && AutoVacLauncherPending;
 		ok = ok && CheckpointerShutdownXLOGPending;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		ok = ok && !InterruptPending;
 		ok = ok && !QueryCancelPending;
 		ok = ok && !ProcDiePending;
@@ -210,7 +210,7 @@ test_backend_pending_interrupts_are_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && !AutoVacLauncherPending;
 		ok = ok && !CheckpointerShutdownXLOGPending;
 
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 		InterruptPending = saved_interrupt_pending;
 		QueryCancelPending = saved_query_cancel_pending;
 		ProcDiePending = saved_proc_die_pending;
@@ -233,7 +233,7 @@ test_backend_pending_interrupts_are_backend_local(PG_FUNCTION_ARGS)
 	}
 	PG_CATCH();
 	{
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 		InterruptPending = saved_interrupt_pending;
 		QueryCancelPending = saved_query_cancel_pending;
 		ProcDiePending = saved_proc_die_pending;
@@ -287,7 +287,7 @@ test_backend_exit_state_is_backend_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		proc_exit_inprogress = true;
 		shmem_exit_inprogress = true;
 		fake_backend1.exit_state.on_proc_exit_index = 1;
@@ -300,7 +300,7 @@ test_backend_exit_state_is_backend_local(PG_FUNCTION_ARGS)
 		fake_backend1.exit_state.on_proc_exit_list[0].arg =
 			PointerGetDatum(&fake_backend1);
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		ok = ok && !proc_exit_inprogress;
 		ok = ok && !shmem_exit_inprogress;
 		ok = ok && !PgBackendExitInProgress();
@@ -309,7 +309,7 @@ test_backend_exit_state_is_backend_local(PG_FUNCTION_ARGS)
 		proc_exit_inprogress = false;
 		shmem_exit_inprogress = false;
 
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		ok = ok && proc_exit_inprogress;
 		ok = ok && shmem_exit_inprogress;
 		ok = ok && PgBackendExitInProgress();
@@ -324,17 +324,17 @@ test_backend_exit_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && fake_backend1.exit_state.on_proc_exit_list[0].function == NULL;
 		ok = ok && fake_backend1.exit_state.on_proc_exit_list[0].arg == 0;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		ok = ok && !proc_exit_inprogress;
 		ok = ok && !shmem_exit_inprogress;
 
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 		proc_exit_inprogress = saved_proc_exit_flag;
 		shmem_exit_inprogress = saved_shmem_exit_flag;
 	}
 	PG_CATCH();
 	{
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 		proc_exit_inprogress = saved_proc_exit_flag;
 		shmem_exit_inprogress = saved_shmem_exit_flag;
 		PG_RE_THROW();

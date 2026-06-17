@@ -12,6 +12,7 @@
  *-------------------------------------------------------------------------
  */
 
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include <unistd.h>

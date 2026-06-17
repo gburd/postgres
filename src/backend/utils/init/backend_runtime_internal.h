@@ -114,7 +114,55 @@ function_name(object_type *object_arg) \
 	reset_function(&early_state); \
 }
 
+#define PG_RUNTIME_RETURN_CURRENT_EXECUTION_BUCKET(variable, field) \
+	do { \
+		typeof(variable) bucket = (variable); \
+		if (likely(bucket != NULL)) \
+			return bucket; \
+		return &PgCurrentOrEarlyExecution()->field; \
+	} while (0)
+
+#define PG_RUNTIME_RETURN_CURRENT_SESSION_BUCKET(variable, field) \
+	do { \
+		typeof(variable) bucket = (variable); \
+		if (likely(bucket != NULL)) \
+			return bucket; \
+		return &PgCurrentOrEarlySession()->field; \
+	} while (0)
+
+#define PG_RUNTIME_RETURN_CURRENT_BACKEND_BUCKET(variable, field, early_state) \
+	do { \
+		typeof(variable) bucket = (variable); \
+		PgBackend  *backend; \
+		if (likely(bucket != NULL)) \
+			return bucket; \
+		backend = CurrentPgBackend; \
+		if (backend == NULL) \
+			return &(early_state); \
+		return &backend->field; \
+	} while (0)
+
+#define PG_RUNTIME_RETURN_INITIALIZED_SESSION_BUCKET(variable, field, early_state, init_function) \
+	do { \
+		typeof(variable) bucket = (variable); \
+		PgSession *session; \
+		if (likely(bucket != NULL && bucket->initialized)) \
+			return bucket; \
+		session = CurrentPgSession; \
+		if (session == NULL) \
+			bucket = &(early_state); \
+		else \
+			bucket = &session->field; \
+		if (!bucket->initialized) \
+			init_function(bucket); \
+		return bucket; \
+	} while (0)
+
 extern PgCarrier *PgCurrentCarrierState(void);
+extern void PgRuntimeFlushCurrentHotMirrors(void);
+extern void PgRuntimeReloadCurrentHotMirrors(void);
+extern void PgRuntimeFlushCurrentHotCells(void);
+extern void PgRuntimeReloadCurrentHotCells(void);
 extern void PgBackendInitializeIdCounter(void);
 extern void PgBackendInitializeRuntimeObject(PgBackend *backend,
 											 PgRuntime *runtime,

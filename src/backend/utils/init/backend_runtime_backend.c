@@ -9,6 +9,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include "access/gin.h"
@@ -593,8 +594,8 @@ PgBackendEnsureWaitStateInitialized(PgBackendWaitState *wait_state)
 {
 	Assert(wait_state != NULL);
 
-	if (wait_state->my_wait_event_info == NULL)
-		wait_state->my_wait_event_info = &wait_state->local_wait_event_info;
+	if (wait_state->wait_event_info_ptr == NULL)
+		wait_state->wait_event_info_ptr = &wait_state->local_wait_event_info;
 }
 
 void
@@ -603,7 +604,7 @@ PgBackendInitializeWaitState(PgBackendWaitState *wait_state)
 	Assert(wait_state != NULL);
 
 	MemSet(wait_state, 0, sizeof(*wait_state));
-	wait_state->my_wait_event_info = &wait_state->local_wait_event_info;
+	wait_state->wait_event_info_ptr = &wait_state->local_wait_event_info;
 	pg_atomic_init_u32(&wait_state->waiting, 0);
 }
 
@@ -615,9 +616,9 @@ PgBackendAdoptEarlyWaitState(PgBackend *backend)
 	PgBackendEnsureWaitStateInitialized(&early_backend_wait_state);
 	backend->wait_state = early_backend_wait_state;
 
-	if (backend->wait_state.my_wait_event_info ==
+	if (backend->wait_state.wait_event_info_ptr ==
 		&early_backend_wait_state.local_wait_event_info)
-		backend->wait_state.my_wait_event_info =
+		backend->wait_state.wait_event_info_ptr =
 			&backend->wait_state.local_wait_event_info;
 
 	PgBackendInitializeWaitState(&early_backend_wait_state);
@@ -1015,19 +1016,17 @@ PgCurrentBackendActivityState(void)
 PgBackendMemoryManagerState *
 PgCurrentBackendMemoryManagerState(void)
 {
-	if (CurrentPgBackend == NULL)
-		return &early_backend_memory_manager;
-
-	return &CurrentPgBackend->memory_manager;
+	PG_RUNTIME_RETURN_CURRENT_BACKEND_BUCKET(CurrentPgBackendMemoryManagerRuntimeState,
+											 memory_manager,
+											 early_backend_memory_manager);
 }
 
 PgBackendUtilityState *
 PgCurrentBackendUtilityState(void)
 {
-	if (CurrentPgBackend == NULL)
-		return &early_backend_utility;
-
-	return &CurrentPgBackend->utility;
+	PG_RUNTIME_RETURN_CURRENT_BACKEND_BUCKET(CurrentPgBackendUtilityRuntimeState,
+											 utility,
+											 early_backend_utility);
 }
 
 PgBackendParallelState *
@@ -1043,10 +1042,9 @@ PgCurrentBackendParallelState(void)
 PgBackendCoreState *
 PgCurrentCoreState(void)
 {
-	if (CurrentPgBackend == NULL)
-		return &early_backend_core;
-
-	return &CurrentPgBackend->core;
+	PG_RUNTIME_RETURN_CURRENT_BACKEND_BUCKET(CurrentPgBackendCoreRuntimeState,
+											 core,
+											 early_backend_core);
 }
 
 PGPROC **
@@ -1106,7 +1104,7 @@ PgCurrentAuxProcessResourceOwnerRef(void)
 pg_prng_state *
 PgCurrentGlobalPrngStateRef(void)
 {
-	return &PgCurrentCoreState()->global_prng_state;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendCoreRuntimeState, PgCurrentCoreState)->global_prng_state;
 }
 
 PgBackendCommandState *
@@ -1154,28 +1152,25 @@ PgCurrentMyBackendTypeRef(void)
 PgBackendPgStatPendingState *
 PgCurrentBackendPgStatPendingState(void)
 {
-	if (CurrentPgBackend == NULL)
-		return &early_backend_pgstat_pending;
-
-	return &CurrentPgBackend->pgstat_pending;
+	PG_RUNTIME_RETURN_CURRENT_BACKEND_BUCKET(CurrentPgBackendPgStatPendingRuntimeState,
+											 pgstat_pending,
+											 early_backend_pgstat_pending);
 }
 
 PgBackendInstrumentationState *
 PgCurrentBackendInstrumentationState(void)
 {
-	if (CurrentPgBackend == NULL)
-		return &early_backend_instrumentation;
-
-	return &CurrentPgBackend->instrumentation;
+	PG_RUNTIME_RETURN_CURRENT_BACKEND_BUCKET(CurrentPgBackendInstrumentationRuntimeState,
+											 instrumentation,
+											 early_backend_instrumentation);
 }
 
 PgBackendBufferState *
 PgCurrentBackendBufferState(void)
 {
-	if (CurrentPgBackend == NULL)
-		return &early_backend_buffers;
-
-	return &CurrentPgBackend->buffers;
+	PG_RUNTIME_RETURN_CURRENT_BACKEND_BUCKET(CurrentPgBackendBufferRuntimeState,
+											 buffers,
+											 early_backend_buffers);
 }
 
 MemoryContext
@@ -1197,33 +1192,36 @@ PgBackendBufferAllocationContext(void)
 PgBackendStorageState *
 PgCurrentBackendStorageState(void)
 {
-	if (CurrentPgBackend == NULL)
-		return &early_backend_storage;
-
-	return &CurrentPgBackend->storage;
+	PG_RUNTIME_RETURN_CURRENT_BACKEND_BUCKET(CurrentPgBackendStorageRuntimeState,
+											 storage,
+											 early_backend_storage);
 }
 
 PgBackendLockState *
 PgCurrentBackendLockState(void)
 {
-	if (CurrentPgBackend == NULL)
-		return &early_backend_locks;
-
-	return &CurrentPgBackend->locks;
+	PG_RUNTIME_RETURN_CURRENT_BACKEND_BUCKET(CurrentPgBackendLockRuntimeState,
+											 locks,
+											 early_backend_locks);
 }
 
 PgBackendIPCState *
 PgCurrentBackendIPCState(void)
 {
-	if (CurrentPgBackend == NULL)
-		return &early_backend_ipc;
-
-	return &CurrentPgBackend->ipc;
+	PG_RUNTIME_RETURN_CURRENT_BACKEND_BUCKET(CurrentPgBackendIPCRuntimeState,
+											 ipc,
+											 early_backend_ipc);
 }
 
 PgBackendWaitState *
 PgCurrentBackendWaitState(void)
 {
+	if (likely(CurrentPgBackendWaitRuntimeState != NULL))
+	{
+		PgBackendEnsureWaitStateInitialized(CurrentPgBackendWaitRuntimeState);
+		return CurrentPgBackendWaitRuntimeState;
+	}
+
 	if (CurrentPgBackend == NULL)
 	{
 		PgBackendEnsureWaitStateInitialized(&early_backend_wait_state);
@@ -1234,15 +1232,26 @@ PgCurrentBackendWaitState(void)
 	return &CurrentPgBackend->wait_state;
 }
 
+/*
+ * Current process and thread-per-session carriers do not consume published
+ * wait specs.  A future scheduler that parks and resumes many sessions on a
+ * carrier can enable this owner-local switch when it needs to observe waits.
+ */
+static bool pg_runtime_publish_wait_specs = false;
+
 int
 PgSuspend(const PgWaitSpec *wait_spec, PgSuspendCallback callback,
 		  void *callback_arg)
 {
-	PgBackend  *backend = CurrentPgBackend;
+	PgBackend  *backend;
 	int			result = 0;
 
 	Assert(callback != NULL);
 
+	if (likely(!pg_runtime_publish_wait_specs || wait_spec == NULL))
+		return callback(callback_arg);
+
+	backend = CurrentPgBackend;
 	if (backend != NULL && wait_spec != NULL)
 	{
 		backend->wait_state.spec = *wait_spec;
@@ -1276,10 +1285,9 @@ PgSuspend(const PgWaitSpec *wait_spec, PgSuspendCallback callback,
 PgBackendTimeoutState *
 PgCurrentTimeoutState(void)
 {
-	if (CurrentPgBackend == NULL)
-		return &early_backend_timeout;
-
-	return &CurrentPgBackend->timeout;
+	PG_RUNTIME_RETURN_CURRENT_BACKEND_BUCKET(CurrentPgBackendTimeoutRuntimeState,
+											 timeout,
+											 early_backend_timeout);
 }
 
 PgBackendWalSenderState *
@@ -1399,28 +1407,25 @@ PgCurrentBasicArchiveDirectoryRef(void)
 PgBackendTransactionState *
 PgCurrentBackendTransactionState(void)
 {
-	if (CurrentPgBackend == NULL)
-		return &early_backend_transaction;
-
-	return &CurrentPgBackend->transaction;
+	PG_RUNTIME_RETURN_CURRENT_BACKEND_BUCKET(CurrentPgBackendTransactionRuntimeState,
+											 transaction,
+											 early_backend_transaction);
 }
 
 PgBackendPendingInterruptState *
 PgCurrentPendingInterrupts(void)
 {
-	if (CurrentPgBackend == NULL)
-		return &early_pending_interrupts;
-
-	return &CurrentPgBackend->pending_interrupts;
+	PG_RUNTIME_RETURN_CURRENT_BACKEND_BUCKET(CurrentPgBackendPendingInterruptRuntimeState,
+											 pending_interrupts,
+											 early_pending_interrupts);
 }
 
 PgBackendInterruptHoldoffState *
 PgCurrentInterruptHoldoffs(void)
 {
-	if (CurrentPgBackend == NULL)
-		return &early_interrupt_holdoffs;
-
-	return &CurrentPgBackend->interrupt_holdoffs;
+	PG_RUNTIME_RETURN_CURRENT_BACKEND_BUCKET(CurrentPgBackendInterruptHoldoffRuntimeState,
+											 interrupt_holdoffs,
+											 early_interrupt_holdoffs);
 }
 
 void

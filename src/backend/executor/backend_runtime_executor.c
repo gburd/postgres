@@ -9,6 +9,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include "executor/spi.h"
@@ -18,71 +19,72 @@
 PgExecutionSPIState *
 PgCurrentExecutionSPIState(void)
 {
-	return &PgCurrentOrEarlyExecution()->spi;
+	PG_RUNTIME_RETURN_CURRENT_EXECUTION_BUCKET(CurrentPgExecutionSPIRuntimeState,
+											   spi);
 }
 
 uint64 *
 PgCurrentSPIProcessedRef(void)
 {
-	return &PgCurrentExecutionSPIState()->processed;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionSPIRuntimeState, PgCurrentExecutionSPIState)->processed;
 }
 
 SPITupleTable **
 PgCurrentSPITuptableRef(void)
 {
-	return &PgCurrentExecutionSPIState()->tuptable;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionSPIRuntimeState, PgCurrentExecutionSPIState)->tuptable;
 }
 
 int *
 PgCurrentSPIResultRef(void)
 {
-	return &PgCurrentExecutionSPIState()->result;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionSPIRuntimeState, PgCurrentExecutionSPIState)->result;
 }
 
 _SPI_connection **
 PgCurrentSPIStackRef(void)
 {
-	return &PgCurrentExecutionSPIState()->stack;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionSPIRuntimeState, PgCurrentExecutionSPIState)->stack;
 }
 
 _SPI_connection **
 PgCurrentSPICurrentRef(void)
 {
-	return &PgCurrentExecutionSPIState()->current;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionSPIRuntimeState, PgCurrentExecutionSPIState)->current;
 }
 
 int *
 PgCurrentSPIStackDepthRef(void)
 {
-	return &PgCurrentExecutionSPIState()->stack_depth;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionSPIRuntimeState, PgCurrentExecutionSPIState)->stack_depth;
 }
 
 int *
 PgCurrentSPIConnectedRef(void)
 {
-	return &PgCurrentExecutionSPIState()->connected;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionSPIRuntimeState, PgCurrentExecutionSPIState)->connected;
 }
 
 BufferUsage *
 PgCurrentBufferUsageRef(void)
 {
-	return &PgCurrentBackendInstrumentationState()->buffer_usage;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendInstrumentationRuntimeState, PgCurrentBackendInstrumentationState)->buffer_usage;
 }
 
 BufferUsage *
 PgCurrentSavedBufferUsageRef(void)
 {
-	return &PgCurrentBackendInstrumentationState()->saved_buffer_usage;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendInstrumentationRuntimeState, PgCurrentBackendInstrumentationState)->saved_buffer_usage;
 }
 
 WalUsage *
 PgCurrentWalUsageRef(void)
 {
-	return &PgCurrentBackendInstrumentationState()->wal_usage;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendInstrumentationRuntimeState, PgCurrentBackendInstrumentationState)->wal_usage;
 }
 
 WalUsage *
 PgCurrentSavedWalUsageRef(void)
 {
-	return &PgCurrentBackendInstrumentationState()->saved_wal_usage;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendInstrumentationRuntimeState, PgCurrentBackendInstrumentationState)->saved_wal_usage;
 }

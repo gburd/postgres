@@ -1697,7 +1697,7 @@ test_session_guc_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && slist_is_empty(PgCurrentGUCStackListRef());
 		ok = ok && slist_is_empty(PgCurrentGUCReportListRef());
 
-		CurrentPgSession = &fake_session2;
+		PgSetCurrentSession(&fake_session2);
 		ok = ok && *PgCurrentGUCMemoryContextRef() == NULL;
 		ok = ok && *PgCurrentGUCVariablesRef() == NULL;
 		ok = ok && *PgCurrentNumGUCVariablesRef() == 0;
@@ -1719,7 +1719,7 @@ test_session_guc_state_is_session_local(PG_FUNCTION_ARGS)
 		*PgCurrentGUCReportingEnabledRef() = false;
 		*PgCurrentGUCNestLevelRef() = 4;
 
-		CurrentPgSession = &fake_session1;
+		PgSetCurrentSession(&fake_session1);
 		ok = ok && *PgCurrentGUCMemoryContextRef() ==
 			(MemoryContext) &fake_session1;
 		ok = ok && *PgCurrentGUCVariablesRef() ==
@@ -1732,7 +1732,7 @@ test_session_guc_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentGUCReportingEnabledRef();
 		ok = ok && *PgCurrentGUCNestLevelRef() == 3;
 
-		CurrentPgSession = &fake_session2;
+		PgSetCurrentSession(&fake_session2);
 		ok = ok && *PgCurrentGUCMemoryContextRef() ==
 			(MemoryContext) &fake_session2;
 		ok = ok && *PgCurrentGUCVariablesRef() ==

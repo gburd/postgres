@@ -9,6 +9,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include "utils/backend_runtime.h"
@@ -17,7 +18,8 @@
 PgExecutionBaseBackupState *
 PgCurrentExecutionBaseBackupState(void)
 {
-	return &PgCurrentOrEarlyExecution()->basebackup;
+	PG_RUNTIME_RETURN_CURRENT_EXECUTION_BUCKET(CurrentPgExecutionBaseBackupRuntimeState,
+											   basebackup);
 }
 
 struct BackupState **
@@ -47,17 +49,17 @@ PgCurrentSessionBackupStateRef(void)
 bool *
 PgCurrentBaseBackupStartedInRecoveryRef(void)
 {
-	return &PgCurrentExecutionBaseBackupState()->backup_started_in_recovery;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionBaseBackupRuntimeState, PgCurrentExecutionBaseBackupState)->backup_started_in_recovery;
 }
 
 long long int *
 PgCurrentBaseBackupTotalChecksumFailuresRef(void)
 {
-	return &PgCurrentExecutionBaseBackupState()->total_checksum_failures;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionBaseBackupRuntimeState, PgCurrentExecutionBaseBackupState)->total_checksum_failures;
 }
 
 bool *
 PgCurrentBaseBackupNoVerifyChecksumsRef(void)
 {
-	return &PgCurrentExecutionBaseBackupState()->noverify_checksums;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionBaseBackupRuntimeState, PgCurrentExecutionBaseBackupState)->noverify_checksums;
 }

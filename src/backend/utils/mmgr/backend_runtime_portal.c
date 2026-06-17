@@ -9,6 +9,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include "utils/backend_runtime.h"
@@ -17,35 +18,39 @@
 PgSessionPortalManagerState *
 PgCurrentSessionPortalManagerState(void)
 {
-	return &PgCurrentOrEarlySession()->portal_manager;
+	PG_RUNTIME_RETURN_CURRENT_SESSION_BUCKET(CurrentPgSessionPortalManagerRuntimeState,
+											 portal_manager);
 }
 
 PgExecutionPortalState *
 PgCurrentExecutionPortalState(void)
 {
+	if (likely(CurrentPgExecutionPortalRuntimeState != NULL))
+		return CurrentPgExecutionPortalRuntimeState;
+
 	return &PgCurrentOrEarlyExecution()->portal;
 }
 
 Portal *
 PgCurrentActivePortalRef(void)
 {
-	return &PgCurrentExecutionPortalState()->active;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionPortalRuntimeState, PgCurrentExecutionPortalState)->active;
 }
 
 MemoryContext *
 PgCurrentTopPortalContextRef(void)
 {
-	return &PgCurrentSessionPortalManagerState()->top_portal_context;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionPortalManagerRuntimeState, PgCurrentSessionPortalManagerState)->top_portal_context;
 }
 
 HTAB **
 PgCurrentPortalHashTableRef(void)
 {
-	return &PgCurrentSessionPortalManagerState()->portal_hash_table;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionPortalManagerRuntimeState, PgCurrentSessionPortalManagerState)->portal_hash_table;
 }
 
 unsigned int *
 PgCurrentUnnamedPortalCountRef(void)
 {
-	return &PgCurrentSessionPortalManagerState()->unnamed_portal_count;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionPortalManagerRuntimeState, PgCurrentSessionPortalManagerState)->unnamed_portal_count;
 }

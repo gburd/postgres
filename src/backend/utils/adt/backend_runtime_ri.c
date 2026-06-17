@@ -13,6 +13,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include "utils/backend_runtime.h"
@@ -22,6 +23,10 @@ PgSessionRIGlobalsState *
 PgCurrentSessionRIGlobalsState(void)
 {
 	PgSessionRIGlobalsState *ri_globals;
+
+	if (likely(CurrentPgSessionRIGlobalsRuntimeState != NULL &&
+			   CurrentPgSessionRIGlobalsRuntimeState->debug_discard_caches_initialized))
+		return CurrentPgSessionRIGlobalsRuntimeState;
 
 	ri_globals = &PgCurrentOrEarlySession()->ri_globals;
 	if (!ri_globals->debug_discard_caches_initialized)
@@ -33,47 +38,47 @@ PgCurrentSessionRIGlobalsState(void)
 HTAB **
 PgCurrentRIConstraintCacheRef(void)
 {
-	return &PgCurrentSessionRIGlobalsState()->constraint_cache;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionRIGlobalsRuntimeState, PgCurrentSessionRIGlobalsState)->constraint_cache;
 }
 
 HTAB **
 PgCurrentRIQueryCacheRef(void)
 {
-	return &PgCurrentSessionRIGlobalsState()->query_cache;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionRIGlobalsRuntimeState, PgCurrentSessionRIGlobalsState)->query_cache;
 }
 
 HTAB **
 PgCurrentRICompareCacheRef(void)
 {
-	return &PgCurrentSessionRIGlobalsState()->compare_cache;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionRIGlobalsRuntimeState, PgCurrentSessionRIGlobalsState)->compare_cache;
 }
 
 dclist_head *
 PgCurrentRIConstraintCacheValidListRef(void)
 {
-	return &PgCurrentSessionRIGlobalsState()->constraint_cache_valid_list;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionRIGlobalsRuntimeState, PgCurrentSessionRIGlobalsState)->constraint_cache_valid_list;
 }
 
 bool *
 PgCurrentRIFastPathXactCallbackRegisteredRef(void)
 {
-	return &PgCurrentSessionRIGlobalsState()->fastpath_xact_callback_registered;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionRIGlobalsRuntimeState, PgCurrentSessionRIGlobalsState)->fastpath_xact_callback_registered;
 }
 
 int *
 PgCurrentDebugDiscardCachesRef(void)
 {
-	return &PgCurrentSessionRIGlobalsState()->debug_discard_caches_value;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionRIGlobalsRuntimeState, PgCurrentSessionRIGlobalsState)->debug_discard_caches_value;
 }
 
 HTAB **
 PgCurrentRIFastPathCacheRef(void)
 {
-	return &PgCurrentExecutionTransactionCleanupState()->ri_fastpath_cache;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentExecutionTransactionCleanupState)->ri_fastpath_cache;
 }
 
 bool *
 PgCurrentRIFastPathCallbackRegisteredRef(void)
 {
-	return &PgCurrentExecutionTransactionCleanupState()->ri_fastpath_callback_registered;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentExecutionTransactionCleanupState)->ri_fastpath_callback_registered;
 }

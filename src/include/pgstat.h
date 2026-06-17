@@ -18,6 +18,7 @@
 #include "storage/locktag.h"
 #include "utils/backend_progress.h" /* for backward compatibility */	/* IWYU pragma: export */
 #include "utils/backend_status.h"	/* for backward compatibility */	/* IWYU pragma: export */
+#include "utils/backend_runtime_current.h"
 #include "utils/global_lifetime.h"
 #include "utils/pgstat_kind.h"
 
@@ -880,8 +881,14 @@ extern PgStat_CheckpointerStats *PgCurrentPendingCheckpointerStatsRef(void);
 extern PgStat_PendingIO *PgCurrentPendingIOStatsRef(void);
 extern bool *PgCurrentHaveIOStatsRef(void);
 
-#define PendingIOStats (*PgCurrentPendingIOStatsRef())
-#define have_iostats (*PgCurrentHaveIOStatsRef())
+#define PendingIOStats \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentPendingIOStatsHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentPendingIOStatsRef))
+#define have_iostats \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentHaveIOStatsHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentHaveIOStatsRef))
 
 extern PgStat_SLRUStats *PgCurrentPendingSLRUStatsArray(void);
 extern bool *PgCurrentHaveSLRUStatsRef(void);
@@ -913,14 +920,38 @@ extern bool *PgCurrentForceStatsSnapshotClearRef(void);
 extern bool *PgCurrentPgStatIsInitializedRef(void);
 extern bool *PgCurrentPgStatIsShutdownRef(void);
 
-#define PendingBackendStats (*PgCurrentPendingBackendStatsRef())
-#define backend_has_iostats (*PgCurrentBackendHasIOStatsRef())
-#define prevBackendWalUsage (*PgCurrentPgStatPrevBackendWalUsageRef())
-#define pgstat_report_fixed (*PgCurrentPgStatReportFixedRef())
-#define pgStatForceNextFlush (*PgCurrentPgStatForceNextFlushRef())
-#define force_stats_snapshot_clear (*PgCurrentForceStatsSnapshotClearRef())
-#define pgstat_is_initialized (*PgCurrentPgStatIsInitializedRef())
-#define pgstat_is_shutdown (*PgCurrentPgStatIsShutdownRef())
+#define PendingBackendStats \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentPendingBackendStatsHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentPendingBackendStatsRef))
+#define backend_has_iostats \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentBackendHasIOStatsHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentBackendHasIOStatsRef))
+#define prevBackendWalUsage \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentPgStatPrevBackendWalUsageHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentPgStatPrevBackendWalUsageRef))
+#define pgstat_report_fixed \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentPgStatReportFixedHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentPgStatReportFixedRef))
+#define pgStatForceNextFlush \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentPgStatForceNextFlushHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentPgStatForceNextFlushRef))
+#define force_stats_snapshot_clear \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentForceStatsSnapshotClearHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentForceStatsSnapshotClearRef))
+#define pgstat_is_initialized \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentPgStatIsInitializedHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentPgStatIsInitializedRef))
+#define pgstat_is_shutdown \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentPgStatIsShutdownHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentPgStatIsShutdownRef))
 
 extern int *PgCurrentPgStatXactCommitRef(void);
 extern int *PgCurrentPgStatXactRollbackRef(void);

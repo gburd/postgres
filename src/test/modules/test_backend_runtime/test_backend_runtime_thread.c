@@ -164,21 +164,21 @@ test_backend_thread_runtime_state(PG_FUNCTION_ARGS)
 		CHECK_THREAD_RUNTIME_STATE(CurrentPgConnection == saved_connection);
 		CHECK_THREAD_RUNTIME_STATE(CurrentPgExecution == saved_execution);
 
-		CurrentPgRuntime = saved_runtime;
-		CurrentPgCarrier = saved_carrier;
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentRuntime(saved_runtime);
+		PgSetCurrentCarrier(saved_carrier);
+		PgSetCurrentBackend(saved_backend);
 		PgSetCurrentSession(saved_session);
-		CurrentPgConnection = saved_connection;
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentConnection(saved_connection);
+		PgSetCurrentExecution(saved_execution);
 	}
 	PG_CATCH();
 	{
-		CurrentPgRuntime = saved_runtime;
-		CurrentPgCarrier = saved_carrier;
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentRuntime(saved_runtime);
+		PgSetCurrentCarrier(saved_carrier);
+		PgSetCurrentBackend(saved_backend);
 		PgSetCurrentSession(saved_session);
-		CurrentPgConnection = saved_connection;
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentConnection(saved_connection);
+		PgSetCurrentExecution(saved_execution);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -259,21 +259,21 @@ test_backend_thread_ids_are_logical(PG_FUNCTION_ARGS)
 		ok = ok && CurrentPgConnection == saved_connection;
 		ok = ok && CurrentPgExecution == saved_execution;
 
-		CurrentPgRuntime = saved_runtime;
-		CurrentPgCarrier = saved_carrier;
-		CurrentPgBackend = saved_backend;
-		CurrentPgSession = saved_session;
-		CurrentPgConnection = saved_connection;
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentRuntime(saved_runtime);
+		PgSetCurrentCarrier(saved_carrier);
+		PgSetCurrentBackend(saved_backend);
+		PgSetCurrentSession(saved_session);
+		PgSetCurrentConnection(saved_connection);
+		PgSetCurrentExecution(saved_execution);
 	}
 	PG_CATCH();
 	{
-		CurrentPgRuntime = saved_runtime;
-		CurrentPgCarrier = saved_carrier;
-		CurrentPgBackend = saved_backend;
-		CurrentPgSession = saved_session;
-		CurrentPgConnection = saved_connection;
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentRuntime(saved_runtime);
+		PgSetCurrentCarrier(saved_carrier);
+		PgSetCurrentBackend(saved_backend);
+		PgSetCurrentSession(saved_session);
+		PgSetCurrentConnection(saved_connection);
+		PgSetCurrentExecution(saved_execution);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();

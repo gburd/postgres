@@ -1809,10 +1809,19 @@ next_pow2_int(int64 num)
 #define MAX_SEQ_SCANS PG_BACKEND_MAX_SEQ_SCANS
 
 /* Tables being scanned. */
-#define seq_scan_tables (PgCurrentSeqScanTables())
+#define seq_scan_tables \
+	((HTAB **) PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentSeqScanTablesHotRef, \
+												CurrentPgBackend, \
+												PgCurrentSeqScanTables))
 /* Subtransaction nest level. */
-#define seq_scan_level (PgCurrentSeqScanLevels())
-#define num_seq_scans (*PgCurrentNumSeqScansRef())
+#define seq_scan_level \
+	((int *) PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentSeqScanLevelsHotRef, \
+											  CurrentPgBackend, \
+											  PgCurrentSeqScanLevels))
+#define num_seq_scans \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentNumSeqScansHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentNumSeqScansRef))
 
 
 /* Register a table as having an active hash_seq_search scan */

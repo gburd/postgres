@@ -36,30 +36,30 @@ test_backend_dsm_shutdown_is_backend_local(PG_FUNCTION_ARGS)
 		 * CurrentPgBackend is switched because this test isolates DSM mapping
 		 * ownership; the rest of the current process runtime remains real.
 		 */
-		CurrentPgBackend = &fake_backend_with_dsm;
+		PgSetCurrentBackend(&fake_backend_with_dsm);
 		pg_prng_seed(&pg_global_prng_state, 1);
 		seg = dsm_create(1024, 0);
 		dsm_pin_mapping(seg);
 		handle = dsm_segment_handle(seg);
 
-		CurrentPgBackend = &fake_backend_to_exit;
+		PgSetCurrentBackend(&fake_backend_to_exit);
 		dsm_backend_shutdown();
 
-		CurrentPgBackend = &fake_backend_with_dsm;
+		PgSetCurrentBackend(&fake_backend_with_dsm);
 		found = (dsm_find_mapping(handle) == seg);
 		dsm_detach(seg);
 		seg = NULL;
 
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 	}
 	PG_CATCH();
 	{
 		if (seg != NULL)
 		{
-			CurrentPgBackend = &fake_backend_with_dsm;
+			PgSetCurrentBackend(&fake_backend_with_dsm);
 			dsm_detach(seg);
 		}
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();

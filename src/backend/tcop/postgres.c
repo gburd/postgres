@@ -137,7 +137,10 @@ typedef struct BindParamCbData
  * as opposed to any random read from client that might happen within
  * commands like COPY FROM STDIN.
  */
-#define DoingCommandRead (*PgCurrentDoingCommandReadRef())
+#define DoingCommandRead \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentDoingCommandReadHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentDoingCommandReadRef))
 
 /*
  * If an unnamed prepared statement exists, it's stored here.
@@ -362,8 +365,7 @@ SocketBackend(PgSession *session, StringInfo inBuf)
 	 * Get message type code from the frontend.
 	 */
 	HOLD_CANCEL_INTERRUPTS();
-	pq_startmsgread();
-	qtype = pq_getbyte();
+	qtype = pq_startmsgread_getbyte();
 
 	if (qtype == EOF)			/* frontend disconnected */
 	{
@@ -4394,7 +4396,7 @@ PgSessionStepUnprotected(PgSession *session, PgStepBudget budget)
 	StringInfoData input_message;
 
 	Assert(session != NULL);
-	Assert(budget.max_messages == 1);
+	Assert(budget.max_messages >= 0);
 	state = &session->loop_state;
 	Assert(state->step_error_boundary_active);
 
@@ -4903,9 +4905,10 @@ PgSessionStep(PgSession *session, PgStepBudget budget)
 	ErrorContextCallback *save_context_stack;
 	sigjmp_buf	local_sigjmp_buf;
 	PgStepResult result;
+	int			processed_messages = 0;
 
 	Assert(session != NULL);
-	Assert(budget.max_messages == 1);
+	Assert(budget.max_messages >= 0);
 	state = &session->loop_state;
 	Assert(!state->step_error_boundary_active);
 
@@ -4923,19 +4926,19 @@ PgSessionStep(PgSession *session, PgStepBudget budget)
 	 * during error recovery.  (If we get into an infinite loop thereby, it
 	 * will soon be stopped by overflow of elog.c's internal state stack.)
 	 *
-	 * Note that we use sigsetjmp(..., 1), so that this function's signal mask
-	 * (to wit, UnBlockSig) will be restored when longjmp'ing to here.  This is
-	 * essential in case we longjmp'd out of a signal handler on a platform
-	 * where that leaves the signal blocked.  It's not redundant with the
-	 * unblock in AbortTransaction() because the latter is only called if we
-	 * were inside a transaction.
+	 * If we longjmp'd out of a signal handler on a platform where that leaves
+	 * the signal blocked, restore UnBlockSig before error recovery.  Keep the
+	 * restoration explicit here instead of using sigsetjmp(..., 1), because
+	 * PgSessionStep() is now a one-message boundary and saving the signal mask
+	 * on every successful message is visible in tiny-query hot paths.
 	 */
 	save_exception_stack = PG_exception_stack;
 	save_context_stack = error_context_stack;
 	state->step_error_boundary_active = true;
 
-	if (sigsetjmp(local_sigjmp_buf, 1) != 0)
+	if (sigsetjmp(local_sigjmp_buf, 0) != 0)
 	{
+		sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
 		PgSessionRecoverError(session);
 
 		if (!state->ignore_till_sync)
@@ -4951,7 +4954,18 @@ PgSessionStep(PgSession *session, PgStepBudget budget)
 	{
 		/* We can now handle ereport(ERROR) */
 		PG_exception_stack = &local_sigjmp_buf;
-		result = PgSessionStepUnprotected(session, budget);
+
+		for (;;)
+		{
+			result = PgSessionStepUnprotected(session, budget);
+			if (result != PG_STEP_CONTINUE)
+				break;
+
+			processed_messages++;
+			if (budget.max_messages > 0 &&
+				processed_messages >= budget.max_messages)
+				break;
+		}
 	}
 
 	PG_exception_stack = save_exception_stack;
@@ -4968,7 +4982,7 @@ PgSessionRun(PgSession *session)
 
 	Assert(session != NULL);
 
-	budget.max_messages = 1;
+	budget.max_messages = 0;
 
 	for (;;)
 		(void) PgSessionStep(session, budget);

@@ -13,6 +13,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include "utils/backend_runtime.h"
@@ -21,25 +22,27 @@
 PgExecutionDebugState *
 PgCurrentExecutionDebugState(void)
 {
-	return &PgCurrentOrEarlyExecution()->debug;
+	PG_RUNTIME_RETURN_CURRENT_EXECUTION_BUCKET(CurrentPgExecutionDebugRuntimeState,
+											   debug);
 }
 
 PgExecutionValgrindState *
 PgCurrentExecutionValgrindState(void)
 {
-	return &PgCurrentOrEarlyExecution()->valgrind;
+	PG_RUNTIME_RETURN_CURRENT_EXECUTION_BUCKET(CurrentPgExecutionValgrindRuntimeState,
+											   valgrind);
 }
 
 const char **
 PgCurrentDebugQueryStringRef(void)
 {
-	return &PgCurrentExecutionDebugState()->debug_query_string;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionDebugRuntimeState, PgCurrentExecutionDebugState)->debug_query_string;
 }
 
 bool *
 PgCurrentDoingCommandReadRef(void)
 {
-	return &PgCurrentSessionLoopState()->doing_command_read;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionLoopRuntimeState, PgCurrentSessionLoopState)->doing_command_read;
 }
 
 CachedPlanSource **
@@ -93,5 +96,5 @@ PgCurrentRowDescriptionBufRef(void)
 unsigned int *
 PgCurrentValgrindOldErrorCountRef(void)
 {
-	return &PgCurrentExecutionValgrindState()->old_error_count;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionValgrindRuntimeState, PgCurrentExecutionValgrindState)->old_error_count;
 }

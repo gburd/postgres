@@ -70,6 +70,7 @@
  *-------------------------------------------------------------------------
  */
 
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include <dirent.h>
@@ -2527,6 +2528,8 @@ retry:
 pgoff_t
 FileSize(File file)
 {
+	pgoff_t		returnCode;
+
 	Assert(FileIsValid(file));
 
 	DO_DB(elog(LOG, "FileSize %d (%s)",
@@ -2538,7 +2541,27 @@ FileSize(File file)
 			return (pgoff_t) -1;
 	}
 
-	return lseek(VfdCache[file].fd, 0, SEEK_END);
+	/*
+	 * In threaded mode, relation descriptors can be used concurrently in one
+	 * process.  Avoid mutating the kernel file offset while asking for the file
+	 * length.  Process mode keeps the historical lseek() path, which is cheaper
+	 * on the Linux Docker benchmark baseline.
+	 */
+	if (multithreaded)
+	{
+		struct stat statbuf;
+
+		if (fstat(VfdCache[file].fd, &statbuf) < 0)
+			return (pgoff_t) -1;
+
+		return statbuf.st_size;
+	}
+
+	returnCode = lseek(VfdCache[file].fd, 0, SEEK_END);
+	if (returnCode < 0)
+		return (pgoff_t) -1;
+
+	return returnCode;
 }
 
 int

@@ -15,6 +15,7 @@
 #define COST_H
 
 #include "nodes/pathnodes.h"
+#include "utils/backend_runtime_current.h"
 #include "utils/global_lifetime.h"
 #include "nodes/plannodes.h"
 
@@ -73,32 +74,102 @@ extern bool *PgCurrentEnablePresortedAggregateRef(void);
 extern bool *PgCurrentEnableAsyncAppendRef(void);
 extern int *PgCurrentConstraintExclusionRef(void);
 
-#define disable_cost (*PgCurrentDisableCostRef())
+#define disable_cost \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentDisableCostHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentDisableCostRef))
 #define max_parallel_workers_per_gather \
-	(*PgCurrentMaxParallelWorkersPerGatherRef())
-#define enable_seqscan (*PgCurrentEnableSeqscanRef())
-#define enable_indexscan (*PgCurrentEnableIndexscanRef())
-#define enable_indexonlyscan (*PgCurrentEnableIndexonlyscanRef())
-#define enable_bitmapscan (*PgCurrentEnableBitmapscanRef())
-#define enable_tidscan (*PgCurrentEnableTidscanRef())
-#define enable_sort (*PgCurrentEnableSortRef())
-#define enable_incremental_sort (*PgCurrentEnableIncrementalSortRef())
-#define enable_hashagg (*PgCurrentEnableHashaggRef())
-#define enable_nestloop (*PgCurrentEnableNestloopRef())
-#define enable_material (*PgCurrentEnableMaterialRef())
-#define enable_memoize (*PgCurrentEnableMemoizeRef())
-#define enable_mergejoin (*PgCurrentEnableMergejoinRef())
-#define enable_hashjoin (*PgCurrentEnableHashjoinRef())
-#define enable_gathermerge (*PgCurrentEnableGathermergeRef())
-#define enable_partitionwise_join (*PgCurrentEnablePartitionwiseJoinRef())
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentMaxParallelWorkersPerGatherHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentMaxParallelWorkersPerGatherRef))
+#define enable_seqscan \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEnableSeqscanHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentEnableSeqscanRef))
+#define enable_indexscan \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEnableIndexscanHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentEnableIndexscanRef))
+#define enable_indexonlyscan \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEnableIndexonlyscanHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentEnableIndexonlyscanRef))
+#define enable_bitmapscan \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEnableBitmapscanHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentEnableBitmapscanRef))
+#define enable_tidscan \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEnableTidscanHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentEnableTidscanRef))
+#define enable_sort \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEnableSortHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentEnableSortRef))
+#define enable_incremental_sort \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEnableIncrementalSortHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentEnableIncrementalSortRef))
+#define enable_hashagg \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEnableHashaggHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentEnableHashaggRef))
+#define enable_nestloop \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEnableNestloopHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentEnableNestloopRef))
+#define enable_material \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEnableMaterialHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentEnableMaterialRef))
+#define enable_memoize \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEnableMemoizeHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentEnableMemoizeRef))
+#define enable_mergejoin \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEnableMergejoinHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentEnableMergejoinRef))
+#define enable_hashjoin \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEnableHashjoinHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentEnableHashjoinRef))
+#define enable_gathermerge \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEnableGathermergeHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentEnableGathermergeRef))
+#define enable_partitionwise_join \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEnablePartitionwiseJoinHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentEnablePartitionwiseJoinRef))
 #define enable_partitionwise_aggregate \
-	(*PgCurrentEnablePartitionwiseAggregateRef())
-#define enable_parallel_append (*PgCurrentEnableParallelAppendRef())
-#define enable_parallel_hash (*PgCurrentEnableParallelHashRef())
-#define enable_partition_pruning (*PgCurrentEnablePartitionPruningRef())
-#define enable_presorted_aggregate (*PgCurrentEnablePresortedAggregateRef())
-#define enable_async_append (*PgCurrentEnableAsyncAppendRef())
-#define constraint_exclusion (*PgCurrentConstraintExclusionRef())
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEnablePartitionwiseAggregateHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentEnablePartitionwiseAggregateRef))
+#define enable_parallel_append \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEnableParallelAppendHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentEnableParallelAppendRef))
+#define enable_parallel_hash \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEnableParallelHashHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentEnableParallelHashRef))
+#define enable_partition_pruning \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEnablePartitionPruningHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentEnablePartitionPruningRef))
+#define enable_presorted_aggregate \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEnablePresortedAggregateHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentEnablePresortedAggregateRef))
+#define enable_async_append \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEnableAsyncAppendHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentEnableAsyncAppendRef))
+#define constraint_exclusion \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentConstraintExclusionHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentConstraintExclusionRef))
 
 extern double index_pages_fetched(double tuples_fetched, BlockNumber pages,
 								  double index_pages, PlannerInfo *root);

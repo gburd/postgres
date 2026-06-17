@@ -17,8 +17,11 @@
 #include <signal.h>
 
 #include "storage/relfilelocator.h"
-#include "utils/backend_runtime.h"
 #include "utils/global_lifetime.h"
+
+#ifndef FRONTEND
+#include "utils/backend_runtime.h"
+#endif
 
 /*
  * We support several types of shared-invalidation messages:
@@ -137,9 +140,14 @@ typedef union
 
 
 /* Counter of messages processed; don't worry about overflow. */
+#ifndef FRONTEND
 #define SharedInvalidMessageCounter (*PgCurrentSharedInvalidMessageCounterRef())
 
-#define catchupInterruptPending (*PgCurrentCatchupInterruptPendingRef())
+#define catchupInterruptPending \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentCatchupInterruptPendingHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentCatchupInterruptPendingRef))
+#endif
 
 extern void SendSharedInvalidMessages(const SharedInvalidationMessage *msgs,
 									  int n);

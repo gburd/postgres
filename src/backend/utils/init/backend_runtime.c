@@ -13,6 +13,8 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_CURRENT_NO_BUCKET_ALIASES
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include <unistd.h>
@@ -91,17 +93,52 @@
 #include "utils/typcache.h"
 #include "utils/xml.h"
 
-PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgRuntime *CurrentPgRuntime = NULL;
-PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgCarrier *CurrentPgCarrier = NULL;
-PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgBackend *CurrentPgBackend = NULL;
-PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgSession *CurrentPgSession = NULL;
-PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgConnection *CurrentPgConnection = NULL;
-PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgExecution *CurrentPgExecution = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgRuntimeCurrentBridge
+			PgRuntimeCurrentBridgeState = {0};
+PG_GLOBAL_RUNTIME int PgRuntimeHotCurrentCellModeState =
+			PG_RUNTIME_HOT_CURRENT_CELLS_FALLBACK;
+
+PG_GLOBAL_RUNTIME PgRuntime **PgCurrentRuntimeHotRefProcessRef = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgRuntime **PgCurrentRuntimeHotRefThreadRef = NULL;
+PG_GLOBAL_RUNTIME PgCarrier **PgCurrentCarrierHotRefProcessRef = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgCarrier **PgCurrentCarrierHotRefThreadRef = NULL;
+PG_GLOBAL_RUNTIME PgBackend **PgCurrentBackendHotRefProcessRef = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgBackend **PgCurrentBackendHotRefThreadRef = NULL;
+PG_GLOBAL_RUNTIME PgSession **PgCurrentSessionHotRefProcessRef = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgSession **PgCurrentSessionHotRefThreadRef = NULL;
+PG_GLOBAL_RUNTIME PgConnection **PgCurrentConnectionHotRefProcessRef = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgConnection **PgCurrentConnectionHotRefThreadRef = NULL;
+PG_GLOBAL_RUNTIME PgExecution **PgCurrentExecutionHotRefProcessRef = NULL;
+PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgExecution **PgCurrentExecutionHotRefThreadRef = NULL;
+
+#define PG_RUNTIME_HOT_CELL(variable, owner, owner_type, type, field) \
+PG_GLOBAL_RUNTIME type *variable##ProcessCell = NULL; \
+PG_THREAD_LOCAL PG_GLOBAL_CARRIER type *variable##ThreadCell = NULL;
+#include "utils/backend_runtime_hot_cells.def"
+#undef PG_RUNTIME_HOT_CELL
+
+#define PG_RUNTIME_HOT_BUCKET(variable, type, owner, field) \
+PG_GLOBAL_RUNTIME type *variable##ProcessBucket = NULL; \
+PG_THREAD_LOCAL PG_GLOBAL_CARRIER type *variable##ThreadBucket = NULL;
+#include "utils/backend_runtime_hot_buckets.def"
+#undef PG_RUNTIME_HOT_BUCKET
+
+#define PG_RUNTIME_HOT_FIELD(variable, owner, type, expr) \
+PG_GLOBAL_RUNTIME type *variable##ProcessRef = NULL; \
+PG_GLOBAL_RUNTIME const void *variable##ProcessOwner = NULL; \
+PG_THREAD_LOCAL PG_GLOBAL_CARRIER type *variable##ThreadRef = NULL; \
+PG_THREAD_LOCAL PG_GLOBAL_CARRIER const void *variable##ThreadOwner = NULL;
+#include "utils/backend_runtime_hot_fields.def"
+#undef PG_RUNTIME_HOT_FIELD
 
 static PG_GLOBAL_RUNTIME PgRuntime process_runtime;
 static PG_GLOBAL_RUNTIME PgRuntime thread_runtime;
 static PG_GLOBAL_RUNTIME bool thread_runtime_initialized = false;
-static PG_GLOBAL_CARRIER PgCarrier process_carrier;
+static PG_GLOBAL_CARRIER PgCarrier process_carrier = {
+	.wait_event_signal_fd = -1,
+	.wait_event_selfpipe_readfd = -1,
+	.wait_event_selfpipe_writefd = -1
+};
 static PG_GLOBAL_BACKEND PgBackend process_backend;
 static PG_GLOBAL_SESSION PgSession process_session;
 static PG_GLOBAL_CONNECTION PgConnection process_connection;
@@ -114,6 +151,377 @@ PgBackendPendingInterruptState *PgCurrentPendingInterrupts(void);
 PgBackendInterruptHoldoffState *PgCurrentInterruptHoldoffs(void);
 
 
+
+static void
+PgRuntimeClearHotCurrentRootRefs(void)
+{
+	PgCurrentRuntimeHotRefProcessRef = NULL;
+	PgCurrentRuntimeHotRefThreadRef = NULL;
+	PgCurrentCarrierHotRefProcessRef = NULL;
+	PgCurrentCarrierHotRefThreadRef = NULL;
+	PgCurrentBackendHotRefProcessRef = NULL;
+	PgCurrentBackendHotRefThreadRef = NULL;
+	PgCurrentSessionHotRefProcessRef = NULL;
+	PgCurrentSessionHotRefThreadRef = NULL;
+	PgCurrentConnectionHotRefProcessRef = NULL;
+	PgCurrentConnectionHotRefThreadRef = NULL;
+	PgCurrentExecutionHotRefProcessRef = NULL;
+	PgCurrentExecutionHotRefThreadRef = NULL;
+}
+
+static void
+PgRuntimeLoadHotCurrentRootRefs(void)
+{
+	switch (PgRuntimeHotCurrentCellModeState)
+	{
+		case PG_RUNTIME_HOT_CURRENT_CELLS_PROCESS:
+			PgCurrentRuntimeHotRefProcessRef =
+				&PgRuntimeCurrentBridgeState.runtime;
+			PgCurrentCarrierHotRefProcessRef =
+				&PgRuntimeCurrentBridgeState.carrier;
+			PgCurrentBackendHotRefProcessRef =
+				&PgRuntimeCurrentBridgeState.backend;
+			PgCurrentSessionHotRefProcessRef =
+				&PgRuntimeCurrentBridgeState.session;
+			PgCurrentConnectionHotRefProcessRef =
+				&PgRuntimeCurrentBridgeState.connection;
+			PgCurrentExecutionHotRefProcessRef =
+				&PgRuntimeCurrentBridgeState.execution;
+			break;
+
+		case PG_RUNTIME_HOT_CURRENT_CELLS_THREAD:
+			PgCurrentRuntimeHotRefThreadRef =
+				&PgRuntimeCurrentBridgeState.runtime;
+			PgCurrentCarrierHotRefThreadRef =
+				&PgRuntimeCurrentBridgeState.carrier;
+			PgCurrentBackendHotRefThreadRef =
+				&PgRuntimeCurrentBridgeState.backend;
+			PgCurrentSessionHotRefThreadRef =
+				&PgRuntimeCurrentBridgeState.session;
+			PgCurrentConnectionHotRefThreadRef =
+				&PgRuntimeCurrentBridgeState.connection;
+			PgCurrentExecutionHotRefThreadRef =
+				&PgRuntimeCurrentBridgeState.execution;
+			break;
+
+		case PG_RUNTIME_HOT_CURRENT_CELLS_FALLBACK:
+			PgRuntimeClearHotCurrentRootRefs();
+			break;
+	}
+}
+
+static void
+PgRuntimeClearHotBucketPointers(void)
+{
+#define PG_RUNTIME_HOT_BUCKET(variable, type, owner, field) \
+	do { \
+		PgRuntimeCurrentBridgeState.variable = NULL; \
+		variable##ProcessBucket = NULL; \
+		variable##ThreadBucket = NULL; \
+	} while (0);
+#include "utils/backend_runtime_hot_buckets.def"
+#undef PG_RUNTIME_HOT_BUCKET
+}
+
+void
+PgRuntimeFlushCurrentHotCells(void)
+{
+	/*
+	 * Hot current cells cache addresses into the active runtime object.
+	 * Direct compatibility-lvalue writes update the runtime owner field.
+	 */
+}
+
+static void
+PgRuntimeLoadHotCurrentCells(void)
+{
+#define PG_RUNTIME_HOT_CELL(variable, owner, owner_type, type, field) \
+	do { \
+		PgRuntimeCurrentBridgeState.variable = \
+			PgRuntimeCurrentBridgeState.owner != NULL ? \
+			&PgRuntimeCurrentBridgeState.owner->field : NULL; \
+	} while (0);
+#include "utils/backend_runtime_hot_cells.def"
+#undef PG_RUNTIME_HOT_CELL
+
+	switch (PgRuntimeHotCurrentCellModeState)
+	{
+		case PG_RUNTIME_HOT_CURRENT_CELLS_PROCESS:
+#define PG_RUNTIME_HOT_CELL(variable, owner, owner_type, type, field) \
+			do { \
+				variable##ProcessCell = \
+					PgRuntimeCurrentBridgeState.owner != NULL ? \
+					&PgRuntimeCurrentBridgeState.owner->field : NULL; \
+			} while (0);
+#include "utils/backend_runtime_hot_cells.def"
+#undef PG_RUNTIME_HOT_CELL
+			break;
+
+		case PG_RUNTIME_HOT_CURRENT_CELLS_THREAD:
+#define PG_RUNTIME_HOT_CELL(variable, owner, owner_type, type, field) \
+			do { \
+				variable##ThreadCell = \
+					PgRuntimeCurrentBridgeState.owner != NULL ? \
+					&PgRuntimeCurrentBridgeState.owner->field : NULL; \
+			} while (0);
+#include "utils/backend_runtime_hot_cells.def"
+#undef PG_RUNTIME_HOT_CELL
+			break;
+
+		case PG_RUNTIME_HOT_CURRENT_CELLS_FALLBACK:
+			break;
+	}
+}
+
+static void
+PgRuntimeClearHotCurrentCells(void)
+{
+#define PG_RUNTIME_HOT_CELL(variable, owner, owner_type, type, field) \
+	do { \
+		PgRuntimeCurrentBridgeState.variable = NULL; \
+		variable##ProcessCell = NULL; \
+		variable##ThreadCell = NULL; \
+	} while (0);
+#include "utils/backend_runtime_hot_cells.def"
+#undef PG_RUNTIME_HOT_CELL
+}
+
+static void
+PgRuntimeInstallHotCurrentCells(PgRuntimeHotCurrentCellMode mode)
+{
+	PgRuntimeHotCurrentCellModeState = mode;
+	PgRuntimeLoadHotCurrentRootRefs();
+	PgRuntimeLoadHotCurrentCells();
+}
+
+static void
+PgRuntimeInstallHotCurrentCellsForCurrentWork(void)
+{
+	PgBackend  *backend = PgRuntimeCurrentBridgeState.backend;
+
+#define PG_RUNTIME_HOT_CELL(variable, owner, owner_type, type, field) \
+	do { \
+		if (PgRuntimeCurrentBridgeState.owner == NULL) \
+		{ \
+			PgRuntimeInstallHotCurrentCells(PG_RUNTIME_HOT_CURRENT_CELLS_FALLBACK); \
+			return; \
+		} \
+	} while (0);
+#include "utils/backend_runtime_hot_cells.def"
+#undef PG_RUNTIME_HOT_CELL
+
+	/*
+	 * This code is installing the compatibility accessors, so do not call
+	 * IsBootstrapProcessingMode() here: Mode itself is a compatibility
+	 * accessor and may still resolve through early fallback state.
+	 */
+	if (backend != NULL && backend->core.mode == BootstrapProcessing)
+	{
+		PgRuntimeInstallHotCurrentCells(PG_RUNTIME_HOT_CURRENT_CELLS_FALLBACK);
+		return;
+	}
+
+	if (!IsUnderPostmaster || MyBackendType != B_BACKEND)
+	{
+		PgRuntimeInstallHotCurrentCells(PG_RUNTIME_HOT_CURRENT_CELLS_FALLBACK);
+		return;
+	}
+
+	if (CurrentPgCarrier != NULL &&
+		CurrentPgCarrier->kind == PG_CARRIER_THREAD)
+		PgRuntimeInstallHotCurrentCells(PG_RUNTIME_HOT_CURRENT_CELLS_THREAD);
+	else if (CurrentPgRuntime != NULL)
+		PgRuntimeInstallHotCurrentCells(PG_RUNTIME_HOT_CURRENT_CELLS_PROCESS);
+	else
+		PgRuntimeInstallHotCurrentCells(PG_RUNTIME_HOT_CURRENT_CELLS_FALLBACK);
+}
+
+void
+PgRuntimeReloadCurrentHotCells(void)
+{
+	PgRuntimeLoadHotCurrentCells();
+}
+
+void
+PgRuntimeFlushCurrentHotMirrors(void)
+{
+#define PG_RUNTIME_HOT_MIRROR(variable, owner, owner_type, type, field) \
+	do { \
+		if (PgRuntimeCurrentBridgeState.variable##Owner != NULL && \
+			PgRuntimeCurrentBridgeState.variable##Owner == \
+			(const void *) PgRuntimeCurrentBridgeState.owner) \
+			((owner_type *) PgRuntimeCurrentBridgeState.variable##Owner)->field = \
+				PgRuntimeCurrentBridgeState.variable; \
+	} while (0);
+#include "utils/backend_runtime_hot_mirrors.def"
+#undef PG_RUNTIME_HOT_MIRROR
+}
+
+static void
+PgRuntimeLoadHotMirrorValues(void)
+{
+#define PG_RUNTIME_HOT_MIRROR(variable, owner, owner_type, type, field) \
+	do { \
+		if (PgRuntimeCurrentBridgeState.owner != NULL) \
+		{ \
+			PgRuntimeCurrentBridgeState.variable = \
+				PgRuntimeCurrentBridgeState.owner->field; \
+			PgRuntimeCurrentBridgeState.variable##Owner = \
+				PgRuntimeCurrentBridgeState.owner; \
+		} \
+		else \
+		{ \
+			PgRuntimeCurrentBridgeState.variable = (type) 0; \
+			PgRuntimeCurrentBridgeState.variable##Owner = NULL; \
+		} \
+	} while (0);
+#include "utils/backend_runtime_hot_mirrors.def"
+#undef PG_RUNTIME_HOT_MIRROR
+}
+
+void
+PgRuntimeReloadCurrentHotMirrors(void)
+{
+	PgRuntimeLoadHotMirrorValues();
+}
+
+static void
+PgRuntimeClearHotMirrorValues(void)
+{
+#define PG_RUNTIME_HOT_MIRROR(variable, owner, owner_type, type, field) \
+	do { \
+		PgRuntimeCurrentBridgeState.variable = NULL; \
+		PgRuntimeCurrentBridgeState.variable##Owner = NULL; \
+	} while (0);
+#include "utils/backend_runtime_hot_mirrors.def"
+#undef PG_RUNTIME_HOT_MIRROR
+}
+
+static void
+PgRuntimeClearHotFieldPointers(void)
+{
+#define PG_RUNTIME_HOT_FIELD(variable, owner, type, expr) \
+	do { \
+		PgRuntimeCurrentBridgeState.variable = NULL; \
+		PgRuntimeCurrentBridgeState.variable##Owner = NULL; \
+		variable##ProcessRef = NULL; \
+		variable##ProcessOwner = NULL; \
+		variable##ThreadRef = NULL; \
+		variable##ThreadOwner = NULL; \
+	} while (0);
+#include "utils/backend_runtime_hot_fields.def"
+#undef PG_RUNTIME_HOT_FIELD
+}
+
+static void
+PgRuntimeInstallHotBucketPointers(PgCarrier *carrier, PgBackend *backend,
+								  PgSession *session,
+								  PgConnection *connection,
+								  PgExecution *execution)
+{
+	/*
+	 * These pointers are only a cache of the current runtime work.  A future
+	 * pooled scheduler must call this whenever it switches carrier work.
+	 */
+#define PG_RUNTIME_HOT_BUCKET(variable, type, owner, field) \
+	do { \
+		type	   *bucket = (owner != NULL) ? &owner->field : NULL; \
+ \
+		PgRuntimeCurrentBridgeState.variable = bucket; \
+		switch (PgRuntimeHotCurrentCellModeState) \
+		{ \
+			case PG_RUNTIME_HOT_CURRENT_CELLS_PROCESS: \
+				variable##ProcessBucket = bucket; \
+				break; \
+			case PG_RUNTIME_HOT_CURRENT_CELLS_THREAD: \
+				variable##ThreadBucket = bucket; \
+				break; \
+			case PG_RUNTIME_HOT_CURRENT_CELLS_FALLBACK: \
+				break; \
+		} \
+	} while (0);
+#include "utils/backend_runtime_hot_buckets.def"
+#undef PG_RUNTIME_HOT_BUCKET
+}
+
+static void
+PgRuntimeInstallHotMirrorValues(void)
+{
+	PgRuntimeLoadHotMirrorValues();
+}
+
+static void
+PgRuntimeInstallHotFieldPointers(void)
+{
+	/*
+	 * Derived slots carry an owner token.  Inline hot paths must compare the
+	 * token with the current owner before using the slot.
+	 */
+#define PG_RUNTIME_HOT_FIELD(variable, owner, type, expr) \
+	do { \
+		type	   *slot = (expr); \
+		const void *slot_owner = PgRuntimeCurrentBridgeState.owner; \
+ \
+		PgRuntimeCurrentBridgeState.variable = slot; \
+		PgRuntimeCurrentBridgeState.variable##Owner = slot_owner; \
+		switch (PgRuntimeHotCurrentCellModeState) \
+		{ \
+			case PG_RUNTIME_HOT_CURRENT_CELLS_PROCESS: \
+				variable##ProcessRef = slot; \
+				variable##ProcessOwner = slot_owner; \
+				break; \
+			case PG_RUNTIME_HOT_CURRENT_CELLS_THREAD: \
+				variable##ThreadRef = slot; \
+				variable##ThreadOwner = slot_owner; \
+				break; \
+			case PG_RUNTIME_HOT_CURRENT_CELLS_FALLBACK: \
+				break; \
+		} \
+	} while (0);
+#include "utils/backend_runtime_hot_fields.def"
+#undef PG_RUNTIME_HOT_FIELD
+}
+
+static void
+PgRuntimeRefreshCurrentWork(bool rebind_session_gucs)
+{
+	PgRuntimeInstallHotCurrentCellsForCurrentWork();
+	PgRuntimeInstallHotBucketPointers(CurrentPgCarrier, CurrentPgBackend,
+									  CurrentPgSession, CurrentPgConnection,
+									  CurrentPgExecution);
+	PgRuntimeInstallHotMirrorValues();
+	PgRuntimeInstallHotFieldPointers();
+	if (rebind_session_gucs && CurrentPgSession != NULL)
+		RebindSessionGUCVariablePointers();
+}
+
+void
+PgRuntimeAfterProcessingModeChange(ProcessingMode mode)
+{
+	/*
+	 * Processing mode is part of the current-work contract.  In particular,
+	 * bootstrap must not keep process-fast compatibility slots that were
+	 * installed before Mode became BootstrapProcessing.
+	 */
+	PgRuntimeRefreshCurrentWork(false);
+}
+
+static void
+PgRuntimeSetCurrentWork(PgRuntime *runtime, PgCarrier *carrier,
+						PgBackend *backend, PgSession *session,
+						PgConnection *connection, PgExecution *execution,
+						bool rebind_session_gucs)
+{
+	PgRuntimeFlushCurrentHotCells();
+	PgRuntimeFlushCurrentHotMirrors();
+	CurrentPgRuntime = runtime;
+	CurrentPgCarrier = carrier;
+	CurrentPgBackend = backend;
+	CurrentPgSession = session;
+	CurrentPgConnection = connection;
+	CurrentPgExecution = execution;
+	PgRuntimeRefreshCurrentWork(rebind_session_gucs);
+}
 
 static void
 PgRuntimeInitializeRuntimeObject(PgRuntime *runtime)
@@ -148,12 +556,15 @@ PgRuntimeResetAfterFork(void)
 {
 	PgBackendResetDsmStateAfterFork();
 
-	CurrentPgRuntime = NULL;
-	CurrentPgCarrier = NULL;
-	CurrentPgBackend = NULL;
-	CurrentPgSession = NULL;
-	CurrentPgConnection = NULL;
-	CurrentPgExecution = NULL;
+	PgRuntimeFlushCurrentHotCells();
+	PgRuntimeFlushCurrentHotMirrors();
+	PgRuntimeSetCurrentWork(NULL, NULL, NULL, NULL, NULL, NULL, false);
+	PgRuntimeHotCurrentCellModeState = PG_RUNTIME_HOT_CURRENT_CELLS_FALLBACK;
+	PgRuntimeClearHotCurrentRootRefs();
+	PgRuntimeClearHotBucketPointers();
+	PgRuntimeClearHotCurrentCells();
+	PgRuntimeClearHotMirrorValues();
+	PgRuntimeClearHotFieldPointers();
 
 	MemSet(&process_runtime, 0, sizeof(process_runtime));
 	PgRuntimeInitializeRuntimeObject(&process_runtime);
@@ -171,9 +582,29 @@ PgRuntimeResetAfterFork(void)
 void
 InitializePgProcessRuntime(void)
 {
+	int			wait_event_signal_fd = process_carrier.wait_event_signal_fd;
+	int			wait_event_selfpipe_readfd =
+		process_carrier.wait_event_selfpipe_readfd;
+	int			wait_event_selfpipe_writefd =
+		process_carrier.wait_event_selfpipe_writefd;
+	int			wait_event_selfpipe_owner_pid =
+		process_carrier.wait_event_selfpipe_owner_pid;
+
 	MemSet(&process_runtime, 0, sizeof(process_runtime));
 	PgRuntimeInitializeRuntimeObject(&process_runtime);
 	PgCarrierInitializeRuntimeObject(&process_carrier);
+
+	/*
+	 * InitPostmasterChild() and InitStandaloneProcess() initialize wait-event
+	 * support before BaseInit() installs the process runtime.  Preserve those
+	 * child-local descriptors here; PgRuntimeResetAfterFork() still clears any
+	 * inherited postmaster descriptors before wait-event support is recreated.
+	 */
+	process_carrier.wait_event_signal_fd = wait_event_signal_fd;
+	process_carrier.wait_event_selfpipe_readfd = wait_event_selfpipe_readfd;
+	process_carrier.wait_event_selfpipe_writefd = wait_event_selfpipe_writefd;
+	process_carrier.wait_event_selfpipe_owner_pid = wait_event_selfpipe_owner_pid;
+
 	MemSet(&process_backend, 0, sizeof(process_backend));
 	MemSet(&process_session, 0, sizeof(process_session));
 	MemSet(&process_connection, 0, sizeof(process_connection));
@@ -211,12 +642,9 @@ InitializePgProcessRuntime(void)
 									   &process_session, &process_carrier);
 	PgExecutionAdoptEarlyState(&process_execution);
 
-	CurrentPgRuntime = &process_runtime;
-	CurrentPgCarrier = &process_carrier;
-	CurrentPgBackend = &process_backend;
-	CurrentPgConnection = &process_connection;
-	CurrentPgExecution = &process_execution;
-	PgSetCurrentSession(&process_session);
+	PgRuntimeSetCurrentWork(&process_runtime, &process_carrier,
+							&process_backend, &process_session,
+							&process_connection, &process_execution, true);
 
 	if (MyProc != NULL && MyProc->backendId == 0)
 		MyProc->backendId = process_backend.id;
@@ -296,12 +724,9 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgConnectionAdoptEarlyState(&state->connection,
 								state->connection.identity.port);
 	PgExecutionAdoptEarlyState(&state->execution);
-	CurrentPgRuntime = &thread_runtime;
-	CurrentPgCarrier = &state->carrier;
-	CurrentPgBackend = &state->backend;
-	CurrentPgConnection = &state->connection;
-	CurrentPgExecution = &state->execution;
-	PgSetCurrentSession(&state->session);
+	PgRuntimeSetCurrentWork(&thread_runtime, &state->carrier, &state->backend,
+							&state->session, &state->connection,
+							&state->execution, true);
 	InitializeThreadedSessionRequiredGUCOptions();
 }
 
@@ -317,11 +742,57 @@ InitializePgThreadBackendRuntime(PgThreadBackendRuntimeState *state,
 }
 
 void
+PgSetCurrentRuntime(PgRuntime *runtime)
+{
+	PgRuntimeFlushCurrentHotCells();
+	PgRuntimeFlushCurrentHotMirrors();
+	CurrentPgRuntime = runtime;
+	PgRuntimeRefreshCurrentWork(false);
+}
+
+void
+PgSetCurrentCarrier(PgCarrier *carrier)
+{
+	PgRuntimeFlushCurrentHotCells();
+	PgRuntimeFlushCurrentHotMirrors();
+	CurrentPgCarrier = carrier;
+	PgRuntimeRefreshCurrentWork(false);
+}
+
+void
+PgSetCurrentBackend(PgBackend *backend)
+{
+	PgRuntimeFlushCurrentHotCells();
+	PgRuntimeFlushCurrentHotMirrors();
+	CurrentPgBackend = backend;
+	PgRuntimeRefreshCurrentWork(false);
+}
+
+void
 PgSetCurrentSession(PgSession *session)
 {
+	PgRuntimeFlushCurrentHotCells();
+	PgRuntimeFlushCurrentHotMirrors();
 	CurrentPgSession = session;
-	if (CurrentPgSession != NULL)
-		RebindSessionGUCVariablePointers();
+	PgRuntimeRefreshCurrentWork(false);
+}
+
+void
+PgSetCurrentConnection(PgConnection *connection)
+{
+	PgRuntimeFlushCurrentHotCells();
+	PgRuntimeFlushCurrentHotMirrors();
+	CurrentPgConnection = connection;
+	PgRuntimeRefreshCurrentWork(false);
+}
+
+void
+PgSetCurrentExecution(PgExecution *execution)
+{
+	PgRuntimeFlushCurrentHotCells();
+	PgRuntimeFlushCurrentHotMirrors();
+	CurrentPgExecution = execution;
+	PgRuntimeRefreshCurrentWork(false);
 }
 
 PgSession *

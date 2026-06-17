@@ -85,7 +85,10 @@ struct cachedesc
 StaticAssertDecl(lengthof(cacheinfo) == SysCacheSize,
 				 "SysCacheSize does not match syscache.c's array");
 
-#define SysCache (PgCurrentSysCacheArray())
+#define SysCache \
+	(PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentSysCacheArrayHotRef, \
+									  CurrentPgSession, \
+									  PgCurrentSysCacheArray))
 
 #define CacheInitialized (*PgCurrentSysCacheInitializedRef())
 

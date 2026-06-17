@@ -9,6 +9,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include "access/xact.h"
@@ -18,49 +19,55 @@
 PgExecutionXLogInsertState *
 PgCurrentExecutionXLogInsertState(void)
 {
-	return &PgCurrentOrEarlyExecution()->xloginsert;
+	PG_RUNTIME_RETURN_CURRENT_EXECUTION_BUCKET(CurrentPgExecutionXLogInsertRuntimeState,
+											   xloginsert);
 }
 
 PgExecutionXactState *
 PgCurrentExecutionXactState(void)
 {
+	if (likely(CurrentPgExecutionXactRuntimeState != NULL))
+		return CurrentPgExecutionXactRuntimeState;
+
 	return &PgCurrentOrEarlyExecution()->xact;
 }
 
 PgExecutionTransactionCleanupState *
 PgCurrentExecutionTransactionCleanupState(void)
 {
-	return &PgCurrentOrEarlyExecution()->transaction_cleanup;
+	PG_RUNTIME_RETURN_CURRENT_EXECUTION_BUCKET(CurrentPgExecutionTransactionCleanupRuntimeState,
+											   transaction_cleanup);
 }
 
 PgExecutionTwoPhaseRecordState *
 PgCurrentExecutionTwoPhaseRecordState(void)
 {
-	return &PgCurrentOrEarlyExecution()->two_phase_records;
+	PG_RUNTIME_RETURN_CURRENT_EXECUTION_BUCKET(CurrentPgExecutionTwoPhaseRecordRuntimeState,
+											   two_phase_records);
 }
 
 int *
 PgCurrentDefaultXactIsoLevelRef(void)
 {
-	return &PgCurrentSessionXactDefaultState()->default_xact_iso_level;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionXactDefaultRuntimeState, PgCurrentSessionXactDefaultState)->default_xact_iso_level;
 }
 
 bool *
 PgCurrentDefaultXactReadOnlyRef(void)
 {
-	return &PgCurrentSessionXactDefaultState()->default_xact_read_only;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionXactDefaultRuntimeState, PgCurrentSessionXactDefaultState)->default_xact_read_only;
 }
 
 bool *
 PgCurrentDefaultXactDeferrableRef(void)
 {
-	return &PgCurrentSessionXactDefaultState()->default_xact_deferrable;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionXactDefaultRuntimeState, PgCurrentSessionXactDefaultState)->default_xact_deferrable;
 }
 
 int *
 PgCurrentSynchronousCommitRef(void)
 {
-	return &PgCurrentSessionXactDefaultState()->synchronous_commit_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionXactDefaultRuntimeState, PgCurrentSessionXactDefaultState)->synchronous_commit_value;
 }
 
 XactCallbackItem **
@@ -86,139 +93,139 @@ PgCurrentXactCallbackMemoryContext(void)
 int *
 PgCurrentXactIsoLevelRef(void)
 {
-	return &PgCurrentExecutionXactState()->iso_level;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXactRuntimeState, PgCurrentExecutionXactState)->iso_level;
 }
 
 bool *
 PgCurrentXactReadOnlyRef(void)
 {
-	return &PgCurrentExecutionXactState()->read_only;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXactRuntimeState, PgCurrentExecutionXactState)->read_only;
 }
 
 bool *
 PgCurrentXactDeferrableRef(void)
 {
-	return &PgCurrentExecutionXactState()->deferrable;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXactRuntimeState, PgCurrentExecutionXactState)->deferrable;
 }
 
 bool *
 PgCurrentXactIsSampledRef(void)
 {
-	return &PgCurrentExecutionXactState()->is_sampled;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXactRuntimeState, PgCurrentExecutionXactState)->is_sampled;
 }
 
 TransactionId *
 PgCurrentCheckXidAliveRef(void)
 {
-	return &PgCurrentExecutionXactState()->check_xid_alive;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXactRuntimeState, PgCurrentExecutionXactState)->check_xid_alive;
 }
 
 bool *
 PgCurrentBSysScanRef(void)
 {
-	return &PgCurrentExecutionXactState()->bsysscan_value;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXactRuntimeState, PgCurrentExecutionXactState)->bsysscan_value;
 }
 
 int *
 PgCurrentMyXactFlagsRef(void)
 {
-	return &PgCurrentExecutionXactState()->flags;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXactRuntimeState, PgCurrentExecutionXactState)->flags;
 }
 
 FullTransactionId *
 PgCurrentXactTopFullTransactionIdRef(void)
 {
-	return &PgCurrentExecutionXactState()->top_full_transaction_id;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXactRuntimeState, PgCurrentExecutionXactState)->top_full_transaction_id;
 }
 
 int *
 PgCurrentNParallelCurrentXidsRef(void)
 {
-	return &PgCurrentExecutionXactState()->n_parallel_current_xids;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXactRuntimeState, PgCurrentExecutionXactState)->n_parallel_current_xids;
 }
 
 TransactionId **
 PgCurrentParallelCurrentXidsRef(void)
 {
-	return &PgCurrentExecutionXactState()->parallel_current_xids;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXactRuntimeState, PgCurrentExecutionXactState)->parallel_current_xids;
 }
 
 int *
 PgCurrentNUnreportedXidsRef(void)
 {
-	return &PgCurrentExecutionXactState()->n_unreported_xids;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXactRuntimeState, PgCurrentExecutionXactState)->n_unreported_xids;
 }
 
 TransactionId *
 PgCurrentUnreportedXids(void)
 {
-	return PgCurrentExecutionXactState()->unreported_xids;
+	return PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXactRuntimeState, PgCurrentExecutionXactState)->unreported_xids;
 }
 
 SubTransactionId *
 PgCurrentSubTransactionIdCounterRef(void)
 {
-	return &PgCurrentExecutionXactState()->current_sub_transaction_id;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXactRuntimeState, PgCurrentExecutionXactState)->current_sub_transaction_id;
 }
 
 CommandId *
 PgCurrentCommandIdCounterRef(void)
 {
-	return &PgCurrentExecutionXactState()->current_command_id;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXactRuntimeState, PgCurrentExecutionXactState)->current_command_id;
 }
 
 bool *
 PgCurrentCommandIdUsedRef(void)
 {
-	return &PgCurrentExecutionXactState()->current_command_id_used;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXactRuntimeState, PgCurrentExecutionXactState)->current_command_id_used;
 }
 
 TimestampTz *
 PgCurrentXactStartTimestampRef(void)
 {
-	return &PgCurrentExecutionXactState()->xact_start_timestamp;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXactRuntimeState, PgCurrentExecutionXactState)->xact_start_timestamp;
 }
 
 TimestampTz *
 PgCurrentStmtStartTimestampRef(void)
 {
-	return &PgCurrentExecutionXactState()->stmt_start_timestamp;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXactRuntimeState, PgCurrentExecutionXactState)->stmt_start_timestamp;
 }
 
 TimestampTz *
 PgCurrentXactStopTimestampRef(void)
 {
-	return &PgCurrentExecutionXactState()->xact_stop_timestamp;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXactRuntimeState, PgCurrentExecutionXactState)->xact_stop_timestamp;
 }
 
 char **
 PgCurrentPrepareGIDRef(void)
 {
-	return &PgCurrentExecutionXactState()->prepare_gid;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXactRuntimeState, PgCurrentExecutionXactState)->prepare_gid;
 }
 
 bool *
 PgCurrentForceSyncCommitRef(void)
 {
-	return &PgCurrentExecutionXactState()->force_sync_commit;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXactRuntimeState, PgCurrentExecutionXactState)->force_sync_commit;
 }
 
 MemoryContext *
 PgCurrentTransactionAbortContextRef(void)
 {
-	return &PgCurrentExecutionXactState()->transaction_abort_context;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXactRuntimeState, PgCurrentExecutionXactState)->transaction_abort_context;
 }
 
 TransactionStateData **
 PgCurrentTopTransactionStateDataRef(void)
 {
-	return &PgCurrentExecutionXactState()->top_transaction_state_data;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXactRuntimeState, PgCurrentExecutionXactState)->top_transaction_state_data;
 }
 
 TransactionStateData **
 PgCurrentTransactionStateRef(void)
 {
-	return &PgCurrentExecutionXactState()->current_transaction_state;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXactRuntimeState, PgCurrentExecutionXactState)->current_transaction_state;
 }
 
 PgExecutionTwoPhaseRecordState *
@@ -230,167 +237,167 @@ PgCurrentTwoPhaseRecordStateRef(void)
 TransactionId *
 PgCurrentCachedFetchXidRef(void)
 {
-	return &PgCurrentBackendTransactionState()->cached_fetch_xid;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTransactionRuntimeState, PgCurrentBackendTransactionState)->cached_fetch_xid;
 }
 
 int *
 PgCurrentCachedFetchXidStatusRef(void)
 {
-	return &PgCurrentBackendTransactionState()->cached_fetch_xid_status;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTransactionRuntimeState, PgCurrentBackendTransactionState)->cached_fetch_xid_status;
 }
 
 XLogRecPtr *
 PgCurrentCachedCommitLSNRef(void)
 {
-	return &PgCurrentBackendTransactionState()->cached_commit_lsn;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTransactionRuntimeState, PgCurrentBackendTransactionState)->cached_commit_lsn;
 }
 
 void **
 PgCurrentTwoPhaseLockedGxactRef(void)
 {
-	return &PgCurrentBackendTransactionState()->two_phase_locked_gxact;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTransactionRuntimeState, PgCurrentBackendTransactionState)->two_phase_locked_gxact;
 }
 
 bool *
 PgCurrentTwoPhaseExitRegisteredRef(void)
 {
-	return &PgCurrentBackendTransactionState()->two_phase_exit_registered;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTransactionRuntimeState, PgCurrentBackendTransactionState)->two_phase_exit_registered;
 }
 
 FullTransactionId *
 PgCurrentTwoPhaseCachedFxidRef(void)
 {
-	return &PgCurrentBackendTransactionState()->two_phase_cached_fxid;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTransactionRuntimeState, PgCurrentBackendTransactionState)->two_phase_cached_fxid;
 }
 
 void **
 PgCurrentTwoPhaseCachedGxactRef(void)
 {
-	return &PgCurrentBackendTransactionState()->two_phase_cached_gxact;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTransactionRuntimeState, PgCurrentBackendTransactionState)->two_phase_cached_gxact;
 }
 
 int *
 PgCurrentSlruErrorCauseRef(void)
 {
-	return &PgCurrentBackendTransactionState()->slru_error_cause;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTransactionRuntimeState, PgCurrentBackendTransactionState)->slru_error_cause;
 }
 
 int *
 PgCurrentSlruErrnoRef(void)
 {
-	return &PgCurrentBackendTransactionState()->slru_errno_value;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTransactionRuntimeState, PgCurrentBackendTransactionState)->slru_errno_value;
 }
 
 dclist_head *
 PgCurrentMultiXactCacheRef(void)
 {
-	return &PgCurrentBackendTransactionState()->multixact_cache;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTransactionRuntimeState, PgCurrentBackendTransactionState)->multixact_cache;
 }
 
 bool *
 PgCurrentMultiXactCacheInitializedRef(void)
 {
-	return &PgCurrentBackendTransactionState()->multixact_cache_initialized;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTransactionRuntimeState, PgCurrentBackendTransactionState)->multixact_cache_initialized;
 }
 
 MemoryContext *
 PgCurrentMultiXactContextRef(void)
 {
-	return &PgCurrentBackendTransactionState()->multixact_context;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTransactionRuntimeState, PgCurrentBackendTransactionState)->multixact_context;
 }
 
 char **
 PgCurrentMultiXactDebugStringRef(void)
 {
-	return &PgCurrentBackendTransactionState()->multixact_debug_string;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTransactionRuntimeState, PgCurrentBackendTransactionState)->multixact_debug_string;
 }
 
 TransactionId *
 PgCurrentProcArrayCachedXidNotInProgressRef(void)
 {
-	return &PgCurrentBackendTransactionState()->procarray_cached_xid_not_in_progress;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTransactionRuntimeState, PgCurrentBackendTransactionState)->procarray_cached_xid_not_in_progress;
 }
 
 struct GlobalVisState *
 PgCurrentGlobalVisSharedRelsRef(void)
 {
-	return &PgCurrentBackendTransactionState()->global_vis_shared_rels;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTransactionRuntimeState, PgCurrentBackendTransactionState)->global_vis_shared_rels;
 }
 
 struct GlobalVisState *
 PgCurrentGlobalVisCatalogRelsRef(void)
 {
-	return &PgCurrentBackendTransactionState()->global_vis_catalog_rels;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTransactionRuntimeState, PgCurrentBackendTransactionState)->global_vis_catalog_rels;
 }
 
 struct GlobalVisState *
 PgCurrentGlobalVisDataRelsRef(void)
 {
-	return &PgCurrentBackendTransactionState()->global_vis_data_rels;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTransactionRuntimeState, PgCurrentBackendTransactionState)->global_vis_data_rels;
 }
 
 struct GlobalVisState *
 PgCurrentGlobalVisTempRelsRef(void)
 {
-	return &PgCurrentBackendTransactionState()->global_vis_temp_rels;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTransactionRuntimeState, PgCurrentBackendTransactionState)->global_vis_temp_rels;
 }
 
 TransactionId *
 PgCurrentComputeXidHorizonsResultLastXminRef(void)
 {
-	return &PgCurrentBackendTransactionState()->compute_xid_horizons_result_last_xmin;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTransactionRuntimeState, PgCurrentBackendTransactionState)->compute_xid_horizons_result_last_xmin;
 }
 
 long *
 PgCurrentXidCacheByRecentXminRef(void)
 {
-	return &PgCurrentBackendTransactionState()->xidcache_by_recent_xmin;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTransactionRuntimeState, PgCurrentBackendTransactionState)->xidcache_by_recent_xmin;
 }
 
 long *
 PgCurrentXidCacheByKnownXactRef(void)
 {
-	return &PgCurrentBackendTransactionState()->xidcache_by_known_xact;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTransactionRuntimeState, PgCurrentBackendTransactionState)->xidcache_by_known_xact;
 }
 
 long *
 PgCurrentXidCacheByMyXactRef(void)
 {
-	return &PgCurrentBackendTransactionState()->xidcache_by_my_xact;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTransactionRuntimeState, PgCurrentBackendTransactionState)->xidcache_by_my_xact;
 }
 
 long *
 PgCurrentXidCacheByLatestXidRef(void)
 {
-	return &PgCurrentBackendTransactionState()->xidcache_by_latest_xid;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTransactionRuntimeState, PgCurrentBackendTransactionState)->xidcache_by_latest_xid;
 }
 
 long *
 PgCurrentXidCacheByMainXidRef(void)
 {
-	return &PgCurrentBackendTransactionState()->xidcache_by_main_xid;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTransactionRuntimeState, PgCurrentBackendTransactionState)->xidcache_by_main_xid;
 }
 
 long *
 PgCurrentXidCacheByChildXidRef(void)
 {
-	return &PgCurrentBackendTransactionState()->xidcache_by_child_xid;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTransactionRuntimeState, PgCurrentBackendTransactionState)->xidcache_by_child_xid;
 }
 
 long *
 PgCurrentXidCacheByKnownAssignedRef(void)
 {
-	return &PgCurrentBackendTransactionState()->xidcache_by_known_assigned;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTransactionRuntimeState, PgCurrentBackendTransactionState)->xidcache_by_known_assigned;
 }
 
 long *
 PgCurrentXidCacheNoOverflowRef(void)
 {
-	return &PgCurrentBackendTransactionState()->xidcache_no_overflow;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTransactionRuntimeState, PgCurrentBackendTransactionState)->xidcache_no_overflow;
 }
 
 long *
 PgCurrentXidCacheSlowAnswerRef(void)
 {
-	return &PgCurrentBackendTransactionState()->xidcache_slow_answer;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTransactionRuntimeState, PgCurrentBackendTransactionState)->xidcache_slow_answer;
 }

@@ -24,6 +24,7 @@
 #include "storage/procnumber.h"
 #include "storage/spin.h"
 #include "utils/backend_id.h"
+#include "utils/backend_runtime_current.h"
 #include "utils/global_lifetime.h"
 
 /* Avoid including clog.h here */
@@ -389,7 +390,16 @@ typedef struct PGPROC
 PGPROC;
 
 extern PGPROC **PgCurrentMyProcRef(void);
-#define MyProc (*PgCurrentMyProcRef())
+
+static inline PGPROC **
+PgCurrentMyProcRefFast(void)
+{
+	return PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentMyProcHotRef,
+											CurrentPgBackend,
+											PgCurrentMyProcRef);
+}
+
+#define MyProc (*PgCurrentMyProcRefFast())
 
 /*
  * There is one ProcGlobal struct for the whole database cluster.

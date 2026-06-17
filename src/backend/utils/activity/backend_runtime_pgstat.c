@@ -13,6 +13,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include "pgstat.h"
@@ -24,37 +25,37 @@
 bool *
 PgCurrentPgStatTrackCountsRef(void)
 {
-	return &PgCurrentSessionPgStatState()->track_counts;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPgStatRuntimeState, PgCurrentSessionPgStatState)->track_counts;
 }
 
 int *
 PgCurrentPgStatTrackFunctionsRef(void)
 {
-	return &PgCurrentSessionPgStatState()->track_functions;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPgStatRuntimeState, PgCurrentSessionPgStatState)->track_functions;
 }
 
 int *
 PgCurrentPgStatFetchConsistencyRef(void)
 {
-	return &PgCurrentSessionPgStatState()->fetch_consistency;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPgStatRuntimeState, PgCurrentSessionPgStatState)->fetch_consistency;
 }
 
 bool *
 PgCurrentPgStatTrackActivitiesRef(void)
 {
-	return &PgCurrentSessionPgStatState()->track_activities;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPgStatRuntimeState, PgCurrentSessionPgStatState)->track_activities;
 }
 
 SessionEndType *
 PgCurrentPgStatSessionEndCauseRef(void)
 {
-	return &PgCurrentSessionPgStatState()->session_end_cause;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPgStatRuntimeState, PgCurrentSessionPgStatState)->session_end_cause;
 }
 
 PgStat_Counter *
 PgCurrentPgStatLastSessionReportTimeRef(void)
 {
-	return &PgCurrentSessionPgStatState()->last_session_report_time;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPgStatRuntimeState, PgCurrentSessionPgStatState)->last_session_report_time;
 }
 
 LocalPgBackendStatus **
@@ -78,197 +79,197 @@ PgCurrentBackendStatusSnapContextRef(void)
 PgStat_SubXactStatus **
 PgCurrentPgStatXactStackRef(void)
 {
-	return &PgCurrentExecutionTransactionCleanupState()->pgstat_xact_stack;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentExecutionTransactionCleanupState)->pgstat_xact_stack;
 }
 
 PgStat_LocalState *
 PgCurrentPgStatLocalState(void)
 {
-	return &PgCurrentBackendPgStatPendingState()->local;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->local;
 }
 
 MemoryContext *
 PgCurrentPgStatFixedSnapshotContextRef(void)
 {
-	return &PgCurrentBackendPgStatPendingState()->fixed_snapshot_context;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->fixed_snapshot_context;
 }
 
 PgStat_BgWriterStats *
 PgCurrentPendingBgWriterStatsRef(void)
 {
-	return &PgCurrentBackendPgStatPendingState()->pending_bgwriter;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->pending_bgwriter;
 }
 
 PgStat_CheckpointerStats *
 PgCurrentPendingCheckpointerStatsRef(void)
 {
-	return &PgCurrentBackendPgStatPendingState()->pending_checkpointer;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->pending_checkpointer;
 }
 
 PgStat_PendingIO *
 PgCurrentPendingIOStatsRef(void)
 {
-	return &PgCurrentBackendPgStatPendingState()->io_stats;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->io_stats;
 }
 
 bool *
 PgCurrentHaveIOStatsRef(void)
 {
-	return &PgCurrentBackendPgStatPendingState()->io_stats_pending;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->io_stats_pending;
 }
 
 PgStat_SLRUStats *
 PgCurrentPendingSLRUStatsArray(void)
 {
-	return PgCurrentBackendPgStatPendingState()->slru_stats;
+	return PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->slru_stats;
 }
 
 bool *
 PgCurrentHaveSLRUStatsRef(void)
 {
-	return &PgCurrentBackendPgStatPendingState()->slru_stats_pending;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->slru_stats_pending;
 }
 
 PgStat_PendingLock *
 PgCurrentPendingLockStatsRef(void)
 {
-	return &PgCurrentBackendPgStatPendingState()->lock_stats;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->lock_stats;
 }
 
 bool *
 PgCurrentHaveLockStatsRef(void)
 {
-	return &PgCurrentBackendPgStatPendingState()->lock_stats_pending;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->lock_stats_pending;
 }
 
 PgStat_BackendPending *
 PgCurrentPendingBackendStatsRef(void)
 {
-	return &PgCurrentBackendPgStatPendingState()->backend_stats;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->backend_stats;
 }
 
 bool *
 PgCurrentBackendHasIOStatsRef(void)
 {
-	return &PgCurrentBackendPgStatPendingState()->backend_io_stats_pending;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->backend_io_stats_pending;
 }
 
 MemoryContext *
 PgCurrentPgStatPendingContextRef(void)
 {
-	return &PgCurrentBackendPgStatPendingState()->pending_context;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->pending_context;
 }
 
 dlist_head *
 PgCurrentPgStatPendingListRef(void)
 {
-	return &PgCurrentBackendPgStatPendingState()->pending;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->pending;
 }
 
 void **
 PgCurrentPgStatEntryRefHashRef(void)
 {
-	return &PgCurrentBackendPgStatPendingState()->entry_ref_hash;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->entry_ref_hash;
 }
 
 int *
 PgCurrentPgStatSharedRefAgeRef(void)
 {
-	return &PgCurrentBackendPgStatPendingState()->shared_ref_age;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->shared_ref_age;
 }
 
 MemoryContext *
 PgCurrentPgStatSharedRefContextRef(void)
 {
-	return &PgCurrentBackendPgStatPendingState()->shared_ref_context;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->shared_ref_context;
 }
 
 MemoryContext *
 PgCurrentPgStatEntryRefHashContextRef(void)
 {
-	return &PgCurrentBackendPgStatPendingState()->entry_ref_hash_context;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->entry_ref_hash_context;
 }
 
 WalUsage *
 PgCurrentPgStatPrevBackendWalUsageRef(void)
 {
-	return &PgCurrentBackendPgStatPendingState()->backend_wal_prev_usage;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->backend_wal_prev_usage;
 }
 
 bool *
 PgCurrentPgStatReportFixedRef(void)
 {
-	return &PgCurrentBackendPgStatPendingState()->report_fixed;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->report_fixed;
 }
 
 bool *
 PgCurrentPgStatForceNextFlushRef(void)
 {
-	return &PgCurrentBackendPgStatPendingState()->force_next_flush;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->force_next_flush;
 }
 
 bool *
 PgCurrentForceStatsSnapshotClearRef(void)
 {
-	return &PgCurrentBackendPgStatPendingState()->force_snapshot_clear;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->force_snapshot_clear;
 }
 
 bool *
 PgCurrentPgStatIsInitializedRef(void)
 {
-	return &PgCurrentBackendPgStatPendingState()->is_initialized;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->is_initialized;
 }
 
 bool *
 PgCurrentPgStatIsShutdownRef(void)
 {
-	return &PgCurrentBackendPgStatPendingState()->is_shutdown;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->is_shutdown;
 }
 
 int *
 PgCurrentPgStatXactCommitRef(void)
 {
-	return &PgCurrentBackendPgStatPendingState()->xact_commit;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->xact_commit;
 }
 
 int *
 PgCurrentPgStatXactRollbackRef(void)
 {
-	return &PgCurrentBackendPgStatPendingState()->xact_rollback;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->xact_rollback;
 }
 
 PgStat_Counter *
 PgCurrentPgStatBlockReadTimeRef(void)
 {
-	return &PgCurrentBackendPgStatPendingState()->block_read_time;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->block_read_time;
 }
 
 PgStat_Counter *
 PgCurrentPgStatBlockWriteTimeRef(void)
 {
-	return &PgCurrentBackendPgStatPendingState()->block_write_time;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->block_write_time;
 }
 
 PgStat_Counter *
 PgCurrentPgStatActiveTimeRef(void)
 {
-	return &PgCurrentBackendPgStatPendingState()->active_time;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->active_time;
 }
 
 PgStat_Counter *
 PgCurrentPgStatTransactionIdleTimeRef(void)
 {
-	return &PgCurrentBackendPgStatPendingState()->transaction_idle_time;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->transaction_idle_time;
 }
 
 instr_time *
 PgCurrentPgStatTotalFuncTimeRef(void)
 {
-	return &PgCurrentBackendPgStatPendingState()->func_total_time;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->func_total_time;
 }
 
 WalUsage *
 PgCurrentPgStatPrevWalUsageRef(void)
 {
-	return &PgCurrentBackendPgStatPendingState()->wal_prev_usage;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->wal_prev_usage;
 }

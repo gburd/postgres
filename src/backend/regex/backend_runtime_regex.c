@@ -9,6 +9,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include "utils/backend_runtime.h"
@@ -17,41 +18,43 @@
 PgSessionRegexState *
 PgCurrentSessionRegexState(void)
 {
-	return &PgCurrentOrEarlySession()->regex;
+	PG_RUNTIME_RETURN_CURRENT_SESSION_BUCKET(CurrentPgSessionRegexRuntimeState,
+											 regex);
 }
 
 PgExecutionRegexState *
 PgCurrentExecutionRegexState(void)
 {
-	return &PgCurrentOrEarlyExecution()->regex;
+	PG_RUNTIME_RETURN_CURRENT_EXECUTION_BUCKET(CurrentPgExecutionRegexRuntimeState,
+											   regex);
 }
 
 struct pg_ctype_cache **
 PgCurrentRegexCtypeCacheListRef(void)
 {
-	return &PgCurrentSessionRegexState()->ctype_cache_list;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionRegexRuntimeState, PgCurrentSessionRegexState)->ctype_cache_list;
 }
 
 MemoryContext *
 PgCurrentRegexpCacheMemoryContextRef(void)
 {
-	return &PgCurrentSessionRegexState()->regexp_cache_context;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionRegexRuntimeState, PgCurrentSessionRegexState)->regexp_cache_context;
 }
 
 int *
 PgCurrentRegexpNumCachedResRef(void)
 {
-	return &PgCurrentSessionRegexState()->num_cached_res;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionRegexRuntimeState, PgCurrentSessionRegexState)->num_cached_res;
 }
 
 PgSessionRegexCachedEntry *
 PgCurrentRegexpCachedResArray(void)
 {
-	return PgCurrentSessionRegexState()->cached_res;
+	return PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionRegexRuntimeState, PgCurrentSessionRegexState)->cached_res;
 }
 
 void **
 PgCurrentRegexLocaleRef(void)
 {
-	return &PgCurrentExecutionRegexState()->regex_locale;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionRegexRuntimeState, PgCurrentExecutionRegexState)->regex_locale;
 }

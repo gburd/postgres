@@ -19,6 +19,7 @@
 #ifndef RESOWNER_H
 #define RESOWNER_H
 
+#include "utils/backend_runtime_current.h"
 #include "utils/global_lifetime.h"
 
 /*
@@ -27,16 +28,51 @@
  */
 typedef struct ResourceOwnerData *ResourceOwner;
 
-
 /*
  * Globally known ResourceOwners
  */
 extern ResourceOwner *PgCurrentResourceOwnerRef(void);
+#ifndef FRONTEND
+static inline ResourceOwner *
+PgCurrentResourceOwnerRefFast(void)
+{
+	return PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentResourceOwnerHotRef,
+											CurrentPgExecution,
+											PgCurrentResourceOwnerRef);
+}
+
+#define CurrentResourceOwner (*PgCurrentResourceOwnerRefFast())
+#else
 #define CurrentResourceOwner (*PgCurrentResourceOwnerRef())
+#endif
 extern ResourceOwner *PgCurTransactionResourceOwnerRef(void);
+#ifndef FRONTEND
+static inline ResourceOwner *
+PgCurTransactionResourceOwnerRefFast(void)
+{
+	return PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurTransactionResourceOwnerHotRef,
+											CurrentPgExecution,
+											PgCurTransactionResourceOwnerRef);
+}
+
+#define CurTransactionResourceOwner (*PgCurTransactionResourceOwnerRefFast())
+#else
 #define CurTransactionResourceOwner (*PgCurTransactionResourceOwnerRef())
+#endif
 extern ResourceOwner *PgTopTransactionResourceOwnerRef(void);
+#ifndef FRONTEND
+static inline ResourceOwner *
+PgTopTransactionResourceOwnerRefFast(void)
+{
+	return PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgTopTransactionResourceOwnerHotRef,
+											CurrentPgExecution,
+											PgTopTransactionResourceOwnerRef);
+}
+
+#define TopTransactionResourceOwner (*PgTopTransactionResourceOwnerRefFast())
+#else
 #define TopTransactionResourceOwner (*PgTopTransactionResourceOwnerRef())
+#endif
 extern ResourceOwner *PgCurrentAuxProcessResourceOwnerRef(void);
 #define AuxProcessResourceOwner (*PgCurrentAuxProcessResourceOwnerRef())
 

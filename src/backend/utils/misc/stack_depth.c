@@ -24,13 +24,19 @@
 
 
 /* max_stack_depth converted to bytes for speed of checking */
-#define max_stack_depth_bytes (*PgCurrentMaxStackDepthBytesRef())
+#define max_stack_depth_bytes \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentMaxStackDepthBytesHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentMaxStackDepthBytesRef))
 
 /*
  * Stack base pointer -- initialized by set_stack_base(), which
  * should be called from main().
  */
-#define stack_base_ptr (*PgCurrentStackBasePtrRef())
+#define stack_base_ptr \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentStackBasePtrHotRef, \
+									   CurrentPgCarrier, \
+									   PgCurrentStackBasePtrRef))
 
 
 /*

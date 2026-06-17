@@ -34,7 +34,10 @@
 
 
 /* Hash table for information about each tablespace */
-#define TableSpaceCacheHash (*PgCurrentTableSpaceCacheHashRef())
+#define TableSpaceCacheHash \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentTableSpaceCacheHashHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentTableSpaceCacheHashRef))
 
 typedef struct
 {

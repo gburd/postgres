@@ -71,4 +71,12 @@
 /* State stored in or directly representing shared memory. */
 #define PG_GLOBAL_SHMEM
 
+/*
+ * A few historically global hot-path macros live in broad headers that cannot
+ * include backend_runtime.h.  Keep the canonical TLS bridge declarations in
+ * backend_runtime.h, and use this helper only for those narrow imports.
+ */
+#define PG_RUNTIME_BRIDGE_EXTERN(type, variable) \
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER type variable
+
 #endif							/* GLOBAL_LIFETIME_H */

@@ -13,6 +13,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include "utils/backend_runtime.h"
@@ -21,71 +22,71 @@
 int *
 PgCurrentParallelWorkerNumberRef(void)
 {
-	return &PgCurrentBackendParallelState()->worker_number;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendParallelRuntimeState, PgCurrentBackendParallelState)->worker_number;
 }
 
 volatile sig_atomic_t *
 PgCurrentParallelMessagePendingRef(void)
 {
-	return &PgCurrentBackendParallelState()->message_pending;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendParallelRuntimeState, PgCurrentBackendParallelState)->message_pending;
 }
 
 bool *
 PgCurrentInitializingParallelWorkerRef(void)
 {
-	return &PgCurrentBackendParallelState()->initializing_worker;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendParallelRuntimeState, PgCurrentBackendParallelState)->initializing_worker;
 }
 
 void **
 PgCurrentFixedParallelStateRef(void)
 {
-	return &PgCurrentBackendParallelState()->fixed_parallel_state;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendParallelRuntimeState, PgCurrentBackendParallelState)->fixed_parallel_state;
 }
 
 dlist_head *
 PgCurrentParallelContextListRef(void)
 {
-	return &PgCurrentBackendParallelState()->context_list;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendParallelRuntimeState, PgCurrentBackendParallelState)->context_list;
 }
 
 bool *
 PgCurrentParallelContextListInitializedRef(void)
 {
-	return &PgCurrentBackendParallelState()->context_list_initialized;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendParallelRuntimeState, PgCurrentBackendParallelState)->context_list_initialized;
 }
 
 pid_t *
 PgCurrentParallelLeaderPidRef(void)
 {
-	return &PgCurrentBackendParallelState()->leader_pid;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendParallelRuntimeState, PgCurrentBackendParallelState)->leader_pid;
 }
 
 MemoryContext *
 PgCurrentParallelMessageContextRef(void)
 {
-	return &PgCurrentBackendParallelState()->message_context;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendParallelRuntimeState, PgCurrentBackendParallelState)->message_context;
 }
 
 void **
 PgCurrentPqMqHandleRef(void)
 {
-	return &PgCurrentBackendParallelState()->pq_mq_handle;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendParallelRuntimeState, PgCurrentBackendParallelState)->pq_mq_handle;
 }
 
 bool *
 PgCurrentPqMqBusyRef(void)
 {
-	return &PgCurrentBackendParallelState()->pq_mq_busy;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendParallelRuntimeState, PgCurrentBackendParallelState)->pq_mq_busy;
 }
 
 pid_t *
 PgCurrentPqMqParallelLeaderPidRef(void)
 {
-	return &PgCurrentBackendParallelState()->pq_mq_parallel_leader_pid;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendParallelRuntimeState, PgCurrentBackendParallelState)->pq_mq_parallel_leader_pid;
 }
 
 ProcNumber *
 PgCurrentPqMqParallelLeaderProcNumberRef(void)
 {
-	return &PgCurrentBackendParallelState()->pq_mq_parallel_leader_proc_number;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendParallelRuntimeState, PgCurrentBackendParallelState)->pq_mq_parallel_leader_proc_number;
 }

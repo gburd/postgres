@@ -13,6 +13,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include "executor/spi.h"
@@ -23,25 +24,33 @@
 PgExecutionCatalogState *
 PgCurrentExecutionCatalogState(void)
 {
+	if (likely(CurrentPgExecutionCatalogRuntimeState != NULL))
+		return CurrentPgExecutionCatalogRuntimeState;
+
 	return &PgCurrentOrEarlyExecution()->catalog;
 }
 
 PgExecutionCatalogCacheState *
 PgCurrentExecutionCatalogCacheState(void)
 {
+	if (likely(CurrentPgExecutionCatalogCacheRuntimeState != NULL))
+		return CurrentPgExecutionCatalogCacheRuntimeState;
+
 	return &PgCurrentOrEarlyExecution()->catalog_cache;
 }
 
 PgExecutionRelMapState *
 PgCurrentExecutionRelMapState(void)
 {
-	return &PgCurrentOrEarlyExecution()->relmap;
+	PG_RUNTIME_RETURN_CURRENT_EXECUTION_BUCKET(CurrentPgExecutionRelMapRuntimeState,
+											   relmap);
 }
 
 PgExecutionInvalidationState *
 PgCurrentExecutionInvalidationState(void)
 {
-	return &PgCurrentOrEarlyExecution()->invalidation;
+	PG_RUNTIME_RETURN_CURRENT_EXECUTION_BUCKET(CurrentPgExecutionInvalidationRuntimeState,
+											   invalidation);
 }
 
 dlist_head *
@@ -59,49 +68,49 @@ PgCurrentCachedExpressionListRef(void)
 MemoryContext *
 PgCacheMemoryContextRef(void)
 {
-	return &PgCurrentSessionCatalogLookupState()->cache_memory_context;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->cache_memory_context;
 }
 
 CatCache **
 PgCurrentSysCacheArray(void)
 {
-	return PgCurrentSessionCatalogLookupState()->sys_cache;
+	return PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->sys_cache;
 }
 
 bool *
 PgCurrentSysCacheInitializedRef(void)
 {
-	return &PgCurrentSessionCatalogLookupState()->sys_cache_initialized;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->sys_cache_initialized;
 }
 
 Oid *
 PgCurrentSysCacheRelationOidArray(void)
 {
-	return PgCurrentSessionCatalogLookupState()->sys_cache_relation_oid;
+	return PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->sys_cache_relation_oid;
 }
 
 int *
 PgCurrentSysCacheRelationOidSizeRef(void)
 {
-	return &PgCurrentSessionCatalogLookupState()->sys_cache_relation_oid_size;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->sys_cache_relation_oid_size;
 }
 
 Oid *
 PgCurrentSysCacheSupportingRelOidArray(void)
 {
-	return PgCurrentSessionCatalogLookupState()->sys_cache_supporting_rel_oid;
+	return PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->sys_cache_supporting_rel_oid;
 }
 
 int *
 PgCurrentSysCacheSupportingRelOidSizeRef(void)
 {
-	return &PgCurrentSessionCatalogLookupState()->sys_cache_supporting_rel_oid_size;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->sys_cache_supporting_rel_oid_size;
 }
 
 CatCacheHeader **
 PgCurrentCatCacheHeaderRef(void)
 {
-	return &PgCurrentSessionCatalogLookupState()->cat_cache_header;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->cat_cache_header;
 }
 
 MemoryContext *
@@ -135,313 +144,313 @@ PgCurrentCachedFunctionHashRef(void)
 HTAB **
 PgCurrentRelationIdCacheRef(void)
 {
-	return &PgCurrentSessionCatalogLookupState()->relcache_relation_id_cache;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->relcache_relation_id_cache;
 }
 
 bool *
 PgCurrentCriticalRelcachesBuiltRef(void)
 {
-	return &PgCurrentSessionCatalogLookupState()->relcache_critical_built;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->relcache_critical_built;
 }
 
 bool *
 PgCurrentCriticalSharedRelcachesBuiltRef(void)
 {
-	return &PgCurrentSessionCatalogLookupState()->relcache_critical_shared_built;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->relcache_critical_shared_built;
 }
 
 long *
 PgCurrentRelcacheInvalsReceivedRef(void)
 {
-	return &PgCurrentSessionCatalogLookupState()->relcache_invals_received;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->relcache_invals_received;
 }
 
 TupleDesc *
 PgCurrentPgClassDescriptorRef(void)
 {
-	return &PgCurrentSessionCatalogLookupState()->relcache_pg_class_descriptor;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->relcache_pg_class_descriptor;
 }
 
 TupleDesc *
 PgCurrentPgIndexDescriptorRef(void)
 {
-	return &PgCurrentSessionCatalogLookupState()->relcache_pg_index_descriptor;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->relcache_pg_index_descriptor;
 }
 
 HTAB **
 PgCurrentOpClassCacheRef(void)
 {
-	return &PgCurrentSessionCatalogLookupState()->relcache_opclass_cache;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->relcache_opclass_cache;
 }
 
 HTAB **
 PgCurrentTypeCacheHashRef(void)
 {
-	return &PgCurrentSessionCatalogLookupState()->typcache_type_cache_hash;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->typcache_type_cache_hash;
 }
 
 HTAB **
 PgCurrentRelIdToTypeIdCacheHashRef(void)
 {
-	return &PgCurrentSessionCatalogLookupState()->typcache_relid_to_typeid_hash;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->typcache_relid_to_typeid_hash;
 }
 
 TypeCacheEntry **
 PgCurrentFirstDomainTypeEntryRef(void)
 {
-	return &PgCurrentSessionCatalogLookupState()->typcache_first_domain_type_entry;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->typcache_first_domain_type_entry;
 }
 
 Oid **
 PgCurrentTypCacheInProgressListRef(void)
 {
-	return &PgCurrentSessionCatalogLookupState()->typcache_in_progress_list;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->typcache_in_progress_list;
 }
 
 int *
 PgCurrentTypCacheInProgressListLenRef(void)
 {
-	return &PgCurrentSessionCatalogLookupState()->typcache_in_progress_list_len;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->typcache_in_progress_list_len;
 }
 
 int *
 PgCurrentTypCacheInProgressListMaxLenRef(void)
 {
-	return &PgCurrentSessionCatalogLookupState()->typcache_in_progress_list_maxlen;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->typcache_in_progress_list_maxlen;
 }
 
 HTAB **
 PgCurrentRecordCacheHashRef(void)
 {
-	return &PgCurrentSessionCatalogLookupState()->typcache_record_cache_hash;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->typcache_record_cache_hash;
 }
 
 RecordCacheArrayEntry **
 PgCurrentRecordCacheArrayRef(void)
 {
-	return &PgCurrentSessionCatalogLookupState()->typcache_record_cache_array;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->typcache_record_cache_array;
 }
 
 int32 *
 PgCurrentRecordCacheArrayLenRef(void)
 {
-	return &PgCurrentSessionCatalogLookupState()->typcache_record_cache_array_len;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->typcache_record_cache_array_len;
 }
 
 int32 *
 PgCurrentNextRecordTypmodRef(void)
 {
-	return &PgCurrentSessionCatalogLookupState()->typcache_next_record_typmod;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->typcache_next_record_typmod;
 }
 
 uint64 *
 PgCurrentTupleDescIdCounterRef(void)
 {
-	return &PgCurrentSessionCatalogLookupState()->typcache_tupledesc_id_counter;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->typcache_tupledesc_id_counter;
 }
 
 HTAB **
 PgCurrentAttoptCacheHashRef(void)
 {
-	return &PgCurrentSessionCatalogLookupState()->attopt_cache_hash;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->attopt_cache_hash;
 }
 
 HTAB **
 PgCurrentRelfilenumberMapHashRef(void)
 {
-	return &PgCurrentSessionCatalogLookupState()->relfilenumber_map_hash;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->relfilenumber_map_hash;
 }
 
 ScanKeyData *
 PgCurrentRelfilenumberScanKeyArray(void)
 {
-	return PgCurrentSessionCatalogLookupState()->relfilenumber_skey;
+	return PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->relfilenumber_skey;
 }
 
 HTAB **
 PgCurrentTableSpaceCacheHashRef(void)
 {
-	return &PgCurrentSessionCatalogLookupState()->tablespace_cache_hash;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->tablespace_cache_hash;
 }
 
 HTAB **
 PgCurrentEventTriggerCacheRef(void)
 {
-	return &PgCurrentSessionCatalogLookupState()->event_trigger_cache;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->event_trigger_cache;
 }
 
 MemoryContext *
 PgCurrentEventTriggerCacheContextRef(void)
 {
-	return &PgCurrentSessionCatalogLookupState()->event_trigger_cache_context;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->event_trigger_cache_context;
 }
 
 int *
 PgCurrentEventTriggerCacheStateRef(void)
 {
-	return &PgCurrentSessionCatalogLookupState()->event_trigger_cache_state;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->event_trigger_cache_state;
 }
 
 HTAB **
 PgCurrentUncommittedEnumTypesRef(void)
 {
-	return &PgCurrentExecutionCatalogState()->uncommitted_enum_types;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionCatalogRuntimeState, PgCurrentExecutionCatalogState)->uncommitted_enum_types;
 }
 
 HTAB **
 PgCurrentUncommittedEnumValuesRef(void)
 {
-	return &PgCurrentExecutionCatalogState()->uncommitted_enum_values;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionCatalogRuntimeState, PgCurrentExecutionCatalogState)->uncommitted_enum_values;
 }
 
 Oid *
 PgCurrentReindexedHeapRef(void)
 {
-	return &PgCurrentExecutionCatalogState()->currently_reindexed_heap;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionCatalogRuntimeState, PgCurrentExecutionCatalogState)->currently_reindexed_heap;
 }
 
 Oid *
 PgCurrentReindexedIndexRef(void)
 {
-	return &PgCurrentExecutionCatalogState()->currently_reindexed_index;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionCatalogRuntimeState, PgCurrentExecutionCatalogState)->currently_reindexed_index;
 }
 
 List **
 PgCurrentPendingReindexedIndexesRef(void)
 {
-	return &PgCurrentExecutionCatalogState()->pending_reindexed_indexes;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionCatalogRuntimeState, PgCurrentExecutionCatalogState)->pending_reindexed_indexes;
 }
 
 int *
 PgCurrentReindexingNestLevelRef(void)
 {
-	return &PgCurrentExecutionCatalogState()->reindexing_nest_level;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionCatalogRuntimeState, PgCurrentExecutionCatalogState)->reindexing_nest_level;
 }
 
 struct PendingRelDelete **
 PgCurrentPendingRelDeletesRef(void)
 {
-	return &PgCurrentExecutionCatalogState()->pending_rel_deletes;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionCatalogRuntimeState, PgCurrentExecutionCatalogState)->pending_rel_deletes;
 }
 
 HTAB **
 PgCurrentPendingSyncHashRef(void)
 {
-	return &PgCurrentExecutionCatalogState()->pending_sync_hash;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionCatalogRuntimeState, PgCurrentExecutionCatalogState)->pending_sync_hash;
 }
 
 CatCInProgress **
 PgCurrentCatCacheInProgressStackRef(void)
 {
-	return &PgCurrentExecutionCatalogCacheState()->catcache_in_progress_stack;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionCatalogCacheRuntimeState, PgCurrentExecutionCatalogCacheState)->catcache_in_progress_stack;
 }
 
 InProgressEnt **
 PgCurrentRelcacheInProgressListRef(void)
 {
-	return &PgCurrentExecutionCatalogCacheState()->relcache_in_progress_list;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionCatalogCacheRuntimeState, PgCurrentExecutionCatalogCacheState)->relcache_in_progress_list;
 }
 
 int *
 PgCurrentRelcacheInProgressListLenRef(void)
 {
-	return &PgCurrentExecutionCatalogCacheState()->relcache_in_progress_list_len;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionCatalogCacheRuntimeState, PgCurrentExecutionCatalogCacheState)->relcache_in_progress_list_len;
 }
 
 int *
 PgCurrentRelcacheInProgressListMaxLenRef(void)
 {
-	return &PgCurrentExecutionCatalogCacheState()->relcache_in_progress_list_maxlen;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionCatalogCacheRuntimeState, PgCurrentExecutionCatalogCacheState)->relcache_in_progress_list_maxlen;
 }
 
 Oid *
 PgCurrentRelcacheEOXactList(void)
 {
-	return PgCurrentExecutionCatalogCacheState()->relcache_eoxact_list;
+	return PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionCatalogCacheRuntimeState, PgCurrentExecutionCatalogCacheState)->relcache_eoxact_list;
 }
 
 int *
 PgCurrentRelcacheEOXactListLenRef(void)
 {
-	return &PgCurrentExecutionCatalogCacheState()->relcache_eoxact_list_len;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionCatalogCacheRuntimeState, PgCurrentExecutionCatalogCacheState)->relcache_eoxact_list_len;
 }
 
 bool *
 PgCurrentRelcacheEOXactListOverflowedRef(void)
 {
-	return &PgCurrentExecutionCatalogCacheState()->relcache_eoxact_list_overflowed;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionCatalogCacheRuntimeState, PgCurrentExecutionCatalogCacheState)->relcache_eoxact_list_overflowed;
 }
 
 TupleDesc **
 PgCurrentRelcacheEOXactTupleDescArrayRef(void)
 {
-	return &PgCurrentExecutionCatalogCacheState()->relcache_eoxact_tupledesc_array;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionCatalogCacheRuntimeState, PgCurrentExecutionCatalogCacheState)->relcache_eoxact_tupledesc_array;
 }
 
 int *
 PgCurrentRelcacheNextEOXactTupleDescNumRef(void)
 {
-	return &PgCurrentExecutionCatalogCacheState()->relcache_next_eoxact_tupledesc_num;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionCatalogCacheRuntimeState, PgCurrentExecutionCatalogCacheState)->relcache_next_eoxact_tupledesc_num;
 }
 
 int *
 PgCurrentRelcacheEOXactTupleDescArrayLenRef(void)
 {
-	return &PgCurrentExecutionCatalogCacheState()->relcache_eoxact_tupledesc_array_len;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionCatalogCacheRuntimeState, PgCurrentExecutionCatalogCacheState)->relcache_eoxact_tupledesc_array_len;
 }
 
 PgExecutionRelMapFile *
 PgCurrentRelMapActiveSharedUpdatesRef(void)
 {
-	return &PgCurrentExecutionRelMapState()->active_shared_updates;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionRelMapRuntimeState, PgCurrentExecutionRelMapState)->active_shared_updates;
 }
 
 PgExecutionRelMapFile *
 PgCurrentRelMapActiveLocalUpdatesRef(void)
 {
-	return &PgCurrentExecutionRelMapState()->active_local_updates;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionRelMapRuntimeState, PgCurrentExecutionRelMapState)->active_local_updates;
 }
 
 PgExecutionRelMapFile *
 PgCurrentRelMapPendingSharedUpdatesRef(void)
 {
-	return &PgCurrentExecutionRelMapState()->pending_shared_updates;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionRelMapRuntimeState, PgCurrentExecutionRelMapState)->pending_shared_updates;
 }
 
 PgExecutionRelMapFile *
 PgCurrentRelMapPendingLocalUpdatesRef(void)
 {
-	return &PgCurrentExecutionRelMapState()->pending_local_updates;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionRelMapRuntimeState, PgCurrentExecutionRelMapState)->pending_local_updates;
 }
 
 PgExecutionInvalMessageArray *
 PgCurrentInvalMessageArrays(void)
 {
-	return PgCurrentExecutionInvalidationState()->message_arrays;
+	return PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionInvalidationRuntimeState, PgCurrentExecutionInvalidationState)->message_arrays;
 }
 
 struct TransInvalidationInfo **
 PgCurrentTransInvalInfoRef(void)
 {
-	return &PgCurrentExecutionInvalidationState()->trans_info;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionInvalidationRuntimeState, PgCurrentExecutionInvalidationState)->trans_info;
 }
 
 struct InvalidationInfo **
 PgCurrentInplaceInvalInfoRef(void)
 {
-	return &PgCurrentExecutionInvalidationState()->inplace_info;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionInvalidationRuntimeState, PgCurrentExecutionInvalidationState)->inplace_info;
 }
 
 struct _SPI_plan **
 PgCurrentRuleutilsRuleByOidPlanRef(void)
 {
-	return &PgCurrentSessionCatalogLookupState()->ruleutils_rule_by_oid_plan;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->ruleutils_rule_by_oid_plan;
 }
 
 struct _SPI_plan **
 PgCurrentRuleutilsViewRulePlanRef(void)
 {
-	return &PgCurrentSessionCatalogLookupState()->ruleutils_view_rule_plan;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSessionCatalogLookupState)->ruleutils_view_rule_plan;
 }
 
 void

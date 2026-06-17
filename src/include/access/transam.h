@@ -15,6 +15,7 @@
 #define TRANSAM_H
 
 #include "access/xlogdefs.h"
+#include "utils/global_lifetime.h"
 
 
 /* ----------------

@@ -470,7 +470,7 @@ backend_thread_entry(void *arg)
 {
 	BackendThreadStart *thread_start = (BackendThreadStart *) arg;
 
-	CurrentPgCarrier = &thread_start->runtime_state.carrier;
+	PgSetCurrentCarrier(&thread_start->runtime_state.carrier);
 	backend_thread_set_current_start(thread_start);
 	backend_thread_wait_until_registered(thread_start);
 

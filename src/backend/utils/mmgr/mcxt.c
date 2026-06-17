@@ -361,7 +361,7 @@ MemoryContextInit(void)
 	 * Not having any other place to point CurrentMemoryContext, make it point
 	 * to TopMemoryContext.  Caller should change this soon!
 	 */
-	CurrentMemoryContext = TopMemoryContext;
+	MemoryContextSwitchTo(TopMemoryContext);
 
 	/*
 	 * Initialize ErrorContext as an AllocSetContext with slow growth rate ---

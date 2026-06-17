@@ -60,12 +60,12 @@ test_execution_resource_owners_are_execution_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		CurrentResourceOwner = fake_owner1;
 		CurTransactionResourceOwner = fake_owner2;
 		TopTransactionResourceOwner = fake_owner3;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && CurrentResourceOwner == NULL;
 		ok = ok && CurTransactionResourceOwner == NULL;
 		ok = ok && TopTransactionResourceOwner == NULL;
@@ -73,24 +73,24 @@ test_execution_resource_owners_are_execution_local(PG_FUNCTION_ARGS)
 		CurTransactionResourceOwner = fake_owner1;
 		TopTransactionResourceOwner = fake_owner2;
 
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		ok = ok && CurrentResourceOwner == fake_owner1;
 		ok = ok && CurTransactionResourceOwner == fake_owner2;
 		ok = ok && TopTransactionResourceOwner == fake_owner3;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && CurrentResourceOwner == fake_owner3;
 		ok = ok && CurTransactionResourceOwner == fake_owner1;
 		ok = ok && TopTransactionResourceOwner == fake_owner2;
 
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		CurrentResourceOwner = saved_current_resource_owner;
 		CurTransactionResourceOwner = saved_cur_transaction_resource_owner;
 		TopTransactionResourceOwner = saved_top_transaction_resource_owner;
 	}
 	PG_CATCH();
 	{
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		CurrentResourceOwner = saved_current_resource_owner;
 		CurTransactionResourceOwner = saved_cur_transaction_resource_owner;
 		TopTransactionResourceOwner = saved_top_transaction_resource_owner;
@@ -122,32 +122,32 @@ test_execution_debug_query_string_is_execution_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		debug_query_string = "fake execution one";
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && debug_query_string == NULL;
 		debug_query_string = "fake execution two";
 
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		ok = ok && strcmp(debug_query_string, "fake execution one") == 0;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && strcmp(debug_query_string, "fake execution two") == 0;
 		debug_query_string = NULL;
 
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		debug_query_string = "reset me";
 		fake_execution1.memory_contexts.message_context = NULL;
 		PgExecutionResetClosedState(&fake_execution1);
 		ok = ok && debug_query_string == NULL;
 
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		debug_query_string = saved_debug_query_string;
 	}
 	PG_CATCH();
 	{
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		debug_query_string = saved_debug_query_string;
 		PG_RE_THROW();
 	}
@@ -188,25 +188,25 @@ test_execution_error_state_is_execution_local(PG_FUNCTION_ARGS)
 	 * Do not wrap this in PG_TRY(): this test intentionally rewires
 	 * PG_exception_stack to prove the compatibility lvalue is execution-local.
 	 */
-	CurrentPgExecution = &fake_execution1;
+	PgSetCurrentExecution(&fake_execution1);
 	error_context_stack = &fake_error_context1;
 	PG_exception_stack = &fake_exception_stack1;
 
-	CurrentPgExecution = &fake_execution2;
+	PgSetCurrentExecution(&fake_execution2);
 	ok = ok && error_context_stack == NULL;
 	ok = ok && PG_exception_stack == NULL;
 	error_context_stack = &fake_error_context2;
 	PG_exception_stack = &fake_exception_stack2;
 
-	CurrentPgExecution = &fake_execution1;
+	PgSetCurrentExecution(&fake_execution1);
 	ok = ok && error_context_stack == &fake_error_context1;
 	ok = ok && PG_exception_stack == &fake_exception_stack1;
 
-	CurrentPgExecution = &fake_execution2;
+	PgSetCurrentExecution(&fake_execution2);
 	ok = ok && error_context_stack == &fake_error_context2;
 	ok = ok && PG_exception_stack == &fake_exception_stack2;
 
-	CurrentPgExecution = saved_execution;
+	PgSetCurrentExecution(saved_execution);
 	error_context_stack = saved_error_context_stack;
 	PG_exception_stack = saved_exception_stack;
 
@@ -253,7 +253,7 @@ test_execution_memory_contexts_are_execution_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		TopMemoryContext = fake_context1;
 		CurrentMemoryContext = fake_context1;
 		ErrorContext = fake_context2;
@@ -262,7 +262,7 @@ test_execution_memory_contexts_are_execution_local(PG_FUNCTION_ARGS)
 		CurTransactionContext = fake_context2;
 		PortalContext = fake_context3;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && TopMemoryContext == NULL;
 		ok = ok && CurrentMemoryContext == NULL;
 		ok = ok && ErrorContext == NULL;
@@ -278,7 +278,7 @@ test_execution_memory_contexts_are_execution_local(PG_FUNCTION_ARGS)
 		CurTransactionContext = fake_context1;
 		PortalContext = fake_context2;
 
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		ok = ok && TopMemoryContext == fake_context1;
 		ok = ok && CurrentMemoryContext == fake_context1;
 		ok = ok && ErrorContext == fake_context2;
@@ -287,7 +287,7 @@ test_execution_memory_contexts_are_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && CurTransactionContext == fake_context2;
 		ok = ok && PortalContext == fake_context3;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && TopMemoryContext == fake_context2;
 		ok = ok && CurrentMemoryContext == fake_context3;
 		ok = ok && ErrorContext == fake_context1;
@@ -307,7 +307,7 @@ test_execution_memory_contexts_are_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && CurTransactionContext == NULL;
 		ok = ok && PortalContext == NULL;
 
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		TopMemoryContext = saved_top_memory_context;
 		CurrentMemoryContext = saved_current_memory_context;
 		ErrorContext = saved_error_context;
@@ -320,7 +320,7 @@ test_execution_memory_contexts_are_execution_local(PG_FUNCTION_ARGS)
 	}
 	PG_CATCH();
 	{
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		TopMemoryContext = saved_top_memory_context;
 		CurrentMemoryContext = saved_current_memory_context;
 		ErrorContext = saved_error_context;
@@ -369,12 +369,12 @@ test_execution_spi_state_is_execution_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		SPI_processed = 111;
 		SPI_tuptable = &fake_tuptable1;
 		SPI_result = SPI_OK_SELECT;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && SPI_processed == 0;
 		ok = ok && SPI_tuptable == NULL;
 		ok = ok && SPI_result == 0;
@@ -383,26 +383,26 @@ test_execution_spi_state_is_execution_local(PG_FUNCTION_ARGS)
 		SPI_tuptable = &fake_tuptable2;
 		SPI_result = SPI_OK_INSERT;
 
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		ok = ok && SPI_processed == 111;
 		ok = ok && SPI_tuptable == &fake_tuptable1;
 		ok = ok && SPI_result == SPI_OK_SELECT;
 		ok = ok && *PgCurrentSPIConnectedRef() == -1;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && SPI_processed == 222;
 		ok = ok && SPI_tuptable == &fake_tuptable2;
 		ok = ok && SPI_result == SPI_OK_INSERT;
 		ok = ok && *PgCurrentSPIConnectedRef() == -1;
 
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		SPI_processed = saved_spi_processed;
 		SPI_tuptable = saved_spi_tuptable;
 		SPI_result = saved_spi_result;
 	}
 	PG_CATCH();
 	{
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		SPI_processed = saved_spi_processed;
 		SPI_tuptable = saved_spi_tuptable;
 		SPI_result = saved_spi_result;
@@ -439,25 +439,25 @@ test_execution_active_portal_is_execution_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		ActivePortal = &fake_portal1;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && ActivePortal == NULL;
 		ActivePortal = &fake_portal2;
 
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		ok = ok && ActivePortal == &fake_portal1;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && ActivePortal == &fake_portal2;
 
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		ActivePortal = saved_active_portal;
 	}
 	PG_CATCH();
 	{
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		ActivePortal = saved_active_portal;
 		PG_RE_THROW();
 	}
@@ -498,7 +498,7 @@ test_execution_reset_closed_state(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgExecution = &fake_execution;
+		PgSetCurrentExecution(&fake_execution);
 		debug_query_string = "reset execution";
 		fake_execution.error.context_stack = &fake_error_context;
 		fake_execution.error.exception_stack = &fake_exception_stack;
@@ -825,13 +825,13 @@ test_execution_reset_closed_state(PG_FUNCTION_ARGS)
 		PgExecutionResetClosedState(&fake_execution);
 		ok = ok && fake_execution.resource_owners.resource_owner_context == NULL;
 
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 	}
 	PG_CATCH();
 	{
 		if (message_context != NULL)
 			MemoryContextDelete(message_context);
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -887,12 +887,12 @@ test_execution_event_trigger_query_state_reset(PG_FUNCTION_ARGS)
 								  ALLOCSET_SMALL_SIZES);
 		fake_execution.replication_scratch.event_trigger_context =
 			fake_event_trigger_context;
-		CurrentPgExecution = &fake_execution;
+		PgSetCurrentExecution(&fake_execution);
 		fake_execution.memory_contexts.message_context = NULL;
 		PgExecutionResetClosedState(&fake_execution);
 		fake_event_trigger_context = NULL;
 		ok = ok && *PgCurrentEventTriggerMemoryContextRef() == NULL;
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 	}
 	PG_CATCH();
 	{
@@ -907,7 +907,7 @@ test_execution_event_trigger_query_state_reset(PG_FUNCTION_ARGS)
 		}
 		if (fake_event_trigger_context != NULL)
 			MemoryContextDelete(fake_event_trigger_context);
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -966,7 +966,7 @@ test_execution_vacuum_state_is_execution_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		*PgCurrentVacuumInProgressRef() = true;
 		VacuumCostBalance = 101;
 		VacuumCostActive = true;
@@ -978,7 +978,7 @@ test_execution_vacuum_state_is_execution_local(PG_FUNCTION_ARGS)
 		*PgCurrentParallelVacuumSharedCostParamsRef() = &shared_cost_balance1;
 		*PgCurrentParallelVacuumSharedParamsGenerationLocalRef() = 13;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && !*PgCurrentVacuumInProgressRef();
 		ok = ok && VacuumCostBalance == 0;
 		ok = ok && !VacuumCostActive;
@@ -997,7 +997,7 @@ test_execution_vacuum_state_is_execution_local(PG_FUNCTION_ARGS)
 		*PgCurrentParallelVacuumSharedCostParamsRef() = &shared_cost_balance2;
 		*PgCurrentParallelVacuumSharedParamsGenerationLocalRef() = 31;
 
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		ok = ok && *PgCurrentVacuumInProgressRef();
 		ok = ok && VacuumCostBalance == 101;
 		ok = ok && VacuumCostActive;
@@ -1011,7 +1011,7 @@ test_execution_vacuum_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok &&
 			*PgCurrentParallelVacuumSharedParamsGenerationLocalRef() == 13;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && !*PgCurrentVacuumInProgressRef();
 		ok = ok && VacuumCostBalance == 202;
 		ok = ok && !VacuumCostActive;
@@ -1025,7 +1025,7 @@ test_execution_vacuum_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok &&
 			*PgCurrentParallelVacuumSharedParamsGenerationLocalRef() == 31;
 
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		*PgCurrentVacuumInProgressRef() = saved_vacuum_in_progress;
 		VacuumCostBalance = saved_vacuum_cost_balance;
 		VacuumCostActive = saved_vacuum_cost_active;
@@ -1041,7 +1041,7 @@ test_execution_vacuum_state_is_execution_local(PG_FUNCTION_ARGS)
 	}
 	PG_CATCH();
 	{
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		*PgCurrentVacuumInProgressRef() = saved_vacuum_in_progress;
 		VacuumCostBalance = saved_vacuum_cost_balance;
 		VacuumCostActive = saved_vacuum_cost_active;
@@ -1087,37 +1087,37 @@ test_execution_node_io_state_is_execution_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		*PgCurrentNodeWriteLocationFieldsRef() = true;
 		*PgCurrentNodeReadStrtokPtrRef() = "node io one";
 		*PgCurrentNodeRestoreLocationFieldsRef() = true;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && !*PgCurrentNodeWriteLocationFieldsRef();
 		ok = ok && *PgCurrentNodeReadStrtokPtrRef() == NULL;
 		ok = ok && !*PgCurrentNodeRestoreLocationFieldsRef();
 		*PgCurrentNodeReadStrtokPtrRef() = "node io two";
 
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		ok = ok && *PgCurrentNodeWriteLocationFieldsRef();
 		ok = ok &&
 			strcmp(*PgCurrentNodeReadStrtokPtrRef(), "node io one") == 0;
 		ok = ok && *PgCurrentNodeRestoreLocationFieldsRef();
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && !*PgCurrentNodeWriteLocationFieldsRef();
 		ok = ok &&
 			strcmp(*PgCurrentNodeReadStrtokPtrRef(), "node io two") == 0;
 		ok = ok && !*PgCurrentNodeRestoreLocationFieldsRef();
 
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		*PgCurrentNodeWriteLocationFieldsRef() = saved_write_location_fields;
 		*PgCurrentNodeReadStrtokPtrRef() = saved_strtok_ptr;
 		*PgCurrentNodeRestoreLocationFieldsRef() = saved_restore_location_fields;
 	}
 	PG_CATCH();
 	{
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		*PgCurrentNodeWriteLocationFieldsRef() = saved_write_location_fields;
 		*PgCurrentNodeReadStrtokPtrRef() = saved_strtok_ptr;
 		*PgCurrentNodeRestoreLocationFieldsRef() = saved_restore_location_fields;
@@ -1156,28 +1156,28 @@ test_execution_basebackup_state_is_execution_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		*PgCurrentBaseBackupStartedInRecoveryRef() = true;
 		*PgCurrentBaseBackupTotalChecksumFailuresRef() = 17;
 		*PgCurrentBaseBackupNoVerifyChecksumsRef() = true;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && !*PgCurrentBaseBackupStartedInRecoveryRef();
 		ok = ok && *PgCurrentBaseBackupTotalChecksumFailuresRef() == 0;
 		ok = ok && !*PgCurrentBaseBackupNoVerifyChecksumsRef();
 		*PgCurrentBaseBackupTotalChecksumFailuresRef() = 29;
 
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		ok = ok && *PgCurrentBaseBackupStartedInRecoveryRef();
 		ok = ok && *PgCurrentBaseBackupTotalChecksumFailuresRef() == 17;
 		ok = ok && *PgCurrentBaseBackupNoVerifyChecksumsRef();
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && !*PgCurrentBaseBackupStartedInRecoveryRef();
 		ok = ok && *PgCurrentBaseBackupTotalChecksumFailuresRef() == 29;
 		ok = ok && !*PgCurrentBaseBackupNoVerifyChecksumsRef();
 
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		*PgCurrentBaseBackupStartedInRecoveryRef() =
 			saved_backup_started_in_recovery;
 		*PgCurrentBaseBackupTotalChecksumFailuresRef() =
@@ -1186,7 +1186,7 @@ test_execution_basebackup_state_is_execution_local(PG_FUNCTION_ARGS)
 	}
 	PG_CATCH();
 	{
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		*PgCurrentBaseBackupStartedInRecoveryRef() =
 			saved_backup_started_in_recovery;
 		*PgCurrentBaseBackupTotalChecksumFailuresRef() =
@@ -1231,31 +1231,31 @@ test_execution_analyze_state_is_execution_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		*PgCurrentAnalyzeContextRef() = fake_context1;
 		*PgCurrentAnalyzeStrategyRef() = fake_strategy1;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && *PgCurrentAnalyzeContextRef() == NULL;
 		ok = ok && *PgCurrentAnalyzeStrategyRef() == NULL;
 		*PgCurrentAnalyzeContextRef() = fake_context2;
 		*PgCurrentAnalyzeStrategyRef() = fake_strategy2;
 
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		ok = ok && *PgCurrentAnalyzeContextRef() == fake_context1;
 		ok = ok && *PgCurrentAnalyzeStrategyRef() == fake_strategy1;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && *PgCurrentAnalyzeContextRef() == fake_context2;
 		ok = ok && *PgCurrentAnalyzeStrategyRef() == fake_strategy2;
 
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		*PgCurrentAnalyzeContextRef() = saved_analyze_context;
 		*PgCurrentAnalyzeStrategyRef() = saved_analyze_strategy;
 	}
 	PG_CATCH();
 	{
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		*PgCurrentAnalyzeContextRef() = saved_analyze_context;
 		*PgCurrentAnalyzeStrategyRef() = saved_analyze_strategy;
 		PG_RE_THROW();
@@ -1297,7 +1297,7 @@ test_execution_extension_state_is_execution_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		creating_extension = true;
 		CurrentExtensionObject = 12345;
 		PgCurrentExecutionExtensionState()->auto_explain_nesting_level = 3;
@@ -1305,7 +1305,7 @@ test_execution_extension_state_is_execution_local(PG_FUNCTION_ARGS)
 		*PgCurrentPgcryptoDebugHandlerRef() =
 			test_backend_runtime_debug_handler1;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && !creating_extension;
 		ok = ok && CurrentExtensionObject == InvalidOid;
 		ok = ok && PgCurrentExecutionExtensionState()->auto_explain_nesting_level == 0;
@@ -1316,7 +1316,7 @@ test_execution_extension_state_is_execution_local(PG_FUNCTION_ARGS)
 		*PgCurrentPgcryptoDebugHandlerRef() =
 			test_backend_runtime_debug_handler2;
 
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		ok = ok && creating_extension;
 		ok = ok && CurrentExtensionObject == 12345;
 		ok = ok && PgCurrentExecutionExtensionState()->auto_explain_nesting_level == 3;
@@ -1324,7 +1324,7 @@ test_execution_extension_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentPgcryptoDebugHandlerRef() ==
 			test_backend_runtime_debug_handler1;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && !creating_extension;
 		ok = ok && CurrentExtensionObject == 67890;
 		ok = ok && PgCurrentExecutionExtensionState()->auto_explain_nesting_level == 7;
@@ -1332,7 +1332,7 @@ test_execution_extension_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentPgcryptoDebugHandlerRef() ==
 			test_backend_runtime_debug_handler2;
 
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		creating_extension = saved_creating_extension;
 		CurrentExtensionObject = saved_current_extension_object;
 		PgCurrentExecutionExtensionState()->auto_explain_nesting_level =
@@ -1343,7 +1343,7 @@ test_execution_extension_state_is_execution_local(PG_FUNCTION_ARGS)
 	}
 	PG_CATCH();
 	{
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		creating_extension = saved_creating_extension;
 		CurrentExtensionObject = saved_current_extension_object;
 		PgCurrentExecutionExtensionState()->auto_explain_nesting_level =
@@ -1383,25 +1383,25 @@ test_execution_matview_state_is_execution_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		*PgCurrentMatViewMaintenanceDepthRef() = 2;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && *PgCurrentMatViewMaintenanceDepthRef() == 0;
 		*PgCurrentMatViewMaintenanceDepthRef() = 5;
 
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		ok = ok && *PgCurrentMatViewMaintenanceDepthRef() == 2;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && *PgCurrentMatViewMaintenanceDepthRef() == 5;
 
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		*PgCurrentMatViewMaintenanceDepthRef() = saved_maintenance_depth;
 	}
 	PG_CATCH();
 	{
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		*PgCurrentMatViewMaintenanceDepthRef() = saved_maintenance_depth;
 		PG_RE_THROW();
 	}
@@ -1430,7 +1430,7 @@ test_execution_snapshot_combo_state_is_execution_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		PgCurrentSnapshotDataRef()->snapshot_type = SNAPSHOT_SELF;
 		PgCurrentSecondarySnapshotDataRef()->snapshot_type = SNAPSHOT_ANY;
 		PgCurrentCatalogSnapshotDataRef()->snapshot_type = SNAPSHOT_TOAST;
@@ -1453,7 +1453,7 @@ test_execution_snapshot_combo_state_is_execution_local(PG_FUNCTION_ARGS)
 		*PgCurrentUsedComboCidsRef() = 103;
 		*PgCurrentSizeComboCidsRef() = 104;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && PgCurrentSnapshotDataRef()->snapshot_type == SNAPSHOT_MVCC;
 		ok = ok && PgCurrentSecondarySnapshotDataRef()->snapshot_type == SNAPSHOT_MVCC;
 		ok = ok && PgCurrentCatalogSnapshotDataRef()->snapshot_type == SNAPSHOT_MVCC;
@@ -1497,7 +1497,7 @@ test_execution_snapshot_combo_state_is_execution_local(PG_FUNCTION_ARGS)
 		*PgCurrentUsedComboCidsRef() = 203;
 		*PgCurrentSizeComboCidsRef() = 204;
 
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		ok = ok && PgCurrentSnapshotDataRef()->snapshot_type == SNAPSHOT_SELF;
 		ok = ok && PgCurrentSecondarySnapshotDataRef()->snapshot_type == SNAPSHOT_ANY;
 		ok = ok && PgCurrentCatalogSnapshotDataRef()->snapshot_type == SNAPSHOT_TOAST;
@@ -1520,7 +1520,7 @@ test_execution_snapshot_combo_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentUsedComboCidsRef() == 103;
 		ok = ok && *PgCurrentSizeComboCidsRef() == 104;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && PgCurrentSnapshotDataRef()->snapshot_type == SNAPSHOT_HISTORIC_MVCC;
 		ok = ok && PgCurrentSecondarySnapshotDataRef()->snapshot_type == SNAPSHOT_NON_VACUUMABLE;
 		ok = ok && PgCurrentCatalogSnapshotDataRef()->snapshot_type == SNAPSHOT_DIRTY;
@@ -1543,11 +1543,11 @@ test_execution_snapshot_combo_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentUsedComboCidsRef() == 203;
 		ok = ok && *PgCurrentSizeComboCidsRef() == 204;
 
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 	}
 	PG_CATCH();
 	{
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -1579,7 +1579,7 @@ test_execution_xloginsert_state_is_execution_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		*PgCurrentXLogInsertRegisteredBuffersRef() = &fake_execution1;
 		*PgCurrentXLogInsertMaxRegisteredBuffersRef() = 101;
 		*PgCurrentXLogInsertMaxRegisteredBlockIdRef() = 102;
@@ -1596,7 +1596,7 @@ test_execution_xloginsert_state_is_execution_local(PG_FUNCTION_ARGS)
 		*PgCurrentXLogInsertBeginCalledRef() = true;
 		*PgCurrentXLogInsertContextRef() = (MemoryContext) &fake_execution1;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && *PgCurrentXLogInsertRegisteredBuffersRef() == NULL;
 		ok = ok && *PgCurrentXLogInsertMaxRegisteredBuffersRef() == 0;
 		ok = ok && *PgCurrentXLogInsertMaxRegisteredBlockIdRef() == 0;
@@ -1629,7 +1629,7 @@ test_execution_xloginsert_state_is_execution_local(PG_FUNCTION_ARGS)
 		*PgCurrentXLogInsertBeginCalledRef() = false;
 		*PgCurrentXLogInsertContextRef() = (MemoryContext) &fake_execution2;
 
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		ok = ok && *PgCurrentXLogInsertRegisteredBuffersRef() == &fake_execution1;
 		ok = ok && *PgCurrentXLogInsertMaxRegisteredBuffersRef() == 101;
 		ok = ok && *PgCurrentXLogInsertMaxRegisteredBlockIdRef() == 102;
@@ -1649,7 +1649,7 @@ test_execution_xloginsert_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentXLogInsertContextRef() ==
 			(MemoryContext) &fake_execution1;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && *PgCurrentXLogInsertRegisteredBuffersRef() == &fake_execution2;
 		ok = ok && *PgCurrentXLogInsertMaxRegisteredBuffersRef() == 201;
 		ok = ok && *PgCurrentXLogInsertMaxRegisteredBlockIdRef() == 202;
@@ -1669,11 +1669,11 @@ test_execution_xloginsert_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentXLogInsertContextRef() ==
 			(MemoryContext) &fake_execution2;
 
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 	}
 	PG_CATCH();
 	{
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -1705,7 +1705,7 @@ test_execution_xact_state_is_execution_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		XactIsoLevel = XACT_SERIALIZABLE;
 		XactReadOnly = true;
 		XactDeferrable = true;
@@ -1736,7 +1736,7 @@ test_execution_xact_state_is_execution_local(PG_FUNCTION_ARGS)
 		*PgCurrentTransactionStateRef() =
 			(TransactionStateData *) &fake_execution1;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && XactIsoLevel == 0;
 		ok = ok && !XactReadOnly;
 		ok = ok && !XactDeferrable;
@@ -1793,7 +1793,7 @@ test_execution_xact_state_is_execution_local(PG_FUNCTION_ARGS)
 		*PgCurrentTransactionStateRef() =
 			(TransactionStateData *) &fake_execution2;
 
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		ok = ok && XactIsoLevel == XACT_SERIALIZABLE;
 		ok = ok && XactReadOnly;
 		ok = ok && XactDeferrable;
@@ -1825,7 +1825,7 @@ test_execution_xact_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentTransactionStateRef() ==
 			(TransactionStateData *) &fake_execution1;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && XactIsoLevel == XACT_REPEATABLE_READ;
 		ok = ok && !XactReadOnly;
 		ok = ok && !XactDeferrable;
@@ -1857,11 +1857,11 @@ test_execution_xact_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentTransactionStateRef() ==
 			(TransactionStateData *) &fake_execution2;
 
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 	}
 	PG_CATCH();
 	{
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -1889,7 +1889,7 @@ test_execution_transaction_cleanup_state_is_execution_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		*PgCurrentLargeObjectCookiesRef() =
 			(LargeObjectDesc **) &fake_execution1;
 		*PgCurrentLargeObjectCookiesSizeRef() = 101;
@@ -1901,7 +1901,7 @@ test_execution_transaction_cleanup_state_is_execution_local(PG_FUNCTION_ARGS)
 		*PgCurrentRIFastPathCacheRef() = (HTAB *) &fake_execution1;
 		*PgCurrentRIFastPathCallbackRegisteredRef() = true;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && *PgCurrentLargeObjectCookiesRef() == NULL;
 		ok = ok && *PgCurrentLargeObjectCookiesSizeRef() == 0;
 		ok = ok && !*PgCurrentLargeObjectCleanupNeededRef();
@@ -1922,7 +1922,7 @@ test_execution_transaction_cleanup_state_is_execution_local(PG_FUNCTION_ARGS)
 		*PgCurrentRIFastPathCacheRef() = (HTAB *) &fake_execution2;
 		*PgCurrentRIFastPathCallbackRegisteredRef() = false;
 
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		ok = ok && *PgCurrentLargeObjectCookiesRef() ==
 			(LargeObjectDesc **) &fake_execution1;
 		ok = ok && *PgCurrentLargeObjectCookiesSizeRef() == 101;
@@ -1935,7 +1935,7 @@ test_execution_transaction_cleanup_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentRIFastPathCacheRef() == (HTAB *) &fake_execution1;
 		ok = ok && *PgCurrentRIFastPathCallbackRegisteredRef();
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && *PgCurrentLargeObjectCookiesRef() ==
 			(LargeObjectDesc **) &fake_execution2;
 		ok = ok && *PgCurrentLargeObjectCookiesSizeRef() == 201;
@@ -1948,11 +1948,11 @@ test_execution_transaction_cleanup_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentRIFastPathCacheRef() == (HTAB *) &fake_execution2;
 		ok = ok && !*PgCurrentRIFastPathCallbackRegisteredRef();
 
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 	}
 	PG_CATCH();
 	{
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -1994,7 +1994,7 @@ test_execution_reporting_replication_state_is_execution_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		*PgCurrentErrorDataStackDepthRef() = 1;
 		*PgCurrentErrorRecursionDepthRef() = 2;
 		PgCurrentErrorDataArray()[1].elevel = ERROR;
@@ -2011,7 +2011,7 @@ test_execution_reporting_replication_state_is_execution_local(PG_FUNCTION_ARGS)
 		*PgCurrentApplyMessageContextRef() = (MemoryContext) &fake_execution1;
 		*PgCurrentLogicalStreamingContextRef() = (MemoryContext) &fake_execution1;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && *PgCurrentErrorDataStackDepthRef() == -1;
 		ok = ok && *PgCurrentErrorRecursionDepthRef() == 0;
 		ok = ok && PgCurrentErrorDataArray()[0].elevel == 0;
@@ -2045,7 +2045,7 @@ test_execution_reporting_replication_state_is_execution_local(PG_FUNCTION_ARGS)
 		*PgCurrentApplyMessageContextRef() = (MemoryContext) &fake_execution2;
 		*PgCurrentLogicalStreamingContextRef() = (MemoryContext) &fake_execution2;
 
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		ok = ok && *PgCurrentErrorDataStackDepthRef() == 1;
 		ok = ok && *PgCurrentErrorRecursionDepthRef() == 2;
 		ok = ok && PgCurrentErrorDataArray()[1].elevel == ERROR;
@@ -2064,7 +2064,7 @@ test_execution_reporting_replication_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentLogicalStreamingContextRef() ==
 			(MemoryContext) &fake_execution1;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && *PgCurrentErrorDataStackDepthRef() == 0;
 		ok = ok && *PgCurrentErrorRecursionDepthRef() == 3;
 		ok = ok && PgCurrentErrorDataArray()[0].elevel == WARNING;
@@ -2083,11 +2083,11 @@ test_execution_reporting_replication_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentLogicalStreamingContextRef() ==
 			(MemoryContext) &fake_execution2;
 
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 	}
 	PG_CATCH();
 	{
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -2115,7 +2115,7 @@ test_execution_guc_error_state_is_execution_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		*PgCurrentGUCCheckErrcodeValueRef() = 101;
 		GUC_check_errmsg_string = "message one";
 		GUC_check_errdetail_string = "detail one";
@@ -2126,7 +2126,7 @@ test_execution_guc_error_state_is_execution_local(PG_FUNCTION_ARGS)
 		*PgCurrentGUCFlexFatalErrmsgRef() = "fatal one";
 		*PgCurrentGUCFlexFatalJmpRef() = (sigjmp_buf *) &fake_execution1;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && *PgCurrentGUCCheckErrcodeValueRef() == 0;
 		ok = ok && GUC_check_errmsg_string == NULL;
 		ok = ok && GUC_check_errdetail_string == NULL;
@@ -2147,7 +2147,7 @@ test_execution_guc_error_state_is_execution_local(PG_FUNCTION_ARGS)
 		*PgCurrentGUCFlexFatalErrmsgRef() = "fatal two";
 		*PgCurrentGUCFlexFatalJmpRef() = (sigjmp_buf *) &fake_execution2;
 
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		ok = ok && *PgCurrentGUCCheckErrcodeValueRef() == 101;
 		ok = ok && strcmp(GUC_check_errmsg_string, "message one") == 0;
 		ok = ok && strcmp(GUC_check_errdetail_string, "detail one") == 0;
@@ -2159,7 +2159,7 @@ test_execution_guc_error_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentGUCFlexFatalJmpRef() ==
 			(sigjmp_buf *) &fake_execution1;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && *PgCurrentGUCCheckErrcodeValueRef() == 201;
 		ok = ok && strcmp(GUC_check_errmsg_string, "message two") == 0;
 		ok = ok && strcmp(GUC_check_errdetail_string, "detail two") == 0;
@@ -2171,11 +2171,11 @@ test_execution_guc_error_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentGUCFlexFatalJmpRef() ==
 			(sigjmp_buf *) &fake_execution2;
 
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 	}
 	PG_CATCH();
 	{
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -2208,7 +2208,7 @@ test_execution_catalog_state_is_execution_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		*PgCurrentUncommittedEnumTypesRef() = (HTAB *) &fake_execution1;
 		*PgCurrentUncommittedEnumValuesRef() = (HTAB *) &fake_execution1;
 		*PgCurrentReindexedHeapRef() = 101;
@@ -2222,7 +2222,7 @@ test_execution_catalog_state_is_execution_local(PG_FUNCTION_ARGS)
 			(struct PendingRelDelete *) &fake_execution1;
 		*PgCurrentPendingSyncHashRef() = (HTAB *) &fake_execution1;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && *PgCurrentUncommittedEnumTypesRef() == NULL;
 		ok = ok && *PgCurrentUncommittedEnumValuesRef() == NULL;
 		ok = ok && *PgCurrentReindexedHeapRef() == InvalidOid;
@@ -2245,7 +2245,7 @@ test_execution_catalog_state_is_execution_local(PG_FUNCTION_ARGS)
 			(struct PendingRelDelete *) &fake_execution2;
 		*PgCurrentPendingSyncHashRef() = (HTAB *) &fake_execution2;
 
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		ok = ok && *PgCurrentUncommittedEnumTypesRef() ==
 			(HTAB *) &fake_execution1;
 		ok = ok && *PgCurrentUncommittedEnumValuesRef() ==
@@ -2260,7 +2260,7 @@ test_execution_catalog_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentPendingSyncHashRef() ==
 			(HTAB *) &fake_execution1;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && *PgCurrentUncommittedEnumTypesRef() ==
 			(HTAB *) &fake_execution2;
 		ok = ok && *PgCurrentUncommittedEnumValuesRef() ==
@@ -2275,11 +2275,11 @@ test_execution_catalog_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentPendingSyncHashRef() ==
 			(HTAB *) &fake_execution2;
 
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 	}
 	PG_CATCH();
 	{
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -2311,7 +2311,7 @@ test_execution_catalog_cache_state_is_execution_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		*PgCurrentCatCacheInProgressStackRef() =
 			(CatCInProgress *) &fake_execution1;
 		*PgCurrentRelcacheInProgressListRef() =
@@ -2325,7 +2325,7 @@ test_execution_catalog_cache_state_is_execution_local(PG_FUNCTION_ARGS)
 		*PgCurrentRelcacheNextEOXactTupleDescNumRef() = 3;
 		*PgCurrentRelcacheEOXactTupleDescArrayLenRef() = 4;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && *PgCurrentCatCacheInProgressStackRef() == NULL;
 		ok = ok && *PgCurrentRelcacheInProgressListRef() == NULL;
 		ok = ok && *PgCurrentRelcacheInProgressListLenRef() == 0;
@@ -2350,7 +2350,7 @@ test_execution_catalog_cache_state_is_execution_local(PG_FUNCTION_ARGS)
 		*PgCurrentRelcacheNextEOXactTupleDescNumRef() = 8;
 		*PgCurrentRelcacheEOXactTupleDescArrayLenRef() = 9;
 
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		ok = ok && *PgCurrentCatCacheInProgressStackRef() ==
 			(CatCInProgress *) &fake_execution1;
 		ok = ok && *PgCurrentRelcacheInProgressListRef() ==
@@ -2365,7 +2365,7 @@ test_execution_catalog_cache_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentRelcacheNextEOXactTupleDescNumRef() == 3;
 		ok = ok && *PgCurrentRelcacheEOXactTupleDescArrayLenRef() == 4;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && *PgCurrentCatCacheInProgressStackRef() ==
 			(CatCInProgress *) &fake_execution2;
 		ok = ok && *PgCurrentRelcacheInProgressListRef() ==
@@ -2380,11 +2380,11 @@ test_execution_catalog_cache_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentRelcacheNextEOXactTupleDescNumRef() == 8;
 		ok = ok && *PgCurrentRelcacheEOXactTupleDescArrayLenRef() == 9;
 
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 	}
 	PG_CATCH();
 	{
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -2412,7 +2412,7 @@ test_execution_relmap_state_is_execution_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		PgCurrentRelMapActiveSharedUpdatesRef()->num_mappings = 1;
 		PgCurrentRelMapActiveSharedUpdatesRef()->mappings[0].mapoid = 101;
 		PgCurrentRelMapActiveSharedUpdatesRef()->mappings[0].mapfilenumber =
@@ -2421,7 +2421,7 @@ test_execution_relmap_state_is_execution_local(PG_FUNCTION_ARGS)
 		PgCurrentRelMapPendingSharedUpdatesRef()->num_mappings = 3;
 		PgCurrentRelMapPendingLocalUpdatesRef()->num_mappings = 4;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && PgCurrentRelMapActiveSharedUpdatesRef()->num_mappings == 0;
 		ok = ok && PgCurrentRelMapActiveLocalUpdatesRef()->num_mappings == 0;
 		ok = ok &&
@@ -2436,7 +2436,7 @@ test_execution_relmap_state_is_execution_local(PG_FUNCTION_ARGS)
 		PgCurrentRelMapPendingSharedUpdatesRef()->num_mappings = 7;
 		PgCurrentRelMapPendingLocalUpdatesRef()->num_mappings = 8;
 
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		ok = ok && PgCurrentRelMapActiveSharedUpdatesRef()->num_mappings == 1;
 		ok = ok &&
 			PgCurrentRelMapActiveSharedUpdatesRef()->mappings[0].mapoid == 101;
@@ -2447,7 +2447,7 @@ test_execution_relmap_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && PgCurrentRelMapPendingSharedUpdatesRef()->num_mappings == 3;
 		ok = ok && PgCurrentRelMapPendingLocalUpdatesRef()->num_mappings == 4;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && PgCurrentRelMapActiveSharedUpdatesRef()->num_mappings == 5;
 		ok = ok &&
 			PgCurrentRelMapActiveSharedUpdatesRef()->mappings[0].mapoid == 201;
@@ -2458,11 +2458,11 @@ test_execution_relmap_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && PgCurrentRelMapPendingSharedUpdatesRef()->num_mappings == 7;
 		ok = ok && PgCurrentRelMapPendingLocalUpdatesRef()->num_mappings == 8;
 
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 	}
 	PG_CATCH();
 	{
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -2494,7 +2494,7 @@ test_execution_inval_twophase_state_is_execution_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		PgCurrentInvalMessageArrays()[0].msgs = &invalmsg1;
 		PgCurrentInvalMessageArrays()[0].maxmsgs = 101;
 		*PgCurrentTransInvalInfoRef() =
@@ -2509,7 +2509,7 @@ test_execution_inval_twophase_state_is_execution_local(PG_FUNCTION_ARGS)
 		PgCurrentTwoPhaseRecordStateRef()->bytes_free = 103;
 		PgCurrentTwoPhaseRecordStateRef()->total_len = 104;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && PgCurrentInvalMessageArrays()[0].msgs == NULL;
 		ok = ok && PgCurrentInvalMessageArrays()[0].maxmsgs == 0;
 		ok = ok && *PgCurrentTransInvalInfoRef() == NULL;
@@ -2534,7 +2534,7 @@ test_execution_inval_twophase_state_is_execution_local(PG_FUNCTION_ARGS)
 		PgCurrentTwoPhaseRecordStateRef()->bytes_free = 203;
 		PgCurrentTwoPhaseRecordStateRef()->total_len = 204;
 
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		ok = ok && PgCurrentInvalMessageArrays()[0].msgs == &invalmsg1;
 		ok = ok && PgCurrentInvalMessageArrays()[0].maxmsgs == 101;
 		ok = ok && *PgCurrentTransInvalInfoRef() ==
@@ -2549,7 +2549,7 @@ test_execution_inval_twophase_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && PgCurrentTwoPhaseRecordStateRef()->bytes_free == 103;
 		ok = ok && PgCurrentTwoPhaseRecordStateRef()->total_len == 104;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && PgCurrentInvalMessageArrays()[1].msgs == &invalmsg2;
 		ok = ok && PgCurrentInvalMessageArrays()[1].maxmsgs == 201;
 		ok = ok && *PgCurrentTransInvalInfoRef() ==
@@ -2564,11 +2564,11 @@ test_execution_inval_twophase_state_is_execution_local(PG_FUNCTION_ARGS)
 		ok = ok && PgCurrentTwoPhaseRecordStateRef()->bytes_free == 203;
 		ok = ok && PgCurrentTwoPhaseRecordStateRef()->total_len == 204;
 
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 	}
 	PG_CATCH();
 	{
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -2596,7 +2596,7 @@ test_execution_async_state_is_execution_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		*PgCurrentPendingActionsRef() = (struct ActionList *) &fake_execution1;
 		*PgCurrentPendingListenActionsRef() = (HTAB *) &fake_execution1;
 		*PgCurrentPendingNotifiesRef() =
@@ -2612,7 +2612,7 @@ test_execution_async_state_is_execution_local(PG_FUNCTION_ARGS)
 		*PgCurrentSignalProcnosRef() = (ProcNumber *) &fake_execution1;
 		*PgCurrentTryAdvanceTailRef() = true;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && *PgCurrentPendingActionsRef() == NULL;
 		ok = ok && *PgCurrentPendingListenActionsRef() == NULL;
 		ok = ok && *PgCurrentPendingNotifiesRef() == NULL;
@@ -2640,7 +2640,7 @@ test_execution_async_state_is_execution_local(PG_FUNCTION_ARGS)
 		*PgCurrentSignalProcnosRef() = (ProcNumber *) &fake_execution2;
 		*PgCurrentTryAdvanceTailRef() = false;
 
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		ok = ok && *PgCurrentPendingActionsRef() ==
 			(struct ActionList *) &fake_execution1;
 		ok = ok && *PgCurrentPendingListenActionsRef() ==
@@ -2660,7 +2660,7 @@ test_execution_async_state_is_execution_local(PG_FUNCTION_ARGS)
 			(ProcNumber *) &fake_execution1;
 		ok = ok && *PgCurrentTryAdvanceTailRef();
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && *PgCurrentPendingActionsRef() ==
 			(struct ActionList *) &fake_execution2;
 		ok = ok && *PgCurrentPendingListenActionsRef() ==
@@ -2677,7 +2677,7 @@ test_execution_async_state_is_execution_local(PG_FUNCTION_ARGS)
 			(ProcNumber *) &fake_execution2;
 		ok = ok && !*PgCurrentTryAdvanceTailRef();
 
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		if (fake_execution1.async.signal_context != NULL)
 			MemoryContextDelete(fake_execution1.async.signal_context);
 		if (fake_execution2.async.signal_context != NULL)
@@ -2685,7 +2685,7 @@ test_execution_async_state_is_execution_local(PG_FUNCTION_ARGS)
 	}
 	PG_CATCH();
 	{
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		if (fake_execution1.async.signal_context != NULL)
 			MemoryContextDelete(fake_execution1.async.signal_context);
 		if (fake_execution2.async.signal_context != NULL)
@@ -2719,7 +2719,7 @@ test_execution_misc_scratch_state_is_execution_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		*PgCurrentArrayAnalyzeExtraDataRef() = &fake_execution1;
 		*PgCurrentTriggerDepthRef() = 101;
 		after_triggers_context1 = PgCurrentAfterTriggersMemoryContext();
@@ -2731,7 +2731,7 @@ test_execution_misc_scratch_state_is_execution_local(PG_FUNCTION_ARGS)
 			(ResourceOwner) &fake_execution1;
 		*PgCurrentSnapBuildExportInProgressRef() = true;
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && *PgCurrentArrayAnalyzeExtraDataRef() == NULL;
 		ok = ok && *PgCurrentTriggerDepthRef() == 0;
 		ok = ok && *PgCurrentAfterTriggersDataRef() == NULL;
@@ -2753,7 +2753,7 @@ test_execution_misc_scratch_state_is_execution_local(PG_FUNCTION_ARGS)
 			(ResourceOwner) &fake_execution2;
 		*PgCurrentSnapBuildExportInProgressRef() = false;
 
-		CurrentPgExecution = &fake_execution1;
+		PgSetCurrentExecution(&fake_execution1);
 		ok = ok && *PgCurrentArrayAnalyzeExtraDataRef() == &fake_execution1;
 		ok = ok && *PgCurrentTriggerDepthRef() == 101;
 		ok = ok && *PgCurrentAfterTriggersMemoryContextRef() ==
@@ -2765,7 +2765,7 @@ test_execution_misc_scratch_state_is_execution_local(PG_FUNCTION_ARGS)
 			(ResourceOwner) &fake_execution1;
 		ok = ok && *PgCurrentSnapBuildExportInProgressRef();
 
-		CurrentPgExecution = &fake_execution2;
+		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && *PgCurrentArrayAnalyzeExtraDataRef() == &fake_execution2;
 		ok = ok && *PgCurrentTriggerDepthRef() == 201;
 		ok = ok && *PgCurrentAfterTriggersMemoryContextRef() ==
@@ -2777,7 +2777,7 @@ test_execution_misc_scratch_state_is_execution_local(PG_FUNCTION_ARGS)
 			(ResourceOwner) &fake_execution2;
 		ok = ok && !*PgCurrentSnapBuildExportInProgressRef();
 
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 	}
 	PG_CATCH();
 	{
@@ -2785,7 +2785,7 @@ test_execution_misc_scratch_state_is_execution_local(PG_FUNCTION_ARGS)
 			MemoryContextDelete(fake_execution1.trigger.after_triggers_context);
 		if (fake_execution2.trigger.after_triggers_context != NULL)
 			MemoryContextDelete(fake_execution2.trigger.after_triggers_context);
-		CurrentPgExecution = saved_execution;
+		PgSetCurrentExecution(saved_execution);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();

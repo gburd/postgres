@@ -16,6 +16,7 @@
 
 #include "nodes/pathnodes.h"
 #include "nodes/plannodes.h"
+#include "utils/backend_runtime_current.h"
 #include "utils/global_lifetime.h"
 
 /* GUC parameters */
@@ -23,9 +24,14 @@
 extern double *PgCurrentCursorTupleFractionRef(void);
 extern bool *PgCurrentEnableSelfJoinEliminationRef(void);
 
-#define cursor_tuple_fraction (*PgCurrentCursorTupleFractionRef())
+#define cursor_tuple_fraction \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentCursorTupleFractionHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentCursorTupleFractionRef))
 #define enable_self_join_elimination \
-	(*PgCurrentEnableSelfJoinEliminationRef())
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEnableSelfJoinEliminationHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentEnableSelfJoinEliminationRef))
 
 /* query_planner callback to compute query_pathkeys */
 typedef void (*query_pathkeys_callback) (PlannerInfo *root, void *extra);
@@ -73,8 +79,14 @@ extern Limit *make_limit(Plan *lefttree, Node *limitOffset, Node *limitCount,
 extern int *PgCurrentFromCollapseLimitRef(void);
 extern int *PgCurrentJoinCollapseLimitRef(void);
 
-#define from_collapse_limit (*PgCurrentFromCollapseLimitRef())
-#define join_collapse_limit (*PgCurrentJoinCollapseLimitRef())
+#define from_collapse_limit \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentFromCollapseLimitHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentFromCollapseLimitRef))
+#define join_collapse_limit \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentJoinCollapseLimitHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentJoinCollapseLimitRef))
 
 extern void add_base_rels_to_query(PlannerInfo *root, Node *jtnode);
 extern void add_other_rels_to_query(PlannerInfo *root);

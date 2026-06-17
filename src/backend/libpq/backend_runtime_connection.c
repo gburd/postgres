@@ -12,6 +12,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include "libpq/libpq.h"
@@ -202,6 +203,9 @@ PgConnectionSocketIORef(PgConnection *connection)
 PgConnectionSocketIOState *
 PgCurrentConnectionSocketIORef(void)
 {
+	if (likely(CurrentPgConnectionSocketIORuntimeState != NULL))
+		return CurrentPgConnectionSocketIORuntimeState;
+
 	return PgConnectionSocketIORef(CurrentPgConnection);
 }
 
@@ -232,6 +236,9 @@ PgConnectionPqCommMethodsRef(PgConnection *connection)
 const PQcommMethods **
 PgCurrentPqCommMethodsRef(void)
 {
+	if (likely(CurrentPgConnectionProtocolRuntimeState != NULL))
+		return &CurrentPgConnectionProtocolRuntimeState->comm_methods;
+
 	return PgConnectionPqCommMethodsRef(CurrentPgConnection);
 }
 
@@ -244,6 +251,9 @@ PgConnectionFeBeWaitSetRef(PgConnection *connection)
 WaitEventSet **
 PgCurrentFeBeWaitSetRef(void)
 {
+	if (likely(CurrentPgConnectionProtocolRuntimeState != NULL))
+		return &CurrentPgConnectionProtocolRuntimeState->fe_be_wait_set;
+
 	return PgConnectionFeBeWaitSetRef(CurrentPgConnection);
 }
 
@@ -256,6 +266,9 @@ PgConnectionFrontendProtocolRef(PgConnection *connection)
 uint32 *
 PgCurrentFrontendProtocolRef(void)
 {
+	if (likely(CurrentPgConnectionProtocolRuntimeState != NULL))
+		return &CurrentPgConnectionProtocolRuntimeState->frontend_protocol;
+
 	return PgConnectionFrontendProtocolRef(CurrentPgConnection);
 }
 

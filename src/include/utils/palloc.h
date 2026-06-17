@@ -28,6 +28,7 @@
 #ifndef PALLOC_H
 #define PALLOC_H
 
+#include "utils/backend_runtime_current.h"
 #include "utils/global_lifetime.h"
 
 /*
@@ -59,7 +60,15 @@ typedef struct MemoryContextCallback
  * to change the setting.
  */
 extern MemoryContext *PgCurrentMemoryContextRef(void);
+extern void PgSetCurrentMemoryContextObject(MemoryContext context);
+#ifndef FRONTEND
+#define CurrentMemoryContext \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentMemoryContextHotRef, \
+									   CurrentPgExecution, \
+									   PgCurrentMemoryContextRef))
+#else
 #define CurrentMemoryContext (*PgCurrentMemoryContextRef())
+#endif
 
 /*
  * Flags for MemoryContextAllocExtended.

@@ -13,6 +13,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include "access/gin.h"
@@ -2249,97 +2250,55 @@ PgCurrentSessionBufferIOState(void)
 PgSessionXactDefaultState *
 PgCurrentSessionXactDefaultState(void)
 {
-	PgSessionXactDefaultState *xact_defaults;
-
-	if (CurrentPgSession == NULL)
-		xact_defaults = &early_session_xact_defaults;
-	else
-		xact_defaults = &CurrentPgSession->xact_defaults;
-
-	if (!xact_defaults->initialized)
-		PgSessionInitializeXactDefaultState(xact_defaults);
-
-	return xact_defaults;
+	PG_RUNTIME_RETURN_INITIALIZED_SESSION_BUCKET(CurrentPgSessionXactDefaultRuntimeState,
+												 xact_defaults,
+												 early_session_xact_defaults,
+												 PgSessionInitializeXactDefaultState);
 }
 
 PgSessionLockWaitState *
 PgCurrentSessionLockWaitState(void)
 {
-	PgSessionLockWaitState *lock_wait;
-
-	if (CurrentPgSession == NULL)
-		lock_wait = &early_session_lock_wait;
-	else
-		lock_wait = &CurrentPgSession->lock_wait;
-
-	if (!lock_wait->initialized)
-		PgSessionInitializeLockWaitState(lock_wait);
-
-	return lock_wait;
+	PG_RUNTIME_RETURN_INITIALIZED_SESSION_BUCKET(CurrentPgSessionLockWaitRuntimeState,
+												 lock_wait,
+												 early_session_lock_wait,
+												 PgSessionInitializeLockWaitState);
 }
 
 PgSessionLoggingState *
 PgCurrentSessionLoggingState(void)
 {
-	PgSessionLoggingState *logging;
-
-	if (CurrentPgSession == NULL)
-		logging = &early_session_logging;
-	else
-		logging = &CurrentPgSession->logging;
-
-	if (!logging->initialized)
-		PgSessionInitializeLoggingState(logging);
-
-	return logging;
+	PG_RUNTIME_RETURN_INITIALIZED_SESSION_BUCKET(CurrentPgSessionLoggingRuntimeState,
+												 logging,
+												 early_session_logging,
+												 PgSessionInitializeLoggingState);
 }
 
 PgSessionMiscGUCState *
 PgCurrentSessionMiscGUCState(void)
 {
-	PgSessionMiscGUCState *misc_guc;
-
-	if (CurrentPgSession == NULL)
-		misc_guc = &early_session_misc_guc;
-	else
-		misc_guc = &CurrentPgSession->misc_guc;
-
-	if (!misc_guc->initialized)
-		PgSessionInitializeMiscGUCState(misc_guc);
-
-	return misc_guc;
+	PG_RUNTIME_RETURN_INITIALIZED_SESSION_BUCKET(CurrentPgSessionMiscGUCRuntimeState,
+												 misc_guc,
+												 early_session_misc_guc,
+												 PgSessionInitializeMiscGUCState);
 }
 
 PgSessionGUCState *
 PgCurrentSessionGUCState(void)
 {
-	PgSessionGUCState *guc;
-
-	if (CurrentPgSession == NULL)
-		guc = &early_session_guc;
-	else
-		guc = &CurrentPgSession->guc;
-
-	if (!guc->initialized)
-		PgSessionInitializeGUCState(guc);
-
-	return guc;
+	PG_RUNTIME_RETURN_INITIALIZED_SESSION_BUCKET(CurrentPgSessionGUCRuntimeState,
+												 guc,
+												 early_session_guc,
+												 PgSessionInitializeGUCState);
 }
 
 PgSessionPgStatState *
 PgCurrentSessionPgStatState(void)
 {
-	PgSessionPgStatState *pgstat;
-
-	if (CurrentPgSession == NULL)
-		pgstat = &early_session_pgstat;
-	else
-		pgstat = &CurrentPgSession->pgstat;
-
-	if (!pgstat->initialized)
-		PgSessionInitializePgStatState(pgstat);
-
-	return pgstat;
+	PG_RUNTIME_RETURN_INITIALIZED_SESSION_BUCKET(CurrentPgSessionPgStatRuntimeState,
+												 pgstat,
+												 early_session_pgstat,
+												 PgSessionInitializePgStatState);
 }
 
 PgSessionQueryIdState *
@@ -2544,49 +2503,28 @@ PgCurrentSessionSortGUCState(void)
 PgSessionQueryMemoryState *
 PgCurrentSessionQueryMemoryState(void)
 {
-	PgSessionQueryMemoryState *query_memory;
-
-	if (CurrentPgSession == NULL)
-		query_memory = &early_session_query_memory;
-	else
-		query_memory = &CurrentPgSession->query_memory;
-
-	if (!query_memory->initialized)
-		PgSessionInitializeQueryMemoryState(query_memory);
-
-	return query_memory;
+	PG_RUNTIME_RETURN_INITIALIZED_SESSION_BUCKET(CurrentPgSessionQueryMemoryRuntimeState,
+												 query_memory,
+												 early_session_query_memory,
+												 PgSessionInitializeQueryMemoryState);
 }
 
 PgSessionPlannerCostState *
 PgCurrentSessionPlannerCostState(void)
 {
-	PgSessionPlannerCostState *planner_cost;
-
-	if (CurrentPgSession == NULL)
-		planner_cost = &early_session_planner_cost;
-	else
-		planner_cost = &CurrentPgSession->planner_cost;
-
-	if (!planner_cost->initialized)
-		PgSessionInitializePlannerCostState(planner_cost);
-
-	return planner_cost;
+	PG_RUNTIME_RETURN_INITIALIZED_SESSION_BUCKET(CurrentPgSessionPlannerCostRuntimeState,
+												 planner_cost,
+												 early_session_planner_cost,
+												 PgSessionInitializePlannerCostState);
 }
 
 PgSessionPlannerMethodState *
 PgCurrentSessionPlannerMethodState(void)
 {
-	PgSessionPlannerMethodState *planner_method;
-
-	if (CurrentPgSession == NULL)
-		planner_method = &early_session_planner_method;
-	else
-		planner_method = &CurrentPgSession->planner_method;
-
-	if (!planner_method->initialized)
-		PgSessionInitializePlannerMethodState(planner_method);
-
-	return planner_method;
+	PG_RUNTIME_RETURN_INITIALIZED_SESSION_BUCKET(CurrentPgSessionPlannerMethodRuntimeState,
+												 planner_method,
+												 early_session_planner_method,
+												 PgSessionInitializePlannerMethodState);
 }
 
 PgSessionFunctionManagerState *
@@ -2610,6 +2548,9 @@ PgCurrentSessionExtensionModuleState(void)
 PgSessionCatalogLookupState *
 PgCurrentSessionCatalogLookupState(void)
 {
+	if (likely(CurrentPgSessionCatalogLookupRuntimeState != NULL))
+		return CurrentPgSessionCatalogLookupRuntimeState;
+
 	if (CurrentPgSession == NULL)
 		return &early_session_catalog_lookup;
 
@@ -2766,6 +2707,9 @@ PgCurrentSessionTcopState(void)
 PgSessionLoopState *
 PgCurrentSessionLoopState(void)
 {
+	if (likely(CurrentPgSessionLoopRuntimeState != NULL))
+		return CurrentPgSessionLoopRuntimeState;
+
 	if (CurrentPgSession == NULL)
 		return &early_session_loop_state;
 
@@ -2776,6 +2720,10 @@ PgSessionNamespaceState *
 PgCurrentSessionNamespaceState(void)
 {
 	PgSessionNamespaceState *namespace_state;
+
+	if (likely(CurrentPgSessionNamespaceRuntimeState != NULL &&
+			   CurrentPgSessionNamespaceRuntimeState->initialized))
+		return CurrentPgSessionNamespaceRuntimeState;
 
 	if (CurrentPgSession == NULL)
 		namespace_state = &early_session_namespace;
@@ -2795,6 +2743,10 @@ PgCurrentSessionDateTimeState(void)
 {
 	PgSessionDateTimeState *datetime;
 
+	if (likely(CurrentPgSessionDateTimeRuntimeState != NULL &&
+			   CurrentPgSessionDateTimeRuntimeState->initialized))
+		return CurrentPgSessionDateTimeRuntimeState;
+
 	datetime = &PgCurrentOrEarlySession()->datetime;
 
 	if (!datetime->initialized)
@@ -2812,13 +2764,17 @@ PgCurrentNamespaceState(void)
 char **
 PgCurrentNamespaceSearchPathRef(void)
 {
-	return &PgCurrentSessionNamespaceState()->namespace_search_path_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionNamespaceRuntimeState, PgCurrentSessionNamespaceState)->namespace_search_path_value;
 }
 
 PgSessionLocaleState *
 PgCurrentSessionLocaleState(void)
 {
 	PgSessionLocaleState *locale;
+
+	if (likely(CurrentPgSessionLocaleRuntimeState != NULL &&
+			   CurrentPgSessionLocaleRuntimeState->initialized))
+		return CurrentPgSessionLocaleRuntimeState;
 
 	locale = &PgCurrentOrEarlySession()->locale;
 
@@ -2837,37 +2793,37 @@ PgCurrentLocaleState(void)
 void **
 PgCurrentIcuConverterRef(void)
 {
-	return &PgCurrentSessionLocaleState()->icu_converter;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionLocaleRuntimeState, PgCurrentSessionLocaleState)->icu_converter;
 }
 
 char **
 PgCurrentLocaleMessagesRef(void)
 {
-	return &PgCurrentSessionLocaleState()->locale_messages_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionLocaleRuntimeState, PgCurrentSessionLocaleState)->locale_messages_value;
 }
 
 char **
 PgCurrentLocaleMonetaryRef(void)
 {
-	return &PgCurrentSessionLocaleState()->locale_monetary_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionLocaleRuntimeState, PgCurrentSessionLocaleState)->locale_monetary_value;
 }
 
 char **
 PgCurrentLocaleNumericRef(void)
 {
-	return &PgCurrentSessionLocaleState()->locale_numeric_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionLocaleRuntimeState, PgCurrentSessionLocaleState)->locale_numeric_value;
 }
 
 char **
 PgCurrentLocaleTimeRef(void)
 {
-	return &PgCurrentSessionLocaleState()->locale_time_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionLocaleRuntimeState, PgCurrentSessionLocaleState)->locale_time_value;
 }
 
 int *
 PgCurrentIcuValidationLevelRef(void)
 {
-	return &PgCurrentSessionLocaleState()->icu_validation_level_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionLocaleRuntimeState, PgCurrentSessionLocaleState)->icu_validation_level_value;
 }
 
 Oid *
@@ -3011,55 +2967,55 @@ PgCurrentBinaryUpgradeRecordInitPrivsRef(void)
 int *
 PgCurrentDateStyleRef(void)
 {
-	return &PgCurrentSessionDateTimeState()->date_style;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionDateTimeRuntimeState, PgCurrentSessionDateTimeState)->date_style;
 }
 
 int *
 PgCurrentDateOrderRef(void)
 {
-	return &PgCurrentSessionDateTimeState()->date_order;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionDateTimeRuntimeState, PgCurrentSessionDateTimeState)->date_order;
 }
 
 int *
 PgCurrentIntervalStyleRef(void)
 {
-	return &PgCurrentSessionDateTimeState()->interval_style;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionDateTimeRuntimeState, PgCurrentSessionDateTimeState)->interval_style;
 }
 
 char **
 PgCurrentTimeZoneStringRef(void)
 {
-	return &PgCurrentSessionDateTimeState()->timezone_string_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionDateTimeRuntimeState, PgCurrentSessionDateTimeState)->timezone_string_value;
 }
 
 char **
 PgCurrentLogTimeZoneStringRef(void)
 {
-	return &PgCurrentSessionDateTimeState()->log_timezone_string_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionDateTimeRuntimeState, PgCurrentSessionDateTimeState)->log_timezone_string_value;
 }
 
 pg_tz **
 PgCurrentSessionTimeZoneRef(void)
 {
-	return &PgCurrentSessionDateTimeState()->session_timezone_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionDateTimeRuntimeState, PgCurrentSessionDateTimeState)->session_timezone_value;
 }
 
 pg_tz **
 PgCurrentLogTimeZoneRef(void)
 {
-	return &PgCurrentSessionDateTimeState()->log_timezone_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionDateTimeRuntimeState, PgCurrentSessionDateTimeState)->log_timezone_value;
 }
 
 TimeZoneAbbrevTable **
 PgCurrentTimeZoneAbbrevTableRef(void)
 {
-	return &PgCurrentSessionDateTimeState()->timezone_abbrev_table;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionDateTimeRuntimeState, PgCurrentSessionDateTimeState)->timezone_abbrev_table;
 }
 
 PgSessionTzAbbrevCache *
 PgCurrentTimeZoneAbbrevCache(void)
 {
-	return PgCurrentSessionDateTimeState()->timezone_abbrev_cache;
+	return PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionDateTimeRuntimeState, PgCurrentSessionDateTimeState)->timezone_abbrev_cache;
 }
 
 char **
