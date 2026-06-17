@@ -331,29 +331,6 @@ extern int	FileOpsSetXattr(const char *path, const char *name,
 							const void *value, size_t len);
 extern int	FileOpsRemoveXattr(const char *path, const char *name);
 
-/*
- * FileOpsRemoveXattrsForRelation - clean up FILEOPS-tracked extended
- * attributes attached to any fork/segment of a relation.
- *
- * Called from smgrDoPendingDeletes(isCommit=true) so that auxiliary state
- * (compression markers, encryption key references, etc.) attached to
- * relation files via FileOpsSetXattr is removed in the same transaction
- * boundary as the relation drop.  Today this is a no-op because no caller
- * stores xattrs on relation files; the hook is added now so future commits
- * that introduce relation-keyed xattrs do not need to touch
- * catalog/storage.c again.
- *
- * This is the *narrow* coupling between FILEOPS and pendingDeletes.  See
- * the Future Work section of the FILEOPS commit message for why FILEOPS
- * does NOT (yet) replace pendingDeletes outright.
- *
- * The rlocator argument is opaque (RelFileLocator); declared as void* in
- * this header to avoid pulling in catalog/pg_class.h here.  The
- * implementation in fileops.c casts it back.
- */
-struct RelFileLocator;
-extern void FileOpsRemoveXattrsForRelation(const struct RelFileLocator *rlocator);
-
 /* WAL redo and descriptor functions */
 extern void fileops_redo(XLogReaderState *record);
 extern void fileops_desc(StringInfo buf, XLogReaderState *record);

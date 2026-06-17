@@ -1271,26 +1271,6 @@ FileOpsRemoveXattr(const char *path, const char *name)
 }
 
 /*
- * FileOpsRemoveXattrsForRelation - clean up FILEOPS-tracked xattrs for a
- * relation that is being dropped via smgrDoPendingDeletes.
- *
- * Today this is a no-op: nothing in core stores extended attributes on
- * relation files via FileOpsSetXattr.  The hook is added now so that
- * future commits introducing relation-keyed xattrs (e.g. compression
- * markers, encryption key references) can wire in by populating an
- * internal registry without touching catalog/storage.c again.
- *
- * This is the *narrow* coupling between FILEOPS and pendingDeletes; see
- * the FILEOPS commit message for why FILEOPS does NOT replace
- * pendingDeletes outright in this release.
- */
-void
-FileOpsRemoveXattrsForRelation(const struct RelFileLocator *rlocator)
-{
-	(void) rlocator;	/* placeholder; no per-relation xattr registry yet */
-}
-
-/*
  * FileOpsDoPendingOps - Execute pending file operations at transaction end
  *
  * At commit, operations with at_commit=true are executed.
