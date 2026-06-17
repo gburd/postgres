@@ -14,6 +14,7 @@
 
 #include "access/cmptype.h"
 #include "access/genam.h"
+#include "access/itup.h"
 #include "access/stratnum.h"
 #include "nodes/nodes.h"
 #include "nodes/pg_list.h"
@@ -28,7 +29,6 @@ typedef struct IndexPath IndexPath;
 
 /* Likewise, this file shouldn't depend on execnodes.h. */
 typedef struct IndexInfo IndexInfo;
-
 
 /*
  * Properties for amproperty API.  This list covers properties known to the

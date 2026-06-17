@@ -15,6 +15,7 @@
 #define EXECUTOR_H
 
 #include "access/xlogdefs.h"
+#include "access/itup.h"
 #include "datatype/timestamp.h"
 #include "executor/execdesc.h"
 #include "fmgr.h"
@@ -755,11 +756,13 @@ extern Bitmapset *ExecGetAllUpdatedCols(ResultRelInfo *relinfo, EState *estate);
  */
 extern void ExecOpenIndices(ResultRelInfo *resultRelInfo, bool speculative);
 extern void ExecCloseIndices(ResultRelInfo *resultRelInfo);
+extern void ExecSetIndexUnchanged(ResultRelInfo *resultRelInfo,
+								  const Bitmapset *modified_idx_attrs);
 
 /* flags for ExecInsertIndexTuples */
 #define		EIIT_IS_UPDATE			(1<<0)
 #define		EIIT_NO_DUPE_ERROR		(1<<1)
-#define		EIIT_ONLY_SUMMARIZING	(1<<2)
+#define		EIIT_IS_HOT_INDEXED		(1<<2)
 extern List *ExecInsertIndexTuples(ResultRelInfo *resultRelInfo, EState *estate,
 								   uint32 flags, TupleTableSlot *slot,
 								   List *arbiterIndexes,
