@@ -8,6 +8,42 @@ Append here only when investigating a Phase 12 regression, recording validation
 that changes the closeout evidence, or deliberately reopening a scoped Phase 12
 blocker.
 
+## Linux Simple-Query Perf Checkpoint
+
+Evidence checkpoint:
+
+- target: record the focused Linux c8 simple-query profiling pass after the
+  threaded FileSize() lseek restoration and the allocator/context probes, so
+  later optimization work starts from measured branch-vs-process evidence.
+- workload: vanilla REL_19_BETA1 pgbench client, pgbench -S -M simple -c 8
+  -j 8 -T 22, against branch process and branch threaded servers built with
+  the same configure flags on native WSL ext4 storage.
+- native WSL perf availability: software task-clock profiling works through
+  /usr/lib/linux-tools-6.8.0-124/perf; hardware counters (cycles,
+  instructions, branches) are not supported by the WSL kernel exposed here.
+- stat result: process mode reached 21602.9 TPS with 42606 ms server
+  task-clock, or about 0.0897 ms server CPU per transaction; threaded mode
+  reached 21173.0 TPS with 45467 ms server task-clock, or about 0.0977 ms
+  server CPU per transaction.
+- interpretation: the c8 simple-query gap in this run looks like roughly 9%
+  more server CPU per transaction in threaded mode, not a context-switch cliff;
+  context switches per transaction were similar (about 0.459 process vs 0.465
+  threaded).
+- profile shape: both profiles are dominated by frontend socket wakeups and the
+  normal simple-query planner/catalog path.  No single threaded-only syscall or
+  lock cliff appears.  Small threaded-heavy samples include syscache/relcache
+  and planner work (SearchSysCache1, ReceiveSharedInvalidMessages,
+  get_relation_info, smgrnblocks, standard_planner) plus runtime current
+  accessors in transaction/predicate paths.
+- discarded probes: tcmalloc was not a stable win when vanilla pgbench drove
+  all systems; a single-statement GenerationContext scratch context and a
+  thread-first hot-current branch-bias probe both benchmarked worse and were
+  reverted.
+- next optimization direction: avoid allocator swaps and broad scheduler work
+  for this workload first; profile or instrument simple-query planning/catalog
+  current-access cost and high-frequency transaction/runtime accessors, then
+  make narrowly proven threaded-only reductions.
+
 ## Linux Threaded FileSize VFD Offset Recheck
 
 Lifecycle/preflight note:
