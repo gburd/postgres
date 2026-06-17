@@ -1550,8 +1550,7 @@ recno_tuple_delete(Relation relation, ItemPointer tid, CommandId cid,
 								  relation->rd_rel->relpersistence);
 
 		/* Free old_tuple copy now that before-image has been stored */
-		pfree(old_tuple_for_delete_wal->t_data);
-		pfree(old_tuple_for_delete_wal);
+		RecnoFreeTuple(old_tuple_for_delete_wal);
 
 		/* Mark this block dirty for the scan-path sLog bypass */
 		RecnoDirtyMapMark(RelationGetRelid(relation), blkno);
@@ -3932,8 +3931,7 @@ force_shrink_retry:
 		 */
 
 		/* Free old_tuple copy now that before-image has been stored */
-		pfree(old_tuple_for_inplace_wal->t_data);
-		pfree(old_tuple_for_inplace_wal);
+		RecnoFreeTuple(old_tuple_for_inplace_wal);
 
 		/* Mark this block dirty for the scan-path sLog bypass */
 		RecnoDirtyMapMark(RelationGetRelid(relation), blkno);
