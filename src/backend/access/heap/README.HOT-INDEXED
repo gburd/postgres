@@ -1,0 +1,56 @@
+HOT-indexed updates (Selective Index Update, "HOT/SIU")
+=======================================================
+
+Classic HOT (see README.HOT) keeps an UPDATE off the indexes only when no
+indexed column changed: the new tuple is a heap-only tuple appended to the
+chain, and every index entry continues to resolve, via the same-page t_ctid
+chain, to a tuple whose indexed values still equal the entry's key.
+
+HOT-indexed (Selective Index Update, SIU) relaxes that to: an UPDATE may
+change indexed columns and still be a heap-only tuple on the same page,
+provided new index entries are inserted only into the indexes whose key
+attributes actually changed.  The indexes whose attributes did not change are
+left untouched, which is where the write-amplification saving comes from.
+
+The price is that a chain may now contain tuples with different index keys, so
+an index entry for an old key can chain-resolve to a live tuple whose current
+key differs.  Such an entry is STALE.  The read side detects and drops stale
+entries by testing the heap's crossed-attribute bitmap against the index's
+key columns.
+
+This file documents the eligibility rules, the write path, the on-chain
+representation, the read-side staleness test, prune/collapse, vacuum reclamation,
+recovery, the logical-replication apply gating, and the statistics.
+
+
+The classic-HOT invariant we are relaxing
+------------------------------------------
+
+Classic HOT relies on two properties:
+
+  (a) every live index entry resolves, via a same-page t_ctid chain, to the
+      chain's root line pointer; and
+
+  (b) the indexed values of every tuple on the chain equal the key of every
+      index entry that reaches it.
+
+HOT-indexed keeps (a) but breaks (b): after a HOT-indexed update the chain
+holds tuples with different keys, and a new index entry is planted that points
+at the *specific* heap-only tuple whose key it matches -- not necessarily the
+root.
+
+
+The HOT-indexed invariant (the new contract)
+--------------------------------------------
+
+  An index entry points at the heap-only tuple version whose indexed key it
+  matched at insertion time.  A chain walk that reaches a live tuple by
+  crossing a HOT-indexed hop *after* the entry's own target may be stale: if
+  the union of those crossed hops' modified attributes overlaps the index's
+  key columns, the entry is stale and the tuple is dropped from that scan.
+  The row is
+  re-supplied by the fresh entry that the same update inserted for the new
+  key.
+
+This is what makes dropping a stale entry safe: the live row is always
+reachable through exactly one non-stale entry per index.
