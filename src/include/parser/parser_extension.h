@@ -285,6 +285,16 @@ extern const char *pg_grammar_ext_get_serialized_lime(const PgGrammarExtension *
 extern void pg_grammar_ext_lock_parser(void);
 
 /*
+ * pg_grammar_ext_prewarm
+ *	  Internal hook called by the postmaster after all
+ *	  shared_preload_libraries have run _PG_init().  Composes the
+ *	  registered grammar extensions into the active parser snapshot at
+ *	  startup (before backends fork), so no session pays a first-query
+ *	  compose cost.  No-op when no extension registered.
+ */
+extern void pg_grammar_ext_prewarm(void);
+
+/*
  * Phase 4 Track B: scanner-keyword hook.
  *
  * If non-NULL, scan.c calls this function for every identifier-shaped

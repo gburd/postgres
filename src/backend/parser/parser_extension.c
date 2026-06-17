@@ -532,6 +532,39 @@ pg_grammar_ext_lock_parser(void)
 						err_detail ? err_detail : "(no detail)")));
 }
 
+/*
+ * pg_grammar_ext_prewarm
+ *	  Compose the registered extension grammars into the active parser
+ *	  snapshot at postmaster startup, after all shared_preload_libraries
+ *	  have run their _PG_init() (and so registered their extensions) but
+ *	  before any backend forks.  Every backend then inherits the composed
+ *	  snapshot across fork, so the first query in every session parses at
+ *	  warm-cache speed -- no per-backend, no first-query compose latency.
+ *
+ *	  A compose failure here is FATAL: a broken grammar extension in
+ *	  shared_preload_libraries should stop the postmaster at startup
+ *	  rather than fail every backend's first parse.
+ *
+ *	  No-op when no grammar extension registered, or after the parser is
+ *	  already locked (idempotent).
+ */
+void
+pg_grammar_ext_prewarm(void)
+{
+	char	   *err_detail = NULL;
+	unsigned int base_nrule = 0;
+
+	if (parser_locked || npending == 0)
+		return;
+	parser_locked = true;
+
+	if (!pg_grammar_compose_install(&base_nrule, &err_detail))
+		ereport(FATAL,
+				(errcode(ERRCODE_CONFIG_FILE_ERROR),
+				 errmsg("grammar extension compose failed at startup: %s",
+						err_detail ? err_detail : "(no detail)")));
+}
+
 
 /*
  * ----------------------------------------------------------------------
