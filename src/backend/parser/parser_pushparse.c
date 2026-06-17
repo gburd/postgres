@@ -28,8 +28,11 @@
 
 #include "gramparse.h"
 #include "parser/parser.h"
+#include "parser/parser_extension.h"
 #include "parser/scanner.h"
+#include "lib/stringinfo.h"
 
+#include <lime/lime_compiler.h>
 #include <lime/parse_context.h>
 #include <lime/snapshot.h>
 
@@ -51,14 +54,164 @@ extern int	base_yyHostReduce(void *user, int ruleno,
 extern bool raw_parser_lime_pushparse(core_yyscan_t yyscanner,
 									  base_yy_extra_type *yyextra,
 									  List **result);
-extern char *raw_parser_lime_compose_probe(const char *extra_rule);
+extern bool pg_grammar_compose_install(unsigned int *base_nrule_out,
+									   char **errmsg_out);
 
 /*
- * The base snapshot, built once per backend on first use.  When grammar
- * extensions are active this will be replaced by the composed snapshot
- * (parser_extension.c); for now it is the base grammar only.
+ * Active parser snapshot.
+ *
+ *   base_snapshot     -- the base SQL grammar, built once per backend.
+ *   composed_snapshot -- base + registered extension grammars, compiled
+ *                        in-process; NULL until pg_grammar_compose_install
+ *                        runs.  When set, parses use it instead of base.
+ *   composed_base_nrule -- the base grammar's rule count; the host-reduce
+ *                        dispatcher routes ruleno < this to the base
+ *                        actions and ruleno >= this to extension rules.
  */
 static ParserSnapshot *base_snapshot = NULL;
+static ParserSnapshot *composed_snapshot = NULL;
+static unsigned int composed_base_nrule = 0;
+
+/*
+ * pushparse_host_reduce
+ *	  The composed snapshot's host-reduce dispatcher.  Routes a reduce by
+ *	  composed rule number: base rules (ruleno < composed_base_nrule) run
+ *	  the generated base actions via base_yyHostReduce; extension rules
+ *	  (ruleno >= composed_base_nrule) route to their registered
+ *	  PgGrammarReduceFn via pg_grammar_ext_resolve_reduce.  `user` is the
+ *	  core scanner, threaded as the host_reduce user pointer.
+ */
+static int
+pushparse_host_reduce(void *user, int ruleno,
+					  const void *rhs_values, const int *rhs_locs,
+					  int nrhs, void *lhs_out, int *lhs_loc_out)
+{
+	if ((unsigned int) ruleno < composed_base_nrule)
+		return base_yyHostReduce(user, ruleno, rhs_values, rhs_locs,
+								 nrhs, lhs_out, lhs_loc_out);
+
+	return pg_grammar_ext_resolve_reduce((int) ((unsigned int) ruleno -
+												composed_base_nrule),
+										 user, nrhs,
+										 (const void *const *) rhs_values,
+										 rhs_locs, lhs_out);
+}
+
+/*
+ * pg_grammar_compose_install
+ *	  Merge the base grammar source with the registered extension
+ *	  fragments, compile the result to a runtime ParserSnapshot
+ *	  in-process (no subprocess, no C compiler), and install it as the
+ *	  active composed snapshot.  Stores the base rule count in
+ *	  *base_nrule_out.  Returns true on success; on failure sets
+ *	  *errmsg_out to a palloc'd message and returns false.
+ */
+bool
+pg_grammar_compose_install(unsigned int *base_nrule_out, char **errmsg_out)
+{
+	const char **frags;
+	int			nfrags;
+	StringInfoData merged;
+	ParserSnapshot *snap = NULL;
+	char	   *err = NULL;
+	int			rc;
+
+	if (base_snapshot == NULL)
+	{
+		base_snapshot = base_yyBuildSnapshot();
+		if (base_snapshot == NULL)
+		{
+			if (errmsg_out)
+				*errmsg_out = pstrdup("could not build base parser snapshot");
+			return false;
+		}
+	}
+	composed_base_nrule = base_snapshot->nrule;
+	if (base_nrule_out)
+		*base_nrule_out = composed_base_nrule;
+
+	if (base_snapshot->grammar_source == NULL ||
+		base_snapshot->grammar_source_len == 0)
+	{
+		if (errmsg_out)
+			*errmsg_out = pstrdup("base snapshot has no embedded grammar "
+								  "source; rebuild with lime -n");
+		return false;
+	}
+
+	nfrags = pg_grammar_ext_pending_fragments(&frags);
+	if (nfrags == 0)
+		return true;			/* nothing to compose; base snapshot stands */
+
+	/* base grammar text + each extension fragment, in registration order. */
+	initStringInfo(&merged);
+	appendBinaryStringInfo(&merged, base_snapshot->grammar_source,
+						   (int) base_snapshot->grammar_source_len);
+	for (int i = 0; i < nfrags; i++)
+	{
+		appendStringInfoChar(&merged, '\n');
+		appendStringInfoString(&merged, frags[i]);
+		appendStringInfoChar(&merged, '\n');
+	}
+
+	rc = lime_compile_grammar_in_process(merged.data, (size_t) merged.len,
+										 &snap, &err);
+	pfree(merged.data);
+	if (rc != 0 || snap == NULL)
+	{
+		if (errmsg_out)
+			*errmsg_out = psprintf("in-process grammar compose failed: %s",
+								   err ? err : "(no detail)");
+		if (err)
+			free(err);
+		return false;
+	}
+
+	/* Route base/extension reduces through the composed dispatcher. */
+	snap->host_reduce = pushparse_host_reduce;
+	composed_snapshot = snap;
+	return true;
+}
+
+/*
+ * pushparse_ascii_to_named
+ *	  Translate a raw single-character token code (the ASCII byte the core
+ *	  scanner emits for ';' '(' ',' '+' ...) to the backend grammar's named
+ *	  token id (SEMI, LPAREN, COMMA, PLUS, ...).  The pull parser does this
+ *	  inside base_yyparse (gram.lime's ascii_to_lime_token); the push path
+ *	  must apply the same mapping before parse_token, or single-character
+ *	  tokens arrive at the wrong external code and are rejected.  Named
+ *	  tokens (keywords, IDENT, ICONST, ...) pass through unchanged.
+ *
+ *	  Kept in sync with gram.lime's ascii_to_lime_token; the named codes
+ *	  come from gram.h (via gramparse.h).
+ */
+static inline int
+pushparse_ascii_to_named(int t)
+{
+	switch (t)
+	{
+		case '(':	return LPAREN;
+		case ')':	return RPAREN;
+		case '[':	return LBRACKET;
+		case ']':	return RBRACKET;
+		case ',':	return COMMA;
+		case ';':	return SEMI;
+		case ':':	return COLON;
+		case '.':	return DOT;
+		case '+':	return PLUS;
+		case '-':	return MINUS;
+		case '*':	return STAR;
+		case '/':	return SLASH;
+		case '%':	return PERCENT;
+		case '^':	return CARET;
+		case '|':	return PIPE;
+		case '<':	return LT;
+		case '>':	return GT;
+		case '=':	return EQ;
+		default:	return t;
+	}
+}
 
 /*
  * raw_parser_lime_pushparse
@@ -75,34 +228,53 @@ raw_parser_lime_pushparse(core_yyscan_t yyscanner,
 						  base_yy_extra_type *yyextra,
 						  List **result)
 {
+	ParserSnapshot *snap;
 	ParseContext *ctx;
 	int			rc = 0;
-	void	   *tree;
+	bool		accepted = false;
+	void	   *tree = NULL;
 
 	*result = NIL;
 
-	if (base_snapshot == NULL)
+	/*
+	 * Use the composed snapshot (base + extensions) when grammar
+	 * extensions have been installed; otherwise the base grammar.  Both
+	 * carry a host_reduce hook that runs base actions; the composed
+	 * snapshot's hook (pushparse_host_reduce) additionally routes
+	 * extension-rule reduces.
+	 */
+	if (composed_snapshot != NULL)
+		snap = composed_snapshot;
+	else
 	{
-		base_snapshot = base_yyBuildSnapshot();
 		if (base_snapshot == NULL)
-			elog(ERROR, "could not build base parser snapshot");
+		{
+			base_snapshot = base_yyBuildSnapshot();
+			if (base_snapshot == NULL)
+				elog(ERROR, "could not build base parser snapshot");
+		}
+		snap = base_snapshot;
 	}
 
 	/*
 	 * Borrow the snapshot: it lives for the backend's lifetime, far longer
 	 * than this parse, so we skip the per-parse refcount atomics.
 	 */
-	ctx = parse_begin_borrowed(base_snapshot);
+	ctx = parse_begin_borrowed(snap);
 	if (ctx == NULL)
 		elog(ERROR, "could not begin parse");
 
 	/*
-	 * Route base-rule reduces to the generated host-reduce wrapper, passing
-	 * the live scanner so %extra_argument (yyscanner) is available to every
-	 * action.  (Extension-rule reduces will route to their LimeReduceFns
-	 * once the composed snapshot is in use.)
+	 * Route reduces, passing the live scanner so %extra_argument
+	 * (yyscanner) is available to every action.  The composed snapshot
+	 * already wires pushparse_host_reduce as its host_reduce; for the base
+	 * snapshot we install base_yyHostReduce explicitly (it dispatches base
+	 * rules only, which is all the base grammar has).
 	 */
-	parse_set_host_reduce(ctx, base_yyHostReduce, yyscanner);
+	if (composed_snapshot != NULL)
+		parse_set_host_reduce(ctx, pushparse_host_reduce, yyscanner);
+	else
+		parse_set_host_reduce(ctx, base_yyHostReduce, yyscanner);
 
 	for (;;)
 	{
@@ -112,6 +284,7 @@ raw_parser_lime_pushparse(core_yyscan_t yyscanner,
 		void	   *boxed;
 
 		tok = base_yylex(&lval, &lloc, yyscanner);
+		tok = pushparse_ascii_to_named(tok);
 
 		/*
 		 * PostgreSQL's YYSTYPE is a union of pointer-width members.  The
@@ -123,13 +296,24 @@ raw_parser_lime_pushparse(core_yyscan_t yyscanner,
 
 		rc = parse_token(ctx, tok, boxed, lloc);
 
-		if (tok == 0)			/* EOF: parse settles on this call */
+		if (tok == 0)
+		{
+			/*
+			 * EOF.  parse_token returns 1 ("EOF accepts") on a successful
+			 * parse and a different non-zero / zero on failure; treat
+			 * accept (rc == 1) as success, everything else as error.
+			 */
+			accepted = (rc == 1);
 			break;
-		if (rc != 0)			/* syntax error */
+		}
+		if (rc != 0)			/* mid-stream syntax error */
+		{
+			accepted = false;
 			break;
+		}
 	}
 
-	if (rc == 0)
+	if (accepted)
 	{
 		tree = parse_result(ctx);
 		/* The start-rule action assigns yyextra->parsetree; prefer it. */
@@ -138,5 +322,5 @@ raw_parser_lime_pushparse(core_yyscan_t yyscanner,
 	}
 
 	parse_end(ctx);
-	return (rc == 0);
+	return accepted;
 }

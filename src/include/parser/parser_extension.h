@@ -200,6 +200,30 @@ extern void pg_grammar_ext_dispatch_reduce(unsigned int rule_id,
 										   void *lhs_out);
 
 /*
+ * pg_grammar_ext_resolve_reduce
+ *	  Track B host-reduce routing for EXTENSION rules.  The push parser's
+ *	  composed host-reduce dispatcher calls this with the extension rule's
+ *	  composed-relative index (composed_ruleno - base_nrule); it maps that
+ *	  to the registered PgGrammarReduceFn and invokes it.  Returns 0 on
+ *	  success.  `extra_arg` is the core scanner.
+ */
+extern int pg_grammar_ext_resolve_reduce(int ext_rule_index,
+										 void *extra_arg,
+										 int nrhs,
+										 const void *const *rhs_values,
+										 const int *rhs_locs,
+										 void *lhs_out);
+
+/*
+ * pg_grammar_ext_pending_fragments
+ *	  Return the registered extension fragments (NUL-terminated .lime
+ *	  text) for the push-parse driver to merge with the base grammar
+ *	  source.  Returns the count; *frags_out points at an array the
+ *	  caller must not free.
+ */
+extern int pg_grammar_ext_pending_fragments(const char ***frags_out);
+
+/*
  * pg_grammar_ext_set_precedence
  *	  Set or override the precedence of a symbol.
  *
