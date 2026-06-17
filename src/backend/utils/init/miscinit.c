@@ -36,6 +36,7 @@
 #include "libpq/pqsignal.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
+#include "parser/parser_extension.h"
 #include "pgstat.h"
 #include "postmaster/autovacuum.h"
 #include "postmaster/interrupt.h"
@@ -1860,6 +1861,14 @@ process_shared_preload_libraries(void)
 				   false);
 	process_shared_preload_libraries_in_progress = false;
 	process_shared_preload_libraries_done = true;
+
+	/*
+	 * Now that every preload library's _PG_init() has run and registered
+	 * any runtime grammar extensions, compose them into the parser
+	 * snapshot here in the postmaster, before backends fork, so no session
+	 * pays a first-query compose cost.  No-op if none registered.
+	 */
+	pg_grammar_ext_prewarm();
 }
 
 /*
