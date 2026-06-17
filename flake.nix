@@ -12,7 +12,7 @@
     #   nix develop --override-input lime path:/path/to/lime
     # for local development against an unpublished branch.
     lime = {
-      url = "git+https://codeberg.org/gregburd/lime.git?ref=refs/tags/v1.6.2";
+      url = "git+https://codeberg.org/gregburd/lime.git?ref=refs/tags/v1.7.0";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
       inputs.flake-utils.follows = "flake-utils";
     };
