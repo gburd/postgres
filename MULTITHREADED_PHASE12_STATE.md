@@ -1,3 +1,25 @@
+## ProcPort Hot Current
+
+Lifecycle/preflight note:
+
+- target: reduce small-query protocol overhead by removing repeated current
+  connection identity access for `MyProcPort` in libpq read/write and tcop
+  paths.
+- touched roots/buckets: no ownership roots move; cache only the address of
+  `PgConnection.identity.port`.
+- owner source files: `src/include/miscadmin.h`,
+  `src/include/utils/backend_runtime_hot_fields.def`, and this state note.
+- legacy symbols/accessors: keep `PgCurrentProcPortRef()` as the fallback and
+  compatibility surface.
+- repeated lifecycle operations: none.  The generated current bridge already
+  installs and clears connection-owned hot fields with the current connection.
+- checked primitive decision: cache the field address, not the `Port` value, so
+  existing connection adoption and `PgConnectionResetIdentityClosedState()`
+  assignments remain visible through the lvalue.
+- validation impact: full clean rebuild because hot-field indexes are generated
+  into many translation units, then lifecycle/threaded smoke checks and focused
+  c8 prepared small-query benchmarks.
+
 ## Threaded Interrupt Pending Fast Path
 
 Lifecycle/preflight note:

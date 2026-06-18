@@ -608,6 +608,11 @@ PG_RUNTIME_HOT_FIELD(PgCurrentExceptionStackHotRef,
 					 sigjmp_buf *,
 					 CurrentPgExecution != NULL ?
 					 &CurrentPgExecution->error.exception_stack : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentProcPortHotRef,
+					 connection,
+					 struct Port *,
+					 CurrentPgConnection != NULL ?
+					 &CurrentPgConnection->identity.port : NULL)
 PG_RUNTIME_HOT_FIELD(PgCurrentPqCommMethodsHotRef,
 					 connection,
 					 const struct PQcommMethods *,

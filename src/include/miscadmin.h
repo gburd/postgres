@@ -325,7 +325,10 @@ extern int *PgCurrentMyPMChildSlotRef(void);
 #define MyProcPid (*PgCurrentMyProcPidRef())
 #define MyStartTime (*PgCurrentMyStartTimeRef())
 #define MyStartTimestamp (*PgCurrentMyStartTimestampRef())
-#define MyProcPort (*PgCurrentProcPortRef())
+#define MyProcPort \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentProcPortHotRef, \
+									   CurrentPgConnection, \
+									   PgCurrentProcPortRef))
 #define MyLatch (*PgCurrentMyLatchRef())
 #define MyCancelKey (PgCurrentCancelKey())
 #define MyCancelKeyLength (*PgCurrentCancelKeyLengthRef())
