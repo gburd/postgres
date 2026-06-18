@@ -305,25 +305,31 @@ pushparse_build_keyword_map(void)
 /*
  * pushparse_resolve_collision
  *	  For a token `tok` the scanner produced as a BASE SQL keyword, check
- *	  whether a loaded extension also claims that lexeme (a collision).  If
- *	  so, ask the admissibility oracle which meaning fits the parser's
- *	  current state and return the token to actually feed:
+ *	  whether a loaded extension also claims that lexeme (a collision) and,
+ *	  if so, decide which token the parser should actually receive in its
+ *	  current state:
  *
  *	    - only the extension token is admissible -> the extension code
  *	      (e.g. a QUEL verb at statement start, where the base keyword
  *	      cannot begin a statement);
  *	    - only the base token is admissible -> the base code (unchanged);
- *	    - both admissible -> a genuine ambiguity (e.g. DELETE).  Resolving
- *	      that needs multi-token fork-resolve; until that lands, keep the
- *	      base meaning so base SQL is never silently broken;
- *	    - neither -> keep the base code and let the base grammar error.
+ *	    - both admissible -> a genuine ambiguity (e.g. DELETE: base
+ *	      `DELETE FROM ...` vs QUEL `delete e where ...`).  The two diverge
+ *	      one token later, so *need_peek is set and the caller peeks the
+ *	      next token to decide between *peek_base_code and *peek_ext_code;
+ *	    - neither admissible -> keep the base code and let the base grammar
+ *	      produce the error.
  *
- *	  Non-colliding tokens (no extension claims the base code) return
- *	  `tok` unchanged with zero oracle calls.
+ *	  Non-colliding tokens return `tok` unchanged with zero oracle calls
+ *	  and *need_peek = false.
  */
 static int
-pushparse_resolve_collision(ParseContext *ctx, int tok)
+pushparse_resolve_collision(ParseContext *ctx, int tok,
+							bool *need_peek,
+							int *peek_base_code, int *peek_ext_code)
 {
+	*need_peek = false;
+
 	for (int i = 0; i < kw_map_count; i++)
 	{
 		LimeTokenAdmissibility ad_base;
@@ -338,14 +344,41 @@ pushparse_resolve_collision(ParseContext *ctx, int tok)
 		if (ad_ext != LIME_TOK_NONE && ad_base == LIME_TOK_NONE)
 			return kw_map[i].code;	/* only the extension fits here */
 
-		/*
-		 * Both-admissible (fork-resolve) and only-base cases keep the base
-		 * meaning.  Fork-resolve for genuine ambiguity (DELETE) is a
-		 * follow-up; never guess in its favour.
-		 */
+		if (ad_ext != LIME_TOK_NONE && ad_base != LIME_TOK_NONE)
+		{
+			/* Genuine ambiguity: resolve with one token of lookahead. */
+			*need_peek = true;
+			*peek_base_code = kw_map[i].base_code;
+			*peek_ext_code = kw_map[i].code;
+			return tok;
+		}
+
+		/* Only base (or neither) admissible: keep the base meaning. */
 		return tok;
 	}
 	return tok;
+}
+
+/*
+ * pushparse_peek_resolves_ext
+ *	  One-token lookahead disambiguation for a both-admissible collision.
+ *	  `next` is the token that follows the colliding keyword.  Returns true
+ *	  if the EXTENSION meaning wins.
+ *
+ *	  For DELETE -- the only verb that legitimately leads a statement in
+ *	  both grammars -- base `DELETE` is always followed by FROM, while QUEL
+ *	  `delete e where ...` is followed by the relation-variable identifier.
+ *	  So the discriminator is exactly one token: next == FROM means base
+ *	  SQL DELETE; anything else means the extension.  This is the
+ *	  divergence point MULTI_GRAMMAR.md identifies for the delete case.
+ *
+ *	  Keeping base on next == FROM guarantees base SQL DELETE is never
+ *	  stolen; the extension only wins where base DELETE cannot continue.
+ */
+static bool
+pushparse_peek_resolves_ext(int next)
+{
+	return (next != FROM);
 }
 
 /*
@@ -409,6 +442,12 @@ raw_parser_lime_pushparse(core_yyscan_t yyscanner,
 	bool		accepted = false;
 	void	   *tree = NULL;
 
+	/* One-token pushback buffer for colliding-keyword (DELETE) lookahead. */
+	bool		have_buffered = false;
+	int			buffered_tok = 0;
+	YYSTYPE		buffered_lval;
+	YYLTYPE		buffered_lloc = 0;
+
 	*result = NIL;
 
 	/*
@@ -458,17 +497,54 @@ raw_parser_lime_pushparse(core_yyscan_t yyscanner,
 		int			tok;
 		void	   *boxed;
 
-		tok = base_yylex(&lval, &lloc, yyscanner);
-		tok = pushparse_ascii_to_named(tok);
+		if (have_buffered)
+		{
+			/* Replay a token peeked during collision resolution. */
+			tok = buffered_tok;
+			lval = buffered_lval;
+			lloc = buffered_lloc;
+			have_buffered = false;
+		}
+		else
+		{
+			tok = base_yylex(&lval, &lloc, yyscanner);
+			tok = pushparse_ascii_to_named(tok);
 
-		/*
-		 * Colliding-keyword resolution (composed snapshot only): if the
-		 * scanner produced a base SQL keyword that a loaded extension also
-		 * claims, let the admissibility oracle pick the meaning that fits
-		 * the current parse state.  No-op for non-colliding tokens.
-		 */
-		if (composed_snapshot != NULL)
-			tok = pushparse_resolve_collision(ctx, tok);
+			/*
+			 * Colliding-keyword resolution (composed snapshot only): if
+			 * the scanner produced a base SQL keyword that a loaded
+			 * extension also claims, ask the admissibility oracle which
+			 * meaning fits the current parse state.  No-op for
+			 * non-colliding tokens.
+			 */
+			if (composed_snapshot != NULL)
+			{
+				bool		need_peek = false;
+				int			base_code = 0;
+				int			ext_code = 0;
+
+				tok = pushparse_resolve_collision(ctx, tok, &need_peek,
+												  &base_code, &ext_code);
+				if (need_peek)
+				{
+					/*
+					 * Genuine ambiguity (DELETE): peek the next token,
+					 * buffer it to feed after this one, and choose the
+					 * base or extension meaning from one token of
+					 * lookahead.
+					 */
+					buffered_tok = base_yylex(&buffered_lval,
+											  &buffered_lloc, yyscanner);
+					buffered_tok = pushparse_ascii_to_named(buffered_tok);
+					have_buffered = true;
+
+					if (pushparse_peek_resolves_ext(buffered_tok))
+						tok = ext_code;
+					else
+						tok = base_code;
+				}
+			}
+		}
 
 		/*
 		 * PostgreSQL's YYSTYPE is a union of pointer-width members.  The

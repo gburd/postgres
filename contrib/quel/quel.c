@@ -141,7 +141,7 @@ static const QuelToken quel_tokens[] = {
 	{"K_QUEL_RETRIEVE", "retrieve"},
 	{"K_QUEL_REPLACE", "replace"},	/* base SQL: REPLACE -- oracle-resolved */
 	{"K_QUEL_APPEND", "append"},
-	{"K_QUEL_DELETE_QUEL", "q_delete"}, /* base SQL: DELETE -- needs fork-resolve */
+	{"K_QUEL_DELETE_QUEL", "delete"}, /* base SQL: DELETE -- fork-resolved by 1-token peek */
 	{"K_QUEL_RANGE", "range"},	/* base SQL: RANGE -- oracle-resolved */
 	{"K_QUEL_OF", "of"},		/* base SQL: OF -- oracle-resolved */
 	{"K_QUEL_IS", "is"},		/* base SQL: IS -- oracle-resolved */
