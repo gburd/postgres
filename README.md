@@ -28,6 +28,57 @@ Important constraints:
 - pooled scheduling comes after explicit wait boundaries exist;
 - correctness and lifecycle ownership come before broad performance claims.
 
+Current status:
+
+- Phase 12 / Gate E2-Core is closed for the scoped core runtime.
+- Phase 13 is active, focused on scheduler-aware wait boundaries.
+- Process mode remains supported.
+- Thread-per-session mode runs regular client backends and normal SQL paths.
+- Core backend/session/connection/execution/carrier state has explicit runtime
+  ownership sufficient for startup, command execution, PL/pgSQL, core GUC
+  behavior, logical interrupts, cancellation, termination, teardown, reconnect,
+  worker handoff, and the current in-tree worker runtime scope.
+- The branch is still experimental. It is not a production-ready PostgreSQL
+  server, does not yet provide pooled carrier scheduling, and does not claim
+  contrib-wide threaded extension support.
+- Phase 16 owns broader extension hardening, bundled procedural languages
+  beyond PL/pgSQL, and the full custom/extension GUC matrix.
+
+Current validation baseline:
+
+- `gmake check`
+- `gmake check-threaded`
+- `gmake check-threaded-workers`
+- `gmake check-threaded-world-core`
+- `gmake check-runtime-lifecycles`
+- `gmake check-global-lifetimes`
+- `git diff --check`
+
+Performance guidance:
+
+Performance work is currently measured against vanilla PostgreSQL 19 beta 1
+using vanilla `pgbench` as the client. Local profiles compare three lanes:
+vanilla process mode, this branch in process mode, and this branch in
+thread-per-session mode.
+
+The most recent five-workload local profile for tiny read-only `pgbench`
+workloads showed the branch around parity with vanilla on this machine:
+
+| Workload | Branch process / vanilla | Branch threaded / vanilla |
+| --- | ---: | ---: |
+| `builtin_select_simple` | 0.976 | 1.014 |
+| `builtin_select_prepared` | 0.983 | 0.980 |
+| `select1_prepared` | 1.003 | 1.029 |
+| `bench_one_prepared` | 1.018 | 1.006 |
+| `kv_read_prepared` | 0.973 | 0.991 |
+
+Treat these numbers as development guidance, not a portability or production
+benchmark. The important current signal is that the scoped thread-per-session
+runtime is close enough to vanilla on these small read-only workloads to move
+the next optimization effort into Phase 13 wait-boundary work. Future
+performance work should continue to compare all three lanes, because some
+remaining overhead is branch-wide rather than threaded-only.
+
 Background and inspiration:
 
 - [PostgreSQL wiki: Multithreading](https://wiki.postgresql.org/wiki/Multithreading)
