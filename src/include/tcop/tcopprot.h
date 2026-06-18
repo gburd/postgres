@@ -38,7 +38,9 @@ PgCurrentWhereToSendOutputRefFast(void)
 }
 
 #define whereToSendOutput (*PgCurrentWhereToSendOutputRefFast())
+#ifndef PgCurrentPostAuthDelayRef
 extern int *PgCurrentPostAuthDelayRef(void);
+#endif
 #define PostAuthDelay (*PgCurrentPostAuthDelayRef())
 static inline int *
 PgCurrentClientConnectionCheckIntervalRefFast(void)
@@ -71,8 +73,12 @@ typedef enum
 	LOGSTMT_ALL,				/* log all statements */
 } LogStmtLevel;
 
+#ifndef PgCurrentLogDisconnectionsRef
 extern bool *PgCurrentLogDisconnectionsRef(void);
+#endif
+#ifndef PgCurrentLogStatementRef
 extern int *PgCurrentLogStatementRef(void);
+#endif
 #define Log_disconnections (*PgCurrentLogDisconnectionsRef())
 #define log_statement (*PgCurrentLogStatementRef())
 
@@ -80,7 +86,9 @@ extern int *PgCurrentLogStatementRef(void);
 #define RESTRICT_RELKIND_VIEW			0x01
 #define RESTRICT_RELKIND_FOREIGN_TABLE	0x02
 
+#ifndef PgCurrentRestrictNonsystemRelationKindRef
 extern int *PgCurrentRestrictNonsystemRelationKindRef(void);
+#endif
 #define restrict_nonsystem_relation_kind (*PgCurrentRestrictNonsystemRelationKindRef())
 
 extern List *pg_parse_query(const char *query_string);

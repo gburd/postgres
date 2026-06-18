@@ -44,7 +44,7 @@ typedef int ProcNumber;
 /*
  * Proc number of this backend (same as GetNumberFromPGProc(MyProc))
  */
-extern ProcNumber *PgCurrentMyProcNumberRef(void);
+extern ProcNumber *(PgCurrentMyProcNumberRef) (void);
 
 static inline ProcNumber *
 PgCurrentMyProcNumberRefFast(void)
@@ -57,7 +57,7 @@ PgCurrentMyProcNumberRefFast(void)
 #define MyProcNumber (*PgCurrentMyProcNumberRefFast())
 
 /* proc number of our parallel session leader, or INVALID_PROC_NUMBER if none */
-extern ProcNumber *PgCurrentParallelLeaderProcNumberRef(void);
+extern ProcNumber *(PgCurrentParallelLeaderProcNumberRef) (void);
 #define ParallelLeaderProcNumber (*PgCurrentParallelLeaderProcNumberRef())
 
 /*

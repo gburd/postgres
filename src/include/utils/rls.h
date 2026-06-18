@@ -16,7 +16,9 @@
 #include "utils/global_lifetime.h"
 
 /* GUC variable */
+#ifndef PgCurrentRowSecurityRef
 extern bool *PgCurrentRowSecurityRef(void);
+#endif
 #define row_security (*PgCurrentRowSecurityRef())
 
 /*

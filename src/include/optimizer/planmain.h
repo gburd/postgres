@@ -21,8 +21,12 @@
 
 /* GUC parameters */
 #define DEFAULT_CURSOR_TUPLE_FRACTION 0.1
+#ifndef PgCurrentCursorTupleFractionRef
 extern double *PgCurrentCursorTupleFractionRef(void);
+#endif
+#ifndef PgCurrentEnableSelfJoinEliminationRef
 extern bool *PgCurrentEnableSelfJoinEliminationRef(void);
+#endif
 
 #define cursor_tuple_fraction \
 	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentCursorTupleFractionHotRef, \
@@ -76,8 +80,12 @@ extern Limit *make_limit(Plan *lefttree, Node *limitOffset, Node *limitCount,
 /*
  * prototypes for plan/initsplan.c
  */
+#ifndef PgCurrentFromCollapseLimitRef
 extern int *PgCurrentFromCollapseLimitRef(void);
+#endif
+#ifndef PgCurrentJoinCollapseLimitRef
 extern int *PgCurrentJoinCollapseLimitRef(void);
+#endif
 
 #define from_collapse_limit \
 	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentFromCollapseLimitHotRef, \

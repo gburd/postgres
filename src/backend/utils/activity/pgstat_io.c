@@ -22,7 +22,9 @@
 #include "utils/pgstat_internal.h"
 
 #undef PgCurrentBackendPgStatPendingState
+#ifndef PgCurrentBackendPgStatPendingState
 extern PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
+#endif
 
 static inline PgBackendPgStatPendingState *
 pgstat_current_pending_state(BackendType *bktype)

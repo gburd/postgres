@@ -22,13 +22,27 @@
 /*
  * allpaths.c
  */
+#ifndef PgCurrentEnableGeqoRef
 extern bool *PgCurrentEnableGeqoRef(void);
+#endif
+#ifndef PgCurrentEnableEagerAggregateRef
 extern bool *PgCurrentEnableEagerAggregateRef(void);
+#endif
+#ifndef PgCurrentGeqoThresholdRef
 extern int *PgCurrentGeqoThresholdRef(void);
+#endif
+#ifndef PgCurrentMinEagerAggGroupSizeRef
 extern double *PgCurrentMinEagerAggGroupSizeRef(void);
+#endif
+#ifndef PgCurrentMinParallelTableScanSizeRef
 extern int *PgCurrentMinParallelTableScanSizeRef(void);
+#endif
+#ifndef PgCurrentMinParallelIndexScanSizeRef
 extern int *PgCurrentMinParallelIndexScanSizeRef(void);
+#endif
+#ifndef PgCurrentEnableGroupByReorderingRef
 extern bool *PgCurrentEnableGroupByReorderingRef(void);
+#endif
 
 #define enable_geqo \
 	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEnableGeqoHotRef, \

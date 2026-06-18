@@ -16,7 +16,9 @@
 #include "parser/parse_node.h"
 #include "utils/global_lifetime.h"
 
+#ifndef PgCurrentTransformNullEqualsRef
 extern bool *PgCurrentTransformNullEqualsRef(void);
+#endif
 
 #define Transform_null_equals (*PgCurrentTransformNullEqualsRef())
 

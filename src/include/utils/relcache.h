@@ -161,8 +161,12 @@ extern void RelationCacheInitFileRemove(void);
  * Storage lives in the current PgSession; keep the historical names as
  * compatibility accessors while relcache state moves behind runtime objects.
  */
+#ifndef PgCurrentCriticalRelcachesBuiltRef
 extern bool *PgCurrentCriticalRelcachesBuiltRef(void);
+#endif
+#ifndef PgCurrentCriticalSharedRelcachesBuiltRef
 extern bool *PgCurrentCriticalSharedRelcachesBuiltRef(void);
+#endif
 
 #define criticalRelcachesBuilt (*PgCurrentCriticalRelcachesBuiltRef())
 #define criticalSharedRelcachesBuilt (*PgCurrentCriticalSharedRelcachesBuiltRef())

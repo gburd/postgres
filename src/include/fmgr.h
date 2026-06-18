@@ -812,7 +812,9 @@ extern bool CheckFunctionValidatorAccess(Oid validatorOid, Oid functionOid);
  */
 typedef struct DynamicFileList DynamicFileList; /* opaque outside dfmgr.c */
 
+#ifndef PgCurrentDynamicLibraryPathRef
 extern char **PgCurrentDynamicLibraryPathRef(void);
+#endif
 #define Dynamic_library_path (*PgCurrentDynamicLibraryPathRef())
 
 extern char *substitute_path_macro(const char *str, const char *macro, const char *value);

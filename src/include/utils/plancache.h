@@ -37,7 +37,9 @@ typedef enum
 }			PlanCacheMode;
 
 /* GUC parameter */
+#ifndef PgCurrentPlanCacheModeRef
 extern int *PgCurrentPlanCacheModeRef(void);
+#endif
 #define plan_cache_mode (*PgCurrentPlanCacheModeRef())
 
 /* Optional callback to editorialize on rewritten parse trees */

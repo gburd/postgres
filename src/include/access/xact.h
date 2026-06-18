@@ -39,9 +39,13 @@
 #define XACT_REPEATABLE_READ	2
 #define XACT_SERIALIZABLE		3
 
+#ifndef PgCurrentDefaultXactIsoLevelRef
 extern int *PgCurrentDefaultXactIsoLevelRef(void);
+#endif
 #define DefaultXactIsoLevel (*PgCurrentDefaultXactIsoLevelRef())
+#ifndef PgCurrentXactIsoLevelRef
 extern int *PgCurrentXactIsoLevelRef(void);
+#endif
 #define XactIsoLevel (*PgCurrentXactIsoLevelRef())
 
 /*
@@ -56,22 +60,32 @@ extern int *PgCurrentXactIsoLevelRef(void);
 #define IsolationIsSerializable() (XactIsoLevel == XACT_SERIALIZABLE)
 
 /* Xact read-only state */
+#ifndef PgCurrentDefaultXactReadOnlyRef
 extern bool *PgCurrentDefaultXactReadOnlyRef(void);
+#endif
 #define DefaultXactReadOnly (*PgCurrentDefaultXactReadOnlyRef())
+#ifndef PgCurrentXactReadOnlyRef
 extern bool *PgCurrentXactReadOnlyRef(void);
+#endif
 #define XactReadOnly (*PgCurrentXactReadOnlyRef())
 
 /* flag for logging statements in this transaction */
+#ifndef PgCurrentXactIsSampledRef
 extern bool *PgCurrentXactIsSampledRef(void);
+#endif
 #define xact_is_sampled (*PgCurrentXactIsSampledRef())
 
 /*
  * Xact is deferrable -- only meaningful (currently) for read only
  * SERIALIZABLE transactions
  */
+#ifndef PgCurrentDefaultXactDeferrableRef
 extern bool *PgCurrentDefaultXactDeferrableRef(void);
+#endif
 #define DefaultXactDeferrable (*PgCurrentDefaultXactDeferrableRef())
+#ifndef PgCurrentXactDeferrableRef
 extern bool *PgCurrentXactDeferrableRef(void);
+#endif
 #define XactDeferrable (*PgCurrentXactDeferrableRef())
 
 typedef enum
@@ -89,12 +103,18 @@ typedef enum
 #define SYNCHRONOUS_COMMIT_ON	SYNCHRONOUS_COMMIT_REMOTE_FLUSH
 
 /* Synchronous commit level */
+#ifndef PgCurrentSynchronousCommitRef
 extern int *PgCurrentSynchronousCommitRef(void);
+#endif
 #define synchronous_commit (*PgCurrentSynchronousCommitRef())
 
 /* used during logical streaming of a transaction */
+#ifndef PgCurrentCheckXidAliveRef
 extern TransactionId *PgCurrentCheckXidAliveRef(void);
+#endif
+#ifndef PgCurrentBSysScanRef
 extern bool *PgCurrentBSysScanRef(void);
+#endif
 #define CheckXidAlive (*PgCurrentCheckXidAliveRef())
 #define bsysscan (*PgCurrentBSysScanRef())
 
@@ -105,7 +125,9 @@ extern bool *PgCurrentBSysScanRef(void);
  * globally accessible, so can be set from anywhere in the code which requires
  * recording flags.
  */
+#ifndef PgCurrentMyXactFlagsRef
 extern int *PgCurrentMyXactFlagsRef(void);
+#endif
 #define MyXactFlags (*PgCurrentMyXactFlagsRef())
 
 /*

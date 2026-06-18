@@ -129,10 +129,18 @@ typedef struct TriggerInstrumentation
 								 * was fired */
 } TriggerInstrumentation;
 
+#ifndef PgCurrentBufferUsageRef
 extern BufferUsage *PgCurrentBufferUsageRef(void);
+#endif
+#ifndef PgCurrentSavedBufferUsageRef
 extern BufferUsage *PgCurrentSavedBufferUsageRef(void);
+#endif
+#ifndef PgCurrentWalUsageRef
 extern WalUsage *PgCurrentWalUsageRef(void);
+#endif
+#ifndef PgCurrentSavedWalUsageRef
 extern WalUsage *PgCurrentSavedWalUsageRef(void);
+#endif
 
 #ifndef FRONTEND
 #define pgBufferUsage \

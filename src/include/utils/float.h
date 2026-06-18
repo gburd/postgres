@@ -27,7 +27,9 @@
 /* Radians per degree, a.k.a. PI / 180 */
 #define RADIANS_PER_DEGREE 0.0174532925199432957692
 
+#ifndef PgCurrentExtraFloatDigitsRef
 extern int *PgCurrentExtraFloatDigitsRef(void);
+#endif
 #define extra_float_digits (*PgCurrentExtraFloatDigitsRef())
 
 /*

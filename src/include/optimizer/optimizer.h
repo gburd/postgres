@@ -72,15 +72,33 @@ extern Selectivity clauselist_selectivity_ext(PlannerInfo *root,
 /* in path/costsize.c: */
 
 /* widely used cost parameters */
+#ifndef PgCurrentSeqPageCostRef
 extern double *PgCurrentSeqPageCostRef(void);
+#endif
+#ifndef PgCurrentRandomPageCostRef
 extern double *PgCurrentRandomPageCostRef(void);
+#endif
+#ifndef PgCurrentCpuTupleCostRef
 extern double *PgCurrentCpuTupleCostRef(void);
+#endif
+#ifndef PgCurrentCpuIndexTupleCostRef
 extern double *PgCurrentCpuIndexTupleCostRef(void);
+#endif
+#ifndef PgCurrentCpuOperatorCostRef
 extern double *PgCurrentCpuOperatorCostRef(void);
+#endif
+#ifndef PgCurrentParallelTupleCostRef
 extern double *PgCurrentParallelTupleCostRef(void);
+#endif
+#ifndef PgCurrentParallelSetupCostRef
 extern double *PgCurrentParallelSetupCostRef(void);
+#endif
+#ifndef PgCurrentRecursiveWorktableFactorRef
 extern double *PgCurrentRecursiveWorktableFactorRef(void);
+#endif
+#ifndef PgCurrentEffectiveCacheSizeRef
 extern int *PgCurrentEffectiveCacheSizeRef(void);
+#endif
 
 #define seq_page_cost \
 	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentSeqPageCostHotRef, \
@@ -138,9 +156,15 @@ typedef enum
 }			DebugParallelMode;
 
 /* GUC parameters */
+#ifndef PgCurrentDebugParallelQueryRef
 extern int *PgCurrentDebugParallelQueryRef(void);
+#endif
+#ifndef PgCurrentParallelLeaderParticipationRef
 extern bool *PgCurrentParallelLeaderParticipationRef(void);
+#endif
+#ifndef PgCurrentEnableDistinctReorderingRef
 extern bool *PgCurrentEnableDistinctReorderingRef(void);
+#endif
 
 #define debug_parallel_query \
 	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentDebugParallelQueryHotRef, \

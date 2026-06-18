@@ -871,15 +871,31 @@ extern void pgstat_create_transactional(PgStat_Kind kind, Oid dboid, uint64 obji
  */
 
 /* Backend-local stats state */
+#ifndef PgCurrentPgStatLocalState
 extern PgStat_LocalState *PgCurrentPgStatLocalState(void);
+#endif
 #define pgStatLocal (*PgCurrentPgStatLocalState())
+#ifndef PgCurrentPgStatFixedSnapshotContextRef
 extern MemoryContext *PgCurrentPgStatFixedSnapshotContextRef(void);
+#endif
+#ifndef PgCurrentPgStatPendingContextRef
 extern MemoryContext *PgCurrentPgStatPendingContextRef(void);
+#endif
+#ifndef PgCurrentPgStatPendingListRef
 extern dlist_head *PgCurrentPgStatPendingListRef(void);
+#endif
+#ifndef PgCurrentPgStatEntryRefHashRef
 extern void **PgCurrentPgStatEntryRefHashRef(void);
+#endif
+#ifndef PgCurrentPgStatSharedRefAgeRef
 extern int *PgCurrentPgStatSharedRefAgeRef(void);
+#endif
+#ifndef PgCurrentPgStatSharedRefContextRef
 extern MemoryContext *PgCurrentPgStatSharedRefContextRef(void);
+#endif
+#ifndef PgCurrentPgStatEntryRefHashContextRef
 extern MemoryContext *PgCurrentPgStatEntryRefHashContextRef(void);
+#endif
 
 /* Helper functions for reading and writing of on-disk stats file */
 extern void pgstat_write_chunk(FILE *fpout, void *ptr, size_t len);

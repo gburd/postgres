@@ -17,7 +17,9 @@
 #include "nodes/nodes.h"
 
 #ifdef DEBUG_NODE_TESTS_ENABLED
+#ifndef PgCurrentNodeRestoreLocationFieldsRef
 extern bool *PgCurrentNodeRestoreLocationFieldsRef(void);
+#endif
 #define restore_location_fields (*PgCurrentNodeRestoreLocationFieldsRef())
 #endif
 

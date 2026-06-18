@@ -513,7 +513,9 @@ extern int	pgwin32_recv(SOCKET s, char *buf, int len, int flags);
 extern int	pgwin32_send(SOCKET s, const void *buf, int len, int flags);
 extern int	pgwin32_waitforsinglesocket(SOCKET s, int what, int timeout);
 
+#ifndef PgCurrentPgwin32NoBlockRef
 extern int *PgCurrentPgwin32NoBlockRef(void);
+#endif
 #define pgwin32_noblock (*PgCurrentPgwin32NoBlockRef())
 
 #endif							/* FRONTEND */

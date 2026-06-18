@@ -54,11 +54,21 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool EnableHotStandby;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool fullPageWrites;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool wal_log_hints;
 #ifndef FRONTEND
+#ifndef PgCurrentWalCompressionRef
 extern int *PgCurrentWalCompressionRef(void);
+#endif
+#ifndef PgCurrentWalInitZeroRef
 extern bool *PgCurrentWalInitZeroRef(void);
+#endif
+#ifndef PgCurrentWalRecycleRef
 extern bool *PgCurrentWalRecycleRef(void);
+#endif
+#ifndef PgCurrentWalConsistencyCheckingRef
 extern bool **PgCurrentWalConsistencyCheckingRef(void);
+#endif
+#ifndef PgCurrentWalConsistencyCheckingStringRef
 extern char **PgCurrentWalConsistencyCheckingStringRef(void);
+#endif
 #define wal_compression (*PgCurrentWalCompressionRef())
 #define wal_init_zero (*PgCurrentWalInitZeroRef())
 #define wal_recycle (*PgCurrentWalRecycleRef())
@@ -67,9 +77,15 @@ extern char **PgCurrentWalConsistencyCheckingStringRef(void);
 #endif
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool log_checkpoints;
 #ifndef FRONTEND
+#ifndef PgCurrentCommitDelayRef
 extern int *PgCurrentCommitDelayRef(void);
+#endif
+#ifndef PgCurrentCommitSiblingsRef
 extern int *PgCurrentCommitSiblingsRef(void);
+#endif
+#ifndef PgCurrentTrackWalIoTimingRef
 extern bool *PgCurrentTrackWalIoTimingRef(void);
+#endif
 #define CommitDelay (*PgCurrentCommitDelayRef())
 #define CommitSiblings (*PgCurrentCommitSiblingsRef())
 #define track_wal_io_timing (*PgCurrentTrackWalIoTimingRef())
@@ -159,7 +175,9 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME int wal_level;
 	 (wal_level >= WAL_LEVEL_LOGICAL || XLogLogicalInfo)
 
 #ifdef WAL_DEBUG
+#ifndef PgCurrentXLogDebugRef
 extern bool *PgCurrentXLogDebugRef(void);
+#endif
 #define XLOG_DEBUG (*PgCurrentXLogDebugRef())
 #endif
 

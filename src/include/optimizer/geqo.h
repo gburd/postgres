@@ -54,28 +54,40 @@
  * If you change these, update backend/utils/misc/postgresql.conf.sample
  */
 /* 1 .. 10, knob for adjustment of defaults */
+#ifndef PgCurrentGeqoEffortRef
 extern int *PgCurrentGeqoEffortRef(void);
+#endif
 
 #define DEFAULT_GEQO_EFFORT 5
 #define MIN_GEQO_EFFORT 1
 #define MAX_GEQO_EFFORT 10
 
 /* 2 .. inf, or 0 to use default */
+#ifndef PgCurrentGeqoPoolSizeRef
 extern int *PgCurrentGeqoPoolSizeRef(void);
+#endif
 
 /* 1 .. inf, or 0 to use default */
+#ifndef PgCurrentGeqoGenerationsRef
 extern int *PgCurrentGeqoGenerationsRef(void);
+#endif
 
+#ifndef PgCurrentGeqoSelectionBiasRef
 extern double *PgCurrentGeqoSelectionBiasRef(void);
+#endif
 
+#ifndef PgCurrentGeqoPlannerExtensionIdRef
 extern int *PgCurrentGeqoPlannerExtensionIdRef(void);
+#endif
 
 #define DEFAULT_GEQO_SELECTION_BIAS 2.0
 #define MIN_GEQO_SELECTION_BIAS 1.5
 #define MAX_GEQO_SELECTION_BIAS 2.0
 
 /* 0 .. 1 */
+#ifndef PgCurrentGeqoSeedRef
 extern double *PgCurrentGeqoSeedRef(void);
+#endif
 
 #define Geqo_effort \
 	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentGeqoEffortHotRef, \

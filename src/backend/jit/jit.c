@@ -33,9 +33,9 @@
  * JIT GUC state lives in PgSessionJitGUCState.  Public names remain available
  * through compatibility macros in jit/jit.h.
  */
-#define provider (*PgCurrentJitProviderCallbacksRef())
-#define provider_successfully_loaded (*PgCurrentJitProviderSuccessfullyLoadedRef())
-#define provider_failed_loading (*PgCurrentJitProviderFailedLoadingRef())
+#define jit_provider_callbacks (*PgCurrentJitProviderCallbacksRef())
+#define jit_provider_callbacks_loaded (*PgCurrentJitProviderSuccessfullyLoadedRef())
+#define jit_provider_callbacks_failed_loading (*PgCurrentJitProviderFailedLoadingRef())
 
 
 static bool provider_init(void);
@@ -70,9 +70,9 @@ provider_init(void)
 	 * Don't retry loading after failing - attempting to load JIT provider
 	 * isn't cheap.
 	 */
-	if (provider_failed_loading)
+	if (jit_provider_callbacks_failed_loading)
 		return false;
-	if (provider_successfully_loaded)
+	if (jit_provider_callbacks_loaded)
 		return true;
 
 	/*
@@ -85,8 +85,8 @@ provider_init(void)
 	if (!pg_file_exists(path))
 	{
 		elog(DEBUG1,
-			 "provider not available, disabling JIT for current session");
-		provider_failed_loading = true;
+			 "JIT provider not available, disabling JIT for current session");
+		jit_provider_callbacks_failed_loading = true;
 		return false;
 	}
 
@@ -97,15 +97,15 @@ provider_init(void)
 	 * ERROR in that case, so the user is notified, but we don't want to
 	 * continually retry.
 	 */
-	provider_failed_loading = true;
+	jit_provider_callbacks_failed_loading = true;
 
 	/* and initialize */
 	init = (JitProviderInit)
 		load_external_function(path, "_PG_jit_provider_init", true, NULL);
-	init(&provider);
+	init(&jit_provider_callbacks);
 
-	provider_successfully_loaded = true;
-	provider_failed_loading = false;
+	jit_provider_callbacks_loaded = true;
+	jit_provider_callbacks_failed_loading = false;
 
 	elog(DEBUG1, "successfully loaded JIT provider in current session");
 
@@ -119,8 +119,8 @@ provider_init(void)
 void
 jit_reset_after_error(void)
 {
-	if (provider_successfully_loaded)
-		provider.reset_after_error();
+	if (jit_provider_callbacks_loaded)
+		jit_provider_callbacks.reset_after_error();
 }
 
 /*
@@ -129,14 +129,14 @@ jit_reset_after_error(void)
 void
 jit_release_context(JitContext *context)
 {
-	if (provider_successfully_loaded)
-		provider.release_context(context);
+	if (jit_provider_callbacks_loaded)
+		jit_provider_callbacks.release_context(context);
 
 	pfree(context);
 }
 
 /*
- * Ask provider to JIT compile an expression.
+ * Ask the provider to JIT compile an expression.
  *
  * Returns true if successful, false if not.
  */
@@ -165,7 +165,7 @@ jit_compile_expr(struct ExprState *state)
 
 	/* this also takes !jit_enabled into account */
 	if (provider_init())
-		return provider.compile_expr(state);
+		return jit_provider_callbacks.compile_expr(state);
 
 	return false;
 }

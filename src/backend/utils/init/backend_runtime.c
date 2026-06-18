@@ -97,6 +97,8 @@ PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgRuntimeCurrentBridge
 			PgRuntimeCurrentBridgeState = {0};
 PG_GLOBAL_RUNTIME int PgRuntimeHotCurrentCellModeState =
 			PG_RUNTIME_HOT_CURRENT_CELLS_FALLBACK;
+PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgRuntimeBridgeFallbackStats
+			PgRuntimeBridgeFallbackStatsState = {0};
 
 PG_GLOBAL_RUNTIME PgRuntime **PgCurrentRuntimeHotRefProcessRef = NULL;
 PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgRuntime **PgCurrentRuntimeHotRefThreadRef = NULL;
@@ -116,12 +118,6 @@ PG_GLOBAL_RUNTIME type *variable##ProcessCell = NULL; \
 PG_THREAD_LOCAL PG_GLOBAL_CARRIER type *variable##ThreadCell = NULL;
 #include "utils/backend_runtime_hot_cells.def"
 #undef PG_RUNTIME_HOT_CELL
-
-#define PG_RUNTIME_HOT_BUCKET(variable, type, owner, field) \
-PG_GLOBAL_RUNTIME type *variable##ProcessBucket = NULL; \
-PG_THREAD_LOCAL PG_GLOBAL_CARRIER type *variable##ThreadBucket = NULL;
-#include "utils/backend_runtime_hot_buckets.def"
-#undef PG_RUNTIME_HOT_BUCKET
 
 #define PG_RUNTIME_HOT_FIELD(variable, owner, type, expr) \
 PG_GLOBAL_RUNTIME type *variable##ProcessRef = NULL; \
@@ -150,6 +146,67 @@ PgBackendTransactionState *PgCurrentBackendTransactionState(void);
 PgBackendPendingInterruptState *PgCurrentPendingInterrupts(void);
 PgBackendInterruptHoldoffState *PgCurrentInterruptHoldoffs(void);
 
+
+static bool
+PgRuntimeBridgeFallbackStatsRequested(void)
+{
+	const char *enabled;
+
+	enabled = getenv("PG_RUNTIME_BRIDGE_FALLBACK_STATS");
+	return enabled != NULL && enabled[0] != '\0' && enabled[0] != '0';
+}
+
+void
+PgRuntimeReportBridgeFallbackStats(void)
+{
+	PgRuntimeBridgeFallbackStats *stats = &PgRuntimeBridgeFallbackStatsState;
+	uint64		total;
+
+	if (!PgRuntimeBridgeFallbackStatsRequested())
+		return;
+
+	total = stats->hot_cell +
+		stats->hot_mirror +
+		stats->hot_field +
+		stats->hot_bucket +
+		stats->fast_bucket +
+		stats->fast_initialized_bucket +
+		stats->carrier +
+		stats->interrupts +
+		stats->memory_contexts +
+		stats->session_catalog_lookup +
+		stats->after_triggers;
+
+	ereport(LOG,
+			(errmsg_internal("runtime bridge fallback stats: pid=%d mode=%d total=" UINT64_FORMAT
+							 " hot_cell=" UINT64_FORMAT
+							 " hot_mirror=" UINT64_FORMAT
+							 " hot_field=" UINT64_FORMAT
+							 " hot_bucket=" UINT64_FORMAT
+							 " fast_bucket=" UINT64_FORMAT
+							 " fast_initialized_bucket=" UINT64_FORMAT
+							 " carrier=" UINT64_FORMAT
+							 " interrupts=" UINT64_FORMAT
+							 " memory_contexts=" UINT64_FORMAT
+							 " session_catalog_lookup=" UINT64_FORMAT
+							 " after_triggers=" UINT64_FORMAT,
+							 MyProcPid,
+							 PgRuntimeHotCurrentCellModeState,
+							 total,
+							 stats->hot_cell,
+							 stats->hot_mirror,
+							 stats->hot_field,
+							 stats->hot_bucket,
+							 stats->fast_bucket,
+							 stats->fast_initialized_bucket,
+							 stats->carrier,
+							 stats->interrupts,
+							 stats->memory_contexts,
+							 stats->session_catalog_lookup,
+							 stats->after_triggers)));
+
+	MemSet(stats, 0, sizeof(*stats));
+}
 
 
 static void
@@ -216,8 +273,6 @@ PgRuntimeClearHotBucketPointers(void)
 #define PG_RUNTIME_HOT_BUCKET(variable, type, owner, field) \
 	do { \
 		PgRuntimeCurrentBridgeState.variable = NULL; \
-		variable##ProcessBucket = NULL; \
-		variable##ThreadBucket = NULL; \
 	} while (0);
 #include "utils/backend_runtime_hot_buckets.def"
 #undef PG_RUNTIME_HOT_BUCKET
@@ -414,8 +469,7 @@ PgRuntimeClearHotFieldPointers(void)
 }
 
 static void
-PgRuntimeInstallHotBucketPointers(PgCarrier *carrier, PgBackend *backend,
-								  PgSession *session,
+PgRuntimeInstallHotBucketPointers(PgBackend *backend, PgSession *session,
 								  PgConnection *connection,
 								  PgExecution *execution)
 {
@@ -428,17 +482,6 @@ PgRuntimeInstallHotBucketPointers(PgCarrier *carrier, PgBackend *backend,
 		type	   *bucket = (owner != NULL) ? &owner->field : NULL; \
  \
 		PgRuntimeCurrentBridgeState.variable = bucket; \
-		switch (PgRuntimeHotCurrentCellModeState) \
-		{ \
-			case PG_RUNTIME_HOT_CURRENT_CELLS_PROCESS: \
-				variable##ProcessBucket = bucket; \
-				break; \
-			case PG_RUNTIME_HOT_CURRENT_CELLS_THREAD: \
-				variable##ThreadBucket = bucket; \
-				break; \
-			case PG_RUNTIME_HOT_CURRENT_CELLS_FALLBACK: \
-				break; \
-		} \
 	} while (0);
 #include "utils/backend_runtime_hot_buckets.def"
 #undef PG_RUNTIME_HOT_BUCKET
@@ -486,8 +529,8 @@ static void
 PgRuntimeRefreshCurrentWork(bool rebind_session_gucs)
 {
 	PgRuntimeInstallHotCurrentCellsForCurrentWork();
-	PgRuntimeInstallHotBucketPointers(CurrentPgCarrier, CurrentPgBackend,
-									  CurrentPgSession, CurrentPgConnection,
+	PgRuntimeInstallHotBucketPointers(CurrentPgBackend, CurrentPgSession,
+									  CurrentPgConnection,
 									  CurrentPgExecution);
 	PgRuntimeInstallHotMirrorValues();
 	PgRuntimeInstallHotFieldPointers();

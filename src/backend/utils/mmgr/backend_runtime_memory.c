@@ -36,9 +36,13 @@ PgRuntimeDeleteOwnedMemoryContext(MemoryContext *context)
 PgExecutionMemoryContextState *
 PgCurrentExecutionMemoryContexts(void)
 {
-	if (likely(CurrentPgExecutionMemoryContextRuntimeState != NULL))
-		return CurrentPgExecutionMemoryContextRuntimeState;
+	PgExecutionMemoryContextState *memory_contexts;
 
+	memory_contexts = CurrentPgExecutionMemoryContextRuntimeState;
+	if (likely(memory_contexts != NULL))
+		return memory_contexts;
+
+	PG_RUNTIME_BRIDGE_COUNT_FALLBACK(memory_contexts);
 	return &PgCurrentOrEarlyExecution()->memory_contexts;
 }
 

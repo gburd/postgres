@@ -94,8 +94,12 @@ GinTernaryValueGetDatum(GinTernaryValue X)
 #define PG_RETURN_GIN_TERNARY_VALUE(x) return GinTernaryValueGetDatum(x)
 
 /* GUC parameters */
+#ifndef PgCurrentGinFuzzySearchLimitRef
 extern int *PgCurrentGinFuzzySearchLimitRef(void);
+#endif
+#ifndef PgCurrentGinPendingListLimitRef
 extern int *PgCurrentGinPendingListLimitRef(void);
+#endif
 #define GinFuzzySearchLimit (*PgCurrentGinFuzzySearchLimitRef())
 #define gin_pending_list_limit (*PgCurrentGinPendingListLimitRef())
 

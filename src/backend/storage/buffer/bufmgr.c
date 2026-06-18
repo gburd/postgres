@@ -73,7 +73,9 @@
 #include "utils/wait_event.h"
 
 #undef PgCurrentBackendBufferState
+#ifndef PgCurrentBackendBufferState
 extern PgBackendBufferState *PgCurrentBackendBufferState(void);
+#endif
 
 
 /* Note: these two macros only work on shared buffers, not local ones! */

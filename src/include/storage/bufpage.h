@@ -18,7 +18,9 @@
 #include "storage/block.h"
 #include "storage/off.h"
 /* GUC variable */
+#ifndef PgCurrentIgnoreChecksumFailureRef
 extern bool *PgCurrentIgnoreChecksumFailureRef(void);
+#endif
 
 #define ignore_checksum_failure (*PgCurrentIgnoreChecksumFailureRef())
 

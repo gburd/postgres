@@ -3947,19 +3947,30 @@ typedef struct AfterTriggerCallbackItem
 	void	   *arg;
 } AfterTriggerCallbackItem;
 
-static AfterTriggersData *GetCurrentAfterTriggersData(void);
+static pg_attribute_always_inline AfterTriggersData *GetCurrentAfterTriggersData(void);
 
 #define afterTriggers (*GetCurrentAfterTriggersData())
 
-static AfterTriggersData *
-GetCurrentAfterTriggersData(void)
+static inline void **
+GetCurrentAfterTriggersDataRefFast(void)
 {
 	void	  **after_triggers_data;
 
 	after_triggers_data =
-		PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentAfterTriggersDataHotRef,
-										 CurrentPgExecution,
-										 PgCurrentAfterTriggersDataRef);
+		PgRuntimeCurrentBridgeState.PgCurrentAfterTriggersDataHotRef;
+	if (likely(after_triggers_data != NULL))
+		return after_triggers_data;
+
+	PG_RUNTIME_BRIDGE_COUNT_FALLBACK(after_triggers);
+	return PgCurrentAfterTriggersDataRef();
+}
+
+static pg_attribute_always_inline AfterTriggersData *
+GetCurrentAfterTriggersData(void)
+{
+	void	  **after_triggers_data;
+
+	after_triggers_data = GetCurrentAfterTriggersDataRefFast();
 	if (*after_triggers_data == NULL)
 		*after_triggers_data =
 			MemoryContextAllocZero(PgCurrentAfterTriggersMemoryContext(),

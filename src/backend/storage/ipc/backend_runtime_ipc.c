@@ -20,6 +20,19 @@
 #include "storage/waiteventset.h"
 #include "../../utils/init/backend_runtime_internal.h"
 
+static inline PgCarrier *
+PgCurrentCarrierStateFast(void)
+{
+	PgCarrier  *carrier;
+
+	carrier = PgRuntimeCurrentBridgeState.carrier;
+	if (likely(carrier != NULL))
+		return carrier;
+
+	PG_RUNTIME_BRIDGE_COUNT_FALLBACK(carrier);
+	return PgCurrentCarrierState();
+}
+
 void **
 PgCurrentProcSignalSlotRef(void)
 {
@@ -107,29 +120,29 @@ PgCurrentLocalWaitEventInfoRef(void)
 volatile sig_atomic_t *
 PgCurrentWaitEventWaitingRef(void)
 {
-	return &PgCurrentCarrierState()->wait_event_waiting;
+	return &PgCurrentCarrierStateFast()->wait_event_waiting;
 }
 
 int *
 PgCurrentWaitEventSignalFdRef(void)
 {
-	return &PgCurrentCarrierState()->wait_event_signal_fd;
+	return &PgCurrentCarrierStateFast()->wait_event_signal_fd;
 }
 
 int *
 PgCurrentWaitEventSelfPipeReadFdRef(void)
 {
-	return &PgCurrentCarrierState()->wait_event_selfpipe_readfd;
+	return &PgCurrentCarrierStateFast()->wait_event_selfpipe_readfd;
 }
 
 int *
 PgCurrentWaitEventSelfPipeWriteFdRef(void)
 {
-	return &PgCurrentCarrierState()->wait_event_selfpipe_writefd;
+	return &PgCurrentCarrierStateFast()->wait_event_selfpipe_writefd;
 }
 
 int *
 PgCurrentWaitEventSelfPipeOwnerPidRef(void)
 {
-	return &PgCurrentCarrierState()->wait_event_selfpipe_owner_pid;
+	return &PgCurrentCarrierStateFast()->wait_event_selfpipe_owner_pid;
 }

@@ -161,8 +161,12 @@ PgCurrentPendingInterruptStateRefFast(void)
 #define CheckpointerShutdownXLOGPending \
 	(PgCurrentPendingInterruptStateRefFast()->checkpointer_shutdown_xlog_pending)
 
+#ifndef PgCurrentCheckClientConnectionPendingRef
 extern volatile sig_atomic_t *PgCurrentCheckClientConnectionPendingRef(void);
+#endif
+#ifndef PgCurrentClientConnectionLostRef
 extern volatile sig_atomic_t *PgCurrentClientConnectionLostRef(void);
+#endif
 
 #define CheckClientConnectionPending (*PgCurrentCheckClientConnectionPendingRef())
 #define ClientConnectionLost (*PgCurrentClientConnectionLostRef())
@@ -175,9 +179,15 @@ typedef struct PgBackendInterruptHoldoffState
 	volatile uint32 crit_section_count;
 } PgBackendInterruptHoldoffState;
 
+#ifndef PgCurrentInterruptHoldoffCountRef
 extern volatile uint32 *PgCurrentInterruptHoldoffCountRef(void);
+#endif
+#ifndef PgCurrentQueryCancelHoldoffCountRef
 extern volatile uint32 *PgCurrentQueryCancelHoldoffCountRef(void);
+#endif
+#ifndef PgCurrentCritSectionCountRef
 extern volatile uint32 *PgCurrentCritSectionCountRef(void);
+#endif
 
 /*
  * Compatibility lvalues for the historic interrupt holdoff globals.  The
@@ -211,17 +221,16 @@ PgThreadedInterruptsPendingFast(void)
 #else
 	void	   *backend_mask;
 
-	if (likely(PgRuntimeHotCurrentCellModeState ==
-			   PG_RUNTIME_HOT_CURRENT_CELLS_PROCESS))
-		return false;
-
 	backend_mask =
 		PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentBackendInterruptMaskHotRef,
 										 CurrentPgBackend,
 										 PgCurrentBackendInterruptMaskRef);
 
 	if (unlikely(backend_mask == NULL))
+	{
+		PG_RUNTIME_BRIDGE_COUNT_FALLBACK(interrupts);
 		return PgCurrentBackendHasPendingInterrupts();
+	}
 
 	return pg_atomic_read_u32((pg_atomic_uint32 *) backend_mask) != 0;
 #endif
@@ -286,11 +295,16 @@ do { \
  */
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME pid_t PostmasterPid;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool IsPostmasterEnvironment;
-extern bool *PgCurrentIsUnderPostmasterRef(void);
-#define IsUnderPostmaster (*PgCurrentIsUnderPostmasterRef())
+extern bool *(PgCurrentIsUnderPostmasterRef) (void);
+#define IsUnderPostmaster \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentIsUnderPostmasterHotRef, \
+									   CurrentPgCarrier, \
+									   PgCurrentIsUnderPostmasterRef))
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool IsBinaryUpgrade;
 
+#ifndef PgCurrentExitOnAnyErrorRef
 extern bool *PgCurrentExitOnAnyErrorRef(void);
+#endif
 #define ExitOnAnyError (*PgCurrentExitOnAnyErrorRef())
 
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *DataDir;
@@ -312,14 +326,30 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME int serializable_buffers;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int subtransaction_buffers;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int transaction_buffers;
 
+#ifndef PgCurrentMyProcPidRef
 extern int *PgCurrentMyProcPidRef(void);
+#endif
+#ifndef PgCurrentMyStartTimeRef
 extern pg_time_t *PgCurrentMyStartTimeRef(void);
+#endif
+#ifndef PgCurrentMyStartTimestampRef
 extern TimestampTz *PgCurrentMyStartTimestampRef(void);
+#endif
+#ifndef PgCurrentProcPortRef
 extern struct Port **PgCurrentProcPortRef(void);
+#endif
+#ifndef PgCurrentMyLatchRef
 extern struct Latch **PgCurrentMyLatchRef(void);
+#endif
+#ifndef PgCurrentCancelKey
 extern uint8 *PgCurrentCancelKey(void);
+#endif
+#ifndef PgCurrentCancelKeyLengthRef
 extern int *PgCurrentCancelKeyLengthRef(void);
+#endif
+#ifndef PgCurrentMyPMChildSlotRef
 extern int *PgCurrentMyPMChildSlotRef(void);
+#endif
 
 #define MyProcPid (*PgCurrentMyProcPidRef())
 #define MyStartTime (*PgCurrentMyStartTimeRef())
@@ -333,7 +363,9 @@ extern int *PgCurrentMyPMChildSlotRef(void);
 #define MyCancelKeyLength (*PgCurrentCancelKeyLengthRef())
 #define MyPMChildSlot (*PgCurrentMyPMChildSlotRef())
 
+#ifndef PgCurrentOutputFileNameRef
 extern char *PgCurrentOutputFileNameRef(void);
+#endif
 #define OutputFileName (PgCurrentOutputFileNameRef())
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char my_exec_path[];
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char pkglib_path[];
@@ -342,9 +374,15 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME char pkglib_path[];
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char postgres_exec_path[];
 #endif
 
+#ifndef PgCurrentMyDatabaseIdRef
 extern Oid *PgCurrentMyDatabaseIdRef(void);
+#endif
+#ifndef PgCurrentMyDatabaseTableSpaceRef
 extern Oid *PgCurrentMyDatabaseTableSpaceRef(void);
+#endif
+#ifndef PgCurrentMyDatabaseHasLoginEventTriggersRef
 extern bool *PgCurrentMyDatabaseHasLoginEventTriggersRef(void);
+#endif
 
 #define MyDatabaseId \
 	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentMyDatabaseIdHotRef, \
@@ -391,9 +429,15 @@ extern bool *PgCurrentMyDatabaseHasLoginEventTriggersRef(void);
 #define DATEORDER_DMY			1
 #define DATEORDER_MDY			2
 
+#ifndef PgCurrentDateStyleRef
 extern int *PgCurrentDateStyleRef(void);
+#endif
+#ifndef PgCurrentDateOrderRef
 extern int *PgCurrentDateOrderRef(void);
+#endif
+#ifndef PgCurrentIntervalStyleRef
 extern int *PgCurrentIntervalStyleRef(void);
+#endif
 
 #define DateStyle (*PgCurrentDateStyleRef())
 #define DateOrder (*PgCurrentDateOrderRef())
@@ -415,13 +459,23 @@ extern int *PgCurrentIntervalStyleRef(void);
 #define MAXTZLEN		10		/* max TZ name len, not counting tr. null */
 
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool enableFsync;
+#ifndef PgCurrentAllowSystemTableModsRef
 extern bool *PgCurrentAllowSystemTableModsRef(void);
+#endif
 #define allowSystemTableMods (*PgCurrentAllowSystemTableModsRef())
 
+#ifndef PgCurrentWorkMemRef
 extern int *PgCurrentWorkMemRef(void);
+#endif
+#ifndef PgCurrentHashMemMultiplierRef
 extern double *PgCurrentHashMemMultiplierRef(void);
+#endif
+#ifndef PgCurrentMaintenanceWorkMemRef
 extern int *PgCurrentMaintenanceWorkMemRef(void);
+#endif
+#ifndef PgCurrentMaxParallelMaintenanceWorkersRef
 extern int *PgCurrentMaxParallelMaintenanceWorkersRef(void);
+#endif
 
 #define work_mem \
 	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentWorkMemHotRef, \
@@ -448,12 +502,24 @@ extern int *PgCurrentMaxParallelMaintenanceWorkersRef(void);
 #define MIN_BAS_VAC_RING_SIZE_KB 128
 #define MAX_BAS_VAC_RING_SIZE_KB (16 * 1024 * 1024)
 
+#ifndef PgCurrentVacuumBufferUsageLimitRef
 extern int *PgCurrentVacuumBufferUsageLimitRef(void);
+#endif
+#ifndef PgCurrentVacuumCostPageHitRef
 extern int *PgCurrentVacuumCostPageHitRef(void);
+#endif
+#ifndef PgCurrentVacuumCostPageMissRef
 extern int *PgCurrentVacuumCostPageMissRef(void);
+#endif
+#ifndef PgCurrentVacuumCostPageDirtyRef
 extern int *PgCurrentVacuumCostPageDirtyRef(void);
+#endif
+#ifndef PgCurrentVacuumCostLimitRef
 extern int *PgCurrentVacuumCostLimitRef(void);
+#endif
+#ifndef PgCurrentVacuumCostDelayRef
 extern double *PgCurrentVacuumCostDelayRef(void);
+#endif
 
 #define VacuumBufferUsageLimit (*PgCurrentVacuumBufferUsageLimitRef())
 #define VacuumCostPageHit (*PgCurrentVacuumCostPageHitRef())
@@ -462,8 +528,12 @@ extern double *PgCurrentVacuumCostDelayRef(void);
 #define VacuumCostLimit (*PgCurrentVacuumCostLimitRef())
 #define VacuumCostDelay (*PgCurrentVacuumCostDelayRef())
 
+#ifndef PgCurrentVacuumCostBalanceRef
 extern int *PgCurrentVacuumCostBalanceRef(void);
+#endif
+#ifndef PgCurrentVacuumCostActiveRef
 extern bool *PgCurrentVacuumCostActiveRef(void);
+#endif
 
 #define VacuumCostBalance (*PgCurrentVacuumCostBalanceRef())
 #define VacuumCostActive (*PgCurrentVacuumCostActiveRef())
@@ -471,8 +541,12 @@ extern bool *PgCurrentVacuumCostActiveRef(void);
 
 /* in utils/misc/stack_depth.c */
 
+#ifndef PgCurrentMaxStackDepthRef
 extern int *PgCurrentMaxStackDepthRef(void);
+#endif
+#ifndef PgCurrentMaxStackDepthBytesRef
 extern ssize_t *PgCurrentMaxStackDepthBytesRef(void);
+#endif
 #define max_stack_depth \
 	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentMaxStackDepthHotRef, \
 									   CurrentPgSession, \
@@ -504,8 +578,12 @@ extern void PreventCommandDuringRecovery(const char *cmdname);
 #define SECURITY_RESTRICTED_OPERATION	0x0002
 #define SECURITY_NOFORCE_RLS			0x0004
 
+#ifndef PgCurrentDatabasePathRef
 extern char **PgCurrentDatabasePathRef(void);
+#endif
+#ifndef PgCurrentDatabasePathOwnedRef
 extern bool *PgCurrentDatabasePathOwnedRef(void);
+#endif
 #define DatabasePath (*PgCurrentDatabasePathRef())
 
 /* now in utils/init/miscinit.c */
@@ -566,7 +644,7 @@ typedef enum BackendType
 
 #define BACKEND_NUM_TYPES (B_LOGGER + 1)
 
-extern BackendType *PgCurrentMyBackendTypeRef(void);
+extern BackendType *(PgCurrentMyBackendTypeRef) (void);
 #define MyBackendType (*PgCurrentMyBackendTypeRef())
 
 #define AmRegularBackendProcess()	(MyBackendType == B_BACKEND)
@@ -666,7 +744,9 @@ typedef enum ProcessingMode
 	NormalProcessing,			/* normal processing */
 } ProcessingMode;
 
+#ifndef PgCurrentProcessingModeRef
 extern ProcessingMode *PgCurrentProcessingModeRef(void);
+#endif
 #ifndef FRONTEND
 extern void PgRuntimeAfterProcessingModeChange(ProcessingMode mode);
 #else
@@ -714,14 +794,20 @@ extern void StoreConnectionWarningForConnection(struct PgConnection *connection,
 extern void StoreConnectionWarning(const char *msg, const char *detail);
 
 /* in utils/init/miscinit.c */
+#ifndef PgCurrentIgnoreSystemIndexesRef
 extern bool *PgCurrentIgnoreSystemIndexesRef(void);
+#endif
 #define IgnoreSystemIndexes (*PgCurrentIgnoreSystemIndexesRef())
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool process_shared_preload_libraries_in_progress;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool process_shared_preload_libraries_done;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool process_shmem_requests_in_progress;
+#ifndef PgCurrentSessionPreloadLibrariesRef
 extern char **PgCurrentSessionPreloadLibrariesRef(void);
+#endif
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *shared_preload_libraries_string;
+#ifndef PgCurrentLocalPreloadLibrariesRef
 extern char **PgCurrentLocalPreloadLibrariesRef(void);
+#endif
 
 #define session_preload_libraries_string \
 	(*PgCurrentSessionPreloadLibrariesRef())

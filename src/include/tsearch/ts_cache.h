@@ -86,14 +86,30 @@ typedef struct TSConfigCacheEntry
 /*
  * GUC variable for current configuration
  */
+#ifndef PgCurrentTSCurrentConfigRef
 extern char **PgCurrentTSCurrentConfigRef(void);
+#endif
+#ifndef PgCurrentTSCurrentConfigCacheRef
 extern Oid *PgCurrentTSCurrentConfigCacheRef(void);
+#endif
+#ifndef PgCurrentTSParserCacheHashRef
 extern HTAB **PgCurrentTSParserCacheHashRef(void);
+#endif
+#ifndef PgCurrentTSLastUsedParserRef
 extern TSParserCacheEntry **PgCurrentTSLastUsedParserRef(void);
+#endif
+#ifndef PgCurrentTSDictionaryCacheHashRef
 extern HTAB **PgCurrentTSDictionaryCacheHashRef(void);
+#endif
+#ifndef PgCurrentTSLastUsedDictionaryRef
 extern TSDictionaryCacheEntry **PgCurrentTSLastUsedDictionaryRef(void);
+#endif
+#ifndef PgCurrentTSConfigCacheHashRef
 extern HTAB **PgCurrentTSConfigCacheHashRef(void);
+#endif
+#ifndef PgCurrentTSLastUsedConfigRef
 extern TSConfigCacheEntry **PgCurrentTSLastUsedConfigRef(void);
+#endif
 #define TSCurrentConfig (*PgCurrentTSCurrentConfigRef())
 
 

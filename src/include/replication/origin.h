@@ -49,7 +49,9 @@ typedef struct ReplOriginXactState
 	TimestampTz origin_timestamp;
 } ReplOriginXactState;
 
+#ifndef PgCurrentReplOriginXactStateRef
 extern ReplOriginXactState *PgCurrentReplOriginXactStateRef(void);
+#endif
 #define replorigin_xact_state (*PgCurrentReplOriginXactStateRef())
 
 /* GUCs */

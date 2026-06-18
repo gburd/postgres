@@ -584,10 +584,14 @@ static PG_GLOBAL_RUNTIME char *syslog_ident_str;
 static PG_GLOBAL_RUNTIME char *server_version_string;
 static PG_GLOBAL_RUNTIME int server_version_num;
 static PG_GLOBAL_RUNTIME char *debug_io_direct_string;
+#ifndef PgCurrentRestrictNonsystemRelationKindStringRef
 extern char **PgCurrentRestrictNonsystemRelationKindStringRef(void);
+#endif
 #define restrict_nonsystem_relation_kind_string \
 	(*PgCurrentRestrictNonsystemRelationKindStringRef())
+#ifndef PgCurrentLogMinMessagesStringRef
 extern char **PgCurrentLogMinMessagesStringRef(void);
+#endif
 #define log_min_messages_string (*PgCurrentLogMinMessagesStringRef())
 
 #ifdef HAVE_SYSLOG
@@ -597,8 +601,12 @@ extern char **PgCurrentLogMinMessagesStringRef(void);
 #endif
 static PG_GLOBAL_RUNTIME int syslog_facility = DEFAULT_SYSLOG_FACILITY;
 
+#ifndef PgCurrentTimeZoneStringRef
 extern char **PgCurrentTimeZoneStringRef(void);
+#endif
+#ifndef PgCurrentLogTimeZoneStringRef
 extern char **PgCurrentLogTimeZoneStringRef(void);
+#endif
 #define timezone_string (*PgCurrentTimeZoneStringRef())
 #define log_timezone_string (*PgCurrentLogTimeZoneStringRef())
 #define timezone_abbreviations_string (*PgCurrentTimeZoneAbbreviationsStringRef())

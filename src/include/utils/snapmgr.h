@@ -20,9 +20,15 @@
 #include "utils/snapshot.h"
 
 
+#ifndef PgCurrentFirstSnapshotSetRef
 extern bool *PgCurrentFirstSnapshotSetRef(void);
+#endif
+#ifndef PgCurrentTransactionXminRef
 extern TransactionId *PgCurrentTransactionXminRef(void);
+#endif
+#ifndef PgCurrentRecentXminRef
 extern TransactionId *PgCurrentRecentXminRef(void);
+#endif
 
 #define FirstSnapshotSet (*PgCurrentFirstSnapshotSetRef())
 #define TransactionXmin (*PgCurrentTransactionXminRef())

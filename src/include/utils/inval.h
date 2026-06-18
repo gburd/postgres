@@ -20,7 +20,9 @@
 #include "utils/global_lifetime.h"
 #include "utils/relcache.h"
 
+#ifndef PgCurrentDebugDiscardCachesRef
 extern int *PgCurrentDebugDiscardCachesRef(void);
+#endif
 
 #define debug_discard_caches (*PgCurrentDebugDiscardCachesRef())
 

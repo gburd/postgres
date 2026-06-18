@@ -70,7 +70,6 @@
  *-------------------------------------------------------------------------
  */
 
-#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include <dirent.h>
@@ -240,7 +239,7 @@ typedef struct vfd
  * than INT_MAX kilobytes.  When not enforcing, it could theoretically
  * overflow, but we don't care.
  */
-#define temporary_files_size (*PgCurrentTemporaryFilesSizeRef())
+#define current_temporary_files_size (*PgCurrentTemporaryFilesSizeRef())
 
 /* Temporary file access initialized and not yet shut down? */
 #ifdef USE_ASSERT_CHECKING
@@ -2080,7 +2079,7 @@ FileClose(File file)
 	if (vfdP->fdstate & FD_TEMP_FILE_LIMIT)
 	{
 		/* Subtract its size from current usage (do first in case of error) */
-		temporary_files_size -= vfdP->fileSize;
+		current_temporary_files_size -= vfdP->fileSize;
 		vfdP->fileSize = 0;
 	}
 
@@ -2345,7 +2344,7 @@ FileWriteV(File file, const struct iovec *iov, int iovcnt, pgoff_t offset,
 
 		if (past_write > vfdP->fileSize)
 		{
-			uint64		newTotal = temporary_files_size;
+			uint64		newTotal = current_temporary_files_size;
 
 			newTotal += past_write - vfdP->fileSize;
 			if (newTotal > (uint64) temp_file_limit * (uint64) 1024)
@@ -2373,7 +2372,7 @@ retry:
 		errno = ENOSPC;
 
 		/*
-		 * Maintain fileSize and temporary_files_size if it's a temp file.
+		 * Maintain fileSize and current_temporary_files_size if it's a temp file.
 		 */
 		if (vfdP->fdstate & FD_TEMP_FILE_LIMIT)
 		{
@@ -2381,7 +2380,7 @@ retry:
 
 			if (past_write > vfdP->fileSize)
 			{
-				temporary_files_size += past_write - vfdP->fileSize;
+				current_temporary_files_size += past_write - vfdP->fileSize;
 				vfdP->fileSize = past_write;
 			}
 		}
@@ -2577,7 +2576,7 @@ FileTruncate(File file, pgoff_t offset, uint32 wait_event_info)
 	{
 		/* adjust our state for truncation of a temp file */
 		Assert(VfdCache[file].fdstate & FD_TEMP_FILE_LIMIT);
-		temporary_files_size -= VfdCache[file].fileSize - offset;
+		current_temporary_files_size -= VfdCache[file].fileSize - offset;
 		VfdCache[file].fileSize = offset;
 	}
 

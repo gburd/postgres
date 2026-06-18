@@ -158,7 +158,7 @@ extern void TerminateBackgroundWorker(BackgroundWorkerHandle *handle);
 extern void TerminateBackgroundWorkersForDatabase(Oid databaseId);
 
 /* This is valid in a running worker */
-extern BackgroundWorker **PgCurrentMyBgworkerEntryRef(void);
+extern BackgroundWorker **(PgCurrentMyBgworkerEntryRef) (void);
 #define MyBgworkerEntry (*PgCurrentMyBgworkerEntryRef())
 
 /*

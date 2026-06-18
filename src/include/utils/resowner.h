@@ -73,7 +73,7 @@ PgTopTransactionResourceOwnerRefFast(void)
 #else
 #define TopTransactionResourceOwner (*PgTopTransactionResourceOwnerRef())
 #endif
-extern ResourceOwner *PgCurrentAuxProcessResourceOwnerRef(void);
+extern ResourceOwner *(PgCurrentAuxProcessResourceOwnerRef) (void);
 #define AuxProcessResourceOwner (*PgCurrentAuxProcessResourceOwnerRef())
 
 /*

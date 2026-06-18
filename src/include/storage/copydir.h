@@ -20,7 +20,9 @@ typedef enum FileCopyMethod
 }			FileCopyMethod;
 
 /* GUC parameters */
+#ifndef PgCurrentFileCopyMethodRef
 extern int *PgCurrentFileCopyMethodRef(void);
+#endif
 
 #define file_copy_method (*PgCurrentFileCopyMethodRef())
 

@@ -50,29 +50,75 @@ typedef enum
 
 /* parameter variables and flags (see also optimizer.h) */
 extern Cost *PgCurrentDisableCostRef(void);
+#ifndef PgCurrentMaxParallelWorkersPerGatherRef
 extern int *PgCurrentMaxParallelWorkersPerGatherRef(void);
+#endif
+#ifndef PgCurrentEnableSeqscanRef
 extern bool *PgCurrentEnableSeqscanRef(void);
+#endif
+#ifndef PgCurrentEnableIndexscanRef
 extern bool *PgCurrentEnableIndexscanRef(void);
+#endif
+#ifndef PgCurrentEnableIndexonlyscanRef
 extern bool *PgCurrentEnableIndexonlyscanRef(void);
+#endif
+#ifndef PgCurrentEnableBitmapscanRef
 extern bool *PgCurrentEnableBitmapscanRef(void);
+#endif
+#ifndef PgCurrentEnableTidscanRef
 extern bool *PgCurrentEnableTidscanRef(void);
+#endif
+#ifndef PgCurrentEnableSortRef
 extern bool *PgCurrentEnableSortRef(void);
+#endif
+#ifndef PgCurrentEnableIncrementalSortRef
 extern bool *PgCurrentEnableIncrementalSortRef(void);
+#endif
+#ifndef PgCurrentEnableHashaggRef
 extern bool *PgCurrentEnableHashaggRef(void);
+#endif
+#ifndef PgCurrentEnableNestloopRef
 extern bool *PgCurrentEnableNestloopRef(void);
+#endif
+#ifndef PgCurrentEnableMaterialRef
 extern bool *PgCurrentEnableMaterialRef(void);
+#endif
+#ifndef PgCurrentEnableMemoizeRef
 extern bool *PgCurrentEnableMemoizeRef(void);
+#endif
+#ifndef PgCurrentEnableMergejoinRef
 extern bool *PgCurrentEnableMergejoinRef(void);
+#endif
+#ifndef PgCurrentEnableHashjoinRef
 extern bool *PgCurrentEnableHashjoinRef(void);
+#endif
+#ifndef PgCurrentEnableGathermergeRef
 extern bool *PgCurrentEnableGathermergeRef(void);
+#endif
+#ifndef PgCurrentEnablePartitionwiseJoinRef
 extern bool *PgCurrentEnablePartitionwiseJoinRef(void);
+#endif
+#ifndef PgCurrentEnablePartitionwiseAggregateRef
 extern bool *PgCurrentEnablePartitionwiseAggregateRef(void);
+#endif
+#ifndef PgCurrentEnableParallelAppendRef
 extern bool *PgCurrentEnableParallelAppendRef(void);
+#endif
+#ifndef PgCurrentEnableParallelHashRef
 extern bool *PgCurrentEnableParallelHashRef(void);
+#endif
+#ifndef PgCurrentEnablePartitionPruningRef
 extern bool *PgCurrentEnablePartitionPruningRef(void);
+#endif
+#ifndef PgCurrentEnablePresortedAggregateRef
 extern bool *PgCurrentEnablePresortedAggregateRef(void);
+#endif
+#ifndef PgCurrentEnableAsyncAppendRef
 extern bool *PgCurrentEnableAsyncAppendRef(void);
+#endif
+#ifndef PgCurrentConstraintExclusionRef
 extern int *PgCurrentConstraintExclusionRef(void);
+#endif
 
 #define disable_cost \
 	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentDisableCostHotRef, \

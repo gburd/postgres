@@ -27,7 +27,9 @@
 
 /* user-settable parameters */
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int wal_receiver_status_interval;
+#ifndef PgCurrentWalReceiverTimeoutRef
 extern int *PgCurrentWalReceiverTimeoutRef(void);
+#endif
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool hot_standby_feedback;
 
 #define wal_receiver_timeout (*PgCurrentWalReceiverTimeoutRef())

@@ -30,8 +30,12 @@
 #define DEFAULT_TABLE_ACCESS_METHOD	"heap"
 
 /* GUCs */
+#ifndef PgCurrentDefaultTableAccessMethodRef
 extern char **PgCurrentDefaultTableAccessMethodRef(void);
+#endif
+#ifndef PgCurrentSynchronizeSeqscansRef
 extern bool *PgCurrentSynchronizeSeqscansRef(void);
+#endif
 #define default_table_access_method (*PgCurrentDefaultTableAccessMethodRef())
 #define synchronize_seqscans (*PgCurrentSynchronizeSeqscansRef())
 

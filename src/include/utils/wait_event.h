@@ -24,7 +24,9 @@ extern void pgstat_reset_wait_event_storage(void);
 #ifdef S_LOCK_TEST
 extern PGDLLIMPORT PG_GLOBAL_BACKEND uint32 *my_wait_event_info;
 #else
+#ifndef PgCurrentMyWaitEventInfoRef
 extern uint32 **PgCurrentMyWaitEventInfoRef(void);
+#endif
 #define my_wait_event_info (*PgCurrentMyWaitEventInfoRef())
 #endif
 

@@ -22,7 +22,9 @@
  * but the value is one of the char values defined below, as they appear in
  * pg_attribute.attcompression, e.g. TOAST_PGLZ_COMPRESSION.
  */
+#ifndef PgCurrentDefaultToastCompressionRef
 extern int *PgCurrentDefaultToastCompressionRef(void);
+#endif
 #define default_toast_compression (*PgCurrentDefaultToastCompressionRef())
 
 /*

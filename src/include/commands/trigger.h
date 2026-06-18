@@ -142,7 +142,9 @@ typedef struct TransitionCaptureState
 #define SESSION_REPLICATION_ROLE_ORIGIN		0
 #define SESSION_REPLICATION_ROLE_REPLICA	1
 #define SESSION_REPLICATION_ROLE_LOCAL		2
+#ifndef PgCurrentSessionReplicationRoleRef
 extern int *PgCurrentSessionReplicationRoleRef(void);
+#endif
 
 #define SessionReplicationRole (*PgCurrentSessionReplicationRoleRef())
 

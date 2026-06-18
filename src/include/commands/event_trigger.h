@@ -29,7 +29,9 @@ typedef struct EventTriggerData
 	CommandTag	tag;
 } EventTriggerData;
 
+#ifndef PgCurrentEventTriggersRef
 extern bool *PgCurrentEventTriggersRef(void);
+#endif
 
 #define event_triggers (*PgCurrentEventTriggersRef())
 

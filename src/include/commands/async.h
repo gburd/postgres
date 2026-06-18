@@ -17,9 +17,13 @@
 
 #include "utils/global_lifetime.h"
 
+#ifndef PgCurrentTraceNotifyRef
 extern bool *PgCurrentTraceNotifyRef(void);
+#endif
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_notify_queue_pages;
+#ifndef PgCurrentNotifyInterruptPendingRef
 extern volatile sig_atomic_t *PgCurrentNotifyInterruptPendingRef(void);
+#endif
 #define notifyInterruptPending (*PgCurrentNotifyInterruptPendingRef())
 
 #define Trace_notify (*PgCurrentTraceNotifyRef())

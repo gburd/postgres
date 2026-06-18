@@ -324,15 +324,33 @@ typedef struct PVWorkerUsage
 
 /* GUC parameters */
 /* Exported for PostGIS. */
+#ifndef PgCurrentDefaultStatisticsTargetRef
 extern int *PgCurrentDefaultStatisticsTargetRef(void);
+#endif
+#ifndef PgCurrentVacuumFreezeMinAgeRef
 extern int *PgCurrentVacuumFreezeMinAgeRef(void);
+#endif
+#ifndef PgCurrentVacuumFreezeTableAgeRef
 extern int *PgCurrentVacuumFreezeTableAgeRef(void);
+#endif
+#ifndef PgCurrentVacuumMultixactFreezeMinAgeRef
 extern int *PgCurrentVacuumMultixactFreezeMinAgeRef(void);
+#endif
+#ifndef PgCurrentVacuumMultixactFreezeTableAgeRef
 extern int *PgCurrentVacuumMultixactFreezeTableAgeRef(void);
+#endif
+#ifndef PgCurrentVacuumFailsafeAgeRef
 extern int *PgCurrentVacuumFailsafeAgeRef(void);
+#endif
+#ifndef PgCurrentVacuumMultixactFailsafeAgeRef
 extern int *PgCurrentVacuumMultixactFailsafeAgeRef(void);
+#endif
+#ifndef PgCurrentTrackCostDelayTimingRef
 extern bool *PgCurrentTrackCostDelayTimingRef(void);
+#endif
+#ifndef PgCurrentVacuumTruncateRef
 extern bool *PgCurrentVacuumTruncateRef(void);
+#endif
 
 #define default_statistics_target (*PgCurrentDefaultStatisticsTargetRef())
 #define vacuum_freeze_min_age (*PgCurrentVacuumFreezeMinAgeRef())
@@ -355,7 +373,9 @@ extern bool *PgCurrentVacuumTruncateRef(void);
  * fraction of pages in the relation vacuum may scan and fail to freeze
  * before disabling eager scanning.
  */
+#ifndef PgCurrentVacuumMaxEagerFreezeFailureRateRef
 extern double *PgCurrentVacuumMaxEagerFreezeFailureRateRef(void);
+#endif
 
 #define vacuum_max_eager_freeze_failure_rate \
 	(*PgCurrentVacuumMaxEagerFreezeFailureRateRef())
@@ -368,13 +388,27 @@ extern double *PgCurrentVacuumMaxEagerFreezeFailureRateRef(void);
 #define MAX_STATISTICS_TARGET 10000
 
 /* Variables for cost-based parallel vacuum */
+#ifndef PgCurrentVacuumSharedCostBalanceRef
 extern pg_atomic_uint32 **PgCurrentVacuumSharedCostBalanceRef(void);
+#endif
+#ifndef PgCurrentVacuumActiveNWorkersRef
 extern pg_atomic_uint32 **PgCurrentVacuumActiveNWorkersRef(void);
+#endif
+#ifndef PgCurrentVacuumCostBalanceLocalRef
 extern int *PgCurrentVacuumCostBalanceLocalRef(void);
+#endif
+#ifndef PgCurrentVacuumFailsafeActiveRef
 extern bool *PgCurrentVacuumFailsafeActiveRef(void);
+#endif
+#ifndef PgCurrentLocalVacuumCostDelayRef
 extern double *PgCurrentLocalVacuumCostDelayRef(void);
+#endif
+#ifndef PgCurrentLocalVacuumCostLimitRef
 extern int *PgCurrentLocalVacuumCostLimitRef(void);
+#endif
+#ifndef PgCurrentParallelVacuumWorkerDelayNsRef
 extern int64 *PgCurrentParallelVacuumWorkerDelayNsRef(void);
+#endif
 
 #define VacuumSharedCostBalance (*PgCurrentVacuumSharedCostBalanceRef())
 #define VacuumActiveNWorkers (*PgCurrentVacuumActiveNWorkersRef())

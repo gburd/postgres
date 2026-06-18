@@ -114,7 +114,9 @@ PG_GLOBAL_RUNTIME bool syslog_sequence_numbers = true;
 PG_GLOBAL_RUNTIME bool syslog_split_messages = true;
 
 /* Processed form of backtrace_functions GUC */
+#ifndef PgCurrentBacktraceFunctionListRef
 extern char **PgCurrentBacktraceFunctionListRef(void);
+#endif
 #define backtrace_function_list (*PgCurrentBacktraceFunctionListRef())
 
 #ifdef HAVE_SYSLOG

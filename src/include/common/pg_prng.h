@@ -31,7 +31,9 @@ typedef struct pg_prng_state
 #ifdef FRONTEND
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME pg_prng_state pg_global_prng_state;
 #else
+#ifndef PgCurrentGlobalPrngStateRef
 extern pg_prng_state *PgCurrentGlobalPrngStateRef(void);
+#endif
 #define pg_global_prng_state (*PgCurrentGlobalPrngStateRef())
 #endif
 

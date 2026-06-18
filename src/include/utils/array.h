@@ -347,7 +347,9 @@ typedef struct ArrayIteratorData *ArrayIterator;
 /*
  * GUC parameter
  */
+#ifndef PgCurrentArrayNullsRef
 extern bool *PgCurrentArrayNullsRef(void);
+#endif
 #define Array_nulls (*PgCurrentArrayNullsRef())
 
 /*

@@ -20,9 +20,15 @@
 #include "nodes/parsenodes.h"
 #include "utils/global_lifetime.h"
 
+#ifndef PgCurrentDefaultTablespaceRef
 extern char **PgCurrentDefaultTablespaceRef(void);
+#endif
+#ifndef PgCurrentTempTablespacesRef
 extern char **PgCurrentTempTablespacesRef(void);
+#endif
+#ifndef PgCurrentAllowInPlaceTablespacesRef
 extern bool *PgCurrentAllowInPlaceTablespacesRef(void);
+#endif
 
 #define default_tablespace (*PgCurrentDefaultTablespaceRef())
 #define temp_tablespaces (*PgCurrentTempTablespacesRef())

@@ -23,7 +23,9 @@ typedef enum
 	BYTEA_OUTPUT_HEX,
 }			ByteaOutputType;
 
+#ifndef PgCurrentByteaOutputRef
 extern int *PgCurrentByteaOutputRef(void);
+#endif
 #define bytea_output (*PgCurrentByteaOutputRef())	/* ByteaOutputType,
 													 * but int for GUC enum */
 

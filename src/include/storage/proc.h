@@ -389,7 +389,7 @@ typedef struct PGPROC
 }
 PGPROC;
 
-extern PGPROC **PgCurrentMyProcRef(void);
+extern PGPROC **(PgCurrentMyProcRef) (void);
 
 static inline PGPROC **
 PgCurrentMyProcRefFast(void)
@@ -550,13 +550,27 @@ extern PGDLLIMPORT PG_GLOBAL_SHMEM PGPROC *PreparedXactProcs;
 #define FIRST_PREPARED_XACT_PROC_NUMBER	(MaxBackends + NUM_AUXILIARY_PROCS)
 
 /* configurable options */
+#ifndef PgCurrentDeadlockTimeoutRef
 extern int *PgCurrentDeadlockTimeoutRef(void);
+#endif
+#ifndef PgCurrentStatementTimeoutRef
 extern int *PgCurrentStatementTimeoutRef(void);
+#endif
+#ifndef PgCurrentLockTimeoutRef
 extern int *PgCurrentLockTimeoutRef(void);
+#endif
+#ifndef PgCurrentIdleInTransactionSessionTimeoutRef
 extern int *PgCurrentIdleInTransactionSessionTimeoutRef(void);
+#endif
+#ifndef PgCurrentTransactionTimeoutRef
 extern int *PgCurrentTransactionTimeoutRef(void);
+#endif
+#ifndef PgCurrentIdleSessionTimeoutRef
 extern int *PgCurrentIdleSessionTimeoutRef(void);
+#endif
+#ifndef PgCurrentLogLockWaitsRef
 extern bool *PgCurrentLogLockWaitsRef(void);
+#endif
 #define DeadlockTimeout (*PgCurrentDeadlockTimeoutRef())
 #define StatementTimeout (*PgCurrentStatementTimeoutRef())
 #define LockTimeout (*PgCurrentLockTimeoutRef())

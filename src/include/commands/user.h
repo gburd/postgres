@@ -19,8 +19,12 @@
 #include "utils/guc.h"
 
 /* GUCs */
+#ifndef PgCurrentPasswordEncryptionRef
 extern int *PgCurrentPasswordEncryptionRef(void);
+#endif
+#ifndef PgCurrentCreateRoleSelfGrantRef
 extern char **PgCurrentCreateRoleSelfGrantRef(void);
+#endif
 
 #define Password_encryption (*PgCurrentPasswordEncryptionRef())
 #define createrole_self_grant (*PgCurrentCreateRoleSelfGrantRef())

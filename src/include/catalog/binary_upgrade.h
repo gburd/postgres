@@ -17,20 +17,48 @@
 #include "common/relpath.h"
 #include "utils/global_lifetime.h"
 
+#ifndef PgCurrentBinaryUpgradeNextPgTablespaceOidRef
 extern Oid *PgCurrentBinaryUpgradeNextPgTablespaceOidRef(void);
+#endif
+#ifndef PgCurrentBinaryUpgradeNextPgTypeOidRef
 extern Oid *PgCurrentBinaryUpgradeNextPgTypeOidRef(void);
+#endif
+#ifndef PgCurrentBinaryUpgradeNextArrayPgTypeOidRef
 extern Oid *PgCurrentBinaryUpgradeNextArrayPgTypeOidRef(void);
+#endif
+#ifndef PgCurrentBinaryUpgradeNextMrngPgTypeOidRef
 extern Oid *PgCurrentBinaryUpgradeNextMrngPgTypeOidRef(void);
+#endif
+#ifndef PgCurrentBinaryUpgradeNextMrngArrayPgTypeOidRef
 extern Oid *PgCurrentBinaryUpgradeNextMrngArrayPgTypeOidRef(void);
+#endif
+#ifndef PgCurrentBinaryUpgradeNextHeapPgClassOidRef
 extern Oid *PgCurrentBinaryUpgradeNextHeapPgClassOidRef(void);
+#endif
+#ifndef PgCurrentBinaryUpgradeNextHeapPgClassRelfilenumberRef
 extern RelFileNumber *PgCurrentBinaryUpgradeNextHeapPgClassRelfilenumberRef(void);
+#endif
+#ifndef PgCurrentBinaryUpgradeNextIndexPgClassOidRef
 extern Oid *PgCurrentBinaryUpgradeNextIndexPgClassOidRef(void);
+#endif
+#ifndef PgCurrentBinaryUpgradeNextIndexPgClassRelfilenumberRef
 extern RelFileNumber *PgCurrentBinaryUpgradeNextIndexPgClassRelfilenumberRef(void);
+#endif
+#ifndef PgCurrentBinaryUpgradeNextToastPgClassOidRef
 extern Oid *PgCurrentBinaryUpgradeNextToastPgClassOidRef(void);
+#endif
+#ifndef PgCurrentBinaryUpgradeNextToastPgClassRelfilenumberRef
 extern RelFileNumber *PgCurrentBinaryUpgradeNextToastPgClassRelfilenumberRef(void);
+#endif
+#ifndef PgCurrentBinaryUpgradeNextPgEnumOidRef
 extern Oid *PgCurrentBinaryUpgradeNextPgEnumOidRef(void);
+#endif
+#ifndef PgCurrentBinaryUpgradeNextPgAuthidOidRef
 extern Oid *PgCurrentBinaryUpgradeNextPgAuthidOidRef(void);
+#endif
+#ifndef PgCurrentBinaryUpgradeRecordInitPrivsRef
 extern bool *PgCurrentBinaryUpgradeRecordInitPrivsRef(void);
+#endif
 
 #define binary_upgrade_next_pg_tablespace_oid \
 	(*PgCurrentBinaryUpgradeNextPgTablespaceOidRef())

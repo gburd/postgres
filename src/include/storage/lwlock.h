@@ -111,7 +111,9 @@ typedef enum LWLockMode
 
 
 #ifdef LOCK_DEBUG
+#ifndef PgCurrentTraceLwlocksRef
 extern bool *PgCurrentTraceLwlocksRef(void);
+#endif
 #define Trace_lwlocks (*PgCurrentTraceLwlocksRef())
 #endif
 

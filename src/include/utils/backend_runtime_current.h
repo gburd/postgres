@@ -35,6 +35,8 @@ typedef struct WalUsage WalUsage;
 typedef struct PgStat_BackendPending PgStat_BackendPending;
 typedef struct TransactionStateData TransactionStateData;
 
+#include "utils/backend_runtime_current_state_forward_decls.def"
+
 typedef struct PgBackendBufferState PgBackendBufferState;
 typedef struct PgBackendCoreState PgBackendCoreState;
 typedef struct PgBackendExprInterpState PgBackendExprInterpState;
@@ -146,6 +148,31 @@ typedef struct PgRuntimeCurrentBridge
 extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgRuntimeCurrentBridge
 			PgRuntimeCurrentBridgeState;
 
+typedef struct PgRuntimeBridgeFallbackStats
+{
+	uint64		hot_cell;
+	uint64		hot_mirror;
+	uint64		hot_field;
+	uint64		hot_bucket;
+	uint64		fast_bucket;
+	uint64		fast_initialized_bucket;
+	uint64		carrier;
+	uint64		interrupts;
+	uint64		memory_contexts;
+	uint64		session_catalog_lookup;
+	uint64		after_triggers;
+} PgRuntimeBridgeFallbackStats;
+
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER
+			PgRuntimeBridgeFallbackStats PgRuntimeBridgeFallbackStatsState;
+
+#define PG_RUNTIME_BRIDGE_COUNT_FALLBACK(member) \
+	do { \
+		PgRuntimeBridgeFallbackStatsState.member++; \
+	} while (0)
+#define PG_RUNTIME_BRIDGE_COUNT_FALLBACK_EXPR(member) \
+	((void) (PgRuntimeBridgeFallbackStatsState.member++))
+
 typedef enum PgRuntimeHotCurrentCellMode
 {
 	PG_RUNTIME_HOT_CURRENT_CELLS_FALLBACK = 0,
@@ -172,12 +199,6 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER type *variable##ThreadCell;
 #include "utils/backend_runtime_hot_cells.def"
 #undef PG_RUNTIME_HOT_CELL
 
-#define PG_RUNTIME_HOT_BUCKET(variable, type, owner, field) \
-extern PGDLLIMPORT PG_GLOBAL_RUNTIME type *variable##ProcessBucket; \
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER type *variable##ThreadBucket;
-#include "utils/backend_runtime_hot_buckets.def"
-#undef PG_RUNTIME_HOT_BUCKET
-
 #define PG_RUNTIME_HOT_FIELD(variable, owner, type, expr) \
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME type *variable##ProcessRef; \
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME const void *variable##ProcessOwner; \
@@ -190,19 +211,6 @@ extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER const void *variable##Threa
 static inline type * \
 name##MaybeRef(void) \
 { \
-	type	   *slot; \
- \
-	if (likely(PgRuntimeHotCurrentCellModeState == \
-			   PG_RUNTIME_HOT_CURRENT_CELLS_THREAD)) \
-		return &PgRuntimeCurrentBridgeState.field; \
-	else if (PgRuntimeHotCurrentCellModeState == \
-			 PG_RUNTIME_HOT_CURRENT_CELLS_PROCESS) \
-	{ \
-		slot = name##ProcessRef; \
-		if (likely(slot != NULL)) \
-			return slot; \
-	} \
- \
 	return &PgRuntimeCurrentBridgeState.field; \
 }
 PG_RUNTIME_CURRENT_ROOT_REF(PgCurrentRuntimeHotRef, PgRuntime *, runtime)
@@ -226,21 +234,11 @@ variable##MaybeRef(type *(*fallback) (void)) \
 { \
 	type	   *slot; \
  \
-	if (likely(PgRuntimeHotCurrentCellModeState == \
-			   PG_RUNTIME_HOT_CURRENT_CELLS_THREAD)) \
-	{ \
-		slot = PgRuntimeCurrentBridgeState.variable; \
-		if (likely(slot != NULL)) \
-			return slot; \
-	} \
-	else if (PgRuntimeHotCurrentCellModeState == \
-			 PG_RUNTIME_HOT_CURRENT_CELLS_PROCESS) \
-	{ \
-		slot = variable##ProcessCell; \
-		if (likely(slot != NULL)) \
-			return slot; \
-	} \
+	slot = PgRuntimeCurrentBridgeState.variable; \
+	if (likely(slot != NULL)) \
+		return slot; \
  \
+	PG_RUNTIME_BRIDGE_COUNT_FALLBACK(hot_cell); \
 	return fallback(); \
 }
 #include "utils/backend_runtime_hot_cells.def"
@@ -256,6 +254,7 @@ variable##MaybeRef(type *(*fallback) (void)) \
 			   bridge->variable##Owner == (const void *) bridge->owner)) \
 		return &bridge->variable; \
  \
+	PG_RUNTIME_BRIDGE_COUNT_FALLBACK(hot_mirror); \
 	return fallback(); \
 }
 #include "utils/backend_runtime_hot_mirrors.def"
@@ -275,25 +274,14 @@ variable##MaybeRef(type *(*fallback) (void)) \
 static inline type * \
 variable##MaybeRef(type *(*fallback) (void)) \
 { \
+	PgRuntimeCurrentBridge *bridge = &PgRuntimeCurrentBridgeState; \
 	type	   *slot; \
  \
-	if (likely(PgRuntimeHotCurrentCellModeState == \
-			   PG_RUNTIME_HOT_CURRENT_CELLS_THREAD)) \
-	{ \
-		PgRuntimeCurrentBridge *bridge = &PgRuntimeCurrentBridgeState; \
+	slot = bridge->variable; \
+	if (likely(slot != NULL)) \
+		return slot; \
  \
-		slot = bridge->variable; \
-		if (likely(slot != NULL)) \
-			return slot; \
-	} \
-	else if (PgRuntimeHotCurrentCellModeState == \
-			 PG_RUNTIME_HOT_CURRENT_CELLS_PROCESS) \
-	{ \
-		slot = variable##ProcessRef; \
-		if (likely(slot != NULL)) \
-			return slot; \
-	} \
- \
+	PG_RUNTIME_BRIDGE_COUNT_FALLBACK(hot_field); \
 	return fallback(); \
 }
 #include "utils/backend_runtime_hot_fields.def"
@@ -320,77 +308,213 @@ variable##Maybe(void) \
 { \
 	type	   *bucket; \
  \
-	if (likely(PgRuntimeHotCurrentCellModeState == \
-			   PG_RUNTIME_HOT_CURRENT_CELLS_THREAD)) \
-	{ \
-		bucket = PgRuntimeCurrentBridgeState.variable; \
-		if (likely(bucket != NULL)) \
-			return bucket; \
-	} \
-	else if (PgRuntimeHotCurrentCellModeState == \
-			 PG_RUNTIME_HOT_CURRENT_CELLS_PROCESS) \
-	{ \
-		bucket = variable##ProcessBucket; \
-		if (likely(bucket != NULL)) \
-			return bucket; \
-	} \
+	bucket = PgRuntimeCurrentBridgeState.variable; \
+	if (likely(bucket != NULL)) \
+		return bucket; \
  \
+	PG_RUNTIME_BRIDGE_COUNT_FALLBACK(hot_bucket); \
 	return NULL; \
 }
 #include "utils/backend_runtime_hot_buckets.def"
 #undef PG_RUNTIME_HOT_BUCKET
 
 #ifndef BACKEND_RUNTIME_CURRENT_NO_BUCKET_ALIASES
-#define CurrentPgBackendBufferRuntimeState \
-	(CurrentPgBackendBufferRuntimeStateMaybe())
+#define CurrentPgBackendExitRuntimeState \
+	(CurrentPgBackendExitRuntimeStateMaybe())
 #define CurrentPgBackendCoreRuntimeState \
 	(CurrentPgBackendCoreRuntimeStateMaybe())
+#define CurrentPgBackendCommandRuntimeState \
+	(CurrentPgBackendCommandRuntimeStateMaybe())
+#define CurrentPgBackendLogRuntimeState \
+	(CurrentPgBackendLogRuntimeStateMaybe())
 #define CurrentPgBackendExprInterpRuntimeState \
 	(CurrentPgBackendExprInterpRuntimeStateMaybe())
-#define CurrentPgBackendIPCRuntimeState \
-	(CurrentPgBackendIPCRuntimeStateMaybe())
-#define CurrentPgBackendInterruptHoldoffRuntimeState \
-	(CurrentPgBackendInterruptHoldoffRuntimeStateMaybe())
-#define CurrentPgBackendInstrumentationRuntimeState \
-	(CurrentPgBackendInstrumentationRuntimeStateMaybe())
-#define CurrentPgBackendLockRuntimeState \
-	(CurrentPgBackendLockRuntimeStateMaybe())
-#define CurrentPgBackendMemoryManagerRuntimeState \
-	(CurrentPgBackendMemoryManagerRuntimeStateMaybe())
-#define CurrentPgBackendParallelRuntimeState \
-	(CurrentPgBackendParallelRuntimeStateMaybe())
-#define CurrentPgBackendPendingInterruptRuntimeState \
-	(CurrentPgBackendPendingInterruptRuntimeStateMaybe())
-#define CurrentPgBackendPgStatPendingRuntimeState \
-	(CurrentPgBackendPgStatPendingRuntimeStateMaybe())
-#define CurrentPgBackendStorageRuntimeState \
-	(CurrentPgBackendStorageRuntimeStateMaybe())
 #define CurrentPgBackendTimeoutRuntimeState \
 	(CurrentPgBackendTimeoutRuntimeStateMaybe())
-#define CurrentPgBackendTransactionRuntimeState \
-	(CurrentPgBackendTransactionRuntimeStateMaybe())
-#define CurrentPgBackendUtilityRuntimeState \
-	(CurrentPgBackendUtilityRuntimeStateMaybe())
-#define CurrentPgBackendWaitRuntimeState \
-	(CurrentPgBackendWaitRuntimeStateMaybe())
+#define CurrentPgBackendWalSenderRuntimeState \
+	(CurrentPgBackendWalSenderRuntimeStateMaybe())
+#define CurrentPgBackendReplicationRuntimeState \
+	(CurrentPgBackendReplicationRuntimeStateMaybe())
+#define CurrentPgBackendLogicalReplicationRuntimeState \
+	(CurrentPgBackendLogicalReplicationRuntimeStateMaybe())
 #define CurrentPgBackendXLogRuntimeState \
 	(CurrentPgBackendXLogRuntimeStateMaybe())
-#define CurrentPgConnectionProtocolRuntimeState \
-	(CurrentPgConnectionProtocolRuntimeStateMaybe())
+#define CurrentPgBackendRecoveryRuntimeState \
+	(CurrentPgBackendRecoveryRuntimeStateMaybe())
+#define CurrentPgBackendMaintenanceWorkerRuntimeState \
+	(CurrentPgBackendMaintenanceWorkerRuntimeStateMaybe())
+#define CurrentPgBackendAutovacuumRuntimeState \
+	(CurrentPgBackendAutovacuumRuntimeStateMaybe())
+#define CurrentPgBackendRepackRuntimeState \
+	(CurrentPgBackendRepackRuntimeStateMaybe())
+#define CurrentPgBackendAioRuntimeState \
+	(CurrentPgBackendAioRuntimeStateMaybe())
+#define CurrentPgBackendExtensionModuleRuntimeState \
+	(CurrentPgBackendExtensionModuleRuntimeStateMaybe())
+#define CurrentPgBackendPgStatPendingRuntimeState \
+	(CurrentPgBackendPgStatPendingRuntimeStateMaybe())
+#define CurrentPgBackendActivityRuntimeState \
+	(CurrentPgBackendActivityRuntimeStateMaybe())
+#define CurrentPgBackendMemoryManagerRuntimeState \
+	(CurrentPgBackendMemoryManagerRuntimeStateMaybe())
+#define CurrentPgBackendUtilityRuntimeState \
+	(CurrentPgBackendUtilityRuntimeStateMaybe())
+#define CurrentPgBackendParallelRuntimeState \
+	(CurrentPgBackendParallelRuntimeStateMaybe())
+#define CurrentPgBackendInstrumentationRuntimeState \
+	(CurrentPgBackendInstrumentationRuntimeStateMaybe())
+#define CurrentPgBackendBufferRuntimeState \
+	(CurrentPgBackendBufferRuntimeStateMaybe())
+#define CurrentPgBackendStorageRuntimeState \
+	(CurrentPgBackendStorageRuntimeStateMaybe())
+#define CurrentPgBackendLockRuntimeState \
+	(CurrentPgBackendLockRuntimeStateMaybe())
+#define CurrentPgBackendIPCRuntimeState \
+	(CurrentPgBackendIPCRuntimeStateMaybe())
+#define CurrentPgBackendTransactionRuntimeState \
+	(CurrentPgBackendTransactionRuntimeStateMaybe())
+#define CurrentPgBackendPendingInterruptRuntimeState \
+	(CurrentPgBackendPendingInterruptRuntimeStateMaybe())
+#define CurrentPgBackendInterruptHoldoffRuntimeState \
+	(CurrentPgBackendInterruptHoldoffRuntimeStateMaybe())
+#define CurrentPgBackendWaitRuntimeState \
+	(CurrentPgBackendWaitRuntimeStateMaybe())
+#define CurrentPgSessionLoopRuntimeState \
+	(CurrentPgSessionLoopRuntimeStateMaybe())
+#define CurrentPgSessionTcopRuntimeState \
+	(CurrentPgSessionTcopRuntimeStateMaybe())
+#define CurrentPgSessionDatabaseRuntimeState \
+	(CurrentPgSessionDatabaseRuntimeStateMaybe())
+#define CurrentPgSessionTablespaceRuntimeState \
+	(CurrentPgSessionTablespaceRuntimeStateMaybe())
+#define CurrentPgSessionBinaryUpgradeRuntimeState \
+	(CurrentPgSessionBinaryUpgradeRuntimeStateMaybe())
+#define CurrentPgSessionDateTimeRuntimeState \
+	(CurrentPgSessionDateTimeRuntimeStateMaybe())
+#define CurrentPgSessionParserRuntimeState \
+	(CurrentPgSessionParserRuntimeStateMaybe())
+#define CurrentPgSessionVacuumRuntimeState \
+	(CurrentPgSessionVacuumRuntimeStateMaybe())
+#define CurrentPgSessionBufferIORuntimeState \
+	(CurrentPgSessionBufferIORuntimeStateMaybe())
+#define CurrentPgSessionXactDefaultRuntimeState \
+	(CurrentPgSessionXactDefaultRuntimeStateMaybe())
+#define CurrentPgSessionLockWaitRuntimeState \
+	(CurrentPgSessionLockWaitRuntimeStateMaybe())
+#define CurrentPgSessionLoggingRuntimeState \
+	(CurrentPgSessionLoggingRuntimeStateMaybe())
+#define CurrentPgSessionMiscGUCRuntimeState \
+	(CurrentPgSessionMiscGUCRuntimeStateMaybe())
+#define CurrentPgSessionGUCRuntimeState \
+	(CurrentPgSessionGUCRuntimeStateMaybe())
+#define CurrentPgSessionPgStatRuntimeState \
+	(CurrentPgSessionPgStatRuntimeStateMaybe())
+#define CurrentPgSessionQueryIdRuntimeState \
+	(CurrentPgSessionQueryIdRuntimeStateMaybe())
+#define CurrentPgSessionStorageGUCRuntimeState \
+	(CurrentPgSessionStorageGUCRuntimeStateMaybe())
+#define CurrentPgSessionUserGUCRuntimeState \
+	(CurrentPgSessionUserGUCRuntimeStateMaybe())
+#define CurrentPgSessionUserIdentityRuntimeState \
+	(CurrentPgSessionUserIdentityRuntimeStateMaybe())
+#define CurrentPgSessionCommandGUCRuntimeState \
+	(CurrentPgSessionCommandGUCRuntimeStateMaybe())
+#define CurrentPgSessionReplicationGUCRuntimeState \
+	(CurrentPgSessionReplicationGUCRuntimeStateMaybe())
+#define CurrentPgSessionLogicalReplicationRuntimeState \
+	(CurrentPgSessionLogicalReplicationRuntimeStateMaybe())
+#define CurrentPgSessionGeneralGUCRuntimeState \
+	(CurrentPgSessionGeneralGUCRuntimeStateMaybe())
+#define CurrentPgSessionAccessWalGUCRuntimeState \
+	(CurrentPgSessionAccessWalGUCRuntimeStateMaybe())
+#define CurrentPgSessionJitGUCRuntimeState \
+	(CurrentPgSessionJitGUCRuntimeStateMaybe())
+#define CurrentPgSessionJitProviderRuntimeState \
+	(CurrentPgSessionJitProviderRuntimeStateMaybe())
+#define CurrentPgSessionLLVMJitRuntimeState \
+	(CurrentPgSessionLLVMJitRuntimeStateMaybe())
+#define CurrentPgSessionSortGUCRuntimeState \
+	(CurrentPgSessionSortGUCRuntimeStateMaybe())
+#define CurrentPgSessionTextSearchRuntimeState \
+	(CurrentPgSessionTextSearchRuntimeStateMaybe())
+#define CurrentPgSessionConnectionGUCRuntimeState \
+	(CurrentPgSessionConnectionGUCRuntimeStateMaybe())
+#define CurrentPgSessionQueryMemoryRuntimeState \
+	(CurrentPgSessionQueryMemoryRuntimeStateMaybe())
+#define CurrentPgSessionPlannerCostRuntimeState \
+	(CurrentPgSessionPlannerCostRuntimeStateMaybe())
+#define CurrentPgSessionPlannerMethodRuntimeState \
+	(CurrentPgSessionPlannerMethodRuntimeStateMaybe())
+#define CurrentPgSessionFunctionManagerRuntimeState \
+	(CurrentPgSessionFunctionManagerRuntimeStateMaybe())
+#define CurrentPgSessionExtensionModuleRuntimeState \
+	(CurrentPgSessionExtensionModuleRuntimeStateMaybe())
+#define CurrentPgSessionCatalogLookupRuntimeState \
+	(CurrentPgSessionCatalogLookupRuntimeStateMaybe())
+#define CurrentPgSessionInvalidationCallbackRuntimeState \
+	(CurrentPgSessionInvalidationCallbackRuntimeStateMaybe())
+#define CurrentPgSessionRIGlobalsRuntimeState \
+	(CurrentPgSessionRIGlobalsRuntimeStateMaybe())
+#define CurrentPgSessionRelMapRuntimeState \
+	(CurrentPgSessionRelMapRuntimeStateMaybe())
+#define CurrentPgSessionPreparedStatementRuntimeState \
+	(CurrentPgSessionPreparedStatementRuntimeStateMaybe())
+#define CurrentPgSessionOnCommitRuntimeState \
+	(CurrentPgSessionOnCommitRuntimeStateMaybe())
+#define CurrentPgSessionSequenceRuntimeState \
+	(CurrentPgSessionSequenceRuntimeStateMaybe())
+#define CurrentPgSessionXactCallbackRuntimeState \
+	(CurrentPgSessionXactCallbackRuntimeStateMaybe())
+#define CurrentPgSessionBackupRuntimeState \
+	(CurrentPgSessionBackupRuntimeStateMaybe())
+#define CurrentPgSessionRegexRuntimeState \
+	(CurrentPgSessionRegexRuntimeStateMaybe())
+#define CurrentPgSessionPortalManagerRuntimeState \
+	(CurrentPgSessionPortalManagerRuntimeStateMaybe())
+#define CurrentPgSessionLargeObjectRuntimeState \
+	(CurrentPgSessionLargeObjectRuntimeStateMaybe())
+#define CurrentPgSessionAsyncRuntimeState \
+	(CurrentPgSessionAsyncRuntimeStateMaybe())
+#define CurrentPgSessionEncodingRuntimeState \
+	(CurrentPgSessionEncodingRuntimeStateMaybe())
+#define CurrentPgSessionTempFileRuntimeState \
+	(CurrentPgSessionTempFileRuntimeStateMaybe())
+#define CurrentPgSessionRandomRuntimeState \
+	(CurrentPgSessionRandomRuntimeStateMaybe())
+#define CurrentPgSessionOptimizerRuntimeState \
+	(CurrentPgSessionOptimizerRuntimeStateMaybe())
+#define CurrentPgSessionPlanCacheRuntimeState \
+	(CurrentPgSessionPlanCacheRuntimeStateMaybe())
+#define CurrentPgSessionNamespaceRuntimeState \
+	(CurrentPgSessionNamespaceRuntimeStateMaybe())
+#define CurrentPgSessionLocaleRuntimeState \
+	(CurrentPgSessionLocaleRuntimeStateMaybe())
+#define CurrentPgConnectionIdentityRuntimeState \
+	(CurrentPgConnectionIdentityRuntimeStateMaybe())
 #define CurrentPgConnectionSocketIORuntimeState \
 	(CurrentPgConnectionSocketIORuntimeStateMaybe())
-#define CurrentPgExecutionCatalogRuntimeState \
-	(CurrentPgExecutionCatalogRuntimeStateMaybe())
-#define CurrentPgExecutionCatalogCacheRuntimeState \
-	(CurrentPgExecutionCatalogCacheRuntimeStateMaybe())
+#define CurrentPgConnectionProtocolRuntimeState \
+	(CurrentPgConnectionProtocolRuntimeStateMaybe())
+#define CurrentPgConnectionOutputRuntimeState \
+	(CurrentPgConnectionOutputRuntimeStateMaybe())
+#define CurrentPgConnectionInterruptRuntimeState \
+	(CurrentPgConnectionInterruptRuntimeStateMaybe())
+#define CurrentPgConnectionStartupRuntimeState \
+	(CurrentPgConnectionStartupRuntimeStateMaybe())
+#define CurrentPgConnectionClientConnectionInfoRuntimeState \
+	(CurrentPgConnectionClientConnectionInfoRuntimeStateMaybe())
+#define CurrentPgConnectionSecurityRuntimeState \
+	(CurrentPgConnectionSecurityRuntimeStateMaybe())
 #define CurrentPgExecutionDebugRuntimeState \
 	(CurrentPgExecutionDebugRuntimeStateMaybe())
 #define CurrentPgExecutionErrorRuntimeState \
 	(CurrentPgExecutionErrorRuntimeStateMaybe())
-#define CurrentPgExecutionSPIRuntimeState \
-	(CurrentPgExecutionSPIRuntimeStateMaybe())
 #define CurrentPgExecutionMemoryContextRuntimeState \
 	(CurrentPgExecutionMemoryContextRuntimeStateMaybe())
+#define CurrentPgExecutionResourceOwnerRuntimeState \
+	(CurrentPgExecutionResourceOwnerRuntimeStateMaybe())
+#define CurrentPgExecutionSPIRuntimeState \
+	(CurrentPgExecutionSPIRuntimeStateMaybe())
 #define CurrentPgExecutionPortalRuntimeState \
 	(CurrentPgExecutionPortalRuntimeStateMaybe())
 #define CurrentPgExecutionVacuumRuntimeState \
@@ -405,8 +529,6 @@ variable##Maybe(void) \
 	(CurrentPgExecutionExtensionRuntimeStateMaybe())
 #define CurrentPgExecutionMatViewRuntimeState \
 	(CurrentPgExecutionMatViewRuntimeStateMaybe())
-#define CurrentPgExecutionResourceOwnerRuntimeState \
-	(CurrentPgExecutionResourceOwnerRuntimeStateMaybe())
 #define CurrentPgExecutionSnapshotRuntimeState \
 	(CurrentPgExecutionSnapshotRuntimeStateMaybe())
 #define CurrentPgExecutionComboCidRuntimeState \
@@ -423,6 +545,10 @@ variable##Maybe(void) \
 	(CurrentPgExecutionGUCErrorRuntimeStateMaybe())
 #define CurrentPgExecutionAsyncRuntimeState \
 	(CurrentPgExecutionAsyncRuntimeStateMaybe())
+#define CurrentPgExecutionCatalogRuntimeState \
+	(CurrentPgExecutionCatalogRuntimeStateMaybe())
+#define CurrentPgExecutionCatalogCacheRuntimeState \
+	(CurrentPgExecutionCatalogCacheRuntimeStateMaybe())
 #define CurrentPgExecutionRelMapRuntimeState \
 	(CurrentPgExecutionRelMapRuntimeStateMaybe())
 #define CurrentPgExecutionInvalidationRuntimeState \
@@ -437,46 +563,6 @@ variable##Maybe(void) \
 	(CurrentPgExecutionValgrindRuntimeStateMaybe())
 #define CurrentPgExecutionSnapBuildRuntimeState \
 	(CurrentPgExecutionSnapBuildRuntimeStateMaybe())
-#define CurrentPgSessionCatalogLookupRuntimeState \
-	(CurrentPgSessionCatalogLookupRuntimeStateMaybe())
-#define CurrentPgSessionDateTimeRuntimeState \
-	(CurrentPgSessionDateTimeRuntimeStateMaybe())
-#define CurrentPgSessionXactDefaultRuntimeState \
-	(CurrentPgSessionXactDefaultRuntimeStateMaybe())
-#define CurrentPgSessionLockWaitRuntimeState \
-	(CurrentPgSessionLockWaitRuntimeStateMaybe())
-#define CurrentPgSessionParserRuntimeState \
-	(CurrentPgSessionParserRuntimeStateMaybe())
-#define CurrentPgSessionVacuumRuntimeState \
-	(CurrentPgSessionVacuumRuntimeStateMaybe())
-#define CurrentPgSessionRegexRuntimeState \
-	(CurrentPgSessionRegexRuntimeStateMaybe())
-#define CurrentPgSessionRIGlobalsRuntimeState \
-	(CurrentPgSessionRIGlobalsRuntimeStateMaybe())
-#define CurrentPgSessionEncodingRuntimeState \
-	(CurrentPgSessionEncodingRuntimeStateMaybe())
-#define CurrentPgSessionPortalManagerRuntimeState \
-	(CurrentPgSessionPortalManagerRuntimeStateMaybe())
-#define CurrentPgSessionGUCRuntimeState \
-	(CurrentPgSessionGUCRuntimeStateMaybe())
-#define CurrentPgSessionLocaleRuntimeState \
-	(CurrentPgSessionLocaleRuntimeStateMaybe())
-#define CurrentPgSessionLoggingRuntimeState \
-	(CurrentPgSessionLoggingRuntimeStateMaybe())
-#define CurrentPgSessionLoopRuntimeState \
-	(CurrentPgSessionLoopRuntimeStateMaybe())
-#define CurrentPgSessionMiscGUCRuntimeState \
-	(CurrentPgSessionMiscGUCRuntimeStateMaybe())
-#define CurrentPgSessionNamespaceRuntimeState \
-	(CurrentPgSessionNamespaceRuntimeStateMaybe())
-#define CurrentPgSessionPgStatRuntimeState \
-	(CurrentPgSessionPgStatRuntimeStateMaybe())
-#define CurrentPgSessionPlannerCostRuntimeState \
-	(CurrentPgSessionPlannerCostRuntimeStateMaybe())
-#define CurrentPgSessionPlannerMethodRuntimeState \
-	(CurrentPgSessionPlannerMethodRuntimeStateMaybe())
-#define CurrentPgSessionQueryMemoryRuntimeState \
-	(CurrentPgSessionQueryMemoryRuntimeStateMaybe())
 #endif
 
 #endif							/* BACKEND_RUNTIME_CURRENT_H */

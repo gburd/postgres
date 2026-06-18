@@ -20,7 +20,9 @@
 
 /* GUC variables */
 #ifdef TRACE_SYNCSCAN
+#ifndef PgCurrentTraceSyncscanRef
 extern bool *PgCurrentTraceSyncscanRef(void);
+#endif
 #define trace_syncscan (*PgCurrentTraceSyncscanRef())
 #endif
 

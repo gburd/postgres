@@ -33,15 +33,27 @@ typedef struct PGPROC PGPROC;
 
 /* GUC variables */
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_locks_per_xact;
+#ifndef PgCurrentLogLockFailuresRef
 extern bool *PgCurrentLogLockFailuresRef(void);
+#endif
 #define log_lock_failures (*PgCurrentLogLockFailuresRef())
 
 #ifdef LOCK_DEBUG
+#ifndef PgCurrentTraceLockOidMinRef
 extern int *PgCurrentTraceLockOidMinRef(void);
+#endif
+#ifndef PgCurrentTraceLocksRef
 extern bool *PgCurrentTraceLocksRef(void);
+#endif
+#ifndef PgCurrentTraceUserlocksRef
 extern bool *PgCurrentTraceUserlocksRef(void);
+#endif
+#ifndef PgCurrentTraceLockTableRef
 extern int *PgCurrentTraceLockTableRef(void);
+#endif
+#ifndef PgCurrentDebugDeadlocksRef
 extern bool *PgCurrentDebugDeadlocksRef(void);
+#endif
 #define Trace_lock_oidmin (*PgCurrentTraceLockOidMinRef())
 #define Trace_locks (*PgCurrentTraceLocksRef())
 #define Trace_userlocks (*PgCurrentTraceUserlocksRef())

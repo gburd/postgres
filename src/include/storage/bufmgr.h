@@ -164,13 +164,27 @@ typedef struct WritebackContext WritebackContext;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int NBuffers;
 
 /* in backend_runtime.c */
+#ifndef PgCurrentZeroDamagedPagesRef
 extern bool *PgCurrentZeroDamagedPagesRef(void);
+#endif
+#ifndef PgCurrentTrackIOTimingRef
 extern bool *PgCurrentTrackIOTimingRef(void);
+#endif
+#ifndef PgCurrentEffectiveIOConcurrencyRef
 extern int *PgCurrentEffectiveIOConcurrencyRef(void);
+#endif
+#ifndef PgCurrentMaintenanceIOConcurrencyRef
 extern int *PgCurrentMaintenanceIOConcurrencyRef(void);
+#endif
+#ifndef PgCurrentIOCombineLimitRef
 extern int *PgCurrentIOCombineLimitRef(void);
+#endif
+#ifndef PgCurrentIOCombineLimitGUCRef
 extern int *PgCurrentIOCombineLimitGUCRef(void);
+#endif
+#ifndef PgCurrentBackendFlushAfterRef
 extern int *PgCurrentBackendFlushAfterRef(void);
+#endif
 
 #define zero_damaged_pages (*PgCurrentZeroDamagedPagesRef())
 #define track_io_timing (*PgCurrentTrackIOTimingRef())

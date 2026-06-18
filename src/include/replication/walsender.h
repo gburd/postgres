@@ -35,9 +35,15 @@ typedef enum
 
 /* user-settable parameters */
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_wal_senders;
+#ifndef PgCurrentWalSenderTimeoutRef
 extern int *PgCurrentWalSenderTimeoutRef(void);
+#endif
+#ifndef PgCurrentWalSenderShutdownTimeoutRef
 extern int *PgCurrentWalSenderShutdownTimeoutRef(void);
+#endif
+#ifndef PgCurrentLogReplicationCommandsRef
 extern bool *PgCurrentLogReplicationCommandsRef(void);
+#endif
 
 #define wal_sender_timeout (*PgCurrentWalSenderTimeoutRef())
 #define wal_sender_shutdown_timeout (*PgCurrentWalSenderShutdownTimeoutRef())

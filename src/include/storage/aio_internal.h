@@ -414,8 +414,11 @@ extern PGDLLIMPORT const IoMethodOps pgaio_uring_ops;
 
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME const IoMethodOps *pgaio_method_ops;
 extern PGDLLIMPORT PG_GLOBAL_SHMEM PgAioCtl *pgaio_ctl;
-extern PGDLLIMPORT PgAioBackend **PgCurrentAioBackendRef(void);
-#define pgaio_my_backend (*PgCurrentAioBackendRef())
+extern PGDLLIMPORT PgAioBackend **(PgCurrentAioBackendRef) (void);
+#define pgaio_my_backend \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentAioBackendHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentAioBackendRef))
 
 
 

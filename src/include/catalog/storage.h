@@ -21,7 +21,9 @@
 #include "utils/relcache.h"
 
 /* GUC variables */
+#ifndef PgCurrentWalSkipThresholdRef
 extern int *PgCurrentWalSkipThresholdRef(void);
+#endif
 #define wal_skip_threshold (*PgCurrentWalSkipThresholdRef())
 
 extern SMgrRelation RelationCreateStorage(RelFileLocator rlocator,

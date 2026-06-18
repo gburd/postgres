@@ -80,7 +80,9 @@ typedef struct LargeObjectDesc
 /*
  * GUC: backwards-compatibility flag to suppress LO permission checks
  */
+#ifndef PgCurrentLoCompatPrivilegesRef
 extern bool *PgCurrentLoCompatPrivilegesRef(void);
+#endif
 #define lo_compat_privileges (*PgCurrentLoCompatPrivilegesRef())
 
 /*

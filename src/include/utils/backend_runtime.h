@@ -3046,6 +3046,7 @@ extern void PgSetCurrentBackend(PgBackend *backend);
 extern void PgSetCurrentSession(PgSession *session);
 extern void PgSetCurrentConnection(PgConnection *connection);
 extern void PgSetCurrentExecution(PgExecution *execution);
+extern void PgRuntimeReportBridgeFallbackStats(void);
 extern bool PgCurrentSessionOwnsPointer(const void *ptr);
 extern bool PgCurrentOrEarlySessionOwnsPointer(const void *ptr);
 extern void PgBackendResetClosedState(PgBackend *backend);
@@ -3314,7 +3315,12 @@ pg_noreturn extern void PgSessionRun(PgSession *session);
 	({ \
 		typeof(variable) pg_runtime_bucket = (variable); \
  \
-		likely(pg_runtime_bucket != NULL) ? pg_runtime_bucket : fallback(); \
+		if (unlikely(pg_runtime_bucket == NULL)) \
+		{ \
+			PG_RUNTIME_BRIDGE_COUNT_FALLBACK(fast_bucket); \
+			pg_runtime_bucket = fallback(); \
+		} \
+		pg_runtime_bucket; \
 	})
 
 #define PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(variable, fallback) \
@@ -3322,12 +3328,157 @@ pg_noreturn extern void PgSessionRun(PgSession *session);
 	({ \
 		typeof(variable) pg_runtime_bucket = (variable); \
  \
-		likely(pg_runtime_bucket != NULL && pg_runtime_bucket->initialized) ? \
-		pg_runtime_bucket : fallback(); \
+		if (unlikely(pg_runtime_bucket == NULL || \
+					 !pg_runtime_bucket->initialized)) \
+		{ \
+			PG_RUNTIME_BRIDGE_COUNT_FALLBACK(fast_initialized_bucket); \
+			pg_runtime_bucket = fallback(); \
+		} \
+		pg_runtime_bucket; \
+	})
+
+#define PG_RUNTIME_CURRENT_FIELD_REF(variable, fallback, member) \
+	__extension__ \
+	({ \
+		typeof(variable) pg_runtime_bucket = (variable); \
+ \
+		unlikely(pg_runtime_bucket == NULL) ? \
+		(PG_RUNTIME_BRIDGE_COUNT_FALLBACK_EXPR(fast_bucket), (fallback)()) : \
+		&pg_runtime_bucket->member; \
+	})
+
+#define PG_RUNTIME_CURRENT_FIELD_REF_PASTE(variable, fallback, head, tail) \
+	__extension__ \
+	({ \
+		typeof(variable) pg_runtime_bucket = (variable); \
+ \
+		unlikely(pg_runtime_bucket == NULL) ? \
+		(PG_RUNTIME_BRIDGE_COUNT_FALLBACK_EXPR(fast_bucket), (fallback)()) : \
+		&pg_runtime_bucket->head ## tail; \
+	})
+
+#define PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(variable, fallback, member) \
+	__extension__ \
+	({ \
+		typeof(variable) pg_runtime_bucket = (variable); \
+ \
+		unlikely(pg_runtime_bucket == NULL || \
+				 !pg_runtime_bucket->initialized) ? \
+		(PG_RUNTIME_BRIDGE_COUNT_FALLBACK_EXPR(fast_initialized_bucket), \
+		 (fallback)()) : \
+		&pg_runtime_bucket->member; \
+	})
+
+#define PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF_PASTE(variable, fallback, head, tail) \
+	__extension__ \
+	({ \
+		typeof(variable) pg_runtime_bucket = (variable); \
+ \
+		unlikely(pg_runtime_bucket == NULL || \
+				 !pg_runtime_bucket->initialized) ? \
+		(PG_RUNTIME_BRIDGE_COUNT_FALLBACK_EXPR(fast_initialized_bucket), \
+		 (fallback)()) : \
+		&pg_runtime_bucket->head ## tail; \
+	})
+
+#define PG_RUNTIME_CURRENT_FIELD_PTR(variable, fallback, member) \
+	__extension__ \
+	({ \
+		typeof(variable) pg_runtime_bucket = (variable); \
+ \
+		unlikely(pg_runtime_bucket == NULL) ? \
+		(PG_RUNTIME_BRIDGE_COUNT_FALLBACK_EXPR(fast_bucket), (fallback)()) : \
+		pg_runtime_bucket->member; \
+	})
+
+#define PG_RUNTIME_CURRENT_FIELD_PTR_PASTE(variable, fallback, head, tail) \
+	__extension__ \
+	({ \
+		typeof(variable) pg_runtime_bucket = (variable); \
+ \
+		unlikely(pg_runtime_bucket == NULL) ? \
+		(PG_RUNTIME_BRIDGE_COUNT_FALLBACK_EXPR(fast_bucket), (fallback)()) : \
+		pg_runtime_bucket->head ## tail; \
+	})
+
+#define PG_RUNTIME_CURRENT_INITIALIZED_FIELD_PTR(variable, fallback, member) \
+	__extension__ \
+	({ \
+		typeof(variable) pg_runtime_bucket = (variable); \
+ \
+		unlikely(pg_runtime_bucket == NULL || \
+				 !pg_runtime_bucket->initialized) ? \
+		(PG_RUNTIME_BRIDGE_COUNT_FALLBACK_EXPR(fast_initialized_bucket), \
+		 (fallback)()) : \
+		pg_runtime_bucket->member; \
+	})
+
+#define PG_RUNTIME_CURRENT_ROOT_FIELD_REF(root, fallback, member) \
+	__extension__ \
+	({ \
+		typeof(PgRuntimeCurrentBridgeState.root) pg_runtime_owner = \
+			PgRuntimeCurrentBridgeState.root; \
+ \
+		unlikely(pg_runtime_owner == NULL) ? \
+		(PG_RUNTIME_BRIDGE_COUNT_FALLBACK_EXPR(fast_bucket), (fallback)()) : \
+		&pg_runtime_owner->member; \
+	})
+
+#define PG_RUNTIME_CURRENT_ROOT_FIELD_PTR(root, fallback, member) \
+	__extension__ \
+	({ \
+		typeof(PgRuntimeCurrentBridgeState.root) pg_runtime_owner = \
+			PgRuntimeCurrentBridgeState.root; \
+ \
+		unlikely(pg_runtime_owner == NULL) ? \
+		(PG_RUNTIME_BRIDGE_COUNT_FALLBACK_EXPR(fast_bucket), (fallback)()) : \
+		pg_runtime_owner->member; \
+	})
+
+#define PG_RUNTIME_CURRENT_CARRIER_FIELD_REF(fallback, member) \
+	__extension__ \
+	({ \
+		PgCarrier  *pg_runtime_carrier = PgRuntimeCurrentBridgeState.carrier; \
+ \
+		unlikely(pg_runtime_carrier == NULL) ? \
+		(PG_RUNTIME_BRIDGE_COUNT_FALLBACK_EXPR(carrier), (fallback)()) : \
+		&pg_runtime_carrier->member; \
 	})
 
 #ifndef BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
+#define PgCurrentBackendThreadStartRef() \
+	PG_RUNTIME_CURRENT_CARRIER_FIELD_REF(PgCurrentBackendThreadStartRef, \
+										 backend_thread_start)
+#define PgCurrentIsUnderPostmasterRef() \
+	PG_RUNTIME_CURRENT_CARRIER_FIELD_REF(PgCurrentIsUnderPostmasterRef, \
+										 is_under_postmaster)
+#define PgCurrentThreadedGUCMutexDepthRef() \
+	PG_RUNTIME_CURRENT_CARRIER_FIELD_REF(PgCurrentThreadedGUCMutexDepthRef, \
+										 threaded_guc_mutex_depth)
+#define PgCurrentWaitEventWaitingRef() \
+	PG_RUNTIME_CURRENT_CARRIER_FIELD_REF(PgCurrentWaitEventWaitingRef, \
+										 wait_event_waiting)
+#define PgCurrentWaitEventSignalFdRef() \
+	PG_RUNTIME_CURRENT_CARRIER_FIELD_REF(PgCurrentWaitEventSignalFdRef, \
+										 wait_event_signal_fd)
+#define PgCurrentWaitEventSelfPipeReadFdRef() \
+	PG_RUNTIME_CURRENT_CARRIER_FIELD_REF(PgCurrentWaitEventSelfPipeReadFdRef, \
+										 wait_event_selfpipe_readfd)
+#define PgCurrentWaitEventSelfPipeWriteFdRef() \
+	PG_RUNTIME_CURRENT_CARRIER_FIELD_REF(PgCurrentWaitEventSelfPipeWriteFdRef, \
+										 wait_event_selfpipe_writefd)
+#define PgCurrentWaitEventSelfPipeOwnerPidRef() \
+	PG_RUNTIME_CURRENT_CARRIER_FIELD_REF(PgCurrentWaitEventSelfPipeOwnerPidRef, \
+										 wait_event_selfpipe_owner_pid)
+#define PgCurrentStackBasePtrRef() \
+	PG_RUNTIME_CURRENT_CARRIER_FIELD_REF(PgCurrentStackBasePtrRef, \
+										 stack_base_ptr)
+#include "utils/backend_runtime_current_state_accessor_prototypes.def"
 #include "utils/backend_runtime_hot_bucket_accessors.def"
+#include "utils/backend_runtime_current_field_accessor_prototypes.def"
+#include "utils/backend_runtime_current_field_accessors.def"
+#include "utils/backend_runtime_current_state_field_accessor_prototypes.def"
+#include "utils/backend_runtime_current_state_field_accessors.def"
 #endif
 
 #endif							/* BACKEND_RUNTIME_H */

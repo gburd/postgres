@@ -40,7 +40,9 @@ extern void AttachSession(dsm_handle handle);
 extern void DetachSession(void);
 
 /* The current session, or NULL for none. */
+#ifndef PgCurrentLegacySessionRef
 extern Session **PgCurrentLegacySessionRef(void);
+#endif
 #define CurrentSession (*PgCurrentLegacySessionRef())
 
 #endif							/* SESSION_H */

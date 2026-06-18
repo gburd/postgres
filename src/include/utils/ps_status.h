@@ -21,9 +21,12 @@
 #define DEFAULT_UPDATE_PROCESS_TITLE true
 #endif
 
-extern bool *PgCurrentUpdateProcessTitleRef(void);
+extern bool *(PgCurrentUpdateProcessTitleRef) (void);
 
-#define update_process_title (*PgCurrentUpdateProcessTitleRef())
+#define update_process_title \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentUpdateProcessTitleHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentUpdateProcessTitleRef))
 
 extern char **save_ps_display_args(int argc, char **argv);
 

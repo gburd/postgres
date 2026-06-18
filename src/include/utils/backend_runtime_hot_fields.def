@@ -23,6 +23,36 @@ PG_RUNTIME_HOT_FIELD(PgCurrentMyProcNumberHotRef,
 					 backend,
 					 int,
 					 CurrentPgBackend != NULL ? &CurrentPgBackend->my_proc_number : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentIsUnderPostmasterHotRef,
+					 carrier,
+					 bool,
+					 CurrentPgCarrier != NULL ?
+					 &CurrentPgCarrier->is_under_postmaster : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentUpdateProcessTitleHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->misc_guc.update_process_title_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentAioBackendHotRef,
+					 backend,
+					 struct PgAioBackend *,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->aio.my_backend : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentBackslashQuoteHotRef,
+					 session,
+					 int,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->parser.backslash_quote_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentComputeQueryIdHotRef,
+					 session,
+					 int,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->query_id.compute_query_id_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentQueryIdEnabledHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->query_id.query_id_enabled_value : NULL)
 PG_RUNTIME_HOT_FIELD(PgCurrentPrivateRefCountArrayKeysHotRef,
 					 backend,
 					 void *,

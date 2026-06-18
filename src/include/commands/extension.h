@@ -19,7 +19,9 @@
 #include "utils/global_lifetime.h"
 
 /* GUC */
+#ifndef PgCurrentExtensionControlPathRef
 extern char **PgCurrentExtensionControlPathRef(void);
+#endif
 #define Extension_control_path (*PgCurrentExtensionControlPathRef())
 
 /*
@@ -31,8 +33,12 @@ extern char **PgCurrentExtensionControlPathRef(void);
  * scripts can drop member objects without having to explicitly dissociate
  * them from the extension first.
  */
+#ifndef PgCurrentCreatingExtensionRef
 extern bool *PgCurrentCreatingExtensionRef(void);
+#endif
+#ifndef PgCurrentExtensionObjectRef
 extern Oid *PgCurrentExtensionObjectRef(void);
+#endif
 #define creating_extension (*PgCurrentCreatingExtensionRef())
 #define CurrentExtensionObject (*PgCurrentExtensionObjectRef())
 

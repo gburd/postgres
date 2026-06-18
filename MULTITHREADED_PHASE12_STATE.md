@@ -22758,3 +22758,51 @@ Validation follow-up:
     process 38134.6 TPS, threaded 37291.3 TPS; process/vanilla 0.928,
     threaded/process 0.978, threaded/vanilla 0.907. Threaded `PgSessionStep`
     self dropped to 2.46%.
+
+## Bridge-Only Compile-Time Accessor Probe
+
+Lifecycle/preflight note:
+
+- target: estimate the overhead of the runtime process/thread accessor mode
+  switch itself by forcing hot roots, cells, fields, and buckets to read the
+  installed `PgRuntimeCurrentBridgeState` path directly.
+- touched roots/buckets: generated current accessors only; no lifecycle or
+  runtime object ownership changes.
+- owner source files: dirty probe in `src/include/utils/backend_runtime_current.h`
+  and this state note.
+- legacy symbols/accessors: public accessor APIs are unchanged for the probe;
+  process/thread side arrays remain installed but are bypassed in hot inline
+  accessors.
+- repeated lifecycle operations: none. Runtime refresh still populates the
+  bridge and process/thread hot refs as before.
+- checked primitive decision: this is a measurement-only patch layered on top
+  of committed thread-first accessor layout `dc1741b42a`, intended to isolate
+  mode-check overhead from the rest of the branch's compatibility-state cost.
+- validation impact: clean rebuild/install, threaded smoke, and focused
+  vanilla-pgbench select1_prepared profiling.
+
+Validation follow-up:
+
+- clean rebuild/install: passed.
+- threaded smoke: `make check-threaded-smoke` passed, followed by normal
+  `make install`.
+- focused repeat profiles:
+  - `/tmp/mtpg_three_lane_profile_20260618_215640`: vanilla 43524.4 TPS,
+    process 42424.9 TPS, threaded 44659.8 TPS; process/vanilla 0.975,
+    threaded/process 1.053, threaded/vanilla 1.026. Threaded `PgSessionStep`
+    self was 2.94%.
+  - `/tmp/mtpg_three_lane_profile_20260618_215902`: vanilla 47600.4 TPS,
+    process 43253.6 TPS, threaded 44402.8 TPS; process/vanilla 0.909,
+    threaded/process 1.027, threaded/vanilla 0.933. Threaded `PgSessionStep`
+    self was 2.76%.
+- interpretation: the runtime mode switch is a material part of the branch-wide
+  overhead. A production version should not hard-code bridge-only accessors;
+  it should either generate mode-specialized accessor headers/builds or install
+  a single direct fast path for the selected backend model.
+- full five-workload profile: result dir
+  `/tmp/mtpg_three_lane_profile_20260618_220205`; simple SELECT
+  threaded/vanilla 1.079, built-in prepared SELECT 0.916, custom
+  select1_prepared 0.904, single-row prepared read 0.849, random KV prepared
+  read 0.898. `PgSessionStep` self fell to 0.64-2.87% in threaded reports
+  depending on workload, versus the earlier process/thread accessors where it
+  regularly dominated tiny-query profiles.

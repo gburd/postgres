@@ -86,12 +86,16 @@ extern char *map_sql_identifier_to_xml_name(const char *ident, bool fully_escape
 extern char *map_xml_name_to_sql_identifier(const char *name);
 extern char *map_sql_value_to_xml_value(Datum value, Oid type, bool xml_escape_strings);
 
+#ifndef PgCurrentXmlBinaryRef
 extern int *PgCurrentXmlBinaryRef(void);
+#endif
 #define xmlbinary (*PgCurrentXmlBinaryRef())	/* XmlBinaryType,
 												 * but int for GUC enum */
 
+#ifndef PgCurrentXmlOptionRef
 extern int *PgCurrentXmlOptionRef(void);	/* XmlOptionType, but int for
 											 * GUC enum */
+#endif
 
 extern PGDLLIMPORT const TableFuncRoutine XmlTableRoutine;
 

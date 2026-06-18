@@ -81,19 +81,45 @@ struct JitProviderCallbacks
 
 
 /* GUCs */
+#ifndef PgCurrentJitEnabledRef
 extern bool *PgCurrentJitEnabledRef(void);
+#endif
+#ifndef PgCurrentJitProviderRef
 extern char **PgCurrentJitProviderRef(void);
+#endif
+#ifndef PgCurrentJitDebuggingSupportRef
 extern bool *PgCurrentJitDebuggingSupportRef(void);
+#endif
+#ifndef PgCurrentJitDumpBitcodeRef
 extern bool *PgCurrentJitDumpBitcodeRef(void);
+#endif
+#ifndef PgCurrentJitExpressionsRef
 extern bool *PgCurrentJitExpressionsRef(void);
+#endif
+#ifndef PgCurrentJitProfilingSupportRef
 extern bool *PgCurrentJitProfilingSupportRef(void);
+#endif
+#ifndef PgCurrentJitTupleDeformingRef
 extern bool *PgCurrentJitTupleDeformingRef(void);
+#endif
+#ifndef PgCurrentJitAboveCostRef
 extern double *PgCurrentJitAboveCostRef(void);
+#endif
+#ifndef PgCurrentJitInlineAboveCostRef
 extern double *PgCurrentJitInlineAboveCostRef(void);
+#endif
+#ifndef PgCurrentJitOptimizeAboveCostRef
 extern double *PgCurrentJitOptimizeAboveCostRef(void);
+#endif
+#ifndef PgCurrentJitProviderCallbacksRef
 extern JitProviderCallbacks *PgCurrentJitProviderCallbacksRef(void);
+#endif
+#ifndef PgCurrentJitProviderSuccessfullyLoadedRef
 extern bool *PgCurrentJitProviderSuccessfullyLoadedRef(void);
+#endif
+#ifndef PgCurrentJitProviderFailedLoadingRef
 extern bool *PgCurrentJitProviderFailedLoadingRef(void);
+#endif
 #define jit_enabled (*PgCurrentJitEnabledRef())
 #define jit_provider (*PgCurrentJitProviderRef())
 #define jit_debugging_support (*PgCurrentJitDebuggingSupportRef())

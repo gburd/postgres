@@ -25,8 +25,12 @@
 #define PG_LOGICAL_SNAPSHOTS_DIR	PG_LOGICAL_DIR "/snapshots"
 
 /* GUC variables */
+#ifndef PgCurrentLogicalDecodingWorkMemRef
 extern int *PgCurrentLogicalDecodingWorkMemRef(void);
-extern int *PgCurrentDebugLogicalReplicationStreamingRef(void);
+#endif
+#ifndef PgCurrentDebugLogicalReplicationStreamingRef
+extern int *(PgCurrentDebugLogicalReplicationStreamingRef)(void);
+#endif
 
 #define logical_decoding_work_mem (*PgCurrentLogicalDecodingWorkMemRef())
 #define debug_logical_replication_streaming \

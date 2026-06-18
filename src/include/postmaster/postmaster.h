@@ -82,7 +82,9 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME int Unix_socket_permissions;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *Unix_socket_group;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *Unix_socket_directories;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *ListenAddresses;
+#ifndef PgCurrentClientAuthInProgressRef
 extern bool *PgCurrentClientAuthInProgressRef(void);
+#endif
 #define ClientAuthInProgress (*PgCurrentClientAuthInProgressRef())
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int PreAuthDelay;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int AuthenticationTimeout;
@@ -129,7 +131,9 @@ extern bool PostmasterSignalAutoVacLauncher(void);
 extern void pgwin32_register_deadchild_callback(HANDLE procHandle, DWORD procId);
 #endif
 
+#ifndef PgCurrentClientSocketRef
 extern struct ClientSocket **PgCurrentClientSocketRef(void);
+#endif
 #define MyClientSocket (*PgCurrentClientSocketRef())
 
 /* prototypes for functions in launch_backend.c */

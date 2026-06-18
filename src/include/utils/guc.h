@@ -246,11 +246,21 @@ typedef enum
 
 
 /* GUC vars that are actually defined in guc_tables.c, rather than elsewhere */
+#ifndef PgCurrentDebugPrintPlanRef
 extern bool *PgCurrentDebugPrintPlanRef(void);
+#endif
+#ifndef PgCurrentDebugPrintParseRef
 extern bool *PgCurrentDebugPrintParseRef(void);
+#endif
+#ifndef PgCurrentDebugPrintRawParseRef
 extern bool *PgCurrentDebugPrintRawParseRef(void);
+#endif
+#ifndef PgCurrentDebugPrintRewrittenRef
 extern bool *PgCurrentDebugPrintRewrittenRef(void);
+#endif
+#ifndef PgCurrentDebugPrettyPrintRef
 extern bool *PgCurrentDebugPrettyPrintRef(void);
+#endif
 #define Debug_print_plan (*PgCurrentDebugPrintPlanRef())
 #define Debug_print_parse (*PgCurrentDebugPrintParseRef())
 #define Debug_print_raw_parse (*PgCurrentDebugPrintRawParseRef())
@@ -258,9 +268,15 @@ extern bool *PgCurrentDebugPrettyPrintRef(void);
 #define Debug_pretty_print (*PgCurrentDebugPrettyPrintRef())
 
 #ifdef DEBUG_NODE_TESTS_ENABLED
+#ifndef PgCurrentDebugCopyParsePlanTreesRef
 extern bool *PgCurrentDebugCopyParsePlanTreesRef(void);
+#endif
+#ifndef PgCurrentDebugWriteReadParsePlanTreesRef
 extern bool *PgCurrentDebugWriteReadParsePlanTreesRef(void);
+#endif
+#ifndef PgCurrentDebugRawExpressionCoverageTestRef
 extern bool *PgCurrentDebugRawExpressionCoverageTestRef(void);
+#endif
 #define Debug_copy_parse_plan_trees (*PgCurrentDebugCopyParsePlanTreesRef())
 #define Debug_write_read_parse_plan_trees (*PgCurrentDebugWriteReadParsePlanTreesRef())
 #define Debug_raw_expression_coverage_test (*PgCurrentDebugRawExpressionCoverageTestRef())
@@ -289,12 +305,24 @@ extern bool *PgCurrentDebugRawExpressionCoverageTestRef(void);
 
 #endif							/* DEBUG_NODE_TESTS_ENABLED */
 
+#ifndef PgCurrentLogParserStatsRef
 extern bool *PgCurrentLogParserStatsRef(void);
+#endif
+#ifndef PgCurrentLogPlannerStatsRef
 extern bool *PgCurrentLogPlannerStatsRef(void);
+#endif
+#ifndef PgCurrentLogExecutorStatsRef
 extern bool *PgCurrentLogExecutorStatsRef(void);
+#endif
+#ifndef PgCurrentLogStatementStatsRef
 extern bool *PgCurrentLogStatementStatsRef(void);
+#endif
+#ifndef PgCurrentLogBtreeBuildStatsRef
 extern bool *PgCurrentLogBtreeBuildStatsRef(void);
+#endif
+#ifndef PgCurrentEventSourceRef
 extern char **PgCurrentEventSourceRef(void);
+#endif
 #define log_parser_stats (*PgCurrentLogParserStatsRef())
 #define log_planner_stats (*PgCurrentLogPlannerStatsRef())
 #define log_executor_stats (*PgCurrentLogExecutorStatsRef())
@@ -302,25 +330,55 @@ extern char **PgCurrentEventSourceRef(void);
 #define log_btree_build_stats (*PgCurrentLogBtreeBuildStatsRef())
 #define event_source (*PgCurrentEventSourceRef())
 
+#ifndef PgCurrentCheckFunctionBodiesRef
 extern bool *PgCurrentCheckFunctionBodiesRef(void);
+#endif
+#ifndef PgCurrentCurrentRoleIsSuperuserRef
 extern bool *PgCurrentCurrentRoleIsSuperuserRef(void);
+#endif
 #define check_function_bodies (*PgCurrentCheckFunctionBodiesRef())
 #define current_role_is_superuser (*PgCurrentCurrentRoleIsSuperuserRef())
 
+#ifndef PgCurrentAllowAlterSystemRef
 extern bool *PgCurrentAllowAlterSystemRef(void);
+#endif
 #define AllowAlterSystem (*PgCurrentAllowAlterSystemRef())
+#ifndef PgCurrentLogDurationRef
 extern bool *PgCurrentLogDurationRef(void);
+#endif
+#ifndef PgCurrentLogParameterMaxLengthRef
 extern int *PgCurrentLogParameterMaxLengthRef(void);
+#endif
+#ifndef PgCurrentLogParameterMaxLengthOnErrorRef
 extern int *PgCurrentLogParameterMaxLengthOnErrorRef(void);
+#endif
+#ifndef PgCurrentLogMinErrorStatementRef
 extern int *PgCurrentLogMinErrorStatementRef(void);
+#endif
+#ifndef PgCurrentLogMinMessagesArrayRef
 extern int *PgCurrentLogMinMessagesArrayRef(void);
+#endif
+#ifndef PgCurrentClientMinMessagesRef
 extern int *PgCurrentClientMinMessagesRef(void);
+#endif
+#ifndef PgCurrentLogMinDurationSampleRef
 extern int *PgCurrentLogMinDurationSampleRef(void);
+#endif
+#ifndef PgCurrentLogMinDurationStatementRef
 extern int *PgCurrentLogMinDurationStatementRef(void);
+#endif
+#ifndef PgCurrentLogTempFilesRef
 extern int *PgCurrentLogTempFilesRef(void);
+#endif
+#ifndef PgCurrentLogStatementSampleRateRef
 extern double *PgCurrentLogStatementSampleRateRef(void);
+#endif
+#ifndef PgCurrentLogXactSampleRateRef
 extern double *PgCurrentLogXactSampleRateRef(void);
+#endif
+#ifndef PgCurrentBacktraceFunctionsRef
 extern char **PgCurrentBacktraceFunctionsRef(void);
+#endif
 #define log_duration (*PgCurrentLogDurationRef())
 #define log_parameter_max_length (*PgCurrentLogParameterMaxLengthRef())
 #define log_parameter_max_length_on_error (*PgCurrentLogParameterMaxLengthOnErrorRef())
@@ -334,18 +392,34 @@ extern char **PgCurrentBacktraceFunctionsRef(void);
 #define log_xact_sample_rate (*PgCurrentLogXactSampleRateRef())
 #define backtrace_functions (*PgCurrentBacktraceFunctionsRef())
 
+#ifndef PgCurrentTempFileLimitRef
 extern int *PgCurrentTempFileLimitRef(void);
+#endif
 #define temp_file_limit (*PgCurrentTempFileLimitRef())
 
+#ifndef PgCurrentNumTempBuffersRef
 extern int *PgCurrentNumTempBuffersRef(void);
+#endif
 #define num_temp_buffers (*PgCurrentNumTempBuffersRef())
 
+#ifndef PgCurrentClusterNameRef
 extern char **PgCurrentClusterNameRef(void);
+#endif
+#ifndef PgCurrentConfigFileNameRef
 extern char **PgCurrentConfigFileNameRef(void);
+#endif
+#ifndef PgCurrentHbaFileNameRef
 extern char **PgCurrentHbaFileNameRef(void);
+#endif
+#ifndef PgCurrentIdentFileNameRef
 extern char **PgCurrentIdentFileNameRef(void);
+#endif
+#ifndef PgCurrentHostsFileNameRef
 extern char **PgCurrentHostsFileNameRef(void);
+#endif
+#ifndef PgCurrentExternalPidFileRef
 extern char **PgCurrentExternalPidFileRef(void);
+#endif
 #define cluster_name (*PgCurrentClusterNameRef())
 #define ConfigFileName (*PgCurrentConfigFileNameRef())
 #define HbaFileName (*PgCurrentHbaFileNameRef())
@@ -353,26 +427,42 @@ extern char **PgCurrentExternalPidFileRef(void);
 #define HostsFileName (*PgCurrentHostsFileNameRef())
 #define external_pid_file (*PgCurrentExternalPidFileRef())
 
+#ifndef PgCurrentApplicationNameRef
 extern char **PgCurrentApplicationNameRef(void);
+#endif
 #define application_name (*PgCurrentApplicationNameRef())
 
+#ifndef PgCurrentTcpKeepalivesIdleRef
 extern int *PgCurrentTcpKeepalivesIdleRef(void);
+#endif
+#ifndef PgCurrentTcpKeepalivesIntervalRef
 extern int *PgCurrentTcpKeepalivesIntervalRef(void);
+#endif
+#ifndef PgCurrentTcpKeepalivesCountRef
 extern int *PgCurrentTcpKeepalivesCountRef(void);
+#endif
+#ifndef PgCurrentTcpUserTimeoutRef
 extern int *PgCurrentTcpUserTimeoutRef(void);
+#endif
 #define tcp_keepalives_idle (*PgCurrentTcpKeepalivesIdleRef())
 #define tcp_keepalives_interval (*PgCurrentTcpKeepalivesIntervalRef())
 #define tcp_keepalives_count (*PgCurrentTcpKeepalivesCountRef())
 #define tcp_user_timeout (*PgCurrentTcpUserTimeoutRef())
 
+#ifndef PgCurrentRoleStringRef
 extern char **PgCurrentRoleStringRef(void);
+#endif
 #define role_string (*PgCurrentRoleStringRef())
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool in_hot_standby_guc;
+#ifndef PgCurrentTraceSortRef
 extern bool *PgCurrentTraceSortRef(void);
+#endif
 #define trace_sort (*PgCurrentTraceSortRef())
 
 #ifdef DEBUG_BOUNDED_SORT
+#ifndef PgCurrentOptimizeBoundedSortRef
 extern bool *PgCurrentOptimizeBoundedSortRef(void);
+#endif
 #define optimize_bounded_sort (*PgCurrentOptimizeBoundedSortRef())
 #endif
 
@@ -542,9 +632,15 @@ extern TupleDesc GetPGVariableResultDesc(const char *name);
 
 /* Support for messages reported from GUC check hooks */
 
+#ifndef PgCurrentGUCCheckErrmsgStringRef
 extern char **PgCurrentGUCCheckErrmsgStringRef(void);
+#endif
+#ifndef PgCurrentGUCCheckErrdetailStringRef
 extern char **PgCurrentGUCCheckErrdetailStringRef(void);
+#endif
+#ifndef PgCurrentGUCCheckErrhintStringRef
 extern char **PgCurrentGUCCheckErrhintStringRef(void);
+#endif
 #define GUC_check_errmsg_string (*PgCurrentGUCCheckErrmsgStringRef())
 #define GUC_check_errdetail_string (*PgCurrentGUCCheckErrdetailStringRef())
 #define GUC_check_errhint_string (*PgCurrentGUCCheckErrhintStringRef())

@@ -193,93 +193,259 @@ extern PgRuntimeServerGUCState *PgCurrentRuntimeServerGUCState(void);
 extern void PgRuntimeInitializeExtensionModuleState(PgRuntimeExtensionModuleState *extension_modules);
 extern void PgRuntimeAdoptEarlyExtensionModuleState(PgRuntime *runtime);
 extern PgRuntimeExtensionModuleState *PgCurrentRuntimeExtensionModuleState(void);
+#ifndef PgCurrentSessionLoopState
 extern PgSessionLoopState *PgCurrentSessionLoopState(void);
+#endif
+#ifndef PgCurrentSessionTcopState
 extern PgSessionTcopState *PgCurrentSessionTcopState(void);
+#endif
+#ifndef PgCurrentSessionDatabaseState
 extern PgSessionDatabaseState *PgCurrentSessionDatabaseState(void);
+#endif
+#ifndef PgCurrentSessionTablespaceState
 extern PgSessionTablespaceState *PgCurrentSessionTablespaceState(void);
+#endif
+#ifndef PgCurrentSessionBinaryUpgradeState
 extern PgSessionBinaryUpgradeState *PgCurrentSessionBinaryUpgradeState(void);
+#endif
+#ifndef PgCurrentSessionCatalogLookupState
 extern PgSessionCatalogLookupState *PgCurrentSessionCatalogLookupState(void);
+#endif
+#ifndef PgCurrentSessionTextSearchState
 extern PgSessionTextSearchState *PgCurrentSessionTextSearchState(void);
+#endif
+#ifndef PgCurrentSessionConnectionGUCState
 extern PgSessionConnectionGUCState *PgCurrentSessionConnectionGUCState(void);
+#endif
+#ifndef PgCurrentSessionDateTimeState
 extern PgSessionDateTimeState *PgCurrentSessionDateTimeState(void);
+#endif
+#ifndef PgCurrentSessionEncodingState
 extern PgSessionEncodingState *PgCurrentSessionEncodingState(void);
+#endif
+#ifndef PgCurrentSessionTempFileState
 extern PgSessionTempFileState *PgCurrentSessionTempFileState(void);
+#endif
+#ifndef PgCurrentSessionParserState
 extern PgSessionParserState *PgCurrentSessionParserState(void);
+#endif
+#ifndef PgCurrentSessionVacuumState
 extern PgSessionVacuumState *PgCurrentSessionVacuumState(void);
+#endif
+#ifndef PgCurrentSessionBufferIOState
 extern PgSessionBufferIOState *PgCurrentSessionBufferIOState(void);
+#endif
+#ifndef PgCurrentSessionXactDefaultState
 extern PgSessionXactDefaultState *PgCurrentSessionXactDefaultState(void);
+#endif
+#ifndef PgCurrentSessionLockWaitState
 extern PgSessionLockWaitState *PgCurrentSessionLockWaitState(void);
+#endif
 extern PgSessionNamespaceState *PgCurrentSessionNamespaceState(void);
 extern PgSessionLocaleState *PgCurrentSessionLocaleState(void);
+#ifndef PgCurrentSessionExtensionModuleState
 extern PgSessionExtensionModuleState *PgCurrentSessionExtensionModuleState(void);
+#endif
 extern PgSessionInvalidationCallbackState *PgCurrentSessionInvalidationCallbackState(void);
+#ifndef PgCurrentSessionRIGlobalsState
 extern PgSessionRIGlobalsState *PgCurrentSessionRIGlobalsState(void);
+#endif
+#ifndef PgCurrentSessionRelMapState
 extern PgSessionRelMapState *PgCurrentSessionRelMapState(void);
+#endif
+#ifndef PgCurrentSessionPreparedStatementState
 extern PgSessionPreparedStatementState *PgCurrentSessionPreparedStatementState(void);
+#endif
+#ifndef PgCurrentSessionPlanCacheState
 extern PgSessionPlanCacheState *PgCurrentSessionPlanCacheState(void);
+#endif
+#ifndef PgCurrentSessionOnCommitState
 extern PgSessionOnCommitState *PgCurrentSessionOnCommitState(void);
+#endif
+#ifndef PgCurrentSessionSequenceState
 extern PgSessionSequenceState *PgCurrentSessionSequenceState(void);
+#endif
+#ifndef PgCurrentSessionXactCallbackState
 extern PgSessionXactCallbackState *PgCurrentSessionXactCallbackState(void);
+#endif
+#ifndef PgCurrentSessionBackupState
 extern PgSessionBackupState *PgCurrentSessionBackupState(void);
+#endif
+#ifndef PgCurrentSessionRegexState
 extern PgSessionRegexState *PgCurrentSessionRegexState(void);
+#endif
+#ifndef PgCurrentSessionPortalManagerState
 extern PgSessionPortalManagerState *PgCurrentSessionPortalManagerState(void);
+#endif
+#ifndef PgCurrentSessionLargeObjectState
 extern PgSessionLargeObjectState *PgCurrentSessionLargeObjectState(void);
+#endif
+#ifndef PgCurrentSessionAsyncState
 extern PgSessionAsyncState *PgCurrentSessionAsyncState(void);
+#endif
+#ifndef PgCurrentSessionRandomState
 extern PgSessionRandomState *PgCurrentSessionRandomState(void);
+#endif
+#ifndef PgCurrentSessionOptimizerState
 extern PgSessionOptimizerState *PgCurrentSessionOptimizerState(void);
+#endif
+#ifndef PgCurrentSessionFunctionManagerState
 extern PgSessionFunctionManagerState *PgCurrentSessionFunctionManagerState(void);
+#endif
+#ifndef PgCurrentSessionGeneralGUCState
 extern PgSessionGeneralGUCState *PgCurrentSessionGeneralGUCState(void);
+#endif
+#ifndef PgCurrentSessionQueryIdState
 extern PgSessionQueryIdState *PgCurrentSessionQueryIdState(void);
+#endif
+#ifndef PgCurrentSessionStorageGUCState
 extern PgSessionStorageGUCState *PgCurrentSessionStorageGUCState(void);
+#endif
+#ifndef PgCurrentSessionUserGUCState
 extern PgSessionUserGUCState *PgCurrentSessionUserGUCState(void);
+#endif
+#ifndef PgCurrentSessionCommandGUCState
 extern PgSessionCommandGUCState *PgCurrentSessionCommandGUCState(void);
+#endif
+#ifndef PgCurrentSessionReplicationGUCState
 extern PgSessionReplicationGUCState *PgCurrentSessionReplicationGUCState(void);
+#endif
+#ifndef PgCurrentSessionLogicalReplicationState
 extern PgSessionLogicalReplicationState *PgCurrentSessionLogicalReplicationState(void);
+#endif
+#ifndef PgCurrentSessionAccessWalGUCState
 extern PgSessionAccessWalGUCState *PgCurrentSessionAccessWalGUCState(void);
+#endif
+#ifndef PgCurrentSessionJitGUCState
 extern PgSessionJitGUCState *PgCurrentSessionJitGUCState(void);
+#endif
+#ifndef PgCurrentSessionJitProviderState
 extern PgSessionJitProviderState *PgCurrentSessionJitProviderState(void);
+#endif
+#ifndef PgCurrentSessionLLVMJitState
 extern PgSessionLLVMJitState *PgCurrentSessionLLVMJitState(void);
+#endif
+#ifndef PgCurrentSessionLoggingState
 extern PgSessionLoggingState *PgCurrentSessionLoggingState(void);
+#endif
+#ifndef PgCurrentSessionSortGUCState
 extern PgSessionSortGUCState *PgCurrentSessionSortGUCState(void);
+#endif
+#ifndef PgCurrentSessionQueryMemoryState
 extern PgSessionQueryMemoryState *PgCurrentSessionQueryMemoryState(void);
+#endif
+#ifndef PgCurrentSessionPlannerCostState
 extern PgSessionPlannerCostState *PgCurrentSessionPlannerCostState(void);
+#endif
+#ifndef PgCurrentSessionPlannerMethodState
 extern PgSessionPlannerMethodState *PgCurrentSessionPlannerMethodState(void);
+#endif
+#ifndef PgCurrentSessionPgStatState
 extern PgSessionPgStatState *PgCurrentSessionPgStatState(void);
+#endif
+#ifndef PgCurrentSessionMiscGUCState
 extern PgSessionMiscGUCState *PgCurrentSessionMiscGUCState(void);
+#endif
+#ifndef PgCurrentSessionGUCState
 extern PgSessionGUCState *PgCurrentSessionGUCState(void);
+#endif
+#ifndef PgCurrentBackendCommandState
 extern PgBackendCommandState *PgCurrentBackendCommandState(void);
+#endif
+#ifndef PgCurrentBackendActivityState
 extern PgBackendActivityState *PgCurrentBackendActivityState(void);
+#endif
+#ifndef PgCurrentBackendLogState
 extern PgBackendLogState *PgCurrentBackendLogState(void);
+#endif
 extern MemoryContext PgRuntimeEnsureExtensionModuleMemoryContext(PgRuntimeExtensionModuleState *extension_modules);
+#ifndef PgCurrentExecutionErrorState
 extern PgExecutionErrorState *PgCurrentExecutionErrorState(void);
+#endif
+#ifndef PgCurrentExecutionDebugState
 extern PgExecutionDebugState *PgCurrentExecutionDebugState(void);
+#endif
+#ifndef PgCurrentExecutionExtensionState
 extern PgExecutionExtensionState *PgCurrentExecutionExtensionState(void);
+#endif
+#ifndef PgCurrentExecutionMemoryContexts
 extern PgExecutionMemoryContextState *PgCurrentExecutionMemoryContexts(void);
+#endif
+#ifndef PgCurrentExecutionResourceOwners
 extern PgExecutionResourceOwnerState *PgCurrentExecutionResourceOwners(void);
+#endif
+#ifndef PgCurrentExecutionSPIState
 extern PgExecutionSPIState *PgCurrentExecutionSPIState(void);
+#endif
+#ifndef PgCurrentExecutionPortalState
 extern PgExecutionPortalState *PgCurrentExecutionPortalState(void);
+#endif
+#ifndef PgCurrentExecutionVacuumState
 extern PgExecutionVacuumState *PgCurrentExecutionVacuumState(void);
+#endif
+#ifndef PgCurrentExecutionAnalyzeState
 extern PgExecutionAnalyzeState *PgCurrentExecutionAnalyzeState(void);
+#endif
+#ifndef PgCurrentExecutionNodeIOState
 extern PgExecutionNodeIOState *PgCurrentExecutionNodeIOState(void);
+#endif
+#ifndef PgCurrentExecutionBaseBackupState
 extern PgExecutionBaseBackupState *PgCurrentExecutionBaseBackupState(void);
+#endif
+#ifndef PgCurrentExecutionMatViewState
 extern PgExecutionMatViewState *PgCurrentExecutionMatViewState(void);
+#endif
+#ifndef PgCurrentExecutionCatalogState
 extern PgExecutionCatalogState *PgCurrentExecutionCatalogState(void);
+#endif
+#ifndef PgCurrentExecutionCatalogCacheState
 extern PgExecutionCatalogCacheState *PgCurrentExecutionCatalogCacheState(void);
+#endif
+#ifndef PgCurrentExecutionRelMapState
 extern PgExecutionRelMapState *PgCurrentExecutionRelMapState(void);
+#endif
+#ifndef PgCurrentExecutionInvalidationState
 extern PgExecutionInvalidationState *PgCurrentExecutionInvalidationState(void);
+#endif
+#ifndef PgCurrentExecutionTwoPhaseRecordState
 extern PgExecutionTwoPhaseRecordState *PgCurrentExecutionTwoPhaseRecordState(void);
+#endif
+#ifndef PgCurrentExecutionAsyncState
 extern PgExecutionAsyncState *PgCurrentExecutionAsyncState(void);
+#endif
+#ifndef PgCurrentExecutionXactState
 extern PgExecutionXactState *PgCurrentExecutionXactState(void);
+#endif
+#ifndef PgCurrentExecutionGUCErrorState
 extern PgExecutionGUCErrorState *PgCurrentExecutionGUCErrorState(void);
+#endif
+#ifndef PgCurrentExecutionSnapshotState
 extern PgExecutionSnapshotState *PgCurrentExecutionSnapshotState(void);
+#endif
+#ifndef PgCurrentExecutionComboCidState
 extern PgExecutionComboCidState *PgCurrentExecutionComboCidState(void);
+#endif
+#ifndef PgCurrentExecutionXLogInsertState
 extern PgExecutionXLogInsertState *PgCurrentExecutionXLogInsertState(void);
+#endif
+#ifndef PgCurrentExecutionTransactionCleanupState
 extern PgExecutionTransactionCleanupState *PgCurrentExecutionTransactionCleanupState(void);
+#endif
+#ifndef PgCurrentExecutionRegexState
 extern PgExecutionRegexState *PgCurrentExecutionRegexState(void);
+#endif
+#ifndef PgCurrentExecutionTriggerState
 extern PgExecutionTriggerState *PgCurrentExecutionTriggerState(void);
+#endif
+#ifndef PgCurrentExecutionValgrindState
 extern PgExecutionValgrindState *PgCurrentExecutionValgrindState(void);
+#endif
+#ifndef PgCurrentExecutionReplicationScratchState
 extern PgExecutionReplicationScratchState *PgCurrentExecutionReplicationScratchState(void);
+#endif
+#ifndef PgCurrentExecutionSnapBuildState
 extern PgExecutionSnapBuildState *PgCurrentExecutionSnapBuildState(void);
+#endif
 extern PgConnectionIdentityState *PgConnectionIdentityStateRef(PgConnection *connection);
 extern PgConnectionSocketIOState *PgConnectionSocketIOStateRef(PgConnection *connection);
 extern PgConnectionProtocolState *PgConnectionProtocolStateRef(PgConnection *connection);
@@ -293,24 +459,52 @@ extern void PgConnectionInitializeRuntimeObject(PgConnection *connection,
 												PgBackend *backend,
 												PgSession *session,
 												struct Port *port);
+#ifndef PgCurrentCoreState
 extern PgBackendCoreState *PgCurrentCoreState(void);
+#endif
+#ifndef PgCurrentBackendInstrumentationState
 extern PgBackendInstrumentationState *PgCurrentBackendInstrumentationState(void);
+#endif
+#ifndef PgCurrentBackendBufferState
 extern PgBackendBufferState *PgCurrentBackendBufferState(void);
+#endif
 extern MemoryContext PgBackendBufferAllocationContext(void);
+#ifndef PgCurrentBackendStorageState
 extern PgBackendStorageState *PgCurrentBackendStorageState(void);
+#endif
 extern void PgBackendResetFileAccessClosedState(PgBackendStorageState *storage);
 extern void PgBackendResetStorageClosedState(PgBackendStorageState *storage);
+#ifndef PgCurrentBackendLockState
 extern PgBackendLockState *PgCurrentBackendLockState(void);
+#endif
+#ifndef PgCurrentBackendIPCState
 extern PgBackendIPCState *PgCurrentBackendIPCState(void);
+#endif
+#ifndef PgCurrentBackendWaitState
 extern PgBackendWaitState *PgCurrentBackendWaitState(void);
+#endif
 extern void PgBackendResetTimeoutClosedState(PgBackendTimeoutState *timeout);
+#ifndef PgCurrentBackendPgStatPendingState
 extern PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
+#endif
+#ifndef PgCurrentBackendMemoryManagerState
 extern PgBackendMemoryManagerState *PgCurrentBackendMemoryManagerState(void);
+#endif
+#ifndef PgCurrentBackendTransactionState
 extern PgBackendTransactionState *PgCurrentBackendTransactionState(void);
+#endif
+#ifndef PgCurrentBackendUtilityState
 extern PgBackendUtilityState *PgCurrentBackendUtilityState(void);
+#endif
+#ifndef PgCurrentBackendParallelState
 extern PgBackendParallelState *PgCurrentBackendParallelState(void);
+#endif
+#ifndef PgCurrentPendingInterrupts
 extern PgBackendPendingInterruptState *PgCurrentPendingInterrupts(void);
+#endif
+#ifndef PgCurrentInterruptHoldoffs
 extern PgBackendInterruptHoldoffState *PgCurrentInterruptHoldoffs(void);
+#endif
 
 extern void PgSessionInitializeDateTimeState(PgSessionDateTimeState *datetime);
 extern void PgSessionInitializeVacuumState(PgSessionVacuumState *vacuum);

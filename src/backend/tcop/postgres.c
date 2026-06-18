@@ -155,8 +155,8 @@ typedef struct BindParamCbData
 #define UseSemiNewlineNewline (*PgCurrentUseSemiNewlineNewlineRef())	/* -j switch */
 
 /* reused buffer to pass to SendRowDescriptionMessage() */
-#define row_description_context (*PgCurrentRowDescriptionContextRef())
-#define row_description_buf (*PgCurrentRowDescriptionBufRef())
+#define current_row_description_context (*PgCurrentRowDescriptionContextRef())
+#define current_row_description_buf (*PgCurrentRowDescriptionBufRef())
 
 /* ----------------------------------------------------------------
  *		decls for routines only used in this file
@@ -183,8 +183,8 @@ static void report_recovery_conflict(RecoveryConflictReason reason);
 static PgSession *PgSessionBootstrap(const char *dbname, const char *username);
 static void PgSessionLoopStateInit(PgSessionLoopState *state);
 static void PgSessionRecoverError(PgSession *session);
-static PgStepResult PgSessionStepUnprotected(PgSession *session,
-											 PgStepBudget budget);
+static pg_attribute_always_inline PgStepResult PgSessionStepUnprotected(PgSession *session,
+																		PgStepBudget budget);
 static void log_disconnections(int code, Datum arg);
 static void enable_statement_timeout(void);
 static void disable_statement_timeout(void);
@@ -2689,16 +2689,16 @@ exec_describe_statement_message(const char *stmt_name)
 	/*
 	 * First describe the parameters...
 	 */
-	pq_beginmessage_reuse(&row_description_buf, PqMsg_ParameterDescription);
-	pq_sendint16(&row_description_buf, psrc->num_params);
+	pq_beginmessage_reuse(&current_row_description_buf, PqMsg_ParameterDescription);
+	pq_sendint16(&current_row_description_buf, psrc->num_params);
 
 	for (int i = 0; i < psrc->num_params; i++)
 	{
 		Oid			ptype = psrc->param_types[i];
 
-		pq_sendint32(&row_description_buf, (int) ptype);
+		pq_sendint32(&current_row_description_buf, (int) ptype);
 	}
-	pq_endmessage_reuse(&row_description_buf);
+	pq_endmessage_reuse(&current_row_description_buf);
 
 	/*
 	 * Next send RowDescription or NoData to describe the result...
@@ -2710,7 +2710,7 @@ exec_describe_statement_message(const char *stmt_name)
 		/* Get the plan's primary targetlist */
 		tlist = CachedPlanGetTargetList(psrc, NULL);
 
-		SendRowDescriptionMessage(&row_description_buf,
+		SendRowDescriptionMessage(&current_row_description_buf,
 								  psrc->resultDesc,
 								  tlist,
 								  NULL);
@@ -2763,7 +2763,7 @@ exec_describe_portal_message(const char *portal_name)
 		return;					/* can't actually do anything... */
 
 	if (portal->tupDesc)
-		SendRowDescriptionMessage(&row_description_buf,
+		SendRowDescriptionMessage(&current_row_description_buf,
 								  portal->tupDesc,
 								  FetchPortalTargetList(portal),
 								  portal->formats);
@@ -4275,9 +4275,11 @@ static void
 PgSessionRecoverError(PgSession *session)
 {
 	PgSessionLoopState *state;
+	MemoryContext message_context;
 
 	Assert(session != NULL);
 	state = &session->loop_state;
+	message_context = MessageContext;
 
 	/*
 	 * NOTE: if you are tempted to add more code here, consider the high
@@ -4309,7 +4311,7 @@ PgSessionRecoverError(PgSession *session)
 	state->idle_session_timeout_enabled = false;
 
 	/* Not reading from the client anymore. */
-	DoingCommandRead = false;
+	state->doing_command_read = false;
 
 	/* Make sure libpq is in a good state */
 	pq_comm_reset();
@@ -4358,7 +4360,7 @@ PgSessionRecoverError(PgSession *session)
 	 * Now return to normal top-level context and clear ErrorContext for next
 	 * time.
 	 */
-	MemoryContextSwitchTo(MessageContext);
+	MemoryContextSwitchTo(message_context);
 	FlushErrorState();
 
 	/*
@@ -4370,7 +4372,7 @@ PgSessionRecoverError(PgSession *session)
 		state->ignore_till_sync = true;
 
 	/* We don't have a transaction command open anymore */
-	xact_started = false;
+	state->transaction_started = false;
 
 	/*
 	 * If an error occurred while we were reading a message from the client, we
@@ -4388,10 +4390,11 @@ PgSessionRecoverError(PgSession *session)
 	RESUME_INTERRUPTS();
 }
 
-static PgStepResult
+static pg_attribute_always_inline PgStepResult
 PgSessionStepUnprotected(PgSession *session, PgStepBudget budget)
 {
 	PgSessionLoopState *state;
+	MemoryContext message_context;
 	int			firstchar;
 	StringInfoData input_message;
 
@@ -4399,6 +4402,7 @@ PgSessionStepUnprotected(PgSession *session, PgStepBudget budget)
 	Assert(budget.max_messages >= 0);
 	state = &session->loop_state;
 	Assert(state->step_error_boundary_active);
+	message_context = MessageContext;
 
 	/*
 	 * At top of loop, reset extended-query-message flag, so that any errors
@@ -4417,8 +4421,8 @@ PgSessionStepUnprotected(PgSession *session, PgStepBudget budget)
 	 * Release storage left over from prior query cycle, and create a new query
 	 * input buffer in the cleared MessageContext.
 	 */
-	MemoryContextSwitchTo(MessageContext);
-	MemoryContextReset(MessageContext);
+	MemoryContextSwitchTo(message_context);
+	MemoryContextReset(message_context);
 
 	initStringInfo(&input_message);
 
@@ -4570,7 +4574,7 @@ PgSessionStepUnprotected(PgSession *session, PgStepBudget budget)
 	 * since we don't want, say, reads on behalf of COPY FROM STDIN doing the
 	 * same thing.)
 	 */
-	DoingCommandRead = true;
+	state->doing_command_read = true;
 
 	/*
 	 * (3) read a command (loop blocks here)
@@ -4606,7 +4610,7 @@ PgSessionStepUnprotected(PgSession *session, PgStepBudget budget)
 	 * DoingCommandRead.
 	 */
 	CHECK_FOR_INTERRUPTS();
-	DoingCommandRead = false;
+	state->doing_command_read = false;
 
 	/*
 	 * (6) check for any other interesting events that happened while we slept.
@@ -4736,7 +4740,7 @@ PgSessionStepUnprotected(PgSession *session, PgStepBudget budget)
 			 */
 
 			/* switch back to message context */
-			MemoryContextSwitchTo(MessageContext);
+			MemoryContextSwitchTo(message_context);
 
 			HandleFunctionRequest(&input_message);
 
@@ -4901,6 +4905,8 @@ PgStepResult
 PgSessionStep(PgSession *session, PgStepBudget budget)
 {
 	PgSessionLoopState *state;
+	sigjmp_buf **exception_stack_ref;
+	ErrorContextCallback **context_stack_ref;
 	sigjmp_buf *save_exception_stack;
 	ErrorContextCallback *save_context_stack;
 	sigjmp_buf	local_sigjmp_buf;
@@ -4932,8 +4938,12 @@ PgSessionStep(PgSession *session, PgStepBudget budget)
 	 * PgSessionStep() is now a one-message boundary and saving the signal mask
 	 * on every successful message is visible in tiny-query hot paths.
 	 */
-	save_exception_stack = PG_exception_stack;
-	save_context_stack = error_context_stack;
+	exception_stack_ref = PgCurrentExceptionStackRefFast();
+	context_stack_ref = PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentErrorContextStackHotRef,
+														 CurrentPgExecution,
+														 PgCurrentErrorContextStackRef);
+	save_exception_stack = *exception_stack_ref;
+	save_context_stack = *context_stack_ref;
 	state->step_error_boundary_active = true;
 
 	if (sigsetjmp(local_sigjmp_buf, 0) != 0)
@@ -4944,8 +4954,8 @@ PgSessionStep(PgSession *session, PgStepBudget budget)
 		if (!state->ignore_till_sync)
 			state->send_ready_for_query = true;	/* after error */
 
-		PG_exception_stack = save_exception_stack;
-		error_context_stack = save_context_stack;
+		*exception_stack_ref = save_exception_stack;
+		*context_stack_ref = save_context_stack;
 		state->step_error_boundary_active = false;
 
 		return PG_STEP_ERROR_RECOVERED;
@@ -4953,7 +4963,7 @@ PgSessionStep(PgSession *session, PgStepBudget budget)
 	else
 	{
 		/* We can now handle ereport(ERROR) */
-		PG_exception_stack = &local_sigjmp_buf;
+		*exception_stack_ref = &local_sigjmp_buf;
 
 		for (;;)
 		{
@@ -4968,8 +4978,8 @@ PgSessionStep(PgSession *session, PgStepBudget budget)
 		}
 	}
 
-	PG_exception_stack = save_exception_stack;
-	error_context_stack = save_context_stack;
+	*exception_stack_ref = save_exception_stack;
+	*context_stack_ref = save_context_stack;
 	state->step_error_boundary_active = false;
 
 	return result;
@@ -4978,14 +4988,32 @@ PgSessionStep(PgSession *session, PgStepBudget budget)
 pg_noreturn void
 PgSessionRun(PgSession *session)
 {
+	PgSessionLoopState *state;
 	PgStepBudget budget;
+	sigjmp_buf **exception_stack_ref;
+	sigjmp_buf	local_sigjmp_buf;
 
 	Assert(session != NULL);
+	state = &session->loop_state;
+	Assert(!state->step_error_boundary_active);
 
 	budget.max_messages = 0;
+	exception_stack_ref = PgCurrentExceptionStackRefFast();
+	state->step_error_boundary_active = true;
+
+	if (sigsetjmp(local_sigjmp_buf, 1) != 0)
+	{
+		PgSessionRecoverError(session);
+
+		if (!state->ignore_till_sync)
+			state->send_ready_for_query = true;	/* initially, or after error */
+	}
+
+	/* We can now handle ereport(ERROR) */
+	*exception_stack_ref = &local_sigjmp_buf;
 
 	for (;;)
-		(void) PgSessionStep(session, budget);
+		(void) PgSessionStepUnprotected(session, budget);
 }
 
 
@@ -5185,8 +5213,8 @@ PgSessionBootstrap(const char *dbname, const char *username)
 		PgCurrentRowDescriptionContextRef(),
 		"RowDescriptionContext",
 		ALLOCSET_DEFAULT_SIZES);
-	MemoryContextSwitchTo(row_description_context);
-	initStringInfo(&row_description_buf);
+	MemoryContextSwitchTo(current_row_description_context);
+	initStringInfo(&current_row_description_buf);
 	MemoryContextSwitchTo(TopMemoryContext);
 
 	/* Fire any defined login event triggers, if appropriate */

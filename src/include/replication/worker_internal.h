@@ -250,10 +250,14 @@ typedef struct ParallelApplyWorkerInfo
 /* Main memory context for apply worker. Permanent during worker lifetime. */
 #define ApplyContext (PgCurrentLogicalReplicationState()->apply_context)
 
+#ifndef PgCurrentApplyMessageContextRef
 extern MemoryContext *PgCurrentApplyMessageContextRef(void);
+#endif
 #define ApplyMessageContext (*PgCurrentApplyMessageContextRef())
 
+#ifndef PgCurrentApplyErrorContextStackRef
 extern ErrorContextCallback **PgCurrentApplyErrorContextStackRef(void);
+#endif
 #define apply_error_context_stack (*PgCurrentApplyErrorContextStackRef())
 
 #define MyParallelShared \

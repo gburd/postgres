@@ -15,6 +15,7 @@
 #define QUERYJUMBLE_H
 
 #include "nodes/parsenodes.h"
+#include "utils/backend_runtime_current.h"
 #include "utils/global_lifetime.h"
 
 /*
@@ -87,11 +88,21 @@ enum ComputeQueryIdType
 	COMPUTE_QUERY_ID_REGRESS,
 };
 
-extern int *PgCurrentComputeQueryIdRef(void);
-extern bool *PgCurrentQueryIdEnabledRef(void);
+#ifndef PgCurrentComputeQueryIdRef
+extern int *(PgCurrentComputeQueryIdRef)(void);
+#endif
+#ifndef PgCurrentQueryIdEnabledRef
+extern bool *(PgCurrentQueryIdEnabledRef)(void);
+#endif
 
-#define compute_query_id (*PgCurrentComputeQueryIdRef())
-#define query_id_enabled (*PgCurrentQueryIdEnabledRef())
+#define compute_query_id \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentComputeQueryIdHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentComputeQueryIdRef))
+#define query_id_enabled \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentQueryIdEnabledHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentQueryIdEnabledRef))
 
 extern const char *CleanQuerytext(const char *query, int *location, int *len);
 extern LocationLen *ComputeConstantLengths(const JumbleState *jstate,

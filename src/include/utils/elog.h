@@ -318,13 +318,17 @@ typedef struct ErrorContextCallback
 	void	   *arg;
 } ErrorContextCallback;
 
+#ifndef PgCurrentErrorContextStackRef
 extern ErrorContextCallback **PgCurrentErrorContextStackRef(void);
+#endif
 #define error_context_stack \
 	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentErrorContextStackHotRef, \
 									   CurrentPgExecution, \
 									   PgCurrentErrorContextStackRef))
 
+#ifndef PgCurrentExceptionStackRef
 extern sigjmp_buf **PgCurrentExceptionStackRef(void);
+#endif
 #ifndef FRONTEND
 static inline sigjmp_buf **
 PgCurrentExceptionStackRefFast(void)
@@ -487,12 +491,24 @@ typedef struct ErrorData
 } ErrorData;
 
 extern void EmitErrorReport(void);
+#ifndef PgCurrentErrorDataArray
 extern ErrorData *PgCurrentErrorDataArray(void);
+#endif
+#ifndef PgCurrentErrorDataStackDepthRef
 extern int *PgCurrentErrorDataStackDepthRef(void);
+#endif
+#ifndef PgCurrentErrorRecursionDepthRef
 extern int *PgCurrentErrorRecursionDepthRef(void);
+#endif
+#ifndef PgCurrentSavedTimevalRef
 extern struct timeval *PgCurrentSavedTimevalRef(void);
+#endif
+#ifndef PgCurrentSavedTimevalSetRef
 extern bool *PgCurrentSavedTimevalSetRef(void);
+#endif
+#ifndef PgCurrentFormattedLogTime
 extern char *PgCurrentFormattedLogTime(void);
+#endif
 extern ErrorData *CopyErrorData(void);
 extern void FreeErrorData(ErrorData *edata);
 extern void FlushErrorState(void);
@@ -516,7 +532,9 @@ typedef enum
 	PGERROR_VERBOSE,			/* all the facts, ma'am */
 }			PGErrorVerbosity;
 
+#ifndef PgCurrentLogErrorVerbosityRef
 extern int *PgCurrentLogErrorVerbosityRef(void);
+#endif
 #define Log_error_verbosity (*PgCurrentLogErrorVerbosityRef())
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *Log_line_prefix;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int Log_destination;

@@ -847,9 +847,15 @@ extern PgStat_WalStats *pgstat_fetch_stat_wal(void);
  */
 
 /* GUC parameters */
+#ifndef PgCurrentPgStatTrackCountsRef
 extern bool *PgCurrentPgStatTrackCountsRef(void);
+#endif
+#ifndef PgCurrentPgStatTrackFunctionsRef
 extern int *PgCurrentPgStatTrackFunctionsRef(void);
+#endif
+#ifndef PgCurrentPgStatFetchConsistencyRef
 extern int *PgCurrentPgStatFetchConsistencyRef(void);
+#endif
 
 #define pgstat_track_counts (*PgCurrentPgStatTrackCountsRef())
 #define pgstat_track_functions (*PgCurrentPgStatTrackFunctionsRef())
@@ -861,7 +867,9 @@ extern int *PgCurrentPgStatFetchConsistencyRef(void);
  */
 
 /* updated directly by bgwriter and bufmgr */
+#ifndef PgCurrentPendingBgWriterStatsRef
 extern PgStat_BgWriterStats *PgCurrentPendingBgWriterStatsRef(void);
+#endif
 
 #define PendingBgWriterStats (*PgCurrentPendingBgWriterStatsRef())
 
@@ -874,12 +882,18 @@ extern PgStat_BgWriterStats *PgCurrentPendingBgWriterStatsRef(void);
  * Checkpointer statistics counters are updated directly by checkpointer and
  * bufmgr.
  */
+#ifndef PgCurrentPendingCheckpointerStatsRef
 extern PgStat_CheckpointerStats *PgCurrentPendingCheckpointerStatsRef(void);
+#endif
 
 #define PendingCheckpointerStats (*PgCurrentPendingCheckpointerStatsRef())
 
+#ifndef PgCurrentPendingIOStatsRef
 extern PgStat_PendingIO *PgCurrentPendingIOStatsRef(void);
+#endif
+#ifndef PgCurrentHaveIOStatsRef
 extern bool *PgCurrentHaveIOStatsRef(void);
+#endif
 
 #define PendingIOStats \
 	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentPendingIOStatsHotRef, \
@@ -890,14 +904,22 @@ extern bool *PgCurrentHaveIOStatsRef(void);
 									   CurrentPgBackend, \
 									   PgCurrentHaveIOStatsRef))
 
+#ifndef PgCurrentPendingSLRUStatsArray
 extern PgStat_SLRUStats *PgCurrentPendingSLRUStatsArray(void);
+#endif
+#ifndef PgCurrentHaveSLRUStatsRef
 extern bool *PgCurrentHaveSLRUStatsRef(void);
+#endif
 
 #define pending_SLRUStats (PgCurrentPendingSLRUStatsArray())
 #define have_slrustats (*PgCurrentHaveSLRUStatsRef())
 
+#ifndef PgCurrentPendingLockStatsRef
 extern PgStat_PendingLock *PgCurrentPendingLockStatsRef(void);
+#endif
+#ifndef PgCurrentHaveLockStatsRef
 extern bool *PgCurrentHaveLockStatsRef(void);
+#endif
 
 #define PendingLockStats (*PgCurrentPendingLockStatsRef())
 #define have_lockstats (*PgCurrentHaveLockStatsRef())
@@ -911,14 +933,30 @@ extern bool *PgCurrentHaveLockStatsRef(void);
  * be flushed to shared memory.  Statistics callbacks should never reset this
  * flag; pgstat_report_stat() is in charge of doing that.
  */
+#ifndef PgCurrentPendingBackendStatsRef
 extern PgStat_BackendPending *PgCurrentPendingBackendStatsRef(void);
+#endif
+#ifndef PgCurrentBackendHasIOStatsRef
 extern bool *PgCurrentBackendHasIOStatsRef(void);
+#endif
+#ifndef PgCurrentPgStatPrevBackendWalUsageRef
 extern WalUsage *PgCurrentPgStatPrevBackendWalUsageRef(void);
+#endif
+#ifndef PgCurrentPgStatReportFixedRef
 extern bool *PgCurrentPgStatReportFixedRef(void);
+#endif
+#ifndef PgCurrentPgStatForceNextFlushRef
 extern bool *PgCurrentPgStatForceNextFlushRef(void);
+#endif
+#ifndef PgCurrentForceStatsSnapshotClearRef
 extern bool *PgCurrentForceStatsSnapshotClearRef(void);
+#endif
+#ifndef PgCurrentPgStatIsInitializedRef
 extern bool *PgCurrentPgStatIsInitializedRef(void);
+#endif
+#ifndef PgCurrentPgStatIsShutdownRef
 extern bool *PgCurrentPgStatIsShutdownRef(void);
+#endif
 
 #define PendingBackendStats \
 	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentPendingBackendStatsHotRef, \
@@ -953,8 +991,12 @@ extern bool *PgCurrentPgStatIsShutdownRef(void);
 									   CurrentPgBackend, \
 									   PgCurrentPgStatIsShutdownRef))
 
+#ifndef PgCurrentPgStatXactCommitRef
 extern int *PgCurrentPgStatXactCommitRef(void);
+#endif
+#ifndef PgCurrentPgStatXactRollbackRef
 extern int *PgCurrentPgStatXactRollbackRef(void);
+#endif
 
 #define pgStatXactCommit (*PgCurrentPgStatXactCommitRef())
 #define pgStatXactRollback (*PgCurrentPgStatXactRollbackRef())
@@ -964,8 +1006,12 @@ extern int *PgCurrentPgStatXactRollbackRef(void);
  */
 
 /* Updated by pgstat_count_buffer_*_time macros */
+#ifndef PgCurrentPgStatBlockReadTimeRef
 extern PgStat_Counter *PgCurrentPgStatBlockReadTimeRef(void);
+#endif
+#ifndef PgCurrentPgStatBlockWriteTimeRef
 extern PgStat_Counter *PgCurrentPgStatBlockWriteTimeRef(void);
+#endif
 
 #define pgStatBlockReadTime (*PgCurrentPgStatBlockReadTimeRef())
 #define pgStatBlockWriteTime (*PgCurrentPgStatBlockWriteTimeRef())
@@ -974,20 +1020,30 @@ extern PgStat_Counter *PgCurrentPgStatBlockWriteTimeRef(void);
  * Updated by pgstat_count_conn_*_time macros, called by
  * pgstat_report_activity().
  */
+#ifndef PgCurrentPgStatActiveTimeRef
 extern PgStat_Counter *PgCurrentPgStatActiveTimeRef(void);
+#endif
+#ifndef PgCurrentPgStatTransactionIdleTimeRef
 extern PgStat_Counter *PgCurrentPgStatTransactionIdleTimeRef(void);
+#endif
 
 #define pgStatActiveTime (*PgCurrentPgStatActiveTimeRef())
 #define pgStatTransactionIdleTime (*PgCurrentPgStatTransactionIdleTimeRef())
 
+#ifndef PgCurrentPgStatTotalFuncTimeRef
 extern instr_time *PgCurrentPgStatTotalFuncTimeRef(void);
+#endif
+#ifndef PgCurrentPgStatPrevWalUsageRef
 extern WalUsage *PgCurrentPgStatPrevWalUsageRef(void);
+#endif
 
 #define total_func_time (*PgCurrentPgStatTotalFuncTimeRef())
 #define prevWalUsage (*PgCurrentPgStatPrevWalUsageRef())
 
 /* updated by the traffic cop and in errfinish() */
+#ifndef PgCurrentPgStatSessionEndCauseRef
 extern SessionEndType *PgCurrentPgStatSessionEndCauseRef(void);
+#endif
 #define pgStatSessionEndCause (*PgCurrentPgStatSessionEndCauseRef())
 
 #endif							/* PGSTAT_H */
