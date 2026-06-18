@@ -196,11 +196,19 @@ pg_grammar_compose_install(unsigned int *base_nrule_out, char **errmsg_out)
  * each registered extension token's NAME via lime_snapshot_token_code.
  * scan.c consults it (through pg_grammar_ext_keyword_hook) so an
  * extension keyword lexeme resolves to its composed token code.
+ *
+ * `base_code` records, for a lexeme that ALSO matches a base SQL
+ * keyword, that base keyword's token code.  Such colliding lexemes are
+ * resolved at parse time by the admissibility oracle: at a parse state
+ * where only the extension meaning fits (e.g. a QUEL verb at statement
+ * start, where the base keyword cannot begin a statement) the scanner
+ * emits the extension code; otherwise it keeps the base code.
  */
 typedef struct PushparseKwEntry
 {
 	char	   *lexeme;			/* lowercase, NUL-terminated */
-	int			code;			/* external token code in composed snapshot */
+	int			code;			/* extension token code in composed snapshot */
+	int			base_code;		/* base SQL token code, or -1 if no collision */
 } PushparseKwEntry;
 
 static PushparseKwEntry *kw_map = NULL;
@@ -212,6 +220,8 @@ pushparse_kw_add(const char *name, const char *lexeme,
 				 PgGrammarExtKeywordCategory category, void *cb_arg)
 {
 	int			code;
+	int			base_code = -1;
+	int			kwnum;
 
 	(void) category;
 	(void) cb_arg;
@@ -223,6 +233,16 @@ pushparse_kw_add(const char *name, const char *lexeme,
 	code = lime_snapshot_token_code(composed_snapshot, name);
 	if (code < 0)
 		return;					/* token absent from composed grammar */
+
+	/*
+	 * Does this lexeme also match a base SQL keyword?  If so it is a
+	 * collision: the scanner's base lookup would normally win, shadowing
+	 * the extension.  Record the base token code so the push loop can ask
+	 * the admissibility oracle which meaning fits the current parse state.
+	 */
+	kwnum = ScanKeywordLookup(lexeme, &ScanKeywords);
+	if (kwnum >= 0)
+		base_code = ScanKeywordTokens[kwnum];
 
 	if (kw_map_count == kw_map_capacity)
 	{
@@ -237,6 +257,7 @@ pushparse_kw_add(const char *name, const char *lexeme,
 	}
 	kw_map[kw_map_count].lexeme = MemoryContextStrdup(TopMemoryContext, lexeme);
 	kw_map[kw_map_count].code = code;
+	kw_map[kw_map_count].base_code = base_code;
 	kw_map_count++;
 }
 
@@ -265,6 +286,52 @@ pushparse_build_keyword_map(void)
 	pg_grammar_ext_foreach_token(pushparse_kw_add, NULL);
 	if (kw_map_count > 0)
 		pg_grammar_ext_keyword_hook = pushparse_keyword_hook;
+}
+
+/*
+ * pushparse_resolve_collision
+ *	  For a token `tok` the scanner produced as a BASE SQL keyword, check
+ *	  whether a loaded extension also claims that lexeme (a collision).  If
+ *	  so, ask the admissibility oracle which meaning fits the parser's
+ *	  current state and return the token to actually feed:
+ *
+ *	    - only the extension token is admissible -> the extension code
+ *	      (e.g. a QUEL verb at statement start, where the base keyword
+ *	      cannot begin a statement);
+ *	    - only the base token is admissible -> the base code (unchanged);
+ *	    - both admissible -> a genuine ambiguity (e.g. DELETE).  Resolving
+ *	      that needs multi-token fork-resolve; until that lands, keep the
+ *	      base meaning so base SQL is never silently broken;
+ *	    - neither -> keep the base code and let the base grammar error.
+ *
+ *	  Non-colliding tokens (no extension claims the base code) return
+ *	  `tok` unchanged with zero oracle calls.
+ */
+static int
+pushparse_resolve_collision(ParseContext *ctx, int tok)
+{
+	for (int i = 0; i < kw_map_count; i++)
+	{
+		LimeTokenAdmissibility ad_base;
+		LimeTokenAdmissibility ad_ext;
+
+		if (kw_map[i].base_code != tok)
+			continue;			/* not a collision on this base code */
+
+		ad_base = parse_context_token_admissible(ctx, kw_map[i].base_code);
+		ad_ext = parse_context_token_admissible(ctx, kw_map[i].code);
+
+		if (ad_ext != LIME_TOK_NONE && ad_base == LIME_TOK_NONE)
+			return kw_map[i].code;	/* only the extension fits here */
+
+		/*
+		 * Both-admissible (fork-resolve) and only-base cases keep the base
+		 * meaning.  Fork-resolve for genuine ambiguity (DELETE) is a
+		 * follow-up; never guess in its favour.
+		 */
+		return tok;
+	}
+	return tok;
 }
 
 /*
@@ -379,6 +446,15 @@ raw_parser_lime_pushparse(core_yyscan_t yyscanner,
 
 		tok = base_yylex(&lval, &lloc, yyscanner);
 		tok = pushparse_ascii_to_named(tok);
+
+		/*
+		 * Colliding-keyword resolution (composed snapshot only): if the
+		 * scanner produced a base SQL keyword that a loaded extension also
+		 * claims, let the admissibility oracle pick the meaning that fits
+		 * the current parse state.  No-op for non-colliding tokens.
+		 */
+		if (composed_snapshot != NULL)
+			tok = pushparse_resolve_collision(ctx, tok);
 
 		/*
 		 * PostgreSQL's YYSTYPE is a union of pointer-width members.  The
