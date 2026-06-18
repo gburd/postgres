@@ -158,6 +158,11 @@ PG_RUNTIME_HOT_FIELD(PgCurrentCritSectionCountHotRef,
 					 volatile uint32,
 					 CurrentPgBackend != NULL ?
 					 &CurrentPgBackend->interrupt_holdoffs.crit_section_count : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentBackendInterruptMaskHotRef,
+					 backend,
+					 void,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->interrupts.pending_mask : NULL)
 PG_RUNTIME_HOT_FIELD(PgCurrentMyDatabaseIdHotRef,
 					 session,
 					 Oid,

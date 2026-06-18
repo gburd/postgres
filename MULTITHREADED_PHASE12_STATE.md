@@ -1,3 +1,26 @@
+## Threaded Interrupt Pending Fast Path
+
+Lifecycle/preflight note:
+
+- target: reduce the prepared point-select threaded CPU gap by shortening part
+  of the no-interrupt `CHECK_FOR_INTERRUPTS()` path after profiling showed
+  `PgCurrentBackendHasPendingInterrupts()` as a threaded-only per-query cost.
+- touched roots/buckets: no ownership roots move; add only a derived hot-field
+  pointer for the current backend interrupt mailbox.
+- owner source files: `src/include/miscadmin.h`,
+  `src/include/utils/backend_runtime_hot_fields.def`,
+  `src/backend/postmaster/interrupt.c`, and this state note.
+- legacy symbols/accessors: keep `PgCurrentBackendHasPendingInterrupts()` and
+  `ProcSignalBackendInterruptsPending()` as the cold fallback and external
+  compatibility surface.
+- repeated lifecycle operations: none.  The generated current bridge already
+  installs and clears hot fields with the current backend work.
+- checked primitive decision: cache the address of the existing backend atomic
+  mask and keep atomic reads; do not introduce a non-atomic shadow flag, cache
+  proc-signal slot addresses, or skip proc-signal delivery.
+- validation impact: rebuild, run focused threaded/runtime checks, then rerun
+  the vanilla-pgbench prepared c8 process/threaded comparison.
+
 ## PgStat Activity Hot Current
 
 Lifecycle/preflight note:

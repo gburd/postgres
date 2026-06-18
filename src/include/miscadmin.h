@@ -27,6 +27,9 @@
 
 #include "datatype/timestamp.h" /* for TimestampTz */
 #include "pgtime.h"				/* for pg_time_t */
+#ifndef FRONTEND
+#include "port/atomics.h"
+#endif
 #include "utils/backend_runtime_current.h"
 #include "utils/global_lifetime.h"
 
@@ -197,22 +200,45 @@ extern volatile uint32 *PgCurrentCritSectionCountRef(void);
 /* in tcop/postgres.c */
 extern void ProcessInterrupts(void);
 extern bool PgCurrentBackendHasPendingInterrupts(void);
+extern bool ProcSignalBackendInterruptsPending(void);
+extern void *PgCurrentBackendInterruptMaskRef(void);
+
+static inline bool
+PgThreadedInterruptsPendingFast(void)
+{
+#ifdef FRONTEND
+	return false;
+#else
+	void	   *backend_mask;
+
+	if (likely(PgRuntimeHotCurrentCellModeState ==
+			   PG_RUNTIME_HOT_CURRENT_CELLS_PROCESS))
+		return false;
+
+	backend_mask =
+		PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentBackendInterruptMaskHotRef,
+										 CurrentPgBackend,
+										 PgCurrentBackendInterruptMaskRef);
+
+	if (unlikely(backend_mask == NULL))
+		return PgCurrentBackendHasPendingInterrupts();
+
+	return pg_atomic_read_u32((pg_atomic_uint32 *) backend_mask) != 0 ||
+		ProcSignalBackendInterruptsPending();
+#endif
+}
 
 /* Test whether an interrupt is pending */
 #ifndef WIN32
 #define INTERRUPTS_PENDING_CONDITION() \
 	(unlikely(InterruptPending || \
-			  (PgRuntimeHotCurrentCellModeState != \
-			   PG_RUNTIME_HOT_CURRENT_CELLS_PROCESS && \
-			   PgCurrentBackendHasPendingInterrupts())))
+			  PgThreadedInterruptsPendingFast()))
 #else
 #define INTERRUPTS_PENDING_CONDITION() \
 	(unlikely(UNBLOCKED_SIGNAL_QUEUE()) ? \
 	 pgwin32_dispatch_queued_signals() : (void) 0, \
 	 unlikely(InterruptPending || \
-			  (PgRuntimeHotCurrentCellModeState != \
-			   PG_RUNTIME_HOT_CURRENT_CELLS_PROCESS && \
-			   PgCurrentBackendHasPendingInterrupts())))
+			  PgThreadedInterruptsPendingFast()))
 #endif
 
 /* Service interrupt, if one is pending and it's safe to service it now */

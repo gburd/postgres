@@ -59,6 +59,17 @@ PgCurrentCritSectionCountRef(void)
 	return &PgCurrentInterruptHoldoffs()->crit_section_count;
 }
 
+void *
+PgCurrentBackendInterruptMaskRef(void)
+{
+	PgBackend  *backend = CurrentPgBackend;
+
+	if (backend == NULL)
+		return NULL;
+
+	return &backend->interrupts.pending_mask;
+}
+
 void
 PgBackendWakeup(PgBackend *backend)
 {
