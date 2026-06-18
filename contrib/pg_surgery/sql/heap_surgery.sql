@@ -83,6 +83,26 @@ create view vw as select 1;
 select heap_force_kill('vw'::regclass, ARRAY['(0, 1)']::tid[]);
 select heap_force_freeze('vw'::regclass, ARRAY['(0, 1)']::tid[]);
 
+-- A HOT/SIU chain collapse turns the chain root and each dead entry-bearing
+-- member into an LP_REDIRECT to the live tuple.  pg_surgery operates on real
+-- tuples and must leave the live row reachable after such a collapse.
+create extension pageinspect;
+create table htomb (id int primary key, a int, b int) with (fillfactor = 50);
+create index htomb_a on htomb(a);
+insert into htomb values (1, 10, 20);
+-- Two HOT-indexed updates on an indexed attr, then prune: the dead mid-chain
+-- versions collapse to LP_REDIRECTs to the live tuple.  INDEX_CLEANUP off keeps
+-- the stale btree leaves (and hence the redirects) in place.
+update htomb set a = 11 where id = 1;
+update htomb set a = 12 where id = 1;
+vacuum (index_cleanup off) htomb;
+select n_hot_indexed > 0 as made_hot_indexed
+  from pg_relation_hot_indexed_stats('htomb');
+-- the live row is intact and reachable after the collapse
+select id, a, b from htomb;
+drop table htomb;
+drop extension pageinspect;
+
 -- cleanup.
 drop view vw;
 drop extension pg_surgery;
