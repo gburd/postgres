@@ -6046,7 +6046,7 @@ BufferLockAcquire(Buffer buffer, BufferDesc *buf_hdr, BufferLockMode mode)
 		 */
 		for (;;)
 		{
-			PGSemaphoreLock(MyProc->sem);
+			ProcWaitOnSemaphore(MyProc, wait_event);
 			if (MyProc->lwWaiting == LW_WS_NOT_WAITING)
 				break;
 			extraWaits++;
@@ -6485,7 +6485,7 @@ BufferLockWakeup(BufferDesc *buf_hdr, bool wake_exclusive)
 		 */
 		pg_write_barrier();
 		waiter->lwWaiting = LW_WS_NOT_WAITING;
-		PGSemaphoreUnlock(waiter->sem);
+		ProcWakeSemaphore(waiter);
 	}
 }
 

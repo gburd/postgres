@@ -224,6 +224,54 @@ wait_for_pid_to_leave_pg_stat_activity($lock_pid,
 $lock_holder->query_safe('SELECT pg_advisory_unlock(130013);', verbose => 0);
 $lock_holder->quit;
 
+my $lw_holder = start_psql_script(
+	"SELECT pg_backend_pid();\nSELECT test_backend_runtime_hold_lwlock(60000);\n",
+	90);
+ok(pump_until($lw_holder->{run}, $lw_holder->{timer},
+		$lw_holder->{stdout}, qr/^\d+\s*$/m),
+	'Phase 13 LWLock holder backend reported logical backend id');
+my ($lw_holder_pid) = ${ $lw_holder->{stdout} } =~ /^(\d+)\s*$/m;
+
+my $lw_holder_snapshot = wait_for_completion_snapshot(
+	$lw_holder_pid,
+	qr/^waiting\|event_set\|TestBackendRuntimeHoldLWLock\|1\|.*\|1\|1\|1$/,
+	'LWLock holder is active before testing semaphore-backed wait');
+
+my $lw_waiter = start_psql_script(
+	"SELECT pg_backend_pid();\nSELECT test_backend_runtime_wait_on_lwlock();\n",
+	90);
+ok(pump_until($lw_waiter->{run}, $lw_waiter->{timer},
+		$lw_waiter->{stdout}, qr/^\d+\s*$/m),
+	'Phase 13 LWLock waiter backend reported logical backend id');
+my ($lw_waiter_pid) = ${ $lw_waiter->{stdout} } =~ /^(\d+)\s*$/m;
+
+my $lw_waiter_snapshot = wait_for_completion_snapshot(
+	$lw_waiter_pid,
+	qr/^waiting\|semaphore\|TestBackendRuntimeLWLock\|1\|0\|0\|0\|1\|1\|1$/,
+	'LWLock semaphore wait publishes wait completion for real threaded backend');
+
+is($node->safe_psql(
+		'postgres',
+		"SELECT wait_event FROM pg_stat_activity WHERE pid = $lw_waiter_pid;"),
+	'TestBackendRuntimeLWLock',
+	'pg_stat_activity agrees active threaded backend is waiting on LWLock semaphore');
+
+is($node->safe_psql('postgres', "SELECT pg_cancel_backend($lw_holder_pid);"),
+	't', 'query cancel accepted for backend holding test LWLock');
+ok(pump_until($lw_holder->{run}, $lw_holder->{timer},
+		$lw_holder->{stderr}, qr/canceling statement due to user request/),
+	'canceled LWLock holder releases test LWLock');
+eval { $lw_holder->{run}->finish; };
+wait_for_pid_to_leave_pg_stat_activity($lw_holder_pid,
+	'canceled LWLock holder leaves pg_stat_activity');
+
+ok(pump_until($lw_waiter->{run}, $lw_waiter->{timer},
+		$lw_waiter->{stdout}, qr/^t\s*$/m),
+	'published LWLock semaphore wait completes after holder releases');
+eval { $lw_waiter->{run}->finish; };
+wait_for_pid_to_leave_pg_stat_activity($lw_waiter_pid,
+	'LWLock waiter leaves pg_stat_activity after acquiring test LWLock');
+
 is($node->safe_psql('postgres', 'SELECT 42;'), '42',
 	'threaded server remains usable after Phase 13 wait-completion TAP');
 

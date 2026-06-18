@@ -62,3 +62,15 @@ CREATE FUNCTION test_backend_runtime_wait_on_condition_variable(pg_catalog.int4)
 	AS 'MODULE_PATHNAME',
 	   'test_backend_runtime_wait_on_condition_variable'
 	LANGUAGE C;
+
+CREATE FUNCTION test_backend_runtime_hold_lwlock(pg_catalog.int4)
+	RETURNS pg_catalog.bool
+	AS 'MODULE_PATHNAME',
+	   'test_backend_runtime_hold_lwlock'
+	LANGUAGE C;
+
+CREATE FUNCTION test_backend_runtime_wait_on_lwlock()
+	RETURNS pg_catalog.bool
+	AS 'MODULE_PATHNAME',
+	   'test_backend_runtime_wait_on_lwlock'
+	LANGUAGE C;

@@ -19,6 +19,7 @@
 #include "postmaster/interrupt.h"
 #include "storage/condition_variable.h"
 #include "storage/latch.h"
+#include "storage/lwlock.h"
 #include "storage/pmsignal.h"
 #include "utils/backend_runtime.h"
 #include "utils/builtins.h"
@@ -41,6 +42,8 @@ PG_FUNCTION_INFO_V1(test_backend_runtime_custom_guc_init_count);
 PG_FUNCTION_INFO_V1(test_backend_runtime_emit_fatal);
 PG_FUNCTION_INFO_V1(test_backend_runtime_wait_completion_snapshot);
 PG_FUNCTION_INFO_V1(test_backend_runtime_wait_on_condition_variable);
+PG_FUNCTION_INFO_V1(test_backend_runtime_hold_lwlock);
+PG_FUNCTION_INFO_V1(test_backend_runtime_wait_on_lwlock);
 
 pg_noreturn PGDLLEXPORT void test_backend_runtime_unreachable_bgworker_main(Datum main_arg);
 PGDLLEXPORT void test_backend_runtime_thread_bgworker_main(Datum main_arg);
@@ -50,6 +53,9 @@ PGDLLEXPORT void _PG_init(void);
 
 static uint32 test_backend_runtime_thread_bgworker_wait_event = 0;
 static uint32 test_backend_runtime_condition_variable_wait_event = 0;
+static uint32 test_backend_runtime_hold_lwlock_wait_event = 0;
+static bool test_backend_runtime_lwlock_initialized = false;
+static LWLock test_backend_runtime_lwlock;
 static pg_atomic_uint32 test_backend_runtime_restart_count;
 static pg_atomic_uint32 test_backend_runtime_crash_count;
 static PG_THREAD_LOCAL char *test_backend_runtime_custom_guc = NULL;
@@ -64,6 +70,8 @@ test_backend_runtime_wait_kind_name(PgWaitKind kind)
 			return "none";
 		case PG_WAIT_KIND_EVENT_SET:
 			return "event_set";
+		case PG_WAIT_KIND_SEMAPHORE:
+			return "semaphore";
 	}
 
 	return "unknown";
@@ -102,6 +110,15 @@ _PG_init(void)
 							   NULL,
 							   NULL,
 							   NULL);
+
+	if (!test_backend_runtime_lwlock_initialized)
+	{
+		int			tranche_id;
+
+		tranche_id = LWLockNewTrancheId("TestBackendRuntimeLWLock");
+		LWLockInitialize(&test_backend_runtime_lwlock, tranche_id);
+		test_backend_runtime_lwlock_initialized = true;
+	}
 }
 
 Datum
@@ -389,6 +406,52 @@ test_backend_runtime_wait_on_condition_variable(PG_FUNCTION_ARGS)
 	PG_END_TRY();
 
 	PG_RETURN_BOOL(timed_out);
+}
+
+Datum
+test_backend_runtime_hold_lwlock(PG_FUNCTION_ARGS)
+{
+	int32		timeout_ms = PG_GETARG_INT32(0);
+	volatile bool held = false;
+
+	if (timeout_ms < 0)
+		ereport(ERROR,
+				errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				errmsg("LWLock hold timeout must not be negative"));
+
+	if (test_backend_runtime_hold_lwlock_wait_event == 0)
+		test_backend_runtime_hold_lwlock_wait_event =
+			WaitEventExtensionNew("TestBackendRuntimeHoldLWLock");
+
+	LWLockAcquire(&test_backend_runtime_lwlock, LW_EXCLUSIVE);
+	held = true;
+
+	PG_TRY();
+	{
+		(void) WaitLatch(MyLatch,
+						 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+						 timeout_ms,
+						 test_backend_runtime_hold_lwlock_wait_event);
+		ResetLatch(MyLatch);
+		CHECK_FOR_INTERRUPTS();
+	}
+	PG_FINALLY();
+	{
+		if (held)
+			LWLockRelease(&test_backend_runtime_lwlock);
+	}
+	PG_END_TRY();
+
+	PG_RETURN_BOOL(true);
+}
+
+Datum
+test_backend_runtime_wait_on_lwlock(PG_FUNCTION_ARGS)
+{
+	LWLockAcquire(&test_backend_runtime_lwlock, LW_EXCLUSIVE);
+	LWLockRelease(&test_backend_runtime_lwlock);
+
+	PG_RETURN_BOOL(true);
 }
 
 void

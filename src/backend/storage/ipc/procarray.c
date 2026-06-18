@@ -812,7 +812,7 @@ ProcArrayGroupClearXid(PGPROC *proc, TransactionId latestXid)
 		for (;;)
 		{
 			/* acts as a read barrier */
-			PGSemaphoreLock(proc->sem);
+			ProcWaitOnSemaphore(proc, WAIT_EVENT_PROCARRAY_GROUP_UPDATE);
 			if (!proc->procArrayGroupMember)
 				break;
 			extraWaits++;
@@ -875,7 +875,7 @@ ProcArrayGroupClearXid(PGPROC *proc, TransactionId latestXid)
 		nextproc->procArrayGroupMember = false;
 
 		if (nextproc != MyProc)
-			PGSemaphoreUnlock(nextproc->sem);
+			ProcWakeSemaphore(nextproc);
 	}
 }
 

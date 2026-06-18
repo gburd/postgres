@@ -995,7 +995,7 @@ LWLockWakeup(LWLock *lock)
 		 */
 		pg_write_barrier();
 		waiter->lwWaiting = LW_WS_NOT_WAITING;
-		PGSemaphoreUnlock(waiter->sem);
+		ProcWakeSemaphore(waiter);
 	}
 }
 
@@ -1105,7 +1105,7 @@ LWLockDequeueSelf(LWLock *lock)
 		 */
 		for (;;)
 		{
-			PGSemaphoreLock(MyProc->sem);
+			ProcWaitOnSemaphore(MyProc, PG_WAIT_LWLOCK | lock->tranche);
 			if (MyProc->lwWaiting == LW_WS_NOT_WAITING)
 				break;
 			extraWaits++;
@@ -1258,7 +1258,7 @@ LWLockAcquire(LWLock *lock, LWLockMode mode)
 
 		for (;;)
 		{
-			PGSemaphoreLock(proc->sem);
+			ProcWaitOnSemaphore(proc, PG_WAIT_LWLOCK | lock->tranche);
 			if (proc->lwWaiting == LW_WS_NOT_WAITING)
 				break;
 			extraWaits++;
@@ -1424,7 +1424,7 @@ LWLockAcquireOrWait(LWLock *lock, LWLockMode mode)
 
 			for (;;)
 			{
-				PGSemaphoreLock(proc->sem);
+				ProcWaitOnSemaphore(proc, PG_WAIT_LWLOCK | lock->tranche);
 				if (proc->lwWaiting == LW_WS_NOT_WAITING)
 					break;
 				extraWaits++;
@@ -1642,7 +1642,7 @@ LWLockWaitForVar(LWLock *lock, pg_atomic_uint64 *valptr, uint64 oldval,
 
 		for (;;)
 		{
-			PGSemaphoreLock(proc->sem);
+			ProcWaitOnSemaphore(proc, PG_WAIT_LWLOCK | lock->tranche);
 			if (proc->lwWaiting == LW_WS_NOT_WAITING)
 				break;
 			extraWaits++;
@@ -1744,7 +1744,7 @@ LWLockUpdateVar(LWLock *lock, pg_atomic_uint64 *valptr, uint64 val)
 		/* check comment in LWLockWakeup() about this barrier */
 		pg_write_barrier();
 		waiter->lwWaiting = LW_WS_NOT_WAITING;
-		PGSemaphoreUnlock(waiter->sem);
+		ProcWakeSemaphore(waiter);
 	}
 }
 

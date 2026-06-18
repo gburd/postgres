@@ -1569,6 +1569,28 @@ PgBackendWakeWaitCompletion(PgBackend *backend, uint32 ready_events)
 	return true;
 }
 
+bool
+PgBackendWakeWaitCompletionById(PgBackendId backend_id, uint32 ready_events)
+{
+#ifndef WIN32
+	PgBackend  *backend = NULL;
+
+	ThreadedBackendRegistryLock();
+	if (backend_id < ThreadedBackendRegistryCapacity)
+		backend = ThreadedBackendRegistry[backend_id];
+
+	if (backend != NULL)
+		(void) PgBackendWakeWaitCompletion(backend, ready_events);
+	ThreadedBackendRegistryUnlock();
+
+	return backend != NULL;
+#else
+	(void) backend_id;
+	(void) ready_events;
+	return false;
+#endif
+}
+
 static void
 PgBackendWakeForWaitCompletion(PgBackend *backend)
 {

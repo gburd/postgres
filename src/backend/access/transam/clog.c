@@ -545,7 +545,7 @@ TransactionGroupUpdateXidStatus(TransactionId xid, XidStatus status,
 		for (;;)
 		{
 			/* acts as a read barrier */
-			PGSemaphoreLock(proc->sem);
+			ProcWaitOnSemaphore(proc, WAIT_EVENT_XACT_GROUP_UPDATE);
 			if (!proc->clogGroupMember)
 				break;
 			extraWaits++;
@@ -655,7 +655,7 @@ TransactionGroupUpdateXidStatus(TransactionId xid, XidStatus status,
 		wakeproc->clogGroupMember = false;
 
 		if (wakeproc != MyProc)
-			PGSemaphoreUnlock(wakeproc->sem);
+			ProcWakeSemaphore(wakeproc);
 	}
 
 	return true;

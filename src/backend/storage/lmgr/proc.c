@@ -2104,6 +2104,67 @@ ProcWaitForSignal(uint32 wait_event_info)
 	CHECK_FOR_INTERRUPTS();
 }
 
+typedef struct ProcSemaphoreWaitArgs
+{
+	PGPROC	   *proc;
+} ProcSemaphoreWaitArgs;
+
+static int
+ProcSemaphoreWaitCallback(void *callback_arg)
+{
+	ProcSemaphoreWaitArgs *args = (ProcSemaphoreWaitArgs *) callback_arg;
+
+	PGSemaphoreLock(args->proc->sem);
+	return 0;
+}
+
+/*
+ * ProcWaitOnSemaphore - wait on a PGPROC-owned semaphore.
+ *
+ * This is the scheduler-visible wrapper for semaphore-backed waits such as
+ * LWLocks, buffer content locks, and group-update waits.  The
+ * thread-per-session fallback still blocks in PGSemaphoreLock(), but the
+ * logical backend's current wait-completion record now exposes the wait event
+ * and owner.
+ */
+void
+ProcWaitOnSemaphore(PGPROC *proc, uint32 wait_event_info)
+{
+	ProcSemaphoreWaitArgs args;
+	PgWaitSpec	wait_spec;
+
+	Assert(proc != NULL);
+
+	args.proc = proc;
+	wait_spec.kind = PG_WAIT_KIND_SEMAPHORE;
+	wait_spec.wait_event_info = wait_event_info;
+	wait_spec.wake_events = 0;
+	wait_spec.timeout = -1;
+
+	(void) PgSuspend(&wait_spec, ProcSemaphoreWaitCallback, &args);
+}
+
+/*
+ * ProcWakeSemaphore - wake a backend blocked on its PGPROC semaphore.
+ *
+ * Mark the Phase 13 wait-completion record before the legacy semaphore wake so
+ * a future scheduler requeue hook sees readiness at the logical backend layer.
+ */
+void
+ProcWakeSemaphore(PGPROC *proc)
+{
+	PgBackend  *backend = CurrentPgBackend;
+
+	Assert(proc != NULL);
+
+	if (backend != NULL &&
+		backend->runtime != NULL &&
+		backend->runtime->kind == PG_RUNTIME_THREAD_PER_SESSION &&
+		proc->backendId != 0)
+		(void) PgBackendWakeWaitCompletionById(proc->backendId, 0);
+	PGSemaphoreUnlock(proc->sem);
+}
+
 /*
  * ProcSendSignal - set the latch of a backend identified by ProcNumber
  */

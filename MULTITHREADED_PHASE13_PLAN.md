@@ -101,6 +101,10 @@ The first wait-boundary slice is implemented:
 - `WaitEventSetWait()` is the first representative wait-family entry point
   because `WaitLatch()`, `WaitLatchOrSocket()`, and frontend socket waits
   already flow through it.
+- `ProcWaitOnSemaphore()` publishes PGPROC-owned semaphore waits used by
+  LWLocks, buffer content locks, CLOG group update, and ProcArray group update
+  paths.  `ProcWakeSemaphore()` marks matching logical wait-completion records
+  ready before falling back to the existing `PGSemaphoreUnlock()` wake.
 - Focused backend-runtime coverage proves publication, existing-pending cancel
   seeding, later termination marking, readiness marking, and cleanup.
 - Wait-completion publication is automatic for `PG_RUNTIME_THREAD_PER_SESSION`
@@ -111,14 +115,31 @@ The first wait-boundary slice is implemented:
   another SQL session while a backend is blocked on frontend input
   (`ClientRead`), frontend output (`ClientWrite`), a latch wait (`PgSleep`), a
   condition variable wait (`TestBackendRuntimeConditionVariable`), and a
-  heavyweight advisory lock wait (`advisory`).  The same test confirms
-  `pg_stat_activity` reports the expected wait event and that query cancel
-  wakes each active published wait.
+  heavyweight advisory lock wait (`advisory`).  It also observes a real
+  semaphore-backed LWLock wait (`TestBackendRuntimeLWLock`).  The same test
+  confirms `pg_stat_activity` reports the expected wait event and that query
+  cancel wakes each interruptible active published wait.
 
-The next Phase 13 slice should audit whether any remaining blocking family in
-the threaded-world core target bypasses `WaitEventSetWait()` or the existing
-lock/condition-variable paths, with timeout waits treated as part of the
-representative latch/event-set coverage unless a distinct bypass appears.
+## Wait-Family Audit
+
+The threaded-world core target now has scheduler-visible publication for the
+blocking families that can park a regular backend:
+
+| Family | Publication path | Evidence |
+| --- | --- | --- |
+| Event-set, latch, socket, frontend input/output, timeout | `WaitEventSetWait()` builds `PG_WAIT_KIND_EVENT_SET` and calls `PgSuspend()` | TAP observes `ClientRead`, `ClientWrite`, and `PgSleep`; unit coverage checks timeout metadata |
+| Condition variables | `ConditionVariableTimedSleep()` waits through `WaitLatch()` | TAP observes `TestBackendRuntimeConditionVariable` |
+| Heavyweight locks and signal waits | `ProcSleep()`/`ProcWaitForSignal()` wait through `WaitLatch()` | TAP observes advisory lock wait event `advisory` |
+| PGPROC semaphores, including LWLocks, buffer content locks, CLOG group update, and ProcArray group update | `ProcWaitOnSemaphore()` builds `PG_WAIT_KIND_SEMAPHORE` and calls `PgSuspend()`; `ProcWakeSemaphore()` marks readiness before the legacy semaphore wake | TAP observes `TestBackendRuntimeLWLock`; source audit leaves only absorbed-wakeup balancing as raw semaphore operations |
+
+Remaining direct platform `poll()`, `epoll_wait()`, and socket waits in regular
+backend paths are under `WaitEventSetWait()`/`WaitLatchOrSocket()` or special
+startup/authentication/control-plane paths.  Those special paths can continue
+blocking in the thread-per-session fallback until a later phase gives startup
+and control-plane work explicit scheduler tasks.
+
+With this audit complete, Phase 13 has the wait-completion substrate and real
+coverage needed before Phase 14 starts designing pooled-carrier scheduling.
 
 ## Validation Gate
 

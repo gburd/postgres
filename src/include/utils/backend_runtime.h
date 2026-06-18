@@ -223,7 +223,8 @@ typedef struct PgBackendInterruptMailbox
 typedef enum PgWaitKind
 {
 	PG_WAIT_KIND_NONE,
-	PG_WAIT_KIND_EVENT_SET
+	PG_WAIT_KIND_EVENT_SET,
+	PG_WAIT_KIND_SEMAPHORE
 } PgWaitKind;
 
 typedef struct PgWaitSpec
@@ -3353,6 +3354,8 @@ extern void PgBackendMarkWaitCompletionInterrupt(PgBackend *backend,
 												 PgWaitCompletionInterrupt interrupt);
 extern bool PgBackendWakeWaitCompletion(PgBackend *backend,
 										uint32 ready_events);
+extern bool PgBackendWakeWaitCompletionById(PgBackendId backend_id,
+											uint32 ready_events);
 extern int	PgSuspend(const PgWaitSpec *wait_spec,
 					  PgSuspendCallback callback, void *callback_arg);
 extern PgStepResult PgSessionStep(PgSession *session, PgStepBudget budget);
