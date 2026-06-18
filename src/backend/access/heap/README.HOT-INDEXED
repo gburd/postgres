@@ -252,6 +252,9 @@ HEAP_INDEXED_UPDATED heap-only tuple whose line pointer is preserved, and
 multiple LP_REDIRECTs forwarding to one live tuple.
 
 Statistics: pg_stat_all_tables.n_tup_hot_indexed_upd counts HOT-indexed
+updates; pg_stat_all_indexes.n_tup_hot_indexed_upd_matched / _skipped count
+per-index recheck outcomes; and pg_relation_hot_indexed_stats() reports
+per-relation HOT-indexed chain counts.
 
 
 Appendices
