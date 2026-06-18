@@ -66,6 +66,7 @@ extern int	lime_snapshot_token_code(const ParserSnapshot *snap,
 extern bool raw_parser_lime_pushparse(core_yyscan_t yyscanner,
 									  base_yy_extra_type *yyextra,
 									  List **result);
+extern bool raw_parser_lime_active(void);
 extern bool pg_grammar_compose_install(unsigned int *base_nrule_out,
 									   char **errmsg_out);
 
@@ -83,6 +84,19 @@ extern bool pg_grammar_compose_install(unsigned int *base_nrule_out,
 static ParserSnapshot *base_snapshot = NULL;
 static ParserSnapshot *composed_snapshot = NULL;
 static unsigned int composed_base_nrule = 0;
+
+/*
+ * raw_parser_lime_active
+ *	  True once a composed grammar snapshot (base + registered
+ *	  extensions) is installed -- i.e. at least one grammar extension
+ *	  registered and pg_grammar_ext_prewarm()/lock composed it.  raw_parser
+ *	  uses this to decide whether to drive the push parser.
+ */
+bool
+raw_parser_lime_active(void)
+{
+	return composed_snapshot != NULL;
+}
 
 /*
  * pushparse_host_reduce
