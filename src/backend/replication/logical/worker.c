@@ -484,6 +484,14 @@ WalReceiverConn *LogRepWorkerWalRcvConn = NULL;
 Subscription *MySubscription = NULL;
 static bool MySubscriptionValid = false;
 
+/*
+ * Cache of the per-subscription hot_indexed_on_apply mode.  The apply worker
+ * refreshes this after every successful load of MySubscription; readers
+ * outside worker.c go through GetHotIndexedApplyMode() so they don't need
+ * visibility into the Subscription struct or the apply worker's globals.
+ */
+static char hot_indexed_apply_mode = LOGICALREP_HOT_INDEXED_OFF;
+
 static List *on_commit_wakeup_workers_subids = NIL;
 
 bool		in_remote_transaction = false;
@@ -5171,6 +5179,9 @@ maybe_reread_subscription(void)
 	MemoryContextDelete(MySubscription->cxt);
 	MySubscription = newsub;
 
+	/* Refresh the cached HOT-indexed apply mode from the new tuple. */
+	hot_indexed_apply_mode = MySubscription->hotindexedonapply;
+
 	/* Change synchronous commit according to the user's wishes */
 	SetConfigOption("synchronous_commit", MySubscription->synccommit,
 					PGC_BACKEND, PGC_S_OVERRIDE);
@@ -5844,6 +5855,12 @@ InitializeLogRepWorker(void)
 
 	MySubscriptionValid = true;
 
+	/*
+	 * Cache the subscription's HOT-indexed apply mode so it is cheap to
+	 * consult from the heap access method (via GetHotIndexedApplyMode()).
+	 */
+	hot_indexed_apply_mode = MySubscription->hotindexedonapply;
+
 	if (!MySubscription->enabled)
 	{
 		ereport(LOG,
@@ -6081,6 +6098,22 @@ bool
 IsLogicalWorker(void)
 {
 	return MyLogicalRepWorker != NULL;
+}
+
+/*
+ * Return the cached HOT-indexed apply mode of the current logical replication
+ * worker's subscription.
+ *
+ * Callers outside worker.c (notably heapam.c's HeapUpdateHotAllowable) use
+ * this accessor to avoid pulling in worker_internal.h or the Subscription
+ * struct.  Non-apply processes get LOGICALREP_HOT_INDEXED_OFF, which is the
+ * conservative value; callers are expected to guard with IsLogicalWorker()
+ * first for clarity, but the accessor is safe either way.
+ */
+char
+GetHotIndexedApplyMode(void)
+{
+	return hot_indexed_apply_mode;
 }
 
 /*
