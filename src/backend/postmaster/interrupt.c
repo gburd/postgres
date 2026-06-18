@@ -69,10 +69,10 @@ PgBackendWakeup(PgBackend *backend)
 }
 
 void
-PgBackendRaiseInterrupt(PgBackend *backend,
-						PgBackendInterruptType interrupt_type)
+SendInterrupt(PgBackend *backend, PgBackendInterruptType interrupt_type)
 {
 	PgBackendInterruptMask interrupt_mask;
+	PgBackendInterruptMask old_mask;
 
 	if (backend == NULL)
 		return;
@@ -80,8 +80,17 @@ PgBackendRaiseInterrupt(PgBackend *backend,
 		return;
 
 	interrupt_mask = PG_BACKEND_INTERRUPT_MASK(interrupt_type);
-	pg_atomic_fetch_or_u32(&backend->interrupts.pending_mask, interrupt_mask);
-	PgBackendWakeForInterrupt(backend);
+	old_mask = pg_atomic_fetch_or_u32(&backend->interrupts.pending_mask,
+									  interrupt_mask);
+	if ((old_mask & interrupt_mask) == 0)
+		PgBackendWakeForInterrupt(backend);
+}
+
+void
+PgBackendRaiseInterrupt(PgBackend *backend,
+						PgBackendInterruptType interrupt_type)
+{
+	SendInterrupt(backend, interrupt_type);
 }
 
 static void
@@ -105,7 +114,13 @@ PgBackendWakeForInterrupt(PgBackend *backend)
 void
 PgCurrentBackendRaiseInterrupt(PgBackendInterruptType interrupt_type)
 {
-	PgBackendRaiseInterrupt(CurrentPgBackend, interrupt_type);
+	RaiseInterrupt(interrupt_type);
+}
+
+void
+RaiseInterrupt(PgBackendInterruptType interrupt_type)
+{
+	SendInterrupt(CurrentPgBackend, interrupt_type);
 }
 
 void
@@ -121,7 +136,7 @@ PgBackendRaiseProcDieInterrupt(PgBackend *backend, int sender_pid,
 		backend->interrupts.proc_die_sender_uid = sender_uid;
 	}
 
-	PgBackendRaiseInterrupt(backend, PG_BACKEND_INTERRUPT_PROC_DIE);
+	SendInterrupt(backend, PG_BACKEND_INTERRUPT_PROC_DIE);
 }
 
 void
@@ -316,7 +331,7 @@ ProcessMainLoopInterrupts(void)
 void
 SignalHandlerForConfigReload(SIGNAL_ARGS)
 {
-	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_CONFIG_RELOAD);
+	RaiseInterrupt(PG_BACKEND_INTERRUPT_CONFIG_RELOAD);
 	ConfigReloadPending = true;
 	SetLatch(MyLatch);
 }
@@ -360,7 +375,7 @@ SignalHandlerForCrashExit(SIGNAL_ARGS)
 void
 SignalHandlerForShutdownRequest(SIGNAL_ARGS)
 {
-	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST);
+	RaiseInterrupt(PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST);
 	ShutdownRequestPending = true;
 	SetLatch(MyLatch);
 }

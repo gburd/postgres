@@ -375,12 +375,6 @@ CheckpointerMain(const void *startup_data, size_t startup_data_len)
 	UpdateSharedMemoryConfig();
 
 	/*
-	 * Advertise our proc number that backends can use to wake us up while
-	 * we're sleeping.
-	 */
-	ProcGlobal->checkpointerProc = MyProcNumber;
-
-	/*
 	 * Loop until we've been asked to write the shutdown checkpoint or
 	 * terminate.
 	 */
@@ -973,7 +967,7 @@ IsCheckpointOnSchedule(double progress)
 static void
 ReqShutdownXLOG(SIGNAL_ARGS)
 {
-	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_CHECKPOINTER_SHUTDOWN_XLOG);
+	RaiseInterrupt(PG_BACKEND_INTERRUPT_CHECKPOINTER_SHUTDOWN_XLOG);
 	CheckpointerShutdownXLOGPending = true;
 	SetLatch(MyLatch);
 }
@@ -1145,8 +1139,7 @@ RequestCheckpoint(int flags)
 #define MAX_SIGNAL_TRIES 600	/* max wait 60.0 sec */
 	for (ntries = 0;; ntries++)
 	{
-		volatile PROC_HDR *procglobal = ProcGlobal;
-		ProcNumber	checkpointerProc = procglobal->checkpointerProc;
+		ProcNumber	checkpointerProc = pg_atomic_read_u32(&ProcGlobal->checkpointerProc);
 
 		if (checkpointerProc == INVALID_PROC_NUMBER)
 		{
@@ -1287,8 +1280,7 @@ ForwardSyncRequest(const FileTag *ftag, SyncRequestType type)
 	/* ... but not till after we release the lock */
 	if (too_full)
 	{
-		volatile PROC_HDR *procglobal = ProcGlobal;
-		ProcNumber	checkpointerProc = procglobal->checkpointerProc;
+		ProcNumber	checkpointerProc = pg_atomic_read_u32(&ProcGlobal->checkpointerProc);
 
 		if (checkpointerProc != INVALID_PROC_NUMBER)
 			SetLatch(&GetPGProcByNumber(checkpointerProc)->procLatch);
@@ -1568,8 +1560,7 @@ FirstCallSinceLastCheckpoint(void)
 void
 WakeupCheckpointer(void)
 {
-	volatile PROC_HDR *procglobal = ProcGlobal;
-	ProcNumber	checkpointerProc = procglobal->checkpointerProc;
+	ProcNumber	checkpointerProc = pg_atomic_read_u32(&ProcGlobal->checkpointerProc);
 
 	if (checkpointerProc != INVALID_PROC_NUMBER)
 		SetLatch(&GetPGProcByNumber(checkpointerProc)->procLatch);

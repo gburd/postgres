@@ -173,7 +173,7 @@ HandleCatchupInterrupt(void)
 	 * you do here.
 	 */
 
-	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_CATCHUP);
+	RaiseInterrupt(PG_BACKEND_INTERRUPT_CATCHUP);
 	catchupInterruptPending = true;
 
 	/* latch will be set by procsignal_sigusr1_handler */

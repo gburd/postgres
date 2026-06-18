@@ -2387,7 +2387,7 @@ SignalBackends(void)
 		 */
 		if (pid == my_signal_pid)
 		{
-			PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_NOTIFY);
+			RaiseInterrupt(PG_BACKEND_INTERRUPT_NOTIFY);
 			notifyInterruptPending = true;
 			continue;
 		}
@@ -2555,7 +2555,7 @@ HandleNotifyInterrupt(void)
 	 */
 
 	/* signal that work needs to be done */
-	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_NOTIFY);
+	RaiseInterrupt(PG_BACKEND_INTERRUPT_NOTIFY);
 	notifyInterruptPending = true;
 
 	/* latch will be set by procsignal_sigusr1_handler */

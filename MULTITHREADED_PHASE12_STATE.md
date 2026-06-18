@@ -22594,3 +22594,31 @@ Lifecycle/preflight note:
 - validation impact: rebuild/install, restart branch process/threaded clusters,
   rerun `kv_hot_update_tx` normal/sync-off focused benchmarks and sanity-check
   clean startup/shutdown before deciding whether to keep the primitive change.
+
+## Interrupt API Upstream Alignment
+
+Lifecycle/preflight note:
+
+- target: align the branch's logical backend interrupt vocabulary with the
+  upstream `SendProcSignal() -> SendInterrupt()` patch direction and route
+  threaded logical-backend signalling through latch-backed in-thread
+  interrupts as widely as current target identity allows.
+- touched roots/buckets: existing `PgBackend.interrupts` mailbox, proc-signal
+  interrupt mask bridge, and interrupt latch only; no new runtime roots,
+  buckets, or lifecycle transitions.
+- owner source files: `src/backend/postmaster/interrupt.c`,
+  `src/backend/storage/ipc/procsignal.c`, `src/include/utils/backend_runtime.h`,
+  selected logical-interrupt callers, and this state note.
+- legacy symbols/accessors: keep `PgBackendRaiseInterrupt()` and
+  `PgCurrentBackendRaiseInterrupt()` as compatibility implementation wrappers
+  while adding upstream-shaped `SendInterrupt()` and `RaiseInterrupt()` entry
+  points.  Preserve `SendProcSignal()` for process-mode callers and as the
+  compatibility bridge from old procsignal reasons to logical interrupts.
+- repeated lifecycle operations: none.  Startup, adoption, reset, shutdown, and
+  process-mode signal delivery continue to use the existing checked paths.
+- checked primitive decision: redirect `SendProcSignal()` to the logical
+  interrupt/latch path whenever the proc-signal slot identifies a threaded
+  backend.  Leave true process-mode signalling on `kill(SIGUSR1)` until those
+  processes have a real `PgBackend` target.
+- validation impact: rebuild and run focused backend-runtime/threaded interrupt
+  validation before considering wider benchmark reruns.

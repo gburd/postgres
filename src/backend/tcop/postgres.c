@@ -3065,7 +3065,7 @@ StatementCancelHandler(SIGNAL_ARGS)
 	 */
 	if (!PgBackendExitInProgress())
 	{
-		PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_QUERY_CANCEL);
+		RaiseInterrupt(PG_BACKEND_INTERRUPT_QUERY_CANCEL);
 		QueryCancelPending = true;
 	}
 
@@ -3094,7 +3094,7 @@ void
 HandleRecoveryConflictInterrupt(void)
 {
 	if (pg_atomic_read_u32(&MyProc->pendingRecoveryConflicts) != 0)
-		PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_RECOVERY_CONFLICT);
+		RaiseInterrupt(PG_BACKEND_INTERRUPT_RECOVERY_CONFLICT);
 
 	/* latch will be set by procsignal_sigusr1_handler */
 }
@@ -3270,7 +3270,7 @@ report_recovery_conflict(RecoveryConflictReason reason)
 					 * code in ProcessInterrupts().
 					 */
 					(void) pg_atomic_fetch_or_u32(&MyProc->pendingRecoveryConflicts, (1 << reason));
-					PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_RECOVERY_CONFLICT);
+					RaiseInterrupt(PG_BACKEND_INTERRUPT_RECOVERY_CONFLICT);
 					return;
 				}
 

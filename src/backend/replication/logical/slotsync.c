@@ -1379,7 +1379,7 @@ slotsync_reread_config(void)
 void
 HandleSlotSyncMessageInterrupt(void)
 {
-	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_SLOT_SYNC_MESSAGE);
+	RaiseInterrupt(PG_BACKEND_INTERRUPT_SLOT_SYNC_MESSAGE);
 	SlotSyncShutdownPending = true;
 	/* latch will be set by procsignal_sigusr1_handler */
 }

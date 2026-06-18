@@ -505,8 +505,9 @@ typedef struct PROC_HDR
 	 * Current slot numbers of some auxiliary processes. There can be only one
 	 * of each of these running at a time.
 	 */
-	ProcNumber	walwriterProc;
-	ProcNumber	checkpointerProc;
+	pg_atomic_uint32 avLauncherProc;
+	pg_atomic_uint32 walwriterProc;
+	pg_atomic_uint32 checkpointerProc;
 
 	/* Current shared estimate of appropriate spins_per_delay value */
 	int			spins_per_delay;

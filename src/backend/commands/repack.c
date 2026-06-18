@@ -3657,7 +3657,7 @@ DecodingWorkerFileName(char *fname, Oid relid, uint32 seq)
 void
 HandleRepackMessageInterrupt(void)
 {
-	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_REPACK_MESSAGE);
+	RaiseInterrupt(PG_BACKEND_INTERRUPT_REPACK_MESSAGE);
 	RepackMessagePending = true;
 }
 

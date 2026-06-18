@@ -1492,7 +1492,7 @@ StatementTimeoutHandler(void)
 	if (sig == SIGTERM)
 		PgBackendRaiseProcDieInterrupt(target, 0, 0);
 	else
-		PgBackendRaiseInterrupt(target, PG_BACKEND_INTERRUPT_QUERY_CANCEL);
+		SendInterrupt(target, PG_BACKEND_INTERRUPT_QUERY_CANCEL);
 
 	if (!PgBackendUsesProcessSignals(target))
 		return;
@@ -1512,7 +1512,7 @@ LockTimeoutHandler(void)
 {
 	PgBackend  *target = TimeoutTargetBackend();
 
-	PgBackendRaiseInterrupt(target, PG_BACKEND_INTERRUPT_QUERY_CANCEL);
+	SendInterrupt(target, PG_BACKEND_INTERRUPT_QUERY_CANCEL);
 
 	if (!PgBackendUsesProcessSignals(target))
 		return;
@@ -1539,36 +1539,36 @@ TimeoutTargetBackend(void)
 static void
 TransactionTimeoutHandler(void)
 {
-	PgBackendRaiseInterrupt(TimeoutTargetBackend(),
-							PG_BACKEND_INTERRUPT_TRANSACTION_TIMEOUT);
+	SendInterrupt(TimeoutTargetBackend(),
+				  PG_BACKEND_INTERRUPT_TRANSACTION_TIMEOUT);
 }
 
 static void
 IdleInTransactionSessionTimeoutHandler(void)
 {
-	PgBackendRaiseInterrupt(TimeoutTargetBackend(),
-							PG_BACKEND_INTERRUPT_IDLE_IN_TRANSACTION_SESSION_TIMEOUT);
+	SendInterrupt(TimeoutTargetBackend(),
+				  PG_BACKEND_INTERRUPT_IDLE_IN_TRANSACTION_SESSION_TIMEOUT);
 }
 
 static void
 IdleSessionTimeoutHandler(void)
 {
-	PgBackendRaiseInterrupt(TimeoutTargetBackend(),
-							PG_BACKEND_INTERRUPT_IDLE_SESSION_TIMEOUT);
+	SendInterrupt(TimeoutTargetBackend(),
+				  PG_BACKEND_INTERRUPT_IDLE_SESSION_TIMEOUT);
 }
 
 static void
 IdleStatsUpdateTimeoutHandler(void)
 {
-	PgBackendRaiseInterrupt(TimeoutTargetBackend(),
-							PG_BACKEND_INTERRUPT_IDLE_STATS_UPDATE_TIMEOUT);
+	SendInterrupt(TimeoutTargetBackend(),
+				  PG_BACKEND_INTERRUPT_IDLE_STATS_UPDATE_TIMEOUT);
 }
 
 static void
 ClientCheckTimeoutHandler(void)
 {
-	PgBackendRaiseInterrupt(TimeoutTargetBackend(),
-							PG_BACKEND_INTERRUPT_CLIENT_CONNECTION_CHECK);
+	SendInterrupt(TimeoutTargetBackend(),
+				  PG_BACKEND_INTERRUPT_CLIENT_CONNECTION_CHECK);
 }
 
 /*

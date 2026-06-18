@@ -1019,7 +1019,7 @@ ParallelApplyWorkerMain(Datum main_arg)
 void
 HandleParallelApplyMessageInterrupt(void)
 {
-	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_PARALLEL_APPLY_MESSAGE);
+	RaiseInterrupt(PG_BACKEND_INTERRUPT_PARALLEL_APPLY_MESSAGE);
 	ParallelApplyMessagePending = true;
 	/* latch will be set by procsignal_sigusr1_handler */
 }

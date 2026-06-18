@@ -3279,6 +3279,15 @@ extern int	PgBackendGetSignalPid(PgBackend *backend);
 extern int	PgCurrentBackendSignalPid(void);
 extern bool PgBackendUsesProcessSignals(PgBackend *backend);
 extern void PgBackendWakeup(PgBackend *backend);
+/*
+ * Logical backend interrupts are for backend events such as cancel, die,
+ * notify, and proc-signal-derived work. Wait readiness should remain with
+ * latches, condition variables, wait event sets, or Phase 13 wait-completion
+ * records until the scheduler owns that wait family.
+ */
+extern void SendInterrupt(PgBackend *backend,
+						  PgBackendInterruptType interrupt_type);
+extern void RaiseInterrupt(PgBackendInterruptType interrupt_type);
 extern void PgBackendRaiseInterrupt(PgBackend *backend,
 									 PgBackendInterruptType interrupt_type);
 extern void PgBackendRaiseProcDieInterrupt(PgBackend *backend, int sender_pid,
