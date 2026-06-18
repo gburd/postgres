@@ -124,7 +124,10 @@ const ShmemCallbacks ProcSignalShmemCallbacks = {
 
 PG_GLOBAL_SHMEM NON_EXEC_STATIC ProcSignalHeader *ProcSignal = NULL;
 
-#define MyProcSignalSlot (*(ProcSignalSlot **) PgCurrentProcSignalSlotRef())
+#define MyProcSignalSlot \
+	(*(ProcSignalSlot **) PG_RUNTIME_CURRENT_HOT_FIELD_REF( \
+		PgCurrentProcSignalSlotHotRef, CurrentPgBackend, \
+		PgCurrentProcSignalSlotRef))
 
 static bool ProcSignalReasonToBackendInterrupt(ProcSignalReason reason,
 											   PgBackendInterruptType *interrupt_type);
@@ -320,8 +323,6 @@ int
 SendBackendInterrupt(int backend_pid, PgBackendInterruptType interrupt_type,
 					 int sender_pid, int sender_uid)
 {
-	PgBackendInterruptMask interrupt_mask;
-
 	if (backend_pid == 0 ||
 		interrupt_type < 0 || interrupt_type >= PG_BACKEND_INTERRUPT_COUNT)
 	{
@@ -329,42 +330,31 @@ SendBackendInterrupt(int backend_pid, PgBackendInterruptType interrupt_type,
 		return -1;
 	}
 
-	interrupt_mask = PG_BACKEND_INTERRUPT_MASK(interrupt_type);
-
 	for (int i = 0; i < NumProcSignalSlots; i++)
 	{
 		volatile ProcSignalSlot *slot = &ProcSignal->psh_slot[i];
 		bool		found = false;
-		bool		needs_wakeup = false;
 
 		SpinLockAcquire(&slot->pss_mutex);
 		if (pg_atomic_read_u32(&slot->pss_pid) == PostmasterPid &&
 			slot->pss_backendId == (PgBackendId) backend_pid)
-		{
-			if (interrupt_type == PG_BACKEND_INTERRUPT_PROC_DIE &&
-				slot->pss_proc_die_sender_pid == 0)
-			{
-				slot->pss_proc_die_sender_pid = sender_pid;
-				slot->pss_proc_die_sender_uid = sender_uid;
-			}
-			needs_wakeup =
-				(pg_atomic_fetch_or_u32(&slot->pss_backendInterruptMask,
-										interrupt_mask) & interrupt_mask) == 0;
 			found = true;
-		}
 		SpinLockRelease(&slot->pss_mutex);
 
 		if (found)
 		{
-			if (needs_wakeup)
-				WakeProcSignalSlot(i);
-			return 0;
+			if (PgBackendSendInterruptById((PgBackendId) backend_pid,
+										 interrupt_type,
+										 sender_pid, sender_uid))
+				return 0;
+			break;
 		}
 	}
 
 	errno = ESRCH;
 	return -1;
 }
+
 
 PgBackendInterruptMask
 ConsumeBackendInterruptsFromProcSignal(int *sender_pid, int *sender_uid)
@@ -436,21 +426,17 @@ SendProcSignal(pid_t pid, ProcSignalReason reason, ProcNumber procNumber)
 		SpinLockAcquire(&slot->pss_mutex);
 		if (ProcSignalSlotMatchesTarget(slot, pid, true))
 		{
+			PgBackendId backend_id = slot->pss_backendId;
+
 			if (ProcSignalSlotUsesBackendInterrupts(slot, pid))
 			{
 				if (ProcSignalReasonToBackendInterrupt(reason, &interrupt_type))
 				{
-					PgBackendInterruptMask interrupt_mask;
-					PgBackendInterruptMask old_mask;
-
-					interrupt_mask = PG_BACKEND_INTERRUPT_MASK(interrupt_type);
-					old_mask =
-						pg_atomic_fetch_or_u32(&slot->pss_backendInterruptMask,
-											   interrupt_mask);
 					SpinLockRelease(&slot->pss_mutex);
-					if ((old_mask & interrupt_mask) == 0)
-						WakeProcSignalSlot(procNumber);
-					return 0;
+					if (PgBackendSendInterruptById(backend_id, interrupt_type, 0, 0))
+						return 0;
+					errno = ESRCH;
+					return -1;
 				}
 
 				slot->pss_signalFlags[reason] = true;
@@ -485,21 +471,17 @@ SendProcSignal(pid_t pid, ProcSignalReason reason, ProcNumber procNumber)
 			SpinLockAcquire(&slot->pss_mutex);
 			if (ProcSignalSlotMatchesTarget(slot, pid, false))
 			{
+				PgBackendId backend_id = slot->pss_backendId;
+
 				if (ProcSignalSlotUsesBackendInterrupts(slot, pid))
 				{
 					if (ProcSignalReasonToBackendInterrupt(reason, &interrupt_type))
 					{
-						PgBackendInterruptMask interrupt_mask;
-						PgBackendInterruptMask old_mask;
-
-						interrupt_mask = PG_BACKEND_INTERRUPT_MASK(interrupt_type);
-						old_mask =
-							pg_atomic_fetch_or_u32(&slot->pss_backendInterruptMask,
-												   interrupt_mask);
 						SpinLockRelease(&slot->pss_mutex);
-						if ((old_mask & interrupt_mask) == 0)
-							WakeProcSignalSlot(i);
-						return 0;
+						if (PgBackendSendInterruptById(backend_id, interrupt_type, 0, 0))
+							return 0;
+						errno = ESRCH;
+						return -1;
 					}
 
 					slot->pss_signalFlags[reason] = true;
@@ -669,19 +651,21 @@ EmitProcSignalBarrier(ProcSignalBarrierType type)
 
 		if (pid != 0)
 		{
+			PgBackendId backend_id = 0;
+
 			SpinLockAcquire(&slot->pss_mutex);
 			pid = pg_atomic_read_u32(&slot->pss_pid);
 			if (pid != 0)
 			{
 				/* see SendProcSignal for details */
 				if (pid == PostmasterPid)
-					pg_atomic_fetch_or_u32(&slot->pss_backendInterruptMask,
-										   PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_PROC_SIGNAL_BARRIER));
+					backend_id = slot->pss_backendId;
 				else
 					slot->pss_signalFlags[PROCSIG_BARRIER] = true;
 				SpinLockRelease(&slot->pss_mutex);
 				if (pid == PostmasterPid)
-					WakeProcSignalSlot(i);
+					(void) PgBackendSendInterruptById(backend_id,
+						PG_BACKEND_INTERRUPT_PROC_SIGNAL_BARRIER, 0, 0);
 				else
 					kill(pid, SIGUSR1);
 			}

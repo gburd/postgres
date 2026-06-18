@@ -53,6 +53,12 @@
 
 static PG_GLOBAL_RUNTIME bool backend_id_counter_initialized = false;
 static PG_GLOBAL_RUNTIME pg_atomic_uint64 next_backend_id;
+
+#ifndef WIN32
+static PG_GLOBAL_RUNTIME pthread_mutex_t ThreadedBackendRegistryMutex = PTHREAD_MUTEX_INITIALIZER;
+static PG_GLOBAL_RUNTIME PgBackend **ThreadedBackendRegistry = NULL;
+static PG_GLOBAL_RUNTIME Size ThreadedBackendRegistryCapacity = 0;
+#endif
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackend early_backend_fallback = {
 	.core = {
 		.mode = InitProcessing
@@ -233,6 +239,129 @@ PgBackendAssignId(void)
 	PgBackendInitializeIdCounter();
 
 	return pg_atomic_add_fetch_u64(&next_backend_id, 1);
+}
+
+#ifndef WIN32
+static void
+ThreadedBackendRegistryLock(void)
+{
+	int			rc;
+
+	rc = pthread_mutex_lock(&ThreadedBackendRegistryMutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not lock threaded backend registry: %m");
+	}
+}
+
+static void
+ThreadedBackendRegistryUnlock(void)
+{
+	int			rc;
+
+	rc = pthread_mutex_unlock(&ThreadedBackendRegistryMutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not unlock threaded backend registry: %m");
+	}
+}
+
+static void
+PgBackendEnsureThreadedRegistryCapacity(PgBackendId backend_id)
+{
+	Size		new_capacity;
+	PgBackend **new_registry;
+
+	if (backend_id < ThreadedBackendRegistryCapacity)
+		return;
+
+	new_capacity = ThreadedBackendRegistryCapacity == 0 ?
+		128 : ThreadedBackendRegistryCapacity;
+	while (backend_id >= new_capacity)
+	{
+		if (new_capacity > (Size) (PG_UINT64_MAX / 2))
+			elog(FATAL, "threaded backend registry capacity overflow");
+		new_capacity *= 2;
+	}
+
+	new_registry = realloc(ThreadedBackendRegistry,
+						   new_capacity * sizeof(PgBackend *));
+	if (new_registry == NULL)
+		elog(FATAL, "out of memory growing threaded backend registry");
+
+	MemSet(new_registry + ThreadedBackendRegistryCapacity, 0,
+		   (new_capacity - ThreadedBackendRegistryCapacity) * sizeof(PgBackend *));
+	ThreadedBackendRegistry = new_registry;
+	ThreadedBackendRegistryCapacity = new_capacity;
+}
+#endif
+
+static void
+PgBackendRegisterThreadedBackend(PgBackend *backend)
+{
+#ifndef WIN32
+	Assert(backend != NULL);
+
+	if (backend->runtime == NULL ||
+		backend->runtime->kind != PG_RUNTIME_THREAD_PER_SESSION)
+		return;
+
+	ThreadedBackendRegistryLock();
+	PgBackendEnsureThreadedRegistryCapacity(backend->id);
+	if (ThreadedBackendRegistry[backend->id] != NULL &&
+		ThreadedBackendRegistry[backend->id] != backend)
+		elog(FATAL, "threaded backend id %llu is already registered",
+			 (unsigned long long) backend->id);
+	ThreadedBackendRegistry[backend->id] = backend;
+	ThreadedBackendRegistryUnlock();
+#endif
+}
+
+void
+PgBackendUnregisterThreadedBackend(PgBackend *backend)
+{
+#ifndef WIN32
+	Assert(backend != NULL);
+
+	if (backend->runtime == NULL ||
+		backend->runtime->kind != PG_RUNTIME_THREAD_PER_SESSION)
+		return;
+
+	ThreadedBackendRegistryLock();
+	if (backend->id < ThreadedBackendRegistryCapacity &&
+		ThreadedBackendRegistry[backend->id] == backend)
+		ThreadedBackendRegistry[backend->id] = NULL;
+	ThreadedBackendRegistryUnlock();
+#endif
+}
+
+bool
+PgBackendSendInterruptById(PgBackendId backend_id,
+						   PgBackendInterruptType interrupt_type,
+						   int sender_pid, int sender_uid)
+{
+#ifndef WIN32
+	PgBackend  *backend = NULL;
+
+	ThreadedBackendRegistryLock();
+	if (backend_id < ThreadedBackendRegistryCapacity)
+		backend = ThreadedBackendRegistry[backend_id];
+
+	if (backend != NULL)
+	{
+		if (interrupt_type == PG_BACKEND_INTERRUPT_PROC_DIE)
+			PgBackendRaiseProcDieInterrupt(backend, sender_pid, sender_uid);
+		else
+			SendInterrupt(backend, interrupt_type);
+	}
+	ThreadedBackendRegistryUnlock();
+
+	return backend != NULL;
+#else
+	return false;
+#endif
 }
 
 static void
@@ -994,6 +1123,8 @@ PgBackendInitializeRuntimeObject(PgBackend *backend,
 	do { init; } while (0);
 #include "backend_runtime_backend_buckets.def"
 #undef PG_BACKEND_BUCKET
+
+	PgBackendRegisterThreadedBackend(backend);
 }
 
 void

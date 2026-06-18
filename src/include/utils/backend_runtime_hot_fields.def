@@ -163,6 +163,11 @@ PG_RUNTIME_HOT_FIELD(PgCurrentBackendInterruptMaskHotRef,
 					 void,
 					 CurrentPgBackend != NULL ?
 					 &CurrentPgBackend->interrupts.pending_mask : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentProcSignalSlotHotRef,
+					 backend,
+					 void *,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->ipc.proc_signal_slot : NULL)
 PG_RUNTIME_HOT_FIELD(PgCurrentMyDatabaseIdHotRef,
 					 session,
 					 Oid,

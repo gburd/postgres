@@ -639,6 +639,8 @@ PgBackendResetClosedState(PgBackend *backend)
 	if (backend == NULL)
 		return;
 
+	PgBackendUnregisterThreadedBackend(backend);
+
 #define PG_BACKEND_BUCKET(field, init, adopt, reset) \
 	do { reset; } while (0);
 #include "backend_runtime_backend_buckets.def"

@@ -22667,3 +22667,37 @@ Lifecycle/preflight note:
   processes have a real `PgBackend` target.
 - validation impact: rebuild and run focused backend-runtime/threaded interrupt
   validation before considering wider benchmark reruns.
+
+## Proc-Signal Slot Hot Current Probe
+
+Lifecycle/preflight note:
+
+- target: reduce threaded interrupt-poll overhead by caching the current
+  backend's existing proc-signal slot field address as a hot current field.
+- touched roots/buckets: existing PgBackend.ipc.proc_signal_slot only; no
+  ownership transfer, new root, or lifecycle transition.
+- owner source files: src/include/utils/backend_runtime_hot_fields.def,
+  src/backend/storage/ipc/procsignal.c, and this state note.
+- legacy symbols/accessors: keep PgCurrentProcSignalSlotRef() as the
+  fallback accessor; MyProcSignalSlot uses the generated hot-field accessor.
+- repeated lifecycle operations: none.  ProcSignalInit() and
+  ProcSignalClearProc() still write the same backend field, and runtime
+  enter/reset still refreshes generated hot fields through the existing path.
+- checked primitive decision: cache only the address of the per-backend
+  proc-signal slot field, not the slot contents or interrupt mask, so slot
+  registration and cleanup semantics remain unchanged.
+- validation impact: clean rebuild required because generated hot-field
+  indexes are involved, then threaded smoke and focused prepared-query
+  benchmarks against branch process/threaded and vanilla.
+
+## Threaded Backend Interrupt Registry
+
+Lifecycle/preflight note:
+
+- target: remove the threaded-only proc-signal slot poll from CHECK_FOR_INTERRUPTS() by routing converted proc-signal reasons directly into the target backend mailbox.
+- touched roots/buckets: existing PgBackend.id and PgBackend.interrupts only, plus a process-local thread-runtime registry keyed by PgBackendId; no shared-memory pointer publication.
+- owner source files: src/backend/utils/init/backend_runtime_backend.c, src/backend/utils/init/backend_runtime_teardown.c, src/backend/storage/ipc/procsignal.c, src/include/miscadmin.h, src/include/utils/backend_runtime.h, and this state note.
+- legacy symbols/accessors: keep ProcSignalBackendInterruptsPending() and ConsumeBackendInterruptsFromProcSignal() for fallback/legacy proc-signal flags; CHECK_FOR_INTERRUPTS() should use only the backend mailbox on the normal threaded path.
+- repeated lifecycle operations: register thread-runtime PgBackend objects after runtime-object initialization, unregister them before closed-state reset, and leave process-mode backend lifecycle unchanged.
+- checked primitive decision: use a process-local mutex-protected pointer table rather than storing PgBackend pointers in shared ProcSignal slots; signal delivery resolves PgBackendId to a live local backend only inside the threaded postmaster address space.
+- validation impact: clean rebuild, threaded smoke, interrupt/cancel sanity, and focused vanilla/process/threaded select1_prepared c8 profiling to confirm ProcSignalBackendInterruptsPending() leaves CHECK_FOR_INTERRUPTS().

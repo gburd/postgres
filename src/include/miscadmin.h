@@ -223,8 +223,7 @@ PgThreadedInterruptsPendingFast(void)
 	if (unlikely(backend_mask == NULL))
 		return PgCurrentBackendHasPendingInterrupts();
 
-	return pg_atomic_read_u32((pg_atomic_uint32 *) backend_mask) != 0 ||
-		ProcSignalBackendInterruptsPending();
+	return pg_atomic_read_u32((pg_atomic_uint32 *) backend_mask) != 0;
 #endif
 }
 
