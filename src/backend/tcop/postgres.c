@@ -189,6 +189,86 @@ static void log_disconnections(int code, Datum arg);
 static void enable_statement_timeout(void);
 static void disable_statement_timeout(void);
 
+static inline volatile uint32 *
+SocketBackendQueryCancelHoldoffRef(PgSession *session)
+{
+	PgBackend  *backend = session->backend;
+
+	if (likely(backend != NULL))
+		return &backend->interrupt_holdoffs.query_cancel_holdoff_count;
+
+	return PgCurrentQueryCancelHoldoffCountRef();
+}
+
+static inline PgBackendPendingInterruptState *
+ClientPendingInterruptState(PgBackend *backend)
+{
+	if (likely(backend != NULL))
+		return &backend->pending_interrupts;
+
+	return PgCurrentPendingInterruptStateRefFast();
+}
+
+static inline bool
+ClientBackendInterruptsPending(PgBackend *backend)
+{
+	if (likely(backend != NULL))
+		return pg_atomic_read_u32(&backend->interrupts.pending_mask) != 0;
+
+	return PgThreadedInterruptsPendingFast();
+}
+
+static inline bool
+ClientInterruptsPending(PgBackend *backend,
+						PgBackendPendingInterruptState *pending_state)
+{
+#ifdef WIN32
+	if (unlikely(UNBLOCKED_SIGNAL_QUEUE()))
+		pgwin32_dispatch_queued_signals();
+#endif
+	return unlikely(pending_state->interrupt_pending ||
+					ClientBackendInterruptsPending(backend));
+}
+
+static inline bool
+ClientInterruptsCanProcessProcDie(PgBackend *backend)
+{
+	if (likely(backend != NULL))
+		return backend->interrupt_holdoffs.interrupt_holdoff_count == 0 &&
+			backend->interrupt_holdoffs.crit_section_count == 0;
+
+	return InterruptHoldoffCount == 0 && CritSectionCount == 0;
+}
+
+static inline bool
+ClientReadDoingCommandRead(void)
+{
+	PgSession  *session = CurrentPgSession;
+
+	if (likely(session != NULL))
+		return session->loop_state.doing_command_read;
+
+	return DoingCommandRead;
+}
+
+static inline bool
+ClientReadCatchupInterruptPending(PgBackend *backend)
+{
+	if (likely(backend != NULL))
+		return backend->ipc.catchup_interrupt_pending;
+
+	return catchupInterruptPending;
+}
+
+static inline bool
+ClientReadNotifyInterruptPending(PgBackend *backend)
+{
+	if (likely(backend != NULL))
+		return backend->utility.notify_interrupt_pending;
+
+	return notifyInterruptPending;
+}
+
 
 /* ----------------------------------------------------------------
  *		infrastructure for valgrind debugging
@@ -355,16 +435,18 @@ static int
 SocketBackend(PgSession *session, StringInfo inBuf)
 {
 	PgSessionLoopState *state;
+	volatile uint32 *query_cancel_holdoff_count;
 	int			qtype;
 	int			maxmsglen;
 
 	Assert(session != NULL);
 	state = &session->loop_state;
+	query_cancel_holdoff_count = SocketBackendQueryCancelHoldoffRef(session);
 
 	/*
 	 * Get message type code from the frontend.
 	 */
-	HOLD_CANCEL_INTERRUPTS();
+	(*query_cancel_holdoff_count)++;
 	qtype = pq_startmsgread_getbyte();
 
 	if (qtype == EOF)			/* frontend disconnected */
@@ -470,7 +552,8 @@ SocketBackend(PgSession *session, StringInfo inBuf)
 	 */
 	if (pq_getmessage(inBuf, maxmsglen))
 		return EOF;				/* suitable message already logged */
-	RESUME_CANCEL_INTERRUPTS();
+	Assert(*query_cancel_holdoff_count > 0);
+	(*query_cancel_holdoff_count)--;
 
 	return qtype;
 }
@@ -508,22 +591,28 @@ ReadCommand(PgSession *session, StringInfo inBuf)
 void
 ProcessClientReadInterrupt(bool blocked)
 {
+	PgBackend  *backend;
+	PgBackendPendingInterruptState *pending_state;
 	int			save_errno = errno;
 
-	if (DoingCommandRead)
+	backend = CurrentPgBackend;
+	pending_state = ClientPendingInterruptState(backend);
+
+	if (ClientReadDoingCommandRead())
 	{
 		/* Check for general interrupts that arrived before/while reading */
-		CHECK_FOR_INTERRUPTS();
+		if (ClientInterruptsPending(backend, pending_state))
+			ProcessInterrupts();
 
 		/* Process sinval catchup interrupts, if any */
-		if (catchupInterruptPending)
+		if (ClientReadCatchupInterruptPending(backend))
 			ProcessCatchupInterrupt();
 
 		/* Process notify interrupts, if any */
-		if (notifyInterruptPending)
+		if (ClientReadNotifyInterruptPending(backend))
 			ProcessNotifyInterrupt(true);
 	}
-	else if (ProcDiePending)
+	else if (pending_state->proc_die_pending)
 	{
 		/*
 		 * We're dying.  If there is no data available to read, then it's safe
@@ -534,7 +623,10 @@ ProcessClientReadInterrupt(bool blocked)
 		 * cleared it while reading.
 		 */
 		if (blocked)
-			CHECK_FOR_INTERRUPTS();
+		{
+			if (ClientInterruptsPending(backend, pending_state))
+				ProcessInterrupts();
+		}
 		else
 			SetLatch(MyLatch);
 	}
@@ -554,9 +646,14 @@ ProcessClientReadInterrupt(bool blocked)
 void
 ProcessClientWriteInterrupt(bool blocked)
 {
+	PgBackend  *backend;
+	PgBackendPendingInterruptState *pending_state;
 	int			save_errno = errno;
 
-	if (ProcDiePending)
+	backend = CurrentPgBackend;
+	pending_state = ClientPendingInterruptState(backend);
+
+	if (pending_state->proc_die_pending)
 	{
 		/*
 		 * We're dying.  If it's not possible to write, then we should handle
@@ -573,7 +670,7 @@ ProcessClientWriteInterrupt(bool blocked)
 			 * Don't mess with whereToSendOutput if ProcessInterrupts wouldn't
 			 * service ProcDiePending.
 			 */
-			if (InterruptHoldoffCount == 0 && CritSectionCount == 0)
+			if (ClientInterruptsCanProcessProcDie(backend))
 			{
 				/*
 				 * We don't want to send the client the error message, as a)
@@ -584,7 +681,8 @@ ProcessClientWriteInterrupt(bool blocked)
 				if (whereToSendOutput == DestRemote)
 					whereToSendOutput = DestNone;
 
-				CHECK_FOR_INTERRUPTS();
+				if (ClientInterruptsPending(backend, pending_state))
+					ProcessInterrupts();
 			}
 		}
 		else

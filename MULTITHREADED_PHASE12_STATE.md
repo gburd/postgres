@@ -1,3 +1,27 @@
+## Protocol Loop Holdoff Probe
+
+Lifecycle/preflight note:
+
+- target: reduce branch-wide tiny-query protocol overhead by avoiding repeated
+  runtime-current indirection around frontend message reads and no-op client
+  read/write interrupt checks.
+- touched roots/buckets: no root ownership changes; cache only the current
+  session backend's existing `interrupt_holdoffs.query_cancel_holdoff_count`
+  field inside `SocketBackend()`.
+- owner source files: `src/backend/tcop/postgres.c` and this state note.
+- legacy symbols/accessors: keep `PgCurrentQueryCancelHoldoffCountRef()` and
+  the `QueryCancelHoldoffCount` compatibility lvalue as fallback surfaces;
+  keep the existing interrupt/holdoff/catchup/notify compatibility lvalues for
+  early/null current states.
+- repeated lifecycle operations: none.  The pointer is scoped to one
+  `SocketBackend()` call and is not stored across session/backend adoption.
+- checked primitive decision: cache the field address and preserve the
+  historical EOF/error path, which does not resume cancel interrupts because
+  the backend is disconnecting.
+- validation impact: rebuild, direct initdb, threaded smoke, then rerun the
+  focused vanilla-pgbench `select1_prepared` comparison before deciding whether
+  to keep the probe.
+
 ## ProcPort Hot Current
 
 Lifecycle/preflight note:
