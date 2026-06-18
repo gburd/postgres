@@ -41,6 +41,12 @@ SELECT test_backend_pooled_scheduler_queue_state();
  t
 (1 row)
 
+SELECT test_backend_pooled_scheduler_runs_backend();
+ test_backend_pooled_scheduler_runs_backend 
+--------------------------------------------
+ t
+(1 row)
+
 SELECT test_backend_pooled_wait_requeues_backend();
  test_backend_pooled_wait_requeues_backend 
 -------------------------------------------

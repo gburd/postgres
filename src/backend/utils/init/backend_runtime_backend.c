@@ -1006,6 +1006,98 @@ PgRuntimeSchedulerCounts(PgRuntime *runtime, uint32 *runnable_count,
 	SpinLockRelease(&scheduler->lock);
 }
 
+static PgStepResult
+PgRuntimeSchedulerSessionStep(PgBackend *backend, PgStepBudget budget,
+							  void *callback_arg)
+{
+	Assert(callback_arg == NULL);
+	Assert(backend != NULL);
+	Assert(backend->session != NULL);
+
+	return PgSessionStep(backend->session, budget);
+}
+
+bool
+PgRuntimeSchedulerRunNextWithCallback(PgRuntime *runtime, PgCarrier *carrier,
+									  PgStepBudget budget,
+									  PgSchedulerStepCallback callback,
+									  void *callback_arg,
+									  PgStepResult *step_result)
+{
+	volatile bool attached = false;
+	PgBackend  *volatile backend = NULL;
+	PgStepResult result = PG_STEP_CONTINUE;
+
+	if (step_result != NULL)
+		*step_result = PG_STEP_CONTINUE;
+
+	if (!PgRuntimeIsPooledScheduler(runtime) ||
+		carrier == NULL ||
+		carrier->runtime != runtime ||
+		callback == NULL)
+		return false;
+
+	backend = PgRuntimeSchedulerPopRunnable(runtime);
+	if (backend == NULL)
+		return false;
+
+	PG_TRY();
+	{
+		PgSchedulerBackendState scheduler_state;
+
+		PgCarrierAttachBackend(carrier, backend);
+		attached = true;
+		PgBackendClearPublishedWaitCompletion(backend);
+
+		result = callback(backend, budget, callback_arg);
+
+		PgCarrierDetachBackend(carrier);
+		attached = false;
+
+		switch (result)
+		{
+			case PG_STEP_CONTINUE:
+			case PG_STEP_ERROR_RECOVERED:
+				(void) PgBackendSchedulerEnqueueRunnable(backend);
+				break;
+
+			case PG_STEP_WAITING:
+				scheduler_state = (PgSchedulerBackendState)
+					pg_atomic_read_u32(&backend->scheduler.state);
+				if (scheduler_state != PG_SCHEDULER_BACKEND_WAITING)
+					elog(ERROR,
+						 "scheduler step reported waiting without published wait");
+				break;
+		}
+	}
+	PG_CATCH();
+	{
+		if (attached)
+			PgCarrierDetachBackend(carrier);
+		if (backend != NULL)
+		{
+			PgBackendClearPublishedWaitCompletion(backend);
+			PgBackendSchedulerMarkDetached(backend);
+		}
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (step_result != NULL)
+		*step_result = result;
+
+	return true;
+}
+
+bool
+PgRuntimeSchedulerRunNext(PgRuntime *runtime, PgCarrier *carrier,
+						  PgStepBudget budget, PgStepResult *step_result)
+{
+	return PgRuntimeSchedulerRunNextWithCallback(runtime, carrier, budget,
+												PgRuntimeSchedulerSessionStep,
+												NULL, step_result);
+}
+
 static void
 PgBackendSchedulerRequeueWaitCompletion(PgWaitCompletion *completion,
 										void *arg)

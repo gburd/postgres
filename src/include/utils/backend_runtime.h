@@ -177,6 +177,10 @@ typedef enum PgStepResult
 	PG_STEP_ERROR_RECOVERED
 } PgStepResult;
 
+typedef PgStepResult (*PgSchedulerStepCallback) (PgBackend *backend,
+												 PgStepBudget budget,
+												 void *callback_arg);
+
 typedef enum PgSchedulerBackendState
 {
 	PG_SCHEDULER_BACKEND_DETACHED = 0,
@@ -3342,6 +3346,15 @@ extern void PgBackendSchedulerMarkRunning(PgBackend *backend);
 extern bool PgBackendSchedulerMarkWaiting(PgBackend *backend);
 extern bool PgBackendSchedulerEnqueueRunnable(PgBackend *backend);
 extern PgBackend *PgRuntimeSchedulerPopRunnable(PgRuntime *runtime);
+extern bool PgRuntimeSchedulerRunNext(PgRuntime *runtime, PgCarrier *carrier,
+									  PgStepBudget budget,
+									  PgStepResult *step_result);
+extern bool PgRuntimeSchedulerRunNextWithCallback(PgRuntime *runtime,
+												  PgCarrier *carrier,
+												  PgStepBudget budget,
+												  PgSchedulerStepCallback callback,
+												  void *callback_arg,
+												  PgStepResult *step_result);
 extern void PgRuntimeSchedulerSetWakeLatch(PgRuntime *runtime,
 										   struct Latch *wake_latch);
 extern uint64 PgRuntimeSchedulerWakeGeneration(PgRuntime *runtime);

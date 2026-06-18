@@ -31,6 +31,10 @@ CREATE FUNCTION test_backend_pooled_scheduler_queue_state()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;
 
+CREATE FUNCTION test_backend_pooled_scheduler_runs_backend()
+	RETURNS pg_catalog.bool
+	AS 'MODULE_PATHNAME' LANGUAGE C;
+
 CREATE FUNCTION test_backend_pooled_wait_requeues_backend()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;

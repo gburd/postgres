@@ -7,6 +7,7 @@ SELECT test_backend_thread_create_join();
 SELECT test_backend_thread_exit_join();
 SELECT test_backend_thread_runtime_state();
 SELECT test_backend_pooled_scheduler_queue_state();
+SELECT test_backend_pooled_scheduler_runs_backend();
 SELECT test_backend_pooled_wait_requeues_backend();
 SELECT test_backend_pooled_wait_parks_backend();
 SELECT test_carrier_threaded_guc_lock_depth_is_carrier_local();
