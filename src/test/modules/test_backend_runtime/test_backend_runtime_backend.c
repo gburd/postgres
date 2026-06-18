@@ -1199,6 +1199,7 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	INSTR_TIME_SET_CURRENT(pgstat_pending->func_total_time);
 
 	wait_state->spec.kind = PG_WAIT_KIND_EVENT_SET;
+	wait_state->spec.socket = PGINVALID_SOCKET;
 	wait_state->spec.wait_event_info = 0x01020304;
 	wait_state->spec.wake_events = 33;
 	wait_state->spec.timeout = 34;
@@ -1534,6 +1535,7 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && wait_state->spec.kind == PG_WAIT_KIND_NONE;
 	ok = ok && wait_state->spec.wait_event_info == 0;
 	ok = ok && wait_state->spec.wake_events == 0;
+	ok = ok && wait_state->spec.socket == 0;
 	ok = ok && wait_state->spec.timeout == 0;
 	ok = ok && wait_state->local_wait_event_info == 0;
 	ok = ok && *PgCurrentMyWaitEventInfoRef() ==

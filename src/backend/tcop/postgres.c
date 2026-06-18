@@ -483,6 +483,8 @@ SocketBackend(PgSession *session, StringInfo inBuf)
 			wait_spec.wait_event_info = WAIT_EVENT_CLIENT_READ;
 			wait_spec.wake_events =
 				WL_SOCKET_READABLE | WL_LATCH_SET | WL_POSTMASTER_DEATH;
+			wait_spec.socket = MyProcPort != NULL ? MyProcPort->sock :
+				PGINVALID_SOCKET;
 			wait_spec.timeout = -1;
 
 			if (PgBackendPublishWaitCompletion(CurrentPgBackend, &wait_spec))

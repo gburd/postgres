@@ -401,6 +401,7 @@ test_backend_pooled_wait_requeues_backend(PG_FUNCTION_ARGS)
 		wait_spec.kind = PG_WAIT_KIND_EVENT_SET;
 		wait_spec.wait_event_info = WAIT_EVENT_CLIENT_READ;
 		wait_spec.wake_events = WL_LATCH_SET;
+		wait_spec.socket = PGINVALID_SOCKET;
 		wait_spec.timeout = -1;
 
 		callback_state.runtime = &pooled_runtime;
@@ -508,6 +509,7 @@ test_backend_pooled_wait_parks_backend(PG_FUNCTION_ARGS)
 		wait_spec.kind = PG_WAIT_KIND_EVENT_SET;
 		wait_spec.wait_event_info = WAIT_EVENT_CLIENT_READ;
 		wait_spec.wake_events = WL_SOCKET_READABLE;
+		wait_spec.socket = 42;
 		wait_spec.timeout = -1;
 
 		CHECK_POOLED_PARK(PgBackendPublishWaitCompletion(&state.backend,
@@ -525,6 +527,7 @@ test_backend_pooled_wait_parks_backend(PG_FUNCTION_ARGS)
 		CHECK_POOLED_PARK(completion->execution == &state.execution);
 		CHECK_POOLED_PARK(completion->spec.wait_event_info ==
 						  WAIT_EVENT_CLIENT_READ);
+		CHECK_POOLED_PARK(completion->spec.socket == 42);
 		CHECK_POOLED_PARK(completion->requeue_arg == &pooled_runtime);
 		CHECK_POOLED_PARK(runnable_count == 0);
 		CHECK_POOLED_PARK(waiting_count == 1);
