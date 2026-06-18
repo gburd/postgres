@@ -827,6 +827,48 @@ test_backend_pooled_wait_parks_backend(PG_FUNCTION_ARGS)
 		CHECK_POOLED_PARK(pg_atomic_read_u32(&state.backend.scheduler.state) ==
 						  PG_SCHEDULER_BACKEND_RUNNING);
 
+		ResetLatch(&scheduler_latch);
+		CHECK_POOLED_PARK(PgBackendPublishWaitCompletion(&state.backend,
+														 &wait_spec));
+		wait_published = true;
+		PgCarrierDetachBackend(&state.carrier);
+		PgRuntimeSchedulerCounts(&pooled_runtime, &runnable_count,
+								 &waiting_count);
+		CHECK_POOLED_PARK(runnable_count == 0);
+		CHECK_POOLED_PARK(waiting_count == 1);
+		CHECK_POOLED_PARK(pg_atomic_read_u32(&completion->state) ==
+						  PG_WAIT_COMPLETION_WAITING);
+
+		SendInterrupt(&state.backend, PG_BACKEND_INTERRUPT_QUERY_CANCEL);
+		PgRuntimeSchedulerCounts(&pooled_runtime, &runnable_count,
+								 &waiting_count);
+		CHECK_POOLED_PARK(pg_atomic_read_u32(&completion->state) ==
+						  PG_WAIT_COMPLETION_READY);
+		CHECK_POOLED_PARK(pg_atomic_read_u32(&completion->ready_events) == 0);
+		CHECK_POOLED_PARK(pg_atomic_read_u32(&completion->interrupt_events) ==
+						  PG_WAIT_COMPLETION_INTERRUPT_CANCEL);
+		CHECK_POOLED_PARK(pg_atomic_read_u32(&state.backend.interrupts.pending_mask) ==
+						  PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_QUERY_CANCEL));
+		CHECK_POOLED_PARK(runnable_count == 1);
+		CHECK_POOLED_PARK(waiting_count == 0);
+		CHECK_POOLED_PARK(scheduler_latch.is_set);
+		CHECK_POOLED_PARK(PgRuntimeSchedulerWakeGeneration(&pooled_runtime) == 2);
+
+		popped = PgRuntimeSchedulerPopRunnable(&pooled_runtime);
+		CHECK_POOLED_PARK(popped == &state.backend);
+		PgCarrierAttachBackend(&state.carrier, &state.backend);
+		PgBackendClearPublishedWaitCompletion(&state.backend);
+		wait_published = false;
+		(void) PgBackendConsumeInterrupts(&state.backend);
+		PgRuntimeSchedulerCounts(&pooled_runtime, &runnable_count,
+								 &waiting_count);
+		CHECK_POOLED_PARK(runnable_count == 0);
+		CHECK_POOLED_PARK(waiting_count == 0);
+		CHECK_POOLED_PARK(pg_atomic_read_u32(&completion->state) ==
+						  PG_WAIT_COMPLETION_INACTIVE);
+		CHECK_POOLED_PARK(pg_atomic_read_u32(&state.backend.scheduler.state) ==
+						  PG_SCHEDULER_BACKEND_RUNNING);
+
 		PgCarrierDetachBackend(&state.carrier);
 		PgSetCurrentRuntime(saved_runtime);
 		PgSetCurrentCarrier(saved_carrier);
