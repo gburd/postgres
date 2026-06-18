@@ -12,6 +12,8 @@
  */
 #include "test_backend_runtime.h"
 
+#include "libpq/protocol.h"
+
 PG_FUNCTION_INFO_V1(test_connection_socket_io_is_connection_local);
 Datum
 test_connection_socket_io_is_connection_local(PG_FUNCTION_ARGS)
@@ -85,6 +87,51 @@ test_connection_socket_io_is_connection_local(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "connection socket I/O state was not connection-local");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_connection_startmsgread_getbyte_if_available);
+Datum
+test_connection_startmsgread_getbyte_if_available(PG_FUNCTION_ARGS)
+{
+	PgConnection *saved_connection;
+	PgConnection connection;
+	unsigned char qtype = '\0';
+	int			result;
+	bool		ok = true;
+
+	saved_connection = CurrentPgConnection;
+	MemSet(&connection, 0, sizeof(connection));
+	connection.socket_io.recv_buffer[0] = PqMsg_Query;
+	connection.socket_io.recv_pointer = 0;
+	connection.socket_io.recv_length = 1;
+
+	PG_TRY();
+	{
+		PgSetCurrentConnection(&connection);
+
+		result = pq_startmsgread_getbyte_if_available(&qtype);
+		ok = ok && result == 1;
+		ok = ok && qtype == PqMsg_Query;
+		ok = ok && connection.socket_io.recv_pointer == 1;
+		ok = ok && connection.socket_io.recv_length == 1;
+		ok = ok && connection.socket_io.comm_reading_msg;
+
+		pq_endmsgread();
+		ok = ok && !connection.socket_io.comm_reading_msg;
+
+		PgSetCurrentConnection(saved_connection);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentConnection(saved_connection);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "nonblocking message start did not preserve socket state");
 
 	PG_RETURN_BOOL(true);
 }

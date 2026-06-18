@@ -1285,6 +1285,32 @@ pq_startmsgread_getbyte(void)
 	return pq_getbyte_from(io);
 }
 
+/*
+ * Begin reading a frontend message only if its type byte is already
+ * available.  Returns 1 with the byte stored in *c, 0 if a read would block,
+ * or EOF on trouble.  On the 0/EOF paths, no message read remains active.
+ */
+int
+pq_startmsgread_getbyte_if_available(unsigned char *c)
+{
+	PgConnectionSocketIOState *io = PqSocketIO();
+	int			result;
+
+	Assert(c != NULL);
+
+	if (io->comm_reading_msg)
+		ereport(FATAL,
+				(errcode(ERRCODE_PROTOCOL_VIOLATION),
+				 errmsg("terminating connection because protocol synchronization was lost")));
+
+	io->comm_reading_msg = true;
+	result = pq_getbyte_if_available(c);
+	if (result != 1)
+		io->comm_reading_msg = false;
+
+	return result;
+}
+
 
 /* --------------------------------
  *		pq_endmsgread	- finish reading message.

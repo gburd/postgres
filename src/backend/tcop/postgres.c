@@ -87,6 +87,7 @@
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
 #include "utils/varlena.h"
+#include "utils/wait_event.h"
 
 /*
  * Log_disconnections, log_statement, and PostAuthDelay live in
@@ -107,6 +108,8 @@
 #define ERRDETAIL_SIGNAL_SENDER(pid, uid) \
 	((pid) == 0 ? 0 : \
 	 errdetail_log("Signal sent by PID %d, UID %d.", (int) (pid), (int) (uid)))
+
+#define READ_COMMAND_WOULD_BLOCK	(-2)
 
 /* ----------------
  *		private typedefs etc
@@ -164,6 +167,7 @@ typedef struct BindParamCbData
  */
 static int	InteractiveBackend(StringInfo inBuf);
 static int	interactive_getc(void);
+static bool PgSessionCanParkClientRead(PgSession *session);
 static int	SocketBackend(PgSession *session, StringInfo inBuf);
 static int	ReadCommand(PgSession *session, StringInfo inBuf);
 static void forbidden_in_wal_sender(char firstchar);
@@ -267,6 +271,16 @@ ClientReadNotifyInterruptPending(PgBackend *backend)
 		return backend->utility.notify_interrupt_pending;
 
 	return notifyInterruptPending;
+}
+
+static bool
+PgSessionCanParkClientRead(PgSession *session)
+{
+	PgBackend  *backend = CurrentPgBackend;
+
+	return session != NULL &&
+		backend != NULL &&
+		PgRuntimeIsPooledScheduler(backend->runtime);
 }
 
 
@@ -447,7 +461,43 @@ SocketBackend(PgSession *session, StringInfo inBuf)
 	 * Get message type code from the frontend.
 	 */
 	(*query_cancel_holdoff_count)++;
-	qtype = pq_startmsgread_getbyte();
+	/*
+	 * A pooled carrier may park only before protocol message consumption has
+	 * begun.  Once the type byte is consumed, finish the whole message on the
+	 * same carrier so error recovery never sees a half-read message.
+	 */
+	if (PgSessionCanParkClientRead(session))
+	{
+		unsigned char qtype_byte;
+		int			read_result;
+
+		read_result = pq_startmsgread_getbyte_if_available(&qtype_byte);
+		if (read_result == 0)
+		{
+			PgWaitSpec	wait_spec;
+
+			Assert(*query_cancel_holdoff_count > 0);
+			(*query_cancel_holdoff_count)--;
+
+			wait_spec.kind = PG_WAIT_KIND_EVENT_SET;
+			wait_spec.wait_event_info = WAIT_EVENT_CLIENT_READ;
+			wait_spec.wake_events =
+				WL_SOCKET_READABLE | WL_LATCH_SET | WL_POSTMASTER_DEATH;
+			wait_spec.timeout = -1;
+
+			if (PgBackendPublishWaitCompletion(CurrentPgBackend, &wait_spec))
+				return READ_COMMAND_WOULD_BLOCK;
+
+			(*query_cancel_holdoff_count)++;
+			qtype = pq_startmsgread_getbyte();
+		}
+		else if (read_result == EOF)
+			qtype = EOF;
+		else
+			qtype = qtype_byte;
+	}
+	else
+		qtype = pq_startmsgread_getbyte();
 
 	if (qtype == EOF)			/* frontend disconnected */
 	{
@@ -4678,6 +4728,8 @@ PgSessionStepUnprotected(PgSession *session, PgStepBudget budget)
 	 * (3) read a command (loop blocks here)
 	 */
 	firstchar = ReadCommand(session, &input_message);
+	if (firstchar == READ_COMMAND_WOULD_BLOCK)
+		return PG_STEP_WAITING;
 
 	/*
 	 * (4) turn off the idle-in-transaction and idle-session timeouts if

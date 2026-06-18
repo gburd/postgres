@@ -82,6 +82,7 @@ extern Port *pq_init(ClientSocket *client_sock);
 extern int	pq_getbytes(void *b, size_t len);
 extern void pq_startmsgread(void);
 extern int	pq_startmsgread_getbyte(void);
+extern int	pq_startmsgread_getbyte_if_available(unsigned char *c);
 extern void pq_endmsgread(void);
 extern bool pq_is_reading_msg(void);
 extern int	pq_getmessage(StringInfo s, int maxlen);

@@ -139,6 +139,7 @@ SELECT test_execution_async_state_is_execution_local();
 SELECT test_execution_misc_scratch_state_is_execution_local();
 SELECT test_execution_resource_owners_are_execution_local();
 SELECT test_connection_socket_io_is_connection_local();
+SELECT test_connection_startmsgread_getbyte_if_available();
 SELECT test_connection_protocol_state_is_connection_local();
 SELECT test_connection_reset_closed_state();
 SELECT test_connection_warning_state_is_connection_local();
