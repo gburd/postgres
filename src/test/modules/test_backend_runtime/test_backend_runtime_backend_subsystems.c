@@ -1008,6 +1008,158 @@ test_backend_wait_state_is_backend_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+typedef struct TestWaitCompletionContext
+{
+	PgBackend  *backend;
+	PgSession  *session;
+	PgExecution *execution;
+	bool		saw_published_wait;
+	bool		saw_cancel_interrupt;
+	bool		saw_termination_interrupt;
+	bool		saw_ready_wait;
+} TestWaitCompletionContext;
+
+static int
+test_wait_completion_callback(void *callback_arg)
+{
+	TestWaitCompletionContext *context;
+	PgWaitCompletion *completion;
+	uint32		interrupt_events;
+
+	context = (TestWaitCompletionContext *) callback_arg;
+	completion = PgBackendCurrentWaitCompletion(context->backend);
+	interrupt_events = pg_atomic_read_u32(&completion->interrupt_events);
+
+	context->saw_published_wait =
+		completion != NULL &&
+		completion->backend == context->backend &&
+		completion->session == context->session &&
+		completion->execution == context->execution &&
+		completion->spec.kind == PG_WAIT_KIND_EVENT_SET &&
+		completion->spec.wait_event_info == 0x0A0B0C0D &&
+		completion->spec.wake_events == (WL_LATCH_SET | WL_TIMEOUT) &&
+		completion->spec.timeout == 42 &&
+		context->backend->wait_state.spec.kind == PG_WAIT_KIND_EVENT_SET &&
+		pg_atomic_read_u32(&context->backend->wait_state.waiting) == 1 &&
+		pg_atomic_read_u32(&completion->state) == PG_WAIT_COMPLETION_WAITING &&
+		pg_atomic_read_u32(&completion->ready_events) == 0 &&
+		(interrupt_events & PG_WAIT_COMPLETION_INTERRUPT_CANCEL) != 0 &&
+		(interrupt_events & PG_WAIT_COMPLETION_INTERRUPT_TERMINATE) == 0;
+
+	SendInterrupt(context->backend, PG_BACKEND_INTERRUPT_QUERY_CANCEL);
+	SendInterrupt(context->backend, PG_BACKEND_INTERRUPT_PROC_DIE);
+	interrupt_events = pg_atomic_read_u32(&completion->interrupt_events);
+	context->saw_cancel_interrupt =
+		(interrupt_events & PG_WAIT_COMPLETION_INTERRUPT_CANCEL) != 0;
+	context->saw_termination_interrupt =
+		(interrupt_events & PG_WAIT_COMPLETION_INTERRUPT_TERMINATE) != 0;
+
+	context->saw_ready_wait =
+		PgBackendWakeWaitCompletion(context->backend, WL_LATCH_SET) &&
+		pg_atomic_read_u32(&completion->state) == PG_WAIT_COMPLETION_READY &&
+		(pg_atomic_read_u32(&completion->ready_events) & WL_LATCH_SET) != 0;
+
+	return 42;
+}
+
+PG_FUNCTION_INFO_V1(test_backend_wait_completion_publication);
+Datum
+test_backend_wait_completion_publication(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgSession  *saved_session;
+	PgExecution *saved_execution;
+	PgBackend	fake_backend;
+	PgSession	fake_session;
+	PgExecution fake_execution;
+	PgWaitCompletion *completion;
+	PgWaitSpec	wait_spec;
+	TestWaitCompletionContext context;
+	bool		saved_publication;
+	bool		ok = true;
+	int			result;
+
+	saved_backend = CurrentPgBackend;
+	saved_session = CurrentPgSession;
+	saved_execution = CurrentPgExecution;
+	saved_publication = PgSetWaitCompletionPublication(true);
+
+	MemSet(&fake_backend, 0, sizeof(fake_backend));
+	MemSet(&fake_session, 0, sizeof(fake_session));
+	MemSet(&fake_execution, 0, sizeof(fake_execution));
+	pg_atomic_init_u32(&fake_backend.interrupts.pending_mask, 0);
+	pg_atomic_write_u32(&fake_backend.interrupts.pending_mask,
+						PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_QUERY_CANCEL));
+	pg_atomic_init_u32(&fake_backend.wait_state.waiting, 0);
+	pg_atomic_init_u32(&fake_backend.wait_state.completion.state,
+					   PG_WAIT_COMPLETION_INACTIVE);
+	pg_atomic_init_u32(&fake_backend.wait_state.completion.ready_events, 0);
+	pg_atomic_init_u32(&fake_backend.wait_state.completion.interrupt_events, 0);
+	fake_backend.wait_state.wait_event_info_ptr =
+		&fake_backend.wait_state.local_wait_event_info;
+
+	wait_spec.kind = PG_WAIT_KIND_EVENT_SET;
+	wait_spec.wait_event_info = 0x0A0B0C0D;
+	wait_spec.wake_events = WL_LATCH_SET | WL_TIMEOUT;
+	wait_spec.timeout = 42;
+
+	MemSet(&context, 0, sizeof(context));
+	context.backend = &fake_backend;
+	context.session = &fake_session;
+	context.execution = &fake_execution;
+
+	PG_TRY();
+	{
+		PgSetCurrentBackend(&fake_backend);
+		PgSetCurrentSession(&fake_session);
+		PgSetCurrentExecution(&fake_execution);
+
+		result = PgSuspend(&wait_spec, test_wait_completion_callback,
+						   &context);
+		completion = PgBackendCurrentWaitCompletion(&fake_backend);
+
+		ok = ok && result == 42;
+		ok = ok && context.saw_published_wait;
+		ok = ok && context.saw_cancel_interrupt;
+		ok = ok && context.saw_termination_interrupt;
+		ok = ok && context.saw_ready_wait;
+		ok = ok && completion != NULL;
+		ok = ok && pg_atomic_read_u32(&fake_backend.wait_state.waiting) == 0;
+		ok = ok && fake_backend.wait_state.spec.kind == PG_WAIT_KIND_NONE;
+		ok = ok && fake_backend.wait_state.spec.wait_event_info == 0;
+		ok = ok && fake_backend.wait_state.spec.wake_events == 0;
+		ok = ok && fake_backend.wait_state.spec.timeout == 0;
+		ok = ok && completion->backend == NULL;
+		ok = ok && completion->session == NULL;
+		ok = ok && completion->execution == NULL;
+		ok = ok && completion->spec.kind == PG_WAIT_KIND_NONE;
+		ok = ok && pg_atomic_read_u32(&completion->state) ==
+			PG_WAIT_COMPLETION_INACTIVE;
+		ok = ok && pg_atomic_read_u32(&completion->ready_events) == 0;
+		ok = ok && pg_atomic_read_u32(&completion->interrupt_events) == 0;
+		ok = ok && !PgBackendWakeWaitCompletion(&fake_backend, WL_LATCH_SET);
+
+		PgSetCurrentBackend(saved_backend);
+		PgSetCurrentSession(saved_session);
+		PgSetCurrentExecution(saved_execution);
+		PgSetWaitCompletionPublication(saved_publication);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentBackend(saved_backend);
+		PgSetCurrentSession(saved_session);
+		PgSetCurrentExecution(saved_execution);
+		PgSetWaitCompletionPublication(saved_publication);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "backend wait completion publication failed");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_backend_transaction_state_is_backend_local);
 Datum
 test_backend_transaction_state_is_backend_local(PG_FUNCTION_ARGS)

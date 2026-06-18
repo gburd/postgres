@@ -86,6 +86,29 @@ Known non-goals before Phase 13:
    story. At that point, a larger refactor can be judged against real Phase 13
    mechanics rather than as an abstract cleanup.
 
+## Current Implementation Status
+
+The first wait-boundary slice is implemented:
+
+- `PgWaitCompletion` records live beside `PgBackendWaitState`.
+- `PgSuspend()` can publish the current backend/session/execution owner, wait
+  kind, wait event info, wake mask, timeout, readiness state, and cancel/die
+  interrupt flags while preserving the blocking callback fallback.
+- `PgBackendWakeWaitCompletion()` records wait readiness and wakes the owning
+  backend latch unless a future scheduler installs a requeue hook.
+- `SendInterrupt()` marks published wait completions for query-cancel and
+  proc-die delivery without changing the logical interrupt mailbox semantics.
+- `WaitEventSetWait()` is the first representative wait-family entry point
+  because `WaitLatch()`, `WaitLatchOrSocket()`, and frontend socket waits
+  already flow through it.
+- Focused backend-runtime coverage proves publication, existing-pending cancel
+  seeding, later termination marking, readiness marking, and cleanup.
+
+The next Phase 13 slices should turn this into normal scheduler-visible wait
+ownership rather than a test-enabled publication path, then add real blocked
+client coverage for frontend input/output and latch waits before moving on to
+condition variables and lock waits.
+
 ## Validation Gate
 
 After each wait-family conversion:

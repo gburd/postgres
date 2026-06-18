@@ -94,7 +94,16 @@ SendInterrupt(PgBackend *backend, PgBackendInterruptType interrupt_type)
 	old_mask = pg_atomic_fetch_or_u32(&backend->interrupts.pending_mask,
 									  interrupt_mask);
 	if ((old_mask & interrupt_mask) == 0)
+	{
+		if (interrupt_type == PG_BACKEND_INTERRUPT_QUERY_CANCEL)
+			PgBackendMarkWaitCompletionInterrupt(backend,
+												 PG_WAIT_COMPLETION_INTERRUPT_CANCEL);
+		else if (interrupt_type == PG_BACKEND_INTERRUPT_PROC_DIE)
+			PgBackendMarkWaitCompletionInterrupt(backend,
+												 PG_WAIT_COMPLETION_INTERRUPT_TERMINATE);
+
 		PgBackendWakeForInterrupt(backend);
+	}
 }
 
 void

@@ -64,6 +64,7 @@ typedef struct PgRuntime PgRuntime;
 typedef struct PgCarrier PgCarrier;
 typedef struct PgBackend PgBackend;
 typedef struct PgBackendStatus PgBackendStatus;
+typedef struct PgWaitCompletion PgWaitCompletion;
 typedef struct BackgroundWorker BackgroundWorker;
 typedef struct IncrementalBackupInfo IncrementalBackupInfo;
 typedef struct LagTracker LagTracker;
@@ -233,9 +234,47 @@ typedef struct PgWaitSpec
 	long		timeout;
 } PgWaitSpec;
 
+/*
+ * Phase 13 wait-completion record.
+ *
+ * Logical events still flow through backend interrupts.  Wait readiness is
+ * recorded here and wakes the owning backend's latch in the thread-per-session
+ * fallback; a later pooled scheduler can install a requeue hook instead.
+ */
+typedef enum PgWaitCompletionState
+{
+	PG_WAIT_COMPLETION_INACTIVE = 0,
+	PG_WAIT_COMPLETION_WAITING,
+	PG_WAIT_COMPLETION_READY,
+	PG_WAIT_COMPLETION_CANCELLED
+} PgWaitCompletionState;
+
+typedef enum PgWaitCompletionInterrupt
+{
+	PG_WAIT_COMPLETION_INTERRUPT_CANCEL = (1 << 0),
+	PG_WAIT_COMPLETION_INTERRUPT_TERMINATE = (1 << 1)
+} PgWaitCompletionInterrupt;
+
+typedef void (*PgWaitCompletionRequeueHook) (PgWaitCompletion *completion,
+											 void *arg);
+
+struct PgWaitCompletion
+{
+	PgWaitSpec	spec;
+	PgBackend  *backend;
+	PgSession  *session;
+	PgExecution *execution;
+	pg_atomic_uint32 state;
+	pg_atomic_uint32 ready_events;
+	pg_atomic_uint32 interrupt_events;
+	PgWaitCompletionRequeueHook requeue;
+	void	   *requeue_arg;
+};
+
 typedef struct PgBackendWaitState
 {
 	PgWaitSpec	spec;
+	PgWaitCompletion completion;
 	uint32		local_wait_event_info;
 	uint32	   *wait_event_info_ptr;
 	pg_atomic_uint32 waiting;
@@ -3305,6 +3344,12 @@ extern void PgBackendConsumeProcDieSender(PgBackend *backend, int *sender_pid,
 										  int *sender_uid);
 extern bool PgCurrentBackendHasPendingInterrupts(void);
 extern void PgCurrentBackendApplyInterrupts(void);
+extern bool PgSetWaitCompletionPublication(bool enabled);
+extern PgWaitCompletion *PgBackendCurrentWaitCompletion(PgBackend *backend);
+extern void PgBackendMarkWaitCompletionInterrupt(PgBackend *backend,
+												 PgWaitCompletionInterrupt interrupt);
+extern bool PgBackendWakeWaitCompletion(PgBackend *backend,
+										uint32 ready_events);
 extern int	PgSuspend(const PgWaitSpec *wait_spec,
 					  PgSuspendCallback callback, void *callback_arg);
 extern PgStepResult PgSessionStep(PgSession *session, PgStepBudget budget);

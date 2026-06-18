@@ -196,6 +196,13 @@ static void PgBackendAdoptEarlyIPCState(PgBackend *backend);
 static void PgBackendEnsureWaitStateInitialized(PgBackendWaitState *wait_state);
 void PgBackendInitializeWaitState(PgBackendWaitState *wait_state);
 static void PgBackendAdoptEarlyWaitState(PgBackend *backend);
+static void PgWaitCompletionInitialize(PgWaitCompletion *completion);
+static void PgWaitCompletionPublish(PgWaitCompletion *completion,
+									PgBackend *backend,
+									const PgWaitSpec *wait_spec);
+static void PgWaitCompletionClear(PgWaitCompletion *completion);
+static void PgBackendClearWaitCompletion(PgBackendWaitState *wait_state);
+static void PgBackendWakeForWaitCompletion(PgBackend *backend);
 void PgBackendInitializeTransactionState(PgBackendTransactionState *transaction);
 static void PgBackendAdoptEarlyTransactionState(PgBackend *backend);
 static void PgBackendInitializeTimeoutState(PgBackendTimeoutState *timeout);
@@ -733,8 +740,78 @@ PgBackendInitializeWaitState(PgBackendWaitState *wait_state)
 	Assert(wait_state != NULL);
 
 	MemSet(wait_state, 0, sizeof(*wait_state));
+	PgWaitCompletionInitialize(&wait_state->completion);
 	wait_state->wait_event_info_ptr = &wait_state->local_wait_event_info;
 	pg_atomic_init_u32(&wait_state->waiting, 0);
+}
+
+static void
+PgWaitCompletionInitialize(PgWaitCompletion *completion)
+{
+	Assert(completion != NULL);
+
+	MemSet(completion, 0, sizeof(*completion));
+	pg_atomic_init_u32(&completion->state, PG_WAIT_COMPLETION_INACTIVE);
+	pg_atomic_init_u32(&completion->ready_events, 0);
+	pg_atomic_init_u32(&completion->interrupt_events, 0);
+}
+
+static void
+PgWaitCompletionPublish(PgWaitCompletion *completion, PgBackend *backend,
+						const PgWaitSpec *wait_spec)
+{
+	PgBackendInterruptMask pending_interrupts;
+	uint32		interrupt_events = 0;
+
+	Assert(completion != NULL);
+	Assert(backend != NULL);
+	Assert(wait_spec != NULL);
+
+	pending_interrupts =
+		pg_atomic_read_u32(&backend->interrupts.pending_mask);
+	if (pending_interrupts &
+		PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_QUERY_CANCEL))
+		interrupt_events |= PG_WAIT_COMPLETION_INTERRUPT_CANCEL;
+	if (pending_interrupts &
+		PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_PROC_DIE))
+		interrupt_events |= PG_WAIT_COMPLETION_INTERRUPT_TERMINATE;
+
+	completion->spec = *wait_spec;
+	completion->backend = backend;
+	completion->session = CurrentPgSession;
+	completion->execution = CurrentPgExecution;
+	completion->requeue = NULL;
+	completion->requeue_arg = NULL;
+	pg_atomic_write_u32(&completion->ready_events, 0);
+	pg_atomic_write_u32(&completion->interrupt_events, interrupt_events);
+	pg_atomic_write_membarrier_u32(&completion->state,
+								   PG_WAIT_COMPLETION_WAITING);
+}
+
+static void
+PgWaitCompletionClear(PgWaitCompletion *completion)
+{
+	Assert(completion != NULL);
+
+	MemSet(&completion->spec, 0, sizeof(completion->spec));
+	completion->backend = NULL;
+	completion->session = NULL;
+	completion->execution = NULL;
+	completion->requeue = NULL;
+	completion->requeue_arg = NULL;
+	pg_atomic_write_u32(&completion->ready_events, 0);
+	pg_atomic_write_u32(&completion->interrupt_events, 0);
+	pg_atomic_write_u32(&completion->state, PG_WAIT_COMPLETION_INACTIVE);
+}
+
+static void
+PgBackendClearWaitCompletion(PgBackendWaitState *wait_state)
+{
+	Assert(wait_state != NULL);
+
+	pg_atomic_write_u32(&wait_state->waiting, 0);
+	MemSet(&wait_state->spec, 0, sizeof(wait_state->spec));
+	PgWaitCompletionClear(&wait_state->completion);
 }
 
 static void
@@ -1370,11 +1447,88 @@ PgCurrentBackendWaitState(void)
  */
 static PG_GLOBAL_RUNTIME bool pg_runtime_publish_wait_specs = false;
 
+bool
+PgSetWaitCompletionPublication(bool enabled)
+{
+	bool		previous = pg_runtime_publish_wait_specs;
+
+	pg_runtime_publish_wait_specs = enabled;
+	return previous;
+}
+
+PgWaitCompletion *
+PgBackendCurrentWaitCompletion(PgBackend *backend)
+{
+	if (backend == NULL)
+		return NULL;
+
+	return &backend->wait_state.completion;
+}
+
+void
+PgBackendMarkWaitCompletionInterrupt(PgBackend *backend,
+									 PgWaitCompletionInterrupt interrupt)
+{
+	PgWaitCompletion *completion;
+	uint32		state;
+
+	if (backend == NULL)
+		return;
+
+	completion = &backend->wait_state.completion;
+	state = pg_atomic_read_u32(&completion->state);
+	if (state != PG_WAIT_COMPLETION_WAITING &&
+		state != PG_WAIT_COMPLETION_READY)
+		return;
+
+	pg_atomic_fetch_or_u32(&completion->interrupt_events, interrupt);
+}
+
+bool
+PgBackendWakeWaitCompletion(PgBackend *backend, uint32 ready_events)
+{
+	PgWaitCompletion *completion;
+	uint32		state;
+
+	if (backend == NULL)
+		return false;
+
+	completion = &backend->wait_state.completion;
+	state = pg_atomic_read_u32(&completion->state);
+	if (state != PG_WAIT_COMPLETION_WAITING &&
+		state != PG_WAIT_COMPLETION_READY)
+		return false;
+
+	pg_atomic_fetch_or_u32(&completion->ready_events, ready_events);
+	pg_atomic_write_membarrier_u32(&completion->state,
+								   PG_WAIT_COMPLETION_READY);
+
+	if (completion->requeue != NULL)
+		completion->requeue(completion, completion->requeue_arg);
+	else
+		PgBackendWakeForWaitCompletion(backend);
+
+	return true;
+}
+
+static void
+PgBackendWakeForWaitCompletion(PgBackend *backend)
+{
+	if (backend == NULL)
+		return;
+
+	if (backend->interrupt_latch != NULL)
+		SetLatch(backend->interrupt_latch);
+	else if (backend == CurrentPgBackend && MyLatch != NULL)
+		SetLatch(MyLatch);
+}
+
 int
 PgSuspend(const PgWaitSpec *wait_spec, PgSuspendCallback callback,
 		  void *callback_arg)
 {
 	PgBackend  *backend;
+	PgBackendWaitState *wait_state;
 	int			result = 0;
 
 	Assert(callback != NULL);
@@ -1385,8 +1539,11 @@ PgSuspend(const PgWaitSpec *wait_spec, PgSuspendCallback callback,
 	backend = CurrentPgBackend;
 	if (backend != NULL && wait_spec != NULL)
 	{
-		backend->wait_state.spec = *wait_spec;
-		pg_atomic_write_membarrier_u32(&backend->wait_state.waiting, 1);
+		wait_state = &backend->wait_state;
+		PgBackendEnsureWaitStateInitialized(wait_state);
+		wait_state->spec = *wait_spec;
+		PgWaitCompletionPublish(&wait_state->completion, backend, wait_spec);
+		pg_atomic_write_membarrier_u32(&wait_state->waiting, 1);
 	}
 
 	PG_TRY();
@@ -1396,19 +1553,13 @@ PgSuspend(const PgWaitSpec *wait_spec, PgSuspendCallback callback,
 	PG_CATCH();
 	{
 		if (backend != NULL)
-		{
-			pg_atomic_write_u32(&backend->wait_state.waiting, 0);
-			backend->wait_state.spec.kind = PG_WAIT_KIND_NONE;
-		}
+			PgBackendClearWaitCompletion(&backend->wait_state);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
 
 	if (backend != NULL)
-	{
-		pg_atomic_write_u32(&backend->wait_state.waiting, 0);
-		backend->wait_state.spec.kind = PG_WAIT_KIND_NONE;
-	}
+		PgBackendClearWaitCompletion(&backend->wait_state);
 
 	return result;
 }
