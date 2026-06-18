@@ -139,15 +139,15 @@ typedef struct QuelToken
 
 static const QuelToken quel_tokens[] = {
 	{"K_QUEL_RETRIEVE", "retrieve"},
-	{"K_QUEL_REPLACE", "q_replace"},	/* base SQL: REPLACE */
+	{"K_QUEL_REPLACE", "replace"},	/* base SQL: REPLACE -- oracle-resolved */
 	{"K_QUEL_APPEND", "append"},
-	{"K_QUEL_DELETE_QUEL", "q_delete"}, /* base SQL: DELETE */
-	{"K_QUEL_RANGE", "q_range"},	/* base SQL: RANGE */
-	{"K_QUEL_OF", "q_of"},		/* base SQL: OF */
-	{"K_QUEL_IS", "q_is"},		/* base SQL: IS */
-	{"K_QUEL_TO", "q_to"},		/* base SQL: TO */
-	{"K_QUEL_INTO_QUEL", "q_into"}, /* base SQL: INTO */
-	{"K_QUEL_BY", "q_by"},		/* base SQL: BY */
+	{"K_QUEL_DELETE_QUEL", "q_delete"}, /* base SQL: DELETE -- needs fork-resolve */
+	{"K_QUEL_RANGE", "range"},	/* base SQL: RANGE -- oracle-resolved */
+	{"K_QUEL_OF", "of"},		/* base SQL: OF -- oracle-resolved */
+	{"K_QUEL_IS", "is"},		/* base SQL: IS -- oracle-resolved */
+	{"K_QUEL_TO", "to"},		/* base SQL: TO -- oracle-resolved */
+	{"K_QUEL_INTO_QUEL", "into"}, /* base SQL: INTO -- oracle-resolved */
+	{"K_QUEL_BY", "by"},		/* base SQL: BY -- oracle-resolved */
 };
 
 /*
