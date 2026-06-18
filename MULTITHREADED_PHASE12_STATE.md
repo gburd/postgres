@@ -22701,3 +22701,60 @@ Lifecycle/preflight note:
 - repeated lifecycle operations: register thread-runtime PgBackend objects after runtime-object initialization, unregister them before closed-state reset, and leave process-mode backend lifecycle unchanged.
 - checked primitive decision: use a process-local mutex-protected pointer table rather than storing PgBackend pointers in shared ProcSignal slots; signal delivery resolves PgBackendId to a live local backend only inside the threaded postmaster address space.
 - validation impact: clean rebuild, threaded smoke, interrupt/cancel sanity, and focused vanilla/process/threaded select1_prepared c8 profiling to confirm ProcSignalBackendInterruptsPending() leaves CHECK_FOR_INTERRUPTS().
+
+## Bootstrap Memory Context Hot-Bucket Fallback
+
+Lifecycle/preflight note:
+
+- target: restore bootstrap initdb after the process execution hot-bucket path let MemoryContextInit() store TopMemoryContext outside the early execution state adopted by BaseInit().
+- touched roots/buckets: existing PgExecution.memory_contexts bucket only; no new owner, root, field, or lifecycle transfer.
+- owner source files: src/include/utils/backend_runtime_current.h, src/backend/utils/mmgr/backend_runtime_memory.c, src/backend/utils/init/backend_runtime_session.c, and this state note.
+- legacy symbols/accessors: keep PgCurrentExecutionMemoryContexts() as the owner-adjacent fallback for memory-context accessors; avoid the generated bucket alias only before process/thread hot buckets are installed.
+- repeated lifecycle operations: preserve the existing MemoryContextInit() -> InitializePgProcessRuntime() early-state adoption path; process/thread runtime refresh still installs hot bucket pointers normally.
+- checked primitive decision: use raw hot-bucket refs gated by PgRuntimeHotCurrentCellModeState instead of the public bucket alias, because the alias can resolve to TLS bridge storage while the runtime is still in fallback mode.
+- validation impact: reproduce bootstrap initdb, then rebuild/install and rerun threaded smoke before returning to branch-wide profiling.
+
+Validation follow-up:
+
+- clean rebuild/install: passed after reverting the dirty fast-carrier experiment and applying the fallback-mode bucket alias fix.
+- direct bootstrap check: `initdb --auth trust --no-sync --no-instructions --lc-messages=C --no-clean /tmp/mtpg-fixed-clean-initdb` passed through bootstrap and post-bootstrap initialization.
+- threaded smoke: `make check-threaded-smoke` passed all 10 threaded regress tests, followed by a normal `make install` before benchmarking.
+- focused vanilla-pgbench select1_prepared c8 profile: result dir `/tmp/mtpg_three_lane_profile_20260618_210614`; vanilla 39819.6 TPS, branch process 37041.2 TPS, branch threaded 36003.4 TPS, with process/vanilla 0.930, threaded/process 0.972, threaded/vanilla 0.904.
+- full five-workload vanilla-pgbench profile: result dir `/tmp/mtpg_three_lane_profile_20260618_210838`; simple SELECT threaded/vanilla 0.914, built-in prepared SELECT 0.967, custom select1_prepared 0.871, single-row prepared read 0.906, random KV prepared read 1.074. Treat the KV threaded win cautiously because it likely reflects run/cache variance.
+
+## Thread-First Hot Current Accessor Layout
+
+Lifecycle/preflight note:
+
+- target: reduce the accumulated threaded overhead from generated current-state
+  accessors by making the threaded bridge path the fallthrough/likely branch
+  for hot roots, cells, fields, and buckets.
+- touched roots/buckets: generated accessors only; no runtime object ownership,
+  lifecycle, or refresh semantics changed.
+- owner source files: `src/include/utils/backend_runtime_current.h` and this
+  state note.
+- legacy symbols/accessors: all public current macros and fallback accessors
+  keep the same API and fallback behavior; only branch ordering changes.
+- repeated lifecycle operations: none. `PgRuntimeInstallCurrent()` still
+  refreshes the same bridge/process/thread pointers.
+- checked primitive decision: this is a structural layout probe for the
+  branch-wide overhead hypothesis. The prior process-first layout made
+  threaded backends take the out-of-line path for nearly every hot current
+  lookup; optimizing individual symbols was hiding that accumulated cost.
+- validation impact: clean rebuild/install and threaded smoke required, then
+  vanilla-pgbench branch-wide profiling.
+
+Validation follow-up:
+
+- clean rebuild/install: passed.
+- threaded smoke: `make check-threaded-smoke` passed, followed by normal
+  `make install`.
+- focused repeat profiles:
+  - `/tmp/mtpg_three_lane_profile_20260618_214902`: vanilla 41392.4 TPS,
+    process 38612.3 TPS, threaded 37128.8 TPS; process/vanilla 0.933,
+    threaded/process 0.962, threaded/vanilla 0.897. Threaded `PgSessionStep`
+    self dropped to 2.56%.
+  - `/tmp/mtpg_three_lane_profile_20260618_215130`: vanilla 41106.3 TPS,
+    process 38134.6 TPS, threaded 37291.3 TPS; process/vanilla 0.928,
+    threaded/process 0.978, threaded/vanilla 0.907. Threaded `PgSessionStep`
+    self dropped to 2.46%.

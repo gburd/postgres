@@ -193,15 +193,15 @@ name##MaybeRef(void) \
 	type	   *slot; \
  \
 	if (likely(PgRuntimeHotCurrentCellModeState == \
-			   PG_RUNTIME_HOT_CURRENT_CELLS_PROCESS)) \
+			   PG_RUNTIME_HOT_CURRENT_CELLS_THREAD)) \
+		return &PgRuntimeCurrentBridgeState.field; \
+	else if (PgRuntimeHotCurrentCellModeState == \
+			 PG_RUNTIME_HOT_CURRENT_CELLS_PROCESS) \
 	{ \
 		slot = name##ProcessRef; \
 		if (likely(slot != NULL)) \
 			return slot; \
 	} \
-	else if (PgRuntimeHotCurrentCellModeState == \
-			 PG_RUNTIME_HOT_CURRENT_CELLS_THREAD) \
-		return &PgRuntimeCurrentBridgeState.field; \
  \
 	return &PgRuntimeCurrentBridgeState.field; \
 }
@@ -227,16 +227,16 @@ variable##MaybeRef(type *(*fallback) (void)) \
 	type	   *slot; \
  \
 	if (likely(PgRuntimeHotCurrentCellModeState == \
-			   PG_RUNTIME_HOT_CURRENT_CELLS_PROCESS)) \
+			   PG_RUNTIME_HOT_CURRENT_CELLS_THREAD)) \
 	{ \
-		slot = variable##ProcessCell; \
+		slot = PgRuntimeCurrentBridgeState.variable; \
 		if (likely(slot != NULL)) \
 			return slot; \
 	} \
 	else if (PgRuntimeHotCurrentCellModeState == \
-			 PG_RUNTIME_HOT_CURRENT_CELLS_THREAD) \
+			 PG_RUNTIME_HOT_CURRENT_CELLS_PROCESS) \
 	{ \
-		slot = PgRuntimeCurrentBridgeState.variable; \
+		slot = variable##ProcessCell; \
 		if (likely(slot != NULL)) \
 			return slot; \
 	} \
@@ -278,18 +278,18 @@ variable##MaybeRef(type *(*fallback) (void)) \
 	type	   *slot; \
  \
 	if (likely(PgRuntimeHotCurrentCellModeState == \
-			   PG_RUNTIME_HOT_CURRENT_CELLS_PROCESS)) \
-	{ \
-		slot = variable##ProcessRef; \
-		if (likely(slot != NULL)) \
-			return slot; \
-	} \
-	else if (PgRuntimeHotCurrentCellModeState == \
-			 PG_RUNTIME_HOT_CURRENT_CELLS_THREAD) \
+			   PG_RUNTIME_HOT_CURRENT_CELLS_THREAD)) \
 	{ \
 		PgRuntimeCurrentBridge *bridge = &PgRuntimeCurrentBridgeState; \
  \
 		slot = bridge->variable; \
+		if (likely(slot != NULL)) \
+			return slot; \
+	} \
+	else if (PgRuntimeHotCurrentCellModeState == \
+			 PG_RUNTIME_HOT_CURRENT_CELLS_PROCESS) \
+	{ \
+		slot = variable##ProcessRef; \
 		if (likely(slot != NULL)) \
 			return slot; \
 	} \
@@ -321,21 +321,21 @@ variable##Maybe(void) \
 	type	   *bucket; \
  \
 	if (likely(PgRuntimeHotCurrentCellModeState == \
-			   PG_RUNTIME_HOT_CURRENT_CELLS_PROCESS)) \
-	{ \
-		bucket = variable##ProcessBucket; \
-		if (likely(bucket != NULL)) \
-			return bucket; \
-	} \
-	else if (PgRuntimeHotCurrentCellModeState == \
-			 PG_RUNTIME_HOT_CURRENT_CELLS_THREAD) \
+			   PG_RUNTIME_HOT_CURRENT_CELLS_THREAD)) \
 	{ \
 		bucket = PgRuntimeCurrentBridgeState.variable; \
 		if (likely(bucket != NULL)) \
 			return bucket; \
 	} \
+	else if (PgRuntimeHotCurrentCellModeState == \
+			 PG_RUNTIME_HOT_CURRENT_CELLS_PROCESS) \
+	{ \
+		bucket = variable##ProcessBucket; \
+		if (likely(bucket != NULL)) \
+			return bucket; \
+	} \
  \
-	return PgRuntimeCurrentBridgeState.variable; \
+	return NULL; \
 }
 #include "utils/backend_runtime_hot_buckets.def"
 #undef PG_RUNTIME_HOT_BUCKET
