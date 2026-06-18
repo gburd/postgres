@@ -509,6 +509,12 @@ SELECT test_backend_wait_completion_publication();
  t
 (1 row)
 
+SELECT test_backend_wait_completion_publication_policy();
+ test_backend_wait_completion_publication_policy 
+-------------------------------------------------
+ t
+(1 row)
+
 SELECT test_backend_ipc_state_is_backend_local();
  test_backend_ipc_state_is_backend_local 
 -----------------------------------------

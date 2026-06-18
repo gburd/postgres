@@ -219,25 +219,20 @@ GUCRecordVariableIsCurrentSessionOwned(const struct config_generic *record)
 }
 
 static bool
-GUCRecordHasCheckOrAssignHook(const struct config_generic *record)
+GUCRecordHasAssignHook(const struct config_generic *record)
 {
 	switch (record->vartype)
 	{
 		case PGC_BOOL:
-			return record->_bool.check_hook != NULL ||
-				record->_bool.assign_hook != NULL;
+			return record->_bool.assign_hook != NULL;
 		case PGC_INT:
-			return record->_int.check_hook != NULL ||
-				record->_int.assign_hook != NULL;
+			return record->_int.assign_hook != NULL;
 		case PGC_REAL:
-			return record->_real.check_hook != NULL ||
-				record->_real.assign_hook != NULL;
+			return record->_real.assign_hook != NULL;
 		case PGC_STRING:
-			return record->_string.check_hook != NULL ||
-				record->_string.assign_hook != NULL;
+			return record->_string.assign_hook != NULL;
 		case PGC_ENUM:
-			return record->_enum.check_hook != NULL ||
-				record->_enum.assign_hook != NULL;
+			return record->_enum.assign_hook != NULL;
 	}
 
 	pg_unreachable();
@@ -272,18 +267,21 @@ GUCSetOptionNeedsThreadedLock(const struct config_generic *record)
 	/*
 	 * The copied built-in GUC table, hash, non-default list, stack list, and
 	 * report list are PgSession-owned.  A simple built-in GUC whose direct
-	 * variable also lives in PgSession and has no hooks mutates only this
+	 * variable also lives in PgSession and has no assign hook mutates only this
 	 * logical backend's GUC state, so it does not need the temporary
-	 * process-wide GUC mutex.
+	 * process-wide GUC mutex.  Check hooks must not be guarded merely because
+	 * they are hooks: some validate against catalogs and can wait on heavyweight
+	 * locks, so holding the process-wide GUC mutex across them can deadlock
+	 * threaded sessions.
 	 *
 	 * Keep all ambiguous paths serialized: custom/extension records,
-	 * placeholders, hook-backed records, execution-owned active transaction
-	 * GUCs, and records whose direct variable still points at process-global
-	 * storage.
- */
+	 * placeholders, assign-hook-backed records, execution-owned active
+	 * transaction GUCs, and records whose direct variable still points at
+	 * process-global storage.
+	 */
 	if (GUCRecordIsCurrentSessionBuiltin(record) &&
 		GUCRecordVariableIsCurrentSessionOwned(record) &&
-		!GUCRecordHasCheckOrAssignHook(record))
+		!GUCRecordHasAssignHook(record))
 		return false;
 
 	return true;

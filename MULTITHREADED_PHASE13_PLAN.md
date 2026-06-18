@@ -103,11 +103,14 @@ The first wait-boundary slice is implemented:
   already flow through it.
 - Focused backend-runtime coverage proves publication, existing-pending cancel
   seeding, later termination marking, readiness marking, and cleanup.
+- Wait-completion publication is automatic for `PG_RUNTIME_THREAD_PER_SESSION`
+  backends. Process-mode backends continue to use the direct blocking fallback
+  path, while a narrow test/diagnostic override can force publication without a
+  threaded runtime object.
 
-The next Phase 13 slices should turn this into normal scheduler-visible wait
-ownership rather than a test-enabled publication path, then add real blocked
-client coverage for frontend input/output and latch waits before moving on to
-condition variables and lock waits.
+The next Phase 13 slices should add real blocked-client coverage for frontend
+input/output and latch waits, then move on to condition variables and lock
+waits.
 
 ## Validation Gate
 

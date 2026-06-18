@@ -1019,6 +1019,13 @@ typedef struct TestWaitCompletionContext
 	bool		saw_ready_wait;
 } TestWaitCompletionContext;
 
+typedef struct TestWaitCompletionPolicyContext
+{
+	PgBackend  *backend;
+	bool		saw_published_wait;
+	bool		saw_unpublished_wait;
+} TestWaitCompletionPolicyContext;
+
 static int
 test_wait_completion_callback(void *callback_arg)
 {
@@ -1060,6 +1067,31 @@ test_wait_completion_callback(void *callback_arg)
 		(pg_atomic_read_u32(&completion->ready_events) & WL_LATCH_SET) != 0;
 
 	return 42;
+}
+
+static int
+test_wait_completion_policy_callback(void *callback_arg)
+{
+	TestWaitCompletionPolicyContext *context;
+	PgWaitCompletion *completion;
+
+	context = (TestWaitCompletionPolicyContext *) callback_arg;
+	completion = PgBackendCurrentWaitCompletion(context->backend);
+
+	context->saw_published_wait =
+		completion != NULL &&
+		pg_atomic_read_u32(&context->backend->wait_state.waiting) == 1 &&
+		pg_atomic_read_u32(&completion->state) == PG_WAIT_COMPLETION_WAITING &&
+		completion->backend == context->backend &&
+		completion->spec.kind == PG_WAIT_KIND_EVENT_SET;
+	context->saw_unpublished_wait =
+		completion != NULL &&
+		pg_atomic_read_u32(&context->backend->wait_state.waiting) == 0 &&
+		pg_atomic_read_u32(&completion->state) == PG_WAIT_COMPLETION_INACTIVE &&
+		completion->backend == NULL &&
+		completion->spec.kind == PG_WAIT_KIND_NONE;
+
+	return 7;
 }
 
 PG_FUNCTION_INFO_V1(test_backend_wait_completion_publication);
@@ -1156,6 +1188,93 @@ test_backend_wait_completion_publication(PG_FUNCTION_ARGS)
 
 	if (!ok)
 		elog(ERROR, "backend wait completion publication failed");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_backend_wait_completion_publication_policy);
+Datum
+test_backend_wait_completion_publication_policy(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgRuntime	process_runtime;
+	PgRuntime	thread_runtime;
+	PgBackend	process_backend;
+	PgBackend	thread_backend;
+	PgWaitSpec	wait_spec;
+	TestWaitCompletionPolicyContext context;
+	bool		saved_publication;
+	bool		ok = true;
+
+	saved_backend = CurrentPgBackend;
+	saved_publication = PgSetWaitCompletionPublication(false);
+
+	MemSet(&process_runtime, 0, sizeof(process_runtime));
+	process_runtime.kind = PG_RUNTIME_PROCESS;
+	MemSet(&thread_runtime, 0, sizeof(thread_runtime));
+	thread_runtime.kind = PG_RUNTIME_THREAD_PER_SESSION;
+
+	MemSet(&process_backend, 0, sizeof(process_backend));
+	process_backend.runtime = &process_runtime;
+	process_backend.wait_state.wait_event_info_ptr =
+		&process_backend.wait_state.local_wait_event_info;
+	pg_atomic_init_u32(&process_backend.wait_state.waiting, 0);
+	pg_atomic_init_u32(&process_backend.wait_state.completion.state,
+					   PG_WAIT_COMPLETION_INACTIVE);
+	pg_atomic_init_u32(&process_backend.wait_state.completion.ready_events, 0);
+	pg_atomic_init_u32(&process_backend.wait_state.completion.interrupt_events, 0);
+
+	MemSet(&thread_backend, 0, sizeof(thread_backend));
+	thread_backend.runtime = &thread_runtime;
+	thread_backend.wait_state.wait_event_info_ptr =
+		&thread_backend.wait_state.local_wait_event_info;
+	pg_atomic_init_u32(&thread_backend.wait_state.waiting, 0);
+	pg_atomic_init_u32(&thread_backend.wait_state.completion.state,
+					   PG_WAIT_COMPLETION_INACTIVE);
+	pg_atomic_init_u32(&thread_backend.wait_state.completion.ready_events, 0);
+	pg_atomic_init_u32(&thread_backend.wait_state.completion.interrupt_events, 0);
+
+	wait_spec.kind = PG_WAIT_KIND_EVENT_SET;
+	wait_spec.wait_event_info = 0x01020304;
+	wait_spec.wake_events = WL_LATCH_SET;
+	wait_spec.timeout = -1;
+
+	PG_TRY();
+	{
+		MemSet(&context, 0, sizeof(context));
+		context.backend = &process_backend;
+		PgSetCurrentBackend(&process_backend);
+		ok = ok && PgSuspend(&wait_spec,
+							 test_wait_completion_policy_callback,
+							 &context) == 7;
+		ok = ok && context.saw_unpublished_wait;
+		ok = ok && !context.saw_published_wait;
+
+		MemSet(&context, 0, sizeof(context));
+		context.backend = &thread_backend;
+		PgSetCurrentBackend(&thread_backend);
+		ok = ok && PgSuspend(&wait_spec,
+							 test_wait_completion_policy_callback,
+							 &context) == 7;
+		ok = ok && context.saw_published_wait;
+		ok = ok && !context.saw_unpublished_wait;
+		ok = ok && pg_atomic_read_u32(&thread_backend.wait_state.waiting) == 0;
+		ok = ok && pg_atomic_read_u32(&thread_backend.wait_state.completion.state) ==
+			PG_WAIT_COMPLETION_INACTIVE;
+
+		PgSetCurrentBackend(saved_backend);
+		PgSetWaitCompletionPublication(saved_publication);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentBackend(saved_backend);
+		PgSetWaitCompletionPublication(saved_publication);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "backend wait completion publication policy failed");
 
 	PG_RETURN_BOOL(true);
 }

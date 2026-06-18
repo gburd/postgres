@@ -203,6 +203,8 @@ static void PgWaitCompletionPublish(PgWaitCompletion *completion,
 static void PgWaitCompletionClear(PgWaitCompletion *completion);
 static void PgBackendClearWaitCompletion(PgBackendWaitState *wait_state);
 static void PgBackendWakeForWaitCompletion(PgBackend *backend);
+static bool PgBackendShouldPublishWaitCompletion(PgBackend *backend,
+												 const PgWaitSpec *wait_spec);
 void PgBackendInitializeTransactionState(PgBackendTransactionState *transaction);
 static void PgBackendAdoptEarlyTransactionState(PgBackend *backend);
 static void PgBackendInitializeTimeoutState(PgBackendTimeoutState *timeout);
@@ -1441,9 +1443,9 @@ PgCurrentBackendWaitState(void)
 }
 
 /*
- * Current process and thread-per-session carriers do not consume published
- * wait specs.  A future scheduler that parks and resumes many sessions on a
- * carrier can enable this owner-local switch when it needs to observe waits.
+ * Thread-per-session backends publish wait completions automatically.  This
+ * override exists for focused tests and diagnostics that need to observe the
+ * publication path without constructing a threaded runtime object.
  */
 static PG_GLOBAL_RUNTIME bool pg_runtime_publish_wait_specs = false;
 
@@ -1523,6 +1525,20 @@ PgBackendWakeForWaitCompletion(PgBackend *backend)
 		SetLatch(MyLatch);
 }
 
+static bool
+PgBackendShouldPublishWaitCompletion(PgBackend *backend,
+									 const PgWaitSpec *wait_spec)
+{
+	if (wait_spec == NULL || backend == NULL)
+		return false;
+	if (pg_runtime_publish_wait_specs)
+		return true;
+	if (backend->runtime == NULL)
+		return false;
+
+	return backend->runtime->kind == PG_RUNTIME_THREAD_PER_SESSION;
+}
+
 int
 PgSuspend(const PgWaitSpec *wait_spec, PgSuspendCallback callback,
 		  void *callback_arg)
@@ -1533,18 +1549,15 @@ PgSuspend(const PgWaitSpec *wait_spec, PgSuspendCallback callback,
 
 	Assert(callback != NULL);
 
-	if (likely(!pg_runtime_publish_wait_specs || wait_spec == NULL))
+	backend = CurrentPgBackend;
+	if (likely(!PgBackendShouldPublishWaitCompletion(backend, wait_spec)))
 		return callback(callback_arg);
 
-	backend = CurrentPgBackend;
-	if (backend != NULL && wait_spec != NULL)
-	{
-		wait_state = &backend->wait_state;
-		PgBackendEnsureWaitStateInitialized(wait_state);
-		wait_state->spec = *wait_spec;
-		PgWaitCompletionPublish(&wait_state->completion, backend, wait_spec);
-		pg_atomic_write_membarrier_u32(&wait_state->waiting, 1);
-	}
+	wait_state = &backend->wait_state;
+	PgBackendEnsureWaitStateInitialized(wait_state);
+	wait_state->spec = *wait_spec;
+	PgWaitCompletionPublish(&wait_state->completion, backend, wait_spec);
+	pg_atomic_write_membarrier_u32(&wait_state->waiting, 1);
 
 	PG_TRY();
 	{
