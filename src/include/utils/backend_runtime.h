@@ -45,6 +45,7 @@
 #include "storage/lwlock.h"
 #include "storage/procnumber.h"
 #include "storage/relfilelocator.h"
+#include "storage/spin.h"
 #include "tcop/dest.h"
 #include "utils/backend_id.h"
 #include "utils/backend_status.h"
@@ -131,7 +132,8 @@ typedef int (*PgSuspendCallback) (void *callback_arg);
 typedef enum PgRuntimeKind
 {
 	PG_RUNTIME_PROCESS,
-	PG_RUNTIME_THREAD_PER_SESSION
+	PG_RUNTIME_THREAD_PER_SESSION,
+	PG_RUNTIME_POOLED_SCHEDULER
 } PgRuntimeKind;
 
 typedef enum PgCarrierKind
@@ -173,6 +175,34 @@ typedef enum PgStepResult
 	PG_STEP_CONTINUE,
 	PG_STEP_ERROR_RECOVERED
 } PgStepResult;
+
+typedef enum PgSchedulerBackendState
+{
+	PG_SCHEDULER_BACKEND_DETACHED = 0,
+	PG_SCHEDULER_BACKEND_RUNNING,
+	PG_SCHEDULER_BACKEND_WAITING,
+	PG_SCHEDULER_BACKEND_RUNNABLE
+} PgSchedulerBackendState;
+
+typedef struct PgRuntimeSchedulerState
+{
+	bool		initialized;
+	slock_t		lock;
+	dlist_head	runnable_queue;
+	dlist_head	waiting_queue;
+	uint32		runnable_count;
+	uint32		waiting_count;
+	uint64		enqueue_generation;
+	uint64		wake_generation;
+	struct Latch *wake_latch;
+} PgRuntimeSchedulerState;
+
+typedef struct PgBackendSchedulerState
+{
+	dlist_node	node;
+	pg_atomic_uint32 state;
+	uint64		enqueue_generation;
+} PgBackendSchedulerState;
 
 /*
  * Logical interrupts target a backend object first.  In process mode these are
@@ -2265,6 +2295,7 @@ struct PgRuntime
 
 	PgRuntimeServerGUCState server_guc;
 	PgRuntimeExtensionModuleState extension_modules;
+	PgRuntimeSchedulerState scheduler;
 };
 
 struct PgCarrier
@@ -2336,6 +2367,7 @@ struct PgBackend
 	dlist_head	dsm_segment_list;
 
 	BackendType backend_type;
+	PgBackendSchedulerState scheduler;
 };
 
 struct PgSession
@@ -3296,6 +3328,21 @@ extern PgBackendLaunchModel PgRuntimeGetBackendLaunchModel(BackendType backend_t
 extern bool PgRuntimeShouldThreadBackend(BackendType backend_type);
 extern PgBackendModel PgRuntimeGetExtensionBackendModel(void);
 extern void PgRuntimeSetExtensionBackendModel(PgBackendModel backend_model);
+extern bool PgRuntimeIsPooledScheduler(PgRuntime *runtime);
+extern bool PgRuntimeUsesLogicalBackends(PgRuntime *runtime);
+extern bool PgRuntimePublishesWaitCompletions(PgRuntime *runtime);
+extern void PgRuntimeSchedulerInitialize(PgRuntime *runtime);
+extern void PgBackendSchedulerInitialize(PgBackendSchedulerState *scheduler);
+extern void PgBackendSchedulerMarkDetached(PgBackend *backend);
+extern void PgBackendSchedulerMarkRunning(PgBackend *backend);
+extern bool PgBackendSchedulerMarkWaiting(PgBackend *backend);
+extern bool PgBackendSchedulerEnqueueRunnable(PgBackend *backend);
+extern PgBackend *PgRuntimeSchedulerPopRunnable(PgRuntime *runtime);
+extern void PgRuntimeSchedulerSetWakeLatch(PgRuntime *runtime,
+										   struct Latch *wake_latch);
+extern uint64 PgRuntimeSchedulerWakeGeneration(PgRuntime *runtime);
+extern void PgRuntimeSchedulerCounts(PgRuntime *runtime, uint32 *runnable_count,
+									 uint32 *waiting_count);
 extern MemoryContext PgBackendBufferAllocationContext(void);
 #define PgRuntimeGetOwnedMemoryContextWithSizes(context, name, ...) \
 	((*(context) != NULL) ? *(context) : \

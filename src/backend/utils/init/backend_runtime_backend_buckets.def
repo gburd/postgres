@@ -53,3 +53,4 @@ PG_BACKEND_BUCKET(aio, PgBackendInitializeAioState(&backend->aio), PgBackendAdop
 PG_BACKEND_BUCKET(extension_modules, PgBackendInitializeExtensionModuleState(&backend->extension_modules), PgBackendAdoptEarlyExtensionModuleState(backend), PgBackendResetExtensionModuleClosedState(&backend->extension_modules))
 PG_BACKEND_BUCKET(pending_interrupts, PG_RUNTIME_NOOP, PgBackendAdoptEarlyPendingInterrupts(backend), PG_RUNTIME_NOOP)
 PG_BACKEND_BUCKET(interrupt_holdoffs, PG_RUNTIME_NOOP, PgBackendAdoptEarlyInterruptHoldoffs(backend), PG_RUNTIME_NOOP)
+PG_BACKEND_BUCKET(scheduler, PgBackendSchedulerInitialize(&backend->scheduler), PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)

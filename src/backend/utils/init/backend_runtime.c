@@ -724,6 +724,30 @@ InitializePgThreadRuntime(PgBackendExitContinuation exit_backend)
 	thread_runtime.exit_backend = exit_backend;
 }
 
+bool
+PgRuntimeIsPooledScheduler(PgRuntime *runtime)
+{
+	return runtime != NULL &&
+		runtime->kind == PG_RUNTIME_POOLED_SCHEDULER;
+}
+
+bool
+PgRuntimeUsesLogicalBackends(PgRuntime *runtime)
+{
+	return runtime != NULL &&
+		runtime->kind != PG_RUNTIME_PROCESS;
+}
+
+bool
+PgRuntimePublishesWaitCompletions(PgRuntime *runtime)
+{
+	if (runtime == NULL)
+		return false;
+
+	return runtime->kind == PG_RUNTIME_THREAD_PER_SESSION ||
+		runtime->kind == PG_RUNTIME_POOLED_SCHEDULER;
+}
+
 void
 InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 									  BackendType backend_type,

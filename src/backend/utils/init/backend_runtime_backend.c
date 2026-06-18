@@ -205,6 +205,11 @@ static void PgBackendClearWaitCompletion(PgBackendWaitState *wait_state);
 static void PgBackendWakeForWaitCompletion(PgBackend *backend);
 static bool PgBackendShouldPublishWaitCompletion(PgBackend *backend,
 												 const PgWaitSpec *wait_spec);
+static void PgBackendSchedulerDetachLocked(PgRuntimeSchedulerState *scheduler,
+										   PgBackend *backend,
+										   PgSchedulerBackendState state);
+static void PgBackendSchedulerRequeueWaitCompletion(PgWaitCompletion *completion,
+													void *arg);
 void PgBackendInitializeTransactionState(PgBackendTransactionState *transaction);
 static void PgBackendAdoptEarlyTransactionState(PgBackend *backend);
 static void PgBackendInitializeTimeoutState(PgBackendTimeoutState *timeout);
@@ -314,7 +319,7 @@ PgBackendRegisterThreadedBackend(PgBackend *backend)
 	Assert(backend != NULL);
 
 	if (backend->runtime == NULL ||
-		backend->runtime->kind != PG_RUNTIME_THREAD_PER_SESSION)
+		!PgRuntimeUsesLogicalBackends(backend->runtime))
 		return;
 
 	ThreadedBackendRegistryLock();
@@ -335,7 +340,7 @@ PgBackendUnregisterThreadedBackend(PgBackend *backend)
 	Assert(backend != NULL);
 
 	if (backend->runtime == NULL ||
-		backend->runtime->kind != PG_RUNTIME_THREAD_PER_SESSION)
+		!PgRuntimeUsesLogicalBackends(backend->runtime))
 		return;
 
 	ThreadedBackendRegistryLock();
@@ -751,6 +756,270 @@ PgBackendInitializeWaitState(PgBackendWaitState *wait_state)
 	pg_atomic_init_u32(&wait_state->waiting, 0);
 }
 
+void
+PgRuntimeSchedulerInitialize(PgRuntime *runtime)
+{
+	PgRuntimeSchedulerState *scheduler;
+
+	Assert(runtime != NULL);
+
+	scheduler = &runtime->scheduler;
+	SpinLockInit(&scheduler->lock);
+	dlist_init(&scheduler->runnable_queue);
+	dlist_init(&scheduler->waiting_queue);
+	scheduler->runnable_count = 0;
+	scheduler->waiting_count = 0;
+	scheduler->enqueue_generation = 0;
+	scheduler->wake_generation = 0;
+	scheduler->wake_latch = NULL;
+	scheduler->initialized = true;
+}
+
+void
+PgBackendSchedulerInitialize(PgBackendSchedulerState *scheduler)
+{
+	Assert(scheduler != NULL);
+
+	dlist_node_init(&scheduler->node);
+	pg_atomic_init_u32(&scheduler->state,
+					   PG_SCHEDULER_BACKEND_DETACHED);
+	scheduler->enqueue_generation = 0;
+}
+
+static void
+PgBackendSchedulerDetachLocked(PgRuntimeSchedulerState *scheduler,
+							   PgBackend *backend,
+							   PgSchedulerBackendState state)
+{
+	Assert(scheduler != NULL);
+	Assert(backend != NULL);
+
+	if (state == PG_SCHEDULER_BACKEND_WAITING)
+	{
+		Assert(scheduler->waiting_count > 0);
+		dlist_delete_thoroughly(&backend->scheduler.node);
+		scheduler->waiting_count--;
+	}
+	else if (state == PG_SCHEDULER_BACKEND_RUNNABLE)
+	{
+		Assert(scheduler->runnable_count > 0);
+		dlist_delete_thoroughly(&backend->scheduler.node);
+		scheduler->runnable_count--;
+	}
+}
+
+void
+PgBackendSchedulerMarkDetached(PgBackend *backend)
+{
+	PgRuntimeSchedulerState *scheduler;
+	PgSchedulerBackendState state;
+
+	if (backend == NULL || !PgRuntimeIsPooledScheduler(backend->runtime))
+		return;
+
+	scheduler = &backend->runtime->scheduler;
+	Assert(scheduler->initialized);
+
+	SpinLockAcquire(&scheduler->lock);
+	state = (PgSchedulerBackendState)
+		pg_atomic_read_u32(&backend->scheduler.state);
+	PgBackendSchedulerDetachLocked(scheduler, backend, state);
+	pg_atomic_write_u32(&backend->scheduler.state,
+						PG_SCHEDULER_BACKEND_DETACHED);
+	SpinLockRelease(&scheduler->lock);
+}
+
+void
+PgBackendSchedulerMarkRunning(PgBackend *backend)
+{
+	PgRuntimeSchedulerState *scheduler;
+	PgSchedulerBackendState state;
+
+	if (backend == NULL || !PgRuntimeIsPooledScheduler(backend->runtime))
+		return;
+
+	scheduler = &backend->runtime->scheduler;
+	Assert(scheduler->initialized);
+
+	SpinLockAcquire(&scheduler->lock);
+	state = (PgSchedulerBackendState)
+		pg_atomic_read_u32(&backend->scheduler.state);
+	PgBackendSchedulerDetachLocked(scheduler, backend, state);
+	pg_atomic_write_u32(&backend->scheduler.state,
+						PG_SCHEDULER_BACKEND_RUNNING);
+	SpinLockRelease(&scheduler->lock);
+}
+
+bool
+PgBackendSchedulerMarkWaiting(PgBackend *backend)
+{
+	PgRuntimeSchedulerState *scheduler;
+	PgSchedulerBackendState state;
+	bool		queued = false;
+
+	if (backend == NULL || !PgRuntimeIsPooledScheduler(backend->runtime))
+		return false;
+
+	scheduler = &backend->runtime->scheduler;
+	Assert(scheduler->initialized);
+
+	SpinLockAcquire(&scheduler->lock);
+	state = (PgSchedulerBackendState)
+		pg_atomic_read_u32(&backend->scheduler.state);
+	if (state != PG_SCHEDULER_BACKEND_WAITING)
+	{
+		PgBackendSchedulerDetachLocked(scheduler, backend, state);
+		dlist_push_tail(&scheduler->waiting_queue, &backend->scheduler.node);
+		scheduler->waiting_count++;
+		pg_atomic_write_u32(&backend->scheduler.state,
+							PG_SCHEDULER_BACKEND_WAITING);
+		queued = true;
+	}
+	SpinLockRelease(&scheduler->lock);
+
+	return queued;
+}
+
+bool
+PgBackendSchedulerEnqueueRunnable(PgBackend *backend)
+{
+	PgRuntimeSchedulerState *scheduler;
+	PgSchedulerBackendState state;
+	struct Latch *wake_latch = NULL;
+	bool		queued = false;
+
+	if (backend == NULL || !PgRuntimeIsPooledScheduler(backend->runtime))
+		return false;
+
+	scheduler = &backend->runtime->scheduler;
+	Assert(scheduler->initialized);
+
+	SpinLockAcquire(&scheduler->lock);
+	state = (PgSchedulerBackendState)
+		pg_atomic_read_u32(&backend->scheduler.state);
+	if (state != PG_SCHEDULER_BACKEND_RUNNABLE)
+	{
+		PgBackendSchedulerDetachLocked(scheduler, backend, state);
+		scheduler->enqueue_generation++;
+		backend->scheduler.enqueue_generation = scheduler->enqueue_generation;
+		dlist_push_tail(&scheduler->runnable_queue, &backend->scheduler.node);
+		scheduler->runnable_count++;
+		scheduler->wake_generation++;
+		wake_latch = scheduler->wake_latch;
+		pg_atomic_write_u32(&backend->scheduler.state,
+							PG_SCHEDULER_BACKEND_RUNNABLE);
+		queued = true;
+	}
+	SpinLockRelease(&scheduler->lock);
+
+	if (wake_latch != NULL)
+		SetLatch(wake_latch);
+
+	return queued;
+}
+
+PgBackend *
+PgRuntimeSchedulerPopRunnable(PgRuntime *runtime)
+{
+	PgRuntimeSchedulerState *scheduler;
+	PgBackend  *backend = NULL;
+
+	if (!PgRuntimeIsPooledScheduler(runtime))
+		return NULL;
+
+	scheduler = &runtime->scheduler;
+	Assert(scheduler->initialized);
+
+	SpinLockAcquire(&scheduler->lock);
+	if (!dlist_is_empty(&scheduler->runnable_queue))
+	{
+		dlist_node *node = dlist_head_node(&scheduler->runnable_queue);
+
+		dlist_delete_thoroughly(node);
+		Assert(scheduler->runnable_count > 0);
+		scheduler->runnable_count--;
+		backend = dlist_container(PgBackend, scheduler.node, node);
+		pg_atomic_write_u32(&backend->scheduler.state,
+							PG_SCHEDULER_BACKEND_RUNNING);
+	}
+	SpinLockRelease(&scheduler->lock);
+
+	return backend;
+}
+
+void
+PgRuntimeSchedulerSetWakeLatch(PgRuntime *runtime, struct Latch *wake_latch)
+{
+	PgRuntimeSchedulerState *scheduler;
+
+	if (!PgRuntimeIsPooledScheduler(runtime))
+		return;
+
+	scheduler = &runtime->scheduler;
+	Assert(scheduler->initialized);
+
+	SpinLockAcquire(&scheduler->lock);
+	scheduler->wake_latch = wake_latch;
+	SpinLockRelease(&scheduler->lock);
+}
+
+uint64
+PgRuntimeSchedulerWakeGeneration(PgRuntime *runtime)
+{
+	PgRuntimeSchedulerState *scheduler;
+	uint64		wake_generation;
+
+	if (!PgRuntimeIsPooledScheduler(runtime))
+		return 0;
+
+	scheduler = &runtime->scheduler;
+	Assert(scheduler->initialized);
+
+	SpinLockAcquire(&scheduler->lock);
+	wake_generation = scheduler->wake_generation;
+	SpinLockRelease(&scheduler->lock);
+
+	return wake_generation;
+}
+
+void
+PgRuntimeSchedulerCounts(PgRuntime *runtime, uint32 *runnable_count,
+						 uint32 *waiting_count)
+{
+	PgRuntimeSchedulerState *scheduler;
+
+	if (runnable_count != NULL)
+		*runnable_count = 0;
+	if (waiting_count != NULL)
+		*waiting_count = 0;
+	if (!PgRuntimeIsPooledScheduler(runtime))
+		return;
+
+	scheduler = &runtime->scheduler;
+	Assert(scheduler->initialized);
+
+	SpinLockAcquire(&scheduler->lock);
+	if (runnable_count != NULL)
+		*runnable_count = scheduler->runnable_count;
+	if (waiting_count != NULL)
+		*waiting_count = scheduler->waiting_count;
+	SpinLockRelease(&scheduler->lock);
+}
+
+static void
+PgBackendSchedulerRequeueWaitCompletion(PgWaitCompletion *completion,
+										void *arg)
+{
+	PgRuntime  *runtime = (PgRuntime *) arg;
+
+	if (completion == NULL || completion->backend == NULL)
+		return;
+
+	if (runtime != NULL && runtime != completion->backend->runtime)
+		return;
+	(void) PgBackendSchedulerEnqueueRunnable(completion->backend);
+}
+
 static void
 PgWaitCompletionInitialize(PgWaitCompletion *completion)
 {
@@ -786,8 +1055,17 @@ PgWaitCompletionPublish(PgWaitCompletion *completion, PgBackend *backend,
 	completion->backend = backend;
 	completion->session = CurrentPgSession;
 	completion->execution = CurrentPgExecution;
-	completion->requeue = NULL;
-	completion->requeue_arg = NULL;
+	if (PgRuntimeIsPooledScheduler(backend->runtime))
+	{
+		completion->requeue = PgBackendSchedulerRequeueWaitCompletion;
+		completion->requeue_arg = backend->runtime;
+		(void) PgBackendSchedulerMarkWaiting(backend);
+	}
+	else
+	{
+		completion->requeue = NULL;
+		completion->requeue_arg = NULL;
+	}
 	pg_atomic_write_u32(&completion->ready_events, 0);
 	pg_atomic_write_u32(&completion->interrupt_events, interrupt_events);
 	pg_atomic_write_membarrier_u32(&completion->state,
@@ -813,7 +1091,13 @@ PgWaitCompletionClear(PgWaitCompletion *completion)
 static void
 PgBackendClearWaitCompletion(PgBackendWaitState *wait_state)
 {
+	PgBackend  *backend;
+
 	Assert(wait_state != NULL);
+
+	backend = wait_state->completion.backend;
+	if (backend != NULL && PgRuntimeIsPooledScheduler(backend->runtime))
+		PgBackendSchedulerMarkDetached(backend);
 
 	pg_atomic_write_u32(&wait_state->waiting, 0);
 	MemSet(&wait_state->spec, 0, sizeof(wait_state->spec));
@@ -1614,7 +1898,7 @@ PgBackendShouldPublishWaitCompletion(PgBackend *backend,
 	if (backend->runtime == NULL)
 		return false;
 
-	return backend->runtime->kind == PG_RUNTIME_THREAD_PER_SESSION;
+	return PgRuntimePublishesWaitCompletions(backend->runtime);
 }
 
 int
@@ -1843,7 +2127,7 @@ PgBackendGetSignalPid(PgBackend *backend)
 		return MyProcPid;
 
 	if (backend->runtime != NULL &&
-		backend->runtime->kind == PG_RUNTIME_THREAD_PER_SESSION)
+		PgRuntimeUsesLogicalBackends(backend->runtime))
 	{
 		if (backend->id > PG_INT32_MAX)
 			elog(ERROR, "threaded backend identifier exceeds protocol range");

@@ -15,3 +15,4 @@ PG_RUNTIME_BUCKET(extension_backend_model, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP, PG_
 PG_RUNTIME_BUCKET(server_guc, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)
 PG_RUNTIME_BUCKET(extension_modules, PgRuntimeInitializeExtensionModuleState(&runtime->extension_modules), PgRuntimeAdoptEarlyExtensionModuleState(runtime), PG_RUNTIME_NOOP)
 PG_RUNTIME_BUCKET(exit_backend, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)
+PG_RUNTIME_BUCKET(scheduler, PgRuntimeSchedulerInitialize(runtime), PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)
