@@ -318,48 +318,49 @@ extern void pg_grammar_ext_prewarm(void);
  * If non-NULL, scan.c calls this function for every identifier-shaped
  * token AFTER a base ScanKeywordLookup miss, BEFORE classifying as
  * IDENT.  The argument is a palloc'd lowercased copy of the input
- * lexeme (NUL-terminated).  Returns the rebuilt-parser token code
- * (>= 0) for a registered extension keyword, or -1 for a miss.
+ * lexeme (NUL-terminated).  Returns the extension token code (>= 0) in
+ * the composed snapshot for a registered extension keyword, or -1 for a
+ * miss.
  *
- * Set during the parser-rebuild pipeline once the rebuilt .so is
- * dlopen'd and registered tokens have had their codes resolved
- * (via base_yyTokenName).
+ * Published after the in-process grammar compose (pg_grammar_ext_prewarm
+ * at postmaster start), once each registered extension token's code has
+ * been resolved against the composed snapshot via
+ * lime_snapshot_token_code().
  *
- * Lifecycle (intentional non-feature):
- *   The hook is published once at the first raw_parser() call after
- *   shared_preload_libraries-loaded extensions register their
- *   contributions, and stays installed until postmaster exit.
- *   There is NO SIGHUP-driven teardown / re-publish.  Reasons:
+ * Lifecycle and config reload (Option A -- load-at-start):
+ *   Grammar extensions register from shared_preload_libraries _PG_init,
+ *   which runs only at postmaster start.  The composed snapshot is built
+ *   once there (pg_grammar_ext_prewarm) and inherited by every backend
+ *   across fork.  A config reload (SIGHUP -- pg_ctl reload /
+ *   pg_reload_conf() / kill -HUP) re-reads GUCs as usual; it does NOT
+ *   recompose the grammar, and need not: the registered extension set is
+ *   fixed for the postmaster's lifetime.
  *
- *     1. dlclose'ing the rebuilt .so while a backend has a
- *        ParseTree referencing strings allocated in that .so's
- *        text segment is unsafe.  The parse tree outlives the
- *        parse call (parse_analyze, planner, executor all see it).
+ *   This is deliberate and matches every other shared_preload_libraries
+ *   extension: the LIBRARIES cannot be hot-loaded into a running
+ *   cluster, so the grammar set cannot change without a restart.  Not
+ *   recomposing also keeps in-flight parse trees safe -- a RawStmt and
+ *   its token strings outlive the parse call (parse_analyze, planner,
+ *   executor all see them), so the snapshot they were parsed against
+ *   must stay valid.
  *
- *     2. The cache key is keyed on the SET of registered extensions,
- *        not their evolving state.  A SIGHUP that adds an extension
- *        would invalidate the key for every existing backend, but
- *        existing backends still hold the OLD .so.  Live-swapping
- *        without a coordinated quiesce would race.
+ *   To add or remove a grammar extension: edit
+ *   shared_preload_libraries, restart the postmaster.  (A future
+ *   enhancement could let a GUC activate/deactivate an already-loaded
+ *   dialect across a standard config reload, with a refcounted snapshot
+ *   swap at the raw_parser boundary; not implemented.)
  *
- *     3. shared_preload_libraries is the established PG idiom for
- *        load-at-startup-only extension code.  Grammar extensions
- *        slot in there cleanly.
- *
- *   To add or remove an extension: edit shared_preload_libraries,
- *   restart the postmaster.  This is documented behaviour, not a
- *   limitation.
- *
- * Hook ordering matters: the base perfect-hash ScanKeywordLookup
- * runs first.  Extensions cannot OVERRIDE existing SQL keywords --
- * a registered extension keyword whose lexeme matches a base SQL
- * keyword is silently shadowed.  Concrete impact: contrib/quel
- * cannot use lexemes like "range", "of", "is", "to", "by",
- * "replace" because those are base SQL keywords.  QUEL keywords
- * use prefixed lexemes ("into_quel", "delete_quel") to avoid the
- * collision.  A future API extension could add a per-extension
- * "shadow base SQL keyword" capability, but that's a Phase 2+
- * feature with significant grammar-conflict implications.
+ * Keyword override:
+ *   An extension keyword resolves to its own token even when its lexeme
+ *   collides with a base SQL keyword.  Non-colliding lexemes resolve
+ *   straight through this hook; colliding lexemes (a word that is both a
+ *   base and an extension keyword) are resolved at parse time by the
+ *   admissibility oracle, which emits the extension token only in parse
+ *   states where the base keyword is inadmissible (e.g. a QUEL verb at
+ *   statement start).  contrib/quel therefore uses its real lexemes
+ *   (range/of/is/to/into/by/replace); a verb that legitimately begins a
+ *   statement in both grammars (DELETE) is left to multi-token
+ *   fork-resolve.
  */
 typedef int (*PgGrammarExtKeywordHook) (const char *lower_lexeme);
 extern PGDLLIMPORT PgGrammarExtKeywordHook pg_grammar_ext_keyword_hook;
