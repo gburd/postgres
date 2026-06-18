@@ -176,6 +176,32 @@ test_backend_thread_runtime_state(PG_FUNCTION_ARGS)
 		CHECK_THREAD_RUNTIME_STATE(CurrentPgConnection == saved_connection);
 		CHECK_THREAD_RUNTIME_STATE(CurrentPgExecution == saved_execution);
 
+		PgCarrierAttachBackend(&state.carrier, &state.backend);
+		CHECK_THREAD_RUNTIME_STATE(CurrentPgRuntime == state.backend.runtime);
+		CHECK_THREAD_RUNTIME_STATE(CurrentPgCarrier == &state.carrier);
+		CHECK_THREAD_RUNTIME_STATE(CurrentPgBackend == &state.backend);
+		CHECK_THREAD_RUNTIME_STATE(CurrentPgSession == &state.session);
+		CHECK_THREAD_RUNTIME_STATE(CurrentPgConnection == &state.connection);
+		CHECK_THREAD_RUNTIME_STATE(CurrentPgExecution == &state.execution);
+		CHECK_THREAD_RUNTIME_STATE(state.carrier.current_backend == &state.backend);
+		CHECK_THREAD_RUNTIME_STATE(state.carrier.current_session == &state.session);
+		CHECK_THREAD_RUNTIME_STATE(state.carrier.current_execution == &state.execution);
+		CHECK_THREAD_RUNTIME_STATE(state.backend.carrier == &state.carrier);
+		CHECK_THREAD_RUNTIME_STATE(state.execution.carrier == &state.carrier);
+
+		PgCarrierDetachBackend(&state.carrier);
+		CHECK_THREAD_RUNTIME_STATE(CurrentPgRuntime == state.backend.runtime);
+		CHECK_THREAD_RUNTIME_STATE(CurrentPgCarrier == &state.carrier);
+		CHECK_THREAD_RUNTIME_STATE(CurrentPgBackend == NULL);
+		CHECK_THREAD_RUNTIME_STATE(CurrentPgSession == NULL);
+		CHECK_THREAD_RUNTIME_STATE(CurrentPgConnection == NULL);
+		CHECK_THREAD_RUNTIME_STATE(CurrentPgExecution == NULL);
+		CHECK_THREAD_RUNTIME_STATE(state.carrier.current_backend == NULL);
+		CHECK_THREAD_RUNTIME_STATE(state.carrier.current_session == NULL);
+		CHECK_THREAD_RUNTIME_STATE(state.carrier.current_execution == NULL);
+		CHECK_THREAD_RUNTIME_STATE(state.backend.carrier == NULL);
+		CHECK_THREAD_RUNTIME_STATE(state.execution.carrier == NULL);
+
 		PgSetCurrentRuntime(saved_runtime);
 		PgSetCurrentCarrier(saved_carrier);
 		PgSetCurrentBackend(saved_backend);
@@ -349,6 +375,7 @@ test_backend_pooled_wait_requeues_backend(PG_FUNCTION_ARGS)
 	saved_connection = CurrentPgConnection;
 	saved_execution = CurrentPgExecution;
 
+	MemSet(&state, 0, sizeof(state));
 	InitLatch(&fake_latch);
 	InitLatch(&scheduler_latch);
 	MemSet(&pooled_runtime, 0, sizeof(pooled_runtime));
@@ -365,15 +392,9 @@ test_backend_pooled_wait_requeues_backend(PG_FUNCTION_ARGS)
 											  &fake_latch);
 		state.carrier.runtime = &pooled_runtime;
 		state.backend.runtime = &pooled_runtime;
-		pooled_runtime.current_carrier = &state.carrier;
 		PgBackendSchedulerInitialize(&state.backend.scheduler);
 
-		PgSetCurrentRuntime(&pooled_runtime);
-		PgSetCurrentCarrier(&state.carrier);
-		PgSetCurrentBackend(&state.backend);
-		PgSetCurrentSession(&state.session);
-		PgSetCurrentConnection(&state.connection);
-		PgSetCurrentExecution(&state.execution);
+		PgCarrierAttachBackend(&state.carrier, &state.backend);
 
 		PgBackendSchedulerMarkRunning(&state.backend);
 
@@ -404,6 +425,7 @@ test_backend_pooled_wait_requeues_backend(PG_FUNCTION_ARGS)
 			PG_SCHEDULER_BACKEND_DETACHED)
 			elog(ERROR, "pooled wait did not complete expected requeue cycle");
 
+		PgCarrierDetachBackend(&state.carrier);
 		PgSetCurrentRuntime(saved_runtime);
 		PgSetCurrentCarrier(saved_carrier);
 		PgSetCurrentBackend(saved_backend);
@@ -413,6 +435,7 @@ test_backend_pooled_wait_requeues_backend(PG_FUNCTION_ARGS)
 	}
 	PG_CATCH();
 	{
+		PgCarrierDetachBackend(&state.carrier);
 		PgSetCurrentRuntime(saved_runtime);
 		PgSetCurrentCarrier(saved_carrier);
 		PgSetCurrentBackend(saved_backend);

@@ -3118,6 +3118,8 @@ extern void PgSetCurrentBackend(PgBackend *backend);
 extern void PgSetCurrentSession(PgSession *session);
 extern void PgSetCurrentConnection(PgConnection *connection);
 extern void PgSetCurrentExecution(PgExecution *execution);
+extern void PgCarrierAttachBackend(PgCarrier *carrier, PgBackend *backend);
+extern void PgCarrierDetachBackend(PgCarrier *carrier);
 extern void PgRuntimeReportBridgeFallbackStats(void);
 extern bool PgCurrentSessionOwnsPointer(const void *ptr);
 extern bool PgCurrentOrEarlySessionOwnsPointer(const void *ptr);
