@@ -1,3 +1,49 @@
+Multithreaded PostgreSQL Experimental Branch
+============================================
+
+This repository is an experimental PostgreSQL branch exploring how PostgreSQL
+can run backend sessions in a native multithreaded runtime while preserving the
+existing multiprocess backend model.
+
+The aim is not to bolt `pthread_create()` onto PostgreSQL and call it done. The
+branch is making backend, session, connection, execution, interrupt, lifecycle,
+and wait state explicit so that PostgreSQL can support:
+
+- the existing process-per-backend model;
+- a native thread-per-session runtime for regular client backends;
+- threaded in-tree worker families where ownership is understood;
+- a later scheduler that can run logical sessions or executions on a smaller
+  pool of physical carriers.
+
+The current implementation starts from PostgreSQL `REL_19_BETA1`. Phase 12 has
+closed the scoped core thread-per-session state-migration gate. The active
+direction is Phase 13: making waits scheduler-aware while keeping process mode
+and thread-per-session fallback behavior healthy.
+
+Important constraints:
+
+- process-mode PostgreSQL must continue to work;
+- arbitrary third-party C extensions are not assumed to be thread-safe;
+- thread-per-session is a milestone, not the final scheduler design;
+- pooled scheduling comes after explicit wait boundaries exist;
+- correctness and lifecycle ownership come before broad performance claims.
+
+Useful project documents:
+
+- [Architecture](MULTITHREADED_ARCHITECTURE.md): target object model and
+  north-star design.
+- [Implementation plan](MULTITHREADED_PLAN.md): staged roadmap, validation
+  gates, and phase boundaries.
+- [Phase 13 plan](MULTITHREADED_PHASE13_PLAN.md): current scheduler-aware wait
+  boundary work.
+- [Threading review](MULTITHREADED_THREADING_REVIEW.md): review of the branch
+  direction, risks, and historical correctness blockers.
+- [Agent guide](AGENTS.md): local development rules, validation defaults, and
+  current working assumptions for this branch.
+
+Original PostgreSQL README
+==========================
+
 PostgreSQL Database Management System
 =====================================
 
