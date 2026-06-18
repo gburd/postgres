@@ -244,6 +244,16 @@ stale entries (enforced in heap_prune_record_redirect, the stub recorders, and
 heap_page_would_be_all_visible).
 
 
+amcheck and statistics
+----------------------
+
+verify_heapam treats the HOT-indexed artifacts as legitimate: a live
+HEAP_INDEXED_UPDATED heap-only tuple whose line pointer is preserved, and
+multiple LP_REDIRECTs forwarding to one live tuple.
+
+Statistics: pg_stat_all_tables.n_tup_hot_indexed_upd counts HOT-indexed
+
+
 Appendices
 ----------
 
