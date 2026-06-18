@@ -1368,7 +1368,7 @@ PgCurrentBackendWaitState(void)
  * wait specs.  A future scheduler that parks and resumes many sessions on a
  * carrier can enable this owner-local switch when it needs to observe waits.
  */
-static bool pg_runtime_publish_wait_specs = false;
+static PG_GLOBAL_RUNTIME bool pg_runtime_publish_wait_specs = false;
 
 int
 PgSuspend(const PgWaitSpec *wait_spec, PgSuspendCallback callback,

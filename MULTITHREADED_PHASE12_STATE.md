@@ -1,3 +1,44 @@
+## Runtime Current Field Macro Hygiene
+
+Lifecycle/preflight note:
+
+- target: restore the README-listed guardrails after fresh validation exposed
+  current-field accessor preprocessor fallout and strict global-lifetime
+  scanner misses, then uncovered missing lazy initialization in bridge-backed
+  field refs.
+- touched roots/buckets: `CurrentPgExecutionDebugRuntimeState`,
+  `CurrentPgSessionEncodingRuntimeState`, `CurrentPgBackendWaitRuntimeState`,
+  and the dormant wait-spec publication switch. No ownership or lifecycle
+  shape changes.
+- owner source files:
+  `src/include/utils/backend_runtime_current_field_accessors.def`,
+  `src/include/utils/backend_runtime.h`,
+  `src/backend/storage/ipc/backend_runtime_ipc.c`,
+  `src/backend/utils/init/backend_runtime_backend.c`,
+  `src/backend/utils/mb/backend_runtime_mb.c`,
+  `src/test/modules/test_backend_runtime/test_backend_runtime_dsm.c`,
+  `src/tools/global_lifetime/scan_global_lifetimes.pl`, `README.md`, and this
+  state note.
+- legacy symbols/accessors: preserve `PgCurrentDebugQueryStringRef()` and the
+  `debug_query_string` compatibility lvalue semantics. Preserve exported
+  session-encoding and backend-wait field-ref functions while keeping their
+  generated hot macros bridge-backed for initialized buckets.
+- repeated lifecycle operations: none.
+- checked primitive decision: use the exported fallback function for
+  `PgCurrentDebugQueryStringRef()` itself, while leaving the hot
+  `debug_query_string` lvalue on its bridge-backed inline path. The field name
+  collides with the compatibility macro and cannot safely appear in a rescanned
+  generated macro body. Add initialized-by-member fast helpers so encoding refs
+  fall back until `client_encoding` is installed and wait refs fall back until
+  `wait_event_info_ptr` is installed. Initialize fake DSM test backends' wait
+  state before DSM allocation. Classify the dormant wait-spec publication
+  switch as runtime-global, and ignore generated Bison `*_yydebug`
+  declarations guarded by `YYDEBUG`.
+- validation impact: after rebuilding affected objects, the README-listed
+  targets pass locally, including `check-threaded`, `check-threaded-workers`,
+  and `check-threaded-world-core`. The earlier `subscription.sql` hang did not
+  reproduce after the fixes.
+
 ## Protocol Loop Holdoff Probe
 
 Lifecycle/preflight note:

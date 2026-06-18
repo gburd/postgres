@@ -28,6 +28,11 @@ test_backend_dsm_shutdown_is_backend_local(PG_FUNCTION_ARGS)
 	MemSet(&fake_backend_to_exit, 0, sizeof(fake_backend_to_exit));
 	dlist_init(&fake_backend_with_dsm.dsm_segment_list);
 	dlist_init(&fake_backend_to_exit.dsm_segment_list);
+	/* DSM allocation reports wait events through backend-local wait state. */
+	fake_backend_with_dsm.wait_state.wait_event_info_ptr =
+		&fake_backend_with_dsm.wait_state.local_wait_event_info;
+	fake_backend_to_exit.wait_state.wait_event_info_ptr =
+		&fake_backend_to_exit.wait_state.local_wait_event_info;
 
 	PG_TRY();
 	{

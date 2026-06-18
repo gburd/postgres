@@ -108,13 +108,13 @@ PgCurrentLocalLatchData(void)
 uint32 **
 PgCurrentMyWaitEventInfoRef(void)
 {
-	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendWaitRuntimeState, PgCurrentBackendWaitState)->wait_event_info_ptr;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR_INITIALIZED_BY(CurrentPgBackendWaitRuntimeState, PgCurrentBackendWaitState, wait_event_info_ptr)->wait_event_info_ptr;
 }
 
 uint32 *
 PgCurrentLocalWaitEventInfoRef(void)
 {
-	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendWaitRuntimeState, PgCurrentBackendWaitState)->local_wait_event_info;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR_INITIALIZED_BY(CurrentPgBackendWaitRuntimeState, PgCurrentBackendWaitState, wait_event_info_ptr)->local_wait_event_info;
 }
 
 volatile sig_atomic_t *

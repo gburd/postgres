@@ -54,6 +54,11 @@ Current validation baseline:
 - `gmake check-global-lifetimes`
 - `git diff --check`
 
+These Gate E2-Core validation targets are currently green in the local WSL
+development tree as of June 19, 2026. Re-run the full set before claiming a new
+release-quality checkpoint, because this branch intentionally keeps changing
+runtime ownership boundaries.
+
 Performance guidance:
 
 Performance work is currently measured against vanilla PostgreSQL 19 beta 1

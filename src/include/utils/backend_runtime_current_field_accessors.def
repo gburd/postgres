@@ -121,11 +121,11 @@
 	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXactRuntimeState, PgCurrentCheckXidAliveRef, \
 									 check_xid_alive)
 #define PgCurrentClientEncodingRef() \
-	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentClientEncodingRef, \
-									 client_encoding)
+	PG_RUNTIME_CURRENT_INITIALIZED_BY_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentClientEncodingRef, \
+									 client_encoding, client_encoding)
 #define PgCurrentClientEncodingStringRef() \
-	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentClientEncodingStringRef, \
-									 client_encoding_string_value)
+	PG_RUNTIME_CURRENT_INITIALIZED_BY_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentClientEncodingStringRef, \
+									 client_encoding, client_encoding_string_value)
 #define PgCurrentClientMinMessagesRef() \
 	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentClientMinMessagesRef, \
 									 client_min_messages_value)
@@ -181,8 +181,8 @@
 	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendUtilityRuntimeState, PgCurrentDCHCounterRef, \
 									 dch_counter)
 #define PgCurrentDatabaseEncodingRef() \
-	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentDatabaseEncodingRef, \
-									 database_encoding)
+	PG_RUNTIME_CURRENT_INITIALIZED_BY_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentDatabaseEncodingRef, \
+									 client_encoding, database_encoding)
 #define PgCurrentDateOrderRef() \
 	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionDateTimeRuntimeState, PgCurrentDateOrderRef, \
 									 date_order)
@@ -280,8 +280,7 @@
 	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentDebugPrintRewrittenRef, \
 									 debug_print_rewritten_value)
 #define PgCurrentDebugQueryStringRef() \
-	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionDebugRuntimeState, PgCurrentDebugQueryStringRef, \
-									 debug_query_string)
+	PgCurrentDebugQueryStringRef()
 #define PgCurrentDebugRawExpressionCoverageTestRef() \
 	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentDebugRawExpressionCoverageTestRef, \
 									 debug_raw_expression_coverage_test_value)
@@ -424,11 +423,11 @@
 	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnableTidscanRef, \
 									 enable_tidscan_value)
 #define PgCurrentEncodingConvProcListRef() \
-	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentEncodingConvProcListRef, \
-									 conv_proc_list)
+	PG_RUNTIME_CURRENT_INITIALIZED_BY_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentEncodingConvProcListRef, \
+									 client_encoding, conv_proc_list)
 #define PgCurrentEncodingStartupCompleteRef() \
-	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentEncodingStartupCompleteRef, \
-									 backend_startup_complete)
+	PG_RUNTIME_CURRENT_INITIALIZED_BY_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentEncodingStartupCompleteRef, \
+									 client_encoding, backend_startup_complete)
 #define PgCurrentErrorContextStackRef() \
 	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionErrorRuntimeState, PgCurrentErrorContextStackRef, \
 									 context_stack)
@@ -709,8 +708,8 @@
 	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionVacuumRuntimeState, PgCurrentLocalVacuumCostLimitRef, \
 									 local_vacuum_cost_limit_value)
 #define PgCurrentLocalWaitEventInfoRef() \
-	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendWaitRuntimeState, PgCurrentLocalWaitEventInfoRef, \
-									 local_wait_event_info)
+	PG_RUNTIME_CURRENT_INITIALIZED_BY_FIELD_REF(CurrentPgBackendWaitRuntimeState, PgCurrentLocalWaitEventInfoRef, \
+									 wait_event_info_ptr, local_wait_event_info)
 #define PgCurrentLocaleMessagesRef() \
 	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLocaleRuntimeState, PgCurrentLocaleMessagesRef, \
 									 locale_messages_value)
@@ -823,8 +822,8 @@
 	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendStorageRuntimeState, PgCurrentMdContextRef, \
 									 md_context)
 #define PgCurrentMessageEncodingRef() \
-	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentMessageEncodingRef, \
-									 message_encoding)
+	PG_RUNTIME_CURRENT_INITIALIZED_BY_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentMessageEncodingRef, \
+									 client_encoding, message_encoding)
 #define PgCurrentMinEagerAggGroupSizeRef() \
 	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentMinEagerAggGroupSizeRef, \
 									 min_eager_agg_group_size_value)
@@ -868,8 +867,8 @@
 	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendCoreRuntimeState, PgCurrentMyStartTimestampRef, \
 									 start_timestamp)
 #define PgCurrentMyWaitEventInfoRef() \
-	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendWaitRuntimeState, PgCurrentMyWaitEventInfoRef, \
-									 wait_event_info_ptr)
+	PG_RUNTIME_CURRENT_INITIALIZED_BY_FIELD_REF(CurrentPgBackendWaitRuntimeState, PgCurrentMyWaitEventInfoRef, \
+									 wait_event_info_ptr, wait_event_info_ptr)
 #define PgCurrentMyXactDidWriteRef() \
 	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentMyXactDidWriteRef, \
 									 my_xact_did_write)
@@ -1000,8 +999,8 @@
 	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentPendingCheckpointerStatsRef, \
 									 pending_checkpointer)
 #define PgCurrentPendingClientEncodingRef() \
-	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentPendingClientEncodingRef, \
-									 pending_client_encoding)
+	PG_RUNTIME_CURRENT_INITIALIZED_BY_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentPendingClientEncodingRef, \
+									 client_encoding, pending_client_encoding)
 #define PgCurrentPendingIOStatsRef() \
 	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentPendingIOStatsRef, \
 									 io_stats)
@@ -1360,8 +1359,8 @@
 	PG_RUNTIME_CURRENT_FIELD_PTR(CurrentPgBackendUtilityRuntimeState, PgCurrentSeqScanTables, \
 									 seq_scan_tables)
 #define PgCurrentServerEncodingStringRef() \
-	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentServerEncodingStringRef, \
-									 server_encoding_string_value)
+	PG_RUNTIME_CURRENT_INITIALIZED_BY_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentServerEncodingStringRef, \
+									 client_encoding, server_encoding_string_value)
 #define PgCurrentSessionPreloadLibrariesRef() \
 	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionMiscGUCRuntimeState, PgCurrentSessionPreloadLibrariesRef, \
 									 session_preload_libraries_value)
@@ -1492,11 +1491,11 @@
 	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionDateTimeRuntimeState, PgCurrentTimeZoneStringRef, \
 									 timezone_string_value)
 #define PgCurrentToClientConvProcRef() \
-	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentToClientConvProcRef, \
-									 to_client_conv_proc)
+	PG_RUNTIME_CURRENT_INITIALIZED_BY_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentToClientConvProcRef, \
+									 client_encoding, to_client_conv_proc)
 #define PgCurrentToServerConvProcRef() \
-	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentToServerConvProcRef, \
-									 to_server_conv_proc)
+	PG_RUNTIME_CURRENT_INITIALIZED_BY_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentToServerConvProcRef, \
+									 client_encoding, to_server_conv_proc)
 #define PgCurrentTopPortalContextRef() \
 	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionPortalManagerRuntimeState, PgCurrentTopPortalContextRef, \
 									 top_portal_context)
@@ -1594,8 +1593,8 @@
 	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionComboCidRuntimeState, PgCurrentUsedComboCidsRef, \
 									 used)
 #define PgCurrentUtf8ToServerConvProcRef() \
-	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentUtf8ToServerConvProcRef, \
-									 utf8_to_server_conv_proc)
+	PG_RUNTIME_CURRENT_INITIALIZED_BY_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentUtf8ToServerConvProcRef, \
+									 client_encoding, utf8_to_server_conv_proc)
 #define PgCurrentVacuumActiveNWorkersRef() \
 	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionVacuumRuntimeState, PgCurrentVacuumActiveNWorkersRef, \
 									 active_nworkers)

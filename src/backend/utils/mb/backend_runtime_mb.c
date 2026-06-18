@@ -36,7 +36,7 @@ PgCurrentSessionEncodingState(void)
 List **
 PgCurrentEncodingConvProcListRef(void)
 {
-	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionEncodingRuntimeState, PgCurrentSessionEncodingState)->conv_proc_list;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR_INITIALIZED_BY(CurrentPgSessionEncodingRuntimeState, PgCurrentSessionEncodingState, client_encoding)->conv_proc_list;
 }
 
 MemoryContext
@@ -53,47 +53,47 @@ PgCurrentEncodingCacheMemoryContext(void)
 FmgrInfo **
 PgCurrentToServerConvProcRef(void)
 {
-	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionEncodingRuntimeState, PgCurrentSessionEncodingState)->to_server_conv_proc;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR_INITIALIZED_BY(CurrentPgSessionEncodingRuntimeState, PgCurrentSessionEncodingState, client_encoding)->to_server_conv_proc;
 }
 
 FmgrInfo **
 PgCurrentToClientConvProcRef(void)
 {
-	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionEncodingRuntimeState, PgCurrentSessionEncodingState)->to_client_conv_proc;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR_INITIALIZED_BY(CurrentPgSessionEncodingRuntimeState, PgCurrentSessionEncodingState, client_encoding)->to_client_conv_proc;
 }
 
 FmgrInfo **
 PgCurrentUtf8ToServerConvProcRef(void)
 {
-	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionEncodingRuntimeState, PgCurrentSessionEncodingState)->utf8_to_server_conv_proc;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR_INITIALIZED_BY(CurrentPgSessionEncodingRuntimeState, PgCurrentSessionEncodingState, client_encoding)->utf8_to_server_conv_proc;
 }
 
 const pg_enc2name **
 PgCurrentClientEncodingRef(void)
 {
-	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionEncodingRuntimeState, PgCurrentSessionEncodingState)->client_encoding;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR_INITIALIZED_BY(CurrentPgSessionEncodingRuntimeState, PgCurrentSessionEncodingState, client_encoding)->client_encoding;
 }
 
 const pg_enc2name **
 PgCurrentDatabaseEncodingRef(void)
 {
-	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionEncodingRuntimeState, PgCurrentSessionEncodingState)->database_encoding;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR_INITIALIZED_BY(CurrentPgSessionEncodingRuntimeState, PgCurrentSessionEncodingState, client_encoding)->database_encoding;
 }
 
 const pg_enc2name **
 PgCurrentMessageEncodingRef(void)
 {
-	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionEncodingRuntimeState, PgCurrentSessionEncodingState)->message_encoding;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR_INITIALIZED_BY(CurrentPgSessionEncodingRuntimeState, PgCurrentSessionEncodingState, client_encoding)->message_encoding;
 }
 
 bool *
 PgCurrentEncodingStartupCompleteRef(void)
 {
-	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionEncodingRuntimeState, PgCurrentSessionEncodingState)->backend_startup_complete;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR_INITIALIZED_BY(CurrentPgSessionEncodingRuntimeState, PgCurrentSessionEncodingState, client_encoding)->backend_startup_complete;
 }
 
 int *
 PgCurrentPendingClientEncodingRef(void)
 {
-	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionEncodingRuntimeState, PgCurrentSessionEncodingState)->pending_client_encoding;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR_INITIALIZED_BY(CurrentPgSessionEncodingRuntimeState, PgCurrentSessionEncodingState, client_encoding)->pending_client_encoding;
 }

@@ -3337,6 +3337,20 @@ pg_noreturn extern void PgSessionRun(PgSession *session);
 		pg_runtime_bucket; \
 	})
 
+#define PG_RUNTIME_FAST_BUCKET_ACCESSOR_INITIALIZED_BY(variable, fallback, initialized_member) \
+	__extension__ \
+	({ \
+		typeof(variable) pg_runtime_bucket = (variable); \
+ \
+		if (unlikely(pg_runtime_bucket == NULL || \
+					 !pg_runtime_bucket->initialized_member)) \
+		{ \
+			PG_RUNTIME_BRIDGE_COUNT_FALLBACK(fast_initialized_bucket); \
+			pg_runtime_bucket = fallback(); \
+		} \
+		pg_runtime_bucket; \
+	})
+
 #define PG_RUNTIME_CURRENT_FIELD_REF(variable, fallback, member) \
 	__extension__ \
 	({ \
@@ -3344,6 +3358,18 @@ pg_noreturn extern void PgSessionRun(PgSession *session);
  \
 		unlikely(pg_runtime_bucket == NULL) ? \
 		(PG_RUNTIME_BRIDGE_COUNT_FALLBACK_EXPR(fast_bucket), (fallback)()) : \
+		&pg_runtime_bucket->member; \
+	})
+
+#define PG_RUNTIME_CURRENT_INITIALIZED_BY_FIELD_REF(variable, fallback, initialized_member, member) \
+	__extension__ \
+	({ \
+		typeof(variable) pg_runtime_bucket = (variable); \
+ \
+		unlikely(pg_runtime_bucket == NULL || \
+				 !pg_runtime_bucket->initialized_member) ? \
+		(PG_RUNTIME_BRIDGE_COUNT_FALLBACK_EXPR(fast_initialized_bucket), \
+		 (fallback)()) : \
 		&pg_runtime_bucket->member; \
 	})
 
