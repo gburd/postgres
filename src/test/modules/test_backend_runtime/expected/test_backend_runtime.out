@@ -47,6 +47,12 @@ SELECT test_backend_pooled_wait_requeues_backend();
  t
 (1 row)
 
+SELECT test_backend_pooled_wait_parks_backend();
+ test_backend_pooled_wait_parks_backend 
+----------------------------------------
+ t
+(1 row)
+
 SELECT test_carrier_threaded_guc_lock_depth_is_carrier_local();
  test_carrier_threaded_guc_lock_depth_is_carrier_local 
 -------------------------------------------------------

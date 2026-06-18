@@ -173,6 +173,7 @@ typedef struct PgStepBudget
 typedef enum PgStepResult
 {
 	PG_STEP_CONTINUE,
+	PG_STEP_WAITING,
 	PG_STEP_ERROR_RECOVERED
 } PgStepResult;
 
@@ -3396,6 +3397,9 @@ extern bool PgCurrentBackendHasPendingInterrupts(void);
 extern void PgCurrentBackendApplyInterrupts(void);
 extern bool PgSetWaitCompletionPublication(bool enabled);
 extern PgWaitCompletion *PgBackendCurrentWaitCompletion(PgBackend *backend);
+extern bool PgBackendPublishWaitCompletion(PgBackend *backend,
+										   const PgWaitSpec *wait_spec);
+extern void PgBackendClearPublishedWaitCompletion(PgBackend *backend);
 extern bool PgBackendSnapshotWaitCompletionById(PgBackendId backend_id,
 												PgWaitCompletion *snapshot,
 												uint32 *waiting);

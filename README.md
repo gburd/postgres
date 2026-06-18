@@ -38,8 +38,9 @@ Current status:
   condition variables, heavyweight locks, and PGPROC semaphore-backed waits
   including LWLocks.
 - Phase 14 is active. The branch now has pooled scheduler queue/requeue
-  scaffolding, and current work is adding the carrier/session switching needed
-  before logical backends can park and resume on a smaller carrier pool.
+  scaffolding, carrier current-work switching, and a publish-only wait parking
+  primitive. Remaining Phase 14 work is to wire real scheduler loops, event
+  readiness, and frontend wait boundaries through that substrate.
 - Process mode remains supported.
 - Thread-per-session mode runs regular client backends and normal SQL paths.
 - Core backend/session/connection/execution/carrier state has explicit runtime

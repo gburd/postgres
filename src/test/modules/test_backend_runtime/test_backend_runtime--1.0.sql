@@ -35,6 +35,10 @@ CREATE FUNCTION test_backend_pooled_wait_requeues_backend()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;
 
+CREATE FUNCTION test_backend_pooled_wait_parks_backend()
+	RETURNS pg_catalog.bool
+	AS 'MODULE_PATHNAME' LANGUAGE C;
+
 CREATE FUNCTION test_carrier_threaded_guc_lock_depth_is_carrier_local()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;

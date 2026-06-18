@@ -201,7 +201,7 @@ static void PgWaitCompletionPublish(PgWaitCompletion *completion,
 									PgBackend *backend,
 									const PgWaitSpec *wait_spec);
 static void PgWaitCompletionClear(PgWaitCompletion *completion);
-static void PgBackendClearWaitCompletion(PgBackendWaitState *wait_state);
+static void PgBackendClearWaitCompletionState(PgBackendWaitState *wait_state);
 static void PgBackendWakeForWaitCompletion(PgBackend *backend);
 static bool PgBackendShouldPublishWaitCompletion(PgBackend *backend,
 												 const PgWaitSpec *wait_spec);
@@ -1089,7 +1089,7 @@ PgWaitCompletionClear(PgWaitCompletion *completion)
 }
 
 static void
-PgBackendClearWaitCompletion(PgBackendWaitState *wait_state)
+PgBackendClearWaitCompletionState(PgBackendWaitState *wait_state)
 {
 	PgBackend  *backend;
 
@@ -1097,7 +1097,14 @@ PgBackendClearWaitCompletion(PgBackendWaitState *wait_state)
 
 	backend = wait_state->completion.backend;
 	if (backend != NULL && PgRuntimeIsPooledScheduler(backend->runtime))
-		PgBackendSchedulerMarkDetached(backend);
+	{
+		PgSchedulerBackendState scheduler_state;
+
+		scheduler_state = (PgSchedulerBackendState)
+			pg_atomic_read_u32(&backend->scheduler.state);
+		if (scheduler_state != PG_SCHEDULER_BACKEND_RUNNING)
+			PgBackendSchedulerMarkDetached(backend);
+	}
 
 	pg_atomic_write_u32(&wait_state->waiting, 0);
 	MemSet(&wait_state->spec, 0, sizeof(wait_state->spec));
@@ -1756,6 +1763,33 @@ PgBackendCurrentWaitCompletion(PgBackend *backend)
 }
 
 bool
+PgBackendPublishWaitCompletion(PgBackend *backend,
+							   const PgWaitSpec *wait_spec)
+{
+	PgBackendWaitState *wait_state;
+
+	if (!PgBackendShouldPublishWaitCompletion(backend, wait_spec))
+		return false;
+
+	wait_state = &backend->wait_state;
+	PgBackendEnsureWaitStateInitialized(wait_state);
+	wait_state->spec = *wait_spec;
+	PgWaitCompletionPublish(&wait_state->completion, backend, wait_spec);
+	pg_atomic_write_membarrier_u32(&wait_state->waiting, 1);
+
+	return true;
+}
+
+void
+PgBackendClearPublishedWaitCompletion(PgBackend *backend)
+{
+	if (backend == NULL)
+		return;
+
+	PgBackendClearWaitCompletionState(&backend->wait_state);
+}
+
+bool
 PgBackendSnapshotWaitCompletionById(PgBackendId backend_id,
 									PgWaitCompletion *snapshot,
 									uint32 *waiting)
@@ -1906,7 +1940,6 @@ PgSuspend(const PgWaitSpec *wait_spec, PgSuspendCallback callback,
 		  void *callback_arg)
 {
 	PgBackend  *backend;
-	PgBackendWaitState *wait_state;
 	int			result = 0;
 
 	Assert(callback != NULL);
@@ -1914,12 +1947,7 @@ PgSuspend(const PgWaitSpec *wait_spec, PgSuspendCallback callback,
 	backend = CurrentPgBackend;
 	if (likely(!PgBackendShouldPublishWaitCompletion(backend, wait_spec)))
 		return callback(callback_arg);
-
-	wait_state = &backend->wait_state;
-	PgBackendEnsureWaitStateInitialized(wait_state);
-	wait_state->spec = *wait_spec;
-	PgWaitCompletionPublish(&wait_state->completion, backend, wait_spec);
-	pg_atomic_write_membarrier_u32(&wait_state->waiting, 1);
+	(void) PgBackendPublishWaitCompletion(backend, wait_spec);
 
 	PG_TRY();
 	{
@@ -1928,13 +1956,13 @@ PgSuspend(const PgWaitSpec *wait_spec, PgSuspendCallback callback,
 	PG_CATCH();
 	{
 		if (backend != NULL)
-			PgBackendClearWaitCompletion(&backend->wait_state);
+			PgBackendClearWaitCompletionState(&backend->wait_state);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
 
 	if (backend != NULL)
-		PgBackendClearWaitCompletion(&backend->wait_state);
+		PgBackendClearWaitCompletionState(&backend->wait_state);
 
 	return result;
 }
