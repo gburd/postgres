@@ -206,6 +206,44 @@ under the opclass even if not bitwise-identical, e.g. numeric 1.0 vs 1.00) is
 still detected.  (Appendix A motivates this recheck in detail.)
 
 
+Prune and chain collapse
+-------------------------
+
+Because a HOT-indexed update plants an index entry pointing at a mid-chain
+heap-only tuple's own TID, classic HOT's assumption that mid-chain line
+pointers have no external references no longer holds.  Pruning therefore must
+not reclaim such a line pointer while a not-yet-swept index entry can still
+arrive at it.
+
+heap_prune_chain collapses a run of dead chain members to a single
+LP_REDIRECT that forwards to the first live tuple, and preserves the line
+pointer of a live HOT-indexed member (heap_prune_item_preserves_hot_indexed)
+so a reader arriving via a stale entry still finds a walkable hop.  More than
+one LP_REDIRECT may forward to the same live tuple.  The redirect lifecycle
+reuses the existing prune WAL records; there is no new on-disk format.
+
+
+Vacuum reclamation
+------------------
+
+VACUUM's index cleanup sweeps the stale index entries.  The collapse back to
+classic HOT is driven by prune, not by VACUUM's second pass: once a chain is
+fully dead, a later prune (heap_prune_chain / heap_prune_chain_find_live)
+reclaims its members and re-points the root redirect straight at first_live.
+Re-pointing a redirect preserves reachability (every walker still reaches
+first_live), so it is safe under the exclusive lock prune already holds.
+
+VACUUM's second pass (lazy_vacuum_heap_page) does not itself re-point
+redirects or reclaim stubs; it performs the usual LP_DEAD -> LP_UNUSED
+conversion and leaves the HOT-indexed collapse to prune.
+
+A page that still carries a preserved HOT-indexed member or a collapse-survivor
+stub is deliberately left non-all-visible, so that an index-only scan
+heap-fetches through the chain and the crossed-attribute bitmap can filter
+stale entries (enforced in heap_prune_record_redirect, the stub recorders, and
+heap_page_would_be_all_visible).
+
+
 Appendices
 ----------
 
