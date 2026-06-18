@@ -257,6 +257,40 @@ per-index recheck outcomes; and pg_relation_hot_indexed_stats() reports
 per-relation HOT-indexed chain counts.
 
 
+Logical replication
+-------------------
+
+A HOT-indexed update of a replica-identity attribute on a subscriber leaves a
+stale index leaf; the apply worker's replica-identity lookups tolerate that
+only when the indexed attributes are covered by the replica identity.  The
+per-subscription hot_indexed_on_apply option (pg_subscription.subhotindexedonapply,
+off / subset_only / always; subset_only is the default) controls this:
+HeapUpdateHotAllowable consults GetHotIndexedApplyMode on the apply path and
+falls back to non-HOT when the indexed attributes are not exactly the primary
+key (off) or not a subset of it (subset_only).
+
+
+Recovery
+--------
+
+HOT-indexed updates and the prune/collapse use the existing heap UPDATE and
+prune/freeze WAL records, so crash recovery replays them with no new record
+types.  src/test/recovery/t/054_hot_indexed_recovery.pl builds a chain,
+crashes without a checkpoint (forcing WAL redo), and verifies the chain walk,
+verify_heapam, and vacuum reclamation after restart, with
+wal_consistency_checking = 'all' comparing each replayed page to its FPI.
+
+
+Adversarial tests
+-----------------
+
+src/test/isolation/specs/hot_indexed_adversarial.spec exercises the cases the
+invariant must satisfy under concurrency: key cycling (X->Y->X), aborted
+HOT-indexed updates, concurrent unique inserts against a freed/taken key,
+snapshot-safe reclaim of stale leaves, and reader consistency across a
+concurrent prune/collapse.
+
+
 Appendices
 ----------
 
