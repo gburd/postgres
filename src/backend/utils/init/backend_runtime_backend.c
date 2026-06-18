@@ -1098,6 +1098,78 @@ PgRuntimeSchedulerRunNext(PgRuntime *runtime, PgCarrier *carrier,
 												NULL, step_result);
 }
 
+static PgBackend *
+PgRuntimeSchedulerFindSocketWait(PgRuntime *runtime, pgsocket socket,
+								 uint32 ready_events, uint32 *matched_events)
+{
+	PgRuntimeSchedulerState *scheduler;
+	PgBackend  *backend = NULL;
+	uint32		socket_events;
+	dlist_iter	iter;
+
+	if (matched_events != NULL)
+		*matched_events = 0;
+
+	socket_events = ready_events & WL_SOCKET_MASK;
+	if (!PgRuntimeIsPooledScheduler(runtime) ||
+		socket == PGINVALID_SOCKET ||
+		socket_events == 0)
+		return NULL;
+
+	scheduler = &runtime->scheduler;
+	Assert(scheduler->initialized);
+
+	SpinLockAcquire(&scheduler->lock);
+	dlist_foreach(iter, &scheduler->waiting_queue)
+	{
+		PgBackend  *candidate;
+		PgWaitCompletion *completion;
+		PgWaitSpec *spec;
+		uint32		completion_state;
+		uint32		candidate_events;
+
+		candidate = dlist_container(PgBackend, scheduler.node, iter.cur);
+		completion = &candidate->wait_state.completion;
+		spec = &completion->spec;
+		completion_state = pg_atomic_read_u32(&completion->state);
+		candidate_events = spec->wake_events & socket_events;
+
+		if (completion_state == PG_WAIT_COMPLETION_WAITING &&
+			spec->kind == PG_WAIT_KIND_EVENT_SET &&
+			spec->socket == socket &&
+			candidate_events != 0)
+		{
+			backend = candidate;
+			if (matched_events != NULL)
+				*matched_events = candidate_events;
+			break;
+		}
+	}
+	SpinLockRelease(&scheduler->lock);
+
+	return backend;
+}
+
+uint32
+PgRuntimeSchedulerWakeSocket(PgRuntime *runtime, pgsocket socket,
+							 uint32 ready_events)
+{
+	PgBackend  *backend;
+	uint32		woken = 0;
+	uint32		matched_events;
+
+	while ((backend = PgRuntimeSchedulerFindSocketWait(runtime, socket,
+													  ready_events,
+													  &matched_events)) != NULL)
+	{
+		if (!PgBackendWakeWaitCompletion(backend, matched_events))
+			break;
+		woken++;
+	}
+
+	return woken;
+}
+
 static void
 PgBackendSchedulerRequeueWaitCompletion(PgWaitCompletion *completion,
 										void *arg)

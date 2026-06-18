@@ -792,8 +792,12 @@ test_backend_pooled_wait_parks_backend(PG_FUNCTION_ARGS)
 		CHECK_POOLED_PARK(CurrentPgConnection == NULL);
 		CHECK_POOLED_PARK(CurrentPgExecution == NULL);
 
-		CHECK_POOLED_PARK(PgBackendWakeWaitCompletion(&state.backend,
-													  WL_SOCKET_READABLE));
+		CHECK_POOLED_PARK(PgRuntimeSchedulerWakeSocket(&pooled_runtime, 17,
+													   WL_SOCKET_READABLE) == 0);
+		CHECK_POOLED_PARK(PgRuntimeSchedulerWakeSocket(&pooled_runtime, 42,
+													   WL_SOCKET_WRITEABLE) == 0);
+		CHECK_POOLED_PARK(PgRuntimeSchedulerWakeSocket(&pooled_runtime, 42,
+													   WL_SOCKET_READABLE) == 1);
 		PgRuntimeSchedulerCounts(&pooled_runtime, &runnable_count,
 								 &waiting_count);
 		CHECK_POOLED_PARK(pg_atomic_read_u32(&completion->state) ==

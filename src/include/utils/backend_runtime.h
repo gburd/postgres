@@ -3355,6 +3355,9 @@ extern bool PgRuntimeSchedulerRunNextWithCallback(PgRuntime *runtime,
 												  PgSchedulerStepCallback callback,
 												  void *callback_arg,
 												  PgStepResult *step_result);
+extern uint32 PgRuntimeSchedulerWakeSocket(PgRuntime *runtime,
+										   pgsocket socket,
+										   uint32 ready_events);
 extern void PgRuntimeSchedulerSetWakeLatch(PgRuntime *runtime,
 										   struct Latch *wake_latch);
 extern uint64 PgRuntimeSchedulerWakeGeneration(PgRuntime *runtime);
