@@ -131,6 +131,7 @@
 
 #include "access/genam.h"
 #include "access/heapam.h"
+#include "access/hot_indexed.h"
 #include "access/htup_details.h"
 #include "access/multixact.h"
 #include "access/tidstore.h"
@@ -445,7 +446,8 @@ static bool lazy_vacuum_all_indexes(LVRelState *vacrel);
 static void lazy_vacuum_heap_rel(LVRelState *vacrel);
 static void lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno,
 								  Buffer buffer, OffsetNumber *deadoffsets,
-								  int num_offsets, Buffer vmbuffer);
+								  int num_offsets, Buffer vmbuffer,
+								  bool got_cleanup_lock);
 static bool lazy_check_wraparound_failsafe(LVRelState *vacrel);
 static void lazy_cleanup_all_indexes(LVRelState *vacrel);
 static IndexBulkDeleteResult *lazy_vacuum_one_index(Relation indrel,
@@ -1972,6 +1974,7 @@ lazy_scan_new_or_empty(LVRelState *vacrel, Buffer buf, BlockNumber blkno,
 										  NULL, 0,
 										  NULL, 0,
 										  NULL, 0,
+										  NULL, 0,
 										  NULL, 0);
 
 			END_CRIT_SECTION();
@@ -2214,6 +2217,7 @@ lazy_scan_noprune(LVRelState *vacrel,
 
 		hastup = true;			/* page prevents rel truncation */
 		tupleheader = (HeapTupleHeader) PageGetItem(page, itemid);
+
 		if (heap_tuple_should_freeze(tupleheader, &vacrel->cutoffs,
 									 &NoFreezePageRelfrozenXid,
 									 &NoFreezePageRelminMxid))
@@ -2686,6 +2690,7 @@ lazy_vacuum_heap_rel(LVRelState *vacrel)
 		Size		freespace;
 		OffsetNumber offsets[MaxOffsetNumber];
 		int			num_offsets;
+		bool		got_cleanup_lock;
 
 		vacuum_delay_point(false);
 
@@ -2708,10 +2713,20 @@ lazy_vacuum_heap_rel(LVRelState *vacrel)
 		 */
 		visibilitymap_pin(vacrel->rel, blkno, &vmbuffer);
 
-		/* We need a non-cleanup exclusive lock to mark dead_items unused */
-		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+		/*
+		 * Setting dead items unused needs only an exclusive lock, but
+		 * reclaiming a collapsed HOT-indexed chain additionally re-points the
+		 * redirects that forward into it -- moving chain structure concurrent
+		 * scans follow, which requires a cleanup lock.  Prefer a cleanup lock
+		 * (as the first pass does); if unavailable, fall back to an exclusive
+		 * lock and lazy_vacuum_heap_page defers any such reclaim on this page
+		 * to a later vacuum that can obtain one.
+		 */
+		got_cleanup_lock = ConditionalLockBufferForCleanup(buf);
+		if (!got_cleanup_lock)
+			LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
 		lazy_vacuum_heap_page(vacrel, blkno, buf, offsets,
-							  num_offsets, vmbuffer);
+							  num_offsets, vmbuffer, got_cleanup_lock);
 
 		/* Now that we've vacuumed the page, record its available space */
 		page = BufferGetPage(buf);
@@ -2746,6 +2761,7 @@ lazy_vacuum_heap_rel(LVRelState *vacrel)
 	restore_vacuum_error_info(vacrel, &saved_err_info);
 }
 
+
 /*
  *	lazy_vacuum_heap_page() -- free page's LP_DEAD items listed in the
  *						  vacrel->dead_items store.
@@ -2757,7 +2773,7 @@ lazy_vacuum_heap_rel(LVRelState *vacrel)
 static void
 lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 					  OffsetNumber *deadoffsets, int num_offsets,
-					  Buffer vmbuffer)
+					  Buffer vmbuffer, bool got_cleanup_lock)
 {
 	Page		page = BufferGetPage(buffer);
 	OffsetNumber unused[MaxHeapTuplesPerPage];
@@ -2783,7 +2799,9 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 	 * and mark the page all-visible within the same critical section,
 	 * enabling both changes to be emitted in a single WAL record. Since the
 	 * visibility checks may perform I/O and allocate memory, they must be
-	 * done outside the critical section.
+	 * done outside the critical section.  A deferred reclaim leaves a
+	 * not-yet-removed member on the page, so skip the check when anything was
+	 * deferred.
 	 */
 	if (heap_page_would_be_all_visible(vacrel->rel, buffer,
 									   vacrel->vistest, true,
@@ -2815,12 +2833,11 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 
 		itemid = PageGetItemId(page, toff);
 
+		/* A reclaimable item is a classic LP_DEAD line pointer. */
 		Assert(ItemIdIsDead(itemid) && !ItemIdHasStorage(itemid));
 		ItemIdSetUnused(itemid);
 		unused[nunused++] = toff;
 	}
-
-	Assert(nunused > 0);
 
 	/* Attempt to truncate line pointer array now */
 	PageTruncateLinePointerArray(page);
@@ -2851,12 +2868,13 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 								  vmflags != 0 ? vmbuffer : InvalidBuffer,
 								  vmflags,
 								  conflict_xid,
-								  false,	/* no cleanup lock required */
+								  got_cleanup_lock,
 								  PRUNE_VACUUM_CLEANUP,
 								  NULL, 0,	/* frozen */
 								  NULL, 0,	/* redirected */
 								  NULL, 0,	/* dead */
-								  unused, nunused);
+								  unused, nunused,
+								  NULL, 0); /* stubs */
 	}
 
 	END_CRIT_SECTION();
@@ -3647,9 +3665,43 @@ heap_page_would_be_all_visible(Relation rel, Buffer buf,
 		*logging_offnum = offnum;
 		itemid = PageGetItemId(page, offnum);
 
-		/* Unused or redirect line pointers are of no interest */
-		if (!ItemIdIsUsed(itemid) || ItemIdIsRedirected(itemid))
+		/* Unused line pointers are of no interest. */
+		if (!ItemIdIsUsed(itemid))
 			continue;
+
+		/*
+		 * Plain redirects are of no interest (the chain member they point at
+		 * is inspected separately) -- except a redirect that forwards to a
+		 * HOT-selectively-updated live tuple.  Such a redirect may still be
+		 * reached by a stale index entry whose key the live tuple no longer
+		 * holds; if the page were marked all-visible an index-only scan would
+		 * trust the VM, skip the heap fetch, and surface that stale key.
+		 * Keep the page not-all-visible until the stale leaves are swept and
+		 * the redirect reclaimed.  This mirrors the guard in
+		 * heap_prune_record_redirect, applied here because VACUUM's second
+		 * pass can set all-visible after reclaiming other items on the page.
+		 */
+		if (ItemIdIsRedirected(itemid))
+		{
+			OffsetNumber rdoff = ItemIdGetRedirect(itemid);
+
+			if (rdoff >= FirstOffsetNumber && rdoff <= maxoff)
+			{
+				ItemId		tlp = PageGetItemId(page, rdoff);
+
+				if (ItemIdIsNormal(tlp))
+				{
+					HeapTupleHeader thtup = (HeapTupleHeader) PageGetItem(page, tlp);
+
+					if ((thtup->t_infomask2 & HEAP_INDEXED_UPDATED) != 0)
+					{
+						*all_frozen = all_visible = false;
+						break;
+					}
+				}
+			}
+			continue;
+		}
 
 		ItemPointerSet(&(tuple.t_self), blockno, offnum);
 
@@ -3675,6 +3727,24 @@ heap_page_would_be_all_visible(Relation rel, Buffer buf,
 		tuple.t_data = (HeapTupleHeader) PageGetItem(page, itemid);
 		tuple.t_len = ItemIdGetLength(itemid);
 		tuple.t_tableOid = RelationGetRelid(rel);
+
+		/*
+		 * A HOT-indexed collapse-survivor stub is an LP_NORMAL item that is
+		 * not a real tuple: it forwards through the chain and carries a
+		 * preserved modified-attrs bitmap that a reader arriving via a stale
+		 * leaf must still cross.  A page holding one must stay not-all-visible
+		 * so index-only scans heap-fetch through the chain, exactly like the
+		 * redirect-to-SIU case above.  A stub's header is frozen-invalid
+		 * (HEAP_XMIN_INVALID), so the visibility check below would also class
+		 * it not-all-visible -- but recognize it explicitly here rather than
+		 * relying on that side effect, so the guard cannot silently lapse if
+		 * the stub encoding ever changes.
+		 */
+		if (HotIndexedHeaderIsStub(tuple.t_data))
+		{
+			*all_frozen = all_visible = false;
+			break;
+		}
 
 		/* Visibility checks may do IO or allocate memory */
 		Assert(CritSectionCount == 0);
