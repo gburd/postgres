@@ -152,16 +152,6 @@ typedef struct PgStat_TableCounts
 	PgStat_Counter tuples_hot_indexed_updated;
 	PgStat_Counter tuples_newpage_updated;
 
-	/*
-	 * Per-index HOT-indexed update counters.  Maintained on pgstat entries
-	 * keyed on an index oid, not on the owning table's entry.  They count how
-	 * many HOT-indexed updates skipped this index (key unchanged) vs.
-	 * inserted a fresh entry (key changed).  Summarizing indexes do not
-	 * contribute to either counter.
-	 */
-	PgStat_Counter tuples_hot_indexed_upd_skipped;
-	PgStat_Counter tuples_hot_indexed_upd_matched;
-
 	bool		truncdropped;
 
 	PgStat_Counter delta_live_tuples;
@@ -191,6 +181,15 @@ typedef struct PgStat_IndexCounts
 	PgStat_Counter tuples_fetched;
 	PgStat_Counter blocks_fetched;
 	PgStat_Counter blocks_hit;
+
+	/*
+	 * Per-index HOT-indexed (selective index update) counters.  They count
+	 * how many HOT-indexed updates skipped this index (its key attributes did
+	 * not change, so no fresh entry was needed) vs. inserted a fresh entry
+	 * (a key attribute changed).  Summarizing indexes do not contribute.
+	 */
+	PgStat_Counter tuples_hot_indexed_upd_skipped;
+	PgStat_Counter tuples_hot_indexed_upd_matched;
 } PgStat_IndexCounts;
 
 /* ----------
@@ -508,10 +507,6 @@ typedef struct PgStat_StatTabEntry
 	PgStat_Counter tuples_hot_indexed_updated;
 	PgStat_Counter tuples_newpage_updated;
 
-	/* Per-index HOT-indexed update counters (see PgStat_TableCounts). */
-	PgStat_Counter tuples_hot_indexed_upd_skipped;
-	PgStat_Counter tuples_hot_indexed_upd_matched;
-
 	PgStat_Counter live_tuples;
 	PgStat_Counter dead_tuples;
 	PgStat_Counter mod_since_analyze;
@@ -547,6 +542,10 @@ typedef struct PgStat_StatIdxEntry
 
 	PgStat_Counter blocks_fetched;
 	PgStat_Counter blocks_hit;
+
+	/* Per-index HOT-indexed (selective index update) counters. */
+	PgStat_Counter tuples_hot_indexed_upd_skipped;
+	PgStat_Counter tuples_hot_indexed_upd_matched;
 
 	TimestampTz stat_reset_time;
 } PgStat_StatIdxEntry;
@@ -836,12 +835,12 @@ extern void pgstat_report_analyze(Relation rel,
 #define pgstat_count_hot_indexed_upd_skipped(rel)						\
 	do {															\
 		if (pgstat_should_count_relation(rel))						\
-			(rel)->pgstat_info->counts.tuples_hot_indexed_upd_skipped++;\
+			(rel)->pgstat_info->idx.tuples_hot_indexed_upd_skipped++;\
 	} while (0)
 #define pgstat_count_hot_indexed_upd_matched(rel)						\
 	do {															\
 		if (pgstat_should_count_relation(rel))						\
-			(rel)->pgstat_info->counts.tuples_hot_indexed_upd_matched++;\
+			(rel)->pgstat_info->idx.tuples_hot_indexed_upd_matched++;\
 	} while (0)
 #define pgstat_count_buffer_read(rel)								\
 	do {															\
