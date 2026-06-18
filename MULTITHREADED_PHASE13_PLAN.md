@@ -109,11 +109,16 @@ The first wait-boundary slice is implemented:
   threaded runtime object.
 - A focused threaded TAP test now observes real wait-completion records from
   another SQL session while a backend is blocked on frontend input
-  (`ClientRead`) and while an active backend is blocked in a latch wait
-  (`PgSleep`), then proves query cancel still wakes the published latch wait.
+  (`ClientRead`), frontend output (`ClientWrite`), a latch wait (`PgSleep`), a
+  condition variable wait (`TestBackendRuntimeConditionVariable`), and a
+  heavyweight advisory lock wait (`advisory`).  The same test confirms
+  `pg_stat_activity` reports the expected wait event and that query cancel
+  wakes each active published wait.
 
-The next Phase 13 slices should add real blocked-client coverage for frontend
-output, then move on to condition variables and lock waits.
+The next Phase 13 slice should audit whether any remaining blocking family in
+the threaded-world core target bypasses `WaitEventSetWait()` or the existing
+lock/condition-variable paths, with timeout waits treated as part of the
+representative latch/event-set coverage unless a distinct bypass appears.
 
 ## Validation Gate
 

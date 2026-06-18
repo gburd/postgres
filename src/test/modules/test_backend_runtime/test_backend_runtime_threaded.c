@@ -17,6 +17,7 @@
 #include "port/atomics.h"
 #include "postmaster/bgworker.h"
 #include "postmaster/interrupt.h"
+#include "storage/condition_variable.h"
 #include "storage/latch.h"
 #include "storage/pmsignal.h"
 #include "utils/backend_runtime.h"
@@ -39,6 +40,7 @@ PG_FUNCTION_INFO_V1(test_backend_runtime_custom_guc_value);
 PG_FUNCTION_INFO_V1(test_backend_runtime_custom_guc_init_count);
 PG_FUNCTION_INFO_V1(test_backend_runtime_emit_fatal);
 PG_FUNCTION_INFO_V1(test_backend_runtime_wait_completion_snapshot);
+PG_FUNCTION_INFO_V1(test_backend_runtime_wait_on_condition_variable);
 
 pg_noreturn PGDLLEXPORT void test_backend_runtime_unreachable_bgworker_main(Datum main_arg);
 PGDLLEXPORT void test_backend_runtime_thread_bgworker_main(Datum main_arg);
@@ -47,6 +49,7 @@ pg_noreturn PGDLLEXPORT void test_backend_runtime_crash_bgworker_main(Datum main
 PGDLLEXPORT void _PG_init(void);
 
 static uint32 test_backend_runtime_thread_bgworker_wait_event = 0;
+static uint32 test_backend_runtime_condition_variable_wait_event = 0;
 static pg_atomic_uint32 test_backend_runtime_restart_count;
 static pg_atomic_uint32 test_backend_runtime_crash_count;
 static PG_THREAD_LOCAL char *test_backend_runtime_custom_guc = NULL;
@@ -353,6 +356,39 @@ test_backend_runtime_wait_completion_snapshot(PG_FUNCTION_ARGS)
 					  snapshot.execution != NULL);
 
 	PG_RETURN_TEXT_P(cstring_to_text(result));
+}
+
+Datum
+test_backend_runtime_wait_on_condition_variable(PG_FUNCTION_ARGS)
+{
+	int32		timeout_ms = PG_GETARG_INT32(0);
+	ConditionVariable cv;
+	volatile bool timed_out = false;
+
+	if (timeout_ms < 0)
+		ereport(ERROR,
+				errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				errmsg("condition variable wait timeout must not be negative"));
+
+	if (test_backend_runtime_condition_variable_wait_event == 0)
+		test_backend_runtime_condition_variable_wait_event =
+			WaitEventExtensionNew("TestBackendRuntimeConditionVariable");
+
+	ConditionVariableInit(&cv);
+	ConditionVariablePrepareToSleep(&cv);
+
+	PG_TRY();
+	{
+		timed_out = ConditionVariableTimedSleep(&cv, timeout_ms,
+												test_backend_runtime_condition_variable_wait_event);
+	}
+	PG_FINALLY();
+	{
+		ConditionVariableCancelSleep();
+	}
+	PG_END_TRY();
+
+	PG_RETURN_BOOL(timed_out);
 }
 
 void
