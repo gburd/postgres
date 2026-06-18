@@ -28,6 +28,15 @@ Important constraints:
 - pooled scheduling comes after explicit wait boundaries exist;
 - correctness and lifecycle ownership come before broad performance claims.
 
+Background and inspiration:
+
+- [PostgreSQL wiki: Multithreading](https://wiki.postgresql.org/wiki/Multithreading)
+- [PostgreSQL wiki: Signals](https://wiki.postgresql.org/wiki/Signals)
+- [PGConf.dev 2025 Developer Unconference notes](https://wiki.postgresql.org/wiki/PGConf.dev_2025_Developer_Unconference)
+- [Investigating Multithreaded PostgreSQL](https://www.youtube.com/watch?v=7BvLaRkaijc),
+  Thomas Munro's PGConf.dev 2025 talk, attended by the branch author and a
+  significant inspiration for this work.
+
 Useful project documents:
 
 - [Architecture](MULTITHREADED_ARCHITECTURE.md): target object model and
