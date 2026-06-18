@@ -107,10 +107,13 @@ The first wait-boundary slice is implemented:
   backends. Process-mode backends continue to use the direct blocking fallback
   path, while a narrow test/diagnostic override can force publication without a
   threaded runtime object.
+- A focused threaded TAP test now observes real wait-completion records from
+  another SQL session while a backend is blocked on frontend input
+  (`ClientRead`) and while an active backend is blocked in a latch wait
+  (`PgSleep`), then proves query cancel still wakes the published latch wait.
 
 The next Phase 13 slices should add real blocked-client coverage for frontend
-input/output and latch waits, then move on to condition variables and lock
-waits.
+output, then move on to condition variables and lock waits.
 
 ## Validation Gate
 

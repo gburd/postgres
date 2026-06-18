@@ -3346,6 +3346,9 @@ extern bool PgCurrentBackendHasPendingInterrupts(void);
 extern void PgCurrentBackendApplyInterrupts(void);
 extern bool PgSetWaitCompletionPublication(bool enabled);
 extern PgWaitCompletion *PgBackendCurrentWaitCompletion(PgBackend *backend);
+extern bool PgBackendSnapshotWaitCompletionById(PgBackendId backend_id,
+												PgWaitCompletion *snapshot,
+												uint32 *waiting);
 extern void PgBackendMarkWaitCompletionInterrupt(PgBackend *backend,
 												 PgWaitCompletionInterrupt interrupt);
 extern bool PgBackendWakeWaitCompletion(PgBackend *backend,

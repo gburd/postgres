@@ -38,6 +38,7 @@ PG_FUNCTION_INFO_V1(test_backend_runtime_crash_thread_bgworker);
 PG_FUNCTION_INFO_V1(test_backend_runtime_custom_guc_value);
 PG_FUNCTION_INFO_V1(test_backend_runtime_custom_guc_init_count);
 PG_FUNCTION_INFO_V1(test_backend_runtime_emit_fatal);
+PG_FUNCTION_INFO_V1(test_backend_runtime_wait_completion_snapshot);
 
 pg_noreturn PGDLLEXPORT void test_backend_runtime_unreachable_bgworker_main(Datum main_arg);
 PGDLLEXPORT void test_backend_runtime_thread_bgworker_main(Datum main_arg);
@@ -50,6 +51,38 @@ static pg_atomic_uint32 test_backend_runtime_restart_count;
 static pg_atomic_uint32 test_backend_runtime_crash_count;
 static PG_THREAD_LOCAL char *test_backend_runtime_custom_guc = NULL;
 static PG_THREAD_LOCAL int test_backend_runtime_custom_guc_init_counter = 0;
+
+static const char *
+test_backend_runtime_wait_kind_name(PgWaitKind kind)
+{
+	switch (kind)
+	{
+		case PG_WAIT_KIND_NONE:
+			return "none";
+		case PG_WAIT_KIND_EVENT_SET:
+			return "event_set";
+	}
+
+	return "unknown";
+}
+
+static const char *
+test_backend_runtime_wait_completion_state_name(uint32 state)
+{
+	switch (state)
+	{
+		case PG_WAIT_COMPLETION_INACTIVE:
+			return "inactive";
+		case PG_WAIT_COMPLETION_WAITING:
+			return "waiting";
+		case PG_WAIT_COMPLETION_READY:
+			return "ready";
+		case PG_WAIT_COMPLETION_CANCELLED:
+			return "cancelled";
+	}
+
+	return "unknown";
+}
 
 void
 _PG_init(void)
@@ -279,6 +312,47 @@ test_backend_runtime_emit_fatal(PG_FUNCTION_ARGS)
 	ereport(FATAL,
 			(errmsg("test_backend_runtime requested FATAL")));
 	pg_unreachable();
+}
+
+Datum
+test_backend_runtime_wait_completion_snapshot(PG_FUNCTION_ARGS)
+{
+	int32		backend_id_arg = PG_GETARG_INT32(0);
+	PgWaitCompletion snapshot;
+	uint32		waiting;
+	uint32		state;
+	uint32		ready_events;
+	uint32		interrupt_events;
+	const char *wait_event;
+	char	   *result;
+
+	if (backend_id_arg <= 0)
+		PG_RETURN_NULL();
+
+	if (!PgBackendSnapshotWaitCompletionById((PgBackendId) backend_id_arg,
+											 &snapshot, &waiting))
+		PG_RETURN_NULL();
+
+	state = pg_atomic_read_u32(&snapshot.state);
+	ready_events = pg_atomic_read_u32(&snapshot.ready_events);
+	interrupt_events = pg_atomic_read_u32(&snapshot.interrupt_events);
+	wait_event = pgstat_get_wait_event(snapshot.spec.wait_event_info);
+	if (wait_event == NULL)
+		wait_event = "";
+
+	result = psprintf("%s|%s|%s|%u|%u|%u|%u|%d|%d|%d",
+					  test_backend_runtime_wait_completion_state_name(state),
+					  test_backend_runtime_wait_kind_name(snapshot.spec.kind),
+					  wait_event,
+					  waiting,
+					  snapshot.spec.wake_events,
+					  ready_events,
+					  interrupt_events,
+					  snapshot.backend != NULL,
+					  snapshot.session != NULL,
+					  snapshot.execution != NULL);
+
+	PG_RETURN_TEXT_P(cstring_to_text(result));
 }
 
 void

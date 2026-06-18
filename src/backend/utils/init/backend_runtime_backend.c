@@ -369,6 +369,10 @@ PgBackendSendInterruptById(PgBackendId backend_id,
 
 	return backend != NULL;
 #else
+	(void) backend_id;
+	(void) interrupt_type;
+	(void) sender_pid;
+	(void) sender_uid;
 	return false;
 #endif
 }
@@ -1465,6 +1469,58 @@ PgBackendCurrentWaitCompletion(PgBackend *backend)
 		return NULL;
 
 	return &backend->wait_state.completion;
+}
+
+bool
+PgBackendSnapshotWaitCompletionById(PgBackendId backend_id,
+									PgWaitCompletion *snapshot,
+									uint32 *waiting)
+{
+#ifndef WIN32
+	PgBackend  *backend = NULL;
+	bool		found = false;
+
+	if (snapshot != NULL)
+		PgWaitCompletionInitialize(snapshot);
+	if (waiting != NULL)
+		*waiting = 0;
+
+	ThreadedBackendRegistryLock();
+	if (backend_id < ThreadedBackendRegistryCapacity)
+		backend = ThreadedBackendRegistry[backend_id];
+
+	if (backend != NULL)
+	{
+		PgWaitCompletion *completion = &backend->wait_state.completion;
+
+		if (snapshot != NULL)
+		{
+			snapshot->spec = completion->spec;
+			snapshot->backend = completion->backend;
+			snapshot->session = completion->session;
+			snapshot->execution = completion->execution;
+			pg_atomic_init_u32(&snapshot->state,
+							   pg_atomic_read_u32(&completion->state));
+			pg_atomic_init_u32(&snapshot->ready_events,
+							   pg_atomic_read_u32(&completion->ready_events));
+			pg_atomic_init_u32(&snapshot->interrupt_events,
+							   pg_atomic_read_u32(&completion->interrupt_events));
+			snapshot->requeue = completion->requeue;
+			snapshot->requeue_arg = completion->requeue_arg;
+		}
+		if (waiting != NULL)
+			*waiting = pg_atomic_read_u32(&backend->wait_state.waiting);
+		found = true;
+	}
+	ThreadedBackendRegistryUnlock();
+
+	return found;
+#else
+	(void) backend_id;
+	(void) snapshot;
+	(void) waiting;
+	return false;
+#endif
 }
 
 void
