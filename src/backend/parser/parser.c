@@ -47,14 +47,24 @@ int			(*base_yyparse_fn) (core_yyscan_t yyscanner) = base_yyparse;
 /*
  * Track B push-parse driver (parser_pushparse.c).  Kept in a separate
  * TU so Lime's runtime headers stay off this file's include path.
+ *
+ * raw_parser_lime_active() reports whether a composed grammar snapshot
+ * (base + registered extensions) is installed; when it is, raw_parser
+ * drives the Lime push parser so extension rules and keywords take
+ * effect.  With no extension loaded it returns false and raw_parser uses
+ * the in-binary static parser with zero added cost.
+ *
+ * The PG_LIME_PUSHPARSE environment variable forces the push path even
+ * with no extension active (used to A/B the push parser against the pull
+ * parser on plain SQL).
  */
 extern bool raw_parser_lime_pushparse(core_yyscan_t yyscanner,
 									  base_yy_extra_type *yyextra,
 									  List **result);
+extern bool raw_parser_lime_active(void);
 
-/* Probe gate: PG_LIME_PUSHPARSE in the environment selects the push path. */
-#define RAW_PARSER_LIME_PUSHPARSE_ENABLED() \
-	(getenv("PG_LIME_PUSHPARSE") != NULL)
+#define RAW_PARSER_USE_PUSHPARSE() \
+	(raw_parser_lime_active() || getenv("PG_LIME_PUSHPARSE") != NULL)
 
 
 /*
@@ -106,13 +116,12 @@ raw_parser(const char *str, RawParseMode mode)
 	parser_init(&yyextra);
 
 	/*
-	 * Track B probe: when PG_LIME_PUSHPARSE is set, drive the Lime runtime
-	 * push parser over the snapshot (running base reduce actions through the
-	 * host-reduce wrapper) instead of the static pull parser.  Default path
-	 * is unchanged.  This validates the in-process Track B parse against the
-	 * pull parser before it becomes the extension-active default.
+	 * When grammar extensions are active, drive the Lime push parser over
+	 * the composed snapshot so extension rules and keyword overrides take
+	 * effect (running base reduce actions through the host-reduce wrapper).
+	 * With no extension loaded, fall through to the in-binary static parser.
 	 */
-	if (RAW_PARSER_LIME_PUSHPARSE_ENABLED())
+	if (RAW_PARSER_USE_PUSHPARSE())
 	{
 		List	   *pushtree;
 		bool		ok;
