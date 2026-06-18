@@ -42,7 +42,7 @@ test_runtime_server_guc_state_is_runtime_local(PG_FUNCTION_ARGS)
 	PG_TRY();
 	{
 		stage = "runtime1 default";
-		CurrentPgRuntime = &fake_runtime1;
+		PgSetCurrentRuntime(&fake_runtime1);
 		RebindSessionGUCVariablePointers();
 		ok = ok && strcmp(cluster_name, "") == 0;
 		ok = ok && ConfigFileName == NULL;
@@ -83,7 +83,7 @@ test_runtime_server_guc_state_is_runtime_local(PG_FUNCTION_ARGS)
 				 stage);
 
 		stage = "runtime2 default";
-		CurrentPgRuntime = &fake_runtime2;
+		PgSetCurrentRuntime(&fake_runtime2);
 		RebindSessionGUCVariablePointers();
 		ok = ok && strcmp(cluster_name, "") == 0;
 		ok = ok && ConfigFileName == NULL;
@@ -123,7 +123,7 @@ test_runtime_server_guc_state_is_runtime_local(PG_FUNCTION_ARGS)
 				 stage);
 
 		stage = "runtime1 restore";
-		CurrentPgRuntime = &fake_runtime1;
+		PgSetCurrentRuntime(&fake_runtime1);
 		RebindSessionGUCVariablePointers();
 		ok = ok && strcmp(cluster_name, "phase12_runtime_one") == 0;
 		ok = ok && strcmp(ConfigFileName,
@@ -152,7 +152,7 @@ test_runtime_server_guc_state_is_runtime_local(PG_FUNCTION_ARGS)
 				 external_pid_file ? external_pid_file : "<null>");
 
 		stage = "saved runtime restore";
-		CurrentPgRuntime = saved_runtime;
+		PgSetCurrentRuntime(saved_runtime);
 		RebindSessionGUCVariablePointers();
 		cluster_name = saved_cluster_name;
 		ConfigFileName = saved_config_file_name;
@@ -163,7 +163,7 @@ test_runtime_server_guc_state_is_runtime_local(PG_FUNCTION_ARGS)
 	}
 	PG_CATCH();
 	{
-		CurrentPgRuntime = saved_runtime;
+		PgSetCurrentRuntime(saved_runtime);
 		RebindSessionGUCVariablePointers();
 		cluster_name = saved_cluster_name;
 		ConfigFileName = saved_config_file_name;
@@ -206,7 +206,7 @@ test_runtime_extension_module_state_is_runtime_local(PG_FUNCTION_ARGS)
 	PG_TRY();
 	{
 		stage = "runtime1 default";
-		CurrentPgRuntime = &fake_runtime1;
+		PgSetCurrentRuntime(&fake_runtime1);
 		extension_modules = PgCurrentRuntimeExtensionModuleState();
 		ok = ok && extension_modules->pg_plan_advice_context == NULL;
 		ok = ok && extension_modules->pg_plan_advice_advisor_hook_list == NIL;
@@ -231,7 +231,7 @@ test_runtime_extension_module_state_is_runtime_local(PG_FUNCTION_ARGS)
 		ok = ok && extension_modules->bloom_context == runtime1_bloom_context;
 
 		stage = "runtime2 default";
-		CurrentPgRuntime = &fake_runtime2;
+		PgSetCurrentRuntime(&fake_runtime2);
 		extension_modules = PgCurrentRuntimeExtensionModuleState();
 		ok = ok && extension_modules->pg_plan_advice_context == NULL;
 		ok = ok && extension_modules->pg_plan_advice_advisor_hook_list == NIL;
@@ -256,18 +256,18 @@ test_runtime_extension_module_state_is_runtime_local(PG_FUNCTION_ARGS)
 		ok = ok && extension_modules->bloom_context == runtime2_bloom_context;
 
 		stage = "runtime1 restore";
-		CurrentPgRuntime = &fake_runtime1;
+		PgSetCurrentRuntime(&fake_runtime1);
 		extension_modules = PgCurrentRuntimeExtensionModuleState();
 		ok = ok && extension_modules->pg_plan_advice_context == runtime1_context;
 		ok = ok && extension_modules->pg_plan_advice_advisor_hook_list ==
 			runtime1_advisors;
 		ok = ok && extension_modules->bloom_context == runtime1_bloom_context;
 
-		CurrentPgRuntime = saved_runtime;
+		PgSetCurrentRuntime(saved_runtime);
 	}
 	PG_CATCH();
 	{
-		CurrentPgRuntime = saved_runtime;
+		PgSetCurrentRuntime(saved_runtime);
 		if (runtime1_context != NULL)
 			MemoryContextDelete(runtime1_context);
 		if (runtime1_bloom_context != NULL)
@@ -280,7 +280,7 @@ test_runtime_extension_module_state_is_runtime_local(PG_FUNCTION_ARGS)
 	}
 	PG_END_TRY();
 
-	CurrentPgRuntime = saved_runtime;
+	PgSetCurrentRuntime(saved_runtime);
 	if (runtime1_context != NULL)
 		MemoryContextDelete(runtime1_context);
 	if (runtime1_bloom_context != NULL)

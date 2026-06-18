@@ -176,7 +176,11 @@ typedef struct ActiveSnapshotElt
 } ActiveSnapshotElt;
 
 /* Top of the stack of active snapshots */
-#define ActiveSnapshot (*(ActiveSnapshotElt **) PgCurrentActiveSnapshotRef())
+#define ActiveSnapshot \
+	(*(ActiveSnapshotElt **) \
+	 PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentActiveSnapshotHotRef, \
+									  CurrentPgExecution, \
+									  PgCurrentActiveSnapshotRef))
 
 /*
  * Currently registered Snapshots.  Ordered in a heap by xmin, so that we can

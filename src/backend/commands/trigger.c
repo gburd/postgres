@@ -3956,7 +3956,10 @@ GetCurrentAfterTriggersData(void)
 {
 	void	  **after_triggers_data;
 
-	after_triggers_data = PgCurrentAfterTriggersDataRef();
+	after_triggers_data =
+		PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentAfterTriggersDataHotRef,
+										 CurrentPgExecution,
+										 PgCurrentAfterTriggersDataRef);
 	if (*after_triggers_data == NULL)
 		*after_triggers_data =
 			MemoryContextAllocZero(PgCurrentAfterTriggersMemoryContext(),

@@ -18,7 +18,68 @@
 
 #include "executor/instrument.h"
 #include "storage/bufmgr.h"
+#include "utils/backend_runtime.h"
 #include "utils/pgstat_internal.h"
+
+#undef PgCurrentBackendPgStatPendingState
+extern PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
+
+static inline PgBackendPgStatPendingState *
+pgstat_current_pending_state(BackendType *bktype)
+{
+	PgBackend  *backend = CurrentPgBackend;
+
+	if (likely(backend != NULL))
+	{
+		*bktype = backend->backend_type;
+		return &backend->pgstat_pending;
+	}
+
+	*bktype = MyBackendType;
+	return PgCurrentBackendPgStatPendingState();
+}
+
+static inline void
+pgstat_count_backend_io_op_in_state(PgBackendPgStatPendingState *pending_state,
+									BackendType bktype,
+									IOObject io_object,
+									IOContext io_context,
+									IOOp io_op,
+									uint32 cnt, uint64 bytes)
+{
+	if (!pgstat_tracks_backend_bktype(bktype))
+		return;
+
+	Assert(pgstat_tracks_io_op(bktype, io_object, io_context, io_op));
+
+	pending_state->backend_stats.pending_io.counts[io_object][io_context][io_op] += cnt;
+	pending_state->backend_stats.pending_io.bytes[io_object][io_context][io_op] += bytes;
+
+	pending_state->backend_io_stats_pending = true;
+	pending_state->report_fixed = true;
+}
+
+static inline void
+pgstat_count_backend_io_op_time_in_state(PgBackendPgStatPendingState *pending_state,
+										 BackendType bktype,
+										 IOObject io_object,
+										 IOContext io_context,
+										 IOOp io_op,
+										 instr_time io_time)
+{
+	Assert(track_io_timing || track_wal_io_timing);
+
+	if (!pgstat_tracks_backend_bktype(bktype))
+		return;
+
+	Assert(pgstat_tracks_io_op(bktype, io_object, io_context, io_op));
+
+	INSTR_TIME_ADD(pending_state->backend_stats.pending_io.pending_times[io_object][io_context][io_op],
+				   io_time);
+
+	pending_state->backend_io_stats_pending = true;
+	pending_state->report_fixed = true;
+}
 
 /*
  * Check that stats have not been counted for any combination of IOObject,
@@ -65,19 +126,26 @@ void
 pgstat_count_io_op(IOObject io_object, IOContext io_context, IOOp io_op,
 				   uint32 cnt, uint64 bytes)
 {
+	BackendType bktype;
+	PgBackendPgStatPendingState *pending_state =
+		pgstat_current_pending_state(&bktype);
+	PgStat_PendingIO *pending_io = &pending_state->io_stats;
+
 	Assert((unsigned int) io_object < IOOBJECT_NUM_TYPES);
 	Assert((unsigned int) io_context < IOCONTEXT_NUM_TYPES);
 	Assert(pgstat_is_ioop_tracked_in_bytes(io_op) || bytes == 0);
-	Assert(pgstat_tracks_io_op(MyBackendType, io_object, io_context, io_op));
+	Assert(pgstat_tracks_io_op(bktype, io_object, io_context, io_op));
 
-	PendingIOStats.counts[io_object][io_context][io_op] += cnt;
-	PendingIOStats.bytes[io_object][io_context][io_op] += bytes;
+	pending_io->counts[io_object][io_context][io_op] += cnt;
+	pending_io->bytes[io_object][io_context][io_op] += bytes;
 
 	/* Add the per-backend counts */
-	pgstat_count_backend_io_op(io_object, io_context, io_op, cnt, bytes);
+	pgstat_count_backend_io_op_in_state(pending_state, bktype,
+										io_object, io_context, io_op,
+										cnt, bytes);
 
-	have_iostats = true;
-	pgstat_report_fixed = true;
+	pending_state->io_stats_pending = true;
+	pending_state->report_fixed = true;
 }
 
 /*
@@ -121,6 +189,10 @@ pgstat_count_io_op_time(IOObject io_object, IOContext io_context, IOOp io_op,
 {
 	if (!INSTR_TIME_IS_ZERO(start_time))
 	{
+		BackendType bktype;
+		PgBackendPgStatPendingState *pending_state =
+			pgstat_current_pending_state(&bktype);
+		PgStat_PendingIO *pending_io = &pending_state->io_stats;
 		instr_time	io_time;
 
 		INSTR_TIME_SET_CURRENT(io_time);
@@ -146,12 +218,13 @@ pgstat_count_io_op_time(IOObject io_object, IOContext io_context, IOOp io_op,
 			}
 		}
 
-		INSTR_TIME_ADD(PendingIOStats.pending_times[io_object][io_context][io_op],
+		INSTR_TIME_ADD(pending_io->pending_times[io_object][io_context][io_op],
 					   io_time);
 
 		/* Add the per-backend count */
-		pgstat_count_backend_io_op_time(io_object, io_context, io_op,
-										io_time);
+		pgstat_count_backend_io_op_time_in_state(pending_state, bktype,
+												 io_object, io_context, io_op,
+												 io_time);
 	}
 
 	pgstat_count_io_op(io_object, io_context, io_op, cnt, bytes);

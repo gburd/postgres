@@ -9,6 +9,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include "parser/parse_expr.h"
@@ -21,6 +22,10 @@ PgCurrentSessionParserState(void)
 {
 	PgSessionParserState *parser;
 
+	if (likely(CurrentPgSessionParserRuntimeState != NULL &&
+			   CurrentPgSessionParserRuntimeState->initialized))
+		return CurrentPgSessionParserRuntimeState;
+
 	parser = &PgCurrentOrEarlySession()->parser;
 
 	if (!parser->initialized)
@@ -32,17 +37,17 @@ PgCurrentSessionParserState(void)
 bool *
 PgCurrentTransformNullEqualsRef(void)
 {
-	return &PgCurrentSessionParserState()->transform_null_equals_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionParserRuntimeState, PgCurrentSessionParserState)->transform_null_equals_value;
 }
 
 int *
 PgCurrentBackslashQuoteRef(void)
 {
-	return &PgCurrentSessionParserState()->backslash_quote_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionParserRuntimeState, PgCurrentSessionParserState)->backslash_quote_value;
 }
 
 HTAB **
 PgCurrentOperatorLookupCacheRef(void)
 {
-	return &PgCurrentSessionParserState()->operator_lookup_cache;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionParserRuntimeState, PgCurrentSessionParserState)->operator_lookup_cache;
 }

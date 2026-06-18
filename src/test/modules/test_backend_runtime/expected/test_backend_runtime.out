@@ -473,6 +473,12 @@ SELECT test_backend_instrumentation_state_is_backend_local();
  t
 (1 row)
 
+SELECT test_runtime_hot_bucket_cache_tracks_current_work();
+ test_runtime_hot_bucket_cache_tracks_current_work 
+---------------------------------------------------
+ t
+(1 row)
+
 SELECT test_backend_buffer_state_is_backend_local();
  test_backend_buffer_state_is_backend_local 
 --------------------------------------------

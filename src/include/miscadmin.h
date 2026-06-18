@@ -27,6 +27,7 @@
 
 #include "datatype/timestamp.h" /* for TimestampTz */
 #include "pgtime.h"				/* for pg_time_t */
+#include "utils/backend_runtime_current.h"
 #include "utils/global_lifetime.h"
 
 struct PgConnection;
@@ -111,43 +112,51 @@ typedef struct PgBackendPendingInterruptState
 
 extern PgBackendPendingInterruptState *PgCurrentPendingInterruptStateRef(void);
 
+static inline PgBackendPendingInterruptState *
+PgCurrentPendingInterruptStateRefFast(void)
+{
+	return PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentPendingInterruptStateHotRef,
+											CurrentPgBackend,
+											PgCurrentPendingInterruptStateRef);
+}
+
 /*
  * Compatibility lvalues for the historic pending interrupt globals. The
  * storage now belongs to the current PgBackend object, while early startup
  * paths before runtime installation use backend_runtime.c fallback storage.
  */
 #define InterruptPending \
-	(PgCurrentPendingInterruptStateRef()->interrupt_pending)
+	(PgCurrentPendingInterruptStateRefFast()->interrupt_pending)
 #define QueryCancelPending \
-	(PgCurrentPendingInterruptStateRef()->query_cancel_pending)
+	(PgCurrentPendingInterruptStateRefFast()->query_cancel_pending)
 #define ProcDiePending \
-	(PgCurrentPendingInterruptStateRef()->proc_die_pending)
+	(PgCurrentPendingInterruptStateRefFast()->proc_die_pending)
 #define ProcDieSenderPid \
-	(PgCurrentPendingInterruptStateRef()->proc_die_sender_pid)
+	(PgCurrentPendingInterruptStateRefFast()->proc_die_sender_pid)
 #define ProcDieSenderUid \
-	(PgCurrentPendingInterruptStateRef()->proc_die_sender_uid)
+	(PgCurrentPendingInterruptStateRefFast()->proc_die_sender_uid)
 #define IdleInTransactionSessionTimeoutPending \
-	(PgCurrentPendingInterruptStateRef()->idle_in_transaction_session_timeout_pending)
+	(PgCurrentPendingInterruptStateRefFast()->idle_in_transaction_session_timeout_pending)
 #define TransactionTimeoutPending \
-	(PgCurrentPendingInterruptStateRef()->transaction_timeout_pending)
+	(PgCurrentPendingInterruptStateRefFast()->transaction_timeout_pending)
 #define IdleSessionTimeoutPending \
-	(PgCurrentPendingInterruptStateRef()->idle_session_timeout_pending)
+	(PgCurrentPendingInterruptStateRefFast()->idle_session_timeout_pending)
 #define ProcSignalBarrierPending \
-	(PgCurrentPendingInterruptStateRef()->proc_signal_barrier_pending)
+	(PgCurrentPendingInterruptStateRefFast()->proc_signal_barrier_pending)
 #define LogMemoryContextPending \
-	(PgCurrentPendingInterruptStateRef()->log_memory_context_pending)
+	(PgCurrentPendingInterruptStateRefFast()->log_memory_context_pending)
 #define IdleStatsUpdateTimeoutPending \
-	(PgCurrentPendingInterruptStateRef()->idle_stats_update_timeout_pending)
+	(PgCurrentPendingInterruptStateRefFast()->idle_stats_update_timeout_pending)
 #define ConfigReloadPending \
-	(PgCurrentPendingInterruptStateRef()->config_reload_pending)
+	(PgCurrentPendingInterruptStateRefFast()->config_reload_pending)
 #define ShutdownRequestPending \
-	(PgCurrentPendingInterruptStateRef()->shutdown_request_pending)
+	(PgCurrentPendingInterruptStateRefFast()->shutdown_request_pending)
 #define WakeupStopPending \
-	(PgCurrentPendingInterruptStateRef()->wakeup_stop_pending)
+	(PgCurrentPendingInterruptStateRefFast()->wakeup_stop_pending)
 #define AutoVacLauncherPending \
-	(PgCurrentPendingInterruptStateRef()->autovac_launcher_pending)
+	(PgCurrentPendingInterruptStateRefFast()->autovac_launcher_pending)
 #define CheckpointerShutdownXLOGPending \
-	(PgCurrentPendingInterruptStateRef()->checkpointer_shutdown_xlog_pending)
+	(PgCurrentPendingInterruptStateRefFast()->checkpointer_shutdown_xlog_pending)
 
 extern volatile sig_atomic_t *PgCurrentCheckClientConnectionPendingRef(void);
 extern volatile sig_atomic_t *PgCurrentClientConnectionLostRef(void);
@@ -172,9 +181,18 @@ extern volatile uint32 *PgCurrentCritSectionCountRef(void);
  * storage now belongs to the current PgBackend object, while early startup
  * paths before runtime installation use backend_runtime.c fallback storage.
  */
-#define InterruptHoldoffCount (*PgCurrentInterruptHoldoffCountRef())
-#define QueryCancelHoldoffCount (*PgCurrentQueryCancelHoldoffCountRef())
-#define CritSectionCount (*PgCurrentCritSectionCountRef())
+#define InterruptHoldoffCount \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentInterruptHoldoffCountHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentInterruptHoldoffCountRef))
+#define QueryCancelHoldoffCount \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentQueryCancelHoldoffCountHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentQueryCancelHoldoffCountRef))
+#define CritSectionCount \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentCritSectionCountHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentCritSectionCountRef))
 
 /* in tcop/postgres.c */
 extern void ProcessInterrupts(void);
@@ -183,12 +201,18 @@ extern bool PgCurrentBackendHasPendingInterrupts(void);
 /* Test whether an interrupt is pending */
 #ifndef WIN32
 #define INTERRUPTS_PENDING_CONDITION() \
-	(unlikely(InterruptPending || PgCurrentBackendHasPendingInterrupts()))
+	(unlikely(InterruptPending || \
+			  (PgRuntimeHotCurrentCellModeState != \
+			   PG_RUNTIME_HOT_CURRENT_CELLS_PROCESS && \
+			   PgCurrentBackendHasPendingInterrupts())))
 #else
 #define INTERRUPTS_PENDING_CONDITION() \
 	(unlikely(UNBLOCKED_SIGNAL_QUEUE()) ? \
 	 pgwin32_dispatch_queued_signals() : (void) 0, \
-	 unlikely(InterruptPending || PgCurrentBackendHasPendingInterrupts()))
+	 unlikely(InterruptPending || \
+			  (PgRuntimeHotCurrentCellModeState != \
+			   PG_RUNTIME_HOT_CURRENT_CELLS_PROCESS && \
+			   PgCurrentBackendHasPendingInterrupts())))
 #endif
 
 /* Service interrupt, if one is pending and it's safe to service it now */
@@ -294,8 +318,14 @@ extern Oid *PgCurrentMyDatabaseIdRef(void);
 extern Oid *PgCurrentMyDatabaseTableSpaceRef(void);
 extern bool *PgCurrentMyDatabaseHasLoginEventTriggersRef(void);
 
-#define MyDatabaseId (*PgCurrentMyDatabaseIdRef())
-#define MyDatabaseTableSpace (*PgCurrentMyDatabaseTableSpaceRef())
+#define MyDatabaseId \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentMyDatabaseIdHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentMyDatabaseIdRef))
+#define MyDatabaseTableSpace \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentMyDatabaseTableSpaceHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentMyDatabaseTableSpaceRef))
 #define MyDatabaseHasLoginEventTriggers \
 	(*PgCurrentMyDatabaseHasLoginEventTriggersRef())
 
@@ -365,11 +395,22 @@ extern double *PgCurrentHashMemMultiplierRef(void);
 extern int *PgCurrentMaintenanceWorkMemRef(void);
 extern int *PgCurrentMaxParallelMaintenanceWorkersRef(void);
 
-#define work_mem (*PgCurrentWorkMemRef())
-#define hash_mem_multiplier (*PgCurrentHashMemMultiplierRef())
-#define maintenance_work_mem (*PgCurrentMaintenanceWorkMemRef())
+#define work_mem \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentWorkMemHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentWorkMemRef))
+#define hash_mem_multiplier \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentHashMemMultiplierHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentHashMemMultiplierRef))
+#define maintenance_work_mem \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentMaintenanceWorkMemHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentMaintenanceWorkMemRef))
 #define max_parallel_maintenance_workers \
-	(*PgCurrentMaxParallelMaintenanceWorkersRef())
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentMaxParallelMaintenanceWorkersHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentMaxParallelMaintenanceWorkersRef))
 
 /*
  * Upper and lower hard limits for the buffer access strategy ring size
@@ -404,7 +445,10 @@ extern bool *PgCurrentVacuumCostActiveRef(void);
 
 extern int *PgCurrentMaxStackDepthRef(void);
 extern ssize_t *PgCurrentMaxStackDepthBytesRef(void);
-#define max_stack_depth (*PgCurrentMaxStackDepthRef())
+#define max_stack_depth \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentMaxStackDepthHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentMaxStackDepthRef))
 
 /* Required daylight between max_stack_depth and the kernel limit, in bytes */
 #define STACK_DEPTH_SLOP (512 * 1024)
@@ -595,6 +639,11 @@ typedef enum ProcessingMode
 } ProcessingMode;
 
 extern ProcessingMode *PgCurrentProcessingModeRef(void);
+#ifndef FRONTEND
+extern void PgRuntimeAfterProcessingModeChange(ProcessingMode mode);
+#else
+#define PgRuntimeAfterProcessingModeChange(mode) ((void) 0)
+#endif
 #define Mode (*PgCurrentProcessingModeRef())
 
 #define IsBootstrapProcessingMode() (Mode == BootstrapProcessing)
@@ -609,6 +658,7 @@ extern ProcessingMode *PgCurrentProcessingModeRef(void);
 				  (mode) == InitProcessing || \
 				  (mode) == NormalProcessing); \
 		Mode = (mode); \
+		PgRuntimeAfterProcessingModeChange(mode); \
 	} while(0)
 
 

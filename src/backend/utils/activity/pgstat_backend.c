@@ -43,14 +43,17 @@ void
 pgstat_count_backend_io_op_time(IOObject io_object, IOContext io_context,
 								IOOp io_op, instr_time io_time)
 {
+	BackendType bktype = MyBackendType;
+	PgStat_BackendPending *pending_backend = &PendingBackendStats;
+
 	Assert(track_io_timing || track_wal_io_timing);
 
-	if (!pgstat_tracks_backend_bktype(MyBackendType))
+	if (!pgstat_tracks_backend_bktype(bktype))
 		return;
 
-	Assert(pgstat_tracks_io_op(MyBackendType, io_object, io_context, io_op));
+	Assert(pgstat_tracks_io_op(bktype, io_object, io_context, io_op));
 
-	INSTR_TIME_ADD(PendingBackendStats.pending_io.pending_times[io_object][io_context][io_op],
+	INSTR_TIME_ADD(pending_backend->pending_io.pending_times[io_object][io_context][io_op],
 				   io_time);
 
 	backend_has_iostats = true;
@@ -61,13 +64,16 @@ void
 pgstat_count_backend_io_op(IOObject io_object, IOContext io_context,
 						   IOOp io_op, uint32 cnt, uint64 bytes)
 {
-	if (!pgstat_tracks_backend_bktype(MyBackendType))
+	BackendType bktype = MyBackendType;
+	PgStat_BackendPending *pending_backend = &PendingBackendStats;
+
+	if (!pgstat_tracks_backend_bktype(bktype))
 		return;
 
-	Assert(pgstat_tracks_io_op(MyBackendType, io_object, io_context, io_op));
+	Assert(pgstat_tracks_io_op(bktype, io_object, io_context, io_op));
 
-	PendingBackendStats.pending_io.counts[io_object][io_context][io_op] += cnt;
-	PendingBackendStats.pending_io.bytes[io_object][io_context][io_op] += bytes;
+	pending_backend->pending_io.counts[io_object][io_context][io_op] += cnt;
+	pending_backend->pending_io.bytes[io_object][io_context][io_op] += bytes;
 
 	backend_has_iostats = true;
 	pgstat_report_fixed = true;

@@ -14,6 +14,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include "utils/backend_runtime.h"
@@ -23,61 +24,61 @@
 bool *
 PgCurrentExitOnAnyErrorRef(void)
 {
-	return &PgCurrentCoreState()->exit_on_any_error;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendCoreRuntimeState, PgCurrentCoreState)->exit_on_any_error;
 }
 
 int *
 PgCurrentMyProcPidRef(void)
 {
-	return &PgCurrentCoreState()->proc_pid;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendCoreRuntimeState, PgCurrentCoreState)->proc_pid;
 }
 
 pg_time_t *
 PgCurrentMyStartTimeRef(void)
 {
-	return &PgCurrentCoreState()->start_time;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendCoreRuntimeState, PgCurrentCoreState)->start_time;
 }
 
 TimestampTz *
 PgCurrentMyStartTimestampRef(void)
 {
-	return &PgCurrentCoreState()->start_timestamp;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendCoreRuntimeState, PgCurrentCoreState)->start_timestamp;
 }
 
 struct Latch **
 PgCurrentMyLatchRef(void)
 {
-	return &PgCurrentCoreState()->latch;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendCoreRuntimeState, PgCurrentCoreState)->latch;
 }
 
 int *
 PgCurrentMyPMChildSlotRef(void)
 {
-	return &PgCurrentCoreState()->pm_child_slot;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendCoreRuntimeState, PgCurrentCoreState)->pm_child_slot;
 }
 
 char *
 PgCurrentOutputFileNameRef(void)
 {
-	return PgCurrentCoreState()->output_file_name;
+	return PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendCoreRuntimeState, PgCurrentCoreState)->output_file_name;
 }
 
 ProcessingMode *
 PgCurrentProcessingModeRef(void)
 {
-	return &PgCurrentCoreState()->mode;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendCoreRuntimeState, PgCurrentCoreState)->mode;
 }
 
 bool *
 PgCurrentIgnoreSystemIndexesRef(void)
 {
-	return &PgCurrentCoreState()->ignore_system_indexes;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendCoreRuntimeState, PgCurrentCoreState)->ignore_system_indexes;
 }
 
 HTAB **
 PgCurrentSeqScanTables(void)
 {
-	return PgCurrentBackendUtilityState()->seq_scan_tables;
+	return PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->seq_scan_tables;
 }
 
 char **
@@ -89,49 +90,49 @@ PgCurrentStackBasePtrRef(void)
 int *
 PgCurrentSeqScanLevels(void)
 {
-	return PgCurrentBackendUtilityState()->seq_scan_levels;
+	return PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->seq_scan_levels;
 }
 
 int *
 PgCurrentNumSeqScansRef(void)
 {
-	return &PgCurrentBackendUtilityState()->num_seq_scans;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->num_seq_scans;
 }
 
 volatile sig_atomic_t *
 PgCurrentNotifyInterruptPendingRef(void)
 {
-	return &PgCurrentBackendUtilityState()->notify_interrupt_pending;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->notify_interrupt_pending;
 }
 
 bool *
 PgCurrentAsyncUnlistenExitRegisteredRef(void)
 {
-	return &PgCurrentBackendUtilityState()->async_unlisten_exit_registered;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->async_unlisten_exit_registered;
 }
 
 dshash_table **
 PgCurrentAsyncGlobalChannelTableRef(void)
 {
-	return &PgCurrentBackendUtilityState()->async_global_channel_table;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->async_global_channel_table;
 }
 
 struct dsa_area **
 PgCurrentAsyncGlobalChannelDSARef(void)
 {
-	return &PgCurrentBackendUtilityState()->async_global_channel_dsa;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->async_global_channel_dsa;
 }
 
 struct ExtensionSiblingCache **
 PgCurrentExtensionSiblingListRef(void)
 {
-	return &PgCurrentBackendUtilityState()->extension_sibling_list;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->extension_sibling_list;
 }
 
 HTAB **
 PgCurrentInjectionPointCacheRef(void)
 {
-	return &PgCurrentBackendUtilityState()->injection_point_cache;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->injection_point_cache;
 }
 
 MemoryContext
@@ -146,147 +147,147 @@ PgCurrentUtilityCacheMemoryContext(void)
 ReservoirStateData *
 PgCurrentSamplingOldReservoirRef(void)
 {
-	return &PgCurrentBackendUtilityState()->sampling_old_reservoir;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->sampling_old_reservoir;
 }
 
 bool *
 PgCurrentSamplingOldReservoirInitializedRef(void)
 {
-	return &PgCurrentBackendUtilityState()->sampling_old_reservoir_initialized;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->sampling_old_reservoir_initialized;
 }
 
 Oid *
 PgCurrentSuperuserLastRoleIdRef(void)
 {
-	return &PgCurrentBackendUtilityState()->superuser_last_roleid;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->superuser_last_roleid;
 }
 
 bool *
 PgCurrentSuperuserLastRoleIdIsSuperRef(void)
 {
-	return &PgCurrentBackendUtilityState()->superuser_last_roleid_is_super;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->superuser_last_roleid_is_super;
 }
 
 bool *
 PgCurrentSuperuserRoleIdCallbackRegisteredRef(void)
 {
-	return &PgCurrentBackendUtilityState()->superuser_roleid_callback_registered;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->superuser_roleid_callback_registered;
 }
 
 void **
 PgCurrentResourceReleaseCallbacksRef(void)
 {
-	return &PgCurrentBackendUtilityState()->resource_release_callbacks;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->resource_release_callbacks;
 }
 
 #ifdef RESOWNER_STATS
 int *
 PgCurrentResourceOwnerArrayLookupsRef(void)
 {
-	return &PgCurrentBackendUtilityState()->resource_owner_array_lookups;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->resource_owner_array_lookups;
 }
 
 int *
 PgCurrentResourceOwnerHashLookupsRef(void)
 {
-	return &PgCurrentBackendUtilityState()->resource_owner_hash_lookups;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->resource_owner_hash_lookups;
 }
 #endif
 
 const void **
 PgCurrentDateTokenCache(void)
 {
-	return PgCurrentBackendUtilityState()->date_cache;
+	return PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->date_cache;
 }
 
 const void **
 PgCurrentDeltaTokenCache(void)
 {
-	return PgCurrentBackendUtilityState()->delta_cache;
+	return PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->delta_cache;
 }
 
 bool *
 PgCurrentDegreeConstsSetRef(void)
 {
-	return &PgCurrentBackendUtilityState()->degree_consts_set;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->degree_consts_set;
 }
 
 float8 *
 PgCurrentDegreeSin30Ref(void)
 {
-	return &PgCurrentBackendUtilityState()->degree_sin_30;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->degree_sin_30;
 }
 
 float8 *
 PgCurrentDegreeOneMinusCos60Ref(void)
 {
-	return &PgCurrentBackendUtilityState()->degree_one_minus_cos_60;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->degree_one_minus_cos_60;
 }
 
 float8 *
 PgCurrentDegreeAsin05Ref(void)
 {
-	return &PgCurrentBackendUtilityState()->degree_asin_0_5;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->degree_asin_0_5;
 }
 
 float8 *
 PgCurrentDegreeAcos05Ref(void)
 {
-	return &PgCurrentBackendUtilityState()->degree_acos_0_5;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->degree_acos_0_5;
 }
 
 float8 *
 PgCurrentDegreeAtan10Ref(void)
 {
-	return &PgCurrentBackendUtilityState()->degree_atan_1_0;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->degree_atan_1_0;
 }
 
 float8 *
 PgCurrentDegreeTan45Ref(void)
 {
-	return &PgCurrentBackendUtilityState()->degree_tan_45;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->degree_tan_45;
 }
 
 float8 *
 PgCurrentDegreeCot45Ref(void)
 {
-	return &PgCurrentBackendUtilityState()->degree_cot_45;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->degree_cot_45;
 }
 
 void **
 PgCurrentDCHCache(void)
 {
-	return PgCurrentBackendUtilityState()->dch_cache;
+	return PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->dch_cache;
 }
 
 int *
 PgCurrentNumDCHCacheRef(void)
 {
-	return &PgCurrentBackendUtilityState()->n_dch_cache;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->n_dch_cache;
 }
 
 int *
 PgCurrentDCHCounterRef(void)
 {
-	return &PgCurrentBackendUtilityState()->dch_counter;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->dch_counter;
 }
 
 void **
 PgCurrentNUMCache(void)
 {
-	return PgCurrentBackendUtilityState()->num_cache;
+	return PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->num_cache;
 }
 
 int *
 PgCurrentNumNUMCacheRef(void)
 {
-	return &PgCurrentBackendUtilityState()->n_num_cache;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->n_num_cache;
 }
 
 int *
 PgCurrentNUMCounterRef(void)
 {
-	return &PgCurrentBackendUtilityState()->num_counter;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->num_counter;
 }
 
 MemoryContext
@@ -301,11 +302,11 @@ PgCurrentFormatCacheMemoryContext(void)
 MemoryContext *
 PgCurrentLibxmlContextRef(void)
 {
-	return &PgCurrentBackendUtilityState()->libxml_context;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->libxml_context;
 }
 
 HTAB **
 PgCurrentMissingAttrCacheRef(void)
 {
-	return &PgCurrentBackendUtilityState()->missing_attr_cache;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, PgCurrentBackendUtilityState)->missing_attr_cache;
 }

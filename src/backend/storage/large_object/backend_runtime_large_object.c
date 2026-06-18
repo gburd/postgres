@@ -9,6 +9,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include "utils/backend_runtime.h"
@@ -29,23 +30,23 @@ PgCurrentLargeObjectIndexRelationRef(void)
 LargeObjectDesc ***
 PgCurrentLargeObjectCookiesRef(void)
 {
-	return &PgCurrentExecutionTransactionCleanupState()->lo_cookies;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentExecutionTransactionCleanupState)->lo_cookies;
 }
 
 int *
 PgCurrentLargeObjectCookiesSizeRef(void)
 {
-	return &PgCurrentExecutionTransactionCleanupState()->lo_cookies_size;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentExecutionTransactionCleanupState)->lo_cookies_size;
 }
 
 bool *
 PgCurrentLargeObjectCleanupNeededRef(void)
 {
-	return &PgCurrentExecutionTransactionCleanupState()->lo_cleanup_needed;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentExecutionTransactionCleanupState)->lo_cleanup_needed;
 }
 
 MemoryContext *
 PgCurrentLargeObjectContextRef(void)
 {
-	return &PgCurrentExecutionTransactionCleanupState()->lo_context;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentExecutionTransactionCleanupState)->lo_context;
 }

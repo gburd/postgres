@@ -13,6 +13,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include "utils/backend_runtime.h"
@@ -22,7 +23,7 @@
 EventTriggerQueryState **
 PgCurrentEventTriggerQueryStateRef(void)
 {
-	return &PgCurrentExecutionReplicationScratchState()->event_trigger_query_state;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionReplicationScratchRuntimeState, PgCurrentExecutionReplicationScratchState)->event_trigger_query_state;
 }
 
 MemoryContext
@@ -39,5 +40,5 @@ PgCurrentEventTriggerMemoryContext(void)
 MemoryContext *
 PgCurrentEventTriggerMemoryContextRef(void)
 {
-	return &PgCurrentExecutionReplicationScratchState()->event_trigger_context;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionReplicationScratchRuntimeState, PgCurrentExecutionReplicationScratchState)->event_trigger_context;
 }

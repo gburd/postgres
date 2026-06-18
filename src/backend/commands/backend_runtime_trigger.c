@@ -13,6 +13,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include "commands/trigger.h"
@@ -22,19 +23,20 @@
 PgExecutionTriggerState *
 PgCurrentExecutionTriggerState(void)
 {
-	return &PgCurrentOrEarlyExecution()->trigger;
+	PG_RUNTIME_RETURN_CURRENT_EXECUTION_BUCKET(CurrentPgExecutionTriggerRuntimeState,
+											   trigger);
 }
 
 int *
 PgCurrentTriggerDepthRef(void)
 {
-	return &PgCurrentExecutionTriggerState()->depth;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionTriggerRuntimeState, PgCurrentExecutionTriggerState)->depth;
 }
 
 void **
 PgCurrentAfterTriggersDataRef(void)
 {
-	return &PgCurrentExecutionTriggerState()->after_triggers_data;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionTriggerRuntimeState, PgCurrentExecutionTriggerState)->after_triggers_data;
 }
 
 MemoryContext
@@ -51,5 +53,5 @@ PgCurrentAfterTriggersMemoryContext(void)
 MemoryContext *
 PgCurrentAfterTriggersMemoryContextRef(void)
 {
-	return &PgCurrentExecutionTriggerState()->after_triggers_context;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionTriggerRuntimeState, PgCurrentExecutionTriggerState)->after_triggers_context;
 }

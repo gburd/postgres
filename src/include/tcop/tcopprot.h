@@ -27,16 +27,39 @@ typedef struct ExplainState ExplainState;	/* defined in explain_state.h */
  * Connection output state remains source-compatible, but storage belongs to
  * PgConnection so a logical connection can move between carriers.
  */
-#define whereToSendOutput (*PgCurrentWhereToSendOutputRef())
+static inline CommandDest *
+PgCurrentWhereToSendOutputRefFast(void)
+{
+	PgConnection *connection = CurrentPgConnection;
+
+	if (likely(connection != NULL))
+		return &connection->output.where_to_send_output;
+	return PgCurrentWhereToSendOutputRef();
+}
+
+#define whereToSendOutput (*PgCurrentWhereToSendOutputRefFast())
 extern int *PgCurrentPostAuthDelayRef(void);
 #define PostAuthDelay (*PgCurrentPostAuthDelayRef())
-#define client_connection_check_interval (*PgCurrentClientConnectionCheckIntervalRef())
+static inline int *
+PgCurrentClientConnectionCheckIntervalRefFast(void)
+{
+	PgConnection *connection = CurrentPgConnection;
+
+	if (likely(connection != NULL))
+		return &connection->output.client_connection_check_interval;
+	return PgCurrentClientConnectionCheckIntervalRef();
+}
+
+#define client_connection_check_interval (*PgCurrentClientConnectionCheckIntervalRefFast())
 
 /*
  * Compatibility lvalue for the historical execution-local debug query string.
  * Storage belongs to the current PgExecution object.
  */
-#define debug_query_string (*PgCurrentDebugQueryStringRef())
+#define debug_query_string \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentDebugQueryStringHotRef, \
+									   CurrentPgExecution, \
+									   PgCurrentDebugQueryStringRef))
 
 /* GUC-configurable parameters */
 

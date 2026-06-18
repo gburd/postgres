@@ -13,6 +13,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include "utils/backend_runtime.h"
@@ -75,7 +76,8 @@ PgCurrentRuntimeExtensionModuleState(void)
 PgExecutionExtensionState *
 PgCurrentExecutionExtensionState(void)
 {
-	return &PgCurrentOrEarlyExecution()->extension;
+	PG_RUNTIME_RETURN_CURRENT_EXECUTION_BUCKET(CurrentPgExecutionExtensionRuntimeState,
+											   extension);
 }
 
 MemoryContext
@@ -117,17 +119,17 @@ PgCurrentPgcryptoDesState(void)
 PgExecutionDebugHandler *
 PgCurrentPgcryptoDebugHandlerRef(void)
 {
-	return &PgCurrentExecutionExtensionState()->pgcrypto_debug_handler;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionExtensionRuntimeState, PgCurrentExecutionExtensionState)->pgcrypto_debug_handler;
 }
 
 bool *
 PgCurrentCreatingExtensionRef(void)
 {
-	return &PgCurrentExecutionExtensionState()->creating;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionExtensionRuntimeState, PgCurrentExecutionExtensionState)->creating;
 }
 
 Oid *
 PgCurrentExtensionObjectRef(void)
 {
-	return &PgCurrentExecutionExtensionState()->current_object;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionExtensionRuntimeState, PgCurrentExecutionExtensionState)->current_object;
 }

@@ -37,9 +37,18 @@
  */
 
 #define MAXINVALMSGS 32
-#define sinvalMessages (*(SharedInvalidationMessage **) PgCurrentSharedInvalidationMessagesRef())
-#define nextmsg (*PgCurrentSharedInvalidationNextMsgRef())
-#define nummsgs (*PgCurrentSharedInvalidationNumMsgsRef())
+#define sinvalMessages \
+	(*(SharedInvalidationMessage **) PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentSharedInvalidationMessagesHotRef, \
+																	  CurrentPgBackend, \
+																	  PgCurrentSharedInvalidationMessagesRef))
+#define nextmsg \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentSharedInvalidationNextMsgHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentSharedInvalidationNextMsgRef))
+#define nummsgs \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentSharedInvalidationNumMsgsHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentSharedInvalidationNumMsgsRef))
 
 
 /*
@@ -164,7 +173,7 @@ HandleCatchupInterrupt(void)
 	 * you do here.
 	 */
 
-	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_CATCHUP);
+	RaiseInterrupt(PG_BACKEND_INTERRUPT_CATCHUP);
 	catchupInterruptPending = true;
 
 	/* latch will be set by procsignal_sigusr1_handler */

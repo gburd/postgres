@@ -32,7 +32,7 @@ test_backend_parallel_state_is_backend_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		ok = ok && ParallelWorkerNumber == -1;
 		ok = ok && !ParallelMessagePending;
 		ok = ok && !InitializingParallelWorker;
@@ -57,7 +57,7 @@ test_backend_parallel_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentPqMqParallelLeaderProcNumberRef() = 12;
 		*PgCurrentParallelMessageContextRef() = (MemoryContext) &fake_backend1;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		ok = ok && ParallelWorkerNumber == -1;
 		ok = ok && !ParallelMessagePending;
 		ok = ok && !InitializingParallelWorker;
@@ -83,7 +83,7 @@ test_backend_parallel_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentPqMqParallelLeaderProcNumberRef() = 34;
 		*PgCurrentParallelMessageContextRef() = (MemoryContext) &fake_backend2;
 
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		ok = ok && ParallelWorkerNumber == 3;
 		ok = ok && ParallelMessagePending;
 		ok = ok && InitializingParallelWorker;
@@ -98,7 +98,7 @@ test_backend_parallel_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentParallelMessageContextRef() ==
 			(MemoryContext) &fake_backend1;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		ok = ok && ParallelWorkerNumber == 4;
 		ok = ok && !ParallelMessagePending;
 		ok = ok && InitializingParallelWorker;
@@ -113,11 +113,11 @@ test_backend_parallel_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentParallelMessageContextRef() ==
 			(MemoryContext) &fake_backend2;
 
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 	}
 	PG_CATCH();
 	{
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -151,13 +151,13 @@ test_backend_instrumentation_state_is_backend_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		pgBufferUsage.shared_blks_hit = 11;
 		save_pgBufferUsage.shared_blks_hit = 12;
 		pgWalUsage.wal_records = 13;
 		save_pgWalUsage.wal_records = 14;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		ok = ok && pgBufferUsage.shared_blks_hit == 0;
 		ok = ok && save_pgBufferUsage.shared_blks_hit == 0;
 		ok = ok && pgWalUsage.wal_records == 0;
@@ -168,19 +168,19 @@ test_backend_instrumentation_state_is_backend_local(PG_FUNCTION_ARGS)
 		pgWalUsage.wal_records = 23;
 		save_pgWalUsage.wal_records = 24;
 
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		ok = ok && pgBufferUsage.shared_blks_hit == 11;
 		ok = ok && save_pgBufferUsage.shared_blks_hit == 12;
 		ok = ok && pgWalUsage.wal_records == 13;
 		ok = ok && save_pgWalUsage.wal_records == 14;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		ok = ok && pgBufferUsage.shared_blks_hit == 21;
 		ok = ok && save_pgBufferUsage.shared_blks_hit == 22;
 		ok = ok && pgWalUsage.wal_records == 23;
 		ok = ok && save_pgWalUsage.wal_records == 24;
 
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 		pgBufferUsage = saved_buffer_usage;
 		save_pgBufferUsage = saved_saved_buffer_usage;
 		pgWalUsage = saved_wal_usage;
@@ -188,7 +188,7 @@ test_backend_instrumentation_state_is_backend_local(PG_FUNCTION_ARGS)
 	}
 	PG_CATCH();
 	{
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 		pgBufferUsage = saved_buffer_usage;
 		save_pgBufferUsage = saved_saved_buffer_usage;
 		pgWalUsage = saved_wal_usage;
@@ -200,7 +200,106 @@ test_backend_instrumentation_state_is_backend_local(PG_FUNCTION_ARGS)
 	if (!ok)
 		elog(ERROR, "backend instrumentation state was not backend-local");
 
-PG_RETURN_BOOL(true);
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_runtime_hot_bucket_cache_tracks_current_work);
+Datum
+test_runtime_hot_bucket_cache_tracks_current_work(PG_FUNCTION_ARGS)
+{
+	PgBackend  *saved_backend;
+	PgExecution *saved_execution;
+	PgBackend	fake_backend;
+	PgExecution fake_execution;
+	MemoryContext saved_current_memory_context;
+	MemoryContext fake_memory_context;
+	ResourceOwner saved_current_resource_owner;
+	ResourceOwner fake_resource_owner;
+	bool		ok = true;
+
+	saved_backend = CurrentPgBackend;
+	saved_execution = CurrentPgExecution;
+	saved_current_memory_context = CurrentMemoryContext;
+	saved_current_resource_owner = CurrentResourceOwner;
+	MemSet(&fake_backend, 0, sizeof(fake_backend));
+	MemSet(&fake_execution, 0, sizeof(fake_execution));
+	fake_memory_context = (MemoryContext) &fake_execution;
+	fake_resource_owner = (ResourceOwner) &fake_execution;
+
+	PG_TRY();
+	{
+		PgSetCurrentSession(CurrentPgSession);
+
+		if (CurrentPgBackend == NULL)
+			elog(ERROR, "runtime hot bucket cache has no current backend");
+		if (CurrentPgExecution == NULL)
+			elog(ERROR, "runtime hot bucket cache has no current execution");
+		if (CurrentPgBackendBufferRuntimeState != &CurrentPgBackend->buffers)
+			elog(ERROR, "runtime hot bucket cache does not match current backend buffers");
+		if (CurrentPgBackendLockRuntimeState != &CurrentPgBackend->locks)
+			elog(ERROR, "runtime hot bucket cache does not match current backend locks");
+		if (CurrentPgExecutionMemoryContextRuntimeState !=
+			&CurrentPgExecution->memory_contexts)
+			elog(ERROR, "runtime hot bucket cache does not match current execution memory contexts");
+		if (CurrentPgExecutionResourceOwnerRuntimeState !=
+			&CurrentPgExecution->resource_owners)
+			elog(ERROR, "runtime hot bucket cache does not match current execution resource owners");
+
+		/*
+		 * Current-work setters are the cache invalidation boundary.  A hot
+		 * bucket cache must follow those switches rather than retaining the
+		 * previously-installed runtime work.
+		 */
+		PgSetCurrentBackend(&fake_backend);
+		PgSetCurrentExecution(&fake_execution);
+
+		*PgCurrentPrivateRefCountArrayKeysRef() = &fake_backend;
+		*PgCurrentPrivateRefCountOverflowedRef() = 17;
+		*PgCurrentNumHeldLWLocksRef() = 19;
+
+		if (*PgCurrentPrivateRefCountArrayKeysRef() != &fake_backend)
+			elog(ERROR, "runtime hot bucket cache did not track current work: private refcount keys");
+		if (*PgCurrentPrivateRefCountOverflowedRef() != 17)
+			elog(ERROR, "runtime hot bucket cache did not track current work: private refcount overflowed");
+		if (*PgCurrentNumHeldLWLocksRef() != 19)
+			elog(ERROR, "runtime hot bucket cache did not track current work: held lwlock count");
+		if (CurrentPgBackendBufferRuntimeState != &fake_backend.buffers)
+			elog(ERROR, "runtime hot bucket cache did not rebind: backend buffer bucket");
+		if (CurrentPgBackendLockRuntimeState != &fake_backend.locks)
+			elog(ERROR, "runtime hot bucket cache did not rebind: backend lock bucket");
+		if (CurrentPgExecutionMemoryContextRuntimeState !=
+			&fake_execution.memory_contexts)
+			elog(ERROR, "runtime hot bucket cache did not rebind: execution memory bucket");
+		if (CurrentPgExecutionResourceOwnerRuntimeState !=
+			&fake_execution.resource_owners)
+			elog(ERROR, "runtime hot bucket cache did not rebind: execution resource owner bucket");
+
+		PgSetCurrentBackend(saved_backend);
+		PgSetCurrentExecution(&fake_execution);
+		CurrentMemoryContext = fake_memory_context;
+		CurrentResourceOwner = fake_resource_owner;
+		if (CurrentMemoryContext != fake_memory_context)
+			elog(ERROR, "runtime hot mirror did not track explicit current execution switch: current memory context");
+		if (CurrentResourceOwner != fake_resource_owner)
+			elog(ERROR, "runtime hot mirror did not track explicit current execution switch: current resource owner");
+		PgSetCurrentExecution(saved_execution);
+		CurrentMemoryContext = saved_current_memory_context;
+		CurrentResourceOwner = saved_current_resource_owner;
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentBackend(saved_backend);
+		PgSetCurrentExecution(saved_execution);
+		CurrentMemoryContext = saved_current_memory_context;
+		CurrentResourceOwner = saved_current_resource_owner;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "runtime hot bucket cache did not track current work");
+
+	PG_RETURN_BOOL(true);
 }
 
 PG_FUNCTION_INFO_V1(test_backend_buffer_state_is_backend_local);
@@ -220,7 +319,7 @@ test_backend_buffer_state_is_backend_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		*PgCurrentNLocBufferRef() = 101;
 		*PgCurrentLocalBufferDescriptorsRef() = &fake_backend1;
 		*PgCurrentLocalBufferBlockPointersRef() = &fake_backend1;
@@ -245,7 +344,7 @@ test_backend_buffer_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentPrivateRefCountEntryLastRef() = 110;
 		*PgCurrentMaxProportionalPinsRef() = 111;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		fake_backend2_writeback = PgCurrentBackendWritebackContextRef();
 		ok = ok && *PgCurrentNLocBufferRef() == 0;
 		ok = ok && *PgCurrentLocalBufferDescriptorsRef() == NULL;
@@ -293,7 +392,7 @@ test_backend_buffer_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentPrivateRefCountEntryLastRef() = 210;
 		*PgCurrentMaxProportionalPinsRef() = 211;
 
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		ok = ok && PgCurrentBackendWritebackContextRef() == fake_backend1_writeback;
 		ok = ok && *PgCurrentNLocBufferRef() == 101;
 		ok = ok && *PgCurrentLocalBufferDescriptorsRef() == &fake_backend1;
@@ -317,7 +416,7 @@ test_backend_buffer_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentPrivateRefCountEntryLastRef() == 110;
 		ok = ok && *PgCurrentMaxProportionalPinsRef() == 111;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		ok = ok && PgCurrentBackendWritebackContextRef() == fake_backend2_writeback;
 		ok = ok && *PgCurrentNLocBufferRef() == 201;
 		ok = ok && *PgCurrentLocalBufferDescriptorsRef() == &fake_backend2;
@@ -341,11 +440,11 @@ test_backend_buffer_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentPrivateRefCountEntryLastRef() == 210;
 		ok = ok && *PgCurrentMaxProportionalPinsRef() == 211;
 
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 	}
 	PG_CATCH();
 	{
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -373,7 +472,7 @@ test_backend_storage_state_is_backend_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		*PgCurrentVfdCacheRef() = &fake_backend1;
 		*PgCurrentSizeVfdCacheRef() = 101;
 		*PgCurrentNFileRef() = 102;
@@ -391,7 +490,7 @@ test_backend_storage_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentSMgrRelationHashRef() = (HTAB *) &fake_backend1;
 		*PgCurrentMdContextRef() = (MemoryContext) &fake_backend1;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		ok = ok && *PgCurrentVfdCacheRef() == NULL;
 		ok = ok && *PgCurrentSizeVfdCacheRef() == 0;
 		ok = ok && *PgCurrentNFileRef() == 0;
@@ -429,7 +528,7 @@ test_backend_storage_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentSMgrRelationHashRef() = (HTAB *) &fake_backend2;
 		*PgCurrentMdContextRef() = (MemoryContext) &fake_backend2;
 
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		ok = ok && *PgCurrentVfdCacheRef() == &fake_backend1;
 		ok = ok && *PgCurrentSizeVfdCacheRef() == 101;
 		ok = ok && *PgCurrentNFileRef() == 102;
@@ -450,7 +549,7 @@ test_backend_storage_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && dlist_is_empty(PgCurrentSMgrUnpinnedRelationsRef());
 		ok = ok && *PgCurrentMdContextRef() == (MemoryContext) &fake_backend1;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		ok = ok && *PgCurrentVfdCacheRef() == &fake_backend2;
 		ok = ok && *PgCurrentSizeVfdCacheRef() == 201;
 		ok = ok && *PgCurrentNFileRef() == 202;
@@ -471,11 +570,11 @@ test_backend_storage_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && dlist_is_empty(PgCurrentSMgrUnpinnedRelationsRef());
 		ok = ok && *PgCurrentMdContextRef() == (MemoryContext) &fake_backend2;
 
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 	}
 	PG_CATCH();
 	{
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -503,7 +602,7 @@ test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		*PgCurrentNumHeldLWLocksRef() = 1;
 		PgCurrentHeldLWLocks()[0].lock = (LWLock *) &fake_backend1;
 		PgCurrentHeldLWLocks()[0].mode = LW_EXCLUSIVE;
@@ -548,7 +647,7 @@ test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentMyXactDidWriteRef() = true;
 		*PgCurrentSavedSerializableXactRef() = &fake_backend1;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		ok = ok && *PgCurrentNumHeldLWLocksRef() == 0;
 		ok = ok && PgCurrentHeldLWLocks()[0].lock == NULL;
 		ok = ok && PgCurrentHeldLWLocks()[0].mode == 0;
@@ -636,7 +735,7 @@ test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentMyXactDidWriteRef() = false;
 		*PgCurrentSavedSerializableXactRef() = &fake_backend2;
 
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		ok = ok && *PgCurrentNumHeldLWLocksRef() == 1;
 		ok = ok && PgCurrentHeldLWLocks()[0].lock == (LWLock *) &fake_backend1;
 		ok = ok && PgCurrentHeldLWLocks()[0].mode == LW_EXCLUSIVE;
@@ -681,7 +780,7 @@ test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentMyXactDidWriteRef();
 		ok = ok && *PgCurrentSavedSerializableXactRef() == &fake_backend1;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		ok = ok && *PgCurrentNumHeldLWLocksRef() == 1;
 		ok = ok && PgCurrentHeldLWLocks()[0].lock == (LWLock *) &fake_backend2;
 		ok = ok && PgCurrentHeldLWLocks()[0].mode == LW_SHARED;
@@ -726,11 +825,11 @@ test_backend_lock_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && !*PgCurrentMyXactDidWriteRef();
 		ok = ok && *PgCurrentSavedSerializableXactRef() == &fake_backend2;
 
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 	}
 	PG_CATCH();
 	{
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -756,7 +855,7 @@ test_backend_ipc_state_is_backend_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		*PgCurrentProcSignalSlotRef() = &fake_backend1;
 		SharedInvalidMessageCounter = 101;
 		catchupInterruptPending = true;
@@ -771,7 +870,7 @@ test_backend_ipc_state_is_backend_local(PG_FUNCTION_ARGS)
 		PgCurrentLocalLatchData()->is_set = true;
 		PgCurrentLocalLatchData()->owner_pid = 111;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		ok = ok && *PgCurrentProcSignalSlotRef() == NULL;
 		ok = ok && SharedInvalidMessageCounter == 0;
 		ok = ok && !catchupInterruptPending;
@@ -800,7 +899,7 @@ test_backend_ipc_state_is_backend_local(PG_FUNCTION_ARGS)
 		PgCurrentLocalLatchData()->is_set = false;
 		PgCurrentLocalLatchData()->owner_pid = 222;
 
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		ok = ok && *PgCurrentProcSignalSlotRef() == &fake_backend1;
 		ok = ok && SharedInvalidMessageCounter == 101;
 		ok = ok && catchupInterruptPending;
@@ -815,7 +914,7 @@ test_backend_ipc_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && PgCurrentLocalLatchData()->is_set;
 		ok = ok && PgCurrentLocalLatchData()->owner_pid == 111;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		ok = ok && *PgCurrentProcSignalSlotRef() == &fake_backend2;
 		ok = ok && SharedInvalidMessageCounter == 201;
 		ok = ok && !catchupInterruptPending;
@@ -830,11 +929,11 @@ test_backend_ipc_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && !PgCurrentLocalLatchData()->is_set;
 		ok = ok && PgCurrentLocalLatchData()->owner_pid == 222;
 
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 	}
 	PG_CATCH();
 	{
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -862,7 +961,7 @@ test_backend_wait_state_is_backend_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		ok = ok && *PgCurrentMyWaitEventInfoRef() ==
 			PgCurrentLocalWaitEventInfoRef();
 		pgstat_report_wait_start(0x01000011);
@@ -873,7 +972,7 @@ test_backend_wait_state_is_backend_local(PG_FUNCTION_ARGS)
 		pgstat_report_wait_start(0x02000022);
 		ok = ok && external_wait_event1 == 0x02000022;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		ok = ok && *PgCurrentMyWaitEventInfoRef() ==
 			PgCurrentLocalWaitEventInfoRef();
 		ok = ok && external_wait_event2 == 0;
@@ -881,24 +980,24 @@ test_backend_wait_state_is_backend_local(PG_FUNCTION_ARGS)
 		pgstat_report_wait_start(0x03000033);
 		ok = ok && external_wait_event2 == 0x03000033;
 
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		ok = ok && *PgCurrentMyWaitEventInfoRef() == &external_wait_event1;
 		ok = ok && external_wait_event1 == 0x02000022;
 		pgstat_report_wait_end();
 		ok = ok && external_wait_event1 == 0;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		ok = ok && *PgCurrentMyWaitEventInfoRef() == &external_wait_event2;
 		ok = ok && external_wait_event2 == 0x03000033;
 		pgstat_reset_wait_event_storage();
 		ok = ok && *PgCurrentMyWaitEventInfoRef() ==
 			PgCurrentLocalWaitEventInfoRef();
 
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 	}
 	PG_CATCH();
 	{
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -928,7 +1027,7 @@ test_backend_transaction_state_is_backend_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		*PgCurrentCachedFetchXidRef() = 101;
 		*PgCurrentCachedFetchXidStatusRef() = 102;
 		*PgCurrentCachedCommitLSNRef() = UINT64CONST(103);
@@ -970,7 +1069,7 @@ test_backend_transaction_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentXidCacheNoOverflowRef() = 123;
 		*PgCurrentXidCacheSlowAnswerRef() = 124;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		ok = ok && *PgCurrentCachedFetchXidRef() == InvalidTransactionId;
 		ok = ok && *PgCurrentCachedFetchXidStatusRef() == 0;
 		ok = ok && *PgCurrentCachedCommitLSNRef() == 0;
@@ -1053,7 +1152,7 @@ test_backend_transaction_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentXidCacheNoOverflowRef() = 223;
 		*PgCurrentXidCacheSlowAnswerRef() = 224;
 
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		ok = ok && *PgCurrentCachedFetchXidRef() == 101;
 		ok = ok && *PgCurrentCachedFetchXidStatusRef() == 102;
 		ok = ok && *PgCurrentCachedCommitLSNRef() == UINT64CONST(103);
@@ -1096,7 +1195,7 @@ test_backend_transaction_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentXidCacheNoOverflowRef() == 123;
 		ok = ok && *PgCurrentXidCacheSlowAnswerRef() == 124;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		ok = ok && *PgCurrentCachedFetchXidRef() == 201;
 		ok = ok && *PgCurrentCachedFetchXidStatusRef() == 202;
 		ok = ok && *PgCurrentCachedCommitLSNRef() == UINT64CONST(203);
@@ -1139,11 +1238,11 @@ test_backend_transaction_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentXidCacheNoOverflowRef() == 223;
 		ok = ok && *PgCurrentXidCacheSlowAnswerRef() == 224;
 
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 	}
 	PG_CATCH();
 	{
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -1171,7 +1270,7 @@ test_backend_timeout_state_is_backend_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		timeout1 = PgCurrentTimeoutState();
 		timeout1->all_timeouts_initialized = true;
 		timeout1->all_timeouts[DEADLOCK_TIMEOUT].index = DEADLOCK_TIMEOUT;
@@ -1193,7 +1292,7 @@ test_backend_timeout_state_is_backend_local(PG_FUNCTION_ARGS)
 		timeout1->firing_timeout_execution = (PgExecution *) &fake_backend1;
 		timeout1->signal_delivery = true;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		timeout2 = PgCurrentTimeoutState();
 		ok = ok && !timeout2->all_timeouts_initialized;
 		ok = ok && timeout2->num_active_timeouts == 0;
@@ -1224,7 +1323,7 @@ test_backend_timeout_state_is_backend_local(PG_FUNCTION_ARGS)
 		timeout2->firing_timeout_execution = (PgExecution *) &fake_backend2;
 		timeout2->signal_delivery = false;
 
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		timeout1 = PgCurrentTimeoutState();
 		ok = ok && timeout1->all_timeouts_initialized;
 		ok = ok && timeout1->num_active_timeouts == 1;
@@ -1247,7 +1346,7 @@ test_backend_timeout_state_is_backend_local(PG_FUNCTION_ARGS)
 			(PgExecution *) &fake_backend1;
 		ok = ok && timeout1->signal_delivery;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		timeout2 = PgCurrentTimeoutState();
 		ok = ok && timeout2->all_timeouts_initialized;
 		ok = ok && timeout2->num_active_timeouts == 1;
@@ -1270,11 +1369,11 @@ test_backend_timeout_state_is_backend_local(PG_FUNCTION_ARGS)
 			(PgExecution *) &fake_backend2;
 		ok = ok && !timeout2->signal_delivery;
 
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 	}
 	PG_CATCH();
 	{
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -1302,7 +1401,7 @@ test_backend_walsender_state_is_backend_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		walsender1 = PgCurrentWalSenderState();
 		walsender1->my_wal_snd = (WalSnd *) &fake_backend1;
 		walsender1->is_walsender = true;
@@ -1336,7 +1435,7 @@ test_backend_walsender_state_is_backend_local(PG_FUNCTION_ARGS)
 		walsender1->replication_cmd_context = (MemoryContext) &fake_backend1;
 		walsender1->lag_tracker = (LagTracker *) &fake_backend1;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		walsender2 = PgCurrentWalSenderState();
 		ok = ok && walsender2->my_wal_snd == NULL;
 		ok = ok && !walsender2->is_walsender;
@@ -1389,7 +1488,7 @@ test_backend_walsender_state_is_backend_local(PG_FUNCTION_ARGS)
 		walsender2->replication_cmd_context = (MemoryContext) &fake_backend2;
 		walsender2->lag_tracker = (LagTracker *) &fake_backend2;
 
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		walsender1 = PgCurrentWalSenderState();
 		ok = ok && walsender1->my_wal_snd == (WalSnd *) &fake_backend1;
 		ok = ok && walsender1->is_walsender;
@@ -1426,7 +1525,7 @@ test_backend_walsender_state_is_backend_local(PG_FUNCTION_ARGS)
 			(MemoryContext) &fake_backend1;
 		ok = ok && walsender1->lag_tracker == (LagTracker *) &fake_backend1;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		walsender2 = PgCurrentWalSenderState();
 		ok = ok && walsender2->my_wal_snd == (WalSnd *) &fake_backend2;
 		ok = ok && !walsender2->is_walsender;
@@ -1463,11 +1562,11 @@ test_backend_walsender_state_is_backend_local(PG_FUNCTION_ARGS)
 			(MemoryContext) &fake_backend2;
 		ok = ok && walsender2->lag_tracker == (LagTracker *) &fake_backend2;
 
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 	}
 	PG_CATCH();
 	{
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -1501,7 +1600,7 @@ test_backend_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		replication1 = PgCurrentReplicationState();
 		replication1->my_replication_slot =
 			(ReplicationSlot *) &fake_backend1;
@@ -1516,7 +1615,7 @@ test_backend_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 		replication1->walreceiver_reply_message.maxlen = 107;
 		replication1->walreceiver_primary_has_standby_xmin = false;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		replication2 = PgCurrentReplicationState();
 		ok = ok && replication2->my_replication_slot == NULL;
 		ok = ok && replication2->sync_rep_wait_mode == SYNC_REP_NO_WAIT;
@@ -1543,7 +1642,7 @@ test_backend_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 		replication2->walreceiver_reply_message.maxlen = 207;
 		replication2->walreceiver_primary_has_standby_xmin = true;
 
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		replication1 = PgCurrentReplicationState();
 		ok = ok && replication1->my_replication_slot ==
 			(ReplicationSlot *) &fake_backend1;
@@ -1561,7 +1660,7 @@ test_backend_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && replication1->walreceiver_reply_message.maxlen == 107;
 		ok = ok && !replication1->walreceiver_primary_has_standby_xmin;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		replication2 = PgCurrentReplicationState();
 		ok = ok && replication2->my_replication_slot ==
 			(ReplicationSlot *) &fake_backend2;
@@ -1579,11 +1678,11 @@ test_backend_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && replication2->walreceiver_reply_message.maxlen == 207;
 		ok = ok && replication2->walreceiver_primary_has_standby_xmin;
 
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 	}
 	PG_CATCH();
 	{
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -1639,7 +1738,7 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		logical1 = PgCurrentLogicalReplicationState();
 		logical1->apply_error_callback_arg.command = LOGICAL_REP_MSG_INSERT;
 		logical1->apply_error_callback_arg.rel =
@@ -1693,7 +1792,7 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 			(ParallelApplyWorkerInfo *) &fake_backend1;
 		logical1->parallel_apply_subxactlist = (List *) &fake_backend1;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		logical2 = PgCurrentLogicalReplicationState();
 		ok = ok && dlist_is_empty(&logical2->lsn_mapping);
 		ok = ok && logical2->apply_error_callback_arg.command == 0;
@@ -1798,7 +1897,7 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 			(ParallelApplyWorkerInfo *) &fake_backend2;
 		logical2->parallel_apply_subxactlist = (List *) &fake_backend2;
 
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		logical1 = PgCurrentLogicalReplicationState();
 		ok = ok && dlist_is_empty(&logical1->lsn_mapping);
 		ok = ok && logical1->apply_error_callback_arg.command ==
@@ -1861,7 +1960,7 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 			(ParallelApplyWorkerInfo *) &fake_backend1;
 		ok = ok && logical1->parallel_apply_subxactlist == (List *) &fake_backend1;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		logical2 = PgCurrentLogicalReplicationState();
 		ok = ok && dlist_is_empty(&logical2->lsn_mapping);
 		ok = ok && logical2->apply_error_callback_arg.command ==
@@ -1924,11 +2023,11 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 			(ParallelApplyWorkerInfo *) &fake_backend2;
 		ok = ok && logical2->parallel_apply_subxactlist == (List *) &fake_backend2;
 
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 	}
 	PG_CATCH();
 	{
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -1974,7 +2073,7 @@ test_backend_xlog_state_is_backend_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		xlog1 = PgCurrentXLogState();
 		xlog1->local_recovery_in_progress = false;
 		xlog1->local_xlog_insert_allowed = 1;
@@ -2000,7 +2099,7 @@ test_backend_xlog_state_is_backend_local(PG_FUNCTION_ARGS)
 		xlog1->gist_xlog_op_context = (MemoryContext) &fake_backend1;
 		xlog1->spgist_xlog_op_context = (MemoryContext) &fake_backend1;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		xlog2 = PgCurrentXLogState();
 		ok = ok && xlog2->local_recovery_in_progress;
 		ok = ok && xlog2->local_xlog_insert_allowed == -1;
@@ -2050,7 +2149,7 @@ test_backend_xlog_state_is_backend_local(PG_FUNCTION_ARGS)
 		xlog2->gist_xlog_op_context = (MemoryContext) &fake_backend2;
 		xlog2->spgist_xlog_op_context = (MemoryContext) &fake_backend2;
 
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		xlog1 = PgCurrentXLogState();
 		ok = ok && !xlog1->local_recovery_in_progress;
 		ok = ok && xlog1->local_xlog_insert_allowed == 1;
@@ -2077,7 +2176,7 @@ test_backend_xlog_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && xlog1->gist_xlog_op_context == (MemoryContext) &fake_backend1;
 		ok = ok && xlog1->spgist_xlog_op_context == (MemoryContext) &fake_backend1;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		xlog2 = PgCurrentXLogState();
 		ok = ok && !xlog2->local_recovery_in_progress;
 		ok = ok && xlog2->local_xlog_insert_allowed == 0;
@@ -2104,11 +2203,11 @@ test_backend_xlog_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && xlog2->gist_xlog_op_context == (MemoryContext) &fake_backend2;
 		ok = ok && xlog2->spgist_xlog_op_context == (MemoryContext) &fake_backend2;
 
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 	}
 	PG_CATCH();
 	{
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -2138,7 +2237,7 @@ test_backend_recovery_state_is_backend_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		recovery1 = PgCurrentRecoveryState();
 		recovery1->startup_got_sighup = true;
 		recovery1->startup_shutdown_requested = true;
@@ -2155,7 +2254,7 @@ test_backend_recovery_state_is_backend_local(PG_FUNCTION_ARGS)
 		recovery1->got_standby_lock_timeout = true;
 		recovery1->standby_wait_us = 102;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		recovery2 = PgCurrentRecoveryState();
 		ok = ok && !recovery2->startup_got_sighup;
 		ok = ok && !recovery2->startup_shutdown_requested;
@@ -2187,7 +2286,7 @@ test_backend_recovery_state_is_backend_local(PG_FUNCTION_ARGS)
 		recovery2->got_standby_lock_timeout = true;
 		recovery2->standby_wait_us = 202;
 
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		recovery1 = PgCurrentRecoveryState();
 		ok = ok && recovery1->startup_got_sighup;
 		ok = ok && recovery1->startup_shutdown_requested;
@@ -2204,7 +2303,7 @@ test_backend_recovery_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && recovery1->got_standby_lock_timeout;
 		ok = ok && recovery1->standby_wait_us == 102;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		recovery2 = PgCurrentRecoveryState();
 		ok = ok && recovery2->startup_got_sighup;
 		ok = ok && recovery2->startup_shutdown_requested;
@@ -2221,11 +2320,11 @@ test_backend_recovery_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && recovery2->got_standby_lock_timeout;
 		ok = ok && recovery2->standby_wait_us == 202;
 
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 	}
 	PG_CATCH();
 	{
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -2263,7 +2362,7 @@ test_backend_maintenance_worker_state_is_backend_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		worker1 = PgCurrentMaintenanceWorkerState();
 		worker1->arch_module_errdetail_string = (char *) &fake_backend1;
 		worker1->pgarch_last_sigterm_time = 101;
@@ -2293,7 +2392,7 @@ test_backend_maintenance_worker_state_is_backend_local(PG_FUNCTION_ARGS)
 		worker1->datachecksum_launcher_running = true;
 		worker1->datachecksum_operation = DISABLE_DATACHECKSUMS;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		worker2 = PgCurrentMaintenanceWorkerState();
 		ok = ok && worker2->arch_module_errdetail_string == NULL;
 		ok = ok && worker2->pgarch_last_sigterm_time == 0;
@@ -2351,7 +2450,7 @@ test_backend_maintenance_worker_state_is_backend_local(PG_FUNCTION_ARGS)
 		worker2->datachecksum_launcher_running = true;
 		worker2->datachecksum_operation = DISABLE_DATACHECKSUMS;
 
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		worker1 = PgCurrentMaintenanceWorkerState();
 		ok = ok && worker1->arch_module_errdetail_string ==
 			(char *) &fake_backend1;
@@ -2389,7 +2488,7 @@ test_backend_maintenance_worker_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && worker1->datachecksum_launcher_running;
 		ok = ok && worker1->datachecksum_operation == DISABLE_DATACHECKSUMS;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		worker2 = PgCurrentMaintenanceWorkerState();
 		ok = ok && worker2->arch_module_errdetail_string ==
 			(char *) &fake_backend2;
@@ -2427,11 +2526,11 @@ test_backend_maintenance_worker_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && worker2->datachecksum_launcher_running;
 		ok = ok && worker2->datachecksum_operation == DISABLE_DATACHECKSUMS;
 
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 	}
 	PG_CATCH();
 	{
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -2469,7 +2568,7 @@ test_backend_autovacuum_state_is_backend_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		av1 = PgCurrentAutovacuumState();
 		av1->av_storage_param_cost_delay = 1.5;
 		av1->av_storage_param_cost_limit = 101;
@@ -2486,7 +2585,7 @@ test_backend_autovacuum_state_is_backend_local(PG_FUNCTION_ARGS)
 		av1->avl_dbase_array = (struct avl_dbase *) &fake_backend1;
 		av1->my_worker_info = (struct WorkerInfoData *) &fake_backend1;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		av2 = PgCurrentAutovacuumState();
 		ok = ok && av2->av_storage_param_cost_delay == -1;
 		ok = ok && av2->av_storage_param_cost_limit == -1;
@@ -2518,7 +2617,7 @@ test_backend_autovacuum_state_is_backend_local(PG_FUNCTION_ARGS)
 		av2->avl_dbase_array = (struct avl_dbase *) &fake_backend2;
 		av2->my_worker_info = (struct WorkerInfoData *) &fake_backend2;
 
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		av1 = PgCurrentAutovacuumState();
 		ok = ok && av1->av_storage_param_cost_delay == 1.5;
 		ok = ok && av1->av_storage_param_cost_limit == 101;
@@ -2537,7 +2636,7 @@ test_backend_autovacuum_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && av1->my_worker_info ==
 			(struct WorkerInfoData *) &fake_backend1;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		av2 = PgCurrentAutovacuumState();
 		ok = ok && av2->av_storage_param_cost_delay == 2.5;
 		ok = ok && av2->av_storage_param_cost_limit == 201;
@@ -2556,11 +2655,11 @@ test_backend_autovacuum_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && av2->my_worker_info ==
 			(struct WorkerInfoData *) &fake_backend2;
 
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 	}
 	PG_CATCH();
 	{
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -2592,7 +2691,7 @@ test_backend_repack_state_is_backend_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		repack1 = PgCurrentRepackState();
 		repack1->decoding_worker = (struct DecodingWorker *) &fake_backend1;
 		RepackMessagePending = true;
@@ -2606,7 +2705,7 @@ test_backend_repack_state_is_backend_local(PG_FUNCTION_ARGS)
 		repack1->repacked_rel_toast_locator.dbOid = 106;
 		repack1->repacked_rel_toast_locator.relNumber = 107;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		repack2 = PgCurrentRepackState();
 		ok = ok && repack2->decoding_worker == NULL;
 		ok = ok && !RepackMessagePending;
@@ -2628,7 +2727,7 @@ test_backend_repack_state_is_backend_local(PG_FUNCTION_ARGS)
 		repack2->repacked_rel_toast_locator.dbOid = 206;
 		repack2->repacked_rel_toast_locator.relNumber = 207;
 
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		repack1 = PgCurrentRepackState();
 		ok = ok && repack1->decoding_worker ==
 			(struct DecodingWorker *) &fake_backend1;
@@ -2644,7 +2743,7 @@ test_backend_repack_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && repack1->repacked_rel_toast_locator.dbOid == 106;
 		ok = ok && repack1->repacked_rel_toast_locator.relNumber == 107;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		repack2 = PgCurrentRepackState();
 		ok = ok && repack2->decoding_worker ==
 			(struct DecodingWorker *) &fake_backend2;
@@ -2660,11 +2759,11 @@ test_backend_repack_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && repack2->repacked_rel_toast_locator.dbOid == 206;
 		ok = ok && repack2->repacked_rel_toast_locator.relNumber == 207;
 
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 	}
 	PG_CATCH();
 	{
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -2694,13 +2793,13 @@ test_backend_aio_state_is_backend_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		aio1 = PgCurrentAioState();
 		pgaio_my_backend = (PgAioBackend *) &fake_backend1;
 		aio1->my_io_worker_id = 101;
 		aio1->my_uring_context = (struct PgAioUringContext *) &fake_backend1;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		aio2 = PgCurrentAioState();
 		ok = ok && pgaio_my_backend == NULL;
 		ok = ok && aio2->my_io_worker_id == -1;
@@ -2710,25 +2809,25 @@ test_backend_aio_state_is_backend_local(PG_FUNCTION_ARGS)
 		aio2->my_io_worker_id = 201;
 		aio2->my_uring_context = (struct PgAioUringContext *) &fake_backend2;
 
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		aio1 = PgCurrentAioState();
 		ok = ok && pgaio_my_backend == (PgAioBackend *) &fake_backend1;
 		ok = ok && aio1->my_io_worker_id == 101;
 		ok = ok && aio1->my_uring_context ==
 			(struct PgAioUringContext *) &fake_backend1;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		aio2 = PgCurrentAioState();
 		ok = ok && pgaio_my_backend == (PgAioBackend *) &fake_backend2;
 		ok = ok && aio2->my_io_worker_id == 201;
 		ok = ok && aio2->my_uring_context ==
 			(struct PgAioUringContext *) &fake_backend2;
 
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 	}
 	PG_CATCH();
 	{
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -2760,7 +2859,7 @@ test_backend_extension_module_state_is_backend_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		extension_modules = PgCurrentBackendExtensionModuleState();
 		extension_modules->basic_archive_archive_directory = "";
 		ok = ok && strcmp(extension_modules->basic_archive_archive_directory, "") == 0;
@@ -2785,7 +2884,7 @@ test_backend_extension_module_state_is_backend_local(PG_FUNCTION_ARGS)
 		extension_modules->basic_archive_archive_directory =
 			backend1_archive_directory;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		extension_modules = PgCurrentBackendExtensionModuleState();
 		extension_modules->basic_archive_archive_directory = "";
 		ok = ok && strcmp(extension_modules->basic_archive_archive_directory, "") == 0;
@@ -2798,7 +2897,7 @@ test_backend_extension_module_state_is_backend_local(PG_FUNCTION_ARGS)
 		extension_modules->pg_stash_advice_state =
 			(struct pgsa_shared_state *) &fake_backend2;
 
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		extension_modules = PgCurrentBackendExtensionModuleState();
 		ok = ok && extension_modules->pg_prewarm_autoprewarm_state ==
 			(struct AutoPrewarmSharedState *) &fake_backend1;
@@ -2815,7 +2914,7 @@ test_backend_extension_module_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && strcmp(extension_modules->basic_archive_archive_directory,
 						  "backend1_archive") == 0;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		extension_modules = PgCurrentBackendExtensionModuleState();
 		ok = ok && strcmp(extension_modules->basic_archive_archive_directory,
 						  "") == 0;
@@ -2848,11 +2947,11 @@ test_backend_extension_module_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok &&
 			fake_backend_reset.extension_modules.pg_stash_advice_context == NULL;
 
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 	}
 	PG_CATCH();
 	{
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 		if (reset_pg_stash_context != NULL)
 			MemoryContextDelete(reset_pg_stash_context);
 		PG_RE_THROW();

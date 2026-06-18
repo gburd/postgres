@@ -9,6 +9,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include "utils/backend_runtime.h"
@@ -17,125 +18,129 @@
 PgExecutionSnapshotState *
 PgCurrentExecutionSnapshotState(void)
 {
+	if (likely(CurrentPgExecutionSnapshotRuntimeState != NULL))
+		return CurrentPgExecutionSnapshotRuntimeState;
+
 	return &PgCurrentOrEarlyExecution()->snapshot;
 }
 
 PgExecutionComboCidState *
 PgCurrentExecutionComboCidState(void)
 {
-	return &PgCurrentOrEarlyExecution()->combo_cid;
+	PG_RUNTIME_RETURN_CURRENT_EXECUTION_BUCKET(CurrentPgExecutionComboCidRuntimeState,
+											   combo_cid);
 }
 
 SnapshotData *
 PgCurrentSnapshotDataRef(void)
 {
-	return &PgCurrentExecutionSnapshotState()->current_snapshot_data;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionSnapshotRuntimeState, PgCurrentExecutionSnapshotState)->current_snapshot_data;
 }
 
 SnapshotData *
 PgCurrentSecondarySnapshotDataRef(void)
 {
-	return &PgCurrentExecutionSnapshotState()->secondary_snapshot_data;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionSnapshotRuntimeState, PgCurrentExecutionSnapshotState)->secondary_snapshot_data;
 }
 
 SnapshotData *
 PgCurrentCatalogSnapshotDataRef(void)
 {
-	return &PgCurrentExecutionSnapshotState()->catalog_snapshot_data;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionSnapshotRuntimeState, PgCurrentExecutionSnapshotState)->catalog_snapshot_data;
 }
 
 Snapshot *
 PgCurrentSnapshotRef(void)
 {
-	return &PgCurrentExecutionSnapshotState()->current_snapshot;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionSnapshotRuntimeState, PgCurrentExecutionSnapshotState)->current_snapshot;
 }
 
 Snapshot *
 PgCurrentSecondarySnapshotRef(void)
 {
-	return &PgCurrentExecutionSnapshotState()->secondary_snapshot;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionSnapshotRuntimeState, PgCurrentExecutionSnapshotState)->secondary_snapshot;
 }
 
 Snapshot *
 PgCurrentCatalogSnapshotRef(void)
 {
-	return &PgCurrentExecutionSnapshotState()->catalog_snapshot;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionSnapshotRuntimeState, PgCurrentExecutionSnapshotState)->catalog_snapshot;
 }
 
 Snapshot *
 PgCurrentHistoricSnapshotRef(void)
 {
-	return &PgCurrentExecutionSnapshotState()->historic_snapshot;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionSnapshotRuntimeState, PgCurrentExecutionSnapshotState)->historic_snapshot;
 }
 
 TransactionId *
 PgCurrentTransactionXminRef(void)
 {
-	return &PgCurrentExecutionSnapshotState()->transaction_xmin;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionSnapshotRuntimeState, PgCurrentExecutionSnapshotState)->transaction_xmin;
 }
 
 TransactionId *
 PgCurrentRecentXminRef(void)
 {
-	return &PgCurrentExecutionSnapshotState()->recent_xmin;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionSnapshotRuntimeState, PgCurrentExecutionSnapshotState)->recent_xmin;
 }
 
 HTAB **
 PgCurrentTupleCidDataRef(void)
 {
-	return &PgCurrentExecutionSnapshotState()->tuplecid_data;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionSnapshotRuntimeState, PgCurrentExecutionSnapshotState)->tuplecid_data;
 }
 
 void **
 PgCurrentActiveSnapshotRef(void)
 {
-	return &PgCurrentExecutionSnapshotState()->active_snapshot;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionSnapshotRuntimeState, PgCurrentExecutionSnapshotState)->active_snapshot;
 }
 
 pairingheap *
 PgCurrentRegisteredSnapshotsRef(void)
 {
-	return &PgCurrentExecutionSnapshotState()->registered_snapshots;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionSnapshotRuntimeState, PgCurrentExecutionSnapshotState)->registered_snapshots;
 }
 
 bool *
 PgCurrentFirstSnapshotSetRef(void)
 {
-	return &PgCurrentExecutionSnapshotState()->first_snapshot_set;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionSnapshotRuntimeState, PgCurrentExecutionSnapshotState)->first_snapshot_set;
 }
 
 Snapshot *
 PgCurrentFirstXactSnapshotRef(void)
 {
-	return &PgCurrentExecutionSnapshotState()->first_xact_snapshot;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionSnapshotRuntimeState, PgCurrentExecutionSnapshotState)->first_xact_snapshot;
 }
 
 List **
 PgCurrentExportedSnapshotsRef(void)
 {
-	return &PgCurrentExecutionSnapshotState()->exported_snapshots;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionSnapshotRuntimeState, PgCurrentExecutionSnapshotState)->exported_snapshots;
 }
 
 HTAB **
 PgCurrentComboCidHashRef(void)
 {
-	return &PgCurrentExecutionComboCidState()->hash;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionComboCidRuntimeState, PgCurrentExecutionComboCidState)->hash;
 }
 
 void **
 PgCurrentComboCidsRef(void)
 {
-	return &PgCurrentExecutionComboCidState()->cids;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionComboCidRuntimeState, PgCurrentExecutionComboCidState)->cids;
 }
 
 int *
 PgCurrentUsedComboCidsRef(void)
 {
-	return &PgCurrentExecutionComboCidState()->used;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionComboCidRuntimeState, PgCurrentExecutionComboCidState)->used;
 }
 
 int *
 PgCurrentSizeComboCidsRef(void)
 {
-	return &PgCurrentExecutionComboCidState()->size;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionComboCidRuntimeState, PgCurrentExecutionComboCidState)->size;
 }

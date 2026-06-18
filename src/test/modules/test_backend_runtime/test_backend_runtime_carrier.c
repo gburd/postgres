@@ -41,7 +41,7 @@ test_carrier_misc_state_is_carrier_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgCarrier = &fake_carrier1;
+		PgSetCurrentCarrier(&fake_carrier1);
 		*PgCurrentWaitEventWaitingRef() = true;
 		*PgCurrentWaitEventSignalFdRef() = 11;
 		*PgCurrentWaitEventSelfPipeReadFdRef() = 12;
@@ -51,7 +51,7 @@ test_carrier_misc_state_is_carrier_local(PG_FUNCTION_ARGS)
 		*PgCurrentBackendThreadStartRef() = thread_start1;
 		IsUnderPostmaster = true;
 
-		CurrentPgCarrier = &fake_carrier2;
+		PgSetCurrentCarrier(&fake_carrier2);
 		ok = ok && *PgCurrentWaitEventWaitingRef() == false;
 		ok = ok && *PgCurrentWaitEventSignalFdRef() == -1;
 		ok = ok && *PgCurrentWaitEventSelfPipeReadFdRef() == -1;
@@ -69,7 +69,7 @@ test_carrier_misc_state_is_carrier_local(PG_FUNCTION_ARGS)
 		*PgCurrentBackendThreadStartRef() = thread_start2;
 		IsUnderPostmaster = false;
 
-		CurrentPgCarrier = &fake_carrier1;
+		PgSetCurrentCarrier(&fake_carrier1);
 		ok = ok && *PgCurrentWaitEventWaitingRef() == true;
 		ok = ok && *PgCurrentWaitEventSignalFdRef() == 11;
 		ok = ok && *PgCurrentWaitEventSelfPipeReadFdRef() == 12;
@@ -79,7 +79,7 @@ test_carrier_misc_state_is_carrier_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentBackendThreadStartRef() == thread_start1;
 		ok = ok && IsUnderPostmaster;
 
-		CurrentPgCarrier = &fake_carrier2;
+		PgSetCurrentCarrier(&fake_carrier2);
 		ok = ok && *PgCurrentWaitEventWaitingRef() == false;
 		ok = ok && *PgCurrentWaitEventSignalFdRef() == 21;
 		ok = ok && *PgCurrentWaitEventSelfPipeReadFdRef() == 22;
@@ -89,12 +89,12 @@ test_carrier_misc_state_is_carrier_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentBackendThreadStartRef() == thread_start2;
 		ok = ok && !IsUnderPostmaster;
 
-		CurrentPgCarrier = saved_carrier;
+		PgSetCurrentCarrier(saved_carrier);
 		IsUnderPostmaster = saved_is_under_postmaster;
 	}
 	PG_CATCH();
 	{
-		CurrentPgCarrier = saved_carrier;
+		PgSetCurrentCarrier(saved_carrier);
 		IsUnderPostmaster = saved_is_under_postmaster;
 		PG_RE_THROW();
 	}
@@ -123,21 +123,21 @@ test_carrier_threaded_guc_lock_depth_is_carrier_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgCarrier = &fake_carrier1;
+		PgSetCurrentCarrier(&fake_carrier1);
 		*PgCurrentThreadedGUCMutexDepthRef() = 1;
-		CurrentPgCarrier = &fake_carrier2;
+		PgSetCurrentCarrier(&fake_carrier2);
 		ok = ok && *PgCurrentThreadedGUCMutexDepthRef() == 0;
 		*PgCurrentThreadedGUCMutexDepthRef() = 2;
-		CurrentPgCarrier = &fake_carrier1;
+		PgSetCurrentCarrier(&fake_carrier1);
 		ok = ok && *PgCurrentThreadedGUCMutexDepthRef() == 1;
-		CurrentPgCarrier = &fake_carrier2;
+		PgSetCurrentCarrier(&fake_carrier2);
 		ok = ok && *PgCurrentThreadedGUCMutexDepthRef() == 2;
 
-		CurrentPgCarrier = saved_carrier;
+		PgSetCurrentCarrier(saved_carrier);
 	}
 	PG_CATCH();
 	{
-		CurrentPgCarrier = saved_carrier;
+		PgSetCurrentCarrier(saved_carrier);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();

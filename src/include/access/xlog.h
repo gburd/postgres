@@ -17,9 +17,11 @@
 #include "datatype/timestamp.h"
 #include "lib/stringinfo.h"
 #include "nodes/pg_list.h"
-#include "utils/backend_runtime.h"
 #include "utils/global_lifetime.h"
 
+#ifndef FRONTEND
+#include "utils/backend_runtime.h"
+#endif
 
 /* Sync methods */
 enum WalSyncMethod
@@ -32,9 +34,11 @@ enum WalSyncMethod
 };
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int wal_sync_method;
 
+#ifndef FRONTEND
 #define ProcLastRecPtr (PgCurrentXLogState()->proc_last_rec_ptr)
 #define XactLastRecEnd (PgCurrentXLogState()->xact_last_rec_end)
 #define XactLastCommitEnd (PgCurrentXLogState()->xact_last_commit_end)
+#endif
 
 /* these variables are GUC parameters related to XLOG */
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int wal_segment_size;
@@ -49,6 +53,7 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *XLogArchiveCommand;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool EnableHotStandby;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool fullPageWrites;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool wal_log_hints;
+#ifndef FRONTEND
 extern int *PgCurrentWalCompressionRef(void);
 extern bool *PgCurrentWalInitZeroRef(void);
 extern bool *PgCurrentWalRecycleRef(void);
@@ -59,13 +64,16 @@ extern char **PgCurrentWalConsistencyCheckingStringRef(void);
 #define wal_recycle (*PgCurrentWalRecycleRef())
 #define wal_consistency_checking (*PgCurrentWalConsistencyCheckingRef())
 #define wal_consistency_checking_string (*PgCurrentWalConsistencyCheckingStringRef())
+#endif
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool log_checkpoints;
+#ifndef FRONTEND
 extern int *PgCurrentCommitDelayRef(void);
 extern int *PgCurrentCommitSiblingsRef(void);
 extern bool *PgCurrentTrackWalIoTimingRef(void);
 #define CommitDelay (*PgCurrentCommitDelayRef())
 #define CommitSiblings (*PgCurrentCommitSiblingsRef())
 #define track_wal_io_timing (*PgCurrentTrackWalIoTimingRef())
+#endif
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int wal_decode_buffer_size;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int data_checksums;
 
@@ -106,8 +114,10 @@ typedef enum RecoveryState
 } RecoveryState;
 
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int wal_level;
+#ifndef FRONTEND
 #define XLogLogicalInfo \
 	(PgCurrentLogicalReplicationState()->xlog_logical_info)
+#endif
 
 /* Is WAL archiving enabled (always or only while server is running normally)? */
 #define XLogArchivingActive() \

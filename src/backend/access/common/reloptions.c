@@ -27,10 +27,13 @@
 #include "catalog/pg_type.h"
 #include "commands/defrem.h"
 #include "commands/tablespace.h"
+#include "miscadmin.h"
 #include "nodes/makefuncs.h"
+#include "port/pg_pthread.h"
 #include "storage/lock.h"
 #include "utils/array.h"
 #include "utils/attoptcache.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/global_lifetime.h"
 #include "utils/guc.h"
@@ -602,9 +605,71 @@ static PG_GLOBAL_RUNTIME int max_custom_options = 0;
 static PG_GLOBAL_RUNTIME relopt_gen **custom_options = NULL;
 static PG_GLOBAL_RUNTIME bool need_initialization = true;
 
+#ifndef WIN32
+static PG_GLOBAL_RUNTIME pthread_mutex_t ThreadedRelOptionsMutex = PTHREAD_MUTEX_INITIALIZER;
+#endif
+
+static bool ThreadedRelOptionsLock(void);
+static void ThreadedRelOptionsUnlock(bool locked);
+static MemoryContext RelOptionsGlobalMemoryContext(void);
 static void initialize_reloptions(void);
 static void parse_one_reloption(relopt_value *option, char *text_str,
 								int text_len, bool validate);
+
+static bool
+ThreadedRelOptionsLock(void)
+{
+#ifndef WIN32
+	int			rc;
+
+	if (!multithreaded)
+		return false;
+
+	HOLD_INTERRUPTS();
+	rc = pthread_mutex_lock(&ThreadedRelOptionsMutex);
+	if (rc != 0)
+	{
+		RESUME_INTERRUPTS();
+		errno = rc;
+		ereport(FATAL,
+				(errmsg("could not enter threaded reloptions critical section: %m")));
+	}
+
+	return true;
+#else
+	return false;
+#endif
+}
+
+static void
+ThreadedRelOptionsUnlock(bool locked)
+{
+#ifndef WIN32
+	int			rc;
+
+	if (!locked)
+		return;
+
+	rc = pthread_mutex_unlock(&ThreadedRelOptionsMutex);
+	RESUME_INTERRUPTS();
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not leave threaded reloptions critical section: %m");
+	}
+#else
+	(void) locked;
+#endif
+}
+
+static MemoryContext
+RelOptionsGlobalMemoryContext(void)
+{
+	if (multithreaded)
+		return PgCurrentRuntimeExtensionModuleMemoryContext();
+
+	return TopMemoryContext;
+}
 
 /*
  * Get the length of a string reloption (either default or the user-defined
@@ -669,7 +734,7 @@ initialize_reloptions(void)
 
 	if (relOpts)
 		pfree(relOpts);
-	relOpts = MemoryContextAlloc(TopMemoryContext,
+	relOpts = MemoryContextAlloc(RelOptionsGlobalMemoryContext(),
 								 (j + 1) * sizeof(relopt_gen *));
 
 	j = 0;
@@ -742,13 +807,25 @@ initialize_reloptions(void)
 relopt_kind
 add_reloption_kind(void)
 {
+	bool		locked;
+	relopt_kind result;
+
+	locked = ThreadedRelOptionsLock();
+
 	/* don't hand out the last bit so that the enum's behavior is portable */
 	if (last_assigned_kind >= RELOPT_KIND_MAX)
+	{
+		ThreadedRelOptionsUnlock(locked);
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("user-defined relation parameter types limit exceeded")));
+	}
+
 	last_assigned_kind <<= 1;
-	return (relopt_kind) last_assigned_kind;
+	result = (relopt_kind) last_assigned_kind;
+
+	ThreadedRelOptionsUnlock(locked);
+	return result;
 }
 
 /*
@@ -759,28 +836,43 @@ add_reloption_kind(void)
 static void
 add_reloption(relopt_gen *newoption)
 {
-	if (num_custom_options >= max_custom_options)
+	bool		locked;
+
+	locked = ThreadedRelOptionsLock();
+
+	PG_TRY();
 	{
-		MemoryContext oldcxt;
-
-		oldcxt = MemoryContextSwitchTo(TopMemoryContext);
-
-		if (max_custom_options == 0)
+		if (num_custom_options >= max_custom_options)
 		{
-			max_custom_options = 8;
-			custom_options = palloc(max_custom_options * sizeof(relopt_gen *));
+			MemoryContext oldcxt;
+
+			oldcxt = MemoryContextSwitchTo(RelOptionsGlobalMemoryContext());
+
+			if (max_custom_options == 0)
+			{
+				max_custom_options = 8;
+				custom_options = palloc(max_custom_options * sizeof(relopt_gen *));
+			}
+			else
+			{
+				max_custom_options *= 2;
+				custom_options = repalloc(custom_options,
+										  max_custom_options * sizeof(relopt_gen *));
+			}
+			MemoryContextSwitchTo(oldcxt);
 		}
-		else
-		{
-			max_custom_options *= 2;
-			custom_options = repalloc(custom_options,
-									  max_custom_options * sizeof(relopt_gen *));
-		}
-		MemoryContextSwitchTo(oldcxt);
+		custom_options[num_custom_options++] = newoption;
+
+		need_initialization = true;
 	}
-	custom_options[num_custom_options++] = newoption;
+	PG_CATCH();
+	{
+		ThreadedRelOptionsUnlock(locked);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 
-	need_initialization = true;
+	ThreadedRelOptionsUnlock(locked);
 }
 
 /*
@@ -838,7 +930,7 @@ allocate_reloption(uint32 kinds, int type, const char *name, const char *desc,
 	relopt_gen *newoption;
 
 	if (kinds != RELOPT_KIND_LOCAL)
-		oldcxt = MemoryContextSwitchTo(TopMemoryContext);
+		oldcxt = MemoryContextSwitchTo(RelOptionsGlobalMemoryContext());
 	else
 		oldcxt = NULL;
 
@@ -1181,7 +1273,8 @@ init_string_reloption(uint32 kinds, const char *name, const char *desc,
 		if (kinds == RELOPT_KIND_LOCAL)
 			newoption->default_val = strdup(default_val);
 		else
-			newoption->default_val = MemoryContextStrdup(TopMemoryContext, default_val);
+			newoption->default_val =
+				MemoryContextStrdup(RelOptionsGlobalMemoryContext(), default_val);
 		newoption->default_len = strlen(default_val);
 		newoption->default_isnull = false;
 	}
@@ -1619,33 +1712,46 @@ parseRelOptions(Datum options, bool validate, relopt_kind kind,
 				int *numrelopts)
 {
 	relopt_value *reloptions = NULL;
+	bool		locked;
 	int			numoptions = 0;
 	int			i;
 	int			j;
 
-	if (need_initialization)
-		initialize_reloptions();
+	locked = ThreadedRelOptionsLock();
 
-	/* Build a list of expected options, based on kind */
-
-	for (i = 0; relOpts[i]; i++)
-		if (relOpts[i]->kinds & kind)
-			numoptions++;
-
-	if (numoptions > 0)
+	PG_TRY();
 	{
-		reloptions = palloc(numoptions * sizeof(relopt_value));
+		if (need_initialization)
+			initialize_reloptions();
 
-		for (i = 0, j = 0; relOpts[i]; i++)
-		{
+		/* Build a list of expected options, based on kind. */
+		for (i = 0; relOpts[i]; i++)
 			if (relOpts[i]->kinds & kind)
+				numoptions++;
+
+		if (numoptions > 0)
+		{
+			reloptions = palloc(numoptions * sizeof(relopt_value));
+
+			for (i = 0, j = 0; relOpts[i]; i++)
 			{
-				reloptions[j].gen = relOpts[i];
-				reloptions[j].isset = false;
-				j++;
+				if (relOpts[i]->kinds & kind)
+				{
+					reloptions[j].gen = relOpts[i];
+					reloptions[j].isset = false;
+					j++;
+				}
 			}
 		}
 	}
+	PG_CATCH();
+	{
+		ThreadedRelOptionsUnlock(locked);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	ThreadedRelOptionsUnlock(locked);
 
 	/* Done if no options */
 	if (DatumGetPointer(options) != NULL)
@@ -2253,30 +2359,44 @@ LOCKMODE
 AlterTableGetRelOptionsLockLevel(List *defList)
 {
 	LOCKMODE	lockmode = NoLock;
+	bool		locked;
 	ListCell   *cell;
 
 	if (defList == NIL)
 		return AccessExclusiveLock;
 
-	if (need_initialization)
-		initialize_reloptions();
+	locked = ThreadedRelOptionsLock();
 
-	foreach(cell, defList)
+	PG_TRY();
 	{
-		DefElem    *def = (DefElem *) lfirst(cell);
-		int			i;
+		if (need_initialization)
+			initialize_reloptions();
 
-		for (i = 0; relOpts[i]; i++)
+		foreach(cell, defList)
 		{
-			if (strncmp(relOpts[i]->name,
-						def->defname,
-						relOpts[i]->namelen + 1) == 0)
+			DefElem    *def = (DefElem *) lfirst(cell);
+			int			i;
+
+			for (i = 0; relOpts[i]; i++)
 			{
-				if (lockmode < relOpts[i]->lockmode)
-					lockmode = relOpts[i]->lockmode;
+				if (strncmp(relOpts[i]->name,
+							def->defname,
+							relOpts[i]->namelen + 1) == 0)
+				{
+					if (lockmode < relOpts[i]->lockmode)
+						lockmode = relOpts[i]->lockmode;
+				}
 			}
 		}
 	}
+	PG_CATCH();
+	{
+		ThreadedRelOptionsUnlock(locked);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	ThreadedRelOptionsUnlock(locked);
 
 	return lockmode;
 }

@@ -752,6 +752,8 @@ Deferred with invariant:
 Goal: extend the visible wait boundary so sessions can suspend and resume
 without pinning an OS thread.
 
+Detailed working plan: `MULTITHREADED_PHASE13_PLAN.md`.
+
 Likely changes:
 
 - Convert `PgSuspend()` waits from "block current carrier" to "register wait and
@@ -761,6 +763,15 @@ Likely changes:
   timeout waits scheduler-visible.
 - Keep thread-per-session mode available with blocking waits for debugging and
   fallback.
+- Keep the Phase 12 interrupt/latch boundary intact while doing this:
+  logical backend events use `SendInterrupt()`/`RaiseInterrupt()` or mapped
+  proc-signal reasons, wait readiness remains latch/CV/wait-event driven until
+  represented by a Phase 13 wait-completion record, and process lifecycle
+  signalling remains process-shaped.
+- Do not perform a wholesale latch-to-interrupt replacement before the first
+  scheduler-visible wait family exists. Reassess the broader upstream-style
+  refactor after Phase 13 has concrete wait-completion and task-requeue
+  mechanics.
 
 Validation:
 
@@ -1141,17 +1152,21 @@ Mitigation:
    already been recorded on the branch.
 2. Inventory blocking wait paths used by the threaded core target and classify
    them as keep-blocking, scheduler-visible now, or later scheduler work.
-3. Introduce the minimal wait-completion record needed to resume an owning
+3. Record the Phase 13 interrupt/latch boundary from
+   `MULTITHREADED_PHASE13_PLAN.md` in any new wait or scheduler helper API:
+   logical events are interrupts, wait readiness is latch/CV/wait-completion,
+   and process lifecycle remains process signalling.
+4. Introduce the minimal wait-completion record needed to resume an owning
    session/execution without changing pooled-carrier scheduling yet.
-4. Convert one narrow wait family to the scheduler-visible boundary while
+5. Convert one narrow wait family to the scheduler-visible boundary while
    preserving the thread-per-session blocking fallback.
-5. Add focused cancellation, termination, timeout, and reconnect coverage for
+6. Add focused cancellation, termination, timeout, and reconnect coverage for
    that wait family.
-6. Repeat the wait-family conversion for latch, lock, condition-variable,
+7. Repeat the wait-family conversion for latch, lock, condition-variable,
    frontend input, frontend output, and timeout waits.
-7. After the wait boundary is coherent, begin Phase 14 pooled carrier scheduler
+8. After the wait boundary is coherent, begin Phase 14 pooled carrier scheduler
    work.
-8. Defer contrib-wide threaded support, bundled languages beyond PL/pgSQL, and
+9. Defer contrib-wide threaded support, bundled languages beyond PL/pgSQL, and
    the full custom/extension GUC matrix to Phase 16.
 
 Each commit should leave process mode buildable. Prefer temporary compatibility

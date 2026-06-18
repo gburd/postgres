@@ -13,6 +13,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include "optimizer/cost.h"
@@ -100,7 +101,8 @@ PgCurrentRuntimeServerGUCState(void)
 PgExecutionGUCErrorState *
 PgCurrentExecutionGUCErrorState(void)
 {
-	return &PgCurrentOrEarlyExecution()->guc_error;
+	PG_RUNTIME_RETURN_CURRENT_EXECUTION_BUCKET(CurrentPgExecutionGUCErrorRuntimeState,
+											   guc_error);
 }
 
 char **
@@ -208,13 +210,13 @@ PgCurrentRestrictNonsystemRelationKindRef(void)
 char **
 PgCurrentDateStyleStringRef(void)
 {
-	return &PgCurrentSessionDateTimeState()->datestyle_string_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionDateTimeRuntimeState, PgCurrentSessionDateTimeState)->datestyle_string_value;
 }
 
 char **
 PgCurrentTimeZoneAbbreviationsStringRef(void)
 {
-	return &PgCurrentSessionDateTimeState()->timezone_abbreviations_string_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionDateTimeRuntimeState, PgCurrentSessionDateTimeState)->timezone_abbreviations_string_value;
 }
 
 bool *
@@ -244,13 +246,13 @@ PgCurrentSessionAuthorizationStringRef(void)
 char **
 PgCurrentClientEncodingStringRef(void)
 {
-	return &PgCurrentSessionEncodingState()->client_encoding_string_value;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionEncodingRuntimeState, PgCurrentSessionEncodingState)->client_encoding_string_value;
 }
 
 char **
 PgCurrentServerEncodingStringRef(void)
 {
-	return &PgCurrentSessionEncodingState()->server_encoding_string_value;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionEncodingRuntimeState, PgCurrentSessionEncodingState)->server_encoding_string_value;
 }
 
 int *
@@ -340,49 +342,49 @@ PgCurrentTraceNotifyRef(void)
 bool *
 PgCurrentAllowSystemTableModsRef(void)
 {
-	return &PgCurrentSessionMiscGUCState()->allow_system_table_mods_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionMiscGUCRuntimeState, PgCurrentSessionMiscGUCState)->allow_system_table_mods_value;
 }
 
 int *
 PgCurrentMaxStackDepthRef(void)
 {
-	return &PgCurrentSessionMiscGUCState()->max_stack_depth_kb;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionMiscGUCRuntimeState, PgCurrentSessionMiscGUCState)->max_stack_depth_kb;
 }
 
 ssize_t *
 PgCurrentMaxStackDepthBytesRef(void)
 {
-	return &PgCurrentSessionMiscGUCState()->max_stack_depth_bytes;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionMiscGUCRuntimeState, PgCurrentSessionMiscGUCState)->max_stack_depth_bytes;
 }
 
 char **
 PgCurrentSessionPreloadLibrariesRef(void)
 {
-	return &PgCurrentSessionMiscGUCState()->session_preload_libraries_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionMiscGUCRuntimeState, PgCurrentSessionMiscGUCState)->session_preload_libraries_value;
 }
 
 char **
 PgCurrentLocalPreloadLibrariesRef(void)
 {
-	return &PgCurrentSessionMiscGUCState()->local_preload_libraries_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionMiscGUCRuntimeState, PgCurrentSessionMiscGUCState)->local_preload_libraries_value;
 }
 
 char **
 PgCurrentDynamicLibraryPathRef(void)
 {
-	return &PgCurrentSessionMiscGUCState()->dynamic_library_path_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionMiscGUCRuntimeState, PgCurrentSessionMiscGUCState)->dynamic_library_path_value;
 }
 
 char **
 PgCurrentExtensionControlPathRef(void)
 {
-	return &PgCurrentSessionMiscGUCState()->extension_control_path_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionMiscGUCRuntimeState, PgCurrentSessionMiscGUCState)->extension_control_path_value;
 }
 
 bool *
 PgCurrentUpdateProcessTitleRef(void)
 {
-	return &PgCurrentSessionMiscGUCState()->update_process_title_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionMiscGUCRuntimeState, PgCurrentSessionMiscGUCState)->update_process_title_value;
 }
 
 MemoryContext *
@@ -403,49 +405,49 @@ PgCurrentGUCMemoryContextRef(void)
 struct config_generic **
 PgCurrentGUCVariablesRef(void)
 {
-	return &PgCurrentSessionGUCState()->variables;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionGUCRuntimeState, PgCurrentSessionGUCState)->variables;
 }
 
 int *
 PgCurrentNumGUCVariablesRef(void)
 {
-	return &PgCurrentSessionGUCState()->num_variables;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionGUCRuntimeState, PgCurrentSessionGUCState)->num_variables;
 }
 
 HTAB **
 PgCurrentGUCHashTableRef(void)
 {
-	return &PgCurrentSessionGUCState()->hash_table;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionGUCRuntimeState, PgCurrentSessionGUCState)->hash_table;
 }
 
 dlist_head *
 PgCurrentGUCNondefListRef(void)
 {
-	return &PgCurrentSessionGUCState()->nondef_list;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionGUCRuntimeState, PgCurrentSessionGUCState)->nondef_list;
 }
 
 slist_head *
 PgCurrentGUCStackListRef(void)
 {
-	return &PgCurrentSessionGUCState()->stack_list;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionGUCRuntimeState, PgCurrentSessionGUCState)->stack_list;
 }
 
 slist_head *
 PgCurrentGUCReportListRef(void)
 {
-	return &PgCurrentSessionGUCState()->report_list;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionGUCRuntimeState, PgCurrentSessionGUCState)->report_list;
 }
 
 bool *
 PgCurrentGUCReportingEnabledRef(void)
 {
-	return &PgCurrentSessionGUCState()->reporting_enabled;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionGUCRuntimeState, PgCurrentSessionGUCState)->reporting_enabled;
 }
 
 int *
 PgCurrentGUCNestLevelRef(void)
 {
-	return &PgCurrentSessionGUCState()->nest_level;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionGUCRuntimeState, PgCurrentSessionGUCState)->nest_level;
 }
 
 int *
@@ -808,395 +810,395 @@ PgCurrentOptimizeBoundedSortRef(void)
 int *
 PgCurrentWorkMemRef(void)
 {
-	return &PgCurrentSessionQueryMemoryState()->work_mem_kb;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionQueryMemoryRuntimeState, PgCurrentSessionQueryMemoryState)->work_mem_kb;
 }
 
 double *
 PgCurrentHashMemMultiplierRef(void)
 {
-	return &PgCurrentSessionQueryMemoryState()->hash_mem_multiplier_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionQueryMemoryRuntimeState, PgCurrentSessionQueryMemoryState)->hash_mem_multiplier_value;
 }
 
 int *
 PgCurrentMaintenanceWorkMemRef(void)
 {
-	return &PgCurrentSessionQueryMemoryState()->maintenance_work_mem_kb;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionQueryMemoryRuntimeState, PgCurrentSessionQueryMemoryState)->maintenance_work_mem_kb;
 }
 
 int *
 PgCurrentMaxParallelMaintenanceWorkersRef(void)
 {
-	return &PgCurrentSessionQueryMemoryState()->max_parallel_maintenance_workers_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionQueryMemoryRuntimeState, PgCurrentSessionQueryMemoryState)->max_parallel_maintenance_workers_value;
 }
 
 double *
 PgCurrentSeqPageCostRef(void)
 {
-	return &PgCurrentSessionPlannerCostState()->seq_page_cost_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerCostRuntimeState, PgCurrentSessionPlannerCostState)->seq_page_cost_value;
 }
 
 double *
 PgCurrentRandomPageCostRef(void)
 {
-	return &PgCurrentSessionPlannerCostState()->random_page_cost_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerCostRuntimeState, PgCurrentSessionPlannerCostState)->random_page_cost_value;
 }
 
 double *
 PgCurrentCpuTupleCostRef(void)
 {
-	return &PgCurrentSessionPlannerCostState()->cpu_tuple_cost_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerCostRuntimeState, PgCurrentSessionPlannerCostState)->cpu_tuple_cost_value;
 }
 
 double *
 PgCurrentCpuIndexTupleCostRef(void)
 {
-	return &PgCurrentSessionPlannerCostState()->cpu_index_tuple_cost_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerCostRuntimeState, PgCurrentSessionPlannerCostState)->cpu_index_tuple_cost_value;
 }
 
 double *
 PgCurrentCpuOperatorCostRef(void)
 {
-	return &PgCurrentSessionPlannerCostState()->cpu_operator_cost_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerCostRuntimeState, PgCurrentSessionPlannerCostState)->cpu_operator_cost_value;
 }
 
 double *
 PgCurrentParallelTupleCostRef(void)
 {
-	return &PgCurrentSessionPlannerCostState()->parallel_tuple_cost_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerCostRuntimeState, PgCurrentSessionPlannerCostState)->parallel_tuple_cost_value;
 }
 
 double *
 PgCurrentParallelSetupCostRef(void)
 {
-	return &PgCurrentSessionPlannerCostState()->parallel_setup_cost_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerCostRuntimeState, PgCurrentSessionPlannerCostState)->parallel_setup_cost_value;
 }
 
 double *
 PgCurrentRecursiveWorktableFactorRef(void)
 {
-	return &PgCurrentSessionPlannerCostState()->recursive_worktable_factor_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerCostRuntimeState, PgCurrentSessionPlannerCostState)->recursive_worktable_factor_value;
 }
 
 int *
 PgCurrentEffectiveCacheSizeRef(void)
 {
-	return &PgCurrentSessionPlannerCostState()->effective_cache_size_pages;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerCostRuntimeState, PgCurrentSessionPlannerCostState)->effective_cache_size_pages;
 }
 
 Cost *
 PgCurrentDisableCostRef(void)
 {
-	return (Cost *) &PgCurrentSessionPlannerCostState()->disable_cost_value;
+	return (Cost *) &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerCostRuntimeState, PgCurrentSessionPlannerCostState)->disable_cost_value;
 }
 
 int *
 PgCurrentMaxParallelWorkersPerGatherRef(void)
 {
-	return &PgCurrentSessionPlannerCostState()->max_parallel_workers_per_gather_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerCostRuntimeState, PgCurrentSessionPlannerCostState)->max_parallel_workers_per_gather_value;
 }
 
 int *
 PgCurrentDebugParallelQueryRef(void)
 {
-	return &PgCurrentSessionPlannerCostState()->debug_parallel_query_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerCostRuntimeState, PgCurrentSessionPlannerCostState)->debug_parallel_query_value;
 }
 
 bool *
 PgCurrentParallelLeaderParticipationRef(void)
 {
-	return &PgCurrentSessionPlannerCostState()->parallel_leader_participation_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerCostRuntimeState, PgCurrentSessionPlannerCostState)->parallel_leader_participation_value;
 }
 
 bool *
 PgCurrentEnableSeqscanRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->enable_seqscan_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->enable_seqscan_value;
 }
 
 bool *
 PgCurrentEnableIndexscanRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->enable_indexscan_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->enable_indexscan_value;
 }
 
 bool *
 PgCurrentEnableIndexonlyscanRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->enable_indexonlyscan_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->enable_indexonlyscan_value;
 }
 
 bool *
 PgCurrentEnableBitmapscanRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->enable_bitmapscan_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->enable_bitmapscan_value;
 }
 
 bool *
 PgCurrentEnableTidscanRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->enable_tidscan_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->enable_tidscan_value;
 }
 
 bool *
 PgCurrentEnableSortRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->enable_sort_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->enable_sort_value;
 }
 
 bool *
 PgCurrentEnableIncrementalSortRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->enable_incremental_sort_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->enable_incremental_sort_value;
 }
 
 bool *
 PgCurrentEnableHashaggRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->enable_hashagg_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->enable_hashagg_value;
 }
 
 bool *
 PgCurrentEnableNestloopRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->enable_nestloop_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->enable_nestloop_value;
 }
 
 bool *
 PgCurrentEnableMaterialRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->enable_material_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->enable_material_value;
 }
 
 bool *
 PgCurrentEnableMemoizeRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->enable_memoize_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->enable_memoize_value;
 }
 
 bool *
 PgCurrentEnableMergejoinRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->enable_mergejoin_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->enable_mergejoin_value;
 }
 
 bool *
 PgCurrentEnableHashjoinRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->enable_hashjoin_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->enable_hashjoin_value;
 }
 
 bool *
 PgCurrentEnableGathermergeRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->enable_gathermerge_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->enable_gathermerge_value;
 }
 
 bool *
 PgCurrentEnablePartitionwiseJoinRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->enable_partitionwise_join_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->enable_partitionwise_join_value;
 }
 
 bool *
 PgCurrentEnablePartitionwiseAggregateRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->enable_partitionwise_aggregate_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->enable_partitionwise_aggregate_value;
 }
 
 bool *
 PgCurrentEnableParallelAppendRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->enable_parallel_append_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->enable_parallel_append_value;
 }
 
 bool *
 PgCurrentEnableParallelHashRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->enable_parallel_hash_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->enable_parallel_hash_value;
 }
 
 bool *
 PgCurrentEnablePartitionPruningRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->enable_partition_pruning_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->enable_partition_pruning_value;
 }
 
 bool *
 PgCurrentEnablePresortedAggregateRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->enable_presorted_aggregate_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->enable_presorted_aggregate_value;
 }
 
 bool *
 PgCurrentEnableAsyncAppendRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->enable_async_append_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->enable_async_append_value;
 }
 
 bool *
 PgCurrentEnableDistinctReorderingRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->enable_distinct_reordering_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->enable_distinct_reordering_value;
 }
 
 bool *
 PgCurrentEnableGeqoRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->enable_geqo_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->enable_geqo_value;
 }
 
 bool *
 PgCurrentEnableEagerAggregateRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->enable_eager_aggregate_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->enable_eager_aggregate_value;
 }
 
 bool *
 PgCurrentEnableGroupByReorderingRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->enable_group_by_reordering_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->enable_group_by_reordering_value;
 }
 
 bool *
 PgCurrentEnableSelfJoinEliminationRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->enable_self_join_elimination_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->enable_self_join_elimination_value;
 }
 
 double *
 PgCurrentCursorTupleFractionRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->cursor_tuple_fraction_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->cursor_tuple_fraction_value;
 }
 
 int *
 PgCurrentConstraintExclusionRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->constraint_exclusion_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->constraint_exclusion_value;
 }
 
 int *
 PgCurrentGeqoThresholdRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->geqo_threshold_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->geqo_threshold_value;
 }
 
 int *
 PgCurrentGeqoEffortRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->Geqo_effort_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->Geqo_effort_value;
 }
 
 int *
 PgCurrentGeqoPoolSizeRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->Geqo_pool_size_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->Geqo_pool_size_value;
 }
 
 int *
 PgCurrentGeqoGenerationsRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->Geqo_generations_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->Geqo_generations_value;
 }
 
 double *
 PgCurrentGeqoSelectionBiasRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->Geqo_selection_bias_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->Geqo_selection_bias_value;
 }
 
 double *
 PgCurrentGeqoSeedRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->Geqo_seed_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->Geqo_seed_value;
 }
 
 int *
 PgCurrentGeqoPlannerExtensionIdRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->Geqo_planner_extension_id_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->Geqo_planner_extension_id_value;
 }
 
 double *
 PgCurrentMinEagerAggGroupSizeRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->min_eager_agg_group_size_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->min_eager_agg_group_size_value;
 }
 
 int *
 PgCurrentMinParallelTableScanSizeRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->min_parallel_table_scan_size_blocks;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->min_parallel_table_scan_size_blocks;
 }
 
 int *
 PgCurrentMinParallelIndexScanSizeRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->min_parallel_index_scan_size_blocks;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->min_parallel_index_scan_size_blocks;
 }
 
 int *
 PgCurrentFromCollapseLimitRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->from_collapse_limit_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->from_collapse_limit_value;
 }
 
 int *
 PgCurrentJoinCollapseLimitRef(void)
 {
-	return &PgCurrentSessionPlannerMethodState()->join_collapse_limit_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->join_collapse_limit_value;
 }
 
 int *
 PgCurrentGUCCheckErrcodeValueRef(void)
 {
-	return &PgCurrentExecutionGUCErrorState()->check_errcode_value;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionGUCErrorRuntimeState, PgCurrentExecutionGUCErrorState)->check_errcode_value;
 }
 
 char **
 PgCurrentGUCCheckErrmsgStringRef(void)
 {
-	return &PgCurrentExecutionGUCErrorState()->check_errmsg_string;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionGUCErrorRuntimeState, PgCurrentExecutionGUCErrorState)->check_errmsg_string;
 }
 
 char **
 PgCurrentGUCCheckErrdetailStringRef(void)
 {
-	return &PgCurrentExecutionGUCErrorState()->check_errdetail_string;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionGUCErrorRuntimeState, PgCurrentExecutionGUCErrorState)->check_errdetail_string;
 }
 
 char **
 PgCurrentGUCCheckErrhintStringRef(void)
 {
-	return &PgCurrentExecutionGUCErrorState()->check_errhint_string;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionGUCErrorRuntimeState, PgCurrentExecutionGUCErrorState)->check_errhint_string;
 }
 
 int *
 PgCurrentFormatErrnumberRef(void)
 {
-	return &PgCurrentExecutionGUCErrorState()->format_errnumber;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionGUCErrorRuntimeState, PgCurrentExecutionGUCErrorState)->format_errnumber;
 }
 
 const char **
 PgCurrentFormatDomainRef(void)
 {
-	return &PgCurrentExecutionGUCErrorState()->format_domain;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionGUCErrorRuntimeState, PgCurrentExecutionGUCErrorState)->format_domain;
 }
 
 unsigned int *
 PgCurrentConfigFileLinenoRef(void)
 {
-	return &PgCurrentExecutionGUCErrorState()->config_file_lineno;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionGUCErrorRuntimeState, PgCurrentExecutionGUCErrorState)->config_file_lineno;
 }
 
 const char **
 PgCurrentGUCFlexFatalErrmsgRef(void)
 {
-	return &PgCurrentExecutionGUCErrorState()->flex_fatal_errmsg;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionGUCErrorRuntimeState, PgCurrentExecutionGUCErrorState)->flex_fatal_errmsg;
 }
 
 sigjmp_buf **
 PgCurrentGUCFlexFatalJmpRef(void)
 {
-	return &PgCurrentExecutionGUCErrorState()->flex_fatal_jmp;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionGUCErrorRuntimeState, PgCurrentExecutionGUCErrorState)->flex_fatal_jmp;
 }

@@ -13,11 +13,21 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include "storage/buf_internals.h"
 #include "utils/memutils.h"
 #include "../../utils/init/backend_runtime_internal.h"
+
+static inline PgBackendBufferState *
+PgCurrentBackendBufferStateFast(void)
+{
+	if (likely(CurrentPgBackendBufferRuntimeState != NULL))
+		return CurrentPgBackendBufferRuntimeState;
+
+	return PgCurrentBackendBufferState();
+}
 
 bool *
 PgCurrentZeroDamagedPagesRef(void)
@@ -64,79 +74,79 @@ PgCurrentBackendFlushAfterRef(void)
 int *
 PgCurrentNLocBufferRef(void)
 {
-	return &PgCurrentBackendBufferState()->nlocbuffer;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendBufferRuntimeState, PgCurrentBackendBufferState)->nlocbuffer;
 }
 
 void **
 PgCurrentLocalBufferDescriptorsRef(void)
 {
-	return &PgCurrentBackendBufferState()->local_buffer_descriptors;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendBufferRuntimeState, PgCurrentBackendBufferState)->local_buffer_descriptors;
 }
 
 void **
 PgCurrentLocalBufferBlockPointersRef(void)
 {
-	return &PgCurrentBackendBufferState()->local_buffer_block_pointers;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendBufferRuntimeState, PgCurrentBackendBufferState)->local_buffer_block_pointers;
 }
 
 int32 **
 PgCurrentLocalRefCountRef(void)
 {
-	return &PgCurrentBackendBufferState()->local_ref_count;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendBufferRuntimeState, PgCurrentBackendBufferState)->local_ref_count;
 }
 
 int *
 PgCurrentNextFreeLocalBufIdRef(void)
 {
-	return &PgCurrentBackendBufferState()->next_free_local_buf_id;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendBufferRuntimeState, PgCurrentBackendBufferState)->next_free_local_buf_id;
 }
 
 HTAB **
 PgCurrentLocalBufHashRef(void)
 {
-	return &PgCurrentBackendBufferState()->local_buf_hash;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendBufferRuntimeState, PgCurrentBackendBufferState)->local_buf_hash;
 }
 
 int *
 PgCurrentNLocalPinnedBuffersRef(void)
 {
-	return &PgCurrentBackendBufferState()->n_local_pinned_buffers;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendBufferRuntimeState, PgCurrentBackendBufferState)->n_local_pinned_buffers;
 }
 
 char **
 PgCurrentLocalBufferCurBlockRef(void)
 {
-	return &PgCurrentBackendBufferState()->local_buffer_cur_block;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendBufferRuntimeState, PgCurrentBackendBufferState)->local_buffer_cur_block;
 }
 
 int *
 PgCurrentLocalBufferNextBufInBlockRef(void)
 {
-	return &PgCurrentBackendBufferState()->local_buffer_next_buf_in_block;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendBufferRuntimeState, PgCurrentBackendBufferState)->local_buffer_next_buf_in_block;
 }
 
 int *
 PgCurrentLocalBufferNumBufsInBlockRef(void)
 {
-	return &PgCurrentBackendBufferState()->local_buffer_num_bufs_in_block;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendBufferRuntimeState, PgCurrentBackendBufferState)->local_buffer_num_bufs_in_block;
 }
 
 int *
 PgCurrentLocalBufferTotalBufsAllocatedRef(void)
 {
-	return &PgCurrentBackendBufferState()->local_buffer_total_bufs_allocated;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendBufferRuntimeState, PgCurrentBackendBufferState)->local_buffer_total_bufs_allocated;
 }
 
 MemoryContext *
 PgCurrentLocalBufferContextRef(void)
 {
-	return &PgCurrentBackendBufferState()->local_buffer_context;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendBufferRuntimeState, PgCurrentBackendBufferState)->local_buffer_context;
 }
 
 BufferDesc **
 PgCurrentPinCountWaitBufRef(void)
 {
-	return &PgCurrentBackendBufferState()->pin_count_wait_buf;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendBufferRuntimeState, PgCurrentBackendBufferState)->pin_count_wait_buf;
 }
 
 WritebackContext *
@@ -155,47 +165,47 @@ PgCurrentBackendWritebackContextRef(void)
 void **
 PgCurrentPrivateRefCountArrayKeysRef(void)
 {
-	return &PgCurrentBackendBufferState()->private_ref_count_array_keys;
+	return &PgCurrentBackendBufferStateFast()->private_ref_count_array_keys;
 }
 
 void **
 PgCurrentPrivateRefCountArrayRef(void)
 {
-	return &PgCurrentBackendBufferState()->private_ref_count_array;
+	return &PgCurrentBackendBufferStateFast()->private_ref_count_array;
 }
 
 void **
 PgCurrentPrivateRefCountHashRef(void)
 {
-	return &PgCurrentBackendBufferState()->private_ref_count_hash;
+	return &PgCurrentBackendBufferStateFast()->private_ref_count_hash;
 }
 
 int32 *
 PgCurrentPrivateRefCountOverflowedRef(void)
 {
-	return &PgCurrentBackendBufferState()->private_ref_count_overflowed;
+	return &PgCurrentBackendBufferStateFast()->private_ref_count_overflowed;
 }
 
 uint32 *
 PgCurrentPrivateRefCountClockRef(void)
 {
-	return &PgCurrentBackendBufferState()->private_ref_count_clock;
+	return &PgCurrentBackendBufferStateFast()->private_ref_count_clock;
 }
 
 int *
 PgCurrentReservedRefCountSlotRef(void)
 {
-	return &PgCurrentBackendBufferState()->reserved_ref_count_slot;
+	return &PgCurrentBackendBufferStateFast()->reserved_ref_count_slot;
 }
 
 int *
 PgCurrentPrivateRefCountEntryLastRef(void)
 {
-	return &PgCurrentBackendBufferState()->private_ref_count_entry_last;
+	return &PgCurrentBackendBufferStateFast()->private_ref_count_entry_last;
 }
 
 uint32 *
 PgCurrentMaxProportionalPinsRef(void)
 {
-	return &PgCurrentBackendBufferState()->max_proportional_pins;
+	return &PgCurrentBackendBufferStateFast()->max_proportional_pins;
 }

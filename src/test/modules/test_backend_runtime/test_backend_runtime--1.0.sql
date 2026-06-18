@@ -323,6 +323,10 @@ CREATE FUNCTION test_backend_instrumentation_state_is_backend_local()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;
 
+CREATE FUNCTION test_runtime_hot_bucket_cache_tracks_current_work()
+	RETURNS pg_catalog.bool
+	AS 'MODULE_PATHNAME' LANGUAGE C;
+
 CREATE FUNCTION test_backend_buffer_state_is_backend_local()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;

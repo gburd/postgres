@@ -1,0 +1,284 @@
+/*
+ * Hot current-work runtime bucket cache definitions.
+ *
+ * Each row names a thread-local compatibility cache pointer derived from the
+ * active backend or execution object.  These are not ownership roots; they are
+ * rebound with the current runtime work and cleared whenever current runtime
+ * work is cleared.
+ *
+ * Arguments:
+ *   variable name, pointed-to type, current work variable, field name
+ */
+
+PG_RUNTIME_HOT_BUCKET(CurrentPgBackendBufferRuntimeState,
+					  PgBackendBufferState,
+					  backend,
+					  buffers)
+PG_RUNTIME_HOT_BUCKET(CurrentPgBackendCoreRuntimeState,
+					  PgBackendCoreState,
+					  backend,
+					  core)
+PG_RUNTIME_HOT_BUCKET(CurrentPgBackendExprInterpRuntimeState,
+					  PgBackendExprInterpState,
+					  backend,
+					  expr_interp)
+PG_RUNTIME_HOT_BUCKET(CurrentPgBackendIPCRuntimeState,
+					  PgBackendIPCState,
+					  backend,
+					  ipc)
+PG_RUNTIME_HOT_BUCKET(CurrentPgBackendInterruptHoldoffRuntimeState,
+					  PgBackendInterruptHoldoffState,
+					  backend,
+					  interrupt_holdoffs)
+PG_RUNTIME_HOT_BUCKET(CurrentPgBackendInstrumentationRuntimeState,
+					  PgBackendInstrumentationState,
+					  backend,
+					  instrumentation)
+PG_RUNTIME_HOT_BUCKET(CurrentPgBackendLockRuntimeState,
+					  PgBackendLockState,
+					  backend,
+					  locks)
+PG_RUNTIME_HOT_BUCKET(CurrentPgBackendMemoryManagerRuntimeState,
+					  PgBackendMemoryManagerState,
+					  backend,
+					  memory_manager)
+PG_RUNTIME_HOT_BUCKET(CurrentPgBackendParallelRuntimeState,
+					  PgBackendParallelState,
+					  backend,
+					  parallel)
+PG_RUNTIME_HOT_BUCKET(CurrentPgBackendPendingInterruptRuntimeState,
+					  PgBackendPendingInterruptState,
+					  backend,
+					  pending_interrupts)
+PG_RUNTIME_HOT_BUCKET(CurrentPgBackendPgStatPendingRuntimeState,
+					  PgBackendPgStatPendingState,
+					  backend,
+					  pgstat_pending)
+PG_RUNTIME_HOT_BUCKET(CurrentPgBackendStorageRuntimeState,
+					  PgBackendStorageState,
+					  backend,
+					  storage)
+PG_RUNTIME_HOT_BUCKET(CurrentPgBackendTimeoutRuntimeState,
+					  PgBackendTimeoutState,
+					  backend,
+					  timeout)
+PG_RUNTIME_HOT_BUCKET(CurrentPgBackendTransactionRuntimeState,
+					  PgBackendTransactionState,
+					  backend,
+					  transaction)
+PG_RUNTIME_HOT_BUCKET(CurrentPgBackendUtilityRuntimeState,
+					  PgBackendUtilityState,
+					  backend,
+					  utility)
+PG_RUNTIME_HOT_BUCKET(CurrentPgBackendWaitRuntimeState,
+					  PgBackendWaitState,
+					  backend,
+					  wait_state)
+PG_RUNTIME_HOT_BUCKET(CurrentPgBackendXLogRuntimeState,
+					  PgBackendXLogState,
+					  backend,
+					  xlog)
+PG_RUNTIME_HOT_BUCKET(CurrentPgConnectionProtocolRuntimeState,
+					  PgConnectionProtocolState,
+					  connection,
+					  protocol)
+PG_RUNTIME_HOT_BUCKET(CurrentPgConnectionSocketIORuntimeState,
+					  PgConnectionSocketIOState,
+					  connection,
+					  socket_io)
+PG_RUNTIME_HOT_BUCKET(CurrentPgExecutionCatalogRuntimeState,
+					  PgExecutionCatalogState,
+					  execution,
+					  catalog)
+PG_RUNTIME_HOT_BUCKET(CurrentPgExecutionCatalogCacheRuntimeState,
+					  PgExecutionCatalogCacheState,
+					  execution,
+					  catalog_cache)
+PG_RUNTIME_HOT_BUCKET(CurrentPgExecutionDebugRuntimeState,
+					  PgExecutionDebugState,
+					  execution,
+					  debug)
+PG_RUNTIME_HOT_BUCKET(CurrentPgExecutionErrorRuntimeState,
+					  PgExecutionErrorState,
+					  execution,
+					  error)
+PG_RUNTIME_HOT_BUCKET(CurrentPgExecutionSPIRuntimeState,
+					  PgExecutionSPIState,
+					  execution,
+					  spi)
+PG_RUNTIME_HOT_BUCKET(CurrentPgExecutionMemoryContextRuntimeState,
+					  PgExecutionMemoryContextState,
+					  execution,
+					  memory_contexts)
+PG_RUNTIME_HOT_BUCKET(CurrentPgExecutionPortalRuntimeState,
+					  PgExecutionPortalState,
+					  execution,
+					  portal)
+PG_RUNTIME_HOT_BUCKET(CurrentPgExecutionVacuumRuntimeState,
+					  PgExecutionVacuumState,
+					  execution,
+					  vacuum)
+PG_RUNTIME_HOT_BUCKET(CurrentPgExecutionNodeIORuntimeState,
+					  PgExecutionNodeIOState,
+					  execution,
+					  node_io)
+PG_RUNTIME_HOT_BUCKET(CurrentPgExecutionBaseBackupRuntimeState,
+					  PgExecutionBaseBackupState,
+					  execution,
+					  basebackup)
+PG_RUNTIME_HOT_BUCKET(CurrentPgExecutionAnalyzeRuntimeState,
+					  PgExecutionAnalyzeState,
+					  execution,
+					  analyze)
+PG_RUNTIME_HOT_BUCKET(CurrentPgExecutionExtensionRuntimeState,
+					  PgExecutionExtensionState,
+					  execution,
+					  extension)
+PG_RUNTIME_HOT_BUCKET(CurrentPgExecutionMatViewRuntimeState,
+					  PgExecutionMatViewState,
+					  execution,
+					  matview)
+PG_RUNTIME_HOT_BUCKET(CurrentPgExecutionResourceOwnerRuntimeState,
+					  PgExecutionResourceOwnerState,
+					  execution,
+					  resource_owners)
+PG_RUNTIME_HOT_BUCKET(CurrentPgExecutionSnapshotRuntimeState,
+					  PgExecutionSnapshotState,
+					  execution,
+					  snapshot)
+PG_RUNTIME_HOT_BUCKET(CurrentPgExecutionComboCidRuntimeState,
+					  PgExecutionComboCidState,
+					  execution,
+					  combo_cid)
+PG_RUNTIME_HOT_BUCKET(CurrentPgExecutionXLogInsertRuntimeState,
+					  PgExecutionXLogInsertState,
+					  execution,
+					  xloginsert)
+PG_RUNTIME_HOT_BUCKET(CurrentPgExecutionXactRuntimeState,
+					  PgExecutionXactState,
+					  execution,
+					  xact)
+PG_RUNTIME_HOT_BUCKET(CurrentPgExecutionTransactionCleanupRuntimeState,
+					  PgExecutionTransactionCleanupState,
+					  execution,
+					  transaction_cleanup)
+PG_RUNTIME_HOT_BUCKET(CurrentPgExecutionReplicationScratchRuntimeState,
+					  PgExecutionReplicationScratchState,
+					  execution,
+					  replication_scratch)
+PG_RUNTIME_HOT_BUCKET(CurrentPgExecutionGUCErrorRuntimeState,
+					  PgExecutionGUCErrorState,
+					  execution,
+					  guc_error)
+PG_RUNTIME_HOT_BUCKET(CurrentPgExecutionAsyncRuntimeState,
+					  PgExecutionAsyncState,
+					  execution,
+					  async)
+PG_RUNTIME_HOT_BUCKET(CurrentPgExecutionRelMapRuntimeState,
+					  PgExecutionRelMapState,
+					  execution,
+					  relmap)
+PG_RUNTIME_HOT_BUCKET(CurrentPgExecutionInvalidationRuntimeState,
+					  PgExecutionInvalidationState,
+					  execution,
+					  invalidation)
+PG_RUNTIME_HOT_BUCKET(CurrentPgExecutionTwoPhaseRecordRuntimeState,
+					  PgExecutionTwoPhaseRecordState,
+					  execution,
+					  two_phase_records)
+PG_RUNTIME_HOT_BUCKET(CurrentPgExecutionTriggerRuntimeState,
+					  PgExecutionTriggerState,
+					  execution,
+					  trigger)
+PG_RUNTIME_HOT_BUCKET(CurrentPgExecutionRegexRuntimeState,
+					  PgExecutionRegexState,
+					  execution,
+					  regex)
+PG_RUNTIME_HOT_BUCKET(CurrentPgExecutionValgrindRuntimeState,
+					  PgExecutionValgrindState,
+					  execution,
+					  valgrind)
+PG_RUNTIME_HOT_BUCKET(CurrentPgExecutionSnapBuildRuntimeState,
+					  PgExecutionSnapBuildState,
+					  execution,
+					  snapbuild)
+PG_RUNTIME_HOT_BUCKET(CurrentPgSessionCatalogLookupRuntimeState,
+					  PgSessionCatalogLookupState,
+					  session,
+					  catalog_lookup)
+PG_RUNTIME_HOT_BUCKET(CurrentPgSessionDateTimeRuntimeState,
+					  PgSessionDateTimeState,
+					  session,
+					  datetime)
+PG_RUNTIME_HOT_BUCKET(CurrentPgSessionXactDefaultRuntimeState,
+					  PgSessionXactDefaultState,
+					  session,
+					  xact_defaults)
+PG_RUNTIME_HOT_BUCKET(CurrentPgSessionLockWaitRuntimeState,
+					  PgSessionLockWaitState,
+					  session,
+					  lock_wait)
+PG_RUNTIME_HOT_BUCKET(CurrentPgSessionParserRuntimeState,
+					  PgSessionParserState,
+					  session,
+					  parser)
+PG_RUNTIME_HOT_BUCKET(CurrentPgSessionVacuumRuntimeState,
+					  PgSessionVacuumState,
+					  session,
+					  vacuum)
+PG_RUNTIME_HOT_BUCKET(CurrentPgSessionRegexRuntimeState,
+					  PgSessionRegexState,
+					  session,
+					  regex)
+PG_RUNTIME_HOT_BUCKET(CurrentPgSessionRIGlobalsRuntimeState,
+					  PgSessionRIGlobalsState,
+					  session,
+					  ri_globals)
+PG_RUNTIME_HOT_BUCKET(CurrentPgSessionEncodingRuntimeState,
+					  PgSessionEncodingState,
+					  session,
+					  encoding)
+PG_RUNTIME_HOT_BUCKET(CurrentPgSessionPortalManagerRuntimeState,
+					  PgSessionPortalManagerState,
+					  session,
+					  portal_manager)
+PG_RUNTIME_HOT_BUCKET(CurrentPgSessionGUCRuntimeState,
+					  PgSessionGUCState,
+					  session,
+					  guc)
+PG_RUNTIME_HOT_BUCKET(CurrentPgSessionLocaleRuntimeState,
+					  PgSessionLocaleState,
+					  session,
+					  locale)
+PG_RUNTIME_HOT_BUCKET(CurrentPgSessionLoggingRuntimeState,
+					  PgSessionLoggingState,
+					  session,
+					  logging)
+PG_RUNTIME_HOT_BUCKET(CurrentPgSessionLoopRuntimeState,
+					  PgSessionLoopState,
+					  session,
+					  loop_state)
+PG_RUNTIME_HOT_BUCKET(CurrentPgSessionMiscGUCRuntimeState,
+					  PgSessionMiscGUCState,
+					  session,
+					  misc_guc)
+PG_RUNTIME_HOT_BUCKET(CurrentPgSessionNamespaceRuntimeState,
+					  PgSessionNamespaceState,
+					  session,
+					  namespace_state)
+PG_RUNTIME_HOT_BUCKET(CurrentPgSessionPgStatRuntimeState,
+					  PgSessionPgStatState,
+					  session,
+					  pgstat)
+PG_RUNTIME_HOT_BUCKET(CurrentPgSessionPlannerCostRuntimeState,
+					  PgSessionPlannerCostState,
+					  session,
+					  planner_cost)
+PG_RUNTIME_HOT_BUCKET(CurrentPgSessionPlannerMethodRuntimeState,
+					  PgSessionPlannerMethodState,
+					  session,
+					  planner_method)
+PG_RUNTIME_HOT_BUCKET(CurrentPgSessionQueryMemoryRuntimeState,
+					  PgSessionQueryMemoryState,
+					  session,
+					  query_memory)

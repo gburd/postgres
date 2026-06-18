@@ -160,8 +160,15 @@ PG_GLOBAL_SHMEM LWLockPadded *MainLWLockArray = NULL;
 /* struct representing the LWLocks we're holding */
 typedef PgBackendLWLockHandle LWLockHandle;
 
-#define num_held_lwlocks (*PgCurrentNumHeldLWLocksRef())
-#define held_lwlocks (PgCurrentHeldLWLocks())
+#define PG_BACKEND_HOT_FIELD_REF(slot, fallback) \
+	PG_RUNTIME_CURRENT_HOT_FIELD_REF(slot, CurrentPgBackend, fallback)
+
+#define num_held_lwlocks \
+	(*(int *) PG_BACKEND_HOT_FIELD_REF(PgCurrentNumHeldLWLocksHotRef, \
+									   PgCurrentNumHeldLWLocksRef))
+#define held_lwlocks \
+	((PgBackendLWLockHandle *) PG_BACKEND_HOT_FIELD_REF(PgCurrentHeldLWLocksHotRef, \
+														PgCurrentHeldLWLocks))
 
 /* Maximum number of LWLock tranches that can be assigned by extensions */
 #define MAX_USER_DEFINED_TRANCHES 256
@@ -1132,6 +1139,8 @@ LWLockDequeueSelf(LWLock *lock)
 bool
 LWLockAcquire(LWLock *lock, LWLockMode mode)
 {
+	PgBackendLWLockHandle *local_held_lwlocks = held_lwlocks;
+	int			local_num_held_lwlocks = num_held_lwlocks;
 	PGPROC	   *proc = MyProc;
 	bool		result = true;
 	int			extraWaits = 0;
@@ -1161,7 +1170,7 @@ LWLockAcquire(LWLock *lock, LWLockMode mode)
 	Assert(!(proc == NULL && IsUnderPostmaster));
 
 	/* Ensure we will have room to remember the lock */
-	if (num_held_lwlocks >= MAX_SIMUL_LWLOCKS)
+	if (local_num_held_lwlocks >= MAX_SIMUL_LWLOCKS)
 		elog(ERROR, "too many LWLocks taken");
 
 	/*
@@ -1281,8 +1290,9 @@ LWLockAcquire(LWLock *lock, LWLockMode mode)
 		TRACE_POSTGRESQL_LWLOCK_ACQUIRE(T_NAME(lock), mode);
 
 	/* Add lock to list of locks held by this backend */
-	held_lwlocks[num_held_lwlocks].lock = lock;
-	held_lwlocks[num_held_lwlocks++].mode = mode;
+	local_held_lwlocks[local_num_held_lwlocks].lock = lock;
+	local_held_lwlocks[local_num_held_lwlocks++].mode = mode;
+	num_held_lwlocks = local_num_held_lwlocks;
 
 	/*
 	 * Fix the process wait semaphore's count for any absorbed wakeups.
@@ -1749,6 +1759,8 @@ LWLockUpdateVar(LWLock *lock, pg_atomic_uint64 *valptr, uint64 val)
 void
 LWLockRelease(LWLock *lock)
 {
+	PgBackendLWLockHandle *local_held_lwlocks = held_lwlocks;
+	int			local_num_held_lwlocks = num_held_lwlocks;
 	LWLockMode	mode;
 	uint32		oldstate;
 	bool		check_waiters;
@@ -1758,18 +1770,19 @@ LWLockRelease(LWLock *lock)
 	 * Remove lock from list of locks held.  Usually, but not always, it will
 	 * be the latest-acquired lock; so search array backwards.
 	 */
-	for (i = num_held_lwlocks; --i >= 0;)
-		if (lock == held_lwlocks[i].lock)
+	for (i = local_num_held_lwlocks; --i >= 0;)
+		if (lock == local_held_lwlocks[i].lock)
 			break;
 
 	if (i < 0)
 		elog(ERROR, "lock %s is not held", T_NAME(lock));
 
-	mode = held_lwlocks[i].mode;
+	mode = local_held_lwlocks[i].mode;
 
-	num_held_lwlocks--;
-	for (; i < num_held_lwlocks; i++)
-		held_lwlocks[i] = held_lwlocks[i + 1];
+	local_num_held_lwlocks--;
+	for (; i < local_num_held_lwlocks; i++)
+		local_held_lwlocks[i] = local_held_lwlocks[i + 1];
+	num_held_lwlocks = local_num_held_lwlocks;
 
 	PRINT_LWDEBUG("LWLockRelease", lock, mode);
 

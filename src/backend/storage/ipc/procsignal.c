@@ -128,6 +128,11 @@ PG_GLOBAL_SHMEM NON_EXEC_STATIC ProcSignalHeader *ProcSignal = NULL;
 
 static bool ProcSignalReasonToBackendInterrupt(ProcSignalReason reason,
 											   PgBackendInterruptType *interrupt_type);
+static bool ProcSignalSlotMatchesTarget(volatile ProcSignalSlot *slot,
+										pid_t pid,
+										bool allow_process_pid_match);
+static bool ProcSignalSlotUsesBackendInterrupts(volatile ProcSignalSlot *slot,
+												pid_t pid);
 static void WakeProcSignalSlot(int procNumber);
 static bool CheckProcSignal(ProcSignalReason reason);
 static void CleanupProcSignalState(int status, Datum arg);
@@ -330,6 +335,7 @@ SendBackendInterrupt(int backend_pid, PgBackendInterruptType interrupt_type,
 	{
 		volatile ProcSignalSlot *slot = &ProcSignal->psh_slot[i];
 		bool		found = false;
+		bool		needs_wakeup = false;
 
 		SpinLockAcquire(&slot->pss_mutex);
 		if (pg_atomic_read_u32(&slot->pss_pid) == PostmasterPid &&
@@ -341,15 +347,17 @@ SendBackendInterrupt(int backend_pid, PgBackendInterruptType interrupt_type,
 				slot->pss_proc_die_sender_pid = sender_pid;
 				slot->pss_proc_die_sender_uid = sender_uid;
 			}
-			pg_atomic_fetch_or_u32(&slot->pss_backendInterruptMask,
-								   interrupt_mask);
+			needs_wakeup =
+				(pg_atomic_fetch_or_u32(&slot->pss_backendInterruptMask,
+										interrupt_mask) & interrupt_mask) == 0;
 			found = true;
 		}
 		SpinLockRelease(&slot->pss_mutex);
 
 		if (found)
 		{
-			WakeProcSignalSlot(i);
+			if (needs_wakeup)
+				WakeProcSignalSlot(i);
 			return 0;
 		}
 	}
@@ -385,6 +393,9 @@ ConsumeBackendInterruptsFromProcSignal(int *sender_pid, int *sender_uid)
 		slot->pss_proc_die_sender_uid = 0;
 		SpinLockRelease(&slot->pss_mutex);
 	}
+
+	if (CheckProcSignal(PROCSIG_WALSND_INIT_STOPPING))
+		HandleWalSndInitStopping();
 
 	return pending;
 }
@@ -423,30 +434,33 @@ SendProcSignal(pid_t pid, ProcSignalReason reason, ProcNumber procNumber)
 		slot = &ProcSignal->psh_slot[procNumber];
 
 		SpinLockAcquire(&slot->pss_mutex);
-		if (pg_atomic_read_u32(&slot->pss_pid) == pid)
+		if (ProcSignalSlotMatchesTarget(slot, pid, true))
 		{
-			if (pid == PostmasterPid)
+			if (ProcSignalSlotUsesBackendInterrupts(slot, pid))
 			{
 				if (ProcSignalReasonToBackendInterrupt(reason, &interrupt_type))
 				{
 					PgBackendInterruptMask interrupt_mask;
+					PgBackendInterruptMask old_mask;
 
 					interrupt_mask = PG_BACKEND_INTERRUPT_MASK(interrupt_type);
-					pg_atomic_fetch_or_u32(&slot->pss_backendInterruptMask,
-										   interrupt_mask);
+					old_mask =
+						pg_atomic_fetch_or_u32(&slot->pss_backendInterruptMask,
+											   interrupt_mask);
 					SpinLockRelease(&slot->pss_mutex);
-					WakeProcSignalSlot(procNumber);
+					if ((old_mask & interrupt_mask) == 0)
+						WakeProcSignalSlot(procNumber);
 					return 0;
 				}
 
-				SpinLockRelease(&slot->pss_mutex);
-				return -1;
-			}
-			else
-			{
-				/* Atomically set the proper flag */
 				slot->pss_signalFlags[reason] = true;
+				SpinLockRelease(&slot->pss_mutex);
+				WakeProcSignalSlot(procNumber);
+				return 0;
 			}
+
+			/* Atomically set the proper flag */
+			slot->pss_signalFlags[reason] = true;
 			SpinLockRelease(&slot->pss_mutex);
 			/* Send signal */
 			return kill(pid, SIGUSR1);
@@ -468,24 +482,77 @@ SendProcSignal(pid_t pid, ProcSignalReason reason, ProcNumber procNumber)
 		{
 			slot = &ProcSignal->psh_slot[i];
 
-			if (pg_atomic_read_u32(&slot->pss_pid) == pid)
+			SpinLockAcquire(&slot->pss_mutex);
+			if (ProcSignalSlotMatchesTarget(slot, pid, false))
 			{
-				SpinLockAcquire(&slot->pss_mutex);
-				if (pg_atomic_read_u32(&slot->pss_pid) == pid)
+				if (ProcSignalSlotUsesBackendInterrupts(slot, pid))
 				{
-					/* Atomically set the proper flag */
+					if (ProcSignalReasonToBackendInterrupt(reason, &interrupt_type))
+					{
+						PgBackendInterruptMask interrupt_mask;
+						PgBackendInterruptMask old_mask;
+
+						interrupt_mask = PG_BACKEND_INTERRUPT_MASK(interrupt_type);
+						old_mask =
+							pg_atomic_fetch_or_u32(&slot->pss_backendInterruptMask,
+												   interrupt_mask);
+						SpinLockRelease(&slot->pss_mutex);
+						if ((old_mask & interrupt_mask) == 0)
+							WakeProcSignalSlot(i);
+						return 0;
+					}
+
 					slot->pss_signalFlags[reason] = true;
 					SpinLockRelease(&slot->pss_mutex);
-					/* Send signal */
-					return kill(pid, SIGUSR1);
+					WakeProcSignalSlot(i);
+					return 0;
 				}
+
+				/* Atomically set the proper flag */
+				slot->pss_signalFlags[reason] = true;
 				SpinLockRelease(&slot->pss_mutex);
+				/* Send signal */
+				return kill(pid, SIGUSR1);
 			}
+			SpinLockRelease(&slot->pss_mutex);
 		}
 	}
 
 	errno = ESRCH;
 	return -1;
+}
+
+static bool
+ProcSignalSlotMatchesTarget(volatile ProcSignalSlot *slot, pid_t pid,
+							bool allow_process_pid_match)
+{
+	uint32		slot_pid;
+
+	if (pid <= 0)
+		return false;
+
+	slot_pid = pg_atomic_read_u32(&slot->pss_pid);
+	if (allow_process_pid_match && slot_pid == (uint32) pid)
+		return true;
+	if (slot_pid != (uint32) PostmasterPid && slot_pid == (uint32) pid)
+		return true;
+
+	return slot_pid == (uint32) PostmasterPid &&
+		slot->pss_backendId == (PgBackendId) pid;
+}
+
+static bool
+ProcSignalSlotUsesBackendInterrupts(volatile ProcSignalSlot *slot, pid_t pid)
+{
+	uint32		slot_pid;
+
+	if (pid <= 0 || slot->pss_backendId == 0)
+		return false;
+
+	slot_pid = pg_atomic_read_u32(&slot->pss_pid);
+
+	return slot_pid == (uint32) PostmasterPid &&
+		(pid == PostmasterPid || slot->pss_backendId == (PgBackendId) pid);
 }
 
 static bool
@@ -706,7 +773,7 @@ WaitForProcSignalBarrier(uint64 generation)
 static void
 HandleProcSignalBarrierInterrupt(void)
 {
-	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_PROC_SIGNAL_BARRIER);
+	RaiseInterrupt(PG_BACKEND_INTERRUPT_PROC_SIGNAL_BARRIER);
 	ProcSignalBarrierPending = true;
 	/* latch will be set by procsignal_sigusr1_handler */
 }
@@ -870,7 +937,7 @@ static void
 ResetProcSignalBarrierBits(uint32 flags)
 {
 	pg_atomic_fetch_or_u32(&MyProcSignalSlot->pss_barrierCheckMask, flags);
-	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_PROC_SIGNAL_BARRIER);
+	RaiseInterrupt(PG_BACKEND_INTERRUPT_PROC_SIGNAL_BARRIER);
 	ProcSignalBarrierPending = true;
 }
 

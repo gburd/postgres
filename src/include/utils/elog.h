@@ -18,6 +18,7 @@
 #include <sys/time.h>
 
 #include "lib/stringinfo.h"
+#include "utils/backend_runtime_current.h"
 #include "utils/global_lifetime.h"
 
 /* We cannot include nodes.h yet, so forward-declare struct Node */
@@ -318,10 +319,25 @@ typedef struct ErrorContextCallback
 } ErrorContextCallback;
 
 extern ErrorContextCallback **PgCurrentErrorContextStackRef(void);
-#define error_context_stack (*PgCurrentErrorContextStackRef())
+#define error_context_stack \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentErrorContextStackHotRef, \
+									   CurrentPgExecution, \
+									   PgCurrentErrorContextStackRef))
 
 extern sigjmp_buf **PgCurrentExceptionStackRef(void);
+#ifndef FRONTEND
+static inline sigjmp_buf **
+PgCurrentExceptionStackRefFast(void)
+{
+	return PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentExceptionStackHotRef,
+											CurrentPgExecution,
+											PgCurrentExceptionStackRef);
+}
+
+#define PG_exception_stack (*PgCurrentExceptionStackRefFast())
+#else
 #define PG_exception_stack (*PgCurrentExceptionStackRef())
+#endif
 
 
 /*----------

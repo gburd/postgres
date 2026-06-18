@@ -39,6 +39,15 @@
 
 #define HAS_PGSTAT_PERMISSIONS(role)	 (has_privs_of_role(GetUserId(), ROLE_PG_READ_ALL_STATS) || has_privs_of_role(GetUserId(), role))
 
+static int
+PgStatProcSignalPid(PGPROC *proc)
+{
+	if (proc->pid == PostmasterPid && proc->backendId != 0)
+		return (int) proc->backendId;
+
+	return proc->pid;
+}
+
 #define PG_STAT_GET_RELENTRY_INT64(stat)						\
 Datum															\
 CppConcat(pg_stat_get_,stat)(PG_FUNCTION_ARGS)					\
@@ -452,7 +461,7 @@ pg_stat_get_activity(PG_FUNCTION_ARGS)
 			/* leader_pid */
 			nulls[29] = true;
 
-			proc = BackendPidGetProc(beentry->st_procpid);
+			proc = BackendSignalPidGetProc(beentry->st_procpid);
 
 			if (proc == NULL && (beentry->st_backendType != B_BACKEND))
 			{
@@ -485,9 +494,9 @@ pg_stat_get_activity(PG_FUNCTION_ARGS)
 				 * leaves the field as NULL for the leader of a parallel group
 				 * or the leader of parallel apply workers.
 				 */
-				if (leader && leader->pid != beentry->st_procpid)
+				if (leader && PgStatProcSignalPid(leader) != beentry->st_procpid)
 				{
-					values[29] = Int32GetDatum(leader->pid);
+					values[29] = Int32GetDatum(PgStatProcSignalPid(leader));
 					nulls[29] = false;
 				}
 				else if (beentry->st_backendType == B_BG_WORKER)
@@ -832,7 +841,7 @@ pg_stat_get_backend_wait_event_type(PG_FUNCTION_ARGS)
 		wait_event_type = "<insufficient privilege>";
 	else
 	{
-		proc = BackendPidGetProc(beentry->st_procpid);
+		proc = BackendSignalPidGetProc(beentry->st_procpid);
 		if (!proc)
 			proc = AuxiliaryPidGetProc(beentry->st_procpid);
 		if (proc)
@@ -859,7 +868,7 @@ pg_stat_get_backend_wait_event(PG_FUNCTION_ARGS)
 		wait_event = "<insufficient privilege>";
 	else
 	{
-		proc = BackendPidGetProc(beentry->st_procpid);
+		proc = BackendSignalPidGetProc(beentry->st_procpid);
 		if (!proc)
 			proc = AuxiliaryPidGetProc(beentry->st_procpid);
 		if (proc)

@@ -434,10 +434,12 @@ with_temp_install = \
 	$(with_temp_install_extra)
 
 define fix_temp_install_darwin_libpq
-	if test x'$(PORTNAME)' = xdarwin && \
-	   test -f '$(abs_top_builddir)'/tmp_install$(libdir)/libpqwalreceiver$(DLSUFFIX) && \
-	   otool -L '$(abs_top_builddir)'/tmp_install$(libdir)/libpqwalreceiver$(DLSUFFIX) | grep -q '$(libdir)/libpq.5$(DLSUFFIX)'; then \
-	  install_name_tool -change '$(libdir)/libpq.5$(DLSUFFIX)' '@loader_path/libpq.5$(DLSUFFIX)' '$(abs_top_builddir)'/tmp_install$(libdir)/libpqwalreceiver$(DLSUFFIX); \
+	if test x'$(PORTNAME)' = xdarwin; then \
+	  find '$(abs_top_builddir)'/tmp_install$(bindir) '$(abs_top_builddir)'/tmp_install$(libdir) -type f | while read f; do \
+	    if otool -L "$$f" 2>/dev/null | grep -q '$(libdir)/libpq.5$(DLSUFFIX)'; then \
+	      install_name_tool -change '$(libdir)/libpq.5$(DLSUFFIX)' '$(abs_top_builddir)'/tmp_install$(libdir)/libpq.5$(DLSUFFIX) "$$f"; \
+	    fi; \
+	  done; \
 	fi
 endef
 

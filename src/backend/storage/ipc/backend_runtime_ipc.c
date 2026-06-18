@@ -13,6 +13,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include "storage/latch.h"
@@ -22,85 +23,85 @@
 void **
 PgCurrentProcSignalSlotRef(void)
 {
-	return &PgCurrentBackendIPCState()->proc_signal_slot;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendIPCRuntimeState, PgCurrentBackendIPCState)->proc_signal_slot;
 }
 
 uint64 *
 PgCurrentSharedInvalidMessageCounterRef(void)
 {
-	return &PgCurrentBackendIPCState()->shared_invalid_message_counter;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendIPCRuntimeState, PgCurrentBackendIPCState)->shared_invalid_message_counter;
 }
 
 volatile sig_atomic_t *
 PgCurrentCatchupInterruptPendingRef(void)
 {
-	return &PgCurrentBackendIPCState()->catchup_interrupt_pending;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendIPCRuntimeState, PgCurrentBackendIPCState)->catchup_interrupt_pending;
 }
 
 void **
 PgCurrentSharedInvalidationMessagesRef(void)
 {
-	return &PgCurrentBackendIPCState()->shared_invalidation_messages;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendIPCRuntimeState, PgCurrentBackendIPCState)->shared_invalidation_messages;
 }
 
 volatile int *
 PgCurrentSharedInvalidationNextMsgRef(void)
 {
-	return &PgCurrentBackendIPCState()->shared_invalidation_next_msg;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendIPCRuntimeState, PgCurrentBackendIPCState)->shared_invalidation_next_msg;
 }
 
 volatile int *
 PgCurrentSharedInvalidationNumMsgsRef(void)
 {
-	return &PgCurrentBackendIPCState()->shared_invalidation_num_msgs;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendIPCRuntimeState, PgCurrentBackendIPCState)->shared_invalidation_num_msgs;
 }
 
 bool *
 PgCurrentDsmInitDoneRef(void)
 {
-	return &PgCurrentBackendIPCState()->dsm_init_done;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendIPCRuntimeState, PgCurrentBackendIPCState)->dsm_init_done;
 }
 
 void **
 PgCurrentDsmRegistryDsaRef(void)
 {
-	return &PgCurrentBackendIPCState()->dsm_registry_dsa;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendIPCRuntimeState, PgCurrentBackendIPCState)->dsm_registry_dsa;
 }
 
 void **
 PgCurrentDsmRegistryTableRef(void)
 {
-	return &PgCurrentBackendIPCState()->dsm_registry_table;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendIPCRuntimeState, PgCurrentBackendIPCState)->dsm_registry_table;
 }
 
 LocalTransactionId *
 PgCurrentNextLocalTransactionIdRef(void)
 {
-	return &PgCurrentBackendIPCState()->next_local_transaction_id;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendIPCRuntimeState, PgCurrentBackendIPCState)->next_local_transaction_id;
 }
 
 WaitEventSet **
 PgCurrentLatchWaitSetRef(void)
 {
-	return &PgCurrentBackendIPCState()->latch_wait_set;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendIPCRuntimeState, PgCurrentBackendIPCState)->latch_wait_set;
 }
 
 Latch *
 PgCurrentLocalLatchData(void)
 {
-	return &PgCurrentBackendIPCState()->local_latch_data;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendIPCRuntimeState, PgCurrentBackendIPCState)->local_latch_data;
 }
 
 uint32 **
 PgCurrentMyWaitEventInfoRef(void)
 {
-	return &PgCurrentBackendWaitState()->my_wait_event_info;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendWaitRuntimeState, PgCurrentBackendWaitState)->wait_event_info_ptr;
 }
 
 uint32 *
 PgCurrentLocalWaitEventInfoRef(void)
 {
-	return &PgCurrentBackendWaitState()->local_wait_event_info;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendWaitRuntimeState, PgCurrentBackendWaitState)->local_wait_event_info;
 }
 
 volatile sig_atomic_t *

@@ -13,6 +13,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include "commands/async.h"
@@ -22,7 +23,8 @@
 PgExecutionAsyncState *
 PgCurrentExecutionAsyncState(void)
 {
-	return &PgCurrentOrEarlyExecution()->async;
+	PG_RUNTIME_RETURN_CURRENT_EXECUTION_BUCKET(CurrentPgExecutionAsyncRuntimeState,
+											   async);
 }
 
 HTAB **
@@ -40,31 +42,31 @@ PgCurrentAsyncRegisteredListenerRef(void)
 struct ActionList **
 PgCurrentPendingActionsRef(void)
 {
-	return &PgCurrentExecutionAsyncState()->pending_actions;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionAsyncRuntimeState, PgCurrentExecutionAsyncState)->pending_actions;
 }
 
 HTAB **
 PgCurrentPendingListenActionsRef(void)
 {
-	return &PgCurrentExecutionAsyncState()->pending_listen_actions;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionAsyncRuntimeState, PgCurrentExecutionAsyncState)->pending_listen_actions;
 }
 
 struct NotificationList **
 PgCurrentPendingNotifiesRef(void)
 {
-	return &PgCurrentExecutionAsyncState()->pending_notifies;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionAsyncRuntimeState, PgCurrentExecutionAsyncState)->pending_notifies;
 }
 
 PgExecutionAsyncQueuePosition *
 PgCurrentQueueHeadBeforeWriteRef(void)
 {
-	return &PgCurrentExecutionAsyncState()->queue_head_before_write;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionAsyncRuntimeState, PgCurrentExecutionAsyncState)->queue_head_before_write;
 }
 
 PgExecutionAsyncQueuePosition *
 PgCurrentQueueHeadAfterWriteRef(void)
 {
-	return &PgCurrentExecutionAsyncState()->queue_head_after_write;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionAsyncRuntimeState, PgCurrentExecutionAsyncState)->queue_head_after_write;
 }
 
 MemoryContext
@@ -79,17 +81,17 @@ PgCurrentAsyncSignalWorkspaceContext(void)
 int32 **
 PgCurrentSignalPidsRef(void)
 {
-	return &PgCurrentExecutionAsyncState()->signal_pids;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionAsyncRuntimeState, PgCurrentExecutionAsyncState)->signal_pids;
 }
 
 ProcNumber **
 PgCurrentSignalProcnosRef(void)
 {
-	return &PgCurrentExecutionAsyncState()->signal_procnos;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionAsyncRuntimeState, PgCurrentExecutionAsyncState)->signal_procnos;
 }
 
 bool *
 PgCurrentTryAdvanceTailRef(void)
 {
-	return &PgCurrentExecutionAsyncState()->try_advance_tail;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionAsyncRuntimeState, PgCurrentExecutionAsyncState)->try_advance_tail;
 }

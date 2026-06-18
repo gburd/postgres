@@ -14,6 +14,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include "access/gin.h"
@@ -674,15 +675,15 @@ PgSessionResetPreparedStatementClosedState(PgSession *session)
 	if (session->prepared_statement.prepared_queries != NULL)
 	{
 		saved_session = CurrentPgSession;
-		CurrentPgSession = session;
+		PgSetCurrentSession(session);
 		PG_TRY();
 		{
 			DropAllPreparedStatements();
-			CurrentPgSession = saved_session;
+			PgSetCurrentSession(saved_session);
 		}
 		PG_CATCH();
 		{
-			CurrentPgSession = saved_session;
+			PgSetCurrentSession(saved_session);
 			PG_RE_THROW();
 		}
 		PG_END_TRY();
@@ -699,9 +700,9 @@ PgSessionResetXactCallbackClosedState(PgSession *session)
 	Assert(session != NULL);
 
 	saved_session = CurrentPgSession;
-	CurrentPgSession = session;
+	PgSetCurrentSession(session);
 	ResetXactCallbackState();
-	CurrentPgSession = saved_session;
+	PgSetCurrentSession(saved_session);
 
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->xact_callbacks.xact_callback_context);
 }
@@ -716,15 +717,15 @@ PgSessionResetBackupClosedState(PgSession *session)
 	if (session->backup.session_backup_state != SESSION_BACKUP_NONE)
 	{
 		saved_session = CurrentPgSession;
-		CurrentPgSession = session;
+		PgSetCurrentSession(session);
 		PG_TRY();
 		{
 			do_pg_abort_backup(0, BoolGetDatum(false));
-			CurrentPgSession = saved_session;
+			PgSetCurrentSession(saved_session);
 		}
 		PG_CATCH();
 		{
-			CurrentPgSession = saved_session;
+			PgSetCurrentSession(saved_session);
 			PG_RE_THROW();
 		}
 		PG_END_TRY();
@@ -767,17 +768,17 @@ PgSessionResetExtensionModuleClosedState(PgSession *session)
 	Assert(session != NULL);
 
 	saved_session = CurrentPgSession;
-	CurrentPgSession = session;
+	PgSetCurrentSession(session);
 	PG_TRY();
 	{
 		foreach_ptr(PgSessionResetCallbackItem, item,
 					session->extension_modules.reset_callbacks)
 			item->callback(item->arg);
-		CurrentPgSession = saved_session;
+		PgSetCurrentSession(saved_session);
 	}
 	PG_CATCH();
 	{
-		CurrentPgSession = saved_session;
+		PgSetCurrentSession(saved_session);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -1181,8 +1182,18 @@ PgExecutionResetClosedState(PgExecution *execution)
 	if (execution == NULL)
 		return;
 
+	if (execution == CurrentPgExecution)
+		PgRuntimeFlushCurrentHotCells();
+	if (execution == CurrentPgExecution)
+		PgRuntimeFlushCurrentHotMirrors();
+
 #define PG_EXECUTION_BUCKET(field, init, adopt, reset) \
 	do { reset; } while (0);
 #include "backend_runtime_execution_buckets.def"
 #undef PG_EXECUTION_BUCKET
+
+	if (execution == CurrentPgExecution)
+		PgRuntimeReloadCurrentHotCells();
+	if (execution == CurrentPgExecution)
+		PgRuntimeReloadCurrentHotMirrors();
 }

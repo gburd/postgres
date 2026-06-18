@@ -361,7 +361,7 @@ MemoryContextInit(void)
 	 * Not having any other place to point CurrentMemoryContext, make it point
 	 * to TopMemoryContext.  Caller should change this soon!
 	 */
-	CurrentMemoryContext = TopMemoryContext;
+	MemoryContextSwitchTo(TopMemoryContext);
 
 	/*
 	 * Initialize ErrorContext as an AllocSetContext with slow growth rate ---
@@ -1312,7 +1312,7 @@ MemoryContextAllocExtended(MemoryContext context, Size size, int flags)
 void
 HandleLogMemoryContextInterrupt(void)
 {
-	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_LOG_MEMORY_CONTEXT);
+	RaiseInterrupt(PG_BACKEND_INTERRUPT_LOG_MEMORY_CONTEXT);
 	LogMemoryContextPending = true;
 	/* latch will be set by procsignal_sigusr1_handler */
 }

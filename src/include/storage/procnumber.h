@@ -14,6 +14,7 @@
 #ifndef PROCNUMBER_H
 #define PROCNUMBER_H
 
+#include "utils/backend_runtime_current.h"
 #include "utils/global_lifetime.h"
 
 /*
@@ -44,7 +45,16 @@ typedef int ProcNumber;
  * Proc number of this backend (same as GetNumberFromPGProc(MyProc))
  */
 extern ProcNumber *PgCurrentMyProcNumberRef(void);
-#define MyProcNumber (*PgCurrentMyProcNumberRef())
+
+static inline ProcNumber *
+PgCurrentMyProcNumberRefFast(void)
+{
+	return (ProcNumber *) PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentMyProcNumberHotRef,
+														   CurrentPgBackend,
+														   PgCurrentMyProcNumberRef);
+}
+
+#define MyProcNumber (*PgCurrentMyProcNumberRefFast())
 
 /* proc number of our parallel session leader, or INVALID_PROC_NUMBER if none */
 extern ProcNumber *PgCurrentParallelLeaderProcNumberRef(void);

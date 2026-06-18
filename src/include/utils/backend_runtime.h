@@ -155,9 +155,12 @@ struct GlobalVisState
 };
 
 /*
- * Budget for one invocation of PgSessionStep().  The process-mode runner uses
- * a single-message budget today; later schedulers can extend this contract
- * without changing the caller shape.
+ * Budget for one invocation of PgSessionStep().  A positive value yields after
+ * that many frontend protocol messages.  A zero or negative value is
+ * unbounded, which lets process and thread-per-session carriers amortize the
+ * bottom error boundary across the same long-running loop shape that vanilla
+ * PostgresMain() uses.  Later nonblocking schedulers can use small positive
+ * budgets to preserve fairness.
  */
 typedef struct PgStepBudget
 {
@@ -234,7 +237,7 @@ typedef struct PgBackendWaitState
 {
 	PgWaitSpec	spec;
 	uint32		local_wait_event_info;
-	uint32	   *my_wait_event_info;
+	uint32	   *wait_event_info_ptr;
 	pg_atomic_uint32 waiting;
 } PgBackendWaitState;
 
@@ -2422,19 +2425,13 @@ typedef struct PgThreadBackendRuntimeState
 	PgExecution execution;
 } PgThreadBackendRuntimeState;
 
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgRuntime *CurrentPgRuntime;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgCarrier *CurrentPgCarrier;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgBackend *CurrentPgBackend;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgSession *CurrentPgSession;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgConnection *CurrentPgConnection;
-extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgExecution *CurrentPgExecution;
-
 extern void PgRuntimeResetAfterFork(void);
 
 extern bool *PgCurrentIsUnderPostmasterRef(void);
 extern bool *PgCurrentDoingCommandReadRef(void);
 extern MemoryContext *PgTopMemoryContextRef(void);
 extern MemoryContext *PgCurrentMemoryContextRef(void);
+extern void PgSetCurrentMemoryContextObject(MemoryContext context);
 extern MemoryContext *PgErrorContextRef(void);
 extern MemoryContext *PgMessageContextRef(void);
 extern MemoryContext *PgTopTransactionContextRef(void);
@@ -3043,7 +3040,12 @@ extern void InitializePgThreadBackendRuntime(PgThreadBackendRuntimeState *state,
 											 BackendType backend_type,
 											 struct Port *port,
 											 struct Latch *interrupt_latch);
+extern void PgSetCurrentRuntime(PgRuntime *runtime);
+extern void PgSetCurrentCarrier(PgCarrier *carrier);
+extern void PgSetCurrentBackend(PgBackend *backend);
 extern void PgSetCurrentSession(PgSession *session);
+extern void PgSetCurrentConnection(PgConnection *connection);
+extern void PgSetCurrentExecution(PgExecution *execution);
 extern bool PgCurrentSessionOwnsPointer(const void *ptr);
 extern bool PgCurrentOrEarlySessionOwnsPointer(const void *ptr);
 extern void PgBackendResetClosedState(PgBackend *backend);
@@ -3277,6 +3279,15 @@ extern int	PgBackendGetSignalPid(PgBackend *backend);
 extern int	PgCurrentBackendSignalPid(void);
 extern bool PgBackendUsesProcessSignals(PgBackend *backend);
 extern void PgBackendWakeup(PgBackend *backend);
+/*
+ * Logical backend interrupts are for backend events such as cancel, die,
+ * notify, and proc-signal-derived work. Wait readiness should remain with
+ * latches, condition variables, wait event sets, or Phase 13 wait-completion
+ * records until the scheduler owns that wait family.
+ */
+extern void SendInterrupt(PgBackend *backend,
+						  PgBackendInterruptType interrupt_type);
+extern void RaiseInterrupt(PgBackendInterruptType interrupt_type);
 extern void PgBackendRaiseInterrupt(PgBackend *backend,
 									 PgBackendInterruptType interrupt_type);
 extern void PgBackendRaiseProcDieInterrupt(PgBackend *backend, int sender_pid,
@@ -3293,5 +3304,26 @@ extern int	PgSuspend(const PgWaitSpec *wait_spec,
 					  PgSuspendCallback callback, void *callback_arg);
 extern PgStepResult PgSessionStep(PgSession *session, PgStepBudget budget);
 pg_noreturn extern void PgSessionRun(PgSession *session);
+
+#define PG_RUNTIME_FAST_BUCKET_ACCESSOR(variable, fallback) \
+	__extension__ \
+	({ \
+		typeof(variable) pg_runtime_bucket = (variable); \
+ \
+		likely(pg_runtime_bucket != NULL) ? pg_runtime_bucket : fallback(); \
+	})
+
+#define PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(variable, fallback) \
+	__extension__ \
+	({ \
+		typeof(variable) pg_runtime_bucket = (variable); \
+ \
+		likely(pg_runtime_bucket != NULL && pg_runtime_bucket->initialized) ? \
+		pg_runtime_bucket : fallback(); \
+	})
+
+#ifndef BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
+#include "utils/backend_runtime_hot_bucket_accessors.def"
+#endif
 
 #endif							/* BACKEND_RUNTIME_H */

@@ -1,3 +1,28 @@
+## PgStat Activity Hot Current
+
+Lifecycle/preflight note:
+
+- target: remove a remaining threaded-mode current-session accessor leaf from
+  the simple-query activity reporting path by caching
+  PgSession.pgstat.track_activities in the generated hot-field bridge.
+- touched roots/buckets: existing session-owned PgSessionPgStatState only;
+  no owner lifetime, allocation, or reset ordering changes.
+- owner source files: src/include/utils/backend_runtime.h,
+  src/include/utils/backend_runtime_hot_fields.def,
+  src/include/utils/backend_status.h, and this state note.
+- legacy symbols/accessors: preserve PgCurrentPgStatTrackActivitiesRef() as
+  the fallback and GUC table storage hook while routing the compatibility
+  lvalue through PG_RUNTIME_CURRENT_HOT_FIELD_REF() where possible.
+- repeated lifecycle operations: none.  The generated bridge is refreshed by
+  the existing current-work install/clear path.
+- checked primitive decision: use a single generated hot field because perf
+  still reports PgCurrentPgStatTrackActivitiesRef() under threaded c8 simple
+  SELECT; do not broaden pgstat migration unless this targeted alias moves the
+  profile and benchmark in the right direction.
+- validation impact: clean rebuild because the bridge layout changes, smoke
+  process/threaded startup, then rerun only the vanilla pgbench client
+  pgbench -S -M simple -c 8 -j 8 comparison.
+
 # Phase 12 State Migration Notes
 
 This file is the archival chronological ledger for Phase 12 state migration and
@@ -7,6 +32,404 @@ current source of truth for what Phase 12 delivered and what later phases own.
 Append here only when investigating a Phase 12 regression, recording validation
 that changes the closeout evidence, or deliberately reopening a scoped Phase 12
 blocker.
+
+## Linux Simple-Query Runtime-Current Hot Paths
+
+Lifecycle/preflight note:
+
+- target: reduce the remaining Linux threaded c8 simple-query CPU gap by moving
+  high-frequency backend-local predicate runtime-current lookups from the
+  generic fast-bucket accessor path to the existing hot-field bridge.
+- touched roots/buckets: no runtime root ownership changes; the probe only
+  caches addresses into the current backend's lock and storage state.
+- owner source files: `src/include/utils/backend_runtime_hot_fields.def`,
+  `src/backend/storage/lmgr/predicate.c`, and this state note.
+- legacy symbols/accessors: `PgCurrentMySerializableXactRef()`,
+  `PgCurrentMyXactDidWriteRef()`, `PgCurrentSavedSerializableXactRef()`, and
+  `PgCurrentLocalPredicateLockHashRef()` remain the fallback contracts.
+- repeated lifecycle operations: none.
+- validation impact: rebuild, run the focused vanilla-pgbench simple SELECT c8
+  benchmark, and keep the change only if the measured direction is useful.
+
+Validation follow-up:
+
+- clean-build note: adding generated hot-field slots changes
+  `PgRuntimeCurrentBridge` layout; incremental builds can leave stale field
+  offsets in older objects and produce invalid threaded smoke-test failures.
+- discarded scope: the initial VFD-cache hot-field probe was narrowed out before
+  clean-build validation, so this checkpoint does not claim any fd.c/VFD
+  improvement.
+- Docker validation: clean `make`, `make install` passed after the narrowed
+  predicate-only change.
+- native WSL focused workload: vanilla REL_19_BETA1 pgbench client,
+  `pgbench -n -S -M simple -c 8 -j 8 -T 10`, scale 10, same ext4 storage and
+  server settings (`max_connections = 100`, `shared_buffers = 128MB`).
+- three-way result: vanilla process averaged 20967.7 TPS (min 20356.7, max
+  21468.1), branch process averaged 19694.5 TPS (min 19416.0, max 19960.0),
+  and branch threaded averaged 18717.7 TPS (min 18149.2, max 19333.1).
+  Threaded was 89.3% of vanilla and 95.0% of branch process in this short run.
+- threaded-only A/B: predicate hot refs averaged 19191.9 TPS (19641.7,
+  18709.9, 19224.1) versus the reverted baseline at 18771.5 TPS (19493.8,
+  18859.7, 17961.0), a noisy but positive 2.2% direction on the focused
+  workload.
+
+## Linux Simple-Query Perf Checkpoint
+
+Evidence checkpoint:
+
+- target: record the focused Linux c8 simple-query profiling pass after the
+  threaded FileSize() lseek restoration and the allocator/context probes, so
+  later optimization work starts from measured branch-vs-process evidence.
+- workload: vanilla REL_19_BETA1 pgbench client, pgbench -S -M simple -c 8
+  -j 8 -T 22, against branch process and branch threaded servers built with
+  the same configure flags on native WSL ext4 storage.
+- native WSL perf availability: software task-clock profiling works through
+  /usr/lib/linux-tools-6.8.0-124/perf; hardware counters (cycles,
+  instructions, branches) are not supported by the WSL kernel exposed here.
+- stat result: process mode reached 21602.9 TPS with 42606 ms server
+  task-clock, or about 0.0897 ms server CPU per transaction; threaded mode
+  reached 21173.0 TPS with 45467 ms server task-clock, or about 0.0977 ms
+  server CPU per transaction.
+- interpretation: the c8 simple-query gap in this run looks like roughly 9%
+  more server CPU per transaction in threaded mode, not a context-switch cliff;
+  context switches per transaction were similar (about 0.459 process vs 0.465
+  threaded).
+- profile shape: both profiles are dominated by frontend socket wakeups and the
+  normal simple-query planner/catalog path.  No single threaded-only syscall or
+  lock cliff appears.  Small threaded-heavy samples include syscache/relcache
+  and planner work (SearchSysCache1, ReceiveSharedInvalidMessages,
+  get_relation_info, smgrnblocks, standard_planner) plus runtime current
+  accessors in transaction/predicate paths.
+- discarded probes: tcmalloc was not a stable win when vanilla pgbench drove
+  all systems; a single-statement GenerationContext scratch context and a
+  thread-first hot-current branch-bias probe both benchmarked worse and were
+  reverted.
+- next optimization direction: avoid allocator swaps and broad scheduler work
+  for this workload first; profile or instrument simple-query planning/catalog
+  current-access cost and high-frequency transaction/runtime accessors, then
+  make narrowly proven threaded-only reductions.
+
+## Linux Threaded FileSize VFD Offset Recheck
+
+Lifecycle/preflight note:
+
+- target: recheck the conservative threaded `FileSize()` `fstat()` path now
+  that Linux profiling shows relation-size calls remain visible in simple
+  SELECT workloads, and restore the historical `lseek(SEEK_END)` path if the
+  VFD ownership proof holds.
+- touched roots/buckets: no runtime roots or buckets move; this relies on
+  existing current-backend `PgBackendStorageState` ownership for VFD, smgr, and
+  md caches.
+- owner source files: `src/backend/storage/file/fd.c` and this state note.
+- legacy symbols/accessors: `FileSize()`, `VfdCache`,
+  `PgCurrentVfdCacheRef()`, and `PgCurrentSMgrRelationHashRef()` retain their
+  public contracts.
+- repeated lifecycle operations: none.
+- checked primitive decision: treat `File` values as indexes into the current
+  backend's VFD cache, matching the existing threaded runtime storage split;
+  normal relation I/O remains positioned (`preadv`/`pwritev`), so `lseek()`
+  affects only this logical backend's open file description.
+- validation impact: rebuild in the Linux Docker image, run the focused c8
+  simple SELECT benchmark against the same vanilla baseline, and run threaded
+  regression checks if retained.
+
+## Linux Process Runtime Wait-Event Adoption
+
+Lifecycle/preflight note:
+
+- target: fix Linux process-mode startup in Docker benchmarks after runtime
+  migration moved wait-event signal/self-pipe state into `PgCarrier`.
+- touched roots/buckets: `PgCarrier` wait-event fd buckets and early
+  `PgBackendIPCState` latch wait-set adoption; no ownership root move.
+- owner source files: `src/backend/utils/init/backend_runtime.c` and this
+  state note.
+- legacy symbols/accessors: `PgCurrentWaitEventSignalFdRef()`,
+  `PgCurrentWaitEventSelfPipeReadFdRef()`,
+  `PgCurrentWaitEventSelfPipeWriteFdRef()`, and `LatchWaitSet`.
+- repeated lifecycle operations: preserve already-initialized pre-`BaseInit`
+  carrier wait-event fds while installing the process runtime, reusing the
+  existing early backend IPC adoption for `LatchWaitSet` and local latch data.
+- checked primitive decision: keep the fix in process-runtime installation
+  because `fork_process()` must still reset inherited postmaster fds before
+  `InitPostmasterChild()` creates child-local wait-event support.
+- validation impact: rebuild branch in the Linux Docker image, rerun process
+  and threaded startup/pgbench benchmarks against the same vanilla 19 beta 1
+  container baseline, then rerun local process/threaded checks if retained.
+
+## Linux Shared-Offset File Size
+
+Lifecycle/preflight note:
+
+- target: reduce Linux threaded select-only benchmark contention caused by
+  repeated relation-size checks using ``lseek(SEEK_END)`` on file descriptors
+  shared by all backend threads in one process.
+- touched roots/buckets: no runtime roots or buckets move; storage fd size
+  lookup implementation only.
+- owner source files: `src/backend/storage/file/fd.c`,
+  `src/backend/storage/smgr/md.c`, and this state note.
+- legacy symbols/accessors: `FileSize()` and `mdnblocks()` retain their public
+  contracts.
+- repeated lifecycle operations: none.
+- checked primitive decision: use `fstat()` in the existing fd owner instead
+  of adding per-relation or per-thread fd caches for this benchmark-visible
+  path.  If shared fd offsets remain visible elsewhere, add a storage-wide
+  checked rule to avoid offset-mutating syscalls in threaded mode.
+- validation impact: rebuild in the Linux Docker image, rerun c8 threaded
+  select profiling and vanilla/process/threaded pgbench ratios, then run local
+  checks if retained.
+
+## Planner GUC Hot-Field Coverage
+
+Lifecycle/preflight note:
+
+- target: reduce Linux threaded simple-query planning overhead by extending the
+  generated current hot-field fast path to the remaining planner method,
+  GEQO, collapse-limit, and planner-cost GUC lvalues that still call
+  `PgCurrent*Ref()` directly in optimizer headers.
+- touched roots/buckets: derived current hot-field slots for existing
+  `PgSessionPlannerCostState` and `PgSessionPlannerMethodState` fields; no
+  ownership roots move.
+- owner source files: `src/include/utils/backend_runtime_hot_fields.def`,
+  `src/include/optimizer/cost.h`, `src/include/optimizer/paths.h`,
+  `src/include/optimizer/geqo.h`, `src/include/optimizer/planmain.h`, and this
+  state note.
+- legacy symbols/accessors: existing `PgCurrent*Ref()` accessors remain the
+  fallback and external compatibility surface.
+- repeated lifecycle operations: no new init/adopt/reset/destroy operations;
+  hot-field install/clear/reload continues to use the generated hot-field
+  table and `PgRuntimeRefreshCurrentWork()`.
+- checked primitive decision: reuse `PG_RUNTIME_HOT_FIELD` rows instead of
+  adding handwritten per-GUC fast globals or one-off planner-local caching.
+- validation impact: rebuild locally, rerun Linux Docker focused simple vs
+  prepared select benchmarks, then repeat process/threaded/vanilla pgbench
+  ratios if the focused result moves.
+
+## Explicit Hot Current-Work State
+
+Lifecycle/preflight note:
+
+- target: reduce repeated threaded current-state/TLS lookups in sampled hot
+  paths by loading current owner state into local variables and passing it
+  through small helper functions, rather than adding more compatibility
+  accessor special cases.
+- touched roots/buckets: derived current backend/session/connection/execution
+  hot buckets and fields; no ownership roots move.
+- owner source files: `src/backend/storage/buffer/bufmgr.c`,
+  `src/backend/storage/lmgr/lwlock.c`,
+  `src/backend/utils/activity/pgstat_io.c`,
+  `src/backend/utils/activity/pgstat_backend.c`, and related owner-adjacent
+  current-state declarations if a small shared helper is needed.
+- legacy symbols/accessors: public `PgCurrent*Ref()`, `PgCurrent*State()`,
+  and compatibility lvalue macros remain the broad/cold surface; converted
+  hot functions use explicit owner pointers after one current-work lookup.
+- repeated lifecycle operations: no init/adopt/reset/destroy operations; this
+  reuses the existing generated hot current-work install/clear/reload path.
+- checked primitive decision: reuse generated hot bucket/field rows and the
+  current-work refresh hook as the checked primitive; keep the performance
+  conversion owner-adjacent instead of introducing new lifecycle machinery.
+- validation impact: rebuild, run process and threaded regression checks,
+  rerun vanilla/process/threaded pgbench comparisons, and resample threaded
+  mode to verify `_tlv_get_addr` traffic moves down in the converted clusters.
+
+## Owner-Adjacent Fast Bucket Accessors
+
+Lifecycle/preflight note:
+
+- target: remove repeated slow current-state accessor calls from owner-adjacent
+  compatibility ref functions by making generated hot bucket slots usable even
+  in files that suppress public inline accessor aliases.
+- touched roots/buckets: derived current backend/session/connection/execution
+  hot bucket pointers; no ownership roots move.
+- owner source files: `src/include/utils/backend_runtime.h` and
+  owner-adjacent `backend_runtime_*.c` accessor files, with focused follow-up
+  in timeout/protocol hot paths if samples still show current-state overhead.
+- legacy symbols/accessors: public `PgCurrent*State()` and `PgCurrent*Ref()`
+  names remain the compatibility surface; ref accessors may consult generated
+  hot bucket slots before falling back to the existing state accessor.
+- repeated lifecycle operations: no new owner init/reset/destroy operations;
+  this reuses the existing generated hot bucket install/clear/reload path.
+- checked primitive decision: add a reusable fast bucket macro, including an
+  initialized-bucket variant for lazily initialized session buckets, instead of
+  adding one-off local helpers in each owner file.
+- validation impact: rebuild, smoke process/threaded SQL, rerun
+  vanilla/process/threaded pgbench comparisons, and resample threaded mode to
+  verify `PgCurrent*State()` and `_tlv_get_addr` top-stack samples move down.
+
+## Generated Hot Current Runtime View
+
+Lifecycle/preflight note:
+
+- target: replace one-off hot compatibility pointers with a generated
+  carrier-local current-runtime view for hot owner buckets seen in pgbench
+  samples.
+- touched roots/buckets: derived hot bucket pointers for current carrier,
+  backend, session, connection, and execution-owned buckets; no ownership roots
+  move.
+- owner source files: `src/backend/utils/init/backend_runtime.c`,
+  owner-adjacent runtime accessor files under `src/backend/utils/init`,
+  `src/backend/libpq`, `src/backend/utils/misc`, `src/backend/utils/cache`,
+  and `src/backend/utils/activity`.
+- legacy symbols/accessors: hot `PgCurrent*State()` and `PgCurrent*Ref()`
+  compatibility accessors remain the public surface, with generated cache
+  pointers as the fast path and existing early fallback functions as the cold
+  path.
+- repeated lifecycle operations: install/clear of derived current-view
+  pointers is centralized in the hot bucket `.def` table and rebinding helper.
+- checked primitive decision: extend `backend_runtime_hot_buckets.def` rather
+  than adding handwritten TLS variables or per-accessor special cases.
+- validation impact: rerun backend-runtime module regression, lifecycle/global
+  lifetime scans, and pgbench process/threaded/vanilla comparisons; use samples
+  to confirm `_tlv_get_addr` and broad `PgCurrent*` accessor traffic move down.
+
+## Generated Hot Current Runtime Mirrors
+
+Lifecycle/preflight note:
+
+- target: replace selected pointer-to-object hot compatibility lvalues with a
+  generated carrier-local mirror cache so very hot reads and assignments do not
+  rediscover the owner object on every access.
+- touched roots/buckets: derived current-work mirror slots for current
+  execution/backend/session/connection fields; no ownership roots move.
+- owner source files: `src/include/utils/backend_runtime_current.h`,
+  `src/backend/utils/init/backend_runtime.c`, and owner-adjacent accessors for
+  memory/resource/backend hot fields as needed.
+- legacy symbols/accessors: hot `CurrentMemoryContext`, `MessageContext`,
+  `CurrentResourceOwner`, `MyProc`, `MyProcNumber`, and similar compatibility
+  lvalues remain source-compatible; the mirror is loaded from the current
+  runtime object on install and flushed back before current-work switches.
+- repeated lifecycle operations: mirror install/flush/clear is centralized in
+  a generated `.def` table rather than hand-written per variable.
+- checked primitive decision: add or extend a generated hot-current table for
+  mirror slots, with owner-token assertions for stale direct current-pointer
+  mutation in assert builds.
+- validation impact: rerun backend-runtime module regression,
+  lifecycle/global lifetime scans, `gmake check`, `gmake
+  check-threaded-workers`, and vanilla/process/threaded pgbench comparisons.
+
+Outcome note: the direct mirror probe was not retained as a performance fix.
+Even after release-mode owner checks and narrowed mirror coverage, single-user
+post-bootstrap could segfault.  The failure mode showed that unconditional
+shadow lvalues are too fragile while legacy accessors can still observe object
+fields directly.  The generated mirror table is left empty during the follow-up
+current-cell experiment.
+
+## Generated Hot Current Runtime Cells
+
+Lifecycle/preflight note:
+
+- target: replace the hottest compatibility lvalues with generated current
+  cells that are direct process globals in process mode and direct carrier TLS
+  scalars in threaded mode, avoiding the broad current-bridge TLS lookup in
+  `palloc()` and resource-owner hot paths.
+- touched roots/buckets: derived current-cell copies of selected
+  execution-owned scalar pointer fields, initially `CurrentMemoryContext`,
+  `MessageContext`, and `CurrentResourceOwner`; no ownership roots move.
+- owner source files: `src/include/utils/backend_runtime_current.h`,
+  `src/backend/utils/init/backend_runtime.c`,
+  `src/backend/utils/mmgr/backend_runtime_memory.c`, and
+  `src/backend/utils/resowner/backend_runtime_resowner.c`.
+- legacy symbols/accessors: existing lvalue macros remain the source surface;
+  object-field accessors must return the active current cell when installed so
+  direct accessor callers and macro users do not diverge.
+- repeated lifecycle operations: load/flush/clear of current cells is
+  centralized in a generated `.def` table and invoked at runtime install,
+  execution switch, after-fork reset, and execution closed-state reset.
+- checked primitive decision: use a generated hot-cell `.def` table instead of
+  hand-patching each lvalue; keep cells as a carrier execution cache that a
+  future scheduler must flush/reload on carrier work switches.
+- validation impact: first restore clean `initdb`, then rerun the
+  backend-runtime module regression and pgbench process/threaded/vanilla
+  comparisons before broad checks.
+
+Outcome note: a scalar-copy version of the `CurrentMemoryContext` cell was
+rejected because it made the historical compatibility name read-only and forced
+all writes through a setter.  A first pointer-to-field probe was also rejected:
+LLDB/disassembly showed `palloc()` loading the address of the cached pointer
+cell rather than the owner field value, so `MemoryContextAllocZero()` received
+the address of `current_context` as though it were a `MemoryContext`.  The
+retained shape is a generated hot ref: process mode caches a direct global
+pointer to the owner field, threaded mode caches a carrier TLS pointer to the
+owner field, and the legacy lvalue writes through that pointer into the runtime
+object.
+
+## Generated Hot Current Root and Bucket Fast Slots
+
+Lifecycle/preflight note:
+
+- target: move current-root reads and generated hot bucket pointers onto
+  process-global slots in process mode and carrier TLS slots in threaded mode,
+  so owner-token bucket checks no longer have to read the broad current bridge
+  TLS object on every hot accessor call.
+- touched roots/buckets: current runtime/carrier/backend/session/connection/
+  execution root pointers plus generated current backend/session/connection/
+  execution bucket pointers; no ownership roots move.
+- owner source files: `src/include/utils/backend_runtime_current.h`,
+  `src/backend/utils/init/backend_runtime.c`, and
+  `src/backend/utils/init/backend_runtime_internal.h`.
+- legacy symbols/accessors: `CurrentPgRuntime`, `CurrentPgCarrier`,
+  `CurrentPgBackend`, `CurrentPgSession`, `CurrentPgConnection`,
+  `CurrentPgExecution`, and generated `CurrentPg*RuntimeState` bucket names
+  remain source-compatible lvalues/pointers; fallback still derives from the
+  bridge when fast slots are not installed.
+- repeated lifecycle operations: generated load/clear/install of root refs and
+  bucket slots is centralized beside current-cell install/clear.
+- checked primitive decision: extend the generated hot bucket table and add a
+  small generated current-root ref primitive rather than adding per-accessor
+  special cases.
+- validation impact: rerun backend-runtime module regression, process/threaded
+  smoke tests, disassemble `_palloc`, resample branch process pgbench for
+  `_tlv_get_addr`, then rerun vanilla/process/threaded pgbench comparisons.
+
+Lifecycle/preflight note:
+
+- target: make generated hot bucket slots the hot-path authority and move
+  current-root validation to cold fallback paths, so process-mode accessors do
+  not rediscover the current root through carrier TLS on every call.
+- touched roots/buckets: generated current backend/session/execution bucket
+  slots and owner-adjacent direct current-session switches; no ownership roots
+  move.
+- owner source files: `src/backend/utils/init/backend_runtime_internal.h`,
+  `src/backend/utils/init/backend_runtime_teardown.c`, and targeted
+  owner-adjacent accessors with handwritten bucket validation.
+- legacy symbols/accessors: `CurrentPgSession` remains an lvalue, but
+  non-initialization current-work switches in backend runtime code should use
+  `PgSetCurrentSession()` so hot bucket slots are rebound with the root.
+- repeated lifecycle operations: current-work switch flush/reload remains
+  centralized in `PgSetCurrentSession()` and `PgSetCurrentExecution()` rather
+  than repeated at individual call sites.
+- checked primitive decision: tighten the existing `PG_RUNTIME_RETURN_*_BUCKET`
+  helpers instead of adding one-off fast paths for every sampled accessor.
+- validation impact: rerun backend-runtime module regression, process/threaded
+  smoke tests, disassemble sampled accessors, resample one-client process
+  pgbench, then rerun vanilla/process/threaded pgbench comparisons.
+
+Lifecycle/preflight note:
+
+- target: replace direct current-root compatibility assignment in normal
+  runtime/test paths with setter-based current-work switching, then let
+  generated hot bucket slots serve as the common fast path without per-access
+  owner validation.
+- touched roots/buckets: current runtime/carrier/backend/session/connection/
+  execution roots, generated hot bucket slots, generated hot field slots, and
+  current-cell reload hooks; no ownership roots move.
+- owner source files: `src/include/utils/backend_runtime.h`,
+  `src/backend/utils/init/backend_runtime.c`,
+  `src/backend/utils/init/backend_runtime_internal.h`, and
+  `src/test/modules/test_backend_runtime` current-root tests.
+- legacy symbols/accessors: `CurrentPg*` names remain lvalues for cold
+  compatibility, but runtime code and tests should switch roots through
+  `PgSetCurrent*()` helpers so generated caches are rebound with the roots.
+- repeated lifecycle operations: root assignment, hot-cell install,
+  hot-bucket install, hot-field install, mirror reload, and optional session
+  GUC rebinding should go through one refresh helper instead of repeated
+  owner-adjacent boilerplate.
+- checked primitive decision: add setter helpers as the checked primitive for
+  current-work switching; keep generated `.def` tables as the bucket/field
+  primitive.
+- validation impact: rerun backend-runtime module regression first to catch
+  stale direct root assignments, then rebuild/install, smoke process/threaded
+  SQL, resample one-client process/threaded pgbench, and compare to the
+  vanilla 19 beta 1 benchmark.
 
 ## CurrentSession Compatibility Bridge
 
@@ -6682,7 +7105,7 @@ Validation for this slice:
 
 The one-hundred-twenty-ninth Phase 12 slice moves a coherent storage-owned
 backend-local state group from standalone backend-local TLS into
-`PgBackendStorageState`:
+``PgBackendStorageState``:
 
 - pending file-sync/unlink state from `sync.c`: `pendingOps`,
   `pendingUnlinks`, `pendingOpsCxt`, `sync_cycle_ctr`,
@@ -6755,11 +7178,11 @@ by `PgCurrentVfdCacheRef()`, `PgCurrentSizeVfdCacheRef()`,
 `PgCurrentNFileRef()`, `PgCurrentTemporaryFilesAllowedRef()`,
 `PgCurrentNumAllocatedDescsRef()`, `PgCurrentMaxAllocatedDescsRef()`,
 `PgCurrentAllocatedDescsRef()`, and `PgCurrentNumExternalFDsRef()`.
-`PgBackendStorageState` stores the private `fd.c` pointer-typed arrays as
+``PgBackendStorageState`` stores the private `fd.c` pointer-typed arrays as
 opaque `void *` fields so `Vfd` and `AllocateDesc` stay local to `fd.c`.
 
 This slice also fixes a thread-runtime adoption gap exposed by moving
-descriptor counts into `PgBackendStorageState`. Thread startup performs latch
+descriptor counts into ``PgBackendStorageState``. Thread startup performs latch
 and wait-set initialization before `InstallPgThreadBackendRuntimeState()`, and
 those paths can reserve file descriptors through the early backend fallback
 state. The install path now calls `PgBackendAdoptEarlyStorageState()` so that
@@ -21278,3 +21701,924 @@ Current blocker selection:
   the full custom/extension GUC matrix remain deferred with invariant to
   Phase 16 / Gate E2-Extensions as documented in the world-core target
   classification.
+
+## Runtime Hot-Bucket Current Cache
+
+Lifecycle/preflight note:
+
+- target: add a narrow current-work hot-bucket cache for measured runtime
+  accessor hotspots so steady-state threaded execution does not repeatedly walk
+  through the generic current backend/execution selectors.  Keep the cache
+  derived from `CurrentPgBackend`/`CurrentPgExecution`; it must not become an
+  ownership path.
+- touched roots/buckets: existing `PgBackend.buffers`, `PgBackend.locks`,
+  `PgExecution.memory_contexts`, and `PgExecution.resource_owners`; add a new
+  table-driven hot-bucket `.def` list for repeated current-pointer cache
+  declaration, definition, clear, and install mechanics.  No existing lifecycle
+  bucket semantics change.
+- owner source files: `src/backend/utils/init/backend_runtime.c`,
+  `src/include/utils/backend_runtime_hot_buckets.def`,
+  `src/include/utils/backend_runtime.h`,
+  `src/backend/utils/init/backend_runtime_backend.c`,
+  `src/backend/storage/buffer/backend_runtime_buffer.c`,
+  `src/backend/utils/init/backend_runtime_execution.c`,
+  `src/backend/utils/mmgr/backend_runtime_memory.c`,
+  `src/backend/utils/resowner/backend_runtime_resowner.c`,
+  backend-runtime regression tests, and this state note.
+- legacy symbols/accessors: `CurrentPgBackend`, `CurrentPgExecution`,
+  `PgCurrentBackendBufferState()`, `PgCurrentBackendLockState()`,
+  `PgCurrentOrEarlyExecution()`, `PgCurrentExecutionMemoryContexts()`,
+  `PgCurrentExecutionResourceOwners()`, and private buffer refcount accessors.
+- repeated lifecycle operations: repeated clearing and installing of derived
+  current-work cache pointers on process runtime init, threaded runtime install,
+  and after-fork reset.  Do not open-code these by hand for each pointer; drive
+  the repeated declarations/definitions/install/clear from the new
+  `backend_runtime_hot_buckets.def` table.
+- checked primitive decision: add the small hot-bucket `.def` table as the
+  checked primitive for this slice.  It is intentionally a current-pointer
+  cache primitive rather than a lifecycle ownership bucket; future scheduler
+  work must rebind this table wherever it switches current backend/execution
+  work.
+- validation impact: rebuild touched backend objects and backend link, run
+  focused backend-runtime regression coverage for hot cache install/reset,
+  run lifecycle/global scans and `git diff --check`, then run process/threaded
+  regression baselines and the pgbench performance smoke used to justify the
+  change.
+
+Validation/evidence:
+
+- Added the def-table generated hot current-bucket cache for backend buffer,
+  backend lock, execution memory-context, and execution resource-owner state.
+  The generated rows declare/define/install/clear the TLS cache pointers, and
+  the accessors treat the cache as opportunistic so direct compatibility
+  current-pointer switches fall back to the current owner rather than reading a
+  stale bucket.
+- `gmake -C src/test/modules/test_backend_runtime check` passed, including
+  `test_runtime_hot_bucket_cache_tracks_current_work`.
+- `gmake check-runtime-lifecycles`, `gmake check-global-lifetimes`, and
+  `git diff --check` passed.
+- Timed process/threaded regression baselines after the change:
+  `gmake check` passed all 245 tests in 72.23s real time;
+  `gmake check-threaded-workers` passed all 245 threaded worker-setting tests
+  in 79.67s real time.
+- Pgbench smoke used installed builds, Unix sockets, scale 10, `fsync=off`,
+  `synchronous_commit=off`, `full_page_writes=off`, `autovacuum=off`,
+  `jit=off`, and `--locale=C.UTF-8`.  Vanilla `REL_19_BETA1` was run from
+  `/Users/samwillis/Code/postgres-19beta1-vanilla-bench`; the branch was run
+  in process mode and threaded mode from this worktree's temporary install.
+  Select-only prepared TPS at 1/8/32 clients: vanilla 63224/127212/82932,
+  branch process 38805/93576/89538, branch threaded 38041/71831/93686.
+  Read-write prepared TPS at 32 clients: vanilla 10910, branch process 9133,
+  branch threaded 10824.  The 32-client select-only numbers were noisy, but
+  the 1-client and 8-client results show the remaining overhead is already
+  visible in branch process mode compared with vanilla, not only in threaded
+  carrier execution.
+
+## Runtime Hot-Bucket Fast Accessor Expansion
+
+Lifecycle/preflight note:
+
+- target: extend consumption of the generated current-work hot-bucket cache to
+  the remaining sampled backend-local buffer and lock-manager accessors in the
+  select-only pgbench path, before moving to more invasive field-level TLS
+  pointer schemes.
+- touched roots/buckets: existing `PgBackend.buffers` and `PgBackend.locks`;
+  no new owner roots and no lifecycle ownership changes.
+- owner source files: `src/backend/storage/buffer/backend_runtime_buffer.c`,
+  `src/backend/storage/lmgr/backend_runtime_lmgr.c`, and this state note.
+- legacy symbols/accessors: `ReservedRefCountSlot`,
+  `MaxProportionalPins`, `FastPathLocalUseCounts`,
+  `FastPathLocalUseCountsOwned`, `held_lwlocks`, and `num_held_lwlocks`.
+- repeated lifecycle operations: none.  Reuse the existing def-table generated
+  install/clear path for hot current buckets; this batch only changes
+  owner-adjacent accessor fast paths.
+- checked primitive decision: no new primitive.  Add an lmgr-local fast helper
+  analogous to the existing buffer helper and keep it guarded by the same
+  current-backend/stale-cache invariant.
+- validation impact: rebuild touched backend objects and the backend, install
+  the branch test build, rerun focused backend-runtime coverage plus lifecycle
+  scans, then rerun the clean vanilla/process/threaded pgbench matrix.
+
+## Runtime Hot-Field Current Slots
+
+Lifecycle/preflight note:
+
+- target: add def-table generated TLS field-slot pointers for the hottest
+  sampled compatibility lvalues so tiny-query execution avoids repeated
+  out-of-line `PgCurrent*Ref()` calls after current work is installed.
+- touched roots/buckets: derived slots into existing `PgExecution` memory and
+  resource-owner fields, existing `PgBackend` proc/buffer/lock fields, and
+  existing `PgConnection` socket-I/O state.  No lifecycle ownership moves.
+- owner source files: `src/backend/utils/init/backend_runtime.c`,
+  `src/include/utils/backend_runtime_hot_fields.def`,
+  `src/include/utils/backend_runtime.h`, compatibility macro headers for
+  memory/resource-owner/proc access, local buffer/LWLock hot macros, and this
+  state note.
+- legacy symbols/accessors: `CurrentMemoryContext`, `MessageContext`,
+  `CurrentResourceOwner`, `MyProc`, `MyProcNumber`, private buffer refcount
+  fields, `held_lwlocks`, and `num_held_lwlocks`.
+- repeated lifecycle operations: repeated slot declaration, definition, clear,
+  and install on process runtime init, threaded backend install, and after-fork
+  reset.  Drive those operations from the new field-slot `.def` table rather
+  than handwritten per-field boilerplate.
+- checked primitive decision: add a hot-field `.def` table that generates each
+  slot plus an owner token.  Inline users must check the owner token before
+  taking the slot so existing direct current-pointer compatibility tests and
+  future scheduler rebinding failures fall back to the canonical accessor
+  instead of reading stale state.
+- validation impact: rebuild headers/users broadly enough to catch macro
+  fallout, run backend-runtime regression coverage, lifecycle/global scans,
+  `git diff --check`, then rerun focused pgbench against the vanilla
+  `REL_19_BETA1` baseline.
+
+## Session Step Signal-Mask Hot Path
+
+Lifecycle/preflight note:
+
+- target: remove per-message signal-mask save/restore overhead from
+  `PgSessionStep()` after profiling showed branch-only `sigprocmask` samples in
+  select-only pgbench.
+- touched roots/buckets: existing `PgSession.loop_state` error-boundary state;
+  no owner root or bucket ownership changes.
+- owner source files: `src/backend/tcop/postgres.c` and this state note.
+- legacy symbols/accessors: `PG_exception_stack`, `error_context_stack`,
+  `UnBlockSig`, and the `PgSessionStep()`/`PgSessionRun()` compatibility loop.
+- repeated lifecycle operations: none.  This is a hot-path exception-boundary
+  adjustment, not a repeated state init/adopt/reset/destroy pattern.
+- checked primitive decision: no new primitive.  Keep the explicit session step
+  boundary, but make signal-mask restoration an error-path operation instead
+  of a per-message `sigsetjmp(..., 1)` cost.
+- validation impact: rebuild `postgres`, rerun focused process/threaded
+  pgbench select-only checks against the vanilla `REL_19_BETA1` baseline, then
+  rerun backend-runtime/lifecycle/global checks before keeping the change.
+
+## Bundled Current TLS Cache
+
+Lifecycle/preflight note:
+
+- target: reduce Darwin `_tlv_get_addr` overhead by bundling current runtime
+  pointers, hot-bucket pointers, and hot-field slots under one carrier-local
+  TLS object instead of many independent TLS variables.
+- touched roots/buckets: current runtime bridge pointers plus derived hot
+  bucket/field slots for existing backend/execution roots; no ownership root
+  or lifecycle state moves.
+- owner source files: `src/include/utils/backend_runtime_current.h`,
+  `src/include/utils/backend_runtime.h`,
+  `src/backend/utils/init/backend_runtime.c`, hot-path compatibility headers,
+  buffer/LWLock local hot macros, lifetime checker bridge exceptions, and this
+  state note.
+- legacy symbols/accessors: `CurrentPgRuntime`, `CurrentPgCarrier`,
+  `CurrentPgBackend`, `CurrentPgSession`, `CurrentPgConnection`,
+  `CurrentPgExecution`, generated hot-bucket names, and generated hot-field
+  slots.
+- repeated lifecycle operations: repeated current pointer, hot-bucket, and
+  hot-field clear/install.  Keep those operations generated from existing
+  `.def` tables and use neutral struct field names to avoid macro recursion.
+- checked primitive decision: add a small current-bridge header as the checked
+  primitive for carrier-local current TLS imports.  Extend the global lifetime
+  checker's local-runtime boundary to treat that header as part of the runtime
+  bridge.
+- validation impact: rebuild broadly enough to catch macro/lvalue fallout,
+  run backend-runtime regression coverage plus lifecycle/global scans and
+  `git diff --check`, then rerun focused vanilla/process/threaded pgbench.
+
+## Bundled Current TLS Cache Rollback
+
+Lifecycle/preflight note:
+
+- target: back out the single bundled current TLS object after pgbench showed
+  threaded-mode postmaster exits during session setup, while keeping the
+  def-table generated hot-bucket and hot-field TLS pointers that had already
+  validated.
+- touched roots/buckets: current runtime bridge pointers plus derived hot
+  bucket/field slots for existing backend/execution roots; no ownership root
+  or lifecycle state moves.
+- owner source files: `src/include/utils/backend_runtime.h`,
+  `src/backend/utils/init/backend_runtime.c`, hot-path compatibility headers,
+  buffer/LWLock local hot macros, lifetime checker bridge exceptions, and this
+  state note.
+- legacy symbols/accessors: `CurrentPgRuntime`, `CurrentPgCarrier`,
+  `CurrentPgBackend`, `CurrentPgSession`, `CurrentPgConnection`,
+  `CurrentPgExecution`, generated hot-bucket names, and generated hot-field
+  slot names.
+- repeated lifecycle operations: keep repeated hot-bucket and hot-field
+  clear/install generated from the `.def` tables, but restore separate TLS
+  bridge declarations so threaded session startup and teardown return to the
+  previously validated shape.
+- checked primitive decision: retain the hot-bucket and hot-field `.def`
+  tables as the checked primitive.  Do not keep the bundled current bridge
+  until the silent threaded postmaster exit has a separate root-cause fix.
+- validation impact: rebuild affected headers/users and loadable modules, rerun
+  backend-runtime regression coverage plus lifecycle/global scans and
+  `git diff --check`, then rerun vanilla/process/threaded pgbench.
+
+## Threaded Reloptions Registry Synchronization
+
+Lifecycle/preflight note:
+
+- target: fix pgbench-triggered threaded backend crashes in
+  `build_reloptions()` by preventing concurrent relation-options registry
+  rebuilds and reader iteration over `relOpts`.
+- touched roots/buckets: process/runtime-global reloptions registry state
+  (`relOpts`, `custom_options`, `last_assigned_kind`, and
+  `need_initialization`); no ownership root migration.
+- owner source files: `src/backend/access/common/reloptions.c` and this state
+  note.
+- legacy symbols/accessors: `initialize_reloptions()`,
+  `parseRelOptions()`, `AlterTableGetRelOptionsLockLevel()`,
+  `add_reloption_kind()`, and `add_reloption()`.
+- repeated lifecycle operations: repeated lazy rebuild and copy-out of the
+  process-global reloptions parser table.  Keep the registry owner-adjacent and
+  guard the existing lifecycle rather than moving the state in this benchmark
+  batch.
+- checked primitive decision: no new lifecycle primitive.  Add a small
+  owner-local pthread mutex matching the existing threaded GUC guard style;
+  the lock is held only while rebuilding/snapshotting registry metadata, not
+  while parsing user reloption values.
+- validation impact: rebuild `reloptions.o` and `postgres`, reinstall the
+  benchmark prefix, rerun backend-runtime regression coverage plus
+  lifecycle/global scans and `git diff --check`, then rerun threaded pgbench
+  rows against the vanilla `REL_19_BETA1` baseline.
+
+## Threaded Reloptions Runtime Allocation
+
+Lifecycle/preflight note:
+
+- target: fix remaining threaded pgbench crashes in `parseRelOptions()` by
+  moving process-global reloptions registry allocations out of backend-owned
+  `TopMemoryContext` when running the threaded runtime.
+- touched roots/buckets: process/runtime-global reloptions registry state
+  (`relOpts`, `custom_options`, custom reloption descriptors, and string
+  default storage); no ownership root migration.
+- owner source files: `src/backend/access/common/reloptions.c` and this state
+  note.
+- legacy symbols/accessors: `initialize_reloptions()`, `add_reloption()`,
+  `allocate_reloption()`, `init_string_reloption()`, and the global
+  `relOpts`/`custom_options` registry.
+- repeated lifecycle operations: repeated non-local reloption allocation into
+  long-lived storage.  Reuse the existing runtime extension-module memory
+  context for threaded runtime-wide registry allocations instead of adding
+  another handwritten global context.
+- checked primitive decision: no new lifecycle primitive.  Keep this
+  owner-adjacent because reloptions is still a compact process-global registry
+  and the mutex/lifetime fix must cover the same source-level owner.
+- validation impact: rebuild `reloptions.o` and `postgres`, reinstall the
+  benchmark prefix, rerun backend-runtime regression coverage plus
+  lifecycle/global scans and `git diff --check`, then rerun threaded pgbench
+  rows against the vanilla `REL_19_BETA1` baseline.
+
+## Hot Field Single-Owner Fast Path
+
+Lifecycle/preflight note:
+
+- target: reduce benchmark-visible Darwin TLS overhead by changing the hottest compatibility lvalue fast paths to derive fields from the current backend/execution owner pointer instead of reading a generated field-slot TLS pointer, an owner-token TLS pointer, and the owner TLS pointer on every use.
+- touched roots/buckets: derived references into existing `PgExecution` memory/resource-owner buckets and existing `PgBackend` proc/buffer/lock buckets.  No ownership root or lifecycle migration.
+- owner source files: `src/include/utils/palloc.h`, `src/include/utils/memutils.h`, `src/include/utils/resowner.h`, `src/include/storage/proc.h`, `src/include/storage/procnumber.h`, `src/backend/storage/buffer/bufmgr.c`, `src/backend/storage/lmgr/lwlock.c`, and this state note.
+- legacy symbols/accessors: `CurrentMemoryContext`, `MessageContext`, `CurrentResourceOwner`, `MyProc`, `MyProcNumber`, private buffer refcount fields, `held_lwlocks`, and `num_held_lwlocks`.
+- repeated lifecycle operations: none.  Keep the generated hot-field table available for current-pointer install/clear experiments, but do not pay multiple TLS reads in these hot macros.
+- checked primitive decision: no new lifecycle primitive.  Use current owner pointers as the stale-safe primitive because direct current-pointer switches already update `CurrentPgBackend`/`CurrentPgExecution`; fallback accessors remain responsible for early paths before an owner exists.
+- validation impact: rebuild affected headers/users, run backend-runtime focused tests and lifecycle/global scans, then rerun focused vanilla/process/threaded pgbench traces against the `REL_19_BETA1` baseline.
+
+Follow-up: a direct process-root bypass was rejected after focused
+backend-runtime regression testing showed direct current-pointer switch tests
+reading the process root instead of the test current object.  That shape is
+not scheduler-safe: future carrier/session remapping must preserve
+`CurrentPg*` lvalue semantics.  Keep any performance fix on the current-pointer
+bridge itself, or on generated hot slots that remain invalidated/rebound with
+current work.
+
+## Hot Field Current Bridge Bundle
+
+Lifecycle/preflight note:
+
+- target: reduce the remaining `_tlv_get_addr` cost by moving generated
+  hot-field pointer slots and owner tokens into the existing
+  `PgRuntimeCurrentBridgeState` carrier-local TLS object.
+- touched roots/buckets: derived hot-field references into existing
+  `PgExecution` memory/resource-owner buckets and existing `PgBackend`
+  proc/buffer/lock buckets.  No ownership root or lifecycle migration.
+- owner source files: `src/include/utils/backend_runtime_current.h`,
+  `src/include/utils/backend_runtime_hot_fields.def`,
+  `src/include/utils/backend_runtime.h`,
+  `src/backend/utils/init/backend_runtime.c`, broad compatibility headers
+  that use generated hot fields, and this state note.
+- legacy symbols/accessors: generated `PgCurrent*HotRef` and
+  `PgCurrent*HotRefOwner` names, plus `CurrentMemoryContext`,
+  `MessageContext`, `CurrentResourceOwner`, `MyProc`, `MyProcNumber`,
+  private buffer refcount fields, `held_lwlocks`, and `num_held_lwlocks`.
+- repeated lifecycle operations: clear/install of derived hot-field slots
+  alongside current work.  Reuse the existing generated def table and current
+  bridge rather than adding another handwritten pointer list.
+- checked primitive decision: extend the current bridge as the primitive for
+  derived current-work slots.  The slots remain stale-safe via owner-token
+  checks, and future scheduler carrier/session remapping still updates them
+  at the centralized current-work install/clear points.
+- validation impact: rebuild broadly, run lifecycle/global scans,
+  backend-runtime focused regression, `git diff --check`, and a focused
+  vanilla/process/threaded pgbench trace against the `REL_19_BETA1` baseline.
+
+## Root Current TLS Bundle
+
+Lifecycle/preflight note:
+
+- target: reduce Darwin `_tlv_get_addr` overhead by bundling the six root
+  current pointers (`CurrentPgRuntime`, `CurrentPgCarrier`,
+  `CurrentPgBackend`, `CurrentPgSession`, `CurrentPgConnection`, and
+  `CurrentPgExecution`) into one carrier-local TLS bridge object while
+  preserving each `CurrentPg*` name as an assignable lvalue macro.
+- touched roots/buckets: carrier-local current-pointer bridge only.  Existing
+  runtime/backend/session/connection/execution objects and generated hot
+  bucket/field slots keep their current ownership.
+- owner source files: new `src/include/utils/backend_runtime_current.h`,
+  `src/include/utils/backend_runtime.h`, `src/backend/utils/init/backend_runtime.c`,
+  broad compatibility headers that import current pointers, this state note,
+  and any checker exception needed for the bridge header.
+- legacy symbols/accessors: `CurrentPgRuntime`, `CurrentPgCarrier`,
+  `CurrentPgBackend`, `CurrentPgSession`, `CurrentPgConnection`, and
+  `CurrentPgExecution`.
+- repeated lifecycle operations: current-pointer clear/install in process
+  init, after-fork reset, and threaded backend install.  Keep those call sites
+  unchanged by making the historical names macro lvalues into the bundled
+  bridge object.
+- checked primitive decision: add a small bridge header as the checked
+  primitive for root current TLS imports.  Do not bypass current pointers with
+  process roots; direct assignment must remain the invariant that tests and a
+  future scheduler rely on.
+- validation impact: rebuild broadly, run backend-runtime focused tests plus
+  lifecycle/global scans and `git diff --check`, then rerun focused
+  vanilla/process/threaded pgbench traces against the `REL_19_BETA1` baseline.
+
+## Generated Hot Field Rebind Expansion
+
+Lifecycle/preflight note:
+
+- target: reduce remaining benchmark-visible current-accessor/TLS overhead by
+  extending generated owner-checked hot-field slots to the next broad set of
+  compatibility globals, and by rebinding those slots whenever the current
+  session changes.
+- touched roots/buckets: derived references into existing backend, carrier,
+  session, connection, and execution buckets.  No ownership root or lifecycle
+  migration.
+- owner source files: `src/include/utils/backend_runtime_current.h`,
+  `src/include/utils/backend_runtime_hot_fields.def`,
+  `src/backend/utils/init/backend_runtime.c`, broad compatibility headers
+  using hot fields, selected owner-adjacent C files with local compatibility
+  macros, and this state note.
+- legacy symbols/accessors: pending interrupt state, interrupt holdoff counts,
+  database OIDs, selected planner/query-memory/misc GUC lvalues, stack-depth
+  references, syscache/tablespace cache pointers, pending IO stats,
+  error-context stack, libpq protocol methods, and shared invalidation
+  scratch pointers.
+- repeated lifecycle operations: clear/install/rebind of derived hot-field
+  slots alongside current work.  Address bridge fields directly from the
+  generated table so new rows do not require handwritten alias lists.
+- checked primitive decision: reuse the generated hot-field table plus
+  owner-token checks as the primitive.  Refresh hot bucket and field pointers
+  in `PgSetCurrentSession()` so future carrier/session scheduler switches can
+  use the same central current-work rebind path.
+- validation impact: rebuild broadly, run lifecycle/global scans,
+  backend-runtime focused regression, `git diff --check`, and focused
+  vanilla/process/threaded pgbench traces against the `REL_19_BETA1`
+  baseline.
+
+## Hot Bucket Accessor Capture
+
+Lifecycle/preflight note:
+
+- target: reduce the remaining long tail of benchmark-visible
+  `PgCurrent*State` bucket accessor calls by capturing current owner and hot
+  bucket pointers once in shared accessor macros, and by adding a missing hot
+  bucket for backend instrumentation.
+- touched roots/buckets: derived hot bucket references into existing backend,
+  session, and execution buckets.  No ownership root or lifecycle migration.
+- owner source files: `src/include/utils/backend_runtime_current.h`,
+  `src/include/utils/backend_runtime_hot_buckets.def`,
+  `src/backend/utils/init/backend_runtime_internal.h`,
+  selected backend/session bucket accessors, and this state note.
+- legacy symbols/accessors: backend pgstat pending, utility, core, storage,
+  lock, IPC, wait, transaction, pending interrupt and holdoff bucket
+  accessors; session logging/pgstat/planner-method bucket accessors; existing
+  generated execution/session bucket helper users.
+- repeated lifecycle operations: current-work hot bucket install/clear stays in
+  the generated bucket table.  Reuse and tighten that primitive rather than
+  adding more one-off compatibility field slots.
+- checked primitive decision: extend generated hot bucket coverage and central
+  return macros.  Accessors still fall back to early state or owner-adjacent
+  initialization paths when current work is absent or stale.
+- validation impact: rebuild broadly, run lifecycle/global scans,
+  backend-runtime focused regression, `git diff --check`, and focused
+  vanilla/process/threaded pgbench traces against the `REL_19_BETA1`
+  baseline.
+
+## Process-Mode Current Bridge Fast Path
+
+Lifecycle/preflight note:
+
+- target: remove benchmark-visible Darwin TLS resolver overhead from process
+  mode by routing compatibility current-pointer lvalues through a plain
+  process-local bridge when the server is not running threaded carriers,
+  while preserving the TLS bridge for threaded mode.
+- touched roots/buckets: current runtime bridge fields and derived hot
+  bucket/field slots.  No ownership root migration.
+- owner source files: `src/include/utils/backend_runtime_current.h`,
+  `src/backend/utils/init/backend_runtime.c`, this state note, and any
+  lifecycle checker metadata required for the added process-local bridge.
+- legacy symbols/accessors: `CurrentPgRuntime`, `CurrentPgCarrier`,
+  `CurrentPgBackend`, `CurrentPgSession`, `CurrentPgConnection`,
+  `CurrentPgExecution`, generated hot bucket aliases, and generated hot field
+  aliases.
+- repeated lifecycle operations: current work clear/install/rebind should
+  continue to use the central bridge helpers; the process/TLS choice belongs
+  inside the bridge primitive rather than at every owner call site.
+- checked primitive decision: add a generated-current bridge accessor that
+  selects a normal global bridge for process mode and the existing TLS bridge
+  for threaded mode.  Future scheduler carrier switches still rebind current
+  work through `PgSetCurrentSession()` and the install helpers.
+- validation impact: rebuild broadly, rerun focused c1 pgbench against the
+  `REL_19_BETA1` vanilla baseline, then run lifecycle/global scans,
+  backend-runtime focused regression, and `git diff --check`.
+
+Probe outcome: not retained.  A plain process-local bridge selected from the
+public current-pointer macros preserved threaded c1 throughput but broke
+process-mode startup with repeated `FATAL: all AuxiliaryProcs are in use`.
+Keep the current bridge TLS-only unless the process-mode fork/postmaster state
+split is redesigned explicitly.
+
+## Release Hot Field Owner Assertion
+
+Lifecycle/preflight note:
+
+- target: reduce benchmark-visible hot-field fallback calls by treating
+  generated hot-field owner validation as a debug invariant rather than a
+  release-build branch.
+- touched roots/buckets: derived hot-field slots into existing backend,
+  carrier, session, connection, and execution buckets.  No ownership root or
+  lifecycle migration.
+- owner source files: `src/include/utils/backend_runtime_current.h`,
+  `src/backend/utils/init/backend_runtime.c`, direct current-session switch
+  sites if the invariant requires central rebinding, and this state note.
+- legacy symbols/accessors: all accessors routed through
+  `PG_RUNTIME_CURRENT_HOT_FIELD_REF`, especially memory context, resource
+  owner, MyProc, LWLock held-lock arrays, socket I/O, and planner/GUC hot
+  fields.
+- repeated lifecycle operations: central clear/install/rebind of hot-field
+  slots remains the primitive.  Do not add per-accessor fallback branches in
+  response to stale direct current-pointer switches; route switches through
+  the current-work rebind helper.
+- checked primitive decision: keep owner tokens in the bridge, but check them
+  with `Assert()` in assertion builds.  Release builds rely on the existing
+  central rebind invariant and fall back only when a slot has not been
+  installed.
+- validation impact: rebuild, rerun threaded/process c1 and c32 pgbench
+  samples against the `REL_19_BETA1` vanilla baseline, then lifecycle/global
+  scans and backend-runtime focused regression if retained.
+
+Probe outcome: not retained.  Treating owner validation as an assertion did
+not produce a stable c32 improvement, and it weakens stale-slot protection for
+direct current-session switches during teardown.  Keep runtime owner checks in
+the release hot-field path until current-work switching is fully centralized
+and checked.
+
+## Central Hot Accessor Aliases
+
+Lifecycle/preflight note:
+
+- target: reduce branch-wide benchmark-visible `PgCurrent*` fallback calls by
+  generating central static-inline aliases for sampled hot accessors after the
+  full runtime object definitions and prototypes are visible.
+- touched roots/buckets: derived hot-field and hot-bucket references into
+  existing backend, connection, execution, and session buckets.  No ownership
+  root migration.
+- owner source files: `src/include/utils/backend_runtime.h`, new generated
+  accessor definition table if retained, owner-adjacent fallback C files that
+  define the external symbols, this state note, and backend-runtime tests if a
+  stale-cache invariant needs coverage.
+- legacy symbols/accessors: sampled direct accessors such as
+  `PgCurrentConnectionSocketIORef`, `PgCurrentBackendLockState`,
+  `PgCurrentBackendUtilityState`, `PgCurrentTransactionStateRef`,
+  `PgCurrentActiveSnapshotRef`, `PgCurrentErrorContextStackRef`,
+  `PgCurrentExceptionStackRef`, and `PgCurrentAfterTriggersDataRef`.
+- repeated lifecycle operations: no new init/adopt/reset/destroy lifecycle.
+  The aliases must use the existing generated hot bucket/field cache and must
+  retain the external fallback functions for early-state and direct temporary
+  current-work switch paths.
+- checked primitive decision: add a central generated alias primitive rather
+  than placing function-like macros in broad headers such as `palloc.h`.
+  Owner C files opt out while defining the fallback symbols.
+- validation impact: rebuild, run backend-runtime focused regression to check
+  direct current-work switch fallback behavior, then rerun process/threaded
+  c1/c32 medians against the `REL_19_BETA1` vanilla baseline.
+
+Probe outcome: not retained.  Adding generated bucket owner tokens, internal
+static-inline bucket aliases, and extra hot-field aliases for transaction,
+snapshot, and trigger lvalues made the focused prepared select-only benchmark
+worse on the clean machine.  Three-run medians from
+`/tmp/pgbench-fastaccess-repeats-20260616-231614/results.tsv` were:
+vanilla process c1 63163 TPS and c32 195245 TPS; branch process c1 40335 TPS
+and c32 89005 TPS; branch threaded c1 42396 TPS and c32 87739 TPS.  This is
+below the retained hot-field expansion run, especially at c32, so keep the
+retained generated hot-field and hot-bucket cache shape and do not repeat this
+alias strategy without a different layout.
+
+## Session Step Batching Probe
+
+Lifecycle/preflight note:
+
+- target: test whether branch-wide pgbench overhead comes from installing and
+  removing the bottom `PgSessionStep()` error boundary once per frontend
+  protocol message, rather than once for a long backend loop as in vanilla
+  `REL_19_BETA1`.
+- touched roots/buckets: existing `PgSession.loop_state` fields only.  No
+  runtime ownership root or lifecycle bucket moves.
+- owner source files: `src/backend/tcop/postgres.c`,
+  `src/include/utils/backend_runtime.h`, this state note, and benchmark
+  evidence against the vanilla 19 beta 1 worktree.
+- legacy symbols/accessors: `PgSessionStep()`, `PgSessionRun()`,
+  `PgSessionStepUnprotected()`, `PG_exception_stack`,
+  `error_context_stack`, `DoingCommandRead`, `ignore_till_sync`,
+  `doing_extended_query_message`, and `send_ready_for_query`.
+- repeated lifecycle operations: none.  This changes scheduler/loop boundary
+  control flow only; it does not add init/adopt/reset/destroy boilerplate.
+- checked primitive decision: reuse the existing `PgStepBudget` primitive.
+  Define a zero/negative budget as unbounded work for process and
+  thread-per-session carriers, while leaving positive budgets available for a
+  future scheduler that wants to yield after N messages.
+- validation impact: rebuild `postgres`, rerun focused backend-runtime tests,
+  compare prepared select-only pgbench for vanilla process, branch process,
+  and branch threaded modes, then run lifecycle/global scans and full
+  process/threaded checks if retained.
+
+Validation/evidence:
+
+- Retained the `PgStepBudget` batching change: positive budgets still yield
+  after N messages, while `PgSessionRun()` uses an unbounded budget so
+  process and thread-per-session carriers amortize the bottom error boundary
+  across the long-running backend loop.
+- Focused backend-runtime regression passed after the change.
+- Three-run prepared select-only pgbench matrix in
+  `/tmp/pgbench-sessionstep-20260616-234238/results.tsv` used fresh clusters
+  with vanilla `REL_19_BETA1` process mode, branch process mode, and branch
+  threaded mode.  Medians were: vanilla process c1 64112 TPS and c32 231769
+  TPS; branch process c1 46381 TPS and c32 121579 TPS; branch threaded c1
+  46692 TPS and c32 126331 TPS.
+- This narrows some branch/threaded samples relative to earlier retained runs,
+  but it does not reach the target.  Threaded mode remains roughly 27% behind
+  vanilla at c1 and roughly 45% behind at c32 in this matrix, while branch
+  process and branch threaded remain close.  Treat the remaining major gap as
+  shared branch current-accessor/TLS overhead unless later CPU-time profiling
+  contradicts that.
+
+## Connection Socket I/O Local Bucket Probe
+
+Lifecycle/preflight note:
+
+- target: test whether repeated connection socket-I/O current accessor traffic
+  in the FE/BE protocol path can be reduced by caching the owner bucket inside
+  hot `pqcomm.c` functions instead of routing every buffer field access through
+  `PqSocketIO()`.
+- touched roots/buckets: existing `PgConnection.socket_io`; no ownership root
+  migration and no lifecycle bucket changes.
+- owner source files: `src/backend/libpq/pqcomm.c` and this state note.
+- legacy symbols/accessors: local `PqSend*`, `PqRecv*`, `PqCommBusy`, and
+  `PqCommReadingMsg` compatibility macros, plus
+  `PgCurrentConnectionSocketIORef()`.
+- repeated lifecycle operations: none.  This is owner-local hot-path caching
+  of an already-installed bucket.
+- checked primitive decision: no new primitive.  Keep the public connection
+  accessor/fallback path unchanged; use function-local `PgConnectionSocketIOState`
+  pointers only where the active connection cannot change during the function.
+- validation impact: rebuild `pqcomm.o`/backend, rerun focused backend-runtime
+  tests, then compare prepared select-only process/threaded pgbench against
+  the vanilla 19 beta 1 baseline if retained.
+
+Probe outcome: not retained.  The owner-local `pqcomm.c` bucket caching
+compiled and passed focused backend-runtime regression, and it improved some
+threaded/concurrent samples, but it regressed the clean branch process c1 path.
+Branch process c1 medians dropped from about 46.4k TPS in
+`/tmp/pgbench-sessionstep-20260616-234238/results.tsv` to about 44.0k TPS in
+`/tmp/pgbench-pqio-c1-rerun-20260617-000346/results.tsv`.  The mixed result
+suggests instruction/cache shape and protocol helper inlining matter; do not
+repeat this local refactor as a general current-accessor solution.
+
+## Per-Query Hot Lvalue Expansion
+
+Lifecycle/preflight note:
+
+- target: reduce shared branch process/threaded overhead visible in both
+  prepared select-only and trivial `SELECT 1` pgbench runs by routing sampled
+  per-query compatibility lvalues through the generated hot-field table rather
+  than out-of-line `PgCurrent*Ref()` accessors.
+- touched roots/buckets: derived hot-field references into existing backend,
+  session, connection, and execution buckets only.  No ownership root or
+  lifecycle migration.
+- owner source files: `src/include/utils/backend_runtime_current.h`,
+  `src/include/utils/backend_runtime_hot_fields.def`, `src/include/pgstat.h`,
+  `src/include/executor/instrument.h`, `src/backend/access/transam/xact.c`,
+  `src/backend/utils/time/snapmgr.c`, `src/backend/commands/trigger.c`,
+  `src/backend/tcop/postgres.c`, and this state note.
+- legacy symbols/accessors: buffer/WAL usage, backend pgstat pending flags and
+  backend pending stats, transaction current-state pointer, active snapshot,
+  after-trigger data pointer, debug query string, command-read flag, and
+  dynahash sequential-scan cleanup counters.
+- repeated lifecycle operations: none.  This reuses current-work hot-field
+  install/clear/rebind and keeps fallback accessors for early startup,
+  bootstrap, and stale direct current-work switch paths.
+- checked primitive decision: extend the existing generated hot-field table
+  rather than adding subsystem-local caching or broad generated accessor
+  aliases.  Avoid hot fields whose types require new broad include-order
+  dependencies until a dedicated typed hot-lvalue primitive exists.
+- validation impact: rebuild broadly, run focused backend-runtime regression,
+  process/threaded smoke tests, and rerun vanilla/process/threaded pgbench
+  diagnostics against the `REL_19_BETA1` vanilla baseline before deciding
+  whether to retain the batch.
+
+## Hot Bucket Fast-Path Ordering
+
+Lifecycle/preflight note:
+
+- target: reduce general branch process/threaded overhead by making generated
+  current-bucket helpers return an installed hot bucket before consulting
+  `CurrentPgBackend` or `CurrentPgSession`.
+- touched roots/buckets: existing generated backend/session bucket caches only;
+  no ownership root migration and no lifecycle bucket additions.
+- owner source files: `src/backend/utils/init/backend_runtime_internal.h` and
+  this state note.
+- legacy symbols/accessors: all accessors using
+  `PG_RUNTIME_RETURN_CURRENT_BACKEND_BUCKET()` and
+  `PG_RUNTIME_RETURN_INITIALIZED_SESSION_BUCKET()`, especially sampled
+  logging, pgstat, lock, IPC, buffer, memory-manager, and utility bucket
+  accessors.
+- repeated lifecycle operations: none.  This reorders an existing checked
+  fast path and leaves fallback initialization/adoption semantics unchanged.
+- checked primitive decision: reuse the existing generated hot-bucket
+  primitive.  Do not add more per-field hot rows until the bucket fast path is
+  known to avoid unnecessary current-root/TLS lookups.
+- validation impact: rebuild, rerun focused backend-runtime regression, smoke
+  fresh `initdb`, then compare vanilla 19 beta 1, branch process, and branch
+  threaded c1/c32 pgbench results.
+
+## Trusted Hot-Field Current-Work Fast Path
+
+Lifecycle/preflight note:
+
+- target: reduce process and threaded per-query overhead by making generated
+  hot-field accessors trust the already-installed current-work field pointer in
+  process/thread hot-cell modes instead of revalidating it through
+  `CurrentPgBackend`/`CurrentPgSession` on every access.
+- touched roots/buckets: existing current-work hot-field pointer cache only;
+  no ownership root migration and no lifecycle bucket additions.
+- owner source files: `src/include/utils/backend_runtime_current.h` and this
+  state note.
+- legacy symbols/accessors: all `PG_RUNTIME_CURRENT_HOT_FIELD_REF()` users,
+  especially sampled transaction, trigger, pgstat, logging, planner, buffer,
+  resource-owner, and protocol lvalues.
+- repeated lifecycle operations: none.  This relies on the existing
+  `PgRuntimeFlushCurrentHotCells()`, `PgRuntimeFlushCurrentHotMirrors()`, and
+  `PgRuntimeRefreshCurrentWork()` switch discipline to clear/rebind cached
+  field pointers at current-work boundaries.
+- checked primitive decision: reuse the generated hot-field table and current
+  work rebind point.  Keep owner-token validation for fallback bridge mode,
+  where callers may use the bridge directly before process/thread hot cells are
+  installed.
+- validation impact: rebuild broadly, run fresh `initdb`, focused
+  backend-runtime regression, and rerun vanilla 19 beta 1 process/threaded
+  pgbench diagnostics.  If retained, profile again to confirm the remaining
+  cost shifted away from hot-field owner/root lookups.
+
+## Scheduler Wait-Publication Fast Path
+
+Lifecycle/preflight note:
+
+- target: reduce shared process/threaded per-message overhead by avoiding
+  `PgSuspend()` wait-state publication work when no scheduler consumes the
+  `PgBackendWaitState` wait spec.
+- touched roots/buckets: existing `PgBackend.wait_state` bucket only; no
+  ownership root migration and no lifecycle bucket additions.
+- owner source files: `src/backend/utils/init/backend_runtime_backend.c` and
+  this state note.
+- legacy symbols/accessors: `PgSuspend()` and all `WaitEventSetWait()` callers
+  that currently enter the runtime wait-boundary wrapper.
+- repeated lifecycle operations: none.  The wait-state bucket lifecycle remains
+  initialized/reset as before; only runtime publication on the hot wait path is
+  gated.
+- checked primitive decision: use one owner-adjacent publication switch rather
+  than open-coded process/thread checks in wait-event code.  A later scheduler
+  can enable this switch when it actually needs carrier-visible wait specs.
+- validation impact: rebuild, fresh `initdb`, backend-runtime regression, and
+  c1 vanilla/process/threaded pgbench.  If retained, add explicit scheduler
+  ownership notes before future nonblocking carrier work starts consuming wait
+  specs.
+
+## Threaded Bridge-Based Hot Current Cache
+
+Lifecycle/preflight note:
+
+- target: reduce threaded-mode macOS TLS overhead by making generated hot
+  current root, cell, bucket, and field accessors read the existing
+  carrier-local `PgRuntimeCurrentBridgeState` cache directly in threaded mode
+  instead of touching one TLS symbol per generated cache entry.
+- touched roots/buckets: existing generated current bridge, hot current cells,
+  hot buckets, and hot fields only; no ownership root migration and no
+  lifecycle bucket additions.
+- owner source files: `src/include/utils/backend_runtime_current.h`,
+  `src/backend/utils/init/backend_runtime.c`, and this state note.
+- legacy symbols/accessors: all `CurrentPg*` root lvalues,
+  `PG_RUNTIME_CURRENT_HOT_FIELD_REF()` users, generated hot-bucket accessors,
+  and generated hot-cell users such as `CurrentMemoryContext`.
+- repeated lifecycle operations: none.  This reuses the existing
+  `PgRuntimeRefreshCurrentWork()` and `PgRuntimeInstallHot*()` switch discipline
+  that clears/rebinds current-work cache state at carrier/session/execution
+  boundaries.
+- checked primitive decision: generalize the existing generated bridge-cache
+  primitive rather than adding more one-off TLS hot fields.  Keep process-mode
+  globals unchanged, because process mode does not pay the per-symbol TLS lookup
+  cost.
+- validation impact: rebuild, fresh `initdb`, focused backend-runtime
+  regression, profile threaded c1 pgbench for `_tlv_get_addr`, then rerun the
+  vanilla 19 beta 1 process/threaded benchmark comparison before deciding
+  whether to keep the route.
+
+## Per-Message Runtime Accessor Batch
+
+Lifecycle/preflight note:
+
+- target: reduce the remaining per-protocol-message runtime overhead sampled in
+  process and threaded c1 pgbench after the bridge-cache change.
+- touched roots/buckets: existing backend/session current-work caches,
+  `PgBackend.timeout`, `PgBackend.my_beentry`, transaction-state pointer, and
+  backend interrupt readiness bits; no ownership root migration.
+- owner source files: `src/include/utils/backend_runtime_current.h`,
+  `src/include/utils/backend_runtime_hot_buckets.def`,
+  `src/include/utils/backend_runtime_hot_fields.def`,
+  `src/backend/utils/init/backend_runtime_backend.c`,
+  `src/backend/access/transam/xact.c`, `src/include/utils/backend_status.h`,
+  `src/backend/postmaster/interrupt.c`, `src/include/miscadmin.h`, and this
+  state note.
+- legacy symbols/accessors: `CurrentTransactionState`, `MyBEEntry`,
+  `PgCurrentTimeoutState()`, `PgCurrentBackendHasPendingInterrupts()`, and
+  `CHECK_FOR_INTERRUPTS()`.
+- repeated lifecycle operations: none.  The batch reuses generated hot bucket
+  and hot field pointer installation and keeps interrupt mailbox consumption in
+  the existing owner-adjacent interrupt code.
+- checked primitive decision: use generated hot buckets/fields for ordinary
+  current object access, and make the backend-local `InterruptPending` flag the
+  cheap readiness bit for logical backend interrupts instead of polling mailbox
+  atomics on every interrupt check.
+- validation impact: rebuild, fresh `initdb`, backend-runtime regression,
+  focused interrupt/threaded smoke if needed, then c1 vanilla/process/threaded
+  pgbench comparison.
+
+## Inline Hot-Bucket Accessor Aliases
+
+Lifecycle/preflight note:
+
+- target: reduce process and threaded per-message overhead by making public
+  current bucket accessor calls inline to the generated hot-bucket current-work
+  cache where the bucket is already represented in
+  `backend_runtime_hot_buckets.def`.
+- touched roots/buckets: existing current-work hot bucket pointer cache only;
+  no ownership root migration and no lifecycle bucket additions.
+- owner source files: `src/include/utils/backend_runtime.h`,
+  `src/backend/utils/init/backend_runtime_backend.c`,
+  `src/backend/utils/init/backend_runtime_session.c`,
+  `src/backend/utils/init/backend_runtime_execution.c`, and this state note.
+- legacy symbols/accessors: `PgCurrentBackend*State()`,
+  `PgCurrentSession*State()`, `PgCurrentExecution*State()`, and
+  `PgCurrentConnection*State()` accessors that have a generated hot-bucket row.
+- repeated lifecycle operations: none.  This reuses the existing
+  `PgRuntimeRefreshCurrentWork()` hot-bucket rebinding discipline and keeps the
+  out-of-line fallback symbols for non-inlined and exceptional paths.
+- checked primitive decision: add a generated alias layer over the checked
+  hot-bucket table rather than continuing one accessor at a time.  Accessor
+  implementation files opt out so their fallback definitions remain real C
+  functions.
+- validation impact: rebuild broadly, fresh `initdb`, backend-runtime
+  regression, profile c1 prepared mode for `_tlv_get_addr`/`PgCurrent*` leaves,
+  and rerun vanilla 19 beta 1 process/threaded benchmark comparison before
+  deciding whether to keep this route.
+
+## Inline Hot-Field Accessor Aliases
+
+Lifecycle/preflight note:
+
+- target: test whether the remaining c1 prepared-mode slowdown is dominated by
+  out-of-line hot field/cell compatibility ref helpers such as
+  `PgCurrentWhereToSendOutputRef()`, `PgCurrentMyBackendTypeRef()`,
+  `PgTopTransactionResourceOwnerRef()`, and related sampled `PgCurrent*Ref()`
+  leaves.
+- touched roots/buckets: existing generated current-work hot field and hot cell
+  caches only; no ownership root migration and no lifecycle bucket additions.
+- owner source files: `src/include/utils/backend_runtime.h`,
+  `src/include/utils/backend_runtime_hot_fields.def`,
+  field-owner headers that expose legacy lvalues, and this state note.
+- legacy symbols/accessors: generated hot-field and hot-cell lvalue ref
+  accessors whose addresses are already rebound at current-work install/clear
+  boundaries.
+- repeated lifecycle operations: none.  This reuses the checked current-work
+  refresh path and keeps owner-adjacent fallback functions for early/fallback
+  and non-inlined callers.
+- checked primitive decision: prefer a generated alias layer over another
+  per-call-site accessor migration.  If the generated aliases do not reduce the
+  `_tlv_get_addr`/`PgCurrent*Ref()` profile leaves, move to a current-context
+  design instead of extending one-off hot fields.
+- validation impact: rebuild broadly, fresh `initdb`, backend-runtime
+  regression, profile c1 prepared threaded mode, and rerun the vanilla 19 beta
+  1 process/threaded benchmark comparison before deciding whether to keep the
+  route.
+
+## Socket I/O Owner-State Hot Path
+
+Lifecycle/preflight note:
+
+- target: reduce branch-wide process and threaded protocol overhead by caching
+  the current `PgConnectionSocketIOState` owner once per hot FE/BE protocol
+  function instead of expanding migrated compatibility macros repeatedly.
+- touched roots/buckets: existing `PgConnection.socket_io` state and current
+  connection hot bucket only; no ownership root migration.
+- owner source files: `src/backend/libpq/pqcomm.c` and this state note.
+- legacy symbols/accessors: `PqSendBuffer`, `PqSendPointer`, `PqSendStart`,
+  `PqRecvBuffer`, `PqRecvPointer`, `PqRecvLength`, `PqCommBusy`, and
+  `PqCommReadingMsg`.
+- repeated lifecycle operations: none.  The batch reuses existing
+  connection-owned allocation/reset/teardown and only narrows repeated accessor
+  expansion inside hot protocol code.
+- checked primitive decision: use an owner-adjacent local-state cache first;
+  if the pattern repeats across migrated subsystems, promote it to a checked
+  helper macro or generated owner-state binding primitive.
+- validation impact: rebuild, fresh `initdb`, backend-runtime regression, and
+  rerun vanilla 19 beta 1 process/threaded c1 `SELECT 1` and `pgbench -S`
+  comparisons.
+
+## Threaded pg_stat_activity Signal-PID Wait Events
+
+Lifecycle/preflight note:
+
+- target: make `pg_stat_activity` wait-event lookups follow the SQL-visible
+  backend signal pid used by threaded sessions, matching `pg_locks`, signal
+  functions, and `pg_backend_pid()`.
+- touched roots/buckets: no lifecycle ownership movement; this uses existing
+  `PGPROC.wait_event_info` and `PgBackend` logical backend identifiers.
+- owner source files: `src/backend/utils/adt/pgstatfuncs.c` and this state note.
+- legacy symbols/accessors: none.  Existing `BackendSignalPidGetProc()` handles
+  process-mode OS pids and thread-mode logical backend ids.
+- repeated lifecycle operations: none.  Startup, adoption, reset, and shutdown
+  paths remain unchanged.
+- checked primitive decision: use the existing signal-pid PGPROC lookup rather
+  than reasserting wait-event storage or adding another runtime-current hook.
+- validation impact: rebuild/install, restart branch process/threaded clusters,
+  rerun hot-row and builtin TPC-B prepared c8 probes to separate observability
+  fixes from any remaining lock/WAL wakeup latency.
+
+
+## Linux Threaded Latch Self-Pipe Wake Probe
+
+Lifecycle/preflight note:
+
+- target: test whether Linux threaded lock-handoff latency is dominated by
+  sibling backend threads falling back to `pthread_kill(SIGURG)` because the
+  epoll/signalfd wait primitive has no direct per-thread wake fd.
+- touched roots/buckets: existing wait-event carrier fd state only; no runtime
+  ownership movement and no new lifecycle bucket.
+- owner source files: `src/backend/storage/ipc/waiteventset.c` and this state
+  note.
+- legacy symbols/accessors: existing `GetWaitEventSetLatchWakeupFd()` and
+  `WakeupOtherProcFd()` become active on Linux epoll builds by selecting the
+  self-pipe wake primitive instead of signalfd.
+- repeated lifecycle operations: none.  Startup still initializes per-carrier
+  wait-event support, latch ownership still records the current wake fd, and
+  shutdown paths are unchanged.
+- checked primitive decision: try the direct fd wake path because the measured
+  hot-row wake-to-return gap is about 80 us in branch process mode but about
+  852 us average / 12 ms p99 in threaded mode, and the current signalfd path
+  forces sibling backend threads through `pthread_kill()`.
+- validation impact: rebuild/install, restart branch process/threaded clusters,
+  rerun `kv_hot_update_tx` normal/sync-off focused benchmarks and sanity-check
+  clean startup/shutdown before deciding whether to keep the primitive change.
+
+## Interrupt API Upstream Alignment
+
+Lifecycle/preflight note:
+
+- target: align the branch's logical backend interrupt vocabulary with the
+  upstream `SendProcSignal() -> SendInterrupt()` patch direction and route
+  threaded logical-backend signalling through latch-backed in-thread
+  interrupts as widely as current target identity allows.
+- touched roots/buckets: existing `PgBackend.interrupts` mailbox, proc-signal
+  interrupt mask bridge, and interrupt latch only; no new runtime roots,
+  buckets, or lifecycle transitions.
+- owner source files: `src/backend/postmaster/interrupt.c`,
+  `src/backend/storage/ipc/procsignal.c`, `src/include/utils/backend_runtime.h`,
+  selected logical-interrupt callers, and this state note.
+- legacy symbols/accessors: keep `PgBackendRaiseInterrupt()` and
+  `PgCurrentBackendRaiseInterrupt()` as compatibility implementation wrappers
+  while adding upstream-shaped `SendInterrupt()` and `RaiseInterrupt()` entry
+  points.  Preserve `SendProcSignal()` for process-mode callers and as the
+  compatibility bridge from old procsignal reasons to logical interrupts.
+- repeated lifecycle operations: none.  Startup, adoption, reset, shutdown, and
+  process-mode signal delivery continue to use the existing checked paths.
+- checked primitive decision: redirect `SendProcSignal()` to the logical
+  interrupt/latch path whenever the proc-signal slot identifies a threaded
+  backend.  Leave true process-mode signalling on `kill(SIGUSR1)` until those
+  processes have a real `PgBackend` target.
+- validation impact: rebuild and run focused backend-runtime/threaded interrupt
+  validation before considering wider benchmark reruns.

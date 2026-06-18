@@ -13,6 +13,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include "commands/vacuum.h"
@@ -25,6 +26,10 @@ PgCurrentSessionVacuumState(void)
 {
 	PgSessionVacuumState *vacuum;
 
+	if (likely(CurrentPgSessionVacuumRuntimeState != NULL &&
+			   CurrentPgSessionVacuumRuntimeState->initialized))
+		return CurrentPgSessionVacuumRuntimeState;
+
 	vacuum = &PgCurrentOrEarlySession()->vacuum;
 	if (!vacuum->initialized)
 		PgSessionInitializeVacuumState(vacuum);
@@ -35,197 +40,199 @@ PgCurrentSessionVacuumState(void)
 PgExecutionVacuumState *
 PgCurrentExecutionVacuumState(void)
 {
-	return &PgCurrentOrEarlyExecution()->vacuum;
+	PG_RUNTIME_RETURN_CURRENT_EXECUTION_BUCKET(CurrentPgExecutionVacuumRuntimeState,
+											   vacuum);
 }
 
 PgExecutionAnalyzeState *
 PgCurrentExecutionAnalyzeState(void)
 {
-	return &PgCurrentOrEarlyExecution()->analyze;
+	PG_RUNTIME_RETURN_CURRENT_EXECUTION_BUCKET(CurrentPgExecutionAnalyzeRuntimeState,
+											   analyze);
 }
 
 int *
 PgCurrentVacuumBufferUsageLimitRef(void)
 {
-	return &PgCurrentSessionVacuumState()->vacuum_buffer_usage_limit_kb;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionVacuumRuntimeState, PgCurrentSessionVacuumState)->vacuum_buffer_usage_limit_kb;
 }
 
 int *
 PgCurrentVacuumCostPageHitRef(void)
 {
-	return &PgCurrentSessionVacuumState()->vacuum_cost_page_hit_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionVacuumRuntimeState, PgCurrentSessionVacuumState)->vacuum_cost_page_hit_value;
 }
 
 int *
 PgCurrentVacuumCostPageMissRef(void)
 {
-	return &PgCurrentSessionVacuumState()->vacuum_cost_page_miss_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionVacuumRuntimeState, PgCurrentSessionVacuumState)->vacuum_cost_page_miss_value;
 }
 
 int *
 PgCurrentVacuumCostPageDirtyRef(void)
 {
-	return &PgCurrentSessionVacuumState()->vacuum_cost_page_dirty_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionVacuumRuntimeState, PgCurrentSessionVacuumState)->vacuum_cost_page_dirty_value;
 }
 
 int *
 PgCurrentVacuumCostLimitRef(void)
 {
-	return &PgCurrentSessionVacuumState()->vacuum_cost_limit_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionVacuumRuntimeState, PgCurrentSessionVacuumState)->vacuum_cost_limit_value;
 }
 
 double *
 PgCurrentVacuumCostDelayRef(void)
 {
-	return &PgCurrentSessionVacuumState()->vacuum_cost_delay_ms;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionVacuumRuntimeState, PgCurrentSessionVacuumState)->vacuum_cost_delay_ms;
 }
 
 int *
 PgCurrentDefaultStatisticsTargetRef(void)
 {
-	return &PgCurrentSessionVacuumState()->default_statistics_target_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionVacuumRuntimeState, PgCurrentSessionVacuumState)->default_statistics_target_value;
 }
 
 int *
 PgCurrentVacuumFreezeMinAgeRef(void)
 {
-	return &PgCurrentSessionVacuumState()->vacuum_freeze_min_age_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionVacuumRuntimeState, PgCurrentSessionVacuumState)->vacuum_freeze_min_age_value;
 }
 
 int *
 PgCurrentVacuumFreezeTableAgeRef(void)
 {
-	return &PgCurrentSessionVacuumState()->vacuum_freeze_table_age_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionVacuumRuntimeState, PgCurrentSessionVacuumState)->vacuum_freeze_table_age_value;
 }
 
 int *
 PgCurrentVacuumMultixactFreezeMinAgeRef(void)
 {
-	return &PgCurrentSessionVacuumState()->vacuum_multixact_freeze_min_age_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionVacuumRuntimeState, PgCurrentSessionVacuumState)->vacuum_multixact_freeze_min_age_value;
 }
 
 int *
 PgCurrentVacuumMultixactFreezeTableAgeRef(void)
 {
-	return &PgCurrentSessionVacuumState()->vacuum_multixact_freeze_table_age_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionVacuumRuntimeState, PgCurrentSessionVacuumState)->vacuum_multixact_freeze_table_age_value;
 }
 
 int *
 PgCurrentVacuumFailsafeAgeRef(void)
 {
-	return &PgCurrentSessionVacuumState()->vacuum_failsafe_age_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionVacuumRuntimeState, PgCurrentSessionVacuumState)->vacuum_failsafe_age_value;
 }
 
 int *
 PgCurrentVacuumMultixactFailsafeAgeRef(void)
 {
-	return &PgCurrentSessionVacuumState()->vacuum_multixact_failsafe_age_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionVacuumRuntimeState, PgCurrentSessionVacuumState)->vacuum_multixact_failsafe_age_value;
 }
 
 bool *
 PgCurrentTrackCostDelayTimingRef(void)
 {
-	return &PgCurrentSessionVacuumState()->track_cost_delay_timing_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionVacuumRuntimeState, PgCurrentSessionVacuumState)->track_cost_delay_timing_value;
 }
 
 bool *
 PgCurrentVacuumTruncateRef(void)
 {
-	return &PgCurrentSessionVacuumState()->vacuum_truncate_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionVacuumRuntimeState, PgCurrentSessionVacuumState)->vacuum_truncate_value;
 }
 
 double *
 PgCurrentVacuumMaxEagerFreezeFailureRateRef(void)
 {
-	return &PgCurrentSessionVacuumState()->vacuum_max_eager_freeze_failure_rate_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionVacuumRuntimeState, PgCurrentSessionVacuumState)->vacuum_max_eager_freeze_failure_rate_value;
 }
 
 double *
 PgCurrentLocalVacuumCostDelayRef(void)
 {
-	return &PgCurrentSessionVacuumState()->local_vacuum_cost_delay_ms;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionVacuumRuntimeState, PgCurrentSessionVacuumState)->local_vacuum_cost_delay_ms;
 }
 
 int *
 PgCurrentLocalVacuumCostLimitRef(void)
 {
-	return &PgCurrentSessionVacuumState()->local_vacuum_cost_limit_value;
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionVacuumRuntimeState, PgCurrentSessionVacuumState)->local_vacuum_cost_limit_value;
 }
 
 bool *
 PgCurrentVacuumInProgressRef(void)
 {
-	return &PgCurrentExecutionVacuumState()->in_vacuum;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionVacuumRuntimeState, PgCurrentExecutionVacuumState)->in_vacuum;
 }
 
 int *
 PgCurrentVacuumCostBalanceRef(void)
 {
-	return &PgCurrentExecutionVacuumState()->cost_balance;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionVacuumRuntimeState, PgCurrentExecutionVacuumState)->cost_balance;
 }
 
 bool *
 PgCurrentVacuumCostActiveRef(void)
 {
-	return &PgCurrentExecutionVacuumState()->cost_active;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionVacuumRuntimeState, PgCurrentExecutionVacuumState)->cost_active;
 }
 
 pg_atomic_uint32 **
 PgCurrentVacuumSharedCostBalanceRef(void)
 {
-	return &PgCurrentExecutionVacuumState()->shared_cost_balance;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionVacuumRuntimeState, PgCurrentExecutionVacuumState)->shared_cost_balance;
 }
 
 pg_atomic_uint32 **
 PgCurrentVacuumActiveNWorkersRef(void)
 {
-	return &PgCurrentExecutionVacuumState()->active_nworkers;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionVacuumRuntimeState, PgCurrentExecutionVacuumState)->active_nworkers;
 }
 
 int *
 PgCurrentVacuumCostBalanceLocalRef(void)
 {
-	return &PgCurrentExecutionVacuumState()->cost_balance_local;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionVacuumRuntimeState, PgCurrentExecutionVacuumState)->cost_balance_local;
 }
 
 bool *
 PgCurrentVacuumFailsafeActiveRef(void)
 {
-	return &PgCurrentExecutionVacuumState()->failsafe_active;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionVacuumRuntimeState, PgCurrentExecutionVacuumState)->failsafe_active;
 }
 
 int64 *
 PgCurrentParallelVacuumWorkerDelayNsRef(void)
 {
-	return &PgCurrentExecutionVacuumState()->parallel_worker_delay_ns;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionVacuumRuntimeState, PgCurrentExecutionVacuumState)->parallel_worker_delay_ns;
 }
 
 void **
 PgCurrentParallelVacuumSharedCostParamsRef(void)
 {
-	return &PgCurrentExecutionVacuumState()->parallel_shared_cost_params;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionVacuumRuntimeState, PgCurrentExecutionVacuumState)->parallel_shared_cost_params;
 }
 
 uint32 *
 PgCurrentParallelVacuumSharedParamsGenerationLocalRef(void)
 {
-	return &PgCurrentExecutionVacuumState()->parallel_shared_params_generation_local;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionVacuumRuntimeState, PgCurrentExecutionVacuumState)->parallel_shared_params_generation_local;
 }
 
 MemoryContext *
 PgCurrentAnalyzeContextRef(void)
 {
-	return &PgCurrentExecutionAnalyzeState()->context;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionAnalyzeRuntimeState, PgCurrentExecutionAnalyzeState)->context;
 }
 
 BufferAccessStrategy *
 PgCurrentAnalyzeStrategyRef(void)
 {
-	return &PgCurrentExecutionAnalyzeState()->strategy;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionAnalyzeRuntimeState, PgCurrentExecutionAnalyzeState)->strategy;
 }
 
 void **
 PgCurrentArrayAnalyzeExtraDataRef(void)
 {
-	return &PgCurrentExecutionAnalyzeState()->array_extra_data;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionAnalyzeRuntimeState, PgCurrentExecutionAnalyzeState)->array_extra_data;
 }

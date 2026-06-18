@@ -9,6 +9,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include "utils/backend_runtime.h"
@@ -17,83 +18,83 @@
 void **
 PgCurrentXLogInsertRegisteredBuffersRef(void)
 {
-	return &PgCurrentExecutionXLogInsertState()->registered_buffers;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXLogInsertRuntimeState, PgCurrentExecutionXLogInsertState)->registered_buffers;
 }
 
 int *
 PgCurrentXLogInsertMaxRegisteredBuffersRef(void)
 {
-	return &PgCurrentExecutionXLogInsertState()->max_registered_buffers;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXLogInsertRuntimeState, PgCurrentExecutionXLogInsertState)->max_registered_buffers;
 }
 
 int *
 PgCurrentXLogInsertMaxRegisteredBlockIdRef(void)
 {
-	return &PgCurrentExecutionXLogInsertState()->max_registered_block_id;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXLogInsertRuntimeState, PgCurrentExecutionXLogInsertState)->max_registered_block_id;
 }
 
 XLogRecData **
 PgCurrentXLogInsertMainRDataHeadRef(void)
 {
-	return &PgCurrentExecutionXLogInsertState()->mainrdata_head;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXLogInsertRuntimeState, PgCurrentExecutionXLogInsertState)->mainrdata_head;
 }
 
 XLogRecData **
 PgCurrentXLogInsertMainRDataLastRef(void)
 {
-	return &PgCurrentExecutionXLogInsertState()->mainrdata_last;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXLogInsertRuntimeState, PgCurrentExecutionXLogInsertState)->mainrdata_last;
 }
 
 uint64 *
 PgCurrentXLogInsertMainRDataLenRef(void)
 {
-	return &PgCurrentExecutionXLogInsertState()->mainrdata_len;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXLogInsertRuntimeState, PgCurrentExecutionXLogInsertState)->mainrdata_len;
 }
 
 uint8 *
 PgCurrentXLogInsertFlagsRef(void)
 {
-	return &PgCurrentExecutionXLogInsertState()->curinsert_flags;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXLogInsertRuntimeState, PgCurrentExecutionXLogInsertState)->curinsert_flags;
 }
 
 XLogRecData *
 PgCurrentXLogInsertHeaderRecordDataRef(void)
 {
-	return &PgCurrentExecutionXLogInsertState()->hdr_rdt;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXLogInsertRuntimeState, PgCurrentExecutionXLogInsertState)->hdr_rdt;
 }
 
 char **
 PgCurrentXLogInsertHeaderScratchRef(void)
 {
-	return &PgCurrentExecutionXLogInsertState()->hdr_scratch;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXLogInsertRuntimeState, PgCurrentExecutionXLogInsertState)->hdr_scratch;
 }
 
 XLogRecData **
 PgCurrentXLogInsertRDatasRef(void)
 {
-	return &PgCurrentExecutionXLogInsertState()->rdatas;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXLogInsertRuntimeState, PgCurrentExecutionXLogInsertState)->rdatas;
 }
 
 int *
 PgCurrentXLogInsertNumRDatasRef(void)
 {
-	return &PgCurrentExecutionXLogInsertState()->num_rdatas;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXLogInsertRuntimeState, PgCurrentExecutionXLogInsertState)->num_rdatas;
 }
 
 int *
 PgCurrentXLogInsertMaxRDatasRef(void)
 {
-	return &PgCurrentExecutionXLogInsertState()->max_rdatas;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXLogInsertRuntimeState, PgCurrentExecutionXLogInsertState)->max_rdatas;
 }
 
 bool *
 PgCurrentXLogInsertBeginCalledRef(void)
 {
-	return &PgCurrentExecutionXLogInsertState()->begininsert_called;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXLogInsertRuntimeState, PgCurrentExecutionXLogInsertState)->begininsert_called;
 }
 
 MemoryContext *
 PgCurrentXLogInsertContextRef(void)
 {
-	return &PgCurrentExecutionXLogInsertState()->context;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXLogInsertRuntimeState, PgCurrentExecutionXLogInsertState)->context;
 }

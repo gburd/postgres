@@ -424,7 +424,7 @@ PostmasterChildRaiseThreadInterrupt(PMChild *pmchild,
 	PMChildThreadBackendLock();
 	if (pmchild->thread_backend != NULL)
 	{
-		PgBackendRaiseInterrupt(pmchild->thread_backend, interrupt);
+		SendInterrupt(pmchild->thread_backend, interrupt);
 		raised = true;
 	}
 	PMChildThreadBackendUnlock();

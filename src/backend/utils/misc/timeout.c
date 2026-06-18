@@ -12,6 +12,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include <limits.h>
@@ -28,16 +29,16 @@
 /*
  * List of possible timeout reasons in the order of enum TimeoutId.
  */
-#define all_timeouts (PgCurrentTimeoutState()->all_timeouts)
+#define all_timeouts (PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTimeoutRuntimeState, PgCurrentTimeoutState)->all_timeouts)
 #define all_timeouts_initialized \
-	(PgCurrentTimeoutState()->all_timeouts_initialized)
+	(PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTimeoutRuntimeState, PgCurrentTimeoutState)->all_timeouts_initialized)
 
 /*
  * List of active timeouts ordered by their fin_time and priority.
  * This list is subject to change by the interrupt handler, so it's volatile.
  */
-#define num_active_timeouts (PgCurrentTimeoutState()->num_active_timeouts)
-#define active_timeouts (PgCurrentTimeoutState()->active_timeouts)
+#define num_active_timeouts (PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTimeoutRuntimeState, PgCurrentTimeoutState)->num_active_timeouts)
+#define active_timeouts (PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTimeoutRuntimeState, PgCurrentTimeoutState)->active_timeouts)
 
 /*
  * Flag controlling whether the signal handler is allowed to do anything.
@@ -51,7 +52,7 @@
  *
  * We leave this "false" when we're not expecting interrupts, just in case.
  */
-#define alarm_enabled (PgCurrentTimeoutState()->alarm_enabled)
+#define alarm_enabled (PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTimeoutRuntimeState, PgCurrentTimeoutState)->alarm_enabled)
 
 #define disable_alarm() (alarm_enabled = false)
 #define enable_alarm()	(alarm_enabled = true)
@@ -62,14 +63,14 @@
  * Note that the signal handler will unconditionally reset signal_pending to
  * false, so that can change asynchronously even when alarm_enabled is false.
  */
-#define signal_pending (PgCurrentTimeoutState()->signal_pending)
-#define signal_due_at (PgCurrentTimeoutState()->signal_due_at)
+#define signal_pending (PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTimeoutRuntimeState, PgCurrentTimeoutState)->signal_pending)
+#define signal_due_at (PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTimeoutRuntimeState, PgCurrentTimeoutState)->signal_due_at)
 #define firing_timeout_target \
-	(PgCurrentTimeoutState()->firing_timeout_target)
+	(PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTimeoutRuntimeState, PgCurrentTimeoutState)->firing_timeout_target)
 #define firing_timeout_execution \
-	(PgCurrentTimeoutState()->firing_timeout_execution)
+	(PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTimeoutRuntimeState, PgCurrentTimeoutState)->firing_timeout_execution)
 #define timeout_signal_delivery \
-	(PgCurrentTimeoutState()->signal_delivery)
+	(PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTimeoutRuntimeState, PgCurrentTimeoutState)->signal_delivery)
 
 static void InitializeTimeoutState(void);
 static bool fire_due_timeouts(TimestampTz now);

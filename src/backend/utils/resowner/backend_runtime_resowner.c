@@ -9,6 +9,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include "utils/backend_runtime.h"
@@ -16,14 +17,27 @@
 #include "utils/resowner.h"
 #include "../init/backend_runtime_internal.h"
 
+static ResourceOwner *PgCurrentResourceOwnerObjectRef(void);
+
 PgExecutionResourceOwnerState *
 PgCurrentExecutionResourceOwners(void)
 {
+	if (likely(CurrentPgExecutionResourceOwnerRuntimeState != NULL))
+		return CurrentPgExecutionResourceOwnerRuntimeState;
+
 	return &PgCurrentOrEarlyExecution()->resource_owners;
 }
 
 ResourceOwner *
 PgCurrentResourceOwnerRef(void)
+{
+	return PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentResourceOwnerHotRef,
+											CurrentPgExecution,
+											PgCurrentResourceOwnerObjectRef);
+}
+
+static ResourceOwner *
+PgCurrentResourceOwnerObjectRef(void)
 {
 	return &PgCurrentExecutionResourceOwners()->current_owner;
 }

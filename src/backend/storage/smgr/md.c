@@ -1889,7 +1889,7 @@ _mdnblocks(SMgrRelation reln, ForkNumber forknum, MdfdVec *seg)
 	if (len < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
-				 errmsg("could not seek to end of file \"%s\": %m",
+				 errmsg("could not determine size of file \"%s\": %m",
 						FilePathName(seg->mdfd_vfd))));
 	/* note that this calculation will ignore any partial block at EOF */
 	return (BlockNumber) (len / BLCKSZ);

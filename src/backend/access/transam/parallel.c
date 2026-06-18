@@ -1055,7 +1055,7 @@ ParallelContextActive(void)
 void
 HandleParallelMessageInterrupt(void)
 {
-	PgCurrentBackendRaiseInterrupt(PG_BACKEND_INTERRUPT_PARALLEL_MESSAGE);
+	RaiseInterrupt(PG_BACKEND_INTERRUPT_PARALLEL_MESSAGE);
 	ParallelMessagePending = true;
 	/* latch will be set by procsignal_sigusr1_handler */
 }
@@ -1346,9 +1346,9 @@ ParallelWorkerMain(Datum main_arg)
 	memcpy(&ParallelWorkerNumber, MyBgworkerEntry->bgw_extra, sizeof(int));
 
 	/* Set up a memory context to work in, just for cleanliness. */
-	CurrentMemoryContext = AllocSetContextCreate(TopMemoryContext,
-												 "Parallel worker",
-												 ALLOCSET_DEFAULT_SIZES);
+	MemoryContextSwitchTo(AllocSetContextCreate(TopMemoryContext,
+												"Parallel worker",
+												ALLOCSET_DEFAULT_SIZES));
 
 	/*
 	 * Attach to the dynamic shared memory segment for the parallel query, and

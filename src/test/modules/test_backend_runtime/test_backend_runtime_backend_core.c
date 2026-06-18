@@ -69,7 +69,7 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		ExitOnAnyError = true;
 		MyProcPid = 111;
 		MyProcNumber = 12;
@@ -87,7 +87,7 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 		pg_global_prng_state.s0 = 1111;
 		pg_global_prng_state.s1 = 2222;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		ok = ok && !ExitOnAnyError;
 		ok = ok && MyProcPid == 0;
 		ok = ok && MyProcNumber == INVALID_PROC_NUMBER;
@@ -122,7 +122,7 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 		pg_global_prng_state.s0 = 5555;
 		pg_global_prng_state.s1 = 6666;
 
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		ok = ok && ExitOnAnyError;
 		ok = ok && MyProcPid == 111;
 		ok = ok && MyProcNumber == 12;
@@ -140,7 +140,7 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && pg_global_prng_state.s0 == 1111;
 		ok = ok && pg_global_prng_state.s1 == 2222;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		ok = ok && !ExitOnAnyError;
 		ok = ok && MyProcPid == 555;
 		ok = ok && MyProcNumber == 56;
@@ -158,7 +158,7 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && pg_global_prng_state.s0 == 5555;
 		ok = ok && pg_global_prng_state.s1 == 6666;
 
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 		ExitOnAnyError = saved_exit_on_any_error;
 		MyProcPid = saved_proc_pid;
 		MyProcNumber = saved_proc_number;
@@ -177,7 +177,7 @@ test_backend_core_state_is_backend_local(PG_FUNCTION_ARGS)
 	}
 	PG_CATCH();
 	{
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 		ExitOnAnyError = saved_exit_on_any_error;
 		MyProcPid = saved_proc_pid;
 		MyProcNumber = saved_proc_number;
@@ -224,8 +224,8 @@ test_backend_command_log_state_is_backend_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgBackend = &fake_backend1;
-		CurrentPgSession = &fake_session1;
+		PgSetCurrentBackend(&fake_backend1);
+		PgSetCurrentSession(&fake_session1);
 		*PgCurrentDoingCommandReadRef() = true;
 		*PgCurrentUserDOptionRef() = "data-one";
 		PgCurrentUsageSaveRusageRef()->ru_inblock = 11;
@@ -235,8 +235,8 @@ test_backend_command_log_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentLogLineNumberRef() = 13;
 		*PgCurrentLogLinePidRef() = 14;
 
-		CurrentPgBackend = &fake_backend2;
-		CurrentPgSession = &fake_session2;
+		PgSetCurrentBackend(&fake_backend2);
+		PgSetCurrentSession(&fake_session2);
 		ok = ok && !*PgCurrentDoingCommandReadRef();
 		ok = ok && *PgCurrentUserDOptionRef() == NULL;
 		ok = ok && PgCurrentUsageSaveRusageRef()->ru_inblock == 0;
@@ -254,8 +254,8 @@ test_backend_command_log_state_is_backend_local(PG_FUNCTION_ARGS)
 		*PgCurrentLogLineNumberRef() = 23;
 		*PgCurrentLogLinePidRef() = 24;
 
-		CurrentPgBackend = &fake_backend1;
-		CurrentPgSession = &fake_session1;
+		PgSetCurrentBackend(&fake_backend1);
+		PgSetCurrentSession(&fake_session1);
 		ok = ok && *PgCurrentDoingCommandReadRef();
 		ok = ok && strcmp(*PgCurrentUserDOptionRef(), "data-one") == 0;
 		ok = ok && PgCurrentUsageSaveRusageRef()->ru_inblock == 11;
@@ -264,8 +264,8 @@ test_backend_command_log_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentLogLineNumberRef() == 13;
 		ok = ok && *PgCurrentLogLinePidRef() == 14;
 
-		CurrentPgBackend = &fake_backend2;
-		CurrentPgSession = &fake_session2;
+		PgSetCurrentBackend(&fake_backend2);
+		PgSetCurrentSession(&fake_session2);
 		ok = ok && !*PgCurrentDoingCommandReadRef();
 		ok = ok && strcmp(*PgCurrentUserDOptionRef(), "data-two") == 0;
 		ok = ok && PgCurrentUsageSaveRusageRef()->ru_inblock == 21;
@@ -274,13 +274,13 @@ test_backend_command_log_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && *PgCurrentLogLineNumberRef() == 23;
 		ok = ok && *PgCurrentLogLinePidRef() == 24;
 
-		CurrentPgBackend = saved_backend;
-		CurrentPgSession = saved_session;
+		PgSetCurrentBackend(saved_backend);
+		PgSetCurrentSession(saved_session);
 	}
 	PG_CATCH();
 	{
-		CurrentPgBackend = saved_backend;
-		CurrentPgSession = saved_session;
+		PgSetCurrentBackend(saved_backend);
+		PgSetCurrentSession(saved_session);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -310,12 +310,12 @@ test_backend_expr_interp_state_is_backend_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		PgCurrentExprInterpState()->dispatch_table = dispatch_one;
 		PgCurrentExprInterpState()->reverse_dispatch_table[0].opcode = &fake_backend1;
 		PgCurrentExprInterpState()->reverse_dispatch_table[0].op = 11;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		ok = ok && PgCurrentExprInterpState()->dispatch_table == NULL;
 		ok = ok && PgCurrentExprInterpState()->reverse_dispatch_table[0].opcode == NULL;
 		ok = ok && PgCurrentExprInterpState()->reverse_dispatch_table[0].op == 0;
@@ -323,21 +323,21 @@ test_backend_expr_interp_state_is_backend_local(PG_FUNCTION_ARGS)
 		PgCurrentExprInterpState()->reverse_dispatch_table[0].opcode = &fake_backend2;
 		PgCurrentExprInterpState()->reverse_dispatch_table[0].op = 22;
 
-		CurrentPgBackend = &fake_backend1;
+		PgSetCurrentBackend(&fake_backend1);
 		ok = ok && PgCurrentExprInterpState()->dispatch_table == dispatch_one;
 		ok = ok && PgCurrentExprInterpState()->reverse_dispatch_table[0].opcode == &fake_backend1;
 		ok = ok && PgCurrentExprInterpState()->reverse_dispatch_table[0].op == 11;
 
-		CurrentPgBackend = &fake_backend2;
+		PgSetCurrentBackend(&fake_backend2);
 		ok = ok && PgCurrentExprInterpState()->dispatch_table == dispatch_two;
 		ok = ok && PgCurrentExprInterpState()->reverse_dispatch_table[0].opcode == &fake_backend2;
 		ok = ok && PgCurrentExprInterpState()->reverse_dispatch_table[0].op == 22;
 
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 	}
 	PG_CATCH();
 	{
-		CurrentPgBackend = saved_backend;
+		PgSetCurrentBackend(saved_backend);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -369,9 +369,9 @@ test_backend_interrupt_wakes_target_latch(PG_FUNCTION_ARGS)
 							PG_BACKEND_INTERRUPT_QUERY_CANCEL);
 	latch_set = fake_latch.is_set;
 
-	CurrentPgBackend = &fake_backend;
+	PgSetCurrentBackend(&fake_backend);
 	pending_seen = PgCurrentBackendHasPendingInterrupts();
-	CurrentPgBackend = saved_backend;
+	PgSetCurrentBackend(saved_backend);
 
 	ResetLatch(&fake_latch);
 	pending = PgBackendConsumeInterrupts(&fake_backend);

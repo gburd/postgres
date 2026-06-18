@@ -13,6 +13,7 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include "commands/matview.h"
@@ -22,11 +23,12 @@
 PgExecutionMatViewState *
 PgCurrentExecutionMatViewState(void)
 {
-	return &PgCurrentOrEarlyExecution()->matview;
+	PG_RUNTIME_RETURN_CURRENT_EXECUTION_BUCKET(CurrentPgExecutionMatViewRuntimeState,
+											   matview);
 }
 
 int *
 PgCurrentMatViewMaintenanceDepthRef(void)
 {
-	return &PgCurrentExecutionMatViewState()->maintenance_depth;
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionMatViewRuntimeState, PgCurrentExecutionMatViewState)->maintenance_depth;
 }

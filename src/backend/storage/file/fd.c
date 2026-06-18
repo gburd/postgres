@@ -70,6 +70,7 @@
  *-------------------------------------------------------------------------
  */
 
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
 #include <dirent.h>
@@ -2527,6 +2528,8 @@ retry:
 pgoff_t
 FileSize(File file)
 {
+	pgoff_t		returnCode;
+
 	Assert(FileIsValid(file));
 
 	DO_DB(elog(LOG, "FileSize %d (%s)",
@@ -2538,7 +2541,18 @@ FileSize(File file)
 			return (pgoff_t) -1;
 	}
 
-	return lseek(VfdCache[file].fd, 0, SEEK_END);
+	/*
+	 * File values index the current backend's VFD cache.  In threaded mode the
+	 * cache, smgr relation table, and md segment descriptors live in
+	 * PgBackendStorageState, so this lseek() only changes this logical backend's
+	 * open file description.  Normal relation reads and writes are positioned
+	 * I/O, matching the historical process-mode behavior here.
+	 */
+	returnCode = lseek(VfdCache[file].fd, 0, SEEK_END);
+	if (returnCode < 0)
+		return (pgoff_t) -1;
+
+	return returnCode;
 }
 
 int

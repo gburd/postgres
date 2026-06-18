@@ -289,7 +289,10 @@ typedef struct LocalPgBackendStatus
  * ----------
  */
 extern bool *PgCurrentPgStatTrackActivitiesRef(void);
-#define pgstat_track_activities (*PgCurrentPgStatTrackActivitiesRef())
+#define pgstat_track_activities \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentPgStatTrackActivitiesHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentPgStatTrackActivitiesRef))
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int pgstat_track_activity_query_size;
 
 
@@ -298,7 +301,10 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME int pgstat_track_activity_query_size;
  * ----------
  */
 extern PgBackendStatus **PgCurrentMyBEEntryRef(void);
-#define MyBEEntry (*PgCurrentMyBEEntryRef())
+#define MyBEEntry \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentMyBEEntryHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentMyBEEntryRef))
 
 
 /* ----------
