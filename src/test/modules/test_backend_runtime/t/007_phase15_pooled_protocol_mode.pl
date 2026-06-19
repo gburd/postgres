@@ -9,6 +9,7 @@ use Time::HiRes qw(usleep);
 
 use constant PARK_STATE => 0;
 use constant QUEUE_STATE => 1;
+use constant LAST_WAKE_REASONS => 6;
 use constant PARKED_PROTOCOL_COUNT => 14;
 use constant CARRIER_ATTACHED => 17;
 use constant SESSION_PRESENT => 18;
@@ -20,6 +21,8 @@ use constant MIGRATED_RESUME_COUNT => 23;
 use constant REGISTERED_CARRIER_COUNT => 24;
 use constant IDLE_CARRIER_COUNT => 25;
 use constant ACTIVE_CARRIER_COUNT => 26;
+
+use constant PROTOCOL_WAKE_NOTIFY => (1 << 8);
 
 my $node = PostgreSQL::Test::Cluster->new('phase15_pooled_protocol_mode');
 
@@ -119,6 +122,17 @@ sub wait_for_carrier_pinned_non_protocol_park
 		$label);
 
 	return protocol_snapshot_fields($snapshot);
+}
+
+sub wait_for_pid_to_leave_pg_stat_activity
+{
+	my ($pid, $label) = @_;
+
+	$node->poll_query_until(
+		'postgres',
+		"SELECT NOT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $pid);",
+		't') || die "timed out waiting for $label";
+	pass($label);
 }
 
 $node->init;
@@ -247,6 +261,72 @@ is($node->safe_psql('postgres', "SELECT pg_cancel_backend($sleep_pid);"),
 	'query cancel accepted for pooled carrier-pinned pg_sleep');
 eval { $sleep_session->{run}->finish; };
 
+$sessions[4]->quit;
+wait_for_pid_to_leave_pg_stat_activity($pids[4],
+	'disconnected pooled parked protocol session exits cleanly');
+pop @sessions;
+pop @pids;
+
+is($node->safe_psql('postgres', "SELECT pg_cancel_backend($pids[0]);"),
+	't',
+	'query cancel request accepted for pooled parked protocol session');
+is($sessions[0]->query_safe('SELECT 15016;', verbose => 0), '15016',
+	'cancelled pooled parked protocol session remains usable');
+wait_for_protocol_parked($pids[0],
+	'cancelled pooled parked protocol session returns to protocol-read park');
+
+my $terminated = $node->background_psql('postgres',
+	on_error_stop => 0, timeout => 20);
+my $terminated_pid = $terminated->query_safe('SELECT pg_backend_pid();',
+	verbose => 0);
+wait_for_protocol_parked($terminated_pid,
+	'pooled termination victim parks at protocol read boundary');
+is($node->safe_psql('postgres',
+		"SELECT pg_terminate_backend($terminated_pid, 5000);"),
+	't',
+	'terminate request accepted for pooled parked protocol session');
+wait_for_pid_to_leave_pg_stat_activity($terminated_pid,
+	'terminated pooled parked protocol session leaves pg_stat_activity');
+eval { $terminated->{run}->finish; };
+
+my $listener = $node->background_psql('postgres', timeout => 20);
+my $notify_pattern =
+  qr/Asynchronous notification "phase15_notify".*"payload" received/;
+my $listener_pid = $listener->query_safe(
+	'LISTEN phase15_notify; SELECT pg_backend_pid();',
+	verbose => 0);
+wait_for_protocol_parked($listener_pid,
+	'pooled LISTEN session parks before asynchronous notification');
+$node->safe_psql('postgres', "NOTIFY phase15_notify, 'payload';");
+wait_for_protocol_field(
+	$listener_pid,
+	LAST_WAKE_REASONS,
+	sub {
+		my $reasons = shift;
+		return ($reasons & PROTOCOL_WAKE_NOTIFY) != 0;
+	},
+	'asynchronous notification wakes pooled parked protocol session');
+like($listener->query_safe('SELECT 15017;', verbose => 0),
+	$notify_pattern,
+	'asynchronous notification is visible to pooled listening session');
+wait_for_protocol_parked($listener_pid,
+	'pooled LISTEN session parks again after notification visibility check');
+
+my $idle_timeout = $node->background_psql('postgres',
+	on_error_stop => 0, timeout => 20);
+my $idle_timeout_pid = $idle_timeout->query_safe(
+	"SET idle_session_timeout = '3s'; SELECT pg_backend_pid();",
+	verbose => 0);
+wait_for_protocol_parked($idle_timeout_pid,
+	'pooled idle-session-timeout session parks at protocol read boundary');
+wait_for_pid_to_leave_pg_stat_activity($idle_timeout_pid,
+	'pooled idle_session_timeout wakes and exits parked protocol session');
+eval { $idle_timeout->{run}->finish; };
+
+is($node->safe_psql('postgres', 'SELECT 15018;'), '15018',
+	'pooled protocol server remains usable after parked wake races');
+
+$listener->quit;
 for my $session (@sessions)
 {
 	$session->quit;

@@ -815,6 +815,7 @@ backend_pooled_protocol_run_logical_start(BackendPooledCarrierStart *carrier_sta
 	conn_timing.fork_end = GetCurrentTimestamp();
 	MyStartTimestamp = GetCurrentTimestamp();
 	MyStartTime = timestamptz_to_time_t(MyStartTimestamp);
+	backend_thread_init_random_state();
 
 	if (sigsetjmp(logical_start->exit_jmp, 1) != 0)
 	{
