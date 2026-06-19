@@ -1304,7 +1304,9 @@ Mitigation:
 6. Add the protocol byte-probe primitive with explicit no-byte, byte-available,
    and EOF/error semantics, plus tests that prove no-byte does not advance
    buffer or message-read state, does not leave query-cancel holdoff elevated,
-   and reports transport read/write/buffered-input readiness.
+   and reports transport read/write/buffered-input readiness. Buffered transport
+   input must return an immediately consumable byte or requeue for immediate
+   re-probe; it must not sleep waiting for kernel socket readiness.
 7. Add explicit protocol-park prepare/commit APIs, including parked wake reason,
    generation/sequence tracking, and deferred-notify generation tracking.
    `PgSessionStep()` prepares the park and returns; the carrier loop commits

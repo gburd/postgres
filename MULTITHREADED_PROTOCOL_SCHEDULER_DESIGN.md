@@ -186,7 +186,11 @@ The primitive must also specify:
   and writability. SSL `WANT_WRITE` while reading must park on writability, not
   only readability. GSS or SSL buffered plaintext must be reported as
   `PG_PROTOCOL_BYTE_AVAILABLE` or `transport_buffered_input`, not hidden behind
-  a socket-readiness wait that may never fire.
+  a socket-readiness wait that may never fire. `transport_buffered_input` is not
+  a sleepable parked condition: the probe should return
+  `PG_PROTOCOL_BYTE_AVAILABLE` if a type byte can be exposed immediately, or the
+  scheduler must make the backend immediately runnable to re-probe without
+  waiting for kernel socket readiness.
 - EINTR/latch/proc-signal behavior: transient interrupts must not consume a byte
   or move buffer cursors. They should return no-byte only after recording the
   wake reason that must be serviced before re-parking.
