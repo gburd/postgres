@@ -2027,6 +2027,12 @@ PgBackendSnapshotProtocolParkById(PgBackendId backend_id,
 				scheduler->same_carrier_resume_count;
 			snapshot->scheduler_migrated_resume_count =
 				scheduler->migrated_resume_count;
+			snapshot->scheduler_registered_carrier_count =
+				scheduler->registered_carrier_count;
+			snapshot->scheduler_idle_carrier_count =
+				scheduler->idle_carrier_count;
+			snapshot->scheduler_active_carrier_count =
+				scheduler->active_carrier_count;
 			SpinLockRelease(&scheduler->lock);
 
 			snapshot->carrier_attached = backend->carrier != NULL;

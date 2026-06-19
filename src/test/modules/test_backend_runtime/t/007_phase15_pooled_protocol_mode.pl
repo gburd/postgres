@@ -11,6 +11,9 @@ use constant PARK_STATE => 0;
 use constant QUEUE_STATE => 1;
 use constant PARKED_PROTOCOL_COUNT => 14;
 use constant CARRIER_LIMIT => 21;
+use constant REGISTERED_CARRIER_COUNT => 24;
+use constant IDLE_CARRIER_COUNT => 25;
+use constant ACTIVE_CARRIER_COUNT => 26;
 
 my $node = PostgreSQL::Test::Cluster->new('phase15_pooled_protocol_mode');
 
@@ -40,7 +43,7 @@ sub wait_for_protocol_parked
 		$snapshot = protocol_snapshot($pid);
 		my @fields = protocol_snapshot_fields($snapshot);
 
-		if (@fields == 24 &&
+		if (@fields >= 27 &&
 			$fields[PARK_STATE] eq 'committed' &&
 			$fields[QUEUE_STATE] eq 'parked_protocol_read')
 		{
@@ -89,6 +92,12 @@ is($fields[CARRIER_LIMIT], '2',
 	'protocol scheduler exposes configured pooled carrier limit');
 ok($fields[PARKED_PROTOCOL_COUNT] >= 1,
 	'protocol scheduler tracks parked session in pooled protocol mode');
+is($fields[REGISTERED_CARRIER_COUNT], '2',
+	'pooled protocol staging carriers register with scheduler');
+ok($fields[IDLE_CARRIER_COUNT] >= 1,
+	'parked pooled protocol session releases its registered carrier');
+ok($fields[ACTIVE_CARRIER_COUNT] >= 1,
+	'protocol scheduler accounts for active snapshot carrier');
 
 is($session->query_safe('SELECT 15015;', verbose => 0), '15015',
 	'pooled protocol mode resumes a parked protocol session');

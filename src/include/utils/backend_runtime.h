@@ -292,6 +292,9 @@ typedef struct PgProtocolParkSnapshot
 	uint32		scheduler_carrier_limit;
 	uint64		scheduler_same_carrier_resume_count;
 	uint64		scheduler_migrated_resume_count;
+	uint32		scheduler_registered_carrier_count;
+	uint32		scheduler_idle_carrier_count;
+	uint32		scheduler_active_carrier_count;
 } PgProtocolParkSnapshot;
 
 typedef struct PgBackendProtocolParkState

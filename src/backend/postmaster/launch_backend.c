@@ -524,6 +524,14 @@ backend_thread_entry(void *arg)
 	read_nondefault_variables();
 	InitializeLatchWaitSet();
 	InstallPgThreadBackendRuntimeState(&thread_start->runtime_state);
+	if (thread_start->child_type == B_BACKEND &&
+		PgRuntimePooledProtocolRequested())
+	{
+		if (!PgRuntimeProtocolSchedulerRegisterCarrier(CurrentPgRuntime,
+													   CurrentPgCarrier))
+			ereport(DEBUG1,
+					(errmsg_internal("pooled protocol staging carrier exceeded configured carrier limit")));
+	}
 	(void) set_stack_base();
 	PgBackendSetInterruptLatch(CurrentPgBackend, MyLatch);
 
@@ -695,6 +703,9 @@ backend_thread_finish(int code)
 	 * must delete the saved root before publishing PMChild exit.
 	 */
 	PostmasterChildUnpublishLogicalBackend(thread_start->publication.pmchild);
+	if (thread_start->runtime_state.carrier.protocol_scheduler_registered)
+		(void) PgRuntimeProtocolSchedulerUnregisterCarrier(thread_start->runtime_state.carrier.runtime,
+														   &thread_start->runtime_state.carrier);
 	if (retained_top_context != NULL)
 	{
 		/*

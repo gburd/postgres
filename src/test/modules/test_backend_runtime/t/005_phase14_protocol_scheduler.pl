@@ -71,7 +71,7 @@ sub wait_for_protocol_parked
 		sub {
 			my @fields = protocol_snapshot_fields(shift);
 
-			return 0 unless @fields == 24;
+			return 0 unless @fields >= 24;
 			return $fields[PARK_STATE] eq 'committed'
 			  && $fields[QUEUE_STATE] eq 'parked_protocol_read'
 			  && $fields[CARRIER_ATTACHED] == 0
