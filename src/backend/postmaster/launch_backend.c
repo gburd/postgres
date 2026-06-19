@@ -198,7 +198,8 @@ static PG_GLOBAL_IMMUTABLE const child_process_kind child_process_kinds[] = {
 
 typedef enum BackendThreadStartKind
 {
-	BACKEND_THREAD_START_DEDICATED
+	BACKEND_THREAD_START_DEDICATED,
+	BACKEND_THREAD_START_POOLED_LOGICAL
 } BackendThreadStartKind;
 
 typedef struct BackendThreadPublication
@@ -222,6 +223,16 @@ typedef struct BackendThreadStart
 	pg_atomic_uint32 launch_registered;
 } BackendThreadStart;
 
+typedef struct BackendPooledLogicalStart
+{
+	BackendThreadPublication publication;
+	PgThreadBackendLogicalState logical;
+	BackendStartupData startup_data;
+	ClientSocket client_sock;
+	sigjmp_buf	exit_jmp;
+	bool		exit_jmp_valid;
+} BackendPooledLogicalStart;
+
 static PG_GLOBAL_RUNTIME bool postmaster_thread_carriers_started = false;
 
 static bool postmaster_backend_thread_launch(PMChild *pmchild,
@@ -240,6 +251,7 @@ static void backend_thread_wait_until_registered(BackendThreadStart *thread_star
 static void backend_thread_init_random_state(void);
 pg_noreturn static void backend_thread_exit(int code);
 pg_noreturn static void backend_thread_finish(int code);
+pg_noreturn static void backend_pooled_logical_finish(int code);
 static int	backend_thread_exitstatus(int code);
 
 const char *
@@ -636,10 +648,21 @@ ThreadedBackendStartupComplete(void)
 static void
 backend_thread_exit(int code)
 {
-	if (backend_thread_current_start() == NULL)
+	BackendThreadPublication *publication = backend_thread_current_publication();
+
+	if (publication == NULL)
 		pg_thread_exit();
 
-	backend_thread_finish(code);
+	switch (publication->kind)
+	{
+		case BACKEND_THREAD_START_DEDICATED:
+			backend_thread_finish(code);
+
+		case BACKEND_THREAD_START_POOLED_LOGICAL:
+			backend_pooled_logical_finish(code);
+	}
+
+	pg_unreachable();
 }
 
 static void
@@ -695,6 +718,59 @@ backend_thread_finish(int code)
 
 	backend_thread_set_current_start(NULL);
 	free(thread_start);
+	pg_thread_exit();
+}
+
+static void
+backend_pooled_logical_finish(int code)
+{
+	BackendPooledLogicalStart *logical_start;
+	PgBackendExitState *exit_state;
+	MemoryContext retained_top_context;
+	int			exitstatus;
+	Size		top_memory_allocated = 0;
+	Size		top_memory_reclaimed = 0;
+
+	logical_start =
+		(BackendPooledLogicalStart *) backend_thread_current_publication();
+	Assert(logical_start != NULL);
+	Assert(logical_start->publication.kind ==
+		   BACKEND_THREAD_START_POOLED_LOGICAL);
+
+	exit_state = PgCurrentBackendExitStateRef();
+	retained_top_context = exit_state->retained_top_memory_context;
+	exitstatus = backend_thread_exitstatus(code);
+	MyClientSocket = NULL;
+	if (logical_start->client_sock.sock != PGINVALID_SOCKET)
+	{
+		closesocket(logical_start->client_sock.sock);
+		logical_start->client_sock.sock = PGINVALID_SOCKET;
+	}
+
+	/*
+	 * Pooled logical exit retires the session without retiring the carrier.
+	 * The postmaster still owns PMChild slot release, while this carrier owns
+	 * reclaiming the retained logical TopMemoryContext before jumping back to
+	 * the scheduler loop.
+	 */
+	PostmasterChildUnpublishLogicalBackend(logical_start->publication.pmchild);
+	if (retained_top_context != NULL)
+	{
+		top_memory_reclaimed = MemoryContextMemAllocated(retained_top_context,
+														 true);
+		MemoryContextDelete(retained_top_context);
+		exit_state->retained_top_memory_context = NULL;
+		top_memory_allocated = 0;
+	}
+	PostmasterChildPublishPooledLogicalExit(logical_start->publication.pmchild,
+											exitstatus,
+											top_memory_allocated,
+											top_memory_reclaimed,
+											logical_start->publication.postmaster_latch);
+
+	if (logical_start->exit_jmp_valid)
+		siglongjmp(logical_start->exit_jmp, 1);
+
 	pg_thread_exit();
 }
 
