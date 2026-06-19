@@ -9,6 +9,13 @@ use PostgreSQL::Test::Utils;
 use Test::More;
 use Time::HiRes qw(usleep);
 
+use constant PARK_STATE => 0;
+use constant QUEUE_STATE => 1;
+use constant CARRIER_ATTACHED => 17;
+use constant SESSION_PRESENT => 18;
+use constant CONNECTION_PRESENT => 19;
+use constant EXECUTION_PRESENT => 20;
+
 my $node = PostgreSQL::Test::Cluster->new('phase13_wait_completion');
 
 sub start_psql_script
@@ -57,6 +64,37 @@ sub wait_for_completion_snapshot
 
 	fail($label);
 	diag("last wait-completion snapshot for $pid: \"$snapshot\"");
+	return $snapshot;
+}
+
+sub wait_for_carrier_pinned_non_protocol_park
+{
+	my ($pid, $label) = @_;
+	my $snapshot = '';
+
+	for (1 .. 100)
+	{
+		$snapshot = $node->safe_psql(
+			'postgres',
+			"SELECT coalesce(test_backend_runtime_protocol_park_snapshot($pid), '');");
+		my @fields = split(/\|/, $snapshot);
+
+		if (@fields == 21 &&
+			$fields[PARK_STATE] eq 'none' &&
+			$fields[QUEUE_STATE] eq 'none' &&
+			$fields[CARRIER_ATTACHED] == 1 &&
+			$fields[SESSION_PRESENT] == 1 &&
+			$fields[CONNECTION_PRESENT] == 1 &&
+			$fields[EXECUTION_PRESENT] == 1)
+		{
+			pass($label);
+			return $snapshot;
+		}
+		usleep(100_000);
+	}
+
+	fail($label);
+	diag("last protocol-park snapshot for $pid: \"$snapshot\"");
 	return $snapshot;
 }
 
@@ -118,6 +156,8 @@ my $write_snapshot = wait_for_completion_snapshot(
 	$write_pid,
 	qr/^waiting\|event_set\|ClientWrite\|1\|.*\|1\|1\|1$/,
 	'frontend output publishes client write wait completion for real threaded backend');
+wait_for_carrier_pinned_non_protocol_park($write_pid,
+	'frontend output wait remains carrier-pinned and non-protocol-parked');
 
 is($node->safe_psql(
 		'postgres',
@@ -146,6 +186,8 @@ my $sleep_snapshot = wait_for_completion_snapshot(
 	$sleep_pid,
 	qr/^waiting\|event_set\|PgSleep\|1\|.*\|1\|1\|1$/,
 	'pg_sleep publishes latch wait completion for real threaded backend');
+wait_for_carrier_pinned_non_protocol_park($sleep_pid,
+	'pg_sleep remains carrier-pinned and non-protocol-parked');
 
 is($node->safe_psql(
 		'postgres',
@@ -174,6 +216,8 @@ my $cv_snapshot = wait_for_completion_snapshot(
 	$cv_pid,
 	qr/^waiting\|event_set\|TestBackendRuntimeConditionVariable\|1\|.*\|1\|1\|1$/,
 	'condition-variable sleep publishes wait completion for real threaded backend');
+wait_for_carrier_pinned_non_protocol_park($cv_pid,
+	'condition-variable wait remains carrier-pinned and non-protocol-parked');
 
 is($node->safe_psql(
 		'postgres',
@@ -205,6 +249,8 @@ my $lock_snapshot = wait_for_completion_snapshot(
 	$lock_pid,
 	qr/^waiting\|event_set\|advisory\|1\|.*\|1\|1\|1$/,
 	'advisory lock wait publishes wait completion for real threaded backend');
+wait_for_carrier_pinned_non_protocol_park($lock_pid,
+	'advisory lock wait remains carrier-pinned and non-protocol-parked');
 
 is($node->safe_psql(
 		'postgres',
@@ -236,6 +282,8 @@ my $lw_holder_snapshot = wait_for_completion_snapshot(
 	$lw_holder_pid,
 	qr/^waiting\|event_set\|TestBackendRuntimeHoldLWLock\|1\|.*\|1\|1\|1$/,
 	'LWLock holder is active before testing semaphore-backed wait');
+wait_for_carrier_pinned_non_protocol_park($lw_holder_pid,
+	'LWLock holder wait remains carrier-pinned and non-protocol-parked');
 
 my $lw_waiter = start_psql_script(
 	"SELECT pg_backend_pid();\nSELECT test_backend_runtime_wait_on_lwlock();\n",
@@ -249,6 +297,8 @@ my $lw_waiter_snapshot = wait_for_completion_snapshot(
 	$lw_waiter_pid,
 	qr/^waiting\|semaphore\|TestBackendRuntimeLWLock\|1\|0\|0\|0\|1\|1\|1$/,
 	'LWLock semaphore wait publishes wait completion for real threaded backend');
+wait_for_carrier_pinned_non_protocol_park($lw_waiter_pid,
+	'LWLock semaphore wait remains carrier-pinned and non-protocol-parked');
 
 is($node->safe_psql(
 		'postgres',
