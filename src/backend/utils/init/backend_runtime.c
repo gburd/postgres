@@ -130,6 +130,7 @@ PG_THREAD_LOCAL PG_GLOBAL_CARRIER const void *variable##ThreadOwner = NULL;
 static PG_GLOBAL_RUNTIME PgRuntime process_runtime;
 static PG_GLOBAL_RUNTIME PgRuntime thread_runtime;
 static PG_GLOBAL_RUNTIME bool thread_runtime_initialized = false;
+static PG_GLOBAL_RUNTIME MemoryContext thread_runtime_server_guc_context = NULL;
 static PG_GLOBAL_CARRIER PgCarrier process_carrier = {
 	.wait_event_signal_fd = -1,
 	.wait_event_selfpipe_readfd = -1,
@@ -139,6 +140,12 @@ static PG_GLOBAL_BACKEND PgBackend process_backend;
 static PG_GLOBAL_SESSION PgSession process_session;
 static PG_GLOBAL_CONNECTION PgConnection process_connection;
 static PG_GLOBAL_EXECUTION PgExecution process_execution;
+
+static MemoryContext PgRuntimeThreadServerGUCContext(void);
+static char *PgRuntimeCopyThreadServerGUCString(char *current,
+												const char *source);
+static void PgRuntimeCopyThreadServerGUCState(const PgRuntimeServerGUCState *source);
+static void PgRuntimeRefreshThreadServerGUCState(void);
 
 PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
 PgBackendInstrumentationState *PgCurrentBackendInstrumentationState(void);
@@ -789,13 +796,91 @@ InitializePgProcessRuntime(void)
 		MyProc->backendId = process_backend.id;
 }
 
+static MemoryContext
+PgRuntimeThreadServerGUCContext(void)
+{
+	MemoryContext parent;
+
+	if (thread_runtime_server_guc_context != NULL)
+		return thread_runtime_server_guc_context;
+
+	parent = PostmasterContext != NULL ? PostmasterContext : TopMemoryContext;
+	Assert(parent != NULL);
+	thread_runtime_server_guc_context =
+		AllocSetContextCreate(parent,
+							  "thread runtime server GUC state",
+							  ALLOCSET_DEFAULT_SIZES);
+	return thread_runtime_server_guc_context;
+}
+
+/*
+ * The thread runtime is shared by many logical sessions.  Server GUC strings
+ * must therefore live in runtime/postmaster-owned memory, not in the
+ * per-session GUC contexts that pooled carriers repeatedly create and delete.
+ */
+static char *
+PgRuntimeCopyThreadServerGUCString(char *current, const char *source)
+{
+	if (source == NULL)
+		return NULL;
+	if (current != NULL && strcmp(current, source) == 0)
+		return current;
+
+	return MemoryContextStrdup(PgRuntimeThreadServerGUCContext(), source);
+}
+
+static void
+PgRuntimeCopyThreadServerGUCState(const PgRuntimeServerGUCState *source)
+{
+	PgRuntimeServerGUCState *dest = &thread_runtime.server_guc;
+
+	Assert(source != NULL);
+	Assert(source->initialized);
+
+	dest->initialized = true;
+	dest->cluster_name_value =
+		PgRuntimeCopyThreadServerGUCString(dest->cluster_name_value,
+										   source->cluster_name_value);
+	dest->config_file_name =
+		PgRuntimeCopyThreadServerGUCString(dest->config_file_name,
+										   source->config_file_name);
+	dest->hba_file_name =
+		PgRuntimeCopyThreadServerGUCString(dest->hba_file_name,
+										   source->hba_file_name);
+	dest->ident_file_name =
+		PgRuntimeCopyThreadServerGUCString(dest->ident_file_name,
+										   source->ident_file_name);
+	dest->hosts_file_name =
+		PgRuntimeCopyThreadServerGUCString(dest->hosts_file_name,
+										   source->hosts_file_name);
+	dest->external_pid_file_value =
+		PgRuntimeCopyThreadServerGUCString(dest->external_pid_file_value,
+										   source->external_pid_file_value);
+}
+
+static void
+PgRuntimeRefreshThreadServerGUCState(void)
+{
+	PgRuntimeServerGUCState *early_server_guc;
+
+	early_server_guc = PgEarlyRuntimeServerGUCState();
+	if (PgRuntimeServerGUCStateHasConfigPaths(early_server_guc))
+		PgRuntimeCopyThreadServerGUCState(early_server_guc);
+	else if (PgRuntimeServerGUCStateHasConfigPaths(&process_runtime.server_guc))
+		PgRuntimeCopyThreadServerGUCState(&process_runtime.server_guc);
+	else if (early_server_guc->initialized)
+		PgRuntimeCopyThreadServerGUCState(early_server_guc);
+	else if (process_runtime.server_guc.initialized)
+		PgRuntimeCopyThreadServerGUCState(&process_runtime.server_guc);
+	else if (!thread_runtime.server_guc.initialized)
+		PgRuntimeInitializeServerGUCState(&thread_runtime.server_guc);
+}
+
 void
 InitializePgThreadRuntime(PgBackendExitContinuation exit_backend)
 {
 	if (!thread_runtime_initialized)
 	{
-		PgRuntimeServerGUCState *early_server_guc;
-
 		MemSet(&thread_runtime, 0, sizeof(thread_runtime));
 		PgRuntimeInitializeRuntimeObject(&thread_runtime);
 
@@ -811,21 +896,13 @@ InitializePgThreadRuntime(PgBackendExitContinuation exit_backend)
 			thread_runtime.extension_backend_model =
 				PG_BACKEND_MODEL_THREAD_PER_SESSION;
 		}
-		early_server_guc = PgEarlyRuntimeServerGUCState();
-		if (PgRuntimeServerGUCStateHasConfigPaths(&process_runtime.server_guc))
-			thread_runtime.server_guc = process_runtime.server_guc;
-		else if (PgRuntimeServerGUCStateHasConfigPaths(early_server_guc))
-			thread_runtime.server_guc = *early_server_guc;
-		else if (process_runtime.server_guc.initialized)
-			thread_runtime.server_guc = process_runtime.server_guc;
-		else
-			PgRuntimeInitializeServerGUCState(&thread_runtime.server_guc);
 		thread_runtime.extension_modules = process_runtime.extension_modules;
 		PgRuntimeEnsureExtensionModuleMemoryContext(&thread_runtime.extension_modules);
 		PgBackendInitializeIdCounter();
 		thread_runtime_initialized = true;
 	}
 
+	PgRuntimeRefreshThreadServerGUCState();
 	thread_runtime.exit_backend = exit_backend;
 }
 

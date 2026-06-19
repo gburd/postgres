@@ -475,8 +475,7 @@ static void InitializeGUCOptionsFromEnvironment(void);
 static void InitializeOneGUCOption(struct config_generic *gconf);
 static void InitializeOneGUCOptionResetMetadata(struct config_generic *gconf);
 static const void *GUCOptionVariablePointer(struct config_generic *gconf);
-static void InitializeThreadedSessionReboundGUCOptions(
-													const void **initial_variables);
+static void InitializeThreadedSessionReboundGUCOptions(void);
 static void InitializeThreadedSessionCompatibilityGUCOptions(void);
 static bool ThreadedGUCLock(void);
 static void ThreadedGUCUnlock(bool locked);
@@ -1736,7 +1735,6 @@ InitializeGUCOptions(void)
 void
 InitializeThreadedSessionGUCOptions(void)
 {
-	const void **initial_variables;
 	bool		locked;
 
 	/*
@@ -1755,13 +1753,8 @@ InitializeThreadedSessionGUCOptions(void)
 
 		build_guc_variables();
 
-		initial_variables = palloc_array(const void *, num_guc_variables);
-		for (int i = 0; i < num_guc_variables; i++)
-			initial_variables[i] = GUCOptionVariablePointer(&guc_variables[i]);
-
 		RebindSessionGUCVariablePointers();
-		InitializeThreadedSessionReboundGUCOptions(initial_variables);
-		pfree(initial_variables);
+		InitializeThreadedSessionReboundGUCOptions();
 
 		InitializeThreadedSessionCompatibilityGUCOptions();
 done:
@@ -1854,15 +1847,14 @@ GUCOptionVariablePointer(struct config_generic *gconf)
 }
 
 static void
-InitializeThreadedSessionReboundGUCOptions(const void **initial_variables)
+InitializeThreadedSessionReboundGUCOptions(void)
 {
 	for (int i = 0; i < num_guc_variables; i++)
 	{
 		struct config_generic *gconf = &guc_variables[i];
 		const void *variable = GUCOptionVariablePointer(gconf);
 
-		if (variable == initial_variables[i] &&
-			!PgCurrentOrEarlySessionOwnsPointer(variable))
+		if (!PgCurrentOrEarlySessionOwnsPointer(variable))
 		{
 			InitializeOneGUCOptionResetMetadata(gconf);
 			continue;
@@ -2225,6 +2217,12 @@ InitializeOneGUCOptionResetMetadata(struct config_generic *gconf)
 			{
 				struct config_string *conf = &gconf->_string;
 				char	   *newval;
+
+				if (!PgCurrentOrEarlySessionOwnsPointer(conf->variable))
+				{
+					conf->reset_val = *conf->variable;
+					break;
+				}
 
 				if (conf->boot_val != NULL)
 					newval = guc_strdup(FATAL, conf->boot_val);

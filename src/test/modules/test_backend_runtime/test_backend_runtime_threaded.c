@@ -163,6 +163,8 @@ test_backend_runtime_protocol_queue_state_name(
 			return "parked_protocol_read";
 		case PG_PROTOCOL_SCHEDULER_QUEUE_RUNNABLE:
 			return "runnable";
+		case PG_PROTOCOL_SCHEDULER_QUEUE_LEASED:
+			return "leased";
 	}
 
 	return "unknown";

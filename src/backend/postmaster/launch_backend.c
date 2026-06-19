@@ -62,6 +62,7 @@
 #include "storage/pg_shmem.h"
 #include "storage/shmem_internal.h"
 #include "tcop/backend_startup.h"
+#include "tcop/tcopprot.h"
 #include "utils/backend_runtime.h"
 #include "utils/guc.h"
 #include "utils/global_lifetime.h"
@@ -231,9 +232,26 @@ typedef struct BackendPooledLogicalStart
 	ClientSocket client_sock;
 	sigjmp_buf	exit_jmp;
 	bool		exit_jmp_valid;
+	struct BackendPooledLogicalStart *next;
 } BackendPooledLogicalStart;
 
+typedef struct BackendPooledCarrierStart
+{
+	PgCarrier	carrier;
+	PgThread	thread;
+	int			carrier_index;
+	pg_tz	   *startup_session_timezone;
+	pg_tz	   *startup_log_timezone;
+} BackendPooledCarrierStart;
+
 static PG_GLOBAL_RUNTIME bool postmaster_thread_carriers_started = false;
+#ifndef WIN32
+static PG_GLOBAL_RUNTIME pthread_mutex_t pooled_protocol_queue_mutex = PTHREAD_MUTEX_INITIALIZER;
+static PG_GLOBAL_RUNTIME BackendPooledLogicalStart *pooled_protocol_queue_head = NULL;
+static PG_GLOBAL_RUNTIME BackendPooledLogicalStart *pooled_protocol_queue_tail = NULL;
+static PG_GLOBAL_RUNTIME int pooled_protocol_carrier_count = 0;
+static PG_GLOBAL_RUNTIME bool pooled_protocol_pool_started = false;
+#endif
 
 static bool postmaster_backend_thread_launch(PMChild *pmchild,
 											 BackendType child_type,
@@ -241,6 +259,11 @@ static bool postmaster_backend_thread_launch(PMChild *pmchild,
 											 void *startup_data,
 											 size_t startup_data_len,
 											 const ClientSocket *client_sock);
+static bool postmaster_pooled_protocol_launch(PMChild *pmchild,
+											  int child_slot,
+											  void *startup_data,
+											  size_t startup_data_len,
+											  const ClientSocket *client_sock);
 static void backend_thread_entry(void *arg);
 static void backend_thread_run_backend(BackendThreadStart *thread_start);
 static void backend_thread_run_worker(BackendThreadStart *thread_start);
@@ -253,6 +276,19 @@ pg_noreturn static void backend_thread_exit(int code);
 pg_noreturn static void backend_thread_finish(int code);
 pg_noreturn static void backend_pooled_logical_finish(int code);
 static int	backend_thread_exitstatus(int code);
+#ifndef WIN32
+static bool backend_pooled_protocol_start_pool(void);
+static void backend_pooled_protocol_carrier_entry(void *arg);
+static void backend_pooled_protocol_enqueue(BackendPooledLogicalStart *logical_start);
+static BackendPooledLogicalStart *backend_pooled_protocol_dequeue(void);
+static BackendPooledLogicalStart *backend_pooled_logical_start_from_backend(PgBackend *backend);
+static void backend_pooled_protocol_run_logical_start(BackendPooledCarrierStart *carrier_start,
+													  BackendPooledLogicalStart *logical_start);
+static void backend_pooled_protocol_resume_logical_start(BackendPooledLogicalStart *logical_start);
+static PgStepResult backend_pooled_protocol_run_attached_logical(BackendPooledLogicalStart *logical_start,
+																 PgSession *session);
+pg_noreturn static void backend_pooled_protocol_exit_logical(int code);
+#endif
 
 const char *
 PostmasterChildName(BackendType child_type)
@@ -277,6 +313,16 @@ postmaster_child_launch_carrier(PMChild *pmchild,
 {
 	pid_t		pid;
 	PgBackendLaunchModel launch_model;
+
+	if (multithreaded &&
+		child_type == B_BACKEND &&
+		PgRuntimePooledProtocolRequested())
+	{
+		return postmaster_pooled_protocol_launch(pmchild, child_slot,
+												 startup_data,
+												 startup_data_len,
+												 client_sock);
+	}
 
 	if (multithreaded &&
 		child_type == B_BG_WORKER &&
@@ -491,6 +537,372 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 	return true;
 #endif
 }
+
+static bool
+postmaster_pooled_protocol_launch(PMChild *pmchild, int child_slot,
+								  void *startup_data, size_t startup_data_len,
+								  const ClientSocket *client_sock)
+{
+#ifdef WIN32
+	errno = ENOSYS;
+	return false;
+#else
+	BackendPooledLogicalStart *logical_start;
+
+	if (client_sock == NULL ||
+		startup_data == NULL ||
+		startup_data_len != sizeof(BackendStartupData))
+	{
+		errno = EINVAL;
+		return false;
+	}
+
+	InitializePgThreadRuntime(backend_thread_exit);
+	if (!backend_pooled_protocol_start_pool())
+		return false;
+
+	logical_start = malloc(sizeof(BackendPooledLogicalStart));
+	if (logical_start == NULL)
+	{
+		errno = ENOMEM;
+		return false;
+	}
+	MemSet(logical_start, 0, sizeof(*logical_start));
+
+	logical_start->publication.kind = BACKEND_THREAD_START_POOLED_LOGICAL;
+	logical_start->publication.pmchild = pmchild;
+	logical_start->publication.postmaster_latch = MyLatch;
+	if (logical_start->publication.postmaster_latch == NULL)
+		logical_start->publication.postmaster_latch = PgCurrentLocalLatchData();
+	Assert(logical_start->publication.postmaster_latch != NULL);
+	logical_start->startup_data = *((BackendStartupData *) startup_data);
+	logical_start->startup_data.fork_started = GetCurrentTimestamp();
+	logical_start->client_sock = *client_sock;
+	logical_start->client_sock.sock = dup(client_sock->sock);
+	if (logical_start->client_sock.sock < 0)
+	{
+		int			save_errno = errno;
+
+		free(logical_start);
+		errno = save_errno;
+		return false;
+	}
+
+	InitializePgThreadBackendLogicalState(&logical_start->logical, NULL,
+										  B_BACKEND, NULL, NULL);
+	PostmasterChildSetPooledLogical(pmchild);
+	PostmasterChildPublishLogicalBackend(pmchild,
+										 &logical_start->logical.backend);
+	backend_pooled_protocol_enqueue(logical_start);
+	postmaster_thread_carriers_started = true;
+	return true;
+#endif
+}
+
+#ifndef WIN32
+static bool
+backend_pooled_protocol_start_pool(void)
+{
+	int			carrier_limit;
+
+	if (pooled_protocol_pool_started)
+		return true;
+
+	carrier_limit = PgRuntimePooledProtocolCarrierLimit();
+	if (carrier_limit <= 0)
+	{
+		errno = EINVAL;
+		return false;
+	}
+
+	for (int i = pooled_protocol_carrier_count; i < carrier_limit; i++)
+	{
+		BackendPooledCarrierStart *carrier_start;
+		int			rc;
+
+		carrier_start = malloc(sizeof(BackendPooledCarrierStart));
+		if (carrier_start == NULL)
+		{
+			errno = ENOMEM;
+			return false;
+		}
+		MemSet(carrier_start, 0, sizeof(*carrier_start));
+		InitializePgThreadCarrierRuntimeState(&carrier_start->carrier);
+		carrier_start->carrier_index = i;
+		carrier_start->startup_session_timezone = session_timezone;
+		carrier_start->startup_log_timezone = log_timezone;
+
+		rc = pg_thread_create(&carrier_start->thread,
+							  "postgres pooled protocol carrier",
+							  backend_pooled_protocol_carrier_entry,
+							  carrier_start);
+		if (rc != 0)
+		{
+			free(carrier_start);
+			errno = rc;
+			return false;
+		}
+
+		pooled_protocol_carrier_count++;
+	}
+
+	pooled_protocol_pool_started = true;
+	postmaster_thread_carriers_started = true;
+	return true;
+}
+
+static void
+backend_pooled_protocol_enqueue(BackendPooledLogicalStart *logical_start)
+{
+	int			rc;
+
+	Assert(logical_start != NULL);
+	Assert(logical_start->next == NULL);
+
+	rc = pthread_mutex_lock(&pooled_protocol_queue_mutex);
+	if (rc != 0)
+		elog(FATAL, "could not lock pooled protocol queue: %m");
+
+	if (pooled_protocol_queue_tail != NULL)
+		pooled_protocol_queue_tail->next = logical_start;
+	else
+		pooled_protocol_queue_head = logical_start;
+	pooled_protocol_queue_tail = logical_start;
+
+	rc = pthread_mutex_unlock(&pooled_protocol_queue_mutex);
+	if (rc != 0)
+		elog(FATAL, "could not unlock pooled protocol queue: %m");
+}
+
+static BackendPooledLogicalStart *
+backend_pooled_protocol_dequeue(void)
+{
+	BackendPooledLogicalStart *logical_start;
+	int			rc;
+
+	rc = pthread_mutex_lock(&pooled_protocol_queue_mutex);
+	if (rc != 0)
+		elog(FATAL, "could not lock pooled protocol queue: %m");
+
+	logical_start = pooled_protocol_queue_head;
+	if (logical_start != NULL)
+	{
+		pooled_protocol_queue_head = logical_start->next;
+		if (pooled_protocol_queue_head == NULL)
+			pooled_protocol_queue_tail = NULL;
+		logical_start->next = NULL;
+	}
+
+	rc = pthread_mutex_unlock(&pooled_protocol_queue_mutex);
+	if (rc != 0)
+		elog(FATAL, "could not unlock pooled protocol queue: %m");
+
+	return logical_start;
+}
+
+static BackendPooledLogicalStart *
+backend_pooled_logical_start_from_backend(PgBackend *backend)
+{
+	char	   *logical_base;
+
+	Assert(backend != NULL);
+
+	logical_base = (char *) backend -
+		offsetof(PgThreadBackendLogicalState, backend);
+	return (BackendPooledLogicalStart *)
+		(logical_base - offsetof(BackendPooledLogicalStart, logical));
+}
+
+static void
+backend_pooled_protocol_carrier_entry(void *arg)
+{
+	BackendPooledCarrierStart *carrier_start =
+		(BackendPooledCarrierStart *) arg;
+	PgBackend  *scratch[64];
+
+	sigprocmask(SIG_SETMASK, &BlockSig, NULL);
+
+	PgSetCurrentCarrier(&carrier_start->carrier);
+	PgRuntimeSetCurrentWork(carrier_start->carrier.runtime,
+							&carrier_start->carrier,
+							NULL, NULL, NULL, NULL, false);
+	MyBackendType = B_BACKEND;
+	MyProcPid = (int) getpid();
+	IsUnderPostmaster = true;
+	session_timezone = carrier_start->startup_session_timezone;
+	log_timezone = carrier_start->startup_log_timezone;
+	MemoryContextInit();
+	InitializeWaitEventSupport();
+	(void) set_stack_base();
+	backend_thread_init_random_state();
+
+	if (!PgRuntimeProtocolSchedulerRegisterCarrier(CurrentPgRuntime,
+												   CurrentPgCarrier))
+		elog(FATAL, "could not register pooled protocol carrier");
+
+	for (;;)
+	{
+		BackendPooledLogicalStart *logical_start;
+		PgBackend  *backend;
+
+		Assert(CurrentPgCarrier == &carrier_start->carrier);
+		Assert(CurrentPgBackend == NULL);
+		Assert(CurrentPgSession == NULL);
+		Assert(CurrentPgConnection == NULL);
+		Assert(CurrentPgExecution == NULL);
+
+		(void) PgRuntimeProtocolSchedulerPollParkedReads(CurrentPgRuntime,
+														 scratch,
+														 lengthof(scratch));
+
+		backend = PgCarrierLeaseRunnableProtocolBackend(CurrentPgCarrier);
+		if (backend != NULL)
+		{
+			logical_start =
+				backend_pooled_logical_start_from_backend(backend);
+			backend_pooled_protocol_resume_logical_start(logical_start);
+			continue;
+		}
+
+		logical_start = backend_pooled_protocol_dequeue();
+		if (logical_start != NULL)
+		{
+			backend_pooled_protocol_run_logical_start(carrier_start,
+													  logical_start);
+			continue;
+		}
+
+		pg_usleep(10000L);
+	}
+}
+
+static void
+backend_pooled_protocol_run_logical_start(BackendPooledCarrierStart *carrier_start,
+										  BackendPooledLogicalStart *logical_start)
+{
+	PgSession  *session;
+
+	Assert(carrier_start != NULL);
+	Assert(logical_start != NULL);
+	Assert(CurrentPgCarrier == &carrier_start->carrier);
+	Assert(CurrentPgBackend == NULL);
+
+	PgCarrierAttachBackend(CurrentPgCarrier, &logical_start->logical.backend,
+						   &logical_start->logical.session,
+						   &logical_start->logical.connection,
+						   &logical_start->logical.execution);
+	*PgCurrentBackendThreadStartRef() = logical_start;
+
+	MyPMChildSlot = logical_start->publication.pmchild->child_slot;
+	MyBackendType = B_BACKEND;
+	MyProcPid = (int) getpid();
+	IsUnderPostmaster = true;
+	session_timezone = carrier_start->startup_session_timezone;
+	log_timezone = carrier_start->startup_log_timezone;
+
+	InitProcessLocalLatch();
+	MemoryContextInit();
+	InitializeTransactionState();
+	InitializeThreadedSessionGUCOptions();
+	read_nondefault_variables();
+	InitializeLatchWaitSet();
+	InitializeThreadedSessionRequiredGUCOptions();
+	PgBackendSetInterruptLatch(CurrentPgBackend, MyLatch);
+
+	MyClientSocket = &logical_start->client_sock;
+	conn_timing.socket_create = logical_start->startup_data.socket_created;
+	conn_timing.fork_start = logical_start->startup_data.fork_started;
+	conn_timing.fork_end = GetCurrentTimestamp();
+	MyStartTimestamp = GetCurrentTimestamp();
+	MyStartTime = timestamptz_to_time_t(MyStartTimestamp);
+
+	if (sigsetjmp(logical_start->exit_jmp, 1) != 0)
+	{
+		logical_start->exit_jmp_valid = false;
+		*PgCurrentBackendThreadStartRef() = NULL;
+		PgCarrierDetachBackend(CurrentPgCarrier, NULL);
+		free(logical_start);
+		return;
+	}
+
+	logical_start->exit_jmp_valid = true;
+	session = BackendStartSessionWithStartupData(&logical_start->startup_data,
+												 &logical_start->client_sock,
+												 BACKEND_STARTUP_THREAD);
+	(void) backend_pooled_protocol_run_attached_logical(logical_start,
+														session);
+}
+
+static void
+backend_pooled_protocol_resume_logical_start(BackendPooledLogicalStart *logical_start)
+{
+	PgSession  *session;
+	uint32		wake_events;
+
+	Assert(logical_start != NULL);
+	Assert(CurrentPgBackend == &logical_start->logical.backend);
+	Assert(CurrentPgSession == &logical_start->logical.session);
+
+	*PgCurrentBackendThreadStartRef() = logical_start;
+	wake_events = CurrentPgBackend->protocol_park.wake_events;
+	PgBackendResumeProtocolReadPark(CurrentPgBackend);
+	if (wake_events & WL_LATCH_SET)
+		ResetLatch(MyLatch);
+	session = CurrentPgSession;
+
+	if (sigsetjmp(logical_start->exit_jmp, 1) != 0)
+	{
+		logical_start->exit_jmp_valid = false;
+		*PgCurrentBackendThreadStartRef() = NULL;
+		PgCarrierDetachBackend(CurrentPgCarrier, NULL);
+		free(logical_start);
+		return;
+	}
+
+	logical_start->exit_jmp_valid = true;
+	(void) backend_pooled_protocol_run_attached_logical(logical_start,
+														session);
+}
+
+static PgStepResult
+backend_pooled_protocol_run_attached_logical(BackendPooledLogicalStart *logical_start,
+											 PgSession *session)
+{
+	for (;;)
+	{
+		PgStepResult result;
+
+		result = PgSessionRunProtocolSchedulerUntilBoundary(session);
+		switch (result)
+		{
+			case PG_STEP_PARK_PROTOCOL_READ:
+				logical_start->exit_jmp_valid = false;
+				*PgCurrentBackendThreadStartRef() = NULL;
+				return result;
+
+			case PG_STEP_DONE:
+				backend_pooled_protocol_exit_logical(0);
+
+			case PG_STEP_FATAL_EXIT:
+				backend_pooled_protocol_exit_logical(1);
+
+			case PG_STEP_CONTINUE:
+			case PG_STEP_ERROR_RECOVERED:
+				pg_unreachable();
+		}
+	}
+}
+
+pg_noreturn static void
+backend_pooled_protocol_exit_logical(int code)
+{
+	if (CurrentPgRuntime != NULL && CurrentPgBackend != NULL)
+		(void) PgRuntimeProtocolSchedulerRemoveBackend(CurrentPgRuntime,
+													   CurrentPgBackend);
+
+	PgBackendExit(code);
+}
+#endif
 
 static void
 backend_thread_entry(void *arg)

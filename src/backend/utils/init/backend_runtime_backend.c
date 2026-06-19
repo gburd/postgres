@@ -1742,6 +1742,10 @@ PgRuntimeProtocolSchedulerParkBackend(PgRuntime *runtime, PgBackend *backend)
 		return false;
 	if (backend->runtime != runtime)
 		return false;
+	if (backend->carrier != NULL ||
+		backend->execution == NULL ||
+		backend->execution->carrier != NULL)
+		return false;
 
 	park_state = &backend->protocol_park;
 	scheduler = &runtime->protocol_scheduler;
@@ -1798,8 +1802,7 @@ PgRuntimeProtocolSchedulerMarkRunnable(PgRuntime *runtime, PgBackend *backend)
 		dlist_delete(&park_state->scheduler_node);
 		scheduler->parked_protocol_count--;
 	}
-	else if (park_state->scheduler_queue_state !=
-			 PG_PROTOCOL_SCHEDULER_QUEUE_NONE)
+	else
 	{
 		SpinLockRelease(&scheduler->lock);
 		return false;
@@ -1847,7 +1850,7 @@ PgRuntimeProtocolSchedulerPopRunnable(PgRuntime *runtime)
 		   PG_PROTOCOL_SCHEDULER_QUEUE_RUNNABLE);
 
 	backend->protocol_park.scheduler_queue_state =
-		PG_PROTOCOL_SCHEDULER_QUEUE_NONE;
+		PG_PROTOCOL_SCHEDULER_QUEUE_LEASED;
 	scheduler->runnable_count--;
 	SpinLockRelease(&scheduler->lock);
 
@@ -1918,8 +1921,16 @@ PgCarrierLeaseRunnableProtocolBackend(PgCarrier *carrier)
 		backend->execution->carrier != NULL ||
 		backend->protocol_park.state != PG_PROTOCOL_PARK_COMMITTED ||
 		backend->protocol_park.scheduler_queue_state !=
-		PG_PROTOCOL_SCHEDULER_QUEUE_NONE)
-		elog(PANIC, "cannot lease inconsistent protocol scheduler backend");
+		PG_PROTOCOL_SCHEDULER_QUEUE_LEASED)
+		elog(PANIC, "cannot lease inconsistent protocol scheduler backend: runtime_match=%d carrier=%p session=%p connection=%p execution=%p execution_carrier=%p park_state=%d queue_state=%d",
+			 backend->runtime == runtime,
+			 backend->carrier,
+			 backend->session,
+			 backend->connection,
+			 backend->execution,
+			 backend->execution != NULL ? backend->execution->carrier : NULL,
+			 backend->protocol_park.state,
+			 backend->protocol_park.scheduler_queue_state);
 
 	PgCarrierAttachBackend(carrier, backend, backend->session,
 						   backend->connection, backend->execution);
@@ -1960,6 +1971,9 @@ PgRuntimeProtocolSchedulerRemoveBackend(PgRuntime *runtime, PgBackend *backend)
 			Assert(scheduler->runnable_count > 0);
 			dlist_delete(&park_state->scheduler_node);
 			scheduler->runnable_count--;
+			break;
+
+		case PG_PROTOCOL_SCHEDULER_QUEUE_LEASED:
 			break;
 	}
 
@@ -2181,7 +2195,12 @@ PgCarrierCommitProtocolReadPark(PgCarrier *carrier, PgBackend *backend)
 	park_state->parked_carrier = carrier;
 	PgCarrierDetachBackend(carrier, backend);
 	if (!PgRuntimeProtocolSchedulerParkBackend(carrier->runtime, backend))
-		elog(PANIC, "could not enqueue committed protocol read park");
+		elog(PANIC, "could not enqueue committed protocol read park: backend_runtime_match=%d park_state=%d queue_state=%d carrier=%p backend_carrier=%p",
+			 backend->runtime == carrier->runtime,
+			 park_state->state,
+			 park_state->scheduler_queue_state,
+			 carrier,
+			 backend->carrier);
 }
 
 bool
@@ -2280,7 +2299,7 @@ PgBackendResumeProtocolReadPark(PgBackend *backend)
 	Assert(park_state->wake_generation == 0 ||
 		   park_state->wake_generation == park_state->spec.generation);
 	Assert(park_state->scheduler_queue_state ==
-		   PG_PROTOCOL_SCHEDULER_QUEUE_NONE);
+		   PG_PROTOCOL_SCHEDULER_QUEUE_LEASED);
 
 	PgRuntimeProtocolSchedulerRecordResume(backend);
 	park_state->last_wake_reasons = park_state->wake_reasons;
@@ -2292,6 +2311,7 @@ PgBackendResumeProtocolReadPark(PgBackend *backend)
 	park_state->wake_events = 0;
 	park_state->wake_generation = 0;
 	park_state->parked_carrier = NULL;
+	park_state->scheduler_queue_state = PG_PROTOCOL_SCHEDULER_QUEUE_NONE;
 }
 
 static void

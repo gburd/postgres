@@ -542,7 +542,7 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 		runnable_backend = PgCarrierLeaseRunnableProtocolBackend(&resume_carrier);
 		ok = ok && runnable_backend == &state.logical.backend;
 		ok = ok && state.logical.backend.protocol_park.scheduler_queue_state ==
-			PG_PROTOCOL_SCHEDULER_QUEUE_NONE;
+			PG_PROTOCOL_SCHEDULER_QUEUE_LEASED;
 		ok = ok && scheduler->parked_protocol_count == 0;
 		ok = ok && scheduler->runnable_count == 0;
 		ok = ok && CurrentPgCarrier == &resume_carrier;
