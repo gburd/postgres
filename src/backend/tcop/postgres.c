@@ -486,6 +486,7 @@ SocketBackend(PgSession *session, StringInfo inBuf)
 			wait_spec.socket = MyProcPort != NULL ? MyProcPort->sock :
 				PGINVALID_SOCKET;
 			wait_spec.timeout = -1;
+			wait_spec.timeout_at = 0;
 
 			if (PgBackendPublishWaitCompletion(CurrentPgBackend, &wait_spec))
 				return READ_COMMAND_WOULD_BLOCK;

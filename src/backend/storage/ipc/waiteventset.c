@@ -78,6 +78,7 @@
 #include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
+#include "utils/timestamp.h"
 #include "utils/timeout.h"
 #include "utils/wait_event.h"
 
@@ -1117,6 +1118,8 @@ WaitEventSetWait(WaitEventSet *set, long timeout,
 	wait_spec.wake_events = wake_events;
 	wait_spec.socket = wait_socket;
 	wait_spec.timeout = timeout;
+	wait_spec.timeout_at = timeout >= 0 ?
+		TimestampTzPlusMilliseconds(GetCurrentTimestamp(), timeout) : 0;
 
 	return PgSuspend(&wait_spec, WaitEventSetWaitInternal, &args);
 }

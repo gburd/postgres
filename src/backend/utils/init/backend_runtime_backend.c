@@ -50,6 +50,7 @@
 #include "utils/memutils.h"
 #include "utils/pgstat_internal.h"
 #include "utils/resowner.h"
+#include "utils/timestamp.h"
 
 static PG_GLOBAL_RUNTIME bool backend_id_counter_initialized = false;
 static PG_GLOBAL_RUNTIME pg_atomic_uint64 next_backend_id;
@@ -1171,7 +1172,20 @@ PgRuntimeSchedulerWakeSocket(PgRuntime *runtime, pgsocket socket,
 }
 
 static bool
-PgBackendHasDueLogicalTimeout(PgBackend *backend, TimestampTz now)
+PgWaitSpecHasTimeout(const PgWaitSpec *spec, TimestampTz *timeout_at)
+{
+	if (spec == NULL ||
+		spec->timeout < 0 ||
+		spec->timeout_at == 0)
+		return false;
+
+	if (timeout_at != NULL)
+		*timeout_at = spec->timeout_at;
+	return true;
+}
+
+static bool
+PgBackendNextLogicalTimeout(PgBackend *backend, TimestampTz *timeout_at)
 {
 	PgBackendTimeoutState *timeout;
 
@@ -1186,15 +1200,83 @@ PgBackendHasDueLogicalTimeout(PgBackend *backend, TimestampTz now)
 		timeout->active_timeouts[0] == NULL)
 		return false;
 
-	return now >= timeout->active_timeouts[0]->fin_time;
+	if (timeout_at != NULL)
+		*timeout_at = timeout->active_timeouts[0]->fin_time;
+	return true;
+}
+
+static bool
+PgBackendHasDueLogicalTimeout(PgBackend *backend, TimestampTz now)
+{
+	TimestampTz timeout_at;
+
+	if (!PgBackendNextLogicalTimeout(backend, &timeout_at))
+		return false;
+
+	return now >= timeout_at;
+}
+
+static bool
+PgBackendHasDueWaitSpecTimeout(PgBackend *backend, TimestampTz now)
+{
+	PgWaitCompletion *completion;
+	TimestampTz timeout_at;
+
+	if (backend == NULL)
+		return false;
+
+	completion = &backend->wait_state.completion;
+	if (!PgWaitSpecHasTimeout(&completion->spec, &timeout_at))
+		return false;
+
+	return now >= timeout_at;
+}
+
+static bool
+PgBackendNextSchedulerTimeout(PgBackend *backend, TimestampTz *timeout_at)
+{
+	PgWaitCompletion *completion;
+	TimestampTz candidate;
+	TimestampTz next_timeout = 0;
+	bool		found = false;
+
+	if (backend == NULL)
+		return false;
+
+	completion = &backend->wait_state.completion;
+	if (PgWaitSpecHasTimeout(&completion->spec, &candidate))
+	{
+		next_timeout = candidate;
+		found = true;
+	}
+
+	if (PgBackendNextLogicalTimeout(backend, &candidate) &&
+		(!found || candidate < next_timeout))
+	{
+		next_timeout = candidate;
+		found = true;
+	}
+
+	if (!found)
+		return false;
+
+	if (timeout_at != NULL)
+		*timeout_at = next_timeout;
+	return true;
 }
 
 static PgBackend *
-PgRuntimeSchedulerFindDueTimeoutWait(PgRuntime *runtime, TimestampTz now)
+PgRuntimeSchedulerFindDueTimeoutWait(PgRuntime *runtime, TimestampTz now,
+									 bool *logical_due, bool *wait_due)
 {
 	PgRuntimeSchedulerState *scheduler;
 	PgBackend  *backend = NULL;
 	dlist_iter	iter;
+
+	if (logical_due != NULL)
+		*logical_due = false;
+	if (wait_due != NULL)
+		*wait_due = false;
 
 	if (!PgRuntimeIsPooledScheduler(runtime))
 		return NULL;
@@ -1208,15 +1290,25 @@ PgRuntimeSchedulerFindDueTimeoutWait(PgRuntime *runtime, TimestampTz now)
 		PgBackend  *candidate;
 		PgWaitCompletion *completion;
 		uint32		completion_state;
+		bool		candidate_logical_due;
+		bool		candidate_wait_due;
 
 		candidate = dlist_container(PgBackend, scheduler.node, iter.cur);
 		completion = &candidate->wait_state.completion;
 		completion_state = pg_atomic_read_u32(&completion->state);
+		candidate_logical_due =
+			PgBackendHasDueLogicalTimeout(candidate, now);
+		candidate_wait_due =
+			PgBackendHasDueWaitSpecTimeout(candidate, now);
 
 		if (completion_state == PG_WAIT_COMPLETION_WAITING &&
-			PgBackendHasDueLogicalTimeout(candidate, now))
+			(candidate_logical_due || candidate_wait_due))
 		{
 			backend = candidate;
+			if (logical_due != NULL)
+				*logical_due = candidate_logical_due;
+			if (wait_due != NULL)
+				*wait_due = candidate_wait_due;
 			break;
 		}
 	}
@@ -1231,6 +1323,8 @@ PgRuntimeSchedulerProcessDueTimeouts(PgRuntime *runtime, PgCarrier *carrier,
 {
 	PgBackend  *backend;
 	uint32		processed = 0;
+	bool		logical_due;
+	bool		wait_due;
 
 	if (!PgRuntimeIsPooledScheduler(runtime) ||
 		carrier == NULL ||
@@ -1238,28 +1332,33 @@ PgRuntimeSchedulerProcessDueTimeouts(PgRuntime *runtime, PgCarrier *carrier,
 		return 0;
 
 	while ((backend = PgRuntimeSchedulerFindDueTimeoutWait(runtime,
-														  now)) != NULL)
+														  now,
+														  &logical_due,
+														  &wait_due)) != NULL)
 	{
 		volatile bool attached = false;
 		bool		fired = false;
 
-		PG_TRY();
+		if (logical_due)
 		{
-			PgCarrierAttachBackend(carrier, backend);
-			attached = true;
-			fired = process_due_logical_timeouts();
-			PgCarrierDetachBackend(carrier);
-			attached = false;
-		}
-		PG_CATCH();
-		{
-			if (attached)
+			PG_TRY();
+			{
+				PgCarrierAttachBackend(carrier, backend);
+				attached = true;
+				fired = process_due_logical_timeouts();
 				PgCarrierDetachBackend(carrier);
-			PG_RE_THROW();
+				attached = false;
+			}
+			PG_CATCH();
+			{
+				if (attached)
+					PgCarrierDetachBackend(carrier);
+				PG_RE_THROW();
+			}
+			PG_END_TRY();
 		}
-		PG_END_TRY();
 
-		if (!fired)
+		if (logical_due && !fired && !wait_due)
 			break;
 
 		(void) PgBackendWakeWaitCompletion(backend, WL_TIMEOUT);
@@ -1267,6 +1366,96 @@ PgRuntimeSchedulerProcessDueTimeouts(PgRuntime *runtime, PgCarrier *carrier,
 	}
 
 	return processed;
+}
+
+uint32
+PgRuntimeSchedulerSnapshotWaits(PgRuntime *runtime,
+								PgRuntimeSchedulerSocketWait *socket_waits,
+								uint32 max_socket_waits,
+								TimestampTz now,
+								PgRuntimeSchedulerWaitSnapshot *snapshot)
+{
+	PgRuntimeSchedulerState *scheduler;
+	TimestampTz next_timeout = 0;
+	uint32		filled_sockets = 0;
+	uint32		total_sockets = 0;
+	bool		has_timeout = false;
+	dlist_iter	iter;
+
+	if (snapshot != NULL)
+	{
+		MemSet(snapshot, 0, sizeof(*snapshot));
+		snapshot->timeout = -1;
+	}
+
+	if (!PgRuntimeIsPooledScheduler(runtime))
+		return 0;
+
+	scheduler = &runtime->scheduler;
+	Assert(scheduler->initialized);
+
+	SpinLockAcquire(&scheduler->lock);
+	if (snapshot != NULL)
+	{
+		snapshot->runnable_count = scheduler->runnable_count;
+		snapshot->waiting_count = scheduler->waiting_count;
+		snapshot->wake_generation = scheduler->wake_generation;
+	}
+	dlist_foreach(iter, &scheduler->waiting_queue)
+	{
+		PgBackend  *candidate;
+		PgWaitCompletion *completion;
+		PgWaitSpec *spec;
+		uint32		completion_state;
+		uint32		socket_events;
+		TimestampTz candidate_timeout;
+
+		candidate = dlist_container(PgBackend, scheduler.node, iter.cur);
+		completion = &candidate->wait_state.completion;
+		spec = &completion->spec;
+		completion_state = pg_atomic_read_u32(&completion->state);
+
+		if (completion_state != PG_WAIT_COMPLETION_WAITING)
+			continue;
+
+		socket_events = spec->wake_events & WL_SOCKET_MASK;
+		if (spec->kind == PG_WAIT_KIND_EVENT_SET &&
+			spec->socket != PGINVALID_SOCKET &&
+			socket_events != 0)
+		{
+			if (socket_waits != NULL && filled_sockets < max_socket_waits)
+			{
+				socket_waits[filled_sockets].socket = spec->socket;
+				socket_waits[filled_sockets].wake_events = socket_events;
+				socket_waits[filled_sockets].wait_event_info =
+					spec->wait_event_info;
+				filled_sockets++;
+			}
+			total_sockets++;
+		}
+
+		if (PgBackendNextSchedulerTimeout(candidate, &candidate_timeout) &&
+			(!has_timeout || candidate_timeout < next_timeout))
+		{
+			next_timeout = candidate_timeout;
+			has_timeout = true;
+		}
+	}
+	if (snapshot != NULL)
+	{
+		snapshot->socket_count = total_sockets;
+		snapshot->socket_overflow = total_sockets > max_socket_waits;
+		snapshot->has_timeout = has_timeout;
+		if (has_timeout)
+		{
+			snapshot->timeout_at = next_timeout;
+			snapshot->timeout =
+				TimestampDifferenceMilliseconds(now, next_timeout);
+		}
+	}
+	SpinLockRelease(&scheduler->lock);
+
+	return filled_sockets;
 }
 
 static void

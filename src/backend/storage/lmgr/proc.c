@@ -2141,6 +2141,7 @@ ProcWaitOnSemaphore(PGPROC *proc, uint32 wait_event_info)
 	wait_spec.wake_events = 0;
 	wait_spec.socket = PGINVALID_SOCKET;
 	wait_spec.timeout = -1;
+	wait_spec.timeout_at = 0;
 
 	(void) PgSuspend(&wait_spec, ProcSemaphoreWaitCallback, &args);
 }

@@ -209,6 +209,25 @@ typedef struct PgBackendSchedulerState
 	uint64		enqueue_generation;
 } PgBackendSchedulerState;
 
+typedef struct PgRuntimeSchedulerSocketWait
+{
+	pgsocket	socket;
+	uint32		wake_events;
+	uint32		wait_event_info;
+} PgRuntimeSchedulerSocketWait;
+
+typedef struct PgRuntimeSchedulerWaitSnapshot
+{
+	uint32		runnable_count;
+	uint32		waiting_count;
+	uint32		socket_count;
+	bool		socket_overflow;
+	bool		has_timeout;
+	long		timeout;
+	TimestampTz timeout_at;
+	uint64		wake_generation;
+} PgRuntimeSchedulerWaitSnapshot;
+
 /*
  * Logical interrupts target a backend object first.  In process mode these are
  * bridged back to the historical volatile globals serviced by
@@ -269,6 +288,7 @@ typedef struct PgWaitSpec
 	uint32		wake_events;
 	pgsocket	socket;
 	long		timeout;
+	TimestampTz timeout_at;
 } PgWaitSpec;
 
 /*
@@ -3361,6 +3381,11 @@ extern uint32 PgRuntimeSchedulerWakeSocket(PgRuntime *runtime,
 extern uint32 PgRuntimeSchedulerProcessDueTimeouts(PgRuntime *runtime,
 												   PgCarrier *carrier,
 												   TimestampTz now);
+extern uint32 PgRuntimeSchedulerSnapshotWaits(PgRuntime *runtime,
+											  PgRuntimeSchedulerSocketWait *socket_waits,
+											  uint32 max_socket_waits,
+											  TimestampTz now,
+											  PgRuntimeSchedulerWaitSnapshot *snapshot);
 extern void PgRuntimeSchedulerSetWakeLatch(PgRuntime *runtime,
 										   struct Latch *wake_latch);
 extern uint64 PgRuntimeSchedulerWakeGeneration(PgRuntime *runtime);
