@@ -242,6 +242,7 @@ typedef enum PgProtocolSchedulerQueueState
 {
 	PG_PROTOCOL_SCHEDULER_QUEUE_NONE,
 	PG_PROTOCOL_SCHEDULER_QUEUE_PARKED_PROTOCOL_READ,
+	PG_PROTOCOL_SCHEDULER_QUEUE_POLLING,
 	PG_PROTOCOL_SCHEDULER_QUEUE_RUNNABLE,
 	PG_PROTOCOL_SCHEDULER_QUEUE_LEASED
 } PgProtocolSchedulerQueueState;
@@ -3508,6 +3509,9 @@ extern bool PgRuntimeProtocolSchedulerMarkRunnable(PgRuntime *runtime,
 												   PgBackend *backend);
 extern bool PgRuntimeProtocolSchedulerLeaseBackend(PgRuntime *runtime,
 												   PgBackend *backend);
+extern PgBackend *PgRuntimeProtocolSchedulerLeaseParkedBackend(PgRuntime *runtime);
+extern bool PgRuntimeProtocolSchedulerReparkBackend(PgRuntime *runtime,
+													PgBackend *backend);
 extern PgBackend *PgRuntimeProtocolSchedulerPopRunnable(PgRuntime *runtime);
 extern int	PgRuntimeProtocolSchedulerCollectParked(PgRuntime *runtime,
 													PgBackend **backends,

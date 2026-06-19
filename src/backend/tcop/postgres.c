@@ -5302,7 +5302,7 @@ PgBackendPollProtocolReadPark(PgBackend *backend, uint32 *wake_events)
 	park_state = &backend->protocol_park;
 	if (park_state->state != PG_PROTOCOL_PARK_COMMITTED ||
 		park_state->scheduler_queue_state !=
-		PG_PROTOCOL_SCHEDULER_QUEUE_PARKED_PROTOCOL_READ)
+		PG_PROTOCOL_SCHEDULER_QUEUE_POLLING)
 		return false;
 
 	park_spec = &park_state->spec;
@@ -5404,18 +5404,38 @@ PgRuntimeProtocolSchedulerPollParkedReads(PgRuntime *runtime,
 										  PgBackend **scratch,
 										  int max_backends)
 {
-	int			nbackends;
 	int			nready = 0;
 
-	nbackends = PgRuntimeProtocolSchedulerCollectParked(runtime, scratch,
-													   max_backends);
-	for (int i = 0; i < nbackends; i++)
-	{
-		PgBackend  *backend = scratch[i];
+	(void) scratch;
 
-		if (PgBackendPollProtocolReadPark(backend, NULL) &&
-			PgRuntimeProtocolSchedulerMarkRunnable(runtime, backend))
+	for (int i = 0; i < max_backends; i++)
+	{
+		PgBackend  *backend;
+		bool		ready = false;
+
+		backend = PgRuntimeProtocolSchedulerLeaseParkedBackend(runtime);
+		if (backend == NULL)
+			break;
+
+		PG_TRY();
+		{
+			ready = PgBackendPollProtocolReadPark(backend, NULL);
+		}
+		PG_CATCH();
+		{
+			(void) PgRuntimeProtocolSchedulerReparkBackend(runtime, backend);
+			PG_RE_THROW();
+		}
+		PG_END_TRY();
+
+		if (ready)
+		{
+			if (!PgRuntimeProtocolSchedulerMarkRunnable(runtime, backend))
+				elog(PANIC, "could not make polled protocol backend runnable");
 			nready++;
+		}
+		else if (!PgRuntimeProtocolSchedulerReparkBackend(runtime, backend))
+			elog(PANIC, "could not return unready protocol backend to parked queue");
 	}
 
 	return nready;

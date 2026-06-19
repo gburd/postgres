@@ -1802,6 +1802,11 @@ PgRuntimeProtocolSchedulerMarkRunnable(PgRuntime *runtime, PgBackend *backend)
 		dlist_delete(&park_state->scheduler_node);
 		scheduler->parked_protocol_count--;
 	}
+	else if (park_state->scheduler_queue_state ==
+			 PG_PROTOCOL_SCHEDULER_QUEUE_POLLING)
+	{
+		/* Already removed from the parked list by the polling carrier. */
+	}
 	else
 	{
 		SpinLockRelease(&scheduler->lock);
@@ -1861,6 +1866,7 @@ PgRuntimeProtocolSchedulerLeaseBackend(PgRuntime *runtime, PgBackend *backend)
 			break;
 
 		case PG_PROTOCOL_SCHEDULER_QUEUE_NONE:
+		case PG_PROTOCOL_SCHEDULER_QUEUE_POLLING:
 		case PG_PROTOCOL_SCHEDULER_QUEUE_LEASED:
 			SpinLockRelease(&scheduler->lock);
 			return false;
@@ -1868,6 +1874,71 @@ PgRuntimeProtocolSchedulerLeaseBackend(PgRuntime *runtime, PgBackend *backend)
 
 	park_state->scheduler_queue_state =
 		PG_PROTOCOL_SCHEDULER_QUEUE_LEASED;
+	SpinLockRelease(&scheduler->lock);
+
+	return true;
+}
+
+PgBackend *
+PgRuntimeProtocolSchedulerLeaseParkedBackend(PgRuntime *runtime)
+{
+	PgProtocolSchedulerState *scheduler;
+	PgBackend  *backend;
+	dlist_node *node;
+
+	if (runtime == NULL)
+		return NULL;
+
+	scheduler = &runtime->protocol_scheduler;
+	SpinLockAcquire(&scheduler->lock);
+	if (dlist_is_empty(&scheduler->parked_protocol_queue))
+	{
+		SpinLockRelease(&scheduler->lock);
+		return NULL;
+	}
+
+	Assert(scheduler->parked_protocol_count > 0);
+	node = dlist_pop_head_node(&scheduler->parked_protocol_queue);
+	backend = dlist_container(PgBackend, protocol_park.scheduler_node, node);
+	Assert(backend->protocol_park.state == PG_PROTOCOL_PARK_COMMITTED);
+	Assert(backend->protocol_park.scheduler_queue_state ==
+		   PG_PROTOCOL_SCHEDULER_QUEUE_PARKED_PROTOCOL_READ);
+
+	backend->protocol_park.scheduler_queue_state =
+		PG_PROTOCOL_SCHEDULER_QUEUE_POLLING;
+	scheduler->parked_protocol_count--;
+	SpinLockRelease(&scheduler->lock);
+
+	return backend;
+}
+
+bool
+PgRuntimeProtocolSchedulerReparkBackend(PgRuntime *runtime, PgBackend *backend)
+{
+	PgBackendProtocolParkState *park_state;
+	PgProtocolSchedulerState *scheduler;
+
+	if (runtime == NULL || backend == NULL)
+		return false;
+	if (backend->runtime != runtime)
+		return false;
+
+	park_state = &backend->protocol_park;
+	scheduler = &runtime->protocol_scheduler;
+	SpinLockAcquire(&scheduler->lock);
+
+	if (park_state->state != PG_PROTOCOL_PARK_COMMITTED ||
+		park_state->scheduler_queue_state != PG_PROTOCOL_SCHEDULER_QUEUE_POLLING)
+	{
+		SpinLockRelease(&scheduler->lock);
+		return false;
+	}
+
+	dlist_push_tail(&scheduler->parked_protocol_queue,
+					&park_state->scheduler_node);
+	park_state->scheduler_queue_state =
+		PG_PROTOCOL_SCHEDULER_QUEUE_PARKED_PROTOCOL_READ;
+	scheduler->parked_protocol_count++;
 	SpinLockRelease(&scheduler->lock);
 
 	return true;
@@ -2013,6 +2084,9 @@ PgRuntimeProtocolSchedulerRemoveBackend(PgRuntime *runtime, PgBackend *backend)
 			Assert(scheduler->parked_protocol_count > 0);
 			dlist_delete(&park_state->scheduler_node);
 			scheduler->parked_protocol_count--;
+			break;
+
+		case PG_PROTOCOL_SCHEDULER_QUEUE_POLLING:
 			break;
 
 		case PG_PROTOCOL_SCHEDULER_QUEUE_RUNNABLE:

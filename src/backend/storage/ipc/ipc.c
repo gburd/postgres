@@ -168,9 +168,17 @@ PgBackendExit(int code)
 void
 PgBackendExitComplete(int code)
 {
-	if (CurrentPgRuntime != NULL && CurrentPgRuntime->exit_backend != NULL)
+	PgRuntime  *runtime = CurrentPgRuntime;
+
+	if ((runtime == NULL || runtime->exit_backend == NULL) &&
+		CurrentPgCarrier != NULL &&
+		CurrentPgCarrier->runtime != NULL &&
+		CurrentPgCarrier->runtime->exit_backend != NULL)
+		runtime = CurrentPgCarrier->runtime;
+
+	if (runtime != NULL && runtime->exit_backend != NULL)
 	{
-		CurrentPgRuntime->exit_backend(code);
+		runtime->exit_backend(code);
 
 		/*
 		 * A runtime may unwind to a scheduler or exit the process, but it
@@ -178,6 +186,9 @@ PgBackendExitComplete(int code)
 		 */
 		elog(PANIC, "backend exit continuation returned");
 	}
+
+	if (CurrentPgCarrier != NULL && CurrentPgCarrier->kind == PG_CARRIER_THREAD)
+		elog(PANIC, "thread carrier reached process backend exit");
 
 	PgBackendExitProcess(code);
 }
