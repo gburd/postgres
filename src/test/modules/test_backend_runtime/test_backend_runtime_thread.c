@@ -49,6 +49,7 @@ typedef struct TestPooledSchedulerStepState
 static PgStepResult test_pooled_scheduler_step(PgBackend *backend,
 											   PgStepBudget budget,
 											   void *arg);
+static void test_pooled_scheduler_timeout_handler(void);
 static int	test_pooled_wait_callback(void *arg);
 
 static void
@@ -378,6 +379,17 @@ test_pooled_scheduler_step(PgBackend *backend, PgStepBudget budget, void *arg)
 		return PG_STEP_ERROR_RECOVERED;
 
 	return PG_STEP_CONTINUE;
+}
+
+static void
+test_pooled_scheduler_timeout_handler(void)
+{
+	PgBackend  *target = get_firing_timeout_target_backend();
+
+	if (target == NULL)
+		target = CurrentPgBackend;
+
+	SendInterrupt(target, PG_BACKEND_INTERRUPT_IDLE_SESSION_TIMEOUT);
 }
 
 PG_FUNCTION_INFO_V1(test_backend_pooled_scheduler_runs_backend);
@@ -728,6 +740,7 @@ test_backend_pooled_wait_parks_backend(PG_FUNCTION_ARGS)
 	uint32		runnable_count;
 	uint32		waiting_count;
 	bool		wait_published = false;
+	TimestampTz now;
 
 	saved_runtime = CurrentPgRuntime;
 	saved_carrier = CurrentPgCarrier;
@@ -853,6 +866,54 @@ test_backend_pooled_wait_parks_backend(PG_FUNCTION_ARGS)
 		CHECK_POOLED_PARK(waiting_count == 0);
 		CHECK_POOLED_PARK(scheduler_latch.is_set);
 		CHECK_POOLED_PARK(PgRuntimeSchedulerWakeGeneration(&pooled_runtime) == 2);
+
+		popped = PgRuntimeSchedulerPopRunnable(&pooled_runtime);
+		CHECK_POOLED_PARK(popped == &state.backend);
+		PgCarrierAttachBackend(&state.carrier, &state.backend);
+		PgBackendClearPublishedWaitCompletion(&state.backend);
+		wait_published = false;
+		(void) PgBackendConsumeInterrupts(&state.backend);
+		PgRuntimeSchedulerCounts(&pooled_runtime, &runnable_count,
+								 &waiting_count);
+		CHECK_POOLED_PARK(runnable_count == 0);
+		CHECK_POOLED_PARK(waiting_count == 0);
+		CHECK_POOLED_PARK(pg_atomic_read_u32(&completion->state) ==
+						  PG_WAIT_COMPLETION_INACTIVE);
+		CHECK_POOLED_PARK(pg_atomic_read_u32(&state.backend.scheduler.state) ==
+						  PG_SCHEDULER_BACKEND_RUNNING);
+
+		ResetLatch(&scheduler_latch);
+		InitializeLogicalTimeouts();
+		RegisterTimeout(USER_TIMEOUT, test_pooled_scheduler_timeout_handler);
+		now = GetCurrentTimestamp();
+		enable_timeout_at(USER_TIMEOUT, now - 1000);
+		CHECK_POOLED_PARK(PgBackendPublishWaitCompletion(&state.backend,
+														 &wait_spec));
+		wait_published = true;
+		PgCarrierDetachBackend(&state.carrier);
+		PgRuntimeSchedulerCounts(&pooled_runtime, &runnable_count,
+								 &waiting_count);
+		CHECK_POOLED_PARK(runnable_count == 0);
+		CHECK_POOLED_PARK(waiting_count == 1);
+		CHECK_POOLED_PARK(pg_atomic_read_u32(&completion->state) ==
+						  PG_WAIT_COMPLETION_WAITING);
+
+		CHECK_POOLED_PARK(PgRuntimeSchedulerProcessDueTimeouts(&pooled_runtime,
+															   &state.carrier,
+															   GetCurrentTimestamp()) == 1);
+		PgRuntimeSchedulerCounts(&pooled_runtime, &runnable_count,
+								 &waiting_count);
+		CHECK_POOLED_PARK(pg_atomic_read_u32(&completion->state) ==
+						  PG_WAIT_COMPLETION_READY);
+		CHECK_POOLED_PARK(pg_atomic_read_u32(&completion->ready_events) ==
+						  WL_TIMEOUT);
+		CHECK_POOLED_PARK(pg_atomic_read_u32(&state.backend.interrupts.pending_mask) ==
+						  PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_IDLE_SESSION_TIMEOUT));
+		CHECK_POOLED_PARK(runnable_count == 1);
+		CHECK_POOLED_PARK(waiting_count == 0);
+		CHECK_POOLED_PARK(scheduler_latch.is_set);
+		CHECK_POOLED_PARK(PgRuntimeSchedulerWakeGeneration(&pooled_runtime) == 3);
+		CHECK_POOLED_PARK(CurrentPgBackend == NULL);
 
 		popped = PgRuntimeSchedulerPopRunnable(&pooled_runtime);
 		CHECK_POOLED_PARK(popped == &state.backend);

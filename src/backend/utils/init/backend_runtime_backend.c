@@ -1170,6 +1170,105 @@ PgRuntimeSchedulerWakeSocket(PgRuntime *runtime, pgsocket socket,
 	return woken;
 }
 
+static bool
+PgBackendHasDueLogicalTimeout(PgBackend *backend, TimestampTz now)
+{
+	PgBackendTimeoutState *timeout;
+
+	if (backend == NULL)
+		return false;
+
+	timeout = &backend->timeout;
+	if (!timeout->all_timeouts_initialized ||
+		timeout->signal_delivery ||
+		timeout->num_active_timeouts <= 0 ||
+		!timeout->alarm_enabled ||
+		timeout->active_timeouts[0] == NULL)
+		return false;
+
+	return now >= timeout->active_timeouts[0]->fin_time;
+}
+
+static PgBackend *
+PgRuntimeSchedulerFindDueTimeoutWait(PgRuntime *runtime, TimestampTz now)
+{
+	PgRuntimeSchedulerState *scheduler;
+	PgBackend  *backend = NULL;
+	dlist_iter	iter;
+
+	if (!PgRuntimeIsPooledScheduler(runtime))
+		return NULL;
+
+	scheduler = &runtime->scheduler;
+	Assert(scheduler->initialized);
+
+	SpinLockAcquire(&scheduler->lock);
+	dlist_foreach(iter, &scheduler->waiting_queue)
+	{
+		PgBackend  *candidate;
+		PgWaitCompletion *completion;
+		uint32		completion_state;
+
+		candidate = dlist_container(PgBackend, scheduler.node, iter.cur);
+		completion = &candidate->wait_state.completion;
+		completion_state = pg_atomic_read_u32(&completion->state);
+
+		if (completion_state == PG_WAIT_COMPLETION_WAITING &&
+			PgBackendHasDueLogicalTimeout(candidate, now))
+		{
+			backend = candidate;
+			break;
+		}
+	}
+	SpinLockRelease(&scheduler->lock);
+
+	return backend;
+}
+
+uint32
+PgRuntimeSchedulerProcessDueTimeouts(PgRuntime *runtime, PgCarrier *carrier,
+									 TimestampTz now)
+{
+	PgBackend  *backend;
+	uint32		processed = 0;
+
+	if (!PgRuntimeIsPooledScheduler(runtime) ||
+		carrier == NULL ||
+		carrier->runtime != runtime)
+		return 0;
+
+	while ((backend = PgRuntimeSchedulerFindDueTimeoutWait(runtime,
+														  now)) != NULL)
+	{
+		volatile bool attached = false;
+		bool		fired = false;
+
+		PG_TRY();
+		{
+			PgCarrierAttachBackend(carrier, backend);
+			attached = true;
+			fired = process_due_logical_timeouts();
+			PgCarrierDetachBackend(carrier);
+			attached = false;
+		}
+		PG_CATCH();
+		{
+			if (attached)
+				PgCarrierDetachBackend(carrier);
+			PG_RE_THROW();
+		}
+		PG_END_TRY();
+
+		if (!fired)
+			break;
+
+		(void) PgBackendWakeWaitCompletion(backend, WL_TIMEOUT);
+		processed++;
+	}
+
+	return processed;
+}
+
 static void
 PgBackendSchedulerRequeueWaitCompletion(PgWaitCompletion *completion,
 										void *arg)

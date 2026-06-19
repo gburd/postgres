@@ -3358,6 +3358,9 @@ extern bool PgRuntimeSchedulerRunNextWithCallback(PgRuntime *runtime,
 extern uint32 PgRuntimeSchedulerWakeSocket(PgRuntime *runtime,
 										   pgsocket socket,
 										   uint32 ready_events);
+extern uint32 PgRuntimeSchedulerProcessDueTimeouts(PgRuntime *runtime,
+												   PgCarrier *carrier,
+												   TimestampTz now);
 extern void PgRuntimeSchedulerSetWakeLatch(PgRuntime *runtime,
 										   struct Latch *wake_latch);
 extern uint64 PgRuntimeSchedulerWakeGeneration(PgRuntime *runtime);
