@@ -289,6 +289,8 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 	ResourceOwner saved_current_resource_owner;
 	PgThreadBackendRuntimeState state;
 	PgProtocolParkSpec park_spec;
+	TimestampTz timeout_wake_at;
+	uint64		timeout_generation;
 	Latch		fake_latch;
 	bool		ok = true;
 
@@ -309,6 +311,14 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 	state.backend.core.latch = &fake_latch;
 	state.session.loop_state.doing_command_read = true;
 	state.connection.socket_io.transport_generation = 11;
+	state.backend.timeout.all_timeouts_initialized = true;
+	state.backend.timeout.signal_delivery = false;
+	state.backend.timeout.alarm_enabled = true;
+	state.backend.timeout.num_active_timeouts = 1;
+	state.backend.timeout.all_timeouts[IDLE_SESSION_TIMEOUT].active = true;
+	state.backend.timeout.all_timeouts[IDLE_SESSION_TIMEOUT].fin_time = 424242;
+	state.backend.timeout.active_timeouts[0] =
+		&state.backend.timeout.all_timeouts[IDLE_SESSION_TIMEOUT];
 	state.backend.timeout.generation = 17;
 
 	PG_TRY();
@@ -322,6 +332,12 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 		park_spec.transport_generation =
 			state.connection.socket_io.transport_generation;
 		park_spec.wait_event_info = WAIT_EVENT_CLIENT_READ;
+
+		ok = ok && PgBackendLogicalTimeoutNextWake(&state.backend,
+												   &timeout_wake_at,
+												   &timeout_generation);
+		ok = ok && timeout_wake_at == 424242;
+		ok = ok && timeout_generation == 17;
 
 		ok = ok && PgBackendPrepareProtocolReadPark(&state.backend,
 													&park_spec);
@@ -337,6 +353,8 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 			WL_SOCKET_READABLE;
 		ok = ok && state.backend.protocol_park.spec.transport_generation == 11;
 		ok = ok && state.backend.protocol_park.spec.timeout_generation == 17;
+		ok = ok && state.backend.protocol_park.spec.timeout_wake_at_valid;
+		ok = ok && state.backend.protocol_park.spec.timeout_wake_at == 424242;
 		ok = ok && state.backend.protocol_park.spec.generation == 1;
 		ok = ok && CurrentPgBackend == &state.backend;
 		ok = ok && state.carrier.current_backend == &state.backend;
@@ -375,6 +393,13 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 			PG_PROTOCOL_PARK_WAKE_LOGICAL;
 		ok = ok && state.backend.protocol_park.wake_events == WL_LATCH_SET;
 		ok = ok && state.backend.protocol_park.wake_generation == 1;
+		ok = ok && PgBackendMarkProtocolReadParkWake(&state.backend, 1,
+													 PG_PROTOCOL_PARK_WAKE_TIMEOUT,
+													 WL_TIMEOUT);
+		ok = ok && state.backend.protocol_park.wake_reasons ==
+			(PG_PROTOCOL_PARK_WAKE_LOGICAL | PG_PROTOCOL_PARK_WAKE_TIMEOUT);
+		ok = ok && state.backend.protocol_park.wake_events ==
+			(WL_LATCH_SET | WL_TIMEOUT);
 
 		PgCarrierAttachBackend(&state.carrier, &state.backend,
 							   &state.session, &state.connection,

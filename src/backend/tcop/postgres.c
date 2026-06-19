@@ -190,6 +190,9 @@ static PgSession *PgSessionBootstrap(const char *dbname, const char *username);
 pg_noreturn static void PgSessionRunProtocolSchedulerStaging(PgSession *session);
 static uint32 PgSessionStagingWaitProtocolRead(PgBackend *backend,
 											   PgProtocolParkSpec *park_spec);
+static long PgProtocolParkTimeoutDelayMs(PgBackend *backend,
+										 PgProtocolParkSpec *park_spec,
+										 bool *stale_timeout);
 static void PgSessionLoopStateInit(PgSessionLoopState *state);
 static void PgSessionRecoverError(PgSession *session);
 static pg_attribute_always_inline PgStepResult PgSessionStepUnprotected(PgSession *session,
@@ -691,6 +694,7 @@ PgSessionServiceProtocolReadWake(PgSession *session)
 	Assert(session == CurrentPgSession);
 	Assert(session->loop_state.doing_command_read);
 
+	(void) process_due_logical_timeouts();
 	ProcessClientReadInterrupt(false);
 
 	if (ConfigReloadPending)
@@ -5186,6 +5190,44 @@ PgSessionRun(PgSession *session)
 		(void) PgSessionStepUnprotected(session, budget);
 }
 
+static long
+PgProtocolParkTimeoutDelayMs(PgBackend *backend,
+							 PgProtocolParkSpec *park_spec,
+							 bool *stale_timeout)
+{
+	TimestampTz now;
+	long		delay_ms;
+
+	Assert(backend != NULL);
+	Assert(park_spec != NULL);
+	Assert(stale_timeout != NULL);
+
+	*stale_timeout = false;
+
+	if (!park_spec->timeout_wake_at_valid)
+		return -1;
+
+	if (!PgBackendProtocolReadParkTimeoutGenerationValid(backend,
+														 park_spec->generation))
+	{
+		*stale_timeout = true;
+		return 0;
+	}
+
+	now = GetCurrentTimestamp();
+	if (now >= park_spec->timeout_wake_at)
+		return 0;
+
+	delay_ms = TimestampDifferenceMilliseconds(now,
+											   park_spec->timeout_wake_at);
+	if (delay_ms < 0)
+		return 0;
+	if (delay_ms > INT_MAX)
+		return INT_MAX;
+
+	return delay_ms;
+}
+
 static uint32
 PgSessionStagingWaitProtocolRead(PgBackend *backend,
 								 PgProtocolParkSpec *park_spec)
@@ -5247,6 +5289,8 @@ PgSessionStagingWaitProtocolRead(PgBackend *backend,
 		for (;;)
 		{
 			int			rc;
+			long		timeout_ms;
+			bool		stale_timeout;
 
 			if (connection->socket_io.transport_generation !=
 				park_spec->transport_generation)
@@ -5258,7 +5302,30 @@ PgSessionStagingWaitProtocolRead(PgBackend *backend,
 				break;
 			}
 
-			rc = WaitEventSetWait(wait_set, -1, events, lengthof(events), 0);
+			timeout_ms =
+				PgProtocolParkTimeoutDelayMs(backend, park_spec,
+											 &stale_timeout);
+			if (stale_timeout)
+			{
+				(void) PgBackendMarkProtocolReadParkWake(backend,
+														 park_spec->generation,
+														 PG_PROTOCOL_PARK_WAKE_STALE_TIMEOUT,
+														 0);
+				break;
+			}
+			if (timeout_ms == 0)
+			{
+				wake_events |= WL_TIMEOUT;
+				break;
+			}
+
+			rc = WaitEventSetWait(wait_set, timeout_ms, events,
+								  lengthof(events), 0);
+			if (rc == 0)
+			{
+				wake_events |= WL_TIMEOUT;
+				break;
+			}
 			for (int i = 0; i < rc; i++)
 			{
 				wake_events |= events[i].events;
@@ -5293,6 +5360,8 @@ PgSessionStagingWaitProtocolRead(PgBackend *backend,
 			wake_reasons |= PG_PROTOCOL_PARK_WAKE_LOGICAL;
 		if (wake_events & WL_POSTMASTER_DEATH)
 			wake_reasons |= PG_PROTOCOL_PARK_WAKE_POSTMASTER;
+		if (wake_events & WL_TIMEOUT)
+			wake_reasons |= PG_PROTOCOL_PARK_WAKE_TIMEOUT;
 
 		(void) PgBackendMarkProtocolReadParkWake(backend,
 												 park_spec->generation,

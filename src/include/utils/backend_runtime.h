@@ -214,7 +214,9 @@ typedef enum PgProtocolParkWakeReason
 	PG_PROTOCOL_PARK_WAKE_CLOSED = (1 << 2),
 	PG_PROTOCOL_PARK_WAKE_LOGICAL = (1 << 3),
 	PG_PROTOCOL_PARK_WAKE_POSTMASTER = (1 << 4),
-	PG_PROTOCOL_PARK_WAKE_STALE_TRANSPORT = (1 << 5)
+	PG_PROTOCOL_PARK_WAKE_STALE_TRANSPORT = (1 << 5),
+	PG_PROTOCOL_PARK_WAKE_TIMEOUT = (1 << 6),
+	PG_PROTOCOL_PARK_WAKE_STALE_TIMEOUT = (1 << 7)
 } PgProtocolParkWakeReason;
 
 typedef struct PgProtocolParkSpec
@@ -227,6 +229,8 @@ typedef struct PgProtocolParkSpec
 	bool		transport_buffered_input;
 	uint64		transport_generation;
 	uint64		timeout_generation;
+	bool		timeout_wake_at_valid;
+	TimestampTz timeout_wake_at;
 	uint32		wait_event_info;
 	uint64		generation;
 } PgProtocolParkSpec;
@@ -3433,6 +3437,9 @@ extern bool PgBackendWakeWaitCompletion(PgBackend *backend,
 										uint32 ready_events);
 extern bool PgBackendWakeWaitCompletionById(PgBackendId backend_id,
 											uint32 ready_events);
+extern bool PgBackendLogicalTimeoutNextWake(PgBackend *backend,
+											TimestampTz *wake_at,
+											uint64 *generation);
 extern bool PgBackendPrepareProtocolReadPark(PgBackend *backend,
 											 PgProtocolParkSpec *spec);
 extern void PgCarrierCommitProtocolReadPark(PgCarrier *carrier,

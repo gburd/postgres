@@ -1583,6 +1583,33 @@ PgBackendWakeWaitCompletionById(PgBackendId backend_id, uint32 ready_events)
 }
 
 bool
+PgBackendLogicalTimeoutNextWake(PgBackend *backend, TimestampTz *wake_at,
+								uint64 *generation)
+{
+	PgBackendTimeoutState *timeout;
+
+	Assert(backend != NULL);
+
+	timeout = &backend->timeout;
+	if (generation != NULL)
+		*generation = timeout->generation;
+
+	if (!timeout->all_timeouts_initialized ||
+		timeout->signal_delivery ||
+		timeout->num_active_timeouts <= 0 ||
+		!timeout->alarm_enabled)
+		return false;
+
+	if (timeout->active_timeouts[0] == NULL)
+		return false;
+
+	if (wake_at != NULL)
+		*wake_at = timeout->active_timeouts[0]->fin_time;
+
+	return true;
+}
+
+bool
 PgBackendPrepareProtocolReadPark(PgBackend *backend, PgProtocolParkSpec *spec)
 {
 	PgSession  *session;
@@ -1616,7 +1643,11 @@ PgBackendPrepareProtocolReadPark(PgBackend *backend, PgProtocolParkSpec *spec)
 	spec->socket = connection->identity.port != NULL ?
 		connection->identity.port->sock : PGINVALID_SOCKET;
 	spec->generation = ++park_state->next_generation;
-	spec->timeout_generation = backend->timeout.generation;
+	spec->timeout_wake_at_valid =
+		PgBackendLogicalTimeoutNextWake(backend, &spec->timeout_wake_at,
+										&spec->timeout_generation);
+	if (!spec->timeout_wake_at_valid)
+		spec->timeout_generation = backend->timeout.generation;
 
 	park_state->spec = *spec;
 	park_state->wake_reasons = PG_PROTOCOL_PARK_WAKE_NONE;
