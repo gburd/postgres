@@ -805,18 +805,25 @@ Likely changes:
   cherry-pick only the current work that matches the protocol-boundary design.
 - Add a nonblocking frontend message type-byte probe with explicit no-byte,
   byte-available, and EOF/error semantics.
-- Add an explicit protocol-park API separate from `PgSuspend()`.
-- Teach `PgSessionStep()` to return a parked protocol-read result.
+- Add transport wait mask/generation support for the protocol probe, including
+  SSL/GSS read/write/buffered-input behavior, or explicitly keep SSL/GSS
+  connections carrier-pinned for Phase 14.
+- Add explicit protocol-park prepare/commit APIs separate from `PgSuspend()`.
+- Teach `PgSessionStep()` to return a prepared protocol-park result, and extend
+  `PgStepResult` with normal and fatal logical backend exit outcomes before
+  scheduler dispatch depends on it.
 - Add parked wake reason and generation/sequence tracking.
 - Add a deferred-notify generation/reason marker so idle-in-transaction
   listeners do not spin on unserviceable notifications.
 - Add scheduler runnable and parked-protocol queues.
-- Add socket-readiness dispatch for parked protocol reads.
+- Add frontend transport-readiness dispatch for parked protocol reads.
 - Wake parked sessions on frontend input, disconnect, cancel/die,
   config/catchup/proc-signal work, timeout expiry, postmaster death, and
   scheduler shutdown.
 - Add backend-indexed timeout snapshot/wake plumbing, or reattach before
   inspecting/firing current-backend timeout state.
+- Add timeout generation validation so stale parked timeout snapshots cannot
+  fire after timer reconfiguration or frontend input readiness.
 - Add `LISTEN`/`NOTIFY` wake behavior for parked sessions, including the
   `idle in transaction` no-spin rule.
 - Add attach/detach assertions for current pointers, TLS mirrors, `PGPROC`,
@@ -825,6 +832,9 @@ Likely changes:
 - Decide the Phase 14 wake object policy for `PGPROC`, backend latch,
   `MyLatch`, and `FeBeWaitSet`; this is an acceptance criterion, not a later
   open question.
+- Define the concrete parked wake routing table for frontend transport,
+  `SendInterrupt()`, proc-signal fallback, `PGPROC->procLatch`, timeout expiry,
+  and postmaster death before adding scheduler queues.
 
 Initial limitations are required, not merely acceptable:
 
@@ -843,9 +853,13 @@ Validation:
   death correctly;
 - byte-probe tests prove no-byte leaves message state untouched and
   byte-available pins the backend until the complete message is handled;
+- byte-probe tests prove no-byte restores query-cancel holdoff, does not move
+  receive-buffer cursors, and reports the correct transport wait mask;
 - parked `LISTEN` sessions receive notifications;
 - parked `idle in transaction` listeners do not spin or deliver notifications
   before transaction state permits it;
+- timeout tests prove stale parked timeout generations do not fire detached
+  timeout behavior;
 - negative tests prove `pg_sleep()`, advisory locks, LWLocks/semaphores, and
   frontend output backpressure do not claim carrier release;
 - process-mode and thread-per-session modes still work.
@@ -1289,35 +1303,44 @@ Mitigation:
    This is a hard Phase 14A.0 gate.
 6. Add the protocol byte-probe primitive with explicit no-byte, byte-available,
    and EOF/error semantics, plus tests that prove no-byte does not advance
-   buffer or message-read state.
+   buffer or message-read state, does not leave query-cancel holdoff elevated,
+   and reports transport read/write/buffered-input readiness.
 7. Add explicit protocol-park prepare/commit APIs, including parked wake reason,
    generation/sequence tracking, and deferred-notify generation tracking.
    `PgSessionStep()` prepares the park and returns; the carrier loop commits
    detach only after the step stack has unwound.
-8. Add backend-indexed timeout snapshot/wake support, or require reattach before
+8. Extend `PgStepResult` and backend-exit paths so protocol park, normal logical
+   exit, and fatal logical exit return to the scheduler before dispatch grows.
+9. Add backend-indexed timeout snapshot/wake support, or require reattach before
    inspecting/firing timeout state that depends on current-backend globals.
-9. Decide and assert the Phase 14 `PGPROC`, latch, logical wake object, and
+   Include timeout generation validation for stale parked snapshots.
+10. Decide and assert the Phase 14 `PGPROC`, latch, logical wake object, and
    `FeBeWaitSet` ownership rules.
-10. Teach `PgSessionStep()` to return a parked protocol-read result only before
-    any new frontend message byte has been consumed.
-11. Cover frontend input, disconnect, cancel, terminate, timeout, postmaster
+11. Define the concrete parked wake routing table across frontend transport,
+    `SendInterrupt()`, proc-signal fallback, `PGPROC->procLatch`, timeout, and
+    postmaster death.
+12. Teach `PgSessionStep()` to return a prepared protocol-read park result only
+    before any new frontend message byte has been consumed.
+13. Cover frontend input, disconnect, cancel, terminate, timeout, postmaster
     death, and `LISTEN`/`NOTIFY` wakeups.
-12. Add negative tests proving `pg_sleep()`, lock waits, LWLocks/semaphores, and
+14. Add negative tests proving `pg_sleep()`, lock waits, LWLocks/semaphores, and
    frontend output backpressure remain carrier-pinned.
-13. Add attach/detach invariant assertions for current pointers, TLS mirrors,
+15. Add attach/detach invariant assertions for current pointers, TLS mirrors,
     `PGPROC`, latches, `FeBeWaitSet`, memory contexts, resource owners,
     timeouts, and scheduler state.
-14. Split extension compatibility into thread-per-session,
+16. Split extension compatibility into thread-per-session,
     pooled-protocol-affine, pooled-protocol-migratable, and later
     task-reentrant levels before any migration claim.
-15. Decouple client sessions from carrier creation and add a bounded carrier
+17. Split PMChild logical-backend publication from physical carrier-thread
+    lifetime before claiming a reusable carrier pool.
+18. Decouple client sessions from carrier creation and add a bounded carrier
     pool.
-16. Add sessions-greater-than-carriers stress coverage and soft carrier
+19. Add sessions-greater-than-carriers stress coverage and soft carrier
     affinity/grace-pinning instrumentation.
-17. Run Gate F before leaving Phase 15.
-18. Defer contrib-wide threaded support, bundled languages beyond PL/pgSQL, and
+20. Run Gate F before leaving Phase 15.
+21. Defer contrib-wide threaded support, bundled languages beyond PL/pgSQL, and
     the full custom/extension GUC matrix to Phase 16.
-19. Defer frontend-output yielding, COPY continuations, lock-wait yielding,
+22. Defer frontend-output yielding, COPY continuations, lock-wait yielding,
     executor/utility yield points, and AIO/storage scheduler boundaries to
     Phase 17.
 

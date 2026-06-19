@@ -146,8 +146,16 @@ typedef enum PgProtocolByteResult
 	PG_PROTOCOL_BYTE_EOF
 } PgProtocolByteResult;
 
+typedef struct PgProtocolByteProbe
+{
+	unsigned char type;
+	uint32		transport_wait_events;
+	bool		transport_buffered_input;
+	uint64		transport_generation;
+} PgProtocolByteProbe;
+
 PgProtocolByteResult PgConnectionProbeMessageType(PgConnection *connection,
-												  unsigned char *type);
+												  PgProtocolByteProbe *probe);
 ```
 
 The exact names can change, but the semantics must not:
@@ -155,7 +163,8 @@ The exact names can change, but the semantics must not:
 - `PG_PROTOCOL_BYTE_NONE` means no byte is currently available, no active
   message read has started, `comm_reading_msg` or its replacement remains false,
   no input buffer cursor moves, no type byte is consumed, and the backend may
-  park at the protocol boundary.
+  park at the protocol boundary. The returned `transport_wait_events` must say
+  which transport readiness events can make progress.
 - `PG_PROTOCOL_BYTE_AVAILABLE` means the type byte has been consumed and the
   message is now owned by the attached carrier until the complete message body
   is read, skipped, or recovered from by the normal synchronous protocol path.
@@ -169,17 +178,30 @@ The primitive must also specify:
 
 - SSL/GSS and handshake states: no-byte may only mean "would block before a new
   PostgreSQL message". A mid-record SSL/GSS state is not a parkable PostgreSQL
-  protocol boundary unless that layer has its own explicit continuation.
+  protocol boundary unless that layer has its own explicit continuation. If
+  SSL/GSS cannot report a stable `transport_wait_events` mask and generation,
+  Phase 14 must disable protocol parking for that connection and keep it
+  carrier-pinned at frontend reads.
+- transport readiness: `transport_wait_events` may include socket readability
+  and writability. SSL `WANT_WRITE` while reading must park on writability, not
+  only readability. GSS or SSL buffered plaintext must be reported as
+  `PG_PROTOCOL_BYTE_AVAILABLE` or `transport_buffered_input`, not hidden behind
+  a socket-readiness wait that may never fire.
 - EINTR/latch/proc-signal behavior: transient interrupts must not consume a byte
   or move buffer cursors. They should return no-byte only after recording the
   wake reason that must be serviced before re-parking.
 - timeout behavior: timeout expiry observed during the probe must be surfaced as
   a wake/service reason, not hidden as an ordinary no-byte result.
+- query-cancel holdoff behavior: the no-byte path must not return with
+  query-cancel holdoff elevated. The byte-available path may use the existing
+  holdoff shape, but it must remain carrier-pinned until the full message body
+  is complete or the connection exits.
 - error recovery: after an error, parking is legal only after protocol recovery
   has either restored sync or decided to terminate the connection.
 - observability: tests must prove the no-byte path leaves message-read state and
-  buffer cursors unchanged, and the byte-available path prevents detach until the
-  body is complete.
+  buffer cursors unchanged, leaves no active message read, restores holdoff
+  counters, preserves transport generation, and prevents detach after
+  byte-available until the body is complete.
 
 ## Wait Classification
 
@@ -192,7 +214,8 @@ Only:
 
 The wait sources attached to this parked state are:
 
-- frontend socket readable;
+- frontend transport readiness, including socket readability or writability as
+  required by SSL/GSS state;
 - backend logical interrupt/latch wake;
 - async notify pending;
 - catchup/config/proc-signal work;
@@ -441,7 +464,7 @@ For Phase 14A it should provide:
 - runnable queue;
 - parked protocol-wait queue or indexed wait set;
 - timeout tracking for parked sessions;
-- socket readiness dispatch;
+- frontend transport readiness dispatch;
 - logical wake dispatch;
 - attach/detach assertions;
 - optional last-carrier diagnostic metadata, without grace-pinning policy.
@@ -529,6 +552,24 @@ contexts, resource owners, timeout state, wait-event pointers, and the
 scheduler-loop state where no backend is current. Scheduler code should not
 assemble those bindings ad hoc.
 
+The implementation should wrap the existing current-work bridge, such as
+`PgRuntimeSetCurrentWork()` or its successor, instead of clearing individual
+pointers by hand. The attach/detach APIs must update current roots, refresh hot
+cells and bucket pointers, rebind compatibility mirrors, and invalidate or
+validate cached fast-path slots as one atomic-looking operation from the
+scheduler's point of view.
+
+Debug builds should make hot-field ownership checkable:
+
+- every hot slot used by scheduler-visible code should be associated with the
+  currently attached backend/session/execution generation;
+- `CurrentMemoryContext` must never point at a parked backend's
+  `MessageContext` while a carrier is running scheduler code;
+- scheduler-loop allocation must use a carrier/runtime context, not the last
+  detached session;
+- resource-owner and error-context current pointers must be null or
+  scheduler-safe while no backend is attached.
+
 ### On Attach
 
 Before a carrier calls into `PgSessionStep()` for a backend:
@@ -564,6 +605,8 @@ Before a carrier returns to the scheduler after protocol parking:
 - `PGPROC`, locks, transaction state, and stats identity remain owned by the
   logical backend;
 - current pointers on the carrier are cleared or set to scheduler-only values;
+- `CurrentMemoryContext`, resource owner, and error context point at
+  scheduler-safe state or are null where allowed;
 - TLS/global mirrors that could be observed by carrier scheduler code are not
   left pointing at the detached session;
 - the backend is in `PARKED_PROTOCOL_READ` scheduler state and appears in
@@ -590,18 +633,24 @@ claiming protocol parking works:
 
 - `PGPROC` remains owned by the logical backend while parked, including locks,
   proc-array identity, wait-event fields, and signal/stat visibility.
-- The parked backend is woken through either a backend-owned logical wake object
-  or a scheduler-owned parked record that is independent of any carrier-local
-  latch pointer.
-- `MyLatch` and the backend interrupt latch must be rebound on attach and must
-  not leave a parked backend depending on the last carrier's stack or local
-  wait object.
+- Phase 14A.1 must define a parked wake routing table before runnable/parked
+  scheduler queues are introduced. The table must cover frontend transport
+  readiness, connection close/error, `SendInterrupt()`, proc-signal fallback,
+  `PGPROC->procLatch` users, timeout expiry, and postmaster death.
+- The parked backend is woken through a backend-owned logical wake object or a
+  scheduler-owned parked record that is independent of any carrier-local latch
+  pointer. The chosen object must carry a park generation.
+- `MyLatch`, `backend->interrupt_latch`, and `PGPROC->procLatch` ownership must
+  be rebound on attach and redirected or represented while parked. A parked
+  backend must not depend on the last carrier's stack or local wait object.
 - `FeBeWaitSet` must either be recreated/rebound on every attach or represented
   as connection-owned state whose socket, latch, and postmaster-death entries
   are safe across detach.
 - Socket readiness, latch/interrupt wake, timeout wake, and postmaster death
   must all converge on the parked scheduler record without requiring the backend
   to be attached already.
+- If any wake path cannot target the parked generation reliably, that backend is
+  not eligible for protocol parking yet and must remain carrier-pinned.
 - Tests must cover wake delivery after detach, same-carrier resume, migrated
   resume if migration exists, and teardown while parked.
 
@@ -658,7 +707,8 @@ generic wait and must not imply that detach already happened inside
 1. Preserve the top-level error boundary.
 2. If resuming from a parked wake, service the wake reason before deciding
    whether to park again:
-   - socket-readable wakes may proceed to the nonblocking message-byte probe;
+   - frontend transport readiness wakes may proceed to the nonblocking
+     message-byte probe;
    - socket-close/error wakes must detect disconnect;
    - logical interrupt wakes must run the top-level interrupt/config/catchup
      path that is legal while idle;
@@ -711,9 +761,9 @@ When a parked backend is made runnable, service wake reasons in this order:
    normal attached timeout path.
 5. Service `LISTEN`/`NOTIFY` only if the current transaction state permits
    delivery.
-6. If socket readability remains, run the protocol byte probe. A consumed type
-   byte makes the backend carrier-pinned until the message body and command
-   dispatch complete.
+6. If frontend transport readiness remains, run the protocol byte probe. A
+   consumed type byte makes the backend carrier-pinned until the message body
+   and command dispatch complete.
 7. If no frontend byte is available and all serviceable wake reasons are
    consumed or explicitly deferred, re-park with a new generation.
 
@@ -723,6 +773,18 @@ notification because the backend is idle in a transaction, the scheduler must
 record the notify generation/reason as deferred. The same unprocessable notify
 must not keep requeueing the backend until transaction state changes or a newer
 notification generation arrives.
+
+There are two separate notify states to track:
+
+- the logical wake/signal generation that made the parked backend runnable;
+- the backend's still-pending async notification work, which may remain pending
+  while idle in a transaction.
+
+Phase 14 must test both. Reparking after an idle-in-transaction notify wake is
+legal only after the wake generation is marked serviced/deferred, while the
+backend-level pending async notification remains for later delivery. A new
+notify signal generation or a transaction-state change may make the backend
+runnable again; the same deferred generation must not.
 
 ## API Sketch
 
@@ -735,11 +797,12 @@ generic wait publication.
 typedef enum PgProtocolParkWake
 {
 	PG_PROTOCOL_WAKE_SOCKET_READABLE = 1 << 0,
-	PG_PROTOCOL_WAKE_SOCKET_CLOSED   = 1 << 1,
-	PG_PROTOCOL_WAKE_INTERRUPT       = 1 << 2,
-	PG_PROTOCOL_WAKE_NOTIFY          = 1 << 3,
-	PG_PROTOCOL_WAKE_TIMEOUT         = 1 << 4,
-	PG_PROTOCOL_WAKE_POSTMASTER_DEATH = 1 << 5,
+	PG_PROTOCOL_WAKE_SOCKET_WRITEABLE = 1 << 1,
+	PG_PROTOCOL_WAKE_SOCKET_CLOSED   = 1 << 2,
+	PG_PROTOCOL_WAKE_INTERRUPT       = 1 << 3,
+	PG_PROTOCOL_WAKE_NOTIFY          = 1 << 4,
+	PG_PROTOCOL_WAKE_TIMEOUT         = 1 << 5,
+	PG_PROTOCOL_WAKE_POSTMASTER_DEATH = 1 << 6,
 } PgProtocolParkWake;
 
 typedef struct PgProtocolParkSpec
@@ -748,10 +811,14 @@ typedef struct PgProtocolParkSpec
 	PgSession  *session;
 	PgConnection *connection;
 	pgsocket	socket;
+	uint32		transport_wait_events;
+	uint64		transport_generation;
 	TimestampTz timeout_at;
+	uint64		timeout_generation;
 	uint32		wake_mask;
 	uint32		wait_event_info;
 	uint64		generation;
+	uint64		notify_signal_generation;
 	uint64		deferred_notify_generation;
 } PgProtocolParkSpec;
 
@@ -773,7 +840,8 @@ It must assert that:
 - the session is in top-level command read state;
 - no execution stack is active below the current `PgSessionStep()` frame;
 - the backend is not already in a scheduler queue;
-- the connection socket is valid or the wake is purely interrupt/timeout based.
+- the connection transport has a valid wait mask or buffered-input generation,
+  unless the wake is purely interrupt/timeout based.
 
 `PgCarrierCommitProtocolReadPark()` is called only by the carrier loop after
 `PgSessionStep()` has returned `PARK_PROTOCOL_READ`. It performs the actual
@@ -822,7 +890,7 @@ deferred the wake reason.
 The scheduler must record enough wake metadata for the session step to know why
 it was resumed:
 
-- socket readable;
+- frontend transport readable/writeable/buffered;
 - socket close/error;
 - logical interrupt;
 - notify;
@@ -881,7 +949,9 @@ It should not use a partial message as the scheduler continuation.
 
 The parked protocol wait must be woken by:
 
-- frontend socket readability;
+- frontend transport readiness from the park record's
+  `transport_wait_events`, including socket readability, socket writability for
+  SSL/GSS progress, and already-buffered decrypted bytes;
 - socket hangup/error;
 - logical backend interrupts;
 - `PROCSIG_NOTIFY_INTERRUPT`;
@@ -894,6 +964,11 @@ The parked protocol wait must be woken by:
 
 Wake handling should mark the backend runnable. Actual interrupt semantics
 should remain in the normal top-level processing path where possible.
+
+The scheduler must compare the park record's transport generation before acting
+on readiness. If the connection's transport state has changed since the park was
+prepared, the backend must be reattached to re-probe rather than treating stale
+readiness as permission to consume protocol bytes.
 
 ## Timeout Handling
 
@@ -917,6 +992,14 @@ The exact API can change, but the ownership rule cannot:
 - firing timeout handlers and raising user-visible timeout errors must happen
   only after the backend is attached and the normal top-level timeout path is
   active.
+
+Parked timeout snapshots must carry a timeout generation. Any timeout enable,
+disable, reschedule, service, frontend byte consumption, or backend reattach
+that changes timeout state must advance that generation. When the scheduler
+observes a timeout timestamp, it may only mark the parked timeout expired if the
+park record's timeout generation still matches the backend's current timeout
+generation. A stale timeout snapshot must wake/reprobe the backend at most; it
+must not fire user-visible timeout behavior while detached.
 
 An acceptable initial implementation is to snapshot the next idle timeout while
 the backend is still attached during protocol park, let the scheduler sleep on
@@ -1106,6 +1189,13 @@ session step.
 Logical backend exit must clean up one backend/session without necessarily
 exiting the physical carrier.
 
+Before scheduler dispatch grows beyond staging, `PgStepResult` must have
+explicit scheduler-visible outcomes for protocol park, normal logical backend
+exit, and fatal logical backend exit. EOF, `Terminate`, and other normal session
+end paths must be able to return `DONE` or a logical-exit result to the carrier
+loop in pooled modes. They must not rely on non-returning `PgBackendExit(0)` if
+the physical carrier is supposed to survive and run another backend.
+
 Phase 14A needs a clear split:
 
 - logical backend exit: close connection, release session resources, unregister
@@ -1118,6 +1208,14 @@ If this split is not clean yet, it is better to keep a staging implementation
 where each accepted client creates a carrier, while the design and tests focus
 only on protocol parking semantics. Do not let that staging shape become the
 target architecture.
+
+Phase 15 also has to split the postmaster child publication model. The current
+thread-backed PMChild shape publishes one `thread_backend` and one `signal_pid`
+for the life of a carrier thread and clears them on thread exit. A real carrier
+pool needs logical backend lifetime, signal pid publication, and carrier thread
+exit to be represented separately, so a parked or migrated logical backend is
+not lost when a carrier exits and a carrier can be reused without implying
+logical backend exit.
 
 ## Carrier Pool
 
@@ -1162,26 +1260,35 @@ Phase 15 owns real pool mode:
 
 - Add the nonblocking frontend message type-byte probe.
 - Add explicit prepare/commit protocol-park APIs.
+- Add the transport wait mask/generation required by TLS/GSS-aware protocol
+  parking, or explicitly disable protocol parking for SSL/GSS connections in
+  Phase 14.
 - Teach `PgSessionStep()` to return `PARK_PROTOCOL_READ` after preparing a park
   request, without detaching inside the step frame.
 - Teach the carrier loop to commit the park and detach only after
   `PgSessionStep()` has returned.
+- Extend `PgStepResult` with protocol park, normal exit, and fatal exit outcomes
+  before scheduler dispatch relies on the step result.
 - Assert that no partial frontend message is active when parking.
-- Add unit coverage for the message-read predicate.
+- Add unit coverage for the message-read predicate, receive-buffer cursor,
+  query-cancel holdoff, and transport wait mask.
 
-### Phase 14A.2: Scheduler Queue And Socket Wake
+### Phase 14A.2: Scheduler Queue And Transport Wake
 
 - Add runnable and parked-protocol queues.
-- Add socket readiness wait-set dispatch for parked protocol reads.
+- Add frontend transport readiness wait-set dispatch for parked protocol reads.
 - Wake parked backends on frontend input or disconnect.
 - Run one frontend message per dispatch initially.
 - Add focused TAP coverage for multiple idle clients.
+- Cover TLS/GSS transport wait masks, or prove those connections stay
+  carrier-pinned in Phase 14.
 
 ### Phase 14A.3: Logical Wake While Parked
 
 - Wake parked sessions on cancel/die/config/catchup/proc-signal events.
 - Add `LISTEN`/`NOTIFY` coverage.
 - Add idle timeout and idle-in-transaction timeout coverage.
+- Add timeout snapshot generation validation coverage.
 - Prove parked idle-in-transaction sessions preserve transaction and lock
   state.
 
@@ -1254,7 +1361,7 @@ Likely keep/cherry-pick conceptually:
 - wait-completion records and tests from Phase 13;
 - nonblocking frontend message type-byte probe;
 - `PgSessionStep()` returning a parked/top-level result;
-- socket readiness dispatch for parked protocol waits;
+- frontend transport readiness dispatch for parked protocol waits;
 - logical interrupt wake for parked protocol waits;
 - timeout wake for parked idle sessions;
 - scheduler queue primitives after renaming/narrowing states.
@@ -1321,10 +1428,16 @@ Before claiming Phase 14:
 - carrier attach/detach invariant assertions are enabled in development builds;
 - protocol-byte probe tests prove no-byte leaves message state untouched and
   byte-available pins the backend until the full message is handled;
+- byte-probe tests prove no-byte restores query-cancel holdoff and does not move
+  receive-buffer cursors;
+- transport-readiness tests prove TLS/GSS connections either park with the
+  correct read/write/buffered wait mask or are excluded from Phase 14 parking;
 - parked wake tests cover frontend input, disconnect, cancel, terminate,
   timeout, postmaster death, and `LISTEN`/`NOTIFY`;
 - idle-in-transaction notify tests prove the deferred-notify marker prevents
   requeue churn;
+- timeout tests prove stale parked timeout generations cannot fire detached
+  timeout behavior;
 - lifecycle/global-state checks pass;
 - no generated test output is part of commits;
 - docs clearly distinguish observable waits from scheduler-yielding waits.

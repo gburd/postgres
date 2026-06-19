@@ -175,6 +175,12 @@ typedef enum PgStepResult
 } PgStepResult;
 
 /*
+ * Phase 14 protocol scheduling must extend PgStepResult before dispatch grows:
+ * prepared protocol park, normal logical exit, and fatal logical exit must
+ * return to the carrier loop instead of relying on carrier-thread exit.
+ */
+
+/*
  * Logical interrupts target a backend object first.  In process mode these are
  * bridged back to the historical volatile globals serviced by
  * CHECK_FOR_INTERRUPTS(); later backend models can route these bits without

@@ -923,6 +923,11 @@ PgRuntimeSetExtensionBackendModel(PgBackendModel backend_model)
 	if (CurrentPgRuntime == NULL)
 		return;
 
+	/*
+	 * PG_BACKEND_MODEL_POOLED_SCHEDULER is a transitional generic marker.  The
+	 * protocol-boundary scheduler must split protocol-affine from migratable
+	 * module promises before using a stricter pooled runtime requirement.
+	 */
 	check_loaded_modules_backend_model(backend_model);
 	CurrentPgRuntime->extension_backend_model = backend_model;
 }
