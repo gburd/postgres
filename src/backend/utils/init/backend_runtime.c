@@ -706,6 +706,15 @@ PgRuntimeResetAfterFork(void)
 void
 InitializePgProcessRuntime(void)
 {
+	/*
+	 * Bootstrap and standalone startup can call InitProcess() before BaseInit()
+	 * installs the process runtime.  Preserve the PGPROC/latch/wait-event
+	 * storage that InitProcess() already made current.
+	 */
+	PGPROC	   *my_proc = MyProc;
+	ProcNumber	my_proc_number = MyProcNumber;
+	struct Latch *my_latch = MyLatch;
+	uint32	   *my_wait_event_info = *PgCurrentMyWaitEventInfoRef();
 	int			wait_event_signal_fd = process_carrier.wait_event_signal_fd;
 	int			wait_event_selfpipe_readfd =
 		process_carrier.wait_event_selfpipe_readfd;
@@ -751,6 +760,10 @@ InitializePgProcessRuntime(void)
 									 &process_connection, &process_execution,
 									 MyBackendType, NULL);
 	PgBackendAdoptEarlyState(&process_backend);
+	process_backend.my_proc = my_proc;
+	process_backend.my_proc_number = my_proc_number;
+	process_backend.core.latch = my_latch;
+	process_backend.wait_state.wait_event_info_ptr = my_wait_event_info;
 	PgBackendSetInterruptLatch(&process_backend, process_backend.core.latch);
 	PgBackendAdoptEarlyExitState(&process_backend.exit_state);
 

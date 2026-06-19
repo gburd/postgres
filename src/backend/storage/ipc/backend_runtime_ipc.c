@@ -108,13 +108,29 @@ PgCurrentLocalLatchData(void)
 uint32 **
 PgCurrentMyWaitEventInfoRef(void)
 {
-	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR_INITIALIZED_BY(CurrentPgBackendWaitRuntimeState, PgCurrentBackendWaitState, wait_event_info_ptr)->wait_event_info_ptr;
+	PgBackendWaitState *wait_state = CurrentPgBackendWaitRuntimeState;
+
+	if (unlikely(wait_state == NULL || wait_state->wait_event_info_ptr == NULL))
+	{
+		PG_RUNTIME_BRIDGE_COUNT_FALLBACK(fast_initialized_bucket);
+		wait_state = PgCurrentBackendWaitState();
+	}
+
+	return &wait_state->wait_event_info_ptr;
 }
 
 uint32 *
 PgCurrentLocalWaitEventInfoRef(void)
 {
-	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR_INITIALIZED_BY(CurrentPgBackendWaitRuntimeState, PgCurrentBackendWaitState, wait_event_info_ptr)->local_wait_event_info;
+	PgBackendWaitState *wait_state = CurrentPgBackendWaitRuntimeState;
+
+	if (unlikely(wait_state == NULL || wait_state->wait_event_info_ptr == NULL))
+	{
+		PG_RUNTIME_BRIDGE_COUNT_FALLBACK(fast_initialized_bucket);
+		wait_state = PgCurrentBackendWaitState();
+	}
+
+	return &wait_state->local_wait_event_info;
 }
 
 volatile sig_atomic_t *
