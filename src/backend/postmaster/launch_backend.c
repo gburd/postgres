@@ -196,16 +196,27 @@ static PG_GLOBAL_IMMUTABLE const child_process_kind child_process_kinds[] = {
 #undef PG_PROCTYPE
 };
 
+typedef enum BackendThreadStartKind
+{
+	BACKEND_THREAD_START_DEDICATED
+} BackendThreadStartKind;
+
+typedef struct BackendThreadPublication
+{
+	BackendThreadStartKind kind;
+	PMChild    *pmchild;
+	Latch	   *postmaster_latch;
+} BackendThreadPublication;
+
 typedef struct BackendThreadStart
 {
-	PMChild    *pmchild;
+	BackendThreadPublication publication;
 	BackendType child_type;
 	int			child_slot;
 	PgThreadBackendRuntimeState runtime_state;
 	BackendStartupData startup_data;
 	BackgroundWorker bgworker_startup_data;
 	ClientSocket client_sock;
-	Latch	   *postmaster_latch;
 	pg_tz	   *startup_session_timezone;
 	pg_tz	   *startup_log_timezone;
 	pg_atomic_uint32 launch_registered;
@@ -222,6 +233,7 @@ static bool postmaster_backend_thread_launch(PMChild *pmchild,
 static void backend_thread_entry(void *arg);
 static void backend_thread_run_backend(BackendThreadStart *thread_start);
 static void backend_thread_run_worker(BackendThreadStart *thread_start);
+static BackendThreadPublication *backend_thread_current_publication(void);
 static BackendThreadStart *backend_thread_current_start(void);
 static void backend_thread_set_current_start(BackendThreadStart *thread_start);
 static void backend_thread_wait_until_registered(BackendThreadStart *thread_start);
@@ -402,7 +414,8 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 		return false;
 	}
 
-	thread_start->pmchild = pmchild;
+	thread_start->publication.kind = BACKEND_THREAD_START_DEDICATED;
+	thread_start->publication.pmchild = pmchild;
 	thread_start->child_type = child_type;
 	thread_start->child_slot = child_slot;
 	if (child_type == B_BACKEND)
@@ -442,10 +455,10 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 	InitializePgThreadBackendRuntimeState(&thread_start->runtime_state,
 										  thread_start->child_type, NULL,
 										  NULL);
-	thread_start->postmaster_latch = MyLatch;
-	if (thread_start->postmaster_latch == NULL)
-		thread_start->postmaster_latch = PgCurrentLocalLatchData();
-	Assert(thread_start->postmaster_latch != NULL);
+	thread_start->publication.postmaster_latch = MyLatch;
+	if (thread_start->publication.postmaster_latch == NULL)
+		thread_start->publication.postmaster_latch = PgCurrentLocalLatchData();
+	Assert(thread_start->publication.postmaster_latch != NULL);
 
 	rc = pg_thread_create(&thread, "postgres backend",
 						  backend_thread_entry, thread_start);
@@ -562,7 +575,21 @@ backend_thread_run_worker(BackendThreadStart *thread_start)
 static BackendThreadStart *
 backend_thread_current_start(void)
 {
-	return (BackendThreadStart *) *PgCurrentBackendThreadStartRef();
+	BackendThreadPublication *publication;
+
+	publication = backend_thread_current_publication();
+	if (publication == NULL)
+		return NULL;
+	if (publication->kind != BACKEND_THREAD_START_DEDICATED)
+		return NULL;
+
+	return (BackendThreadStart *) publication;
+}
+
+static BackendThreadPublication *
+backend_thread_current_publication(void)
+{
+	return (BackendThreadPublication *) *PgCurrentBackendThreadStartRef();
 }
 
 static void
@@ -597,13 +624,13 @@ backend_thread_init_random_state(void)
 void
 ThreadedBackendStartupComplete(void)
 {
-	BackendThreadStart *thread_start = backend_thread_current_start();
+	BackendThreadPublication *publication = backend_thread_current_publication();
 
-	if (thread_start == NULL)
+	if (publication == NULL)
 		return;
 
-	PostmasterChildPublishThreadStartupComplete(thread_start->pmchild,
-												thread_start->postmaster_latch);
+	PostmasterChildPublishLogicalStartupComplete(publication->pmchild,
+												 publication->postmaster_latch);
 }
 
 static void
@@ -644,7 +671,7 @@ backend_thread_finish(int code)
 	 * is kept as a postmaster-side regression probe; normal thread teardown
 	 * must delete the saved root before publishing PMChild exit.
 	 */
-	PostmasterChildUnpublishLogicalBackend(thread_start->pmchild);
+	PostmasterChildUnpublishLogicalBackend(thread_start->publication.pmchild);
 	if (retained_top_context != NULL)
 	{
 		/*
@@ -661,10 +688,10 @@ backend_thread_finish(int code)
 		exit_state->retained_top_memory_context = NULL;
 		top_memory_allocated = 0;
 	}
-	PostmasterChildPublishThreadExit(thread_start->pmchild, exitstatus,
+	PostmasterChildPublishThreadExit(thread_start->publication.pmchild, exitstatus,
 									 top_memory_allocated,
 									 top_memory_reclaimed,
-									 thread_start->postmaster_latch);
+									 thread_start->publication.postmaster_latch);
 
 	backend_thread_set_current_start(NULL);
 	free(thread_start);
