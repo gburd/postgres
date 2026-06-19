@@ -291,6 +291,7 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 	PgProtocolParkSpec park_spec;
 	TimestampTz timeout_wake_at;
 	uint64		timeout_generation;
+	uint64		notify_generation;
 	Latch		fake_latch;
 	bool		ok = true;
 
@@ -400,6 +401,21 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 			(PG_PROTOCOL_PARK_WAKE_LOGICAL | PG_PROTOCOL_PARK_WAKE_TIMEOUT);
 		ok = ok && state.backend.protocol_park.wake_events ==
 			(WL_LATCH_SET | WL_TIMEOUT);
+		ok = ok && PgBackendNotifyInterruptGeneration(&state.backend) == 0;
+		SendInterrupt(&state.backend, PG_BACKEND_INTERRUPT_NOTIFY);
+		ok = ok && PgBackendNotifyInterruptGeneration(&state.backend) == 1;
+		SendInterrupt(&state.backend, PG_BACKEND_INTERRUPT_NOTIFY);
+		notify_generation =
+			PgBackendNotifyInterruptGeneration(&state.backend);
+		ok = ok && notify_generation == 2;
+		ok = ok && PgBackendMarkProtocolReadParkWake(&state.backend, 1,
+													 PG_PROTOCOL_PARK_WAKE_NOTIFY,
+													 WL_LATCH_SET);
+		ok = ok && state.backend.protocol_park.wake_reasons ==
+			(PG_PROTOCOL_PARK_WAKE_LOGICAL | PG_PROTOCOL_PARK_WAKE_TIMEOUT |
+			 PG_PROTOCOL_PARK_WAKE_NOTIFY);
+		ok = ok && state.backend.protocol_park.notify_wake_generation ==
+			notify_generation;
 
 		PgCarrierAttachBackend(&state.carrier, &state.backend,
 							   &state.session, &state.connection,
@@ -414,6 +430,25 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 			PG_PROTOCOL_PARK_WAKE_NONE;
 		ok = ok && state.backend.protocol_park.wake_events == 0;
 		ok = ok && state.backend.protocol_park.wake_generation == 0;
+		ok = ok && state.backend.protocol_park.last_wake_reasons ==
+			(PG_PROTOCOL_PARK_WAKE_LOGICAL | PG_PROTOCOL_PARK_WAKE_TIMEOUT |
+			 PG_PROTOCOL_PARK_WAKE_NOTIFY);
+		ok = ok && state.backend.protocol_park.last_wake_events ==
+			(WL_LATCH_SET | WL_TIMEOUT);
+		ok = ok && state.backend.protocol_park.last_wake_generation == 1;
+		ok = ok && PgBackendMarkProtocolReadParkDeferredNotify(&state.backend,
+															   notify_generation,
+															   PG_PROTOCOL_PARK_WAKE_NOTIFY);
+		ok = ok && state.backend.protocol_park.deferred_notify_generation ==
+			notify_generation;
+		ok = ok && state.backend.protocol_park.deferred_notify_park_generation == 1;
+		ok = ok && state.backend.protocol_park.deferred_notify_reasons ==
+			PG_PROTOCOL_PARK_WAKE_NOTIFY;
+		PgBackendClearProtocolReadParkDeferredNotify(&state.backend);
+		ok = ok && state.backend.protocol_park.deferred_notify_generation == 0;
+		ok = ok && state.backend.protocol_park.deferred_notify_park_generation == 0;
+		ok = ok && state.backend.protocol_park.deferred_notify_reasons ==
+			PG_PROTOCOL_PARK_WAKE_NONE;
 		ok = ok && CurrentPgBackend == &state.backend;
 		ok = ok && state.carrier.current_backend == &state.backend;
 		ok = ok && state.backend.carrier == &state.carrier;
@@ -448,9 +483,14 @@ test_protocol_read_wake_applies_backend_interrupt(PG_FUNCTION_ARGS)
 	PgBackend  *backend;
 	PgSession  *session;
 	PgBackendInterruptMask saved_interrupt_mask;
+	uint32		saved_notify_generation;
+	uint64		saved_deferred_notify_generation;
+	uint64		saved_deferred_notify_park_generation;
+	uint32		saved_deferred_notify_reasons;
 	bool		saved_doing_command_read;
 	bool		saved_interrupt_pending;
 	bool		saved_query_cancel_pending;
+	bool		saved_notify_interrupt_pending;
 	bool		ok = true;
 
 	backend = CurrentPgBackend;
@@ -460,16 +500,28 @@ test_protocol_read_wake_applies_backend_interrupt(PG_FUNCTION_ARGS)
 
 	saved_interrupt_mask =
 		pg_atomic_read_u32(&backend->interrupts.pending_mask);
+	saved_notify_generation =
+		pg_atomic_read_u32(&backend->interrupts.notify_generation);
+	saved_deferred_notify_generation =
+		backend->protocol_park.deferred_notify_generation;
+	saved_deferred_notify_park_generation =
+		backend->protocol_park.deferred_notify_park_generation;
+	saved_deferred_notify_reasons =
+		backend->protocol_park.deferred_notify_reasons;
 	saved_doing_command_read = session->loop_state.doing_command_read;
 	saved_interrupt_pending = InterruptPending;
 	saved_query_cancel_pending = QueryCancelPending;
+	saved_notify_interrupt_pending = notifyInterruptPending;
 
 	PG_TRY();
 	{
 		pg_atomic_write_u32(&backend->interrupts.pending_mask, 0);
+		pg_atomic_write_u32(&backend->interrupts.notify_generation, 0);
+		PgBackendClearProtocolReadParkDeferredNotify(backend);
 		session->loop_state.doing_command_read = true;
 		InterruptPending = false;
 		QueryCancelPending = false;
+		notifyInterruptPending = false;
 
 		SendInterrupt(backend, PG_BACKEND_INTERRUPT_QUERY_CANCEL);
 		ok = ok && pg_atomic_read_u32(&backend->interrupts.pending_mask) != 0;
@@ -480,13 +532,33 @@ test_protocol_read_wake_applies_backend_interrupt(PG_FUNCTION_ARGS)
 		ok = ok && !InterruptPending;
 		ok = ok && !QueryCancelPending;
 
+		SendInterrupt(backend, PG_BACKEND_INTERRUPT_NOTIFY);
+		ok = ok && PgBackendNotifyInterruptGeneration(backend) == 1;
+
+		PgSessionServiceProtocolReadWake(session);
+
+		ok = ok && pg_atomic_read_u32(&backend->interrupts.pending_mask) == 0;
+		ok = ok && notifyInterruptPending;
+		ok = ok && backend->protocol_park.deferred_notify_generation == 1;
+		ok = ok && backend->protocol_park.deferred_notify_reasons ==
+			PG_PROTOCOL_PARK_WAKE_NOTIFY;
+
 		if (MyLatch != NULL)
 			ResetLatch(MyLatch);
 		pg_atomic_write_u32(&backend->interrupts.pending_mask,
 							saved_interrupt_mask);
+		pg_atomic_write_u32(&backend->interrupts.notify_generation,
+							saved_notify_generation);
+		backend->protocol_park.deferred_notify_generation =
+			saved_deferred_notify_generation;
+		backend->protocol_park.deferred_notify_park_generation =
+			saved_deferred_notify_park_generation;
+		backend->protocol_park.deferred_notify_reasons =
+			saved_deferred_notify_reasons;
 		session->loop_state.doing_command_read = saved_doing_command_read;
 		InterruptPending = saved_interrupt_pending;
 		QueryCancelPending = saved_query_cancel_pending;
+		notifyInterruptPending = saved_notify_interrupt_pending;
 	}
 	PG_CATCH();
 	{
@@ -494,9 +566,18 @@ test_protocol_read_wake_applies_backend_interrupt(PG_FUNCTION_ARGS)
 			ResetLatch(MyLatch);
 		pg_atomic_write_u32(&backend->interrupts.pending_mask,
 							saved_interrupt_mask);
+		pg_atomic_write_u32(&backend->interrupts.notify_generation,
+							saved_notify_generation);
+		backend->protocol_park.deferred_notify_generation =
+			saved_deferred_notify_generation;
+		backend->protocol_park.deferred_notify_park_generation =
+			saved_deferred_notify_park_generation;
+		backend->protocol_park.deferred_notify_reasons =
+			saved_deferred_notify_reasons;
 		session->loop_state.doing_command_read = saved_doing_command_read;
 		InterruptPending = saved_interrupt_pending;
 		QueryCancelPending = saved_query_cancel_pending;
+		notifyInterruptPending = saved_notify_interrupt_pending;
 		PG_RE_THROW();
 	}
 	PG_END_TRY();

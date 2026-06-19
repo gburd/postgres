@@ -216,7 +216,8 @@ typedef enum PgProtocolParkWakeReason
 	PG_PROTOCOL_PARK_WAKE_POSTMASTER = (1 << 4),
 	PG_PROTOCOL_PARK_WAKE_STALE_TRANSPORT = (1 << 5),
 	PG_PROTOCOL_PARK_WAKE_TIMEOUT = (1 << 6),
-	PG_PROTOCOL_PARK_WAKE_STALE_TIMEOUT = (1 << 7)
+	PG_PROTOCOL_PARK_WAKE_STALE_TIMEOUT = (1 << 7),
+	PG_PROTOCOL_PARK_WAKE_NOTIFY = (1 << 8)
 } PgProtocolParkWakeReason;
 
 typedef struct PgProtocolParkSpec
@@ -243,6 +244,13 @@ typedef struct PgBackendProtocolParkState
 	uint32		wake_reasons;
 	uint32		wake_events;
 	uint64		wake_generation;
+	uint32		last_wake_reasons;
+	uint32		last_wake_events;
+	uint64		last_wake_generation;
+	uint64		notify_wake_generation;
+	uint64		deferred_notify_generation;
+	uint64		deferred_notify_park_generation;
+	uint32		deferred_notify_reasons;
 } PgBackendProtocolParkState;
 
 /*
@@ -287,6 +295,7 @@ typedef uint32 PgBackendInterruptMask;
 typedef struct PgBackendInterruptMailbox
 {
 	pg_atomic_uint32 pending_mask;
+	pg_atomic_uint32 notify_generation;
 	volatile int proc_die_sender_pid;
 	volatile int proc_die_sender_uid;
 } PgBackendInterruptMailbox;
@@ -3405,6 +3414,7 @@ extern void PgBackendUnregisterThreadedBackend(PgBackend *backend);
 extern bool PgBackendSendInterruptById(PgBackendId backend_id,
 									  PgBackendInterruptType interrupt_type,
 									  int sender_pid, int sender_uid);
+extern uint64 PgBackendNotifyInterruptGeneration(PgBackend *backend);
 /*
  * Logical backend interrupts are for backend events such as cancel, die,
  * notify, and proc-signal-derived work. Wait readiness should remain with
@@ -3448,6 +3458,10 @@ extern bool PgBackendMarkProtocolReadParkWake(PgBackend *backend,
 											  uint64 generation,
 											  uint32 wake_reasons,
 											  uint32 wake_events);
+extern bool PgBackendMarkProtocolReadParkDeferredNotify(PgBackend *backend,
+														uint64 notify_generation,
+														uint32 wake_reasons);
+extern void PgBackendClearProtocolReadParkDeferredNotify(PgBackend *backend);
 extern bool PgBackendProtocolReadParkTimeoutGenerationValid(PgBackend *backend,
 															uint64 generation);
 extern void PgBackendResumeProtocolReadPark(PgBackend *backend);

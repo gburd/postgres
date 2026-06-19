@@ -1653,6 +1653,7 @@ PgBackendPrepareProtocolReadPark(PgBackend *backend, PgProtocolParkSpec *spec)
 	park_state->wake_reasons = PG_PROTOCOL_PARK_WAKE_NONE;
 	park_state->wake_events = 0;
 	park_state->wake_generation = 0;
+	park_state->notify_wake_generation = 0;
 	park_state->state = PG_PROTOCOL_PARK_PREPARED;
 
 	return true;
@@ -1699,8 +1700,52 @@ PgBackendMarkProtocolReadParkWake(PgBackend *backend, uint64 generation,
 	park_state->wake_reasons |= wake_reasons;
 	park_state->wake_events |= wake_events;
 	park_state->wake_generation = generation;
+	if (wake_reasons & PG_PROTOCOL_PARK_WAKE_NOTIFY)
+		park_state->notify_wake_generation =
+			PgBackendNotifyInterruptGeneration(backend);
 
 	return true;
+}
+
+bool
+PgBackendMarkProtocolReadParkDeferredNotify(PgBackend *backend,
+											uint64 notify_generation,
+											uint32 wake_reasons)
+{
+	PgBackendProtocolParkState *park_state;
+
+	Assert(backend != NULL);
+
+	if (notify_generation == 0)
+		return false;
+
+	park_state = &backend->protocol_park;
+	if (park_state->deferred_notify_generation == notify_generation)
+	{
+		park_state->deferred_notify_reasons |= wake_reasons;
+		return true;
+	}
+
+	park_state->deferred_notify_generation = notify_generation;
+	park_state->deferred_notify_park_generation =
+		park_state->last_wake_generation;
+	park_state->deferred_notify_reasons = wake_reasons;
+
+	return true;
+}
+
+void
+PgBackendClearProtocolReadParkDeferredNotify(PgBackend *backend)
+{
+	PgBackendProtocolParkState *park_state;
+
+	if (backend == NULL)
+		return;
+
+	park_state = &backend->protocol_park;
+	park_state->deferred_notify_generation = 0;
+	park_state->deferred_notify_park_generation = 0;
+	park_state->deferred_notify_reasons = PG_PROTOCOL_PARK_WAKE_NONE;
 }
 
 bool
@@ -1734,6 +1779,9 @@ PgBackendResumeProtocolReadPark(PgBackend *backend)
 	Assert(park_state->wake_generation == 0 ||
 		   park_state->wake_generation == park_state->spec.generation);
 
+	park_state->last_wake_reasons = park_state->wake_reasons;
+	park_state->last_wake_events = park_state->wake_events;
+	park_state->last_wake_generation = park_state->wake_generation;
 	park_state->state = PG_PROTOCOL_PARK_NONE;
 	MemSet(&park_state->spec, 0, sizeof(park_state->spec));
 	park_state->wake_reasons = PG_PROTOCOL_PARK_WAKE_NONE;
@@ -1958,6 +2006,7 @@ PgBackendInitializeInterrupts(PgBackend *backend)
 		return;
 
 	pg_atomic_init_u32(&backend->interrupts.pending_mask, 0);
+	pg_atomic_init_u32(&backend->interrupts.notify_generation, 0);
 	backend->interrupts.proc_die_sender_pid = 0;
 	backend->interrupts.proc_die_sender_uid = 0;
 }

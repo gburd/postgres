@@ -79,21 +79,49 @@ PgBackendWakeup(PgBackend *backend)
 	PgBackendWakeForInterrupt(backend);
 }
 
+static uint32
+PgBackendAdvanceNotifyGeneration(PgBackend *backend)
+{
+	uint32		generation;
+
+	generation =
+		pg_atomic_add_fetch_u32(&backend->interrupts.notify_generation, 1);
+	if (unlikely(generation == 0))
+		generation =
+			pg_atomic_add_fetch_u32(&backend->interrupts.notify_generation, 1);
+
+	return generation;
+}
+
+uint64
+PgBackendNotifyInterruptGeneration(PgBackend *backend)
+{
+	if (backend == NULL)
+		return 0;
+
+	return pg_atomic_read_u32(&backend->interrupts.notify_generation);
+}
+
 void
 SendInterrupt(PgBackend *backend, PgBackendInterruptType interrupt_type)
 {
 	PgBackendInterruptMask interrupt_mask;
 	PgBackendInterruptMask old_mask;
+	bool		notify_interrupt;
 
 	if (backend == NULL)
 		return;
 	if (interrupt_type < 0 || interrupt_type >= PG_BACKEND_INTERRUPT_COUNT)
 		return;
 
+	notify_interrupt = interrupt_type == PG_BACKEND_INTERRUPT_NOTIFY;
+	if (notify_interrupt)
+		(void) PgBackendAdvanceNotifyGeneration(backend);
+
 	interrupt_mask = PG_BACKEND_INTERRUPT_MASK(interrupt_type);
 	old_mask = pg_atomic_fetch_or_u32(&backend->interrupts.pending_mask,
 									  interrupt_mask);
-	if ((old_mask & interrupt_mask) == 0)
+	if ((old_mask & interrupt_mask) == 0 || notify_interrupt)
 	{
 		if (interrupt_type == PG_BACKEND_INTERRUPT_QUERY_CANCEL)
 			PgBackendMarkWaitCompletionInterrupt(backend,

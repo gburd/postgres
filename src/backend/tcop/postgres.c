@@ -690,12 +690,27 @@ ProcessClientReadInterrupt(bool blocked)
 void
 PgSessionServiceProtocolReadWake(PgSession *session)
 {
+	PgBackend  *backend;
+
 	Assert(session != NULL);
 	Assert(session == CurrentPgSession);
 	Assert(session->loop_state.doing_command_read);
 
+	backend = session->backend;
+	Assert(backend == CurrentPgBackend);
+
 	(void) process_due_logical_timeouts();
 	ProcessClientReadInterrupt(false);
+
+	if (ClientReadNotifyInterruptPending(backend))
+	{
+		if (IsTransactionOrTransactionBlock())
+			(void) PgBackendMarkProtocolReadParkDeferredNotify(backend,
+															   PgBackendNotifyInterruptGeneration(backend),
+															   PG_PROTOCOL_PARK_WAKE_NOTIFY);
+	}
+	else
+		PgBackendClearProtocolReadParkDeferredNotify(backend);
 
 	if (ConfigReloadPending)
 	{
@@ -5351,6 +5366,7 @@ PgSessionStagingWaitProtocolRead(PgBackend *backend,
 	if (wake_events != 0)
 	{
 		uint32		wake_reasons = PG_PROTOCOL_PARK_WAKE_NONE;
+		PgBackendInterruptMask pending_interrupts;
 
 		if (wake_events & park_spec->transport_wait_events)
 			wake_reasons |= PG_PROTOCOL_PARK_WAKE_TRANSPORT;
@@ -5362,6 +5378,12 @@ PgSessionStagingWaitProtocolRead(PgBackend *backend,
 			wake_reasons |= PG_PROTOCOL_PARK_WAKE_POSTMASTER;
 		if (wake_events & WL_TIMEOUT)
 			wake_reasons |= PG_PROTOCOL_PARK_WAKE_TIMEOUT;
+		pending_interrupts =
+			pg_atomic_read_u32(&backend->interrupts.pending_mask);
+		if ((wake_events & WL_LATCH_SET) &&
+			(pending_interrupts &
+			 PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_NOTIFY)))
+			wake_reasons |= PG_PROTOCOL_PARK_WAKE_NOTIFY;
 
 		(void) PgBackendMarkProtocolReadParkWake(backend,
 												 park_spec->generation,
