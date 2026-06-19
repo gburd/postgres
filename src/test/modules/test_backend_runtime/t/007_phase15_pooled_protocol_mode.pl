@@ -99,6 +99,28 @@ sub wait_for_protocol_field
 	return protocol_snapshot_fields($snapshot);
 }
 
+sub wait_for_carrier_pinned_non_protocol_park
+{
+	my ($pid, $label) = @_;
+
+	my $snapshot = wait_for_protocol_snapshot(
+		$pid,
+		sub {
+			my @fields = protocol_snapshot_fields(shift);
+
+			return 0 unless @fields >= 21;
+			return $fields[PARK_STATE] eq 'none'
+			  && $fields[QUEUE_STATE] eq 'none'
+			  && $fields[CARRIER_ATTACHED] == 1
+			  && $fields[SESSION_PRESENT] == 1
+			  && $fields[CONNECTION_PRESENT] == 1
+			  && $fields[EXECUTION_PRESENT] == 1;
+		},
+		$label);
+
+	return protocol_snapshot_fields($snapshot);
+}
+
 $node->init;
 $node->append_conf(
 	'postgresql.conf', q{
@@ -213,6 +235,17 @@ wait_for_protocol_field(
 	PARKED_PROTOCOL_COUNT,
 	sub { return shift >= scalar @sessions; },
 	'pooled protocol sessions still outnumber carriers after stress');
+
+my $sleep_session = $node->background_psql('postgres', timeout => 30);
+my $sleep_output = $sleep_session->query_until(qr/^\d+\s*$/m,
+	"SELECT pg_backend_pid();\nSELECT pg_sleep(30);\n");
+my ($sleep_pid) = $sleep_output =~ /^(\d+)\s*$/m;
+wait_for_carrier_pinned_non_protocol_park($sleep_pid,
+	'pooled pg_sleep remains carrier-pinned and non-protocol-parked');
+is($node->safe_psql('postgres', "SELECT pg_cancel_backend($sleep_pid);"),
+	't',
+	'query cancel accepted for pooled carrier-pinned pg_sleep');
+eval { $sleep_session->{run}->finish; };
 
 for my $session (@sessions)
 {
