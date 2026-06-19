@@ -387,3 +387,69 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 
 	PG_RETURN_BOOL(true);
 }
+
+PG_FUNCTION_INFO_V1(test_protocol_read_wake_applies_backend_interrupt);
+Datum
+test_protocol_read_wake_applies_backend_interrupt(PG_FUNCTION_ARGS)
+{
+	PgBackend  *backend;
+	PgSession  *session;
+	PgBackendInterruptMask saved_interrupt_mask;
+	bool		saved_doing_command_read;
+	bool		saved_interrupt_pending;
+	bool		saved_query_cancel_pending;
+	bool		ok = true;
+
+	backend = CurrentPgBackend;
+	session = CurrentPgSession;
+	if (backend == NULL || session == NULL)
+		elog(ERROR, "test requires a current backend and session");
+
+	saved_interrupt_mask =
+		pg_atomic_read_u32(&backend->interrupts.pending_mask);
+	saved_doing_command_read = session->loop_state.doing_command_read;
+	saved_interrupt_pending = InterruptPending;
+	saved_query_cancel_pending = QueryCancelPending;
+
+	PG_TRY();
+	{
+		pg_atomic_write_u32(&backend->interrupts.pending_mask, 0);
+		session->loop_state.doing_command_read = true;
+		InterruptPending = false;
+		QueryCancelPending = false;
+
+		SendInterrupt(backend, PG_BACKEND_INTERRUPT_QUERY_CANCEL);
+		ok = ok && pg_atomic_read_u32(&backend->interrupts.pending_mask) != 0;
+
+		PgSessionServiceProtocolReadWake(session);
+
+		ok = ok && pg_atomic_read_u32(&backend->interrupts.pending_mask) == 0;
+		ok = ok && !InterruptPending;
+		ok = ok && !QueryCancelPending;
+
+		if (MyLatch != NULL)
+			ResetLatch(MyLatch);
+		pg_atomic_write_u32(&backend->interrupts.pending_mask,
+							saved_interrupt_mask);
+		session->loop_state.doing_command_read = saved_doing_command_read;
+		InterruptPending = saved_interrupt_pending;
+		QueryCancelPending = saved_query_cancel_pending;
+	}
+	PG_CATCH();
+	{
+		if (MyLatch != NULL)
+			ResetLatch(MyLatch);
+		pg_atomic_write_u32(&backend->interrupts.pending_mask,
+							saved_interrupt_mask);
+		session->loop_state.doing_command_read = saved_doing_command_read;
+		InterruptPending = saved_interrupt_pending;
+		QueryCancelPending = saved_query_cancel_pending;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "protocol read wake did not service backend interrupt");
+
+	PG_RETURN_BOOL(true);
+}

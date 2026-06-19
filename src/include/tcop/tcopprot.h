@@ -122,6 +122,7 @@ pg_noreturn extern void FloatExceptionHandler(SIGNAL_ARGS);
 extern void HandleRecoveryConflictInterrupt(void);
 extern void ProcessClientReadInterrupt(bool blocked);
 extern void ProcessClientWriteInterrupt(bool blocked);
+extern void PgSessionServiceProtocolReadWake(PgSession *session);
 
 extern void process_postgres_switches(int argc, char *argv[],
 									  GucContext ctx, const char **dbname);

@@ -53,6 +53,12 @@ SELECT test_carrier_protocol_park_prepare_commit();
  t
 (1 row)
 
+SELECT test_protocol_read_wake_applies_backend_interrupt();
+ test_protocol_read_wake_applies_backend_interrupt 
+---------------------------------------------------
+ t
+(1 row)
+
 SELECT test_carrier_misc_state_is_carrier_local();
  test_carrier_misc_state_is_carrier_local 
 ------------------------------------------

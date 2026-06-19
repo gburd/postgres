@@ -39,6 +39,10 @@ CREATE FUNCTION test_carrier_protocol_park_prepare_commit()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;
 
+CREATE FUNCTION test_protocol_read_wake_applies_backend_interrupt()
+	RETURNS pg_catalog.bool
+	AS 'MODULE_PATHNAME' LANGUAGE C;
+
 CREATE FUNCTION test_carrier_misc_state_is_carrier_local()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;

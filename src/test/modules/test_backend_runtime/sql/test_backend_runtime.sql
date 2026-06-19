@@ -9,6 +9,7 @@ SELECT test_backend_thread_runtime_state();
 SELECT test_carrier_threaded_guc_lock_depth_is_carrier_local();
 SELECT test_carrier_attach_detach_current_work();
 SELECT test_carrier_protocol_park_prepare_commit();
+SELECT test_protocol_read_wake_applies_backend_interrupt();
 SELECT test_carrier_misc_state_is_carrier_local();
 SELECT test_thread_install_adopts_backend_fallback_state();
 SELECT test_thread_install_adopts_session_execution_fallback_state();

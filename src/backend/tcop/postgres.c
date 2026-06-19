@@ -460,6 +460,8 @@ SocketBackend(PgSession *session, StringInfo inBuf, PgStepBudget budget)
 		PgProtocolByteProbe probe;
 		PgProtocolByteResult probe_result;
 
+		PgSessionServiceProtocolReadWake(session);
+
 		probe_result = PgConnectionProbeMessageType(session->connection,
 													&probe);
 		if (probe_result == PG_PROTOCOL_BYTE_NONE)
@@ -680,6 +682,22 @@ ProcessClientReadInterrupt(bool blocked)
 	}
 
 	errno = save_errno;
+}
+
+void
+PgSessionServiceProtocolReadWake(PgSession *session)
+{
+	Assert(session != NULL);
+	Assert(session == CurrentPgSession);
+	Assert(session->loop_state.doing_command_read);
+
+	ProcessClientReadInterrupt(false);
+
+	if (ConfigReloadPending)
+	{
+		ConfigReloadPending = false;
+		ProcessConfigFile(PGC_SIGHUP);
+	}
 }
 
 /*
