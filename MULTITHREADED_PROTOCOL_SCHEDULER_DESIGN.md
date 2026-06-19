@@ -1312,6 +1312,12 @@ thread-per-session launcher still allocates them together. This avoids baking
 the staging assumption into the runtime fixture that later pooled carriers must
 reuse across logical sessions.
 
+The runnable side should expose a carrier-facing lease primitive: an idle
+carrier pops one runnable protocol backend and attaches the backend's logical
+session/connection/execution state to itself. Staging mode may still drive this
+from the same thread that parked the session, but tests should be able to prove
+the lease path also works with a different resume carrier.
+
 Phase 14 staging phases may be committed as scaffolding, but documentation and
 test names should not claim "pooled carrier scheduler complete" while there is
 still one carrier per client connection. Phase 15 is not complete until the real

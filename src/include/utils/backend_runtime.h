@@ -3491,6 +3491,7 @@ extern bool PgRuntimeProtocolSchedulerParkBackend(PgRuntime *runtime,
 extern bool PgRuntimeProtocolSchedulerMarkRunnable(PgRuntime *runtime,
 												   PgBackend *backend);
 extern PgBackend *PgRuntimeProtocolSchedulerPopRunnable(PgRuntime *runtime);
+extern PgBackend *PgCarrierLeaseRunnableProtocolBackend(PgCarrier *carrier);
 extern bool PgRuntimeProtocolSchedulerRemoveBackend(PgRuntime *runtime,
 													PgBackend *backend);
 extern bool PgBackendSnapshotProtocolParkById(PgBackendId backend_id,

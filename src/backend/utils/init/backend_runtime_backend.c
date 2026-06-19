@@ -1728,6 +1728,42 @@ PgRuntimeProtocolSchedulerPopRunnable(PgRuntime *runtime)
 	return backend;
 }
 
+PgBackend *
+PgCarrierLeaseRunnableProtocolBackend(PgCarrier *carrier)
+{
+	PgRuntime  *runtime;
+	PgBackend  *backend;
+
+	Assert(carrier != NULL);
+	Assert(carrier == CurrentPgCarrier);
+	Assert(carrier->current_backend == NULL);
+	Assert(carrier->current_session == NULL);
+	Assert(carrier->current_execution == NULL);
+
+	runtime = carrier->runtime;
+	if (runtime == NULL)
+		return NULL;
+
+	backend = PgRuntimeProtocolSchedulerPopRunnable(runtime);
+	if (backend == NULL)
+		return NULL;
+
+	if (backend->runtime != runtime ||
+		backend->carrier != NULL ||
+		backend->session == NULL ||
+		backend->connection == NULL ||
+		backend->execution == NULL ||
+		backend->execution->carrier != NULL ||
+		backend->protocol_park.state != PG_PROTOCOL_PARK_COMMITTED ||
+		backend->protocol_park.scheduler_queue_state !=
+		PG_PROTOCOL_SCHEDULER_QUEUE_NONE)
+		elog(PANIC, "cannot lease inconsistent protocol scheduler backend");
+
+	PgCarrierAttachBackend(carrier, backend, backend->session,
+						   backend->connection, backend->execution);
+	return backend;
+}
+
 bool
 PgRuntimeProtocolSchedulerRemoveBackend(PgRuntime *runtime, PgBackend *backend)
 {

@@ -288,6 +288,7 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 	MemoryContext saved_current_memory_context;
 	ResourceOwner saved_current_resource_owner;
 	PgThreadBackendRuntimeState state;
+	PgCarrier	resume_carrier;
 	PgProtocolParkSpec park_spec;
 	PgProtocolSchedulerState *scheduler;
 	PgBackend  *runnable_backend;
@@ -316,6 +317,7 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 	InitializePgThreadRuntime(NULL);
 	InitializePgThreadBackendRuntimeState(&state, B_BACKEND, NULL,
 										  &fake_latch);
+	InitializePgThreadCarrierRuntimeState(&resume_carrier);
 	PgCarrierDetachBackend(&state.carrier, &state.logical.backend);
 	MemSet(&fake_proc, 0, sizeof(fake_proc));
 	InitLatch(&fake_latch);
@@ -423,6 +425,13 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 		ok = ok && CurrentMemoryContext != fake_memory_context;
 		ok = ok && CurrentResourceOwner != fake_resource_owner;
 
+		PgRuntimeSetCurrentWork(state.logical.backend.runtime, &resume_carrier,
+								NULL, NULL, NULL, NULL, false);
+		ok = ok && PgCarrierLeaseRunnableProtocolBackend(&resume_carrier) == NULL;
+		ok = ok && CurrentPgCarrier == &resume_carrier;
+		ok = ok && CurrentPgBackend == NULL;
+		ok = ok && resume_carrier.current_backend == NULL;
+
 		ResetLatch(&fake_latch);
 		PgBackendRaiseInterrupt(&state.logical.backend,
 								PG_BACKEND_INTERRUPT_QUERY_CANCEL);
@@ -488,18 +497,23 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 			PG_PROTOCOL_SCHEDULER_QUEUE_RUNNABLE;
 		ok = ok && scheduler->parked_protocol_count == 0;
 		ok = ok && scheduler->runnable_count == 1;
-		runnable_backend =
-			PgRuntimeProtocolSchedulerPopRunnable(state.logical.backend.runtime);
+		runnable_backend = PgCarrierLeaseRunnableProtocolBackend(&resume_carrier);
 		ok = ok && runnable_backend == &state.logical.backend;
 		ok = ok && state.logical.backend.protocol_park.scheduler_queue_state ==
 			PG_PROTOCOL_SCHEDULER_QUEUE_NONE;
 		ok = ok && scheduler->parked_protocol_count == 0;
 		ok = ok && scheduler->runnable_count == 0;
-
-		PgCarrierAttachBackend(&state.carrier, &state.logical.backend,
-							   &state.logical.session, &state.logical.connection,
-							   &state.logical.execution);
+		ok = ok && CurrentPgCarrier == &resume_carrier;
+		ok = ok && CurrentPgBackend == &state.logical.backend;
+		ok = ok && resume_carrier.current_backend == &state.logical.backend;
+		ok = ok && resume_carrier.current_session == &state.logical.session;
+		ok = ok && resume_carrier.current_execution == &state.logical.execution;
+		ok = ok && state.carrier.current_backend == NULL;
+		ok = ok && state.logical.backend.carrier == &resume_carrier;
+		ok = ok && state.logical.execution.carrier == &resume_carrier;
 		PgBackendResumeProtocolReadPark(&state.logical.backend);
+		ok = ok && scheduler->same_carrier_resume_count == 0;
+		ok = ok && scheduler->migrated_resume_count == 1;
 
 		ok = ok && state.logical.backend.protocol_park.state ==
 			PG_PROTOCOL_PARK_NONE;
@@ -528,8 +542,8 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 		ok = ok && state.logical.backend.protocol_park.deferred_notify_reasons ==
 			PG_PROTOCOL_PARK_WAKE_NONE;
 		ok = ok && CurrentPgBackend == &state.logical.backend;
-		ok = ok && state.carrier.current_backend == &state.logical.backend;
-		ok = ok && state.logical.backend.carrier == &state.carrier;
+		ok = ok && resume_carrier.current_backend == &state.logical.backend;
+		ok = ok && state.logical.backend.carrier == &resume_carrier;
 		ok = ok && MyProc == &fake_proc;
 		ok = ok && MyProcNumber == 42;
 		ok = ok && MyLatch == &fake_latch;
