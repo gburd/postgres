@@ -238,6 +238,19 @@ wait_for_pid_to_leave_pg_stat_activity($xact_timeout_pid,
 	'idle_in_transaction_session_timeout wakes and exits parked protocol client');
 eval { $xact_timeout->{run}->finish; };
 
+my $transaction_timeout = $node->background_psql('postgres',
+	on_error_stop => 0, timeout => 20);
+my $transaction_timeout_sql =
+  "SET transaction_timeout = '3s'; "
+  . "BEGIN; SELECT pg_backend_pid();";
+my $transaction_timeout_pid = $transaction_timeout->query_safe(
+	$transaction_timeout_sql, verbose => 0);
+wait_for_protocol_parked($transaction_timeout_pid,
+	'transaction-timeout client parks at protocol read boundary');
+wait_for_pid_to_leave_pg_stat_activity($transaction_timeout_pid,
+	'transaction_timeout wakes and exits parked protocol client');
+eval { $transaction_timeout->{run}->finish; };
+
 $listener->quit;
 $deferred->quit;
 $idle_clients[0]->quit;
