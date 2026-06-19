@@ -54,11 +54,17 @@
 
 #ifdef WIN32
 #include <shlwapi.h>
+#else
+#include "port/pg_pthread.h"
 #endif
 
 /* Error triggered for locale-sensitive subroutines */
 #define		PGLOCALE_SUPPORT_ERROR(provider) \
 	elog(ERROR, "unsupported collprovider for %s: %c", __func__, provider)
+
+#ifndef WIN32
+static PG_GLOBAL_RUNTIME pthread_mutex_t PgLocaleMutex = PTHREAD_MUTEX_INITIALIZER;
+#endif
 
 /*
  * This should be large enough that most strings will fit, but small enough
@@ -167,6 +173,52 @@ CurrentLastCollationCacheLocaleRef(void)
 static char *IsoLocaleName(const char *);
 #endif
 
+bool
+pg_locale_lock(void)
+{
+#ifndef WIN32
+	int			rc;
+
+	if (!multithreaded)
+		return false;
+
+	HOLD_INTERRUPTS();
+	rc = pthread_mutex_lock(&PgLocaleMutex);
+	if (rc != 0)
+	{
+		RESUME_INTERRUPTS();
+		errno = rc;
+		ereport(FATAL,
+				(errmsg("could not enter locale critical section: %m")));
+	}
+
+	return true;
+#else
+	return false;
+#endif
+}
+
+void
+pg_locale_unlock(bool locked)
+{
+#ifndef WIN32
+	int			rc;
+
+	if (!locked)
+		return;
+
+	rc = pthread_mutex_unlock(&PgLocaleMutex);
+	RESUME_INTERRUPTS();
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not leave locale critical section: %m");
+	}
+#else
+	(void) locked;
+#endif
+}
+
 /*
  * pg_perm_setlocale
  *
@@ -186,6 +238,9 @@ pg_perm_setlocale(int category, const char *locale)
 {
 	char	   *result;
 	const char *envvar;
+	bool		locked;
+
+	locked = pg_locale_lock();
 
 #ifndef WIN32
 	result = setlocale(category, locale);
@@ -210,7 +265,10 @@ pg_perm_setlocale(int category, const char *locale)
 #endif							/* WIN32 */
 
 	if (result == NULL)
+	{
+		pg_locale_unlock(locked);
 		return result;			/* fall out immediately on failure */
+	}
 
 	/*
 	 * Use the right encoding in translated messages.  Under ENABLE_NLS, let
@@ -268,8 +326,12 @@ pg_perm_setlocale(int category, const char *locale)
 	}
 
 	if (setenv(envvar, result, 1) != 0)
+	{
+		pg_locale_unlock(locked);
 		return NULL;
+	}
 
+	pg_locale_unlock(locked);
 	return result;
 }
 
@@ -289,6 +351,11 @@ check_locale(int category, const char *locale, char **canonname)
 {
 	char	   *save;
 	char	   *res;
+	char	   *savecopy;
+	char	   *rescopy = NULL;
+	bool		locked;
+	bool		restore_ok;
+	bool		oom = false;
 
 	/* Don't let Windows' non-ASCII locale names in. */
 	if (!pg_is_ascii(locale))
@@ -303,24 +370,55 @@ check_locale(int category, const char *locale, char **canonname)
 	if (canonname)
 		*canonname = NULL;		/* in case of failure */
 
+	locked = pg_locale_lock();
+
 	save = setlocale(category, NULL);
 	if (!save)
+	{
+		pg_locale_unlock(locked);
 		return false;			/* won't happen, we hope */
+	}
 
 	/* save may be pointing at a modifiable scratch variable, see above. */
-	save = pstrdup(save);
+	savecopy = strdup(save);
+	if (savecopy == NULL)
+	{
+		pg_locale_unlock(locked);
+		ereport(ERROR,
+				(errcode(ERRCODE_OUT_OF_MEMORY),
+				 errmsg("out of memory")));
+	}
 
 	/* set the locale with setlocale, to see if it accepts it. */
 	res = setlocale(category, locale);
 
 	/* save canonical name if requested. */
 	if (res && canonname)
-		*canonname = pstrdup(res);
+	{
+		rescopy = strdup(res);
+		if (rescopy == NULL)
+			oom = true;
+	}
 
 	/* restore old value. */
-	if (!setlocale(category, save))
-		elog(WARNING, "failed to restore old locale \"%s\"", save);
-	pfree(save);
+	restore_ok = (setlocale(category, savecopy) != NULL);
+
+	pg_locale_unlock(locked);
+
+	if (!restore_ok)
+		elog(WARNING, "failed to restore old locale \"%s\"", savecopy);
+	free(savecopy);
+
+	if (oom)
+		ereport(ERROR,
+				(errcode(ERRCODE_OUT_OF_MEMORY),
+				 errmsg("out of memory")));
+
+	if (rescopy)
+	{
+		*canonname = pstrdup(rescopy);
+		free(rescopy);
+	}
 
 	/* Don't let Windows' non-ASCII locale names out. */
 	if (canonname && *canonname && !pg_is_ascii(*canonname))

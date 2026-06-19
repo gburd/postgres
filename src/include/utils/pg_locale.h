@@ -56,6 +56,8 @@
 	(PgCurrentLocaleState()->localized_full_months_values)
 
 extern bool check_locale(int category, const char *locale, char **canonname);
+extern bool pg_locale_lock(void);
+extern void pg_locale_unlock(bool locked);
 extern char *pg_perm_setlocale(int category, const char *locale);
 
 /*

@@ -460,13 +460,27 @@ CheckMyDatabase(const char *name, bool am_superuser,
 
 	if (threaded_backend)
 	{
-		const char *current_ctype = setlocale(LC_CTYPE, NULL);
+		const char *current_ctype;
+		char		current_ctype_buf[LOCALE_NAME_BUFLEN];
+		bool		locale_locked;
+		bool		locale_matches;
 
-		if (current_ctype == NULL || strcmp(current_ctype, ctype) != 0)
+		locale_locked = pg_locale_lock();
+		current_ctype = setlocale(LC_CTYPE, NULL);
+		if (current_ctype != NULL)
+			strlcpy(current_ctype_buf, current_ctype,
+					sizeof(current_ctype_buf));
+		else
+			strlcpy(current_ctype_buf, "(null)", sizeof(current_ctype_buf));
+		locale_matches = (current_ctype != NULL &&
+						  strcmp(current_ctype, ctype) == 0);
+		pg_locale_unlock(locale_locked);
+
+		if (!locale_matches)
 			ereport(FATAL,
 					(errmsg("database locale is incompatible with threaded backend mode"),
 					 errdetail("The process LC_CTYPE is \"%s\", but database \"%s\" requires LC_CTYPE \"%s\".",
-							   current_ctype ? current_ctype : "(null)",
+							   current_ctype_buf,
 							   name,
 							   ctype),
 					 errhint("Threaded backend mode currently requires databases to use the postmaster's process LC_CTYPE.")));
