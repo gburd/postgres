@@ -1342,20 +1342,20 @@ The cleanest development base is the end of Phase 13 wait observability:
 
 From there, rebuild Phase 14A around protocol parking.
 
-Current handoff state:
+Current branch state:
 
 - the abandoned generic scheduler direction is preserved on
   `abandoned/phase14-generic-scheduler-prototype`;
-- the fresh implementation branch is `phase14-protocol-boundary-scheduler`;
+- the protocol-boundary implementation branch is
+  `phase14-protocol-boundary-scheduler`;
 - `multithreaded` has been moved back to `84601c25a7`;
 - `phase14-protocol-boundary-scheduler` starts from `84601c25a7`;
-- the only code commits kept so far are:
-  - `e16777e3f8 Serialize threaded locale probes`;
-  - `8d94030db6 Record wait completion socket metadata`;
-- `make -s -C src/test/modules/test_backend_runtime check` currently fails
-  during `temp-install` with an `initdb` bootstrap segmentation fault on both
-  `84601c25a7` and `phase14-protocol-boundary-scheduler`, so treat that as a
-  pre-existing baseline problem, not evidence against the two kept commits;
+- Phase 14A has been rebuilt around top-level protocol parking, with deep waits
+  remaining observable but carrier-pinned;
+- the historical `temp-install`/`initdb` bootstrap segmentation fault seen on
+  the Phase 13 baseline has been fixed on `phase14-protocol-boundary-scheduler`;
+  `make -C src/test/modules/test_backend_runtime check` is now expected to pass
+  as part of Phase 14A verification;
 - this design document and the updated phase plan are committed on
   `phase14-protocol-boundary-scheduler` and should be kept in sync as review
   feedback closes.

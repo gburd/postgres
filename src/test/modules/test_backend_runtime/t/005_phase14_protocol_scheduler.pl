@@ -202,8 +202,20 @@ $deferred->query_safe('LISTEN phase14_defer;', verbose => 0);
 my $deferred_pid = $deferred->query_safe(
 	'BEGIN; SELECT pg_backend_pid();',
 	verbose => 0);
+$deferred->query_safe('SELECT pg_advisory_xact_lock(140014);', verbose => 0);
 wait_for_protocol_parked($deferred_pid,
 	'idle-in-transaction LISTEN client parks at protocol read boundary');
+is($node->safe_psql(
+		'postgres',
+		"SELECT state FROM pg_stat_activity WHERE pid = $deferred_pid;"),
+	'idle in transaction',
+	'parked idle-in-transaction client preserves transaction state');
+is($node->safe_psql(
+		'postgres',
+		"SELECT count(*) FROM pg_locks WHERE pid = $deferred_pid AND "
+		  . "locktype = 'advisory' AND objid = 140014 AND granted;"),
+	'1',
+	'parked idle-in-transaction client preserves transaction advisory lock');
 $node->safe_psql('postgres', "NOTIFY phase14_defer, 'payload';");
 wait_for_protocol_field(
 	$deferred_pid,
@@ -220,6 +232,12 @@ $deferred->{stdout} = '';
 like($deferred->query_safe('COMMIT;', verbose => 0),
 	$deferred_notify_pattern,
 	'deferred notification is delivered after COMMIT wakes the parked client');
+is($node->safe_psql(
+		'postgres',
+		"SELECT count(*) FROM pg_locks WHERE pid = $deferred_pid AND "
+		  . "locktype = 'advisory' AND objid = 140014 AND granted;"),
+	'0',
+	'idle-in-transaction advisory lock is released after COMMIT');
 wait_for_protocol_parked($deferred_pid,
 	'deferred notification client parks again after COMMIT');
 
