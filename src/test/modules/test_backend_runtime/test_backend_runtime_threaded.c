@@ -427,7 +427,8 @@ test_backend_runtime_protocol_park_snapshot(PG_FUNCTION_ARGS)
 					  UINT64_FORMAT "|%u|%u|" UINT64_FORMAT "|%u|%u|"
 					  UINT64_FORMAT "|" UINT64_FORMAT "|" UINT64_FORMAT "|"
 					  UINT64_FORMAT "|%u|%u|%u|" UINT64_FORMAT "|"
-					  UINT64_FORMAT "|%d|%d|%d|%d",
+					  UINT64_FORMAT "|%d|%d|%d|%d|%u|" UINT64_FORMAT "|"
+					  UINT64_FORMAT,
 					  test_backend_runtime_protocol_park_state_name(snapshot.state),
 					  test_backend_runtime_protocol_queue_state_name(
 						  snapshot.scheduler_queue_state),
@@ -449,7 +450,10 @@ test_backend_runtime_protocol_park_snapshot(PG_FUNCTION_ARGS)
 					  snapshot.carrier_attached,
 					  snapshot.session_present,
 					  snapshot.connection_present,
-					  snapshot.execution_present);
+					  snapshot.execution_present,
+					  snapshot.scheduler_carrier_limit,
+					  snapshot.scheduler_same_carrier_resume_count,
+					  snapshot.scheduler_migrated_resume_count);
 
 	PG_RETURN_TEXT_P(cstring_to_text(result));
 }

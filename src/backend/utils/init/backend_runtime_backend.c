@@ -120,6 +120,8 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackend early_backend_fallback = {
 	.backend_type = B_INVALID
 };
 
+static void PgRuntimeProtocolSchedulerRecordResume(PgBackend *backend);
+
 #define early_backend_core early_backend_fallback.core
 #define early_backend_command early_backend_fallback.command
 #define early_backend_log early_backend_fallback.log_state
@@ -1601,6 +1603,7 @@ PgRuntimeInitializeProtocolScheduler(PgProtocolSchedulerState *scheduler)
 	SpinLockInit(&scheduler->lock);
 	dlist_init(&scheduler->runnable_queue);
 	dlist_init(&scheduler->parked_protocol_queue);
+	scheduler->carrier_limit = PgRuntimePooledProtocolCarrierLimit();
 }
 
 bool
@@ -1817,6 +1820,12 @@ PgBackendSnapshotProtocolParkById(PgBackendId backend_id,
 				scheduler->runnable_enqueue_count;
 			snapshot->scheduler_parked_protocol_enqueue_count =
 				scheduler->parked_protocol_enqueue_count;
+			snapshot->scheduler_carrier_limit =
+				scheduler->carrier_limit;
+			snapshot->scheduler_same_carrier_resume_count =
+				scheduler->same_carrier_resume_count;
+			snapshot->scheduler_migrated_resume_count =
+				scheduler->migrated_resume_count;
 			SpinLockRelease(&scheduler->lock);
 
 			snapshot->carrier_attached = backend->carrier != NULL;
@@ -1834,6 +1843,34 @@ PgBackendSnapshotProtocolParkById(PgBackendId backend_id,
 	(void) snapshot;
 	return false;
 #endif
+}
+
+static void
+PgRuntimeProtocolSchedulerRecordResume(PgBackend *backend)
+{
+	PgProtocolSchedulerState *scheduler;
+	PgBackendProtocolParkState *park_state;
+	PgCarrier  *resume_carrier;
+	PgCarrier  *parked_carrier;
+
+	Assert(backend != NULL);
+
+	if (backend->runtime == NULL)
+		return;
+
+	park_state = &backend->protocol_park;
+	resume_carrier = backend->carrier;
+	parked_carrier = park_state->parked_carrier;
+	if (resume_carrier == NULL || parked_carrier == NULL)
+		return;
+
+	scheduler = &backend->runtime->protocol_scheduler;
+	SpinLockAcquire(&scheduler->lock);
+	if (resume_carrier == parked_carrier)
+		scheduler->same_carrier_resume_count++;
+	else
+		scheduler->migrated_resume_count++;
+	SpinLockRelease(&scheduler->lock);
 }
 
 bool
@@ -1934,6 +1971,7 @@ PgCarrierCommitProtocolReadPark(PgCarrier *carrier, PgBackend *backend)
 		elog(PANIC, "cannot commit protocol read park during active message read");
 
 	park_state->state = PG_PROTOCOL_PARK_COMMITTED;
+	park_state->parked_carrier = carrier;
 	PgCarrierDetachBackend(carrier, backend);
 	if (!PgRuntimeProtocolSchedulerParkBackend(carrier->runtime, backend))
 		elog(PANIC, "could not enqueue committed protocol read park");
@@ -2037,6 +2075,7 @@ PgBackendResumeProtocolReadPark(PgBackend *backend)
 	Assert(park_state->scheduler_queue_state ==
 		   PG_PROTOCOL_SCHEDULER_QUEUE_NONE);
 
+	PgRuntimeProtocolSchedulerRecordResume(backend);
 	park_state->last_wake_reasons = park_state->wake_reasons;
 	park_state->last_wake_events = park_state->wake_events;
 	park_state->last_wake_generation = park_state->wake_generation;
@@ -2045,6 +2084,7 @@ PgBackendResumeProtocolReadPark(PgBackend *backend)
 	park_state->wake_reasons = PG_PROTOCOL_PARK_WAKE_NONE;
 	park_state->wake_events = 0;
 	park_state->wake_generation = 0;
+	park_state->parked_carrier = NULL;
 }
 
 static void

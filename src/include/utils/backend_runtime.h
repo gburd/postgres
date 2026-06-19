@@ -254,6 +254,9 @@ typedef struct PgProtocolSchedulerState
 	uint32		parked_protocol_count;
 	uint64		runnable_enqueue_count;
 	uint64		parked_protocol_enqueue_count;
+	uint32		carrier_limit;
+	uint64		same_carrier_resume_count;
+	uint64		migrated_resume_count;
 } PgProtocolSchedulerState;
 
 typedef struct PgProtocolParkSnapshot
@@ -279,6 +282,9 @@ typedef struct PgProtocolParkSnapshot
 	bool		session_present;
 	bool		connection_present;
 	bool		execution_present;
+	uint32		scheduler_carrier_limit;
+	uint64		scheduler_same_carrier_resume_count;
+	uint64		scheduler_migrated_resume_count;
 } PgProtocolParkSnapshot;
 
 typedef struct PgBackendProtocolParkState
@@ -298,6 +304,7 @@ typedef struct PgBackendProtocolParkState
 	uint64		deferred_notify_generation;
 	uint64		deferred_notify_park_generation;
 	uint32		deferred_notify_reasons;
+	PgCarrier  *parked_carrier;
 } PgBackendProtocolParkState;
 
 /*
