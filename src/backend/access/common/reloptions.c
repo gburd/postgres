@@ -607,7 +607,7 @@ static PG_GLOBAL_RUNTIME bool need_initialization = true;
 
 #ifndef WIN32
 static PG_GLOBAL_RUNTIME pthread_mutex_t ThreadedRelOptionsMutex = PTHREAD_MUTEX_INITIALIZER;
-static PG_THREAD_LOCAL PG_GLOBAL_CARRIER int ThreadedRelOptionsMutexDepth = 0;
+#define ThreadedRelOptionsMutexDepth (*PgCurrentThreadedRelOptionsMutexDepthRef())
 #endif
 /*
  * Custom reloptions are process-global.  In threaded mode they must not be

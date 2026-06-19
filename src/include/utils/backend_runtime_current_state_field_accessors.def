@@ -206,16 +206,6 @@
 	(&PgCurrentSessionExtensionModuleState()->isn_weak)
 #define PgCurrentPasswordcheckMinPasswordLengthRef() \
 	(&PgCurrentSessionExtensionModuleState()->passwordcheck_min_password_length)
-#define PgCurrentDblinkContextRef() \
-	(&PgCurrentSessionExtensionModuleState()->dblink_context)
-#define PgCurrentDblinkPersistentConnectionRef() \
-	(&PgCurrentSessionExtensionModuleState()->dblink_persistent_connection)
-#define PgCurrentDblinkRemoteConnHashRef() \
-	(&PgCurrentSessionExtensionModuleState()->dblink_remote_conn_hash)
-#define PgCurrentDblinkResetRegisteredRef() \
-	(&PgCurrentSessionExtensionModuleState()->dblink_reset_registered)
-#define PgCurrentPostgresFdwOptionsContextRef() \
-	(&PgCurrentSessionExtensionModuleState()->postgres_fdw_options_context)
 #define PgCurrentPostgresFdwOptionsRef() \
 	(&PgCurrentSessionExtensionModuleState()->postgres_fdw_options)
 #define PgCurrentPostgresFdwApplicationNameRef() \

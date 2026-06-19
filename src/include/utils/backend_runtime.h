@@ -2429,6 +2429,7 @@ struct PgCarrier
 	int			wait_event_selfpipe_owner_pid;
 	char	   *stack_base_ptr;
 	int			threaded_guc_mutex_depth;
+	int			threaded_reloptions_mutex_depth;
 	bool		protocol_scheduler_registered;
 	bool		protocol_scheduler_idle;
 };
@@ -2730,6 +2731,7 @@ extern slist_head *PgCurrentGUCReportListRef(void);
 extern bool *PgCurrentGUCReportingEnabledRef(void);
 extern int *PgCurrentGUCNestLevelRef(void);
 extern int *PgCurrentThreadedGUCMutexDepthRef(void);
+extern int *PgCurrentThreadedRelOptionsMutexDepthRef(void);
 extern void **PgCurrentBackendThreadStartRef(void);
 extern volatile sig_atomic_t *PgCurrentWaitEventWaitingRef(void);
 extern int *PgCurrentWaitEventSignalFdRef(void);
@@ -3745,6 +3747,9 @@ pg_noreturn extern void PgSessionRun(PgSession *session);
 #define PgCurrentThreadedGUCMutexDepthRef() \
 	PG_RUNTIME_CURRENT_CARRIER_FIELD_REF(PgCurrentThreadedGUCMutexDepthRef, \
 										 threaded_guc_mutex_depth)
+#define PgCurrentThreadedRelOptionsMutexDepthRef() \
+	PG_RUNTIME_CURRENT_CARRIER_FIELD_REF(PgCurrentThreadedRelOptionsMutexDepthRef, \
+										 threaded_reloptions_mutex_depth)
 #define PgCurrentWaitEventWaitingRef() \
 	PG_RUNTIME_CURRENT_CARRIER_FIELD_REF(PgCurrentWaitEventWaitingRef, \
 										 wait_event_waiting)

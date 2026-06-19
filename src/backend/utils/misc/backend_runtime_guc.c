@@ -457,6 +457,12 @@ PgCurrentThreadedGUCMutexDepthRef(void)
 }
 
 int *
+PgCurrentThreadedRelOptionsMutexDepthRef(void)
+{
+	return &PgCurrentCarrierState()->threaded_reloptions_mutex_depth;
+}
+
+int *
 PgCurrentWalSenderTimeoutRef(void)
 {
 	return &PgCurrentSessionReplicationGUCState()->wal_sender_timeout_ms;

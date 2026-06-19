@@ -918,6 +918,7 @@ InitializePgThreadCarrierRuntimeState(PgCarrier *carrier)
 	scheduler_execution = malloc(sizeof(PgExecution));
 	if (scheduler_execution == NULL)
 		elog(FATAL, "out of memory allocating carrier scheduler execution state");
+	MemSet(scheduler_execution, 0, sizeof(PgExecution));
 	PgExecutionInitializeRuntimeObject(scheduler_execution, NULL, NULL,
 									   carrier);
 
@@ -957,16 +958,35 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 									  struct Latch *interrupt_latch)
 {
 	PgThreadBackendLogicalState *logical;
+	PgExecution *scheduler_execution;
 
 	Assert(state != NULL);
 	Assert(thread_runtime_initialized);
 
 	MemSet(state, 0, sizeof(*state));
 	logical = &state->logical;
-	InitializePgThreadCarrierRuntimeState(&state->carrier);
-	InitializePgThreadBackendLogicalState(logical, &state->carrier,
-										  backend_type, port,
-										  interrupt_latch);
+
+	PgCarrierInitializeRuntimeObject(&state->carrier);
+	scheduler_execution = malloc(sizeof(PgExecution));
+	if (scheduler_execution == NULL)
+		elog(FATAL, "out of memory allocating carrier scheduler execution state");
+	MemSet(scheduler_execution, 0, sizeof(PgExecution));
+	PgExecutionInitializeRuntimeObject(scheduler_execution, NULL, NULL,
+									   &state->carrier);
+	state->carrier.kind = PG_CARRIER_THREAD;
+	state->carrier.runtime = &thread_runtime;
+	state->carrier.scheduler_execution = scheduler_execution;
+
+	PgBackendInitializeRuntimeObject(&logical->backend, &thread_runtime,
+									 &state->carrier, &logical->session,
+									 &logical->connection, &logical->execution,
+									 backend_type, interrupt_latch);
+	PgSessionInitializeRuntimeObject(&logical->session, &logical->backend,
+									 &logical->connection, &logical->execution);
+	PgConnectionInitializeRuntimeObject(&logical->connection, &logical->backend,
+										&logical->session, port);
+	PgExecutionInitializeRuntimeObject(&logical->execution, &logical->backend,
+									   &logical->session, &state->carrier);
 
 	state->carrier.current_backend = &logical->backend;
 	state->carrier.current_session = &logical->session;
