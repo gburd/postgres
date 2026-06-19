@@ -1220,6 +1220,9 @@ state exposes logical backend publication through `logical_backend` and
 lifecycle report. A real carrier pool must preserve that separation so a parked
 or migrated logical backend is not lost when a carrier exits and a carrier can
 be reused without implying logical backend exit.
+Phase 15 introduces a pooled-logical PMChild state for client sessions that
+publish a logical backend without owning a dedicated process or native thread
+carrier; signal and wake routing still target the published logical backend.
 
 ## Carrier Pool
 

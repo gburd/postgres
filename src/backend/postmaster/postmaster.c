@@ -3639,12 +3639,12 @@ signal_child(PMChild *pmchild, int signal)
 {
 	pid_t		pid;
 
-	if (PostmasterChildIsThread(pmchild))
+	if (PostmasterChildHasLogicalBackendPublication(pmchild))
 	{
 		PgBackendInterruptType interrupt;
 
 		ereport(DEBUG3,
-				(errmsg_internal("sending signal %d/%s to %s thread-backed logical backend",
+				(errmsg_internal("sending signal %d/%s to %s logical backend",
 								 signal, pm_signame(signal),
 								 GetBackendTypeDesc(pmchild->bkend_type))));
 
@@ -3685,7 +3685,7 @@ static bool
 thread_child_signal_interrupt(PMChild *pmchild, int signal,
 							  PgBackendInterruptType *interrupt)
 {
-	Assert(PostmasterChildIsThread(pmchild));
+	Assert(PostmasterChildHasLogicalBackendPublication(pmchild));
 	Assert(interrupt != NULL);
 
 	switch (signal)
@@ -5225,7 +5225,7 @@ PostmasterNotifyPIDForWorker(int pid)
 		if (PostmasterChildSignalPid(bp) != pid)
 			continue;
 
-		if (PostmasterChildIsThread(bp))
+		if (PostmasterChildHasLogicalBackendPublication(bp))
 			return PostmasterChildWakeThreadBackend(bp);
 		else if (kill(pid, SIGUSR1) < 0)
 			return false;

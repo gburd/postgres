@@ -46,7 +46,8 @@ struct PgBackend;
 typedef enum PMChildCarrierKind
 {
 	PM_CHILD_CARRIER_PROCESS,
-	PM_CHILD_CARRIER_THREAD
+	PM_CHILD_CARRIER_THREAD,
+	PM_CHILD_CARRIER_POOLED_LOGICAL
 } PMChildCarrierKind;
 
 typedef struct
@@ -163,9 +164,12 @@ extern PMChild *AssignPostmasterChildSlot(BackendType btype);
 extern PMChild *AllocDeadEndChild(void);
 extern bool PostmasterChildIsProcess(const PMChild *pmchild);
 extern bool PostmasterChildIsThread(const PMChild *pmchild);
+extern bool PostmasterChildIsPooledLogical(const PMChild *pmchild);
+extern bool PostmasterChildHasLogicalBackendPublication(const PMChild *pmchild);
 extern pid_t PostmasterChildSignalPid(const PMChild *pmchild);
 extern void PostmasterChildSetProcess(PMChild *pmchild, pid_t pid);
 extern void PostmasterChildSetThread(PMChild *pmchild, const PgThread *thread);
+extern void PostmasterChildSetPooledLogical(PMChild *pmchild);
 extern void PostmasterChildPublishLogicalBackend(PMChild *pmchild,
 												 struct PgBackend *backend);
 extern void PostmasterChildUnpublishLogicalBackend(PMChild *pmchild);

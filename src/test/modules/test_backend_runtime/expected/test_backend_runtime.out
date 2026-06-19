@@ -629,6 +629,12 @@ SELECT test_pmchild_thread_backend_reset_api();
  t
 (1 row)
 
+SELECT test_pmchild_pooled_logical_backend_signal_api();
+ test_pmchild_pooled_logical_backend_signal_api 
+------------------------------------------------
+ t
+(1 row)
+
 SELECT test_pmchild_thread_backend_publication_race();
  test_pmchild_thread_backend_publication_race 
 ----------------------------------------------

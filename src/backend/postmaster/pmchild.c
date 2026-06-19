@@ -350,6 +350,19 @@ PostmasterChildIsThread(const PMChild *pmchild)
 	return pmchild->carrier_kind == PM_CHILD_CARRIER_THREAD;
 }
 
+bool
+PostmasterChildIsPooledLogical(const PMChild *pmchild)
+{
+	return pmchild->carrier_kind == PM_CHILD_CARRIER_POOLED_LOGICAL;
+}
+
+bool
+PostmasterChildHasLogicalBackendPublication(const PMChild *pmchild)
+{
+	return PostmasterChildIsThread(pmchild) ||
+		PostmasterChildIsPooledLogical(pmchild);
+}
+
 pid_t
 PostmasterChildSignalPid(const PMChild *pmchild)
 {
@@ -357,7 +370,7 @@ PostmasterChildSignalPid(const PMChild *pmchild)
 
 	Assert(pmchild != NULL);
 
-	if (!PostmasterChildIsThread(pmchild))
+	if (!PostmasterChildHasLogicalBackendPublication(pmchild))
 		return pmchild->pid;
 
 	PMChildLogicalBackendLock();
@@ -388,9 +401,17 @@ PostmasterChildSetThread(PMChild *pmchild, const PgThread *thread)
 }
 
 void
+PostmasterChildSetPooledLogical(PMChild *pmchild)
+{
+	pmchild->carrier_kind = PM_CHILD_CARRIER_POOLED_LOGICAL;
+	pmchild->pid = 0;
+	PMChildResetLogicalPublicationState(pmchild, 0);
+}
+
+void
 PostmasterChildPublishLogicalBackend(PMChild *pmchild, struct PgBackend *backend)
 {
-	Assert(PostmasterChildIsThread(pmchild));
+	Assert(PostmasterChildHasLogicalBackendPublication(pmchild));
 
 	PMChildLogicalBackendLock();
 	pmchild->logical_backend = backend;
@@ -404,10 +425,11 @@ PostmasterChildPublishLogicalBackend(PMChild *pmchild, struct PgBackend *backend
 void
 PostmasterChildUnpublishLogicalBackend(PMChild *pmchild)
 {
-	Assert(PostmasterChildIsThread(pmchild));
+	Assert(PostmasterChildHasLogicalBackendPublication(pmchild));
 
 	PMChildLogicalBackendLock();
-	pmchild->thread_exit_logical_signal_pid = pmchild->logical_signal_pid;
+	if (PostmasterChildIsThread(pmchild))
+		pmchild->thread_exit_logical_signal_pid = pmchild->logical_signal_pid;
 	pmchild->logical_backend = NULL;
 	pmchild->logical_signal_pid = 0;
 	PMChildLogicalBackendUnlock();
@@ -419,7 +441,7 @@ PostmasterChildRaiseThreadInterrupt(PMChild *pmchild,
 {
 	bool		raised = false;
 
-	Assert(PostmasterChildIsThread(pmchild));
+	Assert(PostmasterChildHasLogicalBackendPublication(pmchild));
 
 	PMChildLogicalBackendLock();
 	if (pmchild->logical_backend != NULL)
@@ -437,7 +459,7 @@ PostmasterChildWakeThreadBackend(PMChild *pmchild)
 {
 	bool		woke = false;
 
-	Assert(PostmasterChildIsThread(pmchild));
+	Assert(PostmasterChildHasLogicalBackendPublication(pmchild));
 
 	PMChildLogicalBackendLock();
 	if (pmchild->logical_backend != NULL)
