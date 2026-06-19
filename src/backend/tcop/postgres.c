@@ -5401,7 +5401,7 @@ PgSessionRunProtocolSchedulerStaging(PgSession *session)
 
 	Assert(session != NULL);
 	Assert(CurrentPgRuntime != NULL);
-	Assert(CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION);
+	Assert(PgRuntimeIsThreadBacked(CurrentPgRuntime));
 
 	MemSet(&budget, 0, sizeof(budget));
 	budget.max_messages = 1;
@@ -5705,8 +5705,7 @@ PostgresMain(const char *dbname, const char *username)
 	PgSession  *session;
 
 	session = PgSessionBootstrap(dbname, username);
-	if (CurrentPgRuntime != NULL &&
-		CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION)
+	if (PgRuntimeIsThreadBacked(CurrentPgRuntime))
 		PgSessionRunProtocolSchedulerStaging(session);
 	PgSessionRun(session);
 }

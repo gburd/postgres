@@ -738,8 +738,7 @@ ProcessParallelApplyInterrupts(void)
 static bool
 ParallelApplyWorkerThreadedRuntime(void)
 {
-	return CurrentPgRuntime != NULL &&
-		CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION;
+	return PgRuntimeIsThreadBacked(CurrentPgRuntime);
 }
 
 /* Parallel apply worker main loop. */

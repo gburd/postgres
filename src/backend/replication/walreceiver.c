@@ -175,8 +175,7 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
 
 	Assert(startup_data_len == 0);
 
-	threaded_receiver = (CurrentPgRuntime != NULL &&
-						 CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION);
+	threaded_receiver = PgRuntimeIsThreadBacked(CurrentPgRuntime);
 
 	AuxiliaryProcessMainCommon();
 

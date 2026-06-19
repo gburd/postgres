@@ -46,8 +46,7 @@ AuxiliaryProcessMainCommon(void)
 
 	Assert(IsUnderPostmaster);
 
-	threaded_worker = (CurrentPgRuntime != NULL &&
-					   CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION);
+	threaded_worker = PgRuntimeIsThreadBacked(CurrentPgRuntime);
 
 	/* Release postmaster's working memory context */
 	if (PostmasterContext && !threaded_worker)

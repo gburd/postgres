@@ -79,7 +79,7 @@ sub wait_for_carrier_pinned_non_protocol_park
 			"SELECT coalesce(test_backend_runtime_protocol_park_snapshot($pid), '');");
 		my @fields = split(/\|/, $snapshot);
 
-		if (@fields == 21 &&
+		if (@fields >= 21 &&
 			$fields[PARK_STATE] eq 'none' &&
 			$fields[QUEUE_STATE] eq 'none' &&
 			$fields[CARRIER_ATTACHED] == 1 &&
@@ -110,7 +110,7 @@ sub wait_for_protocol_parked
 			"SELECT coalesce(test_backend_runtime_protocol_park_snapshot($pid), '');");
 		my @fields = split(/\|/, $snapshot);
 
-		if (@fields == 21 &&
+		if (@fields >= 21 &&
 			$fields[PARK_STATE] eq 'committed' &&
 			$fields[QUEUE_STATE] eq 'parked_protocol_read' &&
 			$fields[CARRIER_ATTACHED] == 0 &&

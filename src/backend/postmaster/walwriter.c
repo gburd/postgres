@@ -100,8 +100,7 @@ WalWriterMain(const void *startup_data, size_t startup_data_len)
 	Assert(startup_data_len == 0);
 
 	AuxiliaryProcessMainCommon();
-	threaded_worker = (CurrentPgRuntime != NULL &&
-					   CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION);
+	threaded_worker = PgRuntimeIsThreadBacked(CurrentPgRuntime);
 
 	/*
 	 * Properly accept or ignore signals the postmaster might send us

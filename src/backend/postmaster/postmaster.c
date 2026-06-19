@@ -426,6 +426,7 @@ static void handle_pm_pmsignal_signal(SIGNAL_ARGS);
 static void handle_pm_child_exit_signal(SIGNAL_ARGS);
 static void handle_pm_reload_request_signal(SIGNAL_ARGS);
 static void handle_pm_shutdown_request_signal(SIGNAL_ARGS);
+static void set_postmaster_signal_latch(void);
 static void process_pm_pmsignal(void);
 static void process_pm_child_exit(void);
 static void process_pm_reload_request(void);
@@ -2058,7 +2059,7 @@ static void
 handle_pm_pmsignal_signal(SIGNAL_ARGS)
 {
 	pending_pm_pmsignal = true;
-	SetLatch(MyLatch);
+	set_postmaster_signal_latch();
 }
 
 /*
@@ -2072,8 +2073,7 @@ PostmasterSignalPMSignal(void)
 {
 	pending_pm_pmsignal = true;
 
-	if (postmaster_pmsignal_latch != NULL)
-		SetLatch(postmaster_pmsignal_latch);
+	set_postmaster_signal_latch();
 }
 
 bool
@@ -2093,7 +2093,7 @@ static void
 handle_pm_reload_request_signal(SIGNAL_ARGS)
 {
 	pending_pm_reload_request = true;
-	SetLatch(MyLatch);
+	set_postmaster_signal_latch();
 }
 
 /*
@@ -2173,7 +2173,25 @@ handle_pm_shutdown_request_signal(SIGNAL_ARGS)
 			pending_pm_shutdown_request = true;
 			break;
 	}
-	SetLatch(MyLatch);
+	set_postmaster_signal_latch();
+}
+
+/*
+ * Process-directed signals can be delivered to any unmasked carrier thread in
+ * a threaded runtime.  The pending postmaster flags are process-global, but
+ * waking a carrier-local MyLatch would leave the postmaster asleep, so route
+ * wakeups through the latch recorded by ServerLoop() once available.
+ */
+static void
+set_postmaster_signal_latch(void)
+{
+	Latch	   *latch = postmaster_pmsignal_latch;
+
+	if (latch == NULL)
+		latch = MyLatch;
+
+	if (latch != NULL)
+		SetLatch(latch);
 }
 
 /*
@@ -2334,7 +2352,7 @@ static void
 handle_pm_child_exit_signal(SIGNAL_ARGS)
 {
 	pending_pm_child_exit = true;
-	SetLatch(MyLatch);
+	set_postmaster_signal_latch();
 }
 
 /*

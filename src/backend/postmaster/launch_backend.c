@@ -37,6 +37,7 @@
 #include "access/xact.h"
 #include "common/pg_prng.h"
 #include "libpq/libpq-be.h"
+#include "libpq/pqsignal.h"
 #include "miscadmin.h"
 #include "pgtime.h"
 #include "postmaster/autovacuum.h"
@@ -470,6 +471,14 @@ static void
 backend_thread_entry(void *arg)
 {
 	BackendThreadStart *thread_start = (BackendThreadStart *) arg;
+
+	/*
+	 * A carrier thread inherits the postmaster thread's current signal mask,
+	 * but process-directed control signals must be handled by the postmaster
+	 * thread.  Keep carriers in the same blocked-signal state that a forked
+	 * child sees before its child-specific signal setup.
+	 */
+	sigprocmask(SIG_SETMASK, &BlockSig, NULL);
 
 	PgSetCurrentCarrier(&thread_start->runtime_state.carrier);
 	backend_thread_set_current_start(thread_start);
