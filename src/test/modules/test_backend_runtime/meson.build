@@ -62,6 +62,7 @@ tests += {
       't/003_milestone_w_core_smoke.pl',
       't/004_phase13_wait_completion.pl',
       't/005_phase14_protocol_scheduler.pl',
+      't/006_phase14_protocol_postmaster_death.pl',
     ],
   },
 }
