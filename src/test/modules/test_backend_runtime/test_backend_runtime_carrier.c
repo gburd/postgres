@@ -296,6 +296,7 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 	uint64		notify_generation;
 	uint32		expected_wake_reasons;
 	uint32		expected_wake_events;
+	PgBackendInterruptMask pending_interrupts;
 	PGPROC		fake_proc;
 	Latch		fake_latch;
 	WaitEventSet *fake_wait_set;
@@ -421,6 +422,16 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 		ok = ok && FeBeWaitSet != fake_wait_set;
 		ok = ok && CurrentMemoryContext != fake_memory_context;
 		ok = ok && CurrentResourceOwner != fake_resource_owner;
+
+		ResetLatch(&fake_latch);
+		PgBackendRaiseInterrupt(&state.backend,
+								PG_BACKEND_INTERRUPT_QUERY_CANCEL);
+		ok = ok && fake_latch.is_set;
+		ok = ok && CurrentPgBackend == NULL;
+		pending_interrupts = PgBackendConsumeInterrupts(&state.backend);
+		ok = ok && (pending_interrupts &
+					PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_QUERY_CANCEL));
+		ResetLatch(&fake_latch);
 
 		ok = ok && !PgBackendMarkProtocolReadParkWake(&state.backend, 0,
 													  PG_PROTOCOL_PARK_WAKE_LOGICAL,
