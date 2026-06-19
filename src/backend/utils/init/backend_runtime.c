@@ -909,14 +909,21 @@ InitializePgThreadRuntime(PgBackendExitContinuation exit_backend)
 void
 InitializePgThreadCarrierRuntimeState(PgCarrier *carrier)
 {
+	PgExecution *scheduler_execution;
+
 	Assert(carrier != NULL);
 	Assert(thread_runtime_initialized);
 
-	MemSet(carrier, 0, sizeof(*carrier));
 	PgCarrierInitializeRuntimeObject(carrier);
+	scheduler_execution = malloc(sizeof(PgExecution));
+	if (scheduler_execution == NULL)
+		elog(FATAL, "out of memory allocating carrier scheduler execution state");
+	PgExecutionInitializeRuntimeObject(scheduler_execution, NULL, NULL,
+									   carrier);
 
 	carrier->kind = PG_CARRIER_THREAD;
 	carrier->runtime = &thread_runtime;
+	carrier->scheduler_execution = scheduler_execution;
 }
 
 void
@@ -970,6 +977,7 @@ void
 InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 {
 	PgThreadBackendLogicalState *logical;
+	PgExecution *scheduler_execution;
 
 	Assert(state != NULL);
 
@@ -985,6 +993,23 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	PgRuntimeSetCurrentWork(&thread_runtime, &state->carrier,
 							&logical->backend, &logical->session,
 							&logical->connection, &logical->execution, true);
+	scheduler_execution = state->carrier.scheduler_execution;
+	if (scheduler_execution != NULL &&
+		scheduler_execution->memory_contexts.top_context == NULL)
+	{
+		scheduler_execution->memory_contexts.top_context =
+			logical->execution.memory_contexts.top_context;
+		scheduler_execution->memory_contexts.current_context =
+			logical->execution.memory_contexts.current_context != NULL ?
+			logical->execution.memory_contexts.current_context :
+			logical->execution.memory_contexts.top_context;
+		scheduler_execution->memory_contexts.error_context =
+			logical->execution.memory_contexts.error_context;
+		scheduler_execution->resource_owners.current_owner =
+			logical->execution.resource_owners.current_owner;
+		scheduler_execution->resource_owners.resource_owner_context =
+			logical->execution.resource_owners.resource_owner_context;
+	}
 	InitializeThreadedSessionRequiredGUCOptions();
 }
 

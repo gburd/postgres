@@ -1169,12 +1169,32 @@ PgExecutionResetDebugClosedState(PgExecution *execution)
 static void
 PgExecutionResetMemoryContextsClosedState(PgExecution *execution)
 {
+	bool		preserve_error_context;
+	MemoryContext error_context;
+
 	Assert(execution != NULL);
+
+	/*
+	 * Threaded backend finish still has to publish logical exit and reclaim
+	 * the retained TopMemoryContext after closed-state reset.  Keep the
+	 * backend's ErrorContext address usable for any ereport() on that final
+	 * physical-thread path, while clearing Top/CurrentMemoryContext so the
+	 * retained root can be deleted deliberately by the carrier exit code.
+	 */
+	preserve_error_context =
+		PgBackendExitInProgress() &&
+		PgRuntimeIsThreadBacked(CurrentPgRuntime) &&
+		execution == CurrentPgExecution;
+	error_context = preserve_error_context ?
+		execution->memory_contexts.error_context : NULL;
 
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(execution->memory_contexts.message_context);
 
 	MemSet(&execution->memory_contexts, 0,
 		   sizeof(execution->memory_contexts));
+
+	if (preserve_error_context)
+		execution->memory_contexts.error_context = error_context;
 }
 
 void

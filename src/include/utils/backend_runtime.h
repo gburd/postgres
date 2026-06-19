@@ -2419,6 +2419,7 @@ struct PgCarrier
 	PgBackend  *current_backend;
 	PgSession  *current_session;
 	PgExecution *current_execution;
+	PgExecution *scheduler_execution;
 	void	   *backend_thread_start;
 	bool		is_under_postmaster;
 	volatile sig_atomic_t wait_event_waiting;
@@ -3502,6 +3503,8 @@ extern void PgRuntimeInitializeProtocolScheduler(PgProtocolSchedulerState *sched
 extern bool PgRuntimeProtocolSchedulerParkBackend(PgRuntime *runtime,
 												  PgBackend *backend);
 extern bool PgRuntimeProtocolSchedulerMarkRunnable(PgRuntime *runtime,
+												   PgBackend *backend);
+extern bool PgRuntimeProtocolSchedulerLeaseBackend(PgRuntime *runtime,
 												   PgBackend *backend);
 extern PgBackend *PgRuntimeProtocolSchedulerPopRunnable(PgRuntime *runtime);
 extern int	PgRuntimeProtocolSchedulerCollectParked(PgRuntime *runtime,

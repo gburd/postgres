@@ -278,7 +278,9 @@ variable##MaybeRef(type *(*fallback) (void)) \
 	type	   *slot; \
  \
 	slot = bridge->variable; \
-	if (likely(slot != NULL)) \
+	if (likely(slot != NULL && \
+			   bridge->variable##Owner == \
+			   (const void *) PG_RUNTIME_HOT_FIELD_CURRENT_OWNER(owner))) \
 		return slot; \
  \
 	PG_RUNTIME_BRIDGE_COUNT_FALLBACK(hot_field); \

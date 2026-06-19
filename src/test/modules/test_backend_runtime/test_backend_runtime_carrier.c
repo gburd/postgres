@@ -165,7 +165,11 @@ test_carrier_attach_detach_current_work(PG_FUNCTION_ARGS)
 	Latch		fake_latch;
 	WaitEventSet *fake_wait_set;
 	MemoryContext fake_memory_context;
+	MemoryContext saved_error_context;
+	MemoryContext scheduler_memory_context;
+	MemoryContext scheduler_error_context;
 	ResourceOwner fake_resource_owner;
+	ResourceOwner scheduler_resource_owner;
 	bool		ok = true;
 
 	saved_runtime = CurrentPgRuntime;
@@ -175,7 +179,11 @@ test_carrier_attach_detach_current_work(PG_FUNCTION_ARGS)
 	saved_connection = CurrentPgConnection;
 	saved_execution = CurrentPgExecution;
 	saved_current_memory_context = CurrentMemoryContext;
+	saved_error_context = ErrorContext;
 	saved_current_resource_owner = CurrentResourceOwner;
+	scheduler_memory_context = TopMemoryContext;
+	scheduler_error_context = ErrorContext;
+	scheduler_resource_owner = CurrentResourceOwner;
 
 	InitializePgThreadRuntime(NULL);
 	InitializePgThreadBackendRuntimeState(&state, B_BACKEND, NULL,
@@ -194,6 +202,18 @@ test_carrier_attach_detach_current_work(PG_FUNCTION_ARGS)
 	state.logical.execution.memory_contexts.current_context = fake_memory_context;
 	state.logical.execution.resource_owners.current_owner =
 		(struct ResourceOwnerData *) fake_resource_owner;
+	ok = ok && state.carrier.scheduler_execution != NULL;
+	if (state.carrier.scheduler_execution != NULL)
+	{
+		state.carrier.scheduler_execution->memory_contexts.top_context =
+			TopMemoryContext;
+		state.carrier.scheduler_execution->memory_contexts.current_context =
+			scheduler_memory_context;
+		state.carrier.scheduler_execution->memory_contexts.error_context =
+			scheduler_error_context;
+		state.carrier.scheduler_execution->resource_owners.current_owner =
+			(struct ResourceOwnerData *) scheduler_resource_owner;
+	}
 
 	PG_TRY();
 	{
@@ -249,13 +269,15 @@ test_carrier_attach_detach_current_work(PG_FUNCTION_ARGS)
 		ok = ok && MyProc != &fake_proc;
 		ok = ok && MyLatch != &fake_latch;
 		ok = ok && FeBeWaitSet != fake_wait_set;
-		ok = ok && CurrentMemoryContext != fake_memory_context;
-		ok = ok && CurrentResourceOwner != fake_resource_owner;
+		ok = ok && CurrentMemoryContext == scheduler_memory_context;
+		ok = ok && ErrorContext == scheduler_error_context;
+		ok = ok && CurrentResourceOwner == scheduler_resource_owner;
 
 		PgRuntimeSetCurrentWork(saved_runtime, saved_carrier, saved_backend,
 								saved_session, saved_connection,
 								saved_execution, false);
 		CurrentMemoryContext = saved_current_memory_context;
+		ErrorContext = saved_error_context;
 		CurrentResourceOwner = saved_current_resource_owner;
 	}
 	PG_CATCH();
@@ -264,6 +286,7 @@ test_carrier_attach_detach_current_work(PG_FUNCTION_ARGS)
 								saved_session, saved_connection,
 								saved_execution, false);
 		CurrentMemoryContext = saved_current_memory_context;
+		ErrorContext = saved_error_context;
 		CurrentResourceOwner = saved_current_resource_owner;
 		PG_RE_THROW();
 	}

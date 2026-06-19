@@ -480,8 +480,19 @@ PgExecutionInitializeRuntimeObject(PgExecution *execution,
 PgExecution *
 PgCurrentOrEarlyExecution(void)
 {
+	PgCarrier  *carrier;
+
 	if (CurrentPgExecution == NULL)
+	{
+		carrier = CurrentPgCarrier;
+		if (carrier != NULL &&
+			carrier->kind == PG_CARRIER_THREAD &&
+			CurrentPgRuntime != NULL &&
+			CurrentPgRuntime == carrier->runtime &&
+			carrier->scheduler_execution != NULL)
+			return carrier->scheduler_execution;
 		return &early_execution_fallback;
+	}
 
 	return CurrentPgExecution;
 }

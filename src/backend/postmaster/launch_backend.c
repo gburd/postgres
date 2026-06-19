@@ -272,6 +272,7 @@ static BackendThreadStart *backend_thread_current_start(void);
 static void backend_thread_set_current_start(BackendThreadStart *thread_start);
 static void backend_thread_wait_until_registered(BackendThreadStart *thread_start);
 static void backend_thread_init_random_state(void);
+static void backend_thread_clear_deleted_retained_memory_contexts(void);
 pg_noreturn static void backend_thread_exit(int code);
 pg_noreturn static void backend_thread_finish(int code);
 pg_noreturn static void backend_pooled_logical_finish(int code);
@@ -1054,6 +1055,16 @@ backend_thread_init_random_state(void)
 	}
 }
 
+static void
+backend_thread_clear_deleted_retained_memory_contexts(void)
+{
+	if (CurrentPgExecution == NULL)
+		return;
+
+	CurrentPgExecution->memory_contexts.error_context = NULL;
+	CurrentPgExecution->memory_contexts.current_context = NULL;
+}
+
 void
 ThreadedBackendStartupComplete(void)
 {
@@ -1132,6 +1143,7 @@ backend_thread_finish(int code)
 		top_memory_reclaimed = MemoryContextMemAllocated(retained_top_context,
 														 true);
 		MemoryContextDelete(retained_top_context);
+		backend_thread_clear_deleted_retained_memory_contexts();
 		exit_state->retained_top_memory_context = NULL;
 		top_memory_allocated = 0;
 	}
@@ -1183,6 +1195,7 @@ backend_pooled_logical_finish(int code)
 		top_memory_reclaimed = MemoryContextMemAllocated(retained_top_context,
 														 true);
 		MemoryContextDelete(retained_top_context);
+		backend_thread_clear_deleted_retained_memory_contexts();
 		exit_state->retained_top_memory_context = NULL;
 		top_memory_allocated = 0;
 	}
