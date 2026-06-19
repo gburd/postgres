@@ -66,6 +66,7 @@
 #include "storage/bufmgr.h"
 #include "storage/ipc.h"
 #include "storage/fd.h"
+#include "storage/latch.h"
 #include "storage/pmsignal.h"
 #include "storage/proc.h"
 #include "storage/procsignal.h"
@@ -186,6 +187,9 @@ static void ProcessRecoveryConflictInterrupts(void);
 static void ProcessRecoveryConflictInterrupt(RecoveryConflictReason reason);
 static void report_recovery_conflict(RecoveryConflictReason reason);
 static PgSession *PgSessionBootstrap(const char *dbname, const char *username);
+pg_noreturn static void PgSessionRunProtocolSchedulerStaging(PgSession *session);
+static uint32 PgSessionStagingWaitProtocolRead(PgBackend *backend,
+											   PgProtocolParkSpec *park_spec);
 static void PgSessionLoopStateInit(PgSessionLoopState *state);
 static void PgSessionRecoverError(PgSession *session);
 static pg_attribute_always_inline PgStepResult PgSessionStepUnprotected(PgSession *session,
@@ -5164,6 +5168,166 @@ PgSessionRun(PgSession *session)
 		(void) PgSessionStepUnprotected(session, budget);
 }
 
+static uint32
+PgSessionStagingWaitProtocolRead(PgBackend *backend,
+								 PgProtocolParkSpec *park_spec)
+{
+	PgConnection *connection;
+	WaitEventSet *wait_set;
+	WaitEvent	events[FeBeWaitSetNEvents];
+	uint32		wake_events = 0;
+	uint32	   *wait_event_info_ptr;
+
+	Assert(backend != NULL);
+	Assert(park_spec != NULL);
+	Assert(park_spec->backend == backend);
+	Assert(park_spec->connection != NULL);
+	Assert(CurrentPgBackend == NULL);
+	Assert(CurrentPgSession == NULL);
+	Assert(CurrentPgConnection == NULL);
+	Assert(CurrentPgExecution == NULL);
+
+	/*
+	 * Buffered transport input is an immediate re-probe condition, not a
+	 * kernel socket wait.  The probe should expose a protocol byte if one is
+	 * available; otherwise the carrier re-enters the top-level loop without
+	 * sleeping so the transport layer can make its own state visible.
+	 */
+	if (park_spec->transport_buffered_input)
+		return 0;
+
+	if (park_spec->transport_wait_events == 0 ||
+		park_spec->socket == PGINVALID_SOCKET)
+		return 0;
+
+	connection = park_spec->connection;
+	wait_set = connection->protocol.fe_be_wait_set;
+	Assert(wait_set != NULL);
+
+	wait_event_info_ptr = backend->wait_state.wait_event_info_ptr;
+	Assert(wait_event_info_ptr != NULL);
+
+	ModifyWaitEvent(wait_set, FeBeWaitSetSocketPos,
+					park_spec->transport_wait_events | WL_SOCKET_CLOSED,
+					NULL);
+
+	*(volatile uint32 *) wait_event_info_ptr = park_spec->wait_event_info;
+	PG_TRY();
+	{
+		for (;;)
+		{
+			int			rc;
+
+			if (connection->socket_io.transport_generation !=
+				park_spec->transport_generation)
+				break;
+
+			rc = WaitEventSetWait(wait_set, -1, events, lengthof(events), 0);
+			for (int i = 0; i < rc; i++)
+			{
+				wake_events |= events[i].events;
+				if (events[i].events & (park_spec->transport_wait_events |
+										WL_SOCKET_CLOSED |
+										WL_LATCH_SET |
+										WL_POSTMASTER_DEATH))
+					break;
+			}
+
+			if (wake_events != 0)
+				break;
+		}
+		*(volatile uint32 *) wait_event_info_ptr = 0;
+	}
+	PG_CATCH();
+	{
+		*(volatile uint32 *) wait_event_info_ptr = 0;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	return wake_events;
+}
+
+pg_noreturn static void
+PgSessionRunProtocolSchedulerStaging(PgSession *session)
+{
+	PgStepBudget budget;
+
+	Assert(session != NULL);
+	Assert(CurrentPgRuntime != NULL);
+	Assert(CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION);
+
+	MemSet(&budget, 0, sizeof(budget));
+	budget.max_messages = 1;
+	budget.protocol_park_enabled = true;
+	budget.return_logical_exits = true;
+
+	for (;;)
+	{
+		PgStepResult result;
+
+		result = PgSessionStep(session, budget);
+		switch (result)
+		{
+			case PG_STEP_CONTINUE:
+			case PG_STEP_ERROR_RECOVERED:
+				break;
+
+			case PG_STEP_PARK_PROTOCOL_READ:
+				{
+					PgCarrier  *carrier = CurrentPgCarrier;
+					PgBackend  *backend = session->backend;
+					PgConnection *connection = session->connection;
+					PgExecution *execution = session->execution;
+					PgProtocolParkSpec park_spec;
+					uint32		wake_events;
+
+					Assert(carrier != NULL);
+					Assert(backend != NULL);
+					Assert(connection != NULL);
+					Assert(execution != NULL);
+					Assert(backend == CurrentPgBackend);
+					Assert(backend->protocol_park.state ==
+						   PG_PROTOCOL_PARK_PREPARED);
+
+					park_spec = backend->protocol_park.spec;
+					PgCarrierCommitProtocolReadPark(carrier, backend);
+
+					wake_events =
+						PgSessionStagingWaitProtocolRead(backend, &park_spec);
+
+					PgCarrierAttachBackend(carrier, backend, session,
+										   connection, execution);
+					PgBackendResumeProtocolReadPark(backend);
+
+					if (wake_events & WL_POSTMASTER_DEATH)
+						ereport(FATAL,
+								(errcode(ERRCODE_ADMIN_SHUTDOWN),
+								 errmsg("terminating connection due to unexpected postmaster exit")));
+
+					if (wake_events & WL_LATCH_SET)
+					{
+						/*
+						 * Process the pending interrupt under the next
+						 * PgSessionStep() error boundary.  Leaving the latch
+						 * set here would make the next detached wait return
+						 * immediately even if the interrupt was already
+						 * consumed.
+						 */
+						ResetLatch(MyLatch);
+					}
+				}
+				break;
+
+			case PG_STEP_DONE:
+				PgBackendExit(0);
+
+			case PG_STEP_FATAL_EXIT:
+				PgBackendExit(1);
+		}
+	}
+}
+
 
 /*
  * Bootstrap a backend PgSession before the command loop starts.
@@ -5389,6 +5553,9 @@ PostgresMain(const char *dbname, const char *username)
 	PgSession  *session;
 
 	session = PgSessionBootstrap(dbname, username);
+	if (CurrentPgRuntime != NULL &&
+		CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION)
+		PgSessionRunProtocolSchedulerStaging(session);
 	PgSessionRun(session);
 }
 

@@ -1647,6 +1647,21 @@ PgCarrierCommitProtocolReadPark(PgCarrier *carrier, PgBackend *backend)
 	PgCarrierDetachBackend(carrier, backend);
 }
 
+void
+PgBackendResumeProtocolReadPark(PgBackend *backend)
+{
+	PgBackendProtocolParkState *park_state;
+
+	Assert(backend != NULL);
+	Assert(backend == CurrentPgBackend);
+
+	park_state = &backend->protocol_park;
+	Assert(park_state->state == PG_PROTOCOL_PARK_COMMITTED);
+
+	park_state->state = PG_PROTOCOL_PARK_NONE;
+	MemSet(&park_state->spec, 0, sizeof(park_state->spec));
+}
+
 static void
 PgBackendWakeForWaitCompletion(PgBackend *backend)
 {

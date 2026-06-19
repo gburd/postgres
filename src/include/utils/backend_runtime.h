@@ -3421,6 +3421,7 @@ extern bool PgBackendPrepareProtocolReadPark(PgBackend *backend,
 											 PgProtocolParkSpec *spec);
 extern void PgCarrierCommitProtocolReadPark(PgCarrier *carrier,
 											PgBackend *backend);
+extern void PgBackendResumeProtocolReadPark(PgBackend *backend);
 extern int	PgSuspend(const PgWaitSpec *wait_spec,
 					  PgSuspendCallback callback, void *callback_arg);
 extern PgStepResult PgSessionStep(PgSession *session, PgStepBudget budget);

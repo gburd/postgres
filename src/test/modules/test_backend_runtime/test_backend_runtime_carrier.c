@@ -352,6 +352,19 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 		ok = ok && state.carrier.current_backend == NULL;
 		ok = ok && state.backend.carrier == NULL;
 
+		PgCarrierAttachBackend(&state.carrier, &state.backend,
+							   &state.session, &state.connection,
+							   &state.execution);
+		PgBackendResumeProtocolReadPark(&state.backend);
+
+		ok = ok && state.backend.protocol_park.state ==
+			PG_PROTOCOL_PARK_NONE;
+		ok = ok && state.backend.protocol_park.spec.backend == NULL;
+		ok = ok && state.backend.protocol_park.next_generation == 1;
+		ok = ok && CurrentPgBackend == &state.backend;
+		ok = ok && state.carrier.current_backend == &state.backend;
+		ok = ok && state.backend.carrier == &state.carrier;
+
 		PgRuntimeSetCurrentWork(saved_runtime, saved_carrier, saved_backend,
 								saved_session, saved_connection,
 								saved_execution, false);
