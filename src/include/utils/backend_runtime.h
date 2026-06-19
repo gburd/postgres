@@ -255,6 +255,13 @@ typedef struct PgProtocolSchedulerState
 	uint64		runnable_enqueue_count;
 	uint64		parked_protocol_enqueue_count;
 	uint32		carrier_limit;
+	uint32		registered_carrier_count;
+	uint32		idle_carrier_count;
+	uint32		active_carrier_count;
+	uint64		carrier_register_count;
+	uint64		carrier_reject_count;
+	uint64		carrier_lease_count;
+	uint64		carrier_release_count;
 	uint64		same_carrier_resume_count;
 	uint64		migrated_resume_count;
 } PgProtocolSchedulerState;
@@ -2417,6 +2424,8 @@ struct PgCarrier
 	int			wait_event_selfpipe_owner_pid;
 	char	   *stack_base_ptr;
 	int			threaded_guc_mutex_depth;
+	bool		protocol_scheduler_registered;
+	bool		protocol_scheduler_idle;
 };
 
 struct PgBackend
@@ -3491,6 +3500,10 @@ extern bool PgRuntimeProtocolSchedulerParkBackend(PgRuntime *runtime,
 extern bool PgRuntimeProtocolSchedulerMarkRunnable(PgRuntime *runtime,
 												   PgBackend *backend);
 extern PgBackend *PgRuntimeProtocolSchedulerPopRunnable(PgRuntime *runtime);
+extern bool PgRuntimeProtocolSchedulerRegisterCarrier(PgRuntime *runtime,
+													  PgCarrier *carrier);
+extern bool PgRuntimeProtocolSchedulerUnregisterCarrier(PgRuntime *runtime,
+														PgCarrier *carrier);
 extern PgBackend *PgCarrierLeaseRunnableProtocolBackend(PgCarrier *carrier);
 extern bool PgRuntimeProtocolSchedulerRemoveBackend(PgRuntime *runtime,
 													PgBackend *backend);

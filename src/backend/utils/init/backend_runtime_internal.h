@@ -193,6 +193,8 @@ extern PgRuntimeServerGUCState *PgCurrentRuntimeServerGUCState(void);
 extern void PgRuntimeInitializeExtensionModuleState(PgRuntimeExtensionModuleState *extension_modules);
 extern void PgRuntimeAdoptEarlyExtensionModuleState(PgRuntime *runtime);
 extern PgRuntimeExtensionModuleState *PgCurrentRuntimeExtensionModuleState(void);
+extern void PgRuntimeProtocolSchedulerCarrierBecameActive(PgCarrier *carrier);
+extern void PgRuntimeProtocolSchedulerCarrierBecameIdle(PgCarrier *carrier);
 #ifndef PgCurrentSessionLoopState
 extern PgSessionLoopState *PgCurrentSessionLoopState(void);
 #endif

@@ -613,6 +613,7 @@ PgCarrierAttachBackend(PgCarrier *carrier, PgBackend *backend,
 	execution->backend = backend;
 	execution->session = session;
 	execution->carrier = carrier;
+	PgRuntimeProtocolSchedulerCarrierBecameActive(carrier);
 
 	PgRuntimeSetCurrentWork(runtime, carrier, backend, session, connection,
 							execution, true);
@@ -641,6 +642,7 @@ PgCarrierDetachBackend(PgCarrier *carrier, PgBackend *backend)
 		backend->carrier = NULL;
 	if (execution != NULL && execution->carrier == carrier)
 		execution->carrier = NULL;
+	PgRuntimeProtocolSchedulerCarrierBecameIdle(carrier);
 
 	if (CurrentPgCarrier == carrier)
 		PgRuntimeSetCurrentWork(runtime, carrier, NULL, NULL, NULL, NULL,

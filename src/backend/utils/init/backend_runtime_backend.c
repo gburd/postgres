@@ -1607,6 +1607,132 @@ PgRuntimeInitializeProtocolScheduler(PgProtocolSchedulerState *scheduler)
 }
 
 bool
+PgRuntimeProtocolSchedulerRegisterCarrier(PgRuntime *runtime, PgCarrier *carrier)
+{
+	PgProtocolSchedulerState *scheduler;
+	bool		carrier_idle;
+
+	if (runtime == NULL || carrier == NULL)
+		return false;
+	if (carrier->runtime != NULL && carrier->runtime != runtime)
+		return false;
+
+	scheduler = &runtime->protocol_scheduler;
+	SpinLockAcquire(&scheduler->lock);
+	if (carrier->protocol_scheduler_registered)
+	{
+		bool		ok = carrier->runtime == runtime;
+
+		SpinLockRelease(&scheduler->lock);
+		return ok;
+	}
+
+	if (scheduler->carrier_limit > 0 &&
+		scheduler->registered_carrier_count >= scheduler->carrier_limit)
+	{
+		scheduler->carrier_reject_count++;
+		SpinLockRelease(&scheduler->lock);
+		return false;
+	}
+
+	carrier_idle = carrier->current_backend == NULL &&
+		carrier->current_session == NULL &&
+		carrier->current_execution == NULL;
+	carrier->runtime = runtime;
+	carrier->protocol_scheduler_registered = true;
+	carrier->protocol_scheduler_idle = carrier_idle;
+	scheduler->registered_carrier_count++;
+	if (carrier_idle)
+		scheduler->idle_carrier_count++;
+	else
+		scheduler->active_carrier_count++;
+	scheduler->carrier_register_count++;
+	SpinLockRelease(&scheduler->lock);
+
+	return true;
+}
+
+bool
+PgRuntimeProtocolSchedulerUnregisterCarrier(PgRuntime *runtime, PgCarrier *carrier)
+{
+	PgProtocolSchedulerState *scheduler;
+
+	if (runtime == NULL || carrier == NULL)
+		return false;
+	if (carrier->runtime != runtime)
+		return false;
+
+	scheduler = &runtime->protocol_scheduler;
+	SpinLockAcquire(&scheduler->lock);
+	if (!carrier->protocol_scheduler_registered)
+	{
+		SpinLockRelease(&scheduler->lock);
+		return false;
+	}
+
+	Assert(scheduler->registered_carrier_count > 0);
+	scheduler->registered_carrier_count--;
+	if (carrier->protocol_scheduler_idle)
+	{
+		Assert(scheduler->idle_carrier_count > 0);
+		scheduler->idle_carrier_count--;
+	}
+	else
+	{
+		Assert(scheduler->active_carrier_count > 0);
+		scheduler->active_carrier_count--;
+	}
+	carrier->protocol_scheduler_registered = false;
+	carrier->protocol_scheduler_idle = false;
+	SpinLockRelease(&scheduler->lock);
+
+	return true;
+}
+
+void
+PgRuntimeProtocolSchedulerCarrierBecameActive(PgCarrier *carrier)
+{
+	PgProtocolSchedulerState *scheduler;
+
+	if (carrier == NULL || !carrier->protocol_scheduler_registered)
+		return;
+	Assert(carrier->runtime != NULL);
+
+	scheduler = &carrier->runtime->protocol_scheduler;
+	SpinLockAcquire(&scheduler->lock);
+	if (carrier->protocol_scheduler_idle)
+	{
+		Assert(scheduler->idle_carrier_count > 0);
+		scheduler->idle_carrier_count--;
+		scheduler->active_carrier_count++;
+		carrier->protocol_scheduler_idle = false;
+	}
+	SpinLockRelease(&scheduler->lock);
+}
+
+void
+PgRuntimeProtocolSchedulerCarrierBecameIdle(PgCarrier *carrier)
+{
+	PgProtocolSchedulerState *scheduler;
+
+	if (carrier == NULL || !carrier->protocol_scheduler_registered)
+		return;
+	Assert(carrier->runtime != NULL);
+
+	scheduler = &carrier->runtime->protocol_scheduler;
+	SpinLockAcquire(&scheduler->lock);
+	if (!carrier->protocol_scheduler_idle)
+	{
+		Assert(scheduler->active_carrier_count > 0);
+		scheduler->active_carrier_count--;
+		scheduler->idle_carrier_count++;
+		scheduler->carrier_release_count++;
+		carrier->protocol_scheduler_idle = true;
+	}
+	SpinLockRelease(&scheduler->lock);
+}
+
+bool
 PgRuntimeProtocolSchedulerParkBackend(PgRuntime *runtime, PgBackend *backend)
 {
 	PgBackendProtocolParkState *park_state;
@@ -1740,6 +1866,9 @@ PgCarrierLeaseRunnableProtocolBackend(PgCarrier *carrier)
 	Assert(carrier->current_session == NULL);
 	Assert(carrier->current_execution == NULL);
 
+	if (!carrier->protocol_scheduler_registered)
+		return NULL;
+
 	runtime = carrier->runtime;
 	if (runtime == NULL)
 		return NULL;
@@ -1761,6 +1890,9 @@ PgCarrierLeaseRunnableProtocolBackend(PgCarrier *carrier)
 
 	PgCarrierAttachBackend(carrier, backend, backend->session,
 						   backend->connection, backend->execution);
+	SpinLockAcquire(&runtime->protocol_scheduler.lock);
+	runtime->protocol_scheduler.carrier_lease_count++;
+	SpinLockRelease(&runtime->protocol_scheduler.lock);
 	return backend;
 }
 

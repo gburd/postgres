@@ -1318,6 +1318,11 @@ session/connection/execution state to itself. Staging mode may still drive this
 from the same thread that parked the session, but tests should be able to prove
 the lease path also works with a different resume carrier.
 
+Real pool carriers must register with the protocol scheduler before leasing
+work. Registration is bounded by the configured carrier limit and accounts
+idle, active, rejected, leased, and released carriers so the pool can prove it
+is serving sessions with fewer physical carriers than logical sessions.
+
 Phase 14 staging phases may be committed as scaffolding, but documentation and
 test names should not claim "pooled carrier scheduler complete" while there is
 still one carrier per client connection. Phase 15 is not complete until the real

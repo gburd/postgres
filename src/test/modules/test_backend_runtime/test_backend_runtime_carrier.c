@@ -289,12 +289,20 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 	ResourceOwner saved_current_resource_owner;
 	PgThreadBackendRuntimeState state;
 	PgCarrier	resume_carrier;
+	PgCarrier	overflow_carrier;
 	PgProtocolParkSpec park_spec;
-	PgProtocolSchedulerState *scheduler;
+	PgProtocolSchedulerState *scheduler = NULL;
 	PgBackend  *runnable_backend;
 	TimestampTz timeout_wake_at;
 	uint64		timeout_generation;
 	uint64		notify_generation;
+	uint32		saved_carrier_limit = 0;
+	uint32		base_registered_carriers = 0;
+	uint32		base_idle_carriers = 0;
+	uint32		base_active_carriers = 0;
+	uint64		base_carrier_rejects = 0;
+	uint64		base_carrier_leases = 0;
+	uint64		base_carrier_releases = 0;
 	uint32		expected_wake_reasons;
 	uint32		expected_wake_events;
 	PgBackendInterruptMask pending_interrupts;
@@ -318,6 +326,7 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 	InitializePgThreadBackendRuntimeState(&state, B_BACKEND, NULL,
 										  &fake_latch);
 	InitializePgThreadCarrierRuntimeState(&resume_carrier);
+	InitializePgThreadCarrierRuntimeState(&overflow_carrier);
 	PgCarrierDetachBackend(&state.carrier, &state.logical.backend);
 	MemSet(&fake_proc, 0, sizeof(fake_proc));
 	InitLatch(&fake_latch);
@@ -351,6 +360,27 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 		scheduler = &state.logical.backend.runtime->protocol_scheduler;
 		ok = ok && scheduler->parked_protocol_count == 0;
 		ok = ok && scheduler->runnable_count == 0;
+		saved_carrier_limit = scheduler->carrier_limit;
+		base_registered_carriers = scheduler->registered_carrier_count;
+		base_idle_carriers = scheduler->idle_carrier_count;
+		base_active_carriers = scheduler->active_carrier_count;
+		base_carrier_rejects = scheduler->carrier_reject_count;
+		base_carrier_leases = scheduler->carrier_lease_count;
+		base_carrier_releases = scheduler->carrier_release_count;
+		scheduler->carrier_limit = base_registered_carriers + 1;
+
+		ok = ok && PgRuntimeProtocolSchedulerRegisterCarrier(state.logical.backend.runtime,
+															 &resume_carrier);
+		ok = ok && resume_carrier.protocol_scheduler_registered;
+		ok = ok && resume_carrier.protocol_scheduler_idle;
+		ok = ok && scheduler->registered_carrier_count ==
+			base_registered_carriers + 1;
+		ok = ok && scheduler->idle_carrier_count == base_idle_carriers + 1;
+		ok = ok && scheduler->active_carrier_count == base_active_carriers;
+		ok = ok && !PgRuntimeProtocolSchedulerRegisterCarrier(state.logical.backend.runtime,
+															  &overflow_carrier);
+		ok = ok && scheduler->carrier_reject_count == base_carrier_rejects + 1;
+		scheduler->carrier_limit = saved_carrier_limit;
 
 		MemSet(&park_spec, 0, sizeof(park_spec));
 		park_spec.transport_wait_events = WL_SOCKET_READABLE;
@@ -431,6 +461,10 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 		ok = ok && CurrentPgCarrier == &resume_carrier;
 		ok = ok && CurrentPgBackend == NULL;
 		ok = ok && resume_carrier.current_backend == NULL;
+		ok = ok && resume_carrier.protocol_scheduler_idle;
+		ok = ok && scheduler->idle_carrier_count == base_idle_carriers + 1;
+		ok = ok && scheduler->active_carrier_count == base_active_carriers;
+		ok = ok && scheduler->carrier_lease_count == base_carrier_leases;
 
 		ResetLatch(&fake_latch);
 		PgBackendRaiseInterrupt(&state.logical.backend,
@@ -511,6 +545,10 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 		ok = ok && state.carrier.current_backend == NULL;
 		ok = ok && state.logical.backend.carrier == &resume_carrier;
 		ok = ok && state.logical.execution.carrier == &resume_carrier;
+		ok = ok && !resume_carrier.protocol_scheduler_idle;
+		ok = ok && scheduler->idle_carrier_count == base_idle_carriers;
+		ok = ok && scheduler->active_carrier_count == base_active_carriers + 1;
+		ok = ok && scheduler->carrier_lease_count == base_carrier_leases + 1;
 		PgBackendResumeProtocolReadPark(&state.logical.backend);
 		ok = ok && scheduler->same_carrier_resume_count == 0;
 		ok = ok && scheduler->migrated_resume_count == 1;
@@ -551,6 +589,19 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 		ok = ok && CurrentMemoryContext == fake_memory_context;
 		ok = ok && CurrentResourceOwner == fake_resource_owner;
 
+		PgCarrierDetachBackend(&resume_carrier, &state.logical.backend);
+		ok = ok && resume_carrier.protocol_scheduler_idle;
+		ok = ok && scheduler->idle_carrier_count == base_idle_carriers + 1;
+		ok = ok && scheduler->active_carrier_count == base_active_carriers;
+		ok = ok && scheduler->carrier_release_count == base_carrier_releases + 1;
+		ok = ok && PgRuntimeProtocolSchedulerUnregisterCarrier(state.logical.backend.runtime,
+															   &resume_carrier);
+		ok = ok && !resume_carrier.protocol_scheduler_registered;
+		ok = ok && scheduler->registered_carrier_count ==
+			base_registered_carriers;
+		ok = ok && scheduler->idle_carrier_count == base_idle_carriers;
+		ok = ok && scheduler->active_carrier_count == base_active_carriers;
+
 		PgRuntimeSetCurrentWork(saved_runtime, saved_carrier, saved_backend,
 								saved_session, saved_connection,
 								saved_execution, false);
@@ -559,6 +610,14 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 	}
 	PG_CATCH();
 	{
+		if (scheduler != NULL)
+			scheduler->carrier_limit = saved_carrier_limit;
+		if (resume_carrier.current_backend != NULL)
+			PgCarrierDetachBackend(&resume_carrier,
+								   &state.logical.backend);
+		if (resume_carrier.protocol_scheduler_registered)
+			(void) PgRuntimeProtocolSchedulerUnregisterCarrier(state.logical.backend.runtime,
+															   &resume_carrier);
 		PgRuntimeSetCurrentWork(saved_runtime, saved_carrier, saved_backend,
 								saved_session, saved_connection,
 								saved_execution, false);
