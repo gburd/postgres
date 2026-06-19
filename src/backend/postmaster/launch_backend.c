@@ -459,7 +459,8 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 
 	postmaster_thread_carriers_started = true;
 	PostmasterChildSetThread(pmchild, &thread);
-	PostmasterChildSetThreadBackend(pmchild, &thread_start->runtime_state.backend);
+	PostmasterChildPublishLogicalBackend(pmchild,
+										 &thread_start->runtime_state.backend);
 	pg_atomic_write_u32(&thread_start->launch_registered, 1);
 	return true;
 #endif
@@ -634,7 +635,7 @@ backend_thread_finish(int code)
 	 * is kept as a postmaster-side regression probe; normal thread teardown
 	 * must delete the saved root before publishing PMChild exit.
 	 */
-	PostmasterChildDetachThreadBackend(thread_start->pmchild);
+	PostmasterChildUnpublishLogicalBackend(thread_start->pmchild);
 	if (retained_top_context != NULL)
 	{
 		/*

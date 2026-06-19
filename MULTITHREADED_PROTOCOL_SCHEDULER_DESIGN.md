@@ -1213,13 +1213,13 @@ where each accepted client creates a carrier, while the design and tests focus
 only on protocol parking semantics. Do not let that staging shape become the
 target architecture.
 
-Phase 15 also has to split the postmaster child publication model. The current
-thread-backed PMChild shape publishes one `thread_backend` and one `signal_pid`
-for the life of a carrier thread and clears them on thread exit. A real carrier
-pool needs logical backend lifetime, signal pid publication, and carrier thread
-exit to be represented separately, so a parked or migrated logical backend is
-not lost when a carrier exits and a carrier can be reused without implying
-logical backend exit.
+Phase 15 also has to keep the postmaster child publication model split between
+logical backend identity and physical carrier lifetime. Thread-backed PMChild
+state exposes logical backend publication through `logical_backend` and
+`logical_signal_pid`, while native thread exit remains a separate carrier
+lifecycle report. A real carrier pool must preserve that separation so a parked
+or migrated logical backend is not lost when a carrier exits and a carrier can
+be reused without implying logical backend exit.
 
 ## Carrier Pool
 
