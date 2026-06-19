@@ -1561,6 +1561,7 @@ PgBackendWakeWaitCompletion(PgBackend *backend, uint32 ready_events)
 	pg_atomic_write_membarrier_u32(&completion->state,
 								   PG_WAIT_COMPLETION_READY);
 
+	/* Not a Phase 14/15 deep-wait carrier-release hook. */
 	if (completion->requeue != NULL)
 		completion->requeue(completion, completion->requeue_arg);
 	else

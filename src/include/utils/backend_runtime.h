@@ -241,7 +241,8 @@ typedef struct PgWaitSpec
  *
  * Logical events still flow through backend interrupts.  Wait readiness is
  * recorded here and wakes the owning backend's latch in the thread-per-session
- * fallback; a later pooled scheduler can install a requeue hook instead.
+ * fallback.  Phase 14/15 protocol scheduling must not treat this record as a
+ * carrier-release continuation for deep waits.
  */
 typedef enum PgWaitCompletionState
 {
@@ -269,6 +270,7 @@ struct PgWaitCompletion
 	pg_atomic_uint32 state;
 	pg_atomic_uint32 ready_events;
 	pg_atomic_uint32 interrupt_events;
+	/* Reserved for later explicit scheduler-boundary experiments. */
 	PgWaitCompletionRequeueHook requeue;
 	void	   *requeue_arg;
 };

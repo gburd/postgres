@@ -18,6 +18,18 @@ waits, checkpoint waits, executor waits, extension code, and most output flush
 paths remain synchronous and carrier-pinned until each has an explicit
 continuation design.
 
+Phase boundary summary:
+
+- Phase 14 proves the protocol park/resume foundation. A staging
+  implementation may still have one carrier per client while it proves that
+  top-level frontend input parking is correct.
+- Phase 15 proves the real bounded carrier pool. This is where parked sessions
+  stop owning carriers, active work leases carriers, and at least one validation
+  run has more client sessions than carriers.
+- Phase 17 or later owns output-yielding, COPY continuations, deep wait
+  detachment, executor/utility yield points, AIO/storage detachment, and any
+  stackful coroutine or task-reentrant extension model.
+
 ## Goals
 
 - Run many mostly-idle client sessions on fewer physical carrier threads.
@@ -116,6 +128,58 @@ This boundary is safe because:
 The scheduler must not park after reading the frontend message type byte unless
 the entire message read and dispatch path has an explicit resumable protocol
 state. Phase 14A should avoid that problem.
+
+## Protocol Byte Probe Contract
+
+Phase 14 requires a new frontend message type-byte primitive. Existing helpers
+such as `pq_getbyte_if_available()` and `pq_startmsgread_getbyte()` are not the
+contract, because one requires an active message read and the other starts and
+consumes the message type byte.
+
+The required primitive has explicit tri-state semantics:
+
+```c
+typedef enum PgProtocolByteResult
+{
+	PG_PROTOCOL_BYTE_NONE,
+	PG_PROTOCOL_BYTE_AVAILABLE,
+	PG_PROTOCOL_BYTE_EOF
+} PgProtocolByteResult;
+
+PgProtocolByteResult PgConnectionProbeMessageType(PgConnection *connection,
+												  unsigned char *type);
+```
+
+The exact names can change, but the semantics must not:
+
+- `PG_PROTOCOL_BYTE_NONE` means no byte is currently available, no active
+  message read has started, `comm_reading_msg` or its replacement remains false,
+  no input buffer cursor moves, no type byte is consumed, and the backend may
+  park at the protocol boundary.
+- `PG_PROTOCOL_BYTE_AVAILABLE` means the type byte has been consumed and the
+  message is now owned by the attached carrier until the complete message body
+  is read, skipped, or recovered from by the normal synchronous protocol path.
+  The backend must not detach again until it returns to a new top-level
+  protocol boundary.
+- `PG_PROTOCOL_BYTE_EOF` means the connection is closed or has a hard read
+  error. The backend must service disconnect/error handling while attached; it
+  must not park as though the connection were merely idle.
+
+The primitive must also specify:
+
+- SSL/GSS and handshake states: no-byte may only mean "would block before a new
+  PostgreSQL message". A mid-record SSL/GSS state is not a parkable PostgreSQL
+  protocol boundary unless that layer has its own explicit continuation.
+- EINTR/latch/proc-signal behavior: transient interrupts must not consume a byte
+  or move buffer cursors. They should return no-byte only after recording the
+  wake reason that must be serviced before re-parking.
+- timeout behavior: timeout expiry observed during the probe must be surfaced as
+  a wake/service reason, not hidden as an ordinary no-byte result.
+- error recovery: after an error, parking is legal only after protocol recovery
+  has either restored sync or decided to terminate the connection.
+- observability: tests must prove the no-byte path leaves message-read state and
+  buffer cursors unchanged, and the byte-available path prevents detach until the
+  body is complete.
 
 ## Wait Classification
 
@@ -309,12 +373,31 @@ PG_BACKEND_MODEL_TASK_REENTRANT
 ```
 
 `PG_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE` means the session may use the pooled
-runtime but cannot migrate carriers. It can still benefit from common logical
-interrupt and wait-observability machinery, but it does not contribute to the
-"many sessions on fewer carriers" goal while idle.
+runtime but must resume on a compatible home carrier or carrier class. It can
+detach at the top-level protocol boundary and release the carrier while parked,
+but the scheduler must respect the affinity constraint before reattaching it.
+This model exists because "pooled" and "migratable" are different promises.
 
 `PG_BACKEND_MODEL_POOLED_PROTOCOL_MIGRATABLE` means the session can detach only
 at the top-level protocol boundary and later run on any carrier.
+
+`PG_BACKEND_MODEL_TASK_REENTRANT` is a later, stronger promise. It means code is
+safe for selected deep-wait or task-level continuations, not merely top-level
+protocol detach.
+
+The current single `PG_BACKEND_MODEL_POOLED_SCHEDULER` shape is too coarse for
+Phase 15 migration claims. Before Phase 15 can claim carrier migration, module
+compatibility must be split into at least:
+
+- process-only;
+- thread-per-session;
+- pooled protocol affine;
+- pooled protocol migratable;
+- later task reentrant.
+
+Until that split exists, pooled protocol mode must treat modules that only claim
+the old generic pooled scheduler model as non-migratable, or reject them from
+pooled protocol mode.
 
 Examples of state that must not be carrier-local for migratable sessions:
 
@@ -341,13 +424,13 @@ interrupt routing, and runtime-wide policy.
 For Phase 14A it should provide:
 
 - scheduler initialization;
-- carrier pool startup/shutdown;
 - runnable queue;
 - parked protocol-wait queue or indexed wait set;
 - timeout tracking for parked sessions;
 - socket readiness dispatch;
 - logical wake dispatch;
-- carrier affinity policy.
+- attach/detach assertions;
+- optional soft carrier affinity metadata.
 
 ### PgCarrier
 
@@ -417,6 +500,21 @@ backend is carrier-pinned.
 Carrier attach and detach must be specified as a contract, not inferred from
 current-pointer side effects.
 
+Phase 14 must introduce or expose narrow runtime APIs for this boundary before
+the scheduler uses carrier migration:
+
+```c
+void PgCarrierAttachBackend(PgCarrier *carrier, PgBackend *backend,
+							PgSession *session, PgConnection *connection);
+void PgCarrierDetachBackend(PgCarrier *carrier, PgBackend *backend);
+```
+
+These APIs must own the rebinding/assertion work for `Current*`, hot buckets,
+TLS mirrors, GUC/session globals, `MyProc`, `MyLatch`, `FeBeWaitSet`, memory
+contexts, resource owners, timeout state, wait-event pointers, and the
+scheduler-loop state where no backend is current. Scheduler code should not
+assemble those bindings ad hoc.
+
 ### On Attach
 
 Before a carrier calls into `PgSessionStep()` for a backend:
@@ -469,6 +567,29 @@ The implementation should assert against:
   detached backend;
 - two carriers simultaneously attached to the same backend;
 - stale `FeBeWaitSet` latch entries after carrier migration.
+
+### Phase 14 Wake Object Acceptance Criteria
+
+Protocol parking needs a wake object immediately. Phase 14 may keep `PGPROC`
+backend-lifetime, but it must make these ownership decisions explicit before
+claiming protocol parking works:
+
+- `PGPROC` remains owned by the logical backend while parked, including locks,
+  proc-array identity, wait-event fields, and signal/stat visibility.
+- The parked backend is woken through either a backend-owned logical wake object
+  or a scheduler-owned parked record that is independent of any carrier-local
+  latch pointer.
+- `MyLatch` and the backend interrupt latch must be rebound on attach and must
+  not leave a parked backend depending on the last carrier's stack or local
+  wait object.
+- `FeBeWaitSet` must either be recreated/rebound on every attach or represented
+  as connection-owned state whose socket, latch, and postmaster-death entries
+  are safe across detach.
+- Socket readiness, latch/interrupt wake, timeout wake, and postmaster death
+  must all converge on the parked scheduler record without requiring the backend
+  to be attached already.
+- Tests must cover wake delivery after detach, same-carrier resume, migrated
+  resume if migration exists, and teardown while parked.
 
 ## Scheduler State Machine
 
@@ -542,6 +663,46 @@ named like a generic wait.
    - finish reading and dispatch the message synchronously;
    - remain carrier-pinned until the command returns to top level.
 
+## Idle Command-Read Compatibility
+
+Parking at the protocol boundary must preserve the observable behavior of the
+existing `DoingCommandRead` state.
+
+Before a backend parks:
+
+- the session must be in the same logical command-read state used by the
+  thread-per-session idle read path;
+- query cancel must remain ignored or deferred exactly as PostgreSQL expects
+  while idle at command read;
+- idle connection checks, idle stats handling, and idle timeout arming must see
+  equivalent state to a carrier-pinned idle read;
+- any query-cancel holdoff or interrupt holdoff used around the type-byte probe
+  must be restored to a well-defined parked state.
+
+When a parked backend is made runnable, service wake reasons in this order:
+
+1. Handle postmaster death, proc die, and hard connection EOF/error first.
+2. Reattach the backend and restore command-read-compatible `Current*`,
+   `DoingCommandRead`, latch, timeout, and wait-event state.
+3. Run top-level interrupt/config/catchup processing that is legal while idle.
+   Query cancel while idle must preserve current PostgreSQL semantics.
+4. Mark and service expired idle/transaction/client-check timeouts through the
+   normal attached timeout path.
+5. Service `LISTEN`/`NOTIFY` only if the current transaction state permits
+   delivery.
+6. If socket readability remains, run the protocol byte probe. A consumed type
+   byte makes the backend carrier-pinned until the message body and command
+   dispatch complete.
+7. If no frontend byte is available and all serviceable wake reasons are
+   consumed or explicitly deferred, re-park with a new generation.
+
+An idle-in-transaction notify wake needs a deferred-notify marker. If
+`ProcessNotifyInterrupt()` or the equivalent path cannot clear the pending
+notification because the backend is idle in a transaction, the scheduler must
+record the notify generation/reason as deferred. The same unprocessable notify
+must not keep requeueing the backend until transaction state changes or a newer
+notification generation arrives.
+
 ## API Sketch
 
 Names are provisional. The important point is to separate protocol parking from
@@ -555,8 +716,9 @@ typedef enum PgProtocolParkWake
 	PG_PROTOCOL_WAKE_SOCKET_READABLE = 1 << 0,
 	PG_PROTOCOL_WAKE_SOCKET_CLOSED   = 1 << 1,
 	PG_PROTOCOL_WAKE_INTERRUPT       = 1 << 2,
-	PG_PROTOCOL_WAKE_TIMEOUT         = 1 << 3,
-	PG_PROTOCOL_WAKE_POSTMASTER_DEATH = 1 << 4,
+	PG_PROTOCOL_WAKE_NOTIFY          = 1 << 3,
+	PG_PROTOCOL_WAKE_TIMEOUT         = 1 << 4,
+	PG_PROTOCOL_WAKE_POSTMASTER_DEATH = 1 << 5,
 } PgProtocolParkWake;
 
 typedef struct PgProtocolParkSpec
@@ -569,6 +731,7 @@ typedef struct PgProtocolParkSpec
 	uint32		wake_mask;
 	uint32		wait_event_info;
 	uint64		generation;
+	uint64		deferred_notify_generation;
 } PgProtocolParkSpec;
 
 bool PgBackendParkProtocolRead(PgProtocolParkSpec *spec);
@@ -702,6 +865,31 @@ should remain in the normal top-level processing path where possible.
 
 Timeouts must target logical backends, not physical carriers.
 
+Detached scheduler code must not call timeout helpers that implicitly inspect
+or mutate `CurrentPgBackend`. Phase 14 must choose one explicit mechanism:
+
+```c
+bool PgBackendTimeoutNextWake(PgBackend *backend, TimestampTz *wake_at);
+void PgBackendTimeoutMarkExpired(PgBackend *backend, TimestampTz now);
+void PgBackendTimeoutServiceAttached(PgBackend *backend);
+```
+
+The exact API can change, but the ownership rule cannot:
+
+- computing the next parked wake may use backend-indexed timeout state captured
+  before detach or an API that takes an explicit `PgBackend *`;
+- marking a parked timeout expired may set backend-owned pending bits and
+  enqueue a `PG_PROTOCOL_WAKE_TIMEOUT`;
+- firing timeout handlers and raising user-visible timeout errors must happen
+  only after the backend is attached and the normal top-level timeout path is
+  active.
+
+An acceptable initial implementation is to snapshot the next idle timeout while
+the backend is still attached during protocol park, let the scheduler sleep on
+that timestamp, and reattach the backend before calling any current-backend
+timeout code. What is not acceptable is a detached carrier inspecting or firing
+another backend's logical timeout through thread-local `Current*` state.
+
 For parked sessions, the scheduler should know the next relevant logical
 timeout and wake the backend when it expires. On re-entry, existing timeout
 processing should set the same user-visible behavior as thread-per-session
@@ -713,6 +901,7 @@ Timeouts to cover in Phase 14A:
 - idle-in-transaction session timeout;
 - transaction timeout while idle;
 - idle stats update timeout if retained;
+- client connection check timeout if retained while parked;
 - postmaster-death checks if represented as timeout-backed polling on a
   platform.
 
@@ -899,24 +1088,26 @@ target architecture.
 The target pooled runtime should eventually launch carriers independently of
 client connections.
 
-Phase 14A may be implemented in two steps:
+Phase 14 may use staging mode:
 
-1. Staging mode:
-   - still launch one carrier per client;
-   - prove protocol park/resume, logical wakeups, and state ownership;
-   - use carrier affinity trivially because the home carrier exists.
-2. Real pool mode:
-   - launch a bounded carrier pool;
-   - accepted clients create logical backend/session objects;
-   - parked sessions do not own carriers;
-   - active commands lease carriers;
-   - backend exit does not imply carrier exit.
+- still launch one carrier per client;
+- prove protocol park/resume, logical wakeups, and state ownership;
+- use carrier affinity trivially because the home carrier exists;
+- keep all deep waits and active command work carrier-pinned.
 
-Staging mode is useful, but it is not Phase 14A completion. It is a precursor
-that proves protocol parking mechanics before the true carrier pool exists.
+Staging mode is acceptable Phase 14 completion if protocol parking is correct
+and the tests avoid claiming that sessions outnumber carriers. It is a
+foundation, not the final pooled scheduler.
 
-Phase 14A completion requires real pool mode and at least one validation run
-where runnable/parked client sessions outnumber carrier threads.
+Phase 15 owns real pool mode:
+
+- launch a bounded carrier pool;
+- accepted clients create logical backend/session objects;
+- parked sessions do not own carriers;
+- active commands lease carriers;
+- backend exit does not imply carrier exit;
+- at least one validation run has runnable/parked client sessions outnumbering
+  carrier threads.
 
 ## Implementation Phases
 
@@ -960,17 +1151,17 @@ where runnable/parked client sessions outnumber carrier threads.
 - Add optional short grace pin.
 - Add counters and benchmarks for bursty interactive clients.
 
-### Phase 14A.5: Real Carrier Pool
+### Phase 15.1: Real Carrier Pool
 
 - Decouple client accept from carrier creation.
 - Run a bounded number of carriers.
 - Ensure backend exit does not imply carrier exit.
 - Add stress tests with sessions greater than carriers.
 
-Phase 14A should not be considered complete until this phase is done. Earlier
-staging phases may be committed as scaffolding, but documentation and test names
-should not claim "pooled carrier scheduler complete" while there is still one
-carrier per client connection.
+Phase 14 staging phases may be committed as scaffolding, but documentation and
+test names should not claim "pooled carrier scheduler complete" while there is
+still one carrier per client connection. Phase 15 is not complete until the real
+bounded pool and sessions-greater-than-carriers validation exist.
 
 ### Phase 14B: Output Boundary, Optional
 
@@ -1017,8 +1208,9 @@ Current handoff state:
   during `temp-install` with an `initdb` bootstrap segmentation fault on both
   `84601c25a7` and `phase14-protocol-boundary-scheduler`, so treat that as a
   pre-existing baseline problem, not evidence against the two kept commits;
-- this design document and the updated phase plan are intentionally
-  uncommitted working-tree docs for the Phase 14 restart.
+- this design document and the updated phase plan are committed on
+  `phase14-protocol-boundary-scheduler` and should be kept in sync as review
+  feedback closes.
 
 Likely keep/cherry-pick conceptually:
 
@@ -1081,17 +1273,34 @@ Likely drop or rewrite:
 
 ### Validation Gates
 
-Before claiming Phase 14A:
+Before claiming Phase 14:
 
 - normal process-mode regression tests pass;
 - thread-per-session tests pass;
 - focused protocol scheduler TAP passes;
-- at least one pooled scheduler stress test runs with more sessions than
-  carriers;
 - carrier attach/detach invariant assertions are enabled in development builds;
+- protocol-byte probe tests prove no-byte leaves message state untouched and
+  byte-available pins the backend until the full message is handled;
+- parked wake tests cover frontend input, disconnect, cancel, terminate,
+  timeout, postmaster death, and `LISTEN`/`NOTIFY`;
+- idle-in-transaction notify tests prove the deferred-notify marker prevents
+  requeue churn;
 - lifecycle/global-state checks pass;
 - no generated test output is part of commits;
 - docs clearly distinguish observable waits from scheduler-yielding waits.
+
+Before claiming Phase 15:
+
+- the runtime launches a bounded carrier pool independently of client sessions;
+- parked sessions do not own carriers;
+- at least one pooled scheduler stress test runs with more sessions than
+  carriers;
+- extension compatibility distinguishes protocol-affine from
+  protocol-migratable sessions;
+- migration/affinity counters distinguish same-carrier resumes from migrated
+  resumes;
+- negative deep-wait tests still prove `PgSuspend()` does not detach active C
+  stacks.
 
 ## Performance Expectations
 
@@ -1119,13 +1328,6 @@ sessions, but should be measured rather than assumed.
 ## Open Questions
 
 - What is the first real carrier-pool sizing policy?
-- Is `PGPROC` backend-lifetime sufficient for Phase 14A idle detach, or do
-  specific idle states require additional ownership cleanup?
-- Which latch should represent a parked backend: backend-owned, carrier-owned,
-  scheduler-owned, or a logical wake object?
-- How should `FeBeWaitSet` be represented while detached?
-- Should parked protocol wait use Phase 13 wait-completion records, a separate
-  scheduler wait record, or both?
 - What is the minimum safe grace-pin timeout?
 - How should NUMA and CPU affinity be represented, if at all?
 - What is the exact PMChild lifecycle for a logical backend whose carrier is

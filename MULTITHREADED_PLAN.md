@@ -105,9 +105,11 @@ Completed shape:
 Current shape after Phase 3:
 
 `PgSessionStep(PgSession *, PgStepBudget)` owns the protected bottom
-`sigsetjmp` boundary, while `PgSessionStepUnprotected()` remains private.
-`PgSessionRun()` is the process-mode loop that repeatedly invokes that protected
-step with a single-message budget.
+`sigsetjmp` boundary used by scheduler callers, while
+`PgSessionStepUnprotected()` remains private. Current process/thread runners may
+install their own persistent top-level boundary and call the private helper
+inside that boundary; future scheduler code must use the protected step API
+rather than treating `PgSessionRun()` as the scheduler entrypoint.
 
 Validation:
 
@@ -801,20 +803,28 @@ Likely changes:
 
 - Start from a clean Phase 13 wait-observability baseline, or hard-reset and
   cherry-pick only the current work that matches the protocol-boundary design.
-- Add a nonblocking frontend message type-byte probe.
+- Add a nonblocking frontend message type-byte probe with explicit no-byte,
+  byte-available, and EOF/error semantics.
 - Add an explicit protocol-park API separate from `PgSuspend()`.
 - Teach `PgSessionStep()` to return a parked protocol-read result.
 - Add parked wake reason and generation/sequence tracking.
+- Add a deferred-notify generation/reason marker so idle-in-transaction
+  listeners do not spin on unserviceable notifications.
 - Add scheduler runnable and parked-protocol queues.
 - Add socket-readiness dispatch for parked protocol reads.
 - Wake parked sessions on frontend input, disconnect, cancel/die,
   config/catchup/proc-signal work, timeout expiry, postmaster death, and
   scheduler shutdown.
+- Add backend-indexed timeout snapshot/wake plumbing, or reattach before
+  inspecting/firing current-backend timeout state.
 - Add `LISTEN`/`NOTIFY` wake behavior for parked sessions, including the
   `idle in transaction` no-spin rule.
 - Add attach/detach assertions for current pointers, TLS mirrors, `PGPROC`,
   latches, `FeBeWaitSet`, memory contexts, resource owners, timeouts, and
   scheduler state.
+- Decide the Phase 14 wake object policy for `PGPROC`, backend latch,
+  `MyLatch`, and `FeBeWaitSet`; this is an acceptance criterion, not a later
+  open question.
 
 Initial limitations are required, not merely acceptable:
 
@@ -831,6 +841,8 @@ Validation:
 - parked idle clients resume on frontend input;
 - parked clients handle disconnect, cancel, terminate, timeout, and postmaster
   death correctly;
+- byte-probe tests prove no-byte leaves message state untouched and
+  byte-available pins the backend until the complete message is handled;
 - parked `LISTEN` sessions receive notifications;
 - parked `idle in transaction` listeners do not spin or deliver notifications
   before transaction state permits it;
@@ -858,6 +870,8 @@ Likely changes:
 - Split logical backend exit from physical carrier exit.
 - Add session migration compatibility levels such as pooled-protocol-affine and
   pooled-protocol-migratable.
+- Replace or split any single generic pooled-scheduler extension level before
+  claiming session migration.
 - Keep non-migratable sessions hard-affine or rejected from pooled protocol
   mode.
 - Add soft carrier affinity and optional short grace pinning for hot sessions.
@@ -1269,26 +1283,35 @@ Mitigation:
    `MULTITHREADED_PROTOCOL_SCHEDULER_DESIGN.md`.
 5. Remove or disable generic scheduler requeue hooks from deep
    wait-completion records before adding new pooled scheduler behavior.
-6. Add the nonblocking frontend message type-byte probe and the explicit
-   protocol-park API.
-7. Teach `PgSessionStep()` to return a parked protocol-read result only before
-   any new frontend message byte has been consumed.
-8. Add parked wake reason and generation tracking, then cover frontend input,
-   disconnect, cancel, terminate, timeout, postmaster death, and
-   `LISTEN`/`NOTIFY` wakeups.
-9. Add negative tests proving `pg_sleep()`, lock waits, LWLocks/semaphores, and
+6. Add the protocol byte-probe primitive with explicit no-byte, byte-available,
+   and EOF/error semantics, plus tests that prove no-byte does not advance
+   buffer or message-read state.
+7. Add the explicit protocol-park API, including parked wake reason,
+   generation/sequence tracking, and deferred-notify generation tracking.
+8. Add backend-indexed timeout snapshot/wake support, or require reattach before
+   inspecting/firing timeout state that depends on current-backend globals.
+9. Decide and assert the Phase 14 `PGPROC`, latch, logical wake object, and
+   `FeBeWaitSet` ownership rules.
+10. Teach `PgSessionStep()` to return a parked protocol-read result only before
+    any new frontend message byte has been consumed.
+11. Cover frontend input, disconnect, cancel, terminate, timeout, postmaster
+    death, and `LISTEN`/`NOTIFY` wakeups.
+12. Add negative tests proving `pg_sleep()`, lock waits, LWLocks/semaphores, and
    frontend output backpressure remain carrier-pinned.
-10. Add attach/detach invariant assertions for current pointers, TLS mirrors,
+13. Add attach/detach invariant assertions for current pointers, TLS mirrors,
     `PGPROC`, latches, `FeBeWaitSet`, memory contexts, resource owners,
     timeouts, and scheduler state.
-11. Decouple client sessions from carrier creation and add a bounded carrier
+14. Split extension compatibility into thread-per-session,
+    pooled-protocol-affine, pooled-protocol-migratable, and later
+    task-reentrant levels before any migration claim.
+15. Decouple client sessions from carrier creation and add a bounded carrier
     pool.
-12. Add sessions-greater-than-carriers stress coverage and soft carrier
+16. Add sessions-greater-than-carriers stress coverage and soft carrier
     affinity/grace-pinning instrumentation.
-13. Run Gate F before leaving Phase 15.
-14. Defer contrib-wide threaded support, bundled languages beyond PL/pgSQL, and
+17. Run Gate F before leaving Phase 15.
+18. Defer contrib-wide threaded support, bundled languages beyond PL/pgSQL, and
     the full custom/extension GUC matrix to Phase 16.
-15. Defer frontend-output yielding, COPY continuations, lock-wait yielding,
+19. Defer frontend-output yielding, COPY continuations, lock-wait yielding,
     executor/utility yield points, and AIO/storage scheduler boundaries to
     Phase 17.
 

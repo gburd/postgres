@@ -486,6 +486,11 @@ typedef enum PgBackendModel
 {
 	PG_BACKEND_MODEL_PROCESS = 0,
 	PG_BACKEND_MODEL_THREAD_PER_SESSION,
+	/*
+	 * Transitional generic marker.  Before pooled protocol migration is claimed,
+	 * split this into protocol-affine, protocol-migratable, and later
+	 * task-reentrant promises.
+	 */
 	PG_BACKEND_MODEL_POOLED_SCHEDULER
 } PgBackendModel;
 
