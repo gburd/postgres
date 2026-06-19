@@ -29,9 +29,10 @@
 PG_MODULE_MAGIC_EXT(
 					.name = "test_backend_runtime_threaded",
 					.version = PG_VERSION,
-					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
+					PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE
 );
 
+PG_FUNCTION_INFO_V1(test_backend_runtime_model_snapshot);
 PG_FUNCTION_INFO_V1(test_backend_runtime_request_autovacuum_worker);
 PG_FUNCTION_INFO_V1(test_backend_runtime_rejects_process_bgworker);
 PG_FUNCTION_INFO_V1(test_backend_runtime_launch_thread_bgworker);
@@ -61,6 +62,44 @@ static pg_atomic_uint32 test_backend_runtime_restart_count;
 static pg_atomic_uint32 test_backend_runtime_crash_count;
 static PG_THREAD_LOCAL char *test_backend_runtime_custom_guc = NULL;
 static PG_THREAD_LOCAL int test_backend_runtime_custom_guc_init_counter = 0;
+
+static const char *
+test_backend_runtime_kind_name(PgRuntimeKind kind)
+{
+	switch (kind)
+	{
+		case PG_RUNTIME_PROCESS:
+			return "process";
+		case PG_RUNTIME_THREAD_PER_SESSION:
+			return "thread_per_session";
+		case PG_RUNTIME_POOLED_PROTOCOL:
+			return "pooled_protocol";
+	}
+
+	return "unknown";
+}
+
+static const char *
+test_backend_runtime_model_name(PgBackendModel model)
+{
+	switch (model)
+	{
+		case PG_BACKEND_MODEL_PROCESS:
+			return "process";
+		case PG_BACKEND_MODEL_THREAD_PER_SESSION:
+			return "thread-per-session";
+		case PG_BACKEND_MODEL_POOLED_SCHEDULER:
+			return "pooled-scheduler";
+		case PG_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE:
+			return "pooled-protocol-affine";
+		case PG_BACKEND_MODEL_POOLED_PROTOCOL_MIGRATABLE:
+			return "pooled-protocol-migratable";
+		case PG_BACKEND_MODEL_TASK_REENTRANT:
+			return "task-reentrant";
+	}
+
+	return "unknown";
+}
 
 static const char *
 test_backend_runtime_wait_kind_name(PgWaitKind kind)
@@ -153,6 +192,25 @@ _PG_init(void)
 		LWLockInitialize(&test_backend_runtime_lwlock, tranche_id);
 		test_backend_runtime_lwlock_initialized = true;
 	}
+}
+
+Datum
+test_backend_runtime_model_snapshot(PG_FUNCTION_ARGS)
+{
+	PgRuntime  *runtime = CurrentPgRuntime;
+	char	   *result;
+
+	if (runtime == NULL)
+		PG_RETURN_NULL();
+
+	result = psprintf("%s|%s|%d|%d",
+					  test_backend_runtime_kind_name(runtime->kind),
+					  test_backend_runtime_model_name(
+						  runtime->extension_backend_model),
+					  PgRuntimePooledProtocolCarrierLimit(),
+					  PgRuntimePooledProtocolRequested());
+
+	PG_RETURN_TEXT_P(cstring_to_text(result));
 }
 
 Datum

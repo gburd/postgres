@@ -63,6 +63,7 @@ tests += {
       't/004_phase13_wait_completion.pl',
       't/005_phase14_protocol_scheduler.pl',
       't/006_phase14_protocol_postmaster_death.pl',
+      't/007_phase15_pooled_protocol_mode.pl',
     ],
   },
 }

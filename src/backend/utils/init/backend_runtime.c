@@ -799,9 +799,18 @@ InitializePgThreadRuntime(PgBackendExitContinuation exit_backend)
 		MemSet(&thread_runtime, 0, sizeof(thread_runtime));
 		PgRuntimeInitializeRuntimeObject(&thread_runtime);
 
-		thread_runtime.kind = PG_RUNTIME_THREAD_PER_SESSION;
-		thread_runtime.extension_backend_model =
-			PG_BACKEND_MODEL_THREAD_PER_SESSION;
+		if (PgRuntimePooledProtocolRequested())
+		{
+			thread_runtime.kind = PG_RUNTIME_POOLED_PROTOCOL;
+			thread_runtime.extension_backend_model =
+				PG_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE;
+		}
+		else
+		{
+			thread_runtime.kind = PG_RUNTIME_THREAD_PER_SESSION;
+			thread_runtime.extension_backend_model =
+				PG_BACKEND_MODEL_THREAD_PER_SESSION;
+		}
 		early_server_guc = PgEarlyRuntimeServerGUCState();
 		if (PgRuntimeServerGUCStateHasConfigPaths(&process_runtime.server_guc))
 			thread_runtime.server_guc = process_runtime.server_guc;
