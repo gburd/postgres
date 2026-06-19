@@ -294,7 +294,11 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 	TimestampTz timeout_wake_at;
 	uint64		timeout_generation;
 	uint64		notify_generation;
+	PGPROC		fake_proc;
 	Latch		fake_latch;
+	WaitEventSet *fake_wait_set;
+	MemoryContext fake_memory_context;
+	ResourceOwner fake_resource_owner;
 	bool		ok = true;
 
 	saved_runtime = CurrentPgRuntime;
@@ -310,9 +314,19 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 	InitializePgThreadBackendRuntimeState(&state, B_BACKEND, NULL,
 										  &fake_latch);
 	PgCarrierDetachBackend(&state.carrier, &state.backend);
+	MemSet(&fake_proc, 0, sizeof(fake_proc));
 	InitLatch(&fake_latch);
+	fake_wait_set = (WaitEventSet *) &state.connection;
+	fake_memory_context = (MemoryContext) &state.execution;
+	fake_resource_owner = (ResourceOwner) &state.execution;
+	state.backend.my_proc = &fake_proc;
+	state.backend.my_proc_number = 42;
 	state.backend.core.latch = &fake_latch;
 	state.session.loop_state.doing_command_read = true;
+	state.connection.protocol.fe_be_wait_set = fake_wait_set;
+	state.execution.memory_contexts.current_context = fake_memory_context;
+	state.execution.resource_owners.current_owner =
+		(struct ResourceOwnerData *) fake_resource_owner;
 	state.connection.socket_io.transport_generation = 11;
 	state.backend.timeout.all_timeouts_initialized = true;
 	state.backend.timeout.signal_delivery = false;
@@ -365,6 +379,12 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 		ok = ok && CurrentPgBackend == &state.backend;
 		ok = ok && state.carrier.current_backend == &state.backend;
 		ok = ok && state.backend.carrier == &state.carrier;
+		ok = ok && MyProc == &fake_proc;
+		ok = ok && MyProcNumber == 42;
+		ok = ok && MyLatch == &fake_latch;
+		ok = ok && FeBeWaitSet == fake_wait_set;
+		ok = ok && CurrentMemoryContext == fake_memory_context;
+		ok = ok && CurrentResourceOwner == fake_resource_owner;
 
 		PgCarrierCommitProtocolReadPark(&state.carrier, &state.backend);
 
@@ -390,6 +410,15 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 		ok = ok && CurrentPgExecution == NULL;
 		ok = ok && state.carrier.current_backend == NULL;
 		ok = ok && state.backend.carrier == NULL;
+		ok = ok && CurrentPgBackendTimeoutRuntimeState == NULL;
+		ok = ok && CurrentPgConnectionProtocolRuntimeState == NULL;
+		ok = ok && CurrentPgExecutionMemoryContextRuntimeState == NULL;
+		ok = ok && CurrentPgExecutionResourceOwnerRuntimeState == NULL;
+		ok = ok && MyProc != &fake_proc;
+		ok = ok && MyLatch != &fake_latch;
+		ok = ok && FeBeWaitSet != fake_wait_set;
+		ok = ok && CurrentMemoryContext != fake_memory_context;
+		ok = ok && CurrentResourceOwner != fake_resource_owner;
 
 		ok = ok && !PgBackendMarkProtocolReadParkWake(&state.backend, 0,
 													  PG_PROTOCOL_PARK_WAKE_LOGICAL,
@@ -475,6 +504,12 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 		ok = ok && CurrentPgBackend == &state.backend;
 		ok = ok && state.carrier.current_backend == &state.backend;
 		ok = ok && state.backend.carrier == &state.carrier;
+		ok = ok && MyProc == &fake_proc;
+		ok = ok && MyProcNumber == 42;
+		ok = ok && MyLatch == &fake_latch;
+		ok = ok && FeBeWaitSet == fake_wait_set;
+		ok = ok && CurrentMemoryContext == fake_memory_context;
+		ok = ok && CurrentResourceOwner == fake_resource_owner;
 
 		PgRuntimeSetCurrentWork(saved_runtime, saved_carrier, saved_backend,
 								saved_session, saved_connection,
