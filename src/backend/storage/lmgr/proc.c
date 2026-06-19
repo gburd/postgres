@@ -2160,8 +2160,7 @@ ProcWakeSemaphore(PGPROC *proc)
 	Assert(proc != NULL);
 
 	if (backend != NULL &&
-		backend->runtime != NULL &&
-		backend->runtime->kind == PG_RUNTIME_THREAD_PER_SESSION &&
+		PgRuntimeIsThreadBacked(backend->runtime) &&
 		proc->backendId != 0)
 		(void) PgBackendWakeWaitCompletionById(proc->backendId, 0);
 	PGSemaphoreUnlock(proc->sem);

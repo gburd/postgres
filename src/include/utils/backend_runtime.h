@@ -132,7 +132,8 @@ typedef int (*PgSuspendCallback) (void *callback_arg);
 typedef enum PgRuntimeKind
 {
 	PG_RUNTIME_PROCESS,
-	PG_RUNTIME_THREAD_PER_SESSION
+	PG_RUNTIME_THREAD_PER_SESSION,
+	PG_RUNTIME_POOLED_PROTOCOL
 } PgRuntimeKind;
 
 typedef enum PgCarrierKind
@@ -3429,6 +3430,8 @@ extern MemoryContext *PgCurrentClientConnectionInfoContextRef(void);
 extern bool *PgCurrentClientConnectionInfoAuthnIdOwnedRef(void);
 extern PgConnectionSecurityState *PgConnectionSecurityStateRef(PgConnection *connection);
 extern PgConnectionSecurityState *PgCurrentConnectionSecurityStateRef(void);
+extern bool PgRuntimeKindIsThreadBacked(PgRuntimeKind kind);
+extern bool PgRuntimeIsThreadBacked(PgRuntime *runtime);
 extern PgBackendLaunchModel PgRuntimeGetBackendLaunchModel(BackendType backend_type);
 extern bool PgRuntimeShouldThreadBackend(BackendType backend_type);
 extern PgBackendModel PgRuntimeGetExtensionBackendModel(void);

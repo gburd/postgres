@@ -315,8 +315,7 @@ PgBackendRegisterThreadedBackend(PgBackend *backend)
 #ifndef WIN32
 	Assert(backend != NULL);
 
-	if (backend->runtime == NULL ||
-		backend->runtime->kind != PG_RUNTIME_THREAD_PER_SESSION)
+	if (!PgRuntimeIsThreadBacked(backend->runtime))
 		return;
 
 	ThreadedBackendRegistryLock();
@@ -336,8 +335,7 @@ PgBackendUnregisterThreadedBackend(PgBackend *backend)
 #ifndef WIN32
 	Assert(backend != NULL);
 
-	if (backend->runtime == NULL ||
-		backend->runtime->kind != PG_RUNTIME_THREAD_PER_SESSION)
+	if (!PgRuntimeIsThreadBacked(backend->runtime))
 		return;
 
 	ThreadedBackendRegistryLock();
@@ -2072,7 +2070,7 @@ PgBackendShouldPublishWaitCompletion(PgBackend *backend,
 	if (backend->runtime == NULL)
 		return false;
 
-	return backend->runtime->kind == PG_RUNTIME_THREAD_PER_SESSION;
+	return PgRuntimeIsThreadBacked(backend->runtime);
 }
 
 int
@@ -2301,8 +2299,7 @@ PgBackendGetSignalPid(PgBackend *backend)
 	if (backend == NULL)
 		return MyProcPid;
 
-	if (backend->runtime != NULL &&
-		backend->runtime->kind == PG_RUNTIME_THREAD_PER_SESSION)
+	if (PgRuntimeIsThreadBacked(backend->runtime))
 	{
 		if (backend->id > PG_INT32_MAX)
 			elog(ERROR, "threaded backend identifier exceeds protocol range");

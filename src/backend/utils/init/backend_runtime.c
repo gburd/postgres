@@ -963,6 +963,19 @@ PgCurrentCarrierState(void)
 	return CurrentPgCarrier;
 }
 
+bool
+PgRuntimeKindIsThreadBacked(PgRuntimeKind kind)
+{
+	return kind == PG_RUNTIME_THREAD_PER_SESSION ||
+		kind == PG_RUNTIME_POOLED_PROTOCOL;
+}
+
+bool
+PgRuntimeIsThreadBacked(PgRuntime *runtime)
+{
+	return runtime != NULL &&
+		PgRuntimeKindIsThreadBacked(runtime->kind);
+}
 
 PgBackendLaunchModel
 PgRuntimeGetBackendLaunchModel(BackendType backend_type)

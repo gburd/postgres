@@ -5497,8 +5497,7 @@ PgSessionBootstrap(const char *dbname, const char *username)
 	Assert(username != NULL);
 
 	Assert(GetProcessingMode() == InitProcessing);
-	threaded_backend = (CurrentPgRuntime != NULL &&
-						CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION);
+	threaded_backend = PgRuntimeIsThreadBacked(CurrentPgRuntime);
 
 	/*
 	 * Set up signal handlers.  (InitPostmasterChild or InitStandaloneProcess

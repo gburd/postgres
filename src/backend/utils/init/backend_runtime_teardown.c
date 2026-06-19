@@ -189,8 +189,7 @@ PgBackendResetBufferClosedState(PgBackendBufferState *buffers)
 	 */
 	if (PgBackendExitInProgress())
 	{
-		if (CurrentPgRuntime != NULL &&
-			CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION &&
+		if (PgRuntimeIsThreadBacked(CurrentPgRuntime) &&
 			CurrentPgBackend != NULL &&
 			CurrentPgBackend->backend_type == B_BACKEND)
 		{

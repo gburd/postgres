@@ -41,8 +41,7 @@ PgRuntimeEnsureExtensionModuleMemoryContext(PgRuntimeExtensionModuleState *exten
 
 	if (extension_modules->memory_context == NULL)
 	{
-		if (CurrentPgRuntime != NULL &&
-			CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION)
+		if (PgRuntimeIsThreadBacked(CurrentPgRuntime))
 			elog(ERROR,
 				 "thread runtime extension module memory context is not initialized");
 
