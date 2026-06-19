@@ -433,6 +433,7 @@ static void process_pm_reload_request(void);
 static void process_pm_shutdown_request(void);
 static void dummy_handler(SIGNAL_ARGS);
 static void process_pm_thread_startup_complete(void);
+static void process_pm_pooled_logical_exit(void);
 static void process_pm_thread_exit(void);
 static void CleanupBackend(PMChild *bp, int exitstatus);
 static bool cleanup_archiver_child(PMChild *child, int exitstatus);
@@ -1729,6 +1730,7 @@ ServerLoop(void)
 		 * timeout.
 		 */
 		process_pm_thread_startup_complete();
+		process_pm_pooled_logical_exit();
 		process_pm_thread_exit();
 
 		nevents = WaitEventSetWait(pm_wait_set,
@@ -1772,6 +1774,7 @@ ServerLoop(void)
 		if (pending_pm_pmsignal)
 			process_pm_pmsignal();
 		process_pm_thread_startup_complete();
+		process_pm_pooled_logical_exit();
 		process_pm_thread_exit();
 
 		for (int i = 0; i < nevents; i++)
@@ -2556,6 +2559,48 @@ process_pm_child_exit(void)
 	 * or actions to make.
 	 */
 	PostmasterStateMachine();
+}
+
+/*
+ * Cleanup after a pooled logical backend reports exit.  The carrier thread
+ * that ran the session remains alive; the postmaster owns PMChild list
+ * mutation and slot release just like process and thread-backed children.
+ */
+static void
+process_pm_pooled_logical_exit(void)
+{
+	dlist_mutable_iter iter;
+	bool		reaped = false;
+
+	dlist_foreach_modify(iter, &ActiveChildList)
+	{
+		PMChild    *pmchild = dlist_container(PMChild, elem, iter.cur);
+		int			exitstatus;
+		pid_t		signal_pid;
+		Size		top_memory_allocated;
+		Size		top_memory_reclaimed;
+
+		if (!PostmasterChildHasExitedPooledLogical(pmchild, &exitstatus,
+												  &top_memory_allocated,
+												  &top_memory_reclaimed,
+												  &signal_pid))
+			continue;
+
+		if (top_memory_allocated > 0)
+			ereport(WARNING,
+					(errmsg_internal("pooled logical backend %d retained %zu bytes in TopMemoryContext at exit",
+									 signal_pid, top_memory_allocated)));
+		if (top_memory_reclaimed > 0)
+			ereport(DEBUG1,
+					(errmsg_internal("pooled logical backend %d reclaimed %zu bytes from TopMemoryContext at exit",
+									 signal_pid, top_memory_reclaimed)));
+
+		CleanupBackend(pmchild, exitstatus);
+		reaped = true;
+	}
+
+	if (reaped)
+		PostmasterStateMachine();
 }
 
 /*
