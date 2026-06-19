@@ -131,6 +131,7 @@ pg_noreturn extern void PostgresSingleUserMain(int argc, char *argv[],
 extern PgSession *PostgresBootstrapSession(const char *dbname,
 										   const char *username);
 extern PgStepResult PgSessionRunProtocolSchedulerUntilBoundary(PgSession *session);
+pg_noreturn extern void PostgresRunSession(PgSession *session);
 pg_noreturn extern void PostgresMain(const char *dbname,
 									 const char *username);
 extern void ResetUsage(void);

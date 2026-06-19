@@ -108,6 +108,9 @@ typedef enum LogConnectionOption
 }			LogConnectionOption;
 
 pg_noreturn extern void BackendMain(const void *startup_data, size_t startup_data_len);
+extern PgSession *BackendStartSessionWithStartupData(const BackendStartupData *startup_data,
+													 struct ClientSocket *client_sock,
+													 BackendStartupMode startup_mode);
 pg_noreturn extern void BackendMainWithStartupData(const BackendStartupData *startup_data,
 												  struct ClientSocket *client_sock,
 												  BackendStartupMode startup_mode);

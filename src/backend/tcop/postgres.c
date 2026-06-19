@@ -5763,14 +5763,19 @@ PostgresBootstrapSession(const char *dbname, const char *username)
  * ----------------------------------------------------------------
  */
 void
-PostgresMain(const char *dbname, const char *username)
+PostgresRunSession(PgSession *session)
 {
-	PgSession  *session;
+	Assert(session != NULL);
 
-	session = PostgresBootstrapSession(dbname, username);
 	if (PgRuntimeIsThreadBacked(CurrentPgRuntime))
 		PgSessionRunProtocolSchedulerStaging(session);
 	PgSessionRun(session);
+}
+
+void
+PostgresMain(const char *dbname, const char *username)
+{
+	PostgresRunSession(PostgresBootstrapSession(dbname, username));
 }
 
 /*
