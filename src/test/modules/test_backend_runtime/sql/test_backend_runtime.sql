@@ -6,6 +6,7 @@ SELECT test_backend_interrupt_wakes_target_latch();
 SELECT test_backend_thread_create_join();
 SELECT test_backend_thread_exit_join();
 SELECT test_backend_thread_runtime_state();
+SELECT test_backend_thread_split_initializers();
 SELECT test_carrier_threaded_guc_lock_depth_is_carrier_local();
 SELECT test_carrier_attach_detach_current_work();
 SELECT test_carrier_protocol_park_prepare_commit();

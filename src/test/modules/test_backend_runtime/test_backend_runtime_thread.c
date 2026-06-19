@@ -200,6 +200,115 @@ test_backend_thread_runtime_state(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_backend_thread_split_initializers);
+Datum
+test_backend_thread_split_initializers(PG_FUNCTION_ARGS)
+{
+#define CHECK_THREAD_SPLIT_INITIALIZER(expr) \
+	do { \
+		if (!(expr)) \
+			elog(ERROR, "thread backend split initializer check failed: %s", \
+				 #expr); \
+	} while (0)
+
+	PgRuntime  *saved_runtime;
+	PgCarrier  *saved_carrier;
+	PgBackend  *saved_backend;
+	PgSession  *saved_session;
+	PgConnection *saved_connection;
+	PgExecution *saved_execution;
+	PgCarrier	carrier;
+	PgThreadBackendLogicalState logical_without_carrier;
+	PgThreadBackendLogicalState logical_with_carrier;
+	Latch		fake_latch1;
+	Latch		fake_latch2;
+
+	saved_runtime = CurrentPgRuntime;
+	saved_carrier = CurrentPgCarrier;
+	saved_backend = CurrentPgBackend;
+	saved_session = CurrentPgSession;
+	saved_connection = CurrentPgConnection;
+	saved_execution = CurrentPgExecution;
+
+	InitLatch(&fake_latch1);
+	InitLatch(&fake_latch2);
+
+	PG_TRY();
+	{
+		InitializePgThreadRuntime(NULL);
+		InitializePgThreadCarrierRuntimeState(&carrier);
+
+		CHECK_THREAD_SPLIT_INITIALIZER(carrier.kind == PG_CARRIER_THREAD);
+		CHECK_THREAD_SPLIT_INITIALIZER(carrier.runtime != NULL);
+		CHECK_THREAD_SPLIT_INITIALIZER(carrier.current_backend == NULL);
+		CHECK_THREAD_SPLIT_INITIALIZER(carrier.current_session == NULL);
+		CHECK_THREAD_SPLIT_INITIALIZER(carrier.current_execution == NULL);
+
+		InitializePgThreadBackendLogicalState(&logical_without_carrier, NULL,
+											  B_BACKEND, NULL, &fake_latch1);
+
+		CHECK_THREAD_SPLIT_INITIALIZER(logical_without_carrier.backend.runtime ==
+									   carrier.runtime);
+		CHECK_THREAD_SPLIT_INITIALIZER(logical_without_carrier.backend.carrier ==
+									   NULL);
+		CHECK_THREAD_SPLIT_INITIALIZER(logical_without_carrier.backend.session ==
+									   &logical_without_carrier.session);
+		CHECK_THREAD_SPLIT_INITIALIZER(logical_without_carrier.backend.connection ==
+									   &logical_without_carrier.connection);
+		CHECK_THREAD_SPLIT_INITIALIZER(logical_without_carrier.backend.execution ==
+									   &logical_without_carrier.execution);
+		CHECK_THREAD_SPLIT_INITIALIZER(logical_without_carrier.session.backend ==
+									   &logical_without_carrier.backend);
+		CHECK_THREAD_SPLIT_INITIALIZER(logical_without_carrier.connection.backend ==
+									   &logical_without_carrier.backend);
+		CHECK_THREAD_SPLIT_INITIALIZER(logical_without_carrier.execution.backend ==
+									   &logical_without_carrier.backend);
+		CHECK_THREAD_SPLIT_INITIALIZER(logical_without_carrier.execution.carrier ==
+									   NULL);
+
+		InitializePgThreadBackendLogicalState(&logical_with_carrier, &carrier,
+											  B_BACKEND, NULL, &fake_latch2);
+
+		CHECK_THREAD_SPLIT_INITIALIZER(logical_with_carrier.backend.runtime ==
+									   carrier.runtime);
+		CHECK_THREAD_SPLIT_INITIALIZER(logical_with_carrier.backend.carrier ==
+									   &carrier);
+		CHECK_THREAD_SPLIT_INITIALIZER(logical_with_carrier.execution.carrier ==
+									   &carrier);
+		CHECK_THREAD_SPLIT_INITIALIZER(carrier.current_backend == NULL);
+		CHECK_THREAD_SPLIT_INITIALIZER(carrier.current_session == NULL);
+		CHECK_THREAD_SPLIT_INITIALIZER(carrier.current_execution == NULL);
+		CHECK_THREAD_SPLIT_INITIALIZER(CurrentPgRuntime == saved_runtime);
+		CHECK_THREAD_SPLIT_INITIALIZER(CurrentPgCarrier == saved_carrier);
+		CHECK_THREAD_SPLIT_INITIALIZER(CurrentPgBackend == saved_backend);
+		CHECK_THREAD_SPLIT_INITIALIZER(CurrentPgSession == saved_session);
+		CHECK_THREAD_SPLIT_INITIALIZER(CurrentPgConnection == saved_connection);
+		CHECK_THREAD_SPLIT_INITIALIZER(CurrentPgExecution == saved_execution);
+
+		PgSetCurrentRuntime(saved_runtime);
+		PgSetCurrentCarrier(saved_carrier);
+		PgSetCurrentBackend(saved_backend);
+		PgSetCurrentSession(saved_session);
+		PgSetCurrentConnection(saved_connection);
+		PgSetCurrentExecution(saved_execution);
+	}
+	PG_CATCH();
+	{
+		PgSetCurrentRuntime(saved_runtime);
+		PgSetCurrentCarrier(saved_carrier);
+		PgSetCurrentBackend(saved_backend);
+		PgSetCurrentSession(saved_session);
+		PgSetCurrentConnection(saved_connection);
+		PgSetCurrentExecution(saved_execution);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+#undef CHECK_THREAD_SPLIT_INITIALIZER
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_backend_pgproc_has_logical_id);
 Datum
 test_backend_pgproc_has_logical_id(PG_FUNCTION_ARGS)

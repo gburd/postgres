@@ -3211,6 +3211,12 @@ extern void **PgCurrentSavedSerializableXactRef(void);
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);
+extern void InitializePgThreadCarrierRuntimeState(PgCarrier *carrier);
+extern void InitializePgThreadBackendLogicalState(PgThreadBackendLogicalState *logical,
+												 PgCarrier *carrier,
+												 BackendType backend_type,
+												 struct Port *port,
+												 struct Latch *interrupt_latch);
 extern void InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 												 BackendType backend_type,
 												 struct Port *port,

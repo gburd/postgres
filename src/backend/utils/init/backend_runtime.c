@@ -819,6 +819,43 @@ InitializePgThreadRuntime(PgBackendExitContinuation exit_backend)
 }
 
 void
+InitializePgThreadCarrierRuntimeState(PgCarrier *carrier)
+{
+	Assert(carrier != NULL);
+	Assert(thread_runtime_initialized);
+
+	MemSet(carrier, 0, sizeof(*carrier));
+	PgCarrierInitializeRuntimeObject(carrier);
+
+	carrier->kind = PG_CARRIER_THREAD;
+	carrier->runtime = &thread_runtime;
+}
+
+void
+InitializePgThreadBackendLogicalState(PgThreadBackendLogicalState *logical,
+									  PgCarrier *carrier,
+									  BackendType backend_type,
+									  struct Port *port,
+									  struct Latch *interrupt_latch)
+{
+	Assert(logical != NULL);
+	Assert(thread_runtime_initialized);
+
+	MemSet(logical, 0, sizeof(*logical));
+
+	PgBackendInitializeRuntimeObject(&logical->backend, &thread_runtime,
+									 carrier, &logical->session,
+									 &logical->connection, &logical->execution,
+									 backend_type, interrupt_latch);
+	PgSessionInitializeRuntimeObject(&logical->session, &logical->backend,
+									 &logical->connection, &logical->execution);
+	PgConnectionInitializeRuntimeObject(&logical->connection, &logical->backend,
+										&logical->session, port);
+	PgExecutionInitializeRuntimeObject(&logical->execution, &logical->backend,
+									   &logical->session, carrier);
+}
+
+void
 InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 									  BackendType backend_type,
 									  struct Port *port,
@@ -831,24 +868,14 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 
 	MemSet(state, 0, sizeof(*state));
 	logical = &state->logical;
-	PgCarrierInitializeRuntimeObject(&state->carrier);
+	InitializePgThreadCarrierRuntimeState(&state->carrier);
+	InitializePgThreadBackendLogicalState(logical, &state->carrier,
+										  backend_type, port,
+										  interrupt_latch);
 
-	state->carrier.kind = PG_CARRIER_THREAD;
-	state->carrier.runtime = &thread_runtime;
 	state->carrier.current_backend = &logical->backend;
 	state->carrier.current_session = &logical->session;
 	state->carrier.current_execution = &logical->execution;
-
-	PgBackendInitializeRuntimeObject(&logical->backend, &thread_runtime,
-									 &state->carrier, &logical->session,
-									 &logical->connection, &logical->execution,
-									 backend_type, interrupt_latch);
-	PgSessionInitializeRuntimeObject(&logical->session, &logical->backend,
-									 &logical->connection, &logical->execution);
-	PgConnectionInitializeRuntimeObject(&logical->connection, &logical->backend,
-										&logical->session, port);
-	PgExecutionInitializeRuntimeObject(&logical->execution, &logical->backend,
-									   &logical->session, &state->carrier);
 }
 
 void
