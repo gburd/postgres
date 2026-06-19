@@ -2591,13 +2591,18 @@ struct PgExecution
 	PgExecutionSnapBuildState snapbuild;
 };
 
-typedef struct PgThreadBackendRuntimeState
+typedef struct PgThreadBackendLogicalState
 {
-	PgCarrier	carrier;
 	PgBackend	backend;
 	PgSession	session;
 	PgConnection connection;
 	PgExecution execution;
+} PgThreadBackendLogicalState;
+
+typedef struct PgThreadBackendRuntimeState
+{
+	PgCarrier	carrier;
+	PgThreadBackendLogicalState logical;
 } PgThreadBackendRuntimeState;
 
 extern void PgRuntimeResetAfterFork(void);

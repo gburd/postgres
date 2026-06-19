@@ -824,46 +824,52 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 									  struct Port *port,
 									  struct Latch *interrupt_latch)
 {
+	PgThreadBackendLogicalState *logical;
+
 	Assert(state != NULL);
 	Assert(thread_runtime_initialized);
 
 	MemSet(state, 0, sizeof(*state));
+	logical = &state->logical;
 	PgCarrierInitializeRuntimeObject(&state->carrier);
 
 	state->carrier.kind = PG_CARRIER_THREAD;
 	state->carrier.runtime = &thread_runtime;
-	state->carrier.current_backend = &state->backend;
-	state->carrier.current_session = &state->session;
-	state->carrier.current_execution = &state->execution;
+	state->carrier.current_backend = &logical->backend;
+	state->carrier.current_session = &logical->session;
+	state->carrier.current_execution = &logical->execution;
 
-	PgBackendInitializeRuntimeObject(&state->backend, &thread_runtime,
-									 &state->carrier, &state->session,
-									 &state->connection, &state->execution,
+	PgBackendInitializeRuntimeObject(&logical->backend, &thread_runtime,
+									 &state->carrier, &logical->session,
+									 &logical->connection, &logical->execution,
 									 backend_type, interrupt_latch);
-	PgSessionInitializeRuntimeObject(&state->session, &state->backend,
-									 &state->connection, &state->execution);
-	PgConnectionInitializeRuntimeObject(&state->connection, &state->backend,
-										&state->session, port);
-	PgExecutionInitializeRuntimeObject(&state->execution, &state->backend,
-									   &state->session, &state->carrier);
+	PgSessionInitializeRuntimeObject(&logical->session, &logical->backend,
+									 &logical->connection, &logical->execution);
+	PgConnectionInitializeRuntimeObject(&logical->connection, &logical->backend,
+										&logical->session, port);
+	PgExecutionInitializeRuntimeObject(&logical->execution, &logical->backend,
+									   &logical->session, &state->carrier);
 }
 
 void
 InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 {
+	PgThreadBackendLogicalState *logical;
+
 	Assert(state != NULL);
 
-	state->carrier.current_backend = &state->backend;
-	state->carrier.current_session = &state->session;
-	state->carrier.current_execution = &state->execution;
-	PgBackendAdoptEarlyState(&state->backend);
-	PgSessionAdoptEarlyState(&state->session);
-	PgConnectionAdoptEarlyState(&state->connection,
-								state->connection.identity.port);
-	PgExecutionAdoptEarlyState(&state->execution);
-	PgRuntimeSetCurrentWork(&thread_runtime, &state->carrier, &state->backend,
-							&state->session, &state->connection,
-							&state->execution, true);
+	logical = &state->logical;
+	state->carrier.current_backend = &logical->backend;
+	state->carrier.current_session = &logical->session;
+	state->carrier.current_execution = &logical->execution;
+	PgBackendAdoptEarlyState(&logical->backend);
+	PgSessionAdoptEarlyState(&logical->session);
+	PgConnectionAdoptEarlyState(&logical->connection,
+								logical->connection.identity.port);
+	PgExecutionAdoptEarlyState(&logical->execution);
+	PgRuntimeSetCurrentWork(&thread_runtime, &state->carrier,
+							&logical->backend, &logical->session,
+							&logical->connection, &logical->execution, true);
 	InitializeThreadedSessionRequiredGUCOptions();
 }
 

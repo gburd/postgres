@@ -45,23 +45,23 @@ test_thread_install_adopts_backend_fallback_state(PG_FUNCTION_ARGS)
 		InitializePgThreadRuntime(NULL);
 		InitializePgThreadBackendRuntimeState(&state, B_BACKEND, NULL,
 											  &fake_latch);
-		PgBackendAdoptEarlyState(&state.backend);
+		PgBackendAdoptEarlyState(&state.logical.backend);
 
-		ok = ok && state.backend.walsender.is_walsender;
-		ok = ok && state.backend.replication.sync_rep_wait_mode == 101;
-		ok = ok && state.backend.logical_replication.slotsync_sleep_ms == 102;
-		ok = ok && dlist_is_empty(&state.backend.logical_replication.lsn_mapping);
-		ok = ok && state.backend.xlog.local_xlog_insert_allowed == 103;
-		ok = ok && state.backend.recovery.standby_wait_us == 104;
+		ok = ok && state.logical.backend.walsender.is_walsender;
+		ok = ok && state.logical.backend.replication.sync_rep_wait_mode == 101;
+		ok = ok && state.logical.backend.logical_replication.slotsync_sleep_ms == 102;
+		ok = ok && dlist_is_empty(&state.logical.backend.logical_replication.lsn_mapping);
+		ok = ok && state.logical.backend.xlog.local_xlog_insert_allowed == 103;
+		ok = ok && state.logical.backend.recovery.standby_wait_us == 104;
 		ok = ok &&
-			state.backend.maintenance_worker.walsummarizer_sleep_quanta == 105;
-		ok = ok && state.backend.autovacuum.av_storage_param_cost_limit == 106;
-		ok = ok && dlist_is_empty(&state.backend.autovacuum.database_list);
-		ok = ok && state.backend.repack.current_segment == 107;
-		ok = ok && state.backend.aio.my_io_worker_id == 108;
-		ok = ok && state.backend.pending_interrupts.interrupt_pending;
+			state.logical.backend.maintenance_worker.walsummarizer_sleep_quanta == 105;
+		ok = ok && state.logical.backend.autovacuum.av_storage_param_cost_limit == 106;
+		ok = ok && dlist_is_empty(&state.logical.backend.autovacuum.database_list);
+		ok = ok && state.logical.backend.repack.current_segment == 107;
+		ok = ok && state.logical.backend.aio.my_io_worker_id == 108;
+		ok = ok && state.logical.backend.pending_interrupts.interrupt_pending;
 		ok = ok &&
-			state.backend.interrupt_holdoffs.interrupt_holdoff_count == 109;
+			state.logical.backend.interrupt_holdoffs.interrupt_holdoff_count == 109;
 
 		ok = ok && !PgCurrentWalSenderState()->is_walsender;
 		ok = ok && PgCurrentReplicationState()->sync_rep_wait_mode == -1;

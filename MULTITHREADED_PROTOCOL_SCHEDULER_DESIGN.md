@@ -1306,6 +1306,12 @@ Phase 15 owns real pool mode:
 - Add optional short grace pin only after scheduler pressure and shutdown escape
   conditions are tested.
 
+Early Phase 15 foundation should keep the carrier object visibly separate from
+the logical backend/session/connection/execution object group even where the
+thread-per-session launcher still allocates them together. This avoids baking
+the staging assumption into the runtime fixture that later pooled carriers must
+reuse across logical sessions.
+
 Phase 14 staging phases may be committed as scaffolding, but documentation and
 test names should not claim "pooled carrier scheduler complete" while there is
 still one carrier per client connection. Phase 15 is not complete until the real

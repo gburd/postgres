@@ -533,8 +533,8 @@ test_connection_warning_state_is_connection_local(PG_FUNCTION_ARGS)
 	InitializePgThreadRuntime(NULL);
 	InitializePgThreadBackendRuntimeState(&state1, B_BACKEND, NULL, NULL);
 	InitializePgThreadBackendRuntimeState(&state2, B_BACKEND, NULL, NULL);
-	fake_connection1 = &state1.connection;
-	fake_connection2 = &state2.connection;
+	fake_connection1 = &state1.logical.connection;
+	fake_connection2 = &state2.logical.connection;
 
 	PG_TRY();
 	{

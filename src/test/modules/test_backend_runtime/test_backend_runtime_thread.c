@@ -127,8 +127,8 @@ test_backend_thread_runtime_state(PG_FUNCTION_ARGS)
 		InitializePgThreadBackendRuntimeState(&state, B_BACKEND, NULL,
 											  &fake_latch);
 
-		CHECK_THREAD_RUNTIME_STATE(state.backend.runtime != NULL);
-		CHECK_THREAD_RUNTIME_STATE(state.backend.runtime->kind ==
+		CHECK_THREAD_RUNTIME_STATE(state.logical.backend.runtime != NULL);
+		CHECK_THREAD_RUNTIME_STATE(state.logical.backend.runtime->kind ==
 								   PG_RUNTIME_THREAD_PER_SESSION);
 		CHECK_THREAD_RUNTIME_STATE(!PgRuntimeKindIsThreadBacked(PG_RUNTIME_PROCESS));
 		CHECK_THREAD_RUNTIME_STATE(PgRuntimeKindIsThreadBacked(
@@ -136,18 +136,18 @@ test_backend_thread_runtime_state(PG_FUNCTION_ARGS)
 		CHECK_THREAD_RUNTIME_STATE(PgRuntimeKindIsThreadBacked(
 									   PG_RUNTIME_POOLED_PROTOCOL));
 		CHECK_THREAD_RUNTIME_STATE(!PgRuntimeIsThreadBacked(NULL));
-		CHECK_THREAD_RUNTIME_STATE(PgRuntimeIsThreadBacked(state.backend.runtime));
+		CHECK_THREAD_RUNTIME_STATE(PgRuntimeIsThreadBacked(state.logical.backend.runtime));
 		CHECK_THREAD_RUNTIME_STATE(PgRuntimePooledProtocolCarrierLimit() ==
 								   pooled_protocol_carriers);
 		CHECK_THREAD_RUNTIME_STATE(PgRuntimePooledProtocolRequested() ==
 								   (multithreaded &&
 									pooled_protocol_carriers > 0));
-		CHECK_THREAD_RUNTIME_STATE(state.backend.runtime->extension_backend_model ==
+		CHECK_THREAD_RUNTIME_STATE(state.logical.backend.runtime->extension_backend_model ==
 								   PG_BACKEND_MODEL_THREAD_PER_SESSION);
 		CHECK_THREAD_RUNTIME_STATE(state.carrier.kind == PG_CARRIER_THREAD);
-		CHECK_THREAD_RUNTIME_STATE(state.carrier.current_backend == &state.backend);
-		CHECK_THREAD_RUNTIME_STATE(state.carrier.current_session == &state.session);
-		CHECK_THREAD_RUNTIME_STATE(state.carrier.current_execution == &state.execution);
+		CHECK_THREAD_RUNTIME_STATE(state.carrier.current_backend == &state.logical.backend);
+		CHECK_THREAD_RUNTIME_STATE(state.carrier.current_session == &state.logical.session);
+		CHECK_THREAD_RUNTIME_STATE(state.carrier.current_execution == &state.logical.execution);
 		CHECK_THREAD_RUNTIME_STATE(state.carrier.backend_thread_start == NULL);
 		CHECK_THREAD_RUNTIME_STATE(state.carrier.wait_event_waiting == false);
 		CHECK_THREAD_RUNTIME_STATE(state.carrier.wait_event_signal_fd == -1);
@@ -155,20 +155,20 @@ test_backend_thread_runtime_state(PG_FUNCTION_ARGS)
 		CHECK_THREAD_RUNTIME_STATE(state.carrier.wait_event_selfpipe_writefd == -1);
 		CHECK_THREAD_RUNTIME_STATE(state.carrier.wait_event_selfpipe_owner_pid == 0);
 		CHECK_THREAD_RUNTIME_STATE(state.carrier.stack_base_ptr == NULL);
-		CHECK_THREAD_RUNTIME_STATE(state.backend.backend_type == B_BACKEND);
-		CHECK_THREAD_RUNTIME_STATE(state.backend.interrupt_latch == &fake_latch);
-		CHECK_THREAD_RUNTIME_STATE(dlist_is_empty(&state.backend.dsm_segment_list));
-		CHECK_THREAD_RUNTIME_STATE(state.backend.session == &state.session);
-		CHECK_THREAD_RUNTIME_STATE(state.backend.connection == &state.connection);
-		CHECK_THREAD_RUNTIME_STATE(state.backend.execution == &state.execution);
-		CHECK_THREAD_RUNTIME_STATE(state.session.backend == &state.backend);
-		CHECK_THREAD_RUNTIME_STATE(state.session.connection == &state.connection);
-		CHECK_THREAD_RUNTIME_STATE(state.session.execution == &state.execution);
-		CHECK_THREAD_RUNTIME_STATE(state.connection.backend == &state.backend);
-		CHECK_THREAD_RUNTIME_STATE(state.connection.session == &state.session);
-		CHECK_THREAD_RUNTIME_STATE(state.execution.backend == &state.backend);
-		CHECK_THREAD_RUNTIME_STATE(state.execution.session == &state.session);
-		CHECK_THREAD_RUNTIME_STATE(state.execution.carrier == &state.carrier);
+		CHECK_THREAD_RUNTIME_STATE(state.logical.backend.backend_type == B_BACKEND);
+		CHECK_THREAD_RUNTIME_STATE(state.logical.backend.interrupt_latch == &fake_latch);
+		CHECK_THREAD_RUNTIME_STATE(dlist_is_empty(&state.logical.backend.dsm_segment_list));
+		CHECK_THREAD_RUNTIME_STATE(state.logical.backend.session == &state.logical.session);
+		CHECK_THREAD_RUNTIME_STATE(state.logical.backend.connection == &state.logical.connection);
+		CHECK_THREAD_RUNTIME_STATE(state.logical.backend.execution == &state.logical.execution);
+		CHECK_THREAD_RUNTIME_STATE(state.logical.session.backend == &state.logical.backend);
+		CHECK_THREAD_RUNTIME_STATE(state.logical.session.connection == &state.logical.connection);
+		CHECK_THREAD_RUNTIME_STATE(state.logical.session.execution == &state.logical.execution);
+		CHECK_THREAD_RUNTIME_STATE(state.logical.connection.backend == &state.logical.backend);
+		CHECK_THREAD_RUNTIME_STATE(state.logical.connection.session == &state.logical.session);
+		CHECK_THREAD_RUNTIME_STATE(state.logical.execution.backend == &state.logical.backend);
+		CHECK_THREAD_RUNTIME_STATE(state.logical.execution.session == &state.logical.session);
+		CHECK_THREAD_RUNTIME_STATE(state.logical.execution.carrier == &state.carrier);
 		CHECK_THREAD_RUNTIME_STATE(CurrentPgRuntime == saved_runtime);
 		CHECK_THREAD_RUNTIME_STATE(CurrentPgCarrier == saved_carrier);
 		CHECK_THREAD_RUNTIME_STATE(CurrentPgBackend == saved_backend);
@@ -250,11 +250,11 @@ test_backend_thread_ids_are_logical(PG_FUNCTION_ARGS)
 		InitializePgThreadRuntime(NULL);
 		InitializePgThreadBackendRuntimeState(&state1, B_BACKEND, NULL,
 											  &fake_latch1);
-		thread_backend_id1 = PgBackendGetId(&state1.backend);
+		thread_backend_id1 = PgBackendGetId(&state1.logical.backend);
 
 		InitializePgThreadBackendRuntimeState(&state2, B_BACKEND, NULL,
 											  &fake_latch2);
-		thread_backend_id2 = PgBackendGetId(&state2.backend);
+		thread_backend_id2 = PgBackendGetId(&state2.logical.backend);
 
 		ok = ok && current_backend_id != 0;
 		ok = ok && thread_backend_id1 != 0;
@@ -262,8 +262,8 @@ test_backend_thread_ids_are_logical(PG_FUNCTION_ARGS)
 		ok = ok && thread_backend_id1 != current_backend_id;
 		ok = ok && thread_backend_id2 != current_backend_id;
 		ok = ok && thread_backend_id1 != thread_backend_id2;
-		ok = ok && thread_backend_id1 == PgBackendGetId(&state1.backend);
-		ok = ok && thread_backend_id2 == PgBackendGetId(&state2.backend);
+		ok = ok && thread_backend_id1 == PgBackendGetId(&state1.logical.backend);
+		ok = ok && thread_backend_id2 == PgBackendGetId(&state2.logical.backend);
 		ok = ok && CurrentPgRuntime == saved_runtime;
 		ok = ok && CurrentPgCarrier == saved_carrier;
 		ok = ok && CurrentPgBackend == saved_backend;

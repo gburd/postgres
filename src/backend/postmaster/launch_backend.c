@@ -460,7 +460,7 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 	postmaster_thread_carriers_started = true;
 	PostmasterChildSetThread(pmchild, &thread);
 	PostmasterChildPublishLogicalBackend(pmchild,
-										 &thread_start->runtime_state.backend);
+										 &thread_start->runtime_state.logical.backend);
 	pg_atomic_write_u32(&thread_start->launch_registered, 1);
 	return true;
 #endif

@@ -180,58 +180,58 @@ test_carrier_attach_detach_current_work(PG_FUNCTION_ARGS)
 	InitializePgThreadRuntime(NULL);
 	InitializePgThreadBackendRuntimeState(&state, B_BACKEND, NULL,
 										  &fake_latch);
-	PgCarrierDetachBackend(&state.carrier, &state.backend);
+	PgCarrierDetachBackend(&state.carrier, &state.logical.backend);
 	MemSet(&fake_proc, 0, sizeof(fake_proc));
 	InitLatch(&fake_latch);
-	fake_wait_set = (WaitEventSet *) &state.connection;
-	fake_memory_context = (MemoryContext) &state.execution;
-	fake_resource_owner = (ResourceOwner) &state.execution;
-	state.backend.my_proc = &fake_proc;
-	state.backend.my_proc_number = 42;
-	state.backend.core.latch = &fake_latch;
-	state.backend.timeout.num_active_timeouts = 3;
-	state.connection.protocol.fe_be_wait_set = fake_wait_set;
-	state.execution.memory_contexts.current_context = fake_memory_context;
-	state.execution.resource_owners.current_owner =
+	fake_wait_set = (WaitEventSet *) &state.logical.connection;
+	fake_memory_context = (MemoryContext) &state.logical.execution;
+	fake_resource_owner = (ResourceOwner) &state.logical.execution;
+	state.logical.backend.my_proc = &fake_proc;
+	state.logical.backend.my_proc_number = 42;
+	state.logical.backend.core.latch = &fake_latch;
+	state.logical.backend.timeout.num_active_timeouts = 3;
+	state.logical.connection.protocol.fe_be_wait_set = fake_wait_set;
+	state.logical.execution.memory_contexts.current_context = fake_memory_context;
+	state.logical.execution.resource_owners.current_owner =
 		(struct ResourceOwnerData *) fake_resource_owner;
 
 	PG_TRY();
 	{
-		PgCarrierAttachBackend(&state.carrier, &state.backend,
-							   &state.session, &state.connection,
-							   &state.execution);
+		PgCarrierAttachBackend(&state.carrier, &state.logical.backend,
+							   &state.logical.session, &state.logical.connection,
+							   &state.logical.execution);
 
-		ok = ok && CurrentPgRuntime == state.backend.runtime;
+		ok = ok && CurrentPgRuntime == state.logical.backend.runtime;
 		ok = ok && CurrentPgRuntime->current_carrier == &state.carrier;
 		ok = ok && CurrentPgCarrier == &state.carrier;
-		ok = ok && CurrentPgBackend == &state.backend;
-		ok = ok && CurrentPgSession == &state.session;
-		ok = ok && CurrentPgConnection == &state.connection;
-		ok = ok && CurrentPgExecution == &state.execution;
-		ok = ok && state.carrier.current_backend == &state.backend;
-		ok = ok && state.carrier.current_session == &state.session;
-		ok = ok && state.carrier.current_execution == &state.execution;
-		ok = ok && state.backend.carrier == &state.carrier;
-		ok = ok && state.execution.carrier == &state.carrier;
+		ok = ok && CurrentPgBackend == &state.logical.backend;
+		ok = ok && CurrentPgSession == &state.logical.session;
+		ok = ok && CurrentPgConnection == &state.logical.connection;
+		ok = ok && CurrentPgExecution == &state.logical.execution;
+		ok = ok && state.carrier.current_backend == &state.logical.backend;
+		ok = ok && state.carrier.current_session == &state.logical.session;
+		ok = ok && state.carrier.current_execution == &state.logical.execution;
+		ok = ok && state.logical.backend.carrier == &state.carrier;
+		ok = ok && state.logical.execution.carrier == &state.carrier;
 		ok = ok && CurrentPgBackendTimeoutRuntimeState ==
-			&state.backend.timeout;
+			&state.logical.backend.timeout;
 		ok = ok && CurrentPgConnectionProtocolRuntimeState ==
-			&state.connection.protocol;
+			&state.logical.connection.protocol;
 		ok = ok && CurrentPgExecutionMemoryContextRuntimeState ==
-			&state.execution.memory_contexts;
+			&state.logical.execution.memory_contexts;
 		ok = ok && CurrentPgExecutionResourceOwnerRuntimeState ==
-			&state.execution.resource_owners;
+			&state.logical.execution.resource_owners;
 		ok = ok && MyProc == &fake_proc;
 		ok = ok && MyProcNumber == 42;
 		ok = ok && MyLatch == &fake_latch;
 		ok = ok && FeBeWaitSet == fake_wait_set;
 		ok = ok && CurrentMemoryContext == fake_memory_context;
 		ok = ok && CurrentResourceOwner == fake_resource_owner;
-		ok = ok && PgCurrentTimeoutState() == &state.backend.timeout;
+		ok = ok && PgCurrentTimeoutState() == &state.logical.backend.timeout;
 
-		PgCarrierDetachBackend(&state.carrier, &state.backend);
+		PgCarrierDetachBackend(&state.carrier, &state.logical.backend);
 
-		ok = ok && CurrentPgRuntime == state.backend.runtime;
+		ok = ok && CurrentPgRuntime == state.logical.backend.runtime;
 		ok = ok && CurrentPgCarrier == &state.carrier;
 		ok = ok && CurrentPgBackend == NULL;
 		ok = ok && CurrentPgSession == NULL;
@@ -240,8 +240,8 @@ test_carrier_attach_detach_current_work(PG_FUNCTION_ARGS)
 		ok = ok && state.carrier.current_backend == NULL;
 		ok = ok && state.carrier.current_session == NULL;
 		ok = ok && state.carrier.current_execution == NULL;
-		ok = ok && state.backend.carrier == NULL;
-		ok = ok && state.execution.carrier == NULL;
+		ok = ok && state.logical.backend.carrier == NULL;
+		ok = ok && state.logical.execution.carrier == NULL;
 		ok = ok && CurrentPgBackendTimeoutRuntimeState == NULL;
 		ok = ok && CurrentPgConnectionProtocolRuntimeState == NULL;
 		ok = ok && CurrentPgExecutionMemoryContextRuntimeState == NULL;
@@ -316,72 +316,72 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 	InitializePgThreadRuntime(NULL);
 	InitializePgThreadBackendRuntimeState(&state, B_BACKEND, NULL,
 										  &fake_latch);
-	PgCarrierDetachBackend(&state.carrier, &state.backend);
+	PgCarrierDetachBackend(&state.carrier, &state.logical.backend);
 	MemSet(&fake_proc, 0, sizeof(fake_proc));
 	InitLatch(&fake_latch);
-	fake_wait_set = (WaitEventSet *) &state.connection;
-	fake_memory_context = (MemoryContext) &state.execution;
-	fake_resource_owner = (ResourceOwner) &state.execution;
-	state.backend.my_proc = &fake_proc;
-	state.backend.my_proc_number = 42;
-	state.backend.core.latch = &fake_latch;
-	state.session.loop_state.doing_command_read = true;
-	state.connection.protocol.fe_be_wait_set = fake_wait_set;
-	state.execution.memory_contexts.current_context = fake_memory_context;
-	state.execution.resource_owners.current_owner =
+	fake_wait_set = (WaitEventSet *) &state.logical.connection;
+	fake_memory_context = (MemoryContext) &state.logical.execution;
+	fake_resource_owner = (ResourceOwner) &state.logical.execution;
+	state.logical.backend.my_proc = &fake_proc;
+	state.logical.backend.my_proc_number = 42;
+	state.logical.backend.core.latch = &fake_latch;
+	state.logical.session.loop_state.doing_command_read = true;
+	state.logical.connection.protocol.fe_be_wait_set = fake_wait_set;
+	state.logical.execution.memory_contexts.current_context = fake_memory_context;
+	state.logical.execution.resource_owners.current_owner =
 		(struct ResourceOwnerData *) fake_resource_owner;
-	state.connection.socket_io.transport_generation = 11;
-	state.backend.timeout.all_timeouts_initialized = true;
-	state.backend.timeout.signal_delivery = false;
-	state.backend.timeout.alarm_enabled = true;
-	state.backend.timeout.num_active_timeouts = 1;
-	state.backend.timeout.all_timeouts[IDLE_SESSION_TIMEOUT].active = true;
-	state.backend.timeout.all_timeouts[IDLE_SESSION_TIMEOUT].fin_time = 424242;
-	state.backend.timeout.active_timeouts[0] =
-		&state.backend.timeout.all_timeouts[IDLE_SESSION_TIMEOUT];
-	state.backend.timeout.generation = 17;
+	state.logical.connection.socket_io.transport_generation = 11;
+	state.logical.backend.timeout.all_timeouts_initialized = true;
+	state.logical.backend.timeout.signal_delivery = false;
+	state.logical.backend.timeout.alarm_enabled = true;
+	state.logical.backend.timeout.num_active_timeouts = 1;
+	state.logical.backend.timeout.all_timeouts[IDLE_SESSION_TIMEOUT].active = true;
+	state.logical.backend.timeout.all_timeouts[IDLE_SESSION_TIMEOUT].fin_time = 424242;
+	state.logical.backend.timeout.active_timeouts[0] =
+		&state.logical.backend.timeout.all_timeouts[IDLE_SESSION_TIMEOUT];
+	state.logical.backend.timeout.generation = 17;
 
 	PG_TRY();
 	{
-		PgCarrierAttachBackend(&state.carrier, &state.backend,
-							   &state.session, &state.connection,
-							   &state.execution);
-		scheduler = &state.backend.runtime->protocol_scheduler;
+		PgCarrierAttachBackend(&state.carrier, &state.logical.backend,
+							   &state.logical.session, &state.logical.connection,
+							   &state.logical.execution);
+		scheduler = &state.logical.backend.runtime->protocol_scheduler;
 		ok = ok && scheduler->parked_protocol_count == 0;
 		ok = ok && scheduler->runnable_count == 0;
 
 		MemSet(&park_spec, 0, sizeof(park_spec));
 		park_spec.transport_wait_events = WL_SOCKET_READABLE;
 		park_spec.transport_generation =
-			state.connection.socket_io.transport_generation;
+			state.logical.connection.socket_io.transport_generation;
 		park_spec.wait_event_info = WAIT_EVENT_CLIENT_READ;
 
-		ok = ok && PgBackendLogicalTimeoutNextWake(&state.backend,
+		ok = ok && PgBackendLogicalTimeoutNextWake(&state.logical.backend,
 												   &timeout_wake_at,
 												   &timeout_generation);
 		ok = ok && timeout_wake_at == 424242;
 		ok = ok && timeout_generation == 17;
 
-		ok = ok && PgBackendPrepareProtocolReadPark(&state.backend,
+		ok = ok && PgBackendPrepareProtocolReadPark(&state.logical.backend,
 													&park_spec);
-		ok = ok && state.backend.protocol_park.state ==
+		ok = ok && state.logical.backend.protocol_park.state ==
 			PG_PROTOCOL_PARK_PREPARED;
-		ok = ok && state.backend.protocol_park.spec.backend ==
-			&state.backend;
-		ok = ok && state.backend.protocol_park.spec.session ==
-			&state.session;
-		ok = ok && state.backend.protocol_park.spec.connection ==
-			&state.connection;
-		ok = ok && state.backend.protocol_park.spec.transport_wait_events ==
+		ok = ok && state.logical.backend.protocol_park.spec.backend ==
+			&state.logical.backend;
+		ok = ok && state.logical.backend.protocol_park.spec.session ==
+			&state.logical.session;
+		ok = ok && state.logical.backend.protocol_park.spec.connection ==
+			&state.logical.connection;
+		ok = ok && state.logical.backend.protocol_park.spec.transport_wait_events ==
 			WL_SOCKET_READABLE;
-		ok = ok && state.backend.protocol_park.spec.transport_generation == 11;
-		ok = ok && state.backend.protocol_park.spec.timeout_generation == 17;
-		ok = ok && state.backend.protocol_park.spec.timeout_wake_at_valid;
-		ok = ok && state.backend.protocol_park.spec.timeout_wake_at == 424242;
-		ok = ok && state.backend.protocol_park.spec.generation == 1;
-		ok = ok && CurrentPgBackend == &state.backend;
-		ok = ok && state.carrier.current_backend == &state.backend;
-		ok = ok && state.backend.carrier == &state.carrier;
+		ok = ok && state.logical.backend.protocol_park.spec.transport_generation == 11;
+		ok = ok && state.logical.backend.protocol_park.spec.timeout_generation == 17;
+		ok = ok && state.logical.backend.protocol_park.spec.timeout_wake_at_valid;
+		ok = ok && state.logical.backend.protocol_park.spec.timeout_wake_at == 424242;
+		ok = ok && state.logical.backend.protocol_park.spec.generation == 1;
+		ok = ok && CurrentPgBackend == &state.logical.backend;
+		ok = ok && state.carrier.current_backend == &state.logical.backend;
+		ok = ok && state.logical.backend.carrier == &state.carrier;
 		ok = ok && MyProc == &fake_proc;
 		ok = ok && MyProcNumber == 42;
 		ok = ok && MyLatch == &fake_latch;
@@ -389,30 +389,30 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 		ok = ok && CurrentMemoryContext == fake_memory_context;
 		ok = ok && CurrentResourceOwner == fake_resource_owner;
 
-		PgCarrierCommitProtocolReadPark(&state.carrier, &state.backend);
+		PgCarrierCommitProtocolReadPark(&state.carrier, &state.logical.backend);
 
-		ok = ok && state.backend.protocol_park.state ==
+		ok = ok && state.logical.backend.protocol_park.state ==
 			PG_PROTOCOL_PARK_COMMITTED;
-		ok = ok && state.backend.protocol_park.spec.generation == 1;
-		ok = ok && state.backend.protocol_park.wake_reasons ==
+		ok = ok && state.logical.backend.protocol_park.spec.generation == 1;
+		ok = ok && state.logical.backend.protocol_park.wake_reasons ==
 			PG_PROTOCOL_PARK_WAKE_NONE;
-		ok = ok && state.backend.protocol_park.wake_generation == 0;
-		ok = ok && state.backend.protocol_park.scheduler_queue_state ==
+		ok = ok && state.logical.backend.protocol_park.wake_generation == 0;
+		ok = ok && state.logical.backend.protocol_park.scheduler_queue_state ==
 			PG_PROTOCOL_SCHEDULER_QUEUE_PARKED_PROTOCOL_READ;
 		ok = ok && scheduler->parked_protocol_count == 1;
 		ok = ok && scheduler->runnable_count == 0;
-		ok = ok && PgBackendProtocolReadParkTimeoutGenerationValid(&state.backend,
+		ok = ok && PgBackendProtocolReadParkTimeoutGenerationValid(&state.logical.backend,
 																   1);
-		state.backend.timeout.generation++;
-		ok = ok && !PgBackendProtocolReadParkTimeoutGenerationValid(&state.backend,
+		state.logical.backend.timeout.generation++;
+		ok = ok && !PgBackendProtocolReadParkTimeoutGenerationValid(&state.logical.backend,
 																	1);
-		state.backend.timeout.generation = 17;
+		state.logical.backend.timeout.generation = 17;
 		ok = ok && CurrentPgBackend == NULL;
 		ok = ok && CurrentPgSession == NULL;
 		ok = ok && CurrentPgConnection == NULL;
 		ok = ok && CurrentPgExecution == NULL;
 		ok = ok && state.carrier.current_backend == NULL;
-		ok = ok && state.backend.carrier == NULL;
+		ok = ok && state.logical.backend.carrier == NULL;
 		ok = ok && CurrentPgBackendTimeoutRuntimeState == NULL;
 		ok = ok && CurrentPgConnectionProtocolRuntimeState == NULL;
 		ok = ok && CurrentPgExecutionMemoryContextRuntimeState == NULL;
@@ -424,50 +424,50 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 		ok = ok && CurrentResourceOwner != fake_resource_owner;
 
 		ResetLatch(&fake_latch);
-		PgBackendRaiseInterrupt(&state.backend,
+		PgBackendRaiseInterrupt(&state.logical.backend,
 								PG_BACKEND_INTERRUPT_QUERY_CANCEL);
 		ok = ok && fake_latch.is_set;
 		ok = ok && CurrentPgBackend == NULL;
-		pending_interrupts = PgBackendConsumeInterrupts(&state.backend);
+		pending_interrupts = PgBackendConsumeInterrupts(&state.logical.backend);
 		ok = ok && (pending_interrupts &
 					PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_QUERY_CANCEL));
 		ResetLatch(&fake_latch);
 
-		ok = ok && !PgBackendMarkProtocolReadParkWake(&state.backend, 0,
+		ok = ok && !PgBackendMarkProtocolReadParkWake(&state.logical.backend, 0,
 													  PG_PROTOCOL_PARK_WAKE_LOGICAL,
 													  WL_LATCH_SET);
-		ok = ok && state.backend.protocol_park.wake_reasons ==
+		ok = ok && state.logical.backend.protocol_park.wake_reasons ==
 			PG_PROTOCOL_PARK_WAKE_NONE;
-		ok = ok && PgBackendMarkProtocolReadParkWake(&state.backend, 1,
+		ok = ok && PgBackendMarkProtocolReadParkWake(&state.logical.backend, 1,
 													 PG_PROTOCOL_PARK_WAKE_LOGICAL,
 													 WL_LATCH_SET);
-		ok = ok && state.backend.protocol_park.wake_reasons ==
+		ok = ok && state.logical.backend.protocol_park.wake_reasons ==
 			PG_PROTOCOL_PARK_WAKE_LOGICAL;
-		ok = ok && state.backend.protocol_park.wake_events == WL_LATCH_SET;
-		ok = ok && state.backend.protocol_park.wake_generation == 1;
-		ok = ok && PgBackendMarkProtocolReadParkWake(&state.backend, 1,
+		ok = ok && state.logical.backend.protocol_park.wake_events == WL_LATCH_SET;
+		ok = ok && state.logical.backend.protocol_park.wake_generation == 1;
+		ok = ok && PgBackendMarkProtocolReadParkWake(&state.logical.backend, 1,
 													 PG_PROTOCOL_PARK_WAKE_TIMEOUT,
 													 WL_TIMEOUT);
-		ok = ok && state.backend.protocol_park.wake_reasons ==
+		ok = ok && state.logical.backend.protocol_park.wake_reasons ==
 			(PG_PROTOCOL_PARK_WAKE_LOGICAL | PG_PROTOCOL_PARK_WAKE_TIMEOUT);
-		ok = ok && state.backend.protocol_park.wake_events ==
+		ok = ok && state.logical.backend.protocol_park.wake_events ==
 			(WL_LATCH_SET | WL_TIMEOUT);
-		ok = ok && PgBackendMarkProtocolReadParkWake(&state.backend, 1,
+		ok = ok && PgBackendMarkProtocolReadParkWake(&state.logical.backend, 1,
 													 PG_PROTOCOL_PARK_WAKE_POSTMASTER,
 													 WL_POSTMASTER_DEATH);
-		ok = ok && state.backend.protocol_park.wake_reasons ==
+		ok = ok && state.logical.backend.protocol_park.wake_reasons ==
 			(PG_PROTOCOL_PARK_WAKE_LOGICAL | PG_PROTOCOL_PARK_WAKE_TIMEOUT |
 			 PG_PROTOCOL_PARK_WAKE_POSTMASTER);
-		ok = ok && state.backend.protocol_park.wake_events ==
+		ok = ok && state.logical.backend.protocol_park.wake_events ==
 			(WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH);
-		ok = ok && PgBackendNotifyInterruptGeneration(&state.backend) == 0;
-		SendInterrupt(&state.backend, PG_BACKEND_INTERRUPT_NOTIFY);
-		ok = ok && PgBackendNotifyInterruptGeneration(&state.backend) == 1;
-		SendInterrupt(&state.backend, PG_BACKEND_INTERRUPT_NOTIFY);
+		ok = ok && PgBackendNotifyInterruptGeneration(&state.logical.backend) == 0;
+		SendInterrupt(&state.logical.backend, PG_BACKEND_INTERRUPT_NOTIFY);
+		ok = ok && PgBackendNotifyInterruptGeneration(&state.logical.backend) == 1;
+		SendInterrupt(&state.logical.backend, PG_BACKEND_INTERRUPT_NOTIFY);
 		notify_generation =
-			PgBackendNotifyInterruptGeneration(&state.backend);
+			PgBackendNotifyInterruptGeneration(&state.logical.backend);
 		ok = ok && notify_generation == 2;
-		ok = ok && PgBackendMarkProtocolReadParkWake(&state.backend, 1,
+		ok = ok && PgBackendMarkProtocolReadParkWake(&state.logical.backend, 1,
 													 PG_PROTOCOL_PARK_WAKE_NOTIFY,
 													 WL_LATCH_SET);
 		expected_wake_reasons =
@@ -477,59 +477,59 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 			PG_PROTOCOL_PARK_WAKE_NOTIFY;
 		expected_wake_events =
 			WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH;
-		ok = ok && state.backend.protocol_park.wake_reasons ==
+		ok = ok && state.logical.backend.protocol_park.wake_reasons ==
 			expected_wake_reasons;
-		ok = ok && state.backend.protocol_park.notify_wake_generation ==
+		ok = ok && state.logical.backend.protocol_park.notify_wake_generation ==
 			notify_generation;
 
-		ok = ok && PgRuntimeProtocolSchedulerMarkRunnable(state.backend.runtime,
-														  &state.backend);
-		ok = ok && state.backend.protocol_park.scheduler_queue_state ==
+		ok = ok && PgRuntimeProtocolSchedulerMarkRunnable(state.logical.backend.runtime,
+														  &state.logical.backend);
+		ok = ok && state.logical.backend.protocol_park.scheduler_queue_state ==
 			PG_PROTOCOL_SCHEDULER_QUEUE_RUNNABLE;
 		ok = ok && scheduler->parked_protocol_count == 0;
 		ok = ok && scheduler->runnable_count == 1;
 		runnable_backend =
-			PgRuntimeProtocolSchedulerPopRunnable(state.backend.runtime);
-		ok = ok && runnable_backend == &state.backend;
-		ok = ok && state.backend.protocol_park.scheduler_queue_state ==
+			PgRuntimeProtocolSchedulerPopRunnable(state.logical.backend.runtime);
+		ok = ok && runnable_backend == &state.logical.backend;
+		ok = ok && state.logical.backend.protocol_park.scheduler_queue_state ==
 			PG_PROTOCOL_SCHEDULER_QUEUE_NONE;
 		ok = ok && scheduler->parked_protocol_count == 0;
 		ok = ok && scheduler->runnable_count == 0;
 
-		PgCarrierAttachBackend(&state.carrier, &state.backend,
-							   &state.session, &state.connection,
-							   &state.execution);
-		PgBackendResumeProtocolReadPark(&state.backend);
+		PgCarrierAttachBackend(&state.carrier, &state.logical.backend,
+							   &state.logical.session, &state.logical.connection,
+							   &state.logical.execution);
+		PgBackendResumeProtocolReadPark(&state.logical.backend);
 
-		ok = ok && state.backend.protocol_park.state ==
+		ok = ok && state.logical.backend.protocol_park.state ==
 			PG_PROTOCOL_PARK_NONE;
-		ok = ok && state.backend.protocol_park.spec.backend == NULL;
-		ok = ok && state.backend.protocol_park.next_generation == 1;
-		ok = ok && state.backend.protocol_park.wake_reasons ==
+		ok = ok && state.logical.backend.protocol_park.spec.backend == NULL;
+		ok = ok && state.logical.backend.protocol_park.next_generation == 1;
+		ok = ok && state.logical.backend.protocol_park.wake_reasons ==
 			PG_PROTOCOL_PARK_WAKE_NONE;
-		ok = ok && state.backend.protocol_park.wake_events == 0;
-		ok = ok && state.backend.protocol_park.wake_generation == 0;
-		ok = ok && state.backend.protocol_park.last_wake_reasons ==
+		ok = ok && state.logical.backend.protocol_park.wake_events == 0;
+		ok = ok && state.logical.backend.protocol_park.wake_generation == 0;
+		ok = ok && state.logical.backend.protocol_park.last_wake_reasons ==
 			expected_wake_reasons;
-		ok = ok && state.backend.protocol_park.last_wake_events ==
+		ok = ok && state.logical.backend.protocol_park.last_wake_events ==
 			expected_wake_events;
-		ok = ok && state.backend.protocol_park.last_wake_generation == 1;
-		ok = ok && PgBackendMarkProtocolReadParkDeferredNotify(&state.backend,
+		ok = ok && state.logical.backend.protocol_park.last_wake_generation == 1;
+		ok = ok && PgBackendMarkProtocolReadParkDeferredNotify(&state.logical.backend,
 															   notify_generation,
 															   PG_PROTOCOL_PARK_WAKE_NOTIFY);
-		ok = ok && state.backend.protocol_park.deferred_notify_generation ==
+		ok = ok && state.logical.backend.protocol_park.deferred_notify_generation ==
 			notify_generation;
-		ok = ok && state.backend.protocol_park.deferred_notify_park_generation == 1;
-		ok = ok && state.backend.protocol_park.deferred_notify_reasons ==
+		ok = ok && state.logical.backend.protocol_park.deferred_notify_park_generation == 1;
+		ok = ok && state.logical.backend.protocol_park.deferred_notify_reasons ==
 			PG_PROTOCOL_PARK_WAKE_NOTIFY;
-		PgBackendClearProtocolReadParkDeferredNotify(&state.backend);
-		ok = ok && state.backend.protocol_park.deferred_notify_generation == 0;
-		ok = ok && state.backend.protocol_park.deferred_notify_park_generation == 0;
-		ok = ok && state.backend.protocol_park.deferred_notify_reasons ==
+		PgBackendClearProtocolReadParkDeferredNotify(&state.logical.backend);
+		ok = ok && state.logical.backend.protocol_park.deferred_notify_generation == 0;
+		ok = ok && state.logical.backend.protocol_park.deferred_notify_park_generation == 0;
+		ok = ok && state.logical.backend.protocol_park.deferred_notify_reasons ==
 			PG_PROTOCOL_PARK_WAKE_NONE;
-		ok = ok && CurrentPgBackend == &state.backend;
-		ok = ok && state.carrier.current_backend == &state.backend;
-		ok = ok && state.backend.carrier == &state.carrier;
+		ok = ok && CurrentPgBackend == &state.logical.backend;
+		ok = ok && state.carrier.current_backend == &state.logical.backend;
+		ok = ok && state.logical.backend.carrier == &state.carrier;
 		ok = ok && MyProc == &fake_proc;
 		ok = ok && MyProcNumber == 42;
 		ok = ok && MyLatch == &fake_latch;
