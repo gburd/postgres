@@ -232,6 +232,7 @@ typedef struct PgWaitSpec
 	PgWaitKind	kind;
 	uint32		wait_event_info;
 	uint32		wake_events;
+	pgsocket	socket;
 	long		timeout;
 } PgWaitSpec;
 
