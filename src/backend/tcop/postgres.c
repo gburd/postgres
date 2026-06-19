@@ -186,7 +186,6 @@ static void drop_unnamed_stmt(void);
 static void ProcessRecoveryConflictInterrupts(void);
 static void ProcessRecoveryConflictInterrupt(RecoveryConflictReason reason);
 static void report_recovery_conflict(RecoveryConflictReason reason);
-static PgSession *PgSessionBootstrap(const char *dbname, const char *username);
 pg_noreturn static void PgSessionRunProtocolSchedulerStaging(PgSession *session);
 static uint32 PgSessionStagingWaitProtocolRead(PgBackend *backend,
 											   PgProtocolParkSpec *park_spec);
@@ -5395,19 +5394,11 @@ PgSessionStagingWaitProtocolRead(PgBackend *backend,
 }
 
 static void
-PgSessionCommitCurrentProtocolReadPark(PgSession *session,
-									   PgBackend **backend,
-									   PgConnection **connection,
-									   PgExecution **execution,
-									   PgProtocolParkSpec *park_spec)
+PgSessionCommitCurrentProtocolReadPark(PgSession *session)
 {
 	PgCarrier  *carrier = CurrentPgCarrier;
 
 	Assert(session != NULL);
-	Assert(backend != NULL);
-	Assert(connection != NULL);
-	Assert(execution != NULL);
-	Assert(park_spec != NULL);
 	Assert(carrier != NULL);
 	Assert(session->backend != NULL);
 	Assert(session->connection != NULL);
@@ -5416,12 +5407,7 @@ PgSessionCommitCurrentProtocolReadPark(PgSession *session,
 	Assert(session->backend->protocol_park.state ==
 		   PG_PROTOCOL_PARK_PREPARED);
 
-	*backend = session->backend;
-	*connection = session->connection;
-	*execution = session->execution;
-	*park_spec = (*backend)->protocol_park.spec;
-
-	PgCarrierCommitProtocolReadPark(carrier, *backend);
+	PgCarrierCommitProtocolReadPark(carrier, session->backend);
 }
 
 static uint32
@@ -5458,8 +5444,8 @@ PgSessionStagingWaitAndResumeProtocolRead(PgSession *session,
 	return wake_events;
 }
 
-pg_noreturn static void
-PgSessionRunProtocolSchedulerStaging(PgSession *session)
+PgStepResult
+PgSessionRunProtocolSchedulerUntilBoundary(PgSession *session)
 {
 	PgStepBudget budget;
 
@@ -5484,17 +5470,41 @@ PgSessionRunProtocolSchedulerStaging(PgSession *session)
 				break;
 
 			case PG_STEP_PARK_PROTOCOL_READ:
+				PgSessionCommitCurrentProtocolReadPark(session);
+				return PG_STEP_PARK_PROTOCOL_READ;
+
+			case PG_STEP_DONE:
+			case PG_STEP_FATAL_EXIT:
+				return result;
+		}
+	}
+}
+
+pg_noreturn static void
+PgSessionRunProtocolSchedulerStaging(PgSession *session)
+{
+	for (;;)
+	{
+		PgStepResult result;
+
+		result = PgSessionRunProtocolSchedulerUntilBoundary(session);
+		switch (result)
+		{
+			case PG_STEP_PARK_PROTOCOL_READ:
 				{
-					PgBackend  *backend;
-					PgConnection *connection;
-					PgExecution *execution;
+					PgBackend  *backend = session->backend;
+					PgConnection *connection = session->connection;
+					PgExecution *execution = session->execution;
 					PgProtocolParkSpec park_spec;
 					uint32		wake_events;
 
-					PgSessionCommitCurrentProtocolReadPark(session, &backend,
-														  &connection,
-														  &execution,
-														  &park_spec);
+					Assert(backend != NULL);
+					Assert(connection != NULL);
+					Assert(execution != NULL);
+					Assert(backend->protocol_park.state ==
+						   PG_PROTOCOL_PARK_COMMITTED);
+
+					park_spec = backend->protocol_park.spec;
 					wake_events =
 						PgSessionStagingWaitAndResumeProtocolRead(session,
 																  backend,
@@ -5526,6 +5536,10 @@ PgSessionRunProtocolSchedulerStaging(PgSession *session)
 
 			case PG_STEP_FATAL_EXIT:
 				PgBackendExit(1);
+
+			case PG_STEP_CONTINUE:
+			case PG_STEP_ERROR_RECOVERED:
+				pg_unreachable();
 		}
 	}
 }
@@ -5537,8 +5551,8 @@ PgSessionRunProtocolSchedulerStaging(PgSession *session)
  * NB: Single user mode specific setup should go to PostgresSingleUserMain()
  * if reasonably possible.
  */
-static PgSession *
-PgSessionBootstrap(const char *dbname, const char *username)
+PgSession *
+PostgresBootstrapSession(const char *dbname, const char *username)
 {
 	bool		threaded_backend;
 
@@ -5753,7 +5767,7 @@ PostgresMain(const char *dbname, const char *username)
 {
 	PgSession  *session;
 
-	session = PgSessionBootstrap(dbname, username);
+	session = PostgresBootstrapSession(dbname, username);
 	if (PgRuntimeIsThreadBacked(CurrentPgRuntime))
 		PgSessionRunProtocolSchedulerStaging(session);
 	PgSessionRun(session);

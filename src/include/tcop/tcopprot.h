@@ -128,6 +128,9 @@ extern void process_postgres_switches(int argc, char *argv[],
 									  GucContext ctx, const char **dbname);
 pg_noreturn extern void PostgresSingleUserMain(int argc, char *argv[],
 											   const char *username);
+extern PgSession *PostgresBootstrapSession(const char *dbname,
+										   const char *username);
+extern PgStepResult PgSessionRunProtocolSchedulerUntilBoundary(PgSession *session);
 pg_noreturn extern void PostgresMain(const char *dbname,
 									 const char *username);
 extern void ResetUsage(void);
