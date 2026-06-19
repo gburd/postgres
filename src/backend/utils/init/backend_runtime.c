@@ -977,6 +977,18 @@ PgRuntimeIsThreadBacked(PgRuntime *runtime)
 		PgRuntimeKindIsThreadBacked(runtime->kind);
 }
 
+bool
+PgRuntimePooledProtocolRequested(void)
+{
+	return multithreaded && pooled_protocol_carriers > 0;
+}
+
+int
+PgRuntimePooledProtocolCarrierLimit(void)
+{
+	return pooled_protocol_carriers;
+}
+
 PgBackendLaunchModel
 PgRuntimeGetBackendLaunchModel(BackendType backend_type)
 {

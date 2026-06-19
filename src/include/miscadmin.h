@@ -317,6 +317,7 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_worker_processes;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_parallel_workers;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int autovacuum_max_parallel_workers;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool multithreaded;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int pooled_protocol_carriers;
 
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int commit_timestamp_buffers;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int multixact_member_buffers;

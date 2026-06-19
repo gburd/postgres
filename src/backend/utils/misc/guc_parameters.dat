@@ -2530,6 +2530,16 @@
   options => 'plan_cache_mode_options',
 },
 
+{ name => 'pooled_protocol_carriers', type => 'int', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
+  short_desc => 'Sets the carrier count for the experimental pooled protocol scheduler.',
+  long_desc => 'A value of 0 keeps threaded client backends in thread-per-session mode. Positive values reserve the configured carrier count for the Phase 15 pooled protocol scheduler.',
+  flags => 'GUC_NOT_IN_SAMPLE',
+  variable => 'pooled_protocol_carriers',
+  boot_val => '0',
+  min => '0',
+  max => 'INT_MAX / 2',
+},
+
 { name => 'port', type => 'int', context => 'PGC_POSTMASTER', group => 'CONN_AUTH_SETTINGS',
   short_desc => 'Sets the TCP port the server listens on.',
   variable => 'PostPortNumber',

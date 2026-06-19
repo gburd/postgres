@@ -80,6 +80,7 @@ PG_GLOBAL_RUNTIME int max_parallel_workers = 8;
 PG_GLOBAL_RUNTIME int autovacuum_max_parallel_workers = 0;
 PG_GLOBAL_RUNTIME int MaxBackends = 0;
 PG_GLOBAL_RUNTIME bool multithreaded = false;
+PG_GLOBAL_RUNTIME int pooled_protocol_carriers = 0;
 
 /* configurable SLRU buffer sizes */
 PG_GLOBAL_RUNTIME int commit_timestamp_buffers = 0;
