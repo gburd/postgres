@@ -226,6 +226,7 @@ typedef struct PgProtocolParkSpec
 	uint32		transport_wait_events;
 	bool		transport_buffered_input;
 	uint64		transport_generation;
+	uint64		timeout_generation;
 	uint32		wait_event_info;
 	uint64		generation;
 } PgProtocolParkSpec;
@@ -400,6 +401,7 @@ typedef struct PgBackendTimeoutState
 	PgBackend  *firing_timeout_target;
 	PgExecution *firing_timeout_execution;
 	bool		signal_delivery;
+	uint64		generation;
 } PgBackendTimeoutState;
 
 typedef struct PgBackendWalSenderState
@@ -3439,6 +3441,8 @@ extern bool PgBackendMarkProtocolReadParkWake(PgBackend *backend,
 											  uint64 generation,
 											  uint32 wake_reasons,
 											  uint32 wake_events);
+extern bool PgBackendProtocolReadParkTimeoutGenerationValid(PgBackend *backend,
+															uint64 generation);
 extern void PgBackendResumeProtocolReadPark(PgBackend *backend);
 extern int	PgSuspend(const PgWaitSpec *wait_spec,
 					  PgSuspendCallback callback, void *callback_arg);

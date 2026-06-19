@@ -309,6 +309,7 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 	state.backend.core.latch = &fake_latch;
 	state.session.loop_state.doing_command_read = true;
 	state.connection.socket_io.transport_generation = 11;
+	state.backend.timeout.generation = 17;
 
 	PG_TRY();
 	{
@@ -335,6 +336,7 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 		ok = ok && state.backend.protocol_park.spec.transport_wait_events ==
 			WL_SOCKET_READABLE;
 		ok = ok && state.backend.protocol_park.spec.transport_generation == 11;
+		ok = ok && state.backend.protocol_park.spec.timeout_generation == 17;
 		ok = ok && state.backend.protocol_park.spec.generation == 1;
 		ok = ok && CurrentPgBackend == &state.backend;
 		ok = ok && state.carrier.current_backend == &state.backend;
@@ -348,6 +350,12 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 		ok = ok && state.backend.protocol_park.wake_reasons ==
 			PG_PROTOCOL_PARK_WAKE_NONE;
 		ok = ok && state.backend.protocol_park.wake_generation == 0;
+		ok = ok && PgBackendProtocolReadParkTimeoutGenerationValid(&state.backend,
+																   1);
+		state.backend.timeout.generation++;
+		ok = ok && !PgBackendProtocolReadParkTimeoutGenerationValid(&state.backend,
+																	1);
+		state.backend.timeout.generation = 17;
 		ok = ok && CurrentPgBackend == NULL;
 		ok = ok && CurrentPgSession == NULL;
 		ok = ok && CurrentPgConnection == NULL;

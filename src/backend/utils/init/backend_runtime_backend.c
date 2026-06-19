@@ -1616,6 +1616,7 @@ PgBackendPrepareProtocolReadPark(PgBackend *backend, PgProtocolParkSpec *spec)
 	spec->socket = connection->identity.port != NULL ?
 		connection->identity.port->sock : PGINVALID_SOCKET;
 	spec->generation = ++park_state->next_generation;
+	spec->timeout_generation = backend->timeout.generation;
 
 	park_state->spec = *spec;
 	park_state->wake_reasons = PG_PROTOCOL_PARK_WAKE_NONE;
@@ -1669,6 +1670,24 @@ PgBackendMarkProtocolReadParkWake(PgBackend *backend, uint64 generation,
 	park_state->wake_generation = generation;
 
 	return true;
+}
+
+bool
+PgBackendProtocolReadParkTimeoutGenerationValid(PgBackend *backend,
+												uint64 generation)
+{
+	PgBackendProtocolParkState *park_state;
+
+	if (backend == NULL)
+		return false;
+
+	park_state = &backend->protocol_park;
+	if (park_state->state != PG_PROTOCOL_PARK_COMMITTED)
+		return false;
+	if (park_state->spec.generation != generation)
+		return false;
+
+	return park_state->spec.timeout_generation == backend->timeout.generation;
 }
 
 void

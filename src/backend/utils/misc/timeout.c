@@ -71,9 +71,12 @@
 	(PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTimeoutRuntimeState, PgCurrentTimeoutState)->firing_timeout_execution)
 #define timeout_signal_delivery \
 	(PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTimeoutRuntimeState, PgCurrentTimeoutState)->signal_delivery)
+#define timeout_generation \
+	(PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTimeoutRuntimeState, PgCurrentTimeoutState)->generation)
 
 static void InitializeTimeoutState(void);
 static bool fire_due_timeouts(TimestampTz now);
+static void advance_timeout_generation(void);
 
 
 /*****************************************************************************
@@ -125,6 +128,14 @@ insert_timeout(TimeoutId id, int index)
 	active_timeouts[index] = &all_timeouts[id];
 
 	num_active_timeouts++;
+}
+
+static void
+advance_timeout_generation(void)
+{
+	timeout_generation++;
+	if (unlikely(timeout_generation == 0))
+		timeout_generation = 1;
 }
 
 /*
@@ -194,6 +205,7 @@ enable_timeout(TimeoutId id, TimestampTz now, TimestampTz fin_time,
 	all_timeouts[id].interval_in_ms = interval_in_ms;
 
 	insert_timeout(id, i);
+	advance_timeout_generation();
 }
 
 /*
@@ -429,6 +441,8 @@ fire_due_timeouts(TimestampTz now)
 
 	/* Done firing timeouts, so reschedule next interrupt if any */
 	schedule_alarm(now);
+	if (fired)
+		advance_timeout_generation();
 
 	return fired;
 }
@@ -521,6 +535,7 @@ InitializeTimeoutState(void)
 	}
 
 	all_timeouts_initialized = true;
+	advance_timeout_generation();
 }
 
 /*
@@ -621,6 +636,7 @@ reschedule_timeouts(void)
 	/* Reschedule the interrupt, if any timeouts remain active. */
 	if (num_active_timeouts > 0)
 		schedule_alarm(GetCurrentTimestamp());
+	advance_timeout_generation();
 }
 
 PgBackend *
@@ -826,12 +842,17 @@ enable_timeouts(const EnableTimeoutParams *timeouts, int count)
 void
 disable_timeout(TimeoutId id, bool keep_indicator)
 {
+	bool		changed;
+
 	/* Assert request is sane */
 	Assert(all_timeouts_initialized);
 	Assert(all_timeouts[id].timeout_handler != NULL);
 
 	/* Disable timeout interrupts for safety. */
 	disable_alarm();
+
+	changed = all_timeouts[id].active ||
+		(!keep_indicator && all_timeouts[id].indicator);
 
 	/* Find the timeout and remove it from the active list. */
 	if (all_timeouts[id].active)
@@ -844,6 +865,8 @@ disable_timeout(TimeoutId id, bool keep_indicator)
 	/* Reschedule the interrupt, if any timeouts remain active. */
 	if (num_active_timeouts > 0)
 		schedule_alarm(GetCurrentTimestamp());
+	if (changed)
+		advance_timeout_generation();
 }
 
 /*
@@ -860,6 +883,7 @@ void
 disable_timeouts(const DisableTimeoutParams *timeouts, int count)
 {
 	int			i;
+	bool		changed = false;
 
 	Assert(all_timeouts_initialized);
 
@@ -873,6 +897,10 @@ disable_timeouts(const DisableTimeoutParams *timeouts, int count)
 
 		Assert(all_timeouts[id].timeout_handler != NULL);
 
+		if (all_timeouts[id].active ||
+			(!timeouts[i].keep_indicator && all_timeouts[id].indicator))
+			changed = true;
+
 		if (all_timeouts[id].active)
 			remove_timeout_index(find_active_timeout(id));
 
@@ -883,6 +911,8 @@ disable_timeouts(const DisableTimeoutParams *timeouts, int count)
 	/* Reschedule the interrupt, if any timeouts remain active. */
 	if (num_active_timeouts > 0)
 		schedule_alarm(GetCurrentTimestamp());
+	if (changed)
+		advance_timeout_generation();
 }
 
 /*
@@ -893,6 +923,7 @@ void
 disable_all_timeouts(bool keep_indicators)
 {
 	int			i;
+	bool		changed;
 
 	disable_alarm();
 
@@ -902,14 +933,19 @@ disable_all_timeouts(bool keep_indicators)
 	 * to enable it again shortly.  See comments in schedule_alarm().
 	 */
 
+	changed = num_active_timeouts > 0;
 	num_active_timeouts = 0;
 
 	for (i = 0; i < MAX_TIMEOUTS; i++)
 	{
+		if (!keep_indicators && all_timeouts[i].indicator)
+			changed = true;
 		all_timeouts[i].active = false;
 		if (!keep_indicators)
 			all_timeouts[i].indicator = false;
 	}
+	if (changed)
+		advance_timeout_generation();
 }
 
 /*
@@ -937,7 +973,10 @@ get_timeout_indicator(TimeoutId id, bool reset_indicator)
 	if (all_timeouts[id].indicator)
 	{
 		if (reset_indicator)
+		{
 			all_timeouts[id].indicator = false;
+			advance_timeout_generation();
+		}
 		return true;
 	}
 	return false;
