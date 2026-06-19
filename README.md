@@ -62,9 +62,13 @@ runtime ownership boundaries.
 Performance guidance:
 
 Performance work is currently measured against vanilla PostgreSQL 19 beta 1
-using vanilla `pgbench` as the client. Local profiles compare three lanes:
-vanilla process mode, this branch in process mode, and this branch in
-thread-per-session mode.
+using vanilla `pgbench` as the client. The reusable local runner is
+`src/tools/benchmark/mtpg_pgbench_matrix.pl`; it compares vanilla process mode,
+this branch in process mode, this branch in thread-per-session mode, and
+configurable pooled protocol carrier lanes such as `branch_pool_4`,
+`branch_pool_8`, and `branch_pool_16`. Use `--restart-per-workload` when a
+profile needs to isolate one workload per fresh postmaster, for example while
+debugging pooled-mode lifecycle failures between sequential client batches.
 
 The most recent five-workload local profile for tiny read-only `pgbench`
 workloads showed the branch around parity with vanilla on this machine:
@@ -81,7 +85,7 @@ Treat these numbers as development guidance, not a portability or production
 benchmark. The important current signal is that the scoped thread-per-session
 runtime is close enough to vanilla on these small read-only workloads to move
 the next optimization effort into Phase 13 wait-boundary work. Future
-performance work should continue to compare all three lanes, because some
+performance work should continue to compare all branch lanes, because some
 remaining overhead is branch-wide rather than threaded-only.
 
 Background and inspiration:

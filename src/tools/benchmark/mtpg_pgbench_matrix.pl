@@ -1,0 +1,619 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings FATAL => 'all';
+
+use Cwd qw(abs_path);
+use File::Path qw(make_path remove_tree);
+use File::Spec;
+use FindBin;
+use Getopt::Long qw(GetOptions);
+use IO::Socket::INET;
+use POSIX qw(strftime);
+
+my $repo_root = abs_path(File::Spec->catdir($FindBin::Bin, '..', '..', '..'));
+
+my $vanilla_install = '/home/sam/codex-work/vanilla-pg19/tmp_install';
+my $branch_install = File::Spec->catdir($repo_root, 'tmp_install');
+my $client_install = $vanilla_install;
+my $out_dir = File::Spec->catdir('/tmp',
+	sprintf('mtpg_pgbench_matrix_%s', strftime('%Y%m%d_%H%M%S', localtime)));
+my $duration = 35;
+my $warmup = 5;
+my $clients = 8;
+my $threads = 8;
+my $scale = 10;
+my $max_connections = 100;
+my $shared_buffers = '128MB';
+my $pool_sizes = '4,8,16';
+my $workloads =
+  'builtin_select_simple,builtin_select_prepared,select1_prepared,bench_one_prepared,kv_read_prepared';
+my $lanes = 'vanilla,branch_process,branch_threaded,branch_pool';
+my $reuse = 0;
+my $restart_per_workload = 0;
+my $help = 0;
+my $socket_seq = 0;
+
+GetOptions(
+	'vanilla-install=s' => \$vanilla_install,
+	'branch-install=s'  => \$branch_install,
+	'client-install=s'  => \$client_install,
+	'out-dir=s'         => \$out_dir,
+	'duration=i'        => \$duration,
+	'warmup=i'          => \$warmup,
+	'clients=i'         => \$clients,
+	'threads=i'         => \$threads,
+	'scale=i'           => \$scale,
+	'max-connections=i' => \$max_connections,
+	'shared-buffers=s'  => \$shared_buffers,
+	'pool-sizes=s'      => \$pool_sizes,
+	'workloads=s'       => \$workloads,
+	'lanes=s'           => \$lanes,
+	'reuse'             => \$reuse,
+	'restart-per-workload' => \$restart_per_workload,
+	'help'              => \$help,
+) or die usage();
+
+if ($help)
+{
+	print usage();
+	exit 0;
+}
+
+die "--duration must be positive\n" if $duration <= 0;
+die "--warmup must be non-negative\n" if $warmup < 0;
+die "--clients must be positive\n" if $clients <= 0;
+die "--threads must be positive\n" if $threads <= 0;
+die "--scale must be positive\n" if $scale <= 0;
+die "--max-connections must exceed --clients\n"
+  if $max_connections <= $clients;
+
+my @pool_sizes = grep { length($_) } split /,/, $pool_sizes;
+for my $size (@pool_sizes)
+{
+	die "invalid pool size: $size\n" unless $size =~ /^\d+$/ && $size > 0;
+}
+
+my @requested_workloads = grep { length($_) } split /,/, $workloads;
+my @requested_lanes = grep { length($_) } split /,/, $lanes;
+
+my %workload_specs = (
+	builtin_select_simple => {
+		args => [ '-S', '-M', 'simple' ],
+		needs_extra_setup => 0,
+	},
+	builtin_select_prepared => {
+		args => [ '-S', '-M', 'prepared' ],
+		needs_extra_setup => 0,
+	},
+	select1_prepared => {
+		args => [ '-M', 'prepared', '-f', undef ],
+		script => 'select1.sql',
+		needs_extra_setup => 0,
+	},
+	bench_one_prepared => {
+		args => [ '-M', 'prepared', '-f', undef ],
+		script => 'bench_one.sql',
+		needs_extra_setup => 1,
+	},
+	kv_read_prepared => {
+		args => [ '-M', 'prepared', '-f', undef ],
+		script => 'kv_read.sql',
+		needs_extra_setup => 1,
+	},
+);
+
+for my $workload (@requested_workloads)
+{
+	die "unknown workload: $workload\n" unless exists $workload_specs{$workload};
+}
+
+my @lane_specs;
+for my $lane (@requested_lanes)
+{
+	if ($lane eq 'vanilla')
+	{
+		push @lane_specs, {
+			name => 'vanilla',
+			install => $vanilla_install,
+			config => [],
+			branch => 0,
+		};
+	}
+	elsif ($lane eq 'branch_process')
+	{
+		push @lane_specs, {
+			name => 'branch_process',
+			install => $branch_install,
+			config => [],
+			branch => 1,
+		};
+	}
+	elsif ($lane eq 'branch_threaded')
+	{
+		push @lane_specs, {
+			name => 'branch_threaded',
+			install => $branch_install,
+			config => [ 'multithreaded = on', 'pooled_protocol_carriers = 0' ],
+			branch => 1,
+		};
+	}
+	elsif ($lane eq 'branch_pool')
+	{
+		for my $size (@pool_sizes)
+		{
+			push @lane_specs, {
+				name => "branch_pool_$size",
+				install => $branch_install,
+				config => [
+					'multithreaded = on',
+					"pooled_protocol_carriers = $size",
+				],
+				branch => 1,
+			};
+		}
+	}
+	else
+	{
+		die "unknown lane: $lane\n";
+	}
+}
+
+die "no lanes selected\n" unless @lane_specs;
+
+verify_install($client_install, 'client');
+verify_install($vanilla_install, 'vanilla') if lane_selected('vanilla', \@lane_specs);
+verify_install($branch_install, 'branch') if grep { $_->{branch} } @lane_specs;
+install_library_paths($client_install, $vanilla_install, $branch_install);
+
+if (-e $out_dir && !$reuse)
+{
+	die "output directory already exists: $out_dir\n";
+}
+
+make_path($out_dir);
+my $script_dir = File::Spec->catdir($out_dir, 'scripts');
+make_path($script_dir);
+write_workload_scripts($script_dir);
+
+my $tps_path = File::Spec->catfile($out_dir, 'tps.tsv');
+open my $tps_fh, '>', $tps_path or die "could not write $tps_path: $!";
+print $tps_fh join("\t", qw(lane workload tps latency_ms failed_transactions)), "\n";
+
+my %results;
+if ($restart_per_workload)
+{
+	for my $lane (@lane_specs)
+	{
+		for my $workload (@requested_workloads)
+		{
+			run_lane($lane, [ $workload ], $script_dir, $tps_fh, \%results,
+				$workload);
+		}
+	}
+}
+else
+{
+	for my $lane (@lane_specs)
+	{
+		run_lane($lane, \@requested_workloads, $script_dir, $tps_fh, \%results,
+			undef);
+	}
+}
+
+close $tps_fh;
+
+write_ratios($out_dir, \@requested_workloads, \@lane_specs, \%results);
+write_summary($out_dir, \@requested_workloads, \@lane_specs, \%results);
+
+print "wrote $tps_path\n";
+print "wrote ", File::Spec->catfile($out_dir, 'ratios.tsv'), "\n";
+print "wrote ", File::Spec->catfile($out_dir, 'summary.md'), "\n";
+
+sub usage
+{
+	return <<'USAGE';
+Usage: src/tools/benchmark/mtpg_pgbench_matrix.pl [options]
+
+Runs the multithreaded branch pgbench comparison matrix:
+  vanilla
+  branch_process
+  branch_threaded
+  branch_pool_<N> for each --pool-sizes value
+
+Key options:
+  --vanilla-install=DIR   vanilla PostgreSQL install tree
+  --branch-install=DIR    branch PostgreSQL install tree
+  --client-install=DIR    client binary install tree, defaults to vanilla
+  --out-dir=DIR           result directory
+  --duration=SECONDS      measured pgbench duration, default 35
+  --warmup=SECONDS        warmup duration per workload, default 5
+  --clients=N             pgbench clients, default 8
+  --threads=N             pgbench threads, default 8
+  --scale=N               pgbench initialization scale, default 10
+  --pool-sizes=LIST       comma-separated pooled carrier counts, default 4,8,16
+  --lanes=LIST            vanilla,branch_process,branch_threaded,branch_pool
+  --workloads=LIST        workload names to run
+  --restart-per-workload  restart each lane for each workload
+
+Output:
+  tps.tsv                 raw TPS and latency per lane/workload
+  ratios.tsv              per-lane ratios against vanilla
+  summary.md              Markdown table for quick comparison
+USAGE
+}
+
+sub lane_selected
+{
+	my ($name, $lane_specs) = @_;
+
+	for my $lane (@$lane_specs)
+	{
+		return 1 if $lane->{name} eq $name;
+	}
+	return 0;
+}
+
+sub verify_install
+{
+	my ($install, $label) = @_;
+
+	for my $bin (qw(postgres initdb pg_ctl psql pgbench))
+	{
+		my $path = File::Spec->catfile($install, 'bin', $bin);
+		die "$label install is missing $path\n" unless -x $path;
+	}
+
+	my $tzdir = File::Spec->catdir($install, 'share', 'postgresql', 'timezonesets');
+	die "$label install is missing $tzdir\n" unless -d $tzdir;
+}
+
+sub install_library_paths
+{
+	my @installs = @_;
+	my @paths;
+	my %seen;
+
+	for my $install (@installs)
+	{
+		my $libdir = File::Spec->catdir($install, 'lib');
+		next unless -d $libdir;
+		next if $seen{$libdir}++;
+		push @paths, $libdir;
+	}
+
+	if (defined $ENV{LD_LIBRARY_PATH} && length $ENV{LD_LIBRARY_PATH})
+	{
+		for my $libdir (split /:/, $ENV{LD_LIBRARY_PATH})
+		{
+			next if $seen{$libdir}++;
+			push @paths, $libdir;
+		}
+	}
+
+	$ENV{LD_LIBRARY_PATH} = join ':', @paths if @paths;
+}
+
+sub write_workload_scripts
+{
+	my ($dir) = @_;
+
+	write_file(File::Spec->catfile($dir, 'select1.sql'), "SELECT 1;\n");
+	write_file(File::Spec->catfile($dir, 'bench_one.sql'),
+		"SELECT payload FROM bench_one WHERE id = 1;\n");
+	write_file(File::Spec->catfile($dir, 'kv_read.sql'),
+		"\\set id random(1, 100000)\n"
+	  . "SELECT v, payload FROM bench_kv WHERE id = :id;\n");
+	write_file(File::Spec->catfile($dir, 'setup_extra.sql'),
+		"DROP TABLE IF EXISTS bench_one;\n"
+	  . "CREATE TABLE bench_one(id int primary key, payload text not null);\n"
+	  . "INSERT INTO bench_one VALUES (1, repeat('x', 128));\n"
+	  . "DROP TABLE IF EXISTS bench_kv;\n"
+	  . "CREATE TABLE bench_kv(id int primary key, v int not null, payload text not null);\n"
+	  . "INSERT INTO bench_kv SELECT g, 0, repeat(md5(g::text), 4) FROM generate_series(1, 100000) g;\n"
+	  . "VACUUM ANALYZE bench_one;\n"
+	  . "VACUUM ANALYZE bench_kv;\n"
+	  . "VACUUM ANALYZE pgbench_accounts;\n"
+	  . "CHECKPOINT;\n");
+}
+
+sub write_file
+{
+	my ($path, $contents) = @_;
+
+	open my $fh, '>', $path or die "could not write $path: $!";
+	print $fh $contents;
+	close $fh;
+}
+
+sub run_lane
+{
+	my ($lane, $workloads, $script_dir, $tps_fh, $results, $lane_dir_suffix) = @_;
+
+	my $lane_dir_name = defined $lane_dir_suffix ?
+		"$lane->{name}_$lane_dir_suffix" : $lane->{name};
+	my $lane_dir = File::Spec->catdir($out_dir, $lane_dir_name);
+	my $data_dir = File::Spec->catdir($lane_dir, 'data');
+	my $socket_dir = File::Spec->catdir('/tmp',
+		sprintf('mtpg_sock_%d_%d', $$, ++$socket_seq));
+	my $server_log = File::Spec->catfile($lane_dir, 'server.log');
+	my $port = pick_free_port();
+
+	remove_tree($lane_dir) if -e $lane_dir;
+	make_path($data_dir);
+	make_path($socket_dir);
+
+	my $server_bin = bin_path($lane->{install}, 'postgres');
+	my $initdb_bin = bin_path($lane->{install}, 'initdb');
+	my $pg_ctl_bin = bin_path($lane->{install}, 'pg_ctl');
+	my $psql_bin = bin_path($client_install, 'psql');
+	my $pgbench_bin = bin_path($client_install, 'pgbench');
+
+	print "==> initializing $lane->{name} on port $port\n";
+	run_cmd([ $initdb_bin, '-A', 'trust', '--no-sync', '-D', $data_dir ],
+		"$lane->{name} initdb");
+
+	append_config($data_dir, $port, $socket_dir, $lane->{config});
+
+	my $started = 0;
+	eval {
+		run_cmd([
+				$pg_ctl_bin, '-D', $data_dir, '-l', $server_log,
+				'-o', "-k $socket_dir",
+				'-w', 'start'
+			],
+			"$lane->{name} start");
+		$started = 1;
+
+		run_cmd([
+				$pgbench_bin, '-i', '-s', $scale,
+				'-h', $socket_dir, '-p', $port, 'postgres'
+			],
+			"$lane->{name} pgbench init");
+
+		run_cmd([
+				$psql_bin, '-X', '-v', 'ON_ERROR_STOP=1',
+				'-h', $socket_dir, '-p', $port, '-d', 'postgres',
+				'-f', File::Spec->catfile($script_dir, 'setup_extra.sql')
+			],
+			"$lane->{name} extra setup");
+
+		for my $workload (@$workloads)
+		{
+			my ($tps, $latency, $failed) =
+			  run_workload($lane, $workload, $script_dir, $socket_dir, $port,
+				$pgbench_bin);
+			$results->{$lane->{name}}{$workload} = {
+				tps => $tps,
+				latency => $latency,
+				failed => $failed,
+			};
+			print $tps_fh join("\t", $lane->{name}, $workload, $tps,
+				$latency, $failed), "\n";
+			print "    $workload: $tps TPS, $latency ms\n";
+		}
+	};
+	my $err = $@;
+
+	if ($started)
+	{
+		system $pg_ctl_bin, '-D', $data_dir, '-m', 'fast', '-w', 'stop';
+	}
+	remove_tree($socket_dir) if -e $socket_dir;
+
+	die $err if $err;
+}
+
+sub append_config
+{
+	my ($data_dir, $port, $socket_dir, $extra_config) = @_;
+	my $conf = File::Spec->catfile($data_dir, 'postgresql.conf');
+
+	open my $fh, '>>', $conf or die "could not append $conf: $!";
+	print $fh "\n# mtpg pgbench matrix\n";
+	print $fh "listen_addresses = '127.0.0.1'\n";
+	print $fh "port = $port\n";
+	print $fh "unix_socket_directories = '$socket_dir'\n";
+	print $fh "max_connections = $max_connections\n";
+	print $fh "shared_buffers = $shared_buffers\n";
+	for my $line (@$extra_config)
+	{
+		print $fh "$line\n";
+	}
+	close $fh;
+}
+
+sub run_workload
+{
+	my ($lane, $workload, $script_dir, $socket_dir, $port, $pgbench_bin) = @_;
+
+	my $spec = $workload_specs{$workload};
+	my @args = @{ $spec->{args} };
+	for my $arg (@args)
+	{
+		if (!defined $arg)
+		{
+			$arg = File::Spec->catfile($script_dir, $spec->{script});
+		}
+	}
+
+	my @base_cmd = (
+		$pgbench_bin,
+		'-n',
+		'-c', $clients,
+		'-j', $threads,
+		'-h', $socket_dir,
+		'-p', $port,
+		@args,
+	);
+
+	if ($warmup > 0)
+	{
+		my $warm = File::Spec->catfile($out_dir,
+			"$lane->{name}_${workload}.warm");
+		run_capture([ @base_cmd, '-T', $warmup, 'postgres' ], "$workload warmup",
+			"$warm.out", "$warm.err");
+	}
+
+	my $bench = File::Spec->catfile($out_dir, "$lane->{name}_${workload}.bench");
+	my $output = run_capture([ @base_cmd, '-T', $duration, 'postgres' ],
+		"$lane->{name} $workload", $bench, "$bench.err");
+
+	my ($tps) = $output =~ /^tps = ([0-9.]+) /m;
+	my ($latency) = $output =~ /^latency average = ([0-9.]+) ms/m;
+	my ($failed) = $output =~ /^number of failed transactions: ([0-9]+)/m;
+
+	die "could not parse TPS for $lane->{name} $workload\n$output\n"
+	  unless defined $tps && defined $latency && defined $failed;
+
+	return ($tps, $latency, $failed);
+}
+
+sub bin_path
+{
+	my ($install, $bin) = @_;
+	return File::Spec->catfile($install, 'bin', $bin);
+}
+
+sub run_cmd
+{
+	my ($cmd, $label) = @_;
+
+	my $rc = system @$cmd;
+	if ($rc != 0)
+	{
+		die "$label failed with exit code " . ($rc >> 8) . ": @$cmd\n";
+	}
+}
+
+sub run_capture
+{
+	my ($cmd, $label, $stdout_path, $stderr_path) = @_;
+
+	open my $out, '>', $stdout_path or die "could not write $stdout_path: $!";
+	open my $err, '>', $stderr_path or die "could not write $stderr_path: $!";
+
+	my $pid = fork();
+	die "fork failed for $label: $!" unless defined $pid;
+	if ($pid == 0)
+	{
+		open STDOUT, '>&', $out or die "dup stdout failed: $!";
+		open STDERR, '>&', $err or die "dup stderr failed: $!";
+		exec @$cmd or die "exec failed for $label: $!";
+	}
+
+	waitpid($pid, 0);
+	my $rc = $?;
+	close $out;
+	close $err;
+
+	my $output = slurp($stdout_path);
+	if ($rc != 0)
+	{
+		my $stderr = slurp($stderr_path);
+		die "$label failed with exit code "
+		  . ($rc >> 8)
+		  . ": @$cmd\n$output\n$stderr\n";
+	}
+
+	return $output;
+}
+
+sub slurp
+{
+	my ($path) = @_;
+
+	open my $fh, '<', $path or die "could not read $path: $!";
+	local $/;
+	my $contents = <$fh>;
+	close $fh;
+	return $contents;
+}
+
+sub pick_free_port
+{
+	my $socket = IO::Socket::INET->new(
+		LocalAddr => '127.0.0.1',
+		LocalPort => 0,
+		Proto => 'tcp',
+		Listen => 1,
+		ReuseAddr => 0,
+	) or die "could not allocate a free TCP port: $!";
+
+	my $port = $socket->sockport();
+	close $socket;
+	return $port;
+}
+
+sub write_ratios
+{
+	my ($dir, $workloads, $lane_specs, $results) = @_;
+	my $path = File::Spec->catfile($dir, 'ratios.tsv');
+
+	open my $fh, '>', $path or die "could not write $path: $!";
+	print $fh join("\t", qw(workload lane tps ratio_vs_vanilla)), "\n";
+	for my $workload (@$workloads)
+	{
+		my $vanilla = $results->{vanilla}{$workload}{tps};
+		for my $lane (@$lane_specs)
+		{
+			my $name = $lane->{name};
+			next unless exists $results->{$name}{$workload};
+			my $tps = $results->{$name}{$workload}{tps};
+			my $ratio = defined $vanilla && $vanilla > 0 ? $tps / $vanilla : 0;
+			print $fh join("\t", $workload, $name, $tps,
+				sprintf('%.3f', $ratio)), "\n";
+		}
+	}
+	close $fh;
+}
+
+sub write_summary
+{
+	my ($dir, $workloads, $lane_specs, $results) = @_;
+	my $path = File::Spec->catfile($dir, 'summary.md');
+
+	open my $fh, '>', $path or die "could not write $path: $!";
+	print $fh "# mtpg pgbench matrix\n\n";
+	print $fh "- duration: ${duration}s\n";
+	print $fh "- warmup: ${warmup}s\n";
+	print $fh "- clients: $clients\n";
+	print $fh "- threads: $threads\n";
+	print $fh "- scale: $scale\n";
+	print $fh "- branch install: `$branch_install`\n";
+	print $fh "- vanilla install: `$vanilla_install`\n";
+	print $fh "- client install: `$client_install`\n\n";
+
+	print $fh "| Workload |";
+	for my $lane (@$lane_specs)
+	{
+		print $fh " $lane->{name} TPS |";
+		print $fh " $lane->{name} / vanilla |" unless $lane->{name} eq 'vanilla';
+	}
+	print $fh "\n| --- |";
+	for my $lane (@$lane_specs)
+	{
+		print $fh " ---: |";
+		print $fh " ---: |" unless $lane->{name} eq 'vanilla';
+	}
+	print $fh "\n";
+
+	for my $workload (@$workloads)
+	{
+		my $vanilla = $results->{vanilla}{$workload}{tps};
+		print $fh "| `$workload` |";
+		for my $lane (@$lane_specs)
+		{
+			my $name = $lane->{name};
+			my $tps = $results->{$name}{$workload}{tps};
+			print $fh " ", sprintf('%.1f', $tps), " |";
+			if ($name ne 'vanilla')
+			{
+				my $ratio = defined $vanilla && $vanilla > 0 ? $tps / $vanilla : 0;
+				print $fh " ", sprintf('%.3f', $ratio), " |";
+			}
+		}
+		print $fh "\n";
+	}
+	close $fh;
+}
