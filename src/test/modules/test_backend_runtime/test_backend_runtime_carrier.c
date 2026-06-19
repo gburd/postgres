@@ -345,12 +345,28 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 		ok = ok && state.backend.protocol_park.state ==
 			PG_PROTOCOL_PARK_COMMITTED;
 		ok = ok && state.backend.protocol_park.spec.generation == 1;
+		ok = ok && state.backend.protocol_park.wake_reasons ==
+			PG_PROTOCOL_PARK_WAKE_NONE;
+		ok = ok && state.backend.protocol_park.wake_generation == 0;
 		ok = ok && CurrentPgBackend == NULL;
 		ok = ok && CurrentPgSession == NULL;
 		ok = ok && CurrentPgConnection == NULL;
 		ok = ok && CurrentPgExecution == NULL;
 		ok = ok && state.carrier.current_backend == NULL;
 		ok = ok && state.backend.carrier == NULL;
+
+		ok = ok && !PgBackendMarkProtocolReadParkWake(&state.backend, 0,
+													  PG_PROTOCOL_PARK_WAKE_LOGICAL,
+													  WL_LATCH_SET);
+		ok = ok && state.backend.protocol_park.wake_reasons ==
+			PG_PROTOCOL_PARK_WAKE_NONE;
+		ok = ok && PgBackendMarkProtocolReadParkWake(&state.backend, 1,
+													 PG_PROTOCOL_PARK_WAKE_LOGICAL,
+													 WL_LATCH_SET);
+		ok = ok && state.backend.protocol_park.wake_reasons ==
+			PG_PROTOCOL_PARK_WAKE_LOGICAL;
+		ok = ok && state.backend.protocol_park.wake_events == WL_LATCH_SET;
+		ok = ok && state.backend.protocol_park.wake_generation == 1;
 
 		PgCarrierAttachBackend(&state.carrier, &state.backend,
 							   &state.session, &state.connection,
@@ -361,6 +377,10 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 			PG_PROTOCOL_PARK_NONE;
 		ok = ok && state.backend.protocol_park.spec.backend == NULL;
 		ok = ok && state.backend.protocol_park.next_generation == 1;
+		ok = ok && state.backend.protocol_park.wake_reasons ==
+			PG_PROTOCOL_PARK_WAKE_NONE;
+		ok = ok && state.backend.protocol_park.wake_events == 0;
+		ok = ok && state.backend.protocol_park.wake_generation == 0;
 		ok = ok && CurrentPgBackend == &state.backend;
 		ok = ok && state.carrier.current_backend == &state.backend;
 		ok = ok && state.backend.carrier == &state.carrier;

@@ -5212,11 +5212,23 @@ PgSessionStagingWaitProtocolRead(PgBackend *backend,
 	 * sleeping so the transport layer can make its own state visible.
 	 */
 	if (park_spec->transport_buffered_input)
+	{
+		(void) PgBackendMarkProtocolReadParkWake(backend,
+												 park_spec->generation,
+												 PG_PROTOCOL_PARK_WAKE_BUFFERED_INPUT,
+												 0);
 		return 0;
+	}
 
 	if (park_spec->transport_wait_events == 0 ||
 		park_spec->socket == PGINVALID_SOCKET)
+	{
+		(void) PgBackendMarkProtocolReadParkWake(backend,
+												 park_spec->generation,
+												 PG_PROTOCOL_PARK_WAKE_STALE_TRANSPORT,
+												 0);
 		return 0;
+	}
 
 	connection = park_spec->connection;
 	wait_set = connection->protocol.fe_be_wait_set;
@@ -5238,7 +5250,13 @@ PgSessionStagingWaitProtocolRead(PgBackend *backend,
 
 			if (connection->socket_io.transport_generation !=
 				park_spec->transport_generation)
+			{
+				(void) PgBackendMarkProtocolReadParkWake(backend,
+														 park_spec->generation,
+														 PG_PROTOCOL_PARK_WAKE_STALE_TRANSPORT,
+														 0);
 				break;
+			}
 
 			rc = WaitEventSetWait(wait_set, -1, events, lengthof(events), 0);
 			for (int i = 0; i < rc; i++)
@@ -5262,6 +5280,25 @@ PgSessionStagingWaitProtocolRead(PgBackend *backend,
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
+
+	if (wake_events != 0)
+	{
+		uint32		wake_reasons = PG_PROTOCOL_PARK_WAKE_NONE;
+
+		if (wake_events & park_spec->transport_wait_events)
+			wake_reasons |= PG_PROTOCOL_PARK_WAKE_TRANSPORT;
+		if (wake_events & WL_SOCKET_CLOSED)
+			wake_reasons |= PG_PROTOCOL_PARK_WAKE_CLOSED;
+		if (wake_events & WL_LATCH_SET)
+			wake_reasons |= PG_PROTOCOL_PARK_WAKE_LOGICAL;
+		if (wake_events & WL_POSTMASTER_DEATH)
+			wake_reasons |= PG_PROTOCOL_PARK_WAKE_POSTMASTER;
+
+		(void) PgBackendMarkProtocolReadParkWake(backend,
+												 park_spec->generation,
+												 wake_reasons,
+												 wake_events);
+	}
 
 	return wake_events;
 }

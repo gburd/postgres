@@ -206,6 +206,17 @@ typedef enum PgProtocolParkState
 	PG_PROTOCOL_PARK_COMMITTED
 } PgProtocolParkState;
 
+typedef enum PgProtocolParkWakeReason
+{
+	PG_PROTOCOL_PARK_WAKE_NONE = 0,
+	PG_PROTOCOL_PARK_WAKE_BUFFERED_INPUT = (1 << 0),
+	PG_PROTOCOL_PARK_WAKE_TRANSPORT = (1 << 1),
+	PG_PROTOCOL_PARK_WAKE_CLOSED = (1 << 2),
+	PG_PROTOCOL_PARK_WAKE_LOGICAL = (1 << 3),
+	PG_PROTOCOL_PARK_WAKE_POSTMASTER = (1 << 4),
+	PG_PROTOCOL_PARK_WAKE_STALE_TRANSPORT = (1 << 5)
+} PgProtocolParkWakeReason;
+
 typedef struct PgProtocolParkSpec
 {
 	PgBackend  *backend;
@@ -224,6 +235,9 @@ typedef struct PgBackendProtocolParkState
 	PgProtocolParkState state;
 	PgProtocolParkSpec spec;
 	uint64		next_generation;
+	uint32		wake_reasons;
+	uint32		wake_events;
+	uint64		wake_generation;
 } PgBackendProtocolParkState;
 
 /*
@@ -3421,6 +3435,10 @@ extern bool PgBackendPrepareProtocolReadPark(PgBackend *backend,
 											 PgProtocolParkSpec *spec);
 extern void PgCarrierCommitProtocolReadPark(PgCarrier *carrier,
 											PgBackend *backend);
+extern bool PgBackendMarkProtocolReadParkWake(PgBackend *backend,
+											  uint64 generation,
+											  uint32 wake_reasons,
+											  uint32 wake_events);
 extern void PgBackendResumeProtocolReadPark(PgBackend *backend);
 extern int	PgSuspend(const PgWaitSpec *wait_spec,
 					  PgSuspendCallback callback, void *callback_arg);

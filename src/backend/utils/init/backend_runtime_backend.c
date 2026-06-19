@@ -1618,6 +1618,9 @@ PgBackendPrepareProtocolReadPark(PgBackend *backend, PgProtocolParkSpec *spec)
 	spec->generation = ++park_state->next_generation;
 
 	park_state->spec = *spec;
+	park_state->wake_reasons = PG_PROTOCOL_PARK_WAKE_NONE;
+	park_state->wake_events = 0;
+	park_state->wake_generation = 0;
 	park_state->state = PG_PROTOCOL_PARK_PREPARED;
 
 	return true;
@@ -1647,6 +1650,27 @@ PgCarrierCommitProtocolReadPark(PgCarrier *carrier, PgBackend *backend)
 	PgCarrierDetachBackend(carrier, backend);
 }
 
+bool
+PgBackendMarkProtocolReadParkWake(PgBackend *backend, uint64 generation,
+								  uint32 wake_reasons, uint32 wake_events)
+{
+	PgBackendProtocolParkState *park_state;
+
+	Assert(backend != NULL);
+
+	park_state = &backend->protocol_park;
+	if (park_state->state != PG_PROTOCOL_PARK_COMMITTED)
+		return false;
+	if (park_state->spec.generation != generation)
+		return false;
+
+	park_state->wake_reasons |= wake_reasons;
+	park_state->wake_events |= wake_events;
+	park_state->wake_generation = generation;
+
+	return true;
+}
+
 void
 PgBackendResumeProtocolReadPark(PgBackend *backend)
 {
@@ -1657,9 +1681,14 @@ PgBackendResumeProtocolReadPark(PgBackend *backend)
 
 	park_state = &backend->protocol_park;
 	Assert(park_state->state == PG_PROTOCOL_PARK_COMMITTED);
+	Assert(park_state->wake_generation == 0 ||
+		   park_state->wake_generation == park_state->spec.generation);
 
 	park_state->state = PG_PROTOCOL_PARK_NONE;
 	MemSet(&park_state->spec, 0, sizeof(park_state->spec));
+	park_state->wake_reasons = PG_PROTOCOL_PARK_WAKE_NONE;
+	park_state->wake_events = 0;
+	park_state->wake_generation = 0;
 }
 
 static void
