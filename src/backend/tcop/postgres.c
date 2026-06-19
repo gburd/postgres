@@ -5394,6 +5394,70 @@ PgSessionStagingWaitProtocolRead(PgBackend *backend,
 	return wake_events;
 }
 
+static void
+PgSessionCommitCurrentProtocolReadPark(PgSession *session,
+									   PgBackend **backend,
+									   PgConnection **connection,
+									   PgExecution **execution,
+									   PgProtocolParkSpec *park_spec)
+{
+	PgCarrier  *carrier = CurrentPgCarrier;
+
+	Assert(session != NULL);
+	Assert(backend != NULL);
+	Assert(connection != NULL);
+	Assert(execution != NULL);
+	Assert(park_spec != NULL);
+	Assert(carrier != NULL);
+	Assert(session->backend != NULL);
+	Assert(session->connection != NULL);
+	Assert(session->execution != NULL);
+	Assert(session->backend == CurrentPgBackend);
+	Assert(session->backend->protocol_park.state ==
+		   PG_PROTOCOL_PARK_PREPARED);
+
+	*backend = session->backend;
+	*connection = session->connection;
+	*execution = session->execution;
+	*park_spec = (*backend)->protocol_park.spec;
+
+	PgCarrierCommitProtocolReadPark(carrier, *backend);
+}
+
+static uint32
+PgSessionStagingWaitAndResumeProtocolRead(PgSession *session,
+										  PgBackend *backend,
+										  PgConnection *connection,
+										  PgExecution *execution,
+										  PgProtocolParkSpec *park_spec)
+{
+	PgCarrier  *carrier = CurrentPgCarrier;
+	uint32		wake_events;
+
+	Assert(session != NULL);
+	Assert(backend != NULL);
+	Assert(connection != NULL);
+	Assert(execution != NULL);
+	Assert(park_spec != NULL);
+	Assert(carrier != NULL);
+	Assert(CurrentPgBackend == NULL);
+	Assert(CurrentPgSession == NULL);
+	Assert(CurrentPgConnection == NULL);
+	Assert(CurrentPgExecution == NULL);
+
+	wake_events = PgSessionStagingWaitProtocolRead(backend, park_spec);
+
+	if (!PgRuntimeProtocolSchedulerMarkRunnable(CurrentPgRuntime, backend))
+		elog(PANIC, "could not mark protocol read park runnable");
+	if (PgRuntimeProtocolSchedulerPopRunnable(CurrentPgRuntime) != backend)
+		elog(PANIC, "unexpected protocol scheduler runnable backend");
+
+	PgCarrierAttachBackend(carrier, backend, session, connection, execution);
+	PgBackendResumeProtocolReadPark(backend);
+
+	return wake_events;
+}
+
 pg_noreturn static void
 PgSessionRunProtocolSchedulerStaging(PgSession *session)
 {
@@ -5421,37 +5485,22 @@ PgSessionRunProtocolSchedulerStaging(PgSession *session)
 
 			case PG_STEP_PARK_PROTOCOL_READ:
 				{
-					PgCarrier  *carrier = CurrentPgCarrier;
-					PgBackend  *backend = session->backend;
-					PgConnection *connection = session->connection;
-					PgExecution *execution = session->execution;
+					PgBackend  *backend;
+					PgConnection *connection;
+					PgExecution *execution;
 					PgProtocolParkSpec park_spec;
 					uint32		wake_events;
 
-					Assert(carrier != NULL);
-					Assert(backend != NULL);
-					Assert(connection != NULL);
-					Assert(execution != NULL);
-					Assert(backend == CurrentPgBackend);
-					Assert(backend->protocol_park.state ==
-						   PG_PROTOCOL_PARK_PREPARED);
-
-					park_spec = backend->protocol_park.spec;
-					PgCarrierCommitProtocolReadPark(carrier, backend);
-
+					PgSessionCommitCurrentProtocolReadPark(session, &backend,
+														  &connection,
+														  &execution,
+														  &park_spec);
 					wake_events =
-						PgSessionStagingWaitProtocolRead(backend, &park_spec);
-
-					if (!PgRuntimeProtocolSchedulerMarkRunnable(CurrentPgRuntime,
-																backend))
-						elog(PANIC, "could not mark protocol read park runnable");
-					if (PgRuntimeProtocolSchedulerPopRunnable(CurrentPgRuntime) !=
-						backend)
-						elog(PANIC, "unexpected protocol scheduler runnable backend");
-
-					PgCarrierAttachBackend(carrier, backend, session,
-										   connection, execution);
-					PgBackendResumeProtocolReadPark(backend);
+						PgSessionStagingWaitAndResumeProtocolRead(session,
+																  backend,
+																  connection,
+																  execution,
+																  &park_spec);
 
 					if (wake_events & WL_POSTMASTER_DEATH)
 						ereport(FATAL,
