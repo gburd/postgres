@@ -289,6 +289,8 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 	ResourceOwner saved_current_resource_owner;
 	PgThreadBackendRuntimeState state;
 	PgProtocolParkSpec park_spec;
+	PgProtocolSchedulerState *scheduler;
+	PgBackend  *runnable_backend;
 	TimestampTz timeout_wake_at;
 	uint64		timeout_generation;
 	uint64		notify_generation;
@@ -327,6 +329,9 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 		PgCarrierAttachBackend(&state.carrier, &state.backend,
 							   &state.session, &state.connection,
 							   &state.execution);
+		scheduler = &state.backend.runtime->protocol_scheduler;
+		ok = ok && scheduler->parked_protocol_count == 0;
+		ok = ok && scheduler->runnable_count == 0;
 
 		MemSet(&park_spec, 0, sizeof(park_spec));
 		park_spec.transport_wait_events = WL_SOCKET_READABLE;
@@ -369,6 +374,10 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 		ok = ok && state.backend.protocol_park.wake_reasons ==
 			PG_PROTOCOL_PARK_WAKE_NONE;
 		ok = ok && state.backend.protocol_park.wake_generation == 0;
+		ok = ok && state.backend.protocol_park.scheduler_queue_state ==
+			PG_PROTOCOL_SCHEDULER_QUEUE_PARKED_PROTOCOL_READ;
+		ok = ok && scheduler->parked_protocol_count == 1;
+		ok = ok && scheduler->runnable_count == 0;
 		ok = ok && PgBackendProtocolReadParkTimeoutGenerationValid(&state.backend,
 																   1);
 		state.backend.timeout.generation++;
@@ -416,6 +425,20 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 			 PG_PROTOCOL_PARK_WAKE_NOTIFY);
 		ok = ok && state.backend.protocol_park.notify_wake_generation ==
 			notify_generation;
+
+		ok = ok && PgRuntimeProtocolSchedulerMarkRunnable(state.backend.runtime,
+														  &state.backend);
+		ok = ok && state.backend.protocol_park.scheduler_queue_state ==
+			PG_PROTOCOL_SCHEDULER_QUEUE_RUNNABLE;
+		ok = ok && scheduler->parked_protocol_count == 0;
+		ok = ok && scheduler->runnable_count == 1;
+		runnable_backend =
+			PgRuntimeProtocolSchedulerPopRunnable(state.backend.runtime);
+		ok = ok && runnable_backend == &state.backend;
+		ok = ok && state.backend.protocol_park.scheduler_queue_state ==
+			PG_PROTOCOL_SCHEDULER_QUEUE_NONE;
+		ok = ok && scheduler->parked_protocol_count == 0;
+		ok = ok && scheduler->runnable_count == 0;
 
 		PgCarrierAttachBackend(&state.carrier, &state.backend,
 							   &state.session, &state.connection,

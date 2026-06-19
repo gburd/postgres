@@ -236,10 +236,29 @@ typedef struct PgProtocolParkSpec
 	uint64		generation;
 } PgProtocolParkSpec;
 
+typedef enum PgProtocolSchedulerQueueState
+{
+	PG_PROTOCOL_SCHEDULER_QUEUE_NONE,
+	PG_PROTOCOL_SCHEDULER_QUEUE_PARKED_PROTOCOL_READ,
+	PG_PROTOCOL_SCHEDULER_QUEUE_RUNNABLE
+} PgProtocolSchedulerQueueState;
+
+typedef struct PgProtocolSchedulerState
+{
+	dlist_head	runnable_queue;
+	dlist_head	parked_protocol_queue;
+	uint32		runnable_count;
+	uint32		parked_protocol_count;
+	uint64		runnable_enqueue_count;
+	uint64		parked_protocol_enqueue_count;
+} PgProtocolSchedulerState;
+
 typedef struct PgBackendProtocolParkState
 {
 	PgProtocolParkState state;
 	PgProtocolParkSpec spec;
+	dlist_node	scheduler_node;
+	PgProtocolSchedulerQueueState scheduler_queue_state;
 	uint64		next_generation;
 	uint32		wake_reasons;
 	uint32		wake_events;
@@ -2342,6 +2361,7 @@ struct PgRuntime
 	 */
 	PgBackendExitContinuation exit_backend;
 
+	PgProtocolSchedulerState protocol_scheduler;
 	PgRuntimeServerGUCState server_guc;
 	PgRuntimeExtensionModuleState extension_modules;
 };
@@ -3415,6 +3435,14 @@ extern bool PgBackendSendInterruptById(PgBackendId backend_id,
 									  PgBackendInterruptType interrupt_type,
 									  int sender_pid, int sender_uid);
 extern uint64 PgBackendNotifyInterruptGeneration(PgBackend *backend);
+extern void PgRuntimeInitializeProtocolScheduler(PgProtocolSchedulerState *scheduler);
+extern bool PgRuntimeProtocolSchedulerParkBackend(PgRuntime *runtime,
+												  PgBackend *backend);
+extern bool PgRuntimeProtocolSchedulerMarkRunnable(PgRuntime *runtime,
+												   PgBackend *backend);
+extern PgBackend *PgRuntimeProtocolSchedulerPopRunnable(PgRuntime *runtime);
+extern bool PgRuntimeProtocolSchedulerRemoveBackend(PgRuntime *runtime,
+													PgBackend *backend);
 /*
  * Logical backend interrupts are for backend events such as cancel, die,
  * notify, and proc-signal-derived work. Wait readiness should remain with

@@ -197,6 +197,7 @@ static void PgBackendAdoptEarlyIPCState(PgBackend *backend);
 static void PgBackendEnsureWaitStateInitialized(PgBackendWaitState *wait_state);
 void PgBackendInitializeWaitState(PgBackendWaitState *wait_state);
 static void PgBackendAdoptEarlyWaitState(PgBackend *backend);
+static void PgBackendInitializeProtocolParkState(PgBackendProtocolParkState *protocol_park);
 static void PgWaitCompletionInitialize(PgWaitCompletion *completion);
 static void PgWaitCompletionPublish(PgWaitCompletion *completion,
 									PgBackend *backend,
@@ -750,6 +751,17 @@ PgBackendInitializeWaitState(PgBackendWaitState *wait_state)
 	PgWaitCompletionInitialize(&wait_state->completion);
 	wait_state->wait_event_info_ptr = &wait_state->local_wait_event_info;
 	pg_atomic_init_u32(&wait_state->waiting, 0);
+}
+
+static void
+PgBackendInitializeProtocolParkState(PgBackendProtocolParkState *protocol_park)
+{
+	Assert(protocol_park != NULL);
+
+	MemSet(protocol_park, 0, sizeof(*protocol_park));
+	dlist_node_init(&protocol_park->scheduler_node);
+	protocol_park->scheduler_queue_state =
+		PG_PROTOCOL_SCHEDULER_QUEUE_NONE;
 }
 
 static void
@@ -1582,6 +1594,151 @@ PgBackendWakeWaitCompletionById(PgBackendId backend_id, uint32 ready_events)
 #endif
 }
 
+void
+PgRuntimeInitializeProtocolScheduler(PgProtocolSchedulerState *scheduler)
+{
+	Assert(scheduler != NULL);
+
+	MemSet(scheduler, 0, sizeof(*scheduler));
+	dlist_init(&scheduler->runnable_queue);
+	dlist_init(&scheduler->parked_protocol_queue);
+}
+
+bool
+PgRuntimeProtocolSchedulerParkBackend(PgRuntime *runtime, PgBackend *backend)
+{
+	PgBackendProtocolParkState *park_state;
+	PgProtocolSchedulerState *scheduler;
+
+	if (runtime == NULL || backend == NULL)
+		return false;
+	if (backend->runtime != runtime)
+		return false;
+
+	park_state = &backend->protocol_park;
+	if (park_state->state != PG_PROTOCOL_PARK_COMMITTED)
+		return false;
+	if (park_state->scheduler_queue_state !=
+		PG_PROTOCOL_SCHEDULER_QUEUE_NONE)
+		return false;
+
+	scheduler = &runtime->protocol_scheduler;
+	dlist_push_tail(&scheduler->parked_protocol_queue,
+					&park_state->scheduler_node);
+	park_state->scheduler_queue_state =
+		PG_PROTOCOL_SCHEDULER_QUEUE_PARKED_PROTOCOL_READ;
+	scheduler->parked_protocol_count++;
+	scheduler->parked_protocol_enqueue_count++;
+
+	return true;
+}
+
+bool
+PgRuntimeProtocolSchedulerMarkRunnable(PgRuntime *runtime, PgBackend *backend)
+{
+	PgBackendProtocolParkState *park_state;
+	PgProtocolSchedulerState *scheduler;
+
+	if (runtime == NULL || backend == NULL)
+		return false;
+	if (backend->runtime != runtime)
+		return false;
+
+	park_state = &backend->protocol_park;
+	scheduler = &runtime->protocol_scheduler;
+
+	if (park_state->scheduler_queue_state ==
+		PG_PROTOCOL_SCHEDULER_QUEUE_RUNNABLE)
+		return true;
+
+	if (park_state->scheduler_queue_state ==
+		PG_PROTOCOL_SCHEDULER_QUEUE_PARKED_PROTOCOL_READ)
+	{
+		Assert(scheduler->parked_protocol_count > 0);
+		dlist_delete(&park_state->scheduler_node);
+		scheduler->parked_protocol_count--;
+	}
+	else if (park_state->scheduler_queue_state !=
+			 PG_PROTOCOL_SCHEDULER_QUEUE_NONE)
+		return false;
+
+	if (park_state->state != PG_PROTOCOL_PARK_COMMITTED)
+		return false;
+
+	dlist_push_tail(&scheduler->runnable_queue,
+					&park_state->scheduler_node);
+	park_state->scheduler_queue_state =
+		PG_PROTOCOL_SCHEDULER_QUEUE_RUNNABLE;
+	scheduler->runnable_count++;
+	scheduler->runnable_enqueue_count++;
+
+	return true;
+}
+
+PgBackend *
+PgRuntimeProtocolSchedulerPopRunnable(PgRuntime *runtime)
+{
+	PgProtocolSchedulerState *scheduler;
+	PgBackend  *backend;
+	dlist_node *node;
+
+	if (runtime == NULL)
+		return NULL;
+
+	scheduler = &runtime->protocol_scheduler;
+	if (dlist_is_empty(&scheduler->runnable_queue))
+		return NULL;
+
+	Assert(scheduler->runnable_count > 0);
+	node = dlist_pop_head_node(&scheduler->runnable_queue);
+	backend = dlist_container(PgBackend, protocol_park.scheduler_node, node);
+	Assert(backend->protocol_park.scheduler_queue_state ==
+		   PG_PROTOCOL_SCHEDULER_QUEUE_RUNNABLE);
+
+	backend->protocol_park.scheduler_queue_state =
+		PG_PROTOCOL_SCHEDULER_QUEUE_NONE;
+	scheduler->runnable_count--;
+
+	return backend;
+}
+
+bool
+PgRuntimeProtocolSchedulerRemoveBackend(PgRuntime *runtime, PgBackend *backend)
+{
+	PgBackendProtocolParkState *park_state;
+	PgProtocolSchedulerState *scheduler;
+
+	if (runtime == NULL || backend == NULL)
+		return false;
+	if (backend->runtime != runtime)
+		return false;
+
+	park_state = &backend->protocol_park;
+	scheduler = &runtime->protocol_scheduler;
+
+	switch (park_state->scheduler_queue_state)
+	{
+		case PG_PROTOCOL_SCHEDULER_QUEUE_NONE:
+			return false;
+
+		case PG_PROTOCOL_SCHEDULER_QUEUE_PARKED_PROTOCOL_READ:
+			Assert(scheduler->parked_protocol_count > 0);
+			dlist_delete(&park_state->scheduler_node);
+			scheduler->parked_protocol_count--;
+			break;
+
+		case PG_PROTOCOL_SCHEDULER_QUEUE_RUNNABLE:
+			Assert(scheduler->runnable_count > 0);
+			dlist_delete(&park_state->scheduler_node);
+			scheduler->runnable_count--;
+			break;
+	}
+
+	park_state->scheduler_queue_state =
+		PG_PROTOCOL_SCHEDULER_QUEUE_NONE;
+	return true;
+}
+
 bool
 PgBackendLogicalTimeoutNextWake(PgBackend *backend, TimestampTz *wake_at,
 								uint64 *generation)
@@ -1681,6 +1838,8 @@ PgCarrierCommitProtocolReadPark(PgCarrier *carrier, PgBackend *backend)
 
 	park_state->state = PG_PROTOCOL_PARK_COMMITTED;
 	PgCarrierDetachBackend(carrier, backend);
+	if (!PgRuntimeProtocolSchedulerParkBackend(carrier->runtime, backend))
+		elog(PANIC, "could not enqueue committed protocol read park");
 }
 
 bool
@@ -1778,6 +1937,8 @@ PgBackendResumeProtocolReadPark(PgBackend *backend)
 	Assert(park_state->state == PG_PROTOCOL_PARK_COMMITTED);
 	Assert(park_state->wake_generation == 0 ||
 		   park_state->wake_generation == park_state->spec.generation);
+	Assert(park_state->scheduler_queue_state ==
+		   PG_PROTOCOL_SCHEDULER_QUEUE_NONE);
 
 	park_state->last_wake_reasons = park_state->wake_reasons;
 	park_state->last_wake_events = park_state->wake_events;

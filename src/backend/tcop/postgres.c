@@ -5442,6 +5442,13 @@ PgSessionRunProtocolSchedulerStaging(PgSession *session)
 					wake_events =
 						PgSessionStagingWaitProtocolRead(backend, &park_spec);
 
+					if (!PgRuntimeProtocolSchedulerMarkRunnable(CurrentPgRuntime,
+																backend))
+						elog(PANIC, "could not mark protocol read park runnable");
+					if (PgRuntimeProtocolSchedulerPopRunnable(CurrentPgRuntime) !=
+						backend)
+						elog(PANIC, "unexpected protocol scheduler runnable backend");
+
 					PgCarrierAttachBackend(carrier, backend, session,
 										   connection, execution);
 					PgBackendResumeProtocolReadPark(backend);
