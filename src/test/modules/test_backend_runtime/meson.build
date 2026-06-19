@@ -60,6 +60,8 @@ tests += {
       't/001_threaded_runtime.pl',
       't/002_threaded_bgworker_crash.pl',
       't/003_milestone_w_core_smoke.pl',
+      't/004_phase13_wait_completion.pl',
+      't/005_phase14_protocol_scheduler.pl',
     ],
   },
 }

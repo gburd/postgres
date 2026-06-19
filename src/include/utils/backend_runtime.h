@@ -45,6 +45,7 @@
 #include "storage/lwlock.h"
 #include "storage/procnumber.h"
 #include "storage/relfilelocator.h"
+#include "storage/spin.h"
 #include "tcop/dest.h"
 #include "utils/backend_id.h"
 #include "utils/backend_status.h"
@@ -245,6 +246,7 @@ typedef enum PgProtocolSchedulerQueueState
 
 typedef struct PgProtocolSchedulerState
 {
+	slock_t		lock;
 	dlist_head	runnable_queue;
 	dlist_head	parked_protocol_queue;
 	uint32		runnable_count;
@@ -252,6 +254,31 @@ typedef struct PgProtocolSchedulerState
 	uint64		runnable_enqueue_count;
 	uint64		parked_protocol_enqueue_count;
 } PgProtocolSchedulerState;
+
+typedef struct PgProtocolParkSnapshot
+{
+	PgProtocolParkState state;
+	PgProtocolSchedulerQueueState scheduler_queue_state;
+	uint64		generation;
+	uint32		wake_reasons;
+	uint32		wake_events;
+	uint64		wake_generation;
+	uint32		last_wake_reasons;
+	uint32		last_wake_events;
+	uint64		last_wake_generation;
+	uint64		notify_wake_generation;
+	uint64		deferred_notify_generation;
+	uint64		deferred_notify_park_generation;
+	uint32		deferred_notify_reasons;
+	uint32		scheduler_runnable_count;
+	uint32		scheduler_parked_protocol_count;
+	uint64		scheduler_runnable_enqueue_count;
+	uint64		scheduler_parked_protocol_enqueue_count;
+	bool		carrier_attached;
+	bool		session_present;
+	bool		connection_present;
+	bool		execution_present;
+} PgProtocolParkSnapshot;
 
 typedef struct PgBackendProtocolParkState
 {
@@ -3443,6 +3470,8 @@ extern bool PgRuntimeProtocolSchedulerMarkRunnable(PgRuntime *runtime,
 extern PgBackend *PgRuntimeProtocolSchedulerPopRunnable(PgRuntime *runtime);
 extern bool PgRuntimeProtocolSchedulerRemoveBackend(PgRuntime *runtime,
 													PgBackend *backend);
+extern bool PgBackendSnapshotProtocolParkById(PgBackendId backend_id,
+											  PgProtocolParkSnapshot *snapshot);
 /*
  * Logical backend interrupts are for backend events such as cancel, die,
  * notify, and proc-signal-derived work. Wait readiness should remain with
