@@ -10,12 +10,15 @@ use Time::HiRes qw(usleep);
 
 use constant PARK_STATE => 0;
 use constant QUEUE_STATE => 1;
+use constant LAST_WAKE_REASONS => 6;
 use constant DEFERRED_NOTIFY_GENERATION => 10;
 use constant PARKED_PROTOCOL_COUNT => 14;
 use constant CARRIER_ATTACHED => 17;
 use constant SESSION_PRESENT => 18;
 use constant CONNECTION_PRESENT => 19;
 use constant EXECUTION_PRESENT => 20;
+
+use constant PROTOCOL_WAKE_NOTIFY => (1 << 8);
 
 my $node = PostgreSQL::Test::Cluster->new('phase14_protocol_scheduler');
 
@@ -178,13 +181,19 @@ my $listener_pid = $listener->query_safe(
 wait_for_protocol_parked($listener_pid,
 	'LISTEN client parks before asynchronous notification');
 $node->safe_psql('postgres', "NOTIFY phase14_notify, 'payload';");
-ok(pump_until(
-		$listener->{run},
-		$listener->{timeout},
-		\$listener->{stdout},
-		$notify_pattern),
+wait_for_protocol_field(
+	$listener_pid,
+	LAST_WAKE_REASONS,
+	sub {
+		my $reasons = shift;
+		return ($reasons & PROTOCOL_WAKE_NOTIFY) != 0;
+	},
 	'asynchronous notification wakes parked protocol client');
-$listener->{stdout} = '';
+like($listener->query_safe('SELECT 1004;', verbose => 0),
+	$notify_pattern,
+	'asynchronous notification is visible to listening client');
+wait_for_protocol_parked($listener_pid,
+	'LISTEN client parks again after notification visibility check');
 
 my $deferred = $node->background_psql('postgres', timeout => 20);
 my $deferred_notify_pattern =

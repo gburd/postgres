@@ -98,6 +98,37 @@ sub wait_for_carrier_pinned_non_protocol_park
 	return $snapshot;
 }
 
+sub wait_for_protocol_parked
+{
+	my ($pid, $label) = @_;
+	my $snapshot = '';
+
+	for (1 .. 100)
+	{
+		$snapshot = $node->safe_psql(
+			'postgres',
+			"SELECT coalesce(test_backend_runtime_protocol_park_snapshot($pid), '');");
+		my @fields = split(/\|/, $snapshot);
+
+		if (@fields == 21 &&
+			$fields[PARK_STATE] eq 'committed' &&
+			$fields[QUEUE_STATE] eq 'parked_protocol_read' &&
+			$fields[CARRIER_ATTACHED] == 0 &&
+			$fields[SESSION_PRESENT] == 1 &&
+			$fields[CONNECTION_PRESENT] == 1 &&
+			$fields[EXECUTION_PRESENT] == 1)
+		{
+			pass($label);
+			return $snapshot;
+		}
+		usleep(100_000);
+	}
+
+	fail($label);
+	diag("last protocol-park snapshot for $pid: \"$snapshot\"");
+	return $snapshot;
+}
+
 sub wait_for_pid_to_leave_pg_stat_activity
 {
 	my ($pid, $label) = @_;
@@ -129,10 +160,14 @@ $node->safe_psql('postgres',
 my $idle = $node->background_psql('postgres', timeout => 20);
 my $idle_pid = $idle->query_safe('SELECT pg_backend_pid();', verbose => 0);
 
-my $idle_snapshot = wait_for_completion_snapshot(
-	$idle_pid,
-	qr/^waiting\|event_set\|ClientRead\|1\|.*\|1\|1\|1$/,
-	'idle threaded client publishes frontend input wait completion');
+wait_for_protocol_parked($idle_pid,
+	'idle threaded client parks at protocol read boundary');
+like(
+	$node->safe_psql(
+		'postgres',
+		"SELECT coalesce(test_backend_runtime_wait_completion_snapshot($idle_pid), '');"),
+	qr/^inactive\|none\|/,
+	'idle protocol park does not publish a generic wait-completion record');
 
 is($node->safe_psql(
 		'postgres',
