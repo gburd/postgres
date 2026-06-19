@@ -549,7 +549,7 @@ static bool
 module_backend_model_is_valid(PgBackendModel backend_model)
 {
 	return backend_model >= PG_BACKEND_MODEL_PROCESS &&
-		backend_model <= PG_BACKEND_MODEL_POOLED_SCHEDULER;
+		backend_model <= PG_BACKEND_MODEL_TASK_REENTRANT;
 }
 
 static bool
@@ -580,6 +580,12 @@ module_backend_model_name(PgBackendModel backend_model)
 			return "thread-per-session";
 		case PG_BACKEND_MODEL_POOLED_SCHEDULER:
 			return "pooled-scheduler";
+		case PG_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE:
+			return "pooled-protocol-affine";
+		case PG_BACKEND_MODEL_POOLED_PROTOCOL_MIGRATABLE:
+			return "pooled-protocol-migratable";
+		case PG_BACKEND_MODEL_TASK_REENTRANT:
+			return "task-reentrant";
 	}
 
 	return "unknown";

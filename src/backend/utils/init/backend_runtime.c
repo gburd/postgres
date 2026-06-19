@@ -1011,7 +1011,7 @@ void
 PgRuntimeSetExtensionBackendModel(PgBackendModel backend_model)
 {
 	if (backend_model < PG_BACKEND_MODEL_PROCESS ||
-		backend_model > PG_BACKEND_MODEL_POOLED_SCHEDULER)
+		backend_model > PG_BACKEND_MODEL_TASK_REENTRANT)
 		elog(ERROR, "invalid backend model: %d", backend_model);
 
 	if (CurrentPgRuntime == NULL)
@@ -1019,8 +1019,8 @@ PgRuntimeSetExtensionBackendModel(PgBackendModel backend_model)
 
 	/*
 	 * PG_BACKEND_MODEL_POOLED_SCHEDULER is a transitional generic marker.  The
-	 * protocol-boundary scheduler must split protocol-affine from migratable
-	 * module promises before using a stricter pooled runtime requirement.
+	 * protocol-boundary scheduler uses stricter protocol-affine and migratable
+	 * module promises before claiming Phase 15 carrier-pool compatibility.
 	 */
 	check_loaded_modules_backend_model(backend_model);
 	CurrentPgRuntime->extension_backend_model = backend_model;

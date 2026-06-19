@@ -38,6 +38,12 @@ SELECT test_ext_backend_model_expect_load_error('test_ext_bad_backend_model',
 SELECT test_ext_backend_model_expect_load_error('test_ext_short_magic',
 											   'magic block mismatch');
 LOAD 'plpgsql';
+SELECT test_ext_backend_model_expect_lookup_error('test_ext_backend_model',
+												 'test_ext_backend_model_get',
+												 'pooled-protocol-affine',
+												 'backend model mismatch');
+SELECT test_ext_backend_model_expect_set_error('pooled-protocol-affine',
+											  'backend model mismatch');
 
 SELECT test_ext_backend_model_set('process');
 LOAD 'test_ext';
