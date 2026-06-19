@@ -219,6 +219,16 @@ GUCRecordVariableIsCurrentSessionOwned(const struct config_generic *record)
 }
 
 static bool
+GUCThreadedBackendReplayActive(bool is_reload)
+{
+	return is_reload &&
+		multithreaded &&
+		IsUnderPostmaster &&
+		CurrentPgCarrier != NULL &&
+		CurrentPgCarrier->kind == PG_CARRIER_THREAD;
+}
+
+static bool
 GUCRecordHasAssignHook(const struct config_generic *record)
 {
 	switch (record->vartype)
@@ -961,7 +971,8 @@ string_field_used(struct config_generic *conf, char *strval)
 {
 	if (strval == *(conf->_string.variable) ||
 		strval == conf->_string.reset_val ||
-		strval == conf->_string.boot_val)
+		strval == conf->_string.boot_val ||
+		strval == conf->last_reported)
 		return true;
 	for (GucStack *stack = conf->stack; stack; stack = stack->prev)
 	{
@@ -970,6 +981,26 @@ string_field_used(struct config_generic *conf, char *strval)
 			return true;
 	}
 	return false;
+}
+
+/*
+ * Forget the last value reported to the frontend.  In threaded builds, copied
+ * session GUC records can transiently have last_reported sharing storage with
+ * another string field.  Avoid freeing such storage until the owning field is
+ * replaced or discarded.
+ */
+static void
+clear_last_reported(struct config_generic *conf)
+{
+	char	   *last_reported = conf->last_reported;
+
+	if (last_reported == NULL)
+		return;
+
+	conf->last_reported = NULL;
+	if (conf->vartype != PGC_STRING ||
+		!string_field_used(conf, last_reported))
+		guc_free(last_reported);
 }
 
 /*
@@ -3187,7 +3218,7 @@ ReportGUCOption(struct config_generic *record)
 		 * we'll set last_reported to NULL and thereby possibly make a
 		 * duplicate report later.
 		 */
-		guc_free(record->last_reported);
+		clear_last_reported(record);
 		record->last_reported = guc_strdup(LOG, val);
 	}
 
@@ -4579,8 +4610,21 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 				GucContext	orig_context = context;
 				GucSource	orig_source = source;
 				Oid			orig_srole = srole;
+				bool		assign_variable;
 
 #define newval (newval_union.stringval)
+
+				/*
+				 * Threaded backends can replay another process's non-default
+				 * GUCs into a copied GUC table.  If a string GUC still points
+				 * at process-global backing storage, do not replace that
+				 * global with a string allocated in this session's GUC
+				 * context.  Ordinary SET processing must still assign
+				 * custom and extension GUCs.
+				 */
+				assign_variable =
+					!GUCThreadedBackendReplayActive(is_reload) ||
+					PgCurrentOrEarlySessionOwnsPointer(conf->variable);
 
 				if (value)
 				{
@@ -4656,11 +4700,14 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 					if (!makeDefault)
 						push_old_value(record, action);
 
-					if (conf->assign_hook)
-						conf->assign_hook(newval, newextra);
-					set_string_field(record, conf->variable, newval);
-					set_extra_field(record, &record->extra,
-									newextra);
+					if (assign_variable)
+					{
+						if (conf->assign_hook)
+							conf->assign_hook(newval, newextra);
+						set_string_field(record, conf->variable, newval);
+						set_extra_field(record, &record->extra,
+										newextra);
+					}
 					set_guc_source(record, source);
 					record->scontext = context;
 					record->srole = srole;
@@ -6890,7 +6937,7 @@ RestoreGUCState(void *gucstate)
 		 */
 		Assert(gconf->stack == NULL);
 		guc_free(gconf->extra);
-		guc_free(gconf->last_reported);
+		clear_last_reported(gconf);
 		guc_free(gconf->sourcefile);
 		switch (gconf->vartype)
 		{
