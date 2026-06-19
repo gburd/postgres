@@ -5624,7 +5624,7 @@ PgSessionRunProtocolSchedulerUntilBoundary(PgSession *session)
 
 	Assert(session != NULL);
 	Assert(CurrentPgRuntime != NULL);
-	Assert(PgRuntimeIsThreadBacked(CurrentPgRuntime));
+	Assert(PgRuntimeIsPooledProtocol(CurrentPgRuntime));
 
 	MemSet(&budget, 0, sizeof(budget));
 	budget.max_messages = 1;
@@ -5940,7 +5940,7 @@ PostgresRunSession(PgSession *session)
 {
 	Assert(session != NULL);
 
-	if (PgRuntimeIsThreadBacked(CurrentPgRuntime))
+	if (PgRuntimeIsPooledProtocol(CurrentPgRuntime))
 		PgSessionRunProtocolSchedulerStaging(session);
 	PgSessionRun(session);
 }

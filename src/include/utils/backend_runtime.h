@@ -3467,6 +3467,8 @@ extern PgConnectionSecurityState *PgConnectionSecurityStateRef(PgConnection *con
 extern PgConnectionSecurityState *PgCurrentConnectionSecurityStateRef(void);
 extern bool PgRuntimeKindIsThreadBacked(PgRuntimeKind kind);
 extern bool PgRuntimeIsThreadBacked(PgRuntime *runtime);
+extern bool PgRuntimeKindIsPooledProtocol(PgRuntimeKind kind);
+extern bool PgRuntimeIsPooledProtocol(PgRuntime *runtime);
 extern bool PgRuntimePooledProtocolRequested(void);
 extern int	PgRuntimePooledProtocolCarrierLimit(void);
 extern PgBackendLaunchModel PgRuntimeGetBackendLaunchModel(BackendType backend_type);

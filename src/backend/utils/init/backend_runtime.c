@@ -1144,6 +1144,19 @@ PgRuntimeIsThreadBacked(PgRuntime *runtime)
 }
 
 bool
+PgRuntimeKindIsPooledProtocol(PgRuntimeKind kind)
+{
+	return kind == PG_RUNTIME_POOLED_PROTOCOL;
+}
+
+bool
+PgRuntimeIsPooledProtocol(PgRuntime *runtime)
+{
+	return runtime != NULL &&
+		PgRuntimeKindIsPooledProtocol(runtime->kind);
+}
+
+bool
 PgRuntimePooledProtocolRequested(void)
 {
 	return multithreaded && pooled_protocol_carriers > 0;

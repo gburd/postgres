@@ -137,6 +137,15 @@ test_backend_thread_runtime_state(PG_FUNCTION_ARGS)
 									   PG_RUNTIME_POOLED_PROTOCOL));
 		CHECK_THREAD_RUNTIME_STATE(!PgRuntimeIsThreadBacked(NULL));
 		CHECK_THREAD_RUNTIME_STATE(PgRuntimeIsThreadBacked(state.logical.backend.runtime));
+		CHECK_THREAD_RUNTIME_STATE(!PgRuntimeKindIsPooledProtocol(
+									   PG_RUNTIME_PROCESS));
+		CHECK_THREAD_RUNTIME_STATE(!PgRuntimeKindIsPooledProtocol(
+									   PG_RUNTIME_THREAD_PER_SESSION));
+		CHECK_THREAD_RUNTIME_STATE(PgRuntimeKindIsPooledProtocol(
+									   PG_RUNTIME_POOLED_PROTOCOL));
+		CHECK_THREAD_RUNTIME_STATE(!PgRuntimeIsPooledProtocol(NULL));
+		CHECK_THREAD_RUNTIME_STATE(!PgRuntimeIsPooledProtocol(
+									   state.logical.backend.runtime));
 		CHECK_THREAD_RUNTIME_STATE(PgRuntimePooledProtocolCarrierLimit() ==
 								   pooled_protocol_carriers);
 		CHECK_THREAD_RUNTIME_STATE(PgRuntimePooledProtocolRequested() ==
