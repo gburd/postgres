@@ -1854,6 +1854,39 @@ PgRuntimeProtocolSchedulerPopRunnable(PgRuntime *runtime)
 	return backend;
 }
 
+int
+PgRuntimeProtocolSchedulerCollectParked(PgRuntime *runtime,
+										PgBackend **backends,
+										int max_backends)
+{
+	PgProtocolSchedulerState *scheduler;
+	dlist_iter	iter;
+	int			nbackends = 0;
+
+	if (runtime == NULL || backends == NULL || max_backends <= 0)
+		return 0;
+
+	scheduler = &runtime->protocol_scheduler;
+	SpinLockAcquire(&scheduler->lock);
+	dlist_foreach(iter, &scheduler->parked_protocol_queue)
+	{
+		PgBackend  *backend;
+
+		if (nbackends >= max_backends)
+			break;
+
+		backend = dlist_container(PgBackend, protocol_park.scheduler_node,
+								  iter.cur);
+		Assert(backend->protocol_park.state == PG_PROTOCOL_PARK_COMMITTED);
+		Assert(backend->protocol_park.scheduler_queue_state ==
+			   PG_PROTOCOL_SCHEDULER_QUEUE_PARKED_PROTOCOL_READ);
+		backends[nbackends++] = backend;
+	}
+	SpinLockRelease(&scheduler->lock);
+
+	return nbackends;
+}
+
 PgBackend *
 PgCarrierLeaseRunnableProtocolBackend(PgCarrier *carrier)
 {

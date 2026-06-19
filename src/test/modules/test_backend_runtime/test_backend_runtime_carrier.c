@@ -293,6 +293,7 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 	PgProtocolParkSpec park_spec;
 	PgProtocolSchedulerState *scheduler = NULL;
 	PgBackend  *runnable_backend;
+	PgBackend  *parked_backends[4];
 	TimestampTz timeout_wake_at;
 	uint64		timeout_generation;
 	uint64		notify_generation;
@@ -433,6 +434,10 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 			PG_PROTOCOL_SCHEDULER_QUEUE_PARKED_PROTOCOL_READ;
 		ok = ok && scheduler->parked_protocol_count == 1;
 		ok = ok && scheduler->runnable_count == 0;
+		ok = ok && PgRuntimeProtocolSchedulerCollectParked(state.logical.backend.runtime,
+														   parked_backends,
+														   lengthof(parked_backends)) == 1;
+		ok = ok && parked_backends[0] == &state.logical.backend;
 		ok = ok && PgBackendProtocolReadParkTimeoutGenerationValid(&state.logical.backend,
 																   1);
 		state.logical.backend.timeout.generation++;
@@ -531,6 +536,9 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 			PG_PROTOCOL_SCHEDULER_QUEUE_RUNNABLE;
 		ok = ok && scheduler->parked_protocol_count == 0;
 		ok = ok && scheduler->runnable_count == 1;
+		ok = ok && PgRuntimeProtocolSchedulerCollectParked(state.logical.backend.runtime,
+														   parked_backends,
+														   lengthof(parked_backends)) == 0;
 		runnable_backend = PgCarrierLeaseRunnableProtocolBackend(&resume_carrier);
 		ok = ok && runnable_backend == &state.logical.backend;
 		ok = ok && state.logical.backend.protocol_park.scheduler_queue_state ==

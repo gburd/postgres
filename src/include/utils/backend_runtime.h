@@ -3500,6 +3500,9 @@ extern bool PgRuntimeProtocolSchedulerParkBackend(PgRuntime *runtime,
 extern bool PgRuntimeProtocolSchedulerMarkRunnable(PgRuntime *runtime,
 												   PgBackend *backend);
 extern PgBackend *PgRuntimeProtocolSchedulerPopRunnable(PgRuntime *runtime);
+extern int	PgRuntimeProtocolSchedulerCollectParked(PgRuntime *runtime,
+													PgBackend **backends,
+													int max_backends);
 extern bool PgRuntimeProtocolSchedulerRegisterCarrier(PgRuntime *runtime,
 													  PgCarrier *carrier);
 extern bool PgRuntimeProtocolSchedulerUnregisterCarrier(PgRuntime *runtime,
