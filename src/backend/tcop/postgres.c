@@ -189,6 +189,9 @@ static void report_recovery_conflict(RecoveryConflictReason reason);
 pg_noreturn static void PgSessionRunProtocolSchedulerStaging(PgSession *session);
 static uint32 PgSessionStagingWaitProtocolRead(PgBackend *backend,
 											   PgProtocolParkSpec *park_spec);
+static void PgBackendMarkProtocolReadParkWakeEvents(PgBackend *backend,
+													PgProtocolParkSpec *park_spec,
+													uint32 wake_events);
 static long PgProtocolParkTimeoutDelayMs(PgBackend *backend,
 										 PgProtocolParkSpec *park_spec,
 										 bool *stale_timeout);
@@ -5242,6 +5245,182 @@ PgProtocolParkTimeoutDelayMs(PgBackend *backend,
 	return delay_ms;
 }
 
+static void
+PgBackendMarkProtocolReadParkWakeEvents(PgBackend *backend,
+										PgProtocolParkSpec *park_spec,
+										uint32 wake_events)
+{
+	uint32		wake_reasons = PG_PROTOCOL_PARK_WAKE_NONE;
+	PgBackendInterruptMask pending_interrupts;
+
+	Assert(backend != NULL);
+	Assert(park_spec != NULL);
+
+	if (wake_events & park_spec->transport_wait_events)
+		wake_reasons |= PG_PROTOCOL_PARK_WAKE_TRANSPORT;
+	if (wake_events & WL_SOCKET_CLOSED)
+		wake_reasons |= PG_PROTOCOL_PARK_WAKE_CLOSED;
+	if (wake_events & WL_LATCH_SET)
+		wake_reasons |= PG_PROTOCOL_PARK_WAKE_LOGICAL;
+	if (wake_events & WL_POSTMASTER_DEATH)
+		wake_reasons |= PG_PROTOCOL_PARK_WAKE_POSTMASTER;
+	if (wake_events & WL_TIMEOUT)
+		wake_reasons |= PG_PROTOCOL_PARK_WAKE_TIMEOUT;
+	pending_interrupts =
+		pg_atomic_read_u32(&backend->interrupts.pending_mask);
+	if ((wake_events & WL_LATCH_SET) &&
+		(pending_interrupts &
+		 PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_NOTIFY)))
+		wake_reasons |= PG_PROTOCOL_PARK_WAKE_NOTIFY;
+
+	(void) PgBackendMarkProtocolReadParkWake(backend,
+											 park_spec->generation,
+											 wake_reasons,
+											 wake_events);
+}
+
+bool
+PgBackendPollProtocolReadPark(PgBackend *backend, uint32 *wake_events)
+{
+	PgBackendProtocolParkState *park_state;
+	PgProtocolParkSpec *park_spec;
+	PgConnection *connection;
+	uint32		observed_events = 0;
+	uint32	   *wait_event_info_ptr;
+	bool		stale_timeout;
+	long		timeout_ms;
+
+	Assert(backend != NULL);
+	Assert(CurrentPgBackend == NULL);
+	Assert(CurrentPgSession == NULL);
+	Assert(CurrentPgConnection == NULL);
+	Assert(CurrentPgExecution == NULL);
+
+	if (wake_events != NULL)
+		*wake_events = 0;
+
+	park_state = &backend->protocol_park;
+	if (park_state->state != PG_PROTOCOL_PARK_COMMITTED ||
+		park_state->scheduler_queue_state !=
+		PG_PROTOCOL_SCHEDULER_QUEUE_PARKED_PROTOCOL_READ)
+		return false;
+
+	park_spec = &park_state->spec;
+	Assert(park_spec->backend == backend);
+	Assert(park_spec->connection != NULL);
+
+	if (park_spec->transport_buffered_input)
+	{
+		(void) PgBackendMarkProtocolReadParkWake(backend,
+												 park_spec->generation,
+												 PG_PROTOCOL_PARK_WAKE_BUFFERED_INPUT,
+												 0);
+		return true;
+	}
+
+	if (park_spec->transport_wait_events == 0 ||
+		park_spec->socket == PGINVALID_SOCKET)
+	{
+		(void) PgBackendMarkProtocolReadParkWake(backend,
+												 park_spec->generation,
+												 PG_PROTOCOL_PARK_WAKE_STALE_TRANSPORT,
+												 0);
+		return true;
+	}
+
+	connection = park_spec->connection;
+	if (connection->socket_io.transport_generation !=
+		park_spec->transport_generation)
+	{
+		(void) PgBackendMarkProtocolReadParkWake(backend,
+												 park_spec->generation,
+												 PG_PROTOCOL_PARK_WAKE_STALE_TRANSPORT,
+												 0);
+		return true;
+	}
+
+	timeout_ms = PgProtocolParkTimeoutDelayMs(backend, park_spec,
+											 &stale_timeout);
+	if (stale_timeout)
+	{
+		(void) PgBackendMarkProtocolReadParkWake(backend,
+												 park_spec->generation,
+												 PG_PROTOCOL_PARK_WAKE_STALE_TIMEOUT,
+												 0);
+		return true;
+	}
+	if (timeout_ms == 0)
+		observed_events |= WL_TIMEOUT;
+
+	if (observed_events == 0)
+	{
+		WaitEventSet *wait_set = connection->protocol.fe_be_wait_set;
+		WaitEvent	events[FeBeWaitSetNEvents];
+		int			rc;
+
+		Assert(wait_set != NULL);
+		ModifyWaitEvent(wait_set, FeBeWaitSetSocketPos,
+						park_spec->transport_wait_events | WL_SOCKET_CLOSED,
+						NULL);
+
+		wait_event_info_ptr = backend->wait_state.wait_event_info_ptr;
+		Assert(wait_event_info_ptr != NULL);
+
+		*(volatile uint32 *) wait_event_info_ptr = park_spec->wait_event_info;
+		PG_TRY();
+		{
+			rc = WaitEventSetWait(wait_set, 0, events, lengthof(events), 0);
+			for (int i = 0; i < rc; i++)
+			{
+				observed_events |= events[i].events;
+				if (events[i].events & (park_spec->transport_wait_events |
+										WL_SOCKET_CLOSED |
+										WL_LATCH_SET |
+										WL_POSTMASTER_DEATH))
+					break;
+			}
+			*(volatile uint32 *) wait_event_info_ptr = 0;
+		}
+		PG_CATCH();
+		{
+			*(volatile uint32 *) wait_event_info_ptr = 0;
+			PG_RE_THROW();
+		}
+		PG_END_TRY();
+	}
+
+	if (observed_events == 0)
+		return false;
+
+	PgBackendMarkProtocolReadParkWakeEvents(backend, park_spec,
+											observed_events);
+	if (wake_events != NULL)
+		*wake_events = observed_events;
+	return true;
+}
+
+int
+PgRuntimeProtocolSchedulerPollParkedReads(PgRuntime *runtime,
+										  PgBackend **scratch,
+										  int max_backends)
+{
+	int			nbackends;
+	int			nready = 0;
+
+	nbackends = PgRuntimeProtocolSchedulerCollectParked(runtime, scratch,
+													   max_backends);
+	for (int i = 0; i < nbackends; i++)
+	{
+		PgBackend  *backend = scratch[i];
+
+		if (PgBackendPollProtocolReadPark(backend, NULL) &&
+			PgRuntimeProtocolSchedulerMarkRunnable(runtime, backend))
+			nready++;
+	}
+
+	return nready;
+}
+
 static uint32
 PgSessionStagingWaitProtocolRead(PgBackend *backend,
 								 PgProtocolParkSpec *park_spec)
@@ -5363,32 +5542,8 @@ PgSessionStagingWaitProtocolRead(PgBackend *backend,
 	PG_END_TRY();
 
 	if (wake_events != 0)
-	{
-		uint32		wake_reasons = PG_PROTOCOL_PARK_WAKE_NONE;
-		PgBackendInterruptMask pending_interrupts;
-
-		if (wake_events & park_spec->transport_wait_events)
-			wake_reasons |= PG_PROTOCOL_PARK_WAKE_TRANSPORT;
-		if (wake_events & WL_SOCKET_CLOSED)
-			wake_reasons |= PG_PROTOCOL_PARK_WAKE_CLOSED;
-		if (wake_events & WL_LATCH_SET)
-			wake_reasons |= PG_PROTOCOL_PARK_WAKE_LOGICAL;
-		if (wake_events & WL_POSTMASTER_DEATH)
-			wake_reasons |= PG_PROTOCOL_PARK_WAKE_POSTMASTER;
-		if (wake_events & WL_TIMEOUT)
-			wake_reasons |= PG_PROTOCOL_PARK_WAKE_TIMEOUT;
-		pending_interrupts =
-			pg_atomic_read_u32(&backend->interrupts.pending_mask);
-		if ((wake_events & WL_LATCH_SET) &&
-			(pending_interrupts &
-			 PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_NOTIFY)))
-			wake_reasons |= PG_PROTOCOL_PARK_WAKE_NOTIFY;
-
-		(void) PgBackendMarkProtocolReadParkWake(backend,
-												 park_spec->generation,
-												 wake_reasons,
-												 wake_events);
-	}
+		PgBackendMarkProtocolReadParkWakeEvents(backend, park_spec,
+												wake_events);
 
 	return wake_events;
 }

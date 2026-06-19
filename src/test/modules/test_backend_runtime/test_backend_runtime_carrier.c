@@ -641,6 +641,113 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_protocol_scheduler_poll_buffered_read);
+Datum
+test_protocol_scheduler_poll_buffered_read(PG_FUNCTION_ARGS)
+{
+	PgRuntime  *saved_runtime;
+	PgCarrier  *saved_carrier;
+	PgBackend  *saved_backend;
+	PgSession  *saved_session;
+	PgConnection *saved_connection;
+	PgExecution *saved_execution;
+	MemoryContext saved_current_memory_context;
+	ResourceOwner saved_current_resource_owner;
+	PgThreadBackendRuntimeState state;
+	PgRuntime  *runtime;
+	PgProtocolSchedulerState *scheduler;
+	PgProtocolParkSpec park_spec;
+	PgBackend  *scratch[4];
+	uint32		base_parked_protocol_count;
+	uint32		base_runnable_count;
+	bool		ok = true;
+
+	saved_runtime = CurrentPgRuntime;
+	saved_carrier = CurrentPgCarrier;
+	saved_backend = CurrentPgBackend;
+	saved_session = CurrentPgSession;
+	saved_connection = CurrentPgConnection;
+	saved_execution = CurrentPgExecution;
+	saved_current_memory_context = CurrentMemoryContext;
+	saved_current_resource_owner = CurrentResourceOwner;
+
+	InitializePgThreadRuntime(NULL);
+	InitializePgThreadBackendRuntimeState(&state, B_BACKEND, NULL, NULL);
+	PgCarrierDetachBackend(&state.carrier, &state.logical.backend);
+	state.logical.session.loop_state.doing_command_read = true;
+	state.logical.connection.socket_io.transport_generation = 17;
+	runtime = state.logical.backend.runtime;
+	scheduler = &runtime->protocol_scheduler;
+	base_parked_protocol_count = scheduler->parked_protocol_count;
+	base_runnable_count = scheduler->runnable_count;
+
+	PG_TRY();
+	{
+		PgCarrierAttachBackend(&state.carrier, &state.logical.backend,
+							   &state.logical.session,
+							   &state.logical.connection,
+							   &state.logical.execution);
+
+		MemSet(&park_spec, 0, sizeof(park_spec));
+		park_spec.transport_buffered_input = true;
+		park_spec.transport_generation =
+			state.logical.connection.socket_io.transport_generation;
+		park_spec.wait_event_info = WAIT_EVENT_CLIENT_READ;
+
+		ok = ok && PgBackendPrepareProtocolReadPark(&state.logical.backend,
+													&park_spec);
+		PgCarrierCommitProtocolReadPark(&state.carrier,
+										&state.logical.backend);
+		ok = ok && CurrentPgBackend == NULL;
+		ok = ok && state.logical.backend.carrier == NULL;
+		ok = ok && scheduler->parked_protocol_count ==
+			base_parked_protocol_count + 1;
+		ok = ok && scheduler->runnable_count == base_runnable_count;
+		ok = ok && PgRuntimeProtocolSchedulerPollParkedReads(runtime,
+															 scratch,
+															 lengthof(scratch)) == 1;
+		ok = ok && state.logical.backend.protocol_park.wake_reasons ==
+			PG_PROTOCOL_PARK_WAKE_BUFFERED_INPUT;
+		ok = ok && state.logical.backend.protocol_park.wake_events == 0;
+		ok = ok && state.logical.backend.protocol_park.scheduler_queue_state ==
+			PG_PROTOCOL_SCHEDULER_QUEUE_RUNNABLE;
+		ok = ok && scheduler->parked_protocol_count ==
+			base_parked_protocol_count;
+		ok = ok && scheduler->runnable_count == base_runnable_count + 1;
+
+		ok = ok && PgRuntimeProtocolSchedulerRemoveBackend(runtime,
+														   &state.logical.backend);
+		ok = ok && scheduler->parked_protocol_count ==
+			base_parked_protocol_count;
+		ok = ok && scheduler->runnable_count == base_runnable_count;
+
+		PgRuntimeSetCurrentWork(saved_runtime, saved_carrier, saved_backend,
+								saved_session, saved_connection,
+								saved_execution, false);
+		CurrentMemoryContext = saved_current_memory_context;
+		CurrentResourceOwner = saved_current_resource_owner;
+	}
+	PG_CATCH();
+	{
+		(void) PgRuntimeProtocolSchedulerRemoveBackend(runtime,
+													   &state.logical.backend);
+		if (state.carrier.current_backend != NULL)
+			PgCarrierDetachBackend(&state.carrier, &state.logical.backend);
+		PgRuntimeSetCurrentWork(saved_runtime, saved_carrier, saved_backend,
+								saved_session, saved_connection,
+								saved_execution, false);
+		CurrentMemoryContext = saved_current_memory_context;
+		CurrentResourceOwner = saved_current_resource_owner;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "protocol scheduler buffered read poll failed");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_protocol_read_wake_applies_backend_interrupt);
 Datum
 test_protocol_read_wake_applies_backend_interrupt(PG_FUNCTION_ARGS)

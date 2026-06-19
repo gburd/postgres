@@ -130,6 +130,11 @@ pg_noreturn extern void PostgresSingleUserMain(int argc, char *argv[],
 											   const char *username);
 extern PgSession *PostgresBootstrapSession(const char *dbname,
 										   const char *username);
+extern bool PgBackendPollProtocolReadPark(PgBackend *backend,
+										  uint32 *wake_events);
+extern int	PgRuntimeProtocolSchedulerPollParkedReads(PgRuntime *runtime,
+													 PgBackend **scratch,
+													 int max_backends);
 extern PgStepResult PgSessionRunProtocolSchedulerUntilBoundary(PgSession *session);
 pg_noreturn extern void PostgresRunSession(PgSession *session);
 pg_noreturn extern void PostgresMain(const char *dbname,

@@ -59,6 +59,12 @@ SELECT test_carrier_protocol_park_prepare_commit();
  t
 (1 row)
 
+SELECT test_protocol_scheduler_poll_buffered_read();
+ test_protocol_scheduler_poll_buffered_read 
+--------------------------------------------
+ t
+(1 row)
+
 SELECT test_protocol_read_wake_applies_backend_interrupt();
  test_protocol_read_wake_applies_backend_interrupt 
 ---------------------------------------------------
