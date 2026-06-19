@@ -64,6 +64,8 @@ tests += {
       't/005_phase14_protocol_scheduler.pl',
       't/006_phase14_protocol_postmaster_death.pl',
       't/007_phase15_pooled_protocol_mode.pl',
+      't/008_phase15_pooled_protocol_postmaster_death.pl',
+      't/009_phase15_pooled_deep_waits_pinned.pl',
     ],
   },
 }
