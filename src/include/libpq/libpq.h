@@ -84,6 +84,9 @@ extern void pq_startmsgread(void);
 extern int	pq_startmsgread_getbyte(void);
 extern void pq_endmsgread(void);
 extern bool pq_is_reading_msg(void);
+extern bool PgConnectionCanParkBeforeMessage(PgConnection *connection);
+extern PgProtocolByteResult PgConnectionProbeMessageType(PgConnection *connection,
+														 PgProtocolByteProbe *probe);
 extern int	pq_getmessage(StringInfo s, int maxlen);
 extern int	pq_getbyte(void);
 extern int	pq_peekbyte(void);

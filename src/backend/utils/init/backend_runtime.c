@@ -549,7 +549,7 @@ PgRuntimeAfterProcessingModeChange(ProcessingMode mode)
 	PgRuntimeRefreshCurrentWork(false);
 }
 
-static void
+void
 PgRuntimeSetCurrentWork(PgRuntime *runtime, PgCarrier *carrier,
 						PgBackend *backend, PgSession *session,
 						PgConnection *connection, PgExecution *execution,
@@ -564,6 +564,87 @@ PgRuntimeSetCurrentWork(PgRuntime *runtime, PgCarrier *carrier,
 	CurrentPgConnection = connection;
 	CurrentPgExecution = execution;
 	PgRuntimeRefreshCurrentWork(rebind_session_gucs);
+}
+
+void
+PgCarrierAttachBackend(PgCarrier *carrier, PgBackend *backend,
+					   PgSession *session, PgConnection *connection,
+					   PgExecution *execution)
+{
+	PgRuntime  *runtime;
+
+	Assert(carrier != NULL);
+	Assert(backend != NULL);
+	Assert(session != NULL);
+	Assert(connection != NULL);
+	Assert(execution != NULL);
+	Assert(backend->session == NULL || backend->session == session);
+	Assert(backend->connection == NULL || backend->connection == connection);
+	Assert(backend->execution == NULL || backend->execution == execution);
+	Assert(session->backend == NULL || session->backend == backend);
+	Assert(session->connection == NULL || session->connection == connection);
+	Assert(session->execution == NULL || session->execution == execution);
+	Assert(connection->backend == NULL || connection->backend == backend);
+	Assert(connection->session == NULL || connection->session == session);
+	Assert(execution->backend == NULL || execution->backend == backend);
+	Assert(execution->session == NULL || execution->session == session);
+
+	runtime = carrier->runtime;
+	if (runtime == NULL)
+		runtime = backend->runtime;
+	Assert(runtime != NULL);
+	Assert(backend->runtime == NULL || backend->runtime == runtime);
+
+	runtime->current_carrier = carrier;
+	carrier->runtime = runtime;
+	carrier->current_backend = backend;
+	carrier->current_session = session;
+	carrier->current_execution = execution;
+	backend->runtime = runtime;
+	backend->carrier = carrier;
+	backend->session = session;
+	backend->connection = connection;
+	backend->execution = execution;
+	session->backend = backend;
+	session->connection = connection;
+	session->execution = execution;
+	connection->backend = backend;
+	connection->session = session;
+	execution->backend = backend;
+	execution->session = session;
+	execution->carrier = carrier;
+
+	PgRuntimeSetCurrentWork(runtime, carrier, backend, session, connection,
+							execution, true);
+}
+
+void
+PgCarrierDetachBackend(PgCarrier *carrier, PgBackend *backend)
+{
+	PgRuntime  *runtime;
+	PgExecution *execution;
+
+	Assert(carrier != NULL);
+	Assert(backend == NULL || carrier->current_backend == backend);
+
+	runtime = carrier->runtime;
+	Assert(runtime != NULL);
+
+	if (backend == NULL)
+		backend = carrier->current_backend;
+	execution = carrier->current_execution;
+
+	carrier->current_backend = NULL;
+	carrier->current_session = NULL;
+	carrier->current_execution = NULL;
+	if (backend != NULL && backend->carrier == carrier)
+		backend->carrier = NULL;
+	if (execution != NULL && execution->carrier == carrier)
+		execution->carrier = NULL;
+
+	if (CurrentPgCarrier == carrier)
+		PgRuntimeSetCurrentWork(runtime, carrier, NULL, NULL, NULL, NULL,
+								false);
 }
 
 static void

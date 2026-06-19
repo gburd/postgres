@@ -31,6 +31,14 @@ CREATE FUNCTION test_carrier_threaded_guc_lock_depth_is_carrier_local()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;
 
+CREATE FUNCTION test_carrier_attach_detach_current_work()
+	RETURNS pg_catalog.bool
+	AS 'MODULE_PATHNAME' LANGUAGE C;
+
+CREATE FUNCTION test_carrier_protocol_park_prepare_commit()
+	RETURNS pg_catalog.bool
+	AS 'MODULE_PATHNAME' LANGUAGE C;
+
 CREATE FUNCTION test_carrier_misc_state_is_carrier_local()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;
@@ -536,6 +544,10 @@ CREATE FUNCTION test_connection_socket_io_is_connection_local()
 	AS 'MODULE_PATHNAME' LANGUAGE C;
 
 CREATE FUNCTION test_connection_protocol_state_is_connection_local()
+	RETURNS pg_catalog.bool
+	AS 'MODULE_PATHNAME' LANGUAGE C;
+
+CREATE FUNCTION test_connection_protocol_byte_probe()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;
 

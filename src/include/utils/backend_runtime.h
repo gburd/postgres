@@ -166,19 +166,65 @@ struct GlobalVisState
 typedef struct PgStepBudget
 {
 	int			max_messages;
+	bool		protocol_park_enabled;
+	bool		return_logical_exits;
 } PgStepBudget;
 
 typedef enum PgStepResult
 {
 	PG_STEP_CONTINUE,
-	PG_STEP_ERROR_RECOVERED
+	PG_STEP_PARK_PROTOCOL_READ,
+	PG_STEP_ERROR_RECOVERED,
+	PG_STEP_DONE,
+	PG_STEP_FATAL_EXIT
 } PgStepResult;
 
 /*
- * Phase 14 protocol scheduling must extend PgStepResult before dispatch grows:
- * prepared protocol park, normal logical exit, and fatal logical exit must
- * return to the carrier loop instead of relying on carrier-thread exit.
+ * Protocol park and logical-exit results are opt-in through PgStepBudget until
+ * scheduler dispatch grows beyond process/thread-per-session compatibility.
  */
+
+typedef enum PgProtocolByteResult
+{
+	PG_PROTOCOL_BYTE_NONE,
+	PG_PROTOCOL_BYTE_AVAILABLE,
+	PG_PROTOCOL_BYTE_EOF
+} PgProtocolByteResult;
+
+typedef struct PgProtocolByteProbe
+{
+	unsigned char type;
+	uint32		transport_wait_events;
+	bool		transport_buffered_input;
+	uint64		transport_generation;
+} PgProtocolByteProbe;
+
+typedef enum PgProtocolParkState
+{
+	PG_PROTOCOL_PARK_NONE,
+	PG_PROTOCOL_PARK_PREPARED,
+	PG_PROTOCOL_PARK_COMMITTED
+} PgProtocolParkState;
+
+typedef struct PgProtocolParkSpec
+{
+	PgBackend  *backend;
+	PgSession  *session;
+	PgConnection *connection;
+	pgsocket	socket;
+	uint32		transport_wait_events;
+	bool		transport_buffered_input;
+	uint64		transport_generation;
+	uint32		wait_event_info;
+	uint64		generation;
+} PgProtocolParkSpec;
+
+typedef struct PgBackendProtocolParkState
+{
+	PgProtocolParkState state;
+	PgProtocolParkSpec spec;
+	uint64		next_generation;
+} PgBackendProtocolParkState;
 
 /*
  * Logical interrupts target a backend object first.  In process mode these are
@@ -264,9 +310,6 @@ typedef enum PgWaitCompletionInterrupt
 	PG_WAIT_COMPLETION_INTERRUPT_TERMINATE = (1 << 1)
 } PgWaitCompletionInterrupt;
 
-typedef void (*PgWaitCompletionRequeueHook) (PgWaitCompletion *completion,
-											 void *arg);
-
 struct PgWaitCompletion
 {
 	PgWaitSpec	spec;
@@ -276,9 +319,6 @@ struct PgWaitCompletion
 	pg_atomic_uint32 state;
 	pg_atomic_uint32 ready_events;
 	pg_atomic_uint32 interrupt_events;
-	/* Reserved for later explicit scheduler-boundary experiments. */
-	PgWaitCompletionRequeueHook requeue;
-	void	   *requeue_arg;
 };
 
 typedef struct PgBackendWaitState
@@ -2147,6 +2187,7 @@ typedef struct PgConnectionSocketIOState
 	bool		comm_busy;
 	bool		comm_reading_msg;
 	int			win32_noblock;
+	uint64		transport_generation;
 } PgConnectionSocketIOState;
 
 typedef struct PgConnectionProtocolState
@@ -2334,6 +2375,7 @@ struct PgBackend
 	PgBackendPendingInterruptState pending_interrupts;
 	PgBackendInterruptHoldoffState interrupt_holdoffs;
 	PgBackendWaitState wait_state;
+	PgBackendProtocolParkState protocol_park;
 	struct PGPROC *my_proc;
 	ProcNumber	my_proc_number;
 	ProcNumber	parallel_leader_proc_number;
@@ -3095,6 +3137,16 @@ extern void PgSetCurrentBackend(PgBackend *backend);
 extern void PgSetCurrentSession(PgSession *session);
 extern void PgSetCurrentConnection(PgConnection *connection);
 extern void PgSetCurrentExecution(PgExecution *execution);
+extern void PgRuntimeSetCurrentWork(PgRuntime *runtime, PgCarrier *carrier,
+									PgBackend *backend, PgSession *session,
+									PgConnection *connection,
+									PgExecution *execution,
+									bool rebind_session_gucs);
+extern void PgCarrierAttachBackend(PgCarrier *carrier, PgBackend *backend,
+								   PgSession *session,
+								   PgConnection *connection,
+								   PgExecution *execution);
+extern void PgCarrierDetachBackend(PgCarrier *carrier, PgBackend *backend);
 extern void PgRuntimeReportBridgeFallbackStats(void);
 extern bool PgCurrentSessionOwnsPointer(const void *ptr);
 extern bool PgCurrentOrEarlySessionOwnsPointer(const void *ptr);
@@ -3365,6 +3417,10 @@ extern bool PgBackendWakeWaitCompletion(PgBackend *backend,
 										uint32 ready_events);
 extern bool PgBackendWakeWaitCompletionById(PgBackendId backend_id,
 											uint32 ready_events);
+extern bool PgBackendPrepareProtocolReadPark(PgBackend *backend,
+											 PgProtocolParkSpec *spec);
+extern void PgCarrierCommitProtocolReadPark(PgCarrier *carrier,
+											PgBackend *backend);
 extern int	PgSuspend(const PgWaitSpec *wait_spec,
 					  PgSuspendCallback callback, void *callback_arg);
 extern PgStepResult PgSessionStep(PgSession *session, PgStepBudget budget);

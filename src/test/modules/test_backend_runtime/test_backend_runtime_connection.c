@@ -12,6 +12,35 @@
  */
 #include "test_backend_runtime.h"
 
+#ifndef WIN32
+#include <sys/socket.h>
+#endif
+
+#ifndef WIN32
+static void
+test_close_socket(pgsocket *sock)
+{
+	if (*sock != PGINVALID_SOCKET)
+	{
+		closesocket(*sock);
+		*sock = PGINVALID_SOCKET;
+	}
+}
+
+static void
+test_make_socket_pair(pgsocket socks[2])
+{
+	socks[0] = PGINVALID_SOCKET;
+	socks[1] = PGINVALID_SOCKET;
+
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, socks) != 0)
+		elog(ERROR, "could not create socket pair: %m");
+
+	if (!pg_set_noblock(socks[0]) || !pg_set_noblock(socks[1]))
+		elog(ERROR, "could not set socket pair nonblocking: %m");
+}
+#endif
+
 PG_FUNCTION_INFO_V1(test_connection_socket_io_is_connection_local);
 Datum
 test_connection_socket_io_is_connection_local(PG_FUNCTION_ARGS)
@@ -87,6 +116,144 @@ test_connection_socket_io_is_connection_local(PG_FUNCTION_ARGS)
 		elog(ERROR, "connection socket I/O state was not connection-local");
 
 	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_connection_protocol_byte_probe);
+Datum
+test_connection_protocol_byte_probe(PG_FUNCTION_ARGS)
+{
+#ifndef WIN32
+	PgConnection *saved_connection;
+	volatile uint32 saved_query_cancel_holdoff_count;
+	PgConnection connection;
+	PgConnectionSocketIOState *socket_io;
+	Port		port;
+	pgsocket	socks[2] = {PGINVALID_SOCKET, PGINVALID_SOCKET};
+	PgProtocolByteProbe probe;
+	PgProtocolByteResult result;
+	unsigned char type_byte;
+	bool		ok = true;
+
+	saved_connection = CurrentPgConnection;
+	saved_query_cancel_holdoff_count = QueryCancelHoldoffCount;
+	MemSet(&connection, 0, sizeof(connection));
+	MemSet(&port, 0, sizeof(port));
+
+	PG_TRY();
+	{
+		PgSetCurrentConnection(&connection);
+		QueryCancelHoldoffCount = 0;
+
+		socket_io = &connection.socket_io;
+		socket_io->recv_buffer[0] = PqMsg_Query;
+		socket_io->recv_pointer = 0;
+		socket_io->recv_length = 1;
+		socket_io->transport_generation = 7;
+		connection.identity.port = NULL;
+		result = PgConnectionProbeMessageType(&connection, &probe);
+		ok = ok && result == PG_PROTOCOL_BYTE_AVAILABLE;
+		ok = ok && probe.type == PqMsg_Query;
+		ok = ok && probe.transport_wait_events == 0;
+		ok = ok && probe.transport_buffered_input;
+		ok = ok && probe.transport_generation == 8;
+		ok = ok && socket_io->recv_pointer == 1;
+		ok = ok && pq_is_reading_msg();
+		ok = ok && !PgConnectionCanParkBeforeMessage(&connection);
+		pq_endmsgread();
+		ok = ok && PgConnectionCanParkBeforeMessage(&connection);
+
+		MemSet(&connection, 0, sizeof(connection));
+		MemSet(&port, 0, sizeof(port));
+		test_make_socket_pair(socks);
+		port.sock = socks[0];
+		connection.identity.port = &port;
+		socket_io = &connection.socket_io;
+		socket_io->recv_pointer = 3;
+		socket_io->recv_length = 3;
+		socket_io->transport_generation = 42;
+		result = PgConnectionProbeMessageType(&connection, &probe);
+		ok = ok && result == PG_PROTOCOL_BYTE_NONE;
+		ok = ok && (probe.transport_wait_events & WL_SOCKET_READABLE) != 0;
+		ok = ok && !probe.transport_buffered_input;
+		ok = ok && probe.transport_generation == 42;
+		ok = ok && socket_io->recv_pointer == 3;
+		ok = ok && socket_io->recv_length == 3;
+		ok = ok && !pq_is_reading_msg();
+		ok = ok && PgConnectionCanParkBeforeMessage(&connection);
+		ok = ok && QueryCancelHoldoffCount == 0;
+		test_close_socket(&socks[0]);
+		test_close_socket(&socks[1]);
+
+		MemSet(&connection, 0, sizeof(connection));
+		MemSet(&port, 0, sizeof(port));
+		test_make_socket_pair(socks);
+		type_byte = PqMsg_Query;
+		if (send(socks[1], &type_byte, 1, 0) != 1)
+			elog(ERROR, "could not write protocol byte to socket pair: %m");
+		port.sock = socks[0];
+		connection.identity.port = &port;
+		socket_io = &connection.socket_io;
+		socket_io->transport_generation = 90;
+		result = PgConnectionProbeMessageType(&connection, &probe);
+		ok = ok && result == PG_PROTOCOL_BYTE_AVAILABLE;
+		ok = ok && probe.type == PqMsg_Query;
+		ok = ok && probe.transport_wait_events == 0;
+		ok = ok && !probe.transport_buffered_input;
+		ok = ok && probe.transport_generation == 91;
+		ok = ok && pq_is_reading_msg();
+		ok = ok && !PgConnectionCanParkBeforeMessage(&connection);
+		pq_endmsgread();
+		ok = ok && PgConnectionCanParkBeforeMessage(&connection);
+		test_close_socket(&socks[0]);
+		test_close_socket(&socks[1]);
+
+		MemSet(&connection, 0, sizeof(connection));
+		MemSet(&port, 0, sizeof(port));
+		test_make_socket_pair(socks);
+		port.sock = socks[0];
+		connection.identity.port = &port;
+		test_close_socket(&socks[1]);
+		result = PgConnectionProbeMessageType(&connection, &probe);
+		ok = ok && result == PG_PROTOCOL_BYTE_EOF;
+		ok = ok && !pq_is_reading_msg();
+		ok = ok && PgConnectionCanParkBeforeMessage(&connection);
+		test_close_socket(&socks[0]);
+
+		MemSet(&connection, 0, sizeof(connection));
+		MemSet(&port, 0, sizeof(port));
+		test_make_socket_pair(socks);
+		port.sock = socks[0];
+		connection.identity.port = &port;
+		connection.security.gss_send_length = 2;
+		connection.security.gss_send_next = 1;
+		result = PgConnectionProbeMessageType(&connection, &probe);
+		ok = ok && result == PG_PROTOCOL_BYTE_NONE;
+		ok = ok && probe.transport_wait_events == WL_SOCKET_WRITEABLE;
+		ok = ok && !probe.transport_buffered_input;
+		ok = ok && !pq_is_reading_msg();
+		test_close_socket(&socks[0]);
+		test_close_socket(&socks[1]);
+
+		QueryCancelHoldoffCount = saved_query_cancel_holdoff_count;
+		PgSetCurrentConnection(saved_connection);
+	}
+	PG_CATCH();
+	{
+		test_close_socket(&socks[0]);
+		test_close_socket(&socks[1]);
+		QueryCancelHoldoffCount = saved_query_cancel_holdoff_count;
+		PgSetCurrentConnection(saved_connection);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "protocol byte probe did not preserve boundary semantics");
+
+	PG_RETURN_BOOL(true);
+#else
+	PG_RETURN_BOOL(true);
+#endif
 }
 PG_FUNCTION_INFO_V1(test_connection_protocol_state_is_connection_local);
 Datum

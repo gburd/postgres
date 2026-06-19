@@ -87,6 +87,7 @@
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
 #include "utils/varlena.h"
+#include "utils/wait_event.h"
 
 /*
  * Log_disconnections, log_statement, and PostAuthDelay live in
@@ -142,6 +143,8 @@ typedef struct BindParamCbData
 									   CurrentPgSession, \
 									   PgCurrentDoingCommandReadRef))
 
+#define PG_READ_COMMAND_PROTOCOL_PARK	(-2)
+
 /*
  * If an unnamed prepared statement exists, it's stored here.
  * We keep it separate from the hashtable kept by commands/prepare.c
@@ -164,8 +167,10 @@ typedef struct BindParamCbData
  */
 static int	InteractiveBackend(StringInfo inBuf);
 static int	interactive_getc(void);
-static int	SocketBackend(PgSession *session, StringInfo inBuf);
-static int	ReadCommand(PgSession *session, StringInfo inBuf);
+static int	SocketBackend(PgSession *session, StringInfo inBuf,
+						  PgStepBudget budget);
+static int	ReadCommand(PgSession *session, StringInfo inBuf,
+						PgStepBudget budget);
 static void forbidden_in_wal_sender(char firstchar);
 static bool check_log_statement(List *stmt_list);
 static int	errdetail_execute(List *raw_parsetree_list);
@@ -432,7 +437,7 @@ interactive_getc(void)
  * ----------------
  */
 static int
-SocketBackend(PgSession *session, StringInfo inBuf)
+SocketBackend(PgSession *session, StringInfo inBuf, PgStepBudget budget)
 {
 	PgSessionLoopState *state;
 	volatile uint32 *query_cancel_holdoff_count;
@@ -446,8 +451,45 @@ SocketBackend(PgSession *session, StringInfo inBuf)
 	/*
 	 * Get message type code from the frontend.
 	 */
-	(*query_cancel_holdoff_count)++;
-	qtype = pq_startmsgread_getbyte();
+	if (budget.protocol_park_enabled)
+	{
+		PgProtocolByteProbe probe;
+		PgProtocolByteResult probe_result;
+
+		probe_result = PgConnectionProbeMessageType(session->connection,
+													&probe);
+		if (probe_result == PG_PROTOCOL_BYTE_NONE)
+		{
+			PgProtocolParkSpec park_spec;
+
+			MemSet(&park_spec, 0, sizeof(park_spec));
+			park_spec.transport_wait_events = probe.transport_wait_events;
+			park_spec.transport_buffered_input =
+				probe.transport_buffered_input;
+			park_spec.transport_generation = probe.transport_generation;
+			park_spec.wait_event_info = WAIT_EVENT_CLIENT_READ;
+
+			if (PgBackendPrepareProtocolReadPark(session->backend,
+												 &park_spec))
+				return PG_READ_COMMAND_PROTOCOL_PARK;
+
+			(*query_cancel_holdoff_count)++;
+			qtype = pq_startmsgread_getbyte();
+		}
+		else if (probe_result == PG_PROTOCOL_BYTE_AVAILABLE)
+		{
+			qtype = probe.type;
+			(*query_cancel_holdoff_count)++;
+			goto have_message_type;
+		}
+		else
+			qtype = EOF;
+	}
+	else
+	{
+		(*query_cancel_holdoff_count)++;
+		qtype = pq_startmsgread_getbyte();
+	}
 
 	if (qtype == EOF)			/* frontend disconnected */
 	{
@@ -469,6 +511,8 @@ SocketBackend(PgSession *session, StringInfo inBuf)
 		}
 		return qtype;
 	}
+
+have_message_type:
 
 	/*
 	 * Validate message type code before trying to read body; if we have lost
@@ -566,14 +610,14 @@ SocketBackend(PgSession *session, StringInfo inBuf)
  * ----------------
  */
 static int
-ReadCommand(PgSession *session, StringInfo inBuf)
+ReadCommand(PgSession *session, StringInfo inBuf, PgStepBudget budget)
 {
 	int			result;
 
 	Assert(session != NULL);
 
 	if (whereToSendOutput == DestRemote)
-		result = SocketBackend(session, inBuf);
+		result = SocketBackend(session, inBuf, budget);
 	else
 		result = InteractiveBackend(inBuf);
 	return result;
@@ -4677,7 +4721,10 @@ PgSessionStepUnprotected(PgSession *session, PgStepBudget budget)
 	/*
 	 * (3) read a command (loop blocks here)
 	 */
-	firstchar = ReadCommand(session, &input_message);
+	firstchar = ReadCommand(session, &input_message, budget);
+
+	if (firstchar == PG_READ_COMMAND_PROTOCOL_PARK)
+		return PG_STEP_PARK_PROTOCOL_READ;
 
 	/*
 	 * (4) turn off the idle-in-transaction and idle-session timeouts if
@@ -4970,6 +5017,9 @@ PgSessionStepUnprotected(PgSession *session, PgStepBudget budget)
 			if (whereToSendOutput == DestRemote)
 				whereToSendOutput = DestNone;
 
+			if (budget.return_logical_exits)
+				return PG_STEP_DONE;
+
 			/*
 			 * NOTE: if you are tempted to add more code here, DON'T! Whatever
 			 * you had in mind to do should be set up as an on_proc_exit or
@@ -5095,7 +5145,7 @@ PgSessionRun(PgSession *session)
 	state = &session->loop_state;
 	Assert(!state->step_error_boundary_active);
 
-	budget.max_messages = 0;
+	MemSet(&budget, 0, sizeof(budget));
 	exception_stack_ref = PgCurrentExceptionStackRefFast();
 	state->step_error_boundary_active = true;
 

@@ -23,6 +23,7 @@
 #include "commands/repack.h"
 #include "executor/spi.h"
 #include "lib/dshash.h"
+#include "libpq/libpq.h"
 #include "miscadmin.h"
 #include "postmaster/pgarch.h"
 #include "postmaster/interrupt.h"
@@ -786,8 +787,6 @@ PgWaitCompletionPublish(PgWaitCompletion *completion, PgBackend *backend,
 	completion->backend = backend;
 	completion->session = CurrentPgSession;
 	completion->execution = CurrentPgExecution;
-	completion->requeue = NULL;
-	completion->requeue_arg = NULL;
 	pg_atomic_write_u32(&completion->ready_events, 0);
 	pg_atomic_write_u32(&completion->interrupt_events, interrupt_events);
 	pg_atomic_write_membarrier_u32(&completion->state,
@@ -803,8 +802,6 @@ PgWaitCompletionClear(PgWaitCompletion *completion)
 	completion->backend = NULL;
 	completion->session = NULL;
 	completion->execution = NULL;
-	completion->requeue = NULL;
-	completion->requeue_arg = NULL;
 	pg_atomic_write_u32(&completion->ready_events, 0);
 	pg_atomic_write_u32(&completion->interrupt_events, 0);
 	pg_atomic_write_u32(&completion->state, PG_WAIT_COMPLETION_INACTIVE);
@@ -1505,8 +1502,6 @@ PgBackendSnapshotWaitCompletionById(PgBackendId backend_id,
 							   pg_atomic_read_u32(&completion->ready_events));
 			pg_atomic_init_u32(&snapshot->interrupt_events,
 							   pg_atomic_read_u32(&completion->interrupt_events));
-			snapshot->requeue = completion->requeue;
-			snapshot->requeue_arg = completion->requeue_arg;
 		}
 		if (waiting != NULL)
 			*waiting = pg_atomic_read_u32(&backend->wait_state.waiting);
@@ -1560,15 +1555,7 @@ PgBackendWakeWaitCompletion(PgBackend *backend, uint32 ready_events)
 	pg_atomic_fetch_or_u32(&completion->ready_events, ready_events);
 	pg_atomic_write_membarrier_u32(&completion->state,
 								   PG_WAIT_COMPLETION_READY);
-
-	/*
-	 * Not a Phase 14/15 deep-wait carrier-release hook.  Phase 14A.0 must
-	 * remove, disable, or assert this unreachable before scheduler queues start.
-	 */
-	if (completion->requeue != NULL)
-		completion->requeue(completion, completion->requeue_arg);
-	else
-		PgBackendWakeForWaitCompletion(backend);
+	PgBackendWakeForWaitCompletion(backend);
 
 	return true;
 }
@@ -1593,6 +1580,71 @@ PgBackendWakeWaitCompletionById(PgBackendId backend_id, uint32 ready_events)
 	(void) ready_events;
 	return false;
 #endif
+}
+
+bool
+PgBackendPrepareProtocolReadPark(PgBackend *backend, PgProtocolParkSpec *spec)
+{
+	PgSession  *session;
+	PgConnection *connection;
+	PgBackendProtocolParkState *park_state;
+
+	Assert(backend != NULL);
+	Assert(spec != NULL);
+	Assert(backend == CurrentPgBackend);
+
+	session = spec->session != NULL ? spec->session : backend->session;
+	connection = spec->connection != NULL ? spec->connection : backend->connection;
+	Assert(session != NULL);
+	Assert(connection != NULL);
+	Assert(session == CurrentPgSession);
+	Assert(connection == CurrentPgConnection);
+	Assert(session->loop_state.doing_command_read);
+
+	if (!PgConnectionCanParkBeforeMessage(connection))
+		return false;
+	if (spec->transport_wait_events == 0 && !spec->transport_buffered_input)
+		return false;
+
+	park_state = &backend->protocol_park;
+	Assert(park_state->state == PG_PROTOCOL_PARK_NONE ||
+		   park_state->state == PG_PROTOCOL_PARK_COMMITTED);
+
+	spec->backend = backend;
+	spec->session = session;
+	spec->connection = connection;
+	spec->socket = connection->identity.port != NULL ?
+		connection->identity.port->sock : PGINVALID_SOCKET;
+	spec->generation = ++park_state->next_generation;
+
+	park_state->spec = *spec;
+	park_state->state = PG_PROTOCOL_PARK_PREPARED;
+
+	return true;
+}
+
+void
+PgCarrierCommitProtocolReadPark(PgCarrier *carrier, PgBackend *backend)
+{
+	PgBackendProtocolParkState *park_state;
+	PgConnection *connection;
+
+	Assert(carrier != NULL);
+	Assert(backend != NULL);
+	Assert(carrier == CurrentPgCarrier);
+	Assert(backend == CurrentPgBackend);
+	Assert(carrier->current_backend == backend);
+
+	park_state = &backend->protocol_park;
+	Assert(park_state->state == PG_PROTOCOL_PARK_PREPARED);
+
+	connection = park_state->spec.connection;
+	Assert(connection != NULL);
+	if (!PgConnectionCanParkBeforeMessage(connection))
+		elog(PANIC, "cannot commit protocol read park during active message read");
+
+	park_state->state = PG_PROTOCOL_PARK_COMMITTED;
+	PgCarrierDetachBackend(carrier, backend);
 }
 
 static void

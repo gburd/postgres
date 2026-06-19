@@ -147,3 +147,230 @@ test_carrier_threaded_guc_lock_depth_is_carrier_local(PG_FUNCTION_ARGS)
 
 	PG_RETURN_BOOL(true);
 }
+
+PG_FUNCTION_INFO_V1(test_carrier_attach_detach_current_work);
+Datum
+test_carrier_attach_detach_current_work(PG_FUNCTION_ARGS)
+{
+	PgRuntime  *saved_runtime;
+	PgCarrier  *saved_carrier;
+	PgBackend  *saved_backend;
+	PgSession  *saved_session;
+	PgConnection *saved_connection;
+	PgExecution *saved_execution;
+	MemoryContext saved_current_memory_context;
+	ResourceOwner saved_current_resource_owner;
+	PgThreadBackendRuntimeState state;
+	PGPROC		fake_proc;
+	Latch		fake_latch;
+	WaitEventSet *fake_wait_set;
+	MemoryContext fake_memory_context;
+	ResourceOwner fake_resource_owner;
+	bool		ok = true;
+
+	saved_runtime = CurrentPgRuntime;
+	saved_carrier = CurrentPgCarrier;
+	saved_backend = CurrentPgBackend;
+	saved_session = CurrentPgSession;
+	saved_connection = CurrentPgConnection;
+	saved_execution = CurrentPgExecution;
+	saved_current_memory_context = CurrentMemoryContext;
+	saved_current_resource_owner = CurrentResourceOwner;
+
+	InitializePgThreadRuntime(NULL);
+	InitializePgThreadBackendRuntimeState(&state, B_BACKEND, NULL,
+										  &fake_latch);
+	PgCarrierDetachBackend(&state.carrier, &state.backend);
+	MemSet(&fake_proc, 0, sizeof(fake_proc));
+	InitLatch(&fake_latch);
+	fake_wait_set = (WaitEventSet *) &state.connection;
+	fake_memory_context = (MemoryContext) &state.execution;
+	fake_resource_owner = (ResourceOwner) &state.execution;
+	state.backend.my_proc = &fake_proc;
+	state.backend.my_proc_number = 42;
+	state.backend.core.latch = &fake_latch;
+	state.backend.timeout.num_active_timeouts = 3;
+	state.connection.protocol.fe_be_wait_set = fake_wait_set;
+	state.execution.memory_contexts.current_context = fake_memory_context;
+	state.execution.resource_owners.current_owner =
+		(struct ResourceOwnerData *) fake_resource_owner;
+
+	PG_TRY();
+	{
+		PgCarrierAttachBackend(&state.carrier, &state.backend,
+							   &state.session, &state.connection,
+							   &state.execution);
+
+		ok = ok && CurrentPgRuntime == state.backend.runtime;
+		ok = ok && CurrentPgRuntime->current_carrier == &state.carrier;
+		ok = ok && CurrentPgCarrier == &state.carrier;
+		ok = ok && CurrentPgBackend == &state.backend;
+		ok = ok && CurrentPgSession == &state.session;
+		ok = ok && CurrentPgConnection == &state.connection;
+		ok = ok && CurrentPgExecution == &state.execution;
+		ok = ok && state.carrier.current_backend == &state.backend;
+		ok = ok && state.carrier.current_session == &state.session;
+		ok = ok && state.carrier.current_execution == &state.execution;
+		ok = ok && state.backend.carrier == &state.carrier;
+		ok = ok && state.execution.carrier == &state.carrier;
+		ok = ok && CurrentPgBackendTimeoutRuntimeState ==
+			&state.backend.timeout;
+		ok = ok && CurrentPgConnectionProtocolRuntimeState ==
+			&state.connection.protocol;
+		ok = ok && CurrentPgExecutionMemoryContextRuntimeState ==
+			&state.execution.memory_contexts;
+		ok = ok && CurrentPgExecutionResourceOwnerRuntimeState ==
+			&state.execution.resource_owners;
+		ok = ok && MyProc == &fake_proc;
+		ok = ok && MyProcNumber == 42;
+		ok = ok && MyLatch == &fake_latch;
+		ok = ok && FeBeWaitSet == fake_wait_set;
+		ok = ok && CurrentMemoryContext == fake_memory_context;
+		ok = ok && CurrentResourceOwner == fake_resource_owner;
+		ok = ok && PgCurrentTimeoutState() == &state.backend.timeout;
+
+		PgCarrierDetachBackend(&state.carrier, &state.backend);
+
+		ok = ok && CurrentPgRuntime == state.backend.runtime;
+		ok = ok && CurrentPgCarrier == &state.carrier;
+		ok = ok && CurrentPgBackend == NULL;
+		ok = ok && CurrentPgSession == NULL;
+		ok = ok && CurrentPgConnection == NULL;
+		ok = ok && CurrentPgExecution == NULL;
+		ok = ok && state.carrier.current_backend == NULL;
+		ok = ok && state.carrier.current_session == NULL;
+		ok = ok && state.carrier.current_execution == NULL;
+		ok = ok && state.backend.carrier == NULL;
+		ok = ok && state.execution.carrier == NULL;
+		ok = ok && CurrentPgBackendTimeoutRuntimeState == NULL;
+		ok = ok && CurrentPgConnectionProtocolRuntimeState == NULL;
+		ok = ok && CurrentPgExecutionMemoryContextRuntimeState == NULL;
+		ok = ok && CurrentPgExecutionResourceOwnerRuntimeState == NULL;
+		ok = ok && MyProc != &fake_proc;
+		ok = ok && MyLatch != &fake_latch;
+		ok = ok && FeBeWaitSet != fake_wait_set;
+		ok = ok && CurrentMemoryContext != fake_memory_context;
+		ok = ok && CurrentResourceOwner != fake_resource_owner;
+
+		PgRuntimeSetCurrentWork(saved_runtime, saved_carrier, saved_backend,
+								saved_session, saved_connection,
+								saved_execution, false);
+		CurrentMemoryContext = saved_current_memory_context;
+		CurrentResourceOwner = saved_current_resource_owner;
+	}
+	PG_CATCH();
+	{
+		PgRuntimeSetCurrentWork(saved_runtime, saved_carrier, saved_backend,
+								saved_session, saved_connection,
+								saved_execution, false);
+		CurrentMemoryContext = saved_current_memory_context;
+		CurrentResourceOwner = saved_current_resource_owner;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "carrier attach/detach did not refresh current work");
+
+	PG_RETURN_BOOL(true);
+}
+
+PG_FUNCTION_INFO_V1(test_carrier_protocol_park_prepare_commit);
+Datum
+test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
+{
+	PgRuntime  *saved_runtime;
+	PgCarrier  *saved_carrier;
+	PgBackend  *saved_backend;
+	PgSession  *saved_session;
+	PgConnection *saved_connection;
+	PgExecution *saved_execution;
+	MemoryContext saved_current_memory_context;
+	ResourceOwner saved_current_resource_owner;
+	PgThreadBackendRuntimeState state;
+	PgProtocolParkSpec park_spec;
+	Latch		fake_latch;
+	bool		ok = true;
+
+	saved_runtime = CurrentPgRuntime;
+	saved_carrier = CurrentPgCarrier;
+	saved_backend = CurrentPgBackend;
+	saved_session = CurrentPgSession;
+	saved_connection = CurrentPgConnection;
+	saved_execution = CurrentPgExecution;
+	saved_current_memory_context = CurrentMemoryContext;
+	saved_current_resource_owner = CurrentResourceOwner;
+
+	InitializePgThreadRuntime(NULL);
+	InitializePgThreadBackendRuntimeState(&state, B_BACKEND, NULL,
+										  &fake_latch);
+	PgCarrierDetachBackend(&state.carrier, &state.backend);
+	InitLatch(&fake_latch);
+	state.backend.core.latch = &fake_latch;
+	state.session.loop_state.doing_command_read = true;
+	state.connection.socket_io.transport_generation = 11;
+
+	PG_TRY();
+	{
+		PgCarrierAttachBackend(&state.carrier, &state.backend,
+							   &state.session, &state.connection,
+							   &state.execution);
+
+		MemSet(&park_spec, 0, sizeof(park_spec));
+		park_spec.transport_wait_events = WL_SOCKET_READABLE;
+		park_spec.transport_generation =
+			state.connection.socket_io.transport_generation;
+		park_spec.wait_event_info = WAIT_EVENT_CLIENT_READ;
+
+		ok = ok && PgBackendPrepareProtocolReadPark(&state.backend,
+													&park_spec);
+		ok = ok && state.backend.protocol_park.state ==
+			PG_PROTOCOL_PARK_PREPARED;
+		ok = ok && state.backend.protocol_park.spec.backend ==
+			&state.backend;
+		ok = ok && state.backend.protocol_park.spec.session ==
+			&state.session;
+		ok = ok && state.backend.protocol_park.spec.connection ==
+			&state.connection;
+		ok = ok && state.backend.protocol_park.spec.transport_wait_events ==
+			WL_SOCKET_READABLE;
+		ok = ok && state.backend.protocol_park.spec.transport_generation == 11;
+		ok = ok && state.backend.protocol_park.spec.generation == 1;
+		ok = ok && CurrentPgBackend == &state.backend;
+		ok = ok && state.carrier.current_backend == &state.backend;
+		ok = ok && state.backend.carrier == &state.carrier;
+
+		PgCarrierCommitProtocolReadPark(&state.carrier, &state.backend);
+
+		ok = ok && state.backend.protocol_park.state ==
+			PG_PROTOCOL_PARK_COMMITTED;
+		ok = ok && state.backend.protocol_park.spec.generation == 1;
+		ok = ok && CurrentPgBackend == NULL;
+		ok = ok && CurrentPgSession == NULL;
+		ok = ok && CurrentPgConnection == NULL;
+		ok = ok && CurrentPgExecution == NULL;
+		ok = ok && state.carrier.current_backend == NULL;
+		ok = ok && state.backend.carrier == NULL;
+
+		PgRuntimeSetCurrentWork(saved_runtime, saved_carrier, saved_backend,
+								saved_session, saved_connection,
+								saved_execution, false);
+		CurrentMemoryContext = saved_current_memory_context;
+		CurrentResourceOwner = saved_current_resource_owner;
+	}
+	PG_CATCH();
+	{
+		PgRuntimeSetCurrentWork(saved_runtime, saved_carrier, saved_backend,
+								saved_session, saved_connection,
+								saved_execution, false);
+		CurrentMemoryContext = saved_current_memory_context;
+		CurrentResourceOwner = saved_current_resource_owner;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "protocol park prepare/commit split failed");
+
+	PG_RETURN_BOOL(true);
+}

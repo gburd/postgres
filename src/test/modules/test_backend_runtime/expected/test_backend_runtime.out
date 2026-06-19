@@ -41,6 +41,18 @@ SELECT test_carrier_threaded_guc_lock_depth_is_carrier_local();
  t
 (1 row)
 
+SELECT test_carrier_attach_detach_current_work();
+ test_carrier_attach_detach_current_work 
+-----------------------------------------
+ t
+(1 row)
+
+SELECT test_carrier_protocol_park_prepare_commit();
+ test_carrier_protocol_park_prepare_commit 
+-------------------------------------------
+ t
+(1 row)
+
 SELECT test_carrier_misc_state_is_carrier_local();
  test_carrier_misc_state_is_carrier_local 
 ------------------------------------------
@@ -801,6 +813,12 @@ SELECT test_connection_protocol_state_is_connection_local();
  t
 (1 row)
 
+SELECT test_connection_protocol_byte_probe();
+ test_connection_protocol_byte_probe 
+-------------------------------------
+ t
+(1 row)
+
 SELECT test_connection_reset_closed_state();
  test_connection_reset_closed_state 
 ------------------------------------
@@ -1004,4 +1022,3 @@ SELECT convert_from(
 ----------------------------
  phase12 encoding state
 (1 row)
-
