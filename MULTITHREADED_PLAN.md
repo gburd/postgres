@@ -872,9 +872,12 @@ Likely changes:
   pooled-protocol-migratable.
 - Replace or split any single generic pooled-scheduler extension level before
   claiming session migration.
+- Do not set the pooled protocol runtime requirement to the old
+  `PG_BACKEND_MODEL_POOLED_SCHEDULER` marker; it is too coarse and ordinal
+  loader compatibility would admit the wrong modules.
 - Keep non-migratable sessions hard-affine or rejected from pooled protocol
   mode.
-- Add soft carrier affinity and optional short grace pinning for hot sessions.
+- Add migration/affinity policy after the compatibility split exists.
 - Add scheduler observability for carrier count, running backends, parked
   protocol reads, runnable queue length, wake reasons, and migrated versus
   same-carrier resumes.
@@ -1281,13 +1284,16 @@ Mitigation:
    and process lifecycle remains process signalling.
 4. Link Phase 14 and Phase 15 work to
    `MULTITHREADED_PROTOCOL_SCHEDULER_DESIGN.md`.
-5. Remove or disable generic scheduler requeue hooks from deep
-   wait-completion records before adding new pooled scheduler behavior.
+5. Remove, disable, or assert-unreachable generic scheduler requeue hooks from
+   deep wait-completion records before adding new pooled scheduler behavior.
+   This is a hard Phase 14A.0 gate.
 6. Add the protocol byte-probe primitive with explicit no-byte, byte-available,
    and EOF/error semantics, plus tests that prove no-byte does not advance
    buffer or message-read state.
-7. Add the explicit protocol-park API, including parked wake reason,
+7. Add explicit protocol-park prepare/commit APIs, including parked wake reason,
    generation/sequence tracking, and deferred-notify generation tracking.
+   `PgSessionStep()` prepares the park and returns; the carrier loop commits
+   detach only after the step stack has unwound.
 8. Add backend-indexed timeout snapshot/wake support, or require reattach before
    inspecting/firing timeout state that depends on current-backend globals.
 9. Decide and assert the Phase 14 `PGPROC`, latch, logical wake object, and

@@ -307,14 +307,20 @@ Required behavior:
 Correctness must not depend on a session returning to the same carrier after it
 parks. Performance may benefit from preferring the same carrier.
 
-Phase 14A should support soft carrier affinity:
+Phase 14 should keep this minimal:
 
-- record the last carrier that ran a logical backend;
+- record the last carrier that ran a logical backend if that is cheap and useful
+  for diagnostics;
+- do not implement grace pinning as a Phase 14 correctness feature;
+- do not hold a carrier for an idle session in staging mode.
+
+Phase 15 target pooled mode may add soft carrier affinity:
+
 - when the backend wakes, prefer that carrier if it is idle or cheap to wake;
 - allow any carrier to run the backend if the preferred carrier is busy;
 - do not hold a carrier indefinitely for an idle session.
 
-An optional optimization is a short grace pin:
+Phase 15 may also add a short grace pin after correctness is proven:
 
 - after `ReadyForQuery`, a carrier may wait briefly for the same session's next
   frontend message before returning to the general pool;
@@ -328,7 +334,7 @@ This separates the correctness model from cache-locality policy:
 
 ```text
 Correctness: parked sessions are movable.
-Performance: recently active sessions have carrier affinity.
+Performance: target pooled mode may prefer recently active sessions' carriers.
 ```
 
 ## Session Migration Compatibility
@@ -399,6 +405,14 @@ Until that split exists, pooled protocol mode must treat modules that only claim
 the old generic pooled scheduler model as non-migratable, or reject them from
 pooled protocol mode.
 
+Phase 14/15 must not set the runtime-required backend model to
+`PG_BACKEND_MODEL_POOLED_SCHEDULER`. The live loader currently uses ordinal
+compatibility for that generic marker, so using it as the requirement would
+admit modules under a promise the protocol scheduler no longer defines. Until
+the split enum exists, pooled protocol mode should require
+`PG_BACKEND_MODEL_THREAD_PER_SESSION` plus a separate hard-affinity policy, or
+remain disabled for extension-bearing sessions.
+
 Examples of state that must not be carrier-local for migratable sessions:
 
 - session GUC backing variables;
@@ -430,7 +444,7 @@ For Phase 14A it should provide:
 - socket readiness dispatch;
 - logical wake dispatch;
 - attach/detach assertions;
-- optional soft carrier affinity metadata.
+- optional last-carrier diagnostic metadata, without grace-pinning policy.
 
 ### PgCarrier
 
@@ -600,7 +614,10 @@ Suggested states:
 - `DETACHED`: backend is not owned by scheduler queues and is not running;
 - `RUNNABLE`: backend is queued to run;
 - `RUNNING`: backend is attached to a carrier;
-- `PARKED_PROTOCOL_READ`: backend is detached at top-level protocol input;
+- `PARKING_PROTOCOL_READ`: backend is still attached, but `PgSessionStep()` has
+  prepared a park request and is returning normally to the carrier loop;
+- `PARKED_PROTOCOL_READ`: backend is detached by the carrier loop after the step
+  stack has unwound;
 - `EXITING`: backend is tearing down and must not be dispatched.
 
 Avoid a generic `WAITING` state unless it is explicitly qualified. Deep
@@ -611,14 +628,17 @@ observable waits should not be represented as scheduler waiting.
 `PgSessionStep()` should return a small set of scheduler-visible outcomes:
 
 - `CONTINUE`: made progress and may be called again;
-- `PARKED_PROTOCOL_READ`: detached safely at top-level frontend input;
+- `PARK_PROTOCOL_READ`: prepared a protocol-read park request at top-level
+  frontend input. The backend is still attached until the carrier loop observes
+  the result and detaches after `PgSessionStep()` has returned;
 - `ERROR_RECOVERED`: recovered from `ERROR`; scheduler may continue or exit
   depending on session state;
 - `DONE`: session exited normally;
 - `FATAL_EXIT`: logical backend is terminating.
 
-The exact enum names can differ, but `PARKED_PROTOCOL_READ` should not be
-named like a generic wait.
+The exact enum names can differ, but the park result should not be named like a
+generic wait and must not imply that detach already happened inside
+`PgSessionStep()`.
 
 ## Phase 14A Control Flow
 
@@ -627,7 +647,8 @@ named like a generic wait.
 1. Pop a runnable backend.
 2. Attach backend/session/connection/execution current pointers.
 3. Run `PgSessionStep()` with a small budget.
-4. If the step returns `PARKED_PROTOCOL_READ`, detach and wait for readiness.
+4. If the step returns `PARK_PROTOCOL_READ`, assert the `PgSessionStep()` stack
+   has unwound, then commit the prepared park, detach, and wait for readiness.
 5. If the step returns `CONTINUE`, requeue or continue based on budget.
 6. If the step returns `DONE`/`FATAL_EXIT`, perform logical backend cleanup.
 7. If no backend is runnable, wait on scheduler wake sources.
@@ -653,9 +674,9 @@ named like a generic wait.
 4. Mark command-read state.
 5. Attempt nonblocking read of the next frontend message type byte.
 6. If no byte is available:
-   - publish a protocol-park wait;
+   - prepare a protocol-park request owned by the backend/session;
    - clear/adjust interrupt holdoff as needed;
-   - return `PARKED_PROTOCOL_READ`;
+   - return `PARK_PROTOCOL_READ`;
    - do not leave a partial message read active.
 7. If a byte is available:
    - disable idle timers as today;
@@ -734,19 +755,32 @@ typedef struct PgProtocolParkSpec
 	uint64		deferred_notify_generation;
 } PgProtocolParkSpec;
 
-bool PgBackendParkProtocolRead(PgProtocolParkSpec *spec);
+bool PgBackendPrepareProtocolReadPark(PgProtocolParkSpec *spec);
+void PgCarrierCommitProtocolReadPark(PgCarrier *carrier, PgBackend *backend);
 void PgBackendUnparkProtocolRead(PgBackend *backend, uint32 wake_events);
 ```
 
-`PgBackendParkProtocolRead()` may detach the backend from the current carrier.
+`PgBackendPrepareProtocolReadPark()` is called while inside `PgSessionStep()`.
+It records the park request and returns a step result, but it must not detach
+the backend, clear `CurrentPgBackend`, enqueue the backend in a detached parked
+queue, or otherwise make the carrier available to another backend while the
+`PgSessionStep()` frame is still live.
+
 It must assert that:
 
 - the backend is in pooled scheduler mode;
 - no protocol message read is active;
 - the session is in top-level command read state;
-- no execution stack is active below `PgSessionStep()`;
+- no execution stack is active below the current `PgSessionStep()` frame;
 - the backend is not already in a scheduler queue;
 - the connection socket is valid or the wake is purely interrupt/timeout based.
+
+`PgCarrierCommitProtocolReadPark()` is called only by the carrier loop after
+`PgSessionStep()` has returned `PARK_PROTOCOL_READ`. It performs the actual
+detach, rebinds or clears carrier current state, and moves the backend into the
+parked protocol-read structure. This split protects the no-live-stack invariant:
+the only live PostgreSQL frame at prepare time is the step frame that is about
+to return, and the detach happens after it has unwound.
 
 ### Observable Wait
 
@@ -972,7 +1006,8 @@ explicit flag:
 PgSuspend(...);
 
 /* Scheduler-yielding, only legal at top-level protocol input. */
-PgBackendParkProtocolRead(...);
+PgBackendPrepareProtocolReadPark(...);
+PgCarrierCommitProtocolReadPark(...);
 ```
 
 Alternatively, `PgWaitSpec` can carry a capability flag:
@@ -981,7 +1016,8 @@ Alternatively, `PgWaitSpec` can carry a capability flag:
 PG_WAIT_CAN_DETACH_CARRIER
 ```
 
-Only the protocol-read boundary should set that flag in Phase 14A.
+Only the protocol-read commit path should set that flag in Phase 14A, and only
+after `PgSessionStep()` has returned.
 
 ## Fairness And Scheduling Policy
 
@@ -1114,7 +1150,9 @@ Phase 15 owns real pool mode:
 ### Phase 14A.0: Clean Baseline
 
 - Start from the end of Phase 13 wait-completion work.
-- Remove or disable generic scheduler requeue from deep waits.
+- Remove, disable, or assert-unreachable generic scheduler requeue hooks from
+  deep wait-completion records. Phase 14A.1 must not start while a deep
+  wait-completion readiness path can enqueue detached scheduler work.
 - Ensure process mode and thread-per-session mode still pass their existing
   gates.
 - Update documentation to distinguish observable waits from scheduler-yielding
@@ -1123,8 +1161,11 @@ Phase 15 owns real pool mode:
 ### Phase 14A.1: Protocol Park Primitive
 
 - Add the nonblocking frontend message type-byte probe.
-- Add an explicit protocol-park API.
-- Teach `PgSessionStep()` to return `PARKED_PROTOCOL_READ`.
+- Add explicit prepare/commit protocol-park APIs.
+- Teach `PgSessionStep()` to return `PARK_PROTOCOL_READ` after preparing a park
+  request, without detaching inside the step frame.
+- Teach the carrier loop to commit the park and detach only after
+  `PgSessionStep()` has returned.
 - Assert that no partial frontend message is active when parking.
 - Add unit coverage for the message-read predicate.
 
@@ -1144,19 +1185,15 @@ Phase 15 owns real pool mode:
 - Prove parked idle-in-transaction sessions preserve transaction and lock
   state.
 
-### Phase 14A.4: Carrier Affinity
-
-- Track last carrier.
-- Prefer same-carrier resume when cheap.
-- Add optional short grace pin.
-- Add counters and benchmarks for bursty interactive clients.
-
 ### Phase 15.1: Real Carrier Pool
 
 - Decouple client accept from carrier creation.
 - Run a bounded number of carriers.
 - Ensure backend exit does not imply carrier exit.
 - Add stress tests with sessions greater than carriers.
+- Add migration/affinity counters for same-carrier versus moved resumes.
+- Add optional short grace pin only after scheduler pressure and shutdown escape
+  conditions are tested.
 
 Phase 14 staging phases may be committed as scaffolding, but documentation and
 test names should not claim "pooled carrier scheduler complete" while there is
@@ -1262,14 +1299,17 @@ Likely drop or rewrite:
 
 ### Stress Tests
 
-- many idle clients with fewer carriers than sessions;
 - bursty clients with short think time;
-- idle-in-transaction clients holding locks while carriers serve other
-  sessions;
 - frequent `LISTEN`/`NOTIFY` wakeups;
 - cancel/terminate races with frontend input readiness;
 - timeout races with frontend input readiness;
 - disconnect races while parked.
+
+These are Phase 15 target-pool stress tests, not Phase 14 staging evidence:
+
+- many idle clients with fewer carriers than sessions;
+- idle-in-transaction clients holding locks while carriers serve other
+  sessions.
 
 ### Validation Gates
 
@@ -1304,11 +1344,13 @@ Before claiming Phase 15:
 
 ## Performance Expectations
 
-Phase 14A should primarily improve scalability for many idle or think-time
-heavy sessions. It should not be expected to reduce carrier usage for many
-simultaneously active blocked queries.
+Target pooled mode should primarily improve scalability for many idle or
+think-time-heavy sessions. Phase 14 staging proves correctness of the protocol
+park/resume boundary; the measurable carrier-count wins arrive in Phase 15 when
+parked sessions no longer own carriers. Neither phase should be expected to
+reduce carrier usage for many simultaneously active blocked queries.
 
-Expected wins:
+Expected Phase 15 wins:
 
 - fewer sleeping carrier threads for idle clients;
 - lower memory and scheduler overhead under high idle connection counts;
@@ -1347,7 +1389,8 @@ Everything else remains synchronous.
 This gives a much smaller and more defensible milestone:
 
 ```text
-Many idle sessions, fewer carriers, no arbitrary stack suspension.
+Phase 14: protocol park/resume correctness, no arbitrary stack suspension.
+Phase 15: many idle sessions on fewer carriers.
 ```
 
 Later phases can add additional scheduler-yielding boundaries one at a time,

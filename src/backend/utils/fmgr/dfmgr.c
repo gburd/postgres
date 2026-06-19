@@ -560,6 +560,12 @@ module_backend_model_is_compatible(PgBackendModel module_backend_model,
 		!module_backend_model_is_valid(required_backend_model))
 		return false;
 
+	/*
+	 * This ordinal rule predates the protocol-boundary scheduler split.  Do not
+	 * use PG_BACKEND_MODEL_POOLED_SCHEDULER as the Phase 14/15 runtime
+	 * requirement; it cannot distinguish protocol-affine from migratable
+	 * sessions.
+	 */
 	return module_backend_model >= required_backend_model;
 }
 

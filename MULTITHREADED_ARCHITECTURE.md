@@ -361,8 +361,10 @@ This is the first credible threaded milestone.
 
 Phase 14/15 implement a deliberately narrow version of pooled scheduling.
 Session work runs synchronously until it returns to the top-level frontend
-protocol boundary. A logical backend may detach only when it is about to wait
-for the next frontend message type byte and no byte has been consumed.
+protocol boundary. A session step may prepare a protocol-read park only when it
+is about to wait for the next frontend message type byte and no byte has been
+consumed. The carrier loop performs the actual detach only after the session
+step has returned.
 
 In this stage, a task runs until it:
 
@@ -562,16 +564,25 @@ Suggested model:
 - default `PG_MODULE_MAGIC` means process-backend-compatible only;
 - a new module magic field advertises backend model compatibility;
 - audited modules can opt into thread-per-session compatibility;
-- a stricter later flag can advertise pooled-scheduler/task reentrancy;
+- pooled protocol compatibility must split carrier-affine sessions from
+  carrier-migratable sessions;
+- a stricter later flag can advertise deep-wait/task reentrancy;
 - `dfmgr.c` rejects incompatible modules when the runtime is threaded.
 
 Possible flags:
 
 ```c
 PG_BACKEND_MODEL_PROCESS
-PG_BACKEND_MODEL_THREAD_SESSION
+PG_BACKEND_MODEL_THREAD_PER_SESSION
+PG_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE
+PG_BACKEND_MODEL_POOLED_PROTOCOL_MIGRATABLE
 PG_BACKEND_MODEL_TASK_REENTRANT
 ```
+
+The current live `PG_BACKEND_MODEL_POOLED_SCHEDULER` marker is a transitional
+generic level and is too coarse for Phase 15 migration claims. Protocol
+scheduler work must not treat it as equivalent to either protocol-affine or
+protocol-migratable support.
 
 In-tree modules can be migrated deliberately. PL/pgSQL should be treated as a
 first-class target, not as an arbitrary third-party extension. It should gain
