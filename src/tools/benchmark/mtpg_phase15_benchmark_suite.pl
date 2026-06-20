@@ -65,6 +65,7 @@ my @profile_order = qw(
   pool_idle_1000ms
   pool_burst_10ms
   pool_scale_1000_idle
+  connection_memory_idle
   connection_churn
 );
 
@@ -149,6 +150,22 @@ my %profile_specs = (
 		sample_server_resources => 1,
 		resource_sample_interval_ms => 500,
 	},
+	connection_memory_idle => {
+		description =>
+		  'Large idle connection memory profile: process, pinned thread, and pooled carrier footprint.',
+		lanes => 'vanilla,branch_process,branch_threaded,branch_pool',
+		pool_sizes => '64,128,256,512',
+		workloads => 'select1_sleep_1000ms_prepared',
+		clients => 1000,
+		threads => 64,
+		max_connections => 1100,
+		scale => 1,
+		duration => 20,
+		warmup => 3,
+		runs => 2,
+		sample_server_resources => 1,
+		resource_sample_interval_ms => 500,
+	},
 	connection_churn => {
 		description =>
 		  'One transaction per connection profile for reconnect-heavy client patterns.',
@@ -229,6 +246,7 @@ Profiles:
   pool_idle_1000ms         c200 long-idle scale profile, all lanes
   pool_burst_10ms          short-idle pooled diagnostic profile
   pool_scale_1000_idle     c1000 long-idle pinned vs pooled scale profile
+  connection_memory_idle   c1000 idle connection memory footprint profile
   connection_churn         reconnect-heavy profile
 USAGE
 }

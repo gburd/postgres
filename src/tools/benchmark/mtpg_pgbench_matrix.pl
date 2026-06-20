@@ -34,6 +34,7 @@ my $reuse = 0;
 my $restart_per_workload = 0;
 my $sample_server_resources = 0;
 my $resource_sample_interval_ms = 100;
+my $resource_baseline_samples = 3;
 my $help = 0;
 my $socket_seq = 0;
 my $default_max_files_per_process = 1000;
@@ -58,6 +59,7 @@ GetOptions(
 	'restart-per-workload' => \$restart_per_workload,
 	'sample-server-resources!' => \$sample_server_resources,
 	'resource-sample-interval-ms=i' => \$resource_sample_interval_ms,
+	'resource-baseline-samples=i' => \$resource_baseline_samples,
 	'help'              => \$help,
 ) or die usage();
 
@@ -77,6 +79,8 @@ die "--max-connections must exceed --clients\n"
 die "--runs must be positive\n" if $runs <= 0;
 die "--resource-sample-interval-ms must be positive\n"
   if $resource_sample_interval_ms <= 0;
+die "--resource-baseline-samples must be non-negative\n"
+  if $resource_baseline_samples < 0;
 
 raise_nofile_limit_for_benchmark(benchmark_max_files_per_process($max_connections));
 
@@ -231,6 +235,15 @@ print $resources_fh
 	  max_server_rss_kb max_server_pss_kb max_server_private_kb samples)),
   "\n";
 
+my $resource_baselines_path =
+  File::Spec->catfile($out_dir, 'server_resource_baselines.tsv');
+open my $resource_baselines_fh, '>', $resource_baselines_path
+  or die "could not write $resource_baselines_path: $!";
+print $resource_baselines_fh
+  join("\t", qw(lane workload_scope max_server_processes max_server_threads
+	  max_server_rss_kb max_server_pss_kb max_server_private_kb samples)),
+  "\n";
+
 my %results;
 if ($restart_per_workload)
 {
@@ -239,7 +252,7 @@ if ($restart_per_workload)
 		for my $workload (@requested_workloads)
 		{
 			run_lane($lane, [ $workload ], $script_dir, $tps_fh, $samples_fh,
-				$resources_fh, \%results, $workload);
+				$resources_fh, $resource_baselines_fh, \%results, $workload);
 		}
 	}
 }
@@ -248,24 +261,29 @@ else
 	for my $lane (@lane_specs)
 	{
 		run_lane($lane, \@requested_workloads, $script_dir, $tps_fh, $samples_fh,
-			$resources_fh, \%results, undef);
+			$resources_fh, $resource_baselines_fh, \%results, undef);
 	}
 }
 
 close $tps_fh;
 close $samples_fh;
 close $resources_fh;
+close $resource_baselines_fh;
 
 write_ratios($out_dir, \@requested_workloads, \@lane_specs, \%results);
 write_resource_efficiency($out_dir, \@requested_workloads, \@lane_specs,
+	\%results);
+write_memory_footprint($out_dir, \@requested_workloads, \@lane_specs,
 	\%results);
 write_summary($out_dir, \@requested_workloads, \@lane_specs, \%results);
 
 print "wrote $tps_path\n";
 print "wrote $samples_path\n";
 print "wrote $resources_path\n";
+print "wrote $resource_baselines_path\n";
 print "wrote ", File::Spec->catfile($out_dir, 'ratios.tsv'), "\n";
 print "wrote ", File::Spec->catfile($out_dir, 'resource_efficiency.tsv'), "\n";
+print "wrote ", File::Spec->catfile($out_dir, 'memory_footprint.tsv'), "\n";
 print "wrote ", File::Spec->catfile($out_dir, 'summary.md'), "\n";
 
 sub usage
@@ -298,6 +316,9 @@ Key options:
                            sample server process/thread counts while measuring
   --resource-sample-interval-ms=N
                            server resource sample interval, default 100
+  --resource-baseline-samples=N
+                           idle server samples before each measured workload,
+                           default 3
 
 Additional non-default workloads useful for pooled connection-shape profiles:
   select1_sleep_1ms_prepared
@@ -310,8 +331,11 @@ Output:
   tps.tsv                 summary TPS and latency per lane/workload
   samples.tsv             per-run TPS and latency samples
   server_resources.tsv    max server process/thread counts sampled per workload
+  server_resource_baselines.tsv
+                           idle server resource samples before workload clients
   ratios.tsv              per-lane ratios against vanilla, or the first selected lane
   resource_efficiency.tsv derived TPS/thread and memory/client metrics
+  memory_footprint.tsv    baseline-adjusted memory footprint estimates
   summary.md              Markdown table for quick comparison
 USAGE
 }
@@ -422,7 +446,7 @@ sub write_file
 sub run_lane
 {
 	my ($lane, $workloads, $script_dir, $tps_fh, $samples_fh, $resources_fh,
-		$results, $lane_dir_suffix) = @_;
+		$resource_baselines_fh, $results, $lane_dir_suffix) = @_;
 
 	my $lane_dir_name = defined $lane_dir_suffix ?
 		"$lane->{name}_$lane_dir_suffix" : $lane->{name};
@@ -472,6 +496,16 @@ sub run_lane
 			],
 			"$lane->{name} extra setup");
 
+		my $baseline_resources = sample_server_resource_baseline($data_dir);
+		print $resource_baselines_fh join("\t", $lane->{name},
+			defined $lane_dir_suffix ? $lane_dir_suffix : 'all',
+			resource_value($baseline_resources, 'max_server_processes'),
+			resource_value($baseline_resources, 'max_server_threads'),
+			resource_value($baseline_resources, 'max_server_rss_kb'),
+			resource_value($baseline_resources, 'max_server_pss_kb'),
+			resource_value($baseline_resources, 'max_server_private_kb'),
+			resource_value($baseline_resources, 'samples')), "\n";
+
 		for my $workload (@$workloads)
 		{
 			my @samples;
@@ -501,6 +535,7 @@ sub run_lane
 				latency => $summary->{latency},
 				failed => $summary->{failed},
 				resources => $resources,
+				baseline_resources => $baseline_resources,
 			};
 			print $tps_fh join("\t", $lane->{name}, $workload,
 				$summary->{tps}, $summary->{latency}, $summary->{failed}),
@@ -810,6 +845,23 @@ sub new_server_resource_sample
 	};
 }
 
+sub sample_server_resource_baseline
+{
+	my ($data_dir) = @_;
+	my $resources = new_server_resource_sample($data_dir);
+
+	return $resources unless $resources->{enabled};
+
+	for my $sample_index (1 .. $resource_baseline_samples)
+	{
+		sample_server_resources($resources);
+		select(undef, undef, undef, $resources->{interval_seconds})
+		  if $sample_index < $resource_baseline_samples;
+	}
+
+	return $resources;
+}
+
 sub read_postmaster_pid
 {
 	my ($data_dir) = @_;
@@ -1003,6 +1055,16 @@ sub resource_number
 	return 0 + $sample->{$key};
 }
 
+sub resource_delta
+{
+	my ($resources, $baseline, $key) = @_;
+	my $value = resource_number($resources, $key);
+	my $base = resource_number($baseline, $key);
+
+	return undef unless defined $value && defined $base;
+	return $value - $base;
+}
+
 sub metric_value
 {
 	my ($value, $digits) = @_;
@@ -1135,6 +1197,177 @@ sub write_resource_efficiency
 	close $fh;
 }
 
+sub write_memory_footprint
+{
+	my ($dir, $workloads, $lane_specs, $results) = @_;
+	my $path = File::Spec->catfile($dir, 'memory_footprint.tsv');
+
+	open my $fh, '>', $path or die "could not write $path: $!";
+	print $fh join("\t", qw(workload lane clients max_server_processes
+		  max_server_threads baseline_server_processes baseline_server_threads
+		  private_delta_kb pss_delta_kb rss_delta_kb
+		  private_delta_per_client_kb pss_delta_per_client_kb
+		  private_delta_per_server_thread_kb pss_delta_per_server_thread_kb
+		  pooled_idle_session_private_kb pooled_carrier_private_kb
+		  pooled_idle_session_pss_kb pooled_carrier_pss_kb
+		  pooled_fit_points)),
+	  "\n";
+
+	for my $workload (@$workloads)
+	{
+		my $private_fit =
+		  pooled_memory_fit($workload, $lane_specs, $results,
+			'max_server_private_kb');
+		my $pss_fit =
+		  pooled_memory_fit($workload, $lane_specs, $results,
+			'max_server_pss_kb');
+
+		for my $lane (@$lane_specs)
+		{
+			my $name = $lane->{name};
+			next unless exists $results->{$name}{$workload};
+
+			my $result = $results->{$name}{$workload};
+			my $resources = $result->{resources};
+			my $baseline = $result->{baseline_resources};
+			my $processes = resource_number($resources, 'max_server_processes');
+			my $threads = resource_number($resources, 'max_server_threads');
+			my $baseline_processes =
+			  resource_number($baseline, 'max_server_processes');
+			my $baseline_threads =
+			  resource_number($baseline, 'max_server_threads');
+			my $thread_delta =
+			  resource_delta($resources, $baseline, 'max_server_threads');
+			my $private_delta =
+			  resource_delta($resources, $baseline, 'max_server_private_kb');
+			my $pss_delta =
+			  resource_delta($resources, $baseline, 'max_server_pss_kb');
+			my $rss_delta =
+			  resource_delta($resources, $baseline, 'max_server_rss_kb');
+			my $private_per_client =
+			  defined $private_delta && $clients > 0
+			  ? $private_delta / $clients
+			  : undef;
+			my $pss_per_client =
+			  defined $pss_delta && $clients > 0 ? $pss_delta / $clients : undef;
+			my $private_per_thread =
+			  defined $private_delta && defined $thread_delta && $thread_delta > 0
+			  ? $private_delta / $thread_delta
+			  : undef;
+			my $pss_per_thread =
+			  defined $pss_delta && defined $thread_delta && $thread_delta > 0
+			  ? $pss_delta / $thread_delta
+			  : undef;
+
+			print $fh join("\t",
+				$workload,
+				$name,
+				$clients,
+				defined $processes ? $processes : 'n/a',
+				defined $threads ? $threads : 'n/a',
+				defined $baseline_processes ? $baseline_processes : 'n/a',
+				defined $baseline_threads ? $baseline_threads : 'n/a',
+				metric_value($private_delta, 1),
+				metric_value($pss_delta, 1),
+				metric_value($rss_delta, 1),
+				metric_value($private_per_client, 2),
+				metric_value($pss_per_client, 2),
+				metric_value($private_per_thread, 2),
+				metric_value($pss_per_thread, 2),
+				pooled_fit_session_value($private_fit),
+				pooled_fit_carrier_value($private_fit),
+				pooled_fit_session_value($pss_fit),
+				pooled_fit_carrier_value($pss_fit),
+				pooled_fit_points($private_fit, $pss_fit)),
+			  "\n";
+		}
+	}
+
+	close $fh;
+}
+
+sub pooled_memory_fit
+{
+	my ($workload, $lane_specs, $results, $memory_key) = @_;
+	my @points;
+
+	for my $lane (@$lane_specs)
+	{
+		my $name = $lane->{name};
+		next unless $name =~ /^branch_pool_/;
+		next unless exists $results->{$name}{$workload};
+
+		my $result = $results->{$name}{$workload};
+		my $thread_delta =
+		  resource_delta($result->{resources}, $result->{baseline_resources},
+			'max_server_threads');
+		my $memory_delta =
+		  resource_delta($result->{resources}, $result->{baseline_resources},
+			$memory_key);
+
+		next
+		  unless defined $thread_delta && $thread_delta > 0 &&
+		  defined $memory_delta;
+		push @points, [ $thread_delta, $memory_delta ];
+	}
+
+	return undef unless @points >= 2;
+
+	my ($sum_x, $sum_y, $sum_xx, $sum_xy) = (0, 0, 0, 0);
+	for my $point (@points)
+	{
+		my ($x, $y) = @$point;
+		$sum_x += $x;
+		$sum_y += $y;
+		$sum_xx += $x * $x;
+		$sum_xy += $x * $y;
+	}
+
+	my $n = scalar @points;
+	my $denominator = $n * $sum_xx - $sum_x * $sum_x;
+	return undef if $denominator == 0;
+
+	my $slope = ($n * $sum_xy - $sum_x * $sum_y) / $denominator;
+	my $intercept = ($sum_y - $slope * $sum_x) / $n;
+
+	return {
+		points => $n,
+		carrier_kb => $slope,
+		session_kb => $clients > 0 ? $intercept / $clients : undef,
+	};
+}
+
+sub pooled_fit_session_value
+{
+	my ($fit) = @_;
+
+	return 'n/a' unless defined $fit;
+	return metric_value($fit->{session_kb}, 2);
+}
+
+sub pooled_fit_carrier_value
+{
+	my ($fit) = @_;
+
+	return 'n/a' unless defined $fit;
+	return metric_value($fit->{carrier_kb}, 2);
+}
+
+sub pooled_fit_points
+{
+	my (@fits) = @_;
+	my $points;
+
+	for my $fit (@fits)
+	{
+		next unless defined $fit;
+		$points = $fit->{points}
+		  if !defined $points || $fit->{points} > $points;
+	}
+
+	return defined $points ? $points : 'n/a';
+}
+
 sub write_summary
 {
 	my ($dir, $workloads, $lane_specs, $results) = @_;
@@ -1202,6 +1435,25 @@ sub write_summary
 		print $fh "\n";
 	}
 
+	print $fh "\n## Idle server resource baselines\n\n";
+	print $fh "| Workload | Lane | Baseline server processes | Baseline server threads | Baseline RSS kB | Baseline PSS kB | Baseline private kB |\n";
+	print $fh "| --- | --- | ---: | ---: | ---: | ---: | ---: |\n";
+	for my $workload (@$workloads)
+	{
+		for my $lane (@$lane_specs)
+		{
+			my $name = $lane->{name};
+			next unless exists $results->{$name}{$workload};
+			my $baseline = $results->{$name}{$workload}{baseline_resources};
+			print $fh "| `$workload` | `$name` | ",
+			  resource_value($baseline, 'max_server_processes'), " | ",
+			  resource_value($baseline, 'max_server_threads'), " | ",
+			  resource_value($baseline, 'max_server_rss_kb'), " | ",
+			  resource_value($baseline, 'max_server_pss_kb'), " | ",
+			  resource_value($baseline, 'max_server_private_kb'), " |\n";
+		}
+	}
+
 	print $fh "\n## Server resource samples\n\n";
 	print $fh "| Workload | Lane | Max server processes | Max server threads | Max RSS kB | Max PSS kB | Max private kB |\n";
 	print $fh "| --- | --- | ---: | ---: | ---: | ---: | ---: |\n";
@@ -1218,6 +1470,54 @@ sub write_summary
 			  resource_value($resources, 'max_server_rss_kb'), " | ",
 			  resource_value($resources, 'max_server_pss_kb'), " | ",
 			  resource_value($resources, 'max_server_private_kb'), " |\n";
+		}
+	}
+
+	print $fh "\n## Server Memory Footprint\n\n";
+	print $fh "| Workload | Lane | Private delta/client kB | PSS delta/client kB | Private delta/server thread kB | PSS delta/server thread kB | Pool-est. idle session private kB | Pool-est. carrier private kB |\n";
+	print $fh "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |\n";
+	for my $workload (@$workloads)
+	{
+		my $private_fit =
+		  pooled_memory_fit($workload, $lane_specs, $results,
+			'max_server_private_kb');
+
+		for my $lane (@$lane_specs)
+		{
+			my $name = $lane->{name};
+			next unless exists $results->{$name}{$workload};
+
+			my $result = $results->{$name}{$workload};
+			my $resources = $result->{resources};
+			my $baseline = $result->{baseline_resources};
+			my $thread_delta =
+			  resource_delta($resources, $baseline, 'max_server_threads');
+			my $private_delta =
+			  resource_delta($resources, $baseline, 'max_server_private_kb');
+			my $pss_delta =
+			  resource_delta($resources, $baseline, 'max_server_pss_kb');
+			my $private_per_client =
+			  defined $private_delta && $clients > 0
+			  ? $private_delta / $clients
+			  : undef;
+			my $pss_per_client =
+			  defined $pss_delta && $clients > 0 ? $pss_delta / $clients : undef;
+			my $private_per_thread =
+			  defined $private_delta && defined $thread_delta && $thread_delta > 0
+			  ? $private_delta / $thread_delta
+			  : undef;
+			my $pss_per_thread =
+			  defined $pss_delta && defined $thread_delta && $thread_delta > 0
+			  ? $pss_delta / $thread_delta
+			  : undef;
+
+			print $fh "| `$workload` | `$name` | ",
+			  metric_value($private_per_client, 2), " | ",
+			  metric_value($pss_per_client, 2), " | ",
+			  metric_value($private_per_thread, 2), " | ",
+			  metric_value($pss_per_thread, 2), " | ",
+			  pooled_fit_session_value($private_fit), " | ",
+			  pooled_fit_carrier_value($private_fit), " |\n";
 		}
 	}
 
