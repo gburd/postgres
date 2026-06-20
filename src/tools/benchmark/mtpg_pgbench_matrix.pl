@@ -101,6 +101,21 @@ my %workload_specs = (
 		script => 'kv_read.sql',
 		needs_extra_setup => 1,
 	},
+	select1_sleep_1ms_prepared => {
+		args => [ '-M', 'prepared', '-f', undef ],
+		script => 'select1_sleep_1ms.sql',
+		needs_extra_setup => 0,
+	},
+	select1_sleep_10ms_prepared => {
+		args => [ '-M', 'prepared', '-f', undef ],
+		script => 'select1_sleep_10ms.sql',
+		needs_extra_setup => 0,
+	},
+	select1_connect_prepared => {
+		args => [ '-C', '-M', 'prepared', '-f', undef ],
+		script => 'select1.sql',
+		needs_extra_setup => 0,
+	},
 );
 
 for my $workload (@requested_workloads)
@@ -236,6 +251,11 @@ Key options:
   --workloads=LIST        workload names to run
   --restart-per-workload  restart each lane for each workload
 
+Additional non-default workloads useful for pooled connection-shape profiles:
+  select1_sleep_1ms_prepared
+  select1_sleep_10ms_prepared
+  select1_connect_prepared
+
 Output:
   tps.tsv                 raw TPS and latency per lane/workload
   ratios.tsv              per-lane ratios against vanilla
@@ -299,6 +319,12 @@ sub write_workload_scripts
 	my ($dir) = @_;
 
 	write_file(File::Spec->catfile($dir, 'select1.sql'), "SELECT 1;\n");
+	write_file(File::Spec->catfile($dir, 'select1_sleep_1ms.sql'),
+		"SELECT 1;\n"
+	  . "\\sleep 1 ms\n");
+	write_file(File::Spec->catfile($dir, 'select1_sleep_10ms.sql'),
+		"SELECT 1;\n"
+	  . "\\sleep 10 ms\n");
 	write_file(File::Spec->catfile($dir, 'bench_one.sql'),
 		"SELECT payload FROM bench_one WHERE id = 1;\n");
 	write_file(File::Spec->catfile($dir, 'kv_read.sql'),
@@ -560,9 +586,11 @@ sub write_ratios
 			my $name = $lane->{name};
 			next unless exists $results->{$name}{$workload};
 			my $tps = $results->{$name}{$workload}{tps};
-			my $ratio = defined $vanilla && $vanilla > 0 ? $tps / $vanilla : 0;
-			print $fh join("\t", $workload, $name, $tps,
-				sprintf('%.3f', $ratio)), "\n";
+			my $ratio =
+			  defined $vanilla && $vanilla > 0
+			  ? sprintf('%.3f', $tps / $vanilla)
+			  : 'n/a';
+			print $fh join("\t", $workload, $name, $tps, $ratio), "\n";
 		}
 	}
 	close $fh;
@@ -579,6 +607,9 @@ sub write_summary
 	print $fh "- warmup: ${warmup}s\n";
 	print $fh "- clients: $clients\n";
 	print $fh "- threads: $threads\n";
+	print $fh "- max connections: $max_connections\n";
+	print $fh "- pool sizes: $pool_sizes\n"
+	  if grep { $_->{name} =~ /^branch_pool_/ } @$lane_specs;
 	print $fh "- scale: $scale\n";
 	print $fh "- branch install: `$branch_install`\n";
 	print $fh "- vanilla install: `$vanilla_install`\n";
@@ -609,8 +640,11 @@ sub write_summary
 			print $fh " ", sprintf('%.1f', $tps), " |";
 			if ($name ne 'vanilla')
 			{
-				my $ratio = defined $vanilla && $vanilla > 0 ? $tps / $vanilla : 0;
-				print $fh " ", sprintf('%.3f', $ratio), " |";
+				my $ratio =
+				  defined $vanilla && $vanilla > 0
+				  ? sprintf('%.3f', $tps / $vanilla)
+				  : 'n/a';
+				print $fh " $ratio |";
 			}
 		}
 		print $fh "\n";
