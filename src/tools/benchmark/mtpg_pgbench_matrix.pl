@@ -257,12 +257,15 @@ close $samples_fh;
 close $resources_fh;
 
 write_ratios($out_dir, \@requested_workloads, \@lane_specs, \%results);
+write_resource_efficiency($out_dir, \@requested_workloads, \@lane_specs,
+	\%results);
 write_summary($out_dir, \@requested_workloads, \@lane_specs, \%results);
 
 print "wrote $tps_path\n";
 print "wrote $samples_path\n";
 print "wrote $resources_path\n";
 print "wrote ", File::Spec->catfile($out_dir, 'ratios.tsv'), "\n";
+print "wrote ", File::Spec->catfile($out_dir, 'resource_efficiency.tsv'), "\n";
 print "wrote ", File::Spec->catfile($out_dir, 'summary.md'), "\n";
 
 sub usage
@@ -308,6 +311,7 @@ Output:
   samples.tsv             per-run TPS and latency samples
   server_resources.tsv    max server process/thread counts sampled per workload
   ratios.tsv              per-lane ratios against vanilla, or the first selected lane
+  resource_efficiency.tsv derived TPS/thread and memory/client metrics
   summary.md              Markdown table for quick comparison
 USAGE
 }
@@ -990,6 +994,32 @@ sub resource_value
 	return $sample->{$key};
 }
 
+sub resource_number
+{
+	my ($sample, $key) = @_;
+
+	return undef unless defined $sample && defined $sample->{$key};
+	return undef unless $sample->{$key} =~ /^-?\d+(?:\.\d+)?$/;
+	return 0 + $sample->{$key};
+}
+
+sub metric_value
+{
+	my ($value, $digits) = @_;
+
+	return 'n/a' unless defined $value;
+	return sprintf("%.${digits}f", $value);
+}
+
+sub metric_ratio
+{
+	my ($value, $baseline, $digits) = @_;
+
+	return 'n/a'
+	  unless defined $value && defined $baseline && $baseline > 0;
+	return sprintf("%.${digits}f", $value / $baseline);
+}
+
 sub slurp
 {
 	my ($path) = @_;
@@ -1043,6 +1073,63 @@ sub write_ratios
 			  ? sprintf('%.3f', $tps / $baseline)
 			  : 'n/a';
 			print $fh join("\t", $workload, $name, $tps, $ratio), "\n";
+		}
+	}
+	close $fh;
+}
+
+sub write_resource_efficiency
+{
+	my ($dir, $workloads, $lane_specs, $results) = @_;
+	my $path = File::Spec->catfile($dir, 'resource_efficiency.tsv');
+	my $baseline_lane = ratio_baseline_lane($lane_specs);
+
+	open my $fh, '>', $path or die "could not write $path: $!";
+	print $fh join("\t", qw(workload lane tps max_server_threads
+		  tps_per_server_thread clients_per_server_thread private_kb_per_client
+		  tps_per_thread_vs_baseline server_threads_vs_baseline
+		  private_kb_vs_baseline)), "\n";
+
+	for my $workload (@$workloads)
+	{
+		my $baseline = $results->{$baseline_lane}{$workload};
+		my $baseline_threads =
+		  resource_number($baseline->{resources}, 'max_server_threads');
+		my $baseline_private =
+		  resource_number($baseline->{resources}, 'max_server_private_kb');
+		my $baseline_tps_per_thread =
+		  defined $baseline_threads && $baseline_threads > 0
+		  ? $baseline->{tps} / $baseline_threads
+		  : undef;
+
+		for my $lane (@$lane_specs)
+		{
+			my $name = $lane->{name};
+			next unless exists $results->{$name}{$workload};
+
+			my $result = $results->{$name}{$workload};
+			my $resources = $result->{resources};
+			my $threads = resource_number($resources, 'max_server_threads');
+			my $private = resource_number($resources, 'max_server_private_kb');
+			my $tps_per_thread =
+			  defined $threads && $threads > 0 ? $result->{tps} / $threads : undef;
+			my $clients_per_thread =
+			  defined $threads && $threads > 0 ? $clients / $threads : undef;
+			my $private_per_client =
+			  defined $private && $clients > 0 ? $private / $clients : undef;
+
+			print $fh join("\t",
+				$workload,
+				$name,
+				$result->{tps},
+				defined $threads ? $threads : 'n/a',
+				metric_value($tps_per_thread, 3),
+				metric_value($clients_per_thread, 3),
+				metric_value($private_per_client, 1),
+				metric_ratio($tps_per_thread, $baseline_tps_per_thread, 3),
+				metric_ratio($threads, $baseline_threads, 3),
+				metric_ratio($private, $baseline_private, 3)),
+			  "\n";
 		}
 	}
 	close $fh;
@@ -1131,6 +1218,47 @@ sub write_summary
 			  resource_value($resources, 'max_server_rss_kb'), " | ",
 			  resource_value($resources, 'max_server_pss_kb'), " | ",
 			  resource_value($resources, 'max_server_private_kb'), " |\n";
+		}
+	}
+
+	print $fh "\n## Server Resource Efficiency\n\n";
+	print $fh "| Workload | Lane | TPS/server thread | Clients/server thread | Private kB/client | TPS/thread / $baseline_lane | Threads / $baseline_lane | Private kB / $baseline_lane |\n";
+	print $fh "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |\n";
+	for my $workload (@$workloads)
+	{
+		my $baseline = $results->{$baseline_lane}{$workload};
+		my $baseline_threads =
+		  resource_number($baseline->{resources}, 'max_server_threads');
+		my $baseline_private =
+		  resource_number($baseline->{resources}, 'max_server_private_kb');
+		my $baseline_tps_per_thread =
+		  defined $baseline_threads && $baseline_threads > 0
+		  ? $baseline->{tps} / $baseline_threads
+		  : undef;
+
+		for my $lane (@$lane_specs)
+		{
+			my $name = $lane->{name};
+			next unless exists $results->{$name}{$workload};
+
+			my $result = $results->{$name}{$workload};
+			my $resources = $result->{resources};
+			my $threads = resource_number($resources, 'max_server_threads');
+			my $private = resource_number($resources, 'max_server_private_kb');
+			my $tps_per_thread =
+			  defined $threads && $threads > 0 ? $result->{tps} / $threads : undef;
+			my $clients_per_thread =
+			  defined $threads && $threads > 0 ? $clients / $threads : undef;
+			my $private_per_client =
+			  defined $private && $clients > 0 ? $private / $clients : undef;
+
+			print $fh "| `$workload` | `$name` | ",
+			  metric_value($tps_per_thread, 3), " | ",
+			  metric_value($clients_per_thread, 3), " | ",
+			  metric_value($private_per_client, 1), " | ",
+			  metric_ratio($tps_per_thread, $baseline_tps_per_thread, 3), " | ",
+			  metric_ratio($threads, $baseline_threads, 3), " | ",
+			  metric_ratio($private, $baseline_private, 3), " |\n";
 		}
 	}
 	close $fh;
