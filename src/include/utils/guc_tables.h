@@ -159,20 +159,11 @@ typedef struct guc_stack
 } GucStack;
 
 struct config_generic;
+typedef struct config_generic_state config_generic_state;
 
-typedef struct config_generic_state
+typedef struct config_generic_cold_state
 {
-	const struct config_generic *record;
-	int			status;			/* status bits, see below */
-	GucSource	source;			/* source of the current actual value */
-	GucSource	reset_source;	/* source of the reset_value */
-	GucContext	scontext;		/* context that set the current value */
-	GucContext	reset_scontext; /* context that set the reset value */
-	Oid			srole;			/* role that set the current value */
-	Oid			reset_srole;	/* role that set the reset value */
-	GucStack   *stack;			/* stacked prior values */
-	void	   *extra;			/* "extra" pointer for current actual value */
-	void	   *reset_extra;
+	config_generic_state *state; /* owning per-session hot state */
 	dlist_node	nondef_link;	/* list link for variables that have source
 								 * different from PGC_S_DEFAULT */
 	slist_node	stack_link;		/* list link for variables that have non-NULL
@@ -184,10 +175,26 @@ typedef struct config_generic_state
 	char	   *sourcefile;		/* file current setting is from (NULL if not
 								 * set in config file) */
 	int			sourceline;		/* line in source file */
+} config_generic_cold_state;
+
+struct config_generic_state
+{
+	const struct config_generic *record;
+	config_generic_cold_state *cold;
+	int			status;			/* status bits, see below */
+	GucSource	source;			/* source of the current actual value */
+	GucSource	reset_source;	/* source of the reset_value */
+	GucContext	scontext;		/* context that set the current value */
+	GucContext	reset_scontext; /* context that set the reset value */
+	Oid			srole;			/* role that set the current value */
+	Oid			reset_srole;	/* role that set the reset value */
+	GucStack   *stack;			/* stacked prior values */
+	void	   *extra;			/* "extra" pointer for current actual value */
+	void	   *reset_extra;
 
 	union config_var_addr variable;
 	union config_var_val reset_val;
-} config_generic_state;
+};
 
 
 /* GUC records for specific variable types */

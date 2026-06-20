@@ -226,7 +226,69 @@ GUCRecordState(const struct config_generic *record)
 	return record->state;
 }
 
+static config_generic_cold_state *
+GUCRecordColdStateIfAllocated(const struct config_generic *record)
+{
+	return GUCRecordState(record)->cold;
+}
+
+static config_generic_cold_state *
+GUCRecordColdState(const struct config_generic *record)
+{
+	config_generic_state *state = GUCRecordState(record);
+
+	if (state->cold == NULL)
+	{
+		state->cold = MemoryContextAllocZero(GUCMemoryContext,
+											 sizeof(config_generic_cold_state));
+		state->cold->state = state;
+	}
+
+	return state->cold;
+}
+
+static char *
+GUCRecordLastReported(const struct config_generic *record)
+{
+	config_generic_cold_state *cold = GUCRecordColdStateIfAllocated(record);
+
+	return cold != NULL ? cold->last_reported : NULL;
+}
+
+static char *
+GUCRecordSourceFile(const struct config_generic *record)
+{
+	config_generic_cold_state *cold = GUCRecordColdStateIfAllocated(record);
+
+	return cold != NULL ? cold->sourcefile : NULL;
+}
+
+static int
+GUCRecordSourceLine(const struct config_generic *record)
+{
+	config_generic_cold_state *cold = GUCRecordColdStateIfAllocated(record);
+
+	return cold != NULL ? cold->sourceline : 0;
+}
+
+static void
+GUCRecordResetColdFields(const struct config_generic *record)
+{
+	config_generic_cold_state *cold = GUCRecordColdStateIfAllocated(record);
+
+	if (cold == NULL)
+		return;
+
+	cold->last_reported = NULL;
+	cold->sourcefile = NULL;
+	cold->sourceline = 0;
+}
+
 #define GUC_STATE(record)			(GUCRecordState(record))
+#define GUC_COLD(record)			(GUCRecordColdState(record))
+#define GUC_NONDEF_LINK(record)		(&GUC_COLD(record)->nondef_link)
+#define GUC_STACK_LINK(record)		(&GUC_COLD(record)->stack_link)
+#define GUC_REPORT_LINK(record)		(&GUC_COLD(record)->report_link)
 #define GUC_STATUS(record)			(GUC_STATE(record)->status)
 #define GUC_SOURCE(record)			(GUC_STATE(record)->source)
 #define GUC_RESET_SOURCE(record)	(GUC_STATE(record)->reset_source)
@@ -237,9 +299,15 @@ GUCRecordState(const struct config_generic *record)
 #define GUC_STACK(record)			(GUC_STATE(record)->stack)
 #define GUC_EXTRA(record)			(GUC_STATE(record)->extra)
 #define GUC_RESET_EXTRA(record)		(GUC_STATE(record)->reset_extra)
-#define GUC_LAST_REPORTED(record)	(GUC_STATE(record)->last_reported)
-#define GUC_SOURCEFILE(record)		(GUC_STATE(record)->sourcefile)
-#define GUC_SOURCELINE(record)		(GUC_STATE(record)->sourceline)
+#define GUC_LAST_REPORTED(record)	(GUCRecordLastReported(record))
+#define GUC_SET_LAST_REPORTED(record, value) \
+	(GUC_COLD(record)->last_reported = (value))
+#define GUC_SOURCEFILE(record)		(GUCRecordSourceFile(record))
+#define GUC_SET_SOURCEFILE(record, value) \
+	(GUC_COLD(record)->sourcefile = (value))
+#define GUC_SOURCELINE(record)		(GUCRecordSourceLine(record))
+#define GUC_SET_SOURCELINE(record, value) \
+	(GUC_COLD(record)->sourceline = (value))
 #define GUC_VARIABLE_BOOL(record)	(GUC_STATE(record)->variable.boolvar)
 #define GUC_VARIABLE_INT(record)	(GUC_STATE(record)->variable.intvar)
 #define GUC_VARIABLE_REAL(record)	(GUC_STATE(record)->variable.realvar)
@@ -252,6 +320,8 @@ GUCRecordState(const struct config_generic *record)
 #define GUC_RESET_ENUM(record)		(GUC_STATE(record)->reset_val.enumval)
 #define GUC_STATE_RECORD(state) \
 	(unconstify(struct config_generic *, (state)->record))
+#define GUC_COLD_STATE_RECORD(cold) \
+	GUC_STATE_RECORD((cold)->state)
 
 static bool
 GUCRecordVariableIsCurrentSessionOwned(const struct config_generic *record)
@@ -339,14 +409,14 @@ GUCSetOptionNeedsThreadedLock(const struct config_generic *record)
 		return false;
 
 	/*
-	 * The copied built-in GUC table, hash, non-default list, stack list, and
-	 * report list are PgSession-owned.  A simple built-in GUC whose direct
-	 * variable also lives in PgSession and has no assign hook mutates only this
-	 * logical backend's GUC state, so it does not need the temporary
-	 * process-wide GUC mutex.  Check hooks must not be guarded merely because
-	 * they are hooks: some validate against catalogs and can wait on heavyweight
-	 * locks, so holding the process-wide GUC mutex across them can deadlock
-	 * threaded sessions.
+	 * Built-in GUC descriptors are immutable, while the current value,
+	 * reset/source metadata, and list membership live in PgSession-owned state.
+	 * A simple built-in GUC whose direct variable also lives in PgSession and
+	 * has no assign hook mutates only this logical backend's GUC state, so it
+	 * does not need the temporary process-wide GUC mutex.  Check hooks must not
+	 * be guarded merely because they are hooks: some validate against catalogs
+	 * and can wait on heavyweight locks, so holding the process-wide GUC mutex
+	 * across them can deadlock threaded sessions.
 	 *
 	 * Keep all ambiguous paths serialized: custom/extension records,
 	 * placeholders, assign-hook-backed records, execution-owned active
@@ -368,10 +438,10 @@ GUCShowOptionNeedsThreadedLock(const struct config_generic *record)
 		return false;
 
 	/*
-	 * Ordinary built-in GUC records are copied into each PgSession and their
-	 * direct-variable slots are rebound to session/execution state. Showing
-	 * such a record reads only this logical backend's copy, so it need not
-	 * serialize with other threaded sessions.
+	 * Ordinary built-in GUC records share immutable descriptors, with their
+	 * direct-variable slots rebound through per-session state. Showing such a
+	 * record reads only this logical backend's state, so it need not serialize
+	 * with other threaded sessions.
 	 *
 	 * Keep hook-backed and custom/extension records under the runtime GUC
 	 * mutex. Show hooks can inspect subsystem state, and custom records may
@@ -512,14 +582,13 @@ static PG_GLOBAL_IMMUTABLE const char *const map_old_guc_names[] = {
 
 
 /*
- * Per-session copy of the built-in GUC record template.  ConfigureNames[]
- * remains the immutable static template generated from guc_parameters.dat;
- * guc.c mutates the copy so GUC stack/reset/report state is not shared by
- * threaded logical backends.
+ * Per-session lookup state for custom GUCs and placeholders.  Built-in GUCs
+ * use the immutable ConfigureNames[] descriptor table plus per-session
+ * config_generic_state overlays, so only truly dynamic records need hash
+ * storage here.
  *
- * Custom GUCs and placeholders remain per-session in a dynahash.  The gucname
- * field is redundant with gucvar->name, but dynahash makes it too painful to
- * not store the hash key separately.
+ * The gucname field is redundant with gucvar->name, but dynahash makes it too
+ * painful to not store the hash key separately.
  */
 typedef struct
 {
@@ -1139,7 +1208,7 @@ clear_last_reported(struct config_generic *conf)
 	if (last_reported == NULL)
 		return;
 
-	GUC_LAST_REPORTED(conf) = NULL;
+	GUC_SET_LAST_REPORTED(conf, NULL);
 	if (conf->vartype != PGC_STRING ||
 		!string_field_used(conf, last_reported))
 		guc_free(last_reported);
@@ -2377,9 +2446,7 @@ InitializeOneGUCOption(struct config_generic *gconf)
 	GUC_RESET_SROLE(gconf) = BOOTSTRAP_SUPERUSERID;
 	GUC_STACK(gconf) = NULL;
 	GUC_EXTRA(gconf) = NULL;
-	GUC_LAST_REPORTED(gconf) = NULL;
-	GUC_SOURCEFILE(gconf) = NULL;
-	GUC_SOURCELINE(gconf) = 0;
+	GUCRecordResetColdFields(gconf);
 
 	switch (gconf->vartype)
 	{
@@ -2490,9 +2557,7 @@ InitializeOneGUCOptionResetMetadata(struct config_generic *gconf)
 	GUC_RESET_SROLE(gconf) = BOOTSTRAP_SUPERUSERID;
 	GUC_STACK(gconf) = NULL;
 	GUC_EXTRA(gconf) = NULL;
-	GUC_LAST_REPORTED(gconf) = NULL;
-	GUC_SOURCEFILE(gconf) = NULL;
-	GUC_SOURCELINE(gconf) = 0;
+	GUCRecordResetColdFields(gconf);
 
 	switch (gconf->vartype)
 	{
@@ -2586,11 +2651,11 @@ static void
 RemoveGUCFromLists(struct config_generic *gconf)
 {
 	if (GUC_SOURCE(gconf) != PGC_S_DEFAULT)
-		dlist_delete(&GUC_STATE(gconf)->nondef_link);
+		dlist_delete(GUC_NONDEF_LINK(gconf));
 	if (GUC_STACK(gconf) != NULL)
-		slist_delete(&guc_stack_list, &GUC_STATE(gconf)->stack_link);
+		slist_delete(&guc_stack_list, GUC_STACK_LINK(gconf));
 	if (GUC_STATUS(gconf) & GUC_NEEDS_REPORT)
-		slist_delete(&guc_report_list, &GUC_STATE(gconf)->report_link);
+		slist_delete(&guc_report_list, GUC_REPORT_LINK(gconf));
 }
 
 
@@ -2867,9 +2932,9 @@ ResetAllOptions(void)
 	/* We need only consider GUCs not already at PGC_S_DEFAULT */
 	dlist_foreach_modify(iter, &guc_nondef_list)
 	{
-		config_generic_state *state = dlist_container(config_generic_state,
-													  nondef_link, iter.cur);
-		struct config_generic *gconf = GUC_STATE_RECORD(state);
+		config_generic_cold_state *cold = dlist_container(config_generic_cold_state,
+														  nondef_link, iter.cur);
+		struct config_generic *gconf = GUC_COLD_STATE_RECORD(cold);
 
 		/* Don't reset non-SET-able values */
 		if (gconf->context != PGC_SUSET &&
@@ -2957,7 +3022,7 @@ ResetAllOptions(void)
 		if ((gconf->flags & GUC_REPORT) && !(GUC_STATUS(gconf) & GUC_NEEDS_REPORT))
 		{
 			GUC_STATUS(gconf) |= GUC_NEEDS_REPORT;
-			slist_push_head(&guc_report_list, &GUC_STATE(gconf)->report_link);
+			slist_push_head(&guc_report_list, GUC_REPORT_LINK(gconf));
 		}
 	}
 }
@@ -2976,12 +3041,12 @@ set_guc_source(struct config_generic *gconf, GucSource newsource)
 	if (GUC_SOURCE(gconf) == PGC_S_DEFAULT)
 	{
 		if (newsource != PGC_S_DEFAULT)
-			dlist_push_tail(&guc_nondef_list, &GUC_STATE(gconf)->nondef_link);
+			dlist_push_tail(&guc_nondef_list, GUC_NONDEF_LINK(gconf));
 	}
 	else
 	{
 		if (newsource == PGC_S_DEFAULT)
-			dlist_delete(&GUC_STATE(gconf)->nondef_link);
+			dlist_delete(GUC_NONDEF_LINK(gconf));
 	}
 	/* Now update the source field */
 	GUC_SOURCE(gconf) = newsource;
@@ -3065,7 +3130,7 @@ push_old_value(struct config_generic *gconf, GucAction action)
 	set_stack_value(gconf, &stack->prior);
 
 	if (GUC_STACK(gconf) == NULL)
-		slist_push_head(&guc_stack_list, &GUC_STATE(gconf)->stack_link);
+		slist_push_head(&guc_stack_list, GUC_STACK_LINK(gconf));
 	GUC_STACK(gconf) = stack;
 }
 
@@ -3137,9 +3202,9 @@ AtEOXact_GUC(bool isCommit, int nestLevel)
 	/* We need only process GUCs having nonempty stacks */
 	slist_foreach_modify(iter, &guc_stack_list)
 	{
-		config_generic_state *state = slist_container(config_generic_state,
-													  stack_link, iter.cur);
-		struct config_generic *gconf = GUC_STATE_RECORD(state);
+		config_generic_cold_state *cold = slist_container(config_generic_cold_state,
+														  stack_link, iter.cur);
+		struct config_generic *gconf = GUC_COLD_STATE_RECORD(cold);
 		GucStack   *stack;
 
 		/*
@@ -3392,7 +3457,7 @@ AtEOXact_GUC(bool isCommit, int nestLevel)
 				!(GUC_STATUS(gconf) & GUC_NEEDS_REPORT))
 			{
 				GUC_STATUS(gconf) |= GUC_NEEDS_REPORT;
-				slist_push_head(&guc_report_list, &GUC_STATE(gconf)->report_link);
+				slist_push_head(&guc_report_list, GUC_REPORT_LINK(gconf));
 			}
 		}						/* end of stack-popping loop */
 	}
@@ -3488,9 +3553,9 @@ ReportChangedGUCOptions(void)
 	/* Transmit new values of interesting variables */
 	slist_foreach_modify(iter, &guc_report_list)
 	{
-		config_generic_state *state = slist_container(config_generic_state,
-													  report_link, iter.cur);
-		struct config_generic *conf = GUC_STATE_RECORD(state);
+		config_generic_cold_state *cold = slist_container(config_generic_cold_state,
+														  report_link, iter.cur);
+		struct config_generic *conf = GUC_COLD_STATE_RECORD(cold);
 
 		Assert((conf->flags & GUC_REPORT) && (GUC_STATUS(conf) & GUC_NEEDS_REPORT));
 		ReportGUCOption(conf);
@@ -3526,7 +3591,7 @@ ReportGUCOption(struct config_generic *record)
 		 * duplicate report later.
 		 */
 		clear_last_reported(record);
-		GUC_LAST_REPORTED(record) = guc_strdup(LOG, val);
+		GUC_SET_LAST_REPORTED(record, guc_strdup(LOG, val));
 	}
 
 	pfree(val);
@@ -5198,7 +5263,7 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 		!(GUC_STATUS(record) & GUC_NEEDS_REPORT))
 	{
 		GUC_STATUS(record) |= GUC_NEEDS_REPORT;
-		slist_push_head(&guc_report_list, &GUC_STATE(record)->report_link);
+		slist_push_head(&guc_report_list, GUC_REPORT_LINK(record));
 	}
 
 	return changeVal ? 1 : -1;
@@ -5243,8 +5308,8 @@ set_config_sourcefile(const char *name, char *sourcefile, int sourceline)
 
 	sourcefile = guc_strdup(elevel, sourcefile);
 	guc_free(GUC_SOURCEFILE(record));
-	GUC_SOURCEFILE(record) = sourcefile;
-	GUC_SOURCELINE(record) = sourceline;
+	GUC_SET_SOURCEFILE(record, sourcefile);
+	GUC_SET_SOURCELINE(record, sourceline);
 }
 
 /*
@@ -6098,7 +6163,7 @@ reapply_stacked_values(struct config_generic *variable,
 										 GUC_ACTION_SET, true, WARNING, false);
 			if (GUC_STACK(variable) != NULL)
 			{
-				slist_delete(&guc_stack_list, &GUC_STATE(variable)->stack_link);
+				slist_delete(&guc_stack_list, GUC_STACK_LINK(variable));
 				GUC_STACK(variable) = NULL;
 			}
 		}
@@ -6348,9 +6413,9 @@ get_explain_guc_options(int *num)
 	/* We need only consider GUCs with source not PGC_S_DEFAULT */
 	dlist_foreach(iter, &guc_nondef_list)
 	{
-		config_generic_state *state = dlist_container(config_generic_state,
-													  nondef_link, iter.cur);
-		struct config_generic *conf = GUC_STATE_RECORD(state);
+		config_generic_cold_state *cold = dlist_container(config_generic_cold_state,
+														  nondef_link, iter.cur);
+		struct config_generic *conf = GUC_COLD_STATE_RECORD(cold);
 		bool		modified;
 
 		/* return only parameters marked for inclusion in explain */
@@ -6667,7 +6732,11 @@ write_one_nondefault_variable(FILE *fp, struct config_generic *gconf)
 		fprintf(fp, "%s", GUC_SOURCEFILE(gconf));
 	fputc(0, fp);
 
-	fwrite(&GUC_SOURCELINE(gconf), 1, sizeof(GUC_SOURCELINE(gconf)), fp);
+	{
+		int			sourceline = GUC_SOURCELINE(gconf);
+
+		fwrite(&sourceline, 1, sizeof(sourceline), fp);
+	}
 	fwrite(&GUC_SOURCE(gconf), 1, sizeof(GUC_SOURCE(gconf)), fp);
 	fwrite(&GUC_SCONTEXT(gconf), 1, sizeof(GUC_SCONTEXT(gconf)), fp);
 	fwrite(&GUC_SROLE(gconf), 1, sizeof(GUC_SROLE(gconf)), fp);
@@ -6700,9 +6769,9 @@ write_nondefault_variables(GucContext context)
 	/* We need only consider GUCs with source not PGC_S_DEFAULT */
 	dlist_foreach(iter, &guc_nondef_list)
 	{
-		config_generic_state *state = dlist_container(config_generic_state,
-													  nondef_link, iter.cur);
-		struct config_generic *gconf = GUC_STATE_RECORD(state);
+		config_generic_cold_state *cold = dlist_container(config_generic_cold_state,
+														  nondef_link, iter.cur);
+		struct config_generic *gconf = GUC_COLD_STATE_RECORD(cold);
 
 		write_one_nondefault_variable(fp, gconf);
 	}
@@ -7011,9 +7080,9 @@ EstimateGUCStateSpace(void)
 	 */
 	dlist_foreach(iter, &guc_nondef_list)
 	{
-		config_generic_state *state = dlist_container(config_generic_state,
-													  nondef_link, iter.cur);
-		struct config_generic *gconf = GUC_STATE_RECORD(state);
+		config_generic_cold_state *cold = dlist_container(config_generic_cold_state,
+														  nondef_link, iter.cur);
+		struct config_generic *gconf = GUC_COLD_STATE_RECORD(cold);
 
 		size = add_size(size, estimate_variable_size(gconf));
 	}
@@ -7127,8 +7196,12 @@ serialize_variable(char **destptr, Size *maxbytes,
 				 (GUC_SOURCEFILE(gconf) ? GUC_SOURCEFILE(gconf) : ""));
 
 	if (GUC_SOURCEFILE(gconf) && GUC_SOURCEFILE(gconf)[0])
-		do_serialize_binary(destptr, maxbytes, &GUC_SOURCELINE(gconf),
-							sizeof(GUC_SOURCELINE(gconf)));
+	{
+		int			sourceline = GUC_SOURCELINE(gconf);
+
+		do_serialize_binary(destptr, maxbytes, &sourceline,
+							sizeof(sourceline));
+	}
 
 	do_serialize_binary(destptr, maxbytes, &GUC_SOURCE(gconf),
 						sizeof(GUC_SOURCE(gconf)));
@@ -7158,9 +7231,9 @@ SerializeGUCState(Size maxsize, char *start_address)
 	/* We need only consider GUCs with source not PGC_S_DEFAULT */
 	dlist_foreach(iter, &guc_nondef_list)
 	{
-		config_generic_state *state = dlist_container(config_generic_state,
-													  nondef_link, iter.cur);
-		struct config_generic *gconf = GUC_STATE_RECORD(state);
+		config_generic_cold_state *cold = dlist_container(config_generic_cold_state,
+														  nondef_link, iter.cur);
+		struct config_generic *gconf = GUC_COLD_STATE_RECORD(cold);
 
 		serialize_variable(&curptr, &bytes_left, gconf);
 	}
@@ -7275,9 +7348,9 @@ RestoreGUCState(void *gucstate)
 	 */
 	dlist_foreach_modify(iter, &guc_nondef_list)
 	{
-		config_generic_state *state = dlist_container(config_generic_state,
-													  nondef_link, iter.cur);
-		struct config_generic *gconf = GUC_STATE_RECORD(state);
+		config_generic_cold_state *cold = dlist_container(config_generic_cold_state,
+														  nondef_link, iter.cur);
+		struct config_generic *gconf = GUC_COLD_STATE_RECORD(cold);
 
 		/* Do nothing if non-shippable or if already at PGC_S_DEFAULT. */
 		if (can_skip_gucvar(gconf))
