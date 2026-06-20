@@ -1123,9 +1123,6 @@
 #define PgCurrentPgStatXactStackRef() \
 	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentPgStatXactStackRef, \
 									 pgstat_xact_stack)
-#define PgCurrentPgcryptoDebugHandlerRef() \
-	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionExtensionRuntimeState, PgCurrentPgcryptoDebugHandlerRef, \
-									 pgcrypto_debug_handler)
 #define PgCurrentPinCountWaitBufRef() \
 	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendBufferRuntimeState, PgCurrentPinCountWaitBufRef, \
 									 pin_count_wait_buf)

@@ -24,7 +24,7 @@ static PG_GLOBAL_RUNTIME PgRuntimeExtensionModuleState early_runtime_extension_m
 
 #define PG_PLAN_ADVICE_RUNTIME_STATE_KEY "pg_plan_advice.runtime"
 #define BLOOM_RUNTIME_STATE_KEY "bloom.runtime"
-#define RENDEZVOUS_RUNTIME_STATE_KEY "rendezvous.runtime"
+#define PGCRYPTO_EXECUTION_STATE_KEY "pgcrypto.execution"
 
 typedef struct PgPlanAdviceRuntimeState
 {
@@ -37,10 +37,10 @@ typedef struct PgBloomRuntimeState
 	MemoryContext context;
 } PgBloomRuntimeState;
 
-typedef struct PgRendezvousRuntimeState
+typedef struct PgcryptoExecutionState
 {
-	HTAB	   *hash;
-} PgRendezvousRuntimeState;
+	PgExecutionDebugHandler debug_handler;
+} PgcryptoExecutionState;
 
 void
 PgRuntimeInitializeExtensionModuleState(PgRuntimeExtensionModuleState *extension_modules)
@@ -48,6 +48,7 @@ PgRuntimeInitializeExtensionModuleState(PgRuntimeExtensionModuleState *extension
 	Assert(extension_modules != NULL);
 
 	extension_modules->memory_context = NULL;
+	extension_modules->rendezvous_hash = NULL;
 	extension_modules->private_states = NIL;
 }
 
@@ -153,6 +154,70 @@ PgCurrentExecutionExtensionState(void)
 											   extension);
 }
 
+static PgExecutionExtensionPrivateState *
+PgExecutionFindExtensionPrivateState(PgExecutionExtensionState *extension,
+									 const char *key)
+{
+	Assert(extension != NULL);
+	Assert(key != NULL);
+
+	foreach_ptr(PgExecutionExtensionPrivateState, private_state,
+				extension->private_states)
+	{
+		if (strcmp(private_state->key, key) == 0)
+			return private_state;
+	}
+
+	return NULL;
+}
+
+void *
+PgExecutionGetExtensionPrivateState(const char *key)
+{
+	PgExecutionExtensionPrivateState *private_state;
+
+	private_state = PgExecutionFindExtensionPrivateState(
+		PgCurrentExecutionExtensionState(), key);
+
+	return private_state != NULL ? private_state->state : NULL;
+}
+
+void *
+PgExecutionEnsureExtensionPrivateState(const char *key, Size size,
+									   PgExtensionPrivateStateCleanup cleanup)
+{
+	PgExecutionExtensionState *extension;
+	PgExecutionExtensionPrivateState *private_state;
+	MemoryContext alloc_context;
+	MemoryContext old_context;
+
+	Assert(key != NULL);
+	Assert(size > 0);
+
+	extension = PgCurrentExecutionExtensionState();
+	private_state = PgExecutionFindExtensionPrivateState(extension, key);
+	if (private_state != NULL)
+		return private_state->state;
+
+	if (TopMemoryContext != NULL)
+		alloc_context = TopMemoryContext;
+	else if (CurrentMemoryContext != NULL)
+		alloc_context = CurrentMemoryContext;
+	else
+		elog(ERROR,
+			 "execution extension private state memory context is not initialized");
+
+	old_context = MemoryContextSwitchTo(alloc_context);
+	private_state = palloc_object(PgExecutionExtensionPrivateState);
+	private_state->key = key;
+	private_state->state = palloc0(size);
+	private_state->cleanup = cleanup;
+	extension->private_states = lappend(extension->private_states, private_state);
+	MemoryContextSwitchTo(old_context);
+
+	return private_state->state;
+}
+
 MemoryContext
 PgCurrentRuntimeExtensionModuleMemoryContext(void)
 {
@@ -198,19 +263,19 @@ PgCurrentBloomContextRef(void)
 HTAB **
 PgCurrentRendezvousHashRef(void)
 {
-	PgRendezvousRuntimeState *state;
-
-	state = (PgRendezvousRuntimeState *)
-		PgRuntimeEnsureExtensionPrivateState(RENDEZVOUS_RUNTIME_STATE_KEY,
-											 sizeof(PgRendezvousRuntimeState),
-											 NULL);
-	return &state->hash;
+	return &PgCurrentRuntimeExtensionModuleState()->rendezvous_hash;
 }
 
 PgExecutionDebugHandler *
 PgCurrentPgcryptoDebugHandlerRef(void)
 {
-	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionExtensionRuntimeState, PgCurrentExecutionExtensionState)->pgcrypto_debug_handler;
+	PgcryptoExecutionState *state;
+
+	state = (PgcryptoExecutionState *)
+		PgExecutionEnsureExtensionPrivateState(PGCRYPTO_EXECUTION_STATE_KEY,
+											   sizeof(PgcryptoExecutionState),
+											   NULL);
+	return &state->debug_handler;
 }
 
 bool *

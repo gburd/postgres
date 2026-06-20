@@ -56,6 +56,7 @@ typedef struct auto_explain_extension_options
 } auto_explain_extension_options;
 
 #define AUTO_EXPLAIN_SESSION_STATE_KEY "auto_explain.session"
+#define AUTO_EXPLAIN_EXECUTION_STATE_KEY "auto_explain.execution"
 
 typedef struct AutoExplainSessionState
 {
@@ -78,6 +79,12 @@ typedef struct AutoExplainSessionState
 	auto_explain_extension_options *extension_options;
 } AutoExplainSessionState;
 
+typedef struct AutoExplainExecutionState
+{
+	int			nesting_level;
+	bool		current_query_sampled;
+} AutoExplainExecutionState;
+
 static AutoExplainSessionState *
 auto_explain_session_state(void)
 {
@@ -99,6 +106,15 @@ auto_explain_session_state(void)
 	}
 
 	return state;
+}
+
+static AutoExplainExecutionState *
+auto_explain_execution_state(void)
+{
+	return (AutoExplainExecutionState *)
+		PgExecutionEnsureExtensionPrivateState(AUTO_EXPLAIN_EXECUTION_STATE_KEY,
+											   sizeof(AutoExplainExecutionState),
+											   NULL);
 }
 
 #define auto_explain_log_min_duration \
@@ -132,9 +148,9 @@ auto_explain_session_state(void)
 #define auto_explain_log_extension_options \
 	(auto_explain_session_state()->log_extension_options_value)
 #define nesting_level \
-	(PgCurrentExecutionExtensionState()->auto_explain_nesting_level)
+	(auto_explain_execution_state()->nesting_level)
 #define current_query_sampled \
-	(PgCurrentExecutionExtensionState()->auto_explain_current_query_sampled)
+	(auto_explain_execution_state()->current_query_sampled)
 
 static auto_explain_extension_options *
 current_auto_explain_extension_options(void)

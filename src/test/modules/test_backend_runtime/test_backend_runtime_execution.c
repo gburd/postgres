@@ -1277,18 +1277,14 @@ test_execution_extension_state_is_execution_local(PG_FUNCTION_ARGS)
 	PgExecution fake_execution2;
 	bool		saved_creating_extension;
 	Oid			saved_current_extension_object;
-	int			saved_auto_explain_nesting_level;
-	bool		saved_auto_explain_current_query_sampled;
 	PgExecutionDebugHandler saved_pgcrypto_debug_handler;
+	const char *private_key = "test_backend_runtime.execution_private";
+	void	  **private_slot;
 	bool		ok = true;
 
 	saved_execution = CurrentPgExecution;
 	saved_creating_extension = creating_extension;
 	saved_current_extension_object = CurrentExtensionObject;
-	saved_auto_explain_nesting_level =
-		PgCurrentExecutionExtensionState()->auto_explain_nesting_level;
-	saved_auto_explain_current_query_sampled =
-		PgCurrentExecutionExtensionState()->auto_explain_current_query_sampled;
 	saved_pgcrypto_debug_handler = *PgCurrentPgcryptoDebugHandlerRef();
 	MemSet(&fake_execution1, 0, sizeof(fake_execution1));
 	MemSet(&fake_execution2, 0, sizeof(fake_execution2));
@@ -1300,45 +1296,48 @@ test_execution_extension_state_is_execution_local(PG_FUNCTION_ARGS)
 		PgSetCurrentExecution(&fake_execution1);
 		creating_extension = true;
 		CurrentExtensionObject = 12345;
-		PgCurrentExecutionExtensionState()->auto_explain_nesting_level = 3;
-		PgCurrentExecutionExtensionState()->auto_explain_current_query_sampled = true;
+		ok = ok && PgExecutionGetExtensionPrivateState(private_key) == NULL;
+		private_slot = (void **)
+			PgExecutionEnsureExtensionPrivateState(private_key,
+												   sizeof(void *),
+												   NULL);
+		*private_slot = &fake_execution1;
 		*PgCurrentPgcryptoDebugHandlerRef() =
 			test_backend_runtime_debug_handler1;
 
 		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && !creating_extension;
 		ok = ok && CurrentExtensionObject == InvalidOid;
-		ok = ok && PgCurrentExecutionExtensionState()->auto_explain_nesting_level == 0;
-		ok = ok && !PgCurrentExecutionExtensionState()->auto_explain_current_query_sampled;
+		ok = ok && PgExecutionGetExtensionPrivateState(private_key) == NULL;
 		ok = ok && *PgCurrentPgcryptoDebugHandlerRef() == NULL;
 		CurrentExtensionObject = 67890;
-		PgCurrentExecutionExtensionState()->auto_explain_nesting_level = 7;
+		private_slot = (void **)
+			PgExecutionEnsureExtensionPrivateState(private_key,
+												   sizeof(void *),
+												   NULL);
+		*private_slot = &fake_execution2;
 		*PgCurrentPgcryptoDebugHandlerRef() =
 			test_backend_runtime_debug_handler2;
 
 		PgSetCurrentExecution(&fake_execution1);
 		ok = ok && creating_extension;
 		ok = ok && CurrentExtensionObject == 12345;
-		ok = ok && PgCurrentExecutionExtensionState()->auto_explain_nesting_level == 3;
-		ok = ok && PgCurrentExecutionExtensionState()->auto_explain_current_query_sampled;
+		private_slot = (void **) PgExecutionGetExtensionPrivateState(private_key);
+		ok = ok && private_slot != NULL && *private_slot == &fake_execution1;
 		ok = ok && *PgCurrentPgcryptoDebugHandlerRef() ==
 			test_backend_runtime_debug_handler1;
 
 		PgSetCurrentExecution(&fake_execution2);
 		ok = ok && !creating_extension;
 		ok = ok && CurrentExtensionObject == 67890;
-		ok = ok && PgCurrentExecutionExtensionState()->auto_explain_nesting_level == 7;
-		ok = ok && !PgCurrentExecutionExtensionState()->auto_explain_current_query_sampled;
+		private_slot = (void **) PgExecutionGetExtensionPrivateState(private_key);
+		ok = ok && private_slot != NULL && *private_slot == &fake_execution2;
 		ok = ok && *PgCurrentPgcryptoDebugHandlerRef() ==
 			test_backend_runtime_debug_handler2;
 
 		PgSetCurrentExecution(saved_execution);
 		creating_extension = saved_creating_extension;
 		CurrentExtensionObject = saved_current_extension_object;
-		PgCurrentExecutionExtensionState()->auto_explain_nesting_level =
-			saved_auto_explain_nesting_level;
-		PgCurrentExecutionExtensionState()->auto_explain_current_query_sampled =
-			saved_auto_explain_current_query_sampled;
 		*PgCurrentPgcryptoDebugHandlerRef() = saved_pgcrypto_debug_handler;
 	}
 	PG_CATCH();
@@ -1346,17 +1345,16 @@ test_execution_extension_state_is_execution_local(PG_FUNCTION_ARGS)
 		PgSetCurrentExecution(saved_execution);
 		creating_extension = saved_creating_extension;
 		CurrentExtensionObject = saved_current_extension_object;
-		PgCurrentExecutionExtensionState()->auto_explain_nesting_level =
-			saved_auto_explain_nesting_level;
-		PgCurrentExecutionExtensionState()->auto_explain_current_query_sampled =
-			saved_auto_explain_current_query_sampled;
 		*PgCurrentPgcryptoDebugHandlerRef() = saved_pgcrypto_debug_handler;
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
 
 	PgExecutionInitializeExtensionState(&fake_execution2.extension);
-	ok = ok && fake_execution2.extension.pgcrypto_debug_handler == NULL;
+	PgSetCurrentExecution(&fake_execution2);
+	ok = ok && PgExecutionGetExtensionPrivateState(private_key) == NULL;
+	ok = ok && *PgCurrentPgcryptoDebugHandlerRef() == NULL;
+	PgSetCurrentExecution(saved_execution);
 
 	if (!ok)
 		elog(ERROR, "extension state was not execution-local");

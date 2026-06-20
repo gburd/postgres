@@ -1122,9 +1122,7 @@ typedef struct PgExecutionExtensionState
 {
 	bool		creating;
 	Oid			current_object;
-	int			auto_explain_nesting_level;
-	bool		auto_explain_current_query_sampled;
-	PgExecutionDebugHandler pgcrypto_debug_handler;
+	List	   *private_states;
 } PgExecutionExtensionState;
 
 typedef struct PgExecutionMatViewState
@@ -1853,6 +1851,7 @@ typedef struct PgExtensionPrivateState
 } PgExtensionPrivateState;
 
 typedef PgExtensionPrivateState PgBackendExtensionPrivateState;
+typedef PgExtensionPrivateState PgExecutionExtensionPrivateState;
 typedef PgExtensionPrivateState PgRuntimeExtensionPrivateState;
 typedef PgExtensionPrivateState PgSessionExtensionPrivateState;
 
@@ -2160,6 +2159,7 @@ typedef struct PgRuntimeServerGUCState
 typedef struct PgRuntimeExtensionModuleState
 {
 	MemoryContext memory_context;
+	HTAB	   *rendezvous_hash;
 	List	   *private_states;
 } PgRuntimeExtensionModuleState;
 
@@ -3215,6 +3215,9 @@ extern bool *PgCurrentPLTclResetRegisteredRef(void);
 extern MemoryContext *PgCurrentPLsampleMemoryContextRef(void);
 extern PgExecutionExtensionState *PgCurrentExecutionExtensionState(void);
 extern void PgExecutionInitializeExtensionState(PgExecutionExtensionState *extension);
+extern void *PgExecutionGetExtensionPrivateState(const char *key);
+extern void *PgExecutionEnsureExtensionPrivateState(const char *key, Size size,
+												   PgExtensionPrivateStateCleanup cleanup);
 extern PgExecutionDebugHandler *PgCurrentPgcryptoDebugHandlerRef(void);
 extern void PgSessionRegisterResetCallback(PgSessionResetCallback callback,
 										   void *arg);

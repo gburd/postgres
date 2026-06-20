@@ -231,9 +231,7 @@ PgExecutionInitializeExtensionState(PgExecutionExtensionState *extension)
 
 	extension->creating = false;
 	extension->current_object = InvalidOid;
-	extension->auto_explain_nesting_level = 0;
-	extension->auto_explain_current_query_sampled = false;
-	extension->pgcrypto_debug_handler = NULL;
+	extension->private_states = NIL;
 }
 
 static void

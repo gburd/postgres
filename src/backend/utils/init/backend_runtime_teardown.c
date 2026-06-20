@@ -1219,6 +1219,30 @@ PgExecutionResetMemoryContextsClosedState(PgExecution *execution)
 		execution->memory_contexts.error_context = error_context;
 }
 
+static void
+PgExecutionResetExtensionClosedState(PgExecutionExtensionState *extension)
+{
+	Assert(extension != NULL);
+
+	foreach_ptr(PgExecutionExtensionPrivateState, private_state,
+				extension->private_states)
+	{
+		if (private_state->cleanup != NULL &&
+			private_state->state != NULL)
+			private_state->cleanup(private_state->state);
+	}
+
+	foreach_ptr(PgExecutionExtensionPrivateState, private_state,
+				extension->private_states)
+	{
+		if (private_state->state != NULL)
+			pfree(private_state->state);
+	}
+	list_free_deep(extension->private_states);
+
+	PgExecutionInitializeExtensionState(extension);
+}
+
 void
 PgExecutionResetClosedState(PgExecution *execution)
 {
