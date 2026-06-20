@@ -65,6 +65,16 @@ PgBackendResetStringInfo(StringInfoData *buf)
 }
 
 static void
+PgBackendResetExprInterpClosedState(PgBackendExprInterpState *expr_interp)
+{
+	Assert(expr_interp != NULL);
+
+	if (expr_interp->reverse_dispatch_table != NULL)
+		pfree(expr_interp->reverse_dispatch_table);
+	MemSet(expr_interp, 0, sizeof(*expr_interp));
+}
+
+static void
 PgBackendResetLockClosedState(PgBackendLockState *locks)
 {
 	Assert(locks != NULL);

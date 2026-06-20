@@ -460,12 +460,10 @@ typedef struct PgBackendExprEvalOpLookup
 	int			op;
 } PgBackendExprEvalOpLookup;
 
-#define PG_BACKEND_EXPR_INTERP_MAX_OPS 512
-
 typedef struct PgBackendExprInterpState
 {
 	const void **dispatch_table;
-	PgBackendExprEvalOpLookup reverse_dispatch_table[PG_BACKEND_EXPR_INTERP_MAX_OPS];
+	PgBackendExprEvalOpLookup *reverse_dispatch_table;
 } PgBackendExprInterpState;
 
 typedef struct PgBackendTimeoutState
