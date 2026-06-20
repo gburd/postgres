@@ -446,6 +446,72 @@ CatalogCacheComputeTupleHashValue(CatCache *cache, int nkeys, HeapTuple tuple)
 	return CatalogCacheComputeHashValue(cache, nkeys, v1, v2, v3, v4);
 }
 
+uint32
+CatalogCacheComputeTupleHashValueForKeys(TupleDesc tupdesc, int nkeys,
+										 const int *keyno, HeapTuple tuple)
+{
+	Datum		values[CATCACHE_MAXKEYS] = {0};
+	CCHashFN	hashfunc[CATCACHE_MAXKEYS];
+	uint32		hashValue = 0;
+	uint32		oneHash;
+	bool		isNull = false;
+
+	Assert(tupdesc != NULL);
+	Assert(keyno != NULL);
+	Assert(HeapTupleIsValid(tuple));
+	Assert(nkeys > 0 && nkeys <= CATCACHE_MAXKEYS);
+
+	for (int i = 0; i < nkeys; i++)
+	{
+		Oid			keytype;
+		RegProcedure eqfunc;
+		CCFastEqualFN fasteqfunc;
+
+		if (keyno[i] > 0)
+		{
+			Form_pg_attribute attr = TupleDescAttr(tupdesc, keyno[i] - 1);
+
+			keytype = attr->atttypid;
+			Assert(attr->attnotnull);
+		}
+		else
+		{
+			if (keyno[i] < 0)
+				elog(FATAL, "sys attributes are not supported in caches");
+			keytype = OIDOID;
+		}
+
+		values[i] = fastgetattr(tuple, keyno[i], tupdesc, &isNull);
+		Assert(!isNull);
+		GetCCHashEqFuncs(keytype, &hashfunc[i], &eqfunc, &fasteqfunc);
+	}
+
+	switch (nkeys)
+	{
+		case 4:
+			oneHash = (hashfunc[3]) (values[3]);
+			hashValue ^= pg_rotate_left32(oneHash, 24);
+			pg_fallthrough;
+		case 3:
+			oneHash = (hashfunc[2]) (values[2]);
+			hashValue ^= pg_rotate_left32(oneHash, 16);
+			pg_fallthrough;
+		case 2:
+			oneHash = (hashfunc[1]) (values[1]);
+			hashValue ^= pg_rotate_left32(oneHash, 8);
+			pg_fallthrough;
+		case 1:
+			oneHash = (hashfunc[0]) (values[0]);
+			hashValue ^= oneHash;
+			break;
+		default:
+			elog(FATAL, "wrong number of hash keys: %d", nkeys);
+			break;
+	}
+
+	return hashValue;
+}
+
 /*
  *		CatalogCacheCompareTuple
  *
@@ -948,6 +1014,9 @@ ResetCatalogCachesExt(bool debug_discard)
 
 	CACHE_elog(DEBUG2, "ResetCatalogCaches called");
 
+	if (CacheHdr == NULL)
+		return;
+
 	slist_foreach(iter, &CacheHdr->ch_caches)
 	{
 		CatCache   *cache = slist_container(CatCache, cc_next, iter.cur);
@@ -977,6 +1046,9 @@ CatalogCacheFlushCatalog(Oid catId)
 	slist_iter	iter;
 
 	CACHE_elog(DEBUG2, "CatalogCacheFlushCatalog called for %u", catId);
+
+	if (CacheHdr == NULL)
+		return;
 
 	slist_foreach(iter, &CacheHdr->ch_caches)
 	{
@@ -2498,99 +2570,6 @@ CatCacheCopyKeys(TupleDesc tupdesc, int nkeys, const int *attnos,
 		dstkeys[i] = datumCopy(src,
 							   att->attbyval,
 							   att->attlen);
-	}
-}
-
-/*
- *	PrepareToInvalidateCacheTuple()
- *
- *	This is part of a rather subtle chain of events, so pay attention:
- *
- *	When a tuple is inserted or deleted, it cannot be flushed from the
- *	catcaches immediately, for reasons explained at the top of cache/inval.c.
- *	Instead we have to add entry(s) for the tuple to a list of pending tuple
- *	invalidations that will be done at the end of the command or transaction.
- *
- *	The lists of tuples that need to be flushed are kept by inval.c.  This
- *	routine is a helper routine for inval.c.  Given a tuple belonging to
- *	the specified relation, find all catcaches it could be in, compute the
- *	correct hash value for each such catcache, and call the specified
- *	function to record the cache id and hash value in inval.c's lists.
- *	SysCacheInvalidate will be called later, if appropriate,
- *	using the recorded information.
- *
- *	For an insert or delete, tuple is the target tuple and newtuple is NULL.
- *	For an update, we are called just once, with tuple being the old tuple
- *	version and newtuple the new version.  We should make two list entries
- *	if the tuple's hash value changed, but only one if it didn't.
- *
- *	Note that it is irrelevant whether the given tuple is actually loaded
- *	into the catcache at the moment.  Even if it's not there now, it might
- *	be by the end of the command, or there might be a matching negative entry
- *	to flush --- or other backends' caches might have such entries --- so
- *	we have to make list entries to flush it later.
- *
- *	Also note that it's not an error if there are no catcaches for the
- *	specified relation.  inval.c doesn't know exactly which rels have
- *	catcaches --- it will call this routine for any tuple that's in a
- *	system relation.
- */
-void
-PrepareToInvalidateCacheTuple(Relation relation,
-							  HeapTuple tuple,
-							  HeapTuple newtuple,
-							  void (*function) (int, uint32, Oid, void *),
-							  void *context)
-{
-	slist_iter	iter;
-	Oid			reloid;
-
-	CACHE_elog(DEBUG2, "PrepareToInvalidateCacheTuple: called");
-
-	/*
-	 * sanity checks
-	 */
-	Assert(RelationIsValid(relation));
-	Assert(HeapTupleIsValid(tuple));
-	Assert(function);
-	Assert(CacheHdr != NULL);
-
-	reloid = RelationGetRelid(relation);
-
-	/* ----------------
-	 *	for each cache
-	 *	   if the cache contains tuples from the specified relation
-	 *		   compute the tuple's hash value(s) in this cache,
-	 *		   and call the passed function to register the information.
-	 * ----------------
-	 */
-
-	slist_foreach(iter, &CacheHdr->ch_caches)
-	{
-		CatCache   *ccp = slist_container(CatCache, cc_next, iter.cur);
-		uint32		hashvalue;
-		Oid			dbid;
-
-		if (ccp->cc_reloid != reloid)
-			continue;
-
-		/* Just in case cache hasn't finished initialization yet... */
-		ConditionalCatalogCacheInitializeCache(ccp);
-
-		hashvalue = CatalogCacheComputeTupleHashValue(ccp, ccp->cc_nkeys, tuple);
-		dbid = ccp->cc_relisshared ? (Oid) 0 : MyDatabaseId;
-
-		(*function) (ccp->id, hashvalue, dbid, context);
-
-		if (newtuple)
-		{
-			uint32		newhashvalue;
-
-			newhashvalue = CatalogCacheComputeTupleHashValue(ccp, ccp->cc_nkeys, newtuple);
-
-			if (newhashvalue != hashvalue)
-				(*function) (ccp->id, newhashvalue, dbid, context);
-		}
 	}
 }
 
