@@ -17,6 +17,9 @@
 #define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
 #include <unistd.h>
 
 #include "access/gin.h"
@@ -146,6 +149,7 @@ static char *PgRuntimeCopyThreadServerGUCString(char *current,
 												const char *source);
 static void PgRuntimeCopyThreadServerGUCState(const PgRuntimeServerGUCState *source);
 static void PgRuntimeRefreshThreadServerGUCState(void);
+static void PgRuntimeConfigurePooledProtocolAllocator(void);
 
 PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
 PgBackendInstrumentationState *PgCurrentBackendInstrumentationState(void);
@@ -876,11 +880,30 @@ PgRuntimeRefreshThreadServerGUCState(void)
 		PgRuntimeInitializeServerGUCState(&thread_runtime.server_guc);
 }
 
+static void
+PgRuntimeConfigurePooledProtocolAllocator(void)
+{
+#if defined(__GLIBC__)
+	/*
+	 * Pooled protocol mode targets many mostly-idle logical sessions in one
+	 * postmaster child.  Glibc's default arena growth preserves allocator
+	 * throughput for pinned hot paths, but retains substantial private memory
+	 * in pooled idle-connection profiles.  Keep pooled mode modest by default,
+	 * while letting an operator-provided MALLOC_ARENA_MAX win.
+	 */
+	if (getenv("MALLOC_ARENA_MAX") == NULL)
+		(void) mallopt(M_ARENA_MAX, 4);
+#endif
+}
+
 void
 InitializePgThreadRuntime(PgBackendExitContinuation exit_backend)
 {
 	if (!thread_runtime_initialized)
 	{
+		if (PgRuntimePooledProtocolRequested())
+			PgRuntimeConfigurePooledProtocolAllocator();
+
 		MemSet(&thread_runtime, 0, sizeof(thread_runtime));
 		PgRuntimeInitializeRuntimeObject(&thread_runtime);
 
