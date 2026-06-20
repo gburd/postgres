@@ -68,6 +68,24 @@ my @protocol_park_memory_summary_fields = qw(
   sizeof_execution sizeof_logical_state sizeof_runtime_state
 );
 
+my @protocol_park_guc_memory_fields = qw(
+  pid backend_id generation
+  context_total_bytes context_free_bytes context_used_bytes context_blocks
+  builtin_count custom_count state_array_bytes
+  cold_count cold_direct_bytes
+  current_string_bytes reset_string_bytes
+  last_reported_bytes sourcefile_bytes
+  stack_count stack_direct_bytes custom_record_bytes
+  attributed_bytes unattributed_used_bytes
+);
+
+my @protocol_park_guc_memory_summary_fields = qw(
+  context_used_bytes context_blocks builtin_count custom_count state_array_bytes
+  cold_count cold_direct_bytes current_string_bytes reset_string_bytes
+  last_reported_bytes sourcefile_bytes stack_count stack_direct_bytes
+  custom_record_bytes attributed_bytes unattributed_used_bytes
+);
+
 my @protocol_park_context_memory_fields = qw(
   pid backend_id generation context_index depth type name ident path
   local_total_bytes local_free_bytes local_used_bytes local_blocks local_free_chunks
@@ -418,6 +436,15 @@ print $protocol_park_memory_fh
 	@protocol_park_memory_fields),
   "\n";
 
+my $protocol_park_guc_memory_path =
+  File::Spec->catfile($out_dir, 'protocol_park_guc_memory.tsv');
+open my $protocol_park_guc_memory_fh, '>', $protocol_park_guc_memory_path
+  or die "could not write $protocol_park_guc_memory_path: $!";
+print $protocol_park_guc_memory_fh
+  join("\t", 'lane', 'workload', 'run', 'sample_index',
+	@protocol_park_guc_memory_fields),
+  "\n";
+
 my $protocol_park_context_memory_path =
   File::Spec->catfile($out_dir, 'protocol_park_context_memory.tsv');
 open my $protocol_park_context_memory_fh, '>', $protocol_park_context_memory_path
@@ -457,6 +484,7 @@ if ($restart_per_workload)
 			run_lane($lane, [ $workload ], $script_dir, $tps_fh,
 				$samples_fh, $resources_fh, $resource_samples_fh,
 				$resource_baselines_fh, $protocol_park_memory_fh,
+				$protocol_park_guc_memory_fh,
 				$protocol_park_context_memory_fh,
 				$protocol_park_catcache_memory_fh,
 				$protocol_park_relcache_memory_fh, \%results, $workload);
@@ -470,6 +498,7 @@ else
 		run_lane($lane, \@requested_workloads, $script_dir, $tps_fh,
 			$samples_fh, $resources_fh, $resource_samples_fh,
 			$resource_baselines_fh, $protocol_park_memory_fh,
+			$protocol_park_guc_memory_fh,
 			$protocol_park_context_memory_fh,
 			$protocol_park_catcache_memory_fh,
 			$protocol_park_relcache_memory_fh, \%results, undef);
@@ -487,6 +516,7 @@ close $memory_map_path_summary_fh;
 close $thread_stacks_fh;
 close $memory_accounting_fh;
 close $protocol_park_memory_fh;
+close $protocol_park_guc_memory_fh;
 close $protocol_park_context_memory_fh;
 close $protocol_park_catcache_memory_fh;
 close $protocol_park_relcache_memory_fh;
@@ -497,6 +527,8 @@ write_resource_efficiency($out_dir, \@requested_workloads, \@lane_specs,
 write_memory_footprint($out_dir, \@requested_workloads, \@lane_specs,
 	\%results);
 write_protocol_park_memory_summary($out_dir, $protocol_park_memory_path);
+write_protocol_park_guc_memory_summary($out_dir,
+	$protocol_park_guc_memory_path);
 write_protocol_park_context_memory_summary($out_dir,
 	$protocol_park_context_memory_path);
 write_protocol_park_catcache_memory_summary($out_dir,
@@ -517,6 +549,7 @@ print "wrote $memory_map_path_summary_path\n";
 print "wrote $thread_stacks_path\n";
 print "wrote $memory_accounting_path\n";
 print "wrote $protocol_park_memory_path\n";
+print "wrote $protocol_park_guc_memory_path\n";
 print "wrote $protocol_park_context_memory_path\n";
 print "wrote $protocol_park_catcache_memory_path\n";
 print "wrote $protocol_park_relcache_memory_path\n";
@@ -524,6 +557,7 @@ print "wrote ", File::Spec->catfile($out_dir, 'ratios.tsv'), "\n";
 print "wrote ", File::Spec->catfile($out_dir, 'resource_efficiency.tsv'), "\n";
 print "wrote ", File::Spec->catfile($out_dir, 'memory_footprint.tsv'), "\n";
 print "wrote ", File::Spec->catfile($out_dir, 'protocol_park_memory_summary.tsv'), "\n";
+print "wrote ", File::Spec->catfile($out_dir, 'protocol_park_guc_memory_summary.tsv'), "\n";
 print "wrote ", File::Spec->catfile($out_dir, 'protocol_park_context_memory_summary.tsv'), "\n";
 print "wrote ", File::Spec->catfile($out_dir, 'protocol_park_catcache_memory_summary.tsv'), "\n";
 print "wrote ", File::Spec->catfile($out_dir, 'protocol_park_relcache_memory_summary.tsv'), "\n";
@@ -610,11 +644,15 @@ Output:
                            per-thread stack visibility for detailed snapshots
   protocol_park_memory.tsv
                            parsed per-park memory-context attribution rows
+  protocol_park_guc_memory.tsv
+                           parsed per-park GUC memory attribution rows
   protocol_park_context_memory.tsv
                            bounded per-backend memory-context tree rows
                            emitted at committed protocol-read parks
   protocol_park_memory_summary.tsv
                            median per-park memory attribution by lane/workload
+  protocol_park_guc_memory_summary.tsv
+                           median per-park GUC memory attribution by lane/workload
   protocol_park_context_memory_summary.tsv
                            median per-context retained/used memory by path
   ratios.tsv              per-lane ratios against vanilla, or the first selected lane
@@ -747,7 +785,8 @@ sub run_lane
 {
 	my ($lane, $workloads, $script_dir, $tps_fh, $samples_fh, $resources_fh,
 		$resource_samples_fh, $resource_baselines_fh,
-		$protocol_park_memory_fh, $protocol_park_context_memory_fh,
+		$protocol_park_memory_fh, $protocol_park_guc_memory_fh,
+		$protocol_park_context_memory_fh,
 		$protocol_park_catcache_memory_fh,
 		$protocol_park_relcache_memory_fh, $results,
 		$lane_dir_suffix) = @_;
@@ -845,6 +884,7 @@ sub run_lane
 				  run_workload($lane, $workload, $script_dir, $socket_dir,
 					$port, $pgbench_bin, $data_dir, $server_log, $run_index,
 					$resource_samples_fh, $protocol_park_memory_fh,
+					$protocol_park_guc_memory_fh,
 					$protocol_park_context_memory_fh,
 					$protocol_park_catcache_memory_fh,
 					$protocol_park_relcache_memory_fh);
@@ -987,7 +1027,8 @@ sub run_workload
 {
 	my ($lane, $workload, $script_dir, $socket_dir, $port, $pgbench_bin,
 		$data_dir, $server_log, $run_index, $resource_samples_fh,
-		$protocol_park_memory_fh, $protocol_park_context_memory_fh,
+		$protocol_park_memory_fh, $protocol_park_guc_memory_fh,
+		$protocol_park_context_memory_fh,
 		$protocol_park_catcache_memory_fh,
 		$protocol_park_relcache_memory_fh) = @_;
 
@@ -1029,6 +1070,7 @@ sub run_workload
 
 	parse_protocol_park_memory_log($server_log, $protocol_park_log_offset,
 		$lane->{name}, $workload, $run_index, $protocol_park_memory_fh,
+		$protocol_park_guc_memory_fh,
 		$protocol_park_context_memory_fh,
 		$protocol_park_catcache_memory_fh,
 		$protocol_park_relcache_memory_fh)
@@ -1588,8 +1630,9 @@ sub number_or_zero
 sub parse_protocol_park_memory_log
 {
 	my ($server_log, $offset, $lane, $workload, $run_index, $fh,
-		$context_fh, $catcache_fh, $relcache_fh) = @_;
+		$guc_fh, $context_fh, $catcache_fh, $relcache_fh) = @_;
 	my $sample_index = 0;
+	my $guc_sample_index = 0;
 	my $context_sample_index = 0;
 	my $catcache_sample_index = 0;
 	my $relcache_sample_index = 0;
@@ -1606,6 +1649,26 @@ sub parse_protocol_park_memory_log
 	{
 		my %fields;
 		my $payload;
+
+		if ($line =~ /protocol_park_guc_memory\s+(.*)$/)
+		{
+			next unless defined $guc_fh;
+			$payload = $1;
+			while ($payload =~ /([A-Za-z0-9_]+)=([^\s]+)/g)
+			{
+				$fields{$1} = $2;
+			}
+
+			$guc_sample_index++;
+			print $guc_fh join("\t",
+				$lane,
+				$workload,
+				$run_index,
+				$guc_sample_index,
+				map { defined $fields{$_} ? $fields{$_} : 'n/a' }
+				  @protocol_park_guc_memory_fields), "\n";
+			next;
+		}
 
 		if ($line =~ /protocol_park_context_memory\s+(.*)$/)
 		{
@@ -2673,6 +2736,86 @@ sub write_protocol_park_memory_summary
 				  ? metric_value(median(@$values) / 1024, 2)
 				  : 'n/a'
 			} @protocol_park_memory_summary_fields),
+		  "\n";
+	}
+
+	close $fh;
+}
+
+sub write_protocol_park_guc_memory_summary
+{
+	my ($dir, $raw_path) = @_;
+	my $path =
+	  File::Spec->catfile($dir, 'protocol_park_guc_memory_summary.tsv');
+	my %field_index;
+	my %groups;
+
+	open my $raw_fh, '<', $raw_path or die "could not read $raw_path: $!";
+	my $header = <$raw_fh>;
+	chomp $header if defined $header;
+	my @header = defined $header ? split /\t/, $header : ();
+	for my $i (0 .. $#header)
+	{
+		$field_index{$header[$i]} = $i;
+	}
+
+	while (defined(my $line = <$raw_fh>))
+	{
+		chomp $line;
+		next if $line eq '';
+		my @cols = split /\t/, $line, -1;
+		my $lane = $cols[$field_index{lane}];
+		my $workload = $cols[$field_index{workload}];
+		my $key = "$lane\t$workload";
+
+		$groups{$key}{lane} = $lane;
+		$groups{$key}{workload} = $workload;
+		$groups{$key}{count}++;
+		for my $field (@protocol_park_guc_memory_summary_fields)
+		{
+			next unless exists $field_index{$field};
+			my $value = $cols[$field_index{$field}];
+
+			next unless defined $value && $value =~ /^-?\d+(?:\.\d+)?$/;
+			push @{ $groups{$key}{values}{$field} }, $value + 0;
+		}
+	}
+	close $raw_fh;
+
+	open my $fh, '>', $path or die "could not write $path: $!";
+	print $fh join("\t",
+		'workload',
+		'lane',
+		'guc_samples',
+		map {
+			$_ =~ /bytes\z/ ? "${_}_median_kb" : "${_}_median"
+		} @protocol_park_guc_memory_summary_fields),
+	  "\n";
+
+	for my $key (sort keys %groups)
+	{
+		my $group = $groups{$key};
+
+		print $fh join("\t",
+			$group->{workload},
+			$group->{lane},
+			$group->{count},
+			map {
+				my $values = $group->{values}{$_};
+
+				if (!defined $values || !@$values)
+				{
+					'n/a';
+				}
+				elsif ($_ =~ /bytes\z/)
+				{
+					metric_value(median(@$values) / 1024, 2);
+				}
+				else
+				{
+					metric_value(median(@$values), 2);
+				}
+			} @protocol_park_guc_memory_summary_fields),
 		  "\n";
 	}
 

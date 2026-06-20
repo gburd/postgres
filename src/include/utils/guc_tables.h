@@ -403,6 +403,7 @@ extern struct config_generic **get_guc_variables(int *num_vars);
 
 extern void InitializeGUCVariablePointers(struct config_generic *variables);
 extern void build_guc_variables(void);
+extern void PgLogProtocolParkGUCMemory(uint32 backend_id, uint64 generation);
 
 /* search in enum options */
 extern const char *config_enum_lookup_by_value(const struct config_generic *record, int val);

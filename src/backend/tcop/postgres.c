@@ -85,6 +85,7 @@
 #include "utils/backend_runtime.h"
 #include "utils/catcache.h"
 #include "utils/guc_hooks.h"
+#include "utils/guc_tables.h"
 #include "utils/inval.h"
 #include "utils/injection_point.h"
 #include "utils/lsyscache.h"
@@ -6073,6 +6074,7 @@ PgLogProtocolParkMemory(PgSession *session, PgProtocolParkSpec *park_spec)
 							 sizeof(PgThreadBackendRuntimeState))));
 
 	PgLogProtocolParkContextMemory(backend, park_spec);
+	PgLogProtocolParkGUCMemory((uint32) backend->id, park_spec->generation);
 	PgLogProtocolParkCacheMemory(backend, park_spec);
 }
 

@@ -2029,6 +2029,205 @@ guc_custom_variable_count(void)
 	return hash_get_num_entries(guc_hashtab);
 }
 
+static Size
+guc_cstring_payload_size(const char *str)
+{
+	return str != NULL ? strlen(str) + 1 : 0;
+}
+
+static void
+guc_record_string_payload_size(const struct config_generic *gconf,
+							   Size *current_string_bytes,
+							   Size *reset_string_bytes)
+{
+	const char *current;
+	const char *reset;
+
+	if (gconf->vartype != PGC_STRING)
+		return;
+
+	current = *GUC_VARIABLE_STRING(gconf);
+	if (current == NULL || current == gconf->_string.boot_val)
+		current = NULL;
+	else
+		*current_string_bytes += guc_cstring_payload_size(current);
+
+	reset = GUC_RESET_STRING(gconf);
+	if (reset == NULL || reset == gconf->_string.boot_val || reset == current)
+		reset = NULL;
+	else
+		*reset_string_bytes += guc_cstring_payload_size(reset);
+
+	return;
+}
+
+static Size
+guc_record_stack_memory(const struct config_generic *gconf, Size *stack_count)
+{
+	Size		bytes = 0;
+	const char *current = NULL;
+	const char *reset = NULL;
+
+	if (gconf->vartype == PGC_STRING)
+	{
+		current = *GUC_VARIABLE_STRING(gconf);
+		reset = GUC_RESET_STRING(gconf);
+	}
+
+	for (GucStack *stack = GUC_STACK(gconf); stack; stack = stack->prev)
+	{
+		(*stack_count)++;
+		bytes += sizeof(GucStack);
+
+		if (gconf->vartype == PGC_STRING)
+		{
+			if (stack->prior.val.stringval != NULL &&
+				stack->prior.val.stringval != gconf->_string.boot_val &&
+				stack->prior.val.stringval != current &&
+				stack->prior.val.stringval != reset)
+				bytes += guc_cstring_payload_size(stack->prior.val.stringval);
+			if (stack->masked.val.stringval != NULL &&
+				stack->masked.val.stringval != gconf->_string.boot_val &&
+				stack->masked.val.stringval != current &&
+				stack->masked.val.stringval != reset &&
+				stack->masked.val.stringval != stack->prior.val.stringval)
+				bytes += guc_cstring_payload_size(stack->masked.val.stringval);
+		}
+	}
+
+	return bytes;
+}
+
+static void
+guc_record_memory_stats(const struct config_generic *gconf,
+						Size *cold_count,
+						Size *cold_direct_bytes,
+						Size *current_string_bytes,
+						Size *reset_string_bytes,
+						Size *last_reported_bytes,
+						Size *sourcefile_bytes,
+						Size *stack_count,
+						Size *stack_direct_bytes)
+{
+	config_generic_cold_state *cold;
+
+	guc_record_string_payload_size(gconf, current_string_bytes,
+								   reset_string_bytes);
+	*stack_direct_bytes += guc_record_stack_memory(gconf, stack_count);
+
+	cold = GUCRecordColdStateIfAllocated(gconf);
+	if (cold == NULL)
+		return;
+
+	(*cold_count)++;
+	*cold_direct_bytes += sizeof(config_generic_cold_state);
+	*last_reported_bytes += guc_cstring_payload_size(cold->last_reported);
+	*sourcefile_bytes += guc_cstring_payload_size(cold->sourcefile);
+}
+
+void
+PgLogProtocolParkGUCMemory(uint32 backend_id, uint64 generation)
+{
+	MemoryContextCounters context;
+	Size		context_used;
+	Size		custom_count;
+	Size		state_array_bytes;
+	Size		cold_count = 0;
+	Size		cold_direct_bytes = 0;
+	Size		current_string_bytes = 0;
+	Size		reset_string_bytes = 0;
+	Size		last_reported_bytes = 0;
+	Size		sourcefile_bytes = 0;
+	Size		stack_count = 0;
+	Size		stack_direct_bytes = 0;
+	Size		custom_record_bytes = 0;
+	Size		attributed_bytes;
+	Size		unattributed_used_bytes;
+
+	if (GUCMemoryContext == NULL)
+		return;
+
+	MemoryContextMemConsumed(GUCMemoryContext, &context);
+	context_used = context.totalspace - context.freespace;
+	custom_count = guc_custom_variable_count();
+	state_array_bytes = sizeof(config_generic_state) * (num_guc_variables + 1);
+
+	for (int i = 0; i < num_guc_variables; i++)
+		guc_record_memory_stats(&guc_variables[i],
+								&cold_count,
+								&cold_direct_bytes,
+								&current_string_bytes,
+								&reset_string_bytes,
+								&last_reported_bytes,
+								&sourcefile_bytes,
+								&stack_count,
+								&stack_direct_bytes);
+
+	if (guc_hashtab != NULL)
+	{
+		HASH_SEQ_STATUS status;
+		GUCHashEntry *hentry;
+
+		hash_seq_init(&status, guc_hashtab);
+		while ((hentry = (GUCHashEntry *) hash_seq_search(&status)) != NULL)
+		{
+			struct config_generic *gconf = hentry->gucvar;
+
+			custom_record_bytes += sizeof(struct config_generic);
+			if (gconf->state != NULL)
+				custom_record_bytes += sizeof(config_generic_state);
+			guc_record_memory_stats(gconf,
+									&cold_count,
+									&cold_direct_bytes,
+									&current_string_bytes,
+									&reset_string_bytes,
+									&last_reported_bytes,
+									&sourcefile_bytes,
+									&stack_count,
+									&stack_direct_bytes);
+		}
+	}
+
+	attributed_bytes = state_array_bytes + cold_direct_bytes +
+		current_string_bytes + reset_string_bytes + last_reported_bytes +
+		sourcefile_bytes + stack_direct_bytes + custom_record_bytes;
+	unattributed_used_bytes = context_used > attributed_bytes ?
+		context_used - attributed_bytes : 0;
+
+	ereport(LOG_SERVER_ONLY,
+			(errhidestmt(true),
+			 errhidecontext(true),
+			 errmsg_internal("protocol_park_guc_memory pid=%d backend_id=%u generation=%llu "
+							 "context_total_bytes=%zu context_free_bytes=%zu context_used_bytes=%zu context_blocks=%zu "
+							 "builtin_count=%d custom_count=%zu state_array_bytes=%zu "
+							 "cold_count=%zu cold_direct_bytes=%zu "
+							 "current_string_bytes=%zu reset_string_bytes=%zu "
+							 "last_reported_bytes=%zu sourcefile_bytes=%zu "
+							 "stack_count=%zu stack_direct_bytes=%zu custom_record_bytes=%zu "
+							 "attributed_bytes=%zu unattributed_used_bytes=%zu",
+							 PgCurrentBackendSignalPid(),
+							 backend_id,
+							 (unsigned long long) generation,
+							 context.totalspace,
+							 context.freespace,
+							 context_used,
+							 context.nblocks,
+							 num_guc_variables,
+							 custom_count,
+							 state_array_bytes,
+							 cold_count,
+							 cold_direct_bytes,
+							 current_string_bytes,
+							 reset_string_bytes,
+							 last_reported_bytes,
+							 sourcefile_bytes,
+							 stack_count,
+							 stack_direct_bytes,
+							 custom_record_bytes,
+							 attributed_bytes,
+							 unattributed_used_bytes)));
+}
+
 static HTAB *
 ensure_guc_custom_hashtab(int nelem)
 {
