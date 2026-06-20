@@ -184,6 +184,8 @@ PgBackendResetPgStatPendingClosedState(PgBackendPgStatPendingState *pgstat_pendi
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(pgstat_pending->shared_ref_context);
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(pgstat_pending->entry_ref_hash_context);
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(pgstat_pending->pending_context);
+	if (pgstat_pending->cold != NULL)
+		free(pgstat_pending->cold);
 
 	PgBackendInitializePgStatPendingState(pgstat_pending);
 }
@@ -612,6 +614,8 @@ PgBackendResetUtilityClosedState(PgBackendUtilityState *utility)
 
 	if (utility == NULL)
 		return;
+
+	utility->notify_interrupt_pending = false;
 
 	if (utility->async_global_channel_table != NULL)
 		dshash_detach(utility->async_global_channel_table);

@@ -106,6 +106,25 @@ PgCurrentPgStatLocalState(void)
 	return PgCurrentPgStatLocalStateSlow();
 }
 
+static PgBackendPgStatPendingColdState *
+PgCurrentPgStatPendingColdState(void)
+{
+	PgBackendPgStatPendingState *pgstat_pending;
+
+	pgstat_pending =
+		PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState,
+										PgCurrentBackendPgStatPendingState);
+	if (likely(pgstat_pending->cold != NULL))
+		return pgstat_pending->cold;
+
+	pgstat_pending->cold = malloc(sizeof(PgBackendPgStatPendingColdState));
+	if (unlikely(pgstat_pending->cold == NULL))
+		elog(ERROR, "out of memory allocating pgstat pending cold state");
+	MemSet(pgstat_pending->cold, 0, sizeof(PgBackendPgStatPendingColdState));
+
+	return pgstat_pending->cold;
+}
+
 MemoryContext *
 PgCurrentPgStatFixedSnapshotContextRef(void)
 {
@@ -115,13 +134,13 @@ PgCurrentPgStatFixedSnapshotContextRef(void)
 PgStat_BgWriterStats *
 PgCurrentPendingBgWriterStatsRef(void)
 {
-	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->pending_bgwriter;
+	return &PgCurrentPgStatPendingColdState()->pending_bgwriter;
 }
 
 PgStat_CheckpointerStats *
 PgCurrentPendingCheckpointerStatsRef(void)
 {
-	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->pending_checkpointer;
+	return &PgCurrentPgStatPendingColdState()->pending_checkpointer;
 }
 
 PgStat_PendingIO *
@@ -139,7 +158,7 @@ PgCurrentHaveIOStatsRef(void)
 PgStat_SLRUStats *
 PgCurrentPendingSLRUStatsArray(void)
 {
-	return PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->slru_stats;
+	return PgCurrentPgStatPendingColdState()->slru_stats;
 }
 
 bool *
@@ -151,7 +170,7 @@ PgCurrentHaveSLRUStatsRef(void)
 PgStat_PendingLock *
 PgCurrentPendingLockStatsRef(void)
 {
-	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->lock_stats;
+	return &PgCurrentPgStatPendingColdState()->lock_stats;
 }
 
 bool *

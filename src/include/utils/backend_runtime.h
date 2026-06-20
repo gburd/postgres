@@ -732,6 +732,14 @@ typedef struct PgBackendExtensionModuleState
 	List	   *private_states;
 } PgBackendExtensionModuleState;
 
+typedef struct PgBackendPgStatPendingColdState
+{
+	PgStat_BgWriterStats pending_bgwriter;
+	PgStat_CheckpointerStats pending_checkpointer;
+	PgStat_SLRUStats slru_stats[PGSTAT_SLRU_NUM_ELEMENTS];
+	PgStat_PendingLock lock_stats;
+} PgBackendPgStatPendingColdState;
+
 typedef struct PgBackendPgStatPendingState
 {
 	PgStat_LocalState *local;
@@ -740,16 +748,13 @@ typedef struct PgBackendPgStatPendingState
 	int			shared_ref_age;
 	MemoryContext shared_ref_context;
 	MemoryContext entry_ref_hash_context;
-	PgStat_BgWriterStats pending_bgwriter;
-	PgStat_CheckpointerStats pending_checkpointer;
 	PgStat_PendingIO io_stats;
 	bool		io_stats_pending;
-	PgStat_SLRUStats slru_stats[PGSTAT_SLRU_NUM_ELEMENTS];
 	bool		slru_stats_pending;
-	PgStat_PendingLock lock_stats;
 	bool		lock_stats_pending;
 	PgStat_BackendPending backend_stats;
 	bool		backend_io_stats_pending;
+	PgBackendPgStatPendingColdState *cold;
 	MemoryContext pending_context;
 	dlist_head	pending;
 	bool		report_fixed;

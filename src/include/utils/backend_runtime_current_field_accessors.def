@@ -992,12 +992,6 @@
 #define PgCurrentPendingBackendStatsRef() \
 	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentPendingBackendStatsRef, \
 									 backend_stats)
-#define PgCurrentPendingBgWriterStatsRef() \
-	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentPendingBgWriterStatsRef, \
-									 pending_bgwriter)
-#define PgCurrentPendingCheckpointerStatsRef() \
-	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentPendingCheckpointerStatsRef, \
-									 pending_checkpointer)
 #define PgCurrentPendingClientEncodingRef() \
 	PG_RUNTIME_CURRENT_INITIALIZED_BY_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentPendingClientEncodingRef, \
 									 client_encoding, pending_client_encoding)
@@ -1007,9 +1001,6 @@
 #define PgCurrentPendingListenActionsRef() \
 	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionAsyncRuntimeState, PgCurrentPendingListenActionsRef, \
 									 pending_listen_actions)
-#define PgCurrentPendingLockStatsRef() \
-	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentPendingLockStatsRef, \
-									 lock_stats)
 #define PgCurrentPendingNotifiesRef() \
 	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionAsyncRuntimeState, PgCurrentPendingNotifiesRef, \
 									 pending_notifies)
@@ -1019,9 +1010,6 @@
 #define PgCurrentPendingRelDeletesRef() \
 	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionCatalogRuntimeState, PgCurrentPendingRelDeletesRef, \
 									 pending_rel_deletes)
-#define PgCurrentPendingSLRUStatsArray() \
-	PG_RUNTIME_CURRENT_FIELD_PTR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentPendingSLRUStatsArray, \
-									 slru_stats)
 #define PgCurrentPendingSyncHashRef() \
 	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionCatalogRuntimeState, PgCurrentPendingSyncHashRef, \
 									 pending_sync_hash)
