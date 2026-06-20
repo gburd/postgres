@@ -83,9 +83,27 @@ PgCurrentPgStatXactStackRef(void)
 }
 
 PgStat_LocalState *
+PgCurrentPgStatLocalStateSlow(void)
+{
+	PgBackendPgStatPendingState *pgstat_pending;
+
+	pgstat_pending =
+		PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState,
+										PgCurrentBackendPgStatPendingState);
+	if (likely(pgstat_pending->local != NULL))
+		return pgstat_pending->local;
+
+	Assert(TopMemoryContext != NULL);
+	pgstat_pending->local =
+		MemoryContextAllocZero(TopMemoryContext, sizeof(PgStat_LocalState));
+
+	return pgstat_pending->local;
+}
+
+PgStat_LocalState *
 PgCurrentPgStatLocalState(void)
 {
-	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->local;
+	return PgCurrentPgStatLocalStateSlow();
 }
 
 MemoryContext *

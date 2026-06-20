@@ -112,7 +112,26 @@ PgCurrentRendezvousHashRef(void)
 PgSessionPgcryptoDesState *
 PgCurrentPgcryptoDesState(void)
 {
-	return &PgCurrentSessionExtensionModuleState()->pgcrypto_des;
+	PgSessionExtensionModuleState *extension_modules;
+	MemoryContext alloc_context;
+	MemoryContext old_context;
+
+	extension_modules = PgCurrentSessionExtensionModuleState();
+	if (likely(extension_modules->pgcrypto_des != NULL))
+		return extension_modules->pgcrypto_des;
+
+	if (CurrentPgSession != NULL)
+		alloc_context = PgSessionGetDynamicLibraryMemoryContext(CurrentPgSession);
+	else
+		alloc_context = TopMemoryContext;
+
+	Assert(alloc_context != NULL);
+	old_context = MemoryContextSwitchTo(alloc_context);
+	extension_modules->pgcrypto_des =
+		palloc0_object(PgSessionPgcryptoDesState);
+	MemoryContextSwitchTo(old_context);
+
+	return extension_modules->pgcrypto_des;
 }
 
 PgExecutionDebugHandler *

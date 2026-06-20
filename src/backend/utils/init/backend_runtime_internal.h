@@ -489,6 +489,7 @@ extern void PgBackendResetTimeoutClosedState(PgBackendTimeoutState *timeout);
 #ifndef PgCurrentBackendPgStatPendingState
 extern PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
 #endif
+extern PgStat_LocalState *PgCurrentPgStatLocalStateSlow(void);
 #ifndef PgCurrentBackendMemoryManagerState
 extern PgBackendMemoryManagerState *PgCurrentBackendMemoryManagerState(void);
 #endif

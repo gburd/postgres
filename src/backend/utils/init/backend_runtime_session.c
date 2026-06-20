@@ -1549,8 +1549,7 @@ PgSessionInitializeExtensionModuleState(PgSessionExtensionModuleState *extension
 	extension_modules->sepgsql_avc_lru_hint = 0;
 	extension_modules->sepgsql_avc_threshold = 0;
 	extension_modules->sepgsql_avc_unlabeled = NULL;
-	memset(&extension_modules->pgcrypto_des, 0,
-		   sizeof(extension_modules->pgcrypto_des));
+	extension_modules->pgcrypto_des = NULL;
 	extension_modules->dblink_context = NULL;
 	extension_modules->dblink_persistent_connection = NULL;
 	extension_modules->dblink_remote_conn_hash = NULL;

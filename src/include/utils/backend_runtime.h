@@ -742,7 +742,7 @@ typedef struct PgBackendExtensionModuleState
 
 typedef struct PgBackendPgStatPendingState
 {
-	PgStat_LocalState local;
+	PgStat_LocalState *local;
 	MemoryContext fixed_snapshot_context;
 	void	   *entry_ref_hash;
 	int			shared_ref_age;
@@ -1961,7 +1961,7 @@ typedef struct PgSessionExtensionModuleState
 	int			sepgsql_avc_lru_hint;
 	int			sepgsql_avc_threshold;
 	char	   *sepgsql_avc_unlabeled;
-	PgSessionPgcryptoDesState pgcrypto_des;
+	PgSessionPgcryptoDesState *pgcrypto_des;
 	MemoryContext dblink_context;
 	void	   *dblink_persistent_connection;
 	void	   *dblink_remote_conn_hash;

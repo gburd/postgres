@@ -1065,8 +1065,16 @@
 	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPgStatRuntimeState, PgCurrentPgStatLastSessionReportTimeRef, \
 									 last_session_report_time)
 #define PgCurrentPgStatLocalState() \
-	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentPgStatLocalState, \
-									 local)
+	__extension__ \
+	({ \
+		PgBackendPgStatPendingState *pg_runtime_bucket = \
+			CurrentPgBackendPgStatPendingRuntimeState; \
+ \
+		unlikely(pg_runtime_bucket == NULL || pg_runtime_bucket->local == NULL) ? \
+		(PG_RUNTIME_BRIDGE_COUNT_FALLBACK_EXPR(fast_bucket), \
+		 PgCurrentPgStatLocalStateSlow()) : \
+		pg_runtime_bucket->local; \
+	})
 #define PgCurrentPgStatPendingContextRef() \
 	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentPgStatPendingContextRef, \
 									 pending_context)

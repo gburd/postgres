@@ -151,7 +151,10 @@ test_backend_runtime_sepgsql_defaults_ok(PgSessionExtensionModuleState *extensio
 static bool
 test_backend_runtime_pgcrypto_des_defaults_ok(PgSessionExtensionModuleState *extension_modules)
 {
-	PgSessionPgcryptoDesState *des = &extension_modules->pgcrypto_des;
+	PgSessionPgcryptoDesState *des = extension_modules->pgcrypto_des;
+
+	if (des == NULL)
+		return true;
 
 	return des->des_initialised == 0 &&
 		des->saltbits == 0 &&
@@ -166,6 +169,64 @@ test_backend_runtime_pgcrypto_des_defaults_ok(PgSessionExtensionModuleState *ext
 		des->m_sbox[0][0] == 0 &&
 		des->psbox[0][0] == 0 &&
 		des->output[0] == '\0';
+}
+
+static PgSessionPgcryptoDesState *
+test_backend_runtime_ensure_pgcrypto_des(PgSessionExtensionModuleState *extension_modules)
+{
+	if (extension_modules->pgcrypto_des == NULL)
+		extension_modules->pgcrypto_des =
+			palloc0_object(PgSessionPgcryptoDesState);
+
+	return extension_modules->pgcrypto_des;
+}
+
+static void
+test_backend_runtime_seed_pgcrypto_des(PgSessionExtensionModuleState *extension_modules,
+									   uint32 saltbits_value,
+									   const char *output_value,
+									   bool use_de_key)
+{
+	PgSessionPgcryptoDesState *des;
+
+	des = test_backend_runtime_ensure_pgcrypto_des(extension_modules);
+	des->des_initialised = 1;
+	des->saltbits = saltbits_value;
+	des->old_salt = saltbits_value + 1;
+	des->bits28 = use_de_key ? &des->de_keysl[4] : &des->en_keysl[4];
+	des->bits24 = use_de_key ? &des->de_keysr[4] : &des->en_keysr[4];
+	des->init_perm[0] = saltbits_value + 2;
+	des->final_perm[0] = saltbits_value + 3;
+	des->en_keysl[0] = saltbits_value + 4;
+	des->m_sbox[0][0] = saltbits_value + 5;
+	des->psbox[0][0] = saltbits_value + 6;
+	des->old_rawkey0 = saltbits_value + 7;
+	des->old_rawkey1 = saltbits_value + 8;
+	strlcpy(des->output, output_value, sizeof(des->output));
+}
+
+static bool
+test_backend_runtime_pgcrypto_des_seed_ok(PgSessionExtensionModuleState *extension_modules,
+										  uint32 saltbits_value,
+										  const char *output_value,
+										  bool use_de_key)
+{
+	PgSessionPgcryptoDesState *des = extension_modules->pgcrypto_des;
+
+	return des != NULL &&
+		des->des_initialised == 1 &&
+		des->saltbits == saltbits_value &&
+		des->old_salt == saltbits_value + 1 &&
+		des->bits28 == (use_de_key ? &des->de_keysl[4] : &des->en_keysl[4]) &&
+		des->bits24 == (use_de_key ? &des->de_keysr[4] : &des->en_keysr[4]) &&
+		des->init_perm[0] == saltbits_value + 2 &&
+		des->final_perm[0] == saltbits_value + 3 &&
+		des->en_keysl[0] == saltbits_value + 4 &&
+		des->m_sbox[0][0] == saltbits_value + 5 &&
+		des->psbox[0][0] == saltbits_value + 6 &&
+		des->old_rawkey0 == saltbits_value + 7 &&
+		des->old_rawkey1 == saltbits_value + 8 &&
+		strcmp(des->output, output_value) == 0;
 }
 
 PG_FUNCTION_INFO_V1(test_session_catalog_lookup_state_is_session_local);
@@ -863,21 +924,9 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		extension_modules->sepgsql_avc_lru_hint = 34;
 		extension_modules->sepgsql_avc_threshold = 35;
 		extension_modules->sepgsql_avc_unlabeled = session1_sepgsql_unlabeled;
-		extension_modules->pgcrypto_des.des_initialised = 1;
-		extension_modules->pgcrypto_des.saltbits = 101;
-		extension_modules->pgcrypto_des.old_salt = 102;
-		extension_modules->pgcrypto_des.bits28 = &extension_modules->pgcrypto_des.en_keysl[4];
-		extension_modules->pgcrypto_des.bits24 = &extension_modules->pgcrypto_des.en_keysr[4];
-		extension_modules->pgcrypto_des.init_perm[0] = 103;
-		extension_modules->pgcrypto_des.final_perm[0] = 104;
-		extension_modules->pgcrypto_des.en_keysl[0] = 105;
-		extension_modules->pgcrypto_des.m_sbox[0][0] = 106;
-		extension_modules->pgcrypto_des.psbox[0][0] = 107;
-		extension_modules->pgcrypto_des.old_rawkey0 = 108;
-		extension_modules->pgcrypto_des.old_rawkey1 = 109;
-		strlcpy(extension_modules->pgcrypto_des.output,
-				session1_pgcrypto_output,
-				sizeof(extension_modules->pgcrypto_des.output));
+		test_backend_runtime_seed_pgcrypto_des(extension_modules, 101,
+											   session1_pgcrypto_output,
+											   false);
 		extension_modules->dblink_context = session1_dblink_context;
 		extension_modules->dblink_persistent_connection = &session1_private;
 		extension_modules->dblink_remote_conn_hash = &session1_reset_count;
@@ -1020,21 +1069,9 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		extension_modules->sepgsql_avc_lru_hint = 44;
 		extension_modules->sepgsql_avc_threshold = 45;
 		extension_modules->sepgsql_avc_unlabeled = session2_sepgsql_unlabeled;
-		extension_modules->pgcrypto_des.des_initialised = 1;
-		extension_modules->pgcrypto_des.saltbits = 201;
-		extension_modules->pgcrypto_des.old_salt = 202;
-		extension_modules->pgcrypto_des.bits28 = &extension_modules->pgcrypto_des.de_keysl[4];
-		extension_modules->pgcrypto_des.bits24 = &extension_modules->pgcrypto_des.de_keysr[4];
-		extension_modules->pgcrypto_des.init_perm[0] = 203;
-		extension_modules->pgcrypto_des.final_perm[0] = 204;
-		extension_modules->pgcrypto_des.en_keysl[0] = 205;
-		extension_modules->pgcrypto_des.m_sbox[0][0] = 206;
-		extension_modules->pgcrypto_des.psbox[0][0] = 207;
-		extension_modules->pgcrypto_des.old_rawkey0 = 208;
-		extension_modules->pgcrypto_des.old_rawkey1 = 209;
-		strlcpy(extension_modules->pgcrypto_des.output,
-				session2_pgcrypto_output,
-				sizeof(extension_modules->pgcrypto_des.output));
+		test_backend_runtime_seed_pgcrypto_des(extension_modules, 201,
+											   session2_pgcrypto_output,
+											   true);
 		session2_dblink_context =
 			AllocSetContextCreate(TopMemoryContext,
 								  "test session2 dblink context",
@@ -1156,22 +1193,10 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && extension_modules->sepgsql_avc_threshold == 35;
 		ok = ok && strcmp(extension_modules->sepgsql_avc_unlabeled,
 						  "session1unlabeled") == 0;
-		ok = ok && extension_modules->pgcrypto_des.des_initialised == 1;
-		ok = ok && extension_modules->pgcrypto_des.saltbits == 101;
-		ok = ok && extension_modules->pgcrypto_des.old_salt == 102;
-		ok = ok && extension_modules->pgcrypto_des.bits28 ==
-			&extension_modules->pgcrypto_des.en_keysl[4];
-		ok = ok && extension_modules->pgcrypto_des.bits24 ==
-			&extension_modules->pgcrypto_des.en_keysr[4];
-		ok = ok && extension_modules->pgcrypto_des.init_perm[0] == 103;
-		ok = ok && extension_modules->pgcrypto_des.final_perm[0] == 104;
-		ok = ok && extension_modules->pgcrypto_des.en_keysl[0] == 105;
-		ok = ok && extension_modules->pgcrypto_des.m_sbox[0][0] == 106;
-		ok = ok && extension_modules->pgcrypto_des.psbox[0][0] == 107;
-		ok = ok && extension_modules->pgcrypto_des.old_rawkey0 == 108;
-		ok = ok && extension_modules->pgcrypto_des.old_rawkey1 == 109;
-		ok = ok && strcmp(extension_modules->pgcrypto_des.output,
-						  "session1des") == 0;
+		ok = ok && test_backend_runtime_pgcrypto_des_seed_ok(extension_modules,
+															 101,
+															 "session1des",
+															 false);
 		ok = ok && extension_modules->dblink_context ==
 			session1_dblink_context;
 		ok = ok && extension_modules->dblink_persistent_connection ==
@@ -1285,22 +1310,10 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && extension_modules->sepgsql_avc_threshold == 45;
 		ok = ok && strcmp(extension_modules->sepgsql_avc_unlabeled,
 						  "session2unlabeled") == 0;
-		ok = ok && extension_modules->pgcrypto_des.des_initialised == 1;
-		ok = ok && extension_modules->pgcrypto_des.saltbits == 201;
-		ok = ok && extension_modules->pgcrypto_des.old_salt == 202;
-		ok = ok && extension_modules->pgcrypto_des.bits28 ==
-			&extension_modules->pgcrypto_des.de_keysl[4];
-		ok = ok && extension_modules->pgcrypto_des.bits24 ==
-			&extension_modules->pgcrypto_des.de_keysr[4];
-		ok = ok && extension_modules->pgcrypto_des.init_perm[0] == 203;
-		ok = ok && extension_modules->pgcrypto_des.final_perm[0] == 204;
-		ok = ok && extension_modules->pgcrypto_des.en_keysl[0] == 205;
-		ok = ok && extension_modules->pgcrypto_des.m_sbox[0][0] == 206;
-		ok = ok && extension_modules->pgcrypto_des.psbox[0][0] == 207;
-		ok = ok && extension_modules->pgcrypto_des.old_rawkey0 == 208;
-		ok = ok && extension_modules->pgcrypto_des.old_rawkey1 == 209;
-		ok = ok && strcmp(extension_modules->pgcrypto_des.output,
-						  "session2des") == 0;
+		ok = ok && test_backend_runtime_pgcrypto_des_seed_ok(extension_modules,
+															 201,
+															 "session2des",
+															 true);
 		ok = ok && extension_modules->dblink_context ==
 			session2_dblink_context;
 		ok = ok && extension_modules->dblink_persistent_connection ==
@@ -1432,22 +1445,10 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && fake_session2.extension_modules.sepgsql_avc_threshold == 45;
 		ok = ok && strcmp(fake_session2.extension_modules.sepgsql_avc_unlabeled,
 						  "session2unlabeled") == 0;
-		ok = ok && fake_session2.extension_modules.pgcrypto_des.des_initialised == 1;
-		ok = ok && fake_session2.extension_modules.pgcrypto_des.saltbits == 201;
-		ok = ok && fake_session2.extension_modules.pgcrypto_des.old_salt == 202;
-		ok = ok && fake_session2.extension_modules.pgcrypto_des.bits28 ==
-			&fake_session2.extension_modules.pgcrypto_des.de_keysl[4];
-		ok = ok && fake_session2.extension_modules.pgcrypto_des.bits24 ==
-			&fake_session2.extension_modules.pgcrypto_des.de_keysr[4];
-		ok = ok && fake_session2.extension_modules.pgcrypto_des.init_perm[0] == 203;
-		ok = ok && fake_session2.extension_modules.pgcrypto_des.final_perm[0] == 204;
-		ok = ok && fake_session2.extension_modules.pgcrypto_des.en_keysl[0] == 205;
-		ok = ok && fake_session2.extension_modules.pgcrypto_des.m_sbox[0][0] == 206;
-		ok = ok && fake_session2.extension_modules.pgcrypto_des.psbox[0][0] == 207;
-		ok = ok && fake_session2.extension_modules.pgcrypto_des.old_rawkey0 == 208;
-		ok = ok && fake_session2.extension_modules.pgcrypto_des.old_rawkey1 == 209;
-		ok = ok && strcmp(fake_session2.extension_modules.pgcrypto_des.output,
-						  "session2des") == 0;
+		ok = ok && test_backend_runtime_pgcrypto_des_seed_ok(&fake_session2.extension_modules,
+															 201,
+															 "session2des",
+															 true);
 		ok = ok && fake_session2.extension_modules.reset_callbacks != NIL;
 		ok = ok && fake_session2.extension_modules.pg_trgm_similarity_threshold == 0.21;
 		ok = ok && fake_session2.extension_modules.pg_trgm_word_similarity_threshold == 0.22;

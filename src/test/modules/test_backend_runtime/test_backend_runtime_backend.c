@@ -1159,13 +1159,14 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 							  "test repack message context",
 							  ALLOCSET_SMALL_SIZES);
 
-	pgstat_pending->local.snapshot.context =
+	pgstat_pending->local = palloc0_object(PgStat_LocalState);
+	pgstat_pending->local->snapshot.context =
 		AllocSetContextCreate(TopMemoryContext,
 							  "test pgstat snapshot context",
 							  ALLOCSET_SMALL_SIZES);
-	pgstat_pending->local.snapshot.stats =
+	pgstat_pending->local->snapshot.stats =
 		(struct pgstat_snapshot_hash *) &fake_backend;
-	pgstat_pending->local.snapshot.mode = PGSTAT_FETCH_CONSISTENCY_CACHE;
+	pgstat_pending->local->snapshot.mode = PGSTAT_FETCH_CONSISTENCY_CACHE;
 	pgstat_pending->shared_ref_age = 24;
 	pgstat_pending->shared_ref_context =
 		AllocSetContextCreate(TopMemoryContext,
@@ -1505,10 +1506,7 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && !OidIsValid(repack->repacked_rel_locator.relNumber);
 	ok = ok && !OidIsValid(repack->repacked_rel_toast_locator.relNumber);
 	ok = ok && repack->message_context == NULL;
-	ok = ok && pgstat_pending->local.snapshot.context == NULL;
-	ok = ok && pgstat_pending->local.snapshot.stats == NULL;
-	ok = ok && pgstat_pending->local.snapshot.mode ==
-		PGSTAT_FETCH_CONSISTENCY_NONE;
+	ok = ok && pgstat_pending->local == NULL;
 	ok = ok && pgstat_pending->entry_ref_hash == NULL;
 	ok = ok && pgstat_pending->shared_ref_age == 0;
 	ok = ok && pgstat_pending->shared_ref_context == NULL;

@@ -70,8 +70,6 @@
 	(&PgCurrentRuntimeExtensionModuleState()->bloom_context)
 #define PgCurrentRendezvousHashRef() \
 	(&PgCurrentRuntimeExtensionModuleState()->rendezvous_hash)
-#define PgCurrentPgcryptoDesState() \
-	(&PgCurrentSessionExtensionModuleState()->pgcrypto_des)
 #define PgCurrentMyDatabaseIdRef() \
 	(&PgCurrentSessionDatabaseState()->database_id)
 #define PgCurrentMyDatabaseTableSpaceRef() \

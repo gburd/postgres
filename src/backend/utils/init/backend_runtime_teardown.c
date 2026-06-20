@@ -146,8 +146,11 @@ PgBackendResetPgStatPendingClosedState(PgBackendPgStatPendingState *pgstat_pendi
 	Assert(pgstat_pending != NULL);
 	Assert(pgstat_pending->entry_ref_hash == NULL);
 	Assert(dlist_is_empty(&pgstat_pending->pending));
-	Assert(pgstat_pending->local.shared_hash == NULL);
-	Assert(pgstat_pending->local.dsa == NULL);
+	if (pgstat_pending->local != NULL)
+	{
+		Assert(pgstat_pending->local->shared_hash == NULL);
+		Assert(pgstat_pending->local->dsa == NULL);
+	}
 
 	/*
 	 * Normal pgstat shutdown owns flushing, shared-entry release, and DSA
@@ -155,7 +158,11 @@ PgBackendResetPgStatPendingClosedState(PgBackendPgStatPendingState *pgstat_pendi
 	 * restores constructor defaults for reuse.
 	 */
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(pgstat_pending->fixed_snapshot_context);
-	PG_RUNTIME_DELETE_MEMORY_CONTEXT(pgstat_pending->local.snapshot.context);
+	if (pgstat_pending->local != NULL)
+	{
+		PG_RUNTIME_DELETE_MEMORY_CONTEXT(pgstat_pending->local->snapshot.context);
+		pfree(pgstat_pending->local);
+	}
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(pgstat_pending->shared_ref_context);
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(pgstat_pending->entry_ref_hash_context);
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(pgstat_pending->pending_context);
@@ -798,6 +805,8 @@ PgSessionResetExtensionModuleClosedState(PgSession *session)
 		session->extension_modules.sepgsql_context);
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(
 		session->extension_modules.sepgsql_avc_context);
+	if (session->extension_modules.pgcrypto_des != NULL)
+		pfree(session->extension_modules.pgcrypto_des);
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(
 		session->extension_modules.dblink_context);
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(

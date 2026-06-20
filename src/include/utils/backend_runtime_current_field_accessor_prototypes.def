@@ -362,6 +362,7 @@ extern bool * PgCurrentPgStatIsInitializedRef(void);
 extern bool * PgCurrentPgStatIsShutdownRef(void);
 extern PgStat_Counter * PgCurrentPgStatLastSessionReportTimeRef(void);
 extern PgStat_LocalState * PgCurrentPgStatLocalState(void);
+extern PgStat_LocalState * PgCurrentPgStatLocalStateSlow(void);
 extern MemoryContext * PgCurrentPgStatPendingContextRef(void);
 extern dlist_head * PgCurrentPgStatPendingListRef(void);
 extern WalUsage * PgCurrentPgStatPrevBackendWalUsageRef(void);
