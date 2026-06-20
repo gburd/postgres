@@ -1844,8 +1844,6 @@ typedef struct PgSessionFunctionManagerState
 typedef void (*PgSessionResetCallback) (void *arg);
 typedef void (*PgSessionExtensionPrivateStateCleanup) (void *state);
 
-#define PG_SESSION_SEPGSQL_AVC_NUM_SLOTS 512
-
 typedef struct PgSessionResetCallbackItem
 {
 	PgSessionResetCallback callback;
@@ -1925,17 +1923,6 @@ typedef struct PgSessionExtensionModuleState
 	bool		pg_plan_advice_trace_mask;
 	int			pg_plan_advice_generate_advice;
 	char	   *pg_stash_advice_stash_name;
-	MemoryContext sepgsql_context;
-	MemoryContext sepgsql_avc_context;
-	char	   *sepgsql_client_label_peer;
-	List	   *sepgsql_client_label_pending;
-	char	   *sepgsql_client_label_committed;
-	char	   *sepgsql_client_label_func;
-	List	   *sepgsql_avc_slots[PG_SESSION_SEPGSQL_AVC_NUM_SLOTS];
-	int			sepgsql_avc_num_caches;
-	int			sepgsql_avc_lru_hint;
-	int			sepgsql_avc_threshold;
-	char	   *sepgsql_avc_unlabeled;
 	MemoryContext dblink_context;
 	void	   *dblink_persistent_connection;
 	void	   *dblink_remote_conn_hash;

@@ -50,22 +50,22 @@ typedef struct
 /*
  * Declaration of static variables
  */
-#define AVC_NUM_SLOTS		PG_SESSION_SEPGSQL_AVC_NUM_SLOTS
+#define AVC_NUM_SLOTS		SEPGSQL_AVC_NUM_SLOTS
 #define AVC_NUM_RECLAIM		16
 #define AVC_DEF_THRESHOLD	384
 
 #define avc_mem_cxt \
-	(PgCurrentSessionExtensionModuleState()->sepgsql_avc_context)
+	(sepgsql_session_state()->avc_context)
 #define avc_slots \
-	(PgCurrentSessionExtensionModuleState()->sepgsql_avc_slots)
+	(sepgsql_session_state()->avc_slots)
 #define avc_num_caches \
-	(PgCurrentSessionExtensionModuleState()->sepgsql_avc_num_caches)
+	(sepgsql_session_state()->avc_num_caches)
 #define avc_lru_hint \
-	(PgCurrentSessionExtensionModuleState()->sepgsql_avc_lru_hint)
+	(sepgsql_session_state()->avc_lru_hint)
 #define avc_threshold \
-	(PgCurrentSessionExtensionModuleState()->sepgsql_avc_threshold)
+	(sepgsql_session_state()->avc_threshold)
 #define avc_unlabeled \
-	(PgCurrentSessionExtensionModuleState()->sepgsql_avc_unlabeled)
+	(sepgsql_session_state()->avc_unlabeled)
 
 /*
  * Hash function
@@ -499,9 +499,8 @@ sepgsql_avc_init(void)
 	/*
 	 * All the avc stuff shall be allocated in avc_mem_cxt
 	 */
-	avc_mem_cxt = PgRuntimeGetOwnedMemoryContext(
-		&PgCurrentSessionExtensionModuleState()->sepgsql_avc_context,
-		"userspace access vector cache");
+	avc_mem_cxt = PgRuntimeGetOwnedMemoryContext(&avc_mem_cxt,
+												 "userspace access vector cache");
 	memset(avc_slots, 0, sizeof(avc_slots));
 	avc_num_caches = 0;
 	avc_lru_hint = 0;

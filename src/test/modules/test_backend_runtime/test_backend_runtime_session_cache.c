@@ -147,27 +147,6 @@ test_backend_runtime_seed_small_contrib_defaults(PgSessionExtensionModuleState *
 	extension_modules->passwordcheck_min_password_length = 8;
 }
 
-static bool
-test_backend_runtime_sepgsql_defaults_ok(PgSessionExtensionModuleState *extension_modules)
-{
-	for (int i = 0; i < PG_SESSION_SEPGSQL_AVC_NUM_SLOTS; i++)
-	{
-		if (extension_modules->sepgsql_avc_slots[i] != NIL)
-			return false;
-	}
-
-	return extension_modules->sepgsql_context == NULL &&
-		extension_modules->sepgsql_avc_context == NULL &&
-		extension_modules->sepgsql_client_label_peer == NULL &&
-		extension_modules->sepgsql_client_label_pending == NIL &&
-		extension_modules->sepgsql_client_label_committed == NULL &&
-		extension_modules->sepgsql_client_label_func == NULL &&
-		extension_modules->sepgsql_avc_num_caches == 0 &&
-		extension_modules->sepgsql_avc_lru_hint == 0 &&
-		extension_modules->sepgsql_avc_threshold == 0 &&
-		extension_modules->sepgsql_avc_unlabeled == NULL;
-}
-
 PG_FUNCTION_INFO_V1(test_session_catalog_lookup_state_is_session_local);
 Datum
 test_session_catalog_lookup_state_is_session_local(PG_FUNCTION_ARGS)
@@ -676,14 +655,6 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 	char		session1_shell_role[] = "session1role";
 	char		session2_shell_command[] = "session2cmd";
 	char		session2_shell_role[] = "session2role";
-	char		session1_sepgsql_peer[] = "session1peer";
-	char		session1_sepgsql_committed[] = "session1committed";
-	char		session1_sepgsql_func[] = "session1func";
-	char		session1_sepgsql_unlabeled[] = "session1unlabeled";
-	char		session2_sepgsql_peer[] = "session2peer";
-	char		session2_sepgsql_committed[] = "session2committed";
-	char		session2_sepgsql_func[] = "session2func";
-	char		session2_sepgsql_unlabeled[] = "session2unlabeled";
 	char		session1_pgfdw_appname[] = "session1fdw";
 	char		session2_pgfdw_appname[] = "session2fdw";
 	int			session1_refint_foreign;
@@ -700,16 +671,12 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 	MemoryContext session1_plperl_context = NULL;
 	MemoryContext session1_pltcl_context = NULL;
 	MemoryContext session1_plsample_context = NULL;
-	MemoryContext session1_sepgsql_context = NULL;
-	MemoryContext session1_sepgsql_avc_context = NULL;
 	MemoryContext session1_dblink_context = NULL;
 	MemoryContext session1_pgfdw_options_context = NULL;
 	MemoryContext session2_plpython_context = NULL;
 	MemoryContext session2_plperl_context = NULL;
 	MemoryContext session2_pltcl_context = NULL;
 	MemoryContext session2_plsample_context = NULL;
-	MemoryContext session2_sepgsql_context = NULL;
-	MemoryContext session2_sepgsql_avc_context = NULL;
 	MemoryContext session2_dblink_context = NULL;
 	MemoryContext session2_pgfdw_options_context = NULL;
 	bool		ok = true;
@@ -761,7 +728,6 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && extension_modules->plsample_memory_context == NULL;
 		ok = ok && test_backend_runtime_refint_defaults_ok(extension_modules);
 		ok = ok && test_backend_runtime_small_contrib_defaults_ok(extension_modules);
-		ok = ok && test_backend_runtime_sepgsql_defaults_ok(extension_modules);
 		ok = ok && extension_modules->private_states == NIL;
 		ok = ok && PgSessionGetExtensionPrivateState(
 			test_backend_runtime_private_state_key) == NULL;
@@ -796,14 +762,6 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		session1_plsample_context =
 			AllocSetContextCreate(TopMemoryContext,
 								  "test session1 PL/Sample context",
-								  ALLOCSET_SMALL_SIZES);
-		session1_sepgsql_context =
-			AllocSetContextCreate(TopMemoryContext,
-								  "test session1 sepgsql context",
-								  ALLOCSET_SMALL_SIZES);
-		session1_sepgsql_avc_context =
-			AllocSetContextCreate(TopMemoryContext,
-								  "test session1 sepgsql AVC context",
 								  ALLOCSET_SMALL_SIZES);
 		session1_dblink_context =
 			AllocSetContextCreate(TopMemoryContext,
@@ -854,19 +812,6 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		extension_modules->basebackup_to_shell_required_role = session1_shell_role;
 		extension_modules->isn_weak = true;
 		extension_modules->passwordcheck_min_password_length = 32;
-		extension_modules->sepgsql_context = session1_sepgsql_context;
-		extension_modules->sepgsql_avc_context = session1_sepgsql_avc_context;
-		extension_modules->sepgsql_client_label_peer = session1_sepgsql_peer;
-		extension_modules->sepgsql_client_label_pending =
-			(List *) &session1_private;
-		extension_modules->sepgsql_client_label_committed =
-			session1_sepgsql_committed;
-		extension_modules->sepgsql_client_label_func = session1_sepgsql_func;
-		extension_modules->sepgsql_avc_slots[3] = (List *) &session1_private;
-		extension_modules->sepgsql_avc_num_caches = 33;
-		extension_modules->sepgsql_avc_lru_hint = 34;
-		extension_modules->sepgsql_avc_threshold = 35;
-		extension_modules->sepgsql_avc_unlabeled = session1_sepgsql_unlabeled;
 		session1_extension_private_state =
 			(TestBackendRuntimeExtensionPrivateState *)
 			PgSessionEnsureExtensionPrivateState(
@@ -929,7 +874,6 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && !extension_modules->pltcl_reset_registered;
 		ok = ok && test_backend_runtime_refint_defaults_ok(extension_modules);
 		ok = ok && test_backend_runtime_small_contrib_defaults_ok(extension_modules);
-		ok = ok && test_backend_runtime_sepgsql_defaults_ok(extension_modules);
 		ok = ok && extension_modules->private_states == NIL;
 		ok = ok && PgSessionGetExtensionPrivateState(
 			test_backend_runtime_private_state_key) == NULL;
@@ -963,14 +907,6 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		session2_plsample_context =
 			AllocSetContextCreate(TopMemoryContext,
 								  "test session2 PL/Sample context",
-								  ALLOCSET_SMALL_SIZES);
-		session2_sepgsql_context =
-			AllocSetContextCreate(TopMemoryContext,
-								  "test session2 sepgsql context",
-								  ALLOCSET_SMALL_SIZES);
-		session2_sepgsql_avc_context =
-			AllocSetContextCreate(TopMemoryContext,
-								  "test session2 sepgsql AVC context",
 								  ALLOCSET_SMALL_SIZES);
 		extension_modules->auto_explain_log_min_duration = 20;
 		extension_modules->auto_explain_log_parameter_max_length = 128;
@@ -1013,19 +949,6 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		extension_modules->basebackup_to_shell_required_role = session2_shell_role;
 		extension_modules->isn_weak = true;
 		extension_modules->passwordcheck_min_password_length = 42;
-		extension_modules->sepgsql_context = session2_sepgsql_context;
-		extension_modules->sepgsql_avc_context = session2_sepgsql_avc_context;
-		extension_modules->sepgsql_client_label_peer = session2_sepgsql_peer;
-		extension_modules->sepgsql_client_label_pending =
-			(List *) &session2_private;
-		extension_modules->sepgsql_client_label_committed =
-			session2_sepgsql_committed;
-		extension_modules->sepgsql_client_label_func = session2_sepgsql_func;
-		extension_modules->sepgsql_avc_slots[5] = (List *) &session2_private;
-		extension_modules->sepgsql_avc_num_caches = 43;
-		extension_modules->sepgsql_avc_lru_hint = 44;
-		extension_modules->sepgsql_avc_threshold = 45;
-		extension_modules->sepgsql_avc_unlabeled = session2_sepgsql_unlabeled;
 		session2_extension_private_state =
 			(TestBackendRuntimeExtensionPrivateState *)
 			PgSessionEnsureExtensionPrivateState(
@@ -1143,25 +1066,6 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 						  "session1role") == 0;
 		ok = ok && extension_modules->isn_weak;
 		ok = ok && extension_modules->passwordcheck_min_password_length == 32;
-		ok = ok && extension_modules->sepgsql_context ==
-			session1_sepgsql_context;
-		ok = ok && extension_modules->sepgsql_avc_context ==
-			session1_sepgsql_avc_context;
-		ok = ok && strcmp(extension_modules->sepgsql_client_label_peer,
-						  "session1peer") == 0;
-		ok = ok && extension_modules->sepgsql_client_label_pending ==
-			(List *) &session1_private;
-		ok = ok && strcmp(extension_modules->sepgsql_client_label_committed,
-						  "session1committed") == 0;
-		ok = ok && strcmp(extension_modules->sepgsql_client_label_func,
-						  "session1func") == 0;
-		ok = ok && extension_modules->sepgsql_avc_slots[3] ==
-			(List *) &session1_private;
-		ok = ok && extension_modules->sepgsql_avc_num_caches == 33;
-		ok = ok && extension_modules->sepgsql_avc_lru_hint == 34;
-		ok = ok && extension_modules->sepgsql_avc_threshold == 35;
-		ok = ok && strcmp(extension_modules->sepgsql_avc_unlabeled,
-						  "session1unlabeled") == 0;
 		ok = ok && PgSessionGetExtensionPrivateState(
 			test_backend_runtime_private_state_key) ==
 			session1_extension_private_state;
@@ -1263,25 +1167,6 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 						  "session2role") == 0;
 		ok = ok && extension_modules->isn_weak;
 		ok = ok && extension_modules->passwordcheck_min_password_length == 42;
-		ok = ok && extension_modules->sepgsql_context ==
-			session2_sepgsql_context;
-		ok = ok && extension_modules->sepgsql_avc_context ==
-			session2_sepgsql_avc_context;
-		ok = ok && strcmp(extension_modules->sepgsql_client_label_peer,
-						  "session2peer") == 0;
-		ok = ok && extension_modules->sepgsql_client_label_pending ==
-			(List *) &session2_private;
-		ok = ok && strcmp(extension_modules->sepgsql_client_label_committed,
-						  "session2committed") == 0;
-		ok = ok && strcmp(extension_modules->sepgsql_client_label_func,
-						  "session2func") == 0;
-		ok = ok && extension_modules->sepgsql_avc_slots[5] ==
-			(List *) &session2_private;
-		ok = ok && extension_modules->sepgsql_avc_num_caches == 43;
-		ok = ok && extension_modules->sepgsql_avc_lru_hint == 44;
-		ok = ok && extension_modules->sepgsql_avc_threshold == 45;
-		ok = ok && strcmp(extension_modules->sepgsql_avc_unlabeled,
-						  "session2unlabeled") == 0;
 		ok = ok && PgSessionGetExtensionPrivateState(
 			test_backend_runtime_private_state_key) ==
 			session2_extension_private_state;
@@ -1319,8 +1204,6 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		session1_plperl_context = NULL;
 		session1_pltcl_context = NULL;
 		session1_plsample_context = NULL;
-		session1_sepgsql_context = NULL;
-		session1_sepgsql_avc_context = NULL;
 		session1_dblink_context = NULL;
 		session1_pgfdw_options_context = NULL;
 		ok = ok && session1_reset_count == 1;
@@ -1342,7 +1225,6 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && !fake_session1.extension_modules.pltcl_reset_registered;
 		ok = ok && test_backend_runtime_refint_defaults_ok(&fake_session1.extension_modules);
 		ok = ok && test_backend_runtime_small_contrib_defaults_ok(&fake_session1.extension_modules);
-		ok = ok && test_backend_runtime_sepgsql_defaults_ok(&fake_session1.extension_modules);
 		ok = ok && fake_session1.extension_modules.private_states == NIL;
 		ok = ok && session1_private_state_cleanup_count == 1;
 		ok = ok && fake_session1.extension_modules.reset_callbacks == NIL;
@@ -1402,25 +1284,6 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 						  "session2role") == 0;
 		ok = ok && fake_session2.extension_modules.isn_weak;
 		ok = ok && fake_session2.extension_modules.passwordcheck_min_password_length == 42;
-		ok = ok && fake_session2.extension_modules.sepgsql_context ==
-			session2_sepgsql_context;
-		ok = ok && fake_session2.extension_modules.sepgsql_avc_context ==
-			session2_sepgsql_avc_context;
-		ok = ok && strcmp(fake_session2.extension_modules.sepgsql_client_label_peer,
-						  "session2peer") == 0;
-		ok = ok && fake_session2.extension_modules.sepgsql_client_label_pending ==
-			(List *) &session2_private;
-		ok = ok && strcmp(fake_session2.extension_modules.sepgsql_client_label_committed,
-						  "session2committed") == 0;
-		ok = ok && strcmp(fake_session2.extension_modules.sepgsql_client_label_func,
-						  "session2func") == 0;
-		ok = ok && fake_session2.extension_modules.sepgsql_avc_slots[5] ==
-			(List *) &session2_private;
-		ok = ok && fake_session2.extension_modules.sepgsql_avc_num_caches == 43;
-		ok = ok && fake_session2.extension_modules.sepgsql_avc_lru_hint == 44;
-		ok = ok && fake_session2.extension_modules.sepgsql_avc_threshold == 45;
-		ok = ok && strcmp(fake_session2.extension_modules.sepgsql_avc_unlabeled,
-						  "session2unlabeled") == 0;
 		ok = ok && fake_session2.extension_modules.private_states != NIL;
 		ok = ok && session2_private_state_cleanup_count == 0;
 		ok = ok && fake_session2.extension_modules.reset_callbacks != NIL;
@@ -1483,8 +1346,6 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		session2_plperl_context = NULL;
 		session2_pltcl_context = NULL;
 		session2_plsample_context = NULL;
-		session2_sepgsql_context = NULL;
-		session2_sepgsql_avc_context = NULL;
 		session2_dblink_context = NULL;
 		session2_pgfdw_options_context = NULL;
 		ok = ok && session2_reset_count == 1;
@@ -1505,7 +1366,6 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && !fake_session2.extension_modules.pltcl_reset_registered;
 		ok = ok && test_backend_runtime_refint_defaults_ok(&fake_session2.extension_modules);
 		ok = ok && test_backend_runtime_small_contrib_defaults_ok(&fake_session2.extension_modules);
-		ok = ok && test_backend_runtime_sepgsql_defaults_ok(&fake_session2.extension_modules);
 		ok = ok && fake_session2.extension_modules.private_states == NIL;
 		ok = ok && session2_private_state_cleanup_count == 1;
 		ok = ok && fake_session2.extension_modules.reset_callbacks == NIL;
@@ -1538,10 +1398,6 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 			MemoryContextDelete(session1_pltcl_context);
 		if (session1_plsample_context != NULL)
 			MemoryContextDelete(session1_plsample_context);
-		if (session1_sepgsql_context != NULL)
-			MemoryContextDelete(session1_sepgsql_context);
-		if (session1_sepgsql_avc_context != NULL)
-			MemoryContextDelete(session1_sepgsql_avc_context);
 		if (session1_dblink_context != NULL)
 			MemoryContextDelete(session1_dblink_context);
 		if (session1_pgfdw_options_context != NULL)
@@ -1554,10 +1410,6 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 			MemoryContextDelete(session2_pltcl_context);
 		if (session2_plsample_context != NULL)
 			MemoryContextDelete(session2_plsample_context);
-		if (session2_sepgsql_context != NULL)
-			MemoryContextDelete(session2_sepgsql_context);
-		if (session2_sepgsql_avc_context != NULL)
-			MemoryContextDelete(session2_sepgsql_avc_context);
 		if (session2_dblink_context != NULL)
 			MemoryContextDelete(session2_dblink_context);
 		if (session2_pgfdw_options_context != NULL)

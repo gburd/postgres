@@ -1538,18 +1538,6 @@ PgSessionInitializeExtensionModuleState(PgSessionExtensionModuleState *extension
 	extension_modules->pg_plan_advice_trace_mask = false;
 	extension_modules->pg_plan_advice_generate_advice = 0;
 	extension_modules->pg_stash_advice_stash_name = "";
-	extension_modules->sepgsql_context = NULL;
-	extension_modules->sepgsql_avc_context = NULL;
-	extension_modules->sepgsql_client_label_peer = NULL;
-	extension_modules->sepgsql_client_label_pending = NIL;
-	extension_modules->sepgsql_client_label_committed = NULL;
-	extension_modules->sepgsql_client_label_func = NULL;
-	memset(extension_modules->sepgsql_avc_slots, 0,
-		   sizeof(extension_modules->sepgsql_avc_slots));
-	extension_modules->sepgsql_avc_num_caches = 0;
-	extension_modules->sepgsql_avc_lru_hint = 0;
-	extension_modules->sepgsql_avc_threshold = 0;
-	extension_modules->sepgsql_avc_unlabeled = NULL;
 	extension_modules->dblink_context = NULL;
 	extension_modules->dblink_persistent_connection = NULL;
 	extension_modules->dblink_remote_conn_hash = NULL;
