@@ -139,8 +139,9 @@ my @fields = wait_for_protocol_field(
 
 is($fields[CARRIER_LIMIT], '2',
 	'pooled postmaster-death snapshot exposes carrier limit');
-is($fields[REGISTERED_CARRIER_COUNT], '2',
-	'pooled postmaster-death snapshot exposes bounded carriers');
+ok($fields[REGISTERED_CARRIER_COUNT] >= 1
+	  && $fields[REGISTERED_CARRIER_COUNT] <= $fields[CARRIER_LIMIT],
+	'pooled postmaster-death snapshot exposes bounded demand-started carriers');
 
 $node->stop('immediate');
 

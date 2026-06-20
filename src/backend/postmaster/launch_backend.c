@@ -32,6 +32,7 @@
 #include "postgres.h"
 
 #include <errno.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include "access/xact.h"
@@ -247,8 +248,10 @@ typedef struct BackendPooledCarrierStart
 static PG_GLOBAL_RUNTIME bool postmaster_thread_carriers_started = false;
 #ifndef WIN32
 static PG_GLOBAL_RUNTIME pthread_mutex_t pooled_protocol_queue_mutex = PTHREAD_MUTEX_INITIALIZER;
+static PG_GLOBAL_RUNTIME pthread_cond_t pooled_protocol_queue_cond = PTHREAD_COND_INITIALIZER;
 static PG_GLOBAL_RUNTIME BackendPooledLogicalStart *pooled_protocol_queue_head = NULL;
 static PG_GLOBAL_RUNTIME BackendPooledLogicalStart *pooled_protocol_queue_tail = NULL;
+static PG_GLOBAL_RUNTIME int pooled_protocol_queue_length = 0;
 static PG_GLOBAL_RUNTIME int pooled_protocol_carrier_count = 0;
 static PG_GLOBAL_RUNTIME bool pooled_protocol_pool_started = false;
 #endif
@@ -279,9 +282,17 @@ pg_noreturn static void backend_pooled_logical_finish(int code);
 static int	backend_thread_exitstatus(int code);
 #ifndef WIN32
 static bool backend_pooled_protocol_start_pool(void);
+static bool backend_pooled_protocol_start_one_carrier(void);
+static void backend_pooled_protocol_maybe_start_carrier_for_work(void);
 static void backend_pooled_protocol_carrier_entry(void *arg);
 static void backend_pooled_protocol_enqueue(BackendPooledLogicalStart *logical_start);
 static BackendPooledLogicalStart *backend_pooled_protocol_dequeue(void);
+static int	backend_pooled_protocol_queue_count(void);
+static uint32 backend_pooled_protocol_idle_carrier_count(void);
+static void backend_pooled_protocol_signal_work(void);
+static void backend_pooled_protocol_wait_for_work(long timeout_us);
+static void backend_pooled_protocol_deadline_after(long timeout_us,
+												   struct timespec *deadline);
 static BackendPooledLogicalStart *backend_pooled_logical_start_from_backend(PgBackend *backend);
 static void backend_pooled_protocol_run_logical_start(BackendPooledCarrierStart *carrier_start,
 													  BackendPooledLogicalStart *logical_start);
@@ -595,6 +606,8 @@ postmaster_pooled_protocol_launch(PMChild *pmchild, int child_slot,
 	PostmasterChildPublishLogicalBackend(pmchild,
 										 &logical_start->logical.backend);
 	backend_pooled_protocol_enqueue(logical_start);
+	backend_pooled_protocol_signal_work();
+	backend_pooled_protocol_maybe_start_carrier_for_work();
 	postmaster_thread_carriers_started = true;
 	return true;
 #endif
@@ -604,10 +617,19 @@ postmaster_pooled_protocol_launch(PMChild *pmchild, int child_slot,
 static bool
 backend_pooled_protocol_start_pool(void)
 {
-	int			carrier_limit;
-
-	if (pooled_protocol_pool_started)
+	if (pooled_protocol_carrier_count > 0)
 		return true;
+
+	return backend_pooled_protocol_start_one_carrier();
+}
+
+static bool
+backend_pooled_protocol_start_one_carrier(void)
+{
+	BackendPooledCarrierStart *carrier_start;
+	int			carrier_limit;
+	int			carrier_index;
+	int			rc;
 
 	carrier_limit = PgRuntimePooledProtocolCarrierLimit();
 	if (carrier_limit <= 0)
@@ -615,41 +637,60 @@ backend_pooled_protocol_start_pool(void)
 		errno = EINVAL;
 		return false;
 	}
+	if (pooled_protocol_carrier_count >= carrier_limit)
+		return true;
 
-	for (int i = pooled_protocol_carrier_count; i < carrier_limit; i++)
+	carrier_start = malloc(sizeof(BackendPooledCarrierStart));
+	if (carrier_start == NULL)
 	{
-		BackendPooledCarrierStart *carrier_start;
-		int			rc;
+		errno = ENOMEM;
+		return false;
+	}
+	MemSet(carrier_start, 0, sizeof(*carrier_start));
 
-		carrier_start = malloc(sizeof(BackendPooledCarrierStart));
-		if (carrier_start == NULL)
-		{
-			errno = ENOMEM;
-			return false;
-		}
-		MemSet(carrier_start, 0, sizeof(*carrier_start));
-		InitializePgThreadCarrierRuntimeState(&carrier_start->carrier);
-		carrier_start->carrier_index = i;
-		carrier_start->startup_session_timezone = session_timezone;
-		carrier_start->startup_log_timezone = log_timezone;
+	carrier_index = pooled_protocol_carrier_count;
+	InitializePgThreadCarrierRuntimeState(&carrier_start->carrier);
+	carrier_start->carrier_index = carrier_index;
+	carrier_start->startup_session_timezone = session_timezone;
+	carrier_start->startup_log_timezone = log_timezone;
 
-		rc = pg_thread_create(&carrier_start->thread,
-							  "postgres pooled protocol carrier",
-							  backend_pooled_protocol_carrier_entry,
-							  carrier_start);
-		if (rc != 0)
-		{
-			free(carrier_start);
-			errno = rc;
-			return false;
-		}
-
-		pooled_protocol_carrier_count++;
+	rc = pg_thread_create(&carrier_start->thread,
+						  "postgres pooled protocol carrier",
+						  backend_pooled_protocol_carrier_entry,
+						  carrier_start);
+	if (rc != 0)
+	{
+		free(carrier_start);
+		errno = rc;
+		return false;
 	}
 
+	pooled_protocol_carrier_count++;
 	pooled_protocol_pool_started = true;
 	postmaster_thread_carriers_started = true;
 	return true;
+}
+
+static void
+backend_pooled_protocol_maybe_start_carrier_for_work(void)
+{
+	int			queue_length;
+	uint32		idle_carriers;
+
+	if (!pooled_protocol_pool_started)
+		return;
+	if (pooled_protocol_carrier_count >= PgRuntimePooledProtocolCarrierLimit())
+		return;
+
+	queue_length = backend_pooled_protocol_queue_count();
+	if (queue_length <= 1)
+		return;
+
+	idle_carriers = backend_pooled_protocol_idle_carrier_count();
+	if ((uint32) queue_length <= idle_carriers)
+		return;
+
+	(void) backend_pooled_protocol_start_one_carrier();
 }
 
 static void
@@ -662,17 +703,24 @@ backend_pooled_protocol_enqueue(BackendPooledLogicalStart *logical_start)
 
 	rc = pthread_mutex_lock(&pooled_protocol_queue_mutex);
 	if (rc != 0)
+	{
+		errno = rc;
 		elog(FATAL, "could not lock pooled protocol queue: %m");
+	}
 
 	if (pooled_protocol_queue_tail != NULL)
 		pooled_protocol_queue_tail->next = logical_start;
 	else
 		pooled_protocol_queue_head = logical_start;
 	pooled_protocol_queue_tail = logical_start;
+	pooled_protocol_queue_length++;
 
 	rc = pthread_mutex_unlock(&pooled_protocol_queue_mutex);
 	if (rc != 0)
+	{
+		errno = rc;
 		elog(FATAL, "could not unlock pooled protocol queue: %m");
+	}
 }
 
 static BackendPooledLogicalStart *
@@ -683,7 +731,10 @@ backend_pooled_protocol_dequeue(void)
 
 	rc = pthread_mutex_lock(&pooled_protocol_queue_mutex);
 	if (rc != 0)
+	{
+		errno = rc;
 		elog(FATAL, "could not lock pooled protocol queue: %m");
+	}
 
 	logical_start = pooled_protocol_queue_head;
 	if (logical_start != NULL)
@@ -692,13 +743,143 @@ backend_pooled_protocol_dequeue(void)
 		if (pooled_protocol_queue_head == NULL)
 			pooled_protocol_queue_tail = NULL;
 		logical_start->next = NULL;
+		Assert(pooled_protocol_queue_length > 0);
+		pooled_protocol_queue_length--;
 	}
 
 	rc = pthread_mutex_unlock(&pooled_protocol_queue_mutex);
 	if (rc != 0)
+	{
+		errno = rc;
 		elog(FATAL, "could not unlock pooled protocol queue: %m");
+	}
 
 	return logical_start;
+}
+
+static int
+backend_pooled_protocol_queue_count(void)
+{
+	int			queue_length;
+	int			rc;
+
+	rc = pthread_mutex_lock(&pooled_protocol_queue_mutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not lock pooled protocol queue: %m");
+	}
+
+	queue_length = pooled_protocol_queue_length;
+
+	rc = pthread_mutex_unlock(&pooled_protocol_queue_mutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not unlock pooled protocol queue: %m");
+	}
+
+	return queue_length;
+}
+
+static uint32
+backend_pooled_protocol_idle_carrier_count(void)
+{
+	PgRuntime  *runtime = CurrentPgRuntime;
+	PgProtocolSchedulerState *scheduler;
+	uint32		idle_carriers;
+
+	if (runtime == NULL)
+		return 0;
+
+	scheduler = &runtime->protocol_scheduler;
+	SpinLockAcquire(&scheduler->lock);
+	idle_carriers = scheduler->idle_carrier_count;
+	SpinLockRelease(&scheduler->lock);
+
+	return idle_carriers;
+}
+
+static void
+backend_pooled_protocol_signal_work(void)
+{
+	int			rc;
+
+	rc = pthread_mutex_lock(&pooled_protocol_queue_mutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not lock pooled protocol queue: %m");
+	}
+
+	rc = pthread_cond_signal(&pooled_protocol_queue_cond);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not signal pooled protocol queue: %m");
+	}
+
+	rc = pthread_mutex_unlock(&pooled_protocol_queue_mutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not unlock pooled protocol queue: %m");
+	}
+}
+
+static void
+backend_pooled_protocol_wait_for_work(long timeout_us)
+{
+	struct timespec deadline;
+	int			rc;
+
+	rc = pthread_mutex_lock(&pooled_protocol_queue_mutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not lock pooled protocol queue: %m");
+	}
+
+	if (pooled_protocol_queue_length == 0)
+	{
+		backend_pooled_protocol_deadline_after(timeout_us, &deadline);
+		rc = pthread_cond_timedwait(&pooled_protocol_queue_cond,
+									&pooled_protocol_queue_mutex,
+									&deadline);
+		if (rc != 0 && rc != ETIMEDOUT)
+		{
+			errno = rc;
+			elog(FATAL, "could not wait on pooled protocol queue: %m");
+		}
+	}
+
+	rc = pthread_mutex_unlock(&pooled_protocol_queue_mutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not unlock pooled protocol queue: %m");
+	}
+}
+
+static void
+backend_pooled_protocol_deadline_after(long timeout_us,
+									   struct timespec *deadline)
+{
+	struct timeval now;
+	long		nsec;
+
+	Assert(deadline != NULL);
+	Assert(timeout_us >= 0);
+
+	gettimeofday(&now, NULL);
+	deadline->tv_sec = now.tv_sec + timeout_us / USECS_PER_SEC;
+	nsec = now.tv_usec * 1000L + (timeout_us % USECS_PER_SEC) * 1000L;
+	if (nsec >= 1000000000L)
+	{
+		deadline->tv_sec++;
+		nsec -= 1000000000L;
+	}
+	deadline->tv_nsec = nsec;
 }
 
 static BackendPooledLogicalStart *
@@ -773,7 +954,7 @@ backend_pooled_protocol_carrier_entry(void *arg)
 			continue;
 		}
 
-		pg_usleep(10000L);
+		backend_pooled_protocol_wait_for_work(10000L);
 	}
 }
 

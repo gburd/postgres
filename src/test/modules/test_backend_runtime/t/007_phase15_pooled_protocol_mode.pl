@@ -182,10 +182,12 @@ my @fields = wait_for_protocol_field(
 
 is($fields[CARRIER_LIMIT], '2',
 	'protocol scheduler exposes configured pooled carrier limit');
-is($fields[REGISTERED_CARRIER_COUNT], '2',
-	'pooled protocol carriers are bounded by configured carrier limit');
-ok($fields[IDLE_CARRIER_COUNT] >= 1,
-	'parked pooled protocol sessions release their registered carriers');
+ok($fields[REGISTERED_CARRIER_COUNT] >= 1
+	  && $fields[REGISTERED_CARRIER_COUNT] <= $fields[CARRIER_LIMIT],
+	'pooled protocol carriers are demand-started within configured carrier limit');
+is($fields[IDLE_CARRIER_COUNT] + $fields[ACTIVE_CARRIER_COUNT],
+	$fields[REGISTERED_CARRIER_COUNT],
+	'protocol scheduler accounts for all registered carriers');
 ok($fields[ACTIVE_CARRIER_COUNT] >= 1,
 	'protocol scheduler accounts for active snapshot carrier');
 
