@@ -1310,7 +1310,7 @@ build_guc_variables(void)
 	GUCMemoryContext =
 		PgRuntimeGetOwnedMemoryContextWithSizes(PgCurrentGUCMemoryContextRef(),
 												"GUCMemoryContext",
-												ALLOCSET_DEFAULT_SIZES);
+												ALLOCSET_START_SMALL_SIZES);
 
 	/*
 	 * Count all the built-in variables.
