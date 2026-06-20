@@ -224,7 +224,8 @@ my $resources_path = File::Spec->catfile($out_dir, 'server_resources.tsv');
 open my $resources_fh, '>', $resources_path
   or die "could not write $resources_path: $!";
 print $resources_fh
-  join("\t", qw(lane workload max_server_processes max_server_threads samples)),
+  join("\t", qw(lane workload max_server_processes max_server_threads
+	  max_server_rss_kb max_server_pss_kb max_server_private_kb samples)),
   "\n";
 
 my %results;
@@ -492,6 +493,9 @@ sub run_lane
 			print $resources_fh join("\t", $lane->{name}, $workload,
 				resource_value($resources, 'max_server_processes'),
 				resource_value($resources, 'max_server_threads'),
+				resource_value($resources, 'max_server_rss_kb'),
+				resource_value($resources, 'max_server_pss_kb'),
+				resource_value($resources, 'max_server_private_kb'),
 				resource_value($resources, 'samples')), "\n";
 			print "    $workload: $summary->{tps} TPS, $summary->{latency} ms";
 			print " (median of $runs runs)" if $runs > 1;
@@ -615,6 +619,9 @@ sub new_resource_summary
 	return {
 		max_server_processes => undef,
 		max_server_threads => undef,
+		max_server_rss_kb => undef,
+		max_server_pss_kb => undef,
+		max_server_private_kb => undef,
 		samples => 0,
 	};
 }
@@ -629,6 +636,12 @@ sub merge_resource_summary
 		$sample->{max_server_processes});
 	update_resource_max($summary, max_server_threads =>
 		$sample->{max_server_threads});
+	update_resource_max($summary, max_server_rss_kb =>
+		$sample->{max_server_rss_kb});
+	update_resource_max($summary, max_server_pss_kb =>
+		$sample->{max_server_pss_kb});
+	update_resource_max($summary, max_server_private_kb =>
+		$sample->{max_server_private_kb});
 	$summary->{samples} += $sample->{samples}
 	  if defined $sample->{samples};
 }
@@ -719,6 +732,9 @@ sub new_server_resource_sample
 		postmaster_pid => $pid,
 		max_server_processes => undef,
 		max_server_threads => undef,
+		max_server_rss_kb => undef,
+		max_server_pss_kb => undef,
+		max_server_private_kb => undef,
 		samples => 0,
 	};
 }
@@ -747,13 +763,42 @@ sub sample_server_resources
 	return unless @pids;
 
 	my $threads = 0;
+	my $rss_kb = 0;
+	my $pss_kb = 0;
+	my $private_kb = 0;
+	my $saw_rss = 0;
+	my $saw_pss = 0;
+	my $saw_private = 0;
+
 	for my $pid (@pids)
 	{
 		$threads += linux_thread_count($pid);
+		my $memory = linux_process_memory_kb($pid);
+		next unless defined $memory;
+
+		if (defined $memory->{rss_kb})
+		{
+			$rss_kb += $memory->{rss_kb};
+			$saw_rss = 1;
+		}
+		if (defined $memory->{pss_kb})
+		{
+			$pss_kb += $memory->{pss_kb};
+			$saw_pss = 1;
+		}
+		if (defined $memory->{private_kb})
+		{
+			$private_kb += $memory->{private_kb};
+			$saw_private = 1;
+		}
 	}
 
 	update_resource_max($sample, max_server_processes => scalar @pids);
 	update_resource_max($sample, max_server_threads => $threads);
+	update_resource_max($sample, max_server_rss_kb => $rss_kb) if $saw_rss;
+	update_resource_max($sample, max_server_pss_kb => $pss_kb) if $saw_pss;
+	update_resource_max($sample, max_server_private_kb => $private_kb)
+	  if $saw_private;
 	$sample->{samples}++;
 }
 
@@ -816,6 +861,47 @@ sub linux_thread_count
 	my $count = grep { /^\d+$/ } readdir $dh;
 	closedir $dh;
 	return $count;
+}
+
+sub linux_process_memory_kb
+{
+	my ($pid) = @_;
+	my $rollup = "/proc/$pid/smaps_rollup";
+
+	if (open my $fh, '<', $rollup)
+	{
+		my %memory;
+		while (defined(my $line = <$fh>))
+		{
+			if ($line =~ /^Rss:\s+(\d+)\s+kB/)
+			{
+				$memory{rss_kb} = int($1);
+			}
+			elsif ($line =~ /^Pss:\s+(\d+)\s+kB/)
+			{
+				$memory{pss_kb} = int($1);
+			}
+			elsif ($line =~ /^Private_(?:Clean|Dirty|Hugetlb):\s+(\d+)\s+kB/)
+			{
+				$memory{private_kb} += int($1);
+			}
+		}
+		close $fh;
+		return \%memory if %memory;
+	}
+
+	my $status = "/proc/$pid/status";
+	open my $fh, '<', $status or return undef;
+	while (defined(my $line = <$fh>))
+	{
+		if ($line =~ /^VmRSS:\s+(\d+)\s+kB/)
+		{
+			close $fh;
+			return { rss_kb => int($1) };
+		}
+	}
+	close $fh;
+	return undef;
 }
 
 sub update_resource_max
@@ -944,8 +1030,8 @@ sub write_summary
 	}
 
 	print $fh "\n## Server resource samples\n\n";
-	print $fh "| Workload | Lane | Max server processes | Max server threads |\n";
-	print $fh "| --- | --- | ---: | ---: |\n";
+	print $fh "| Workload | Lane | Max server processes | Max server threads | Max RSS kB | Max PSS kB | Max private kB |\n";
+	print $fh "| --- | --- | ---: | ---: | ---: | ---: | ---: |\n";
 	for my $workload (@$workloads)
 	{
 		for my $lane (@$lane_specs)
@@ -955,7 +1041,10 @@ sub write_summary
 			my $resources = $results->{$name}{$workload}{resources};
 			print $fh "| `$workload` | `$name` | ",
 			  resource_value($resources, 'max_server_processes'), " | ",
-			  resource_value($resources, 'max_server_threads'), " |\n";
+			  resource_value($resources, 'max_server_threads'), " | ",
+			  resource_value($resources, 'max_server_rss_kb'), " | ",
+			  resource_value($resources, 'max_server_pss_kb'), " | ",
+			  resource_value($resources, 'max_server_private_kb'), " |\n";
 		}
 	}
 	close $fh;

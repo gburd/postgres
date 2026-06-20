@@ -69,6 +69,11 @@ configurable pooled protocol carrier lanes such as `branch_pool_4`,
 `branch_pool_8`, and `branch_pool_16`. Use `--restart-per-workload` when a
 profile needs to isolate one workload per fresh postmaster, for example while
 debugging pooled-mode lifecycle failures between sequential client batches.
+The Phase 15 scenario wrapper is
+`src/tools/benchmark/mtpg_phase15_benchmark_suite.pl`; its `pinned_hot` profile
+checks whether thread-per-session remains near vanilla/process mode, while its
+pooled profiles measure connection-shape scaling, server process/thread counts,
+and sampled memory footprint under mostly-idle or reconnect-heavy clients.
 
 The most recent five-workload local profile for tiny read-only `pgbench`
 workloads showed the branch around parity with vanilla on this machine:
