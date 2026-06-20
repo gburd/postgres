@@ -190,6 +190,31 @@ typedef struct catcacheheader
 	int			ch_ntup;		/* # of tuples in all caches */
 } CatCacheHeader;
 
+typedef struct PgCatCacheMemoryStats
+{
+	int			id;
+	Oid			reloid;
+	Oid			indexoid;
+	const char *relname;
+	int			ntup;
+	int			npositive;
+	int			nnegative;
+	int			nlist;
+	int			nbuckets;
+	int			nlbuckets;
+	Size		cache_header_bytes;
+	Size		bucket_bytes;
+	Size		tuple_header_bytes;
+	Size		tuple_data_bytes;
+	Size		negative_key_bytes;
+	Size		list_header_bytes;
+	Size		list_key_bytes;
+	Size		total_requested_bytes;
+} PgCatCacheMemoryStats;
+
+typedef void (*PgCatCacheMemoryStatsCallback) (const PgCatCacheMemoryStats *stats,
+											  void *arg);
+
 
 /* this compatibility macro duplicates utils/memutils.h... */
 #ifndef CacheMemoryContext
@@ -227,6 +252,8 @@ extern void ReleaseCatCacheList(CatCList *list);
 
 extern void ResetCatalogCaches(void);
 extern void ResetCatalogCachesExt(bool debug_discard);
+extern void PgCatCacheCollectMemoryStats(PgCatCacheMemoryStatsCallback callback,
+										 void *arg);
 extern void CatalogCacheFlushCatalog(Oid catId);
 extern void CatCacheInvalidate(CatCache *cache, uint32 hashValue);
 extern void PrepareToInvalidateCacheTuple(Relation relation,

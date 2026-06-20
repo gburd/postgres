@@ -892,7 +892,12 @@ PgRuntimeConfigurePooledProtocolAllocator(void)
 	 * while letting an operator-provided MALLOC_ARENA_MAX win.
 	 */
 	if (getenv("MALLOC_ARENA_MAX") == NULL)
-		(void) mallopt(M_ARENA_MAX, 4);
+		(void) mallopt(M_ARENA_MAX, 1);
+
+	if (getenv("MALLOC_TRIM_THRESHOLD_") == NULL)
+		(void) mallopt(M_TRIM_THRESHOLD, 128 * 1024);
+	if (getenv("MALLOC_TOP_PAD_") == NULL)
+		(void) mallopt(M_TOP_PAD, 0);
 #endif
 }
 

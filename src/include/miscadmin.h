@@ -318,7 +318,13 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_parallel_workers;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int autovacuum_max_parallel_workers;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool multithreaded;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int pooled_protocol_carriers;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int pooled_protocol_idle_memory_compaction;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool threaded_lazy_relcache_init_file;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool log_protocol_park_memory;
+
+#define POOLED_PROTOCOL_IDLE_MEMORY_COMPACTION_OFF	0
+#define POOLED_PROTOCOL_IDLE_MEMORY_COMPACTION_TRIM	1
+#define POOLED_PROTOCOL_IDLE_MEMORY_COMPACTION_CACHE	2
 
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int commit_timestamp_buffers;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int multixact_member_buffers;

@@ -346,6 +346,13 @@ ReservePrivateRefCountEntryFor(PgBackendBufferState *state)
 		Assert(array[victim_slot].buffer != InvalidBuffer);
 		Assert(array_keys[victim_slot] == array[victim_slot].buffer);
 
+		if (hash == NULL)
+		{
+			hash = refcount_create(PgBackendBufferAllocationContext(),
+								   100, NULL);
+			state->private_ref_count_hash = hash;
+		}
+
 		/* enter victim array entry into hashtable */
 		hashent = refcount_insert(hash,
 								  array_keys[victim_slot],
@@ -4279,7 +4286,8 @@ InitBufferManagerAccess(void)
 	ReservedRefCountSlot = -1;
 	PrivateRefCountEntryLast = -1;
 
-	PrivateRefCountHash = refcount_create(CurrentMemoryContext, 100, NULL);
+	if (PrivateRefCountHash != NULL)
+		refcount_reset(PrivateRefCountHash);
 
 	/*
 	 * BackendWritebackContext is backend-local storage.  Process-mode

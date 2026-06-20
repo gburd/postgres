@@ -27,6 +27,10 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
+
 #ifdef USE_VALGRIND
 #include <valgrind/valgrind.h>
 #endif
@@ -79,10 +83,13 @@
 #include "tcop/tcopprot.h"
 #include "tcop/utility.h"
 #include "utils/backend_runtime.h"
+#include "utils/catcache.h"
 #include "utils/guc_hooks.h"
+#include "utils/inval.h"
 #include "utils/injection_point.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/relcache.h"
 #include "utils/ps_status.h"
 #include "utils/snapmgr.h"
 #include "utils/timeout.h"
@@ -199,10 +206,12 @@ pg_noreturn static void PgSessionRunProtocolSchedulerStaging(PgSession *session)
 static uint32 PgSessionStagingWaitProtocolRead(PgBackend *backend,
 											   PgProtocolParkSpec *park_spec);
 static void PgBackendMarkProtocolReadParkWakeEvents(PgBackend *backend,
-													PgProtocolParkSpec *park_spec,
-													uint32 wake_events);
+													 PgProtocolParkSpec *park_spec,
+													 uint32 wake_events);
+static void PgSessionReleasePooledProtocolIdleMemory(PgSession *session,
+													 PgProtocolParkSpec *park_spec);
 static void PgLogProtocolParkMemory(PgSession *session,
-									PgProtocolParkSpec *park_spec);
+									 PgProtocolParkSpec *park_spec);
 static long PgProtocolParkTimeoutDelayMs(PgBackend *backend,
 										 PgProtocolParkSpec *park_spec,
 										 bool *stale_timeout);
@@ -5632,8 +5641,8 @@ PgProtocolParkMemoryCounters(MemoryContext context,
 		MemoryContextMemConsumed(context, counters);
 }
 
-#define PG_PROTOCOL_PARK_CONTEXT_LOG_MAX 64
-#define PG_PROTOCOL_PARK_CONTEXT_LOG_MAX_DEPTH 1
+#define PG_PROTOCOL_PARK_CONTEXT_LOG_MAX 512
+#define PG_PROTOCOL_PARK_CONTEXT_LOG_MAX_DEPTH 4
 #define PG_PROTOCOL_PARK_CONTEXT_LOG_INTERVAL 16
 #define PG_PROTOCOL_PARK_CONTEXT_TOKEN_MAX 80
 #define PG_PROTOCOL_PARK_CONTEXT_PATH_MAX 256
@@ -5655,6 +5664,12 @@ typedef struct PgProtocolParkContextMemoryLogState
 	PgProtocolParkContextMemoryRow rows[PG_PROTOCOL_PARK_CONTEXT_LOG_MAX];
 	int			count;
 } PgProtocolParkContextMemoryLogState;
+
+typedef struct PgProtocolParkCacheMemoryLogState
+{
+	PgBackend  *backend;
+	PgProtocolParkSpec *park_spec;
+} PgProtocolParkCacheMemoryLogState;
 
 static inline Size
 PgProtocolParkMemoryUsed(const MemoryContextCounters *counters)
@@ -5845,6 +5860,119 @@ PgLogProtocolParkContextMemory(PgBackend *backend,
 }
 
 static void
+PgLogProtocolParkCatCacheMemoryRow(const PgCatCacheMemoryStats *stats,
+								   void *arg)
+{
+	PgProtocolParkCacheMemoryLogState *state = arg;
+	char		relname[PG_PROTOCOL_PARK_CONTEXT_TOKEN_MAX];
+
+	Assert(stats != NULL);
+	Assert(state != NULL);
+	Assert(state->backend != NULL);
+	Assert(state->park_spec != NULL);
+
+	if (stats->ntup == 0 && stats->nlist == 0)
+		return;
+
+	PgProtocolParkSanitizeToken(stats->relname, relname, sizeof(relname));
+	ereport(LOG_SERVER_ONLY,
+			(errhidestmt(true),
+			 errhidecontext(true),
+			 errmsg_internal("protocol_park_catcache_memory pid=%d backend_id=%u generation=%llu "
+							 "cache_id=%d reloid=%u indexoid=%u relname=%s "
+							 "ntup=%d npositive=%d nnegative=%d nlist=%d nbuckets=%d nlbuckets=%d "
+							 "cache_header_bytes=%zu bucket_bytes=%zu tuple_header_bytes=%zu tuple_data_bytes=%zu "
+							 "negative_key_bytes=%zu list_header_bytes=%zu list_key_bytes=%zu total_requested_bytes=%zu",
+							 PgCurrentBackendSignalPid(),
+							 (unsigned int) state->backend->id,
+							 (unsigned long long) state->park_spec->generation,
+							 stats->id,
+							 stats->reloid,
+							 stats->indexoid,
+							 relname,
+							 stats->ntup,
+							 stats->npositive,
+							 stats->nnegative,
+							 stats->nlist,
+							 stats->nbuckets,
+							 stats->nlbuckets,
+							 stats->cache_header_bytes,
+							 stats->bucket_bytes,
+							 stats->tuple_header_bytes,
+							 stats->tuple_data_bytes,
+							 stats->negative_key_bytes,
+							 stats->list_header_bytes,
+							 stats->list_key_bytes,
+							 stats->total_requested_bytes)));
+}
+
+static void
+PgLogProtocolParkRelCacheMemoryRow(const PgRelCacheMemoryStats *stats,
+								   void *arg)
+{
+	PgProtocolParkCacheMemoryLogState *state = arg;
+	char		relname[PG_PROTOCOL_PARK_CONTEXT_TOKEN_MAX];
+
+	Assert(stats != NULL);
+	Assert(state != NULL);
+	Assert(state->backend != NULL);
+	Assert(state->park_spec != NULL);
+
+	PgProtocolParkSanitizeToken(stats->relname, relname, sizeof(relname));
+	ereport(LOG_SERVER_ONLY,
+			(errhidestmt(true),
+			 errhidecontext(true),
+			 errmsg_internal("protocol_park_relcache_memory pid=%d backend_id=%u generation=%llu "
+							 "reloid=%u relname=%s isvalid=%d isnailed=%d islocaltemp=%d refcnt=%d "
+							 "has_index_context=%d has_rules_context=%d has_partition_context=%d "
+							 "relation_data_bytes=%zu class_tuple_bytes=%zu tuple_desc_bytes=%zu tuple_constr_bytes=%zu "
+							 "index_tuple_bytes=%zu options_bytes=%zu pubdesc_bytes=%zu direct_payload_bytes=%zu "
+							 "private_context_total_bytes=%zu private_context_free_bytes=%zu private_context_used_bytes=%zu",
+							 PgCurrentBackendSignalPid(),
+							 (unsigned int) state->backend->id,
+							 (unsigned long long) state->park_spec->generation,
+							 stats->reloid,
+							 relname,
+							 stats->isvalid ? 1 : 0,
+							 stats->isnailed ? 1 : 0,
+							 stats->islocaltemp ? 1 : 0,
+							 stats->refcnt,
+							 stats->has_index_context ? 1 : 0,
+							 stats->has_rules_context ? 1 : 0,
+							 stats->has_partition_context ? 1 : 0,
+							 stats->relation_data_bytes,
+							 stats->class_tuple_bytes,
+							 stats->tuple_desc_bytes,
+							 stats->tuple_constr_bytes,
+							 stats->index_tuple_bytes,
+							 stats->options_bytes,
+							 stats->pubdesc_bytes,
+							 stats->direct_payload_bytes,
+							 stats->private_context_total_bytes,
+							 stats->private_context_free_bytes,
+							 stats->private_context_used_bytes)));
+}
+
+static void
+PgLogProtocolParkCacheMemory(PgBackend *backend,
+							 PgProtocolParkSpec *park_spec)
+{
+	PgProtocolParkCacheMemoryLogState state;
+
+	Assert(backend != NULL);
+	Assert(park_spec != NULL);
+
+	if (park_spec->generation != 1 &&
+		park_spec->generation % PG_PROTOCOL_PARK_CONTEXT_LOG_INTERVAL != 0)
+		return;
+
+	state.backend = backend;
+	state.park_spec = park_spec;
+	PgCatCacheCollectMemoryStats(PgLogProtocolParkCatCacheMemoryRow, &state);
+	PgRelCacheCollectMemoryStats(PgLogProtocolParkRelCacheMemoryRow, &state);
+}
+
+static void
 PgLogProtocolParkMemory(PgSession *session, PgProtocolParkSpec *park_spec)
 {
 	PgBackend  *backend;
@@ -5948,6 +6076,51 @@ PgLogProtocolParkMemory(PgSession *session, PgProtocolParkSpec *park_spec)
 							 sizeof(PgThreadBackendRuntimeState))));
 
 	PgLogProtocolParkContextMemory(backend, park_spec);
+	PgLogProtocolParkCacheMemory(backend, park_spec);
+}
+
+static void
+PgSessionReleasePooledProtocolIdleMemory(PgSession *session,
+										 PgProtocolParkSpec *park_spec)
+{
+	MemoryContext *abort_context;
+	int			mode = pooled_protocol_idle_memory_compaction;
+
+	if (!PgRuntimeIsPooledProtocol(CurrentPgRuntime))
+		return;
+	if (IsTransactionOrTransactionBlock() || IsAbortedTransactionBlockState())
+		return;
+
+	Assert(session != NULL);
+	Assert(park_spec != NULL);
+	Assert(session->backend != NULL);
+	Assert(session->backend->protocol_park.state ==
+		   PG_PROTOCOL_PARK_PREPARED);
+
+	if (mode <= POOLED_PROTOCOL_IDLE_MEMORY_COMPACTION_OFF)
+		return;
+
+	/*
+	 * TransactionAbortContext is a deliberately preallocated OOM reserve while
+	 * a transaction is active.  Once a pooled session is cleanly idle at the
+	 * protocol boundary, optional compaction keeps the pointer lazy so
+	 * AtStart_Memory() can reserve it again for the next transaction.
+	 */
+	abort_context = PgCurrentTransactionAbortContextRef();
+	if (*abort_context != NULL)
+	{
+		Assert(CurrentMemoryContext != *abort_context);
+		MemoryContextDelete(*abort_context);
+		*abort_context = NULL;
+	}
+
+	if (mode >= POOLED_PROTOCOL_IDLE_MEMORY_COMPACTION_CACHE)
+		InvalidateSystemCachesExtended(false);
+
+#if defined(__GLIBC__)
+	if (mode >= POOLED_PROTOCOL_IDLE_MEMORY_COMPACTION_TRIM)
+		(void) malloc_trim(0);
+#endif
 }
 
 static void
@@ -5964,6 +6137,8 @@ PgSessionCommitCurrentProtocolReadPark(PgSession *session)
 	Assert(session->backend->protocol_park.state ==
 		   PG_PROTOCOL_PARK_PREPARED);
 
+	PgSessionReleasePooledProtocolIdleMemory(session,
+											 &session->backend->protocol_park.spec);
 	PgLogProtocolParkMemory(session, &session->backend->protocol_park.spec);
 	PgCarrierCommitProtocolReadPark(carrier, session->backend);
 }

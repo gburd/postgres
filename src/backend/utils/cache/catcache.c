@@ -535,6 +535,123 @@ CatCachePrintStats(int code, Datum arg)
 #endif							/* CATCACHE_STATS */
 
 
+static Size
+CatCacheCopiedKeyRequestedSize(TupleDesc tupdesc, int attnum, Datum key)
+{
+	Form_pg_attribute att;
+
+	Assert(attnum > 0);
+
+	att = TupleDescAttr(tupdesc, attnum - 1);
+	if (att->attbyval)
+		return 0;
+
+	return MAXALIGN(datumGetSize(key, false, att->attlen));
+}
+
+static Size
+CatCacheCopiedKeysRequestedSize(TupleDesc tupdesc, int nkeys,
+								const int *attnos, const Datum *keys)
+{
+	Size		total = 0;
+
+	for (int i = 0; i < nkeys; i++)
+		total += CatCacheCopiedKeyRequestedSize(tupdesc, attnos[i], keys[i]);
+
+	return total;
+}
+
+void
+PgCatCacheCollectMemoryStats(PgCatCacheMemoryStatsCallback callback, void *arg)
+{
+	slist_iter	iter;
+
+	if (callback == NULL || CacheHdr == NULL)
+		return;
+
+	slist_foreach(iter, &CacheHdr->ch_caches)
+	{
+		CatCache   *cache = slist_container(CatCache, cc_next, iter.cur);
+		PgCatCacheMemoryStats stats;
+
+		MemSet(&stats, 0, sizeof(stats));
+		stats.id = cache->id;
+		stats.reloid = cache->cc_reloid;
+		stats.indexoid = cache->cc_indexoid;
+		stats.relname = cache->cc_relname;
+		stats.ntup = cache->cc_ntup;
+		stats.nlist = cache->cc_nlist;
+		stats.nbuckets = cache->cc_nbuckets;
+		stats.nlbuckets = cache->cc_nlbuckets;
+		stats.cache_header_bytes = MAXALIGN(sizeof(CatCache));
+		stats.bucket_bytes = cache->cc_nbuckets * sizeof(dlist_head);
+		if (cache->cc_lbucket != NULL)
+			stats.bucket_bytes += cache->cc_nlbuckets * sizeof(dlist_head);
+
+		for (int i = 0; i < cache->cc_nbuckets; i++)
+		{
+			dlist_iter	tuple_iter;
+
+			dlist_foreach(tuple_iter, &cache->cc_bucket[i])
+			{
+				CatCTup    *ct;
+
+				ct = dlist_container(CatCTup, cache_elem, tuple_iter.cur);
+				stats.tuple_header_bytes += MAXALIGN(sizeof(CatCTup));
+				if (ct->negative)
+				{
+					stats.nnegative++;
+					stats.negative_key_bytes +=
+						CatCacheCopiedKeysRequestedSize(cache->cc_tupdesc,
+														cache->cc_nkeys,
+														cache->cc_keyno,
+														ct->keys);
+				}
+				else
+				{
+					stats.npositive++;
+					stats.tuple_data_bytes += MAXALIGN(ct->tuple.t_len);
+				}
+			}
+		}
+
+		if (cache->cc_lbucket != NULL)
+		{
+			for (int i = 0; i < cache->cc_nlbuckets; i++)
+			{
+				dlist_iter	list_iter;
+
+				dlist_foreach(list_iter, &cache->cc_lbucket[i])
+				{
+					CatCList  *cl;
+
+					cl = dlist_container(CatCList, cache_elem, list_iter.cur);
+					stats.list_header_bytes +=
+						MAXALIGN(offsetof(CatCList, members) +
+								 cl->n_members * sizeof(CatCTup *));
+					stats.list_key_bytes +=
+						CatCacheCopiedKeysRequestedSize(cache->cc_tupdesc,
+														cl->nkeys,
+														cache->cc_keyno,
+														cl->keys);
+				}
+			}
+		}
+
+		stats.total_requested_bytes =
+			stats.cache_header_bytes +
+			stats.bucket_bytes +
+			stats.tuple_header_bytes +
+			stats.tuple_data_bytes +
+			stats.negative_key_bytes +
+			stats.list_header_bytes +
+			stats.list_key_bytes;
+
+		callback(&stats, arg);
+	}
+}
+
+
 /*
  *		CatCacheRemoveCTup
  *

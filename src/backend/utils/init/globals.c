@@ -81,6 +81,8 @@ PG_GLOBAL_RUNTIME int autovacuum_max_parallel_workers = 0;
 PG_GLOBAL_RUNTIME int MaxBackends = 0;
 PG_GLOBAL_RUNTIME bool multithreaded = false;
 PG_GLOBAL_RUNTIME int pooled_protocol_carriers = 0;
+PG_GLOBAL_RUNTIME int pooled_protocol_idle_memory_compaction = 0;
+PG_GLOBAL_RUNTIME bool threaded_lazy_relcache_init_file = true;
 PG_GLOBAL_RUNTIME bool log_protocol_park_memory = false;
 
 /* configurable SLRU buffer sizes */

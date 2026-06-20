@@ -158,6 +158,9 @@ static bool XLogCompressBackupBlock(const PageData *page, uint16 hole_offset,
 void
 XLogBeginInsert(void)
 {
+	if (unlikely(mainrdata_last == NULL))
+		InitXLogInsert();
+
 	Assert(max_registered_block_id == 0);
 	Assert(mainrdata_last == (XLogRecData *) &mainrdata_head);
 	Assert(mainrdata_len == 0);
@@ -193,6 +196,9 @@ XLogEnsureRecordSpace(int max_block_id, int ndatas)
 	 * consistently even if the arrays happen to be large enough already.
 	 */
 	Assert(CritSectionCount == 0);
+
+	if (unlikely(mainrdata_last == NULL))
+		InitXLogInsert();
 
 	/* the minimum values can't be decreased */
 	if (max_block_id < XLR_NORMAL_MAX_BLOCK_ID)

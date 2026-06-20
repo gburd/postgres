@@ -721,10 +721,12 @@ BaseInit(void)
 	InitTemporaryFileAccess();
 
 	/*
-	 * Initialize local buffers for WAL record construction, in case we ever
-	 * try to insert XLOG.
+	 * Initialize local buffers for WAL record construction in process mode.
+	 * Threaded logical sessions initialize this scratch lazily on first WAL
+	 * insert so read-only idle sessions do not retain it.
 	 */
-	InitXLogInsert();
+	if (!PgRuntimeIsThreadBacked(CurrentPgRuntime))
+		InitXLogInsert();
 
 	/* Initialize lock manager's local structs */
 	InitLockManagerAccess();

@@ -2548,6 +2548,16 @@
   max => 'INT_MAX / 2',
 },
 
+{ name => 'pooled_protocol_idle_memory_compaction', type => 'int', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
+  short_desc => 'Sets idle memory compaction for the experimental pooled protocol scheduler.',
+  long_desc => 'A value of 0 disables idle compaction. A value of 1 releases clean idle reserves and trims allocator free space at protocol-read parks. A value of 2 also discards idle system caches before trimming.',
+  flags => 'GUC_NOT_IN_SAMPLE',
+  variable => 'pooled_protocol_idle_memory_compaction',
+  boot_val => 'POOLED_PROTOCOL_IDLE_MEMORY_COMPACTION_OFF',
+  min => 'POOLED_PROTOCOL_IDLE_MEMORY_COMPACTION_OFF',
+  max => 'POOLED_PROTOCOL_IDLE_MEMORY_COMPACTION_CACHE',
+},
+
 { name => 'port', type => 'int', context => 'PGC_POSTMASTER', group => 'CONN_AUTH_SETTINGS',
   short_desc => 'Sets the TCP port the server listens on.',
   variable => 'PostPortNumber',
@@ -3281,6 +3291,14 @@
   boot_val => '""',
   check_hook => 'check_temp_tablespaces',
   assign_hook => 'assign_temp_tablespaces',
+},
+
+{ name => 'threaded_lazy_relcache_init_file', type => 'bool', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
+  short_desc => 'Avoids preloading non-critical relcache init-file entries for threaded backends.',
+  long_desc => 'When enabled, threaded backends load only nailed critical relcache descriptors from pg_internal.init and let other relcache entries materialize on demand. This reduces idle logical-session memory at the cost of more first-use catalog work.',
+  flags => 'GUC_NOT_IN_SAMPLE',
+  variable => 'threaded_lazy_relcache_init_file',
+  boot_val => 'true',
 },
 
 { name => 'TimeZone', type => 'string', context => 'PGC_USERSET', group => 'CLIENT_CONN_LOCALE',

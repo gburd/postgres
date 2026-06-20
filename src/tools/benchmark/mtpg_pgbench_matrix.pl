@@ -40,6 +40,7 @@ my $log_protocol_park_memory = 0;
 my $help = 0;
 my $socket_seq = 0;
 my $default_max_files_per_process = 1000;
+my @branch_extra_config;
 
 my @protocol_park_memory_fields = qw(
   pid backend_id generation
@@ -78,6 +79,35 @@ my @protocol_park_context_memory_summary_fields = qw(
   recursive_total_bytes recursive_free_bytes recursive_used_bytes recursive_blocks recursive_free_chunks
 );
 
+my @protocol_park_catcache_memory_fields = qw(
+  pid backend_id generation cache_id reloid indexoid relname
+  ntup npositive nnegative nlist nbuckets nlbuckets
+  cache_header_bytes bucket_bytes tuple_header_bytes tuple_data_bytes
+  negative_key_bytes list_header_bytes list_key_bytes total_requested_bytes
+);
+
+my @protocol_park_catcache_memory_summary_fields = qw(
+  ntup npositive nnegative nlist nbuckets nlbuckets
+  cache_header_bytes bucket_bytes tuple_header_bytes tuple_data_bytes
+  negative_key_bytes list_header_bytes list_key_bytes total_requested_bytes
+);
+
+my @protocol_park_relcache_memory_fields = qw(
+  pid backend_id generation reloid relname isvalid isnailed islocaltemp refcnt
+  has_index_context has_rules_context has_partition_context
+  relation_data_bytes class_tuple_bytes tuple_desc_bytes tuple_constr_bytes
+  index_tuple_bytes options_bytes pubdesc_bytes direct_payload_bytes
+  private_context_total_bytes private_context_free_bytes private_context_used_bytes
+);
+
+my @protocol_park_relcache_memory_summary_fields = qw(
+  isvalid isnailed islocaltemp refcnt has_index_context has_rules_context
+  has_partition_context relation_data_bytes class_tuple_bytes tuple_desc_bytes
+  tuple_constr_bytes index_tuple_bytes options_bytes pubdesc_bytes
+  direct_payload_bytes private_context_total_bytes private_context_free_bytes
+  private_context_used_bytes
+);
+
 GetOptions(
 	'vanilla-install=s' => \$vanilla_install,
 	'branch-install=s'  => \$branch_install,
@@ -96,6 +126,7 @@ GetOptions(
 	'lanes=s'           => \$lanes,
 	'reuse'             => \$reuse,
 	'restart-per-workload' => \$restart_per_workload,
+	'branch-config=s@' => \@branch_extra_config,
 	'sample-server-resources!' => \$sample_server_resources,
 	'sample-memory-detail!' => \$sample_memory_detail,
 	'resource-sample-interval-ms=i' => \$resource_sample_interval_ms,
@@ -230,7 +261,7 @@ for my $lane (@requested_lanes)
 		push @lane_specs, {
 			name => 'branch_process',
 			install => $branch_install,
-			config => [ @branch_diagnostic_config ],
+			config => [ @branch_extra_config, @branch_diagnostic_config ],
 			branch => 1,
 		};
 	}
@@ -242,6 +273,7 @@ for my $lane (@requested_lanes)
 			config => [
 				'multithreaded = on',
 				'pooled_protocol_carriers = 0',
+				@branch_extra_config,
 				@branch_diagnostic_config,
 			],
 			branch => 1,
@@ -257,6 +289,7 @@ for my $lane (@requested_lanes)
 				config => [
 					'multithreaded = on',
 					"pooled_protocol_carriers = $size",
+					@branch_extra_config,
 					@branch_diagnostic_config,
 				],
 				branch => 1,
@@ -394,6 +427,26 @@ print $protocol_park_context_memory_fh
 	@protocol_park_context_memory_fields),
   "\n";
 
+my $protocol_park_catcache_memory_path =
+  File::Spec->catfile($out_dir, 'protocol_park_catcache_memory.tsv');
+open my $protocol_park_catcache_memory_fh, '>',
+  $protocol_park_catcache_memory_path
+  or die "could not write $protocol_park_catcache_memory_path: $!";
+print $protocol_park_catcache_memory_fh
+  join("\t", 'lane', 'workload', 'run', 'sample_index',
+	@protocol_park_catcache_memory_fields),
+  "\n";
+
+my $protocol_park_relcache_memory_path =
+  File::Spec->catfile($out_dir, 'protocol_park_relcache_memory.tsv');
+open my $protocol_park_relcache_memory_fh, '>',
+  $protocol_park_relcache_memory_path
+  or die "could not write $protocol_park_relcache_memory_path: $!";
+print $protocol_park_relcache_memory_fh
+  join("\t", 'lane', 'workload', 'run', 'sample_index',
+	@protocol_park_relcache_memory_fields),
+  "\n";
+
 my %results;
 if ($restart_per_workload)
 {
@@ -404,7 +457,9 @@ if ($restart_per_workload)
 			run_lane($lane, [ $workload ], $script_dir, $tps_fh,
 				$samples_fh, $resources_fh, $resource_samples_fh,
 				$resource_baselines_fh, $protocol_park_memory_fh,
-				$protocol_park_context_memory_fh, \%results, $workload);
+				$protocol_park_context_memory_fh,
+				$protocol_park_catcache_memory_fh,
+				$protocol_park_relcache_memory_fh, \%results, $workload);
 		}
 	}
 }
@@ -415,7 +470,9 @@ else
 		run_lane($lane, \@requested_workloads, $script_dir, $tps_fh,
 			$samples_fh, $resources_fh, $resource_samples_fh,
 			$resource_baselines_fh, $protocol_park_memory_fh,
-			$protocol_park_context_memory_fh, \%results, undef);
+			$protocol_park_context_memory_fh,
+			$protocol_park_catcache_memory_fh,
+			$protocol_park_relcache_memory_fh, \%results, undef);
 	}
 }
 
@@ -431,6 +488,8 @@ close $thread_stacks_fh;
 close $memory_accounting_fh;
 close $protocol_park_memory_fh;
 close $protocol_park_context_memory_fh;
+close $protocol_park_catcache_memory_fh;
+close $protocol_park_relcache_memory_fh;
 
 write_ratios($out_dir, \@requested_workloads, \@lane_specs, \%results);
 write_resource_efficiency($out_dir, \@requested_workloads, \@lane_specs,
@@ -440,6 +499,10 @@ write_memory_footprint($out_dir, \@requested_workloads, \@lane_specs,
 write_protocol_park_memory_summary($out_dir, $protocol_park_memory_path);
 write_protocol_park_context_memory_summary($out_dir,
 	$protocol_park_context_memory_path);
+write_protocol_park_catcache_memory_summary($out_dir,
+	$protocol_park_catcache_memory_path);
+write_protocol_park_relcache_memory_summary($out_dir,
+	$protocol_park_relcache_memory_path);
 write_memory_detail_summaries($out_dir);
 write_summary($out_dir, \@requested_workloads, \@lane_specs, \%results);
 
@@ -455,11 +518,15 @@ print "wrote $thread_stacks_path\n";
 print "wrote $memory_accounting_path\n";
 print "wrote $protocol_park_memory_path\n";
 print "wrote $protocol_park_context_memory_path\n";
+print "wrote $protocol_park_catcache_memory_path\n";
+print "wrote $protocol_park_relcache_memory_path\n";
 print "wrote ", File::Spec->catfile($out_dir, 'ratios.tsv'), "\n";
 print "wrote ", File::Spec->catfile($out_dir, 'resource_efficiency.tsv'), "\n";
 print "wrote ", File::Spec->catfile($out_dir, 'memory_footprint.tsv'), "\n";
 print "wrote ", File::Spec->catfile($out_dir, 'protocol_park_memory_summary.tsv'), "\n";
 print "wrote ", File::Spec->catfile($out_dir, 'protocol_park_context_memory_summary.tsv'), "\n";
+print "wrote ", File::Spec->catfile($out_dir, 'protocol_park_catcache_memory_summary.tsv'), "\n";
+print "wrote ", File::Spec->catfile($out_dir, 'protocol_park_relcache_memory_summary.tsv'), "\n";
 print "wrote ", File::Spec->catfile($out_dir, 'server_process_rollup_summary.tsv'), "\n";
 print "wrote ", File::Spec->catfile($out_dir, 'server_memory_map_category_summary.tsv'), "\n";
 print "wrote ", File::Spec->catfile($out_dir, 'server_memory_map_path_top.tsv'), "\n";
@@ -492,6 +559,8 @@ Key options:
   --lanes=LIST            vanilla,branch_process,branch_threaded,branch_pool
   --workloads=LIST        workload names to run
   --restart-per-workload  restart each lane for each workload
+  --branch-config=LINE    append a postgresql.conf line to branch lanes;
+                           may be specified more than once
   --sample-server-resources
                            sample server process/thread counts while measuring
   --sample-memory-detail
@@ -679,7 +748,9 @@ sub run_lane
 	my ($lane, $workloads, $script_dir, $tps_fh, $samples_fh, $resources_fh,
 		$resource_samples_fh, $resource_baselines_fh,
 		$protocol_park_memory_fh, $protocol_park_context_memory_fh,
-		$results, $lane_dir_suffix) = @_;
+		$protocol_park_catcache_memory_fh,
+		$protocol_park_relcache_memory_fh, $results,
+		$lane_dir_suffix) = @_;
 
 	my $lane_dir_name = defined $lane_dir_suffix ?
 		"$lane->{name}_$lane_dir_suffix" : $lane->{name};
@@ -774,7 +845,9 @@ sub run_lane
 				  run_workload($lane, $workload, $script_dir, $socket_dir,
 					$port, $pgbench_bin, $data_dir, $server_log, $run_index,
 					$resource_samples_fh, $protocol_park_memory_fh,
-					$protocol_park_context_memory_fh);
+					$protocol_park_context_memory_fh,
+					$protocol_park_catcache_memory_fh,
+					$protocol_park_relcache_memory_fh);
 
 				push @samples, {
 					tps => $sample_tps,
@@ -914,7 +987,9 @@ sub run_workload
 {
 	my ($lane, $workload, $script_dir, $socket_dir, $port, $pgbench_bin,
 		$data_dir, $server_log, $run_index, $resource_samples_fh,
-		$protocol_park_memory_fh, $protocol_park_context_memory_fh) = @_;
+		$protocol_park_memory_fh, $protocol_park_context_memory_fh,
+		$protocol_park_catcache_memory_fh,
+		$protocol_park_relcache_memory_fh) = @_;
 
 	my $spec = $workload_specs{$workload};
 	my @args = @{ $spec->{args} };
@@ -954,7 +1029,9 @@ sub run_workload
 
 	parse_protocol_park_memory_log($server_log, $protocol_park_log_offset,
 		$lane->{name}, $workload, $run_index, $protocol_park_memory_fh,
-		$protocol_park_context_memory_fh)
+		$protocol_park_context_memory_fh,
+		$protocol_park_catcache_memory_fh,
+		$protocol_park_relcache_memory_fh)
 	  if $log_protocol_park_memory;
 
 	my ($tps) = $output =~ /^tps = ([0-9.]+) /m;
@@ -1511,9 +1588,11 @@ sub number_or_zero
 sub parse_protocol_park_memory_log
 {
 	my ($server_log, $offset, $lane, $workload, $run_index, $fh,
-		$context_fh) = @_;
+		$context_fh, $catcache_fh, $relcache_fh) = @_;
 	my $sample_index = 0;
 	my $context_sample_index = 0;
+	my $catcache_sample_index = 0;
+	my $relcache_sample_index = 0;
 
 	return unless defined $fh;
 	return unless -e $server_log;
@@ -1545,6 +1624,46 @@ sub parse_protocol_park_memory_log
 				$context_sample_index,
 				map { defined $fields{$_} ? $fields{$_} : 'n/a' }
 				  @protocol_park_context_memory_fields), "\n";
+			next;
+		}
+
+		if ($line =~ /protocol_park_catcache_memory\s+(.*)$/)
+		{
+			next unless defined $catcache_fh;
+			$payload = $1;
+			while ($payload =~ /([A-Za-z0-9_]+)=([^\s]+)/g)
+			{
+				$fields{$1} = $2;
+			}
+
+			$catcache_sample_index++;
+			print $catcache_fh join("\t",
+				$lane,
+				$workload,
+				$run_index,
+				$catcache_sample_index,
+				map { defined $fields{$_} ? $fields{$_} : 'n/a' }
+				  @protocol_park_catcache_memory_fields), "\n";
+			next;
+		}
+
+		if ($line =~ /protocol_park_relcache_memory\s+(.*)$/)
+		{
+			next unless defined $relcache_fh;
+			$payload = $1;
+			while ($payload =~ /([A-Za-z0-9_]+)=([^\s]+)/g)
+			{
+				$fields{$1} = $2;
+			}
+
+			$relcache_sample_index++;
+			print $relcache_fh join("\t",
+				$lane,
+				$workload,
+				$run_index,
+				$relcache_sample_index,
+				map { defined $fields{$_} ? $fields{$_} : 'n/a' }
+				  @protocol_park_relcache_memory_fields), "\n";
 			next;
 		}
 
@@ -2662,6 +2781,193 @@ sub protocol_context_summary_sort_value
 
 	return 0 unless defined $values && @$values;
 	return median(@$values);
+}
+
+sub write_protocol_park_catcache_memory_summary
+{
+	my ($dir, $raw_path) = @_;
+	my $path =
+	  File::Spec->catfile($dir, 'protocol_park_catcache_memory_summary.tsv');
+	my %field_index;
+	my %groups;
+
+	open my $raw_fh, '<', $raw_path or die "could not read $raw_path: $!";
+	my $header = <$raw_fh>;
+	chomp $header if defined $header;
+	my @header = defined $header ? split /\t/, $header : ();
+	for my $i (0 .. $#header)
+	{
+		$field_index{$header[$i]} = $i;
+	}
+
+	while (defined(my $line = <$raw_fh>))
+	{
+		chomp $line;
+		next if $line eq '';
+		my @cols = split /\t/, $line, -1;
+		my $lane = $cols[$field_index{lane}];
+		my $workload = $cols[$field_index{workload}];
+		my $cache_id = $cols[$field_index{cache_id}];
+		my $relname = $cols[$field_index{relname}];
+		my $reloid = $cols[$field_index{reloid}];
+		my $indexoid = $cols[$field_index{indexoid}];
+		my $key = join "\t", $lane, $workload, $cache_id, $relname,
+		  $reloid, $indexoid;
+
+		$groups{$key}{lane} = $lane;
+		$groups{$key}{workload} = $workload;
+		$groups{$key}{cache_id} = $cache_id;
+		$groups{$key}{relname} = $relname;
+		$groups{$key}{reloid} = $reloid;
+		$groups{$key}{indexoid} = $indexoid;
+		$groups{$key}{count}++;
+		for my $field (@protocol_park_catcache_memory_summary_fields)
+		{
+			next unless exists $field_index{$field};
+			my $value = $cols[$field_index{$field}];
+
+			next unless defined $value && $value =~ /^-?\d+(?:\.\d+)?$/;
+			push @{ $groups{$key}{values}{$field} }, $value + 0;
+		}
+	}
+	close $raw_fh;
+
+	open my $fh, '>', $path or die "could not write $path: $!";
+	print $fh join("\t",
+		'workload',
+		'lane',
+		'cache_id',
+		'relname',
+		'reloid',
+		'indexoid',
+		'cache_samples',
+		map {
+			$_ =~ /bytes\z/ ? "${_}_median_kb" : "${_}_median"
+		} @protocol_park_catcache_memory_summary_fields),
+	  "\n";
+
+	my @groups =
+	  sort {
+		  protocol_context_summary_sort_value($groups{$b},
+			  'total_requested_bytes') <=>
+			protocol_context_summary_sort_value($groups{$a},
+				'total_requested_bytes') ||
+		  $groups{$a}{relname} cmp $groups{$b}{relname}
+	  } keys %groups;
+
+	for my $key (@groups)
+	{
+		my $group = $groups{$key};
+
+		print $fh join("\t",
+			$group->{workload},
+			$group->{lane},
+			$group->{cache_id},
+			$group->{relname},
+			$group->{reloid},
+			$group->{indexoid},
+			$group->{count},
+			map {
+				my $values = $group->{values}{$_};
+				defined $values && @$values
+				  ? ($_ =~ /bytes\z/
+					  ? metric_value(median(@$values) / 1024, 2)
+					  : metric_value(median(@$values), 2))
+				  : 'n/a'
+			} @protocol_park_catcache_memory_summary_fields),
+		  "\n";
+	}
+
+	close $fh;
+}
+
+sub write_protocol_park_relcache_memory_summary
+{
+	my ($dir, $raw_path) = @_;
+	my $path =
+	  File::Spec->catfile($dir, 'protocol_park_relcache_memory_summary.tsv');
+	my %field_index;
+	my %groups;
+
+	open my $raw_fh, '<', $raw_path or die "could not read $raw_path: $!";
+	my $header = <$raw_fh>;
+	chomp $header if defined $header;
+	my @header = defined $header ? split /\t/, $header : ();
+	for my $i (0 .. $#header)
+	{
+		$field_index{$header[$i]} = $i;
+	}
+
+	while (defined(my $line = <$raw_fh>))
+	{
+		chomp $line;
+		next if $line eq '';
+		my @cols = split /\t/, $line, -1;
+		my $lane = $cols[$field_index{lane}];
+		my $workload = $cols[$field_index{workload}];
+		my $reloid = $cols[$field_index{reloid}];
+		my $relname = $cols[$field_index{relname}];
+		my $key = join "\t", $lane, $workload, $reloid, $relname;
+
+		$groups{$key}{lane} = $lane;
+		$groups{$key}{workload} = $workload;
+		$groups{$key}{reloid} = $reloid;
+		$groups{$key}{relname} = $relname;
+		$groups{$key}{count}++;
+		for my $field (@protocol_park_relcache_memory_summary_fields)
+		{
+			next unless exists $field_index{$field};
+			my $value = $cols[$field_index{$field}];
+
+			next unless defined $value && $value =~ /^-?\d+(?:\.\d+)?$/;
+			push @{ $groups{$key}{values}{$field} }, $value + 0;
+		}
+	}
+	close $raw_fh;
+
+	open my $fh, '>', $path or die "could not write $path: $!";
+	print $fh join("\t",
+		'workload',
+		'lane',
+		'reloid',
+		'relname',
+		'relcache_samples',
+		map {
+			$_ =~ /bytes\z/ ? "${_}_median_kb" : "${_}_median"
+		} @protocol_park_relcache_memory_summary_fields),
+	  "\n";
+
+	my @groups =
+	  sort {
+		  protocol_context_summary_sort_value($groups{$b},
+			  'private_context_used_bytes') <=>
+			protocol_context_summary_sort_value($groups{$a},
+				'private_context_used_bytes') ||
+		  $groups{$a}{relname} cmp $groups{$b}{relname}
+	  } keys %groups;
+
+	for my $key (@groups)
+	{
+		my $group = $groups{$key};
+
+		print $fh join("\t",
+			$group->{workload},
+			$group->{lane},
+			$group->{reloid},
+			$group->{relname},
+			$group->{count},
+			map {
+				my $values = $group->{values}{$_};
+				defined $values && @$values
+				  ? ($_ =~ /bytes\z/
+					  ? metric_value(median(@$values) / 1024, 2)
+					  : metric_value(median(@$values), 2))
+				  : 'n/a'
+			} @protocol_park_relcache_memory_summary_fields),
+		  "\n";
+	}
+
+	close $fh;
 }
 
 sub write_memory_detail_summaries
