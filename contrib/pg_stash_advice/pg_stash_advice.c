@@ -29,10 +29,6 @@ PG_MODULE_MAGIC_EXT(
 					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
 );
 
-/* GUC variables */
-PG_GLOBAL_RUNTIME bool pg_stash_advice_persist = true;
-PG_GLOBAL_RUNTIME int pg_stash_advice_persist_interval = 30;
-
 /* Backend-local memory context. */
 #define pg_stash_advice_mcxt \
 	(pg_stash_advice_backend_state()->context)

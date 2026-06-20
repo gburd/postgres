@@ -679,7 +679,7 @@ ossl_aes_cfb_init(PX_Cipher *c, const uint8 *key, unsigned klen, const uint8 *iv
  * aliases
  */
 
-static PX_Alias ossl_aliases[] = {
+static const PX_Alias ossl_aliases[] = {
 	{"bf", "bf-cbc"},
 	{"blowfish", "bf-cbc"},
 	{"blowfish-cbc", "bf-cbc"},

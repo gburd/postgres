@@ -258,10 +258,6 @@ typedef struct pgssSharedState
 	pgssGlobalStats stats;		/* global statistics for pgss */
 } pgssSharedState;
 
-/* Links to shared memory state */
-static pgssSharedState *pgss;
-static HTAB *pgss_hash;
-
 static void pgss_shmem_request(void *arg);
 static void pgss_shmem_init(void *arg);
 
@@ -295,6 +291,8 @@ typedef struct PgStatStatementsRuntimeState
 	ExecutorFinish_hook_type prev_ExecutorFinish;
 	ExecutorEnd_hook_type prev_ExecutorEnd;
 	ProcessUtility_hook_type prev_ProcessUtility;
+	pgssSharedState *shared_state;
+	HTAB	   *hash;
 } PgStatStatementsRuntimeState;
 
 typedef struct PgStatStatementsSessionState
@@ -387,6 +385,8 @@ static const struct config_enum_entry track_options[] =
 
 #define pgss_max (pgss_runtime_state()->max)
 #define pgss_save (pgss_runtime_state()->save)
+#define pgss (pgss_runtime_state()->shared_state)
+#define pgss_hash (pgss_runtime_state()->hash)
 #define pgss_track (pgss_session_state()->track)
 #define pgss_track_utility (pgss_session_state()->track_utility)
 #define pgss_track_planning (pgss_session_state()->track_planning)

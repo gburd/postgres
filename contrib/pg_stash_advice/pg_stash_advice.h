@@ -73,6 +73,7 @@ typedef struct pgsa_shared_state
 
 /* Backend-local attachment state. */
 #define PG_STASH_ADVICE_BACKEND_STATE_KEY "pg_stash_advice.backend"
+#define PG_STASH_ADVICE_RUNTIME_STATE_KEY "pg_stash_advice.runtime"
 
 typedef struct PgStashAdviceBackendState
 {
@@ -84,6 +85,34 @@ typedef struct PgStashAdviceBackendState
 } PgStashAdviceBackendState;
 
 extern PgStashAdviceBackendState *pg_stash_advice_backend_state(void);
+
+/* Runtime-local GUC backing state. */
+typedef struct PgStashAdviceRuntimeState
+{
+	bool		initialized;
+	bool		persist;
+	int			persist_interval;
+} PgStashAdviceRuntimeState;
+
+static inline PgStashAdviceRuntimeState *
+pg_stash_advice_runtime_state(void)
+{
+	PgStashAdviceRuntimeState *state;
+
+	state = (PgStashAdviceRuntimeState *)
+		PgRuntimeEnsureExtensionPrivateState(
+			PG_STASH_ADVICE_RUNTIME_STATE_KEY,
+			sizeof(PgStashAdviceRuntimeState),
+			NULL);
+	if (!state->initialized)
+	{
+		state->persist = true;
+		state->persist_interval = 30;
+		state->initialized = true;
+	}
+
+	return state;
+}
 
 /* For stash ID -> stash name hash table */
 typedef struct pgsa_stash_name
@@ -132,8 +161,10 @@ pg_stash_advice_session_state(void)
 	(pg_stash_advice_session_state()->stash_name)
 
 /* GUC variables */
-extern PG_GLOBAL_RUNTIME bool pg_stash_advice_persist;
-extern PG_GLOBAL_RUNTIME int pg_stash_advice_persist_interval;
+#define pg_stash_advice_persist \
+	(pg_stash_advice_runtime_state()->persist)
+#define pg_stash_advice_persist_interval \
+	(pg_stash_advice_runtime_state()->persist_interval)
 
 /* Function prototypes */
 extern void pgsa_attach(void);

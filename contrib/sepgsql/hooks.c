@@ -66,6 +66,8 @@ sepgsql_hook_runtime_state(void)
 /*
  * Contextual information on DDL commands
  */
+#define SEPGSQL_CONTEXT_SESSION_STATE_KEY "sepgsql.context.session"
+
 typedef struct
 {
 	NodeTag		cmdtype;
@@ -77,7 +79,17 @@ typedef struct
 	const char *createdb_dtemplate;
 } sepgsql_context_info_t;
 
-static sepgsql_context_info_t sepgsql_context_info;
+static sepgsql_context_info_t *
+sepgsql_context_info_state(void)
+{
+	return (sepgsql_context_info_t *)
+		PgSessionEnsureExtensionPrivateState(
+			SEPGSQL_CONTEXT_SESSION_STATE_KEY,
+			sizeof(sepgsql_context_info_t),
+			NULL);
+}
+
+#define sepgsql_context_info (*sepgsql_context_info_state())
 
 /*
  * GUC: sepgsql.permissive = (on|off)
@@ -503,6 +515,5 @@ _PG_init(void)
 	next_ProcessUtility_hook = ProcessUtility_hook;
 	ProcessUtility_hook = sepgsql_utility_command;
 
-	/* init contextual info */
-	memset(&sepgsql_context_info, 0, sizeof(sepgsql_context_info));
+	/* Contextual command state is lazily initialized per session. */
 }
