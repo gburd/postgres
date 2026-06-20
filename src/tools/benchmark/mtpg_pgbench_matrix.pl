@@ -9,7 +9,7 @@ use File::Spec;
 use FindBin;
 use Getopt::Long qw(GetOptions);
 use IO::Socket::INET;
-use POSIX qw(strftime);
+use POSIX qw(WNOHANG strftime);
 
 my $repo_root = abs_path(File::Spec->catdir($FindBin::Bin, '..', '..', '..'));
 
@@ -205,6 +205,13 @@ my $tps_path = File::Spec->catfile($out_dir, 'tps.tsv');
 open my $tps_fh, '>', $tps_path or die "could not write $tps_path: $!";
 print $tps_fh join("\t", qw(lane workload tps latency_ms failed_transactions)), "\n";
 
+my $resources_path = File::Spec->catfile($out_dir, 'server_resources.tsv');
+open my $resources_fh, '>', $resources_path
+  or die "could not write $resources_path: $!";
+print $resources_fh
+  join("\t", qw(lane workload max_server_processes max_server_threads samples)),
+  "\n";
+
 my %results;
 if ($restart_per_workload)
 {
@@ -212,8 +219,8 @@ if ($restart_per_workload)
 	{
 		for my $workload (@requested_workloads)
 		{
-			run_lane($lane, [ $workload ], $script_dir, $tps_fh, \%results,
-				$workload);
+			run_lane($lane, [ $workload ], $script_dir, $tps_fh,
+				$resources_fh, \%results, $workload);
 		}
 	}
 }
@@ -221,17 +228,19 @@ else
 {
 	for my $lane (@lane_specs)
 	{
-		run_lane($lane, \@requested_workloads, $script_dir, $tps_fh, \%results,
-			undef);
+		run_lane($lane, \@requested_workloads, $script_dir, $tps_fh,
+			$resources_fh, \%results, undef);
 	}
 }
 
 close $tps_fh;
+close $resources_fh;
 
 write_ratios($out_dir, \@requested_workloads, \@lane_specs, \%results);
 write_summary($out_dir, \@requested_workloads, \@lane_specs, \%results);
 
 print "wrote $tps_path\n";
+print "wrote $resources_path\n";
 print "wrote ", File::Spec->catfile($out_dir, 'ratios.tsv'), "\n";
 print "wrote ", File::Spec->catfile($out_dir, 'summary.md'), "\n";
 
@@ -270,6 +279,7 @@ Additional non-default workloads useful for pooled connection-shape profiles:
 
 Output:
   tps.tsv                 raw TPS and latency per lane/workload
+  server_resources.tsv    max server process/thread counts sampled per workload
   ratios.tsv              per-lane ratios against vanilla
   summary.md              Markdown table for quick comparison
 USAGE
@@ -372,7 +382,8 @@ sub write_file
 
 sub run_lane
 {
-	my ($lane, $workloads, $script_dir, $tps_fh, $results, $lane_dir_suffix) = @_;
+	my ($lane, $workloads, $script_dir, $tps_fh, $resources_fh, $results,
+		$lane_dir_suffix) = @_;
 
 	my $lane_dir_name = defined $lane_dir_suffix ?
 		"$lane->{name}_$lane_dir_suffix" : $lane->{name};
@@ -424,16 +435,21 @@ sub run_lane
 
 		for my $workload (@$workloads)
 		{
-			my ($tps, $latency, $failed) =
+			my ($tps, $latency, $failed, $resources) =
 			  run_workload($lane, $workload, $script_dir, $socket_dir, $port,
-				$pgbench_bin);
+				$pgbench_bin, $data_dir);
 			$results->{$lane->{name}}{$workload} = {
 				tps => $tps,
 				latency => $latency,
 				failed => $failed,
+				resources => $resources,
 			};
 			print $tps_fh join("\t", $lane->{name}, $workload, $tps,
 				$latency, $failed), "\n";
+			print $resources_fh join("\t", $lane->{name}, $workload,
+				resource_value($resources, 'max_server_processes'),
+				resource_value($resources, 'max_server_threads'),
+				resource_value($resources, 'samples')), "\n";
 			print "    $workload: $tps TPS, $latency ms\n";
 		}
 	};
@@ -469,7 +485,8 @@ sub append_config
 
 sub run_workload
 {
-	my ($lane, $workload, $script_dir, $socket_dir, $port, $pgbench_bin) = @_;
+	my ($lane, $workload, $script_dir, $socket_dir, $port, $pgbench_bin,
+		$data_dir) = @_;
 
 	my $spec = $workload_specs{$workload};
 	my @args = @{ $spec->{args} };
@@ -500,8 +517,9 @@ sub run_workload
 	}
 
 	my $bench = File::Spec->catfile($out_dir, "$lane->{name}_${workload}.bench");
+	my $resources = new_server_resource_sample($data_dir);
 	my $output = run_capture([ @base_cmd, '-T', $duration, 'postgres' ],
-		"$lane->{name} $workload", $bench, "$bench.err");
+		"$lane->{name} $workload", $bench, "$bench.err", $resources);
 
 	my ($tps) = $output =~ /^tps = ([0-9.]+) /m;
 	my ($latency) = $output =~ /^latency average = ([0-9.]+) ms/m;
@@ -510,7 +528,7 @@ sub run_workload
 	die "could not parse TPS for $lane->{name} $workload\n$output\n"
 	  unless defined $tps && defined $latency && defined $failed;
 
-	return ($tps, $latency, $failed);
+	return ($tps, $latency, $failed, $resources);
 }
 
 sub bin_path
@@ -532,7 +550,7 @@ sub run_cmd
 
 sub run_capture
 {
-	my ($cmd, $label, $stdout_path, $stderr_path) = @_;
+	my ($cmd, $label, $stdout_path, $stderr_path, $resource_sample) = @_;
 
 	open my $out, '>', $stdout_path or die "could not write $stdout_path: $!";
 	open my $err, '>', $stderr_path or die "could not write $stderr_path: $!";
@@ -546,7 +564,24 @@ sub run_capture
 		exec @$cmd or die "exec failed for $label: $!";
 	}
 
-	waitpid($pid, 0);
+	for (;;)
+	{
+		my $waited = waitpid($pid, WNOHANG);
+		if ($waited == $pid)
+		{
+			last;
+		}
+		elsif ($waited == 0)
+		{
+			sample_server_resources($resource_sample)
+			  if defined $resource_sample;
+			select(undef, undef, undef, 0.100);
+		}
+		else
+		{
+			last;
+		}
+	}
 	my $rc = $?;
 	close $out;
 	close $err;
@@ -561,6 +596,133 @@ sub run_capture
 	}
 
 	return $output;
+}
+
+sub new_server_resource_sample
+{
+	my ($data_dir) = @_;
+	my $pid = read_postmaster_pid($data_dir);
+
+	return {
+		postmaster_pid => $pid,
+		max_server_processes => undef,
+		max_server_threads => undef,
+		samples => 0,
+	};
+}
+
+sub read_postmaster_pid
+{
+	my ($data_dir) = @_;
+	my $pidfile = File::Spec->catfile($data_dir, 'postmaster.pid');
+
+	open my $fh, '<', $pidfile or return undef;
+	my $line = <$fh>;
+	close $fh;
+	chomp $line if defined $line;
+	return $line =~ /^\d+$/ ? int($line) : undef;
+}
+
+sub sample_server_resources
+{
+	my ($sample) = @_;
+
+	return unless defined $sample;
+	return unless defined $sample->{postmaster_pid};
+	return unless -d '/proc';
+
+	my @pids = linux_process_tree($sample->{postmaster_pid});
+	return unless @pids;
+
+	my $threads = 0;
+	for my $pid (@pids)
+	{
+		$threads += linux_thread_count($pid);
+	}
+
+	update_resource_max($sample, max_server_processes => scalar @pids);
+	update_resource_max($sample, max_server_threads => $threads);
+	$sample->{samples}++;
+}
+
+sub linux_process_tree
+{
+	my ($root_pid) = @_;
+	my %children;
+
+	return () unless defined $root_pid && -d "/proc/$root_pid";
+
+	opendir my $dh, '/proc' or return ();
+	while (defined(my $entry = readdir $dh))
+	{
+		next unless $entry =~ /^\d+$/;
+		my $ppid = linux_ppid($entry);
+		next unless defined $ppid;
+		push @{ $children{$ppid} }, int($entry);
+	}
+	closedir $dh;
+
+	my @tree;
+	my @queue = (int($root_pid));
+	my %seen;
+	while (@queue)
+	{
+		my $pid = shift @queue;
+		next if $seen{$pid}++;
+		next unless -d "/proc/$pid";
+		push @tree, $pid;
+		push @queue, @{ $children{$pid} || [] };
+	}
+
+	return @tree;
+}
+
+sub linux_ppid
+{
+	my ($pid) = @_;
+	my $status = "/proc/$pid/status";
+
+	open my $fh, '<', $status or return undef;
+	while (defined(my $line = <$fh>))
+	{
+		if ($line =~ /^PPid:\s+(\d+)/)
+		{
+			close $fh;
+			return int($1);
+		}
+	}
+	close $fh;
+	return undef;
+}
+
+sub linux_thread_count
+{
+	my ($pid) = @_;
+	my $task_dir = "/proc/$pid/task";
+
+	opendir my $dh, $task_dir or return -d "/proc/$pid" ? 1 : 0;
+	my $count = grep { /^\d+$/ } readdir $dh;
+	closedir $dh;
+	return $count;
+}
+
+sub update_resource_max
+{
+	my ($sample, $key, $value) = @_;
+
+	return unless defined $value;
+	if (!defined $sample->{$key} || $sample->{$key} < $value)
+	{
+		$sample->{$key} = $value;
+	}
+}
+
+sub resource_value
+{
+	my ($sample, $key) = @_;
+
+	return 'n/a' unless defined $sample && defined $sample->{$key};
+	return $sample->{$key};
 }
 
 sub slurp
@@ -666,6 +828,22 @@ sub write_summary
 			}
 		}
 		print $fh "\n";
+	}
+
+	print $fh "\n## Server resource samples\n\n";
+	print $fh "| Workload | Lane | Max server processes | Max server threads |\n";
+	print $fh "| --- | --- | ---: | ---: |\n";
+	for my $workload (@$workloads)
+	{
+		for my $lane (@$lane_specs)
+		{
+			my $name = $lane->{name};
+			next unless exists $results->{$name}{$workload};
+			my $resources = $results->{$name}{$workload}{resources};
+			print $fh "| `$workload` | `$name` | ",
+			  resource_value($resources, 'max_server_processes'), " | ",
+			  resource_value($resources, 'max_server_threads'), " |\n";
+		}
 	}
 	close $fh;
 }
