@@ -31,6 +31,8 @@ my $workloads =
 my $lanes = 'vanilla,branch_process,branch_threaded,branch_pool';
 my $reuse = 0;
 my $restart_per_workload = 0;
+my $sample_server_resources = 0;
+my $resource_sample_interval_ms = 100;
 my $help = 0;
 my $socket_seq = 0;
 
@@ -51,6 +53,8 @@ GetOptions(
 	'lanes=s'           => \$lanes,
 	'reuse'             => \$reuse,
 	'restart-per-workload' => \$restart_per_workload,
+	'sample-server-resources!' => \$sample_server_resources,
+	'resource-sample-interval-ms=i' => \$resource_sample_interval_ms,
 	'help'              => \$help,
 ) or die usage();
 
@@ -67,6 +71,8 @@ die "--threads must be positive\n" if $threads <= 0;
 die "--scale must be positive\n" if $scale <= 0;
 die "--max-connections must exceed --clients\n"
   if $max_connections <= $clients;
+die "--resource-sample-interval-ms must be positive\n"
+  if $resource_sample_interval_ms <= 0;
 
 my @pool_sizes = grep { length($_) } split /,/, $pool_sizes;
 for my $size (@pool_sizes)
@@ -269,6 +275,10 @@ Key options:
   --lanes=LIST            vanilla,branch_process,branch_threaded,branch_pool
   --workloads=LIST        workload names to run
   --restart-per-workload  restart each lane for each workload
+  --sample-server-resources
+                           sample server process/thread counts while measuring
+  --resource-sample-interval-ms=N
+                           server resource sample interval, default 100
 
 Additional non-default workloads useful for pooled connection-shape profiles:
   select1_sleep_1ms_prepared
@@ -564,23 +574,30 @@ sub run_capture
 		exec @$cmd or die "exec failed for $label: $!";
 	}
 
-	for (;;)
+	if (defined $resource_sample && $resource_sample->{enabled})
 	{
-		my $waited = waitpid($pid, WNOHANG);
-		if ($waited == $pid)
+		for (;;)
 		{
-			last;
+			my $waited = waitpid($pid, WNOHANG);
+			if ($waited == $pid)
+			{
+				last;
+			}
+			elsif ($waited == 0)
+			{
+				sample_server_resources($resource_sample);
+				select(undef, undef, undef,
+					$resource_sample->{interval_seconds});
+			}
+			else
+			{
+				last;
+			}
 		}
-		elsif ($waited == 0)
-		{
-			sample_server_resources($resource_sample)
-			  if defined $resource_sample;
-			select(undef, undef, undef, 0.100);
-		}
-		else
-		{
-			last;
-		}
+	}
+	else
+	{
+		waitpid($pid, 0);
 	}
 	my $rc = $?;
 	close $out;
@@ -601,9 +618,12 @@ sub run_capture
 sub new_server_resource_sample
 {
 	my ($data_dir) = @_;
-	my $pid = read_postmaster_pid($data_dir);
+	my $pid = $sample_server_resources ?
+		read_postmaster_pid($data_dir) : undef;
 
 	return {
+		enabled => $sample_server_resources,
+		interval_seconds => $resource_sample_interval_ms / 1000,
 		postmaster_pid => $pid,
 		max_server_processes => undef,
 		max_server_threads => undef,
