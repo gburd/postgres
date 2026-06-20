@@ -433,7 +433,7 @@ ResourceOwnerCreate(ResourceOwner parent, const char *name)
 		context = PgRuntimeGetOwnedMemoryContextWithSizes(
 			&resource_owners->resource_owner_context,
 			"ResourceOwnerContext",
-			ALLOCSET_DEFAULT_SIZES);
+			ALLOCSET_START_SMALL_SIZES);
 	}
 	if (context == NULL)
 		context = TopMemoryContext;

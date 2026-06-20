@@ -264,7 +264,7 @@ pq_init(ClientSocket *client_sock)
 
 	/* allocate the Port struct and copy the ClientSocket contents to it */
 	port_context = PgRuntimeGetOwnedMemoryContextWithSizes(
-		PgCurrentPortContextRef(), "PortContext", ALLOCSET_DEFAULT_SIZES);
+		PgCurrentPortContextRef(), "PortContext", ALLOCSET_START_SMALL_SIZES);
 	oldcontext = MemoryContextSwitchTo(port_context);
 	port = palloc0_object(Port);
 	MemoryContextSwitchTo(oldcontext);

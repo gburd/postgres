@@ -6470,7 +6470,7 @@ PostgresBootstrapSession(const char *dbname, const char *username)
 	PgRuntimeGetOwnedMemoryContextWithSizes(
 		PgCurrentRowDescriptionContextRef(),
 		"RowDescriptionContext",
-		ALLOCSET_DEFAULT_SIZES);
+		ALLOCSET_START_SMALL_SIZES);
 	MemoryContextSwitchTo(current_row_description_context);
 	initStringInfo(&current_row_description_buf);
 	MemoryContextSwitchTo(TopMemoryContext);
