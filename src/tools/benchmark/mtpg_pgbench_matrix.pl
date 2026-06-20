@@ -111,6 +111,16 @@ my %workload_specs = (
 		script => 'select1_sleep_10ms.sql',
 		needs_extra_setup => 0,
 	},
+	select1_sleep_100ms_prepared => {
+		args => [ '-M', 'prepared', '-f', undef ],
+		script => 'select1_sleep_100ms.sql',
+		needs_extra_setup => 0,
+	},
+	select1_sleep_1000ms_prepared => {
+		args => [ '-M', 'prepared', '-f', undef ],
+		script => 'select1_sleep_1000ms.sql',
+		needs_extra_setup => 0,
+	},
 	select1_connect_prepared => {
 		args => [ '-C', '-M', 'prepared', '-f', undef ],
 		script => 'select1.sql',
@@ -254,6 +264,8 @@ Key options:
 Additional non-default workloads useful for pooled connection-shape profiles:
   select1_sleep_1ms_prepared
   select1_sleep_10ms_prepared
+  select1_sleep_100ms_prepared
+  select1_sleep_1000ms_prepared
   select1_connect_prepared
 
 Output:
@@ -325,6 +337,12 @@ sub write_workload_scripts
 	write_file(File::Spec->catfile($dir, 'select1_sleep_10ms.sql'),
 		"SELECT 1;\n"
 	  . "\\sleep 10 ms\n");
+	write_file(File::Spec->catfile($dir, 'select1_sleep_100ms.sql'),
+		"SELECT 1;\n"
+	  . "\\sleep 100 ms\n");
+	write_file(File::Spec->catfile($dir, 'select1_sleep_1000ms.sql'),
+		"SELECT 1;\n"
+	  . "\\sleep 1000 ms\n");
 	write_file(File::Spec->catfile($dir, 'bench_one.sql'),
 		"SELECT payload FROM bench_one WHERE id = 1;\n");
 	write_file(File::Spec->catfile($dir, 'kv_read.sql'),
