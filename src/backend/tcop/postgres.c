@@ -174,8 +174,8 @@ static pg_noinline int SocketBackendHandleEOF(void);
 static int	SocketBackendReadMessageBody(PgSession *session, StringInfo inBuf,
 										 int qtype,
 										 volatile uint32 *query_cancel_holdoff_count);
-static int	ReadCommand(PgSession *session, StringInfo inBuf,
-						PgStepBudget budget);
+static int	ReadCommand(PgSession *session, StringInfo inBuf);
+static int	ReadCommandProtocolPark(PgSession *session, StringInfo inBuf);
 static void forbidden_in_wal_sender(char firstchar);
 static bool check_log_statement(List *stmt_list);
 static int	errdetail_execute(List *raw_parsetree_list);
@@ -202,7 +202,9 @@ static long PgProtocolParkTimeoutDelayMs(PgBackend *backend,
 static void PgSessionLoopStateInit(PgSessionLoopState *state);
 static void PgSessionRecoverError(PgSession *session);
 static pg_attribute_always_inline PgStepResult PgSessionStepUnprotected(PgSession *session,
-																		PgStepBudget budget);
+																		int max_messages,
+																		bool protocol_park_enabled,
+																		bool return_logical_exits);
 static void log_disconnections(int code, Datum arg);
 static void enable_statement_timeout(void);
 static void disable_statement_timeout(void);
@@ -646,19 +648,28 @@ SocketBackendReadMessageBody(PgSession *session, StringInfo inBuf, int qtype,
  * ----------------
  */
 static int
-ReadCommand(PgSession *session, StringInfo inBuf, PgStepBudget budget)
+ReadCommand(PgSession *session, StringInfo inBuf)
 {
 	int			result;
 
 	Assert(session != NULL);
 
 	if (whereToSendOutput == DestRemote)
-	{
-		if (unlikely(budget.protocol_park_enabled))
-			result = SocketBackendProtocolPark(session, inBuf);
-		else
-			result = SocketBackend(session, inBuf);
-	}
+		result = SocketBackend(session, inBuf);
+	else
+		result = InteractiveBackend(inBuf);
+	return result;
+}
+
+static int
+ReadCommandProtocolPark(PgSession *session, StringInfo inBuf)
+{
+	int			result;
+
+	Assert(session != NULL);
+
+	if (whereToSendOutput == DestRemote)
+		result = SocketBackendProtocolPark(session, inBuf);
 	else
 		result = InteractiveBackend(inBuf);
 	return result;
@@ -4606,7 +4617,9 @@ PgSessionRecoverError(PgSession *session)
 }
 
 static pg_attribute_always_inline PgStepResult
-PgSessionStepUnprotected(PgSession *session, PgStepBudget budget)
+PgSessionStepUnprotected(PgSession *session, int max_messages,
+						 bool protocol_park_enabled,
+						 bool return_logical_exits)
 {
 	PgSessionLoopState *state;
 	MemoryContext message_context;
@@ -4614,7 +4627,7 @@ PgSessionStepUnprotected(PgSession *session, PgStepBudget budget)
 	StringInfoData input_message;
 
 	Assert(session != NULL);
-	Assert(budget.max_messages >= 0);
+	Assert(max_messages >= 0);
 	state = &session->loop_state;
 	Assert(state->step_error_boundary_active);
 	message_context = MessageContext;
@@ -4794,9 +4807,13 @@ PgSessionStepUnprotected(PgSession *session, PgStepBudget budget)
 	/*
 	 * (3) read a command (loop blocks here)
 	 */
-	firstchar = ReadCommand(session, &input_message, budget);
+	if (unlikely(protocol_park_enabled))
+		firstchar = ReadCommandProtocolPark(session, &input_message);
+	else
+		firstchar = ReadCommand(session, &input_message);
 
-	if (unlikely(firstchar == PG_READ_COMMAND_PROTOCOL_PARK))
+	if (unlikely(protocol_park_enabled &&
+				 firstchar == PG_READ_COMMAND_PROTOCOL_PARK))
 		return PG_STEP_PARK_PROTOCOL_READ;
 
 	/*
@@ -5090,7 +5107,7 @@ PgSessionStepUnprotected(PgSession *session, PgStepBudget budget)
 			if (whereToSendOutput == DestRemote)
 				whereToSendOutput = DestNone;
 
-			if (budget.return_logical_exits)
+			if (return_logical_exits)
 				return PG_STEP_DONE;
 
 			/*
@@ -5188,7 +5205,9 @@ PgSessionStep(PgSession *session, PgStepBudget budget)
 
 		for (;;)
 		{
-			result = PgSessionStepUnprotected(session, budget);
+			result = PgSessionStepUnprotected(session, budget.max_messages,
+											  budget.protocol_park_enabled,
+											  budget.return_logical_exits);
 			if (result != PG_STEP_CONTINUE)
 				break;
 
@@ -5210,7 +5229,6 @@ pg_noreturn void
 PgSessionRun(PgSession *session)
 {
 	PgSessionLoopState *state;
-	PgStepBudget budget;
 	sigjmp_buf **exception_stack_ref;
 	sigjmp_buf	local_sigjmp_buf;
 
@@ -5218,7 +5236,6 @@ PgSessionRun(PgSession *session)
 	state = &session->loop_state;
 	Assert(!state->step_error_boundary_active);
 
-	MemSet(&budget, 0, sizeof(budget));
 	exception_stack_ref = PgCurrentExceptionStackRefFast();
 	state->step_error_boundary_active = true;
 
@@ -5234,7 +5251,7 @@ PgSessionRun(PgSession *session)
 	*exception_stack_ref = &local_sigjmp_buf;
 
 	for (;;)
-		(void) PgSessionStepUnprotected(session, budget);
+		(void) PgSessionStepUnprotected(session, 0, false, false);
 }
 
 static long
