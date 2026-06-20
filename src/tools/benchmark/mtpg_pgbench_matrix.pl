@@ -543,7 +543,7 @@ sub append_config
 sub benchmark_max_files_per_process
 {
 	my ($connections) = @_;
-	my $fd_budget = $connections * 4;
+	my $fd_budget = $connections * 8;
 
 	return $fd_budget > $default_max_files_per_process ?
 	  $fd_budget : $default_max_files_per_process;
