@@ -33,6 +33,7 @@ my $lanes = 'vanilla,branch_process,branch_threaded,branch_pool';
 my $reuse = 0;
 my $restart_per_workload = 0;
 my $sample_server_resources = 0;
+my $sample_memory_detail = 0;
 my $resource_sample_interval_ms = 100;
 my $resource_baseline_samples = 3;
 my $log_protocol_park_memory = 0;
@@ -66,6 +67,17 @@ my @protocol_park_memory_summary_fields = qw(
   sizeof_execution sizeof_logical_state sizeof_runtime_state
 );
 
+my @protocol_park_context_memory_fields = qw(
+  pid backend_id generation context_index depth type name ident path
+  local_total_bytes local_free_bytes local_used_bytes local_blocks local_free_chunks
+  recursive_total_bytes recursive_free_bytes recursive_used_bytes recursive_blocks recursive_free_chunks
+);
+
+my @protocol_park_context_memory_summary_fields = qw(
+  local_total_bytes local_free_bytes local_used_bytes local_blocks local_free_chunks
+  recursive_total_bytes recursive_free_bytes recursive_used_bytes recursive_blocks recursive_free_chunks
+);
+
 GetOptions(
 	'vanilla-install=s' => \$vanilla_install,
 	'branch-install=s'  => \$branch_install,
@@ -85,6 +97,7 @@ GetOptions(
 	'reuse'             => \$reuse,
 	'restart-per-workload' => \$restart_per_workload,
 	'sample-server-resources!' => \$sample_server_resources,
+	'sample-memory-detail!' => \$sample_memory_detail,
 	'resource-sample-interval-ms=i' => \$resource_sample_interval_ms,
 	'resource-baseline-samples=i' => \$resource_baseline_samples,
 	'log-protocol-park-memory!' => \$log_protocol_park_memory,
@@ -110,6 +123,8 @@ die "--resource-sample-interval-ms must be positive\n"
 die "--resource-baseline-samples must be non-negative\n"
   if $resource_baseline_samples < 0;
 
+$sample_server_resources = 1 if $sample_memory_detail;
+
 raise_nofile_limit_for_benchmark(benchmark_max_files_per_process($max_connections));
 
 my @pool_sizes = grep { length($_) } split /,/, $pool_sizes;
@@ -121,9 +136,6 @@ for my $size (@pool_sizes)
 my @requested_workloads = grep { length($_) } split /,/, $workloads;
 my @requested_lanes = grep { length($_) } split /,/, $lanes;
 my @branch_diagnostic_config;
-
-push @branch_diagnostic_config, 'log_protocol_park_memory = on'
-  if $log_protocol_park_memory;
 
 my %workload_specs = (
 	builtin_select_simple => {
@@ -315,6 +327,55 @@ print $resource_baselines_fh
 	  max_smaps_rollup_readable max_smaps_rollup_unreadable samples)),
   "\n";
 
+my $process_rollups_path =
+  File::Spec->catfile($out_dir, 'server_process_rollups.tsv');
+open my $process_rollups_fh, '>', $process_rollups_path
+  or die "could not write $process_rollups_path: $!";
+print $process_rollups_fh
+  join("\t", qw(lane workload run sample_index process_index pid ppid
+	  comm threads rss_kb vm_rss_kb pss_kb shared_kb private_kb
+	  smaps_rollup_readable smaps_rollup_unreadable)),
+  "\n";
+
+my $memory_map_summary_path =
+  File::Spec->catfile($out_dir, 'server_memory_map_summary.tsv');
+open my $memory_map_summary_fh, '>', $memory_map_summary_path
+  or die "could not write $memory_map_summary_path: $!";
+print $memory_map_summary_fh
+  join("\t", qw(lane workload run snapshot_index sample_index category
+	  mappings size_kb rss_kb pss_kb shared_kb private_kb)),
+  "\n";
+
+my $memory_map_path_summary_path =
+  File::Spec->catfile($out_dir, 'server_memory_map_path_summary.tsv');
+open my $memory_map_path_summary_fh, '>', $memory_map_path_summary_path
+  or die "could not write $memory_map_path_summary_path: $!";
+print $memory_map_path_summary_fh
+  join("\t", qw(lane workload run snapshot_index sample_index category
+	  path mappings size_kb rss_kb pss_kb shared_kb private_kb)),
+  "\n";
+
+my $thread_stacks_path =
+  File::Spec->catfile($out_dir, 'server_thread_stacks.tsv');
+open my $thread_stacks_fh, '>', $thread_stacks_path
+  or die "could not write $thread_stacks_path: $!";
+print $thread_stacks_fh
+  join("\t", qw(lane workload run snapshot_index sample_index pid tid name
+	  state vmstk_kb stack_map_found stack_map_kb)),
+  "\n";
+
+my $memory_accounting_path =
+  File::Spec->catfile($out_dir, 'server_memory_accounting.tsv');
+open my $memory_accounting_fh, '>', $memory_accounting_path
+  or die "could not write $memory_accounting_path: $!";
+print $memory_accounting_fh
+  join("\t", qw(lane workload run snapshot_index sample_index processes
+	  threads rollup_rss_kb rollup_pss_kb rollup_shared_kb
+	  rollup_private_kb map_rss_kb map_pss_kb map_shared_kb
+	  map_private_kb rss_diff_kb pss_diff_kb shared_diff_kb
+	  private_diff_kb smaps_pids_readable smaps_pids_unreadable)),
+  "\n";
+
 my $protocol_park_memory_path =
   File::Spec->catfile($out_dir, 'protocol_park_memory.tsv');
 open my $protocol_park_memory_fh, '>', $protocol_park_memory_path
@@ -322,6 +383,15 @@ open my $protocol_park_memory_fh, '>', $protocol_park_memory_path
 print $protocol_park_memory_fh
   join("\t", 'lane', 'workload', 'run', 'sample_index',
 	@protocol_park_memory_fields),
+  "\n";
+
+my $protocol_park_context_memory_path =
+  File::Spec->catfile($out_dir, 'protocol_park_context_memory.tsv');
+open my $protocol_park_context_memory_fh, '>', $protocol_park_context_memory_path
+  or die "could not write $protocol_park_context_memory_path: $!";
+print $protocol_park_context_memory_fh
+  join("\t", 'lane', 'workload', 'run', 'sample_index',
+	@protocol_park_context_memory_fields),
   "\n";
 
 my %results;
@@ -333,8 +403,8 @@ if ($restart_per_workload)
 		{
 			run_lane($lane, [ $workload ], $script_dir, $tps_fh,
 				$samples_fh, $resources_fh, $resource_samples_fh,
-				$resource_baselines_fh, $protocol_park_memory_fh, \%results,
-				$workload);
+				$resource_baselines_fh, $protocol_park_memory_fh,
+				$protocol_park_context_memory_fh, \%results, $workload);
 		}
 	}
 }
@@ -344,8 +414,8 @@ else
 	{
 		run_lane($lane, \@requested_workloads, $script_dir, $tps_fh,
 			$samples_fh, $resources_fh, $resource_samples_fh,
-			$resource_baselines_fh, $protocol_park_memory_fh, \%results,
-			undef);
+			$resource_baselines_fh, $protocol_park_memory_fh,
+			$protocol_park_context_memory_fh, \%results, undef);
 	}
 }
 
@@ -354,7 +424,13 @@ close $samples_fh;
 close $resources_fh;
 close $resource_samples_fh;
 close $resource_baselines_fh;
+close $process_rollups_fh;
+close $memory_map_summary_fh;
+close $memory_map_path_summary_fh;
+close $thread_stacks_fh;
+close $memory_accounting_fh;
 close $protocol_park_memory_fh;
+close $protocol_park_context_memory_fh;
 
 write_ratios($out_dir, \@requested_workloads, \@lane_specs, \%results);
 write_resource_efficiency($out_dir, \@requested_workloads, \@lane_specs,
@@ -362,6 +438,9 @@ write_resource_efficiency($out_dir, \@requested_workloads, \@lane_specs,
 write_memory_footprint($out_dir, \@requested_workloads, \@lane_specs,
 	\%results);
 write_protocol_park_memory_summary($out_dir, $protocol_park_memory_path);
+write_protocol_park_context_memory_summary($out_dir,
+	$protocol_park_context_memory_path);
+write_memory_detail_summaries($out_dir);
 write_summary($out_dir, \@requested_workloads, \@lane_specs, \%results);
 
 print "wrote $tps_path\n";
@@ -369,11 +448,22 @@ print "wrote $samples_path\n";
 print "wrote $resources_path\n";
 print "wrote $resource_samples_path\n";
 print "wrote $resource_baselines_path\n";
+print "wrote $process_rollups_path\n";
+print "wrote $memory_map_summary_path\n";
+print "wrote $memory_map_path_summary_path\n";
+print "wrote $thread_stacks_path\n";
+print "wrote $memory_accounting_path\n";
 print "wrote $protocol_park_memory_path\n";
+print "wrote $protocol_park_context_memory_path\n";
 print "wrote ", File::Spec->catfile($out_dir, 'ratios.tsv'), "\n";
 print "wrote ", File::Spec->catfile($out_dir, 'resource_efficiency.tsv'), "\n";
 print "wrote ", File::Spec->catfile($out_dir, 'memory_footprint.tsv'), "\n";
 print "wrote ", File::Spec->catfile($out_dir, 'protocol_park_memory_summary.tsv'), "\n";
+print "wrote ", File::Spec->catfile($out_dir, 'protocol_park_context_memory_summary.tsv'), "\n";
+print "wrote ", File::Spec->catfile($out_dir, 'server_process_rollup_summary.tsv'), "\n";
+print "wrote ", File::Spec->catfile($out_dir, 'server_memory_map_category_summary.tsv'), "\n";
+print "wrote ", File::Spec->catfile($out_dir, 'server_memory_map_path_top.tsv'), "\n";
+print "wrote ", File::Spec->catfile($out_dir, 'server_thread_stack_summary.tsv'), "\n";
 print "wrote ", File::Spec->catfile($out_dir, 'summary.md'), "\n";
 
 sub usage
@@ -404,6 +494,10 @@ Key options:
   --restart-per-workload  restart each lane for each workload
   --sample-server-resources
                            sample server process/thread counts while measuring
+  --sample-memory-detail
+                           write per-process rollups, one detailed smaps
+                           category snapshot per run, and per-thread stack
+                           visibility; implies --sample-server-resources
   --resource-sample-interval-ms=N
                            server resource sample interval, default 100
   --resource-baseline-samples=N
@@ -432,10 +526,28 @@ Output:
                            raw per-sample process-tree memory observations
   server_resource_baselines.tsv
                            idle server resource samples before workload clients
+  server_process_rollups.tsv
+                           per-process smaps_rollup rows for sampled server
+                           process trees when --sample-memory-detail is used
+  server_memory_map_summary.tsv
+                           one detailed smaps category snapshot per run when
+                           --sample-memory-detail is used
+  server_memory_map_path_summary.tsv
+                           detailed smaps totals by category and mapped path
+  server_memory_accounting.tsv
+                           detailed smaps category totals checked against
+                           process smaps_rollup totals
+  server_thread_stacks.tsv
+                           per-thread stack visibility for detailed snapshots
   protocol_park_memory.tsv
                            parsed per-park memory-context attribution rows
+  protocol_park_context_memory.tsv
+                           bounded per-backend memory-context tree rows
+                           emitted at committed protocol-read parks
   protocol_park_memory_summary.tsv
                            median per-park memory attribution by lane/workload
+  protocol_park_context_memory_summary.tsv
+                           median per-context retained/used memory by path
   ratios.tsv              per-lane ratios against vanilla, or the first selected lane
   resource_efficiency.tsv derived TPS/thread and memory/client metrics
   memory_footprint.tsv    baseline-adjusted memory footprint estimates
@@ -566,7 +678,8 @@ sub run_lane
 {
 	my ($lane, $workloads, $script_dir, $tps_fh, $samples_fh, $resources_fh,
 		$resource_samples_fh, $resource_baselines_fh,
-		$protocol_park_memory_fh, $results, $lane_dir_suffix) = @_;
+		$protocol_park_memory_fh, $protocol_park_context_memory_fh,
+		$results, $lane_dir_suffix) = @_;
 
 	my $lane_dir_name = defined $lane_dir_suffix ?
 		"$lane->{name}_$lane_dir_suffix" : $lane->{name};
@@ -616,6 +729,25 @@ sub run_lane
 			],
 			"$lane->{name} extra setup");
 
+		if ($log_protocol_park_memory && $lane->{branch})
+		{
+			run_cmd([
+					$pg_ctl_bin, '-D', $data_dir, '-m', 'fast',
+					'-w', 'stop'
+				],
+				"$lane->{name} stop before protocol park logging");
+			$started = 0;
+			append_postmaster_config($data_dir,
+				'log_protocol_park_memory = on');
+			run_cmd([
+					$pg_ctl_bin, '-D', $data_dir, '-l', $server_log,
+					'-o', "-k $socket_dir",
+					'-w', 'start'
+				],
+				"$lane->{name} restart with protocol park logging");
+			$started = 1;
+		}
+
 		my $baseline_resources = sample_server_resource_baseline($data_dir);
 		print $resource_baselines_fh join("\t", $lane->{name},
 			defined $lane_dir_suffix ? $lane_dir_suffix : 'all',
@@ -641,7 +773,8 @@ sub run_lane
 					$sample_resources) =
 				  run_workload($lane, $workload, $script_dir, $socket_dir,
 					$port, $pgbench_bin, $data_dir, $server_log, $run_index,
-					$resource_samples_fh, $protocol_park_memory_fh);
+					$resource_samples_fh, $protocol_park_memory_fh,
+					$protocol_park_context_memory_fh);
 
 				push @samples, {
 					tps => $sample_tps,
@@ -718,6 +851,16 @@ sub append_config
 	close $fh;
 }
 
+sub append_postmaster_config
+{
+	my ($data_dir, $line) = @_;
+	my $conf = File::Spec->catfile($data_dir, 'postgresql.conf');
+
+	open my $fh, '>>', $conf or die "could not append $conf: $!";
+	print $fh "$line\n";
+	close $fh;
+}
+
 sub benchmark_max_files_per_process
 {
 	my ($connections) = @_;
@@ -771,7 +914,7 @@ sub run_workload
 {
 	my ($lane, $workload, $script_dir, $socket_dir, $port, $pgbench_bin,
 		$data_dir, $server_log, $run_index, $resource_samples_fh,
-		$protocol_park_memory_fh) = @_;
+		$protocol_park_memory_fh, $protocol_park_context_memory_fh) = @_;
 
 	my $spec = $workload_specs{$workload};
 	my @args = @{ $spec->{args} };
@@ -810,7 +953,8 @@ sub run_workload
 		"$lane->{name} $workload", $bench, "$bench.err", $resources);
 
 	parse_protocol_park_memory_log($server_log, $protocol_park_log_offset,
-		$lane->{name}, $workload, $run_index, $protocol_park_memory_fh)
+		$lane->{name}, $workload, $run_index, $protocol_park_memory_fh,
+		$protocol_park_context_memory_fh)
 	  if $log_protocol_park_memory;
 
 	my ($tps) = $output =~ /^tps = ([0-9.]+) /m;
@@ -980,15 +1124,20 @@ sub new_server_resource_sample
 	my ($data_dir, $lane, $workload, $run_index, $raw_fh) = @_;
 	my $pid = $sample_server_resources ?
 		read_postmaster_pid($data_dir) : undef;
+	my $detail_at = defined $lane ? time() + int($duration / 2) : undef;
 
 	return {
 		enabled => $sample_server_resources,
 		interval_seconds => $resource_sample_interval_ms / 1000,
 		postmaster_pid => $pid,
+		data_dir => $data_dir,
 		lane => $lane,
 		workload => $workload,
 		run_index => $run_index,
 		raw_fh => $raw_fh,
+		detail_enabled => $sample_memory_detail && defined $lane,
+		detail_at_epoch => $detail_at,
+		detail_snapshot_index => 0,
 		max_server_processes => undef,
 		max_server_threads => undef,
 		max_server_rss_kb => undef,
@@ -1055,12 +1204,18 @@ sub sample_server_resources
 	my $saw_pss = 0;
 	my $saw_shared = 0;
 	my $saw_private = 0;
+	my @process_rollups;
+	my $sample_index = $sample->{samples} + 1;
+	my $process_index = 0;
 
 	for my $pid (@pids)
 	{
-		$threads += linux_thread_count($pid);
+		my $pid_threads = linux_thread_count($pid);
+		my $process_info = linux_process_info($pid);
+		$threads += $pid_threads;
 		my $memory = linux_process_memory_kb($pid);
 		next unless defined $memory;
+		$process_index++;
 
 		if (defined $memory->{rss_kb})
 		{
@@ -1089,6 +1244,27 @@ sub sample_server_resources
 		}
 		$smaps_rollup_readable += $memory->{smaps_rollup_readable} || 0;
 		$smaps_rollup_unreadable += $memory->{smaps_rollup_unreadable} || 0;
+
+		if ($sample->{detail_enabled})
+		{
+			my $rollup = {
+				pid => $pid,
+				ppid => defined $process_info->{ppid} ? $process_info->{ppid} : 'n/a',
+				comm => defined $process_info->{comm} ? $process_info->{comm} : 'n/a',
+				threads => $pid_threads,
+				rss_kb => $memory->{rss_kb},
+				vm_rss_kb => $memory->{vm_rss_kb},
+				pss_kb => $memory->{pss_kb},
+				shared_kb => $memory->{shared_kb},
+				private_kb => $memory->{private_kb},
+				smaps_rollup_readable => $memory->{smaps_rollup_readable} || 0,
+				smaps_rollup_unreadable => $memory->{smaps_rollup_unreadable} || 0,
+			};
+
+			push @process_rollups, $rollup;
+			write_server_process_rollup($sample, $sample_index,
+				$process_index, $rollup);
+		}
 	}
 
 	update_resource_max($sample, max_server_processes => scalar @pids);
@@ -1115,6 +1291,15 @@ sub sample_server_resources
 		$saw_private ? $private_kb : undef,
 		$smaps_rollup_readable,
 		$smaps_rollup_unreadable);
+
+	if ($sample->{detail_enabled} &&
+		$sample->{detail_snapshot_index} == 0 &&
+		(!defined $sample->{detail_at_epoch} ||
+		 time() >= $sample->{detail_at_epoch}))
+	{
+		write_memory_detail_snapshot($sample, $sample_index, \@pids,
+			\@process_rollups, $threads);
+	}
 }
 
 sub write_server_resource_sample
@@ -1143,10 +1328,192 @@ sub write_server_resource_sample
 		$smaps_rollup_unreadable), "\n";
 }
 
+sub write_server_process_rollup
+{
+	my ($sample, $sample_index, $process_index, $rollup) = @_;
+
+	return unless defined $process_rollups_fh;
+	return unless defined $sample->{lane} && defined $sample->{workload};
+
+	print $process_rollups_fh join("\t",
+		$sample->{lane},
+		$sample->{workload},
+		defined $sample->{run_index} ? $sample->{run_index} : 'n/a',
+		$sample_index,
+		$process_index,
+		$rollup->{pid},
+		$rollup->{ppid},
+		$rollup->{comm},
+		$rollup->{threads},
+		defined $rollup->{rss_kb} ? $rollup->{rss_kb} : 'n/a',
+		defined $rollup->{vm_rss_kb} ? $rollup->{vm_rss_kb} : 'n/a',
+		defined $rollup->{pss_kb} ? $rollup->{pss_kb} : 'n/a',
+		defined $rollup->{shared_kb} ? $rollup->{shared_kb} : 'n/a',
+		defined $rollup->{private_kb} ? $rollup->{private_kb} : 'n/a',
+		$rollup->{smaps_rollup_readable},
+		$rollup->{smaps_rollup_unreadable}), "\n";
+}
+
+sub write_memory_detail_snapshot
+{
+	my ($sample, $sample_index, $pids, $process_rollups, $threads) = @_;
+	my %categories;
+	my %paths;
+	my %rollup_totals = (
+		rss_kb => 0,
+		pss_kb => 0,
+		shared_kb => 0,
+		private_kb => 0,
+	);
+	my $rollup_readable = 0;
+	my $rollup_unreadable = 0;
+	my $map_readable = 0;
+	my $map_unreadable = 0;
+
+	$sample->{detail_snapshot_index}++;
+	my $snapshot_index = $sample->{detail_snapshot_index};
+
+	for my $rollup (@$process_rollups)
+	{
+		for my $field (qw(rss_kb pss_kb shared_kb private_kb))
+		{
+			$rollup_totals{$field} += $rollup->{$field}
+			  if defined $rollup->{$field};
+		}
+		$rollup_readable += $rollup->{smaps_rollup_readable} || 0;
+		$rollup_unreadable += $rollup->{smaps_rollup_unreadable} || 0;
+	}
+
+	for my $pid (@$pids)
+	{
+		my $pid_smaps =
+		  linux_process_smaps_categories($pid, $sample->{data_dir});
+
+		if (!defined $pid_smaps)
+		{
+			$map_unreadable++;
+			next;
+		}
+
+		$map_readable++;
+		for my $category (keys %{ $pid_smaps->{categories} })
+		{
+			for my $field (qw(mappings size_kb rss_kb pss_kb shared_kb private_kb))
+			{
+				$categories{$category}{$field} +=
+				  $pid_smaps->{categories}{$category}{$field} || 0;
+			}
+		}
+		for my $path_key (keys %{ $pid_smaps->{paths} })
+		{
+			for my $field (qw(mappings size_kb rss_kb pss_kb shared_kb private_kb))
+			{
+				$paths{$path_key}{$field} +=
+				  $pid_smaps->{paths}{$path_key}{$field} || 0;
+			}
+			$paths{$path_key}{category} = $pid_smaps->{paths}{$path_key}{category};
+			$paths{$path_key}{path} = $pid_smaps->{paths}{$path_key}{path};
+		}
+	}
+
+	for my $category (sort keys %categories)
+	{
+		my $entry = $categories{$category};
+
+		print $memory_map_summary_fh join("\t",
+			$sample->{lane},
+			$sample->{workload},
+			$sample->{run_index},
+			$snapshot_index,
+			$sample_index,
+			$category,
+			map { metric_value($entry->{$_} || 0, 1) }
+			  qw(mappings size_kb rss_kb pss_kb shared_kb private_kb)),
+		  "\n";
+	}
+
+	for my $path_key (sort keys %paths)
+	{
+		my $entry = $paths{$path_key};
+
+		print $memory_map_path_summary_fh join("\t",
+			$sample->{lane},
+			$sample->{workload},
+			$sample->{run_index},
+			$snapshot_index,
+			$sample_index,
+			$entry->{category},
+			$entry->{path},
+			map { metric_value($entry->{$_} || 0, 1) }
+			  qw(mappings size_kb rss_kb pss_kb shared_kb private_kb)),
+		  "\n";
+	}
+
+	my %map_totals = (
+		rss_kb => category_sum(\%categories, 'rss_kb'),
+		pss_kb => category_sum(\%categories, 'pss_kb'),
+		shared_kb => category_sum(\%categories, 'shared_kb'),
+		private_kb => category_sum(\%categories, 'private_kb'),
+	);
+	my @memory_fields = qw(rss_kb pss_kb shared_kb private_kb);
+	my @rollup_values =
+	  map { metric_value($rollup_totals{$_}, 1) } @memory_fields;
+	my @map_values =
+	  map { metric_value($map_totals{$_}, 1) } @memory_fields;
+	my @diff_values =
+	  map {
+		  metric_value(number_or_zero($rollup_totals{$_}) -
+			  number_or_zero($map_totals{$_}), 1)
+	  } @memory_fields;
+
+	print $memory_accounting_fh join("\t",
+		$sample->{lane},
+		$sample->{workload},
+		$sample->{run_index},
+		$snapshot_index,
+		$sample_index,
+		scalar @$pids,
+		$threads,
+		@rollup_values,
+		@map_values,
+		@diff_values,
+		$map_readable,
+		$map_unreadable),
+	  "\n";
+
+	for my $pid (@$pids)
+	{
+		next unless linux_thread_count($pid) > 1;
+		write_thread_stack_snapshot($sample, $snapshot_index, $sample_index,
+			$pid);
+	}
+}
+
+sub category_sum
+{
+	my ($categories, $field) = @_;
+	my $sum = 0;
+
+	for my $category (keys %$categories)
+	{
+		$sum += $categories->{$category}{$field} || 0;
+	}
+	return $sum;
+}
+
+sub number_or_zero
+{
+	my ($value) = @_;
+
+	return defined $value ? $value : 0;
+}
+
 sub parse_protocol_park_memory_log
 {
-	my ($server_log, $offset, $lane, $workload, $run_index, $fh) = @_;
+	my ($server_log, $offset, $lane, $workload, $run_index, $fh,
+		$context_fh) = @_;
 	my $sample_index = 0;
+	my $context_sample_index = 0;
 
 	return unless defined $fh;
 	return unless -e $server_log;
@@ -1160,6 +1527,26 @@ sub parse_protocol_park_memory_log
 	{
 		my %fields;
 		my $payload;
+
+		if ($line =~ /protocol_park_context_memory\s+(.*)$/)
+		{
+			next unless defined $context_fh;
+			$payload = $1;
+			while ($payload =~ /([A-Za-z0-9_]+)=([^\s]+)/g)
+			{
+				$fields{$1} = $2;
+			}
+
+			$context_sample_index++;
+			print $context_fh join("\t",
+				$lane,
+				$workload,
+				$run_index,
+				$context_sample_index,
+				map { defined $fields{$_} ? $fields{$_} : 'n/a' }
+				  @protocol_park_context_memory_fields), "\n";
+			next;
+		}
 
 		next unless $line =~ /protocol_park_memory\s+(.*)$/;
 		$payload = $1;
@@ -1231,6 +1618,28 @@ sub linux_ppid
 	return undef;
 }
 
+sub linux_process_info
+{
+	my ($pid) = @_;
+	my %info;
+	my $status = "/proc/$pid/status";
+
+	open my $fh, '<', $status or return {};
+	while (defined(my $line = <$fh>))
+	{
+		if ($line =~ /^Name:\s+(.+?)\s*$/)
+		{
+			$info{comm} = $1;
+		}
+		elsif ($line =~ /^PPid:\s+(\d+)/)
+		{
+			$info{ppid} = int($1);
+		}
+	}
+	close $fh;
+	return \%info;
+}
+
 sub linux_thread_count
 {
 	my ($pid) = @_;
@@ -1240,6 +1649,230 @@ sub linux_thread_count
 	my $count = grep { /^\d+$/ } readdir $dh;
 	closedir $dh;
 	return $count;
+}
+
+sub linux_process_smaps_categories
+{
+	my ($pid, $data_dir) = @_;
+	my $smaps = "/proc/$pid/smaps";
+	my %categories;
+	my %paths;
+	my $current;
+
+	open my $fh, '<', $smaps or return undef;
+	while (defined(my $line = <$fh>))
+	{
+		if ($line =~ /^([0-9a-f]+)-([0-9a-f]+)\s+(\S+)\s+([0-9a-f]+)\s+(\S+)\s+(\d+)\s*(.*)$/)
+		{
+			finish_smaps_mapping(\%categories, \%paths, $current,
+				$data_dir)
+			  if defined $current;
+			$current = {
+				start => hex_address($1),
+				end => hex_address($2),
+				perms => $3,
+				path => $7,
+				rss_kb => 0,
+				pss_kb => 0,
+				shared_kb => 0,
+				private_kb => 0,
+			};
+			$current->{size_kb} =
+			  ($current->{end} - $current->{start}) / 1024;
+			$current->{path} =~ s/^\s+|\s+$//g;
+			next;
+		}
+
+		next unless defined $current;
+		if ($line =~ /^Rss:\s+(\d+)\s+kB/)
+		{
+			$current->{rss_kb} = int($1);
+		}
+		elsif ($line =~ /^Pss:\s+(\d+)\s+kB/)
+		{
+			$current->{pss_kb} = int($1);
+		}
+		elsif ($line =~ /^Shared_(?:Clean|Dirty|Hugetlb):\s+(\d+)\s+kB/)
+		{
+			$current->{shared_kb} += int($1);
+		}
+		elsif ($line =~ /^Private_(?:Clean|Dirty|Hugetlb):\s+(\d+)\s+kB/)
+		{
+			$current->{private_kb} += int($1);
+		}
+	}
+	finish_smaps_mapping(\%categories, \%paths, $current, $data_dir)
+	  if defined $current;
+	close $fh;
+
+	return {
+		categories => \%categories,
+		paths => \%paths,
+	};
+}
+
+sub finish_smaps_mapping
+{
+	my ($categories, $paths, $mapping, $data_dir) = @_;
+
+	return unless defined $mapping;
+
+	my $category =
+	  linux_smaps_mapping_category($mapping->{path}, $mapping->{perms},
+		$mapping->{size_kb}, $data_dir);
+	my $path = smaps_path_label($mapping->{path});
+	my $entry = $categories->{$category} ||= {
+		mappings => 0,
+		size_kb => 0,
+		rss_kb => 0,
+		pss_kb => 0,
+		shared_kb => 0,
+		private_kb => 0,
+	};
+	my $path_key = "$category\t$path";
+	my $path_entry = $paths->{$path_key} ||= {
+		category => $category,
+		path => $path,
+		mappings => 0,
+		size_kb => 0,
+		rss_kb => 0,
+		pss_kb => 0,
+		shared_kb => 0,
+		private_kb => 0,
+	};
+
+	$entry->{mappings}++;
+	$path_entry->{mappings}++;
+	for my $field (qw(size_kb rss_kb pss_kb shared_kb private_kb))
+	{
+		$entry->{$field} += $mapping->{$field} || 0;
+		$path_entry->{$field} += $mapping->{$field} || 0;
+	}
+}
+
+sub smaps_path_label
+{
+	my ($path) = @_;
+
+	$path = '[anonymous]' unless defined $path && length $path;
+	$path =~ s/[\t\r\n]+/ /g;
+	return $path;
+}
+
+sub linux_smaps_mapping_category
+{
+	my ($path, $perms, $size_kb, $data_dir) = @_;
+
+	$path = '' unless defined $path;
+	$perms = '' unless defined $perms;
+
+	return 'heap' if $path eq '[heap]';
+	return 'labeled_stack' if $path =~ /^\[stack(?::\d+)?\]$/;
+	return 'vvar_vdso_vsyscall' if $path =~ /^\[(?:vvar|vdso|vsyscall)\]$/;
+	return 'dev_zero_deleted' if $path =~ m{(?:^|/)dev/zero\s+\(deleted\)$};
+	return 'shared_memory'
+	  if $path =~ /^\[anon_shmem:/ ||
+		 $path =~ m{/(?:dev/)?shm/} ||
+		 $path =~ /SYSV/;
+	return 'postgres_binary' if $path =~ m{/bin/postgres(?:\s|\z)};
+	return 'data_directory_file'
+	  if defined $data_dir && length($data_dir) && index($path, $data_dir) == 0;
+	return 'thread_stack_candidate'
+	  if $path eq '' && $perms =~ /^rw/ && $size_kb >= 7000 &&
+		 $size_kb <= 9000;
+	return 'anonymous_rw' if $path eq '' && $perms =~ /^rw/;
+	return 'anonymous_guard' if $path eq '' && $perms =~ /^---/;
+	return 'anonymous_exec' if $path eq '' && $perms =~ /x/;
+	return 'anonymous_other' if $path eq '';
+	return 'deleted_file' if $path =~ /\(deleted\)$/;
+	return 'shared_library'
+	  if $path =~ /\.so(?:[.\d]*)?(?:\s|\z)/ ||
+		 $path =~ m{/(?:lib|lib64|usr/lib|usr/lib64)/};
+	return 'locale_or_timezone' if $path =~ m{/locale/|/timezonesets/};
+	return 'other_file';
+}
+
+sub write_thread_stack_snapshot
+{
+	my ($sample, $snapshot_index, $sample_index, $pid) = @_;
+	my $task_dir = "/proc/$pid/task";
+
+	opendir my $dh, $task_dir or return;
+	my @tids = sort { $a <=> $b } grep { /^\d+$/ } readdir $dh;
+	closedir $dh;
+
+	for my $tid (@tids)
+	{
+		my $info = linux_thread_status_info($pid, $tid);
+		my $stack_map_kb = linux_thread_stack_map_kb($pid, $tid);
+
+		print $thread_stacks_fh join("\t",
+			$sample->{lane},
+			$sample->{workload},
+			$sample->{run_index},
+			$snapshot_index,
+			$sample_index,
+			$pid,
+			$tid,
+			defined $info->{name} ? $info->{name} : 'n/a',
+			defined $info->{state} ? $info->{state} : 'n/a',
+			defined $info->{vmstk_kb} ? $info->{vmstk_kb} : 'n/a',
+			defined $stack_map_kb ? 1 : 0,
+			defined $stack_map_kb ? $stack_map_kb : 'n/a'),
+		  "\n";
+	}
+}
+
+sub linux_thread_status_info
+{
+	my ($pid, $tid) = @_;
+	my %info;
+	my $status = "/proc/$pid/task/$tid/status";
+
+	open my $fh, '<', $status or return {};
+	while (defined(my $line = <$fh>))
+	{
+		if ($line =~ /^Name:\s+(.+?)\s*$/)
+		{
+			$info{name} = $1;
+		}
+		elsif ($line =~ /^State:\s+(.+?)\s*$/)
+		{
+			$info{state} = $1;
+		}
+		elsif ($line =~ /^VmStk:\s+(\d+)\s+kB/)
+		{
+			$info{vmstk_kb} = int($1);
+		}
+	}
+	close $fh;
+	return \%info;
+}
+
+sub linux_thread_stack_map_kb
+{
+	my ($pid, $tid) = @_;
+	my $maps = "/proc/$pid/task/$tid/maps";
+
+	open my $fh, '<', $maps or return undef;
+	while (defined(my $line = <$fh>))
+	{
+		if ($line =~ /^([0-9a-f]+)-([0-9a-f]+)\s+\S+\s+\S+\s+\S+\s+\d+\s+\[stack(?::\d+)?\]\s*$/)
+		{
+			close $fh;
+			return (hex_address($2) - hex_address($1)) / 1024;
+		}
+	}
+	close $fh;
+	return undef;
+}
+
+sub hex_address
+{
+	my ($value) = @_;
+
+	no warnings 'portable';
+	return hex($value);
 }
 
 sub linux_process_memory_kb
@@ -1633,6 +2266,222 @@ sub append_protocol_park_memory_summary
 	}
 }
 
+sub append_protocol_park_context_memory_summary
+{
+	my ($fh, $dir) = @_;
+	my $path = File::Spec->catfile($dir,
+		'protocol_park_context_memory_summary.tsv');
+	my ($header, $rows) = read_tsv_rows($path);
+	my %emitted;
+
+	return unless @$rows;
+
+	print $fh "\n## Protocol Park Context Attribution\n\n";
+	print $fh "| Workload | Lane | Context path | Samples | Local total kB | Local used kB | Local free kB | Recursive total kB | Recursive used kB |\n";
+	print $fh "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |\n";
+	for my $row (@$rows)
+	{
+		my $lane = tsv_row_value($row, $header, 'lane');
+		my $workload = tsv_row_value($row, $header, 'workload');
+		my $key = "$lane\t$workload";
+
+		$emitted{$key} ||= 0;
+		next if $emitted{$key} >= 12;
+		$emitted{$key}++;
+
+		print $fh "| `$workload` | `$lane` | `",
+		  tsv_row_value($row, $header, 'path'), "` | ",
+		  tsv_row_value($row, $header, 'context_samples'), " | ",
+		  tsv_row_value($row, $header, 'local_total_bytes_median_kb'), " | ",
+		  tsv_row_value($row, $header, 'local_used_bytes_median_kb'), " | ",
+		  tsv_row_value($row, $header, 'local_free_bytes_median_kb'), " | ",
+		  tsv_row_value($row, $header, 'recursive_total_bytes_median_kb'), " | ",
+		  tsv_row_value($row, $header, 'recursive_used_bytes_median_kb'), " |\n";
+	}
+}
+
+sub append_memory_detail_summary
+{
+	my ($fh, $dir) = @_;
+
+	append_process_rollup_summary($fh, $dir);
+	append_memory_accounting_summary($fh, $dir);
+	append_memory_map_category_summary($fh, $dir);
+	append_memory_map_path_top($fh, $dir);
+	append_thread_stack_summary($fh, $dir);
+}
+
+sub append_process_rollup_summary
+{
+	my ($fh, $dir) = @_;
+	my $path = File::Spec->catfile($dir, 'server_process_rollup_summary.tsv');
+	my ($header, $rows) = read_tsv_rows($path);
+
+	return unless @$rows;
+
+	print $fh "\n## Process Rollup Detail\n\n";
+	print $fh "| Workload | Lane | Processes | Threads | Total PSS kB | Total private kB | Median process PSS kB | Max process PSS kB | Median process private kB | Max process private kB |\n";
+	print $fh "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n";
+	for my $row (@$rows)
+	{
+		print $fh "| `", tsv_row_value($row, $header, 'workload'), "` | `",
+		  tsv_row_value($row, $header, 'lane'), "` | ",
+		  tsv_row_value($row, $header, 'processes'), " | ",
+		  tsv_row_value($row, $header, 'threads'), " | ",
+		  tsv_row_value($row, $header, 'total_pss_kb'), " | ",
+		  tsv_row_value($row, $header, 'total_private_kb'), " | ",
+		  tsv_row_value($row, $header, 'median_process_pss_kb'), " | ",
+		  tsv_row_value($row, $header, 'max_process_pss_kb'), " | ",
+		  tsv_row_value($row, $header, 'median_process_private_kb'), " | ",
+		  tsv_row_value($row, $header, 'max_process_private_kb'), " |\n";
+	}
+}
+
+sub append_memory_accounting_summary
+{
+	my ($fh, $dir) = @_;
+	my $path = File::Spec->catfile($dir, 'server_memory_accounting.tsv');
+	my ($header, $rows) = read_tsv_rows($path);
+
+	return unless @$rows;
+
+	print $fh "\n## Memory Accounting Check\n\n";
+	print $fh "| Workload | Lane | Processes | Threads | Rollup PSS kB | Map PSS kB | PSS diff kB | Rollup private kB | Map private kB | Private diff kB | smaps pids read | smaps pids missed |\n";
+	print $fh "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n";
+	for my $row (@$rows)
+	{
+		print $fh "| `", tsv_row_value($row, $header, 'workload'), "` | `",
+		  tsv_row_value($row, $header, 'lane'), "` | ",
+		  tsv_row_value($row, $header, 'processes'), " | ",
+		  tsv_row_value($row, $header, 'threads'), " | ",
+		  tsv_row_value($row, $header, 'rollup_pss_kb'), " | ",
+		  tsv_row_value($row, $header, 'map_pss_kb'), " | ",
+		  tsv_row_value($row, $header, 'pss_diff_kb'), " | ",
+		  tsv_row_value($row, $header, 'rollup_private_kb'), " | ",
+		  tsv_row_value($row, $header, 'map_private_kb'), " | ",
+		  tsv_row_value($row, $header, 'private_diff_kb'), " | ",
+		  tsv_row_value($row, $header, 'smaps_pids_readable'), " | ",
+		  tsv_row_value($row, $header, 'smaps_pids_unreadable'), " |\n";
+	}
+}
+
+sub append_memory_map_category_summary
+{
+	my ($fh, $dir) = @_;
+	my $path =
+	  File::Spec->catfile($dir, 'server_memory_map_category_summary.tsv');
+	my ($header, $rows) = read_tsv_rows($path);
+	my %emitted;
+
+	return unless @$rows;
+
+	print $fh "\n## Memory Map Categories\n\n";
+	print $fh "| Workload | Lane | Category | Mappings | PSS kB | Private kB | PSS share | Private share |\n";
+	print $fh "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |\n";
+	for my $row (@$rows)
+	{
+		my $lane = tsv_row_value($row, $header, 'lane');
+		my $workload = tsv_row_value($row, $header, 'workload');
+		my $key = "$lane\t$workload";
+
+		$emitted{$key} ||= 0;
+		next if $emitted{$key} >= 6;
+		$emitted{$key}++;
+
+		print $fh "| `$workload` | `$lane` | `",
+		  tsv_row_value($row, $header, 'category'), "` | ",
+		  tsv_row_value($row, $header, 'mappings'), " | ",
+		  tsv_row_value($row, $header, 'pss_kb'), " | ",
+		  tsv_row_value($row, $header, 'private_kb'), " | ",
+		  tsv_row_value($row, $header, 'pss_pct'), " | ",
+		  tsv_row_value($row, $header, 'private_pct'), " |\n";
+	}
+}
+
+sub append_memory_map_path_top
+{
+	my ($fh, $dir) = @_;
+	my $path = File::Spec->catfile($dir, 'server_memory_map_path_top.tsv');
+	my ($header, $rows) = read_tsv_rows($path);
+
+	return unless @$rows;
+
+	print $fh "\n## Memory Map Top Paths\n\n";
+	print $fh "| Workload | Lane | Category | Path | Mappings | PSS kB | Private kB |\n";
+	print $fh "| --- | --- | --- | --- | ---: | ---: | ---: |\n";
+	for my $row (@$rows)
+	{
+		print $fh "| `", tsv_row_value($row, $header, 'workload'), "` | `",
+		  tsv_row_value($row, $header, 'lane'), "` | `",
+		  tsv_row_value($row, $header, 'category'), "` | `",
+		  tsv_row_value($row, $header, 'path'), "` | ",
+		  tsv_row_value($row, $header, 'mappings'), " | ",
+		  tsv_row_value($row, $header, 'pss_kb'), " | ",
+		  tsv_row_value($row, $header, 'private_kb'), " |\n";
+	}
+}
+
+sub append_thread_stack_summary
+{
+	my ($fh, $dir) = @_;
+	my $path = File::Spec->catfile($dir, 'server_thread_stack_summary.tsv');
+	my ($header, $rows) = read_tsv_rows($path);
+
+	return unless @$rows;
+
+	print $fh "\n## Thread Stack Visibility\n\n";
+	print $fh "| Workload | Lane | Threads | Stack maps found | Total VmStk kB | Median VmStk kB | Max VmStk kB | Total stack map kB | Median stack map kB |\n";
+	print $fh "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n";
+	for my $row (@$rows)
+	{
+		print $fh "| `", tsv_row_value($row, $header, 'workload'), "` | `",
+		  tsv_row_value($row, $header, 'lane'), "` | ",
+		  tsv_row_value($row, $header, 'threads'), " | ",
+		  tsv_row_value($row, $header, 'stack_map_found'), " | ",
+		  tsv_row_value($row, $header, 'total_vmstk_kb'), " | ",
+		  tsv_row_value($row, $header, 'median_vmstk_kb'), " | ",
+		  tsv_row_value($row, $header, 'max_vmstk_kb'), " | ",
+		  tsv_row_value($row, $header, 'total_stack_map_kb'), " | ",
+		  tsv_row_value($row, $header, 'median_stack_map_kb'), " |\n";
+	}
+}
+
+sub read_tsv_rows
+{
+	my ($path) = @_;
+	my %field_index;
+	my @rows;
+
+	return (\%field_index, \@rows) unless -e $path;
+	open my $fh, '<', $path or return (\%field_index, \@rows);
+	my $header = <$fh>;
+	chomp $header if defined $header;
+	my @header = defined $header ? split /\t/, $header : ();
+	for my $i (0 .. $#header)
+	{
+		$field_index{$header[$i]} = $i;
+	}
+	while (defined(my $line = <$fh>))
+	{
+		chomp $line;
+		next if $line eq '';
+		push @rows, [ split /\t/, $line, -1 ];
+	}
+	close $fh;
+	return (\%field_index, \@rows);
+}
+
+sub tsv_row_value
+{
+	my ($row, $field_index, $name) = @_;
+
+	return 'n/a' unless exists $field_index->{$name};
+	return defined $row->[$field_index->{$name}] &&
+	  $row->[$field_index->{$name}] ne ''
+	  ? $row->[$field_index->{$name}]
+	  : 'n/a';
+}
+
 sub protocol_summary_value
 {
 	my ($row, $field_index, $name) = @_;
@@ -1709,6 +2558,547 @@ sub write_protocol_park_memory_summary
 	}
 
 	close $fh;
+}
+
+sub write_protocol_park_context_memory_summary
+{
+	my ($dir, $raw_path) = @_;
+	my $path =
+	  File::Spec->catfile($dir, 'protocol_park_context_memory_summary.tsv');
+	my %field_index;
+	my %groups;
+
+	open my $raw_fh, '<', $raw_path or die "could not read $raw_path: $!";
+	my $header = <$raw_fh>;
+	chomp $header if defined $header;
+	my @header = defined $header ? split /\t/, $header : ();
+	for my $i (0 .. $#header)
+	{
+		$field_index{$header[$i]} = $i;
+	}
+
+	while (defined(my $line = <$raw_fh>))
+	{
+		chomp $line;
+		next if $line eq '';
+		my @cols = split /\t/, $line, -1;
+		my $lane = $cols[$field_index{lane}];
+		my $workload = $cols[$field_index{workload}];
+		my $path_value = $cols[$field_index{path}];
+		my $type = $cols[$field_index{type}];
+		my $name = $cols[$field_index{name}];
+		my $depth = $cols[$field_index{depth}];
+		my $key = join "\t", $lane, $workload, $path_value, $type, $name,
+		  $depth;
+
+		$groups{$key}{lane} = $lane;
+		$groups{$key}{workload} = $workload;
+		$groups{$key}{path} = $path_value;
+		$groups{$key}{type} = $type;
+		$groups{$key}{name} = $name;
+		$groups{$key}{depth} = $depth;
+		$groups{$key}{count}++;
+		for my $field (@protocol_park_context_memory_summary_fields)
+		{
+			next unless exists $field_index{$field};
+			my $value = $cols[$field_index{$field}];
+
+			next unless defined $value && $value =~ /^-?\d+(?:\.\d+)?$/;
+			push @{ $groups{$key}{values}{$field} }, $value + 0;
+		}
+	}
+	close $raw_fh;
+
+	open my $fh, '>', $path or die "could not write $path: $!";
+	print $fh join("\t",
+		'workload',
+		'lane',
+		'path',
+		'type',
+		'name',
+		'depth',
+		'context_samples',
+		map { "${_}_median_kb" }
+		  @protocol_park_context_memory_summary_fields),
+	  "\n";
+
+	my @groups =
+	  sort {
+		  protocol_context_summary_sort_value($groups{$b}, 'local_total_bytes') <=>
+			protocol_context_summary_sort_value($groups{$a}, 'local_total_bytes') ||
+		  protocol_context_summary_sort_value($groups{$b}, 'local_used_bytes') <=>
+			protocol_context_summary_sort_value($groups{$a}, 'local_used_bytes') ||
+		  $groups{$a}{path} cmp $groups{$b}{path}
+	  } keys %groups;
+
+	for my $key (@groups)
+	{
+		my $group = $groups{$key};
+
+		print $fh join("\t",
+			$group->{workload},
+			$group->{lane},
+			$group->{path},
+			$group->{type},
+			$group->{name},
+			$group->{depth},
+			$group->{count},
+			map {
+				my $values = $group->{values}{$_};
+				defined $values && @$values
+				  ? metric_value(median(@$values) / 1024, 2)
+				  : 'n/a'
+			} @protocol_park_context_memory_summary_fields),
+		  "\n";
+	}
+
+	close $fh;
+}
+
+sub protocol_context_summary_sort_value
+{
+	my ($group, $field) = @_;
+	my $values = $group->{values}{$field};
+
+	return 0 unless defined $values && @$values;
+	return median(@$values);
+}
+
+sub write_memory_detail_summaries
+{
+	my ($dir) = @_;
+
+	write_process_rollup_summary($dir);
+	write_memory_map_category_summary($dir);
+	write_memory_map_path_top($dir);
+	write_thread_stack_summary($dir);
+}
+
+sub write_process_rollup_summary
+{
+	my ($dir) = @_;
+	my $raw_path = File::Spec->catfile($dir, 'server_process_rollups.tsv');
+	my $summary_path =
+	  File::Spec->catfile($dir, 'server_process_rollup_summary.tsv');
+	my %field_index;
+	my %samples;
+
+	open my $raw_fh, '<', $raw_path or die "could not read $raw_path: $!";
+	my $header = <$raw_fh>;
+	chomp $header if defined $header;
+	my @header = defined $header ? split /\t/, $header : ();
+	for my $i (0 .. $#header)
+	{
+		$field_index{$header[$i]} = $i;
+	}
+
+	while (defined(my $line = <$raw_fh>))
+	{
+		chomp $line;
+		next if $line eq '';
+		my @cols = split /\t/, $line, -1;
+		my $lane = $cols[$field_index{lane}];
+		my $workload = $cols[$field_index{workload}];
+		my $run = $cols[$field_index{run}];
+		my $sample_index = $cols[$field_index{sample_index}];
+		my $key = join "\t", $lane, $workload, $run, $sample_index;
+		my $sample = $samples{$key} ||= {
+			lane => $lane,
+			workload => $workload,
+			run => $run,
+			sample_index => $sample_index,
+			processes => 0,
+			threads => 0,
+			rss_kb => 0,
+			pss_kb => 0,
+			shared_kb => 0,
+			private_kb => 0,
+			pss_values => [],
+			private_values => [],
+		};
+		my $threads = tsv_number(\@cols, \%field_index, 'threads');
+		my $rss = tsv_number(\@cols, \%field_index, 'rss_kb');
+		my $pss = tsv_number(\@cols, \%field_index, 'pss_kb');
+		my $shared = tsv_number(\@cols, \%field_index, 'shared_kb');
+		my $private = tsv_number(\@cols, \%field_index, 'private_kb');
+
+		$sample->{processes}++;
+		$sample->{threads} += $threads if defined $threads;
+		$sample->{rss_kb} += $rss if defined $rss;
+		$sample->{pss_kb} += $pss if defined $pss;
+		$sample->{shared_kb} += $shared if defined $shared;
+		$sample->{private_kb} += $private if defined $private;
+		push @{ $sample->{pss_values} }, $pss if defined $pss;
+		push @{ $sample->{private_values} }, $private if defined $private;
+	}
+	close $raw_fh;
+
+	my %best;
+	for my $sample (values %samples)
+	{
+		my $key = join "\t", $sample->{lane}, $sample->{workload};
+		if (!defined $best{$key} ||
+			$sample->{pss_kb} > $best{$key}{pss_kb})
+		{
+			$best{$key} = $sample;
+		}
+	}
+
+	open my $fh, '>', $summary_path
+	  or die "could not write $summary_path: $!";
+	print $fh join("\t", qw(workload lane run sample_index processes threads
+		  total_rss_kb total_pss_kb total_shared_kb total_private_kb
+		  median_process_pss_kb max_process_pss_kb
+		  median_process_private_kb max_process_private_kb)),
+	  "\n";
+	for my $key (sort keys %best)
+	{
+		my $sample = $best{$key};
+		my @pss_values = @{ $sample->{pss_values} };
+		my @private_values = @{ $sample->{private_values} };
+		my @total_values =
+		  map { metric_value($sample->{$_}, 1) }
+		  qw(rss_kb pss_kb shared_kb private_kb);
+
+		print $fh join("\t",
+			$sample->{workload},
+			$sample->{lane},
+			$sample->{run},
+			$sample->{sample_index},
+			$sample->{processes},
+			$sample->{threads},
+			@total_values,
+			@pss_values ? metric_value(median(@pss_values), 1) : 'n/a',
+			@pss_values ? metric_value(max_value(@pss_values), 1) : 'n/a',
+			@private_values ? metric_value(median(@private_values), 1) : 'n/a',
+			@private_values ? metric_value(max_value(@private_values), 1) : 'n/a'),
+		  "\n";
+	}
+	close $fh;
+}
+
+sub write_memory_map_category_summary
+{
+	my ($dir) = @_;
+	my $raw_path = File::Spec->catfile($dir, 'server_memory_map_summary.tsv');
+	my $summary_path =
+	  File::Spec->catfile($dir, 'server_memory_map_category_summary.tsv');
+	my %field_index;
+	my %snapshots;
+
+	open my $raw_fh, '<', $raw_path or die "could not read $raw_path: $!";
+	my $header = <$raw_fh>;
+	chomp $header if defined $header;
+	my @header = defined $header ? split /\t/, $header : ();
+	for my $i (0 .. $#header)
+	{
+		$field_index{$header[$i]} = $i;
+	}
+
+	while (defined(my $line = <$raw_fh>))
+	{
+		chomp $line;
+		next if $line eq '';
+		my @cols = split /\t/, $line, -1;
+		my $lane = $cols[$field_index{lane}];
+		my $workload = $cols[$field_index{workload}];
+		my $run = $cols[$field_index{run}];
+		my $snapshot_index = $cols[$field_index{snapshot_index}];
+		my $key = join "\t", $lane, $workload, $run, $snapshot_index;
+		my $snapshot = $snapshots{$key} ||= {
+			lane => $lane,
+			workload => $workload,
+			run => $run,
+			snapshot_index => $snapshot_index,
+			total_pss_kb => 0,
+			total_private_kb => 0,
+			rows => [],
+		};
+		my $row = {
+			category => $cols[$field_index{category}],
+			mappings => tsv_number(\@cols, \%field_index, 'mappings') || 0,
+			size_kb => tsv_number(\@cols, \%field_index, 'size_kb') || 0,
+			rss_kb => tsv_number(\@cols, \%field_index, 'rss_kb') || 0,
+			pss_kb => tsv_number(\@cols, \%field_index, 'pss_kb') || 0,
+			shared_kb => tsv_number(\@cols, \%field_index, 'shared_kb') || 0,
+			private_kb => tsv_number(\@cols, \%field_index, 'private_kb') || 0,
+		};
+
+		$snapshot->{total_pss_kb} += $row->{pss_kb};
+		$snapshot->{total_private_kb} += $row->{private_kb};
+		push @{ $snapshot->{rows} }, $row;
+	}
+	close $raw_fh;
+
+	my %best;
+	for my $snapshot (values %snapshots)
+	{
+		my $key = join "\t", $snapshot->{lane}, $snapshot->{workload};
+		if (!defined $best{$key} ||
+			$snapshot->{total_pss_kb} > $best{$key}{total_pss_kb})
+		{
+			$best{$key} = $snapshot;
+		}
+	}
+
+	open my $fh, '>', $summary_path
+	  or die "could not write $summary_path: $!";
+	print $fh join("\t", qw(workload lane run snapshot_index category
+		  mappings size_kb rss_kb pss_kb shared_kb private_kb pss_pct
+		  private_pct)),
+	  "\n";
+	for my $key (sort keys %best)
+	{
+		my $snapshot = $best{$key};
+		my @rows =
+		  sort { $b->{private_kb} <=> $a->{private_kb} ||
+				 $b->{pss_kb} <=> $a->{pss_kb} }
+		  @{ $snapshot->{rows} };
+
+		for my $row (@rows)
+		{
+			print $fh join("\t",
+				$snapshot->{workload},
+				$snapshot->{lane},
+				$snapshot->{run},
+				$snapshot->{snapshot_index},
+				$row->{category},
+				metric_value($row->{mappings}, 1),
+				metric_value($row->{size_kb}, 1),
+				metric_value($row->{rss_kb}, 1),
+				metric_value($row->{pss_kb}, 1),
+				metric_value($row->{shared_kb}, 1),
+				metric_value($row->{private_kb}, 1),
+				metric_ratio($row->{pss_kb}, $snapshot->{total_pss_kb}, 3),
+				metric_ratio($row->{private_kb},
+					$snapshot->{total_private_kb}, 3)),
+			  "\n";
+		}
+	}
+	close $fh;
+}
+
+sub write_memory_map_path_top
+{
+	my ($dir) = @_;
+	my $raw_path = File::Spec->catfile($dir, 'server_memory_map_path_summary.tsv');
+	my $top_path = File::Spec->catfile($dir, 'server_memory_map_path_top.tsv');
+	my %field_index;
+	my %snapshots;
+
+	open my $raw_fh, '<', $raw_path or die "could not read $raw_path: $!";
+	my $header = <$raw_fh>;
+	chomp $header if defined $header;
+	my @header = defined $header ? split /\t/, $header : ();
+	for my $i (0 .. $#header)
+	{
+		$field_index{$header[$i]} = $i;
+	}
+
+	while (defined(my $line = <$raw_fh>))
+	{
+		chomp $line;
+		next if $line eq '';
+		my @cols = split /\t/, $line, -1;
+		my $lane = $cols[$field_index{lane}];
+		my $workload = $cols[$field_index{workload}];
+		my $run = $cols[$field_index{run}];
+		my $snapshot_index = $cols[$field_index{snapshot_index}];
+		my $key = join "\t", $lane, $workload, $run, $snapshot_index;
+		my $snapshot = $snapshots{$key} ||= {
+			lane => $lane,
+			workload => $workload,
+			run => $run,
+			snapshot_index => $snapshot_index,
+			total_private_kb => 0,
+			rows => [],
+		};
+		my $row = {
+			category => $cols[$field_index{category}],
+			path => $cols[$field_index{path}],
+			mappings => tsv_number(\@cols, \%field_index, 'mappings') || 0,
+			size_kb => tsv_number(\@cols, \%field_index, 'size_kb') || 0,
+			rss_kb => tsv_number(\@cols, \%field_index, 'rss_kb') || 0,
+			pss_kb => tsv_number(\@cols, \%field_index, 'pss_kb') || 0,
+			shared_kb => tsv_number(\@cols, \%field_index, 'shared_kb') || 0,
+			private_kb => tsv_number(\@cols, \%field_index, 'private_kb') || 0,
+		};
+
+		$snapshot->{total_private_kb} += $row->{private_kb};
+		push @{ $snapshot->{rows} }, $row;
+	}
+	close $raw_fh;
+
+	my %best;
+	for my $snapshot (values %snapshots)
+	{
+		my $key = join "\t", $snapshot->{lane}, $snapshot->{workload};
+		if (!defined $best{$key} ||
+			$snapshot->{total_private_kb} > $best{$key}{total_private_kb})
+		{
+			$best{$key} = $snapshot;
+		}
+	}
+
+	open my $fh, '>', $top_path or die "could not write $top_path: $!";
+	print $fh join("\t", qw(workload lane run snapshot_index category path
+		  mappings size_kb rss_kb pss_kb shared_kb private_kb)),
+	  "\n";
+	for my $key (sort keys %best)
+	{
+		my $snapshot = $best{$key};
+		my @rows =
+		  sort { $b->{private_kb} <=> $a->{private_kb} ||
+				 $b->{pss_kb} <=> $a->{pss_kb} }
+		  @{ $snapshot->{rows} };
+		my $limit = @rows < 8 ? scalar @rows : 8;
+
+		for my $i (0 .. $limit - 1)
+		{
+			my $row = $rows[$i];
+
+			print $fh join("\t",
+				$snapshot->{workload},
+				$snapshot->{lane},
+				$snapshot->{run},
+				$snapshot->{snapshot_index},
+				$row->{category},
+				$row->{path},
+				metric_value($row->{mappings}, 1),
+				metric_value($row->{size_kb}, 1),
+				metric_value($row->{rss_kb}, 1),
+				metric_value($row->{pss_kb}, 1),
+				metric_value($row->{shared_kb}, 1),
+				metric_value($row->{private_kb}, 1)),
+			  "\n";
+		}
+	}
+	close $fh;
+}
+
+sub write_thread_stack_summary
+{
+	my ($dir) = @_;
+	my $raw_path = File::Spec->catfile($dir, 'server_thread_stacks.tsv');
+	my $summary_path =
+	  File::Spec->catfile($dir, 'server_thread_stack_summary.tsv');
+	my %field_index;
+	my %snapshots;
+
+	open my $raw_fh, '<', $raw_path or die "could not read $raw_path: $!";
+	my $header = <$raw_fh>;
+	chomp $header if defined $header;
+	my @header = defined $header ? split /\t/, $header : ();
+	for my $i (0 .. $#header)
+	{
+		$field_index{$header[$i]} = $i;
+	}
+
+	while (defined(my $line = <$raw_fh>))
+	{
+		chomp $line;
+		next if $line eq '';
+		my @cols = split /\t/, $line, -1;
+		my $lane = $cols[$field_index{lane}];
+		my $workload = $cols[$field_index{workload}];
+		my $run = $cols[$field_index{run}];
+		my $snapshot_index = $cols[$field_index{snapshot_index}];
+		my $key = join "\t", $lane, $workload, $run, $snapshot_index;
+		my $snapshot = $snapshots{$key} ||= {
+			lane => $lane,
+			workload => $workload,
+			run => $run,
+			snapshot_index => $snapshot_index,
+			threads => 0,
+			stack_map_found => 0,
+			vmstk_values => [],
+			stack_map_values => [],
+		};
+		my $vmstk = tsv_number(\@cols, \%field_index, 'vmstk_kb');
+		my $stack_map = tsv_number(\@cols, \%field_index, 'stack_map_kb');
+		my $found = tsv_number(\@cols, \%field_index, 'stack_map_found');
+
+		$snapshot->{threads}++;
+		$snapshot->{stack_map_found}++ if defined $found && $found > 0;
+		push @{ $snapshot->{vmstk_values} }, $vmstk if defined $vmstk;
+		push @{ $snapshot->{stack_map_values} }, $stack_map
+		  if defined $stack_map;
+	}
+	close $raw_fh;
+
+	my %best;
+	for my $snapshot (values %snapshots)
+	{
+		my $key = join "\t", $snapshot->{lane}, $snapshot->{workload};
+		if (!defined $best{$key} ||
+			$snapshot->{threads} > $best{$key}{threads})
+		{
+			$best{$key} = $snapshot;
+		}
+	}
+
+	open my $fh, '>', $summary_path
+	  or die "could not write $summary_path: $!";
+	print $fh join("\t", qw(workload lane run snapshot_index threads
+		  stack_map_found total_vmstk_kb median_vmstk_kb max_vmstk_kb
+		  total_stack_map_kb median_stack_map_kb max_stack_map_kb)),
+	  "\n";
+	for my $key (sort keys %best)
+	{
+		my $snapshot = $best{$key};
+		my @vmstk = @{ $snapshot->{vmstk_values} };
+		my @stack_map = @{ $snapshot->{stack_map_values} };
+
+		print $fh join("\t",
+			$snapshot->{workload},
+			$snapshot->{lane},
+			$snapshot->{run},
+			$snapshot->{snapshot_index},
+			$snapshot->{threads},
+			$snapshot->{stack_map_found},
+			metric_value(sum_values(@vmstk), 1),
+			@vmstk ? metric_value(median(@vmstk), 1) : 'n/a',
+			@vmstk ? metric_value(max_value(@vmstk), 1) : 'n/a',
+			metric_value(sum_values(@stack_map), 1),
+			@stack_map ? metric_value(median(@stack_map), 1) : 'n/a',
+			@stack_map ? metric_value(max_value(@stack_map), 1) : 'n/a'),
+		  "\n";
+	}
+	close $fh;
+}
+
+sub tsv_number
+{
+	my ($cols, $field_index, $field) = @_;
+
+	return undef unless exists $field_index->{$field};
+	my $value = $cols->[$field_index->{$field}];
+	return undef unless defined $value && $value =~ /^-?\d+(?:\.\d+)?$/;
+	return 0 + $value;
+}
+
+sub max_value
+{
+	my @values = @_;
+	my $max;
+
+	for my $value (@values)
+	{
+		$max = $value if !defined $max || $value > $max;
+	}
+	return $max;
+}
+
+sub sum_values
+{
+	my @values = @_;
+	my $sum = 0;
+
+	for my $value (@values)
+	{
+		$sum += $value;
+	}
+	return $sum;
 }
 
 sub pooled_memory_fit
@@ -2007,7 +3397,9 @@ sub write_summary
 		}
 	}
 
+	append_memory_detail_summary($fh, $dir);
 	append_protocol_park_memory_summary($fh, $dir);
+	append_protocol_park_context_memory_summary($fh, $dir);
 
 	close $fh;
 }

@@ -164,6 +164,7 @@ my %profile_specs = (
 		warmup => 3,
 		runs => 2,
 		sample_server_resources => 1,
+		sample_memory_detail => 1,
 		log_protocol_park_memory => 1,
 		resource_sample_interval_ms => 500,
 	},
@@ -339,6 +340,8 @@ sub matrix_command
 		push @cmd,
 		  "--resource-sample-interval-ms=$profile->{resource_sample_interval_ms}";
 	}
+	push @cmd, '--sample-memory-detail'
+	  if $profile->{sample_memory_detail};
 	push @cmd, '--log-protocol-park-memory'
 	  if $profile->{log_protocol_park_memory};
 	push @cmd, @extra_matrix_args;

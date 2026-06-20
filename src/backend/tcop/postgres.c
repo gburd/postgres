@@ -5632,10 +5632,216 @@ PgProtocolParkMemoryCounters(MemoryContext context,
 		MemoryContextMemConsumed(context, counters);
 }
 
+#define PG_PROTOCOL_PARK_CONTEXT_LOG_MAX 64
+#define PG_PROTOCOL_PARK_CONTEXT_LOG_MAX_DEPTH 1
+#define PG_PROTOCOL_PARK_CONTEXT_LOG_INTERVAL 16
+#define PG_PROTOCOL_PARK_CONTEXT_TOKEN_MAX 80
+#define PG_PROTOCOL_PARK_CONTEXT_PATH_MAX 256
+
+typedef struct PgProtocolParkContextMemoryRow
+{
+	int			context_index;
+	int			depth;
+	char		type[16];
+	char		name[PG_PROTOCOL_PARK_CONTEXT_TOKEN_MAX];
+	char		ident[PG_PROTOCOL_PARK_CONTEXT_TOKEN_MAX];
+	char		path[PG_PROTOCOL_PARK_CONTEXT_PATH_MAX];
+	MemoryContextCounters local;
+	MemoryContextCounters recursive;
+} PgProtocolParkContextMemoryRow;
+
+typedef struct PgProtocolParkContextMemoryLogState
+{
+	PgProtocolParkContextMemoryRow rows[PG_PROTOCOL_PARK_CONTEXT_LOG_MAX];
+	int			count;
+} PgProtocolParkContextMemoryLogState;
+
 static inline Size
 PgProtocolParkMemoryUsed(const MemoryContextCounters *counters)
 {
 	return counters->totalspace - counters->freespace;
+}
+
+static bool
+PgProtocolParkTokenCharAllowed(unsigned char c)
+{
+	return (c >= 'a' && c <= 'z') ||
+		(c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9') ||
+		c == '_' || c == '-' || c == '.' || c == ':' ||
+		c == '/' || c == '[' || c == ']';
+}
+
+static void
+PgProtocolParkSanitizeToken(const char *src, char *dst, Size dstlen)
+{
+	Size		i = 0;
+
+	Assert(dstlen > 0);
+
+	if (src == NULL || src[0] == '\0')
+		src = "none";
+
+	while (src[i] != '\0' && i + 1 < dstlen)
+	{
+		unsigned char c = (unsigned char) src[i];
+
+		dst[i] = PgProtocolParkTokenCharAllowed(c) ? (char) c : '_';
+		i++;
+	}
+	dst[i] = '\0';
+}
+
+static void
+PgProtocolParkAppendPath(char *dst, Size dstlen, const char *parent_path,
+						 const char *name)
+{
+	int			written;
+
+	if (parent_path == NULL || parent_path[0] == '\0')
+		written = snprintf(dst, dstlen, "%s", name);
+	else
+		written = snprintf(dst, dstlen, "%s/%s", parent_path, name);
+
+	if (written < 0 || (Size) written >= dstlen)
+		dst[dstlen - 1] = '\0';
+}
+
+static const char *
+PgProtocolParkContextTypeName(MemoryContext context)
+{
+	if (IsA(context, AllocSetContext))
+		return "AllocSet";
+	if (IsA(context, SlabContext))
+		return "Slab";
+	if (IsA(context, GenerationContext))
+		return "Generation";
+	if (IsA(context, BumpContext))
+		return "Bump";
+	return "Unknown";
+}
+
+static void
+PgProtocolParkMemoryCountersAdd(MemoryContextCounters *dst,
+								const MemoryContextCounters *src)
+{
+	dst->nblocks += src->nblocks;
+	dst->freechunks += src->freechunks;
+	dst->totalspace += src->totalspace;
+	dst->freespace += src->freespace;
+}
+
+static MemoryContextCounters
+PgCollectProtocolParkContextMemory(PgProtocolParkContextMemoryLogState *state,
+								   MemoryContext context,
+								   const char *parent_path,
+								   int depth)
+{
+	MemoryContextCounters subtree;
+	PgProtocolParkContextMemoryRow *row = NULL;
+	char		path[PG_PROTOCOL_PARK_CONTEXT_PATH_MAX];
+	char		name[PG_PROTOCOL_PARK_CONTEXT_TOKEN_MAX];
+
+	MemSet(&subtree, 0, sizeof(subtree));
+
+	if (context == NULL)
+		return subtree;
+
+	Assert(MemoryContextIsValid(context));
+
+	PgProtocolParkSanitizeToken(context->name, name, sizeof(name));
+	PgProtocolParkAppendPath(path, sizeof(path), parent_path, name);
+
+	if (state->count < PG_PROTOCOL_PARK_CONTEXT_LOG_MAX)
+	{
+		row = &state->rows[state->count++];
+		MemSet(row, 0, sizeof(*row));
+		row->context_index = state->count;
+		row->depth = depth;
+		strlcpy(row->type, PgProtocolParkContextTypeName(context),
+				sizeof(row->type));
+		strlcpy(row->name, name, sizeof(row->name));
+		PgProtocolParkSanitizeToken(context->ident, row->ident,
+									sizeof(row->ident));
+		strlcpy(row->path, path, sizeof(row->path));
+		context->methods->stats(context, NULL, NULL, &row->local, false);
+		subtree = row->local;
+	}
+	else
+		context->methods->stats(context, NULL, NULL, &subtree, false);
+
+	if (depth >= PG_PROTOCOL_PARK_CONTEXT_LOG_MAX_DEPTH)
+	{
+		if (row != NULL)
+			row->recursive = subtree;
+		return subtree;
+	}
+
+	for (MemoryContext child = context->firstchild;
+		 child != NULL;
+		 child = child->nextchild)
+	{
+		MemoryContextCounters child_counters;
+
+		child_counters =
+			PgCollectProtocolParkContextMemory(state, child, path, depth + 1);
+		PgProtocolParkMemoryCountersAdd(&subtree, &child_counters);
+	}
+
+	if (row != NULL)
+		row->recursive = subtree;
+
+	return subtree;
+}
+
+static void
+PgLogProtocolParkContextMemory(PgBackend *backend,
+							   PgProtocolParkSpec *park_spec)
+{
+	PgProtocolParkContextMemoryLogState state;
+
+	Assert(backend != NULL);
+	Assert(park_spec != NULL);
+
+	if (park_spec->generation != 1 &&
+		park_spec->generation % PG_PROTOCOL_PARK_CONTEXT_LOG_INTERVAL != 0)
+		return;
+
+	MemSet(&state, 0, sizeof(state));
+	(void) PgCollectProtocolParkContextMemory(&state, TopMemoryContext,
+											  NULL, 0);
+
+	for (int i = 0; i < state.count; i++)
+	{
+		PgProtocolParkContextMemoryRow *row = &state.rows[i];
+
+		ereport(LOG_SERVER_ONLY,
+				(errhidestmt(true),
+				 errhidecontext(true),
+				 errmsg_internal("protocol_park_context_memory pid=%d backend_id=%u generation=%llu "
+								 "context_index=%d depth=%d type=%s name=%s ident=%s path=%s "
+								 "local_total_bytes=%zu local_free_bytes=%zu local_used_bytes=%zu local_blocks=%zu local_free_chunks=%zu "
+								 "recursive_total_bytes=%zu recursive_free_bytes=%zu recursive_used_bytes=%zu recursive_blocks=%zu recursive_free_chunks=%zu",
+								 PgCurrentBackendSignalPid(),
+								 (unsigned int) backend->id,
+								 (unsigned long long) park_spec->generation,
+								 row->context_index,
+								 row->depth,
+								 row->type,
+								 row->name,
+								 row->ident,
+								 row->path,
+								 row->local.totalspace,
+								 row->local.freespace,
+								 PgProtocolParkMemoryUsed(&row->local),
+								 row->local.nblocks,
+								 row->local.freechunks,
+								 row->recursive.totalspace,
+								 row->recursive.freespace,
+								 PgProtocolParkMemoryUsed(&row->recursive),
+								 row->recursive.nblocks,
+								 row->recursive.freechunks)));
+	}
 }
 
 static void
@@ -5740,6 +5946,8 @@ PgLogProtocolParkMemory(PgSession *session, PgProtocolParkSpec *park_spec)
 							 sizeof(PgConnection), sizeof(PgExecution),
 							 sizeof(PgThreadBackendLogicalState),
 							 sizeof(PgThreadBackendRuntimeState))));
+
+	PgLogProtocolParkContextMemory(backend, park_spec);
 }
 
 static void
