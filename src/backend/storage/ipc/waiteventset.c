@@ -366,6 +366,46 @@ InitializeWaitEventSupport(void)
 }
 
 /*
+ * Release process-level wait event support owned by the current carrier.
+ *
+ * Backends historically relied on process exit to close these descriptors.
+ * Threaded carriers exit without process exit, so descriptor and fd.c
+ * accounting must be released explicitly at carrier teardown.
+ */
+void
+ShutdownWaitEventSupport(void)
+{
+#ifndef WIN32
+	waiting = false;
+#endif
+
+#ifdef WAIT_USE_SIGNALFD
+	if (signal_fd != -1)
+	{
+		(void) close(signal_fd);
+		signal_fd = -1;
+		ReleaseExternalFD();
+	}
+#endif
+
+#ifdef WAIT_USE_SELF_PIPE
+	if (selfpipe_readfd != -1)
+	{
+		(void) close(selfpipe_readfd);
+		selfpipe_readfd = -1;
+		ReleaseExternalFD();
+	}
+	if (selfpipe_writefd != -1)
+	{
+		(void) close(selfpipe_writefd);
+		selfpipe_writefd = -1;
+		ReleaseExternalFD();
+	}
+	selfpipe_owner_pid = 0;
+#endif
+}
+
+/*
  * Create a WaitEventSet with space for nevents different events to wait for.
  *
  * These events can then be efficiently waited upon together, using

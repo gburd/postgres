@@ -62,6 +62,7 @@
 #include "storage/latch.h"
 #include "storage/pg_shmem.h"
 #include "storage/shmem_internal.h"
+#include "storage/waiteventset.h"
 #include "tcop/backend_startup.h"
 #include "tcop/tcopprot.h"
 #include "utils/backend_runtime.h"
@@ -276,6 +277,7 @@ static void backend_thread_set_current_start(BackendThreadStart *thread_start);
 static void backend_thread_wait_until_registered(BackendThreadStart *thread_start);
 static void backend_thread_init_random_state(void);
 static void backend_thread_clear_deleted_retained_memory_contexts(void);
+static void backend_thread_free_deleted_retained_memory_contexts(void);
 pg_noreturn static void backend_thread_exit(int code);
 pg_noreturn static void backend_thread_finish(int code);
 pg_noreturn static void backend_pooled_logical_finish(int code);
@@ -1246,6 +1248,14 @@ backend_thread_clear_deleted_retained_memory_contexts(void)
 	CurrentPgExecution->memory_contexts.current_context = NULL;
 }
 
+static void
+backend_thread_free_deleted_retained_memory_contexts(void)
+{
+	if (CurrentPgBackend != NULL)
+		AllocSetFreeContextFreelists(CurrentPgBackend->memory_manager.context_freelists,
+									 PG_BACKEND_ALLOCSET_NUM_FREELISTS);
+}
+
 void
 ThreadedBackendStartupComplete(void)
 {
@@ -1324,6 +1334,7 @@ backend_thread_finish(int code)
 		top_memory_reclaimed = MemoryContextMemAllocated(retained_top_context,
 														 true);
 		MemoryContextDelete(retained_top_context);
+		backend_thread_free_deleted_retained_memory_contexts();
 		backend_thread_clear_deleted_retained_memory_contexts();
 		exit_state->retained_top_memory_context = NULL;
 		top_memory_allocated = 0;
@@ -1333,6 +1344,7 @@ backend_thread_finish(int code)
 									 top_memory_reclaimed,
 									 thread_start->publication.postmaster_latch);
 
+	ShutdownWaitEventSupport();
 	backend_thread_set_current_start(NULL);
 	free(thread_start);
 	pg_thread_exit();
@@ -1376,6 +1388,7 @@ backend_pooled_logical_finish(int code)
 		top_memory_reclaimed = MemoryContextMemAllocated(retained_top_context,
 														 true);
 		MemoryContextDelete(retained_top_context);
+		backend_thread_free_deleted_retained_memory_contexts();
 		backend_thread_clear_deleted_retained_memory_contexts();
 		exit_state->retained_top_memory_context = NULL;
 		top_memory_allocated = 0;

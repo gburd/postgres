@@ -567,10 +567,11 @@ PgBackendResetMemoryManagerClosedState(PgBackendMemoryManagerState *memory_manag
 		return;
 
 	/*
-	 * The AllocSet freelist is tied to memory-context ownership, not the
-	 * backend bookkeeping bucket.  Process exit lets the operating system
-	 * reclaim it, while threaded exit deletes the saved TopMemoryContext root
-	 * after closed-state reset.  Do not walk freelist links here: by
+	 * The AllocSet freelist is tied to memory-context ownership, not this
+	 * bookkeeping bucket.  Process exit lets the operating system reclaim it,
+	 * while threaded exit deletes the saved TopMemoryContext root after
+	 * closed-state reset and then frees any contexts that deletion left on the
+	 * backend-local freelists.  Do not walk freelist links here: by
 	 * closed-state reset time they may already point into memory-context
 	 * teardown state.
 	 */

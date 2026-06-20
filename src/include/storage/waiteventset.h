@@ -76,6 +76,7 @@ struct Latch;
  * prototypes for functions in waiteventset.c
  */
 extern void InitializeWaitEventSupport(void);
+extern void ShutdownWaitEventSupport(void);
 
 extern WaitEventSet *CreateWaitEventSet(ResourceOwner resowner, int nevents);
 extern void FreeWaitEventSet(WaitEventSet *set);
