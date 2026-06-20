@@ -815,10 +815,6 @@ PgSessionResetExtensionModuleClosedState(PgSession *session)
 		session->extension_modules.pltcl_memory_context);
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(
 		session->extension_modules.plsample_memory_context);
-	PG_RUNTIME_DELETE_MEMORY_CONTEXT(
-		session->extension_modules.dblink_context);
-	PG_RUNTIME_DELETE_MEMORY_CONTEXT(
-		session->extension_modules.postgres_fdw_options_context);
 	PgSessionInitializeExtensionModuleState(&session->extension_modules);
 }
 

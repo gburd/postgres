@@ -55,36 +55,82 @@ typedef struct auto_explain_extension_options
 	/* a null-terminated copy of the GUC string follows the array */
 } auto_explain_extension_options;
 
+#define AUTO_EXPLAIN_SESSION_STATE_KEY "auto_explain.session"
+
+typedef struct AutoExplainSessionState
+{
+	bool		initialized;
+	int			log_min_duration_value;
+	int			log_parameter_max_length_value;
+	bool		log_analyze_value;
+	bool		log_verbose_value;
+	bool		log_buffers_value;
+	bool		log_io_value;
+	bool		log_wal_value;
+	bool		log_triggers_value;
+	bool		log_timing_value;
+	bool		log_settings_value;
+	int			log_format_value;
+	int			log_level_value;
+	bool		log_nested_statements_value;
+	double		sample_rate_value;
+	char	   *log_extension_options_value;
+	auto_explain_extension_options *extension_options;
+} AutoExplainSessionState;
+
+static AutoExplainSessionState *
+auto_explain_session_state(void)
+{
+	AutoExplainSessionState *state;
+
+	state = (AutoExplainSessionState *)
+		PgSessionEnsureExtensionPrivateState(AUTO_EXPLAIN_SESSION_STATE_KEY,
+											 sizeof(AutoExplainSessionState),
+											 NULL);
+	if (!state->initialized)
+	{
+		state->log_min_duration_value = -1;
+		state->log_parameter_max_length_value = -1;
+		state->log_timing_value = true;
+		state->log_format_value = EXPLAIN_FORMAT_TEXT;
+		state->log_level_value = LOG;
+		state->sample_rate_value = 1.0;
+		state->initialized = true;
+	}
+
+	return state;
+}
+
 #define auto_explain_log_min_duration \
-	(PgCurrentSessionExtensionModuleState()->auto_explain_log_min_duration)
+	(auto_explain_session_state()->log_min_duration_value)
 #define auto_explain_log_parameter_max_length \
-	(PgCurrentSessionExtensionModuleState()->auto_explain_log_parameter_max_length)
+	(auto_explain_session_state()->log_parameter_max_length_value)
 #define auto_explain_log_analyze \
-	(PgCurrentSessionExtensionModuleState()->auto_explain_log_analyze)
+	(auto_explain_session_state()->log_analyze_value)
 #define auto_explain_log_verbose \
-	(PgCurrentSessionExtensionModuleState()->auto_explain_log_verbose)
+	(auto_explain_session_state()->log_verbose_value)
 #define auto_explain_log_buffers \
-	(PgCurrentSessionExtensionModuleState()->auto_explain_log_buffers)
+	(auto_explain_session_state()->log_buffers_value)
 #define auto_explain_log_io \
-	(PgCurrentSessionExtensionModuleState()->auto_explain_log_io)
+	(auto_explain_session_state()->log_io_value)
 #define auto_explain_log_wal \
-	(PgCurrentSessionExtensionModuleState()->auto_explain_log_wal)
+	(auto_explain_session_state()->log_wal_value)
 #define auto_explain_log_triggers \
-	(PgCurrentSessionExtensionModuleState()->auto_explain_log_triggers)
+	(auto_explain_session_state()->log_triggers_value)
 #define auto_explain_log_timing \
-	(PgCurrentSessionExtensionModuleState()->auto_explain_log_timing)
+	(auto_explain_session_state()->log_timing_value)
 #define auto_explain_log_settings \
-	(PgCurrentSessionExtensionModuleState()->auto_explain_log_settings)
+	(auto_explain_session_state()->log_settings_value)
 #define auto_explain_log_format \
-	(PgCurrentSessionExtensionModuleState()->auto_explain_log_format)
+	(auto_explain_session_state()->log_format_value)
 #define auto_explain_log_level \
-	(PgCurrentSessionExtensionModuleState()->auto_explain_log_level)
+	(auto_explain_session_state()->log_level_value)
 #define auto_explain_log_nested_statements \
-	(PgCurrentSessionExtensionModuleState()->auto_explain_log_nested_statements)
+	(auto_explain_session_state()->log_nested_statements_value)
 #define auto_explain_sample_rate \
-	(PgCurrentSessionExtensionModuleState()->auto_explain_sample_rate)
+	(auto_explain_session_state()->sample_rate_value)
 #define auto_explain_log_extension_options \
-	(PgCurrentSessionExtensionModuleState()->auto_explain_log_extension_options)
+	(auto_explain_session_state()->log_extension_options_value)
 #define nesting_level \
 	(PgCurrentExecutionExtensionState()->auto_explain_nesting_level)
 #define current_query_sampled \
@@ -93,8 +139,7 @@ typedef struct auto_explain_extension_options
 static auto_explain_extension_options *
 current_auto_explain_extension_options(void)
 {
-	return (auto_explain_extension_options *)
-		PgCurrentSessionExtensionModuleState()->auto_explain_extension_options;
+	return auto_explain_session_state()->extension_options;
 }
 
 static const struct config_enum_entry format_options[] = {
@@ -598,8 +643,7 @@ retry:
 static void
 assign_log_extension_options(const char *newval, void *extra)
 {
-	PgCurrentSessionExtensionModuleState()->auto_explain_extension_options =
-		extra;
+	auto_explain_session_state()->extension_options = extra;
 }
 
 /*

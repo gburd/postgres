@@ -32,9 +32,9 @@
 #include "utils/syscache.h"
 
 /* Session-local cache for shippability lookups. */
-#define ShippableCacheHash (*(HTAB **) PgCurrentPostgresFdwShippableCacheHashRef())
+#define ShippableCacheHash (postgres_fdw_session_state()->shippable_cache_hash)
 #define pgfdw_shippable_callbacks_registered \
-	(*PgCurrentPostgresFdwShippableCallbacksRegisteredRef())
+	(postgres_fdw_session_state()->shippable_callbacks_registered)
 
 /*
  * Hash key for shippability lookups.  We include the FDW server OID because

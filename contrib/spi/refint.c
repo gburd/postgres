@@ -22,6 +22,8 @@ PG_MODULE_MAGIC_EXT(
 					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
 );
 
+#define REFINT_SESSION_STATE_KEY "refint.session"
+
 typedef struct
 {
 	char	   *ident;
@@ -29,11 +31,29 @@ typedef struct
 	SPIPlanPtr *splan;
 } EPlan;
 
-#define FPlans (*(EPlan **) PgCurrentRefintForeignPlansRef())
-#define nFPlans (*PgCurrentRefintNumForeignPlansRef())
-#define PPlans (*(EPlan **) PgCurrentRefintPrimaryPlansRef())
-#define nPPlans (*PgCurrentRefintNumPrimaryPlansRef())
-#define refint_reset_registered (*PgCurrentRefintResetRegisteredRef())
+typedef struct RefintSessionState
+{
+	EPlan	   *foreign_plans;
+	int			num_foreign_plans;
+	EPlan	   *primary_plans;
+	int			num_primary_plans;
+	bool		reset_registered;
+} RefintSessionState;
+
+static RefintSessionState *
+refint_session_state(void)
+{
+	return (RefintSessionState *)
+		PgSessionEnsureExtensionPrivateState(REFINT_SESSION_STATE_KEY,
+											 sizeof(RefintSessionState),
+											 NULL);
+}
+
+#define FPlans (refint_session_state()->foreign_plans)
+#define nFPlans (refint_session_state()->num_foreign_plans)
+#define PPlans (refint_session_state()->primary_plans)
+#define nPPlans (refint_session_state()->num_primary_plans)
+#define refint_reset_registered (refint_session_state()->reset_registered)
 
 static EPlan *find_plan(char *ident, EPlan **eplan, int *nplans);
 static MemoryContext refint_cache_context(void);

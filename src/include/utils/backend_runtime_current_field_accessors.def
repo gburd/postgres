@@ -1210,9 +1210,6 @@
 #define PgCurrentRegexpCacheMemoryContextRef() \
 	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionRegexRuntimeState, PgCurrentRegexpCacheMemoryContextRef, \
 									 regexp_cache_context)
-#define PgCurrentRegexpCachedResArray() \
-	PG_RUNTIME_CURRENT_FIELD_PTR(CurrentPgSessionRegexRuntimeState, PgCurrentRegexpCachedResArray, \
-									 cached_res)
 #define PgCurrentRegexpNumCachedResRef() \
 	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionRegexRuntimeState, PgCurrentRegexpNumCachedResRef, \
 									 num_cached_res)

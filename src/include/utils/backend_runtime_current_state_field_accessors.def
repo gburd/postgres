@@ -184,46 +184,6 @@
 	(&PgCurrentSessionExtensionModuleState()->pltcl_reset_registered)
 #define PgCurrentPLsampleMemoryContextRef() \
 	(&PgCurrentSessionExtensionModuleState()->plsample_memory_context)
-#define PgCurrentRefintForeignPlansRef() \
-	(&PgCurrentSessionExtensionModuleState()->refint_foreign_plans)
-#define PgCurrentRefintNumForeignPlansRef() \
-	(&PgCurrentSessionExtensionModuleState()->refint_num_foreign_plans)
-#define PgCurrentRefintPrimaryPlansRef() \
-	(&PgCurrentSessionExtensionModuleState()->refint_primary_plans)
-#define PgCurrentRefintNumPrimaryPlansRef() \
-	(&PgCurrentSessionExtensionModuleState()->refint_num_primary_plans)
-#define PgCurrentRefintResetRegisteredRef() \
-	(&PgCurrentSessionExtensionModuleState()->refint_reset_registered)
-#define PgCurrentAuthDelayMillisecondsRef() \
-	(&PgCurrentSessionExtensionModuleState()->auth_delay_milliseconds)
-#define PgCurrentBasebackupToShellCommandRef() \
-	(&PgCurrentSessionExtensionModuleState()->basebackup_to_shell_command)
-#define PgCurrentBasebackupToShellRequiredRoleRef() \
-	(&PgCurrentSessionExtensionModuleState()->basebackup_to_shell_required_role)
-#define PgCurrentIsnWeakRef() \
-	(&PgCurrentSessionExtensionModuleState()->isn_weak)
-#define PgCurrentPasswordcheckMinPasswordLengthRef() \
-	(&PgCurrentSessionExtensionModuleState()->passwordcheck_min_password_length)
-#define PgCurrentPostgresFdwOptionsRef() \
-	(&PgCurrentSessionExtensionModuleState()->postgres_fdw_options)
-#define PgCurrentPostgresFdwApplicationNameRef() \
-	(&PgCurrentSessionExtensionModuleState()->postgres_fdw_application_name)
-#define PgCurrentPostgresFdwConnectionHashRef() \
-	(&PgCurrentSessionExtensionModuleState()->postgres_fdw_connection_hash)
-#define PgCurrentPostgresFdwShippableCacheHashRef() \
-	(&PgCurrentSessionExtensionModuleState()->postgres_fdw_shippable_cache_hash)
-#define PgCurrentPostgresFdwCursorNumberRef() \
-	(&PgCurrentSessionExtensionModuleState()->postgres_fdw_cursor_number)
-#define PgCurrentPostgresFdwPrepStmtNumberRef() \
-	(&PgCurrentSessionExtensionModuleState()->postgres_fdw_prep_stmt_number)
-#define PgCurrentPostgresFdwXactGotConnectionRef() \
-	(&PgCurrentSessionExtensionModuleState()->postgres_fdw_xact_got_connection)
-#define PgCurrentPostgresFdwReadOnlyLevelRef() \
-	(&PgCurrentSessionExtensionModuleState()->postgres_fdw_read_only_level)
-#define PgCurrentPostgresFdwConnectionCallbacksRegisteredRef() \
-	(&PgCurrentSessionExtensionModuleState()->postgres_fdw_connection_callbacks_registered)
-#define PgCurrentPostgresFdwShippableCallbacksRegisteredRef() \
-	(&PgCurrentSessionExtensionModuleState()->postgres_fdw_shippable_callbacks_registered)
 #define PgCurrentArchModuleCheckErrdetailStringRef() \
 	(&PgCurrentMaintenanceWorkerState()->arch_module_errdetail_string)
 #define PgCurrentRepackMessagePendingRef() \

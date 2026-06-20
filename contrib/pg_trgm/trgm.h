@@ -113,12 +113,22 @@ typedef char *BITVECP;
 
 typedef struct TrgmPackedGraph TrgmPackedGraph;
 
+typedef struct PgTrgmSessionState
+{
+	bool		initialized;
+	double		similarity_threshold_value;
+	double		word_similarity_threshold_value;
+	double		strict_word_similarity_threshold_value;
+} PgTrgmSessionState;
+
+extern PgTrgmSessionState *pg_trgm_session_state(void);
+
 #define similarity_threshold \
-	(PgCurrentSessionExtensionModuleState()->pg_trgm_similarity_threshold)
+	(pg_trgm_session_state()->similarity_threshold_value)
 #define word_similarity_threshold \
-	(PgCurrentSessionExtensionModuleState()->pg_trgm_word_similarity_threshold)
+	(pg_trgm_session_state()->word_similarity_threshold_value)
 #define strict_word_similarity_threshold \
-	(PgCurrentSessionExtensionModuleState()->pg_trgm_strict_word_similarity_threshold)
+	(pg_trgm_session_state()->strict_word_similarity_threshold_value)
 
 extern double index_strategy_get_limit(StrategyNumber strategy);
 extern uint32 trgm2int(trgm *ptr);

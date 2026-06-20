@@ -97,8 +97,25 @@ typedef struct pgsa_stash_name
 	(PgCurrentBackendExtensionModuleState()->pg_stash_advice_entry_dshash)
 
 /* Session-local custom GUC backing state. */
+#define PG_STASH_ADVICE_SESSION_STATE_KEY "pg_stash_advice.session"
+
+typedef struct PgStashAdviceSessionState
+{
+	char	   *stash_name;
+} PgStashAdviceSessionState;
+
+static inline PgStashAdviceSessionState *
+pg_stash_advice_session_state(void)
+{
+	return (PgStashAdviceSessionState *)
+		PgSessionEnsureExtensionPrivateState(
+			PG_STASH_ADVICE_SESSION_STATE_KEY,
+			sizeof(PgStashAdviceSessionState),
+			NULL);
+}
+
 #define pg_stash_advice_stash_name \
-	(PgCurrentSessionExtensionModuleState()->pg_stash_advice_stash_name)
+	(pg_stash_advice_session_state()->stash_name)
 
 /* GUC variables */
 extern PG_GLOBAL_RUNTIME bool pg_stash_advice_persist;

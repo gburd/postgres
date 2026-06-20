@@ -34,8 +34,26 @@ PG_MODULE_MAGIC_EXT(
 					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
 );
 
-#define pg_plan_advice_always_explain_supplied_advice \
-	(PgCurrentSessionExtensionModuleState()->pg_plan_advice_always_explain_supplied_advice)
+#define PG_PLAN_ADVICE_SESSION_STATE_KEY "pg_plan_advice.session"
+
+PgPlanAdviceSessionState *
+pg_plan_advice_session_state(void)
+{
+	PgPlanAdviceSessionState *state;
+
+	state = (PgPlanAdviceSessionState *)
+		PgSessionEnsureExtensionPrivateState(PG_PLAN_ADVICE_SESSION_STATE_KEY,
+											 sizeof(PgPlanAdviceSessionState),
+											 NULL);
+	if (!state->initialized)
+	{
+		state->always_explain_supplied_advice = true;
+		state->initialized = true;
+	}
+
+	return state;
+}
+
 #define pgpa_memory_context (*PgCurrentPgPlanAdviceContextRef())
 #define advisor_hook_list (*PgCurrentPgPlanAdviceAdvisorHookListRef())
 

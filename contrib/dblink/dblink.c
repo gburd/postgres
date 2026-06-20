@@ -80,6 +80,16 @@ typedef struct remoteConn
 	bool		newXactForCursor;	/* Opened a transaction for a cursor */
 } remoteConn;
 
+#define DBLINK_SESSION_STATE_KEY "dblink.session"
+
+typedef struct DblinkSessionState
+{
+	MemoryContext context;
+	remoteConn *persistent_connection;
+	HTAB	   *remote_conn_hash;
+	bool		reset_registered;
+} DblinkSessionState;
+
 typedef struct storeInfo
 {
 	FunctionCallInfo fcinfo;
@@ -142,12 +152,13 @@ static bool is_valid_dblink_fdw_option(const PQconninfoOption *options, const ch
 static bool dblink_connstr_has_required_scram_options(const char *connstr);
 static MemoryContext dblink_get_context(void);
 static void dblink_reset_session_state(void *arg);
+static DblinkSessionState *dblink_session_state(void);
 
 /* Session-local state, exposed through compatibility macros. */
-#define dblink_context (*PgCurrentDblinkContextRef())
-#define pconn (*(remoteConn **) PgCurrentDblinkPersistentConnectionRef())
-#define remoteConnHash (*(HTAB **) PgCurrentDblinkRemoteConnHashRef())
-#define dblink_reset_registered (*PgCurrentDblinkResetRegisteredRef())
+#define dblink_context (dblink_session_state()->context)
+#define pconn (dblink_session_state()->persistent_connection)
+#define remoteConnHash (dblink_session_state()->remote_conn_hash)
+#define dblink_reset_registered (dblink_session_state()->reset_registered)
 
 /* custom wait event values, retrieved from shared memory */
 static uint32 dblink_we_connect = 0;
@@ -2579,10 +2590,19 @@ dblink_get_context(void)
 {
 	if (dblink_context == NULL)
 		dblink_context =
-			PgRuntimeGetOwnedMemoryContext(PgCurrentDblinkContextRef(),
+			PgRuntimeGetOwnedMemoryContext(&dblink_context,
 										   "dblink session");
 
 	return dblink_context;
+}
+
+static DblinkSessionState *
+dblink_session_state(void)
+{
+	return (DblinkSessionState *)
+		PgSessionEnsureExtensionPrivateState(DBLINK_SESSION_STATE_KEY,
+											 sizeof(DblinkSessionState),
+											 NULL);
 }
 
 static remoteConn *

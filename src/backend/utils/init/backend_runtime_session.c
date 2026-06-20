@@ -27,7 +27,6 @@
 #include "archive/archive_module.h"
 #include "catalog/binary_upgrade.h"
 #include "commands/extension.h"
-#include "commands/explain_state.h"
 #include "commands/repack.h"
 #include "commands/trigger.h"
 #include "commands/vacuum.h"
@@ -71,17 +70,6 @@
 #include "utils/typcache.h"
 #include "utils/xml.h"
 #include "backend_runtime_internal.h"
-
-#define PG_TRGM_SIMILARITY_THRESHOLD_DEFAULT 0.3
-#define PG_TRGM_WORD_SIMILARITY_THRESHOLD_DEFAULT 0.6
-#define PG_TRGM_STRICT_WORD_SIMILARITY_THRESHOLD_DEFAULT 0.5
-#define PG_PLAN_ADVICE_ALWAYS_EXPLAIN_SUPPLIED_ADVICE_DEFAULT true
-#define AUTO_EXPLAIN_LOG_MIN_DURATION_DEFAULT (-1)
-#define AUTO_EXPLAIN_LOG_PARAMETER_MAX_LENGTH_DEFAULT (-1)
-#define AUTO_EXPLAIN_LOG_TIMING_DEFAULT true
-#define AUTO_EXPLAIN_LOG_FORMAT_DEFAULT EXPLAIN_FORMAT_TEXT
-#define AUTO_EXPLAIN_LOG_LEVEL_DEFAULT LOG
-#define AUTO_EXPLAIN_SAMPLE_RATE_DEFAULT 1.0
 
 static void PgSessionAdoptEarlyDatabaseState(PgSession *session);
 static void PgSessionInitializeTablespaceState(PgSessionTablespaceState *tablespace);
@@ -531,23 +519,6 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSession early_session_fallback = {
 		.min_parallel_index_scan_size_blocks = (512 * 1024) / BLCKSZ,
 		.from_collapse_limit_value = 8,
 		.join_collapse_limit_value = 8
-	},
-	.extension_modules = {
-		.auto_explain_log_min_duration = AUTO_EXPLAIN_LOG_MIN_DURATION_DEFAULT,
-		.auto_explain_log_parameter_max_length =
-			AUTO_EXPLAIN_LOG_PARAMETER_MAX_LENGTH_DEFAULT,
-		.auto_explain_log_timing = AUTO_EXPLAIN_LOG_TIMING_DEFAULT,
-		.auto_explain_log_format = AUTO_EXPLAIN_LOG_FORMAT_DEFAULT,
-		.auto_explain_log_level = AUTO_EXPLAIN_LOG_LEVEL_DEFAULT,
-		.auto_explain_sample_rate = AUTO_EXPLAIN_SAMPLE_RATE_DEFAULT,
-		.pg_trgm_similarity_threshold = PG_TRGM_SIMILARITY_THRESHOLD_DEFAULT,
-		.pg_trgm_word_similarity_threshold =
-			PG_TRGM_WORD_SIMILARITY_THRESHOLD_DEFAULT,
-		.pg_trgm_strict_word_similarity_threshold =
-			PG_TRGM_STRICT_WORD_SIMILARITY_THRESHOLD_DEFAULT,
-		.pg_plan_advice_always_explain_supplied_advice =
-			PG_PLAN_ADVICE_ALWAYS_EXPLAIN_SUPPLIED_ADVICE_DEFAULT,
-		.pg_stash_advice_stash_name = ""
 	},
 	.temp_file = {
 		.initialized = true,
@@ -1490,69 +1461,8 @@ PgSessionInitializeExtensionModuleState(PgSessionExtensionModuleState *extension
 	extension_modules->pltcl_current_call_state = NULL;
 	extension_modules->pltcl_reset_registered = false;
 	extension_modules->plsample_memory_context = NULL;
-	extension_modules->refint_foreign_plans = NULL;
-	extension_modules->refint_num_foreign_plans = 0;
-	extension_modules->refint_primary_plans = NULL;
-	extension_modules->refint_num_primary_plans = 0;
-	extension_modules->refint_reset_registered = false;
-	extension_modules->auth_delay_milliseconds = 0;
-	extension_modules->basebackup_to_shell_command = "";
-	extension_modules->basebackup_to_shell_required_role = "";
-	extension_modules->isn_weak = false;
-	extension_modules->passwordcheck_min_password_length = 8;
 	extension_modules->private_states = NIL;
 	extension_modules->reset_callbacks = NIL;
-	extension_modules->auto_explain_log_min_duration =
-		AUTO_EXPLAIN_LOG_MIN_DURATION_DEFAULT;
-	extension_modules->auto_explain_log_parameter_max_length =
-		AUTO_EXPLAIN_LOG_PARAMETER_MAX_LENGTH_DEFAULT;
-	extension_modules->auto_explain_log_analyze = false;
-	extension_modules->auto_explain_log_verbose = false;
-	extension_modules->auto_explain_log_buffers = false;
-	extension_modules->auto_explain_log_io = false;
-	extension_modules->auto_explain_log_wal = false;
-	extension_modules->auto_explain_log_triggers = false;
-	extension_modules->auto_explain_log_timing =
-		AUTO_EXPLAIN_LOG_TIMING_DEFAULT;
-	extension_modules->auto_explain_log_settings = false;
-	extension_modules->auto_explain_log_format =
-		AUTO_EXPLAIN_LOG_FORMAT_DEFAULT;
-	extension_modules->auto_explain_log_level =
-		AUTO_EXPLAIN_LOG_LEVEL_DEFAULT;
-	extension_modules->auto_explain_log_nested_statements = false;
-	extension_modules->auto_explain_sample_rate =
-		AUTO_EXPLAIN_SAMPLE_RATE_DEFAULT;
-	extension_modules->auto_explain_log_extension_options = NULL;
-	extension_modules->auto_explain_extension_options = NULL;
-	extension_modules->pg_trgm_similarity_threshold =
-		PG_TRGM_SIMILARITY_THRESHOLD_DEFAULT;
-	extension_modules->pg_trgm_word_similarity_threshold =
-		PG_TRGM_WORD_SIMILARITY_THRESHOLD_DEFAULT;
-	extension_modules->pg_trgm_strict_word_similarity_threshold =
-		PG_TRGM_STRICT_WORD_SIMILARITY_THRESHOLD_DEFAULT;
-	extension_modules->pg_plan_advice_advice = NULL;
-	extension_modules->pg_plan_advice_always_store_advice_details = false;
-	extension_modules->pg_plan_advice_always_explain_supplied_advice =
-		PG_PLAN_ADVICE_ALWAYS_EXPLAIN_SUPPLIED_ADVICE_DEFAULT;
-	extension_modules->pg_plan_advice_feedback_warnings = false;
-	extension_modules->pg_plan_advice_trace_mask = false;
-	extension_modules->pg_plan_advice_generate_advice = 0;
-	extension_modules->pg_stash_advice_stash_name = "";
-	extension_modules->dblink_context = NULL;
-	extension_modules->dblink_persistent_connection = NULL;
-	extension_modules->dblink_remote_conn_hash = NULL;
-	extension_modules->dblink_reset_registered = false;
-	extension_modules->postgres_fdw_options_context = NULL;
-	extension_modules->postgres_fdw_options = NULL;
-	extension_modules->postgres_fdw_application_name = NULL;
-	extension_modules->postgres_fdw_connection_hash = NULL;
-	extension_modules->postgres_fdw_shippable_cache_hash = NULL;
-	extension_modules->postgres_fdw_cursor_number = 0;
-	extension_modules->postgres_fdw_prep_stmt_number = 0;
-	extension_modules->postgres_fdw_xact_got_connection = false;
-	extension_modules->postgres_fdw_read_only_level = 0;
-	extension_modules->postgres_fdw_connection_callbacks_registered = false;
-	extension_modules->postgres_fdw_shippable_callbacks_registered = false;
 }
 
 PG_RUNTIME_DEFINE_ADOPT_EARLY_WITH_INIT(PgSessionAdoptEarlyExtensionModuleState,
@@ -1722,7 +1632,7 @@ PgSessionInitializeRegexState(PgSessionRegexState *regex)
 
 	regex->regexp_cache_context = NULL;
 	regex->num_cached_res = 0;
-	MemSet(regex->cached_res, 0, sizeof(regex->cached_res));
+	regex->cached_res = NULL;
 	regex->ctype_cache_list = NULL;
 }
 
@@ -3273,156 +3183,6 @@ MemoryContext *
 PgCurrentPLsampleMemoryContextRef(void)
 {
 	return &PgCurrentSessionExtensionModuleState()->plsample_memory_context;
-}
-
-void **
-PgCurrentRefintForeignPlansRef(void)
-{
-	return &PgCurrentSessionExtensionModuleState()->refint_foreign_plans;
-}
-
-int *
-PgCurrentRefintNumForeignPlansRef(void)
-{
-	return &PgCurrentSessionExtensionModuleState()->refint_num_foreign_plans;
-}
-
-void **
-PgCurrentRefintPrimaryPlansRef(void)
-{
-	return &PgCurrentSessionExtensionModuleState()->refint_primary_plans;
-}
-
-int *
-PgCurrentRefintNumPrimaryPlansRef(void)
-{
-	return &PgCurrentSessionExtensionModuleState()->refint_num_primary_plans;
-}
-
-bool *
-PgCurrentRefintResetRegisteredRef(void)
-{
-	return &PgCurrentSessionExtensionModuleState()->refint_reset_registered;
-}
-
-int *
-PgCurrentAuthDelayMillisecondsRef(void)
-{
-	return &PgCurrentSessionExtensionModuleState()->auth_delay_milliseconds;
-}
-
-char **
-PgCurrentBasebackupToShellCommandRef(void)
-{
-	return &PgCurrentSessionExtensionModuleState()->basebackup_to_shell_command;
-}
-
-char **
-PgCurrentBasebackupToShellRequiredRoleRef(void)
-{
-	return &PgCurrentSessionExtensionModuleState()->basebackup_to_shell_required_role;
-}
-
-bool *
-PgCurrentIsnWeakRef(void)
-{
-	return &PgCurrentSessionExtensionModuleState()->isn_weak;
-}
-
-int *
-PgCurrentPasswordcheckMinPasswordLengthRef(void)
-{
-	return &PgCurrentSessionExtensionModuleState()->passwordcheck_min_password_length;
-}
-
-MemoryContext *
-PgCurrentDblinkContextRef(void)
-{
-	return &PgCurrentSessionExtensionModuleState()->dblink_context;
-}
-
-void **
-PgCurrentDblinkPersistentConnectionRef(void)
-{
-	return &PgCurrentSessionExtensionModuleState()->dblink_persistent_connection;
-}
-
-void **
-PgCurrentDblinkRemoteConnHashRef(void)
-{
-	return &PgCurrentSessionExtensionModuleState()->dblink_remote_conn_hash;
-}
-
-bool *
-PgCurrentDblinkResetRegisteredRef(void)
-{
-	return &PgCurrentSessionExtensionModuleState()->dblink_reset_registered;
-}
-
-MemoryContext *
-PgCurrentPostgresFdwOptionsContextRef(void)
-{
-	return &PgCurrentSessionExtensionModuleState()->postgres_fdw_options_context;
-}
-
-void **
-PgCurrentPostgresFdwOptionsRef(void)
-{
-	return &PgCurrentSessionExtensionModuleState()->postgres_fdw_options;
-}
-
-char **
-PgCurrentPostgresFdwApplicationNameRef(void)
-{
-	return &PgCurrentSessionExtensionModuleState()->postgres_fdw_application_name;
-}
-
-void **
-PgCurrentPostgresFdwConnectionHashRef(void)
-{
-	return &PgCurrentSessionExtensionModuleState()->postgres_fdw_connection_hash;
-}
-
-void **
-PgCurrentPostgresFdwShippableCacheHashRef(void)
-{
-	return &PgCurrentSessionExtensionModuleState()->postgres_fdw_shippable_cache_hash;
-}
-
-unsigned int *
-PgCurrentPostgresFdwCursorNumberRef(void)
-{
-	return &PgCurrentSessionExtensionModuleState()->postgres_fdw_cursor_number;
-}
-
-unsigned int *
-PgCurrentPostgresFdwPrepStmtNumberRef(void)
-{
-	return &PgCurrentSessionExtensionModuleState()->postgres_fdw_prep_stmt_number;
-}
-
-bool *
-PgCurrentPostgresFdwXactGotConnectionRef(void)
-{
-	return &PgCurrentSessionExtensionModuleState()->postgres_fdw_xact_got_connection;
-}
-
-int *
-PgCurrentPostgresFdwReadOnlyLevelRef(void)
-{
-	return &PgCurrentSessionExtensionModuleState()->postgres_fdw_read_only_level;
-}
-
-bool *
-PgCurrentPostgresFdwConnectionCallbacksRegisteredRef(void)
-{
-	return &PgCurrentSessionExtensionModuleState()->postgres_fdw_connection_callbacks_registered;
-}
-
-bool *
-PgCurrentPostgresFdwShippableCallbacksRegisteredRef(void)
-{
-	return &PgCurrentSessionExtensionModuleState()->postgres_fdw_shippable_callbacks_registered;
 }
 
 void

@@ -77,18 +77,18 @@ typedef struct ConnCacheEntry
 } ConnCacheEntry;
 
 /* Session-local state, exposed through compatibility macros. */
-#define ConnectionHash (*(HTAB **) PgCurrentPostgresFdwConnectionHashRef())
-#define cursor_number (*PgCurrentPostgresFdwCursorNumberRef())
-#define prep_stmt_number (*PgCurrentPostgresFdwPrepStmtNumberRef())
-#define xact_got_connection (*PgCurrentPostgresFdwXactGotConnectionRef())
+#define ConnectionHash (postgres_fdw_session_state()->connection_hash)
+#define cursor_number (postgres_fdw_session_state()->cursor_number)
+#define prep_stmt_number (postgres_fdw_session_state()->prep_stmt_number)
+#define xact_got_connection (postgres_fdw_session_state()->xact_got_connection)
 
 /*
  * tracks the topmost read-only local transaction's nesting level determined
  * by GetTopReadOnlyTransactionNestLevel()
  */
-#define read_only_level (*PgCurrentPostgresFdwReadOnlyLevelRef())
+#define read_only_level (postgres_fdw_session_state()->read_only_level)
 #define pgfdw_connection_callbacks_registered \
-	(*PgCurrentPostgresFdwConnectionCallbacksRegisteredRef())
+	(postgres_fdw_session_state()->connection_callbacks_registered)
 
 /* custom wait event values, retrieved from shared memory */
 static uint32 pgfdw_we_cleanup_result = 0;

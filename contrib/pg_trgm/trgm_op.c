@@ -44,6 +44,28 @@ PG_FUNCTION_INFO_V1(strict_word_similarity_dist_commutator_op);
 static int	CMPTRGM_CHOOSE(const void *a, const void *b);
 int			(*CMPTRGM) (const void *a, const void *b) = CMPTRGM_CHOOSE;
 
+#define PG_TRGM_SESSION_STATE_KEY "pg_trgm.session"
+
+PgTrgmSessionState *
+pg_trgm_session_state(void)
+{
+	PgTrgmSessionState *state;
+
+	state = (PgTrgmSessionState *)
+		PgSessionEnsureExtensionPrivateState(PG_TRGM_SESSION_STATE_KEY,
+											 sizeof(PgTrgmSessionState),
+											 NULL);
+	if (!state->initialized)
+	{
+		state->similarity_threshold_value = 0.3;
+		state->word_similarity_threshold_value = 0.6;
+		state->strict_word_similarity_threshold_value = 0.5;
+		state->initialized = true;
+	}
+
+	return state;
+}
+
 /* Trigram with position */
 typedef struct
 {

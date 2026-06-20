@@ -24,8 +24,24 @@ PG_MODULE_MAGIC_EXT(
 					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
 );
 
+#define AUTH_DELAY_SESSION_STATE_KEY "auth_delay.session"
+
+typedef struct AuthDelaySessionState
+{
+	int			milliseconds;
+} AuthDelaySessionState;
+
+static AuthDelaySessionState *
+auth_delay_session_state(void)
+{
+	return (AuthDelaySessionState *)
+		PgSessionEnsureExtensionPrivateState(AUTH_DELAY_SESSION_STATE_KEY,
+											 sizeof(AuthDelaySessionState),
+											 NULL);
+}
+
 /* GUC Variables */
-#define auth_delay_milliseconds (*PgCurrentAuthDelayMillisecondsRef())
+#define auth_delay_milliseconds (auth_delay_session_state()->milliseconds)
 
 /* Original Hook */
 static PG_GLOBAL_RUNTIME ClientAuthentication_hook_type original_client_auth_hook = NULL;

@@ -38,6 +38,8 @@ PG_MODULE_MAGIC_EXT(
 
 #define MAXEAN13LEN 18
 
+#define ISN_SESSION_STATE_KEY "isn.session"
+
 enum isn_type
 {
 	ISN_INVALID, ANY, EAN13, ISBN, ISMN, ISSN, UPC
@@ -45,8 +47,22 @@ enum isn_type
 
 static const char *const isn_names[] = {"EAN13/UPC/ISxN", "EAN13/UPC/ISxN", "EAN13", "ISBN", "ISMN", "ISSN", "UPC"};
 
+typedef struct IsnSessionState
+{
+	bool		weak;
+} IsnSessionState;
+
+static IsnSessionState *
+isn_session_state(void)
+{
+	return (IsnSessionState *)
+		PgSessionEnsureExtensionPrivateState(ISN_SESSION_STATE_KEY,
+											 sizeof(IsnSessionState),
+											 NULL);
+}
+
 /* GUC value */
-#define g_weak (*PgCurrentIsnWeakRef())
+#define g_weak (isn_session_state()->weak)
 
 
 /***********************************************************************
