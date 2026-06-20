@@ -216,13 +216,11 @@ GUCRecordState(const struct config_generic *record)
 		Assert(guc_variable_states != NULL);
 		Assert(index >= 0);
 		Assert(index < num_guc_variables);
-		Assert(guc_variable_states[index].record == record);
 
 		return &guc_variable_states[index];
 	}
 
 	Assert(record->state != NULL);
-	Assert(record->state->record == record);
 	return record->state;
 }
 
@@ -241,10 +239,88 @@ GUCRecordColdState(const struct config_generic *record)
 	{
 		state->cold = MemoryContextAllocZero(GUCMemoryContext,
 											 sizeof(config_generic_cold_state));
-		state->cold->state = state;
+		state->cold->record = record;
 	}
 
 	return state->cold;
+}
+
+static GucStack *
+GUCRecordStack(const struct config_generic *record)
+{
+	config_generic_cold_state *cold = GUCRecordColdStateIfAllocated(record);
+
+	return cold != NULL ? cold->stack : NULL;
+}
+
+static void
+GUCRecordSetStack(const struct config_generic *record, GucStack *stack)
+{
+	config_generic_cold_state *cold = GUCRecordColdStateIfAllocated(record);
+
+	if (cold == NULL && stack == NULL)
+		return;
+
+	if (cold == NULL)
+		cold = GUCRecordColdState(record);
+
+	cold->stack = stack;
+}
+
+static void *
+GUCRecordExtra(const struct config_generic *record)
+{
+	config_generic_cold_state *cold = GUCRecordColdStateIfAllocated(record);
+
+	return cold != NULL ? cold->extra : NULL;
+}
+
+static void **
+GUCRecordExtraRef(const struct config_generic *record)
+{
+	return &GUCRecordColdState(record)->extra;
+}
+
+static void
+GUCRecordSetExtra(const struct config_generic *record, void *extra)
+{
+	config_generic_cold_state *cold = GUCRecordColdStateIfAllocated(record);
+
+	if (cold == NULL && extra == NULL)
+		return;
+
+	if (cold == NULL)
+		cold = GUCRecordColdState(record);
+
+	cold->extra = extra;
+}
+
+static void *
+GUCRecordResetExtra(const struct config_generic *record)
+{
+	config_generic_cold_state *cold = GUCRecordColdStateIfAllocated(record);
+
+	return cold != NULL ? cold->reset_extra : NULL;
+}
+
+static void **
+GUCRecordResetExtraRef(const struct config_generic *record)
+{
+	return &GUCRecordColdState(record)->reset_extra;
+}
+
+static void
+GUCRecordSetResetExtra(const struct config_generic *record, void *reset_extra)
+{
+	config_generic_cold_state *cold = GUCRecordColdStateIfAllocated(record);
+
+	if (cold == NULL && reset_extra == NULL)
+		return;
+
+	if (cold == NULL)
+		cold = GUCRecordColdState(record);
+
+	cold->reset_extra = reset_extra;
 }
 
 static char *
@@ -279,6 +355,9 @@ GUCRecordResetColdFields(const struct config_generic *record)
 	if (cold == NULL)
 		return;
 
+	cold->stack = NULL;
+	cold->extra = NULL;
+	cold->reset_extra = NULL;
 	cold->last_reported = NULL;
 	cold->sourcefile = NULL;
 	cold->sourceline = 0;
@@ -296,9 +375,17 @@ GUCRecordResetColdFields(const struct config_generic *record)
 #define GUC_RESET_SCONTEXT(record)	(GUC_STATE(record)->reset_scontext)
 #define GUC_SROLE(record)			(GUC_STATE(record)->srole)
 #define GUC_RESET_SROLE(record)		(GUC_STATE(record)->reset_srole)
-#define GUC_STACK(record)			(GUC_STATE(record)->stack)
-#define GUC_EXTRA(record)			(GUC_STATE(record)->extra)
-#define GUC_RESET_EXTRA(record)		(GUC_STATE(record)->reset_extra)
+#define GUC_STACK(record)			(GUCRecordStack(record))
+#define GUC_SET_STACK(record, value) \
+	GUCRecordSetStack((record), (value))
+#define GUC_EXTRA(record)			(GUCRecordExtra(record))
+#define GUC_EXTRA_REF(record)		(GUCRecordExtraRef(record))
+#define GUC_SET_EXTRA(record, value) \
+	GUCRecordSetExtra((record), (value))
+#define GUC_RESET_EXTRA(record)		(GUCRecordResetExtra(record))
+#define GUC_RESET_EXTRA_REF(record)	(GUCRecordResetExtraRef(record))
+#define GUC_SET_RESET_EXTRA(record, value) \
+	GUCRecordSetResetExtra((record), (value))
 #define GUC_LAST_REPORTED(record)	(GUCRecordLastReported(record))
 #define GUC_SET_LAST_REPORTED(record, value) \
 	(GUC_COLD(record)->last_reported = (value))
@@ -318,10 +405,8 @@ GUCRecordResetColdFields(const struct config_generic *record)
 #define GUC_RESET_REAL(record)		(GUC_STATE(record)->reset_val.realval)
 #define GUC_RESET_STRING(record)	(GUC_STATE(record)->reset_val.stringval)
 #define GUC_RESET_ENUM(record)		(GUC_STATE(record)->reset_val.enumval)
-#define GUC_STATE_RECORD(state) \
-	(unconstify(struct config_generic *, (state)->record))
 #define GUC_COLD_STATE_RECORD(cold) \
-	GUC_STATE_RECORD((cold)->state)
+	(unconstify(struct config_generic *, (cold)->record))
 
 static bool
 GUCRecordVariableIsCurrentSessionOwned(const struct config_generic *record)
@@ -1392,8 +1477,6 @@ build_guc_variables(void)
 	guc_variable_states = MemoryContextAllocZero(GUCMemoryContext,
 												 sizeof(config_generic_state) *
 												 (num_vars + 1));
-	for (int i = 0; i < num_vars; i++)
-		guc_variable_states[i].record = &guc_variables[i];
 	InitializeGUCVariableStatePointers();
 
 	dlist_init(&guc_nondef_list);
@@ -1606,7 +1689,6 @@ add_placeholder_variable(const char *name, int elevel)
 		return NULL;
 	}
 	memset(state, 0, sizeof(config_generic_state) + sizeof(char *));
-	state->record = var;
 	var->state = state;
 
 	var->name = guc_strdup(elevel, name);
@@ -2444,8 +2526,8 @@ InitializeOneGUCOption(struct config_generic *gconf)
 	GUC_RESET_SCONTEXT(gconf) = PGC_INTERNAL;
 	GUC_SROLE(gconf) = BOOTSTRAP_SUPERUSERID;
 	GUC_RESET_SROLE(gconf) = BOOTSTRAP_SUPERUSERID;
-	GUC_STACK(gconf) = NULL;
-	GUC_EXTRA(gconf) = NULL;
+	GUC_SET_STACK(gconf, NULL);
+	GUC_SET_EXTRA(gconf, NULL);
 	GUCRecordResetColdFields(gconf);
 
 	switch (gconf->vartype)
@@ -2532,7 +2614,8 @@ InitializeOneGUCOption(struct config_generic *gconf)
 			}
 	}
 
-	GUC_EXTRA(gconf) = GUC_RESET_EXTRA(gconf) = extra;
+	GUC_SET_EXTRA(gconf, extra);
+	GUC_SET_RESET_EXTRA(gconf, extra);
 }
 
 /*
@@ -2555,8 +2638,8 @@ InitializeOneGUCOptionResetMetadata(struct config_generic *gconf)
 	GUC_RESET_SCONTEXT(gconf) = PGC_INTERNAL;
 	GUC_SROLE(gconf) = BOOTSTRAP_SUPERUSERID;
 	GUC_RESET_SROLE(gconf) = BOOTSTRAP_SUPERUSERID;
-	GUC_STACK(gconf) = NULL;
-	GUC_EXTRA(gconf) = NULL;
+	GUC_SET_STACK(gconf, NULL);
+	GUC_SET_EXTRA(gconf, NULL);
 	GUCRecordResetColdFields(gconf);
 
 	switch (gconf->vartype)
@@ -2638,7 +2721,7 @@ InitializeOneGUCOptionResetMetadata(struct config_generic *gconf)
 			}
 	}
 
-	GUC_RESET_EXTRA(gconf) = extra;
+	GUC_SET_RESET_EXTRA(gconf, extra);
 }
 
 /*
@@ -2960,7 +3043,7 @@ ResetAllOptions(void)
 						conf->assign_hook(GUC_RESET_BOOL(gconf),
 										  GUC_RESET_EXTRA(gconf));
 					*GUC_VARIABLE_BOOL(gconf) = GUC_RESET_BOOL(gconf);
-					set_extra_field(gconf, &GUC_EXTRA(gconf),
+					set_extra_field(gconf, GUC_EXTRA_REF(gconf),
 									GUC_RESET_EXTRA(gconf));
 					break;
 				}
@@ -2972,7 +3055,7 @@ ResetAllOptions(void)
 						conf->assign_hook(GUC_RESET_INT(gconf),
 										  GUC_RESET_EXTRA(gconf));
 					*GUC_VARIABLE_INT(gconf) = GUC_RESET_INT(gconf);
-					set_extra_field(gconf, &GUC_EXTRA(gconf),
+					set_extra_field(gconf, GUC_EXTRA_REF(gconf),
 									GUC_RESET_EXTRA(gconf));
 					break;
 				}
@@ -2984,7 +3067,7 @@ ResetAllOptions(void)
 						conf->assign_hook(GUC_RESET_REAL(gconf),
 										  GUC_RESET_EXTRA(gconf));
 					*GUC_VARIABLE_REAL(gconf) = GUC_RESET_REAL(gconf);
-					set_extra_field(gconf, &GUC_EXTRA(gconf),
+					set_extra_field(gconf, GUC_EXTRA_REF(gconf),
 									GUC_RESET_EXTRA(gconf));
 					break;
 				}
@@ -2997,7 +3080,7 @@ ResetAllOptions(void)
 										  GUC_RESET_EXTRA(gconf));
 					set_string_field(gconf, GUC_VARIABLE_STRING(gconf),
 									 GUC_RESET_STRING(gconf));
-					set_extra_field(gconf, &GUC_EXTRA(gconf),
+					set_extra_field(gconf, GUC_EXTRA_REF(gconf),
 									GUC_RESET_EXTRA(gconf));
 					break;
 				}
@@ -3009,7 +3092,7 @@ ResetAllOptions(void)
 						conf->assign_hook(GUC_RESET_ENUM(gconf),
 										  GUC_RESET_EXTRA(gconf));
 					*GUC_VARIABLE_ENUM(gconf) = GUC_RESET_ENUM(gconf);
-					set_extra_field(gconf, &GUC_EXTRA(gconf),
+					set_extra_field(gconf, GUC_EXTRA_REF(gconf),
 									GUC_RESET_EXTRA(gconf));
 					break;
 				}
@@ -3131,7 +3214,7 @@ push_old_value(struct config_generic *gconf, GucAction action)
 
 	if (GUC_STACK(gconf) == NULL)
 		slist_push_head(&guc_stack_list, GUC_STACK_LINK(gconf));
-	GUC_STACK(gconf) = stack;
+	GUC_SET_STACK(gconf, stack);
 }
 
 
@@ -3341,7 +3424,7 @@ AtEOXact_GUC(bool isCommit, int nestLevel)
 								if (conf->assign_hook)
 									conf->assign_hook(newval, newextra);
 								*GUC_VARIABLE_BOOL(gconf) = newval;
-								set_extra_field(gconf, &GUC_EXTRA(gconf),
+								set_extra_field(gconf, GUC_EXTRA_REF(gconf),
 												newextra);
 								changed = true;
 							}
@@ -3359,7 +3442,7 @@ AtEOXact_GUC(bool isCommit, int nestLevel)
 								if (conf->assign_hook)
 									conf->assign_hook(newval, newextra);
 								*GUC_VARIABLE_INT(gconf) = newval;
-								set_extra_field(gconf, &GUC_EXTRA(gconf),
+								set_extra_field(gconf, GUC_EXTRA_REF(gconf),
 												newextra);
 								changed = true;
 							}
@@ -3377,7 +3460,7 @@ AtEOXact_GUC(bool isCommit, int nestLevel)
 								if (conf->assign_hook)
 									conf->assign_hook(newval, newextra);
 								*GUC_VARIABLE_REAL(gconf) = newval;
-								set_extra_field(gconf, &GUC_EXTRA(gconf),
+								set_extra_field(gconf, GUC_EXTRA_REF(gconf),
 												newextra);
 								changed = true;
 							}
@@ -3396,7 +3479,7 @@ AtEOXact_GUC(bool isCommit, int nestLevel)
 									conf->assign_hook(newval, newextra);
 								set_string_field(gconf, GUC_VARIABLE_STRING(gconf),
 												 newval);
-								set_extra_field(gconf, &GUC_EXTRA(gconf),
+								set_extra_field(gconf, GUC_EXTRA_REF(gconf),
 												newextra);
 								changed = true;
 							}
@@ -3423,7 +3506,7 @@ AtEOXact_GUC(bool isCommit, int nestLevel)
 								if (conf->assign_hook)
 									conf->assign_hook(newval, newextra);
 								*GUC_VARIABLE_ENUM(gconf) = newval;
-								set_extra_field(gconf, &GUC_EXTRA(gconf),
+								set_extra_field(gconf, GUC_EXTRA_REF(gconf),
 												newextra);
 								changed = true;
 							}
@@ -3447,7 +3530,7 @@ AtEOXact_GUC(bool isCommit, int nestLevel)
 			 * Pop the GUC's state stack; if it's now empty, remove the GUC
 			 * from guc_stack_list.
 			 */
-			GUC_STACK(gconf) = prev;
+			GUC_SET_STACK(gconf, prev);
 			if (prev == NULL)
 				slist_delete_current(&iter);
 			pfree(stack);
@@ -4745,7 +4828,7 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 					if (conf->assign_hook)
 						conf->assign_hook(newval, newextra);
 					*GUC_VARIABLE_BOOL(record) = newval;
-					set_extra_field(record, &GUC_EXTRA(record),
+					set_extra_field(record, GUC_EXTRA_REF(record),
 									newextra);
 					set_guc_source(record, source);
 					GUC_SCONTEXT(record) = context;
@@ -4756,7 +4839,7 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 					if (GUC_RESET_SOURCE(record) <= source)
 					{
 						GUC_RESET_BOOL(record) = newval;
-						set_extra_field(record, &GUC_RESET_EXTRA(record),
+						set_extra_field(record, GUC_RESET_EXTRA_REF(record),
 										newextra);
 						GUC_RESET_SOURCE(record) = source;
 						GUC_RESET_SCONTEXT(record) = context;
@@ -4841,7 +4924,7 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 					if (conf->assign_hook)
 						conf->assign_hook(newval, newextra);
 					*GUC_VARIABLE_INT(record) = newval;
-					set_extra_field(record, &GUC_EXTRA(record),
+					set_extra_field(record, GUC_EXTRA_REF(record),
 									newextra);
 					set_guc_source(record, source);
 					GUC_SCONTEXT(record) = context;
@@ -4852,7 +4935,7 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 					if (GUC_RESET_SOURCE(record) <= source)
 					{
 						GUC_RESET_INT(record) = newval;
-						set_extra_field(record, &GUC_RESET_EXTRA(record),
+						set_extra_field(record, GUC_RESET_EXTRA_REF(record),
 										newextra);
 						GUC_RESET_SOURCE(record) = source;
 						GUC_RESET_SCONTEXT(record) = context;
@@ -4937,7 +5020,7 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 					if (conf->assign_hook)
 						conf->assign_hook(newval, newextra);
 					*GUC_VARIABLE_REAL(record) = newval;
-					set_extra_field(record, &GUC_EXTRA(record),
+					set_extra_field(record, GUC_EXTRA_REF(record),
 									newextra);
 					set_guc_source(record, source);
 					GUC_SCONTEXT(record) = context;
@@ -4948,7 +5031,7 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 					if (GUC_RESET_SOURCE(record) <= source)
 					{
 						GUC_RESET_REAL(record) = newval;
-						set_extra_field(record, &GUC_RESET_EXTRA(record),
+						set_extra_field(record, GUC_RESET_EXTRA_REF(record),
 										newextra);
 						GUC_RESET_SOURCE(record) = source;
 						GUC_RESET_SCONTEXT(record) = context;
@@ -5078,7 +5161,7 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 							conf->assign_hook(newval, newextra);
 						set_string_field(record, GUC_VARIABLE_STRING(record),
 										 newval);
-						set_extra_field(record, &GUC_EXTRA(record),
+						set_extra_field(record, GUC_EXTRA_REF(record),
 										newextra);
 					}
 					set_guc_source(record, source);
@@ -5130,7 +5213,7 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 					{
 						set_string_field(record, &GUC_RESET_STRING(record),
 										 newval);
-						set_extra_field(record, &GUC_RESET_EXTRA(record),
+						set_extra_field(record, GUC_RESET_EXTRA_REF(record),
 										newextra);
 						GUC_RESET_SOURCE(record) = source;
 						GUC_RESET_SCONTEXT(record) = context;
@@ -5219,7 +5302,7 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 					if (conf->assign_hook)
 						conf->assign_hook(newval, newextra);
 					*GUC_VARIABLE_ENUM(record) = newval;
-					set_extra_field(record, &GUC_EXTRA(record),
+					set_extra_field(record, GUC_EXTRA_REF(record),
 									newextra);
 					set_guc_source(record, source);
 					GUC_SCONTEXT(record) = context;
@@ -5230,7 +5313,7 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 					if (GUC_RESET_SOURCE(record) <= source)
 					{
 						GUC_RESET_ENUM(record) = newval;
-						set_extra_field(record, &GUC_RESET_EXTRA(record),
+						set_extra_field(record, GUC_RESET_EXTRA_REF(record),
 										newextra);
 						GUC_RESET_SOURCE(record) = source;
 						GUC_RESET_SCONTEXT(record) = context;
@@ -5955,7 +6038,6 @@ init_custom_variable(const char *name,
 	state = (config_generic_state *) guc_malloc(FATAL,
 											   sizeof(config_generic_state));
 	memset(state, 0, sizeof(config_generic_state));
-	state->record = gen;
 	gen->state = state;
 
 	gen->name = guc_strdup(FATAL, name);
@@ -6164,7 +6246,7 @@ reapply_stacked_values(struct config_generic *variable,
 			if (GUC_STACK(variable) != NULL)
 			{
 				slist_delete(&guc_stack_list, GUC_STACK_LINK(variable));
-				GUC_STACK(variable) = NULL;
+				GUC_SET_STACK(variable, NULL);
 			}
 		}
 	}
