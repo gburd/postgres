@@ -2553,7 +2553,7 @@
   long_desc => 'A value of 0 disables idle compaction. A value of 1 releases clean idle reserves and trims allocator free space at protocol-read parks. A value of 2 also discards idle system caches before trimming.',
   flags => 'GUC_NOT_IN_SAMPLE',
   variable => 'pooled_protocol_idle_memory_compaction',
-  boot_val => 'POOLED_PROTOCOL_IDLE_MEMORY_COMPACTION_OFF',
+  boot_val => 'POOLED_PROTOCOL_IDLE_MEMORY_COMPACTION_TRIM',
   min => 'POOLED_PROTOCOL_IDLE_MEMORY_COMPACTION_OFF',
   max => 'POOLED_PROTOCOL_IDLE_MEMORY_COMPACTION_CACHE',
 },
