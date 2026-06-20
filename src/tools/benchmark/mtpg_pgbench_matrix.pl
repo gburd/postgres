@@ -36,6 +36,7 @@ my $sample_server_resources = 0;
 my $resource_sample_interval_ms = 100;
 my $help = 0;
 my $socket_seq = 0;
+my $default_max_files_per_process = 1000;
 
 GetOptions(
 	'vanilla-install=s' => \$vanilla_install,
@@ -517,6 +518,8 @@ sub append_config
 {
 	my ($data_dir, $port, $socket_dir, $extra_config) = @_;
 	my $conf = File::Spec->catfile($data_dir, 'postgresql.conf');
+	my $max_files_per_process =
+	  benchmark_max_files_per_process($max_connections);
 
 	open my $fh, '>>', $conf or die "could not append $conf: $!";
 	print $fh "\n# mtpg pgbench matrix\n";
@@ -525,11 +528,25 @@ sub append_config
 	print $fh "unix_socket_directories = '$socket_dir'\n";
 	print $fh "max_connections = $max_connections\n";
 	print $fh "shared_buffers = $shared_buffers\n";
+	if ($max_files_per_process > $default_max_files_per_process)
+	{
+		# Threaded lanes keep all client sockets in one server process.
+		print $fh "max_files_per_process = $max_files_per_process\n";
+	}
 	for my $line (@$extra_config)
 	{
 		print $fh "$line\n";
 	}
 	close $fh;
+}
+
+sub benchmark_max_files_per_process
+{
+	my ($connections) = @_;
+	my $fd_budget = $connections * 4;
+
+	return $fd_budget > $default_max_files_per_process ?
+	  $fd_budget : $default_max_files_per_process;
 }
 
 sub run_workload
@@ -987,6 +1004,12 @@ sub write_summary
 	print $fh "- clients: $clients\n";
 	print $fh "- threads: $threads\n";
 	print $fh "- max connections: $max_connections\n";
+	if (benchmark_max_files_per_process($max_connections) >
+		$default_max_files_per_process)
+	{
+		print $fh "- max files per process: ",
+		  benchmark_max_files_per_process($max_connections), "\n";
+	}
 	print $fh "- pool sizes: $pool_sizes\n"
 	  if grep { $_->{name} =~ /^branch_pool_/ } @$lane_specs;
 	print $fh "- scale: $scale\n";
