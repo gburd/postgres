@@ -5871,9 +5871,6 @@ PgLogProtocolParkCatCacheMemoryRow(const PgCatCacheMemoryStats *stats,
 	Assert(state->backend != NULL);
 	Assert(state->park_spec != NULL);
 
-	if (stats->ntup == 0 && stats->nlist == 0)
-		return;
-
 	PgProtocolParkSanitizeToken(stats->relname, relname, sizeof(relname));
 	ereport(LOG_SERVER_ONLY,
 			(errhidestmt(true),
