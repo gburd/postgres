@@ -201,6 +201,8 @@ static uint32 PgSessionStagingWaitProtocolRead(PgBackend *backend,
 static void PgBackendMarkProtocolReadParkWakeEvents(PgBackend *backend,
 													PgProtocolParkSpec *park_spec,
 													uint32 wake_events);
+static void PgLogProtocolParkMemory(PgSession *session,
+									PgProtocolParkSpec *park_spec);
 static long PgProtocolParkTimeoutDelayMs(PgBackend *backend,
 										 PgProtocolParkSpec *park_spec,
 										 bool *stale_timeout);
@@ -5621,6 +5623,126 @@ PgSessionStagingWaitProtocolRead(PgBackend *backend,
 }
 
 static void
+PgProtocolParkMemoryCounters(MemoryContext context,
+							 MemoryContextCounters *counters)
+{
+	MemSet(counters, 0, sizeof(*counters));
+
+	if (context != NULL)
+		MemoryContextMemConsumed(context, counters);
+}
+
+static inline Size
+PgProtocolParkMemoryUsed(const MemoryContextCounters *counters)
+{
+	return counters->totalspace - counters->freespace;
+}
+
+static void
+PgLogProtocolParkMemory(PgSession *session, PgProtocolParkSpec *park_spec)
+{
+	PgBackend  *backend;
+	PgConnection *connection;
+	MemoryContextCounters top;
+	MemoryContextCounters message;
+	MemoryContextCounters cache;
+	MemoryContextCounters top_xact;
+	MemoryContextCounters cur_xact;
+	MemoryContextCounters portal;
+	MemoryContextCounters error;
+	MemoryContextCounters current;
+	MemoryContextCounters row_description;
+	MemoryContextCounters client_info;
+	MemoryContextCounters legacy_session;
+	MemoryContextCounters dynamic_library;
+
+	if (!log_protocol_park_memory)
+		return;
+
+	Assert(session != NULL);
+	Assert(park_spec != NULL);
+	backend = session->backend;
+	connection = session->connection;
+	Assert(backend != NULL);
+	Assert(connection != NULL);
+	Assert(session->execution != NULL);
+
+	PgProtocolParkMemoryCounters(TopMemoryContext, &top);
+	PgProtocolParkMemoryCounters(MessageContext, &message);
+	PgProtocolParkMemoryCounters(CacheMemoryContext, &cache);
+	PgProtocolParkMemoryCounters(TopTransactionContext, &top_xact);
+	PgProtocolParkMemoryCounters(CurTransactionContext, &cur_xact);
+	PgProtocolParkMemoryCounters(PortalContext, &portal);
+	PgProtocolParkMemoryCounters(ErrorContext, &error);
+	PgProtocolParkMemoryCounters(CurrentMemoryContext, &current);
+	PgProtocolParkMemoryCounters(session->tcop.row_description_context,
+								 &row_description);
+	PgProtocolParkMemoryCounters(connection->client_connection_info_context,
+								 &client_info);
+	PgProtocolParkMemoryCounters(session->legacy_session_context,
+								 &legacy_session);
+	PgProtocolParkMemoryCounters(session->dynamic_library_context,
+								 &dynamic_library);
+
+	ereport(LOG_SERVER_ONLY,
+			(errhidestmt(true),
+			 errhidecontext(true),
+			 errmsg_internal("protocol_park_memory pid=%d backend_id=%u generation=%llu "
+							 "top_total_bytes=%zu top_free_bytes=%zu top_used_bytes=%zu top_blocks=%zu "
+							 "message_total_bytes=%zu message_free_bytes=%zu message_used_bytes=%zu message_blocks=%zu "
+							 "cache_total_bytes=%zu cache_free_bytes=%zu cache_used_bytes=%zu cache_blocks=%zu "
+							 "top_xact_total_bytes=%zu top_xact_free_bytes=%zu top_xact_used_bytes=%zu top_xact_blocks=%zu "
+							 "cur_xact_total_bytes=%zu cur_xact_free_bytes=%zu cur_xact_used_bytes=%zu cur_xact_blocks=%zu "
+							 "portal_total_bytes=%zu portal_free_bytes=%zu portal_used_bytes=%zu portal_blocks=%zu "
+							 "error_total_bytes=%zu error_free_bytes=%zu error_used_bytes=%zu error_blocks=%zu "
+							 "current_total_bytes=%zu current_free_bytes=%zu current_used_bytes=%zu current_blocks=%zu "
+							 "row_description_total_bytes=%zu row_description_free_bytes=%zu row_description_used_bytes=%zu row_description_blocks=%zu "
+							 "client_info_total_bytes=%zu client_info_free_bytes=%zu client_info_used_bytes=%zu client_info_blocks=%zu "
+							 "legacy_session_total_bytes=%zu legacy_session_free_bytes=%zu legacy_session_used_bytes=%zu legacy_session_blocks=%zu "
+							 "dynamic_library_total_bytes=%zu dynamic_library_free_bytes=%zu dynamic_library_used_bytes=%zu dynamic_library_blocks=%zu "
+							 "sizeof_backend=%zu sizeof_session=%zu sizeof_connection=%zu sizeof_execution=%zu "
+							 "sizeof_logical_state=%zu sizeof_runtime_state=%zu",
+							 PgCurrentBackendSignalPid(),
+							 (unsigned int) backend->id,
+							 (unsigned long long) park_spec->generation,
+							 top.totalspace, top.freespace,
+							 PgProtocolParkMemoryUsed(&top), top.nblocks,
+							 message.totalspace, message.freespace,
+							 PgProtocolParkMemoryUsed(&message), message.nblocks,
+							 cache.totalspace, cache.freespace,
+							 PgProtocolParkMemoryUsed(&cache), cache.nblocks,
+							 top_xact.totalspace, top_xact.freespace,
+							 PgProtocolParkMemoryUsed(&top_xact), top_xact.nblocks,
+							 cur_xact.totalspace, cur_xact.freespace,
+							 PgProtocolParkMemoryUsed(&cur_xact), cur_xact.nblocks,
+							 portal.totalspace, portal.freespace,
+							 PgProtocolParkMemoryUsed(&portal), portal.nblocks,
+							 error.totalspace, error.freespace,
+							 PgProtocolParkMemoryUsed(&error), error.nblocks,
+							 current.totalspace, current.freespace,
+							 PgProtocolParkMemoryUsed(&current), current.nblocks,
+							 row_description.totalspace,
+							 row_description.freespace,
+							 PgProtocolParkMemoryUsed(&row_description),
+							 row_description.nblocks,
+							 client_info.totalspace, client_info.freespace,
+							 PgProtocolParkMemoryUsed(&client_info),
+							 client_info.nblocks,
+							 legacy_session.totalspace,
+							 legacy_session.freespace,
+							 PgProtocolParkMemoryUsed(&legacy_session),
+							 legacy_session.nblocks,
+							 dynamic_library.totalspace,
+							 dynamic_library.freespace,
+							 PgProtocolParkMemoryUsed(&dynamic_library),
+							 dynamic_library.nblocks,
+							 sizeof(PgBackend), sizeof(PgSession),
+							 sizeof(PgConnection), sizeof(PgExecution),
+							 sizeof(PgThreadBackendLogicalState),
+							 sizeof(PgThreadBackendRuntimeState))));
+}
+
+static void
 PgSessionCommitCurrentProtocolReadPark(PgSession *session)
 {
 	PgCarrier  *carrier = CurrentPgCarrier;
@@ -5634,6 +5756,7 @@ PgSessionCommitCurrentProtocolReadPark(PgSession *session)
 	Assert(session->backend->protocol_park.state ==
 		   PG_PROTOCOL_PARK_PREPARED);
 
+	PgLogProtocolParkMemory(session, &session->backend->protocol_park.spec);
 	PgCarrierCommitProtocolReadPark(carrier, session->backend);
 }
 

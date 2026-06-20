@@ -1959,6 +1959,14 @@
   check_hook => 'check_stage_log_stats',
 },
 
+{ name => 'log_protocol_park_memory', type => 'bool', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
+  short_desc => 'Logs memory attribution when a protocol-read park is committed.',
+  long_desc => 'This experimental setting is only for Phase 15 scheduler memory diagnostics.',
+  flags => 'GUC_NOT_IN_SAMPLE',
+  variable => 'log_protocol_park_memory',
+  boot_val => 'false',
+},
+
 { name => 'log_recovery_conflict_waits', type => 'bool', context => 'PGC_SIGHUP', group => 'LOGGING_WHAT',
   short_desc => 'Logs standby recovery conflict waits.',
   variable => 'log_recovery_conflict_waits',

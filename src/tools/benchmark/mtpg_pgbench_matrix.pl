@@ -35,9 +35,36 @@ my $restart_per_workload = 0;
 my $sample_server_resources = 0;
 my $resource_sample_interval_ms = 100;
 my $resource_baseline_samples = 3;
+my $log_protocol_park_memory = 0;
 my $help = 0;
 my $socket_seq = 0;
 my $default_max_files_per_process = 1000;
+
+my @protocol_park_memory_fields = qw(
+  pid backend_id generation
+  top_total_bytes top_free_bytes top_used_bytes top_blocks
+  message_total_bytes message_free_bytes message_used_bytes message_blocks
+  cache_total_bytes cache_free_bytes cache_used_bytes cache_blocks
+  top_xact_total_bytes top_xact_free_bytes top_xact_used_bytes top_xact_blocks
+  cur_xact_total_bytes cur_xact_free_bytes cur_xact_used_bytes cur_xact_blocks
+  portal_total_bytes portal_free_bytes portal_used_bytes portal_blocks
+  error_total_bytes error_free_bytes error_used_bytes error_blocks
+  current_total_bytes current_free_bytes current_used_bytes current_blocks
+  row_description_total_bytes row_description_free_bytes row_description_used_bytes row_description_blocks
+  client_info_total_bytes client_info_free_bytes client_info_used_bytes client_info_blocks
+  legacy_session_total_bytes legacy_session_free_bytes legacy_session_used_bytes legacy_session_blocks
+  dynamic_library_total_bytes dynamic_library_free_bytes dynamic_library_used_bytes dynamic_library_blocks
+  sizeof_backend sizeof_session sizeof_connection sizeof_execution
+  sizeof_logical_state sizeof_runtime_state
+);
+
+my @protocol_park_memory_summary_fields = qw(
+  top_used_bytes message_used_bytes cache_used_bytes top_xact_used_bytes
+  cur_xact_used_bytes portal_used_bytes error_used_bytes current_used_bytes
+  row_description_used_bytes client_info_used_bytes legacy_session_used_bytes
+  dynamic_library_used_bytes sizeof_backend sizeof_session sizeof_connection
+  sizeof_execution sizeof_logical_state sizeof_runtime_state
+);
 
 GetOptions(
 	'vanilla-install=s' => \$vanilla_install,
@@ -60,6 +87,7 @@ GetOptions(
 	'sample-server-resources!' => \$sample_server_resources,
 	'resource-sample-interval-ms=i' => \$resource_sample_interval_ms,
 	'resource-baseline-samples=i' => \$resource_baseline_samples,
+	'log-protocol-park-memory!' => \$log_protocol_park_memory,
 	'help'              => \$help,
 ) or die usage();
 
@@ -92,6 +120,10 @@ for my $size (@pool_sizes)
 
 my @requested_workloads = grep { length($_) } split /,/, $workloads;
 my @requested_lanes = grep { length($_) } split /,/, $lanes;
+my @branch_diagnostic_config;
+
+push @branch_diagnostic_config, 'log_protocol_park_memory = on'
+  if $log_protocol_park_memory;
 
 my %workload_specs = (
 	builtin_select_simple => {
@@ -186,7 +218,7 @@ for my $lane (@requested_lanes)
 		push @lane_specs, {
 			name => 'branch_process',
 			install => $branch_install,
-			config => [],
+			config => [ @branch_diagnostic_config ],
 			branch => 1,
 		};
 	}
@@ -195,7 +227,11 @@ for my $lane (@requested_lanes)
 		push @lane_specs, {
 			name => 'branch_threaded',
 			install => $branch_install,
-			config => [ 'multithreaded = on', 'pooled_protocol_carriers = 0' ],
+			config => [
+				'multithreaded = on',
+				'pooled_protocol_carriers = 0',
+				@branch_diagnostic_config,
+			],
 			branch => 1,
 		};
 	}
@@ -209,6 +245,7 @@ for my $lane (@requested_lanes)
 				config => [
 					'multithreaded = on',
 					"pooled_protocol_carriers = $size",
+					@branch_diagnostic_config,
 				],
 				branch => 1,
 			};
@@ -252,7 +289,19 @@ open my $resources_fh, '>', $resources_path
   or die "could not write $resources_path: $!";
 print $resources_fh
   join("\t", qw(lane workload max_server_processes max_server_threads
-	  max_server_rss_kb max_server_pss_kb max_server_private_kb samples)),
+	  max_server_rss_kb max_server_vm_rss_kb max_server_pss_kb
+	  max_server_shared_kb max_server_private_kb
+	  max_smaps_rollup_readable max_smaps_rollup_unreadable samples)),
+  "\n";
+
+my $resource_samples_path =
+  File::Spec->catfile($out_dir, 'server_resource_samples.tsv');
+open my $resource_samples_fh, '>', $resource_samples_path
+  or die "could not write $resource_samples_path: $!";
+print $resource_samples_fh
+  join("\t", qw(lane workload run sample_index server_processes server_threads
+	  server_rss_kb server_vm_rss_kb server_pss_kb server_shared_kb
+	  server_private_kb smaps_rollup_readable smaps_rollup_unreadable)),
   "\n";
 
 my $resource_baselines_path =
@@ -261,7 +310,18 @@ open my $resource_baselines_fh, '>', $resource_baselines_path
   or die "could not write $resource_baselines_path: $!";
 print $resource_baselines_fh
   join("\t", qw(lane workload_scope max_server_processes max_server_threads
-	  max_server_rss_kb max_server_pss_kb max_server_private_kb samples)),
+	  max_server_rss_kb max_server_vm_rss_kb max_server_pss_kb
+	  max_server_shared_kb max_server_private_kb
+	  max_smaps_rollup_readable max_smaps_rollup_unreadable samples)),
+  "\n";
+
+my $protocol_park_memory_path =
+  File::Spec->catfile($out_dir, 'protocol_park_memory.tsv');
+open my $protocol_park_memory_fh, '>', $protocol_park_memory_path
+  or die "could not write $protocol_park_memory_path: $!";
+print $protocol_park_memory_fh
+  join("\t", 'lane', 'workload', 'run', 'sample_index',
+	@protocol_park_memory_fields),
   "\n";
 
 my %results;
@@ -271,8 +331,10 @@ if ($restart_per_workload)
 	{
 		for my $workload (@requested_workloads)
 		{
-			run_lane($lane, [ $workload ], $script_dir, $tps_fh, $samples_fh,
-				$resources_fh, $resource_baselines_fh, \%results, $workload);
+			run_lane($lane, [ $workload ], $script_dir, $tps_fh,
+				$samples_fh, $resources_fh, $resource_samples_fh,
+				$resource_baselines_fh, $protocol_park_memory_fh, \%results,
+				$workload);
 		}
 	}
 }
@@ -280,30 +342,38 @@ else
 {
 	for my $lane (@lane_specs)
 	{
-		run_lane($lane, \@requested_workloads, $script_dir, $tps_fh, $samples_fh,
-			$resources_fh, $resource_baselines_fh, \%results, undef);
+		run_lane($lane, \@requested_workloads, $script_dir, $tps_fh,
+			$samples_fh, $resources_fh, $resource_samples_fh,
+			$resource_baselines_fh, $protocol_park_memory_fh, \%results,
+			undef);
 	}
 }
 
 close $tps_fh;
 close $samples_fh;
 close $resources_fh;
+close $resource_samples_fh;
 close $resource_baselines_fh;
+close $protocol_park_memory_fh;
 
 write_ratios($out_dir, \@requested_workloads, \@lane_specs, \%results);
 write_resource_efficiency($out_dir, \@requested_workloads, \@lane_specs,
 	\%results);
 write_memory_footprint($out_dir, \@requested_workloads, \@lane_specs,
 	\%results);
+write_protocol_park_memory_summary($out_dir, $protocol_park_memory_path);
 write_summary($out_dir, \@requested_workloads, \@lane_specs, \%results);
 
 print "wrote $tps_path\n";
 print "wrote $samples_path\n";
 print "wrote $resources_path\n";
+print "wrote $resource_samples_path\n";
 print "wrote $resource_baselines_path\n";
+print "wrote $protocol_park_memory_path\n";
 print "wrote ", File::Spec->catfile($out_dir, 'ratios.tsv'), "\n";
 print "wrote ", File::Spec->catfile($out_dir, 'resource_efficiency.tsv'), "\n";
 print "wrote ", File::Spec->catfile($out_dir, 'memory_footprint.tsv'), "\n";
+print "wrote ", File::Spec->catfile($out_dir, 'protocol_park_memory_summary.tsv'), "\n";
 print "wrote ", File::Spec->catfile($out_dir, 'summary.md'), "\n";
 
 sub usage
@@ -339,6 +409,9 @@ Key options:
   --resource-baseline-samples=N
                            idle server samples before each measured workload,
                            default 3
+  --log-protocol-park-memory
+                           enable branch server log attribution at committed
+                           protocol-read parks and write protocol_park_memory.tsv
 
 Additional non-default workloads useful for pooled connection-shape profiles:
   select1_sleep_1ms_prepared
@@ -355,8 +428,14 @@ Output:
   tps.tsv                 summary TPS and latency per lane/workload
   samples.tsv             per-run TPS and latency samples
   server_resources.tsv    max server process/thread counts sampled per workload
+  server_resource_samples.tsv
+                           raw per-sample process-tree memory observations
   server_resource_baselines.tsv
                            idle server resource samples before workload clients
+  protocol_park_memory.tsv
+                           parsed per-park memory-context attribution rows
+  protocol_park_memory_summary.tsv
+                           median per-park memory attribution by lane/workload
   ratios.tsv              per-lane ratios against vanilla, or the first selected lane
   resource_efficiency.tsv derived TPS/thread and memory/client metrics
   memory_footprint.tsv    baseline-adjusted memory footprint estimates
@@ -486,7 +565,8 @@ sub write_file
 sub run_lane
 {
 	my ($lane, $workloads, $script_dir, $tps_fh, $samples_fh, $resources_fh,
-		$resource_baselines_fh, $results, $lane_dir_suffix) = @_;
+		$resource_samples_fh, $resource_baselines_fh,
+		$protocol_park_memory_fh, $results, $lane_dir_suffix) = @_;
 
 	my $lane_dir_name = defined $lane_dir_suffix ?
 		"$lane->{name}_$lane_dir_suffix" : $lane->{name};
@@ -542,8 +622,12 @@ sub run_lane
 			resource_value($baseline_resources, 'max_server_processes'),
 			resource_value($baseline_resources, 'max_server_threads'),
 			resource_value($baseline_resources, 'max_server_rss_kb'),
+			resource_value($baseline_resources, 'max_server_vm_rss_kb'),
 			resource_value($baseline_resources, 'max_server_pss_kb'),
+			resource_value($baseline_resources, 'max_server_shared_kb'),
 			resource_value($baseline_resources, 'max_server_private_kb'),
+			resource_value($baseline_resources, 'max_smaps_rollup_readable'),
+			resource_value($baseline_resources, 'max_smaps_rollup_unreadable'),
 			resource_value($baseline_resources, 'samples')), "\n";
 
 		for my $workload (@$workloads)
@@ -556,7 +640,8 @@ sub run_lane
 				my ($sample_tps, $sample_latency, $sample_failed,
 					$sample_resources) =
 				  run_workload($lane, $workload, $script_dir, $socket_dir,
-					$port, $pgbench_bin, $data_dir);
+					$port, $pgbench_bin, $data_dir, $server_log, $run_index,
+					$resource_samples_fh, $protocol_park_memory_fh);
 
 				push @samples, {
 					tps => $sample_tps,
@@ -584,8 +669,12 @@ sub run_lane
 				resource_value($resources, 'max_server_processes'),
 				resource_value($resources, 'max_server_threads'),
 				resource_value($resources, 'max_server_rss_kb'),
+				resource_value($resources, 'max_server_vm_rss_kb'),
 				resource_value($resources, 'max_server_pss_kb'),
+				resource_value($resources, 'max_server_shared_kb'),
 				resource_value($resources, 'max_server_private_kb'),
+				resource_value($resources, 'max_smaps_rollup_readable'),
+				resource_value($resources, 'max_smaps_rollup_unreadable'),
 				resource_value($resources, 'samples')), "\n";
 			print "    $workload: $summary->{tps} TPS, $summary->{latency} ms";
 			print " (median of $runs runs)" if $runs > 1;
@@ -681,7 +770,8 @@ sub raise_nofile_limit_for_benchmark
 sub run_workload
 {
 	my ($lane, $workload, $script_dir, $socket_dir, $port, $pgbench_bin,
-		$data_dir) = @_;
+		$data_dir, $server_log, $run_index, $resource_samples_fh,
+		$protocol_park_memory_fh) = @_;
 
 	my $spec = $workload_specs{$workload};
 	my @args = @{ $spec->{args} };
@@ -712,9 +802,16 @@ sub run_workload
 	}
 
 	my $bench = File::Spec->catfile($out_dir, "$lane->{name}_${workload}.bench");
-	my $resources = new_server_resource_sample($data_dir);
+	my $resources =
+	  new_server_resource_sample($data_dir, $lane->{name}, $workload,
+		$run_index, $resource_samples_fh);
+	my $protocol_park_log_offset = -e $server_log ? (-s $server_log) : 0;
 	my $output = run_capture([ @base_cmd, '-T', $duration, 'postgres' ],
 		"$lane->{name} $workload", $bench, "$bench.err", $resources);
+
+	parse_protocol_park_memory_log($server_log, $protocol_park_log_offset,
+		$lane->{name}, $workload, $run_index, $protocol_park_memory_fh)
+	  if $log_protocol_park_memory;
 
 	my ($tps) = $output =~ /^tps = ([0-9.]+) /m;
 	my ($latency) = $output =~ /^latency average = ([0-9.]+) ms/m;
@@ -766,8 +863,12 @@ sub new_resource_summary
 		max_server_processes => undef,
 		max_server_threads => undef,
 		max_server_rss_kb => undef,
+		max_server_vm_rss_kb => undef,
 		max_server_pss_kb => undef,
+		max_server_shared_kb => undef,
 		max_server_private_kb => undef,
+		max_smaps_rollup_readable => undef,
+		max_smaps_rollup_unreadable => undef,
 		samples => 0,
 	};
 }
@@ -784,10 +885,18 @@ sub merge_resource_summary
 		$sample->{max_server_threads});
 	update_resource_max($summary, max_server_rss_kb =>
 		$sample->{max_server_rss_kb});
+	update_resource_max($summary, max_server_vm_rss_kb =>
+		$sample->{max_server_vm_rss_kb});
 	update_resource_max($summary, max_server_pss_kb =>
 		$sample->{max_server_pss_kb});
+	update_resource_max($summary, max_server_shared_kb =>
+		$sample->{max_server_shared_kb});
 	update_resource_max($summary, max_server_private_kb =>
 		$sample->{max_server_private_kb});
+	update_resource_max($summary, max_smaps_rollup_readable =>
+		$sample->{max_smaps_rollup_readable});
+	update_resource_max($summary, max_smaps_rollup_unreadable =>
+		$sample->{max_smaps_rollup_unreadable});
 	$summary->{samples} += $sample->{samples}
 	  if defined $sample->{samples};
 }
@@ -868,7 +977,7 @@ sub run_capture
 
 sub new_server_resource_sample
 {
-	my ($data_dir) = @_;
+	my ($data_dir, $lane, $workload, $run_index, $raw_fh) = @_;
 	my $pid = $sample_server_resources ?
 		read_postmaster_pid($data_dir) : undef;
 
@@ -876,11 +985,19 @@ sub new_server_resource_sample
 		enabled => $sample_server_resources,
 		interval_seconds => $resource_sample_interval_ms / 1000,
 		postmaster_pid => $pid,
+		lane => $lane,
+		workload => $workload,
+		run_index => $run_index,
+		raw_fh => $raw_fh,
 		max_server_processes => undef,
 		max_server_threads => undef,
 		max_server_rss_kb => undef,
+		max_server_vm_rss_kb => undef,
 		max_server_pss_kb => undef,
+		max_server_shared_kb => undef,
 		max_server_private_kb => undef,
+		max_smaps_rollup_readable => undef,
+		max_smaps_rollup_unreadable => undef,
 		samples => 0,
 	};
 }
@@ -927,10 +1044,16 @@ sub sample_server_resources
 
 	my $threads = 0;
 	my $rss_kb = 0;
+	my $vm_rss_kb = 0;
 	my $pss_kb = 0;
+	my $shared_kb = 0;
 	my $private_kb = 0;
+	my $smaps_rollup_readable = 0;
+	my $smaps_rollup_unreadable = 0;
 	my $saw_rss = 0;
+	my $saw_vm_rss = 0;
 	my $saw_pss = 0;
+	my $saw_shared = 0;
 	my $saw_private = 0;
 
 	for my $pid (@pids)
@@ -944,25 +1067,118 @@ sub sample_server_resources
 			$rss_kb += $memory->{rss_kb};
 			$saw_rss = 1;
 		}
+		if (defined $memory->{vm_rss_kb})
+		{
+			$vm_rss_kb += $memory->{vm_rss_kb};
+			$saw_vm_rss = 1;
+		}
 		if (defined $memory->{pss_kb})
 		{
 			$pss_kb += $memory->{pss_kb};
 			$saw_pss = 1;
+		}
+		if (defined $memory->{shared_kb})
+		{
+			$shared_kb += $memory->{shared_kb};
+			$saw_shared = 1;
 		}
 		if (defined $memory->{private_kb})
 		{
 			$private_kb += $memory->{private_kb};
 			$saw_private = 1;
 		}
+		$smaps_rollup_readable += $memory->{smaps_rollup_readable} || 0;
+		$smaps_rollup_unreadable += $memory->{smaps_rollup_unreadable} || 0;
 	}
 
 	update_resource_max($sample, max_server_processes => scalar @pids);
 	update_resource_max($sample, max_server_threads => $threads);
 	update_resource_max($sample, max_server_rss_kb => $rss_kb) if $saw_rss;
+	update_resource_max($sample, max_server_vm_rss_kb => $vm_rss_kb)
+	  if $saw_vm_rss;
 	update_resource_max($sample, max_server_pss_kb => $pss_kb) if $saw_pss;
+	update_resource_max($sample, max_server_shared_kb => $shared_kb)
+	  if $saw_shared;
 	update_resource_max($sample, max_server_private_kb => $private_kb)
 	  if $saw_private;
+	update_resource_max($sample, max_smaps_rollup_readable =>
+		$smaps_rollup_readable);
+	update_resource_max($sample, max_smaps_rollup_unreadable =>
+		$smaps_rollup_unreadable);
 	$sample->{samples}++;
+
+	write_server_resource_sample($sample, scalar @pids, $threads,
+		$saw_rss ? $rss_kb : undef,
+		$saw_vm_rss ? $vm_rss_kb : undef,
+		$saw_pss ? $pss_kb : undef,
+		$saw_shared ? $shared_kb : undef,
+		$saw_private ? $private_kb : undef,
+		$smaps_rollup_readable,
+		$smaps_rollup_unreadable);
+}
+
+sub write_server_resource_sample
+{
+	my ($sample, $processes, $threads, $rss_kb, $vm_rss_kb, $pss_kb,
+		$shared_kb, $private_kb, $smaps_rollup_readable,
+		$smaps_rollup_unreadable) = @_;
+	my $fh = $sample->{raw_fh};
+
+	return unless defined $fh;
+	return unless defined $sample->{lane} && defined $sample->{workload};
+
+	print $fh join("\t",
+		$sample->{lane},
+		$sample->{workload},
+		defined $sample->{run_index} ? $sample->{run_index} : 'n/a',
+		$sample->{samples},
+		$processes,
+		$threads,
+		defined $rss_kb ? $rss_kb : 'n/a',
+		defined $vm_rss_kb ? $vm_rss_kb : 'n/a',
+		defined $pss_kb ? $pss_kb : 'n/a',
+		defined $shared_kb ? $shared_kb : 'n/a',
+		defined $private_kb ? $private_kb : 'n/a',
+		$smaps_rollup_readable,
+		$smaps_rollup_unreadable), "\n";
+}
+
+sub parse_protocol_park_memory_log
+{
+	my ($server_log, $offset, $lane, $workload, $run_index, $fh) = @_;
+	my $sample_index = 0;
+
+	return unless defined $fh;
+	return unless -e $server_log;
+
+	open my $log_fh, '<', $server_log
+	  or die "could not read $server_log: $!";
+	seek $log_fh, $offset, 0
+	  or die "could not seek $server_log: $!";
+
+	while (defined(my $line = <$log_fh>))
+	{
+		my %fields;
+		my $payload;
+
+		next unless $line =~ /protocol_park_memory\s+(.*)$/;
+		$payload = $1;
+		while ($payload =~ /([A-Za-z0-9_]+)=([^\s]+)/g)
+		{
+			$fields{$1} = $2;
+		}
+
+		$sample_index++;
+		print $fh join("\t",
+			$lane,
+			$workload,
+			$run_index,
+			$sample_index,
+			map { defined $fields{$_} ? $fields{$_} : 'n/a' }
+			  @protocol_park_memory_fields), "\n";
+	}
+
+	close $log_fh;
 }
 
 sub linux_process_tree
@@ -1030,10 +1246,13 @@ sub linux_process_memory_kb
 {
 	my ($pid) = @_;
 	my $rollup = "/proc/$pid/smaps_rollup";
+	my $vm_rss_kb = linux_process_vm_rss_kb($pid);
+	my %memory;
 
 	if (open my $fh, '<', $rollup)
 	{
-		my %memory;
+		$memory{smaps_rollup_readable} = 1;
+		$memory{smaps_rollup_unreadable} = 0;
 		while (defined(my $line = <$fh>))
 		{
 			if ($line =~ /^Rss:\s+(\d+)\s+kB/)
@@ -1044,15 +1263,32 @@ sub linux_process_memory_kb
 			{
 				$memory{pss_kb} = int($1);
 			}
+			elsif ($line =~ /^Shared_(?:Clean|Dirty|Hugetlb):\s+(\d+)\s+kB/)
+			{
+				$memory{shared_kb} += int($1);
+			}
 			elsif ($line =~ /^Private_(?:Clean|Dirty|Hugetlb):\s+(\d+)\s+kB/)
 			{
 				$memory{private_kb} += int($1);
 			}
 		}
 		close $fh;
+		$memory{vm_rss_kb} = $vm_rss_kb if defined $vm_rss_kb;
 		return \%memory if %memory;
 	}
 
+	return undef unless defined $vm_rss_kb;
+
+	return {
+		vm_rss_kb => $vm_rss_kb,
+		smaps_rollup_readable => 0,
+		smaps_rollup_unreadable => 1,
+	};
+}
+
+sub linux_process_vm_rss_kb
+{
+	my ($pid) = @_;
 	my $status = "/proc/$pid/status";
 	open my $fh, '<', $status or return undef;
 	while (defined(my $line = <$fh>))
@@ -1060,7 +1296,7 @@ sub linux_process_memory_kb
 		if ($line =~ /^VmRSS:\s+(\d+)\s+kB/)
 		{
 			close $fh;
-			return { rss_kb => int($1) };
+			return int($1);
 		}
 	}
 	close $fh;
@@ -1177,6 +1413,7 @@ sub write_ratios
 			print $fh join("\t", $workload, $name, $tps, $ratio), "\n";
 		}
 	}
+
 	close $fh;
 }
 
@@ -1188,9 +1425,10 @@ sub write_resource_efficiency
 
 	open my $fh, '>', $path or die "could not write $path: $!";
 	print $fh join("\t", qw(workload lane tps max_server_threads
-		  tps_per_server_thread clients_per_server_thread private_kb_per_client
+		  tps_per_server_thread clients_per_server_thread pss_kb_per_client
+		  private_kb_per_client
 		  tps_per_thread_vs_baseline server_threads_vs_baseline
-		  private_kb_vs_baseline)), "\n";
+		  pss_kb_vs_baseline private_kb_vs_baseline)), "\n";
 
 	for my $workload (@$workloads)
 	{
@@ -1199,6 +1437,8 @@ sub write_resource_efficiency
 		  resource_number($baseline->{resources}, 'max_server_threads');
 		my $baseline_private =
 		  resource_number($baseline->{resources}, 'max_server_private_kb');
+		my $baseline_pss =
+		  resource_number($baseline->{resources}, 'max_server_pss_kb');
 		my $baseline_tps_per_thread =
 		  defined $baseline_threads && $baseline_threads > 0
 		  ? $baseline->{tps} / $baseline_threads
@@ -1213,10 +1453,13 @@ sub write_resource_efficiency
 			my $resources = $result->{resources};
 			my $threads = resource_number($resources, 'max_server_threads');
 			my $private = resource_number($resources, 'max_server_private_kb');
+			my $pss = resource_number($resources, 'max_server_pss_kb');
 			my $tps_per_thread =
 			  defined $threads && $threads > 0 ? $result->{tps} / $threads : undef;
 			my $clients_per_thread =
 			  defined $threads && $threads > 0 ? $clients / $threads : undef;
+			my $pss_per_client =
+			  defined $pss && $clients > 0 ? $pss / $clients : undef;
 			my $private_per_client =
 			  defined $private && $clients > 0 ? $private / $clients : undef;
 
@@ -1227,9 +1470,11 @@ sub write_resource_efficiency
 				defined $threads ? $threads : 'n/a',
 				metric_value($tps_per_thread, 3),
 				metric_value($clients_per_thread, 3),
+				metric_value($pss_per_client, 1),
 				metric_value($private_per_client, 1),
 				metric_ratio($tps_per_thread, $baseline_tps_per_thread, 3),
 				metric_ratio($threads, $baseline_threads, 3),
+				metric_ratio($pss, $baseline_pss, 3),
 				metric_ratio($private, $baseline_private, 3)),
 			  "\n";
 		}
@@ -1246,6 +1491,7 @@ sub write_memory_footprint
 	print $fh join("\t", qw(workload lane clients max_server_processes
 		  max_server_threads baseline_server_processes baseline_server_threads
 		  private_delta_kb pss_delta_kb rss_delta_kb
+		  vm_rss_delta_kb shared_delta_kb
 		  private_delta_per_client_kb pss_delta_per_client_kb
 		  private_delta_per_server_thread_kb pss_delta_per_server_thread_kb
 		  pooled_idle_session_private_kb pooled_carrier_private_kb
@@ -1284,6 +1530,10 @@ sub write_memory_footprint
 			  resource_delta($resources, $baseline, 'max_server_pss_kb');
 			my $rss_delta =
 			  resource_delta($resources, $baseline, 'max_server_rss_kb');
+			my $vm_rss_delta =
+			  resource_delta($resources, $baseline, 'max_server_vm_rss_kb');
+			my $shared_delta =
+			  resource_delta($resources, $baseline, 'max_server_shared_kb');
 			my $private_per_client =
 			  defined $private_delta && $clients > 0
 			  ? $private_delta / $clients
@@ -1310,6 +1560,8 @@ sub write_memory_footprint
 				metric_value($private_delta, 1),
 				metric_value($pss_delta, 1),
 				metric_value($rss_delta, 1),
+				metric_value($vm_rss_delta, 1),
+				metric_value($shared_delta, 1),
 				metric_value($private_per_client, 2),
 				metric_value($pss_per_client, 2),
 				metric_value($private_per_thread, 2),
@@ -1321,6 +1573,139 @@ sub write_memory_footprint
 				pooled_fit_points($private_fit, $pss_fit)),
 			  "\n";
 		}
+	}
+
+	close $fh;
+}
+
+sub append_protocol_park_memory_summary
+{
+	my ($fh, $dir) = @_;
+	my $path = File::Spec->catfile($dir, 'protocol_park_memory_summary.tsv');
+	my %field_index;
+	my @rows;
+
+	return unless -e $path;
+	open my $summary_fh, '<', $path or return;
+	my $header = <$summary_fh>;
+	chomp $header if defined $header;
+	my @header = defined $header ? split /\t/, $header : ();
+	for my $i (0 .. $#header)
+	{
+		$field_index{$header[$i]} = $i;
+	}
+
+	while (defined(my $line = <$summary_fh>))
+	{
+		chomp $line;
+		next if $line eq '';
+		push @rows, [ split /\t/, $line, -1 ];
+	}
+	close $summary_fh;
+	return unless @rows;
+
+	print $fh "\n## Protocol Park Memory Attribution\n\n";
+	print $fh "| Workload | Lane | Park samples | Top used kB | Message used kB | Cache used kB | Current used kB | RowDescription used kB | Client info used kB | Legacy session used kB | Logical struct kB | Runtime struct kB |\n";
+	print $fh "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n";
+	for my $row (@rows)
+	{
+		print $fh "| `", protocol_summary_value($row, \%field_index, 'workload'), "` | `",
+		  protocol_summary_value($row, \%field_index, 'lane'), "` | ",
+		  protocol_summary_value($row, \%field_index, 'park_samples'), " | ",
+		  protocol_summary_value($row, \%field_index,
+			'top_used_bytes_median_kb'), " | ",
+		  protocol_summary_value($row, \%field_index,
+			'message_used_bytes_median_kb'), " | ",
+		  protocol_summary_value($row, \%field_index,
+			'cache_used_bytes_median_kb'), " | ",
+		  protocol_summary_value($row, \%field_index,
+			'current_used_bytes_median_kb'), " | ",
+		  protocol_summary_value($row, \%field_index,
+			'row_description_used_bytes_median_kb'), " | ",
+		  protocol_summary_value($row, \%field_index,
+			'client_info_used_bytes_median_kb'), " | ",
+		  protocol_summary_value($row, \%field_index,
+			'legacy_session_used_bytes_median_kb'), " | ",
+		  protocol_summary_value($row, \%field_index,
+			'sizeof_logical_state_median_kb'), " | ",
+		  protocol_summary_value($row, \%field_index,
+			'sizeof_runtime_state_median_kb'), " |\n";
+	}
+}
+
+sub protocol_summary_value
+{
+	my ($row, $field_index, $name) = @_;
+
+	return 'n/a' unless exists $field_index->{$name};
+	return defined $row->[$field_index->{$name}] &&
+	  $row->[$field_index->{$name}] ne ''
+	  ? $row->[$field_index->{$name}]
+	  : 'n/a';
+}
+
+sub write_protocol_park_memory_summary
+{
+	my ($dir, $raw_path) = @_;
+	my $path = File::Spec->catfile($dir, 'protocol_park_memory_summary.tsv');
+	my %field_index;
+	my %groups;
+
+	open my $raw_fh, '<', $raw_path or die "could not read $raw_path: $!";
+	my $header = <$raw_fh>;
+	chomp $header if defined $header;
+	my @header = defined $header ? split /\t/, $header : ();
+	for my $i (0 .. $#header)
+	{
+		$field_index{$header[$i]} = $i;
+	}
+
+	while (defined(my $line = <$raw_fh>))
+	{
+		chomp $line;
+		next if $line eq '';
+		my @cols = split /\t/, $line, -1;
+		my $lane = $cols[$field_index{lane}];
+		my $workload = $cols[$field_index{workload}];
+		my $key = "$lane\t$workload";
+
+		$groups{$key}{lane} = $lane;
+		$groups{$key}{workload} = $workload;
+		$groups{$key}{count}++;
+		for my $field (@protocol_park_memory_summary_fields)
+		{
+			next unless exists $field_index{$field};
+			my $value = $cols[$field_index{$field}];
+
+			next unless defined $value && $value =~ /^-?\d+(?:\.\d+)?$/;
+			push @{ $groups{$key}{values}{$field} }, $value + 0;
+		}
+	}
+	close $raw_fh;
+
+	open my $fh, '>', $path or die "could not write $path: $!";
+	print $fh join("\t",
+		'workload',
+		'lane',
+		'park_samples',
+		map { "${_}_median_kb" } @protocol_park_memory_summary_fields),
+	  "\n";
+
+	for my $key (sort keys %groups)
+	{
+		my $group = $groups{$key};
+
+		print $fh join("\t",
+			$group->{workload},
+			$group->{lane},
+			$group->{count},
+			map {
+				my $values = $group->{values}{$_};
+				defined $values && @$values
+				  ? metric_value(median(@$values) / 1024, 2)
+				  : 'n/a'
+			} @protocol_park_memory_summary_fields),
+		  "\n";
 	}
 
 	close $fh;
@@ -1476,8 +1861,8 @@ sub write_summary
 	}
 
 	print $fh "\n## Idle server resource baselines\n\n";
-	print $fh "| Workload | Lane | Baseline server processes | Baseline server threads | Baseline RSS kB | Baseline PSS kB | Baseline private kB |\n";
-	print $fh "| --- | --- | ---: | ---: | ---: | ---: | ---: |\n";
+	print $fh "| Workload | Lane | Baseline server processes | Baseline server threads | Baseline smaps RSS kB | Baseline VmRSS kB | Baseline PSS kB | Baseline shared kB | Baseline private kB | smaps readable | smaps unreadable |\n";
+	print $fh "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n";
 	for my $workload (@$workloads)
 	{
 		for my $lane (@$lane_specs)
@@ -1489,14 +1874,18 @@ sub write_summary
 			  resource_value($baseline, 'max_server_processes'), " | ",
 			  resource_value($baseline, 'max_server_threads'), " | ",
 			  resource_value($baseline, 'max_server_rss_kb'), " | ",
+			  resource_value($baseline, 'max_server_vm_rss_kb'), " | ",
 			  resource_value($baseline, 'max_server_pss_kb'), " | ",
-			  resource_value($baseline, 'max_server_private_kb'), " |\n";
+			  resource_value($baseline, 'max_server_shared_kb'), " | ",
+			  resource_value($baseline, 'max_server_private_kb'), " | ",
+			  resource_value($baseline, 'max_smaps_rollup_readable'), " | ",
+			  resource_value($baseline, 'max_smaps_rollup_unreadable'), " |\n";
 		}
 	}
 
 	print $fh "\n## Server resource samples\n\n";
-	print $fh "| Workload | Lane | Max server processes | Max server threads | Max RSS kB | Max PSS kB | Max private kB |\n";
-	print $fh "| --- | --- | ---: | ---: | ---: | ---: | ---: |\n";
+	print $fh "| Workload | Lane | Max server processes | Max server threads | Max smaps RSS kB | Max VmRSS kB | Max PSS kB | Max shared kB | Max private kB | smaps readable | smaps unreadable |\n";
+	print $fh "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n";
 	for my $workload (@$workloads)
 	{
 		for my $lane (@$lane_specs)
@@ -1508,19 +1897,26 @@ sub write_summary
 			  resource_value($resources, 'max_server_processes'), " | ",
 			  resource_value($resources, 'max_server_threads'), " | ",
 			  resource_value($resources, 'max_server_rss_kb'), " | ",
+			  resource_value($resources, 'max_server_vm_rss_kb'), " | ",
 			  resource_value($resources, 'max_server_pss_kb'), " | ",
-			  resource_value($resources, 'max_server_private_kb'), " |\n";
+			  resource_value($resources, 'max_server_shared_kb'), " | ",
+			  resource_value($resources, 'max_server_private_kb'), " | ",
+			  resource_value($resources, 'max_smaps_rollup_readable'), " | ",
+			  resource_value($resources, 'max_smaps_rollup_unreadable'), " |\n";
 		}
 	}
 
 	print $fh "\n## Server Memory Footprint\n\n";
-	print $fh "| Workload | Lane | Private delta/client kB | PSS delta/client kB | Private delta/server thread kB | PSS delta/server thread kB | Pool-est. idle session private kB | Pool-est. carrier private kB |\n";
-	print $fh "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |\n";
+	print $fh "| Workload | Lane | PSS delta/client kB | Private delta/client kB | PSS delta/server thread kB | Private delta/server thread kB | Pool-est. idle session PSS kB | Pool-est. carrier PSS kB | Pool-est. idle session private kB | Pool-est. carrier private kB |\n";
+	print $fh "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n";
 	for my $workload (@$workloads)
 	{
 		my $private_fit =
 		  pooled_memory_fit($workload, $lane_specs, $results,
 			'max_server_private_kb');
+		my $pss_fit =
+		  pooled_memory_fit($workload, $lane_specs, $results,
+			'max_server_pss_kb');
 
 		for my $lane (@$lane_specs)
 		{
@@ -1552,18 +1948,20 @@ sub write_summary
 			  : undef;
 
 			print $fh "| `$workload` | `$name` | ",
-			  metric_value($private_per_client, 2), " | ",
 			  metric_value($pss_per_client, 2), " | ",
-			  metric_value($private_per_thread, 2), " | ",
+			  metric_value($private_per_client, 2), " | ",
 			  metric_value($pss_per_thread, 2), " | ",
+			  metric_value($private_per_thread, 2), " | ",
+			  pooled_fit_session_value($pss_fit), " | ",
+			  pooled_fit_carrier_value($pss_fit), " | ",
 			  pooled_fit_session_value($private_fit), " | ",
 			  pooled_fit_carrier_value($private_fit), " |\n";
 		}
 	}
 
 	print $fh "\n## Server Resource Efficiency\n\n";
-	print $fh "| Workload | Lane | TPS/server thread | Clients/server thread | Private kB/client | TPS/thread / $baseline_lane | Threads / $baseline_lane | Private kB / $baseline_lane |\n";
-	print $fh "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |\n";
+	print $fh "| Workload | Lane | TPS/server thread | Clients/server thread | PSS kB/client | Private kB/client | TPS/thread / $baseline_lane | Threads / $baseline_lane | PSS kB / $baseline_lane | Private kB / $baseline_lane |\n";
+	print $fh "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n";
 	for my $workload (@$workloads)
 	{
 		my $baseline = $results->{$baseline_lane}{$workload};
@@ -1571,6 +1969,8 @@ sub write_summary
 		  resource_number($baseline->{resources}, 'max_server_threads');
 		my $baseline_private =
 		  resource_number($baseline->{resources}, 'max_server_private_kb');
+		my $baseline_pss =
+		  resource_number($baseline->{resources}, 'max_server_pss_kb');
 		my $baseline_tps_per_thread =
 		  defined $baseline_threads && $baseline_threads > 0
 		  ? $baseline->{tps} / $baseline_threads
@@ -1585,21 +1985,29 @@ sub write_summary
 			my $resources = $result->{resources};
 			my $threads = resource_number($resources, 'max_server_threads');
 			my $private = resource_number($resources, 'max_server_private_kb');
+			my $pss = resource_number($resources, 'max_server_pss_kb');
 			my $tps_per_thread =
 			  defined $threads && $threads > 0 ? $result->{tps} / $threads : undef;
 			my $clients_per_thread =
 			  defined $threads && $threads > 0 ? $clients / $threads : undef;
+			my $pss_per_client =
+			  defined $pss && $clients > 0 ? $pss / $clients : undef;
 			my $private_per_client =
 			  defined $private && $clients > 0 ? $private / $clients : undef;
 
 			print $fh "| `$workload` | `$name` | ",
 			  metric_value($tps_per_thread, 3), " | ",
 			  metric_value($clients_per_thread, 3), " | ",
+			  metric_value($pss_per_client, 1), " | ",
 			  metric_value($private_per_client, 1), " | ",
 			  metric_ratio($tps_per_thread, $baseline_tps_per_thread, 3), " | ",
 			  metric_ratio($threads, $baseline_threads, 3), " | ",
+			  metric_ratio($pss, $baseline_pss, 3), " | ",
 			  metric_ratio($private, $baseline_private, 3), " |\n";
 		}
 	}
+
+	append_protocol_park_memory_summary($fh, $dir);
+
 	close $fh;
 }
