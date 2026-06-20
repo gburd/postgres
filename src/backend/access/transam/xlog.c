@@ -5194,7 +5194,9 @@ InitializeWalConsistencyChecking(void)
 
 		set_config_option_ext("wal_consistency_checking",
 							  wal_consistency_checking_string,
-							  guc->scontext, guc->source, guc->srole,
+							  ConfigOptionSetContext(guc),
+							  ConfigOptionSource(guc),
+							  ConfigOptionSetRole(guc),
 							  GUC_ACTION_SET, true, ERROR, false);
 
 		/* checking should not be deferred again */

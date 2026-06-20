@@ -960,6 +960,7 @@ PgSessionInitializeGUCState(PgSessionGUCState *guc)
 	guc->initialized = true;
 	guc->memory_context = NULL;
 	guc->variables = NULL;
+	guc->variable_states = NULL;
 	guc->num_variables = 0;
 	guc->hash_table = NULL;
 	dlist_init(&guc->nondef_list);

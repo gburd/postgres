@@ -188,6 +188,7 @@ extern slist_head * PgCurrentGUCReportListRef(void);
 extern bool * PgCurrentGUCReportingEnabledRef(void);
 extern slist_head * PgCurrentGUCStackListRef(void);
 extern struct config_generic * * PgCurrentGUCVariablesRef(void);
+extern struct config_generic_state * * PgCurrentGUCVariableStatesRef(void);
 extern int * PgCurrentGeqoEffortRef(void);
 extern int * PgCurrentGeqoGenerationsRef(void);
 extern int * PgCurrentGeqoPlannerExtensionIdRef(void);

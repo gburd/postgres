@@ -54,6 +54,15 @@ union config_var_val
 	int			enumval;
 };
 
+union config_var_addr
+{
+	bool	   *boolvar;
+	int		   *intvar;
+	double	   *realvar;
+	char	  **stringvar;
+	int		   *enumvar;
+};
+
 /*
  * The actual value of a GUC variable can include a malloc'd opaque struct
  * "extra", which is created by its check_hook and used by its assign_hook.
@@ -148,6 +157,37 @@ typedef struct guc_stack
 	config_var_value prior;		/* previous value of variable */
 	config_var_value masked;	/* SET value in a GUC_SET_LOCAL entry */
 } GucStack;
+
+struct config_generic;
+
+typedef struct config_generic_state
+{
+	const struct config_generic *record;
+	int			status;			/* status bits, see below */
+	GucSource	source;			/* source of the current actual value */
+	GucSource	reset_source;	/* source of the reset_value */
+	GucContext	scontext;		/* context that set the current value */
+	GucContext	reset_scontext; /* context that set the reset value */
+	Oid			srole;			/* role that set the current value */
+	Oid			reset_srole;	/* role that set the reset value */
+	GucStack   *stack;			/* stacked prior values */
+	void	   *extra;			/* "extra" pointer for current actual value */
+	void	   *reset_extra;
+	dlist_node	nondef_link;	/* list link for variables that have source
+								 * different from PGC_S_DEFAULT */
+	slist_node	stack_link;		/* list link for variables that have non-NULL
+								 * stack */
+	slist_node	report_link;	/* list link for variables that have the
+								 * GUC_NEEDS_REPORT bit set in status */
+	char	   *last_reported;	/* if variable is GUC_REPORT, value last sent
+								 * to client (NULL if not yet sent) */
+	char	   *sourcefile;		/* file current setting is from (NULL if not
+								 * set in config file) */
+	int			sourceline;		/* line in source file */
+
+	union config_var_addr variable;
+	union config_var_val reset_val;
+} config_generic_state;
 
 
 /* GUC records for specific variable types */
@@ -273,6 +313,9 @@ struct config_generic
 	const char *long_desc;		/* long desc. of this variable's purpose */
 	int			flags;			/* flag bits, see guc.h */
 	enum config_type vartype;	/* type of variable */
+	config_generic_state *state; /* per-session mutable state; NULL for
+								 * built-ins, which use the current session's
+								 * state array */
 	/* variable fields, initialized at runtime: */
 	int			status;			/* status bits, see below */
 	GucSource	source;			/* source of the current actual value */
@@ -341,6 +384,13 @@ extern char *ShowGUCOption(const struct config_generic *record, bool use_units);
 
 /* get whether or not the GUC variable is visible to current user */
 extern bool ConfigOptionIsVisible(const struct config_generic *conf);
+extern const union config_var_val *ConfigOptionResetValue(const struct config_generic *conf);
+extern GucSource ConfigOptionSource(const struct config_generic *conf);
+extern GucContext ConfigOptionSetContext(const struct config_generic *conf);
+extern Oid	ConfigOptionSetRole(const struct config_generic *conf);
+extern const char *ConfigOptionSourceFile(const struct config_generic *conf);
+extern int	ConfigOptionSourceLine(const struct config_generic *conf);
+extern bool ConfigOptionPendingRestart(const struct config_generic *conf);
 
 /* get the current set of variables */
 extern struct config_generic **get_guc_variables(int *num_vars);

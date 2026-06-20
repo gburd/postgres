@@ -1577,6 +1577,7 @@ typedef struct PgSessionGUCState
 	bool		initialized;
 	MemoryContext memory_context;
 	struct config_generic *variables;
+	struct config_generic_state *variable_states;
 	int			num_variables;
 	HTAB	   *hash_table;
 	dlist_head	nondef_list;
@@ -2628,6 +2629,7 @@ extern char **PgCurrentExtensionControlPathRef(void);
 extern bool *PgCurrentUpdateProcessTitleRef(void);
 extern MemoryContext *PgCurrentGUCMemoryContextRef(void);
 extern struct config_generic **PgCurrentGUCVariablesRef(void);
+extern struct config_generic_state **PgCurrentGUCVariableStatesRef(void);
 extern int *PgCurrentNumGUCVariablesRef(void);
 extern HTAB **PgCurrentGUCHashTableRef(void);
 extern dlist_head *PgCurrentGUCNondefListRef(void);
