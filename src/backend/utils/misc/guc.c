@@ -240,9 +240,54 @@ GUCRecordColdState(const struct config_generic *record)
 		state->cold = MemoryContextAllocZero(GUCMemoryContext,
 											 sizeof(config_generic_cold_state));
 		state->cold->record = record;
+		state->cold->reset_source = PGC_S_DEFAULT;
+		state->cold->reset_scontext = PGC_INTERNAL;
+		state->cold->reset_srole = BOOTSTRAP_SUPERUSERID;
 	}
 
 	return state->cold;
+}
+
+static GucSource
+GUCRecordResetSource(const struct config_generic *record)
+{
+	config_generic_cold_state *cold = GUCRecordColdStateIfAllocated(record);
+
+	return cold != NULL ? cold->reset_source : PGC_S_DEFAULT;
+}
+
+static GucSource *
+GUCRecordResetSourceRef(const struct config_generic *record)
+{
+	return &GUCRecordColdState(record)->reset_source;
+}
+
+static GucContext
+GUCRecordResetSContext(const struct config_generic *record)
+{
+	config_generic_cold_state *cold = GUCRecordColdStateIfAllocated(record);
+
+	return cold != NULL ? cold->reset_scontext : PGC_INTERNAL;
+}
+
+static GucContext *
+GUCRecordResetSContextRef(const struct config_generic *record)
+{
+	return &GUCRecordColdState(record)->reset_scontext;
+}
+
+static Oid
+GUCRecordResetSRole(const struct config_generic *record)
+{
+	config_generic_cold_state *cold = GUCRecordColdStateIfAllocated(record);
+
+	return cold != NULL ? cold->reset_srole : BOOTSTRAP_SUPERUSERID;
+}
+
+static Oid *
+GUCRecordResetSRoleRef(const struct config_generic *record)
+{
+	return &GUCRecordColdState(record)->reset_srole;
 }
 
 static GucStack *
@@ -358,6 +403,9 @@ GUCRecordResetColdFields(const struct config_generic *record)
 	cold->stack = NULL;
 	cold->extra = NULL;
 	cold->reset_extra = NULL;
+	cold->reset_source = PGC_S_DEFAULT;
+	cold->reset_scontext = PGC_INTERNAL;
+	cold->reset_srole = BOOTSTRAP_SUPERUSERID;
 	cold->last_reported = NULL;
 	cold->sourcefile = NULL;
 	cold->sourceline = 0;
@@ -370,11 +418,17 @@ GUCRecordResetColdFields(const struct config_generic *record)
 #define GUC_REPORT_LINK(record)		(&GUC_COLD(record)->report_link)
 #define GUC_STATUS(record)			(GUC_STATE(record)->status)
 #define GUC_SOURCE(record)			(GUC_STATE(record)->source)
-#define GUC_RESET_SOURCE(record)	(GUC_STATE(record)->reset_source)
+#define GUC_RESET_SOURCE(record)	(GUCRecordResetSource(record))
+#define GUC_RESET_SOURCE_REF(record) \
+	GUCRecordResetSourceRef(record)
 #define GUC_SCONTEXT(record)		(GUC_STATE(record)->scontext)
-#define GUC_RESET_SCONTEXT(record)	(GUC_STATE(record)->reset_scontext)
+#define GUC_RESET_SCONTEXT(record)	(GUCRecordResetSContext(record))
+#define GUC_RESET_SCONTEXT_REF(record) \
+	GUCRecordResetSContextRef(record)
 #define GUC_SROLE(record)			(GUC_STATE(record)->srole)
-#define GUC_RESET_SROLE(record)		(GUC_STATE(record)->reset_srole)
+#define GUC_RESET_SROLE(record)		(GUCRecordResetSRole(record))
+#define GUC_RESET_SROLE_REF(record) \
+	GUCRecordResetSRoleRef(record)
 #define GUC_STACK(record)			(GUCRecordStack(record))
 #define GUC_SET_STACK(record, value) \
 	GUCRecordSetStack((record), (value))
@@ -985,7 +1039,7 @@ ProcessConfigFileInternal(GucContext context, bool applySettings, int elevel)
 		 * not override those settings.
 		 */
 		if (GUC_RESET_SOURCE(gconf) == PGC_S_FILE)
-			GUC_RESET_SOURCE(gconf) = PGC_S_DEFAULT;
+			*GUC_RESET_SOURCE_REF(gconf) = PGC_S_DEFAULT;
 		if (GUC_SOURCE(gconf) == PGC_S_FILE)
 			set_guc_source(gconf, PGC_S_DEFAULT);
 		for (GucStack *stack = GUC_STACK(gconf); stack; stack = stack->prev)
@@ -1041,7 +1095,7 @@ ProcessConfigFileInternal(GucContext context, bool applySettings, int elevel)
 			 * will not override those settings.
 			 */
 			if (GUC_RESET_SOURCE(gconf) == PGC_S_FILE)
-				GUC_RESET_SOURCE(gconf) = PGC_S_DEFAULT;
+				*GUC_RESET_SOURCE_REF(gconf) = PGC_S_DEFAULT;
 			if (GUC_SOURCE(gconf) == PGC_S_FILE)
 				set_guc_source(gconf, PGC_S_DEFAULT);
 			for (GucStack *stack = GUC_STACK(gconf); stack; stack = stack->prev)
@@ -2521,11 +2575,8 @@ InitializeOneGUCOption(struct config_generic *gconf)
 
 	GUC_STATUS(gconf) = 0;
 	GUC_SOURCE(gconf) = PGC_S_DEFAULT;
-	GUC_RESET_SOURCE(gconf) = PGC_S_DEFAULT;
 	GUC_SCONTEXT(gconf) = PGC_INTERNAL;
-	GUC_RESET_SCONTEXT(gconf) = PGC_INTERNAL;
 	GUC_SROLE(gconf) = BOOTSTRAP_SUPERUSERID;
-	GUC_RESET_SROLE(gconf) = BOOTSTRAP_SUPERUSERID;
 	GUC_SET_STACK(gconf, NULL);
 	GUC_SET_EXTRA(gconf, NULL);
 	GUCRecordResetColdFields(gconf);
@@ -2633,11 +2684,8 @@ InitializeOneGUCOptionResetMetadata(struct config_generic *gconf)
 
 	GUC_STATUS(gconf) = 0;
 	GUC_SOURCE(gconf) = PGC_S_DEFAULT;
-	GUC_RESET_SOURCE(gconf) = PGC_S_DEFAULT;
 	GUC_SCONTEXT(gconf) = PGC_INTERNAL;
-	GUC_RESET_SCONTEXT(gconf) = PGC_INTERNAL;
 	GUC_SROLE(gconf) = BOOTSTRAP_SUPERUSERID;
-	GUC_RESET_SROLE(gconf) = BOOTSTRAP_SUPERUSERID;
 	GUC_SET_STACK(gconf, NULL);
 	GUC_SET_EXTRA(gconf, NULL);
 	GUCRecordResetColdFields(gconf);
@@ -4841,9 +4889,9 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 						GUC_RESET_BOOL(record) = newval;
 						set_extra_field(record, GUC_RESET_EXTRA_REF(record),
 										newextra);
-						GUC_RESET_SOURCE(record) = source;
-						GUC_RESET_SCONTEXT(record) = context;
-						GUC_RESET_SROLE(record) = srole;
+						*GUC_RESET_SOURCE_REF(record) = source;
+						*GUC_RESET_SCONTEXT_REF(record) = context;
+						*GUC_RESET_SROLE_REF(record) = srole;
 					}
 					for (GucStack *stack = GUC_STACK(record); stack; stack = stack->prev)
 					{
@@ -4937,9 +4985,9 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 						GUC_RESET_INT(record) = newval;
 						set_extra_field(record, GUC_RESET_EXTRA_REF(record),
 										newextra);
-						GUC_RESET_SOURCE(record) = source;
-						GUC_RESET_SCONTEXT(record) = context;
-						GUC_RESET_SROLE(record) = srole;
+						*GUC_RESET_SOURCE_REF(record) = source;
+						*GUC_RESET_SCONTEXT_REF(record) = context;
+						*GUC_RESET_SROLE_REF(record) = srole;
 					}
 					for (GucStack *stack = GUC_STACK(record); stack; stack = stack->prev)
 					{
@@ -5033,9 +5081,9 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 						GUC_RESET_REAL(record) = newval;
 						set_extra_field(record, GUC_RESET_EXTRA_REF(record),
 										newextra);
-						GUC_RESET_SOURCE(record) = source;
-						GUC_RESET_SCONTEXT(record) = context;
-						GUC_RESET_SROLE(record) = srole;
+						*GUC_RESET_SOURCE_REF(record) = source;
+						*GUC_RESET_SCONTEXT_REF(record) = context;
+						*GUC_RESET_SROLE_REF(record) = srole;
 					}
 					for (GucStack *stack = GUC_STACK(record); stack; stack = stack->prev)
 					{
@@ -5215,9 +5263,9 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 										 newval);
 						set_extra_field(record, GUC_RESET_EXTRA_REF(record),
 										newextra);
-						GUC_RESET_SOURCE(record) = source;
-						GUC_RESET_SCONTEXT(record) = context;
-						GUC_RESET_SROLE(record) = srole;
+						*GUC_RESET_SOURCE_REF(record) = source;
+						*GUC_RESET_SCONTEXT_REF(record) = context;
+						*GUC_RESET_SROLE_REF(record) = srole;
 					}
 					for (GucStack *stack = GUC_STACK(record); stack; stack = stack->prev)
 					{
@@ -5315,9 +5363,9 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 						GUC_RESET_ENUM(record) = newval;
 						set_extra_field(record, GUC_RESET_EXTRA_REF(record),
 										newextra);
-						GUC_RESET_SOURCE(record) = source;
-						GUC_RESET_SCONTEXT(record) = context;
-						GUC_RESET_SROLE(record) = srole;
+						*GUC_RESET_SOURCE_REF(record) = source;
+						*GUC_RESET_SCONTEXT_REF(record) = context;
+						*GUC_RESET_SROLE_REF(record) = srole;
 					}
 					for (GucStack *stack = GUC_STACK(record); stack; stack = stack->prev)
 					{

@@ -164,6 +164,9 @@ typedef struct config_generic_state config_generic_state;
 typedef struct config_generic_cold_state
 {
 	const struct config_generic *record;	/* owning GUC record */
+	GucSource	reset_source;	/* source of the reset_value */
+	GucContext	reset_scontext; /* context that set the reset value */
+	Oid			reset_srole;	/* role that set the reset value */
 	GucStack   *stack;			/* stacked prior values */
 	void	   *extra;			/* "extra" pointer for current actual value */
 	void	   *reset_extra;
@@ -185,11 +188,8 @@ struct config_generic_state
 	config_generic_cold_state *cold;
 	int			status;			/* status bits, see below */
 	GucSource	source;			/* source of the current actual value */
-	GucSource	reset_source;	/* source of the reset_value */
 	GucContext	scontext;		/* context that set the current value */
-	GucContext	reset_scontext; /* context that set the reset value */
 	Oid			srole;			/* role that set the current value */
-	Oid			reset_srole;	/* role that set the reset value */
 
 	union config_var_addr variable;
 	union config_var_val reset_val;
