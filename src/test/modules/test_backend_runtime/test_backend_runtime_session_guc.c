@@ -194,6 +194,9 @@ test_runtime_extension_module_state_is_runtime_local(PG_FUNCTION_ARGS)
 	MemoryContext runtime1_bloom_context = NULL;
 	MemoryContext runtime2_context = NULL;
 	MemoryContext runtime2_bloom_context = NULL;
+	void	  **runtime1_private = NULL;
+	void	  **runtime2_private = NULL;
+	const char *runtime_private_key = "test_backend_runtime.runtime_private";
 	List	   *runtime1_advisors = (List *) &fake_runtime1;
 	List	   *runtime2_advisors = (List *) &fake_runtime2;
 	const char *stage = "initial";
@@ -208,9 +211,8 @@ test_runtime_extension_module_state_is_runtime_local(PG_FUNCTION_ARGS)
 		stage = "runtime1 default";
 		PgSetCurrentRuntime(&fake_runtime1);
 		extension_modules = PgCurrentRuntimeExtensionModuleState();
-		ok = ok && extension_modules->pg_plan_advice_context == NULL;
-		ok = ok && extension_modules->pg_plan_advice_advisor_hook_list == NIL;
-		ok = ok && extension_modules->bloom_context == NULL;
+		ok = ok && extension_modules->private_states == NIL;
+		ok = ok && PgRuntimeGetExtensionPrivateState(runtime_private_key) == NULL;
 
 		stage = "runtime1 set";
 		runtime1_context =
@@ -224,18 +226,24 @@ test_runtime_extension_module_state_is_runtime_local(PG_FUNCTION_ARGS)
 		*PgCurrentPgPlanAdviceContextRef() = runtime1_context;
 		*PgCurrentPgPlanAdviceAdvisorHookListRef() = runtime1_advisors;
 		*PgCurrentBloomContextRef() = runtime1_bloom_context;
+		runtime1_private = (void **)
+			PgRuntimeEnsureExtensionPrivateState(runtime_private_key,
+												 sizeof(void *),
+												 NULL);
+		*runtime1_private = &fake_runtime1;
 		extension_modules = PgCurrentRuntimeExtensionModuleState();
-		ok = ok && extension_modules->pg_plan_advice_context == runtime1_context;
-		ok = ok && extension_modules->pg_plan_advice_advisor_hook_list ==
+		ok = ok && *PgCurrentPgPlanAdviceContextRef() == runtime1_context;
+		ok = ok && *PgCurrentPgPlanAdviceAdvisorHookListRef() ==
 			runtime1_advisors;
-		ok = ok && extension_modules->bloom_context == runtime1_bloom_context;
+		ok = ok && *PgCurrentBloomContextRef() == runtime1_bloom_context;
+		ok = ok && *(void **) PgRuntimeGetExtensionPrivateState(runtime_private_key) ==
+			&fake_runtime1;
 
 		stage = "runtime2 default";
 		PgSetCurrentRuntime(&fake_runtime2);
 		extension_modules = PgCurrentRuntimeExtensionModuleState();
-		ok = ok && extension_modules->pg_plan_advice_context == NULL;
-		ok = ok && extension_modules->pg_plan_advice_advisor_hook_list == NIL;
-		ok = ok && extension_modules->bloom_context == NULL;
+		ok = ok && extension_modules->private_states == NIL;
+		ok = ok && PgRuntimeGetExtensionPrivateState(runtime_private_key) == NULL;
 
 		stage = "runtime2 set";
 		runtime2_context =
@@ -249,19 +257,28 @@ test_runtime_extension_module_state_is_runtime_local(PG_FUNCTION_ARGS)
 		*PgCurrentPgPlanAdviceContextRef() = runtime2_context;
 		*PgCurrentPgPlanAdviceAdvisorHookListRef() = runtime2_advisors;
 		*PgCurrentBloomContextRef() = runtime2_bloom_context;
+		runtime2_private = (void **)
+			PgRuntimeEnsureExtensionPrivateState(runtime_private_key,
+												 sizeof(void *),
+												 NULL);
+		*runtime2_private = &fake_runtime2;
 		extension_modules = PgCurrentRuntimeExtensionModuleState();
-		ok = ok && extension_modules->pg_plan_advice_context == runtime2_context;
-		ok = ok && extension_modules->pg_plan_advice_advisor_hook_list ==
+		ok = ok && *PgCurrentPgPlanAdviceContextRef() == runtime2_context;
+		ok = ok && *PgCurrentPgPlanAdviceAdvisorHookListRef() ==
 			runtime2_advisors;
-		ok = ok && extension_modules->bloom_context == runtime2_bloom_context;
+		ok = ok && *PgCurrentBloomContextRef() == runtime2_bloom_context;
+		ok = ok && *(void **) PgRuntimeGetExtensionPrivateState(runtime_private_key) ==
+			&fake_runtime2;
 
 		stage = "runtime1 restore";
 		PgSetCurrentRuntime(&fake_runtime1);
 		extension_modules = PgCurrentRuntimeExtensionModuleState();
-		ok = ok && extension_modules->pg_plan_advice_context == runtime1_context;
-		ok = ok && extension_modules->pg_plan_advice_advisor_hook_list ==
+		ok = ok && *PgCurrentPgPlanAdviceContextRef() == runtime1_context;
+		ok = ok && *PgCurrentPgPlanAdviceAdvisorHookListRef() ==
 			runtime1_advisors;
-		ok = ok && extension_modules->bloom_context == runtime1_bloom_context;
+		ok = ok && *PgCurrentBloomContextRef() == runtime1_bloom_context;
+		ok = ok && *(void **) PgRuntimeGetExtensionPrivateState(runtime_private_key) ==
+			&fake_runtime1;
 
 		PgSetCurrentRuntime(saved_runtime);
 	}
@@ -276,6 +293,10 @@ test_runtime_extension_module_state_is_runtime_local(PG_FUNCTION_ARGS)
 			MemoryContextDelete(runtime2_context);
 		if (runtime2_bloom_context != NULL)
 			MemoryContextDelete(runtime2_bloom_context);
+		if (fake_runtime1.extension_modules.memory_context != NULL)
+			MemoryContextDelete(fake_runtime1.extension_modules.memory_context);
+		if (fake_runtime2.extension_modules.memory_context != NULL)
+			MemoryContextDelete(fake_runtime2.extension_modules.memory_context);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -289,6 +310,10 @@ test_runtime_extension_module_state_is_runtime_local(PG_FUNCTION_ARGS)
 		MemoryContextDelete(runtime2_context);
 	if (runtime2_bloom_context != NULL)
 		MemoryContextDelete(runtime2_bloom_context);
+	if (fake_runtime1.extension_modules.memory_context != NULL)
+		MemoryContextDelete(fake_runtime1.extension_modules.memory_context);
+	if (fake_runtime2.extension_modules.memory_context != NULL)
+		MemoryContextDelete(fake_runtime2.extension_modules.memory_context);
 
 	if (!ok)
 		elog(ERROR, "runtime extension module state was not runtime-local at %s",

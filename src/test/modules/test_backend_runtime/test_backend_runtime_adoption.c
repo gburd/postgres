@@ -19,6 +19,8 @@ test_thread_install_adopts_backend_fallback_state(PG_FUNCTION_ARGS)
 	PgBackend  *saved_backend;
 	PgThreadBackendRuntimeState state;
 	Latch		fake_latch;
+	void	  **extension_slot;
+	const char *extension_key = "test_backend_runtime.adoption";
 	bool		ok = true;
 
 	saved_backend = CurrentPgBackend;
@@ -37,8 +39,11 @@ test_thread_install_adopts_backend_fallback_state(PG_FUNCTION_ARGS)
 		PgCurrentAutovacuumState()->av_storage_param_cost_limit = 106;
 		PgCurrentRepackState()->current_segment = 107;
 		PgCurrentAioState()->my_io_worker_id = 108;
-		PgCurrentBackendExtensionModuleState()->pg_stash_advice_state =
-			(struct pgsa_shared_state *) &state;
+		extension_slot = (void **)
+			PgBackendEnsureExtensionPrivateState(extension_key,
+												 sizeof(void *),
+												 NULL);
+		*extension_slot = &state;
 		InterruptPending = true;
 		InterruptHoldoffCount = 109;
 
@@ -59,6 +64,10 @@ test_thread_install_adopts_backend_fallback_state(PG_FUNCTION_ARGS)
 		ok = ok && dlist_is_empty(&state.logical.backend.autovacuum.database_list);
 		ok = ok && state.logical.backend.repack.current_segment == 107;
 		ok = ok && state.logical.backend.aio.my_io_worker_id == 108;
+		PgSetCurrentBackend(&state.logical.backend);
+		extension_slot = (void **) PgBackendGetExtensionPrivateState(extension_key);
+		ok = ok && extension_slot != NULL && *extension_slot == &state;
+		PgSetCurrentBackend(NULL);
 		ok = ok && state.logical.backend.pending_interrupts.interrupt_pending;
 		ok = ok &&
 			state.logical.backend.interrupt_holdoffs.interrupt_holdoff_count == 109;
@@ -77,8 +86,7 @@ test_thread_install_adopts_backend_fallback_state(PG_FUNCTION_ARGS)
 		ok = ok && dlist_is_empty(&PgCurrentAutovacuumState()->database_list);
 		ok = ok && PgCurrentRepackState()->current_segment == 0;
 		ok = ok && PgCurrentAioState()->my_io_worker_id == -1;
-		ok = ok &&
-			PgCurrentBackendExtensionModuleState()->pg_stash_advice_state == NULL;
+		ok = ok && PgBackendGetExtensionPrivateState(extension_key) == NULL;
 		ok = ok && !InterruptPending;
 		ok = ok && InterruptHoldoffCount == 0;
 

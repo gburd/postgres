@@ -35,7 +35,7 @@ PG_GLOBAL_RUNTIME int pg_stash_advice_persist_interval = 30;
 
 /* Backend-local memory context. */
 #define pg_stash_advice_mcxt \
-	(PgCurrentBackendExtensionModuleState()->pg_stash_advice_context)
+	(pg_stash_advice_backend_state()->context)
 
 /* Function prototypes */
 static char *pgsa_advisor(PlannerGlobal *glob,
@@ -43,6 +43,7 @@ static char *pgsa_advisor(PlannerGlobal *glob,
 						  const char *query_string,
 						  int cursorOptions,
 						  ExplainState *es);
+static void pg_stash_advice_backend_state_cleanup(void *arg);
 static bool pgsa_check_stash_name_guc(char **newval, void **extra,
 									  GucSource source);
 static void pgsa_init_shared_state(void *ptr, void *arg);
@@ -58,6 +59,30 @@ static bool pgsa_is_identifier(char *str);
 #define SH_SCOPE extern
 #define SH_DEFINE
 #include "lib/simplehash.h"
+
+PgStashAdviceBackendState *
+pg_stash_advice_backend_state(void)
+{
+	return (PgStashAdviceBackendState *)
+		PgBackendEnsureExtensionPrivateState(PG_STASH_ADVICE_BACKEND_STATE_KEY,
+											 sizeof(PgStashAdviceBackendState),
+											 pg_stash_advice_backend_state_cleanup);
+}
+
+static void
+pg_stash_advice_backend_state_cleanup(void *arg)
+{
+	PgStashAdviceBackendState *state = (PgStashAdviceBackendState *) arg;
+
+	if (state->entry_dshash != NULL)
+		dshash_detach(state->entry_dshash);
+	if (state->stash_dshash != NULL)
+		dshash_detach(state->stash_dshash);
+	if (state->dsa_area != NULL)
+		dsa_detach(state->dsa_area);
+	if (state->context != NULL)
+		MemoryContextDelete(state->context);
+}
 
 /*
  * Initialize this module.

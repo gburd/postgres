@@ -122,6 +122,13 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackend early_backend_fallback = {
 
 static void PgRuntimeProtocolSchedulerRecordResume(PgBackend *backend);
 
+#define BASIC_ARCHIVE_BACKEND_STATE_KEY "basic_archive.backend"
+
+typedef struct PgBasicArchiveBackendState
+{
+	char	   *archive_directory;
+} PgBasicArchiveBackendState;
+
 #define early_backend_core early_backend_fallback.core
 #define early_backend_command early_backend_fallback.command
 #define early_backend_log early_backend_fallback.log_state
@@ -1150,7 +1157,6 @@ PgBackendInitializeExtensionModuleState(PgBackendExtensionModuleState *extension
 	Assert(extension_modules != NULL);
 
 	MemSet(extension_modules, 0, sizeof(*extension_modules));
-	extension_modules->basic_archive_archive_directory = "";
 }
 
 static void
@@ -2616,10 +2622,75 @@ PgCurrentBackendExtensionModuleState(void)
 	return &CurrentPgBackend->extension_modules;
 }
 
+static PgBackendExtensionPrivateState *
+PgBackendFindExtensionPrivateState(PgBackendExtensionModuleState *extension_modules,
+								   const char *key)
+{
+	Assert(extension_modules != NULL);
+	Assert(key != NULL);
+
+	foreach_ptr(PgBackendExtensionPrivateState, private_state,
+				extension_modules->private_states)
+	{
+		if (strcmp(private_state->key, key) == 0)
+			return private_state;
+	}
+
+	return NULL;
+}
+
+void *
+PgBackendGetExtensionPrivateState(const char *key)
+{
+	PgBackendExtensionPrivateState *private_state;
+
+	private_state = PgBackendFindExtensionPrivateState(
+		PgCurrentBackendExtensionModuleState(), key);
+
+	return private_state != NULL ? private_state->state : NULL;
+}
+
+void *
+PgBackendEnsureExtensionPrivateState(const char *key, Size size,
+									 PgExtensionPrivateStateCleanup cleanup)
+{
+	PgBackendExtensionModuleState *extension_modules;
+	PgBackendExtensionPrivateState *private_state;
+	MemoryContext old_context;
+
+	Assert(key != NULL);
+	Assert(size > 0);
+
+	extension_modules = PgCurrentBackendExtensionModuleState();
+	private_state = PgBackendFindExtensionPrivateState(extension_modules, key);
+	if (private_state != NULL)
+		return private_state->state;
+
+	old_context = MemoryContextSwitchTo(TopMemoryContext);
+	private_state = palloc_object(PgBackendExtensionPrivateState);
+	private_state->key = key;
+	private_state->state = palloc0(size);
+	private_state->cleanup = cleanup;
+	extension_modules->private_states =
+		lappend(extension_modules->private_states, private_state);
+	MemoryContextSwitchTo(old_context);
+
+	return private_state->state;
+}
+
 char **
 PgCurrentBasicArchiveDirectoryRef(void)
 {
-	return &PgCurrentBackendExtensionModuleState()->basic_archive_archive_directory;
+	PgBasicArchiveBackendState *state;
+
+	state = (PgBasicArchiveBackendState *)
+		PgBackendEnsureExtensionPrivateState(BASIC_ARCHIVE_BACKEND_STATE_KEY,
+											 sizeof(PgBasicArchiveBackendState),
+											 NULL);
+	if (state->archive_directory == NULL)
+		state->archive_directory = "";
+
+	return &state->archive_directory;
 }
 
 PgBackendTransactionState *

@@ -100,6 +100,10 @@ typedef struct AutoPrewarmReadStreamData
 	BlockNumber nblocks;
 } AutoPrewarmReadStreamData;
 
+typedef struct AutoPrewarmBackendState
+{
+	AutoPrewarmSharedState *state;
+} AutoPrewarmBackendState;
 
 PGDLLEXPORT void autoprewarm_main(Datum main_arg);
 PGDLLEXPORT void autoprewarm_database_main(Datum main_arg);
@@ -115,9 +119,20 @@ static bool apw_init_shmem(void);
 static void apw_detach_shmem(int code, Datum arg);
 static int	apw_compare_blockinfo(const void *p, const void *q);
 
+#define PG_PREWARM_BACKEND_STATE_KEY "pg_prewarm.autoprewarm.backend"
+
+static AutoPrewarmBackendState *
+apw_backend_state(void)
+{
+	return (AutoPrewarmBackendState *)
+		PgBackendEnsureExtensionPrivateState(PG_PREWARM_BACKEND_STATE_KEY,
+											 sizeof(AutoPrewarmBackendState),
+											 NULL);
+}
+
 /* Backend-local pointer to shared autoprewarm state. */
 #define apw_state \
-	(PgCurrentBackendExtensionModuleState()->pg_prewarm_autoprewarm_state)
+	(apw_backend_state()->state)
 
 /* GUC variables. */
 static bool autoprewarm = true; /* start worker? */

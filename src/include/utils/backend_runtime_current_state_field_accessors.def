@@ -62,14 +62,6 @@
 	(&PgCurrentBackendLogState()->line_number)
 #define PgCurrentLogLinePidRef() \
 	(&PgCurrentBackendLogState()->line_pid)
-#define PgCurrentPgPlanAdviceContextRef() \
-	(&PgCurrentRuntimeExtensionModuleState()->pg_plan_advice_context)
-#define PgCurrentPgPlanAdviceAdvisorHookListRef() \
-	(&PgCurrentRuntimeExtensionModuleState()->pg_plan_advice_advisor_hook_list)
-#define PgCurrentBloomContextRef() \
-	(&PgCurrentRuntimeExtensionModuleState()->bloom_context)
-#define PgCurrentRendezvousHashRef() \
-	(&PgCurrentRuntimeExtensionModuleState()->rendezvous_hash)
 #define PgCurrentMyDatabaseIdRef() \
 	(&PgCurrentSessionDatabaseState()->database_id)
 #define PgCurrentMyDatabaseTableSpaceRef() \
@@ -190,8 +182,6 @@
 	(&PgCurrentRepackState()->message_pending)
 #define PgCurrentAioBackendRef() \
 	(&PgCurrentAioState()->my_backend)
-#define PgCurrentBasicArchiveDirectoryRef() \
-	(&PgCurrentBackendExtensionModuleState()->basic_archive_archive_directory)
 #define PgCurrentLocalBackendStatusTableRef() \
 	(&PgCurrentBackendActivityState()->backend_status_table)
 #define PgCurrentLocalNumBackendsRef() \

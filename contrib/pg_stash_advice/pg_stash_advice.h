@@ -22,6 +22,7 @@
 #include "lib/dshash.h"
 #include "storage/lwlock.h"
 #include "utils/backend_runtime.h"
+#include "utils/dsa.h"
 
 #define PGSA_DUMP_FILE		"pg_stash_advice.tsv"
 
@@ -70,6 +71,20 @@ typedef struct pgsa_shared_state
 	pg_atomic_uint64 change_count;
 } pgsa_shared_state;
 
+/* Backend-local attachment state. */
+#define PG_STASH_ADVICE_BACKEND_STATE_KEY "pg_stash_advice.backend"
+
+typedef struct PgStashAdviceBackendState
+{
+	pgsa_shared_state *state;
+	dsa_area   *dsa_area;
+	dshash_table *stash_dshash;
+	dshash_table *entry_dshash;
+	MemoryContext context;
+} PgStashAdviceBackendState;
+
+extern PgStashAdviceBackendState *pg_stash_advice_backend_state(void);
+
 /* For stash ID -> stash name hash table */
 typedef struct pgsa_stash_name
 {
@@ -86,15 +101,14 @@ typedef struct pgsa_stash_name
 #define SH_DECLARE
 #include "lib/simplehash.h"
 
-/* Backend-local attachment state. */
 #define pgsa_state \
-	(PgCurrentBackendExtensionModuleState()->pg_stash_advice_state)
+	(pg_stash_advice_backend_state()->state)
 #define pgsa_dsa_area \
-	(PgCurrentBackendExtensionModuleState()->pg_stash_advice_dsa_area)
+	(pg_stash_advice_backend_state()->dsa_area)
 #define pgsa_stash_dshash \
-	(PgCurrentBackendExtensionModuleState()->pg_stash_advice_stash_dshash)
+	(pg_stash_advice_backend_state()->stash_dshash)
 #define pgsa_entry_dshash \
-	(PgCurrentBackendExtensionModuleState()->pg_stash_advice_entry_dshash)
+	(pg_stash_advice_backend_state()->entry_dshash)
 
 /* Session-local custom GUC backing state. */
 #define PG_STASH_ADVICE_SESSION_STATE_KEY "pg_stash_advice.session"

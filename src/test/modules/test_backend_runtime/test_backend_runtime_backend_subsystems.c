@@ -3113,6 +3113,20 @@ test_backend_aio_state_is_backend_local(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+typedef struct TestBackendExtensionCleanupState
+{
+	bool	   *called;
+} TestBackendExtensionCleanupState;
+
+static void
+test_backend_extension_private_state_cleanup(void *arg)
+{
+	TestBackendExtensionCleanupState *state =
+		(TestBackendExtensionCleanupState *) arg;
+
+	*state->called = true;
+}
+
 PG_FUNCTION_INFO_V1(test_backend_extension_module_state_is_backend_local);
 Datum
 test_backend_extension_module_state_is_backend_local(PG_FUNCTION_ARGS)
@@ -3124,7 +3138,11 @@ test_backend_extension_module_state_is_backend_local(PG_FUNCTION_ARGS)
 	PgBackendExtensionModuleState *extension_modules;
 	char		backend1_archive_directory[] = "backend1_archive";
 	char		reset_archive_directory[] = "reset_archive";
-	MemoryContext reset_pg_stash_context = NULL;
+	void	  **private_slot;
+	TestBackendExtensionCleanupState *cleanup_state;
+	const char *private_key = "test_backend_runtime.backend_private";
+	const char *cleanup_key = "test_backend_runtime.backend_cleanup";
+	bool		cleanup_called = false;
 	bool		ok = true;
 
 	saved_backend = CurrentPgBackend;
@@ -3136,99 +3154,55 @@ test_backend_extension_module_state_is_backend_local(PG_FUNCTION_ARGS)
 	{
 		PgSetCurrentBackend(&fake_backend1);
 		extension_modules = PgCurrentBackendExtensionModuleState();
-		extension_modules->basic_archive_archive_directory = "";
-		ok = ok && strcmp(extension_modules->basic_archive_archive_directory, "") == 0;
-		ok = ok && extension_modules->pg_prewarm_autoprewarm_state == NULL;
-		ok = ok && extension_modules->pg_stash_advice_state == NULL;
-		ok = ok && extension_modules->pg_stash_advice_dsa_area == NULL;
-		ok = ok && extension_modules->pg_stash_advice_stash_dshash == NULL;
-		ok = ok && extension_modules->pg_stash_advice_entry_dshash == NULL;
-		ok = ok && extension_modules->pg_stash_advice_context == NULL;
-		extension_modules->pg_prewarm_autoprewarm_state =
-			(struct AutoPrewarmSharedState *) &fake_backend1;
-		extension_modules->pg_stash_advice_state =
-			(struct pgsa_shared_state *) &fake_backend1;
-		extension_modules->pg_stash_advice_dsa_area =
-			(dsa_area *) &fake_backend1;
-		extension_modules->pg_stash_advice_stash_dshash =
-			(dshash_table *) &fake_backend1;
-		extension_modules->pg_stash_advice_entry_dshash =
-			(dshash_table *) &fake_backend1;
-		extension_modules->pg_stash_advice_context =
-			(MemoryContext) &fake_backend1;
-		extension_modules->basic_archive_archive_directory =
-			backend1_archive_directory;
+		ok = ok && extension_modules->private_states == NIL;
+		ok = ok && PgBackendGetExtensionPrivateState(private_key) == NULL;
+		ok = ok && strcmp(*PgCurrentBasicArchiveDirectoryRef(), "") == 0;
+		*PgCurrentBasicArchiveDirectoryRef() = backend1_archive_directory;
+		private_slot = (void **)
+			PgBackendEnsureExtensionPrivateState(private_key,
+												 sizeof(void *),
+												 NULL);
+		*private_slot = &fake_backend1;
 
 		PgSetCurrentBackend(&fake_backend2);
 		extension_modules = PgCurrentBackendExtensionModuleState();
-		extension_modules->basic_archive_archive_directory = "";
-		ok = ok && strcmp(extension_modules->basic_archive_archive_directory, "") == 0;
-		ok = ok && extension_modules->pg_prewarm_autoprewarm_state == NULL;
-		ok = ok && extension_modules->pg_stash_advice_state == NULL;
-		ok = ok && extension_modules->pg_stash_advice_dsa_area == NULL;
-		ok = ok && extension_modules->pg_stash_advice_stash_dshash == NULL;
-		ok = ok && extension_modules->pg_stash_advice_entry_dshash == NULL;
-		ok = ok && extension_modules->pg_stash_advice_context == NULL;
-		extension_modules->pg_stash_advice_state =
-			(struct pgsa_shared_state *) &fake_backend2;
+		ok = ok && extension_modules->private_states == NIL;
+		ok = ok && PgBackendGetExtensionPrivateState(private_key) == NULL;
+		ok = ok && strcmp(*PgCurrentBasicArchiveDirectoryRef(), "") == 0;
+		private_slot = (void **)
+			PgBackendEnsureExtensionPrivateState(private_key,
+												 sizeof(void *),
+												 NULL);
+		*private_slot = &fake_backend2;
 
 		PgSetCurrentBackend(&fake_backend1);
-		extension_modules = PgCurrentBackendExtensionModuleState();
-		ok = ok && extension_modules->pg_prewarm_autoprewarm_state ==
-			(struct AutoPrewarmSharedState *) &fake_backend1;
-		ok = ok && extension_modules->pg_stash_advice_state ==
-			(struct pgsa_shared_state *) &fake_backend1;
-		ok = ok && extension_modules->pg_stash_advice_dsa_area ==
-			(dsa_area *) &fake_backend1;
-		ok = ok && extension_modules->pg_stash_advice_stash_dshash ==
-			(dshash_table *) &fake_backend1;
-		ok = ok && extension_modules->pg_stash_advice_entry_dshash ==
-			(dshash_table *) &fake_backend1;
-		ok = ok && extension_modules->pg_stash_advice_context ==
-			(MemoryContext) &fake_backend1;
-		ok = ok && strcmp(extension_modules->basic_archive_archive_directory,
+		private_slot = (void **) PgBackendGetExtensionPrivateState(private_key);
+		ok = ok && private_slot != NULL && *private_slot == &fake_backend1;
+		ok = ok && strcmp(*PgCurrentBasicArchiveDirectoryRef(),
 						  "backend1_archive") == 0;
 
 		PgSetCurrentBackend(&fake_backend2);
-		extension_modules = PgCurrentBackendExtensionModuleState();
-		ok = ok && strcmp(extension_modules->basic_archive_archive_directory,
-						  "") == 0;
-		ok = ok && extension_modules->pg_prewarm_autoprewarm_state == NULL;
-		ok = ok && extension_modules->pg_stash_advice_state ==
-			(struct pgsa_shared_state *) &fake_backend2;
-		ok = ok && extension_modules->pg_stash_advice_dsa_area == NULL;
+		private_slot = (void **) PgBackendGetExtensionPrivateState(private_key);
+		ok = ok && private_slot != NULL && *private_slot == &fake_backend2;
+		ok = ok && strcmp(*PgCurrentBasicArchiveDirectoryRef(), "") == 0;
 
-		fake_backend_reset.extension_modules.pg_prewarm_autoprewarm_state =
-			(struct AutoPrewarmSharedState *) &fake_backend_reset;
-		fake_backend_reset.extension_modules.pg_stash_advice_state =
-			(struct pgsa_shared_state *) &fake_backend_reset;
-		reset_pg_stash_context =
-			AllocSetContextCreate(TopMemoryContext,
-								  "test pg_stash_advice context",
-								  ALLOCSET_SMALL_SIZES);
-		fake_backend_reset.extension_modules.pg_stash_advice_context =
-			reset_pg_stash_context;
-		fake_backend_reset.extension_modules.basic_archive_archive_directory =
-			reset_archive_directory;
+		PgSetCurrentBackend(&fake_backend_reset);
+		*PgCurrentBasicArchiveDirectoryRef() = reset_archive_directory;
+		cleanup_state = (TestBackendExtensionCleanupState *)
+			PgBackendEnsureExtensionPrivateState(cleanup_key,
+												 sizeof(TestBackendExtensionCleanupState),
+												 test_backend_extension_private_state_cleanup);
+		cleanup_state->called = &cleanup_called;
+		PgSetCurrentBackend(saved_backend);
 		PgBackendResetClosedState(&fake_backend_reset);
-		reset_pg_stash_context = NULL;
-		ok = ok &&
-			strcmp(fake_backend_reset.extension_modules.basic_archive_archive_directory,
-				   "") == 0;
-		ok = ok &&
-			fake_backend_reset.extension_modules.pg_prewarm_autoprewarm_state == NULL;
-		ok = ok &&
-			fake_backend_reset.extension_modules.pg_stash_advice_state == NULL;
-		ok = ok &&
-			fake_backend_reset.extension_modules.pg_stash_advice_context == NULL;
+		ok = ok && cleanup_called;
+		ok = ok && fake_backend_reset.extension_modules.private_states == NIL;
 
 		PgSetCurrentBackend(saved_backend);
 	}
 	PG_CATCH();
 	{
 		PgSetCurrentBackend(saved_backend);
-		if (reset_pg_stash_context != NULL)
-			MemoryContextDelete(reset_pg_stash_context);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();

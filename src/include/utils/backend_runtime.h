@@ -731,13 +731,7 @@ typedef struct PgBackendAioState
 
 typedef struct PgBackendExtensionModuleState
 {
-	char	   *basic_archive_archive_directory;
-	struct AutoPrewarmSharedState *pg_prewarm_autoprewarm_state;
-	struct pgsa_shared_state *pg_stash_advice_state;
-	dsa_area   *pg_stash_advice_dsa_area;
-	dshash_table *pg_stash_advice_stash_dshash;
-	dshash_table *pg_stash_advice_entry_dshash;
-	MemoryContext pg_stash_advice_context;
+	List	   *private_states;
 } PgBackendExtensionModuleState;
 
 typedef struct PgBackendPgStatPendingState
@@ -1842,7 +1836,8 @@ typedef struct PgSessionFunctionManagerState
 } PgSessionFunctionManagerState;
 
 typedef void (*PgSessionResetCallback) (void *arg);
-typedef void (*PgSessionExtensionPrivateStateCleanup) (void *state);
+typedef void (*PgExtensionPrivateStateCleanup) (void *state);
+typedef PgExtensionPrivateStateCleanup PgSessionExtensionPrivateStateCleanup;
 
 typedef struct PgSessionResetCallbackItem
 {
@@ -1850,12 +1845,16 @@ typedef struct PgSessionResetCallbackItem
 	void	   *arg;
 } PgSessionResetCallbackItem;
 
-typedef struct PgSessionExtensionPrivateState
+typedef struct PgExtensionPrivateState
 {
 	const char *key;
 	void	   *state;
-	PgSessionExtensionPrivateStateCleanup cleanup;
-} PgSessionExtensionPrivateState;
+	PgExtensionPrivateStateCleanup cleanup;
+} PgExtensionPrivateState;
+
+typedef PgExtensionPrivateState PgBackendExtensionPrivateState;
+typedef PgExtensionPrivateState PgRuntimeExtensionPrivateState;
+typedef PgExtensionPrivateState PgSessionExtensionPrivateState;
 
 typedef struct PgSessionExtensionModuleState
 {
@@ -2161,10 +2160,7 @@ typedef struct PgRuntimeServerGUCState
 typedef struct PgRuntimeExtensionModuleState
 {
 	MemoryContext memory_context;
-	MemoryContext pg_plan_advice_context;
-	List	   *pg_plan_advice_advisor_hook_list;
-	MemoryContext bloom_context;
-	HTAB	   *rendezvous_hash;
+	List	   *private_states;
 } PgRuntimeExtensionModuleState;
 
 #define PG_CONNECTION_SEND_BUFFER_SIZE 8192
@@ -3024,6 +3020,9 @@ extern volatile sig_atomic_t *PgCurrentRepackMessagePendingRef(void);
 extern PgBackendAioState *PgCurrentAioState(void);
 extern struct PgAioBackend **PgCurrentAioBackendRef(void);
 extern PgBackendExtensionModuleState *PgCurrentBackendExtensionModuleState(void);
+extern void *PgBackendGetExtensionPrivateState(const char *key);
+extern void *PgBackendEnsureExtensionPrivateState(const char *key, Size size,
+												 PgExtensionPrivateStateCleanup cleanup);
 extern char **PgCurrentBasicArchiveDirectoryRef(void);
 extern TransactionId *PgCurrentCachedFetchXidRef(void);
 extern int *PgCurrentCachedFetchXidStatusRef(void);
@@ -3177,6 +3176,9 @@ extern MemoryContext PgSessionGetDynamicLibraryMemoryContext(PgSession *session)
 extern List **PgCurrentSessionDynamicLibraryInitsRef(void);
 extern PgRuntimeExtensionModuleState *PgCurrentRuntimeExtensionModuleState(void);
 extern MemoryContext PgCurrentRuntimeExtensionModuleMemoryContext(void);
+extern void *PgRuntimeGetExtensionPrivateState(const char *key);
+extern void *PgRuntimeEnsureExtensionPrivateState(const char *key, Size size,
+												 PgExtensionPrivateStateCleanup cleanup);
 extern MemoryContext *PgCurrentPgPlanAdviceContextRef(void);
 extern List **PgCurrentPgPlanAdviceAdvisorHookListRef(void);
 extern MemoryContext *PgCurrentBloomContextRef(void);

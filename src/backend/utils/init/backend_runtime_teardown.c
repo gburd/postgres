@@ -110,13 +110,21 @@ PgBackendResetExtensionModuleClosedState(PgBackendExtensionModuleState *extensio
 {
 	Assert(extension_modules != NULL);
 
-	if (extension_modules->pg_stash_advice_entry_dshash != NULL)
-		dshash_detach(extension_modules->pg_stash_advice_entry_dshash);
-	if (extension_modules->pg_stash_advice_stash_dshash != NULL)
-		dshash_detach(extension_modules->pg_stash_advice_stash_dshash);
-	if (extension_modules->pg_stash_advice_dsa_area != NULL)
-		dsa_detach(extension_modules->pg_stash_advice_dsa_area);
-	PG_RUNTIME_DELETE_MEMORY_CONTEXT(extension_modules->pg_stash_advice_context);
+	foreach_ptr(PgBackendExtensionPrivateState, private_state,
+				extension_modules->private_states)
+	{
+		if (private_state->cleanup != NULL &&
+			private_state->state != NULL)
+			private_state->cleanup(private_state->state);
+	}
+
+	foreach_ptr(PgBackendExtensionPrivateState, private_state,
+				extension_modules->private_states)
+	{
+		if (private_state->state != NULL)
+			pfree(private_state->state);
+	}
+	list_free_deep(extension_modules->private_states);
 
 	PgBackendInitializeExtensionModuleState(extension_modules);
 }
