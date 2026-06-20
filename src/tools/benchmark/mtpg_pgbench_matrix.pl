@@ -26,6 +26,7 @@ my $scale = 10;
 my $max_connections = 100;
 my $shared_buffers = '128MB';
 my $pool_sizes = '4,8,16';
+my $runs = 1;
 my $workloads =
   'builtin_select_simple,builtin_select_prepared,select1_prepared,bench_one_prepared,kv_read_prepared';
 my $lanes = 'vanilla,branch_process,branch_threaded,branch_pool';
@@ -49,6 +50,7 @@ GetOptions(
 	'max-connections=i' => \$max_connections,
 	'shared-buffers=s'  => \$shared_buffers,
 	'pool-sizes=s'      => \$pool_sizes,
+	'runs=i'            => \$runs,
 	'workloads=s'       => \$workloads,
 	'lanes=s'           => \$lanes,
 	'reuse'             => \$reuse,
@@ -71,6 +73,7 @@ die "--threads must be positive\n" if $threads <= 0;
 die "--scale must be positive\n" if $scale <= 0;
 die "--max-connections must exceed --clients\n"
   if $max_connections <= $clients;
+die "--runs must be positive\n" if $runs <= 0;
 die "--resource-sample-interval-ms must be positive\n"
   if $resource_sample_interval_ms <= 0;
 
@@ -211,6 +214,12 @@ my $tps_path = File::Spec->catfile($out_dir, 'tps.tsv');
 open my $tps_fh, '>', $tps_path or die "could not write $tps_path: $!";
 print $tps_fh join("\t", qw(lane workload tps latency_ms failed_transactions)), "\n";
 
+my $samples_path = File::Spec->catfile($out_dir, 'samples.tsv');
+open my $samples_fh, '>', $samples_path
+  or die "could not write $samples_path: $!";
+print $samples_fh
+  join("\t", qw(lane workload run tps latency_ms failed_transactions)), "\n";
+
 my $resources_path = File::Spec->catfile($out_dir, 'server_resources.tsv');
 open my $resources_fh, '>', $resources_path
   or die "could not write $resources_path: $!";
@@ -225,7 +234,7 @@ if ($restart_per_workload)
 	{
 		for my $workload (@requested_workloads)
 		{
-			run_lane($lane, [ $workload ], $script_dir, $tps_fh,
+			run_lane($lane, [ $workload ], $script_dir, $tps_fh, $samples_fh,
 				$resources_fh, \%results, $workload);
 		}
 	}
@@ -234,18 +243,20 @@ else
 {
 	for my $lane (@lane_specs)
 	{
-		run_lane($lane, \@requested_workloads, $script_dir, $tps_fh,
+		run_lane($lane, \@requested_workloads, $script_dir, $tps_fh, $samples_fh,
 			$resources_fh, \%results, undef);
 	}
 }
 
 close $tps_fh;
+close $samples_fh;
 close $resources_fh;
 
 write_ratios($out_dir, \@requested_workloads, \@lane_specs, \%results);
 write_summary($out_dir, \@requested_workloads, \@lane_specs, \%results);
 
 print "wrote $tps_path\n";
+print "wrote $samples_path\n";
 print "wrote $resources_path\n";
 print "wrote ", File::Spec->catfile($out_dir, 'ratios.tsv'), "\n";
 print "wrote ", File::Spec->catfile($out_dir, 'summary.md'), "\n";
@@ -272,6 +283,7 @@ Key options:
   --threads=N             pgbench threads, default 8
   --scale=N               pgbench initialization scale, default 10
   --pool-sizes=LIST       comma-separated pooled carrier counts, default 4,8,16
+  --runs=N                measured repetitions per lane/workload, default 1
   --lanes=LIST            vanilla,branch_process,branch_threaded,branch_pool
   --workloads=LIST        workload names to run
   --restart-per-workload  restart each lane for each workload
@@ -288,7 +300,8 @@ Additional non-default workloads useful for pooled connection-shape profiles:
   select1_connect_prepared
 
 Output:
-  tps.tsv                 raw TPS and latency per lane/workload
+  tps.tsv                 summary TPS and latency per lane/workload
+  samples.tsv             per-run TPS and latency samples
   server_resources.tsv    max server process/thread counts sampled per workload
   ratios.tsv              per-lane ratios against vanilla
   summary.md              Markdown table for quick comparison
@@ -392,8 +405,8 @@ sub write_file
 
 sub run_lane
 {
-	my ($lane, $workloads, $script_dir, $tps_fh, $resources_fh, $results,
-		$lane_dir_suffix) = @_;
+	my ($lane, $workloads, $script_dir, $tps_fh, $samples_fh, $resources_fh,
+		$results, $lane_dir_suffix) = @_;
 
 	my $lane_dir_name = defined $lane_dir_suffix ?
 		"$lane->{name}_$lane_dir_suffix" : $lane->{name};
@@ -445,22 +458,44 @@ sub run_lane
 
 		for my $workload (@$workloads)
 		{
-			my ($tps, $latency, $failed, $resources) =
-			  run_workload($lane, $workload, $script_dir, $socket_dir, $port,
-				$pgbench_bin, $data_dir);
+			my @samples;
+			my $resources = new_resource_summary();
+
+			for my $run_index (1 .. $runs)
+			{
+				my ($sample_tps, $sample_latency, $sample_failed,
+					$sample_resources) =
+				  run_workload($lane, $workload, $script_dir, $socket_dir,
+					$port, $pgbench_bin, $data_dir);
+
+				push @samples, {
+					tps => $sample_tps,
+					latency => $sample_latency,
+					failed => $sample_failed,
+				};
+				merge_resource_summary($resources, $sample_resources);
+				print $samples_fh join("\t", $lane->{name}, $workload,
+					$run_index, $sample_tps, $sample_latency, $sample_failed),
+				  "\n";
+			}
+
+			my $summary = summarize_workload_samples(\@samples);
 			$results->{$lane->{name}}{$workload} = {
-				tps => $tps,
-				latency => $latency,
-				failed => $failed,
+				tps => $summary->{tps},
+				latency => $summary->{latency},
+				failed => $summary->{failed},
 				resources => $resources,
 			};
-			print $tps_fh join("\t", $lane->{name}, $workload, $tps,
-				$latency, $failed), "\n";
+			print $tps_fh join("\t", $lane->{name}, $workload,
+				$summary->{tps}, $summary->{latency}, $summary->{failed}),
+			  "\n";
 			print $resources_fh join("\t", $lane->{name}, $workload,
 				resource_value($resources, 'max_server_processes'),
 				resource_value($resources, 'max_server_threads'),
 				resource_value($resources, 'samples')), "\n";
-			print "    $workload: $tps TPS, $latency ms\n";
+			print "    $workload: $summary->{tps} TPS, $summary->{latency} ms";
+			print " (median of $runs runs)" if $runs > 1;
+			print "\n";
 		}
 	};
 	my $err = $@;
@@ -539,6 +574,63 @@ sub run_workload
 	  unless defined $tps && defined $latency && defined $failed;
 
 	return ($tps, $latency, $failed, $resources);
+}
+
+sub summarize_workload_samples
+{
+	my ($samples) = @_;
+	my @tps_values = map { $_->{tps} } @$samples;
+	my @latency_values = map { $_->{latency} } @$samples;
+	my $failed_total = 0;
+
+	for my $sample (@$samples)
+	{
+		$failed_total += $sample->{failed};
+	}
+
+	return {
+		tps => median(@tps_values),
+		latency => median(@latency_values),
+		failed => $failed_total,
+	};
+}
+
+sub median
+{
+	my @values = sort { $a <=> $b } @_;
+	my $count = scalar @values;
+
+	die "cannot compute median of no samples\n" if $count == 0;
+
+	if ($count % 2)
+	{
+		return $values[int($count / 2)];
+	}
+
+	return ($values[$count / 2 - 1] + $values[$count / 2]) / 2;
+}
+
+sub new_resource_summary
+{
+	return {
+		max_server_processes => undef,
+		max_server_threads => undef,
+		samples => 0,
+	};
+}
+
+sub merge_resource_summary
+{
+	my ($summary, $sample) = @_;
+
+	return unless defined $summary && defined $sample;
+
+	update_resource_max($summary, max_server_processes =>
+		$sample->{max_server_processes});
+	update_resource_max($summary, max_server_threads =>
+		$sample->{max_server_threads});
+	$summary->{samples} += $sample->{samples}
+	  if defined $sample->{samples};
 }
 
 sub bin_path
@@ -805,6 +897,7 @@ sub write_summary
 	print $fh "# mtpg pgbench matrix\n\n";
 	print $fh "- duration: ${duration}s\n";
 	print $fh "- warmup: ${warmup}s\n";
+	print $fh "- runs: $runs\n";
 	print $fh "- clients: $clients\n";
 	print $fh "- threads: $threads\n";
 	print $fh "- max connections: $max_connections\n";
