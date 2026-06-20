@@ -1353,6 +1353,27 @@ clear_last_reported(struct config_generic *conf)
 		guc_free(last_reported);
 }
 
+static char *
+canonicalize_default_string_value(struct config_generic *conf, char *newval)
+{
+	const char *boot_val = conf->_string.boot_val;
+
+	if (boot_val == NULL || newval == NULL || newval == boot_val)
+		return newval;
+	if (strcmp(newval, boot_val) != 0)
+		return newval;
+
+	guc_free(newval);
+	return unconstify(char *, boot_val);
+}
+
+static void
+guc_free_string_value(struct config_generic *conf, char *strval)
+{
+	if (strval != NULL && strval != conf->_string.boot_val)
+		guc_free(strval);
+}
+
 /*
  * Support for assigning to a field of a string GUC item.  Free the prior
  * value if it's not referenced anywhere else in the item (including stacked
@@ -2644,6 +2665,7 @@ InitializeOneGUCOption(struct config_generic *gconf)
 											PGC_S_DEFAULT, LOG))
 					elog(FATAL, "failed to initialize %s to \"%s\"",
 						 gconf->name, newval ? newval : "");
+				newval = canonicalize_default_string_value(gconf, newval);
 				if (conf->assign_hook)
 					conf->assign_hook(newval, extra);
 				*GUC_VARIABLE_STRING(gconf) = GUC_RESET_STRING(gconf) = newval;
@@ -2752,6 +2774,7 @@ InitializeOneGUCOptionResetMetadata(struct config_generic *gconf)
 											PGC_S_DEFAULT, LOG))
 					elog(FATAL, "failed to initialize %s reset value to \"%s\"",
 						 gconf->name, newval ? newval : "");
+				newval = canonicalize_default_string_value(gconf, newval);
 				GUC_RESET_STRING(gconf) = newval;
 				break;
 			}
@@ -7508,10 +7531,12 @@ RestoreGUCState(void *gucstate)
 				break;
 			case PGC_STRING:
 				{
-					guc_free(*GUC_VARIABLE_STRING(gconf));
+					guc_free_string_value(gconf,
+										  *GUC_VARIABLE_STRING(gconf));
 					if (GUC_RESET_STRING(gconf) &&
 						GUC_RESET_STRING(gconf) != *GUC_VARIABLE_STRING(gconf))
-						guc_free(GUC_RESET_STRING(gconf));
+						guc_free_string_value(gconf,
+											  GUC_RESET_STRING(gconf));
 					break;
 				}
 		}
