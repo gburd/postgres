@@ -1410,7 +1410,7 @@ PgBackendBufferAllocationContext(void)
 	if (TopMemoryContext != NULL)
 		return PgRuntimeGetOwnedMemoryContextWithSizes(&buffers->buffer_context,
 													   "BackendBufferContext",
-													   ALLOCSET_DEFAULT_SIZES);
+													   ALLOCSET_START_SMALL_SIZES);
 	if (CurrentMemoryContext != NULL)
 		return CurrentMemoryContext;
 
