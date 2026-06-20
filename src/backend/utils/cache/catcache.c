@@ -112,6 +112,7 @@ static void CatCacheRemoveCList(CatCache *cache, CatCList *cl);
 static void RehashCatCache(CatCache *cp);
 static void RehashCatCacheLists(CatCache *cp);
 static void CatalogCacheInitializeCache(CatCache *cache);
+static inline void EnsureCatCacheBuckets(CatCache *cache);
 static CatCTup *CatalogCacheCreateEntry(CatCache *cache, HeapTuple ntp,
 										Datum *arguments,
 										uint32 hashValue, Index hashIndex);
@@ -581,14 +582,15 @@ PgCatCacheCollectMemoryStats(PgCatCacheMemoryStatsCallback callback, void *arg)
 		stats.relname = cache->cc_relname;
 		stats.ntup = cache->cc_ntup;
 		stats.nlist = cache->cc_nlist;
-		stats.nbuckets = cache->cc_nbuckets;
+		stats.nbuckets = cache->cc_bucket != NULL ? cache->cc_nbuckets : 0;
 		stats.nlbuckets = cache->cc_nlbuckets;
 		stats.cache_header_bytes = MAXALIGN(sizeof(CatCache));
-		stats.bucket_bytes = cache->cc_nbuckets * sizeof(dlist_head);
+		if (cache->cc_bucket != NULL)
+			stats.bucket_bytes = cache->cc_nbuckets * sizeof(dlist_head);
 		if (cache->cc_lbucket != NULL)
 			stats.bucket_bytes += cache->cc_nlbuckets * sizeof(dlist_head);
 
-		for (int i = 0; i < cache->cc_nbuckets; i++)
+		for (int i = 0; cache->cc_bucket != NULL && i < cache->cc_nbuckets; i++)
 		{
 			dlist_iter	tuple_iter;
 
@@ -792,6 +794,9 @@ CatCacheInvalidate(CatCache *cache, uint32 hashValue)
 	/*
 	 * inspect the proper hash bucket for tuple matches
 	 */
+	if (cache->cc_bucket == NULL)
+		return;
+
 	hashIndex = HASH_INDEX(hashValue, cache->cc_nbuckets);
 	dlist_foreach_modify(iter, &cache->cc_bucket[hashIndex])
 	{
@@ -891,7 +896,7 @@ ResetCatalogCache(CatCache *cache, bool debug_discard)
 	}
 
 	/* Remove each tuple in this cache, or at least mark it dead */
-	for (i = 0; i < cache->cc_nbuckets; i++)
+	for (i = 0; cache->cc_bucket != NULL && i < cache->cc_nbuckets; i++)
 	{
 		dlist_head *bucket = &cache->cc_bucket[i];
 
@@ -1065,7 +1070,7 @@ InitCatCache(int id,
 	 */
 	cp = (CatCache *) palloc_aligned(sizeof(CatCache), PG_CACHE_LINE_SIZE,
 									 MCXT_ALLOC_ZERO);
-	cp->cc_bucket = palloc0(nbuckets * sizeof(dlist_head));
+	cp->cc_bucket = NULL;
 
 	/*
 	 * Many catcaches never receive any list searches.  Therefore, we don't
@@ -1112,6 +1117,17 @@ InitCatCache(int id,
 	MemoryContextSwitchTo(oldcxt);
 
 	return cp;
+}
+
+static inline void
+EnsureCatCacheBuckets(CatCache *cache)
+{
+	if (likely(cache->cc_bucket != NULL))
+		return;
+
+	cache->cc_bucket =
+		(dlist_head *) MemoryContextAllocZero(CacheMemoryContext,
+											  cache->cc_nbuckets * sizeof(dlist_head));
 }
 
 /*
@@ -1558,6 +1574,7 @@ SearchCatCacheInternal(CatCache *cache,
 	 * one-time startup overhead for each cache
 	 */
 	ConditionalCatalogCacheInitializeCache(cache);
+	EnsureCatCacheBuckets(cache);
 
 #ifdef CATCACHE_STATS
 	cache->cc_searches++;
@@ -1894,6 +1911,7 @@ SearchCatCacheList(CatCache *cache,
 	 * one-time startup overhead for each cache
 	 */
 	ConditionalCatalogCacheInitializeCache(cache);
+	EnsureCatCacheBuckets(cache);
 
 	Assert(nkeys > 0 && nkeys < cache->cc_nkeys);
 
