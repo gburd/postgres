@@ -90,6 +90,13 @@ typedef struct DblinkSessionState
 	bool		reset_registered;
 } DblinkSessionState;
 
+typedef struct DblinkRuntimeState
+{
+	uint32		we_connect;
+	uint32		we_get_conn;
+	uint32		we_get_result;
+} DblinkRuntimeState;
+
 typedef struct storeInfo
 {
 	FunctionCallInfo fcinfo;
@@ -152,6 +159,7 @@ static bool is_valid_dblink_fdw_option(const PQconninfoOption *options, const ch
 static bool dblink_connstr_has_required_scram_options(const char *connstr);
 static MemoryContext dblink_get_context(void);
 static void dblink_reset_session_state(void *arg);
+static DblinkRuntimeState *dblink_runtime_state(void);
 static DblinkSessionState *dblink_session_state(void);
 
 /* Session-local state, exposed through compatibility macros. */
@@ -161,9 +169,11 @@ static DblinkSessionState *dblink_session_state(void);
 #define dblink_reset_registered (dblink_session_state()->reset_registered)
 
 /* custom wait event values, retrieved from shared memory */
-static uint32 dblink_we_connect = 0;
-static uint32 dblink_we_get_conn = 0;
-static uint32 dblink_we_get_result = 0;
+#define dblink_we_connect (dblink_runtime_state()->we_connect)
+#define dblink_we_get_conn (dblink_runtime_state()->we_get_conn)
+#define dblink_we_get_result (dblink_runtime_state()->we_get_result)
+
+#define DBLINK_RUNTIME_STATE_KEY "dblink.runtime"
 
 /*
  *	Following is hash that holds multiple remote connections.
@@ -2602,6 +2612,15 @@ dblink_session_state(void)
 	return (DblinkSessionState *)
 		PgSessionEnsureExtensionPrivateState(DBLINK_SESSION_STATE_KEY,
 											 sizeof(DblinkSessionState),
+											 NULL);
+}
+
+static DblinkRuntimeState *
+dblink_runtime_state(void)
+{
+	return (DblinkRuntimeState *)
+		PgRuntimeEnsureExtensionPrivateState(DBLINK_RUNTIME_STATE_KEY,
+											 sizeof(DblinkRuntimeState),
 											 NULL);
 }
 

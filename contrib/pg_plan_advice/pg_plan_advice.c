@@ -35,6 +35,24 @@ PG_MODULE_MAGIC_EXT(
 );
 
 #define PG_PLAN_ADVICE_SESSION_STATE_KEY "pg_plan_advice.session"
+#define PG_PLAN_ADVICE_EXPLAIN_RUNTIME_STATE_KEY \
+	"pg_plan_advice.explain.runtime"
+
+typedef struct PgPlanAdviceExplainRuntimeState
+{
+	explain_per_plan_hook_type prev_explain_per_plan;
+	int			es_extension_id;
+} PgPlanAdviceExplainRuntimeState;
+
+static PgPlanAdviceExplainRuntimeState *
+pg_plan_advice_explain_runtime_state(void)
+{
+	return (PgPlanAdviceExplainRuntimeState *)
+		PgRuntimeEnsureExtensionPrivateState(
+			PG_PLAN_ADVICE_EXPLAIN_RUNTIME_STATE_KEY,
+			sizeof(PgPlanAdviceExplainRuntimeState),
+			NULL);
+}
 
 PgPlanAdviceSessionState *
 pg_plan_advice_session_state(void)
@@ -58,10 +76,10 @@ pg_plan_advice_session_state(void)
 #define advisor_hook_list (*PgCurrentPgPlanAdviceAdvisorHookListRef())
 
 /* Saved hook value */
-static explain_per_plan_hook_type prev_explain_per_plan = NULL;
-
-/* Other file-level globals */
-static int	es_extension_id;
+#define prev_explain_per_plan \
+	(pg_plan_advice_explain_runtime_state()->prev_explain_per_plan)
+#define es_extension_id \
+	(pg_plan_advice_explain_runtime_state()->es_extension_id)
 
 static void pg_plan_advice_explain_option_handler(ExplainState *es,
 												  DefElem *opt,

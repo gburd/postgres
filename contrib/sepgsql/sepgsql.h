@@ -36,6 +36,9 @@
 
 typedef struct SePgsqlSessionState
 {
+	bool		initialized;
+	int			mode;
+	bool		debug_audit;
 	MemoryContext context;
 	MemoryContext avc_context;
 	char	   *client_label_peer;
@@ -49,7 +52,15 @@ typedef struct SePgsqlSessionState
 	char	   *avc_unlabeled;
 } SePgsqlSessionState;
 
+typedef struct SePgsqlRuntimeState
+{
+	bool		initialized;
+	int			startup_mode;
+	bool		permissive;
+} SePgsqlRuntimeState;
+
 extern SePgsqlSessionState *sepgsql_session_state(void);
+extern SePgsqlRuntimeState *sepgsql_runtime_state(void);
 
 /*
  * Internally used code of object classes

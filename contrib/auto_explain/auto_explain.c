@@ -55,8 +55,17 @@ typedef struct auto_explain_extension_options
 	/* a null-terminated copy of the GUC string follows the array */
 } auto_explain_extension_options;
 
+#define AUTO_EXPLAIN_RUNTIME_STATE_KEY "auto_explain.runtime"
 #define AUTO_EXPLAIN_SESSION_STATE_KEY "auto_explain.session"
 #define AUTO_EXPLAIN_EXECUTION_STATE_KEY "auto_explain.execution"
+
+typedef struct AutoExplainRuntimeState
+{
+	ExecutorStart_hook_type prev_ExecutorStart;
+	ExecutorRun_hook_type prev_ExecutorRun;
+	ExecutorFinish_hook_type prev_ExecutorFinish;
+	ExecutorEnd_hook_type prev_ExecutorEnd;
+} AutoExplainRuntimeState;
 
 typedef struct AutoExplainSessionState
 {
@@ -84,6 +93,15 @@ typedef struct AutoExplainExecutionState
 	int			nesting_level;
 	bool		current_query_sampled;
 } AutoExplainExecutionState;
+
+static AutoExplainRuntimeState *
+auto_explain_runtime_state(void)
+{
+	return (AutoExplainRuntimeState *)
+		PgRuntimeEnsureExtensionPrivateState(AUTO_EXPLAIN_RUNTIME_STATE_KEY,
+											 sizeof(AutoExplainRuntimeState),
+											 NULL);
+}
 
 static AutoExplainSessionState *
 auto_explain_session_state(void)
@@ -152,6 +170,15 @@ auto_explain_execution_state(void)
 #define current_query_sampled \
 	(auto_explain_execution_state()->current_query_sampled)
 
+#define prev_ExecutorStart \
+	(auto_explain_runtime_state()->prev_ExecutorStart)
+#define prev_ExecutorRun \
+	(auto_explain_runtime_state()->prev_ExecutorRun)
+#define prev_ExecutorFinish \
+	(auto_explain_runtime_state()->prev_ExecutorFinish)
+#define prev_ExecutorEnd \
+	(auto_explain_runtime_state()->prev_ExecutorEnd)
+
 static auto_explain_extension_options *
 current_auto_explain_extension_options(void)
 {
@@ -184,12 +211,6 @@ static const struct config_enum_entry loglevel_options[] = {
 	(auto_explain_log_min_duration >= 0 && \
 	 (nesting_level == 0 || auto_explain_log_nested_statements) && \
 	 current_query_sampled)
-
-/* Saved hook values */
-static ExecutorStart_hook_type prev_ExecutorStart = NULL;
-static ExecutorRun_hook_type prev_ExecutorRun = NULL;
-static ExecutorFinish_hook_type prev_ExecutorFinish = NULL;
-static ExecutorEnd_hook_type prev_ExecutorEnd = NULL;
 
 static void explain_ExecutorStart(QueryDesc *queryDesc, int eflags);
 static void explain_ExecutorRun(QueryDesc *queryDesc,

@@ -90,10 +90,31 @@ typedef struct ConnCacheEntry
 #define pgfdw_connection_callbacks_registered \
 	(postgres_fdw_session_state()->connection_callbacks_registered)
 
+typedef struct PostgresFdwRuntimeState
+{
+	uint32		we_cleanup_result;
+	uint32		we_connect;
+	uint32		we_get_result;
+} PostgresFdwRuntimeState;
+
+#define POSTGRES_FDW_RUNTIME_STATE_KEY "postgres_fdw.runtime"
+
+static PostgresFdwRuntimeState *
+postgres_fdw_runtime_state(void)
+{
+	return (PostgresFdwRuntimeState *)
+		PgRuntimeEnsureExtensionPrivateState(POSTGRES_FDW_RUNTIME_STATE_KEY,
+											 sizeof(PostgresFdwRuntimeState),
+											 NULL);
+}
+
 /* custom wait event values, retrieved from shared memory */
-static uint32 pgfdw_we_cleanup_result = 0;
-static uint32 pgfdw_we_connect = 0;
-static uint32 pgfdw_we_get_result = 0;
+#define pgfdw_we_cleanup_result \
+	(postgres_fdw_runtime_state()->we_cleanup_result)
+#define pgfdw_we_connect \
+	(postgres_fdw_runtime_state()->we_connect)
+#define pgfdw_we_get_result \
+	(postgres_fdw_runtime_state()->we_get_result)
 
 /*
  * Milliseconds to wait to cancel an in-progress query or execute a cleanup
