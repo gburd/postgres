@@ -168,8 +168,12 @@ typedef struct BindParamCbData
  */
 static int	InteractiveBackend(StringInfo inBuf);
 static int	interactive_getc(void);
-static int	SocketBackend(PgSession *session, StringInfo inBuf,
-						  PgStepBudget budget);
+static int	SocketBackend(PgSession *session, StringInfo inBuf);
+static int	SocketBackendProtocolPark(PgSession *session, StringInfo inBuf);
+static pg_noinline int SocketBackendHandleEOF(void);
+static int	SocketBackendReadMessageBody(PgSession *session, StringInfo inBuf,
+										 int qtype,
+										 volatile uint32 *query_cancel_holdoff_count);
 static int	ReadCommand(PgSession *session, StringInfo inBuf,
 						PgStepBudget budget);
 static void forbidden_in_wal_sender(char firstchar);
@@ -446,84 +450,105 @@ interactive_getc(void)
  * ----------------
  */
 static int
-SocketBackend(PgSession *session, StringInfo inBuf, PgStepBudget budget)
+SocketBackend(PgSession *session, StringInfo inBuf)
 {
-	PgSessionLoopState *state;
 	volatile uint32 *query_cancel_holdoff_count;
 	int			qtype;
-	int			maxmsglen;
 
 	Assert(session != NULL);
-	state = &session->loop_state;
 	query_cancel_holdoff_count = SocketBackendQueryCancelHoldoffRef(session);
 
 	/*
 	 * Get message type code from the frontend.
 	 */
-	if (budget.protocol_park_enabled)
+	(*query_cancel_holdoff_count)++;
+	qtype = pq_startmsgread_getbyte();
+
+	if (qtype == EOF)			/* frontend disconnected */
+		return SocketBackendHandleEOF();
+
+	return SocketBackendReadMessageBody(session, inBuf, qtype,
+										query_cancel_holdoff_count);
+}
+
+static int
+SocketBackendProtocolPark(PgSession *session, StringInfo inBuf)
+{
+	volatile uint32 *query_cancel_holdoff_count;
+	int			qtype;
+	PgProtocolByteProbe probe;
+	PgProtocolByteResult probe_result;
+
+	Assert(session != NULL);
+	query_cancel_holdoff_count = SocketBackendQueryCancelHoldoffRef(session);
+
+	PgSessionServiceProtocolReadWake(session);
+
+	probe_result = PgConnectionProbeMessageType(session->connection,
+												&probe);
+	if (probe_result == PG_PROTOCOL_BYTE_NONE)
 	{
-		PgProtocolByteProbe probe;
-		PgProtocolByteResult probe_result;
+		PgProtocolParkSpec park_spec;
 
-		PgSessionServiceProtocolReadWake(session);
+		MemSet(&park_spec, 0, sizeof(park_spec));
+		park_spec.transport_wait_events = probe.transport_wait_events;
+		park_spec.transport_buffered_input =
+			probe.transport_buffered_input;
+		park_spec.transport_generation = probe.transport_generation;
+		park_spec.wait_event_info = WAIT_EVENT_CLIENT_READ;
 
-		probe_result = PgConnectionProbeMessageType(session->connection,
-													&probe);
-		if (probe_result == PG_PROTOCOL_BYTE_NONE)
-		{
-			PgProtocolParkSpec park_spec;
+		if (PgBackendPrepareProtocolReadPark(session->backend,
+											 &park_spec))
+			return PG_READ_COMMAND_PROTOCOL_PARK;
 
-			MemSet(&park_spec, 0, sizeof(park_spec));
-			park_spec.transport_wait_events = probe.transport_wait_events;
-			park_spec.transport_buffered_input =
-				probe.transport_buffered_input;
-			park_spec.transport_generation = probe.transport_generation;
-			park_spec.wait_event_info = WAIT_EVENT_CLIENT_READ;
-
-			if (PgBackendPrepareProtocolReadPark(session->backend,
-												 &park_spec))
-				return PG_READ_COMMAND_PROTOCOL_PARK;
-
-			(*query_cancel_holdoff_count)++;
-			qtype = pq_startmsgread_getbyte();
-		}
-		else if (probe_result == PG_PROTOCOL_BYTE_AVAILABLE)
-		{
-			qtype = probe.type;
-			(*query_cancel_holdoff_count)++;
-			goto have_message_type;
-		}
-		else
-			qtype = EOF;
-	}
-	else
-	{
 		(*query_cancel_holdoff_count)++;
 		qtype = pq_startmsgread_getbyte();
 	}
+	else if (probe_result == PG_PROTOCOL_BYTE_AVAILABLE)
+	{
+		qtype = probe.type;
+		(*query_cancel_holdoff_count)++;
+	}
+	else
+		qtype = EOF;
 
 	if (qtype == EOF)			/* frontend disconnected */
-	{
-		if (IsTransactionState())
-			ereport(COMMERROR,
-					(errcode(ERRCODE_CONNECTION_FAILURE),
-					 errmsg("unexpected EOF on client connection with an open transaction")));
-		else
-		{
-			/*
-			 * Can't send DEBUG log messages to client at this point. Since
-			 * we're disconnecting right away, we don't need to restore
-			 * whereToSendOutput.
-			 */
-			whereToSendOutput = DestNone;
-			ereport(DEBUG1,
-					(errcode(ERRCODE_CONNECTION_DOES_NOT_EXIST),
-					 errmsg_internal("unexpected EOF on client connection")));
-		}
-		return qtype;
-	}
+		return SocketBackendHandleEOF();
 
-have_message_type:
+	return SocketBackendReadMessageBody(session, inBuf, qtype,
+										query_cancel_holdoff_count);
+}
+
+static pg_noinline int
+SocketBackendHandleEOF(void)
+{
+	if (IsTransactionState())
+		ereport(COMMERROR,
+				(errcode(ERRCODE_CONNECTION_FAILURE),
+				 errmsg("unexpected EOF on client connection with an open transaction")));
+	else
+	{
+		/*
+		 * Can't send DEBUG log messages to client at this point. Since we're
+		 * disconnecting right away, we don't need to restore whereToSendOutput.
+		 */
+		whereToSendOutput = DestNone;
+		ereport(DEBUG1,
+				(errcode(ERRCODE_CONNECTION_DOES_NOT_EXIST),
+				 errmsg_internal("unexpected EOF on client connection")));
+	}
+	return EOF;
+}
+
+static int
+SocketBackendReadMessageBody(PgSession *session, StringInfo inBuf, int qtype,
+							 volatile uint32 *query_cancel_holdoff_count)
+{
+	PgSessionLoopState *state;
+	int			maxmsglen;
+
+	Assert(session != NULL);
+	state = &session->loop_state;
 
 	/*
 	 * Validate message type code before trying to read body; if we have lost
@@ -628,7 +653,12 @@ ReadCommand(PgSession *session, StringInfo inBuf, PgStepBudget budget)
 	Assert(session != NULL);
 
 	if (whereToSendOutput == DestRemote)
-		result = SocketBackend(session, inBuf, budget);
+	{
+		if (unlikely(budget.protocol_park_enabled))
+			result = SocketBackendProtocolPark(session, inBuf);
+		else
+			result = SocketBackend(session, inBuf);
+	}
 	else
 		result = InteractiveBackend(inBuf);
 	return result;
@@ -4766,7 +4796,7 @@ PgSessionStepUnprotected(PgSession *session, PgStepBudget budget)
 	 */
 	firstchar = ReadCommand(session, &input_message, budget);
 
-	if (firstchar == PG_READ_COMMAND_PROTOCOL_PARK)
+	if (unlikely(firstchar == PG_READ_COMMAND_PROTOCOL_PARK))
 		return PG_STEP_PARK_PROTOCOL_READ;
 
 	/*

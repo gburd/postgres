@@ -197,7 +197,6 @@ pq_advance_recv_pointer(PgConnectionSocketIOState *io, size_t amount)
 		return;
 
 	io->recv_pointer += amount;
-	io->transport_generation++;
 }
 
 static bool

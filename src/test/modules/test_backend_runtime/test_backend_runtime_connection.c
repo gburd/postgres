@@ -155,7 +155,7 @@ test_connection_protocol_byte_probe(PG_FUNCTION_ARGS)
 		ok = ok && probe.type == PqMsg_Query;
 		ok = ok && probe.transport_wait_events == 0;
 		ok = ok && probe.transport_buffered_input;
-		ok = ok && probe.transport_generation == 8;
+		ok = ok && probe.transport_generation == 7;
 		ok = ok && socket_io->recv_pointer == 1;
 		ok = ok && pq_is_reading_msg();
 		ok = ok && !PgConnectionCanParkBeforeMessage(&connection);

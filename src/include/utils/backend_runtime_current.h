@@ -260,16 +260,6 @@ variable##MaybeRef(type *(*fallback) (void)) \
 #include "utils/backend_runtime_hot_mirrors.def"
 #undef PG_RUNTIME_HOT_MIRROR
 
-#define PG_RUNTIME_HOT_FIELD_CURRENT_OWNER_carrier CurrentPgCarrier
-#define PG_RUNTIME_HOT_FIELD_CURRENT_OWNER_backend CurrentPgBackend
-#define PG_RUNTIME_HOT_FIELD_CURRENT_OWNER_session CurrentPgSession
-#define PG_RUNTIME_HOT_FIELD_CURRENT_OWNER_connection CurrentPgConnection
-#define PG_RUNTIME_HOT_FIELD_CURRENT_OWNER_execution CurrentPgExecution
-#define PG_RUNTIME_HOT_FIELD_CURRENT_OWNER_(owner) \
-	PG_RUNTIME_HOT_FIELD_CURRENT_OWNER_##owner
-#define PG_RUNTIME_HOT_FIELD_CURRENT_OWNER(owner) \
-	PG_RUNTIME_HOT_FIELD_CURRENT_OWNER_(owner)
-
 #define PG_RUNTIME_HOT_FIELD(variable, owner, type, expr) \
 static inline type * \
 variable##MaybeRef(type *(*fallback) (void)) \
@@ -280,7 +270,7 @@ variable##MaybeRef(type *(*fallback) (void)) \
 	slot = bridge->variable; \
 	if (likely(slot != NULL && \
 			   bridge->variable##Owner == \
-			   (const void *) PG_RUNTIME_HOT_FIELD_CURRENT_OWNER(owner))) \
+			   (const void *) bridge->owner)) \
 		return slot; \
  \
 	PG_RUNTIME_BRIDGE_COUNT_FALLBACK(hot_field); \
@@ -288,14 +278,6 @@ variable##MaybeRef(type *(*fallback) (void)) \
 }
 #include "utils/backend_runtime_hot_fields.def"
 #undef PG_RUNTIME_HOT_FIELD
-
-#undef PG_RUNTIME_HOT_FIELD_CURRENT_OWNER
-#undef PG_RUNTIME_HOT_FIELD_CURRENT_OWNER_
-#undef PG_RUNTIME_HOT_FIELD_CURRENT_OWNER_execution
-#undef PG_RUNTIME_HOT_FIELD_CURRENT_OWNER_connection
-#undef PG_RUNTIME_HOT_FIELD_CURRENT_OWNER_session
-#undef PG_RUNTIME_HOT_FIELD_CURRENT_OWNER_backend
-#undef PG_RUNTIME_HOT_FIELD_CURRENT_OWNER_carrier
 
 #define PG_RUNTIME_HOT_FIELD_REF(variable) \
 	(PgRuntimeCurrentBridgeState.variable)
