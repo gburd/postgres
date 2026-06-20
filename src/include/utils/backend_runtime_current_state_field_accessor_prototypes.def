@@ -146,7 +146,6 @@ extern bool * PgCurrentPgOutputPublicationsValidRef(void);
 extern HTAB ** PgCurrentPgOutputRelationSyncCacheRef(void);
 extern List ** PgCurrentPgPlanAdviceAdvisorHookListRef(void);
 extern MemoryContext * PgCurrentPgPlanAdviceContextRef(void);
-extern PgSessionPgcryptoDesState * PgCurrentPgcryptoDesState(void);
 extern double * PgCurrentPhonyRandomSeedRef(void);
 extern int * PgCurrentPlanCacheModeRef(void);
 extern const char *** PgCurrentPlannerExtensionNameArrayRef(void);

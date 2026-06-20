@@ -49,6 +49,26 @@ test_backend_runtime_session_reset_callback(void *arg)
 	(*counter)++;
 }
 
+typedef struct TestBackendRuntimeExtensionPrivateState
+{
+	int			value;
+	const char *label;
+	int		   *cleanup_count;
+} TestBackendRuntimeExtensionPrivateState;
+
+static const char test_backend_runtime_private_state_key[] =
+	"test_backend_runtime.private_state";
+
+static void
+test_backend_runtime_extension_private_state_cleanup(void *arg)
+{
+	TestBackendRuntimeExtensionPrivateState *state =
+		(TestBackendRuntimeExtensionPrivateState *) arg;
+
+	if (state->cleanup_count != NULL)
+		(*state->cleanup_count)++;
+}
+
 static void
 test_backend_runtime_seed_auto_explain_defaults(PgSessionExtensionModuleState *extension_modules)
 {
@@ -146,87 +166,6 @@ test_backend_runtime_sepgsql_defaults_ok(PgSessionExtensionModuleState *extensio
 		extension_modules->sepgsql_avc_lru_hint == 0 &&
 		extension_modules->sepgsql_avc_threshold == 0 &&
 		extension_modules->sepgsql_avc_unlabeled == NULL;
-}
-
-static bool
-test_backend_runtime_pgcrypto_des_defaults_ok(PgSessionExtensionModuleState *extension_modules)
-{
-	PgSessionPgcryptoDesState *des = extension_modules->pgcrypto_des;
-
-	if (des == NULL)
-		return true;
-
-	return des->des_initialised == 0 &&
-		des->saltbits == 0 &&
-		des->old_salt == 0 &&
-		des->bits28 == NULL &&
-		des->bits24 == NULL &&
-		des->old_rawkey0 == 0 &&
-		des->old_rawkey1 == 0 &&
-		des->init_perm[0] == 0 &&
-		des->final_perm[0] == 0 &&
-		des->en_keysl[0] == 0 &&
-		des->m_sbox[0][0] == 0 &&
-		des->psbox[0][0] == 0 &&
-		des->output[0] == '\0';
-}
-
-static PgSessionPgcryptoDesState *
-test_backend_runtime_ensure_pgcrypto_des(PgSessionExtensionModuleState *extension_modules)
-{
-	if (extension_modules->pgcrypto_des == NULL)
-		extension_modules->pgcrypto_des =
-			palloc0_object(PgSessionPgcryptoDesState);
-
-	return extension_modules->pgcrypto_des;
-}
-
-static void
-test_backend_runtime_seed_pgcrypto_des(PgSessionExtensionModuleState *extension_modules,
-									   uint32 saltbits_value,
-									   const char *output_value,
-									   bool use_de_key)
-{
-	PgSessionPgcryptoDesState *des;
-
-	des = test_backend_runtime_ensure_pgcrypto_des(extension_modules);
-	des->des_initialised = 1;
-	des->saltbits = saltbits_value;
-	des->old_salt = saltbits_value + 1;
-	des->bits28 = use_de_key ? &des->de_keysl[4] : &des->en_keysl[4];
-	des->bits24 = use_de_key ? &des->de_keysr[4] : &des->en_keysr[4];
-	des->init_perm[0] = saltbits_value + 2;
-	des->final_perm[0] = saltbits_value + 3;
-	des->en_keysl[0] = saltbits_value + 4;
-	des->m_sbox[0][0] = saltbits_value + 5;
-	des->psbox[0][0] = saltbits_value + 6;
-	des->old_rawkey0 = saltbits_value + 7;
-	des->old_rawkey1 = saltbits_value + 8;
-	strlcpy(des->output, output_value, sizeof(des->output));
-}
-
-static bool
-test_backend_runtime_pgcrypto_des_seed_ok(PgSessionExtensionModuleState *extension_modules,
-										  uint32 saltbits_value,
-										  const char *output_value,
-										  bool use_de_key)
-{
-	PgSessionPgcryptoDesState *des = extension_modules->pgcrypto_des;
-
-	return des != NULL &&
-		des->des_initialised == 1 &&
-		des->saltbits == saltbits_value &&
-		des->old_salt == saltbits_value + 1 &&
-		des->bits28 == (use_de_key ? &des->de_keysl[4] : &des->en_keysl[4]) &&
-		des->bits24 == (use_de_key ? &des->de_keysr[4] : &des->en_keysr[4]) &&
-		des->init_perm[0] == saltbits_value + 2 &&
-		des->final_perm[0] == saltbits_value + 3 &&
-		des->en_keysl[0] == saltbits_value + 4 &&
-		des->m_sbox[0][0] == saltbits_value + 5 &&
-		des->psbox[0][0] == saltbits_value + 6 &&
-		des->old_rawkey0 == saltbits_value + 7 &&
-		des->old_rawkey1 == saltbits_value + 8 &&
-		strcmp(des->output, output_value) == 0;
 }
 
 PG_FUNCTION_INFO_V1(test_session_catalog_lookup_state_is_session_local);
@@ -745,8 +684,6 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 	char		session2_sepgsql_committed[] = "session2committed";
 	char		session2_sepgsql_func[] = "session2func";
 	char		session2_sepgsql_unlabeled[] = "session2unlabeled";
-	char		session1_pgcrypto_output[] = "session1des";
-	char		session2_pgcrypto_output[] = "session2des";
 	char		session1_pgfdw_appname[] = "session1fdw";
 	char		session2_pgfdw_appname[] = "session2fdw";
 	int			session1_refint_foreign;
@@ -755,6 +692,10 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 	int			session2_refint_primary;
 	int			session1_pgfdw_options;
 	int			session2_pgfdw_options;
+	int			session1_private_state_cleanup_count = 0;
+	int			session2_private_state_cleanup_count = 0;
+	TestBackendRuntimeExtensionPrivateState *session1_extension_private_state;
+	TestBackendRuntimeExtensionPrivateState *session2_extension_private_state;
 	MemoryContext session1_plpython_context = NULL;
 	MemoryContext session1_plperl_context = NULL;
 	MemoryContext session1_pltcl_context = NULL;
@@ -821,7 +762,9 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && test_backend_runtime_refint_defaults_ok(extension_modules);
 		ok = ok && test_backend_runtime_small_contrib_defaults_ok(extension_modules);
 		ok = ok && test_backend_runtime_sepgsql_defaults_ok(extension_modules);
-		ok = ok && test_backend_runtime_pgcrypto_des_defaults_ok(extension_modules);
+		ok = ok && extension_modules->private_states == NIL;
+		ok = ok && PgSessionGetExtensionPrivateState(
+			test_backend_runtime_private_state_key) == NULL;
 		ok = ok && extension_modules->dblink_context == NULL;
 		ok = ok && extension_modules->dblink_persistent_connection == NULL;
 		ok = ok && extension_modules->dblink_remote_conn_hash == NULL;
@@ -924,9 +867,21 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		extension_modules->sepgsql_avc_lru_hint = 34;
 		extension_modules->sepgsql_avc_threshold = 35;
 		extension_modules->sepgsql_avc_unlabeled = session1_sepgsql_unlabeled;
-		test_backend_runtime_seed_pgcrypto_des(extension_modules, 101,
-											   session1_pgcrypto_output,
-											   false);
+		session1_extension_private_state =
+			(TestBackendRuntimeExtensionPrivateState *)
+			PgSessionEnsureExtensionPrivateState(
+				test_backend_runtime_private_state_key,
+				sizeof(TestBackendRuntimeExtensionPrivateState),
+				test_backend_runtime_extension_private_state_cleanup);
+		session1_extension_private_state->value = 101;
+		session1_extension_private_state->label = "session1 private state";
+		session1_extension_private_state->cleanup_count =
+			&session1_private_state_cleanup_count;
+		ok = ok && PgSessionEnsureExtensionPrivateState(
+			test_backend_runtime_private_state_key,
+			sizeof(TestBackendRuntimeExtensionPrivateState),
+			test_backend_runtime_extension_private_state_cleanup) ==
+			session1_extension_private_state;
 		extension_modules->dblink_context = session1_dblink_context;
 		extension_modules->dblink_persistent_connection = &session1_private;
 		extension_modules->dblink_remote_conn_hash = &session1_reset_count;
@@ -975,7 +930,9 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && test_backend_runtime_refint_defaults_ok(extension_modules);
 		ok = ok && test_backend_runtime_small_contrib_defaults_ok(extension_modules);
 		ok = ok && test_backend_runtime_sepgsql_defaults_ok(extension_modules);
-		ok = ok && test_backend_runtime_pgcrypto_des_defaults_ok(extension_modules);
+		ok = ok && extension_modules->private_states == NIL;
+		ok = ok && PgSessionGetExtensionPrivateState(
+			test_backend_runtime_private_state_key) == NULL;
 		ok = ok && extension_modules->dblink_persistent_connection == NULL;
 		ok = ok && extension_modules->dblink_remote_conn_hash == NULL;
 		ok = ok && !extension_modules->dblink_reset_registered;
@@ -1069,9 +1026,21 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		extension_modules->sepgsql_avc_lru_hint = 44;
 		extension_modules->sepgsql_avc_threshold = 45;
 		extension_modules->sepgsql_avc_unlabeled = session2_sepgsql_unlabeled;
-		test_backend_runtime_seed_pgcrypto_des(extension_modules, 201,
-											   session2_pgcrypto_output,
-											   true);
+		session2_extension_private_state =
+			(TestBackendRuntimeExtensionPrivateState *)
+			PgSessionEnsureExtensionPrivateState(
+				test_backend_runtime_private_state_key,
+				sizeof(TestBackendRuntimeExtensionPrivateState),
+				test_backend_runtime_extension_private_state_cleanup);
+		session2_extension_private_state->value = 201;
+		session2_extension_private_state->label = "session2 private state";
+		session2_extension_private_state->cleanup_count =
+			&session2_private_state_cleanup_count;
+		ok = ok && PgSessionEnsureExtensionPrivateState(
+			test_backend_runtime_private_state_key,
+			sizeof(TestBackendRuntimeExtensionPrivateState),
+			test_backend_runtime_extension_private_state_cleanup) ==
+			session2_extension_private_state;
 		session2_dblink_context =
 			AllocSetContextCreate(TopMemoryContext,
 								  "test session2 dblink context",
@@ -1193,10 +1162,13 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && extension_modules->sepgsql_avc_threshold == 35;
 		ok = ok && strcmp(extension_modules->sepgsql_avc_unlabeled,
 						  "session1unlabeled") == 0;
-		ok = ok && test_backend_runtime_pgcrypto_des_seed_ok(extension_modules,
-															 101,
-															 "session1des",
-															 false);
+		ok = ok && PgSessionGetExtensionPrivateState(
+			test_backend_runtime_private_state_key) ==
+			session1_extension_private_state;
+		ok = ok && session1_extension_private_state->value == 101;
+		ok = ok && strcmp(session1_extension_private_state->label,
+						  "session1 private state") == 0;
+		ok = ok && session1_private_state_cleanup_count == 0;
 		ok = ok && extension_modules->dblink_context ==
 			session1_dblink_context;
 		ok = ok && extension_modules->dblink_persistent_connection ==
@@ -1310,10 +1282,13 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && extension_modules->sepgsql_avc_threshold == 45;
 		ok = ok && strcmp(extension_modules->sepgsql_avc_unlabeled,
 						  "session2unlabeled") == 0;
-		ok = ok && test_backend_runtime_pgcrypto_des_seed_ok(extension_modules,
-															 201,
-															 "session2des",
-															 true);
+		ok = ok && PgSessionGetExtensionPrivateState(
+			test_backend_runtime_private_state_key) ==
+			session2_extension_private_state;
+		ok = ok && session2_extension_private_state->value == 201;
+		ok = ok && strcmp(session2_extension_private_state->label,
+						  "session2 private state") == 0;
+		ok = ok && session2_private_state_cleanup_count == 0;
 		ok = ok && extension_modules->dblink_context ==
 			session2_dblink_context;
 		ok = ok && extension_modules->dblink_persistent_connection ==
@@ -1368,7 +1343,8 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && test_backend_runtime_refint_defaults_ok(&fake_session1.extension_modules);
 		ok = ok && test_backend_runtime_small_contrib_defaults_ok(&fake_session1.extension_modules);
 		ok = ok && test_backend_runtime_sepgsql_defaults_ok(&fake_session1.extension_modules);
-		ok = ok && test_backend_runtime_pgcrypto_des_defaults_ok(&fake_session1.extension_modules);
+		ok = ok && fake_session1.extension_modules.private_states == NIL;
+		ok = ok && session1_private_state_cleanup_count == 1;
 		ok = ok && fake_session1.extension_modules.reset_callbacks == NIL;
 		ok = ok && fake_session1.extension_modules.pg_trgm_similarity_threshold == 0.3;
 		ok = ok && fake_session1.extension_modules.pg_trgm_word_similarity_threshold == 0.6;
@@ -1445,10 +1421,8 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && fake_session2.extension_modules.sepgsql_avc_threshold == 45;
 		ok = ok && strcmp(fake_session2.extension_modules.sepgsql_avc_unlabeled,
 						  "session2unlabeled") == 0;
-		ok = ok && test_backend_runtime_pgcrypto_des_seed_ok(&fake_session2.extension_modules,
-															 201,
-															 "session2des",
-															 true);
+		ok = ok && fake_session2.extension_modules.private_states != NIL;
+		ok = ok && session2_private_state_cleanup_count == 0;
 		ok = ok && fake_session2.extension_modules.reset_callbacks != NIL;
 		ok = ok && fake_session2.extension_modules.pg_trgm_similarity_threshold == 0.21;
 		ok = ok && fake_session2.extension_modules.pg_trgm_word_similarity_threshold == 0.22;
@@ -1532,7 +1506,8 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && test_backend_runtime_refint_defaults_ok(&fake_session2.extension_modules);
 		ok = ok && test_backend_runtime_small_contrib_defaults_ok(&fake_session2.extension_modules);
 		ok = ok && test_backend_runtime_sepgsql_defaults_ok(&fake_session2.extension_modules);
-		ok = ok && test_backend_runtime_pgcrypto_des_defaults_ok(&fake_session2.extension_modules);
+		ok = ok && fake_session2.extension_modules.private_states == NIL;
+		ok = ok && session2_private_state_cleanup_count == 1;
 		ok = ok && fake_session2.extension_modules.reset_callbacks == NIL;
 		ok = ok && fake_session2.extension_modules.pg_trgm_similarity_threshold == 0.3;
 		ok = ok && fake_session2.extension_modules.pg_trgm_word_similarity_threshold == 0.6;

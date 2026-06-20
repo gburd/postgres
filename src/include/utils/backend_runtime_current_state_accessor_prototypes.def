@@ -57,7 +57,6 @@ extern PgBackendLogicalReplicationState *PgCurrentLogicalReplicationState(void);
 extern PgBackendMaintenanceWorkerState *PgCurrentMaintenanceWorkerState(void);
 extern PgSessionNamespaceState *PgCurrentNamespaceState(void);
 extern PgBackendPendingInterruptState *PgCurrentPendingInterrupts(void);
-extern PgSessionPgcryptoDesState *PgCurrentPgcryptoDesState(void);
 extern PgBackendRecoveryState *PgCurrentRecoveryState(void);
 extern PgBackendRepackState *PgCurrentRepackState(void);
 extern PgBackendReplicationState *PgCurrentReplicationState(void);

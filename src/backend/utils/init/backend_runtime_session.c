@@ -1500,6 +1500,7 @@ PgSessionInitializeExtensionModuleState(PgSessionExtensionModuleState *extension
 	extension_modules->basebackup_to_shell_required_role = "";
 	extension_modules->isn_weak = false;
 	extension_modules->passwordcheck_min_password_length = 8;
+	extension_modules->private_states = NIL;
 	extension_modules->reset_callbacks = NIL;
 	extension_modules->auto_explain_log_min_duration =
 		AUTO_EXPLAIN_LOG_MIN_DURATION_DEFAULT;
@@ -1549,7 +1550,6 @@ PgSessionInitializeExtensionModuleState(PgSessionExtensionModuleState *extension
 	extension_modules->sepgsql_avc_lru_hint = 0;
 	extension_modules->sepgsql_avc_threshold = 0;
 	extension_modules->sepgsql_avc_unlabeled = NULL;
-	extension_modules->pgcrypto_des = NULL;
 	extension_modules->dblink_context = NULL;
 	extension_modules->dblink_persistent_connection = NULL;
 	extension_modules->dblink_remote_conn_hash = NULL;
@@ -2542,6 +2542,68 @@ PgCurrentSessionExtensionModuleState(void)
 		return &early_session_extension_modules;
 
 	return &CurrentPgSession->extension_modules;
+}
+
+static PgSessionExtensionPrivateState *
+PgSessionFindExtensionPrivateState(PgSessionExtensionModuleState *extension_modules,
+								   const char *key)
+{
+	Assert(extension_modules != NULL);
+	Assert(key != NULL);
+
+	foreach_ptr(PgSessionExtensionPrivateState, private_state,
+				extension_modules->private_states)
+	{
+		if (strcmp(private_state->key, key) == 0)
+			return private_state;
+	}
+
+	return NULL;
+}
+
+void *
+PgSessionGetExtensionPrivateState(const char *key)
+{
+	PgSessionExtensionPrivateState *private_state;
+
+	private_state = PgSessionFindExtensionPrivateState(
+		PgCurrentSessionExtensionModuleState(), key);
+
+	return private_state != NULL ? private_state->state : NULL;
+}
+
+void *
+PgSessionEnsureExtensionPrivateState(const char *key, Size size,
+									 PgSessionExtensionPrivateStateCleanup cleanup)
+{
+	PgSessionExtensionModuleState *extension_modules;
+	PgSessionExtensionPrivateState *private_state;
+	MemoryContext alloc_context;
+	MemoryContext old_context;
+
+	Assert(key != NULL);
+	Assert(size > 0);
+
+	extension_modules = PgCurrentSessionExtensionModuleState();
+	private_state = PgSessionFindExtensionPrivateState(extension_modules, key);
+	if (private_state != NULL)
+		return private_state->state;
+
+	if (CurrentPgSession != NULL)
+		alloc_context = PgSessionGetDynamicLibraryMemoryContext(CurrentPgSession);
+	else
+		alloc_context = TopMemoryContext;
+
+	old_context = MemoryContextSwitchTo(alloc_context);
+	private_state = palloc_object(PgSessionExtensionPrivateState);
+	private_state->key = key;
+	private_state->state = palloc0(size);
+	private_state->cleanup = cleanup;
+	extension_modules->private_states =
+		lappend(extension_modules->private_states, private_state);
+	MemoryContextSwitchTo(old_context);
+
+	return private_state->state;
 }
 
 PgSessionCatalogLookupState *

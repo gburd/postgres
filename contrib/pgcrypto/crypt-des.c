@@ -72,6 +72,42 @@
 static const char _crypt_a64[] =
 "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
+#define PGCRYPTO_DES_SESSION_STATE_KEY "pgcrypto.crypt-des"
+#define PGCRYPTO_DES_OUTPUT_SIZE 21
+
+typedef struct PgcryptoDesState
+{
+	uint8		inv_key_perm[64];
+	uint8		u_key_perm[56];
+	uint8		inv_comp_perm[56];
+	uint8		u_sbox[8][64];
+	uint8		un_pbox[32];
+	uint32		saltbits;
+	long		old_salt;
+	const uint32 *bits28;
+	const uint32 *bits24;
+	uint8		init_perm[64];
+	uint8		final_perm[64];
+	uint32		en_keysl[16];
+	uint32		en_keysr[16];
+	uint32		de_keysl[16];
+	uint32		de_keysr[16];
+	int			des_initialised;
+	uint8		m_sbox[4][4096];
+	uint32		psbox[4][256];
+	uint32		ip_maskl[8][256];
+	uint32		ip_maskr[8][256];
+	uint32		fp_maskl[8][256];
+	uint32		fp_maskr[8][256];
+	uint32		key_perm_maskl[8][128];
+	uint32		key_perm_maskr[8][128];
+	uint32		comp_maskl[8][128];
+	uint32		comp_maskr[8][128];
+	uint32		old_rawkey0;
+	uint32		old_rawkey1;
+	char		output[PGCRYPTO_DES_OUTPUT_SIZE];
+} PgcryptoDesState;
+
 static const uint8 IP[64] = {
 	58, 50, 42, 34, 26, 18, 10, 2, 60, 52, 44, 36, 28, 20, 12, 4,
 	62, 54, 46, 38, 30, 22, 14, 6, 64, 56, 48, 40, 32, 24, 16, 8,
@@ -171,7 +207,7 @@ static const uint32 _crypt_bits32[32] =
 
 static const uint8 _crypt_bits8[8] = {0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01};
 
-#define pgcrypto_des_state (PgCurrentPgcryptoDesState())
+#define pgcrypto_des_state (state)
 #define inv_key_perm (pgcrypto_des_state->inv_key_perm)
 #define u_key_perm (pgcrypto_des_state->u_key_perm)
 #define inv_comp_perm (pgcrypto_des_state->inv_comp_perm)
@@ -202,6 +238,14 @@ static const uint8 _crypt_bits8[8] = {0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 
 #define old_rawkey1 (pgcrypto_des_state->old_rawkey1)
 #define output (pgcrypto_des_state->output)
 
+static PgcryptoDesState *
+pgcrypto_des_state_current(void)
+{
+	return (PgcryptoDesState *)
+		PgSessionEnsureExtensionPrivateState(PGCRYPTO_DES_SESSION_STATE_KEY,
+											 sizeof(PgcryptoDesState), NULL);
+}
+
 static inline int
 ascii_to_bin(char ch)
 {
@@ -221,7 +265,7 @@ ascii_to_bin(char ch)
 }
 
 static void
-des_init(void)
+des_init(PgcryptoDesState *state)
 {
 	int			i,
 				j,
@@ -373,7 +417,7 @@ des_init(void)
 }
 
 static void
-setup_salt(long salt)
+setup_salt(PgcryptoDesState *state, long salt)
 {
 	uint32		obit,
 				saltbit;
@@ -396,7 +440,7 @@ setup_salt(long salt)
 }
 
 static int
-des_setkey(const char *key)
+des_setkey(PgcryptoDesState *state, const char *key)
 {
 	uint32		k0,
 				k1,
@@ -406,7 +450,7 @@ des_setkey(const char *key)
 				round;
 
 	if (!des_initialised)
-		des_init();
+		des_init(state);
 
 	rawkey0 = pg_ntoh32(*(const uint32 *) key);
 	rawkey1 = pg_ntoh32(*(const uint32 *) (key + 4));
@@ -483,7 +527,8 @@ des_setkey(const char *key)
 }
 
 static int
-do_des(uint32 l_in, uint32 r_in, uint32 *l_out, uint32 *r_out, int count)
+do_des(PgcryptoDesState *state, uint32 l_in, uint32 r_in, uint32 *l_out,
+	   uint32 *r_out, int count)
 {
 	/*
 	 * l_in, r_in, l_out, and r_out are in pseudo-"big-endian" format.
@@ -617,7 +662,8 @@ do_des(uint32 l_in, uint32 r_in, uint32 *l_out, uint32 *r_out, int count)
 }
 
 static int
-des_cipher(const char *in, char *out, long salt, int count)
+des_cipher(PgcryptoDesState *state, const char *in, char *out, long salt,
+		   int count)
 {
 	uint32		buffer[2];
 	uint32		l_out,
@@ -627,9 +673,9 @@ des_cipher(const char *in, char *out, long salt, int count)
 	int			retval;
 
 	if (!des_initialised)
-		des_init();
+		des_init(state);
 
-	setup_salt(salt);
+	setup_salt(state, salt);
 
 	/* copy data to avoid assuming input is word-aligned */
 	memcpy(buffer, in, sizeof(buffer));
@@ -637,7 +683,7 @@ des_cipher(const char *in, char *out, long salt, int count)
 	rawl = pg_ntoh32(buffer[0]);
 	rawr = pg_ntoh32(buffer[1]);
 
-	retval = do_des(rawl, rawr, &l_out, &r_out, count);
+	retval = do_des(state, rawl, rawr, &l_out, &r_out, count);
 	if (retval)
 		return retval;
 
@@ -653,6 +699,7 @@ des_cipher(const char *in, char *out, long salt, int count)
 char *
 px_crypt_des(const char *key, const char *setting)
 {
+	PgcryptoDesState *state;
 	int			i;
 	uint32		count,
 				salt,
@@ -663,8 +710,9 @@ px_crypt_des(const char *key, const char *setting)
 	char	   *p;
 	uint8	   *q;
 
+	state = pgcrypto_des_state_current();
 	if (!des_initialised)
-		des_init();
+		des_init(state);
 
 
 	/*
@@ -678,7 +726,7 @@ px_crypt_des(const char *key, const char *setting)
 		if (*key != '\0')
 			key++;
 	}
-	if (des_setkey((char *) keybuf))
+	if (des_setkey(state, (char *) keybuf))
 		return NULL;
 
 #ifndef DISABLE_XDES
@@ -709,7 +757,7 @@ px_crypt_des(const char *key, const char *setting)
 			/*
 			 * Encrypt the key with itself.
 			 */
-			if (des_cipher((char *) keybuf, (char *) keybuf, 0L, 1))
+			if (des_cipher(state, (char *) keybuf, (char *) keybuf, 0L, 1))
 				return NULL;
 
 			/*
@@ -719,7 +767,7 @@ px_crypt_des(const char *key, const char *setting)
 			while (q - (uint8 *) keybuf - 8 && *key)
 				*q++ ^= *key++ << 1;
 
-			if (des_setkey((char *) keybuf))
+			if (des_setkey(state, (char *) keybuf))
 				return NULL;
 		}
 		strlcpy(output, setting, 10);
@@ -760,12 +808,12 @@ px_crypt_des(const char *key, const char *setting)
 
 		p = output + 2;
 	}
-	setup_salt(salt);
+	setup_salt(state, salt);
 
 	/*
 	 * Do it.
 	 */
-	if (do_des(0L, 0L, &r0, &r1, count))
+	if (do_des(state, 0L, 0L, &r0, &r1, count))
 		return NULL;
 
 	/*

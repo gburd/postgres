@@ -783,6 +783,13 @@ PgSessionResetExtensionModuleClosedState(PgSession *session)
 		foreach_ptr(PgSessionResetCallbackItem, item,
 					session->extension_modules.reset_callbacks)
 			item->callback(item->arg);
+		foreach_ptr(PgSessionExtensionPrivateState, private_state,
+					session->extension_modules.private_states)
+		{
+			if (private_state->cleanup != NULL &&
+				private_state->state != NULL)
+				private_state->cleanup(private_state->state);
+		}
 		PgSetCurrentSession(saved_session);
 	}
 	PG_CATCH();
@@ -792,6 +799,13 @@ PgSessionResetExtensionModuleClosedState(PgSession *session)
 	}
 	PG_END_TRY();
 
+	foreach_ptr(PgSessionExtensionPrivateState, private_state,
+				session->extension_modules.private_states)
+	{
+		if (private_state->state != NULL)
+			pfree(private_state->state);
+	}
+	list_free_deep(session->extension_modules.private_states);
 	list_free_deep(session->extension_modules.reset_callbacks);
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(
 		session->extension_modules.plpython_memory_context);
@@ -805,8 +819,6 @@ PgSessionResetExtensionModuleClosedState(PgSession *session)
 		session->extension_modules.sepgsql_context);
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(
 		session->extension_modules.sepgsql_avc_context);
-	if (session->extension_modules.pgcrypto_des != NULL)
-		pfree(session->extension_modules.pgcrypto_des);
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(
 		session->extension_modules.dblink_context);
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(
