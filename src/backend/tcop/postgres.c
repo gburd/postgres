@@ -168,14 +168,19 @@ typedef struct BindParamCbData
  */
 static int	InteractiveBackend(StringInfo inBuf);
 static int	interactive_getc(void);
-static int	SocketBackend(PgSession *session, StringInfo inBuf);
-static int	SocketBackendProtocolPark(PgSession *session, StringInfo inBuf);
+static pg_attribute_always_inline int SocketBackend(PgSession *session,
+													StringInfo inBuf);
+static pg_attribute_always_inline int SocketBackendProtocolPark(PgSession *session,
+																StringInfo inBuf);
 static pg_noinline int SocketBackendHandleEOF(void);
-static int	SocketBackendReadMessageBody(PgSession *session, StringInfo inBuf,
-										 int qtype,
-										 volatile uint32 *query_cancel_holdoff_count);
-static int	ReadCommand(PgSession *session, StringInfo inBuf);
-static int	ReadCommandProtocolPark(PgSession *session, StringInfo inBuf);
+static pg_attribute_always_inline int SocketBackendReadMessageBody(PgSession *session,
+																   StringInfo inBuf,
+																   int qtype,
+																   volatile uint32 *query_cancel_holdoff_count);
+static pg_attribute_always_inline int ReadCommand(PgSession *session,
+												  StringInfo inBuf);
+static pg_attribute_always_inline int ReadCommandProtocolPark(PgSession *session,
+															  StringInfo inBuf);
 static void forbidden_in_wal_sender(char firstchar);
 static bool check_log_statement(List *stmt_list);
 static int	errdetail_execute(List *raw_parsetree_list);
@@ -451,7 +456,7 @@ interactive_getc(void)
  *	EOF is returned if the connection is lost.
  * ----------------
  */
-static int
+static pg_attribute_always_inline int
 SocketBackend(PgSession *session, StringInfo inBuf)
 {
 	volatile uint32 *query_cancel_holdoff_count;
@@ -473,7 +478,7 @@ SocketBackend(PgSession *session, StringInfo inBuf)
 										query_cancel_holdoff_count);
 }
 
-static int
+static pg_attribute_always_inline int
 SocketBackendProtocolPark(PgSession *session, StringInfo inBuf)
 {
 	volatile uint32 *query_cancel_holdoff_count;
@@ -542,7 +547,7 @@ SocketBackendHandleEOF(void)
 	return EOF;
 }
 
-static int
+static pg_attribute_always_inline int
 SocketBackendReadMessageBody(PgSession *session, StringInfo inBuf, int qtype,
 							 volatile uint32 *query_cancel_holdoff_count)
 {
@@ -647,7 +652,7 @@ SocketBackendReadMessageBody(PgSession *session, StringInfo inBuf, int qtype,
  *		EOF is returned if end of file.
  * ----------------
  */
-static int
+static pg_attribute_always_inline int
 ReadCommand(PgSession *session, StringInfo inBuf)
 {
 	int			result;
@@ -661,7 +666,7 @@ ReadCommand(PgSession *session, StringInfo inBuf)
 	return result;
 }
 
-static int
+static pg_attribute_always_inline int
 ReadCommandProtocolPark(PgSession *session, StringInfo inBuf)
 {
 	int			result;

@@ -147,8 +147,8 @@ static bool socket_is_send_pending(void);
 static int	socket_putmessage(char msgtype, const char *s, size_t len);
 static void socket_putmessage_noblock(char msgtype, const char *s, size_t len);
 static inline PgConnectionSocketIOState *PqSocketIO(void);
-static inline void pq_advance_recv_pointer(PgConnectionSocketIOState *io,
-										   size_t amount);
+static pg_attribute_always_inline void pq_advance_recv_pointer(PgConnectionSocketIOState *io,
+															   size_t amount);
 static bool pq_connection_transport_buffered_input(PgConnection *connection);
 static uint32 pq_connection_transport_wait_events(PgConnection *connection);
 static inline int pq_getbyte_from(PgConnectionSocketIOState *io);
@@ -188,13 +188,10 @@ PqSocketIO(void)
 	return PgCurrentConnectionSocketIORef();
 }
 
-static inline void
+static pg_attribute_always_inline void
 pq_advance_recv_pointer(PgConnectionSocketIOState *io, size_t amount)
 {
 	Assert(io != NULL);
-
-	if (amount == 0)
-		return;
 
 	io->recv_pointer += amount;
 }
@@ -1257,23 +1254,6 @@ pq_getbytes_from(PgConnectionSocketIOState *io, void *b, size_t len)
 		len -= amount;
 	}
 	return 0;
-}
-
-/* --------------------------------
- *		pq_discardbytes		- throw away a known number of bytes
- *
- *		same as pq_getbytes except we do not copy the data to anyplace.
- *		this is used for resynchronizing after read errors.
- *
- *		returns 0 if OK, EOF if trouble
- * --------------------------------
- */
-static int
-pq_discardbytes(size_t len)
-{
-	PgConnectionSocketIOState *io = PqSocketIO();
-
-	return pq_discardbytes_from(io, len);
 }
 
 static int
