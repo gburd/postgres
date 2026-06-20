@@ -78,6 +78,8 @@ die "--runs must be positive\n" if $runs <= 0;
 die "--resource-sample-interval-ms must be positive\n"
   if $resource_sample_interval_ms <= 0;
 
+raise_nofile_limit_for_benchmark(benchmark_max_files_per_process($max_connections));
+
 my @pool_sizes = grep { length($_) } split /,/, $pool_sizes;
 for my $size (@pool_sizes)
 {
@@ -543,10 +545,50 @@ sub append_config
 sub benchmark_max_files_per_process
 {
 	my ($connections) = @_;
-	my $fd_budget = $connections * 8;
+	my $fd_budget = $connections * 16;
 
 	return $fd_budget > $default_max_files_per_process ?
 	  $fd_budget : $default_max_files_per_process;
+}
+
+sub raise_nofile_limit_for_benchmark
+{
+	my ($needed) = @_;
+
+	return if $^O ne 'linux';
+	return if $needed <= 0;
+
+	my $ok = eval {
+		require 'sys/syscall.ph';
+		1;
+	};
+	if (!$ok || !defined &SYS_prlimit64)
+	{
+		warn "could not inspect RLIMIT_NOFILE for benchmark: $@\n";
+		return;
+	}
+
+	my $old_limit = pack('QQ', 0, 0);
+	if (syscall(&SYS_prlimit64, 0, 7, 0, $old_limit) != 0)
+	{
+		warn "could not inspect RLIMIT_NOFILE for benchmark: $!\n";
+		return;
+	}
+
+	my ($soft, $hard) = unpack('QQ', $old_limit);
+	return if $soft >= $needed;
+
+	if ($hard < $needed)
+	{
+		warn "benchmark needs RLIMIT_NOFILE >= $needed, but hard limit is $hard\n";
+		return;
+	}
+
+	my $new_limit = pack('QQ', $needed, $hard);
+	if (syscall(&SYS_prlimit64, 0, 7, $new_limit, 0) != 0)
+	{
+		warn "could not raise RLIMIT_NOFILE to $needed for benchmark: $!\n";
+	}
 }
 
 sub run_workload
