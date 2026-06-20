@@ -6456,7 +6456,7 @@ PostgresBootstrapSession(const char *dbname, const char *username)
 	 */
 	PgRuntimeGetOwnedMemoryContextWithSizes(PgMessageContextRef(),
 											"MessageContext",
-											ALLOCSET_DEFAULT_SIZES);
+											ALLOCSET_START_SMALL_SIZES);
 
 	/*
 	 * Create memory context and buffer used for RowDescription messages. As
