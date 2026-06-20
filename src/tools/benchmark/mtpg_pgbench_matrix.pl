@@ -307,7 +307,7 @@ Output:
   tps.tsv                 summary TPS and latency per lane/workload
   samples.tsv             per-run TPS and latency samples
   server_resources.tsv    max server process/thread counts sampled per workload
-  ratios.tsv              per-lane ratios against vanilla
+  ratios.tsv              per-lane ratios against vanilla, or the first selected lane
   summary.md              Markdown table for quick comparison
 USAGE
 }
@@ -321,6 +321,14 @@ sub lane_selected
 		return 1 if $lane->{name} eq $name;
 	}
 	return 0;
+}
+
+sub ratio_baseline_lane
+{
+	my ($lane_specs) = @_;
+
+	return 'vanilla' if lane_selected('vanilla', $lane_specs);
+	return $lane_specs->[0]{name};
 }
 
 sub verify_install
@@ -1012,20 +1020,27 @@ sub write_ratios
 {
 	my ($dir, $workloads, $lane_specs, $results) = @_;
 	my $path = File::Spec->catfile($dir, 'ratios.tsv');
+	my $baseline_lane = ratio_baseline_lane($lane_specs);
+	my $ratio_header = "ratio_vs_$baseline_lane";
+
+	$ratio_header =~ s/[^A-Za-z0-9_]/_/g;
 
 	open my $fh, '>', $path or die "could not write $path: $!";
-	print $fh join("\t", qw(workload lane tps ratio_vs_vanilla)), "\n";
+	print $fh join("\t", 'workload', 'lane', 'tps', $ratio_header), "\n";
 	for my $workload (@$workloads)
 	{
-		my $vanilla = $results->{vanilla}{$workload}{tps};
+		my $baseline =
+		  exists $results->{$baseline_lane}{$workload}
+		  ? $results->{$baseline_lane}{$workload}{tps}
+		  : undef;
 		for my $lane (@$lane_specs)
 		{
 			my $name = $lane->{name};
 			next unless exists $results->{$name}{$workload};
 			my $tps = $results->{$name}{$workload}{tps};
 			my $ratio =
-			  defined $vanilla && $vanilla > 0
-			  ? sprintf('%.3f', $tps / $vanilla)
+			  defined $baseline && $baseline > 0
+			  ? sprintf('%.3f', $tps / $baseline)
 			  : 'n/a';
 			print $fh join("\t", $workload, $name, $tps, $ratio), "\n";
 		}
@@ -1037,6 +1052,7 @@ sub write_summary
 {
 	my ($dir, $workloads, $lane_specs, $results) = @_;
 	my $path = File::Spec->catfile($dir, 'summary.md');
+	my $baseline_lane = ratio_baseline_lane($lane_specs);
 
 	open my $fh, '>', $path or die "could not write $path: $!";
 	print $fh "# mtpg pgbench matrix\n\n";
@@ -1058,35 +1074,40 @@ sub write_summary
 	print $fh "- branch install: `$branch_install`\n";
 	print $fh "- vanilla install: `$vanilla_install`\n";
 	print $fh "- client install: `$client_install`\n\n";
+	print $fh "- ratio baseline: `$baseline_lane`\n\n";
 
 	print $fh "| Workload |";
 	for my $lane (@$lane_specs)
 	{
 		print $fh " $lane->{name} TPS |";
-		print $fh " $lane->{name} / vanilla |" unless $lane->{name} eq 'vanilla';
+		print $fh " $lane->{name} / $baseline_lane |"
+		  unless $lane->{name} eq $baseline_lane;
 	}
 	print $fh "\n| --- |";
 	for my $lane (@$lane_specs)
 	{
 		print $fh " ---: |";
-		print $fh " ---: |" unless $lane->{name} eq 'vanilla';
+		print $fh " ---: |" unless $lane->{name} eq $baseline_lane;
 	}
 	print $fh "\n";
 
 	for my $workload (@$workloads)
 	{
-		my $vanilla = $results->{vanilla}{$workload}{tps};
+		my $baseline =
+		  exists $results->{$baseline_lane}{$workload}
+		  ? $results->{$baseline_lane}{$workload}{tps}
+		  : undef;
 		print $fh "| `$workload` |";
 		for my $lane (@$lane_specs)
 		{
 			my $name = $lane->{name};
 			my $tps = $results->{$name}{$workload}{tps};
 			print $fh " ", sprintf('%.1f', $tps), " |";
-			if ($name ne 'vanilla')
+			if ($name ne $baseline_lane)
 			{
 				my $ratio =
-				  defined $vanilla && $vanilla > 0
-				  ? sprintf('%.3f', $tps / $vanilla)
+				  defined $baseline && $baseline > 0
+				  ? sprintf('%.3f', $tps / $baseline)
 				  : 'n/a';
 				print $fh " $ratio |";
 			}
