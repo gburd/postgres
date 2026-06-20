@@ -2182,11 +2182,11 @@ typedef struct PgConnectionIdentityState
 typedef struct PgConnectionSocketIOState
 {
 	char	   *send_buffer;
+	char	   *recv_buffer;
 	MemoryContext socket_io_context;
 	int			send_buffer_size;
 	size_t		send_pointer;
 	size_t		send_start;
-	char		recv_buffer[PG_CONNECTION_RECV_BUFFER_SIZE];
 	int			recv_pointer;
 	int			recv_length;
 	bool		comm_busy;

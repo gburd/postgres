@@ -154,6 +154,7 @@ static uint32 pq_connection_transport_wait_events(PgConnection *connection);
 static inline int pq_getbyte_from(PgConnectionSocketIOState *io);
 static inline int pq_getbytes_from(PgConnectionSocketIOState *io,
 								   void *b, size_t len);
+static inline void pq_ensure_recv_buffer(PgConnectionSocketIOState *io);
 static int	pq_discardbytes_from(PgConnectionSocketIOState *io, size_t len);
 static inline int internal_putbytes(PgConnectionSocketIOState *io,
 								   const void *b, size_t len);
@@ -186,6 +187,18 @@ PqSocketIO(void)
 	}
 
 	return PgCurrentConnectionSocketIORef();
+}
+
+static inline void
+pq_ensure_recv_buffer(PgConnectionSocketIOState *io)
+{
+	Assert(io != NULL);
+
+	if (io->recv_buffer == NULL)
+		io->recv_buffer = MemoryContextAlloc(PgRuntimeGetOwnedMemoryContext(
+												 PgCurrentConnectionSocketIOContextRef(),
+												 "socket I/O connection state"),
+											 PQ_RECV_BUFFER_SIZE);
 }
 
 static pg_attribute_always_inline void
@@ -367,10 +380,15 @@ pq_init(ClientSocket *client_sock)
 	/* initialize state variables */
 	PqCommMethods = &PqCommSocketMethods;
 	PqSendBufferSize = PQ_SEND_BUFFER_SIZE;
-	PqSendBuffer = MemoryContextAlloc(
-		PgRuntimeGetOwnedMemoryContext(PgCurrentConnectionSocketIOContextRef(),
-									   "socket I/O connection state"),
-		PqSendBufferSize);
+	{
+		MemoryContext socket_io_context;
+
+		socket_io_context =
+			PgRuntimeGetOwnedMemoryContext(PgCurrentConnectionSocketIOContextRef(),
+										   "socket I/O connection state");
+		PqSendBuffer = MemoryContextAlloc(socket_io_context, PqSendBufferSize);
+		PqRecvBuffer = MemoryContextAlloc(socket_io_context, PQ_RECV_BUFFER_SIZE);
+	}
 	PqSendPointer = PqSendStart = PqRecvPointer = PqRecvLength = 0;
 	PqCommBusy = false;
 	PqCommReadingMsg = false;
@@ -464,15 +482,22 @@ socket_close(int code, Datum arg)
 	{
 		PgRuntimeDeleteOwnedMemoryContext(socket_io_context);
 		PqSendBuffer = NULL;
+		PqRecvBuffer = NULL;
 		PqSendBufferSize = 0;
 		PqSendPointer = PqSendStart = 0;
+		PqRecvPointer = PqRecvLength = 0;
 	}
-	else if (PqSendBuffer != NULL)
+	else if (PqSendBuffer != NULL || PqRecvBuffer != NULL)
 	{
-		pfree(PqSendBuffer);
+		if (PqSendBuffer != NULL)
+			pfree(PqSendBuffer);
+		if (PqRecvBuffer != NULL)
+			pfree(PqRecvBuffer);
 		PqSendBuffer = NULL;
+		PqRecvBuffer = NULL;
 		PqSendBufferSize = 0;
 		PqSendPointer = PqSendStart = 0;
+		PqRecvPointer = PqRecvLength = 0;
 	}
 
 	/* Nothing to do in a standalone backend, where MyProcPort is NULL. */
@@ -1039,6 +1064,8 @@ socket_set_nonblocking(bool nonblocking)
 static int
 pq_recvbuf(PgConnectionSocketIOState *io)
 {
+	pq_ensure_recv_buffer(io);
+
 	if (io->recv_pointer > 0)
 	{
 		if (io->recv_length > io->recv_pointer)
@@ -1347,6 +1374,28 @@ PgConnectionCanParkBeforeMessage(PgConnection *connection)
 		return false;
 
 	return !connection->socket_io.comm_reading_msg;
+}
+
+void
+PgConnectionReleaseIdleRecvBuffer(PgConnection *connection)
+{
+	PgConnectionSocketIOState *io;
+
+	if (connection == NULL)
+		return;
+
+	io = &connection->socket_io;
+	if (io->recv_buffer == NULL)
+		return;
+	if (io->comm_reading_msg)
+		return;
+	if (io->recv_pointer < io->recv_length)
+		return;
+
+	pfree(io->recv_buffer);
+	io->recv_buffer = NULL;
+	io->recv_pointer = 0;
+	io->recv_length = 0;
 }
 
 PgProtocolByteResult

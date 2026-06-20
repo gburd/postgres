@@ -131,6 +131,7 @@ test_connection_protocol_byte_probe(PG_FUNCTION_ARGS)
 	pgsocket	socks[2] = {PGINVALID_SOCKET, PGINVALID_SOCKET};
 	PgProtocolByteProbe probe;
 	PgProtocolByteResult result;
+	char		recv_buffer[PG_CONNECTION_RECV_BUFFER_SIZE];
 	unsigned char type_byte;
 	bool		ok = true;
 
@@ -145,6 +146,7 @@ test_connection_protocol_byte_probe(PG_FUNCTION_ARGS)
 		QueryCancelHoldoffCount = 0;
 
 		socket_io = &connection.socket_io;
+		socket_io->recv_buffer = recv_buffer;
 		socket_io->recv_buffer[0] = PqMsg_Query;
 		socket_io->recv_pointer = 0;
 		socket_io->recv_length = 1;
@@ -168,6 +170,7 @@ test_connection_protocol_byte_probe(PG_FUNCTION_ARGS)
 		port.sock = socks[0];
 		connection.identity.port = &port;
 		socket_io = &connection.socket_io;
+		socket_io->recv_buffer = recv_buffer;
 		socket_io->recv_pointer = 3;
 		socket_io->recv_length = 3;
 		socket_io->transport_generation = 42;
@@ -193,6 +196,7 @@ test_connection_protocol_byte_probe(PG_FUNCTION_ARGS)
 		port.sock = socks[0];
 		connection.identity.port = &port;
 		socket_io = &connection.socket_io;
+		socket_io->recv_buffer = recv_buffer;
 		socket_io->transport_generation = 90;
 		result = PgConnectionProbeMessageType(&connection, &probe);
 		ok = ok && result == PG_PROTOCOL_BYTE_AVAILABLE;
@@ -357,6 +361,7 @@ test_connection_reset_closed_state(PG_FUNCTION_ARGS)
 							  ALLOCSET_SMALL_SIZES);
 	oldcontext = MemoryContextSwitchTo(socket_io->socket_io_context);
 	socket_io->send_buffer = pstrdup("released by socket reset");
+	socket_io->recv_buffer = palloc0(PG_CONNECTION_RECV_BUFFER_SIZE);
 	MemoryContextSwitchTo(oldcontext);
 	socket_io->send_buffer_size = 128;
 	socket_io->send_pointer = 64;
@@ -442,7 +447,7 @@ test_connection_reset_closed_state(PG_FUNCTION_ARGS)
 		ok = ok && socket_io->send_buffer_size == 0;
 		ok = ok && socket_io->send_pointer == 0;
 		ok = ok && socket_io->send_start == 0;
-		ok = ok && socket_io->recv_buffer[0] == '\0';
+		ok = ok && socket_io->recv_buffer == NULL;
 		ok = ok && socket_io->recv_pointer == 0;
 		ok = ok && socket_io->recv_length == 0;
 		ok = ok && !socket_io->comm_busy;

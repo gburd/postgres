@@ -6113,6 +6113,8 @@ PgSessionReleasePooledProtocolIdleMemory(PgSession *session,
 		*abort_context = NULL;
 	}
 
+	PgConnectionReleaseIdleRecvBuffer(session->connection);
+
 	if (mode >= POOLED_PROTOCOL_IDLE_MEMORY_COMPACTION_CACHE)
 		InvalidateSystemCachesExtended(false);
 
