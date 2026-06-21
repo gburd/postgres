@@ -1910,6 +1910,13 @@ CheckDeadLock(void)
 	DeadLockState result;
 
 	/*
+	 * DeadLockCheck() relies on MaxBackends-sized private workspace.  Allocate
+	 * it before taking every lock-manager partition lock; palloc while those
+	 * locks are held would lengthen the most sensitive part of this path.
+	 */
+	EnsureDeadLockCheckingWorkspace();
+
+	/*
 	 * Acquire exclusive lock on the entire shared lock data structures. Must
 	 * grab LWLocks in partition-number order to avoid LWLock deadlock.
 	 *
