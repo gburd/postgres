@@ -51,6 +51,7 @@
 #include "utils/memutils.h"
 #include "utils/pgstat_internal.h"
 #include "utils/resowner.h"
+#include "utils/timestamp.h"
 
 static PG_GLOBAL_RUNTIME bool backend_id_counter_initialized = false;
 static PG_GLOBAL_RUNTIME pg_atomic_uint64 next_backend_id;
@@ -2175,6 +2176,10 @@ PgBackendSnapshotProtocolParkById(PgBackendId backend_id,
 				scheduler->idle_carrier_count;
 			snapshot->scheduler_active_carrier_count =
 				scheduler->active_carrier_count;
+			snapshot->last_park_duration_valid =
+				park_state->last_park_duration_valid;
+			snapshot->last_park_duration_ms =
+				park_state->last_park_duration_ms;
 			SpinLockRelease(&scheduler->lock);
 
 			snapshot->carrier_attached = backend->carrier != NULL;
@@ -2321,6 +2326,7 @@ PgCarrierCommitProtocolReadPark(PgCarrier *carrier, PgBackend *backend)
 
 	park_state->state = PG_PROTOCOL_PARK_COMMITTED;
 	park_state->parked_carrier = carrier;
+	park_state->committed_at = GetCurrentTimestamp();
 	PgCarrierDetachBackend(carrier, backend);
 	if (!PgRuntimeProtocolSchedulerParkBackend(carrier->runtime, backend))
 		elog(PANIC, "could not enqueue committed protocol read park: backend_runtime_match=%d park_state=%d queue_state=%d carrier=%p backend_carrier=%p",
@@ -2430,11 +2436,26 @@ PgBackendResumeProtocolReadPark(PgBackend *backend)
 		   PG_PROTOCOL_SCHEDULER_QUEUE_LEASED);
 
 	PgRuntimeProtocolSchedulerRecordResume(backend);
+	if (park_state->committed_at != 0)
+	{
+		park_state->last_park_duration_ms =
+			TimestampDifferenceMilliseconds(park_state->committed_at,
+											GetCurrentTimestamp());
+		if (park_state->last_park_duration_ms < 0)
+			park_state->last_park_duration_ms = 0;
+		park_state->last_park_duration_valid = true;
+	}
+	else
+	{
+		park_state->last_park_duration_ms = 0;
+		park_state->last_park_duration_valid = false;
+	}
 	park_state->last_wake_reasons = park_state->wake_reasons;
 	park_state->last_wake_events = park_state->wake_events;
 	park_state->last_wake_generation = park_state->wake_generation;
 	park_state->state = PG_PROTOCOL_PARK_NONE;
 	MemSet(&park_state->spec, 0, sizeof(park_state->spec));
+	park_state->committed_at = 0;
 	park_state->wake_reasons = PG_PROTOCOL_PARK_WAKE_NONE;
 	park_state->wake_events = 0;
 	park_state->wake_generation = 0;

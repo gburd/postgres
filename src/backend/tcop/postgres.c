@@ -118,6 +118,8 @@
 	((pid) == 0 ? 0 : \
 	 errdetail_log("Signal sent by PID %d, UID %d.", (int) (pid), (int) (uid)))
 
+#define POOLED_PROTOCOL_IDLE_PGSTAT_RELEASE_MIN_MS 100
+
 /* ----------------
  *		private typedefs etc
  * ----------------
@@ -6083,6 +6085,7 @@ PgSessionReleasePooledProtocolIdleMemory(PgSession *session,
 										 PgProtocolParkSpec *park_spec)
 {
 	MemoryContext *abort_context;
+	PgBackendProtocolParkState *park_state;
 	int			mode = pooled_protocol_idle_memory_compaction;
 
 	if (!PgRuntimeIsPooledProtocol(CurrentPgRuntime))
@@ -6095,6 +6098,7 @@ PgSessionReleasePooledProtocolIdleMemory(PgSession *session,
 	Assert(session->backend != NULL);
 	Assert(session->backend->protocol_park.state ==
 		   PG_PROTOCOL_PARK_PREPARED);
+	park_state = &session->backend->protocol_park;
 
 	if (mode <= POOLED_PROTOCOL_IDLE_MEMORY_COMPACTION_OFF)
 		return;
@@ -6114,6 +6118,11 @@ PgSessionReleasePooledProtocolIdleMemory(PgSession *session,
 	}
 
 	PgConnectionReleaseIdleRecvBuffer(session->connection);
+	/* First parks and demonstrably quiet sessions can shed pgstat scratch. */
+	if (!park_state->last_park_duration_valid ||
+		park_state->last_park_duration_ms >=
+		POOLED_PROTOCOL_IDLE_PGSTAT_RELEASE_MIN_MS)
+		pgstat_release_idle_memory();
 
 	if (mode >= POOLED_PROTOCOL_IDLE_MEMORY_COMPACTION_CACHE)
 		InvalidateSystemCachesExtended(false);

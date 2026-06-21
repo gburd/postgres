@@ -805,6 +805,7 @@ extern bool pgstat_replslot_from_serialized_name_cb(const NameData *name, PgStat
 
 extern void pgstat_attach_shmem(void);
 extern void pgstat_detach_shmem(void);
+extern void pgstat_release_shared_ref_memory(void);
 
 extern PgStat_EntryRef *pgstat_get_entry_ref(PgStat_Kind kind, Oid dboid, uint64 objid,
 											 bool create, bool *created_entry);

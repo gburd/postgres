@@ -297,6 +297,8 @@ typedef struct PgProtocolParkSnapshot
 	uint32		scheduler_registered_carrier_count;
 	uint32		scheduler_idle_carrier_count;
 	uint32		scheduler_active_carrier_count;
+	bool		last_park_duration_valid;
+	long		last_park_duration_ms;
 } PgProtocolParkSnapshot;
 
 typedef struct PgBackendProtocolParkState
@@ -316,6 +318,9 @@ typedef struct PgBackendProtocolParkState
 	uint64		deferred_notify_generation;
 	uint64		deferred_notify_park_generation;
 	uint32		deferred_notify_reasons;
+	TimestampTz committed_at;
+	bool		last_park_duration_valid;
+	long		last_park_duration_ms;
 	PgCarrier  *parked_carrier;
 } PgBackendProtocolParkState;
 

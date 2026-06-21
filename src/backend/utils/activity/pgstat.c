@@ -802,6 +802,25 @@ pgstat_force_next_flush(void)
 	pgStatForceNextFlush = true;
 }
 
+void
+pgstat_release_idle_memory(void)
+{
+	pgstat_assert_is_up();
+	Assert(!IsTransactionOrTransactionBlock());
+
+	(void) pgstat_report_stat(true);
+	Assert(dlist_is_empty(&pgStatPending));
+
+	if (pgStatPendingContext != NULL)
+	{
+		MemoryContextDelete(pgStatPendingContext);
+		pgStatPendingContext = NULL;
+		dlist_init(&pgStatPending);
+	}
+
+	pgstat_release_shared_ref_memory();
+}
+
 /*
  * Only for use by pgstat_reset_counters()
  */

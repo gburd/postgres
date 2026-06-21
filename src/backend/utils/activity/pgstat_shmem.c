@@ -303,6 +303,24 @@ pgstat_detach_shmem(void)
 	pgStatLocal.dsa = NULL;
 }
 
+void
+pgstat_release_shared_ref_memory(void)
+{
+	if (pgStatEntryRefHash != NULL)
+		pgstat_release_all_entry_refs(false);
+
+	if (pgStatEntryRefHashContext != NULL)
+	{
+		MemoryContextDelete(pgStatEntryRefHashContext);
+		pgStatEntryRefHashContext = NULL;
+	}
+	if (pgStatSharedRefContext != NULL)
+	{
+		MemoryContextDelete(pgStatSharedRefContext);
+		pgStatSharedRefContext = NULL;
+	}
+}
+
 
 /* ------------------------------------------------------------
  * Maintenance of shared memory stats entries
