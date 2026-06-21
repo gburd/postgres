@@ -79,6 +79,10 @@ PgBackendResetLockClosedState(PgBackendLockState *locks)
 {
 	Assert(locks != NULL);
 
+	if (locks->held_lwlocks_array != NULL &&
+		locks->held_lwlocks_array != locks->held_lwlocks_inline)
+		pfree(locks->held_lwlocks_array);
+
 	if (locks->fast_path_local_use_counts_owned &&
 		locks->fast_path_local_use_counts != NULL)
 		pfree(locks->fast_path_local_use_counts);

@@ -157,6 +157,51 @@ PG_GLOBAL_SHMEM LWLockPadded *MainLWLockArray = NULL;
  */
 #define MAX_SIMUL_LWLOCKS	PG_BACKEND_MAX_SIMUL_LWLOCKS
 
+static pg_noinline PgBackendLWLockHandle *
+LWLockEnsureHeldLockCapacity(int needed)
+{
+	PgBackendLockState *locks = PgCurrentBackendLockState();
+	PgBackendLWLockHandle *new_held_lwlocks;
+	int			new_capacity;
+	int			nheld;
+
+	if (unlikely(locks->held_lwlocks_array == NULL ||
+				 locks->held_lwlocks_capacity <= 0))
+	{
+		locks->held_lwlocks_array = locks->held_lwlocks_inline;
+		locks->held_lwlocks_capacity = PG_BACKEND_MAX_INLINE_LWLOCKS;
+	}
+
+	if (needed <= locks->held_lwlocks_capacity)
+		return locks->held_lwlocks_array;
+	if (needed > MAX_SIMUL_LWLOCKS)
+		elog(ERROR, "too many LWLocks taken");
+	if (TopMemoryContext == NULL)
+		elog(ERROR, "cannot grow LWLock tracking before memory contexts exist");
+
+	new_capacity = locks->held_lwlocks_capacity;
+	while (new_capacity < needed)
+		new_capacity *= 2;
+	new_capacity = Min(new_capacity, MAX_SIMUL_LWLOCKS);
+
+	new_held_lwlocks =
+		MemoryContextAlloc(TopMemoryContext,
+						   sizeof(PgBackendLWLockHandle) * new_capacity);
+	nheld = *PgCurrentNumHeldLWLocksRef();
+	if (nheld > 0)
+		memcpy(new_held_lwlocks, locks->held_lwlocks_array,
+			   sizeof(PgBackendLWLockHandle) * nheld);
+	if (locks->held_lwlocks_array != locks->held_lwlocks_inline)
+		pfree(locks->held_lwlocks_array);
+
+	locks->held_lwlocks_array = new_held_lwlocks;
+	locks->held_lwlocks_capacity = new_capacity;
+	PgRuntimeCurrentBridgeState.PgCurrentHeldLWLocksHotRef = new_held_lwlocks;
+	PgRuntimeCurrentBridgeState.PgCurrentHeldLWLocksHotRefOwner =
+		CurrentPgBackend;
+	return locks->held_lwlocks_array;
+}
+
 /* struct representing the LWLocks we're holding */
 typedef PgBackendLWLockHandle LWLockHandle;
 
@@ -1172,6 +1217,9 @@ LWLockAcquire(LWLock *lock, LWLockMode mode)
 	/* Ensure we will have room to remember the lock */
 	if (local_num_held_lwlocks >= MAX_SIMUL_LWLOCKS)
 		elog(ERROR, "too many LWLocks taken");
+	if (unlikely(local_num_held_lwlocks >= PG_BACKEND_MAX_INLINE_LWLOCKS))
+		local_held_lwlocks =
+			LWLockEnsureHeldLockCapacity(local_num_held_lwlocks + 1);
 
 	/*
 	 * Lock out cancel/die interrupts until we exit the code section protected
@@ -1313,6 +1361,8 @@ LWLockAcquire(LWLock *lock, LWLockMode mode)
 bool
 LWLockConditionalAcquire(LWLock *lock, LWLockMode mode)
 {
+	PgBackendLWLockHandle *local_held_lwlocks = held_lwlocks;
+	int			local_num_held_lwlocks = num_held_lwlocks;
 	bool		mustwait;
 
 	Assert(mode == LW_SHARED || mode == LW_EXCLUSIVE);
@@ -1320,8 +1370,11 @@ LWLockConditionalAcquire(LWLock *lock, LWLockMode mode)
 	PRINT_LWDEBUG("LWLockConditionalAcquire", lock, mode);
 
 	/* Ensure we will have room to remember the lock */
-	if (num_held_lwlocks >= MAX_SIMUL_LWLOCKS)
+	if (local_num_held_lwlocks >= MAX_SIMUL_LWLOCKS)
 		elog(ERROR, "too many LWLocks taken");
+	if (unlikely(local_num_held_lwlocks >= PG_BACKEND_MAX_INLINE_LWLOCKS))
+		local_held_lwlocks =
+			LWLockEnsureHeldLockCapacity(local_num_held_lwlocks + 1);
 
 	/*
 	 * Lock out cancel/die interrupts until we exit the code section protected
@@ -1345,8 +1398,9 @@ LWLockConditionalAcquire(LWLock *lock, LWLockMode mode)
 	else
 	{
 		/* Add lock to list of locks held by this backend */
-		held_lwlocks[num_held_lwlocks].lock = lock;
-		held_lwlocks[num_held_lwlocks++].mode = mode;
+		local_held_lwlocks[local_num_held_lwlocks].lock = lock;
+		local_held_lwlocks[local_num_held_lwlocks++].mode = mode;
+		num_held_lwlocks = local_num_held_lwlocks;
 		if (TRACE_POSTGRESQL_LWLOCK_CONDACQUIRE_ENABLED())
 			TRACE_POSTGRESQL_LWLOCK_CONDACQUIRE(T_NAME(lock), mode);
 	}
@@ -1370,6 +1424,8 @@ LWLockConditionalAcquire(LWLock *lock, LWLockMode mode)
 bool
 LWLockAcquireOrWait(LWLock *lock, LWLockMode mode)
 {
+	PgBackendLWLockHandle *local_held_lwlocks = held_lwlocks;
+	int			local_num_held_lwlocks = num_held_lwlocks;
 	PGPROC	   *proc = MyProc;
 	bool		mustwait;
 	int			extraWaits = 0;
@@ -1384,8 +1440,11 @@ LWLockAcquireOrWait(LWLock *lock, LWLockMode mode)
 	PRINT_LWDEBUG("LWLockAcquireOrWait", lock, mode);
 
 	/* Ensure we will have room to remember the lock */
-	if (num_held_lwlocks >= MAX_SIMUL_LWLOCKS)
+	if (local_num_held_lwlocks >= MAX_SIMUL_LWLOCKS)
 		elog(ERROR, "too many LWLocks taken");
+	if (unlikely(local_num_held_lwlocks >= PG_BACKEND_MAX_INLINE_LWLOCKS))
+		local_held_lwlocks =
+			LWLockEnsureHeldLockCapacity(local_num_held_lwlocks + 1);
 
 	/*
 	 * Lock out cancel/die interrupts until we exit the code section protected
@@ -1476,8 +1535,9 @@ LWLockAcquireOrWait(LWLock *lock, LWLockMode mode)
 	{
 		LOG_LWDEBUG("LWLockAcquireOrWait", lock, "succeeded");
 		/* Add lock to list of locks held by this backend */
-		held_lwlocks[num_held_lwlocks].lock = lock;
-		held_lwlocks[num_held_lwlocks++].mode = mode;
+		local_held_lwlocks[local_num_held_lwlocks].lock = lock;
+		local_held_lwlocks[local_num_held_lwlocks++].mode = mode;
+		num_held_lwlocks = local_num_held_lwlocks;
 		if (TRACE_POSTGRESQL_LWLOCK_ACQUIRE_OR_WAIT_ENABLED())
 			TRACE_POSTGRESQL_LWLOCK_ACQUIRE_OR_WAIT(T_NAME(lock), mode);
 	}

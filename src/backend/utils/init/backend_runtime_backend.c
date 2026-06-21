@@ -702,18 +702,29 @@ PgBackendInitializeLockState(PgBackendLockState *locks)
 	Assert(locks != NULL);
 
 	MemSet(locks, 0, sizeof(*locks));
+	locks->held_lwlocks_array = locks->held_lwlocks_inline;
+	locks->held_lwlocks_capacity = PG_BACKEND_MAX_INLINE_LWLOCKS;
 }
 
 static void
 PgBackendAdoptEarlyLockState(PgBackend *backend)
 {
+	PgBackendLWLockHandle *early_held_lwlocks;
+
 	Assert(backend != NULL);
 	Assert(early_backend_locks.strong_lock_in_progress == NULL);
 	Assert(early_backend_locks.awaited_lock == NULL);
 	Assert(early_backend_locks.awaited_owner == NULL);
 	Assert(early_backend_locks.blocking_autovacuum_proc == NULL);
 
+	early_held_lwlocks = early_backend_locks.held_lwlocks_array;
 	backend->locks = early_backend_locks;
+	if (early_held_lwlocks == NULL ||
+		early_held_lwlocks == early_backend_locks.held_lwlocks_inline)
+		backend->locks.held_lwlocks_array =
+			backend->locks.held_lwlocks_inline;
+	else
+		backend->locks.held_lwlocks_array = early_held_lwlocks;
 	PgBackendInitializeLockState(&early_backend_locks);
 }
 
@@ -1430,9 +1441,23 @@ PgCurrentBackendStorageState(void)
 PgBackendLockState *
 PgCurrentBackendLockState(void)
 {
-	PG_RUNTIME_RETURN_CURRENT_BACKEND_BUCKET(CurrentPgBackendLockRuntimeState,
-											 locks,
-											 early_backend_locks);
+	PgBackend  *backend;
+	PgBackendLockState *locks;
+
+	locks = CurrentPgBackendLockRuntimeState;
+	if (unlikely(locks == NULL))
+	{
+		backend = CurrentPgBackend;
+		locks = backend == NULL ? &early_backend_locks : &backend->locks;
+	}
+	if (unlikely(locks->held_lwlocks_array == NULL ||
+				 locks->held_lwlocks_capacity <= 0))
+	{
+		locks->held_lwlocks_array = locks->held_lwlocks_inline;
+		locks->held_lwlocks_capacity = PG_BACKEND_MAX_INLINE_LWLOCKS;
+	}
+
+	return locks;
 }
 
 PgBackendIPCState *

@@ -918,6 +918,7 @@ typedef struct PgBackendStorageState
 	MemoryContext md_context;
 } PgBackendStorageState;
 
+#define PG_BACKEND_MAX_INLINE_LWLOCKS 16
 #define PG_BACKEND_MAX_SIMUL_LWLOCKS 200
 
 typedef struct PgBackendLWLockHandle
@@ -944,7 +945,9 @@ typedef struct PgBackendLWLockStats
 
 typedef struct PgBackendLockState
 {
-	PgBackendLWLockHandle held_lwlocks[PG_BACKEND_MAX_SIMUL_LWLOCKS];
+	PgBackendLWLockHandle *held_lwlocks_array;
+	PgBackendLWLockHandle held_lwlocks_inline[PG_BACKEND_MAX_INLINE_LWLOCKS];
+	int			held_lwlocks_capacity;
 	int			num_held_lwlocks;
 	int			local_num_user_defined_lwlock_tranches;
 	HTAB	   *lwlock_stats_htab;
