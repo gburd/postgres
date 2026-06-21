@@ -49,7 +49,6 @@
 #include "utils/elog.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
-#include "utils/pgstat_internal.h"
 #include "utils/resowner.h"
 #include "utils/timestamp.h"
 

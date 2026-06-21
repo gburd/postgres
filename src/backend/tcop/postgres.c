@@ -90,6 +90,7 @@
 #include "utils/injection_point.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/pgstat_internal.h"
 #include "utils/relcache.h"
 #include "utils/ps_status.h"
 #include "utils/snapmgr.h"
@@ -6191,6 +6192,7 @@ PgSessionStagingWaitAndResumeProtocolRead(PgSession *session,
 		elog(PANIC, "could not lease protocol read park for same carrier resume");
 
 	PgCarrierAttachBackend(carrier, backend, session, connection, execution);
+	pgstat_ensure_shmem_attached();
 	PgBackendResumeProtocolReadPark(backend);
 
 	return wake_events;

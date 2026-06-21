@@ -591,6 +591,8 @@ pgstat_shutdown_hook(int code, Datum arg)
 	Assert(!pgstat_is_shutdown);
 	Assert(IsUnderPostmaster || !IsPostmasterEnvironment);
 
+	pgstat_ensure_shmem_attached();
+
 	/*
 	 * If we got as far as discovering our own database ID, we can flush out
 	 * what we did so far.  Otherwise, we'd be reporting an invalid database
@@ -611,10 +613,7 @@ pgstat_shutdown_hook(int code, Datum arg)
 		pgstat_request_entry_refs_gc();
 
 	pgstat_detach_shmem();
-
-#ifdef USE_ASSERT_CHECKING
 	pgstat_is_shutdown = true;
-#endif
 }
 
 /*
@@ -647,9 +646,7 @@ pgstat_initialize(void)
 	/* Set up a process-exit hook to clean up */
 	before_shmem_exit(pgstat_shutdown_hook, 0);
 
-#ifdef USE_ASSERT_CHECKING
 	pgstat_is_initialized = true;
-#endif
 }
 
 
@@ -806,6 +803,9 @@ pgstat_force_next_flush(void)
 void
 pgstat_release_idle_memory(void)
 {
+	if (!pgstat_is_initialized || pgstat_is_shutdown)
+		return;
+
 	pgstat_assert_is_up();
 	Assert(!IsTransactionOrTransactionBlock());
 
@@ -821,6 +821,7 @@ pgstat_release_idle_memory(void)
 
 	pgstat_release_shared_ref_memory();
 	pgstat_release_snapshot_memory();
+	pgstat_detach_idle_memory();
 }
 
 /*

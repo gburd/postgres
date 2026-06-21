@@ -281,6 +281,17 @@ pgstat_attach_shmem(void)
 }
 
 void
+pgstat_ensure_shmem_attached(void)
+{
+	if (pgStatLocal.dsa != NULL)
+		return;
+	if (!pgstat_is_initialized || pgstat_is_shutdown)
+		return;
+
+	pgstat_attach_shmem();
+}
+
+void
 pgstat_detach_shmem(void)
 {
 	Assert(pgStatLocal.dsa);
@@ -301,6 +312,15 @@ pgstat_detach_shmem(void)
 	dsa_release_in_place(pgStatLocal.shmem->raw_dsa_area);
 
 	pgStatLocal.dsa = NULL;
+}
+
+void
+pgstat_detach_idle_memory(void)
+{
+	if (pgStatLocal.dsa == NULL)
+		return;
+
+	pgstat_detach_shmem();
 }
 
 void

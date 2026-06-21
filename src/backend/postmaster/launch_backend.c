@@ -69,6 +69,7 @@
 #include "utils/guc.h"
 #include "utils/global_lifetime.h"
 #include "utils/memutils.h"
+#include "utils/pgstat_internal.h"
 #include "utils/timestamp.h"
 
 #ifdef EXEC_BACKEND
@@ -1029,6 +1030,7 @@ backend_pooled_protocol_resume_logical_start(BackendPooledLogicalStart *logical_
 	Assert(CurrentPgSession == &logical_start->logical.session);
 
 	*PgCurrentBackendThreadStartRef() = logical_start;
+	pgstat_ensure_shmem_attached();
 	wake_events = CurrentPgBackend->protocol_park.wake_events;
 	PgBackendResumeProtocolReadPark(CurrentPgBackend);
 	if (wake_events & WL_LATCH_SET)
