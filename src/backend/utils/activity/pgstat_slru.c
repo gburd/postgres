@@ -88,7 +88,7 @@ pgstat_fetch_slru(void)
 {
 	pgstat_snapshot_fixed(PGSTAT_KIND_SLRU);
 
-	return pgStatLocal.snapshot.slru;
+	return pgStatSnapshot.slru;
 }
 
 /*
@@ -197,7 +197,7 @@ pgstat_slru_snapshot_cb(void)
 
 	LWLockAcquire(&stats_shmem->lock, LW_SHARED);
 
-	memcpy(pgStatLocal.snapshot.slru, &stats_shmem->stats,
+	memcpy(pgStatSnapshot.slru, &stats_shmem->stats,
 		   sizeof(stats_shmem->stats));
 
 	LWLockRelease(&stats_shmem->lock);

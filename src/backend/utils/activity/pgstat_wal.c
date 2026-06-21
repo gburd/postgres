@@ -59,7 +59,7 @@ pgstat_fetch_stat_wal(void)
 {
 	pgstat_snapshot_fixed(PGSTAT_KIND_WAL);
 
-	return &pgStatLocal.snapshot.wal;
+	return &pgStatSnapshot.wal;
 }
 
 /*
@@ -162,7 +162,7 @@ pgstat_wal_snapshot_cb(void)
 	PgStatShared_Wal *stats_shmem = &pgStatLocal.shmem->wal;
 
 	LWLockAcquire(&stats_shmem->lock, LW_SHARED);
-	memcpy(&pgStatLocal.snapshot.wal, &stats_shmem->stats,
-		   sizeof(pgStatLocal.snapshot.wal));
+	memcpy(&pgStatSnapshot.wal, &stats_shmem->stats,
+		   sizeof(pgStatSnapshot.wal));
 	LWLockRelease(&stats_shmem->lock);
 }

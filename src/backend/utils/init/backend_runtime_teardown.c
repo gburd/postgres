@@ -180,11 +180,15 @@ PgBackendResetPgStatPendingClosedState(PgBackendPgStatPendingState *pgstat_pendi
 	 * restores constructor defaults for reuse.
 	 */
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(pgstat_pending->fixed_snapshot_context);
-	if (pgstat_pending->local != NULL)
+	if (pgstat_pending->local != NULL &&
+		pgstat_pending->local->snapshot != NULL)
 	{
-		PG_RUNTIME_DELETE_MEMORY_CONTEXT(pgstat_pending->local->snapshot.context);
-		pfree(pgstat_pending->local);
+		PG_RUNTIME_DELETE_MEMORY_CONTEXT(pgstat_pending->local->snapshot->context);
+		pfree(pgstat_pending->local->snapshot);
+		pgstat_pending->local->snapshot = NULL;
 	}
+	if (pgstat_pending->local != NULL)
+		pfree(pgstat_pending->local);
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(pgstat_pending->shared_ref_context);
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(pgstat_pending->entry_ref_hash_context);
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(pgstat_pending->pending_context);

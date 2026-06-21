@@ -107,7 +107,7 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		pgStatLocal.shmem = (PgStat_ShmemControl *) &fake_backend1;
 		pgStatLocal.dsa = (dsa_area *) &fake_backend1;
 		pgStatLocal.shared_hash = (dshash_table *) &fake_backend1;
-		pgStatLocal.snapshot.mode = PGSTAT_FETCH_CONSISTENCY_CACHE;
+		pgStatSnapshot.mode = PGSTAT_FETCH_CONSISTENCY_CACHE;
 		*PgCurrentPgStatPendingContextRef() = (MemoryContext) &fake_backend1;
 		prevBackendWalUsage.wal_records = 21;
 		pgstat_report_fixed = true;
@@ -144,7 +144,7 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && pgStatLocal.shmem == NULL;
 		ok = ok && pgStatLocal.dsa == NULL;
 		ok = ok && pgStatLocal.shared_hash == NULL;
-		ok = ok && pgStatLocal.snapshot.mode == PGSTAT_FETCH_CONSISTENCY_NONE;
+		ok = ok && pgStatSnapshot.mode == PGSTAT_FETCH_CONSISTENCY_NONE;
 		ok = ok && *PgCurrentPgStatPendingContextRef() == NULL;
 		ok = ok && PgCurrentPgStatPendingListRef() == &fake_backend2.pgstat_pending.pending;
 		ok = ok && dlist_is_empty(PgCurrentPgStatPendingListRef());
@@ -180,7 +180,7 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		pgStatLocal.shmem = (PgStat_ShmemControl *) &fake_backend2;
 		pgStatLocal.dsa = (dsa_area *) &fake_backend2;
 		pgStatLocal.shared_hash = (dshash_table *) &fake_backend2;
-		pgStatLocal.snapshot.mode = PGSTAT_FETCH_CONSISTENCY_SNAPSHOT;
+		pgStatSnapshot.mode = PGSTAT_FETCH_CONSISTENCY_SNAPSHOT;
 		*PgCurrentPgStatPendingContextRef() = (MemoryContext) &fake_backend2;
 		prevBackendWalUsage.wal_records = 31;
 		pgstat_report_fixed = true;
@@ -217,7 +217,7 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && pgStatLocal.shmem == (PgStat_ShmemControl *) &fake_backend1;
 		ok = ok && pgStatLocal.dsa == (dsa_area *) &fake_backend1;
 		ok = ok && pgStatLocal.shared_hash == (dshash_table *) &fake_backend1;
-		ok = ok && pgStatLocal.snapshot.mode == PGSTAT_FETCH_CONSISTENCY_CACHE;
+		ok = ok && pgStatSnapshot.mode == PGSTAT_FETCH_CONSISTENCY_CACHE;
 		ok = ok && *PgCurrentPgStatPendingContextRef() == (MemoryContext) &fake_backend1;
 		ok = ok && PgCurrentPgStatPendingListRef() == &fake_backend1.pgstat_pending.pending;
 		ok = ok && dlist_is_empty(PgCurrentPgStatPendingListRef());
@@ -256,7 +256,7 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && pgStatLocal.shmem == (PgStat_ShmemControl *) &fake_backend2;
 		ok = ok && pgStatLocal.dsa == (dsa_area *) &fake_backend2;
 		ok = ok && pgStatLocal.shared_hash == (dshash_table *) &fake_backend2;
-		ok = ok && pgStatLocal.snapshot.mode == PGSTAT_FETCH_CONSISTENCY_SNAPSHOT;
+		ok = ok && pgStatSnapshot.mode == PGSTAT_FETCH_CONSISTENCY_SNAPSHOT;
 		ok = ok && *PgCurrentPgStatPendingContextRef() == (MemoryContext) &fake_backend2;
 		ok = ok && PgCurrentPgStatPendingListRef() == &fake_backend2.pgstat_pending.pending;
 		ok = ok && dlist_is_empty(PgCurrentPgStatPendingListRef());
@@ -1160,13 +1160,14 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 							  ALLOCSET_SMALL_SIZES);
 
 	pgstat_pending->local = palloc0_object(PgStat_LocalState);
-	pgstat_pending->local->snapshot.context =
+	pgstat_pending->local->snapshot = palloc0_object(PgStat_Snapshot);
+	pgstat_pending->local->snapshot->context =
 		AllocSetContextCreate(TopMemoryContext,
 							  "test pgstat snapshot context",
 							  ALLOCSET_SMALL_SIZES);
-	pgstat_pending->local->snapshot.stats =
+	pgstat_pending->local->snapshot->stats =
 		(struct pgstat_snapshot_hash *) &fake_backend;
-	pgstat_pending->local->snapshot.mode = PGSTAT_FETCH_CONSISTENCY_CACHE;
+	pgstat_pending->local->snapshot->mode = PGSTAT_FETCH_CONSISTENCY_CACHE;
 	pgstat_pending->shared_ref_age = 24;
 	pgstat_pending->shared_ref_context =
 		AllocSetContextCreate(TopMemoryContext,

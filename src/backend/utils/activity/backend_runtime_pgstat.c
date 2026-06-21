@@ -106,6 +106,33 @@ PgCurrentPgStatLocalState(void)
 	return PgCurrentPgStatLocalStateSlow();
 }
 
+PgStat_Snapshot *
+PgCurrentPgStatSnapshot(void)
+{
+	PgStat_LocalState *local = PgCurrentPgStatLocalState();
+
+	if (likely(local->snapshot != NULL))
+		return local->snapshot;
+
+	Assert(TopMemoryContext != NULL);
+	local->snapshot =
+		MemoryContextAllocZero(TopMemoryContext, sizeof(PgStat_Snapshot));
+
+	return local->snapshot;
+}
+
+PgStat_Snapshot *
+PgCurrentPgStatSnapshotIfAllocated(void)
+{
+	PgBackendPgStatPendingState *pgstat_pending;
+
+	pgstat_pending = CurrentPgBackendPgStatPendingRuntimeState;
+	if (unlikely(pgstat_pending == NULL || pgstat_pending->local == NULL))
+		return NULL;
+
+	return pgstat_pending->local->snapshot;
+}
+
 static PgBackendPgStatPendingColdState *
 PgCurrentPgStatPendingColdState(void)
 {

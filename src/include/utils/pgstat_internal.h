@@ -643,8 +643,8 @@ typedef struct PgStat_LocalState
 	dsa_area   *dsa;
 	dshash_table *shared_hash;
 
-	/* the current statistics snapshot */
-	PgStat_Snapshot snapshot;
+	/* the current statistics snapshot, allocated lazily when stats are read */
+	PgStat_Snapshot *snapshot;
 } PgStat_LocalState;
 
 
@@ -876,6 +876,9 @@ extern void pgstat_create_transactional(PgStat_Kind kind, Oid dboid, uint64 obji
 extern PgStat_LocalState *PgCurrentPgStatLocalState(void);
 #endif
 #define pgStatLocal (*PgCurrentPgStatLocalState())
+extern PgStat_Snapshot *PgCurrentPgStatSnapshot(void);
+extern PgStat_Snapshot *PgCurrentPgStatSnapshotIfAllocated(void);
+#define pgStatSnapshot (*PgCurrentPgStatSnapshot())
 #ifndef PgCurrentPgStatFixedSnapshotContextRef
 extern MemoryContext *PgCurrentPgStatFixedSnapshotContextRef(void);
 #endif
@@ -1067,7 +1070,7 @@ pgstat_get_custom_snapshot_data(PgStat_Kind kind)
 	Assert(pgstat_is_kind_custom(kind));
 	Assert(pgstat_get_kind_info(kind)->fixed_amount);
 
-	return pgStatLocal.snapshot.custom_data[idx];
+	return pgStatSnapshot.custom_data[idx];
 }
 
 #endif							/* PGSTAT_INTERNAL_H */
