@@ -628,6 +628,8 @@ PgCarrierAttachBackend(PgCarrier *carrier, PgBackend *backend,
 
 	PgRuntimeSetCurrentWork(runtime, carrier, backend, session, connection,
 							execution, true);
+	if (PgRuntimeIsPooledProtocol(runtime))
+		RestoreBufferManagerIdleMemory();
 }
 
 void

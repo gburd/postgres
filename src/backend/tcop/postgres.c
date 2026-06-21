@@ -6087,6 +6087,7 @@ PgSessionReleasePooledProtocolIdleMemory(PgSession *session,
 	MemoryContext *abort_context;
 	PgBackendProtocolParkState *park_state;
 	int			mode = pooled_protocol_idle_memory_compaction;
+	bool		release_idle_scratch;
 
 	if (!PgRuntimeIsPooledProtocol(CurrentPgRuntime))
 		return;
@@ -6118,11 +6119,16 @@ PgSessionReleasePooledProtocolIdleMemory(PgSession *session,
 	}
 
 	PgConnectionReleaseIdleRecvBuffer(session->connection);
+
 	/* First parks and demonstrably quiet sessions can shed pgstat scratch. */
-	if (!park_state->last_park_duration_valid ||
+	release_idle_scratch = !park_state->last_park_duration_valid ||
 		park_state->last_park_duration_ms >=
-		POOLED_PROTOCOL_IDLE_PGSTAT_RELEASE_MIN_MS)
+		POOLED_PROTOCOL_IDLE_PGSTAT_RELEASE_MIN_MS;
+	if (release_idle_scratch)
+	{
+		ReleaseBufferManagerIdleMemory();
 		pgstat_release_idle_memory();
+	}
 
 	if (mode >= POOLED_PROTOCOL_IDLE_MEMORY_COMPACTION_CACHE)
 		InvalidateSystemCachesExtended(false);

@@ -895,6 +895,7 @@ typedef struct PgBackendBufferState
 	int			reserved_ref_count_slot;
 	int			private_ref_count_entry_last;
 	uint32		max_proportional_pins;
+	bool		private_ref_count_released_while_idle;
 } PgBackendBufferState;
 
 typedef struct PgBackendStorageState
