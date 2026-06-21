@@ -171,6 +171,9 @@ extern void MemoryContextStats(MemoryContext context);
 extern void MemoryContextStatsDetail(MemoryContext context,
 									 int max_level, int max_children,
 									 bool print_to_stderr);
+extern void AllocSetLogChunkStats(MemoryContext context,
+								  const char *label,
+								  int max_rows);
 extern void MemoryContextAllowInCriticalSection(MemoryContext context,
 												bool allow);
 

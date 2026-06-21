@@ -5860,6 +5860,11 @@ PgLogProtocolParkContextMemory(PgBackend *backend,
 								 row->recursive.nblocks,
 								 row->recursive.freechunks)));
 	}
+
+	if (IsA(TopMemoryContext, AllocSetContext))
+		AllocSetLogChunkStats(TopMemoryContext,
+							  "protocol_park_top_memory_context",
+							  32);
 }
 
 static void
