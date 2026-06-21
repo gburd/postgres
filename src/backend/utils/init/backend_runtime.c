@@ -147,9 +147,10 @@ static PG_GLOBAL_EXECUTION PgExecution process_execution;
 static MemoryContext PgRuntimeThreadServerGUCContext(void);
 static char *PgRuntimeCopyThreadServerGUCString(char *current,
 												const char *source);
+static bool PgRuntimeThreadServerGUCStringIsOwned(char *value);
 static void PgRuntimeCopyThreadServerGUCState(const PgRuntimeServerGUCState *source);
 static void PgRuntimeRefreshThreadServerGUCState(void);
-static void PgRuntimeConfigurePooledProtocolAllocator(void);
+static void PgRuntimeConfigureThreadedAllocator(bool pooled_protocol);
 
 PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
 PgBackendInstrumentationState *PgCurrentBackendInstrumentationState(void);
@@ -826,13 +827,25 @@ PgRuntimeThreadServerGUCContext(void)
  * must therefore live in runtime/postmaster-owned memory, not in the
  * per-session GUC contexts that pooled carriers repeatedly create and delete.
  */
+static bool
+PgRuntimeThreadServerGUCStringIsOwned(char *value)
+{
+	return value != NULL &&
+		thread_runtime_server_guc_context != NULL &&
+		GetMemoryChunkContext(value) == thread_runtime_server_guc_context;
+}
+
 static char *
 PgRuntimeCopyThreadServerGUCString(char *current, const char *source)
 {
+	if (current != NULL && source != NULL && strcmp(current, source) == 0)
+		return current;
+
+	if (PgRuntimeThreadServerGUCStringIsOwned(current))
+		pfree(current);
+
 	if (source == NULL)
 		return NULL;
-	if (current != NULL && strcmp(current, source) == 0)
-		return current;
 
 	return MemoryContextStrdup(PgRuntimeThreadServerGUCContext(), source);
 }
@@ -885,23 +898,30 @@ PgRuntimeRefreshThreadServerGUCState(void)
 }
 
 static void
-PgRuntimeConfigurePooledProtocolAllocator(void)
+PgRuntimeConfigureThreadedAllocator(bool pooled_protocol)
 {
 #if defined(__GLIBC__)
+	int			arena_max = pooled_protocol ? 1 : 4;
+
 	/*
 	 * Pooled protocol mode targets many mostly-idle logical sessions in one
 	 * postmaster child.  Glibc's default arena growth preserves allocator
 	 * throughput for pinned hot paths, but retains substantial private memory
-	 * in pooled idle-connection profiles.  Keep pooled mode modest by default,
-	 * while letting an operator-provided MALLOC_ARENA_MAX win.
+	 * in pooled idle-connection profiles and in thread-per-session connection
+	 * churn.  Keep pooled mode modest by default, use a less aggressive cap
+	 * for pinned-thread mode, and let an operator-provided MALLOC_ARENA_MAX
+	 * win.
 	 */
 	if (getenv("MALLOC_ARENA_MAX") == NULL)
-		(void) mallopt(M_ARENA_MAX, 1);
+		(void) mallopt(M_ARENA_MAX, arena_max);
 
-	if (getenv("MALLOC_TRIM_THRESHOLD_") == NULL)
-		(void) mallopt(M_TRIM_THRESHOLD, 128 * 1024);
-	if (getenv("MALLOC_TOP_PAD_") == NULL)
-		(void) mallopt(M_TOP_PAD, 0);
+	if (pooled_protocol)
+	{
+		if (getenv("MALLOC_TRIM_THRESHOLD_") == NULL)
+			(void) mallopt(M_TRIM_THRESHOLD, 128 * 1024);
+		if (getenv("MALLOC_TOP_PAD_") == NULL)
+			(void) mallopt(M_TOP_PAD, 0);
+	}
 #endif
 }
 
@@ -910,8 +930,7 @@ InitializePgThreadRuntime(PgBackendExitContinuation exit_backend)
 {
 	if (!thread_runtime_initialized)
 	{
-		if (PgRuntimePooledProtocolRequested())
-			PgRuntimeConfigurePooledProtocolAllocator();
+		PgRuntimeConfigureThreadedAllocator(PgRuntimePooledProtocolRequested());
 
 		MemSet(&thread_runtime, 0, sizeof(thread_runtime));
 		PgRuntimeInitializeRuntimeObject(&thread_runtime);
@@ -966,6 +985,8 @@ InitializePgThreadBackendLogicalState(PgThreadBackendLogicalState *logical,
 									  struct Port *port,
 									  struct Latch *interrupt_latch)
 {
+	bool		static_guc_defaults;
+
 	Assert(logical != NULL);
 	Assert(thread_runtime_initialized);
 
@@ -975,8 +996,11 @@ InitializePgThreadBackendLogicalState(PgThreadBackendLogicalState *logical,
 									 carrier, &logical->session,
 									 &logical->connection, &logical->execution,
 									 backend_type, interrupt_latch);
+	static_guc_defaults =
+		PgSessionSetStaticGUCDefaultsForInitialization(true);
 	PgSessionInitializeRuntimeObject(&logical->session, &logical->backend,
 									 &logical->connection, &logical->execution);
+	(void) PgSessionSetStaticGUCDefaultsForInitialization(static_guc_defaults);
 	PgConnectionInitializeRuntimeObject(&logical->connection, &logical->backend,
 										&logical->session, port);
 	PgExecutionInitializeRuntimeObject(&logical->execution, &logical->backend,
@@ -991,6 +1015,7 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 {
 	PgThreadBackendLogicalState *logical;
 	PgExecution *scheduler_execution;
+	bool		static_guc_defaults;
 
 	Assert(state != NULL);
 	Assert(thread_runtime_initialized);
@@ -1013,8 +1038,11 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 									 &state->carrier, &logical->session,
 									 &logical->connection, &logical->execution,
 									 backend_type, interrupt_latch);
+	static_guc_defaults =
+		PgSessionSetStaticGUCDefaultsForInitialization(true);
 	PgSessionInitializeRuntimeObject(&logical->session, &logical->backend,
 									 &logical->connection, &logical->execution);
+	(void) PgSessionSetStaticGUCDefaultsForInitialization(static_guc_defaults);
 	PgConnectionInitializeRuntimeObject(&logical->connection, &logical->backend,
 										&logical->session, port);
 	PgExecutionInitializeRuntimeObject(&logical->execution, &logical->backend,
@@ -1198,6 +1226,24 @@ int
 PgRuntimePooledProtocolCarrierLimit(void)
 {
 	return pooled_protocol_carriers;
+}
+
+uint32
+PgRuntimePooledProtocolIdleCarrierCount(void)
+{
+	PgProtocolSchedulerState *scheduler;
+	uint32		idle_carriers;
+
+	if (!thread_runtime_initialized ||
+		thread_runtime.kind != PG_RUNTIME_POOLED_PROTOCOL)
+		return 0;
+
+	scheduler = &thread_runtime.protocol_scheduler;
+	SpinLockAcquire(&scheduler->lock);
+	idle_carriers = scheduler->idle_carrier_count;
+	SpinLockRelease(&scheduler->lock);
+
+	return idle_carriers;
 }
 
 PgBackendLaunchModel

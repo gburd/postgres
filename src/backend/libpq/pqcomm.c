@@ -152,6 +152,9 @@ static pg_attribute_always_inline void pq_advance_recv_pointer(PgConnectionSocke
 static bool pq_connection_transport_buffered_input(PgConnection *connection);
 static uint32 pq_connection_transport_wait_events(PgConnection *connection);
 static int	pq_probe_recvbuf(PgConnection *connection);
+static PgProtocolByteResult pq_probe_message_type(PgConnection *connection,
+												  PgProtocolByteProbe *probe,
+												  bool probe_kernel);
 static inline int pq_getbyte_from(PgConnectionSocketIOState *io);
 static inline int pq_getbytes_from(PgConnectionSocketIOState *io,
 								   void *b, size_t len);
@@ -1457,9 +1460,9 @@ PgConnectionReleaseIdleRecvBuffer(PgConnection *connection)
 	io->recv_length = 0;
 }
 
-PgProtocolByteResult
-PgConnectionProbeMessageType(PgConnection *connection,
-							 PgProtocolByteProbe *probe)
+static PgProtocolByteResult
+pq_probe_message_type(PgConnection *connection, PgProtocolByteProbe *probe,
+					  bool probe_kernel)
 {
 	PgConnectionSocketIOState *io;
 	Port	   *port;
@@ -1507,6 +1510,9 @@ PgConnectionProbeMessageType(PgConnection *connection,
 	if (port == NULL)
 		return PG_PROTOCOL_BYTE_EOF;
 
+	if (!probe_kernel && !buffered_input)
+		return PG_PROTOCOL_BYTE_NONE;
+
 	if (wait_events == 0 && !buffered_input)
 		return PG_PROTOCOL_BYTE_NONE;
 
@@ -1527,6 +1533,20 @@ PgConnectionProbeMessageType(PgConnection *connection,
 		probe->transport_generation = io->transport_generation;
 	}
 	return PG_PROTOCOL_BYTE_AVAILABLE;
+}
+
+PgProtocolByteResult
+PgConnectionProbeBufferedMessageType(PgConnection *connection,
+									 PgProtocolByteProbe *probe)
+{
+	return pq_probe_message_type(connection, probe, false);
+}
+
+PgProtocolByteResult
+PgConnectionProbeMessageType(PgConnection *connection,
+							 PgProtocolByteProbe *probe)
+{
+	return pq_probe_message_type(connection, probe, true);
 }
 
 

@@ -86,6 +86,8 @@ extern void pq_endmsgread(void);
 extern bool pq_is_reading_msg(void);
 extern bool PgConnectionCanParkBeforeMessage(PgConnection *connection);
 extern void PgConnectionReleaseIdleRecvBuffer(PgConnection *connection);
+extern PgProtocolByteResult PgConnectionProbeBufferedMessageType(PgConnection *connection,
+																 PgProtocolByteProbe *probe);
 extern PgProtocolByteResult PgConnectionProbeMessageType(PgConnection *connection,
 														 PgProtocolByteProbe *probe);
 extern int	pq_getmessage(StringInfo s, int maxlen);

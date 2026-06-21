@@ -355,6 +355,37 @@ PgExecutionResetSPIClosedState(PgExecutionSPIState *spi)
 }
 
 static void
+PgExecutionResetSnapshotDataArrays(SnapshotData *snapshot)
+{
+	Assert(snapshot != NULL);
+
+	if (snapshot->xip != NULL)
+		free(snapshot->xip);
+	if (snapshot->subxip != NULL)
+		free(snapshot->subxip);
+	snapshot->xip = NULL;
+	snapshot->subxip = NULL;
+}
+
+static void
+PgExecutionResetSnapshotClosedState(PgExecutionSnapshotState *snapshot)
+{
+	Assert(snapshot != NULL);
+
+	/*
+	 * GetSnapshotData() mallocs xip/subxip arrays and relies on process exit
+	 * to reclaim them because the historical SnapshotData objects are static.
+	 * Threaded logical backends embed those SnapshotData objects in
+	 * PgExecution, so connection churn must release the arrays explicitly.
+	 */
+	PgExecutionResetSnapshotDataArrays(&snapshot->current_snapshot_data);
+	PgExecutionResetSnapshotDataArrays(&snapshot->secondary_snapshot_data);
+	PgExecutionResetSnapshotDataArrays(&snapshot->catalog_snapshot_data);
+
+	PgExecutionInitializeSnapshotState(snapshot);
+}
+
+static void
 PgExecutionResetPortalClosedState(PgExecutionPortalState *portal)
 {
 	Assert(portal != NULL);
@@ -603,13 +634,19 @@ PgBackendResetMemoryManagerClosedState(PgBackendMemoryManagerState *memory_manag
 
 	/*
 	 * The AllocSet freelist is tied to memory-context ownership, not this
-	 * bookkeeping bucket.  Process exit lets the operating system reclaim it,
-	 * while threaded exit deletes the saved TopMemoryContext root after
-	 * closed-state reset and then frees any contexts that deletion left on the
-	 * backend-local freelists.  Do not walk freelist links here: by
-	 * closed-state reset time they may already point into memory-context
-	 * teardown state.
+	 * bookkeeping bucket.  Process exit lets the operating system reclaim it.
+	 * Threaded logical exit, however, has already run session/connection
+	 * cleanup before reaching the backend memory-manager bucket; those earlier
+	 * MemoryContextDelete() calls can leave deleted keeper blocks on the
+	 * backend-local freelists.  Free them before clearing the bookkeeping, or
+	 * connection churn loses the only references and retains heap forever.
 	 */
+	if (PgBackendExitInProgress() &&
+		CurrentPgRuntime != NULL &&
+		PgRuntimeIsThreadBacked(CurrentPgRuntime))
+		AllocSetFreeContextFreelists(memory_manager->context_freelists,
+									 PG_BACKEND_ALLOCSET_NUM_FREELISTS);
+
 	MemSet(memory_manager->context_freelists, 0,
 		   sizeof(memory_manager->context_freelists));
 	memory_manager->log_memory_context_in_progress = false;
@@ -901,8 +938,23 @@ PgSessionResetGUCClosedState(PgSession *session)
 {
 	Assert(session != NULL);
 
+	if (PgBackendExitInProgress())
+		ResetGUCStateAtBackendExit();
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->guc.memory_context);
 	PgSessionInitializeGUCState(&session->guc);
+}
+
+static void
+PgSessionResetDateTimeClosedState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (!PgBackendExitInProgress())
+		return;
+
+	session->datetime.timezone_abbrev_table = NULL;
+	MemSet(session->datetime.timezone_abbrev_cache, 0,
+		   sizeof(session->datetime.timezone_abbrev_cache));
 }
 
 static void
@@ -1083,8 +1135,17 @@ PgSessionResetLocaleClosedState(PgSession *session)
 	PgSessionResetLocaleConv(&session->locale);
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->locale.locale_conv_context);
 
+	if (PgBackendExitInProgress() &&
+		session->locale.default_locale != NULL)
+	{
+		pg_locale_release_external((pg_locale_t) session->locale.default_locale);
+		session->locale.default_locale = NULL;
+	}
+
 	if (session->locale.collation_cache_context != NULL)
 	{
+		if (PgBackendExitInProgress())
+			pg_locale_release_collation_cache_external(session->locale.collation_cache);
 		PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->locale.collation_cache_context);
 		session->locale.collation_cache = NULL;
 		session->locale.last_collation_cache_oid = InvalidOid;

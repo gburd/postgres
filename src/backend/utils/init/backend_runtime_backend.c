@@ -56,15 +56,20 @@ static PG_GLOBAL_RUNTIME bool backend_id_counter_initialized = false;
 static PG_GLOBAL_RUNTIME pg_atomic_uint64 next_backend_id;
 
 #ifndef WIN32
+typedef struct ThreadedBackendRegistryEntry
+{
+	PgBackendId backend_id;
+	PgBackend  *backend;
+	struct ThreadedBackendRegistryEntry *next;
+} ThreadedBackendRegistryEntry;
+
 static PG_GLOBAL_RUNTIME pthread_mutex_t ThreadedBackendRegistryMutex = PTHREAD_MUTEX_INITIALIZER;
-static PG_GLOBAL_RUNTIME PgBackend **ThreadedBackendRegistry = NULL;
-static PG_GLOBAL_RUNTIME Size ThreadedBackendRegistryCapacity = 0;
+static PG_GLOBAL_RUNTIME ThreadedBackendRegistryEntry *ThreadedBackendRegistry = NULL;
 #endif
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackend early_backend_fallback = {
 	.core = {
 		.mode = InitProcessing
 	},
-	.timeout = {0},
 	.replication = {
 		.sync_rep_wait_mode = -1,
 		.walreceiver_recv_file = -1,
@@ -169,7 +174,6 @@ typedef struct PgBasicArchiveBackendState
 StaticAssertDecl(PG_BACKEND_INTERRUPT_COUNT <= 32,
 				 "PgBackendInterruptMask must fit all backend interrupts");
 
-static PgBackendId PgBackendAssignId(void);
 static PgBackendId PgBackendAssignId(void);
 static void PgBackendResetCoreState(PgBackendCoreState *core);
 static void PgBackendInitializeCommandState(PgBackendCommandState *command);
@@ -288,33 +292,18 @@ ThreadedBackendRegistryUnlock(void)
 	}
 }
 
-static void
-PgBackendEnsureThreadedRegistryCapacity(PgBackendId backend_id)
+static PgBackend *
+ThreadedBackendRegistryLookupLocked(PgBackendId backend_id)
 {
-	Size		new_capacity;
-	PgBackend **new_registry;
-
-	if (backend_id < ThreadedBackendRegistryCapacity)
-		return;
-
-	new_capacity = ThreadedBackendRegistryCapacity == 0 ?
-		128 : ThreadedBackendRegistryCapacity;
-	while (backend_id >= new_capacity)
+	for (ThreadedBackendRegistryEntry *entry = ThreadedBackendRegistry;
+		 entry != NULL;
+		 entry = entry->next)
 	{
-		if (new_capacity > (Size) (PG_UINT64_MAX / 2))
-			elog(FATAL, "threaded backend registry capacity overflow");
-		new_capacity *= 2;
+		if (entry->backend_id == backend_id)
+			return entry->backend;
 	}
 
-	new_registry = realloc(ThreadedBackendRegistry,
-						   new_capacity * sizeof(PgBackend *));
-	if (new_registry == NULL)
-		elog(FATAL, "out of memory growing threaded backend registry");
-
-	MemSet(new_registry + ThreadedBackendRegistryCapacity, 0,
-		   (new_capacity - ThreadedBackendRegistryCapacity) * sizeof(PgBackend *));
-	ThreadedBackendRegistry = new_registry;
-	ThreadedBackendRegistryCapacity = new_capacity;
+	return NULL;
 }
 #endif
 
@@ -322,18 +311,42 @@ static void
 PgBackendRegisterThreadedBackend(PgBackend *backend)
 {
 #ifndef WIN32
+	ThreadedBackendRegistryEntry *entry;
+
 	Assert(backend != NULL);
 
 	if (!PgRuntimeIsThreadBacked(backend->runtime))
 		return;
 
+	entry = malloc(sizeof(*entry));
+	if (entry == NULL)
+		elog(FATAL, "out of memory registering threaded backend");
+	entry->backend_id = backend->id;
+	entry->backend = backend;
+
 	ThreadedBackendRegistryLock();
-	PgBackendEnsureThreadedRegistryCapacity(backend->id);
-	if (ThreadedBackendRegistry[backend->id] != NULL &&
-		ThreadedBackendRegistry[backend->id] != backend)
-		elog(FATAL, "threaded backend id %llu is already registered",
-			 (unsigned long long) backend->id);
-	ThreadedBackendRegistry[backend->id] = backend;
+	for (ThreadedBackendRegistryEntry *existing = ThreadedBackendRegistry;
+		 existing != NULL;
+		 existing = existing->next)
+	{
+		if (existing->backend_id != backend->id)
+			continue;
+
+		if (existing->backend != backend)
+		{
+			ThreadedBackendRegistryUnlock();
+			free(entry);
+			elog(FATAL, "threaded backend id %llu is already registered",
+				 (unsigned long long) backend->id);
+		}
+
+		ThreadedBackendRegistryUnlock();
+		free(entry);
+		return;
+	}
+
+	entry->next = ThreadedBackendRegistry;
+	ThreadedBackendRegistry = entry;
 	ThreadedBackendRegistryUnlock();
 #endif
 }
@@ -348,9 +361,19 @@ PgBackendUnregisterThreadedBackend(PgBackend *backend)
 		return;
 
 	ThreadedBackendRegistryLock();
-	if (backend->id < ThreadedBackendRegistryCapacity &&
-		ThreadedBackendRegistry[backend->id] == backend)
-		ThreadedBackendRegistry[backend->id] = NULL;
+	for (ThreadedBackendRegistryEntry **link = &ThreadedBackendRegistry;
+		 *link != NULL;
+		 link = &(*link)->next)
+	{
+		ThreadedBackendRegistryEntry *entry = *link;
+
+		if (entry->backend_id == backend->id && entry->backend == backend)
+		{
+			*link = entry->next;
+			free(entry);
+			break;
+		}
+	}
 	ThreadedBackendRegistryUnlock();
 #endif
 }
@@ -364,8 +387,7 @@ PgBackendSendInterruptById(PgBackendId backend_id,
 	PgBackend  *backend = NULL;
 
 	ThreadedBackendRegistryLock();
-	if (backend_id < ThreadedBackendRegistryCapacity)
-		backend = ThreadedBackendRegistry[backend_id];
+	backend = ThreadedBackendRegistryLookupLocked(backend_id);
 
 	if (backend != NULL)
 	{
@@ -1526,8 +1548,7 @@ PgBackendSnapshotWaitCompletionById(PgBackendId backend_id,
 		*waiting = 0;
 
 	ThreadedBackendRegistryLock();
-	if (backend_id < ThreadedBackendRegistryCapacity)
-		backend = ThreadedBackendRegistry[backend_id];
+	backend = ThreadedBackendRegistryLookupLocked(backend_id);
 
 	if (backend != NULL)
 	{
@@ -1610,8 +1631,7 @@ PgBackendWakeWaitCompletionById(PgBackendId backend_id, uint32 ready_events)
 	PgBackend  *backend = NULL;
 
 	ThreadedBackendRegistryLock();
-	if (backend_id < ThreadedBackendRegistryCapacity)
-		backend = ThreadedBackendRegistry[backend_id];
+	backend = ThreadedBackendRegistryLookupLocked(backend_id);
 
 	if (backend != NULL)
 		(void) PgBackendWakeWaitCompletion(backend, ready_events);
@@ -2180,8 +2200,7 @@ PgBackendSnapshotProtocolParkById(PgBackendId backend_id,
 		MemSet(snapshot, 0, sizeof(*snapshot));
 
 	ThreadedBackendRegistryLock();
-	if (backend_id < ThreadedBackendRegistryCapacity)
-		backend = ThreadedBackendRegistry[backend_id];
+	backend = ThreadedBackendRegistryLookupLocked(backend_id);
 
 	if (backend != NULL)
 	{

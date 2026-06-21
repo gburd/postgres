@@ -165,6 +165,7 @@ struct pg_locale_struct
 	bool		collate_is_c;
 	bool		ctype_is_c;
 	bool		is_default;
+	char		provider;
 
 	const struct collate_methods *collate;	/* NULL if collate_is_c */
 	const struct ctype_methods *ctype;	/* NULL if ctype_is_c */
@@ -192,6 +193,8 @@ struct pg_locale_struct
 extern void init_database_collation(void);
 extern pg_locale_t pg_database_locale(void);
 extern pg_locale_t pg_newlocale_from_collation(Oid collid);
+extern void pg_locale_release_external(pg_locale_t locale);
+extern void pg_locale_release_collation_cache_external(void *collation_cache);
 
 extern char *get_collation_actual_version(char collprovider, const char *collcollate);
 

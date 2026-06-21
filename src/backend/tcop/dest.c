@@ -273,11 +273,10 @@ ReadyForQuery(CommandDest dest)
 		case DestRemoteExecute:
 		case DestRemoteSimple:
 			{
-				StringInfoData buf;
+				char		tstatus;
 
-				pq_beginmessage(&buf, PqMsg_ReadyForQuery);
-				pq_sendbyte(&buf, TransactionBlockStatusCode());
-				pq_endmessage(&buf);
+				tstatus = TransactionBlockStatusCode();
+				pq_putmessage(PqMsg_ReadyForQuery, &tstatus, 1);
 			}
 			/* Flush output at end of cycle in any case. */
 			pq_flush();

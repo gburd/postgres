@@ -32,6 +32,10 @@
 #include "postgres.h"
 
 #include <errno.h>
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
+#include <poll.h>
 #include <sys/time.h>
 #include <unistd.h>
 
@@ -257,6 +261,11 @@ static PG_GLOBAL_RUNTIME int pooled_protocol_queue_length = 0;
 static PG_GLOBAL_RUNTIME int pooled_protocol_carrier_count = 0;
 static PG_GLOBAL_RUNTIME bool pooled_protocol_pool_started = false;
 #endif
+#if defined(__GLIBC__)
+#define BACKEND_THREAD_MALLOC_TRIM_THRESHOLD ((Size) 64 * 1024 * 1024)
+static PG_GLOBAL_RUNTIME pthread_mutex_t backend_thread_malloc_trim_mutex = PTHREAD_MUTEX_INITIALIZER;
+static PG_GLOBAL_RUNTIME Size backend_thread_malloc_trim_pending = 0;
+#endif
 
 static bool postmaster_backend_thread_launch(PMChild *pmchild,
 											 BackendType child_type,
@@ -269,6 +278,10 @@ static bool postmaster_pooled_protocol_launch(PMChild *pmchild,
 											  void *startup_data,
 											  size_t startup_data_len,
 											  const ClientSocket *client_sock);
+static BackendThreadStart *backend_thread_start_alloc(void);
+static void backend_thread_start_release(BackendThreadStart *thread_start);
+static BackendPooledLogicalStart *backend_pooled_logical_start_alloc(void);
+static void backend_pooled_logical_start_release(BackendPooledLogicalStart *logical_start);
 static void backend_thread_entry(void *arg);
 static void backend_thread_run_backend(BackendThreadStart *thread_start);
 static void backend_thread_run_worker(BackendThreadStart *thread_start);
@@ -279,6 +292,7 @@ static void backend_thread_wait_until_registered(BackendThreadStart *thread_star
 static void backend_thread_init_random_state(void);
 static void backend_thread_clear_deleted_retained_memory_contexts(void);
 static void backend_thread_free_deleted_retained_memory_contexts(void);
+static void backend_thread_maybe_trim_reclaimed_memory(Size reclaimed);
 pg_noreturn static void backend_thread_exit(int code);
 pg_noreturn static void backend_thread_finish(int code);
 pg_noreturn static void backend_pooled_logical_finish(int code);
@@ -293,7 +307,7 @@ static BackendPooledLogicalStart *backend_pooled_protocol_dequeue(void);
 static int	backend_pooled_protocol_queue_count(void);
 static uint32 backend_pooled_protocol_idle_carrier_count(void);
 static void backend_pooled_protocol_signal_work(void);
-static void backend_pooled_protocol_broadcast_work(void);
+static void backend_pooled_protocol_signal_ready_work(int count);
 static void backend_pooled_protocol_wait_for_work(long timeout_us);
 static void backend_pooled_protocol_deadline_after(long timeout_us,
 												   struct timespec *deadline);
@@ -404,6 +418,57 @@ postmaster_child_launch_carrier(PMChild *pmchild,
 	return true;
 }
 
+static BackendThreadStart *
+backend_thread_start_alloc(void)
+{
+	BackendThreadStart *thread_start;
+
+	thread_start = malloc(sizeof(BackendThreadStart));
+	if (thread_start != NULL)
+		MemSet(thread_start, 0, sizeof(*thread_start));
+
+	return thread_start;
+}
+
+static void
+backend_thread_start_release(BackendThreadStart *thread_start)
+{
+	PgExecution *scheduler_execution;
+
+	if (thread_start == NULL)
+		return;
+
+	scheduler_execution = thread_start->runtime_state.carrier.scheduler_execution;
+	if (scheduler_execution != NULL)
+	{
+		thread_start->runtime_state.carrier.scheduler_execution = NULL;
+		free(scheduler_execution);
+	}
+
+	free(thread_start);
+}
+
+static BackendPooledLogicalStart *
+backend_pooled_logical_start_alloc(void)
+{
+	BackendPooledLogicalStart *logical_start;
+
+	logical_start = malloc(sizeof(BackendPooledLogicalStart));
+	if (logical_start != NULL)
+		MemSet(logical_start, 0, sizeof(*logical_start));
+
+	return logical_start;
+}
+
+static void
+backend_pooled_logical_start_release(BackendPooledLogicalStart *logical_start)
+{
+	if (logical_start == NULL)
+		return;
+
+	free(logical_start);
+}
+
 /*
  * Start a regular backend carrier thread.
  *
@@ -481,7 +546,7 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 #else
 	InitializePgThreadRuntime(backend_thread_exit);
 
-	thread_start = malloc(sizeof(BackendThreadStart));
+	thread_start = backend_thread_start_alloc();
 	if (thread_start == NULL)
 	{
 		errno = ENOMEM;
@@ -521,7 +586,7 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 	{
 		int			save_errno = errno;
 
-		free(thread_start);
+		backend_thread_start_release(thread_start);
 		errno = save_errno;
 		return false;
 	}
@@ -540,7 +605,7 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 	{
 		if (child_type == B_BACKEND)
 			closesocket(thread_start->client_sock.sock);
-		free(thread_start);
+		backend_thread_start_release(thread_start);
 		errno = rc;
 		return false;
 	}
@@ -577,7 +642,7 @@ postmaster_pooled_protocol_launch(PMChild *pmchild, int child_slot,
 	if (!backend_pooled_protocol_start_pool())
 		return false;
 
-	logical_start = malloc(sizeof(BackendPooledLogicalStart));
+	logical_start = backend_pooled_logical_start_alloc();
 	if (logical_start == NULL)
 	{
 		errno = ENOMEM;
@@ -599,7 +664,7 @@ postmaster_pooled_protocol_launch(PMChild *pmchild, int child_slot,
 	{
 		int			save_errno = errno;
 
-		free(logical_start);
+		backend_pooled_logical_start_release(logical_start);
 		errno = save_errno;
 		return false;
 	}
@@ -687,7 +752,7 @@ backend_pooled_protocol_maybe_start_carrier_for_work(void)
 		return;
 
 	queue_length = backend_pooled_protocol_queue_count();
-	if (queue_length <= 1)
+	if (queue_length <= 0)
 		return;
 
 	idle_carriers = backend_pooled_protocol_idle_carrier_count();
@@ -789,19 +854,7 @@ backend_pooled_protocol_queue_count(void)
 static uint32
 backend_pooled_protocol_idle_carrier_count(void)
 {
-	PgRuntime  *runtime = CurrentPgRuntime;
-	PgProtocolSchedulerState *scheduler;
-	uint32		idle_carriers;
-
-	if (runtime == NULL)
-		return 0;
-
-	scheduler = &runtime->protocol_scheduler;
-	SpinLockAcquire(&scheduler->lock);
-	idle_carriers = scheduler->idle_carrier_count;
-	SpinLockRelease(&scheduler->lock);
-
-	return idle_carriers;
+	return PgRuntimePooledProtocolIdleCarrierCount();
 }
 
 static void
@@ -832,9 +885,12 @@ backend_pooled_protocol_signal_work(void)
 }
 
 static void
-backend_pooled_protocol_broadcast_work(void)
+backend_pooled_protocol_signal_ready_work(int count)
 {
 	int			rc;
+
+	if (count <= 0)
+		return;
 
 	rc = pthread_mutex_lock(&pooled_protocol_queue_mutex);
 	if (rc != 0)
@@ -843,11 +899,14 @@ backend_pooled_protocol_broadcast_work(void)
 		elog(FATAL, "could not lock pooled protocol queue: %m");
 	}
 
-	rc = pthread_cond_broadcast(&pooled_protocol_queue_cond);
-	if (rc != 0)
+	for (int i = 0; i < count; i++)
 	{
-		errno = rc;
-		elog(FATAL, "could not broadcast pooled protocol queue: %m");
+		rc = pthread_cond_signal(&pooled_protocol_queue_cond);
+		if (rc != 0)
+		{
+			errno = rc;
+			elog(FATAL, "could not signal pooled protocol queue: %m");
+		}
 	}
 
 	rc = pthread_mutex_unlock(&pooled_protocol_queue_mutex);
@@ -932,6 +991,7 @@ backend_pooled_protocol_carrier_entry(void *arg)
 	BackendPooledCarrierStart *carrier_start =
 		(BackendPooledCarrierStart *) arg;
 	PgBackend **scratch;
+	struct pollfd *poll_scratch;
 	int			max_scratch_backends;
 
 	sigprocmask(SIG_SETMASK, &BlockSig, NULL);
@@ -952,6 +1012,9 @@ backend_pooled_protocol_carrier_entry(void *arg)
 	max_scratch_backends = MaxBackends > 0 ? MaxBackends : 1024;
 	scratch = MemoryContextAlloc(TopMemoryContext,
 								 sizeof(PgBackend *) * max_scratch_backends);
+	poll_scratch = MemoryContextAlloc(TopMemoryContext,
+									  sizeof(struct pollfd) *
+									  (max_scratch_backends + 1));
 
 	if (!PgRuntimeProtocolSchedulerRegisterCarrier(CurrentPgRuntime,
 												   CurrentPgCarrier))
@@ -961,6 +1024,7 @@ backend_pooled_protocol_carrier_entry(void *arg)
 	{
 		BackendPooledLogicalStart *logical_start;
 		PgBackend  *backend;
+		int			nready;
 
 		Assert(CurrentPgCarrier == &carrier_start->carrier);
 		Assert(CurrentPgBackend == NULL);
@@ -985,12 +1049,14 @@ backend_pooled_protocol_carrier_entry(void *arg)
 			continue;
 		}
 
-		if (PgRuntimeProtocolSchedulerWaitParkedReads(CurrentPgRuntime,
-													  scratch,
-													  max_scratch_backends,
-													  10L) > 0)
+		nready = PgRuntimeProtocolSchedulerWaitParkedReads(CurrentPgRuntime,
+														   scratch,
+														   poll_scratch,
+														   max_scratch_backends,
+														   10L);
+		if (nready > 0)
 		{
-			backend_pooled_protocol_broadcast_work();
+			backend_pooled_protocol_signal_ready_work(nready);
 			continue;
 		}
 
@@ -1044,7 +1110,7 @@ backend_pooled_protocol_run_logical_start(BackendPooledCarrierStart *carrier_sta
 		logical_start->exit_jmp_valid = false;
 		*PgCurrentBackendThreadStartRef() = NULL;
 		PgCarrierDetachBackend(CurrentPgCarrier, NULL);
-		free(logical_start);
+		backend_pooled_logical_start_release(logical_start);
 		return;
 	}
 
@@ -1079,7 +1145,7 @@ backend_pooled_protocol_resume_logical_start(BackendPooledLogicalStart *logical_
 		logical_start->exit_jmp_valid = false;
 		*PgCurrentBackendThreadStartRef() = NULL;
 		PgCarrierDetachBackend(CurrentPgCarrier, NULL);
-		free(logical_start);
+		backend_pooled_logical_start_release(logical_start);
 		return;
 	}
 
@@ -1295,6 +1361,49 @@ backend_thread_free_deleted_retained_memory_contexts(void)
 									 PG_BACKEND_ALLOCSET_NUM_FREELISTS);
 }
 
+static void
+backend_thread_maybe_trim_reclaimed_memory(Size reclaimed)
+{
+#if defined(__GLIBC__)
+	bool		trim_now = false;
+	int			rc;
+
+	if (reclaimed == 0)
+		return;
+
+	rc = pthread_mutex_lock(&backend_thread_malloc_trim_mutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not lock backend malloc trim state: %m");
+	}
+
+	backend_thread_malloc_trim_pending += reclaimed;
+	if (backend_thread_malloc_trim_pending < reclaimed)
+		backend_thread_malloc_trim_pending =
+			BACKEND_THREAD_MALLOC_TRIM_THRESHOLD;
+
+	if (backend_thread_malloc_trim_pending >=
+		BACKEND_THREAD_MALLOC_TRIM_THRESHOLD)
+	{
+		backend_thread_malloc_trim_pending = 0;
+		trim_now = true;
+	}
+
+	rc = pthread_mutex_unlock(&backend_thread_malloc_trim_mutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not unlock backend malloc trim state: %m");
+	}
+
+	if (trim_now)
+		(void) malloc_trim(0);
+#else
+	(void) reclaimed;
+#endif
+}
+
 void
 ThreadedBackendStartupComplete(void)
 {
@@ -1335,12 +1444,14 @@ backend_thread_finish(int code)
 	MemoryContext retained_top_context;
 	int			exitstatus;
 	Size		top_memory_allocated = 0;
+	Size		top_memory_accounted = 0;
 	Size		top_memory_reclaimed = 0;
 
 	Assert(thread_start != NULL);
 
 	exit_state = PgCurrentBackendExitStateRef();
 	retained_top_context = exit_state->retained_top_memory_context;
+	top_memory_accounted = PgBackendConsumeRetainedTopMemoryAllocated();
 	exitstatus = backend_thread_exitstatus(code);
 	MyClientSocket = NULL;
 	if (thread_start->client_sock.sock != PGINVALID_SOCKET)
@@ -1375,6 +1486,9 @@ backend_thread_finish(int code)
 		MemoryContextDelete(retained_top_context);
 		backend_thread_free_deleted_retained_memory_contexts();
 		backend_thread_clear_deleted_retained_memory_contexts();
+		if (top_memory_accounted < top_memory_reclaimed)
+			top_memory_accounted = top_memory_reclaimed;
+		backend_thread_maybe_trim_reclaimed_memory(top_memory_accounted);
 		exit_state->retained_top_memory_context = NULL;
 		top_memory_allocated = 0;
 	}
@@ -1385,7 +1499,7 @@ backend_thread_finish(int code)
 
 	ShutdownWaitEventSupport();
 	backend_thread_set_current_start(NULL);
-	free(thread_start);
+	backend_thread_start_release(thread_start);
 	pg_thread_exit();
 }
 
@@ -1397,6 +1511,7 @@ backend_pooled_logical_finish(int code)
 	MemoryContext retained_top_context;
 	int			exitstatus;
 	Size		top_memory_allocated = 0;
+	Size		top_memory_accounted = 0;
 	Size		top_memory_reclaimed = 0;
 
 	logical_start =
@@ -1407,6 +1522,7 @@ backend_pooled_logical_finish(int code)
 
 	exit_state = PgCurrentBackendExitStateRef();
 	retained_top_context = exit_state->retained_top_memory_context;
+	top_memory_accounted = PgBackendConsumeRetainedTopMemoryAllocated();
 	exitstatus = backend_thread_exitstatus(code);
 	MyClientSocket = NULL;
 	if (logical_start->client_sock.sock != PGINVALID_SOCKET)
@@ -1429,6 +1545,9 @@ backend_pooled_logical_finish(int code)
 		MemoryContextDelete(retained_top_context);
 		backend_thread_free_deleted_retained_memory_contexts();
 		backend_thread_clear_deleted_retained_memory_contexts();
+		if (top_memory_accounted < top_memory_reclaimed)
+			top_memory_accounted = top_memory_reclaimed;
+		backend_thread_maybe_trim_reclaimed_memory(top_memory_accounted);
 		exit_state->retained_top_memory_context = NULL;
 		top_memory_allocated = 0;
 	}

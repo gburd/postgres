@@ -166,6 +166,9 @@ static void PgSessionAdoptEarlyLoopState(PgSession *session);
 static void PgSessionInitializeTcopState(PgSessionTcopState *tcop);
 static void PgSessionAdoptEarlyTcopState(PgSession *session);
 static PgSessionUserIdentityState *PgCurrentSessionUserIdentityState(void);
+static char *PgSessionDefaultGUCString(const char *src);
+static PG_THREAD_LOCAL PG_GLOBAL_SESSION bool
+			use_static_guc_defaults_for_initialization = false;
 static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSession early_session_fallback = {
 	.tablespace = {
 		.initialized = true,
@@ -591,6 +594,14 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSession early_session_fallback = {
 #define early_session_namespace early_session_fallback.namespace_state
 #define early_session_locale early_session_fallback.locale
 
+bool
+PgSessionSetStaticGUCDefaultsForInitialization(bool use_static)
+{
+	bool		previous = use_static_guc_defaults_for_initialization;
+
+	use_static_guc_defaults_for_initialization = use_static;
+	return previous;
+}
 
 PG_RUNTIME_DEFINE_ADOPT_EARLY_ZERO(PgSessionAdoptEarlyDatabaseState,
 								   PgSession, session, database,
@@ -642,6 +653,15 @@ PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED(PgSessionAdoptEarlyBinaryUpgradeState,
 										  early_session_binary_upgrade,
 										  PgSessionInitializeBinaryUpgradeState)
 
+static char *
+PgSessionDefaultGUCString(const char *src)
+{
+	if (use_static_guc_defaults_for_initialization)
+		return unconstify(char *, src);
+
+	return guc_strdup(FATAL, src);
+}
+
 void
 PgSessionInitializeDateTimeState(PgSessionDateTimeState *datetime)
 {
@@ -651,9 +671,10 @@ PgSessionInitializeDateTimeState(PgSessionDateTimeState *datetime)
 	datetime->date_style = USE_ISO_DATES;
 	datetime->date_order = DATEORDER_MDY;
 	datetime->interval_style = INTSTYLE_POSTGRES;
-	datetime->datestyle_string_value = guc_strdup(FATAL, "ISO, MDY");
-	datetime->timezone_string_value = guc_strdup(FATAL, "GMT");
-	datetime->log_timezone_string_value = guc_strdup(FATAL, "GMT");
+	datetime->datestyle_string_value =
+		PgSessionDefaultGUCString("ISO, MDY");
+	datetime->timezone_string_value = PgSessionDefaultGUCString("GMT");
+	datetime->log_timezone_string_value = PgSessionDefaultGUCString("GMT");
 	datetime->timezone_abbreviations_string_value = NULL;
 	datetime->session_timezone_value = pg_tzset("GMT");
 	datetime->log_timezone_value = datetime->session_timezone_value;
@@ -708,7 +729,8 @@ PgSessionInitializeTextSearchState(PgSessionTextSearchState *text_search)
 
 	MemSet(text_search, 0, sizeof(*text_search));
 	text_search->initialized = true;
-	text_search->current_config_value = guc_strdup(FATAL, "pg_catalog.simple");
+	text_search->current_config_value =
+		PgSessionDefaultGUCString("pg_catalog.simple");
 	text_search->current_config_cache = InvalidOid;
 }
 
@@ -735,7 +757,7 @@ PgSessionInitializeConnectionGUCState(PgSessionConnectionGUCState *connection_gu
 	Assert(connection_guc != NULL);
 
 	connection_guc->initialized = true;
-	connection_guc->application_name_value = guc_strdup(FATAL, "");
+	connection_guc->application_name_value = PgSessionDefaultGUCString("");
 	connection_guc->ssl_renegotiation_limit_value = 0;
 	connection_guc->tcp_keepalives_idle_value = 0;
 	connection_guc->tcp_keepalives_interval_value = 0;
@@ -745,7 +767,7 @@ PgSessionInitializeConnectionGUCState(PgSessionConnectionGUCState *connection_gu
 	connection_guc->log_statement_value = 0;
 	connection_guc->post_auth_delay_seconds = 0;
 	connection_guc->restrict_nonsystem_relation_kind_string_value =
-		guc_strdup(FATAL, "");
+		PgSessionDefaultGUCString("");
 	connection_guc->restrict_nonsystem_relation_kind_value = 0;
 }
 

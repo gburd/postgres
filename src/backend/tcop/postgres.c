@@ -174,6 +174,9 @@ typedef struct BindParamCbData
 #define current_row_description_context (*PgCurrentRowDescriptionContextRef())
 #define current_row_description_buf (*PgCurrentRowDescriptionBufRef())
 
+/* common frontend protocol messages fit without palloc/repalloc */
+#define PG_INPUT_MESSAGE_STACK_BUFFER_SIZE	1024
+
 /* ----------------------------------------------------------------
  *		decls for routines only used in this file
  * ----------------------------------------------------------------
@@ -226,6 +229,8 @@ static long PgProtocolParkTimeoutDelayMs(PgBackend *backend,
 static long PgProtocolParkHibernateDelayMs(PgBackend *backend,
 										   bool *hibernate_due);
 static bool PgBackendProtocolReadParkMarkImmediateWake(PgBackend *backend);
+static short PgProtocolParkPollEvents(uint32 wait_events);
+static uint32 PgProtocolParkPollWakeEvents(uint32 wait_events, short revents);
 static void PgSessionLoopStateInit(PgSessionLoopState *state);
 static void PgSessionRecoverError(PgSession *session);
 static pg_attribute_always_inline PgStepResult PgSessionStepUnprotected(PgSession *session,
@@ -513,8 +518,8 @@ SocketBackendProtocolPark(PgSession *session, StringInfo inBuf)
 
 	PgSessionServiceProtocolReadWake(session);
 
-	probe_result = PgConnectionProbeMessageType(session->connection,
-												&probe);
+	probe_result = PgConnectionProbeBufferedMessageType(session->connection,
+														&probe);
 	if (probe_result == PG_PROTOCOL_BYTE_NONE)
 	{
 		PgProtocolParkSpec park_spec;
@@ -639,6 +644,20 @@ SocketBackendStickyIdleWait(PgSession *session, PgProtocolByteProbe *probe)
 					 errmsg("could not poll client socket: %m")));
 
 		PgSessionServiceProtocolReadWake(session);
+		if (poll_rc > 0 && poll_fd.revents != 0)
+		{
+			int			qtype;
+
+			qtype = pq_startmsgread_getbyte();
+			if (qtype == EOF)
+				return PG_PROTOCOL_BYTE_EOF;
+
+			probe->type = qtype;
+			probe->transport_wait_events = 0;
+			probe->transport_buffered_input = false;
+			probe->transport_generation = io->transport_generation;
+			return PG_PROTOCOL_BYTE_AVAILABLE;
+		}
 		return PgConnectionProbeMessageType(connection, probe);
 	}
 
@@ -4765,6 +4784,7 @@ PgSessionStepUnprotected(PgSession *session, int max_messages,
 	MemoryContext message_context;
 	int			firstchar;
 	StringInfoData input_message;
+	char		input_message_data[PG_INPUT_MESSAGE_STACK_BUFFER_SIZE];
 
 	Assert(session != NULL);
 	Assert(max_messages >= 0);
@@ -4792,7 +4812,8 @@ PgSessionStepUnprotected(PgSession *session, int max_messages,
 	MemoryContextSwitchTo(message_context);
 	MemoryContextReset(message_context);
 
-	initStringInfo(&input_message);
+	initStringInfoFromCallerBuffer(&input_message, input_message_data,
+								   sizeof(input_message_data));
 
 	/*
 	 * Also consider releasing our catalog snapshot if any, so that it's not
@@ -4947,6 +4968,7 @@ PgSessionStepUnprotected(PgSession *session, int max_messages,
 	/*
 	 * (3) read a command (loop blocks here)
 	 */
+	MemoryContextSwitchTo(message_context);
 	if (unlikely(protocol_park_enabled))
 		firstchar = ReadCommandProtocolPark(session, &input_message);
 	else
@@ -5769,22 +5791,65 @@ PgRuntimeProtocolSchedulerPollParkedReads(PgRuntime *runtime,
 	return nready;
 }
 
+static short
+PgProtocolParkPollEvents(uint32 wait_events)
+{
+	short		events = 0;
+
+	if (wait_events & WL_SOCKET_READABLE)
+		events |= POLLIN;
+	if (wait_events & WL_SOCKET_WRITEABLE)
+		events |= POLLOUT;
+#ifdef POLLRDHUP
+	if (wait_events & WL_SOCKET_CLOSED)
+		events |= POLLRDHUP;
+#endif
+
+	return events;
+}
+
+static uint32
+PgProtocolParkPollWakeEvents(uint32 wait_events, short revents)
+{
+	uint32		wake_events = 0;
+	const short closed_revents =
+		POLLERR | POLLHUP | POLLNVAL
+#ifdef POLLRDHUP
+		| POLLRDHUP
+#endif
+		;
+
+	if (revents == 0)
+		return 0;
+
+	if ((wait_events & WL_SOCKET_READABLE) &&
+		(revents & (POLLIN | POLLERR | POLLHUP)))
+		wake_events |= WL_SOCKET_READABLE;
+	if ((wait_events & WL_SOCKET_WRITEABLE) &&
+		(revents & (POLLOUT | POLLERR | POLLHUP)))
+		wake_events |= WL_SOCKET_WRITEABLE;
+	if ((wait_events & WL_SOCKET_CLOSED) &&
+		(revents & closed_revents))
+		wake_events |= WL_SOCKET_CLOSED;
+
+	return wake_events;
+}
+
 int
 PgRuntimeProtocolSchedulerWaitParkedReads(PgRuntime *runtime,
 										  PgBackend **scratch,
+										  struct pollfd *poll_scratch,
 										  int max_backends,
 										  long timeout_ms)
 {
-	WaitEventSet *wait_set;
-	WaitEvent  *events;
 	int			nbackends = 0;
-	int			max_events;
-	int			registered_events = 0;
+	int			registered_sockets = 0;
 	int			nready = 0;
 	long		wait_timeout_ms = timeout_ms;
 	int			rc;
 
-	if (runtime == NULL || scratch == NULL || max_backends <= 0)
+	if (runtime == NULL || scratch == NULL || poll_scratch == NULL ||
+		max_backends <= 0)
 		return 0;
 
 	Assert(CurrentPgBackend == NULL);
@@ -5804,6 +5869,22 @@ PgRuntimeProtocolSchedulerWaitParkedReads(PgRuntime *runtime,
 	}
 	if (nbackends <= 0)
 		return 0;
+
+	for (int i = 0; i <= nbackends; i++)
+	{
+		poll_scratch[i].fd = -1;
+		poll_scratch[i].events = 0;
+		poll_scratch[i].revents = 0;
+	}
+
+#ifndef WIN32
+	if (IsUnderPostmaster &&
+		postmaster_alive_fds[POSTMASTER_FD_WATCH] >= 0)
+	{
+		poll_scratch[0].fd = postmaster_alive_fds[POSTMASTER_FD_WATCH];
+		poll_scratch[0].events = POLLIN;
+	}
+#endif
 
 	for (int i = 0; i < nbackends; i++)
 	{
@@ -5829,14 +5910,6 @@ PgRuntimeProtocolSchedulerWaitParkedReads(PgRuntime *runtime,
 		}
 		return nready;
 	}
-
-	max_events = 1 + nbackends;
-	events = palloc(sizeof(WaitEvent) * max_events);
-	wait_set = CreateWaitEventSet(NULL, max_events);
-
-	(void) AddWaitEventToSet(wait_set, WL_POSTMASTER_DEATH, PGINVALID_SOCKET,
-							 NULL, NULL);
-	registered_events++;
 
 	for (int i = 0; i < nbackends; i++)
 	{
@@ -5905,18 +5978,15 @@ PgRuntimeProtocolSchedulerWaitParkedReads(PgRuntime *runtime,
 			(wait_timeout_ms < 0 || hibernate_delay_ms < wait_timeout_ms))
 			wait_timeout_ms = hibernate_delay_ms;
 
-		(void) AddWaitEventToSet(wait_set,
-								 park_spec->transport_wait_events |
-								 WL_SOCKET_CLOSED,
-								 park_spec->socket, NULL, backend);
-		registered_events++;
-
+		poll_scratch[i + 1].fd = park_spec->socket;
+		poll_scratch[i + 1].events =
+			PgProtocolParkPollEvents(park_spec->transport_wait_events |
+									 WL_SOCKET_CLOSED);
+		registered_sockets++;
 	}
 
 	if (nready > 0)
 	{
-		FreeWaitEventSet(wait_set);
-		pfree(events);
 		for (int i = 0; i < nbackends; i++)
 		{
 			PgBackend  *backend = scratch[i];
@@ -5930,10 +6000,8 @@ PgRuntimeProtocolSchedulerWaitParkedReads(PgRuntime *runtime,
 		return nready;
 	}
 
-	if (registered_events <= 1)
+	if (registered_sockets <= 0)
 	{
-		FreeWaitEventSet(wait_set);
-		pfree(events);
 		for (int i = 0; i < nbackends; i++)
 		{
 			PgBackend  *backend = scratch[i];
@@ -5949,8 +6017,11 @@ PgRuntimeProtocolSchedulerWaitParkedReads(PgRuntime *runtime,
 
 	PG_TRY();
 	{
-		rc = WaitEventSetWait(wait_set, wait_timeout_ms, events, max_events,
-							  WAIT_EVENT_CLIENT_READ);
+		rc = poll(poll_scratch, nbackends + 1, (int) wait_timeout_ms);
+		if (rc < 0 && errno != EINTR)
+			ereport(ERROR,
+					(errcode_for_socket_access(),
+					 errmsg("could not poll pooled protocol sockets: %m")));
 	}
 	PG_CATCH();
 	{
@@ -5963,35 +6034,48 @@ PgRuntimeProtocolSchedulerWaitParkedReads(PgRuntime *runtime,
 				(void) PgRuntimeProtocolSchedulerReparkBackendIfPolling(runtime,
 																		backend);
 		}
-		FreeWaitEventSet(wait_set);
-		pfree(events);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
 
-	for (int i = 0; i < rc; i++)
+#ifndef WIN32
+	if (rc > 0 && poll_scratch[0].revents != 0 && !PostmasterIsAlive())
+		ereport(FATAL,
+				(errcode(ERRCODE_ADMIN_SHUTDOWN),
+				 errmsg("terminating pooled protocol carrier due to unexpected postmaster exit")));
+#endif
+
+	if (rc > 0)
 	{
-		PgBackend  *backend;
+		for (int i = 0; i < nbackends; i++)
+		{
+			PgBackend  *backend = scratch[i];
+			PgProtocolParkSpec *park_spec;
+			uint32		wake_events;
 
-		if (events[i].user_data == NULL)
-			continue;
+			if (poll_scratch[i + 1].revents == 0)
+				continue;
 
-		backend = (PgBackend *) events[i].user_data;
-		if (backend->protocol_park.state != PG_PROTOCOL_PARK_COMMITTED)
-			continue;
-		if (backend->protocol_park.scheduler_queue_state !=
-			PG_PROTOCOL_SCHEDULER_QUEUE_POLLING)
-			continue;
+			if (backend->protocol_park.state != PG_PROTOCOL_PARK_COMMITTED)
+				continue;
+			if (backend->protocol_park.scheduler_queue_state !=
+				PG_PROTOCOL_SCHEDULER_QUEUE_POLLING)
+				continue;
 
-		PgBackendMarkProtocolReadParkWakeEvents(backend,
-												&backend->protocol_park.spec,
-												events[i].events);
-		if (PgRuntimeProtocolSchedulerMarkRunnable(runtime, backend))
-			nready++;
+			park_spec = &backend->protocol_park.spec;
+			wake_events =
+				PgProtocolParkPollWakeEvents(park_spec->transport_wait_events |
+											 WL_SOCKET_CLOSED,
+											 poll_scratch[i + 1].revents);
+			if (wake_events == 0)
+				continue;
+
+			PgBackendMarkProtocolReadParkWakeEvents(backend, park_spec,
+													wake_events);
+			if (PgRuntimeProtocolSchedulerMarkRunnable(runtime, backend))
+				nready++;
+		}
 	}
-
-	FreeWaitEventSet(wait_set);
-	pfree(events);
 
 	for (int i = 0; i < nbackends; i++)
 	{
@@ -6758,24 +6842,24 @@ PgSessionRunProtocolSchedulerUntilBoundary(PgSession *session)
 	save_context_stack = *context_stack_ref;
 	state->step_error_boundary_active = true;
 
+	if (sigsetjmp(local_sigjmp_buf, 0) != 0)
+	{
+		sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
+		PgSessionRecoverError(session);
+
+		if (!state->ignore_till_sync)
+			state->send_ready_for_query = true;	/* after error */
+
+		*exception_stack_ref = save_exception_stack;
+		*context_stack_ref = save_context_stack;
+	}
+
+	/* We can now handle ereport(ERROR). */
+	*exception_stack_ref = &local_sigjmp_buf;
+
 	for (;;)
 	{
 		PgStepResult result;
-
-		if (sigsetjmp(local_sigjmp_buf, 0) != 0)
-		{
-			sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
-			PgSessionRecoverError(session);
-
-			if (!state->ignore_till_sync)
-				state->send_ready_for_query = true;	/* after error */
-
-			*exception_stack_ref = save_exception_stack;
-			*context_stack_ref = save_context_stack;
-		}
-
-		/* We can now handle ereport(ERROR). */
-		*exception_stack_ref = &local_sigjmp_buf;
 
 		result = PgSessionStepUnprotected(session, 0, true, true);
 		switch (result)

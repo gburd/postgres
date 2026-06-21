@@ -792,6 +792,7 @@ static char *ShowGUCOptionInternal(const struct config_generic *record,
 								   bool use_units);
 static void RemoveGUCFromLists(struct config_generic *gconf);
 static void set_guc_source(struct config_generic *gconf, GucSource newsource);
+static void reset_guc_record_at_backend_exit(struct config_generic *gconf);
 static void pg_timezone_abbrev_initialize(void);
 static void push_old_value(struct config_generic *gconf, GucAction action);
 static void ReportGUCOption(struct config_generic *record);
@@ -1428,6 +1429,79 @@ set_extra_field(struct config_generic *gconf, void **field, void *newval)
 	/* Free old value if it's not NULL and isn't referenced anymore */
 	if (oldval && !extra_field_used(gconf, oldval))
 		guc_free(oldval);
+}
+
+static void
+clear_guc_stack(struct config_generic *gconf)
+{
+	GucStack   *stack;
+
+	while ((stack = GUC_STACK(gconf)) != NULL)
+	{
+		GUC_SET_STACK(gconf, stack->prev);
+
+		if (gconf->vartype == PGC_STRING)
+		{
+			set_string_field(gconf, &stack->prior.val.stringval, NULL);
+			set_string_field(gconf, &stack->masked.val.stringval, NULL);
+		}
+		set_extra_field(gconf, &stack->prior.extra, NULL);
+		set_extra_field(gconf, &stack->masked.extra, NULL);
+		guc_free(stack);
+	}
+}
+
+static void
+reset_guc_record_at_backend_exit(struct config_generic *gconf)
+{
+	void	   *extra = GUC_EXTRA(gconf);
+	void	   *reset_extra = GUC_RESET_EXTRA(gconf);
+
+	RemoveGUCFromLists(gconf);
+	clear_guc_stack(gconf);
+	clear_last_reported(gconf);
+	guc_free(GUC_SOURCEFILE(gconf));
+	GUC_SET_SOURCEFILE(gconf, NULL);
+
+	if (gconf->vartype == PGC_STRING)
+	{
+		if (GUCRecordVariableIsCurrentSessionOwned(gconf))
+			set_string_field(gconf, GUC_VARIABLE_STRING(gconf), NULL);
+		set_string_field(gconf, &GUC_RESET_STRING(gconf), NULL);
+	}
+
+	GUC_SET_EXTRA(gconf, NULL);
+	if (extra != NULL && !extra_field_used(gconf, extra))
+		guc_free(extra);
+
+	GUC_SET_RESET_EXTRA(gconf, NULL);
+	if (reset_extra != NULL && !extra_field_used(gconf, reset_extra))
+		guc_free(reset_extra);
+
+	GUC_STATUS(gconf) = 0;
+	GUC_SOURCE(gconf) = PGC_S_DEFAULT;
+	GUC_SCONTEXT(gconf) = PGC_INTERNAL;
+	GUC_SROLE(gconf) = BOOTSTRAP_SUPERUSERID;
+}
+
+void
+ResetGUCStateAtBackendExit(void)
+{
+	if (guc_variables == NULL)
+		return;
+
+	for (int i = 0; i < num_guc_variables; i++)
+		reset_guc_record_at_backend_exit(&guc_variables[i]);
+
+	if (guc_hashtab != NULL)
+	{
+		HASH_SEQ_STATUS status;
+		GUCHashEntry *hentry;
+
+		hash_seq_init(&status, guc_hashtab);
+		while ((hentry = (GUCHashEntry *) hash_seq_search(&status)) != NULL)
+			reset_guc_record_at_backend_exit(hentry->gucvar);
+	}
 }
 
 /*

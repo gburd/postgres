@@ -16,6 +16,8 @@
 #include <sys/resource.h>
 #include <sys/time.h>
 
+struct pollfd;
+
 #include "access/session.h"
 #include "access/skey.h"
 #include "access/tupdesc.h"
@@ -3379,6 +3381,7 @@ extern bool PgRuntimeKindIsPooledProtocol(PgRuntimeKind kind);
 extern bool PgRuntimeIsPooledProtocol(PgRuntime *runtime);
 extern bool PgRuntimePooledProtocolRequested(void);
 extern int	PgRuntimePooledProtocolCarrierLimit(void);
+extern uint32 PgRuntimePooledProtocolIdleCarrierCount(void);
 extern PgBackendLaunchModel PgRuntimeGetBackendLaunchModel(BackendType backend_type);
 extern bool PgRuntimeShouldThreadBackend(BackendType backend_type);
 extern PgBackendModel PgRuntimeGetExtensionBackendModel(void);
@@ -3430,6 +3433,7 @@ extern int	PgRuntimeProtocolSchedulerCollectParked(PgRuntime *runtime,
 													int max_backends);
 extern int	PgRuntimeProtocolSchedulerWaitParkedReads(PgRuntime *runtime,
 													 PgBackend **scratch,
+													 struct pollfd *poll_scratch,
 													 int max_backends,
 													 long timeout_ms);
 extern bool PgRuntimeProtocolSchedulerRegisterCarrier(PgRuntime *runtime,

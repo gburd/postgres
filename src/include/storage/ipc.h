@@ -87,6 +87,7 @@ typedef struct PgBackendExitState
 
 /* ipc.c */
 extern PgBackendExitState *PgCurrentBackendExitStateRef(void);
+extern Size PgBackendConsumeRetainedTopMemoryAllocated(void);
 extern void PgBackendInitializeExitState(PgBackendExitState *exit_state);
 extern void PgBackendAdoptEarlyExitState(PgBackendExitState *exit_state);
 extern bool PgBackendExitInProgress(void);

@@ -15,6 +15,7 @@ PG_SESSION_RESET_BUCKET(xact_callbacks, PgSessionResetXactCallbackClosedState(se
 PG_SESSION_RESET_BUCKET(backup, PgSessionResetBackupClosedState(session))
 PG_SESSION_RESET_BUCKET(async, PgSessionResetAsyncClosedState(session))
 PG_SESSION_RESET_BUCKET(function_manager, PgSessionResetFunctionManagerClosedState(session))
+PG_SESSION_RESET_BUCKET(datetime, PgSessionResetDateTimeClosedState(session))
 PG_SESSION_RESET_BUCKET(guc, PgSessionResetGUCClosedState(session))
 PG_SESSION_RESET_BUCKET(pgstat, PgSessionResetPgStatClosedState(session))
 PG_SESSION_RESET_BUCKET(vacuum, PgSessionResetVacuumClosedState(session))
