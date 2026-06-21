@@ -719,6 +719,8 @@ PgRuntimeResetAfterFork(void)
 void
 InitializePgProcessRuntime(void)
 {
+	BackendType backend_type = MyBackendType;
+
 	/*
 	 * Bootstrap and standalone startup can call InitProcess() before BaseInit()
 	 * installs the process runtime.  Preserve the PGPROC/latch/wait-event
@@ -771,7 +773,7 @@ InitializePgProcessRuntime(void)
 	PgBackendInitializeRuntimeObject(&process_backend, &process_runtime,
 									 &process_carrier, &process_session,
 									 &process_connection, &process_execution,
-									 MyBackendType, NULL);
+									 backend_type, NULL);
 	PgBackendAdoptEarlyState(&process_backend);
 	process_backend.my_proc = my_proc;
 	process_backend.my_proc_number = my_proc_number;
