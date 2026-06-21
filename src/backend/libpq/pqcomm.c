@@ -151,6 +151,7 @@ static pg_attribute_always_inline void pq_advance_recv_pointer(PgConnectionSocke
 															   size_t amount);
 static bool pq_connection_transport_buffered_input(PgConnection *connection);
 static uint32 pq_connection_transport_wait_events(PgConnection *connection);
+static int	pq_probe_recvbuf(PgConnection *connection);
 static inline int pq_getbyte_from(PgConnectionSocketIOState *io);
 static inline int pq_getbytes_from(PgConnectionSocketIOState *io,
 								   void *b, size_t len);
@@ -1322,6 +1323,64 @@ pq_buffer_remaining_data(void)
 	return (io->recv_length - io->recv_pointer);
 }
 
+static int
+pq_probe_recvbuf(PgConnection *connection)
+{
+	PgConnectionSocketIOState *io;
+	Port	   *port;
+	size_t		old_recv_pointer;
+	size_t		old_recv_length;
+	bool		saved_noblock;
+	int			r;
+
+	Assert(connection != NULL);
+	io = &connection->socket_io;
+	port = connection->identity.port;
+	Assert(port != NULL);
+	Assert(io->recv_pointer >= io->recv_length);
+
+	old_recv_pointer = io->recv_pointer;
+	old_recv_length = io->recv_length;
+
+	pq_ensure_recv_buffer(io);
+	io->recv_pointer = 0;
+	io->recv_length = 0;
+
+	saved_noblock = port->noblock;
+	port->noblock = true;
+
+	errno = 0;
+	r = secure_read(port, io->recv_buffer, PQ_RECV_BUFFER_SIZE);
+	port->noblock = saved_noblock;
+	if (r < 0)
+	{
+		if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+		{
+			io->recv_pointer = old_recv_pointer;
+			io->recv_length = old_recv_length;
+			return 0;
+		}
+
+		if (errno != 0)
+			ereport(COMMERROR,
+					(errcode_for_socket_access(),
+					 errmsg("could not receive data from client: %m")));
+		io->recv_pointer = old_recv_pointer;
+		io->recv_length = old_recv_length;
+		return EOF;
+	}
+	if (r == 0)
+	{
+		io->recv_pointer = old_recv_pointer;
+		io->recv_length = old_recv_length;
+		return EOF;
+	}
+
+	io->recv_length = r;
+	io->transport_generation++;
+	return 1;
+}
+
 
 /* --------------------------------
  *		pq_startmsgread - begin reading a message from the client.
@@ -1407,7 +1466,6 @@ PgConnectionProbeMessageType(PgConnection *connection,
 	unsigned char c;
 	bool		buffered_input;
 	uint32		wait_events;
-	bool		saved_noblock;
 	int			r;
 
 	Assert(connection != NULL);
@@ -1452,27 +1510,14 @@ PgConnectionProbeMessageType(PgConnection *connection,
 	if (wait_events == 0 && !buffered_input)
 		return PG_PROTOCOL_BYTE_NONE;
 
-	saved_noblock = port->noblock;
-	port->noblock = true;
-
-	errno = 0;
-	r = secure_read(port, &c, 1);
-	port->noblock = saved_noblock;
-	if (r < 0)
-	{
-		if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
-			return PG_PROTOCOL_BYTE_NONE;
-
-		if (errno != 0)
-			ereport(COMMERROR,
-					(errcode_for_socket_access(),
-					 errmsg("could not receive data from client: %m")));
-		return PG_PROTOCOL_BYTE_EOF;
-	}
+	r = pq_probe_recvbuf(connection);
 	if (r == 0)
+		return PG_PROTOCOL_BYTE_NONE;
+	if (r == EOF)
 		return PG_PROTOCOL_BYTE_EOF;
 
-	io->transport_generation++;
+	c = (unsigned char) io->recv_buffer[io->recv_pointer];
+	pq_advance_recv_pointer(io, 1);
 	io->comm_reading_msg = true;
 	if (probe != NULL)
 	{

@@ -21,6 +21,7 @@
 
 #include <fcntl.h>
 #include <limits.h>
+#include <poll.h>
 #include <signal.h>
 #include <unistd.h>
 #include <sys/resource.h>
@@ -622,6 +623,25 @@ SocketBackendStickyIdleWait(PgSession *session, PgProtocolByteProbe *probe)
 	}
 
 	wait_events = probe->transport_wait_events | WL_SOCKET_CLOSED;
+	if (probe->transport_wait_events == WL_SOCKET_READABLE)
+	{
+		struct pollfd poll_fd;
+		int			poll_rc;
+
+		poll_fd.fd = connection->identity.port->sock;
+		poll_fd.events = POLLIN;
+		poll_fd.revents = 0;
+
+		poll_rc = poll(&poll_fd, 1, (int) timeout_ms);
+		if (poll_rc < 0 && errno != EINTR)
+			ereport(COMMERROR,
+					(errcode_for_socket_access(),
+					 errmsg("could not poll client socket: %m")));
+
+		PgSessionServiceProtocolReadWake(session);
+		return PgConnectionProbeMessageType(connection, probe);
+	}
+
 	wait_set = connection->protocol.fe_be_wait_set;
 	Assert(wait_set != NULL);
 	ModifyWaitEvent(wait_set, FeBeWaitSetSocketPos, wait_events, NULL);
@@ -6712,35 +6732,73 @@ PgSessionStagingWaitAndResumeProtocolRead(PgSession *session,
 PgStepResult
 PgSessionRunProtocolSchedulerUntilBoundary(PgSession *session)
 {
-	PgStepBudget budget;
+	PgSessionLoopState *state;
+	sigjmp_buf **exception_stack_ref;
+	ErrorContextCallback **context_stack_ref;
+	sigjmp_buf *save_exception_stack;
+	ErrorContextCallback *save_context_stack;
+	sigjmp_buf	local_sigjmp_buf;
 
 	Assert(session != NULL);
 	Assert(CurrentPgRuntime != NULL);
 	Assert(PgRuntimeIsPooledProtocol(CurrentPgRuntime));
+	state = &session->loop_state;
+	Assert(!state->step_error_boundary_active);
 
-	MemSet(&budget, 0, sizeof(budget));
-	budget.max_messages = 1;
-	budget.protocol_park_enabled = true;
-	budget.return_logical_exits = true;
+	/*
+	 * Keep one error boundary for the whole active attachment, matching the
+	 * process/thread-per-session loop shape.  Returning to the carrier loop is
+	 * still controlled only by protocol parks or logical exit.
+	 */
+	exception_stack_ref = PgCurrentExceptionStackRefFast();
+	context_stack_ref = PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentErrorContextStackHotRef,
+														 CurrentPgExecution,
+														 PgCurrentErrorContextStackRef);
+	save_exception_stack = *exception_stack_ref;
+	save_context_stack = *context_stack_ref;
+	state->step_error_boundary_active = true;
 
 	for (;;)
 	{
 		PgStepResult result;
 
-		result = PgSessionStep(session, budget);
+		if (sigsetjmp(local_sigjmp_buf, 0) != 0)
+		{
+			sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
+			PgSessionRecoverError(session);
+
+			if (!state->ignore_till_sync)
+				state->send_ready_for_query = true;	/* after error */
+
+			*exception_stack_ref = save_exception_stack;
+			*context_stack_ref = save_context_stack;
+		}
+
+		/* We can now handle ereport(ERROR). */
+		*exception_stack_ref = &local_sigjmp_buf;
+
+		result = PgSessionStepUnprotected(session, 0, true, true);
 		switch (result)
 		{
 			case PG_STEP_CONTINUE:
-			case PG_STEP_ERROR_RECOVERED:
 				break;
 
 			case PG_STEP_PARK_PROTOCOL_READ:
+				*exception_stack_ref = save_exception_stack;
+				*context_stack_ref = save_context_stack;
+				state->step_error_boundary_active = false;
 				PgSessionCommitCurrentProtocolReadPark(session);
 				return PG_STEP_PARK_PROTOCOL_READ;
 
 			case PG_STEP_DONE:
 			case PG_STEP_FATAL_EXIT:
+				*exception_stack_ref = save_exception_stack;
+				*context_stack_ref = save_context_stack;
+				state->step_error_boundary_active = false;
 				return result;
+
+			case PG_STEP_ERROR_RECOVERED:
+				pg_unreachable();
 		}
 	}
 }
