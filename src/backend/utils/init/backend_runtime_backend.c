@@ -1975,6 +1975,38 @@ PgRuntimeProtocolSchedulerReparkBackend(PgRuntime *runtime, PgBackend *backend)
 	return true;
 }
 
+bool
+PgRuntimeProtocolSchedulerReparkBackendIfPolling(PgRuntime *runtime,
+												 PgBackend *backend)
+{
+	PgBackendProtocolParkState *park_state;
+	PgProtocolSchedulerState *scheduler;
+
+	if (runtime == NULL || backend == NULL)
+		return false;
+	if (backend->runtime != runtime)
+		return false;
+
+	park_state = &backend->protocol_park;
+	scheduler = &runtime->protocol_scheduler;
+	SpinLockAcquire(&scheduler->lock);
+
+	if (park_state->state == PG_PROTOCOL_PARK_COMMITTED &&
+		park_state->scheduler_queue_state ==
+		PG_PROTOCOL_SCHEDULER_QUEUE_POLLING)
+	{
+		dlist_push_tail(&scheduler->parked_protocol_queue,
+						&park_state->scheduler_node);
+		park_state->scheduler_queue_state =
+			PG_PROTOCOL_SCHEDULER_QUEUE_PARKED_PROTOCOL_READ;
+		scheduler->parked_protocol_count++;
+	}
+
+	SpinLockRelease(&scheduler->lock);
+
+	return true;
+}
+
 PgBackend *
 PgRuntimeProtocolSchedulerPopRunnable(PgRuntime *runtime)
 {
@@ -2483,6 +2515,7 @@ PgBackendResumeProtocolReadPark(PgBackend *backend)
 	park_state->wake_reasons = PG_PROTOCOL_PARK_WAKE_NONE;
 	park_state->wake_events = 0;
 	park_state->wake_generation = 0;
+	park_state->hibernated = false;
 	park_state->parked_carrier = NULL;
 	park_state->scheduler_queue_state = PG_PROTOCOL_SCHEDULER_QUEUE_NONE;
 }

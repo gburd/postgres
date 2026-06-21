@@ -219,7 +219,8 @@ typedef enum PgProtocolParkWakeReason
 	PG_PROTOCOL_PARK_WAKE_STALE_TRANSPORT = (1 << 5),
 	PG_PROTOCOL_PARK_WAKE_TIMEOUT = (1 << 6),
 	PG_PROTOCOL_PARK_WAKE_STALE_TIMEOUT = (1 << 7),
-	PG_PROTOCOL_PARK_WAKE_NOTIFY = (1 << 8)
+	PG_PROTOCOL_PARK_WAKE_NOTIFY = (1 << 8),
+	PG_PROTOCOL_PARK_WAKE_HIBERNATE = (1 << 9)
 } PgProtocolParkWakeReason;
 
 typedef struct PgProtocolParkSpec
@@ -321,6 +322,7 @@ typedef struct PgBackendProtocolParkState
 	TimestampTz committed_at;
 	bool		last_park_duration_valid;
 	long		last_park_duration_ms;
+	bool		hibernated;
 	PgCarrier  *parked_carrier;
 } PgBackendProtocolParkState;
 
@@ -3420,10 +3422,16 @@ extern bool PgRuntimeProtocolSchedulerLeaseBackend(PgRuntime *runtime,
 extern PgBackend *PgRuntimeProtocolSchedulerLeaseParkedBackend(PgRuntime *runtime);
 extern bool PgRuntimeProtocolSchedulerReparkBackend(PgRuntime *runtime,
 													PgBackend *backend);
+extern bool PgRuntimeProtocolSchedulerReparkBackendIfPolling(PgRuntime *runtime,
+															 PgBackend *backend);
 extern PgBackend *PgRuntimeProtocolSchedulerPopRunnable(PgRuntime *runtime);
 extern int	PgRuntimeProtocolSchedulerCollectParked(PgRuntime *runtime,
 													PgBackend **backends,
 													int max_backends);
+extern int	PgRuntimeProtocolSchedulerWaitParkedReads(PgRuntime *runtime,
+													 PgBackend **scratch,
+													 int max_backends,
+													 long timeout_ms);
 extern bool PgRuntimeProtocolSchedulerRegisterCarrier(PgRuntime *runtime,
 													  PgCarrier *carrier);
 extern bool PgRuntimeProtocolSchedulerUnregisterCarrier(PgRuntime *runtime,

@@ -293,6 +293,7 @@ static BackendPooledLogicalStart *backend_pooled_protocol_dequeue(void);
 static int	backend_pooled_protocol_queue_count(void);
 static uint32 backend_pooled_protocol_idle_carrier_count(void);
 static void backend_pooled_protocol_signal_work(void);
+static void backend_pooled_protocol_broadcast_work(void);
 static void backend_pooled_protocol_wait_for_work(long timeout_us);
 static void backend_pooled_protocol_deadline_after(long timeout_us,
 												   struct timespec *deadline);
@@ -831,6 +832,33 @@ backend_pooled_protocol_signal_work(void)
 }
 
 static void
+backend_pooled_protocol_broadcast_work(void)
+{
+	int			rc;
+
+	rc = pthread_mutex_lock(&pooled_protocol_queue_mutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not lock pooled protocol queue: %m");
+	}
+
+	rc = pthread_cond_broadcast(&pooled_protocol_queue_cond);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not broadcast pooled protocol queue: %m");
+	}
+
+	rc = pthread_mutex_unlock(&pooled_protocol_queue_mutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not unlock pooled protocol queue: %m");
+	}
+}
+
+static void
 backend_pooled_protocol_wait_for_work(long timeout_us)
 {
 	struct timespec deadline;
@@ -903,7 +931,8 @@ backend_pooled_protocol_carrier_entry(void *arg)
 {
 	BackendPooledCarrierStart *carrier_start =
 		(BackendPooledCarrierStart *) arg;
-	PgBackend  *scratch[64];
+	PgBackend **scratch;
+	int			max_scratch_backends;
 
 	sigprocmask(SIG_SETMASK, &BlockSig, NULL);
 
@@ -920,6 +949,9 @@ backend_pooled_protocol_carrier_entry(void *arg)
 	InitializeWaitEventSupport();
 	(void) set_stack_base();
 	backend_thread_init_random_state();
+	max_scratch_backends = MaxBackends > 0 ? MaxBackends : 1024;
+	scratch = MemoryContextAlloc(TopMemoryContext,
+								 sizeof(PgBackend *) * max_scratch_backends);
 
 	if (!PgRuntimeProtocolSchedulerRegisterCarrier(CurrentPgRuntime,
 												   CurrentPgCarrier))
@@ -936,10 +968,6 @@ backend_pooled_protocol_carrier_entry(void *arg)
 		Assert(CurrentPgConnection == NULL);
 		Assert(CurrentPgExecution == NULL);
 
-		(void) PgRuntimeProtocolSchedulerPollParkedReads(CurrentPgRuntime,
-														 scratch,
-														 lengthof(scratch));
-
 		backend = PgCarrierLeaseRunnableProtocolBackend(CurrentPgCarrier);
 		if (backend != NULL)
 		{
@@ -954,6 +982,15 @@ backend_pooled_protocol_carrier_entry(void *arg)
 		{
 			backend_pooled_protocol_run_logical_start(carrier_start,
 													  logical_start);
+			continue;
+		}
+
+		if (PgRuntimeProtocolSchedulerWaitParkedReads(CurrentPgRuntime,
+													  scratch,
+													  max_scratch_backends,
+													  10L) > 0)
+		{
+			backend_pooled_protocol_broadcast_work();
 			continue;
 		}
 

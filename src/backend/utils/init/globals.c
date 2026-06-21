@@ -81,6 +81,8 @@ PG_GLOBAL_RUNTIME int autovacuum_max_parallel_workers = 0;
 PG_GLOBAL_RUNTIME int MaxBackends = 0;
 PG_GLOBAL_RUNTIME bool multithreaded = false;
 PG_GLOBAL_RUNTIME int pooled_protocol_carriers = 0;
+PG_GLOBAL_RUNTIME int pooled_protocol_sticky_idle_ms = 10;
+PG_GLOBAL_RUNTIME int pooled_protocol_hibernate_after_ms = 5000;
 PG_GLOBAL_RUNTIME int pooled_protocol_idle_memory_compaction =
 	POOLED_PROTOCOL_IDLE_MEMORY_COMPACTION_TRIM;
 PG_GLOBAL_RUNTIME bool threaded_lazy_relcache_init_file = true;

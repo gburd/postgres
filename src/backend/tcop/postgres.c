@@ -184,6 +184,8 @@ static pg_attribute_always_inline int SocketBackend(PgSession *session,
 static pg_attribute_always_inline int SocketBackendProtocolPark(PgSession *session,
 																StringInfo inBuf);
 static pg_noinline int SocketBackendHandleEOF(void);
+static PgProtocolByteResult SocketBackendStickyIdleWait(PgSession *session,
+														PgProtocolByteProbe *probe);
 static pg_attribute_always_inline int SocketBackendReadMessageBody(PgSession *session,
 																   StringInfo inBuf,
 																   int qtype,
@@ -214,11 +216,15 @@ static void PgBackendMarkProtocolReadParkWakeEvents(PgBackend *backend,
 													 uint32 wake_events);
 static void PgSessionReleasePooledProtocolIdleMemory(PgSession *session,
 													 PgProtocolParkSpec *park_spec);
+static bool PgSessionShouldHibernatePooledProtocolIdle(PgSession *session);
 static void PgLogProtocolParkMemory(PgSession *session,
 									 PgProtocolParkSpec *park_spec);
 static long PgProtocolParkTimeoutDelayMs(PgBackend *backend,
 										 PgProtocolParkSpec *park_spec,
 										 bool *stale_timeout);
+static long PgProtocolParkHibernateDelayMs(PgBackend *backend,
+										   bool *hibernate_due);
+static bool PgBackendProtocolReadParkMarkImmediateWake(PgBackend *backend);
 static void PgSessionLoopStateInit(PgSessionLoopState *state);
 static void PgSessionRecoverError(PgSession *session);
 static pg_attribute_always_inline PgStepResult PgSessionStepUnprotected(PgSession *session,
@@ -512,6 +518,17 @@ SocketBackendProtocolPark(PgSession *session, StringInfo inBuf)
 	{
 		PgProtocolParkSpec park_spec;
 
+		probe_result = SocketBackendStickyIdleWait(session, &probe);
+		if (probe_result == PG_PROTOCOL_BYTE_AVAILABLE)
+		{
+			qtype = probe.type;
+			(*query_cancel_holdoff_count)++;
+			return SocketBackendReadMessageBody(session, inBuf, qtype,
+												query_cancel_holdoff_count);
+		}
+		if (probe_result == PG_PROTOCOL_BYTE_EOF)
+			return SocketBackendHandleEOF();
+
 		MemSet(&park_spec, 0, sizeof(park_spec));
 		park_spec.transport_wait_events = probe.transport_wait_events;
 		park_spec.transport_buffered_input =
@@ -539,6 +556,89 @@ SocketBackendProtocolPark(PgSession *session, StringInfo inBuf)
 
 	return SocketBackendReadMessageBody(session, inBuf, qtype,
 										query_cancel_holdoff_count);
+}
+
+static PgProtocolByteResult
+SocketBackendStickyIdleWait(PgSession *session, PgProtocolByteProbe *probe)
+{
+	PgConnection *connection;
+	PgProtocolByteResult result;
+	PgConnectionSocketIOState *io;
+	WaitEventSet *wait_set;
+	WaitEvent	events[FeBeWaitSetNEvents];
+	long		timeout_ms;
+	uint32		wait_events;
+	int			rc;
+	TimestampTz timeout_wake_at;
+	uint64		timeout_generation;
+
+	Assert(session != NULL);
+	Assert(probe != NULL);
+	Assert(session == CurrentPgSession);
+	Assert(session->backend == CurrentPgBackend);
+	Assert(session->connection == CurrentPgConnection);
+	Assert(session->loop_state.doing_command_read);
+
+	if (pooled_protocol_sticky_idle_ms <= 0)
+		return PG_PROTOCOL_BYTE_NONE;
+
+	connection = session->connection;
+	io = &connection->socket_io;
+	if (io->comm_reading_msg)
+		ereport(FATAL,
+				(errcode(ERRCODE_PROTOCOL_VIOLATION),
+				 errmsg("terminating connection because protocol synchronization was lost")));
+
+	if (probe->transport_buffered_input ||
+		probe->transport_wait_events == 0 ||
+		probe->transport_generation != io->transport_generation ||
+		connection->identity.port == NULL ||
+		connection->identity.port->sock == PGINVALID_SOCKET)
+		return PG_PROTOCOL_BYTE_NONE;
+
+	timeout_ms = pooled_protocol_sticky_idle_ms;
+	if (PgBackendLogicalTimeoutNextWake(session->backend, &timeout_wake_at,
+										&timeout_generation))
+	{
+		TimestampTz now = GetCurrentTimestamp();
+		long		logical_delay_ms;
+
+		(void) timeout_generation;
+		if (now >= timeout_wake_at)
+			logical_delay_ms = 0;
+		else
+			logical_delay_ms =
+				TimestampDifferenceMilliseconds(now, timeout_wake_at);
+		if (logical_delay_ms < 0)
+			logical_delay_ms = 0;
+		if (logical_delay_ms < timeout_ms)
+			timeout_ms = logical_delay_ms;
+	}
+
+	if (timeout_ms <= 0)
+	{
+		PgSessionServiceProtocolReadWake(session);
+		return PgConnectionProbeMessageType(connection, probe);
+	}
+
+	wait_events = probe->transport_wait_events | WL_SOCKET_CLOSED;
+	wait_set = connection->protocol.fe_be_wait_set;
+	Assert(wait_set != NULL);
+	ModifyWaitEvent(wait_set, FeBeWaitSetSocketPos, wait_events, NULL);
+	rc = WaitEventSetWait(wait_set, timeout_ms, events, lengthof(events),
+						  WAIT_EVENT_CLIENT_READ);
+
+	for (int i = 0; i < rc; i++)
+	{
+		if (events[i].events & WL_POSTMASTER_DEATH)
+			ereport(FATAL,
+					(errcode(ERRCODE_ADMIN_SHUTDOWN),
+					 errmsg("terminating connection due to unexpected postmaster exit")));
+	}
+
+	PgSessionServiceProtocolReadWake(session);
+	result = PgConnectionProbeMessageType(connection, probe);
+	return result;
 }
 
 static pg_noinline int
@@ -5312,6 +5412,145 @@ PgProtocolParkTimeoutDelayMs(PgBackend *backend,
 	return delay_ms;
 }
 
+static long
+PgProtocolParkHibernateDelayMs(PgBackend *backend, bool *hibernate_due)
+{
+	PgBackendProtocolParkState *park_state;
+	TimestampTz now;
+	long		elapsed_ms;
+	long		delay_ms;
+
+	Assert(backend != NULL);
+	Assert(hibernate_due != NULL);
+
+	*hibernate_due = false;
+
+	if (pooled_protocol_hibernate_after_ms < 0)
+		return -1;
+
+	park_state = &backend->protocol_park;
+	if (park_state->state != PG_PROTOCOL_PARK_COMMITTED ||
+		park_state->hibernated ||
+		park_state->committed_at == 0)
+		return -1;
+
+	if (pooled_protocol_hibernate_after_ms == 0)
+	{
+		*hibernate_due = true;
+		return 0;
+	}
+
+	now = GetCurrentTimestamp();
+	elapsed_ms = TimestampDifferenceMilliseconds(park_state->committed_at,
+												 now);
+	if (elapsed_ms < 0)
+		elapsed_ms = 0;
+	if (elapsed_ms >= pooled_protocol_hibernate_after_ms)
+	{
+		*hibernate_due = true;
+		return 0;
+	}
+
+	delay_ms = pooled_protocol_hibernate_after_ms - elapsed_ms;
+	if (delay_ms > INT_MAX)
+		return INT_MAX;
+	return delay_ms;
+}
+
+static bool
+PgBackendProtocolReadParkMarkImmediateWake(PgBackend *backend)
+{
+	PgBackendProtocolParkState *park_state;
+	PgProtocolParkSpec *park_spec;
+	PgConnection *connection;
+	bool		stale_timeout;
+	bool		hibernate_due;
+	long		timeout_ms;
+	PgBackendInterruptMask pending_interrupts;
+
+	Assert(backend != NULL);
+
+	park_state = &backend->protocol_park;
+	if (park_state->state != PG_PROTOCOL_PARK_COMMITTED ||
+		(park_state->scheduler_queue_state !=
+		 PG_PROTOCOL_SCHEDULER_QUEUE_PARKED_PROTOCOL_READ &&
+		 park_state->scheduler_queue_state !=
+		 PG_PROTOCOL_SCHEDULER_QUEUE_POLLING))
+		return false;
+
+	park_spec = &park_state->spec;
+	Assert(park_spec->backend == backend);
+
+	if (park_spec->transport_buffered_input)
+	{
+		(void) PgBackendMarkProtocolReadParkWake(backend,
+												 park_spec->generation,
+												 PG_PROTOCOL_PARK_WAKE_BUFFERED_INPUT,
+												 0);
+		return true;
+	}
+
+	if (park_spec->transport_wait_events == 0 ||
+		park_spec->socket == PGINVALID_SOCKET)
+	{
+		(void) PgBackendMarkProtocolReadParkWake(backend,
+												 park_spec->generation,
+												 PG_PROTOCOL_PARK_WAKE_STALE_TRANSPORT,
+												 0);
+		return true;
+	}
+
+	connection = park_spec->connection;
+	if (connection == NULL ||
+		connection->socket_io.transport_generation !=
+		park_spec->transport_generation)
+	{
+		(void) PgBackendMarkProtocolReadParkWake(backend,
+												 park_spec->generation,
+												 PG_PROTOCOL_PARK_WAKE_STALE_TRANSPORT,
+												 0);
+		return true;
+	}
+
+	timeout_ms = PgProtocolParkTimeoutDelayMs(backend, park_spec,
+											 &stale_timeout);
+	if (stale_timeout)
+	{
+		(void) PgBackendMarkProtocolReadParkWake(backend,
+												 park_spec->generation,
+												 PG_PROTOCOL_PARK_WAKE_STALE_TIMEOUT,
+												 0);
+		return true;
+	}
+	if (timeout_ms == 0)
+	{
+		PgBackendMarkProtocolReadParkWakeEvents(backend, park_spec,
+												WL_TIMEOUT);
+		return true;
+	}
+
+	pending_interrupts =
+		pg_atomic_read_u32(&backend->interrupts.pending_mask);
+	if (pending_interrupts != 0)
+	{
+		PgBackendMarkProtocolReadParkWakeEvents(backend, park_spec,
+												WL_LATCH_SET);
+		return true;
+	}
+
+	(void) PgProtocolParkHibernateDelayMs(backend, &hibernate_due);
+	if (hibernate_due)
+	{
+		(void) PgBackendMarkProtocolReadParkWake(backend,
+												 park_spec->generation,
+												 PG_PROTOCOL_PARK_WAKE_HIBERNATE,
+												 0);
+		return true;
+	}
+
+	return false;
+}
+
 static void
 PgBackendMarkProtocolReadParkWakeEvents(PgBackend *backend,
 										PgProtocolParkSpec *park_spec,
@@ -5490,7 +5729,8 @@ PgRuntimeProtocolSchedulerPollParkedReads(PgRuntime *runtime,
 		}
 		PG_CATCH();
 		{
-			(void) PgRuntimeProtocolSchedulerReparkBackend(runtime, backend);
+			(void) PgRuntimeProtocolSchedulerReparkBackendIfPolling(runtime,
+																	backend);
 			PG_RE_THROW();
 		}
 		PG_END_TRY();
@@ -5501,7 +5741,257 @@ PgRuntimeProtocolSchedulerPollParkedReads(PgRuntime *runtime,
 				elog(PANIC, "could not make polled protocol backend runnable");
 			nready++;
 		}
-		else if (!PgRuntimeProtocolSchedulerReparkBackend(runtime, backend))
+		else if (!PgRuntimeProtocolSchedulerReparkBackendIfPolling(runtime,
+																   backend))
+			elog(PANIC, "could not return unready protocol backend to parked queue");
+	}
+
+	return nready;
+}
+
+int
+PgRuntimeProtocolSchedulerWaitParkedReads(PgRuntime *runtime,
+										  PgBackend **scratch,
+										  int max_backends,
+										  long timeout_ms)
+{
+	WaitEventSet *wait_set;
+	WaitEvent  *events;
+	int			nbackends = 0;
+	int			max_events;
+	int			registered_events = 0;
+	int			nready = 0;
+	long		wait_timeout_ms = timeout_ms;
+	int			rc;
+
+	if (runtime == NULL || scratch == NULL || max_backends <= 0)
+		return 0;
+
+	Assert(CurrentPgBackend == NULL);
+	Assert(CurrentPgSession == NULL);
+	Assert(CurrentPgConnection == NULL);
+	Assert(CurrentPgExecution == NULL);
+
+	for (int i = 0; i < max_backends; i++)
+	{
+		PgBackend  *backend;
+
+		backend = PgRuntimeProtocolSchedulerLeaseParkedBackend(runtime);
+		if (backend == NULL)
+			break;
+
+		scratch[nbackends++] = backend;
+	}
+	if (nbackends <= 0)
+		return 0;
+
+	for (int i = 0; i < nbackends; i++)
+	{
+		PgBackend  *backend = scratch[i];
+
+		if (PgBackendProtocolReadParkMarkImmediateWake(backend))
+		{
+			if (PgRuntimeProtocolSchedulerMarkRunnable(runtime, backend))
+				nready++;
+		}
+	}
+	if (nready > 0)
+	{
+		for (int i = 0; i < nbackends; i++)
+		{
+			PgBackend  *backend = scratch[i];
+
+			if (backend->protocol_park.scheduler_queue_state ==
+				PG_PROTOCOL_SCHEDULER_QUEUE_POLLING &&
+				!PgRuntimeProtocolSchedulerReparkBackendIfPolling(runtime,
+																  backend))
+				elog(PANIC, "could not return unready protocol backend to parked queue");
+		}
+		return nready;
+	}
+
+	max_events = 1 + nbackends;
+	events = palloc(sizeof(WaitEvent) * max_events);
+	wait_set = CreateWaitEventSet(NULL, max_events);
+
+	(void) AddWaitEventToSet(wait_set, WL_POSTMASTER_DEATH, PGINVALID_SOCKET,
+							 NULL, NULL);
+	registered_events++;
+
+	for (int i = 0; i < nbackends; i++)
+	{
+		PgBackend  *backend = scratch[i];
+		PgBackendProtocolParkState *park_state;
+		PgProtocolParkSpec *park_spec;
+		bool		stale_timeout;
+		bool		hibernate_due;
+		long		backend_timeout_ms;
+		long		hibernate_delay_ms;
+		bool		duplicate_socket = false;
+
+		park_state = &backend->protocol_park;
+		if (park_state->state != PG_PROTOCOL_PARK_COMMITTED ||
+			park_state->scheduler_queue_state !=
+			PG_PROTOCOL_SCHEDULER_QUEUE_POLLING)
+			continue;
+
+		park_spec = &park_state->spec;
+		if (park_spec->connection == NULL ||
+			park_spec->transport_buffered_input ||
+			park_spec->transport_wait_events == 0 ||
+			park_spec->socket == PGINVALID_SOCKET)
+			continue;
+
+		for (int j = 0; j < i; j++)
+		{
+			PgBackend  *prior_backend = scratch[j];
+			PgBackendProtocolParkState *prior_park_state;
+
+			prior_park_state = &prior_backend->protocol_park;
+			if (prior_park_state->state == PG_PROTOCOL_PARK_COMMITTED &&
+				prior_park_state->scheduler_queue_state ==
+				PG_PROTOCOL_SCHEDULER_QUEUE_POLLING &&
+				prior_park_state->spec.socket == park_spec->socket)
+			{
+				duplicate_socket = true;
+				break;
+			}
+		}
+		if (duplicate_socket)
+		{
+			(void) PgBackendMarkProtocolReadParkWake(backend,
+													 park_spec->generation,
+													 PG_PROTOCOL_PARK_WAKE_STALE_TRANSPORT,
+													 0);
+			if (PgRuntimeProtocolSchedulerMarkRunnable(runtime, backend))
+				nready++;
+			continue;
+		}
+
+		backend_timeout_ms = PgProtocolParkTimeoutDelayMs(backend,
+														  park_spec,
+														  &stale_timeout);
+		if (stale_timeout || backend_timeout_ms == 0)
+			continue;
+		if (backend_timeout_ms > 0 &&
+			(wait_timeout_ms < 0 || backend_timeout_ms < wait_timeout_ms))
+			wait_timeout_ms = backend_timeout_ms;
+
+		hibernate_delay_ms = PgProtocolParkHibernateDelayMs(backend,
+															&hibernate_due);
+		if (hibernate_due)
+			continue;
+		if (hibernate_delay_ms > 0 &&
+			(wait_timeout_ms < 0 || hibernate_delay_ms < wait_timeout_ms))
+			wait_timeout_ms = hibernate_delay_ms;
+
+		(void) AddWaitEventToSet(wait_set,
+								 park_spec->transport_wait_events |
+								 WL_SOCKET_CLOSED,
+								 park_spec->socket, NULL, backend);
+		registered_events++;
+
+	}
+
+	if (nready > 0)
+	{
+		FreeWaitEventSet(wait_set);
+		pfree(events);
+		for (int i = 0; i < nbackends; i++)
+		{
+			PgBackend  *backend = scratch[i];
+
+			if (backend->protocol_park.scheduler_queue_state ==
+				PG_PROTOCOL_SCHEDULER_QUEUE_POLLING &&
+				!PgRuntimeProtocolSchedulerReparkBackendIfPolling(runtime,
+																  backend))
+				elog(PANIC, "could not return duplicate-wait protocol backend to parked queue");
+		}
+		return nready;
+	}
+
+	if (registered_events <= 1)
+	{
+		FreeWaitEventSet(wait_set);
+		pfree(events);
+		for (int i = 0; i < nbackends; i++)
+		{
+			PgBackend  *backend = scratch[i];
+
+			if (backend->protocol_park.scheduler_queue_state ==
+				PG_PROTOCOL_SCHEDULER_QUEUE_POLLING &&
+				!PgRuntimeProtocolSchedulerReparkBackendIfPolling(runtime,
+																  backend))
+				elog(PANIC, "could not return unwaited protocol backend to parked queue");
+		}
+		return 0;
+	}
+
+	PG_TRY();
+	{
+		rc = WaitEventSetWait(wait_set, wait_timeout_ms, events, max_events,
+							  WAIT_EVENT_CLIENT_READ);
+	}
+	PG_CATCH();
+	{
+		for (int i = 0; i < nbackends; i++)
+		{
+			PgBackend  *backend = scratch[i];
+
+			if (backend->protocol_park.scheduler_queue_state ==
+				PG_PROTOCOL_SCHEDULER_QUEUE_POLLING)
+				(void) PgRuntimeProtocolSchedulerReparkBackendIfPolling(runtime,
+																		backend);
+		}
+		FreeWaitEventSet(wait_set);
+		pfree(events);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	for (int i = 0; i < rc; i++)
+	{
+		PgBackend  *backend;
+
+		if (events[i].user_data == NULL)
+			continue;
+
+		backend = (PgBackend *) events[i].user_data;
+		if (backend->protocol_park.state != PG_PROTOCOL_PARK_COMMITTED)
+			continue;
+		if (backend->protocol_park.scheduler_queue_state !=
+			PG_PROTOCOL_SCHEDULER_QUEUE_POLLING)
+			continue;
+
+		PgBackendMarkProtocolReadParkWakeEvents(backend,
+												&backend->protocol_park.spec,
+												events[i].events);
+		if (PgRuntimeProtocolSchedulerMarkRunnable(runtime, backend))
+			nready++;
+	}
+
+	FreeWaitEventSet(wait_set);
+	pfree(events);
+
+	for (int i = 0; i < nbackends; i++)
+	{
+		PgBackend  *backend = scratch[i];
+
+		if (PgBackendProtocolReadParkMarkImmediateWake(backend))
+		{
+			if (PgRuntimeProtocolSchedulerMarkRunnable(runtime, backend))
+				nready++;
+		}
+	}
+
+	for (int i = 0; i < nbackends; i++)
+	{
+		PgBackend  *backend = scratch[i];
+
+		if (backend->protocol_park.scheduler_queue_state ==
+			PG_PROTOCOL_SCHEDULER_QUEUE_POLLING &&
+			!PgRuntimeProtocolSchedulerReparkBackendIfPolling(runtime,
+															  backend))
 			elog(PANIC, "could not return unready protocol backend to parked queue");
 	}
 
@@ -6093,7 +6583,6 @@ PgSessionReleasePooledProtocolIdleMemory(PgSession *session,
 	MemoryContext *abort_context;
 	PgBackendProtocolParkState *park_state;
 	int			mode = pooled_protocol_idle_memory_compaction;
-	bool		release_idle_scratch;
 
 	if (!PgRuntimeIsPooledProtocol(CurrentPgRuntime))
 		return;
@@ -6109,12 +6598,14 @@ PgSessionReleasePooledProtocolIdleMemory(PgSession *session,
 
 	if (mode <= POOLED_PROTOCOL_IDLE_MEMORY_COMPACTION_OFF)
 		return;
+	if (!PgSessionShouldHibernatePooledProtocolIdle(session))
+		return;
 
 	/*
 	 * TransactionAbortContext is a deliberately preallocated OOM reserve while
-	 * a transaction is active.  Once a pooled session is cleanly idle at the
-	 * protocol boundary, optional compaction keeps the pointer lazy so
-	 * AtStart_Memory() can reserve it again for the next transaction.
+	 * a transaction is active.  Once a pooled session has remained cleanly
+	 * parked long enough to hibernate, optional compaction keeps the pointer
+	 * lazy so AtStart_Memory() can reserve it again for the next transaction.
 	 */
 	abort_context = PgCurrentTransactionAbortContextRef();
 	if (*abort_context != NULL)
@@ -6126,15 +6617,8 @@ PgSessionReleasePooledProtocolIdleMemory(PgSession *session,
 
 	PgConnectionReleaseIdleRecvBuffer(session->connection);
 
-	/* First parks and demonstrably quiet sessions can shed pgstat scratch. */
-	release_idle_scratch = !park_state->last_park_duration_valid ||
-		park_state->last_park_duration_ms >=
-		POOLED_PROTOCOL_IDLE_PGSTAT_RELEASE_MIN_MS;
-	if (release_idle_scratch)
-	{
-		ReleaseBufferManagerIdleMemory();
-		pgstat_release_idle_memory();
-	}
+	ReleaseBufferManagerIdleMemory();
+	pgstat_release_idle_memory();
 
 	if (mode >= POOLED_PROTOCOL_IDLE_MEMORY_COMPACTION_CACHE)
 		InvalidateSystemCachesExtended(false);
@@ -6143,6 +6627,33 @@ PgSessionReleasePooledProtocolIdleMemory(PgSession *session,
 	if (mode >= POOLED_PROTOCOL_IDLE_MEMORY_COMPACTION_TRIM)
 		(void) malloc_trim(0);
 #endif
+
+	park_state->hibernated = true;
+}
+
+static bool
+PgSessionShouldHibernatePooledProtocolIdle(PgSession *session)
+{
+	PgBackendProtocolParkState *park_state;
+
+	Assert(session != NULL);
+	Assert(session->backend != NULL);
+
+	if (pooled_protocol_hibernate_after_ms < 0)
+		return false;
+
+	park_state = &session->backend->protocol_park;
+	if (park_state->hibernated)
+		return false;
+
+	if (pooled_protocol_hibernate_after_ms == 0)
+		return true;
+
+	if (!park_state->last_park_duration_valid)
+		return false;
+
+	return park_state->last_park_duration_ms >=
+		pooled_protocol_hibernate_after_ms;
 }
 
 static void
