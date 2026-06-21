@@ -10,6 +10,7 @@ use FindBin;
 use Getopt::Long qw(GetOptions);
 use IO::Socket::INET;
 use POSIX qw(WNOHANG strftime);
+use Time::HiRes qw(time);
 
 my $repo_root = abs_path(File::Spec->catdir($FindBin::Bin, '..', '..', '..'));
 
@@ -254,6 +255,41 @@ my %workload_specs = (
 		args => [ '-C', '-M', 'prepared', '-f', undef ],
 		script => 'select1.sql',
 		needs_extra_setup => 0,
+	},
+	kv_read_sleep_wake_100ms_prepared => {
+		args => [ '-M', 'prepared', '-f', undef ],
+		script => 'kv_read_sleep_wake_100ms.sql',
+		needs_extra_setup => 1,
+	},
+	kv_read_sleep_wake_1000ms_prepared => {
+		args => [ '-M', 'prepared', '-f', undef ],
+		script => 'kv_read_sleep_wake_1000ms.sql',
+		needs_extra_setup => 1,
+	},
+	app_txn_sleep_wake_100ms_prepared => {
+		args => [ '-M', 'prepared', '-f', undef ],
+		script => 'app_txn_sleep_wake_100ms.sql',
+		needs_extra_setup => 1,
+	},
+	app_txn_sleep_wake_1000ms_prepared => {
+		args => [ '-M', 'prepared', '-f', undef ],
+		script => 'app_txn_sleep_wake_1000ms.sql',
+		needs_extra_setup => 1,
+	},
+	app_mixed_sleep_wake_100ms_prepared => {
+		args => [ '-M', 'prepared', '-f', undef ],
+		script => 'app_mixed_sleep_wake_100ms.sql',
+		needs_extra_setup => 1,
+	},
+	stateful_temp_sleep_wake_1000ms_prepared => {
+		args => [ '-M', 'prepared', '-f', undef ],
+		script => 'stateful_temp_sleep_wake_1000ms.sql',
+		needs_extra_setup => 1,
+	},
+	app_txn_connect_prepared => {
+		args => [ '-C', '-M', 'prepared', '-f', undef ],
+		script => 'app_txn.sql',
+		needs_extra_setup => 1,
 	},
 );
 
@@ -620,6 +656,13 @@ Additional non-default workloads useful for pooled connection-shape profiles:
   select1_sleep_wake_100ms_prepared
   select1_sleep_wake_1000ms_prepared
   select1_connect_prepared
+  kv_read_sleep_wake_100ms_prepared
+  kv_read_sleep_wake_1000ms_prepared
+  app_txn_sleep_wake_100ms_prepared
+  app_txn_sleep_wake_1000ms_prepared
+  app_mixed_sleep_wake_100ms_prepared
+  stateful_temp_sleep_wake_1000ms_prepared
+  app_txn_connect_prepared
 
 Output:
   tps.tsv                 summary TPS and latency per lane/workload
@@ -759,6 +802,61 @@ sub write_workload_scripts
 	write_file(File::Spec->catfile($dir, 'kv_read.sql'),
 		"\\set id random(1, 100000)\n"
 	  . "SELECT v, payload FROM bench_kv WHERE id = :id;\n");
+	write_file(File::Spec->catfile($dir, 'kv_read_sleep_wake_100ms.sql'),
+		"\\set id random_zipfian(1, 100000, 1.07)\n"
+	  . "SELECT v, payload FROM bench_kv WHERE id = :id;\n"
+	  . "\\sleep 100 ms\n"
+	  . "SELECT v, payload FROM bench_kv WHERE id = :id;\n");
+	write_file(File::Spec->catfile($dir, 'kv_read_sleep_wake_1000ms.sql'),
+		"\\set id random_zipfian(1, 100000, 1.07)\n"
+	  . "SELECT v, payload FROM bench_kv WHERE id = :id;\n"
+	  . "\\sleep 1000 ms\n"
+	  . "SELECT v, payload FROM bench_kv WHERE id = :id;\n");
+	write_file(File::Spec->catfile($dir, 'app_txn.sql'),
+		"\\set aid random(1, 100000 * :scale)\n"
+	  . "\\set delta random(-10, 10)\n"
+	  . "BEGIN;\n"
+	  . "SELECT abalance FROM pgbench_accounts WHERE aid = :aid;\n"
+	  . "UPDATE pgbench_accounts SET abalance = abalance + :delta WHERE aid = :aid;\n"
+	  . "UPDATE bench_client_state SET v = v + :delta, last_aid = :aid WHERE client_id = :client_id;\n"
+	  . "COMMIT;\n");
+	write_file(File::Spec->catfile($dir, 'app_txn_sleep_wake_100ms.sql'),
+		"\\set aid random(1, 100000 * :scale)\n"
+	  . "\\set delta random(-10, 10)\n"
+	  . "SELECT abalance FROM pgbench_accounts WHERE aid = :aid;\n"
+	  . "\\sleep 100 ms\n"
+	  . "BEGIN;\n"
+	  . "UPDATE pgbench_accounts SET abalance = abalance + :delta WHERE aid = :aid;\n"
+	  . "UPDATE bench_client_state SET v = v + :delta, last_aid = :aid WHERE client_id = :client_id;\n"
+	  . "COMMIT;\n"
+	  . "SELECT abalance FROM pgbench_accounts WHERE aid = :aid;\n");
+	write_file(File::Spec->catfile($dir, 'app_txn_sleep_wake_1000ms.sql'),
+		"\\set aid random(1, 100000 * :scale)\n"
+	  . "\\set delta random(-10, 10)\n"
+	  . "SELECT abalance FROM pgbench_accounts WHERE aid = :aid;\n"
+	  . "\\sleep 1000 ms\n"
+	  . "BEGIN;\n"
+	  . "UPDATE pgbench_accounts SET abalance = abalance + :delta WHERE aid = :aid;\n"
+	  . "UPDATE bench_client_state SET v = v + :delta, last_aid = :aid WHERE client_id = :client_id;\n"
+	  . "COMMIT;\n"
+	  . "SELECT abalance FROM pgbench_accounts WHERE aid = :aid;\n");
+	write_file(File::Spec->catfile($dir, 'app_mixed_sleep_wake_100ms.sql'),
+		"\\set id random_zipfian(1, 100000, 1.10)\n"
+	  . "\\set delta random(1, 3)\n"
+	  . "SELECT v, payload FROM bench_kv WHERE id = :id;\n"
+	  . "\\sleep 50 ms\n"
+	  . "BEGIN;\n"
+	  . "UPDATE bench_client_state SET v = v + :delta, last_aid = :id WHERE client_id = :client_id;\n"
+	  . "COMMIT;\n"
+	  . "\\sleep 50 ms\n"
+	  . "SELECT count(*), sum(v) FROM bench_kv WHERE id BETWEEN greatest(1, :id - 10) AND least(100000, :id + 10);\n");
+	write_file(File::Spec->catfile($dir, 'stateful_temp_sleep_wake_1000ms.sql'),
+		"SELECT set_config('application_name', 'mtpg_stateful_realish', false);\n"
+	  . "CREATE TEMP TABLE IF NOT EXISTS session_cache(k int primary key, v text not null, seen int not null default 0) ON COMMIT PRESERVE ROWS;\n"
+	  . "INSERT INTO session_cache(k, v, seen) VALUES (:client_id, md5((:client_id)::text), 0) ON CONFLICT (k) DO NOTHING;\n"
+	  . "UPDATE session_cache SET seen = seen + 1 WHERE k = :client_id;\n"
+	  . "\\sleep 1000 ms\n"
+	  . "SELECT v, seen FROM session_cache WHERE k = :client_id;\n");
 	write_file(File::Spec->catfile($dir, 'setup_extra.sql'),
 		"DROP TABLE IF EXISTS bench_one;\n"
 	  . "CREATE TABLE bench_one(id int primary key, payload text not null);\n"
@@ -766,8 +864,12 @@ sub write_workload_scripts
 	  . "DROP TABLE IF EXISTS bench_kv;\n"
 	  . "CREATE TABLE bench_kv(id int primary key, v int not null, payload text not null);\n"
 	  . "INSERT INTO bench_kv SELECT g, 0, repeat(md5(g::text), 4) FROM generate_series(1, 100000) g;\n"
+	  . "DROP TABLE IF EXISTS bench_client_state;\n"
+	  . "CREATE TABLE bench_client_state(client_id int primary key, v bigint not null, last_aid int not null, payload text not null) WITH (fillfactor = 50);\n"
+	  . "INSERT INTO bench_client_state SELECT g, 0, 0, repeat(md5(g::text), 2) FROM generate_series(0, 20000) g;\n"
 	  . "VACUUM ANALYZE bench_one;\n"
 	  . "VACUUM ANALYZE bench_kv;\n"
+	  . "VACUUM ANALYZE bench_client_state;\n"
 	  . "VACUUM ANALYZE pgbench_accounts;\n"
 	  . "CHECKPOINT;\n");
 }
@@ -1057,7 +1159,7 @@ sub run_workload
 		my $warm = File::Spec->catfile($out_dir,
 			"$lane->{name}_${workload}.warm");
 		run_capture([ @base_cmd, '-T', $warmup, 'postgres' ], "$workload warmup",
-			"$warm.out", "$warm.err");
+			"$warm.out", "$warm.err", undef, pgbench_timeout($warmup));
 	}
 
 	my $bench = File::Spec->catfile($out_dir, "$lane->{name}_${workload}.bench");
@@ -1066,7 +1168,8 @@ sub run_workload
 		$run_index, $resource_samples_fh);
 	my $protocol_park_log_offset = -e $server_log ? (-s $server_log) : 0;
 	my $output = run_capture([ @base_cmd, '-T', $duration, 'postgres' ],
-		"$lane->{name} $workload", $bench, "$bench.err", $resources);
+		"$lane->{name} $workload", $bench, "$bench.err", $resources,
+		pgbench_timeout($duration));
 
 	parse_protocol_park_memory_log($server_log, $protocol_park_log_offset,
 		$lane->{name}, $workload, $run_index, $protocol_park_memory_fh,
@@ -1084,6 +1187,14 @@ sub run_workload
 	  unless defined $tps && defined $latency && defined $failed;
 
 	return ($tps, $latency, $failed, $resources);
+}
+
+sub pgbench_timeout
+{
+	my ($seconds) = @_;
+	my $timeout = int($seconds * 4 + 120);
+
+	return $timeout < 180 ? 180 : $timeout;
 }
 
 sub summarize_workload_samples
@@ -1183,7 +1294,8 @@ sub run_cmd
 
 sub run_capture
 {
-	my ($cmd, $label, $stdout_path, $stderr_path, $resource_sample) = @_;
+	my ($cmd, $label, $stdout_path, $stderr_path, $resource_sample,
+		$timeout_seconds) = @_;
 
 	open my $out, '>', $stdout_path or die "could not write $stdout_path: $!";
 	open my $err, '>', $stderr_path or die "could not write $stderr_path: $!";
@@ -1192,41 +1304,71 @@ sub run_capture
 	die "fork failed for $label: $!" unless defined $pid;
 	if ($pid == 0)
 	{
+		setpgrp(0, 0);
 		open STDOUT, '>&', $out or die "dup stdout failed: $!";
 		open STDERR, '>&', $err or die "dup stderr failed: $!";
 		exec @$cmd or die "exec failed for $label: $!";
 	}
 
-	if (defined $resource_sample && $resource_sample->{enabled})
+	my $started_at = time();
+	my $next_sample_at = $started_at;
+	my $timed_out = 0;
+	for (;;)
 	{
-		for (;;)
+		my $waited = waitpid($pid, WNOHANG);
+		last if $waited == $pid;
+		last if $waited < 0;
+
+		my $now = time();
+		if (defined $timeout_seconds &&
+			$timeout_seconds > 0 &&
+			$now - $started_at > $timeout_seconds)
 		{
-			my $waited = waitpid($pid, WNOHANG);
-			if ($waited == $pid)
+			$timed_out = 1;
+			kill 'TERM', -$pid;
+			kill 'TERM', $pid;
+			for (1 .. 50)
 			{
+				$waited = waitpid($pid, WNOHANG);
+				last if $waited == $pid || $waited < 0;
+				select(undef, undef, undef, 0.1);
+			}
+			if ($waited == 0)
+			{
+				kill 'KILL', -$pid;
+				kill 'KILL', $pid;
+				waitpid($pid, 0);
 				last;
 			}
-			elsif ($waited == 0)
-			{
-				sample_server_resources($resource_sample);
-				select(undef, undef, undef,
-					$resource_sample->{interval_seconds});
-			}
-			else
-			{
-				last;
-			}
+			last;
 		}
-	}
-	else
-	{
-		waitpid($pid, 0);
+
+		if (defined $resource_sample && $resource_sample->{enabled} &&
+			$now >= $next_sample_at)
+		{
+			sample_server_resources($resource_sample);
+			$next_sample_at = $now + $resource_sample->{interval_seconds};
+		}
+
+		my $sleep_seconds = 0.1;
+		if (defined $resource_sample && $resource_sample->{enabled})
+		{
+			my $until_sample = $next_sample_at - $now;
+			$sleep_seconds = $until_sample
+			  if $until_sample > 0 && $until_sample < $sleep_seconds;
+		}
+		select(undef, undef, undef, $sleep_seconds);
 	}
 	my $rc = $?;
 	close $out;
 	close $err;
 
 	my $output = slurp($stdout_path);
+	if ($timed_out)
+	{
+		my $stderr = slurp($stderr_path);
+		die "$label timed out after ${timeout_seconds}s: @$cmd\n$output\n$stderr\n";
+	}
 	if ($rc != 0)
 	{
 		my $stderr = slurp($stderr_path);

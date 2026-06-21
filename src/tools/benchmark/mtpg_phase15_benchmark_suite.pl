@@ -21,7 +21,7 @@ my $client_install = $vanilla_install;
 my $out_dir = File::Spec->catdir('/tmp',
 	sprintf('mtpg_phase15_benchmark_suite_%s',
 		strftime('%Y%m%d_%H%M%S', localtime)));
-my $profiles = 'pinned_hot,pool_idle_100ms,pool_idle_1000ms';
+my $profiles = 'pinned_hot,pool_realish_100ms,pool_realish_1000ms';
 my $quick = 0;
 my $override_runs;
 my $override_duration;
@@ -61,6 +61,11 @@ die "matrix script is not executable: $matrix_script\n"
 
 my @profile_order = qw(
   pinned_hot
+  pool_realish_100ms
+  pool_realish_1000ms
+  pool_stateful_1000ms
+  pool_scale_1000_realish
+  connection_churn_realish
   pool_idle_100ms
   pool_idle_1000ms
   pool_burst_10ms
@@ -85,6 +90,90 @@ my %profile_specs = (
 		runs => 3,
 		restart_per_workload => 1,
 		sample_server_resources => 0,
+	},
+	pool_realish_100ms => {
+		description =>
+		  'Mostly idle c200 profile with indexed reads, writes, WAL, and client think time.',
+		lanes => 'vanilla,branch_process,branch_threaded,branch_pool',
+		pool_sizes => '32,64,128,192',
+		workloads =>
+		  'kv_read_sleep_wake_100ms_prepared,app_txn_sleep_wake_100ms_prepared,app_mixed_sleep_wake_100ms_prepared',
+		clients => 200,
+		threads => 32,
+		max_connections => 260,
+		scale => 10,
+		duration => 20,
+		warmup => 4,
+		runs => 3,
+		sample_server_resources => 1,
+		resource_sample_interval_ms => 250,
+	},
+	pool_realish_1000ms => {
+		description =>
+		  'Long-idle c200 profile with real table/index work and protocol-read parks.',
+		lanes => 'vanilla,branch_process,branch_threaded,branch_pool',
+		pool_sizes => '16,32,64,128',
+		workloads =>
+		  'kv_read_sleep_wake_1000ms_prepared,app_txn_sleep_wake_1000ms_prepared',
+		clients => 200,
+		threads => 32,
+		max_connections => 260,
+		scale => 10,
+		duration => 25,
+		warmup => 4,
+		runs => 3,
+		sample_server_resources => 1,
+		resource_sample_interval_ms => 250,
+	},
+	pool_stateful_1000ms => {
+		description =>
+		  'Stateful c100 temp-table session diagnostic profile.',
+		lanes => 'vanilla,branch_process,branch_threaded,branch_pool',
+		pool_sizes => '16,32,64',
+		workloads => 'stateful_temp_sleep_wake_1000ms_prepared',
+		clients => 100,
+		threads => 16,
+		max_connections => 160,
+		scale => 10,
+		duration => 30,
+		warmup => 5,
+		runs => 2,
+		sample_server_resources => 1,
+		sample_memory_detail => 1,
+		log_protocol_park_memory => 1,
+		resource_sample_interval_ms => 500,
+	},
+	pool_scale_1000_realish => {
+		description =>
+		  'Large c1000 indexed-read idle population: vanilla and pinned threads versus bounded carrier pools.',
+		lanes => 'vanilla,branch_threaded,branch_pool',
+		pool_sizes => '64,128,256,512',
+		workloads => 'kv_read_sleep_wake_1000ms_prepared',
+		clients => 1000,
+		threads => 64,
+		max_connections => 1100,
+		scale => 10,
+		duration => 20,
+		warmup => 3,
+		runs => 2,
+		sample_server_resources => 1,
+		resource_sample_interval_ms => 500,
+	},
+	connection_churn_realish => {
+		description =>
+		  'One database-touching transaction per connection for reconnect-heavy client patterns.',
+		lanes => 'vanilla,branch_process,branch_threaded,branch_pool',
+		pool_sizes => '32,64,128',
+		workloads => 'app_txn_connect_prepared',
+		clients => 64,
+		threads => 16,
+		max_connections => 160,
+		scale => 10,
+		duration => 20,
+		warmup => 4,
+		runs => 3,
+		sample_server_resources => 1,
+		resource_sample_interval_ms => 250,
 	},
 	pool_idle_100ms => {
 		description =>
@@ -229,8 +318,8 @@ Usage: src/tools/benchmark/mtpg_phase15_benchmark_suite.pl [options]
 Runs named Phase 15 benchmark profiles through mtpg_pgbench_matrix.pl.
 
 Options:
-  --profiles=LIST          comma-separated profile names, or all
-                           default: pinned_hot,pool_idle_100ms,pool_idle_1000ms
+  --profiles=LIST          comma-separated profile names, showcase, or all
+                           default: pinned_hot,pool_realish_100ms,pool_realish_1000ms
   --quick                  use short one-run profiles for smoke validation
   --runs=N                 override measured repetitions for every profile
   --duration=SECONDS       override measured duration for every profile
@@ -244,6 +333,11 @@ Options:
 
 Profiles:
   pinned_hot               hot-path vanilla/process/threaded parity
+  pool_realish_100ms       c200 indexed reads/writes/ranges with 100ms think time
+  pool_realish_1000ms      c200 real-ish table/index work plus long parks
+  pool_stateful_1000ms     c100 temp-table session diagnostic profile
+  pool_scale_1000_realish  c1000 pinned thread vs pooled real-ish scale profile
+  connection_churn_realish reconnect-heavy profile with real table/index/WAL work
   pool_idle_100ms          c200 mostly-idle scale profile, all lanes
   pool_idle_1000ms         c200 long-idle scale profile, all lanes
   pool_burst_10ms          short-idle pooled diagnostic profile
@@ -263,6 +357,17 @@ sub expand_profiles
 		if ($name eq 'all')
 		{
 			push @names, @$profile_order;
+			next;
+		}
+		if ($name eq 'showcase')
+		{
+			push @names, qw(
+			  pinned_hot
+			  pool_realish_100ms
+			  pool_realish_1000ms
+			  pool_scale_1000_realish
+			  connection_churn_realish
+			);
 			next;
 		}
 		die "unknown profile: $name\n" unless exists $profile_specs->{$name};
