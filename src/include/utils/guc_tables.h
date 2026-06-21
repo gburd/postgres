@@ -186,13 +186,12 @@ typedef struct config_generic_cold_state
 struct config_generic_state
 {
 	config_generic_cold_state *cold;
-	int			status;			/* status bits, see below */
-	GucSource	source;			/* source of the current actual value */
-	GucContext	scontext;		/* context that set the current value */
-	Oid			srole;			/* role that set the current value */
-
 	union config_var_addr variable;
 	union config_var_val reset_val;
+	Oid			srole;			/* role that set the current value */
+	uint8		status;			/* status bits, see below */
+	uint8		source;			/* source of the current actual value */
+	uint8		scontext;		/* context that set the current value */
 };
 
 
@@ -364,6 +363,13 @@ struct config_generic
  */
 #define GUC_PENDING_RESTART 0x0002	/* changed value cannot be applied yet */
 #define GUC_NEEDS_REPORT	0x0004	/* new value must be reported to client */
+
+StaticAssertDecl(PGC_S_SESSION <= PG_UINT8_MAX,
+				 "GucSource must fit in config_generic_state.source");
+StaticAssertDecl(PGC_USERSET <= PG_UINT8_MAX,
+				 "GucContext must fit in config_generic_state.scontext");
+StaticAssertDecl((GUC_IS_IN_FILE | GUC_PENDING_RESTART | GUC_NEEDS_REPORT) <= PG_UINT8_MAX,
+				 "GUC status bits must fit in config_generic_state.status");
 
 
 /* constant tables corresponding to enums above and in guc.h */

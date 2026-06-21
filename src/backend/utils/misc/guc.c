@@ -7086,12 +7086,15 @@ write_one_nondefault_variable(FILE *fp, struct config_generic *gconf)
 
 	{
 		int			sourceline = GUC_SOURCELINE(gconf);
+		GucSource	source = GUC_SOURCE(gconf);
+		GucContext	scontext = GUC_SCONTEXT(gconf);
+		Oid			srole = GUC_SROLE(gconf);
 
 		fwrite(&sourceline, 1, sizeof(sourceline), fp);
+		fwrite(&source, 1, sizeof(source), fp);
+		fwrite(&scontext, 1, sizeof(scontext), fp);
+		fwrite(&srole, 1, sizeof(srole), fp);
 	}
-	fwrite(&GUC_SOURCE(gconf), 1, sizeof(GUC_SOURCE(gconf)), fp);
-	fwrite(&GUC_SCONTEXT(gconf), 1, sizeof(GUC_SCONTEXT(gconf)), fp);
-	fwrite(&GUC_SROLE(gconf), 1, sizeof(GUC_SROLE(gconf)), fp);
 }
 
 void
@@ -7405,9 +7408,9 @@ estimate_variable_size(struct config_generic *gconf)
 	if (GUC_SOURCEFILE(gconf) && GUC_SOURCEFILE(gconf)[0])
 		size = add_size(size, sizeof(GUC_SOURCELINE(gconf)));
 
-	size = add_size(size, sizeof(GUC_SOURCE(gconf)));
-	size = add_size(size, sizeof(GUC_SCONTEXT(gconf)));
-	size = add_size(size, sizeof(GUC_SROLE(gconf)));
+	size = add_size(size, sizeof(GucSource));
+	size = add_size(size, sizeof(GucContext));
+	size = add_size(size, sizeof(Oid));
 
 	return size;
 }
@@ -7555,12 +7558,15 @@ serialize_variable(char **destptr, Size *maxbytes,
 							sizeof(sourceline));
 	}
 
-	do_serialize_binary(destptr, maxbytes, &GUC_SOURCE(gconf),
-						sizeof(GUC_SOURCE(gconf)));
-	do_serialize_binary(destptr, maxbytes, &GUC_SCONTEXT(gconf),
-						sizeof(GUC_SCONTEXT(gconf)));
-	do_serialize_binary(destptr, maxbytes, &GUC_SROLE(gconf),
-						sizeof(GUC_SROLE(gconf)));
+	{
+		GucSource	source = GUC_SOURCE(gconf);
+		GucContext	scontext = GUC_SCONTEXT(gconf);
+		Oid			srole = GUC_SROLE(gconf);
+
+		do_serialize_binary(destptr, maxbytes, &source, sizeof(source));
+		do_serialize_binary(destptr, maxbytes, &scontext, sizeof(scontext));
+		do_serialize_binary(destptr, maxbytes, &srole, sizeof(srole));
+	}
 }
 
 /*
