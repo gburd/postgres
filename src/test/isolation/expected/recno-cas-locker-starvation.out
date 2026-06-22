@@ -1,0 +1,63 @@
+Parsed test spec with 4 sessions
+
+starting permutation: locker_lock w1_update locker_commit w1_commit w2_commit reader_read
+step locker_lock: SELECT id, counter FROM recno_cas_lock WHERE id = 1 FOR NO KEY UPDATE;
+id|counter
+--+-------
+ 1|      1
+(1 row)
+
+step w1_update: UPDATE recno_cas_lock SET counter = counter + 1 WHERE id = 1; <waiting ...>
+step locker_commit: COMMIT;
+step w1_update: <... completed>
+step w1_commit: COMMIT;
+step w2_commit: COMMIT;
+step reader_read: SELECT id, counter FROM recno_cas_lock ORDER BY id;
+id|counter
+--+-------
+ 1|      2
+ 2|      0
+(2 rows)
+
+
+starting permutation: locker_lock w1_update w2_update locker_commit w1_commit w2_commit reader_read
+step locker_lock: SELECT id, counter FROM recno_cas_lock WHERE id = 1 FOR NO KEY UPDATE;
+id|counter
+--+-------
+ 1|      1
+(1 row)
+
+step w1_update: UPDATE recno_cas_lock SET counter = counter + 1 WHERE id = 1; <waiting ...>
+step w2_update: UPDATE recno_cas_lock SET counter = counter + 1 WHERE id = 1; <waiting ...>
+step locker_commit: COMMIT;
+step w1_update: <... completed>
+step w1_commit: COMMIT;
+step w2_update: <... completed>
+step w2_commit: COMMIT;
+step reader_read: SELECT id, counter FROM recno_cas_lock ORDER BY id;
+id|counter
+--+-------
+ 1|      3
+ 2|      0
+(2 rows)
+
+
+starting permutation: locker_lock w1_update locker_abort w1_commit w2_commit reader_read
+step locker_lock: SELECT id, counter FROM recno_cas_lock WHERE id = 1 FOR NO KEY UPDATE;
+id|counter
+--+-------
+ 1|      1
+(1 row)
+
+step w1_update: UPDATE recno_cas_lock SET counter = counter + 1 WHERE id = 1; <waiting ...>
+step locker_abort: ROLLBACK;
+step w1_update: <... completed>
+step w1_commit: COMMIT;
+step w2_commit: COMMIT;
+step reader_read: SELECT id, counter FROM recno_cas_lock ORDER BY id;
+id|counter
+--+-------
+ 1|      2
+ 2|      0
+(2 rows)
+

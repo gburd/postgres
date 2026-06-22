@@ -2761,26 +2761,21 @@ PrepareTransaction(void)
 				 errmsg("cannot PREPARE a transaction that has exported snapshots")));
 
 	/*
-	 * Don't allow PREPARE TRANSACTION if this transaction generated any
-	 * UNDO -- cluster-wide (via InsertUndoRecord) or per-relation (via the
-	 * per-relation UNDO fork).  Neither has a working ROLLBACK PREPARED apply
-	 * path yet: per-relation UNDO's before-images live in backend-private,
-	 * CurTransactionContext-allocated state (XactUndo.relundo_list) that is
-	 * gone the moment this function returns; cluster-wide UNDO's chain-head
-	 * LSN is durably saved in the 2PC state file
-	 * (xl_xact_prepare.last_batch_lsn) but nothing on the COMMIT PREPARED /
-	 * ROLLBACK PREPARED path or crash-recovery path ever reads it back or
-	 * calls into the UNDO apply machinery (confirmed: twophase.c's
-	 * RecordTransactionCommitPrepared/RecordTransactionAbortPrepared never
-	 * call AtAbort_XactUndo() or ATMAddAborted(), the only two entry points
-	 * that trigger UNDO application).  Silently proceeding would make ROLLBACK
-	 * PREPARED a no-op for either kind of UNDO, corrupting data.  Reject
-	 * early, before StartPrepare() writes any 2PC state.
+	 * Reject PREPARE only if this transaction generated UNDO with no working
+	 * ROLLBACK PREPARED apply path.  Both UNDO mechanisms are now 2PC-safe:
+	 * cluster-wide UNDO (index AMs and other cluster-wide consumers) durably
+	 * saves its chain-head LSN in xl_xact_prepare and pins its WAL while
+	 * prepared, and per-relation UNDO is serialized by the owning AM's
+	 * PREPARE-time hook (its per-tuple tracking state plus its per-relation
+	 * chain heads) and replayed by that AM's two-phase postabort handler on
+	 * ROLLBACK PREPARED.  So XactUndoHasUnrecoverableUndo() returns false
+	 * today; the call is kept as a single choke point where any future
+	 * non-2PC-safe UNDO mechanism can re-assert a guard.
 	 */
 	if (XactUndoHasUnrecoverableUndo())
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("cannot PREPARE a transaction that generated UNDO"),
+				 errmsg("cannot PREPARE a transaction that generated UNDO with no ROLLBACK PREPARED support"),
 				 errhint("Commit or roll back the transaction without PREPARE TRANSACTION.")));
 
 	/* Prevent cancel/die interrupt while cleaning up */
@@ -2830,6 +2825,8 @@ PrepareTransaction(void)
 	AtPrepare_PgStat();
 	AtPrepare_MultiXact();
 	AtPrepare_RelationMap();
+	if (TableAMPrepare_hook)
+		TableAMPrepare_hook();
 
 	/*
 	 * Here is where we really truly prepare.
@@ -2843,6 +2840,20 @@ PrepareTransaction(void)
 	/*
 	 * Now we clean up backend-internal state and release internal resources.
 	 */
+
+	/*
+	 * Release this backend's private UNDO record sets and WAL-retention slot,
+	 * exactly as CommitTransaction does via AtCommit_XactUndo().  A prepared
+	 * transaction's UNDO is no longer this backend's responsibility: its
+	 * chain-head LSN is durably recorded in the 2PC state (xl_xact_prepare /
+	 * gxact->undo_batch_lsn), WAL retention is pinned by
+	 * TwoPhaseGetOldestUndoBatchLSN(), and any ROLLBACK PREPARED will drive
+	 * application through the ATM.  Without this, the leftover record sets
+	 * point into the just-freed transaction memory contexts and crash the
+	 * backend at AtProcExit_XactUndo() when it later exits.  No UNDO is
+	 * applied here (this is the prepare/commit path, not abort).
+	 */
+	AtCommit_XactUndo();
 
 	/* Reset XactLastRecEnd until the next transaction writes something */
 	XactLastRecEnd = 0;
@@ -3098,7 +3109,18 @@ AbortTransaction(void)
 	s->parallelModeLevel = 0;
 	s->parallelChildXact = false;	/* should be false already */
 
-	/* Clean up transaction undo state (free per-persistence record sets) */
+	/*
+	 * Release any buffer content locks the errored statement may still hold
+	 * before inline UNDO runs.  AtAbort_XactUndo can apply per-relation UNDO
+	 * synchronously in this backend (ApplyPerRelUndo -> RelUndoApplyChain
+	 * -> RelUndoTrackPage takes buffer content locks), and BufferLockAcquire
+	 * asserts data.lockmode == BUFFER_LOCK_UNLOCK on entry.  Resource-owner
+	 * cleanup releases buffer content locks in RESOURCE_RELEASE_LOCKS, which
+	 * runs later (see ResOwnerReleaseBuffer); UnlockBuffers() above only
+	 * clears PinCountWaitBuf.  Doing the release here bridges that gap.
+	 */
+	BufferLockReleaseAll();
+
 	AtAbort_XactUndo();
 
 	/*
@@ -5539,6 +5561,27 @@ AbortSubTransaction(void)
 		/* Post-abort cleanup */
 		if (FullTransactionIdIsValid(s->fullTransactionId))
 			AtSubAbort_childXids();
+
+		/*
+		 * Release any buffer content locks the errored statement may still
+		 * hold before the ABORT_SUB callback runs.  AtSubAbort_XactUndo()
+		 * (invoked via CallSubXactCallbacks below) can apply per-relation
+		 * UNDO synchronously in this backend, re-locking buffers, and
+		 * BufferLockAcquire asserts data.lockmode == BUFFER_LOCK_UNLOCK on
+		 * entry.  Resource-owner cleanup releases content locks only at
+		 * RESOURCE_RELEASE_LOCKS (below, after the callback); UnlockBuffers()
+		 * above only clears PinCountWaitBuf.  Mirror the top-level abort path.
+		 *
+		 * BufferLockReleaseAll() releases ALL content locks this backend
+		 * holds, not just those taken by the aborting subtransaction.  That is
+		 * safe because a buffer content lock is never held across a
+		 * subtransaction boundary: locks are acquired and released within a
+		 * single buffer access, and subtransactions are begun/aborted at
+		 * statement boundaries (PL/pgSQL EXCEPTION blocks, SPI, savepoints)
+		 * with no content lock held.  Any lock live here therefore belongs to
+		 * the failed statement in this aborting subxact, never to the parent.
+		 */
+		BufferLockReleaseAll();
 
 		CallSubXactCallbacks(SUBXACT_EVENT_ABORT_SUB, s->subTransactionId,
 							 s->parent->subTransactionId);

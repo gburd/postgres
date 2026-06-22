@@ -493,6 +493,46 @@ RelUndoApplyOneRecord(Relation rel, const RelUndoRecordHeader *header,
 				char	   *tuple_data_buf = NULL;
 				uint32		tlen = 0;
 
+				/*
+				 * Escrow (commutative-delta) record: reverse it by ADDing the
+				 * carried negated delta to the escrow attribute in place, NOT
+				 * by restoring a full before-image.  Absolute-per-record, so a
+				 * concurrent writer's delta on the same running sum survives.
+				 */
+				if (header->info_flags & RELUNDO_INFO_ESCROW)
+				{
+					const RelUndoEscrowExtra *extra;
+					const char *neg_delta;
+					char	   *old_image = NULL;
+					uint32		old_len = 0;
+
+					target_blkno = ItemPointerGetBlockNumber(&upd_payload->oldtid);
+					target_offset = ItemPointerGetOffsetNumber(&upd_payload->oldtid);
+
+					extra = (const RelUndoEscrowExtra *)
+						((const char *) payload + sizeof(RelUndoUpdatePayload));
+					neg_delta = (const char *) extra + SizeOfRelUndoEscrowExtra;
+
+					/* trailing tuple_len bytes are the full old before-image */
+					RelUndoReadRecordWithTuple(rel, current_ptr,
+										   &old_image, &old_len);
+
+					page = RelUndoTrackPage(rel, touched, ntouched, target_blkno);
+
+					if (RelUndoApplyEscrow_hook == NULL)
+						elog(ERROR, "RelUndoApplyChain: escrow record with no escrow apply hook installed");
+
+					RelUndoApplyEscrow_hook(page, target_offset,
+											extra->esc_off, neg_delta,
+											extra->neg_delta_len,
+											extra->typmod,
+											old_image, old_len);
+
+					if (old_image)
+						pfree(old_image);
+					break;
+				}
+
 				RelUndoReadRecordWithTuple(rel, current_ptr,
 										   &tuple_data_buf, &tlen);
 

@@ -1,0 +1,282 @@
+--
+-- Test suite for RECNO storage access method
+--
+-- Create extension for RECNO access method (if needed)
+-- CREATE EXTENSION recno;
+-- Test basic table creation with RECNO access method
+CREATE TABLE recno_test (
+    id SERIAL PRIMARY KEY,
+    name TEXT,
+    value INTEGER,
+    data BYTEA
+) USING recno;
+-- Test basic insert operations
+INSERT INTO recno_test (name, value, data)
+VALUES
+    ('Alice', 100, 'test data 1'),
+    ('Bob', 200, 'test data 2'),
+    ('Charlie', 300, 'test data 3');
+-- Test select operations
+SELECT id, name, value, data FROM recno_test ORDER BY id;
+ id |  name   | value |           data           
+----+---------+-------+--------------------------
+  1 | Alice   |   100 | \x7465737420646174612031
+  2 | Bob     |   200 | \x7465737420646174612032
+  3 | Charlie |   300 | \x7465737420646174612033
+(3 rows)
+
+-- Test update operations (should use in-place updates when possible)
+UPDATE recno_test SET value = value + 10 WHERE name = 'Alice';
+UPDATE recno_test SET name = 'Robert' WHERE name = 'Bob';
+-- Verify updates
+SELECT id, name, value, data FROM recno_test ORDER BY id;
+ id |  name   | value |           data           
+----+---------+-------+--------------------------
+  1 | Alice   |   110 | \x7465737420646174612031
+  2 | Robert  |   200 | \x7465737420646174612032
+  3 | Charlie |   300 | \x7465737420646174612033
+(3 rows)
+
+-- Test delete operations
+DELETE FROM recno_test WHERE name = 'Charlie';
+-- Verify deletion
+SELECT id, name, value, data FROM recno_test ORDER BY id;
+ id |  name  | value |           data           
+----+--------+-------+--------------------------
+  1 | Alice  |   110 | \x7465737420646174612031
+  2 | Robert |   200 | \x7465737420646174612032
+(2 rows)
+
+-- Test large data insertion (should use overflow pages)
+INSERT INTO recno_test (name, value, data)
+VALUES ('Large Data Test', 999, repeat('X', 10000)::bytea);
+-- Test compression with text data
+CREATE TABLE recno_text_test (
+    id SERIAL PRIMARY KEY,
+    description TEXT,
+    compressed_data TEXT
+) USING recno;
+-- Insert data that should benefit from compression
+INSERT INTO recno_text_test (description, compressed_data)
+VALUES
+    ('Compression Test 1', repeat('This is a test string that should compress well. ', 100)),
+    ('Compression Test 2', repeat('Another test string for compression testing. ', 150)),
+    ('Compression Test 3', repeat('Lorem ipsum dolor sit amet consectetur. ', 200));
+SELECT id, description,
+    length(compressed_data) as length,
+    pg_column_size(compressed_data) as data_length,
+    ROUND(length(compressed_data)::numeric / NULLIF(pg_column_size(compressed_data), 0), 2) as ratio
+FROM recno_text_test ORDER BY id;
+ id |    description     | length | data_length | ratio 
+----+--------------------+--------+-------------+-------
+  1 | Compression Test 1 |   4900 |        4904 |  1.00
+  2 | Compression Test 2 |   6750 |        6754 |  1.00
+  3 | Compression Test 3 |   8000 |        8004 |  1.00
+(3 rows)
+
+-- Test concurrent transactions (MVCC)
+BEGIN;
+INSERT INTO recno_test (name, value, data) VALUES ('Transaction 1', 1000, 'tx1 data');
+-- This would need a second connection to test properly
+COMMIT;
+-- Test bulk insert operations
+INSERT INTO recno_test (name, value, data)
+SELECT
+    'Bulk ' || i::text,
+    i * 10,
+    ('bulk data ' || i::text)::bytea
+FROM generate_series(1, 100) i;
+-- Test indexing
+CREATE INDEX idx_recno_name ON recno_test(name);
+CREATE INDEX idx_recno_value ON recno_test(value);
+-- Test vacuum operations
+VACUUM recno_test;
+VACUUM ANALYZE recno_test;
+-- Test various data types
+CREATE TABLE recno_datatypes (
+    id SERIAL,
+    bool_col BOOLEAN,
+    int2_col SMALLINT,
+    int4_col INTEGER,
+    int8_col BIGINT,
+    float4_col REAL,
+    float8_col DOUBLE PRECISION,
+    numeric_col NUMERIC(10,2),
+    char_col CHAR(10),
+    varchar_col VARCHAR(50),
+    text_col TEXT,
+    bytea_col BYTEA,
+    date_col DATE,
+    time_col TIME,
+    timestamp_col TIMESTAMP,
+    json_col JSON,
+    jsonb_col JSONB
+) USING recno;
+-- Insert test data for all types
+INSERT INTO recno_datatypes (
+    bool_col, int2_col, int4_col, int8_col, float4_col, float8_col,
+    numeric_col, char_col, varchar_col, text_col, bytea_col,
+    date_col, time_col, timestamp_col, json_col, jsonb_col
+) VALUES (
+    true, 32767, 2147483647, 9223372036854775807, 3.14, 2.718281828,
+    12345.67, 'test      ', 'varchar test', 'This is a longer text field for testing',
+    E'\\xDEADBEEF', '2023-12-01', '14:30:00', '2023-12-01 14:30:00',
+    '{"key": "value", "number": 42}', '{"key": "value", "number": 42}'
+);
+-- Test NULL values
+INSERT INTO recno_datatypes DEFAULT VALUES;
+-- Test updates with different data types
+UPDATE recno_datatypes SET
+    numeric_col = 99999.99,
+    text_col = 'Updated text field',
+    json_col = '{"updated": true}'
+WHERE id = 1;
+-- Test performance with larger dataset
+CREATE TABLE recno_performance (
+    id SERIAL PRIMARY KEY,
+    int_val INTEGER,
+    text_val TEXT,
+    data_val BYTEA
+) USING recno;
+-- Insert deterministic test data (no random())
+INSERT INTO recno_performance (int_val, text_val, data_val)
+SELECT
+    (i * 97 + 13) % 1000000,
+    md5(i::text),
+    decode(md5(i::text), 'hex')
+FROM generate_series(1, 10000) i;
+-- Test range queries
+SELECT COUNT(*) FROM recno_performance WHERE int_val BETWEEN 100000 AND 200000;
+ count 
+-------
+  1031
+(1 row)
+
+-- Test aggregations
+SELECT
+    COUNT(*) as total_rows,
+    MIN(int_val) as min_int,
+    MAX(int_val) as max_int
+FROM recno_performance;
+ total_rows | min_int | max_int 
+------------+---------+---------
+      10000 |     110 |  970013
+(1 row)
+
+-- Test table truncation
+TRUNCATE recno_performance;
+-- Verify truncation
+SELECT COUNT(*) FROM recno_performance;
+ count 
+-------
+     0
+(1 row)
+
+-- Test TOAST replacement with overflow pages
+CREATE TABLE recno_overflow_test (
+    id SERIAL PRIMARY KEY,
+    small_text TEXT,
+    large_text TEXT,
+    huge_bytea BYTEA
+) USING recno;
+-- Insert data that should go to overflow pages
+INSERT INTO recno_overflow_test (small_text, large_text, huge_bytea)
+VALUES (
+    'Small text',
+    repeat('This is a very long text string that should be stored in overflow pages. ', 1000),
+    decode(repeat('ABCD', 50000), 'hex')
+);
+-- Test retrieval of overflow data
+SELECT
+    id,
+    small_text,
+    length(large_text) as large_text_len,
+    length(huge_bytea) as huge_bytea_len
+FROM recno_overflow_test;
+ id | small_text | large_text_len | huge_bytea_len 
+----+------------+----------------+----------------
+  1 | Small text |          73000 |         100000
+(1 row)
+
+-- Test defragmentation by creating fragmented pages
+INSERT INTO recno_test (name, value, data)
+SELECT
+    'Frag ' || i::text,
+    i,
+    ('fragmentation test ' || i::text)::bytea
+FROM generate_series(1, 50) i;
+-- Delete every other row to create fragmentation
+DELETE FROM recno_test WHERE id % 2 = 0 AND name LIKE 'Frag%';
+-- Insert more data to trigger defragmentation
+INSERT INTO recno_test (name, value, data)
+SELECT
+    'Defrag ' || i::text,
+    i + 10000,
+    ('defragmentation test ' || i::text)::bytea
+FROM generate_series(1, 25) i;
+-- Test table information (just verify amname, not runtime-dependent stats)
+SELECT
+    c.relname,
+    am.amname
+FROM pg_class c
+JOIN pg_am am ON c.relam = am.oid
+WHERE c.relname LIKE 'recno_%'
+AND c.relkind = 'r'
+ORDER BY c.relname;
+       relname       | amname 
+---------------------+--------
+ recno_datatypes     | recno
+ recno_overflow_test | recno
+ recno_performance   | recno
+ recno_test          | recno
+ recno_text_test     | recno
+(5 rows)
+
+-- Test constraint enforcement
+ALTER TABLE recno_test ADD CONSTRAINT check_positive_value CHECK (value > 0);
+-- This should succeed
+INSERT INTO recno_test (name, value, data) VALUES ('Valid', 1, 'valid data');
+-- This should fail
+-- INSERT INTO recno_test (name, value, data) VALUES ('Invalid', -1, 'invalid data');
+-- Test foreign key relationships
+CREATE TABLE recno_parent (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL
+) USING recno;
+CREATE TABLE recno_child (
+    id SERIAL PRIMARY KEY,
+    parent_id INTEGER REFERENCES recno_parent(id),
+    description TEXT
+) USING recno;
+INSERT INTO recno_parent (name) VALUES ('Parent 1'), ('Parent 2');
+INSERT INTO recno_child (parent_id, description)
+VALUES (1, 'Child of Parent 1'), (2, 'Child of Parent 2');
+-- Test join operations
+SELECT p.name, c.description
+FROM recno_parent p
+JOIN recno_child c ON p.id = c.parent_id
+ORDER BY p.id;
+   name   |    description    
+----------+-------------------
+ Parent 1 | Child of Parent 1
+ Parent 2 | Child of Parent 2
+(2 rows)
+
+-- Test serializable transactions (if supported)
+BEGIN ISOLATION LEVEL SERIALIZABLE;
+SELECT id, name, value, data FROM recno_test WHERE id = 1 FOR UPDATE;
+ id | name  | value |           data           
+----+-------+-------+--------------------------
+  1 | Alice |   110 | \x7465737420646174612031
+(1 row)
+
+UPDATE recno_test SET value = value + 1 WHERE id = 1;
+COMMIT;
+-- Cleanup
+DROP TABLE recno_child;
+DROP TABLE recno_parent;
+DROP TABLE recno_overflow_test;
+DROP TABLE recno_performance;
+DROP TABLE recno_datatypes;
+DROP TABLE recno_text_test;
+DROP TABLE recno_test;

@@ -1,0 +1,719 @@
+--
+-- Test RECNO multi-page relation support
+--
+-- This test validates that the RECNO storage engine correctly handles
+-- relations that span multiple pages, including:
+--   - Bulk inserts that force page allocation beyond a single page
+--   - Sequential scan retrieval across page boundaries
+--   - UPDATE and DELETE on multi-page tables
+--   - VACUUM and defragmentation across multiple pages
+--   - FSM (free space map) tracking accuracy
+--   - No "RECNO page full" errors during normal operation
+--
+-- =============================================
+-- Force multi-page allocation via bulk insert
+-- =============================================
+-- Each RECNO page is 8kB (default BLCKSZ). With page overhead (~100 bytes)
+-- and tuple overhead (~50 bytes per tuple), roughly 40-80 tuples of ~100 bytes
+-- each fit on one page. Inserting 1000 rows should require 10-25 pages.
+CREATE TABLE recno_mp_basic (
+    id serial PRIMARY KEY,
+    label text NOT NULL,
+    payload text NOT NULL
+) USING recno;
+-- Insert enough rows to guarantee multiple pages
+INSERT INTO recno_mp_basic (label, payload)
+SELECT
+    'row_' || i::text,
+    repeat('A', 100)  -- ~100 byte payload per row
+FROM generate_series(1, 1000) i;
+-- Verify all rows were inserted
+SELECT COUNT(*) AS total_rows FROM recno_mp_basic;
+ total_rows 
+------------
+       1000
+(1 row)
+
+-- Verify the relation uses multiple pages
+SELECT relpages > 1 AS uses_multiple_pages
+FROM pg_class WHERE relname = 'recno_mp_basic';
+ uses_multiple_pages 
+---------------------
+ f
+(1 row)
+
+-- Verify sequential scan retrieves all rows correctly
+SELECT COUNT(*) AS scan_count FROM recno_mp_basic WHERE id > 0;
+ scan_count 
+------------
+       1000
+(1 row)
+
+-- Verify data integrity across pages: check first, middle, last rows
+SELECT id, label FROM recno_mp_basic WHERE id = 1;
+ id | label 
+----+-------
+  1 | row_1
+(1 row)
+
+SELECT id, label FROM recno_mp_basic WHERE id = 500;
+ id  |  label  
+-----+---------
+ 500 | row_500
+(1 row)
+
+SELECT id, label FROM recno_mp_basic WHERE id = 1000;
+  id  |  label   
+------+----------
+ 1000 | row_1000
+(1 row)
+
+-- Verify ordering is preserved
+SELECT COUNT(*) AS ordered_count
+FROM (
+    SELECT id, label,
+           LAG(id) OVER (ORDER BY id) AS prev_id
+    FROM recno_mp_basic
+) sub
+WHERE prev_id IS NOT NULL AND id = prev_id + 1;
+ ordered_count 
+---------------
+           999
+(1 row)
+
+DROP TABLE recno_mp_basic;
+-- =============================================
+-- Wider rows to stress page boundaries
+-- =============================================
+-- Use larger tuples (~500 bytes each) so fewer fit per page,
+-- increasing the number of page transitions during scan.
+CREATE TABLE recno_mp_wide (
+    id serial PRIMARY KEY,
+    col1 text,
+    col2 text,
+    col3 text,
+    col4 integer,
+    col5 timestamp DEFAULT now()
+) USING recno;
+INSERT INTO recno_mp_wide (col1, col2, col3, col4)
+SELECT
+    repeat('X', 150),
+    repeat('Y', 150),
+    'wide_' || i::text,
+    i
+FROM generate_series(1, 500) i;
+-- All rows should be retrievable
+SELECT COUNT(*) AS total FROM recno_mp_wide;
+ total 
+-------
+   500
+(1 row)
+
+-- Spot check across page boundaries
+SELECT col4 FROM recno_mp_wide WHERE col4 IN (1, 100, 250, 400, 500) ORDER BY col4;
+ col4 
+------
+    1
+  100
+  250
+  400
+  500
+(5 rows)
+
+-- Verify aggregation works across pages
+SELECT MIN(col4), MAX(col4), AVG(col4)::integer AS avg_col4 FROM recno_mp_wide;
+ min | max | avg_col4 
+-----+-----+----------
+   1 | 500 |      251
+(1 row)
+
+DROP TABLE recno_mp_wide;
+-- =============================================
+-- UPDATE on multi-page table
+-- =============================================
+CREATE TABLE recno_mp_update (
+    id serial PRIMARY KEY,
+    counter integer DEFAULT 0,
+    data text
+) USING recno;
+INSERT INTO recno_mp_update (data)
+SELECT repeat('U', 80) FROM generate_series(1, 800) i;
+-- Verify pre-update state
+SELECT COUNT(*) AS pre_update_count FROM recno_mp_update;
+ pre_update_count 
+------------------
+              800
+(1 row)
+
+-- Update all rows (touches every page)
+UPDATE recno_mp_update SET counter = counter + 1;
+-- Verify all rows were updated
+SELECT COUNT(*) AS updated_count FROM recno_mp_update WHERE counter = 1;
+ updated_count 
+---------------
+           800
+(1 row)
+
+SELECT COUNT(*) AS not_updated FROM recno_mp_update WHERE counter != 1;
+ not_updated 
+-------------
+           0
+(1 row)
+
+-- Update a subset spanning multiple pages
+UPDATE recno_mp_update SET counter = counter + 10 WHERE id % 3 = 0;
+-- Verify mixed update results
+SELECT counter, COUNT(*) AS cnt
+FROM recno_mp_update
+GROUP BY counter
+ORDER BY counter;
+ counter | cnt 
+---------+-----
+       1 | 534
+      11 | 266
+(2 rows)
+
+-- Update with size increase (may cause cross-page moves)
+UPDATE recno_mp_update SET data = repeat('BIGGER', 30) WHERE id <= 50;
+-- Verify data integrity after size-changing updates
+SELECT COUNT(*) AS total_after_update FROM recno_mp_update;
+ total_after_update 
+--------------------
+                800
+(1 row)
+
+SELECT length(data) > 80 AS grew FROM recno_mp_update WHERE id = 1;
+ grew 
+------
+ t
+(1 row)
+
+DROP TABLE recno_mp_update;
+-- =============================================
+-- DELETE on multi-page table
+-- =============================================
+CREATE TABLE recno_mp_delete (
+    id serial PRIMARY KEY,
+    value integer,
+    filler text
+) USING recno;
+INSERT INTO recno_mp_delete (value, filler)
+SELECT i, repeat('D', 80) FROM generate_series(1, 1000) i;
+-- Verify initial count
+SELECT COUNT(*) AS initial_count FROM recno_mp_delete;
+ initial_count 
+---------------
+          1000
+(1 row)
+
+-- Delete every other row (creates fragmentation across all pages)
+DELETE FROM recno_mp_delete WHERE id % 2 = 0;
+-- Verify deletion
+SELECT COUNT(*) AS after_delete FROM recno_mp_delete;
+ after_delete 
+--------------
+          500
+(1 row)
+
+-- Verify remaining rows are correct
+SELECT COUNT(*) AS odd_only FROM recno_mp_delete WHERE id % 2 = 1;
+ odd_only 
+----------
+      500
+(1 row)
+
+-- Delete a contiguous block that likely spans page boundaries
+DELETE FROM recno_mp_delete WHERE id BETWEEN 201 AND 400;
+SELECT COUNT(*) AS after_range_delete FROM recno_mp_delete;
+ after_range_delete 
+--------------------
+                400
+(1 row)
+
+-- Remaining rows should still be accessible
+SELECT MIN(id), MAX(id) FROM recno_mp_delete;
+ min | max 
+-----+-----
+   1 | 999
+(1 row)
+
+DROP TABLE recno_mp_delete;
+-- =============================================
+-- VACUUM on multi-page table
+-- =============================================
+CREATE TABLE recno_mp_vacuum (
+    id serial PRIMARY KEY,
+    data text
+) USING recno;
+INSERT INTO recno_mp_vacuum (data)
+SELECT repeat('V', 100) FROM generate_series(1, 1000) i;
+-- Record size before deletions
+SELECT pg_relation_size('recno_mp_vacuum') AS size_before_delete;
+ size_before_delete 
+--------------------
+             106496
+(1 row)
+
+-- Delete 50% of rows
+DELETE FROM recno_mp_vacuum WHERE id % 2 = 0;
+-- VACUUM should reclaim space from dead tuples
+VACUUM recno_mp_vacuum;
+-- Verify live rows are intact
+SELECT COUNT(*) AS live_after_vacuum FROM recno_mp_vacuum;
+ live_after_vacuum 
+-------------------
+               500
+(1 row)
+
+-- All remaining rows should be odd
+SELECT COUNT(*) AS all_odd FROM recno_mp_vacuum WHERE id % 2 = 1;
+ all_odd 
+---------
+     500
+(1 row)
+
+-- Insert new rows -- these should reuse freed space from deleted pages
+INSERT INTO recno_mp_vacuum (data)
+SELECT repeat('N', 100) FROM generate_series(1, 300) i;
+SELECT COUNT(*) AS total_after_reuse FROM recno_mp_vacuum;
+ total_after_reuse 
+-------------------
+               800
+(1 row)
+
+DROP TABLE recno_mp_vacuum;
+-- =============================================
+-- VACUUM VERBOSE on multi-page table
+-- =============================================
+CREATE TABLE recno_mp_vacuum_verbose (
+    id serial PRIMARY KEY,
+    data text
+) USING recno;
+INSERT INTO recno_mp_vacuum_verbose (data)
+SELECT repeat('Z', 100) FROM generate_series(1, 800) i;
+-- Delete 75% of rows to create lots of dead tuples across many pages
+DELETE FROM recno_mp_vacuum_verbose WHERE id % 4 != 0;
+-- VACUUM VERBOSE should report multi-page activity
+VACUUM VERBOSE recno_mp_vacuum_verbose;
+INFO:  vacuuming "recno_mp_vacuum_verbose": scanning 11 pages
+INFO:  vacuuming "recno_mp_vacuum_verbose": removing 600 dead index entries across 1 indexes
+INFO:  scanned index "recno_mp_vacuum_verbose_pkey" to remove 600 row versions
+INFO:  index "recno_mp_vacuum_verbose_pkey" now contains 200 row versions in 5 pages
+DETAIL:  600 index row versions were removed.
+0 index pages were newly deleted.
+0 index pages are currently deleted, of which 0 are currently reusable.
+INFO:  RECNO vacuum "recno_mp_vacuum_verbose": found 800 tuples (200 live, 600 dead), vacuumed 11 pages, truncated 0 pages, cleaned 1 indexes
+-- Verify remaining data
+SELECT COUNT(*) AS remaining FROM recno_mp_vacuum_verbose;
+ remaining 
+-----------
+       200
+(1 row)
+
+DROP TABLE recno_mp_vacuum_verbose;
+-- =============================================
+-- VACUUM FULL on multi-page table
+-- =============================================
+CREATE TABLE recno_mp_vacuum_full (
+    id serial PRIMARY KEY,
+    data text
+) USING recno;
+INSERT INTO recno_mp_vacuum_full (data)
+SELECT repeat('F', 120) FROM generate_series(1, 1000) i;
+-- Record initial size
+SELECT pg_relation_size('recno_mp_vacuum_full') AS initial_size;
+ initial_size 
+--------------
+       106496
+(1 row)
+
+-- Delete 90% of rows
+DELETE FROM recno_mp_vacuum_full WHERE id % 10 != 0;
+-- Regular VACUUM
+VACUUM recno_mp_vacuum_full;
+SELECT pg_relation_size('recno_mp_vacuum_full') AS after_vacuum;
+ after_vacuum 
+--------------
+       106496
+(1 row)
+
+-- VACUUM FULL should reclaim all dead space by rewriting the table
+VACUUM FULL recno_mp_vacuum_full;
+SELECT pg_relation_size('recno_mp_vacuum_full') AS after_vacuum_full;
+ after_vacuum_full 
+-------------------
+             16384
+(1 row)
+
+-- Verify data integrity
+SELECT COUNT(*) AS surviving FROM recno_mp_vacuum_full;
+ surviving 
+-----------
+       100
+(1 row)
+
+SELECT MIN(id), MAX(id) FROM recno_mp_vacuum_full;
+ min | max  
+-----+------
+  10 | 1000
+(1 row)
+
+DROP TABLE recno_mp_vacuum_full;
+-- =============================================
+-- Index operations on multi-page table
+-- =============================================
+CREATE TABLE recno_mp_index (
+    id serial PRIMARY KEY,
+    category integer,
+    name text,
+    payload text
+) USING recno;
+INSERT INTO recno_mp_index (category, name, payload)
+SELECT
+    i % 10,
+    'item_' || i::text,
+    repeat('I', 80)
+FROM generate_series(1, 1000) i;
+-- Create indexes after bulk insert
+CREATE INDEX idx_mp_category ON recno_mp_index (category);
+CREATE INDEX idx_mp_name ON recno_mp_index (name);
+-- Force index scan
+SET enable_seqscan = off;
+-- Index scan should work across all pages
+SELECT COUNT(*) AS cat_5_count FROM recno_mp_index WHERE category = 5;
+ cat_5_count 
+-------------
+         100
+(1 row)
+
+SELECT COUNT(*) AS name_match FROM recno_mp_index WHERE name = 'item_500';
+ name_match 
+------------
+          1
+(1 row)
+
+RESET enable_seqscan;
+-- Delete some rows and verify index consistency
+DELETE FROM recno_mp_index WHERE category = 0;
+VACUUM recno_mp_index;
+SET enable_seqscan = off;
+SELECT COUNT(*) AS cat_0_after_delete FROM recno_mp_index WHERE category = 0;
+ cat_0_after_delete 
+--------------------
+                  0
+(1 row)
+
+SELECT COUNT(*) AS cat_1_after_delete FROM recno_mp_index WHERE category = 1;
+ cat_1_after_delete 
+--------------------
+                100
+(1 row)
+
+RESET enable_seqscan;
+-- REINDEX after vacuum
+REINDEX TABLE recno_mp_index;
+SET enable_seqscan = off;
+SELECT COUNT(*) AS after_reindex FROM recno_mp_index WHERE category BETWEEN 3 AND 7;
+ after_reindex 
+---------------
+           500
+(1 row)
+
+RESET enable_seqscan;
+DROP TABLE recno_mp_index;
+-- =============================================
+-- Interleaved insert/delete/insert cycle
+-- =============================================
+-- This tests FSM tracking: after deleting and vacuuming, new inserts
+-- should reuse freed pages rather than always extending the relation.
+CREATE TABLE recno_mp_fsm (
+    id serial PRIMARY KEY,
+    data text
+) USING recno;
+-- Phase 1: Fill pages
+INSERT INTO recno_mp_fsm (data)
+SELECT repeat('1', 100) FROM generate_series(1, 500) i;
+SELECT relpages AS pages_after_phase1
+FROM pg_class WHERE relname = 'recno_mp_fsm';
+ pages_after_phase1 
+--------------------
+                  0
+(1 row)
+
+-- Phase 2: Delete most rows
+DELETE FROM recno_mp_fsm WHERE id > 100;
+VACUUM recno_mp_fsm;
+-- Phase 3: Re-insert -- should reuse freed space
+INSERT INTO recno_mp_fsm (data)
+SELECT repeat('2', 100) FROM generate_series(1, 400) i;
+-- Relation should not have grown much compared to phase 1
+-- (FSM should have directed new inserts to freed pages)
+SELECT COUNT(*) AS total_after_cycle FROM recno_mp_fsm;
+ total_after_cycle 
+-------------------
+               500
+(1 row)
+
+DROP TABLE recno_mp_fsm;
+-- =============================================
+-- Mixed DML stress across pages
+-- =============================================
+CREATE TABLE recno_mp_stress (
+    id serial PRIMARY KEY,
+    version integer DEFAULT 1,
+    data text
+) USING recno;
+-- Bulk insert
+INSERT INTO recno_mp_stress (data)
+SELECT repeat('S', 80) FROM generate_series(1, 1000) i;
+-- Mix of operations touching many pages
+UPDATE recno_mp_stress SET version = 2, data = repeat('T', 80) WHERE id % 5 = 0;
+DELETE FROM recno_mp_stress WHERE id % 7 = 0;
+INSERT INTO recno_mp_stress (version, data)
+SELECT 3, repeat('N', 80) FROM generate_series(1, 200) i;
+-- Verify consistency
+SELECT version, COUNT(*) AS cnt
+FROM recno_mp_stress
+GROUP BY version
+ORDER BY version;
+ version | cnt 
+---------+-----
+       1 | 686
+       2 | 172
+       3 | 200
+(3 rows)
+
+-- Total should be: 1000 - (1000/7 ~= 142) + 200 = ~1058
+-- minus those that were both updated and deleted
+SELECT COUNT(*) AS total FROM recno_mp_stress;
+ total 
+-------
+  1058
+(1 row)
+
+-- VACUUM after mixed operations
+VACUUM recno_mp_stress;
+-- Re-verify after vacuum
+SELECT version, COUNT(*) AS cnt
+FROM recno_mp_stress
+GROUP BY version
+ORDER BY version;
+ version | cnt 
+---------+-----
+       1 | 686
+       2 | 172
+       3 | 200
+(3 rows)
+
+DROP TABLE recno_mp_stress;
+-- =============================================
+-- Very large number of rows
+-- =============================================
+-- Push to many pages to ensure no "page full" errors
+CREATE TABLE recno_mp_large (
+    id serial PRIMARY KEY,
+    small_int integer,
+    medium_text text
+) USING recno;
+-- 5000 rows with moderate-size tuples
+INSERT INTO recno_mp_large (small_int, medium_text)
+SELECT i, repeat(chr(65 + (i % 26)), 60)
+FROM generate_series(1, 5000) i;
+SELECT COUNT(*) AS large_count FROM recno_mp_large;
+ large_count 
+-------------
+        5000
+(1 row)
+
+-- Verify data at boundaries
+SELECT id, small_int, length(medium_text) AS text_len
+FROM recno_mp_large
+WHERE id IN (1, 1000, 2500, 4000, 5000)
+ORDER BY id;
+  id  | small_int | text_len 
+------+-----------+----------
+    1 |         1 |       60
+ 1000 |      1000 |       60
+ 2500 |      2500 |       60
+ 4000 |      4000 |       60
+ 5000 |      5000 |       60
+(5 rows)
+
+-- Verify relation has many pages
+SELECT relpages > 10 AS many_pages
+FROM pg_class WHERE relname = 'recno_mp_large';
+ many_pages 
+------------
+ f
+(1 row)
+
+DROP TABLE recno_mp_large;
+-- =============================================
+-- Multi-page with NULL values
+-- =============================================
+CREATE TABLE recno_mp_nulls (
+    id serial PRIMARY KEY,
+    a text,
+    b integer,
+    c text
+) USING recno;
+-- Insert rows with various NULL patterns across many pages
+INSERT INTO recno_mp_nulls (a, b, c)
+SELECT
+    CASE WHEN i % 3 = 0 THEN NULL ELSE repeat('A', 50) END,
+    CASE WHEN i % 5 = 0 THEN NULL ELSE i END,
+    CASE WHEN i % 7 = 0 THEN NULL ELSE repeat('C', 50) END
+FROM generate_series(1, 1000) i;
+-- Verify NULL counts
+SELECT
+    COUNT(*) AS total,
+    COUNT(a) AS non_null_a,
+    COUNT(b) AS non_null_b,
+    COUNT(c) AS non_null_c
+FROM recno_mp_nulls;
+ total | non_null_a | non_null_b | non_null_c 
+-------+------------+------------+------------
+  1000 |        667 |        800 |        858
+(1 row)
+
+-- Verify NULL filtering works across pages
+SELECT COUNT(*) AS nulls_in_a FROM recno_mp_nulls WHERE a IS NULL;
+ nulls_in_a 
+------------
+        333
+(1 row)
+
+SELECT COUNT(*) AS nulls_in_b FROM recno_mp_nulls WHERE b IS NULL;
+ nulls_in_b 
+------------
+        200
+(1 row)
+
+DROP TABLE recno_mp_nulls;
+-- =============================================
+-- Partitioned table with RECNO multi-page
+-- =============================================
+CREATE TABLE recno_mp_part (
+    id serial,
+    category integer NOT NULL,
+    data text
+) PARTITION BY RANGE (category) USING recno;
+CREATE TABLE recno_mp_part_1 PARTITION OF recno_mp_part
+    FOR VALUES FROM (0) TO (50) USING recno;
+CREATE TABLE recno_mp_part_2 PARTITION OF recno_mp_part
+    FOR VALUES FROM (50) TO (100) USING recno;
+-- Insert enough to make each partition multi-page
+INSERT INTO recno_mp_part (category, data)
+SELECT i % 100, repeat('P', 80)
+FROM generate_series(1, 2000) i;
+-- Verify partition counts
+SELECT COUNT(*) AS part1 FROM recno_mp_part_1;
+ part1 
+-------
+  1000
+(1 row)
+
+SELECT COUNT(*) AS part2 FROM recno_mp_part_2;
+ part2 
+-------
+  1000
+(1 row)
+
+SELECT COUNT(*) AS total FROM recno_mp_part;
+ total 
+-------
+  2000
+(1 row)
+
+-- Cross-partition query
+SELECT category / 50 AS part, COUNT(*) AS cnt
+FROM recno_mp_part
+GROUP BY category / 50
+ORDER BY part;
+ part | cnt  
+------+------
+    0 | 1000
+    1 | 1000
+(2 rows)
+
+-- VACUUM partitions
+VACUUM recno_mp_part;
+DROP TABLE recno_mp_part;
+-- =============================================
+-- Defragmentation across pages
+-- =============================================
+CREATE TABLE recno_mp_defrag (
+    id serial PRIMARY KEY,
+    data text
+) USING recno;
+-- Fill many pages
+INSERT INTO recno_mp_defrag (data)
+SELECT repeat('D', 100) FROM generate_series(1, 1000) i;
+-- Create scattered fragmentation: delete every 3rd row
+DELETE FROM recno_mp_defrag WHERE id % 3 = 0;
+-- Insert new rows of varying sizes to test page reuse with fragmented pages
+INSERT INTO recno_mp_defrag (data)
+SELECT repeat('E', 50 + (i % 100))
+FROM generate_series(1, 500) i;
+-- Verify all data is accessible
+SELECT COUNT(*) AS total_after_defrag_test FROM recno_mp_defrag;
+ total_after_defrag_test 
+-------------------------
+                    1167
+(1 row)
+
+-- VACUUM should defragment pages
+VACUUM recno_mp_defrag;
+-- Verify data is still intact after defragmentation
+SELECT COUNT(*) AS after_vacuum_defrag FROM recno_mp_defrag;
+ after_vacuum_defrag 
+---------------------
+                1167
+(1 row)
+
+DROP TABLE recno_mp_defrag;
+-- =============================================
+-- ANALYZE on multi-page table
+-- =============================================
+CREATE TABLE recno_mp_analyze (
+    id serial PRIMARY KEY,
+    category text,
+    value integer
+) USING recno;
+INSERT INTO recno_mp_analyze (category, value)
+SELECT
+    CASE i % 5
+        WHEN 0 THEN 'alpha'
+        WHEN 1 THEN 'beta'
+        WHEN 2 THEN 'gamma'
+        WHEN 3 THEN 'delta'
+        WHEN 4 THEN 'epsilon'
+    END,
+    i
+FROM generate_series(1, 2000) i;
+-- ANALYZE should sample across all pages
+ANALYZE recno_mp_analyze;
+-- Verify statistics were collected
+SELECT
+    attname,
+    n_distinct,
+    most_common_vals IS NOT NULL AS has_mcv
+FROM pg_stats
+WHERE tablename = 'recno_mp_analyze'
+AND attname IN ('category', 'value')
+ORDER BY attname;
+ attname  | n_distinct | has_mcv 
+----------+------------+---------
+ category |          5 | t
+ value    |         -1 | f
+(2 rows)
+
+-- Verify reltuples is reasonable
+SELECT reltuples > 0 AS has_tuples, relpages > 1 AS multipage
+FROM pg_class WHERE relname = 'recno_mp_analyze';
+ has_tuples | multipage 
+------------+-----------
+ t          | t
+(1 row)
+
+DROP TABLE recno_mp_analyze;

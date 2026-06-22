@@ -1,0 +1,61 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1_add10 s2_add20 s1_commit s2_commit s3_read
+step s1_add10: UPDATE esc_cc SET ytd = ytd + 10 WHERE id = 1;
+step s2_add20: UPDATE esc_cc SET ytd = ytd + 20 WHERE id = 1;
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+step s3_read: SELECT id, ytd FROM esc_cc WHERE id = 1;
+id| ytd
+--+----
+ 1|1030
+(1 row)
+
+
+starting permutation: s1_add10 s2_add20 s2_commit s1_commit s3_read
+step s1_add10: UPDATE esc_cc SET ytd = ytd + 10 WHERE id = 1;
+step s2_add20: UPDATE esc_cc SET ytd = ytd + 20 WHERE id = 1;
+step s2_commit: COMMIT;
+step s1_commit: COMMIT;
+step s3_read: SELECT id, ytd FROM esc_cc WHERE id = 1;
+id| ytd
+--+----
+ 1|1030
+(1 row)
+
+
+starting permutation: s1_add10 s2_add20 s1_abort s2_commit s3_read
+step s1_add10: UPDATE esc_cc SET ytd = ytd + 10 WHERE id = 1;
+step s2_add20: UPDATE esc_cc SET ytd = ytd + 20 WHERE id = 1;
+step s1_abort: ROLLBACK;
+step s2_commit: COMMIT;
+step s3_read: SELECT id, ytd FROM esc_cc WHERE id = 1;
+id| ytd
+--+----
+ 1|1020
+(1 row)
+
+
+starting permutation: s1_add10 s2_add20 s2_abort s1_commit s3_read
+step s1_add10: UPDATE esc_cc SET ytd = ytd + 10 WHERE id = 1;
+step s2_add20: UPDATE esc_cc SET ytd = ytd + 20 WHERE id = 1;
+step s2_abort: ROLLBACK;
+step s1_commit: COMMIT;
+step s3_read: SELECT id, ytd FROM esc_cc WHERE id = 1;
+id| ytd
+--+----
+ 1|1010
+(1 row)
+
+
+starting permutation: s1_add10 s2_add20 s1_abort s2_abort s3_read
+step s1_add10: UPDATE esc_cc SET ytd = ytd + 10 WHERE id = 1;
+step s2_add20: UPDATE esc_cc SET ytd = ytd + 20 WHERE id = 1;
+step s1_abort: ROLLBACK;
+step s2_abort: ROLLBACK;
+step s3_read: SELECT id, ytd FROM esc_cc WHERE id = 1;
+id| ytd
+--+----
+ 1|1000
+(1 row)
+

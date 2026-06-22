@@ -1,0 +1,7 @@
+CREATE EXTENSION test_recno_posting;
+SELECT test_recno_posting();
+ test_recno_posting 
+--------------------
+ 
+(1 row)
+

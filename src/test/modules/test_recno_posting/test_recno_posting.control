@@ -1,0 +1,4 @@
+comment = 'test code for RECNO index posting codec'
+default_version = '1.0'
+module_pathname = '$libdir/test_recno_posting'
+relocatable = true

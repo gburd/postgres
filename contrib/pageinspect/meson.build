@@ -9,6 +9,7 @@ pageinspect_sources = files(
   'hashfuncs.c',
   'heapfuncs.c',
   'rawpage.c',
+  'recnofuncs.c',
 )
 
 if host_system == 'windows'
@@ -38,6 +39,7 @@ install_data(
   'pageinspect--1.10--1.11.sql',
   'pageinspect--1.11--1.12.sql',
   'pageinspect--1.12--1.13.sql',
+  'pageinspect--1.13--1.14.sql',
   'pageinspect.control',
   kwargs: contrib_data_args,
 )

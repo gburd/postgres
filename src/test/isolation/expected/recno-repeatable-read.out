@@ -1,0 +1,87 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1_read_snap s2_insert s2_commit s1_read_snap s1_commit
+step s1_read_snap: SELECT id, val FROM recno_rr ORDER BY id;
+id|val       
+--+----------
+ 1|original_1
+ 2|original_2
+ 3|original_3
+(3 rows)
+
+step s2_insert: INSERT INTO recno_rr VALUES (4, 'new_4');
+step s2_commit: COMMIT;
+step s1_read_snap: SELECT id, val FROM recno_rr ORDER BY id;
+id|val       
+--+----------
+ 1|original_1
+ 2|original_2
+ 3|original_3
+(3 rows)
+
+step s1_commit: COMMIT;
+
+starting permutation: s1_read_snap s2_delete s2_commit s1_read_snap s1_commit
+step s1_read_snap: SELECT id, val FROM recno_rr ORDER BY id;
+id|val       
+--+----------
+ 1|original_1
+ 2|original_2
+ 3|original_3
+(3 rows)
+
+step s2_delete: DELETE FROM recno_rr WHERE id = 1;
+step s2_commit: COMMIT;
+step s1_read_snap: SELECT id, val FROM recno_rr ORDER BY id;
+id|val       
+--+----------
+ 1|original_1
+ 2|original_2
+ 3|original_3
+(3 rows)
+
+step s1_commit: COMMIT;
+
+starting permutation: s1_read_snap s2_update s2_commit s1_read_snap s1_commit
+step s1_read_snap: SELECT id, val FROM recno_rr ORDER BY id;
+id|val       
+--+----------
+ 1|original_1
+ 2|original_2
+ 3|original_3
+(3 rows)
+
+step s2_update: UPDATE recno_rr SET val = 'modified_2' WHERE id = 2;
+step s2_commit: COMMIT;
+step s1_read_snap: SELECT id, val FROM recno_rr ORDER BY id;
+id|val       
+--+----------
+ 1|original_1
+ 2|original_2
+ 3|original_3
+(3 rows)
+
+step s1_commit: COMMIT;
+
+starting permutation: s1_read_snap s2_delete s2_update s2_insert s2_commit s1_read_snap s1_commit
+step s1_read_snap: SELECT id, val FROM recno_rr ORDER BY id;
+id|val       
+--+----------
+ 1|original_1
+ 2|original_2
+ 3|original_3
+(3 rows)
+
+step s2_delete: DELETE FROM recno_rr WHERE id = 1;
+step s2_update: UPDATE recno_rr SET val = 'modified_2' WHERE id = 2;
+step s2_insert: INSERT INTO recno_rr VALUES (4, 'new_4');
+step s2_commit: COMMIT;
+step s1_read_snap: SELECT id, val FROM recno_rr ORDER BY id;
+id|val       
+--+----------
+ 1|original_1
+ 2|original_2
+ 3|original_3
+(3 rows)
+
+step s1_commit: COMMIT;

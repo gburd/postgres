@@ -107,4 +107,14 @@ extern int32 make_numeric_typmod_safe(int32 precision, int32 scale,
 extern Numeric random_numeric(pg_prng_state *state,
 							  Numeric rmin, Numeric rmax);
 
+/*
+ * Fixed-layout numeric support (used by table AMs that accumulate a numeric
+ * value in place under a same-size on-disk slot; see access/recno escrow).
+ */
+extern bool numeric_fixed_layout_params(int32 typmod, int *ndigits_out,
+										int *weight_out, int *dscale_out,
+										Size *img_len_out);
+extern void numeric_to_fixed_layout(Numeric val, int32 typmod,
+									char *dst, Size dstlen);
+
 #endif							/* _PG_NUMERIC_H_ */

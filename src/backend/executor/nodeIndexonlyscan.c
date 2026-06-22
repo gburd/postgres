@@ -36,6 +36,7 @@
 #include "access/tableam.h"
 #include "access/tupdesc.h"
 #include "access/visibilitymap.h"
+#include "catalog/index.h"
 #include "catalog/pg_type.h"
 #include "executor/executor.h"
 #include "executor/instrument.h"
@@ -125,9 +126,54 @@ IndexOnlyNext(IndexOnlyScanState *node)
 	while ((tid = index_getnext_tid(scandesc, direction)) != NULL)
 	{
 		bool		tuple_from_heap = false;
+		IndexTuple	live_itup = NULL;
 
 		CHECK_FOR_INTERRUPTS();
 
+		if (node->ioss_InplaceRecheckInfo != NULL)
+		{
+			/*
+			 * For a table AM that updates in place keeping the same TID
+			 * (am_inplace_update_no_dead_tuple), an indexed-column UPDATE leaves
+			 * the old (oldkey -> tid) index entry in place alongside the new
+			 * (newkey -> tid) entry, both pointing at the one live tuple.  We
+			 * must (1) always fetch the live tuple from the table rather than
+			 * trusting VM all-visible (which would let us emit the possibly
+			 * stale index key without ever consulting the table), and (2)
+			 * recheck the stored index key against the live tuple, skipping
+			 * any entry whose stored key no longer matches.
+			 *
+			 * The recheck only compares key columns; an INCLUDE/payload column
+			 * can differ between the stored entry and the live tuple even when
+			 * the key matches (an in-place UPDATE of a non-key column does not
+			 * refresh the index entry).  So for surviving entries we emit the
+			 * reformed *live* index tuple (live_itup) below rather than the
+			 * stored xs_itup, guaranteeing live payload data.  Heap leaves
+			 * ioss_InplaceRecheckInfo NULL, so all of this is skipped for it.
+			 */
+			InstrCountTuples2(node, 1);
+			if (!index_fetch_heap(scandesc, node->ioss_TableSlot))
+				continue;		/* no visible tuple, try next index entry */
+
+			if (scandesc->xs_heap_continue)
+				elog(ERROR, "non-MVCC snapshots are not supported in index-only scans");
+
+			/* Drop stale (oldkey -> tid) entries left by in-place UPDATEs. */
+			if (scandesc->xs_inplace_recheck &&
+				scandesc->xs_itup != NULL &&
+				ExecIndexInplaceEntryIsStale(estate, node->ioss_RelationDesc,
+											 node->ioss_InplaceRecheckInfo,
+											 scandesc, node->ioss_TableSlot,
+											 &live_itup))
+			{
+				InstrCountFiltered2(node, 1);
+				ExecClearTuple(node->ioss_TableSlot);
+				continue;
+			}
+
+			ExecClearTuple(node->ioss_TableSlot);
+			tuple_from_heap = true;
+		}
 		/*
 		 * We can skip the heap fetch if the TID references a heap page on
 		 * which all tuples are known visible to everybody.  In any case,
@@ -162,9 +208,9 @@ IndexOnlyNext(IndexOnlyScanState *node)
 		 * It's worth going through this complexity to avoid needing to lock
 		 * the VM buffer, which could cause significant contention.
 		 */
-		if (!VM_ALL_VISIBLE(scandesc->heapRelation,
-							ItemPointerGetBlockNumber(tid),
-							&node->ioss_VMBuffer))
+		else if (!VM_ALL_VISIBLE(scandesc->heapRelation,
+								 ItemPointerGetBlockNumber(tid),
+								 &node->ioss_VMBuffer))
 		{
 			/*
 			 * Rats, we have to visit the heap to check visibility.
@@ -194,8 +240,42 @@ IndexOnlyNext(IndexOnlyScanState *node)
 			tuple_from_heap = true;
 		}
 
-		/* Fill the scan tuple slot with data from the index */
-		StoreIndexTuple(node, slot, scandesc);
+		/*
+		 * Fill the scan tuple slot with data from the index.  This might be
+		 * provided in either HeapTuple or IndexTuple format.  Conceivably an
+		 * index AM might fill both fields, in which case we prefer the heap
+		 * format, since it's probably a bit cheaper to fill a slot from.
+		 */
+		if (live_itup != NULL)
+		{
+			/*
+			 * In-place AM: emit the index tuple reformed from the live table
+			 * tuple so INCLUDE/payload columns are current, not the possibly
+			 * stale stored entry.  live_itup uses the AM's storage tuple
+			 * descriptor (xs_itupdesc), same as xs_itup, so temporarily point
+			 * xs_itup at it for the StoreIndexTuple call (which reads xs_itup /
+			 * xs_itupdesc from the scan descriptor).
+			 */
+			IndexTuple	saved_itup = scandesc->xs_itup;
+			HeapTuple	saved_hitup = scandesc->xs_hitup;
+
+			scandesc->xs_hitup = NULL;
+			scandesc->xs_itup = live_itup;
+			StoreIndexTuple(node, slot, scandesc);
+			scandesc->xs_itup = saved_itup;
+			scandesc->xs_hitup = saved_hitup;
+
+			/*
+			 * StoreIndexTuple leaves the slot's pass-by-reference datums
+			 * pointing into live_itup's body.  Materialize the slot so it owns
+			 * a private copy before we free live_itup, otherwise varlena/cstring
+			 * columns would dangle into freed memory.
+			 */
+			ExecMaterializeSlot(slot);
+			pfree(live_itup);
+		}
+		else
+			StoreIndexTuple(node, slot, scandesc);
 
 		/*
 		 * If the index was lossy, we have to recheck the index quals.
@@ -621,6 +701,18 @@ ExecInitIndexOnlyScan(IndexOnlyScan *node, EState *estate, int eflags)
 	lockmode = exec_rt_fetch(node->scan.scanrelid, estate)->rellockmode;
 	indexRelation = index_open(node->indexid, lockmode);
 	indexstate->ioss_RelationDesc = indexRelation;
+
+	/*
+	 * For a table AM that updates in place keeping the same TID, cache an
+	 * IndexInfo so IndexNext can reform the live tuple's key and drop stale
+	 * secondary entries (oldkey -> tid) that survive in-place UPDATEs.  Heap
+	 * leaves this NULL, so its scan path is unchanged.
+	 */
+	if (currentRelation->rd_tableam != NULL &&
+		currentRelation->rd_tableam->am_inplace_update_no_dead_tuple)
+		indexstate->ioss_InplaceRecheckInfo = BuildIndexInfo(indexRelation);
+	else
+		indexstate->ioss_InplaceRecheckInfo = NULL;
 
 	/*
 	 * Initialize index-specific scan state

@@ -8001,6 +8001,137 @@ int128_to_numericvar(INT128 val, NumericVar *var)
 }
 
 /*
+ * numeric_fixed_layout_params()
+ *
+ *	Compute a FIXED on-disk NumericLong layout able to represent EVERY value
+ *	conforming to numeric(precision, scale), plus one guard NBASE digit of
+ *	integer headroom for transient rollback sums.  Because the layout (weight,
+ *	ndigits, dscale) is pinned, the resulting varlena size is constant, which
+ *	lets a consumer overwrite the value in place under a same-size slot.
+ *
+ *	Returns false for an unconstrained typmod, precision > 32, or a negative
+ *	scale; true with *img_len set to the fixed varlena size otherwise.  The
+ *	other out-params describe the pinned NumericVar geometry.
+ */
+bool
+numeric_fixed_layout_params(int32 typmod, int *ndigits_out, int *weight_out,
+							int *dscale_out, Size *img_len_out)
+{
+	int			precision;
+	int			scale;
+	int			int_digits;
+	int			int_ndigits;
+	int			frac_ndigits;
+	int			ndigits;
+	int			weight;
+
+	if (!is_valid_numeric_typmod(typmod))
+		return false;
+	precision = numeric_typmod_precision(typmod);
+	scale = numeric_typmod_scale(typmod);
+	if (precision > 32 || scale < 0 || scale > precision)
+		return false;
+
+	/*
+	 * Integer decimal digits = precision - scale, plus one guard NBASE digit
+	 * so an intermediate running sum that transiently exceeds the declared
+	 * precision (before a rollback restores it) still fits without changing
+	 * width.  Fractional decimal digits = scale.  Convert each to NBASE
+	 * (base-10^DEC_DIGITS) digit counts, rounding up.
+	 */
+	int_digits = (precision - scale) + DEC_DIGITS;	/* + one guard NBASE digit */
+	int_ndigits = (int_digits + DEC_DIGITS - 1) / DEC_DIGITS;
+	frac_ndigits = (scale + DEC_DIGITS - 1) / DEC_DIGITS;
+	ndigits = int_ndigits + frac_ndigits;
+	weight = int_ndigits - 1;		/* NBASE digits left of the point, minus 1 */
+
+	if (ndigits_out)
+		*ndigits_out = ndigits;
+	if (weight_out)
+		*weight_out = weight;
+	if (dscale_out)
+		*dscale_out = scale;
+	if (img_len_out)
+		*img_len_out = NUMERIC_HDRSZ + ndigits * sizeof(NumericDigit);
+	return true;
+}
+
+/*
+ * numeric_to_fixed_layout()
+ *
+ *	Re-lay-out an arbitrary finite numeric value into the fixed NumericLong
+ *	layout for typmod (see numeric_fixed_layout_params), writing exactly
+ *	img_len bytes to dst.  The stored value is padded with leading and
+ *	trailing zero NBASE digits so ndigits/weight/dscale are pinned; it remains
+ *	a valid (non-canonical) Numeric that all reader paths interpret correctly.
+ *
+ *	The value is rounded to the fixed scale; a value that does not fit the
+ *	pinned integer width (even with the guard digit) raises an error, as do
+ *	NaN / Infinity (escrow forbids non-finite accumulands).
+ */
+void
+numeric_to_fixed_layout(Numeric val, int32 typmod, char *dst, Size dstlen)
+{
+	int			f_ndigits;
+	int			f_weight;
+	int			f_dscale;
+	Size		img_len;
+	NumericVar	var;
+	struct NumericData *out;
+	NumericDigit *outdigits;
+	int			i;
+
+	if (!numeric_fixed_layout_params(typmod, &f_ndigits, &f_weight,
+									 &f_dscale, &img_len))
+		elog(ERROR, "numeric_to_fixed_layout: invalid escrow typmod %d", typmod);
+	if (dstlen != img_len)
+		elog(ERROR, "numeric_to_fixed_layout: buffer %zu != fixed image %zu",
+			 dstlen, img_len);
+
+	if (NUMERIC_IS_SPECIAL(val))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("NaN or Infinity cannot be stored in an escrow column")));
+
+	init_var(&var);
+	set_var_from_num(val, &var);
+	round_var(&var, f_dscale);
+	strip_var(&var);
+
+	/*
+	 * Overflow: the value needs more integer NBASE digits than the fixed
+	 * layout reserves (f_weight + 1 leading positions).
+	 */
+	if (var.ndigits > 0 && var.weight > f_weight)
+		ereport(ERROR,
+				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE)),
+				errmsg("escrow value out of range for the column's precision"));
+
+	out = (struct NumericData *) dst;
+	SET_VARSIZE(out, img_len);
+	/*
+	 * Store the value's TRUE weight (not the padded high weight) so display
+	 * and comparison see no spurious leading zeros; keep the byte size fixed
+	 * by writing exactly f_ndigits NBASE digits, placing the value's
+	 * significant digits at the most-significant end and zero-padding the
+	 * trailing (low-order) positions.  Trailing NBASE digits beyond dscale
+	 * are ignored by readers (get_str_from_var caps the fraction at dscale;
+	 * cmp/hash treat absent low digits as zero), so the padding is invisible
+	 * to every numeric consumer while giving a constant on-disk width.
+	 */
+	out->choice.n_long.n_sign_dscale =
+		(var.ndigits == 0 ? NUMERIC_POS : (var.sign & NUMERIC_SIGN_MASK)) |
+		((uint16) f_dscale & NUMERIC_DSCALE_MASK);
+	out->choice.n_long.n_weight = (int16) (var.ndigits == 0 ? 0 : var.weight);
+	outdigits = out->choice.n_long.n_data;
+
+	for (i = 0; i < f_ndigits; i++)
+		outdigits[i] = (i < var.ndigits) ? var.digits[i] : 0;
+
+	free_var(&var);
+}
+
+/*
  * Convert a NumericVar to float8; if out of range, return +/- HUGE_VAL
  */
 static double

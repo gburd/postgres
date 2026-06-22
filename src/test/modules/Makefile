@@ -45,6 +45,7 @@ SUBDIRS = \
 		  test_predtest \
 		  test_radixtree \
 		  test_rbtree \
+		  test_recno_posting \
 		  test_regex \
 		  test_resowner \
 		  test_rls_hooks \

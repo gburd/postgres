@@ -100,3 +100,7 @@ PG_SHMEM_SUBSYSTEM(UndoShmemCallbacks)
  * any consumer.  See slog.c's SLogShmemCallbacks for details.
  */
 PG_SHMEM_SUBSYSTEM(SLogShmemCallbacks)
+
+/* RECNO table access method subsystems */
+PG_SHMEM_SUBSYSTEM(RecnoMvccShmemCallbacks)
+PG_SHMEM_SUBSYSTEM(RecnoDirtyMapShmemCallbacks)

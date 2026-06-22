@@ -1,0 +1,1320 @@
+src/backend/access/recno/README
+
+RECNO Storage Access Manager
+=============================
+
+RECNO is a table access method for PostgreSQL that implements
+heap-compatible xmin/xmax MVCC with in-place updates, integrated overflow
+pages for large attributes, compression, and advanced space management.  It
+provides an alternative to the traditional heap storage manager, using the
+pluggable storage API introduced in PostgreSQL 12.
+
+RECNO does not attempt to replace heap.  It is a specialized storage engine
+designed for workloads that benefit from stable TIDs and reduced storage
+bloat from in-place updates, integrated overflow pages, and built-in
+compression.  It coexists with heap in the same database, and applications
+choose the appropriate storage method per table.
+
+Note: there is a Glossary at the end of this document.
+
+
+Why RECNO exists
+----------------
+
+RECNO targets workloads where HEAP's out-of-place UPDATE (multi-version
+page layout, HOT chains, index churn) is a poor fit.  RECNO carries the
+same heap-shaped xmin/xmax MVCC fields and resolves commit visibility
+through CLOG exactly like heap; what differs is the physical update model
+(see "XID fields" and DESIGN section 1):
+
+- **Update-heavy tables** that spend the majority of their VACUUM time
+  reclaiming dead tuple versions produced by heap's out-of-place UPDATE.
+  RECNO updates in place: the old version is pushed to a per-relation
+  UNDO fork (zheap-shaped) instead of being left on the page, so TIDs
+  stay stable, VACUUM has no HOT chains to prune, and index entries
+  rarely need to be rewritten.  Snapshots older than the update
+  reconstruct the prior version by walking the UNDO fork.
+
+- **Bloat-sensitive tables** where the win is stable TIDs and in-place
+  UPDATE rather than any change to the transaction model.
+
+RECNO is an ordinary xmin/xmax access method: it stamps t_xmin/t_xmax,
+consults CLOG for commit status, and freezes like any other AM.  It does
+NOT escape XID wraparound -- anti-wraparound VACUUM and freezing apply to
+RECNO exactly as they do to heap.
+
+HEAP is not replaced.  RECNO coexists with HEAP in the same database,
+and any individual table chooses one or the other at creation time.
+The intent is that HEAP remains the default and RECNO is reached for
+by users who have measured a specific pain point (bloat from update
+churn) that RECNO's in-place-UPDATE design solves.
+
+
+Design tradeoffs worth knowing
+------------------------------
+
+Everything RECNO gains from in-place UPDATE it pays for elsewhere.
+The two tradeoffs that most often surprise operators are covered
+in this section.
+
+1. Rollback of in-place UPDATE / DELETE is asynchronous
+--------------------------------------------------------
+
+Because RECNO UPDATE overwrites the tuple on disk, the pre-update image
+is not available on the page after the write commits to WAL.  The only
+copy lives in the per-relation UNDO fork (see the RelUndo module:
+`recno_relundo.c`, `src/backend/access/undo/relundo*.c`).  When a
+transaction rolls back, two things happen:
+
+  * **Immediately**, in the abort callback: `RecnoSLogXactCallback()`
+    (`recno_operations.c`) marks the sLog entries for this xid as
+    `ABORTED` via `SLogTupleMarkAborted()` (`src/backend/access/undo/slog.c`).
+    But sLog is only an accelerator: CLOG is authoritative for the
+    aborted xid, so MVCC visibility (`recno_mvcc.c`) treats the aborted
+    xid's tuples as invisible to any snapshot regardless.  No reader ever
+    sees the aborted write.
+
+  * **Asynchronously**, from the logical-revert worker: the xid's
+    per-relation UNDO chain is walked and each record is applied by
+    `RelUndoApplyChain()` (`relundo_apply.c`, called from
+    `recno_operations.c:7428`), which physically restores the
+    before-image on the page.
+
+Until the worker runs, an in-place-UPDATE-then-ROLLBACK leaves the
+*physical* row in its post-update state.  Readers do not see it (CLOG
+marks the xid aborted; sLog accelerates the check), but the on-disk slot
+still holds the new image, so the space is not reclaimable by the FSM.
+This is different from HEAP, where the old tuple version is still
+physically present and reachable by snapshots with an xmin below the
+aborted xid.
+
+(The separate common-WAL UNDO path -- `UNDO_RMID_RECNO` ->
+`recno_undo_apply()` in `recno_undo.c` -- exists for other UNDO clients;
+RECNO row DML rollback does NOT emit those records and uses RelUndo above.)
+
+For applications that commit/abort short transactions at
+high rates, the backlog of physical undo work is small and the
+`logical_revert_naptime` default keeps latency in the second range.
+For long-lived aborted transactions or large bulk UPDATEs that
+abort, the backlog can grow; operators should size the undo log and
+the revert worker accordingly.  The visibility correctness is not
+affected either way.
+
+This is a deliberate departure from HEAP's multi-version-on-page
+model.  It is the price RECNO pays for stable TIDs.
+
+2. sLog concurrency and the partition count
+-------------------------------------------
+
+The sLog is the shared-memory structure RECNO consults on every
+visibility check where `RECNO_TUPLE_UNCOMMITTED` is set.  Its tuple side
+(keyed by `(relid, tid)`) is a partitioned, seqlock-guarded flat
+open-addressing hash, not an LWLock-partitioned hash table.  Each
+partition holds a single copy of its slice of the hash, guarded by a
+per-partition sequence counter (`SLogFlatPartition.seq`) plus a
+per-partition `writer_lock` LWLock.  Readers (`SLOG_SEQ_READ_BEGIN` /
+`SLOG_SEQ_READ_END` in `slog_flathash.h`) acquire-load the sequence
+counter, copy data into locals, then re-check the counter and retry if it
+changed -- a wait-free retry loop, never blocking behind a writer.
+Writers take the partition's `writer_lock` LW_EXCLUSIVE, bump the
+sequence counter odd, mutate the single copy in place, then bump it even
+again; this serializes writers within a partition but never blocks a
+concurrent reader for longer than one retry.
+
+The partition count is runtime-sized by the `slog_num_partitions` GUC
+(`PGC_POSTMASTER`, default `0` = auto).  With the default, the tuple sLog's
+`SLogComputeNumPartitions()` picks 4x the number of online CPUs, clamped
+to `[SLOG_FLAT_MIN_PARTITIONS, SLOG_FLAT_MAX_PARTITIONS]` (16..256) and
+rounded up to a power of two, so the count adapts to the host instead of
+being pinned to a `NUM_BUFFER_PARTITIONS`-style constant.  Set
+`slog_num_partitions` explicitly and restart if perf profiles show
+writer-lock contention on a specific
+partition count; the setting is fixed at postmaster startup.
+
+The sLog also caps per-tuple concurrency at `SLOG_MAX_TUPLE_OPS` (128).
+For a single TID this is the number of distinct ops (INSERT, UPDATE,
+DELETE, LOCK_SHARE, LOCK_EXCL, ABORTED) from distinct transactions, plus
+retained committed-UPDATE markers awaiting horizon advancement, that can
+coexist before new ops are refused.  In practice this is never hit under
+normal OLTP workloads, but malicious or degenerate uses of
+`SELECT ... FOR SHARE` against the same TID from many concurrent backends
+combined with a long-held snapshot can exhaust it.  On overflow, the AM
+degrades gracefully to local-only tracking rather than raising an error or
+blocking (see `flat_hash_apply_insert()`'s per-TID reclamation logic in
+`slog.c`, which first tries to evict the oldest reclaimable retained
+marker before giving up).
+
+
+Key Features
+------------
+
+Heap-Compatible MVCC.  Uses the same xmin/xmax transaction-id visibility
+model as heap, resolving commit status through CLOG.  A tuple carries its
+inserter XID (t_xmin) and deleter/updater XID (t_xmax); older snapshots
+reconstruct the prior version from the per-relation UNDO fork.  RECNO
+freezes and is subject to XID wraparound exactly like a normal xmin/xmax
+access method.  Supports all PostgreSQL isolation levels.
+
+In-Place Updates.  Updates tuples in place when possible, avoiding tuple
+versioning.  Significantly reduces storage bloat compared to heap (40-60%
+for update-heavy workloads).  Falls back to new-page allocation when the
+updated tuple does not fit.  Stable TIDs eliminate the need for HOT chains
+and reduce index update frequency.
+
+Integrated Overflow Pages.  Replaces TOAST with a Derby-inspired overflow
+page design that keeps overflow data within the same relation.  Uses spatial
+locality optimization (multiple overflow records per page) to reduce I/O
+during chain traversal.
+
+Built-in Compression.  Attribute-level compression with multiple algorithm
+support: LZ4, ZSTD, delta compression for numerics, and dictionary
+compression for text data.  Automatic algorithm selection based on data
+type and pattern.  The codecs are fully implemented in recno_compress.c
+(LZ4 and ZSTD are wired to the system libraries when the server is built
+with USE_LZ4 / USE_ZSTD; if a library is unavailable the corresponding
+codec falls back to storing the attribute uncompressed).
+
+Advanced Space Management.  Five-category free space classification
+(FULL/TIGHT/MEDIUM/LOOSE/EMPTY).  Proactive page defragmentation during
+normal operations.  Integrates with PostgreSQL's standard FSM.
+
+WAL-based UNDO/REDO.  Complete crash recovery with before/after images for
+updates.  All page-modifying operations are WAL-logged.
+
+
+Architecture
+============
+
+
+Page Format
+-----------
+
+RECNO pages use a custom format optimized for in-place updates:
+
+    +------------------+
+    | Page Header      |  32 bytes (standard 24 + RECNO metadata 8)
+    +------------------+
+    | Item Pointers    |  Variable, point to tuple locations
+    +------------------+
+    | ... Free Space ...|  Available for new tuples
+    +------------------+
+    | Tuple Data       |  Variable, actual tuple storage
+    +------------------+
+
+Page header fields include the standard PostgreSQL page header (24 bytes),
+the page-level commit-ts bookkeeping word (8 bytes; a cosmetic hint, not
+load-bearing for visibility -- read visibility comes from CLOG), free space
+tracking (2 bytes), defragmentation counter (2 bytes), and page flags
+(4 bytes) for compression, overflow, and defragmentation state.
+
+
+Tuple Format
+------------
+
+RECNO tuples carry heap-shaped xmin/xmax MVCC fields plus a version-chain
+pointer into the per-relation UNDO fork.  The fixed header
+(`RecnoTupleHeader`, `recno.h`):
+
+    Commit-ts word       8 bytes   low 32 bits = t_xmax (deleter/updater
+                                  XID); high 32 bits reserved.  Accessed via
+                                  RecnoTupleGetXmax/SetXmax.  Also used for a
+                                  page-level commit-ts bookkeeping hint.
+    Version-chain ptr    8 bytes   RelUndoRecPtr into the UNDO fork; head of
+                                  this tuple's persistent version chain
+                                  (InvalidRelUndoRecPtr = never updated)
+    Writer lock          4 bytes   Per-tuple atomic CAS writer lock (0=free;
+                                  else MyProcNumber+1 of the current writer)
+    Inserter XID         4 bytes   t_xmin (heap xmin semantics)
+    Current TID          6 bytes   ItemPointerData, points to latest version
+    Attribute count      2 bytes   Number of attributes
+    Flags                2 bytes   Deleted, updated, compressed, overflow,
+                                  uncommitted, etc.
+    Info mask            1 byte    Null attributes, variable length, external
+                                  storage, compression
+    Null bitmap          variable  Null bitmap, followed by an optional
+                                  RecnoInlineDiff when HAS_INLINE_DIFF is set
+
+Visibility is heap-shaped: t_xmin (inserter) and t_xmax (deleter/updater,
+in the low 32 bits of the commit-ts word) resolve against CLOG and the
+reader's snapshot exactly like HeapTupleSatisfiesMVCC.  There is no
+command-ID field in the header: the command ID is obtained from the sLog
+entry (`SLogTupleOp.cid`) when `RECNO_TUPLE_UNCOMMITTED` is set.  The
+version-chain pointer (`t_verptr`) is reserved in every tuple from creation
+(not a conditional trailer appended on first UPDATE); see "Current
+Limitations" below.
+
+
+MVCC Implementation
+-------------------
+
+RECNO uses heap-compatible xmin/xmax MVCC.  Each tuple header carries an
+inserter XID (t_xmin) and a deleter/updater XID (t_xmax, physically stored
+in the low 32 bits of the t_commit_ts word).  Visibility is decided exactly
+like heap's HeapTupleSatisfiesMVCC: a tuple is visible to a snapshot iff its
+t_xmin is committed-and-visible to the snapshot and its t_xmax is invalid,
+not committed, or not visible.  Commit visibility comes from CLOG, exactly
+like heap.
+
+An in-place UPDATE keeps the newest version on the page (new t_xmin) and
+pushes the old version to the per-relation UNDO fork (zheap-style) via the
+tuple's version pointer (t_verptr).  A snapshot that cannot see the updater's
+xmin reads the old version back from the fork with
+RecnoReconstructVisibleVersion().
+
+Serializable isolation uses the core predicate-locking infrastructure
+(predicate.c) based on Cahill, Rohm, and Fekete (2008) and Ports and
+Grittner (2012).  RECNO acquires SIREAD locks on scanned tuples via
+PredicateLockTID and reports rw-antidependencies through
+CheckForSerializableConflictIn/Out, so full dangerous-structure detection
+(two rw-antidependencies into a pivot) is performed by the core, identical
+to heap.
+
+The RECNO_TUPLE_UNCOMMITTED flag is a hint bit set at insert/delete/update
+and cleared at commit; it no longer drives read visibility (CLOG does).
+Concurrent tuple-level locking (SELECT FOR UPDATE/SHARE) is tracked via the
+sLog (`SLOG_OP_LOCK_SHARE` / `SLOG_OP_LOCK_EXCL` entries keyed by `(relid,
+tid)`), and the sLog also serializes write-write conflicts, but it is not
+consulted for read visibility.
+
+
+Design Decision: No HOT
+------------------------
+
+RECNO performs in-place updates, so the TID never changes and indexes never
+need updating due to tuple movement.  This eliminates the problem that HOT
+(Heap Only Tuples) was designed to solve in the heap AM.  See
+src/backend/access/heap/README.HOT for the heap approach to this problem.
+
+
+Overflow Pages
+==============
+
+RECNO implements integrated overflow page storage for large attributes,
+replacing PostgreSQL's TOAST mechanism with a Derby-inspired design that
+keeps overflow data within the same relation.
+
+
+Why Overflow Pages
+------------------
+
+When a tuple contains attributes larger than a page-size-derived
+threshold (`RECNO_OVERFLOW_THRESHOLD` = one quarter of the maximum
+inline tuple size, ~2KB at the default 8KB `BLCKSZ` -- see
+"Configuration" below), storing the entire tuple inline would waste
+space and reduce page utilization.  Overflow pages solve this by:
+
+1. Storing large attribute values in separate overflow pages.
+2. Keeping a short inline prefix in the main tuple for common access
+   patterns (e.g., LIKE 'prefix%' queries).
+3. Maintaining overflow data in the same relation (unlike TOAST's separate
+   table).
+4. Using spatial locality optimization to reduce I/O during overflow
+   fetches.
+
+
+Overflow Architecture
+---------------------
+
+Multiple overflow records from different tuples can be stored on the same
+overflow page.  This differs from TOAST's one-chunk-per-row approach and
+provides better I/O efficiency.
+
+Each overflow record has a fixed-size header containing: the length of the
+record, and the block number and item number of the next record in the chain
+(or InvalidBlockNumber for the last record).
+
+When an attribute exceeds the threshold:
+
+1. The attribute is split into one or more overflow records.
+2. Each record is stored on an overflow page.
+3. The main tuple stores an RecnoOverflowPointer (block + item offset).
+4. Records are chained for attributes spanning multiple records.
+5. Multiple records may share a page (spatial locality).
+
+Example of a 23KB attribute stored as three overflow records:
+
+    Main Tuple Page:
+    +----------------------+
+    | Tuple Header         |
+    | ...                  |
+    | large_col: [OVF PTR]-+----> Overflow Page 100, Item 1
+    | ...                  |
+    +----------------------+
+
+    Overflow Page 100:
+    +----------------------+
+    | Record 1 (Item 1)    |
+    |   Data: [10KB]       |
+    |   Next: 100/2   -----+--+
+    +----------------------+  |
+    | Record 2 (Item 2) <-----+
+    |   Data: [8KB]        |
+    |   Next: 101/1   -----+--+
+    +----------------------+  |
+                              |
+    Overflow Page 101:        |
+    +----------------------+  |
+    | Record 1 (Item 1) <-----+
+    |   Data: [5KB]        |
+    |   Next: INVALID      |
+    +----------------------+
+
+Records from the same chain can reside on the same page (100/1 and 100/2
+above).  This spatial locality optimization reduces I/O but requires careful
+buffer management to avoid locking the same buffer multiple times during
+traversal.
+
+
+Overflow Integration with Operations
+-------------------------------------
+
+INSERT: RecnoFormTupleWithOverflow() identifies attributes exceeding the
+threshold, allocates overflow pages via the FSM, creates record chains,
+stores overflow pointers in the main tuple, and WAL-logs record creation.
+
+FETCH: RecnoFetchOverflowColumn() reads the overflow pointer, follows the
+chain reading each record, reassembles the attribute value, and returns the
+materialized value.  The fetch path handles same-page transitions by
+checking if the next record is on an already-locked buffer and reusing
+the lock.
+
+UPDATE: Cleans up old overflow records, creates new chains if needed,
+reuses overflow pages when possible, and updates pointers in the main
+tuple.
+
+DELETE: Marks overflow records as deleted.  Space reclamation is deferred
+to VACUUM.
+
+VACUUM: RecnoVacuumOverflowRecords() scans for overflow records, checks
+visibility of owning tuples, reclaims orphaned records, updates FSM, and
+handles same-page buffer transitions.
+
+
+Spatial Locality Optimization
+------------------------------
+
+RECNO implements a Derby-inspired spatial locality optimization: when
+storing consecutive overflow records from the same chain, the allocator
+attempts to place them on the same page.  This reduces I/O during chain
+traversal by packing related records together.
+
+For example, a 50KB attribute might be split into:
+  - Record 1 (20KB) on page 100, item 1
+  - Record 2 (20KB) on page 100, item 2  <- Same page!
+  - Record 3 (10KB) on page 101, item 1
+
+When fetching this chain, only 2 pages are read instead of 3.  This
+improves sequential read performance by 30-50% for large attributes.
+
+The allocator achieves this by:
+1. Checking if the previous overflow page has free space
+2. Placing the next record there if space is available
+3. Falling back to FSM allocation if the page is full
+
+This is fundamentally different from TOAST, which stores one chunk per
+page and doesn't optimize for chain locality.
+
+
+Buffer Locking Pattern for Overflow Chains
+-------------------------------------------
+
+Spatial locality creates a buffer management challenge: when traversing an
+overflow chain where multiple records reside on the same page, naive code
+would attempt to lock an already-locked buffer:
+
+    INCORRECT PATTERN (causes assertion failure):
+        while (cur_block != InvalidBlockNumber)
+        {
+            buffer = ReadBuffer(rel, cur_block);
+            LockBuffer(buffer, mode);
+            /* ... process record ... */
+            UnlockReleaseBuffer(buffer);  <- Drops pin
+        }
+
+    Problem: If records N and N+1 are on the same page, the second
+    ReadBuffer() returns the same buffer number, but LockBuffer() fails
+    with assertion: "entry->data.lockmode == BUFFER_LOCK_UNLOCK"
+
+The correct pattern follows PostgreSQL's heap TOAST handling: keep the
+buffer PINNED throughout chain traversal, only dropping the lock between
+records:
+
+    CORRECT PATTERN (used in RecnoFetchOverflowColumn):
+        Buffer current_buffer = InvalidBuffer;
+        BlockNumber current_block = InvalidBlockNumber;
+
+        while (cur_block != InvalidBlockNumber)
+        {
+            /* Check if moving to a different page */
+            if (cur_block != current_block)
+            {
+                /* Release old buffer's pin */
+                if (BufferIsValid(current_buffer))
+                    ReleaseBuffer(current_buffer);
+
+                /* Pin new buffer */
+                buffer = ReadBuffer(rel, cur_block);
+                current_buffer = buffer;
+                current_block = cur_block;
+            }
+            else
+            {
+                /* Same page - reuse pinned buffer */
+                buffer = current_buffer;
+            }
+
+            /* Lock -> process -> unlock (KEEP PIN) */
+            LockBuffer(buffer, mode);
+            /* ... process overflow record ... */
+            cur_block = rec_hdr->or_next_block;
+            LockBuffer(buffer, BUFFER_LOCK_UNLOCK);  <- Unlock, keep pin
+        }
+
+        /* Finally release the pin */
+        if (BufferIsValid(current_buffer))
+            ReleaseBuffer(current_buffer);
+
+Key principles of this pattern:
+
+1. Pin vs Lock: A buffer pin prevents eviction; a lock controls concurrent
+   access.  Pins are cheap and can be held across multiple lock/unlock
+   cycles on the same page.
+
+2. Same-Page Detection: Check if cur_block == current_block before calling
+   ReadBuffer().  If same, reuse the already-pinned buffer.
+
+3. Lock Granularity: Lock only while accessing page data, unlock between
+   records even if staying on the same page.
+
+4. Error Handling: All error paths must unlock and release:
+       LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+       if (BufferIsValid(current_buffer))
+           ReleaseBuffer(current_buffer);
+       ereport(ERROR, ...);
+
+5. Final Cleanup: Always release the current_buffer at the end of the loop.
+
+This pattern is used in:
+  - RecnoFetchOverflowColumn() (SELECT path, BUFFER_LOCK_SHARE)
+  - RecnoDeleteOverflowChain() (DELETE path, BUFFER_LOCK_EXCLUSIVE)
+
+See src/backend/access/heap/heapam.c:3993-4050 for the analogous pattern
+in heap's TOAST handling (heap_toast_insert_or_update).
+
+
+Why This Pattern Is Necessary
+------------------------------
+
+PostgreSQL's buffer manager allows multiple pins on the same buffer from
+the same backend, but requires that a buffer be unlocked before it can be
+locked again.  The assertion:
+
+    Assert(entry->data.lockmode == BUFFER_LOCK_UNLOCK)
+
+in bufmgr.c:5892 enforces this.
+
+Without the pin-reuse pattern:
+  - First record: ReadBuffer(100) -> pin 1, lock, process, unlock + unpin
+  - Second record: ReadBuffer(100) -> pin 2, lock... ASSERTION FAILURE
+
+The buffer manager sees the lock request on a buffer that was recently
+released and is in an inconsistent state.
+
+With the pin-reuse pattern:
+  - First record: ReadBuffer(100) -> pin 1, lock, process, unlock (keep pin)
+  - Second record: Check cur_block == 100 -> reuse pin 1, lock, process...
+
+The buffer remains pinned and in a consistent state throughout.
+
+This is not merely an optimization - it is REQUIRED for correctness when
+implementing spatial locality.
+
+
+Overflow vs TOAST Comparison
+----------------------------
+
+Storage location: TOAST uses a separate pg_toast table; RECNO stores
+overflow in the same relation.
+
+Threshold: TOAST uses ~2KB; RECNO's default (page-size-derived) threshold
+is also ~2KB at the default 8KB BLCKSZ, but is a compile-time constant,
+not a runtime setting.
+
+Spatial locality: TOAST stores one chunk per row; RECNO packs multiple
+records per page.
+
+Compression: TOAST uses pglz; RECNO supports DELTA, DICT, LZ4, ZSTD.
+
+Catalog overhead: TOAST requires a toast table catalog entry; RECNO has
+no separate catalog entry.
+
+
+Overflow Limitations
+--------------------
+
+1. No deduplication: identical large values are stored separately.
+2. No external storage: all overflow data is in-relation.
+3. Single-relation only: cannot share overflow pages across relations.
+4. Chain length: very large attributes (>100MB) may have long chains,
+   impacting fetch performance.
+
+
+Overflow WAL Logging
+--------------------
+
+Overflow record creation and back-patching are WAL-logged via a single
+record type (`xl_recno_overflow_write`, `XLOG_RECNO_OVERFLOW_WRITE` in
+`recno_xlog.h`), carrying a flag that distinguishes a new record
+(`RECNO_OVERFLOW_WAL_NEW_RECORD`) from a header-only link back-patch
+(`RECNO_OVERFLOW_WAL_LINK_UPDATE`).  The write path defers logging until
+the caller's single INSERT/UPDATE WAL record is emitted, so an overflow
+chain write shares one WAL record with its parent tuple's DML record
+rather than emitting one per chunk.
+
+Overflow chain *deletion* is deliberately NOT WAL-logged per record (this
+mirrors TOAST): the parent tuple's own DML record is WAL-logged, so after
+recovery the parent either still exists (its overflow remains referenced)
+or does not (its overflow is orphaned but harmless).  Orphaned overflow
+records are reclaimed by the VACUUM mark-and-sweep in
+`RecnoVacuumOverflowRecords()` (see DESIGN.OVERFLOW section 7), not by a
+dedicated overflow-delete WAL record.
+
+
+Files and Modules
+=================
+
+
+Core Implementation
+-------------------
+
+recno_handler.c     Main table access method interface (TableAmRoutine).
+                    Coordinates between modules, handles scans and
+                    tuple retrieval.
+
+recno_tuple.c       Tuple format, page operations (add, update, delete),
+                    basic visibility and formatting functions.
+
+recno_mvcc.c        Heap-shaped xmin/xmax MVCC implementation.
+                    HeapTupleSatisfiesMVCC-style visibility (CLOG +
+                    snapshot), serializable isolation via the core
+                    predicate-locking infrastructure, shared memory
+                    management.  MultiXact support has been removed;
+                    concurrent tuple locking is tracked via the sLog
+                    (see recno_lock.c).
+
+recno_operations.c  Insert, update, delete, multi-insert for bulk loading,
+                    vacuum and maintenance operations.  Also owns the
+                    sLog transaction-event callback
+                    (RecnoSLogXactCallback) that marks sLog entries
+                    ABORTED on rollback.
+
+recno_slot.c        Custom TupleTableSlot (RecnoTupleTableSlot) with
+                    native deforming.
+
+
+Advanced Features
+-----------------
+
+recno_overflow.c    Derby-inspired column-level overflow storage.
+                    Chain management for large attributes, integration
+                    with main table operations.
+
+recno_compress.c    Attribute compression framework.  Implemented LZ4,
+                    ZSTD, delta, and dictionary codecs (LZ4/ZSTD require
+                    USE_LZ4 / USE_ZSTD at build time, else fall back to
+                    uncompressed).  Automatic algorithm selection.
+
+recno_dict.c        Persistent storage for trained ZSTD/LZ4 compression
+                    dictionaries in the relation's own dictionary fork
+                    (RECNO_DICT_FORKNUM).  Append-only; dictionaries are
+                    never removed.
+
+recno_fsm.c         Free space management and defragmentation.  Five-
+                    category classification, integration with PostgreSQL's
+                    FSM.
+
+recno_dirtymap.c    Shared-memory dirty block map.  Tracks which pages
+                    have ever carried an in-place modification whose
+                    before-image a scanner might still need from the
+                    sLog, letting the scan path skip the per-tuple sLog
+                    probe for pages that were never touched.
+
+recno_vm.c          Visibility Map implementation for RECNO (ALL_VISIBLE
+                    / ALL_FROZEN bits per page), WAL-logged, integrated
+                    with insert/update/delete/vacuum.
+
+recno_xlog.c        WAL logging and REDO recovery.  WAL record
+                    definitions, tuple images for all DML operations.
+
+recno_undo.c        RECNO's UNDO resource manager (UNDO_RMID_RECNO) for
+                    the AM-agnostic shared UNDO-in-WAL mechanism used by
+                    index inserts piggybacking on a RECNO relation's
+                    active UNDO context (see recno_relundo.c and
+                    "Interaction with UNDO-in-WAL" in DESIGN).
+
+recno_relundo.c     RECNO's adapters for the AM-neutral per-relation
+                    UNDO hooks (RelUndo, src/backend/access/undo/
+                    relundo*.c): clearing transient tuple flags
+                    and sLog cleanup after abort/discard.
+
+recno_pvs.c         Per-relation versioned storage (PVS) read path.
+                    Walks the UNDO-fork version chain threaded through
+                    each tuple's t_verptr to reconstruct the tuple
+                    version visible to an older MVCC snapshot when the
+                    on-page image has since been overwritten in place.
+
+recno_lock.c        Tuple-level and page-level locking for concurrent
+                    access (heavyweight LOCKTAG_TUPLE locks acquired
+                    lazily on conflict; see DESIGN section 3.1).
+
+recno_stats.c       RECNO-specific statistics collection for ANALYZE
+                    (compression ratios, overflow usage, commit-ts word
+                    distribution), supplementing the standard per-column
+                    stats collected via scan_analyze_next_block/tuple.
+
+
+Headers
+-------
+
+src/include/access/recno.h          Main header: page/tuple data
+                                    structures, flags, accessor macros.
+src/include/access/recno_xlog.h     WAL record type opcodes and
+                                    structures.
+src/include/access/recno_undo.h     Public interface for the RECNO UNDO
+                                    resource manager (UNDO_RMID_RECNO).
+src/include/access/recno_dict.h     Trained compression dictionary fork
+                                    format and API.
+src/include/access/recno_dirtymap.h Shared-memory dirty block map API.
+
+
+WAL Support
+-----------
+
+src/backend/access/rmgrdesc/recnodesc.c   WAL record description for
+                                          pg_waldump and debugging.
+
+
+Tests
+-----
+
+Regression tests (src/test/regress/sql/, run via `make installcheck`):
+
+    recno.sql                       Core CRUD, page format, basics.
+    recno_tables.sql                Table-level DDL and options.
+    recno_indexes.sql               Index support (B-tree, hash, GiST,
+                                    GIN, SP-GiST, BRIN).
+    recno_mvcc.sql                  xmin/xmax visibility (CLOG).
+    recno_atm.sql                   Aborted Transaction Map / instant
+                                    abort interaction.
+    recno_multixact.sql             Concurrent row locking (SELECT FOR
+                                    SHARE/UPDATE) -- named for the
+                                    feature it exercises, not for an
+                                    implementation dependency; locking
+                                    is sLog-based, not MultiXact-based.
+    recno_vm.sql                    Visibility map.
+    recno_vacuum.sql                VACUUM and space reclamation.
+    recno_undo_redo.sql             INSERT/UPDATE/DELETE + ROLLBACK
+                                    (UNDO) and crash REDO.
+    recno_enable_undo.sql           UNDO enablement path.
+    recno_multipage.sql             Cross-page tuple moves / defrag.
+    recno_overflow.sql,
+    recno_overflow_full.sql         Overflow page store/fetch/delete.
+    recno_compression.sql,
+    recno_compression_full.sql      Attribute compression codecs.
+    recno_heap_compat.sql           Feature-parity checks against heap.
+    recno_integration.sql,
+    recno_integration_vacuum.sql    Cross-feature integration tests.
+    recno_logical_replication.sql   Logical decoding / replication.
+    recno_parallel.sql              Parallel sequential scan.
+    recno_performance.sql,
+    recno_benchmark_comprehensive.sql  In-suite performance comparisons.
+
+Isolation tests (src/test/isolation/specs/recno-*.spec, run via
+`make -C src/test/isolation check`): concurrent-update/insert
+interleavings, dirty-write/read-skew/write-skew/phantom anomaly checks,
+serializable conflict detection, CAS-locker starvation, before-image and
+stale-index-before-image races, savepoint rollback, and vacuum-vs-
+concurrent-access interleavings.  One spec per scenario, ~20 specs.
+
+TAP tests (src/test/modules/recno/t/, run via `make check` in that
+directory): 001_basic_operations.pl (CRUD/indexes/VACUUM/ANALYZE),
+002_crash_recovery.pl, 003_replication.pl, 004_concurrent_access.pl,
+005_wal_consistency.pl.
+
+Crash-recovery TAP test: src/test/recovery/t/061_recno_enable_undo.pl
+(rollback semantics and pg_ctl stop --mode=immediate crash recovery for
+the UNDO-in-WAL + sLog architecture).
+
+Performance/benchmark tooling (not part of `make check`):
+src/test/modules/recno/performance/ (pgbench workloads, bulk-insert,
+compression-effectiveness, sequential/index-scan, vacuum-performance
+Perl scripts) and src/test/benchmarks/ (Python benchmark_suite,
+heap_vs_recno.sh / run_heap_vs_recno.sh comparison harness, TPC-C-style
+tprocc/ and storageperf/ suites).
+
+
+Usage
+=====
+
+
+Creating Tables
+---------------
+
+Specify the access method during table creation:
+
+    CREATE TABLE my_table (
+        id SERIAL PRIMARY KEY,
+        name TEXT,
+        data BYTEA
+    ) USING recno;
+
+
+Configuration
+-------------
+
+Runtime GUC parameters for RECNO (registered in guc_parameters.dat;
+query with `SHOW <name>` or `SELECT * FROM pg_settings WHERE name LIKE
+'recno_%' OR name LIKE 'slog_%'`):
+
+Compression settings:
+
+    recno_enable_compression     Enable/disable compression (default: on)
+    recno_compression_level      ZSTD level override, 1-22 (default: 3);
+                                 only used when recno_compression_algorithm
+                                 forces lz4 or zstd -- the default "auto"
+                                 setting derives the level per value from
+                                 its estimated entropy and ignores this
+    recno_compression_algorithm  Codec selection: auto, lz4, zstd, none
+                                 (default: auto)
+    recno_compression_min_ratio  Minimum compression ratio to retain
+                                 compressed data, else store uncompressed
+                                 (default: 0.8)
+    recno_analyze_refresh_dict   Whether ANALYZE retrains the active
+                                 compression dictionary (default: on)
+
+Other:
+
+    recno_lazy_uncommitted_clear  Skip commit-time page re-visits for
+                                 clearing the UNCOMMITTED tuple hint flag
+                                 (default: off).  Clearing the flag is a
+                                 pure hint; commit visibility comes from
+                                 CLOG via heap-shaped xmin/xmax MVCC.
+
+sLog settings (shared by the RECNO MVCC/locking path; see "sLog
+concurrency and the partition count" above):
+
+    slog_num_partitions           Number of sLog flat-hash partitions,
+                                  0 = auto from CPU count (default: 0;
+                                  PGC_POSTMASTER, requires restart)
+    slog_dsa_max_size_mb          Maximum DSA area size in MB for sLog
+                                  before-image storage (default: 256)
+
+There is no `recno_overflow_threshold`, `recno_enable_overflow`, or
+runtime-configurable overflow-prefix GUC.  The inline-overflow threshold
+is a compile-time constant (`RECNO_OVERFLOW_THRESHOLD` in `recno.h`,
+defined as `RECNO_MAX_TUPLE_SIZE / 4` -- a function of `BLCKSZ`, not a
+fixed byte count) and cannot be changed without a rebuild.  The inline
+prefix length kept alongside an overflow pointer is controlled by the
+plain C global `recno_overflow_inline_prefix` (`recno_overflow.c`,
+default 128 bytes via `RECNO_OVERFLOW_DEFAULT_PREFIX`); it is a global
+variable, not registered as a GUC, so it cannot currently be changed via
+`SET` or `postgresql.conf` -- only by editing the source and rebuilding.
+Overflow storage itself has no on/off switch: any attribute whose
+encoded size exceeds the threshold always spills to an overflow record.
+
+
+Monitoring
+----------
+
+RECNO has no SQL-callable `recno_*_stats()` functions of its own
+(`recno_tableam_handler` is the only RECNO entry in `pg_proc.dat`).  In
+practice, monitor RECNO tables the same way as heap tables, plus three
+pageinspect functions that understand the RECNO page/tuple format:
+
+    -- Table statistics (dead-tuple counting is correct for RECNO: its
+    -- in-place UPDATE creates no dead tuples, so n_dead_tup tracks only
+    -- DELETEs; see "Current Limitations" for the autovacuum implication)
+    SELECT * FROM pg_stat_user_tables WHERE relname = 'my_recno_table';
+
+    -- Storage size
+    SELECT pg_size_pretty(pg_total_relation_size('my_recno_table'));
+
+    -- Page-level inspection (contrib/pageinspect, requires
+    -- CREATE EXTENSION pageinspect):
+    SELECT * FROM recno_page_stats(get_raw_page('my_recno_table', 0));
+    -- Returns: lsn, tli, flags, lower, upper, special, pagesize, version,
+    --          free_size, pd_commit_ts, pd_free_space, pd_flags, max_off
+
+    SELECT * FROM recno_page_items(get_raw_page('my_recno_table', 0));
+    -- Returns one row per line pointer: lp, lp_off, lp_flags, lp_len,
+    --          t_len, t_natts, t_flags, t_commit_ts, t_infomask, t_data
+
+    SELECT * FROM recno_tuple_infomask_flags(t_infomask)
+      FROM recno_page_items(get_raw_page('my_recno_table', 0));
+    -- Decodes a t_infomask value into raw_flags[] / combined_flags[] text
+
+
+Maintenance
+-----------
+
+RECNO requires less maintenance than heap tables due to in-place updates
+and proactive defragmentation:
+
+    VACUUM my_table;              -- Remove deleted tuples, update statistics
+    VACUUM ANALYZE my_table;      -- Also update query planner statistics
+    REINDEX TABLE my_table;       -- More efficient due to stable TIDs
+
+Migration from heap:
+
+    -- Option 1: Direct conversion (requires exclusive lock)
+    ALTER TABLE my_table SET ACCESS METHOD recno;
+
+    -- Option 2: Create new table and copy
+    CREATE TABLE my_table_recno (LIKE my_table) USING recno;
+    INSERT INTO my_table_recno SELECT * FROM my_table;
+    BEGIN;
+    DROP TABLE my_table;
+    ALTER TABLE my_table_recno RENAME TO my_table;
+    COMMIT;
+
+
+Performance Characteristics
+===========================
+
+
+Advantages over Heap
+--------------------
+
+Reduced Storage Bloat.  In-place updates avoid tuple versioning.  40-60%
+less storage for update-heavy workloads.
+
+Faster Updates.  In-place modification avoids tuple version chains.  Better
+cache locality due to stable tuple locations.
+
+Less Vacuum Overhead.  Minimal dead tuple cleanup needed.  Defragmentation
+happens opportunistically during normal operations.
+
+Freezing.  RECNO stamps t_xmin/t_xmax like heap and is subject to XID
+wraparound; anti-wraparound VACUUM and freeze operations apply to RECNO
+exactly as they do to heap.
+
+
+Trade-offs
+----------
+
+Memory Usage.  Higher per-tuple overhead (40-byte header vs heap's
+23 bytes) due to the in-place-MVCC and RowID machinery: the version-chain
+pointer (t_verptr, 8B), the per-tuple CAS writer lock (t_writer, 4B), and
+the index-identity generation (t_gen, 4B), plus a currently-vestigial
+high half of t_commit_ts.
+
+CPU Overhead.  UNDO-fork version reconstruction for old snapshots.
+Compression and decompression operations.
+
+Complexity.  More complex MVCC semantics than heap's XID-based approach.
+Additional monitoring may be needed for overflow pages and compression
+effectiveness.
+
+
+When to Use RECNO vs Heap
+-------------------------
+
+Use RECNO when:
+- Update-heavy workloads cause storage bloat concerns.
+- Large TEXT/JSON/bytea columns benefit from integrated overflow.
+- Built-in compression can reduce storage costs.
+- Lower VACUUM frequency is desirable (in-place UPDATE, no dead versions
+  on the page).
+
+Use heap when:
+- Read-only or insert-only workloads (no update benefit).
+- Very small tables where tuple header overhead matters.
+- Existing tools depend on heap-specific internals.
+- Maximum compatibility with older PostgreSQL versions is needed.
+
+
+Implementation Status
+=====================
+
+
+Production-Ready Features
+-------------------------
+
+- Core Table Access Method: full TableAmRoutine implementation.
+- Heap-Compatible MVCC: xmin/xmax visibility resolved via CLOG.
+- In-Place Updates: working for same-size or smaller replacements; falls
+  back to out-of-place for growing tuples.
+- Overflow Pages: functional for store/fetch/delete chains.
+- Compression Framework: multi-algorithm attribute-level compression with
+  working LZ4, ZSTD, delta, and dictionary codecs.
+- WAL Integration: complete crash recovery with REDO/UNDO.
+- Free Space Management: five-category FSM with defragmentation.
+- Locking: full tuple-level and page-level locking.
+- MultiXact: not used.  Concurrent row lock support with lock conflict
+  detection is implemented via the sLog (SLOG_OP_LOCK_SHARE /
+  SLOG_OP_LOCK_EXCL entries), not MultiXact.
+- Index Support: all PostgreSQL index types (B-tree, hash, GiST, GIN,
+  SP-GiST, BRIN).
+- Visibility Map: WAL-logged VM integrated with insert/update/delete/vacuum.
+- Speculative Insertion: INSERT ON CONFLICT support with WAL logging.
+- Physical Replication: tested with single and cascading standbys.
+- Logical Replication: custom WAL decode translates to INSERT/UPDATE/DELETE.
+
+
+Current Limitations
+-------------------
+
+- Tuple Overhead: 40 bytes per tuple header (vs heap's 23 bytes).  The
+  version-chain pointer (t_verptr, 8 bytes) is a plain aligned header
+  field present in every tuple from creation, not a conditional trailer
+  appended on first UPDATE -- there is no growth event and no packed-page
+  failure mode on the first in-place UPDATE.  The larger fixed header
+  still impacts very narrow tables proportionally more than wide ones.
+- Commit-ts page word: RecnoGetCommitTimestamp() returns a plain
+  GetCurrentTimestamp() wall-clock reading (no shared counter, no CAS, no
+  spin); it stamps the page-level commit-ts bookkeeping word only.  Read
+  visibility is resolved through CLOG, not through this word.  The former
+  atomic global_commit_ts CAS loop was a hot-path serialization point with
+  no surviving strict-monotonicity consumer and has been removed.
+- VACUUM: does not fully reclaim dead tuple space from DELETEs in a
+  single pass; relies on defragmentation plus periodic VACUUM.  This is
+  expected, not a defect in the dead-tuple-accounting sense: RECNO's
+  in-place UPDATE creates zero dead tuples (am_inplace_update_no_dead_tuple
+  = true in the TableAmRoutine), so pg_stat_user_tables.n_dead_tup
+  correctly stays near zero for UPDATE-only churn and autovacuum's normal
+  dead-tuple threshold correctly does not fire on that churn.  Because
+  autovacuum's trigger therefore does not apply to RECNO's per-relation
+  UNDO fork growth, RelUndoMaybeVacuum() (src/backend/access/undo/
+  relundo.c) is called directly from the insert/update/delete DML paths
+  in recno_operations.c as a throttled, self-clocking backstop that
+  discards the UNDO fork on its own schedule (at most once every 5
+  seconds per backend, once the fork exceeds a minimum block count),
+  independent of whether VACUUM ever runs.
+- Parallel Operations: sequential scans only; no parallel vacuum or
+  parallel index builds.
+- Variable-length UPDATE growth on a full page: growing a varlena column on a
+  fillfactor=100 page with no free space ERRORs, because RECNO tuples have
+  stable TIDs and cannot migrate to another page.  Use a fillfactor below 100
+  for tables with growable varlena columns.
+
+
+Feature Parity with Heap
+=========================
+
+This section summarizes RECNO's compatibility with PostgreSQL's default
+heap storage.  Features not listed here work identically in both.
+
+
+Core Storage and MVCC
+---------------------
+
+Update mechanism: heap appends new tuple versions; RECNO updates in-place
+when possible.
+
+MVCC visibility: heap and RECNO both use xmin/xmax (XID-based) resolved
+via CLOG.  Semantically equivalent; all isolation levels supported.
+
+Transaction ID wraparound: applies to both heap and RECNO; both require
+periodic VACUUM and freezing to advance relfrozenxid.
+
+Dead tuple cleanup: heap uses reactive VACUUM; RECNO uses proactive defrag
+plus VACUUM.
+
+Tuple header: heap uses 23 bytes; RECNO uses 40 bytes.
+
+
+Large Attribute Handling
+------------------------
+
+Heap uses TOAST (separate table); RECNO uses integrated overflow pages.
+Heap threshold is ~2KB; RECNO's page-size-derived default is also ~2KB
+(compile-time constant, not runtime-configurable).  Both
+support inline prefixes.  RECNO supports multiple compression algorithms;
+heap uses pglz only.
+
+
+Indexes and Access Methods
+--------------------------
+
+All PostgreSQL index types are fully supported: B-tree, hash, GiST, GIN,
+SP-GiST, BRIN.  Index-only scans work via the visibility map.  HOT updates
+are not needed because in-place updates keep TIDs stable.
+
+
+VACUUM and Space Management
+---------------------------
+
+VACUUM, VACUUM FULL, and autovacuum are fully supported.  Parallel VACUUM
+is not supported (serial only).  ANALYZE is fully supported.  The FSM uses
+five categories.  The visibility map is implemented with WAL logging.
+Freeze is required (RECNO uses xmin/xmax and is subject to XID wraparound).
+
+
+Concurrency and Locking
+------------------------
+
+All standard tuple-level lock modes are supported (FOR UPDATE, FOR SHARE,
+etc.).  Concurrent shared/exclusive row locks are tracked via the sLog
+(recno_lock.c), not MultiXact -- RECNO's tuple header has no xmax field
+for MultiXact to occupy.  Deadlock detection uses PostgreSQL's
+infrastructure.  Speculative insertion (INSERT ON CONFLICT) is fully
+supported.
+
+
+Replication
+-----------
+
+Physical replication (streaming) is fully supported, tested with single
+and cascading standbys.  Logical replication works in both publisher and
+subscriber roles.  WAL archiving and point-in-time recovery work normally.
+
+
+Advanced Features
+-----------------
+
+Partitioning, inheritance, triggers, constraints (PK, FK, CHECK, UNIQUE),
+foreign keys, exclusion constraints, row-level security, materialized
+views, CTEs, window functions, parallel query, and COPY are all fully
+supported.
+
+
+RECNO-Specific Features (Not in Heap)
+--------------------------------------
+
+1. In-place updates (stable TIDs, reduced bloat).
+2. UNDO-fork version reconstruction (old version off-page, stable TIDs).
+3. Integrated overflow pages (no separate TOAST table).
+4. Multiple compression algorithms (LZ4, ZSTD, delta, dictionary).
+5. Proactive page defragmentation.
+6. RECNO-aware pageinspect functions (recno_page_stats, recno_page_items,
+   recno_tuple_infomask_flags in contrib/pageinspect) for page-level
+   diagnostics; see "Monitoring" above.
+
+Query Planner Integration
+==========================
+
+RECNO does not have a planner hook, a compression-cost model, or an
+overflow-chain-cost model.  Planning uses the standard table AM
+callback path with a plain block/tuple-count estimator; there is no
+RECNO-specific adjustment to `seq_page_cost`, `cpu_tuple_cost`, or the
+seqscan-vs-indexscan cost comparison.
+
+
+Size Estimation (relation_estimate_size)
+-----------------------------------------
+
+`recno_relation_estimate_size()` (`recno_handler.c`) implements the
+standard `relation_estimate_size` table AM callback:
+
+1. Reads the actual page count via `smgrnblocks()`.
+2. Estimates the live tuple count: if `pg_class.reltuples` is available,
+   scales it by the ratio of current pages to `pg_class.relpages` to
+   account for growth/shrinkage since the last ANALYZE; otherwise it
+   samples up to the first 10 pages, counts live (non-overflow-record)
+   tuples per page, and extrapolates across all pages.
+3. Computes `allvisfrac` from `pg_class.relallvisible`, exactly as
+   heap's `table_block_relation_estimate_size()` does (an O(1) catalog
+   read rather than a live Visibility Map scan).
+
+This feeds the planner's existing row-count and page-count cost
+formulas; it does not add any RECNO-specific cost terms for
+compression or overflow.
+
+
+ANALYZE for RECNO
+-----------------
+
+RECNO implements the table AM scan callbacks for ANALYZE:
+recno_scan_analyze_next_block() and recno_scan_analyze_next_tuple().
+These sample pages and tuples for the standard per-column statistics
+(MCV, histograms, NULL fractions) that ANALYZE always collects.
+
+Separately, `recno_stats.c`'s `RecnoCollectRelationStats()` computes
+RECNO-specific statistics (compression ratios, overflow usage, space
+efficiency, commit-ts word distribution) and logs them at DEBUG1.  This
+function exists but is not currently wired into the planner or into any
+SQL-callable interface -- it is diagnostic-only.
+
+Standard statistics are stored in pg_class (relpages, reltuples,
+relallvisible) as usual; there are no RECNO-specific monitoring
+functions consuming ANALYZE output (see "Monitoring" above for what is
+actually SQL-accessible).
+
+
+Comparison with ZHeap
+======================
+
+ZHeap was an experimental PostgreSQL storage engine developed by
+EnterpriseDB (2017-2020) that aimed to replace heap with in-place updates
+powered by UNDO logs.  RECNO takes a fundamentally different approach.
+
+
+ZHeap's Approach
+----------------
+
+ZHeap performed in-place updates and stored old tuple versions in UNDO
+logs.  This required approximately 200,000 lines of new code across 13
+major subsystems (undolog, undorecordset, xactundo, undoinsert,
+undodiscard, etc.).  The architecture used fixed transaction slots per
+page with Transaction Page Directory (TPD) overflow.
+
+ZHeap was not merged into PostgreSQL core.  Contributing factors included
+the review challenge of 200K+ lines, incomplete features (logical decoding,
+some ALTER TABLE operations), complex interactions between UNDO, WAL,
+buffer pool, and transactions, and hard failure modes (UNDO log full).
+
+
+RECNO's Different Path
+----------------------
+
+    Aspect          ZHeap                     RECNO
+    -------         ------                    ------
+    Goal            Replace heap for all      Specialized storage engine
+    Updates         In-place with UNDO        In-place when possible, else
+                                              new version
+    MVCC            XID-based with UNDO       XID-based (xmin/xmax) via CLOG
+    Versioning      UNDO logs for old vers.   Per-relation UNDO fork
+    Rollback        Complex UNDO execution    Standard PostgreSQL handling
+    Space reclaim   UNDO discard worker       VACUUM plus defragmentation
+    Code size       ~200K lines               ~30K lines (RECNO's own
+                                              files); ~42K lines counting
+                                              the supporting UNDO/sLog
+                                              infrastructure it shares
+                                              with other AMs
+
+
+What RECNO Learned from ZHeap
+-----------------------------
+
+Adopted concepts: page format patterns, separate version storage design,
+background cleanup worker patterns, WAL integration strategies, and
+engineering practices (test structure, injection points, benchmarking).
+
+Rejected approaches: multi-log UNDO architecture, complex transaction
+rollback machinery, XID-based versioning with epoch wrapping, transaction
+slots with TPD overflow.
+
+Key lessons applied:
+
+1. Complexity control: RECNO targets focused scope (~30K lines for its
+   own files, ~42K including the shared UNDO/sLog infrastructure) rather
+   than universal replacement.
+2. Build on PostgreSQL: leverage existing buffer pool, WAL, and snapshot
+   infrastructure rather than creating parallel systems.
+3. Clear use case: specialize for specific workloads rather than
+   attempting to be a general heap replacement.
+4. Incremental adoption: use the pluggable storage API to coexist with
+   heap.
+
+
+Development
+===========
+
+
+Building
+--------
+
+RECNO is built as part of PostgreSQL.  The build configuration is in:
+    src/backend/access/recno/Makefile   (make)
+    src/backend/access/recno/meson.build (meson)
+
+When adding new source files:
+1. Add the .o target to Makefile OBJS list.
+2. Add the .c file to meson.build backend_sources.
+3. If adding WAL record types, update src/include/access/rmgrlist.h.
+4. If adding GUC parameters, register them in the appropriate GUC module.
+
+
+Testing
+-------
+
+Run regression tests:
+
+    make installcheck EXTRA_TESTS=recno
+    make installcheck EXTRA_TESTS=recno_performance
+
+    -- Or via psql directly:
+    psql -f src/test/regress/sql/recno.sql
+
+
+Debugging
+---------
+
+Enable detailed logging:
+
+    SET log_statement = 'all';
+    SET log_min_messages = 'debug1';
+    SET trace_recovery_messages = 'on';
+
+Note: recno_operations.c (insert/update/delete/multi_insert) contains no
+elog(WARNING, ...) leftover debug prints.  The elog(WARNING, ...) calls
+that do exist in the RECNO source (recno_pvs.c's version-chain
+reconstruction, and recno_xlog.c's INSERT/MULTI_INSERT redo handlers) are
+legitimate defensive diagnostics for encountering malformed or
+unexpectedly-full pages during redo/read, not leftover development
+tracing; they are not slated for removal.
+
+
+Contributing
+------------
+
+When contributing to RECNO:
+
+1. Follow PostgreSQL coding standards (pgindent formatting).
+2. Add regression test coverage for new functionality.
+3. Ensure WAL logging for all page-modifying operations.
+4. Wrap page modifications in START_CRIT_SECTION / END_CRIT_SECTION.
+5. Test crash recovery scenarios (kill -9 during operations).
+6. Profile performance impact with pgbench or custom benchmarks.
+7. Run pgindent on all modified files before submitting.
+
+
+Additional Documentation
+========================
+
+DESIGN                  Consolidated architectural rationale: MVCC
+                        correctness, WAL record format, and lock ordering.
+
+
+References
+==========
+
+Cahill, M.J., Rohm, U., & Fekete, A.D. (2008).  "Serializable Isolation
+for Snapshot Databases."  SIGMOD 2008.  Basis for RECNO's serializable
+isolation design.
+
+PostgreSQL Source Code.  src/include/access/htup_details.h --
+HeapTupleHeaderData structure.  src/backend/access/heap/README.HOT --
+Heap Only Tuples design.
+
+
+Glossary
+========
+
+Commit-ts word
+    The 64-bit RecnoTupleHeader word whose low 32 bits hold t_xmax
+    (deleter/updater XID) and which also carries a page-level commit-ts
+    bookkeeping hint (wall-clock microseconds).
+
+In-place update
+    An UPDATE where the modified tuple is written directly over the
+    existing tuple on the same page, avoiding the creation of a new
+    tuple version.  Possible when the new tuple fits in the same space.
+
+Overflow page
+    A page within the RECNO relation that stores large attribute values
+    exceeding the overflow threshold.  Multiple overflow records from
+    different tuples can share a page.
+
+Overflow record
+    A chunk of large attribute data stored on an overflow page.  Records
+    are chained together for attributes spanning multiple records.
+
+Pruning horizon
+    The XID of the oldest active transaction
+    (GetOldestNonRemovableTransactionId).  Versions whose deleter XID
+    precedes this are candidates for pruning.
+
+Spatial locality
+    The RECNO overflow design optimization of placing multiple overflow
+    records on the same page to reduce I/O during chain traversal.

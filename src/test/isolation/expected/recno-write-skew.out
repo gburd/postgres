@@ -1,0 +1,78 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1_check s2_check s1_update s2_update s1_commit s2_commit s3_verify
+step s1_check: SELECT count(*) FROM recno_oncall WHERE on_call = true;
+count
+-----
+    2
+(1 row)
+
+step s2_check: SELECT count(*) FROM recno_oncall WHERE on_call = true;
+count
+-----
+    2
+(1 row)
+
+step s1_update: UPDATE recno_oncall SET on_call = false WHERE id = 1;
+step s2_update: UPDATE recno_oncall SET on_call = false WHERE id = 2;
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+step s3_verify: SELECT id, name, on_call FROM recno_oncall ORDER BY id;
+id|name |on_call
+--+-----+-------
+ 1|Alice|f      
+ 2|Bob  |t      
+(2 rows)
+
+
+starting permutation: s1_check s2_check s2_update s1_update s2_commit s1_commit s3_verify
+step s1_check: SELECT count(*) FROM recno_oncall WHERE on_call = true;
+count
+-----
+    2
+(1 row)
+
+step s2_check: SELECT count(*) FROM recno_oncall WHERE on_call = true;
+count
+-----
+    2
+(1 row)
+
+step s2_update: UPDATE recno_oncall SET on_call = false WHERE id = 2;
+step s1_update: UPDATE recno_oncall SET on_call = false WHERE id = 1;
+step s2_commit: COMMIT;
+step s1_commit: COMMIT;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+step s3_verify: SELECT id, name, on_call FROM recno_oncall ORDER BY id;
+id|name |on_call
+--+-----+-------
+ 1|Alice|t      
+ 2|Bob  |f      
+(2 rows)
+
+
+starting permutation: s1_check s1_update s1_commit s2_check s2_update s2_commit s3_verify
+step s1_check: SELECT count(*) FROM recno_oncall WHERE on_call = true;
+count
+-----
+    2
+(1 row)
+
+step s1_update: UPDATE recno_oncall SET on_call = false WHERE id = 1;
+step s1_commit: COMMIT;
+step s2_check: SELECT count(*) FROM recno_oncall WHERE on_call = true;
+count
+-----
+    1
+(1 row)
+
+step s2_update: UPDATE recno_oncall SET on_call = false WHERE id = 2;
+step s2_commit: COMMIT;
+step s3_verify: SELECT id, name, on_call FROM recno_oncall ORDER BY id;
+id|name |on_call
+--+-----+-------
+ 1|Alice|f      
+ 2|Bob  |f      
+(2 rows)
+
