@@ -258,6 +258,38 @@ static void ForgetPrivateRefCountEntryFor(PgBackendBufferState *state,
 										  PrivateRefCountEntry *ref);
 static void InitPrivateRefCountAccess(PgBackendBufferState *state);
 static bool PrivateRefCountStateIsIdle(PgBackendBufferState *state);
+static pg_attribute_always_inline ResourceOwner *PgBufferResourceOwnerFastRef(void);
+static pg_attribute_always_inline BufferUsage *PgBufferUsageFastRef(void);
+
+static pg_attribute_always_inline ResourceOwner *
+PgBufferResourceOwnerFastRef(void)
+{
+	PgExecutionResourceOwnerState *resource_owners;
+
+	resource_owners = CurrentPgExecutionResourceOwnerRuntimeState;
+	if (likely(resource_owners != NULL))
+		return &resource_owners->current_owner;
+
+	return PgCurrentResourceOwnerRef();
+}
+
+static pg_attribute_always_inline BufferUsage *
+PgBufferUsageFastRef(void)
+{
+	PgBackendInstrumentationState *instrumentation;
+
+	instrumentation = CurrentPgBackendInstrumentationRuntimeState;
+	if (likely(instrumentation != NULL))
+		return &instrumentation->buffer_usage;
+
+	return PgCurrentBufferUsageRef();
+}
+
+#undef CurrentResourceOwner
+#define CurrentResourceOwner (*PgBufferResourceOwnerFastRef())
+
+#undef pgBufferUsage
+#define pgBufferUsage (*PgBufferUsageFastRef())
 
 /* ResourceOwner callbacks to hold in-progress I/Os and buffer pins */
 static void ResOwnerReleaseBufferIO(Datum res);
