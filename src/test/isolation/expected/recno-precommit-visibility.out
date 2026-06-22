@@ -1,0 +1,47 @@
+Parsed test spec with 3 sessions
+
+starting permutation: orr_begin orr_read w_update w_delete orr_read w_commit orr_read orr_commit
+step orr_begin: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step orr_read: SELECT id, val FROM recno_pcv ORDER BY id;
+id|val
+--+---
+ 1| 10
+ 2| 20
+(2 rows)
+
+step w_update: UPDATE recno_pcv SET val = 999 WHERE id = 1;
+step w_delete: DELETE FROM recno_pcv WHERE id = 2;
+step orr_read: SELECT id, val FROM recno_pcv ORDER BY id;
+id|val
+--+---
+ 1| 10
+ 2| 20
+(2 rows)
+
+step w_commit: COMMIT;
+step orr_read: SELECT id, val FROM recno_pcv ORDER BY id;
+id|val
+--+---
+ 1| 10
+ 2| 20
+(2 rows)
+
+step orr_commit: COMMIT;
+
+starting permutation: w_update w_delete orc_read w_commit orc_read
+step w_update: UPDATE recno_pcv SET val = 999 WHERE id = 1;
+step w_delete: DELETE FROM recno_pcv WHERE id = 2;
+step orc_read: SELECT id, val FROM recno_pcv ORDER BY id;
+id|val
+--+---
+ 1| 10
+ 2| 20
+(2 rows)
+
+step w_commit: COMMIT;
+step orc_read: SELECT id, val FROM recno_pcv ORDER BY id;
+id|val
+--+---
+ 1|999
+(1 row)
+

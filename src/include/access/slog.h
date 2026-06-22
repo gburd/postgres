@@ -5,9 +5,10 @@
  *
  * The sLog provides shared-memory data structures for O(1) lookups:
  *
- *   1. Transaction skip-list - Aborted transaction entries keyed by
- *      (xid, reloid), ordered for efficient xid-based range operations.
- *      Protected by a single LWLock (modifications are infrequent).
+ *   1. Transaction radix tree - Aborted transaction entries keyed by
+ *      (xid, reloid) packed into a uint64, ordered for efficient xid-based
+ *      range operations.  Protected by a single LWLock (modifications are
+ *      infrequent).
  *
  *   2. XID sparsemap - Compressed bitmap for O(1) SLogXidIsPresent().
  *      Protected by a SpinLock (operations are very fast).
@@ -43,7 +44,7 @@
 
 /*
  * Legacy partition count retained for shared memory compatibility.
- * The tuple sLog now uses a single LRLock flat hash (wait-free reads)
+ * The tuple sLog now uses a single seqlock-guarded flat hash (retry-based reads)
  * with writer serialization via SLogTupleWriterLock.  These constants
  * are no longer used operationally.
  */
@@ -86,21 +87,6 @@
 #define SLOG_TUPLE_MAX_ENTRIES			4194304
 
 /*
- * Skip-list pool capacity for the ATM (Aborted Transaction Map).
- * Each slot holds one aborted transaction pending UNDO application.
- * With inline UNDO for small transactions, only large transactions
- * accumulate here.  4096 entries handles sustained abort rates of
- * ~100/s for 40+ seconds before the logical revert worker drains them.
- */
-#define SLOG_TXN_POOL_CAPACITY		4100	/* 4096 user + 2 sentinels + 2
-											 * margin */
-
-/*
- * Sparsemap buffer size for XID presence bitmap (64KB).
- */
-#define SLOG_XID_MAP_BUFSIZE		65536
-
-/*
  * sLog entry types for tuple operations.
  */
 typedef enum SLogOpType
@@ -118,8 +104,8 @@ typedef enum SLogOpType
  * Transaction sLog structures
  *
  * SLogTxnEntry is used as the public output type for lookups.
- * Internally, the skip-list node (SLogTxnNode) contains these same
- * fields plus skip-list metadata.
+ * Internally, the ATM radix tree stores only the data fields; the key
+ * (xid, reloid) is implicit in the tree path.
  * ----------------------------------------------------------------
  */
 
@@ -214,8 +200,8 @@ typedef struct SLogTupleEntry
 /* ----------------------------------------------------------------
  * Shared state
  *
- * The transaction skip-list and XID sparsemap are allocated in
- * shared memory; their internal structures are opaque to callers.
+ * The transaction radix tree is allocated in shared memory; its internal
+ * structures are opaque to callers.
  * The SLogSharedState is defined in slog.c.
  * ----------------------------------------------------------------
  */
@@ -240,7 +226,6 @@ extern void SLogShmemInit(void);
  */
 extern bool SLogTxnInsert(TransactionId xid, Oid reloid, Oid dboid,
 						  XLogRecPtr last_batch_lsn);
-extern bool SLogXidIsPresent(TransactionId xid);
 extern bool SLogTxnLookup(TransactionId xid, Oid reloid,
 						  SLogTxnEntry *entry_out);
 extern bool SLogTxnLookupByXid(TransactionId xid, XLogRecPtr *lsn_out);
@@ -322,6 +307,7 @@ extern bool SLogTupleHasAbortedEntry(Oid relid, ItemPointer tid);
 extern void SLogTupleTrackKey(SLogTupleKey key, TransactionId xid,
 							  TransactionId subxid, SLogOpType op_type);
 extern void SLogTupleResetTracking(void);
+extern bool SLogTupleAnyTracked(void);
 
 /*
  * SLogTrackedKeyInfo -- public snapshot of a tracked key for batch processing.
@@ -396,19 +382,6 @@ extern void SLogTupleRemoveByXidSingle(Oid relid, ItemPointer tid,
 extern void SLogTupleMarkAbortedSingle(Oid relid, ItemPointer tid,
 									   TransactionId xid);
 
-/* Shared before-image read API for MVCC serving */
-extern bool SLogTupleGetSharedBeforeImage(Oid relid, ItemPointer tid,
-										  Snapshot snapshot,
-										  char **data_out, int *len_out,
-										  uint16 *flags_out,
-										  uint64 *orig_commit_ts_out);
-
-/* Write-write conflict probe for the in-place UPDATE path */
-extern bool SLogTupleHasCommittedUpdateAfter(Oid relid, ItemPointer tid,
-											 Snapshot snapshot,
-											 uint64 epq_floor_hlc,
-											 TransactionId exclude_xid);
-
 /* Cleanup retained entries when no longer needed by any snapshot */
 extern void SLogTupleCleanupRetained(void);
 
@@ -422,8 +395,6 @@ extern void SLogTupleMaybeCleanupRetained(void);
 
 /* DSA lifecycle for before-image shared memory */
 extern void SLogEnsureDsaAttached(void);
-extern dsa_pointer SLogDsaAllocateBeforeImage(const char *data, int len,
-											  uint16 flags, uint64 commit_ts);
 extern void SLogDsaFreeBeforeImage(dsa_pointer dp);
 
 /* GUC: maximum DSA size for before-images (in MB) */

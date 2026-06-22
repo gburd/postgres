@@ -232,6 +232,38 @@ relundo_allocate_page(Relation rel, Buffer metabuf, int slot, Buffer *newbuf)
 		 */
 		meta->free_blkno = freehdr->prev_blkno;
 
+		/*
+		 * ABA defense for the WS-PVS2 reader: a recycled block reused at the
+		 * same (blkno, offset) as a discarded prior record would otherwise be
+		 * indistinguishable from that prior record to a stale verptr.  Bump
+		 * the generation counter so the recycled page's hdr->counter differs
+		 * from any previous one at this blkno; RelUndoReadRecord validates
+		 * (RelUndoGetCounter(ptr) == hdr->counter) to reject stale verptrs.
+		 *
+		 * Modular 16-bit increment, skipping 0 (reserved for "uninitialized"
+		 * so a zeroed page never aliases a live counter).  16-bit wraparound
+		 * (every 65535 recycles of the same fork) can produce a counter that
+		 * matches a long-ago page header — RelUndoReadRecord then returns
+		 * false (chain-end / best-effort fallback), never returning wrong
+		 * data.  No further handling needed.
+		 *
+		 * Retention invariant: the oldest_xmin discard gate already protects
+		 * every record the reader REVERSE-APPLIES (urec_xid >= oldest_xmin,
+		 * thus non-discardable).  This counter+validation only protects the
+		 * single visibility-PROBE record the reader STOPS on, whose urec_xid
+		 * may legitimately be < oldest_xmin and thus reside on a discardable
+		 * (and reusable) page.
+		 *
+		 * Only the recycle branch needs the bump: a freshly extended block
+		 * has never been the target of any verptr, so it has no ABA hazard.
+		 * The counter need not be globally unique per page; uniqueness for
+		 * the reader comes from a GIVEN blkno getting a different counter
+		 * each time IT is recycled.
+		 */
+		meta->counter++;
+		if (meta->counter == 0)
+			meta->counter = 1;
+
 		/* Re-initialize the page for use as a data page */
 		relundo_init_page(freepage, old_head, meta->counter);
 

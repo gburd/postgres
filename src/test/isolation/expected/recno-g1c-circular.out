@@ -1,0 +1,89 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1_write_1 s2_write_2 s1_read_2 s2_read_1 s1_commit s2_commit s3_verify
+step s1_write_1: UPDATE recno_g1c SET val = 11 WHERE id = 1;
+step s2_write_2: UPDATE recno_g1c SET val = 22 WHERE id = 2;
+step s1_read_2: SELECT val FROM recno_g1c WHERE id = 2;
+val
+---
+ 20
+(1 row)
+
+step s2_read_1: SELECT val FROM recno_g1c WHERE id = 1;
+val
+---
+ 10
+(1 row)
+
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+step s3_verify: SELECT id, val FROM recno_g1c ORDER BY id;
+id|val
+--+---
+ 1| 11
+ 2| 22
+(2 rows)
+
+
+starting permutation: s1_read_1 s1_read_2 s2_read_1 s2_read_2 s1_write_1 s2_write_2 s1_commit s2_commit s3_verify
+step s1_read_1: SELECT val FROM recno_g1c WHERE id = 1;
+val
+---
+ 10
+(1 row)
+
+step s1_read_2: SELECT val FROM recno_g1c WHERE id = 2;
+val
+---
+ 20
+(1 row)
+
+step s2_read_1: SELECT val FROM recno_g1c WHERE id = 1;
+val
+---
+ 10
+(1 row)
+
+step s2_read_2: SELECT val FROM recno_g1c WHERE id = 2;
+val
+---
+ 20
+(1 row)
+
+step s1_write_1: UPDATE recno_g1c SET val = 11 WHERE id = 1;
+step s2_write_2: UPDATE recno_g1c SET val = 22 WHERE id = 2;
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+step s3_verify: SELECT id, val FROM recno_g1c ORDER BY id;
+id|val
+--+---
+ 1| 11
+ 2| 20
+(2 rows)
+
+
+starting permutation: s1_write_1 s2_read_1 s2_write_2 s1_read_2 s1_commit s2_commit s3_verify
+step s1_write_1: UPDATE recno_g1c SET val = 11 WHERE id = 1;
+step s2_read_1: SELECT val FROM recno_g1c WHERE id = 1;
+val
+---
+ 10
+(1 row)
+
+step s2_write_2: UPDATE recno_g1c SET val = 22 WHERE id = 2;
+step s1_read_2: SELECT val FROM recno_g1c WHERE id = 2;
+val
+---
+ 20
+(1 row)
+
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+step s3_verify: SELECT id, val FROM recno_g1c ORDER BY id;
+id|val
+--+---
+ 1| 11
+ 2| 22
+(2 rows)
+

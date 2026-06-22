@@ -434,6 +434,44 @@ extern RelUndoRecPtr RelUndoReserve(Relation rel, Size record_size,
 									Buffer *undo_buffer);
 
 /*
+ * RelUndoStageResult - facts produced by RelUndoStage() for a deferred WAL emit
+ *
+ * RelUndoStage() writes the UNDO record onto the reserved page and dirties the
+ * buffers but performs NO WAL insert.  The caller then either lets RelUndoFinish
+ * emit the standalone RM_RELUNDO_ID record, or folds these staged bytes into a
+ * different resource manager's combined record (RECNO FOLD path).  The undo and
+ * metapage buffers remain locked+pinned; the caller is responsible for
+ * PageSetLSN on them under its critical section and for releasing them.
+ */
+typedef struct RelUndoStageResult
+{
+	Buffer		undo_buffer;	/* reserved data-page buffer (still locked) */
+	Buffer		metabuf;		/* metapage buffer if is_new_page, else Invalid */
+	bool		is_new_page;	/* first record on a freshly allocated page */
+	uint8		urec_type;		/* header->urec_type (for the xlrec) */
+	uint16		urec_len;		/* header->urec_len (for the xlrec) */
+	uint16		page_offset;	/* page-absolute offset of the record */
+	uint16		new_pd_lower;	/* shadow pd_lower after the write */
+	TransactionId max_xid;		/* page max_xid watermark after the bump */
+	char	   *wal_record_data;	/* palloc'd block-0 data (caller pfrees) */
+	Size		wal_record_size;	/* size of wal_record_data */
+} RelUndoStageResult;
+
+/*
+ * RelUndoStage - write an UNDO record onto its reserved page WITHOUT WAL.
+ *
+ * Performs every page mutation RelUndoFinish() does (header+payload memcpy,
+ * max_xid bump, MarkBufferDirty on the data page and, for a new page, the
+ * metapage) and builds the block-0 WAL data buffer, but does NOT open a
+ * critical section, XLogInsert, PageSetLSN, or release any buffer.  The staged
+ * facts are returned in *result so the caller can emit the WAL record itself.
+ */
+extern void RelUndoStage(Relation rel, Buffer undo_buffer, RelUndoRecPtr ptr,
+						 const RelUndoRecordHeader *header,
+						 const void *payload, Size payload_size,
+						 RelUndoStageResult *result);
+
+/*
  * RelUndoFinish - Complete UNDO record insertion (Phase 2 of 2-phase insert)
  *
  * Writes the UNDO record to the previously reserved space and releases the buffer.
@@ -516,6 +554,16 @@ extern void RelUndoCancel(Relation rel, Buffer undo_buffer, RelUndoRecPtr ptr);
 extern bool RelUndoReadRecord(Relation rel, RelUndoRecPtr ptr,
 							  RelUndoRecordHeader *header,
 							  void **payload, Size *payload_size);
+
+/*
+ * RelUndoReadRecordHeader - Read only the header of an UNDO record.
+ *
+ * Header-only variant that skips the payload palloc.  Used by hot probes
+ * that need only urec_xid (e.g. the lost-update conflict probe).  Returns
+ * false with the same semantics as RelUndoReadRecord.
+ */
+extern bool RelUndoReadRecordHeader(Relation rel, RelUndoRecPtr ptr,
+									RelUndoRecordHeader *header);
 
 /*
  * RelUndoGetCurrentCounter - Get current generation counter for a relation
@@ -697,6 +745,16 @@ extern void PerformRelUndoRecovery(void);
  *   (undoworker.c) so the AM can reclaim any retained-version bookkeeping
  *   (before-images, dirty markers) that has aged out.  The reclamation
  *   horizon is the AM's own xid horizon.  NULL is a valid no-op.
+ *
+ * RelUndoPageIndexTupleDelete_hook: delete the line pointer at the given
+ *   offset when a size-growing UPDATE rollback must re-add a larger
+ *   before-image at the same offset.  The core default (PageIndexTupleDelete)
+ *   asserts every remaining line pointer has storage, but an in-place AM's
+ *   data page routinely carries storage-less LP_DEAD/LP_UNUSED siblings left
+ *   by a concurrent committed-DELETE + prune/VACUUM of *other* rows on the
+ *   page.  An AM that allows such siblings (RECNO) installs a tolerant
+ *   variant (RecnoPageIndexTupleDelete) so an unrelated reclaimed sibling
+ *   cannot abort the rollback.  NULL falls back to PageIndexTupleDelete.
  */
 extern void (*RelUndoClearTransientFlags_hook) (char *tuple_data);
 extern bool (*RelUndoReverseDelta_hook) (const char *new_data, Size new_len,
@@ -705,5 +763,6 @@ extern bool (*RelUndoReverseDelta_hook) (const char *new_data, Size new_len,
 extern Size (*RelUndoReverseDeltaOldLen_hook) (const void *diff);
 extern void (*RelUndoAbortCleanup_hook) (TransactionId xid);
 extern void (*RelUndoDiscardRetained_hook) (void);
+extern void (*RelUndoPageIndexTupleDelete_hook) (Page page, OffsetNumber offset);
 
 #endif							/* RELUNDO_H */

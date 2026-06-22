@@ -107,10 +107,14 @@
 #include "postgres.h"
 
 #include "access/genam.h"
+#include "access/nbtree.h"
 #include "access/relscan.h"
+#include "access/skey.h"
+#include "access/stratnum.h"
 #include "access/tableam.h"
 #include "access/xact.h"
 #include "catalog/index.h"
+#include "catalog/pg_am_d.h"
 #include "executor/executor.h"
 #include "nodes/nodeFuncs.h"
 #include "storage/lmgr.h"
@@ -143,6 +147,10 @@ static bool index_recheck_constraint(Relation index, const Oid *constr_procs,
 static bool index_unchanged_by_update(ResultRelInfo *resultRelInfo,
 									  EState *estate, IndexInfo *indexInfo,
 									  Relation indexRelation);
+static bool index_entry_exists_for_tid(Relation index, Relation heap,
+									   IndexInfo *indexInfo, EState *estate,
+									   const Datum *values, const bool *isnull,
+									   ItemPointer tupleid);
 static bool index_expression_changed_walker(Node *node,
 											Bitmapset *allUpdatedCols);
 static void ExecWithoutOverlapsNotEmpty(Relation rel, NameData attname, Datum attval,
@@ -445,6 +453,47 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 													estate,
 													indexInfo,
 													indexRelation));
+
+		/*
+		 * For a table AM that performs UPDATE in place (keeping the same TID),
+		 * an index whose key is unchanged by the UPDATE already has a valid
+		 * (key, TID) entry that survives the update.  Re-inserting it would
+		 * create a duplicate (key, TID) pair and violate index-AM invariants
+		 * (e.g. nbtree posting-list dedup requires strictly increasing heap
+		 * TIDs).  Skip the redundant insert for non-partial indexes.  Partial
+		 * indexes are excluded because row membership can change even when the
+		 * key columns do not, so a genuinely new entry may still be required.
+		 */
+		if (indexUnchanged &&
+			heapRelation->rd_tableam->am_inplace_update_keeps_tid &&
+			indexInfo->ii_Predicate == NIL)
+			continue;
+
+		/*
+		 * Same in-place keeps-TID hazard, recurrence case: the UPDATE DID
+		 * change this index's key, so indexUnchanged is false and we would
+		 * normally insert (newkey, TID).  But an in-place AM never removes the
+		 * prior (oldkey, TID) entries at update time (they are dropped lazily
+		 * at read time and by VACUUM), so if this row previously held the new
+		 * key value -- e.g. an indexed column oscillating A -> B -> A -- a
+		 * stale (newkey, TID) entry is still physically present.  Inserting
+		 * again would create a DUPLICATE (key, TID) pair, which nbtree's
+		 * posting-list dedup and page-split code reject (strictly increasing
+		 * heap TIDs per key: _bt_posting_valid / nbtsplitloc TID invariants).
+		 * A corrupt posting list then hands IndexOnlyScan a bogus TID whose
+		 * bytes deform as a garbage varlena (recno_tuple.c deform-bounds
+		 * oracle).  Distinct keys at the same TID are fine for nbtree; only an
+		 * exact (key, TID) duplicate is illegal.  So for a keeps-TID UPDATE
+		 * whose key changed, probe the index and skip the insert when this
+		 * exact (key, TID) already exists.  Partial indexes are excluded for
+		 * the same reason as above.
+		 */
+		if ((flags & EIIT_IS_UPDATE) &&
+			heapRelation->rd_tableam->am_inplace_update_keeps_tid &&
+			indexInfo->ii_Predicate == NIL &&
+			index_entry_exists_for_tid(indexRelation, heapRelation, indexInfo,
+									   estate, values, isnull, tupleid))
+			continue;
 
 		satisfiesConstraint =
 			index_insert(indexRelation, /* index relation */
@@ -1122,6 +1171,113 @@ index_unchanged_by_update(ResultRelInfo *resultRelInfo, EState *estate,
 	 */
 	indexInfo->ii_IndexUnchanged = true;
 	return true;
+}
+
+/*
+ * index_entry_exists_for_tid
+ *
+ * For a table AM that updates in place keeping the same TID
+ * (am_inplace_update_keeps_tid), decide whether the index already physically
+ * contains an entry for exactly (key = values/isnull, heap TID = tupleid).
+ *
+ * Such an AM never removes prior (oldkey, TID) entries at UPDATE time, so an
+ * indexed column that oscillates back to a value the row previously held would
+ * otherwise get a second, DUPLICATE (key, TID) entry.  nbtree rejects
+ * duplicate heap TIDs within one key (posting-list dedup and page-split TID
+ * invariants), so ExecInsertIndexTuples() uses this to skip the redundant
+ * insert.  Distinct keys sharing a TID are legal and are left untouched.
+ *
+ * Uses SnapshotAny: the entry we must not duplicate is the physical index
+ * tuple, regardless of the visibility of the heap tuple it points at.  Only
+ * key columns are compared (via the scan key); a lossy scan is rechecked by
+ * comparing the found entry's own TID, which is exact.  Returns false for any
+ * NULL key column, since the caller only needs to suppress an exact-duplicate
+ * insert and NULL handling differs per index; a false negative merely lets the
+ * insert proceed as it does today.
+ */
+static bool
+index_entry_exists_for_tid(Relation index, Relation heap,
+						   IndexInfo *indexInfo, EState *estate,
+						   const Datum *values, const bool *isnull,
+						   ItemPointer tupleid)
+{
+	int			indnkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
+	ScanKeyData scankeys[INDEX_MAX_KEYS];
+	IndexScanDesc index_scan;
+	ItemPointer found_tid;
+	bool		found = false;
+	int			i;
+
+	/*
+	 * Only btree secondary indexes are handled: the exact-duplicate hazard is
+	 * nbtree's posting-list/TID invariant, and the probe below uses the btree
+	 * ordering proc + equality strategy.  A non-btree index (e.g. hash) has no
+	 * such invariant here, so leaving it to the normal insert is correct.
+	 */
+	if (index->rd_rel->relam != BTREE_AM_OID)
+		return false;
+
+	/*
+	 * Any NULL key column: bail out (return false) and let the normal insert
+	 * run.  Building an IS NULL scan key per index flavour is more machinery
+	 * than the duplicate-suppression optimization warrants, and the recurrence
+	 * hazard that motivates this probe is about ordinary non-NULL values.
+	 */
+	for (i = 0; i < indnkeyatts; i++)
+	{
+		Oid			opfamily = index->rd_opfamily[i];
+		Oid			opcintype = index->rd_opcintype[i];
+		Oid			eqop;
+		RegProcedure eqproc;
+
+		if (isnull[i])
+			return false;
+
+		/*
+		 * Use the opclass equality operator's function for the scan key, the
+		 * same way the executor builds an equality index qual (nbtree calls
+		 * sk_func as a boolean operator, not the 3-way BTORDER support proc).
+		 */
+		eqop = get_opfamily_member(opfamily, opcintype, opcintype,
+								   BTEqualStrategyNumber);
+		if (!OidIsValid(eqop))
+			return false;
+		eqproc = get_opcode(eqop);
+		if (!RegProcedureIsValid(eqproc))
+			return false;
+
+		ScanKeyEntryInitialize(&scankeys[i],
+							   0,
+							   (AttrNumber) (i + 1),
+							   BTEqualStrategyNumber,
+							   opcintype,
+							   index->rd_indcollation[i],
+							   eqproc,
+							   values[i]);
+	}
+
+	index_scan = index_beginscan(heap, index, SnapshotAny, NULL,
+								 indnkeyatts, 0, SO_NONE);
+	index_rescan(index_scan, scankeys, indnkeyatts, NULL, 0);
+
+	while ((found_tid = index_getnext_tid(index_scan,
+										  ForwardScanDirection)) != NULL)
+	{
+		/*
+		 * A lossy AM may return non-matching keys; the exact test we need is
+		 * TID identity for a matched entry.  index_getnext_tid returns only
+		 * entries whose key satisfies the (equality) scan keys, so an exact
+		 * TID match here is exactly the (key, TID) duplicate we must suppress.
+		 */
+		if (ItemPointerEquals(found_tid, tupleid))
+		{
+			found = true;
+			break;
+		}
+	}
+
+	index_endscan(index_scan);
+	return found;
 }
 
 /*

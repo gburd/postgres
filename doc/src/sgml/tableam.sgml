@@ -152,4 +152,16 @@ my_tableam_handler(PG_FUNCTION_ARGS)
   its implementation.
  </para>
 
+ <para>
+  <productname>PostgreSQL</productname> also includes the
+  <literal>recno</literal> table access method, which provides an alternative
+  to heap storage with time-based <acronym>MVCC</acronym>, in-place updates,
+  integrated overflow pages, and attribute-level compression.  Its
+  implementation in
+  <filename>src/backend/access/recno/recno_handler.c</filename> demonstrates
+  a complete table access method with custom <acronym>WAL</acronym> resource
+  management, compression, and overflow storage.  See <xref linkend="recno"/>
+  for user documentation.
+ </para>
+
 </chapter>

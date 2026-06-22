@@ -1187,6 +1187,12 @@ if not lz4opt.disabled()
   if lz4.found()
     cdata.set('USE_LZ4', 1)
     cdata.set('HAVE_LIBLZ4', 1)
+
+    # Check for LZ4 >= 1.8.1 which provides the dictionary API
+    # (LZ4_compress_using_dict / LZ4_decompress_using_dict)
+    if lz4.version().version_compare('>=1.8.1')
+      cdata.set('HAVE_LZ4_DICT', 1)
+    endif
   endif
 
 else
@@ -1584,6 +1590,19 @@ else
   readline = not_found_dep
 endif
 
+
+###############################################################
+# Library: RECNO
+###############################################################
+
+# RECNO table access method is always built on the undo branch (mirrors
+# USE_RECNO = 1 in src/Makefile.global.in).  It cannot be conditionally
+# disabled: guc_parameters.dat and pg_proc.dat reference recno symbols
+# unconditionally, so a build with USE_RECNO unset fails to link.  USE_RECNO is
+# therefore always defined and the sources are always compiled, regardless of
+# the (retained-for-compatibility) recno feature option.
+recno = declare_dependency()
+cdata.set('USE_RECNO', 1)
 
 
 ###############################################################
@@ -3999,6 +4018,10 @@ foreach test_dir : tests
 
       env = test_env
       env.prepend('PATH', temp_install_bindir, test_dir['bd'])
+
+      foreach name, value : t.get('env', {})
+        env.set(name, value)
+      endforeach
 
       test_kwargs = {
         'protocol': 'tap',

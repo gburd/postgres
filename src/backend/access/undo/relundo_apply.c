@@ -37,6 +37,7 @@
 #include "storage/buf.h"
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"
+#include "storage/ipc.h"
 #include "utils/rel.h"
 
 /*
@@ -610,23 +611,33 @@ RelUndoApplyOneRecord(Relation rel, const RelUndoRecordHeader *header,
 					{
 						char	   *cur_data = (char *) PageGetItem(page, lp);
 						Size		cur_len = ItemIdGetLength(lp);
+						Size		recon_len;
 
-						old_tuple_data = (char *) palloc(cur_len);
-
-						if (!RelUndoReverseDelta_hook)
+						if (!RelUndoReverseDelta_hook ||
+							!RelUndoReverseDeltaOldLen_hook)
 							elog(ERROR,
 								 "RelUndoApplyChain: no delta-reverse handler registered");
+
+						/*
+						 * Size the reconstruction buffer to the length the diff
+						 * reconstructs to, which differs from the current
+						 * on-page length for a length-changing update.
+						 */
+						recon_len = RelUndoReverseDeltaOldLen_hook(diff_data);
+						old_tuple_data = (char *) palloc(recon_len);
 
 						if (RelUndoReverseDelta_hook(cur_data, cur_len,
 													 diff_data, old_tuple_data,
 													 &old_tuple_len))
 						{
-							/* Restore old tuple in place */
-							memcpy(cur_data, old_tuple_data, old_tuple_len);
-
-							/* Clear AM transient flags on restored tuple */
-							if (RelUndoClearTransientFlags_hook)
-								RelUndoClearTransientFlags_hook(cur_data);
+							/*
+							 * Restore through the shared update path, which
+							 * resizes the slot when the old tuple is larger or
+							 * smaller than the current one and clears AM
+							 * transient flags.
+							 */
+							RelUndoApplyUpdate(rel, page, target_offset,
+											   old_tuple_data, (uint32) old_tuple_len);
 						}
 						else
 						{
@@ -835,7 +846,37 @@ RelUndoApplyUpdate(Relation rel, Page page, OffsetNumber offset,
 	lp = PageGetItemId(page, offset);
 
 	if (!ItemIdIsNormal(lp))
+	{
+		/*
+		 * The slot this in-place UPDATE targeted has been reclaimed
+		 * (LP_DEAD/LP_UNUSED) -- e.g. a concurrent VACUUM relocated or removed
+		 * the tuple.  On the ordinary (catchable) abort path we raise an error
+		 * so ApplyPerRelUndo()'s PG_CATCH defers this relation to the ATM
+		 * revert worker, which retries once the page settles.  But when the
+		 * abort is running inside proc_exit (a client disconnected while
+		 * idle-in-transaction, so backend shutdown reached AbortOutOfAnyTransaction
+		 * -> AtAbort_XactUndo), errfinish() promotes any ERROR to FATAL
+		 * (proc_exit_inprogress is set; elog.c), bypassing that PG_CATCH and
+		 * re-entering proc_exit -> pgstat_report_stat, which trips
+		 * Assert(!IsTransactionOrTransactionBlock()) and takes the whole
+		 * cluster down (a bare SIGSEGV on a production -O2 build).  The tuple
+		 * at this TID is already gone, so there is nothing to restore in place;
+		 * skip it with a warning instead of crashing the cluster.  (RECNO's
+		 * VACUUM cross-page defrag no longer relocates a tuple that carries a
+		 * pending/retained UNDO version pointer or is uncommitted -- see
+		 * RecnoVacuumCrossPageDefrag -- so this reclaimed-target case should not
+		 * arise for a tuple whose rollback record still references its TID; this
+		 * guard is defence in depth for any residual reclaim/relocation source.)
+		 */
+		if (proc_exit_inprogress)
+		{
+			elog(WARNING,
+				 "RelUndoApplyUpdate: target tuple at offset %u already reclaimed; "
+				 "skipping in-place restore during backend exit", offset);
+			return;
+		}
 		elog(ERROR, "RelUndoApplyUpdate: tuple at offset %u is not normal", offset);
+	}
 
 	/*
 	 * Restore the old tuple.  Handle size differences between the new tuple
@@ -856,10 +897,21 @@ RelUndoApplyUpdate(Relation rel, Page page, OffsetNumber offset,
 		/*
 		 * Old tuple is larger than the new one.  Delete the current item
 		 * and re-add the old tuple at the same offset.
+		 *
+		 * Use the AM's tolerant page-delete when one is installed.  The core
+		 * PageIndexTupleDelete asserts every remaining line pointer has
+		 * storage, but an in-place AM's data page routinely carries
+		 * storage-less LP_DEAD/LP_UNUSED siblings left by a concurrent
+		 * committed-DELETE + prune/VACUUM of *other* rows on this page.  The
+		 * target offset itself is normal (checked above); only unrelated
+		 * reclaimed siblings would trip the raw routine's assert.
 		 */
 		OffsetNumber restored_offset;
 
-		PageIndexTupleDelete(page, offset);
+		if (RelUndoPageIndexTupleDelete_hook)
+			RelUndoPageIndexTupleDelete_hook(page, offset);
+		else
+			PageIndexTupleDelete(page, offset);
 		restored_offset = PageAddItem(page, tuple_data,
 									  tuple_len, offset, false, false);
 		if (restored_offset == InvalidOffsetNumber)

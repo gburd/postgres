@@ -61,6 +61,7 @@ bool		(*RelUndoReverseDelta_hook) (const char *new_data, Size new_len,
 Size		(*RelUndoReverseDeltaOldLen_hook) (const void *diff) = NULL;
 void		(*RelUndoAbortCleanup_hook) (TransactionId xid) = NULL;
 void		(*RelUndoDiscardRetained_hook) (void) = NULL;
+void		(*RelUndoPageIndexTupleDelete_hook) (Page page, OffsetNumber offset) = NULL;
 
 /*
  * Per-backend UNDO head page cache.
@@ -611,46 +612,37 @@ reserve:
 }
 
 /*
- * RelUndoFinish
- *		Complete UNDO record insertion (Phase 2 of 2-phase insert)
+ * RelUndoStage
+ *		Write an UNDO record onto its reserved page WITHOUT WAL logging.
  *
- * Writes the header and payload into the space reserved by RelUndoReserve(),
- * marks the buffer dirty, and releases it.
+ * Performs every page mutation RelUndoFinish() does (header+payload memcpy,
+ * max_xid bump, MarkBufferDirty on the data page and, for a new page, the
+ * metapage) and builds the block-0 WAL data buffer, but does NOT open a
+ * critical section, XLogInsert, PageSetLSN, or release any buffer.  The undo
+ * buffer (and metapage, if a new page was allocated) stay locked+pinned.
  *
- * WAL logging is deferred to Phase 3 (WAL integration).
+ * The staged facts are returned in *result so the caller can either emit the
+ * standalone RM_RELUNDO_ID record (RelUndoFinish wrapper) or fold the same
+ * bytes into a combined record under a different resource manager (RECNO FOLD).
  */
 void
-RelUndoFinish(Relation rel, Buffer undo_buffer, RelUndoRecPtr ptr,
-			  const RelUndoRecordHeader *header, const void *payload,
-			  Size payload_size)
+RelUndoStage(Relation rel, Buffer undo_buffer, RelUndoRecPtr ptr,
+			 const RelUndoRecordHeader *header, const void *payload,
+			 Size payload_size, RelUndoStageResult *result)
 {
 	Page		page;
 	char	   *contents;
 	uint16		offset;
 	Size		total_record_size;
-	xl_relundo_insert xlrec;
 	char	   *record_data;
 	RelUndoPageHeader datahdr;
 	bool		is_new_page;
-	uint8		info;
 	Buffer		metabuf = InvalidBuffer;
 
-	elog(DEBUG1, "RelUndoFinish: starting, ptr=%lu, payload_size=%zu",
-		 (unsigned long) ptr, payload_size);
-
-	elog(DEBUG1, "RelUndoFinish: calling BufferGetPage");
 	page = BufferGetPage(undo_buffer);
-
-	elog(DEBUG1, "RelUndoFinish: calling PageGetContents");
 	contents = PageGetContents(page);
-
-	elog(DEBUG1, "RelUndoFinish: calling RelUndoGetOffset");
 	offset = RelUndoGetOffset(ptr);
-
-	elog(DEBUG1, "RelUndoFinish: casting to RelUndoPageHeader");
 	datahdr = (RelUndoPageHeader) contents;
-
-	elog(DEBUG1, "RelUndoFinish: checking is_new_page, offset=%u", offset);
 
 	/*
 	 * Check if this is the first record on a newly allocated page. If the
@@ -658,16 +650,12 @@ RelUndoFinish(Relation rel, Buffer undo_buffer, RelUndoRecPtr ptr,
 	 */
 	is_new_page = (offset == SizeOfRelUndoPageHeaderData);
 
-	elog(DEBUG1, "RelUndoFinish: is_new_page=%d", is_new_page);
-
 	/* Calculate total UNDO record size */
 	total_record_size = SizeOfRelUndoRecordHeader + payload_size;
 
-	elog(DEBUG1, "RelUndoFinish: writing header at offset %u", offset);
 	/* Write the header */
 	memcpy(contents + offset, header, SizeOfRelUndoRecordHeader);
 
-	elog(DEBUG1, "RelUndoFinish: writing payload");
 	/* Write the payload immediately after the header */
 	if (payload_size > 0 && payload != NULL)
 		memcpy(contents + offset + SizeOfRelUndoRecordHeader,
@@ -682,27 +670,19 @@ RelUndoFinish(Relation rel, Buffer undo_buffer, RelUndoRecPtr ptr,
 		TransactionIdFollows(header->urec_xid, datahdr->max_xid))
 		datahdr->max_xid = header->urec_xid;
 
-	elog(DEBUG1, "RelUndoFinish: marking buffer dirty");
-
 	/*
-	 * Mark the buffer dirty now, before the critical section.
+	 * Mark the buffer dirty now, before any critical section.
 	 * XLogRegisterBuffer requires the buffer to be dirty when called.
 	 */
 	MarkBufferDirty(undo_buffer);
 
-	elog(DEBUG1, "RelUndoFinish: checking if need metapage");
-
 	/*
-	 * If this is a new page, get the metapage lock BEFORE entering the
-	 * critical section. We need to include the metapage in the WAL record
-	 * since it was modified during page allocation.
-	 *
-	 * Note: We need EXCLUSIVE lock because XLogRegisterBuffer requires the
-	 * buffer to be exclusively locked.
+	 * If this is a new page, adopt the metapage lock that RelUndoReserve left
+	 * pending.  It was modified during page allocation and must be included in
+	 * whichever WAL record the caller emits.
 	 */
 	if (is_new_page)
 	{
-		elog(DEBUG1, "RelUndoFinish: using pending metapage from RelUndoReserve");
 		Assert(BufferIsValid(relundo_pending_metabuf));
 		metabuf = relundo_pending_metabuf;
 		relundo_pending_metabuf = InvalidBuffer;
@@ -712,17 +692,13 @@ RelUndoFinish(Relation rel, Buffer undo_buffer, RelUndoRecPtr ptr,
 	}
 
 	/*
-	 * Allocate WAL record data buffer BEFORE entering critical section.
-	 * Cannot call palloc() inside a critical section.
+	 * Build the block-0 WAL data buffer.  For a new page we prepend the
+	 * RelUndoPageHeaderData so redo can reconstruct prev_blkno/counter.
 	 */
-	elog(DEBUG1, "RelUndoFinish: allocating WAL record buffer, is_new_page=%d, total_record_size=%zu",
-		 is_new_page, total_record_size);
-
 	if (is_new_page)
 	{
 		Size		wal_data_size = SizeOfRelUndoPageHeaderData + total_record_size;
 
-		elog(DEBUG1, "RelUndoFinish: new page, allocating %zu bytes", wal_data_size);
 		record_data = (char *) palloc(wal_data_size);
 
 		/* Copy page header */
@@ -734,108 +710,130 @@ RelUndoFinish(Relation rel, Buffer undo_buffer, RelUndoRecPtr ptr,
 		if (payload_size > 0 && payload != NULL)
 			memcpy(record_data + SizeOfRelUndoPageHeaderData + SizeOfRelUndoRecordHeader,
 				   payload, payload_size);
+
+		result->wal_record_size = wal_data_size;
 	}
 	else
 	{
 		/* Normal case: just the UNDO record */
-		elog(DEBUG1, "RelUndoFinish: existing page, allocating %zu bytes", total_record_size);
 		record_data = (char *) palloc(total_record_size);
-		elog(DEBUG1, "RelUndoFinish: palloc succeeded, record_data=%p", record_data);
-		elog(DEBUG1, "RelUndoFinish: copying header, header=%p, size=%zu", header, SizeOfRelUndoRecordHeader);
 		memcpy(record_data, header, SizeOfRelUndoRecordHeader);
-		elog(DEBUG1, "RelUndoFinish: header copied");
 		if (payload_size > 0 && payload != NULL)
-		{
-			elog(DEBUG1, "RelUndoFinish: copying payload, payload=%p, size=%zu", payload, payload_size);
 			memcpy(record_data + SizeOfRelUndoRecordHeader, payload, payload_size);
-			elog(DEBUG1, "RelUndoFinish: payload memcpy completed");
-		}
-		elog(DEBUG1, "RelUndoFinish: finished WAL buffer preparation");
+
+		result->wal_record_size = total_record_size;
 	}
 
-	elog(DEBUG1, "RelUndoFinish: about to START_CRIT_SECTION");
+	result->undo_buffer = undo_buffer;
+	result->metabuf = metabuf;
+	result->is_new_page = is_new_page;
+	result->urec_type = header->urec_type;
+	result->urec_len = header->urec_len;
+	result->page_offset = MAXALIGN(SizeOfPageHeaderData) + offset;
+	result->new_pd_lower = datahdr->pd_lower;
+	result->max_xid = datahdr->max_xid;
+	result->wal_record_data = record_data;
+}
+
+/*
+ * RelUndoFinish
+ *		Complete UNDO record insertion (Phase 2 of 2-phase insert)
+ *
+ * Writes the header and payload into the space reserved by RelUndoReserve(),
+ * WAL-logs the insertion as a standalone RM_RELUNDO_ID record, and releases the
+ * buffer(s).  Built on RelUndoStage(): stage the page mutation, then emit the
+ * record and stamp the LSN.
+ */
+void
+RelUndoFinish(Relation rel, Buffer undo_buffer, RelUndoRecPtr ptr,
+			  const RelUndoRecordHeader *header, const void *payload,
+			  Size payload_size)
+{
+	RelUndoStageResult staged;
+	Page		page;
+	uint8		info;
+
+	RelUndoStage(rel, undo_buffer, ptr, header, payload, payload_size, &staged);
+
+	page = BufferGetPage(undo_buffer);
+
 	/* WAL-log the insertion */
 	START_CRIT_SECTION();
 
-	xlrec.urec_type = header->urec_type;
-	xlrec.urec_len = header->urec_len;
-	xlrec.page_offset = MAXALIGN(SizeOfPageHeaderData) + offset;
-	xlrec.new_pd_lower = datahdr->pd_lower;
-	xlrec.max_xid = datahdr->max_xid;
-
-	info = XLOG_RELUNDO_INSERT;
-	if (is_new_page)
-		info |= XLOG_RELUNDO_INIT_PAGE;
-
-	XLogBeginInsert();
-	XLogRegisterData((char *) &xlrec, SizeOfRelundoInsert);
-
-	/*
-	 * Register the data page. We need to register the entire UNDO record
-	 * (header + payload) as block data.
-	 *
-	 * For a new page, we also include the RelUndoPageHeaderData so that redo
-	 * can reconstruct the page header fields (prev_blkno, counter). Use
-	 * REGBUF_WILL_INIT to indicate the redo routine will initialize the page.
-	 *
-	 * For an existing page, do NOT pass REGBUF_STANDARD.  RelUndo data pages
-	 * keep the standard PageHeader.pd_lower pinned at the empty value and track
-	 * their real used extent in the shadow RelUndoPageHeader inside the page
-	 * contents area.  REGBUF_STANDARD would treat [pd_lower, pd_upper) as a
-	 * free "hole" and elide the entire contents from any full-page image, so a
-	 * BLK_RESTORED redo would bring the page back zeroed -- losing the record
-	 * bytes and the prev_blkno chain link.  Logging the whole page (flag 0)
-	 * keeps the FPI faithful.
-	 */
-	if (is_new_page)
-		XLogRegisterBuffer(0, undo_buffer, REGBUF_WILL_INIT);
-	else
-		XLogRegisterBuffer(0, undo_buffer, 0);
-
-	if (is_new_page)
 	{
-		Size		wal_data_size = SizeOfRelUndoPageHeaderData + total_record_size;
+		xl_relundo_insert xlrec;
 
-		XLogRegisterBufData(0, record_data, wal_data_size);
+		xlrec.urec_type = staged.urec_type;
+		xlrec.urec_len = staged.urec_len;
+		xlrec.page_offset = staged.page_offset;
+		xlrec.new_pd_lower = staged.new_pd_lower;
+		xlrec.max_xid = staged.max_xid;
+
+		info = XLOG_RELUNDO_INSERT;
+		if (staged.is_new_page)
+			info |= XLOG_RELUNDO_INIT_PAGE;
+
+		XLogBeginInsert();
+		XLogRegisterData((char *) &xlrec, SizeOfRelundoInsert);
+
+		/*
+		 * Register the data page.  We register the entire UNDO record
+		 * (header + payload) as block data.
+		 *
+		 * For a new page, the block data also carries the RelUndoPageHeaderData
+		 * so redo can reconstruct prev_blkno/counter; REGBUF_WILL_INIT tells
+		 * redo it will initialize the page.
+		 *
+		 * For an existing page, do NOT pass REGBUF_STANDARD.  RelUndo data
+		 * pages keep the standard PageHeader.pd_lower pinned at the empty value
+		 * and track their real used extent in the shadow RelUndoPageHeader
+		 * inside the page contents area.  REGBUF_STANDARD would treat
+		 * [pd_lower, pd_upper) as a free "hole" and elide the entire contents
+		 * from any full-page image, so a BLK_RESTORED redo would bring the page
+		 * back zeroed -- losing the record bytes and the prev_blkno chain link.
+		 * Logging the whole page (flag 0) keeps the FPI faithful.
+		 */
+		if (staged.is_new_page)
+			XLogRegisterBuffer(0, undo_buffer, REGBUF_WILL_INIT);
+		else
+			XLogRegisterBuffer(0, undo_buffer, 0);
+
+		XLogRegisterBufData(0, staged.wal_record_data, staged.wal_record_size);
 
 		/*
 		 * When allocating a new page, the metapage was also updated
 		 * (head_blkno). Register it as block 1 so the metapage state is
-		 * preserved in WAL. Use REGBUF_STANDARD to get a full page image.
+		 * preserved in WAL.  Use REGBUF_STANDARD to get a full page image.
 		 */
-		XLogRegisterBuffer(1, metabuf, REGBUF_STANDARD);
-	}
-	else
-	{
-		/* Normal case: just the UNDO record */
-		XLogRegisterBufData(0, record_data, total_record_size);
-	}
+		if (staged.is_new_page)
+			XLogRegisterBuffer(1, staged.metabuf, REGBUF_STANDARD);
 
-	{
-		XLogRecPtr	recptr = XLogInsert(RM_RELUNDO_ID, info);
+		{
+			XLogRecPtr	recptr = XLogInsert(RM_RELUNDO_ID, info);
 
-		/*
-		 * Stamp the record LSN onto every page we dirtied and registered.
-		 * Without this the buffer manager's WAL-before-data rule is broken:
-		 * the checkpointer flushes WAL only up to a dirty buffer's page LSN
-		 * before writing it, so a stale/zero LSN lets an UNDO page (including
-		 * its prev_blkno chain links) reach disk ahead of the WAL that
-		 * describes it, corrupting the chain on crash recovery.
-		 */
-		PageSetLSN(page, recptr);
-		if (is_new_page)
-			PageSetLSN(BufferGetPage(metabuf), recptr);
+			/*
+			 * Stamp the record LSN onto every page we dirtied and registered.
+			 * Without this the buffer manager's WAL-before-data rule is broken:
+			 * the checkpointer flushes WAL only up to a dirty buffer's page LSN
+			 * before writing it, so a stale/zero LSN lets an UNDO page
+			 * (including its prev_blkno chain links) reach disk ahead of the
+			 * WAL that describes it, corrupting the chain on crash recovery.
+			 */
+			PageSetLSN(page, recptr);
+			if (staged.is_new_page)
+				PageSetLSN(BufferGetPage(staged.metabuf), recptr);
+		}
 	}
 
 	END_CRIT_SECTION();
 
-	pfree(record_data);
+	pfree(staged.wal_record_data);
 
 	UnlockReleaseBuffer(undo_buffer);
 
 	/* Release metapage if we locked it */
-	if (BufferIsValid(metabuf))
-		UnlockReleaseBuffer(metabuf);
+	if (BufferIsValid(staged.metabuf))
+		UnlockReleaseBuffer(staged.metabuf);
 }
 
 /*
@@ -1014,6 +1012,51 @@ RelUndoCancel(Relation rel, Buffer undo_buffer, RelUndoRecPtr ptr)
 }
 
 /*
+ * relundo_fork_nblocks_fast
+ *
+ * Return the number of blocks in the UNDO fork with no per-call filesystem
+ * syscalls on the hot path.
+ *
+ * The old guard was smgrexists() + smgrnblocks() per call.  smgrexists() ->
+ * mdexists() unconditionally mdclose()s the fork fd (to notice an unlink) and
+ * the next access reopens it; on the multiversion read path (per scanned
+ * tuple carrying a retained before-image) that FD open/close storm dominated
+ * CPU at high core count (dentry lockref contention).  smgrnblocks_cached()
+ * does NOT help outside recovery -- it only returns a cached value when
+ * InRecovery -- so the previous version still hit smgrexists() every call.
+ *
+ * smgrnblocks() itself is cheap after the first call: it opens the fork once
+ * (mdopenfork) and leaves the fd cached in the SMgrRelation; it never closes
+ * it.  So the fix is to drop smgrexists() from the hot path entirely and rely
+ * on smgrnblocks().  A valid RelUndoRecPtr can only have been produced by a
+ * writer that extended the fork, so the fork provably exists whenever a
+ * caller has a valid pointer into it; smgrnblocks() therefore never faults
+ * here.  For extra safety against a fake/partial relcache entry whose fork is
+ * genuinely absent, we probe smgrexists() exactly ONCE per SMgrRelation and
+ * latch the positive result (a stat that then keeps the fd via the
+ * subsequent smgrnblocks open); if the fork is absent we return 0 and never
+ * cache, so a later-created fork is still picked up.
+ */
+static inline BlockNumber
+relundo_fork_nblocks_fast(Relation rel)
+{
+	SMgrRelation smgr = RelationGetSmgr(rel);
+
+	/*
+	 * If the fork's fd is already open in this SMgrRelation, it exists and is
+	 * open -- go straight to smgrnblocks (no stat, no close).  md_num_open_segs
+	 * is >0 once mdopenfork has run for this fork.
+	 */
+	if (smgr->md_num_open_segs[RELUNDO_FORKNUM] > 0)
+		return smgrnblocks(smgr, RELUNDO_FORKNUM);
+
+	/* Cold: confirm the fork exists once, then open+size it (fd stays open). */
+	if (!smgrexists(smgr, RELUNDO_FORKNUM))
+		return 0;
+	return smgrnblocks(smgr, RELUNDO_FORKNUM);
+}
+
+/*
  * RelUndoReadRecord
  *		Read an UNDO record from the log
  *
@@ -1039,16 +1082,13 @@ RelUndoReadRecord(Relation rel, RelUndoRecPtr ptr, RelUndoRecordHeader *header,
 	offset = RelUndoGetOffset(ptr);
 
 	/*
-	 * Check that the block exists in the UNDO fork.  The UNDO fork is always
-	 * a standard BLCKSZ-paged smgr fork, so probe smgr directly rather than
-	 * via RelationGetNumberOfBlocksInFork(): the latter dispatches on
-	 * rd_rel->relkind, which is zero for the fake relcache entry used during
-	 * end-of-recovery UNDO and would trip an assertion.
+	 * Bounds-check the block against the UNDO fork size using the cached
+	 * nblocks (no per-call filesystem syscalls; see
+	 * relundo_fork_nblocks_fast).  A zero result means the fork does not
+	 * exist -- treat as out of range.  The UNDO fork is always a standard
+	 * BLCKSZ-paged smgr fork.
 	 */
-	if (!smgrexists(RelationGetSmgr(rel), RELUNDO_FORKNUM))
-		return false;
-
-	if (blkno >= smgrnblocks(RelationGetSmgr(rel), RELUNDO_FORKNUM))
+	if (blkno >= relundo_fork_nblocks_fast(rel))
 		return false;
 
 	buf = ReadBufferExtended(rel, RELUNDO_FORKNUM, blkno, RBM_NORMAL, NULL);
@@ -1062,6 +1102,22 @@ RelUndoReadRecord(Relation rel, RelUndoRecPtr ptr, RelUndoRecordHeader *header,
 		RelUndoPageHeader hdr = (RelUndoPageHeader) contents;
 
 		if (offset < SizeOfRelUndoPageHeaderData || offset >= hdr->pd_lower)
+		{
+			UnlockReleaseBuffer(buf);
+			return false;
+		}
+
+		/*
+		 * ABA defense: reject a verptr whose embedded generation counter does
+		 * not match the page's current counter.  A free-list recycle bumps
+		 * meta->counter (relundo_page.c) before re-initialising the page, so
+		 * a stale verptr to a recycled blkno will see hdr->counter != its own
+		 * counter and fail here.  Returning false is the chain-end signal:
+		 * RecnoReconstructVisibleVersion treats it as best-effort terminator,
+		 * which is the correct, safe answer (never silently reverse-apply a
+		 * structurally valid but unrelated record).
+		 */
+		if (RelUndoGetCounter(ptr) != hdr->counter)
 		{
 			UnlockReleaseBuffer(buf);
 			return false;
@@ -1090,6 +1146,68 @@ RelUndoReadRecord(Relation rel, RelUndoRecPtr ptr, RelUndoRecordHeader *header,
 	{
 		*payload = NULL;
 		*payload_size = 0;
+	}
+
+	UnlockReleaseBuffer(buf);
+	return true;
+}
+
+/*
+ * RelUndoReadRecordHeader
+ *		Read only the header of an UNDO record.
+ *
+ * Same discard/ABA/hole semantics as RelUndoReadRecord but skips the
+ * payload palloc+memcpy.  Used by hot probes (e.g. the lost-update
+ * conflict probe) that need only urec_xid.
+ */
+bool
+RelUndoReadRecordHeader(Relation rel, RelUndoRecPtr ptr,
+						RelUndoRecordHeader *header)
+{
+	BlockNumber blkno;
+	uint16		offset;
+	Buffer		buf;
+	Page		page;
+	char	   *contents;
+
+	if (!RelUndoRecPtrIsValid(ptr))
+		return false;
+
+	blkno = RelUndoGetBlockNum(ptr);
+	offset = RelUndoGetOffset(ptr);
+
+	/* Cached bounds check; see relundo_fork_nblocks_fast. */
+	if (blkno >= relundo_fork_nblocks_fast(rel))
+		return false;
+
+	buf = ReadBufferExtended(rel, RELUNDO_FORKNUM, blkno, RBM_NORMAL, NULL);
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+
+	page = BufferGetPage(buf);
+	contents = PageGetContents(page);
+
+	{
+		RelUndoPageHeader hdr = (RelUndoPageHeader) contents;
+
+		if (offset < SizeOfRelUndoPageHeaderData || offset >= hdr->pd_lower)
+		{
+			UnlockReleaseBuffer(buf);
+			return false;
+		}
+
+		if (RelUndoGetCounter(ptr) != hdr->counter)
+		{
+			UnlockReleaseBuffer(buf);
+			return false;
+		}
+	}
+
+	memcpy(header, contents + offset, SizeOfRelUndoRecordHeader);
+
+	if (header->urec_type == 0)
+	{
+		UnlockReleaseBuffer(buf);
+		return false;
 	}
 
 	UnlockReleaseBuffer(buf);
@@ -1293,9 +1411,9 @@ RelUndoVacuum(Relation rel, TransactionId oldest_xmin)
  * RELUNDO_MAYBE_VACUUM_MIN_BLOCKS
  *		Skip the throttled discard sweep below this fork size (in blocks).
  *		Chosen to make the common case (a quiescent or lightly-written
- *		table) resolve to a single smgrnblocks() check with no page reads,
- *		while still catching sustained-churn growth well before it reaches
- *		problematic size.
+ *		table) resolve to a single relundo_fork_nblocks_fast() call with no
+ *		buffer I/O, while still catching sustained-churn growth well before
+ *		it reaches problematic size.
  */
 #define RELUNDO_MAYBE_VACUUM_MIN_BLOCKS	64
 
@@ -1336,10 +1454,7 @@ RelUndoMaybeVacuum(Relation rel)
 	if (now_ts - relundo_last_vacuum < 5000000)	/* 5 seconds */
 		return;
 
-	if (!smgrexists(RelationGetSmgr(rel), RELUNDO_FORKNUM))
-		return;
-
-	nblocks = smgrnblocks(RelationGetSmgr(rel), RELUNDO_FORKNUM);
+	nblocks = relundo_fork_nblocks_fast(rel);
 	if (nblocks < RELUNDO_MAYBE_VACUUM_MIN_BLOCKS)
 		return;
 

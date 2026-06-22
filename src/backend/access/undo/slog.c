@@ -1,30 +1,31 @@
 /*-------------------------------------------------------------------------
  *
  * slog.c
- *	  Secondary Log (sLog) -- Skip-list + sparsemap shared-memory tracking
+ *	  Secondary Log (sLog) -- radix-tree + flat-hash shared-memory tracking
  *
  * The sLog tracks aborted transactions and per-tuple operations in shared
  * memory for the UNDO subsystem.
  *
- * Transaction sLog (skip-list + sparsemap):
- *   - A shared-memory skip-list keyed by (xid, reloid) stores full abort
- *     metadata.  Entries are ordered by xid then reloid, enabling efficient
- *     range operations for per-xid lookups.
- *   - A shared-memory sparsemap (compressed bitmap) provides O(1)
- *     SLogXidIsPresent() checks.
- *   - The skip-list is protected by a single LWLock (sLog modifications
+ * Transaction sLog (adaptive radix tree):
+ *   - A shared-memory adaptive radix tree (radixtree.h, RT_SHMEM) keyed by
+ *     (xid, reloid) packed into a uint64 stores full abort metadata.  With
+ *     xid in the high bits, ordered iteration groups all entries for a
+ *     given xid contiguously, enabling efficient per-xid range operations.
+ *   - The tree lives in the sLog's DSA area and grows on demand.
+ *   - The radix tree is protected by a single LWLock (sLog modifications
  *     only occur on transaction abort, an uncommon path).
- *   - The sparsemap is protected by a SpinLock (operations are O(1)).
  *
- * Tuple sLog (LRLock-protected flat hash):
+ * Tuple sLog (seqlock-protected flat hash):
  *   - Keyed by (relid, tid), stores up to SLOG_MAX_TUPLE_OPS concurrent
  *     operations per tuple.  Designed for the RECNO table AM.
- *   - Uses a flat open-addressing hash table protected by LRLock for
- *     wait-free reads.  Writes are serialized via SLogTupleWriterLock.
+ *   - Uses a flat open-addressing hash table protected by a seqlock for
+ *     wait-free reads.  Writes are serialized via the per-partition
+ *     writer_lock.
  *   - WAL-free: entries are transient, removed at commit/abort.
  *
- * Locking: Transaction sLog uses LWTRANCHE_SLOG.  Tuple sLog uses
- * LRLock (wait-free reads) + SLogTupleWriterLock (writer serialization).
+ * Locking: Transaction sLog uses LWTRANCHE_SLOG.  Tuple sLog uses a
+ * per-partition seqlock (wait-free reads) + per-partition writer_lock
+ * (writer serialization).
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -76,7 +77,6 @@ slog_num_cpus(void)
 #include "nodes/lockoptions.h"
 #include "miscadmin.h"
 #include "storage/lock.h"
-#include "storage/lrlock.h"
 #include "storage/lwlock.h"
 #include "storage/off.h"
 #include "storage/proc.h"
@@ -89,108 +89,68 @@ slog_num_cpus(void)
 #include "utils/snapmgr.h"
 #include "utils/timestamp.h"
 
-#include "lib/sparsemap.h"
-
 /* ----------------------------------------------------------------
- * Skip-list instantiation for transaction sLog
+ * Adaptive radix tree instantiation for the transaction sLog (ATM)
  *
- * The skip-list is designed for lock-free concurrent access, but we
- * use SKIPLIST_SINGLE_THREADED mode here because:
- *  (a) The pool allocator (shared-memory slab) is not itself lock-free.
- *  (b) The sparsemap is not concurrent-safe.
- *  (c) sLog modifications only happen on transaction abort -- an
- *      uncommon path -- so a single LWLock is sufficient.
+ * The Aborted Transaction Map is keyed by a single uint64 formed from
+ * (xid, reloid):  key = (xid << 32) | reloid.  Both are uint32 and the
+ * two halves pack exactly.  Because xid occupies the high 32 bits, the
+ * radix tree's ordered iteration groups all entries for one xid
+ * contiguously (xid-major, reloid-minor ascending) -- the same ordering
+ * property the old skip-list provided, which the per-xid range
+ * operations below rely on.
  *
- * SKIPLIST_SINGLE_THREADED eliminates C11 <stdatomic.h> dependency,
- * replacing atomics with plain loads/stores.  All concurrent access
- * is serialized externally by txn_lock (LWLock).
- *
- * Max height 16 supports 2^16 = 65,536 entries; the pool holds at
- * most 256 user entries, so this provides ample headroom while
- * minimizing per-node overhead (16 level pointers per pool slot).
+ * The tree lives in the sLog's existing DSA area (the one used for
+ * before-images) so it grows on demand rather than reserving a fixed
+ * shared-memory pool.  All access is serialized externally by the
+ * existing txn_lock (LWLock): SET/DELETE under LW_EXCLUSIVE, FIND and
+ * iteration under LW_SHARED.  We do not use the radix tree's own
+ * internal lock (RT_LOCK_*), since txn_lock already provides the needed
+ * serialization.
  * ----------------------------------------------------------------
  */
-#define SKIPLIST_MAX_HEIGHT 16
-#define SKIPLIST_SINGLE_THREADED
-#include "lib/skiplist.h"
 
 /*
- * struct slog_txn_node - Skip-list node for transaction sLog entries.
+ * slog_atm_value_t - value stored in the ATM radix tree.
  *
- * Ordered by (xid ASC, reloid ASC) so all entries for a given xid
- * are contiguous in the skip-list.
+ * The key (xid, reloid) is implicit in the tree path, so only the data
+ * fields are stored here.
  */
-struct slog_txn_node
+typedef struct slog_atm_value_t
 {
-	/* Key fields */
-	TransactionId xid;
-	Oid			reloid;
-
-	/* Data fields */
 	XLogRecPtr	last_batch_lsn; /* LSN of last UNDO batch for this xid */
 	Oid			dboid;
 	TimestampTz abort_time;
 	bool		revert_complete;
+} slog_atm_value_t;
 
-	/* Skip-list metadata */
-	SKIPLIST_ENTRY(slog_txn) entries;
-};
+#define RT_PREFIX slog_atm
+#define RT_SCOPE static pg_attribute_unused()
+#define RT_DECLARE
+#define RT_DEFINE
+#define RT_VALUE_TYPE slog_atm_value_t
+#define RT_SHMEM
+#define RT_USE_DELETE
+#include "lib/radixtree.h"
 
-/*
- * Suppress warnings from macro-generated skip-list functions:
- * - Missing prototypes: SKIPLIST_DECL generates non-static functions
- * - Mixed declarations: the macro bodies use C99 style
- * - Unused functions: not all generated functions are called
- */
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wmissing-prototypes"
-#pragma GCC diagnostic ignored "-Wdeclaration-after-statement"
-#pragma GCC diagnostic ignored "-Wunused-function"
+/* ATM key encoding: xid in the high 32 bits, reloid in the low 32 bits. */
+static inline uint64
+slog_atm_key(TransactionId xid, Oid reloid)
+{
+	return ((uint64) xid << 32) | (uint64) reloid;
+}
 
-/* *INDENT-OFF* */
-SKIPLIST_DECL(slog_txn, sl_, entries,
-	/* compare_entries: order by (xid, reloid) */
-	{
-		if (a->xid < b->xid)
-			return -1;
-		if (a->xid > b->xid)
-			return 1;
-		if (a->reloid < b->reloid)
-			return -1;
-		if (a->reloid > b->reloid)
-			return 1;
-		return 0;
-	},
-	/* free_entry: no-op (no heap resources to free) */
-	{
-		(void) node;
-	},
-	/* update_entry: copy data fields from value */
-	{
-		slog_txn_node_t *src = (slog_txn_node_t *) value;
-		node->last_batch_lsn = src->last_batch_lsn;
-		node->dboid = src->dboid;
-		node->abort_time = src->abort_time;
-		node->revert_complete = src->revert_complete;
-	},
-	/* archive_entry: deep copy */
-	{
-		dest->xid = src->xid;
-		dest->reloid = src->reloid;
-		dest->last_batch_lsn = src->last_batch_lsn;
-		dest->dboid = src->dboid;
-		dest->abort_time = src->abort_time;
-		dest->revert_complete = src->revert_complete;
-	},
-	/* sizeof_entry */
-	{
-		bytes = sizeof(slog_txn_node_t);
-	})
+static inline TransactionId
+slog_atm_key_xid(uint64 key)
+{
+	return (TransactionId) (key >> 32);
+}
 
-SKIPLIST_DECL_POOL(slog_txn, sl_, entries, SLOG_TXN_POOL_CAPACITY)
-/* *INDENT-ON* */
-
-#pragma GCC diagnostic pop
+static inline Oid
+slog_atm_key_reloid(uint64 key)
+{
+	return (Oid) (key & 0xFFFFFFFFu);
+}
 
 /*
  * Initial size for the DSA area used by before-image storage.
@@ -200,19 +160,17 @@ SKIPLIST_DECL_POOL(slog_txn, sl_, entries, SLOG_TXN_POOL_CAPACITY)
 #define SLOG_DSA_MAX_SIZE_MB	256				/* default max: 256 MB */
 
 /*
- * Maximum number of abort ops applied to an LRLock partition between
- * LRLockPublish calls in SLogTupleMarkAborted.
+ * Maximum number of abort ops applied to a partition between seqlock
+ * begin/end cycles in SLogTupleMarkAborted / SLogTupleCleanupRetained.
  *
- * The LRLock oplog lives in the fixed main shared-memory arena.  When a
- * single publish cycle overflows its initial 4 KB capacity the oplog is
- * regrown with a runtime ShmemAlloc that doubles and never frees the old
- * buffer; a very large rollback applying that many ops before one publish
- * exhausts main shared memory and crashes the whole server.  Publishing every
- * SLOG_ABORT_PUBLISH_BATCH ops resets oplog_used to 0, so we must keep one
- * batch comfortably below the oplog's initial capacity to guarantee the
- * runtime ShmemAlloc is never triggered.  Each entry is an 8-byte header plus
- * MAXALIGN(sizeof(SLogFlatOp)) (~96 bytes); 24 entries (~2.3 KB) leaves margin
- * under the 4 KB LRLOCK_OPLOG_INITIAL_CAPACITY even if the op struct grows.
+ * The seqlock keeps its counter odd for the whole write cycle, so any
+ * concurrent wait-free reader spins until the counter turns even.  A very
+ * large rollback (hundreds of thousands of tuples applied in one cycle)
+ * would pin readers spinning for the entire batch.  Ending and re-beginning
+ * the seqlock every SLOG_ABORT_PUBLISH_BATCH ops bounds that odd-hold
+ * window; the partition writer_lock is held across the whole function, so
+ * dropping to even at a batch boundary leaves the partition consistent for
+ * any reader that observes it.
  */
 #define SLOG_ABORT_PUBLISH_BATCH	24
 
@@ -231,14 +189,9 @@ SKIPLIST_DECL_POOL(slog_txn, sl_, entries, SLOG_TXN_POOL_CAPACITY)
  */
 typedef struct SLogSharedState
 {
-	/* Transaction skip-list */
-	slog_txn_t	txn_list;		/* skip-list head struct */
-	_skip_pool_slog_txn_t txn_pool; /* pool allocator struct */
-	LWLockPadded txn_lock;		/* single LWLock for skip-list */
-
-	/* XID presence bitmap */
-	sparsemap_t xid_map;		/* sparsemap struct */
-	slock_t		xid_spinlock;	/* SpinLock for sparsemap */
+	/* Transaction ATM (adaptive radix tree in the DSA area below) */
+	dsa_pointer atm_handle;		/* RT handle; InvalidDsaPointer until init */
+	LWLockPadded txn_lock;		/* single LWLock serializing ATM access */
 
 	/* Tuple flat hash: N-way partitioned for reduced writer contention.
 	 * Partition count determined at startup by slog_num_partitions GUC. */
@@ -357,14 +310,11 @@ static SLogSharedState *SLogState = NULL;
 /* Per-backend DSA attachment (lazy, via SLogEnsureDsaAttached) */
 static dsa_area *slog_dsa_handle = NULL;
 
-/* Pointers to ShmemAlloc'd regions, set by ShmemRequestStruct framework */
-static char *SLogPoolSlots = NULL;
-static char *SLogPoolFreeList = NULL;
-static char *SLogXidMapBuffer = NULL;
-static char *SLogFlatHashBlock = NULL;	/* single allocation for all partition LRLock blocks */
+/* Per-backend attached ATM radix tree (lazy, via slog_atm_tree) */
+static slog_atm_radix_tree *slog_atm_tree_local = NULL;
 
-/* Sentinel value for slh_ebr to redirect node deallocation */
-static int	slog_ebr_sentinel = 1;
+/* Pointers to ShmemAlloc'd regions, set by ShmemRequestStruct framework */
+static char *SLogFlatHashBlock = NULL;	/* single allocation for all partition flat-hash copies */
 
 /* Rate-limiting for sLog overflow warnings (per-backend) */
 static int	slog_overflow_warning_count = 0;
@@ -407,37 +357,21 @@ static SLogTrackedKey *slog_tracked_keys = NULL;
 static bool slog_has_shared_entries = false;	/* any non-local_only entries? */
 
 /* ----------------------------------------------------------------
- * Compact INSERT tracking via sparsemap (OOM fix)
+ * TID encoding for backend-local INSERT tracking
  *
- * For top-level transactions (no active savepoint), local-only INSERT
- * entries are tracked in per-relid sparsemaps instead of the linked list.
- * The sparsemap run-length compresses contiguous runs of set bits, so a
- * bulk INSERT into freshly extended pages collapses to a handful of runs
- * regardless of row count (measured: 300k sequential rows use 24 bytes,
- * 3M rows stay flat), preventing the multi-GB per-backend growth that the
- * earlier shifted encoding produced under bulk INSERT...SELECT.
+ * Each (blkno, offnum) pair maps to a dense 64-bit key used by the
+ * backend-local INSERT-tracking hash (see below):
  *
- * TID encoding: blkno * MaxOffsetNumber + (offnum - 1)
+ *   blkno * MaxOffsetNumber + (offnum - 1)
  *
- * This maps each (blkno, offnum) pair to a dense, contiguous index: page
- * N's offsets occupy [N*D, N*D + D), immediately followed by page N+1's,
- * with no gaps between pages.  Contiguity is what lets the sparsemap RLE
- * compress sequential inserts.  The earlier ((blkno << 16) | offnum)
- * scheme left a ~65000-index hole between each page's offnum run (offnums
- * use only ~9 of the 16 reserved bits), defeating RLE and bloating the map.
- *
- * Losslessness invariant: this encoding is an in-memory, per-backend
- * sparsemap key only -- it is never written to WAL or disk -- so the
- * divisor is free to be any value that is strictly greater than any real
- * offnum a tracked page can hold.  MaxOffsetNumber is the maximum number of
- * line pointers any page can hold and is therefore an AM-agnostic upper
- * bound: offnum <= MaxOffsetNumber always holds and the divisor never
- * aliases two pages' TIDs onto the same index.  A check at each encode site
- * enforces this; an out-of-range offset is a corruption bug, not a
- * recoverable condition, so it raises ERROR even in production builds.
- *
- * Subtransaction entries still use the linked list because subtxn abort
- * needs per-entry subxid filtering.
+ * Losslessness invariant: this key is in-memory and per-backend only --
+ * never written to WAL or disk -- so the divisor need only be strictly
+ * greater than any real offnum a tracked page can hold.  MaxOffsetNumber
+ * is the maximum number of line pointers any page can hold and is an
+ * AM-agnostic upper bound: offnum <= MaxOffsetNumber always holds, so the
+ * divisor never aliases two pages' TIDs onto the same key.  A check at each
+ * encode site enforces this; an out-of-range offset is a corruption bug,
+ * not a recoverable condition, so it raises ERROR even in production builds.
  * ----------------------------------------------------------------
  */
 #define SLOG_ENCODE_TID(blkno, offnum) \
@@ -447,18 +381,62 @@ static bool slog_has_shared_entries = false;	/* any non-local_only entries? */
 #define SLOG_DECODE_OFFNUM(encoded) \
 	((OffsetNumber) ((encoded) % MaxOffsetNumber + 1))
 
-/* Initial sparsemap buffer size: 4KB, grows geometrically via sm_add_grow */
-#define SLOG_INSERT_MAP_INIT_SIZE	4096
-
-typedef struct SLogInsertMap
+/* ----------------------------------------------------------------
+ * Backend-local INSERT tracking (simplehash)
+ *
+ * Top-level local-only INSERTs are recorded in a single backend-local
+ * open-addressing hash keyed by (relid, encoded_tid).  This replaces the
+ * former per-relid linked-list-of-sparsemaps, which forced an O(n) chunk
+ * scan on every per-tuple visibility probe.  The hash lives in
+ * TopTransactionContext and is destroyed per transaction.  No locks: it is
+ * strictly backend-private.
+ * ----------------------------------------------------------------
+ */
+typedef struct SLogInsertTidKey
 {
 	Oid			relid;
-	sparsemap_t *map;			/* bit per TID, run-length compressed */
-	sm_cursor_t add_cursor;		/* accelerates ascending append inserts */
-	struct SLogInsertMap *next;
-} SLogInsertMap;
+	uint64		encoded_tid;	/* SLOG_ENCODE_TID(blkno, offnum) */
+} SLogInsertTidKey;
 
-static SLogInsertMap *slog_insert_maps = NULL;
+typedef struct SLogInsertTidEntry
+{
+	SLogInsertTidKey key;		/* (relid, encoded_tid) */
+	char		status;			/* required by simplehash */
+} SLogInsertTidEntry;
+
+static inline uint32
+slog_insert_tid_hash(Oid relid, uint64 encoded_tid)
+{
+	uint64		h = hash_combine64((uint64) hash_uint32((uint32) relid),
+								   murmurhash64(encoded_tid));
+
+	return (uint32) (h ^ (h >> 32));
+}
+
+#define SH_PREFIX sloginsert
+#define SH_ELEMENT_TYPE SLogInsertTidEntry
+#define SH_KEY_TYPE SLogInsertTidKey
+#define SH_KEY key
+#define SH_HASH_KEY(tb, key) slog_insert_tid_hash((key).relid, (key).encoded_tid)
+#define SH_EQUAL(tb, a, b) ((a).relid == (b).relid && (a).encoded_tid == (b).encoded_tid)
+#define SH_SCOPE static inline
+#define SH_DEFINE
+#define SH_DECLARE
+#include "lib/simplehash.h"
+
+static sloginsert_hash *slog_insert_tids = NULL;
+
+/*
+ * Lazily create the backend-local INSERT hash in TopTransactionContext.
+ * Returns the (now non-NULL) table.
+ */
+static inline sloginsert_hash *
+slog_insert_tids_ensure(void)
+{
+	if (slog_insert_tids == NULL)
+		slog_insert_tids = sloginsert_create(TopTransactionContext, 256, NULL);
+	return slog_insert_tids;
+}
 
 /* ----------------------------------------------------------------
  * Internal helpers
@@ -494,23 +472,56 @@ SLogGetPartitionByIndex(int part)
  * the old single-lock code.  The `fp__` variable is defined in-scope by
  * SLOG_PART_READ_BEGIN / SLOG_PART_WRITE_BEGIN.
  */
-#define SLOG_PART_LRLOCK(key_ptr) \
-	(SLogGetPartition(key_ptr)->lrlock)
 #define SLOG_PART_WRITER_LOCK(key_ptr) \
 	(&SLogGetPartition(key_ptr)->writer_lock.lock)
 
 /*
- * EBR retire callback for the skip-list.
- *
- * Instead of pfree()'ing the node (which would crash on shared memory),
- * we return it to the pool's free list.
+ * SLogPartApplyOne
+ *		Single-op write helper: acquire writer_lock, one seqlock cycle, one
+ *		apply, release.  Covers the many write sites that apply exactly one
+ *		SLogFlatOp to fp->hash.
  */
-static void
-slog_ebr_retire_callback(void *ebr_state, slog_txn_t *slist, slog_txn_node_t *node)
+static inline void
+SLogPartApplyOne(SLogFlatPartition * fp, const SLogFlatOp *op)
 {
-	(void) ebr_state;
-	(void) slist;
-	sl_skip_pool_free_slog_txn(&SLogState->txn_pool, node);
+	LWLockAcquire(&fp->writer_lock.lock, LW_EXCLUSIVE);
+	SLogSeqWriteBegin(fp);
+	SLogFlatHashApply(fp->hash, op, sizeof(*op));
+	SLogSeqWriteEnd(fp);
+	LWLockRelease(&fp->writer_lock.lock);
+}
+
+/*
+ * slog_atm_tree
+ *		Return this backend's attached ATM radix tree, attaching lazily.
+ *
+ * Ensures the sLog DSA area is attached, then attaches to the shared
+ * radix tree via its handle.  The attached wrapper is cached for the
+ * life of the backend (the control block lives in the pinned DSA area).
+ * The caller must hold txn_lock across any use of the returned tree.
+ */
+static slog_atm_radix_tree *
+slog_atm_tree(void)
+{
+	MemoryContext oldcxt;
+
+	if (slog_atm_tree_local != NULL)
+		return slog_atm_tree_local;
+
+	SLogEnsureDsaAttached();
+	if (slog_dsa_handle == NULL)
+		elog(PANIC, "sLog: DSA not attached for ATM radix tree");
+
+	/*
+	 * Attach in TopMemoryContext so the wrapper persists across
+	 * transactions, mirroring the DSA attach above.
+	 */
+	oldcxt = MemoryContextSwitchTo(TopMemoryContext);
+	slog_atm_tree_local = slog_atm_attach(slog_dsa_handle,
+										  SLogState->atm_handle);
+	MemoryContextSwitchTo(oldcxt);
+
+	return slog_atm_tree_local;
 }
 
 
@@ -525,30 +536,18 @@ slog_ebr_retire_callback(void *ebr_state, slog_txn_t *slist, slog_txn_node_t *no
  *		Calculate shared memory needed for the sLog.
  *
  * Note: The DSA initial region is embedded in SLogSharedState (dsa_space[]),
- * so sizeof(SLogSharedState) already includes SLOG_DSA_INIT_SIZE.
+ * so sizeof(SLogSharedState) already includes SLOG_DSA_INIT_SIZE.  The ATM
+ * radix tree is allocated from that DSA area on demand, so it needs no fixed
+ * reservation here.
  */
 Size
 SLogShmemSize(void)
 {
 	Size		size;
-	size_t		raw_slot_size;
-	size_t		slot_size;
 
 	size = MAXALIGN(sizeof(SLogSharedState));
 
-	/* Pool slots: node + levels array, rounded to 64-byte alignment */
-	raw_slot_size = sizeof(slog_txn_node_t) +
-		sizeof(struct _skiplist_slog_txn_level) * SKIPLIST_MAX_HEIGHT;
-	slot_size = (raw_slot_size + 63u) & ~(size_t) 63u;
-	size = add_size(size, MAXALIGN(slot_size * SLOG_TXN_POOL_CAPACITY));
-
-	/* Pool free-list array */
-	size = add_size(size, MAXALIGN(SLOG_TXN_POOL_CAPACITY * sizeof(int32_t)));
-
-	/* Sparsemap buffer */
-	size = add_size(size, MAXALIGN(SLOG_XID_MAP_BUFSIZE));
-
-	/* Partitioned LRLock flat hashes (32 partitions) */
+	/* Partitioned seqlock flat hashes */
 	size = add_size(size, SLogFlatHashPartitionedShmemSize(SLogFlatHashCapacity(),
 														  MaxBackends));
 
@@ -559,9 +558,8 @@ SLogShmemSize(void)
  * SLogShmemRequest
  *		Register shared memory needs for the sLog.
  *
- * We register the main state struct, pool regions, sparsemap buffer,
- * and tuple hash table via the ShmemRequestStruct/ShmemRequestHash
- * framework.
+ * We register the main state struct, pool regions, and tuple hash table
+ * via the ShmemRequestStruct/ShmemRequestHash framework.
  */
 void
 SLogShmemRequest(void)
@@ -576,33 +574,12 @@ SLogShmemRequest(void)
 		);
 
 	/*
-	 * Additional shared memory for pool slots, free-list, and sparsemap
-	 * buffer registered as separate ShmemRequestStruct entries.
+	 * Additional shared memory for the tuple hash partitions.  The ATM radix
+	 * tree allocates from the DSA area, so it needs no ShmemRequestStruct
+	 * entry.
 	 */
 	{
-		size_t		raw_slot_size;
-		size_t		slot_size;
-
-		raw_slot_size = sizeof(slog_txn_node_t) +
-			sizeof(struct _skiplist_slog_txn_level) * SKIPLIST_MAX_HEIGHT;
-		slot_size = (raw_slot_size + 63u) & ~(size_t) 63u;
-
-		ShmemRequestStruct(.name = "sLog Pool Slots",
-						   .size = slot_size * SLOG_TXN_POOL_CAPACITY,
-						   .ptr = (void **) &SLogPoolSlots,
-			);
-
-		ShmemRequestStruct(.name = "sLog Pool FreeList",
-						   .size = SLOG_TXN_POOL_CAPACITY * sizeof(int32_t),
-						   .ptr = (void **) &SLogPoolFreeList,
-			);
-
-		ShmemRequestStruct(.name = "sLog XID Map Buffer",
-						   .size = SLOG_XID_MAP_BUFSIZE,
-						   .ptr = (void **) &SLogXidMapBuffer,
-			);
-
-		/* Single block for all partitioned LRLock flat hashes */
+		/* Single block for all partitioned seqlock flat hashes */
 		ShmemRequestStruct(.name = "sLog Flat Hash Partitions",
 						   .size = SLogFlatHashPartitionedShmemSize(
 							   SLogFlatHashCapacity(), MaxBackends),
@@ -616,105 +593,18 @@ SLogShmemRequest(void)
  *		Initialize sLog shared memory contents.
  *
  * Called from UndoShmemInit() during the init_fn phase.  The framework
- * has already allocated SLogState.  We manually initialize the skip-list
- * pool, skip-list, sparsemap, and LRLock flat hash.
+ * has already allocated SLogState.  We manually initialize the ATM radix
+ * tree and seqlock flat hash.
  */
 void
 SLogShmemInit(void)
 {
-	slog_txn_t *slist = &SLogState->txn_list;
-	_skip_pool_slog_txn_t *pool = &SLogState->txn_pool;
-	size_t		raw_slot_size;
-	size_t		slot_size;
-	slog_txn_node_t *head_node;
-	slog_txn_node_t *tail_node;
-	int			i;
-
-	/* ---- Initialize the pool manually in shared memory ---- */
-
-	raw_slot_size = sizeof(slog_txn_node_t) +
-		sizeof(struct _skiplist_slog_txn_level) * SKIPLIST_MAX_HEIGHT;
-	slot_size = (raw_slot_size + 63u) & ~(size_t) 63u;
-
-	pool->capacity = SLOG_TXN_POOL_CAPACITY;
-	pool->slot_size = slot_size;
-
-	/* Use the framework-allocated shared memory regions */
-	pool->slots = SLogPoolSlots;
-	memset(pool->slots, 0, slot_size * SLOG_TXN_POOL_CAPACITY);
-
-	pool->next_free = (int32_t *) SLogPoolFreeList;
-	memset(pool->next_free, 0, SLOG_TXN_POOL_CAPACITY * sizeof(int32_t));
-
-	/* Build the free-list chain */
-	for (i = 0; i < SLOG_TXN_POOL_CAPACITY - 1; i++)
-		pool->next_free[i] = i + 1;
-	pool->next_free[SLOG_TXN_POOL_CAPACITY - 1] = -1;
-	pool->free_head = 0;
-
-	/* ---- Initialize the skip-list manually ---- */
-
-	/* Allocate head and tail sentinel nodes from the pool */
-	head_node = sl_skip_pool_alloc_slog_txn(pool);
-	tail_node = sl_skip_pool_alloc_slog_txn(pool);
-
-	if (head_node == NULL || tail_node == NULL)
-		elog(PANIC, "sLog: failed to allocate skip-list sentinels from pool");
-
-	/* Set up sentinel heights and forward pointers */
-	head_node->entries.sle_height = 1;
-	for (i = 0; i < SKIPLIST_MAX_HEIGHT; i++)
-		head_node->entries.sle_levels[i].next = tail_node;
-	head_node->entries.sle_prev = NULL;
-
-	tail_node->entries.sle_height = 1;
-	for (i = 0; i < SKIPLIST_MAX_HEIGHT; i++)
-		tail_node->entries.sle_levels[i].next = NULL;
-	tail_node->entries.sle_prev = head_node;
-
-	/* Initialize the skip-list struct */
-	slist->slh_length = 0;
-	slist->slh_aux = NULL;
-	slist->slh_head = head_node;
-	slist->slh_tail = tail_node;
-
-	/* Set function pointers */
-	slist->slh_fns.free_entry = _skip_free_entry_fn_slog_txn;
-	slist->slh_fns.update_entry = _skip_update_entry_fn_slog_txn;
-	slist->slh_fns.archive_entry = _skip_archive_entry_fn_slog_txn;
-	slist->slh_fns.sizeof_entry = _skip_sizeof_entry_fn_slog_txn;
-	slist->slh_fns.compare_entries = _skip_compare_entries_fn_slog_txn;
-	slist->slh_fns.snapshot_preserve_node = NULL;
-	slist->slh_fns.snapshot_release = NULL;
-
-	/* Snapshot fields unused */
-	slist->slh_snap.cur_era = 0;
-	slist->slh_snap.pres_era = 0;
-	slist->slh_snap.pres = NULL;
-
-	/* Seed PRNG */
-	slist->slh_prng_state = ((uint32_t) time(NULL) ^
-							 ((uint32_t) MyProcPid << 16) ^
-							 (uint32_t) (uintptr_t) slist);
-	slist->slh_splay_counter = 0;
-
-	/*
-	 * Set EBR hooks to redirect node deallocation to pool free-list instead
-	 * of pfree().  We use a non-NULL sentinel for slh_ebr so the skip-list's
-	 * remove_node code takes the EBR path.
-	 */
-	slist->slh_ebr = &slog_ebr_sentinel;
-	slist->slh_ebr_retire = slog_ebr_retire_callback;
-
-	/* ---- Initialize the sparsemap ---- */
-
-	sparsemap_init(&SLogState->xid_map, (uint8 *) SLogXidMapBuffer,
-				 SLOG_XID_MAP_BUFSIZE);
+	/* ATM radix tree is created below, after the DSA area exists. */
+	SLogState->atm_handle = InvalidDsaPointer;
 
 	/* ---- Initialize locks ---- */
 
 	LWLockInitialize(&SLogState->txn_lock.lock, LWTRANCHE_SLOG);
-	SpinLockInit(&SLogState->xid_spinlock);
 
 	/* ---- Compute and set partition count (once, globally) ---- */
 	SLogNumPartitions = SLogComputeNumPartitions();
@@ -731,12 +621,10 @@ SLogShmemInit(void)
 					SLogNumPartitions, slog_num_partitions,
 					slog_num_cpus())));
 
-	/* ---- Initialize partitioned LRLock flat hashes ---- */
+	/* ---- Initialize partitioned seqlock flat hashes ---- */
 	{
 		int			total_capacity = SLogFlatHashCapacity();
 		int			per_part_cap = total_capacity / SLogNumPartitions;
-		Size		data_size;
-		Size		oplog_capacity;
 		Size		per_part_shmem_size;
 		char	   *block_ptr;
 		int			part;
@@ -744,42 +632,23 @@ SLogShmemInit(void)
 		if (per_part_cap < 64)
 			per_part_cap = 64;
 
-		data_size = SLogFlatHashDataSize(per_part_cap);
-		oplog_capacity = (Size) MaxBackends * 4 *
-			(MAXALIGN(sizeof(SLogFlatOp)) + MAXALIGN(sizeof(Size)));
-		oplog_capacity = Max(oplog_capacity, 65536);
-
 		per_part_shmem_size = MAXALIGN(SLogFlatHashShmemSize(per_part_cap,
 															 MaxBackends));
 		block_ptr = SLogFlatHashBlock;
 
 		for (part = 0; part < SLogNumPartitions; part++)
 		{
-			LRLock	   *lrl;
-			void	   *write_data;
-			void	   *read_data;
-			char		name[64];
-
-			snprintf(name, sizeof(name), "sLog Tuple Partition %d", part);
+			SLogFlatPartition *fp = &SLogState->tuple_partitions[part];
 
 			/* Initialize per-partition writer lock */
-			LWLockInitialize(&SLogState->tuple_partitions[part].writer_lock.lock,
-							 LWTRANCHE_SLOG);
+			LWLockInitialize(&fp->writer_lock.lock, LWTRANCHE_SLOG);
 
-			/* Initialize per-partition LRLock in the sliced block */
-			lrl = LRLockInitInPlace(block_ptr, data_size,
-									SLogFlatHashApply, SLogFlatHashSync,
-									MaxBackends, oplog_capacity, name);
+			/* Seqlock counter starts even (stable, no writer in progress) */
+			SeqLockInit(&fp->seqlock);
 
-			write_data = LRLockGetWriteData(lrl);
-			SLogFlatHashInit(write_data, per_part_cap);
-
-			read_data = (void *) LRLockGetReadData(lrl);
-			SLogFlatHashInit(read_data, per_part_cap);
-
-			LRLockMarkReady(lrl);
-
-			SLogState->tuple_partitions[part].lrlock = lrl;
+			/* Single flat-hash copy carved from the shared block */
+			fp->hash = (SLogFlatHash *) block_ptr;
+			SLogFlatHashInit(fp->hash, per_part_cap);
 
 			block_ptr += per_part_shmem_size;
 		}
@@ -793,6 +662,22 @@ SLogShmemInit(void)
 	dsa_pin(SLogState->dsa_area);
 	dsa_set_size_limit(SLogState->dsa_area,
 					   (Size) slog_dsa_max_size_mb * 1024 * 1024);
+
+	/*
+	 * Create the ATM radix tree in the DSA area and record its handle.  The
+	 * transient tree wrapper returned here is discarded when init's memory
+	 * context is reset; the control block lives in the pinned DSA area, and
+	 * each backend re-attaches lazily via slog_atm_tree().  We reuse
+	 * LWTRANCHE_SLOG for the tree's internal lock (unused -- txn_lock
+	 * serializes all access -- but a valid tranche is required).
+	 */
+	{
+		slog_atm_radix_tree *tree;
+
+		tree = slog_atm_create(SLogState->dsa_area, LWTRANCHE_SLOG);
+		SLogState->atm_handle = slog_atm_get_handle(tree);
+	}
+
 	dsa_detach(SLogState->dsa_area);
 	SLogState->dsa_area = NULL;	/* backends re-attach lazily */
 }
@@ -867,36 +752,6 @@ SLogEnsureDsaAttached(void)
 }
 
 /*
- * SLogDsaAllocateBeforeImage
- *		Allocate a before-image in the shared DSA area.
- *
- * Returns InvalidDsaPointer on failure (e.g., DSA full).
- */
-dsa_pointer
-SLogDsaAllocateBeforeImage(const char *data, int len,
-						   uint16 flags, uint64 commit_ts)
-{
-	dsa_pointer dp;
-	SLogBeforeImage *bi;
-	Size		alloc_size;
-
-	SLogEnsureDsaAttached();
-
-	alloc_size = offsetof(SLogBeforeImage, data) + len;
-	dp = dsa_allocate_extended(slog_dsa_handle, alloc_size, DSA_ALLOC_NO_OOM);
-	if (!DsaPointerIsValid(dp))
-		return InvalidDsaPointer;
-
-	bi = (SLogBeforeImage *) dsa_get_address(slog_dsa_handle, dp);
-	bi->len = len;
-	bi->flags = flags;
-	bi->commit_ts = commit_ts;
-	memcpy(bi->data, data, len);
-
-	return dp;
-}
-
-/*
  * SLogDsaFreeBeforeImage
  *		Free a before-image from the shared DSA area.
  */
@@ -919,86 +774,37 @@ SLogDsaFreeBeforeImage(dsa_pointer dp)
  * SLogTxnInsert
  *		Insert an aborted transaction entry into the sLog.
  *
- * Creates an entry in the skip-list and sets the corresponding bit
- * in the XID sparsemap.  Returns false if the pool is full.
+ * Creates an entry in the ATM radix tree.  The tree grows on demand from
+ * the DSA area, so unlike the old fixed pool this never fails for lack of
+ * space; the return type is retained for API compatibility and is always
+ * true.
  */
 bool
 SLogTxnInsert(TransactionId xid, Oid reloid, Oid dboid,
 			  XLogRecPtr last_batch_lsn)
 {
-	slog_txn_node_t *node;
-	slog_txn_node_t query;
-	slog_txn_node_t *existing;
-	int			rc;
+	slog_atm_radix_tree *tree = slog_atm_tree();
+	uint64		key = slog_atm_key(xid, reloid);
+	slog_atm_value_t value;
+
+	value.last_batch_lsn = last_batch_lsn;
+	value.dboid = dboid;
+	value.abort_time = GetCurrentTimestamp();
+	value.revert_complete = false;
 
 	LWLockAcquire(&SLogState->txn_lock.lock, LW_EXCLUSIVE);
 
-	/* Check for duplicate first */
-	memset(&query, 0, sizeof(query));
-	query.xid = xid;
-	query.reloid = reloid;
-
-	existing = sl_skip_position_eq_slog_txn(&SLogState->txn_list, &query);
-	if (existing != NULL)
-	{
-		/* Already present -- no-op */
-		LWLockRelease(&SLogState->txn_lock.lock);
-		return true;
-	}
-
-	/* Allocate from pool */
-	node = sl_skip_pool_alloc_slog_txn(&SLogState->txn_pool);
-	if (node == NULL)
-	{
-		/* Pool full */
-		LWLockRelease(&SLogState->txn_lock.lock);
-		return false;
-	}
-
-	/* Fill key and data fields */
-	node->xid = xid;
-	node->reloid = reloid;
-	node->last_batch_lsn = last_batch_lsn;
-	node->dboid = dboid;
-	node->abort_time = GetCurrentTimestamp();
-	node->revert_complete = false;
-
-	/* Insert into skip-list */
-	rc = sl_skip_insert_slog_txn(&SLogState->txn_list, node);
-	if (rc != 0)
-	{
-		/* Duplicate (shouldn't happen after our check, but be safe) */
-		sl_skip_pool_free_slog_txn(&SLogState->txn_pool, node);
-		LWLockRelease(&SLogState->txn_lock.lock);
-		return true;
-	}
-
-	/* Update sparsemap */
-	SpinLockAcquire(&SLogState->xid_spinlock);
-	sparsemap_add(&SLogState->xid_map, (uint64) xid);
-	SpinLockRelease(&SLogState->xid_spinlock);
+	/*
+	 * RT_SET returns whether the key already existed.  A duplicate insert is
+	 * a no-op on the (xid, reloid) identity; the original entry's data fields
+	 * would be overwritten, so preserve the old behavior of leaving an
+	 * existing entry untouched by finding first.
+	 */
+	if (slog_atm_find(tree, key) == NULL)
+		(void) slog_atm_set(tree, key, &value);
 
 	LWLockRelease(&SLogState->txn_lock.lock);
 	return true;
-}
-
-/*
- * SLogXidIsPresent
- *		O(1) check whether a transaction has any sLog entries.
- *
- * This is the hot-path replacement for the old O(N) ATMIsAborted scan.
- * Uses only the SpinLock-protected sparsemap, avoiding the heavier LWLock.
- */
-bool
-SLogXidIsPresent(TransactionId xid)
-{
-	bool		result;
-
-	SpinLockAcquire(&SLogState->xid_spinlock);
-	result = sparsemap_contains(&SLogState->xid_map, (uint64) xid);
-	SpinLockRelease(&SLogState->xid_spinlock);
-
-	return result;
 }
 
 /*
@@ -1010,21 +816,18 @@ SLogXidIsPresent(TransactionId xid)
 bool
 SLogTxnLookup(TransactionId xid, Oid reloid, SLogTxnEntry *entry_out)
 {
-	slog_txn_node_t query;
-	slog_txn_node_t *found;
-
-	memset(&query, 0, sizeof(query));
-	query.xid = xid;
-	query.reloid = reloid;
+	slog_atm_radix_tree *tree = slog_atm_tree();
+	uint64		key = slog_atm_key(xid, reloid);
+	slog_atm_value_t *found;
 
 	LWLockAcquire(&SLogState->txn_lock.lock, LW_SHARED);
 
-	found = sl_skip_position_eq_slog_txn(&SLogState->txn_list, &query);
+	found = slog_atm_find(tree, key);
 
 	if (found != NULL && entry_out != NULL)
 	{
-		entry_out->xid = found->xid;
-		entry_out->reloid = found->reloid;
+		entry_out->xid = xid;
+		entry_out->reloid = reloid;
 		entry_out->last_batch_lsn = found->last_batch_lsn;
 		entry_out->dboid = found->dboid;
 		entry_out->abort_time = found->abort_time;
@@ -1040,75 +843,57 @@ SLogTxnLookup(TransactionId xid, Oid reloid, SLogTxnEntry *entry_out)
  * SLogTxnLookupByXid
  *		Find the UNDO chain for a given xid (any reloid).
  *
- * Uses skip-list GTE positioning to find the first entry with the given
- * xid.  O(log n) instead of O(n) hash scan.
+ * The radix tree has no seek-to-key API, so we iterate its entries in
+ * ascending key order (xid-major) and return the first one whose xid
+ * matches.  Because keys are xid-major we can stop as soon as we pass
+ * the target xid.  The ATM only holds un-reverted aborted transactions,
+ * so it is small and a full scan is acceptable on this cold path.
  */
 bool
 SLogTxnLookupByXid(TransactionId xid, XLogRecPtr *lsn_out)
 {
-	slog_txn_node_t query;
-	slog_txn_node_t *found;
-
-	memset(&query, 0, sizeof(query));
-	query.xid = xid;
-	query.reloid = 0;			/* minimum reloid */
+	slog_atm_radix_tree *tree = slog_atm_tree();
+	slog_atm_iter *iter;
+	slog_atm_value_t *val;
+	uint64		k;
+	bool		result = false;
 
 	LWLockAcquire(&SLogState->txn_lock.lock, LW_SHARED);
 
-	found = sl_skip_position_gte_slog_txn(&SLogState->txn_list, &query);
-
-	if (found != NULL && found->xid == xid)
+	iter = slog_atm_begin_iterate(tree);
+	while ((val = slog_atm_iterate_next(iter, &k)) != NULL)
 	{
+		TransactionId k_xid = slog_atm_key_xid(k);
+
+		if (k_xid < xid)
+			continue;
+		if (k_xid > xid)
+			break;				/* passed the target range */
+
 		if (lsn_out)
-			*lsn_out = found->last_batch_lsn;
-		LWLockRelease(&SLogState->txn_lock.lock);
-		return true;
+			*lsn_out = val->last_batch_lsn;
+		result = true;
+		break;
 	}
+	slog_atm_end_iterate(iter);
 
 	LWLockRelease(&SLogState->txn_lock.lock);
-	return false;
+	return result;
 }
 
 /*
  * SLogTxnRemove
  *		Remove a specific (xid, reloid) entry.
- *
- * After removal, checks whether any entries remain for this xid and
- * clears the sparsemap bit if not.
  */
 void
 SLogTxnRemove(TransactionId xid, Oid reloid)
 {
-	slog_txn_node_t query;
-	slog_txn_node_t check;
-	slog_txn_node_t *remaining;
-	int			rc;
-
-	memset(&query, 0, sizeof(query));
-	query.xid = xid;
-	query.reloid = reloid;
+	slog_atm_radix_tree *tree = slog_atm_tree();
+	uint64		key = slog_atm_key(xid, reloid);
 
 	LWLockAcquire(&SLogState->txn_lock.lock, LW_EXCLUSIVE);
 
-	rc = sl_skip_remove_node_slog_txn(&SLogState->txn_list, &query);
-
-	if (rc == 0)
-	{
-		/* Successfully removed.  Check if any entries remain for this xid. */
-		memset(&check, 0, sizeof(check));
-		check.xid = xid;
-		check.reloid = 0;
-
-		remaining = sl_skip_position_gte_slog_txn(&SLogState->txn_list, &check);
-
-		if (remaining == NULL || remaining->xid != xid)
-		{
-			/* No entries remain -- clear sparsemap bit */
-			SpinLockAcquire(&SLogState->xid_spinlock);
-			sparsemap_remove(&SLogState->xid_map, (uint64) xid);
-			SpinLockRelease(&SLogState->xid_spinlock);
-		}
-	}
+	(void) slog_atm_delete(tree, key);
 
 	LWLockRelease(&SLogState->txn_lock.lock);
 }
@@ -1117,58 +902,52 @@ SLogTxnRemove(TransactionId xid, Oid reloid)
  * SLogTxnRemoveByXid
  *		Remove all sLog entries for a given transaction ID.
  *
- * Collects all nodes for this xid into a local array, then removes
- * them.  The entries are contiguous in the skip-list thanks to the
- * (xid, reloid) ordering.
+ * Collects all keys for this xid into a local array during an ascending
+ * iteration (keys are contiguous thanks to the xid-major ordering), then
+ * deletes them after ending the iteration -- we do not delete while
+ * iterating.  The ATM is small, so the full scan is acceptable.
  */
 void
 SLogTxnRemoveByXid(TransactionId xid)
 {
-	slog_txn_node_t query;
-	slog_txn_node_t *node;
-	slog_txn_node_t *next;
-	slog_txn_node_t **to_remove;
+	slog_atm_radix_tree *tree = slog_atm_tree();
+	slog_atm_iter *iter;
+	slog_atm_value_t *val;
+	uint64		k;
+	uint64	   *to_remove;
 	int			nremove = 0;
 	int			max_remove = 64;
 	int			i;
 
-	to_remove = (slog_txn_node_t **) palloc(max_remove * sizeof(slog_txn_node_t *));
-
-	memset(&query, 0, sizeof(query));
-	query.xid = xid;
-	query.reloid = 0;
+	to_remove = (uint64 *) palloc(max_remove * sizeof(uint64));
 
 	LWLockAcquire(&SLogState->txn_lock.lock, LW_EXCLUSIVE);
 
-	/* Collect all nodes with matching xid */
-	node = sl_skip_position_gte_slog_txn(&SLogState->txn_list, &query);
-
-	while (node != NULL && node->xid == xid)
+	/* Collect all keys with matching xid */
+	iter = slog_atm_begin_iterate(tree);
+	while ((val = slog_atm_iterate_next(iter, &k)) != NULL)
 	{
+		TransactionId k_xid = slog_atm_key_xid(k);
+
+		(void) val;
+		if (k_xid < xid)
+			continue;
+		if (k_xid > xid)
+			break;
+
 		if (nremove >= max_remove)
 		{
 			max_remove *= 2;
-			to_remove = (slog_txn_node_t **)
-				repalloc(to_remove, max_remove * sizeof(slog_txn_node_t *));
+			to_remove = (uint64 *) repalloc(to_remove,
+											max_remove * sizeof(uint64));
 		}
-		to_remove[nremove++] = node;
-		next = sl_skip_next_node_slog_txn(&SLogState->txn_list, node);
-		node = next;
+		to_remove[nremove++] = k;
 	}
+	slog_atm_end_iterate(iter);
 
-	/* Remove collected nodes */
+	/* Remove collected keys */
 	for (i = 0; i < nremove; i++)
-	{
-		sl_skip_remove_node_slog_txn(&SLogState->txn_list, to_remove[i]);
-	}
-
-	/* Clear sparsemap bit */
-	if (nremove > 0)
-	{
-		SpinLockAcquire(&SLogState->xid_spinlock);
-		sparsemap_remove(&SLogState->xid_map, (uint64) xid);
-		SpinLockRelease(&SLogState->xid_spinlock);
-	}
+		(void) slog_atm_delete(tree, to_remove[i]);
 
 	LWLockRelease(&SLogState->txn_lock.lock);
 
@@ -1179,62 +958,102 @@ SLogTxnRemoveByXid(TransactionId xid)
  * SLogTxnMarkReverted
  *		Mark all entries for a given xid as revert_complete.
  *
- * Walks the contiguous range of entries for this xid in the skip-list.
+ * Iterates the tree in ascending key order and rewrites the value of each
+ * entry for this xid with revert_complete = true.  Keys for one xid are
+ * contiguous, so we stop once we pass the target xid.  We collect the
+ * matching (key, value) pairs first and RT_SET them after ending the
+ * iteration, so the tree is never mutated while an iterator is live.
  */
 void
 SLogTxnMarkReverted(TransactionId xid)
 {
-	slog_txn_node_t query;
-	slog_txn_node_t *node;
+	slog_atm_radix_tree *tree = slog_atm_tree();
+	slog_atm_iter *iter;
+	slog_atm_value_t *val;
+	uint64		k;
+	uint64	   *keys;
+	slog_atm_value_t *vals;
+	int			n = 0;
+	int			max_n = 64;
+	int			i;
 
-	memset(&query, 0, sizeof(query));
-	query.xid = xid;
-	query.reloid = 0;
+	keys = (uint64 *) palloc(max_n * sizeof(uint64));
+	vals = (slog_atm_value_t *) palloc(max_n * sizeof(slog_atm_value_t));
 
 	LWLockAcquire(&SLogState->txn_lock.lock, LW_EXCLUSIVE);
 
-	node = sl_skip_position_gte_slog_txn(&SLogState->txn_list, &query);
-
-	while (node != NULL && node->xid == xid)
+	/*
+	 * Collect matching entries first, then RT_SET them after ending the
+	 * iteration, to avoid mutating the tree while an iterator is live.
+	 */
+	iter = slog_atm_begin_iterate(tree);
+	while ((val = slog_atm_iterate_next(iter, &k)) != NULL)
 	{
-		node->revert_complete = true;
-		node = sl_skip_next_node_slog_txn(&SLogState->txn_list, node);
+		TransactionId k_xid = slog_atm_key_xid(k);
+
+		if (k_xid < xid)
+			continue;
+		if (k_xid > xid)
+			break;
+
+		if (n >= max_n)
+		{
+			max_n *= 2;
+			keys = (uint64 *) repalloc(keys, max_n * sizeof(uint64));
+			vals = (slog_atm_value_t *) repalloc(vals,
+												 max_n * sizeof(slog_atm_value_t));
+		}
+		keys[n] = k;
+		vals[n] = *val;
+		vals[n].revert_complete = true;
+		n++;
 	}
+	slog_atm_end_iterate(iter);
+
+	for (i = 0; i < n; i++)
+		(void) slog_atm_set(tree, keys[i], &vals[i]);
 
 	LWLockRelease(&SLogState->txn_lock.lock);
+
+	pfree(keys);
+	pfree(vals);
 }
 
 /*
  * SLogTxnGetNextUnreverted
  *		Find an entry that hasn't been reverted yet.
  *
- * Iterates the skip-list from head to tail (ordered by xid), returning
- * the first entry with revert_complete == false.
+ * Iterates the tree in ascending key order (xid-major), returning the
+ * first entry with revert_complete == false.
  */
 bool
 SLogTxnGetNextUnreverted(TransactionId *xid_out, Oid *dboid_out,
 						 XLogRecPtr *lsn_out)
 {
-	slog_txn_node_t *node;
-	size_t		iter;
+	slog_atm_radix_tree *tree = slog_atm_tree();
+	slog_atm_iter *iter;
+	slog_atm_value_t *val;
+	uint64		k;
+	bool		result = false;
 
 	LWLockAcquire(&SLogState->txn_lock.lock, LW_SHARED);
 
-	SKIPLIST_FOREACH_H2T(slog_txn, sl_, entries, &SLogState->txn_list, node, iter)
+	iter = slog_atm_begin_iterate(tree);
+	while ((val = slog_atm_iterate_next(iter, &k)) != NULL)
 	{
-		if (!node->revert_complete)
+		if (!val->revert_complete)
 		{
-			*xid_out = node->xid;
-			*dboid_out = node->dboid;
-			*lsn_out = node->last_batch_lsn;
-
-			LWLockRelease(&SLogState->txn_lock.lock);
-			return true;
+			*xid_out = slog_atm_key_xid(k);
+			*dboid_out = val->dboid;
+			*lsn_out = val->last_batch_lsn;
+			result = true;
+			break;
 		}
 	}
+	slog_atm_end_iterate(iter);
 
 	LWLockRelease(&SLogState->txn_lock.lock);
-	return false;
+	return result;
 }
 
 /*
@@ -1244,19 +1063,23 @@ SLogTxnGetNextUnreverted(TransactionId *xid_out, Oid *dboid_out,
 void
 SLogRecoveryFinalize(int *total_out, int *unreverted_out)
 {
-	slog_txn_node_t *node;
-	size_t		iter;
+	slog_atm_radix_tree *tree = slog_atm_tree();
+	slog_atm_iter *iter;
+	slog_atm_value_t *val;
+	uint64		k;
 	int			total = 0;
 	int			unreverted = 0;
 
 	LWLockAcquire(&SLogState->txn_lock.lock, LW_SHARED);
 
-	SKIPLIST_FOREACH_H2T(slog_txn, sl_, entries, &SLogState->txn_list, node, iter)
+	iter = slog_atm_begin_iterate(tree);
+	while ((val = slog_atm_iterate_next(iter, &k)) != NULL)
 	{
 		total++;
-		if (!node->revert_complete)
+		if (!val->revert_complete)
 			unreverted++;
 	}
+	slog_atm_end_iterate(iter);
 
 	LWLockRelease(&SLogState->txn_lock.lock);
 
@@ -1277,22 +1100,26 @@ SLogRecoveryFinalize(int *total_out, int *unreverted_out)
 XLogRecPtr
 SLogTxnGetOldestUnrevertedLSN(void)
 {
-	slog_txn_node_t *node;
-	size_t		iter;
+	slog_atm_radix_tree *tree = slog_atm_tree();
+	slog_atm_iter *iter;
+	slog_atm_value_t *val;
+	uint64		k;
 	XLogRecPtr	oldest = InvalidXLogRecPtr;
 
 	LWLockAcquire(&SLogState->txn_lock.lock, LW_SHARED);
 
-	SKIPLIST_FOREACH_H2T(slog_txn, sl_, entries, &SLogState->txn_list, node, iter)
+	iter = slog_atm_begin_iterate(tree);
+	while ((val = slog_atm_iterate_next(iter, &k)) != NULL)
 	{
-		if (!node->revert_complete &&
-			XLogRecPtrIsValid(node->last_batch_lsn))
+		if (!val->revert_complete &&
+			XLogRecPtrIsValid(val->last_batch_lsn))
 		{
 			if (!XLogRecPtrIsValid(oldest) ||
-				node->last_batch_lsn < oldest)
-				oldest = node->last_batch_lsn;
+				val->last_batch_lsn < oldest)
+				oldest = val->last_batch_lsn;
 		}
 	}
+	slog_atm_end_iterate(iter);
 
 	LWLockRelease(&SLogState->txn_lock.lock);
 	return oldest;
@@ -1369,8 +1196,11 @@ SLogTxnSnapshotForCheckpoint(SLogTxnEntry **entries_out)
 /*
  * SLogTupleEvictCommitted -- evict entries for committed transactions.
  *
- * Called when the sLog flat hash is full.  Scans the flat hash under read-side
- * to collect evictable keys, then applies REMOVE_ENTRY ops under writer lock.
+ * Called when the sLog flat hash is full.  Scans each partition under its
+ * writer lock to collect evictable keys, then applies REMOVE_ENTRY ops.
+ * (This is a cold path, run only when a partition is full; holding the
+ * writer lock across the scan is simpler than a seqlock retry loop and the
+ * per-op TransactionIdIsInProgress/DidCommit probes must not run repeatedly.)
  *
  * Returns the number of entries evicted.
  */
@@ -1385,18 +1215,17 @@ SLogTupleEvictCommitted(void)
 	keys_to_evict = (SLogTupleKey *)
 		palloc(sizeof(SLogTupleKey) * max_evict);
 
-	/* Phase 1: scan each partition under read-side to collect evictable keys */
+	/* Phase 1: scan each partition under its writer lock to collect keys */
 	for (part = 0; part < SLogNumPartitions && nkeys < max_evict; part++)
 	{
 		SLogFlatPartition *fp = SLogGetPartitionByIndex(part);
-		const SLogFlatHash *ht;
 		SLogFlatHashScanState scan;
 		const SLogFlatBucket *bucket;
 
-		ht = (const SLogFlatHash *) LRLockReadBegin(fp->lrlock);
+		LWLockAcquire(&fp->writer_lock.lock, LW_EXCLUSIVE);
 
 		SLogFlatHashScanInit(&scan);
-		while ((bucket = SLogFlatHashScanNext(ht, &scan)) != NULL)
+		while ((bucket = SLogFlatHashScanNext(fp->hash, &scan)) != NULL)
 		{
 			const SLogTupleEntry *entry = &bucket->entry;
 			bool		all_committed = true;
@@ -1440,7 +1269,7 @@ SLogTupleEvictCommitted(void)
 			}
 		}
 
-		LRLockReadEnd(fp->lrlock);
+		LWLockRelease(&fp->writer_lock.lock);
 	}
 
 	/* Phase 2: apply removals grouped by partition */
@@ -1466,7 +1295,7 @@ SLogTupleEvictCommitted(void)
 				continue;
 
 			LWLockAcquire(&fp->writer_lock.lock, LW_EXCLUSIVE);
-			LRLockWriteBegin(fp->lrlock);
+			SLogSeqWriteBegin(fp);
 
 			for (i = 0; i < nkeys; i++)
 			{
@@ -1478,11 +1307,10 @@ SLogTupleEvictCommitted(void)
 				memset(&flat_op, 0, sizeof(flat_op));
 				flat_op.kind = SLOG_FLAT_OP_REMOVE_ENTRY;
 				flat_op.key = keys_to_evict[i];
-				LRLockApplyOp(fp->lrlock, &flat_op, sizeof(flat_op));
+				SLogFlatHashApply(fp->hash, &flat_op, sizeof(flat_op));
 			}
 
-			LRLockPublish(fp->lrlock);
-			LRLockWriteEnd(fp->lrlock);
+			SLogSeqWriteEnd(fp);
 			LWLockRelease(&fp->writer_lock.lock);
 		}
 	}
@@ -1501,7 +1329,7 @@ SLogTupleEvictCommitted(void)
  * SLogTupleInsert
  *		Record a tuple operation in the sLog.
  *
- * Inserts into the LRLock-protected flat hash (wait-free reads).
+ * Inserts into the seqlock-protected flat hash (wait-free reads).
  * Performs overflow handling before failing.
  *
  * Also adds the key to the backend-private tracking list for cleanup.
@@ -1515,7 +1343,6 @@ SLogTupleInsert(Oid relid, ItemPointer tid, TransactionId xid,
 	SLogTupleKey key;
 	SLogFlatOp	flat_op;
 	SLogFlatPartition *fp;
-	const SLogFlatHash *ht;
 	int			entries_before;
 	int			entries_after;
 
@@ -1583,21 +1410,18 @@ SLogTupleInsert(Oid relid, ItemPointer tid, TransactionId xid,
 		flat_op.tuple_op.in_use = true;
 	}
 
-	/* Apply to flat hash via LRLock writer path (partition-local) */
+	/* Apply to flat hash via seqlock writer path (partition-local) */
 	LWLockAcquire(&fp->writer_lock.lock, LW_EXCLUSIVE);
 
-	/* Check capacity before insert */
-	ht = (const SLogFlatHash *) LRLockGetWriteData(fp->lrlock);
-	entries_before = ht->num_entries;
+	/* Check capacity before insert (writer lock held: fp->hash is stable) */
+	entries_before = fp->hash->num_entries;
 
-	LRLockWriteBegin(fp->lrlock);
-	LRLockApplyOp(fp->lrlock, &flat_op, sizeof(flat_op));
-	LRLockPublish(fp->lrlock);
-	LRLockWriteEnd(fp->lrlock);
+	SLogSeqWriteBegin(fp);
+	SLogFlatHashApply(fp->hash, &flat_op, sizeof(flat_op));
+	SLogSeqWriteEnd(fp);
 
 	/* Check if insert succeeded */
-	ht = (const SLogFlatHash *) LRLockGetWriteData(fp->lrlock);
-	entries_after = ht->num_entries;
+	entries_after = fp->hash->num_entries;
 
 	LWLockRelease(&fp->writer_lock.lock);
 
@@ -1616,9 +1440,9 @@ SLogTupleInsert(Oid relid, ItemPointer tid, TransactionId xid,
 	{
 		bool		op_stored;
 
-		ht = (const SLogFlatHash *) LRLockReadBegin(fp->lrlock);
-		op_stored = SLogFlatHashHasOpForXid(ht, &key, xid);
-		LRLockReadEnd(fp->lrlock);
+		LWLockAcquire(&fp->writer_lock.lock, LW_EXCLUSIVE);
+		op_stored = SLogFlatHashHasOpForXid(fp->hash, &key, xid);
+		LWLockRelease(&fp->writer_lock.lock);
 
 		if (!op_stored)
 		{
@@ -1637,15 +1461,11 @@ SLogTupleInsert(Oid relid, ItemPointer tid, TransactionId xid,
 			flat_op.reclaim_xid_horizon = horizon;
 
 			LWLockAcquire(&fp->writer_lock.lock, LW_EXCLUSIVE);
-			LRLockWriteBegin(fp->lrlock);
-			LRLockApplyOp(fp->lrlock, &flat_op, sizeof(flat_op));
-			LRLockPublish(fp->lrlock);
-			LRLockWriteEnd(fp->lrlock);
+			SLogSeqWriteBegin(fp);
+			SLogFlatHashApply(fp->hash, &flat_op, sizeof(flat_op));
+			SLogSeqWriteEnd(fp);
+			op_stored = SLogFlatHashHasOpForXid(fp->hash, &key, xid);
 			LWLockRelease(&fp->writer_lock.lock);
-
-			ht = (const SLogFlatHash *) LRLockReadBegin(fp->lrlock);
-			op_stored = SLogFlatHashHasOpForXid(ht, &key, xid);
-			LRLockReadEnd(fp->lrlock);
 		}
 
 		if (!op_stored)
@@ -1657,16 +1477,11 @@ SLogTupleInsert(Oid relid, ItemPointer tid, TransactionId xid,
 			{
 				/* Retry */
 				LWLockAcquire(&fp->writer_lock.lock, LW_EXCLUSIVE);
-				LRLockWriteBegin(fp->lrlock);
-				LRLockApplyOp(fp->lrlock, &flat_op, sizeof(flat_op));
-				LRLockPublish(fp->lrlock);
-				LRLockWriteEnd(fp->lrlock);
+				SLogSeqWriteBegin(fp);
+				SLogFlatHashApply(fp->hash, &flat_op, sizeof(flat_op));
+				SLogSeqWriteEnd(fp);
+				op_stored = SLogFlatHashHasOpForXid(fp->hash, &key, xid);
 				LWLockRelease(&fp->writer_lock.lock);
-
-				/* Check again */
-				ht = (const SLogFlatHash *) LRLockReadBegin(fp->lrlock);
-				op_stored = SLogFlatHashHasOpForXid(ht, &key, xid);
-				LRLockReadEnd(fp->lrlock);
 			}
 
 			if (!op_stored)
@@ -1764,11 +1579,10 @@ SLogTupleInsertRecovery(Oid relid, ItemPointer tid, TransactionId xid,
 	flat_op.tuple_op.in_use = true;
 
 	LWLockAcquire(SLOG_PART_WRITER_LOCK(&key), LW_EXCLUSIVE);
-	LRLockWriteBegin(SLOG_PART_LRLOCK(&key));
-	LRLockApplyOp(SLOG_PART_LRLOCK(&key), &clear_op, sizeof(clear_op));
-	LRLockApplyOp(SLOG_PART_LRLOCK(&key), &flat_op, sizeof(flat_op));
-	LRLockPublish(SLOG_PART_LRLOCK(&key));
-	LRLockWriteEnd(SLOG_PART_LRLOCK(&key));
+	SLogSeqWriteBegin(SLogGetPartition(&key));
+	SLogFlatHashApply(SLogGetPartition(&key)->hash, &clear_op, sizeof(clear_op));
+	SLogFlatHashApply(SLogGetPartition(&key)->hash, &flat_op, sizeof(flat_op));
+	SLogSeqWriteEnd(SLogGetPartition(&key));
 	LWLockRelease(SLOG_PART_WRITER_LOCK(&key));
 
 	return true;
@@ -1779,36 +1593,40 @@ SLogTupleInsertRecovery(Oid relid, ItemPointer tid, TransactionId xid,
  *		Look up a tuple's sLog entry (copy semantics).
  *
  * Returns true if found, copying the full entry into *entry_out.
- * WAIT-FREE: uses LRLock read-side (atomic epoch increment only).
+ * WAIT-FREE: uses the seqlock read-side retry loop.
  */
 bool
 SLogTupleLookup(Oid relid, ItemPointer tid, SLogTupleEntry *entry_out)
 {
 	SLogTupleKey key;
-	const SLogFlatHash *ht;
-	const SLogFlatBucket *bucket;
+	SLogFlatPartition *fp;
+	bool		found;
+	uint32		slog_seq_;
 
 	memset(&key, 0, sizeof(key));
 	key.relid = relid;
 	ItemPointerCopy(tid, &key.tid);
 
-	ht = (const SLogFlatHash *) LRLockReadBegin(SLOG_PART_LRLOCK(&key));
+	fp = SLogGetPartition(&key);
 
-	bucket = SLogFlatHashProbe(ht, &key);
+	SLOG_SEQ_READ_BEGIN(fp, slog_seq_)
+	{
+		const SLogFlatBucket *bucket = SLogFlatHashProbe(fp->hash, &key);
 
-	if (bucket != NULL && entry_out)
-		memcpy(entry_out, &bucket->entry, sizeof(SLogTupleEntry));
+		found = (bucket != NULL);
+		if (found && entry_out)
+			memcpy(entry_out, &bucket->entry, sizeof(SLogTupleEntry));
+	}
+	SLOG_SEQ_READ_END(fp, slog_seq_);
 
-	LRLockReadEnd(SLOG_PART_LRLOCK(&key));
-
-	return (bucket != NULL);
+	return found;
 }
 
 /*
  * SLogTupleLookupFiltered
  *		Find sLog entries for a TID, optionally filtered by xid.
  *
- * WAIT-FREE: uses LRLock read-side.  If xid_filter is valid, returns
+ * WAIT-FREE: uses the seqlock read-side.  If xid_filter is valid, returns
  * only ops for that xid.  If InvalidTransactionId, returns all active
  * ops for this TID.
  *
@@ -1820,38 +1638,41 @@ SLogTupleLookupFiltered(Oid relid, ItemPointer tid,
 						SLogTupleOp *ops_out, int max_ops)
 {
 	SLogTupleKey key;
-	const SLogFlatHash *ht;
-	const SLogFlatBucket *bucket;
+	SLogFlatPartition *fp;
 	int			nfound = 0;
-	int			i;
+	uint32		slog_seq_;
 
 	memset(&key, 0, sizeof(key));
 	key.relid = relid;
 	ItemPointerCopy(tid, &key.tid);
 
-	ht = (const SLogFlatHash *) LRLockReadBegin(SLOG_PART_LRLOCK(&key));
+	fp = SLogGetPartition(&key);
 
-	bucket = SLogFlatHashProbe(ht, &key);
-
-	if (bucket != NULL)
+	SLOG_SEQ_READ_BEGIN(fp, slog_seq_)
 	{
-		const SLogTupleEntry *entry = &bucket->entry;
+		const SLogFlatBucket *bucket = SLogFlatHashProbe(fp->hash, &key);
 
-		for (i = 0; i < SLOG_MAX_TUPLE_OPS && nfound < max_ops; i++)
+		nfound = 0;				/* reset: body may re-run on retry */
+		if (bucket != NULL)
 		{
-			if (!entry->ops[i].in_use)
-				continue;
+			const SLogTupleEntry *entry = &bucket->entry;
+			int			i;
 
-			if (TransactionIdIsValid(xid_filter) &&
-				!TransactionIdEquals(entry->ops[i].xid, xid_filter))
-				continue;
+			for (i = 0; i < SLOG_MAX_TUPLE_OPS && nfound < max_ops; i++)
+			{
+				if (!entry->ops[i].in_use)
+					continue;
 
-			memcpy(&ops_out[nfound], &entry->ops[i], sizeof(SLogTupleOp));
-			nfound++;
+				if (TransactionIdIsValid(xid_filter) &&
+					!TransactionIdEquals(entry->ops[i].xid, xid_filter))
+					continue;
+
+				memcpy(&ops_out[nfound], &entry->ops[i], sizeof(SLogTupleOp));
+				nfound++;
+			}
 		}
 	}
-
-	LRLockReadEnd(SLOG_PART_LRLOCK(&key));
+	SLOG_SEQ_READ_END(fp, slog_seq_);
 
 	return nfound;
 }
@@ -1860,7 +1681,7 @@ SLogTupleLookupFiltered(Oid relid, ItemPointer tid,
  * SLogTupleRemove
  *		Remove operations for a specific xid from a tuple entry.
  *
- * Uses LRLock writer path with external serialization.
+ * Uses the seqlock writer path with external (writer_lock) serialization.
  */
 void
 SLogTupleRemove(Oid relid, ItemPointer tid, TransactionId xid)
@@ -1877,12 +1698,7 @@ SLogTupleRemove(Oid relid, ItemPointer tid, TransactionId xid)
 	op.key = key;
 	op.xid = xid;
 
-	LWLockAcquire(SLOG_PART_WRITER_LOCK(&key), LW_EXCLUSIVE);
-	LRLockWriteBegin(SLOG_PART_LRLOCK(&key));
-	LRLockApplyOp(SLOG_PART_LRLOCK(&key), &op, sizeof(op));
-	LRLockPublish(SLOG_PART_LRLOCK(&key));
-	LRLockWriteEnd(SLOG_PART_LRLOCK(&key));
-	LWLockRelease(SLOG_PART_WRITER_LOCK(&key));
+	SLogPartApplyOne(SLogGetPartition(&key), &op);
 }
 
 /*
@@ -1970,7 +1786,7 @@ SLogTupleRemoveByXid(TransactionId xid)
 		fp = SLogGetPartitionByIndex(part);
 
 		LWLockAcquire(&fp->writer_lock.lock, LW_EXCLUSIVE);
-		LRLockWriteBegin(fp->lrlock);
+		SLogSeqWriteBegin(fp);
 
 		for (tk = slog_tracked_keys; tk != NULL; tk = tk->next)
 		{
@@ -1985,11 +1801,10 @@ SLogTupleRemoveByXid(TransactionId xid)
 			flat_op.kind = SLOG_FLAT_OP_REMOVE_XID;
 			flat_op.key = tk->key;
 			flat_op.xid = xid;
-			LRLockApplyOp(fp->lrlock, &flat_op, sizeof(flat_op));
+			SLogFlatHashApply(fp->hash, &flat_op, sizeof(flat_op));
 		}
 
-		LRLockPublish(fp->lrlock);
-		LRLockWriteEnd(fp->lrlock);
+		SLogSeqWriteEnd(fp);
 		LWLockRelease(&fp->writer_lock.lock);
 	}
 }
@@ -2027,101 +1842,21 @@ SLogTupleCommitByXid(TransactionId xid, uint64 commit_hlc)
 		return;
 
 	/*
-	 * Commit-time before-image publication (deferred from write time).
+	 * WS-PVS3: committed-UPDATE cross-backend before-images are not published
+	 * to shared DSA (Phase 1) and committed-UPDATE markers are no longer
+	 * retained on the flat hash (Phase 2).  Snapshot-isolation readers
+	 * reconstruct the visible version by walking the durable UNDO fork
+	 * chain (RecnoReconstructVisibleVersion in recno_pvs.c); the write-write
+	 * conflict probe (RecnoTupleHasCommittedUpdateAfter) reads the head
+	 * verptr on the on-page tuple and resolves it in the same fork.
 	 *
-	 * The shared DSA before-image only ever serves a snapshot-isolation
-	 * reader (REPEATABLE READ / SERIALIZABLE) whose snapshot HLC predates our
-	 * commit HLC.  Under READ COMMITTED-only workloads no such reader exists,
-	 * so we skip the allocation entirely and the COMMIT_XID step below drops
-	 * every op (no retained image to stamp).
+	 * flat_hash_apply_commit_xid therefore removes every op of xid at commit
+	 * -- identical to INSERT/DELETE/LOCK -- which drains bucket table_full.
 	 *
-	 * The gate is sound against a reader that started after our last write:
-	 * the reader bumps active_iso_readers (seq-cst) before taking its
-	 * snapshot HLC (seq-cst RMW), and we read the counter here AFTER our
-	 * commit HLC was stamped (also a seq-cst RMW, in RecnoClearUncommittedFlags
-	 * at PRE_COMMIT).  In the single total order over those RMWs, any reader
-	 * with snapshot < our commit has its increment ordered before our read,
-	 * so RecnoHasActiveIsoReaders() returns true and we publish the image.
-	 *
-	 * We publish ONE image per distinct updated key: the deepest tracked-key
-	 * node for a key (the list is newest-first, so the last match while
-	 * walking) holds the true pre-transaction state.  Shallower nodes are
-	 * intra-transaction post-images and must not overwrite it.
+	 * The local tk->before_image (palloc'd in TopTransactionContext by
+	 * SLogTupleStoreBeforeImage) is still used for intra-transaction
+	 * savepoint rollback via RecnoRestoreBeforeImages and is unaffected.
 	 */
-	if (RelUndoHasActiveSnapshotReaders_hook && RelUndoHasActiveSnapshotReaders_hook())
-	{
-		for (tk = slog_tracked_keys; tk != NULL; tk = tk->next)
-		{
-			SLogTrackedKey *deeper;
-			SLogFlatOp	update_op;
-			dsa_pointer dp;
-			bool		is_deepest = true;
-
-			if (!TransactionIdEquals(tk->xid, xid) || tk->local_only)
-				continue;
-			if (tk->op_type != SLOG_OP_UPDATE)
-				continue;
-			if (tk->before_image == NULL)
-				continue;
-
-			/* Skip unless this is the deepest (oldest) node for its key */
-			for (deeper = tk->next; deeper != NULL; deeper = deeper->next)
-			{
-				if (!TransactionIdEquals(deeper->xid, xid) ||
-					deeper->local_only ||
-					deeper->op_type != SLOG_OP_UPDATE)
-					continue;
-				if (deeper->key.relid == tk->key.relid &&
-					ItemPointerEquals(&deeper->key.tid, &tk->key.tid))
-				{
-					is_deepest = false;
-					break;
-				}
-			}
-			if (!is_deepest)
-				continue;
-
-			dp = SLogDsaAllocateBeforeImage(tk->before_image,
-											tk->before_image_len,
-											tk->before_flags,
-											tk->before_commit_ts);
-			if (!DsaPointerIsValid(dp))
-			{
-				TimestampTz now = GetCurrentTimestamp();
-
-				if (slog_overflow_last_warning == 0 ||
-					TimestampDifferenceExceeds(slog_overflow_last_warning,
-											   now, 10000))
-				{
-					slog_overflow_last_warning = now;
-					elog(WARNING, "sLog: DSA before-image allocation failed "
-						 "(limit %d MB); MVCC before-image serving degraded "
-						 "for rel %u tid (%u,%u)",
-						 slog_dsa_max_size_mb,
-						 tk->key.relid,
-						 ItemPointerGetBlockNumber(&tk->key.tid),
-						 ItemPointerGetOffsetNumber(&tk->key.tid));
-				}
-				continue;
-			}
-
-			tk->before_image_dp = dp;
-
-			memset(&update_op, 0, sizeof(update_op));
-			update_op.kind = SLOG_FLAT_OP_UPDATE_OP;
-			update_op.key = tk->key;
-			update_op.xid = xid;
-			update_op.before_image_dp = dp;
-
-			LWLockAcquire(SLOG_PART_WRITER_LOCK(&tk->key), LW_EXCLUSIVE);
-			LRLockWriteBegin(SLOG_PART_LRLOCK(&tk->key));
-			LRLockApplyOp(SLOG_PART_LRLOCK(&tk->key), &update_op,
-						  sizeof(update_op));
-			LRLockPublish(SLOG_PART_LRLOCK(&tk->key));
-			LRLockWriteEnd(SLOG_PART_LRLOCK(&tk->key));
-			LWLockRelease(SLOG_PART_WRITER_LOCK(&tk->key));
-		}
-	}
 
 	/* Batch apply COMMIT_XID ops grouped by partition */
 	{
@@ -2137,7 +1872,7 @@ SLogTupleCommitByXid(TransactionId xid, uint64 commit_hlc)
 			fp = SLogGetPartitionByIndex(part);
 
 			LWLockAcquire(&fp->writer_lock.lock, LW_EXCLUSIVE);
-			LRLockWriteBegin(fp->lrlock);
+			SLogSeqWriteBegin(fp);
 
 			for (tk = slog_tracked_keys; tk != NULL; tk = tk->next)
 			{
@@ -2153,11 +1888,10 @@ SLogTupleCommitByXid(TransactionId xid, uint64 commit_hlc)
 				flat_op.key = tk->key;
 				flat_op.xid = xid;
 				flat_op.commit_hlc = commit_hlc;
-				LRLockApplyOp(fp->lrlock, &flat_op, sizeof(flat_op));
+				SLogFlatHashApply(fp->hash, &flat_op, sizeof(flat_op));
 			}
 
-			LRLockPublish(fp->lrlock);
-			LRLockWriteEnd(fp->lrlock);
+			SLogSeqWriteEnd(fp);
 			LWLockRelease(&fp->writer_lock.lock);
 		}
 	}
@@ -2190,12 +1924,7 @@ SLogTupleRemoveByXidSingle(Oid relid, ItemPointer tid, TransactionId xid)
 	flat_op.key = key;
 	flat_op.xid = xid;
 
-	LWLockAcquire(SLOG_PART_WRITER_LOCK(&key), LW_EXCLUSIVE);
-	LRLockWriteBegin(SLOG_PART_LRLOCK(&key));
-	LRLockApplyOp(SLOG_PART_LRLOCK(&key), &flat_op, sizeof(flat_op));
-	LRLockPublish(SLOG_PART_LRLOCK(&key));
-	LRLockWriteEnd(SLOG_PART_LRLOCK(&key));
-	LWLockRelease(SLOG_PART_WRITER_LOCK(&key));
+	SLogPartApplyOne(SLogGetPartition(&key), &flat_op);
 }
 
 /*
@@ -2226,12 +1955,7 @@ SLogTupleMarkAbortedSingle(Oid relid, ItemPointer tid, TransactionId xid)
 	flat_op.key = key;
 	flat_op.xid = xid;
 
-	LWLockAcquire(SLOG_PART_WRITER_LOCK(&key), LW_EXCLUSIVE);
-	LRLockWriteBegin(SLOG_PART_LRLOCK(&key));
-	LRLockApplyOp(SLOG_PART_LRLOCK(&key), &flat_op, sizeof(flat_op));
-	LRLockPublish(SLOG_PART_LRLOCK(&key));
-	LRLockWriteEnd(SLOG_PART_LRLOCK(&key));
-	LWLockRelease(SLOG_PART_WRITER_LOCK(&key));
+	SLogPartApplyOne(SLogGetPartition(&key), &flat_op);
 }
 
 /*
@@ -2282,10 +2006,10 @@ SLogTupleRemoveBySubXid(TransactionId xid, TransactionId subxid)
 		}
 
 		LWLockAcquire(SLOG_PART_WRITER_LOCK(&tk->key), LW_EXCLUSIVE);
-		LRLockWriteBegin(SLOG_PART_LRLOCK(&tk->key));
-		LRLockApplyOp(SLOG_PART_LRLOCK(&tk->key), &flat_op, sizeof(flat_op));
-		LRLockPublish(SLOG_PART_LRLOCK(&tk->key));
-		LRLockWriteEnd(SLOG_PART_LRLOCK(&tk->key));
+		SLogSeqWriteBegin(SLogGetPartition(&tk->key));
+		SLogFlatHashApply(SLogGetPartition(&tk->key)->hash, &flat_op,
+						 sizeof(flat_op));
+		SLogSeqWriteEnd(SLogGetPartition(&tk->key));
 		LWLockRelease(SLOG_PART_WRITER_LOCK(&tk->key));
 
 		/*
@@ -2341,10 +2065,10 @@ SLogTupleUpdateSubXid(TransactionId xid,
 			flat_op.tuple_op.subxid = old_subxid;
 
 			LWLockAcquire(SLOG_PART_WRITER_LOCK(&tk->key), LW_EXCLUSIVE);
-			LRLockWriteBegin(SLOG_PART_LRLOCK(&tk->key));
-			LRLockApplyOp(SLOG_PART_LRLOCK(&tk->key), &flat_op, sizeof(flat_op));
-			LRLockPublish(SLOG_PART_LRLOCK(&tk->key));
-			LRLockWriteEnd(SLOG_PART_LRLOCK(&tk->key));
+			SLogSeqWriteBegin(SLogGetPartition(&tk->key));
+			SLogFlatHashApply(SLogGetPartition(&tk->key)->hash, &flat_op,
+							 sizeof(flat_op));
+			SLogSeqWriteEnd(SLogGetPartition(&tk->key));
 			LWLockRelease(SLOG_PART_WRITER_LOCK(&tk->key));
 		}
 	}
@@ -2369,7 +2093,6 @@ void
 SLogTupleMarkAborted(TransactionId xid)
 {
 	SLogTrackedKey *tk;
-	SLogInsertMap *im;
 	int			part;
 	dsa_pointer *freedps;
 	int			nfreedps = 0;
@@ -2390,12 +2113,9 @@ SLogTupleMarkAborted(TransactionId xid)
 		SLogFlatPartition *fp = SLogGetPartitionByIndex(part);
 		bool		has_entries = false;
 
-		/* Quick check: any sparsemap entries route to this partition? */
-		for (im = slog_insert_maps; im != NULL && !has_entries; im = im->next)
-		{
-			if (!sm_is_empty(im->map))
-				has_entries = true;	/* conservative; checked per-entry below */
-		}
+		/* Quick check: any local-only INSERT entries at all? */
+		if (slog_insert_tids != NULL && slog_insert_tids->members > 0)
+			has_entries = true;	/* conservative; filtered per-entry below */
 
 		/* Check linked-list entries */
 		if (!has_entries)
@@ -2412,7 +2132,8 @@ SLogTupleMarkAborted(TransactionId xid)
 			}
 		}
 
-		if (!has_entries && slog_insert_maps == NULL)
+		if (!has_entries &&
+			(slog_insert_tids == NULL || slog_insert_tids->members == 0))
 			continue;
 
 		LWLockAcquire(&fp->writer_lock.lock, LW_EXCLUSIVE);
@@ -2423,14 +2144,14 @@ SLogTupleMarkAborted(TransactionId xid)
 		 * frees: this runs under the partition writer lock, so the UNDO
 		 * worker's SLogTupleRemoveByXidGlobal (which also takes the writer
 		 * lock and only frees still-valid dps) cannot race us, and the
-		 * MARK_ABORTED op below nulls before_image_dp in both copies so the
-		 * worker sees InvalidDsaPointer afterward.  We record the dps now but
-		 * free them only after LRLockPublish has drained readers off the old
-		 * copy, so no wait-free reader can dereference a freed pointer.
+		 * MARK_ABORTED op below nulls before_image_dp so the worker sees
+		 * InvalidDsaPointer afterward.  We record the dps now but free them
+		 * only after the seqlock write cycle completes (seq even again), so
+		 * no wait-free reader can dereference a freed pointer: any reader
+		 * that copied the old dp fails its seq re-check and retries.
 		 */
 		{
-			const SLogFlatHash *rht = (const SLogFlatHash *)
-				LRLockGetReadData(fp->lrlock);
+			const SLogFlatHash *rht = fp->hash;
 
 			for (tk = slog_tracked_keys; tk != NULL; tk = tk->next)
 			{
@@ -2465,52 +2186,41 @@ SLogTupleMarkAborted(TransactionId xid)
 			}
 		}
 
-		LRLockWriteBegin(fp->lrlock);
+		SLogSeqWriteBegin(fp);
 
 		/*
-		 * Publish-and-recycle periodically inside the apply loops.  This
-		 * bounds two resources that an unbounded single publish cycle would
-		 * blow on a very large rollback (hundreds of thousands of tuples):
-		 *
-		 *   1. The LRLock oplog, which lives in the fixed main shared-memory
-		 *      arena and is regrown (doubling, never freeing the old buffer)
-		 *      via a runtime ShmemAlloc whenever a single cycle overflows its
-		 *      initial 4 KB.  Each LRLockPublish resets oplog_used to 0.
-		 *
-		 *   2. The LRLock writer spinlock (writer_mutex), held from
-		 *      LRLockWriteBegin to LRLockWriteEnd.  Holding a spinlock across
-		 *      that many ops trips the stuck-spinlock detector (PANIC).  We
-		 *      therefore call WriteEnd + WriteBegin at each batch boundary to
-		 *      release and re-acquire it, keeping the hold time bounded.
-		 *
-		 * Correctness across the recycle: each tuple's abort visibility is
-		 * resolved independently, and a publish leaves both copies in sync, so
-		 * dropping the spinlock at a batch boundary leaves the partition
-		 * consistent for any other writer that interleaves a complete cycle.
-		 * The partition writer LWLock (held for the whole function) still
-		 * serializes us against SLogTupleRemoveByXidGlobal, the only other
-		 * before-image freer, so deferring the dsa_free calls until after the
-		 * final publish remains safe.
+		 * Bound the seqlock odd-hold window on a very large rollback
+		 * (hundreds of thousands of tuples).  While seq is odd every
+		 * wait-free reader of this partition spins; ending and re-beginning
+		 * the seqlock every SLOG_ABORT_PUBLISH_BATCH ops lets those readers
+		 * make progress.  Correctness across the boundary: each tuple's
+		 * abort visibility is resolved independently and each seq cycle
+		 * leaves fp->hash consistent, so a reader that observes the even
+		 * counter at a boundary sees a valid partial state.  The partition
+		 * writer LWLock (held for the whole function) still serializes us
+		 * against SLogTupleRemoveByXidGlobal, the only other before-image
+		 * freer, so deferring the dsa_free calls until after the final
+		 * SLogSeqWriteEnd remains safe.
 		 */
 		ops_since_publish = 0;
 
-		/* Process sparsemap-based local-only INSERTs for this partition */
-		for (im = slog_insert_maps; im != NULL; im = im->next)
+		/* Process backend-local INSERT-hash entries for this partition */
+		if (slog_insert_tids != NULL)
 		{
-			uint64		idx;
-			sm_cursor_t cur = SM_CURSOR_INIT;
+			sloginsert_iterator it;
+			SLogInsertTidEntry *ie;
 
-			idx = sm_minimum(im->map);
-			while (SM_FOUND(idx))
+			sloginsert_start_iterate(slog_insert_tids, &it);
+			while ((ie = sloginsert_iterate(slog_insert_tids, &it)) != NULL)
 			{
 				SLogFlatOp	flat_op;
 				SLogTupleKey smkey;
 
 				memset(&smkey, 0, sizeof(smkey));
-				smkey.relid = im->relid;
+				smkey.relid = ie->key.relid;
 				ItemPointerSet(&smkey.tid,
-							   SLOG_DECODE_BLKNO(idx),
-							   SLOG_DECODE_OFFNUM(idx));
+							   SLOG_DECODE_BLKNO(ie->key.encoded_tid),
+							   SLOG_DECODE_OFFNUM(ie->key.encoded_tid));
 
 				/* Only process if this key belongs to current partition */
 				if (SLogFlatHashPartitionIndex(&smkey) == part)
@@ -2520,18 +2230,15 @@ SLogTupleMarkAborted(TransactionId xid)
 					flat_op.key = smkey;
 					flat_op.xid = xid;
 					flat_op.subxid = InvalidTransactionId;
-					LRLockApplyOp(fp->lrlock, &flat_op, sizeof(flat_op));
+					SLogFlatHashApply(fp->hash, &flat_op, sizeof(flat_op));
 
 					if (++ops_since_publish >= SLOG_ABORT_PUBLISH_BATCH)
 					{
-						LRLockPublish(fp->lrlock);
-						LRLockWriteEnd(fp->lrlock);
-						LRLockWriteBegin(fp->lrlock);
+						SLogSeqWriteEnd(fp);
+						SLogSeqWriteBegin(fp);
 						ops_since_publish = 0;
 					}
 				}
-
-				idx = sm_next_member(im->map, idx, &cur);
 			}
 		}
 
@@ -2560,24 +2267,23 @@ SLogTupleMarkAborted(TransactionId xid)
 				flat_op.xid = xid;
 			}
 
-			LRLockApplyOp(fp->lrlock, &flat_op, sizeof(flat_op));
+			SLogFlatHashApply(fp->hash, &flat_op, sizeof(flat_op));
 
 			if (++ops_since_publish >= SLOG_ABORT_PUBLISH_BATCH)
 			{
-				LRLockPublish(fp->lrlock);
-				LRLockWriteEnd(fp->lrlock);
-				LRLockWriteBegin(fp->lrlock);
+				SLogSeqWriteEnd(fp);
+				SLogSeqWriteBegin(fp);
 				ops_since_publish = 0;
 			}
 		}
 
-		LRLockPublish(fp->lrlock);
-		LRLockWriteEnd(fp->lrlock);
+		SLogSeqWriteEnd(fp);
 
 		/*
-		 * Readers have now been drained off the old copy by LRLockPublish, so
-		 * the before-images are unreachable.  Free them while still holding
-		 * the writer lock (single-owner guarantee).
+		 * The seqlock cycle has closed (seq even), so no wait-free reader
+		 * can still hold a live copy of the now-nulled before-image
+		 * pointers.  Free them while still holding the writer lock
+		 * (single-owner guarantee).
 		 */
 		if (nfreedps > 0)
 		{
@@ -2632,16 +2338,15 @@ SLogTupleRemoveByXidGlobal(TransactionId xid)
 	 * dsa_free() it more than once (a double-free that trips the dsa.c
 	 * superblock/alignment assertions).
 	 *
-	 * Holding the LWLock guarantees no LRLock publish can occur for this
-	 * partition, so the read copy is stable.  We free the before-images here
-	 * (under the LWLock but outside the LRLock spinlock section, since
-	 * dsa_free() may take an LWLock) and then apply REMOVE_XID, which also
-	 * nulls before_image_dp in both copies.  Each dp is freed exactly once.
+	 * Holding the LWLock guarantees no other writer mutates this partition,
+	 * so the single copy is stable while we scan it.  We apply REMOVE_XID
+	 * (which nulls before_image_dp) inside one seqlock cycle, then free the
+	 * before-images after the cycle closes (seq even) so no wait-free reader
+	 * can act on a freed dp.  Each dp is freed exactly once.
 	 */
 	for (part = 0; part < SLogNumPartitions; part++)
 	{
 		SLogFlatPartition *fp = SLogGetPartitionByIndex(part);
-		const SLogFlatHash *ht;
 		SLogFlatHashScanState scan;
 		const SLogFlatBucket *bucket;
 		int			nkeys = 0;
@@ -2650,9 +2355,9 @@ SLogTupleRemoveByXidGlobal(TransactionId xid)
 
 		LWLockAcquire(&fp->writer_lock.lock, LW_EXCLUSIVE);
 
-		ht = (const SLogFlatHash *) LRLockGetReadData(fp->lrlock);
+		/* Scan the single copy; stable because we hold the writer lock. */
 		SLogFlatHashScanInit(&scan);
-		while ((bucket = SLogFlatHashScanNext(ht, &scan)) != NULL)
+		while ((bucket = SLogFlatHashScanNext(fp->hash, &scan)) != NULL)
 		{
 			const SLogTupleEntry *entry = &bucket->entry;
 
@@ -2672,14 +2377,10 @@ SLogTupleRemoveByXidGlobal(TransactionId xid)
 			}
 		}
 
-		/* Free before-images (under LWLock, outside the LRLock spinlock). */
-		for (i = 0; i < ndps; i++)
-			dsa_free(slog_dsa_handle, collected_dps[i]);
-
-		/* Null the dangling pointers in both copies and drop the slots. */
+		/* Null the dangling pointers and drop the slots in one seq cycle. */
 		if (nkeys > 0)
 		{
-			LRLockWriteBegin(fp->lrlock);
+			SLogSeqWriteBegin(fp);
 			for (i = 0; i < nkeys; i++)
 			{
 				SLogFlatOp	flat_op;
@@ -2688,11 +2389,22 @@ SLogTupleRemoveByXidGlobal(TransactionId xid)
 				flat_op.kind = SLOG_FLAT_OP_REMOVE_XID;
 				flat_op.key = collected_keys[i];
 				flat_op.xid = xid;
-				LRLockApplyOp(fp->lrlock, &flat_op, sizeof(flat_op));
+				SLogFlatHashApply(fp->hash, &flat_op, sizeof(flat_op));
 			}
-			LRLockPublish(fp->lrlock);
-			LRLockWriteEnd(fp->lrlock);
+			SLogSeqWriteEnd(fp);
 		}
+
+		/*
+		 * Free before-images AFTER the seq cycle closed the mutation.  With a
+		 * single copy we must not free before the REMOVE_XID nulled the
+		 * pointer and seq returned even: a concurrent wait-free reader may
+		 * have copied the old before_image_dp into a local, and only the seq
+		 * re-check (which now fails) prevents it from acting on a freed dp.
+		 * Done under the writer lock (outside any spinlock, since dsa_free may
+		 * take an LWLock); each dp is freed exactly once.
+		 */
+		for (i = 0; i < ndps; i++)
+			dsa_free(slog_dsa_handle, collected_dps[i]);
 
 		LWLockRelease(&fp->writer_lock.lock);
 	}
@@ -2705,42 +2417,48 @@ SLogTupleRemoveByXidGlobal(TransactionId xid)
  * SLogTupleIterateByTid
  *		Call a callback for each active operation on a tuple.
  *
- * WAIT-FREE: uses LRLock read-side.  The callback receives pointers
- * into the read copy; the callback must not hold the pointers beyond
- * the iteration (they are invalidated by LRLockReadEnd).
+ * WAIT-FREE: uses the seqlock read-side.  The in-use ops are copied into a
+ * local array under the seqlock retry loop; the callback then runs after a
+ * consistent read, so it may have side effects and receives pointers into
+ * the local copy (valid for the duration of this call).
  */
 void
 SLogTupleIterateByTid(Oid relid, ItemPointer tid,
 					  SLogTupleIterCallback callback, void *arg)
 {
 	SLogTupleKey key;
-	const SLogFlatHash *ht;
-	const SLogFlatBucket *bucket;
+	SLogFlatPartition *fp;
+	SLogTupleOp	ops[SLOG_MAX_TUPLE_OPS];
+	int			nops = 0;
+	uint32		slog_seq_;
 	int			i;
 
 	memset(&key, 0, sizeof(key));
 	key.relid = relid;
 	ItemPointerCopy(tid, &key.tid);
 
-	ht = (const SLogFlatHash *) LRLockReadBegin(SLOG_PART_LRLOCK(&key));
+	fp = SLogGetPartition(&key);
 
-	bucket = SLogFlatHashProbe(ht, &key);
-
-	if (bucket != NULL)
+	SLOG_SEQ_READ_BEGIN(fp, slog_seq_)
 	{
-		const SLogTupleEntry *entry = &bucket->entry;
+		const SLogFlatBucket *bucket = SLogFlatHashProbe(fp->hash, &key);
 
-		for (i = 0; i < SLOG_MAX_TUPLE_OPS; i++)
+		nops = 0;				/* reset: body may re-run on retry */
+		if (bucket != NULL)
 		{
-			if (entry->ops[i].in_use)
-			{
-				if (!callback(&entry->ops[i], arg))
-					break;
-			}
+			const SLogTupleEntry *entry = &bucket->entry;
+
+			for (i = 0; i < SLOG_MAX_TUPLE_OPS; i++)
+				if (entry->ops[i].in_use)
+					ops[nops++] = entry->ops[i];
 		}
 	}
+	SLOG_SEQ_READ_END(fp, slog_seq_);
 
-	LRLockReadEnd(SLOG_PART_LRLOCK(&key));
+	/* Consistent read complete; run the (side-effecting) callback. */
+	for (i = 0; i < nops; i++)
+		if (!callback(&ops[i], arg))
+			break;
 }
 
 /* ----------------------------------------------------------------
@@ -2750,27 +2468,29 @@ SLogTupleIterateByTid(Oid relid, ItemPointer tid,
 
 /*
  * SLogTupleHasEntry -- quick probe: does ANY active entry exist for this TID?
- * WAIT-FREE: uses LRLock read-side.
+ * WAIT-FREE: uses the seqlock read-side.
  */
 bool
 SLogTupleHasEntry(Oid relid, ItemPointer tid)
 {
 	SLogTupleKey key;
-	const SLogFlatHash *ht;
-	const SLogFlatBucket *bucket;
+	SLogFlatPartition *fp;
 	bool		has_entry = false;
+	uint32		slog_seq_;
 
 	memset(&key, 0, sizeof(key));
 	key.relid = relid;
 	ItemPointerCopy(tid, &key.tid);
 
-	ht = (const SLogFlatHash *) LRLockReadBegin(SLOG_PART_LRLOCK(&key));
+	fp = SLogGetPartition(&key);
 
-	bucket = SLogFlatHashProbe(ht, &key);
-	if (bucket != NULL && bucket->entry.nops > 0)
-		has_entry = true;
+	SLOG_SEQ_READ_BEGIN(fp, slog_seq_)
+	{
+		const SLogFlatBucket *bucket = SLogFlatHashProbe(fp->hash, &key);
 
-	LRLockReadEnd(SLOG_PART_LRLOCK(&key));
+		has_entry = (bucket != NULL && bucket->entry.nops > 0);
+	}
+	SLOG_SEQ_READ_END(fp, slog_seq_);
 
 	return has_entry;
 }
@@ -2796,29 +2516,38 @@ SLogTupleIsInsertedByMe(Oid relid, ItemPointer tid)
 	if (!TransactionIdIsValid(myxid))
 		return false;
 
+	/*
+	 * Special-marker TIDs (SpecTokenOffsetNumber 0xFFFE for speculative
+	 * insertions, MovedPartitionsOffsetNumber 0xFFFD for cross-partition
+	 * moves) can appear in a tuple's on-page t_ctid.  All sLog entries are
+	 * keyed by an on-page (block, offnum) with offnum <= MaxOffsetNumber,
+	 * so this backend cannot have "inserted" the tuple under such a key.
+	 * Bail out early to avoid tripping the encode-guard elog(ERROR) below.
+	 */
+	if (ItemPointerGetOffsetNumber(tid) > MaxOffsetNumber)
+		return false;
+
 	/* Check shared hash first (normal case) */
 	nfound = SLogTupleLookupFiltered(relid, tid, myxid, &op, 1);
 	if (nfound > 0 && op.op_type == SLOG_OP_INSERT)
 		return true;
 
 	/*
-	 * Check sparsemap-based INSERT tracking (top-level local-only INSERTs).
+	 * Check the backend-local INSERT hash (top-level local-only INSERTs).
 	 */
 	{
-		SLogInsertMap *im;
 		BlockNumber blkno = ItemPointerGetBlockNumber(tid);
 		OffsetNumber offnum = ItemPointerGetOffsetNumber(tid);
-		uint64		encoded;
+		SLogInsertTidKey ikey;
 
 		if (offnum > MaxOffsetNumber)
 			elog(ERROR, "offset %u exceeds page item limit %d in sLog TID encoding",
 				 offnum, MaxOffsetNumber);
-		encoded = SLOG_ENCODE_TID(blkno, offnum);
-		for (im = slog_insert_maps; im != NULL; im = im->next)
-		{
-			if (im->relid == relid && sm_contains(im->map, encoded, NULL))
-				return true;
-		}
+		ikey.relid = relid;
+		ikey.encoded_tid = SLOG_ENCODE_TID(blkno, offnum);
+		if (slog_insert_tids != NULL &&
+			sloginsert_lookup(slog_insert_tids, ikey) != NULL)
+			return true;
 	}
 
 	/*
@@ -2867,54 +2596,59 @@ SLogTupleIsDeletedByMe(Oid relid, ItemPointer tid)
  * Returns the xid of the first in-progress INSERT or DELETE/UPDATE entry
  * found (excluding our own), or InvalidTransactionId if none.
  *
- * WAIT-FREE: uses LRLock read-side (atomic epoch increment + pointer load).
- * This eliminates the buffer-lock / sLog-lock deadlock entirely.
+ * WAIT-FREE: uses the seqlock read-side.  The ops are snapshotted into a
+ * local array inside the retry loop; the (LWLock-taking) transaction-status
+ * checks then run after a consistent read, never inside the retry loop.
  */
 TransactionId
 SLogTupleGetDirtyXid(Oid relid, ItemPointer tid, bool *is_insert)
 {
 	SLogTupleKey key;
-	const SLogFlatHash *ht;
-	const SLogFlatBucket *bucket;
+	SLogFlatPartition *fp;
+	SLogTupleOp	ops[SLOG_MAX_TUPLE_OPS];
+	int			nops = 0;
 	TransactionId result = InvalidTransactionId;
+	uint32		slog_seq_;
 	int			i;
 
 	memset(&key, 0, sizeof(key));
 	key.relid = relid;
 	ItemPointerCopy(tid, &key.tid);
 
-	ht = (const SLogFlatHash *) LRLockReadBegin(SLOG_PART_LRLOCK(&key));
+	fp = SLogGetPartition(&key);
 
-	bucket = SLogFlatHashProbe(ht, &key);
-
-	if (bucket != NULL)
+	SLOG_SEQ_READ_BEGIN(fp, slog_seq_)
 	{
-		const SLogTupleEntry *entry = &bucket->entry;
+		const SLogFlatBucket *bucket = SLogFlatHashProbe(fp->hash, &key);
 
-		for (i = 0; i < SLOG_MAX_TUPLE_OPS; i++)
+		nops = 0;				/* reset: body may re-run on retry */
+		if (bucket != NULL)
 		{
-			TransactionId xid;
-			SLogOpType	op;
+			const SLogTupleEntry *entry = &bucket->entry;
 
-			if (!entry->ops[i].in_use)
-				continue;
-
-			xid = entry->ops[i].xid;
-			op = entry->ops[i].op_type;
-
-			if (TransactionIdIsCurrentTransactionId(xid))
-				continue;
-			if (!TransactionIdIsInProgress(xid))
-				continue;
-
-			if (is_insert)
-				*is_insert = (op == SLOG_OP_INSERT);
-			result = xid;
-			break;
+			for (i = 0; i < SLOG_MAX_TUPLE_OPS; i++)
+				if (entry->ops[i].in_use)
+					ops[nops++] = entry->ops[i];
 		}
 	}
+	SLOG_SEQ_READ_END(fp, slog_seq_);
 
-	LRLockReadEnd(SLOG_PART_LRLOCK(&key));
+	/* Consistent snapshot taken; resolve status outside the retry loop. */
+	for (i = 0; i < nops; i++)
+	{
+		TransactionId xid = ops[i].xid;
+		SLogOpType	op = ops[i].op_type;
+
+		if (TransactionIdIsCurrentTransactionId(xid))
+			continue;
+		if (!TransactionIdIsInProgress(xid))
+			continue;
+
+		if (is_insert)
+			*is_insert = (op == SLOG_OP_INSERT);
+		result = xid;
+		break;
+	}
 
 	return result;
 }
@@ -2935,60 +2669,65 @@ SLogTupleGetDirtyXid(Oid relid, ItemPointer tid, bool *is_insert)
  * ExclusiveLock manufactures a deadlock cycle that heap avoids via
  * HEAP_XMAX_IS_LOCKED_ONLY.
  *
- * WAIT-FREE: uses LRLock read-side, identical to SLogTupleGetDirtyXid.
+ * WAIT-FREE: uses the seqlock read-side, identical to SLogTupleGetDirtyXid.
  */
 TransactionId
 SLogTupleGetDirtyWriterXid(Oid relid, ItemPointer tid, bool *is_insert)
 {
 	SLogTupleKey key;
-	const SLogFlatHash *ht;
-	const SLogFlatBucket *bucket;
+	SLogFlatPartition *fp;
+	SLogTupleOp	ops[SLOG_MAX_TUPLE_OPS];
+	int			nops = 0;
 	TransactionId result = InvalidTransactionId;
+	uint32		slog_seq_;
 	int			i;
 
 	memset(&key, 0, sizeof(key));
 	key.relid = relid;
 	ItemPointerCopy(tid, &key.tid);
 
-	ht = (const SLogFlatHash *) LRLockReadBegin(SLOG_PART_LRLOCK(&key));
+	fp = SLogGetPartition(&key);
 
-	bucket = SLogFlatHashProbe(ht, &key);
-
-	if (bucket != NULL)
+	SLOG_SEQ_READ_BEGIN(fp, slog_seq_)
 	{
-		const SLogTupleEntry *entry = &bucket->entry;
+		const SLogFlatBucket *bucket = SLogFlatHashProbe(fp->hash, &key);
 
-		for (i = 0; i < SLOG_MAX_TUPLE_OPS; i++)
+		nops = 0;				/* reset: body may re-run on retry */
+		if (bucket != NULL)
 		{
-			TransactionId xid;
-			SLogOpType	op;
+			const SLogTupleEntry *entry = &bucket->entry;
 
-			if (!entry->ops[i].in_use)
-				continue;
-
-			op = entry->ops[i].op_type;
-
-			/* Only real writers block another writer. */
-			if (op != SLOG_OP_INSERT &&
-				op != SLOG_OP_UPDATE &&
-				op != SLOG_OP_DELETE)
-				continue;
-
-			xid = entry->ops[i].xid;
-
-			if (TransactionIdIsCurrentTransactionId(xid))
-				continue;
-			if (!TransactionIdIsInProgress(xid))
-				continue;
-
-			if (is_insert)
-				*is_insert = (op == SLOG_OP_INSERT);
-			result = xid;
-			break;
+			for (i = 0; i < SLOG_MAX_TUPLE_OPS; i++)
+				if (entry->ops[i].in_use)
+					ops[nops++] = entry->ops[i];
 		}
 	}
+	SLOG_SEQ_READ_END(fp, slog_seq_);
 
-	LRLockReadEnd(SLOG_PART_LRLOCK(&key));
+	/* Consistent snapshot taken; resolve status outside the retry loop. */
+	for (i = 0; i < nops; i++)
+	{
+		TransactionId xid;
+		SLogOpType	op = ops[i].op_type;
+
+		/* Only real writers block another writer. */
+		if (op != SLOG_OP_INSERT &&
+			op != SLOG_OP_UPDATE &&
+			op != SLOG_OP_DELETE)
+			continue;
+
+		xid = ops[i].xid;
+
+		if (TransactionIdIsCurrentTransactionId(xid))
+			continue;
+		if (!TransactionIdIsInProgress(xid))
+			continue;
+
+		if (is_insert)
+			*is_insert = (op == SLOG_OP_INSERT);
+		result = xid;
+		break;
+	}
 
 	return result;
 }
@@ -3039,71 +2778,77 @@ slog_tuplock_to_lockmode(LockTupleMode mode)
  * Returns the conflicting xid, or InvalidTransactionId if none.  *is_insert is
  * set true only when the returned xid is an in-progress INSERT writer.
  *
- * WAIT-FREE: uses LRLock read-side, identical to SLogTupleGetDirtyWriterXid.
+ * WAIT-FREE: uses the seqlock read-side, identical to SLogTupleGetDirtyWriterXid.
  */
 TransactionId
 SLogTupleGetWriteConflictXid(Oid relid, ItemPointer tid,
 							 LockTupleMode my_mode, bool *is_insert)
 {
 	SLogTupleKey key;
-	const SLogFlatHash *ht;
-	const SLogFlatBucket *bucket;
+	SLogFlatPartition *fp;
+	SLogTupleOp	ops[SLOG_MAX_TUPLE_OPS];
+	int			nops = 0;
 	TransactionId writer_xid = InvalidTransactionId;
 	bool		writer_is_insert = false;
 	TransactionId locker_xid = InvalidTransactionId;
 	LOCKMODE	my_lockmode = slog_tuplock_to_lockmode(my_mode);
+	uint32		slog_seq_;
 	int			i;
 
 	memset(&key, 0, sizeof(key));
 	key.relid = relid;
 	ItemPointerCopy(tid, &key.tid);
 
-	ht = (const SLogFlatHash *) LRLockReadBegin(SLOG_PART_LRLOCK(&key));
+	fp = SLogGetPartition(&key);
 
-	bucket = SLogFlatHashProbe(ht, &key);
-
-	if (bucket != NULL)
+	SLOG_SEQ_READ_BEGIN(fp, slog_seq_)
 	{
-		const SLogTupleEntry *entry = &bucket->entry;
+		const SLogFlatBucket *bucket = SLogFlatHashProbe(fp->hash, &key);
 
-		for (i = 0; i < SLOG_MAX_TUPLE_OPS; i++)
+		nops = 0;				/* reset: body may re-run on retry */
+		if (bucket != NULL)
 		{
-			TransactionId xid;
-			SLogOpType	op;
+			const SLogTupleEntry *entry = &bucket->entry;
 
-			if (!entry->ops[i].in_use)
-				continue;
-
-			op = entry->ops[i].op_type;
-			xid = entry->ops[i].xid;
-
-			if (TransactionIdIsCurrentTransactionId(xid))
-				continue;
-			if (!TransactionIdIsInProgress(xid))
-				continue;
-
-			if (op == SLOG_OP_INSERT ||
-				op == SLOG_OP_UPDATE ||
-				op == SLOG_OP_DELETE)
-			{
-				/* A real writer: highest priority, stop scanning. */
-				writer_xid = xid;
-				writer_is_insert = (op == SLOG_OP_INSERT);
-				break;
-			}
-
-			if (op == SLOG_OP_LOCK_SHARE || op == SLOG_OP_LOCK_EXCL)
-			{
-				LOCKMODE	locker_lockmode =
-					slog_tuplock_to_lockmode(entry->ops[i].lock_mode);
-
-				if (DoLockModesConflict(my_lockmode, locker_lockmode))
-					locker_xid = xid;	/* candidate; keep seeking a writer */
-			}
+			for (i = 0; i < SLOG_MAX_TUPLE_OPS; i++)
+				if (entry->ops[i].in_use)
+					ops[nops++] = entry->ops[i];
 		}
 	}
+	SLOG_SEQ_READ_END(fp, slog_seq_);
 
-	LRLockReadEnd(SLOG_PART_LRLOCK(&key));
+	/* Consistent snapshot taken; resolve status outside the retry loop. */
+	for (i = 0; i < nops; i++)
+	{
+		TransactionId xid;
+		SLogOpType	op = ops[i].op_type;
+
+		xid = ops[i].xid;
+
+		if (TransactionIdIsCurrentTransactionId(xid))
+			continue;
+		if (!TransactionIdIsInProgress(xid))
+			continue;
+
+		if (op == SLOG_OP_INSERT ||
+			op == SLOG_OP_UPDATE ||
+			op == SLOG_OP_DELETE)
+		{
+			/* A real writer: highest priority, stop scanning. */
+			writer_xid = xid;
+			writer_is_insert = (op == SLOG_OP_INSERT);
+			break;
+		}
+
+		if (op == SLOG_OP_LOCK_SHARE || op == SLOG_OP_LOCK_EXCL)
+		{
+			LOCKMODE	locker_lockmode =
+				slog_tuplock_to_lockmode(ops[i].lock_mode);
+
+			if (DoLockModesConflict(my_lockmode, locker_lockmode))
+				locker_xid = xid;	/* candidate; keep seeking a writer */
+		}
+	}
 
 	if (TransactionIdIsValid(writer_xid))
 	{
@@ -3312,12 +3057,10 @@ SLogTupleTrackKey(SLogTupleKey key, TransactionId xid, TransactionId subxid,
  * creating a shared sLog entry.  On subtransaction abort,
  * SLogTupleRemoveBySubXid will create a shared ABORTED entry for visibility.
  *
- * OOM optimization: When not inside a subtransaction, uses a compact
- * sparsemap (1 bit per TID, RLE-compressed) instead of a 136-byte linked
- * list node.  With the dense TID encoding (see SLOG_ENCODE_TID), a bulk
- * sequential INSERT collapses to a few run-length entries: 300k rows
- * measured at 24 bytes, and the map stays flat into the millions of rows,
- * versus the ~1.3 GB the linked list consumed at 10M rows.  Subtransaction
+ * OOM optimization: When not inside a subtransaction, records the TID in a
+ * backend-local open-addressing hash (simplehash) keyed by (relid,
+ * encoded_tid) instead of a 136-byte linked-list node, giving O(1) insert
+ * and probe and bounded per-backend memory under bulk INSERT.  Subtransaction
  * entries still use the linked list because subtxn abort needs per-entry
  * subxid filtering.
  */
@@ -3328,68 +3071,32 @@ SLogTupleTrackLocalOnly(Oid relid, ItemPointer tid,
 	MemoryContext oldcxt;
 
 	/*
-	 * Fast path: top-level transaction with no savepoint → use sparsemap.
+	 * Fast path: top-level transaction with no savepoint → use the hash.
 	 * The subxid is InvalidTransactionId in this case (top-level INSERTs
 	 * always pass the top xid as both xid and subxid=Invalid).
 	 */
 	if (!IsSubTransaction())
 	{
-		SLogInsertMap *im;
 		BlockNumber blkno = ItemPointerGetBlockNumber(tid);
 		OffsetNumber offnum = ItemPointerGetOffsetNumber(tid);
-		uint64		encoded;
+		SLogInsertTidKey ikey;
+		bool		found;
 
 		if (offnum > MaxOffsetNumber)
 			elog(ERROR, "offset %u exceeds page item limit %d in sLog TID encoding",
 				 offnum, MaxOffsetNumber);
-		encoded = SLOG_ENCODE_TID(blkno, offnum);
-		oldcxt = MemoryContextSwitchTo(TopTransactionContext);
+		ikey.relid = relid;
+		ikey.encoded_tid = SLOG_ENCODE_TID(blkno, offnum);
 
-		/* Find or create the insert map for this relid */
-		for (im = slog_insert_maps; im != NULL; im = im->next)
-		{
-			if (im->relid == relid)
-				break;
-		}
-
-		if (im == NULL)
-		{
-			im = (SLogInsertMap *) palloc(sizeof(SLogInsertMap));
-			im->relid = relid;
-			im->map = sm_create(SLOG_INSERT_MAP_INIT_SIZE);
-			if (unlikely(im->map == NULL))
-			{
-				/* Allocation failed — fall back to linked list */
-				pfree(im);
-				MemoryContextSwitchTo(oldcxt);
-				goto fallback_linked_list;
-			}
-			im->add_cursor = (sm_cursor_t) SM_CURSOR_INIT;
-			im->next = slog_insert_maps;
-			slog_insert_maps = im;
-		}
-
-		/* Add the TID bit; sm_add_grow_cursor handles buffer expansion and
-		 * threads a persistent cursor so an ascending append run (the COPY /
-		 * bulk-INSERT pattern) builds in amortized O(1) per row instead of
-		 * O(N) -- O(N) total instead of O(N^2). */
-		if (sm_add_grow_cursor(&im->map, encoded, &im->add_cursor) == SM_IDX_MAX)
-		{
-			/*
-			 * Extremely unlikely: sparsemap growth failed.  Fall back to
-			 * linked list for this entry with a WARNING.
-			 */
-			MemoryContextSwitchTo(oldcxt);
-			elog(WARNING, "sLog INSERT sparsemap growth failed for rel %u, "
-				 "falling back to linked-list tracking", relid);
-			goto fallback_linked_list;
-		}
-
-		MemoryContextSwitchTo(oldcxt);
+		/*
+		 * Record the TID in the backend-local hash.  Insert is amortized
+		 * O(1); the table and its entries live in TopTransactionContext and
+		 * are destroyed at transaction end.
+		 */
+		(void) sloginsert_insert(slog_insert_tids_ensure(), ikey, &found);
 		return;
 	}
 
-fallback_linked_list:
 	{
 		SLogTrackedKey *tk;
 		SLogTupleKey key;
@@ -3430,31 +3137,28 @@ fallback_linked_list:
  * the rewrite transaction's commit HLC, resurrecting the deleted row for any
  * reader whose snapshot predates that commit.
  *
- * Clears the sparsemap bit on the top-level fast path and also drops any
- * matching linked-list node (the savepoint/fallback path).
+ * Clears the backend-local INSERT-hash entry on the top-level fast path and
+ * also drops any matching linked-list node (the savepoint/fallback path).
  */
 void
 SLogTupleUntrackLocalOnly(Oid relid, ItemPointer tid)
 {
-	SLogInsertMap *im;
 	BlockNumber blkno = ItemPointerGetBlockNumber(tid);
 	OffsetNumber offnum = ItemPointerGetOffsetNumber(tid);
-	uint64		encoded;
 	SLogTrackedKey **link;
 
 	if (offnum > MaxOffsetNumber)
 		elog(ERROR, "offset %u exceeds page item limit %d in sLog TID encoding",
 			 offnum, MaxOffsetNumber);
-	encoded = SLOG_ENCODE_TID(blkno, offnum);
-	/* Fast path: clear the sparsemap bit if present. */
-	for (im = slog_insert_maps; im != NULL; im = im->next)
+
+	/* Fast path: drop the backend-local INSERT-hash entry if present. */
+	if (slog_insert_tids != NULL)
 	{
-		if (im->relid == relid)
-		{
-			if (sm_contains(im->map, encoded, NULL))
-				sm_remove(im->map, encoded);
-			break;
-		}
+		SLogInsertTidKey ikey;
+
+		ikey.relid = relid;
+		ikey.encoded_tid = SLOG_ENCODE_TID(blkno, offnum);
+		(void) sloginsert_delete(slog_insert_tids, ikey);
 	}
 
 	/* Fallback/subtxn path: unlink any matching local-only INSERT node. */
@@ -3532,28 +3236,13 @@ SLogTupleStoreBeforeImage(Oid relid, ItemPointer tid, TransactionId xid,
 		MemoryContextSwitchTo(oldcxt);
 
 		/*
-		 * The shared DSA before-image (for cross-backend MVCC reads by
-		 * snapshot-isolation transactions) is NOT allocated here.  It is
-		 * deferred to commit time (SLogTupleCommitByXid), gated on whether
-		 * any REPEATABLE READ / SERIALIZABLE reader is actually active.
-		 *
-		 * The shared copy is invisible to readers until its op carries a
-		 * committed commit_hlc, so allocating it at write time serves no
-		 * reader before commit anyway.  Under READ COMMITTED-only workloads
-		 * (the common case) no isolation reader ever exists, so the
-		 * allocation plus the extra exclusive-LWLock UPDATE_OP publish cycle
-		 * done here per update were pure waste.
-		 *
-		 * Deferring to commit is also the only SOUND gate: a reader that
-		 * starts AFTER this write but BEFORE our commit still needs the
-		 * image, so a write-time RecnoHasActiveIsoReaders() check would miss
-		 * it.  At commit the seq-cst publish-before-snapshot handshake
-		 * (reader bumps active_iso_readers before taking its snapshot HLC; we
-		 * read the counter after stamping our commit HLC) guarantees we
-		 * observe every reader whose snapshot precedes our commit.
-		 *
-		 * The local copy stored above still covers savepoint rollback, which
-		 * is backend-local and does not depend on the DSA copy.
+		 * Only the local per-backend before-image is stored -- consumed by
+		 * intra-transaction savepoint rollback (RecnoRestoreBeforeImages).
+		 * Cross-backend MVCC reads no longer need a shared before-image:
+		 * WS-PVS3 walks the durable UNDO fork chain via
+		 * RecnoReconstructVisibleVersion, and the write-write conflict
+		 * probe (RecnoTupleHasCommittedUpdateAfter) resolves the head
+		 * verptr in the same fork.
 		 */
 		tk->before_image_dp = InvalidDsaPointer;
 
@@ -3637,287 +3326,15 @@ SLogTupleGetBeforeImage(Oid relid, ItemPointer tid, TransactionId xid,
 }
 
 /*
- * SLogTupleGetSharedBeforeImage
- *		Retrieve a committed before-image from shared DSA for MVCC reads.
- *
- * Looks for a committed UPDATE entry on (relid, tid) whose committing xid is
- * NOT visible to the reader's MVCC snapshot (it ran concurrently with, or
- * after, the snapshot).  If found, copies the DSA-resident before-image into
- * a palloc'd buffer and returns true.
- *
- * The caller should serve this data instead of the on-page (post-update)
- * data when the reader's snapshot pre-dates the update commit.
- *
- * AUTHORITY IS THE XID SNAPSHOT, NOT THE HLC: see the rationale on
- * SLogTupleHasCommittedUpdateAfter().  A commit_hlc comparison races with the
- * PRE_COMMIT-stamp / ProcArray-exit ordering and would mis-serve the on-page
- * (new) value to a snapshot that should still see the before-image.
- *
- * Safety: the DSA memory is only freed by SLogTupleCleanupRetained which
- * runs after confirming no active snapshot needs it.
- */
-bool
-SLogTupleGetSharedBeforeImage(Oid relid, ItemPointer tid,
-							  Snapshot snapshot,
-							  char **data_out, int *len_out,
-							  uint16 *flags_out, uint64 *orig_commit_ts_out)
-{
-	SLogTupleKey key;
-	const SLogFlatHash *ht;
-	const SLogFlatBucket *bucket;
-	bool		found = false;
-	dsa_pointer target_dp = InvalidDsaPointer;
-
-	if (SLogState == NULL || snapshot == NULL)
-		return false;
-
-	memset(&key, 0, sizeof(key));
-	key.relid = relid;
-	ItemPointerCopy(tid, &key.tid);
-
-	/*
-	 * Read-side probe: find the relevant before-image DSA pointer.
-	 * The LRLock read-side guarantees the entry won't be freed while we
-	 * hold the epoch.  We copy the dsa_pointer value during the read window.
-	 */
-	ht = (const SLogFlatHash *) LRLockReadBegin(SLOG_PART_LRLOCK(&key));
-
-	bucket = SLogFlatHashProbe(ht, &key);
-	if (bucket != NULL)
-	{
-		const SLogTupleEntry *entry = &bucket->entry;
-		int		i;
-
-		for (i = 0; i < SLOG_MAX_TUPLE_OPS; i++)
-		{
-			if (!entry->ops[i].in_use)
-				continue;
-			if (entry->ops[i].op_type != SLOG_OP_UPDATE)
-				continue;
-			if (entry->ops[i].commit_hlc == 0)
-				continue;	/* uncommitted */
-			if (!TransactionIdIsValid(entry->ops[i].xid))
-				continue;
-			if (!XidInMVCCSnapshot(entry->ops[i].xid, snapshot))
-				continue;	/* visible to reader: on-page value is correct */
-			if (!DsaPointerIsValid(entry->ops[i].before_image_dp))
-				continue;
-
-			target_dp = entry->ops[i].before_image_dp;
-			break;
-		}
-	}
-
-	LRLockReadEnd(SLOG_PART_LRLOCK(&key));
-
-	/*
-	 * If we found a target, access the DSA memory outside the read lock.
-	 * The DSA memory is only freed by SLogTupleCleanupRetained which runs
-	 * after confirming no active snapshot needs it.
-	 */
-	if (DsaPointerIsValid(target_dp))
-	{
-		SLogBeforeImage *bi;
-
-		SLogEnsureDsaAttached();
-		bi = (SLogBeforeImage *)
-			dsa_get_address(slog_dsa_handle, target_dp);
-
-		*data_out = (char *) palloc(bi->len);
-		memcpy(*data_out, bi->data, bi->len);
-		*len_out = (int) bi->len;
-		*flags_out = bi->flags;
-		*orig_commit_ts_out = bi->commit_ts;
-		found = true;
-	}
-
-	return found;
-}
-
-/*
- * SLogTupleHasCommittedUpdateAfter
- *		Write-write conflict probe for the in-place UPDATE path.
- *
- * Returns true if (relid, tid) has a retained committed UPDATE marker whose
- * committing xid is NOT visible to the caller's MVCC snapshot (i.e. it ran
- * concurrently with, or after, the snapshot) and is not exclude_xid (our own).
- * Such a marker means another transaction updated-and-committed this tuple
- * after our statement snapshot was taken, so proceeding with an in-place
- * overwrite would lose that update.  The caller returns TM_Updated to drive
- * EvalPlanQual re-evaluation, matching heap's behaviour when a scanned tuple's
- * xmax committed concurrently with our snapshot.
- *
- * TWO CONFLICT ARMS, because the reader's value-read and the conflict probe
- * live in different snapshot domains and a committer that lands in the gap
- * between them must still be caught:
- *
- *   (1) XID ARM -- XidInMVCCSnapshot(xid): the committer is concurrent with
- *       (in-progress in) our core MVCC snapshot.  This is heap's own
- *       visibility authority.  A "commit_hlc <= anchor" test could NOT
- *       replace this: a committer stamps its commit HLC at PRE_COMMIT but
- *       leaves the ProcArray strictly later, so a reader still seeing it
- *       in-progress reads a current HLC >= its commit_hlc and would wrongly
- *       skip it.  HLC must never be used to *subtract* from the XID arm.
- *
- *   (2) HLC ARM -- read_anchor_hlc != 0 && commit_hlc > read_anchor_hlc:
- *       catches the complementary skew.  Under a point-in-time snapshot
- *       (REPEATABLE READ / SERIALIZABLE) the value read uses the
- *       transaction-start HLC (read_anchor_hlc), which is captured at a
- *       different instant than the core MVCC snapshot's xip list.  A
- *       committer can have ALREADY left the ProcArray (so XidInMVCCSnapshot
- *       returns false -- the XID arm sees no conflict) yet have committed
- *       AFTER our read anchor (commit_hlc > read_anchor_hlc), so the reader
- *       was served that tuple's before-image and read the stale value.
- *       Overwriting in place would then clobber the committed update (the
- *       residual CAS-path lost update verified empirically).  This arm only
- *       ADDS conflicts; it is exactly heap's REPEATABLE READ rule (a row
- *       modified after our snapshot fails an in-place UPDATE -> TM_Updated).
- *       READ COMMITTED passes read_anchor_hlc = 0 to disable this arm: its
- *       value read uses a floating HLCNow() per check, so a committed-after
- *       update is meant to become visible on re-read, not raise a conflict.
- *
- * The EPQ dedup floor applies to BOTH arms: epq_floor_hlc (0 = none)
- * suppresses re-firing on a marker a prior EvalPlanQual on this exact
- * (relid, tid, curcid) already reconciled, which would otherwise livelock
- * because EPQ reuses the same snapshot.
- *
- * RECNO needs this explicit probe because committed in-place UPDATEs rewind
- * t_commit_ts to the original insert timestamp (so mid-life snapshots still
- * see the row), erasing the "updated since you read it" signal that heap keeps
- * in xmax.  The sLog marker is the only durable record of that event.
- *
- * WAIT-FREE: uses the LRLock read-side, no buffer or heavyweight locks.
- */
-bool
-SLogTupleHasCommittedUpdateAfter(Oid relid, ItemPointer tid,
-								 Snapshot snapshot,
-								 uint64 epq_floor_hlc,
-								 TransactionId exclude_xid)
-{
-	SLogTupleKey key;
-	const SLogFlatHash *ht;
-	const SLogFlatBucket *bucket;
-	bool		found = false;
-	TransactionId unstamped_cands[SLOG_MAX_TUPLE_OPS];
-	int			n_unstamped = 0;
-
-	if (SLogState == NULL || snapshot == NULL)
-		return false;
-
-	memset(&key, 0, sizeof(key));
-	key.relid = relid;
-	ItemPointerCopy(tid, &key.tid);
-
-	ht = (const SLogFlatHash *) LRLockReadBegin(SLOG_PART_LRLOCK(&key));
-
-	bucket = SLogFlatHashProbe(ht, &key);
-	if (bucket != NULL)
-	{
-		const SLogTupleEntry *entry = &bucket->entry;
-		int		i;
-
-		for (i = 0; i < SLOG_MAX_TUPLE_OPS; i++)
-		{
-			if (!entry->ops[i].in_use)
-				continue;
-			if (entry->ops[i].op_type != SLOG_OP_UPDATE)
-				continue;
-			if (TransactionIdIsValid(exclude_xid) &&
-				TransactionIdEquals(entry->ops[i].xid, exclude_xid))
-				continue;		/* our own update */
-			if (!TransactionIdIsValid(entry->ops[i].xid))
-				continue;
-			/*
-			 * Conflict only if the committer is in-progress/concurrent in our
-			 * core MVCC snapshot.  XidInMVCCSnapshot() returns true when the xid
-			 * is NOT visible to the snapshot, which is exactly the conflict case
-			 * (the committed update happened at or after our snapshot, so taking
-			 * the CAS fast path here would silently clobber it).  HLC values are
-			 * never used to add or subtract conflicts: the xid-in-snapshot test
-			 * is authoritative.
-			 */
-			if (!XidInMVCCSnapshot(entry->ops[i].xid, snapshot))
-				continue;
-
-			if (entry->ops[i].commit_hlc == 0)
-			{
-				/*
-				 * commit_hlc == 0 normally means "uncommitted, handled by the
-				 * dirty-xid wait path".  But commit_hlc is a derived cache of
-				 * CLOG state stamped lazily at PRE_COMMIT, and under saturation
-				 * that stamp can be missed -- leaving a marker committed in
-				 * CLOG but unstamped.  Such a marker is a genuine write-write
-				 * conflict (XidInMVCCSnapshot already proved it invisible to
-				 * our snapshot) that we must not silently drop.  We cannot call
-				 * TransactionIdDidCommit() here: it may take an SLRU LWLock,
-				 * and we are inside the wait-free LRLock read section (an odd
-				 * epoch blocks the writer's publish).  Defer the CLOG check to
-				 * after LRLockReadEnd().  EPQ dedup cannot apply (no HLC to
-				 * compare), so an unstamped committed marker conservatively
-				 * conflicts -- correct, and vanishingly rare.
-				 */
-				unstamped_cands[n_unstamped++] = entry->ops[i].xid;
-				continue;
-			}
-			/*
-			 * EPQ dedup: a prior EvalPlanQual on this (relid, tid, curcid)
-			 * already reconciled commits up to epq_floor_hlc; do not re-fire
-			 * for those, only for a strictly newer committer.
-			 */
-			if (epq_floor_hlc != 0 &&
-				entry->ops[i].commit_hlc <= epq_floor_hlc)
-				continue;
-
-			found = true;
-			break;
-		}
-	}
-
-	LRLockReadEnd(SLOG_PART_LRLOCK(&key));
-
-	/*
-	 * Resolve any unstamped candidates against CLOG outside the read section.
-	 * A committed xid is a real conflict; an in-progress one is left to the
-	 * dirty-xid wait path (we already verified XidInMVCCSnapshot above).
-	 */
-	if (!found && n_unstamped > 0)
-	{
-		int		i;
-
-		for (i = 0; i < n_unstamped; i++)
-		{
-			if (TransactionIdDidCommit(unstamped_cands[i]))
-			{
-				found = true;
-				break;
-			}
-		}
-	}
-
-	return found;
-}
-
-/*
  * SLogTupleCleanupRetained
- *		Free retained committed UPDATE entries that are no longer visible
- *		to any active snapshot.
+ *		Free retained sLog entries that are no longer visible to any
+ *		active snapshot.
  *
- * A retained UPDATE marker carries two signals an active reader may still
- * need: the DSA before-image (so an old snapshot can reconstruct the
- * pre-update version via SLogTupleGetSharedBeforeImage) and the marker
- * itself (so a concurrent updater can detect the committed update via
- * SLogTupleHasCommittedUpdateAfter, i.e. lost-update/write-write
- * detection).  BOTH of those decide by XidInMVCCSnapshot against the core
- * MVCC snapshot -- xid authority, not HLC comparison.  Reclamation must
- * therefore gate on the xid horizon (GetOldestNonRemovableTransactionId),
- * exactly like the per-TID reclaim in flat_hash_apply_insert: a marker is
- * reclaimable only once its committing xid precedes the oldest active
- * snapshot's xmin, at which point it is visible to every live snapshot and
- * no probe can still need it.  An HLC-horizon gate
- * (commit_hlc < oldest_snapshot_hlc) races with the PRE_COMMIT-stamp /
- * ProcArray-exit skew and frees a marker a concurrent updater still needs,
- * reintroducing the lost update (verified: c=16 RR loses ~2/12 runs with
- * the HLC gate, 0/12 with the xid gate).
+ * WS-PVS3: committed UPDATE markers are no longer retained (commit_xid
+ * apply removes them), so under steady-state this routine primarily
+ * cleans up other retained state.  Reclamation gates on the xid horizon
+ * (GetOldestNonRemovableTransactionId) so a marker is reclaimable only
+ * once its committing xid precedes the oldest active snapshot's xmin.
  *
  * Scans the flat hash under read-side, then applies CLEANUP_RETAINED ops.
  * Walks every partition taking each writer lock LW_EXCLUSIVE, so callers MUST
@@ -3968,17 +3385,17 @@ SLogTupleCleanupRetained(void)
 	 * collect the same before_image_dp, and dsa_free() it twice (a double-free
 	 * that trips the index < DSA_MAX_SEGMENTS assertion in dsa.c).
 	 *
-	 * Holding the LWLock also guarantees no LRLock publish can occur for this
-	 * partition, so the read copy is stable to scan.  We free the DSA
-	 * before-images here (under the LWLock but outside the LRLock spinlock
-	 * section, since dsa_free() may itself take an LWLock) and then apply the
-	 * CLEANUP_RETAINED ops that null out the now-dangling pointers in both
-	 * copies.  Each before-image is therefore freed exactly once.
+	 * Holding the LWLock also guarantees no other writer mutates this
+	 * partition, so the single copy is stable to scan.  We apply the
+	 * CLEANUP_RETAINED ops (which null out the now-dangling pointers) inside
+	 * seqlock cycles, then free the DSA before-images after the final cycle
+	 * closes (seq even) so no wait-free reader can act on a freed dp
+	 * (dsa_free may itself take an LWLock, so it runs outside any spinlock).
+	 * Each before-image is therefore freed exactly once.
 	 */
 	for (part = 0; part < SLogNumPartitions; part++)
 	{
 		SLogFlatPartition *fp = SLogGetPartitionByIndex(part);
-		const SLogFlatHash *ht;
 		SLogFlatHashScanState scan;
 		const SLogFlatBucket *bucket;
 		int			nkeys = 0;
@@ -3987,12 +3404,11 @@ SLogTupleCleanupRetained(void)
 		LWLockAcquire(&fp->writer_lock.lock, LW_EXCLUSIVE);
 
 		/*
-		 * Scan the current read copy to collect expired keys and their
-		 * before-image pointers.  Stable because we hold the writer lock.
+		 * Scan the single copy to collect expired keys and their before-image
+		 * pointers.  Stable because we hold the writer lock.
 		 */
-		ht = (const SLogFlatHash *) LRLockGetReadData(fp->lrlock);
 		SLogFlatHashScanInit(&scan);
-		while ((bucket = SLogFlatHashScanNext(ht, &scan)) != NULL)
+		while ((bucket = SLogFlatHashScanNext(fp->hash, &scan)) != NULL)
 		{
 			const SLogTupleEntry *entry = &bucket->entry;
 			bool		has_expired = false;
@@ -4052,19 +3468,12 @@ SLogTupleCleanupRetained(void)
 			}
 		}
 
-		/* Free before-images (under LWLock, outside the LRLock spinlock). */
-		for (i = 0; i < ndps; i++)
-		{
-			if (DsaPointerIsValid(collected_dps[i]))
-				dsa_free(slog_dsa_handle, collected_dps[i]);
-		}
-
-		/* Null the now-dangling pointers in both copies and drop the slots. */
+		/* Null the now-dangling pointers and drop the slots. */
 		if (nkeys > 0)
 		{
 			int			ops_since_publish = 0;
 
-			LRLockWriteBegin(fp->lrlock);
+			SLogSeqWriteBegin(fp);
 			for (i = 0; i < nkeys; i++)
 			{
 				SLogFlatOp	flat_op;
@@ -4073,29 +3482,39 @@ SLogTupleCleanupRetained(void)
 				flat_op.kind = SLOG_FLAT_OP_CLEANUP_RETAINED;
 				flat_op.key = collected_keys[i];
 				flat_op.reclaim_xid_horizon = reclaim_xid_horizon;
-				LRLockApplyOp(fp->lrlock, &flat_op, sizeof(flat_op));
+				SLogFlatHashApply(fp->hash, &flat_op, sizeof(flat_op));
 
 				/*
-				 * Publish-and-recycle periodically so the writer spinlock
-				 * hold time stays bounded.  On a hot row many retained
+				 * Bound the seqlock odd-hold window so wait-free readers of
+				 * this partition make progress.  On a hot row many retained
 				 * UPDATE markers expire at once, so nkeys can be large; a
-				 * single uninterrupted cycle would hold writer_mutex too
-				 * long (stuck-spinlock PANIC) and let the oplog grow.  Each
-				 * key's reclamation is independent and a publish leaves both
-				 * copies in sync, so dropping the spinlock at a batch
-				 * boundary is safe -- the partition LWLock still serializes
-				 * us against other before-image freers.
+				 * single uninterrupted odd window would spin every reader
+				 * for its whole duration.  Each key's reclamation is
+				 * independent and each seq cycle leaves fp->hash consistent,
+				 * so ending and re-beginning at a batch boundary is safe --
+				 * the partition LWLock still serializes us against other
+				 * before-image freers.
 				 */
 				if (++ops_since_publish >= SLOG_ABORT_PUBLISH_BATCH)
 				{
-					LRLockPublish(fp->lrlock);
-					LRLockWriteEnd(fp->lrlock);
-					LRLockWriteBegin(fp->lrlock);
+					SLogSeqWriteEnd(fp);
+					SLogSeqWriteBegin(fp);
 					ops_since_publish = 0;
 				}
 			}
-			LRLockPublish(fp->lrlock);
-			LRLockWriteEnd(fp->lrlock);
+			SLogSeqWriteEnd(fp);
+		}
+
+		/*
+		 * Free before-images AFTER the seq cycle closed: with a single copy a
+		 * concurrent wait-free reader may have copied an old before_image_dp,
+		 * and only its (now-failing) seq re-check stops it acting on a freed
+		 * dp.  dsa_free may take an LWLock, so it runs outside any spinlock.
+		 */
+		for (i = 0; i < ndps; i++)
+		{
+			if (DsaPointerIsValid(collected_dps[i]))
+				dsa_free(slog_dsa_handle, collected_dps[i]);
 		}
 
 		LWLockRelease(&fp->writer_lock.lock);
@@ -4152,30 +3571,40 @@ SLogTupleMaybeCleanupRetained(void)
 }
 
 /*
+ * SLogTupleAnyTracked
+ *		True iff the current backend has tracked any tuple key (INSERT,
+ *		UPDATE, or DELETE) for the current transaction -- i.e. this backend
+ *		touched at least one RECNO tuple since the last SLogTupleResetTracking().
+ *
+ * Used by RECNO's xact callback to decide whether a non-RECNO transaction
+ * (no tracked keys at all) should skip writing a durable commit-HLC map
+ * entry; see recno_operations.c's RecnoSLogXactCallback.
+ */
+bool
+SLogTupleAnyTracked(void)
+{
+	return slog_tracked_keys != NULL ||
+		(slog_insert_tids != NULL && slog_insert_tids->members > 0);
+}
+
+/*
  * SLogTupleResetTracking
  *		Clear the backend-private tracking list and reset overflow state.
  *
- * Also frees all per-relid INSERT sparsemaps.  The sparsemap structures
- * and their data buffers were allocated in TopTransactionContext, so they
- * would be freed at transaction end anyway.  Explicit cleanup here allows
- * earlier memory reclaim and makes the state consistent for any subsequent
- * operations within the same backend lifetime.
+ * Also frees the backend-local INSERT hash.  The table lives in
+ * TopTransactionContext, so it would be freed at transaction end anyway.
+ * Explicit cleanup here allows earlier memory reclaim and makes the state
+ * consistent for any subsequent operations within the same backend lifetime.
  */
 void
 SLogTupleResetTracking(void)
 {
-	SLogInsertMap *im,
-			   *im_next;
-
-	/* Free sparsemap-based INSERT tracking */
-	for (im = slog_insert_maps; im != NULL; im = im_next)
+	/* Destroy the backend-local INSERT hash */
+	if (slog_insert_tids != NULL)
 	{
-		im_next = im->next;
-		if (im->map != NULL)
-			sm_free(im->map);
-		pfree(im);
+		sloginsert_destroy(slog_insert_tids);
+		slog_insert_tids = NULL;
 	}
-	slog_insert_maps = NULL;
 
 	slog_tracked_keys = NULL;
 	slog_has_shared_entries = false;
@@ -4191,7 +3620,7 @@ SLogTupleResetTracking(void)
  * If the callback returns false, iteration stops early.
  * Used by AM-specific pre-commit callbacks that need to touch pages.
  *
- * Iterates both sparsemap-based INSERT entries (top-level) and
+ * Iterates both hash-based INSERT entries (top-level) and
  * linked-list entries.
  */
 void
@@ -4200,29 +3629,26 @@ SLogTupleIterateTrackedKeys(TransactionId xid,
 							void *arg)
 {
 	SLogTrackedKey *tk;
-	SLogInsertMap *im;
 
-	/* Iterate sparsemap-based local-only INSERTs */
-	for (im = slog_insert_maps; im != NULL; im = im->next)
+	/* Iterate backend-local INSERT-hash entries (top-level local-only) */
+	if (slog_insert_tids != NULL)
 	{
-		uint64		idx;
-		sm_cursor_t cur = SM_CURSOR_INIT;
+		sloginsert_iterator it;
+		SLogInsertTidEntry *ie;
 
-		idx = sm_minimum(im->map);
-		while (SM_FOUND(idx))
+		sloginsert_start_iterate(slog_insert_tids, &it);
+		while ((ie = sloginsert_iterate(slog_insert_tids, &it)) != NULL)
 		{
 			SLogTupleKey key;
 
 			memset(&key, 0, sizeof(key));
-			key.relid = im->relid;
+			key.relid = ie->key.relid;
 			ItemPointerSet(&key.tid,
-						   SLOG_DECODE_BLKNO(idx),
-						   SLOG_DECODE_OFFNUM(idx));
+						   SLOG_DECODE_BLKNO(ie->key.encoded_tid),
+						   SLOG_DECODE_OFFNUM(ie->key.encoded_tid));
 
 			if (!callback(&key, xid, InvalidTransactionId, true, arg))
 				return;
-
-			idx = sm_next_member(im->map, idx, &cur);
 		}
 	}
 
@@ -4254,30 +3680,27 @@ SLogTupleIterateTrackedKeysExt(TransactionId xid,
 							   void *arg)
 {
 	SLogTrackedKey *tk;
-	SLogInsertMap *im;
 
-	/* Iterate sparsemap-based local-only INSERTs */
-	for (im = slog_insert_maps; im != NULL; im = im->next)
+	/* Iterate backend-local INSERT-hash entries (top-level local-only) */
+	if (slog_insert_tids != NULL)
 	{
-		uint64		idx;
-		sm_cursor_t cur = SM_CURSOR_INIT;
+		sloginsert_iterator it;
+		SLogInsertTidEntry *ie;
 
-		idx = sm_minimum(im->map);
-		while (SM_FOUND(idx))
+		sloginsert_start_iterate(slog_insert_tids, &it);
+		while ((ie = sloginsert_iterate(slog_insert_tids, &it)) != NULL)
 		{
 			SLogTupleKey key;
 
 			memset(&key, 0, sizeof(key));
-			key.relid = im->relid;
+			key.relid = ie->key.relid;
 			ItemPointerSet(&key.tid,
-						   SLOG_DECODE_BLKNO(idx),
-						   SLOG_DECODE_OFFNUM(idx));
+						   SLOG_DECODE_BLKNO(ie->key.encoded_tid),
+						   SLOG_DECODE_OFFNUM(ie->key.encoded_tid));
 
 			if (!callback(&key, xid, InvalidTransactionId, true,
 						  0, false, arg))
 				return;
-
-			idx = sm_next_member(im->map, idx, &cur);
 		}
 	}
 
@@ -4310,7 +3733,6 @@ int
 SLogTupleCollectTrackedKeys(TransactionId xid, SLogTrackedKeyInfo **out_keys)
 {
 	SLogTrackedKey *tk;
-	SLogInsertMap *im;
 	int			count = 0;
 	int			capacity = 64;
 	SLogTrackedKeyInfo *arr;
@@ -4324,14 +3746,14 @@ SLogTupleCollectTrackedKeys(TransactionId xid, SLogTrackedKeyInfo **out_keys)
 	arr = (SLogTrackedKeyInfo *) MemoryContextAllocHuge(CurrentMemoryContext,
 														sizeof(SLogTrackedKeyInfo) * (Size) capacity);
 
-	/* Collect sparsemap-based local-only INSERTs */
-	for (im = slog_insert_maps; im != NULL; im = im->next)
+	/* Collect backend-local INSERT-hash entries (top-level local-only) */
+	if (slog_insert_tids != NULL)
 	{
-		uint64		idx;
-		sm_cursor_t cur = SM_CURSOR_INIT;
+		sloginsert_iterator it;
+		SLogInsertTidEntry *ie;
 
-		idx = sm_minimum(im->map);
-		while (SM_FOUND(idx))
+		sloginsert_start_iterate(slog_insert_tids, &it);
+		while ((ie = sloginsert_iterate(slog_insert_tids, &it)) != NULL)
 		{
 			if (count >= capacity)
 			{
@@ -4341,10 +3763,10 @@ SLogTupleCollectTrackedKeys(TransactionId xid, SLogTrackedKeyInfo **out_keys)
 			}
 
 			memset(&arr[count].key, 0, sizeof(SLogTupleKey));
-			arr[count].key.relid = im->relid;
+			arr[count].key.relid = ie->key.relid;
 			ItemPointerSet(&arr[count].key.tid,
-						   SLOG_DECODE_BLKNO(idx),
-						   SLOG_DECODE_OFFNUM(idx));
+						   SLOG_DECODE_BLKNO(ie->key.encoded_tid),
+						   SLOG_DECODE_OFFNUM(ie->key.encoded_tid));
 			arr[count].xid = xid;
 			arr[count].subxid = InvalidTransactionId;
 			arr[count].local_only = true;
@@ -4352,8 +3774,6 @@ SLogTupleCollectTrackedKeys(TransactionId xid, SLogTrackedKeyInfo **out_keys)
 			arr[count].before_commit_ts = 0;
 			arr[count].has_before_image = false;
 			count++;
-
-			idx = sm_next_member(im->map, idx, &cur);
 		}
 	}
 

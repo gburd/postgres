@@ -37,3 +37,6 @@ UNDO_RMGR_INIT(HashUndoRmgrInit)
 
 /* FILEOPS: transactional filesystem-ops UNDO resource manager */
 UNDO_RMGR_INIT(FileopsUndoRmgrInit)
+
+/* RECNO: in-place MVCC table AM UNDO resource manager */
+UNDO_RMGR_INIT(RecnoUndoRmgrInit)

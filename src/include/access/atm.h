@@ -5,8 +5,7 @@
  *
  * The ATM is a shared-memory structure that tracks aborted transactions
  * whose per-relation UNDO chains have not yet been applied (Logical
- * Revert). It enables O(1) visibility checks for aborted transactions
- * and drives the background Logical Revert worker.
+ * Revert). It drives the background Logical Revert worker.
  *
  * The ATM is now backed by the sLog (Secondary Log) shared-memory hash
  * tables defined in access/slog.h.  All ATM functions are thin wrappers
@@ -32,7 +31,6 @@ extern Size ATMShmemSize(void);
 extern void ATMShmemInit(void);
 
 /* Core API */
-extern bool ATMIsAborted(TransactionId xid);
 extern bool ATMGetLastBatchLSN(TransactionId xid, XLogRecPtr *lsn_out);
 extern bool ATMAddAborted(TransactionId xid, Oid dboid,
 						  XLogRecPtr last_batch_lsn);

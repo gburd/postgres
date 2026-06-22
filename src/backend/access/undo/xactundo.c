@@ -73,6 +73,7 @@
 #include "access/table.h"
 #include "catalog/pg_class.h"
 #include "miscadmin.h"
+#include "storage/bufmgr.h"
 #include "storage/ipc.h"
 #include "utils/injection_point.h"
 #include "storage/lmgr.h"
@@ -274,6 +275,16 @@ PrepareXactUndoData(XactUndoContext *ctx, char persistence,
 
 	/* Remember that we've done something undo-related. */
 	XactUndo.has_undo = true;
+
+	/*
+	 * Load the UndoRecordSetInsert() injection points into this backend's
+	 * local cache now, while we are guaranteed not to be inside a critical
+	 * section (PrepareXactUndoData may itself palloc).  UndoRecordSetInsert()
+	 * runs inside the caller's crit section and can only fire these via the
+	 * palloc-free INJECTION_POINT_CACHED variant.
+	 */
+	INJECTION_POINT_LOAD("undo-batch-before-wal-insert");
+	INJECTION_POINT_LOAD("undo-batch-after-wal-insert");
 
 	/*
 	 * If we've entered a subtransaction deeper than what's currently tracked,
@@ -595,42 +606,51 @@ GetPerRelUndoPtr(Oid relid)
 }
 
 /*
+ * IteratePerRelUndo
+ *		Invoke callback(relid, start_urec_ptr, arg) for each registered
+ *		per-relation UNDO chain head.
+ *
+ * Used by AtPrepare_Recno() to serialize the per-relation UNDO chain heads
+ * into the 2PC state file so ROLLBACK PREPARED can restore before-images.
+ */
+void
+IteratePerRelUndo(PerRelUndoIterCB callback, void *arg)
+{
+	PerRelUndoEntry *entry;
+
+	for (entry = XactUndo.relundo_list; entry != NULL; entry = entry->next)
+		callback(entry->relid, entry->start_urec_ptr, arg);
+}
+
+/*
  * XactUndoHasUnrecoverableUndo
- *		Has the current transaction generated ANY UNDO -- cluster-wide
- *		(FILEOPS et al, via InsertUndoRecord) or per-relation (RECNO, via
- *		the per-relation UNDO fork)?
+ *		Does the current transaction hold UNDO that has no working ROLLBACK
+ *		PREPARED apply path yet?
  *
- * PrepareTransaction() calls this before doing any irreversible 2PC state
- * writes.  Neither UNDO mechanism has a working ROLLBACK PREPARED apply
- * path today:
+ * Both UNDO mechanisms are now recoverable across 2PC:
  *
- *   - Per-relation UNDO (relundo_list): lives in CurTransactionContext and
- *     is gone the moment PrepareTransaction() finishes; nothing walks it
- *     during COMMIT PREPARED / ROLLBACK PREPARED or crash recovery.
+ *   - Cluster-wide UNDO (FILEOPS, nbtree/hash; last_batch_lsn): the
+ *     permanent chain-head LSN is durably saved in xl_xact_prepare, its WAL
+ *     is pinned while the xact stays prepared (undo_batch_lsn in twophase.c /
+ *     UndoGetOldestBatchLSN), and FinishPreparedTransaction() feeds it to
+ *     ATMAddAborted() on ROLLBACK PREPARED.
  *
- *   - Cluster-wide UNDO (has_undo, tracked via last_batch_lsn): the LSN IS
- *     durably saved in xl_xact_prepare (see twophase.c's StartPrepare/
- *     EndPrepare), but nothing ever reads it back.  FinishPreparedTransaction()
- *     (twophase.c) calls RecordTransactionCommitPrepared/
- *     RecordTransactionAbortPrepared, both of which are stock core logic
- *     with zero UNDO-awareness -- they never call AtAbort_XactUndo() or
- *     ATMAddAborted(), the only two entry points that actually apply or
- *     schedule application of an UNDO chain.  A ROLLBACK PREPARED after a
- *     cluster-wide-UNDO-generating operation (e.g. FileOpsChmod) silently
- *     leaves the physical change in place forever -- confirmed empirically
- *     (chmod 0700, PREPARE, ROLLBACK PREPARED, mode stays 0700).  The
- *     last_batch_lsn stashing in xl_xact_prepare is currently write-only:
- *     durable for redo-completeness, but nothing on the apply side ever
- *     consults it.
+ *   - Per-relation UNDO (relundo_list, RECNO): AtPrepare_Recno() serializes
+ *     both the per-tuple sLog visibility state and the per-relation UNDO
+ *     chain heads (RECNO_2PC_RELUNDO records) via RegisterTwoPhaseRecord().
+ *     recno_twophase_postabort() replays the chain via RelUndoApplyChain()
+ *     to restore in-place before-images; recno_twophase_postcommit()
+ *     discards it.
  *
- * Until one of those two apply paths is actually implemented, rejecting
- * PREPARE outright whenever the transaction generated UNDO of either kind
- * is the only safe stopgap -- silently proceeding corrupts data.
+ * Nothing remains that PREPARE must reject on UNDO grounds, so this returns
+ * false unconditionally.  Kept as a single choke point (rather than deleting
+ * the call in PrepareTransaction) so any future UNDO mechanism that is not
+ * 2PC-safe has one obvious place to re-assert a guard.
  */
 bool
 XactUndoHasUnrecoverableUndo(void)
 {
-	return XactUndo.has_undo || XactUndo.relundo_list != NULL;
+	return false;
 }
 
 /*
@@ -680,6 +700,8 @@ ApplyPerRelUndo(void)
 	for (entry = XactUndo.relundo_list; entry != NULL; entry = entry->next)
 	{
 		int			saved_trans_state;
+		uint32		saved_hold = InterruptHoldoffCount;
+		uint32		saved_qc_hold = QueryCancelHoldoffCount;
 		bool		applied = false;
 
 		saved_trans_state = EnterInlineUndoApplyState();
@@ -693,6 +715,27 @@ ApplyPerRelUndo(void)
 		}
 		PG_CATCH();
 		{
+			/*
+			 * errfinish() zeroed InterruptHoldoffCount / QueryCancelHoldoffCount
+			 * before longjmp'ing here (it assumes no handler runs inside a
+			 * holdoff section).  This handler DOES: AtAbort_XactUndo() runs
+			 * inside AbortTransaction()'s HOLD_INTERRUPTS() section, whose
+			 * matching RESUME_INTERRUPTS() asserts the count is still positive.
+			 * Restore the pre-error counts so the enclosing abort's holdoff
+			 * bookkeeping stays balanced.
+			 */
+			InterruptHoldoffCount = saved_hold;
+			QueryCancelHoldoffCount = saved_qc_hold;
+
+			/*
+			 * A chain that errored mid-apply may still hold EXCLUSIVE content
+			 * locks on the pages it had pinned into touched[] (RelUndoApplyChain
+			 * releases them only on its normal CLR path).  Release them here so
+			 * a caught error cannot leak a held lock into the next iteration --
+			 * a subsequent entry that re-locks the same buffer would trip the
+			 * BufferLockAcquire lockmode==UNLOCK assert.
+			 */
+			BufferLockReleaseAll();
 			EmitErrorReport();
 			FlushErrorState();
 			applied = false;
@@ -894,6 +937,8 @@ AtAbort_XactUndo(void)
 				MemoryContext undo_ctx;
 				MemoryContext old_ctx;
 				int			saved_trans_state;
+				uint32		saved_hold = InterruptHoldoffCount;
+				uint32		saved_qc_hold = QueryCancelHoldoffCount;
 
 				undo_ctx = AllocSetContextCreate(TopMemoryContext,
 												 "Inline UNDO Apply",
@@ -936,8 +981,18 @@ AtAbort_XactUndo(void)
 					PG_CATCH();
 					{
 						/*
+						 * errfinish() zeroed the holdoff counts before longjmp'ing
+						 * here; this handler runs inside AbortTransaction()'s
+						 * HOLD_INTERRUPTS() section, so restore them before the
+						 * enclosing abort's RESUME_INTERRUPTS() asserts them positive.
+						 *
 						 * If inline UNDO throws an error, fall back to ATM.
+						 * Release any content locks the failed chain left held
+						 * before unwinding.
 						 */
+						InterruptHoldoffCount = saved_hold;
+						QueryCancelHoldoffCount = saved_qc_hold;
+						BufferLockReleaseAll();
 						LeaveInlineUndoApplyState(saved_trans_state);
 						FlushErrorState();
 						undo_applied = false;
@@ -1183,6 +1238,8 @@ AtSubAbort_XactUndo(int level)
 				MemoryContext undo_ctx;
 				MemoryContext old_ctx;
 				int			saved_trans_state;
+				uint32		saved_hold = InterruptHoldoffCount;
+				uint32		saved_qc_hold = QueryCancelHoldoffCount;
 
 				undo_ctx = AllocSetContextCreate(TopMemoryContext,
 												 "Subxact UNDO Apply",
@@ -1196,6 +1253,18 @@ AtSubAbort_XactUndo(int level)
 				}
 				PG_CATCH();
 				{
+					/*
+					 * errfinish() zeroed the holdoff counts before longjmp'ing
+					 * here; this handler runs inside AbortSubTransaction()'s
+					 * HOLD_INTERRUPTS() section, so restore them before the
+					 * enclosing abort's RESUME_INTERRUPTS() asserts them positive.
+					 *
+					 * Release any content locks the failed subxact UNDO
+					 * chain left held before unwinding.
+					 */
+					InterruptHoldoffCount = saved_hold;
+					QueryCancelHoldoffCount = saved_qc_hold;
+					BufferLockReleaseAll();
 					LeaveInlineUndoApplyState(saved_trans_state);
 					FlushErrorState();
 				}

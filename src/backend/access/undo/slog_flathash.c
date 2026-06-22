@@ -288,24 +288,20 @@ SLogFlatHashProbeForInsert(SLogFlatHash * ht, const SLogTupleKey *key,
  *
  * Why this is visibility-preserving:
  *
- *   - Write-write conflict (SLogTupleHasCommittedUpdateAfter) reports a
- *     conflict iff ANY committed marker is invisible to the prober's snapshot.
- *     Commit visibility is monotonic: a snapshot that sees the newest commit
- *     sees every older one, so a snapshot for which an OLDER marker is
- *     invisible also finds the NEWEST marker invisible.  Retaining only the
- *     marker with the greatest commit_hlc therefore yields the identical
- *     conflict verdict.
+ *   - Write-write conflict (RecnoTupleHasCommittedUpdateAfter, WS-PVS3)
+ *     resolves the on-page head verptr in the durable UNDO fork -- it does
+ *     NOT read this hash bucket.  Retention here is inert with respect to
+ *     that probe; coalescing remains sound for any legacy consumer.
  *
- *   - Before-image serving (SLogTupleGetSharedBeforeImage) only ever consults
- *     a marker whose before_image_dp is valid.  A committed marker with NO
- *     before-image can never satisfy that probe, so freeing it is invisible to
- *     readers.  Markers that DO carry a before-image are left untouched here;
- *     they are reclaimed only by the xid-horizon sweep.
+ *   - Before-image serving is no longer performed via this hash under
+ *     WS-PVS3 (readers walk the UNDO fork chain via
+ *     RecnoReconstructVisibleVersion), so freeing markers here is invisible
+ *     to readers.
  *
  * So we free committed UPDATE markers that (a) carry no before-image and
- * (b) are not the single newest-by-commit_hlc such marker.  Markers that are
- * uncommitted, non-UPDATE (locks), or carry a before-image are preserved.
- * Returns the number of slots freed.
+ * (b) are not the single newest-by-commit_hlc such marker.  Under WS-PVS3
+ * Phase 2 committed UPDATE markers are removed at commit, so this coalesce
+ * is inert in steady state and covers only stragglers.
  */
 static int
 flat_hash_coalesce_retained(SLogTupleEntry *entry)
@@ -470,12 +466,11 @@ flat_hash_apply_insert(SLogFlatHash * ht, const SLogFlatOp * op)
 		 * Select the oldest reclaimable UPDATE marker.  A marker is reclaimable
 		 * once its xid precedes the oldest active snapshot's xmin
 		 * (reclaim_xid_horizon): at that point the xid's outcome is settled and
-		 * visible to (or irrelevant to) every live snapshot, so no write-write
-		 * conflict probe (SLogTupleHasCommittedUpdateAfter) and no before-image
-		 * read (SLogTupleGetSharedBeforeImage) can still need it -- both decide
-		 * by XidInMVCCSnapshot, not by HLC.  An in-progress xid can never
-		 * precede this horizon, so this test alone never frees a marker a
-		 * concurrent reader or writer still needs.
+		 * visible to (or irrelevant to) every live snapshot, so no residual
+		 * consumer can still need it (WS-PVS3 moved the write-write conflict
+		 * probe and MVCC read to the durable UNDO fork chain).  An in-progress
+		 * xid can never precede this horizon, so this test alone never frees a
+		 * marker a concurrent reader or writer still needs.
 		 *
 		 * An INVALID reclaim_xid_horizon disables reclamation entirely: every
 		 * marker is treated as non-reclaimable and we fall through to
@@ -681,8 +676,14 @@ flat_hash_apply_update_op(SLogFlatHash * ht, const SLogFlatOp * op)
 
 /*
  * flat_hash_apply_commit_xid
- *		Handle commit retention: stamp commit_hlc on UPDATE ops with
- *		before-images, remove other ops.
+ *		Remove every op belonging to xid.
+ *
+ * WS-PVS3 Phase 2: committed UPDATE markers are no longer retained here.
+ * The write-write conflict probe now reads the head verptr on the tuple
+ * and resolves it in the durable UNDO fork (RecnoTupleHasCommittedUpdateAfter),
+ * and the shared before-image was dropped in Phase 1.  With no consumer for
+ * a retained marker, an UPDATE at commit is treated like INSERT/DELETE/LOCK:
+ * removed.  This drains bucket table_full pressure.
  */
 static void
 flat_hash_apply_commit_xid(SLogFlatHash * ht, const SLogFlatOp * op)
@@ -704,27 +705,8 @@ flat_hash_apply_commit_xid(SLogFlatHash * ht, const SLogFlatOp * op)
 		if (entry->ops[i].xid != op->xid)
 			continue;
 
-		if (entry->ops[i].op_type == SLOG_OP_UPDATE)
-		{
-			/*
-			 * Retain every committed UPDATE marker, stamping commit_hlc. The
-			 * before-image (when present) lets an old snapshot reader
-			 * reconstruct the pre-update version; but even without one the
-			 * marker must survive so a concurrent updater can detect that
-			 * this tuple was updated-and-committed after its read snapshot
-			 * (write-write conflict / lost-update detection).  Both with and
-			 * without a before-image, the marker is reclaimed by
-			 * SLogTupleCleanupRetained() once commit_hlc falls below the
-			 * oldest active snapshot horizon.
-			 */
-			entry->ops[i].commit_hlc = op->commit_hlc;
-		}
-		else
-		{
-			/* Remove */
-			entry->ops[i].in_use = false;
-			entry->nops--;
-		}
+		entry->ops[i].in_use = false;
+		entry->nops--;
 	}
 
 	if (entry->nops == 0)
@@ -740,11 +722,12 @@ flat_hash_apply_commit_xid(SLogFlatHash * ht, const SLogFlatOp * op)
  *		Remove retained committed UPDATE markers whose committing xid
  *		precedes the reclaim xid horizon (op->reclaim_xid_horizon).
  *
- * Gates on the xid horizon -- NOT an HLC threshold -- because every probe
- * that may still need the marker (SLogTupleHasCommittedUpdateAfter,
- * SLogTupleGetSharedBeforeImage) decides by XidInMVCCSnapshot.  This must
- * match the read-side eligibility scan in SLogTupleCleanupRetained so the
- * freed before-image set matches the nulled-pointer set exactly.
+ * Gates on the xid horizon -- NOT an HLC threshold -- so a marker is
+ * reclaimed only when its committing xid precedes every live snapshot.
+ * The write-write conflict probe and MVCC read now use the durable UNDO
+ * fork chain, not this hash, so retained UPDATE markers here are dead
+ * bookkeeping under WS-PVS3; this sweep still applies for any leftover
+ * entries not removed at commit.
  */
 static void
 flat_hash_apply_cleanup_retained(SLogFlatHash * ht, const SLogFlatOp * op)
@@ -892,16 +875,6 @@ SLogFlatHashApply(void *data, const void *operation, Size op_size)
 			flat_hash_apply_create_aborted(ht, op);
 			break;
 	}
-}
-
-/*
- * SLogFlatHashSync
- *		LRLock sync callback. Full memcpy of the data structure.
- */
-void
-SLogFlatHashSync(void *dst, const void *src, Size data_size)
-{
-	memcpy(dst, src, data_size);
 }
 
 /* ----------------------------------------------------------------

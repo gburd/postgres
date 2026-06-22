@@ -18,6 +18,9 @@
 
 #include "postgres_fe.h"
 
+#include <ctype.h>
+
+#include "common/string.h"
 #include "lib/stringinfo.h"
 #include "pg_regress.h"
 
@@ -107,11 +110,152 @@ psql_init(int argc, char **argv)
 	add_stringlist_item(&dblist, "regression");
 }
 
+/*
+ * Replace a run of digits starting at *p with a single '#' character.
+ * Returns pointer to the replacement character (the '#').
+ */
+static char *
+replace_digits(char *p)
+{
+	char	   *end = p;
+
+	while (isdigit((unsigned char) *end))
+		end++;
+
+	/* Replace the span with '#' and shift the rest of the string */
+	*p = '#';
+	if (end > p + 1)
+		memmove(p + 1, end, strlen(end) + 1);
+
+	return p;
+}
+
+/*
+ * Normalize non-deterministic output in regression test result files.
+ *
+ * This filters result files in-place to replace run-specific values
+ * (buffer IDs, relation OIDs, timing values) with stable placeholders
+ * so that diff-based comparison with expected output succeeds across
+ * different test runs.
+ *
+ * Patterns normalized:
+ *   WARNING:  resource was not closed: [NNN] (rel=base/NNN/NNN, ...)
+ *     -> WARNING:  resource was not closed: [#] (rel=base/#/#, ...)
+ *   Planning Time: N.NNN ms  ->  Planning Time: #.# ms
+ *   Execution Time: N.NNN ms ->  Execution Time: #.# ms
+ */
+static void
+psql_postprocess_result(const char *filename)
+{
+	FILE	   *s,
+			   *t;
+	StringInfoData linebuf;
+	char		tmpfile[MAXPGPATH];
+
+	snprintf(tmpfile, sizeof(tmpfile), "%s.tmp", filename);
+
+	s = fopen(filename, "r");
+	if (!s)
+		return;
+	t = fopen(tmpfile, "w");
+	if (!t)
+	{
+		fclose(s);
+		return;
+	}
+
+	initStringInfo(&linebuf);
+
+	while (pg_get_line_buf(s, &linebuf))
+	{
+		char	   *p;
+
+		/*
+		 * Normalize "resource was not closed: [NNN] (rel=base/NNN/NNN, ...)"
+		 *
+		 * The bracket number, database OID, and relation file number are all
+		 * non-deterministic.
+		 */
+		p = strstr(linebuf.data, "resource was not closed: [");
+		if (p)
+		{
+			char	   *q;
+
+			/* Replace the number inside brackets: [NNN] -> [#] */
+			q = p + strlen("resource was not closed: [");
+			if (isdigit((unsigned char) *q))
+				replace_digits(q);
+
+			/* Replace numbers after "rel=base/" */
+			q = strstr(p, "rel=base/");
+			if (q)
+			{
+				q += strlen("rel=base/");
+				if (isdigit((unsigned char) *q))
+				{
+					q = replace_digits(q);
+					/* Skip the '/' separator */
+					if (*(q + 1) == '/')
+					{
+						q += 2;
+						if (isdigit((unsigned char) *q))
+							replace_digits(q);
+					}
+				}
+			}
+		}
+
+		/*
+		 * Normalize "Planning Time: N.NNN ms" and "Execution Time: N.NNN ms"
+		 *
+		 * These timing values vary between runs.
+		 */
+		p = strstr(linebuf.data, "Planning Time: ");
+		if (!p)
+			p = strstr(linebuf.data, "Execution Time: ");
+		if (p)
+		{
+			/* Find the start of the number after ": " */
+			char	   *q = strchr(p, ':');
+
+			if (q)
+			{
+				q++;
+				while (*q == ' ')
+					q++;
+				if (isdigit((unsigned char) *q))
+				{
+					replace_digits(q);
+					/* Skip past '#' and the decimal point */
+					q++;
+					if (*q == '.')
+					{
+						q++;
+						if (isdigit((unsigned char) *q))
+							replace_digits(q);
+					}
+				}
+			}
+		}
+
+		fputs(linebuf.data, t);
+	}
+
+	pfree(linebuf.data);
+	fclose(s);
+	fclose(t);
+	if (rename(tmpfile, filename) != 0)
+	{
+		fprintf(stderr, "Could not overwrite file %s with %s\n",
+				filename, tmpfile);
+	}
+}
+
 int
 main(int argc, char *argv[])
 {
 	return regression_main(argc, argv,
 						   psql_init,
 						   psql_start_test,
-						   NULL /* no postfunc needed */ );
+						   psql_postprocess_result);
 }

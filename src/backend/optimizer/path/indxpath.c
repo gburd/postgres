@@ -718,7 +718,21 @@ get_index_paths(PlannerInfo *root, RelOptInfo *rel,
 {
 	List	   *indexpaths;
 	bool		skip_nonnative_saop = false;
+	bool		inplace_lossy;
 	ListCell   *lc;
+
+	/*
+	 * A lossy index (!amconsistentequality, e.g. GiST/SP-GiST) on a table AM
+	 * that updates in place keeping the same TID is correct only as a bitmap
+	 * heap scan; see the matching comment in build_index_paths.  Such paths are
+	 * built unordered and non-index-only there, so here we must additionally
+	 * withhold them from add_path as plain index scans, while still offering
+	 * them as bitmap seeds below.
+	 */
+	inplace_lossy =
+		(rel->amflags & AMFLAG_INPLACE_UPDATE_KEEPS_TID) != 0 &&
+		index->amhasgettuple &&
+		!index->amconsistentequality;
 
 	/*
 	 * Build simple index paths using the clauses.  Allow ScalarArrayOpExpr
@@ -746,7 +760,7 @@ get_index_paths(PlannerInfo *root, RelOptInfo *rel,
 	{
 		IndexPath  *ipath = (IndexPath *) lfirst(lc);
 
-		if (index->amhasgettuple)
+		if (index->amhasgettuple && !inplace_lossy)
 			add_path(rel, (Path *) ipath);
 
 		if (index->amhasgetbitmap &&
@@ -824,6 +838,7 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 	bool		pathkeys_possibly_useful;
 	bool		index_is_ordered;
 	bool		index_only_scan;
+	bool		inplace_lossy;
 	int			indexcol;
 
 	Assert(skip_nonnative_saop != NULL || scantype == ST_BITMAPSCAN);
@@ -845,6 +860,29 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 			/* either or both are OK */
 			break;
 	}
+
+	/*
+	 * A table AM that updates in place keeping the same TID
+	 * (am_inplace_update_keeps_tid) leaves a stale (oldkey -> tid) secondary
+	 * entry alongside the new (newkey -> tid) entry, both pointing at the one
+	 * live tuple, when an indexed column is updated.  An index AM that returns
+	 * verbatim, equality-comparable keys (amconsistentequality: btree, hash)
+	 * lets the executor recheck the stored key against the live tuple and drop
+	 * the stale entry (see ExecIndexInplaceEntryIsStale).  A lossy AM
+	 * (GiST/SP-GiST, !amconsistentequality) cannot: its keys are approximate,
+	 * so a qual recheck keeps both entries whenever the old and new keys both
+	 * satisfy the qual, and an ORDER BY <-> scan sorts the stale entry by the
+	 * old key's distance.  Only a bitmap heap scan is correct for such an
+	 * index: the TID bitmap collapses the duplicate entries to one tuple and
+	 * the AM forces a heap recheck.  When this is detected we suppress
+	 * index-only and ordered/index-orderby variants here, and get_index_paths
+	 * withholds the plain index path from add_path while still offering it as a
+	 * bitmap seed.
+	 */
+	inplace_lossy =
+		(rel->amflags & AMFLAG_INPLACE_UPDATE_KEEPS_TID) != 0 &&
+		index->amhasgettuple &&
+		!index->amconsistentequality;
 
 	/*
 	 * 1. Combine the per-column IndexClause lists into an overall list.
@@ -913,6 +951,7 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 	 * if we are only trying to build bitmap indexscans.
 	 */
 	pathkeys_possibly_useful = (scantype != ST_BITMAPSCAN &&
+								!inplace_lossy &&
 								has_useful_pathkeys(root, rel));
 	index_is_ordered = (index->sortopfamily != NULL);
 	if (index_is_ordered && pathkeys_possibly_useful)
@@ -954,6 +993,7 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 	 * index data retrieval anyway.
 	 */
 	index_only_scan = (scantype != ST_BITMAPSCAN &&
+					   !inplace_lossy &&
 					   check_index_only(rel, index));
 
 	/*
@@ -979,9 +1019,15 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 
 		/*
 		 * If appropriate, consider parallel index scan.  We don't allow
-		 * parallel index scan for bitmap index scans.
+		 * parallel index scan for bitmap index scans.  A parallel index scan
+		 * is a plain (heap-fetching) index scan, so it is unsafe for a lossy
+		 * index on an in-place table AM for the same reason the serial plain
+		 * scan is (see inplace_lossy above); it is added via add_partial_path
+		 * here rather than routed through get_index_paths, so it must be gated
+		 * directly.  No lossy AM currently sets amcanparallel, but the guard
+		 * keeps the bitmap-only restriction self-contained.
 		 */
-		if (index->amcanparallel &&
+		if (index->amcanparallel && !inplace_lossy &&
 			rel->consider_parallel && outer_relids == NULL &&
 			scantype != ST_BITMAPSCAN)
 		{

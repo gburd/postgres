@@ -1,0 +1,54 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1_update s2_update s1_commit s2_read s2_commit
+step s1_update: UPDATE recno_cu SET counter = counter + 1 WHERE id = 1;
+step s2_update: UPDATE recno_cu SET counter = counter + 10 WHERE id = 1; <waiting ...>
+step s1_commit: COMMIT;
+step s2_update: <... completed>
+step s2_read: SELECT id, counter FROM recno_cu ORDER BY id;
+id|counter
+--+-------
+ 1|     11
+ 2|    100
+(2 rows)
+
+step s2_commit: COMMIT;
+
+starting permutation: s1_update s2_update s1_abort s2_read s2_commit
+step s1_update: UPDATE recno_cu SET counter = counter + 1 WHERE id = 1;
+step s2_update: UPDATE recno_cu SET counter = counter + 10 WHERE id = 1; <waiting ...>
+step s1_abort: ROLLBACK;
+step s2_update: <... completed>
+step s2_read: SELECT id, counter FROM recno_cu ORDER BY id;
+id|counter
+--+-------
+ 1|     10
+ 2|    100
+(2 rows)
+
+step s2_commit: COMMIT;
+
+starting permutation: s1_delete s2_delete s1_commit s2_read s2_commit
+step s1_delete: DELETE FROM recno_cu WHERE id = 2;
+step s2_delete: DELETE FROM recno_cu WHERE id = 2; <waiting ...>
+step s1_commit: COMMIT;
+step s2_delete: <... completed>
+step s2_read: SELECT id, counter FROM recno_cu ORDER BY id;
+id|counter
+--+-------
+ 1|      0
+(1 row)
+
+step s2_commit: COMMIT;
+
+starting permutation: s1_update s2_delete s1_commit s2_commit s1_read
+step s1_update: UPDATE recno_cu SET counter = counter + 1 WHERE id = 1;
+step s2_delete: DELETE FROM recno_cu WHERE id = 2;
+step s1_commit: COMMIT;
+step s2_commit: COMMIT;
+step s1_read: SELECT id, counter FROM recno_cu ORDER BY id;
+id|counter
+--+-------
+ 1|      1
+(1 row)
+

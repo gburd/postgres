@@ -1,0 +1,475 @@
+RECNO Overflow Storage Design
+=============================
+
+This document describes RECNO's column-level overflow mechanism: how
+large attribute values are stored off the main tuple, how the design
+integrates with the surrounding RECNO subsystems (tuple deform, FSM,
+WAL, VACUUM, MVCC visibility), how it differs from PostgreSQL's TOAST,
+how it is expected to compare to TOAST in practice, and the prior art
+that informed the design.  The intended audience is PostgreSQL
+committers and contributors evaluating the RECNO table access method.
+
+Source of record: src/backend/access/recno/recno_overflow.c plus the
+structure and constant definitions in src/include/access/recno.h and
+the WAL format in src/include/access/recno_xlog.h.
+
+
+1. Problem Statement
+====================
+
+RECNO stores tuples in place on heap-style data pages.  A RECNO tuple
+must fit within a single page:
+
+    RECNO_MAX_TUPLE_SIZE =
+        MAXALIGN_DOWN(BLCKSZ - RECNO_PAGE_OVERHEAD - sizeof(ItemIdData))
+
+where RECNO_PAGE_OVERHEAD covers the standard page header plus the
+RecnoPageOpaqueData special area.  For the default 8 KB page this is
+roughly 8 KB minus a few dozen bytes.
+
+Without an off-page mechanism, any row whose serialized form exceeds a
+single page could not be stored at all, and even rows that merely
+approach page size would pack poorly (one row per page, wasting space).
+Overflow storage solves this for individual oversized column values.
+
+The trigger is per-column, not per-row.  During tuple formation
+(recno_tuple.c, RecnoFormTuple, "Phase 1b"), each variable-length,
+non-external attribute whose size exceeds RECNO_OVERFLOW_THRESHOLD is
+moved off-tuple:
+
+    RECNO_OVERFLOW_THRESHOLD = RECNO_MAX_TUPLE_SIZE / 4
+
+i.e. roughly 2 KB on an 8 KB page.  This threshold is deliberately
+conservative: it keeps the main tuple small enough that many tuples
+still share a page even when one or more columns are large, mirroring
+TOAST's goal of keeping the main heap tuple compact.
+
+
+2. On-Disk Structures
+=====================
+
+There are two structures and one host-tuple representation.
+
+2.1 The inline overflow pointer (RecnoOverflowPtr)
+--------------------------------------------------
+
+When a column is overflowed, the value left behind in the main tuple is
+itself a varlena whose payload is a RecnoOverflowPtr followed by an
+optional inline prefix of the original bytes:
+
+    [varlena header][RecnoOverflowPtr][inline_prefix_bytes...]
+
+    typedef struct RecnoOverflowPtr {
+        uint32       ov_magic;          /* "RVOP" sentinel */
+        BlockNumber  ov_first_block;    /* first overflow record page */
+        OffsetNumber ov_first_offset;   /* first overflow record offset */
+        uint16       ov_inline_prefix;  /* prefix bytes stored after ptr */
+        uint32       ov_total_length;   /* total reconstructed length */
+        uint32       ov_content_hash;   /* 32-bit content-hash prefilter */
+    } RecnoOverflowPtr;
+
+ov_content_hash reclaims the two formerly-reserved uint16 fields, so the
+struct stays 20 bytes and RECNO_OVERFLOW_PTR_SIZE is unchanged.  A wider hash
+would grow the struct and defeat the force-shrink UPDATE recovery path.  The
+hash is only a prefilter: an in-place UPDATE that leaves an overflow column
+unchanged reuses (COW-references) the existing chain instead of re-storing it,
+but only after byte-verifying the fetched old value, so a 32-bit collision is
+harmless (it falls through to a normal re-store).
+
+
+
+The ov_magic sentinel (RECNO_OVERFLOW_PTR_MAGIC) is what lets the deform
+path distinguish an overflow pointer from an ordinary varlena.
+RecnoIsOverflowPtr() checks the size lower bound and the magic.  Because
+this is a sentinel rather than a tagged varlena bit, the check requires
+the value to be at least sizeof(RecnoOverflowPtr) and to carry the magic
+in the first four payload bytes; ordinary user data of that size with
+that exact leading word is astronomically unlikely but is, in principle,
+the one fragility of the scheme (see Section 11, Open Questions).
+
+The inline prefix is a configurable number of leading bytes of the
+original value kept directly in the main tuple
+(recno_overflow_inline_prefix GUC, default RECNO_OVERFLOW_DEFAULT_PREFIX
+= 128).  Its purpose is to answer prefix-oriented predicates -- LIKE
+'abc%', B-tree key comparison on a leading substring -- without
+following the chain to reassemble the whole value.  This has no TOAST
+analogue: a TOAST pointer carries no user data at all.
+
+2.2 The overflow record header (RecnoOverflowRecordHeader)
+----------------------------------------------------------
+
+The off-page chunks are stored as ordinary page items via PageAddItem,
+each prefixed by a lightweight header:
+
+    typedef struct RecnoOverflowRecordHeader {
+        uint32       or_magic;        /* "ROVC" sentinel */
+        uint32       or_data_len;     /* data bytes in this chunk */
+        BlockNumber  or_next_block;   /* next chunk page, or Invalid */
+        OffsetNumber or_next_offset;  /* next chunk offset */
+        uint16       or_flags;        /* reserved */
+        /* chunk data follows immediately */
+    } RecnoOverflowRecordHeader;
+
+Critically, this header has NO MVCC fields.  An overflow record has no
+independent commit timestamp, no delete flag, no visibility of its own.
+It inherits the visibility of the parent tuple that points to it.  This
+is the same contract TOAST relies on (a TOAST chunk row is only ever
+reached through a live heap tuple), but RECNO enforces it structurally
+rather than via a second relation's MVCC.
+
+Each chunk holds up to:
+
+    RECNO_OVERFLOW_MAX_CHUNK_SIZE =
+        RECNO_MAX_TUPLE_SIZE - RECNO_OVERFLOW_RECORD_OVERHEAD
+
+bytes, where the overhead is MAXALIGN(sizeof(RecnoOverflowRecordHeader)).
+A value larger than one chunk is split across a chain of records linked
+by (or_next_block, or_next_offset).  RECNO_MAX_OVERFLOW_CHAIN (1024)
+bounds chain length defensively in every traversal.
+
+2.3 Host tuple flag
+-------------------
+
+The parent tuple sets RECNO_TUPLE_HAS_OVERFLOW (0x0002) in t_flags.
+This is the fast-path gate: deform, VACUUM Pass 1, and delete-time
+cleanup all short-circuit immediately when the flag is clear, so tuples
+with no overflow pay nothing.
+
+
+3. The Defining Difference From TOAST
+=====================================
+
+TOAST stores oversized values in a SEPARATE relation (the toast table,
+plus its toast index).  Each chunk is a row in that table, keyed by a
+per-value OID (the chunk_id) and a sequence number, with full heap MVCC
+on each chunk row, and reached through a btree index lookup.
+
+RECNO overflow stores chunks as records on the SAME data pages that hold
+normal tuples.  A page can freely mix live tuples and overflow records;
+they are told apart only by the or_magic sentinel and the item length.
+There is no overflow relation, no overflow index, no chunk_id, no
+per-chunk MVCC, and no index probe to fetch a chunk.  Navigation is a
+direct (block, offset) chase identical in spirit to a heap TID walk.
+
+The consequences fan out across every subsystem:
+
+  - Catalog: TOAST adds a pg_class entry (reltoastrelid) and an index
+    per toastable table.  RECNO adds nothing -- no extra relation, no
+    extra relfilenode, no extra index to keep consistent.
+
+  - Free space: TOAST chunks compete for space only with other TOAST
+    chunks in the toast table.  RECNO overflow records draw from the
+    SAME FSM as normal tuples (RecnoGetPageWithFreeSpace /
+    RecnoRecordFreeSpace), so overflow data and tuple data share and
+    balance one free-space pool.
+
+  - Fetch path: TOAST detoast = btree probe on the toast index +
+    per-chunk heap fetch, ordered by chunk sequence.  RECNO fetch =
+    pointer chase from ov_first_block/offset following or_next_* links
+    (RecnoFetchOverflowColumn), no index involved.
+
+  - Locality: a TOAST value's chunks are clustered in the toast table
+    by insertion but unrelated to where the parent heap tuple lives.
+    RECNO actively co-locates: a chain prefers to place its next record
+    on the same page as its previous record (prev_block first), falling
+    back to the shared FSM only when that page is full.  The goal is to
+    keep a value's chunks physically close so the read-side pin-retaining
+    traversal resolves the chain from one page where possible.  (A
+    head-page sibling-reuse helper, RecnoFindOverflowPageForReuse, is
+    implemented to additionally pack different rows' overflow onto shared
+    pages, but is not yet wired into the write path -- see Section 11.)
+
+  - Compression interplay: TOAST does compression and then external
+    storage as part of one varlena pipeline (the storage strategies
+    plain/extended/external/main).  RECNO runs its own compression pass
+    FIRST (recno_tuple.c "Phase 1", RecnoCompressAttribute), then the
+    overflow threshold is evaluated against the post-compression size
+    ("Phase 1b").  So a value that compresses under the threshold never
+    overflows -- exactly the TOAST ordering, but in RECNO's own code.
+
+
+4. Write Path and WAL Atomicity
+===============================
+
+RecnoStoreOverflowColumn() is called during tuple formation, before the
+main tuple is placed.  For each chunk it:
+
+  1. Picks a target page: try prev_block (chain locality), else
+     RecnoGetPageWithFreeSpace via the shared FSM; extend with P_NEW if
+     the FSM has nothing.
+  2. Builds the record in palloc'd memory, PageAddItem's it under a
+     critical section, and back-patches the previous record's
+     or_next_* link to point at it.
+  3. Does NOT immediately WAL-log or release the buffer.  Instead it
+     appends the (buffer, offset, record_data, len, flag) tuple to a
+     caller-supplied RecnoOverflowBuffers collector and keeps the buffer
+     pinned AND exclusively locked.
+
+The caller (the INSERT/UPDATE path) then emits ONE WAL record that
+registers the main tuple's page together with every collected overflow
+buffer, so the entire row -- main tuple plus all its overflow chunks --
+becomes durable atomically.  This is the central crash-safety property:
+there is never a window where the main tuple is logged but its overflow
+chunks are not, which would otherwise produce a tuple pointing at
+nonexistent or torn overflow data after recovery.
+
+The WAL record type is xl_recno_overflow_write (recno_xlog.h), carrying
+offnum, a flags field, the chunk data_len, and the commit timestamp.
+Two flag values:
+
+    RECNO_OVERFLOW_WAL_NEW_RECORD  (0x0000)  full record + data
+    RECNO_OVERFLOW_WAL_LINK_UPDATE (0x0001)  header-only link back-patch
+
+The MAX_OVERFLOW_BUFFERS (32) cap bounds how many overflow buffers one
+WAL record can carry.  A value large enough to need more chunks than
+that, or callers that pass no collector (NULL overflow_buffers), fall
+back to immediate per-record WAL logging (RecnoXLogOverflowWrite) inside
+the loop -- correct, but not atomic with the parent and therefore
+reliant on VACUUM orphan cleanup if a crash intervenes.
+
+FSM robustness: GetPageWithFreeSpace can return a stale block after a
+crash/recovery cycle.  The write loop re-checks PageGetFreeSpace after
+locking, and on a shortfall it corrects the FSM
+(RecnoRecordFreeSpace + FreeSpaceMapVacuumRange) and retries, bounded by
+MAX_FSM_RETRIES (100) to convert a corrupt-FSM infinite loop into a
+diagnosable error rather than a hang.
+
+
+5. Read Path
+============
+
+RecnoFetchOverflowColumn() reconstructs the full varlena.  It allocates
+a result buffer of ov_total_length, then chases the chain from
+ov_first_block/offset, memcpy'ing each chunk's data after its header,
+following or_next_* until Invalid or until total_length bytes are read.
+
+Spatial-locality optimization in the read path: the buffer is held
+PINNED across the chain walk and only re-locked (BUFFER_LOCK_SHARE) per
+record.  When consecutive records sit on the same page (the common case,
+thanks to the write-side co-location), the pin is reused and no second
+ReadBuffer occurs; the pin is dropped only when the chain crosses to a
+different page or finishes.  Every chunk is validated (offset in range,
+ItemIdIsNormal, or_magic match) and any violation raises
+ERRCODE_DATA_CORRUPTED -- overflow corruption is reported, never
+silently skipped.
+
+Deform integration: RecnoFormTuple's inverse in recno_tuple.c (and the
+slot deform in recno_slot.c) detects an overflow pointer via
+RecnoIsOverflowPtr during attribute walk and calls
+RecnoFetchOverflowColumn to materialize it.  This is currently EAGER:
+the whole value is reassembled in memory on access.  See Section 11.
+
+Lock-ordering note: because overflow records can live on the same page
+as the parent tuple, the fetch path must be able to take a share lock on
+a buffer the caller may already have pinned.  recno_handler.c sampling
+(ANALYZE) and scan paths deliberately drop or avoid holding the parent
+buffer's content lock before triggering deform so that
+RecnoFetchOverflowColumn can lock the page itself.
+
+
+6. Delete and Update Paths
+==========================
+
+On DELETE or on the old-version replacement during UPDATE, the parent
+tuple's overflow chains must be released.  Two helpers cooperate to keep
+lock ordering safe:
+
+  - RecnoCollectOverflowPtrs() walks the tuple's attributes and records
+    each chain's (first_block, first_offset) into caller arrays WITHOUT
+    taking any overflow-page lock.  This lets the caller drop the parent
+    buffer's lock first.
+
+  - RecnoDeleteOverflowChain() / RecnoDeleteTupleOverflows() then chase
+    each chain taking EXCLUSIVE locks on overflow pages and removing the
+    records with RecnoPageIndexTupleDelete (which tolerates LP_UNUSED
+    items left by defrag), updating the shared FSM as space is freed.
+
+The separation matters because a chain can start on the parent's own
+page; collecting pointers first, then releasing the parent lock, then
+deleting, avoids a self-deadlock on that page.
+
+Overflow chain deletion is deliberately NOT WAL-logged per record.  The
+rationale (documented at recno_overflow.c) mirrors TOAST: the parent
+tuple's modification is WAL-logged, so after recovery the parent either
+exists (and its overflow is still referenced) or does not (and its
+overflow is orphaned but harmless).  Orphans are reclaimed by VACUUM.
+This trades a small amount of post-crash dead space for materially less
+WAL on the delete/update hot path.
+
+
+7. VACUUM Integration
+=====================
+
+RecnoVacuumOverflowRecords() (invoked from the RECNO VACUUM path in
+recno_operations.c) is a two-pass mark-and-sweep:
+
+  Pass 1 (mark): scan every page; for each LIVE tuple (normal item, not
+    RECNO_TUPLE_DELETED) that has RECNO_TUPLE_HAS_OVERFLOW, follow each
+    of its chains and insert every (block, offset) it reaches into a
+    hash set of referenced overflow locations.  The key is the packed
+    uint64 (block << 32 | offset).
+
+  Pass 2 (sweep): scan every page again; for each item that IS an
+    overflow record (or_magic match), if its (block, offset) is NOT in
+    the referenced set, it is an orphan and is deleted
+    (RecnoPageIndexTupleDelete), the page marked dirty and WAL-logged
+    via RecnoXLogInitPage, and the FSM updated.  Pass 2 scans each page
+    backwards so deletions do not shift offsets still to be examined.
+
+This reclaims overflow records left behind by (a) crashes between parent
+deletion and chain deletion, and (b) aborted transactions whose overflow
+chunks were written but whose parent tuple is invisible/gone.  It is the
+safety net that makes the "don't WAL-log chain deletes" decision sound.
+
+There is also RecnoGetOverflowStats() for monitoring: a full scan
+counting overflow records and bytes, used by diagnostics.
+
+
+8. Anticipated Comparison to TOAST in Practice
+==============================================
+
+These are design-level expectations, not yet benchmark-confirmed (see
+the caveat at the end of this section).
+
+8.1 Where RECNO overflow should win
+-----------------------------------
+
+  - Fewer I/Os per fetch.  TOAST detoast is an index probe plus N chunk
+    fetches that may be scattered.  RECNO chases a pointer chain that the
+    write path actively co-located, frequently resolving the whole value
+    from one or two pages already adjacent to (or identical to) the
+    parent's page.  No btree descent at all.
+
+  - No second relation.  No toast-table/toast-index catalog overhead, no
+    separate relfilenode to open, fsync, and recover, no toast OID
+    allocation contention on high-rate inserts of large values.
+
+  - Prefix predicates for free.  The inline prefix can satisfy
+    LIKE 'x%' and leading-key comparisons without any overflow fetch at
+    all; TOAST must detoast (at least the first chunk) to do the same.
+
+  - Shared free-space pool.  Overflow space and tuple space draw from
+    one FSM, so a workload that deletes large values frees space
+    reusable by ordinary tuples on the same pages, reducing the
+    bimodal-bloat pattern where a toast table grows independently of its
+    parent.
+
+8.2 Where TOAST should win, or where RECNO pays
+-----------------------------------------------
+
+  - Very large BLOBs.  TOAST streams and can be read chunk-by-chunk via
+    the toast fetch machinery and substring pushdown.  RECNO's fetch is
+    currently EAGER (whole value into one palloc'd varlena), so a
+    hundreds-of-MB value is a hard problem until the streaming
+    enhancement (Section 11, item 1) lands.  TOAST is the mature path
+    here.
+
+  - Mixed-page contention.  Because overflow records live on normal data
+    pages, large-value writes take exclusive locks on the same pages
+    that ordinary DML touches, coupling two workloads that TOAST keeps
+    on physically separate relations.  Under heavy concurrent large-value
+    churn this can raise buffer-lock contention that TOAST would avoid.
+
+  - Scan skbuffer cost.  Sequential scans must inspect and skip overflow
+    records interleaved among tuples (RecnoIsOverflowRecord per item).
+    The cost is a magic-word check per item, small but nonzero, and
+    absent in a heap whose large values are off in a toast table.
+
+  - Out-of-line sharing/immutability.  TOAST values can be shared by
+    reference across row versions in some paths; RECNO overflow is owned
+    strictly by one parent tuple version.
+
+8.3 Caveat
+----------
+
+No A/B benchmark of RECNO overflow versus heap+TOAST on large-value
+workloads has been run as of this writing.  The above is a reasoned
+expectation from the data structures and access patterns, and should be
+validated with a pgbench-style large-value workload (insert/fetch/update
+of multi-KB to multi-MB columns) before any performance claim is made in
+a submission.  Do not cite these as measured results.
+
+
+9. Prior Art and Influences
+===========================
+
+The design is a synthesis of three well-understood lineages:
+
+  - Apache Derby long columns / overflow pages.  Derby's raw store
+    (org.apache.derby.impl.store.raw.data) stores a row whose columns do
+    not fit on a page by writing the oversized columns as "long column"
+    portions chained across pages, leaving a pointer (a page+record
+    handle) in the main row.  RECNO's per-COLUMN (not per-row) overflow
+    decision, the in-tuple pointer-to-first-chunk, and the
+    (block, offset) continuation chain follow this model directly.
+    Derby likewise keeps overflow portions on ordinary container pages
+    rather than a segregated store, which is the same "mix on normal
+    pages" choice RECNO makes and the sharpest contrast with TOAST.
+
+  - PostgreSQL TOAST.  The compress-then-externalize ordering, the
+    size-threshold trigger keeping the main tuple compact, and the
+    "don't WAL-log chunk cleanup; let VACUUM reap orphans" crash-safety
+    contract are taken from TOAST's playbook even though the storage
+    substrate differs.
+
+  - Classic slotted-page / heap TID chasing.  The continuation pointer
+    is a (BlockNumber, OffsetNumber) pair chased exactly like a heap
+    item pointer, so RECNO reuses PageAddItem, ItemId inspection,
+    PageGetFreeSpace, and the standard FSM rather than inventing a
+    parallel allocator.
+
+What RECNO adds on top of these:
+
+  - The inline prefix, for predicate evaluation without fetch.
+  - Active write-time co-location (prev_block-first placement) plus the
+    matching pin-retaining read-time traversal, to make chain fetches
+    cheap.  A head-page sibling-reuse helper exists but is not yet wired
+    in (Section 11, item 4).
+  - MVCC-less overflow records that inherit parent visibility, avoiding
+    a second relation's MVCC and index entirely.
+
+
+10. Tunables and Limits (quick reference)
+=========================================
+
+  recno_overflow_inline_prefix   GUC; default 128 bytes kept inline.
+  RECNO_OVERFLOW_THRESHOLD        RECNO_MAX_TUPLE_SIZE / 4; per-column
+                                  overflow trigger (post-compression).
+  RECNO_OVERFLOW_MAX_CHUNK_SIZE   max data bytes per chunk.
+  RECNO_MAX_OVERFLOW_CHAIN        1024; chain-length safety bound.
+  RECNO_OVERFLOW_REUSE_SCAN       5; head-page sibling pages scanned for
+                                  reuse before extending.
+  MAX_OVERFLOW_BUFFERS            32; overflow buffers per atomic WAL
+                                  record before falling back to
+                                  per-record logging.
+  MAX_FSM_RETRIES                 100; stale-FSM retry bound on write.
+
+
+11. Open Questions / Deferred Work
+==================================
+
+  1. Lazy streaming fetch.  RecnoFetchOverflowColumn is eager; a
+     streaming varlena wrapper that pages chunks in on demand (releasing
+     pins between chunks) is required before RECNO is appropriate for
+     very large BLOBs.  This likely means a custom external-pointer type
+     integrated with the VARATT_EXTERNAL machinery.
+
+  2. Row-level overflow.  If a row's fixed/inlined fields alone exceed a
+     page even after every large column is overflowed, the row itself
+     must split.  This needs a new tuple flag
+     (RECNO_TUPLE_HAS_ROW_OVERFLOW), a row-continuation pointer, and
+     changes to all scan/update/delete paths -- deferred.
+
+  3. Sentinel robustness.  Overflow detection relies on the
+     RECNO_OVERFLOW_PTR_MAGIC / RECNO_OVERFLOW_RECORD_MAGIC sentinels
+     rather than a tagged varlena bit.  A formal argument (or a tagged
+     representation) that no legitimate user varlena can be misread as an
+     overflow pointer would harden the deform path.
+
+  4. Cross-row overflow packing.  RecnoFindOverflowPageForReuse is
+     implemented (it scans a head page's tuples for sibling overflow
+     pages with spare room) but is not yet called by
+     RecnoStoreOverflowColumn, which today places via prev_block then
+     FSM.  Wiring it in would reduce relation size when many rows on a
+     page each carry modest overflow, at the cost of an extra scan on
+     the write path.

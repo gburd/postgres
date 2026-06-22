@@ -36,4 +36,8 @@ OBJS = \
 	xactdesc.o \
 	xlogdesc.o
 
+ifdef USE_RECNO
+OBJS += recnodesc.o
+endif
+
 include $(top_srcdir)/src/backend/common.mk

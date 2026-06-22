@@ -6100,6 +6100,18 @@ StartupXLOG(void)
 	restoreTwoPhaseData();
 
 	/*
+	 * Reload the Aborted Transaction Map from its checkpoint state file before
+	 * the redo pass.  The ATM is otherwise reconstructed only by replaying
+	 * XLOG_ATM_ABORT / XLOG_ATM_FORGET, which redo cannot do for aborts whose
+	 * records precede the checkpoint redo point.  Reloading here -- before
+	 * redo, exactly like restoreTwoPhaseData() above -- lets atm_redo's
+	 * XLOG_ATM_FORGET replays correctly remove entries forgotten after the
+	 * checkpoint, and XLOG_ATM_ABORT replays re-add (idempotently) entries
+	 * aborted after it.
+	 */
+	ATMReloadFromCheckpoint();
+
+	/*
 	 * When starting with crash recovery, reset pgstat data - it might not be
 	 * valid. Otherwise restore pgstat data. It's safe to do this here,
 	 * because postmaster will not yet have started any other processes.
@@ -8151,6 +8163,13 @@ CheckPointGuts(XLogRecPtr checkPointRedo, int flags)
 
 	/* We deliberately delay 2PC checkpointing as long as possible */
 	CheckPointTwoPhase(checkPointRedo);
+
+	/*
+	 * Persist the Aborted Transaction Map so it survives a crash even when
+	 * this checkpoint advances the redo pointer past an un-forgotten
+	 * XLOG_ATM_ABORT record (see CheckPointATM / ATMReloadFromCheckpoint).
+	 */
+	CheckPointATM();
 }
 
 /*

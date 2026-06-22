@@ -6,22 +6,17 @@
  * The ATM is a shared-memory data structure mapping TransactionId to UNDO
  * chain metadata for aborted transactions. It enables:
  *
- *   1. O(1) visibility checks: ATMIsAborted(xid) via SLogXidIsPresent()
- *      for recently-aborted transactions whose effects haven't been
- *      reverted yet.
- *
- *   2. Background Logical Revert: the Logical Revert worker scans the
+ *   1. Background Logical Revert: the Logical Revert worker scans the
  *      sLog for entries where revert_complete == false and applies their
  *      UNDO chains asynchronously.
  *
- *   3. Instant abort: at transaction abort time, the backend writes an
+ *   2. Instant abort: at transaction abort time, the backend writes an
  *      ATM entry (sLog + WAL) instead of performing synchronous
  *      rollback, making ROLLBACK O(1).
  *
  * Implementation: All ATM functions are thin wrappers around the sLog
  * (Secondary Log) hash tables defined in access/slog.h.  The sLog
- * provides O(1) lookups via SLogXidHash, replacing the old fixed-size
- * linear array.
+ * provides O(1) lookups, replacing the old fixed-size linear array.
  *
  * WAL: ATMAddAborted() emits XLOG_ATM_ABORT; ATMForget() emits
  * XLOG_ATM_FORGET. During recovery, atm_redo() replays these without
@@ -115,19 +110,6 @@ void
 ATMShmemInit(void)
 {
 	/* sLog initialization is done separately via SLogShmemInit() */
-}
-
-/*
- * ATMIsAborted
- *		Check whether a transaction is tracked in the ATM.
- *
- * This is the hot-path function called during visibility checks.
- * Delegates to SLogXidIsPresent() for O(1) hash lookup.
- */
-bool
-ATMIsAborted(TransactionId xid)
-{
-	return SLogXidIsPresent(xid);
 }
 
 /*

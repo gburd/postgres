@@ -1,24 +1,29 @@
 /*-------------------------------------------------------------------------
  *
  * slog_flathash.h
- *	  LRLock-protected flat open-addressing hash for sLog tuple tracking.
+ *	  Seqlock-protected flat open-addressing hash for sLog tuple tracking.
  *
- * This provides wait-free read access to sLog tuple entries via the
- * left-right lock primitive.  The flat hash uses open addressing with
- * linear probing and tombstone markers for deletions.
+ * This provides wait-free read access to sLog tuple entries via a seqlock
+ * (sequence lock).  The flat hash uses open addressing with linear probing
+ * and tombstone markers for deletions.
  *
- * Architecture: The LRLock maintains TWO identical copies of the hash in
- * shared memory.  Readers access the "read copy" via atomic epoch counter
- * (wait-free -- no lock, no CAS on the hot path).  Writers apply mutations
- * to both copies sequentially via an oplog, serialized by an external
- * LWLock (SLogTupleWriterLock).  The two-copy invariant means a reader
- * always sees a consistent snapshot even while a writer is mid-mutation.
+ * Architecture: A SINGLE copy of the hash lives in shared memory, guarded
+ * by a per-partition sequence counter (SLogFlatPartition.seq).  Readers
+ * acquire-load the counter, read data into local variables, then re-load
+ * the counter and retry if it changed -- no announce-store, no StoreLoad
+ * fence (unlike the left-right lock this replaces).  Writers are already
+ * mutually excluded by the per-partition writer_lock LWLock, so a writer
+ * simply makes the counter odd (write in progress), mutates the single
+ * copy in place, then makes it even again (+2 total).  A reader that
+ * observes an odd counter spins until it turns even.
  *
  * Scan semantics: SLogFlatHashScanInit/ScanNext iterate all occupied
- * buckets linearly.  Scans must occur within an LRLock read-side or
- * write-side critical section.  For write operations that need global
- * scans (eviction, xid removal), the pattern is: read-side scan to
- * collect keys, then batch-apply write ops under the writer lock.
+ * buckets linearly.  Read-side scans must run inside a seqlock retry loop
+ * (SLOG_SEQ_READ_BEGIN/END) and may only copy data into locals; a writer
+ * holds writer_lock and mutates fp->hash directly.  For write operations
+ * that need global scans (eviction, xid removal), the pattern is: scan
+ * fp->hash under the writer lock (stable, no reader can tear it), collect
+ * keys, then apply write ops.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -31,8 +36,10 @@
 #define SLOG_FLATHASH_H
 
 #include "access/slog.h"
-#include "storage/lrlock.h"
+#include "port/atomics.h"
 #include "storage/lwlock.h"
+#include "storage/s_lock.h"
+#include "storage/seqlock.h"
 
 /*
  * Bucket states encoded via hash_val:
@@ -60,7 +67,7 @@ typedef struct SLogFlatBucket
 /*
  * SLogFlatHash - The flat hash table header, followed by buckets[].
  *
- * Allocated as the data payload of an LRLock (two copies in shared memory).
+ * A single copy lives in shared memory, guarded by the partition seqlock.
  */
 typedef struct SLogFlatHash
 {
@@ -72,7 +79,7 @@ typedef struct SLogFlatHash
 }			SLogFlatHash;
 
 /*
- * Operation kinds for the LRLock oplog.
+ * Operation kinds for the flat-hash apply dispatcher (SLogFlatHashApply).
  */
 typedef enum SLogFlatOpKind
 {
@@ -90,7 +97,7 @@ typedef enum SLogFlatOpKind
 /*
  * SLogFlatOp - A single operation to be applied to the flat hash.
  *
- * This is serialized into the LRLock oplog and applied to both copies.
+ * Passed to SLogFlatHashApply(), which mutates the single flat-hash copy.
  */
 typedef struct SLogFlatOp
 {
@@ -111,10 +118,10 @@ typedef struct SLogFlatOp
 /* ----------------------------------------------------------------
  * Partitioned flat hash: 32-way sharding to reduce writer lock contention.
  *
- * Each partition has its own LRLock (two copies of the flat hash segment)
- * and its own writer lock.  Key routing: hash(key) % NUM_PARTITIONS.
- * This reduces writer lock contention proportionally to the number of
- * partitions.
+ * Each partition has its own single flat-hash copy guarded by a seqlock
+ * (wait-free reads) and its own writer lock.  Key routing:
+ * hash(key) % NUM_PARTITIONS.  This reduces writer lock contention
+ * proportionally to the number of partitions.
  *
  * The partition count is determined at startup by the slog_num_partitions
  * GUC (default: 0 = auto-size based on CPU count).  The heuristic targets
@@ -132,23 +139,75 @@ typedef struct SLogFlatOp
 /*
  * SLogFlatPartition - Per-partition state.
  *
- * Each partition owns a slice of the total flat hash capacity and has
- * independent locking for both reads (LRLock) and writes (LWLock).
+ * Each partition owns a slice of the total flat hash capacity.  Reads are
+ * wait-free via the seqlock (seq); writes are serialized by writer_lock and
+ * mutate the single copy (*hash) in place.
  */
 typedef struct SLogFlatPartition
 {
-	LRLock	   *lrlock;			/* per-partition LRLock (wait-free reads) */
+	SLogFlatHash *hash;			/* single flat-hash copy (in shmem) */
+	SeqLock		seqlock;		/* retry-based consistent reads */
 	LWLockPadded writer_lock;	/* per-partition writer serialization */
 }			SLogFlatPartition;
 
 /*
+ * Seqlock write-side helpers (thin wrappers over the generic SeqLock).
+ *
+ * The caller MUST already hold the partition writer_lock LW_EXCLUSIVE, which
+ * is the sole writer mutual-exclusion mechanism (the seqlock provides no
+ * writer exclusion of its own).  Between _begin and _end the counter is odd,
+ * so any concurrent reader retries; the writer mutates fp->hash directly.
+ */
+static inline void
+SLogSeqWriteBegin(SLogFlatPartition * fp)
+{
+	SeqLockWriteBegin(&fp->seqlock);
+}
+
+static inline void
+SLogSeqWriteEnd(SLogFlatPartition * fp)
+{
+	SeqLockWriteEnd(&fp->seqlock);
+}
+
+/*
+ * Seqlock read-side helpers -- "copy into locals, then act after".
+ *
+ * Usage:
+ *		uint32	slog_seq_;
+ *		SLOG_SEQ_READ_BEGIN(fp, slog_seq_)
+ *		{
+ *			... probe fp->hash and memcpy/read into LOCAL variables ONLY ...
+ *		}
+ *		SLOG_SEQ_READ_END(fp, slog_seq_);
+ *		... now act on the locals ...
+ *
+ * The body may run more than once, so it must have no side effects beyond
+ * writing caller-provided output locals (reset any accumulator at the top of
+ * the body).  It must NOT retain pointers into fp->hash past the loop nor run
+ * callbacks with side effects; those run after SLOG_SEQ_READ_END confirms a
+ * consistent read.  These macros wrap the generic SeqLock reader API.
+ */
+#define SLOG_SEQ_READ_BEGIN(fp, seqvar) \
+	for (;;) \
+	{ \
+		(seqvar) = SeqLockReadBegin(&(fp)->seqlock);
+
+#define SLOG_SEQ_READ_END(fp, seqvar) \
+		if (SeqLockReadRetry(&(fp)->seqlock, (seqvar))) \
+			break; \
+	}
+
+/*
  * Compute the shared memory size needed for the flat hash data
- * (one copy — the LRLock allocates two copies internally).
+ * (the single copy guarded by the seqlock).
  */
 extern Size SLogFlatHashDataSize(int capacity);
 
 /*
- * Compute the total shared memory needed for the LRLock + flat hash.
+ * Compute the total shared memory needed for one partition's flat hash
+ * (the single copy; the seqlock and writer_lock are embedded in
+ * SLogFlatPartition).
  */
 extern Size SLogFlatHashShmemSize(int capacity, int max_backends);
 
@@ -159,16 +218,16 @@ extern Size SLogFlatHashPartitionedShmemSize(int total_capacity,
 											 int max_backends);
 
 /*
- * Initialize the flat hash in a pre-allocated LRLock data block.
- * Called during SLogShmemInit to set up both copies.
+ * Initialize the flat hash in a pre-allocated data block.
+ * Called during SLogShmemInit to set up the single copy.
  */
 extern void SLogFlatHashInit(void *data, int capacity);
 
 /*
- * LRLock callbacks for the flat hash.
+ * Apply one SLogFlatOp to the (single) flat-hash copy.  Called by writers
+ * holding the partition writer_lock, between SLogSeqWriteBegin/End.
  */
 extern void SLogFlatHashApply(void *data, const void *operation, Size op_size);
-extern void SLogFlatHashSync(void *dst, const void *src, Size data_size);
 
 /*
  * Hash computation for SLogTupleKey.
@@ -233,9 +292,10 @@ extern SLogFlatBucket * SLogFlatHashProbeForInsert(SLogFlatHash * ht,
  *       // process bucket->entry
  *   }
  *
- * The scan must be performed within an LRLock read-side or write-side
- * critical section.  For write operations, collect keys during a read-side
- * scan, then apply batch LRLock ops under the writer lock.
+ * The scan must be performed inside a seqlock read-side retry loop
+ * (SLOG_SEQ_READ_BEGIN/END, read into locals only) or by a writer holding
+ * writer_lock.  For write operations, scan fp->hash under the writer lock
+ * (stable) to collect keys, then apply write ops.
  */
 typedef struct SLogFlatHashScanState
 {

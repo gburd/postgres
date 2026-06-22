@@ -198,6 +198,307 @@ there.
  access methods might work differently.
 </para>
 
+<sect2 id="storage-recno">
+<title>RECNO Table Access Method</title>
+
+<para>
+<productname>PostgreSQL</productname> includes the <literal>RECNO</literal> table access method
+as an alternative to the default <literal>heap</literal> storage method. RECNO uses
+heap-compatible xmin/xmax MVCC with in-place updates: the old row version is
+pushed to a per-relation UNDO fork rather than left on the page, reducing
+bloat while keeping table IDs (TIDs) stable across updates.
+</para>
+
+<para>
+Key differences from <literal>heap</literal> storage:
+<itemizedlist>
+<listitem>
+<para><emphasis>In-place updates:</emphasis> RECNO performs updates in-place when possible,
+reducing storage bloat compared to heap's tuple versioning approach.</para>
+</listitem>
+<listitem>
+<para><emphasis>UNDO-fork versioning:</emphasis> An in-place UPDATE pushes the old row
+version to the per-relation UNDO fork (zheap-style); an old snapshot reads it
+back from the fork.  Visibility comes from CLOG exactly like heap.</para>
+</listitem>
+<listitem>
+<para><emphasis>Integrated compression:</emphasis> Built-in compression with multiple algorithms
+(LZ4, ZSTD, Delta, Dictionary) selected automatically based on data patterns.</para>
+</listitem>
+<listitem>
+<para><emphasis>Overflow pages:</emphasis> Large attributes are stored in overflow page chains
+rather than TOAST tables, providing better integration with compression.</para>
+</listitem>
+<listitem>
+<para><emphasis>Advanced space management:</emphasis> Five-level free space classification
+with opportunistic defragmentation reduces VACUUM requirements.</para>
+</listitem>
+</itemizedlist>
+</para>
+
+<para>
+RECNO tables are created using <literal>USING recno</literal> in the <command>CREATE TABLE</command>
+statement. All existing PostgreSQL features including indexes, constraints, and replication
+work transparently with RECNO tables.
+</para>
+
+<para>
+RECNO is particularly beneficial for:
+<itemizedlist>
+<listitem><para>High-update workloads where storage bloat is a concern</para></listitem>
+<listitem><para>Long-running systems where XID wraparound maintenance is problematic</para></listitem>
+<listitem><para>Tables with large text/binary data that benefit from compression</para></listitem>
+<listitem><para>Systems requiring minimal VACUUM overhead</para></listitem>
+</itemizedlist>
+</para>
+
+<sect3 id="storage-recno-rollback-semantics">
+<title>Rollback semantics and visibility</title>
+
+<para>
+<literal>RECNO</literal>'s in-place UPDATE and DELETE changes the rollback
+behaviour that heap users are accustomed to in one visible way.  When a
+transaction on a <literal>RECNO</literal> table with
+<literal>WITH (enable_undo = on)</literal> issues an UPDATE or DELETE and
+then <literal>ROLLBACK</literal>, the before-image is not restored by the
+<literal>ROLLBACK</literal> command itself.  Instead, two independent things
+happen:
+</para>
+
+<para>
+<emphasis>Visibility is restored immediately.</emphasis>  The abort path
+marks the transaction's sLog entries as <literal>ABORTED</literal>, and from
+that moment on every snapshot treats the aborted transaction's writes as
+invisible.  No user query ever sees a value written by the aborted
+transaction.
+</para>
+
+<para>
+<emphasis>The physical before-image is restored asynchronously</emphasis>
+by the logical-revert background worker, which walks the aborted
+transaction's UNDO chain from WAL and reinstates each row in place.
+Until the worker catches up, the on-disk slot holds the aborted-after
+image; readers do not see it (because the sLog hides it), but the space
+is not yet reclaimable by the free-space map.  The backlog is bounded
+by <varname>logical_revert_naptime</varname> and by the revert worker's
+throughput, both of which are tunable.
+</para>
+
+<para>
+The net effect for applications is:
+<itemizedlist>
+<listitem><para>
+<literal>SELECT</literal> queries never observe rolled-back data, exactly
+as with heap.
+</para></listitem>
+<listitem><para>
+Space reclamation from rolled-back UPDATE / DELETE is deferred.  Under
+sustained abort-heavy workloads the asynchronous undo worker may fall
+behind; monitor it via the relevant <structname>pg_stat_*</structname>
+view and size it appropriately.
+</para></listitem>
+<listitem><para>
+Aborted <literal>INSERT</literal> is hidden from readers via the sLog and
+has no physical-space-reclaim dependency; the slot is marked deleted
+by the revert worker for eventual <command>VACUUM</command>.
+</para></listitem>
+</itemizedlist>
+</para>
+
+<para>
+Tables that do not set <literal>WITH (enable_undo = on)</literal> do not
+generate UNDO records and have no rollback-time physical undo.  For
+such tables the usual <literal>ROLLBACK</literal> semantics apply at the
+statement level (no WAL is written for the attempted modification), so
+no divergence from heap is observable.
+</para>
+
+</sect3>
+
+<sect3 id="storage-recno-tuning">
+<title>RECNO Tuning Parameters</title>
+
+<para>
+RECNO provides several configuration parameters for optimizing performance
+based on workload characteristics:
+</para>
+
+<variablelist>
+<varlistentry>
+<term><varname>recno_compression_algorithm</varname></term>
+<listitem>
+<para>
+Controls compression algorithm selection. <literal>auto</literal> (default) analyzes
+data patterns and selects the best algorithm per tuple. Manual options:
+<itemizedlist>
+<listitem><para><literal>lz4</literal>: Fast compression, good for CPU-bound workloads</para></listitem>
+<listitem><para><literal>zstd</literal>: Better compression ratio, configurable with <varname>recno_compression_level</varname></para></listitem>
+<listitem><para><literal>delta</literal>: Excellent for sequential/timestamp data</para></listitem>
+<listitem><para><literal>dictionary</literal>: Effective for repetitive text data</para></listitem>
+<listitem><para><literal>none</literal>: Disable compression for maximum write speed</para></listitem>
+</itemizedlist>
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term><varname>recno_overflow_threshold</varname></term>
+<listitem>
+<para>
+Determines when large attributes move to overflow pages (default 2048 bytes).
+<itemizedlist>
+<listitem><para>Lower values (512-1024): Reduce main page fragmentation, better for narrow tables with occasional large values</para></listitem>
+<listitem><para>Higher values (4096-8192): Keep more data inline, better for wide tables with uniformly large columns</para></listitem>
+</itemizedlist>
+Heap equivalent: similar to <varname>toast_tuple_threshold</varname> but more granular.
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term><varname>recno_defrag_threshold</varname></term>
+<listitem>
+<para>
+Sets free space percentage triggering opportunistic defragmentation (default 25%).
+Unlike heap's VACUUM, RECNO defragments during normal operations:
+<itemizedlist>
+<listitem><para>Lower values (10-15%): More aggressive defragmentation, better space utilization, slightly higher CPU overhead</para></listitem>
+<listitem><para>Higher values (35-50%): Less frequent defragmentation, lower CPU overhead, more fragmentation tolerance</para></listitem>
+</itemizedlist>
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term><varname>recno_timestamp_precision</varname></term>
+<listitem>
+<para>
+Controls timestamp precision for MVCC (default <literal>microsecond</literal>).
+<literal>nanosecond</literal> provides better ordering for high-frequency transactions
+but uses more CPU. Unlike heap's XID-based MVCC, precision affects transaction ordering.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+<sect4 id="storage-recno-workload-tuning">
+<title>Workload-Specific Tuning</title>
+
+<variablelist>
+<varlistentry>
+<term>OLTP Workloads</term>
+<listitem>
+<para>
+Optimize for fast updates and minimal bloat:
+<programlisting>
+recno_compression_algorithm = 'lz4'        # Fast compression
+recno_defrag_threshold = 15                # Aggressive defragmentation
+recno_overflow_threshold = 1024            # Keep main pages compact
+recno_timestamp_precision = 'microsecond' # Sufficient for most OLTP
+</programlisting>
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term>Analytics/OLAP Workloads</term>
+<listitem>
+<para>
+Optimize for compression and storage efficiency:
+<programlisting>
+recno_compression_algorithm = 'zstd'       # Maximum compression
+recno_compression_level = 9                # Higher compression level
+recno_defrag_threshold = 35                # Less frequent defragmentation
+recno_overflow_threshold = 4096            # Allow larger inline data
+</programlisting>
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term>Time-Series Data</term>
+<listitem>
+<para>
+Optimize for timestamp-heavy data:
+<programlisting>
+recno_compression_algorithm = 'delta'      # Excellent for timestamps/sequences
+recno_defrag_threshold = 25                # Balanced defragmentation
+recno_timestamp_precision = 'nanosecond'  # High precision for time-series
+</programlisting>
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term>Text-Heavy Applications</term>
+<listitem>
+<para>
+Optimize for repetitive text data:
+<programlisting>
+recno_compression_algorithm = 'dictionary' # Excellent for repetitive text
+recno_overflow_threshold = 2048             # Standard threshold
+recno_defrag_threshold = 20                 # Moderate defragmentation
+</programlisting>
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</sect4>
+
+<sect4 id="storage-recno-vs-heap">
+<title>RECNO vs HEAP Comparison</title>
+
+<informaltable>
+<tgroup cols="3">
+<thead>
+<row>
+<entry>Aspect</entry>
+<entry>RECNO</entry>
+<entry>HEAP</entry>
+</row>
+</thead>
+<tbody>
+<row>
+<entry>Update Behavior</entry>
+<entry>In-place when possible, reduces bloat</entry>
+<entry>Creates new tuple versions, requires VACUUM</entry>
+</row>
+<row>
+<entry>MVCC Implementation</entry>
+<entry>64-bit timestamps, no wraparound</entry>
+<entry>32-bit XIDs, requires wraparound maintenance</entry>
+</row>
+<row>
+<entry>Large Data Storage</entry>
+<entry>Overflow pages with compression</entry>
+<entry>TOAST tables, separate compression</entry>
+</row>
+<row>
+<entry>Space Management</entry>
+<entry>Opportunistic defragmentation</entry>
+<entry>Periodic VACUUM required</entry>
+</row>
+<row>
+<entry>Compression</entry>
+<entry>Built-in, multiple algorithms</entry>
+<entry>TOAST compression only</entry>
+</row>
+<row>
+<entry>Write Amplification</entry>
+<entry>Lower, in-place updates</entry>
+<entry>Higher, tuple versioning</entry>
+</row>
+</tbody>
+</tgroup>
+</informaltable>
+
+</sect4>
+
+</sect3>
+
+</sect2>
+
 <para>
 Each table and index is stored in a separate file.  For ordinary relations,
 these files are named after the table or index's <firstterm>filenode</firstterm> number,
