@@ -60,6 +60,8 @@ multi-session WebAssembly PGlite much more plausible.
 Architecture Summary
 --------------------
 
+![Multithreaded PostgreSQL architecture](plan_docs/multithreaded-postgres-architecture.svg)
+
 The branch splits backend execution into explicit objects that used to be
 mostly implied by process-global state:
 
