@@ -3477,6 +3477,7 @@ extern bool PgBackendWakeWaitCompletion(PgBackend *backend,
 										uint32 ready_events);
 extern bool PgBackendWakeWaitCompletionById(PgBackendId backend_id,
 											uint32 ready_events);
+extern bool PgBackendShouldPublishWaitCompletion(PgBackend *backend);
 extern bool PgBackendLogicalTimeoutNextWake(PgBackend *backend,
 											TimestampTz *wake_at,
 											uint64 *generation);

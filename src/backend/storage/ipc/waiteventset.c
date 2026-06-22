@@ -1120,31 +1120,6 @@ WaitEventSetWait(WaitEventSet *set, long timeout,
 				 uint32 wait_event_info)
 {
 	WaitEventSetWaitArgs args;
-	PgWaitSpec	wait_spec;
-	uint32		wake_events = 0;
-	pgsocket	wait_socket = PGINVALID_SOCKET;
-	bool		found_wait_socket = false;
-	bool		multiple_wait_sockets = false;
-
-	for (int i = 0; i < set->nevents; i++)
-	{
-		wake_events |= set->events[i].events;
-		if ((set->events[i].events & WL_SOCKET_MASK) != 0 &&
-			set->events[i].fd != PGINVALID_SOCKET)
-		{
-			if (!found_wait_socket)
-			{
-				wait_socket = set->events[i].fd;
-				found_wait_socket = true;
-			}
-			else if (wait_socket != set->events[i].fd)
-				multiple_wait_sockets = true;
-		}
-	}
-	if (multiple_wait_sockets)
-		wait_socket = PGINVALID_SOCKET;
-	if (timeout >= 0)
-		wake_events |= WL_TIMEOUT;
 
 	args.set = set;
 	args.timeout = timeout;
@@ -1152,13 +1127,44 @@ WaitEventSetWait(WaitEventSet *set, long timeout,
 	args.nevents = nevents;
 	args.wait_event_info = wait_event_info;
 
-	wait_spec.kind = PG_WAIT_KIND_EVENT_SET;
-	wait_spec.wait_event_info = wait_event_info;
-	wait_spec.wake_events = wake_events;
-	wait_spec.socket = wait_socket;
-	wait_spec.timeout = timeout;
+	if (likely(!PgBackendShouldPublishWaitCompletion(CurrentPgBackend)))
+		return WaitEventSetWaitInternal(&args);
+	else
+	{
+		PgWaitSpec	wait_spec;
+		uint32		wake_events = 0;
+		pgsocket	wait_socket = PGINVALID_SOCKET;
+		bool		found_wait_socket = false;
+		bool		multiple_wait_sockets = false;
 
-	return PgSuspend(&wait_spec, WaitEventSetWaitInternal, &args);
+		for (int i = 0; i < set->nevents; i++)
+		{
+			wake_events |= set->events[i].events;
+			if ((set->events[i].events & WL_SOCKET_MASK) != 0 &&
+				set->events[i].fd != PGINVALID_SOCKET)
+			{
+				if (!found_wait_socket)
+				{
+					wait_socket = set->events[i].fd;
+					found_wait_socket = true;
+				}
+				else if (wait_socket != set->events[i].fd)
+					multiple_wait_sockets = true;
+			}
+		}
+		if (multiple_wait_sockets)
+			wait_socket = PGINVALID_SOCKET;
+		if (timeout >= 0)
+			wake_events |= WL_TIMEOUT;
+
+		wait_spec.kind = PG_WAIT_KIND_EVENT_SET;
+		wait_spec.wait_event_info = wait_event_info;
+		wait_spec.wake_events = wake_events;
+		wait_spec.socket = wait_socket;
+		wait_spec.timeout = timeout;
+
+		return PgSuspend(&wait_spec, WaitEventSetWaitInternal, &args);
+	}
 }
 
 static int

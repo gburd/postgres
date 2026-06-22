@@ -218,8 +218,6 @@ static void PgWaitCompletionPublish(PgWaitCompletion *completion,
 static void PgWaitCompletionClear(PgWaitCompletion *completion);
 static void PgBackendClearWaitCompletion(PgBackendWaitState *wait_state);
 static void PgBackendWakeForWaitCompletion(PgBackend *backend);
-static bool PgBackendShouldPublishWaitCompletion(PgBackend *backend,
-												 const PgWaitSpec *wait_spec);
 void PgBackendInitializeTransactionState(PgBackendTransactionState *transaction);
 static void PgBackendAdoptEarlyTransactionState(PgBackend *backend);
 static void PgBackendInitializeTimeoutState(PgBackendTimeoutState *timeout);
@@ -2551,11 +2549,10 @@ PgBackendWakeForWaitCompletion(PgBackend *backend)
 		SetLatch(MyLatch);
 }
 
-static bool
-PgBackendShouldPublishWaitCompletion(PgBackend *backend,
-									 const PgWaitSpec *wait_spec)
+bool
+PgBackendShouldPublishWaitCompletion(PgBackend *backend)
 {
-	if (wait_spec == NULL || backend == NULL)
+	if (backend == NULL)
 		return false;
 	if (pg_runtime_publish_wait_specs)
 		return true;
@@ -2576,7 +2573,8 @@ PgSuspend(const PgWaitSpec *wait_spec, PgSuspendCallback callback,
 	Assert(callback != NULL);
 
 	backend = CurrentPgBackend;
-	if (likely(!PgBackendShouldPublishWaitCompletion(backend, wait_spec)))
+	if (likely(wait_spec == NULL ||
+			   !PgBackendShouldPublishWaitCompletion(backend)))
 		return callback(callback_arg);
 
 	wait_state = &backend->wait_state;

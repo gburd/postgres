@@ -101,28 +101,52 @@ StaticAssertDecl(lengthof(cacheinfo) == SysCacheSize,
 #define SysCacheSupportingRelOidSize (*PgCurrentSysCacheSupportingRelOidSizeRef())
 
 static int	oid_compare(const void *a, const void *b);
-static CatCache *InitSysCache(SysCacheIdentifier cacheId);
+static pg_noinline CatCache *InitSysCacheMiss(SysCacheIdentifier cacheId,
+											  CatCache **syscache);
+static pg_attribute_always_inline CatCache *GetSysCache(SysCacheIdentifier cacheId);
 
-static CatCache *
-InitSysCache(SysCacheIdentifier cacheId)
+static pg_noinline CatCache *
+InitSysCacheMiss(SysCacheIdentifier cacheId, CatCache **syscache)
 {
+	CatCache   *cache;
+
 	if (cacheId < 0 || cacheId >= SysCacheSize)
 		elog(ERROR, "invalid cache ID: %d", cacheId);
 
-	if (unlikely(SysCache[cacheId] == NULL))
+	cache = syscache[cacheId];
+	if (unlikely(cache == NULL))
 	{
-		SysCache[cacheId] = InitCatCache(cacheId,
-										 cacheinfo[cacheId].reloid,
-										 cacheinfo[cacheId].indoid,
-										 cacheinfo[cacheId].nkeys,
-										 cacheinfo[cacheId].key,
-										 cacheinfo[cacheId].nbuckets);
-		if (!SysCache[cacheId])
+		cache = InitCatCache(cacheId,
+							 cacheinfo[cacheId].reloid,
+							 cacheinfo[cacheId].indoid,
+							 cacheinfo[cacheId].nkeys,
+							 cacheinfo[cacheId].key,
+							 cacheinfo[cacheId].nbuckets);
+		if (!cache)
 			elog(ERROR, "could not initialize cache %u (%d)",
 				 cacheinfo[cacheId].reloid, cacheId);
+		syscache[cacheId] = cache;
 	}
 
-	return SysCache[cacheId];
+	return cache;
+}
+
+static pg_attribute_always_inline CatCache *
+GetSysCache(SysCacheIdentifier cacheId)
+{
+	CatCache  **syscache = SysCache;
+	CatCache   *cache;
+
+	Assert(cacheId >= 0 && cacheId < SysCacheSize);
+
+	if (unlikely(cacheId < 0 || cacheId >= SysCacheSize))
+		return InitSysCacheMiss(cacheId, syscache);
+
+	cache = syscache[cacheId];
+	if (unlikely(cache == NULL))
+		cache = InitSysCacheMiss(cacheId, syscache);
+
+	return cache;
 }
 
 
@@ -214,7 +238,7 @@ InitCatalogCachePhase2(void)
 	Assert(CacheInitialized);
 
 	for (cacheId = 0; cacheId < SysCacheSize; cacheId++)
-		InitCatCachePhase2(InitSysCache(cacheId), true);
+		InitCatCachePhase2(GetSysCache(cacheId), true);
 }
 
 
@@ -241,7 +265,7 @@ SearchSysCache(SysCacheIdentifier cacheId,
 			   Datum key3,
 			   Datum key4)
 {
-	CatCache   *cache = InitSysCache(cacheId);
+	CatCache   *cache = GetSysCache(cacheId);
 
 	return SearchCatCache(cache, key1, key2, key3, key4);
 }
@@ -250,7 +274,7 @@ HeapTuple
 SearchSysCache1(SysCacheIdentifier cacheId,
 				Datum key1)
 {
-	CatCache   *cache = InitSysCache(cacheId);
+	CatCache   *cache = GetSysCache(cacheId);
 
 	Assert(cache->cc_nkeys == 1);
 
@@ -261,7 +285,7 @@ HeapTuple
 SearchSysCache2(SysCacheIdentifier cacheId,
 				Datum key1, Datum key2)
 {
-	CatCache   *cache = InitSysCache(cacheId);
+	CatCache   *cache = GetSysCache(cacheId);
 
 	Assert(cache->cc_nkeys == 2);
 
@@ -272,7 +296,7 @@ HeapTuple
 SearchSysCache3(SysCacheIdentifier cacheId,
 				Datum key1, Datum key2, Datum key3)
 {
-	CatCache   *cache = InitSysCache(cacheId);
+	CatCache   *cache = GetSysCache(cacheId);
 
 	Assert(cache->cc_nkeys == 3);
 
@@ -283,7 +307,7 @@ HeapTuple
 SearchSysCache4(SysCacheIdentifier cacheId,
 				Datum key1, Datum key2, Datum key3, Datum key4)
 {
-	CatCache   *cache = InitSysCache(cacheId);
+	CatCache   *cache = GetSysCache(cacheId);
 
 	Assert(cache->cc_nkeys == 4);
 
@@ -316,7 +340,7 @@ HeapTuple
 SearchSysCacheLocked1(SysCacheIdentifier cacheId,
 					  Datum key1)
 {
-	CatCache   *cache = InitSysCache(cacheId);
+	CatCache   *cache = GetSysCache(cacheId);
 	ItemPointerData tid;
 	LOCKTAG		tag;
 
@@ -481,7 +505,7 @@ GetSysCacheOid(SysCacheIdentifier cacheId,
 			   Datum key3,
 			   Datum key4)
 {
-	CatCache   *cache = InitSysCache(cacheId);
+	CatCache   *cache = GetSysCache(cacheId);
 	HeapTuple	tuple;
 	bool		isNull;
 	Oid			result;
@@ -631,7 +655,7 @@ SysCacheGetAttr(SysCacheIdentifier cacheId, HeapTuple tup,
 				AttrNumber attributeNumber,
 				bool *isNull)
 {
-	CatCache   *cache = InitSysCache(cacheId);
+	CatCache   *cache = GetSysCache(cacheId);
 
 	/*
 	 * We just need to get the TupleDesc out of the cache entry, and then we
@@ -660,7 +684,6 @@ Datum
 SysCacheGetAttrNotNull(SysCacheIdentifier cacheId, HeapTuple tup,
 					   AttrNumber attributeNumber)
 {
-	CatCache   *cache = InitSysCache(cacheId);
 	bool		isnull;
 	Datum		attr;
 
@@ -668,6 +691,8 @@ SysCacheGetAttrNotNull(SysCacheIdentifier cacheId, HeapTuple tup,
 
 	if (isnull)
 	{
+		CatCache   *cache = GetSysCache(cacheId);
+
 		elog(ERROR,
 			 "unexpected null value in cached tuple for catalog %s column %s",
 			 get_rel_name(cacheinfo[cacheId].reloid),
@@ -694,7 +719,7 @@ GetSysCacheHashValue(SysCacheIdentifier cacheId,
 					 Datum key3,
 					 Datum key4)
 {
-	CatCache   *cache = InitSysCache(cacheId);
+	CatCache   *cache = GetSysCache(cacheId);
 
 	return GetCatCacheHashValue(cache, key1, key2, key3, key4);
 }
@@ -706,7 +731,7 @@ struct catclist *
 SearchSysCacheList(SysCacheIdentifier cacheId, int nkeys,
 				   Datum key1, Datum key2, Datum key3)
 {
-	CatCache   *cache = InitSysCache(cacheId);
+	CatCache   *cache = GetSysCache(cacheId);
 
 	return SearchCatCacheList(cache, nkeys, key1, key2, key3);
 }

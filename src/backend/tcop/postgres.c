@@ -293,10 +293,18 @@ ClientInterruptsCanProcessProcDie(PgBackend *backend)
 }
 
 static inline bool
-ClientReadDoingCommandRead(void)
+ClientReadDoingCommandRead(PgBackend *backend)
 {
-	PgSession  *session = CurrentPgSession;
+	PgSession  *session;
 
+	if (likely(backend != NULL))
+	{
+		session = backend->session;
+		if (likely(session != NULL))
+			return session->loop_state.doing_command_read;
+	}
+
+	session = CurrentPgSession;
 	if (likely(session != NULL))
 		return session->loop_state.doing_command_read;
 
@@ -853,7 +861,7 @@ ProcessClientReadInterrupt(bool blocked)
 	backend = CurrentPgBackend;
 	pending_state = ClientPendingInterruptState(backend);
 
-	if (ClientReadDoingCommandRead())
+	if (ClientReadDoingCommandRead(backend))
 	{
 		/* Check for general interrupts that arrived before/while reading */
 		if (ClientInterruptsPending(backend, pending_state))
