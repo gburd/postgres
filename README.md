@@ -20,6 +20,11 @@ I started from PostgreSQL `REL_19_BETA1` and added two threaded shapes:
 
 This is research and development code. It is not production-ready PostgreSQL.
 
+For reviewers who want the full branch delta from the fork point, see
+[PR #1](https://github.com/samwillis/multithreaded-postgres/pull/1). That diff
+also includes the Markdown planning documents and work log in this repository,
+which inflate the changed-line count by about 35%.
+
 Why This Exists
 ---------------
 
