@@ -2293,17 +2293,18 @@ typedef struct PgConnectionSecurityState
 
 /*
  * Main-loop state owned by PgSession. Some of this state used to be volatile
- * locals in PostgresMain(); keep the loop flags volatile because they must
- * survive the top-level longjmp used for backend error recovery.
+ * locals in PostgresMain(); now that the state lives in PgSession storage,
+ * updates survive the top-level longjmp used for backend error recovery
+ * without forcing volatile access in the hot loop.
  */
 typedef struct PgSessionLoopState
 {
-	volatile bool send_ready_for_query;
-	volatile bool idle_in_transaction_timeout_enabled;
-	volatile bool idle_session_timeout_enabled;
-	volatile bool doing_extended_query_message;
-	volatile bool ignore_till_sync;
-	volatile bool step_error_boundary_active;
+	bool		send_ready_for_query;
+	bool		idle_in_transaction_timeout_enabled;
+	bool		idle_session_timeout_enabled;
+	bool		doing_extended_query_message;
+	bool		ignore_till_sync;
+	bool		step_error_boundary_active;
 	bool		doing_command_read;
 	bool		transaction_started;
 } PgSessionLoopState;
