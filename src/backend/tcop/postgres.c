@@ -3171,11 +3171,13 @@ exec_describe_portal_message(const char *portal_name)
 static void
 start_xact_command(void)
 {
-	if (!xact_started)
+	PgSessionLoopState *state = PgCurrentSessionLoopState();
+
+	if (!state->transaction_started)
 	{
 		StartTransactionCommand();
 
-		xact_started = true;
+		state->transaction_started = true;
 	}
 	else if (MyXactFlags & XACT_FLAGS_PIPELINING)
 	{
@@ -3210,10 +3212,12 @@ start_xact_command(void)
 static void
 finish_xact_command(void)
 {
+	PgSessionLoopState *state = PgCurrentSessionLoopState();
+
 	/* cancel active statement timeout after each command */
 	disable_statement_timeout();
 
-	if (xact_started)
+	if (state->transaction_started)
 	{
 		CommitTransactionCommand();
 
@@ -3228,7 +3232,7 @@ finish_xact_command(void)
 		MemoryContextStats(TopMemoryContext);
 #endif
 
-		xact_started = false;
+		state->transaction_started = false;
 	}
 }
 
@@ -4798,7 +4802,7 @@ PgSessionStepUnprotected(PgSession *session, int max_messages,
 	Assert(max_messages >= 0);
 	state = &session->loop_state;
 	Assert(state->step_error_boundary_active);
-	message_context = MessageContext;
+	message_context = session->execution->memory_contexts.message_context;
 
 	/*
 	 * At top of loop, reset extended-query-message flag, so that any errors
