@@ -256,6 +256,40 @@ static inline int32 GetPrivateRefCountFor(PgBackendBufferState *state,
 										  Buffer buffer);
 static void ForgetPrivateRefCountEntryFor(PgBackendBufferState *state,
 										  PrivateRefCountEntry *ref);
+static void InitPrivateRefCountAccess(PgBackendBufferState *state);
+static bool PrivateRefCountStateIsIdle(PgBackendBufferState *state);
+static pg_attribute_always_inline ResourceOwner *PgBufferResourceOwnerFastRef(void);
+static pg_attribute_always_inline BufferUsage *PgBufferUsageFastRef(void);
+
+static pg_attribute_always_inline ResourceOwner *
+PgBufferResourceOwnerFastRef(void)
+{
+	PgExecutionResourceOwnerState *resource_owners;
+
+	resource_owners = CurrentPgExecutionResourceOwnerRuntimeState;
+	if (likely(resource_owners != NULL))
+		return &resource_owners->current_owner;
+
+	return PgCurrentResourceOwnerRef();
+}
+
+static pg_attribute_always_inline BufferUsage *
+PgBufferUsageFastRef(void)
+{
+	PgBackendInstrumentationState *instrumentation;
+
+	instrumentation = CurrentPgBackendInstrumentationRuntimeState;
+	if (likely(instrumentation != NULL))
+		return &instrumentation->buffer_usage;
+
+	return PgCurrentBufferUsageRef();
+}
+
+#undef CurrentResourceOwner
+#define CurrentResourceOwner (*PgBufferResourceOwnerFastRef())
+
+#undef pgBufferUsage
+#define pgBufferUsage (*PgBufferUsageFastRef())
 
 /* ResourceOwner callbacks to hold in-progress I/Os and buffer pins */
 static void ResOwnerReleaseBufferIO(Datum res);
@@ -345,6 +379,13 @@ ReservePrivateRefCountEntryFor(PgBackendBufferState *state)
 		Assert(array_keys[victim_slot] != InvalidBuffer);
 		Assert(array[victim_slot].buffer != InvalidBuffer);
 		Assert(array_keys[victim_slot] == array[victim_slot].buffer);
+
+		if (hash == NULL)
+		{
+			hash = refcount_create(PgBackendBufferAllocationContext(),
+								   100, NULL);
+			state->private_ref_count_hash = hash;
+		}
 
 		/* enter victim array entry into hashtable */
 		hashent = refcount_insert(hash,
@@ -4247,7 +4288,66 @@ AtEOXact_Buffers(bool isCommit)
 void
 InitBufferManagerAccess(void)
 {
-	MemoryContext buffer_context = PgBackendBufferAllocationContext();
+	InitPrivateRefCountAccess(PrivateRefCountState());
+
+	/*
+	 * AtProcExit_Buffers needs LWLock access, and thereby has to be called at
+	 * the corresponding phase of backend shutdown.
+	 */
+	Assert(MyProc != NULL);
+	on_shmem_exit(AtProcExit_Buffers, 0);
+}
+
+/*
+ * Restore private shared-buffer pin tracking after it has been released at a
+ * clean pooled-protocol idle park.
+ */
+void
+RestoreBufferManagerIdleMemory(void)
+{
+	PgBackendBufferState *state = PrivateRefCountState();
+
+	if (!state->private_ref_count_released_while_idle)
+		return;
+
+	InitPrivateRefCountAccess(state);
+}
+
+/*
+ * Release private shared-buffer pin tracking while a pooled protocol session
+ * is cleanly parked.  A parked session cannot hold buffer pins; if anything
+ * suggests otherwise, leave the state resident instead of risking corruption.
+ */
+void
+ReleaseBufferManagerIdleMemory(void)
+{
+	PgBackendBufferState *state = PrivateRefCountState();
+
+	if (state->buffer_context == NULL)
+		return;
+	if (!PrivateRefCountStateIsIdle(state))
+		return;
+
+	MemoryContextDelete(state->buffer_context);
+	state->buffer_context = NULL;
+	state->backend_writeback_context = NULL;
+	state->private_ref_count_array_keys = NULL;
+	state->private_ref_count_array = NULL;
+	state->private_ref_count_hash = NULL;
+	state->private_ref_count_overflowed = 0;
+	state->private_ref_count_clock = 0;
+	state->reserved_ref_count_slot = -1;
+	state->private_ref_count_entry_last = -1;
+	state->private_ref_count_released_while_idle = true;
+}
+
+static void
+InitPrivateRefCountAccess(PgBackendBufferState *state)
+{
+	MemoryContext buffer_context;
+
+	Assert(state != NULL);
+	buffer_context = PgBackendBufferAllocationContext();
 
 	/*
 	 * An advisory limit on the number of pins each backend should hold, based
@@ -4258,28 +4358,31 @@ InitBufferManagerAccess(void)
 	 */
 	MaxProportionalPins = NBuffers / (MaxBackends + NUM_AUXILIARY_PROCS);
 
-	if (PrivateRefCountArray == NULL)
-		PrivateRefCountArray = MemoryContextAllocZero(buffer_context,
-													  sizeof(PrivateRefCountEntry) *
-													  REFCOUNT_ARRAY_ENTRIES);
+	if (state->private_ref_count_array == NULL)
+		state->private_ref_count_array =
+			MemoryContextAllocZero(buffer_context,
+								   sizeof(PrivateRefCountEntry) *
+								   REFCOUNT_ARRAY_ENTRIES);
 	else
-		memset(PrivateRefCountArray, 0,
+		memset(state->private_ref_count_array, 0,
 			   sizeof(PrivateRefCountEntry) * REFCOUNT_ARRAY_ENTRIES);
 
-	if (PrivateRefCountArrayKeys == NULL)
-		PrivateRefCountArrayKeys = MemoryContextAllocZero(buffer_context,
-														  sizeof(Buffer) *
-														  REFCOUNT_ARRAY_ENTRIES);
+	if (state->private_ref_count_array_keys == NULL)
+		state->private_ref_count_array_keys =
+			MemoryContextAllocZero(buffer_context,
+								   sizeof(Buffer) * REFCOUNT_ARRAY_ENTRIES);
 	else
-		memset(PrivateRefCountArrayKeys, 0,
+		memset(state->private_ref_count_array_keys, 0,
 			   sizeof(Buffer) * REFCOUNT_ARRAY_ENTRIES);
 
-	PrivateRefCountOverflowed = 0;
-	PrivateRefCountClock = 0;
-	ReservedRefCountSlot = -1;
-	PrivateRefCountEntryLast = -1;
+	state->private_ref_count_overflowed = 0;
+	state->private_ref_count_clock = 0;
+	state->reserved_ref_count_slot = -1;
+	state->private_ref_count_entry_last = -1;
+	state->private_ref_count_released_while_idle = false;
 
-	PrivateRefCountHash = refcount_create(CurrentMemoryContext, 100, NULL);
+	if (state->private_ref_count_hash != NULL)
+		refcount_reset((refcount_hash *) state->private_ref_count_hash);
 
 	/*
 	 * BackendWritebackContext is backend-local storage.  Process-mode
@@ -4287,15 +4390,39 @@ InitBufferManagerAccess(void)
 	 * thread-backed backends need their own TLS instance initialized when
 	 * they begin using shared buffers.
 	 */
-	WritebackContextInit(&BackendWritebackContext,
+	if (state->backend_writeback_context == NULL)
+		state->backend_writeback_context =
+			MemoryContextAllocZero(buffer_context, sizeof(WritebackContext));
+	WritebackContextInit(state->backend_writeback_context,
 						 &backend_flush_after);
+}
 
-	/*
-	 * AtProcExit_Buffers needs LWLock access, and thereby has to be called at
-	 * the corresponding phase of backend shutdown.
-	 */
-	Assert(MyProc != NULL);
-	on_shmem_exit(AtProcExit_Buffers, 0);
+static bool
+PrivateRefCountStateIsIdle(PgBackendBufferState *state)
+{
+	Buffer	   *array_keys;
+	PrivateRefCountEntry *array;
+
+	Assert(state != NULL);
+
+	if (state->private_ref_count_overflowed != 0)
+		return false;
+	if (state->private_ref_count_array_keys == NULL ||
+		state->private_ref_count_array == NULL)
+		return false;
+
+	array_keys = (Buffer *) state->private_ref_count_array_keys;
+	array = (PrivateRefCountEntry *) state->private_ref_count_array;
+
+	for (int i = 0; i < REFCOUNT_ARRAY_ENTRIES; i++)
+	{
+		if (array_keys[i] != InvalidBuffer ||
+			array[i].buffer != InvalidBuffer ||
+			array[i].data.refcount != 0)
+			return false;
+	}
+
+	return true;
 }
 
 /*

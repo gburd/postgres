@@ -24,7 +24,7 @@ pgstat_fetch_stat_lock(void)
 {
 	pgstat_snapshot_fixed(PGSTAT_KIND_LOCK);
 
-	return &pgStatLocal.snapshot.lock;
+	return &pgStatSnapshot.lock;
 }
 
 /*
@@ -109,7 +109,7 @@ pgstat_lock_snapshot_cb(void)
 
 	LWLockAcquire(lckstat_lock, LW_SHARED);
 
-	pgStatLocal.snapshot.lock = pgStatLocal.shmem->lock.stats;
+	pgStatSnapshot.lock = pgStatLocal.shmem->lock.stats;
 
 	LWLockRelease(lckstat_lock);
 }

@@ -49,123 +49,24 @@ test_backend_runtime_session_reset_callback(void *arg)
 	(*counter)++;
 }
 
-static void
-test_backend_runtime_seed_auto_explain_defaults(PgSessionExtensionModuleState *extension_modules)
+typedef struct TestBackendRuntimeExtensionPrivateState
 {
-	extension_modules->auto_explain_log_min_duration = -1;
-	extension_modules->auto_explain_log_parameter_max_length = -1;
-	extension_modules->auto_explain_log_timing = true;
-	extension_modules->auto_explain_log_format = EXPLAIN_FORMAT_TEXT;
-	extension_modules->auto_explain_log_level = LOG;
-	extension_modules->auto_explain_sample_rate = 1.0;
-}
+	int			value;
+	const char *label;
+	int		   *cleanup_count;
+} TestBackendRuntimeExtensionPrivateState;
 
-static bool
-test_backend_runtime_auto_explain_defaults_ok(PgSessionExtensionModuleState *extension_modules)
-{
-	return extension_modules->auto_explain_log_min_duration == -1 &&
-		extension_modules->auto_explain_log_parameter_max_length == -1 &&
-		!extension_modules->auto_explain_log_analyze &&
-		!extension_modules->auto_explain_log_verbose &&
-		!extension_modules->auto_explain_log_buffers &&
-		!extension_modules->auto_explain_log_io &&
-		!extension_modules->auto_explain_log_wal &&
-		!extension_modules->auto_explain_log_triggers &&
-		extension_modules->auto_explain_log_timing &&
-		!extension_modules->auto_explain_log_settings &&
-		extension_modules->auto_explain_log_format == EXPLAIN_FORMAT_TEXT &&
-		extension_modules->auto_explain_log_level == LOG &&
-		!extension_modules->auto_explain_log_nested_statements &&
-		extension_modules->auto_explain_sample_rate == 1.0 &&
-		extension_modules->auto_explain_log_extension_options == NULL &&
-		extension_modules->auto_explain_extension_options == NULL;
-}
-
-static bool
-test_backend_runtime_postgres_fdw_defaults_ok(PgSessionExtensionModuleState *extension_modules)
-{
-	return extension_modules->postgres_fdw_options_context == NULL &&
-		extension_modules->postgres_fdw_options == NULL &&
-		extension_modules->postgres_fdw_application_name == NULL &&
-		extension_modules->postgres_fdw_connection_hash == NULL &&
-		extension_modules->postgres_fdw_shippable_cache_hash == NULL &&
-		extension_modules->postgres_fdw_cursor_number == 0 &&
-		extension_modules->postgres_fdw_prep_stmt_number == 0 &&
-		!extension_modules->postgres_fdw_xact_got_connection &&
-		extension_modules->postgres_fdw_read_only_level == 0 &&
-		!extension_modules->postgres_fdw_connection_callbacks_registered &&
-		!extension_modules->postgres_fdw_shippable_callbacks_registered;
-}
-
-static bool
-test_backend_runtime_refint_defaults_ok(PgSessionExtensionModuleState *extension_modules)
-{
-	return extension_modules->refint_foreign_plans == NULL &&
-		extension_modules->refint_num_foreign_plans == 0 &&
-		extension_modules->refint_primary_plans == NULL &&
-		extension_modules->refint_num_primary_plans == 0 &&
-		!extension_modules->refint_reset_registered;
-}
-
-static bool
-test_backend_runtime_small_contrib_defaults_ok(PgSessionExtensionModuleState *extension_modules)
-{
-	return extension_modules->auth_delay_milliseconds == 0 &&
-		strcmp(extension_modules->basebackup_to_shell_command, "") == 0 &&
-		strcmp(extension_modules->basebackup_to_shell_required_role, "") == 0 &&
-		!extension_modules->isn_weak &&
-		extension_modules->passwordcheck_min_password_length == 8;
-}
+static const char test_backend_runtime_private_state_key[] =
+	"test_backend_runtime.private_state";
 
 static void
-test_backend_runtime_seed_small_contrib_defaults(PgSessionExtensionModuleState *extension_modules)
+test_backend_runtime_extension_private_state_cleanup(void *arg)
 {
-	extension_modules->auth_delay_milliseconds = 0;
-	extension_modules->basebackup_to_shell_command = "";
-	extension_modules->basebackup_to_shell_required_role = "";
-	extension_modules->isn_weak = false;
-	extension_modules->passwordcheck_min_password_length = 8;
-}
+	TestBackendRuntimeExtensionPrivateState *state =
+		(TestBackendRuntimeExtensionPrivateState *) arg;
 
-static bool
-test_backend_runtime_sepgsql_defaults_ok(PgSessionExtensionModuleState *extension_modules)
-{
-	for (int i = 0; i < PG_SESSION_SEPGSQL_AVC_NUM_SLOTS; i++)
-	{
-		if (extension_modules->sepgsql_avc_slots[i] != NIL)
-			return false;
-	}
-
-	return extension_modules->sepgsql_context == NULL &&
-		extension_modules->sepgsql_avc_context == NULL &&
-		extension_modules->sepgsql_client_label_peer == NULL &&
-		extension_modules->sepgsql_client_label_pending == NIL &&
-		extension_modules->sepgsql_client_label_committed == NULL &&
-		extension_modules->sepgsql_client_label_func == NULL &&
-		extension_modules->sepgsql_avc_num_caches == 0 &&
-		extension_modules->sepgsql_avc_lru_hint == 0 &&
-		extension_modules->sepgsql_avc_threshold == 0 &&
-		extension_modules->sepgsql_avc_unlabeled == NULL;
-}
-
-static bool
-test_backend_runtime_pgcrypto_des_defaults_ok(PgSessionExtensionModuleState *extension_modules)
-{
-	PgSessionPgcryptoDesState *des = &extension_modules->pgcrypto_des;
-
-	return des->des_initialised == 0 &&
-		des->saltbits == 0 &&
-		des->old_salt == 0 &&
-		des->bits28 == NULL &&
-		des->bits24 == NULL &&
-		des->old_rawkey0 == 0 &&
-		des->old_rawkey1 == 0 &&
-		des->init_perm[0] == 0 &&
-		des->final_perm[0] == 0 &&
-		des->en_keysl[0] == 0 &&
-		des->m_sbox[0][0] == 0 &&
-		des->psbox[0][0] == 0 &&
-		des->output[0] == '\0';
+	if (state->cleanup_count != NULL)
+		(*state->cleanup_count)++;
 }
 
 PG_FUNCTION_INFO_V1(test_session_catalog_lookup_state_is_session_local);
@@ -666,50 +567,22 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 	int			session1_reset_count = 0;
 	int			session2_reset_count = 0;
 	PgSessionExtensionModuleState *extension_modules;
-	char		session1_advice[] = "session1 advice";
-	char		session2_advice[] = "session2 advice";
-	char		session1_stash[] = "session1_stash";
-	char		session2_stash[] = "session2_stash";
-	char		session1_auto_explain_options[] = "debug";
-	char		session2_auto_explain_options[] = "range_table";
-	char		session1_shell_command[] = "session1cmd";
-	char		session1_shell_role[] = "session1role";
-	char		session2_shell_command[] = "session2cmd";
-	char		session2_shell_role[] = "session2role";
-	char		session1_sepgsql_peer[] = "session1peer";
-	char		session1_sepgsql_committed[] = "session1committed";
-	char		session1_sepgsql_func[] = "session1func";
-	char		session1_sepgsql_unlabeled[] = "session1unlabeled";
-	char		session2_sepgsql_peer[] = "session2peer";
-	char		session2_sepgsql_committed[] = "session2committed";
-	char		session2_sepgsql_func[] = "session2func";
-	char		session2_sepgsql_unlabeled[] = "session2unlabeled";
-	char		session1_pgcrypto_output[] = "session1des";
-	char		session2_pgcrypto_output[] = "session2des";
-	char		session1_pgfdw_appname[] = "session1fdw";
-	char		session2_pgfdw_appname[] = "session2fdw";
-	int			session1_refint_foreign;
-	int			session1_refint_primary;
-	int			session2_refint_foreign;
-	int			session2_refint_primary;
-	int			session1_pgfdw_options;
-	int			session2_pgfdw_options;
+	char		session1_label[] = "session1 label";
+	char		session2_label[] = "session2 label";
+	char		session1_proc_hash[] = "session1 proc hash";
+	char		session2_proc_hash[] = "session2 proc hash";
+	int			session1_private_state_cleanup_count = 0;
+	int			session2_private_state_cleanup_count = 0;
+	TestBackendRuntimeExtensionPrivateState *session1_extension_private_state;
+	TestBackendRuntimeExtensionPrivateState *session2_extension_private_state;
 	MemoryContext session1_plpython_context = NULL;
 	MemoryContext session1_plperl_context = NULL;
 	MemoryContext session1_pltcl_context = NULL;
 	MemoryContext session1_plsample_context = NULL;
-	MemoryContext session1_sepgsql_context = NULL;
-	MemoryContext session1_sepgsql_avc_context = NULL;
-	MemoryContext session1_dblink_context = NULL;
-	MemoryContext session1_pgfdw_options_context = NULL;
 	MemoryContext session2_plpython_context = NULL;
 	MemoryContext session2_plperl_context = NULL;
 	MemoryContext session2_pltcl_context = NULL;
 	MemoryContext session2_plsample_context = NULL;
-	MemoryContext session2_sepgsql_context = NULL;
-	MemoryContext session2_sepgsql_avc_context = NULL;
-	MemoryContext session2_dblink_context = NULL;
-	MemoryContext session2_pgfdw_options_context = NULL;
 	bool		ok = true;
 
 	saved_session = CurrentPgSession;
@@ -720,386 +593,149 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		fake_session1.extension_modules.pg_trgm_similarity_threshold = 0.3;
-		fake_session1.extension_modules.pg_trgm_word_similarity_threshold = 0.6;
-		fake_session1.extension_modules.pg_trgm_strict_word_similarity_threshold = 0.5;
-		fake_session1.extension_modules.pg_plan_advice_always_explain_supplied_advice = true;
-		fake_session1.extension_modules.pg_stash_advice_stash_name = "";
-		test_backend_runtime_seed_auto_explain_defaults(&fake_session1.extension_modules);
-		test_backend_runtime_seed_small_contrib_defaults(&fake_session1.extension_modules);
-		fake_session2.extension_modules.pg_trgm_similarity_threshold = 0.3;
-		fake_session2.extension_modules.pg_trgm_word_similarity_threshold = 0.6;
-		fake_session2.extension_modules.pg_trgm_strict_word_similarity_threshold = 0.5;
-		fake_session2.extension_modules.pg_plan_advice_always_explain_supplied_advice = true;
-		fake_session2.extension_modules.pg_stash_advice_stash_name = "";
-		test_backend_runtime_seed_auto_explain_defaults(&fake_session2.extension_modules);
-		test_backend_runtime_seed_small_contrib_defaults(&fake_session2.extension_modules);
-
 		PgSetCurrentSession(&fake_session1);
 		extension_modules = PgCurrentSessionExtensionModuleState();
-		ok = ok && extension_modules->pg_trgm_similarity_threshold == 0.3;
-		ok = ok && extension_modules->pg_trgm_word_similarity_threshold == 0.6;
-		ok = ok && extension_modules->pg_trgm_strict_word_similarity_threshold == 0.5;
-		ok = ok && extension_modules->pg_plan_advice_advice == NULL;
-		ok = ok && !extension_modules->pg_plan_advice_always_store_advice_details;
-		ok = ok && extension_modules->pg_plan_advice_always_explain_supplied_advice;
-		ok = ok && !extension_modules->pg_plan_advice_feedback_warnings;
-		ok = ok && !extension_modules->pg_plan_advice_trace_mask;
-		ok = ok && extension_modules->pg_plan_advice_generate_advice == 0;
-		ok = ok && strcmp(extension_modules->pg_stash_advice_stash_name, "") == 0;
+		ok = ok && extension_modules->plpgsql_state == NULL;
 		ok = ok && extension_modules->plpython_procedure_cache == NULL;
+		ok = ok && extension_modules->plpython_memory_context == NULL;
 		ok = ok && !extension_modules->plpython_reset_registered;
+		ok = ok && extension_modules->plperl_memory_context == NULL;
 		ok = ok && extension_modules->pltcl_start_proc == NULL;
 		ok = ok && extension_modules->pltclu_start_proc == NULL;
+		ok = ok && extension_modules->pltcl_memory_context == NULL;
 		ok = ok && extension_modules->pltcl_hold_interp == NULL;
 		ok = ok && extension_modules->pltcl_interp_hash == NULL;
 		ok = ok && extension_modules->pltcl_proc_hash == NULL;
 		ok = ok && extension_modules->pltcl_current_call_state == NULL;
 		ok = ok && !extension_modules->pltcl_reset_registered;
 		ok = ok && extension_modules->plsample_memory_context == NULL;
-		ok = ok && test_backend_runtime_refint_defaults_ok(extension_modules);
-		ok = ok && test_backend_runtime_small_contrib_defaults_ok(extension_modules);
-		ok = ok && test_backend_runtime_sepgsql_defaults_ok(extension_modules);
-		ok = ok && test_backend_runtime_pgcrypto_des_defaults_ok(extension_modules);
-		ok = ok && extension_modules->dblink_context == NULL;
-		ok = ok && extension_modules->dblink_persistent_connection == NULL;
-		ok = ok && extension_modules->dblink_remote_conn_hash == NULL;
-		ok = ok && !extension_modules->dblink_reset_registered;
-		ok = ok && test_backend_runtime_postgres_fdw_defaults_ok(extension_modules);
-		ok = ok && test_backend_runtime_auto_explain_defaults_ok(extension_modules);
-		extension_modules->pg_trgm_similarity_threshold = 0.11;
-		extension_modules->pg_trgm_word_similarity_threshold = 0.12;
-		extension_modules->pg_trgm_strict_word_similarity_threshold = 0.13;
-		extension_modules->pg_plan_advice_advice = session1_advice;
-		extension_modules->pg_plan_advice_always_store_advice_details = true;
-		extension_modules->pg_plan_advice_always_explain_supplied_advice = false;
-		extension_modules->pg_plan_advice_feedback_warnings = true;
-		extension_modules->pg_plan_advice_trace_mask = true;
-		extension_modules->pg_plan_advice_generate_advice = 1;
-		extension_modules->pg_stash_advice_stash_name = session1_stash;
+		ok = ok && extension_modules->private_states == NIL;
+		ok = ok && PgSessionGetExtensionPrivateState(
+			test_backend_runtime_private_state_key) == NULL;
+
 		session1_plpython_context =
 			AllocSetContextCreate(TopMemoryContext,
-								  "test session1 PL/Python context",
-								  ALLOCSET_SMALL_SIZES);
+							  "test session1 PL/Python context",
+							  ALLOCSET_SMALL_SIZES);
 		session1_plperl_context =
 			AllocSetContextCreate(TopMemoryContext,
-								  "test session1 PL/Perl context",
-								  ALLOCSET_SMALL_SIZES);
+							  "test session1 PL/Perl context",
+							  ALLOCSET_SMALL_SIZES);
 		session1_pltcl_context =
 			AllocSetContextCreate(TopMemoryContext,
-								  "test session1 PL/Tcl context",
-								  ALLOCSET_SMALL_SIZES);
+							  "test session1 PL/Tcl context",
+							  ALLOCSET_SMALL_SIZES);
 		session1_plsample_context =
 			AllocSetContextCreate(TopMemoryContext,
-								  "test session1 PL/Sample context",
-								  ALLOCSET_SMALL_SIZES);
-		session1_sepgsql_context =
-			AllocSetContextCreate(TopMemoryContext,
-								  "test session1 sepgsql context",
-								  ALLOCSET_SMALL_SIZES);
-		session1_sepgsql_avc_context =
-			AllocSetContextCreate(TopMemoryContext,
-								  "test session1 sepgsql AVC context",
-								  ALLOCSET_SMALL_SIZES);
-		session1_dblink_context =
-			AllocSetContextCreate(TopMemoryContext,
-								  "test session1 dblink context",
-								  ALLOCSET_SMALL_SIZES);
-		session1_pgfdw_options_context =
-			AllocSetContextCreate(TopMemoryContext,
-								  "test session1 postgres_fdw options context",
-								  ALLOCSET_SMALL_SIZES);
-		extension_modules->auto_explain_log_min_duration = 10;
-		extension_modules->auto_explain_log_parameter_max_length = 64;
-		extension_modules->auto_explain_log_analyze = true;
-		extension_modules->auto_explain_log_verbose = true;
-		extension_modules->auto_explain_log_buffers = true;
-		extension_modules->auto_explain_log_io = true;
-		extension_modules->auto_explain_log_wal = true;
-		extension_modules->auto_explain_log_triggers = true;
-		extension_modules->auto_explain_log_timing = false;
-		extension_modules->auto_explain_log_settings = true;
-		extension_modules->auto_explain_log_format = EXPLAIN_FORMAT_JSON;
-		extension_modules->auto_explain_log_level = WARNING;
-		extension_modules->auto_explain_log_nested_statements = true;
-		extension_modules->auto_explain_sample_rate = 0.25;
-		extension_modules->auto_explain_log_extension_options =
-			session1_auto_explain_options;
-		extension_modules->auto_explain_extension_options = &session1_private;
+							  "test session1 PL/Sample context",
+							  ALLOCSET_SMALL_SIZES);
 		extension_modules->plpython_procedure_cache = &session1_private;
 		extension_modules->plpython_memory_context = session1_plpython_context;
 		extension_modules->plpython_reset_registered = true;
 		extension_modules->plperl_memory_context = session1_plperl_context;
-		extension_modules->pltcl_start_proc = session1_advice;
-		extension_modules->pltclu_start_proc = session1_stash;
+		extension_modules->pltcl_start_proc = session1_label;
+		extension_modules->pltclu_start_proc = session1_label;
 		extension_modules->pltcl_memory_context = session1_pltcl_context;
 		extension_modules->pltcl_hold_interp = &session1_private;
 		extension_modules->pltcl_interp_hash = &session1_reset_count;
-		extension_modules->pltcl_proc_hash = session1_auto_explain_options;
+		extension_modules->pltcl_proc_hash = session1_proc_hash;
 		extension_modules->pltcl_current_call_state = &session1_private;
 		extension_modules->pltcl_reset_registered = true;
 		extension_modules->plsample_memory_context =
 			session1_plsample_context;
-		extension_modules->refint_foreign_plans = &session1_refint_foreign;
-		extension_modules->refint_num_foreign_plans = 31;
-		extension_modules->refint_primary_plans = &session1_refint_primary;
-		extension_modules->refint_num_primary_plans = 32;
-		extension_modules->refint_reset_registered = true;
-		extension_modules->auth_delay_milliseconds = 31;
-		extension_modules->basebackup_to_shell_command = session1_shell_command;
-		extension_modules->basebackup_to_shell_required_role = session1_shell_role;
-		extension_modules->isn_weak = true;
-		extension_modules->passwordcheck_min_password_length = 32;
-		extension_modules->sepgsql_context = session1_sepgsql_context;
-		extension_modules->sepgsql_avc_context = session1_sepgsql_avc_context;
-		extension_modules->sepgsql_client_label_peer = session1_sepgsql_peer;
-		extension_modules->sepgsql_client_label_pending =
-			(List *) &session1_private;
-		extension_modules->sepgsql_client_label_committed =
-			session1_sepgsql_committed;
-		extension_modules->sepgsql_client_label_func = session1_sepgsql_func;
-		extension_modules->sepgsql_avc_slots[3] = (List *) &session1_private;
-		extension_modules->sepgsql_avc_num_caches = 33;
-		extension_modules->sepgsql_avc_lru_hint = 34;
-		extension_modules->sepgsql_avc_threshold = 35;
-		extension_modules->sepgsql_avc_unlabeled = session1_sepgsql_unlabeled;
-		extension_modules->pgcrypto_des.des_initialised = 1;
-		extension_modules->pgcrypto_des.saltbits = 101;
-		extension_modules->pgcrypto_des.old_salt = 102;
-		extension_modules->pgcrypto_des.bits28 = &extension_modules->pgcrypto_des.en_keysl[4];
-		extension_modules->pgcrypto_des.bits24 = &extension_modules->pgcrypto_des.en_keysr[4];
-		extension_modules->pgcrypto_des.init_perm[0] = 103;
-		extension_modules->pgcrypto_des.final_perm[0] = 104;
-		extension_modules->pgcrypto_des.en_keysl[0] = 105;
-		extension_modules->pgcrypto_des.m_sbox[0][0] = 106;
-		extension_modules->pgcrypto_des.psbox[0][0] = 107;
-		extension_modules->pgcrypto_des.old_rawkey0 = 108;
-		extension_modules->pgcrypto_des.old_rawkey1 = 109;
-		strlcpy(extension_modules->pgcrypto_des.output,
-				session1_pgcrypto_output,
-				sizeof(extension_modules->pgcrypto_des.output));
-		extension_modules->dblink_context = session1_dblink_context;
-		extension_modules->dblink_persistent_connection = &session1_private;
-		extension_modules->dblink_remote_conn_hash = &session1_reset_count;
-		extension_modules->dblink_reset_registered = true;
-		extension_modules->postgres_fdw_options_context =
-			session1_pgfdw_options_context;
-		extension_modules->postgres_fdw_options = &session1_pgfdw_options;
-		extension_modules->postgres_fdw_application_name =
-			session1_pgfdw_appname;
-		extension_modules->postgres_fdw_connection_hash = &session1_private;
-		extension_modules->postgres_fdw_shippable_cache_hash =
-			&session1_reset_count;
-		extension_modules->postgres_fdw_cursor_number = 11;
-		extension_modules->postgres_fdw_prep_stmt_number = 12;
-		extension_modules->postgres_fdw_xact_got_connection = true;
-		extension_modules->postgres_fdw_read_only_level = 13;
-		extension_modules->postgres_fdw_connection_callbacks_registered = true;
-		extension_modules->postgres_fdw_shippable_callbacks_registered = true;
-
+		session1_extension_private_state =
+			(TestBackendRuntimeExtensionPrivateState *)
+			PgSessionEnsureExtensionPrivateState(
+				test_backend_runtime_private_state_key,
+				sizeof(TestBackendRuntimeExtensionPrivateState),
+				test_backend_runtime_extension_private_state_cleanup);
+		session1_extension_private_state->value = 101;
+		session1_extension_private_state->label = "session1 private state";
+		session1_extension_private_state->cleanup_count =
+			&session1_private_state_cleanup_count;
+		ok = ok && PgSessionEnsureExtensionPrivateState(
+			test_backend_runtime_private_state_key,
+			sizeof(TestBackendRuntimeExtensionPrivateState),
+			test_backend_runtime_extension_private_state_cleanup) ==
+			session1_extension_private_state;
 		ok = ok && *PgCurrentPLpgSQLSessionStateRef() == NULL;
 		*PgCurrentPLpgSQLSessionStateRef() = &session1_private;
 		PgSessionRegisterResetCallback(test_backend_runtime_session_reset_callback,
-									   &session1_reset_count);
+								   &session1_reset_count);
 
 		PgSetCurrentSession(&fake_session2);
 		extension_modules = PgCurrentSessionExtensionModuleState();
-		ok = ok && extension_modules->pg_trgm_similarity_threshold == 0.3;
-		ok = ok && extension_modules->pg_trgm_word_similarity_threshold == 0.6;
-		ok = ok && extension_modules->pg_trgm_strict_word_similarity_threshold == 0.5;
-		ok = ok && extension_modules->pg_plan_advice_advice == NULL;
-		ok = ok && !extension_modules->pg_plan_advice_always_store_advice_details;
-		ok = ok && extension_modules->pg_plan_advice_always_explain_supplied_advice;
-		ok = ok && !extension_modules->pg_plan_advice_feedback_warnings;
-		ok = ok && !extension_modules->pg_plan_advice_trace_mask;
-		ok = ok && extension_modules->pg_plan_advice_generate_advice == 0;
-		ok = ok && strcmp(extension_modules->pg_stash_advice_stash_name, "") == 0;
+		ok = ok && extension_modules->plpgsql_state == NULL;
 		ok = ok && extension_modules->plpython_procedure_cache == NULL;
+		ok = ok && extension_modules->plpython_memory_context == NULL;
 		ok = ok && !extension_modules->plpython_reset_registered;
+		ok = ok && extension_modules->plperl_memory_context == NULL;
 		ok = ok && extension_modules->pltcl_start_proc == NULL;
 		ok = ok && extension_modules->pltclu_start_proc == NULL;
+		ok = ok && extension_modules->pltcl_memory_context == NULL;
 		ok = ok && extension_modules->pltcl_hold_interp == NULL;
 		ok = ok && extension_modules->pltcl_interp_hash == NULL;
 		ok = ok && extension_modules->pltcl_proc_hash == NULL;
 		ok = ok && extension_modules->pltcl_current_call_state == NULL;
 		ok = ok && !extension_modules->pltcl_reset_registered;
-		ok = ok && test_backend_runtime_refint_defaults_ok(extension_modules);
-		ok = ok && test_backend_runtime_small_contrib_defaults_ok(extension_modules);
-		ok = ok && test_backend_runtime_sepgsql_defaults_ok(extension_modules);
-		ok = ok && test_backend_runtime_pgcrypto_des_defaults_ok(extension_modules);
-		ok = ok && extension_modules->dblink_persistent_connection == NULL;
-		ok = ok && extension_modules->dblink_remote_conn_hash == NULL;
-		ok = ok && !extension_modules->dblink_reset_registered;
-		ok = ok && test_backend_runtime_postgres_fdw_defaults_ok(extension_modules);
-		ok = ok && test_backend_runtime_auto_explain_defaults_ok(extension_modules);
-		extension_modules->pg_trgm_similarity_threshold = 0.21;
-		extension_modules->pg_trgm_word_similarity_threshold = 0.22;
-		extension_modules->pg_trgm_strict_word_similarity_threshold = 0.23;
-		extension_modules->pg_plan_advice_advice = session2_advice;
-		extension_modules->pg_plan_advice_always_store_advice_details = false;
-		extension_modules->pg_plan_advice_always_explain_supplied_advice = true;
-		extension_modules->pg_plan_advice_feedback_warnings = false;
-		extension_modules->pg_plan_advice_trace_mask = true;
-		extension_modules->pg_plan_advice_generate_advice = 2;
-		extension_modules->pg_stash_advice_stash_name = session2_stash;
+		ok = ok && extension_modules->plsample_memory_context == NULL;
+		ok = ok && extension_modules->private_states == NIL;
+		ok = ok && PgSessionGetExtensionPrivateState(
+			test_backend_runtime_private_state_key) == NULL;
+
 		session2_plpython_context =
 			AllocSetContextCreate(TopMemoryContext,
-								  "test session2 PL/Python context",
-								  ALLOCSET_SMALL_SIZES);
+							  "test session2 PL/Python context",
+							  ALLOCSET_SMALL_SIZES);
 		session2_plperl_context =
 			AllocSetContextCreate(TopMemoryContext,
-								  "test session2 PL/Perl context",
-								  ALLOCSET_SMALL_SIZES);
+							  "test session2 PL/Perl context",
+							  ALLOCSET_SMALL_SIZES);
 		session2_pltcl_context =
 			AllocSetContextCreate(TopMemoryContext,
-								  "test session2 PL/Tcl context",
-								  ALLOCSET_SMALL_SIZES);
+							  "test session2 PL/Tcl context",
+							  ALLOCSET_SMALL_SIZES);
 		session2_plsample_context =
 			AllocSetContextCreate(TopMemoryContext,
-								  "test session2 PL/Sample context",
-								  ALLOCSET_SMALL_SIZES);
-		session2_sepgsql_context =
-			AllocSetContextCreate(TopMemoryContext,
-								  "test session2 sepgsql context",
-								  ALLOCSET_SMALL_SIZES);
-		session2_sepgsql_avc_context =
-			AllocSetContextCreate(TopMemoryContext,
-								  "test session2 sepgsql AVC context",
-								  ALLOCSET_SMALL_SIZES);
-		extension_modules->auto_explain_log_min_duration = 20;
-		extension_modules->auto_explain_log_parameter_max_length = 128;
-		extension_modules->auto_explain_log_analyze = false;
-		extension_modules->auto_explain_log_verbose = true;
-		extension_modules->auto_explain_log_buffers = false;
-		extension_modules->auto_explain_log_io = true;
-		extension_modules->auto_explain_log_wal = false;
-		extension_modules->auto_explain_log_triggers = true;
-		extension_modules->auto_explain_log_timing = true;
-		extension_modules->auto_explain_log_settings = false;
-		extension_modules->auto_explain_log_format = EXPLAIN_FORMAT_XML;
-		extension_modules->auto_explain_log_level = NOTICE;
-		extension_modules->auto_explain_log_nested_statements = false;
-		extension_modules->auto_explain_sample_rate = 0.75;
-		extension_modules->auto_explain_log_extension_options =
-			session2_auto_explain_options;
-		extension_modules->auto_explain_extension_options = &session2_private;
+							  "test session2 PL/Sample context",
+							  ALLOCSET_SMALL_SIZES);
 		extension_modules->plpython_procedure_cache = &session2_private;
 		extension_modules->plpython_memory_context = session2_plpython_context;
 		extension_modules->plpython_reset_registered = true;
 		extension_modules->plperl_memory_context = session2_plperl_context;
-		extension_modules->pltcl_start_proc = session2_advice;
-		extension_modules->pltclu_start_proc = session2_stash;
+		extension_modules->pltcl_start_proc = session2_label;
+		extension_modules->pltclu_start_proc = session2_label;
 		extension_modules->pltcl_memory_context = session2_pltcl_context;
 		extension_modules->pltcl_hold_interp = &session2_private;
 		extension_modules->pltcl_interp_hash = &session2_reset_count;
-		extension_modules->pltcl_proc_hash = session2_auto_explain_options;
+		extension_modules->pltcl_proc_hash = session2_proc_hash;
 		extension_modules->pltcl_current_call_state = &session2_private;
 		extension_modules->pltcl_reset_registered = true;
 		extension_modules->plsample_memory_context =
 			session2_plsample_context;
-		extension_modules->refint_foreign_plans = &session2_refint_foreign;
-		extension_modules->refint_num_foreign_plans = 41;
-		extension_modules->refint_primary_plans = &session2_refint_primary;
-		extension_modules->refint_num_primary_plans = 42;
-		extension_modules->refint_reset_registered = true;
-		extension_modules->auth_delay_milliseconds = 41;
-		extension_modules->basebackup_to_shell_command = session2_shell_command;
-		extension_modules->basebackup_to_shell_required_role = session2_shell_role;
-		extension_modules->isn_weak = true;
-		extension_modules->passwordcheck_min_password_length = 42;
-		extension_modules->sepgsql_context = session2_sepgsql_context;
-		extension_modules->sepgsql_avc_context = session2_sepgsql_avc_context;
-		extension_modules->sepgsql_client_label_peer = session2_sepgsql_peer;
-		extension_modules->sepgsql_client_label_pending =
-			(List *) &session2_private;
-		extension_modules->sepgsql_client_label_committed =
-			session2_sepgsql_committed;
-		extension_modules->sepgsql_client_label_func = session2_sepgsql_func;
-		extension_modules->sepgsql_avc_slots[5] = (List *) &session2_private;
-		extension_modules->sepgsql_avc_num_caches = 43;
-		extension_modules->sepgsql_avc_lru_hint = 44;
-		extension_modules->sepgsql_avc_threshold = 45;
-		extension_modules->sepgsql_avc_unlabeled = session2_sepgsql_unlabeled;
-		extension_modules->pgcrypto_des.des_initialised = 1;
-		extension_modules->pgcrypto_des.saltbits = 201;
-		extension_modules->pgcrypto_des.old_salt = 202;
-		extension_modules->pgcrypto_des.bits28 = &extension_modules->pgcrypto_des.de_keysl[4];
-		extension_modules->pgcrypto_des.bits24 = &extension_modules->pgcrypto_des.de_keysr[4];
-		extension_modules->pgcrypto_des.init_perm[0] = 203;
-		extension_modules->pgcrypto_des.final_perm[0] = 204;
-		extension_modules->pgcrypto_des.en_keysl[0] = 205;
-		extension_modules->pgcrypto_des.m_sbox[0][0] = 206;
-		extension_modules->pgcrypto_des.psbox[0][0] = 207;
-		extension_modules->pgcrypto_des.old_rawkey0 = 208;
-		extension_modules->pgcrypto_des.old_rawkey1 = 209;
-		strlcpy(extension_modules->pgcrypto_des.output,
-				session2_pgcrypto_output,
-				sizeof(extension_modules->pgcrypto_des.output));
-		session2_dblink_context =
-			AllocSetContextCreate(TopMemoryContext,
-								  "test session2 dblink context",
-								  ALLOCSET_SMALL_SIZES);
-		session2_pgfdw_options_context =
-			AllocSetContextCreate(TopMemoryContext,
-								  "test session2 postgres_fdw options context",
-								  ALLOCSET_SMALL_SIZES);
-		extension_modules->dblink_context = session2_dblink_context;
-		extension_modules->dblink_persistent_connection = &session2_private;
-		extension_modules->dblink_remote_conn_hash = &session2_reset_count;
-		extension_modules->dblink_reset_registered = true;
-		extension_modules->postgres_fdw_options_context =
-			session2_pgfdw_options_context;
-		extension_modules->postgres_fdw_options = &session2_pgfdw_options;
-		extension_modules->postgres_fdw_application_name =
-			session2_pgfdw_appname;
-		extension_modules->postgres_fdw_connection_hash = &session2_private;
-		extension_modules->postgres_fdw_shippable_cache_hash =
-			&session2_reset_count;
-		extension_modules->postgres_fdw_cursor_number = 21;
-		extension_modules->postgres_fdw_prep_stmt_number = 22;
-		extension_modules->postgres_fdw_xact_got_connection = true;
-		extension_modules->postgres_fdw_read_only_level = 23;
-		extension_modules->postgres_fdw_connection_callbacks_registered = true;
-		extension_modules->postgres_fdw_shippable_callbacks_registered = true;
-
+		session2_extension_private_state =
+			(TestBackendRuntimeExtensionPrivateState *)
+			PgSessionEnsureExtensionPrivateState(
+				test_backend_runtime_private_state_key,
+				sizeof(TestBackendRuntimeExtensionPrivateState),
+				test_backend_runtime_extension_private_state_cleanup);
+		session2_extension_private_state->value = 201;
+		session2_extension_private_state->label = "session2 private state";
+		session2_extension_private_state->cleanup_count =
+			&session2_private_state_cleanup_count;
+		ok = ok && PgSessionEnsureExtensionPrivateState(
+			test_backend_runtime_private_state_key,
+			sizeof(TestBackendRuntimeExtensionPrivateState),
+			test_backend_runtime_extension_private_state_cleanup) ==
+			session2_extension_private_state;
 		ok = ok && *PgCurrentPLpgSQLSessionStateRef() == NULL;
 		*PgCurrentPLpgSQLSessionStateRef() = &session2_private;
 		PgSessionRegisterResetCallback(test_backend_runtime_session_reset_callback,
-									   &session2_reset_count);
+								   &session2_reset_count);
 
 		PgSetCurrentSession(&fake_session1);
-		ok = ok && *PgCurrentPLpgSQLSessionStateRef() == &session1_private;
 		extension_modules = PgCurrentSessionExtensionModuleState();
-		ok = ok && extension_modules->pg_trgm_similarity_threshold == 0.11;
-		ok = ok && extension_modules->pg_trgm_word_similarity_threshold == 0.12;
-		ok = ok && extension_modules->pg_trgm_strict_word_similarity_threshold == 0.13;
-		ok = ok && strcmp(extension_modules->pg_plan_advice_advice,
-						  "session1 advice") == 0;
-		ok = ok && extension_modules->pg_plan_advice_always_store_advice_details;
-		ok = ok && !extension_modules->pg_plan_advice_always_explain_supplied_advice;
-		ok = ok && extension_modules->pg_plan_advice_feedback_warnings;
-		ok = ok && extension_modules->pg_plan_advice_trace_mask;
-		ok = ok && extension_modules->pg_plan_advice_generate_advice == 1;
-		ok = ok && strcmp(extension_modules->pg_stash_advice_stash_name,
-						  "session1_stash") == 0;
-		ok = ok && extension_modules->auto_explain_log_min_duration == 10;
-		ok = ok && extension_modules->auto_explain_log_parameter_max_length == 64;
-		ok = ok && extension_modules->auto_explain_log_analyze;
-		ok = ok && extension_modules->auto_explain_log_verbose;
-		ok = ok && extension_modules->auto_explain_log_buffers;
-		ok = ok && extension_modules->auto_explain_log_io;
-		ok = ok && extension_modules->auto_explain_log_wal;
-		ok = ok && extension_modules->auto_explain_log_triggers;
-		ok = ok && !extension_modules->auto_explain_log_timing;
-		ok = ok && extension_modules->auto_explain_log_settings;
-		ok = ok && extension_modules->auto_explain_log_format == EXPLAIN_FORMAT_JSON;
-		ok = ok && extension_modules->auto_explain_log_level == WARNING;
-		ok = ok && extension_modules->auto_explain_log_nested_statements;
-		ok = ok && extension_modules->auto_explain_sample_rate == 0.25;
-		ok = ok && strcmp(extension_modules->auto_explain_log_extension_options,
-						  "debug") == 0;
-		ok = ok && extension_modules->auto_explain_extension_options ==
-			&session1_private;
+		ok = ok && *PgCurrentPLpgSQLSessionStateRef() == &session1_private;
 		ok = ok && extension_modules->plpython_procedure_cache ==
 			&session1_private;
 		ok = ok && extension_modules->plpython_memory_context ==
@@ -1108,9 +744,9 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && extension_modules->plperl_memory_context ==
 			session1_plperl_context;
 		ok = ok && strcmp(extension_modules->pltcl_start_proc,
-						  "session1 advice") == 0;
+					  "session1 label") == 0;
 		ok = ok && strcmp(extension_modules->pltclu_start_proc,
-						  "session1_stash") == 0;
+					  "session1 label") == 0;
 		ok = ok && extension_modules->pltcl_memory_context ==
 			session1_pltcl_context;
 		ok = ok && extension_modules->plsample_memory_context ==
@@ -1119,116 +755,21 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && extension_modules->pltcl_interp_hash ==
 			&session1_reset_count;
 		ok = ok && extension_modules->pltcl_proc_hash ==
-			session1_auto_explain_options;
+			session1_proc_hash;
 		ok = ok && extension_modules->pltcl_current_call_state ==
 			&session1_private;
 		ok = ok && extension_modules->pltcl_reset_registered;
-		ok = ok && extension_modules->refint_foreign_plans ==
-			&session1_refint_foreign;
-		ok = ok && extension_modules->refint_num_foreign_plans == 31;
-		ok = ok && extension_modules->refint_primary_plans ==
-			&session1_refint_primary;
-		ok = ok && extension_modules->refint_num_primary_plans == 32;
-		ok = ok && extension_modules->refint_reset_registered;
-		ok = ok && extension_modules->auth_delay_milliseconds == 31;
-		ok = ok && strcmp(extension_modules->basebackup_to_shell_command,
-						  "session1cmd") == 0;
-		ok = ok && strcmp(extension_modules->basebackup_to_shell_required_role,
-						  "session1role") == 0;
-		ok = ok && extension_modules->isn_weak;
-		ok = ok && extension_modules->passwordcheck_min_password_length == 32;
-		ok = ok && extension_modules->sepgsql_context ==
-			session1_sepgsql_context;
-		ok = ok && extension_modules->sepgsql_avc_context ==
-			session1_sepgsql_avc_context;
-		ok = ok && strcmp(extension_modules->sepgsql_client_label_peer,
-						  "session1peer") == 0;
-		ok = ok && extension_modules->sepgsql_client_label_pending ==
-			(List *) &session1_private;
-		ok = ok && strcmp(extension_modules->sepgsql_client_label_committed,
-						  "session1committed") == 0;
-		ok = ok && strcmp(extension_modules->sepgsql_client_label_func,
-						  "session1func") == 0;
-		ok = ok && extension_modules->sepgsql_avc_slots[3] ==
-			(List *) &session1_private;
-		ok = ok && extension_modules->sepgsql_avc_num_caches == 33;
-		ok = ok && extension_modules->sepgsql_avc_lru_hint == 34;
-		ok = ok && extension_modules->sepgsql_avc_threshold == 35;
-		ok = ok && strcmp(extension_modules->sepgsql_avc_unlabeled,
-						  "session1unlabeled") == 0;
-		ok = ok && extension_modules->pgcrypto_des.des_initialised == 1;
-		ok = ok && extension_modules->pgcrypto_des.saltbits == 101;
-		ok = ok && extension_modules->pgcrypto_des.old_salt == 102;
-		ok = ok && extension_modules->pgcrypto_des.bits28 ==
-			&extension_modules->pgcrypto_des.en_keysl[4];
-		ok = ok && extension_modules->pgcrypto_des.bits24 ==
-			&extension_modules->pgcrypto_des.en_keysr[4];
-		ok = ok && extension_modules->pgcrypto_des.init_perm[0] == 103;
-		ok = ok && extension_modules->pgcrypto_des.final_perm[0] == 104;
-		ok = ok && extension_modules->pgcrypto_des.en_keysl[0] == 105;
-		ok = ok && extension_modules->pgcrypto_des.m_sbox[0][0] == 106;
-		ok = ok && extension_modules->pgcrypto_des.psbox[0][0] == 107;
-		ok = ok && extension_modules->pgcrypto_des.old_rawkey0 == 108;
-		ok = ok && extension_modules->pgcrypto_des.old_rawkey1 == 109;
-		ok = ok && strcmp(extension_modules->pgcrypto_des.output,
-						  "session1des") == 0;
-		ok = ok && extension_modules->dblink_context ==
-			session1_dblink_context;
-		ok = ok && extension_modules->dblink_persistent_connection ==
-			&session1_private;
-		ok = ok && extension_modules->dblink_remote_conn_hash ==
-			&session1_reset_count;
-		ok = ok && extension_modules->dblink_reset_registered;
-		ok = ok && extension_modules->postgres_fdw_options_context ==
-			session1_pgfdw_options_context;
-		ok = ok && extension_modules->postgres_fdw_options ==
-			&session1_pgfdw_options;
-		ok = ok && strcmp(extension_modules->postgres_fdw_application_name,
-						  "session1fdw") == 0;
-		ok = ok && extension_modules->postgres_fdw_connection_hash ==
-			&session1_private;
-		ok = ok && extension_modules->postgres_fdw_shippable_cache_hash ==
-			&session1_reset_count;
-		ok = ok && extension_modules->postgres_fdw_cursor_number == 11;
-		ok = ok && extension_modules->postgres_fdw_prep_stmt_number == 12;
-		ok = ok && extension_modules->postgres_fdw_xact_got_connection;
-		ok = ok && extension_modules->postgres_fdw_read_only_level == 13;
-		ok = ok && extension_modules->postgres_fdw_connection_callbacks_registered;
-		ok = ok && extension_modules->postgres_fdw_shippable_callbacks_registered;
+		ok = ok && PgSessionGetExtensionPrivateState(
+			test_backend_runtime_private_state_key) ==
+			session1_extension_private_state;
+		ok = ok && session1_extension_private_state->value == 101;
+		ok = ok && strcmp(session1_extension_private_state->label,
+					  "session1 private state") == 0;
+		ok = ok && session1_private_state_cleanup_count == 0;
 
 		PgSetCurrentSession(&fake_session2);
-		ok = ok && *PgCurrentPLpgSQLSessionStateRef() == &session2_private;
 		extension_modules = PgCurrentSessionExtensionModuleState();
-		ok = ok && extension_modules->pg_trgm_similarity_threshold == 0.21;
-		ok = ok && extension_modules->pg_trgm_word_similarity_threshold == 0.22;
-		ok = ok && extension_modules->pg_trgm_strict_word_similarity_threshold == 0.23;
-		ok = ok && strcmp(extension_modules->pg_plan_advice_advice,
-						  "session2 advice") == 0;
-		ok = ok && !extension_modules->pg_plan_advice_always_store_advice_details;
-		ok = ok && extension_modules->pg_plan_advice_always_explain_supplied_advice;
-		ok = ok && !extension_modules->pg_plan_advice_feedback_warnings;
-		ok = ok && extension_modules->pg_plan_advice_trace_mask;
-		ok = ok && extension_modules->pg_plan_advice_generate_advice == 2;
-		ok = ok && strcmp(extension_modules->pg_stash_advice_stash_name,
-						  "session2_stash") == 0;
-		ok = ok && extension_modules->auto_explain_log_min_duration == 20;
-		ok = ok && extension_modules->auto_explain_log_parameter_max_length == 128;
-		ok = ok && !extension_modules->auto_explain_log_analyze;
-		ok = ok && extension_modules->auto_explain_log_verbose;
-		ok = ok && !extension_modules->auto_explain_log_buffers;
-		ok = ok && extension_modules->auto_explain_log_io;
-		ok = ok && !extension_modules->auto_explain_log_wal;
-		ok = ok && extension_modules->auto_explain_log_triggers;
-		ok = ok && extension_modules->auto_explain_log_timing;
-		ok = ok && !extension_modules->auto_explain_log_settings;
-		ok = ok && extension_modules->auto_explain_log_format == EXPLAIN_FORMAT_XML;
-		ok = ok && extension_modules->auto_explain_log_level == NOTICE;
-		ok = ok && !extension_modules->auto_explain_log_nested_statements;
-		ok = ok && extension_modules->auto_explain_sample_rate == 0.75;
-		ok = ok && strcmp(extension_modules->auto_explain_log_extension_options,
-						  "range_table") == 0;
-		ok = ok && extension_modules->auto_explain_extension_options ==
-			&session2_private;
+		ok = ok && *PgCurrentPLpgSQLSessionStateRef() == &session2_private;
 		ok = ok && extension_modules->plpython_procedure_cache ==
 			&session2_private;
 		ok = ok && extension_modules->plpython_memory_context ==
@@ -1237,9 +778,9 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && extension_modules->plperl_memory_context ==
 			session2_plperl_context;
 		ok = ok && strcmp(extension_modules->pltcl_start_proc,
-						  "session2 advice") == 0;
+					  "session2 label") == 0;
 		ok = ok && strcmp(extension_modules->pltclu_start_proc,
-						  "session2_stash") == 0;
+					  "session2 label") == 0;
 		ok = ok && extension_modules->pltcl_memory_context ==
 			session2_pltcl_context;
 		ok = ok && extension_modules->plsample_memory_context ==
@@ -1248,82 +789,17 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && extension_modules->pltcl_interp_hash ==
 			&session2_reset_count;
 		ok = ok && extension_modules->pltcl_proc_hash ==
-			session2_auto_explain_options;
+			session2_proc_hash;
 		ok = ok && extension_modules->pltcl_current_call_state ==
 			&session2_private;
 		ok = ok && extension_modules->pltcl_reset_registered;
-		ok = ok && extension_modules->refint_foreign_plans ==
-			&session2_refint_foreign;
-		ok = ok && extension_modules->refint_num_foreign_plans == 41;
-		ok = ok && extension_modules->refint_primary_plans ==
-			&session2_refint_primary;
-		ok = ok && extension_modules->refint_num_primary_plans == 42;
-		ok = ok && extension_modules->refint_reset_registered;
-		ok = ok && extension_modules->auth_delay_milliseconds == 41;
-		ok = ok && strcmp(extension_modules->basebackup_to_shell_command,
-						  "session2cmd") == 0;
-		ok = ok && strcmp(extension_modules->basebackup_to_shell_required_role,
-						  "session2role") == 0;
-		ok = ok && extension_modules->isn_weak;
-		ok = ok && extension_modules->passwordcheck_min_password_length == 42;
-		ok = ok && extension_modules->sepgsql_context ==
-			session2_sepgsql_context;
-		ok = ok && extension_modules->sepgsql_avc_context ==
-			session2_sepgsql_avc_context;
-		ok = ok && strcmp(extension_modules->sepgsql_client_label_peer,
-						  "session2peer") == 0;
-		ok = ok && extension_modules->sepgsql_client_label_pending ==
-			(List *) &session2_private;
-		ok = ok && strcmp(extension_modules->sepgsql_client_label_committed,
-						  "session2committed") == 0;
-		ok = ok && strcmp(extension_modules->sepgsql_client_label_func,
-						  "session2func") == 0;
-		ok = ok && extension_modules->sepgsql_avc_slots[5] ==
-			(List *) &session2_private;
-		ok = ok && extension_modules->sepgsql_avc_num_caches == 43;
-		ok = ok && extension_modules->sepgsql_avc_lru_hint == 44;
-		ok = ok && extension_modules->sepgsql_avc_threshold == 45;
-		ok = ok && strcmp(extension_modules->sepgsql_avc_unlabeled,
-						  "session2unlabeled") == 0;
-		ok = ok && extension_modules->pgcrypto_des.des_initialised == 1;
-		ok = ok && extension_modules->pgcrypto_des.saltbits == 201;
-		ok = ok && extension_modules->pgcrypto_des.old_salt == 202;
-		ok = ok && extension_modules->pgcrypto_des.bits28 ==
-			&extension_modules->pgcrypto_des.de_keysl[4];
-		ok = ok && extension_modules->pgcrypto_des.bits24 ==
-			&extension_modules->pgcrypto_des.de_keysr[4];
-		ok = ok && extension_modules->pgcrypto_des.init_perm[0] == 203;
-		ok = ok && extension_modules->pgcrypto_des.final_perm[0] == 204;
-		ok = ok && extension_modules->pgcrypto_des.en_keysl[0] == 205;
-		ok = ok && extension_modules->pgcrypto_des.m_sbox[0][0] == 206;
-		ok = ok && extension_modules->pgcrypto_des.psbox[0][0] == 207;
-		ok = ok && extension_modules->pgcrypto_des.old_rawkey0 == 208;
-		ok = ok && extension_modules->pgcrypto_des.old_rawkey1 == 209;
-		ok = ok && strcmp(extension_modules->pgcrypto_des.output,
-						  "session2des") == 0;
-		ok = ok && extension_modules->dblink_context ==
-			session2_dblink_context;
-		ok = ok && extension_modules->dblink_persistent_connection ==
-			&session2_private;
-		ok = ok && extension_modules->dblink_remote_conn_hash ==
-			&session2_reset_count;
-		ok = ok && extension_modules->dblink_reset_registered;
-		ok = ok && extension_modules->postgres_fdw_options_context ==
-			session2_pgfdw_options_context;
-		ok = ok && extension_modules->postgres_fdw_options ==
-			&session2_pgfdw_options;
-		ok = ok && strcmp(extension_modules->postgres_fdw_application_name,
-						  "session2fdw") == 0;
-		ok = ok && extension_modules->postgres_fdw_connection_hash ==
-			&session2_private;
-		ok = ok && extension_modules->postgres_fdw_shippable_cache_hash ==
-			&session2_reset_count;
-		ok = ok && extension_modules->postgres_fdw_cursor_number == 21;
-		ok = ok && extension_modules->postgres_fdw_prep_stmt_number == 22;
-		ok = ok && extension_modules->postgres_fdw_xact_got_connection;
-		ok = ok && extension_modules->postgres_fdw_read_only_level == 23;
-		ok = ok && extension_modules->postgres_fdw_connection_callbacks_registered;
-		ok = ok && extension_modules->postgres_fdw_shippable_callbacks_registered;
+		ok = ok && PgSessionGetExtensionPrivateState(
+			test_backend_runtime_private_state_key) ==
+			session2_extension_private_state;
+		ok = ok && session2_extension_private_state->value == 201;
+		ok = ok && strcmp(session2_extension_private_state->label,
+					  "session2 private state") == 0;
+		ok = ok && session2_private_state_cleanup_count == 0;
 
 		PgSetCurrentSession(saved_session);
 		PgSessionResetClosedState(&fake_session1);
@@ -1331,10 +807,6 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		session1_plperl_context = NULL;
 		session1_pltcl_context = NULL;
 		session1_plsample_context = NULL;
-		session1_sepgsql_context = NULL;
-		session1_sepgsql_avc_context = NULL;
-		session1_dblink_context = NULL;
-		session1_pgfdw_options_context = NULL;
 		ok = ok && session1_reset_count == 1;
 		ok = ok && session2_reset_count == 0;
 		ok = ok && fake_session1.extension_modules.plpgsql_state == NULL;
@@ -1352,28 +824,10 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && fake_session1.extension_modules.pltcl_proc_hash == NULL;
 		ok = ok && fake_session1.extension_modules.pltcl_current_call_state == NULL;
 		ok = ok && !fake_session1.extension_modules.pltcl_reset_registered;
-		ok = ok && test_backend_runtime_refint_defaults_ok(&fake_session1.extension_modules);
-		ok = ok && test_backend_runtime_small_contrib_defaults_ok(&fake_session1.extension_modules);
-		ok = ok && test_backend_runtime_sepgsql_defaults_ok(&fake_session1.extension_modules);
-		ok = ok && test_backend_runtime_pgcrypto_des_defaults_ok(&fake_session1.extension_modules);
+		ok = ok && fake_session1.extension_modules.private_states == NIL;
+		ok = ok && session1_private_state_cleanup_count == 1;
 		ok = ok && fake_session1.extension_modules.reset_callbacks == NIL;
-		ok = ok && fake_session1.extension_modules.pg_trgm_similarity_threshold == 0.3;
-		ok = ok && fake_session1.extension_modules.pg_trgm_word_similarity_threshold == 0.6;
-		ok = ok && fake_session1.extension_modules.pg_trgm_strict_word_similarity_threshold == 0.5;
-		ok = ok && fake_session1.extension_modules.pg_plan_advice_advice == NULL;
-		ok = ok && !fake_session1.extension_modules.pg_plan_advice_always_store_advice_details;
-		ok = ok && fake_session1.extension_modules.pg_plan_advice_always_explain_supplied_advice;
-		ok = ok && !fake_session1.extension_modules.pg_plan_advice_feedback_warnings;
-		ok = ok && !fake_session1.extension_modules.pg_plan_advice_trace_mask;
-		ok = ok && fake_session1.extension_modules.pg_plan_advice_generate_advice == 0;
-		ok = ok && strcmp(fake_session1.extension_modules.pg_stash_advice_stash_name,
-						  "") == 0;
-		ok = ok && fake_session1.extension_modules.dblink_context == NULL;
-		ok = ok && fake_session1.extension_modules.dblink_persistent_connection == NULL;
-		ok = ok && fake_session1.extension_modules.dblink_remote_conn_hash == NULL;
-		ok = ok && !fake_session1.extension_modules.dblink_reset_registered;
-		ok = ok && test_backend_runtime_postgres_fdw_defaults_ok(&fake_session1.extension_modules);
-		ok = ok && test_backend_runtime_auto_explain_defaults_ok(&fake_session1.extension_modules);
+
 		ok = ok && fake_session2.extension_modules.plpgsql_state == &session2_private;
 		ok = ok && fake_session2.extension_modules.plpython_procedure_cache ==
 			&session2_private;
@@ -1383,9 +837,9 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && fake_session2.extension_modules.plperl_memory_context ==
 			session2_plperl_context;
 		ok = ok && strcmp(fake_session2.extension_modules.pltcl_start_proc,
-						  "session2 advice") == 0;
+					  "session2 label") == 0;
 		ok = ok && strcmp(fake_session2.extension_modules.pltclu_start_proc,
-						  "session2_stash") == 0;
+					  "session2 label") == 0;
 		ok = ok && fake_session2.extension_modules.pltcl_memory_context ==
 			session2_pltcl_context;
 		ok = ok && fake_session2.extension_modules.plsample_memory_context ==
@@ -1395,123 +849,19 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && fake_session2.extension_modules.pltcl_interp_hash ==
 			&session2_reset_count;
 		ok = ok && fake_session2.extension_modules.pltcl_proc_hash ==
-			session2_auto_explain_options;
+			session2_proc_hash;
 		ok = ok && fake_session2.extension_modules.pltcl_current_call_state ==
 			&session2_private;
 		ok = ok && fake_session2.extension_modules.pltcl_reset_registered;
-		ok = ok && fake_session2.extension_modules.refint_foreign_plans ==
-			&session2_refint_foreign;
-		ok = ok && fake_session2.extension_modules.refint_num_foreign_plans == 41;
-		ok = ok && fake_session2.extension_modules.refint_primary_plans ==
-			&session2_refint_primary;
-		ok = ok && fake_session2.extension_modules.refint_num_primary_plans == 42;
-		ok = ok && fake_session2.extension_modules.refint_reset_registered;
-		ok = ok && fake_session2.extension_modules.auth_delay_milliseconds == 41;
-		ok = ok && strcmp(fake_session2.extension_modules.basebackup_to_shell_command,
-						  "session2cmd") == 0;
-		ok = ok && strcmp(fake_session2.extension_modules.basebackup_to_shell_required_role,
-						  "session2role") == 0;
-		ok = ok && fake_session2.extension_modules.isn_weak;
-		ok = ok && fake_session2.extension_modules.passwordcheck_min_password_length == 42;
-		ok = ok && fake_session2.extension_modules.sepgsql_context ==
-			session2_sepgsql_context;
-		ok = ok && fake_session2.extension_modules.sepgsql_avc_context ==
-			session2_sepgsql_avc_context;
-		ok = ok && strcmp(fake_session2.extension_modules.sepgsql_client_label_peer,
-						  "session2peer") == 0;
-		ok = ok && fake_session2.extension_modules.sepgsql_client_label_pending ==
-			(List *) &session2_private;
-		ok = ok && strcmp(fake_session2.extension_modules.sepgsql_client_label_committed,
-						  "session2committed") == 0;
-		ok = ok && strcmp(fake_session2.extension_modules.sepgsql_client_label_func,
-						  "session2func") == 0;
-		ok = ok && fake_session2.extension_modules.sepgsql_avc_slots[5] ==
-			(List *) &session2_private;
-		ok = ok && fake_session2.extension_modules.sepgsql_avc_num_caches == 43;
-		ok = ok && fake_session2.extension_modules.sepgsql_avc_lru_hint == 44;
-		ok = ok && fake_session2.extension_modules.sepgsql_avc_threshold == 45;
-		ok = ok && strcmp(fake_session2.extension_modules.sepgsql_avc_unlabeled,
-						  "session2unlabeled") == 0;
-		ok = ok && fake_session2.extension_modules.pgcrypto_des.des_initialised == 1;
-		ok = ok && fake_session2.extension_modules.pgcrypto_des.saltbits == 201;
-		ok = ok && fake_session2.extension_modules.pgcrypto_des.old_salt == 202;
-		ok = ok && fake_session2.extension_modules.pgcrypto_des.bits28 ==
-			&fake_session2.extension_modules.pgcrypto_des.de_keysl[4];
-		ok = ok && fake_session2.extension_modules.pgcrypto_des.bits24 ==
-			&fake_session2.extension_modules.pgcrypto_des.de_keysr[4];
-		ok = ok && fake_session2.extension_modules.pgcrypto_des.init_perm[0] == 203;
-		ok = ok && fake_session2.extension_modules.pgcrypto_des.final_perm[0] == 204;
-		ok = ok && fake_session2.extension_modules.pgcrypto_des.en_keysl[0] == 205;
-		ok = ok && fake_session2.extension_modules.pgcrypto_des.m_sbox[0][0] == 206;
-		ok = ok && fake_session2.extension_modules.pgcrypto_des.psbox[0][0] == 207;
-		ok = ok && fake_session2.extension_modules.pgcrypto_des.old_rawkey0 == 208;
-		ok = ok && fake_session2.extension_modules.pgcrypto_des.old_rawkey1 == 209;
-		ok = ok && strcmp(fake_session2.extension_modules.pgcrypto_des.output,
-						  "session2des") == 0;
+		ok = ok && fake_session2.extension_modules.private_states != NIL;
+		ok = ok && session2_private_state_cleanup_count == 0;
 		ok = ok && fake_session2.extension_modules.reset_callbacks != NIL;
-		ok = ok && fake_session2.extension_modules.pg_trgm_similarity_threshold == 0.21;
-		ok = ok && fake_session2.extension_modules.pg_trgm_word_similarity_threshold == 0.22;
-		ok = ok && fake_session2.extension_modules.pg_trgm_strict_word_similarity_threshold == 0.23;
-		ok = ok && strcmp(fake_session2.extension_modules.pg_plan_advice_advice,
-						  "session2 advice") == 0;
-		ok = ok && !fake_session2.extension_modules.pg_plan_advice_always_store_advice_details;
-		ok = ok && fake_session2.extension_modules.pg_plan_advice_always_explain_supplied_advice;
-		ok = ok && !fake_session2.extension_modules.pg_plan_advice_feedback_warnings;
-		ok = ok && fake_session2.extension_modules.pg_plan_advice_trace_mask;
-		ok = ok && fake_session2.extension_modules.pg_plan_advice_generate_advice == 2;
-		ok = ok && strcmp(fake_session2.extension_modules.pg_stash_advice_stash_name,
-						  "session2_stash") == 0;
-		ok = ok && fake_session2.extension_modules.auto_explain_log_min_duration == 20;
-		ok = ok && fake_session2.extension_modules.auto_explain_log_parameter_max_length == 128;
-		ok = ok && !fake_session2.extension_modules.auto_explain_log_analyze;
-		ok = ok && fake_session2.extension_modules.auto_explain_log_verbose;
-		ok = ok && !fake_session2.extension_modules.auto_explain_log_buffers;
-		ok = ok && fake_session2.extension_modules.auto_explain_log_io;
-		ok = ok && !fake_session2.extension_modules.auto_explain_log_wal;
-		ok = ok && fake_session2.extension_modules.auto_explain_log_triggers;
-		ok = ok && fake_session2.extension_modules.auto_explain_log_timing;
-		ok = ok && !fake_session2.extension_modules.auto_explain_log_settings;
-		ok = ok && fake_session2.extension_modules.auto_explain_log_format == EXPLAIN_FORMAT_XML;
-		ok = ok && fake_session2.extension_modules.auto_explain_log_level == NOTICE;
-		ok = ok && !fake_session2.extension_modules.auto_explain_log_nested_statements;
-		ok = ok && fake_session2.extension_modules.auto_explain_sample_rate == 0.75;
-		ok = ok && strcmp(fake_session2.extension_modules.auto_explain_log_extension_options,
-						  "range_table") == 0;
-		ok = ok && fake_session2.extension_modules.auto_explain_extension_options ==
-			&session2_private;
-		ok = ok && fake_session2.extension_modules.dblink_persistent_connection ==
-			&session2_private;
-		ok = ok && fake_session2.extension_modules.dblink_context ==
-			session2_dblink_context;
-		ok = ok && fake_session2.extension_modules.dblink_remote_conn_hash ==
-			&session2_reset_count;
-		ok = ok && fake_session2.extension_modules.dblink_reset_registered;
-		ok = ok && fake_session2.extension_modules.postgres_fdw_options_context ==
-			session2_pgfdw_options_context;
-		ok = ok && fake_session2.extension_modules.postgres_fdw_options ==
-			&session2_pgfdw_options;
-		ok = ok && strcmp(fake_session2.extension_modules.postgres_fdw_application_name,
-						  "session2fdw") == 0;
-		ok = ok && fake_session2.extension_modules.postgres_fdw_connection_hash ==
-			&session2_private;
-		ok = ok && fake_session2.extension_modules.postgres_fdw_shippable_cache_hash ==
-			&session2_reset_count;
-		ok = ok && fake_session2.extension_modules.postgres_fdw_cursor_number == 21;
-		ok = ok && fake_session2.extension_modules.postgres_fdw_prep_stmt_number == 22;
-		ok = ok && fake_session2.extension_modules.postgres_fdw_xact_got_connection;
-		ok = ok && fake_session2.extension_modules.postgres_fdw_read_only_level == 23;
-		ok = ok && fake_session2.extension_modules.postgres_fdw_connection_callbacks_registered;
-		ok = ok && fake_session2.extension_modules.postgres_fdw_shippable_callbacks_registered;
 
 		PgSessionResetClosedState(&fake_session2);
 		session2_plpython_context = NULL;
 		session2_plperl_context = NULL;
 		session2_pltcl_context = NULL;
 		session2_plsample_context = NULL;
-		session2_sepgsql_context = NULL;
-		session2_sepgsql_avc_context = NULL;
-		session2_dblink_context = NULL;
-		session2_pgfdw_options_context = NULL;
 		ok = ok && session2_reset_count == 1;
 		ok = ok && fake_session2.extension_modules.plpgsql_state == NULL;
 		ok = ok && fake_session2.extension_modules.plpython_procedure_cache == NULL;
@@ -1528,28 +878,9 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 		ok = ok && fake_session2.extension_modules.pltcl_proc_hash == NULL;
 		ok = ok && fake_session2.extension_modules.pltcl_current_call_state == NULL;
 		ok = ok && !fake_session2.extension_modules.pltcl_reset_registered;
-		ok = ok && test_backend_runtime_refint_defaults_ok(&fake_session2.extension_modules);
-		ok = ok && test_backend_runtime_small_contrib_defaults_ok(&fake_session2.extension_modules);
-		ok = ok && test_backend_runtime_sepgsql_defaults_ok(&fake_session2.extension_modules);
-		ok = ok && test_backend_runtime_pgcrypto_des_defaults_ok(&fake_session2.extension_modules);
+		ok = ok && fake_session2.extension_modules.private_states == NIL;
+		ok = ok && session2_private_state_cleanup_count == 1;
 		ok = ok && fake_session2.extension_modules.reset_callbacks == NIL;
-		ok = ok && fake_session2.extension_modules.pg_trgm_similarity_threshold == 0.3;
-		ok = ok && fake_session2.extension_modules.pg_trgm_word_similarity_threshold == 0.6;
-		ok = ok && fake_session2.extension_modules.pg_trgm_strict_word_similarity_threshold == 0.5;
-		ok = ok && fake_session2.extension_modules.pg_plan_advice_advice == NULL;
-		ok = ok && !fake_session2.extension_modules.pg_plan_advice_always_store_advice_details;
-		ok = ok && fake_session2.extension_modules.pg_plan_advice_always_explain_supplied_advice;
-		ok = ok && !fake_session2.extension_modules.pg_plan_advice_feedback_warnings;
-		ok = ok && !fake_session2.extension_modules.pg_plan_advice_trace_mask;
-		ok = ok && fake_session2.extension_modules.pg_plan_advice_generate_advice == 0;
-		ok = ok && strcmp(fake_session2.extension_modules.pg_stash_advice_stash_name,
-						  "") == 0;
-		ok = ok && fake_session2.extension_modules.dblink_context == NULL;
-		ok = ok && fake_session2.extension_modules.dblink_persistent_connection == NULL;
-		ok = ok && fake_session2.extension_modules.dblink_remote_conn_hash == NULL;
-		ok = ok && !fake_session2.extension_modules.dblink_reset_registered;
-		ok = ok && test_backend_runtime_postgres_fdw_defaults_ok(&fake_session2.extension_modules);
-		ok = ok && test_backend_runtime_auto_explain_defaults_ok(&fake_session2.extension_modules);
 	}
 	PG_CATCH();
 	{
@@ -1562,14 +893,6 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 			MemoryContextDelete(session1_pltcl_context);
 		if (session1_plsample_context != NULL)
 			MemoryContextDelete(session1_plsample_context);
-		if (session1_sepgsql_context != NULL)
-			MemoryContextDelete(session1_sepgsql_context);
-		if (session1_sepgsql_avc_context != NULL)
-			MemoryContextDelete(session1_sepgsql_avc_context);
-		if (session1_dblink_context != NULL)
-			MemoryContextDelete(session1_dblink_context);
-		if (session1_pgfdw_options_context != NULL)
-			MemoryContextDelete(session1_pgfdw_options_context);
 		if (session2_plpython_context != NULL)
 			MemoryContextDelete(session2_plpython_context);
 		if (session2_plperl_context != NULL)
@@ -1578,14 +901,6 @@ test_session_extension_module_state_is_session_local(PG_FUNCTION_ARGS)
 			MemoryContextDelete(session2_pltcl_context);
 		if (session2_plsample_context != NULL)
 			MemoryContextDelete(session2_plsample_context);
-		if (session2_sepgsql_context != NULL)
-			MemoryContextDelete(session2_sepgsql_context);
-		if (session2_sepgsql_avc_context != NULL)
-			MemoryContextDelete(session2_sepgsql_avc_context);
-		if (session2_dblink_context != NULL)
-			MemoryContextDelete(session2_dblink_context);
-		if (session2_pgfdw_options_context != NULL)
-			MemoryContextDelete(session2_pgfdw_options_context);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();

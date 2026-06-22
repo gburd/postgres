@@ -219,6 +219,8 @@ static void WaitEventAdjustWin32(WaitEventSet *set, WaitEvent *event);
 static inline int WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 										WaitEvent *occurred_events, int nevents);
 static int WaitEventSetWaitInternal(void *callback_arg);
+static bool WaitEventLatchFdNeedsRefresh(WaitEvent *event);
+static void WaitEventRefreshLatchFd(WaitEventSet *set, WaitEvent *event);
 
 /* ResourceOwner support to hold WaitEventSets */
 static void ResOwnerReleaseWaitEventSet(Datum res);
@@ -362,6 +364,46 @@ InitializeWaitEventSupport(void)
 #ifdef WAIT_USE_KQUEUE
 	/* Ignore SIGURG, because we'll receive it via kqueue. */
 	pqsignal(SIGURG, PG_SIG_IGN);
+#endif
+}
+
+/*
+ * Release process-level wait event support owned by the current carrier.
+ *
+ * Backends historically relied on process exit to close these descriptors.
+ * Threaded carriers exit without process exit, so descriptor and fd.c
+ * accounting must be released explicitly at carrier teardown.
+ */
+void
+ShutdownWaitEventSupport(void)
+{
+#ifndef WIN32
+	waiting = false;
+#endif
+
+#ifdef WAIT_USE_SIGNALFD
+	if (signal_fd != -1)
+	{
+		(void) close(signal_fd);
+		signal_fd = -1;
+		ReleaseExternalFD();
+	}
+#endif
+
+#ifdef WAIT_USE_SELF_PIPE
+	if (selfpipe_readfd != -1)
+	{
+		(void) close(selfpipe_readfd);
+		selfpipe_readfd = -1;
+		ReleaseExternalFD();
+	}
+	if (selfpipe_writefd != -1)
+	{
+		(void) close(selfpipe_writefd);
+		selfpipe_writefd = -1;
+		ReleaseExternalFD();
+	}
+	selfpipe_owner_pid = 0;
 #endif
 }
 
@@ -672,6 +714,7 @@ void
 ModifyWaitEvent(WaitEventSet *set, int pos, uint32 events, Latch *latch)
 {
 	WaitEvent  *event;
+	bool		latch_fd_needs_refresh;
 #if defined(WAIT_USE_KQUEUE)
 	int			old_events;
 #endif
@@ -698,6 +741,8 @@ ModifyWaitEvent(WaitEventSet *set, int pos, uint32 events, Latch *latch)
 		return;
 	}
 
+	latch_fd_needs_refresh = WaitEventLatchFdNeedsRefresh(event);
+
 	/*
 	 * If neither the event mask nor the associated latch changes, return
 	 * early. That's an important optimization for some sockets, where
@@ -705,7 +750,8 @@ ModifyWaitEvent(WaitEventSet *set, int pos, uint32 events, Latch *latch)
 	 * waiting on writes.
 	 */
 	if (events == event->events &&
-		(!(event->events & WL_LATCH_SET) || set->latch == latch))
+		(!(event->events & WL_LATCH_SET) || set->latch == latch) &&
+		!latch_fd_needs_refresh)
 		return;
 
 	if (event->events & WL_LATCH_SET && events != event->events)
@@ -726,15 +772,19 @@ ModifyWaitEvent(WaitEventSet *set, int pos, uint32 events, Latch *latch)
 
 		/*
 		 * On Unix, we don't need to modify the kernel object because the
-		 * underlying pipe (if there is one) is the same for all latches so we
-		 * can return immediately.  On Windows, we need to update our array of
-		 * handles, but we leave the old one in place and tolerate spurious
-		 * wakeups if the latch is disabled.
+		 * underlying pipe (if there is one) is the same for all latches in a
+		 * carrier.  A pooled logical backend can move to another carrier,
+		 * though, so refresh the registered latch fd before returning.  On
+		 * Windows, we need to update our array of handles, but we leave the
+		 * old one in place and tolerate spurious wakeups if the latch is
+		 * disabled.
 		 */
 #if defined(WAIT_USE_WIN32)
 		if (!latch)
 			return;
 #else
+		if (latch_fd_needs_refresh)
+			WaitEventRefreshLatchFd(set, event);
 		return;
 #endif
 	}
@@ -1080,31 +1130,6 @@ WaitEventSetWait(WaitEventSet *set, long timeout,
 				 uint32 wait_event_info)
 {
 	WaitEventSetWaitArgs args;
-	PgWaitSpec	wait_spec;
-	uint32		wake_events = 0;
-	pgsocket	wait_socket = PGINVALID_SOCKET;
-	bool		found_wait_socket = false;
-	bool		multiple_wait_sockets = false;
-
-	for (int i = 0; i < set->nevents; i++)
-	{
-		wake_events |= set->events[i].events;
-		if ((set->events[i].events & WL_SOCKET_MASK) != 0 &&
-			set->events[i].fd != PGINVALID_SOCKET)
-		{
-			if (!found_wait_socket)
-			{
-				wait_socket = set->events[i].fd;
-				found_wait_socket = true;
-			}
-			else if (wait_socket != set->events[i].fd)
-				multiple_wait_sockets = true;
-		}
-	}
-	if (multiple_wait_sockets)
-		wait_socket = PGINVALID_SOCKET;
-	if (timeout >= 0)
-		wake_events |= WL_TIMEOUT;
 
 	args.set = set;
 	args.timeout = timeout;
@@ -1112,13 +1137,48 @@ WaitEventSetWait(WaitEventSet *set, long timeout,
 	args.nevents = nevents;
 	args.wait_event_info = wait_event_info;
 
-	wait_spec.kind = PG_WAIT_KIND_EVENT_SET;
-	wait_spec.wait_event_info = wait_event_info;
-	wait_spec.wake_events = wake_events;
-	wait_spec.socket = wait_socket;
-	wait_spec.timeout = timeout;
+#ifndef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
+	return WaitEventSetWaitInternal(&args);
+#else
+	if (likely(!PgBackendShouldPublishWaitCompletion(CurrentPgBackend)))
+		return WaitEventSetWaitInternal(&args);
+	else
+	{
+		PgWaitSpec	wait_spec;
+		uint32		wake_events = 0;
+		pgsocket	wait_socket = PGINVALID_SOCKET;
+		bool		found_wait_socket = false;
+		bool		multiple_wait_sockets = false;
 
-	return PgSuspend(&wait_spec, WaitEventSetWaitInternal, &args);
+		for (int i = 0; i < set->nevents; i++)
+		{
+			wake_events |= set->events[i].events;
+			if ((set->events[i].events & WL_SOCKET_MASK) != 0 &&
+				set->events[i].fd != PGINVALID_SOCKET)
+			{
+				if (!found_wait_socket)
+				{
+					wait_socket = set->events[i].fd;
+					found_wait_socket = true;
+				}
+				else if (wait_socket != set->events[i].fd)
+					multiple_wait_sockets = true;
+			}
+		}
+		if (multiple_wait_sockets)
+			wait_socket = PGINVALID_SOCKET;
+		if (timeout >= 0)
+			wake_events |= WL_TIMEOUT;
+
+		wait_spec.kind = PG_WAIT_KIND_EVENT_SET;
+		wait_spec.wait_event_info = wait_event_info;
+		wait_spec.wake_events = wake_events;
+		wait_spec.socket = wait_socket;
+		wait_spec.timeout = timeout;
+
+		return PgSuspend(&wait_spec, WaitEventSetWaitInternal, &args);
+	}
+#endif
 }
 
 static int
@@ -2000,6 +2060,56 @@ int
 GetNumRegisteredWaitEvents(WaitEventSet *set)
 {
 	return set->nevents;
+}
+
+static bool
+WaitEventLatchFdNeedsRefresh(WaitEvent *event)
+{
+	if (event->events != WL_LATCH_SET)
+		return false;
+
+#if defined(WAIT_USE_SELF_PIPE)
+	return event->fd != selfpipe_readfd;
+#elif defined(WAIT_USE_SIGNALFD)
+	return event->fd != signal_fd;
+#else
+	return false;
+#endif
+}
+
+static void
+WaitEventRefreshLatchFd(WaitEventSet *set, WaitEvent *event)
+{
+#if defined(WAIT_USE_SELF_PIPE) || defined(WAIT_USE_SIGNALFD)
+	pgsocket	oldfd = event->fd;
+#if defined(WAIT_USE_SELF_PIPE)
+	pgsocket	newfd = selfpipe_readfd;
+#elif defined(WAIT_USE_SIGNALFD)
+	pgsocket	newfd = signal_fd;
+#endif
+
+	if (oldfd == newfd)
+		return;
+
+#if defined(WAIT_USE_EPOLL)
+	{
+		WaitEvent	old_event = *event;
+
+		event->fd = newfd;
+		if (oldfd != PGINVALID_SOCKET)
+			WaitEventAdjustEpoll(set, &old_event, EPOLL_CTL_DEL);
+		WaitEventAdjustEpoll(set, event, EPOLL_CTL_ADD);
+	}
+#elif defined(WAIT_USE_POLL)
+	event->fd = newfd;
+	WaitEventAdjustPoll(set, event);
+#else
+	event->fd = newfd;
+#endif
+#else
+	(void) set;
+	(void) event;
+#endif
 }
 
 #if defined(WAIT_USE_SELF_PIPE)

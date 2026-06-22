@@ -401,6 +401,7 @@ create_pg_locale_icu(Oid collid, MemoryContext context)
 	collator = make_icu_collator(iculocstr, icurules);
 
 	result = MemoryContextAllocZero(context, sizeof(struct pg_locale_struct));
+	result->provider = COLLPROVIDER_ICU;
 	result->icu.locale = MemoryContextStrdup(context, iculocstr);
 	result->icu.ucol = collator;
 	result->icu.lt = loc;

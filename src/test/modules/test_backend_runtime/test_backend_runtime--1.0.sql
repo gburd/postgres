@@ -27,6 +27,10 @@ CREATE FUNCTION test_backend_thread_runtime_state()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;
 
+CREATE FUNCTION test_backend_thread_split_initializers()
+	RETURNS pg_catalog.bool
+	AS 'MODULE_PATHNAME' LANGUAGE C;
+
 CREATE FUNCTION test_carrier_threaded_guc_lock_depth_is_carrier_local()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;
@@ -36,6 +40,10 @@ CREATE FUNCTION test_carrier_attach_detach_current_work()
 	AS 'MODULE_PATHNAME' LANGUAGE C;
 
 CREATE FUNCTION test_carrier_protocol_park_prepare_commit()
+	RETURNS pg_catalog.bool
+	AS 'MODULE_PATHNAME' LANGUAGE C;
+
+CREATE FUNCTION test_protocol_scheduler_poll_buffered_read()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;
 
@@ -416,6 +424,10 @@ CREATE FUNCTION test_pmchild_thread_backend_signal_api()
 	AS 'MODULE_PATHNAME' LANGUAGE C;
 
 CREATE FUNCTION test_pmchild_thread_backend_reset_api()
+	RETURNS pg_catalog.bool
+	AS 'MODULE_PATHNAME' LANGUAGE C;
+
+CREATE FUNCTION test_pmchild_pooled_logical_backend_signal_api()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME' LANGUAGE C;
 

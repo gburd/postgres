@@ -1910,6 +1910,13 @@ CheckDeadLock(void)
 	DeadLockState result;
 
 	/*
+	 * DeadLockCheck() relies on MaxBackends-sized private workspace.  Allocate
+	 * it before taking every lock-manager partition lock; palloc while those
+	 * locks are held would lengthen the most sensitive part of this path.
+	 */
+	EnsureDeadLockCheckingWorkspace();
+
+	/*
 	 * Acquire exclusive lock on the entire shared lock data structures. Must
 	 * grab LWLocks in partition-number order to avoid LWLock deadlock.
 	 *
@@ -2122,20 +2129,23 @@ ProcSemaphoreWaitCallback(void *callback_arg)
  * ProcWaitOnSemaphore - wait on a PGPROC-owned semaphore.
  *
  * This is the scheduler-visible wrapper for semaphore-backed waits such as
- * LWLocks, buffer content locks, and group-update waits.  The
- * thread-per-session fallback still blocks in PGSemaphoreLock(), but the
- * logical backend's current wait-completion record now exposes the wait event
- * and owner.
+ * LWLocks, buffer content locks, and group-update waits.  When diagnostic
+ * wait-completion publication is compiled in, the logical backend's current
+ * wait-completion record exposes the wait event and owner.  The actual wait
+ * remains carrier-pinned in PGSemaphoreLock().
  */
 void
 ProcWaitOnSemaphore(PGPROC *proc, uint32 wait_event_info)
 {
 	ProcSemaphoreWaitArgs args;
+#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
 	PgWaitSpec	wait_spec;
+#endif
 
 	Assert(proc != NULL);
 
 	args.proc = proc;
+#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
 	wait_spec.kind = PG_WAIT_KIND_SEMAPHORE;
 	wait_spec.wait_event_info = wait_event_info;
 	wait_spec.wake_events = 0;
@@ -2143,27 +2153,35 @@ ProcWaitOnSemaphore(PGPROC *proc, uint32 wait_event_info)
 	wait_spec.timeout = -1;
 
 	(void) PgSuspend(&wait_spec, ProcSemaphoreWaitCallback, &args);
+#else
+	(void) wait_event_info;
+	(void) ProcSemaphoreWaitCallback(&args);
+#endif
 }
 
 /*
  * ProcWakeSemaphore - wake a backend blocked on its PGPROC semaphore.
  *
- * Mark the Phase 13 wait-completion record before the legacy semaphore wake.
- * Phase 14/15 use this as wait observability only; semaphore waits remain
- * carrier-pinned until a later explicit deep-wait continuation design exists.
+ * Mark the diagnostic wait-completion record before the legacy semaphore wake
+ * when that publication path is compiled in.  Phase 14/15 use this as wait
+ * observability only; semaphore waits remain carrier-pinned until a later
+ * explicit deep-wait continuation design exists.
  */
 void
 ProcWakeSemaphore(PGPROC *proc)
 {
+#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
 	PgBackend  *backend = CurrentPgBackend;
+#endif
 
 	Assert(proc != NULL);
 
+#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
 	if (backend != NULL &&
-		backend->runtime != NULL &&
-		backend->runtime->kind == PG_RUNTIME_THREAD_PER_SESSION &&
+		PgRuntimeIsThreadBacked(backend->runtime) &&
 		proc->backendId != 0)
 		(void) PgBackendWakeWaitCompletionById(proc->backendId, 0);
+#endif
 	PGSemaphoreUnlock(proc->sem);
 }
 

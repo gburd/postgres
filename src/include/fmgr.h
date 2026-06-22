@@ -487,11 +487,14 @@ typedef enum PgBackendModel
 	PG_BACKEND_MODEL_PROCESS = 0,
 	PG_BACKEND_MODEL_THREAD_PER_SESSION,
 	/*
-	 * Transitional generic marker.  Before pooled protocol migration is claimed,
-	 * split this into protocol-affine, protocol-migratable, and later
-	 * task-reentrant promises.
+	 * Transitional generic marker.  This is intentionally weaker than the
+	 * protocol-boundary promises below; it must not be used as the runtime
+	 * requirement for Phase 15 pooled protocol scheduling.
 	 */
-	PG_BACKEND_MODEL_POOLED_SCHEDULER
+	PG_BACKEND_MODEL_POOLED_SCHEDULER,
+	PG_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE,
+	PG_BACKEND_MODEL_POOLED_PROTOCOL_MIGRATABLE,
+	PG_BACKEND_MODEL_TASK_REENTRANT
 } PgBackendModel;
 
 #define PG_MODULE_MAGIC_BACKEND_MODEL_PROCESS \
@@ -500,6 +503,12 @@ typedef enum PgBackendModel
 	.backend_model = PG_BACKEND_MODEL_THREAD_PER_SESSION
 #define PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_SCHEDULER \
 	.backend_model = PG_BACKEND_MODEL_POOLED_SCHEDULER
+#define PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE \
+	.backend_model = PG_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE
+#define PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_MIGRATABLE \
+	.backend_model = PG_BACKEND_MODEL_POOLED_PROTOCOL_MIGRATABLE
+#define PG_MODULE_MAGIC_BACKEND_MODEL_TASK_REENTRANT \
+	.backend_model = PG_BACKEND_MODEL_TASK_REENTRANT
 
 /* Definition of the magic block structure */
 typedef struct

@@ -62,6 +62,8 @@ static void PgBackendRememberRetainedTopMemoryContext(void);
  */
 
 static PG_GLOBAL_RUNTIME PgBackendExitState early_exit_state;
+static PG_THREAD_LOCAL PG_GLOBAL_CARRIER Size
+			retained_top_memory_allocated = 0;
 
 static PgBackendExitState *
 CurrentBackendExitState(void)
@@ -85,6 +87,7 @@ PgBackendInitializeExitState(PgBackendExitState *exit_state)
 		return;
 
 	MemSet(exit_state, 0, sizeof(*exit_state));
+	retained_top_memory_allocated = 0;
 }
 
 void
@@ -116,7 +119,22 @@ PgBackendRememberRetainedTopMemoryContext(void)
 
 	if (exit_state->retained_top_memory_context == NULL &&
 		TopMemoryContext != NULL)
+	{
 		exit_state->retained_top_memory_context = TopMemoryContext;
+		if (CurrentPgRuntime != NULL &&
+			PgRuntimeIsThreadBacked(CurrentPgRuntime))
+			retained_top_memory_allocated =
+				MemoryContextMemAllocated(TopMemoryContext, true);
+	}
+}
+
+Size
+PgBackendConsumeRetainedTopMemoryAllocated(void)
+{
+	Size		result = retained_top_memory_allocated;
+
+	retained_top_memory_allocated = 0;
+	return result;
 }
 
 
@@ -168,9 +186,17 @@ PgBackendExit(int code)
 void
 PgBackendExitComplete(int code)
 {
-	if (CurrentPgRuntime != NULL && CurrentPgRuntime->exit_backend != NULL)
+	PgRuntime  *runtime = CurrentPgRuntime;
+
+	if ((runtime == NULL || runtime->exit_backend == NULL) &&
+		CurrentPgCarrier != NULL &&
+		CurrentPgCarrier->runtime != NULL &&
+		CurrentPgCarrier->runtime->exit_backend != NULL)
+		runtime = CurrentPgCarrier->runtime;
+
+	if (runtime != NULL && runtime->exit_backend != NULL)
 	{
-		CurrentPgRuntime->exit_backend(code);
+		runtime->exit_backend(code);
 
 		/*
 		 * A runtime may unwind to a scheduler or exit the process, but it
@@ -178,6 +204,9 @@ PgBackendExitComplete(int code)
 		 */
 		elog(PANIC, "backend exit continuation returned");
 	}
+
+	if (CurrentPgCarrier != NULL && CurrentPgCarrier->kind == PG_CARRIER_THREAD)
+		elog(PANIC, "thread carrier reached process backend exit");
 
 	PgBackendExitProcess(code);
 }

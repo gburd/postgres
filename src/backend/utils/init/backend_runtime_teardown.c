@@ -65,9 +65,23 @@ PgBackendResetStringInfo(StringInfoData *buf)
 }
 
 static void
+PgBackendResetExprInterpClosedState(PgBackendExprInterpState *expr_interp)
+{
+	Assert(expr_interp != NULL);
+
+	if (expr_interp->reverse_dispatch_table != NULL)
+		pfree(expr_interp->reverse_dispatch_table);
+	MemSet(expr_interp, 0, sizeof(*expr_interp));
+}
+
+static void
 PgBackendResetLockClosedState(PgBackendLockState *locks)
 {
 	Assert(locks != NULL);
+
+	if (locks->held_lwlocks_array != NULL &&
+		locks->held_lwlocks_array != locks->held_lwlocks_inline)
+		pfree(locks->held_lwlocks_array);
 
 	if (locks->fast_path_local_use_counts_owned &&
 		locks->fast_path_local_use_counts != NULL)
@@ -110,13 +124,21 @@ PgBackendResetExtensionModuleClosedState(PgBackendExtensionModuleState *extensio
 {
 	Assert(extension_modules != NULL);
 
-	if (extension_modules->pg_stash_advice_entry_dshash != NULL)
-		dshash_detach(extension_modules->pg_stash_advice_entry_dshash);
-	if (extension_modules->pg_stash_advice_stash_dshash != NULL)
-		dshash_detach(extension_modules->pg_stash_advice_stash_dshash);
-	if (extension_modules->pg_stash_advice_dsa_area != NULL)
-		dsa_detach(extension_modules->pg_stash_advice_dsa_area);
-	PG_RUNTIME_DELETE_MEMORY_CONTEXT(extension_modules->pg_stash_advice_context);
+	foreach_ptr(PgBackendExtensionPrivateState, private_state,
+				extension_modules->private_states)
+	{
+		if (private_state->cleanup != NULL &&
+			private_state->state != NULL)
+			private_state->cleanup(private_state->state);
+	}
+
+	foreach_ptr(PgBackendExtensionPrivateState, private_state,
+				extension_modules->private_states)
+	{
+		if (private_state->state != NULL)
+			pfree(private_state->state);
+	}
+	list_free_deep(extension_modules->private_states);
 
 	PgBackendInitializeExtensionModuleState(extension_modules);
 }
@@ -146,8 +168,11 @@ PgBackendResetPgStatPendingClosedState(PgBackendPgStatPendingState *pgstat_pendi
 	Assert(pgstat_pending != NULL);
 	Assert(pgstat_pending->entry_ref_hash == NULL);
 	Assert(dlist_is_empty(&pgstat_pending->pending));
-	Assert(pgstat_pending->local.shared_hash == NULL);
-	Assert(pgstat_pending->local.dsa == NULL);
+	if (pgstat_pending->local != NULL)
+	{
+		Assert(pgstat_pending->local->shared_hash == NULL);
+		Assert(pgstat_pending->local->dsa == NULL);
+	}
 
 	/*
 	 * Normal pgstat shutdown owns flushing, shared-entry release, and DSA
@@ -155,10 +180,20 @@ PgBackendResetPgStatPendingClosedState(PgBackendPgStatPendingState *pgstat_pendi
 	 * restores constructor defaults for reuse.
 	 */
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(pgstat_pending->fixed_snapshot_context);
-	PG_RUNTIME_DELETE_MEMORY_CONTEXT(pgstat_pending->local.snapshot.context);
+	if (pgstat_pending->local != NULL &&
+		pgstat_pending->local->snapshot != NULL)
+	{
+		PG_RUNTIME_DELETE_MEMORY_CONTEXT(pgstat_pending->local->snapshot->context);
+		pfree(pgstat_pending->local->snapshot);
+		pgstat_pending->local->snapshot = NULL;
+	}
+	if (pgstat_pending->local != NULL)
+		pfree(pgstat_pending->local);
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(pgstat_pending->shared_ref_context);
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(pgstat_pending->entry_ref_hash_context);
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(pgstat_pending->pending_context);
+	if (pgstat_pending->cold != NULL)
+		free(pgstat_pending->cold);
 
 	PgBackendInitializePgStatPendingState(pgstat_pending);
 }
@@ -189,8 +224,7 @@ PgBackendResetBufferClosedState(PgBackendBufferState *buffers)
 	 */
 	if (PgBackendExitInProgress())
 	{
-		if (CurrentPgRuntime != NULL &&
-			CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION &&
+		if (PgRuntimeIsThreadBacked(CurrentPgRuntime) &&
 			CurrentPgBackend != NULL &&
 			CurrentPgBackend->backend_type == B_BACKEND)
 		{
@@ -318,6 +352,37 @@ static void
 PgExecutionResetSPIClosedState(PgExecutionSPIState *spi)
 {
 	PgExecutionInitializeSPIState(spi);
+}
+
+static void
+PgExecutionResetSnapshotDataArrays(SnapshotData *snapshot)
+{
+	Assert(snapshot != NULL);
+
+	if (snapshot->xip != NULL)
+		free(snapshot->xip);
+	if (snapshot->subxip != NULL)
+		free(snapshot->subxip);
+	snapshot->xip = NULL;
+	snapshot->subxip = NULL;
+}
+
+static void
+PgExecutionResetSnapshotClosedState(PgExecutionSnapshotState *snapshot)
+{
+	Assert(snapshot != NULL);
+
+	/*
+	 * GetSnapshotData() mallocs xip/subxip arrays and relies on process exit
+	 * to reclaim them because the historical SnapshotData objects are static.
+	 * Threaded logical backends embed those SnapshotData objects in
+	 * PgExecution, so connection churn must release the arrays explicitly.
+	 */
+	PgExecutionResetSnapshotDataArrays(&snapshot->current_snapshot_data);
+	PgExecutionResetSnapshotDataArrays(&snapshot->secondary_snapshot_data);
+	PgExecutionResetSnapshotDataArrays(&snapshot->catalog_snapshot_data);
+
+	PgExecutionInitializeSnapshotState(snapshot);
 }
 
 static void
@@ -568,13 +633,20 @@ PgBackendResetMemoryManagerClosedState(PgBackendMemoryManagerState *memory_manag
 		return;
 
 	/*
-	 * The AllocSet freelist is tied to memory-context ownership, not the
-	 * backend bookkeeping bucket.  Process exit lets the operating system
-	 * reclaim it, while threaded exit deletes the saved TopMemoryContext root
-	 * after closed-state reset.  Do not walk freelist links here: by
-	 * closed-state reset time they may already point into memory-context
-	 * teardown state.
+	 * The AllocSet freelist is tied to memory-context ownership, not this
+	 * bookkeeping bucket.  Process exit lets the operating system reclaim it.
+	 * Threaded logical exit, however, has already run session/connection
+	 * cleanup before reaching the backend memory-manager bucket; those earlier
+	 * MemoryContextDelete() calls can leave deleted keeper blocks on the
+	 * backend-local freelists.  Free them before clearing the bookkeeping, or
+	 * connection churn loses the only references and retains heap forever.
 	 */
+	if (PgBackendExitInProgress() &&
+		CurrentPgRuntime != NULL &&
+		PgRuntimeIsThreadBacked(CurrentPgRuntime))
+		AllocSetFreeContextFreelists(memory_manager->context_freelists,
+									 PG_BACKEND_ALLOCSET_NUM_FREELISTS);
+
 	MemSet(memory_manager->context_freelists, 0,
 		   sizeof(memory_manager->context_freelists));
 	memory_manager->log_memory_context_in_progress = false;
@@ -587,6 +659,8 @@ PgBackendResetUtilityClosedState(PgBackendUtilityState *utility)
 
 	if (utility == NULL)
 		return;
+
+	utility->notify_interrupt_pending = false;
 
 	if (utility->async_global_channel_table != NULL)
 		dshash_detach(utility->async_global_channel_table);
@@ -776,6 +850,13 @@ PgSessionResetExtensionModuleClosedState(PgSession *session)
 		foreach_ptr(PgSessionResetCallbackItem, item,
 					session->extension_modules.reset_callbacks)
 			item->callback(item->arg);
+		foreach_ptr(PgSessionExtensionPrivateState, private_state,
+					session->extension_modules.private_states)
+		{
+			if (private_state->cleanup != NULL &&
+				private_state->state != NULL)
+				private_state->cleanup(private_state->state);
+		}
 		PgSetCurrentSession(saved_session);
 	}
 	PG_CATCH();
@@ -785,6 +866,13 @@ PgSessionResetExtensionModuleClosedState(PgSession *session)
 	}
 	PG_END_TRY();
 
+	foreach_ptr(PgSessionExtensionPrivateState, private_state,
+				session->extension_modules.private_states)
+	{
+		if (private_state->state != NULL)
+			pfree(private_state->state);
+	}
+	list_free_deep(session->extension_modules.private_states);
 	list_free_deep(session->extension_modules.reset_callbacks);
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(
 		session->extension_modules.plpython_memory_context);
@@ -794,14 +882,6 @@ PgSessionResetExtensionModuleClosedState(PgSession *session)
 		session->extension_modules.pltcl_memory_context);
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(
 		session->extension_modules.plsample_memory_context);
-	PG_RUNTIME_DELETE_MEMORY_CONTEXT(
-		session->extension_modules.sepgsql_context);
-	PG_RUNTIME_DELETE_MEMORY_CONTEXT(
-		session->extension_modules.sepgsql_avc_context);
-	PG_RUNTIME_DELETE_MEMORY_CONTEXT(
-		session->extension_modules.dblink_context);
-	PG_RUNTIME_DELETE_MEMORY_CONTEXT(
-		session->extension_modules.postgres_fdw_options_context);
 	PgSessionInitializeExtensionModuleState(&session->extension_modules);
 }
 
@@ -858,8 +938,23 @@ PgSessionResetGUCClosedState(PgSession *session)
 {
 	Assert(session != NULL);
 
+	if (PgBackendExitInProgress())
+		ResetGUCStateAtBackendExit();
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->guc.memory_context);
 	PgSessionInitializeGUCState(&session->guc);
+}
+
+static void
+PgSessionResetDateTimeClosedState(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (!PgBackendExitInProgress())
+		return;
+
+	session->datetime.timezone_abbrev_table = NULL;
+	MemSet(session->datetime.timezone_abbrev_cache, 0,
+		   sizeof(session->datetime.timezone_abbrev_cache));
 }
 
 static void
@@ -1040,8 +1135,17 @@ PgSessionResetLocaleClosedState(PgSession *session)
 	PgSessionResetLocaleConv(&session->locale);
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->locale.locale_conv_context);
 
+	if (PgBackendExitInProgress() &&
+		session->locale.default_locale != NULL)
+	{
+		pg_locale_release_external((pg_locale_t) session->locale.default_locale);
+		session->locale.default_locale = NULL;
+	}
+
 	if (session->locale.collation_cache_context != NULL)
 	{
+		if (PgBackendExitInProgress())
+			pg_locale_release_collation_cache_external(session->locale.collation_cache);
 		PG_RUNTIME_DELETE_MEMORY_CONTEXT(session->locale.collation_cache_context);
 		session->locale.collation_cache = NULL;
 		session->locale.last_collation_cache_oid = InvalidOid;
@@ -1170,12 +1274,56 @@ PgExecutionResetDebugClosedState(PgExecution *execution)
 static void
 PgExecutionResetMemoryContextsClosedState(PgExecution *execution)
 {
+	bool		preserve_error_context;
+	MemoryContext error_context;
+
 	Assert(execution != NULL);
+
+	/*
+	 * Threaded backend finish still has to publish logical exit and reclaim
+	 * the retained TopMemoryContext after closed-state reset.  Keep the
+	 * backend's ErrorContext address usable for any ereport() on that final
+	 * physical-thread path, while clearing Top/CurrentMemoryContext so the
+	 * retained root can be deleted deliberately by the carrier exit code.
+	 */
+	preserve_error_context =
+		PgBackendExitInProgress() &&
+		PgRuntimeIsThreadBacked(CurrentPgRuntime) &&
+		execution == CurrentPgExecution;
+	error_context = preserve_error_context ?
+		execution->memory_contexts.error_context : NULL;
 
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(execution->memory_contexts.message_context);
 
 	MemSet(&execution->memory_contexts, 0,
 		   sizeof(execution->memory_contexts));
+
+	if (preserve_error_context)
+		execution->memory_contexts.error_context = error_context;
+}
+
+static void
+PgExecutionResetExtensionClosedState(PgExecutionExtensionState *extension)
+{
+	Assert(extension != NULL);
+
+	foreach_ptr(PgExecutionExtensionPrivateState, private_state,
+				extension->private_states)
+	{
+		if (private_state->cleanup != NULL &&
+			private_state->state != NULL)
+			private_state->cleanup(private_state->state);
+	}
+
+	foreach_ptr(PgExecutionExtensionPrivateState, private_state,
+				extension->private_states)
+	{
+		if (private_state->state != NULL)
+			pfree(private_state->state);
+	}
+	list_free_deep(extension->private_states);
+
+	PgExecutionInitializeExtensionState(extension);
 }
 
 void

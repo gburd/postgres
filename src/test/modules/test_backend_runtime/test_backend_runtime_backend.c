@@ -107,7 +107,7 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		pgStatLocal.shmem = (PgStat_ShmemControl *) &fake_backend1;
 		pgStatLocal.dsa = (dsa_area *) &fake_backend1;
 		pgStatLocal.shared_hash = (dshash_table *) &fake_backend1;
-		pgStatLocal.snapshot.mode = PGSTAT_FETCH_CONSISTENCY_CACHE;
+		pgStatSnapshot.mode = PGSTAT_FETCH_CONSISTENCY_CACHE;
 		*PgCurrentPgStatPendingContextRef() = (MemoryContext) &fake_backend1;
 		prevBackendWalUsage.wal_records = 21;
 		pgstat_report_fixed = true;
@@ -144,7 +144,7 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && pgStatLocal.shmem == NULL;
 		ok = ok && pgStatLocal.dsa == NULL;
 		ok = ok && pgStatLocal.shared_hash == NULL;
-		ok = ok && pgStatLocal.snapshot.mode == PGSTAT_FETCH_CONSISTENCY_NONE;
+		ok = ok && pgStatSnapshot.mode == PGSTAT_FETCH_CONSISTENCY_NONE;
 		ok = ok && *PgCurrentPgStatPendingContextRef() == NULL;
 		ok = ok && PgCurrentPgStatPendingListRef() == &fake_backend2.pgstat_pending.pending;
 		ok = ok && dlist_is_empty(PgCurrentPgStatPendingListRef());
@@ -180,7 +180,7 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		pgStatLocal.shmem = (PgStat_ShmemControl *) &fake_backend2;
 		pgStatLocal.dsa = (dsa_area *) &fake_backend2;
 		pgStatLocal.shared_hash = (dshash_table *) &fake_backend2;
-		pgStatLocal.snapshot.mode = PGSTAT_FETCH_CONSISTENCY_SNAPSHOT;
+		pgStatSnapshot.mode = PGSTAT_FETCH_CONSISTENCY_SNAPSHOT;
 		*PgCurrentPgStatPendingContextRef() = (MemoryContext) &fake_backend2;
 		prevBackendWalUsage.wal_records = 31;
 		pgstat_report_fixed = true;
@@ -217,7 +217,7 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && pgStatLocal.shmem == (PgStat_ShmemControl *) &fake_backend1;
 		ok = ok && pgStatLocal.dsa == (dsa_area *) &fake_backend1;
 		ok = ok && pgStatLocal.shared_hash == (dshash_table *) &fake_backend1;
-		ok = ok && pgStatLocal.snapshot.mode == PGSTAT_FETCH_CONSISTENCY_CACHE;
+		ok = ok && pgStatSnapshot.mode == PGSTAT_FETCH_CONSISTENCY_CACHE;
 		ok = ok && *PgCurrentPgStatPendingContextRef() == (MemoryContext) &fake_backend1;
 		ok = ok && PgCurrentPgStatPendingListRef() == &fake_backend1.pgstat_pending.pending;
 		ok = ok && dlist_is_empty(PgCurrentPgStatPendingListRef());
@@ -256,7 +256,7 @@ test_backend_pgstat_pending_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && pgStatLocal.shmem == (PgStat_ShmemControl *) &fake_backend2;
 		ok = ok && pgStatLocal.dsa == (dsa_area *) &fake_backend2;
 		ok = ok && pgStatLocal.shared_hash == (dshash_table *) &fake_backend2;
-		ok = ok && pgStatLocal.snapshot.mode == PGSTAT_FETCH_CONSISTENCY_SNAPSHOT;
+		ok = ok && pgStatSnapshot.mode == PGSTAT_FETCH_CONSISTENCY_SNAPSHOT;
 		ok = ok && *PgCurrentPgStatPendingContextRef() == (MemoryContext) &fake_backend2;
 		ok = ok && PgCurrentPgStatPendingListRef() == &fake_backend2.pgstat_pending.pending;
 		ok = ok && dlist_is_empty(PgCurrentPgStatPendingListRef());
@@ -1159,13 +1159,15 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 							  "test repack message context",
 							  ALLOCSET_SMALL_SIZES);
 
-	pgstat_pending->local.snapshot.context =
+	pgstat_pending->local = palloc0_object(PgStat_LocalState);
+	pgstat_pending->local->snapshot = palloc0_object(PgStat_Snapshot);
+	pgstat_pending->local->snapshot->context =
 		AllocSetContextCreate(TopMemoryContext,
 							  "test pgstat snapshot context",
 							  ALLOCSET_SMALL_SIZES);
-	pgstat_pending->local.snapshot.stats =
+	pgstat_pending->local->snapshot->stats =
 		(struct pgstat_snapshot_hash *) &fake_backend;
-	pgstat_pending->local.snapshot.mode = PGSTAT_FETCH_CONSISTENCY_CACHE;
+	pgstat_pending->local->snapshot->mode = PGSTAT_FETCH_CONSISTENCY_CACHE;
 	pgstat_pending->shared_ref_age = 24;
 	pgstat_pending->shared_ref_context =
 		AllocSetContextCreate(TopMemoryContext,
@@ -1179,8 +1181,12 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 		AllocSetContextCreate(TopMemoryContext,
 							  "test pgstat pending context",
 							  ALLOCSET_SMALL_SIZES);
-	pgstat_pending->pending_bgwriter.buf_alloc = 25;
-	pgstat_pending->pending_checkpointer.num_requested = 26;
+	pgstat_pending->cold = malloc(sizeof(PgBackendPgStatPendingColdState));
+	if (pgstat_pending->cold == NULL)
+		elog(ERROR, "out of memory allocating test pgstat pending cold state");
+	MemSet(pgstat_pending->cold, 0, sizeof(PgBackendPgStatPendingColdState));
+	pgstat_pending->cold->pending_bgwriter.buf_alloc = 25;
+	pgstat_pending->cold->pending_checkpointer.num_requested = 26;
 	pgstat_pending->io_stats_pending = true;
 	pgstat_pending->slru_stats_pending = true;
 	pgstat_pending->lock_stats_pending = true;
@@ -1211,7 +1217,6 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 		(MemoryContext) &fake_backend;
 	fake_backend.exit_state.proc_exit_done = true;
 
-	utility->notify_interrupt_pending = true;
 	utility->seq_scan_tables[0] = (HTAB *) &fake_backend;
 	utility->seq_scan_tables[1] = (HTAB *) &fake_backend;
 	utility->seq_scan_levels[0] = 1;
@@ -1266,6 +1271,7 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	{
 		PgSetCurrentRuntime(&fake_runtime);
 		PgSetCurrentBackend(&fake_backend);
+		notifyInterruptPending = true;
 		proc_exit_inprogress = true;
 		PgBackendResetClosedState(&fake_backend);
 	}
@@ -1280,7 +1286,6 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	proc_exit_inprogress = saved_proc_exit_active;
 	PgSetCurrentBackend(saved_backend);
 	PgSetCurrentRuntime(saved_runtime);
-	PgSetCurrentBackend(&fake_backend);
 
 	ok = ok && walsender->uploaded_manifest == NULL;
 	ok = ok && walsender->uploaded_manifest_mcxt == NULL;
@@ -1505,18 +1510,14 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && !OidIsValid(repack->repacked_rel_locator.relNumber);
 	ok = ok && !OidIsValid(repack->repacked_rel_toast_locator.relNumber);
 	ok = ok && repack->message_context == NULL;
-	ok = ok && pgstat_pending->local.snapshot.context == NULL;
-	ok = ok && pgstat_pending->local.snapshot.stats == NULL;
-	ok = ok && pgstat_pending->local.snapshot.mode ==
-		PGSTAT_FETCH_CONSISTENCY_NONE;
+	ok = ok && pgstat_pending->local == NULL;
 	ok = ok && pgstat_pending->entry_ref_hash == NULL;
 	ok = ok && pgstat_pending->shared_ref_age == 0;
 	ok = ok && pgstat_pending->shared_ref_context == NULL;
 	ok = ok && pgstat_pending->entry_ref_hash_context == NULL;
 	ok = ok && pgstat_pending->pending_context == NULL;
 	ok = ok && dlist_is_empty(&pgstat_pending->pending);
-	ok = ok && pgstat_pending->pending_bgwriter.buf_alloc == 0;
-	ok = ok && pgstat_pending->pending_checkpointer.num_requested == 0;
+	ok = ok && pgstat_pending->cold == NULL;
 	ok = ok && !pgstat_pending->io_stats_pending;
 	ok = ok && !pgstat_pending->slru_stats_pending;
 	ok = ok && !pgstat_pending->lock_stats_pending;
@@ -1538,12 +1539,11 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && wait_state->spec.socket == 0;
 	ok = ok && wait_state->spec.timeout == 0;
 	ok = ok && wait_state->local_wait_event_info == 0;
-	ok = ok && *PgCurrentMyWaitEventInfoRef() ==
+	ok = ok && wait_state->wait_event_info_ptr ==
 		&wait_state->local_wait_event_info;
 	ok = ok && pg_atomic_read_u32(&wait_state->waiting) == 0;
-	PgSetCurrentBackend(saved_backend);
 	ok = ok && !fake_backend.memory_manager.log_memory_context_in_progress;
-	ok = ok && utility->notify_interrupt_pending;
+	ok = ok && !utility->notify_interrupt_pending;
 	ok = ok && utility->seq_scan_tables[0] == NULL;
 	ok = ok && utility->seq_scan_tables[1] == NULL;
 	ok = ok && utility->seq_scan_levels[0] == 0;
@@ -1568,7 +1568,10 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && fake_backend.exit_state.proc_exit_done;
 
 	if (!ok)
-		elog(ERROR, "closed backend runtime state was not reset");
+		elog(ERROR, "closed backend runtime state was not reset: retained_top=%p expected_top=%p proc_exit_done=%d",
+			 fake_backend.exit_state.retained_top_memory_context,
+			 &fake_backend,
+			 fake_backend.exit_state.proc_exit_done);
 
 	PG_RETURN_BOOL(true);
 }

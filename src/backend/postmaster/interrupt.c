@@ -123,12 +123,14 @@ SendInterrupt(PgBackend *backend, PgBackendInterruptType interrupt_type)
 									  interrupt_mask);
 	if ((old_mask & interrupt_mask) == 0 || notify_interrupt)
 	{
+#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
 		if (interrupt_type == PG_BACKEND_INTERRUPT_QUERY_CANCEL)
 			PgBackendMarkWaitCompletionInterrupt(backend,
 												 PG_WAIT_COMPLETION_INTERRUPT_CANCEL);
 		else if (interrupt_type == PG_BACKEND_INTERRUPT_PROC_DIE)
 			PgBackendMarkWaitCompletionInterrupt(backend,
 												 PG_WAIT_COMPLETION_INTERRUPT_TERMINATE);
+#endif
 
 		PgBackendWakeForInterrupt(backend);
 	}

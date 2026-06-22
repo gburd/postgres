@@ -27,6 +27,33 @@
 
 typedef struct RelationData *Relation;
 
+typedef struct PgRelCacheMemoryStats
+{
+	Oid			reloid;
+	const char *relname;
+	bool		isvalid;
+	bool		isnailed;
+	bool		islocaltemp;
+	bool		has_index_context;
+	bool		has_rules_context;
+	bool		has_partition_context;
+	int			refcnt;
+	Size		relation_data_bytes;
+	Size		class_tuple_bytes;
+	Size		tuple_desc_bytes;
+	Size		tuple_constr_bytes;
+	Size		index_tuple_bytes;
+	Size		options_bytes;
+	Size		pubdesc_bytes;
+	Size		direct_payload_bytes;
+	Size		private_context_total_bytes;
+	Size		private_context_free_bytes;
+	Size		private_context_used_bytes;
+} PgRelCacheMemoryStats;
+
+typedef void (*PgRelCacheMemoryStatsCallback) (const PgRelCacheMemoryStats *stats,
+											  void *arg);
+
 /* ----------------
  *		RelationPtr is used in the executor to support index scans
  *		where we have to keep track of several index relations in an
@@ -108,6 +135,8 @@ extern int	errtableconstraint(Relation rel, const char *conname);
 extern void RelationCacheInitialize(void);
 extern void RelationCacheInitializePhase2(void);
 extern void RelationCacheInitializePhase3(void);
+extern void PgRelCacheCollectMemoryStats(PgRelCacheMemoryStatsCallback callback,
+										 void *arg);
 
 /*
  * Routine to create a relcache entry for an about-to-be-created relation

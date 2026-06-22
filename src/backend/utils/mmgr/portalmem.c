@@ -113,7 +113,7 @@ EnablePortalManager(void)
 
 	TopPortalContext = AllocSetContextCreate(TopMemoryContext,
 											 "TopPortalContext",
-											 ALLOCSET_DEFAULT_SIZES);
+											 ALLOCSET_START_SMALL_SIZES);
 
 	ctl.keysize = MAX_PORTALNAME_LEN;
 	ctl.entrysize = sizeof(PortalHashEnt);

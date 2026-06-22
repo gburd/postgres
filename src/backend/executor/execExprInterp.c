@@ -604,8 +604,6 @@ ExecInterpExpr(ExprState *state, ExprContext *econtext, bool *isnull)
 
 	StaticAssertDecl(lengthof(local_dispatch_table) == EEOP_LAST + 1,
 					 "dispatch_table out of whack with ExprEvalOp");
-	StaticAssertDecl(EEOP_LAST <= PG_BACKEND_EXPR_INTERP_MAX_OPS,
-					 "backend expression interpreter lookup table too small");
 
 	if (unlikely(state == NULL))
 		return PointerGetDatum(local_dispatch_table);
@@ -2942,6 +2940,9 @@ ExecInitInterpreter(void)
 	{
 		dispatch_table = (const void **)
 			DatumGetPointer(ExecInterpExpr(NULL, NULL, NULL));
+		reverse_dispatch_table = (ExprEvalOpLookup *)
+			MemoryContextAlloc(TopMemoryContext,
+							   sizeof(ExprEvalOpLookup) * EEOP_LAST);
 
 		/* build reverse lookup table */
 		for (int i = 0; i < EEOP_LAST; i++)

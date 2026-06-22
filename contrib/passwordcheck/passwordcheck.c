@@ -33,12 +33,56 @@ PG_MODULE_MAGIC_EXT(
 					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
 );
 
+#define PASSWORDCHECK_SESSION_STATE_KEY "passwordcheck.session"
+#define PASSWORDCHECK_RUNTIME_STATE_KEY "passwordcheck.runtime"
+
+typedef struct PasswordcheckSessionState
+{
+	bool		initialized;
+	int			min_password_length;
+} PasswordcheckSessionState;
+
+typedef struct PasswordcheckRuntimeState
+{
+	check_password_hook_type prev_check_password_hook;
+	bool		hook_installed;
+} PasswordcheckRuntimeState;
+
+static PasswordcheckRuntimeState *
+passwordcheck_runtime_state(void)
+{
+	return (PasswordcheckRuntimeState *)
+		PgRuntimeEnsureExtensionPrivateState(PASSWORDCHECK_RUNTIME_STATE_KEY,
+											 sizeof(PasswordcheckRuntimeState),
+											 NULL);
+}
+
+static PasswordcheckSessionState *
+passwordcheck_session_state(void)
+{
+	PasswordcheckSessionState *state;
+
+	state = (PasswordcheckSessionState *)
+		PgSessionEnsureExtensionPrivateState(PASSWORDCHECK_SESSION_STATE_KEY,
+											 sizeof(PasswordcheckSessionState),
+											 NULL);
+	if (!state->initialized)
+	{
+		state->min_password_length = 8;
+		state->initialized = true;
+	}
+
+	return state;
+}
+
 /* Saved hook value */
-static PG_GLOBAL_RUNTIME check_password_hook_type prev_check_password_hook = NULL;
-static PG_GLOBAL_RUNTIME bool passwordcheck_hook_installed = false;
+#define prev_check_password_hook \
+	(passwordcheck_runtime_state()->prev_check_password_hook)
+#define passwordcheck_hook_installed \
+	(passwordcheck_runtime_state()->hook_installed)
 
 /* GUC variables */
-#define min_password_length (*PgCurrentPasswordcheckMinPasswordLengthRef())
+#define min_password_length (passwordcheck_session_state()->min_password_length)
 
 /*
  * check_password

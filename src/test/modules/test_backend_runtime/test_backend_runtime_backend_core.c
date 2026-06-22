@@ -300,11 +300,15 @@ test_backend_expr_interp_state_is_backend_local(PG_FUNCTION_ARGS)
 	PgBackend	fake_backend2;
 	const void *dispatch_one[1];
 	const void *dispatch_two[1];
+	PgBackendExprEvalOpLookup reverse_dispatch_one[1];
+	PgBackendExprEvalOpLookup reverse_dispatch_two[1];
 	bool		ok = true;
 
 	saved_backend = CurrentPgBackend;
 	MemSet(&fake_backend1, 0, sizeof(fake_backend1));
 	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
+	MemSet(reverse_dispatch_one, 0, sizeof(reverse_dispatch_one));
+	MemSet(reverse_dispatch_two, 0, sizeof(reverse_dispatch_two));
 	dispatch_one[0] = &fake_backend1;
 	dispatch_two[0] = &fake_backend2;
 
@@ -312,26 +316,31 @@ test_backend_expr_interp_state_is_backend_local(PG_FUNCTION_ARGS)
 	{
 		PgSetCurrentBackend(&fake_backend1);
 		PgCurrentExprInterpState()->dispatch_table = dispatch_one;
-		PgCurrentExprInterpState()->reverse_dispatch_table[0].opcode = &fake_backend1;
-		PgCurrentExprInterpState()->reverse_dispatch_table[0].op = 11;
+		PgCurrentExprInterpState()->reverse_dispatch_table = reverse_dispatch_one;
+		reverse_dispatch_one[0].opcode = &fake_backend1;
+		reverse_dispatch_one[0].op = 11;
 
 		PgSetCurrentBackend(&fake_backend2);
 		ok = ok && PgCurrentExprInterpState()->dispatch_table == NULL;
-		ok = ok && PgCurrentExprInterpState()->reverse_dispatch_table[0].opcode == NULL;
-		ok = ok && PgCurrentExprInterpState()->reverse_dispatch_table[0].op == 0;
+		ok = ok && PgCurrentExprInterpState()->reverse_dispatch_table == NULL;
 		PgCurrentExprInterpState()->dispatch_table = dispatch_two;
-		PgCurrentExprInterpState()->reverse_dispatch_table[0].opcode = &fake_backend2;
-		PgCurrentExprInterpState()->reverse_dispatch_table[0].op = 22;
+		PgCurrentExprInterpState()->reverse_dispatch_table = reverse_dispatch_two;
+		reverse_dispatch_two[0].opcode = &fake_backend2;
+		reverse_dispatch_two[0].op = 22;
 
 		PgSetCurrentBackend(&fake_backend1);
 		ok = ok && PgCurrentExprInterpState()->dispatch_table == dispatch_one;
-		ok = ok && PgCurrentExprInterpState()->reverse_dispatch_table[0].opcode == &fake_backend1;
-		ok = ok && PgCurrentExprInterpState()->reverse_dispatch_table[0].op == 11;
+		ok = ok && PgCurrentExprInterpState()->reverse_dispatch_table ==
+			reverse_dispatch_one;
+		ok = ok && reverse_dispatch_one[0].opcode == &fake_backend1;
+		ok = ok && reverse_dispatch_one[0].op == 11;
 
 		PgSetCurrentBackend(&fake_backend2);
 		ok = ok && PgCurrentExprInterpState()->dispatch_table == dispatch_two;
-		ok = ok && PgCurrentExprInterpState()->reverse_dispatch_table[0].opcode == &fake_backend2;
-		ok = ok && PgCurrentExprInterpState()->reverse_dispatch_table[0].op == 22;
+		ok = ok && PgCurrentExprInterpState()->reverse_dispatch_table ==
+			reverse_dispatch_two;
+		ok = ok && reverse_dispatch_two[0].opcode == &fake_backend2;
+		ok = ok && reverse_dispatch_two[0].op == 22;
 
 		PgSetCurrentBackend(saved_backend);
 	}

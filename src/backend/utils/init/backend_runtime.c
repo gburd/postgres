@@ -17,6 +17,9 @@
 #define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
 #include <unistd.h>
 
 #include "access/gin.h"
@@ -43,6 +46,7 @@
 #include "executor/spi.h"
 #include "jit/jit.h"
 #include "lib/dshash.h"
+#include "libpq/libpq.h"
 #include "libpq/crypt.h"
 #include "miscadmin.h"
 #include "nodes/queryjumble.h"
@@ -130,6 +134,7 @@ PG_THREAD_LOCAL PG_GLOBAL_CARRIER const void *variable##ThreadOwner = NULL;
 static PG_GLOBAL_RUNTIME PgRuntime process_runtime;
 static PG_GLOBAL_RUNTIME PgRuntime thread_runtime;
 static PG_GLOBAL_RUNTIME bool thread_runtime_initialized = false;
+static PG_GLOBAL_RUNTIME MemoryContext thread_runtime_server_guc_context = NULL;
 static PG_GLOBAL_CARRIER PgCarrier process_carrier = {
 	.wait_event_signal_fd = -1,
 	.wait_event_selfpipe_readfd = -1,
@@ -139,6 +144,14 @@ static PG_GLOBAL_BACKEND PgBackend process_backend;
 static PG_GLOBAL_SESSION PgSession process_session;
 static PG_GLOBAL_CONNECTION PgConnection process_connection;
 static PG_GLOBAL_EXECUTION PgExecution process_execution;
+
+static MemoryContext PgRuntimeThreadServerGUCContext(void);
+static char *PgRuntimeCopyThreadServerGUCString(char *current,
+												const char *source);
+static bool PgRuntimeThreadServerGUCStringIsOwned(char *value);
+static void PgRuntimeCopyThreadServerGUCState(const PgRuntimeServerGUCState *source);
+static void PgRuntimeRefreshThreadServerGUCState(void);
+static void PgRuntimeConfigureThreadedAllocator(bool pooled_protocol);
 
 PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
 PgBackendInstrumentationState *PgCurrentBackendInstrumentationState(void);
@@ -613,9 +626,22 @@ PgCarrierAttachBackend(PgCarrier *carrier, PgBackend *backend,
 	execution->backend = backend;
 	execution->session = session;
 	execution->carrier = carrier;
+	PgRuntimeProtocolSchedulerCarrierBecameActive(carrier);
 
 	PgRuntimeSetCurrentWork(runtime, carrier, backend, session, connection,
 							execution, true);
+	if (PgRuntimeIsPooledProtocol(runtime) &&
+		backend->my_proc != NULL &&
+		backend->core.latch == &backend->my_proc->procLatch)
+	{
+		ReownLatchCurrentThread(backend->core.latch);
+		RefreshLatchWaitSetCurrentCarrier();
+		if (FeBeWaitSet != NULL)
+			ModifyWaitEvent(FeBeWaitSet, FeBeWaitSetLatchPos, WL_LATCH_SET,
+							MyLatch);
+	}
+	if (PgRuntimeIsPooledProtocol(runtime))
+		RestoreBufferManagerIdleMemory();
 }
 
 void
@@ -641,6 +667,7 @@ PgCarrierDetachBackend(PgCarrier *carrier, PgBackend *backend)
 		backend->carrier = NULL;
 	if (execution != NULL && execution->carrier == carrier)
 		execution->carrier = NULL;
+	PgRuntimeProtocolSchedulerCarrierBecameIdle(carrier);
 
 	if (CurrentPgCarrier == carrier)
 		PgRuntimeSetCurrentWork(runtime, carrier, NULL, NULL, NULL, NULL,
@@ -706,6 +733,8 @@ PgRuntimeResetAfterFork(void)
 void
 InitializePgProcessRuntime(void)
 {
+	BackendType backend_type = MyBackendType;
+
 	/*
 	 * Bootstrap and standalone startup can call InitProcess() before BaseInit()
 	 * installs the process runtime.  Preserve the PGPROC/latch/wait-event
@@ -758,7 +787,7 @@ InitializePgProcessRuntime(void)
 	PgBackendInitializeRuntimeObject(&process_backend, &process_runtime,
 									 &process_carrier, &process_session,
 									 &process_connection, &process_execution,
-									 MyBackendType, NULL);
+									 backend_type, NULL);
 	PgBackendAdoptEarlyState(&process_backend);
 	process_backend.my_proc = my_proc;
 	process_backend.my_proc_number = my_proc_number;
@@ -787,35 +816,215 @@ InitializePgProcessRuntime(void)
 		MyProc->backendId = process_backend.id;
 }
 
+static MemoryContext
+PgRuntimeThreadServerGUCContext(void)
+{
+	MemoryContext parent;
+
+	if (thread_runtime_server_guc_context != NULL)
+		return thread_runtime_server_guc_context;
+
+	parent = TopMemoryContext;
+	Assert(parent != NULL);
+	thread_runtime_server_guc_context =
+		AllocSetContextCreate(parent,
+							  "thread runtime server GUC state",
+							  ALLOCSET_DEFAULT_SIZES);
+	return thread_runtime_server_guc_context;
+}
+
+/*
+ * The thread runtime is shared by many logical sessions.  Server GUC strings
+ * must therefore live in address-space runtime memory, not in the
+ * per-session GUC contexts that pooled carriers repeatedly create and delete.
+ */
+static bool
+PgRuntimeThreadServerGUCStringIsOwned(char *value)
+{
+	return value != NULL &&
+		thread_runtime_server_guc_context != NULL &&
+		GetMemoryChunkContext(value) == thread_runtime_server_guc_context;
+}
+
+static char *
+PgRuntimeCopyThreadServerGUCString(char *current, const char *source)
+{
+	if (current != NULL && source != NULL && strcmp(current, source) == 0)
+		return current;
+
+	if (PgRuntimeThreadServerGUCStringIsOwned(current))
+		pfree(current);
+
+	if (source == NULL)
+		return NULL;
+
+	return MemoryContextStrdup(PgRuntimeThreadServerGUCContext(), source);
+}
+
+static void
+PgRuntimeCopyThreadServerGUCState(const PgRuntimeServerGUCState *source)
+{
+	PgRuntimeServerGUCState *dest = &thread_runtime.server_guc;
+
+	Assert(source != NULL);
+	Assert(source->initialized);
+
+	dest->initialized = true;
+	dest->cluster_name_value =
+		PgRuntimeCopyThreadServerGUCString(dest->cluster_name_value,
+										   source->cluster_name_value);
+	dest->config_file_name =
+		PgRuntimeCopyThreadServerGUCString(dest->config_file_name,
+										   source->config_file_name);
+	dest->hba_file_name =
+		PgRuntimeCopyThreadServerGUCString(dest->hba_file_name,
+										   source->hba_file_name);
+	dest->ident_file_name =
+		PgRuntimeCopyThreadServerGUCString(dest->ident_file_name,
+										   source->ident_file_name);
+	dest->hosts_file_name =
+		PgRuntimeCopyThreadServerGUCString(dest->hosts_file_name,
+										   source->hosts_file_name);
+	dest->external_pid_file_value =
+		PgRuntimeCopyThreadServerGUCString(dest->external_pid_file_value,
+										   source->external_pid_file_value);
+}
+
+static void
+PgRuntimeRefreshThreadServerGUCState(void)
+{
+	PgRuntimeServerGUCState *early_server_guc;
+
+	/*
+	 * File-location server GUCs are postmaster-only.  Once the shared thread
+	 * runtime has copied them into durable address-space memory, do not
+	 * refresh them from early bootstrap fallback state that auxiliary threads
+	 * may temporarily rebind while startup is still unwinding.
+	 */
+	if (PgRuntimeServerGUCStateHasConfigPaths(&thread_runtime.server_guc))
+		return;
+
+	early_server_guc = PgEarlyRuntimeServerGUCState();
+	if (PgRuntimeServerGUCStateHasConfigPaths(early_server_guc))
+		PgRuntimeCopyThreadServerGUCState(early_server_guc);
+	else if (PgRuntimeServerGUCStateHasConfigPaths(&process_runtime.server_guc))
+		PgRuntimeCopyThreadServerGUCState(&process_runtime.server_guc);
+	else if (early_server_guc->initialized)
+		PgRuntimeCopyThreadServerGUCState(early_server_guc);
+	else if (process_runtime.server_guc.initialized)
+		PgRuntimeCopyThreadServerGUCState(&process_runtime.server_guc);
+	else if (!thread_runtime.server_guc.initialized)
+		PgRuntimeInitializeServerGUCState(&thread_runtime.server_guc);
+}
+
+static void
+PgRuntimeConfigureThreadedAllocator(bool pooled_protocol)
+{
+#if defined(__GLIBC__)
+	int			arena_max = pooled_protocol ? 1 : 4;
+
+	/*
+	 * Pooled protocol mode targets many mostly-idle logical sessions in one
+	 * postmaster child.  Glibc's default arena growth preserves allocator
+	 * throughput for pinned hot paths, but retains substantial private memory
+	 * in pooled idle-connection profiles and in thread-per-session connection
+	 * churn.  Keep pooled mode modest by default, use a less aggressive cap
+	 * for pinned-thread mode, and let an operator-provided MALLOC_ARENA_MAX
+	 * win.
+	 */
+	if (getenv("MALLOC_ARENA_MAX") == NULL)
+		(void) mallopt(M_ARENA_MAX, arena_max);
+
+	if (pooled_protocol)
+	{
+		if (getenv("MALLOC_TRIM_THRESHOLD_") == NULL)
+			(void) mallopt(M_TRIM_THRESHOLD, 128 * 1024);
+		if (getenv("MALLOC_TOP_PAD_") == NULL)
+			(void) mallopt(M_TOP_PAD, 0);
+	}
+#endif
+}
+
 void
 InitializePgThreadRuntime(PgBackendExitContinuation exit_backend)
 {
 	if (!thread_runtime_initialized)
 	{
-		PgRuntimeServerGUCState *early_server_guc;
+		PgRuntimeConfigureThreadedAllocator(PgRuntimePooledProtocolRequested());
 
 		MemSet(&thread_runtime, 0, sizeof(thread_runtime));
 		PgRuntimeInitializeRuntimeObject(&thread_runtime);
 
-		thread_runtime.kind = PG_RUNTIME_THREAD_PER_SESSION;
-		thread_runtime.extension_backend_model =
-			PG_BACKEND_MODEL_THREAD_PER_SESSION;
-		early_server_guc = PgEarlyRuntimeServerGUCState();
-		if (PgRuntimeServerGUCStateHasConfigPaths(&process_runtime.server_guc))
-			thread_runtime.server_guc = process_runtime.server_guc;
-		else if (PgRuntimeServerGUCStateHasConfigPaths(early_server_guc))
-			thread_runtime.server_guc = *early_server_guc;
-		else if (process_runtime.server_guc.initialized)
-			thread_runtime.server_guc = process_runtime.server_guc;
+		if (PgRuntimePooledProtocolRequested())
+		{
+			thread_runtime.kind = PG_RUNTIME_POOLED_PROTOCOL;
+			thread_runtime.extension_backend_model =
+				PG_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE;
+		}
 		else
-			PgRuntimeInitializeServerGUCState(&thread_runtime.server_guc);
+		{
+			thread_runtime.kind = PG_RUNTIME_THREAD_PER_SESSION;
+			thread_runtime.extension_backend_model =
+				PG_BACKEND_MODEL_THREAD_PER_SESSION;
+		}
 		thread_runtime.extension_modules = process_runtime.extension_modules;
 		PgRuntimeEnsureExtensionModuleMemoryContext(&thread_runtime.extension_modules);
 		PgBackendInitializeIdCounter();
 		thread_runtime_initialized = true;
 	}
 
+	PgRuntimeRefreshThreadServerGUCState();
 	thread_runtime.exit_backend = exit_backend;
+}
+
+void
+InitializePgThreadCarrierRuntimeState(PgCarrier *carrier)
+{
+	PgExecution *scheduler_execution;
+
+	Assert(carrier != NULL);
+	Assert(thread_runtime_initialized);
+
+	PgCarrierInitializeRuntimeObject(carrier);
+	scheduler_execution = malloc(sizeof(PgExecution));
+	if (scheduler_execution == NULL)
+		elog(FATAL, "out of memory allocating carrier scheduler execution state");
+	MemSet(scheduler_execution, 0, sizeof(PgExecution));
+	PgExecutionInitializeRuntimeObject(scheduler_execution, NULL, NULL,
+									   carrier);
+
+	carrier->kind = PG_CARRIER_THREAD;
+	carrier->runtime = &thread_runtime;
+	carrier->scheduler_execution = scheduler_execution;
+}
+
+void
+InitializePgThreadBackendLogicalState(PgThreadBackendLogicalState *logical,
+									  PgCarrier *carrier,
+									  BackendType backend_type,
+									  struct Port *port,
+									  struct Latch *interrupt_latch)
+{
+	bool		static_guc_defaults;
+
+	Assert(logical != NULL);
+	Assert(thread_runtime_initialized);
+
+	MemSet(logical, 0, sizeof(*logical));
+
+	PgBackendInitializeRuntimeObject(&logical->backend, &thread_runtime,
+									 carrier, &logical->session,
+									 &logical->connection, &logical->execution,
+									 backend_type, interrupt_latch);
+	static_guc_defaults =
+		PgSessionSetStaticGUCDefaultsForInitialization(true);
+	PgSessionInitializeRuntimeObject(&logical->session, &logical->backend,
+									 &logical->connection, &logical->execution);
+	(void) PgSessionSetStaticGUCDefaultsForInitialization(static_guc_defaults);
+	PgConnectionInitializeRuntimeObject(&logical->connection, &logical->backend,
+										&logical->session, port);
+	PgExecutionInitializeRuntimeObject(&logical->execution, &logical->backend,
+									   &logical->session, carrier);
 }
 
 void
@@ -824,46 +1033,83 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 									  struct Port *port,
 									  struct Latch *interrupt_latch)
 {
+	PgThreadBackendLogicalState *logical;
+	PgExecution *scheduler_execution;
+	bool		static_guc_defaults;
+
 	Assert(state != NULL);
 	Assert(thread_runtime_initialized);
 
 	MemSet(state, 0, sizeof(*state));
-	PgCarrierInitializeRuntimeObject(&state->carrier);
+	logical = &state->logical;
 
+	PgCarrierInitializeRuntimeObject(&state->carrier);
+	scheduler_execution = malloc(sizeof(PgExecution));
+	if (scheduler_execution == NULL)
+		elog(FATAL, "out of memory allocating carrier scheduler execution state");
+	MemSet(scheduler_execution, 0, sizeof(PgExecution));
+	PgExecutionInitializeRuntimeObject(scheduler_execution, NULL, NULL,
+									   &state->carrier);
 	state->carrier.kind = PG_CARRIER_THREAD;
 	state->carrier.runtime = &thread_runtime;
-	state->carrier.current_backend = &state->backend;
-	state->carrier.current_session = &state->session;
-	state->carrier.current_execution = &state->execution;
+	state->carrier.scheduler_execution = scheduler_execution;
 
-	PgBackendInitializeRuntimeObject(&state->backend, &thread_runtime,
-									 &state->carrier, &state->session,
-									 &state->connection, &state->execution,
+	PgBackendInitializeRuntimeObject(&logical->backend, &thread_runtime,
+									 &state->carrier, &logical->session,
+									 &logical->connection, &logical->execution,
 									 backend_type, interrupt_latch);
-	PgSessionInitializeRuntimeObject(&state->session, &state->backend,
-									 &state->connection, &state->execution);
-	PgConnectionInitializeRuntimeObject(&state->connection, &state->backend,
-										&state->session, port);
-	PgExecutionInitializeRuntimeObject(&state->execution, &state->backend,
-									   &state->session, &state->carrier);
+	static_guc_defaults =
+		PgSessionSetStaticGUCDefaultsForInitialization(true);
+	PgSessionInitializeRuntimeObject(&logical->session, &logical->backend,
+									 &logical->connection, &logical->execution);
+	(void) PgSessionSetStaticGUCDefaultsForInitialization(static_guc_defaults);
+	PgConnectionInitializeRuntimeObject(&logical->connection, &logical->backend,
+										&logical->session, port);
+	PgExecutionInitializeRuntimeObject(&logical->execution, &logical->backend,
+									   &logical->session, &state->carrier);
+
+	state->carrier.current_backend = &logical->backend;
+	state->carrier.current_session = &logical->session;
+	state->carrier.current_execution = &logical->execution;
 }
 
 void
 InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 {
+	PgThreadBackendLogicalState *logical;
+	PgExecution *scheduler_execution;
+
 	Assert(state != NULL);
 
-	state->carrier.current_backend = &state->backend;
-	state->carrier.current_session = &state->session;
-	state->carrier.current_execution = &state->execution;
-	PgBackendAdoptEarlyState(&state->backend);
-	PgSessionAdoptEarlyState(&state->session);
-	PgConnectionAdoptEarlyState(&state->connection,
-								state->connection.identity.port);
-	PgExecutionAdoptEarlyState(&state->execution);
-	PgRuntimeSetCurrentWork(&thread_runtime, &state->carrier, &state->backend,
-							&state->session, &state->connection,
-							&state->execution, true);
+	logical = &state->logical;
+	state->carrier.current_backend = &logical->backend;
+	state->carrier.current_session = &logical->session;
+	state->carrier.current_execution = &logical->execution;
+	PgBackendAdoptEarlyState(&logical->backend);
+	PgSessionAdoptEarlyState(&logical->session);
+	PgConnectionAdoptEarlyState(&logical->connection,
+								logical->connection.identity.port);
+	PgExecutionAdoptEarlyState(&logical->execution);
+	PgRuntimeSetCurrentWork(&thread_runtime, &state->carrier,
+							&logical->backend, &logical->session,
+							&logical->connection, &logical->execution, true);
+	scheduler_execution = state->carrier.scheduler_execution;
+	if (scheduler_execution != NULL &&
+		scheduler_execution->memory_contexts.top_context == NULL)
+	{
+		scheduler_execution->memory_contexts.top_context =
+			logical->execution.memory_contexts.top_context;
+		scheduler_execution->memory_contexts.current_context =
+			logical->execution.memory_contexts.current_context != NULL ?
+			logical->execution.memory_contexts.current_context :
+			logical->execution.memory_contexts.top_context;
+		scheduler_execution->memory_contexts.error_context =
+			logical->execution.memory_contexts.error_context;
+		scheduler_execution->resource_owners.current_owner =
+			logical->execution.resource_owners.current_owner;
+		scheduler_execution->resource_owners.resource_owner_context =
+			logical->execution.resource_owners.resource_owner_context;
+	}
 	InitializeThreadedSessionRequiredGUCOptions();
 }
 
@@ -963,6 +1209,62 @@ PgCurrentCarrierState(void)
 	return CurrentPgCarrier;
 }
 
+bool
+PgRuntimeKindIsThreadBacked(PgRuntimeKind kind)
+{
+	return kind == PG_RUNTIME_THREAD_PER_SESSION ||
+		kind == PG_RUNTIME_POOLED_PROTOCOL;
+}
+
+bool
+PgRuntimeIsThreadBacked(PgRuntime *runtime)
+{
+	return runtime != NULL &&
+		PgRuntimeKindIsThreadBacked(runtime->kind);
+}
+
+bool
+PgRuntimeKindIsPooledProtocol(PgRuntimeKind kind)
+{
+	return kind == PG_RUNTIME_POOLED_PROTOCOL;
+}
+
+bool
+PgRuntimeIsPooledProtocol(PgRuntime *runtime)
+{
+	return runtime != NULL &&
+		PgRuntimeKindIsPooledProtocol(runtime->kind);
+}
+
+bool
+PgRuntimePooledProtocolRequested(void)
+{
+	return multithreaded && pooled_protocol_carriers > 0;
+}
+
+int
+PgRuntimePooledProtocolCarrierLimit(void)
+{
+	return pooled_protocol_carriers;
+}
+
+uint32
+PgRuntimePooledProtocolIdleCarrierCount(void)
+{
+	PgProtocolSchedulerState *scheduler;
+	uint32		idle_carriers;
+
+	if (!thread_runtime_initialized ||
+		thread_runtime.kind != PG_RUNTIME_POOLED_PROTOCOL)
+		return 0;
+
+	scheduler = &thread_runtime.protocol_scheduler;
+	SpinLockAcquire(&scheduler->lock);
+	idle_carriers = scheduler->idle_carrier_count;
+	SpinLockRelease(&scheduler->lock);
+
+	return idle_carriers;
+}
 
 PgBackendLaunchModel
 PgRuntimeGetBackendLaunchModel(BackendType backend_type)
@@ -1011,7 +1313,7 @@ void
 PgRuntimeSetExtensionBackendModel(PgBackendModel backend_model)
 {
 	if (backend_model < PG_BACKEND_MODEL_PROCESS ||
-		backend_model > PG_BACKEND_MODEL_POOLED_SCHEDULER)
+		backend_model > PG_BACKEND_MODEL_TASK_REENTRANT)
 		elog(ERROR, "invalid backend model: %d", backend_model);
 
 	if (CurrentPgRuntime == NULL)
@@ -1019,8 +1321,8 @@ PgRuntimeSetExtensionBackendModel(PgBackendModel backend_model)
 
 	/*
 	 * PG_BACKEND_MODEL_POOLED_SCHEDULER is a transitional generic marker.  The
-	 * protocol-boundary scheduler must split protocol-affine from migratable
-	 * module promises before using a stricter pooled runtime requirement.
+	 * protocol-boundary scheduler uses stricter protocol-affine and migratable
+	 * module promises before claiming Phase 15 carrier-pool compatibility.
 	 */
 	check_loaded_modules_backend_model(backend_model);
 	CurrentPgRuntime->extension_backend_model = backend_model;

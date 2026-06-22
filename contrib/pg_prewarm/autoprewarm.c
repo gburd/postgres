@@ -100,6 +100,10 @@ typedef struct AutoPrewarmReadStreamData
 	BlockNumber nblocks;
 } AutoPrewarmReadStreamData;
 
+typedef struct AutoPrewarmBackendState
+{
+	AutoPrewarmSharedState *state;
+} AutoPrewarmBackendState;
 
 PGDLLEXPORT void autoprewarm_main(Datum main_arg);
 PGDLLEXPORT void autoprewarm_database_main(Datum main_arg);
@@ -113,15 +117,53 @@ static void apw_start_leader_worker(void);
 static void apw_start_database_worker(void);
 static bool apw_init_shmem(void);
 static void apw_detach_shmem(int code, Datum arg);
+#define PG_PREWARM_RUNTIME_STATE_KEY "pg_prewarm.autoprewarm.runtime"
+#define PG_PREWARM_BACKEND_STATE_KEY "pg_prewarm.autoprewarm.backend"
+
+typedef struct AutoPrewarmRuntimeState
+{
+	bool		initialized;
+	bool		autoprewarm;
+	int			autoprewarm_interval;
+} AutoPrewarmRuntimeState;
+
 static int	apw_compare_blockinfo(const void *p, const void *q);
+
+static AutoPrewarmRuntimeState *
+apw_runtime_state(void)
+{
+	AutoPrewarmRuntimeState *state;
+
+	state = (AutoPrewarmRuntimeState *)
+		PgRuntimeEnsureExtensionPrivateState(PG_PREWARM_RUNTIME_STATE_KEY,
+											 sizeof(AutoPrewarmRuntimeState),
+											 NULL);
+	if (!state->initialized)
+	{
+		state->autoprewarm = true;
+		state->autoprewarm_interval = 300;
+		state->initialized = true;
+	}
+
+	return state;
+}
+
+static AutoPrewarmBackendState *
+apw_backend_state(void)
+{
+	return (AutoPrewarmBackendState *)
+		PgBackendEnsureExtensionPrivateState(PG_PREWARM_BACKEND_STATE_KEY,
+											 sizeof(AutoPrewarmBackendState),
+											 NULL);
+}
 
 /* Backend-local pointer to shared autoprewarm state. */
 #define apw_state \
-	(PgCurrentBackendExtensionModuleState()->pg_prewarm_autoprewarm_state)
+	(apw_backend_state()->state)
 
 /* GUC variables. */
-static bool autoprewarm = true; /* start worker? */
-static int	autoprewarm_interval = 300; /* dump interval */
+#define autoprewarm (apw_runtime_state()->autoprewarm)
+#define autoprewarm_interval (apw_runtime_state()->autoprewarm_interval)
 
 static bool
 autoprewarm_threaded_runtime(void)

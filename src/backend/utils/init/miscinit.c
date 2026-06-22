@@ -90,6 +90,8 @@ static PG_GLOBAL_RUNTIME List *lock_files = NIL;
 void
 InitPostmasterChild(void)
 {
+	BackendType backend_type = MyBackendType;
+
 	IsUnderPostmaster = true;	/* we are a postmaster subprocess now */
 
 	/*
@@ -102,6 +104,7 @@ InitPostmasterChild(void)
 #endif
 
 	InitProcessGlobals();
+	MyBackendType = backend_type;
 
 	/*
 	 * make sure stderr is in binary mode before anything can possibly be
@@ -169,9 +172,11 @@ InitPostmasterChild(void)
 void
 InitStandaloneProcess(const char *argv0)
 {
+	BackendType backend_type = B_STANDALONE_BACKEND;
+
 	Assert(!IsPostmasterEnvironment);
 
-	MyBackendType = B_STANDALONE_BACKEND;
+	MyBackendType = backend_type;
 
 	/*
 	 * Start our win32 signal implementation
@@ -181,6 +186,7 @@ InitStandaloneProcess(const char *argv0)
 #endif
 
 	InitProcessGlobals();
+	MyBackendType = backend_type;
 
 	/* Initialize process-local latch support */
 	InitializeWaitEventSupport();

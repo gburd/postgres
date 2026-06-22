@@ -62,16 +62,6 @@
 	(&PgCurrentBackendLogState()->line_number)
 #define PgCurrentLogLinePidRef() \
 	(&PgCurrentBackendLogState()->line_pid)
-#define PgCurrentPgPlanAdviceContextRef() \
-	(&PgCurrentRuntimeExtensionModuleState()->pg_plan_advice_context)
-#define PgCurrentPgPlanAdviceAdvisorHookListRef() \
-	(&PgCurrentRuntimeExtensionModuleState()->pg_plan_advice_advisor_hook_list)
-#define PgCurrentBloomContextRef() \
-	(&PgCurrentRuntimeExtensionModuleState()->bloom_context)
-#define PgCurrentRendezvousHashRef() \
-	(&PgCurrentRuntimeExtensionModuleState()->rendezvous_hash)
-#define PgCurrentPgcryptoDesState() \
-	(&PgCurrentSessionExtensionModuleState()->pgcrypto_des)
 #define PgCurrentMyDatabaseIdRef() \
 	(&PgCurrentSessionDatabaseState()->database_id)
 #define PgCurrentMyDatabaseTableSpaceRef() \
@@ -186,64 +176,12 @@
 	(&PgCurrentSessionExtensionModuleState()->pltcl_reset_registered)
 #define PgCurrentPLsampleMemoryContextRef() \
 	(&PgCurrentSessionExtensionModuleState()->plsample_memory_context)
-#define PgCurrentRefintForeignPlansRef() \
-	(&PgCurrentSessionExtensionModuleState()->refint_foreign_plans)
-#define PgCurrentRefintNumForeignPlansRef() \
-	(&PgCurrentSessionExtensionModuleState()->refint_num_foreign_plans)
-#define PgCurrentRefintPrimaryPlansRef() \
-	(&PgCurrentSessionExtensionModuleState()->refint_primary_plans)
-#define PgCurrentRefintNumPrimaryPlansRef() \
-	(&PgCurrentSessionExtensionModuleState()->refint_num_primary_plans)
-#define PgCurrentRefintResetRegisteredRef() \
-	(&PgCurrentSessionExtensionModuleState()->refint_reset_registered)
-#define PgCurrentAuthDelayMillisecondsRef() \
-	(&PgCurrentSessionExtensionModuleState()->auth_delay_milliseconds)
-#define PgCurrentBasebackupToShellCommandRef() \
-	(&PgCurrentSessionExtensionModuleState()->basebackup_to_shell_command)
-#define PgCurrentBasebackupToShellRequiredRoleRef() \
-	(&PgCurrentSessionExtensionModuleState()->basebackup_to_shell_required_role)
-#define PgCurrentIsnWeakRef() \
-	(&PgCurrentSessionExtensionModuleState()->isn_weak)
-#define PgCurrentPasswordcheckMinPasswordLengthRef() \
-	(&PgCurrentSessionExtensionModuleState()->passwordcheck_min_password_length)
-#define PgCurrentDblinkContextRef() \
-	(&PgCurrentSessionExtensionModuleState()->dblink_context)
-#define PgCurrentDblinkPersistentConnectionRef() \
-	(&PgCurrentSessionExtensionModuleState()->dblink_persistent_connection)
-#define PgCurrentDblinkRemoteConnHashRef() \
-	(&PgCurrentSessionExtensionModuleState()->dblink_remote_conn_hash)
-#define PgCurrentDblinkResetRegisteredRef() \
-	(&PgCurrentSessionExtensionModuleState()->dblink_reset_registered)
-#define PgCurrentPostgresFdwOptionsContextRef() \
-	(&PgCurrentSessionExtensionModuleState()->postgres_fdw_options_context)
-#define PgCurrentPostgresFdwOptionsRef() \
-	(&PgCurrentSessionExtensionModuleState()->postgres_fdw_options)
-#define PgCurrentPostgresFdwApplicationNameRef() \
-	(&PgCurrentSessionExtensionModuleState()->postgres_fdw_application_name)
-#define PgCurrentPostgresFdwConnectionHashRef() \
-	(&PgCurrentSessionExtensionModuleState()->postgres_fdw_connection_hash)
-#define PgCurrentPostgresFdwShippableCacheHashRef() \
-	(&PgCurrentSessionExtensionModuleState()->postgres_fdw_shippable_cache_hash)
-#define PgCurrentPostgresFdwCursorNumberRef() \
-	(&PgCurrentSessionExtensionModuleState()->postgres_fdw_cursor_number)
-#define PgCurrentPostgresFdwPrepStmtNumberRef() \
-	(&PgCurrentSessionExtensionModuleState()->postgres_fdw_prep_stmt_number)
-#define PgCurrentPostgresFdwXactGotConnectionRef() \
-	(&PgCurrentSessionExtensionModuleState()->postgres_fdw_xact_got_connection)
-#define PgCurrentPostgresFdwReadOnlyLevelRef() \
-	(&PgCurrentSessionExtensionModuleState()->postgres_fdw_read_only_level)
-#define PgCurrentPostgresFdwConnectionCallbacksRegisteredRef() \
-	(&PgCurrentSessionExtensionModuleState()->postgres_fdw_connection_callbacks_registered)
-#define PgCurrentPostgresFdwShippableCallbacksRegisteredRef() \
-	(&PgCurrentSessionExtensionModuleState()->postgres_fdw_shippable_callbacks_registered)
 #define PgCurrentArchModuleCheckErrdetailStringRef() \
 	(&PgCurrentMaintenanceWorkerState()->arch_module_errdetail_string)
 #define PgCurrentRepackMessagePendingRef() \
 	(&PgCurrentRepackState()->message_pending)
 #define PgCurrentAioBackendRef() \
 	(&PgCurrentAioState()->my_backend)
-#define PgCurrentBasicArchiveDirectoryRef() \
-	(&PgCurrentBackendExtensionModuleState()->basic_archive_archive_directory)
 #define PgCurrentLocalBackendStatusTableRef() \
 	(&PgCurrentBackendActivityState()->backend_status_table)
 #define PgCurrentLocalNumBackendsRef() \

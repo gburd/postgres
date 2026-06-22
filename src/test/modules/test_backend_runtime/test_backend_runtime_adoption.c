@@ -19,6 +19,8 @@ test_thread_install_adopts_backend_fallback_state(PG_FUNCTION_ARGS)
 	PgBackend  *saved_backend;
 	PgThreadBackendRuntimeState state;
 	Latch		fake_latch;
+	void	  **extension_slot;
+	const char *extension_key = "test_backend_runtime.adoption";
 	bool		ok = true;
 
 	saved_backend = CurrentPgBackend;
@@ -37,31 +39,38 @@ test_thread_install_adopts_backend_fallback_state(PG_FUNCTION_ARGS)
 		PgCurrentAutovacuumState()->av_storage_param_cost_limit = 106;
 		PgCurrentRepackState()->current_segment = 107;
 		PgCurrentAioState()->my_io_worker_id = 108;
-		PgCurrentBackendExtensionModuleState()->pg_stash_advice_state =
-			(struct pgsa_shared_state *) &state;
+		extension_slot = (void **)
+			PgBackendEnsureExtensionPrivateState(extension_key,
+												 sizeof(void *),
+												 NULL);
+		*extension_slot = &state;
 		InterruptPending = true;
 		InterruptHoldoffCount = 109;
 
 		InitializePgThreadRuntime(NULL);
 		InitializePgThreadBackendRuntimeState(&state, B_BACKEND, NULL,
 											  &fake_latch);
-		PgBackendAdoptEarlyState(&state.backend);
+		PgBackendAdoptEarlyState(&state.logical.backend);
 
-		ok = ok && state.backend.walsender.is_walsender;
-		ok = ok && state.backend.replication.sync_rep_wait_mode == 101;
-		ok = ok && state.backend.logical_replication.slotsync_sleep_ms == 102;
-		ok = ok && dlist_is_empty(&state.backend.logical_replication.lsn_mapping);
-		ok = ok && state.backend.xlog.local_xlog_insert_allowed == 103;
-		ok = ok && state.backend.recovery.standby_wait_us == 104;
+		ok = ok && state.logical.backend.walsender.is_walsender;
+		ok = ok && state.logical.backend.replication.sync_rep_wait_mode == 101;
+		ok = ok && state.logical.backend.logical_replication.slotsync_sleep_ms == 102;
+		ok = ok && dlist_is_empty(&state.logical.backend.logical_replication.lsn_mapping);
+		ok = ok && state.logical.backend.xlog.local_xlog_insert_allowed == 103;
+		ok = ok && state.logical.backend.recovery.standby_wait_us == 104;
 		ok = ok &&
-			state.backend.maintenance_worker.walsummarizer_sleep_quanta == 105;
-		ok = ok && state.backend.autovacuum.av_storage_param_cost_limit == 106;
-		ok = ok && dlist_is_empty(&state.backend.autovacuum.database_list);
-		ok = ok && state.backend.repack.current_segment == 107;
-		ok = ok && state.backend.aio.my_io_worker_id == 108;
-		ok = ok && state.backend.pending_interrupts.interrupt_pending;
+			state.logical.backend.maintenance_worker.walsummarizer_sleep_quanta == 105;
+		ok = ok && state.logical.backend.autovacuum.av_storage_param_cost_limit == 106;
+		ok = ok && dlist_is_empty(&state.logical.backend.autovacuum.database_list);
+		ok = ok && state.logical.backend.repack.current_segment == 107;
+		ok = ok && state.logical.backend.aio.my_io_worker_id == 108;
+		PgSetCurrentBackend(&state.logical.backend);
+		extension_slot = (void **) PgBackendGetExtensionPrivateState(extension_key);
+		ok = ok && extension_slot != NULL && *extension_slot == &state;
+		PgSetCurrentBackend(NULL);
+		ok = ok && state.logical.backend.pending_interrupts.interrupt_pending;
 		ok = ok &&
-			state.backend.interrupt_holdoffs.interrupt_holdoff_count == 109;
+			state.logical.backend.interrupt_holdoffs.interrupt_holdoff_count == 109;
 
 		ok = ok && !PgCurrentWalSenderState()->is_walsender;
 		ok = ok && PgCurrentReplicationState()->sync_rep_wait_mode == -1;
@@ -77,8 +86,7 @@ test_thread_install_adopts_backend_fallback_state(PG_FUNCTION_ARGS)
 		ok = ok && dlist_is_empty(&PgCurrentAutovacuumState()->database_list);
 		ok = ok && PgCurrentRepackState()->current_segment == 0;
 		ok = ok && PgCurrentAioState()->my_io_worker_id == -1;
-		ok = ok &&
-			PgCurrentBackendExtensionModuleState()->pg_stash_advice_state == NULL;
+		ok = ok && PgBackendGetExtensionPrivateState(extension_key) == NULL;
 		ok = ok && !InterruptPending;
 		ok = ok && InterruptHoldoffCount == 0;
 
@@ -158,6 +166,13 @@ test_thread_install_adopts_session_execution_fallback_state(PG_FUNCTION_ARGS)
 		*PgCurrentTriggerDepthRef() = 88;
 		*PgCurrentAfterTriggersDataRef() = &execution;
 		*PgCurrentValgrindOldErrorCountRef() = 77;
+		*PgCurrentXLogInsertRegisteredBuffersRef() = NULL;
+		*PgCurrentXLogInsertMaxRegisteredBuffersRef() = 0;
+		*PgCurrentXLogInsertRDatasRef() = NULL;
+		*PgCurrentXLogInsertMaxRDatasRef() = 0;
+		*PgCurrentXLogInsertMainRDataLastRef() =
+			(XLogRecData *) PgCurrentXLogInsertMainRDataHeadRef();
+		*PgCurrentXLogInsertContextRef() = NULL;
 
 		PgSessionAdoptEarlyState(&session);
 		PgExecutionAdoptEarlyState(&execution);
@@ -193,6 +208,13 @@ test_thread_install_adopts_session_execution_fallback_state(PG_FUNCTION_ARGS)
 		ok = ok && execution.trigger.depth == 88;
 		ok = ok && execution.trigger.after_triggers_data == &execution;
 		ok = ok && execution.valgrind.old_error_count == 77;
+		ok = ok && execution.xloginsert.registered_buffers == NULL;
+		ok = ok && execution.xloginsert.max_registered_buffers == 0;
+		ok = ok && execution.xloginsert.rdatas == NULL;
+		ok = ok && execution.xloginsert.max_rdatas == 0;
+		ok = ok && execution.xloginsert.mainrdata_head == NULL;
+		ok = ok && execution.xloginsert.mainrdata_last == NULL;
+		ok = ok && execution.xloginsert.context == NULL;
 
 		TopMemoryContext = saved_top_memory_context;
 		CurrentMemoryContext = saved_current_memory_context;

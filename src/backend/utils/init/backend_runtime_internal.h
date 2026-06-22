@@ -193,6 +193,8 @@ extern PgRuntimeServerGUCState *PgCurrentRuntimeServerGUCState(void);
 extern void PgRuntimeInitializeExtensionModuleState(PgRuntimeExtensionModuleState *extension_modules);
 extern void PgRuntimeAdoptEarlyExtensionModuleState(PgRuntime *runtime);
 extern PgRuntimeExtensionModuleState *PgCurrentRuntimeExtensionModuleState(void);
+extern void PgRuntimeProtocolSchedulerCarrierBecameActive(PgCarrier *carrier);
+extern void PgRuntimeProtocolSchedulerCarrierBecameIdle(PgCarrier *carrier);
 #ifndef PgCurrentSessionLoopState
 extern PgSessionLoopState *PgCurrentSessionLoopState(void);
 #endif
@@ -487,6 +489,7 @@ extern void PgBackendResetTimeoutClosedState(PgBackendTimeoutState *timeout);
 #ifndef PgCurrentBackendPgStatPendingState
 extern PgBackendPgStatPendingState *PgCurrentBackendPgStatPendingState(void);
 #endif
+extern PgStat_LocalState *PgCurrentPgStatLocalStateSlow(void);
 #ifndef PgCurrentBackendMemoryManagerState
 extern PgBackendMemoryManagerState *PgCurrentBackendMemoryManagerState(void);
 #endif
@@ -511,6 +514,7 @@ extern void PgSessionInitializeVacuumState(PgSessionVacuumState *vacuum);
 extern void PgSessionInitializeLockWaitState(PgSessionLockWaitState *lock_wait);
 extern void PgSessionInitializeParserState(PgSessionParserState *parser);
 extern void PgSessionInitializeGUCState(PgSessionGUCState *guc);
+extern bool PgSessionSetStaticGUCDefaultsForInitialization(bool use_static);
 extern void PgSessionInitializePgStatState(PgSessionPgStatState *pgstat);
 extern void PgSessionInitializeExtensionModuleState(PgSessionExtensionModuleState *extension_modules);
 extern void PgSessionResetCatalogLookupClosedState(PgSession *session);

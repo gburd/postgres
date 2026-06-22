@@ -6,6 +6,7 @@
 #include "btree_gist.h"
 #include "btree_utils_var.h"
 #include "mb/pg_wchar.h"
+#include "utils/backend_runtime.h"
 #include "utils/fmgrprotos.h"
 #include "utils/sortsupport.h"
 
@@ -78,7 +79,16 @@ gbt_textcmp(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
 												 PointerGetDatum(b)));
 }
 
-static gbtree_vinfo tinfo =
+#define BTREE_GIST_TEXT_SESSION_STATE_KEY "btree_gist.text.session"
+
+typedef struct BtreeGistTextSessionState
+{
+	bool		initialized;
+	gbtree_vinfo tinfo;
+	gbtree_vinfo bptinfo;
+} BtreeGistTextSessionState;
+
+static const gbtree_vinfo tinfo_template =
 {
 	gbt_t_text,
 	0,
@@ -148,7 +158,7 @@ gbt_bpcharcmp(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
 												 PointerGetDatum(b)));
 }
 
-static gbtree_vinfo bptinfo =
+static const gbtree_vinfo bptinfo_template =
 {
 	gbt_t_bpchar,
 	0,
@@ -162,6 +172,40 @@ static gbtree_vinfo bptinfo =
 	NULL
 };
 
+static BtreeGistTextSessionState *
+btree_gist_text_session_state(void)
+{
+	BtreeGistTextSessionState *state;
+
+	state = (BtreeGistTextSessionState *)
+		PgSessionEnsureExtensionPrivateState(
+			BTREE_GIST_TEXT_SESSION_STATE_KEY,
+			sizeof(BtreeGistTextSessionState),
+			NULL);
+	if (!state->initialized)
+	{
+		state->tinfo = tinfo_template;
+		state->bptinfo = bptinfo_template;
+		state->tinfo.eml = pg_database_encoding_max_length();
+		state->bptinfo.eml = state->tinfo.eml;
+		state->initialized = true;
+	}
+
+	return state;
+}
+
+static const gbtree_vinfo *
+gbt_text_tinfo(void)
+{
+	return &btree_gist_text_session_state()->tinfo;
+}
+
+static const gbtree_vinfo *
+gbt_bpchar_tinfo(void)
+{
+	return &btree_gist_text_session_state()->bptinfo;
+}
+
 
 /**************************************************
  * GiST support functions
@@ -172,12 +216,7 @@ gbt_text_compress(PG_FUNCTION_ARGS)
 {
 	GISTENTRY  *entry = (GISTENTRY *) PG_GETARG_POINTER(0);
 
-	if (tinfo.eml == 0)
-	{
-		tinfo.eml = pg_database_encoding_max_length();
-	}
-
-	PG_RETURN_POINTER(gbt_var_compress(entry, &tinfo));
+	PG_RETURN_POINTER(gbt_var_compress(entry, gbt_text_tinfo()));
 }
 
 Datum
@@ -204,13 +243,8 @@ gbt_text_consistent(PG_FUNCTION_ARGS)
 	/* All cases served by this function are exact */
 	*recheck = false;
 
-	if (tinfo.eml == 0)
-	{
-		tinfo.eml = pg_database_encoding_max_length();
-	}
-
 	retval = gbt_var_consistent(&r, query, strategy, PG_GET_COLLATION(),
-								GIST_LEAF(entry), &tinfo, fcinfo->flinfo);
+								GIST_LEAF(entry), gbt_text_tinfo(), fcinfo->flinfo);
 
 	PG_RETURN_BOOL(retval);
 }
@@ -232,13 +266,8 @@ gbt_bpchar_consistent(PG_FUNCTION_ARGS)
 	/* All cases served by this function are exact */
 	*recheck = false;
 
-	if (bptinfo.eml == 0)
-	{
-		bptinfo.eml = pg_database_encoding_max_length();
-	}
-
 	retval = gbt_var_consistent(&r, query, strategy, PG_GET_COLLATION(),
-								GIST_LEAF(entry), &bptinfo, fcinfo->flinfo);
+								GIST_LEAF(entry), gbt_bpchar_tinfo(), fcinfo->flinfo);
 	PG_RETURN_BOOL(retval);
 }
 
@@ -249,7 +278,7 @@ gbt_text_union(PG_FUNCTION_ARGS)
 	int32	   *size = (int *) PG_GETARG_POINTER(1);
 
 	PG_RETURN_POINTER(gbt_var_union(entryvec, size, PG_GET_COLLATION(),
-									&tinfo, fcinfo->flinfo));
+									gbt_text_tinfo(), fcinfo->flinfo));
 }
 
 Datum
@@ -259,7 +288,7 @@ gbt_text_picksplit(PG_FUNCTION_ARGS)
 	GIST_SPLITVEC *v = (GIST_SPLITVEC *) PG_GETARG_POINTER(1);
 
 	gbt_var_picksplit(entryvec, v, PG_GET_COLLATION(),
-					  &tinfo, fcinfo->flinfo);
+					  gbt_text_tinfo(), fcinfo->flinfo);
 	PG_RETURN_POINTER(v);
 }
 
@@ -270,7 +299,8 @@ gbt_text_same(PG_FUNCTION_ARGS)
 	Datum		d2 = PG_GETARG_DATUM(1);
 	bool	   *result = (bool *) PG_GETARG_POINTER(2);
 
-	*result = gbt_var_same(d1, d2, PG_GET_COLLATION(), &tinfo, fcinfo->flinfo);
+	*result = gbt_var_same(d1, d2, PG_GET_COLLATION(), gbt_text_tinfo(),
+						   fcinfo->flinfo);
 	PG_RETURN_POINTER(result);
 }
 
@@ -282,7 +312,7 @@ gbt_text_penalty(PG_FUNCTION_ARGS)
 	float	   *result = (float *) PG_GETARG_POINTER(2);
 
 	PG_RETURN_POINTER(gbt_var_penalty(result, o, n, PG_GET_COLLATION(),
-									  &tinfo, fcinfo->flinfo));
+									  gbt_text_tinfo(), fcinfo->flinfo));
 }
 
 static int

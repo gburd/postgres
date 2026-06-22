@@ -17,6 +17,7 @@
 #include "common/sha1.h"
 #include "fmgr.h"
 #include "port/pg_bswap.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/uuid.h"
 #include "varatt.h"
@@ -121,6 +122,13 @@ PG_FUNCTION_INFO_V1(uuid_generate_v5);
 
 #ifdef HAVE_UUID_OSSP
 
+#define UUID_OSSP_SESSION_STATE_KEY "uuid-ossp.session"
+
+typedef struct UuidOsspSessionState
+{
+	uuid_t	   *cached_uuid[2];
+} UuidOsspSessionState;
+
 static void
 pguuid_complain(uuid_rc_t rc)
 {
@@ -134,6 +142,30 @@ pguuid_complain(uuid_rc_t rc)
 		ereport(ERROR,
 				(errcode(ERRCODE_EXTERNAL_ROUTINE_EXCEPTION),
 				 errmsg("OSSP uuid library failure: error code %d", rc)));
+}
+
+static void
+uuid_ossp_session_state_cleanup(void *arg)
+{
+	UuidOsspSessionState *state = (UuidOsspSessionState *) arg;
+
+	for (int i = 0; i < lengthof(state->cached_uuid); i++)
+	{
+		if (state->cached_uuid[i] != NULL)
+		{
+			(void) uuid_destroy(state->cached_uuid[i]);
+			state->cached_uuid[i] = NULL;
+		}
+	}
+}
+
+static UuidOsspSessionState *
+uuid_ossp_session_state(void)
+{
+	return (UuidOsspSessionState *)
+		PgSessionEnsureExtensionPrivateState(UUID_OSSP_SESSION_STATE_KEY,
+											 sizeof(UuidOsspSessionState),
+											 uuid_ossp_session_state_cleanup);
 }
 
 /*
@@ -156,20 +188,22 @@ pguuid_complain(uuid_rc_t rc)
 static uuid_t *
 get_cached_uuid_t(int which)
 {
-	static uuid_t *cached_uuid[2] = {NULL, NULL};
+	UuidOsspSessionState *state = uuid_ossp_session_state();
 
-	if (cached_uuid[which] == NULL)
+	Assert(which >= 0 && which < lengthof(state->cached_uuid));
+
+	if (state->cached_uuid[which] == NULL)
 	{
 		uuid_rc_t	rc;
 
-		rc = uuid_create(&cached_uuid[which]);
+		rc = uuid_create(&state->cached_uuid[which]);
 		if (rc != UUID_RC_OK)
 		{
-			cached_uuid[which] = NULL;
+			state->cached_uuid[which] = NULL;
 			pguuid_complain(rc);
 		}
 	}
-	return cached_uuid[which];
+	return state->cached_uuid[which];
 }
 
 static char *

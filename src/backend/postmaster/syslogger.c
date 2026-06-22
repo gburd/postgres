@@ -179,8 +179,7 @@ SysLoggerMain(const void *startup_data, size_t startup_data_len)
 	WaitEventSet *wes;
 	bool		threaded_logger;
 
-	threaded_logger = (CurrentPgRuntime != NULL &&
-					   CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION);
+	threaded_logger = PgRuntimeIsThreadBacked(CurrentPgRuntime);
 	syslogger_handoff_requested = false;
 
 	/*

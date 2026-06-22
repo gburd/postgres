@@ -237,7 +237,7 @@ pgstat_fetch_stat_io(void)
 {
 	pgstat_snapshot_fixed(PGSTAT_KIND_IO);
 
-	return &pgStatLocal.snapshot.io;
+	return &pgStatSnapshot.io;
 }
 
 /*
@@ -384,7 +384,7 @@ pgstat_io_snapshot_cb(void)
 	{
 		LWLock	   *bktype_lock = &pgStatLocal.shmem->io.locks[i];
 		PgStat_BktypeIO *bktype_shstats = &pgStatLocal.shmem->io.stats.stats[i];
-		PgStat_BktypeIO *bktype_snap = &pgStatLocal.snapshot.io.stats[i];
+		PgStat_BktypeIO *bktype_snap = &pgStatSnapshot.io.stats[i];
 
 		LWLockAcquire(bktype_lock, LW_SHARED);
 
@@ -393,7 +393,7 @@ pgstat_io_snapshot_cb(void)
 		 * the reset timestamp as well.
 		 */
 		if (i == 0)
-			pgStatLocal.snapshot.io.stat_reset_timestamp =
+			pgStatSnapshot.io.stat_reset_timestamp =
 				pgStatLocal.shmem->io.stats.stat_reset_timestamp;
 
 		/* using struct assignment due to better type safety */

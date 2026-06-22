@@ -62,5 +62,5 @@ PgCurrentResourceOwnerMemoryContext(void)
 	resource_owners = PgCurrentExecutionResourceOwners();
 	return PgRuntimeGetOwnedMemoryContextWithSizes(&resource_owners->resource_owner_context,
 												  "ResourceOwnerContext",
-												  ALLOCSET_DEFAULT_SIZES);
+												  ALLOCSET_START_SMALL_SIZES);
 }

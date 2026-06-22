@@ -617,6 +617,7 @@ extern void guc_free(void *ptr);
 
 extern void write_nondefault_variables(GucContext context);
 extern void read_nondefault_variables(void);
+extern void ResetGUCStateAtBackendExit(void);
 
 /* GUC serialization */
 extern Size EstimateGUCStateSpace(void);

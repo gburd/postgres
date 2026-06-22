@@ -28,20 +28,30 @@
 /*
  * Describes the valid options for objects that this wrapper uses.
  */
-typedef struct PgFdwOption
+struct PgFdwOption
 {
 	const char *keyword;
 	Oid			optcontext;		/* OID of catalog in which option may appear */
 	bool		is_libpq_opt;	/* true if it's used in libpq */
-} PgFdwOption;
+};
+
+PostgresFdwSessionState *
+postgres_fdw_session_state(void)
+{
+	return (PostgresFdwSessionState *)
+		PgSessionEnsureExtensionPrivateState(POSTGRES_FDW_SESSION_STATE_KEY,
+											 sizeof(PostgresFdwSessionState),
+											 NULL);
+}
 
 /*
  * Valid options for postgres_fdw.
  * Allocated and filled in InitPgFdwOptions.
  */
 #define postgres_fdw_options \
-	(*(PgFdwOption **) PgCurrentPostgresFdwOptionsRef())
-#define postgres_fdw_options_context (*PgCurrentPostgresFdwOptionsContextRef())
+	(postgres_fdw_session_state()->options)
+#define postgres_fdw_options_context \
+	(postgres_fdw_session_state()->options_context)
 
 /*
  * Helper functions
@@ -376,7 +386,7 @@ postgres_fdw_get_options_context(void)
 {
 	if (postgres_fdw_options_context == NULL)
 		postgres_fdw_options_context =
-			PgRuntimeGetOwnedMemoryContext(PgCurrentPostgresFdwOptionsContextRef(),
+			PgRuntimeGetOwnedMemoryContext(&postgres_fdw_options_context,
 										   "postgres_fdw options");
 
 	return postgres_fdw_options_context;

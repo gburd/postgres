@@ -23,10 +23,21 @@
 static inline PgBackendLockState *
 PgCurrentBackendLockStateFast(void)
 {
-	if (likely(CurrentPgBackendLockRuntimeState != NULL))
-		return CurrentPgBackendLockRuntimeState;
+	PgBackendLockState *locks;
 
-	return PgCurrentBackendLockState();
+	if (likely(CurrentPgBackendLockRuntimeState != NULL))
+		locks = CurrentPgBackendLockRuntimeState;
+	else
+		locks = PgCurrentBackendLockState();
+
+	if (unlikely(locks->held_lwlocks_array == NULL ||
+				 locks->held_lwlocks_capacity <= 0))
+	{
+		locks->held_lwlocks_array = locks->held_lwlocks_inline;
+		locks->held_lwlocks_capacity = PG_BACKEND_MAX_INLINE_LWLOCKS;
+	}
+
+	return locks;
 }
 
 int *
@@ -128,7 +139,7 @@ PgCurrentFastPathLocalUseCountsOwnedRef(void)
 PgBackendLWLockHandle *
 PgCurrentHeldLWLocks(void)
 {
-	return PgCurrentBackendLockStateFast()->held_lwlocks;
+	return PgCurrentBackendLockStateFast()->held_lwlocks_array;
 }
 
 int *

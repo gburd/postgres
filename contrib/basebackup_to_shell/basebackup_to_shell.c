@@ -26,6 +26,9 @@ PG_MODULE_MAGIC_EXT(
 					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
 );
 
+#define BASEBACKUP_TO_SHELL_SESSION_STATE_KEY "basebackup_to_shell.session"
+#define BASEBACKUP_TO_SHELL_RUNTIME_STATE_KEY "basebackup_to_shell.runtime"
+
 typedef struct bbsink_shell
 {
 	/* Common information for all types of sink. */
@@ -43,6 +46,17 @@ typedef struct bbsink_shell
 	/* Pipe to the running command. */
 	FILE	   *pipe;
 } bbsink_shell;
+
+typedef struct BasebackupToShellSessionState
+{
+	char	   *command;
+	char	   *required_role;
+} BasebackupToShellSessionState;
+
+typedef struct BasebackupToShellRuntimeState
+{
+	bool		target_registered;
+} BasebackupToShellRuntimeState;
 
 static void *shell_check_detail(char *target, char *target_detail);
 static bbsink *shell_get_sink(bbsink *next_sink, void *detail_arg);
@@ -67,11 +81,32 @@ static const bbsink_ops bbsink_shell_ops = {
 	.cleanup = bbsink_forward_cleanup
 };
 
-#define basebackup_to_shell_command (*PgCurrentBasebackupToShellCommandRef())
-#define basebackup_to_shell_required_role \
-	(*PgCurrentBasebackupToShellRequiredRoleRef())
+static BasebackupToShellSessionState *
+basebackup_to_shell_session_state(void)
+{
+	return (BasebackupToShellSessionState *)
+		PgSessionEnsureExtensionPrivateState(
+			BASEBACKUP_TO_SHELL_SESSION_STATE_KEY,
+			sizeof(BasebackupToShellSessionState),
+			NULL);
+}
 
-static PG_GLOBAL_RUNTIME bool shell_target_registered = false;
+static BasebackupToShellRuntimeState *
+basebackup_to_shell_runtime_state(void)
+{
+	return (BasebackupToShellRuntimeState *)
+		PgRuntimeEnsureExtensionPrivateState(
+			BASEBACKUP_TO_SHELL_RUNTIME_STATE_KEY,
+			sizeof(BasebackupToShellRuntimeState),
+			NULL);
+}
+
+#define basebackup_to_shell_command \
+	(basebackup_to_shell_session_state()->command)
+#define basebackup_to_shell_required_role \
+	(basebackup_to_shell_session_state()->required_role)
+#define shell_target_registered \
+	(basebackup_to_shell_runtime_state()->target_registered)
 
 void
 _PG_init(void)

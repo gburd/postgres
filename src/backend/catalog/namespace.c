@@ -325,7 +325,7 @@ NamespaceSearchPathContext(void)
 {
 	return PgRuntimeGetOwnedMemoryContextWithSizes(&SearchPathContext,
 												   "namespace search path",
-												   ALLOCSET_DEFAULT_SIZES);
+												   ALLOCSET_START_SMALL_SIZES);
 }
 
 static MemoryContext
@@ -333,7 +333,7 @@ NamespaceSearchPathCacheContext(void)
 {
 	return PgRuntimeGetOwnedMemoryContextWithSizes(&SearchPathCacheContext,
 												   "search_path processing cache",
-												   ALLOCSET_DEFAULT_SIZES);
+												   ALLOCSET_START_SMALL_SIZES);
 }
 
 #define SearchPathCache (*CurrentSearchPathCacheRef())

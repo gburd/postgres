@@ -83,9 +83,73 @@ PgCurrentPgStatXactStackRef(void)
 }
 
 PgStat_LocalState *
+PgCurrentPgStatLocalStateSlow(void)
+{
+	PgBackendPgStatPendingState *pgstat_pending;
+
+	pgstat_pending =
+		PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState,
+										PgCurrentBackendPgStatPendingState);
+	if (likely(pgstat_pending->local != NULL))
+		return pgstat_pending->local;
+
+	Assert(TopMemoryContext != NULL);
+	pgstat_pending->local =
+		MemoryContextAllocZero(TopMemoryContext, sizeof(PgStat_LocalState));
+
+	return pgstat_pending->local;
+}
+
+PgStat_LocalState *
 PgCurrentPgStatLocalState(void)
 {
-	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->local;
+	return PgCurrentPgStatLocalStateSlow();
+}
+
+PgStat_Snapshot *
+PgCurrentPgStatSnapshot(void)
+{
+	PgStat_LocalState *local = PgCurrentPgStatLocalState();
+
+	if (likely(local->snapshot != NULL))
+		return local->snapshot;
+
+	Assert(TopMemoryContext != NULL);
+	local->snapshot =
+		MemoryContextAllocZero(TopMemoryContext, sizeof(PgStat_Snapshot));
+
+	return local->snapshot;
+}
+
+PgStat_Snapshot *
+PgCurrentPgStatSnapshotIfAllocated(void)
+{
+	PgBackendPgStatPendingState *pgstat_pending;
+
+	pgstat_pending = CurrentPgBackendPgStatPendingRuntimeState;
+	if (unlikely(pgstat_pending == NULL || pgstat_pending->local == NULL))
+		return NULL;
+
+	return pgstat_pending->local->snapshot;
+}
+
+static PgBackendPgStatPendingColdState *
+PgCurrentPgStatPendingColdState(void)
+{
+	PgBackendPgStatPendingState *pgstat_pending;
+
+	pgstat_pending =
+		PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState,
+										PgCurrentBackendPgStatPendingState);
+	if (likely(pgstat_pending->cold != NULL))
+		return pgstat_pending->cold;
+
+	pgstat_pending->cold = malloc(sizeof(PgBackendPgStatPendingColdState));
+	if (unlikely(pgstat_pending->cold == NULL))
+		elog(ERROR, "out of memory allocating pgstat pending cold state");
+	MemSet(pgstat_pending->cold, 0, sizeof(PgBackendPgStatPendingColdState));
+
+	return pgstat_pending->cold;
 }
 
 MemoryContext *
@@ -97,13 +161,13 @@ PgCurrentPgStatFixedSnapshotContextRef(void)
 PgStat_BgWriterStats *
 PgCurrentPendingBgWriterStatsRef(void)
 {
-	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->pending_bgwriter;
+	return &PgCurrentPgStatPendingColdState()->pending_bgwriter;
 }
 
 PgStat_CheckpointerStats *
 PgCurrentPendingCheckpointerStatsRef(void)
 {
-	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->pending_checkpointer;
+	return &PgCurrentPgStatPendingColdState()->pending_checkpointer;
 }
 
 PgStat_PendingIO *
@@ -121,7 +185,7 @@ PgCurrentHaveIOStatsRef(void)
 PgStat_SLRUStats *
 PgCurrentPendingSLRUStatsArray(void)
 {
-	return PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->slru_stats;
+	return PgCurrentPgStatPendingColdState()->slru_stats;
 }
 
 bool *
@@ -133,7 +197,7 @@ PgCurrentHaveSLRUStatsRef(void)
 PgStat_PendingLock *
 PgCurrentPendingLockStatsRef(void)
 {
-	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->lock_stats;
+	return &PgCurrentPgStatPendingColdState()->lock_stats;
 }
 
 bool *

@@ -460,6 +460,7 @@ extern void RememberSimpleDeadLock(PGPROC *proc1,
 								   LOCKMODE lockmode,
 								   LOCK *lock,
 								   PGPROC *proc2);
+extern void EnsureDeadLockCheckingWorkspace(void);
 extern void InitDeadLockChecking(void);
 
 extern int	LockWaiterCount(const LOCKTAG *locktag);

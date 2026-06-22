@@ -17,6 +17,9 @@ use constant CARRIER_ATTACHED => 17;
 use constant SESSION_PRESENT => 18;
 use constant CONNECTION_PRESENT => 19;
 use constant EXECUTION_PRESENT => 20;
+use constant CARRIER_LIMIT => 21;
+use constant SAME_CARRIER_RESUME_COUNT => 22;
+use constant MIGRATED_RESUME_COUNT => 23;
 
 use constant PROTOCOL_WAKE_NOTIFY => (1 << 8);
 
@@ -68,7 +71,7 @@ sub wait_for_protocol_parked
 		sub {
 			my @fields = protocol_snapshot_fields(shift);
 
-			return 0 unless @fields == 21;
+			return 0 unless @fields >= 24;
 			return $fields[PARK_STATE] eq 'committed'
 			  && $fields[QUEUE_STATE] eq 'parked_protocol_read'
 			  && $fields[CARRIER_ATTACHED] == 0
@@ -147,6 +150,16 @@ is($idle_clients[0]->query_safe('SELECT 1001;', verbose => 0), '1001',
 	'frontend input wakes a parked protocol client');
 wait_for_protocol_parked($idle_pids[0],
 	'woken protocol client parks again after completing a full message');
+wait_for_protocol_field(
+	$idle_pids[0],
+	SAME_CARRIER_RESUME_COUNT,
+	sub { return shift >= 1; },
+	'same-carrier protocol resume counter advances in staging mode');
+wait_for_protocol_field(
+	$idle_pids[0],
+	MIGRATED_RESUME_COUNT,
+	sub { return shift == 0; },
+	'staging mode does not report migrated protocol resumes');
 
 $idle_clients[1]->quit;
 wait_for_pid_to_leave_pg_stat_activity($idle_pids[1],

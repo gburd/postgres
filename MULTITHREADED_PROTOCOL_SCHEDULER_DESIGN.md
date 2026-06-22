@@ -1213,13 +1213,16 @@ where each accepted client creates a carrier, while the design and tests focus
 only on protocol parking semantics. Do not let that staging shape become the
 target architecture.
 
-Phase 15 also has to split the postmaster child publication model. The current
-thread-backed PMChild shape publishes one `thread_backend` and one `signal_pid`
-for the life of a carrier thread and clears them on thread exit. A real carrier
-pool needs logical backend lifetime, signal pid publication, and carrier thread
-exit to be represented separately, so a parked or migrated logical backend is
-not lost when a carrier exits and a carrier can be reused without implying
-logical backend exit.
+Phase 15 also has to keep the postmaster child publication model split between
+logical backend identity and physical carrier lifetime. Thread-backed PMChild
+state exposes logical backend publication through `logical_backend` and
+`logical_signal_pid`, while native thread exit remains a separate carrier
+lifecycle report. A real carrier pool must preserve that separation so a parked
+or migrated logical backend is not lost when a carrier exits and a carrier can
+be reused without implying logical backend exit.
+Phase 15 introduces a pooled-logical PMChild state for client sessions that
+publish a logical backend without owning a dedicated process or native thread
+carrier; signal and wake routing still target the published logical backend.
 
 ## Carrier Pool
 
@@ -1305,6 +1308,23 @@ Phase 15 owns real pool mode:
 - Add migration/affinity counters for same-carrier versus moved resumes.
 - Add optional short grace pin only after scheduler pressure and shutdown escape
   conditions are tested.
+
+Early Phase 15 foundation should keep the carrier object visibly separate from
+the logical backend/session/connection/execution object group even where the
+thread-per-session launcher still allocates them together. This avoids baking
+the staging assumption into the runtime fixture that later pooled carriers must
+reuse across logical sessions.
+
+The runnable side should expose a carrier-facing lease primitive: an idle
+carrier pops one runnable protocol backend and attaches the backend's logical
+session/connection/execution state to itself. Staging mode may still drive this
+from the same thread that parked the session, but tests should be able to prove
+the lease path also works with a different resume carrier.
+
+Real pool carriers must register with the protocol scheduler before leasing
+work. Registration is bounded by the configured carrier limit and accounts
+idle, active, rejected, leased, and released carriers so the pool can prove it
+is serving sessions with fewer physical carriers than logical sessions.
 
 Phase 14 staging phases may be committed as scaffolding, but documentation and
 test names should not claim "pooled carrier scheduler complete" while there is

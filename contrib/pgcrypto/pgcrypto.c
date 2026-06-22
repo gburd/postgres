@@ -38,6 +38,7 @@
 #include "px-crypt.h"
 #include "px.h"
 #include "utils/builtins.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
 #include "varatt.h"
 
@@ -59,7 +60,31 @@ typedef int (*PFN) (const char *name, void **res);
 static void *find_provider(text *name, PFN provider_lookup, const char *desc,
 						   int silent);
 
-int			builtin_crypto_enabled = BC_ON;
+#define PGCRYPTO_SESSION_STATE_KEY "pgcrypto.session"
+
+typedef struct PgcryptoSessionState
+{
+	bool		initialized;
+	int			builtin_crypto_enabled_value;
+} PgcryptoSessionState;
+
+int *
+pgcrypto_builtin_crypto_enabled_ref(void)
+{
+	PgcryptoSessionState *state;
+
+	state = (PgcryptoSessionState *)
+		PgSessionEnsureExtensionPrivateState(PGCRYPTO_SESSION_STATE_KEY,
+											 sizeof(PgcryptoSessionState),
+											 NULL);
+	if (!state->initialized)
+	{
+		state->builtin_crypto_enabled_value = BC_ON;
+		state->initialized = true;
+	}
+
+	return &state->builtin_crypto_enabled_value;
+}
 
 /*
  * Entrypoint of this module.

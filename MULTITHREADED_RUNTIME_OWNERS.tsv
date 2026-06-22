@@ -353,36 +353,36 @@ avc_num_caches	PgSession	extension_modules	sepgsql_avc_num_caches	PgCurrentSessi
 avc_lru_hint	PgSession	extension_modules	sepgsql_avc_lru_hint	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	sepgsql userspace AVC reclaim pointer
 avc_threshold	PgSession	extension_modules	sepgsql_avc_threshold	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	sepgsql userspace AVC reclaim threshold
 avc_unlabeled	PgSession	extension_modules	sepgsql_avc_unlabeled	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	sepgsql cached unlabeled SELinux label
-pgcrypto DES state	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES crypt generated lookup tables and per-session key/salt/output cache
-inv_key_perm	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES inverted key permutation table
-u_key_perm	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES key permutation table
-inv_comp_perm	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES inverted compression permutation table
-u_sbox	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES generated S-box table
-un_pbox	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES inverted P-box table
-saltbits	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES current salt cache bits
-old_salt	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES previous salt cache key
-bits28	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES 28-bit mask pointer
-bits24	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES 24-bit mask pointer
-init_perm	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES initial permutation table
-final_perm	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES final permutation table
-en_keysl	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES encryption key schedule left halves
-en_keysr	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES encryption key schedule right halves
-de_keysl	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES decryption key schedule left halves
-de_keysr	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES decryption key schedule right halves
-des_initialised	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES generated table initialization flag
-m_sbox	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES merged S-box table
-psbox	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES P-box output masks
-ip_maskl	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES initial permutation left masks
-ip_maskr	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES initial permutation right masks
-fp_maskl	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES final permutation left masks
-fp_maskr	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES final permutation right masks
-key_perm_maskl	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES key permutation left masks
-key_perm_maskr	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES key permutation right masks
-comp_maskl	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES compression left masks
-comp_maskr	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES compression right masks
-old_rawkey0	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES previous raw key high word
-old_rawkey1	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES previous raw key low word
-crypt DES output	PgSession	extension_modules	pgcrypto_des	PgCurrentPgcryptoDesState	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto DES fixed output buffer returned by px_crypt_des
+pgcrypto DES state	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES crypt generated lookup tables and per-session key/salt/output cache
+inv_key_perm	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES inverted key permutation table
+u_key_perm	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES key permutation table
+inv_comp_perm	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES inverted compression permutation table
+u_sbox	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES generated S-box table
+un_pbox	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES inverted P-box table
+saltbits	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES current salt cache bits
+old_salt	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES previous salt cache key
+bits28	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES 28-bit mask pointer
+bits24	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES 24-bit mask pointer
+init_perm	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES initial permutation table
+final_perm	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES final permutation table
+en_keysl	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES encryption key schedule left halves
+en_keysr	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES encryption key schedule right halves
+de_keysl	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES decryption key schedule left halves
+de_keysr	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES decryption key schedule right halves
+des_initialised	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES generated table initialization flag
+m_sbox	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES merged S-box table
+psbox	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES P-box output masks
+ip_maskl	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES initial permutation left masks
+ip_maskr	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES initial permutation right masks
+fp_maskl	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES final permutation left masks
+fp_maskr	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES final permutation right masks
+key_perm_maskl	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES key permutation left masks
+key_perm_maskr	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES key permutation right masks
+comp_maskl	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES compression left masks
+comp_maskr	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES compression right masks
+old_rawkey0	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES previous raw key high word
+old_rawkey1	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES previous raw key low word
+crypt DES output	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES fixed output buffer returned by px_crypt_des
 PLy_procedure_cache	PgSession	extension_modules	plpython_procedure_cache	PgCurrentPLpythonProcedureCacheRef	src/include/utils/backend_runtime.h	PL/Python procedure cache hash
 PL/Python session context	PgSession	extension_modules	plpython_memory_context	PgCurrentPLpythonMemoryContextRef	src/include/utils/backend_runtime.h	PL/Python session-owned parent context for procedure, SPI plan, cursor, and inline block contexts
 plperl_inited	PgSession	extension_modules	plperl_inited	PgCurrentPLperlInitedRef	src/include/utils/backend_runtime.h	PL/Perl per-session module initialization flag
@@ -406,27 +406,27 @@ pltcl_interp_htab	PgSession	extension_modules	pltcl_interp_hash	PgCurrentPLTclIn
 pltcl_proc_htab	PgSession	extension_modules	pltcl_proc_hash	PgCurrentPLTclProcHashRef	src/include/utils/backend_runtime.h	PL/Tcl procedure descriptor hash
 pltcl_current_call_state	PgSession	extension_modules	pltcl_current_call_state	PgCurrentPLTclCurrentCallStateRef	src/include/utils/backend_runtime.h	PL/Tcl current call-state pointer
 PL/Sample session context	PgSession	extension_modules	plsample_memory_context	PgCurrentPLsampleMemoryContextRef	src/include/utils/backend_runtime.h	PL/Sample session-owned parent context for function and procedure call contexts
-FPlans	PgSession	extension_modules	refint_foreign_plans	PgCurrentRefintForeignPlansRef	src/include/utils/backend_runtime.h	refint cached foreign-key SPI plan array
-nFPlans	PgSession	extension_modules	refint_num_foreign_plans	PgCurrentRefintNumForeignPlansRef	src/include/utils/backend_runtime.h	refint cached foreign-key SPI plan count
-PPlans	PgSession	extension_modules	refint_primary_plans	PgCurrentRefintPrimaryPlansRef	src/include/utils/backend_runtime.h	refint cached primary-key SPI plan array
-nPPlans	PgSession	extension_modules	refint_num_primary_plans	PgCurrentRefintNumPrimaryPlansRef	src/include/utils/backend_runtime.h	refint cached primary-key SPI plan count
-auth_delay_milliseconds	PgSession	extension_modules	auth_delay_milliseconds	PgCurrentAuthDelayMillisecondsRef	src/include/utils/backend_runtime.h	auth_delay custom GUC backing integer
-shell_command	PgSession	extension_modules	basebackup_to_shell_command	PgCurrentBasebackupToShellCommandRef	src/include/utils/backend_runtime.h	basebackup_to_shell command custom GUC backing string
-shell_required_role	PgSession	extension_modules	basebackup_to_shell_required_role	PgCurrentBasebackupToShellRequiredRoleRef	src/include/utils/backend_runtime.h	basebackup_to_shell required-role custom GUC backing string
-g_weak	PgSession	extension_modules	isn_weak	PgCurrentIsnWeakRef	src/include/utils/backend_runtime.h	isn weak-mode custom GUC backing bool
-min_password_length	PgSession	extension_modules	passwordcheck_min_password_length	PgCurrentPasswordcheckMinPasswordLengthRef	src/include/utils/backend_runtime.h	passwordcheck minimum-length custom GUC backing integer
-dblink session context	PgSession	extension_modules	dblink_context	PgCurrentDblinkContextRef	src/include/utils/backend_runtime.h	dblink session-owned parent context for persistent connection state
-pconn	PgSession	extension_modules	dblink_persistent_connection	PgCurrentDblinkPersistentConnectionRef	src/include/utils/backend_runtime.h	dblink unnamed persistent connection
-remoteConnHash	PgSession	extension_modules	dblink_remote_conn_hash	PgCurrentDblinkRemoteConnHashRef	src/include/utils/backend_runtime.h	dblink named persistent connection hash
-postgres_fdw options context	PgSession	extension_modules	postgres_fdw_options_context	PgCurrentPostgresFdwOptionsContextRef	src/include/utils/backend_runtime.h	postgres_fdw session-owned parent context for option table
-postgres_fdw_options	PgSession	extension_modules	postgres_fdw_options	PgCurrentPostgresFdwOptionsRef	src/include/utils/backend_runtime.h	postgres_fdw valid option table
-pgfdw_application_name	PgSession	extension_modules	postgres_fdw_application_name	PgCurrentPostgresFdwApplicationNameRef	src/include/utils/backend_runtime.h	postgres_fdw custom GUC backing string
-ConnectionHash	PgSession	extension_modules	postgres_fdw_connection_hash	PgCurrentPostgresFdwConnectionHashRef	src/include/utils/backend_runtime.h	postgres_fdw connection cache hash
-ShippableCacheHash	PgSession	extension_modules	postgres_fdw_shippable_cache_hash	PgCurrentPostgresFdwShippableCacheHashRef	src/include/utils/backend_runtime.h	postgres_fdw shippability cache hash
-cursor_number	PgSession	extension_modules	postgres_fdw_cursor_number	PgCurrentPostgresFdwCursorNumberRef	src/include/utils/backend_runtime.h	postgres_fdw cursor counter
-prep_stmt_number	PgSession	extension_modules	postgres_fdw_prep_stmt_number	PgCurrentPostgresFdwPrepStmtNumberRef	src/include/utils/backend_runtime.h	postgres_fdw prepared-statement counter
-xact_got_connection	PgSession	extension_modules	postgres_fdw_xact_got_connection	PgCurrentPostgresFdwXactGotConnectionRef	src/include/utils/backend_runtime.h	postgres_fdw transaction callback work flag
-read_only_level	PgSession	extension_modules	postgres_fdw_read_only_level	PgCurrentPostgresFdwReadOnlyLevelRef	src/include/utils/backend_runtime.h	postgres_fdw read-only transaction nesting level
+FPlans	PgSession	extension_modules	refint_foreign_plans	refint_session_state	contrib/spi/refint.c	refint cached foreign-key SPI plan array
+nFPlans	PgSession	extension_modules	refint_num_foreign_plans	refint_session_state	contrib/spi/refint.c	refint cached foreign-key SPI plan count
+PPlans	PgSession	extension_modules	refint_primary_plans	refint_session_state	contrib/spi/refint.c	refint cached primary-key SPI plan array
+nPPlans	PgSession	extension_modules	refint_num_primary_plans	refint_session_state	contrib/spi/refint.c	refint cached primary-key SPI plan count
+auth_delay_milliseconds	PgSession	extension_modules	auth_delay_milliseconds	auth_delay_session_state	contrib/auth_delay/auth_delay.c	auth_delay custom GUC backing integer
+shell_command	PgSession	extension_modules	basebackup_to_shell_command	basebackup_to_shell_session_state	contrib/basebackup_to_shell/basebackup_to_shell.c	basebackup_to_shell command custom GUC backing string
+shell_required_role	PgSession	extension_modules	basebackup_to_shell_required_role	basebackup_to_shell_session_state	contrib/basebackup_to_shell/basebackup_to_shell.c	basebackup_to_shell required-role custom GUC backing string
+g_weak	PgSession	extension_modules	isn_weak	isn_session_state	contrib/isn/isn.c	isn weak-mode custom GUC backing bool
+min_password_length	PgSession	extension_modules	passwordcheck_min_password_length	passwordcheck_session_state	contrib/passwordcheck/passwordcheck.c	passwordcheck minimum-length custom GUC backing integer
+dblink session context	PgSession	extension_modules	dblink_context	dblink_session_state	contrib/dblink/dblink.c	dblink session-owned parent context for persistent connection state
+pconn	PgSession	extension_modules	dblink_persistent_connection	dblink_session_state	contrib/dblink/dblink.c	dblink unnamed persistent connection
+remoteConnHash	PgSession	extension_modules	dblink_remote_conn_hash	dblink_session_state	contrib/dblink/dblink.c	dblink named persistent connection hash
+postgres_fdw options context	PgSession	extension_modules	postgres_fdw_options_context	postgres_fdw_session_state	contrib/postgres_fdw/option.c	postgres_fdw session-owned parent context for option table
+postgres_fdw_options	PgSession	extension_modules	postgres_fdw_options	postgres_fdw_session_state	contrib/postgres_fdw/option.c	postgres_fdw valid option table
+pgfdw_application_name	PgSession	extension_modules	postgres_fdw_application_name	postgres_fdw_session_state	contrib/postgres_fdw/postgres_fdw.h	postgres_fdw custom GUC backing string
+ConnectionHash	PgSession	extension_modules	postgres_fdw_connection_hash	postgres_fdw_session_state	contrib/postgres_fdw/connection.c	postgres_fdw connection cache hash
+ShippableCacheHash	PgSession	extension_modules	postgres_fdw_shippable_cache_hash	postgres_fdw_session_state	contrib/postgres_fdw/shippable.c	postgres_fdw shippability cache hash
+cursor_number	PgSession	extension_modules	postgres_fdw_cursor_number	postgres_fdw_session_state	contrib/postgres_fdw/connection.c	postgres_fdw cursor counter
+prep_stmt_number	PgSession	extension_modules	postgres_fdw_prep_stmt_number	postgres_fdw_session_state	contrib/postgres_fdw/connection.c	postgres_fdw prepared-statement counter
+xact_got_connection	PgSession	extension_modules	postgres_fdw_xact_got_connection	postgres_fdw_session_state	contrib/postgres_fdw/connection.c	postgres_fdw transaction callback work flag
+read_only_level	PgSession	extension_modules	postgres_fdw_read_only_level	postgres_fdw_session_state	contrib/postgres_fdw/connection.c	postgres_fdw read-only transaction nesting level
 hpam_context	PgBackend	logical_replication	parallel_apply_message_context	PgCurrentLogicalReplicationState	src/backend/replication/logical/applyparallelworker.c	backend-owned scratch context for ProcessParallelApplyMessages interrupt handling
 hpm_context	PgBackend	repack	message_context	PgCurrentRepackState	src/backend/commands/repack.c	backend-owned scratch context for ProcessRepackMessages interrupt handling
 parallel_hpm_context	PgBackend	parallel	message_context	PgCurrentParallelMessageContextRef	src/backend/access/transam/parallel.c	backend-owned scratch context for ProcessParallelMessages interrupt handling; former local hpm_context

@@ -91,6 +91,7 @@
 #define GUC_check_errcode_value (*PgCurrentGUCCheckErrcodeValueRef())
 #define GUCMemoryContext (*PgCurrentGUCMemoryContextRef())
 #define guc_variables (*PgCurrentGUCVariablesRef())
+#define guc_variable_states (*PgCurrentGUCVariableStatesRef())
 #define num_guc_variables (*PgCurrentNumGUCVariablesRef())
 #define guc_hashtab (*PgCurrentGUCHashTableRef())
 #define guc_nondef_list (*PgCurrentGUCNondefListRef())
@@ -189,6 +190,278 @@ GUCRecordIsCurrentSessionBuiltin(const struct config_generic *record)
 	return (offset % sizeof(struct config_generic)) == 0;
 }
 
+static int
+GUCRecordBuiltinIndex(const struct config_generic *record)
+{
+	uintptr_t	record_addr;
+	uintptr_t	start_addr;
+	Size		offset;
+
+	Assert(GUCRecordIsCurrentSessionBuiltin(record));
+
+	record_addr = (uintptr_t) record;
+	start_addr = (uintptr_t) guc_variables;
+	offset = record_addr - start_addr;
+
+	return offset / sizeof(struct config_generic);
+}
+
+static config_generic_state *
+GUCRecordState(const struct config_generic *record)
+{
+	if (GUCRecordIsCurrentSessionBuiltin(record))
+	{
+		int			index = GUCRecordBuiltinIndex(record);
+
+		Assert(guc_variable_states != NULL);
+		Assert(index >= 0);
+		Assert(index < num_guc_variables);
+
+		return &guc_variable_states[index];
+	}
+
+	Assert(record->state != NULL);
+	return record->state;
+}
+
+static config_generic_cold_state *
+GUCRecordColdStateIfAllocated(const struct config_generic *record)
+{
+	return GUCRecordState(record)->cold;
+}
+
+static config_generic_cold_state *
+GUCRecordColdState(const struct config_generic *record)
+{
+	config_generic_state *state = GUCRecordState(record);
+
+	if (state->cold == NULL)
+	{
+		state->cold = MemoryContextAllocZero(GUCMemoryContext,
+											 sizeof(config_generic_cold_state));
+		state->cold->record = record;
+		state->cold->reset_source = PGC_S_DEFAULT;
+		state->cold->reset_scontext = PGC_INTERNAL;
+		state->cold->reset_srole = BOOTSTRAP_SUPERUSERID;
+	}
+
+	return state->cold;
+}
+
+static GucSource
+GUCRecordResetSource(const struct config_generic *record)
+{
+	config_generic_cold_state *cold = GUCRecordColdStateIfAllocated(record);
+
+	return cold != NULL ? cold->reset_source : PGC_S_DEFAULT;
+}
+
+static GucSource *
+GUCRecordResetSourceRef(const struct config_generic *record)
+{
+	return &GUCRecordColdState(record)->reset_source;
+}
+
+static GucContext
+GUCRecordResetSContext(const struct config_generic *record)
+{
+	config_generic_cold_state *cold = GUCRecordColdStateIfAllocated(record);
+
+	return cold != NULL ? cold->reset_scontext : PGC_INTERNAL;
+}
+
+static GucContext *
+GUCRecordResetSContextRef(const struct config_generic *record)
+{
+	return &GUCRecordColdState(record)->reset_scontext;
+}
+
+static Oid
+GUCRecordResetSRole(const struct config_generic *record)
+{
+	config_generic_cold_state *cold = GUCRecordColdStateIfAllocated(record);
+
+	return cold != NULL ? cold->reset_srole : BOOTSTRAP_SUPERUSERID;
+}
+
+static Oid *
+GUCRecordResetSRoleRef(const struct config_generic *record)
+{
+	return &GUCRecordColdState(record)->reset_srole;
+}
+
+static GucStack *
+GUCRecordStack(const struct config_generic *record)
+{
+	config_generic_cold_state *cold = GUCRecordColdStateIfAllocated(record);
+
+	return cold != NULL ? cold->stack : NULL;
+}
+
+static void
+GUCRecordSetStack(const struct config_generic *record, GucStack *stack)
+{
+	config_generic_cold_state *cold = GUCRecordColdStateIfAllocated(record);
+
+	if (cold == NULL && stack == NULL)
+		return;
+
+	if (cold == NULL)
+		cold = GUCRecordColdState(record);
+
+	cold->stack = stack;
+}
+
+static void *
+GUCRecordExtra(const struct config_generic *record)
+{
+	config_generic_cold_state *cold = GUCRecordColdStateIfAllocated(record);
+
+	return cold != NULL ? cold->extra : NULL;
+}
+
+static void **
+GUCRecordExtraRef(const struct config_generic *record)
+{
+	return &GUCRecordColdState(record)->extra;
+}
+
+static void
+GUCRecordSetExtra(const struct config_generic *record, void *extra)
+{
+	config_generic_cold_state *cold = GUCRecordColdStateIfAllocated(record);
+
+	if (cold == NULL && extra == NULL)
+		return;
+
+	if (cold == NULL)
+		cold = GUCRecordColdState(record);
+
+	cold->extra = extra;
+}
+
+static void *
+GUCRecordResetExtra(const struct config_generic *record)
+{
+	config_generic_cold_state *cold = GUCRecordColdStateIfAllocated(record);
+
+	return cold != NULL ? cold->reset_extra : NULL;
+}
+
+static void **
+GUCRecordResetExtraRef(const struct config_generic *record)
+{
+	return &GUCRecordColdState(record)->reset_extra;
+}
+
+static void
+GUCRecordSetResetExtra(const struct config_generic *record, void *reset_extra)
+{
+	config_generic_cold_state *cold = GUCRecordColdStateIfAllocated(record);
+
+	if (cold == NULL && reset_extra == NULL)
+		return;
+
+	if (cold == NULL)
+		cold = GUCRecordColdState(record);
+
+	cold->reset_extra = reset_extra;
+}
+
+static char *
+GUCRecordLastReported(const struct config_generic *record)
+{
+	config_generic_cold_state *cold = GUCRecordColdStateIfAllocated(record);
+
+	return cold != NULL ? cold->last_reported : NULL;
+}
+
+static char *
+GUCRecordSourceFile(const struct config_generic *record)
+{
+	config_generic_cold_state *cold = GUCRecordColdStateIfAllocated(record);
+
+	return cold != NULL ? cold->sourcefile : NULL;
+}
+
+static int
+GUCRecordSourceLine(const struct config_generic *record)
+{
+	config_generic_cold_state *cold = GUCRecordColdStateIfAllocated(record);
+
+	return cold != NULL ? cold->sourceline : 0;
+}
+
+static void
+GUCRecordResetColdFields(const struct config_generic *record)
+{
+	config_generic_cold_state *cold = GUCRecordColdStateIfAllocated(record);
+
+	if (cold == NULL)
+		return;
+
+	cold->stack = NULL;
+	cold->extra = NULL;
+	cold->reset_extra = NULL;
+	cold->reset_source = PGC_S_DEFAULT;
+	cold->reset_scontext = PGC_INTERNAL;
+	cold->reset_srole = BOOTSTRAP_SUPERUSERID;
+	cold->last_reported = NULL;
+	cold->sourcefile = NULL;
+	cold->sourceline = 0;
+}
+
+#define GUC_STATE(record)			(GUCRecordState(record))
+#define GUC_COLD(record)			(GUCRecordColdState(record))
+#define GUC_NONDEF_LINK(record)		(&GUC_COLD(record)->nondef_link)
+#define GUC_STACK_LINK(record)		(&GUC_COLD(record)->stack_link)
+#define GUC_REPORT_LINK(record)		(&GUC_COLD(record)->report_link)
+#define GUC_STATUS(record)			(GUC_STATE(record)->status)
+#define GUC_SOURCE(record)			(GUC_STATE(record)->source)
+#define GUC_RESET_SOURCE(record)	(GUCRecordResetSource(record))
+#define GUC_RESET_SOURCE_REF(record) \
+	GUCRecordResetSourceRef(record)
+#define GUC_SCONTEXT(record)		(GUC_STATE(record)->scontext)
+#define GUC_RESET_SCONTEXT(record)	(GUCRecordResetSContext(record))
+#define GUC_RESET_SCONTEXT_REF(record) \
+	GUCRecordResetSContextRef(record)
+#define GUC_SROLE(record)			(GUC_STATE(record)->srole)
+#define GUC_RESET_SROLE(record)		(GUCRecordResetSRole(record))
+#define GUC_RESET_SROLE_REF(record) \
+	GUCRecordResetSRoleRef(record)
+#define GUC_STACK(record)			(GUCRecordStack(record))
+#define GUC_SET_STACK(record, value) \
+	GUCRecordSetStack((record), (value))
+#define GUC_EXTRA(record)			(GUCRecordExtra(record))
+#define GUC_EXTRA_REF(record)		(GUCRecordExtraRef(record))
+#define GUC_SET_EXTRA(record, value) \
+	GUCRecordSetExtra((record), (value))
+#define GUC_RESET_EXTRA(record)		(GUCRecordResetExtra(record))
+#define GUC_RESET_EXTRA_REF(record)	(GUCRecordResetExtraRef(record))
+#define GUC_SET_RESET_EXTRA(record, value) \
+	GUCRecordSetResetExtra((record), (value))
+#define GUC_LAST_REPORTED(record)	(GUCRecordLastReported(record))
+#define GUC_SET_LAST_REPORTED(record, value) \
+	(GUC_COLD(record)->last_reported = (value))
+#define GUC_SOURCEFILE(record)		(GUCRecordSourceFile(record))
+#define GUC_SET_SOURCEFILE(record, value) \
+	(GUC_COLD(record)->sourcefile = (value))
+#define GUC_SOURCELINE(record)		(GUCRecordSourceLine(record))
+#define GUC_SET_SOURCELINE(record, value) \
+	(GUC_COLD(record)->sourceline = (value))
+#define GUC_VARIABLE_BOOL(record)	(GUC_STATE(record)->variable.boolvar)
+#define GUC_VARIABLE_INT(record)	(GUC_STATE(record)->variable.intvar)
+#define GUC_VARIABLE_REAL(record)	(GUC_STATE(record)->variable.realvar)
+#define GUC_VARIABLE_STRING(record)	(GUC_STATE(record)->variable.stringvar)
+#define GUC_VARIABLE_ENUM(record)	(GUC_STATE(record)->variable.enumvar)
+#define GUC_RESET_BOOL(record)		(GUC_STATE(record)->reset_val.boolval)
+#define GUC_RESET_INT(record)		(GUC_STATE(record)->reset_val.intval)
+#define GUC_RESET_REAL(record)		(GUC_STATE(record)->reset_val.realval)
+#define GUC_RESET_STRING(record)	(GUC_STATE(record)->reset_val.stringval)
+#define GUC_RESET_ENUM(record)		(GUC_STATE(record)->reset_val.enumval)
+#define GUC_COLD_STATE_RECORD(cold) \
+	(unconstify(struct config_generic *, (cold)->record))
+
 static bool
 GUCRecordVariableIsCurrentSessionOwned(const struct config_generic *record)
 {
@@ -197,25 +470,35 @@ GUCRecordVariableIsCurrentSessionOwned(const struct config_generic *record)
 	switch (record->vartype)
 	{
 		case PGC_BOOL:
-			variable = record->_bool.variable;
+			variable = GUC_VARIABLE_BOOL(record);
 			break;
 		case PGC_INT:
-			variable = record->_int.variable;
+			variable = GUC_VARIABLE_INT(record);
 			break;
 		case PGC_REAL:
-			variable = record->_real.variable;
+			variable = GUC_VARIABLE_REAL(record);
 			break;
 		case PGC_STRING:
-			variable = record->_string.variable;
+			variable = GUC_VARIABLE_STRING(record);
 			break;
 		case PGC_ENUM:
-			variable = record->_enum.variable;
+			variable = GUC_VARIABLE_ENUM(record);
 			break;
 		default:
 			pg_unreachable();
 	}
 
 	return PgCurrentSessionOwnsPointer(variable);
+}
+
+static bool
+GUCThreadedBackendReplayActive(bool is_reload)
+{
+	return is_reload &&
+		multithreaded &&
+		IsUnderPostmaster &&
+		CurrentPgCarrier != NULL &&
+		CurrentPgCarrier->kind == PG_CARRIER_THREAD;
 }
 
 static bool
@@ -265,14 +548,14 @@ GUCSetOptionNeedsThreadedLock(const struct config_generic *record)
 		return false;
 
 	/*
-	 * The copied built-in GUC table, hash, non-default list, stack list, and
-	 * report list are PgSession-owned.  A simple built-in GUC whose direct
-	 * variable also lives in PgSession and has no assign hook mutates only this
-	 * logical backend's GUC state, so it does not need the temporary
-	 * process-wide GUC mutex.  Check hooks must not be guarded merely because
-	 * they are hooks: some validate against catalogs and can wait on heavyweight
-	 * locks, so holding the process-wide GUC mutex across them can deadlock
-	 * threaded sessions.
+	 * Built-in GUC descriptors are immutable, while the current value,
+	 * reset/source metadata, and list membership live in PgSession-owned state.
+	 * A simple built-in GUC whose direct variable also lives in PgSession and
+	 * has no assign hook mutates only this logical backend's GUC state, so it
+	 * does not need the temporary process-wide GUC mutex.  Check hooks must not
+	 * be guarded merely because they are hooks: some validate against catalogs
+	 * and can wait on heavyweight locks, so holding the process-wide GUC mutex
+	 * across them can deadlock threaded sessions.
 	 *
 	 * Keep all ambiguous paths serialized: custom/extension records,
 	 * placeholders, assign-hook-backed records, execution-owned active
@@ -294,10 +577,10 @@ GUCShowOptionNeedsThreadedLock(const struct config_generic *record)
 		return false;
 
 	/*
-	 * Ordinary built-in GUC records are copied into each PgSession and their
-	 * direct-variable slots are rebound to session/execution state. Showing
-	 * such a record reads only this logical backend's copy, so it need not
-	 * serialize with other threaded sessions.
+	 * Ordinary built-in GUC records share immutable descriptors, with their
+	 * direct-variable slots rebound through per-session state. Showing such a
+	 * record reads only this logical backend's state, so it need not serialize
+	 * with other threaded sessions.
 	 *
 	 * Keep hook-backed and custom/extension records under the runtime GUC
 	 * mutex. Show hooks can inspect subsystem state, and custom records may
@@ -438,21 +721,32 @@ static PG_GLOBAL_IMMUTABLE const char *const map_old_guc_names[] = {
 
 
 /*
- * Per-session copy of the built-in GUC record template.  ConfigureNames[]
- * remains the immutable static template generated from guc_parameters.dat;
- * guc.c mutates the copy so GUC stack/reset/report state is not shared by
- * threaded logical backends.
- */
-/*
- * We use a dynahash table to look up GUCs by name, or to iterate through
- * all the GUCs.  The gucname field is redundant with gucvar->name, but
- * dynahash makes it too painful to not store the hash key separately.
+ * Per-session lookup state for custom GUCs and placeholders.  Built-in GUCs
+ * use the immutable ConfigureNames[] descriptor table plus per-session
+ * config_generic_state overlays, so only truly dynamic records need hash
+ * storage here.
+ *
+ * The gucname field is redundant with gucvar->name, but dynahash makes it too
+ * painful to not store the hash key separately.
  */
 typedef struct
 {
 	const char *gucname;		/* hash key */
 	struct config_generic *gucvar;	/* -> GUC's defining structure */
 } GUCHashEntry;
+
+/*
+ * Built-in GUC names are immutable after guc_parameters.dat generation, so the
+ * name-to-index lookup table can be shared by all logical backends.  Custom
+ * GUCs and placeholders remain per-session in guc_hashtab.
+ */
+typedef struct
+{
+	const char *gucname;		/* hash key */
+	int			index;			/* index in ConfigureNames/guc_variables */
+} GUCBuiltinHashEntry;
+
+static PG_GLOBAL_RUNTIME HTAB *guc_builtin_hashtab = NULL;
 
 /*
  * In addition to the hash table, variables having certain properties are
@@ -471,12 +765,16 @@ typedef struct
 static int	guc_var_compare(const void *a, const void *b);
 static uint32 guc_name_hash(const void *key, Size keysize);
 static int	guc_name_match(const void *key1, const void *key2, Size keysize);
+static void ensure_builtin_guc_name_index(void);
+static struct config_generic *find_builtin_option(const char *name);
+static int	guc_custom_variable_count(void);
+static HTAB *ensure_guc_custom_hashtab(int nelem);
+static void InitializeGUCVariableStatePointers(void);
 static void InitializeGUCOptionsFromEnvironment(void);
 static void InitializeOneGUCOption(struct config_generic *gconf);
 static void InitializeOneGUCOptionResetMetadata(struct config_generic *gconf);
 static const void *GUCOptionVariablePointer(struct config_generic *gconf);
-static void InitializeThreadedSessionReboundGUCOptions(
-													const void **initial_variables);
+static void InitializeThreadedSessionReboundGUCOptions(void);
 static void InitializeThreadedSessionCompatibilityGUCOptions(void);
 static bool ThreadedGUCLock(void);
 static void ThreadedGUCUnlock(bool locked);
@@ -494,6 +792,7 @@ static char *ShowGUCOptionInternal(const struct config_generic *record,
 								   bool use_units);
 static void RemoveGUCFromLists(struct config_generic *gconf);
 static void set_guc_source(struct config_generic *gconf, GucSource newsource);
+static void reset_guc_record_at_backend_exit(struct config_generic *gconf);
 static void pg_timezone_abbrev_initialize(void);
 static void push_old_value(struct config_generic *gconf, GucAction action);
 static void ReportGUCOption(struct config_generic *record);
@@ -619,12 +918,17 @@ ProcessConfigFileInternal(GucContext context, bool applySettings, int elevel)
 	 * need this so that we can tell below which ones have been removed from
 	 * the file since we last processed it.
 	 */
-	hash_seq_init(&status, guc_hashtab);
-	while ((hentry = (GUCHashEntry *) hash_seq_search(&status)) != NULL)
+	for (int i = 0; i < num_guc_variables; i++)
+		GUC_STATUS(&guc_variables[i]) &= ~GUC_IS_IN_FILE;
+	if (guc_hashtab != NULL)
 	{
-		struct config_generic *gconf = hentry->gucvar;
+		hash_seq_init(&status, guc_hashtab);
+		while ((hentry = (GUCHashEntry *) hash_seq_search(&status)) != NULL)
+		{
+			struct config_generic *gconf = hentry->gucvar;
 
-		gconf->status &= ~GUC_IS_IN_FILE;
+			GUC_STATUS(gconf) &= ~GUC_IS_IN_FILE;
+		}
 	}
 
 	/*
@@ -657,7 +961,7 @@ ProcessConfigFileInternal(GucContext context, bool applySettings, int elevel)
 		if (record)
 		{
 			/* If it's already marked, then this is a duplicate entry */
-			if (record->status & GUC_IS_IN_FILE)
+			if (GUC_STATUS(record) & GUC_IS_IN_FILE)
 			{
 				/*
 				 * Mark the earlier occurrence(s) as dead/ignorable.  We could
@@ -672,7 +976,7 @@ ProcessConfigFileInternal(GucContext context, bool applySettings, int elevel)
 				}
 			}
 			/* Now mark it as present in file */
-			record->status |= GUC_IS_IN_FILE;
+			GUC_STATUS(record) |= GUC_IS_IN_FILE;
 		}
 		else if (!valid_custom_variable_name(item->name))
 		{
@@ -704,18 +1008,17 @@ ProcessConfigFileInternal(GucContext context, bool applySettings, int elevel)
 	 * boot-time defaults.  If such a variable can't be changed after startup,
 	 * report that and continue.
 	 */
-	hash_seq_init(&status, guc_hashtab);
-	while ((hentry = (GUCHashEntry *) hash_seq_search(&status)) != NULL)
+	for (int i = 0; i < num_guc_variables; i++)
 	{
-		struct config_generic *gconf = hentry->gucvar;
+		struct config_generic *gconf = &guc_variables[i];
 
-		if (gconf->reset_source != PGC_S_FILE ||
-			(gconf->status & GUC_IS_IN_FILE))
+		if (GUC_RESET_SOURCE(gconf) != PGC_S_FILE ||
+			(GUC_STATUS(gconf) & GUC_IS_IN_FILE))
 			continue;
 		if (gconf->context < PGC_SIGHUP)
 		{
 			/* The removal can't be effective without a restart */
-			gconf->status |= GUC_PENDING_RESTART;
+			GUC_STATUS(gconf) |= GUC_PENDING_RESTART;
 			ereport(elevel,
 					(errcode(ERRCODE_CANT_CHANGE_RUNTIME_PARAM),
 					 errmsg("parameter \"%s\" cannot be changed without restarting the server",
@@ -736,11 +1039,11 @@ ProcessConfigFileInternal(GucContext context, bool applySettings, int elevel)
 		 * Reset any "file" sources to "default", else set_config_option will
 		 * not override those settings.
 		 */
-		if (gconf->reset_source == PGC_S_FILE)
-			gconf->reset_source = PGC_S_DEFAULT;
-		if (gconf->source == PGC_S_FILE)
+		if (GUC_RESET_SOURCE(gconf) == PGC_S_FILE)
+			*GUC_RESET_SOURCE_REF(gconf) = PGC_S_DEFAULT;
+		if (GUC_SOURCE(gconf) == PGC_S_FILE)
 			set_guc_source(gconf, PGC_S_DEFAULT);
-		for (GucStack *stack = gconf->stack; stack; stack = stack->prev)
+		for (GucStack *stack = GUC_STACK(gconf); stack; stack = stack->prev)
 		{
 			if (stack->source == PGC_S_FILE)
 				stack->source = PGC_S_DEFAULT;
@@ -756,6 +1059,63 @@ ProcessConfigFileInternal(GucContext context, bool applySettings, int elevel)
 				ereport(elevel,
 						(errmsg("parameter \"%s\" removed from configuration file, reset to default",
 								gconf->name)));
+		}
+	}
+	if (guc_hashtab != NULL)
+	{
+		hash_seq_init(&status, guc_hashtab);
+		while ((hentry = (GUCHashEntry *) hash_seq_search(&status)) != NULL)
+		{
+			struct config_generic *gconf = hentry->gucvar;
+
+			if (GUC_RESET_SOURCE(gconf) != PGC_S_FILE ||
+				(GUC_STATUS(gconf) & GUC_IS_IN_FILE))
+				continue;
+			if (gconf->context < PGC_SIGHUP)
+			{
+				/* The removal can't be effective without a restart */
+				GUC_STATUS(gconf) |= GUC_PENDING_RESTART;
+				ereport(elevel,
+						(errcode(ERRCODE_CANT_CHANGE_RUNTIME_PARAM),
+						 errmsg("parameter \"%s\" cannot be changed without restarting the server",
+								gconf->name)));
+				record_config_file_error(psprintf("parameter \"%s\" cannot be changed without restarting the server",
+												  gconf->name),
+										 NULL, 0,
+										 &head, &tail);
+				error = true;
+				continue;
+			}
+
+			/* No more to do if we're just doing show_all_file_settings() */
+			if (!applySettings)
+				continue;
+
+			/*
+			 * Reset any "file" sources to "default", else set_config_option
+			 * will not override those settings.
+			 */
+			if (GUC_RESET_SOURCE(gconf) == PGC_S_FILE)
+				*GUC_RESET_SOURCE_REF(gconf) = PGC_S_DEFAULT;
+			if (GUC_SOURCE(gconf) == PGC_S_FILE)
+				set_guc_source(gconf, PGC_S_DEFAULT);
+			for (GucStack *stack = GUC_STACK(gconf); stack; stack = stack->prev)
+			{
+				if (stack->source == PGC_S_FILE)
+					stack->source = PGC_S_DEFAULT;
+			}
+
+			/* Now we can re-apply the wired-in default (i.e., the boot_val) */
+			if (set_config_option(gconf->name, NULL,
+								  context, PGC_S_DEFAULT,
+								  GUC_ACTION_SET, true, 0, false) > 0)
+			{
+				/* Log the change if appropriate */
+				if (context == PGC_SIGHUP)
+					ereport(elevel,
+							(errmsg("parameter \"%s\" removed from configuration file, reset to default",
+									gconf->name)));
+			}
 		}
 	}
 
@@ -960,17 +1320,59 @@ guc_free(void *ptr)
 static bool
 string_field_used(struct config_generic *conf, char *strval)
 {
-	if (strval == *(conf->_string.variable) ||
-		strval == conf->_string.reset_val ||
-		strval == conf->_string.boot_val)
+	if (strval == *GUC_VARIABLE_STRING(conf) ||
+		strval == GUC_RESET_STRING(conf) ||
+		strval == conf->_string.boot_val ||
+		strval == GUC_LAST_REPORTED(conf))
 		return true;
-	for (GucStack *stack = conf->stack; stack; stack = stack->prev)
+	for (GucStack *stack = GUC_STACK(conf); stack; stack = stack->prev)
 	{
 		if (strval == stack->prior.val.stringval ||
 			strval == stack->masked.val.stringval)
 			return true;
 	}
 	return false;
+}
+
+/*
+ * Forget the last value reported to the frontend.  In threaded builds, copied
+ * session GUC records can transiently have last_reported sharing storage with
+ * another string field.  Avoid freeing such storage until the owning field is
+ * replaced or discarded.
+ */
+static void
+clear_last_reported(struct config_generic *conf)
+{
+	char	   *last_reported = GUC_LAST_REPORTED(conf);
+
+	if (last_reported == NULL)
+		return;
+
+	GUC_SET_LAST_REPORTED(conf, NULL);
+	if (conf->vartype != PGC_STRING ||
+		!string_field_used(conf, last_reported))
+		guc_free(last_reported);
+}
+
+static char *
+canonicalize_default_string_value(struct config_generic *conf, char *newval)
+{
+	const char *boot_val = conf->_string.boot_val;
+
+	if (boot_val == NULL || newval == NULL || newval == boot_val)
+		return newval;
+	if (strcmp(newval, boot_val) != 0)
+		return newval;
+
+	guc_free(newval);
+	return unconstify(char *, boot_val);
+}
+
+static void
+guc_free_string_value(struct config_generic *conf, char *strval)
+{
+	if (strval != NULL && strval != conf->_string.boot_val)
+		guc_free(strval);
 }
 
 /*
@@ -997,11 +1399,11 @@ set_string_field(struct config_generic *conf, char **field, char *newval)
 static bool
 extra_field_used(struct config_generic *gconf, void *extra)
 {
-	if (extra == gconf->extra)
+	if (extra == GUC_EXTRA(gconf))
 		return true;
-	if (extra == gconf->reset_extra)
+	if (extra == GUC_RESET_EXTRA(gconf))
 		return true;
-	for (GucStack *stack = gconf->stack; stack; stack = stack->prev)
+	for (GucStack *stack = GUC_STACK(gconf); stack; stack = stack->prev)
 	{
 		if (extra == stack->prior.extra ||
 			extra == stack->masked.extra)
@@ -1029,6 +1431,79 @@ set_extra_field(struct config_generic *gconf, void **field, void *newval)
 		guc_free(oldval);
 }
 
+static void
+clear_guc_stack(struct config_generic *gconf)
+{
+	GucStack   *stack;
+
+	while ((stack = GUC_STACK(gconf)) != NULL)
+	{
+		GUC_SET_STACK(gconf, stack->prev);
+
+		if (gconf->vartype == PGC_STRING)
+		{
+			set_string_field(gconf, &stack->prior.val.stringval, NULL);
+			set_string_field(gconf, &stack->masked.val.stringval, NULL);
+		}
+		set_extra_field(gconf, &stack->prior.extra, NULL);
+		set_extra_field(gconf, &stack->masked.extra, NULL);
+		guc_free(stack);
+	}
+}
+
+static void
+reset_guc_record_at_backend_exit(struct config_generic *gconf)
+{
+	void	   *extra = GUC_EXTRA(gconf);
+	void	   *reset_extra = GUC_RESET_EXTRA(gconf);
+
+	RemoveGUCFromLists(gconf);
+	clear_guc_stack(gconf);
+	clear_last_reported(gconf);
+	guc_free(GUC_SOURCEFILE(gconf));
+	GUC_SET_SOURCEFILE(gconf, NULL);
+
+	if (gconf->vartype == PGC_STRING)
+	{
+		if (GUCRecordVariableIsCurrentSessionOwned(gconf))
+			set_string_field(gconf, GUC_VARIABLE_STRING(gconf), NULL);
+		set_string_field(gconf, &GUC_RESET_STRING(gconf), NULL);
+	}
+
+	GUC_SET_EXTRA(gconf, NULL);
+	if (extra != NULL && !extra_field_used(gconf, extra))
+		guc_free(extra);
+
+	GUC_SET_RESET_EXTRA(gconf, NULL);
+	if (reset_extra != NULL && !extra_field_used(gconf, reset_extra))
+		guc_free(reset_extra);
+
+	GUC_STATUS(gconf) = 0;
+	GUC_SOURCE(gconf) = PGC_S_DEFAULT;
+	GUC_SCONTEXT(gconf) = PGC_INTERNAL;
+	GUC_SROLE(gconf) = BOOTSTRAP_SUPERUSERID;
+}
+
+void
+ResetGUCStateAtBackendExit(void)
+{
+	if (guc_variables == NULL)
+		return;
+
+	for (int i = 0; i < num_guc_variables; i++)
+		reset_guc_record_at_backend_exit(&guc_variables[i]);
+
+	if (guc_hashtab != NULL)
+	{
+		HASH_SEQ_STATUS status;
+		GUCHashEntry *hentry;
+
+		hash_seq_init(&status, guc_hashtab);
+		while ((hentry = (GUCHashEntry *) hash_seq_search(&status)) != NULL)
+			reset_guc_record_at_backend_exit(hentry->gucvar);
+	}
+}
+
 /*
  * Support for copying a variable's active value into a stack entry.
  * The "extra" field associated with the active value is copied, too.
@@ -1042,22 +1517,22 @@ set_stack_value(struct config_generic *gconf, config_var_value *val)
 	switch (gconf->vartype)
 	{
 		case PGC_BOOL:
-			val->val.boolval = *gconf->_bool.variable;
+			val->val.boolval = *GUC_VARIABLE_BOOL(gconf);
 			break;
 		case PGC_INT:
-			val->val.intval = *gconf->_int.variable;
+			val->val.intval = *GUC_VARIABLE_INT(gconf);
 			break;
 		case PGC_REAL:
-			val->val.realval = *gconf->_real.variable;
+			val->val.realval = *GUC_VARIABLE_REAL(gconf);
 			break;
 		case PGC_STRING:
-			set_string_field(gconf, &(val->val.stringval), *gconf->_string.variable);
+			set_string_field(gconf, &(val->val.stringval), *GUC_VARIABLE_STRING(gconf));
 			break;
 		case PGC_ENUM:
-			val->val.enumval = *gconf->_enum.variable;
+			val->val.enumval = *GUC_VARIABLE_ENUM(gconf);
 			break;
 	}
-	set_extra_field(gconf, &(val->extra), gconf->extra);
+	set_extra_field(gconf, &(val->extra), GUC_EXTRA(gconf));
 }
 
 /*
@@ -1098,14 +1573,19 @@ get_guc_variables(int *num_vars)
 	GUCHashEntry *hentry;
 	int			i;
 
-	*num_vars = hash_get_num_entries(guc_hashtab);
+	*num_vars = num_guc_variables + guc_custom_variable_count();
 	result = palloc_array(struct config_generic *, *num_vars);
 
-	/* Extract pointers from the hash table */
+	/* Extract pointers from the built-in array and custom hash table. */
 	i = 0;
-	hash_seq_init(&status, guc_hashtab);
-	while ((hentry = (GUCHashEntry *) hash_seq_search(&status)) != NULL)
-		result[i++] = hentry->gucvar;
+	for (int j = 0; j < num_guc_variables; j++)
+		result[i++] = &guc_variables[j];
+	if (guc_hashtab != NULL)
+	{
+		hash_seq_init(&status, guc_hashtab);
+		while ((hentry = (GUCHashEntry *) hash_seq_search(&status)) != NULL)
+			result[i++] = hentry->gucvar;
+	}
 	Assert(i == *num_vars);
 
 	/* Sort by name */
@@ -1124,11 +1604,7 @@ get_guc_variables(int *num_vars)
 void
 build_guc_variables(void)
 {
-	int			size_vars;
 	int			num_vars = 0;
-	HASHCTL		hash_ctl;
-	GUCHashEntry *hentry;
-	bool		found;
 
 	/*
 	 * Create the memory context that will hold all GUC-related data.
@@ -1137,53 +1613,72 @@ build_guc_variables(void)
 	GUCMemoryContext =
 		PgRuntimeGetOwnedMemoryContextWithSizes(PgCurrentGUCMemoryContextRef(),
 												"GUCMemoryContext",
-												ALLOCSET_DEFAULT_SIZES);
+												ALLOCSET_START_SMALL_SIZES);
 
 	/*
 	 * Count all the built-in variables.
 	 */
 	for (int i = 0; ConfigureNames[i].name; i++)
 		num_vars++;
+	ensure_builtin_guc_name_index();
 	num_guc_variables = num_vars;
-	guc_variables = MemoryContextAlloc(GUCMemoryContext,
-									   sizeof(struct config_generic) *
-									   (num_vars + 1));
-	memcpy(guc_variables, ConfigureNames,
-		   sizeof(struct config_generic) * (num_vars + 1));
-	InitializeGUCVariablePointers(guc_variables);
+	guc_variables = ConfigureNames;
+	guc_variable_states = MemoryContextAllocZero(GUCMemoryContext,
+												 sizeof(config_generic_state) *
+												 (num_vars + 1));
+	InitializeGUCVariableStatePointers();
 
 	dlist_init(&guc_nondef_list);
 	slist_init(&guc_stack_list);
 	slist_init(&guc_report_list);
+}
+
+static void
+InitializeGUCVariableStatePointers(void)
+{
+	struct config_generic *variables;
+
+	Assert(guc_variables == ConfigureNames);
+	Assert(guc_variable_states != NULL);
 
 	/*
-	 * Create hash table with 20% slack
+	 * The generated binder writes through config_generic._type.variable
+	 * fields.  Keep that generated API as a compatibility bridge, but do it
+	 * against a short-lived copy and retain only the per-session live backing
+	 * addresses in config_generic_state.
 	 */
-	size_vars = num_vars + num_vars / 4;
-
-	hash_ctl.keysize = sizeof(char *);
-	hash_ctl.entrysize = sizeof(GUCHashEntry);
-	hash_ctl.hash = guc_name_hash;
-	hash_ctl.match = guc_name_match;
-	hash_ctl.hcxt = GUCMemoryContext;
-	guc_hashtab = hash_create("GUC hash table",
-							  size_vars,
-							  &hash_ctl,
-							  HASH_ELEM | HASH_FUNCTION | HASH_COMPARE | HASH_CONTEXT);
+	variables = MemoryContextAlloc(TopMemoryContext,
+								   sizeof(struct config_generic) *
+								   (num_guc_variables + 1));
+	memcpy(variables, ConfigureNames,
+		   sizeof(struct config_generic) * (num_guc_variables + 1));
+	InitializeGUCVariablePointers(variables);
 
 	for (int i = 0; i < num_guc_variables; i++)
 	{
-		struct config_generic *gucvar = &guc_variables[i];
+		config_generic_state *state = &guc_variable_states[i];
 
-		hentry = (GUCHashEntry *) hash_search(guc_hashtab,
-											  &gucvar->name,
-											  HASH_ENTER,
-											  &found);
-		Assert(!found);
-		hentry->gucvar = gucvar;
+		switch (guc_variables[i].vartype)
+		{
+			case PGC_BOOL:
+				state->variable.boolvar = variables[i]._bool.variable;
+				break;
+			case PGC_INT:
+				state->variable.intvar = variables[i]._int.variable;
+				break;
+			case PGC_REAL:
+				state->variable.realvar = variables[i]._real.variable;
+				break;
+			case PGC_STRING:
+				state->variable.stringvar = variables[i]._string.variable;
+				break;
+			case PGC_ENUM:
+				state->variable.enumvar = variables[i]._enum.variable;
+				break;
+		}
 	}
 
-	Assert(num_vars == hash_get_num_entries(guc_hashtab));
+	pfree(variables);
 }
 
 /*
@@ -1193,10 +1688,12 @@ build_guc_variables(void)
 static bool
 add_guc_variable(struct config_generic *var, int elevel)
 {
+	HTAB	   *custom_hashtab;
 	GUCHashEntry *hentry;
 	bool		found;
 
-	hentry = (GUCHashEntry *) hash_search(guc_hashtab,
+	custom_hashtab = ensure_guc_custom_hashtab(guc_custom_variable_count() + 1);
+	hentry = (GUCHashEntry *) hash_search(custom_hashtab,
 										  &var->name,
 										  HASH_ENTER_NULL,
 										  &found);
@@ -1323,17 +1820,30 @@ assignable_custom_variable_name(const char *name, bool skip_errors, int elevel)
 static struct config_generic *
 add_placeholder_variable(const char *name, int elevel)
 {
-	size_t		sz = sizeof(struct config_generic) + sizeof(char *);
 	struct config_generic *var;
+	config_generic_state *state;
 
-	var = (struct config_generic *) guc_malloc(elevel, sz);
+	var = (struct config_generic *) guc_malloc(elevel,
+											   sizeof(struct config_generic));
 	if (var == NULL)
 		return NULL;
-	memset(var, 0, sz);
+	memset(var, 0, sizeof(struct config_generic));
+
+	state = (config_generic_state *) guc_malloc(elevel,
+												sizeof(config_generic_state) +
+												sizeof(char *));
+	if (state == NULL)
+	{
+		guc_free(var);
+		return NULL;
+	}
+	memset(state, 0, sizeof(config_generic_state) + sizeof(char *));
+	var->state = state;
 
 	var->name = guc_strdup(elevel, name);
 	if (var->name == NULL)
 	{
+		guc_free(state);
 		guc_free(var);
 		return NULL;
 	}
@@ -1349,11 +1859,13 @@ add_placeholder_variable(const char *name, int elevel)
 	 * 'static' place to point to.  Note that the current value, as well as
 	 * the boot and reset values, start out NULL.
 	 */
-	var->_string.variable = (char **) (var + 1);
+	GUC_VARIABLE_STRING(var) = (char **) (state + 1);
+	state->variable.stringvar = GUC_VARIABLE_STRING(var);
 
 	if (!add_guc_variable(var, elevel))
 	{
 		guc_free(unconstify(char *, var->name));
+		guc_free(state);
 		guc_free(var);
 		return NULL;
 	}
@@ -1381,16 +1893,23 @@ find_option(const char *name, bool create_placeholders, bool skip_errors,
 			int elevel)
 {
 	GUCHashEntry *hentry;
+	struct config_generic *record;
 
 	Assert(name);
 
-	/* Look it up using the hash table. */
-	hentry = (GUCHashEntry *) hash_search(guc_hashtab,
-										  &name,
-										  HASH_FIND,
-										  NULL);
-	if (hentry)
-		return hentry->gucvar;
+	/* Look it up using the shared built-in index, then custom variables. */
+	record = find_builtin_option(name);
+	if (record != NULL)
+		return record;
+	if (guc_hashtab != NULL)
+	{
+		hentry = (GUCHashEntry *) hash_search(guc_hashtab,
+											  &name,
+											  HASH_FIND,
+											  NULL);
+		if (hentry)
+			return hentry->gucvar;
+	}
 
 	/*
 	 * See if the name is an obsolete name for a variable.  We assume that the
@@ -1503,6 +2022,307 @@ guc_name_match(const void *key1, const void *key2, Size keysize)
 	return guc_name_compare(name1, name2);
 }
 
+/*
+ * Build the shared lookup table for immutable built-in GUC names.  The table
+ * points at ConfigureNames[] indexes rather than per-session records, so
+ * logical backend sessions can avoid rebuilding hundreds of identical hash
+ * entries.
+ */
+static void
+ensure_builtin_guc_name_index(void)
+{
+	int			num_vars = 0;
+	int			size_vars;
+	HASHCTL		hash_ctl;
+	HTAB	   *builtin_hashtab;
+	bool		found;
+
+	if (guc_builtin_hashtab != NULL)
+		return;
+
+	Assert(TopMemoryContext != NULL);
+
+	for (int i = 0; ConfigureNames[i].name; i++)
+		num_vars++;
+
+	size_vars = num_vars + num_vars / 4;
+
+	hash_ctl.keysize = sizeof(char *);
+	hash_ctl.entrysize = sizeof(GUCBuiltinHashEntry);
+	hash_ctl.hash = guc_name_hash;
+	hash_ctl.match = guc_name_match;
+	hash_ctl.hcxt = TopMemoryContext;
+	builtin_hashtab = hash_create("GUC builtin lookup table",
+								  size_vars,
+								  &hash_ctl,
+								  HASH_ELEM | HASH_FUNCTION | HASH_COMPARE | HASH_CONTEXT);
+
+	for (int i = 0; i < num_vars; i++)
+	{
+		const char *name = ConfigureNames[i].name;
+		GUCBuiltinHashEntry *hentry;
+
+		hentry = (GUCBuiltinHashEntry *) hash_search(builtin_hashtab,
+													 &name,
+													 HASH_ENTER,
+													 &found);
+		Assert(!found);
+		hentry->index = i;
+	}
+
+	guc_builtin_hashtab = builtin_hashtab;
+}
+
+static struct config_generic *
+find_builtin_option(const char *name)
+{
+	GUCBuiltinHashEntry *hentry;
+
+	if (guc_variables == NULL)
+		return NULL;
+
+	ensure_builtin_guc_name_index();
+	hentry = (GUCBuiltinHashEntry *) hash_search(guc_builtin_hashtab,
+												 &name,
+												 HASH_FIND,
+												 NULL);
+	if (hentry == NULL)
+		return NULL;
+
+	Assert(hentry->index >= 0);
+	Assert(hentry->index < num_guc_variables);
+	return &guc_variables[hentry->index];
+}
+
+static int
+guc_custom_variable_count(void)
+{
+	if (guc_hashtab == NULL)
+		return 0;
+
+	return hash_get_num_entries(guc_hashtab);
+}
+
+static Size
+guc_cstring_payload_size(const char *str)
+{
+	return str != NULL ? strlen(str) + 1 : 0;
+}
+
+static void
+guc_record_string_payload_size(const struct config_generic *gconf,
+							   Size *current_string_bytes,
+							   Size *reset_string_bytes)
+{
+	const char *current;
+	const char *reset;
+
+	if (gconf->vartype != PGC_STRING)
+		return;
+
+	current = *GUC_VARIABLE_STRING(gconf);
+	if (current == NULL || current == gconf->_string.boot_val)
+		current = NULL;
+	else
+		*current_string_bytes += guc_cstring_payload_size(current);
+
+	reset = GUC_RESET_STRING(gconf);
+	if (reset == NULL || reset == gconf->_string.boot_val || reset == current)
+		reset = NULL;
+	else
+		*reset_string_bytes += guc_cstring_payload_size(reset);
+
+	return;
+}
+
+static Size
+guc_record_stack_memory(const struct config_generic *gconf, Size *stack_count)
+{
+	Size		bytes = 0;
+	const char *current = NULL;
+	const char *reset = NULL;
+
+	if (gconf->vartype == PGC_STRING)
+	{
+		current = *GUC_VARIABLE_STRING(gconf);
+		reset = GUC_RESET_STRING(gconf);
+	}
+
+	for (GucStack *stack = GUC_STACK(gconf); stack; stack = stack->prev)
+	{
+		(*stack_count)++;
+		bytes += sizeof(GucStack);
+
+		if (gconf->vartype == PGC_STRING)
+		{
+			if (stack->prior.val.stringval != NULL &&
+				stack->prior.val.stringval != gconf->_string.boot_val &&
+				stack->prior.val.stringval != current &&
+				stack->prior.val.stringval != reset)
+				bytes += guc_cstring_payload_size(stack->prior.val.stringval);
+			if (stack->masked.val.stringval != NULL &&
+				stack->masked.val.stringval != gconf->_string.boot_val &&
+				stack->masked.val.stringval != current &&
+				stack->masked.val.stringval != reset &&
+				stack->masked.val.stringval != stack->prior.val.stringval)
+				bytes += guc_cstring_payload_size(stack->masked.val.stringval);
+		}
+	}
+
+	return bytes;
+}
+
+static void
+guc_record_memory_stats(const struct config_generic *gconf,
+						Size *cold_count,
+						Size *cold_direct_bytes,
+						Size *current_string_bytes,
+						Size *reset_string_bytes,
+						Size *last_reported_bytes,
+						Size *sourcefile_bytes,
+						Size *stack_count,
+						Size *stack_direct_bytes)
+{
+	config_generic_cold_state *cold;
+
+	guc_record_string_payload_size(gconf, current_string_bytes,
+								   reset_string_bytes);
+	*stack_direct_bytes += guc_record_stack_memory(gconf, stack_count);
+
+	cold = GUCRecordColdStateIfAllocated(gconf);
+	if (cold == NULL)
+		return;
+
+	(*cold_count)++;
+	*cold_direct_bytes += sizeof(config_generic_cold_state);
+	*last_reported_bytes += guc_cstring_payload_size(cold->last_reported);
+	*sourcefile_bytes += guc_cstring_payload_size(cold->sourcefile);
+}
+
+void
+PgLogProtocolParkGUCMemory(uint32 backend_id, uint64 generation)
+{
+	MemoryContextCounters context;
+	Size		context_used;
+	Size		custom_count;
+	Size		state_array_bytes;
+	Size		cold_count = 0;
+	Size		cold_direct_bytes = 0;
+	Size		current_string_bytes = 0;
+	Size		reset_string_bytes = 0;
+	Size		last_reported_bytes = 0;
+	Size		sourcefile_bytes = 0;
+	Size		stack_count = 0;
+	Size		stack_direct_bytes = 0;
+	Size		custom_record_bytes = 0;
+	Size		attributed_bytes;
+	Size		unattributed_used_bytes;
+
+	if (GUCMemoryContext == NULL)
+		return;
+
+	MemoryContextMemConsumed(GUCMemoryContext, &context);
+	context_used = context.totalspace - context.freespace;
+	custom_count = guc_custom_variable_count();
+	state_array_bytes = sizeof(config_generic_state) * (num_guc_variables + 1);
+
+	for (int i = 0; i < num_guc_variables; i++)
+		guc_record_memory_stats(&guc_variables[i],
+								&cold_count,
+								&cold_direct_bytes,
+								&current_string_bytes,
+								&reset_string_bytes,
+								&last_reported_bytes,
+								&sourcefile_bytes,
+								&stack_count,
+								&stack_direct_bytes);
+
+	if (guc_hashtab != NULL)
+	{
+		HASH_SEQ_STATUS status;
+		GUCHashEntry *hentry;
+
+		hash_seq_init(&status, guc_hashtab);
+		while ((hentry = (GUCHashEntry *) hash_seq_search(&status)) != NULL)
+		{
+			struct config_generic *gconf = hentry->gucvar;
+
+			custom_record_bytes += sizeof(struct config_generic);
+			if (gconf->state != NULL)
+				custom_record_bytes += sizeof(config_generic_state);
+			guc_record_memory_stats(gconf,
+									&cold_count,
+									&cold_direct_bytes,
+									&current_string_bytes,
+									&reset_string_bytes,
+									&last_reported_bytes,
+									&sourcefile_bytes,
+									&stack_count,
+									&stack_direct_bytes);
+		}
+	}
+
+	attributed_bytes = state_array_bytes + cold_direct_bytes +
+		current_string_bytes + reset_string_bytes + last_reported_bytes +
+		sourcefile_bytes + stack_direct_bytes + custom_record_bytes;
+	unattributed_used_bytes = context_used > attributed_bytes ?
+		context_used - attributed_bytes : 0;
+
+	ereport(LOG_SERVER_ONLY,
+			(errhidestmt(true),
+			 errhidecontext(true),
+			 errmsg_internal("protocol_park_guc_memory pid=%d backend_id=%u generation=%llu "
+							 "context_total_bytes=%zu context_free_bytes=%zu context_used_bytes=%zu context_blocks=%zu "
+							 "builtin_count=%d custom_count=%zu state_array_bytes=%zu "
+							 "cold_count=%zu cold_direct_bytes=%zu "
+							 "current_string_bytes=%zu reset_string_bytes=%zu "
+							 "last_reported_bytes=%zu sourcefile_bytes=%zu "
+							 "stack_count=%zu stack_direct_bytes=%zu custom_record_bytes=%zu "
+							 "attributed_bytes=%zu unattributed_used_bytes=%zu",
+							 PgCurrentBackendSignalPid(),
+							 backend_id,
+							 (unsigned long long) generation,
+							 context.totalspace,
+							 context.freespace,
+							 context_used,
+							 context.nblocks,
+							 num_guc_variables,
+							 custom_count,
+							 state_array_bytes,
+							 cold_count,
+							 cold_direct_bytes,
+							 current_string_bytes,
+							 reset_string_bytes,
+							 last_reported_bytes,
+							 sourcefile_bytes,
+							 stack_count,
+							 stack_direct_bytes,
+							 custom_record_bytes,
+							 attributed_bytes,
+							 unattributed_used_bytes)));
+}
+
+static HTAB *
+ensure_guc_custom_hashtab(int nelem)
+{
+	HASHCTL		hash_ctl;
+
+	if (guc_hashtab != NULL)
+		return guc_hashtab;
+
+	hash_ctl.keysize = sizeof(char *);
+	hash_ctl.entrysize = sizeof(GUCHashEntry);
+	hash_ctl.hash = guc_name_hash;
+	hash_ctl.match = guc_name_match;
+	hash_ctl.hcxt = GUCMemoryContext;
+	guc_hashtab = hash_create("custom GUC hash table",
+							  Max(nelem, 8),
+							  &hash_ctl,
+							  HASH_ELEM | HASH_FUNCTION | HASH_COMPARE | HASH_CONTEXT);
+
+	return guc_hashtab;
+}
+
 
 /*
  * Convert a GUC name to the form that should be used in pg_parameter_acl.
@@ -1585,11 +2405,12 @@ check_GUC_init(const struct config_generic *gconf)
 		case PGC_BOOL:
 			{
 				const struct config_bool *conf = &gconf->_bool;
+				bool	   *variable = GUC_VARIABLE_BOOL(gconf);
 
-				if (*conf->variable && !conf->boot_val)
+				if (*variable && !conf->boot_val)
 				{
 					elog(LOG, "GUC (PGC_BOOL) %s, boot_val=%d, C-var=%d",
-						 gconf->name, conf->boot_val, *conf->variable);
+						 gconf->name, conf->boot_val, *variable);
 					return false;
 				}
 				break;
@@ -1597,11 +2418,12 @@ check_GUC_init(const struct config_generic *gconf)
 		case PGC_INT:
 			{
 				const struct config_int *conf = &gconf->_int;
+				int		   *variable = GUC_VARIABLE_INT(gconf);
 
-				if (*conf->variable != 0 && *conf->variable != conf->boot_val)
+				if (*variable != 0 && *variable != conf->boot_val)
 				{
 					elog(LOG, "GUC (PGC_INT) %s, boot_val=%d, C-var=%d",
-						 gconf->name, conf->boot_val, *conf->variable);
+						 gconf->name, conf->boot_val, *variable);
 					return false;
 				}
 				break;
@@ -1609,11 +2431,12 @@ check_GUC_init(const struct config_generic *gconf)
 		case PGC_REAL:
 			{
 				const struct config_real *conf = &gconf->_real;
+				double	   *variable = GUC_VARIABLE_REAL(gconf);
 
-				if (*conf->variable != 0.0 && *conf->variable != conf->boot_val)
+				if (*variable != 0.0 && *variable != conf->boot_val)
 				{
 					elog(LOG, "GUC (PGC_REAL) %s, boot_val=%g, C-var=%g",
-						 gconf->name, conf->boot_val, *conf->variable);
+						 gconf->name, conf->boot_val, *variable);
 					return false;
 				}
 				break;
@@ -1621,13 +2444,14 @@ check_GUC_init(const struct config_generic *gconf)
 		case PGC_STRING:
 			{
 				const struct config_string *conf = &gconf->_string;
+				char	  **variable = GUC_VARIABLE_STRING(gconf);
 
-				if (*conf->variable != NULL &&
+				if (*variable != NULL &&
 					(conf->boot_val == NULL ||
-					 strcmp(*conf->variable, conf->boot_val) != 0))
+					 strcmp(*variable, conf->boot_val) != 0))
 				{
 					elog(LOG, "GUC (PGC_STRING) %s, boot_val=%s, C-var=%s",
-						 gconf->name, conf->boot_val ? conf->boot_val : "<null>", *conf->variable);
+						 gconf->name, conf->boot_val ? conf->boot_val : "<null>", *variable);
 					return false;
 				}
 				break;
@@ -1635,11 +2459,12 @@ check_GUC_init(const struct config_generic *gconf)
 		case PGC_ENUM:
 			{
 				const struct config_enum *conf = &gconf->_enum;
+				int		   *variable = GUC_VARIABLE_ENUM(gconf);
 
-				if (*conf->variable != conf->boot_val)
+				if (*variable != conf->boot_val)
 				{
 					elog(LOG, "GUC (PGC_ENUM) %s, boot_val=%d, C-var=%d",
-						 gconf->name, conf->boot_val, *conf->variable);
+						 gconf->name, conf->boot_val, *variable);
 					return false;
 				}
 				break;
@@ -1673,9 +2498,6 @@ check_GUC_init(const struct config_generic *gconf)
 void
 InitializeGUCOptions(void)
 {
-	HASH_SEQ_STATUS status;
-	GUCHashEntry *hentry;
-
 	/*
 	 * Before log_line_prefix could possibly receive a nonempty setting, make
 	 * sure that timezone processing is minimally alive (see elog.c).
@@ -1691,13 +2513,12 @@ InitializeGUCOptions(void)
 	 * Load all variables with their compiled-in defaults, and initialize
 	 * status fields as needed.
 	 */
-	hash_seq_init(&status, guc_hashtab);
-	while ((hentry = (GUCHashEntry *) hash_seq_search(&status)) != NULL)
+	for (int i = 0; i < num_guc_variables; i++)
 	{
 		/* Check mapping between initial and default value */
-		Assert(check_GUC_init(hentry->gucvar));
+		Assert(check_GUC_init(&guc_variables[i]));
 
-		InitializeOneGUCOption(hentry->gucvar);
+		InitializeOneGUCOption(&guc_variables[i]);
 	}
 
 	reporting_enabled = false;
@@ -1736,7 +2557,6 @@ InitializeGUCOptions(void)
 void
 InitializeThreadedSessionGUCOptions(void)
 {
-	const void **initial_variables;
 	bool		locked;
 
 	/*
@@ -1744,24 +2564,19 @@ InitializeThreadedSessionGUCOptions(void)
 	 * fallback state can be adopted into PgSession.  InitPostgres() can reach
 	 * this path again for normal client backends.
 	 */
-	if (guc_hashtab != NULL)
+	if (guc_variables != NULL)
 		return;
 
 	locked = ThreadedGUCLock();
 	PG_TRY();
 	{
-		if (guc_hashtab != NULL)
+		if (guc_variables != NULL)
 			goto done;
 
 		build_guc_variables();
 
-		initial_variables = palloc_array(const void *, num_guc_variables);
-		for (int i = 0; i < num_guc_variables; i++)
-			initial_variables[i] = GUCOptionVariablePointer(&guc_variables[i]);
-
 		RebindSessionGUCVariablePointers();
-		InitializeThreadedSessionReboundGUCOptions(initial_variables);
-		pfree(initial_variables);
+		InitializeThreadedSessionReboundGUCOptions();
 
 		InitializeThreadedSessionCompatibilityGUCOptions();
 done:
@@ -1782,7 +2597,7 @@ InitializeThreadedSessionRequiredGUCOptions(void)
 	};
 	bool		locked;
 
-	if (guc_hashtab == NULL)
+	if (guc_variables == NULL)
 		return;
 
 	locked = ThreadedGUCLock();
@@ -1804,9 +2619,9 @@ InitializeThreadedSessionRequiredGUCOptions(void)
 
 		if (gconf->vartype != PGC_STRING)
 			continue;
-		if (!PgCurrentSessionOwnsPointer(gconf->_string.variable))
+		if (!PgCurrentSessionOwnsPointer(GUC_VARIABLE_STRING(gconf)))
 			continue;
-		if (*gconf->_string.variable == NULL)
+		if (*GUC_VARIABLE_STRING(gconf) == NULL)
 			InitializeOneGUCOption(gconf);
 	}
 
@@ -1822,7 +2637,7 @@ InitializeThreadedSessionRequiredGUCOptions(void)
 
 		gconf = find_option(compatibility_options[i], false, false, PANIC);
 		Assert(gconf->vartype == PGC_STRING);
-		if (*gconf->_string.variable == NULL)
+		if (*GUC_VARIABLE_STRING(gconf) == NULL)
 			InitializeOneGUCOption(gconf);
 	}
 	}
@@ -1839,30 +2654,29 @@ GUCOptionVariablePointer(struct config_generic *gconf)
 	switch (gconf->vartype)
 	{
 		case PGC_BOOL:
-			return gconf->_bool.variable;
+			return GUC_VARIABLE_BOOL(gconf);
 		case PGC_INT:
-			return gconf->_int.variable;
+			return GUC_VARIABLE_INT(gconf);
 		case PGC_REAL:
-			return gconf->_real.variable;
+			return GUC_VARIABLE_REAL(gconf);
 		case PGC_STRING:
-			return gconf->_string.variable;
+			return GUC_VARIABLE_STRING(gconf);
 		case PGC_ENUM:
-			return gconf->_enum.variable;
+			return GUC_VARIABLE_ENUM(gconf);
 	}
 
 	pg_unreachable();
 }
 
 static void
-InitializeThreadedSessionReboundGUCOptions(const void **initial_variables)
+InitializeThreadedSessionReboundGUCOptions(void)
 {
 	for (int i = 0; i < num_guc_variables; i++)
 	{
 		struct config_generic *gconf = &guc_variables[i];
 		const void *variable = GUCOptionVariablePointer(gconf);
 
-		if (variable == initial_variables[i] &&
-			!PgCurrentOrEarlySessionOwnsPointer(variable))
+		if (!PgCurrentOrEarlySessionOwnsPointer(variable))
 		{
 			InitializeOneGUCOptionResetMetadata(gconf);
 			continue;
@@ -1909,19 +2723,19 @@ RebindSessionGUCVariablePointer(const ThreadedSessionGUCRebind *rebind)
 	switch (rebind->vartype)
 	{
 		case PGC_BOOL:
-			gconf->_bool.variable = rebind->accessor.bool_ref();
+			GUC_VARIABLE_BOOL(gconf) = rebind->accessor.bool_ref();
 			break;
 		case PGC_INT:
-			gconf->_int.variable = rebind->accessor.int_ref();
+			GUC_VARIABLE_INT(gconf) = rebind->accessor.int_ref();
 			break;
 		case PGC_REAL:
-			gconf->_real.variable = rebind->accessor.real_ref();
+			GUC_VARIABLE_REAL(gconf) = rebind->accessor.real_ref();
 			break;
 		case PGC_STRING:
-			gconf->_string.variable = rebind->accessor.string_ref();
+			GUC_VARIABLE_STRING(gconf) = rebind->accessor.string_ref();
 			break;
 		case PGC_ENUM:
-			gconf->_enum.variable = rebind->accessor.enum_ref();
+			GUC_VARIABLE_ENUM(gconf) = rebind->accessor.enum_ref();
 			break;
 	}
 }
@@ -1929,7 +2743,7 @@ RebindSessionGUCVariablePointer(const ThreadedSessionGUCRebind *rebind)
 void
 RebindSessionGUCVariablePointers(void)
 {
-	if (guc_hashtab == NULL)
+	if (guc_variables == NULL)
 		return;
 
 	for (int i = 0; i < NumThreadedSessionGUCRebinds; i++)
@@ -1939,7 +2753,7 @@ RebindSessionGUCVariablePointers(void)
 int
 ValidateSessionGUCVariableRebinds(void)
 {
-	if (guc_hashtab == NULL)
+	if (guc_variables == NULL)
 		return 0;
 
 	for (int i = 0; i < NumThreadedSessionGUCRebinds; i++)
@@ -2053,18 +2867,13 @@ InitializeOneGUCOption(struct config_generic *gconf)
 {
 	void	   *extra = NULL;
 
-	gconf->status = 0;
-	gconf->source = PGC_S_DEFAULT;
-	gconf->reset_source = PGC_S_DEFAULT;
-	gconf->scontext = PGC_INTERNAL;
-	gconf->reset_scontext = PGC_INTERNAL;
-	gconf->srole = BOOTSTRAP_SUPERUSERID;
-	gconf->reset_srole = BOOTSTRAP_SUPERUSERID;
-	gconf->stack = NULL;
-	gconf->extra = NULL;
-	gconf->last_reported = NULL;
-	gconf->sourcefile = NULL;
-	gconf->sourceline = 0;
+	GUC_STATUS(gconf) = 0;
+	GUC_SOURCE(gconf) = PGC_S_DEFAULT;
+	GUC_SCONTEXT(gconf) = PGC_INTERNAL;
+	GUC_SROLE(gconf) = BOOTSTRAP_SUPERUSERID;
+	GUC_SET_STACK(gconf, NULL);
+	GUC_SET_EXTRA(gconf, NULL);
+	GUCRecordResetColdFields(gconf);
 
 	switch (gconf->vartype)
 	{
@@ -2079,7 +2888,7 @@ InitializeOneGUCOption(struct config_generic *gconf)
 						 gconf->name, (int) newval);
 				if (conf->assign_hook)
 					conf->assign_hook(newval, extra);
-				*conf->variable = conf->reset_val = newval;
+				*GUC_VARIABLE_BOOL(gconf) = GUC_RESET_BOOL(gconf) = newval;
 				break;
 			}
 		case PGC_INT:
@@ -2095,7 +2904,7 @@ InitializeOneGUCOption(struct config_generic *gconf)
 						 gconf->name, newval);
 				if (conf->assign_hook)
 					conf->assign_hook(newval, extra);
-				*conf->variable = conf->reset_val = newval;
+				*GUC_VARIABLE_INT(gconf) = GUC_RESET_INT(gconf) = newval;
 				break;
 			}
 		case PGC_REAL:
@@ -2111,7 +2920,7 @@ InitializeOneGUCOption(struct config_generic *gconf)
 						 gconf->name, newval);
 				if (conf->assign_hook)
 					conf->assign_hook(newval, extra);
-				*conf->variable = conf->reset_val = newval;
+				*GUC_VARIABLE_REAL(gconf) = GUC_RESET_REAL(gconf) = newval;
 				break;
 			}
 		case PGC_STRING:
@@ -2129,9 +2938,10 @@ InitializeOneGUCOption(struct config_generic *gconf)
 											PGC_S_DEFAULT, LOG))
 					elog(FATAL, "failed to initialize %s to \"%s\"",
 						 gconf->name, newval ? newval : "");
+				newval = canonicalize_default_string_value(gconf, newval);
 				if (conf->assign_hook)
 					conf->assign_hook(newval, extra);
-				*conf->variable = conf->reset_val = newval;
+				*GUC_VARIABLE_STRING(gconf) = GUC_RESET_STRING(gconf) = newval;
 				break;
 			}
 		case PGC_ENUM:
@@ -2145,12 +2955,13 @@ InitializeOneGUCOption(struct config_generic *gconf)
 						 gconf->name, newval);
 				if (conf->assign_hook)
 					conf->assign_hook(newval, extra);
-				*conf->variable = conf->reset_val = newval;
+				*GUC_VARIABLE_ENUM(gconf) = GUC_RESET_ENUM(gconf) = newval;
 				break;
 			}
 	}
 
-	gconf->extra = gconf->reset_extra = extra;
+	GUC_SET_EXTRA(gconf, extra);
+	GUC_SET_RESET_EXTRA(gconf, extra);
 }
 
 /*
@@ -2166,18 +2977,13 @@ InitializeOneGUCOptionResetMetadata(struct config_generic *gconf)
 {
 	void	   *extra = NULL;
 
-	gconf->status = 0;
-	gconf->source = PGC_S_DEFAULT;
-	gconf->reset_source = PGC_S_DEFAULT;
-	gconf->scontext = PGC_INTERNAL;
-	gconf->reset_scontext = PGC_INTERNAL;
-	gconf->srole = BOOTSTRAP_SUPERUSERID;
-	gconf->reset_srole = BOOTSTRAP_SUPERUSERID;
-	gconf->stack = NULL;
-	gconf->extra = NULL;
-	gconf->last_reported = NULL;
-	gconf->sourcefile = NULL;
-	gconf->sourceline = 0;
+	GUC_STATUS(gconf) = 0;
+	GUC_SOURCE(gconf) = PGC_S_DEFAULT;
+	GUC_SCONTEXT(gconf) = PGC_INTERNAL;
+	GUC_SROLE(gconf) = BOOTSTRAP_SUPERUSERID;
+	GUC_SET_STACK(gconf, NULL);
+	GUC_SET_EXTRA(gconf, NULL);
+	GUCRecordResetColdFields(gconf);
 
 	switch (gconf->vartype)
 	{
@@ -2190,7 +2996,7 @@ InitializeOneGUCOptionResetMetadata(struct config_generic *gconf)
 										  PGC_S_DEFAULT, LOG))
 					elog(FATAL, "failed to initialize %s reset value to %d",
 						 gconf->name, (int) newval);
-				conf->reset_val = newval;
+				GUC_RESET_BOOL(gconf) = newval;
 				break;
 			}
 		case PGC_INT:
@@ -2204,7 +3010,7 @@ InitializeOneGUCOptionResetMetadata(struct config_generic *gconf)
 										 PGC_S_DEFAULT, LOG))
 					elog(FATAL, "failed to initialize %s reset value to %d",
 						 gconf->name, newval);
-				conf->reset_val = newval;
+				GUC_RESET_INT(gconf) = newval;
 				break;
 			}
 		case PGC_REAL:
@@ -2218,13 +3024,19 @@ InitializeOneGUCOptionResetMetadata(struct config_generic *gconf)
 										  PGC_S_DEFAULT, LOG))
 					elog(FATAL, "failed to initialize %s reset value to %g",
 						 gconf->name, newval);
-				conf->reset_val = newval;
+				GUC_RESET_REAL(gconf) = newval;
 				break;
 			}
 		case PGC_STRING:
 			{
 				struct config_string *conf = &gconf->_string;
 				char	   *newval;
+
+				if (!PgCurrentOrEarlySessionOwnsPointer(GUC_VARIABLE_STRING(gconf)))
+				{
+					GUC_RESET_STRING(gconf) = *GUC_VARIABLE_STRING(gconf);
+					break;
+				}
 
 				if (conf->boot_val != NULL)
 					newval = guc_strdup(FATAL, conf->boot_val);
@@ -2235,7 +3047,8 @@ InitializeOneGUCOptionResetMetadata(struct config_generic *gconf)
 											PGC_S_DEFAULT, LOG))
 					elog(FATAL, "failed to initialize %s reset value to \"%s\"",
 						 gconf->name, newval ? newval : "");
-				conf->reset_val = newval;
+				newval = canonicalize_default_string_value(gconf, newval);
+				GUC_RESET_STRING(gconf) = newval;
 				break;
 			}
 		case PGC_ENUM:
@@ -2247,12 +3060,12 @@ InitializeOneGUCOptionResetMetadata(struct config_generic *gconf)
 										  PGC_S_DEFAULT, LOG))
 					elog(FATAL, "failed to initialize %s reset value to %d",
 						 gconf->name, newval);
-				conf->reset_val = newval;
+				GUC_RESET_ENUM(gconf) = newval;
 				break;
 			}
 	}
 
-	gconf->reset_extra = extra;
+	GUC_SET_RESET_EXTRA(gconf, extra);
 }
 
 /*
@@ -2264,12 +3077,12 @@ InitializeOneGUCOptionResetMetadata(struct config_generic *gconf)
 static void
 RemoveGUCFromLists(struct config_generic *gconf)
 {
-	if (gconf->source != PGC_S_DEFAULT)
-		dlist_delete(&gconf->nondef_link);
-	if (gconf->stack != NULL)
-		slist_delete(&guc_stack_list, &gconf->stack_link);
-	if (gconf->status & GUC_NEEDS_REPORT)
-		slist_delete(&guc_report_list, &gconf->report_link);
+	if (GUC_SOURCE(gconf) != PGC_S_DEFAULT)
+		dlist_delete(GUC_NONDEF_LINK(gconf));
+	if (GUC_STACK(gconf) != NULL)
+		slist_delete(&guc_stack_list, GUC_STACK_LINK(gconf));
+	if (GUC_STATUS(gconf) & GUC_NEEDS_REPORT)
+		slist_delete(&guc_report_list, GUC_REPORT_LINK(gconf));
 }
 
 
@@ -2373,8 +3186,8 @@ SelectConfigFiles(const char *userDoption, const char *progname)
 	 */
 	data_directory_rec =
 		find_option("data_directory", false, false, PANIC);
-	if (*data_directory_rec->_string.variable)
-		SetDataDir(*data_directory_rec->_string.variable);
+	if (*GUC_VARIABLE_STRING(data_directory_rec))
+		SetDataDir(*GUC_VARIABLE_STRING(data_directory_rec));
 	else if (configdir)
 		SetDataDir(configdir);
 	else
@@ -2546,8 +3359,9 @@ ResetAllOptions(void)
 	/* We need only consider GUCs not already at PGC_S_DEFAULT */
 	dlist_foreach_modify(iter, &guc_nondef_list)
 	{
-		struct config_generic *gconf = dlist_container(struct config_generic,
-													   nondef_link, iter.cur);
+		config_generic_cold_state *cold = dlist_container(config_generic_cold_state,
+														  nondef_link, iter.cur);
+		struct config_generic *gconf = GUC_COLD_STATE_RECORD(cold);
 
 		/* Don't reset non-SET-able values */
 		if (gconf->context != PGC_SUSET &&
@@ -2557,7 +3371,7 @@ ResetAllOptions(void)
 		if (gconf->flags & GUC_NO_RESET_ALL)
 			continue;
 		/* No need to reset if wasn't SET */
-		if (gconf->source <= PGC_S_OVERRIDE)
+		if (GUC_SOURCE(gconf) <= PGC_S_OVERRIDE)
 			continue;
 
 		/* Save old value to support transaction abort */
@@ -2570,11 +3384,11 @@ ResetAllOptions(void)
 					struct config_bool *conf = &gconf->_bool;
 
 					if (conf->assign_hook)
-						conf->assign_hook(conf->reset_val,
-										  gconf->reset_extra);
-					*conf->variable = conf->reset_val;
-					set_extra_field(gconf, &gconf->extra,
-									gconf->reset_extra);
+						conf->assign_hook(GUC_RESET_BOOL(gconf),
+										  GUC_RESET_EXTRA(gconf));
+					*GUC_VARIABLE_BOOL(gconf) = GUC_RESET_BOOL(gconf);
+					set_extra_field(gconf, GUC_EXTRA_REF(gconf),
+									GUC_RESET_EXTRA(gconf));
 					break;
 				}
 			case PGC_INT:
@@ -2582,11 +3396,11 @@ ResetAllOptions(void)
 					struct config_int *conf = &gconf->_int;
 
 					if (conf->assign_hook)
-						conf->assign_hook(conf->reset_val,
-										  gconf->reset_extra);
-					*conf->variable = conf->reset_val;
-					set_extra_field(gconf, &gconf->extra,
-									gconf->reset_extra);
+						conf->assign_hook(GUC_RESET_INT(gconf),
+										  GUC_RESET_EXTRA(gconf));
+					*GUC_VARIABLE_INT(gconf) = GUC_RESET_INT(gconf);
+					set_extra_field(gconf, GUC_EXTRA_REF(gconf),
+									GUC_RESET_EXTRA(gconf));
 					break;
 				}
 			case PGC_REAL:
@@ -2594,11 +3408,11 @@ ResetAllOptions(void)
 					struct config_real *conf = &gconf->_real;
 
 					if (conf->assign_hook)
-						conf->assign_hook(conf->reset_val,
-										  gconf->reset_extra);
-					*conf->variable = conf->reset_val;
-					set_extra_field(gconf, &gconf->extra,
-									gconf->reset_extra);
+						conf->assign_hook(GUC_RESET_REAL(gconf),
+										  GUC_RESET_EXTRA(gconf));
+					*GUC_VARIABLE_REAL(gconf) = GUC_RESET_REAL(gconf);
+					set_extra_field(gconf, GUC_EXTRA_REF(gconf),
+									GUC_RESET_EXTRA(gconf));
 					break;
 				}
 			case PGC_STRING:
@@ -2606,11 +3420,12 @@ ResetAllOptions(void)
 					struct config_string *conf = &gconf->_string;
 
 					if (conf->assign_hook)
-						conf->assign_hook(conf->reset_val,
-										  gconf->reset_extra);
-					set_string_field(gconf, conf->variable, conf->reset_val);
-					set_extra_field(gconf, &gconf->extra,
-									gconf->reset_extra);
+						conf->assign_hook(GUC_RESET_STRING(gconf),
+										  GUC_RESET_EXTRA(gconf));
+					set_string_field(gconf, GUC_VARIABLE_STRING(gconf),
+									 GUC_RESET_STRING(gconf));
+					set_extra_field(gconf, GUC_EXTRA_REF(gconf),
+									GUC_RESET_EXTRA(gconf));
 					break;
 				}
 			case PGC_ENUM:
@@ -2618,23 +3433,23 @@ ResetAllOptions(void)
 					struct config_enum *conf = &gconf->_enum;
 
 					if (conf->assign_hook)
-						conf->assign_hook(conf->reset_val,
-										  gconf->reset_extra);
-					*conf->variable = conf->reset_val;
-					set_extra_field(gconf, &gconf->extra,
-									gconf->reset_extra);
+						conf->assign_hook(GUC_RESET_ENUM(gconf),
+										  GUC_RESET_EXTRA(gconf));
+					*GUC_VARIABLE_ENUM(gconf) = GUC_RESET_ENUM(gconf);
+					set_extra_field(gconf, GUC_EXTRA_REF(gconf),
+									GUC_RESET_EXTRA(gconf));
 					break;
 				}
 		}
 
-		set_guc_source(gconf, gconf->reset_source);
-		gconf->scontext = gconf->reset_scontext;
-		gconf->srole = gconf->reset_srole;
+		set_guc_source(gconf, GUC_RESET_SOURCE(gconf));
+		GUC_SCONTEXT(gconf) = GUC_RESET_SCONTEXT(gconf);
+		GUC_SROLE(gconf) = GUC_RESET_SROLE(gconf);
 
-		if ((gconf->flags & GUC_REPORT) && !(gconf->status & GUC_NEEDS_REPORT))
+		if ((gconf->flags & GUC_REPORT) && !(GUC_STATUS(gconf) & GUC_NEEDS_REPORT))
 		{
-			gconf->status |= GUC_NEEDS_REPORT;
-			slist_push_head(&guc_report_list, &gconf->report_link);
+			GUC_STATUS(gconf) |= GUC_NEEDS_REPORT;
+			slist_push_head(&guc_report_list, GUC_REPORT_LINK(gconf));
 		}
 	}
 }
@@ -2650,18 +3465,18 @@ static void
 set_guc_source(struct config_generic *gconf, GucSource newsource)
 {
 	/* Adjust nondef list membership if appropriate for change */
-	if (gconf->source == PGC_S_DEFAULT)
+	if (GUC_SOURCE(gconf) == PGC_S_DEFAULT)
 	{
 		if (newsource != PGC_S_DEFAULT)
-			dlist_push_tail(&guc_nondef_list, &gconf->nondef_link);
+			dlist_push_tail(&guc_nondef_list, GUC_NONDEF_LINK(gconf));
 	}
 	else
 	{
 		if (newsource == PGC_S_DEFAULT)
-			dlist_delete(&gconf->nondef_link);
+			dlist_delete(GUC_NONDEF_LINK(gconf));
 	}
 	/* Now update the source field */
-	gconf->source = newsource;
+	GUC_SOURCE(gconf) = newsource;
 }
 
 
@@ -2679,7 +3494,7 @@ push_old_value(struct config_generic *gconf, GucAction action)
 		return;
 
 	/* Do we already have a stack entry of the current nest level? */
-	stack = gconf->stack;
+	stack = GUC_STACK(gconf);
 	if (stack && stack->nest_level >= GUCNestLevel)
 	{
 		/* Yes, so adjust its state if necessary */
@@ -2699,8 +3514,8 @@ push_old_value(struct config_generic *gconf, GucAction action)
 				if (stack->state == GUC_SET)
 				{
 					/* SET followed by SET LOCAL, remember SET's value */
-					stack->masked_scontext = gconf->scontext;
-					stack->masked_srole = gconf->srole;
+					stack->masked_scontext = GUC_SCONTEXT(gconf);
+					stack->masked_srole = GUC_SROLE(gconf);
 					set_stack_value(gconf, &stack->masked);
 					stack->state = GUC_SET_LOCAL;
 				}
@@ -2722,7 +3537,7 @@ push_old_value(struct config_generic *gconf, GucAction action)
 	stack = (GucStack *) MemoryContextAllocZero(TopTransactionContext,
 												sizeof(GucStack));
 
-	stack->prev = gconf->stack;
+	stack->prev = GUC_STACK(gconf);
 	stack->nest_level = GUCNestLevel;
 	switch (action)
 	{
@@ -2736,14 +3551,14 @@ push_old_value(struct config_generic *gconf, GucAction action)
 			stack->state = GUC_SAVE;
 			break;
 	}
-	stack->source = gconf->source;
-	stack->scontext = gconf->scontext;
-	stack->srole = gconf->srole;
+	stack->source = GUC_SOURCE(gconf);
+	stack->scontext = GUC_SCONTEXT(gconf);
+	stack->srole = GUC_SROLE(gconf);
 	set_stack_value(gconf, &stack->prior);
 
-	if (gconf->stack == NULL)
-		slist_push_head(&guc_stack_list, &gconf->stack_link);
-	gconf->stack = stack;
+	if (GUC_STACK(gconf) == NULL)
+		slist_push_head(&guc_stack_list, GUC_STACK_LINK(gconf));
+	GUC_SET_STACK(gconf, stack);
 }
 
 
@@ -2814,8 +3629,9 @@ AtEOXact_GUC(bool isCommit, int nestLevel)
 	/* We need only process GUCs having nonempty stacks */
 	slist_foreach_modify(iter, &guc_stack_list)
 	{
-		struct config_generic *gconf = slist_container(struct config_generic,
-													   stack_link, iter.cur);
+		config_generic_cold_state *cold = slist_container(config_generic_cold_state,
+														  stack_link, iter.cur);
+		struct config_generic *gconf = GUC_COLD_STATE_RECORD(cold);
 		GucStack   *stack;
 
 		/*
@@ -2825,7 +3641,7 @@ AtEOXact_GUC(bool isCommit, int nestLevel)
 		 * recovered at the surrounding transaction or subtransaction abort;
 		 * so there could be more than one stack entry to pop.
 		 */
-		while ((stack = gconf->stack) != NULL &&
+		while ((stack = GUC_STACK(gconf)) != NULL &&
 			   stack->nest_level >= nestLevel)
 		{
 			GucStack   *prev = stack->prev;
@@ -2946,13 +3762,13 @@ AtEOXact_GUC(bool isCommit, int nestLevel)
 							bool		newval = newvalue.val.boolval;
 							void	   *newextra = newvalue.extra;
 
-							if (*conf->variable != newval ||
-								gconf->extra != newextra)
+							if (*GUC_VARIABLE_BOOL(gconf) != newval ||
+								GUC_EXTRA(gconf) != newextra)
 							{
 								if (conf->assign_hook)
 									conf->assign_hook(newval, newextra);
-								*conf->variable = newval;
-								set_extra_field(gconf, &gconf->extra,
+								*GUC_VARIABLE_BOOL(gconf) = newval;
+								set_extra_field(gconf, GUC_EXTRA_REF(gconf),
 												newextra);
 								changed = true;
 							}
@@ -2964,13 +3780,13 @@ AtEOXact_GUC(bool isCommit, int nestLevel)
 							int			newval = newvalue.val.intval;
 							void	   *newextra = newvalue.extra;
 
-							if (*conf->variable != newval ||
-								gconf->extra != newextra)
+							if (*GUC_VARIABLE_INT(gconf) != newval ||
+								GUC_EXTRA(gconf) != newextra)
 							{
 								if (conf->assign_hook)
 									conf->assign_hook(newval, newextra);
-								*conf->variable = newval;
-								set_extra_field(gconf, &gconf->extra,
+								*GUC_VARIABLE_INT(gconf) = newval;
+								set_extra_field(gconf, GUC_EXTRA_REF(gconf),
 												newextra);
 								changed = true;
 							}
@@ -2982,13 +3798,13 @@ AtEOXact_GUC(bool isCommit, int nestLevel)
 							double		newval = newvalue.val.realval;
 							void	   *newextra = newvalue.extra;
 
-							if (*conf->variable != newval ||
-								gconf->extra != newextra)
+							if (*GUC_VARIABLE_REAL(gconf) != newval ||
+								GUC_EXTRA(gconf) != newextra)
 							{
 								if (conf->assign_hook)
 									conf->assign_hook(newval, newextra);
-								*conf->variable = newval;
-								set_extra_field(gconf, &gconf->extra,
+								*GUC_VARIABLE_REAL(gconf) = newval;
+								set_extra_field(gconf, GUC_EXTRA_REF(gconf),
 												newextra);
 								changed = true;
 							}
@@ -3000,13 +3816,14 @@ AtEOXact_GUC(bool isCommit, int nestLevel)
 							char	   *newval = newvalue.val.stringval;
 							void	   *newextra = newvalue.extra;
 
-							if (*conf->variable != newval ||
-								gconf->extra != newextra)
+							if (*GUC_VARIABLE_STRING(gconf) != newval ||
+								GUC_EXTRA(gconf) != newextra)
 							{
 								if (conf->assign_hook)
 									conf->assign_hook(newval, newextra);
-								set_string_field(gconf, conf->variable, newval);
-								set_extra_field(gconf, &gconf->extra,
+								set_string_field(gconf, GUC_VARIABLE_STRING(gconf),
+												 newval);
+								set_extra_field(gconf, GUC_EXTRA_REF(gconf),
 												newextra);
 								changed = true;
 							}
@@ -3027,13 +3844,13 @@ AtEOXact_GUC(bool isCommit, int nestLevel)
 							int			newval = newvalue.val.enumval;
 							void	   *newextra = newvalue.extra;
 
-							if (*conf->variable != newval ||
-								gconf->extra != newextra)
+							if (*GUC_VARIABLE_ENUM(gconf) != newval ||
+								GUC_EXTRA(gconf) != newextra)
 							{
 								if (conf->assign_hook)
 									conf->assign_hook(newval, newextra);
-								*conf->variable = newval;
-								set_extra_field(gconf, &gconf->extra,
+								*GUC_VARIABLE_ENUM(gconf) = newval;
+								set_extra_field(gconf, GUC_EXTRA_REF(gconf),
 												newextra);
 								changed = true;
 							}
@@ -3049,25 +3866,25 @@ AtEOXact_GUC(bool isCommit, int nestLevel)
 
 				/* And restore source information */
 				set_guc_source(gconf, newsource);
-				gconf->scontext = newscontext;
-				gconf->srole = newsrole;
+				GUC_SCONTEXT(gconf) = newscontext;
+				GUC_SROLE(gconf) = newsrole;
 			}
 
 			/*
 			 * Pop the GUC's state stack; if it's now empty, remove the GUC
 			 * from guc_stack_list.
 			 */
-			gconf->stack = prev;
+			GUC_SET_STACK(gconf, prev);
 			if (prev == NULL)
 				slist_delete_current(&iter);
 			pfree(stack);
 
 			/* Report new value if we changed it */
 			if (changed && (gconf->flags & GUC_REPORT) &&
-				!(gconf->status & GUC_NEEDS_REPORT))
+				!(GUC_STATUS(gconf) & GUC_NEEDS_REPORT))
 			{
-				gconf->status |= GUC_NEEDS_REPORT;
-				slist_push_head(&guc_report_list, &gconf->report_link);
+				GUC_STATUS(gconf) |= GUC_NEEDS_REPORT;
+				slist_push_head(&guc_report_list, GUC_REPORT_LINK(gconf));
 			}
 		}						/* end of stack-popping loop */
 	}
@@ -3108,13 +3925,23 @@ BeginReportingGUCOptions(void)
 						PGC_INTERNAL, PGC_S_OVERRIDE);
 
 	/* Transmit initial values of interesting variables */
-	hash_seq_init(&status, guc_hashtab);
-	while ((hentry = (GUCHashEntry *) hash_seq_search(&status)) != NULL)
+	for (int i = 0; i < num_guc_variables; i++)
 	{
-		struct config_generic *conf = hentry->gucvar;
+		struct config_generic *conf = &guc_variables[i];
 
 		if (conf->flags & GUC_REPORT)
 			ReportGUCOption(conf);
+	}
+	if (guc_hashtab != NULL)
+	{
+		hash_seq_init(&status, guc_hashtab);
+		while ((hentry = (GUCHashEntry *) hash_seq_search(&status)) != NULL)
+		{
+			struct config_generic *conf = hentry->gucvar;
+
+			if (conf->flags & GUC_REPORT)
+				ReportGUCOption(conf);
+		}
 	}
 }
 
@@ -3153,12 +3980,13 @@ ReportChangedGUCOptions(void)
 	/* Transmit new values of interesting variables */
 	slist_foreach_modify(iter, &guc_report_list)
 	{
-		struct config_generic *conf = slist_container(struct config_generic,
-													  report_link, iter.cur);
+		config_generic_cold_state *cold = slist_container(config_generic_cold_state,
+														  report_link, iter.cur);
+		struct config_generic *conf = GUC_COLD_STATE_RECORD(cold);
 
-		Assert((conf->flags & GUC_REPORT) && (conf->status & GUC_NEEDS_REPORT));
+		Assert((conf->flags & GUC_REPORT) && (GUC_STATUS(conf) & GUC_NEEDS_REPORT));
 		ReportGUCOption(conf);
-		conf->status &= ~GUC_NEEDS_REPORT;
+		GUC_STATUS(conf) &= ~GUC_NEEDS_REPORT;
 		slist_delete_current(&iter);
 	}
 }
@@ -3174,8 +4002,8 @@ ReportGUCOption(struct config_generic *record)
 {
 	char	   *val = ShowGUCOption(record, false);
 
-	if (record->last_reported == NULL ||
-		strcmp(val, record->last_reported) != 0)
+	if (GUC_LAST_REPORTED(record) == NULL ||
+		strcmp(val, GUC_LAST_REPORTED(record)) != 0)
 	{
 		StringInfoData msgbuf;
 
@@ -3189,8 +4017,8 @@ ReportGUCOption(struct config_generic *record)
 		 * we'll set last_reported to NULL and thereby possibly make a
 		 * duplicate report later.
 		 */
-		guc_free(record->last_reported);
-		record->last_reported = guc_strdup(LOG, val);
+		clear_last_reported(record);
+		GUC_SET_LAST_REPORTED(record, guc_strdup(LOG, val));
 	}
 
 	pfree(val);
@@ -4271,7 +5099,7 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 	 * it. Also keep going if makeDefault is true, since we may want to set
 	 * the reset/stacked values even if we can't set the variable itself.
 	 */
-	if (record->source > source)
+	if (GUC_SOURCE(record) > source)
 	{
 		if (changeVal && !makeDefault)
 		{
@@ -4309,11 +5137,11 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 				}
 				else
 				{
-					newval = conf->reset_val;
-					newextra = record->reset_extra;
-					source = record->reset_source;
-					context = record->reset_scontext;
-					srole = record->reset_srole;
+					newval = GUC_RESET_BOOL(record);
+					newextra = GUC_RESET_EXTRA(record);
+					source = GUC_RESET_SOURCE(record);
+					context = GUC_RESET_SCONTEXT(record);
+					srole = GUC_RESET_SROLE(record);
 				}
 
 				if (prohibitValueChange)
@@ -4322,16 +5150,16 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 					if (newextra && !extra_field_used(record, newextra))
 						guc_free(newextra);
 
-					if (*conf->variable != newval)
+					if (*GUC_VARIABLE_BOOL(record) != newval)
 					{
-						record->status |= GUC_PENDING_RESTART;
+						GUC_STATUS(record) |= GUC_PENDING_RESTART;
 						ereport(elevel,
 								(errcode(ERRCODE_CANT_CHANGE_RUNTIME_PARAM),
 								 errmsg("parameter \"%s\" cannot be changed without restarting the server",
 										record->name)));
 						return 0;
 					}
-					record->status &= ~GUC_PENDING_RESTART;
+					GUC_STATUS(record) &= ~GUC_PENDING_RESTART;
 					return -1;
 				}
 
@@ -4343,25 +5171,25 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 
 					if (conf->assign_hook)
 						conf->assign_hook(newval, newextra);
-					*conf->variable = newval;
-					set_extra_field(record, &record->extra,
+					*GUC_VARIABLE_BOOL(record) = newval;
+					set_extra_field(record, GUC_EXTRA_REF(record),
 									newextra);
 					set_guc_source(record, source);
-					record->scontext = context;
-					record->srole = srole;
+					GUC_SCONTEXT(record) = context;
+					GUC_SROLE(record) = srole;
 				}
 				if (makeDefault)
 				{
-					if (record->reset_source <= source)
+					if (GUC_RESET_SOURCE(record) <= source)
 					{
-						conf->reset_val = newval;
-						set_extra_field(record, &record->reset_extra,
+						GUC_RESET_BOOL(record) = newval;
+						set_extra_field(record, GUC_RESET_EXTRA_REF(record),
 										newextra);
-						record->reset_source = source;
-						record->reset_scontext = context;
-						record->reset_srole = srole;
+						*GUC_RESET_SOURCE_REF(record) = source;
+						*GUC_RESET_SCONTEXT_REF(record) = context;
+						*GUC_RESET_SROLE_REF(record) = srole;
 					}
-					for (GucStack *stack = record->stack; stack; stack = stack->prev)
+					for (GucStack *stack = GUC_STACK(record); stack; stack = stack->prev)
 					{
 						if (stack->source <= source)
 						{
@@ -4405,11 +5233,11 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 				}
 				else
 				{
-					newval = conf->reset_val;
-					newextra = record->reset_extra;
-					source = record->reset_source;
-					context = record->reset_scontext;
-					srole = record->reset_srole;
+					newval = GUC_RESET_INT(record);
+					newextra = GUC_RESET_EXTRA(record);
+					source = GUC_RESET_SOURCE(record);
+					context = GUC_RESET_SCONTEXT(record);
+					srole = GUC_RESET_SROLE(record);
 				}
 
 				if (prohibitValueChange)
@@ -4418,16 +5246,16 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 					if (newextra && !extra_field_used(record, newextra))
 						guc_free(newextra);
 
-					if (*conf->variable != newval)
+					if (*GUC_VARIABLE_INT(record) != newval)
 					{
-						record->status |= GUC_PENDING_RESTART;
+						GUC_STATUS(record) |= GUC_PENDING_RESTART;
 						ereport(elevel,
 								(errcode(ERRCODE_CANT_CHANGE_RUNTIME_PARAM),
 								 errmsg("parameter \"%s\" cannot be changed without restarting the server",
 										record->name)));
 						return 0;
 					}
-					record->status &= ~GUC_PENDING_RESTART;
+					GUC_STATUS(record) &= ~GUC_PENDING_RESTART;
 					return -1;
 				}
 
@@ -4439,25 +5267,25 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 
 					if (conf->assign_hook)
 						conf->assign_hook(newval, newextra);
-					*conf->variable = newval;
-					set_extra_field(record, &record->extra,
+					*GUC_VARIABLE_INT(record) = newval;
+					set_extra_field(record, GUC_EXTRA_REF(record),
 									newextra);
 					set_guc_source(record, source);
-					record->scontext = context;
-					record->srole = srole;
+					GUC_SCONTEXT(record) = context;
+					GUC_SROLE(record) = srole;
 				}
 				if (makeDefault)
 				{
-					if (record->reset_source <= source)
+					if (GUC_RESET_SOURCE(record) <= source)
 					{
-						conf->reset_val = newval;
-						set_extra_field(record, &record->reset_extra,
+						GUC_RESET_INT(record) = newval;
+						set_extra_field(record, GUC_RESET_EXTRA_REF(record),
 										newextra);
-						record->reset_source = source;
-						record->reset_scontext = context;
-						record->reset_srole = srole;
+						*GUC_RESET_SOURCE_REF(record) = source;
+						*GUC_RESET_SCONTEXT_REF(record) = context;
+						*GUC_RESET_SROLE_REF(record) = srole;
 					}
-					for (GucStack *stack = record->stack; stack; stack = stack->prev)
+					for (GucStack *stack = GUC_STACK(record); stack; stack = stack->prev)
 					{
 						if (stack->source <= source)
 						{
@@ -4501,11 +5329,11 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 				}
 				else
 				{
-					newval = conf->reset_val;
-					newextra = record->reset_extra;
-					source = record->reset_source;
-					context = record->reset_scontext;
-					srole = record->reset_srole;
+					newval = GUC_RESET_REAL(record);
+					newextra = GUC_RESET_EXTRA(record);
+					source = GUC_RESET_SOURCE(record);
+					context = GUC_RESET_SCONTEXT(record);
+					srole = GUC_RESET_SROLE(record);
 				}
 
 				if (prohibitValueChange)
@@ -4514,16 +5342,16 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 					if (newextra && !extra_field_used(record, newextra))
 						guc_free(newextra);
 
-					if (*conf->variable != newval)
+					if (*GUC_VARIABLE_REAL(record) != newval)
 					{
-						record->status |= GUC_PENDING_RESTART;
+						GUC_STATUS(record) |= GUC_PENDING_RESTART;
 						ereport(elevel,
 								(errcode(ERRCODE_CANT_CHANGE_RUNTIME_PARAM),
 								 errmsg("parameter \"%s\" cannot be changed without restarting the server",
 										record->name)));
 						return 0;
 					}
-					record->status &= ~GUC_PENDING_RESTART;
+					GUC_STATUS(record) &= ~GUC_PENDING_RESTART;
 					return -1;
 				}
 
@@ -4535,25 +5363,25 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 
 					if (conf->assign_hook)
 						conf->assign_hook(newval, newextra);
-					*conf->variable = newval;
-					set_extra_field(record, &record->extra,
+					*GUC_VARIABLE_REAL(record) = newval;
+					set_extra_field(record, GUC_EXTRA_REF(record),
 									newextra);
 					set_guc_source(record, source);
-					record->scontext = context;
-					record->srole = srole;
+					GUC_SCONTEXT(record) = context;
+					GUC_SROLE(record) = srole;
 				}
 				if (makeDefault)
 				{
-					if (record->reset_source <= source)
+					if (GUC_RESET_SOURCE(record) <= source)
 					{
-						conf->reset_val = newval;
-						set_extra_field(record, &record->reset_extra,
+						GUC_RESET_REAL(record) = newval;
+						set_extra_field(record, GUC_RESET_EXTRA_REF(record),
 										newextra);
-						record->reset_source = source;
-						record->reset_scontext = context;
-						record->reset_srole = srole;
+						*GUC_RESET_SOURCE_REF(record) = source;
+						*GUC_RESET_SCONTEXT_REF(record) = context;
+						*GUC_RESET_SROLE_REF(record) = srole;
 					}
-					for (GucStack *stack = record->stack; stack; stack = stack->prev)
+					for (GucStack *stack = GUC_STACK(record); stack; stack = stack->prev)
 					{
 						if (stack->source <= source)
 						{
@@ -4581,8 +5409,21 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 				GucContext	orig_context = context;
 				GucSource	orig_source = source;
 				Oid			orig_srole = srole;
+				bool		assign_variable;
 
 #define newval (newval_union.stringval)
+
+				/*
+				 * Threaded backends can replay another process's non-default
+				 * GUCs into a copied GUC table.  If a string GUC still points
+				 * at process-global backing storage, do not replace that
+				 * global with a string allocated in this session's GUC
+				 * context.  Ordinary SET processing must still assign
+				 * custom and extension GUCs.
+				 */
+				assign_variable =
+					!GUCThreadedBackendReplayActive(is_reload) ||
+					PgCurrentOrEarlySessionOwnsPointer(GUC_VARIABLE_STRING(record));
 
 				if (value)
 				{
@@ -4614,13 +5455,13 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 				{
 					/*
 					 * strdup not needed, since reset_val is already under
-					 * guc.c's control
+				 * guc.c's control
 					 */
-					newval = conf->reset_val;
-					newextra = record->reset_extra;
-					source = record->reset_source;
-					context = record->reset_scontext;
-					srole = record->reset_srole;
+					newval = GUC_RESET_STRING(record);
+					newextra = GUC_RESET_EXTRA(record);
+					source = GUC_RESET_SOURCE(record);
+					context = GUC_RESET_SCONTEXT(record);
+					srole = GUC_RESET_SROLE(record);
 				}
 
 				if (prohibitValueChange)
@@ -4628,9 +5469,9 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 					bool		newval_different;
 
 					/* newval shouldn't be NULL, so we're a bit sloppy here */
-					newval_different = (*conf->variable == NULL ||
+					newval_different = (*GUC_VARIABLE_STRING(record) == NULL ||
 										newval == NULL ||
-										strcmp(*conf->variable, newval) != 0);
+										strcmp(*GUC_VARIABLE_STRING(record), newval) != 0);
 
 					/* Release newval, unless it's reset_val */
 					if (newval && !string_field_used(record, newval))
@@ -4641,14 +5482,14 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 
 					if (newval_different)
 					{
-						record->status |= GUC_PENDING_RESTART;
+						GUC_STATUS(record) |= GUC_PENDING_RESTART;
 						ereport(elevel,
 								(errcode(ERRCODE_CANT_CHANGE_RUNTIME_PARAM),
 								 errmsg("parameter \"%s\" cannot be changed without restarting the server",
 										record->name)));
 						return 0;
 					}
-					record->status &= ~GUC_PENDING_RESTART;
+					GUC_STATUS(record) &= ~GUC_PENDING_RESTART;
 					return -1;
 				}
 
@@ -4658,14 +5499,18 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 					if (!makeDefault)
 						push_old_value(record, action);
 
-					if (conf->assign_hook)
-						conf->assign_hook(newval, newextra);
-					set_string_field(record, conf->variable, newval);
-					set_extra_field(record, &record->extra,
-									newextra);
+					if (assign_variable)
+					{
+						if (conf->assign_hook)
+							conf->assign_hook(newval, newextra);
+						set_string_field(record, GUC_VARIABLE_STRING(record),
+										 newval);
+						set_extra_field(record, GUC_EXTRA_REF(record),
+										newextra);
+					}
 					set_guc_source(record, source);
-					record->scontext = context;
-					record->srole = srole;
+					GUC_SCONTEXT(record) = context;
+					GUC_SROLE(record) = srole;
 
 					/*
 					 * Ugly hack: during SET session_authorization, forcibly
@@ -4708,16 +5553,17 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 
 				if (makeDefault)
 				{
-					if (record->reset_source <= source)
+					if (GUC_RESET_SOURCE(record) <= source)
 					{
-						set_string_field(record, &conf->reset_val, newval);
-						set_extra_field(record, &record->reset_extra,
+						set_string_field(record, &GUC_RESET_STRING(record),
+										 newval);
+						set_extra_field(record, GUC_RESET_EXTRA_REF(record),
 										newextra);
-						record->reset_source = source;
-						record->reset_scontext = context;
-						record->reset_srole = srole;
+						*GUC_RESET_SOURCE_REF(record) = source;
+						*GUC_RESET_SCONTEXT_REF(record) = context;
+						*GUC_RESET_SROLE_REF(record) = srole;
 					}
-					for (GucStack *stack = record->stack; stack; stack = stack->prev)
+					for (GucStack *stack = GUC_STACK(record); stack; stack = stack->prev)
 					{
 						if (stack->source <= source)
 						{
@@ -4765,11 +5611,11 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 				}
 				else
 				{
-					newval = conf->reset_val;
-					newextra = record->reset_extra;
-					source = record->reset_source;
-					context = record->reset_scontext;
-					srole = record->reset_srole;
+					newval = GUC_RESET_ENUM(record);
+					newextra = GUC_RESET_EXTRA(record);
+					source = GUC_RESET_SOURCE(record);
+					context = GUC_RESET_SCONTEXT(record);
+					srole = GUC_RESET_SROLE(record);
 				}
 
 				if (prohibitValueChange)
@@ -4778,16 +5624,16 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 					if (newextra && !extra_field_used(record, newextra))
 						guc_free(newextra);
 
-					if (*conf->variable != newval)
+					if (*GUC_VARIABLE_ENUM(record) != newval)
 					{
-						record->status |= GUC_PENDING_RESTART;
+						GUC_STATUS(record) |= GUC_PENDING_RESTART;
 						ereport(elevel,
 								(errcode(ERRCODE_CANT_CHANGE_RUNTIME_PARAM),
 								 errmsg("parameter \"%s\" cannot be changed without restarting the server",
 										record->name)));
 						return 0;
 					}
-					record->status &= ~GUC_PENDING_RESTART;
+					GUC_STATUS(record) &= ~GUC_PENDING_RESTART;
 					return -1;
 				}
 
@@ -4799,25 +5645,25 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 
 					if (conf->assign_hook)
 						conf->assign_hook(newval, newextra);
-					*conf->variable = newval;
-					set_extra_field(record, &record->extra,
+					*GUC_VARIABLE_ENUM(record) = newval;
+					set_extra_field(record, GUC_EXTRA_REF(record),
 									newextra);
 					set_guc_source(record, source);
-					record->scontext = context;
-					record->srole = srole;
+					GUC_SCONTEXT(record) = context;
+					GUC_SROLE(record) = srole;
 				}
 				if (makeDefault)
 				{
-					if (record->reset_source <= source)
+					if (GUC_RESET_SOURCE(record) <= source)
 					{
-						conf->reset_val = newval;
-						set_extra_field(record, &record->reset_extra,
+						GUC_RESET_ENUM(record) = newval;
+						set_extra_field(record, GUC_RESET_EXTRA_REF(record),
 										newextra);
-						record->reset_source = source;
-						record->reset_scontext = context;
-						record->reset_srole = srole;
+						*GUC_RESET_SOURCE_REF(record) = source;
+						*GUC_RESET_SCONTEXT_REF(record) = context;
+						*GUC_RESET_SROLE_REF(record) = srole;
 					}
-					for (GucStack *stack = record->stack; stack; stack = stack->prev)
+					for (GucStack *stack = GUC_STACK(record); stack; stack = stack->prev)
 					{
 						if (stack->source <= source)
 						{
@@ -4841,10 +5687,10 @@ set_config_with_handle_internal(const char *name, config_handle *handle,
 	}
 
 	if (changeVal && (record->flags & GUC_REPORT) &&
-		!(record->status & GUC_NEEDS_REPORT))
+		!(GUC_STATUS(record) & GUC_NEEDS_REPORT))
 	{
-		record->status |= GUC_NEEDS_REPORT;
-		slist_push_head(&guc_report_list, &record->report_link);
+		GUC_STATUS(record) |= GUC_NEEDS_REPORT;
+		slist_push_head(&guc_report_list, GUC_REPORT_LINK(record));
 	}
 
 	return changeVal ? 1 : -1;
@@ -4888,9 +5734,9 @@ set_config_sourcefile(const char *name, char *sourcefile, int sourceline)
 		return;
 
 	sourcefile = guc_strdup(elevel, sourcefile);
-	guc_free(record->sourcefile);
-	record->sourcefile = sourcefile;
-	record->sourceline = sourceline;
+	guc_free(GUC_SOURCEFILE(record));
+	GUC_SET_SOURCEFILE(record, sourcefile);
+	GUC_SET_SOURCELINE(record, sourceline);
 }
 
 /*
@@ -4946,25 +5792,25 @@ GetConfigOption(const char *name, bool missing_ok, bool restrict_privileged)
 	switch (record->vartype)
 	{
 		case PGC_BOOL:
-			return *record->_bool.variable ? "on" : "off";
+			return *GUC_VARIABLE_BOOL(record) ? "on" : "off";
 
 		case PGC_INT:
 			snprintf(buffer, sizeof(buffer), "%d",
-					 *record->_int.variable);
+					 *GUC_VARIABLE_INT(record));
 			return buffer;
 
 		case PGC_REAL:
 			snprintf(buffer, sizeof(buffer), "%g",
-					 *record->_real.variable);
+					 *GUC_VARIABLE_REAL(record));
 			return buffer;
 
 		case PGC_STRING:
-			return *record->_string.variable ?
-				*record->_string.variable : "";
+			return *GUC_VARIABLE_STRING(record) ?
+				*GUC_VARIABLE_STRING(record) : "";
 
 		case PGC_ENUM:
 			return config_enum_lookup_by_value(record,
-											   *record->_enum.variable);
+											   *GUC_VARIABLE_ENUM(record));
 	}
 	return NULL;
 }
@@ -4994,25 +5840,25 @@ GetConfigOptionResetString(const char *name)
 	switch (record->vartype)
 	{
 		case PGC_BOOL:
-			return record->_bool.reset_val ? "on" : "off";
+			return GUC_RESET_BOOL(record) ? "on" : "off";
 
 		case PGC_INT:
 			snprintf(buffer, sizeof(buffer), "%d",
-					 record->_int.reset_val);
+					 GUC_RESET_INT(record));
 			return buffer;
 
 		case PGC_REAL:
 			snprintf(buffer, sizeof(buffer), "%g",
-					 record->_real.reset_val);
+					 GUC_RESET_REAL(record));
 			return buffer;
 
 		case PGC_STRING:
-			return record->_string.reset_val ?
-				record->_string.reset_val : "";
+			return GUC_RESET_STRING(record) ?
+				GUC_RESET_STRING(record) : "";
 
 		case PGC_ENUM:
 			return config_enum_lookup_by_value(record,
-											   record->_enum.reset_val);
+											   GUC_RESET_ENUM(record));
 	}
 	return NULL;
 }
@@ -5032,6 +5878,48 @@ GetConfigOptionFlags(const char *name, bool missing_ok)
 	if (record == NULL)
 		return 0;
 	return record->flags;
+}
+
+const union config_var_val *
+ConfigOptionResetValue(const struct config_generic *conf)
+{
+	return &GUC_STATE(conf)->reset_val;
+}
+
+GucSource
+ConfigOptionSource(const struct config_generic *conf)
+{
+	return GUC_SOURCE(conf);
+}
+
+GucContext
+ConfigOptionSetContext(const struct config_generic *conf)
+{
+	return GUC_SCONTEXT(conf);
+}
+
+Oid
+ConfigOptionSetRole(const struct config_generic *conf)
+{
+	return GUC_SROLE(conf);
+}
+
+const char *
+ConfigOptionSourceFile(const struct config_generic *conf)
+{
+	return GUC_SOURCEFILE(conf);
+}
+
+int
+ConfigOptionSourceLine(const struct config_generic *conf)
+{
+	return GUC_SOURCELINE(conf);
+}
+
+bool
+ConfigOptionPendingRestart(const struct config_generic *conf)
+{
+	return (GUC_STATUS(conf) & GUC_PENDING_RESTART) != 0;
 }
 
 
@@ -5455,6 +6343,7 @@ init_custom_variable(const char *name,
 					 enum config_type type)
 {
 	struct config_generic *gen;
+	config_generic_state *state;
 
 	/*
 	 * Only allow custom PGC_POSTMASTER variables to be created during shared
@@ -5490,6 +6379,10 @@ init_custom_variable(const char *name,
 	/* As above, an OOM here is FATAL */
 	gen = (struct config_generic *) guc_malloc(FATAL, sizeof(struct config_generic));
 	memset(gen, 0, sizeof(struct config_generic));
+	state = (config_generic_state *) guc_malloc(FATAL,
+											   sizeof(config_generic_state));
+	memset(state, 0, sizeof(config_generic_state));
+	gen->state = state;
 
 	gen->name = guc_strdup(FATAL, name);
 	gen->context = context;
@@ -5516,13 +6409,20 @@ define_custom_variable(struct config_generic *variable)
 	/* Check mapping between initial and default value */
 	Assert(check_GUC_init(variable));
 
+	if (find_builtin_option(name) != NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("attempt to redefine parameter \"%s\"", name)));
+
 	/*
 	 * See if there's a placeholder by the same name.
 	 */
-	hentry = (GUCHashEntry *) hash_search(guc_hashtab,
-										  &name,
-										  HASH_FIND,
-										  NULL);
+	hentry = NULL;
+	if (guc_hashtab != NULL)
+		hentry = (GUCHashEntry *) hash_search(guc_hashtab,
+											  &name,
+											  HASH_FIND,
+											  NULL);
 	if (hentry == NULL)
 	{
 		/*
@@ -5576,25 +6476,25 @@ define_custom_variable(struct config_generic *variable)
 	 */
 
 	/* First, apply the reset value if any */
-	if (pHolder->_string.reset_val)
-		(void) set_config_option_ext(name, pHolder->_string.reset_val,
-									 pHolder->reset_scontext,
-									 pHolder->reset_source,
-									 pHolder->reset_srole,
+	if (GUC_RESET_STRING(pHolder))
+		(void) set_config_option_ext(name, GUC_RESET_STRING(pHolder),
+									 GUC_RESET_SCONTEXT(pHolder),
+									 GUC_RESET_SOURCE(pHolder),
+									 GUC_RESET_SROLE(pHolder),
 									 GUC_ACTION_SET, true, WARNING, false);
 	/* That should not have resulted in stacking anything */
-	Assert(variable->stack == NULL);
+	Assert(GUC_STACK(variable) == NULL);
 
 	/* Now, apply current and stacked values, in the order they were stacked */
-	reapply_stacked_values(variable, pHolder, pHolder->stack,
-						   *(pHolder->_string.variable),
-						   pHolder->scontext, pHolder->source,
-						   pHolder->srole);
+	reapply_stacked_values(variable, pHolder, GUC_STACK(pHolder),
+						   *(GUC_VARIABLE_STRING(pHolder)),
+						   GUC_SCONTEXT(pHolder), GUC_SOURCE(pHolder),
+						   GUC_SROLE(pHolder));
 
 	/* Also copy over any saved source-location information */
-	if (pHolder->sourcefile)
-		set_config_sourcefile(name, pHolder->sourcefile,
-							  pHolder->sourceline);
+	if (GUC_SOURCEFILE(pHolder))
+		set_config_sourcefile(name, GUC_SOURCEFILE(pHolder),
+							  GUC_SOURCELINE(pHolder));
 
 	/* Now we can free the no-longer-referenced placeholder variable */
 	free_placeholder(pHolder);
@@ -5616,7 +6516,7 @@ reapply_stacked_values(struct config_generic *variable,
 					   Oid cursrole)
 {
 	const char *name = variable->name;
-	GucStack   *oldvarstack = variable->stack;
+	GucStack   *oldvarstack = GUC_STACK(variable);
 
 	if (stack != NULL)
 	{
@@ -5666,8 +6566,8 @@ reapply_stacked_values(struct config_generic *variable,
 		}
 
 		/* If we successfully made a stack entry, adjust its nest level */
-		if (variable->stack != oldvarstack)
-			variable->stack->nest_level = stack->nest_level;
+		if (GUC_STACK(variable) != oldvarstack)
+			GUC_STACK(variable)->nest_level = stack->nest_level;
 	}
 	else
 	{
@@ -5679,18 +6579,18 @@ reapply_stacked_values(struct config_generic *variable,
 		 * this is to be just a transactional assignment.  (We leak the stack
 		 * entry.)
 		 */
-		if (curvalue != pHolder->_string.reset_val ||
-			curscontext != pHolder->reset_scontext ||
-			cursource != pHolder->reset_source ||
-			cursrole != pHolder->reset_srole)
+		if (curvalue != GUC_RESET_STRING(pHolder) ||
+			curscontext != GUC_RESET_SCONTEXT(pHolder) ||
+			cursource != GUC_RESET_SOURCE(pHolder) ||
+			cursrole != GUC_RESET_SROLE(pHolder))
 		{
 			(void) set_config_option_ext(name, curvalue,
 										 curscontext, cursource, cursrole,
 										 GUC_ACTION_SET, true, WARNING, false);
-			if (variable->stack != NULL)
+			if (GUC_STACK(variable) != NULL)
 			{
-				slist_delete(&guc_stack_list, &variable->stack_link);
-				variable->stack = NULL;
+				slist_delete(&guc_stack_list, GUC_STACK_LINK(variable));
+				GUC_SET_STACK(variable, NULL);
 			}
 		}
 	}
@@ -5708,10 +6608,11 @@ free_placeholder(struct config_generic *pHolder)
 {
 	/* Placeholders are always STRING type, so free their values */
 	Assert(pHolder->vartype == PGC_STRING);
-	set_string_field(pHolder, pHolder->_string.variable, NULL);
-	set_string_field(pHolder, &pHolder->_string.reset_val, NULL);
+	set_string_field(pHolder, GUC_VARIABLE_STRING(pHolder), NULL);
+	set_string_field(pHolder, &GUC_RESET_STRING(pHolder), NULL);
 
 	guc_free(unconstify(char *, pHolder->name));
+	guc_free(pHolder->state);
 	guc_free(pHolder);
 }
 
@@ -5733,9 +6634,9 @@ DefineCustomBoolVariable(const char *name,
 	struct config_generic *var;
 
 	var = init_custom_variable(name, short_desc, long_desc, context, flags, PGC_BOOL);
-	var->_bool.variable = valueAddr;
+	GUC_VARIABLE_BOOL(var) = valueAddr;
 	var->_bool.boot_val = bootValue;
-	var->_bool.reset_val = bootValue;
+	GUC_RESET_BOOL(var) = bootValue;
 	var->_bool.check_hook = check_hook;
 	var->_bool.assign_hook = assign_hook;
 	var->_bool.show_hook = show_hook;
@@ -5759,9 +6660,9 @@ DefineCustomIntVariable(const char *name,
 	struct config_generic *var;
 
 	var = init_custom_variable(name, short_desc, long_desc, context, flags, PGC_INT);
-	var->_int.variable = valueAddr;
+	GUC_VARIABLE_INT(var) = valueAddr;
 	var->_int.boot_val = bootValue;
-	var->_int.reset_val = bootValue;
+	GUC_RESET_INT(var) = bootValue;
 	var->_int.min = minValue;
 	var->_int.max = maxValue;
 	var->_int.check_hook = check_hook;
@@ -5787,9 +6688,9 @@ DefineCustomRealVariable(const char *name,
 	struct config_generic *var;
 
 	var = init_custom_variable(name, short_desc, long_desc, context, flags, PGC_REAL);
-	var->_real.variable = valueAddr;
+	GUC_VARIABLE_REAL(var) = valueAddr;
 	var->_real.boot_val = bootValue;
-	var->_real.reset_val = bootValue;
+	GUC_RESET_REAL(var) = bootValue;
 	var->_real.min = minValue;
 	var->_real.max = maxValue;
 	var->_real.check_hook = check_hook;
@@ -5813,7 +6714,7 @@ DefineCustomStringVariable(const char *name,
 	struct config_generic *var;
 
 	var = init_custom_variable(name, short_desc, long_desc, context, flags, PGC_STRING);
-	var->_string.variable = valueAddr;
+	GUC_VARIABLE_STRING(var) = valueAddr;
 	var->_string.boot_val = bootValue;
 	var->_string.check_hook = check_hook;
 	var->_string.assign_hook = assign_hook;
@@ -5837,9 +6738,9 @@ DefineCustomEnumVariable(const char *name,
 	struct config_generic *var;
 
 	var = init_custom_variable(name, short_desc, long_desc, context, flags, PGC_ENUM);
-	var->_enum.variable = valueAddr;
+	GUC_VARIABLE_ENUM(var) = valueAddr;
 	var->_enum.boot_val = bootValue;
-	var->_enum.reset_val = bootValue;
+	GUC_RESET_ENUM(var) = bootValue;
 	var->_enum.options = options;
 	var->_enum.check_hook = check_hook;
 	var->_enum.assign_hook = assign_hook;
@@ -5871,30 +6772,33 @@ MarkGUCPrefixReserved(const char *className)
 		 * Check for existing placeholders.  We must actually remove invalid
 		 * placeholders, else future parallel worker startups will fail.
 		 */
-		hash_seq_init(&status, guc_hashtab);
-		while ((hentry = (GUCHashEntry *) hash_seq_search(&status)) != NULL)
+		if (guc_hashtab != NULL)
 		{
-			struct config_generic *var = hentry->gucvar;
-
-			if ((var->flags & GUC_CUSTOM_PLACEHOLDER) != 0 &&
-				strncmp(className, var->name, classLen) == 0 &&
-				var->name[classLen] == GUC_QUALIFIER_SEPARATOR)
+			hash_seq_init(&status, guc_hashtab);
+			while ((hentry = (GUCHashEntry *) hash_seq_search(&status)) != NULL)
 			{
-				ereport(WARNING,
-						(errcode(ERRCODE_INVALID_NAME),
-						 errmsg("invalid configuration parameter name \"%s\", removing it",
-								var->name),
-						 errdetail("\"%s\" is now a reserved prefix.",
-								   className)));
-				/* Remove it from the hash table */
-				hash_search(guc_hashtab,
-							&var->name,
-							HASH_REMOVE,
-							NULL);
-				/* Remove it from any lists it's in, too */
-				RemoveGUCFromLists(var);
-				/* And free it */
-				free_placeholder(var);
+				struct config_generic *var = hentry->gucvar;
+
+				if ((var->flags & GUC_CUSTOM_PLACEHOLDER) != 0 &&
+					strncmp(className, var->name, classLen) == 0 &&
+					var->name[classLen] == GUC_QUALIFIER_SEPARATOR)
+				{
+					ereport(WARNING,
+							(errcode(ERRCODE_INVALID_NAME),
+							 errmsg("invalid configuration parameter name \"%s\", removing it",
+									var->name),
+							 errdetail("\"%s\" is now a reserved prefix.",
+									   className)));
+					/* Remove it from the hash table */
+					hash_search(guc_hashtab,
+								&var->name,
+								HASH_REMOVE,
+								NULL);
+					/* Remove it from any lists it's in, too */
+					RemoveGUCFromLists(var);
+					/* And free it */
+					free_placeholder(var);
+				}
 			}
 		}
 
@@ -5929,13 +6833,15 @@ get_explain_guc_options(int *num)
 	 * While only a fraction of all the GUC variables are marked GUC_EXPLAIN,
 	 * it doesn't seem worth dynamically resizing this array.
 	 */
-	result = palloc_array(struct config_generic *, hash_get_num_entries(guc_hashtab));
+	result = palloc_array(struct config_generic *,
+						  num_guc_variables + guc_custom_variable_count());
 
 	/* We need only consider GUCs with source not PGC_S_DEFAULT */
 	dlist_foreach(iter, &guc_nondef_list)
 	{
-		struct config_generic *conf = dlist_container(struct config_generic,
-													  nondef_link, iter.cur);
+		config_generic_cold_state *cold = dlist_container(config_generic_cold_state,
+														  nondef_link, iter.cur);
+		struct config_generic *conf = GUC_COLD_STATE_RECORD(cold);
 		bool		modified;
 
 		/* return only parameters marked for inclusion in explain */
@@ -5955,7 +6861,7 @@ get_explain_guc_options(int *num)
 				{
 					struct config_bool *lconf = &conf->_bool;
 
-					modified = (lconf->boot_val != *(lconf->variable));
+					modified = (lconf->boot_val != *GUC_VARIABLE_BOOL(conf));
 				}
 				break;
 
@@ -5963,7 +6869,7 @@ get_explain_guc_options(int *num)
 				{
 					struct config_int *lconf = &conf->_int;
 
-					modified = (lconf->boot_val != *(lconf->variable));
+					modified = (lconf->boot_val != *GUC_VARIABLE_INT(conf));
 				}
 				break;
 
@@ -5971,7 +6877,7 @@ get_explain_guc_options(int *num)
 				{
 					struct config_real *lconf = &conf->_real;
 
-					modified = (lconf->boot_val != *(lconf->variable));
+					modified = (lconf->boot_val != *GUC_VARIABLE_REAL(conf));
 				}
 				break;
 
@@ -5980,13 +6886,14 @@ get_explain_guc_options(int *num)
 					struct config_string *lconf = &conf->_string;
 
 					if (lconf->boot_val == NULL &&
-						*lconf->variable == NULL)
+						*GUC_VARIABLE_STRING(conf) == NULL)
 						modified = false;
 					else if (lconf->boot_val == NULL ||
-							 *lconf->variable == NULL)
+							 *GUC_VARIABLE_STRING(conf) == NULL)
 						modified = true;
 					else
-						modified = (strcmp(lconf->boot_val, *(lconf->variable)) != 0);
+						modified = (strcmp(lconf->boot_val,
+										   *GUC_VARIABLE_STRING(conf)) != 0);
 				}
 				break;
 
@@ -5994,7 +6901,7 @@ get_explain_guc_options(int *num)
 				{
 					struct config_enum *lconf = &conf->_enum;
 
-					modified = (lconf->boot_val != *(lconf->variable));
+					modified = (lconf->boot_val != *GUC_VARIABLE_ENUM(conf));
 				}
 				break;
 
@@ -6090,7 +6997,7 @@ ShowGUCOptionInternal(const struct config_generic *record, bool use_units)
 				if (conf->show_hook)
 					val = conf->show_hook();
 				else
-					val = *conf->variable ? "on" : "off";
+					val = *GUC_VARIABLE_BOOL(record) ? "on" : "off";
 			}
 			break;
 
@@ -6106,7 +7013,7 @@ ShowGUCOptionInternal(const struct config_generic *record, bool use_units)
 					 * Use int64 arithmetic to avoid overflows in units
 					 * conversion.
 					 */
-					int64		result = *conf->variable;
+					int64		result = *GUC_VARIABLE_INT(record);
 					const char *unit;
 
 					if (use_units && result > 0 && (record->flags & GUC_UNIT))
@@ -6131,7 +7038,7 @@ ShowGUCOptionInternal(const struct config_generic *record, bool use_units)
 					val = conf->show_hook();
 				else
 				{
-					double		result = *conf->variable;
+					double		result = *GUC_VARIABLE_REAL(record);
 					const char *unit;
 
 					if (use_units && result > 0 && (record->flags & GUC_UNIT))
@@ -6154,8 +7061,9 @@ ShowGUCOptionInternal(const struct config_generic *record, bool use_units)
 
 				if (conf->show_hook)
 					val = conf->show_hook();
-				else if (*conf->variable && **conf->variable)
-					val = *conf->variable;
+				else if (*GUC_VARIABLE_STRING(record) &&
+						 **GUC_VARIABLE_STRING(record))
+					val = *GUC_VARIABLE_STRING(record);
 				else
 					val = "";
 			}
@@ -6168,7 +7076,8 @@ ShowGUCOptionInternal(const struct config_generic *record, bool use_units)
 				if (conf->show_hook)
 					val = conf->show_hook();
 				else
-					val = config_enum_lookup_by_value(record, *conf->variable);
+					val = config_enum_lookup_by_value(record,
+													  *GUC_VARIABLE_ENUM(record));
 			}
 			break;
 
@@ -6197,7 +7106,7 @@ ShowGUCOptionInternal(const struct config_generic *record, bool use_units)
 static void
 write_one_nondefault_variable(FILE *fp, struct config_generic *gconf)
 {
-	Assert(gconf->source != PGC_S_DEFAULT);
+	Assert(GUC_SOURCE(gconf) != PGC_S_DEFAULT);
 
 	fprintf(fp, "%s", gconf->name);
 	fputc(0, fp);
@@ -6206,9 +7115,7 @@ write_one_nondefault_variable(FILE *fp, struct config_generic *gconf)
 	{
 		case PGC_BOOL:
 			{
-				struct config_bool *conf = &gconf->_bool;
-
-				if (*conf->variable)
+				if (*GUC_VARIABLE_BOOL(gconf))
 					fprintf(fp, "true");
 				else
 					fprintf(fp, "false");
@@ -6217,51 +7124,51 @@ write_one_nondefault_variable(FILE *fp, struct config_generic *gconf)
 
 		case PGC_INT:
 			{
-				struct config_int *conf = &gconf->_int;
-
-				fprintf(fp, "%d", *conf->variable);
+				fprintf(fp, "%d", *GUC_VARIABLE_INT(gconf));
 			}
 			break;
 
 		case PGC_REAL:
 			{
-				struct config_real *conf = &gconf->_real;
-
-				fprintf(fp, "%.17g", *conf->variable);
+				fprintf(fp, "%.17g", *GUC_VARIABLE_REAL(gconf));
 			}
 			break;
 
 		case PGC_STRING:
 			{
-				struct config_string *conf = &gconf->_string;
-
 				if (strcmp(gconf->name, "client_encoding") == 0)
 					fprintf(fp, "%s", pg_get_client_encoding_name());
-				else if (*conf->variable)
-					fprintf(fp, "%s", *conf->variable);
+				else if (*GUC_VARIABLE_STRING(gconf))
+					fprintf(fp, "%s", *GUC_VARIABLE_STRING(gconf));
 			}
 			break;
 
 		case PGC_ENUM:
 			{
-				struct config_enum *conf = &gconf->_enum;
-
 				fprintf(fp, "%s",
-						config_enum_lookup_by_value(gconf, *conf->variable));
+						config_enum_lookup_by_value(gconf,
+												   *GUC_VARIABLE_ENUM(gconf)));
 			}
 			break;
 	}
 
 	fputc(0, fp);
 
-	if (gconf->sourcefile)
-		fprintf(fp, "%s", gconf->sourcefile);
+	if (GUC_SOURCEFILE(gconf))
+		fprintf(fp, "%s", GUC_SOURCEFILE(gconf));
 	fputc(0, fp);
 
-	fwrite(&gconf->sourceline, 1, sizeof(gconf->sourceline), fp);
-	fwrite(&gconf->source, 1, sizeof(gconf->source), fp);
-	fwrite(&gconf->scontext, 1, sizeof(gconf->scontext), fp);
-	fwrite(&gconf->srole, 1, sizeof(gconf->srole), fp);
+	{
+		int			sourceline = GUC_SOURCELINE(gconf);
+		GucSource	source = GUC_SOURCE(gconf);
+		GucContext	scontext = GUC_SCONTEXT(gconf);
+		Oid			srole = GUC_SROLE(gconf);
+
+		fwrite(&sourceline, 1, sizeof(sourceline), fp);
+		fwrite(&source, 1, sizeof(source), fp);
+		fwrite(&scontext, 1, sizeof(scontext), fp);
+		fwrite(&srole, 1, sizeof(srole), fp);
+	}
 }
 
 void
@@ -6291,8 +7198,9 @@ write_nondefault_variables(GucContext context)
 	/* We need only consider GUCs with source not PGC_S_DEFAULT */
 	dlist_foreach(iter, &guc_nondef_list)
 	{
-		struct config_generic *gconf = dlist_container(struct config_generic,
-													   nondef_link, iter.cur);
+		config_generic_cold_state *cold = dlist_container(config_generic_cold_state,
+														  nondef_link, iter.cur);
+		struct config_generic *gconf = GUC_COLD_STATE_RECORD(cold);
 
 		write_one_nondefault_variable(fp, gconf);
 	}
@@ -6481,7 +7389,7 @@ can_skip_gucvar(struct config_generic *gconf)
 
 	return gconf->context == PGC_POSTMASTER ||
 		gconf->context == PGC_INTERNAL ||
-		gconf->source == PGC_S_DEFAULT;
+		GUC_SOURCE(gconf) == PGC_S_DEFAULT;
 }
 
 /*
@@ -6514,15 +7422,13 @@ estimate_variable_size(struct config_generic *gconf)
 
 		case PGC_INT:
 			{
-				struct config_int *conf = &gconf->_int;
-
 				/*
 				 * Instead of getting the exact display length, use max
 				 * length.  Also reduce the max length for typical ranges of
 				 * small values.  Maximum value is 2147483647, i.e. 10 chars.
 				 * Include one byte for sign.
 				 */
-				if (abs(*conf->variable) < 1000)
+				if (abs(*GUC_VARIABLE_INT(gconf)) < 1000)
 					valsize = 3 + 1;
 				else
 					valsize = 10 + 1;
@@ -6543,15 +7449,13 @@ estimate_variable_size(struct config_generic *gconf)
 
 		case PGC_STRING:
 			{
-				struct config_string *conf = &gconf->_string;
-
 				/*
 				 * If the value is NULL, we transmit it as an empty string.
 				 * Although this is not physically the same value, GUC
 				 * generally treats a NULL the same as empty string.
 				 */
-				if (*conf->variable)
-					valsize = strlen(*conf->variable);
+				if (*GUC_VARIABLE_STRING(gconf))
+					valsize = strlen(*GUC_VARIABLE_STRING(gconf));
 				else
 					valsize = 0;
 			}
@@ -6559,9 +7463,8 @@ estimate_variable_size(struct config_generic *gconf)
 
 		case PGC_ENUM:
 			{
-				struct config_enum *conf = &gconf->_enum;
-
-				valsize = strlen(config_enum_lookup_by_value(gconf, *conf->variable));
+				valsize = strlen(config_enum_lookup_by_value(gconf,
+															 *GUC_VARIABLE_ENUM(gconf)));
 			}
 			break;
 	}
@@ -6569,19 +7472,19 @@ estimate_variable_size(struct config_generic *gconf)
 	/* Allow space for terminating zero-byte for value */
 	size = add_size(size, valsize + 1);
 
-	if (gconf->sourcefile)
-		size = add_size(size, strlen(gconf->sourcefile));
+	if (GUC_SOURCEFILE(gconf))
+		size = add_size(size, strlen(GUC_SOURCEFILE(gconf)));
 
 	/* Allow space for terminating zero-byte for sourcefile */
 	size = add_size(size, 1);
 
 	/* Include line whenever file is nonempty. */
-	if (gconf->sourcefile && gconf->sourcefile[0])
-		size = add_size(size, sizeof(gconf->sourceline));
+	if (GUC_SOURCEFILE(gconf) && GUC_SOURCEFILE(gconf)[0])
+		size = add_size(size, sizeof(GUC_SOURCELINE(gconf)));
 
-	size = add_size(size, sizeof(gconf->source));
-	size = add_size(size, sizeof(gconf->scontext));
-	size = add_size(size, sizeof(gconf->srole));
+	size = add_size(size, sizeof(GucSource));
+	size = add_size(size, sizeof(GucContext));
+	size = add_size(size, sizeof(Oid));
 
 	return size;
 }
@@ -6606,8 +7509,9 @@ EstimateGUCStateSpace(void)
 	 */
 	dlist_foreach(iter, &guc_nondef_list)
 	{
-		struct config_generic *gconf = dlist_container(struct config_generic,
-													   nondef_link, iter.cur);
+		config_generic_cold_state *cold = dlist_container(config_generic_cold_state,
+														  nondef_link, iter.cur);
+		struct config_generic *gconf = GUC_COLD_STATE_RECORD(cold);
 
 		size = add_size(size, estimate_variable_size(gconf));
 	}
@@ -6680,63 +7584,63 @@ serialize_variable(char **destptr, Size *maxbytes,
 	{
 		case PGC_BOOL:
 			{
-				struct config_bool *conf = &gconf->_bool;
-
 				do_serialize(destptr, maxbytes,
-							 (*conf->variable ? "true" : "false"));
+							 (*GUC_VARIABLE_BOOL(gconf) ? "true" : "false"));
 			}
 			break;
 
 		case PGC_INT:
 			{
-				struct config_int *conf = &gconf->_int;
-
-				do_serialize(destptr, maxbytes, "%d", *conf->variable);
+				do_serialize(destptr, maxbytes, "%d",
+							 *GUC_VARIABLE_INT(gconf));
 			}
 			break;
 
 		case PGC_REAL:
 			{
-				struct config_real *conf = &gconf->_real;
-
 				do_serialize(destptr, maxbytes, "%.*e",
-							 REALTYPE_PRECISION, *conf->variable);
+							 REALTYPE_PRECISION, *GUC_VARIABLE_REAL(gconf));
 			}
 			break;
 
 		case PGC_STRING:
 			{
-				struct config_string *conf = &gconf->_string;
-
 				/* NULL becomes empty string, see estimate_variable_size() */
 				do_serialize(destptr, maxbytes, "%s",
-							 *conf->variable ? *conf->variable : "");
+							 *GUC_VARIABLE_STRING(gconf) ?
+							 *GUC_VARIABLE_STRING(gconf) : "");
 			}
 			break;
 
 		case PGC_ENUM:
 			{
-				struct config_enum *conf = &gconf->_enum;
-
 				do_serialize(destptr, maxbytes, "%s",
-							 config_enum_lookup_by_value(gconf, *conf->variable));
+							 config_enum_lookup_by_value(gconf,
+														 *GUC_VARIABLE_ENUM(gconf)));
 			}
 			break;
 	}
 
 	do_serialize(destptr, maxbytes, "%s",
-				 (gconf->sourcefile ? gconf->sourcefile : ""));
+				 (GUC_SOURCEFILE(gconf) ? GUC_SOURCEFILE(gconf) : ""));
 
-	if (gconf->sourcefile && gconf->sourcefile[0])
-		do_serialize_binary(destptr, maxbytes, &gconf->sourceline,
-							sizeof(gconf->sourceline));
+	if (GUC_SOURCEFILE(gconf) && GUC_SOURCEFILE(gconf)[0])
+	{
+		int			sourceline = GUC_SOURCELINE(gconf);
 
-	do_serialize_binary(destptr, maxbytes, &gconf->source,
-						sizeof(gconf->source));
-	do_serialize_binary(destptr, maxbytes, &gconf->scontext,
-						sizeof(gconf->scontext));
-	do_serialize_binary(destptr, maxbytes, &gconf->srole,
-						sizeof(gconf->srole));
+		do_serialize_binary(destptr, maxbytes, &sourceline,
+							sizeof(sourceline));
+	}
+
+	{
+		GucSource	source = GUC_SOURCE(gconf);
+		GucContext	scontext = GUC_SCONTEXT(gconf);
+		Oid			srole = GUC_SROLE(gconf);
+
+		do_serialize_binary(destptr, maxbytes, &source, sizeof(source));
+		do_serialize_binary(destptr, maxbytes, &scontext, sizeof(scontext));
+		do_serialize_binary(destptr, maxbytes, &srole, sizeof(srole));
+	}
 }
 
 /*
@@ -6759,8 +7663,9 @@ SerializeGUCState(Size maxsize, char *start_address)
 	/* We need only consider GUCs with source not PGC_S_DEFAULT */
 	dlist_foreach(iter, &guc_nondef_list)
 	{
-		struct config_generic *gconf = dlist_container(struct config_generic,
-													   nondef_link, iter.cur);
+		config_generic_cold_state *cold = dlist_container(config_generic_cold_state,
+														  nondef_link, iter.cur);
+		struct config_generic *gconf = GUC_COLD_STATE_RECORD(cold);
 
 		serialize_variable(&curptr, &bytes_left, gconf);
 	}
@@ -6875,8 +7780,9 @@ RestoreGUCState(void *gucstate)
 	 */
 	dlist_foreach_modify(iter, &guc_nondef_list)
 	{
-		struct config_generic *gconf = dlist_container(struct config_generic,
-													   nondef_link, iter.cur);
+		config_generic_cold_state *cold = dlist_container(config_generic_cold_state,
+														  nondef_link, iter.cur);
+		struct config_generic *gconf = GUC_COLD_STATE_RECORD(cold);
 
 		/* Do nothing if non-shippable or if already at PGC_S_DEFAULT. */
 		if (can_skip_gucvar(gconf))
@@ -6890,10 +7796,10 @@ RestoreGUCState(void *gucstate)
 		 * pointers.  We also have to be sure to take it out of any lists it's
 		 * in.
 		 */
-		Assert(gconf->stack == NULL);
-		guc_free(gconf->extra);
-		guc_free(gconf->last_reported);
-		guc_free(gconf->sourcefile);
+		Assert(GUC_STACK(gconf) == NULL);
+		guc_free(GUC_EXTRA(gconf));
+		clear_last_reported(gconf);
+		guc_free(GUC_SOURCEFILE(gconf));
 		switch (gconf->vartype)
 		{
 			case PGC_BOOL:
@@ -6904,16 +7810,17 @@ RestoreGUCState(void *gucstate)
 				break;
 			case PGC_STRING:
 				{
-					struct config_string *conf = &gconf->_string;
-
-					guc_free(*conf->variable);
-					if (conf->reset_val && conf->reset_val != *conf->variable)
-						guc_free(conf->reset_val);
+					guc_free_string_value(gconf,
+										  *GUC_VARIABLE_STRING(gconf));
+					if (GUC_RESET_STRING(gconf) &&
+						GUC_RESET_STRING(gconf) != *GUC_VARIABLE_STRING(gconf))
+						guc_free_string_value(gconf,
+											  GUC_RESET_STRING(gconf));
 					break;
 				}
 		}
-		if (gconf->reset_extra && gconf->reset_extra != gconf->extra)
-			guc_free(gconf->reset_extra);
+		if (GUC_RESET_EXTRA(gconf) && GUC_RESET_EXTRA(gconf) != GUC_EXTRA(gconf))
+			guc_free(GUC_RESET_EXTRA(gconf));
 		/* Remove it from any lists it's in. */
 		RemoveGUCFromLists(gconf);
 		/* Now we can reset the struct to PGS_S_DEFAULT state. */

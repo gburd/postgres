@@ -137,6 +137,7 @@ typedef struct Latch
 extern void InitLatch(Latch *latch);
 extern void InitSharedLatch(Latch *latch);
 extern void OwnLatch(Latch *latch);
+extern void ReownLatchCurrentThread(Latch *latch);
 extern void DisownLatch(Latch *latch);
 extern void SetLatch(Latch *latch);
 extern void ResetLatch(Latch *latch);
@@ -146,5 +147,6 @@ extern int	WaitLatch(Latch *latch, int wakeEvents, long timeout,
 extern int	WaitLatchOrSocket(Latch *latch, int wakeEvents,
 							  pgsocket sock, long timeout, uint32 wait_event_info);
 extern void InitializeLatchWaitSet(void);
+extern void RefreshLatchWaitSetCurrentCarrier(void);
 
 #endif							/* LATCH_H */

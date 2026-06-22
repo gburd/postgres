@@ -46,18 +46,19 @@ struct PgBackend;
 typedef enum PMChildCarrierKind
 {
 	PM_CHILD_CARRIER_PROCESS,
-	PM_CHILD_CARRIER_THREAD
+	PM_CHILD_CARRIER_THREAD,
+	PM_CHILD_CARRIER_POOLED_LOGICAL
 } PMChildCarrierKind;
 
 typedef struct
 {
 	PMChildCarrierKind carrier_kind;	/* process, thread, or future carrier */
 	pid_t		pid;			/* process id, if process-backed */
-	pid_t		signal_pid;		/* visible signal/stat id for this child */
+	pid_t		logical_signal_pid;	/* visible signal/stat id, if published */
 	PgThread	thread;			/* native thread handle, if thread-backed */
-	struct PgBackend *thread_backend;	/* protected by PMChild APIs */
+	struct PgBackend *logical_backend;	/* protected by PMChild APIs */
 	int			thread_exitstatus;	/* waitpid-style status for threads */
-	pid_t		thread_exit_signal_pid;	/* signal/stat id captured at exit */
+	pid_t		thread_exit_logical_signal_pid;	/* id captured at exit */
 	Size		thread_exit_top_memory_allocated;	/* retained top memory */
 	Size		thread_exit_top_memory_reclaimed;	/* freed top memory */
 	pg_atomic_uint32 thread_startup_complete; /* set when startup completes */
@@ -163,18 +164,33 @@ extern PMChild *AssignPostmasterChildSlot(BackendType btype);
 extern PMChild *AllocDeadEndChild(void);
 extern bool PostmasterChildIsProcess(const PMChild *pmchild);
 extern bool PostmasterChildIsThread(const PMChild *pmchild);
+extern bool PostmasterChildIsPooledLogical(const PMChild *pmchild);
+extern bool PostmasterChildHasLogicalBackendPublication(const PMChild *pmchild);
 extern pid_t PostmasterChildSignalPid(const PMChild *pmchild);
 extern void PostmasterChildSetProcess(PMChild *pmchild, pid_t pid);
 extern void PostmasterChildSetThread(PMChild *pmchild, const PgThread *thread);
-extern void PostmasterChildSetThreadBackend(PMChild *pmchild,
-											struct PgBackend *backend);
-extern void PostmasterChildDetachThreadBackend(PMChild *pmchild);
+extern void PostmasterChildSetPooledLogical(PMChild *pmchild);
+extern void PostmasterChildPublishLogicalBackend(PMChild *pmchild,
+												 struct PgBackend *backend);
+extern void PostmasterChildUnpublishLogicalBackend(PMChild *pmchild);
 extern bool PostmasterChildRaiseThreadInterrupt(PMChild *pmchild,
 												int interrupt);
 extern bool PostmasterChildWakeThreadBackend(PMChild *pmchild);
+extern void PostmasterChildPublishLogicalStartupComplete(PMChild *pmchild,
+														 struct Latch *postmaster_latch);
 extern void PostmasterChildPublishThreadStartupComplete(PMChild *pmchild,
 														struct Latch *postmaster_latch);
 extern bool PostmasterChildHasStartupComplete(PMChild *pmchild);
+extern void PostmasterChildPublishPooledLogicalExit(PMChild *pmchild,
+													int exitstatus,
+													Size top_memory_allocated,
+													Size top_memory_reclaimed,
+													struct Latch *postmaster_latch);
+extern bool PostmasterChildHasExitedPooledLogical(PMChild *pmchild,
+												 int *exitstatus,
+												 Size *top_memory_allocated,
+												 Size *top_memory_reclaimed,
+												 pid_t *signal_pid);
 extern void PostmasterChildPublishThreadExit(PMChild *pmchild, int exitstatus,
 											 Size top_memory_allocated,
 											 Size top_memory_reclaimed,

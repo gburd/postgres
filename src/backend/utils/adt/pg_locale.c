@@ -33,6 +33,7 @@
 
 #include <time.h>
 #ifdef USE_ICU
+#include <unicode/ucasemap.h>
 #include <unicode/ucol.h>
 #endif
 
@@ -118,6 +119,7 @@ static PG_GLOBAL_IMMUTABLE struct pg_locale_struct c_locale = {
 	.deterministic = true,
 	.collate_is_c = true,
 	.ctype_is_c = true,
+	.provider = COLLPROVIDER_BUILTIN,
 };
 
 /* Cache for collation-related knowledge */
@@ -144,6 +146,77 @@ typedef struct
 #define SH_DECLARE
 #define SH_DEFINE
 #include "lib/simplehash.h"
+
+void
+pg_locale_release_external(pg_locale_t locale)
+{
+	if (locale == NULL)
+		return;
+
+	switch (locale->provider)
+	{
+		case COLLPROVIDER_BUILTIN:
+			break;
+
+		case COLLPROVIDER_LIBC:
+			if (locale->lt != (locale_t) 0)
+			{
+#ifdef WIN32
+				_free_locale(locale->lt);
+#else
+				freelocale(locale->lt);
+#endif
+				locale->lt = (locale_t) 0;
+			}
+			break;
+
+#ifdef USE_ICU
+		case COLLPROVIDER_ICU:
+			if (locale->icu.ucol != NULL)
+			{
+				ucol_close(locale->icu.ucol);
+				locale->icu.ucol = NULL;
+			}
+			if (locale->icu.ucasemap != NULL)
+			{
+				ucasemap_close(locale->icu.ucasemap);
+				locale->icu.ucasemap = NULL;
+			}
+			if (locale->icu.lt != (locale_t) 0)
+			{
+#ifdef WIN32
+				_free_locale(locale->icu.lt);
+#else
+				freelocale(locale->icu.lt);
+#endif
+				locale->icu.lt = (locale_t) 0;
+			}
+			break;
+#endif
+
+		default:
+			Assert(false);
+			break;
+	}
+}
+
+void
+pg_locale_release_collation_cache_external(void *collation_cache)
+{
+	collation_cache_hash *cache = (collation_cache_hash *) collation_cache;
+	collation_cache_iterator iter;
+	collation_cache_entry *entry;
+
+	if (cache == NULL)
+		return;
+
+	collation_cache_start_iterate(cache, &iter);
+	while ((entry = collation_cache_iterate(cache, &iter)) != NULL)
+	{
+		pg_locale_release_external(entry->locale);
+		entry->locale = NULL;
+	}
+}
 
 static inline collation_cache_hash **
 CurrentCollationCacheRef(void)

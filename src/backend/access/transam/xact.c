@@ -1262,7 +1262,7 @@ AtStart_Memory(void)
 		TopTransactionContext =
 			AllocSetContextCreate(TopMemoryContext,
 								  "TopTransactionContext",
-								  ALLOCSET_DEFAULT_SIZES);
+								  ALLOCSET_START_SMALL_SIZES);
 
 	/*
 	 * In a top-level transaction, CurTransactionContext is the same as

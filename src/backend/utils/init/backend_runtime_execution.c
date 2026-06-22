@@ -100,6 +100,7 @@ static void PgExecutionAdoptEarlyMatViewState(PgExecution *execution);
 static void PgExecutionAdoptEarlySnapshotState(PgExecution *execution);
 static void PgExecutionAdoptEarlyComboCidState(PgExecution *execution);
 static void PgExecutionAdoptEarlyXLogInsertState(PgExecution *execution);
+static bool PgExecutionXLogInsertStateHasWorkingArrays(const PgExecutionXLogInsertState *xloginsert);
 static void PgExecutionAdoptEarlyXactState(PgExecution *execution);
 static void PgExecutionAdoptEarlyTransactionCleanupState(PgExecution *execution);
 static void PgExecutionAdoptEarlyReplicationScratchState(PgExecution *execution);
@@ -231,9 +232,7 @@ PgExecutionInitializeExtensionState(PgExecutionExtensionState *extension)
 
 	extension->creating = false;
 	extension->current_object = InvalidOid;
-	extension->auto_explain_nesting_level = 0;
-	extension->auto_explain_current_query_sampled = false;
-	extension->pgcrypto_debug_handler = NULL;
+	extension->private_states = NIL;
 }
 
 static void
@@ -296,6 +295,17 @@ PgExecutionInitializeXLogInsertState(PgExecutionXLogInsertState *xloginsert)
 	MemSet(xloginsert, 0, sizeof(*xloginsert));
 }
 
+static bool
+PgExecutionXLogInsertStateHasWorkingArrays(const PgExecutionXLogInsertState *xloginsert)
+{
+	Assert(xloginsert != NULL);
+
+	return xloginsert->registered_buffers != NULL &&
+		xloginsert->max_registered_buffers > 0 &&
+		xloginsert->rdatas != NULL &&
+		xloginsert->max_rdatas > 0;
+}
+
 static void
 PgExecutionAdoptEarlyXLogInsertState(PgExecution *execution)
 {
@@ -303,8 +313,13 @@ PgExecutionAdoptEarlyXLogInsertState(PgExecution *execution)
 	Assert(!early_execution_xloginsert.begininsert_called);
 
 	execution->xloginsert = early_execution_xloginsert;
-	if (execution->xloginsert.mainrdata_last ==
-		(XLogRecData *) &early_execution_xloginsert.mainrdata_head)
+	if (!PgExecutionXLogInsertStateHasWorkingArrays(&execution->xloginsert))
+	{
+		PG_RUNTIME_DELETE_MEMORY_CONTEXT(execution->xloginsert.context);
+		PgExecutionInitializeXLogInsertState(&execution->xloginsert);
+	}
+	else if (execution->xloginsert.mainrdata_last ==
+			 (XLogRecData *) &early_execution_xloginsert.mainrdata_head)
 		execution->xloginsert.mainrdata_last =
 			(XLogRecData *) &execution->xloginsert.mainrdata_head;
 
@@ -480,8 +495,19 @@ PgExecutionInitializeRuntimeObject(PgExecution *execution,
 PgExecution *
 PgCurrentOrEarlyExecution(void)
 {
+	PgCarrier  *carrier;
+
 	if (CurrentPgExecution == NULL)
+	{
+		carrier = CurrentPgCarrier;
+		if (carrier != NULL &&
+			carrier->kind == PG_CARRIER_THREAD &&
+			CurrentPgRuntime != NULL &&
+			CurrentPgRuntime == carrier->runtime &&
+			carrier->scheduler_execution != NULL)
+			return carrier->scheduler_execution;
 		return &early_execution_fallback;
+	}
 
 	return CurrentPgExecution;
 }

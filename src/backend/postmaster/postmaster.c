@@ -426,12 +426,14 @@ static void handle_pm_pmsignal_signal(SIGNAL_ARGS);
 static void handle_pm_child_exit_signal(SIGNAL_ARGS);
 static void handle_pm_reload_request_signal(SIGNAL_ARGS);
 static void handle_pm_shutdown_request_signal(SIGNAL_ARGS);
+static void set_postmaster_signal_latch(void);
 static void process_pm_pmsignal(void);
 static void process_pm_child_exit(void);
 static void process_pm_reload_request(void);
 static void process_pm_shutdown_request(void);
 static void dummy_handler(SIGNAL_ARGS);
 static void process_pm_thread_startup_complete(void);
+static void process_pm_pooled_logical_exit(void);
 static void process_pm_thread_exit(void);
 static void CleanupBackend(PMChild *bp, int exitstatus);
 static bool cleanup_archiver_child(PMChild *child, int exitstatus);
@@ -1728,6 +1730,7 @@ ServerLoop(void)
 		 * timeout.
 		 */
 		process_pm_thread_startup_complete();
+		process_pm_pooled_logical_exit();
 		process_pm_thread_exit();
 
 		nevents = WaitEventSetWait(pm_wait_set,
@@ -1771,6 +1774,7 @@ ServerLoop(void)
 		if (pending_pm_pmsignal)
 			process_pm_pmsignal();
 		process_pm_thread_startup_complete();
+		process_pm_pooled_logical_exit();
 		process_pm_thread_exit();
 
 		for (int i = 0; i < nevents; i++)
@@ -2058,7 +2062,7 @@ static void
 handle_pm_pmsignal_signal(SIGNAL_ARGS)
 {
 	pending_pm_pmsignal = true;
-	SetLatch(MyLatch);
+	set_postmaster_signal_latch();
 }
 
 /*
@@ -2072,8 +2076,7 @@ PostmasterSignalPMSignal(void)
 {
 	pending_pm_pmsignal = true;
 
-	if (postmaster_pmsignal_latch != NULL)
-		SetLatch(postmaster_pmsignal_latch);
+	set_postmaster_signal_latch();
 }
 
 bool
@@ -2093,7 +2096,7 @@ static void
 handle_pm_reload_request_signal(SIGNAL_ARGS)
 {
 	pending_pm_reload_request = true;
-	SetLatch(MyLatch);
+	set_postmaster_signal_latch();
 }
 
 /*
@@ -2173,7 +2176,25 @@ handle_pm_shutdown_request_signal(SIGNAL_ARGS)
 			pending_pm_shutdown_request = true;
 			break;
 	}
-	SetLatch(MyLatch);
+	set_postmaster_signal_latch();
+}
+
+/*
+ * Process-directed signals can be delivered to any unmasked carrier thread in
+ * a threaded runtime.  The pending postmaster flags are process-global, but
+ * waking a carrier-local MyLatch would leave the postmaster asleep, so route
+ * wakeups through the latch recorded by ServerLoop() once available.
+ */
+static void
+set_postmaster_signal_latch(void)
+{
+	Latch	   *latch = postmaster_pmsignal_latch;
+
+	if (latch == NULL)
+		latch = MyLatch;
+
+	if (latch != NULL)
+		SetLatch(latch);
 }
 
 /*
@@ -2334,7 +2355,7 @@ static void
 handle_pm_child_exit_signal(SIGNAL_ARGS)
 {
 	pending_pm_child_exit = true;
-	SetLatch(MyLatch);
+	set_postmaster_signal_latch();
 }
 
 /*
@@ -2538,6 +2559,48 @@ process_pm_child_exit(void)
 	 * or actions to make.
 	 */
 	PostmasterStateMachine();
+}
+
+/*
+ * Cleanup after a pooled logical backend reports exit.  The carrier thread
+ * that ran the session remains alive; the postmaster owns PMChild list
+ * mutation and slot release just like process and thread-backed children.
+ */
+static void
+process_pm_pooled_logical_exit(void)
+{
+	dlist_mutable_iter iter;
+	bool		reaped = false;
+
+	dlist_foreach_modify(iter, &ActiveChildList)
+	{
+		PMChild    *pmchild = dlist_container(PMChild, elem, iter.cur);
+		int			exitstatus;
+		pid_t		signal_pid;
+		Size		top_memory_allocated;
+		Size		top_memory_reclaimed;
+
+		if (!PostmasterChildHasExitedPooledLogical(pmchild, &exitstatus,
+												  &top_memory_allocated,
+												  &top_memory_reclaimed,
+												  &signal_pid))
+			continue;
+
+		if (top_memory_allocated > 0)
+			ereport(WARNING,
+					(errmsg_internal("pooled logical backend %d retained %zu bytes in TopMemoryContext at exit",
+									 signal_pid, top_memory_allocated)));
+		if (top_memory_reclaimed > 0)
+			ereport(DEBUG1,
+					(errmsg_internal("pooled logical backend %d reclaimed %zu bytes from TopMemoryContext at exit",
+									 signal_pid, top_memory_reclaimed)));
+
+		CleanupBackend(pmchild, exitstatus);
+		reaped = true;
+	}
+
+	if (reaped)
+		PostmasterStateMachine();
 }
 
 /*
@@ -3639,12 +3702,12 @@ signal_child(PMChild *pmchild, int signal)
 {
 	pid_t		pid;
 
-	if (PostmasterChildIsThread(pmchild))
+	if (PostmasterChildHasLogicalBackendPublication(pmchild))
 	{
 		PgBackendInterruptType interrupt;
 
 		ereport(DEBUG3,
-				(errmsg_internal("sending signal %d/%s to %s thread-backed logical backend",
+				(errmsg_internal("sending signal %d/%s to %s logical backend",
 								 signal, pm_signame(signal),
 								 GetBackendTypeDesc(pmchild->bkend_type))));
 
@@ -3685,7 +3748,7 @@ static bool
 thread_child_signal_interrupt(PMChild *pmchild, int signal,
 							  PgBackendInterruptType *interrupt)
 {
-	Assert(PostmasterChildIsThread(pmchild));
+	Assert(PostmasterChildHasLogicalBackendPublication(pmchild));
 	Assert(interrupt != NULL);
 
 	switch (signal)
@@ -5225,7 +5288,7 @@ PostmasterNotifyPIDForWorker(int pid)
 		if (PostmasterChildSignalPid(bp) != pid)
 			continue;
 
-		if (PostmasterChildIsThread(bp))
+		if (PostmasterChildHasLogicalBackendPublication(bp))
 			return PostmasterChildWakeThreadBackend(bp);
 		else if (kill(pid, SIGUSR1) < 0)
 			return false;

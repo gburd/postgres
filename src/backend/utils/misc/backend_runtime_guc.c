@@ -408,6 +408,12 @@ PgCurrentGUCVariablesRef(void)
 	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionGUCRuntimeState, PgCurrentSessionGUCState)->variables;
 }
 
+struct config_generic_state **
+PgCurrentGUCVariableStatesRef(void)
+{
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionGUCRuntimeState, PgCurrentSessionGUCState)->variable_states;
+}
+
 int *
 PgCurrentNumGUCVariablesRef(void)
 {
@@ -454,6 +460,12 @@ int *
 PgCurrentThreadedGUCMutexDepthRef(void)
 {
 	return &PgCurrentCarrierState()->threaded_guc_mutex_depth;
+}
+
+int *
+PgCurrentThreadedRelOptionsMutexDepthRef(void)
+{
+	return &PgCurrentCarrierState()->threaded_reloptions_mutex_depth;
 }
 
 int *

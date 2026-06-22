@@ -432,8 +432,7 @@ AutoVacLauncherMain(const void *startup_data, size_t startup_data_len)
 	Assert(startup_data_len == 0);
 
 	/* Release postmaster's working memory context */
-	threaded_launcher = (CurrentPgRuntime != NULL &&
-						 CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION);
+	threaded_launcher = PgRuntimeIsThreadBacked(CurrentPgRuntime);
 	if (PostmasterContext && !threaded_launcher)
 	{
 		MemoryContextDelete(PostmasterContext);
@@ -1468,8 +1467,7 @@ AutoVacWorkerMain(const void *startup_data, size_t startup_data_len)
 	bool		threaded_worker;
 
 	Assert(startup_data_len == 0);
-	threaded_worker = (CurrentPgRuntime != NULL &&
-					   CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION);
+	threaded_worker = PgRuntimeIsThreadBacked(CurrentPgRuntime);
 
 	/* Release postmaster's working memory context */
 	if (PostmasterContext && !threaded_worker)
@@ -1594,8 +1592,7 @@ AutoVacWorkerMain(const void *startup_data, size_t startup_data_len)
 		if (pg_atomic_read_u32(&ProcGlobal->avLauncherProc) !=
 			INVALID_PROC_NUMBER)
 		{
-			if (CurrentPgRuntime != NULL &&
-				CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION)
+			if (PgRuntimeIsThreadBacked(CurrentPgRuntime))
 				(void) PostmasterSignalAutoVacLauncher();
 			else
 			{

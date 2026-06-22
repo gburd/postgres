@@ -178,8 +178,7 @@ StartupRereadConfig(void)
 	bool		slotnameChanged;
 	bool		tempSlotChanged = false;
 
-	threaded_worker = (CurrentPgRuntime != NULL &&
-					   CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION);
+	threaded_worker = PgRuntimeIsThreadBacked(CurrentPgRuntime);
 	if (!threaded_worker)
 		ProcessConfigFile(PGC_SIGHUP);
 
@@ -272,8 +271,7 @@ StartupProcessMain(const void *startup_data, size_t startup_data_len)
 	Assert(startup_data_len == 0);
 
 	AuxiliaryProcessMainCommon();
-	threaded_worker = (CurrentPgRuntime != NULL &&
-					   CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION);
+	threaded_worker = PgRuntimeIsThreadBacked(CurrentPgRuntime);
 
 	/* Arrange to clean up at startup process exit */
 	on_shmem_exit(StartupProcExit, 0);

@@ -643,8 +643,8 @@ typedef struct PgStat_LocalState
 	dsa_area   *dsa;
 	dshash_table *shared_hash;
 
-	/* the current statistics snapshot */
-	PgStat_Snapshot snapshot;
+	/* the current statistics snapshot, allocated lazily when stats are read */
+	PgStat_Snapshot *snapshot;
 } PgStat_LocalState;
 
 
@@ -804,7 +804,10 @@ extern bool pgstat_replslot_from_serialized_name_cb(const NameData *name, PgStat
  */
 
 extern void pgstat_attach_shmem(void);
+extern void pgstat_ensure_shmem_attached(void);
 extern void pgstat_detach_shmem(void);
+extern void pgstat_detach_idle_memory(void);
+extern void pgstat_release_shared_ref_memory(void);
 
 extern PgStat_EntryRef *pgstat_get_entry_ref(PgStat_Kind kind, Oid dboid, uint64 objid,
 											 bool create, bool *created_entry);
@@ -875,6 +878,9 @@ extern void pgstat_create_transactional(PgStat_Kind kind, Oid dboid, uint64 obji
 extern PgStat_LocalState *PgCurrentPgStatLocalState(void);
 #endif
 #define pgStatLocal (*PgCurrentPgStatLocalState())
+extern PgStat_Snapshot *PgCurrentPgStatSnapshot(void);
+extern PgStat_Snapshot *PgCurrentPgStatSnapshotIfAllocated(void);
+#define pgStatSnapshot (*PgCurrentPgStatSnapshot())
 #ifndef PgCurrentPgStatFixedSnapshotContextRef
 extern MemoryContext *PgCurrentPgStatFixedSnapshotContextRef(void);
 #endif
@@ -1066,7 +1072,7 @@ pgstat_get_custom_snapshot_data(PgStat_Kind kind)
 	Assert(pgstat_is_kind_custom(kind));
 	Assert(pgstat_get_kind_info(kind)->fixed_amount);
 
-	return pgStatLocal.snapshot.custom_data[idx];
+	return pgStatSnapshot.custom_data[idx];
 }
 
 #endif							/* PGSTAT_INTERNAL_H */

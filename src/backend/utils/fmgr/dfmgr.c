@@ -389,8 +389,7 @@ module_needs_session_init(DynamicFileList *file_scanner)
 {
 	List	  **dynamic_library_inits;
 
-	if (CurrentPgRuntime == NULL ||
-		CurrentPgRuntime->kind != PG_RUNTIME_THREAD_PER_SESSION ||
+	if (!PgRuntimeIsThreadBacked(CurrentPgRuntime) ||
 		CurrentPgSession == NULL)
 		return false;
 
@@ -404,8 +403,7 @@ remember_module_session_init(DynamicFileList *file_scanner)
 	List	  **dynamic_library_inits;
 	MemoryContext oldcontext;
 
-	if (CurrentPgRuntime == NULL ||
-		CurrentPgRuntime->kind != PG_RUNTIME_THREAD_PER_SESSION ||
+	if (!PgRuntimeIsThreadBacked(CurrentPgRuntime) ||
 		CurrentPgSession == NULL)
 		return;
 
@@ -549,7 +547,7 @@ static bool
 module_backend_model_is_valid(PgBackendModel backend_model)
 {
 	return backend_model >= PG_BACKEND_MODEL_PROCESS &&
-		backend_model <= PG_BACKEND_MODEL_POOLED_SCHEDULER;
+		backend_model <= PG_BACKEND_MODEL_TASK_REENTRANT;
 }
 
 static bool
@@ -580,6 +578,12 @@ module_backend_model_name(PgBackendModel backend_model)
 			return "thread-per-session";
 		case PG_BACKEND_MODEL_POOLED_SCHEDULER:
 			return "pooled-scheduler";
+		case PG_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE:
+			return "pooled-protocol-affine";
+		case PG_BACKEND_MODEL_POOLED_PROTOCOL_MIGRATABLE:
+			return "pooled-protocol-migratable";
+		case PG_BACKEND_MODEL_TASK_REENTRANT:
+			return "task-reentrant";
 	}
 
 	return "unknown";

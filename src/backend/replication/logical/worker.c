@@ -4979,8 +4979,7 @@ adjust_xid_advance_interval(RetainDeadTuplesData *rdt_data, bool new_xid_found)
 static bool
 LogicalRepWorkerThreadedRuntime(void)
 {
-	return CurrentPgRuntime != NULL &&
-		CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION;
+	return PgRuntimeIsThreadBacked(CurrentPgRuntime);
 }
 
 static void

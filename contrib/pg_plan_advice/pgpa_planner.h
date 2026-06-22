@@ -76,7 +76,7 @@ typedef struct pgpa_planner_info
  * do so. See pg_plan_advice_request_advice_generation().
  */
 #define pgpa_planner_generate_advice \
-	(PgCurrentSessionExtensionModuleState()->pg_plan_advice_generate_advice)
+	(pg_plan_advice_session_state()->generate_advice)
 
 /* Must be exported for use by test_plan_advice */
 extern PGDLLEXPORT void pgpa_planner_feedback_warning(List *feedback);

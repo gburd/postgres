@@ -607,7 +607,14 @@ static PG_GLOBAL_RUNTIME bool need_initialization = true;
 
 #ifndef WIN32
 static PG_GLOBAL_RUNTIME pthread_mutex_t ThreadedRelOptionsMutex = PTHREAD_MUTEX_INITIALIZER;
+#define ThreadedRelOptionsMutexDepth (*PgCurrentThreadedRelOptionsMutexDepthRef())
 #endif
+/*
+ * Custom reloptions are process-global.  In threaded mode they must not be
+ * parented under a backend carrier's TopMemoryContext, which is deleted when
+ * that logical backend exits.
+ */
+static PG_GLOBAL_RUNTIME MemoryContext ThreadedRelOptionsMemoryContext = NULL;
 
 static bool ThreadedRelOptionsLock(void);
 static void ThreadedRelOptionsUnlock(bool locked);
@@ -624,11 +631,14 @@ ThreadedRelOptionsLock(void)
 
 	if (!multithreaded)
 		return false;
+	if (ThreadedRelOptionsMutexDepth++ > 0)
+		return false;
 
 	HOLD_INTERRUPTS();
 	rc = pthread_mutex_lock(&ThreadedRelOptionsMutex);
 	if (rc != 0)
 	{
+		ThreadedRelOptionsMutexDepth--;
 		RESUME_INTERRUPTS();
 		errno = rc;
 		ereport(FATAL,
@@ -646,6 +656,12 @@ ThreadedRelOptionsUnlock(bool locked)
 {
 #ifndef WIN32
 	int			rc;
+
+	if (!multithreaded)
+		return;
+
+	Assert(ThreadedRelOptionsMutexDepth > 0);
+	ThreadedRelOptionsMutexDepth--;
 
 	if (!locked)
 		return;
@@ -666,7 +682,17 @@ static MemoryContext
 RelOptionsGlobalMemoryContext(void)
 {
 	if (multithreaded)
-		return PgCurrentRuntimeExtensionModuleMemoryContext();
+	{
+#ifndef WIN32
+		Assert(ThreadedRelOptionsMutexDepth > 0);
+#endif
+		if (ThreadedRelOptionsMemoryContext == NULL)
+			ThreadedRelOptionsMemoryContext =
+				AllocSetContextCreate(NULL,
+									  "ThreadedRelOptions",
+									  ALLOCSET_DEFAULT_SIZES);
+		return ThreadedRelOptionsMemoryContext;
+	}
 
 	return TopMemoryContext;
 }
@@ -925,14 +951,10 @@ static relopt_gen *
 allocate_reloption(uint32 kinds, int type, const char *name, const char *desc,
 				   LOCKMODE lockmode)
 {
-	MemoryContext oldcxt;
+	bool		locked = false;
+	MemoryContext oldcxt = NULL;
 	size_t		size;
 	relopt_gen *newoption;
-
-	if (kinds != RELOPT_KIND_LOCAL)
-		oldcxt = MemoryContextSwitchTo(RelOptionsGlobalMemoryContext());
-	else
-		oldcxt = NULL;
 
 	switch (type)
 	{
@@ -959,20 +981,38 @@ allocate_reloption(uint32 kinds, int type, const char *name, const char *desc,
 			return NULL;		/* keep compiler quiet */
 	}
 
-	newoption = palloc(size);
+	if (kinds != RELOPT_KIND_LOCAL)
+	{
+		locked = ThreadedRelOptionsLock();
+		oldcxt = MemoryContextSwitchTo(RelOptionsGlobalMemoryContext());
+	}
 
-	newoption->name = pstrdup(name);
-	if (desc)
-		newoption->desc = pstrdup(desc);
-	else
-		newoption->desc = NULL;
-	newoption->kinds = kinds;
-	newoption->namelen = strlen(name);
-	newoption->type = type;
-	newoption->lockmode = lockmode;
+	PG_TRY();
+	{
+		newoption = palloc(size);
+
+		newoption->name = pstrdup(name);
+		if (desc)
+			newoption->desc = pstrdup(desc);
+		else
+			newoption->desc = NULL;
+		newoption->kinds = kinds;
+		newoption->namelen = strlen(name);
+		newoption->type = type;
+		newoption->lockmode = lockmode;
+	}
+	PG_CATCH();
+	{
+		if (oldcxt != NULL)
+			MemoryContextSwitchTo(oldcxt);
+		ThreadedRelOptionsUnlock(locked);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 
 	if (oldcxt != NULL)
 		MemoryContextSwitchTo(oldcxt);
+	ThreadedRelOptionsUnlock(locked);
 
 	return newoption;
 }
@@ -1273,8 +1313,23 @@ init_string_reloption(uint32 kinds, const char *name, const char *desc,
 		if (kinds == RELOPT_KIND_LOCAL)
 			newoption->default_val = strdup(default_val);
 		else
-			newoption->default_val =
-				MemoryContextStrdup(RelOptionsGlobalMemoryContext(), default_val);
+		{
+			bool		locked;
+
+			locked = ThreadedRelOptionsLock();
+			PG_TRY();
+			{
+				newoption->default_val =
+					MemoryContextStrdup(RelOptionsGlobalMemoryContext(), default_val);
+			}
+			PG_CATCH();
+			{
+				ThreadedRelOptionsUnlock(locked);
+				PG_RE_THROW();
+			}
+			PG_END_TRY();
+			ThreadedRelOptionsUnlock(locked);
+		}
 		newoption->default_len = strlen(default_val);
 		newoption->default_isnull = false;
 	}

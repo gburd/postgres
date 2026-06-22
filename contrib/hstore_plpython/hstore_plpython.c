@@ -4,6 +4,7 @@
 #include "hstore/hstore.h"
 #include "plpy_typeio.h"
 #include "plpy_util.h"
+#include "utils/backend_runtime.h"
 
 PG_MODULE_MAGIC_EXT(
 					.name = "hstore_plpython",
@@ -12,21 +13,51 @@ PG_MODULE_MAGIC_EXT(
 
 /* Linkage to functions in plpython module */
 typedef char *(*PLyObject_AsString_t) (PyObject *plrv);
-static PLyObject_AsString_t PLyObject_AsString_p;
 typedef PyObject *(*PLyUnicode_FromStringAndSize_t) (const char *s, Py_ssize_t size);
-static PLyUnicode_FromStringAndSize_t PLyUnicode_FromStringAndSize_p;
 
 /* Linkage to functions in hstore module */
 typedef HStore *(*hstoreUpgrade_t) (Datum orig);
-static hstoreUpgrade_t hstoreUpgrade_p;
 typedef int (*hstoreUniquePairs_t) (Pairs *a, int32 l, int32 *buflen);
-static hstoreUniquePairs_t hstoreUniquePairs_p;
 typedef HStore *(*hstorePairs_t) (Pairs *pairs, int32 pcount, int32 buflen);
-static hstorePairs_t hstorePairs_p;
 typedef size_t (*hstoreCheckKeyLen_t) (size_t len);
-static hstoreCheckKeyLen_t hstoreCheckKeyLen_p;
 typedef size_t (*hstoreCheckValLen_t) (size_t len);
-static hstoreCheckValLen_t hstoreCheckValLen_p;
+
+#define HSTORE_PLPYTHON_RUNTIME_STATE_KEY "hstore_plpython.runtime"
+
+typedef struct HstorePLpythonRuntimeState
+{
+	PLyObject_AsString_t PLyObject_AsString_p;
+	PLyUnicode_FromStringAndSize_t PLyUnicode_FromStringAndSize_p;
+	hstoreUpgrade_t hstoreUpgrade_p;
+	hstoreUniquePairs_t hstoreUniquePairs_p;
+	hstorePairs_t hstorePairs_p;
+	hstoreCheckKeyLen_t hstoreCheckKeyLen_p;
+	hstoreCheckValLen_t hstoreCheckValLen_p;
+} HstorePLpythonRuntimeState;
+
+static HstorePLpythonRuntimeState *
+hstore_plpython_runtime_state(void)
+{
+	return (HstorePLpythonRuntimeState *)
+		PgRuntimeEnsureExtensionPrivateState(HSTORE_PLPYTHON_RUNTIME_STATE_KEY,
+											 sizeof(HstorePLpythonRuntimeState),
+											 NULL);
+}
+
+#define PLyObject_AsString_p \
+	(hstore_plpython_runtime_state()->PLyObject_AsString_p)
+#define PLyUnicode_FromStringAndSize_p \
+	(hstore_plpython_runtime_state()->PLyUnicode_FromStringAndSize_p)
+#define hstoreUpgrade_p \
+	(hstore_plpython_runtime_state()->hstoreUpgrade_p)
+#define hstoreUniquePairs_p \
+	(hstore_plpython_runtime_state()->hstoreUniquePairs_p)
+#define hstorePairs_p \
+	(hstore_plpython_runtime_state()->hstorePairs_p)
+#define hstoreCheckKeyLen_p \
+	(hstore_plpython_runtime_state()->hstoreCheckKeyLen_p)
+#define hstoreCheckValLen_p \
+	(hstore_plpython_runtime_state()->hstoreCheckValLen_p)
 
 /* Static asserts verify that typedefs above match original declarations */
 StaticAssertVariableIsOfType(&PLyObject_AsString, PLyObject_AsString_t);

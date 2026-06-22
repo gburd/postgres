@@ -76,18 +76,10 @@ BackendMain(const void *startup_data, size_t startup_data_len)
 							   BACKEND_STARTUP_PROCESS);
 }
 
-/*
- * Entry point for a backend with explicit startup data and client socket.
- *
- * BackendMain() remains the process-mode adapter that uses MyClientSocket,
- * which is inherited or reconstructed by the launch path.  Threaded launch
- * can call this entrypoint with a per-thread socket copy before installing
- * the broader backend carrier state.
- */
-void
-BackendMainWithStartupData(const BackendStartupData *bsdata,
-						   ClientSocket *client_sock,
-						   BackendStartupMode startup_mode)
+PgSession *
+BackendStartSessionWithStartupData(const BackendStartupData *bsdata,
+								   ClientSocket *client_sock,
+								   BackendStartupMode startup_mode)
 {
 	Assert(bsdata != NULL);
 	Assert(client_sock != NULL);
@@ -134,7 +126,25 @@ BackendMainWithStartupData(const BackendStartupData *bsdata,
 	 */
 	MemoryContextSwitchTo(TopMemoryContext);
 
-	PostgresMain(MyProcPort->database_name, MyProcPort->user_name);
+	return PostgresBootstrapSession(MyProcPort->database_name,
+									MyProcPort->user_name);
+}
+
+/*
+ * Entry point for a backend with explicit startup data and client socket.
+ *
+ * BackendMain() remains the process-mode adapter that uses MyClientSocket,
+ * which is inherited or reconstructed by the launch path.  Threaded launch
+ * can call this entrypoint with a per-thread socket copy before installing
+ * the broader backend carrier state.
+ */
+void
+BackendMainWithStartupData(const BackendStartupData *bsdata,
+						   ClientSocket *client_sock,
+						   BackendStartupMode startup_mode)
+{
+	PostgresRunSession(BackendStartSessionWithStartupData(bsdata, client_sock,
+														  startup_mode));
 }
 
 

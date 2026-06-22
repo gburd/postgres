@@ -137,22 +137,32 @@ static void PrintLockQueue(LOCK *lock, const char *info);
 
 
 /*
- * InitDeadLockChecking -- initialize deadlock checker during backend startup
+ * EnsureDeadLockCheckingWorkspace -- initialize deadlock checker workspace
  *
- * This does per-backend initialization of the deadlock checker; primarily,
- * allocation of working memory for DeadLockCheck.  We do this per-backend
- * since there's no percentage in making the kernel do copy-on-write
- * inheritance of workspace from the postmaster.  We allocate the space at
- * startup because the deadlock checker is run with all the partitions of the
- * lock table locked, and we want to keep that section as short as possible.
+ * This does per-backend initialization of the deadlock checker working
+ * memory.  We do this per-backend since there's no percentage in making the
+ * kernel do copy-on-write inheritance of workspace from the postmaster.
+ *
+ * The detector itself runs with all partitions of the lock table locked, so
+ * callers must allocate this workspace before entering that critical section.
  */
 void
-InitDeadLockChecking(void)
+EnsureDeadLockCheckingWorkspace(void)
 {
 	MemoryContext oldcxt;
 
+	if (visitedProcs != NULL)
+		return;
+
 	/* Make sure allocations are permanent */
 	oldcxt = MemoryContextSwitchTo(TopMemoryContext);
+
+	if (deadlockDetails != NULL)
+	{
+		Assert(*PgCurrentDeadlockWorkspaceOwnedRef());
+		pfree(deadlockDetails);
+		deadlockDetails = NULL;
+	}
 
 	/*
 	 * FindLockCycle needs at most MaxBackends entries in visitedProcs[] and
@@ -211,6 +221,26 @@ InitDeadLockChecking(void)
 }
 
 /*
+ * InitDeadLockChecking -- initialize deadlock checker during backend startup
+ *
+ * Deadlock-checking workspace is MaxBackends-sized and only needed by
+ * backends that wait long enough to run the detector.  Leave it lazy so quiet
+ * sessions do not carry that memory while parked.  The immediate two-process
+ * deadlock path can run while holding a lock partition LWLock, so keep only
+ * the tiny report buffer it needs ready at startup.
+ */
+void
+InitDeadLockChecking(void)
+{
+	Assert(visitedProcs == NULL);
+	Assert(deadlockDetails == NULL);
+
+	deadlockDetails = (DEADLOCK_INFO *)
+		MemoryContextAlloc(TopMemoryContext, 2 * sizeof(DEADLOCK_INFO));
+	*PgCurrentDeadlockWorkspaceOwnedRef() = true;
+}
+
+/*
  * DeadLockCheck -- Checks for deadlocks for a given process
  *
  * This code looks for deadlocks involving the given process.  If any
@@ -227,6 +257,8 @@ InitDeadLockChecking(void)
 DeadLockState
 DeadLockCheck(PGPROC *proc)
 {
+	Assert(visitedProcs != NULL);
+
 	/* Initialize to "no constraints" */
 	nCurConstraints = 0;
 	nPossibleConstraints = 0;

@@ -52,15 +52,30 @@ typedef char *(*pg_plan_advice_advisor_hook) (PlannerGlobal *glob,
 											  int cursorOptions,
 											  ExplainState *es);
 
+typedef struct PgPlanAdviceSessionState
+{
+	bool		initialized;
+	char	   *advice;
+	bool		always_store_advice_details;
+	bool		always_explain_supplied_advice;
+	bool		feedback_warnings;
+	bool		trace_mask;
+	int			generate_advice;
+} PgPlanAdviceSessionState;
+
+extern PgPlanAdviceSessionState *pg_plan_advice_session_state(void);
+
 /* GUC variables */
 #define pg_plan_advice_advice \
-	(PgCurrentSessionExtensionModuleState()->pg_plan_advice_advice)
+	(pg_plan_advice_session_state()->advice)
 #define pg_plan_advice_always_store_advice_details \
-	(PgCurrentSessionExtensionModuleState()->pg_plan_advice_always_store_advice_details)
+	(pg_plan_advice_session_state()->always_store_advice_details)
+#define pg_plan_advice_always_explain_supplied_advice \
+	(pg_plan_advice_session_state()->always_explain_supplied_advice)
 #define pg_plan_advice_feedback_warnings \
-	(PgCurrentSessionExtensionModuleState()->pg_plan_advice_feedback_warnings)
+	(pg_plan_advice_session_state()->feedback_warnings)
 #define pg_plan_advice_trace_mask \
-	(PgCurrentSessionExtensionModuleState()->pg_plan_advice_trace_mask)
+	(pg_plan_advice_session_state()->trace_mask)
 
 /* Function prototypes (for use by pg_plan_advice itself) */
 extern MemoryContext pg_plan_advice_get_mcxt(void);

@@ -1,7 +1,7 @@
 /*--------------------------------------------------------------------------
  *
  * test_backend_runtime_pmchild.c
- *		PMChild thread-backend publication tests.
+ *		PMChild logical-backend publication tests.
  *
  * Copyright (c) 2026, PostgreSQL Global Development Group
  *
@@ -12,7 +12,7 @@
  */
 #include "test_backend_runtime.h"
 
-typedef struct TestPMChildThreadBackendRace
+typedef struct TestPMChildLogicalBackendRace
 {
 	PMChild    *pmchild;
 	pg_atomic_uint32 start;
@@ -21,16 +21,16 @@ typedef struct TestPMChildThreadBackendRace
 	pg_atomic_uint32 attempts;
 	pg_atomic_uint32 hits;
 	pg_atomic_uint32 saw_live_signal_pid;
-} TestPMChildThreadBackendRace;
+} TestPMChildLogicalBackendRace;
 
 static void
 test_pmchild_install_stale_thread_payload(PMChild *pmchild,
 										  PgBackend *backend)
 {
-	pmchild->signal_pid = 44444;
-	pmchild->thread_backend = backend;
+	pmchild->logical_signal_pid = 44444;
+	pmchild->logical_backend = backend;
 	pmchild->thread_exitstatus = 99;
-	pmchild->thread_exit_signal_pid = 55555;
+	pmchild->thread_exit_logical_signal_pid = 55555;
 	pmchild->thread_exit_top_memory_allocated = 16384;
 	pmchild->thread_exit_top_memory_reclaimed = 32768;
 	pg_atomic_write_u32(&pmchild->thread_startup_complete, 1);
@@ -45,11 +45,11 @@ test_pmchild_thread_payload_is_clear(PMChild *pmchild)
 	Size		top_memory_allocated;
 	Size		top_memory_reclaimed;
 
-	if (pmchild->thread_backend != NULL)
+	if (pmchild->logical_backend != NULL)
 		return false;
 	if (pmchild->thread_exitstatus != 0)
 		return false;
-	if (pmchild->thread_exit_signal_pid != 0)
+	if (pmchild->thread_exit_logical_signal_pid != 0)
 		return false;
 	if (pmchild->thread_exit_top_memory_allocated != 0)
 		return false;
@@ -62,14 +62,19 @@ test_pmchild_thread_payload_is_clear(PMChild *pmchild)
 									   &top_memory_reclaimed,
 									   &exit_signal_pid))
 		return false;
+	if (PostmasterChildHasExitedPooledLogical(pmchild, &exitstatus,
+											 &top_memory_allocated,
+											 &top_memory_reclaimed,
+											 &exit_signal_pid))
+		return false;
 
 	return true;
 }
 
 static void
-test_pmchild_thread_backend_reader_routine(void *arg)
+test_pmchild_logical_backend_reader_routine(void *arg)
 {
-	TestPMChildThreadBackendRace *state = (TestPMChildThreadBackendRace *) arg;
+	TestPMChildLogicalBackendRace *state = (TestPMChildLogicalBackendRace *) arg;
 
 	pg_atomic_fetch_add_u32(&state->ready_count, 1);
 	while (pg_atomic_read_u32(&state->start) == 0 &&
@@ -113,7 +118,7 @@ test_pmchild_thread_backend_signal_api(PG_FUNCTION_ARGS)
 	fake_backend.id = 12345;
 	fake_backend.runtime = &fake_runtime;
 	PgBackendInitializeInterrupts(&fake_backend);
-	fake_pmchild.signal_pid = 54321;
+	fake_pmchild.logical_signal_pid = 54321;
 	fake_pmchild.thread_exitstatus = 99;
 	fake_pmchild.thread_exit_top_memory_allocated = 16384;
 	fake_pmchild.thread_exit_top_memory_reclaimed = 32768;
@@ -131,7 +136,7 @@ test_pmchild_thread_backend_signal_api(PG_FUNCTION_ARGS)
 											   &top_memory_reclaimed,
 											   &exit_signal_pid);
 
-	PostmasterChildSetThreadBackend(&fake_pmchild, &fake_backend);
+	PostmasterChildPublishLogicalBackend(&fake_pmchild, &fake_backend);
 	ok = ok && PostmasterChildSignalPid(&fake_pmchild) == 12345;
 	ok = ok && PostmasterChildRaiseThreadInterrupt(&fake_pmchild,
 												   PG_BACKEND_INTERRUPT_QUERY_CANCEL);
@@ -171,9 +176,10 @@ test_pmchild_thread_backend_signal_api(PG_FUNCTION_ARGS)
 	ok = ok && !PostmasterChildWakeThreadBackend(&fake_pmchild);
 
 	PostmasterChildSetThread(&fake_pmchild, &fake_thread);
-	PostmasterChildSetThreadBackend(&fake_pmchild, &fake_backend);
-	PostmasterChildDetachThreadBackend(&fake_pmchild);
+	PostmasterChildPublishLogicalBackend(&fake_pmchild, &fake_backend);
+	PostmasterChildUnpublishLogicalBackend(&fake_pmchild);
 	ok = ok && PostmasterChildSignalPid(&fake_pmchild) == 0;
+	ok = ok && fake_pmchild.thread_exit_logical_signal_pid == 12345;
 	ok = ok && !PostmasterChildRaiseThreadInterrupt(&fake_pmchild,
 													PG_BACKEND_INTERRUPT_QUERY_CANCEL);
 	PostmasterChildPublishThreadExit(&fake_pmchild, 23, 4096, 2048,
@@ -232,7 +238,7 @@ test_pmchild_thread_backend_reset_api(PG_FUNCTION_ARGS)
 	ok = ok && PostmasterChildSignalPid(&fake_pmchild) == 0;
 	ok = ok && test_pmchild_thread_payload_is_clear(&fake_pmchild);
 
-	PostmasterChildSetThreadBackend(&fake_pmchild, &fake_backend);
+	PostmasterChildPublishLogicalBackend(&fake_pmchild, &fake_backend);
 	PostmasterChildPublishThreadStartupComplete(&fake_pmchild, &fake_latch);
 	PostmasterChildPublishThreadExit(&fake_pmchild, 17, 8192, 32768,
 									 &fake_latch);
@@ -256,6 +262,102 @@ test_pmchild_thread_backend_reset_api(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+PG_FUNCTION_INFO_V1(test_pmchild_pooled_logical_backend_signal_api);
+Datum
+test_pmchild_pooled_logical_backend_signal_api(PG_FUNCTION_ARGS)
+{
+	PgRuntime	fake_runtime;
+	PgBackend	fake_backend;
+	PMChild		fake_pmchild;
+	Latch		fake_latch;
+	PgBackendInterruptMask pending;
+	int			exitstatus;
+	pid_t		exit_signal_pid;
+	Size		top_memory_allocated;
+	Size		top_memory_reclaimed;
+	bool		ok = true;
+
+	MemSet(&fake_runtime, 0, sizeof(fake_runtime));
+	MemSet(&fake_backend, 0, sizeof(fake_backend));
+	MemSet(&fake_pmchild, 0, sizeof(fake_pmchild));
+	MemSet(&fake_latch, 0, sizeof(fake_latch));
+
+	fake_runtime.kind = PG_RUNTIME_POOLED_PROTOCOL;
+	fake_backend.id = 23456;
+	fake_backend.runtime = &fake_runtime;
+	PgBackendInitializeInterrupts(&fake_backend);
+	InitLatch(&fake_latch);
+
+	test_pmchild_install_stale_thread_payload(&fake_pmchild, &fake_backend);
+	PostmasterChildSetPooledLogical(&fake_pmchild);
+	ok = ok && PostmasterChildIsPooledLogical(&fake_pmchild);
+	ok = ok && PostmasterChildHasLogicalBackendPublication(&fake_pmchild);
+	ok = ok && !PostmasterChildIsProcess(&fake_pmchild);
+	ok = ok && !PostmasterChildIsThread(&fake_pmchild);
+	ok = ok && PostmasterChildSignalPid(&fake_pmchild) == 0;
+	ok = ok && test_pmchild_thread_payload_is_clear(&fake_pmchild);
+
+	PostmasterChildPublishLogicalBackend(&fake_pmchild, &fake_backend);
+	ok = ok && PostmasterChildSignalPid(&fake_pmchild) == 23456;
+	ok = ok && PostmasterChildRaiseThreadInterrupt(&fake_pmchild,
+												   PG_BACKEND_INTERRUPT_QUERY_CANCEL);
+	ok = ok && PostmasterChildWakeThreadBackend(&fake_pmchild);
+	pending = PgBackendConsumeInterrupts(&fake_backend);
+	ok = ok && (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_QUERY_CANCEL));
+	ok = ok && !PostmasterChildHasStartupComplete(&fake_pmchild);
+	PostmasterChildPublishLogicalStartupComplete(&fake_pmchild, &fake_latch);
+	ok = ok && PostmasterChildHasStartupComplete(&fake_pmchild);
+	ok = ok && !PostmasterChildHasStartupComplete(&fake_pmchild);
+	ok = ok && !PostmasterChildHasExitedThread(&fake_pmchild, &exitstatus,
+											   &top_memory_allocated,
+											   &top_memory_reclaimed,
+											   &exit_signal_pid);
+	ok = ok && !PostmasterChildHasExitedPooledLogical(&fake_pmchild,
+													  &exitstatus,
+													  &top_memory_allocated,
+													  &top_memory_reclaimed,
+													  &exit_signal_pid);
+
+	PostmasterChildPublishPooledLogicalExit(&fake_pmchild, 19, 4096, 8192,
+											&fake_latch);
+	ok = ok && PostmasterChildSignalPid(&fake_pmchild) == 0;
+	ok = ok && !PostmasterChildHasExitedThread(&fake_pmchild, &exitstatus,
+											   &top_memory_allocated,
+											   &top_memory_reclaimed,
+											   &exit_signal_pid);
+	ok = ok && PostmasterChildHasExitedPooledLogical(&fake_pmchild,
+													 &exitstatus,
+													 &top_memory_allocated,
+													 &top_memory_reclaimed,
+													 &exit_signal_pid);
+	ok = ok && exitstatus == 19;
+	ok = ok && exit_signal_pid == 23456;
+	ok = ok && top_memory_allocated == 4096;
+	ok = ok && top_memory_reclaimed == 8192;
+	ok = ok && !PostmasterChildHasExitedPooledLogical(&fake_pmchild,
+													  &exitstatus,
+													  &top_memory_allocated,
+													  &top_memory_reclaimed,
+													  &exit_signal_pid);
+	ok = ok && !PostmasterChildRaiseThreadInterrupt(&fake_pmchild,
+													PG_BACKEND_INTERRUPT_QUERY_CANCEL);
+	ok = ok && !PostmasterChildWakeThreadBackend(&fake_pmchild);
+
+	PostmasterChildSetPooledLogical(&fake_pmchild);
+	PostmasterChildPublishLogicalBackend(&fake_pmchild, &fake_backend);
+	PostmasterChildUnpublishLogicalBackend(&fake_pmchild);
+	ok = ok && PostmasterChildSignalPid(&fake_pmchild) == 0;
+	ok = ok && fake_pmchild.thread_exit_logical_signal_pid == 0;
+	ok = ok && !PostmasterChildRaiseThreadInterrupt(&fake_pmchild,
+													PG_BACKEND_INTERRUPT_QUERY_CANCEL);
+	ok = ok && !PostmasterChildWakeThreadBackend(&fake_pmchild);
+
+	if (!ok)
+		elog(ERROR, "PMChild pooled logical backend signal API failed");
+
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_pmchild_thread_backend_publication_race);
 Datum
 test_pmchild_thread_backend_publication_race(PG_FUNCTION_ARGS)
@@ -268,7 +370,7 @@ test_pmchild_thread_backend_publication_race(PG_FUNCTION_ARGS)
 	PgThread	fake_pmthread;
 	PgThread	reader_threads[TEST_PMCHILD_READER_THREADS];
 	Latch		fake_latch;
-	TestPMChildThreadBackendRace race_state;
+	TestPMChildLogicalBackendRace race_state;
 	int			created_threads = 0;
 	bool		ok = true;
 
@@ -308,7 +410,7 @@ test_pmchild_thread_backend_publication_race(PG_FUNCTION_ARGS)
 			int			rc;
 
 			rc = pg_thread_create(&reader_threads[i], "pmchild reader",
-								  test_pmchild_thread_backend_reader_routine,
+								  test_pmchild_logical_backend_reader_routine,
 								  &race_state);
 			if (rc != 0)
 			{
@@ -325,7 +427,8 @@ test_pmchild_thread_backend_publication_race(PG_FUNCTION_ARGS)
 
 		for (int i = 0; i < TEST_PMCHILD_PUBLICATION_CYCLES; i++)
 		{
-			PostmasterChildSetThreadBackend(&fake_pmchild, &fake_backend);
+			PostmasterChildPublishLogicalBackend(&fake_pmchild,
+												 &fake_backend);
 			/* Make the reader-side observation deterministic on fast runs. */
 			if (pg_atomic_read_u32(&race_state.hits) == 0)
 			{
@@ -335,7 +438,7 @@ test_pmchild_thread_backend_publication_race(PG_FUNCTION_ARGS)
 					 spins++)
 					pg_usleep(100L);
 			}
-			PostmasterChildDetachThreadBackend(&fake_pmchild);
+			PostmasterChildUnpublishLogicalBackend(&fake_pmchild);
 			PostmasterChildPublishThreadExit(&fake_pmchild, i,
 											 (Size) i * 16,
 											 (Size) i * 32, &fake_latch);

@@ -49,22 +49,27 @@
 #include "utils/elog.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
-#include "utils/pgstat_internal.h"
 #include "utils/resowner.h"
+#include "utils/timestamp.h"
 
 static PG_GLOBAL_RUNTIME bool backend_id_counter_initialized = false;
 static PG_GLOBAL_RUNTIME pg_atomic_uint64 next_backend_id;
 
 #ifndef WIN32
+typedef struct ThreadedBackendRegistryEntry
+{
+	PgBackendId backend_id;
+	PgBackend  *backend;
+	struct ThreadedBackendRegistryEntry *next;
+} ThreadedBackendRegistryEntry;
+
 static PG_GLOBAL_RUNTIME pthread_mutex_t ThreadedBackendRegistryMutex = PTHREAD_MUTEX_INITIALIZER;
-static PG_GLOBAL_RUNTIME PgBackend **ThreadedBackendRegistry = NULL;
-static PG_GLOBAL_RUNTIME Size ThreadedBackendRegistryCapacity = 0;
+static PG_GLOBAL_RUNTIME ThreadedBackendRegistryEntry *ThreadedBackendRegistry = NULL;
 #endif
 static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackend early_backend_fallback = {
 	.core = {
 		.mode = InitProcessing
 	},
-	.timeout = {0},
 	.replication = {
 		.sync_rep_wait_mode = -1,
 		.walreceiver_recv_file = -1,
@@ -120,6 +125,15 @@ static PG_THREAD_LOCAL PG_GLOBAL_BACKEND PgBackend early_backend_fallback = {
 	.backend_type = B_INVALID
 };
 
+static void PgRuntimeProtocolSchedulerRecordResume(PgBackend *backend);
+
+#define BASIC_ARCHIVE_BACKEND_STATE_KEY "basic_archive.backend"
+
+typedef struct PgBasicArchiveBackendState
+{
+	char	   *archive_directory;
+} PgBasicArchiveBackendState;
+
 #define early_backend_core early_backend_fallback.core
 #define early_backend_command early_backend_fallback.command
 #define early_backend_log early_backend_fallback.log_state
@@ -161,7 +175,6 @@ StaticAssertDecl(PG_BACKEND_INTERRUPT_COUNT <= 32,
 				 "PgBackendInterruptMask must fit all backend interrupts");
 
 static PgBackendId PgBackendAssignId(void);
-static PgBackendId PgBackendAssignId(void);
 static void PgBackendResetCoreState(PgBackendCoreState *core);
 static void PgBackendInitializeCommandState(PgBackendCommandState *command);
 static void PgBackendAdoptEarlyCommandState(PgBackend *backend);
@@ -199,14 +212,14 @@ void PgBackendInitializeWaitState(PgBackendWaitState *wait_state);
 static void PgBackendAdoptEarlyWaitState(PgBackend *backend);
 static void PgBackendInitializeProtocolParkState(PgBackendProtocolParkState *protocol_park);
 static void PgWaitCompletionInitialize(PgWaitCompletion *completion);
+#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
 static void PgWaitCompletionPublish(PgWaitCompletion *completion,
 									PgBackend *backend,
 									const PgWaitSpec *wait_spec);
 static void PgWaitCompletionClear(PgWaitCompletion *completion);
 static void PgBackendClearWaitCompletion(PgBackendWaitState *wait_state);
 static void PgBackendWakeForWaitCompletion(PgBackend *backend);
-static bool PgBackendShouldPublishWaitCompletion(PgBackend *backend,
-												 const PgWaitSpec *wait_spec);
+#endif
 void PgBackendInitializeTransactionState(PgBackendTransactionState *transaction);
 static void PgBackendAdoptEarlyTransactionState(PgBackend *backend);
 static void PgBackendInitializeTimeoutState(PgBackendTimeoutState *timeout);
@@ -279,33 +292,18 @@ ThreadedBackendRegistryUnlock(void)
 	}
 }
 
-static void
-PgBackendEnsureThreadedRegistryCapacity(PgBackendId backend_id)
+static PgBackend *
+ThreadedBackendRegistryLookupLocked(PgBackendId backend_id)
 {
-	Size		new_capacity;
-	PgBackend **new_registry;
-
-	if (backend_id < ThreadedBackendRegistryCapacity)
-		return;
-
-	new_capacity = ThreadedBackendRegistryCapacity == 0 ?
-		128 : ThreadedBackendRegistryCapacity;
-	while (backend_id >= new_capacity)
+	for (ThreadedBackendRegistryEntry *entry = ThreadedBackendRegistry;
+		 entry != NULL;
+		 entry = entry->next)
 	{
-		if (new_capacity > (Size) (PG_UINT64_MAX / 2))
-			elog(FATAL, "threaded backend registry capacity overflow");
-		new_capacity *= 2;
+		if (entry->backend_id == backend_id)
+			return entry->backend;
 	}
 
-	new_registry = realloc(ThreadedBackendRegistry,
-						   new_capacity * sizeof(PgBackend *));
-	if (new_registry == NULL)
-		elog(FATAL, "out of memory growing threaded backend registry");
-
-	MemSet(new_registry + ThreadedBackendRegistryCapacity, 0,
-		   (new_capacity - ThreadedBackendRegistryCapacity) * sizeof(PgBackend *));
-	ThreadedBackendRegistry = new_registry;
-	ThreadedBackendRegistryCapacity = new_capacity;
+	return NULL;
 }
 #endif
 
@@ -313,19 +311,42 @@ static void
 PgBackendRegisterThreadedBackend(PgBackend *backend)
 {
 #ifndef WIN32
+	ThreadedBackendRegistryEntry *entry;
+
 	Assert(backend != NULL);
 
-	if (backend->runtime == NULL ||
-		backend->runtime->kind != PG_RUNTIME_THREAD_PER_SESSION)
+	if (!PgRuntimeIsThreadBacked(backend->runtime))
 		return;
 
+	entry = malloc(sizeof(*entry));
+	if (entry == NULL)
+		elog(FATAL, "out of memory registering threaded backend");
+	entry->backend_id = backend->id;
+	entry->backend = backend;
+
 	ThreadedBackendRegistryLock();
-	PgBackendEnsureThreadedRegistryCapacity(backend->id);
-	if (ThreadedBackendRegistry[backend->id] != NULL &&
-		ThreadedBackendRegistry[backend->id] != backend)
-		elog(FATAL, "threaded backend id %llu is already registered",
-			 (unsigned long long) backend->id);
-	ThreadedBackendRegistry[backend->id] = backend;
+	for (ThreadedBackendRegistryEntry *existing = ThreadedBackendRegistry;
+		 existing != NULL;
+		 existing = existing->next)
+	{
+		if (existing->backend_id != backend->id)
+			continue;
+
+		if (existing->backend != backend)
+		{
+			ThreadedBackendRegistryUnlock();
+			free(entry);
+			elog(FATAL, "threaded backend id %llu is already registered",
+				 (unsigned long long) backend->id);
+		}
+
+		ThreadedBackendRegistryUnlock();
+		free(entry);
+		return;
+	}
+
+	entry->next = ThreadedBackendRegistry;
+	ThreadedBackendRegistry = entry;
 	ThreadedBackendRegistryUnlock();
 #endif
 }
@@ -336,14 +357,23 @@ PgBackendUnregisterThreadedBackend(PgBackend *backend)
 #ifndef WIN32
 	Assert(backend != NULL);
 
-	if (backend->runtime == NULL ||
-		backend->runtime->kind != PG_RUNTIME_THREAD_PER_SESSION)
+	if (!PgRuntimeIsThreadBacked(backend->runtime))
 		return;
 
 	ThreadedBackendRegistryLock();
-	if (backend->id < ThreadedBackendRegistryCapacity &&
-		ThreadedBackendRegistry[backend->id] == backend)
-		ThreadedBackendRegistry[backend->id] = NULL;
+	for (ThreadedBackendRegistryEntry **link = &ThreadedBackendRegistry;
+		 *link != NULL;
+		 link = &(*link)->next)
+	{
+		ThreadedBackendRegistryEntry *entry = *link;
+
+		if (entry->backend_id == backend->id && entry->backend == backend)
+		{
+			*link = entry->next;
+			free(entry);
+			break;
+		}
+	}
 	ThreadedBackendRegistryUnlock();
 #endif
 }
@@ -357,8 +387,7 @@ PgBackendSendInterruptById(PgBackendId backend_id,
 	PgBackend  *backend = NULL;
 
 	ThreadedBackendRegistryLock();
-	if (backend_id < ThreadedBackendRegistryCapacity)
-		backend = ThreadedBackendRegistry[backend_id];
+	backend = ThreadedBackendRegistryLookupLocked(backend_id);
 
 	if (backend != NULL)
 	{
@@ -694,18 +723,29 @@ PgBackendInitializeLockState(PgBackendLockState *locks)
 	Assert(locks != NULL);
 
 	MemSet(locks, 0, sizeof(*locks));
+	locks->held_lwlocks_array = locks->held_lwlocks_inline;
+	locks->held_lwlocks_capacity = PG_BACKEND_MAX_INLINE_LWLOCKS;
 }
 
 static void
 PgBackendAdoptEarlyLockState(PgBackend *backend)
 {
+	PgBackendLWLockHandle *early_held_lwlocks;
+
 	Assert(backend != NULL);
 	Assert(early_backend_locks.strong_lock_in_progress == NULL);
 	Assert(early_backend_locks.awaited_lock == NULL);
 	Assert(early_backend_locks.awaited_owner == NULL);
 	Assert(early_backend_locks.blocking_autovacuum_proc == NULL);
 
+	early_held_lwlocks = early_backend_locks.held_lwlocks_array;
 	backend->locks = early_backend_locks;
+	if (early_held_lwlocks == NULL ||
+		early_held_lwlocks == early_backend_locks.held_lwlocks_inline)
+		backend->locks.held_lwlocks_array =
+			backend->locks.held_lwlocks_inline;
+	else
+		backend->locks.held_lwlocks_array = early_held_lwlocks;
 	PgBackendInitializeLockState(&early_backend_locks);
 }
 
@@ -775,6 +815,7 @@ PgWaitCompletionInitialize(PgWaitCompletion *completion)
 	pg_atomic_init_u32(&completion->interrupt_events, 0);
 }
 
+#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
 static void
 PgWaitCompletionPublish(PgWaitCompletion *completion, PgBackend *backend,
 						const PgWaitSpec *wait_spec)
@@ -828,6 +869,7 @@ PgBackendClearWaitCompletion(PgBackendWaitState *wait_state)
 	MemSet(&wait_state->spec, 0, sizeof(wait_state->spec));
 	PgWaitCompletionClear(&wait_state->completion);
 }
+#endif
 
 static void
 PgBackendAdoptEarlyWaitState(PgBackend *backend)
@@ -1150,7 +1192,6 @@ PgBackendInitializeExtensionModuleState(PgBackendExtensionModuleState *extension
 	Assert(extension_modules != NULL);
 
 	MemSet(extension_modules, 0, sizeof(*extension_modules));
-	extension_modules->basic_archive_archive_directory = "";
 }
 
 static void
@@ -1404,7 +1445,7 @@ PgBackendBufferAllocationContext(void)
 	if (TopMemoryContext != NULL)
 		return PgRuntimeGetOwnedMemoryContextWithSizes(&buffers->buffer_context,
 													   "BackendBufferContext",
-													   ALLOCSET_DEFAULT_SIZES);
+													   ALLOCSET_START_SMALL_SIZES);
 	if (CurrentMemoryContext != NULL)
 		return CurrentMemoryContext;
 
@@ -1423,9 +1464,23 @@ PgCurrentBackendStorageState(void)
 PgBackendLockState *
 PgCurrentBackendLockState(void)
 {
-	PG_RUNTIME_RETURN_CURRENT_BACKEND_BUCKET(CurrentPgBackendLockRuntimeState,
-											 locks,
-											 early_backend_locks);
+	PgBackend  *backend;
+	PgBackendLockState *locks;
+
+	locks = CurrentPgBackendLockRuntimeState;
+	if (unlikely(locks == NULL))
+	{
+		backend = CurrentPgBackend;
+		locks = backend == NULL ? &early_backend_locks : &backend->locks;
+	}
+	if (unlikely(locks->held_lwlocks_array == NULL ||
+				 locks->held_lwlocks_capacity <= 0))
+	{
+		locks->held_lwlocks_array = locks->held_lwlocks_inline;
+		locks->held_lwlocks_capacity = PG_BACKEND_MAX_INLINE_LWLOCKS;
+	}
+
+	return locks;
 }
 
 PgBackendIPCState *
@@ -1455,20 +1510,27 @@ PgCurrentBackendWaitState(void)
 	return &CurrentPgBackend->wait_state;
 }
 
+#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
 /*
  * Thread-per-session backends publish wait completions automatically.  This
  * override exists for focused tests and diagnostics that need to observe the
  * publication path without constructing a threaded runtime object.
  */
 static PG_GLOBAL_RUNTIME bool pg_runtime_publish_wait_specs = false;
+#endif
 
 bool
 PgSetWaitCompletionPublication(bool enabled)
 {
+#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
 	bool		previous = pg_runtime_publish_wait_specs;
 
 	pg_runtime_publish_wait_specs = enabled;
 	return previous;
+#else
+	(void) enabled;
+	return false;
+#endif
 }
 
 PgWaitCompletion *
@@ -1485,7 +1547,7 @@ PgBackendSnapshotWaitCompletionById(PgBackendId backend_id,
 									PgWaitCompletion *snapshot,
 									uint32 *waiting)
 {
-#ifndef WIN32
+#if defined(PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION) && !defined(WIN32)
 	PgBackend  *backend = NULL;
 	bool		found = false;
 
@@ -1495,8 +1557,7 @@ PgBackendSnapshotWaitCompletionById(PgBackendId backend_id,
 		*waiting = 0;
 
 	ThreadedBackendRegistryLock();
-	if (backend_id < ThreadedBackendRegistryCapacity)
-		backend = ThreadedBackendRegistry[backend_id];
+	backend = ThreadedBackendRegistryLookupLocked(backend_id);
 
 	if (backend != NULL)
 	{
@@ -1534,6 +1595,7 @@ void
 PgBackendMarkWaitCompletionInterrupt(PgBackend *backend,
 									 PgWaitCompletionInterrupt interrupt)
 {
+#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
 	PgWaitCompletion *completion;
 	uint32		state;
 
@@ -1547,11 +1609,16 @@ PgBackendMarkWaitCompletionInterrupt(PgBackend *backend,
 		return;
 
 	pg_atomic_fetch_or_u32(&completion->interrupt_events, interrupt);
+#else
+	(void) backend;
+	(void) interrupt;
+#endif
 }
 
 bool
 PgBackendWakeWaitCompletion(PgBackend *backend, uint32 ready_events)
 {
+#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
 	PgWaitCompletion *completion;
 	uint32		state;
 
@@ -1570,17 +1637,21 @@ PgBackendWakeWaitCompletion(PgBackend *backend, uint32 ready_events)
 	PgBackendWakeForWaitCompletion(backend);
 
 	return true;
+#else
+	(void) backend;
+	(void) ready_events;
+	return false;
+#endif
 }
 
 bool
 PgBackendWakeWaitCompletionById(PgBackendId backend_id, uint32 ready_events)
 {
-#ifndef WIN32
+#if defined(PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION) && !defined(WIN32)
 	PgBackend  *backend = NULL;
 
 	ThreadedBackendRegistryLock();
-	if (backend_id < ThreadedBackendRegistryCapacity)
-		backend = ThreadedBackendRegistry[backend_id];
+	backend = ThreadedBackendRegistryLookupLocked(backend_id);
 
 	if (backend != NULL)
 		(void) PgBackendWakeWaitCompletion(backend, ready_events);
@@ -1603,6 +1674,133 @@ PgRuntimeInitializeProtocolScheduler(PgProtocolSchedulerState *scheduler)
 	SpinLockInit(&scheduler->lock);
 	dlist_init(&scheduler->runnable_queue);
 	dlist_init(&scheduler->parked_protocol_queue);
+	scheduler->carrier_limit = PgRuntimePooledProtocolCarrierLimit();
+}
+
+bool
+PgRuntimeProtocolSchedulerRegisterCarrier(PgRuntime *runtime, PgCarrier *carrier)
+{
+	PgProtocolSchedulerState *scheduler;
+	bool		carrier_idle;
+
+	if (runtime == NULL || carrier == NULL)
+		return false;
+	if (carrier->runtime != NULL && carrier->runtime != runtime)
+		return false;
+
+	scheduler = &runtime->protocol_scheduler;
+	SpinLockAcquire(&scheduler->lock);
+	if (carrier->protocol_scheduler_registered)
+	{
+		bool		ok = carrier->runtime == runtime;
+
+		SpinLockRelease(&scheduler->lock);
+		return ok;
+	}
+
+	if (scheduler->carrier_limit > 0 &&
+		scheduler->registered_carrier_count >= scheduler->carrier_limit)
+	{
+		scheduler->carrier_reject_count++;
+		SpinLockRelease(&scheduler->lock);
+		return false;
+	}
+
+	carrier_idle = carrier->current_backend == NULL &&
+		carrier->current_session == NULL &&
+		carrier->current_execution == NULL;
+	carrier->runtime = runtime;
+	carrier->protocol_scheduler_registered = true;
+	carrier->protocol_scheduler_idle = carrier_idle;
+	scheduler->registered_carrier_count++;
+	if (carrier_idle)
+		scheduler->idle_carrier_count++;
+	else
+		scheduler->active_carrier_count++;
+	scheduler->carrier_register_count++;
+	SpinLockRelease(&scheduler->lock);
+
+	return true;
+}
+
+bool
+PgRuntimeProtocolSchedulerUnregisterCarrier(PgRuntime *runtime, PgCarrier *carrier)
+{
+	PgProtocolSchedulerState *scheduler;
+
+	if (runtime == NULL || carrier == NULL)
+		return false;
+	if (carrier->runtime != runtime)
+		return false;
+
+	scheduler = &runtime->protocol_scheduler;
+	SpinLockAcquire(&scheduler->lock);
+	if (!carrier->protocol_scheduler_registered)
+	{
+		SpinLockRelease(&scheduler->lock);
+		return false;
+	}
+
+	Assert(scheduler->registered_carrier_count > 0);
+	scheduler->registered_carrier_count--;
+	if (carrier->protocol_scheduler_idle)
+	{
+		Assert(scheduler->idle_carrier_count > 0);
+		scheduler->idle_carrier_count--;
+	}
+	else
+	{
+		Assert(scheduler->active_carrier_count > 0);
+		scheduler->active_carrier_count--;
+	}
+	carrier->protocol_scheduler_registered = false;
+	carrier->protocol_scheduler_idle = false;
+	SpinLockRelease(&scheduler->lock);
+
+	return true;
+}
+
+void
+PgRuntimeProtocolSchedulerCarrierBecameActive(PgCarrier *carrier)
+{
+	PgProtocolSchedulerState *scheduler;
+
+	if (carrier == NULL || !carrier->protocol_scheduler_registered)
+		return;
+	Assert(carrier->runtime != NULL);
+
+	scheduler = &carrier->runtime->protocol_scheduler;
+	SpinLockAcquire(&scheduler->lock);
+	if (carrier->protocol_scheduler_idle)
+	{
+		Assert(scheduler->idle_carrier_count > 0);
+		scheduler->idle_carrier_count--;
+		scheduler->active_carrier_count++;
+		carrier->protocol_scheduler_idle = false;
+	}
+	SpinLockRelease(&scheduler->lock);
+}
+
+void
+PgRuntimeProtocolSchedulerCarrierBecameIdle(PgCarrier *carrier)
+{
+	PgProtocolSchedulerState *scheduler;
+
+	if (carrier == NULL || !carrier->protocol_scheduler_registered)
+		return;
+	Assert(carrier->runtime != NULL);
+
+	scheduler = &carrier->runtime->protocol_scheduler;
+	SpinLockAcquire(&scheduler->lock);
+	if (!carrier->protocol_scheduler_idle)
+	{
+		Assert(scheduler->active_carrier_count > 0);
+		scheduler->active_carrier_count--;
+		scheduler->idle_carrier_count++;
+		scheduler->carrier_release_count++;
+		carrier->protocol_scheduler_idle = true;
+	}
+	SpinLockRelease(&scheduler->lock);
 }
 
 bool
@@ -1614,6 +1812,10 @@ PgRuntimeProtocolSchedulerParkBackend(PgRuntime *runtime, PgBackend *backend)
 	if (runtime == NULL || backend == NULL)
 		return false;
 	if (backend->runtime != runtime)
+		return false;
+	if (backend->carrier != NULL ||
+		backend->execution == NULL ||
+		backend->execution->carrier != NULL)
 		return false;
 
 	park_state = &backend->protocol_park;
@@ -1671,8 +1873,12 @@ PgRuntimeProtocolSchedulerMarkRunnable(PgRuntime *runtime, PgBackend *backend)
 		dlist_delete(&park_state->scheduler_node);
 		scheduler->parked_protocol_count--;
 	}
-	else if (park_state->scheduler_queue_state !=
-			 PG_PROTOCOL_SCHEDULER_QUEUE_NONE)
+	else if (park_state->scheduler_queue_state ==
+			 PG_PROTOCOL_SCHEDULER_QUEUE_POLLING)
+	{
+		/* Already removed from the parked list by the polling carrier. */
+	}
+	else
 	{
 		SpinLockRelease(&scheduler->lock);
 		return false;
@@ -1690,6 +1896,152 @@ PgRuntimeProtocolSchedulerMarkRunnable(PgRuntime *runtime, PgBackend *backend)
 		PG_PROTOCOL_SCHEDULER_QUEUE_RUNNABLE;
 	scheduler->runnable_count++;
 	scheduler->runnable_enqueue_count++;
+	SpinLockRelease(&scheduler->lock);
+
+	return true;
+}
+
+bool
+PgRuntimeProtocolSchedulerLeaseBackend(PgRuntime *runtime, PgBackend *backend)
+{
+	PgBackendProtocolParkState *park_state;
+	PgProtocolSchedulerState *scheduler;
+
+	if (runtime == NULL || backend == NULL)
+		return false;
+	if (backend->runtime != runtime)
+		return false;
+
+	park_state = &backend->protocol_park;
+	scheduler = &runtime->protocol_scheduler;
+	SpinLockAcquire(&scheduler->lock);
+
+	if (park_state->state != PG_PROTOCOL_PARK_COMMITTED)
+	{
+		SpinLockRelease(&scheduler->lock);
+		return false;
+	}
+
+	switch (park_state->scheduler_queue_state)
+	{
+		case PG_PROTOCOL_SCHEDULER_QUEUE_PARKED_PROTOCOL_READ:
+			Assert(scheduler->parked_protocol_count > 0);
+			dlist_delete(&park_state->scheduler_node);
+			scheduler->parked_protocol_count--;
+			break;
+
+		case PG_PROTOCOL_SCHEDULER_QUEUE_RUNNABLE:
+			Assert(scheduler->runnable_count > 0);
+			dlist_delete(&park_state->scheduler_node);
+			scheduler->runnable_count--;
+			break;
+
+		case PG_PROTOCOL_SCHEDULER_QUEUE_NONE:
+		case PG_PROTOCOL_SCHEDULER_QUEUE_POLLING:
+		case PG_PROTOCOL_SCHEDULER_QUEUE_LEASED:
+			SpinLockRelease(&scheduler->lock);
+			return false;
+	}
+
+	park_state->scheduler_queue_state =
+		PG_PROTOCOL_SCHEDULER_QUEUE_LEASED;
+	SpinLockRelease(&scheduler->lock);
+
+	return true;
+}
+
+PgBackend *
+PgRuntimeProtocolSchedulerLeaseParkedBackend(PgRuntime *runtime)
+{
+	PgProtocolSchedulerState *scheduler;
+	PgBackend  *backend;
+	dlist_node *node;
+
+	if (runtime == NULL)
+		return NULL;
+
+	scheduler = &runtime->protocol_scheduler;
+	SpinLockAcquire(&scheduler->lock);
+	if (dlist_is_empty(&scheduler->parked_protocol_queue))
+	{
+		SpinLockRelease(&scheduler->lock);
+		return NULL;
+	}
+
+	Assert(scheduler->parked_protocol_count > 0);
+	node = dlist_pop_head_node(&scheduler->parked_protocol_queue);
+	backend = dlist_container(PgBackend, protocol_park.scheduler_node, node);
+	Assert(backend->protocol_park.state == PG_PROTOCOL_PARK_COMMITTED);
+	Assert(backend->protocol_park.scheduler_queue_state ==
+		   PG_PROTOCOL_SCHEDULER_QUEUE_PARKED_PROTOCOL_READ);
+
+	backend->protocol_park.scheduler_queue_state =
+		PG_PROTOCOL_SCHEDULER_QUEUE_POLLING;
+	scheduler->parked_protocol_count--;
+	SpinLockRelease(&scheduler->lock);
+
+	return backend;
+}
+
+bool
+PgRuntimeProtocolSchedulerReparkBackend(PgRuntime *runtime, PgBackend *backend)
+{
+	PgBackendProtocolParkState *park_state;
+	PgProtocolSchedulerState *scheduler;
+
+	if (runtime == NULL || backend == NULL)
+		return false;
+	if (backend->runtime != runtime)
+		return false;
+
+	park_state = &backend->protocol_park;
+	scheduler = &runtime->protocol_scheduler;
+	SpinLockAcquire(&scheduler->lock);
+
+	if (park_state->state != PG_PROTOCOL_PARK_COMMITTED ||
+		park_state->scheduler_queue_state != PG_PROTOCOL_SCHEDULER_QUEUE_POLLING)
+	{
+		SpinLockRelease(&scheduler->lock);
+		return false;
+	}
+
+	dlist_push_tail(&scheduler->parked_protocol_queue,
+					&park_state->scheduler_node);
+	park_state->scheduler_queue_state =
+		PG_PROTOCOL_SCHEDULER_QUEUE_PARKED_PROTOCOL_READ;
+	scheduler->parked_protocol_count++;
+	SpinLockRelease(&scheduler->lock);
+
+	return true;
+}
+
+bool
+PgRuntimeProtocolSchedulerReparkBackendIfPolling(PgRuntime *runtime,
+												 PgBackend *backend)
+{
+	PgBackendProtocolParkState *park_state;
+	PgProtocolSchedulerState *scheduler;
+
+	if (runtime == NULL || backend == NULL)
+		return false;
+	if (backend->runtime != runtime)
+		return false;
+
+	park_state = &backend->protocol_park;
+	scheduler = &runtime->protocol_scheduler;
+	SpinLockAcquire(&scheduler->lock);
+
+	if (park_state->state == PG_PROTOCOL_PARK_COMMITTED &&
+		park_state->scheduler_queue_state ==
+		PG_PROTOCOL_SCHEDULER_QUEUE_POLLING)
+	{
+		dlist_push_tail(&scheduler->parked_protocol_queue,
+						&park_state->scheduler_node);
+		park_state->scheduler_queue_state =
+			PG_PROTOCOL_SCHEDULER_QUEUE_PARKED_PROTOCOL_READ;
+		scheduler->parked_protocol_count++;
+	}
+
 	SpinLockRelease(&scheduler->lock);
 
 	return true;
@@ -1720,10 +2072,93 @@ PgRuntimeProtocolSchedulerPopRunnable(PgRuntime *runtime)
 		   PG_PROTOCOL_SCHEDULER_QUEUE_RUNNABLE);
 
 	backend->protocol_park.scheduler_queue_state =
-		PG_PROTOCOL_SCHEDULER_QUEUE_NONE;
+		PG_PROTOCOL_SCHEDULER_QUEUE_LEASED;
 	scheduler->runnable_count--;
 	SpinLockRelease(&scheduler->lock);
 
+	return backend;
+}
+
+int
+PgRuntimeProtocolSchedulerCollectParked(PgRuntime *runtime,
+										PgBackend **backends,
+										int max_backends)
+{
+	PgProtocolSchedulerState *scheduler;
+	dlist_iter	iter;
+	int			nbackends = 0;
+
+	if (runtime == NULL || backends == NULL || max_backends <= 0)
+		return 0;
+
+	scheduler = &runtime->protocol_scheduler;
+	SpinLockAcquire(&scheduler->lock);
+	dlist_foreach(iter, &scheduler->parked_protocol_queue)
+	{
+		PgBackend  *backend;
+
+		if (nbackends >= max_backends)
+			break;
+
+		backend = dlist_container(PgBackend, protocol_park.scheduler_node,
+								  iter.cur);
+		Assert(backend->protocol_park.state == PG_PROTOCOL_PARK_COMMITTED);
+		Assert(backend->protocol_park.scheduler_queue_state ==
+			   PG_PROTOCOL_SCHEDULER_QUEUE_PARKED_PROTOCOL_READ);
+		backends[nbackends++] = backend;
+	}
+	SpinLockRelease(&scheduler->lock);
+
+	return nbackends;
+}
+
+PgBackend *
+PgCarrierLeaseRunnableProtocolBackend(PgCarrier *carrier)
+{
+	PgRuntime  *runtime;
+	PgBackend  *backend;
+
+	Assert(carrier != NULL);
+	Assert(carrier == CurrentPgCarrier);
+	Assert(carrier->current_backend == NULL);
+	Assert(carrier->current_session == NULL);
+	Assert(carrier->current_execution == NULL);
+
+	if (!carrier->protocol_scheduler_registered)
+		return NULL;
+
+	runtime = carrier->runtime;
+	if (runtime == NULL)
+		return NULL;
+
+	backend = PgRuntimeProtocolSchedulerPopRunnable(runtime);
+	if (backend == NULL)
+		return NULL;
+
+	if (backend->runtime != runtime ||
+		backend->carrier != NULL ||
+		backend->session == NULL ||
+		backend->connection == NULL ||
+		backend->execution == NULL ||
+		backend->execution->carrier != NULL ||
+		backend->protocol_park.state != PG_PROTOCOL_PARK_COMMITTED ||
+		backend->protocol_park.scheduler_queue_state !=
+		PG_PROTOCOL_SCHEDULER_QUEUE_LEASED)
+		elog(PANIC, "cannot lease inconsistent protocol scheduler backend: runtime_match=%d carrier=%p session=%p connection=%p execution=%p execution_carrier=%p park_state=%d queue_state=%d",
+			 backend->runtime == runtime,
+			 backend->carrier,
+			 backend->session,
+			 backend->connection,
+			 backend->execution,
+			 backend->execution != NULL ? backend->execution->carrier : NULL,
+			 backend->protocol_park.state,
+			 backend->protocol_park.scheduler_queue_state);
+
+	PgCarrierAttachBackend(carrier, backend, backend->session,
+						   backend->connection, backend->execution);
+	SpinLockAcquire(&runtime->protocol_scheduler.lock);
+	runtime->protocol_scheduler.carrier_lease_count++;
+	SpinLockRelease(&runtime->protocol_scheduler.lock);
 	return backend;
 }
 
@@ -1754,10 +2189,16 @@ PgRuntimeProtocolSchedulerRemoveBackend(PgRuntime *runtime, PgBackend *backend)
 			scheduler->parked_protocol_count--;
 			break;
 
+		case PG_PROTOCOL_SCHEDULER_QUEUE_POLLING:
+			break;
+
 		case PG_PROTOCOL_SCHEDULER_QUEUE_RUNNABLE:
 			Assert(scheduler->runnable_count > 0);
 			dlist_delete(&park_state->scheduler_node);
 			scheduler->runnable_count--;
+			break;
+
+		case PG_PROTOCOL_SCHEDULER_QUEUE_LEASED:
 			break;
 	}
 
@@ -1779,8 +2220,7 @@ PgBackendSnapshotProtocolParkById(PgBackendId backend_id,
 		MemSet(snapshot, 0, sizeof(*snapshot));
 
 	ThreadedBackendRegistryLock();
-	if (backend_id < ThreadedBackendRegistryCapacity)
-		backend = ThreadedBackendRegistry[backend_id];
+	backend = ThreadedBackendRegistryLookupLocked(backend_id);
 
 	if (backend != NULL)
 	{
@@ -1819,6 +2259,22 @@ PgBackendSnapshotProtocolParkById(PgBackendId backend_id,
 				scheduler->runnable_enqueue_count;
 			snapshot->scheduler_parked_protocol_enqueue_count =
 				scheduler->parked_protocol_enqueue_count;
+			snapshot->scheduler_carrier_limit =
+				scheduler->carrier_limit;
+			snapshot->scheduler_same_carrier_resume_count =
+				scheduler->same_carrier_resume_count;
+			snapshot->scheduler_migrated_resume_count =
+				scheduler->migrated_resume_count;
+			snapshot->scheduler_registered_carrier_count =
+				scheduler->registered_carrier_count;
+			snapshot->scheduler_idle_carrier_count =
+				scheduler->idle_carrier_count;
+			snapshot->scheduler_active_carrier_count =
+				scheduler->active_carrier_count;
+			snapshot->last_park_duration_valid =
+				park_state->last_park_duration_valid;
+			snapshot->last_park_duration_ms =
+				park_state->last_park_duration_ms;
 			SpinLockRelease(&scheduler->lock);
 
 			snapshot->carrier_attached = backend->carrier != NULL;
@@ -1836,6 +2292,34 @@ PgBackendSnapshotProtocolParkById(PgBackendId backend_id,
 	(void) snapshot;
 	return false;
 #endif
+}
+
+static void
+PgRuntimeProtocolSchedulerRecordResume(PgBackend *backend)
+{
+	PgProtocolSchedulerState *scheduler;
+	PgBackendProtocolParkState *park_state;
+	PgCarrier  *resume_carrier;
+	PgCarrier  *parked_carrier;
+
+	Assert(backend != NULL);
+
+	if (backend->runtime == NULL)
+		return;
+
+	park_state = &backend->protocol_park;
+	resume_carrier = backend->carrier;
+	parked_carrier = park_state->parked_carrier;
+	if (resume_carrier == NULL || parked_carrier == NULL)
+		return;
+
+	scheduler = &backend->runtime->protocol_scheduler;
+	SpinLockAcquire(&scheduler->lock);
+	if (resume_carrier == parked_carrier)
+		scheduler->same_carrier_resume_count++;
+	else
+		scheduler->migrated_resume_count++;
+	SpinLockRelease(&scheduler->lock);
 }
 
 bool
@@ -1936,9 +2420,16 @@ PgCarrierCommitProtocolReadPark(PgCarrier *carrier, PgBackend *backend)
 		elog(PANIC, "cannot commit protocol read park during active message read");
 
 	park_state->state = PG_PROTOCOL_PARK_COMMITTED;
+	park_state->parked_carrier = carrier;
+	park_state->committed_at = GetCurrentTimestamp();
 	PgCarrierDetachBackend(carrier, backend);
 	if (!PgRuntimeProtocolSchedulerParkBackend(carrier->runtime, backend))
-		elog(PANIC, "could not enqueue committed protocol read park");
+		elog(PANIC, "could not enqueue committed protocol read park: backend_runtime_match=%d park_state=%d queue_state=%d carrier=%p backend_carrier=%p",
+			 backend->runtime == carrier->runtime,
+			 park_state->state,
+			 park_state->scheduler_queue_state,
+			 carrier,
+			 backend->carrier);
 }
 
 bool
@@ -2037,18 +2528,38 @@ PgBackendResumeProtocolReadPark(PgBackend *backend)
 	Assert(park_state->wake_generation == 0 ||
 		   park_state->wake_generation == park_state->spec.generation);
 	Assert(park_state->scheduler_queue_state ==
-		   PG_PROTOCOL_SCHEDULER_QUEUE_NONE);
+		   PG_PROTOCOL_SCHEDULER_QUEUE_LEASED);
 
+	PgRuntimeProtocolSchedulerRecordResume(backend);
+	if (park_state->committed_at != 0)
+	{
+		park_state->last_park_duration_ms =
+			TimestampDifferenceMilliseconds(park_state->committed_at,
+											GetCurrentTimestamp());
+		if (park_state->last_park_duration_ms < 0)
+			park_state->last_park_duration_ms = 0;
+		park_state->last_park_duration_valid = true;
+	}
+	else
+	{
+		park_state->last_park_duration_ms = 0;
+		park_state->last_park_duration_valid = false;
+	}
 	park_state->last_wake_reasons = park_state->wake_reasons;
 	park_state->last_wake_events = park_state->wake_events;
 	park_state->last_wake_generation = park_state->wake_generation;
 	park_state->state = PG_PROTOCOL_PARK_NONE;
 	MemSet(&park_state->spec, 0, sizeof(park_state->spec));
+	park_state->committed_at = 0;
 	park_state->wake_reasons = PG_PROTOCOL_PARK_WAKE_NONE;
 	park_state->wake_events = 0;
 	park_state->wake_generation = 0;
+	park_state->hibernated = false;
+	park_state->parked_carrier = NULL;
+	park_state->scheduler_queue_state = PG_PROTOCOL_SCHEDULER_QUEUE_NONE;
 }
 
+#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
 static void
 PgBackendWakeForWaitCompletion(PgBackend *backend)
 {
@@ -2060,25 +2571,31 @@ PgBackendWakeForWaitCompletion(PgBackend *backend)
 	else if (backend == CurrentPgBackend && MyLatch != NULL)
 		SetLatch(MyLatch);
 }
+#endif
 
-static bool
-PgBackendShouldPublishWaitCompletion(PgBackend *backend,
-									 const PgWaitSpec *wait_spec)
+bool
+PgBackendShouldPublishWaitCompletion(PgBackend *backend)
 {
-	if (wait_spec == NULL || backend == NULL)
+#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
+	if (backend == NULL)
 		return false;
 	if (pg_runtime_publish_wait_specs)
 		return true;
 	if (backend->runtime == NULL)
 		return false;
 
-	return backend->runtime->kind == PG_RUNTIME_THREAD_PER_SESSION;
+	return PgRuntimeIsThreadBacked(backend->runtime);
+#else
+	(void) backend;
+	return false;
+#endif
 }
 
 int
 PgSuspend(const PgWaitSpec *wait_spec, PgSuspendCallback callback,
 		  void *callback_arg)
 {
+#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
 	PgBackend  *backend;
 	PgBackendWaitState *wait_state;
 	int			result = 0;
@@ -2086,7 +2603,8 @@ PgSuspend(const PgWaitSpec *wait_spec, PgSuspendCallback callback,
 	Assert(callback != NULL);
 
 	backend = CurrentPgBackend;
-	if (likely(!PgBackendShouldPublishWaitCompletion(backend, wait_spec)))
+	if (likely(wait_spec == NULL ||
+			   !PgBackendShouldPublishWaitCompletion(backend)))
 		return callback(callback_arg);
 
 	wait_state = &backend->wait_state;
@@ -2111,6 +2629,11 @@ PgSuspend(const PgWaitSpec *wait_spec, PgSuspendCallback callback,
 		PgBackendClearWaitCompletion(&backend->wait_state);
 
 	return result;
+#else
+	Assert(callback != NULL);
+	(void) wait_spec;
+	return callback(callback_arg);
+#endif
 }
 
 PgBackendTimeoutState *
@@ -2229,10 +2752,75 @@ PgCurrentBackendExtensionModuleState(void)
 	return &CurrentPgBackend->extension_modules;
 }
 
+static PgBackendExtensionPrivateState *
+PgBackendFindExtensionPrivateState(PgBackendExtensionModuleState *extension_modules,
+								   const char *key)
+{
+	Assert(extension_modules != NULL);
+	Assert(key != NULL);
+
+	foreach_ptr(PgBackendExtensionPrivateState, private_state,
+				extension_modules->private_states)
+	{
+		if (strcmp(private_state->key, key) == 0)
+			return private_state;
+	}
+
+	return NULL;
+}
+
+void *
+PgBackendGetExtensionPrivateState(const char *key)
+{
+	PgBackendExtensionPrivateState *private_state;
+
+	private_state = PgBackendFindExtensionPrivateState(
+		PgCurrentBackendExtensionModuleState(), key);
+
+	return private_state != NULL ? private_state->state : NULL;
+}
+
+void *
+PgBackendEnsureExtensionPrivateState(const char *key, Size size,
+									 PgExtensionPrivateStateCleanup cleanup)
+{
+	PgBackendExtensionModuleState *extension_modules;
+	PgBackendExtensionPrivateState *private_state;
+	MemoryContext old_context;
+
+	Assert(key != NULL);
+	Assert(size > 0);
+
+	extension_modules = PgCurrentBackendExtensionModuleState();
+	private_state = PgBackendFindExtensionPrivateState(extension_modules, key);
+	if (private_state != NULL)
+		return private_state->state;
+
+	old_context = MemoryContextSwitchTo(TopMemoryContext);
+	private_state = palloc_object(PgBackendExtensionPrivateState);
+	private_state->key = key;
+	private_state->state = palloc0(size);
+	private_state->cleanup = cleanup;
+	extension_modules->private_states =
+		lappend(extension_modules->private_states, private_state);
+	MemoryContextSwitchTo(old_context);
+
+	return private_state->state;
+}
+
 char **
 PgCurrentBasicArchiveDirectoryRef(void)
 {
-	return &PgCurrentBackendExtensionModuleState()->basic_archive_archive_directory;
+	PgBasicArchiveBackendState *state;
+
+	state = (PgBasicArchiveBackendState *)
+		PgBackendEnsureExtensionPrivateState(BASIC_ARCHIVE_BACKEND_STATE_KEY,
+											 sizeof(PgBasicArchiveBackendState),
+											 NULL);
+	if (state->archive_directory == NULL)
+		state->archive_directory = "";
+
+	return &state->archive_directory;
 }
 
 PgBackendTransactionState *
@@ -2301,8 +2889,7 @@ PgBackendGetSignalPid(PgBackend *backend)
 	if (backend == NULL)
 		return MyProcPid;
 
-	if (backend->runtime != NULL &&
-		backend->runtime->kind == PG_RUNTIME_THREAD_PER_SESSION)
+	if (PgRuntimeIsThreadBacked(backend->runtime))
 	{
 		if (backend->id > PG_INT32_MAX)
 			elog(ERROR, "threaded backend identifier exceeds protocol range");

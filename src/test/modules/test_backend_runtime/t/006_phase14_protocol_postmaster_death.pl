@@ -36,7 +36,7 @@ sub wait_for_protocol_parked
 		$snapshot = protocol_snapshot($pid);
 		my @fields = split(/\|/, $snapshot);
 
-		if (@fields == 21 &&
+		if (@fields >= 21 &&
 			$fields[PARK_STATE] eq 'committed' &&
 			$fields[QUEUE_STATE] eq 'parked_protocol_read' &&
 			$fields[CARRIER_ATTACHED] == 0 &&

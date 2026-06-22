@@ -137,7 +137,7 @@ PG_RUNTIME_HOT_FIELD(PgCurrentHeldLWLocksHotRef,
 					 backend,
 					 PgBackendLWLockHandle,
 					 CurrentPgBackend != NULL ?
-					 CurrentPgBackend->locks.held_lwlocks : NULL)
+					 CurrentPgBackend->locks.held_lwlocks_array : NULL)
 PG_RUNTIME_HOT_FIELD(PgCurrentNumHeldLWLocksHotRef,
 					 backend,
 					 int,

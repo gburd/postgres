@@ -213,8 +213,7 @@ PerformAuthentication(Port *port)
 
 	/* This should be set already, but let's make sure */
 	ClientAuthInProgress = true;	/* limit visibility of log messages */
-	threaded_backend = (CurrentPgRuntime != NULL &&
-						CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION);
+	threaded_backend = PgRuntimeIsThreadBacked(CurrentPgRuntime);
 
 	/*
 	 * In EXEC_BACKEND case, we didn't inherit the contents of pg_hba.conf
@@ -722,10 +721,12 @@ BaseInit(void)
 	InitTemporaryFileAccess();
 
 	/*
-	 * Initialize local buffers for WAL record construction, in case we ever
-	 * try to insert XLOG.
+	 * Initialize local buffers for WAL record construction in process mode.
+	 * Threaded logical sessions initialize this scratch lazily on first WAL
+	 * insert so read-only idle sessions do not retain it.
 	 */
-	InitXLogInsert();
+	if (!PgRuntimeIsThreadBacked(CurrentPgRuntime))
+		InitXLogInsert();
 
 	/* Initialize lock manager's local structs */
 	InitLockManagerAccess();
@@ -794,8 +795,7 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	int			nfree = 0;
 
 	elog(DEBUG3, "InitPostgres");
-	threaded_backend = (CurrentPgRuntime != NULL &&
-						CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION);
+	threaded_backend = PgRuntimeIsThreadBacked(CurrentPgRuntime);
 
 	/*
 	 * Add my PGPROC struct to the ProcArray.

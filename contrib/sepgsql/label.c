@@ -36,12 +36,35 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
+#define SEPGSQL_RUNTIME_STATE_KEY "sepgsql.runtime"
+#define SEPGSQL_LABEL_RUNTIME_STATE_KEY "sepgsql.label.runtime"
+#define SEPGSQL_SESSION_STATE_KEY "sepgsql.session"
+
 /*
  * Saved hook entries (if stacked)
  */
-static ClientAuthentication_hook_type next_client_auth_hook = NULL;
-static needs_fmgr_hook_type next_needs_fmgr_hook = NULL;
-static fmgr_hook_type next_fmgr_hook = NULL;
+typedef struct SePgsqlLabelRuntimeState
+{
+	ClientAuthentication_hook_type next_client_auth_hook;
+	needs_fmgr_hook_type next_needs_fmgr_hook;
+	fmgr_hook_type next_fmgr_hook;
+} SePgsqlLabelRuntimeState;
+
+static SePgsqlLabelRuntimeState *
+sepgsql_label_runtime_state(void)
+{
+	return (SePgsqlLabelRuntimeState *)
+		PgRuntimeEnsureExtensionPrivateState(SEPGSQL_LABEL_RUNTIME_STATE_KEY,
+											 sizeof(SePgsqlLabelRuntimeState),
+											 NULL);
+}
+
+#define next_client_auth_hook \
+	(sepgsql_label_runtime_state()->next_client_auth_hook)
+#define next_needs_fmgr_hook \
+	(sepgsql_label_runtime_state()->next_needs_fmgr_hook)
+#define next_fmgr_hook \
+	(sepgsql_label_runtime_state()->next_fmgr_hook)
 
 /*
  * client_label_*
@@ -57,13 +80,13 @@ static fmgr_hook_type next_fmgr_hook = NULL;
  * labels were set during the (sub-)transactions.
  */
 #define client_label_peer \
-	(PgCurrentSessionExtensionModuleState()->sepgsql_client_label_peer)
+	(sepgsql_session_state()->client_label_peer)
 #define client_label_pending \
-	(PgCurrentSessionExtensionModuleState()->sepgsql_client_label_pending)
+	(sepgsql_session_state()->client_label_pending)
 #define client_label_committed \
-	(PgCurrentSessionExtensionModuleState()->sepgsql_client_label_committed)
+	(sepgsql_session_state()->client_label_committed)
 #define client_label_func \
-	(PgCurrentSessionExtensionModuleState()->sepgsql_client_label_func)
+	(sepgsql_session_state()->client_label_func)
 
 typedef struct
 {
@@ -71,11 +94,58 @@ typedef struct
 	char	   *label;
 } pending_label;
 
+static void
+sepgsql_session_state_cleanup(void *arg)
+{
+	SePgsqlSessionState *state = (SePgsqlSessionState *) arg;
+
+	PgRuntimeDeleteOwnedMemoryContext(&state->context);
+	PgRuntimeDeleteOwnedMemoryContext(&state->avc_context);
+}
+
+SePgsqlSessionState *
+sepgsql_session_state(void)
+{
+	SePgsqlSessionState *state;
+
+	state = (SePgsqlSessionState *)
+		PgSessionEnsureExtensionPrivateState(SEPGSQL_SESSION_STATE_KEY,
+											 sizeof(SePgsqlSessionState),
+											 sepgsql_session_state_cleanup);
+	if (!state->initialized)
+	{
+		state->mode = sepgsql_runtime_state()->startup_mode;
+		state->initialized = true;
+	}
+
+	return state;
+}
+
+SePgsqlRuntimeState *
+sepgsql_runtime_state(void)
+{
+	SePgsqlRuntimeState *state;
+
+	state = (SePgsqlRuntimeState *)
+		PgRuntimeEnsureExtensionPrivateState(SEPGSQL_RUNTIME_STATE_KEY,
+											 sizeof(SePgsqlRuntimeState),
+											 NULL);
+	if (!state->initialized)
+	{
+		state->startup_mode = SEPGSQL_MODE_INTERNAL;
+		state->initialized = true;
+	}
+
+	return state;
+}
+
 static MemoryContext
 sepgsql_session_context(void)
 {
+	SePgsqlSessionState *state = sepgsql_session_state();
+
 	return PgRuntimeGetOwnedMemoryContext(
-		&PgCurrentSessionExtensionModuleState()->sepgsql_context,
+		&state->context,
 		"SEPostgreSQL session");
 }
 

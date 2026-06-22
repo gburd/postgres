@@ -3,6 +3,12 @@
 -- complain if script is sourced in psql, rather than via CREATE EXTENSION
 \echo Use "CREATE EXTENSION test_backend_runtime_threaded" to load this file. \quit
 
+CREATE FUNCTION test_backend_runtime_model_snapshot()
+	RETURNS pg_catalog.text
+	AS 'MODULE_PATHNAME',
+	   'test_backend_runtime_model_snapshot'
+	LANGUAGE C;
+
 CREATE FUNCTION test_backend_runtime_request_autovacuum_worker()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME',
@@ -49,6 +55,12 @@ CREATE FUNCTION test_backend_runtime_emit_fatal()
 	RETURNS pg_catalog.void
 	AS 'MODULE_PATHNAME',
 	   'test_backend_runtime_emit_fatal'
+	LANGUAGE C;
+
+CREATE FUNCTION test_backend_runtime_wait_completion_enabled()
+	RETURNS pg_catalog.bool
+	AS 'MODULE_PATHNAME',
+	   'test_backend_runtime_wait_completion_enabled'
 	LANGUAGE C;
 
 CREATE FUNCTION test_backend_runtime_wait_completion_snapshot(pg_catalog.int4)

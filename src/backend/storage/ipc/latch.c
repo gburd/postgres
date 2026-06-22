@@ -57,6 +57,16 @@ InitializeLatchWaitSet(void)
 	}
 }
 
+void
+RefreshLatchWaitSetCurrentCarrier(void)
+{
+	if (LatchWaitSet == NULL || MyLatch == NULL)
+		return;
+
+	ModifyWaitEvent(LatchWaitSet, LatchWaitSetLatchPos, WL_LATCH_SET,
+					MyLatch);
+}
+
 /*
  * Initialize a process-local latch.
  */
@@ -145,6 +155,27 @@ OwnLatch(Latch *latch)
 		elog(PANIC, "latch already owned by PID %d", owner_pid);
 
 	latch->owner_pid = MyProcPid;
+#ifndef WIN32
+	latch->owner_wakeup_fd = GetWaitEventSetLatchWakeupFd();
+	latch->owner_thread = pthread_self();
+	latch->owner_thread_valid = true;
+#endif
+}
+
+/*
+ * Refresh the same-process thread wakeup target for a shared latch.
+ *
+ * A pooled-protocol logical backend can move between carrier threads while
+ * retaining its PGPROC and procLatch.  The latch remains owned by this
+ * process, but SetLatch() must target the carrier thread that may currently
+ * sleep on it.
+ */
+void
+ReownLatchCurrentThread(Latch *latch)
+{
+	Assert(latch->is_shared);
+	Assert(latch->owner_pid == MyProcPid);
+
 #ifndef WIN32
 	latch->owner_wakeup_fd = GetWaitEventSetLatchWakeupFd();
 	latch->owner_thread = pthread_self();

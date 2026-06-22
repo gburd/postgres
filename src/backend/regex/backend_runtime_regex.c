@@ -13,6 +13,7 @@
 #include "postgres.h"
 
 #include "utils/backend_runtime.h"
+#include "utils/memutils.h"
 #include "../utils/init/backend_runtime_internal.h"
 
 PgSessionRegexState *
@@ -50,7 +51,24 @@ PgCurrentRegexpNumCachedResRef(void)
 PgSessionRegexCachedEntry *
 PgCurrentRegexpCachedResArray(void)
 {
-	return PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionRegexRuntimeState, PgCurrentSessionRegexState)->cached_res;
+	PgSessionRegexState *regex;
+
+	regex = PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionRegexRuntimeState,
+											PgCurrentSessionRegexState);
+	if (unlikely(regex->cached_res == NULL))
+	{
+		if (regex->regexp_cache_context == NULL)
+			regex->regexp_cache_context =
+				AllocSetContextCreate(TopMemoryContext,
+									  "RegexpCacheMemoryContext",
+									  ALLOCSET_SMALL_SIZES);
+		regex->cached_res =
+			MemoryContextAllocZero(regex->regexp_cache_context,
+								   sizeof(PgSessionRegexCachedEntry) *
+								   PG_SESSION_MAX_CACHED_REGEX);
+	}
+
+	return regex->cached_res;
 }
 
 void **

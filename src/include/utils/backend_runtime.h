@@ -16,6 +16,8 @@
 #include <sys/resource.h>
 #include <sys/time.h>
 
+struct pollfd;
+
 #include "access/session.h"
 #include "access/skey.h"
 #include "access/tupdesc.h"
@@ -132,7 +134,8 @@ typedef int (*PgSuspendCallback) (void *callback_arg);
 typedef enum PgRuntimeKind
 {
 	PG_RUNTIME_PROCESS,
-	PG_RUNTIME_THREAD_PER_SESSION
+	PG_RUNTIME_THREAD_PER_SESSION,
+	PG_RUNTIME_POOLED_PROTOCOL
 } PgRuntimeKind;
 
 typedef enum PgCarrierKind
@@ -218,7 +221,8 @@ typedef enum PgProtocolParkWakeReason
 	PG_PROTOCOL_PARK_WAKE_STALE_TRANSPORT = (1 << 5),
 	PG_PROTOCOL_PARK_WAKE_TIMEOUT = (1 << 6),
 	PG_PROTOCOL_PARK_WAKE_STALE_TIMEOUT = (1 << 7),
-	PG_PROTOCOL_PARK_WAKE_NOTIFY = (1 << 8)
+	PG_PROTOCOL_PARK_WAKE_NOTIFY = (1 << 8),
+	PG_PROTOCOL_PARK_WAKE_HIBERNATE = (1 << 9)
 } PgProtocolParkWakeReason;
 
 typedef struct PgProtocolParkSpec
@@ -241,7 +245,9 @@ typedef enum PgProtocolSchedulerQueueState
 {
 	PG_PROTOCOL_SCHEDULER_QUEUE_NONE,
 	PG_PROTOCOL_SCHEDULER_QUEUE_PARKED_PROTOCOL_READ,
-	PG_PROTOCOL_SCHEDULER_QUEUE_RUNNABLE
+	PG_PROTOCOL_SCHEDULER_QUEUE_POLLING,
+	PG_PROTOCOL_SCHEDULER_QUEUE_RUNNABLE,
+	PG_PROTOCOL_SCHEDULER_QUEUE_LEASED
 } PgProtocolSchedulerQueueState;
 
 typedef struct PgProtocolSchedulerState
@@ -253,6 +259,16 @@ typedef struct PgProtocolSchedulerState
 	uint32		parked_protocol_count;
 	uint64		runnable_enqueue_count;
 	uint64		parked_protocol_enqueue_count;
+	uint32		carrier_limit;
+	uint32		registered_carrier_count;
+	uint32		idle_carrier_count;
+	uint32		active_carrier_count;
+	uint64		carrier_register_count;
+	uint64		carrier_reject_count;
+	uint64		carrier_lease_count;
+	uint64		carrier_release_count;
+	uint64		same_carrier_resume_count;
+	uint64		migrated_resume_count;
 } PgProtocolSchedulerState;
 
 typedef struct PgProtocolParkSnapshot
@@ -278,6 +294,14 @@ typedef struct PgProtocolParkSnapshot
 	bool		session_present;
 	bool		connection_present;
 	bool		execution_present;
+	uint32		scheduler_carrier_limit;
+	uint64		scheduler_same_carrier_resume_count;
+	uint64		scheduler_migrated_resume_count;
+	uint32		scheduler_registered_carrier_count;
+	uint32		scheduler_idle_carrier_count;
+	uint32		scheduler_active_carrier_count;
+	bool		last_park_duration_valid;
+	long		last_park_duration_ms;
 } PgProtocolParkSnapshot;
 
 typedef struct PgBackendProtocolParkState
@@ -297,6 +321,11 @@ typedef struct PgBackendProtocolParkState
 	uint64		deferred_notify_generation;
 	uint64		deferred_notify_park_generation;
 	uint32		deferred_notify_reasons;
+	TimestampTz committed_at;
+	bool		last_park_duration_valid;
+	long		last_park_duration_ms;
+	bool		hibernated;
+	PgCarrier  *parked_carrier;
 } PgBackendProtocolParkState;
 
 /*
@@ -440,12 +469,10 @@ typedef struct PgBackendExprEvalOpLookup
 	int			op;
 } PgBackendExprEvalOpLookup;
 
-#define PG_BACKEND_EXPR_INTERP_MAX_OPS 512
-
 typedef struct PgBackendExprInterpState
 {
 	const void **dispatch_table;
-	PgBackendExprEvalOpLookup reverse_dispatch_table[PG_BACKEND_EXPR_INTERP_MAX_OPS];
+	PgBackendExprEvalOpLookup *reverse_dispatch_table;
 } PgBackendExprInterpState;
 
 typedef struct PgBackendTimeoutState
@@ -711,33 +738,32 @@ typedef struct PgBackendAioState
 
 typedef struct PgBackendExtensionModuleState
 {
-	char	   *basic_archive_archive_directory;
-	struct AutoPrewarmSharedState *pg_prewarm_autoprewarm_state;
-	struct pgsa_shared_state *pg_stash_advice_state;
-	dsa_area   *pg_stash_advice_dsa_area;
-	dshash_table *pg_stash_advice_stash_dshash;
-	dshash_table *pg_stash_advice_entry_dshash;
-	MemoryContext pg_stash_advice_context;
+	List	   *private_states;
 } PgBackendExtensionModuleState;
+
+typedef struct PgBackendPgStatPendingColdState
+{
+	PgStat_BgWriterStats pending_bgwriter;
+	PgStat_CheckpointerStats pending_checkpointer;
+	PgStat_SLRUStats slru_stats[PGSTAT_SLRU_NUM_ELEMENTS];
+	PgStat_PendingLock lock_stats;
+} PgBackendPgStatPendingColdState;
 
 typedef struct PgBackendPgStatPendingState
 {
-	PgStat_LocalState local;
+	PgStat_LocalState *local;
 	MemoryContext fixed_snapshot_context;
 	void	   *entry_ref_hash;
 	int			shared_ref_age;
 	MemoryContext shared_ref_context;
 	MemoryContext entry_ref_hash_context;
-	PgStat_BgWriterStats pending_bgwriter;
-	PgStat_CheckpointerStats pending_checkpointer;
 	PgStat_PendingIO io_stats;
 	bool		io_stats_pending;
-	PgStat_SLRUStats slru_stats[PGSTAT_SLRU_NUM_ELEMENTS];
 	bool		slru_stats_pending;
-	PgStat_PendingLock lock_stats;
 	bool		lock_stats_pending;
 	PgStat_BackendPending backend_stats;
 	bool		backend_io_stats_pending;
+	PgBackendPgStatPendingColdState *cold;
 	MemoryContext pending_context;
 	dlist_head	pending;
 	bool		report_fixed;
@@ -873,6 +899,7 @@ typedef struct PgBackendBufferState
 	int			reserved_ref_count_slot;
 	int			private_ref_count_entry_last;
 	uint32		max_proportional_pins;
+	bool		private_ref_count_released_while_idle;
 } PgBackendBufferState;
 
 typedef struct PgBackendStorageState
@@ -896,6 +923,7 @@ typedef struct PgBackendStorageState
 	MemoryContext md_context;
 } PgBackendStorageState;
 
+#define PG_BACKEND_MAX_INLINE_LWLOCKS 16
 #define PG_BACKEND_MAX_SIMUL_LWLOCKS 200
 
 typedef struct PgBackendLWLockHandle
@@ -922,7 +950,9 @@ typedef struct PgBackendLWLockStats
 
 typedef struct PgBackendLockState
 {
-	PgBackendLWLockHandle held_lwlocks[PG_BACKEND_MAX_SIMUL_LWLOCKS];
+	PgBackendLWLockHandle *held_lwlocks_array;
+	PgBackendLWLockHandle held_lwlocks_inline[PG_BACKEND_MAX_INLINE_LWLOCKS];
+	int			held_lwlocks_capacity;
 	int			num_held_lwlocks;
 	int			local_num_user_defined_lwlock_tranches;
 	HTAB	   *lwlock_stats_htab;
@@ -1108,9 +1138,7 @@ typedef struct PgExecutionExtensionState
 {
 	bool		creating;
 	Oid			current_object;
-	int			auto_explain_nesting_level;
-	bool		auto_explain_current_query_sampled;
-	PgExecutionDebugHandler pgcrypto_debug_handler;
+	List	   *private_states;
 } PgExecutionExtensionState;
 
 typedef struct PgExecutionMatViewState
@@ -1567,6 +1595,7 @@ typedef struct PgSessionGUCState
 	bool		initialized;
 	MemoryContext memory_context;
 	struct config_generic *variables;
+	struct config_generic_state *variable_states;
 	int			num_variables;
 	HTAB	   *hash_table;
 	dlist_head	nondef_list;
@@ -1822,9 +1851,8 @@ typedef struct PgSessionFunctionManagerState
 } PgSessionFunctionManagerState;
 
 typedef void (*PgSessionResetCallback) (void *arg);
-
-#define PG_SESSION_SEPGSQL_AVC_NUM_SLOTS 512
-#define PG_SESSION_PGCRYPTO_DES_OUTPUT_SIZE 21
+typedef void (*PgExtensionPrivateStateCleanup) (void *state);
+typedef PgExtensionPrivateStateCleanup PgSessionExtensionPrivateStateCleanup;
 
 typedef struct PgSessionResetCallbackItem
 {
@@ -1832,38 +1860,17 @@ typedef struct PgSessionResetCallbackItem
 	void	   *arg;
 } PgSessionResetCallbackItem;
 
-typedef struct PgSessionPgcryptoDesState
+typedef struct PgExtensionPrivateState
 {
-	uint8		inv_key_perm[64];
-	uint8		u_key_perm[56];
-	uint8		inv_comp_perm[56];
-	uint8		u_sbox[8][64];
-	uint8		un_pbox[32];
-	uint32		saltbits;
-	long		old_salt;
-	const uint32 *bits28;
-	const uint32 *bits24;
-	uint8		init_perm[64];
-	uint8		final_perm[64];
-	uint32		en_keysl[16];
-	uint32		en_keysr[16];
-	uint32		de_keysl[16];
-	uint32		de_keysr[16];
-	int			des_initialised;
-	uint8		m_sbox[4][4096];
-	uint32		psbox[4][256];
-	uint32		ip_maskl[8][256];
-	uint32		ip_maskr[8][256];
-	uint32		fp_maskl[8][256];
-	uint32		fp_maskr[8][256];
-	uint32		key_perm_maskl[8][128];
-	uint32		key_perm_maskr[8][128];
-	uint32		comp_maskl[8][128];
-	uint32		comp_maskr[8][128];
-	uint32		old_rawkey0;
-	uint32		old_rawkey1;
-	char		output[PG_SESSION_PGCRYPTO_DES_OUTPUT_SIZE];
-} PgSessionPgcryptoDesState;
+	const char *key;
+	void	   *state;
+	PgExtensionPrivateStateCleanup cleanup;
+} PgExtensionPrivateState;
+
+typedef PgExtensionPrivateState PgBackendExtensionPrivateState;
+typedef PgExtensionPrivateState PgExecutionExtensionPrivateState;
+typedef PgExtensionPrivateState PgRuntimeExtensionPrivateState;
+typedef PgExtensionPrivateState PgSessionExtensionPrivateState;
 
 typedef struct PgSessionExtensionModuleState
 {
@@ -1893,70 +1900,8 @@ typedef struct PgSessionExtensionModuleState
 	void	   *pltcl_current_call_state;
 	bool		pltcl_reset_registered;
 	MemoryContext plsample_memory_context;
-	void	   *refint_foreign_plans;
-	int			refint_num_foreign_plans;
-	void	   *refint_primary_plans;
-	int			refint_num_primary_plans;
-	bool		refint_reset_registered;
-	int			auth_delay_milliseconds;
-	char	   *basebackup_to_shell_command;
-	char	   *basebackup_to_shell_required_role;
-	bool		isn_weak;
-	int			passwordcheck_min_password_length;
+	List	   *private_states;
 	List	   *reset_callbacks;
-	int			auto_explain_log_min_duration;
-	int			auto_explain_log_parameter_max_length;
-	bool		auto_explain_log_analyze;
-	bool		auto_explain_log_verbose;
-	bool		auto_explain_log_buffers;
-	bool		auto_explain_log_io;
-	bool		auto_explain_log_wal;
-	bool		auto_explain_log_triggers;
-	bool		auto_explain_log_timing;
-	bool		auto_explain_log_settings;
-	int			auto_explain_log_format;
-	int			auto_explain_log_level;
-	bool		auto_explain_log_nested_statements;
-	double		auto_explain_sample_rate;
-	char	   *auto_explain_log_extension_options;
-	void	   *auto_explain_extension_options;
-	double		pg_trgm_similarity_threshold;
-	double		pg_trgm_word_similarity_threshold;
-	double		pg_trgm_strict_word_similarity_threshold;
-	char	   *pg_plan_advice_advice;
-	bool		pg_plan_advice_always_store_advice_details;
-	bool		pg_plan_advice_always_explain_supplied_advice;
-	bool		pg_plan_advice_feedback_warnings;
-	bool		pg_plan_advice_trace_mask;
-	int			pg_plan_advice_generate_advice;
-	char	   *pg_stash_advice_stash_name;
-	MemoryContext sepgsql_context;
-	MemoryContext sepgsql_avc_context;
-	char	   *sepgsql_client_label_peer;
-	List	   *sepgsql_client_label_pending;
-	char	   *sepgsql_client_label_committed;
-	char	   *sepgsql_client_label_func;
-	List	   *sepgsql_avc_slots[PG_SESSION_SEPGSQL_AVC_NUM_SLOTS];
-	int			sepgsql_avc_num_caches;
-	int			sepgsql_avc_lru_hint;
-	int			sepgsql_avc_threshold;
-	char	   *sepgsql_avc_unlabeled;
-	PgSessionPgcryptoDesState pgcrypto_des;
-	MemoryContext dblink_context;
-	void	   *dblink_persistent_connection;
-	void	   *dblink_remote_conn_hash;
-	bool		dblink_reset_registered;
-	MemoryContext postgres_fdw_options_context;
-	void	   *postgres_fdw_options;
-	char	   *postgres_fdw_application_name;
-	void	   *postgres_fdw_connection_hash;
-	void	   *postgres_fdw_shippable_cache_hash;
-	unsigned int postgres_fdw_cursor_number;
-	unsigned int postgres_fdw_prep_stmt_number;
-	bool		postgres_fdw_xact_got_connection;
-	int			postgres_fdw_read_only_level;
-	bool		postgres_fdw_connection_callbacks_registered;
-	bool		postgres_fdw_shippable_callbacks_registered;
 } PgSessionExtensionModuleState;
 
 typedef struct PgSessionCatalogLookupState
@@ -2097,7 +2042,7 @@ typedef struct PgSessionRegexState
 {
 	MemoryContext regexp_cache_context;
 	int			num_cached_res;
-	PgSessionRegexCachedEntry cached_res[PG_SESSION_MAX_CACHED_REGEX];
+	PgSessionRegexCachedEntry *cached_res;
 	struct pg_ctype_cache *ctype_cache_list;
 } PgSessionRegexState;
 
@@ -2231,10 +2176,8 @@ typedef struct PgRuntimeServerGUCState
 typedef struct PgRuntimeExtensionModuleState
 {
 	MemoryContext memory_context;
-	MemoryContext pg_plan_advice_context;
-	List	   *pg_plan_advice_advisor_hook_list;
-	MemoryContext bloom_context;
 	HTAB	   *rendezvous_hash;
+	List	   *private_states;
 } PgRuntimeExtensionModuleState;
 
 #define PG_CONNECTION_SEND_BUFFER_SIZE 8192
@@ -2252,11 +2195,11 @@ typedef struct PgConnectionIdentityState
 typedef struct PgConnectionSocketIOState
 {
 	char	   *send_buffer;
+	char	   *recv_buffer;
 	MemoryContext socket_io_context;
 	int			send_buffer_size;
 	size_t		send_pointer;
 	size_t		send_start;
-	char		recv_buffer[PG_CONNECTION_RECV_BUFFER_SIZE];
 	int			recv_pointer;
 	int			recv_length;
 	bool		comm_busy;
@@ -2350,17 +2293,18 @@ typedef struct PgConnectionSecurityState
 
 /*
  * Main-loop state owned by PgSession. Some of this state used to be volatile
- * locals in PostgresMain(); keep the loop flags volatile because they must
- * survive the top-level longjmp used for backend error recovery.
+ * locals in PostgresMain(); now that the state lives in PgSession storage,
+ * updates survive the top-level longjmp used for backend error recovery
+ * without forcing volatile access in the hot loop.
  */
 typedef struct PgSessionLoopState
 {
-	volatile bool send_ready_for_query;
-	volatile bool idle_in_transaction_timeout_enabled;
-	volatile bool idle_session_timeout_enabled;
-	volatile bool doing_extended_query_message;
-	volatile bool ignore_till_sync;
-	volatile bool step_error_boundary_active;
+	bool		send_ready_for_query;
+	bool		idle_in_transaction_timeout_enabled;
+	bool		idle_session_timeout_enabled;
+	bool		doing_extended_query_message;
+	bool		ignore_till_sync;
+	bool		step_error_boundary_active;
 	bool		doing_command_read;
 	bool		transaction_started;
 } PgSessionLoopState;
@@ -2400,6 +2344,7 @@ struct PgCarrier
 	PgBackend  *current_backend;
 	PgSession  *current_session;
 	PgExecution *current_execution;
+	PgExecution *scheduler_execution;
 	void	   *backend_thread_start;
 	bool		is_under_postmaster;
 	volatile sig_atomic_t wait_event_waiting;
@@ -2409,6 +2354,9 @@ struct PgCarrier
 	int			wait_event_selfpipe_owner_pid;
 	char	   *stack_base_ptr;
 	int			threaded_guc_mutex_depth;
+	int			threaded_reloptions_mutex_depth;
+	bool		protocol_scheduler_registered;
+	bool		protocol_scheduler_idle;
 };
 
 struct PgBackend
@@ -2583,13 +2531,18 @@ struct PgExecution
 	PgExecutionSnapBuildState snapbuild;
 };
 
-typedef struct PgThreadBackendRuntimeState
+typedef struct PgThreadBackendLogicalState
 {
-	PgCarrier	carrier;
 	PgBackend	backend;
 	PgSession	session;
 	PgConnection connection;
 	PgExecution execution;
+} PgThreadBackendLogicalState;
+
+typedef struct PgThreadBackendRuntimeState
+{
+	PgCarrier	carrier;
+	PgThreadBackendLogicalState logical;
 } PgThreadBackendRuntimeState;
 
 extern void PgRuntimeResetAfterFork(void);
@@ -2695,6 +2648,7 @@ extern char **PgCurrentExtensionControlPathRef(void);
 extern bool *PgCurrentUpdateProcessTitleRef(void);
 extern MemoryContext *PgCurrentGUCMemoryContextRef(void);
 extern struct config_generic **PgCurrentGUCVariablesRef(void);
+extern struct config_generic_state **PgCurrentGUCVariableStatesRef(void);
 extern int *PgCurrentNumGUCVariablesRef(void);
 extern HTAB **PgCurrentGUCHashTableRef(void);
 extern dlist_head *PgCurrentGUCNondefListRef(void);
@@ -2703,6 +2657,7 @@ extern slist_head *PgCurrentGUCReportListRef(void);
 extern bool *PgCurrentGUCReportingEnabledRef(void);
 extern int *PgCurrentGUCNestLevelRef(void);
 extern int *PgCurrentThreadedGUCMutexDepthRef(void);
+extern int *PgCurrentThreadedRelOptionsMutexDepthRef(void);
 extern void **PgCurrentBackendThreadStartRef(void);
 extern volatile sig_atomic_t *PgCurrentWaitEventWaitingRef(void);
 extern int *PgCurrentWaitEventSignalFdRef(void);
@@ -3084,6 +3039,9 @@ extern volatile sig_atomic_t *PgCurrentRepackMessagePendingRef(void);
 extern PgBackendAioState *PgCurrentAioState(void);
 extern struct PgAioBackend **PgCurrentAioBackendRef(void);
 extern PgBackendExtensionModuleState *PgCurrentBackendExtensionModuleState(void);
+extern void *PgBackendGetExtensionPrivateState(const char *key);
+extern void *PgBackendEnsureExtensionPrivateState(const char *key, Size size,
+												 PgExtensionPrivateStateCleanup cleanup);
 extern char **PgCurrentBasicArchiveDirectoryRef(void);
 extern TransactionId *PgCurrentCachedFetchXidRef(void);
 extern int *PgCurrentCachedFetchXidStatusRef(void);
@@ -3198,6 +3156,12 @@ extern void **PgCurrentSavedSerializableXactRef(void);
 
 extern void InitializePgProcessRuntime(void);
 extern void InitializePgThreadRuntime(PgBackendExitContinuation exit_backend);
+extern void InitializePgThreadCarrierRuntimeState(PgCarrier *carrier);
+extern void InitializePgThreadBackendLogicalState(PgThreadBackendLogicalState *logical,
+												 PgCarrier *carrier,
+												 BackendType backend_type,
+												 struct Port *port,
+												 struct Latch *interrupt_latch);
 extern void InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 												 BackendType backend_type,
 												 struct Port *port,
@@ -3231,13 +3195,18 @@ extern MemoryContext PgSessionGetDynamicLibraryMemoryContext(PgSession *session)
 extern List **PgCurrentSessionDynamicLibraryInitsRef(void);
 extern PgRuntimeExtensionModuleState *PgCurrentRuntimeExtensionModuleState(void);
 extern MemoryContext PgCurrentRuntimeExtensionModuleMemoryContext(void);
+extern void *PgRuntimeGetExtensionPrivateState(const char *key);
+extern void *PgRuntimeEnsureExtensionPrivateState(const char *key, Size size,
+												 PgExtensionPrivateStateCleanup cleanup);
 extern MemoryContext *PgCurrentPgPlanAdviceContextRef(void);
 extern List **PgCurrentPgPlanAdviceAdvisorHookListRef(void);
 extern MemoryContext *PgCurrentBloomContextRef(void);
 extern HTAB **PgCurrentRendezvousHashRef(void);
 extern void **PgCurrentPLpgSQLSessionStateRef(void);
 extern PgSessionExtensionModuleState *PgCurrentSessionExtensionModuleState(void);
-extern PgSessionPgcryptoDesState *PgCurrentPgcryptoDesState(void);
+extern void *PgSessionGetExtensionPrivateState(const char *key);
+extern void *PgSessionEnsureExtensionPrivateState(const char *key, Size size,
+												 PgSessionExtensionPrivateStateCleanup cleanup);
 extern void **PgCurrentPLpythonProcedureCacheRef(void);
 extern MemoryContext *PgCurrentPLpythonMemoryContextRef(void);
 extern bool *PgCurrentPLpythonResetRegisteredRef(void);
@@ -3263,33 +3232,11 @@ extern void **PgCurrentPLTclProcHashRef(void);
 extern void **PgCurrentPLTclCurrentCallStateRef(void);
 extern bool *PgCurrentPLTclResetRegisteredRef(void);
 extern MemoryContext *PgCurrentPLsampleMemoryContextRef(void);
-extern void **PgCurrentRefintForeignPlansRef(void);
-extern int *PgCurrentRefintNumForeignPlansRef(void);
-extern void **PgCurrentRefintPrimaryPlansRef(void);
-extern int *PgCurrentRefintNumPrimaryPlansRef(void);
-extern bool *PgCurrentRefintResetRegisteredRef(void);
-extern int *PgCurrentAuthDelayMillisecondsRef(void);
-extern char **PgCurrentBasebackupToShellCommandRef(void);
-extern char **PgCurrentBasebackupToShellRequiredRoleRef(void);
-extern bool *PgCurrentIsnWeakRef(void);
-extern int *PgCurrentPasswordcheckMinPasswordLengthRef(void);
-extern MemoryContext *PgCurrentDblinkContextRef(void);
-extern void **PgCurrentDblinkPersistentConnectionRef(void);
-extern void **PgCurrentDblinkRemoteConnHashRef(void);
-extern bool *PgCurrentDblinkResetRegisteredRef(void);
-extern MemoryContext *PgCurrentPostgresFdwOptionsContextRef(void);
-extern void **PgCurrentPostgresFdwOptionsRef(void);
-extern char **PgCurrentPostgresFdwApplicationNameRef(void);
-extern void **PgCurrentPostgresFdwConnectionHashRef(void);
-extern void **PgCurrentPostgresFdwShippableCacheHashRef(void);
-extern unsigned int *PgCurrentPostgresFdwCursorNumberRef(void);
-extern unsigned int *PgCurrentPostgresFdwPrepStmtNumberRef(void);
-extern bool *PgCurrentPostgresFdwXactGotConnectionRef(void);
-extern int *PgCurrentPostgresFdwReadOnlyLevelRef(void);
-extern bool *PgCurrentPostgresFdwConnectionCallbacksRegisteredRef(void);
-extern bool *PgCurrentPostgresFdwShippableCallbacksRegisteredRef(void);
 extern PgExecutionExtensionState *PgCurrentExecutionExtensionState(void);
 extern void PgExecutionInitializeExtensionState(PgExecutionExtensionState *extension);
+extern void *PgExecutionGetExtensionPrivateState(const char *key);
+extern void *PgExecutionEnsureExtensionPrivateState(const char *key, Size size,
+												   PgExtensionPrivateStateCleanup cleanup);
 extern PgExecutionDebugHandler *PgCurrentPgcryptoDebugHandlerRef(void);
 extern void PgSessionRegisterResetCallback(PgSessionResetCallback callback,
 										   void *arg);
@@ -3429,6 +3376,13 @@ extern MemoryContext *PgCurrentClientConnectionInfoContextRef(void);
 extern bool *PgCurrentClientConnectionInfoAuthnIdOwnedRef(void);
 extern PgConnectionSecurityState *PgConnectionSecurityStateRef(PgConnection *connection);
 extern PgConnectionSecurityState *PgCurrentConnectionSecurityStateRef(void);
+extern bool PgRuntimeKindIsThreadBacked(PgRuntimeKind kind);
+extern bool PgRuntimeIsThreadBacked(PgRuntime *runtime);
+extern bool PgRuntimeKindIsPooledProtocol(PgRuntimeKind kind);
+extern bool PgRuntimeIsPooledProtocol(PgRuntime *runtime);
+extern bool PgRuntimePooledProtocolRequested(void);
+extern int	PgRuntimePooledProtocolCarrierLimit(void);
+extern uint32 PgRuntimePooledProtocolIdleCarrierCount(void);
 extern PgBackendLaunchModel PgRuntimeGetBackendLaunchModel(BackendType backend_type);
 extern bool PgRuntimeShouldThreadBackend(BackendType backend_type);
 extern PgBackendModel PgRuntimeGetExtensionBackendModel(void);
@@ -3467,7 +3421,27 @@ extern bool PgRuntimeProtocolSchedulerParkBackend(PgRuntime *runtime,
 												  PgBackend *backend);
 extern bool PgRuntimeProtocolSchedulerMarkRunnable(PgRuntime *runtime,
 												   PgBackend *backend);
+extern bool PgRuntimeProtocolSchedulerLeaseBackend(PgRuntime *runtime,
+												   PgBackend *backend);
+extern PgBackend *PgRuntimeProtocolSchedulerLeaseParkedBackend(PgRuntime *runtime);
+extern bool PgRuntimeProtocolSchedulerReparkBackend(PgRuntime *runtime,
+													PgBackend *backend);
+extern bool PgRuntimeProtocolSchedulerReparkBackendIfPolling(PgRuntime *runtime,
+															 PgBackend *backend);
 extern PgBackend *PgRuntimeProtocolSchedulerPopRunnable(PgRuntime *runtime);
+extern int	PgRuntimeProtocolSchedulerCollectParked(PgRuntime *runtime,
+													PgBackend **backends,
+													int max_backends);
+extern int	PgRuntimeProtocolSchedulerWaitParkedReads(PgRuntime *runtime,
+													 PgBackend **scratch,
+													 struct pollfd *poll_scratch,
+													 int max_backends,
+													 long timeout_ms);
+extern bool PgRuntimeProtocolSchedulerRegisterCarrier(PgRuntime *runtime,
+													  PgCarrier *carrier);
+extern bool PgRuntimeProtocolSchedulerUnregisterCarrier(PgRuntime *runtime,
+														PgCarrier *carrier);
+extern PgBackend *PgCarrierLeaseRunnableProtocolBackend(PgCarrier *carrier);
 extern bool PgRuntimeProtocolSchedulerRemoveBackend(PgRuntime *runtime,
 													PgBackend *backend);
 extern bool PgBackendSnapshotProtocolParkById(PgBackendId backend_id,
@@ -3493,6 +3467,11 @@ extern void PgBackendConsumeProcDieSender(PgBackend *backend, int *sender_pid,
 										  int *sender_uid);
 extern bool PgCurrentBackendHasPendingInterrupts(void);
 extern void PgCurrentBackendApplyInterrupts(void);
+/*
+ * Generic wait-completion publication is diagnostic-only.  Production builds
+ * leave PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION undefined, making these
+ * APIs no-op/false except for local wait-state initialization.
+ */
 extern bool PgSetWaitCompletionPublication(bool enabled);
 extern PgWaitCompletion *PgBackendCurrentWaitCompletion(PgBackend *backend);
 extern bool PgBackendSnapshotWaitCompletionById(PgBackendId backend_id,
@@ -3504,6 +3483,7 @@ extern bool PgBackendWakeWaitCompletion(PgBackend *backend,
 										uint32 ready_events);
 extern bool PgBackendWakeWaitCompletionById(PgBackendId backend_id,
 											uint32 ready_events);
+extern bool PgBackendShouldPublishWaitCompletion(PgBackend *backend);
 extern bool PgBackendLogicalTimeoutNextWake(PgBackend *backend,
 											TimestampTz *wake_at,
 											uint64 *generation);
@@ -3698,6 +3678,9 @@ pg_noreturn extern void PgSessionRun(PgSession *session);
 #define PgCurrentThreadedGUCMutexDepthRef() \
 	PG_RUNTIME_CURRENT_CARRIER_FIELD_REF(PgCurrentThreadedGUCMutexDepthRef, \
 										 threaded_guc_mutex_depth)
+#define PgCurrentThreadedRelOptionsMutexDepthRef() \
+	PG_RUNTIME_CURRENT_CARRIER_FIELD_REF(PgCurrentThreadedRelOptionsMutexDepthRef, \
+										 threaded_reloptions_mutex_depth)
 #define PgCurrentWaitEventWaitingRef() \
 	PG_RUNTIME_CURRENT_CARRIER_FIELD_REF(PgCurrentWaitEventWaitingRef, \
 										 wait_event_waiting)

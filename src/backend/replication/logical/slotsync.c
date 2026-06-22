@@ -1442,8 +1442,7 @@ SlotSyncCheckForStop(void)
 static bool
 SlotSyncIsThreadedRuntime(void)
 {
-	return CurrentPgRuntime != NULL &&
-		CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION;
+	return PgRuntimeIsThreadBacked(CurrentPgRuntime);
 }
 
 static void
