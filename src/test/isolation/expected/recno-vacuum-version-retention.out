@@ -1,0 +1,25 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1_read1 s2_update s2_vacuum s1_read2 s1_commit s3_vacuum s3_read
+step s1_read1: SELECT val FROM recno_ver_retain WHERE id = 1;
+val
+---
+  0
+(1 row)
+
+step s2_update: UPDATE recno_ver_retain SET val = 1 WHERE id = 1;
+step s2_vacuum: VACUUM recno_ver_retain;
+step s1_read2: SELECT val FROM recno_ver_retain WHERE id = 1;
+val
+---
+  0
+(1 row)
+
+step s1_commit: COMMIT;
+step s3_vacuum: VACUUM recno_ver_retain;
+step s3_read: SELECT val FROM recno_ver_retain WHERE id = 1;
+val
+---
+  1
+(1 row)
+

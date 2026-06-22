@@ -259,6 +259,7 @@ break is not needed in a wider output rendering.
   &custom-scan;
   &geqo;
   &tableam;
+  &recno;
   &indexam;
   &wal-for-extensions;
   &indextypes;

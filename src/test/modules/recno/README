@@ -1,0 +1,77 @@
+# RECNO Test Module
+
+This directory contains comprehensive tests for the RECNO table access method.
+
+## Test Structure
+
+### TAP Tests (t/)
+Perl-based tests using PostgreSQL::Test::Cluster for complex scenarios:
+
+- **001_basic_operations.pl** - Basic CRUD, indexes, VACUUM, ANALYZE
+- **002_concurrent_access.pl** - Multi-session concurrency testing
+- **003_crash_recovery.pl** - WAL replay and crash recovery, including overflow data
+- **004_replication.pl** - Streaming replication with RECNO tables, including overflow
+- **005_wal_consistency.pl** - WAL consistency checking, overflow WAL, checkpoint replay
+
+### Performance Tests (performance/)
+Performance benchmarks and regression tests (see performance/README.md)
+
+## Running Tests
+
+### Run all TAP tests:
+```bash
+cd src/test/modules/recno
+make check
+```
+
+### Run specific test:
+```bash
+cd src/test/modules/recno
+prove t/001_basic_operations.pl
+```
+
+### Run with verbose output:
+```bash
+prove -v t/001_basic_operations.pl
+```
+
+## Prerequisites
+
+RECNO must be built and installed before running these tests:
+```bash
+cd /home/gburd/ws/postgres/recno
+make -C src/backend/access/recno all
+make install
+```
+
+## Test Coverage
+
+- ✅ Basic DML operations (INSERT, UPDATE, DELETE, SELECT)
+- ✅ Multi-page table support
+- ✅ Index operations (B-tree, etc.)
+- ✅ VACUUM and ANALYZE
+- ✅ Concurrent access patterns
+- ✅ Transaction isolation levels
+- ✅ Row locking (FOR UPDATE/SHARE)
+- ✅ Crash recovery and WAL replay
+- ✅ Streaming replication
+- ✅ WAL record consistency
+
+## Dependencies
+
+Tests require these extensions (automatically installed via EXTRA_INSTALL):
+- pageinspect - For page structure inspection
+- pg_walinspect - For WAL record analysis
+
+## Adding New Tests
+
+1. Create new .pl file in t/ directory
+2. Follow PostgreSQL::Test::Cluster patterns
+3. Add to meson.build tests list
+4. Document in this README
+
+## See Also
+
+- Isolation tests: ../../isolation/specs/recno-*.spec
+- Regression tests: ../../regress/sql/recno*.sql
+- RECNO documentation: ../../../../backend/access/recno/README

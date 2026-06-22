@@ -25,4 +25,8 @@ SUBDIRS	    = \
 	transam \
 	undo
 
+ifdef USE_RECNO
+SUBDIRS += recno
+endif
+
 include $(top_srcdir)/src/backend/common.mk

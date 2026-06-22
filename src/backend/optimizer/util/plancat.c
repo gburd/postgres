@@ -309,6 +309,7 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 				info->amoptionalkey = amroutine->amoptionalkey;
 				info->amsearcharray = amroutine->amsearcharray;
 				info->amsearchnulls = amroutine->amsearchnulls;
+				info->amconsistentequality = amroutine->amconsistentequality;
 				info->amcanparallel = amroutine->amcanparallel;
 				info->amhasgettuple = (amroutine->amgettuple != NULL);
 				info->amhasgetbitmap = amroutine->amgetbitmap != NULL &&
@@ -410,6 +411,7 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 				info->amoptionalkey = false;
 				info->amsearcharray = false;
 				info->amsearchnulls = false;
+				info->amconsistentequality = false;
 				info->amcanparallel = false;
 				info->amhasgettuple = false;
 				info->amhasgetbitmap = false;
@@ -559,6 +561,18 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 		relation->rd_tableam->scan_set_tidrange != NULL &&
 		relation->rd_tableam->scan_getnextslot_tidrange != NULL)
 		rel->amflags |= AMFLAG_HAS_TID_RANGE;
+
+	/*
+	 * A table AM that updates in place keeping the same TID
+	 * (am_inplace_update_no_dead_tuple) leaves a stale (oldkey -> tid) secondary
+	 * entry beside the new (newkey -> tid) entry when an indexed column is
+	 * updated.  build_index_paths uses this flag to restrict lossy indexes on
+	 * such tables to bitmap heap scans, the only scan type that dedups the two
+	 * entries and rechecks against the live tuple.
+	 */
+	if (relation->rd_tableam &&
+		relation->rd_tableam->am_inplace_update_no_dead_tuple)
+		rel->amflags |= AMFLAG_INPLACE_UPDATE_KEEPS_TID;
 
 	/*
 	 * Collect info about relation's partitioning scheme, if any. Only

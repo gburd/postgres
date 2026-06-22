@@ -1774,6 +1774,15 @@ typedef struct IndexScanState
 	bool	   *iss_OrderByTypByVals;
 	int16	   *iss_OrderByTypLens;
 	Size		iss_PscanLen;
+
+	/*
+	 * For table AMs that update in place keeping the same TID
+	 * (am_inplace_update_no_dead_tuple), this holds a BuildIndexInfo of
+	 * iss_RelationDesc used to reform the live tuple's key for the stale
+	 * secondary-entry recheck.  NULL for heap and all other AMs, so the
+	 * recheck path is skipped entirely for them.
+	 */
+	IndexInfo  *iss_InplaceRecheckInfo;
 } IndexScanState;
 
 /* ----------------
@@ -1820,6 +1829,14 @@ typedef struct IndexOnlyScanState
 	Size		ioss_PscanLen;
 	AttrNumber *ioss_NameCStringAttNums;
 	int			ioss_NameCStringCount;
+
+	/*
+	 * For table AMs that update in place keeping the same TID
+	 * (am_inplace_update_no_dead_tuple), this holds a BuildIndexInfo of
+	 * ioss_RelationDesc used to reform the live tuple's key for the stale
+	 * secondary-entry recheck.  NULL for heap and all other AMs.
+	 */
+	IndexInfo  *ioss_InplaceRecheckInfo;
 } IndexOnlyScanState;
 
 /* ----------------

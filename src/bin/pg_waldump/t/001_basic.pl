@@ -84,7 +84,7 @@ XLOG2
 Undo
 ATM
 FileOps
-RelUndo$/,
+RECNO$/,
 	'rmgr list');
 
 

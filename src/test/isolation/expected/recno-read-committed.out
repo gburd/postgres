@@ -1,0 +1,65 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1_delete s2_read_all s1_commit s2_read_all s2_commit
+step s1_delete: DELETE FROM recno_rc WHERE id = 1;
+step s2_read_all: SELECT id, val FROM recno_rc ORDER BY id;
+id|val       
+--+----------
+ 1|original_1
+ 2|original_2
+ 3|original_3
+(3 rows)
+
+step s1_commit: COMMIT;
+step s2_read_all: SELECT id, val FROM recno_rc ORDER BY id;
+id|val       
+--+----------
+ 2|original_2
+ 3|original_3
+(2 rows)
+
+step s2_commit: COMMIT;
+
+starting permutation: s1_delete s2_read_all s1_abort s2_read_all s2_commit
+step s1_delete: DELETE FROM recno_rc WHERE id = 1;
+step s2_read_all: SELECT id, val FROM recno_rc ORDER BY id;
+id|val       
+--+----------
+ 1|original_1
+ 2|original_2
+ 3|original_3
+(3 rows)
+
+step s1_abort: ROLLBACK;
+step s2_read_all: SELECT id, val FROM recno_rc ORDER BY id;
+id|val       
+--+----------
+ 1|original_1
+ 2|original_2
+ 3|original_3
+(3 rows)
+
+step s2_commit: COMMIT;
+
+starting permutation: s2_read_count s1_delete s2_read_count s1_commit s2_read_count s2_commit
+step s2_read_count: SELECT count(*) FROM recno_rc;
+count
+-----
+    3
+(1 row)
+
+step s1_delete: DELETE FROM recno_rc WHERE id = 1;
+step s2_read_count: SELECT count(*) FROM recno_rc;
+count
+-----
+    3
+(1 row)
+
+step s1_commit: COMMIT;
+step s2_read_count: SELECT count(*) FROM recno_rc;
+count
+-----
+    2
+(1 row)
+
+step s2_commit: COMMIT;

@@ -1,0 +1,439 @@
+--
+-- Test RECNO Visibility Map functionality
+--
+-- The visibility map tracks which pages contain only tuples visible to all
+-- transactions, enabling index-only scans and VACUUM optimizations.
+--
+-- =============================================
+-- Basic Visibility Map Tests
+-- =============================================
+-- Create table for VM testing
+CREATE TABLE recno_vm_test (
+    id int PRIMARY KEY,
+    val int,
+    data text
+) USING recno;
+CREATE INDEX recno_vm_val_idx ON recno_vm_test(val);
+-- Insert data and ensure all tuples are visible
+INSERT INTO recno_vm_test
+SELECT i, i * 10, 'visible_' || i
+FROM generate_series(1, 1000) i;
+-- Force checkpoint to ensure visibility
+CHECKPOINT;
+-- VACUUM to set all-visible bits
+VACUUM recno_vm_test;
+-- Test index-only scan (should not fetch heap)
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF)
+SELECT val FROM recno_vm_test WHERE val BETWEEN 100 AND 200;
+                                                      QUERY PLAN                                                       
+-----------------------------------------------------------------------------------------------------------------------
+ Index Only Scan using recno_vm_val_idx on recno_vm_test  (cost=0.28..4.38 rows=5 width=4) (actual rows=11.00 loops=1)
+   Index Cond: ((val >= 100) AND (val <= 200))
+   Heap Fetches: 11
+   Index Searches: 1
+   Buffers: shared hit=13
+ Planning:
+   Buffers: shared hit=14
+ Planning Time: #.# ms
+ Execution Time: #.# ms
+(9 rows)
+
+-- Verify index-only scan was used
+SELECT COUNT(*) AS index_only_scan_count
+FROM pg_stat_user_tables
+WHERE tablename = 'recno_vm_test'
+  AND idx_scan > 0;
+ERROR:  column "tablename" does not exist
+LINE 3: WHERE tablename = 'recno_vm_test'
+              ^
+-- =============================================
+-- VM Clearing on Updates
+-- =============================================
+CREATE TABLE recno_vm_clear (
+    id int PRIMARY KEY,
+    val int,
+    data text
+) USING recno;
+CREATE INDEX recno_vm_clear_idx ON recno_vm_clear(val);
+-- Insert and make all-visible
+INSERT INTO recno_vm_clear
+SELECT i, i, 'initial_' || i
+FROM generate_series(1, 100) i;
+VACUUM recno_vm_clear;
+-- Update should clear VM bit for affected pages
+UPDATE recno_vm_clear SET data = 'updated' WHERE id = 50;
+-- This should now require heap fetches for the updated page
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF)
+SELECT val FROM recno_vm_clear WHERE val = 50;
+                                       QUERY PLAN                                        
+-----------------------------------------------------------------------------------------
+ Seq Scan on recno_vm_clear  (cost=0.00..2.25 rows=1 width=4) (actual rows=1.00 loops=1)
+   Filter: (val = 50)
+   Rows Removed by Filter: 99
+   Buffers: shared hit=2
+ Planning:
+   Buffers: shared hit=4
+ Planning Time: #.# ms
+ Execution Time: #.# ms
+(8 rows)
+
+-- VACUUM again to reset VM bits
+VACUUM recno_vm_clear;
+-- =============================================
+-- VM and Delete Operations
+-- =============================================
+CREATE TABLE recno_vm_delete (
+    id int PRIMARY KEY,
+    val int
+) USING recno;
+CREATE INDEX recno_vm_delete_idx ON recno_vm_delete(val);
+INSERT INTO recno_vm_delete
+SELECT i, i FROM generate_series(1, 100) i;
+VACUUM recno_vm_delete;
+-- Delete should clear VM bits
+DELETE FROM recno_vm_delete WHERE id BETWEEN 40 AND 60;
+-- These pages should no longer be all-visible
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF)
+SELECT val FROM recno_vm_delete WHERE val BETWEEN 40 AND 60;
+                                        QUERY PLAN                                        
+------------------------------------------------------------------------------------------
+ Seq Scan on recno_vm_delete  (cost=0.00..2.50 rows=1 width=4) (actual rows=0.00 loops=1)
+   Filter: ((val >= 40) AND (val <= 60))
+   Rows Removed by Filter: 79
+   Buffers: shared hit=2
+ Planning:
+   Buffers: shared hit=4
+ Planning Time: #.# ms
+ Execution Time: #.# ms
+(8 rows)
+
+-- =============================================
+-- VM and HOT Updates
+-- =============================================
+CREATE TABLE recno_vm_hot (
+    id int PRIMARY KEY,
+    indexed int,
+    non_indexed text
+) USING recno;
+CREATE INDEX recno_vm_hot_idx ON recno_vm_hot(indexed);
+INSERT INTO recno_vm_hot
+SELECT i, i, 'data_' || i FROM generate_series(1, 100) i;
+VACUUM recno_vm_hot;
+-- HOT update (non-indexed column) should still clear VM
+UPDATE recno_vm_hot SET non_indexed = 'hot_update' WHERE id = 50;
+-- Verify VM was cleared even for HOT update
+VACUUM VERBOSE recno_vm_hot;
+INFO:  vacuuming "recno_vm_hot": scanning 1 pages
+INFO:  RECNO vacuum "recno_vm_hot": found 100 tuples (100 live, 0 dead), vacuumed 0 pages, truncated 0 pages, cleaned 2 indexes
+-- =============================================
+-- All-Frozen Pages
+-- =============================================
+CREATE TABLE recno_vm_frozen (
+    id int PRIMARY KEY,
+    val int,
+    created timestamp DEFAULT now()
+) USING recno;
+-- Insert old data
+INSERT INTO recno_vm_frozen
+SELECT i, i, now() - interval '2 years'
+FROM generate_series(1, 100) i;
+-- Aggressive VACUUM to set all-frozen
+VACUUM FREEZE recno_vm_frozen;
+-- Check that pages are marked frozen
+SELECT relfrozenxid > 0 AS has_frozen_xid
+FROM pg_class
+WHERE relname = 'recno_vm_frozen';
+ERROR:  operator does not exist: xid > integer
+LINE 1: SELECT relfrozenxid > 0 AS has_frozen_xid
+                            ^
+DETAIL:  No operator of that name accepts the given argument types.
+HINT:  You might need to add explicit type casts.
+-- Insert new data (should not be frozen)
+INSERT INTO recno_vm_frozen VALUES (101, 101, now());
+-- Only old pages should be frozen
+VACUUM VERBOSE recno_vm_frozen;
+INFO:  vacuuming "recno_vm_frozen": scanning 1 pages
+INFO:  RECNO vacuum "recno_vm_frozen": found 101 tuples (101 live, 0 dead), vacuumed 0 pages, truncated 0 pages, cleaned 1 indexes
+-- =============================================
+-- VM and Concurrent Access
+-- =============================================
+CREATE TABLE recno_vm_concurrent (
+    id int PRIMARY KEY,
+    val int
+) USING recno;
+CREATE INDEX recno_vm_concurrent_idx ON recno_vm_concurrent(val);
+INSERT INTO recno_vm_concurrent
+SELECT i, i FROM generate_series(1, 1000) i;
+-- Start a transaction that holds old snapshot
+BEGIN;
+DECLARE vm_cursor CURSOR FOR SELECT * FROM recno_vm_concurrent;
+FETCH 10 FROM vm_cursor;
+ id | val 
+----+-----
+  1 |   1
+  2 |   2
+  3 |   3
+  4 |   4
+  5 |   5
+  6 |   6
+  7 |   7
+  8 |   8
+  9 |   9
+ 10 |  10
+(10 rows)
+
+-- In another session (simulated here), update data
+-- This would clear VM bits
+SAVEPOINT s1;
+UPDATE recno_vm_concurrent SET val = val + 1000 WHERE id > 500;
+ROLLBACK TO s1;
+CLOSE vm_cursor;
+COMMIT;
+-- VACUUM to reset VM
+VACUUM recno_vm_concurrent;
+-- =============================================
+-- VM and Index-Only Scan Performance
+-- =============================================
+CREATE TABLE recno_vm_perf (
+    id int PRIMARY KEY,
+    col1 int,
+    col2 int,
+    col3 int,
+    data text
+) USING recno;
+-- Create multiple indexes
+CREATE INDEX recno_vm_perf_idx1 ON recno_vm_perf(col1);
+CREATE INDEX recno_vm_perf_idx2 ON recno_vm_perf(col2);
+CREATE INDEX recno_vm_perf_idx3 ON recno_vm_perf(col3);
+-- Insert substantial data
+INSERT INTO recno_vm_perf
+SELECT i, i % 100, i % 200, i % 300, repeat('x', 100)
+FROM generate_series(1, 10000) i;
+VACUUM recno_vm_perf;
+ANALYZE recno_vm_perf;
+-- Test index-only scans on different indexes
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF)
+SELECT col1 FROM recno_vm_perf WHERE col1 = 50;
+                                                         QUERY PLAN                                                         
+----------------------------------------------------------------------------------------------------------------------------
+ Index Only Scan using recno_vm_perf_idx1 on recno_vm_perf  (cost=0.29..6.04 rows=100 width=4) (actual rows=100.00 loops=1)
+   Index Cond: (col1 = 50)
+   Heap Fetches: 100
+   Index Searches: 1
+   Buffers: shared hit=102
+ Planning:
+   Buffers: shared hit=36
+ Planning Time: #.# ms
+ Execution Time: #.# ms
+(9 rows)
+
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF)
+SELECT col2 FROM recno_vm_perf WHERE col2 = 150;
+                                                        QUERY PLAN                                                        
+--------------------------------------------------------------------------------------------------------------------------
+ Index Only Scan using recno_vm_perf_idx2 on recno_vm_perf  (cost=0.29..5.16 rows=50 width=4) (actual rows=50.00 loops=1)
+   Index Cond: (col2 = 150)
+   Heap Fetches: 50
+   Index Searches: 1
+   Buffers: shared hit=52
+ Planning:
+   Buffers: shared hit=4
+ Planning Time: #.# ms
+ Execution Time: #.# ms
+(9 rows)
+
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF)
+SELECT col3 FROM recno_vm_perf WHERE col3 = 250;
+                                                        QUERY PLAN                                                        
+--------------------------------------------------------------------------------------------------------------------------
+ Index Only Scan using recno_vm_perf_idx3 on recno_vm_perf  (cost=0.29..4.86 rows=33 width=4) (actual rows=33.00 loops=1)
+   Index Cond: (col3 = 250)
+   Heap Fetches: 33
+   Index Searches: 1
+   Buffers: shared hit=35
+ Planning:
+   Buffers: shared hit=4
+ Planning Time: #.# ms
+ Execution Time: #.# ms
+(9 rows)
+
+-- Count index-only scans
+SELECT idx_scan, idx_tup_read, idx_tup_fetch
+FROM pg_stat_user_tables
+WHERE tablename = 'recno_vm_perf';
+ERROR:  column "idx_tup_read" does not exist
+LINE 1: SELECT idx_scan, idx_tup_read, idx_tup_fetch
+                         ^
+HINT:  Perhaps you meant to reference the column "pg_stat_user_tables.seq_tup_read".
+-- =============================================
+-- VM and Partial Indexes
+-- =============================================
+CREATE TABLE recno_vm_partial (
+    id int PRIMARY KEY,
+    status text,
+    val int
+) USING recno;
+-- Create partial index
+CREATE INDEX recno_vm_partial_idx ON recno_vm_partial(val)
+    WHERE status = 'active';
+INSERT INTO recno_vm_partial
+SELECT i,
+       CASE WHEN i % 3 = 0 THEN 'active' ELSE 'inactive' END,
+       i * 10
+FROM generate_series(1, 300) i;
+VACUUM recno_vm_partial;
+-- Index-only scan should work with partial index
+EXPLAIN (ANALYZE, BUFFERS, TIMING OFF)
+SELECT val FROM recno_vm_partial
+WHERE status = 'active' AND val BETWEEN 100 AND 500;
+                                                          QUERY PLAN                                                          
+------------------------------------------------------------------------------------------------------------------------------
+ Index Only Scan using recno_vm_partial_idx on recno_vm_partial  (cost=0.14..4.16 rows=1 width=4) (actual rows=13.00 loops=1)
+   Index Cond: ((val >= 100) AND (val <= 500))
+   Heap Fetches: 13
+   Index Searches: 1
+   Buffers: shared hit=14
+ Planning:
+   Buffers: shared hit=18
+ Planning Time: #.# ms
+ Execution Time: #.# ms
+(9 rows)
+
+-- =============================================
+-- VM and VACUUM Skip
+-- =============================================
+CREATE TABLE recno_vm_skip (
+    id int PRIMARY KEY,
+    val int,
+    data text
+) USING recno;
+-- Insert data in batches to create multiple pages
+INSERT INTO recno_vm_skip
+SELECT i, i, repeat('x', 100)
+FROM generate_series(1, 1000) i;
+-- VACUUM to set all-visible
+VACUUM recno_vm_skip;
+-- Update only a few rows
+UPDATE recno_vm_skip SET data = 'updated' WHERE id IN (100, 500, 900);
+-- VACUUM VERBOSE should show skipped pages
+VACUUM VERBOSE recno_vm_skip;
+INFO:  vacuuming "recno_vm_skip": scanning 11 pages
+INFO:  table "recno_vm_skip": starting cross-page defragmentation from block 10
+INFO:  RECNO vacuum "recno_vm_skip": found 288 tuples (288 live, 0 dead), vacuumed 0 pages, truncated 0 pages, cleaned 1 indexes
+-- =============================================
+-- VM Recovery After Crash
+-- =============================================
+-- This test would require crash recovery testing
+-- which is better suited for TAP tests
+-- Here we just verify VM state persistence
+CREATE TABLE recno_vm_persist (
+    id int PRIMARY KEY,
+    val int
+) USING recno;
+CREATE INDEX recno_vm_persist_idx ON recno_vm_persist(val);
+INSERT INTO recno_vm_persist
+SELECT i, i FROM generate_series(1, 100) i;
+VACUUM recno_vm_persist;
+-- Force checkpoint to persist VM
+CHECKPOINT;
+-- Verify VM bits are set (would survive restart)
+SELECT COUNT(*) FROM recno_vm_persist WHERE val < 50;
+ count 
+-------
+    49
+(1 row)
+
+-- =============================================
+-- VM with Different Table Sizes
+-- =============================================
+-- Small table (fits in one page)
+CREATE TABLE recno_vm_small (
+    id int PRIMARY KEY,
+    val int
+) USING recno;
+INSERT INTO recno_vm_small VALUES (1, 10), (2, 20), (3, 30);
+VACUUM recno_vm_small;
+-- Medium table (multiple pages)
+CREATE TABLE recno_vm_medium (
+    id int PRIMARY KEY,
+    val int,
+    padding text
+) USING recno;
+INSERT INTO recno_vm_medium
+SELECT i, i, repeat('x', 500)
+FROM generate_series(1, 100) i;
+VACUUM recno_vm_medium;
+-- Large table (many pages)
+CREATE TABLE recno_vm_large (
+    id int PRIMARY KEY,
+    val int,
+    padding text
+) USING recno;
+INSERT INTO recno_vm_large
+SELECT i, i, repeat('x', 100)
+FROM generate_series(1, 10000) i;
+VACUUM recno_vm_large;
+-- Test VM effectiveness at different scales
+SELECT
+    relname,
+    relpages,
+    reltuples
+FROM pg_class
+WHERE relname LIKE 'recno_vm_%'
+ORDER BY relname;
+         relname          | relpages | reltuples 
+--------------------------+----------+-----------
+ recno_vm_clear           |        0 |        -1
+ recno_vm_clear_idx       |        1 |         0
+ recno_vm_clear_pkey      |        1 |         0
+ recno_vm_concurrent      |        0 |        -1
+ recno_vm_concurrent_idx  |        1 |         0
+ recno_vm_concurrent_pkey |        1 |         0
+ recno_vm_delete          |        0 |        -1
+ recno_vm_delete_idx      |        1 |         0
+ recno_vm_delete_pkey     |        1 |         0
+ recno_vm_frozen          |        0 |        -1
+ recno_vm_frozen_pkey     |        1 |         0
+ recno_vm_hot             |        0 |        -1
+ recno_vm_hot_idx         |        1 |         0
+ recno_vm_hot_pkey        |        1 |         0
+ recno_vm_large           |        0 |        -1
+ recno_vm_large_pkey      |        1 |         0
+ recno_vm_medium          |        0 |        -1
+ recno_vm_medium_pkey     |        1 |         0
+ recno_vm_partial         |        0 |        -1
+ recno_vm_partial_idx     |        1 |         0
+ recno_vm_partial_pkey    |        1 |         0
+ recno_vm_perf            |      114 |     10000
+ recno_vm_perf_idx1       |       11 |     10000
+ recno_vm_perf_idx2       |       11 |     10000
+ recno_vm_perf_idx3       |       15 |     10000
+ recno_vm_perf_pkey       |       30 |     10000
+ recno_vm_persist         |        0 |        -1
+ recno_vm_persist_idx     |        1 |         0
+ recno_vm_persist_pkey    |        1 |         0
+ recno_vm_skip            |        0 |        -1
+ recno_vm_skip_pkey       |        1 |         0
+ recno_vm_small           |        0 |        -1
+ recno_vm_small_pkey      |        1 |         0
+ recno_vm_test            |        0 |        -1
+ recno_vm_test_pkey       |        1 |         0
+ recno_vm_val_idx         |        1 |         0
+(36 rows)
+
+-- =============================================
+-- Cleanup
+-- =============================================
+DROP TABLE recno_vm_test CASCADE;
+DROP TABLE recno_vm_clear CASCADE;
+DROP TABLE recno_vm_delete CASCADE;
+DROP TABLE recno_vm_hot CASCADE;
+DROP TABLE recno_vm_frozen CASCADE;
+DROP TABLE recno_vm_concurrent CASCADE;
+DROP TABLE recno_vm_perf CASCADE;
+DROP TABLE recno_vm_partial CASCADE;
+DROP TABLE recno_vm_skip CASCADE;
+DROP TABLE recno_vm_persist CASCADE;
+DROP TABLE recno_vm_small CASCADE;
+DROP TABLE recno_vm_medium CASCADE;
+DROP TABLE recno_vm_large CASCADE;

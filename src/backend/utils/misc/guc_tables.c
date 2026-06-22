@@ -31,9 +31,11 @@
 
 #include "access/commit_ts.h"
 #include "access/gin.h"
+#include "access/recno.h"
 #include "access/logical_revert_worker.h"
 #include "access/slog.h"
 #include "access/slru.h"
+#include "access/xactundo.h"
 #include "access/toast_compression.h"
 #include "access/twophase.h"
 #include "access/undolog.h"
@@ -85,6 +87,7 @@
 #include "storage/bufpage.h"
 #include "storage/copydir.h"
 #include "storage/fd.h"
+#include "storage/fileops.h"
 #include "storage/io_worker.h"
 #include "storage/large_object.h"
 #include "storage/pg_shmem.h"
@@ -477,6 +480,24 @@ static const struct config_enum_entry default_toast_compression_options[] = {
 #ifdef  USE_LZ4
 	{"lz4", TOAST_LZ4_COMPRESSION, false},
 #endif
+	{NULL, 0, false}
+};
+
+/*
+ * Allowed values for recno_compression_algorithm.  Following the
+ * default_toast_compression pattern, codecs whose backing library is not
+ * compiled in are omitted so selecting an unavailable codec fails cleanly at
+ * GUC-assignment time instead of silently degrading.
+ */
+static const struct config_enum_entry recno_compression_algorithm_options[] = {
+	{"auto", RECNO_COMP_ALGO_AUTO, false},
+#ifdef USE_LZ4
+	{"lz4", RECNO_COMP_ALGO_LZ4, false},
+#endif
+#ifdef USE_ZSTD
+	{"zstd", RECNO_COMP_ALGO_ZSTD, false},
+#endif
+	{"none", RECNO_COMP_ALGO_OFF, false},
 	{NULL, 0, false}
 };
 

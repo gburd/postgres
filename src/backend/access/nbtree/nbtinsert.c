@@ -1236,6 +1236,27 @@ _bt_insertonpg(Relation rel,
 							   BufferGetBlockNumber(buf),
 							   BufferGetBlockNumber(rbuf));
 
+		/*
+		 * Write nbtree UNDO record for the split-path insertion, mirroring the
+		 * no-split branch below.  Without this, an aborting transaction whose
+		 * insert triggered a page split would leave its entry behind as bloat,
+		 * since only the no-split path logs undo.
+		 *
+		 * The split moved the new entry off the (blkno, offset) computed before
+		 * the split, so these are best-effort hints only: undo apply re-descends
+		 * by heap TID to find the entry's current location and tolerates a stale
+		 * hint.  Emitted here, after _bt_split's critical section has ended but
+		 * while we still hold the buffer lock, and before _bt_insert_parent
+		 * releases it.
+		 *
+		 * Only write UNDO if the parent table AM supports UNDO.  heaprel is NULL
+		 * during index builds and recovery.
+		 */
+		if (heaprel != NULL && RelationAmSupportsUndo(heaprel))
+			NbtreeUndoLogInsert(rel, heaprel, buf,
+								postingoff == 0 ? itup : origitup,
+								itemsz, newitemoff, isleaf);
+
 		/*----------
 		 * By here,
 		 *
@@ -1432,7 +1453,8 @@ _bt_insertonpg(Relation rel,
 		 */
 		if (heaprel != NULL && RelationAmSupportsUndo(heaprel))
 		{
-			NbtreeUndoLogInsert(rel, heaprel, buf, itup,
+			NbtreeUndoLogInsert(rel, heaprel, buf,
+								postingoff == 0 ? itup : origitup,
 								itemsz, newitemoff, isleaf);
 		}
 

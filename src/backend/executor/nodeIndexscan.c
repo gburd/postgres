@@ -29,9 +29,11 @@
  */
 #include "postgres.h"
 
+#include "access/itup.h"
 #include "access/nbtree.h"
 #include "access/relscan.h"
 #include "access/tableam.h"
+#include "catalog/index.h"
 #include "catalog/pg_am.h"
 #include "executor/executor.h"
 #include "executor/instrument.h"
@@ -44,6 +46,7 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/sortsupport.h"
+#include "utils/syscache.h"
 
 /*
  * When an ordering operator is used, tuples fetched from the index that
@@ -135,6 +138,23 @@ IndexNext(IndexScanState *node)
 	while (index_getnext_slot(scandesc, direction, slot))
 	{
 		CHECK_FOR_INTERRUPTS();
+
+		/*
+		 * For a table AM that updates in place keeping the same TID, the index
+		 * entry that produced this slot may carry a stale key (oldkey -> tid)
+		 * that no longer matches the live tuple.  Recheck the stored index key
+		 * against the live tuple and skip the entry if it has gone stale.
+		 */
+		if (scandesc->xs_inplace_recheck &&
+			node->iss_InplaceRecheckInfo != NULL &&
+			scandesc->xs_itup != NULL &&
+			ExecIndexInplaceEntryIsStale(estate, node->iss_RelationDesc,
+										 node->iss_InplaceRecheckInfo,
+										 scandesc, slot, NULL))
+		{
+			InstrCountFiltered2(node, 1);
+			continue;
+		}
 
 		/*
 		 * If the index was lossy, we have to recheck the index quals using
@@ -277,6 +297,23 @@ next_indextuple:
 		}
 
 		/*
+		 * For a table AM that updates in place keeping the same TID, skip
+		 * entries whose stored key no longer matches the live tuple (a stale
+		 * oldkey -> tid entry left behind by an in-place UPDATE).
+		 */
+		if (scandesc->xs_inplace_recheck &&
+			node->iss_InplaceRecheckInfo != NULL &&
+			scandesc->xs_itup != NULL &&
+			ExecIndexInplaceEntryIsStale(estate, node->iss_RelationDesc,
+										 node->iss_InplaceRecheckInfo,
+										 scandesc, slot, NULL))
+		{
+			InstrCountFiltered2(node, 1);
+			CHECK_FOR_INTERRUPTS();
+			goto next_indextuple;
+		}
+
+		/*
 		 * If the index was lossy, we have to recheck the index quals and
 		 * ORDER BY expressions using the fetched tuple.
 		 */
@@ -403,6 +440,114 @@ IndexRecheck(IndexScanState *node, TupleTableSlot *slot)
 	/* Does the tuple meet the indexqual condition? */
 	econtext->ecxt_scantuple = slot;
 	return ExecQualAndReset(node->indexqualorig, econtext);
+}
+
+
+/*
+ * ExecIndexInplaceEntryIsStale
+ *
+ *		For a table AM that updates in place keeping the same TID
+ *		(am_inplace_update_no_dead_tuple), a changed indexed column leaves the
+ *		secondary index with both the old (oldkey -> tid) and new
+ *		(newkey -> tid) entries pointing at the one live tuple.  An index scan
+ *		can therefore reach the live tuple through a stale entry whose stored
+ *		key no longer matches the tuple's current values.
+ *
+ *		Reform the live tuple's full index tuple from 'liveslot' through the
+ *		index's *storage* tuple descriptor (scandesc->xs_itupdesc) -- the same
+ *		descriptor index_form_tuple() used to build the stored entry -- so the
+ *		comparison is done in the index's storage representation (e.g. cstring
+ *		for btree name_ops, not the name input type).  Then compare the key
+ *		attributes byte-for-byte with datumIsEqual against the stored entry in
+ *		scandesc->xs_itup.  This matches the write-side predicate
+ *		(recno_operations.c uses datumIsEqual to decide whether a key changed)
+ *		and avoids any per-row opclass/operator/syscache lookups.
+ *
+ *		Return true if any key column differs (the entry is stale and the
+ *		caller must skip it); false if every key column matches (the entry is
+ *		current).  On a current entry, when 'live_itup_out' is non-NULL, it is
+ *		set to the reformed live index tuple (palloc'd in the caller's current
+ *		memory context; the caller must pfree it).  Index-only scans use this
+ *		to emit live INCLUDE/payload columns rather than the possibly stale
+ *		values stored in xs_itup.  Plain index scans pass NULL because they
+ *		fill the output slot from the live heap tuple.
+ *
+ *		Only called for in-place AMs (indexInfo is NULL otherwise), and only
+ *		when scandesc->xs_inplace_recheck is set and scandesc->xs_itup is
+ *		available, so heap-style AMs pay nothing.
+ */
+bool
+ExecIndexInplaceEntryIsStale(EState *estate, Relation idxrel,
+							 IndexInfo *indexInfo, IndexScanDesc scandesc,
+							 TupleTableSlot *liveslot,
+							 IndexTuple *live_itup_out)
+{
+	Datum		live_values[INDEX_MAX_KEYS];
+	bool		live_isnull[INDEX_MAX_KEYS];
+	Datum		live_stored_values[INDEX_MAX_KEYS];
+	bool		live_stored_isnull[INDEX_MAX_KEYS];
+	Datum		itup_values[INDEX_MAX_KEYS];
+	bool		itup_isnull[INDEX_MAX_KEYS];
+	TupleDesc	itupdesc = scandesc->xs_itupdesc;
+	IndexTuple	live_itup;
+	int			nkeyatts;
+	int			i;
+	bool		stale = false;
+
+	if (live_itup_out != NULL)
+		*live_itup_out = NULL;
+
+	/* Reform the live tuple's index key datums (opclass input types). */
+	GetPerTupleExprContext(estate)->ecxt_scantuple = liveslot;
+	FormIndexDatum(indexInfo, liveslot, estate, live_values, live_isnull);
+
+	/*
+	 * Convert the live key datums into the index's storage representation by
+	 * forming a real index tuple with the AM-supplied tuple descriptor, then
+	 * deform it back.  This performs the same input-type -> storage-type
+	 * mapping that produced the stored entry (e.g. name -> cstring for btree
+	 * name_ops), so the subsequent datumIsEqual comparisons operate on
+	 * matching representations.
+	 */
+	live_itup = index_form_tuple(itupdesc, live_values, live_isnull);
+	index_deform_tuple(live_itup, itupdesc,
+					   live_stored_values, live_stored_isnull);
+
+	/* Deform the stored index tuple in the same storage representation. */
+	index_deform_tuple(scandesc->xs_itup, itupdesc,
+					   itup_values, itup_isnull);
+
+	nkeyatts = IndexRelationGetNumberOfKeyAttributes(idxrel);
+
+	for (i = 0; i < nkeyatts; i++)
+	{
+		Form_pg_attribute att = TupleDescAttr(itupdesc, i);
+
+		/* Two NULLs in the same column are equal for this purpose. */
+		if (live_stored_isnull[i] && itup_isnull[i])
+			continue;
+
+		/* NULL vs non-NULL is a mismatch -> stale. */
+		if (live_stored_isnull[i] || itup_isnull[i])
+		{
+			stale = true;
+			break;
+		}
+
+		if (!datumIsEqual(itup_values[i], live_stored_values[i],
+						  att->attbyval, att->attlen))
+		{
+			stale = true;
+			break;
+		}
+	}
+
+	if (stale || live_itup_out == NULL)
+		pfree(live_itup);
+	else
+		*live_itup_out = live_itup;
+
+	return stale;
 }
 
 
@@ -985,6 +1130,19 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 	/* Open the index relation. */
 	lockmode = exec_rt_fetch(node->scan.scanrelid, estate)->rellockmode;
 	indexstate->iss_RelationDesc = index_open(node->indexid, lockmode);
+
+	/*
+	 * For a table AM that updates in place keeping the same TID, cache an
+	 * IndexInfo so IndexNext can reform the live tuple's key and drop stale
+	 * secondary entries (oldkey -> tid) that survive in-place UPDATEs.  Heap
+	 * leaves this NULL, so its scan path is unchanged.
+	 */
+	if (currentRelation->rd_tableam != NULL &&
+		currentRelation->rd_tableam->am_inplace_update_no_dead_tuple)
+		indexstate->iss_InplaceRecheckInfo =
+			BuildIndexInfo(indexstate->iss_RelationDesc);
+	else
+		indexstate->iss_InplaceRecheckInfo = NULL;
 
 	/*
 	 * Initialize index-specific scan state
