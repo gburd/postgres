@@ -66,6 +66,7 @@
 #include "storage/bufmgr.h"
 #include "storage/ipc.h"
 #include "storage/fd.h"
+#include "storage/latch.h"
 #include "storage/pmsignal.h"
 #include "storage/proc.h"
 #include "storage/procsignal.h"
@@ -109,8 +110,6 @@
 	((pid) == 0 ? 0 : \
 	 errdetail_log("Signal sent by PID %d, UID %d.", (int) (pid), (int) (uid)))
 
-#define READ_COMMAND_WOULD_BLOCK	(-2)
-
 /* ----------------
  *		private typedefs etc
  * ----------------
@@ -145,6 +144,8 @@ typedef struct BindParamCbData
 									   CurrentPgSession, \
 									   PgCurrentDoingCommandReadRef))
 
+#define PG_READ_COMMAND_PROTOCOL_PARK	(-2)
+
 /*
  * If an unnamed prepared statement exists, it's stored here.
  * We keep it separate from the hashtable kept by commands/prepare.c
@@ -167,9 +168,10 @@ typedef struct BindParamCbData
  */
 static int	InteractiveBackend(StringInfo inBuf);
 static int	interactive_getc(void);
-static bool PgSessionCanParkClientRead(PgSession *session);
-static int	SocketBackend(PgSession *session, StringInfo inBuf);
-static int	ReadCommand(PgSession *session, StringInfo inBuf);
+static int	SocketBackend(PgSession *session, StringInfo inBuf,
+						  PgStepBudget budget);
+static int	ReadCommand(PgSession *session, StringInfo inBuf,
+						PgStepBudget budget);
 static void forbidden_in_wal_sender(char firstchar);
 static bool check_log_statement(List *stmt_list);
 static int	errdetail_execute(List *raw_parsetree_list);
@@ -185,6 +187,12 @@ static void ProcessRecoveryConflictInterrupts(void);
 static void ProcessRecoveryConflictInterrupt(RecoveryConflictReason reason);
 static void report_recovery_conflict(RecoveryConflictReason reason);
 static PgSession *PgSessionBootstrap(const char *dbname, const char *username);
+pg_noreturn static void PgSessionRunProtocolSchedulerStaging(PgSession *session);
+static uint32 PgSessionStagingWaitProtocolRead(PgBackend *backend,
+											   PgProtocolParkSpec *park_spec);
+static long PgProtocolParkTimeoutDelayMs(PgBackend *backend,
+										 PgProtocolParkSpec *park_spec,
+										 bool *stale_timeout);
 static void PgSessionLoopStateInit(PgSessionLoopState *state);
 static void PgSessionRecoverError(PgSession *session);
 static pg_attribute_always_inline PgStepResult PgSessionStepUnprotected(PgSession *session,
@@ -271,16 +279,6 @@ ClientReadNotifyInterruptPending(PgBackend *backend)
 		return backend->utility.notify_interrupt_pending;
 
 	return notifyInterruptPending;
-}
-
-static bool
-PgSessionCanParkClientRead(PgSession *session)
-{
-	PgBackend  *backend = CurrentPgBackend;
-
-	return session != NULL &&
-		backend != NULL &&
-		PgRuntimeIsPooledScheduler(backend->runtime);
 }
 
 
@@ -446,7 +444,7 @@ interactive_getc(void)
  * ----------------
  */
 static int
-SocketBackend(PgSession *session, StringInfo inBuf)
+SocketBackend(PgSession *session, StringInfo inBuf, PgStepBudget budget)
 {
 	PgSessionLoopState *state;
 	volatile uint32 *query_cancel_holdoff_count;
@@ -460,47 +458,47 @@ SocketBackend(PgSession *session, StringInfo inBuf)
 	/*
 	 * Get message type code from the frontend.
 	 */
-	(*query_cancel_holdoff_count)++;
-	/*
-	 * A pooled carrier may park only before protocol message consumption has
-	 * begun.  Once the type byte is consumed, finish the whole message on the
-	 * same carrier so error recovery never sees a half-read message.
-	 */
-	if (PgSessionCanParkClientRead(session))
+	if (budget.protocol_park_enabled)
 	{
-		unsigned char qtype_byte;
-		int			read_result;
+		PgProtocolByteProbe probe;
+		PgProtocolByteResult probe_result;
 
-		read_result = pq_startmsgread_getbyte_if_available(&qtype_byte);
-		if (read_result == 0)
+		PgSessionServiceProtocolReadWake(session);
+
+		probe_result = PgConnectionProbeMessageType(session->connection,
+													&probe);
+		if (probe_result == PG_PROTOCOL_BYTE_NONE)
 		{
-			PgWaitSpec	wait_spec;
+			PgProtocolParkSpec park_spec;
 
-			Assert(*query_cancel_holdoff_count > 0);
-			(*query_cancel_holdoff_count)--;
+			MemSet(&park_spec, 0, sizeof(park_spec));
+			park_spec.transport_wait_events = probe.transport_wait_events;
+			park_spec.transport_buffered_input =
+				probe.transport_buffered_input;
+			park_spec.transport_generation = probe.transport_generation;
+			park_spec.wait_event_info = WAIT_EVENT_CLIENT_READ;
 
-			wait_spec.kind = PG_WAIT_KIND_EVENT_SET;
-			wait_spec.wait_event_info = WAIT_EVENT_CLIENT_READ;
-			wait_spec.wake_events =
-				WL_SOCKET_READABLE | WL_LATCH_SET | WL_POSTMASTER_DEATH;
-			wait_spec.socket = MyProcPort != NULL ? MyProcPort->sock :
-				PGINVALID_SOCKET;
-			wait_spec.timeout = -1;
-			wait_spec.timeout_at = 0;
-
-			if (PgBackendPublishWaitCompletion(CurrentPgBackend, &wait_spec))
-				return READ_COMMAND_WOULD_BLOCK;
+			if (PgBackendPrepareProtocolReadPark(session->backend,
+												 &park_spec))
+				return PG_READ_COMMAND_PROTOCOL_PARK;
 
 			(*query_cancel_holdoff_count)++;
 			qtype = pq_startmsgread_getbyte();
 		}
-		else if (read_result == EOF)
-			qtype = EOF;
+		else if (probe_result == PG_PROTOCOL_BYTE_AVAILABLE)
+		{
+			qtype = probe.type;
+			(*query_cancel_holdoff_count)++;
+			goto have_message_type;
+		}
 		else
-			qtype = qtype_byte;
+			qtype = EOF;
 	}
 	else
+	{
+		(*query_cancel_holdoff_count)++;
 		qtype = pq_startmsgread_getbyte();
+	}
 
 	if (qtype == EOF)			/* frontend disconnected */
 	{
@@ -522,6 +520,8 @@ SocketBackend(PgSession *session, StringInfo inBuf)
 		}
 		return qtype;
 	}
+
+have_message_type:
 
 	/*
 	 * Validate message type code before trying to read body; if we have lost
@@ -619,14 +619,14 @@ SocketBackend(PgSession *session, StringInfo inBuf)
  * ----------------
  */
 static int
-ReadCommand(PgSession *session, StringInfo inBuf)
+ReadCommand(PgSession *session, StringInfo inBuf, PgStepBudget budget)
 {
 	int			result;
 
 	Assert(session != NULL);
 
 	if (whereToSendOutput == DestRemote)
-		result = SocketBackend(session, inBuf);
+		result = SocketBackend(session, inBuf, budget);
 	else
 		result = InteractiveBackend(inBuf);
 	return result;
@@ -685,6 +685,38 @@ ProcessClientReadInterrupt(bool blocked)
 	}
 
 	errno = save_errno;
+}
+
+void
+PgSessionServiceProtocolReadWake(PgSession *session)
+{
+	PgBackend  *backend;
+
+	Assert(session != NULL);
+	Assert(session == CurrentPgSession);
+	Assert(session->loop_state.doing_command_read);
+
+	backend = session->backend;
+	Assert(backend == CurrentPgBackend);
+
+	(void) process_due_logical_timeouts();
+	ProcessClientReadInterrupt(false);
+
+	if (ClientReadNotifyInterruptPending(backend))
+	{
+		if (IsTransactionOrTransactionBlock())
+			(void) PgBackendMarkProtocolReadParkDeferredNotify(backend,
+															   PgBackendNotifyInterruptGeneration(backend),
+															   PG_PROTOCOL_PARK_WAKE_NOTIFY);
+	}
+	else
+		PgBackendClearProtocolReadParkDeferredNotify(backend);
+
+	if (ConfigReloadPending)
+	{
+		ConfigReloadPending = false;
+		ProcessConfigFile(PGC_SIGHUP);
+	}
 }
 
 /*
@@ -4730,9 +4762,10 @@ PgSessionStepUnprotected(PgSession *session, PgStepBudget budget)
 	/*
 	 * (3) read a command (loop blocks here)
 	 */
-	firstchar = ReadCommand(session, &input_message);
-	if (firstchar == READ_COMMAND_WOULD_BLOCK)
-		return PG_STEP_WAITING;
+	firstchar = ReadCommand(session, &input_message, budget);
+
+	if (firstchar == PG_READ_COMMAND_PROTOCOL_PARK)
+		return PG_STEP_PARK_PROTOCOL_READ;
 
 	/*
 	 * (4) turn off the idle-in-transaction and idle-session timeouts if
@@ -5025,6 +5058,9 @@ PgSessionStepUnprotected(PgSession *session, PgStepBudget budget)
 			if (whereToSendOutput == DestRemote)
 				whereToSendOutput = DestNone;
 
+			if (budget.return_logical_exits)
+				return PG_STEP_DONE;
+
 			/*
 			 * NOTE: if you are tempted to add more code here, DON'T! Whatever
 			 * you had in mind to do should be set up as an on_proc_exit or
@@ -5150,7 +5186,7 @@ PgSessionRun(PgSession *session)
 	state = &session->loop_state;
 	Assert(!state->step_error_boundary_active);
 
-	budget.max_messages = 0;
+	MemSet(&budget, 0, sizeof(budget));
 	exception_stack_ref = PgCurrentExceptionStackRefFast();
 	state->step_error_boundary_active = true;
 
@@ -5167,6 +5203,282 @@ PgSessionRun(PgSession *session)
 
 	for (;;)
 		(void) PgSessionStepUnprotected(session, budget);
+}
+
+static long
+PgProtocolParkTimeoutDelayMs(PgBackend *backend,
+							 PgProtocolParkSpec *park_spec,
+							 bool *stale_timeout)
+{
+	TimestampTz now;
+	long		delay_ms;
+
+	Assert(backend != NULL);
+	Assert(park_spec != NULL);
+	Assert(stale_timeout != NULL);
+
+	*stale_timeout = false;
+
+	if (!park_spec->timeout_wake_at_valid)
+		return -1;
+
+	if (!PgBackendProtocolReadParkTimeoutGenerationValid(backend,
+														 park_spec->generation))
+	{
+		*stale_timeout = true;
+		return 0;
+	}
+
+	now = GetCurrentTimestamp();
+	if (now >= park_spec->timeout_wake_at)
+		return 0;
+
+	delay_ms = TimestampDifferenceMilliseconds(now,
+											   park_spec->timeout_wake_at);
+	if (delay_ms < 0)
+		return 0;
+	if (delay_ms > INT_MAX)
+		return INT_MAX;
+
+	return delay_ms;
+}
+
+static uint32
+PgSessionStagingWaitProtocolRead(PgBackend *backend,
+								 PgProtocolParkSpec *park_spec)
+{
+	PgConnection *connection;
+	WaitEventSet *wait_set;
+	WaitEvent	events[FeBeWaitSetNEvents];
+	uint32		wake_events = 0;
+	uint32	   *wait_event_info_ptr;
+
+	Assert(backend != NULL);
+	Assert(park_spec != NULL);
+	Assert(park_spec->backend == backend);
+	Assert(park_spec->connection != NULL);
+	Assert(CurrentPgBackend == NULL);
+	Assert(CurrentPgSession == NULL);
+	Assert(CurrentPgConnection == NULL);
+	Assert(CurrentPgExecution == NULL);
+
+	/*
+	 * Buffered transport input is an immediate re-probe condition, not a
+	 * kernel socket wait.  The probe should expose a protocol byte if one is
+	 * available; otherwise the carrier re-enters the top-level loop without
+	 * sleeping so the transport layer can make its own state visible.
+	 */
+	if (park_spec->transport_buffered_input)
+	{
+		(void) PgBackendMarkProtocolReadParkWake(backend,
+												 park_spec->generation,
+												 PG_PROTOCOL_PARK_WAKE_BUFFERED_INPUT,
+												 0);
+		return 0;
+	}
+
+	if (park_spec->transport_wait_events == 0 ||
+		park_spec->socket == PGINVALID_SOCKET)
+	{
+		(void) PgBackendMarkProtocolReadParkWake(backend,
+												 park_spec->generation,
+												 PG_PROTOCOL_PARK_WAKE_STALE_TRANSPORT,
+												 0);
+		return 0;
+	}
+
+	connection = park_spec->connection;
+	wait_set = connection->protocol.fe_be_wait_set;
+	Assert(wait_set != NULL);
+
+	wait_event_info_ptr = backend->wait_state.wait_event_info_ptr;
+	Assert(wait_event_info_ptr != NULL);
+
+	ModifyWaitEvent(wait_set, FeBeWaitSetSocketPos,
+					park_spec->transport_wait_events | WL_SOCKET_CLOSED,
+					NULL);
+
+	*(volatile uint32 *) wait_event_info_ptr = park_spec->wait_event_info;
+	PG_TRY();
+	{
+		for (;;)
+		{
+			int			rc;
+			long		timeout_ms;
+			bool		stale_timeout;
+
+			if (connection->socket_io.transport_generation !=
+				park_spec->transport_generation)
+			{
+				(void) PgBackendMarkProtocolReadParkWake(backend,
+														 park_spec->generation,
+														 PG_PROTOCOL_PARK_WAKE_STALE_TRANSPORT,
+														 0);
+				break;
+			}
+
+			timeout_ms =
+				PgProtocolParkTimeoutDelayMs(backend, park_spec,
+											 &stale_timeout);
+			if (stale_timeout)
+			{
+				(void) PgBackendMarkProtocolReadParkWake(backend,
+														 park_spec->generation,
+														 PG_PROTOCOL_PARK_WAKE_STALE_TIMEOUT,
+														 0);
+				break;
+			}
+			if (timeout_ms == 0)
+			{
+				wake_events |= WL_TIMEOUT;
+				break;
+			}
+
+			rc = WaitEventSetWait(wait_set, timeout_ms, events,
+								  lengthof(events), 0);
+			if (rc == 0)
+			{
+				wake_events |= WL_TIMEOUT;
+				break;
+			}
+			for (int i = 0; i < rc; i++)
+			{
+				wake_events |= events[i].events;
+				if (events[i].events & (park_spec->transport_wait_events |
+										WL_SOCKET_CLOSED |
+										WL_LATCH_SET |
+										WL_POSTMASTER_DEATH))
+					break;
+			}
+
+			if (wake_events != 0)
+				break;
+		}
+		*(volatile uint32 *) wait_event_info_ptr = 0;
+	}
+	PG_CATCH();
+	{
+		*(volatile uint32 *) wait_event_info_ptr = 0;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (wake_events != 0)
+	{
+		uint32		wake_reasons = PG_PROTOCOL_PARK_WAKE_NONE;
+		PgBackendInterruptMask pending_interrupts;
+
+		if (wake_events & park_spec->transport_wait_events)
+			wake_reasons |= PG_PROTOCOL_PARK_WAKE_TRANSPORT;
+		if (wake_events & WL_SOCKET_CLOSED)
+			wake_reasons |= PG_PROTOCOL_PARK_WAKE_CLOSED;
+		if (wake_events & WL_LATCH_SET)
+			wake_reasons |= PG_PROTOCOL_PARK_WAKE_LOGICAL;
+		if (wake_events & WL_POSTMASTER_DEATH)
+			wake_reasons |= PG_PROTOCOL_PARK_WAKE_POSTMASTER;
+		if (wake_events & WL_TIMEOUT)
+			wake_reasons |= PG_PROTOCOL_PARK_WAKE_TIMEOUT;
+		pending_interrupts =
+			pg_atomic_read_u32(&backend->interrupts.pending_mask);
+		if ((wake_events & WL_LATCH_SET) &&
+			(pending_interrupts &
+			 PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_NOTIFY)))
+			wake_reasons |= PG_PROTOCOL_PARK_WAKE_NOTIFY;
+
+		(void) PgBackendMarkProtocolReadParkWake(backend,
+												 park_spec->generation,
+												 wake_reasons,
+												 wake_events);
+	}
+
+	return wake_events;
+}
+
+pg_noreturn static void
+PgSessionRunProtocolSchedulerStaging(PgSession *session)
+{
+	PgStepBudget budget;
+
+	Assert(session != NULL);
+	Assert(CurrentPgRuntime != NULL);
+	Assert(CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION);
+
+	MemSet(&budget, 0, sizeof(budget));
+	budget.max_messages = 1;
+	budget.protocol_park_enabled = true;
+	budget.return_logical_exits = true;
+
+	for (;;)
+	{
+		PgStepResult result;
+
+		result = PgSessionStep(session, budget);
+		switch (result)
+		{
+			case PG_STEP_CONTINUE:
+			case PG_STEP_ERROR_RECOVERED:
+				break;
+
+			case PG_STEP_PARK_PROTOCOL_READ:
+				{
+					PgCarrier  *carrier = CurrentPgCarrier;
+					PgBackend  *backend = session->backend;
+					PgConnection *connection = session->connection;
+					PgExecution *execution = session->execution;
+					PgProtocolParkSpec park_spec;
+					uint32		wake_events;
+
+					Assert(carrier != NULL);
+					Assert(backend != NULL);
+					Assert(connection != NULL);
+					Assert(execution != NULL);
+					Assert(backend == CurrentPgBackend);
+					Assert(backend->protocol_park.state ==
+						   PG_PROTOCOL_PARK_PREPARED);
+
+					park_spec = backend->protocol_park.spec;
+					PgCarrierCommitProtocolReadPark(carrier, backend);
+
+					wake_events =
+						PgSessionStagingWaitProtocolRead(backend, &park_spec);
+
+					if (!PgRuntimeProtocolSchedulerMarkRunnable(CurrentPgRuntime,
+																backend))
+						elog(PANIC, "could not mark protocol read park runnable");
+					if (PgRuntimeProtocolSchedulerPopRunnable(CurrentPgRuntime) !=
+						backend)
+						elog(PANIC, "unexpected protocol scheduler runnable backend");
+
+					PgCarrierAttachBackend(carrier, backend, session,
+										   connection, execution);
+					PgBackendResumeProtocolReadPark(backend);
+
+					if (wake_events & WL_POSTMASTER_DEATH)
+						ereport(FATAL,
+								(errcode(ERRCODE_ADMIN_SHUTDOWN),
+								 errmsg("terminating connection due to unexpected postmaster exit")));
+
+					if (wake_events & WL_LATCH_SET)
+					{
+						/*
+						 * Process the pending interrupt under the next
+						 * PgSessionStep() error boundary.  Leaving the latch
+						 * set here would make the next detached wait return
+						 * immediately even if the interrupt was already
+						 * consumed.
+						 */
+						ResetLatch(MyLatch);
+					}
+				}
+				break;
+
+			case PG_STEP_DONE:
+				PgBackendExit(0);
+
+			case PG_STEP_FATAL_EXIT:
+				PgBackendExit(1);
+		}
+	}
 }
 
 
@@ -5394,6 +5706,9 @@ PostgresMain(const char *dbname, const char *username)
 	PgSession  *session;
 
 	session = PgSessionBootstrap(dbname, username);
+	if (CurrentPgRuntime != NULL &&
+		CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION)
+		PgSessionRunProtocolSchedulerStaging(session);
 	PgSessionRun(session);
 }
 

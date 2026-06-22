@@ -2,8 +2,9 @@
 
 Phase 13 starts from the Phase 12 thread-per-session runtime. The immediate
 goal is not pooled scheduling yet; it is to make waits explicit enough that a
-later scheduler can suspend and resume logical backend work without changing
-every caller at once.
+later scheduler can observe readiness and wake logical backend work without
+changing every caller at once. The Phase 14/15 protocol scheduler must not infer
+from this plan that arbitrary waits can detach a logical backend.
 
 ## Signalling And Wakeup Boundary
 
@@ -25,8 +26,8 @@ Use this boundary for new Phase 13 work:
 
 This keeps the branch aligned with the upstream direction without importing
 the broad latch API replacement before the scheduler model exists. Once Phase
-13 has real wait-completion records and a task requeue path, revisit whether a
-larger upstream-style `Interrupt` abstraction should subsume more latch call
+13 has real wait-completion records and observable wake routing, revisit whether
+a larger upstream-style `Interrupt` abstraction should subsume more latch call
 sites.
 
 ## Current Pre-Phase-13 Signalling State
@@ -65,7 +66,9 @@ Known non-goals before Phase 13:
    - wait kind and wait event info;
    - readiness state;
    - timeout/cancel/termination interaction;
-   - requeue hook for future pooled carriers.
+   - optional future wake handoff metadata. Any requeue hook is reserved for
+     post-Phase-15 scheduler-boundary experiments, not Phase 14/15 deep-wait
+     detachment.
 3. Put scheduler-aware wake routing behind narrow helpers:
    - `PgBackendWakeForInterrupt()` for logical backend interrupts;
    - a wait-completion wake helper for latch/CV/socket/lock readiness.
@@ -82,7 +85,7 @@ Known non-goals before Phase 13:
    - lock waits;
    - timeout waits.
 7. Reassess the broader upstream latch-to-interrupt architecture after at least
-   one wait family has a working wait-completion record and scheduler requeue
+   one wait family has a working wait-completion record and observable wake
    story. At that point, a larger refactor can be judged against real Phase 13
    mechanics rather than as an abstract cleanup.
 
@@ -95,7 +98,9 @@ The first wait-boundary slice is implemented:
   kind, wait event info, wake mask, timeout, readiness state, and cancel/die
   interrupt flags while preserving the blocking callback fallback.
 - `PgBackendWakeWaitCompletion()` records wait readiness and wakes the owning
-  backend latch unless a future scheduler installs a requeue hook.
+  backend latch. A requeue hook may remain as experimental/future metadata, but
+  Phase 14/15 must not install it for deep waits or treat it as carrier-release
+  semantics.
 - `SendInterrupt()` marks published wait completions for query-cancel and
   proc-die delivery without changing the logical interrupt mailbox semantics.
 - `WaitEventSetWait()` is the first representative wait-family entry point
@@ -152,7 +157,7 @@ After each wait-family conversion:
 - focused TAP or isolation coverage for cancel/terminate/timeout while blocked
 - `git diff --check`
 
-Do not start Phase 14 pooled-carrier scheduling until the Phase 13 wait
-boundary can suspend and resume at least one representative wait family through
+Do not start Phase 14 protocol-boundary scheduling until the Phase 13 wait
+boundary can publish and wake at least one representative wait family through
 the new wait-completion path while process mode and thread-per-session fallback
 remain healthy.

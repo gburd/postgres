@@ -549,7 +549,7 @@ PgRuntimeAfterProcessingModeChange(ProcessingMode mode)
 	PgRuntimeRefreshCurrentWork(false);
 }
 
-static void
+void
 PgRuntimeSetCurrentWork(PgRuntime *runtime, PgCarrier *carrier,
 						PgBackend *backend, PgSession *session,
 						PgConnection *connection, PgExecution *execution,
@@ -564,6 +564,87 @@ PgRuntimeSetCurrentWork(PgRuntime *runtime, PgCarrier *carrier,
 	CurrentPgConnection = connection;
 	CurrentPgExecution = execution;
 	PgRuntimeRefreshCurrentWork(rebind_session_gucs);
+}
+
+void
+PgCarrierAttachBackend(PgCarrier *carrier, PgBackend *backend,
+					   PgSession *session, PgConnection *connection,
+					   PgExecution *execution)
+{
+	PgRuntime  *runtime;
+
+	Assert(carrier != NULL);
+	Assert(backend != NULL);
+	Assert(session != NULL);
+	Assert(connection != NULL);
+	Assert(execution != NULL);
+	Assert(backend->session == NULL || backend->session == session);
+	Assert(backend->connection == NULL || backend->connection == connection);
+	Assert(backend->execution == NULL || backend->execution == execution);
+	Assert(session->backend == NULL || session->backend == backend);
+	Assert(session->connection == NULL || session->connection == connection);
+	Assert(session->execution == NULL || session->execution == execution);
+	Assert(connection->backend == NULL || connection->backend == backend);
+	Assert(connection->session == NULL || connection->session == session);
+	Assert(execution->backend == NULL || execution->backend == backend);
+	Assert(execution->session == NULL || execution->session == session);
+
+	runtime = carrier->runtime;
+	if (runtime == NULL)
+		runtime = backend->runtime;
+	Assert(runtime != NULL);
+	Assert(backend->runtime == NULL || backend->runtime == runtime);
+
+	runtime->current_carrier = carrier;
+	carrier->runtime = runtime;
+	carrier->current_backend = backend;
+	carrier->current_session = session;
+	carrier->current_execution = execution;
+	backend->runtime = runtime;
+	backend->carrier = carrier;
+	backend->session = session;
+	backend->connection = connection;
+	backend->execution = execution;
+	session->backend = backend;
+	session->connection = connection;
+	session->execution = execution;
+	connection->backend = backend;
+	connection->session = session;
+	execution->backend = backend;
+	execution->session = session;
+	execution->carrier = carrier;
+
+	PgRuntimeSetCurrentWork(runtime, carrier, backend, session, connection,
+							execution, true);
+}
+
+void
+PgCarrierDetachBackend(PgCarrier *carrier, PgBackend *backend)
+{
+	PgRuntime  *runtime;
+	PgExecution *execution;
+
+	Assert(carrier != NULL);
+	Assert(backend == NULL || carrier->current_backend == backend);
+
+	runtime = carrier->runtime;
+	Assert(runtime != NULL);
+
+	if (backend == NULL)
+		backend = carrier->current_backend;
+	execution = carrier->current_execution;
+
+	carrier->current_backend = NULL;
+	carrier->current_session = NULL;
+	carrier->current_execution = NULL;
+	if (backend != NULL && backend->carrier == carrier)
+		backend->carrier = NULL;
+	if (execution != NULL && execution->carrier == carrier)
+		execution->carrier = NULL;
+
+	if (CurrentPgCarrier == carrier)
+		PgRuntimeSetCurrentWork(runtime, carrier, NULL, NULL, NULL, NULL,
+								false);
 }
 
 static void
@@ -625,6 +706,15 @@ PgRuntimeResetAfterFork(void)
 void
 InitializePgProcessRuntime(void)
 {
+	/*
+	 * Bootstrap and standalone startup can call InitProcess() before BaseInit()
+	 * installs the process runtime.  Preserve the PGPROC/latch/wait-event
+	 * storage that InitProcess() already made current.
+	 */
+	PGPROC	   *my_proc = MyProc;
+	ProcNumber	my_proc_number = MyProcNumber;
+	struct Latch *my_latch = MyLatch;
+	uint32	   *my_wait_event_info = *PgCurrentMyWaitEventInfoRef();
 	int			wait_event_signal_fd = process_carrier.wait_event_signal_fd;
 	int			wait_event_selfpipe_readfd =
 		process_carrier.wait_event_selfpipe_readfd;
@@ -670,6 +760,10 @@ InitializePgProcessRuntime(void)
 									 &process_connection, &process_execution,
 									 MyBackendType, NULL);
 	PgBackendAdoptEarlyState(&process_backend);
+	process_backend.my_proc = my_proc;
+	process_backend.my_proc_number = my_proc_number;
+	process_backend.core.latch = my_latch;
+	process_backend.wait_state.wait_event_info_ptr = my_wait_event_info;
 	PgBackendSetInterruptLatch(&process_backend, process_backend.core.latch);
 	PgBackendAdoptEarlyExitState(&process_backend.exit_state);
 
@@ -724,30 +818,6 @@ InitializePgThreadRuntime(PgBackendExitContinuation exit_backend)
 	thread_runtime.exit_backend = exit_backend;
 }
 
-bool
-PgRuntimeIsPooledScheduler(PgRuntime *runtime)
-{
-	return runtime != NULL &&
-		runtime->kind == PG_RUNTIME_POOLED_SCHEDULER;
-}
-
-bool
-PgRuntimeUsesLogicalBackends(PgRuntime *runtime)
-{
-	return runtime != NULL &&
-		runtime->kind != PG_RUNTIME_PROCESS;
-}
-
-bool
-PgRuntimePublishesWaitCompletions(PgRuntime *runtime)
-{
-	if (runtime == NULL)
-		return false;
-
-	return runtime->kind == PG_RUNTIME_THREAD_PER_SESSION ||
-		runtime->kind == PG_RUNTIME_POOLED_SCHEDULER;
-}
-
 void
 InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 									  BackendType backend_type,
@@ -783,12 +853,17 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 {
 	Assert(state != NULL);
 
+	state->carrier.current_backend = &state->backend;
+	state->carrier.current_session = &state->session;
+	state->carrier.current_execution = &state->execution;
 	PgBackendAdoptEarlyState(&state->backend);
 	PgSessionAdoptEarlyState(&state->session);
 	PgConnectionAdoptEarlyState(&state->connection,
 								state->connection.identity.port);
 	PgExecutionAdoptEarlyState(&state->execution);
-	PgCarrierAttachBackend(&state->carrier, &state->backend);
+	PgRuntimeSetCurrentWork(&thread_runtime, &state->carrier, &state->backend,
+							&state->session, &state->connection,
+							&state->execution, true);
 	InitializeThreadedSessionRequiredGUCOptions();
 }
 
@@ -855,83 +930,6 @@ PgSetCurrentExecution(PgExecution *execution)
 	PgRuntimeFlushCurrentHotMirrors();
 	CurrentPgExecution = execution;
 	PgRuntimeRefreshCurrentWork(false);
-}
-
-void
-PgCarrierAttachBackend(PgCarrier *carrier, PgBackend *backend)
-{
-	PgRuntime  *runtime;
-	PgSession  *session;
-	PgConnection *connection;
-	PgExecution *execution;
-	PgCarrier  *old_carrier;
-
-	Assert(carrier != NULL);
-	Assert(backend != NULL);
-	Assert(carrier->runtime != NULL);
-	Assert(backend->runtime == carrier->runtime);
-
-	runtime = carrier->runtime;
-	session = backend->session;
-	connection = backend->connection;
-	execution = backend->execution;
-
-	Assert(session != NULL);
-	Assert(connection != NULL);
-	Assert(execution != NULL);
-	Assert(session->backend == backend);
-	Assert(session->connection == connection);
-	Assert(session->execution == execution);
-	Assert(connection->backend == backend);
-	Assert(connection->session == session);
-	Assert(execution->backend == backend);
-	Assert(execution->session == session);
-
-	old_carrier = backend->carrier;
-	if (old_carrier != NULL && old_carrier != carrier &&
-		old_carrier->current_backend == backend)
-	{
-		old_carrier->current_backend = NULL;
-		old_carrier->current_session = NULL;
-		old_carrier->current_execution = NULL;
-	}
-
-	carrier->current_backend = backend;
-	carrier->current_session = session;
-	carrier->current_execution = execution;
-	backend->carrier = carrier;
-	execution->carrier = carrier;
-
-	PgRuntimeSetCurrentWork(runtime, carrier, backend, session, connection,
-							execution, true);
-}
-
-void
-PgCarrierDetachBackend(PgCarrier *carrier)
-{
-	PgRuntime  *runtime;
-	PgBackend  *backend;
-	PgExecution *execution;
-
-	if (carrier == NULL)
-		return;
-
-	runtime = carrier->runtime;
-	backend = carrier->current_backend;
-	execution = carrier->current_execution;
-
-	if (backend != NULL && backend->carrier == carrier)
-		backend->carrier = NULL;
-	if (execution != NULL && execution->carrier == carrier)
-		execution->carrier = NULL;
-
-	carrier->current_backend = NULL;
-	carrier->current_session = NULL;
-	carrier->current_execution = NULL;
-
-	if (CurrentPgCarrier == carrier)
-		PgRuntimeSetCurrentWork(runtime, carrier, NULL, NULL, NULL, NULL,
-								false);
 }
 
 PgSession *
@@ -1019,6 +1017,11 @@ PgRuntimeSetExtensionBackendModel(PgBackendModel backend_model)
 	if (CurrentPgRuntime == NULL)
 		return;
 
+	/*
+	 * PG_BACKEND_MODEL_POOLED_SCHEDULER is a transitional generic marker.  The
+	 * protocol-boundary scheduler must split protocol-affine from migratable
+	 * module promises before using a stricter pooled runtime requirement.
+	 */
 	check_loaded_modules_backend_model(backend_model);
 	CurrentPgRuntime->extension_backend_model = backend_model;
 }

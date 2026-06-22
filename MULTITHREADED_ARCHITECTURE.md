@@ -9,6 +9,27 @@ so PostgreSQL can map work to processes, threads, or a later scheduler.
 This is not a short upstream patch plan. It is a north-star design for a single
 ambitious branch.
 
+## Phase 14/15 Superseding Note
+
+`MULTITHREADED_PROTOCOL_SCHEDULER_DESIGN.md` is the authoritative scheduler
+design for Phase 14 and Phase 15. Those phases schedule only top-level frontend
+protocol input before the next message type byte is consumed.
+
+In Phase 14/15:
+
+- deep waits remain observable but carrier-pinned;
+- `PgSuspend()` publishes wait metadata and invokes the blocking callback on the
+  same carrier;
+- frontend output backpressure, COPY continuations, lock/LWLock/condition
+  variable/latch detachment, executor/utility yields, and AIO/storage detach are
+  deferred to Phase 17 or later;
+- Phase 14 proves protocol park/resume correctness;
+- Phase 15 proves the real bounded carrier pool and sessions-greater-than-
+  carriers validation.
+
+Older sections below that discuss broader run-to-wait scheduling are retained as
+long-term architecture, not as Phase 14/15 implementation instructions.
+
 ## Goals
 
 - Keep the existing multiprocess backend model working.
@@ -290,8 +311,10 @@ active. The first refactor should preserve that property.
 
 Target shape:
 
-- `PgSessionStep()` is the protected public entrypoint used by process mode,
-  thread-per-session mode, and future schedulers.
+- `PgSessionStep()` is the protected public entrypoint used by future scheduler
+  callers.
+- Process/thread runners may install their own persistent top-level error
+  boundary and call private unprotected helpers inside that boundary.
 - `PgSessionStep()` installs the top-level boundary for the duration of the
   step, or asserts that the matching session boundary is already active.
 - Internal helpers such as `PgSessionStepInternal()` may assume a boundary, but
@@ -334,21 +357,24 @@ close to the current process-per-session model:
 
 This is the first credible threaded milestone.
 
-### Stage 3: Run-To-Wait Cooperative Scheduling
+### Stage 3: Protocol-Boundary Cooperative Scheduling
 
-Session work runs on a pool of carriers. A task runs until it:
+Phase 14/15 implement a deliberately narrow version of pooled scheduling.
+Session work runs synchronously until it returns to the top-level frontend
+protocol boundary. A session step may prepare a protocol-read park only when it
+is about to wait for the next frontend message type byte and no byte has been
+consumed. The carrier loop performs the actual detach only after the session
+step has returned.
+
+In this stage, a task runs until it:
 
 - completes;
 - hits a step budget;
-- waits for frontend input;
-- waits for output backpressure;
-- waits on a lock;
-- waits on a latch/interrupt;
-- waits on timeout;
-- waits on AIO or storage completion.
+- reaches the top-level frontend input park boundary.
 
-This stage requires explicit wait objects and wakeups. It does not require
-executor stack capture or green threads.
+Other waits remain carrier-pinned and observable. They must not detach a
+logical backend until a later phase gives the wait site an explicit continuation
+and cleanup contract.
 
 ### Stage 4: Finer-Grained Execution Scheduling
 
@@ -372,12 +398,14 @@ The architecture needs one logical wait path:
 PgWaitResult PgSuspend(PgWaitSpec *wait);
 ```
 
-In early native process/thread modes, `PgSuspend()` may block the current
-carrier using `WaitEventSetWait()`, `WaitLatch()`, or platform APIs. In a later
-pooled scheduler, it registers the wait, marks the task blocked, and runs
-another task.
+In native process/thread modes, `PgSuspend()` may block the current carrier
+using `WaitEventSetWait()`, `WaitLatch()`, or platform APIs. In Phase 14/15 it
+remains an observable-wait API: it may publish wait metadata, but it does not
+detach the logical backend or run another task. Any later design that makes a
+specific deep wait scheduler-yielding must define that wait's continuation,
+cleanup, and extension-safety contract explicitly.
 
-Important wait sources:
+Important wait sources for observability and later scheduler-boundary design:
 
 - frontend command reads;
 - frontend output flush and backpressure;
@@ -536,16 +564,25 @@ Suggested model:
 - default `PG_MODULE_MAGIC` means process-backend-compatible only;
 - a new module magic field advertises backend model compatibility;
 - audited modules can opt into thread-per-session compatibility;
-- a stricter later flag can advertise pooled-scheduler/task reentrancy;
+- pooled protocol compatibility must split carrier-affine sessions from
+  carrier-migratable sessions;
+- a stricter later flag can advertise deep-wait/task reentrancy;
 - `dfmgr.c` rejects incompatible modules when the runtime is threaded.
 
 Possible flags:
 
 ```c
 PG_BACKEND_MODEL_PROCESS
-PG_BACKEND_MODEL_THREAD_SESSION
+PG_BACKEND_MODEL_THREAD_PER_SESSION
+PG_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE
+PG_BACKEND_MODEL_POOLED_PROTOCOL_MIGRATABLE
 PG_BACKEND_MODEL_TASK_REENTRANT
 ```
+
+The current live `PG_BACKEND_MODEL_POOLED_SCHEDULER` marker is a transitional
+generic level and is too coarse for Phase 15 migration claims. Protocol
+scheduler work must not treat it as equivalent to either protocol-affine or
+protocol-migratable support.
 
 In-tree modules can be migrated deliberately. PL/pgSQL should be treated as a
 first-class target, not as an arbitrary third-party extension. It should gain

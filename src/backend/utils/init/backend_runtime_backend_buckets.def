@@ -39,6 +39,7 @@ PG_BACKEND_BUCKET(locks, PgBackendInitializeLockState(&backend->locks), PgBacken
 PG_BACKEND_BUCKET(dsm_segment_list, PgBackendInitializeDsmSegmentList(&backend->dsm_segment_list), PgBackendAdoptEarlyDsmSegmentList(&backend->dsm_segment_list), PgBackendResetDsmSegmentList(&backend->dsm_segment_list))
 PG_BACKEND_BUCKET(ipc, PgBackendInitializeIPCState(&backend->ipc), PgBackendAdoptEarlyIPCState(backend), PgBackendResetIPCClosedState(&backend->ipc))
 PG_BACKEND_BUCKET(wait_state, PgBackendInitializeWaitState(&backend->wait_state), PgBackendAdoptEarlyWaitState(backend), PgBackendResetWaitClosedState(&backend->wait_state))
+PG_BACKEND_BUCKET(protocol_park, PgBackendInitializeProtocolParkState(&backend->protocol_park), PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)
 PG_BACKEND_BUCKET(transaction, PgBackendInitializeTransactionState(&backend->transaction), PgBackendAdoptEarlyTransactionState(backend), PgBackendResetTransactionClosedState(&backend->transaction))
 PG_BACKEND_BUCKET(timeout, PgBackendInitializeTimeoutState(&backend->timeout), PgBackendAdoptEarlyTimeoutState(backend), PgBackendResetTimeoutClosedState(&backend->timeout))
 PG_BACKEND_BUCKET(walsender, PgBackendInitializeWalSenderState(&backend->walsender), PgBackendAdoptEarlyWalSenderState(backend), PgBackendResetWalSenderClosedState(&backend->walsender))
@@ -53,4 +54,3 @@ PG_BACKEND_BUCKET(aio, PgBackendInitializeAioState(&backend->aio), PgBackendAdop
 PG_BACKEND_BUCKET(extension_modules, PgBackendInitializeExtensionModuleState(&backend->extension_modules), PgBackendAdoptEarlyExtensionModuleState(backend), PgBackendResetExtensionModuleClosedState(&backend->extension_modules))
 PG_BACKEND_BUCKET(pending_interrupts, PG_RUNTIME_NOOP, PgBackendAdoptEarlyPendingInterrupts(backend), PG_RUNTIME_NOOP)
 PG_BACKEND_BUCKET(interrupt_holdoffs, PG_RUNTIME_NOOP, PgBackendAdoptEarlyInterruptHoldoffs(backend), PG_RUNTIME_NOOP)
-PG_BACKEND_BUCKET(scheduler, PgBackendSchedulerInitialize(&backend->scheduler), PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)

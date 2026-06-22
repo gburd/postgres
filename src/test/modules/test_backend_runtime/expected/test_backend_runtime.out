@@ -35,33 +35,27 @@ SELECT test_backend_thread_runtime_state();
  t
 (1 row)
 
-SELECT test_backend_pooled_scheduler_queue_state();
- test_backend_pooled_scheduler_queue_state 
--------------------------------------------
- t
-(1 row)
-
-SELECT test_backend_pooled_scheduler_runs_backend();
- test_backend_pooled_scheduler_runs_backend 
---------------------------------------------
- t
-(1 row)
-
-SELECT test_backend_pooled_wait_requeues_backend();
- test_backend_pooled_wait_requeues_backend 
--------------------------------------------
- t
-(1 row)
-
-SELECT test_backend_pooled_wait_parks_backend();
- test_backend_pooled_wait_parks_backend 
-----------------------------------------
- t
-(1 row)
-
 SELECT test_carrier_threaded_guc_lock_depth_is_carrier_local();
  test_carrier_threaded_guc_lock_depth_is_carrier_local 
 -------------------------------------------------------
+ t
+(1 row)
+
+SELECT test_carrier_attach_detach_current_work();
+ test_carrier_attach_detach_current_work 
+-----------------------------------------
+ t
+(1 row)
+
+SELECT test_carrier_protocol_park_prepare_commit();
+ test_carrier_protocol_park_prepare_commit 
+-------------------------------------------
+ t
+(1 row)
+
+SELECT test_protocol_read_wake_applies_backend_interrupt();
+ test_protocol_read_wake_applies_backend_interrupt 
+---------------------------------------------------
  t
 (1 row)
 
@@ -819,15 +813,15 @@ SELECT test_connection_socket_io_is_connection_local();
  t
 (1 row)
 
-SELECT test_connection_startmsgread_getbyte_if_available();
- test_connection_startmsgread_getbyte_if_available 
----------------------------------------------------
- t
-(1 row)
-
 SELECT test_connection_protocol_state_is_connection_local();
  test_connection_protocol_state_is_connection_local 
 ----------------------------------------------------
+ t
+(1 row)
+
+SELECT test_connection_protocol_byte_probe();
+ test_connection_protocol_byte_probe 
+-------------------------------------
  t
 (1 row)
 

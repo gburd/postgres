@@ -2141,7 +2141,6 @@ ProcWaitOnSemaphore(PGPROC *proc, uint32 wait_event_info)
 	wait_spec.wake_events = 0;
 	wait_spec.socket = PGINVALID_SOCKET;
 	wait_spec.timeout = -1;
-	wait_spec.timeout_at = 0;
 
 	(void) PgSuspend(&wait_spec, ProcSemaphoreWaitCallback, &args);
 }
@@ -2149,8 +2148,9 @@ ProcWaitOnSemaphore(PGPROC *proc, uint32 wait_event_info)
 /*
  * ProcWakeSemaphore - wake a backend blocked on its PGPROC semaphore.
  *
- * Mark the Phase 13 wait-completion record before the legacy semaphore wake so
- * a future scheduler requeue hook sees readiness at the logical backend layer.
+ * Mark the Phase 13 wait-completion record before the legacy semaphore wake.
+ * Phase 14/15 use this as wait observability only; semaphore waits remain
+ * carrier-pinned until a later explicit deep-wait continuation design exists.
  */
 void
 ProcWakeSemaphore(PGPROC *proc)
@@ -2161,7 +2161,7 @@ ProcWakeSemaphore(PGPROC *proc)
 
 	if (backend != NULL &&
 		backend->runtime != NULL &&
-		PgRuntimePublishesWaitCompletions(backend->runtime) &&
+		backend->runtime->kind == PG_RUNTIME_THREAD_PER_SESSION &&
 		proc->backendId != 0)
 		(void) PgBackendWakeWaitCompletionById(proc->backendId, 0);
 	PGSemaphoreUnlock(proc->sem);

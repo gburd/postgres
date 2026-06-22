@@ -15,7 +15,9 @@ The ordering is deliberately practical:
 5. launch threaded client backends;
 6. make in-tree auxiliary worker families threaded so normal threaded server
    mode no longer forks for server-owned workers;
-7. only then make sessions movable across pooled carriers.
+7. make sessions movable only at the top-level frontend protocol boundary;
+8. defer more complex scheduler-yielding boundaries until the protocol
+   scheduler is real, hardened, and measured.
 
 ## Current Branch Baseline
 
@@ -103,9 +105,11 @@ Completed shape:
 Current shape after Phase 3:
 
 `PgSessionStep(PgSession *, PgStepBudget)` owns the protected bottom
-`sigsetjmp` boundary, while `PgSessionStepUnprotected()` remains private.
-`PgSessionRun()` is the process-mode loop that repeatedly invokes that protected
-step with a single-message budget.
+`sigsetjmp` boundary used by scheduler callers, while
+`PgSessionStepUnprotected()` remains private. Current process/thread runners may
+install their own persistent top-level boundary and call the private helper
+inside that boundary; future scheduler code must use the protected step API
+rather than treating `PgSessionRun()` as the scheduler entrypoint.
 
 Validation:
 
@@ -733,7 +737,8 @@ Deferred with invariant:
   rejected in threaded mode and the core TAP suite checks those rejections.
 - Bundled procedural languages beyond PL/pgSQL are deferred to Phase 16 / Gate
   E2-Extensions. PL/pgSQL remains in the core validation target; other bundled
-  languages must not be required for Phase 13 scheduler work.
+  languages must not be required for Phase 13 wait-observability work or
+  Phase 14/15 protocol-scheduler work.
 - The full custom/extension GUC matrix is deferred to Phase 16 / Gate
   E2-Extensions. The invariant is that core built-in GUC behavior is validated
   by threaded regression/TAP coverage, while ambiguous hook/custom/extension
@@ -744,34 +749,38 @@ Deferred with invariant:
   GUC, teardown, and worker regressions; wider client/tool coverage belongs to
   later integration gates.
 - Pooled carrier scheduling, fair yielding, and scheduler-visible wait
-  semantics are not Phase 12 work. Phase 13 owns the wait-boundary conversion
-  while preserving the thread-per-session fallback.
+  semantics are not Phase 12 work. Phase 13 owns wait observability while
+  preserving the thread-per-session fallback. Phases 14 and 15 own
+  protocol-boundary scheduling only.
 
-## Phase 13: Scheduler-Aware Wait Boundary
+## Phase 13: Wait Observability Boundary
 
-Goal: extend the visible wait boundary so sessions can suspend and resume
-without pinning an OS thread.
+Goal: make important backend waits visible, cancellable, and wakeable without
+claiming that they release carriers.
 
 Detailed working plan: `MULTITHREADED_PHASE13_PLAN.md`.
 
+Scheduler design constraint: Phase 13 wait-completion records are evidence and
+diagnostic plumbing. They are not, by themselves, scheduler-yielding
+continuations. The protocol-boundary scheduler design in
+`MULTITHREADED_PROTOCOL_SCHEDULER_DESIGN.md` supersedes any older implication
+that arbitrary `PgSuspend()` waits should detach a logical backend.
+
 Likely changes:
 
-- Convert `PgSuspend()` waits from "block current carrier" to "register wait and
-  yield carrier" where safe.
-- Add wait completion records that can requeue the owning session/execution.
-- Make frontend input, frontend output, latch, lock, condition variable, and
-  timeout waits scheduler-visible.
-- Keep thread-per-session mode available with blocking waits for debugging and
-  fallback.
-- Keep the Phase 12 interrupt/latch boundary intact while doing this:
+- Publish wait-completion records for representative blocking wait families.
+- Keep `PgSuspend()` as an observable-wait API that may still block the current
+  carrier.
+- Preserve process-mode behavior and the thread-per-session blocking fallback.
+- Make frontend input/output, latch, lock, condition variable, semaphore, and
+  timeout waits scheduler-visible for diagnostics and cancellation.
+- Keep the Phase 12 interrupt/latch boundary intact:
   logical backend events use `SendInterrupt()`/`RaiseInterrupt()` or mapped
   proc-signal reasons, wait readiness remains latch/CV/wait-event driven until
   represented by a Phase 13 wait-completion record, and process lifecycle
   signalling remains process-shaped.
-- Do not perform a wholesale latch-to-interrupt replacement before the first
-  scheduler-visible wait family exists. Reassess the broader upstream-style
-  refactor after Phase 13 has concrete wait-completion and task-requeue
-  mechanics.
+- Do not install generic scheduler requeue hooks on every wait-completion
+  record.
 
 Validation:
 
@@ -779,70 +788,140 @@ Validation:
 - thread-per-session tests pass;
 - cancellation while blocked still works;
 - idle timeout and transaction timeout behavior remains correct;
-- no lost wakeups in common wait paths.
+- no lost wakeups in common wait paths;
+- negative coverage proves deep waits publish observability but do not detach a
+  logical backend.
 
-## Phase 14: Pooled Carrier Scheduler
+## Phase 14: Protocol-Boundary Scheduler Foundation
 
-Goal: schedule logical session/execution tasks onto a smaller number of worker
-threads.
+Goal: introduce the only Phase 14 scheduler-yielding boundary: top-level
+frontend protocol input before any new message byte has been consumed.
+
+Design reference: `MULTITHREADED_PROTOCOL_SCHEDULER_DESIGN.md`.
 
 Likely changes:
 
-- Add runnable queues and wait queues.
-- Add task budget handling.
-- Make `PgSessionStep()` return when it reaches visible waits.
-- Move blocking waits to scheduler registration.
-- Wake blocked tasks through logical interrupts or wait completion.
-- Keep thread-per-session mode available for debugging and fallback.
+- Start from a clean Phase 13 wait-observability baseline, or hard-reset and
+  cherry-pick only the current work that matches the protocol-boundary design.
+- Add a nonblocking frontend message type-byte probe with explicit no-byte,
+  byte-available, and EOF/error semantics.
+- Add transport wait mask/generation support for the protocol probe, including
+  SSL/GSS read/write/buffered-input behavior, or explicitly keep SSL/GSS
+  connections carrier-pinned for Phase 14.
+- Add explicit protocol-park prepare/commit APIs separate from `PgSuspend()`.
+- Teach `PgSessionStep()` to return a prepared protocol-park result, and extend
+  `PgStepResult` with normal and fatal logical backend exit outcomes before
+  scheduler dispatch depends on it.
+- Add parked wake reason and generation/sequence tracking.
+- Add a deferred-notify generation/reason marker so idle-in-transaction
+  listeners do not spin on unserviceable notifications.
+- Add scheduler runnable and parked-protocol queues.
+- Add frontend transport-readiness dispatch for parked protocol reads.
+- Wake parked sessions on frontend input, disconnect, cancel/die,
+  config/catchup/proc-signal work, timeout expiry, postmaster death, and
+  scheduler shutdown.
+- Add backend-indexed timeout snapshot/wake plumbing, or reattach before
+  inspecting/firing current-backend timeout state.
+- Add timeout generation validation so stale parked timeout snapshots cannot
+  fire after timer reconfiguration or frontend input readiness.
+- Add `LISTEN`/`NOTIFY` wake behavior for parked sessions, including the
+  `idle in transaction` no-spin rule.
+- Add attach/detach assertions for current pointers, TLS mirrors, `PGPROC`,
+  latches, `FeBeWaitSet`, memory contexts, resource owners, timeouts, and
+  scheduler state.
+- Decide the Phase 14 wake object policy for `PGPROC`, backend latch,
+  `MyLatch`, and `FeBeWaitSet`; this is an acceptance criterion, not a later
+  open question.
+- Define the concrete parked wake routing table for frontend transport,
+  `SendInterrupt()`, proc-signal fallback, `PGPROC->procLatch`, timeout expiry,
+  and postmaster death before adding scheduler queues.
 
-Initial limitations are acceptable:
+Initial limitations are required, not merely acceptable:
 
-- long executor calls may pin a carrier until they reach safe yield points;
-- some subsystems may temporarily opt out and require a dedicated carrier;
-- threaded worker families may temporarily require dedicated carriers before
-  they become safe to schedule on the pooled carrier set.
+- deep `PgSuspend()` waits remain carrier-pinned;
+- frontend output backpressure remains carrier-pinned;
+- active command execution remains carrier-pinned;
+- extension or subsystem state that is not session-migratable must keep the
+  session hard-affine, process-only, or rejected from pooled protocol mode;
+- staging implementations may still launch one carrier per client, but must
+  not be described as complete pooled-carrier scheduling.
 
 Validation:
 
-- many idle sessions on few carriers;
-- many clients waiting on locks without many blocked OS threads;
-- no lost wakeups under stress;
-- cancellation of waiting and running tasks;
+- parked idle clients resume on frontend input;
+- parked clients handle disconnect, cancel, terminate, timeout, and postmaster
+  death correctly;
+- byte-probe tests prove no-byte leaves message state untouched and
+  byte-available pins the backend until the complete message is handled;
+- byte-probe tests prove no-byte restores query-cancel holdoff, does not move
+  receive-buffer cursors, and reports the correct transport wait mask;
+- parked `LISTEN` sessions receive notifications;
+- parked `idle in transaction` listeners do not spin or deliver notifications
+  before transaction state permits it;
+- timeout tests prove stale parked timeout generations do not fire detached
+  timeout behavior;
+- negative tests prove `pg_sleep()`, advisory locks, LWLocks/semaphores, and
+  frontend output backpressure do not claim carrier release;
 - process-mode and thread-per-session modes still work.
 
 Exit gate:
 
-- Gate F is part of Phase 14 completion. Before leaving Phase 14, run the Gate
-  F checks from the Test Strategy section: full process-mode and threaded-mode
-  suites plus stress tests for lock waits, cancellation of waiting and running
-  tasks, output backpressure, timeout delivery while waiting, and lost wakeups.
+- Phase 14 completion means the protocol park/resume foundation is correct and
+  well tested. It does not require the final bounded carrier pool yet.
 
-## Phase 15: Executor And Utility Yield Points
+## Phase 15: Real Pooled Protocol Scheduler
 
-Goal: improve fairness and latency for long-running commands under pooled
-scheduling.
+Goal: turn the Phase 14 protocol-boundary foundation into a real carrier pool
+where parked sessions do not own carriers and active commands lease carriers.
+
+Design reference: `MULTITHREADED_PROTOCOL_SCHEDULER_DESIGN.md`.
 
 Likely changes:
 
-- add safe yield checks in long executor loops;
-- add batch boundaries in sort/hash/materialize paths where safe;
-- add COPY yield points;
-- add utility command yield points for long operations;
-- integrate with interrupt checks and budget accounting.
+- Decouple client accept/session creation from carrier creation.
+- Launch and manage a bounded carrier pool.
+- Support validation runs with more client sessions than carrier threads.
+- Split logical backend exit from physical carrier exit.
+- Add session migration compatibility levels such as pooled-protocol-affine and
+  pooled-protocol-migratable.
+- Replace or split any single generic pooled-scheduler extension level before
+  claiming session migration.
+- Do not set the pooled protocol runtime requirement to the old
+  `PG_BACKEND_MODEL_POOLED_SCHEDULER` marker; it is too coarse and ordinal
+  loader compatibility would admit the wrong modules.
+- Keep non-migratable sessions hard-affine or rejected from pooled protocol
+  mode.
+- Add migration/affinity policy after the compatibility split exists.
+- Add scheduler observability for carrier count, running backends, parked
+  protocol reads, runnable queue length, wake reasons, and migrated versus
+  same-carrier resumes.
+- Keep thread-per-session mode available for debugging and fallback.
 
 Validation:
 
-- long query fairness tests;
-- cancellation latency tests;
-- no executor state corruption across yields;
-- performance comparison against thread-per-session mode.
+- many idle or think-time-heavy sessions run on fewer carriers;
+- sessions outnumber carriers in at least one stress test;
+- idle-in-transaction sessions can hold locks while carriers serve other
+  sessions;
+- no lost wakeups under frontend-input, timeout, notify, cancel, terminate, and
+  disconnect races;
+- carrier attach/detach invariant assertions are enabled in development builds;
+- process-mode and thread-per-session modes still work.
+
+Exit gate:
+
+- Gate F is part of Phase 15 completion. Before leaving Phase 15, run the Gate
+  F checks from the Test Strategy section: full process-mode and threaded-mode
+  suites, focused protocol-scheduler TAP, sessions-greater-than-carriers
+  stress, parked wake race tests, attach/detach invariant checks, and negative
+  tests proving deep waits remain carrier-pinned.
 
 ## Phase 16: Bundled Extension Completion And Hardening
 
 Goal: close Gate E2-Extensions after the core threaded runtime is working.
 Threaded mode should become credible and complete for bundled in-tree modules,
 procedural languages, and contrib extensions without delaying Phase 13
-scheduler work.
+wait-observability or Phase 14/15 protocol-scheduler work.
 
 Likely work:
 
@@ -872,6 +951,45 @@ Exit gate:
   repeated full suites, threaded contrib regression for every contrib
   extension, bundled procedural-language checks, custom/extension GUC stress,
   crash/FATAL behavior tests, and performance baselines.
+
+## Phase 17: Advanced Scheduler Boundaries
+
+Goal: revisit more complex scheduler-yielding boundaries only after the
+protocol-boundary scheduler is real, hardened, and measured.
+
+This phase is intentionally post-hardening. Phase 14 and Phase 15 should not
+depend on it, and Phase 16 hardening should be able to declare the
+protocol-boundary scheduler release-ready without solving arbitrary deep waits.
+
+Possible work:
+
+- frontend output backpressure as a scheduler-yielding boundary;
+- COPY input/output continuation states;
+- selected lock waits with caller-specific continuation state;
+- selected executor and utility yield points;
+- AIO/storage completion boundaries where the upper stack can return to a
+  known continuation;
+- stackful coroutine/fiber research, only if the project deliberately chooses
+  that direction;
+- deeper extension compatibility levels such as task reentrancy.
+
+Requirements before any boundary moves out of "carrier-pinned":
+
+- exact call sites are identified;
+- live C stack behavior is specified;
+- continuation state is explicit and heap/session/execution owned;
+- cleanup and error behavior is specified;
+- retry semantics are correct;
+- extension safety is understood;
+- tests prove no detached backend has a live deep stack.
+
+Validation:
+
+- boundary-specific correctness tests;
+- cancellation and timeout race tests;
+- corruption-focused stress tests;
+- performance comparison against the Phase 15 protocol scheduler;
+- clear fallback to carrier-pinned behavior when a boundary is not safe.
 
 ## PL/pgSQL And In-Tree Modules Plan
 
@@ -938,10 +1056,13 @@ Phase 13 validation cadence:
 - wait-boundary source slices: touched-object build, focused wait/latch/timeout
   tests, and `git diff --check`;
 - lock, latch, condition-variable, timeout, frontend input, or frontend output
-  changes: targeted threaded TAP plus isolation tests where relevant;
-- scheduler-visible wait changes: preserve the blocking thread-per-session
-  fallback and run cancellation, termination, idle timeout, transaction
-  timeout, and reconnect coverage before broadening the scheduler surface.
+  observability changes: targeted threaded TAP plus isolation tests where
+  relevant;
+- wait-completion changes: preserve the blocking thread-per-session fallback
+  and run cancellation, termination, idle timeout, transaction timeout, and
+  reconnect coverage;
+- do not treat Phase 13 validation as evidence that a wait family can release a
+  carrier.
 
 Gate A, after Phase 3:
 
@@ -994,7 +1115,7 @@ Gate E, after Phase 11:
 Gate E2-Core closeout:
 
 - core thread-per-session lifecycle and state ownership are coherent enough to
-  start scheduler-aware wait work;
+  start wait-observability and protocol-boundary scheduler work;
 - run `gmake check-runtime-lifecycles` and `gmake check-global-lifetimes`;
 - run a full build, focused process-mode backend-runtime regression, direct
   threaded runtime TAP, PL/pgSQL coverage, and focused core regression smokes
@@ -1008,12 +1129,16 @@ Gate E2-Core closeout:
   PL/pgSQL, or the full custom/extension GUC matrix here. Those are
   Gate E2-Extensions / Gate G work in Phase 16.
 
-Gate F, after Phase 14:
+Gate F, after Phase 15:
 
-- scheduler-aware waits and pooled carriers exist;
-- run full process-mode and threaded-mode suites, plus stress tests for lock
-  waits, cancellation of waiting and running tasks, output backpressure,
-  timeout delivery while waiting, and lost wakeups.
+- the protocol-boundary scheduler is real: sessions can outnumber carriers,
+  parked top-level protocol reads detach from carriers, and deep waits remain
+  carrier-pinned;
+- run full process-mode and threaded-mode suites, focused protocol-scheduler
+  TAP, sessions-greater-than-carriers stress, parked wake race tests for
+  frontend input, disconnect, cancel, terminate, timeout, `LISTEN`/`NOTIFY`,
+  and postmaster death, plus negative tests for `pg_sleep()`, advisory locks,
+  LWLocks/semaphores, and frontend output backpressure.
 
 Gate G, during and before completing Phase 16:
 
@@ -1023,6 +1148,13 @@ Gate G, during and before completing Phase 16:
   checks, custom/extension GUC stress, stress tests for
   interrupts/waits/cancellation/teardown, crash and `FATAL` behavior tests, and
   performance baselines.
+
+Gate H, during any Phase 17 advanced scheduler-boundary work:
+
+- advanced-boundary research gate;
+- each newly carrier-yielding boundary must have boundary-specific correctness,
+  cancellation, timeout, cleanup, error-recovery, extension-safety, and stress
+  coverage before it is treated as more than experimental.
 
 ## Risk Register
 
@@ -1074,17 +1206,25 @@ Mitigation:
 
 - default extensions to process-only;
 - add explicit module metadata;
+- distinguish thread-per-session safety from pooled-protocol migration safety;
+- keep non-migratable sessions hard-affine, process-only, or rejected from
+  pooled protocol mode;
 - provide session-state APIs;
 - migrate PL/pgSQL and selected in-tree modules first.
 
 ### `PGPROC` Ownership
 
 Risk: `PGPROC` currently conflates backend identity, lock waiting, proc array
-membership, and transaction visibility.
+membership, transaction visibility, and wakeup/latch identity.
 
 Mitigation:
 
 - in early thread-per-session mode, keep one `PGPROC` per logical backend;
+- in Phase 14/15 protocol scheduling, keep `PGPROC` owned by the logical
+  backend while carriers only borrow it during attach;
+- assert attach/detach invariants for `MyProc`, `MyLatch`, `procLatch`,
+  `FeBeWaitSet`, wait-event fields, and current pointers;
+- keep deep waits that place `PGPROC` on wait queues carrier-pinned;
 - only later split execution/transaction leasing from idle session identity.
 
 ### File Descriptor Accounting
@@ -1150,24 +1290,61 @@ Mitigation:
 
 1. Finalize and record the Gate E2-Core validation baseline if it has not
    already been recorded on the branch.
-2. Inventory blocking wait paths used by the threaded core target and classify
-   them as keep-blocking, scheduler-visible now, or later scheduler work.
+2. Preserve or restore a clean Phase 13 wait-observability baseline. Deep waits
+   may publish wait-completion records, but must not imply carrier detach.
 3. Record the Phase 13 interrupt/latch boundary from
    `MULTITHREADED_PHASE13_PLAN.md` in any new wait or scheduler helper API:
    logical events are interrupts, wait readiness is latch/CV/wait-completion,
    and process lifecycle remains process signalling.
-4. Introduce the minimal wait-completion record needed to resume an owning
-   session/execution without changing pooled-carrier scheduling yet.
-5. Convert one narrow wait family to the scheduler-visible boundary while
-   preserving the thread-per-session blocking fallback.
-6. Add focused cancellation, termination, timeout, and reconnect coverage for
-   that wait family.
-7. Repeat the wait-family conversion for latch, lock, condition-variable,
-   frontend input, frontend output, and timeout waits.
-8. After the wait boundary is coherent, begin Phase 14 pooled carrier scheduler
-   work.
-9. Defer contrib-wide threaded support, bundled languages beyond PL/pgSQL, and
-   the full custom/extension GUC matrix to Phase 16.
+4. Link Phase 14 and Phase 15 work to
+   `MULTITHREADED_PROTOCOL_SCHEDULER_DESIGN.md`.
+5. Remove, disable, or assert-unreachable generic scheduler requeue hooks from
+   deep wait-completion records before adding new pooled scheduler behavior.
+   This is a hard Phase 14A.0 gate.
+6. Add the protocol byte-probe primitive with explicit no-byte, byte-available,
+   and EOF/error semantics, plus tests that prove no-byte does not advance
+   buffer or message-read state, does not leave query-cancel holdoff elevated,
+   and reports transport read/write/buffered-input readiness. Buffered transport
+   input must return an immediately consumable byte or requeue for immediate
+   re-probe; it must not sleep waiting for kernel socket readiness.
+7. Add explicit protocol-park prepare/commit APIs, including parked wake reason,
+   generation/sequence tracking, and deferred-notify generation tracking.
+   `PgSessionStep()` prepares the park and returns; the carrier loop commits
+   detach only after the step stack has unwound.
+8. Extend `PgStepResult` and backend-exit paths so protocol park, normal logical
+   exit, and fatal logical exit return to the scheduler before dispatch grows.
+9. Add backend-indexed timeout snapshot/wake support, or require reattach before
+   inspecting/firing timeout state that depends on current-backend globals.
+   Include timeout generation validation for stale parked snapshots.
+10. Decide and assert the Phase 14 `PGPROC`, latch, logical wake object, and
+   `FeBeWaitSet` ownership rules.
+11. Define the concrete parked wake routing table across frontend transport,
+    `SendInterrupt()`, proc-signal fallback, `PGPROC->procLatch`, timeout, and
+    postmaster death.
+12. Teach `PgSessionStep()` to return a prepared protocol-read park result only
+    before any new frontend message byte has been consumed.
+13. Cover frontend input, disconnect, cancel, terminate, timeout, postmaster
+    death, and `LISTEN`/`NOTIFY` wakeups.
+14. Add negative tests proving `pg_sleep()`, lock waits, LWLocks/semaphores, and
+   frontend output backpressure remain carrier-pinned.
+15. Add attach/detach invariant assertions for current pointers, TLS mirrors,
+    `PGPROC`, latches, `FeBeWaitSet`, memory contexts, resource owners,
+    timeouts, and scheduler state.
+16. Split extension compatibility into thread-per-session,
+    pooled-protocol-affine, pooled-protocol-migratable, and later
+    task-reentrant levels before any migration claim.
+17. Split PMChild logical-backend publication from physical carrier-thread
+    lifetime before claiming a reusable carrier pool.
+18. Decouple client sessions from carrier creation and add a bounded carrier
+    pool.
+19. Add sessions-greater-than-carriers stress coverage and soft carrier
+    affinity/grace-pinning instrumentation.
+20. Run Gate F before leaving Phase 15.
+21. Defer contrib-wide threaded support, bundled languages beyond PL/pgSQL, and
+    the full custom/extension GUC matrix to Phase 16.
+22. Defer frontend-output yielding, COPY continuations, lock-wait yielding,
+    executor/utility yield points, and AIO/storage scheduler boundaries to
+    Phase 17.
 
 Each commit should leave process mode buildable. Prefer temporary compatibility
 wrappers to broad all-at-once rewrites.

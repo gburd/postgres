@@ -16,11 +16,9 @@ and wait state explicit so that PostgreSQL can support:
   pool of physical carriers.
 
 The current implementation starts from PostgreSQL `REL_19_BETA1`. Phase 12 has
-closed the scoped core thread-per-session state-migration gate, and Phase 13
-has added the scheduler-visible wait-completion substrate. The active direction
-is Phase 14: building pooled carrier scheduling on top of those explicit wait
-boundaries while keeping process mode and thread-per-session fallback behavior
-healthy.
+closed the scoped core thread-per-session state-migration gate. The active
+direction is Phase 13: making waits scheduler-aware while keeping process mode
+and thread-per-session fallback behavior healthy.
 
 Important constraints:
 
@@ -33,14 +31,7 @@ Important constraints:
 Current status:
 
 - Phase 12 / Gate E2-Core is closed for the scoped core runtime.
-- Phase 13 wait-completion coverage is in place for the core threaded wait
-  families: event sets, latches, sockets, frontend input/output, timeout waits,
-  condition variables, heavyweight locks, and PGPROC semaphore-backed waits
-  including LWLocks.
-- Phase 14 is active. The branch now has pooled scheduler queue/requeue
-  scaffolding, carrier current-work switching, and a publish-only wait parking
-  primitive. Remaining Phase 14 work is to wire real scheduler loops, event
-  readiness, and frontend wait boundaries through that substrate.
+- Phase 13 is active, focused on scheduler-aware wait boundaries.
 - Process mode remains supported.
 - Thread-per-session mode runs regular client backends and normal SQL paths.
 - Core backend/session/connection/execution/carrier state has explicit runtime
@@ -48,8 +39,8 @@ Current status:
   behavior, logical interrupts, cancellation, termination, teardown, reconnect,
   worker handoff, and the current in-tree worker runtime scope.
 - The branch is still experimental. It is not a production-ready PostgreSQL
-  server, does not yet provide a complete pooled carrier scheduler, and does
-  not claim contrib-wide threaded extension support.
+  server, does not yet provide pooled carrier scheduling, and does not claim
+  contrib-wide threaded extension support.
 - Phase 16 owns broader extension hardening, bundled procedural languages
   beyond PL/pgSQL, and the full custom/extension GUC matrix.
 
@@ -89,9 +80,9 @@ workloads showed the branch around parity with vanilla on this machine:
 Treat these numbers as development guidance, not a portability or production
 benchmark. The important current signal is that the scoped thread-per-session
 runtime is close enough to vanilla on these small read-only workloads to move
-the next optimization effort into scheduler-aware wait and pooled-carrier work.
-Future performance work should continue to compare all three lanes, because
-some remaining overhead is branch-wide rather than threaded-only.
+the next optimization effort into Phase 13 wait-boundary work. Future
+performance work should continue to compare all three lanes, because some
+remaining overhead is branch-wide rather than threaded-only.
 
 Background and inspiration:
 
@@ -108,8 +99,8 @@ Useful project documents:
   north-star design.
 - [Implementation plan](MULTITHREADED_PLAN.md): staged roadmap, validation
   gates, and phase boundaries.
-- [Phase 13 plan](MULTITHREADED_PHASE13_PLAN.md): scheduler-aware wait boundary
-  work and closeout evidence.
+- [Phase 13 plan](MULTITHREADED_PHASE13_PLAN.md): current scheduler-aware wait
+  boundary work.
 - [Threading review](MULTITHREADED_THREADING_REVIEW.md): review of the branch
   direction, risks, and historical correctness blockers.
 - [Agent guide](AGENTS.md): local development rules, validation defaults, and

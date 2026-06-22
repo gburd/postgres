@@ -95,7 +95,6 @@
 #include "utils/ps_status.h"
 #include "utils/resowner.h"
 #include "utils/rls.h"
-#include "utils/timestamp.h"
 #include "utils/wait_event.h"
 #include "utils/xml.h"
 

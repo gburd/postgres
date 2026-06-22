@@ -147,6 +147,10 @@ static bool socket_is_send_pending(void);
 static int	socket_putmessage(char msgtype, const char *s, size_t len);
 static void socket_putmessage_noblock(char msgtype, const char *s, size_t len);
 static inline PgConnectionSocketIOState *PqSocketIO(void);
+static inline void pq_advance_recv_pointer(PgConnectionSocketIOState *io,
+										   size_t amount);
+static bool pq_connection_transport_buffered_input(PgConnection *connection);
+static uint32 pq_connection_transport_wait_events(PgConnection *connection);
 static inline int pq_getbyte_from(PgConnectionSocketIOState *io);
 static inline int pq_getbytes_from(PgConnectionSocketIOState *io,
 								   void *b, size_t len);
@@ -182,6 +186,70 @@ PqSocketIO(void)
 	}
 
 	return PgCurrentConnectionSocketIORef();
+}
+
+static inline void
+pq_advance_recv_pointer(PgConnectionSocketIOState *io, size_t amount)
+{
+	Assert(io != NULL);
+
+	if (amount == 0)
+		return;
+
+	io->recv_pointer += amount;
+	io->transport_generation++;
+}
+
+static bool
+pq_connection_transport_buffered_input(PgConnection *connection)
+{
+	Port	   *port;
+	PgConnectionSocketIOState *io;
+	PgConnectionSecurityState *security;
+
+	Assert(connection != NULL);
+
+	io = &connection->socket_io;
+	if (io->recv_pointer < io->recv_length)
+		return true;
+
+	port = connection->identity.port;
+	if (port != NULL && port->raw_buf_remaining > 0)
+		return true;
+
+	security = &connection->security;
+	if (security->gss_result_next < security->gss_result_length)
+		return true;
+
+	return false;
+}
+
+static uint32
+pq_connection_transport_wait_events(PgConnection *connection)
+{
+	PgConnectionSecurityState *security;
+	Port	   *port;
+
+	Assert(connection != NULL);
+
+	security = &connection->security;
+	if (security->gss_send_next < security->gss_send_length)
+		return WL_SOCKET_WRITEABLE;
+
+	port = connection->identity.port;
+	if (port == NULL)
+		return 0;
+
+#ifdef USE_SSL
+	if (port->ssl_in_use)
+		return 0;
+#endif
+#ifdef ENABLE_GSS
+	if (port->gss && port->gss->enc)
+		return 0;
+#endif
+
+	return WL_SOCKET_READABLE;
 }
 
 
@@ -1031,6 +1099,7 @@ pq_recvbuf(PgConnectionSocketIOState *io)
 		}
 		/* r contains number of bytes read, so just incr length */
 		io->recv_length += r;
+		io->transport_generation++;
 		return 0;
 	}
 }
@@ -1058,7 +1127,12 @@ pq_getbyte_from(PgConnectionSocketIOState *io)
 		if (pq_recvbuf(io))		/* If nothing in buffer, then recv some */
 			return EOF;			/* Failed to recv data */
 	}
-	return (unsigned char) io->recv_buffer[io->recv_pointer++];
+	{
+		unsigned char c = (unsigned char) io->recv_buffer[io->recv_pointer];
+
+		pq_advance_recv_pointer(io, 1);
+		return c;
+	}
 }
 
 /* --------------------------------
@@ -1100,7 +1174,8 @@ pq_getbyte_if_available(unsigned char *c)
 
 	if (io->recv_pointer < io->recv_length)
 	{
-		*c = io->recv_buffer[io->recv_pointer++];
+		*c = io->recv_buffer[io->recv_pointer];
+		pq_advance_recv_pointer(io, 1);
 		return 1;
 	}
 
@@ -1140,6 +1215,8 @@ pq_getbyte_if_available(unsigned char *c)
 		/* EOF detected */
 		r = EOF;
 	}
+	else
+		io->transport_generation++;
 
 	return r;
 }
@@ -1177,7 +1254,7 @@ pq_getbytes_from(PgConnectionSocketIOState *io, void *b, size_t len)
 		if (amount > len)
 			amount = len;
 		memcpy(s, io->recv_buffer + io->recv_pointer, amount);
-		io->recv_pointer += amount;
+		pq_advance_recv_pointer(io, amount);
 		s += amount;
 		len -= amount;
 	}
@@ -1218,7 +1295,7 @@ pq_discardbytes_from(PgConnectionSocketIOState *io, size_t len)
 		amount = io->recv_length - io->recv_pointer;
 		if (amount > len)
 			amount = len;
-		io->recv_pointer += amount;
+		pq_advance_recv_pointer(io, amount);
 		len -= amount;
 	}
 	return 0;
@@ -1285,30 +1362,99 @@ pq_startmsgread_getbyte(void)
 	return pq_getbyte_from(io);
 }
 
-/*
- * Begin reading a frontend message only if its type byte is already
- * available.  Returns 1 with the byte stored in *c, 0 if a read would block,
- * or EOF on trouble.  On the 0/EOF paths, no message read remains active.
- */
-int
-pq_startmsgread_getbyte_if_available(unsigned char *c)
+bool
+PgConnectionCanParkBeforeMessage(PgConnection *connection)
 {
-	PgConnectionSocketIOState *io = PqSocketIO();
-	int			result;
+	if (connection == NULL)
+		return false;
 
-	Assert(c != NULL);
+	return !connection->socket_io.comm_reading_msg;
+}
+
+PgProtocolByteResult
+PgConnectionProbeMessageType(PgConnection *connection,
+							 PgProtocolByteProbe *probe)
+{
+	PgConnectionSocketIOState *io;
+	Port	   *port;
+	unsigned char c;
+	bool		buffered_input;
+	uint32		wait_events;
+	bool		saved_noblock;
+	int			r;
+
+	Assert(connection != NULL);
+
+	io = &connection->socket_io;
+	if (probe != NULL)
+		MemSet(probe, 0, sizeof(*probe));
 
 	if (io->comm_reading_msg)
 		ereport(FATAL,
 				(errcode(ERRCODE_PROTOCOL_VIOLATION),
 				 errmsg("terminating connection because protocol synchronization was lost")));
 
-	io->comm_reading_msg = true;
-	result = pq_getbyte_if_available(c);
-	if (result != 1)
-		io->comm_reading_msg = false;
+	buffered_input = pq_connection_transport_buffered_input(connection);
+	wait_events = pq_connection_transport_wait_events(connection);
+	if (probe != NULL)
+	{
+		probe->transport_wait_events = wait_events;
+		probe->transport_buffered_input = buffered_input;
+		probe->transport_generation = io->transport_generation;
+	}
 
-	return result;
+	if (io->recv_pointer < io->recv_length)
+	{
+		c = (unsigned char) io->recv_buffer[io->recv_pointer];
+		pq_advance_recv_pointer(io, 1);
+		io->comm_reading_msg = true;
+		if (probe != NULL)
+		{
+			probe->type = c;
+			probe->transport_wait_events = 0;
+			probe->transport_buffered_input = true;
+			probe->transport_generation = io->transport_generation;
+		}
+		return PG_PROTOCOL_BYTE_AVAILABLE;
+	}
+
+	port = connection->identity.port;
+	if (port == NULL)
+		return PG_PROTOCOL_BYTE_EOF;
+
+	if (wait_events == 0 && !buffered_input)
+		return PG_PROTOCOL_BYTE_NONE;
+
+	saved_noblock = port->noblock;
+	port->noblock = true;
+
+	errno = 0;
+	r = secure_read(port, &c, 1);
+	port->noblock = saved_noblock;
+	if (r < 0)
+	{
+		if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+			return PG_PROTOCOL_BYTE_NONE;
+
+		if (errno != 0)
+			ereport(COMMERROR,
+					(errcode_for_socket_access(),
+					 errmsg("could not receive data from client: %m")));
+		return PG_PROTOCOL_BYTE_EOF;
+	}
+	if (r == 0)
+		return PG_PROTOCOL_BYTE_EOF;
+
+	io->transport_generation++;
+	io->comm_reading_msg = true;
+	if (probe != NULL)
+	{
+		probe->type = c;
+		probe->transport_wait_events = 0;
+		probe->transport_buffered_input = buffered_input;
+		probe->transport_generation = io->transport_generation;
+	}
+	return PG_PROTOCOL_BYTE_AVAILABLE;
 }
 
 

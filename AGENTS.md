@@ -30,15 +30,13 @@ Conditional references:
 ## Current Direction
 
 Phase 12 / Gate E2-Core is closed for the scoped core thread-per-session
-runtime. Phase 13 has established the scheduler-visible wait-completion
-substrate for the core threaded wait families. Phase 14 is the active
-direction: build pooled carrier scheduling and async-boundary parking on top of
-those explicit waits while preserving the thread-per-session fallback.
+runtime. Phase 13 is the active direction: make wait boundaries
+scheduler-aware while preserving the thread-per-session fallback.
 
-Do not reopen broad Phase 12 or Phase 13 migration, refactor, or documentation
-churn unless runtime evidence proves a core blocker. Valid evidence includes
-threaded TAP failures, retained-root warnings, lifecycle/global-lifetime
-checker failures, crashes, hangs, lost wakeups, or process-mode regressions.
+Do not reopen broad Phase 12 migration, refactor, or documentation churn unless
+runtime evidence proves a core blocker. Valid evidence includes threaded TAP
+failures, retained-root warnings, lifecycle/global-lifetime checker failures,
+crashes, hangs, or process-mode regressions.
 
 Phase 16 / Gate E2-Extensions owns contrib-wide threaded support, bundled
 procedural languages beyond PL/pgSQL, and the full custom/extension GUC

@@ -41,6 +41,7 @@ PG_FUNCTION_INFO_V1(test_backend_runtime_custom_guc_value);
 PG_FUNCTION_INFO_V1(test_backend_runtime_custom_guc_init_count);
 PG_FUNCTION_INFO_V1(test_backend_runtime_emit_fatal);
 PG_FUNCTION_INFO_V1(test_backend_runtime_wait_completion_snapshot);
+PG_FUNCTION_INFO_V1(test_backend_runtime_protocol_park_snapshot);
 PG_FUNCTION_INFO_V1(test_backend_runtime_wait_on_condition_variable);
 PG_FUNCTION_INFO_V1(test_backend_runtime_hold_lwlock);
 PG_FUNCTION_INFO_V1(test_backend_runtime_wait_on_lwlock);
@@ -90,6 +91,39 @@ test_backend_runtime_wait_completion_state_name(uint32 state)
 			return "ready";
 		case PG_WAIT_COMPLETION_CANCELLED:
 			return "cancelled";
+	}
+
+	return "unknown";
+}
+
+static const char *
+test_backend_runtime_protocol_park_state_name(PgProtocolParkState state)
+{
+	switch (state)
+	{
+		case PG_PROTOCOL_PARK_NONE:
+			return "none";
+		case PG_PROTOCOL_PARK_PREPARED:
+			return "prepared";
+		case PG_PROTOCOL_PARK_COMMITTED:
+			return "committed";
+	}
+
+	return "unknown";
+}
+
+static const char *
+test_backend_runtime_protocol_queue_state_name(
+	PgProtocolSchedulerQueueState state)
+{
+	switch (state)
+	{
+		case PG_PROTOCOL_SCHEDULER_QUEUE_NONE:
+			return "none";
+		case PG_PROTOCOL_SCHEDULER_QUEUE_PARKED_PROTOCOL_READ:
+			return "parked_protocol_read";
+		case PG_PROTOCOL_SCHEDULER_QUEUE_RUNNABLE:
+			return "runnable";
 	}
 
 	return "unknown";
@@ -371,6 +405,51 @@ test_backend_runtime_wait_completion_snapshot(PG_FUNCTION_ARGS)
 					  snapshot.backend != NULL,
 					  snapshot.session != NULL,
 					  snapshot.execution != NULL);
+
+	PG_RETURN_TEXT_P(cstring_to_text(result));
+}
+
+Datum
+test_backend_runtime_protocol_park_snapshot(PG_FUNCTION_ARGS)
+{
+	int32		backend_id_arg = PG_GETARG_INT32(0);
+	PgProtocolParkSnapshot snapshot;
+	char	   *result;
+
+	if (backend_id_arg <= 0)
+		PG_RETURN_NULL();
+
+	if (!PgBackendSnapshotProtocolParkById((PgBackendId) backend_id_arg,
+										   &snapshot))
+		PG_RETURN_NULL();
+
+	result = psprintf("%s|%s|"
+					  UINT64_FORMAT "|%u|%u|" UINT64_FORMAT "|%u|%u|"
+					  UINT64_FORMAT "|" UINT64_FORMAT "|" UINT64_FORMAT "|"
+					  UINT64_FORMAT "|%u|%u|%u|" UINT64_FORMAT "|"
+					  UINT64_FORMAT "|%d|%d|%d|%d",
+					  test_backend_runtime_protocol_park_state_name(snapshot.state),
+					  test_backend_runtime_protocol_queue_state_name(
+						  snapshot.scheduler_queue_state),
+					  snapshot.generation,
+					  snapshot.wake_reasons,
+					  snapshot.wake_events,
+					  snapshot.wake_generation,
+					  snapshot.last_wake_reasons,
+					  snapshot.last_wake_events,
+					  snapshot.last_wake_generation,
+					  snapshot.notify_wake_generation,
+					  snapshot.deferred_notify_generation,
+					  snapshot.deferred_notify_park_generation,
+					  snapshot.deferred_notify_reasons,
+					  snapshot.scheduler_runnable_count,
+					  snapshot.scheduler_parked_protocol_count,
+					  snapshot.scheduler_runnable_enqueue_count,
+					  snapshot.scheduler_parked_protocol_enqueue_count,
+					  snapshot.carrier_attached,
+					  snapshot.session_present,
+					  snapshot.connection_present,
+					  snapshot.execution_present);
 
 	PG_RETURN_TEXT_P(cstring_to_text(result));
 }

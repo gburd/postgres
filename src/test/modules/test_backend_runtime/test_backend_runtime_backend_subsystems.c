@@ -1047,7 +1047,6 @@ test_wait_completion_callback(void *callback_arg)
 		completion->spec.wake_events == (WL_LATCH_SET | WL_TIMEOUT) &&
 		completion->spec.socket == 123 &&
 		completion->spec.timeout == 42 &&
-		completion->spec.timeout_at != 0 &&
 		context->backend->wait_state.spec.kind == PG_WAIT_KIND_EVENT_SET &&
 		pg_atomic_read_u32(&context->backend->wait_state.waiting) == 1 &&
 		pg_atomic_read_u32(&completion->state) == PG_WAIT_COMPLETION_WAITING &&
@@ -1137,8 +1136,6 @@ test_backend_wait_completion_publication(PG_FUNCTION_ARGS)
 	wait_spec.wake_events = WL_LATCH_SET | WL_TIMEOUT;
 	wait_spec.socket = 123;
 	wait_spec.timeout = 42;
-	wait_spec.timeout_at = TimestampTzPlusMilliseconds(GetCurrentTimestamp(),
-													   42);
 
 	MemSet(&context, 0, sizeof(context));
 	context.backend = &fake_backend;
@@ -1167,7 +1164,6 @@ test_backend_wait_completion_publication(PG_FUNCTION_ARGS)
 		ok = ok && fake_backend.wait_state.spec.wake_events == 0;
 		ok = ok && fake_backend.wait_state.spec.socket == 0;
 		ok = ok && fake_backend.wait_state.spec.timeout == 0;
-		ok = ok && fake_backend.wait_state.spec.timeout_at == 0;
 		ok = ok && completion->backend == NULL;
 		ok = ok && completion->session == NULL;
 		ok = ok && completion->execution == NULL;
@@ -1246,7 +1242,6 @@ test_backend_wait_completion_publication_policy(PG_FUNCTION_ARGS)
 	wait_spec.wake_events = WL_LATCH_SET;
 	wait_spec.socket = PGINVALID_SOCKET;
 	wait_spec.timeout = -1;
-	wait_spec.timeout_at = 0;
 
 	PG_TRY();
 	{
