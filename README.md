@@ -12,52 +12,57 @@ and wait state explicit so that PostgreSQL can support:
 - the existing process-per-backend model;
 - a native thread-per-session runtime for regular client backends;
 - threaded in-tree worker families where ownership is understood;
-- a later scheduler that can run logical sessions or executions on a smaller
-  pool of physical carriers.
+- a protocol-boundary scheduler that can park idle frontend input and run
+  logical sessions on a bounded pool of protocol carrier threads.
 
-The current implementation starts from PostgreSQL `REL_19_BETA1`. Phase 12 has
-closed the scoped core thread-per-session state-migration gate. The active
-direction is Phase 13: making waits scheduler-aware while keeping process mode
-and thread-per-session fallback behavior healthy.
+The current implementation starts from PostgreSQL `REL_19_BETA1`. Phase 14
+closed the first protocol-boundary scheduler foundation: only top-level
+frontend protocol input may detach from its carrier, while deep waits remain
+carrier-pinned. The active direction is Phase 15: making the real bounded
+protocol carrier pool reliable and measurable without regressing process mode
+or thread-per-session mode.
 
 Important constraints:
 
 - process-mode PostgreSQL must continue to work;
 - arbitrary third-party C extensions are not assumed to be thread-safe;
 - thread-per-session is a milestone, not the final scheduler design;
-- pooled scheduling comes after explicit wait boundaries exist;
+- pooled protocol-carrier scheduling is intentionally limited to frontend input
+  parks at this stage;
 - correctness and lifecycle ownership come before broad performance claims.
 
 Current status:
 
-- Phase 12 / Gate E2-Core is closed for the scoped core runtime.
-- Phase 13 is active, focused on scheduler-aware wait boundaries.
+- Phase 14 protocol-boundary scheduler foundation is in place.
+- Phase 15 is active, focused on the real protocol carrier pool, wakeup
+  reliability, and honest throughput/memory measurements.
 - Process mode remains supported.
 - Thread-per-session mode runs regular client backends and normal SQL paths.
+- Pooled protocol-carrier mode can park idle frontend input and resume sessions
+  on a bounded carrier pool while preserving session state.
 - Core backend/session/connection/execution/carrier state has explicit runtime
   ownership sufficient for startup, command execution, PL/pgSQL, core GUC
   behavior, logical interrupts, cancellation, termination, teardown, reconnect,
   worker handoff, and the current in-tree worker runtime scope.
 - The branch is still experimental. It is not a production-ready PostgreSQL
-  server, does not yet provide pooled carrier scheduling, and does not claim
-  contrib-wide threaded extension support.
+  server and does not claim contrib-wide threaded extension support.
 - Phase 16 owns broader extension hardening, bundled procedural languages
   beyond PL/pgSQL, and the full custom/extension GUC matrix.
 
 Current validation baseline:
 
-- `gmake check`
-- `gmake check-threaded`
-- `gmake check-threaded-workers`
-- `gmake check-threaded-world-core`
-- `gmake check-runtime-lifecycles`
-- `gmake check-global-lifetimes`
-- `git diff --check`
+- `make check`
+- `make check-threaded`
+- `make check-threaded-smoke`
+- `make check-threaded-150`
+- `make check-threaded-200`
+- `make check-threaded-world-core`
 
-These Gate E2-Core validation targets are currently green in the local WSL
-development tree as of June 19, 2026. Re-run the full set before claiming a new
-release-quality checkpoint, because this branch intentionally keeps changing
-runtime ownership boundaries.
+These validation targets were green in the local WSL development tree after
+the latest full Phase 15 benchmark run on June 22, 2026. `check-world` is not a
+current green target for this branch. Re-run the focused set above before
+claiming a new release-quality checkpoint, because this branch intentionally
+keeps changing runtime ownership boundaries.
 
 Performance guidance:
 
@@ -65,33 +70,30 @@ Performance work is currently measured against vanilla PostgreSQL 19 beta 1
 using vanilla `pgbench` as the client. The reusable local runner is
 `src/tools/benchmark/mtpg_pgbench_matrix.pl`; it compares vanilla process mode,
 this branch in process mode, this branch in thread-per-session mode, and
-configurable pooled protocol carrier lanes such as `branch_pool_4`,
-`branch_pool_8`, and `branch_pool_16`. Use `--restart-per-workload` when a
-profile needs to isolate one workload per fresh postmaster, for example while
-debugging pooled-mode lifecycle failures between sequential client batches.
-The Phase 15 scenario wrapper is
+configurable pooled protocol carrier lanes such as `branch_pool_64`,
+`branch_pool_128`, and `branch_pool_512`. The Phase 15 scenario wrapper is
 `src/tools/benchmark/mtpg_phase15_benchmark_suite.pl`; its `pinned_hot` profile
-checks whether thread-per-session remains near vanilla/process mode, while its
-pooled profiles measure connection-shape scaling, server process/thread counts,
-and sampled memory footprint under mostly-idle or reconnect-heavy clients.
+checks hot-path parity, while its pooled profiles measure mostly-idle, real-ish
+idle/wake, stateful session, reconnect-heavy, and large-connection-population
+shapes.
 
-The most recent five-workload local profile for tiny read-only `pgbench`
-workloads showed the branch around parity with vanilla on this machine:
+The latest full local suite completed all 12 profiles with zero failed
+transactions across 113 TPS result rows. Detailed results and workload
+definitions are in [benchmark results](MULTITHREADED_BENCHMARKS.md). The short
+headline is:
 
-| Workload | Branch process / vanilla | Branch threaded / vanilla |
-| --- | ---: | ---: |
-| `builtin_select_simple` | 0.976 | 1.014 |
-| `builtin_select_prepared` | 0.983 | 0.980 |
-| `select1_prepared` | 1.003 | 1.029 |
-| `bench_one_prepared` | 1.018 | 1.006 |
-| `kv_read_prepared` | 0.973 | 0.991 |
+| Signal | Current result |
+| --- | --- |
+| Hot tiny-query path | Branch process is 0.907x to 0.934x vanilla; pinned threads are 0.797x to 0.952x vanilla depending on workload. |
+| 200 mostly-idle clients, 100 ms wake cycle | Pooled carriers are near process/threaded throughput once the pool is at least 64 carriers; pool 32 shows an `app_mixed` outlier. |
+| 1000 mostly-idle clients, `SELECT 1; \sleep 1000 ms; SELECT 1;` | `branch_pool_128` reaches 978 TPS versus 997 TPS for pinned threads, while using 122 server threads instead of 1008. |
+| 1000 mostly-idle memory profile | Pooled lanes use about 537 KB to 561 KB PSS per client versus 961 KB for pinned threads, 1062 KB for branch process, and 1212 KB for vanilla. |
+| Connection churn | Pooled mode is not yet competitive with process or pinned threads; this remains a known optimization target. |
 
 Treat these numbers as development guidance, not a portability or production
-benchmark. The important current signal is that the scoped thread-per-session
-runtime is close enough to vanilla on these small read-only workloads to move
-the next optimization effort into Phase 13 wait-boundary work. Future
-performance work should continue to compare all branch lanes, because some
-remaining overhead is branch-wide rather than threaded-only.
+benchmark. The important current signal is that pooled carriers now demonstrate
+the intended memory and thread-count advantage for large quiet connection
+populations, while hot-path speed and connection churn still need work.
 
 Background and inspiration:
 
@@ -108,8 +110,10 @@ Useful project documents:
   north-star design.
 - [Implementation plan](MULTITHREADED_PLAN.md): staged roadmap, validation
   gates, and phase boundaries.
-- [Phase 13 plan](MULTITHREADED_PHASE13_PLAN.md): current scheduler-aware wait
-  boundary work.
+- [Phase 13 plan](MULTITHREADED_PHASE13_PLAN.md): historical scheduler-aware
+  wait boundary work.
+- [Benchmark results](MULTITHREADED_BENCHMARKS.md): latest Phase 15 benchmark
+  suite, workload definitions, TPS tables, and memory-footprint results.
 - [Threading review](MULTITHREADED_THREADING_REVIEW.md): review of the branch
   direction, risks, and historical correctness blockers.
 - [Agent guide](AGENTS.md): local development rules, validation defaults, and
