@@ -6837,7 +6837,7 @@ PgSessionRunProtocolSchedulerUntilBoundary(PgSession *session)
 
 	Assert(session != NULL);
 	Assert(CurrentPgRuntime != NULL);
-	Assert(PgRuntimeIsPooledProtocol(CurrentPgRuntime));
+	Assert(PgRuntimeIsThreadBacked(CurrentPgRuntime));
 	state = &session->loop_state;
 	Assert(!state->step_error_boundary_active);
 
@@ -7186,7 +7186,8 @@ PostgresRunSession(PgSession *session)
 {
 	Assert(session != NULL);
 
-	if (PgRuntimeIsPooledProtocol(CurrentPgRuntime))
+	if (PgRuntimeIsThreadBacked(CurrentPgRuntime) &&
+		IsExternalConnectionBackend(MyBackendType))
 		PgSessionRunProtocolSchedulerStaging(session);
 	PgSessionRun(session);
 }

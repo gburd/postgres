@@ -166,6 +166,13 @@ test_thread_install_adopts_session_execution_fallback_state(PG_FUNCTION_ARGS)
 		*PgCurrentTriggerDepthRef() = 88;
 		*PgCurrentAfterTriggersDataRef() = &execution;
 		*PgCurrentValgrindOldErrorCountRef() = 77;
+		*PgCurrentXLogInsertRegisteredBuffersRef() = NULL;
+		*PgCurrentXLogInsertMaxRegisteredBuffersRef() = 0;
+		*PgCurrentXLogInsertRDatasRef() = NULL;
+		*PgCurrentXLogInsertMaxRDatasRef() = 0;
+		*PgCurrentXLogInsertMainRDataLastRef() =
+			(XLogRecData *) PgCurrentXLogInsertMainRDataHeadRef();
+		*PgCurrentXLogInsertContextRef() = NULL;
 
 		PgSessionAdoptEarlyState(&session);
 		PgExecutionAdoptEarlyState(&execution);
@@ -201,6 +208,13 @@ test_thread_install_adopts_session_execution_fallback_state(PG_FUNCTION_ARGS)
 		ok = ok && execution.trigger.depth == 88;
 		ok = ok && execution.trigger.after_triggers_data == &execution;
 		ok = ok && execution.valgrind.old_error_count == 77;
+		ok = ok && execution.xloginsert.registered_buffers == NULL;
+		ok = ok && execution.xloginsert.max_registered_buffers == 0;
+		ok = ok && execution.xloginsert.rdatas == NULL;
+		ok = ok && execution.xloginsert.max_rdatas == 0;
+		ok = ok && execution.xloginsert.mainrdata_head == NULL;
+		ok = ok && execution.xloginsert.mainrdata_last == NULL;
+		ok = ok && execution.xloginsert.context == NULL;
 
 		TopMemoryContext = saved_top_memory_context;
 		CurrentMemoryContext = saved_current_memory_context;

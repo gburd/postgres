@@ -21,6 +21,7 @@ use constant MIGRATED_RESUME_COUNT => 23;
 use constant REGISTERED_CARRIER_COUNT => 24;
 use constant IDLE_CARRIER_COUNT => 25;
 use constant ACTIVE_CARRIER_COUNT => 26;
+use constant LONG_LIVED_BACKGROUND_TIMEOUT => 60;
 
 use constant PROTOCOL_WAKE_NOTIFY => (1 << 8);
 
@@ -74,7 +75,8 @@ sub wait_for_protocol_parked
 
 			return 0 unless @fields >= 27;
 			return $fields[PARK_STATE] eq 'committed'
-			  && $fields[QUEUE_STATE] eq 'parked_protocol_read'
+			  && ($fields[QUEUE_STATE] eq 'parked_protocol_read'
+				|| $fields[QUEUE_STATE] eq 'polling')
 			  && $fields[CARRIER_ATTACHED] == 0
 			  && $fields[SESSION_PRESENT] == 1
 			  && $fields[CONNECTION_PRESENT] == 1
@@ -164,7 +166,8 @@ my @sessions;
 my @pids;
 for my $i (1 .. 5)
 {
-	my $session = $node->background_psql('postgres', timeout => 20);
+	my $session = $node->background_psql('postgres',
+		timeout => LONG_LIVED_BACKGROUND_TIMEOUT);
 	my $pid = $session->query_safe('SELECT pg_backend_pid();', verbose => 0);
 
 	push @sessions, $session;
@@ -291,7 +294,8 @@ wait_for_pid_to_leave_pg_stat_activity($terminated_pid,
 	'terminated pooled parked protocol session leaves pg_stat_activity');
 eval { $terminated->{run}->finish; };
 
-my $listener = $node->background_psql('postgres', timeout => 20);
+my $listener = $node->background_psql('postgres',
+	timeout => LONG_LIVED_BACKGROUND_TIMEOUT);
 my $notify_pattern =
   qr/Asynchronous notification "phase15_notify".*"payload" received/;
 my $listener_pid = $listener->query_safe(

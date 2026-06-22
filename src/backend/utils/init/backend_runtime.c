@@ -813,7 +813,7 @@ PgRuntimeThreadServerGUCContext(void)
 	if (thread_runtime_server_guc_context != NULL)
 		return thread_runtime_server_guc_context;
 
-	parent = PostmasterContext != NULL ? PostmasterContext : TopMemoryContext;
+	parent = TopMemoryContext;
 	Assert(parent != NULL);
 	thread_runtime_server_guc_context =
 		AllocSetContextCreate(parent,
@@ -824,7 +824,7 @@ PgRuntimeThreadServerGUCContext(void)
 
 /*
  * The thread runtime is shared by many logical sessions.  Server GUC strings
- * must therefore live in runtime/postmaster-owned memory, not in the
+ * must therefore live in address-space runtime memory, not in the
  * per-session GUC contexts that pooled carriers repeatedly create and delete.
  */
 static bool
@@ -883,6 +883,15 @@ static void
 PgRuntimeRefreshThreadServerGUCState(void)
 {
 	PgRuntimeServerGUCState *early_server_guc;
+
+	/*
+	 * File-location server GUCs are postmaster-only.  Once the shared thread
+	 * runtime has copied them into durable address-space memory, do not
+	 * refresh them from early bootstrap fallback state that auxiliary threads
+	 * may temporarily rebind while startup is still unwinding.
+	 */
+	if (PgRuntimeServerGUCStateHasConfigPaths(&thread_runtime.server_guc))
+		return;
 
 	early_server_guc = PgEarlyRuntimeServerGUCState();
 	if (PgRuntimeServerGUCStateHasConfigPaths(early_server_guc))

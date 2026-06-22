@@ -62,7 +62,7 @@ static void PgBackendRememberRetainedTopMemoryContext(void);
  */
 
 static PG_GLOBAL_RUNTIME PgBackendExitState early_exit_state;
-static PG_THREAD_LOCAL PG_GLOBAL_BACKEND Size
+static PG_THREAD_LOCAL PG_GLOBAL_CARRIER Size
 			retained_top_memory_allocated = 0;
 
 static PgBackendExitState *

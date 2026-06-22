@@ -1226,13 +1226,17 @@ backend_thread_entry(void *arg)
 	read_nondefault_variables();
 	InitializeLatchWaitSet();
 	InstallPgThreadBackendRuntimeState(&thread_start->runtime_state);
-	if (thread_start->child_type == B_BACKEND &&
-		PgRuntimePooledProtocolRequested())
+	if (thread_start->child_type == B_BACKEND)
 	{
 		if (!PgRuntimeProtocolSchedulerRegisterCarrier(CurrentPgRuntime,
 													   CurrentPgCarrier))
-			ereport(DEBUG1,
-					(errmsg_internal("pooled protocol staging carrier exceeded configured carrier limit")));
+		{
+			if (PgRuntimePooledProtocolRequested())
+				ereport(DEBUG1,
+						(errmsg_internal("pooled protocol staging carrier exceeded configured carrier limit")));
+			else
+				elog(FATAL, "could not register threaded protocol scheduler carrier");
+		}
 	}
 	(void) set_stack_base();
 	PgBackendSetInterruptLatch(CurrentPgBackend, MyLatch);

@@ -581,6 +581,11 @@ sub local_runtime_boundary_violation
 		  || $file eq 'src/backend/port/win32/timer.c'
 		  || $file eq 'src/include/port/win32_port.h');
 
+	# Threaded backend exit handoff for memory retained after logical cleanup.
+	return 0
+	  if $record->{owner} eq 'carrier-local'
+	  && $file eq 'src/backend/storage/ipc/ipc.c';
+
 	return 1;
 }
 

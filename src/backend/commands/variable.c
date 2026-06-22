@@ -481,7 +481,7 @@ show_log_timezone(void)
  * TIMEZONE_ABBREVIATIONS
  */
 
-static TimeZoneAbbrevTable *shared_default_timezone_abbrev_table = NULL;
+static PG_GLOBAL_RUNTIME TimeZoneAbbrevTable *shared_default_timezone_abbrev_table = NULL;
 
 static bool
 timezone_abbreviations_threaded_default_replay(const char *newval)

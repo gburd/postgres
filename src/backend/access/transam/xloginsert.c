@@ -239,6 +239,24 @@ XLogResetInsertion(void)
 {
 	int			i;
 
+	if (unlikely(registered_buffers == NULL || rdatas == NULL ||
+				 max_registered_buffers == 0 || max_rdatas == 0))
+	{
+		Assert(registered_buffers == NULL);
+		Assert(rdatas == NULL);
+		Assert(max_registered_buffers == 0);
+		Assert(max_rdatas == 0);
+
+		num_rdatas = 0;
+		max_registered_block_id = 0;
+		mainrdata_head = NULL;
+		mainrdata_len = 0;
+		mainrdata_last = NULL;
+		curinsert_flags = 0;
+		begininsert_called = false;
+		return;
+	}
+
 	for (i = 0; i < max_registered_block_id; i++)
 		registered_buffers[i].in_use = false;
 
