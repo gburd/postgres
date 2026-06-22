@@ -46,6 +46,7 @@
 #include "executor/spi.h"
 #include "jit/jit.h"
 #include "lib/dshash.h"
+#include "libpq/libpq.h"
 #include "libpq/crypt.h"
 #include "miscadmin.h"
 #include "nodes/queryjumble.h"
@@ -629,6 +630,16 @@ PgCarrierAttachBackend(PgCarrier *carrier, PgBackend *backend,
 
 	PgRuntimeSetCurrentWork(runtime, carrier, backend, session, connection,
 							execution, true);
+	if (PgRuntimeIsPooledProtocol(runtime) &&
+		backend->my_proc != NULL &&
+		backend->core.latch == &backend->my_proc->procLatch)
+	{
+		ReownLatchCurrentThread(backend->core.latch);
+		RefreshLatchWaitSetCurrentCarrier();
+		if (FeBeWaitSet != NULL)
+			ModifyWaitEvent(FeBeWaitSet, FeBeWaitSetLatchPos, WL_LATCH_SET,
+							MyLatch);
+	}
 	if (PgRuntimeIsPooledProtocol(runtime))
 		RestoreBufferManagerIdleMemory();
 }

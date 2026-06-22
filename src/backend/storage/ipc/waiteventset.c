@@ -219,6 +219,8 @@ static void WaitEventAdjustWin32(WaitEventSet *set, WaitEvent *event);
 static inline int WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 										WaitEvent *occurred_events, int nevents);
 static int WaitEventSetWaitInternal(void *callback_arg);
+static bool WaitEventLatchFdNeedsRefresh(WaitEvent *event);
+static void WaitEventRefreshLatchFd(WaitEventSet *set, WaitEvent *event);
 
 /* ResourceOwner support to hold WaitEventSets */
 static void ResOwnerReleaseWaitEventSet(Datum res);
@@ -712,6 +714,7 @@ void
 ModifyWaitEvent(WaitEventSet *set, int pos, uint32 events, Latch *latch)
 {
 	WaitEvent  *event;
+	bool		latch_fd_needs_refresh;
 #if defined(WAIT_USE_KQUEUE)
 	int			old_events;
 #endif
@@ -738,6 +741,8 @@ ModifyWaitEvent(WaitEventSet *set, int pos, uint32 events, Latch *latch)
 		return;
 	}
 
+	latch_fd_needs_refresh = WaitEventLatchFdNeedsRefresh(event);
+
 	/*
 	 * If neither the event mask nor the associated latch changes, return
 	 * early. That's an important optimization for some sockets, where
@@ -745,7 +750,8 @@ ModifyWaitEvent(WaitEventSet *set, int pos, uint32 events, Latch *latch)
 	 * waiting on writes.
 	 */
 	if (events == event->events &&
-		(!(event->events & WL_LATCH_SET) || set->latch == latch))
+		(!(event->events & WL_LATCH_SET) || set->latch == latch) &&
+		!latch_fd_needs_refresh)
 		return;
 
 	if (event->events & WL_LATCH_SET && events != event->events)
@@ -766,15 +772,19 @@ ModifyWaitEvent(WaitEventSet *set, int pos, uint32 events, Latch *latch)
 
 		/*
 		 * On Unix, we don't need to modify the kernel object because the
-		 * underlying pipe (if there is one) is the same for all latches so we
-		 * can return immediately.  On Windows, we need to update our array of
-		 * handles, but we leave the old one in place and tolerate spurious
-		 * wakeups if the latch is disabled.
+		 * underlying pipe (if there is one) is the same for all latches in a
+		 * carrier.  A pooled logical backend can move to another carrier,
+		 * though, so refresh the registered latch fd before returning.  On
+		 * Windows, we need to update our array of handles, but we leave the
+		 * old one in place and tolerate spurious wakeups if the latch is
+		 * disabled.
 		 */
 #if defined(WAIT_USE_WIN32)
 		if (!latch)
 			return;
 #else
+		if (latch_fd_needs_refresh)
+			WaitEventRefreshLatchFd(set, event);
 		return;
 #endif
 	}
@@ -2050,6 +2060,56 @@ int
 GetNumRegisteredWaitEvents(WaitEventSet *set)
 {
 	return set->nevents;
+}
+
+static bool
+WaitEventLatchFdNeedsRefresh(WaitEvent *event)
+{
+	if (event->events != WL_LATCH_SET)
+		return false;
+
+#if defined(WAIT_USE_SELF_PIPE)
+	return event->fd != selfpipe_readfd;
+#elif defined(WAIT_USE_SIGNALFD)
+	return event->fd != signal_fd;
+#else
+	return false;
+#endif
+}
+
+static void
+WaitEventRefreshLatchFd(WaitEventSet *set, WaitEvent *event)
+{
+#if defined(WAIT_USE_SELF_PIPE) || defined(WAIT_USE_SIGNALFD)
+	pgsocket	oldfd = event->fd;
+#if defined(WAIT_USE_SELF_PIPE)
+	pgsocket	newfd = selfpipe_readfd;
+#elif defined(WAIT_USE_SIGNALFD)
+	pgsocket	newfd = signal_fd;
+#endif
+
+	if (oldfd == newfd)
+		return;
+
+#if defined(WAIT_USE_EPOLL)
+	{
+		WaitEvent	old_event = *event;
+
+		event->fd = newfd;
+		if (oldfd != PGINVALID_SOCKET)
+			WaitEventAdjustEpoll(set, &old_event, EPOLL_CTL_DEL);
+		WaitEventAdjustEpoll(set, event, EPOLL_CTL_ADD);
+	}
+#elif defined(WAIT_USE_POLL)
+	event->fd = newfd;
+	WaitEventAdjustPoll(set, event);
+#else
+	event->fd = newfd;
+#endif
+#else
+	(void) set;
+	(void) event;
+#endif
 }
 
 #if defined(WAIT_USE_SELF_PIPE)
