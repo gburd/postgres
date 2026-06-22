@@ -4,8 +4,15 @@ Multithreaded PostgreSQL
 This is an experimental PostgreSQL branch where I am exploring native threaded
 execution for PostgreSQL backends. The experiment is whether PostgreSQL can
 keep its proven process-per-backend model while also gaining a native way to
-run many mostly-idle client sessions with fewer operating-system processes and
-carrier threads.
+scale to many more concurrent client connections.
+
+The potential unlock is a PostgreSQL server that can keep the compatibility and
+isolation properties of process mode, while also supporting connection patterns
+that are difficult today without an external pooler: thousands of mostly-idle
+clients, bursty application fleets, and many logical sessions sharing a smaller
+set of operating-system processes or carrier threads. Longer term, the same
+shape could also make room for more scalable `LISTEN`/`NOTIFY`, live queries,
+or embedded sync-engine patterns inside PostgreSQL itself.
 
 I am also using it to explore how far agent-driven development can go on a
 large, mature, performance-sensitive C codebase. The implementation has been
