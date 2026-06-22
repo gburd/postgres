@@ -1,0 +1,80 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1_update s2_update s1_commit s2_read s2_commit s3_read
+step s1_update: UPDATE recno_dw SET val = 'from_s1' WHERE id = 1;
+step s2_update: UPDATE recno_dw SET val = 'from_s2' WHERE id = 1; <waiting ...>
+step s1_commit: COMMIT;
+step s2_update: <... completed>
+step s2_read: SELECT id, val FROM recno_dw ORDER BY id;
+id|val    
+--+-------
+ 1|from_s2
+ 2|initial
+(2 rows)
+
+step s2_commit: COMMIT;
+step s3_read: SELECT id, val FROM recno_dw ORDER BY id;
+id|val    
+--+-------
+ 1|from_s2
+ 2|initial
+(2 rows)
+
+
+starting permutation: s1_update s2_update s1_abort s2_read s2_commit s3_read
+step s1_update: UPDATE recno_dw SET val = 'from_s1' WHERE id = 1;
+step s2_update: UPDATE recno_dw SET val = 'from_s2' WHERE id = 1; <waiting ...>
+step s1_abort: ROLLBACK;
+step s2_update: <... completed>
+step s2_read: SELECT id, val FROM recno_dw ORDER BY id;
+id|val    
+--+-------
+ 1|from_s2
+ 2|initial
+(2 rows)
+
+step s2_commit: COMMIT;
+step s3_read: SELECT id, val FROM recno_dw ORDER BY id;
+id|val    
+--+-------
+ 1|from_s2
+ 2|initial
+(2 rows)
+
+
+starting permutation: s1_delete s2_delete s1_commit s2_read s2_commit s3_read
+step s1_delete: DELETE FROM recno_dw WHERE id = 2;
+step s2_delete: DELETE FROM recno_dw WHERE id = 2; <waiting ...>
+step s1_commit: COMMIT;
+step s2_delete: <... completed>
+step s2_read: SELECT id, val FROM recno_dw ORDER BY id;
+id|val    
+--+-------
+ 1|initial
+(1 row)
+
+step s2_commit: COMMIT;
+step s3_read: SELECT id, val FROM recno_dw ORDER BY id;
+id|val    
+--+-------
+ 1|initial
+(1 row)
+
+
+starting permutation: s1_delete s2_update s1_commit s2_read s2_commit s3_read
+step s1_delete: DELETE FROM recno_dw WHERE id = 2;
+step s2_update: UPDATE recno_dw SET val = 'from_s2' WHERE id = 1;
+step s1_commit: COMMIT;
+step s2_read: SELECT id, val FROM recno_dw ORDER BY id;
+id|val    
+--+-------
+ 1|from_s2
+(1 row)
+
+step s2_commit: COMMIT;
+step s3_read: SELECT id, val FROM recno_dw ORDER BY id;
+id|val    
+--+-------
+ 1|from_s2
+(1 row)
+

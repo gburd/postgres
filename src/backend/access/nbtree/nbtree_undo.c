@@ -51,6 +51,7 @@
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"
 #include "storage/itemid.h"
+#include "storage/itemptr.h"
 #include "utils/rel.h"
 #include "utils/relcache.h"
 
@@ -279,6 +280,162 @@ NbtreeUndoLogDedup(Relation rel, Relation heaprel, Buffer buf)
 }
 
 /*
+ * nbtree_undo_find_leaf_entry - Locate the live index entry to mark LP_DEAD
+ *
+ * The aborting transaction recorded the (blkno, offset) where it inserted
+ * stored_itup, but concurrent inserts and leaf splits can shift entries: the
+ * tuple now at the stored offset may be a *committed* entry belonging to some
+ * other transaction.  Marking it LP_DEAD would silently drop committed rows
+ * from the index.  We therefore identify the target entry by its heap TID
+ * rather than by physical position.
+ *
+ * want_tid is the heap TID of the inserted entry (BTreeTupleGetHeapTID of
+ * stored_itup).  On a match we return the leaf buffer (locked
+ * BUFFER_LOCK_EXCLUSIVE, pinned) and set *out_offset to the matching offset;
+ * the caller marks it dead and emits the CLR against that buffer/offset.
+ *
+ * If no live entry with want_tid is found, InvalidBuffer is returned: the
+ * entry was already cleaned (e.g. by VACUUM or an earlier undo) and there is
+ * nothing to do.  A posting-list tuple whose range covers want_tid is left
+ * for VACUUM, since splitting a posting list during undo is out of scope.
+ */
+static Buffer
+nbtree_undo_find_leaf_entry(Relation indexrel, BlockNumber stored_blkno,
+							OffsetNumber stored_offset, IndexTuple stored_itup,
+							ItemPointer want_tid, OffsetNumber *out_offset)
+{
+	Buffer		buffer;
+	Page		page;
+	BTPageOpaque opaque;
+	BTScanInsert scankey;
+	int32		cmpval;
+
+	/*
+	 * Fast path: the entry is still at the stored location.  This is the
+	 * common case (no concurrent split/insert disturbed the offset) and lets
+	 * us avoid a full tree descent.  Guard the stored blkno against the
+	 * current relation size; the slow path re-descends and does not depend on
+	 * it.
+	 */
+	if (RelationGetNumberOfBlocks(indexrel) > stored_blkno)
+	{
+		buffer = ReadBuffer(indexrel, stored_blkno);
+		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+		page = BufferGetPage(buffer);
+		opaque = BTPageGetOpaque(page);
+
+		if (P_ISLEAF(opaque) && stored_offset >= P_FIRSTDATAKEY(opaque) &&
+			stored_offset <= PageGetMaxOffsetNumber(page))
+		{
+			ItemId		lp = PageGetItemId(page, stored_offset);
+
+			if (ItemIdIsNormal(lp))
+			{
+				IndexTuple	onpage = (IndexTuple) PageGetItem(page, lp);
+				ItemPointer onpage_tid = BTreeTupleGetHeapTID(onpage);
+
+				if (onpage_tid != NULL &&
+					!BTreeTupleIsPosting(onpage) &&
+					ItemPointerEquals(onpage_tid, want_tid))
+				{
+					*out_offset = stored_offset;
+					return buffer;
+				}
+			}
+		}
+
+		UnlockReleaseBuffer(buffer);
+	}
+
+	/*
+	 * Slow path: the entry moved.  Re-descend the tree to the leaf page that
+	 * should now hold the key, then walk right across split-out siblings while
+	 * the key still belongs on the page, matching by heap TID.
+	 *
+	 * _bt_search needs heaprel only when access == BT_WRITE (to allocate a new
+	 * root for an empty index).  We descend read-locked and upgrade the leaf
+	 * lock to exclusive ourselves, so we pass heaprel == NULL with BT_READ.
+	 * The upgrade and the right-walk are ordered left-to-right, matching
+	 * nbtree's standard latch order, so they cannot deadlock against other
+	 * descents.
+	 */
+	scankey = _bt_mkscankey(indexrel, stored_itup);
+	(void) _bt_search(indexrel, NULL, scankey, &buffer, BT_READ, false);
+	if (!BufferIsValid(buffer))
+	{
+		pfree(scankey);
+		return InvalidBuffer;
+	}
+
+	/* Upgrade the landed leaf to an exclusive lock for in-place modification. */
+	LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+
+	/*
+	 * _bt_compare against the high key tells us whether the key could live on
+	 * a page to the right.  cmpval == 1 means "move right when scankey > high
+	 * key"; this mirrors _bt_moveright's non-nextkey behavior.  We rescan each
+	 * page in full because a concurrent insert or split may have shifted the
+	 * entry since the descent.
+	 */
+	cmpval = 1;
+
+	for (;;)
+	{
+		OffsetNumber off;
+		OffsetNumber maxoff;
+
+		page = BufferGetPage(buffer);
+		opaque = BTPageGetOpaque(page);
+		maxoff = PageGetMaxOffsetNumber(page);
+
+		for (off = P_FIRSTDATAKEY(opaque); off <= maxoff; off = OffsetNumberNext(off))
+		{
+			ItemId		lp = PageGetItemId(page, off);
+			IndexTuple	onpage;
+			ItemPointer onpage_tid;
+
+			if (!ItemIdIsNormal(lp))
+				continue;
+
+			onpage = (IndexTuple) PageGetItem(page, lp);
+
+			/*
+			 * A posting-list tuple covers a range of heap TIDs.  If want_tid
+			 * falls in that range the entry was deduplicated after insertion;
+			 * leave it for VACUUM rather than splitting the posting list here.
+			 */
+			if (BTreeTupleIsPosting(onpage))
+				continue;
+
+			onpage_tid = BTreeTupleGetHeapTID(onpage);
+			if (onpage_tid != NULL && ItemPointerEquals(onpage_tid, want_tid))
+			{
+				*out_offset = off;
+				pfree(scankey);
+				return buffer;
+			}
+		}
+
+		/*
+		 * Not on this page.  Stop if this is the rightmost page or if the key
+		 * is strictly less than this page's high key (so it cannot be further
+		 * right).  Otherwise follow the right link, holding exclusive locks
+		 * left-to-right.
+		 */
+		if (P_RIGHTMOST(opaque) ||
+			_bt_compare(indexrel, scankey, page, P_HIKEY) < cmpval)
+			break;
+
+		buffer = _bt_relandgetbuf(indexrel, buffer, opaque->btpo_next, BT_WRITE);
+	}
+
+	_bt_relbuf(indexrel, buffer);
+	pfree(scankey);
+	return InvalidBuffer;
+}
+
+/*
  * nbtree_undo_apply - Apply a single nbtree UNDO record
  *
  * This is the rm_undo callback for the nbtree RM.
@@ -324,12 +481,20 @@ nbtree_undo_apply(uint8 rmid, uint16 info, TransactionId xid, Oid reloid,
 				Relation	indexrel;
 				Buffer		buffer;
 				Page		page;
-				BTPageOpaque opaque;
+				IndexTuple	stored_itup;
+				ItemPointer want_tid;
+				OffsetNumber kill_offset;
 
 				if (payload_len < SizeOfNbtreeUndoInsertLeaf)
 					return UNDO_APPLY_ERROR;
 
 				memcpy(&hdr, payload, SizeOfNbtreeUndoInsertLeaf);
+
+				/* The original IndexTuple follows the fixed header. */
+				if (payload_len < SizeOfNbtreeUndoInsertLeaf + hdr.itup_sz)
+					return UNDO_APPLY_ERROR;
+
+				stored_itup = (IndexTuple) (payload + SizeOfNbtreeUndoInsertLeaf);
 
 				/*
 				 * Open the index directly using the OID stored in the UNDO
@@ -345,59 +510,69 @@ nbtree_undo_apply(uint8 rmid, uint16 info, TransactionId xid, Oid reloid,
 					return UNDO_APPLY_SKIPPED;
 				}
 
-				if (RelationGetNumberOfBlocks(indexrel) <= hdr.blkno)
+				/*
+				 * Identify the entry to remove by its heap TID, not by the
+				 * stored physical offset: concurrent inserts and leaf splits
+				 * can shift a committed entry onto that offset, and marking it
+				 * LP_DEAD would silently drop committed rows.  A pivot tuple
+				 * (no heap TID) cannot be the inserted leaf entry, so nothing
+				 * to undo in that case.
+				 */
+				want_tid = BTreeTupleGetHeapTID(stored_itup);
+				if (want_tid == NULL)
 				{
-					ereport(DEBUG2,
-							(errmsg("nbtree UNDO INSERT_LEAF: block %u beyond end of index %u",
-									hdr.blkno, hdr.index_oid)));
 					relation_close(indexrel, RowExclusiveLock);
 					return UNDO_APPLY_SKIPPED;
 				}
 
-				buffer = ReadBuffer(indexrel, hdr.blkno);
-				LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
-				page = BufferGetPage(buffer);
-				opaque = BTPageGetOpaque(page);
-
-				if (P_ISLEAF(opaque) &&
-					hdr.offset <= PageGetMaxOffsetNumber(page))
+				buffer = nbtree_undo_find_leaf_entry(indexrel, hdr.blkno,
+													 hdr.offset, stored_itup,
+													 want_tid, &kill_offset);
+				if (!BufferIsValid(buffer))
 				{
-					ItemId		lp = PageGetItemId(page, hdr.offset);
-
-					START_CRIT_SECTION();
-
-					if (ItemIdIsNormal(lp))
-						ItemIdMarkDead(lp);
-
-					MarkBufferDirty(buffer);
-
-					/* Generate physiological CLR */
-					if (RelationNeedsWAL(indexrel))
-					{
-						XLogRecPtr	clr_lsn;
-						xl_undo_apply xlrec;
-
-						xlrec.urec_ptr = urec_ptr;
-						xlrec.xid = xid;
-						xlrec.target_locator = indexrel->rd_locator;
-						xlrec.target_block = hdr.blkno;
-						xlrec.target_offset = hdr.offset;
-						xlrec.operation_type = info;
-						xlrec.clr_flags = UNDO_CLR_LP_DEAD;
-						xlrec.tuple_len = 0;
-
-						XLogBeginInsert();
-						XLogRegisterData((char *) &xlrec,
-										 SizeOfUndoApply);
-						XLogRegisterBuffer(0, buffer,
-										   REGBUF_STANDARD);
-						clr_lsn = XLogInsert(RM_UNDO_ID,
-											 XLOG_UNDO_APPLY_RECORD);
-						PageSetLSN(page, clr_lsn);
-					}
-
-					END_CRIT_SECTION();
+					/* Entry already cleaned (or left to VACUUM): no change. */
+					relation_close(indexrel, RowExclusiveLock);
+					return UNDO_APPLY_SUCCESS;
 				}
+
+				page = BufferGetPage(buffer);
+
+				START_CRIT_SECTION();
+
+				ItemIdMarkDead(PageGetItemId(page, kill_offset));
+				MarkBufferDirty(buffer);
+
+				/*
+				 * Emit a physiological CLR against the buffer we actually
+				 * modified.  The redo handler re-applies ItemIdMarkDead at
+				 * target_offset on block ref 0, so both must name the real
+				 * killed location -- not the stale stored (blkno, offset).
+				 */
+				if (RelationNeedsWAL(indexrel))
+				{
+					XLogRecPtr	clr_lsn;
+					xl_undo_apply xlrec;
+
+					xlrec.urec_ptr = urec_ptr;
+					xlrec.xid = xid;
+					xlrec.target_locator = indexrel->rd_locator;
+					xlrec.target_block = BufferGetBlockNumber(buffer);
+					xlrec.target_offset = kill_offset;
+					xlrec.operation_type = info;
+					xlrec.clr_flags = UNDO_CLR_LP_DEAD;
+					xlrec.tuple_len = 0;
+
+					XLogBeginInsert();
+					XLogRegisterData((char *) &xlrec,
+									 SizeOfUndoApply);
+					XLogRegisterBuffer(0, buffer,
+									   REGBUF_STANDARD);
+					clr_lsn = XLogInsert(RM_UNDO_ID,
+										 XLOG_UNDO_APPLY_RECORD);
+					PageSetLSN(page, clr_lsn);
+				}
+
+				END_CRIT_SECTION();
 
 				UnlockReleaseBuffer(buffer);
 				relation_close(indexrel, RowExclusiveLock);

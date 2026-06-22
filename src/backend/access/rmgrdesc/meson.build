@@ -30,4 +30,9 @@ rmgr_desc_sources = files(
   'xlogdesc.c',
 )
 
+# RECNO is always built on the undo branch (see USE_RECNO handling in the
+# top-level meson.build), and rmgrlist.h registers recno_desc/recno_identify
+# unconditionally, so recnodesc.c must always be compiled.
+rmgr_desc_sources += files('recnodesc.c')
+
 backend_sources += rmgr_desc_sources

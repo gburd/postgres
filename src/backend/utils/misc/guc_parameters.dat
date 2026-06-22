@@ -1047,6 +1047,8 @@
   boot_val => 'true',
 },
 
+
+
 { name => 'event_source', type => 'string', context => 'PGC_POSTMASTER', group => 'LOGGING_WHERE',
   short_desc => 'Sets the application name used to identify PostgreSQL messages in the event log.',
   variable => 'event_source',
@@ -2454,6 +2456,50 @@
   max => 'DBL_MAX',
 },
 
+{ name => 'recno_analyze_refresh_dict', type => 'bool', context => 'PGC_USERSET', group => 'RESOURCES_MEM',
+  short_desc => 'Whether ANALYZE retrains the active RECNO compression dictionary.',
+  long_desc => 'When enabled, ANALYZE on a RECNO table trains a candidate ZSTD dictionary from the sampled rows and activates it for new writes only if it compresses the sample materially better than the current dictionary. Existing data is never rewritten.',
+  variable => 'recno_analyze_refresh_dict',
+  boot_val => 'true',
+},
+
+{ name => 'recno_compression_algorithm', type => 'enum', context => 'PGC_USERSET', group => 'RESOURCES_MEM',
+  short_desc => 'Compression codec selection for RECNO attribute compression.',
+  long_desc => 'auto probes each value\'s estimated entropy to choose the codec and ZSTD level and to skip incompressible data; lz4 and zstd force that codec at the configured level; none disables compression.',
+  variable => 'recno_compression_algorithm',
+  boot_val => 'RECNO_COMP_ALGO_AUTO',
+  options => 'recno_compression_algorithm_options',
+},
+
+{ name => 'recno_compression_level', type => 'int', context => 'PGC_USERSET', group => 'RESOURCES_MEM',
+  short_desc => 'ZSTD level override for RECNO attribute compression.',
+  long_desc => 'Used when recno_compression_algorithm forces lz4 or zstd. With the default auto setting the level is derived per value from its estimated entropy and this value is ignored.',
+  variable => 'recno_compression_level',
+  boot_val => '3',
+  min => '1',
+  max => '22',
+},
+
+{ name => 'recno_compression_min_ratio', type => 'real', context => 'PGC_USERSET', group => 'RESOURCES_MEM',
+  short_desc => 'Minimum compression ratio to retain compressed RECNO attribute data.',
+  variable => 'recno_compression_min_ratio',
+  boot_val => '0.8',
+  min => '0.1',
+  max => '1.0',
+},
+
+{ name => 'recno_enable_compression', type => 'bool', context => 'PGC_USERSET', group => 'RESOURCES_MEM',
+  short_desc => 'Whether to enable attribute-level compression for RECNO tables.',
+  variable => 'recno_enable_compression',
+  boot_val => 'true',
+},
+
+{ name => 'recno_lazy_uncommitted_clear', type => 'bool', context => 'PGC_USERSET', group => 'CLIENT_CONN_STATEMENT',
+  short_desc => 'Skip commit-time page re-visits for RECNO UNCOMMITTED flag clearing.',
+  long_desc => 'When enabled, RECNO_TUPLE_UNCOMMITTED flags are cleared lazily on next access rather than eagerly at commit time. Disabled by default: the lazy path does not restore the pre-update t_commit_ts on in-place UPDATEs, which breaks snapshot isolation for older readers. Re-enabling requires extending visibility-time clear sites to restore t_commit_ts from the sLog before-image.',
+  variable => 'recno_lazy_uncommitted_clear',
+  boot_val => 'false',
+},
 { name => 'recovery_end_command', type => 'string', context => 'PGC_SIGHUP', group => 'WAL_ARCHIVE_RECOVERY',
   short_desc => 'Sets the shell command that will be executed once at the end of recovery.',
   variable => 'recoveryEndCommand',
@@ -2782,7 +2828,6 @@
   min => '1',
   max => '16384',
 },
-
 { name => 'slog_num_partitions', type => 'int', context => 'PGC_POSTMASTER', group => 'WAL_SETTINGS',
   short_desc => 'Number of sLog flat hash partitions (0 = auto from CPU count).',
   long_desc => 'Controls the number of partitions for the optional sLog tuple tracking hash. More partitions reduce writer lock contention. Set 0 for auto-sizing (4x CPUs, clamped 16-256, power of 2). Requires restart.',
@@ -2791,7 +2836,6 @@
   min => '0',
   max => '256',
 },
-
 { name => 'ssl', type => 'bool', context => 'PGC_SIGHUP', group => 'CONN_AUTH_SSL',
   short_desc => 'Enables SSL connections.',
   variable => 'EnableSSL',
@@ -3329,6 +3373,7 @@
   boot_val => 'false',
 },
 
+
 { name => 'undo_batch_record_limit', type => 'int', context => 'PGC_SIGHUP', group => 'RESOURCES_MEM',
   short_desc => 'Sets the UNDO write buffer flush threshold in number of records.',
   long_desc => 'When the UNDO write buffer accumulates this many records, it inserts a new XLOG_UNDO_BATCH WAL record. Larger values reduce the number of WAL reads during rollback of large transactions but hold the WAL insertion lock longer per batch.',
@@ -3337,7 +3382,6 @@
   min => '100',
   max => '100000',
 },
-
 { name => 'undo_batch_size_kb', type => 'int', context => 'PGC_SIGHUP', group => 'RESOURCES_MEM',
   short_desc => 'Sets the UNDO write buffer flush threshold in kilobytes.',
   long_desc => 'When the UNDO write buffer accumulates this many kilobytes, it inserts a new XLOG_UNDO_BATCH WAL record. (This does not flush WAL to disk; that is controlled by synchronous_commit.) Larger values reduce the number of WAL reads during rollback of large transactions but hold the WAL insertion lock longer per batch.',
@@ -3347,7 +3391,6 @@
   min => '64',
   max => '4096',
 },
-
 { name => 'undo_buffer_size', type => 'int', context => 'PGC_POSTMASTER', group => 'RESOURCES_MEM',
   short_desc => 'Sets the size of the UNDO buffer cache.',
   long_desc => 'Size of the dedicated buffer cache for UNDO log pages, in kilobytes.',
@@ -3427,6 +3470,7 @@
   variable => 'update_process_title',
   boot_val => 'DEFAULT_UPDATE_PROCESS_TITLE',
 },
+
 
 { name => 'vacuum_buffer_usage_limit', type => 'int', context => 'PGC_USERSET', group => 'RESOURCES_MEM',
   short_desc => 'Sets the buffer pool size for VACUUM, ANALYZE, and autovacuum.',

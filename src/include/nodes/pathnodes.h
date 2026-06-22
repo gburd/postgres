@@ -971,6 +971,7 @@ typedef struct PartitionSchemeData *PartitionScheme;
 
 /* Bitmask of flags supported by table AMs */
 #define AMFLAG_HAS_TID_RANGE (1 << 0)
+#define AMFLAG_INPLACE_UPDATE_KEEPS_TID (1 << 1)
 
 typedef enum RelOptKind
 {
@@ -1437,6 +1438,8 @@ typedef struct IndexOptInfo
 	bool		amoptionalkey;
 	bool		amsearcharray;
 	bool		amsearchnulls;
+	/* do operators within an opfamily have consistent equality semantics? */
+	bool		amconsistentequality;
 	/* does AM have amgettuple interface? */
 	bool		amhasgettuple;
 	/* does AM have amgetbitmap interface? */

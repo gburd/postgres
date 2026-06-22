@@ -1,0 +1,24 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1_read1 s2_delete s2_vacuum s1_read2 s1_commit s3_vacuum s3_read
+step s1_read1: SELECT id, val FROM recno_reclaim_gate WHERE id = 2;
+id|val
+--+---
+ 2| 20
+(1 row)
+
+step s2_delete: DELETE FROM recno_reclaim_gate WHERE id = 2;
+step s2_vacuum: VACUUM recno_reclaim_gate;
+step s1_read2: SELECT id, val FROM recno_reclaim_gate WHERE id = 2;
+id|val
+--+---
+ 2| 20
+(1 row)
+
+step s1_commit: COMMIT;
+step s3_vacuum: VACUUM recno_reclaim_gate;
+step s3_read: SELECT id, val FROM recno_reclaim_gate WHERE id = 2;
+id|val
+--+---
+(0 rows)
+

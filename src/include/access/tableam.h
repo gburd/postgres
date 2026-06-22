@@ -353,28 +353,6 @@ typedef struct TableAmRoutine
 	bool		am_supports_undo;
 
 	/*
-	 * am_inplace_update_keeps_tid: true if this AM performs UPDATE in place,
-	 * keeping the same TID for the updated row instead of inserting a new
-	 * version at a new TID.
-	 *
-	 * The heap AM creates a new tuple version at a new TID on UPDATE, so when
-	 * an indexed column changes the executor re-inserts entries into every
-	 * index (including indexes on unchanged columns) pointing at the new TID;
-	 * the old entries become dead and are reclaimed by VACUUM.
-	 *
-	 * An in-place AM that keeps the TID must NOT re-insert index entries whose
-	 * key is unchanged by the UPDATE: the existing (key, TID) entry is still
-	 * valid, and inserting an identical (key, TID) pair would create a
-	 * duplicate that violates index-AM invariants (e.g. nbtree posting-list
-	 * dedup requires strictly increasing heap TIDs).  ExecInsertIndexTuples()
-	 * consults this flag together with the per-index "indexUnchanged" signal
-	 * to skip those redundant re-inserts.
-	 *
-	 * The heap AM leaves this false.
-	 */
-	bool		am_inplace_update_keeps_tid;
-
-	/*
 	 * am_inplace_update_no_dead_tuple: true if an UPDATE on this AM creates
 	 * zero dead tuples (the in-place image is overwritten; there is no old
 	 * version left behind for VACUUM to reclaim).
