@@ -6,23 +6,24 @@ PostgreSQL working while advancing the threaded runtime.
 
 ## Mandatory Reading
 
-- `MULTITHREADED_PLAN.md`: active staged plan, validation strategy, gates, and
-  risk register.
-- `MULTITHREADED_ARCHITECTURE.md`: desired end-state architecture.
-- `MULTITHREADED_AGENT_REFERENCE.md`: source orientation, build/test notes,
-  platform friction, and terminology.
+- `plan_docs/MULTITHREADED_PLAN.md`: active staged plan, validation strategy,
+  gates, and risk register.
+- `plan_docs/MULTITHREADED_ARCHITECTURE.md`: desired end-state architecture.
+- `plan_docs/MULTITHREADED_AGENT_REFERENCE.md`: source orientation, build/test
+  notes, platform friction, and terminology.
 - `MULTITHREADED_RUNTIME_LIFECYCLE.tsv`: checked runtime-root lifecycle
   manifest.
 - `MULTITHREADED_RUNTIME_OWNERS.tsv`: checked legacy-symbol owner map.
 
 Conditional references:
 
-- `MULTITHREADED_PHASE12_STATE.md`: archival Phase 12 implementation ledger and
-  Gate E2-Core evidence. Read it when investigating Phase 12 regressions or
-  updating closeout evidence.
-- `MULTITHREADED_AGENT_PHASE12_GUIDE.md`: detailed Phase 12 workflow rules.
-  Read it before reopening Phase 12 state/lifecycle migration work.
-- `MULTITHREADED_THREADING_REVIEW.md`: historical Gate E2 blocker rationale.
+- `plan_docs/MULTITHREADED_PHASE12_STATE.md`: archival Phase 12 implementation
+  ledger and Gate E2-Core evidence. Read it when investigating Phase 12
+  regressions or updating closeout evidence.
+- `plan_docs/MULTITHREADED_AGENT_PHASE12_GUIDE.md`: detailed Phase 12 workflow
+  rules. Read it before reopening Phase 12 state/lifecycle migration work.
+- `plan_docs/MULTITHREADED_THREADING_REVIEW.md`: historical Gate E2 blocker
+  rationale.
 - `refs/REFERENCES.md` and
   `refs/pgconf-2025-multithreading-transcript.md`: motivating background
   material.
@@ -67,7 +68,7 @@ phase/gate owns completion.
   files and `PG_RUNTIME_DEFINE_*` helpers where they fit. Semantic cleanup
   stays handwritten near the owning subsystem.
 - When local build/test friction repeats, update
-  `MULTITHREADED_AGENT_REFERENCE.md` rather than growing this file.
+  `plan_docs/MULTITHREADED_AGENT_REFERENCE.md` rather than growing this file.
 
 ## Validation Defaults
 
