@@ -3467,6 +3467,11 @@ extern void PgBackendConsumeProcDieSender(PgBackend *backend, int *sender_pid,
 										  int *sender_uid);
 extern bool PgCurrentBackendHasPendingInterrupts(void);
 extern void PgCurrentBackendApplyInterrupts(void);
+/*
+ * Generic wait-completion publication is diagnostic-only.  Production builds
+ * leave PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION undefined, making these
+ * APIs no-op/false except for local wait-state initialization.
+ */
 extern bool PgSetWaitCompletionPublication(bool enabled);
 extern PgWaitCompletion *PgBackendCurrentWaitCompletion(PgBackend *backend);
 extern bool PgBackendSnapshotWaitCompletionById(PgBackendId backend_id,

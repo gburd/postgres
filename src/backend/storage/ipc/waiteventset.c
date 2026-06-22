@@ -1127,6 +1127,9 @@ WaitEventSetWait(WaitEventSet *set, long timeout,
 	args.nevents = nevents;
 	args.wait_event_info = wait_event_info;
 
+#ifndef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
+	return WaitEventSetWaitInternal(&args);
+#else
 	if (likely(!PgBackendShouldPublishWaitCompletion(CurrentPgBackend)))
 		return WaitEventSetWaitInternal(&args);
 	else
@@ -1165,6 +1168,7 @@ WaitEventSetWait(WaitEventSet *set, long timeout,
 
 		return PgSuspend(&wait_spec, WaitEventSetWaitInternal, &args);
 	}
+#endif
 }
 
 static int

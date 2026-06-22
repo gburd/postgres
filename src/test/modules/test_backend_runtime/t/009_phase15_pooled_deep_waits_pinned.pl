@@ -121,13 +121,20 @@ log_min_messages = debug1
 });
 $node->start;
 
+$node->safe_psql('postgres',
+	'CREATE EXTENSION test_backend_runtime_threaded;');
+
+if ($node->safe_psql('postgres',
+		'SELECT test_backend_runtime_wait_completion_enabled();') ne 't')
+{
+	$node->stop('fast');
+	plan skip_all => 'wait-completion publication is compiled out';
+}
+
 is($node->safe_psql('postgres', 'SHOW multithreaded'), 'on',
 	'Phase 15 pooled deep-wait TAP starts threaded runtime');
 is($node->safe_psql('postgres', 'SHOW pooled_protocol_carriers'), '3',
 	'pooled deep-wait test uses a bounded carrier pool');
-
-$node->safe_psql('postgres',
-	'CREATE EXTENSION test_backend_runtime_threaded;');
 
 is($node->safe_psql('postgres',
 		'SELECT test_backend_runtime_model_snapshot();'),

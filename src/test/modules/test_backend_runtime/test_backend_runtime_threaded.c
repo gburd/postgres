@@ -41,6 +41,7 @@ PG_FUNCTION_INFO_V1(test_backend_runtime_crash_thread_bgworker);
 PG_FUNCTION_INFO_V1(test_backend_runtime_custom_guc_value);
 PG_FUNCTION_INFO_V1(test_backend_runtime_custom_guc_init_count);
 PG_FUNCTION_INFO_V1(test_backend_runtime_emit_fatal);
+PG_FUNCTION_INFO_V1(test_backend_runtime_wait_completion_enabled);
 PG_FUNCTION_INFO_V1(test_backend_runtime_wait_completion_snapshot);
 PG_FUNCTION_INFO_V1(test_backend_runtime_protocol_park_snapshot);
 PG_FUNCTION_INFO_V1(test_backend_runtime_wait_on_condition_variable);
@@ -428,6 +429,16 @@ test_backend_runtime_emit_fatal(PG_FUNCTION_ARGS)
 	ereport(FATAL,
 			(errmsg("test_backend_runtime requested FATAL")));
 	pg_unreachable();
+}
+
+Datum
+test_backend_runtime_wait_completion_enabled(PG_FUNCTION_ARGS)
+{
+#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
+	PG_RETURN_BOOL(true);
+#else
+	PG_RETURN_BOOL(false);
+#endif
 }
 
 Datum

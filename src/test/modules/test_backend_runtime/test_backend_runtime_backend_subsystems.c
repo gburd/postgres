@@ -1099,6 +1099,7 @@ PG_FUNCTION_INFO_V1(test_backend_wait_completion_publication);
 Datum
 test_backend_wait_completion_publication(PG_FUNCTION_ARGS)
 {
+#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
 	PgBackend  *saved_backend;
 	PgSession  *saved_session;
 	PgExecution *saved_execution;
@@ -1193,12 +1194,16 @@ test_backend_wait_completion_publication(PG_FUNCTION_ARGS)
 		elog(ERROR, "backend wait completion publication failed");
 
 	PG_RETURN_BOOL(true);
+#else
+	PG_RETURN_BOOL(true);
+#endif
 }
 
 PG_FUNCTION_INFO_V1(test_backend_wait_completion_publication_policy);
 Datum
 test_backend_wait_completion_publication_policy(PG_FUNCTION_ARGS)
 {
+#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
 	PgBackend  *saved_backend;
 	PgRuntime	process_runtime;
 	PgRuntime	thread_runtime;
@@ -1281,6 +1286,9 @@ test_backend_wait_completion_publication_policy(PG_FUNCTION_ARGS)
 		elog(ERROR, "backend wait completion publication policy failed");
 
 	PG_RETURN_BOOL(true);
+#else
+	PG_RETURN_BOOL(true);
+#endif
 }
 
 PG_FUNCTION_INFO_V1(test_backend_transaction_state_is_backend_local);

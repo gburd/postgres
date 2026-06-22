@@ -151,11 +151,18 @@ log_min_messages = debug1
 });
 $node->start;
 
-is($node->safe_psql('postgres', 'SHOW multithreaded'), 'on',
-	'Phase 13 wait-completion TAP starts threaded runtime');
-
 $node->safe_psql('postgres',
 	'CREATE EXTENSION test_backend_runtime_threaded;');
+
+if ($node->safe_psql('postgres',
+		'SELECT test_backend_runtime_wait_completion_enabled();') ne 't')
+{
+	$node->stop('fast');
+	plan skip_all => 'wait-completion publication is compiled out';
+}
+
+is($node->safe_psql('postgres', 'SHOW multithreaded'), 'on',
+	'Phase 13 wait-completion TAP starts threaded runtime');
 
 my $idle = $node->background_psql('postgres', timeout => 20);
 my $idle_pid = $idle->query_safe('SELECT pg_backend_pid();', verbose => 0);

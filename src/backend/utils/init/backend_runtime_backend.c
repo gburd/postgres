@@ -212,12 +212,14 @@ void PgBackendInitializeWaitState(PgBackendWaitState *wait_state);
 static void PgBackendAdoptEarlyWaitState(PgBackend *backend);
 static void PgBackendInitializeProtocolParkState(PgBackendProtocolParkState *protocol_park);
 static void PgWaitCompletionInitialize(PgWaitCompletion *completion);
+#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
 static void PgWaitCompletionPublish(PgWaitCompletion *completion,
 									PgBackend *backend,
 									const PgWaitSpec *wait_spec);
 static void PgWaitCompletionClear(PgWaitCompletion *completion);
 static void PgBackendClearWaitCompletion(PgBackendWaitState *wait_state);
 static void PgBackendWakeForWaitCompletion(PgBackend *backend);
+#endif
 void PgBackendInitializeTransactionState(PgBackendTransactionState *transaction);
 static void PgBackendAdoptEarlyTransactionState(PgBackend *backend);
 static void PgBackendInitializeTimeoutState(PgBackendTimeoutState *timeout);
@@ -813,6 +815,7 @@ PgWaitCompletionInitialize(PgWaitCompletion *completion)
 	pg_atomic_init_u32(&completion->interrupt_events, 0);
 }
 
+#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
 static void
 PgWaitCompletionPublish(PgWaitCompletion *completion, PgBackend *backend,
 						const PgWaitSpec *wait_spec)
@@ -866,6 +869,7 @@ PgBackendClearWaitCompletion(PgBackendWaitState *wait_state)
 	MemSet(&wait_state->spec, 0, sizeof(wait_state->spec));
 	PgWaitCompletionClear(&wait_state->completion);
 }
+#endif
 
 static void
 PgBackendAdoptEarlyWaitState(PgBackend *backend)
@@ -1506,20 +1510,27 @@ PgCurrentBackendWaitState(void)
 	return &CurrentPgBackend->wait_state;
 }
 
+#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
 /*
  * Thread-per-session backends publish wait completions automatically.  This
  * override exists for focused tests and diagnostics that need to observe the
  * publication path without constructing a threaded runtime object.
  */
 static PG_GLOBAL_RUNTIME bool pg_runtime_publish_wait_specs = false;
+#endif
 
 bool
 PgSetWaitCompletionPublication(bool enabled)
 {
+#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
 	bool		previous = pg_runtime_publish_wait_specs;
 
 	pg_runtime_publish_wait_specs = enabled;
 	return previous;
+#else
+	(void) enabled;
+	return false;
+#endif
 }
 
 PgWaitCompletion *
@@ -1536,7 +1547,7 @@ PgBackendSnapshotWaitCompletionById(PgBackendId backend_id,
 									PgWaitCompletion *snapshot,
 									uint32 *waiting)
 {
-#ifndef WIN32
+#if defined(PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION) && !defined(WIN32)
 	PgBackend  *backend = NULL;
 	bool		found = false;
 
@@ -1584,6 +1595,7 @@ void
 PgBackendMarkWaitCompletionInterrupt(PgBackend *backend,
 									 PgWaitCompletionInterrupt interrupt)
 {
+#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
 	PgWaitCompletion *completion;
 	uint32		state;
 
@@ -1597,11 +1609,16 @@ PgBackendMarkWaitCompletionInterrupt(PgBackend *backend,
 		return;
 
 	pg_atomic_fetch_or_u32(&completion->interrupt_events, interrupt);
+#else
+	(void) backend;
+	(void) interrupt;
+#endif
 }
 
 bool
 PgBackendWakeWaitCompletion(PgBackend *backend, uint32 ready_events)
 {
+#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
 	PgWaitCompletion *completion;
 	uint32		state;
 
@@ -1620,12 +1637,17 @@ PgBackendWakeWaitCompletion(PgBackend *backend, uint32 ready_events)
 	PgBackendWakeForWaitCompletion(backend);
 
 	return true;
+#else
+	(void) backend;
+	(void) ready_events;
+	return false;
+#endif
 }
 
 bool
 PgBackendWakeWaitCompletionById(PgBackendId backend_id, uint32 ready_events)
 {
-#ifndef WIN32
+#if defined(PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION) && !defined(WIN32)
 	PgBackend  *backend = NULL;
 
 	ThreadedBackendRegistryLock();
@@ -2537,6 +2559,7 @@ PgBackendResumeProtocolReadPark(PgBackend *backend)
 	park_state->scheduler_queue_state = PG_PROTOCOL_SCHEDULER_QUEUE_NONE;
 }
 
+#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
 static void
 PgBackendWakeForWaitCompletion(PgBackend *backend)
 {
@@ -2548,10 +2571,12 @@ PgBackendWakeForWaitCompletion(PgBackend *backend)
 	else if (backend == CurrentPgBackend && MyLatch != NULL)
 		SetLatch(MyLatch);
 }
+#endif
 
 bool
 PgBackendShouldPublishWaitCompletion(PgBackend *backend)
 {
+#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
 	if (backend == NULL)
 		return false;
 	if (pg_runtime_publish_wait_specs)
@@ -2560,12 +2585,17 @@ PgBackendShouldPublishWaitCompletion(PgBackend *backend)
 		return false;
 
 	return PgRuntimeIsThreadBacked(backend->runtime);
+#else
+	(void) backend;
+	return false;
+#endif
 }
 
 int
 PgSuspend(const PgWaitSpec *wait_spec, PgSuspendCallback callback,
 		  void *callback_arg)
 {
+#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
 	PgBackend  *backend;
 	PgBackendWaitState *wait_state;
 	int			result = 0;
@@ -2599,6 +2629,11 @@ PgSuspend(const PgWaitSpec *wait_spec, PgSuspendCallback callback,
 		PgBackendClearWaitCompletion(&backend->wait_state);
 
 	return result;
+#else
+	Assert(callback != NULL);
+	(void) wait_spec;
+	return callback(callback_arg);
+#endif
 }
 
 PgBackendTimeoutState *
