@@ -142,6 +142,34 @@ heapam_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot,
 
 
 /* ----------------------------------------------------------------------------
+ *  Bulk DML hint callbacks for heap AM.
+ * ----------------------------------------------------------------------------
+ */
+
+/*
+ * heapam_begin_bulk_insert - Signal the start of a DML operation.
+ *
+ * If the relation has UNDO enabled, this activates the UNDO write buffer
+ * to batch UNDO records and reduce per-row overhead.  Always called for
+ * UNDO-enabled tables regardless of estimated row count.
+ */
+static void
+heapam_begin_bulk_insert(Relation rel, uint32 options, int64 nrows)
+{
+}
+
+/*
+ * heapam_finish_bulk_insert - Complete a DML operation.
+ *
+ * Flushes any pending UNDO records and deactivates the write buffer.
+ */
+static void
+heapam_finish_bulk_insert(Relation rel, uint32 options)
+{
+}
+
+
+/* ----------------------------------------------------------------------------
  *  Functions for manipulations of physical tuples for heap AM.
  * ----------------------------------------------------------------------------
  */
@@ -2651,6 +2679,8 @@ BitmapHeapScanNextBlock(TableScanDesc scan,
 	return true;
 }
 
+/* heapam does not use UNDO; an in-place-update table AM will set am_supports_undo = true */
+
 /* ------------------------------------------------------------------------
  * Definition of the heap table access method.
  * ------------------------------------------------------------------------
@@ -2658,6 +2688,7 @@ BitmapHeapScanNextBlock(TableScanDesc scan,
 
 static const TableAmRoutine heapam_methods = {
 	.type = T_TableAmRoutine,
+	.am_supports_undo = false,
 
 	.slot_callbacks = heapam_slot_callbacks,
 
@@ -2685,6 +2716,9 @@ static const TableAmRoutine heapam_methods = {
 	.tuple_delete = heapam_tuple_delete,
 	.tuple_update = heapam_tuple_update,
 	.tuple_lock = heapam_tuple_lock,
+
+	.begin_bulk_insert = heapam_begin_bulk_insert,
+	.finish_bulk_insert = heapam_finish_bulk_insert,
 
 	.tuple_fetch_row_version = heapam_fetch_row_version,
 	.tuple_get_latest_tid = heap_get_latest_tid,

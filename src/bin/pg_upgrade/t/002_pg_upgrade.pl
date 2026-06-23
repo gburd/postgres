@@ -288,7 +288,7 @@ else
 			'--bindir=',
 			'--host=' . $oldnode->host,
 			'--port=' . $oldnode->port,
-			"--schedule=$srcdir/src/test/regress/parallel_schedule",
+			"--schedule=$srcdir/src/test/regress/integration_schedule",
 			'--max-concurrent-tests=20',
 			"--inputdir=$inputdir",
 			"--outputdir=$outputdir"

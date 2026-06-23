@@ -153,6 +153,7 @@
 #include "storage/lmgr.h"
 #include "storage/read_stream.h"
 #include "utils/injection_point.h"
+#include "utils/rel.h"
 #include "utils/lsyscache.h"
 #include "utils/pg_rusage.h"
 #include "utils/timestamp.h"
