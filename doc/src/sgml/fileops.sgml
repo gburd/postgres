@@ -1,0 +1,394 @@
+<!-- doc/src/sgml/fileops.sgml -->
+
+<sect1 id="fileops" xreflabel="Transactional File Operations">
+ <title>Transactional File Operations</title>
+
+ <indexterm zone="fileops">
+  <primary>transactional file operations</primary>
+ </indexterm>
+
+ <indexterm zone="fileops">
+  <primary>FILEOPS</primary>
+ </indexterm>
+
+ <para>
+  <productname>PostgreSQL</productname> includes a transactional file
+  operations layer (FILEOPS) that makes filesystem operations such as
+  file creation, deletion, renaming, and truncation atomic with the
+  enclosing database transaction.  These operations are WAL-logged
+  via the <literal>RM_FILEOPS_ID</literal> resource manager and
+  replayed correctly during crash recovery and on standbys.
+ </para>
+
+ <sect2 id="fileops-overview">
+  <title>Overview</title>
+
+  <para>
+   Without FILEOPS, filesystem operations during <command>CREATE
+   TABLE</command> or <command>DROP TABLE</command> are not truly
+   transactional &mdash; a crash between the catalog update and the
+   file operation can leave orphaned files or missing files.  The
+   FILEOPS layer addresses this by:
+  </para>
+
+  <orderedlist>
+   <listitem>
+    <para>
+     Writing a WAL record before performing the filesystem operation.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Deferring destructive operations (deletion) until transaction
+     commit.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Registering undo actions (delete-on-abort for newly created files)
+     that execute automatically if the transaction rolls back.
+    </para>
+   </listitem>
+  </orderedlist>
+ </sect2>
+
+ <sect2 id="fileops-configuration">
+  <title>Configuration</title>
+
+  <para>
+   Transactional file operations are active whenever WAL is being written
+   for the operation, that is, when <function>XLogIsNeeded()</function> is
+   true (any <varname>wal_level</varname> above <literal>minimal</literal>).
+   At <varname>wal_level</varname> = <literal>minimal</literal> the WAL
+   records described below are not emitted, matching the rest of the system.
+   When active, filesystem operations performed within a transaction context
+   are WAL-logged and integrated with the transaction lifecycle, including
+   UNDO records for crash-safe rollback.
+  </para>
+ </sect2>
+
+ <sect2 id="fileops-operations">
+  <title>Supported Operations</title>
+
+  <variablelist>
+   <varlistentry>
+    <term>File Creation</term>
+    <listitem>
+     <para>
+      When a new relation file is created (e.g., during
+      <command>CREATE TABLE</command>), a
+      <literal>XLOG_FILEOPS_CREATE</literal> WAL record is written.
+      If the transaction aborts, the file is automatically deleted.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>File Deletion</term>
+    <listitem>
+     <para>
+      File deletion (e.g., during <command>DROP TABLE</command>) is
+      deferred until transaction commit.  A
+      <literal>XLOG_FILEOPS_DELETE</literal> WAL record is written.
+      If the transaction aborts, the file remains intact.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>File Move/Rename</term>
+    <listitem>
+     <para>
+      File renames are WAL-logged via
+      <literal>XLOG_FILEOPS_RENAME</literal>.  This ensures renames
+      are replayed during crash recovery.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>File Truncation</term>
+    <listitem>
+     <para>
+      File truncations are WAL-logged via
+      <literal>XLOG_FILEOPS_TRUNCATE</literal>.  The old size is
+      recorded for potential undo operations.
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect2>
+
+ <sect2 id="fileops-platform">
+  <title>Platform-Specific Behavior</title>
+
+  <para>
+   The FILEOPS implementation includes platform-specific handling for
+   filesystem differences.  On all platforms, parent directory
+   <function>fsync</function> is performed after file creation or
+   deletion to ensure directory entry durability.
+  </para>
+
+  <para>
+   On systems with copy-on-write filesystems (e.g., ZFS, Btrfs),
+   the FILEOPS layer respects the existing
+   <varname>data_sync_retry</varname> setting for handling
+   <function>fsync</function> failures.
+  </para>
+ </sect2>
+
+ <sect2 id="fileops-recovery">
+  <title>Crash Recovery</title>
+
+  <para>
+   During crash recovery, the FILEOPS resource manager replays
+   operations from the WAL:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     <literal>CREATE</literal> records: re-create the file if it
+     does not exist.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <literal>DELETE</literal> records: perform the deferred deletion.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <literal>RENAME</literal> records: re-apply the rename operation.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <literal>TRUNCATE</literal> records: re-apply the truncation.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   On standbys, FILEOPS WAL records are replayed identically, ensuring
+   that the standby's filesystem state matches the primary's.
+  </para>
+ </sect2>
+
+ <sect2 id="fileops-coverage">
+  <title>Coverage</title>
+
+  <para>
+   FILEOPS wraps the filesystem mutations that previously bypassed
+   crash safety in commands that are otherwise transactional.  Routed
+   through FILEOPS as of this release:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     <command>CREATE DATABASE</command> with <literal>STRATEGY =
+     FILE_COPY</literal> (and the <literal>clone</literal> path) wraps
+     the destination tree via <function>copydir</function>; a
+     transaction abort recursively removes the partial copy.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <command>CREATE TABLESPACE</command> uses
+     <function>FileOpsMkdir</function>,
+     <function>FileOpsSymlink</function>, and
+     <function>FileOpsChmod</function> on the user-supplied location;
+     all are reversed on transaction abort.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <command>DROP TABLESPACE</command> defers the per-database
+     subdirectory removals, the version-directory removal, and the
+     symlink unlink to commit time, so a transaction abort restores
+     the tablespace's filesystem state even after the catalog row has
+     been processed.  This closes a long-standing crash-asymmetry
+     between <command>CREATE TABLESPACE</command> (which used FILEOPS)
+     and <command>DROP TABLESPACE</command> (which did not).
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <command>ALTER DATABASE ... SET TABLESPACE</command> wraps the
+     destination tree through <function>copydir</function>, so a
+     transaction abort recursively removes the partial copy in the
+     new tablespace.  The source tree is preserved until commit by the
+     existing <function>movedb_failure_callback</function>.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     File-level mutations (<function>FileOpsCreate</function>,
+     <function>FileOpsDelete</function>,
+     <function>FileOpsRename</function>,
+     <function>FileOpsTruncate</function>,
+     <function>FileOpsChmod</function>,
+     <function>FileOpsChown</function>,
+     <function>FileOpsMkdir</function>,
+     <function>FileOpsRmdir</function>,
+     <function>FileOpsRmdirRecursive</function>,
+     <function>FileOpsSymlink</function>,
+     <function>FileOpsLink</function>,
+     <function>FileOpsSetXattr</function>,
+     <function>FileOpsRemoveXattr</function>) are available to
+     extension authors needing crash-safe filesystem operations.
+    </para>
+   </listitem>
+  </itemizedlist>
+
+  <para>
+   Operations explicitly NOT routed through FILEOPS, with rationale,
+   include WAL files (their durability is the WAL itself), replication
+   slot directories (intentionally non-transactional, recoverable via
+   slot startup logic), checkpoint state files
+   (<filename>pg_logical/snapshots</filename>, replication origin
+   state, reorderbuffer spills &mdash; all reconstructible from WAL),
+   SLRU segments (clog/multixact/etc, reconstructed from WAL or
+   advisory), 2PC state files (WAL-driven), the relation map
+   (WAL-logged via <literal>RM_RELMAP_ID</literal>), and statistics
+   files (explicitly non-durable).
+  </para>
+ </sect2>
+
+ <sect2 id="fileops-platform">
+  <title>Platform Portability</title>
+
+  <para>
+   FILEOPS is designed to work on every platform <productname>
+   PostgreSQL</productname> supports.  Behavior differences by
+   platform:
+  </para>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     <emphasis>Linux, FreeBSD, macOS</emphasis>: native POSIX calls
+     (<function>unlink</function>, <function>rename</function>,
+     <function>chmod</function>, <function>symlink</function>,
+     <function>setxattr</function>) with
+     <function>fsync</function> of file and parent directory at the
+     appropriate points.  The xattr layer
+     (<filename>src/port/pg_xattr.c</filename>) wraps the per-platform
+     differences (Linux <function>setxattr</function>, BSD
+     <function>extattr_set_file</function>, macOS
+     <function>setxattr</function> with namespace flag).
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <emphasis>Windows</emphasis>: filesystem operations use the
+     <productname>PostgreSQL</productname> Windows compatibility layer
+     (<function>pgrename</function>, <function>pgunlink</function>,
+     <function>pgsymlink</function>) which retries on transient
+     <literal>EACCES</literal>/<literal>ERROR_SHARING_VIOLATION</literal>
+     conditions specific to NTFS.  Symbolic links use NTFS junction
+     points via <function>DeviceIoControl</function>; junctions only
+     work for directories, which matches FILEOPS's only use case
+     (tablespace symlinks).  <function>chmod</function> on Windows is
+     advisory (only the read-only bit is meaningful); FILEOPS records
+     the WAL and UNDO entries unconditionally so behavior is
+     consistent across platforms even if the on-disk effect is
+     limited.  Extended attributes on Windows are stored in alternate
+     data streams (NTFS-only), via the
+     <filename>src/port/pg_xattr.c</filename> Win32 backend.
+     Directory <function>fsync</function> is a no-op on NTFS (NTFS
+     journals directory entries), which
+     <function>fsync_fname_ext</function> already handles.
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect2>
+
+ <sect2 id="fileops-pendingdeletes">
+  <title>Relationship to <literal>pendingDeletes</literal></title>
+
+  <para>
+   <productname>PostgreSQL</productname> has had a separate per-backend
+   <literal>pendingDeletes</literal> list in
+   <filename>src/backend/catalog/storage.c</filename> long before
+   FILEOPS existed.  <literal>pendingDeletes</literal> tracks the
+   <literal>RelFileLocator</literal> identities of relations that need
+   to be unlinked at commit (drops) or abort (creates),
+   coordinates the unlinks with the buffer manager via
+   <function>DropRelationsAllBuffers</function>, and serializes the
+   list into <literal>xl_xact_commit</literal> /
+   <literal>xl_xact_abort</literal> records so standby replay can do
+   the corresponding unlinks.
+  </para>
+
+  <para>
+   FILEOPS does NOT replace <literal>pendingDeletes</literal> in this
+   release; the two coexist.  <literal>pendingDeletes</literal> continues to
+   handle relation-file unlinks on commit/abort.  A future integration could
+   let FILEOPS clean up relation-keyed extended attributes when
+   <function>smgrDoPendingDeletes</function> drops a relation, but no such
+   hook exists today (no caller stores xattrs on relation files), so nothing
+   in <filename>catalog/storage.c</filename> calls into FILEOPS for this yet.
+  </para>
+
+  <para>
+   FILEOPS could eventually subsume parts of the
+   <literal>pendingDeletes</literal> machinery, providing a single
+   uniform commit/abort hook for filesystem mutations.  This is
+   deferred for the following reasons:
+  </para>
+
+  <orderedlist>
+   <listitem>
+    <para>
+     <literal>xl_xact_commit</literal> carries
+     <literal>XACT_XINFO_HAS_RELFILELOCATORS</literal> plus an embedded
+     <literal>RelFileLocator</literal> array as the per-commit unlink
+     list.  Replacing that with separate
+     <literal>XLOG_FILEOPS_DELETE</literal> records would change the
+     wire format consumed by logical decoding,
+     <application>pg_basebackup</application>,
+     <application>pg_receivewal</application>, and downstream
+     replication tools that parse commit records.  Such a change
+     requires a deprecation cycle and pg_upgrade coordination.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <function>smgrunlink</function> is segment-aware: a single
+     relation drop iterates forks (main, fsm, vm, init) and segment
+     files (1 GB segments) and coordinates with the buffer manager.
+     FILEOPS is path-string oriented and would either need to
+     reimplement segment walking and buffer-pool teardown, or call
+     back into <function>smgr</function> &mdash; at which point the
+     abstraction is no clearer than the current
+     <literal>pendingDeletes</literal> list.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     The <varname>wal_level = minimal</varname> optimization in
+     <function>smgrDoPendingSyncs</function> cross-references
+     <literal>pendingDeletes</literal> to skip syncing relations
+     about to be dropped.  Replacing
+     <literal>pendingDeletes</literal> requires either preserving that
+     cross-reference or accepting the cost of redundant fsyncs in the
+     <varname>minimal</varname> case.
+    </para>
+   </listitem>
+  </orderedlist>
+
+  <para>
+   A future patch can introduce
+   <function>FileOpsRelationDrop(rlocator)</function> as an opt-in
+   alternative to <function>RelationDropStorage</function> that emits
+   <literal>XLOG_FILEOPS_DELETE</literal> records per fork and
+   segment, with a corresponding <literal>xl_xact_commit</literal>
+   format flag indicating &ldquo;this xact has FILEOPS delete records,
+   do not consult the embedded relfilelocator array.&rdquo;  That
+   work is out of scope for the initial submission.
+  </para>
+ </sect2>
+
+</sect1>
