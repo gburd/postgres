@@ -2582,6 +2582,8 @@ CommitTransaction(void)
 	 * attempt to access affected files.
 	 */
 	smgrDoPendingDeletes(true);
+	if (FileOpsDoPendingOps_hook)
+		FileOpsDoPendingOps_hook(true);
 
 	/*
 	 * Send out notification signals to other backends (and do other
@@ -2895,6 +2897,8 @@ PrepareTransaction(void)
 	PostPrepare_Inval();
 
 	PostPrepare_smgr();
+	if (FileOpsPostPrepare_hook)
+		FileOpsPostPrepare_hook();
 
 	PostPrepare_MultiXact(fxid);
 
@@ -3176,6 +3180,8 @@ AbortTransaction(void)
 		WaitForPendingRelUndo();
 
 		smgrDoPendingDeletes(false);
+		if (FileOpsDoPendingOps_hook)
+			FileOpsDoPendingOps_hook(false);
 
 		AtEOXact_GUC(false, 1);
 		AtEOXact_SPI(false);
@@ -5362,6 +5368,8 @@ CommitSubTransaction(void)
 	AtEOSubXact_TypeCache();
 	AtEOSubXact_Inval(true);
 	AtSubCommit_smgr();
+	if (FileOpsAtSubCommit_hook)
+		FileOpsAtSubCommit_hook();
 
 	/*
 	 * The only lock we actually release here is the subtransaction XID lock.
@@ -5553,6 +5561,8 @@ AbortSubTransaction(void)
 							 RESOURCE_RELEASE_AFTER_LOCKS,
 							 false, false);
 		AtSubAbort_smgr();
+		if (FileOpsAtSubAbort_hook)
+			FileOpsAtSubAbort_hook();
 
 		AtEOXact_GUC(false, s->gucNestLevel);
 		AtEOSubXact_SPI(false, s->subTransactionId);

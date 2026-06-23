@@ -83,6 +83,7 @@ LogicalMessage
 XLOG2
 Undo
 ATM
+FileOps
 RelUndo$/,
 	'rmgr list');
 

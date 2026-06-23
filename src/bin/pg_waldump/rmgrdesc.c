@@ -21,6 +21,7 @@
 #include "access/rmgr.h"
 #include "access/spgxlog.h"
 #include "access/atm_xlog.h"
+#include "access/fileops_xlog.h"
 #include "access/relundo_xlog.h"
 #include "access/undo_xlog.h"
 #include "access/xact.h"
