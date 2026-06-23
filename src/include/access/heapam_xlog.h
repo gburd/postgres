@@ -77,6 +77,8 @@
 
 /* all_frozen_set always implies all_visible_set */
 #define XLH_INSERT_ALL_FROZEN_SET				(1<<5)
+/* UNDO payload is embedded in this WAL record (bit 6 unused, confirmed by audit) */
+#define XLH_INSERT_HAS_UNDO						(1<<6)
 
 /*
  * xl_heap_update flag values, 8 bits are available.
@@ -90,6 +92,8 @@
 #define XLH_UPDATE_CONTAINS_NEW_TUPLE			(1<<4)
 #define XLH_UPDATE_PREFIX_FROM_OLD				(1<<5)
 #define XLH_UPDATE_SUFFIX_FROM_OLD				(1<<6)
+/* UNDO payload is embedded in this WAL record (bit 7 unused, confirmed by audit) */
+#define XLH_UPDATE_HAS_UNDO						(1<<7)
 
 /* convenience macro for checking whether any form of old tuple was logged */
 #define XLH_UPDATE_CONTAINS_OLD						\
@@ -106,6 +110,9 @@
 #define XLH_DELETE_IS_PARTITION_MOVE			(1<<4)
 /* See heap_delete() */
 #define XLH_DELETE_NO_LOGICAL					(1<<5)
+
+/* UNDO payload is embedded in this WAL record (bit 6 unused, confirmed by audit) */
+#define XLH_DELETE_HAS_UNDO						(1<<6)
 
 /* convenience macro for checking whether any form of old tuple was logged */
 #define XLH_DELETE_CONTAINS_OLD						\

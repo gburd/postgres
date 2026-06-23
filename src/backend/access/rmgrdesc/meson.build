@@ -2,6 +2,7 @@
 
 # used by frontend programs like pg_waldump
 rmgr_desc_sources = files(
+  'atmdesc.c',
   'brindesc.c',
   'clogdesc.c',
   'committsdesc.c',
@@ -15,6 +16,7 @@ rmgr_desc_sources = files(
   'mxactdesc.c',
   'nbtdesc.c',
   'relmapdesc.c',
+  'relundodesc.c',
   'replorigindesc.c',
   'rmgrdesc_utils.c',
   'seqdesc.c',
@@ -22,6 +24,7 @@ rmgr_desc_sources = files(
   'spgdesc.c',
   'standbydesc.c',
   'tblspcdesc.c',
+  'undodesc.c',
   'xactdesc.c',
   'xlogdesc.c',
 )

@@ -5,6 +5,7 @@ backend_sources += files(
   'bufmask.c',
   'detoast.c',
   'heaptuple.c',
+  'index_prune.c',
   'indextuple.c',
   'printsimple.c',
   'printtup.c',

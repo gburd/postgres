@@ -17,6 +17,7 @@ OBJS = \
 	bufmask.o \
 	detoast.o \
 	heaptuple.o \
+	index_prune.o \
 	indextuple.o \
 	printsimple.o \
 	printtup.o \
