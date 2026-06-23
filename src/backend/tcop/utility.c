@@ -1190,6 +1190,7 @@ ProcessUtilitySlow(ParseState *pstate,
 																validnsps,
 																true,
 																false);
+
 							(void) heap_reloptions(RELKIND_TOASTVALUE,
 												   toast_options,
 												   true);

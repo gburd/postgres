@@ -30,8 +30,11 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#include "access/relundo.h"
 #include "access/timeline.h"
 #include "access/transam.h"
+#include "access/undo_xlog.h"
+#include "access/undolog.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
 #include "access/xlogarchive.h"
@@ -1859,6 +1862,51 @@ PerformWalRecovery(void)
 			ereport(LOG,
 					(errmsg("last completed transaction was at log time %s",
 							timestamptz_to_str(xtime))));
+
+		/*
+		 * ARIES-style undo phase: roll back incomplete transactions that
+		 * wrote UNDO records (XLOG_UNDO_BATCH) but did not commit.
+		 *
+		 * During the redo phase above, UndoRecoveryTrackBatch() was called
+		 * from the XLOG_UNDO_BATCH redo handler to record which transactions
+		 * have UNDO data.  UndoRecoveryRemoveXid() was called from the
+		 * XLOG_XACT_COMMIT and XLOG_XACT_ABORT redo handlers to remove
+		 * completed transactions.  Any remaining entries represent incomplete
+		 * transactions that need their UNDO chains walked for rollback.
+		 *
+		 * We check UndoRecoveryNeeded() to avoid overhead when no UNDO
+		 * records were present in the WAL stream.
+		 */
+		if (UndoRecoveryNeeded())
+		{
+			ereport(LOG,
+					(errmsg("starting undo phase for incomplete transactions")));
+			PerformUndoRecovery();
+			ereport(LOG,
+					(errmsg("undo phase complete")));
+		}
+
+		/*
+		 * Reverse-apply per-relation UNDO (in-place before-images) for loser
+		 * transactions.  Like PerformUndoRecovery() above, this runs before
+		 * WAL insertion is enabled, so it writes no WAL; durability is
+		 * provided by the end-of-recovery checkpoint.
+		 *
+		 * Unlike the cluster-wide UNDO phase, this is driven by an
+		 * end-of-redo scan of the UNDO forks on disk rather than redo-time
+		 * tracking: a CHECKPOINT taken after an uncommitted in-place UPDATE
+		 * advances the redo start past that UPDATE's WAL, so nothing is
+		 * replayed for it even though its uncommitted value is durable.
+		 *
+		 * This block is reached only once redo has finished -- at crash
+		 * recovery end or at standby promotion.  A streaming hot standby
+		 * never arrives here.  At promotion StandbyMode is still set (it is
+		 * cleared later in FinishWalRecovery), so gating on !StandbyMode
+		 * would skip the scan for exactly the promoted-standby case that
+		 * needs loser rollback. Run it unconditionally, matching
+		 * PerformUndoRecovery() above.
+		 */
+		PerformRelUndoRecovery();
 
 		InRedo = false;
 	}
