@@ -1,0 +1,180 @@
+src/backend/storage/file/README
+
+Transactional File Operations (FILEOPS)
+=======================================
+
+This directory's fileops.c and fileops_undo.c implement FILEOPS: a set of
+filesystem operations that participate in PostgreSQL transactions.  An
+ordinary unlink() or rename() issued in the middle of a transaction is not
+covered by WAL and is not reversed if the transaction aborts or the server
+crashes.  FILEOPS closes that gap for the filesystem mutations the server
+performs outside the buffer manager -- creating and removing database and
+tablespace directories, copying directory trees, writing version files,
+managing symlinks, and setting extended attributes.
+
+
+Why FILEOPS exists
+------------------
+
+PostgreSQL already makes heap and index changes crash-safe by WAL-logging
+them and replaying the log during recovery.  Directory- and file-level
+operations historically had no equivalent.  Code paths such as CREATE
+DATABASE, CREATE TABLESPACE, and ALTER DATABASE ... SET TABLESPACE perform
+raw mkdir(), symlink(), rename(), and rmtree() calls and then rely on
+ad-hoc cleanup callbacks to undo their effects on failure.  That cleanup is
+best-effort: it does not survive a crash, and it is easy to get the abort
+ordering wrong.
+
+FILEOPS gives these operations the same two guarantees the rest of the
+system enjoys:
+
+  Atomicity with the transaction.  A FILEOPS request does not touch the
+  filesystem when it is issued.  It is recorded as a deferred PendingFileOp
+  and executed only when the transaction commits (or, for delete-on-abort
+  registrations, when it aborts).  If the transaction never commits, the
+  on-disk state is never changed.
+
+  Crash safety.  Each executed operation is WAL-logged under the
+  RM_FILEOPS_ID resource manager, so redo during crash recovery reproduces
+  it on the primary, and a physical standby reproduces it by WAL replay.
+  This holds for the immediate operations (CREATE, WRITE, LINK, MKDIR,
+  CHMOD, CHOWN, TRUNCATE, SETXATTR, REMOVEXATTR) and, as of the B3 fix, for
+  the deferred DESTRUCTIVE operations (RENAME, DELETE, RMDIR) as well: their
+  WAL record is emitted at commit-EXECUTION time inside FileOpsDoPendingOps()
+  -- when the op actually happens on the primary -- and their redo handlers
+  are now real and idempotent (a delete of an already-absent file, a rename
+  whose source is already gone, or an rmdir of an already-absent directory
+  all count as success), so the standby converges regardless of a primary
+  crash mid-commit.  Only the commit path is logged; a delete-on-abort /
+  rmdir-on-abort registration executed during ABORT emits no WAL, because a
+  standby must never apply an aborted transaction's filesystem effect.  See
+  src/test/recovery/t/070_fileops_standby_divergence.pl for the
+  physical-standby diff test that gates this.
+
+  Two deliberate exceptions:
+
+    RMTREE (FileOpsRmtree) writes no WAL and has no redo.  Its only core
+    caller (copydir.c) registers it at_commit=false, i.e. it fires only on
+    ABORT to clean up a partially-copied destination tree; aborts are never
+    replayed as committed, so it cannot diverge a standby.  A commit-time
+    RMTREE would NOT be standby-safe and is currently unused.
+
+    SYMLINK redo is an intentional no-op.  FileOpsSymlink is used ONLY for
+    tablespace symlinks (create_tablespace_directories), and standby /
+    crash-recovery replay of those is owned by RM_TBLSPC, which applies the
+    recovery-time layout remap.  Replaying the FILEOPS record would be
+    redundant and wrong on a remapped standby (see sec2 in fileops.c).
+
+  Operations that must be reversible on rollback
+  also emit UNDO records (RM_UNDO_ID, subtypes FILEOPS_UNDO_*) carrying the
+  before-image needed to reverse them -- the original mode for a chmod, the
+  original length for a truncate, the prior xattr value for a setxattr, and
+  so on.
+
+The operation set deliberately follows the Berkeley DB fileops.src model:
+every filesystem mutation is a composable unit with its own WAL record
+type, redo handler, and rmgrdesc descriptor, so each can be replayed
+independently.
+
+
+How to use the API
+------------------
+
+The public API is declared in src/include/storage/fileops.h.  Call these in
+place of the raw libc/syscall equivalents whenever the operation must be
+transactional.  Each returns the same way its libc counterpart does (the
+create/rename/chmod/chown/mkdir/symlink/link calls return an int errno-style
+result; the void calls register a pending op):
+
+  FileOpsCreate(path, flags, mode, register_delete)
+  FileOpsDelete(path, at_commit)
+  FileOpsRename(oldpath, newpath)
+  FileOpsWrite(path, offset, data, len)
+  FileOpsTruncate(path, length)
+  FileOpsChmod(path, mode)
+  FileOpsChown(path, uid, gid)
+  FileOpsMkdir(path, mode)
+  FileOpsRmdir(path, at_commit)
+  FileOpsRmdirRecursive(path, at_commit)
+  FileOpsRmtree(path, at_commit)
+  FileOpsSymlink(target, linkpath)
+  FileOpsLink(oldpath, newpath)
+  FileOpsSetXattr(path, name, value, len)
+  FileOpsRemoveXattr(path, name)
+
+Two flags recur in this API and are worth understanding:
+
+  register_delete (FileOpsCreate).  When true, the newly created file is
+  registered for deletion if the transaction aborts.  This is the common
+  case for files a transaction brings into existence: keep them on commit,
+  remove them on abort.
+
+  at_commit (FileOpsDelete, FileOpsRmdir, FileOpsRmdirRecursive,
+  FileOpsRmtree).  Selects when the removal happens.  at_commit = true means
+  "remove this when the transaction commits" -- the right choice for tearing
+  down state the transaction is logically deleting (for example, dropping a
+  database directory).  at_commit = false means "remove this only if the
+  transaction aborts" -- used to clean up something the transaction just
+  created, such as the destination tree of an in-progress directory copy.
+
+FileOpsRmtree differs from FileOpsRmdirRecursive in when the tree is walked.
+FileOpsRmdirRecursive enumerates the directory's contents at registration
+time, so it removes what is present now.  FileOpsRmtree defers the walk to
+execute time, so it removes whatever ended up on disk by commit/abort --
+the correct choice when registering the destination of a copydir() that is
+still being populated.
+
+The API hides platform differences: PG_O_DIRECT for unbuffered I/O,
+pg_fsync() for the correct per-platform flush, fsync_parent_path() for
+directory durability on Unix, and durable_rename()/durable_unlink() for
+crash-safe rename and unlink ordering.
+
+
+Transaction lifecycle integration
+----------------------------------
+
+The deferred operations are driven by hooks that the transaction machinery
+(src/backend/access/transam/xact.c) calls at the right points.  Callers of
+the FileOps* API do not invoke these directly; they are documented here so
+the lifecycle is clear:
+
+  FileOpsDoPendingOps(isCommit).  Executes the pending operation list at
+  end of transaction.  Called with true from the commit path and with false
+  from the abort path; each PendingFileOp's at_commit flag decides whether
+  it fires in this phase.
+
+  AtSubCommit_FileOps().  On subtransaction commit, reparents the
+  subtransaction's pending operations to the parent so they are decided by
+  the parent's eventual commit or abort.
+
+  AtSubAbort_FileOps().  On subtransaction abort, executes and discards the
+  pending operations belonging to the aborting subtransaction.
+
+  PostPrepare_FileOps().  At PREPARE TRANSACTION, hands the pending
+  operations off so they are resolved when the prepared transaction is later
+  committed or rolled back.
+
+  FileOpsCancelPendingDelete(path, at_commit).  Removes a previously
+  registered delete-on-commit or delete-on-abort entry, for the case where
+  a caller decides the file should no longer be removed.
+
+  FileOpsSync(path).  Forces durability of a path outside the deferred
+  queue when an operation needs to be flushed immediately.
+
+
+WAL replay and UNDO
+-------------------
+
+fileops.c provides the redo side: fileops_redo() dispatches each
+XLOG_FILEOPS_* record to the matching action during recovery, and
+fileops_desc()/fileops_identify() render records for pg_waldump.  Because
+the redo handler is itself the recovery action, code paths that run under
+WAL replay (the "redo" arms in dbcommands.c, tablespace.c, and copydir.c)
+call the raw syscalls directly rather than re-entering the FileOps* API.
+
+fileops_undo.c provides the rollback side.  For operations whose effect must
+be reversed when a transaction aborts, it records a FILEOPS_UNDO_* payload
+holding the before-image and, during UNDO application, performs the inverse
+action: unlink a created file, rename back, restore the original truncation
+length, mode, owner, or extended-attribute value.  FileopsUndoRmgrInit()
+registers this handler with the UNDO machinery at startup.
