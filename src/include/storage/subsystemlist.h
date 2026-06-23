@@ -88,3 +88,14 @@ PG_SHMEM_SUBSYSTEM(DataChecksumsShmemCallbacks)
 
 /* AIO subsystem. This delegates to the method-specific callbacks */
 PG_SHMEM_SUBSYSTEM(AioShmemCallbacks)
+
+/* UNDO subsystem */
+PG_SHMEM_SUBSYSTEM(UndoShmemCallbacks)
+
+/*
+ * sLog: RECNO's shared-memory tuple/transaction tracking structure.
+ * Registered as its own subsystem (not nested inside UndoShmemCallbacks) so
+ * the generic UNDO subsystem has no compile-time or link-time dependency on
+ * RECNO.  See slog.c's SLogShmemCallbacks for details.
+ */
+PG_SHMEM_SUBSYSTEM(SLogShmemCallbacks)

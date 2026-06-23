@@ -41,6 +41,8 @@
 #include "access/tableam.h"
 #include "access/valid.h"
 #include "access/visibilitymap.h"
+#include "access/xact.h"
+#include "access/xlog.h"
 #include "access/xloginsert.h"
 #include "catalog/pg_database.h"
 #include "catalog/pg_database_d.h"
@@ -58,10 +60,10 @@
 #include "utils/datum.h"
 #include "utils/injection_point.h"
 #include "utils/inval.h"
+#include "utils/memutils.h"
 #include "utils/relcache.h"
 #include "utils/spccache.h"
 #include "utils/syscache.h"
-
 
 static HeapTuple heap_prepare_insert(Relation relation, HeapTuple tup,
 									 TransactionId xid, CommandId cid, uint32 options);
@@ -114,7 +116,6 @@ static int	bottomup_sort_and_shrink(TM_IndexDeleteOp *delstate);
 static XLogRecPtr log_heap_new_cid(Relation relation, HeapTuple tup);
 static HeapTuple ExtractReplicaIdentity(Relation relation, HeapTuple tp, bool key_required,
 										bool *copy);
-
 
 /*
  * This table lists the heavyweight lock mode that corresponds to each tuple
@@ -2141,6 +2142,7 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 		}
 
 		XLogBeginInsert();
+
 		XLogRegisterData(&xlrec, SizeOfHeapInsert);
 
 		xlhdr.t_infomask2 = heaptup->t_data->t_infomask2;
@@ -3070,6 +3072,7 @@ l1:
 			xlrec.flags |= XLH_DELETE_NO_LOGICAL;
 
 		XLogBeginInsert();
+
 		XLogRegisterData(&xlrec, SizeOfHeapDelete);
 
 		XLogRegisterBuffer(0, buffer, REGBUF_STANDARD);
