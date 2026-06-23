@@ -75,4 +75,9 @@ tests += {
       't/001_extension_control_path.pl',
     ],
   },
+  'pytest': {
+    'tests': [
+      'pyt/test_001_extension_control_path.py',
+    ],
+  },
 }

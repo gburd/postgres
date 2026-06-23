@@ -32,6 +32,21 @@ tests += {
   'name': 'pg_rewind',
   'sd': meson.current_source_dir(),
   'bd': meson.current_build_dir(),
+  'pytest': {
+    'tests': [
+      'pyt/test_001_basic.py',
+      'pyt/test_002_databases.py',
+      'pyt/test_003_extrafiles.py',
+      'pyt/test_004_pg_xlog_symlink.py',
+      'pyt/test_005_same_timeline.py',
+      'pyt/test_006_options.py',
+      'pyt/test_007_standby_source.py',
+      'pyt/test_008_min_recovery_point.py',
+      'pyt/test_009_growing_files.py',
+      'pyt/test_010_keep_recycled_wals.py',
+      'pyt/test_011_wal_copy.py',
+    ],
+  },
   'tap': {
     'tests': [
       't/001_basic.pl',

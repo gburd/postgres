@@ -12,4 +12,12 @@ tests += {
       't/001_parallel_autovacuum.pl',
     ],
   },
+  'pytest': {
+    'env': {
+       'enable_injection_points': get_option('injection_points') ? 'yes' : 'no',
+    },
+    'tests': [
+      'pyt/test_001_parallel_autovacuum.py',
+    ],
+  },
 }

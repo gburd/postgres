@@ -27,4 +27,10 @@ tests += {
     ],
     'test_kwargs': {'priority': 50}
   },
+  'pytest': {
+    'tests': [
+      'pyt/test_001_replan_regress.py',
+    ],
+    'test_kwargs': {'priority': 50}
+  },
 }
