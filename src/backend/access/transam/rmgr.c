@@ -43,6 +43,7 @@
 #include "access/undo_xlog.h"
 #include "access/atm.h"
 #include "access/relundo_xlog.h"
+#include "storage/fileops.h"
 /* IWYU pragma: end_keep */
 
 
