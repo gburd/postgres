@@ -2582,6 +2582,8 @@ CommitTransaction(void)
 	 * attempt to access affected files.
 	 */
 	smgrDoPendingDeletes(true);
+	if (PendingPhysOpsDo_hook)
+		PendingPhysOpsDo_hook(true);
 
 	/*
 	 * Send out notification signals to other backends (and do other
@@ -2893,6 +2895,8 @@ PrepareTransaction(void)
 	PostPrepare_Inval();
 
 	PostPrepare_smgr();
+	if (PendingPhysOpsPostPrepare_hook)
+		PendingPhysOpsPostPrepare_hook();
 
 	PostPrepare_MultiXact(fxid);
 
@@ -3174,6 +3178,8 @@ AbortTransaction(void)
 		WaitForPendingRelUndo();
 
 		smgrDoPendingDeletes(false);
+		if (PendingPhysOpsDo_hook)
+			PendingPhysOpsDo_hook(false);
 
 		AtEOXact_GUC(false, 1);
 		AtEOXact_SPI(false);
@@ -5360,6 +5366,8 @@ CommitSubTransaction(void)
 	AtEOSubXact_TypeCache();
 	AtEOSubXact_Inval(true);
 	AtSubCommit_smgr();
+	if (PendingPhysOpsAtSubCommit_hook)
+		PendingPhysOpsAtSubCommit_hook();
 
 	/*
 	 * The only lock we actually release here is the subtransaction XID lock.
@@ -5551,6 +5559,8 @@ AbortSubTransaction(void)
 							 RESOURCE_RELEASE_AFTER_LOCKS,
 							 false, false);
 		AtSubAbort_smgr();
+		if (PendingPhysOpsAtSubAbort_hook)
+			PendingPhysOpsAtSubAbort_hook();
 
 		AtEOXact_GUC(false, s->gucNestLevel);
 		AtEOSubXact_SPI(false, s->subTransactionId);

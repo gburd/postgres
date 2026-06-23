@@ -165,6 +165,7 @@ break is not needed in a wider output rendering.
   &monitoring;
   &wal;
   &undo;
+  &fileops;
   &logical-replication;
   &jit;
   &regress;
