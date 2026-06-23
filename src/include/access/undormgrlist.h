@@ -31,3 +31,7 @@
  */
 
 /* there is deliberately not an #ifndef UNDORMGRLIST_H here */
+
+/* built-in index AM UNDO resource managers */
+UNDO_RMGR_INIT(NbtreeUndoRmgrInit)
+UNDO_RMGR_INIT(HashUndoRmgrInit)
