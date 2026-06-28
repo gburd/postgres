@@ -68,6 +68,7 @@
 #include "utils/guc.h"
 #include "utils/hsearch.h"
 #include "utils/lsyscache.h"
+#include "utils/mysession.h"
 #include "utils/partcache.h"
 #include "utils/rel.h"
 #include "utils/ruleutils.h"
@@ -335,16 +336,6 @@ typedef void (*rsv_callback) (Node *node, deparse_context *context,
  * Global data
  * ----------
  */
-typedef struct RuleUtilsState
-{
-	SPIPlanPtr	plan_getrulebyoid;
-	SPIPlanPtr	plan_getviewrule;
-} RuleUtilsState;
-
-static session_local RuleUtilsState ruleutils_state = {
-	.plan_getrulebyoid = NULL,
-	.plan_getviewrule = NULL,
-};
 static const char *const query_getrulebyoid = "SELECT * FROM pg_catalog.pg_rewrite WHERE oid = $1";
 static const char *const query_getviewrule = "SELECT * FROM pg_catalog.pg_rewrite WHERE ev_class = $1 AND rulename = $2";
 
@@ -637,7 +628,7 @@ pg_get_ruledef_worker(Oid ruleoid, int prettyFlags)
 	 * pg_rewrite over the SPI manager instead of using the syscache to be
 	 * checked for read access on pg_rewrite.
 	 */
-	if (ruleutils_state.plan_getrulebyoid == NULL)
+	if (MySessionData.ruleutils_state.plan_getrulebyoid == NULL)
 	{
 		Oid			argtypes[1];
 		SPIPlanPtr	plan;
@@ -647,7 +638,7 @@ pg_get_ruledef_worker(Oid ruleoid, int prettyFlags)
 		if (plan == NULL)
 			elog(ERROR, "SPI_prepare failed for \"%s\"", query_getrulebyoid);
 		SPI_keepplan(plan);
-		ruleutils_state.plan_getrulebyoid = plan;
+		MySessionData.ruleutils_state.plan_getrulebyoid = plan;
 	}
 
 	/*
@@ -655,7 +646,7 @@ pg_get_ruledef_worker(Oid ruleoid, int prettyFlags)
 	 */
 	args[0] = ObjectIdGetDatum(ruleoid);
 	nulls[0] = ' ';
-	spirc = SPI_execute_plan(ruleutils_state.plan_getrulebyoid, args, nulls, true, 0);
+	spirc = SPI_execute_plan(MySessionData.ruleutils_state.plan_getrulebyoid, args, nulls, true, 0);
 	if (spirc != SPI_OK_SELECT)
 		elog(ERROR, "failed to get pg_rewrite tuple for rule %u", ruleoid);
 	if (SPI_processed != 1)
@@ -829,7 +820,7 @@ pg_get_viewdef_worker(Oid viewoid, int prettyFlags, int wrapColumn)
 	 * pg_rewrite over the SPI manager instead of using the syscache to be
 	 * checked for read access on pg_rewrite.
 	 */
-	if (ruleutils_state.plan_getviewrule == NULL)
+	if (MySessionData.ruleutils_state.plan_getviewrule == NULL)
 	{
 		Oid			argtypes[2];
 		SPIPlanPtr	plan;
@@ -840,7 +831,7 @@ pg_get_viewdef_worker(Oid viewoid, int prettyFlags, int wrapColumn)
 		if (plan == NULL)
 			elog(ERROR, "SPI_prepare failed for \"%s\"", query_getviewrule);
 		SPI_keepplan(plan);
-		ruleutils_state.plan_getviewrule = plan;
+		MySessionData.ruleutils_state.plan_getviewrule = plan;
 	}
 
 	/*
@@ -850,7 +841,7 @@ pg_get_viewdef_worker(Oid viewoid, int prettyFlags, int wrapColumn)
 	args[1] = DirectFunctionCall1(namein, CStringGetDatum(ViewSelectRuleName));
 	nulls[0] = ' ';
 	nulls[1] = ' ';
-	spirc = SPI_execute_plan(ruleutils_state.plan_getviewrule, args, nulls, true, 0);
+	spirc = SPI_execute_plan(MySessionData.ruleutils_state.plan_getviewrule, args, nulls, true, 0);
 	if (spirc != SPI_OK_SELECT)
 		elog(ERROR, "failed to get pg_rewrite tuple for view %u", viewoid);
 	if (SPI_processed != 1)

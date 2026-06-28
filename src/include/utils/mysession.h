@@ -74,6 +74,7 @@ struct ActionList;				/* commands/async.c */
 struct NotificationList;		/* commands/async.c */
 struct ResourceOwnerData;		/* utils/resowner.h: ResourceOwner */
 struct GlobalTransactionData;	/* access/twophase.h: GlobalTransaction */
+struct _SPI_plan;				/* executor/spi.h: SPIPlanPtr */
 
 /*
  * Saved instrumentation counters captured across a nested executor run
@@ -312,6 +313,16 @@ typedef struct TwoPhaseSessState
 	struct GlobalTransactionData *MyLockedGxact;
 	bool		twophaseExitRegistered;
 } TwoPhaseSessState;
+
+/*
+ * Cached SPI plans for the ruleutils decompiler's pg_get_ruledef /
+ * pg_get_viewdef helpers (utils/adt/ruleutils.c).
+ */
+typedef struct RuleUtilsState
+{
+	struct _SPI_plan *plan_getrulebyoid;
+	struct _SPI_plan *plan_getviewrule;
+} RuleUtilsState;
 
 /*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
@@ -692,6 +703,12 @@ typedef struct MySession
 	 * (access/transam/twophase.c).
 	 */
 	TwoPhaseSessState twophase_sess_state;
+
+	/*
+	 * Cached SPI plans for the ruleutils decompiler's pg_get_ruledef /
+	 * pg_get_viewdef helpers (utils/adt/ruleutils.c).
+	 */
+	RuleUtilsState ruleutils_state;
 } MySession;
 
 /*
