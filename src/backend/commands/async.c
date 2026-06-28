@@ -185,6 +185,7 @@
 #include "utils/dsa.h"
 #include "utils/guc_hooks.h"
 #include "utils/memutils.h"
+#include "utils/mysession.h"
 #include "utils/ps_status.h"
 #include "utils/snapmgr.h"
 #include "utils/timestamp.h"
@@ -570,29 +571,6 @@ static QueuePosition queueHeadAfterWrite;
 static int32 *signalPids = NULL;
 static ProcNumber *signalProcnos = NULL;
 
-/* have we advanced to a page that's a multiple of QUEUE_CLEANUP_DELAY? */
-typedef struct AsyncState
-{
-	/* List of pending LISTEN/UNLISTEN actions for the current transaction. */
-	ActionList *pendingActions;
-	/* List of outbound NOTIFY events for the current transaction. */
-	NotificationList *pendingNotifies;
-	/* True if we've registered an on_shmem_exit cleanup. */
-	bool		unlistenExitRegistered;
-	/* True if we're currently registered as a listener in asyncQueueControl. */
-	bool		amRegisteredListener;
-	/* Have we advanced to a page that's a multiple of QUEUE_CLEANUP_DELAY? */
-	bool		tryAdvanceTail;
-} AsyncState;
-
-static session_local AsyncState async_state = {
-	.pendingActions = NULL,
-	.pendingNotifies = NULL,
-	.unlistenExitRegistered = false,
-	.amRegisteredListener = false,
-	.tryAdvanceTail = false,
-};
-
 /* GUC parameters */
 session_guc bool		Trace_notify = false;
 
@@ -802,7 +780,7 @@ initPendingListenActions(void)
 
 	pendingListenActions =
 		hash_create("Pending Listen Actions",
-					list_length(async_state.pendingActions->actions),
+					list_length(MySessionData.async_state.pendingActions->actions),
 					&hash_ctl,
 					HASH_ELEM | HASH_STRINGS | HASH_CONTEXT);
 }
@@ -960,7 +938,7 @@ Async_Notify(const char *channel, const char *payload)
 	else
 		n->data[channel_len + 1] = '\0';
 
-	if (async_state.pendingNotifies == NULL || my_level > async_state.pendingNotifies->nestingLevel)
+	if (MySessionData.async_state.pendingNotifies == NULL || my_level > MySessionData.async_state.pendingNotifies->nestingLevel)
 	{
 		NotificationList *notifies;
 
@@ -979,8 +957,8 @@ Async_Notify(const char *channel, const char *payload)
 		/* We won't build uniqueChannelNames/Hash till later, either */
 		notifies->uniqueChannelNames = NIL;
 		notifies->uniqueChannelHash = NULL;
-		notifies->upper = async_state.pendingNotifies;
-		async_state.pendingNotifies = notifies;
+		notifies->upper = MySessionData.async_state.pendingNotifies;
+		MySessionData.async_state.pendingNotifies = notifies;
 	}
 	else
 	{
@@ -1028,7 +1006,7 @@ queue_listen(ListenActionKind action, const char *channel)
 	actrec->action = action;
 	strcpy(actrec->channel, channel);
 
-	if (async_state.pendingActions == NULL || my_level > async_state.pendingActions->nestingLevel)
+	if (MySessionData.async_state.pendingActions == NULL || my_level > MySessionData.async_state.pendingActions->nestingLevel)
 	{
 		ActionList *actions;
 
@@ -1041,11 +1019,11 @@ queue_listen(ListenActionKind action, const char *channel)
 			MemoryContextAlloc(TopTransactionContext, sizeof(ActionList));
 		actions->nestingLevel = my_level;
 		actions->actions = list_make1(actrec);
-		actions->upper = async_state.pendingActions;
-		async_state.pendingActions = actions;
+		actions->upper = MySessionData.async_state.pendingActions;
+		MySessionData.async_state.pendingActions = actions;
 	}
 	else
-		async_state.pendingActions->actions = lappend(async_state.pendingActions->actions, actrec);
+		MySessionData.async_state.pendingActions->actions = lappend(MySessionData.async_state.pendingActions->actions, actrec);
 
 	MemoryContextSwitchTo(oldcontext);
 }
@@ -1076,7 +1054,7 @@ Async_Unlisten(const char *channel)
 		elog(DEBUG1, "Async_Unlisten(%s,%d)", channel, MyProcPid);
 
 	/* If we couldn't possibly be listening, no need to queue anything */
-	if (async_state.pendingActions == NULL && !async_state.unlistenExitRegistered)
+	if (MySessionData.async_state.pendingActions == NULL && !MySessionData.async_state.unlistenExitRegistered)
 		return;
 
 	queue_listen(LISTEN_UNLISTEN, channel);
@@ -1094,7 +1072,7 @@ Async_UnlistenAll(void)
 		elog(DEBUG1, "Async_UnlistenAll(%d)", MyProcPid);
 
 	/* If we couldn't possibly be listening, no need to queue anything */
-	if (async_state.pendingActions == NULL && !async_state.unlistenExitRegistered)
+	if (MySessionData.async_state.pendingActions == NULL && !MySessionData.async_state.unlistenExitRegistered)
 		return;
 
 	queue_listen(LISTEN_UNLISTEN_ALL, "");
@@ -1176,7 +1154,7 @@ void
 AtPrepare_Notify(void)
 {
 	/* It's not allowed to have any pending LISTEN/UNLISTEN/NOTIFY actions */
-	if (async_state.pendingActions || async_state.pendingNotifies)
+	if (MySessionData.async_state.pendingActions || MySessionData.async_state.pendingNotifies)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("cannot PREPARE a transaction that has executed LISTEN, UNLISTEN, or NOTIFY")));
@@ -1193,7 +1171,7 @@ AtPrepare_Notify(void)
  *		ensure we don't miss any notifies from transactions that commit
  *		just after ours.
  *
- *		If there are outbound notify requests in the async_state.pendingNotifies list,
+ *		If there are outbound notify requests in the MySessionData.async_state.pendingNotifies list,
  *		add them to the global queue.  We do that before commit so that
  *		we can still throw error if we run out of queue space.
  */
@@ -1202,7 +1180,7 @@ PreCommit_Notify(void)
 {
 	ListCell   *p;
 
-	if (!async_state.pendingActions && !async_state.pendingNotifies)
+	if (!MySessionData.async_state.pendingActions && !MySessionData.async_state.pendingNotifies)
 		return;					/* no relevant statements in this xact */
 
 	if (GetGUCBool(GUC_Trace_notify))
@@ -1211,7 +1189,7 @@ PreCommit_Notify(void)
 	/* Preflight for any pending listen/unlisten actions */
 	initGlobalChannelTable();
 
-	if (async_state.pendingActions != NULL)
+	if (MySessionData.async_state.pendingActions != NULL)
 	{
 		/* Ensure we have a local channel table */
 		initLocalChannelTable();
@@ -1219,7 +1197,7 @@ PreCommit_Notify(void)
 		initPendingListenActions();
 
 		/* Stage all the actions this transaction wants to perform */
-		foreach(p, async_state.pendingActions->actions)
+		foreach(p, MySessionData.async_state.pendingActions->actions)
 		{
 			ListenAction *actrec = (ListenAction *) lfirst(p);
 
@@ -1240,7 +1218,7 @@ PreCommit_Notify(void)
 	}
 
 	/* Queue any pending notifies (must happen after the above) */
-	if (async_state.pendingNotifies)
+	if (MySessionData.async_state.pendingNotifies)
 	{
 		ListCell   *nextNotify;
 		bool		firstIteration = true;
@@ -1252,28 +1230,28 @@ PreCommit_Notify(void)
 		 * If uniqueChannelHash is available, use it to efficiently get the
 		 * unique channels.  Otherwise, fall back to the O(N^2) approach.
 		 */
-		async_state.pendingNotifies->uniqueChannelNames = NIL;
-		if (async_state.pendingNotifies->uniqueChannelHash != NULL)
+		MySessionData.async_state.pendingNotifies->uniqueChannelNames = NIL;
+		if (MySessionData.async_state.pendingNotifies->uniqueChannelHash != NULL)
 		{
 			HASH_SEQ_STATUS status;
 			ChannelName *channelEntry;
 
-			hash_seq_init(&status, async_state.pendingNotifies->uniqueChannelHash);
+			hash_seq_init(&status, MySessionData.async_state.pendingNotifies->uniqueChannelHash);
 			while ((channelEntry = (ChannelName *) hash_seq_search(&status)) != NULL)
-				async_state.pendingNotifies->uniqueChannelNames =
-					lappend(async_state.pendingNotifies->uniqueChannelNames,
+				MySessionData.async_state.pendingNotifies->uniqueChannelNames =
+					lappend(MySessionData.async_state.pendingNotifies->uniqueChannelNames,
 							channelEntry->channel);
 		}
 		else
 		{
 			/* O(N^2) approach is better for small number of notifications */
-			foreach_ptr(Notification, n, async_state.pendingNotifies->events)
+			foreach_ptr(Notification, n, MySessionData.async_state.pendingNotifies->events)
 			{
 				char	   *channel = n->data;
 				bool		found = false;
 
 				/* Name present in list? */
-				foreach_ptr(char, oldchan, async_state.pendingNotifies->uniqueChannelNames)
+				foreach_ptr(char, oldchan, MySessionData.async_state.pendingNotifies->uniqueChannelNames)
 				{
 					if (strcmp(oldchan, channel) == 0)
 					{
@@ -1283,8 +1261,8 @@ PreCommit_Notify(void)
 				}
 				/* Add if not already in list */
 				if (!found)
-					async_state.pendingNotifies->uniqueChannelNames =
-						lappend(async_state.pendingNotifies->uniqueChannelNames,
+					MySessionData.async_state.pendingNotifies->uniqueChannelNames =
+						lappend(MySessionData.async_state.pendingNotifies->uniqueChannelNames,
 								channel);
 			}
 		}
@@ -1343,7 +1321,7 @@ PreCommit_Notify(void)
 		SET_QUEUE_POS(queueHeadAfterWrite, 0, 0);
 
 		/* Now push the notifications into the queue */
-		nextNotify = list_head(async_state.pendingNotifies->events);
+		nextNotify = list_head(MySessionData.async_state.pendingNotifies->events);
 		while (nextNotify != NULL)
 		{
 			/*
@@ -1397,7 +1375,7 @@ AtCommit_Notify(void)
 	 * Allow transactions that have not executed LISTEN/UNLISTEN/NOTIFY to
 	 * return as soon as possible
 	 */
-	if (!async_state.pendingActions && !async_state.pendingNotifies)
+	if (!MySessionData.async_state.pendingActions && !MySessionData.async_state.pendingNotifies)
 		return;
 
 	if (GetGUCBool(GUC_Trace_notify))
@@ -1407,7 +1385,7 @@ AtCommit_Notify(void)
 	ApplyPendingListenActions(true);
 
 	/* If no longer listening to anything, get out of listener array */
-	if (async_state.amRegisteredListener && LocalChannelTableIsEmpty())
+	if (MySessionData.async_state.amRegisteredListener && LocalChannelTableIsEmpty())
 		asyncQueueUnregister();
 
 	/*
@@ -1415,7 +1393,7 @@ AtCommit_Notify(void)
 	 * pending notifies, which were previously added to the shared queue by
 	 * PreCommit_Notify().
 	 */
-	if (async_state.pendingNotifies != NULL)
+	if (MySessionData.async_state.pendingNotifies != NULL)
 		SignalBackends();
 
 	/*
@@ -1427,9 +1405,9 @@ AtCommit_Notify(void)
 	 * need for urgency in advancing the global tail.  So this typically will
 	 * be clearing out messages that were sent some time ago.)
 	 */
-	if (async_state.tryAdvanceTail)
+	if (MySessionData.async_state.tryAdvanceTail)
 	{
-		async_state.tryAdvanceTail = false;
+		MySessionData.async_state.tryAdvanceTail = false;
 		asyncQueueAdvanceTail();
 	}
 
@@ -1453,7 +1431,7 @@ BecomeRegisteredListener(void)
 	 * Nothing to do if we are already listening to something, nor if we
 	 * already ran this routine in this transaction.
 	 */
-	if (async_state.amRegisteredListener)
+	if (MySessionData.async_state.amRegisteredListener)
 		return;
 
 	if (GetGUCBool(GUC_Trace_notify))
@@ -1463,10 +1441,10 @@ BecomeRegisteredListener(void)
 	 * Before registering, make sure we will unlisten before dying. (Note:
 	 * this action does not get undone if we abort later.)
 	 */
-	if (!async_state.unlistenExitRegistered)
+	if (!MySessionData.async_state.unlistenExitRegistered)
 	{
 		before_shmem_exit(Async_UnlistenOnExit, 0);
-		async_state.unlistenExitRegistered = true;
+		MySessionData.async_state.unlistenExitRegistered = true;
 	}
 
 	/*
@@ -1520,7 +1498,7 @@ BecomeRegisteredListener(void)
 	LWLockRelease(NotifyQueueLock);
 
 	/* Now we are listed in the global array, so remember we're listening */
-	async_state.amRegisteredListener = true;
+	MySessionData.async_state.amRegisteredListener = true;
 
 	/*
 	 * Try to move our pointer forward as far as possible.  This will skip
@@ -1933,7 +1911,7 @@ asyncQueueUnregister(void)
 {
 	Assert(LocalChannelTableIsEmpty()); /* else caller error */
 
-	if (!async_state.amRegisteredListener)	/* nothing to do */
+	if (!MySessionData.async_state.amRegisteredListener)	/* nothing to do */
 		return;
 
 	/*
@@ -1963,7 +1941,7 @@ asyncQueueUnregister(void)
 	LWLockRelease(NotifyQueueLock);
 
 	/* mark ourselves as no longer listed in the global array */
-	async_state.amRegisteredListener = false;
+	MySessionData.async_state.amRegisteredListener = false;
 }
 
 /*
@@ -2048,7 +2026,7 @@ asyncQueueNotificationToEntry(Notification *n, AsyncQueueEntry *qe)
  * database OID in order to fill the page. So every page is always used up to
  * the last byte which simplifies reading the page later.
  *
- * We are passed the list cell (in async_state.pendingNotifies->events) containing the next
+ * We are passed the list cell (in MySessionData.async_state.pendingNotifies->events) containing the next
  * notification to write and return the first still-unwritten cell back.
  * Eventually we will return NULL indicating all is done.
  *
@@ -2110,7 +2088,7 @@ asyncQueueAddEntries(ListCell *nextNotify)
 		if (offset + qe.length <= QUEUE_PAGESIZE)
 		{
 			/* OK, so advance nextNotify past this item */
-			nextNotify = lnext(async_state.pendingNotifies->events, nextNotify);
+			nextNotify = lnext(MySessionData.async_state.pendingNotifies->events, nextNotify);
 		}
 		else
 		{
@@ -2161,7 +2139,7 @@ asyncQueueAddEntries(ListCell *nextNotify)
 			 * pointer (we don't want to actually do that right here).
 			 */
 			if (QUEUE_POS_PAGE(queue_head) % QUEUE_CLEANUP_DELAY == 0)
-				async_state.tryAdvanceTail = true;
+				MySessionData.async_state.tryAdvanceTail = true;
 
 			/* And exit the loop */
 			break;
@@ -2299,7 +2277,7 @@ SignalBackends(void)
 	LWLockAcquire(NotifyQueueLock, LW_EXCLUSIVE);
 
 	/* Scan each channel name that we notified in this transaction */
-	foreach_ptr(char, channel, async_state.pendingNotifies->uniqueChannelNames)
+	foreach_ptr(char, channel, MySessionData.async_state.pendingNotifies->uniqueChannelNames)
 	{
 		GlobalChannelKey key;
 		GlobalChannelEntry *entry;
@@ -2436,7 +2414,7 @@ AtAbort_Notify(void)
 	ApplyPendingListenActions(false);
 
 	/* If we're no longer listening on anything, unregister */
-	if (async_state.amRegisteredListener && LocalChannelTableIsEmpty())
+	if (MySessionData.async_state.amRegisteredListener && LocalChannelTableIsEmpty())
 		asyncQueueUnregister();
 
 	/* And clean up */
@@ -2454,42 +2432,42 @@ AtSubCommit_Notify(void)
 	int			my_level = GetCurrentTransactionNestLevel();
 
 	/* If there are actions at our nesting level, we must reparent them. */
-	if (async_state.pendingActions != NULL &&
-		async_state.pendingActions->nestingLevel >= my_level)
+	if (MySessionData.async_state.pendingActions != NULL &&
+		MySessionData.async_state.pendingActions->nestingLevel >= my_level)
 	{
-		if (async_state.pendingActions->upper == NULL ||
-			async_state.pendingActions->upper->nestingLevel < my_level - 1)
+		if (MySessionData.async_state.pendingActions->upper == NULL ||
+			MySessionData.async_state.pendingActions->upper->nestingLevel < my_level - 1)
 		{
 			/* nothing to merge; give the whole thing to the parent */
-			--async_state.pendingActions->nestingLevel;
+			--MySessionData.async_state.pendingActions->nestingLevel;
 		}
 		else
 		{
-			ActionList *childPendingActions = async_state.pendingActions;
+			ActionList *childPendingActions = MySessionData.async_state.pendingActions;
 
-			async_state.pendingActions = async_state.pendingActions->upper;
+			MySessionData.async_state.pendingActions = MySessionData.async_state.pendingActions->upper;
 
 			/*
 			 * Mustn't try to eliminate duplicates here --- see queue_listen()
 			 */
-			async_state.pendingActions->actions =
-				list_concat(async_state.pendingActions->actions,
+			MySessionData.async_state.pendingActions->actions =
+				list_concat(MySessionData.async_state.pendingActions->actions,
 							childPendingActions->actions);
 			pfree(childPendingActions);
 		}
 	}
 
 	/* If there are notifies at our nesting level, we must reparent them. */
-	if (async_state.pendingNotifies != NULL &&
-		async_state.pendingNotifies->nestingLevel >= my_level)
+	if (MySessionData.async_state.pendingNotifies != NULL &&
+		MySessionData.async_state.pendingNotifies->nestingLevel >= my_level)
 	{
-		Assert(async_state.pendingNotifies->nestingLevel == my_level);
+		Assert(MySessionData.async_state.pendingNotifies->nestingLevel == my_level);
 
-		if (async_state.pendingNotifies->upper == NULL ||
-			async_state.pendingNotifies->upper->nestingLevel < my_level - 1)
+		if (MySessionData.async_state.pendingNotifies->upper == NULL ||
+			MySessionData.async_state.pendingNotifies->upper->nestingLevel < my_level - 1)
 		{
 			/* nothing to merge; give the whole thing to the parent */
-			--async_state.pendingNotifies->nestingLevel;
+			--MySessionData.async_state.pendingNotifies->nestingLevel;
 		}
 		else
 		{
@@ -2498,10 +2476,10 @@ AtSubCommit_Notify(void)
 			 * now we must, else we fall foul of "Assert(!found)", either here
 			 * or during a later attempt to build the parent-level hashtable.
 			 */
-			NotificationList *childPendingNotifies = async_state.pendingNotifies;
+			NotificationList *childPendingNotifies = MySessionData.async_state.pendingNotifies;
 			ListCell   *l;
 
-			async_state.pendingNotifies = async_state.pendingNotifies->upper;
+			MySessionData.async_state.pendingNotifies = MySessionData.async_state.pendingNotifies->upper;
 			/* Insert all the subxact's events into parent, except for dups */
 			foreach(l, childPendingNotifies->events)
 			{
@@ -2534,21 +2512,21 @@ AtSubAbort_Notify(void)
 	 * current subtransaction level, either because none were ever created, or
 	 * because we reentered this routine due to trouble during subxact abort.
 	 */
-	while (async_state.pendingActions != NULL &&
-		   async_state.pendingActions->nestingLevel >= my_level)
+	while (MySessionData.async_state.pendingActions != NULL &&
+		   MySessionData.async_state.pendingActions->nestingLevel >= my_level)
 	{
-		ActionList *childPendingActions = async_state.pendingActions;
+		ActionList *childPendingActions = MySessionData.async_state.pendingActions;
 
-		async_state.pendingActions = async_state.pendingActions->upper;
+		MySessionData.async_state.pendingActions = MySessionData.async_state.pendingActions->upper;
 		pfree(childPendingActions);
 	}
 
-	while (async_state.pendingNotifies != NULL &&
-		   async_state.pendingNotifies->nestingLevel >= my_level)
+	while (MySessionData.async_state.pendingNotifies != NULL &&
+		   MySessionData.async_state.pendingNotifies->nestingLevel >= my_level)
 	{
-		NotificationList *childPendingNotifies = async_state.pendingNotifies;
+		NotificationList *childPendingNotifies = MySessionData.async_state.pendingNotifies;
 
-		async_state.pendingNotifies = async_state.pendingNotifies->upper;
+		MySessionData.async_state.pendingNotifies = MySessionData.async_state.pendingNotifies->upper;
 		pfree(childPendingNotifies);
 	}
 }
@@ -3113,13 +3091,13 @@ NotifyMyFrontEnd(const char *channel, const char *payload, int32 srcPid)
 static bool
 AsyncExistsPendingNotify(Notification *n)
 {
-	if (async_state.pendingNotifies == NULL)
+	if (MySessionData.async_state.pendingNotifies == NULL)
 		return false;
 
-	if (async_state.pendingNotifies->hashtab != NULL)
+	if (MySessionData.async_state.pendingNotifies->hashtab != NULL)
 	{
 		/* Use the hash table to probe for a match */
-		if (hash_search(async_state.pendingNotifies->hashtab,
+		if (hash_search(MySessionData.async_state.pendingNotifies->hashtab,
 						&n,
 						HASH_FIND,
 						NULL))
@@ -3130,7 +3108,7 @@ AsyncExistsPendingNotify(Notification *n)
 		/* Must scan the event list */
 		ListCell   *l;
 
-		foreach(l, async_state.pendingNotifies->events)
+		foreach(l, MySessionData.async_state.pendingNotifies->events)
 		{
 			Notification *oldn = (Notification *) lfirst(l);
 
@@ -3146,19 +3124,19 @@ AsyncExistsPendingNotify(Notification *n)
 }
 
 /*
- * Add a notification event to a pre-existing async_state.pendingNotifies list.
+ * Add a notification event to a pre-existing MySessionData.async_state.pendingNotifies list.
  *
- * Because async_state.pendingNotifies->events is already nonempty, this works
+ * Because MySessionData.async_state.pendingNotifies->events is already nonempty, this works
  * correctly no matter what CurrentMemoryContext is.
  */
 static void
 AddEventToPendingNotifies(Notification *n)
 {
-	Assert(async_state.pendingNotifies->events != NIL);
+	Assert(MySessionData.async_state.pendingNotifies->events != NIL);
 
 	/* Create the hash tables if it's time to */
-	if (list_length(async_state.pendingNotifies->events) >= MIN_HASHABLE_NOTIFIES &&
-		async_state.pendingNotifies->hashtab == NULL)
+	if (list_length(MySessionData.async_state.pendingNotifies->events) >= MIN_HASHABLE_NOTIFIES &&
+		MySessionData.async_state.pendingNotifies->hashtab == NULL)
 	{
 		HASHCTL		hash_ctl;
 		ListCell   *l;
@@ -3169,38 +3147,38 @@ AddEventToPendingNotifies(Notification *n)
 		hash_ctl.hash = notification_hash;
 		hash_ctl.match = notification_match;
 		hash_ctl.hcxt = CurTransactionContext;
-		async_state.pendingNotifies->hashtab =
+		MySessionData.async_state.pendingNotifies->hashtab =
 			hash_create("Pending Notifies",
 						256L,
 						&hash_ctl,
 						HASH_ELEM | HASH_FUNCTION | HASH_COMPARE | HASH_CONTEXT);
 
 		/* Create the unique channel name table */
-		Assert(async_state.pendingNotifies->uniqueChannelHash == NULL);
+		Assert(MySessionData.async_state.pendingNotifies->uniqueChannelHash == NULL);
 		hash_ctl.keysize = NAMEDATALEN;
 		hash_ctl.entrysize = sizeof(ChannelName);
 		hash_ctl.hcxt = CurTransactionContext;
-		async_state.pendingNotifies->uniqueChannelHash =
+		MySessionData.async_state.pendingNotifies->uniqueChannelHash =
 			hash_create("Pending Notify Channel Names",
 						64L,
 						&hash_ctl,
 						HASH_ELEM | HASH_STRINGS | HASH_CONTEXT);
 
 		/* Insert all the already-existing events */
-		foreach(l, async_state.pendingNotifies->events)
+		foreach(l, MySessionData.async_state.pendingNotifies->events)
 		{
 			Notification *oldn = (Notification *) lfirst(l);
 			char	   *channel = oldn->data;
 			bool		found;
 
-			(void) hash_search(async_state.pendingNotifies->hashtab,
+			(void) hash_search(MySessionData.async_state.pendingNotifies->hashtab,
 							   &oldn,
 							   HASH_ENTER,
 							   &found);
 			Assert(!found);
 
 			/* Add channel name to uniqueChannelHash; might be there already */
-			(void) hash_search(async_state.pendingNotifies->uniqueChannelHash,
+			(void) hash_search(MySessionData.async_state.pendingNotifies->uniqueChannelHash,
 							   channel,
 							   HASH_ENTER,
 							   NULL);
@@ -3208,22 +3186,22 @@ AddEventToPendingNotifies(Notification *n)
 	}
 
 	/* Add new event to the list, in order */
-	async_state.pendingNotifies->events = lappend(async_state.pendingNotifies->events, n);
+	MySessionData.async_state.pendingNotifies->events = lappend(MySessionData.async_state.pendingNotifies->events, n);
 
 	/* Add event to the hash tables if needed */
-	if (async_state.pendingNotifies->hashtab != NULL)
+	if (MySessionData.async_state.pendingNotifies->hashtab != NULL)
 	{
 		char	   *channel = n->data;
 		bool		found;
 
-		(void) hash_search(async_state.pendingNotifies->hashtab,
+		(void) hash_search(MySessionData.async_state.pendingNotifies->hashtab,
 						   &n,
 						   HASH_ENTER,
 						   &found);
 		Assert(!found);
 
 		/* Add channel name to uniqueChannelHash; might be there already */
-		(void) hash_search(async_state.pendingNotifies->uniqueChannelHash,
+		(void) hash_search(MySessionData.async_state.pendingNotifies->uniqueChannelHash,
 						   channel,
 						   HASH_ENTER,
 						   NULL);
@@ -3274,8 +3252,8 @@ ClearPendingActionsAndNotifies(void)
 	 * do here except reset the pointers; the space will be reclaimed when the
 	 * contexts are deleted.
 	 */
-	async_state.pendingActions = NULL;
-	async_state.pendingNotifies = NULL;
+	MySessionData.async_state.pendingActions = NULL;
+	MySessionData.async_state.pendingNotifies = NULL;
 	/* Also clear pendingListenActions, which is derived from async_state.pendingActions */
 	pendingListenActions = NULL;
 }

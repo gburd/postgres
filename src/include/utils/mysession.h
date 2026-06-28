@@ -70,6 +70,8 @@ struct BufferAccessStrategyData;	/* storage/buf.h: BufferAccessStrategy */
 struct LargeObjectDesc;			/* storage/large_object.h */
 struct ComboCidKeyData;			/* utils/time/combocid.c */
 struct DynamicFileList;			/* utils/fmgr/dfmgr.c (also fwd-declared in fmgr.h) */
+struct ActionList;				/* commands/async.c */
+struct NotificationList;		/* commands/async.c */
 
 /*
  * Saved instrumentation counters captured across a nested executor run
@@ -253,6 +255,25 @@ typedef struct DfmgrState
 	struct DynamicFileList *file_list;
 	struct DynamicFileList *file_tail;
 } DfmgrState;
+
+/*
+ * Per-transaction LISTEN/NOTIFY state: pending LISTEN/UNLISTEN actions and
+ * outbound NOTIFY events, plus the listener-registration flags
+ * (commands/async.c).
+ */
+typedef struct AsyncState
+{
+	/* List of pending LISTEN/UNLISTEN actions for the current transaction. */
+	struct ActionList *pendingActions;
+	/* List of outbound NOTIFY events for the current transaction. */
+	struct NotificationList *pendingNotifies;
+	/* True if we've registered an on_shmem_exit cleanup. */
+	bool		unlistenExitRegistered;
+	/* True if we're currently registered as a listener in asyncQueueControl. */
+	bool		amRegisteredListener;
+	/* Have we advanced to a page that's a multiple of QUEUE_CLEANUP_DELAY? */
+	bool		tryAdvanceTail;
+} AsyncState;
 
 /*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
@@ -605,6 +626,13 @@ typedef struct MySession
 	 * DynamicFileList chain (utils/fmgr/dfmgr.c).
 	 */
 	DfmgrState dfmgr_state;
+
+	/*
+	 * Per-transaction LISTEN/NOTIFY state: pending LISTEN/UNLISTEN actions and
+	 * outbound NOTIFY events, plus the listener-registration flags
+	 * (commands/async.c).
+	 */
+	AsyncState async_state;
 } MySession;
 
 /*
