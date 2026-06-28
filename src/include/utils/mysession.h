@@ -68,6 +68,7 @@ struct RelationData;			/* utils/rel.h: Relation */
 struct SeqTableData;			/* commands/sequence.c */
 struct BufferAccessStrategyData;	/* storage/buf.h: BufferAccessStrategy */
 struct LargeObjectDesc;			/* storage/large_object.h */
+struct ComboCidKeyData;			/* utils/time/combocid.c */
 
 /*
  * Saved instrumentation counters captured across a nested executor run
@@ -229,6 +230,18 @@ typedef struct LoState
 	bool		lo_cleanup_needed;
 	MemoryContext fscxt;
 } LoState;
+
+/*
+ * Per-session combo-CID lookup machinery: a hash of (cmin,cmax) pairs plus the
+ * indexed array backing it (utils/time/combocid.c).
+ */
+typedef struct ComboCidState
+{
+	struct HTAB *comboHash;
+	struct ComboCidKeyData *comboCids;
+	int			usedComboCids;	/* number of elements in comboCids */
+	int			sizeComboCids;	/* allocated size of array */
+} ComboCidState;
 
 /*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
@@ -569,6 +582,12 @@ typedef struct MySession
 	 * (libpq/be-fsstubs.c).
 	 */
 	LoState lo_state;
+
+	/*
+	 * Per-session combo-CID lookup machinery: a hash of (cmin,cmax) pairs plus
+	 * the indexed array backing it (utils/time/combocid.c).
+	 */
+	ComboCidState combocid_state;
 } MySession;
 
 /*
