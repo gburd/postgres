@@ -78,6 +78,9 @@ struct _SPI_plan;				/* executor/spi.h: SPIPlanPtr */
 struct dsa_area;				/* utils/dsa.h */
 struct dshash_table;			/* lib/dshash.h */
 struct ParallelApplyWorkerInfo;	/* replication/worker_internal.h */
+struct TSParserCacheEntry;		/* tsearch/ts_cache.h */
+struct TSDictionaryCacheEntry;	/* tsearch/ts_cache.h */
+struct TSConfigCacheEntry;		/* tsearch/ts_cache.h */
 
 /*
  * Saved instrumentation counters captured across a nested executor run
@@ -351,6 +354,26 @@ typedef struct ApplyParallelState
 	struct ParallelApplyWorkerInfo *stream_apply_worker;
 	struct List *subxactlist;
 } ApplyParallelState;
+
+/*
+ * Text-search cache state: the parser/dictionary/configuration hash tables,
+ * their most-recently-used entries, and a cache of the current config OID
+ * (utils/cache/ts_cache.c).
+ */
+typedef struct TsCacheState
+{
+	struct HTAB *TSParserCacheHash;
+	struct TSParserCacheEntry *lastUsedParser;
+
+	struct HTAB *TSDictionaryCacheHash;
+	struct TSDictionaryCacheEntry *lastUsedDictionary;
+
+	struct HTAB *TSConfigCacheHash;
+	struct TSConfigCacheEntry *lastUsedConfig;
+
+	/* a cache of the current config's OID */
+	Oid			TSCurrentConfigCache;
+} TsCacheState;
 
 /*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
@@ -751,6 +774,13 @@ typedef struct MySession
 	 * the subtransaction list (replication/logical/applyparallelworker.c).
 	 */
 	ApplyParallelState apply_parallel_state;
+
+	/*
+	 * Text-search cache state: the parser/dictionary/configuration hash
+	 * tables, their most-recently-used entries, and a cache of the current
+	 * config OID (utils/cache/ts_cache.c).
+	 */
+	TsCacheState ts_cache_state;
 } MySession;
 
 /*

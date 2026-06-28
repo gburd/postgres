@@ -48,6 +48,7 @@
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/mysession.h"
 #include "utils/regproc.h"
 #include "utils/syscache.h"
 
@@ -64,35 +65,12 @@
 
 /*
  * TsCacheState consolidates this module's per-session (thread-local)
- * text-search cache state into a single struct.  See the F4
+ * text-search cache state into a single struct (relocated into
+ * utils/mysession.h and embedded by value in MySession).  See the F4
  * session-state consolidation work.  Note that the GUC
  * default_text_search_config (TSCurrentConfig, below) is deliberately
  * NOT part of this struct: it stays a session_guc.
  */
-typedef struct TsCacheState
-{
-	HTAB	   *TSParserCacheHash;
-	TSParserCacheEntry *lastUsedParser;
-
-	HTAB	   *TSDictionaryCacheHash;
-	TSDictionaryCacheEntry *lastUsedDictionary;
-
-	HTAB	   *TSConfigCacheHash;
-	TSConfigCacheEntry *lastUsedConfig;
-
-	/* a cache of the current config's OID */
-	Oid			TSCurrentConfigCache;
-} TsCacheState;
-
-static session_local TsCacheState ts_cache_state = {
-	.TSParserCacheHash = NULL,
-	.lastUsedParser = NULL,
-	.TSDictionaryCacheHash = NULL,
-	.lastUsedDictionary = NULL,
-	.TSConfigCacheHash = NULL,
-	.lastUsedConfig = NULL,
-	.TSCurrentConfigCache = InvalidOid,
-};
 
 /*
  * GUC default_text_search_config
@@ -124,8 +102,8 @@ InvalidateTSCacheCallBack(Datum arg, SysCacheIdentifier cacheid, uint32 hashvalu
 		entry->isvalid = false;
 
 	/* Also invalidate the current-config cache if it's pg_ts_config */
-	if (hash == ts_cache_state.TSConfigCacheHash)
-		ts_cache_state.TSCurrentConfigCache = InvalidOid;
+	if (hash == MySessionData.ts_cache_state.TSConfigCacheHash)
+		MySessionData.ts_cache_state.TSCurrentConfigCache = InvalidOid;
 }
 
 /*
@@ -136,18 +114,18 @@ lookup_ts_parser_cache(Oid prsId)
 {
 	TSParserCacheEntry *entry;
 
-	if (ts_cache_state.TSParserCacheHash == NULL)
+	if (MySessionData.ts_cache_state.TSParserCacheHash == NULL)
 	{
 		/* First time through: initialize the hash table */
 		HASHCTL		ctl;
 
 		ctl.keysize = sizeof(Oid);
 		ctl.entrysize = sizeof(TSParserCacheEntry);
-		ts_cache_state.TSParserCacheHash = hash_create("Tsearch parser cache", 4,
+		MySessionData.ts_cache_state.TSParserCacheHash = hash_create("Tsearch parser cache", 4,
 										&ctl, HASH_ELEM | HASH_BLOBS);
 		/* Flush cache on pg_ts_parser changes */
 		CacheRegisterSyscacheCallback(TSPARSEROID, InvalidateTSCacheCallBack,
-									  PointerGetDatum(ts_cache_state.TSParserCacheHash));
+									  PointerGetDatum(MySessionData.ts_cache_state.TSParserCacheHash));
 
 		/* Also make sure CacheMemoryContext exists */
 		if (!CacheMemoryContext)
@@ -155,12 +133,12 @@ lookup_ts_parser_cache(Oid prsId)
 	}
 
 	/* Check single-entry cache */
-	if (ts_cache_state.lastUsedParser && ts_cache_state.lastUsedParser->prsId == prsId &&
-		ts_cache_state.lastUsedParser->isvalid)
-		return ts_cache_state.lastUsedParser;
+	if (MySessionData.ts_cache_state.lastUsedParser && MySessionData.ts_cache_state.lastUsedParser->prsId == prsId &&
+		MySessionData.ts_cache_state.lastUsedParser->isvalid)
+		return MySessionData.ts_cache_state.lastUsedParser;
 
 	/* Try to look up an existing entry */
-	entry = (TSParserCacheEntry *) hash_search(ts_cache_state.TSParserCacheHash,
+	entry = (TSParserCacheEntry *) hash_search(MySessionData.ts_cache_state.TSParserCacheHash,
 											   &prsId,
 											   HASH_FIND, NULL);
 	if (entry == NULL || !entry->isvalid)
@@ -194,7 +172,7 @@ lookup_ts_parser_cache(Oid prsId)
 
 			/* Now make the cache entry */
 			entry = (TSParserCacheEntry *)
-				hash_search(ts_cache_state.TSParserCacheHash, &prsId, HASH_ENTER, &found);
+				hash_search(MySessionData.ts_cache_state.TSParserCacheHash, &prsId, HASH_ENTER, &found);
 			Assert(!found);		/* it wasn't there a moment ago */
 		}
 
@@ -218,7 +196,7 @@ lookup_ts_parser_cache(Oid prsId)
 		entry->isvalid = true;
 	}
 
-	ts_cache_state.lastUsedParser = entry;
+	MySessionData.ts_cache_state.lastUsedParser = entry;
 
 	return entry;
 }
@@ -231,20 +209,20 @@ lookup_ts_dictionary_cache(Oid dictId)
 {
 	TSDictionaryCacheEntry *entry;
 
-	if (ts_cache_state.TSDictionaryCacheHash == NULL)
+	if (MySessionData.ts_cache_state.TSDictionaryCacheHash == NULL)
 	{
 		/* First time through: initialize the hash table */
 		HASHCTL		ctl;
 
 		ctl.keysize = sizeof(Oid);
 		ctl.entrysize = sizeof(TSDictionaryCacheEntry);
-		ts_cache_state.TSDictionaryCacheHash = hash_create("Tsearch dictionary cache", 8,
+		MySessionData.ts_cache_state.TSDictionaryCacheHash = hash_create("Tsearch dictionary cache", 8,
 											&ctl, HASH_ELEM | HASH_BLOBS);
 		/* Flush cache on pg_ts_dict and pg_ts_template changes */
 		CacheRegisterSyscacheCallback(TSDICTOID, InvalidateTSCacheCallBack,
-									  PointerGetDatum(ts_cache_state.TSDictionaryCacheHash));
+									  PointerGetDatum(MySessionData.ts_cache_state.TSDictionaryCacheHash));
 		CacheRegisterSyscacheCallback(TSTEMPLATEOID, InvalidateTSCacheCallBack,
-									  PointerGetDatum(ts_cache_state.TSDictionaryCacheHash));
+									  PointerGetDatum(MySessionData.ts_cache_state.TSDictionaryCacheHash));
 
 		/* Also make sure CacheMemoryContext exists */
 		if (!CacheMemoryContext)
@@ -252,12 +230,12 @@ lookup_ts_dictionary_cache(Oid dictId)
 	}
 
 	/* Check single-entry cache */
-	if (ts_cache_state.lastUsedDictionary && ts_cache_state.lastUsedDictionary->dictId == dictId &&
-		ts_cache_state.lastUsedDictionary->isvalid)
-		return ts_cache_state.lastUsedDictionary;
+	if (MySessionData.ts_cache_state.lastUsedDictionary && MySessionData.ts_cache_state.lastUsedDictionary->dictId == dictId &&
+		MySessionData.ts_cache_state.lastUsedDictionary->isvalid)
+		return MySessionData.ts_cache_state.lastUsedDictionary;
 
 	/* Try to look up an existing entry */
-	entry = (TSDictionaryCacheEntry *) hash_search(ts_cache_state.TSDictionaryCacheHash,
+	entry = (TSDictionaryCacheEntry *) hash_search(MySessionData.ts_cache_state.TSDictionaryCacheHash,
 												   &dictId,
 												   HASH_FIND, NULL);
 	if (entry == NULL || !entry->isvalid)
@@ -307,7 +285,7 @@ lookup_ts_dictionary_cache(Oid dictId)
 
 			/* Now make the cache entry */
 			entry = (TSDictionaryCacheEntry *)
-				hash_search(ts_cache_state.TSDictionaryCacheHash,
+				hash_search(MySessionData.ts_cache_state.TSDictionaryCacheHash,
 							&dictId,
 							HASH_ENTER, &found);
 			Assert(!found);		/* it wasn't there a moment ago */
@@ -372,7 +350,7 @@ lookup_ts_dictionary_cache(Oid dictId)
 		entry->isvalid = true;
 	}
 
-	ts_cache_state.lastUsedDictionary = entry;
+	MySessionData.ts_cache_state.lastUsedDictionary = entry;
 
 	return entry;
 }
@@ -389,13 +367,13 @@ init_ts_config_cache(void)
 
 	ctl.keysize = sizeof(Oid);
 	ctl.entrysize = sizeof(TSConfigCacheEntry);
-	ts_cache_state.TSConfigCacheHash = hash_create("Tsearch configuration cache", 16,
+	MySessionData.ts_cache_state.TSConfigCacheHash = hash_create("Tsearch configuration cache", 16,
 									&ctl, HASH_ELEM | HASH_BLOBS);
 	/* Flush cache on pg_ts_config and pg_ts_config_map changes */
 	CacheRegisterSyscacheCallback(TSCONFIGOID, InvalidateTSCacheCallBack,
-								  PointerGetDatum(ts_cache_state.TSConfigCacheHash));
+								  PointerGetDatum(MySessionData.ts_cache_state.TSConfigCacheHash));
 	CacheRegisterSyscacheCallback(TSCONFIGMAP, InvalidateTSCacheCallBack,
-								  PointerGetDatum(ts_cache_state.TSConfigCacheHash));
+								  PointerGetDatum(MySessionData.ts_cache_state.TSConfigCacheHash));
 
 	/* Also make sure CacheMemoryContext exists */
 	if (!CacheMemoryContext)
@@ -410,19 +388,19 @@ lookup_ts_config_cache(Oid cfgId)
 {
 	TSConfigCacheEntry *entry;
 
-	if (ts_cache_state.TSConfigCacheHash == NULL)
+	if (MySessionData.ts_cache_state.TSConfigCacheHash == NULL)
 	{
 		/* First time through: initialize the hash table */
 		init_ts_config_cache();
 	}
 
 	/* Check single-entry cache */
-	if (ts_cache_state.lastUsedConfig && ts_cache_state.lastUsedConfig->cfgId == cfgId &&
-		ts_cache_state.lastUsedConfig->isvalid)
-		return ts_cache_state.lastUsedConfig;
+	if (MySessionData.ts_cache_state.lastUsedConfig && MySessionData.ts_cache_state.lastUsedConfig->cfgId == cfgId &&
+		MySessionData.ts_cache_state.lastUsedConfig->isvalid)
+		return MySessionData.ts_cache_state.lastUsedConfig;
 
 	/* Try to look up an existing entry */
-	entry = (TSConfigCacheEntry *) hash_search(ts_cache_state.TSConfigCacheHash,
+	entry = (TSConfigCacheEntry *) hash_search(MySessionData.ts_cache_state.TSConfigCacheHash,
 											   &cfgId,
 											   HASH_FIND, NULL);
 	if (entry == NULL || !entry->isvalid)
@@ -462,7 +440,7 @@ lookup_ts_config_cache(Oid cfgId)
 
 			/* Now make the cache entry */
 			entry = (TSConfigCacheEntry *)
-				hash_search(ts_cache_state.TSConfigCacheHash,
+				hash_search(MySessionData.ts_cache_state.TSConfigCacheHash,
 							&cfgId,
 							HASH_ENTER, &found);
 			Assert(!found);		/* it wasn't there a moment ago */
@@ -565,7 +543,7 @@ lookup_ts_config_cache(Oid cfgId)
 		entry->isvalid = true;
 	}
 
-	ts_cache_state.lastUsedConfig = entry;
+	MySessionData.ts_cache_state.lastUsedConfig = entry;
 
 	return entry;
 }
@@ -582,8 +560,8 @@ getTSCurrentConfig(bool emitError)
 	List	   *namelist;
 
 	/* if we have a cached value, return it */
-	if (OidIsValid(ts_cache_state.TSCurrentConfigCache))
-		return ts_cache_state.TSCurrentConfigCache;
+	if (OidIsValid(MySessionData.ts_cache_state.TSCurrentConfigCache))
+		return MySessionData.ts_cache_state.TSCurrentConfigCache;
 
 	/* fail if GUC hasn't been set up yet */
 	if (GetGUCString(GUC_TSCurrentConfig) == NULL || *GetGUCString(GUC_TSCurrentConfig) == '\0')
@@ -594,7 +572,7 @@ getTSCurrentConfig(bool emitError)
 			return InvalidOid;
 	}
 
-	if (ts_cache_state.TSConfigCacheHash == NULL)
+	if (MySessionData.ts_cache_state.TSConfigCacheHash == NULL)
 	{
 		/* First time through: initialize the tsconfig inval callback */
 		init_ts_config_cache();
@@ -605,7 +583,7 @@ getTSCurrentConfig(bool emitError)
 	{
 		namelist = stringToQualifiedNameList(GetGUCString(GUC_TSCurrentConfig),
 						     NULL);
-		ts_cache_state.TSCurrentConfigCache = get_ts_config_oid(namelist, false);
+		MySessionData.ts_cache_state.TSCurrentConfigCache = get_ts_config_oid(namelist, false);
 	}
 	else
 	{
@@ -614,12 +592,12 @@ getTSCurrentConfig(bool emitError)
 		namelist = stringToQualifiedNameList(GetGUCString(GUC_TSCurrentConfig),
 											 (Node *) &escontext);
 		if (namelist != NIL)
-			ts_cache_state.TSCurrentConfigCache = get_ts_config_oid(namelist, true);
+			MySessionData.ts_cache_state.TSCurrentConfigCache = get_ts_config_oid(namelist, true);
 		else
-			ts_cache_state.TSCurrentConfigCache = InvalidOid;	/* bad name list syntax */
+			MySessionData.ts_cache_state.TSCurrentConfigCache = InvalidOid;	/* bad name list syntax */
 	}
 
-	return ts_cache_state.TSCurrentConfigCache;
+	return MySessionData.ts_cache_state.TSCurrentConfigCache;
 }
 
 /* GUC check_hook for default_text_search_config */
@@ -695,5 +673,5 @@ void
 assign_default_text_search_config(const char *newval, void *extra)
 {
 	/* Just reset the cache to force a lookup on first use */
-	ts_cache_state.TSCurrentConfigCache = InvalidOid;
+	MySessionData.ts_cache_state.TSCurrentConfigCache = InvalidOid;
 }

@@ -68,7 +68,7 @@ typedef struct
 	Oid		   *dictIds;
 } ListDictionary;
 
-typedef struct
+typedef struct TSConfigCacheEntry
 {
 	/* cfgId is the hash lookup key and MUST BE FIRST */
 	Oid			cfgId;
