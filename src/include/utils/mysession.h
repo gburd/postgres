@@ -66,6 +66,7 @@ struct HTAB;					/* utils/hsearch.h */
 struct PendingRelDelete;		/* catalog/storage.c */
 struct RelationData;			/* utils/rel.h: Relation */
 struct SeqTableData;			/* commands/sequence.c */
+struct BufferAccessStrategyData;	/* storage/buf.h: BufferAccessStrategy */
 
 /*
  * Saved instrumentation counters captured across a nested executor run
@@ -171,6 +172,16 @@ typedef struct ReindexState
 	struct List *pendingReindexedIndexes;
 	int			reindexingNestLevel;
 } ReindexState;
+
+/*
+ * ANALYZE working state: the per-analyze memory context and buffer-access
+ * strategy (commands/analyze.c).
+ */
+typedef struct AnalyzeState
+{
+	MemoryContext anl_context;
+	struct BufferAccessStrategyData *vac_strategy;
+} AnalyzeState;
 
 /*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
@@ -485,6 +496,12 @@ typedef struct MySession
 	 * is being reindexed and the pending list (catalog/index.c).
 	 */
 	ReindexState reindex_state;
+
+	/*
+	 * ANALYZE working state: the per-analyze memory context and buffer-access
+	 * strategy (commands/analyze.c).
+	 */
+	AnalyzeState analyze_state;
 } MySession;
 
 /*
