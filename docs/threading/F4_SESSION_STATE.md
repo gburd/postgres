@@ -297,6 +297,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 142 | `backup/basebackup.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member (per-module `XxxState` fold).** Embeds the file-local `session_local BasebackupState basebackup_state` (the in-progress base-backup state: recovery-mode flag, checksum-failure count, and no-verify-checksums flag) by value as `MySessionData.basebackup_state`; the `BasebackupState` typedef is relocated into `mysession.h`. All three members are scalars (two `bool`, one `long long int`), so the struct is fully self-contained — no new includes or forward declarations. The former initializer was all-false (with the count implicitly zero), so the zero-initialized aggregate preserves semantics exactly. This is the fifty-fifth subsystem migrated into the aggregate. |
 
+| 143 | `replication/logical/snapbuild.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member (per-module `XxxState` fold).** Embeds the file-local `session_local SnapBuildSessState snapbuild_state` (logical-decoding snapshot-export state: the resource owner saved during a snapshot export and whether an export is in progress) by value as `MySessionData.snapbuild_state`; the `SnapBuildSessState` typedef is relocated into `mysession.h`. `SavedResourceOwnerDuringExport` is kept as a pointer to the forward-declared `struct ResourceOwnerData` (zero new includes); the other member is a `bool`. The former initializer was all-NULL/false, so the zero-initialized aggregate preserves semantics exactly. This is the fifty-sixth subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
