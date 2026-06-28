@@ -69,6 +69,7 @@ struct SeqTableData;			/* commands/sequence.c */
 struct BufferAccessStrategyData;	/* storage/buf.h: BufferAccessStrategy */
 struct LargeObjectDesc;			/* storage/large_object.h */
 struct ComboCidKeyData;			/* utils/time/combocid.c */
+struct DynamicFileList;			/* utils/fmgr/dfmgr.c (also fwd-declared in fmgr.h) */
 
 /*
  * Saved instrumentation counters captured across a nested executor run
@@ -242,6 +243,16 @@ typedef struct ComboCidState
 	int			usedComboCids;	/* number of elements in comboCids */
 	int			sizeComboCids;	/* allocated size of array */
 } ComboCidState;
+
+/*
+ * Loaded dynamic-library list for the session: head and tail of the
+ * DynamicFileList chain (utils/fmgr/dfmgr.c).
+ */
+typedef struct DfmgrState
+{
+	struct DynamicFileList *file_list;
+	struct DynamicFileList *file_tail;
+} DfmgrState;
 
 /*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
@@ -588,6 +599,12 @@ typedef struct MySession
 	 * the indexed array backing it (utils/time/combocid.c).
 	 */
 	ComboCidState combocid_state;
+
+	/*
+	 * Loaded dynamic-library list for the session: head and tail of the
+	 * DynamicFileList chain (utils/fmgr/dfmgr.c).
+	 */
+	DfmgrState dfmgr_state;
 } MySession;
 
 /*

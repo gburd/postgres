@@ -26,6 +26,7 @@
 #include "storage/fd.h"
 #include "storage/shmem.h"
 #include "utils/hsearch.h"
+#include "utils/mysession.h"
 
 
 /* signature for PostgreSQL-specific library init function */
@@ -54,17 +55,6 @@ struct DynamicFileList
 	void	   *handle;			/* a handle for pg_dl* functions */
 	const Pg_magic_struct *magic;	/* Location of module's magic block */
 	char		filename[FLEXIBLE_ARRAY_MEMBER];	/* Full pathname of file */
-};
-
-typedef struct DfmgrState
-{
-	DynamicFileList *file_list;
-	DynamicFileList *file_tail;
-} DfmgrState;
-
-static session_local DfmgrState dfmgr_state = {
-	.file_list = NULL,
-	.file_tail = NULL,
 };
 
 /* stat() call under Win32 returns an st_ino field, but it has no meaning */
@@ -205,7 +195,7 @@ internal_load_library(const char *libname)
 	/*
 	 * Scan the list of loaded FILES to see if the file has been loaded.
 	 */
-	for (file_scanner = dfmgr_state.file_list;
+	for (file_scanner = MySessionData.dfmgr_state.file_list;
 		 file_scanner != NULL &&
 		 strcmp(libname, file_scanner->filename) != 0;
 		 file_scanner = file_scanner->next)
@@ -222,7 +212,7 @@ internal_load_library(const char *libname)
 					 errmsg("could not access file \"%s\": %m",
 							libname)));
 
-		for (file_scanner = dfmgr_state.file_list;
+		for (file_scanner = MySessionData.dfmgr_state.file_list;
 			 file_scanner != NULL &&
 			 !SAME_INODE(stat_buf, *file_scanner);
 			 file_scanner = file_scanner->next)
@@ -307,11 +297,11 @@ internal_load_library(const char *libname)
 			(*PG_init) ();
 
 		/* OK to link it into list */
-		if (dfmgr_state.file_list == NULL)
-			dfmgr_state.file_list = file_scanner;
+		if (MySessionData.dfmgr_state.file_list == NULL)
+			MySessionData.dfmgr_state.file_list = file_scanner;
 		else
-			dfmgr_state.file_tail->next = file_scanner;
-		dfmgr_state.file_tail = file_scanner;
+			MySessionData.dfmgr_state.file_tail->next = file_scanner;
+		MySessionData.dfmgr_state.file_tail = file_scanner;
 	}
 
 	return file_scanner->handle;
@@ -432,7 +422,7 @@ incompatible_module_error(const char *libname,
 DynamicFileList *
 get_first_loaded_module(void)
 {
-	return dfmgr_state.file_list;
+	return MySessionData.dfmgr_state.file_list;
 }
 
 DynamicFileList *
@@ -718,7 +708,7 @@ EstimateLibraryStateSpace(void)
 	DynamicFileList *file_scanner;
 	Size		size = 1;
 
-	for (file_scanner = dfmgr_state.file_list;
+	for (file_scanner = MySessionData.dfmgr_state.file_list;
 		 file_scanner != NULL;
 		 file_scanner = file_scanner->next)
 		size = add_size(size, strlen(file_scanner->filename) + 1);
@@ -734,7 +724,7 @@ SerializeLibraryState(Size maxsize, char *start_address)
 {
 	DynamicFileList *file_scanner;
 
-	for (file_scanner = dfmgr_state.file_list;
+	for (file_scanner = MySessionData.dfmgr_state.file_list;
 		 file_scanner != NULL;
 		 file_scanner = file_scanner->next)
 	{
