@@ -52,6 +52,7 @@
 #include "utils/guc.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
+#include "utils/mysession.h"
 #include "utils/pidfile.h"
 #include "utils/syscache.h"
 #include "utils/varlena.h"
@@ -401,34 +402,6 @@ ChangeToDataDir(void)
  * convenient way to do it.
  * ----------------------------------------------------------------
  */
-typedef struct UserIdState
-{
-	Oid			AuthenticatedUserId;
-	Oid			SessionUserId;
-	Oid			OuterUserId;
-	Oid			CurrentUserId;
-	const char *SystemUser;
-
-	/* We also have to remember the superuser state of the session user */
-	bool		SessionUserIsSuperuser;
-
-	int			SecurityRestrictionContext;
-
-	/* We also remember if a SET ROLE is currently active */
-	bool		SetRoleIsActive;
-} UserIdState;
-
-static session_local UserIdState user_id_state = {
-	.AuthenticatedUserId = InvalidOid,
-	.SessionUserId = InvalidOid,
-	.OuterUserId = InvalidOid,
-	.CurrentUserId = InvalidOid,
-	.SystemUser = NULL,
-	.SessionUserIsSuperuser = false,
-	.SecurityRestrictionContext = 0,
-	.SetRoleIsActive = false,
-};
-
 /*
  * GetUserId - get the current effective user ID.
  *
@@ -437,8 +410,8 @@ static session_local UserIdState user_id_state = {
 Oid
 GetUserId(void)
 {
-	Assert(OidIsValid(user_id_state.CurrentUserId));
-	return user_id_state.CurrentUserId;
+	Assert(OidIsValid(MySessionData.user_id_state.CurrentUserId));
+	return MySessionData.user_id_state.CurrentUserId;
 }
 
 
@@ -448,20 +421,20 @@ GetUserId(void)
 Oid
 GetOuterUserId(void)
 {
-	Assert(OidIsValid(user_id_state.OuterUserId));
-	return user_id_state.OuterUserId;
+	Assert(OidIsValid(MySessionData.user_id_state.OuterUserId));
+	return MySessionData.user_id_state.OuterUserId;
 }
 
 
 static void
 SetOuterUserId(Oid userid, bool is_superuser)
 {
-	Assert(user_id_state.SecurityRestrictionContext == 0);
+	Assert(MySessionData.user_id_state.SecurityRestrictionContext == 0);
 	Assert(OidIsValid(userid));
-	user_id_state.OuterUserId = userid;
+	MySessionData.user_id_state.OuterUserId = userid;
 
 	/* We force the effective user ID to match, too */
-	user_id_state.CurrentUserId = userid;
+	MySessionData.user_id_state.CurrentUserId = userid;
 
 	/* Also update the is_superuser GUC to match OuterUserId's property */
 	SetConfigOption("is_superuser",
@@ -476,24 +449,24 @@ SetOuterUserId(Oid userid, bool is_superuser)
 Oid
 GetSessionUserId(void)
 {
-	Assert(OidIsValid(user_id_state.SessionUserId));
-	return user_id_state.SessionUserId;
+	Assert(OidIsValid(MySessionData.user_id_state.SessionUserId));
+	return MySessionData.user_id_state.SessionUserId;
 }
 
 bool
 GetSessionUserIsSuperuser(void)
 {
-	Assert(OidIsValid(user_id_state.SessionUserId));
-	return user_id_state.SessionUserIsSuperuser;
+	Assert(OidIsValid(MySessionData.user_id_state.SessionUserId));
+	return MySessionData.user_id_state.SessionUserIsSuperuser;
 }
 
 static void
 SetSessionUserId(Oid userid, bool is_superuser)
 {
-	Assert(user_id_state.SecurityRestrictionContext == 0);
+	Assert(MySessionData.user_id_state.SecurityRestrictionContext == 0);
 	Assert(OidIsValid(userid));
-	user_id_state.SessionUserId = userid;
-	user_id_state.SessionUserIsSuperuser = is_superuser;
+	MySessionData.user_id_state.SessionUserId = userid;
+	MySessionData.user_id_state.SessionUserIsSuperuser = is_superuser;
 }
 
 /*
@@ -503,7 +476,7 @@ SetSessionUserId(Oid userid, bool is_superuser)
 const char *
 GetSystemUser(void)
 {
-	return user_id_state.SystemUser;
+	return MySessionData.user_id_state.SystemUser;
 }
 
 /*
@@ -513,8 +486,8 @@ GetSystemUser(void)
 Oid
 GetAuthenticatedUserId(void)
 {
-	Assert(OidIsValid(user_id_state.AuthenticatedUserId));
-	return user_id_state.AuthenticatedUserId;
+	Assert(OidIsValid(MySessionData.user_id_state.AuthenticatedUserId));
+	return MySessionData.user_id_state.AuthenticatedUserId;
 }
 
 void
@@ -523,9 +496,9 @@ SetAuthenticatedUserId(Oid userid)
 	Assert(OidIsValid(userid));
 
 	/* call only once */
-	Assert(!OidIsValid(user_id_state.AuthenticatedUserId));
+	Assert(!OidIsValid(MySessionData.user_id_state.AuthenticatedUserId));
 
-	user_id_state.AuthenticatedUserId = userid;
+	MySessionData.user_id_state.AuthenticatedUserId = userid;
 
 	/* Also mark our PGPROC entry with the authenticated user id */
 	/* (We assume this is an atomic store so no lock is needed) */
@@ -580,15 +553,15 @@ SetAuthenticatedUserId(Oid userid)
 void
 GetUserIdAndSecContext(Oid *userid, int *sec_context)
 {
-	*userid = user_id_state.CurrentUserId;
-	*sec_context = user_id_state.SecurityRestrictionContext;
+	*userid = MySessionData.user_id_state.CurrentUserId;
+	*sec_context = MySessionData.user_id_state.SecurityRestrictionContext;
 }
 
 void
 SetUserIdAndSecContext(Oid userid, int sec_context)
 {
-	user_id_state.CurrentUserId = userid;
-	user_id_state.SecurityRestrictionContext = sec_context;
+	MySessionData.user_id_state.CurrentUserId = userid;
+	MySessionData.user_id_state.SecurityRestrictionContext = sec_context;
 }
 
 
@@ -598,7 +571,7 @@ SetUserIdAndSecContext(Oid userid, int sec_context)
 bool
 InLocalUserIdChange(void)
 {
-	return (user_id_state.SecurityRestrictionContext & SECURITY_LOCAL_USERID_CHANGE) != 0;
+	return (MySessionData.user_id_state.SecurityRestrictionContext & SECURITY_LOCAL_USERID_CHANGE) != 0;
 }
 
 /*
@@ -607,7 +580,7 @@ InLocalUserIdChange(void)
 bool
 InSecurityRestrictedOperation(void)
 {
-	return (user_id_state.SecurityRestrictionContext & SECURITY_RESTRICTED_OPERATION) != 0;
+	return (MySessionData.user_id_state.SecurityRestrictionContext & SECURITY_RESTRICTED_OPERATION) != 0;
 }
 
 /*
@@ -616,7 +589,7 @@ InSecurityRestrictedOperation(void)
 bool
 InNoForceRLSOperation(void)
 {
-	return (user_id_state.SecurityRestrictionContext & SECURITY_NOFORCE_RLS) != 0;
+	return (MySessionData.user_id_state.SecurityRestrictionContext & SECURITY_NOFORCE_RLS) != 0;
 }
 
 
@@ -629,7 +602,7 @@ InNoForceRLSOperation(void)
 void
 GetUserIdAndContext(Oid *userid, bool *sec_def_context)
 {
-	*userid = user_id_state.CurrentUserId;
+	*userid = MySessionData.user_id_state.CurrentUserId;
 	*sec_def_context = InLocalUserIdChange();
 }
 
@@ -642,11 +615,11 @@ SetUserIdAndContext(Oid userid, bool sec_def_context)
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("cannot set parameter \"%s\" within security-restricted operation",
 						"role")));
-	user_id_state.CurrentUserId = userid;
+	MySessionData.user_id_state.CurrentUserId = userid;
 	if (sec_def_context)
-		user_id_state.SecurityRestrictionContext |= SECURITY_LOCAL_USERID_CHANGE;
+		MySessionData.user_id_state.SecurityRestrictionContext |= SECURITY_LOCAL_USERID_CHANGE;
 	else
-		user_id_state.SecurityRestrictionContext &= ~SECURITY_LOCAL_USERID_CHANGE;
+		MySessionData.user_id_state.SecurityRestrictionContext &= ~SECURITY_LOCAL_USERID_CHANGE;
 }
 
 
@@ -817,9 +790,9 @@ InitializeSessionUserIdStandalone(void)
 		   AmDataChecksumsWorkerProcess());
 
 	/* call only once */
-	Assert(!OidIsValid(user_id_state.AuthenticatedUserId));
+	Assert(!OidIsValid(MySessionData.user_id_state.AuthenticatedUserId));
 
-	user_id_state.AuthenticatedUserId = BOOTSTRAP_SUPERUSERID;
+	MySessionData.user_id_state.AuthenticatedUserId = BOOTSTRAP_SUPERUSERID;
 
 	/*
 	 * XXX Ideally we'd do this via SetConfigOption("session_authorization"),
@@ -846,7 +819,7 @@ InitializeSystemUser(const char *authn_id, const char *auth_method)
 	char	   *system_user;
 
 	/* call only once */
-	Assert(user_id_state.SystemUser == NULL);
+	Assert(MySessionData.user_id_state.SystemUser == NULL);
 
 	/*
 	 * InitializeSystemUser should be called only when authn_id is not NULL,
@@ -857,7 +830,7 @@ InitializeSystemUser(const char *authn_id, const char *auth_method)
 	system_user = psprintf("%s:%s", auth_method, authn_id);
 
 	/* Store SystemUser in long-lived storage */
-	user_id_state.SystemUser = MemoryContextStrdup(TopMemoryContext, system_user);
+	MySessionData.user_id_state.SystemUser = MemoryContextStrdup(TopMemoryContext, system_user);
 	pfree(system_user);
 }
 
@@ -891,7 +864,7 @@ SetSessionAuthorization(Oid userid, bool is_superuser)
 {
 	SetSessionUserId(userid, is_superuser);
 
-	if (!user_id_state.SetRoleIsActive)
+	if (!MySessionData.user_id_state.SetRoleIsActive)
 		SetOuterUserId(userid, is_superuser);
 }
 
@@ -904,8 +877,8 @@ SetSessionAuthorization(Oid userid, bool is_superuser)
 Oid
 GetCurrentRoleId(void)
 {
-	if (user_id_state.SetRoleIsActive)
-		return user_id_state.OuterUserId;
+	if (MySessionData.user_id_state.SetRoleIsActive)
+		return MySessionData.user_id_state.OuterUserId;
 	else
 		return InvalidOid;
 }
@@ -935,16 +908,16 @@ SetCurrentRoleId(Oid roleid, bool is_superuser)
 	 */
 	if (!OidIsValid(roleid))
 	{
-		user_id_state.SetRoleIsActive = false;
+		MySessionData.user_id_state.SetRoleIsActive = false;
 
-		if (!OidIsValid(user_id_state.SessionUserId))
+		if (!OidIsValid(MySessionData.user_id_state.SessionUserId))
 			return;
 
-		roleid = user_id_state.SessionUserId;
-		is_superuser = user_id_state.SessionUserIsSuperuser;
+		roleid = MySessionData.user_id_state.SessionUserId;
+		is_superuser = MySessionData.user_id_state.SessionUserIsSuperuser;
 	}
 	else
-		user_id_state.SetRoleIsActive = true;
+		MySessionData.user_id_state.SetRoleIsActive = true;
 
 	SetOuterUserId(roleid, is_superuser);
 }

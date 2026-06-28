@@ -195,6 +195,28 @@ typedef struct SuperuserState
 } SuperuserState;
 
 /*
+ * The session's user-identity state: authenticated/session/outer/current user
+ * OIDs, the system user, and the SET ROLE / security-restriction context
+ * (utils/init/miscinit.c).
+ */
+typedef struct UserIdState
+{
+	Oid			AuthenticatedUserId;
+	Oid			SessionUserId;
+	Oid			OuterUserId;
+	Oid			CurrentUserId;
+	const char *SystemUser;
+
+	/* We also have to remember the superuser state of the session user */
+	bool		SessionUserIsSuperuser;
+
+	int			SecurityRestrictionContext;
+
+	/* We also remember if a SET ROLE is currently active */
+	bool		SetRoleIsActive;
+} UserIdState;
+
+/*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
  * backend (storage/sync/sync.c).  The CycleCtr counters are declared as
  * uint16 here (the file-local CycleCtr typedef stays in sync.c).
@@ -519,6 +541,13 @@ typedef struct MySession
 	 * (utils/misc/superuser.c).
 	 */
 	SuperuserState superuser_state;
+
+	/*
+	 * The session's user-identity state: authenticated/session/outer/current
+	 * user OIDs, the system user, and the SET ROLE / security-restriction
+	 * context (utils/init/miscinit.c).
+	 */
+	UserIdState user_id_state;
 } MySession;
 
 /*
