@@ -287,6 +287,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 137 | `utils/init/miscinit.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member (per-module `XxxState` fold).** Embeds the file-local `session_local UserIdState user_id_state` (the session's user-identity state: authenticated/session/outer/current user OIDs, system user, SET ROLE / security-restriction context) by value as `MySessionData.user_id_state`; the `UserIdState` typedef is relocated into `mysession.h`. All members are scalars (four `Oid`, two `bool`, one `int`) plus a `const char *`, so the struct is self-contained — no new includes or forward declarations. The former initializer was all-InvalidOid/NULL/false/0, so the zero-initialized aggregate preserves semantics exactly. This is the fiftieth subsystem migrated into the aggregate. |
 
+| 138 | `libpq/be-fsstubs.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member (per-module `XxxState` fold).** Embeds the file-local `session_local LoState lo_state` (the large-object descriptor table for the current transaction: open LO cookies, cleanup flag, and the fscxt memory context) by value as `MySessionData.lo_state`; the `LoState` typedef is relocated into `mysession.h`. `cookies` is kept as a pointer to the forward-declared `struct LargeObjectDesc` (zero new includes); the remaining members are scalars and a `MemoryContext`. The former initializer was all-NULL/0/false, so the zero-initialized aggregate preserves semantics exactly. This is the fifty-first subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
