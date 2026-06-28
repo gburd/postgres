@@ -72,6 +72,7 @@ struct ComboCidKeyData;			/* utils/time/combocid.c */
 struct DynamicFileList;			/* utils/fmgr/dfmgr.c (also fwd-declared in fmgr.h) */
 struct ActionList;				/* commands/async.c */
 struct NotificationList;		/* commands/async.c */
+struct ResourceOwnerData;		/* utils/resowner.h: ResourceOwner */
 
 /*
  * Saved instrumentation counters captured across a nested executor run
@@ -288,6 +289,17 @@ typedef struct BasebackupState
 	/* Do not verify checksums. */
 	bool		noverify_checksums;
 } BasebackupState;
+
+/*
+ * Logical-decoding snapshot-export state: the resource owner saved during a
+ * snapshot export and whether an export is in progress
+ * (replication/logical/snapbuild.c).
+ */
+typedef struct SnapBuildSessState
+{
+	struct ResourceOwnerData *SavedResourceOwnerDuringExport;
+	bool		ExportInProgress;
+} SnapBuildSessState;
 
 /*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
@@ -654,6 +666,13 @@ typedef struct MySession
 	 * (backup/basebackup.c).
 	 */
 	BasebackupState basebackup_state;
+
+	/*
+	 * Logical-decoding snapshot-export state: the resource owner saved during
+	 * a snapshot export and whether an export is in progress
+	 * (replication/logical/snapbuild.c).
+	 */
+	SnapBuildSessState snapbuild_state;
 } MySession;
 
 /*
