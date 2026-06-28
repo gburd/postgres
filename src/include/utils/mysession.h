@@ -73,6 +73,7 @@ struct DynamicFileList;			/* utils/fmgr/dfmgr.c (also fwd-declared in fmgr.h) */
 struct ActionList;				/* commands/async.c */
 struct NotificationList;		/* commands/async.c */
 struct ResourceOwnerData;		/* utils/resowner.h: ResourceOwner */
+struct GlobalTransactionData;	/* access/twophase.h: GlobalTransaction */
 
 /*
  * Saved instrumentation counters captured across a nested executor run
@@ -300,6 +301,17 @@ typedef struct SnapBuildSessState
 	struct ResourceOwnerData *SavedResourceOwnerDuringExport;
 	bool		ExportInProgress;
 } SnapBuildSessState;
+
+/*
+ * Two-phase-commit session state: the prepared transaction this backend has
+ * locked and whether the on-exit cleanup was registered
+ * (access/transam/twophase.c).
+ */
+typedef struct TwoPhaseSessState
+{
+	struct GlobalTransactionData *MyLockedGxact;
+	bool		twophaseExitRegistered;
+} TwoPhaseSessState;
 
 /*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
@@ -673,6 +685,13 @@ typedef struct MySession
 	 * (replication/logical/snapbuild.c).
 	 */
 	SnapBuildSessState snapbuild_state;
+
+	/*
+	 * Two-phase-commit session state: the prepared transaction this backend
+	 * has locked and whether the on-exit cleanup was registered
+	 * (access/transam/twophase.c).
+	 */
+	TwoPhaseSessState twophase_sess_state;
 } MySession;
 
 /*

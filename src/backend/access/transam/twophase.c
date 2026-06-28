@@ -106,6 +106,7 @@
 #include "utils/builtins.h"
 #include "utils/injection_point.h"
 #include "utils/memutils.h"
+#include "utils/mysession.h"
 #include "utils/timestamp.h"
 #include "utils/wait_event.h"
 
@@ -204,16 +205,6 @@ const ShmemCallbacks TwoPhaseShmemCallbacks = {
  * TwoPhaseStateLock, though obviously the pointer itself doesn't need to be
  * (since it's just local memory).
  */
-typedef struct TwoPhaseSessState
-{
-	GlobalTransaction MyLockedGxact;
-	bool		twophaseExitRegistered;
-} TwoPhaseSessState;
-
-static session_local TwoPhaseSessState twophase_sess_state = {
-	.MyLockedGxact = NULL,
-	.twophaseExitRegistered = false,
-};
 
 static void PrepareRedoRemoveFull(FullTransactionId fxid, bool giveWarning);
 static void RecordTransactionCommitPrepared(TransactionId xid,
@@ -316,7 +307,7 @@ AtProcExit_Twophase(int code, Datum arg)
 void
 AtAbort_Twophase(void)
 {
-	if (twophase_sess_state.MyLockedGxact == NULL)
+	if (MySessionData.twophase_sess_state.MyLockedGxact == NULL)
 		return;
 
 	/*
@@ -340,13 +331,13 @@ AtAbort_Twophase(void)
 	 * state can be wrong, but it's too late to back out.
 	 */
 	LWLockAcquire(TwoPhaseStateLock, LW_EXCLUSIVE);
-	if (!twophase_sess_state.MyLockedGxact->valid)
-		RemoveGXact(twophase_sess_state.MyLockedGxact);
+	if (!MySessionData.twophase_sess_state.MyLockedGxact->valid)
+		RemoveGXact(MySessionData.twophase_sess_state.MyLockedGxact);
 	else
-		twophase_sess_state.MyLockedGxact->locking_backend = INVALID_PROC_NUMBER;
+		MySessionData.twophase_sess_state.MyLockedGxact->locking_backend = INVALID_PROC_NUMBER;
 	LWLockRelease(TwoPhaseStateLock);
 
-	twophase_sess_state.MyLockedGxact = NULL;
+	MySessionData.twophase_sess_state.MyLockedGxact = NULL;
 }
 
 /*
@@ -357,10 +348,10 @@ void
 PostPrepare_Twophase(void)
 {
 	LWLockAcquire(TwoPhaseStateLock, LW_EXCLUSIVE);
-	twophase_sess_state.MyLockedGxact->locking_backend = INVALID_PROC_NUMBER;
+	MySessionData.twophase_sess_state.MyLockedGxact->locking_backend = INVALID_PROC_NUMBER;
 	LWLockRelease(TwoPhaseStateLock);
 
-	twophase_sess_state.MyLockedGxact = NULL;
+	MySessionData.twophase_sess_state.MyLockedGxact = NULL;
 }
 
 
@@ -389,10 +380,10 @@ MarkAsPreparing(FullTransactionId fxid, const char *gid,
 				 errhint("Set \"max_prepared_transactions\" to a nonzero value.")));
 
 	/* on first call, register the exit hook */
-	if (!twophase_sess_state.twophaseExitRegistered)
+	if (!MySessionData.twophase_sess_state.twophaseExitRegistered)
 	{
 		before_shmem_exit(AtProcExit_Twophase, 0);
-		twophase_sess_state.twophaseExitRegistered = true;
+		MySessionData.twophase_sess_state.twophaseExitRegistered = true;
 	}
 
 	LWLockAcquire(TwoPhaseStateLock, LW_EXCLUSIVE);
@@ -505,7 +496,7 @@ MarkAsPreparingGuts(GlobalTransaction gxact, FullTransactionId fxid,
 	 * Remember that we have this GlobalTransaction entry locked for us. If we
 	 * abort after this, we must release it.
 	 */
-	twophase_sess_state.MyLockedGxact = gxact;
+	MySessionData.twophase_sess_state.MyLockedGxact = gxact;
 }
 
 /*
@@ -569,10 +560,10 @@ LockGXact(const char *gid, Oid user)
 	int			i;
 
 	/* on first call, register the exit hook */
-	if (!twophase_sess_state.twophaseExitRegistered)
+	if (!MySessionData.twophase_sess_state.twophaseExitRegistered)
 	{
 		before_shmem_exit(AtProcExit_Twophase, 0);
-		twophase_sess_state.twophaseExitRegistered = true;
+		MySessionData.twophase_sess_state.twophaseExitRegistered = true;
 	}
 
 	LWLockAcquire(TwoPhaseStateLock, LW_EXCLUSIVE);
@@ -615,7 +606,7 @@ LockGXact(const char *gid, Oid user)
 
 		/* OK for me to lock it */
 		gxact->locking_backend = MyProcNumber;
-		twophase_sess_state.MyLockedGxact = gxact;
+		MySessionData.twophase_sess_state.MyLockedGxact = gxact;
 
 		LWLockRelease(TwoPhaseStateLock);
 
@@ -1261,7 +1252,7 @@ EndPrepare(GlobalTransaction gxact)
 	 * we crash after this point, it's too late to abort, but we must unlock
 	 * it so that the prepared transaction can be committed or rolled back.
 	 */
-	twophase_sess_state.MyLockedGxact = gxact;
+	MySessionData.twophase_sess_state.MyLockedGxact = gxact;
 
 	END_CRIT_SECTION();
 
@@ -1691,7 +1682,7 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 	if (ondisk)
 		RemoveTwoPhaseFile(fxid, true);
 
-	twophase_sess_state.MyLockedGxact = NULL;
+	MySessionData.twophase_sess_state.MyLockedGxact = NULL;
 
 	RESUME_INTERRUPTS();
 
@@ -2172,7 +2163,7 @@ RecoverPreparedTransactions(void)
 			StandbyReleaseLockTree(hdr->xid, hdr->nsubxacts, subxids);
 
 		/*
-		 * We're done with recovering this transaction. Clear twophase_sess_state.MyLockedGxact,
+		 * We're done with recovering this transaction. Clear MySessionData.twophase_sess_state.MyLockedGxact,
 		 * like we do in PrepareTransaction() during normal operation.
 		 */
 		PostPrepare_Twophase();
