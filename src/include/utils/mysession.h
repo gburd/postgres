@@ -67,6 +67,7 @@ struct PendingRelDelete;		/* catalog/storage.c */
 struct RelationData;			/* utils/rel.h: Relation */
 struct SeqTableData;			/* commands/sequence.c */
 struct BufferAccessStrategyData;	/* storage/buf.h: BufferAccessStrategy */
+struct LargeObjectDesc;			/* storage/large_object.h */
 
 /*
  * Saved instrumentation counters captured across a nested executor run
@@ -215,6 +216,19 @@ typedef struct UserIdState
 	/* We also remember if a SET ROLE is currently active */
 	bool		SetRoleIsActive;
 } UserIdState;
+
+/*
+ * Large-object descriptor table for the current transaction: the open LO
+ * "cookies", their cleanup flag, and the fscxt memory context
+ * (libpq/be-fsstubs.c).
+ */
+typedef struct LoState
+{
+	struct LargeObjectDesc **cookies;
+	int			cookies_size;
+	bool		lo_cleanup_needed;
+	MemoryContext fscxt;
+} LoState;
 
 /*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
@@ -548,6 +562,13 @@ typedef struct MySession
 	 * context (utils/init/miscinit.c).
 	 */
 	UserIdState user_id_state;
+
+	/*
+	 * Large-object descriptor table for the current transaction: the open LO
+	 * "cookies", their cleanup flag, and the fscxt memory context
+	 * (libpq/be-fsstubs.c).
+	 */
+	LoState lo_state;
 } MySession;
 
 /*

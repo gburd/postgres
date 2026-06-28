@@ -52,6 +52,7 @@
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
+#include "utils/mysession.h"
 #include "utils/snapmgr.h"
 #include "varatt.h"
 
@@ -69,21 +70,6 @@
  * cookies_size entries, of which any unused entries will be NULL.
  */
 
-
-typedef struct LoState
-{
-	LargeObjectDesc **cookies;
-	int			cookies_size;
-	bool		lo_cleanup_needed;
-	MemoryContext fscxt;
-} LoState;
-
-static session_local LoState lo_state = {
-	.cookies = NULL,
-	.cookies_size = 0,
-	.lo_cleanup_needed = false,
-	.fscxt = NULL,
-};
 
 static int	newLOfd(void);
 static void closeLOfd(int fd);
@@ -111,11 +97,11 @@ be_lo_open(PG_FUNCTION_ARGS)
 
 	/*
 	 * Allocate a large object descriptor first.  This will also create
-	 * 'lo_state.fscxt' if this is the first LO opened in this transaction.
+	 * 'MySessionData.lo_state.fscxt' if this is the first LO opened in this transaction.
 	 */
 	fd = newLOfd();
 
-	lobjDesc = inv_open(lobjId, mode, lo_state.fscxt);
+	lobjDesc = inv_open(lobjId, mode, MySessionData.lo_state.fscxt);
 	lobjDesc->subid = GetCurrentSubTransactionId();
 
 	/*
@@ -127,8 +113,8 @@ be_lo_open(PG_FUNCTION_ARGS)
 		lobjDesc->snapshot = RegisterSnapshotOnOwner(lobjDesc->snapshot,
 													 TopTransactionResourceOwner);
 
-	Assert(lo_state.cookies[fd] == NULL);
-	lo_state.cookies[fd] = lobjDesc;
+	Assert(MySessionData.lo_state.cookies[fd] == NULL);
+	MySessionData.lo_state.cookies[fd] = lobjDesc;
 
 	PG_RETURN_INT32(fd);
 }
@@ -138,7 +124,7 @@ be_lo_close(PG_FUNCTION_ARGS)
 {
 	int32		fd = PG_GETARG_INT32(0);
 
-	if (fd < 0 || fd >= lo_state.cookies_size || lo_state.cookies[fd] == NULL)
+	if (fd < 0 || fd >= MySessionData.lo_state.cookies_size || MySessionData.lo_state.cookies[fd] == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 				 errmsg("invalid large-object descriptor: %d", fd)));
@@ -167,11 +153,11 @@ lo_read(int fd, char *buf, int len)
 	int			status;
 	LargeObjectDesc *lobj;
 
-	if (fd < 0 || fd >= lo_state.cookies_size || lo_state.cookies[fd] == NULL)
+	if (fd < 0 || fd >= MySessionData.lo_state.cookies_size || MySessionData.lo_state.cookies[fd] == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 				 errmsg("invalid large-object descriptor: %d", fd)));
-	lobj = lo_state.cookies[fd];
+	lobj = MySessionData.lo_state.cookies[fd];
 
 	/*
 	 * Check state.  inv_read() would throw an error anyway, but we want the
@@ -195,11 +181,11 @@ lo_write(int fd, const char *buf, int len)
 	int			status;
 	LargeObjectDesc *lobj;
 
-	if (fd < 0 || fd >= lo_state.cookies_size || lo_state.cookies[fd] == NULL)
+	if (fd < 0 || fd >= MySessionData.lo_state.cookies_size || MySessionData.lo_state.cookies[fd] == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 				 errmsg("invalid large-object descriptor: %d", fd)));
-	lobj = lo_state.cookies[fd];
+	lobj = MySessionData.lo_state.cookies[fd];
 
 	/* see comment in lo_read() */
 	if ((lobj->flags & IFS_WRLOCK) == 0)
@@ -221,12 +207,12 @@ be_lo_lseek(PG_FUNCTION_ARGS)
 	int32		whence = PG_GETARG_INT32(2);
 	int64		status;
 
-	if (fd < 0 || fd >= lo_state.cookies_size || lo_state.cookies[fd] == NULL)
+	if (fd < 0 || fd >= MySessionData.lo_state.cookies_size || MySessionData.lo_state.cookies[fd] == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 				 errmsg("invalid large-object descriptor: %d", fd)));
 
-	status = inv_seek(lo_state.cookies[fd], offset, whence);
+	status = inv_seek(MySessionData.lo_state.cookies[fd], offset, whence);
 
 	/* guard against result overflow */
 	if (status != (int32) status)
@@ -246,12 +232,12 @@ be_lo_lseek64(PG_FUNCTION_ARGS)
 	int32		whence = PG_GETARG_INT32(2);
 	int64		status;
 
-	if (fd < 0 || fd >= lo_state.cookies_size || lo_state.cookies[fd] == NULL)
+	if (fd < 0 || fd >= MySessionData.lo_state.cookies_size || MySessionData.lo_state.cookies[fd] == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 				 errmsg("invalid large-object descriptor: %d", fd)));
 
-	status = inv_seek(lo_state.cookies[fd], offset, whence);
+	status = inv_seek(MySessionData.lo_state.cookies[fd], offset, whence);
 
 	PG_RETURN_INT64(status);
 }
@@ -263,7 +249,7 @@ be_lo_creat(PG_FUNCTION_ARGS)
 
 	PreventCommandIfReadOnly("lo_creat()");
 
-	lo_state.lo_cleanup_needed = true;
+	MySessionData.lo_state.lo_cleanup_needed = true;
 	lobjId = inv_create(InvalidOid);
 
 	PG_RETURN_OID(lobjId);
@@ -276,7 +262,7 @@ be_lo_create(PG_FUNCTION_ARGS)
 
 	PreventCommandIfReadOnly("lo_create()");
 
-	lo_state.lo_cleanup_needed = true;
+	MySessionData.lo_state.lo_cleanup_needed = true;
 	lobjId = inv_create(lobjId);
 
 	PG_RETURN_OID(lobjId);
@@ -288,12 +274,12 @@ be_lo_tell(PG_FUNCTION_ARGS)
 	int32		fd = PG_GETARG_INT32(0);
 	int64		offset;
 
-	if (fd < 0 || fd >= lo_state.cookies_size || lo_state.cookies[fd] == NULL)
+	if (fd < 0 || fd >= MySessionData.lo_state.cookies_size || MySessionData.lo_state.cookies[fd] == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 				 errmsg("invalid large-object descriptor: %d", fd)));
 
-	offset = inv_tell(lo_state.cookies[fd]);
+	offset = inv_tell(MySessionData.lo_state.cookies[fd]);
 
 	/* guard against result overflow */
 	if (offset != (int32) offset)
@@ -311,12 +297,12 @@ be_lo_tell64(PG_FUNCTION_ARGS)
 	int32		fd = PG_GETARG_INT32(0);
 	int64		offset;
 
-	if (fd < 0 || fd >= lo_state.cookies_size || lo_state.cookies[fd] == NULL)
+	if (fd < 0 || fd >= MySessionData.lo_state.cookies_size || MySessionData.lo_state.cookies[fd] == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 				 errmsg("invalid large-object descriptor: %d", fd)));
 
-	offset = inv_tell(lo_state.cookies[fd]);
+	offset = inv_tell(MySessionData.lo_state.cookies[fd]);
 
 	PG_RETURN_INT64(offset);
 }
@@ -347,20 +333,20 @@ be_lo_unlink(PG_FUNCTION_ARGS)
 	/*
 	 * If there are any open LO FDs referencing that ID, close 'em.
 	 */
-	if (lo_state.fscxt != NULL)
+	if (MySessionData.lo_state.fscxt != NULL)
 	{
 		int			i;
 
-		for (i = 0; i < lo_state.cookies_size; i++)
+		for (i = 0; i < MySessionData.lo_state.cookies_size; i++)
 		{
-			if (lo_state.cookies[i] != NULL && lo_state.cookies[i]->id == lobjId)
+			if (MySessionData.lo_state.cookies[i] != NULL && MySessionData.lo_state.cookies[i]->id == lobjId)
 				closeLOfd(i);
 		}
 	}
 
 	/*
 	 * inv_drop does not create a need for end-of-transaction cleanup and
-	 * hence we don't need to set lo_state.lo_cleanup_needed.
+	 * hence we don't need to set MySessionData.lo_state.lo_cleanup_needed.
 	 */
 	PG_RETURN_INT32(inv_drop(lobjId));
 }
@@ -458,7 +444,7 @@ lo_import_internal(text *filename, Oid lobjOid)
 	/*
 	 * create an inversion object
 	 */
-	lo_state.lo_cleanup_needed = true;
+	MySessionData.lo_state.lo_cleanup_needed = true;
 	oid = inv_create(lobjOid);
 
 	/*
@@ -509,7 +495,7 @@ be_lo_export(PG_FUNCTION_ARGS)
 	/*
 	 * open the inversion object (no need to test for failure)
 	 */
-	lo_state.lo_cleanup_needed = true;
+	MySessionData.lo_state.lo_cleanup_needed = true;
 	lobj = inv_open(lobjId, INV_READ, CurrentMemoryContext);
 
 	/*
@@ -570,11 +556,11 @@ lo_truncate_internal(int32 fd, int64 len)
 {
 	LargeObjectDesc *lobj;
 
-	if (fd < 0 || fd >= lo_state.cookies_size || lo_state.cookies[fd] == NULL)
+	if (fd < 0 || fd >= MySessionData.lo_state.cookies_size || MySessionData.lo_state.cookies[fd] == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 				 errmsg("invalid large-object descriptor: %d", fd)));
-	lobj = lo_state.cookies[fd];
+	lobj = MySessionData.lo_state.cookies[fd];
 
 	/* see comment in lo_read() */
 	if ((lobj->flags & IFS_WRLOCK) == 0)
@@ -619,11 +605,11 @@ AtEOXact_LargeObject(bool isCommit)
 {
 	int			i;
 
-	if (!lo_state.lo_cleanup_needed)
+	if (!MySessionData.lo_state.lo_cleanup_needed)
 		return;					/* no LO operations in this xact */
 
 	/*
-	 * Close LO fds and clear lo_state.cookies array so that LO fds are no longer good.
+	 * Close LO fds and clear MySessionData.lo_state.cookies array so that LO fds are no longer good.
 	 * The memory context and resource owner holding them are going away at
 	 * the end-of-transaction anyway, but on commit, we need to close them to
 	 * avoid warnings about leaked resources at commit.  On abort we can skip
@@ -631,26 +617,26 @@ AtEOXact_LargeObject(bool isCommit)
 	 */
 	if (isCommit)
 	{
-		for (i = 0; i < lo_state.cookies_size; i++)
+		for (i = 0; i < MySessionData.lo_state.cookies_size; i++)
 		{
-			if (lo_state.cookies[i] != NULL)
+			if (MySessionData.lo_state.cookies[i] != NULL)
 				closeLOfd(i);
 		}
 	}
 
 	/* Needn't actually pfree since we're about to zap context */
-	lo_state.cookies = NULL;
-	lo_state.cookies_size = 0;
+	MySessionData.lo_state.cookies = NULL;
+	MySessionData.lo_state.cookies_size = 0;
 
 	/* Release the LO memory context to prevent permanent memory leaks. */
-	if (lo_state.fscxt)
-		MemoryContextDelete(lo_state.fscxt);
-	lo_state.fscxt = NULL;
+	if (MySessionData.lo_state.fscxt)
+		MemoryContextDelete(MySessionData.lo_state.fscxt);
+	MySessionData.lo_state.fscxt = NULL;
 
 	/* Give inv_api.c a chance to clean up, too */
 	close_lo_relation(isCommit);
 
-	lo_state.lo_cleanup_needed = false;
+	MySessionData.lo_state.lo_cleanup_needed = false;
 }
 
 /*
@@ -666,12 +652,12 @@ AtEOSubXact_LargeObject(bool isCommit, SubTransactionId mySubid,
 {
 	int			i;
 
-	if (lo_state.fscxt == NULL)			/* no LO operations in this xact */
+	if (MySessionData.lo_state.fscxt == NULL)			/* no LO operations in this xact */
 		return;
 
-	for (i = 0; i < lo_state.cookies_size; i++)
+	for (i = 0; i < MySessionData.lo_state.cookies_size; i++)
 	{
-		LargeObjectDesc *lo = lo_state.cookies[i];
+		LargeObjectDesc *lo = MySessionData.lo_state.cookies[i];
 
 		if (lo != NULL && lo->subid == mySubid)
 		{
@@ -693,37 +679,37 @@ newLOfd(void)
 	int			i,
 				newsize;
 
-	lo_state.lo_cleanup_needed = true;
-	if (lo_state.fscxt == NULL)
-		lo_state.fscxt = AllocSetContextCreate(TopMemoryContext,
+	MySessionData.lo_state.lo_cleanup_needed = true;
+	if (MySessionData.lo_state.fscxt == NULL)
+		MySessionData.lo_state.fscxt = AllocSetContextCreate(TopMemoryContext,
 									  "Filesystem",
 									  ALLOCSET_DEFAULT_SIZES);
 
 	/* Try to find a free slot */
-	for (i = 0; i < lo_state.cookies_size; i++)
+	for (i = 0; i < MySessionData.lo_state.cookies_size; i++)
 	{
-		if (lo_state.cookies[i] == NULL)
+		if (MySessionData.lo_state.cookies[i] == NULL)
 			return i;
 	}
 
 	/* No free slot, so make the array bigger */
-	if (lo_state.cookies_size <= 0)
+	if (MySessionData.lo_state.cookies_size <= 0)
 	{
 		/* First time through, arbitrarily make 64-element array */
 		i = 0;
 		newsize = 64;
-		lo_state.cookies = (LargeObjectDesc **)
-			MemoryContextAllocZero(lo_state.fscxt, newsize * sizeof(LargeObjectDesc *));
+		MySessionData.lo_state.cookies = (LargeObjectDesc **)
+			MemoryContextAllocZero(MySessionData.lo_state.fscxt, newsize * sizeof(LargeObjectDesc *));
 	}
 	else
 	{
 		/* Double size of array */
-		i = lo_state.cookies_size;
-		newsize = lo_state.cookies_size * 2;
-		lo_state.cookies =
-			repalloc0_array(lo_state.cookies, LargeObjectDesc *, lo_state.cookies_size, newsize);
+		i = MySessionData.lo_state.cookies_size;
+		newsize = MySessionData.lo_state.cookies_size * 2;
+		MySessionData.lo_state.cookies =
+			repalloc0_array(MySessionData.lo_state.cookies, LargeObjectDesc *, MySessionData.lo_state.cookies_size, newsize);
 	}
-	lo_state.cookies_size = newsize;
+	MySessionData.lo_state.cookies_size = newsize;
 
 	return i;
 }
@@ -737,8 +723,8 @@ closeLOfd(int fd)
 	 * Make sure we do not try to free twice if this errors out for some
 	 * reason.  Better a leak than a crash.
 	 */
-	lobj = lo_state.cookies[fd];
-	lo_state.cookies[fd] = NULL;
+	lobj = MySessionData.lo_state.cookies[fd];
+	MySessionData.lo_state.cookies[fd] = NULL;
 
 	if (lobj->snapshot)
 		UnregisterSnapshotFromOwner(lobj->snapshot,
@@ -762,7 +748,7 @@ lo_get_fragment_internal(Oid loOid, int64 offset, int32 nbytes)
 	int			total_read PG_USED_FOR_ASSERTS_ONLY;
 	bytea	   *result = NULL;
 
-	lo_state.lo_cleanup_needed = true;
+	MySessionData.lo_state.lo_cleanup_needed = true;
 	loDesc = inv_open(loOid, INV_READ, CurrentMemoryContext);
 
 	/*
@@ -849,7 +835,7 @@ be_lo_from_bytea(PG_FUNCTION_ARGS)
 
 	PreventCommandIfReadOnly("lo_from_bytea()");
 
-	lo_state.lo_cleanup_needed = true;
+	MySessionData.lo_state.lo_cleanup_needed = true;
 	loOid = inv_create(loOid);
 	loDesc = inv_open(loOid, INV_WRITE, CurrentMemoryContext);
 	written = inv_write(loDesc, VARDATA_ANY(str), VARSIZE_ANY_EXHDR(str));
@@ -873,7 +859,7 @@ be_lo_put(PG_FUNCTION_ARGS)
 
 	PreventCommandIfReadOnly("lo_put()");
 
-	lo_state.lo_cleanup_needed = true;
+	MySessionData.lo_state.lo_cleanup_needed = true;
 	loDesc = inv_open(loOid, INV_WRITE, CurrentMemoryContext);
 	inv_seek(loDesc, offset, SEEK_SET);
 	written = inv_write(loDesc, VARDATA_ANY(str), VARSIZE_ANY_EXHDR(str));
