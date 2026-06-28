@@ -34,6 +34,7 @@
 #include "storage/standby.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
+#include "utils/mysession.h"
 #include "utils/pg_lsn.h"
 #include "utils/timestamp.h"
 #include "utils/wait_event.h"
@@ -41,19 +42,6 @@
 /*
  * Backup-related variables.
  */
-typedef struct XlogFuncsState
-{
-	BackupState *backup_state;
-	StringInfo	tablespace_map;
-	/* Session-level context for the SQL-callable backup functions */
-	MemoryContext backupcontext;
-} XlogFuncsState;
-
-static session_local XlogFuncsState xlogfuncs_state = {
-	.backup_state = NULL,
-	.tablespace_map = NULL,
-	.backupcontext = NULL,
-};
 
 
 /*
@@ -108,34 +96,34 @@ pg_backup_start(PG_FUNCTION_ARGS)
 				 errmsg("a backup is already in progress in this session")));
 
 	/*
-	 * xlogfuncs_state.backup_state and xlogfuncs_state.tablespace_map need to be long-lived as they are used
+	 * MySessionData.xlogfuncs_state.backup_state and MySessionData.xlogfuncs_state.tablespace_map need to be long-lived as they are used
 	 * in pg_backup_stop().  These are allocated in a dedicated memory context
 	 * child of TopMemoryContext, deleted at the end of pg_backup_stop().  If
 	 * an error happens before ending the backup, memory would be leaked in
 	 * this context until pg_backup_start() is called again.
 	 */
-	if (xlogfuncs_state.backupcontext == NULL)
+	if (MySessionData.xlogfuncs_state.backupcontext == NULL)
 	{
-		xlogfuncs_state.backupcontext = AllocSetContextCreate(TopMemoryContext,
+		MySessionData.xlogfuncs_state.backupcontext = AllocSetContextCreate(TopMemoryContext,
 											  "on-line backup context",
 											  ALLOCSET_START_SMALL_SIZES);
 	}
 	else
 	{
-		xlogfuncs_state.backup_state = NULL;
-		xlogfuncs_state.tablespace_map = NULL;
-		MemoryContextReset(xlogfuncs_state.backupcontext);
+		MySessionData.xlogfuncs_state.backup_state = NULL;
+		MySessionData.xlogfuncs_state.tablespace_map = NULL;
+		MemoryContextReset(MySessionData.xlogfuncs_state.backupcontext);
 	}
 
-	oldcontext = MemoryContextSwitchTo(xlogfuncs_state.backupcontext);
-	xlogfuncs_state.backup_state = palloc0_object(BackupState);
-	xlogfuncs_state.tablespace_map = makeStringInfo();
+	oldcontext = MemoryContextSwitchTo(MySessionData.xlogfuncs_state.backupcontext);
+	MySessionData.xlogfuncs_state.backup_state = palloc0_object(BackupState);
+	MySessionData.xlogfuncs_state.tablespace_map = makeStringInfo();
 	MemoryContextSwitchTo(oldcontext);
 
 	register_persistent_abort_backup_handler();
-	do_pg_backup_start(backupidstr, fast, NULL, xlogfuncs_state.backup_state, xlogfuncs_state.tablespace_map);
+	do_pg_backup_start(backupidstr, fast, NULL, MySessionData.xlogfuncs_state.backup_state, MySessionData.xlogfuncs_state.tablespace_map);
 
-	PG_RETURN_LSN(xlogfuncs_state.backup_state->startpoint);
+	PG_RETURN_LSN(MySessionData.xlogfuncs_state.backup_state->startpoint);
 }
 
 
@@ -147,12 +135,12 @@ pg_backup_start(PG_FUNCTION_ARGS)
  * or if we should just return as soon as the WAL record is written.
  *
  * This function stops an in-progress backup, creates backup_label contents and
- * it returns the backup stop LSN, backup_label and xlogfuncs_state.tablespace_map contents.
+ * it returns the backup stop LSN, backup_label and MySessionData.xlogfuncs_state.tablespace_map contents.
  *
  * The backup_label contains the user-supplied label string (typically this
  * would be used to tell where the backup dump will be stored), the starting
  * time, starting WAL location for the dump and so on.  It is the caller's
- * responsibility to write the backup_label and xlogfuncs_state.tablespace_map files in the
+ * responsibility to write the backup_label and MySessionData.xlogfuncs_state.tablespace_map files in the
  * data folder that will be restored from this backup.
  *
  * Permission checking for this function is managed through the normal
@@ -179,27 +167,27 @@ pg_backup_stop(PG_FUNCTION_ARGS)
 				 errmsg("backup is not in progress"),
 				 errhint("Did you call pg_backup_start()?")));
 
-	Assert(xlogfuncs_state.backup_state != NULL);
-	Assert(xlogfuncs_state.tablespace_map != NULL);
+	Assert(MySessionData.xlogfuncs_state.backup_state != NULL);
+	Assert(MySessionData.xlogfuncs_state.tablespace_map != NULL);
 
 	/* Stop the backup */
-	do_pg_backup_stop(xlogfuncs_state.backup_state, waitforarchive);
+	do_pg_backup_stop(MySessionData.xlogfuncs_state.backup_state, waitforarchive);
 
 	/* Build the contents of backup_label */
-	backup_label = build_backup_content(xlogfuncs_state.backup_state, false);
+	backup_label = build_backup_content(MySessionData.xlogfuncs_state.backup_state, false);
 
-	values[0] = LSNGetDatum(xlogfuncs_state.backup_state->stoppoint);
+	values[0] = LSNGetDatum(MySessionData.xlogfuncs_state.backup_state->stoppoint);
 	values[1] = CStringGetTextDatum(backup_label);
-	values[2] = CStringGetTextDatum(xlogfuncs_state.tablespace_map->data);
+	values[2] = CStringGetTextDatum(MySessionData.xlogfuncs_state.tablespace_map->data);
 
 	/* Deallocate backup-related variables */
 	pfree(backup_label);
 
 	/* Clean up the session-level state and its memory context */
-	xlogfuncs_state.backup_state = NULL;
-	xlogfuncs_state.tablespace_map = NULL;
-	MemoryContextDelete(xlogfuncs_state.backupcontext);
-	xlogfuncs_state.backupcontext = NULL;
+	MySessionData.xlogfuncs_state.backup_state = NULL;
+	MySessionData.xlogfuncs_state.tablespace_map = NULL;
+	MemoryContextDelete(MySessionData.xlogfuncs_state.backupcontext);
+	MySessionData.xlogfuncs_state.backupcontext = NULL;
 
 	/* Returns the record as Datum */
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));

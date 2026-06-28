@@ -59,6 +59,7 @@ struct pg_locale_struct;		/* utils/pg_locale.h: pg_locale_t */
 struct EventTriggerQueryState;	/* commands/event_trigger.c */
 struct ConditionVariable;		/* storage/condition_variable.h */
 struct StringInfoData;			/* lib/stringinfo.h: StringInfo */
+struct BackupState;				/* access/xlogbackup.h */
 struct ProcSignalSlot;			/* storage/ipc/procsignal.c */
 struct FixedParallelState;		/* access/transam/parallel.c */
 struct ReplicationState;		/* replication/logical/origin.c */
@@ -374,6 +375,19 @@ typedef struct TsCacheState
 	/* a cache of the current config's OID */
 	Oid			TSCurrentConfigCache;
 } TsCacheState;
+
+/*
+ * State for the SQL-callable backup functions (pg_backup_start /
+ * pg_backup_stop): the in-progress backup state, the tablespace map, and the
+ * session-level memory context (access/transam/xlogfuncs.c).
+ */
+typedef struct XlogFuncsState
+{
+	struct BackupState *backup_state;
+	struct StringInfoData *tablespace_map;
+	/* Session-level context for the SQL-callable backup functions */
+	MemoryContext backupcontext;
+} XlogFuncsState;
 
 /*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
@@ -781,6 +795,13 @@ typedef struct MySession
 	 * config OID (utils/cache/ts_cache.c).
 	 */
 	TsCacheState ts_cache_state;
+
+	/*
+	 * State for the SQL-callable backup functions (pg_backup_start /
+	 * pg_backup_stop): the in-progress backup state, the tablespace map, and
+	 * the session-level memory context (access/transam/xlogfuncs.c).
+	 */
+	XlogFuncsState xlogfuncs_state;
 } MySession;
 
 /*
