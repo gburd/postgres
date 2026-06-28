@@ -303,6 +303,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 145 | `utils/adt/ruleutils.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member (per-module `XxxState` fold).** Embeds the file-local `session_local RuleUtilsState ruleutils_state` (the cached SPI plans for the ruleutils decompiler's pg_get_ruledef / pg_get_viewdef helpers) by value as `MySessionData.ruleutils_state`; the `RuleUtilsState` typedef is relocated into `mysession.h`. Both members are `SPIPlanPtr`, kept as pointers to the forward-declared `struct _SPI_plan` (zero new includes). The former initializer was all-NULL, so the zero-initialized aggregate preserves semantics exactly. This is the fifty-eighth subsystem migrated into the aggregate. |
 
+| 146 | `replication/logical/launcher.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member (per-module `XxxState` fold).** Embeds the file-local `session_local LauncherState launcher_state` (the logical-replication launcher state: the DSA-backed table of per-subscription last-start times and the on-commit wakeup flag) by value as `MySessionData.launcher_state`; the `LauncherState` typedef is relocated into `mysession.h`. `last_start_times_dsa`/`last_start_times` are kept as pointers to the forward-declared `struct dsa_area` / `struct dshash_table` (opaque tagged structs); the remaining member is a `bool` (zero new includes). The former initializer was all-NULL/false, so the zero-initialized aggregate preserves semantics exactly. This is the fifty-ninth subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
