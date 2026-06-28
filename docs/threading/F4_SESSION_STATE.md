@@ -283,6 +283,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 135 | `commands/analyze.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member (per-module `XxxState` fold).** Embeds the file-local `session_local AnalyzeState analyze_state` (the per-ANALYZE memory context and buffer-access strategy) by value as `MySessionData.analyze_state`; the `AnalyzeState` typedef is relocated into `mysession.h`. `anl_context` (`MemoryContext`) is already visible; `vac_strategy` is kept as a pointer to the forward-declared `struct BufferAccessStrategyData` (zero new includes). The former initializer set only `.anl_context = NULL`, so the zero-initialized aggregate preserves semantics exactly. This is the forty-eighth subsystem migrated into the aggregate. |
 
+| 136 | `utils/misc/superuser.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member (per-module `XxxState` fold).** Embeds the file-local `session_local SuperuserState superuser_state` (the one-entry cache for the superuser status of the last requested roleid) by value as `MySessionData.superuser_state`; the `SuperuserState` typedef is relocated into `mysession.h`. All three members are scalars (`Oid` + two `bool`), so the struct is fully self-contained — no new includes or forward declarations. The former initializer was all-InvalidOid/false, so the zero-initialized aggregate preserves semantics exactly. This is the forty-ninth subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
