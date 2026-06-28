@@ -184,6 +184,17 @@ typedef struct AnalyzeState
 } AnalyzeState;
 
 /*
+ * One-entry cache for the superuser status of the last requested roleid
+ * (utils/misc/superuser.c).
+ */
+typedef struct SuperuserState
+{
+	Oid			last_roleid;	/* InvalidOid == cache not valid */
+	bool		last_roleid_is_super;
+	bool		roleid_callback_registered;
+} SuperuserState;
+
+/*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
  * backend (storage/sync/sync.c).  The CycleCtr counters are declared as
  * uint16 here (the file-local CycleCtr typedef stays in sync.c).
@@ -502,6 +513,12 @@ typedef struct MySession
 	 * strategy (commands/analyze.c).
 	 */
 	AnalyzeState analyze_state;
+
+	/*
+	 * One-entry cache for the superuser status of the last requested roleid
+	 * (utils/misc/superuser.c).
+	 */
+	SuperuserState superuser_state;
 } MySession;
 
 /*
