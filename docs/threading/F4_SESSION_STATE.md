@@ -285,6 +285,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 136 | `utils/misc/superuser.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member (per-module `XxxState` fold).** Embeds the file-local `session_local SuperuserState superuser_state` (the one-entry cache for the superuser status of the last requested roleid) by value as `MySessionData.superuser_state`; the `SuperuserState` typedef is relocated into `mysession.h`. All three members are scalars (`Oid` + two `bool`), so the struct is fully self-contained — no new includes or forward declarations. The former initializer was all-InvalidOid/false, so the zero-initialized aggregate preserves semantics exactly. This is the forty-ninth subsystem migrated into the aggregate. |
 
+| 137 | `utils/init/miscinit.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member (per-module `XxxState` fold).** Embeds the file-local `session_local UserIdState user_id_state` (the session's user-identity state: authenticated/session/outer/current user OIDs, system user, SET ROLE / security-restriction context) by value as `MySessionData.user_id_state`; the `UserIdState` typedef is relocated into `mysession.h`. All members are scalars (four `Oid`, two `bool`, one `int`) plus a `const char *`, so the struct is self-contained — no new includes or forward declarations. The former initializer was all-InvalidOid/NULL/false/0, so the zero-initialized aggregate preserves semantics exactly. This is the fiftieth subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
