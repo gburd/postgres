@@ -301,6 +301,8 @@ Each row is one commit. All preserve behavior and pass every gate below.
 
 | 144 | `access/transam/twophase.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member (per-module `XxxState` fold).** Embeds the file-local `session_local TwoPhaseSessState twophase_sess_state` (the two-phase-commit session state: the prepared transaction this backend has locked and whether the on-exit cleanup was registered) by value as `MySessionData.twophase_sess_state`; the `TwoPhaseSessState` typedef is relocated into `mysession.h`. `MyLockedGxact` is kept as a pointer to the forward-declared `struct GlobalTransactionData` (zero new includes); the other member is a `bool`. The former initializer was all-NULL/false, so the zero-initialized aggregate preserves semantics exactly. This is the fifty-seventh subsystem migrated into the aggregate. |
 
+| 145 | `utils/adt/ruleutils.c` + `include/utils/mysession.h` | `MySession` / `MySessionData` | 1 | **MySession member (per-module `XxxState` fold).** Embeds the file-local `session_local RuleUtilsState ruleutils_state` (the cached SPI plans for the ruleutils decompiler's pg_get_ruledef / pg_get_viewdef helpers) by value as `MySessionData.ruleutils_state`; the `RuleUtilsState` typedef is relocated into `mysession.h`. Both members are `SPIPlanPtr`, kept as pointers to the forward-declared `struct _SPI_plan` (zero new includes). The former initializer was all-NULL, so the zero-initialized aggregate preserves semantics exactly. This is the fifty-eighth subsystem migrated into the aggregate. |
+
 ## MySession aggregate
 
 With the per-module `XxxState` sweep complete (modules 1–87 cover every
