@@ -42,6 +42,7 @@
 #include "tcop/tcopprot.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
+#include "utils/mysession.h"
 #include "utils/pg_lsn.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
@@ -95,19 +96,6 @@ static const dshash_parameters dsh_params = {
 	dshash_memhash,
 	dshash_memcpy,
 	LWTRANCHE_LAUNCHER_HASH
-};
-
-typedef struct LauncherState
-{
-	dsa_area   *last_start_times_dsa;
-	dshash_table *last_start_times;
-	bool		on_commit_launcher_wakeup;
-} LauncherState;
-
-static session_local LauncherState launcher_state = {
-	.last_start_times_dsa = NULL,
-	.last_start_times = NULL,
-	.on_commit_launcher_wakeup = false,
 };
 
 
@@ -1073,7 +1061,7 @@ logicalrep_launcher_attach_dshmem(void)
 
 	/* Quick exit if we already did this. */
 	if (LogicalRepCtx->last_start_dsh != DSHASH_HANDLE_INVALID &&
-		launcher_state.last_start_times != NULL)
+		MySessionData.launcher_state.last_start_times != NULL)
 		return;
 
 	/* Otherwise, use a lock to ensure only one process creates the table. */
@@ -1085,21 +1073,21 @@ logicalrep_launcher_attach_dshmem(void)
 	if (LogicalRepCtx->last_start_dsh == DSHASH_HANDLE_INVALID)
 	{
 		/* Initialize dynamic shared hash table for last-start times. */
-		launcher_state.last_start_times_dsa = dsa_create(LWTRANCHE_LAUNCHER_DSA);
-		dsa_pin(launcher_state.last_start_times_dsa);
-		dsa_pin_mapping(launcher_state.last_start_times_dsa);
-		launcher_state.last_start_times = dshash_create(launcher_state.last_start_times_dsa, &dsh_params, NULL);
+		MySessionData.launcher_state.last_start_times_dsa = dsa_create(LWTRANCHE_LAUNCHER_DSA);
+		dsa_pin(MySessionData.launcher_state.last_start_times_dsa);
+		dsa_pin_mapping(MySessionData.launcher_state.last_start_times_dsa);
+		MySessionData.launcher_state.last_start_times = dshash_create(MySessionData.launcher_state.last_start_times_dsa, &dsh_params, NULL);
 
 		/* Store handles in shared memory for other backends to use. */
-		LogicalRepCtx->last_start_dsa = dsa_get_handle(launcher_state.last_start_times_dsa);
-		LogicalRepCtx->last_start_dsh = dshash_get_hash_table_handle(launcher_state.last_start_times);
+		LogicalRepCtx->last_start_dsa = dsa_get_handle(MySessionData.launcher_state.last_start_times_dsa);
+		LogicalRepCtx->last_start_dsh = dshash_get_hash_table_handle(MySessionData.launcher_state.last_start_times);
 	}
-	else if (!launcher_state.last_start_times)
+	else if (!MySessionData.launcher_state.last_start_times)
 	{
 		/* Attach to existing dynamic shared hash table. */
-		launcher_state.last_start_times_dsa = dsa_attach(LogicalRepCtx->last_start_dsa);
-		dsa_pin_mapping(launcher_state.last_start_times_dsa);
-		launcher_state.last_start_times = dshash_attach(launcher_state.last_start_times_dsa, &dsh_params,
+		MySessionData.launcher_state.last_start_times_dsa = dsa_attach(LogicalRepCtx->last_start_dsa);
+		dsa_pin_mapping(MySessionData.launcher_state.last_start_times_dsa);
+		MySessionData.launcher_state.last_start_times = dshash_attach(MySessionData.launcher_state.last_start_times_dsa, &dsh_params,
 										 LogicalRepCtx->last_start_dsh, NULL);
 	}
 
@@ -1118,9 +1106,9 @@ ApplyLauncherSetWorkerStartTime(Oid subid, TimestampTz start_time)
 
 	logicalrep_launcher_attach_dshmem();
 
-	entry = dshash_find_or_insert(launcher_state.last_start_times, &subid, &found);
+	entry = dshash_find_or_insert(MySessionData.launcher_state.last_start_times, &subid, &found);
 	entry->last_start_time = start_time;
-	dshash_release_lock(launcher_state.last_start_times, entry);
+	dshash_release_lock(MySessionData.launcher_state.last_start_times, entry);
 }
 
 /*
@@ -1134,12 +1122,12 @@ ApplyLauncherGetWorkerStartTime(Oid subid)
 
 	logicalrep_launcher_attach_dshmem();
 
-	entry = dshash_find(launcher_state.last_start_times, &subid, false);
+	entry = dshash_find(MySessionData.launcher_state.last_start_times, &subid, false);
 	if (entry == NULL)
 		return 0;
 
 	ret = entry->last_start_time;
-	dshash_release_lock(launcher_state.last_start_times, entry);
+	dshash_release_lock(MySessionData.launcher_state.last_start_times, entry);
 
 	return ret;
 }
@@ -1157,7 +1145,7 @@ ApplyLauncherForgetWorkerStartTime(Oid subid)
 {
 	logicalrep_launcher_attach_dshmem();
 
-	(void) dshash_delete_key(launcher_state.last_start_times, &subid);
+	(void) dshash_delete_key(MySessionData.launcher_state.last_start_times, &subid);
 }
 
 /*
@@ -1168,11 +1156,11 @@ AtEOXact_ApplyLauncher(bool isCommit)
 {
 	if (isCommit)
 	{
-		if (launcher_state.on_commit_launcher_wakeup)
+		if (MySessionData.launcher_state.on_commit_launcher_wakeup)
 			ApplyLauncherWakeup();
 	}
 
-	launcher_state.on_commit_launcher_wakeup = false;
+	MySessionData.launcher_state.on_commit_launcher_wakeup = false;
 }
 
 /*
@@ -1185,8 +1173,8 @@ AtEOXact_ApplyLauncher(bool isCommit)
 void
 ApplyLauncherWakeupAtCommit(void)
 {
-	if (!launcher_state.on_commit_launcher_wakeup)
-		launcher_state.on_commit_launcher_wakeup = true;
+	if (!MySessionData.launcher_state.on_commit_launcher_wakeup)
+		MySessionData.launcher_state.on_commit_launcher_wakeup = true;
 }
 
 /*

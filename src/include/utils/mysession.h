@@ -75,6 +75,8 @@ struct NotificationList;		/* commands/async.c */
 struct ResourceOwnerData;		/* utils/resowner.h: ResourceOwner */
 struct GlobalTransactionData;	/* access/twophase.h: GlobalTransaction */
 struct _SPI_plan;				/* executor/spi.h: SPIPlanPtr */
+struct dsa_area;				/* utils/dsa.h */
+struct dshash_table;			/* lib/dshash.h */
 
 /*
  * Saved instrumentation counters captured across a nested executor run
@@ -323,6 +325,18 @@ typedef struct RuleUtilsState
 	struct _SPI_plan *plan_getrulebyoid;
 	struct _SPI_plan *plan_getviewrule;
 } RuleUtilsState;
+
+/*
+ * Logical-replication launcher state: the DSA-backed table of per-subscription
+ * last-start times and the on-commit wakeup flag
+ * (replication/logical/launcher.c).
+ */
+typedef struct LauncherState
+{
+	struct dsa_area *last_start_times_dsa;
+	struct dshash_table *last_start_times;
+	bool		on_commit_launcher_wakeup;
+} LauncherState;
 
 /*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
@@ -709,6 +723,13 @@ typedef struct MySession
 	 * pg_get_viewdef helpers (utils/adt/ruleutils.c).
 	 */
 	RuleUtilsState ruleutils_state;
+
+	/*
+	 * Logical-replication launcher state: the DSA-backed table of
+	 * per-subscription last-start times and the on-commit wakeup flag
+	 * (replication/logical/launcher.c).
+	 */
+	LauncherState launcher_state;
 } MySession;
 
 /*
