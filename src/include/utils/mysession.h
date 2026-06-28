@@ -276,6 +276,20 @@ typedef struct AsyncState
 } AsyncState;
 
 /*
+ * State for an in-progress base backup: recovery-mode flag, checksum-failure
+ * count, and the no-verify-checksums flag (backup/basebackup.c).
+ */
+typedef struct BasebackupState
+{
+	/* Was the backup currently in-progress initiated in recovery mode? */
+	bool		backup_started_in_recovery;
+	/* Total number of checksum failures during base backup. */
+	long long int total_checksum_failures;
+	/* Do not verify checksums. */
+	bool		noverify_checksums;
+} BasebackupState;
+
+/*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
  * backend (storage/sync/sync.c).  The CycleCtr counters are declared as
  * uint16 here (the file-local CycleCtr typedef stays in sync.c).
@@ -633,6 +647,13 @@ typedef struct MySession
 	 * (commands/async.c).
 	 */
 	AsyncState async_state;
+
+	/*
+	 * State for an in-progress base backup: recovery-mode flag,
+	 * checksum-failure count, and the no-verify-checksums flag
+	 * (backup/basebackup.c).
+	 */
+	BasebackupState basebackup_state;
 } MySession;
 
 /*
