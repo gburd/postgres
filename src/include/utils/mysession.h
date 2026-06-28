@@ -77,6 +77,7 @@ struct GlobalTransactionData;	/* access/twophase.h: GlobalTransaction */
 struct _SPI_plan;				/* executor/spi.h: SPIPlanPtr */
 struct dsa_area;				/* utils/dsa.h */
 struct dshash_table;			/* lib/dshash.h */
+struct ParallelApplyWorkerInfo;	/* replication/worker_internal.h */
 
 /*
  * Saved instrumentation counters captured across a nested executor run
@@ -337,6 +338,19 @@ typedef struct LauncherState
 	struct dshash_table *last_start_times;
 	bool		on_commit_launcher_wakeup;
 } LauncherState;
+
+/*
+ * Parallel-apply leader state for logical replication: the in-progress
+ * transaction hash, the worker pool, the current stream-apply worker, and the
+ * subtransaction list (replication/logical/applyparallelworker.c).
+ */
+typedef struct ApplyParallelState
+{
+	struct HTAB *ParallelApplyTxnHash;
+	struct List *ParallelApplyWorkerPool;
+	struct ParallelApplyWorkerInfo *stream_apply_worker;
+	struct List *subxactlist;
+} ApplyParallelState;
 
 /*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
@@ -730,6 +744,13 @@ typedef struct MySession
 	 * (replication/logical/launcher.c).
 	 */
 	LauncherState launcher_state;
+
+	/*
+	 * Parallel-apply leader state for logical replication: the in-progress
+	 * transaction hash, the worker pool, the current stream-apply worker, and
+	 * the subtransaction list (replication/logical/applyparallelworker.c).
+	 */
+	ApplyParallelState apply_parallel_state;
 } MySession;
 
 /*

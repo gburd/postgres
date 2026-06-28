@@ -172,6 +172,7 @@
 #include "tcop/tcopprot.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
+#include "utils/mysession.h"
 #include "utils/syscache.h"
 #include "utils/wait_event.h"
 
@@ -246,21 +247,6 @@ session_local ParallelApplyWorkerShared *MyParallelShared = NULL;
  */
 
 /* A list to maintain subtransactions, if any. */
-
-typedef struct ApplyParallelState
-{
-	HTAB	   *ParallelApplyTxnHash;
-	List	   *ParallelApplyWorkerPool;
-	ParallelApplyWorkerInfo *stream_apply_worker;
-	List	   *subxactlist;
-} ApplyParallelState;
-
-static session_local ApplyParallelState apply_parallel_state = {
-	.ParallelApplyTxnHash = NULL,
-	.ParallelApplyWorkerPool = NIL,
-	.stream_apply_worker = NULL,
-	.subxactlist = NIL,
-};
 
 static void pa_free_worker_info(ParallelApplyWorkerInfo *winfo);
 static ParallelTransState pa_get_xact_state(ParallelApplyWorkerShared *wshared);
@@ -417,7 +403,7 @@ pa_launch_parallel_worker(void)
 	ListCell   *lc;
 
 	/* Try to get an available parallel apply worker from the worker pool. */
-	foreach(lc, apply_parallel_state.ParallelApplyWorkerPool)
+	foreach(lc, MySessionData.apply_parallel_state.ParallelApplyWorkerPool)
 	{
 		winfo = (ParallelApplyWorkerInfo *) lfirst(lc);
 
@@ -454,7 +440,7 @@ pa_launch_parallel_worker(void)
 
 	if (launched)
 	{
-		apply_parallel_state.ParallelApplyWorkerPool = lappend(apply_parallel_state.ParallelApplyWorkerPool, winfo);
+		MySessionData.apply_parallel_state.ParallelApplyWorkerPool = lappend(MySessionData.apply_parallel_state.ParallelApplyWorkerPool, winfo);
 	}
 	else
 	{
@@ -490,7 +476,7 @@ pa_allocate_worker(TransactionId xid)
 		return;
 
 	/* First time through, initialize parallel apply worker state hashtable. */
-	if (!apply_parallel_state.ParallelApplyTxnHash)
+	if (!MySessionData.apply_parallel_state.ParallelApplyTxnHash)
 	{
 		HASHCTL		ctl;
 
@@ -499,13 +485,13 @@ pa_allocate_worker(TransactionId xid)
 		ctl.entrysize = sizeof(ParallelApplyWorkerEntry);
 		ctl.hcxt = ApplyContext;
 
-		apply_parallel_state.ParallelApplyTxnHash = hash_create("logical replication parallel apply workers hash",
+		MySessionData.apply_parallel_state.ParallelApplyTxnHash = hash_create("logical replication parallel apply workers hash",
 										   16, &ctl,
 										   HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	}
 
 	/* Create an entry for the requested transaction. */
-	entry = hash_search(apply_parallel_state.ParallelApplyTxnHash, &xid, HASH_ENTER, &found);
+	entry = hash_search(MySessionData.apply_parallel_state.ParallelApplyTxnHash, &xid, HASH_ENTER, &found);
 	if (found)
 		elog(ERROR, "hash table corrupted");
 
@@ -532,15 +518,15 @@ pa_find_worker(TransactionId xid)
 	if (!TransactionIdIsValid(xid))
 		return NULL;
 
-	if (!apply_parallel_state.ParallelApplyTxnHash)
+	if (!MySessionData.apply_parallel_state.ParallelApplyTxnHash)
 		return NULL;
 
 	/* Return the cached parallel apply worker if valid. */
-	if (apply_parallel_state.stream_apply_worker)
-		return apply_parallel_state.stream_apply_worker;
+	if (MySessionData.apply_parallel_state.stream_apply_worker)
+		return MySessionData.apply_parallel_state.stream_apply_worker;
 
 	/* Find an entry for the requested transaction. */
-	entry = hash_search(apply_parallel_state.ParallelApplyTxnHash, &xid, HASH_FIND, &found);
+	entry = hash_search(MySessionData.apply_parallel_state.ParallelApplyTxnHash, &xid, HASH_FIND, &found);
 	if (found)
 	{
 		/* The worker must not have exited.  */
@@ -568,7 +554,7 @@ pa_free_worker(ParallelApplyWorkerInfo *winfo)
 	Assert(winfo->in_use);
 	Assert(pa_get_xact_state(winfo->shared) == PARALLEL_TRANS_FINISHED);
 
-	if (!hash_search(apply_parallel_state.ParallelApplyTxnHash, &winfo->shared->xid, HASH_REMOVE, NULL))
+	if (!hash_search(MySessionData.apply_parallel_state.ParallelApplyTxnHash, &winfo->shared->xid, HASH_REMOVE, NULL))
 		elog(ERROR, "hash table corrupted");
 
 	/*
@@ -583,7 +569,7 @@ pa_free_worker(ParallelApplyWorkerInfo *winfo)
 	 * the spurious message, we stop the worker.
 	 */
 	if (winfo->serialize_changes ||
-		list_length(apply_parallel_state.ParallelApplyWorkerPool) >
+		list_length(MySessionData.apply_parallel_state.ParallelApplyWorkerPool) >
 		(GetGUCInt(GUC_max_parallel_apply_workers_per_subscription) / 2))
 	{
 		logicalrep_pa_worker_stop(winfo);
@@ -619,7 +605,7 @@ pa_free_worker_info(ParallelApplyWorkerInfo *winfo)
 		dsm_detach(winfo->dsm_seg);
 
 	/* Remove from the worker pool. */
-	apply_parallel_state.ParallelApplyWorkerPool = list_delete_ptr(apply_parallel_state.ParallelApplyWorkerPool, winfo);
+	MySessionData.apply_parallel_state.ParallelApplyWorkerPool = list_delete_ptr(MySessionData.apply_parallel_state.ParallelApplyWorkerPool, winfo);
 
 	pfree(winfo);
 }
@@ -632,7 +618,7 @@ pa_detach_all_error_mq(void)
 {
 	ListCell   *lc;
 
-	foreach(lc, apply_parallel_state.ParallelApplyWorkerPool)
+	foreach(lc, MySessionData.apply_parallel_state.ParallelApplyWorkerPool)
 	{
 		ParallelApplyWorkerInfo *winfo = (ParallelApplyWorkerInfo *) lfirst(lc);
 
@@ -1099,7 +1085,7 @@ ProcessParallelApplyMessages(void)
 
 	oldcontext = MemoryContextSwitchTo(hpam_context);
 
-	foreach(lc, apply_parallel_state.ParallelApplyWorkerPool)
+	foreach(lc, MySessionData.apply_parallel_state.ParallelApplyWorkerPool)
 	{
 		shm_mq_result res;
 		Size		nbytes;
@@ -1340,7 +1326,7 @@ pa_get_xact_state(ParallelApplyWorkerShared *wshared)
 void
 pa_set_stream_apply_worker(ParallelApplyWorkerInfo *winfo)
 {
-	apply_parallel_state.stream_apply_worker = winfo;
+	MySessionData.apply_parallel_state.stream_apply_worker = winfo;
 }
 
 /*
@@ -1369,7 +1355,7 @@ void
 pa_start_subtrans(TransactionId current_xid, TransactionId top_xid)
 {
 	if (current_xid != top_xid &&
-		!list_member_xid(apply_parallel_state.subxactlist, current_xid))
+		!list_member_xid(MySessionData.apply_parallel_state.subxactlist, current_xid))
 	{
 		MemoryContext oldctx;
 		char		spname[NAMEDATALEN];
@@ -1399,7 +1385,7 @@ pa_start_subtrans(TransactionId current_xid, TransactionId top_xid)
 		CommitTransactionCommand();
 
 		oldctx = MemoryContextSwitchTo(TopTransactionContext);
-		apply_parallel_state.subxactlist = lappend_xid(apply_parallel_state.subxactlist, current_xid);
+		MySessionData.apply_parallel_state.subxactlist = lappend_xid(MySessionData.apply_parallel_state.subxactlist, current_xid);
 		MemoryContextSwitchTo(oldctx);
 	}
 }
@@ -1412,7 +1398,7 @@ pa_reset_subtrans(void)
 	 * We don't need to free this explicitly as the allocated memory will be
 	 * freed at the transaction end.
 	 */
-	apply_parallel_state.subxactlist = NIL;
+	MySessionData.apply_parallel_state.subxactlist = NIL;
 }
 
 /*
@@ -1434,7 +1420,7 @@ pa_stream_abort(LogicalRepStreamAbortData *abort_data)
 
 	/*
 	 * If the two XIDs are the same, it's in fact abort of toplevel xact, so
-	 * just free the apply_parallel_state.subxactlist.
+	 * just free the MySessionData.apply_parallel_state.subxactlist.
 	 */
 	if (subxid == xid)
 	{
@@ -1475,21 +1461,21 @@ pa_stream_abort(LogicalRepStreamAbortData *abort_data)
 		elog(DEBUG1, "rolling back to savepoint %s in logical replication parallel apply worker", spname);
 
 		/*
-		 * Search the apply_parallel_state.subxactlist, determine the offset tracked for the
+		 * Search the MySessionData.apply_parallel_state.subxactlist, determine the offset tracked for the
 		 * subxact, and truncate the list.
 		 *
 		 * Note that for an empty sub-transaction we won't find the subxid
 		 * here.
 		 */
-		for (i = list_length(apply_parallel_state.subxactlist) - 1; i >= 0; i--)
+		for (i = list_length(MySessionData.apply_parallel_state.subxactlist) - 1; i >= 0; i--)
 		{
-			TransactionId xid_tmp = lfirst_xid(list_nth_cell(apply_parallel_state.subxactlist, i));
+			TransactionId xid_tmp = lfirst_xid(list_nth_cell(MySessionData.apply_parallel_state.subxactlist, i));
 
 			if (xid_tmp == subxid)
 			{
 				RollbackToSavepoint(spname);
 				CommitTransactionCommand();
-				apply_parallel_state.subxactlist = list_truncate(apply_parallel_state.subxactlist, i);
+				MySessionData.apply_parallel_state.subxactlist = list_truncate(MySessionData.apply_parallel_state.subxactlist, i);
 				break;
 			}
 		}
