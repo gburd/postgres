@@ -70,6 +70,7 @@
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/mysession.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
@@ -300,44 +301,6 @@ typedef struct RecordCacheArrayEntry
  * Note: RelIdToTypeIdCacheHash is deliberately NOT part of this struct; it is
  * not thread-local (no session_local annotation) and keeps its own storage.
  */
-typedef struct TypeCacheState
-{
-	/* The main type cache hashtable searched by lookup_type_cache */
-	HTAB	   *TypeCacheHash;
-
-	/* List of type cache entries for domain types */
-	TypeCacheEntry *firstDomainTypeEntry;
-
-	/* Stack of domain OIDs whose constraints are being computed */
-	Oid		   *in_progress_list;
-	int			in_progress_list_len;
-	int			in_progress_list_maxlen;
-
-	/* hashtable for recognizing registered record types */
-	HTAB	   *RecordCacheHash;
-
-	/* array of info about registered record types, indexed by assigned typmod */
-	RecordCacheArrayEntry *RecordCacheArray;
-	int32		RecordCacheArrayLen;	/* allocated length of above array */
-	int32		NextRecordTypmod;	/* number of entries used */
-
-	/*
-	 * Process-wide counter for generating unique tupledesc identifiers.
-	 * Zero and one (INVALID_TUPLEDESC_IDENTIFIER) aren't allowed to be chosen
-	 * as identifiers, so we start the counter at INVALID_TUPLEDESC_IDENTIFIER.
-	 */
-	uint64		tupledesc_id_counter;
-} TypeCacheState;
-
-static session_local TypeCacheState typecache_state = {
-	.TypeCacheHash = NULL,
-	.firstDomainTypeEntry = NULL,
-	.RecordCacheHash = NULL,
-	.RecordCacheArray = NULL,
-	.RecordCacheArrayLen = 0,
-	.NextRecordTypmod = 0,
-	.tupledesc_id_counter = INVALID_TUPLEDESC_IDENTIFIER,
-};
 
 static void load_typcache_tupdesc(TypeCacheEntry *typentry);
 static void load_rangetype_info(TypeCacheEntry *typentry);
@@ -419,7 +382,7 @@ lookup_type_cache(Oid type_id, int flags)
 	bool		found;
 	int			in_progress_offset;
 
-	if (typecache_state.TypeCacheHash == NULL)
+	if (MySessionData.typecache_state.TypeCacheHash == NULL)
 	{
 		/* First time through: initialize the hash table */
 		HASHCTL		ctl;
@@ -435,7 +398,7 @@ lookup_type_cache(Oid type_id, int flags)
 		 */
 		ctl.hash = type_cache_syshash;
 
-		typecache_state.TypeCacheHash = hash_create("Type information cache", 64,
+		MySessionData.typecache_state.TypeCacheHash = hash_create("Type information cache", 64,
 									&ctl, HASH_ELEM | HASH_FUNCTION);
 
 		Assert(RelIdToTypeIdCacheHash == NULL);
@@ -459,29 +422,29 @@ lookup_type_cache(Oid type_id, int flags)
 		 * reserve enough in_progress_list slots for many cases
 		 */
 		allocsize = 4;
-		typecache_state.in_progress_list =
+		MySessionData.typecache_state.in_progress_list =
 			MemoryContextAlloc(CacheMemoryContext,
-							   allocsize * sizeof(*typecache_state.in_progress_list));
-		typecache_state.in_progress_list_maxlen = allocsize;
+							   allocsize * sizeof(*MySessionData.typecache_state.in_progress_list));
+		MySessionData.typecache_state.in_progress_list_maxlen = allocsize;
 	}
 
-	Assert(typecache_state.TypeCacheHash != NULL && RelIdToTypeIdCacheHash != NULL);
+	Assert(MySessionData.typecache_state.TypeCacheHash != NULL && RelIdToTypeIdCacheHash != NULL);
 
 	/* Register to catch invalidation messages */
-	if (typecache_state.in_progress_list_len >= typecache_state.in_progress_list_maxlen)
+	if (MySessionData.typecache_state.in_progress_list_len >= MySessionData.typecache_state.in_progress_list_maxlen)
 	{
 		int			allocsize;
 
-		allocsize = typecache_state.in_progress_list_maxlen * 2;
-		typecache_state.in_progress_list = repalloc(typecache_state.in_progress_list,
-									allocsize * sizeof(*typecache_state.in_progress_list));
-		typecache_state.in_progress_list_maxlen = allocsize;
+		allocsize = MySessionData.typecache_state.in_progress_list_maxlen * 2;
+		MySessionData.typecache_state.in_progress_list = repalloc(MySessionData.typecache_state.in_progress_list,
+									allocsize * sizeof(*MySessionData.typecache_state.in_progress_list));
+		MySessionData.typecache_state.in_progress_list_maxlen = allocsize;
 	}
-	in_progress_offset = typecache_state.in_progress_list_len++;
-	typecache_state.in_progress_list[in_progress_offset] = type_id;
+	in_progress_offset = MySessionData.typecache_state.in_progress_list_len++;
+	MySessionData.typecache_state.in_progress_list[in_progress_offset] = type_id;
 
 	/* Try to look up an existing entry */
-	typentry = (TypeCacheEntry *) hash_search(typecache_state.TypeCacheHash,
+	typentry = (TypeCacheEntry *) hash_search(MySessionData.typecache_state.TypeCacheHash,
 											  &type_id,
 											  HASH_FIND, NULL);
 	if (typentry == NULL)
@@ -509,7 +472,7 @@ lookup_type_cache(Oid type_id, int flags)
 							NameStr(typtup->typname))));
 
 		/* Now make the typcache entry */
-		typentry = (TypeCacheEntry *) hash_search(typecache_state.TypeCacheHash,
+		typentry = (TypeCacheEntry *) hash_search(MySessionData.typecache_state.TypeCacheHash,
 												  &type_id,
 												  HASH_ENTER, &found);
 		Assert(!found);			/* it wasn't there a moment ago */
@@ -518,7 +481,7 @@ lookup_type_cache(Oid type_id, int flags)
 
 		/* These fields can never change, by definition */
 		typentry->type_id = type_id;
-		typentry->type_id_hash = get_hash_value(typecache_state.TypeCacheHash, &type_id);
+		typentry->type_id_hash = get_hash_value(MySessionData.typecache_state.TypeCacheHash, &type_id);
 
 		/* Keep this part in sync with the code below */
 		typentry->typlen = typtup->typlen;
@@ -536,8 +499,8 @@ lookup_type_cache(Oid type_id, int flags)
 		/* If it's a domain, immediately thread it into the domain cache list */
 		if (typentry->typtype == TYPTYPE_DOMAIN)
 		{
-			typentry->nextDomain = typecache_state.firstDomainTypeEntry;
-			typecache_state.firstDomainTypeEntry = typentry;
+			typentry->nextDomain = MySessionData.typecache_state.firstDomainTypeEntry;
+			MySessionData.typecache_state.firstDomainTypeEntry = typentry;
 		}
 
 		ReleaseSysCache(tp);
@@ -984,8 +947,8 @@ lookup_type_cache(Oid type_id, int flags)
 
 	INJECTION_POINT("typecache-before-rel-type-cache-insert", NULL);
 
-	Assert(in_progress_offset + 1 == typecache_state.in_progress_list_len);
-	typecache_state.in_progress_list_len--;
+	Assert(in_progress_offset + 1 == MySessionData.typecache_state.in_progress_list_len);
+	MySessionData.typecache_state.in_progress_list_len--;
 
 	insert_rel_type_cache_if_needed(typentry);
 
@@ -1021,7 +984,7 @@ load_typcache_tupdesc(TypeCacheEntry *typentry)
 	 * In future, we could take some pains to not change tupDesc_identifier if
 	 * the tupdesc didn't really change; but for now it's not worth it.
 	 */
-	typentry->tupDesc_identifier = ++typecache_state.tupledesc_id_counter;
+	typentry->tupDesc_identifier = ++MySessionData.typecache_state.tupledesc_id_counter;
 
 	relation_close(rel, AccessShareLock);
 }
@@ -1850,23 +1813,23 @@ cache_multirange_element_properties(TypeCacheEntry *typentry)
 static void
 ensure_record_cache_typmod_slot_exists(int32 typmod)
 {
-	if (typecache_state.RecordCacheArray == NULL)
+	if (MySessionData.typecache_state.RecordCacheArray == NULL)
 	{
-		typecache_state.RecordCacheArray = (RecordCacheArrayEntry *)
+		MySessionData.typecache_state.RecordCacheArray = (RecordCacheArrayEntry *)
 			MemoryContextAllocZero(CacheMemoryContext,
 								   64 * sizeof(RecordCacheArrayEntry));
-		typecache_state.RecordCacheArrayLen = 64;
+		MySessionData.typecache_state.RecordCacheArrayLen = 64;
 	}
 
-	if (typmod >= typecache_state.RecordCacheArrayLen)
+	if (typmod >= MySessionData.typecache_state.RecordCacheArrayLen)
 	{
 		int32		newlen = pg_nextpower2_32(typmod + 1);
 
-		typecache_state.RecordCacheArray = repalloc0_array(typecache_state.RecordCacheArray,
+		MySessionData.typecache_state.RecordCacheArray = repalloc0_array(MySessionData.typecache_state.RecordCacheArray,
 										   RecordCacheArrayEntry,
-										   typecache_state.RecordCacheArrayLen,
+										   MySessionData.typecache_state.RecordCacheArrayLen,
 										   newlen);
-		typecache_state.RecordCacheArrayLen = newlen;
+		MySessionData.typecache_state.RecordCacheArrayLen = newlen;
 	}
 }
 
@@ -1902,9 +1865,9 @@ lookup_rowtype_tupdesc_internal(Oid type_id, int32 typmod, bool noError)
 		if (typmod >= 0)
 		{
 			/* It is already in our local cache? */
-			if (typmod < typecache_state.RecordCacheArrayLen &&
-				typecache_state.RecordCacheArray[typmod].tupdesc != NULL)
-				return typecache_state.RecordCacheArray[typmod].tupdesc;
+			if (typmod < MySessionData.typecache_state.RecordCacheArrayLen &&
+				MySessionData.typecache_state.RecordCacheArray[typmod].tupdesc != NULL)
+				return MySessionData.typecache_state.RecordCacheArray[typmod].tupdesc;
 
 			/* Are we attached to a shared record typmod registry? */
 			if (CurrentSession->shared_typmod_registry != NULL)
@@ -1930,19 +1893,19 @@ lookup_rowtype_tupdesc_internal(Oid type_id, int32 typmod, bool noError)
 					 * Our local array can now point directly to the TupleDesc
 					 * in shared memory, which is non-reference-counted.
 					 */
-					typecache_state.RecordCacheArray[typmod].tupdesc = tupdesc;
+					MySessionData.typecache_state.RecordCacheArray[typmod].tupdesc = tupdesc;
 					Assert(tupdesc->tdrefcount == -1);
 
 					/*
 					 * We don't share tupdesc identifiers across processes, so
 					 * assign one locally.
 					 */
-					typecache_state.RecordCacheArray[typmod].id = ++typecache_state.tupledesc_id_counter;
+					MySessionData.typecache_state.RecordCacheArray[typmod].id = ++MySessionData.typecache_state.tupledesc_id_counter;
 
 					dshash_release_lock(CurrentSession->shared_typmod_table,
 										entry);
 
-					return typecache_state.RecordCacheArray[typmod].tupdesc;
+					return MySessionData.typecache_state.RecordCacheArray[typmod].tupdesc;
 				}
 			}
 		}
@@ -2100,7 +2063,7 @@ assign_record_type_typmod(TupleDesc tupDesc)
 
 	Assert(tupDesc->tdtypeid == RECORDOID);
 
-	if (typecache_state.RecordCacheHash == NULL)
+	if (MySessionData.typecache_state.RecordCacheHash == NULL)
 	{
 		/* First time through: initialize the hash table */
 		HASHCTL		ctl;
@@ -2109,7 +2072,7 @@ assign_record_type_typmod(TupleDesc tupDesc)
 		ctl.entrysize = sizeof(RecordCacheEntry);
 		ctl.hash = record_type_typmod_hash;
 		ctl.match = record_type_typmod_compare;
-		typecache_state.RecordCacheHash = hash_create("Record information cache", 64,
+		MySessionData.typecache_state.RecordCacheHash = hash_create("Record information cache", 64,
 									  &ctl,
 									  HASH_ELEM | HASH_FUNCTION | HASH_COMPARE);
 
@@ -2123,7 +2086,7 @@ assign_record_type_typmod(TupleDesc tupDesc)
 	 * HASH_ENTER yet, because if it's missing, we need to make sure that all
 	 * the allocations succeed before we create the new entry.
 	 */
-	recentry = (RecordCacheEntry *) hash_search(typecache_state.RecordCacheHash,
+	recentry = (RecordCacheEntry *) hash_search(MySessionData.typecache_state.RecordCacheHash,
 												&tupDesc,
 												HASH_FIND, &found);
 	if (found && recentry->tupdesc != NULL)
@@ -2143,25 +2106,25 @@ assign_record_type_typmod(TupleDesc tupDesc)
 		 * Make sure we have room before we CreateTupleDescCopy() or advance
 		 * NextRecordTypmod.
 		 */
-		ensure_record_cache_typmod_slot_exists(typecache_state.NextRecordTypmod);
+		ensure_record_cache_typmod_slot_exists(MySessionData.typecache_state.NextRecordTypmod);
 
 		/* Reference-counted local cache only. */
 		entDesc = CreateTupleDescCopy(tupDesc);
 		entDesc->tdrefcount = 1;
-		entDesc->tdtypmod = typecache_state.NextRecordTypmod++;
+		entDesc->tdtypmod = MySessionData.typecache_state.NextRecordTypmod++;
 	}
 	else
 	{
 		ensure_record_cache_typmod_slot_exists(entDesc->tdtypmod);
 	}
 
-	typecache_state.RecordCacheArray[entDesc->tdtypmod].tupdesc = entDesc;
+	MySessionData.typecache_state.RecordCacheArray[entDesc->tdtypmod].tupdesc = entDesc;
 
 	/* Assign a unique tupdesc identifier, too. */
-	typecache_state.RecordCacheArray[entDesc->tdtypmod].id = ++typecache_state.tupledesc_id_counter;
+	MySessionData.typecache_state.RecordCacheArray[entDesc->tdtypmod].id = ++MySessionData.typecache_state.tupledesc_id_counter;
 
 	/* Fully initialized; create the hash table entry */
-	recentry = (RecordCacheEntry *) hash_search(typecache_state.RecordCacheHash,
+	recentry = (RecordCacheEntry *) hash_search(MySessionData.typecache_state.RecordCacheHash,
 												&tupDesc,
 												HASH_ENTER, NULL);
 	recentry->tupdesc = entDesc;
@@ -2206,15 +2169,15 @@ assign_record_type_identifier(Oid type_id, int32 typmod)
 		/*
 		 * It's a transient record type, so look in our record-type table.
 		 */
-		if (typmod >= 0 && typmod < typecache_state.RecordCacheArrayLen &&
-			typecache_state.RecordCacheArray[typmod].tupdesc != NULL)
+		if (typmod >= 0 && typmod < MySessionData.typecache_state.RecordCacheArrayLen &&
+			MySessionData.typecache_state.RecordCacheArray[typmod].tupdesc != NULL)
 		{
-			Assert(typecache_state.RecordCacheArray[typmod].id != 0);
-			return typecache_state.RecordCacheArray[typmod].id;
+			Assert(MySessionData.typecache_state.RecordCacheArray[typmod].id != 0);
+			return MySessionData.typecache_state.RecordCacheArray[typmod].id;
 		}
 
 		/* For anonymous or unrecognized record type, generate a new ID */
-		return ++typecache_state.tupledesc_id_counter;
+		return ++MySessionData.typecache_state.tupledesc_id_counter;
 	}
 }
 
@@ -2275,13 +2238,13 @@ SharedRecordTypmodRegistryInit(SharedRecordTypmodRegistry *registry,
 	/* Initialize the SharedRecordTypmodRegistry. */
 	registry->record_table_handle = dshash_get_hash_table_handle(record_table);
 	registry->typmod_table_handle = dshash_get_hash_table_handle(typmod_table);
-	pg_atomic_init_u32(&registry->next_typmod, typecache_state.NextRecordTypmod);
+	pg_atomic_init_u32(&registry->next_typmod, MySessionData.typecache_state.NextRecordTypmod);
 
 	/*
 	 * Copy all entries from this backend's private registry into the shared
 	 * registry.
 	 */
-	for (typmod = 0; typmod < typecache_state.NextRecordTypmod; ++typmod)
+	for (typmod = 0; typmod < MySessionData.typecache_state.NextRecordTypmod; ++typmod)
 	{
 		SharedTypmodTableEntry *typmod_table_entry;
 		SharedRecordTableEntry *record_table_entry;
@@ -2290,7 +2253,7 @@ SharedRecordTypmodRegistryInit(SharedRecordTypmodRegistry *registry,
 		TupleDesc	tupdesc;
 		bool		found;
 
-		tupdesc = typecache_state.RecordCacheArray[typmod].tupdesc;
+		tupdesc = MySessionData.typecache_state.RecordCacheArray[typmod].tupdesc;
 		if (tupdesc == NULL)
 			continue;
 
@@ -2371,7 +2334,7 @@ SharedRecordTypmodRegistryAttach(SharedRecordTypmodRegistry *registry)
 	 * we can't be very sure that record-typmod-related state hasn't escaped
 	 * to anywhere else in the process.
 	 */
-	Assert(typecache_state.NextRecordTypmod == 0);
+	Assert(MySessionData.typecache_state.NextRecordTypmod == 0);
 
 	old_context = MemoryContextSwitchTo(TopMemoryContext);
 
@@ -2491,7 +2454,7 @@ TypeCacheRelCallback(Datum arg, Oid relid)
 
 		if (relentry != NULL)
 		{
-			typentry = (TypeCacheEntry *) hash_search(typecache_state.TypeCacheHash,
+			typentry = (TypeCacheEntry *) hash_search(MySessionData.typecache_state.TypeCacheHash,
 													  &relentry->composite_typid,
 													  HASH_FIND, NULL);
 
@@ -2510,7 +2473,7 @@ TypeCacheRelCallback(Datum arg, Oid relid)
 		 * Domain types are created manually, unlike composite types which are
 		 * automatically created for every temporary table.
 		 */
-		for (typentry = typecache_state.firstDomainTypeEntry;
+		for (typentry = MySessionData.typecache_state.firstDomainTypeEntry;
 			 typentry != NULL;
 			 typentry = typentry->nextDomain)
 		{
@@ -2533,7 +2496,7 @@ TypeCacheRelCallback(Datum arg, Oid relid)
 		 * types in cache. Also, we should reset flags for domain types, and
 		 * we loop over all entries in hash, so, do it in a single scan.
 		 */
-		hash_seq_init(&status, typecache_state.TypeCacheHash);
+		hash_seq_init(&status, MySessionData.typecache_state.TypeCacheHash);
 		while ((typentry = (TypeCacheEntry *) hash_seq_search(&status)) != NULL)
 		{
 			if (typentry->typtype == TYPTYPE_COMPOSITE)
@@ -2578,9 +2541,9 @@ TypeCacheTypCallback(Datum arg, SysCacheIdentifier cacheid, uint32 hashvalue)
 	 * InvalidateSystemCachesExtended().
 	 */
 	if (hashvalue == 0)
-		hash_seq_init(&status, typecache_state.TypeCacheHash);
+		hash_seq_init(&status, MySessionData.typecache_state.TypeCacheHash);
 	else
-		hash_seq_init_with_hash_value(&status, typecache_state.TypeCacheHash, hashvalue);
+		hash_seq_init_with_hash_value(&status, MySessionData.typecache_state.TypeCacheHash, hashvalue);
 
 	while ((typentry = (TypeCacheEntry *) hash_seq_search(&status)) != NULL)
 	{
@@ -2628,7 +2591,7 @@ TypeCacheOpcCallback(Datum arg, SysCacheIdentifier cacheid, uint32 hashvalue)
 	TypeCacheEntry *typentry;
 
 	/* TypeCacheHash must exist, else this callback wouldn't be registered */
-	hash_seq_init(&status, typecache_state.TypeCacheHash);
+	hash_seq_init(&status, MySessionData.typecache_state.TypeCacheHash);
 	while ((typentry = (TypeCacheEntry *) hash_seq_search(&status)) != NULL)
 	{
 		bool		hadOpclass = (typentry->flags & TCFLAGS_OPERATOR_FLAGS);
@@ -2670,7 +2633,7 @@ TypeCacheConstrCallback(Datum arg, SysCacheIdentifier cacheid, uint32 hashvalue)
 	 * Instead we thread all the domain-type entries together so that we can
 	 * visit them cheaply.
 	 */
-	for (typentry = typecache_state.firstDomainTypeEntry;
+	for (typentry = MySessionData.typecache_state.firstDomainTypeEntry;
 		 typentry != NULL;
 		 typentry = typentry->nextDomain)
 	{
@@ -3164,9 +3127,9 @@ delete_rel_type_cache_if_needed(TypeCacheEntry *typentry)
 	int			i;
 	bool		is_in_progress = false;
 
-	for (i = 0; i < typecache_state.in_progress_list_len; i++)
+	for (i = 0; i < MySessionData.typecache_state.in_progress_list_len; i++)
 	{
-		if (typecache_state.in_progress_list[i] == typentry->type_id)
+		if (MySessionData.typecache_state.in_progress_list[i] == typentry->type_id)
 		{
 			is_in_progress = true;
 			break;
@@ -3226,18 +3189,18 @@ finalize_in_progress_typentries(void)
 {
 	int			i;
 
-	for (i = 0; i < typecache_state.in_progress_list_len; i++)
+	for (i = 0; i < MySessionData.typecache_state.in_progress_list_len; i++)
 	{
 		TypeCacheEntry *typentry;
 
-		typentry = (TypeCacheEntry *) hash_search(typecache_state.TypeCacheHash,
-												  &typecache_state.in_progress_list[i],
+		typentry = (TypeCacheEntry *) hash_search(MySessionData.typecache_state.TypeCacheHash,
+												  &MySessionData.typecache_state.in_progress_list[i],
 												  HASH_FIND, NULL);
 		if (typentry)
 			insert_rel_type_cache_if_needed(typentry);
 	}
 
-	typecache_state.in_progress_list_len = 0;
+	MySessionData.typecache_state.in_progress_list_len = 0;
 }
 
 void

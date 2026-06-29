@@ -54,6 +54,10 @@ session_local MySession MySessionData =
 		/* default max_stack_depth (100 kB) until the GUC is applied */
 		.max_stack_depth_bytes = 100 * (ssize_t) 1024,
 	},
+	.typecache_state = {
+		/* INVALID_TUPLEDESC_IDENTIFIER (utils/typcache.h); 0 and 1 are reserved */
+		.tupledesc_id_counter = ((uint64) 1),
+	},
 };
 
 /*

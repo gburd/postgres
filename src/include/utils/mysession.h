@@ -64,6 +64,8 @@ struct StringInfoData;			/* lib/stringinfo.h: StringInfo */
 struct BackupState;				/* access/xlogbackup.h */
 struct collation_cache_hash;	/* utils/adt/pg_locale.c (simplehash) */
 struct SyncStandbySlotsConfigData;	/* replication/slot.c */
+struct TypeCacheEntry;			/* utils/typcache.h */
+struct RecordCacheArrayEntry;	/* utils/cache/typcache.c */
 struct ProcSignalSlot;			/* storage/ipc/procsignal.c */
 struct FixedParallelState;		/* access/transam/parallel.c */
 struct ReplicationState;		/* replication/logical/origin.c */
@@ -535,6 +537,27 @@ typedef struct StackDepthState
 	ssize_t		max_stack_depth_bytes;
 	char	   *stack_base_ptr;
 } StackDepthState;
+
+/*
+ * Type/record cache session state: the type-cache and record-cache hash
+ * tables, the in-progress domain-constraint stack, the record-cache array, and
+ * the per-session tupledesc-identifier counter (utils/cache/typcache.c).
+ * tupledesc_id_counter starts at INVALID_TUPLEDESC_IDENTIFIER (1) via the
+ * MySessionData designated initializer.
+ */
+typedef struct TypeCacheState
+{
+	struct HTAB *TypeCacheHash;
+	struct TypeCacheEntry *firstDomainTypeEntry;
+	Oid		   *in_progress_list;
+	int			in_progress_list_len;
+	int			in_progress_list_maxlen;
+	struct HTAB *RecordCacheHash;
+	struct RecordCacheArrayEntry *RecordCacheArray;
+	int32		RecordCacheArrayLen;
+	int32		NextRecordTypmod;
+	uint64		tupledesc_id_counter;
+} TypeCacheState;
 
 /*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
@@ -1015,6 +1038,13 @@ typedef struct MySession
 	 * designated initializer in globals.c.
 	 */
 	StackDepthState stack_depth_state;
+
+	/*
+	 * Type/record cache session state (utils/cache/typcache.c).
+	 * tupledesc_id_counter has a non-zero default (INVALID_TUPLEDESC_IDENTIFIER
+	 * = 1) set via the MySessionData designated initializer in globals.c.
+	 */
+	TypeCacheState typecache_state;
 } MySession;
 
 /*
