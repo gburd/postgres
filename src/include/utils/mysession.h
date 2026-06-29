@@ -496,6 +496,19 @@ typedef struct TransamState
 } TransamState;
 
 /*
+ * Synchronous-replication wait state for a backend: whether to announce the
+ * next takeover and the current sync-rep wait mode (replication/syncrep.c).
+ * NB: non-zero defaults (announce_next_takeover = true, SyncRepWaitMode =
+ * SYNC_REP_NO_WAIT) are set via the MySessionData designated initializer in
+ * globals.c.
+ */
+typedef struct SyncRepState
+{
+	bool		announce_next_takeover;
+	int			SyncRepWaitMode;
+} SyncRepState;
+
+/*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
  * backend (storage/sync/sync.c).  The CycleCtr counters are declared as
  * uint16 here (the file-local CycleCtr typedef stays in sync.c).
@@ -953,6 +966,13 @@ typedef struct MySession
 	 * (access/transam/transam.c).
 	 */
 	TransamState transam_state;
+
+	/*
+	 * Synchronous-replication wait state (replication/syncrep.c).  Non-zero
+	 * defaults are set via the MySessionData designated initializer in
+	 * globals.c.
+	 */
+	SyncRepState syncrep_state;
 } MySession;
 
 /*

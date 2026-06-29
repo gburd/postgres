@@ -23,6 +23,7 @@
 #include "libpq/pqcomm.h"
 #include "miscadmin.h"
 #include "postmaster/postmaster.h"
+#include "replication/syncrep.h"
 #include "storage/procnumber.h"
 #include "storage/procsignal.h"
 #include "utils/mysession.h"
@@ -35,7 +36,17 @@ session_local ProtocolVersion FrontendProtocol;
  * session_local state up into this struct incrementally; see
  * src/include/utils/mysession.h and docs/threading/F4_SESSION_STATE.md.
  */
-session_local MySession MySessionData;
+session_local MySession MySessionData =
+{
+	/*
+	 * Subsystems with non-zero per-session defaults set them here; all other
+	 * members are zero/NULL/false by default.
+	 */
+	.syncrep_state = {
+		.announce_next_takeover = true,
+		.SyncRepWaitMode = SYNC_REP_NO_WAIT,
+	},
+};
 
 /*
  * Interrupt machinery (storage/interrupt.h).  The CFI-handled pending-flag
