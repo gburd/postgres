@@ -46,6 +46,10 @@ session_local MySession MySessionData =
 		.announce_next_takeover = true,
 		.SyncRepWaitMode = SYNC_REP_NO_WAIT,
 	},
+	.standby_state = {
+		/* STANDBY_INITIAL_WAIT_US (file-local to storage/ipc/standby.c) */
+		.standbyWait_us = 1000,
+	},
 };
 
 /*

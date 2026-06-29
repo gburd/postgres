@@ -509,6 +509,23 @@ typedef struct SyncRepState
 } SyncRepState;
 
 /*
+ * Hot-standby recovery-conflict state: the recovery-lock hash tables, the
+ * timeout-handler flags, and the current standby wait interval
+ * (storage/ipc/standby.c).  standbyWait_us has a non-zero default
+ * (STANDBY_INITIAL_WAIT_US) set via the MySessionData designated initializer.
+ */
+typedef struct StandbyState
+{
+	struct HTAB *RecoveryLockHash;
+	struct HTAB *RecoveryLockXidHash;
+	/* Flags set by timeout handlers */
+	volatile sig_atomic_t got_standby_deadlock_timeout;
+	volatile sig_atomic_t got_standby_delay_timeout;
+	volatile sig_atomic_t got_standby_lock_timeout;
+	int			standbyWait_us;
+} StandbyState;
+
+/*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
  * backend (storage/sync/sync.c).  The CycleCtr counters are declared as
  * uint16 here (the file-local CycleCtr typedef stays in sync.c).
@@ -973,6 +990,13 @@ typedef struct MySession
 	 * globals.c.
 	 */
 	SyncRepState syncrep_state;
+
+	/*
+	 * Hot-standby recovery-conflict state (storage/ipc/standby.c).
+	 * standbyWait_us has a non-zero default set via the MySessionData
+	 * designated initializer in globals.c.
+	 */
+	StandbyState standby_state;
 } MySession;
 
 /*
