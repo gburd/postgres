@@ -20,26 +20,12 @@
 
 #include "miscadmin.h"
 #include "utils/guc_hooks.h"
+#include "utils/mysession.h"
 
 
 /* GUC variable for maximum stack depth (measured in kilobytes) */
 session_guc int			max_stack_depth = 100;
 
-typedef struct StackDepthState
-{
-	/* max_stack_depth converted to bytes for speed of checking */
-	ssize_t		max_stack_depth_bytes;
-	/*
-	 * Stack base pointer -- initialized by set_stack_base(), which should be
-	 * called from main().
-	 */
-	char	   *stack_base_ptr;
-} StackDepthState;
-
-static session_local StackDepthState stack_depth_state = {
-	.max_stack_depth_bytes = 100 * (ssize_t) 1024,
-	.stack_base_ptr = NULL,
-};
 
 
 /*
@@ -55,7 +41,7 @@ set_stack_base(void)
 #endif
 	pg_stack_base_t old;
 
-	old = stack_depth_state.stack_base_ptr;
+	old = MySessionData.stack_depth_state.stack_base_ptr;
 
 	/*
 	 * Set up reference point for stack depth checking.  On recent gcc we use
@@ -63,9 +49,9 @@ set_stack_base(void)
 	 * variable's address in a long-lived variable.
 	 */
 #ifdef HAVE__BUILTIN_FRAME_ADDRESS
-	stack_depth_state.stack_base_ptr = __builtin_frame_address(0);
+	MySessionData.stack_depth_state.stack_base_ptr = __builtin_frame_address(0);
 #else
-	stack_depth_state.stack_base_ptr = &stack_base;
+	MySessionData.stack_depth_state.stack_base_ptr = &stack_base;
 #endif
 
 	return old;
@@ -83,7 +69,7 @@ set_stack_base(void)
 void
 restore_stack_base(pg_stack_base_t base)
 {
-	stack_depth_state.stack_base_ptr = base;
+	MySessionData.stack_depth_state.stack_base_ptr = base;
 }
 
 
@@ -121,7 +107,7 @@ stack_is_too_deep(void)
 	/*
 	 * Compute distance from reference point to my local variables
 	 */
-	stack_depth = (ssize_t) (stack_depth_state.stack_base_ptr - &stack_top_loc);
+	stack_depth = (ssize_t) (MySessionData.stack_depth_state.stack_base_ptr - &stack_top_loc);
 
 	/*
 	 * Take abs value, since stacks grow up on some machines, down on others
@@ -132,12 +118,12 @@ stack_is_too_deep(void)
 	/*
 	 * Trouble?
 	 *
-	 * The test on stack_depth_state.stack_base_ptr prevents us from erroring out if called
+	 * The test on MySessionData.stack_depth_state.stack_base_ptr prevents us from erroring out if called
 	 * before that's been set.  Logically it should be done first, but putting
 	 * it last avoids wasting cycles during normal cases.
 	 */
-	if (stack_depth > stack_depth_state.max_stack_depth_bytes &&
-		stack_depth_state.stack_base_ptr != NULL)
+	if (stack_depth > MySessionData.stack_depth_state.max_stack_depth_bytes &&
+		MySessionData.stack_depth_state.stack_base_ptr != NULL)
 		return true;
 
 	return false;
@@ -167,7 +153,7 @@ assign_max_stack_depth(int newval, void *extra)
 {
 	ssize_t		newval_bytes = newval * (ssize_t) 1024;
 
-	stack_depth_state.max_stack_depth_bytes = newval_bytes;
+	MySessionData.stack_depth_state.max_stack_depth_bytes = newval_bytes;
 }
 
 /*

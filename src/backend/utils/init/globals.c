@@ -50,6 +50,10 @@ session_local MySession MySessionData =
 		/* STANDBY_INITIAL_WAIT_US (file-local to storage/ipc/standby.c) */
 		.standbyWait_us = 1000,
 	},
+	.stack_depth_state = {
+		/* default max_stack_depth (100 kB) until the GUC is applied */
+		.max_stack_depth_bytes = 100 * (ssize_t) 1024,
+	},
 };
 
 /*

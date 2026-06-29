@@ -526,6 +526,17 @@ typedef struct StandbyState
 } StandbyState;
 
 /*
+ * Stack-depth guard state: max_stack_depth converted to bytes and the stack
+ * base pointer (utils/misc/stack_depth.c).  max_stack_depth_bytes has a
+ * non-zero default set via the MySessionData designated initializer.
+ */
+typedef struct StackDepthState
+{
+	ssize_t		max_stack_depth_bytes;
+	char	   *stack_base_ptr;
+} StackDepthState;
+
+/*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
  * backend (storage/sync/sync.c).  The CycleCtr counters are declared as
  * uint16 here (the file-local CycleCtr typedef stays in sync.c).
@@ -997,6 +1008,13 @@ typedef struct MySession
 	 * designated initializer in globals.c.
 	 */
 	StandbyState standby_state;
+
+	/*
+	 * Stack-depth guard state (utils/misc/stack_depth.c).
+	 * max_stack_depth_bytes has a non-zero default set via the MySessionData
+	 * designated initializer in globals.c.
+	 */
+	StackDepthState stack_depth_state;
 } MySession;
 
 /*
