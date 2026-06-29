@@ -82,6 +82,7 @@ struct NotificationList;		/* commands/async.c */
 struct ResourceOwnerData;		/* utils/resowner.h: ResourceOwner */
 struct GlobalTransactionData;	/* access/twophase.h: GlobalTransaction */
 struct _SPI_plan;				/* executor/spi.h: SPIPlanPtr */
+struct _SPI_connection;			/* executor/spi_priv.h */
 struct dsa_area;				/* utils/dsa.h */
 struct dshash_table;			/* lib/dshash.h */
 struct ParallelApplyWorkerInfo;	/* replication/worker_internal.h */
@@ -558,6 +559,20 @@ typedef struct TypeCacheState
 	int32		NextRecordTypmod;
 	uint64		tupledesc_id_counter;
 } TypeCacheState;
+
+/*
+ * SPI (server programming interface) session state: the connection stack, the
+ * current connection, and the stack depth / current index (executor/spi.c).
+ * _SPI_connected has a non-zero default (-1) set via the MySessionData
+ * designated initializer.
+ */
+typedef struct SpiState
+{
+	struct _SPI_connection *_SPI_stack;
+	struct _SPI_connection *_SPI_current;
+	int			_SPI_stack_depth;
+	int			_SPI_connected;
+} SpiState;
 
 /*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
@@ -1045,6 +1060,13 @@ typedef struct MySession
 	 * = 1) set via the MySessionData designated initializer in globals.c.
 	 */
 	TypeCacheState typecache_state;
+
+	/*
+	 * SPI session state (executor/spi.c).  _SPI_connected has a non-zero
+	 * default (-1) set via the MySessionData designated initializer in
+	 * globals.c.
+	 */
+	SpiState spi_state;
 } MySession;
 
 /*

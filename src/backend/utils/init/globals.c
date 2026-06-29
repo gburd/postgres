@@ -58,6 +58,10 @@ session_local MySession MySessionData =
 		/* INVALID_TUPLEDESC_IDENTIFIER (utils/typcache.h); 0 and 1 are reserved */
 		.tupledesc_id_counter = ((uint64) 1),
 	},
+	.spi_state = {
+		/* not connected; _SPI_connected is a stack index, -1 when empty */
+		._SPI_connected = -1,
+	},
 };
 
 /*
