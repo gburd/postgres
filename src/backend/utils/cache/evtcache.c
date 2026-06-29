@@ -27,15 +27,9 @@
 #include "utils/hsearch.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
+#include "utils/mysession.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
-
-typedef enum
-{
-	ETCS_NEEDS_REBUILD,
-	ETCS_REBUILD_STARTED,
-	ETCS_VALID,
-} EventTriggerCacheStateType;
 
 typedef struct
 {
@@ -43,17 +37,6 @@ typedef struct
 	List	   *triggerlist;
 } EventTriggerCacheEntry;
 
-
-typedef struct EventTrigCacheState
-{
-	HTAB	   *EventTriggerCache;
-	MemoryContext EventTriggerCacheContext;
-	EventTriggerCacheStateType EventTriggerCacheState;
-} EventTrigCacheState;
-
-static session_local EventTrigCacheState evttrig_cache_state = {
-	.EventTriggerCacheState = ETCS_NEEDS_REBUILD,
-};
 
 static void BuildEventTriggerCache(void);
 static void InvalidateEventCacheCallback(Datum arg,
@@ -73,9 +56,9 @@ EventCacheLookup(EventTriggerEvent event)
 {
 	EventTriggerCacheEntry *entry;
 
-	if (evttrig_cache_state.EventTriggerCacheState != ETCS_VALID)
+	if (MySessionData.evttrig_cache_state.EventTriggerCacheState != ETCS_VALID)
 		BuildEventTriggerCache();
-	entry = hash_search(evttrig_cache_state.EventTriggerCache, &event, HASH_FIND, NULL);
+	entry = hash_search(MySessionData.evttrig_cache_state.EventTriggerCache, &event, HASH_FIND, NULL);
 	return entry != NULL ? entry->triggerlist : NIL;
 }
 
@@ -91,14 +74,14 @@ BuildEventTriggerCache(void)
 	Relation	irel;
 	SysScanDesc scan;
 
-	if (evttrig_cache_state.EventTriggerCacheContext != NULL)
+	if (MySessionData.evttrig_cache_state.EventTriggerCacheContext != NULL)
 	{
 		/*
-		 * Free up any memory already allocated in evttrig_cache_state.EventTriggerCacheContext.
+		 * Free up any memory already allocated in MySessionData.evttrig_cache_state.EventTriggerCacheContext.
 		 * This can happen either because a previous rebuild failed, or
 		 * because an invalidation happened before the rebuild was complete.
 		 */
-		MemoryContextReset(evttrig_cache_state.EventTriggerCacheContext);
+		MemoryContextReset(MySessionData.evttrig_cache_state.EventTriggerCacheContext);
 	}
 	else
 	{
@@ -109,7 +92,7 @@ BuildEventTriggerCache(void)
 		 */
 		if (CacheMemoryContext == NULL)
 			CreateCacheMemoryContext();
-		evttrig_cache_state.EventTriggerCacheContext =
+		MySessionData.evttrig_cache_state.EventTriggerCacheContext =
 			AllocSetContextCreate(CacheMemoryContext,
 								  "EventTriggerCache",
 								  ALLOCSET_DEFAULT_SIZES);
@@ -119,12 +102,12 @@ BuildEventTriggerCache(void)
 	}
 
 	/* Prevent the memory context from being nuked while we're rebuilding. */
-	evttrig_cache_state.EventTriggerCacheState = ETCS_REBUILD_STARTED;
+	MySessionData.evttrig_cache_state.EventTriggerCacheState = ETCS_REBUILD_STARTED;
 
 	/* Create new hash table. */
 	ctl.keysize = sizeof(EventTriggerEvent);
 	ctl.entrysize = sizeof(EventTriggerCacheEntry);
-	ctl.hcxt = evttrig_cache_state.EventTriggerCacheContext;
+	ctl.hcxt = MySessionData.evttrig_cache_state.EventTriggerCacheContext;
 	cache = hash_create("EventTriggerCacheHash", 32, &ctl,
 						HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 
@@ -178,7 +161,7 @@ BuildEventTriggerCache(void)
 			continue;
 
 		/* Switch to correct memory context. */
-		oldcontext = MemoryContextSwitchTo(evttrig_cache_state.EventTriggerCacheContext);
+		oldcontext = MemoryContextSwitchTo(MySessionData.evttrig_cache_state.EventTriggerCacheContext);
 
 		/* Allocate new cache item. */
 		item = palloc0_object(EventTriggerCacheItem);
@@ -208,7 +191,7 @@ BuildEventTriggerCache(void)
 	relation_close(rel, AccessShareLock);
 
 	/* Install new cache. */
-	evttrig_cache_state.EventTriggerCache = cache;
+	MySessionData.evttrig_cache_state.EventTriggerCache = cache;
 
 	/*
 	 * If the cache has been invalidated since we entered this routine, we
@@ -216,8 +199,8 @@ BuildEventTriggerCache(void)
 	 * infinite loops, but we leave the cache marked stale so that we'll
 	 * rebuild it again on next access.  Otherwise, we mark the cache valid.
 	 */
-	if (evttrig_cache_state.EventTriggerCacheState == ETCS_REBUILD_STARTED)
-		evttrig_cache_state.EventTriggerCacheState = ETCS_VALID;
+	if (MySessionData.evttrig_cache_state.EventTriggerCacheState == ETCS_REBUILD_STARTED)
+		MySessionData.evttrig_cache_state.EventTriggerCacheState = ETCS_VALID;
 }
 
 /*
@@ -271,12 +254,12 @@ InvalidateEventCacheCallback(Datum arg, SysCacheIdentifier cacheid,
 	 * we can't immediately blow it away.  But it's advantageous to do this
 	 * when possible, so as to immediately free memory.
 	 */
-	if (evttrig_cache_state.EventTriggerCacheState == ETCS_VALID)
+	if (MySessionData.evttrig_cache_state.EventTriggerCacheState == ETCS_VALID)
 	{
-		MemoryContextReset(evttrig_cache_state.EventTriggerCacheContext);
-		evttrig_cache_state.EventTriggerCache = NULL;
+		MemoryContextReset(MySessionData.evttrig_cache_state.EventTriggerCacheContext);
+		MySessionData.evttrig_cache_state.EventTriggerCache = NULL;
 	}
 
 	/* Mark cache for rebuild. */
-	evttrig_cache_state.EventTriggerCacheState = ETCS_NEEDS_REBUILD;
+	MySessionData.evttrig_cache_state.EventTriggerCacheState = ETCS_NEEDS_REBUILD;
 }

@@ -443,6 +443,24 @@ typedef struct XLogRecoveryState
 } XLogRecoveryState;
 
 /*
+ * Event-trigger cache state: the cache hash, its memory context, and the
+ * cache-validity phase (utils/cache/evtcache.c).
+ */
+typedef enum
+{
+	ETCS_NEEDS_REBUILD,
+	ETCS_REBUILD_STARTED,
+	ETCS_VALID,
+} EventTriggerCacheStateType;
+
+typedef struct EventTrigCacheState
+{
+	struct HTAB *EventTriggerCache;
+	MemoryContext EventTriggerCacheContext;
+	EventTriggerCacheStateType EventTriggerCacheState;
+} EventTrigCacheState;
+
+/*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
  * backend (storage/sync/sync.c).  The CycleCtr counters are declared as
  * uint16 here (the file-local CycleCtr typedef stays in sync.c).
@@ -875,6 +893,12 @@ typedef struct MySession
 	 * timeline of the currently open WAL file (access/transam/xlogrecovery.c).
 	 */
 	XLogRecoveryState xlogrecovery_state;
+
+	/*
+	 * Event-trigger cache state: the cache hash, its memory context, and the
+	 * cache-validity phase (utils/cache/evtcache.c).
+	 */
+	EventTrigCacheState evttrig_cache_state;
 } MySession;
 
 /*
