@@ -22,6 +22,7 @@
 #include "access/clog.h"
 #include "access/subtrans.h"
 #include "access/transam.h"
+#include "utils/mysession.h"
 #include "utils/snapmgr.h"
 
 /*
@@ -30,16 +31,6 @@
  * same XID, for example when scanning a table just after a bulk insert,
  * update, or delete.
  */
-typedef struct TransamState
-{
-	TransactionId cachedFetchXid;
-	XidStatus	cachedFetchXidStatus;
-	XLogRecPtr	cachedCommitLSN;
-} TransamState;
-
-static session_local TransamState transam_state = {
-	.cachedFetchXid = InvalidTransactionId,
-};
 
 /* Local functions */
 static XidStatus TransactionLogFetch(TransactionId transactionId);
@@ -65,8 +56,8 @@ TransactionLogFetch(TransactionId transactionId)
 	 * Before going to the commit log manager, check our single item cache to
 	 * see if we didn't just check the transaction status a moment ago.
 	 */
-	if (TransactionIdEquals(transactionId, transam_state.cachedFetchXid))
-		return transam_state.cachedFetchXidStatus;
+	if (TransactionIdEquals(transactionId, MySessionData.transam_state.cachedFetchXid))
+		return MySessionData.transam_state.cachedFetchXidStatus;
 
 	/*
 	 * Also, check to see if the transaction ID is a permanent one.
@@ -92,9 +83,9 @@ TransactionLogFetch(TransactionId transactionId)
 	if (xidstatus != TRANSACTION_STATUS_IN_PROGRESS &&
 		xidstatus != TRANSACTION_STATUS_SUB_COMMITTED)
 	{
-		transam_state.cachedFetchXid = transactionId;
-		transam_state.cachedFetchXidStatus = xidstatus;
-		transam_state.cachedCommitLSN = xidlsn;
+		MySessionData.transam_state.cachedFetchXid = transactionId;
+		MySessionData.transam_state.cachedFetchXidStatus = xidstatus;
+		MySessionData.transam_state.cachedCommitLSN = xidlsn;
 	}
 
 	return xidstatus;
@@ -332,8 +323,8 @@ TransactionIdGetCommitLSN(TransactionId xid)
 	 * checking TransactionLogFetch's cache will usually succeed and avoid an
 	 * extra trip to shared memory.
 	 */
-	if (TransactionIdEquals(xid, transam_state.cachedFetchXid))
-		return transam_state.cachedCommitLSN;
+	if (TransactionIdEquals(xid, MySessionData.transam_state.cachedFetchXid))
+		return MySessionData.transam_state.cachedCommitLSN;
 
 	/* Special XIDs are always known committed */
 	if (!TransactionIdIsNormal(xid))

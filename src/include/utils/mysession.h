@@ -483,6 +483,19 @@ typedef struct PortalMemState
 } PortalMemState;
 
 /*
+ * Single-entry transaction-status cache for TransactionIdGetStatus()
+ * (access/transam/transam.c).  cachedFetchXidStatus is an XidStatus, which is
+ * plain int; it is declared as int here to avoid pulling access/clog.h into
+ * this widely-included header.
+ */
+typedef struct TransamState
+{
+	TransactionId cachedFetchXid;
+	int			cachedFetchXidStatus;	/* XidStatus */
+	XLogRecPtr	cachedCommitLSN;
+} TransamState;
+
+/*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
  * backend (storage/sync/sync.c).  The CycleCtr counters are declared as
  * uint16 here (the file-local CycleCtr typedef stays in sync.c).
@@ -934,6 +947,12 @@ typedef struct MySession
 	 * the TopPortalContext memory context (utils/mmgr/portalmem.c).
 	 */
 	PortalMemState portalmem_state;
+
+	/*
+	 * Single-entry transaction-status cache for TransactionIdGetStatus()
+	 * (access/transam/transam.c).
+	 */
+	TransamState transam_state;
 } MySession;
 
 /*
