@@ -433,6 +433,16 @@ typedef struct LocaleState
 } LocaleState;
 
 /*
+ * WAL-recovery session state: the expected timeline history list and the
+ * timeline of the currently open WAL file (access/transam/xlogrecovery.c).
+ */
+typedef struct XLogRecoveryState
+{
+	struct List *expectedTLEs;
+	TimeLineID	curFileTLI;
+} XLogRecoveryState;
+
+/*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
  * backend (storage/sync/sync.c).  The CycleCtr counters are declared as
  * uint16 here (the file-local CycleCtr typedef stays in sync.c).
@@ -859,6 +869,12 @@ typedef struct MySession
 	 * collation (utils/adt/pg_locale.c).
 	 */
 	LocaleState locale_state;
+
+	/*
+	 * WAL-recovery session state: the expected timeline history list and the
+	 * timeline of the currently open WAL file (access/transam/xlogrecovery.c).
+	 */
+	XLogRecoveryState xlogrecovery_state;
 } MySession;
 
 /*
