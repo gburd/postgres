@@ -63,6 +63,7 @@ struct ConditionVariable;		/* storage/condition_variable.h */
 struct StringInfoData;			/* lib/stringinfo.h: StringInfo */
 struct BackupState;				/* access/xlogbackup.h */
 struct collation_cache_hash;	/* utils/adt/pg_locale.c (simplehash) */
+struct SyncStandbySlotsConfigData;	/* replication/slot.c */
 struct ProcSignalSlot;			/* storage/ipc/procsignal.c */
 struct FixedParallelState;		/* access/transam/parallel.c */
 struct ReplicationState;		/* replication/logical/origin.c */
@@ -459,6 +460,17 @@ typedef struct EventTrigCacheState
 	MemoryContext EventTriggerCacheContext;
 	EventTriggerCacheStateType EventTriggerCacheState;
 } EventTrigCacheState;
+
+/*
+ * Replication-slot session state: the parsed synchronized_standby_slots
+ * configuration and the oldest flush LSN confirmed across the configured
+ * physical standby slots (replication/slot.c).
+ */
+typedef struct SlotSessState
+{
+	struct SyncStandbySlotsConfigData *synchronized_standby_slots_config;
+	XLogRecPtr	ss_oldest_flush_lsn;
+} SlotSessState;
 
 /*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
@@ -899,6 +911,13 @@ typedef struct MySession
 	 * cache-validity phase (utils/cache/evtcache.c).
 	 */
 	EventTrigCacheState evttrig_cache_state;
+
+	/*
+	 * Replication-slot session state: the parsed synchronized_standby_slots
+	 * configuration and the oldest flush LSN confirmed across the configured
+	 * physical standby slots (replication/slot.c).
+	 */
+	SlotSessState slot_state;
 } MySession;
 
 /*

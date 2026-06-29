@@ -59,6 +59,7 @@
 #include "utils/builtins.h"
 #include "utils/guc_hooks.h"
 #include "utils/injection_point.h"
+#include "utils/mysession.h"
 #include "utils/varlena.h"
 #include "utils/wait_event.h"
 
@@ -92,7 +93,7 @@ typedef struct ReplicationSlotOnDisk
  * of guc_malloc'd memory, so that it can be stored as the "extra" data for the
  * synchronized_standby_slots GUC.
  */
-typedef struct
+typedef struct SyncStandbySlotsConfigData
 {
 	/* Number of slot names in the slot_names[] */
 	int			nslotnames;
@@ -175,22 +176,6 @@ int			idle_replication_slot_timeout_secs = 0;
  */
 sighup_guc char	   *synchronized_standby_slots;
 
-typedef struct SlotSessState
-{
-	/* This is the parsed and cached configuration for synchronized_standby_slots */
-	SyncStandbySlotsConfigData *synchronized_standby_slots_config;
-
-	/*
-	 * Oldest LSN that has been confirmed to be flushed to the standbys
-	 * corresponding to the physical slots specified in the synchronized_standby_slots GUC.
-	 */
-	XLogRecPtr	ss_oldest_flush_lsn;
-} SlotSessState;
-
-static session_local SlotSessState slot_state = {
-	.synchronized_standby_slots_config = NULL,
-	.ss_oldest_flush_lsn = InvalidXLogRecPtr,
-};
 
 static void ReplicationSlotShmemExit(int code, Datum arg);
 static bool IsSlotForConflictCheck(const char *name);
@@ -3078,9 +3063,9 @@ assign_synchronized_standby_slots(const char *newval, void *extra)
 	 * The standby slots may have changed, so we must recompute the oldest
 	 * LSN.
 	 */
-	slot_state.ss_oldest_flush_lsn = InvalidXLogRecPtr;
+	MySessionData.slot_state.ss_oldest_flush_lsn = InvalidXLogRecPtr;
 
-	slot_state.synchronized_standby_slots_config = (SyncStandbySlotsConfigData *) extra;
+	MySessionData.slot_state.synchronized_standby_slots_config = (SyncStandbySlotsConfigData *) extra;
 }
 
 /*
@@ -3092,7 +3077,7 @@ SlotExistsInSyncStandbySlots(const char *slot_name)
 	const char *standby_slot_name;
 
 	/* Return false if there is no value in synchronized_standby_slots */
-	if (slot_state.synchronized_standby_slots_config == NULL)
+	if (MySessionData.slot_state.synchronized_standby_slots_config == NULL)
 		return false;
 
 	/*
@@ -3100,8 +3085,8 @@ SlotExistsInSyncStandbySlots(const char *slot_name)
 	 * shouldn't hurt but if that turns out not to be true then we can cache
 	 * this information for each WalSender as well.
 	 */
-	standby_slot_name = slot_state.synchronized_standby_slots_config->slot_names;
-	for (int i = 0; i < slot_state.synchronized_standby_slots_config->nslotnames; i++)
+	standby_slot_name = MySessionData.slot_state.synchronized_standby_slots_config->slot_names;
+	for (int i = 0; i < MySessionData.slot_state.synchronized_standby_slots_config->nslotnames; i++)
 	{
 		if (strcmp(standby_slot_name, slot_name) == 0)
 			return true;
@@ -3130,7 +3115,7 @@ StandbySlotsHaveCaughtup(XLogRecPtr wait_for_lsn, int elevel)
 	 * Don't need to wait for the standbys to catch up if there is no value in
 	 * synchronized_standby_slots.
 	 */
-	if (slot_state.synchronized_standby_slots_config == NULL)
+	if (MySessionData.slot_state.synchronized_standby_slots_config == NULL)
 		return true;
 
 	/*
@@ -3144,8 +3129,8 @@ StandbySlotsHaveCaughtup(XLogRecPtr wait_for_lsn, int elevel)
 	 * Don't need to wait for the standbys to catch up if they are already
 	 * beyond the specified WAL location.
 	 */
-	if (XLogRecPtrIsValid(slot_state.ss_oldest_flush_lsn) &&
-		slot_state.ss_oldest_flush_lsn >= wait_for_lsn)
+	if (XLogRecPtrIsValid(MySessionData.slot_state.ss_oldest_flush_lsn) &&
+		MySessionData.slot_state.ss_oldest_flush_lsn >= wait_for_lsn)
 		return true;
 
 	/*
@@ -3154,8 +3139,8 @@ StandbySlotsHaveCaughtup(XLogRecPtr wait_for_lsn, int elevel)
 	 */
 	LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
 
-	name = slot_state.synchronized_standby_slots_config->slot_names;
-	for (int i = 0; i < slot_state.synchronized_standby_slots_config->nslotnames; i++)
+	name = MySessionData.slot_state.synchronized_standby_slots_config->slot_names;
+	for (int i = 0; i < MySessionData.slot_state.synchronized_standby_slots_config->nslotnames; i++)
 	{
 		XLogRecPtr	restart_lsn;
 		bool		invalidated;
@@ -3249,14 +3234,14 @@ StandbySlotsHaveCaughtup(XLogRecPtr wait_for_lsn, int elevel)
 	 * Return false if not all the standbys have caught up to the specified
 	 * WAL location.
 	 */
-	if (caught_up_slot_num != slot_state.synchronized_standby_slots_config->nslotnames)
+	if (caught_up_slot_num != MySessionData.slot_state.synchronized_standby_slots_config->nslotnames)
 		return false;
 
 	/* The ss_oldest_flush_lsn must not retreat. */
-	Assert(!XLogRecPtrIsValid(slot_state.ss_oldest_flush_lsn) ||
-		   min_restart_lsn >= slot_state.ss_oldest_flush_lsn);
+	Assert(!XLogRecPtrIsValid(MySessionData.slot_state.ss_oldest_flush_lsn) ||
+		   min_restart_lsn >= MySessionData.slot_state.ss_oldest_flush_lsn);
 
-	slot_state.ss_oldest_flush_lsn = min_restart_lsn;
+	MySessionData.slot_state.ss_oldest_flush_lsn = min_restart_lsn;
 
 	return true;
 }
@@ -3275,7 +3260,7 @@ WaitForStandbyConfirmation(XLogRecPtr wait_for_lsn)
 	 * slot is not a logical failover slot, or there is no value in
 	 * synchronized_standby_slots.
 	 */
-	if (!MyReplicationSlot->data.failover || !slot_state.synchronized_standby_slots_config)
+	if (!MyReplicationSlot->data.failover || !MySessionData.slot_state.synchronized_standby_slots_config)
 		return;
 
 	ConditionVariablePrepareToSleep(&WalSndCtl->wal_confirm_rcv_cv);
