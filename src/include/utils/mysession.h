@@ -62,6 +62,7 @@ struct EventTriggerQueryState;	/* commands/event_trigger.c */
 struct ConditionVariable;		/* storage/condition_variable.h */
 struct StringInfoData;			/* lib/stringinfo.h: StringInfo */
 struct BackupState;				/* access/xlogbackup.h */
+struct collation_cache_hash;	/* utils/adt/pg_locale.c (simplehash) */
 struct ProcSignalSlot;			/* storage/ipc/procsignal.c */
 struct FixedParallelState;		/* access/transam/parallel.c */
 struct ReplicationState;		/* replication/logical/origin.c */
@@ -408,6 +409,28 @@ typedef struct CheckpointerState
 	pg_time_t	last_checkpoint_time;
 	pg_time_t	last_xlog_switch_time;
 } CheckpointerState;
+
+/*
+ * Locale/collation session state: the default locale, locale-cache validity
+ * flags, the collation-cache context + hash, and the last-used collation
+ * (utils/adt/pg_locale.c).
+ */
+typedef struct LocaleState
+{
+	struct pg_locale_struct *default_locale;
+
+	/* indicates whether locale information cache is valid */
+	bool		CurrentLocaleConvValid;
+	bool		CurrentLCTimeValid;
+
+	/* Cache for collation-related knowledge */
+	MemoryContext CollationCacheContext;
+	struct collation_cache_hash *CollationCache;
+
+	/* remember the last collation used */
+	Oid			last_collation_cache_oid;
+	struct pg_locale_struct *last_collation_cache_locale;
+} LocaleState;
 
 /*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
@@ -829,6 +852,13 @@ typedef struct MySession
 	 * last checkpoint / xlog-switch times (postmaster/checkpointer.c).
 	 */
 	CheckpointerState checkpointer_state;
+
+	/*
+	 * Locale/collation session state: the default locale, locale-cache
+	 * validity flags, the collation-cache context + hash, and the last-used
+	 * collation (utils/adt/pg_locale.c).
+	 */
+	LocaleState locale_state;
 } MySession;
 
 /*
