@@ -41,6 +41,8 @@
 #include <signal.h>				/* for sig_atomic_t */
 
 #include "executor/instrument.h"
+#include "access/xlogdefs.h"		/* for XLogRecPtr */
+#include "pgtime.h"				/* for pg_time_t */
 #include "portability/instr_time.h"
 #include "utils/hsearch.h"
 #include "utils/palloc.h"
@@ -388,6 +390,24 @@ typedef struct XlogFuncsState
 	/* Session-level context for the SQL-callable backup functions */
 	MemoryContext backupcontext;
 } XlogFuncsState;
+
+/*
+ * Checkpointer progress/timing state: whether a checkpoint is active, the
+ * current checkpoint's start time/LSN and cached elapsed estimate, and the
+ * last checkpoint / xlog-switch times (postmaster/checkpointer.c).
+ */
+typedef struct CheckpointerState
+{
+	bool		ckpt_active;
+
+	/* these values are valid when ckpt_active is true: */
+	pg_time_t	ckpt_start_time;
+	XLogRecPtr	ckpt_start_recptr;
+	double		ckpt_cached_elapsed;
+
+	pg_time_t	last_checkpoint_time;
+	pg_time_t	last_xlog_switch_time;
+} CheckpointerState;
 
 /*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
@@ -802,6 +822,13 @@ typedef struct MySession
 	 * the session-level memory context (access/transam/xlogfuncs.c).
 	 */
 	XlogFuncsState xlogfuncs_state;
+
+	/*
+	 * Checkpointer progress/timing state: whether a checkpoint is active, the
+	 * current checkpoint's start time/LSN and cached elapsed estimate, and the
+	 * last checkpoint / xlog-switch times (postmaster/checkpointer.c).
+	 */
+	CheckpointerState checkpointer_state;
 } MySession;
 
 /*
