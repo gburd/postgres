@@ -473,6 +473,16 @@ typedef struct SlotSessState
 } SlotSessState;
 
 /*
+ * Portal (cursor) manager session state: the portal-name hash table and the
+ * TopPortalContext memory context (utils/mmgr/portalmem.c).
+ */
+typedef struct PortalMemState
+{
+	struct HTAB *PortalHashTable;
+	MemoryContext TopPortalContext;
+} PortalMemState;
+
+/*
  * Pending fsync/unlink request tracking for the checkpointer / standalone
  * backend (storage/sync/sync.c).  The CycleCtr counters are declared as
  * uint16 here (the file-local CycleCtr typedef stays in sync.c).
@@ -918,6 +928,12 @@ typedef struct MySession
 	 * physical standby slots (replication/slot.c).
 	 */
 	SlotSessState slot_state;
+
+	/*
+	 * Portal (cursor) manager session state: the portal-name hash table and
+	 * the TopPortalContext memory context (utils/mmgr/portalmem.c).
+	 */
+	PortalMemState portalmem_state;
 } MySession;
 
 /*
