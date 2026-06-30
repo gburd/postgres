@@ -2442,7 +2442,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 		LWLockRelease(newPartitionLock);
 
 		/* Notify algorithm of cache hit */
-		if (ActivePoolRoutine->on_hit)
+		if (unlikely(ActivePoolHasAccessHooks) && ActivePoolRoutine->on_hit)
 			ActivePoolRoutine->on_hit(ActivePoolData, existing_buf_id, &newTag);
 
 		*foundPtr = true;
@@ -2467,7 +2467,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	LWLockRelease(newPartitionLock);
 
 	/* Notify algorithm of cache miss (ghost list tracking, etc.) */
-	if (ActivePoolRoutine->on_miss)
+	if (unlikely(ActivePoolHasAccessHooks) && ActivePoolRoutine->on_miss)
 		ActivePoolRoutine->on_miss(ActivePoolData, &newTag);
 
 	/*
@@ -2512,7 +2512,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 		LWLockRelease(newPartitionLock);
 
 		/* Notify algorithm of cache hit (collision case) */
-		if (ActivePoolRoutine->on_hit)
+		if (unlikely(ActivePoolHasAccessHooks) && ActivePoolRoutine->on_hit)
 			ActivePoolRoutine->on_hit(ActivePoolData, existing_buf_id, &newTag);
 
 		*foundPtr = true;
@@ -2557,7 +2557,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	LWLockRelease(newPartitionLock);
 
 	/* Notify algorithm of new page assignment */
-	if (ActivePoolRoutine->on_new_tag)
+	if (unlikely(ActivePoolHasAccessHooks) && ActivePoolRoutine->on_new_tag)
 		ActivePoolRoutine->on_new_tag(ActivePoolData,
 									  victim_buf_hdr->buf_id, &newTag,
 									  false);

@@ -214,6 +214,14 @@ typedef struct BufferPoolRoutine
 extern PGDLLIMPORT const BufferPoolRoutine *ActivePoolRoutine;
 extern PGDLLIMPORT void *ActivePoolData;
 
+/*
+ * True if the active DEFAULT-pool algorithm uses any per-access tracking hook
+ * (on_hit/on_miss/on_new_tag).  False for the built-in clock-sweep, letting
+ * the hot BufferAlloc path skip the hook dispatch with one predicted-false
+ * branch.  Maintained alongside ActivePoolRoutine.
+ */
+extern PGDLLIMPORT bool ActivePoolHasAccessHooks;
+
 /* The built-in clock-sweep buffer pool routine */
 extern PGDLLIMPORT const BufferPoolRoutine clock_pool_routine;
 
