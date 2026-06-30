@@ -54,6 +54,8 @@ typedef enum
 	PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_ON,
 	PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_OFF,
 	PROCSIGNAL_BARRIER_CHECKSUM_ON,
+	PROCSIGNAL_BARRIER_BUFPOOL_DETACH,	/* drop refs to a buffer pool being
+										 * destroyed/resized */
 } ProcSignalBarrierType;
 
 /*

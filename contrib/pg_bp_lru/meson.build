@@ -31,4 +31,12 @@ tests += {
       'pg_bp_lru',
     ],
   },
+  'tap': {
+    'env': {
+      'enable_injection_points': get_option('injection_points') ? 'yes' : 'no',
+    },
+    'tests': [
+      't/001_drop_concurrency.pl',
+    ],
+  },
 }

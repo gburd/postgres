@@ -68,10 +68,25 @@ typedef enum BufferPoolKind
  * PoolBufHashEntry -- open-addressed hash table entry for dynamic pools.
  *
  * Dynamic pool hash tables live entirely in DSM memory as a flat array
- * of these entries, using open addressing with linear probing.  Because
- * entries contain no internal pointers, the table works correctly when
- * the DSM segment is mapped at different virtual addresses in different
- * backends.
+ * of these entries.  Because entries contain no internal pointers, the
+ * table works correctly when the DSM segment is mapped at different
+ * virtual addresses in different backends.
+ *
+ * Probe strategy: "funnel" open addressing (Farach-Colton, Krapivin &
+ * Kuszmaul, "Optimal Bounds for Open Addressing Without Reordering",
+ * arXiv:2501.02305, 2025).  The array is split into a geometrically
+ * decreasing sequence of levels A_1, A_2, ...; a key probes a bounded
+ * number of slots within its level before funneling down to the next,
+ * smaller level.  Compared to plain linear/uniform probing this bounds
+ * worst-case probe complexity at O(log^2 1/delta) instead of O(1/delta),
+ * where delta is the fraction of empty slots.
+ *
+ * The table is sized once at pool creation and never resized: a cache
+ * pool holds at most nbuffers live keys, so the maximum load factor is
+ * fixed (POOL_HASH_LOAD_NUM/POOL_HASH_LOAD_DEN) and delta is bounded for
+ * the life of the pool.  This is the regime the construction targets --
+ * a fixed table whose delta you control from the start, with no
+ * reordering of already-placed entries.
  *
  * Concurrency: all access is protected by the pool's single mapping
  * LWLock (bp_num_partitions = 1 for dynamic pools).
@@ -85,6 +100,21 @@ typedef struct PoolBufHashEntry
 
 #define POOL_HASH_UNUSED	(-1)
 #define POOL_HASH_DELETED	(-2)
+
+/*
+ * Target maximum load factor for the funnel hash table, as a fraction.
+ * With nbuffers live keys at most, the table capacity is sized so that
+ * the live keys occupy at most POOL_HASH_LOAD_NUM/POOL_HASH_LOAD_DEN of
+ * the slots (here 3/4), leaving delta >= 1/4 empty permanently.
+ */
+#define POOL_HASH_LOAD_NUM	3
+#define POOL_HASH_LOAD_DEN	4
+
+/*
+ * Maximum probes attempted within a single funnel level before funneling
+ * down to the next, smaller level.  Bounded by the construction.
+ */
+#define POOL_HASH_LEVEL_PROBES	4
 
 /*
  * BufferPoolDesc -- shared-memory descriptor for a buffer pool instance.
@@ -335,6 +365,12 @@ extern void DestroyDynamicBufferPool(BufferPoolDesc *pool);
 extern BufferPoolDesc *ResizeDynamicBufferPool(BufferPoolDesc *pool,
 											   int new_nbuffers);
 extern void BufferPoolStartupInit(void);
+
+/*
+ * PROCSIGNAL_BARRIER_BUFPOOL_DETACH handler: drop this backend's references
+ * to any pool being destroyed/resized.  Defined in bufpool.c.
+ */
+extern bool ProcessBarrierBufferPoolDetach(void);
 
 /*
  * Open-addressed hash table functions for dynamic pool buffer mapping.
