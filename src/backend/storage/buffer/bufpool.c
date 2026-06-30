@@ -31,6 +31,7 @@
 #include "storage/proc.h"
 #include "storage/procsignal.h"
 #include "utils/guc.h"
+#include "utils/injection_point.h"
 #include "utils/wait_event.h"
 #include "storage/bufmgr.h"
 #include "storage/bufpool.h"
@@ -346,6 +347,54 @@ DetachFromPool(int pool_slot)
 	local->ckpt_ids = NULL;
 	local->strategy_data = NULL;
 	local->attached = false;
+}
+
+/*
+ * ProcessBarrierBufferPoolDetach -- handle PROCSIGNAL_BARRIER_BUFPOOL_DETACH.
+ *
+ * Invoked in every backend when a pool is being destroyed or resized.  The
+ * destroying backend marks the pool inactive (bp_active = false) with a
+ * write barrier before emitting the ProcSignalBarrier, so by the time we run
+ * here every slot whose pool is gone reads as inactive.
+ *
+ * This backend drops its cached pointer to any now-inactive pool
+ * (CurrentBufferPool) and detaches from the pool's DSM mapping.  After
+ * WaitForProcSignalBarrier() returns in the destroyer, no backend holds a
+ * live reference into the pool's DSM, so it is safe to dsm_detach/unpin and
+ * tear the segment down.
+ *
+ * Returns true (always processed; never needs to be retried).  Must not
+ * throw -- a barrier handler that ERRORs would be retried indefinitely.
+ */
+bool
+ProcessBarrierBufferPoolDetach(void)
+{
+	/* Forget any per-relation pool pointer that may target a dying pool. */
+	ResetCurrentBufferPool();
+
+	/*
+	 * Detach from every dynamic pool slot whose pool is no longer active.
+	 * The creating backend's own slot is cleared directly in
+	 * DestroyDynamicBufferPool after the barrier completes, so skipping an
+	 * already-detached slot here is harmless.
+	 */
+	for (int slot = 1; slot < MAX_BUFFER_POOLS; slot++)
+	{
+		BufferPoolDesc *pool = &BufferPoolDescs[slot];
+
+		if (!PoolLocalStates[slot].attached)
+			continue;
+
+		/*
+		 * pg_read_barrier pairs with the pg_write_barrier in
+		 * DestroyDynamicBufferPool so we observe bp_active = false here.
+		 */
+		pg_read_barrier();
+		if (!pool->bp_active)
+			DetachFromPool(slot);
+	}
+
+	return true;
 }
 
 /*
@@ -1005,6 +1054,14 @@ DestroyDynamicBufferPool(BufferPoolDesc *pool)
 	FlushBufferPoolDirtyBuffers(pool);
 
 	/*
+	 * Injection point: lets a TAP test pause a backend here -- after the
+	 * pinned-buffer check but before quiescence -- to drive a concurrent
+	 * BufferAllocInPool against the pool and prove the barrier prevents a
+	 * use-after-detach.
+	 */
+	INJECTION_POINT("bufpool-destroy-before-quiesce", NULL);
+
+	/*
 	 * Mark inactive with a memory barrier so the trickle writer (and any
 	 * other code checking bp_active) sees the pool is going away before we
 	 * clear bp_routine and other fields.  This prevents a race where the
@@ -1013,6 +1070,24 @@ DestroyDynamicBufferPool(BufferPoolDesc *pool)
 	 */
 	pool->bp_active = false;
 	pg_write_barrier();
+
+	/*
+	 * Quiesce all backends with respect to this pool before tearing down its
+	 * DSM.  Emit a ProcSignalBarrier and wait for every backend to process
+	 * it; each backend's handler (ProcessBarrierBufferPoolDetach) drops its
+	 * CurrentBufferPool pointer and detaches from any now-inactive pool's DSM
+	 * mapping.  When WaitForProcSignalBarrier returns, no other backend holds
+	 * a live reference into this pool's DSM or can be mid-get_victim against
+	 * its strategy_data, so the dsm_detach/dsm_unpin_segment below cannot
+	 * race a concurrent BufferAllocInPool.  This is the same quiescence
+	 * pattern used by the online data-checksum enable/disable barriers.
+	 */
+	{
+		uint64		generation;
+
+		generation = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_BUFPOOL_DETACH);
+		WaitForProcSignalBarrier(generation);
+	}
 
 	/* Terminate the trickle writer and wait for it to exit */
 	TerminatePoolTrickleWriter(pool);

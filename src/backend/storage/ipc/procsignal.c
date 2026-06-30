@@ -29,6 +29,7 @@
 #include "replication/slotsync.h"
 #include "replication/walsender.h"
 #include "storage/condition_variable.h"
+#include "storage/bufpool_internals.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
 #include "storage/proc.h"
@@ -597,6 +598,9 @@ ProcessProcSignalBarrier(void)
 					case PROCSIGNAL_BARRIER_CHECKSUM_INPROGRESS_OFF:
 					case PROCSIGNAL_BARRIER_CHECKSUM_OFF:
 						processed = AbsorbDataChecksumsBarrier(type);
+						break;
+					case PROCSIGNAL_BARRIER_BUFPOOL_DETACH:
+						processed = ProcessBarrierBufferPoolDetach();
 						break;
 				}
 
