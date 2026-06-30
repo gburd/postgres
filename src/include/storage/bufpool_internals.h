@@ -202,16 +202,17 @@ typedef struct BufferPoolDesc
 	bool		bp_resv_huge;	/* committed with huge pages */
 
 	/*
-	 * Fragmentation note: bp_resv_offset/bp_resv_size describe a SINGLE
-	 * contiguous sub-range.  The reservation allocator coalesces adjacent
-	 * freed extents and uses best-fit, which recovers most fragmented space,
-	 * but a contiguous request can still be denied if a live pool physically
-	 * separates two free regions even when aggregate free space suffices.
-	 * The complete fix is to let a pool own several disjoint extents: replace
-	 * these two fields with a small extent table {offset,len}[] and map block i
-	 * through it.  Deferred (YAGNI) -- it adds an indirection to the hot
-	 * BufPoolAddrAt path, so it is only worth it if coalescing proves
-	 * insufficient in practice.
+	 * bp_resv_offset/bp_resv_size describe the pool's contiguous ADDRESS
+	 * window in the reservation; bp_resv_size is the requested size (the
+	 * window is rounded up to a whole number of chunks).  The window is backed
+	 * physically by N fixed-size chunks that may be DISJOINT in the backing
+	 * memfd -- the reservation allocator MAP_FIXEDs each chunk into the window
+	 * so the window is contiguous in address space even when the physical
+	 * chunks are scattered.  This makes pool creation immune to external
+	 * fragmentation (any N free chunks satisfy an N-chunk pool) while keeping
+	 * every pool pointer at base+offset -- the disjoint backing is invisible
+	 * on the hot path (measured: no TPS difference vs a contiguous pool).  The
+	 * chunk list lives in the allocator's window record, not here.
 	 */
 
 	/* Trickle writer background worker (stored inline for cross-backend use) */
@@ -428,6 +429,7 @@ extern bool ProcessBarrierBufferPoolDetach(void);
  * ----------------------------------------------------------------
  */
 extern Size BufPoolReserveShmemSize(void);
+extern PGDLLIMPORT void *BufPoolReserveCtlPtr;
 extern void BufPoolReserveInit(void);
 extern bool BufPoolReserveActive(void);
 extern Size BufPoolReserveAlloc(Size size);

@@ -42,6 +42,7 @@ tests += {
       't/004_huge_pages_pool.pl',
       't/005_numa_interleave_pool.pl',
       't/006_algorithm_swap.pl',
+      't/007_disjoint_fragmentation.pl',
     ],
   },
 }
