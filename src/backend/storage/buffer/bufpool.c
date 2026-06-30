@@ -1337,6 +1337,60 @@ ResizeDynamicBufferPool(BufferPoolDesc *pool, int new_nbuffers)
 }
 
 /*
+ * SwapDynamicBufferPoolAlgorithm
+ *		Change a dynamic pool's replacement algorithm at runtime.
+ *
+ * Implemented as a barrier-quiesced destroy-and-recreate at the same size
+ * with the new handler's routine.  This is the safe form of the runtime
+ * algorithm swap that an earlier draft of the series attempted with an
+ * unquiesced in-place memset of the strategy region (which could corrupt a
+ * concurrent get_victim).  DestroyDynamicBufferPool emits
+ * PROCSIGNAL_BARRIER_BUFPOOL_DETACH and waits for every backend to drop the
+ * pool before the old strategy state is freed, so no backend is mid-access
+ * against it when the new algorithm initializes fresh state.
+ *
+ * The pool keeps its OID, name, size, and huge-pages choice; its cached
+ * pages are dropped (a cache -- on-disk data is unaffected).  The caller must
+ * ensure no buffers in the pool are pinned.
+ */
+BufferPoolDesc *
+SwapDynamicBufferPoolAlgorithm(BufferPoolDesc *pool, Oid new_handler_oid)
+{
+	Oid			bp_oid;
+	NameData	pool_name;
+	int			nbuffers;
+	bool		save_huge;
+	const BufferPoolRoutine *routine;
+	Datum		datum;
+
+	Assert(pool != NULL);
+	Assert(pool->bp_active);
+	Assert(PoolIsDynamic(pool));
+	Assert(OidIsValid(new_handler_oid));
+
+	bp_oid = pool->bp_oid;
+	nbuffers = pool->bp_nbuffers;
+	save_huge = pool->bp_resv_huge;
+	namestrcpy(&pool_name, NameStr(pool->bp_name));
+
+	/* Resolve the new handler to its routine vtable. */
+	datum = OidFunctionCall0(new_handler_oid);
+	routine = (const BufferPoolRoutine *) DatumGetPointer(datum);
+
+	elog(LOG, "changing algorithm of buffer pool \"%s\" (%d buffers)",
+		 NameStr(pool_name), nbuffers);
+
+	/* Destroy: barrier-quiesce, flush, terminate trickle writer, free memory. */
+	DestroyDynamicBufferPool(pool);
+
+	/* Recreate at the same size under the new algorithm. */
+	pool = CreateDynamicBufferPool(bp_oid, NameStr(pool_name), nbuffers,
+								   routine, new_handler_oid, save_huge);
+
+	return pool;
+}
+
+/*
  * TrickleWriterMain -- background worker entry point for a per-pool
  * trickle writer.
  *

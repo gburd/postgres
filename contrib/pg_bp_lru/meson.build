@@ -41,6 +41,7 @@ tests += {
       't/003_aio_reservation_pool.pl',
       't/004_huge_pages_pool.pl',
       't/005_numa_interleave_pool.pl',
+      't/006_algorithm_swap.pl',
     ],
   },
 }
