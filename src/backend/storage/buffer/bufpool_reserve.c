@@ -222,17 +222,73 @@ BufPoolReserveInit(void)
 }
 
 /*
+ * bufpool_reserve_coalesce -- merge adjacent free extents (caller holds mutex).
+ *
+ * The naive bump+exact-reuse scheme suffers external fragmentation: after a
+ * create/drop churn, free space can be split into several small extents so a
+ * larger pool is rejected despite sufficient aggregate free space.  Coalescing
+ * adjacent free extents (and best-fit + remainder splitting in the allocator)
+ * recovers that space without changing the on-the-hot-path representation
+ * (each pool still owns one contiguous sub-range, so BufPoolAddrAt stays
+ * base+offset).
+ *
+ * A contiguous request can still fail if a live pool physically separates two
+ * free regions; the complete fix for that is disjoint-extent pools, noted as
+ * the upgrade path in bufpool_internals.h.  Coalescing handles the common case
+ * (adjacent frees) cheaply.
+ */
+static void
+bufpool_reserve_coalesce(void)
+{
+	int			n = ReserveCtl->nextents;
+	BufPoolExtent *e = ReserveCtl->extents;
+
+	/* Insertion sort by offset (n <= MAX_BUFFER_POOLS, tiny). */
+	for (int i = 1; i < n; i++)
+	{
+		BufPoolExtent key = e[i];
+		int			j = i - 1;
+
+		while (j >= 0 && e[j].offset > key.offset)
+		{
+			e[j + 1] = e[j];
+			j--;
+		}
+		e[j + 1] = key;
+	}
+
+	/* Merge adjacent free extents. */
+	for (int i = 0; i + 1 < ReserveCtl->nextents;)
+	{
+		if (!e[i].in_use && !e[i + 1].in_use &&
+			e[i].offset + e[i].size == e[i + 1].offset)
+		{
+			e[i].size += e[i + 1].size;
+			memmove(&e[i + 1], &e[i + 2],
+					(ReserveCtl->nextents - i - 2) * sizeof(BufPoolExtent));
+			ReserveCtl->nextents--;
+		}
+		else
+			i++;
+	}
+}
+
+/*
  * BufPoolReserveAlloc -- reserve a sub-range of the requested size.
  *
  * Returns the offset into the reservation, or (Size) -1 if the feature is
  * off or there is no room.  Does NOT commit memory; call BufPoolCommit next.
  * The caller (pool create) records the offset in the pool descriptor.
+ *
+ * Uses coalescing + best-fit + remainder splitting to resist external
+ * fragmentation; see bufpool_reserve_coalesce.
  */
 Size
 BufPoolReserveAlloc(Size size)
 {
 	Size		offset;
 	long		pgsz = sysconf(_SC_PAGESIZE);
+	int			best;
 
 	if (!BufPoolReserveActive())
 		return (Size) -1;
@@ -242,21 +298,45 @@ BufPoolReserveAlloc(Size size)
 
 	SpinLockAcquire(&ReserveCtl->mutex);
 
-	/* First try to reuse a freed extent that is big enough. */
+	/* Recover adjacent free space before searching. */
+	bufpool_reserve_coalesce();
+
+	/*
+	 * Best-fit among free extents: the smallest free extent that still fits,
+	 * to leave larger holes intact for larger future pools.
+	 */
+	best = -1;
 	for (int i = 0; i < ReserveCtl->nextents; i++)
 	{
 		BufPoolExtent *e = &ReserveCtl->extents[i];
 
-		if (!e->in_use && e->size >= size)
-		{
-			e->in_use = true;
-			offset = e->offset;
-			SpinLockRelease(&ReserveCtl->mutex);
-			return offset;
-		}
+		if (!e->in_use && e->size >= size &&
+			(best < 0 || e->size < ReserveCtl->extents[best].size))
+			best = i;
 	}
 
-	/* Otherwise bump-allocate from the tail. */
+	if (best >= 0)
+	{
+		BufPoolExtent *e = &ReserveCtl->extents[best];
+
+		offset = e->offset;
+
+		/* Split the remainder off as a new free extent, if room to track it. */
+		if (e->size > size && ReserveCtl->nextents < MAX_BUFFER_POOLS)
+		{
+			BufPoolExtent *rem = &ReserveCtl->extents[ReserveCtl->nextents++];
+
+			rem->offset = offset + size;
+			rem->size = e->size - size;
+			rem->in_use = false;
+			e->size = size;
+		}
+		e->in_use = true;
+		SpinLockRelease(&ReserveCtl->mutex);
+		return offset;
+	}
+
+	/* No suitable hole: bump-allocate from the tail. */
 	if (ReserveCtl->bump + size > resv_size ||
 		ReserveCtl->nextents >= MAX_BUFFER_POOLS)
 	{

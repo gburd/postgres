@@ -43,6 +43,7 @@
 #include "storage/latch.h"
 #include "storage/lwlock.h"
 #include "storage/pmsignal.h"
+#include "storage/bufpool_internals.h"
 #include "storage/proc.h"
 #include "storage/shmem.h"
 #include "tcop/tcopprot.h"
@@ -920,6 +921,14 @@ IoWorkerMain(const void *startup_data, size_t startup_data_len)
 				set_ps_display(cmd);
 			}
 #endif
+
+			/*
+			 * Ensure reservation-backed buffer pools are mapped in this worker
+			 * before it reads/writes their buffer memory at the issuer's
+			 * (same) addresses.  A pool committed after this worker forked is
+			 * not yet mapped here; this re-maps the committed sub-ranges.
+			 */
+			BufPoolAttachReservationPools();
 
 			/*
 			 * We don't expect this to ever fail with ERROR or FATAL, no need

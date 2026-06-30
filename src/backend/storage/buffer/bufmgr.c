@@ -2024,16 +2024,20 @@ AsyncReadBuffers(ReadBuffersOperation *operation, int *nblocks_progress)
 		ioh_flags |= PGAIO_HF_REFERENCES_LOCAL;
 
 	/*
-	 * Dynamic buffer pools store buffer data in DSM segments, which are
-	 * mapped at process-specific addresses.  IO workers cannot access these
-	 * buffers, so force synchronous (in-process) I/O.
+	 * Pool buffers whose memory is NOT at the same address in every process
+	 * (legacy per-pool DSM pools) cannot be handed to IO workers, which map
+	 * the segment at a different address; force synchronous (in-process) I/O
+	 * for those.  Reservation-backed pools map at the same address in every
+	 * backend and IO worker, so their buffers can use asynchronous I/O like
+	 * the default pool (the worker re-maps the committed sub-range on demand;
+	 * see pgaio worker reopen path).
 	 */
 	if (persistence != RELPERSISTENCE_TEMP)
 	{
 		BufferDesc *buf_hdr = GetBufferDescriptor(buffers[nblocks_done] - 1);
 		BufferPoolDesc *pool = GetPoolForBufferId(buf_hdr->buf_id);
 
-		if (PoolIsDynamic(pool))
+		if (PoolNeedsDsmAttach(pool))
 			ioh_flags |= PGAIO_HF_REFERENCES_LOCAL;
 	}
 

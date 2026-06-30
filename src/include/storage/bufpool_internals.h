@@ -200,6 +200,19 @@ typedef struct BufferPoolDesc
 	Size		bp_resv_offset;
 	Size		bp_resv_size;
 
+	/*
+	 * Fragmentation note: bp_resv_offset/bp_resv_size describe a SINGLE
+	 * contiguous sub-range.  The reservation allocator coalesces adjacent
+	 * freed extents and uses best-fit, which recovers most fragmented space,
+	 * but a contiguous request can still be denied if a live pool physically
+	 * separates two free regions even when aggregate free space suffices.
+	 * The complete fix is to let a pool own several disjoint extents: replace
+	 * these two fields with a small extent table {offset,len}[] and map block i
+	 * through it.  Deferred (YAGNI) -- it adds an indirection to the hot
+	 * BufPoolAddrAt path, so it is only worth it if coalescing proves
+	 * insufficient in practice.
+	 */
+
 	/* Trickle writer background worker (stored inline for cross-backend use) */
 	int			bp_trickle_slot;	/* BGW slot (-1 = none) */
 	uint64		bp_trickle_generation;	/* BGW generation */
@@ -417,6 +430,7 @@ extern Size BufPoolReserveAlloc(Size size);
 extern void BufPoolReserveFree(Size offset);
 extern void *BufPoolAddrAt(Size offset);
 extern void *BufPoolAttachLocal(Size offset, Size size);
+extern void BufPoolAttachReservationPools(void);
 extern bool BufPoolCommit(Size offset, Size size, bool huge);
 extern void BufPoolDecommit(Size offset, Size size);
 

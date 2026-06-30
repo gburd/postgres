@@ -38,6 +38,7 @@ tests += {
     'tests': [
       't/001_drop_concurrency.pl',
       't/002_reservation_pool.pl',
+      't/003_aio_reservation_pool.pl',
     ],
   },
 }

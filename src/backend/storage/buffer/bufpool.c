@@ -27,6 +27,8 @@
 #include "postmaster/interrupt.h"
 #include "storage/ipc.h"
 #include "storage/buf_internals.h"
+#include "storage/aio.h"
+#include "storage/proclist.h"
 #include "storage/latch.h"
 #include "storage/proc.h"
 #include "storage/procsignal.h"
@@ -702,6 +704,35 @@ GetPoolForBufferId(int buf_id)
 }
 
 /*
+ * BufPoolAttachReservationPools -- map all active reservation-backed pools
+ *		into this process's address space.
+ *
+ * Called by IO workers before performing buffer I/O.  An IO worker reads and
+ * writes buffer memory using the issuer's virtual addresses (carried in the
+ * shared iovec).  For reservation-backed pools those addresses are the same
+ * in every process, but a MAP_FIXED commit only updates the committing
+ * backend's page tables: an IO worker that forked before a pool was created
+ * must re-map the committed sub-range before dereferencing its addresses, or
+ * it SIGSEGVs.  This attaches every active reservation pool (idempotent and
+ * cheap -- one mmap per not-yet-mapped pool).  Legacy DSM pools are skipped;
+ * their buffers are never handed to IO workers (forced synchronous I/O).
+ */
+void
+BufPoolAttachReservationPools(void)
+{
+	for (int i = 1; i < NBufferPools; i++)
+	{
+		BufferPoolDesc *pool = &BufferPoolDescs[i];
+
+		if (!pool->bp_active || !pool->bp_resv_backed)
+			continue;
+		if (PoolLocalStates[i].attached)
+			continue;
+		(void) EnsurePoolAttached(pool);
+	}
+}
+
+/*
  * Compute the next available buffer ID offset for dynamic pools.
  * Dynamic pool buffer IDs start at NBuffers and grow from there.
  */
@@ -942,6 +973,17 @@ CreateDynamicBufferPool(Oid bp_oid, const char *name, int nbuffers,
 		buf->buf_id = pool->bp_first_buf + i;
 		pg_atomic_init_u64(&buf->state, 0);
 		buf->wait_backend_pgprocno = INVALID_PROC_NUMBER;
+
+		/*
+		 * Initialize the AIO wait reference and the content-lock waiter list,
+		 * exactly as buf_init.c does for the default pool.  These were
+		 * previously omitted; it was latent only because pool buffers forced
+		 * synchronous I/O (io_wref unused) -- once AIO is enabled for
+		 * same-address pools, an uninitialized io_wref / lock_waiters corrupts
+		 * the buffer content-lock waitlist (Assert failure in UnlockBuffer).
+		 */
+		pgaio_wref_clear(&buf->io_wref);
+		proclist_init(&buf->lock_waiters);
 	}
 
 	/* Initialize I/O condition variables */
