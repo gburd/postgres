@@ -26,6 +26,7 @@
 #include "catalog/pg_bufferpool.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_proc.h"
+#include "catalog/pg_type.h"
 #include "commands/bufferpoolcmds.h"
 #include "commands/defrem.h"
 #include "fmgr.h"
@@ -469,6 +470,66 @@ AlterBufferPool(AlterBufferPoolStmt *stmt)
 			if (strcmp(def->defname, "direct_io") == 0)
 			{
 				pool->bp_use_direct_io = defGetBoolean(def);
+			}
+			else if (strcmp(def->defname, "handler") == 0)
+			{
+				/*
+				 * Online replacement-algorithm swap.  Resolve the new handler
+				 * function, then quiesce + destroy + recreate the pool under
+				 * the new routine (SwapDynamicBufferPoolAlgorithm).  Safe
+				 * because DestroyDynamicBufferPool emits the detach barrier and
+				 * waits for every backend to drop the pool before the old
+				 * strategy state goes away -- the unsafe in-place memset that an
+				 * earlier draft used (no quiescence) is gone.  The pool's cached
+				 * pages are dropped (it is a cache), so expect a cold pool right
+				 * after the swap.
+				 */
+				char	   *newhandler = defGetString(def);
+				List	   *hname = list_make1(makeString(newhandler));
+				Oid			funcargtypes[1] = {INTERNALOID};
+				Oid			newhoid;
+
+				if (!PoolIsDynamic(pool))
+					ereport(ERROR,
+							(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+							 errmsg("cannot change algorithm of buffer pool \"%s\": not a dynamic pool",
+									stmt->poolname)));
+
+				/* Handlers take one argument of type internal (see CreateBufferPool). */
+				newhoid = LookupFuncName(hname, 1, funcargtypes, false);
+				if (get_func_rettype(newhoid) != INTERNALOID)
+					ereport(ERROR,
+							(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+							 errmsg("function %s must return type %s",
+									newhandler, "internal")));
+
+				SwapDynamicBufferPoolAlgorithm(pool, newhoid);
+
+				/* Update pg_bufferpool.bphandler to the new handler. */
+				{
+					Relation	bprel;
+					HeapTuple	oldtup;
+					HeapTuple	newtup;
+					Datum		values[Natts_pg_bufferpool];
+					bool		nulls[Natts_pg_bufferpool];
+					bool		replaces[Natts_pg_bufferpool];
+
+					bprel = table_open(BufferPoolRelationId, RowExclusiveLock);
+					oldtup = SearchSysCache1(BUFFERPOOLOID, ObjectIdGetDatum(bpoid));
+					if (!HeapTupleIsValid(oldtup))
+						elog(ERROR, "cache lookup failed for buffer pool %u", bpoid);
+					memset(values, 0, sizeof(values));
+					memset(nulls, false, sizeof(nulls));
+					memset(replaces, false, sizeof(replaces));
+					values[Anum_pg_bufferpool_bphandler - 1] = ObjectIdGetDatum(newhoid);
+					replaces[Anum_pg_bufferpool_bphandler - 1] = true;
+					newtup = heap_modify_tuple(oldtup, RelationGetDescr(bprel),
+											   values, nulls, replaces);
+					CatalogTupleUpdate(bprel, &newtup->t_self, newtup);
+					ReleaseSysCache(oldtup);
+					heap_freetuple(newtup);
+					table_close(bprel, RowExclusiveLock);
+				}
 			}
 			else
 			{

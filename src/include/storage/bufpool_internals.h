@@ -409,6 +409,8 @@ extern BufferPoolDesc *CreateDynamicBufferPool(Oid bp_oid, const char *name,
 extern void DestroyDynamicBufferPool(BufferPoolDesc *pool);
 extern BufferPoolDesc *ResizeDynamicBufferPool(BufferPoolDesc *pool,
 											   int new_nbuffers);
+extern BufferPoolDesc *SwapDynamicBufferPoolAlgorithm(BufferPoolDesc *pool,
+													  Oid new_handler_oid);
 extern void BufferPoolStartupInit(void);
 
 /*
