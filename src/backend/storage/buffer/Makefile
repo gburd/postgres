@@ -17,6 +17,7 @@ OBJS = \
 	buf_table.o \
 	bufmgr.o \
 	bufpool.o \
+	bufpool_reserve.o \
 	freelist.o \
 	jam_pool.o \
 	localbuf.o

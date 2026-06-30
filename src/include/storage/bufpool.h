@@ -271,4 +271,7 @@ extern PGDLLIMPORT int trickle_write_batch_size;
 /* GUC variable for RECYCLE pool sizing (0 = disabled) */
 extern PGDLLIMPORT int recycle_pool_buffers;
 
+/* GUC: max memory reservable across all buffer pools (blocks); 0 disables */
+extern PGDLLIMPORT int max_buffer_pool_memory;
+
 #endif							/* BUFPOOL_H */

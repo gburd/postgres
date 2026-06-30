@@ -27,6 +27,8 @@
 #include "postmaster/interrupt.h"
 #include "storage/ipc.h"
 #include "storage/buf_internals.h"
+#include "storage/aio.h"
+#include "storage/proclist.h"
 #include "storage/latch.h"
 #include "storage/proc.h"
 #include "storage/procsignal.h"
@@ -267,14 +269,35 @@ EnsurePoolAttached(BufferPoolDesc *pool)
 	if (likely(local->attached))
 		return local;
 
-	/* First access from this backend: attach to the DSM segment */
-	local->seg = dsm_attach(pool->bp_dsm_handle);
-	if (local->seg == NULL)
-		elog(ERROR, "could not attach to DSM segment for buffer pool \"%s\"",
-			 NameStr(pool->bp_name));
-	dsm_pin_mapping(local->seg);
+	if (pool->bp_resv_backed)
+	{
+		/*
+		 * Reservation-backed pool: the memory is at the same virtual address
+		 * in every backend, but a MAP_FIXED commit only updates the
+		 * committing backend's page tables.  A backend that mapped the
+		 * reservation (PROT_NONE) before this pool was created must re-map
+		 * the committed sub-range read/write in its own address space before
+		 * touching the pool.  BufPoolAttachLocal does that at the same
+		 * address (idempotent for the creating backend).
+		 */
+		base = (char *) BufPoolAttachLocal(pool->bp_resv_offset,
+										   pool->bp_resv_size);
+		if (base == NULL)
+			elog(ERROR, "could not map reservation for buffer pool \"%s\"",
+				 NameStr(pool->bp_name));
+		local->seg = NULL;
+	}
+	else
+	{
+		/* First access from this backend: attach to the DSM segment */
+		local->seg = dsm_attach(pool->bp_dsm_handle);
+		if (local->seg == NULL)
+			elog(ERROR, "could not attach to DSM segment for buffer pool \"%s\"",
+				 NameStr(pool->bp_name));
+		dsm_pin_mapping(local->seg);
 
-	base = dsm_segment_address(local->seg);
+		base = dsm_segment_address(local->seg);
+	}
 
 	/* Resolve offsets to virtual addresses */
 	local->descriptors = (BufferDescPadded *) (base + pool->bp_desc_offset);
@@ -504,7 +527,7 @@ BufferPoolStartupInit(void)
 		recycle_pool = CreateDynamicBufferPool(InvalidOid, "recycle",
 											   recycle_pool_buffers,
 											   &recycle_pool_routine,
-											   InvalidOid);
+											   InvalidOid, false);
 		recycle_pool->bp_kind = BUFPOOL_RECYCLE;
 		elog(LOG, "created RECYCLE pool with %d buffers", recycle_pool_buffers);
 	}
@@ -539,7 +562,7 @@ BufferPoolStartupInit(void)
 			if (pool_nbuffers >= 16)
 				CreateDynamicBufferPool(bpform->oid, poolname,
 										pool_nbuffers, routine,
-										bpform->bphandler);
+										bpform->bphandler, false);
 			else
 				elog(WARNING, "buffer pool \"%s\" has too few buffers (%d), skipping",
 					 poolname, pool_nbuffers);
@@ -681,6 +704,35 @@ GetPoolForBufferId(int buf_id)
 }
 
 /*
+ * BufPoolAttachReservationPools -- map all active reservation-backed pools
+ *		into this process's address space.
+ *
+ * Called by IO workers before performing buffer I/O.  An IO worker reads and
+ * writes buffer memory using the issuer's virtual addresses (carried in the
+ * shared iovec).  For reservation-backed pools those addresses are the same
+ * in every process, but a MAP_FIXED commit only updates the committing
+ * backend's page tables: an IO worker that forked before a pool was created
+ * must re-map the committed sub-range before dereferencing its addresses, or
+ * it SIGSEGVs.  This attaches every active reservation pool (idempotent and
+ * cheap -- one mmap per not-yet-mapped pool).  Legacy DSM pools are skipped;
+ * their buffers are never handed to IO workers (forced synchronous I/O).
+ */
+void
+BufPoolAttachReservationPools(void)
+{
+	for (int i = 1; i < NBufferPools; i++)
+	{
+		BufferPoolDesc *pool = &BufferPoolDescs[i];
+
+		if (!pool->bp_active || !pool->bp_resv_backed)
+			continue;
+		if (PoolLocalStates[i].attached)
+			continue;
+		(void) EnsurePoolAttached(pool);
+	}
+}
+
+/*
  * Compute the next available buffer ID offset for dynamic pools.
  * Dynamic pool buffer IDs start at NBuffers and grow from there.
  */
@@ -721,7 +773,8 @@ ComputeNextBufferIdBase(void)
  */
 BufferPoolDesc *
 CreateDynamicBufferPool(Oid bp_oid, const char *name, int nbuffers,
-						const BufferPoolRoutine *routine, Oid handler_oid)
+						const BufferPoolRoutine *routine, Oid handler_oid,
+						bool use_huge_pages)
 {
 	BufferPoolDesc *pool;
 	dsm_segment *seg;
@@ -813,16 +866,58 @@ CreateDynamicBufferPool(Oid bp_oid, const char *name, int nbuffers,
 	total_size = descs_size + PG_IO_ALIGN_SIZE + blocks_size + io_cvs_size +
 		algo_size + ckpt_size + locks_size + hash_size;
 
-	/* Create and pin DSM segment */
-	seg = dsm_create(total_size, 0);
-	dsm_pin_segment(seg);
-	dsm_pin_mapping(seg);
-
-	dsm_base = dsm_segment_address(seg);
-
-	/* Carve DSM into per-pool arrays and record offsets */
+	/*
+	 * Acquire the pool's base memory.  Preferred path: a committed sub-range
+	 * of the address-space reservation, which maps at the same virtual
+	 * address in every backend (enables same-address pointers, AIO on pool
+	 * buffers, and online resize).  Fallback path (reservation disabled or
+	 * unsupported, or reservation exhausted): a per-pool DSM segment, attached
+	 * per backend via offsets.
+	 */
 	pool = &BufferPoolDescs[slot];
 	MemSet(pool, 0, sizeof(BufferPoolDesc));
+
+	if (BufPoolReserveActive())
+	{
+		Size		resv_off = BufPoolReserveAlloc(total_size);
+
+		if (resv_off != (Size) -1)
+		{
+			if (!BufPoolCommit(resv_off, total_size, use_huge_pages))
+			{
+				BufPoolReserveFree(resv_off);
+				ereport(ERROR,
+						(errcode(ERRCODE_OUT_OF_MEMORY),
+						 errmsg("could not commit memory for buffer pool \"%s\"",
+								name)));
+			}
+			pool->bp_resv_backed = true;
+			pool->bp_resv_offset = resv_off;
+			pool->bp_resv_size = total_size;
+			pool->bp_resv_huge = use_huge_pages;
+			pool->bp_dsm_handle = InvalidDsmHandle;
+			seg = NULL;
+			dsm_base = (char *) BufPoolAddrAt(resv_off);
+		}
+		else
+		{
+			/* reservation exhausted: fall back to a private DSM segment */
+			seg = dsm_create(total_size, 0);
+			dsm_pin_segment(seg);
+			dsm_pin_mapping(seg);
+			dsm_base = dsm_segment_address(seg);
+		}
+	}
+	else
+	{
+		/* Create and pin DSM segment (legacy / unsupported-platform path) */
+		seg = dsm_create(total_size, 0);
+		dsm_pin_segment(seg);
+		dsm_pin_mapping(seg);
+		dsm_base = dsm_segment_address(seg);
+	}
+
+	/* Carve the base region into per-pool arrays and record offsets */
 
 	offset = 0;
 
@@ -880,6 +975,17 @@ CreateDynamicBufferPool(Oid bp_oid, const char *name, int nbuffers,
 		buf->buf_id = pool->bp_first_buf + i;
 		pg_atomic_init_u64(&buf->state, 0);
 		buf->wait_backend_pgprocno = INVALID_PROC_NUMBER;
+
+		/*
+		 * Initialize the AIO wait reference and the content-lock waiter list,
+		 * exactly as buf_init.c does for the default pool.  These were
+		 * previously omitted; it was latent only because pool buffers forced
+		 * synchronous I/O (io_wref unused) -- once AIO is enabled for
+		 * same-address pools, an uninitialized io_wref / lock_waiters corrupts
+		 * the buffer content-lock waitlist (Assert failure in UnlockBuffer).
+		 */
+		pgaio_wref_clear(&buf->io_wref);
+		proclist_init(&buf->lock_waiters);
 	}
 
 	/* Initialize I/O condition variables */
@@ -951,7 +1057,13 @@ CreateDynamicBufferPool(Oid bp_oid, const char *name, int nbuffers,
 	}
 
 	namestrcpy(&pool->bp_name, name);
-	pool->bp_dsm_handle = dsm_segment_handle(seg);
+	/*
+	 * Record the DSM handle only for the fallback DSM path.  Reservation-
+	 * backed pools already set bp_resv_* above and keep bp_dsm_handle =
+	 * InvalidDsmHandle (PoolNeedsDsmAttach stays false for them).
+	 */
+	if (seg != NULL)
+		pool->bp_dsm_handle = dsm_segment_handle(seg);
 	pool->bp_trickle_slot = -1;
 	pool->bp_use_direct_io = false;
 
@@ -1096,12 +1208,27 @@ DestroyDynamicBufferPool(BufferPoolDesc *pool)
 	if (pool->bp_routine->shutdown && local->attached && local->strategy_data)
 		pool->bp_routine->shutdown(local->strategy_data);
 
-	/* Unpin and detach DSM segment */
-	dsm_unpin_segment(pool->bp_dsm_handle);
-	if (local->seg)
+	/* Release the pool's backing memory. */
+	if (pool->bp_resv_backed)
 	{
-		dsm_detach(local->seg);
-		local->seg = NULL;
+		/*
+		 * Reservation-backed: decommit the sub-range (reclaims physical
+		 * memory and makes stale accesses fault) and return it to the
+		 * reservation allocator.  The barrier above guarantees no backend is
+		 * still touching it.
+		 */
+		BufPoolDecommit(pool->bp_resv_offset, pool->bp_resv_size);
+		BufPoolReserveFree(pool->bp_resv_offset);
+	}
+	else
+	{
+		/* DSM-backed (fallback path): unpin and detach the DSM segment. */
+		dsm_unpin_segment(pool->bp_dsm_handle);
+		if (local->seg)
+		{
+			dsm_detach(local->seg);
+			local->seg = NULL;
+		}
 	}
 
 	/* Clear the creating backend's local state */
@@ -1116,6 +1243,10 @@ DestroyDynamicBufferPool(BufferPoolDesc *pool)
 
 	/* Clear the descriptor */
 	pool->bp_dsm_handle = InvalidDsmHandle;
+	pool->bp_resv_backed = false;
+	pool->bp_resv_offset = 0;
+	pool->bp_resv_size = 0;
+	pool->bp_resv_huge = false;
 	pool->bp_trickle_slot = -1;
 	pool->bp_routine = NULL;
 	pool->bp_oid = InvalidOid;
@@ -1168,6 +1299,7 @@ ResizeDynamicBufferPool(BufferPoolDesc *pool, int new_nbuffers)
 	Oid			bp_oid;
 	Oid			handler_oid;
 	NameData	pool_name;
+	bool		save_huge;
 	const BufferPoolRoutine *routine;
 	Datum		datum;
 
@@ -1179,6 +1311,7 @@ ResizeDynamicBufferPool(BufferPoolDesc *pool, int new_nbuffers)
 	/* Save pool identity before destruction */
 	bp_oid = pool->bp_oid;
 	handler_oid = pool->bp_handler_oid;
+	save_huge = pool->bp_resv_huge;
 	namestrcpy(&pool_name, NameStr(pool->bp_name));
 
 	/* Resolve the handler to get the routine vtable */
@@ -1196,9 +1329,9 @@ ResizeDynamicBufferPool(BufferPoolDesc *pool, int new_nbuffers)
 	/* Destroy: flushes dirty buffers, terminates trickle writer, frees DSM */
 	DestroyDynamicBufferPool(pool);
 
-	/* Recreate with new size */
+	/* Recreate with new size, preserving the huge-pages choice. */
 	pool = CreateDynamicBufferPool(bp_oid, NameStr(pool_name), new_nbuffers,
-								   routine, handler_oid);
+								   routine, handler_oid, save_huge);
 
 	return pool;
 }
@@ -1317,14 +1450,32 @@ TrickleWriterMain(Datum main_arg)
 
 		ResetLatch(MyLatch);
 
-		if (ConfigReloadPending)
-		{
-			ConfigReloadPending = false;
-			ProcessConfigFile(PGC_SIGHUP);
-		}
+		/*
+		 * Handle config reload, shutdown, AND ProcSignalBarriers.  The last is
+		 * essential: DROP/RESIZE of a pool emits PROCSIGNAL_BARRIER_BUFPOOL_DETACH
+		 * and waits for every process -- including this trickle writer -- to
+		 * absorb it before tearing down the pool's memory.  Absorbing it here
+		 * (rather than only the old ConfigReload/Shutdown checks) prevents the
+		 * destroyer's WaitForProcSignalBarrier from stalling on us.
+		 */
+		ProcessMainLoopInterrupts();
 
+		/*
+		 * Once the pool is marked inactive (by DestroyDynamicBufferPool, before
+		 * it emits the detach barrier), stop touching the pool's memory but do
+		 * NOT exit on our own: exiting here races the destroyer's
+		 * TerminateBackgroundWorker/WaitForBackgroundWorkerShutdown using a
+		 * reconstructed handle.  Idle until we receive SIGTERM from the
+		 * destroyer (ShutdownRequestPending, handled by ProcessMainLoopInterrupts
+		 * above), which is the single, well-defined exit path.
+		 */
 		if (!pool->bp_active)
-			break;
+		{
+			(void) WaitLatch(MyLatch,
+							 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+							 1000L, WAIT_EVENT_BGWRITER_HIBERNATE);
+			continue;
+		}
 
 		/*
 		 * Use the algorithm's trickle iterator if available.  This lets the
@@ -1476,7 +1627,7 @@ RegisterPoolTrickleWriter(BufferPoolDesc *pool, int slot)
 	snprintf(bgw.bgw_name, BGW_MAXLEN, "trickle writer for pool %s",
 			 NameStr(pool->bp_name));
 	snprintf(bgw.bgw_type, BGW_MAXLEN, "buffer pool trickle writer");
-	bgw.bgw_restart_time = 5;	/* restart after 5 seconds on crash */
+	bgw.bgw_restart_time = BGW_NEVER_RESTART;	/* one-shot per pool; drop/resize re-registers */
 	bgw.bgw_notify_pid = MyProcPid;
 	bgw.bgw_main_arg = Int32GetDatum(slot);
 
@@ -1502,6 +1653,7 @@ void
 TerminatePoolTrickleWriter(BufferPoolDesc *pool)
 {
 	BackgroundWorkerHandle *handle;
+	pid_t		pid;
 
 	if (pool->bp_trickle_slot < 0)
 		return;
@@ -1511,7 +1663,28 @@ TerminatePoolTrickleWriter(BufferPoolDesc *pool)
 										  pool->bp_trickle_generation);
 
 	TerminateBackgroundWorker(handle);
-	WaitForBackgroundWorkerShutdown(handle);
+
+	/*
+	 * Poll for shutdown rather than WaitForBackgroundWorkerShutdown(): the
+	 * latter blocks on a notify latch delivered to the worker's registered
+	 * bgw_notify_pid, which is the backend that CREATED the pool, not
+	 * necessarily the one running DROP/RESIZE.  A reconstructed handle in a
+	 * different backend would wait forever.  GetBackgroundWorkerPid() reads
+	 * the slot state directly and needs no notify registration.
+	 */
+	for (;;)
+	{
+		BgwHandleStatus status = GetBackgroundWorkerPid(handle, &pid);
+
+		if (status == BGWH_STOPPED)
+			break;
+
+		(void) WaitLatch(MyLatch,
+						 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+						 10L, WAIT_EVENT_BGWORKER_SHUTDOWN);
+		ResetLatch(MyLatch);
+		CHECK_FOR_INTERRUPTS();
+	}
 
 	pfree(handle);
 	pool->bp_trickle_slot = -1;
