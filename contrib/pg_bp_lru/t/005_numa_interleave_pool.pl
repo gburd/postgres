@@ -2,7 +2,7 @@
 #
 # NUMA interleaving of buffer pool memory (P5).
 #
-# When buffer_pool_numa_interleave is on, a reservation-backed pool's memory
+# When buffer_pool_numa is on, a reservation-backed pool's memory
 # is interleaved across NUMA nodes on multi-node systems.  The placement is
 # algorithm-agnostic (it acts on the pool's committed memory, not the eviction
 # policy), gated on USE_LIBNUMA + numa_available() + more than one node.  On a
@@ -21,12 +21,12 @@ $node->init;
 $node->append_conf('postgresql.conf', <<'CONF');
 shared_preload_libraries = 'pg_bp_lru'
 max_buffer_pool_memory = 64MB
-buffer_pool_numa_interleave = on
+buffer_pool_numa = on
 CONF
 $node->start;
 
-is($node->safe_psql('postgres', 'SHOW buffer_pool_numa_interleave;'),
-	'on', 'buffer_pool_numa_interleave GUC accepted');
+is($node->safe_psql('postgres', 'SHOW buffer_pool_numa;'),
+	'on', 'buffer_pool_numa GUC accepted');
 
 $node->safe_psql('postgres', 'CREATE EXTENSION pg_bp_lru;');
 

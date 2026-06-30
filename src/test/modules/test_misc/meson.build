@@ -25,6 +25,7 @@ tests += {
       't/014_log_statement_max_length.pl',
       't/015_temp_schema_exit_deferrable.pl',
       't/014_buffer_pool_reservation.pl',
+      't/015_buffer_pool_numa.pl',
     ],
     # The injection points are cluster-wide, so disable installcheck
     'runningcheck': false,

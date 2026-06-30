@@ -1863,6 +1863,7 @@ NullTest
 NullTestType
 NullableDatum
 NullingRelsMatch
+NumaClockControl
 Numeric
 NumericAggState
 NumericDigit

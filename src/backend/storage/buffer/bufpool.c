@@ -21,8 +21,6 @@
 #include "postgres.h"
 
 #include "miscadmin.h"
-#include "port/pg_bitutils.h"
-#include "port/pg_numa.h"
 #include "postmaster/bgworker.h"
 #include "postmaster/interrupt.h"
 #include "storage/ipc.h"
@@ -96,35 +94,6 @@ int			recycle_pool_buffers = 0;
 
 static void BufferPoolShmemRequest(void *arg);
 static void BufferPoolShmemInit(void *arg);
-
-/*
- * ComputePoolPartitions -- compute the number of mapping lock partitions
- * for a buffer pool of the given size.
- *
- * Formula: 1 partition per 128 buffers, minimum max(4, numa_nodes),
- * maximum NUM_BUFFER_PARTITIONS (128), rounded up to a power of 2.
- *
- * Scan-only pools (scan_only = true) use exactly 1 partition since
- * sequential scan access patterns don't benefit from partitioning.
- */
-int
-ComputePoolPartitions(int nbuffers, bool scan_only)
-{
-	int			num_partitions;
-	int			min_partitions;
-
-	if (scan_only)
-		return 1;
-
-	/* NUMA-aware minimum: at least one partition per NUMA node */
-	min_partitions = Max(4, pg_numa_get_max_node() + 1);
-
-	num_partitions = Max(nbuffers / 128, min_partitions);
-	num_partitions = Min(num_partitions, NUM_BUFFER_PARTITIONS);
-
-	/* Round up to next power of 2 for hash partitioning */
-	return pg_nextpower2_32(num_partitions);
-}
 
 const ShmemCallbacks BufferPoolShmemCallbacks = {
 	.request_fn = BufferPoolShmemRequest,
