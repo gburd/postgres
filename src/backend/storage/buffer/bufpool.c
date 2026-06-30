@@ -162,6 +162,11 @@ BufferPoolShmemRequest(void *arg)
 					   .alignment = sizeof(pg_atomic_uint32),
 					   .ptr = (void **) &UnclaimedBufferCount,
 		);
+	ShmemRequestStruct(.name = "Buffer Pool Reservation Control",
+					   .size = BufPoolReserveShmemSize(),
+					   .alignment = PG_CACHE_LINE_SIZE,
+					   .ptr = (void **) &BufPoolReserveCtlPtr,
+		);
 }
 
 /*
