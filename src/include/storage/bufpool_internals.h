@@ -435,6 +435,7 @@ extern void *BufPoolAttachLocal(Size offset, Size size);
 extern void BufPoolAttachReservationPools(void);
 extern bool BufPoolCommit(Size offset, Size size, bool huge);
 extern void BufPoolDecommit(Size offset, Size size);
+extern void BufPoolNumaInterleave(void *addr, Size size);
 
 /*
  * Open-addressed hash table functions for dynamic pool buffer mapping.

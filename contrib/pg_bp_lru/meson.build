@@ -40,6 +40,7 @@ tests += {
       't/002_reservation_pool.pl',
       't/003_aio_reservation_pool.pl',
       't/004_huge_pages_pool.pl',
+      't/005_numa_interleave_pool.pl',
     ],
   },
 }

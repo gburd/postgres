@@ -401,6 +401,13 @@
   boot_val => '"clock"',
 },
 
+{ name => 'buffer_pool_numa_interleave', type => 'bool', context => 'PGC_POSTMASTER', group => 'RESOURCES_MEM',
+  short_desc => 'Interleave buffer pool memory across NUMA nodes.',
+  long_desc => 'When on, the memory of reservation-backed buffer pools is interleaved across NUMA nodes on multi-node systems. Has no effect on single-node or non-NUMA systems, or when max_buffer_pool_memory is 0.',
+  variable => 'buffer_pool_numa_interleave',
+  boot_val => 'false',
+},
+
 { name => 'bytea_output', type => 'enum', context => 'PGC_USERSET', group => 'CLIENT_CONN_STATEMENT',
   short_desc => 'Sets the output format for bytea.',
   variable => 'bytea_output',
