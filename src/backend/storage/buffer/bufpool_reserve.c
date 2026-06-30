@@ -311,6 +311,43 @@ BufPoolAddrAt(Size offset)
 }
 
 /*
+ * BufPoolAttachLocal -- map a committed sub-range read/write in THIS backend.
+ *
+ * A MAP_FIXED commit changes only the committing process's page tables, not
+ * those of processes that already mapped the reservation (PROT_NONE) before
+ * the commit -- e.g. backends or IO workers forked before the pool existed.
+ * Such a process must re-map the committed sub-range in its own address space
+ * before touching the pool.  Because we map at the same address backed by the
+ * same memfd offset, the result is the identical shared pages at the same
+ * virtual address.  Idempotent and cheap (one mmap, no segment registration).
+ *
+ * Returns the (unchanged) base address of the sub-range, or NULL on failure.
+ */
+void *
+BufPoolAttachLocal(Size offset, Size size)
+{
+#ifdef BUFPOOL_RESERVE_SUPPORTED
+	void	   *want;
+	void	   *p;
+
+	Assert(BufPoolReserveActive());
+	Assert(offset + size <= resv_size);
+
+	want = resv_base + offset;
+	p = mmap(want, size, PROT_READ | PROT_WRITE,
+			 MAP_SHARED | MAP_FIXED, resv_fd, offset);
+	if (p == MAP_FAILED)
+		return NULL;
+	Assert(p == want);
+	return p;
+#else
+	(void) offset;
+	(void) size;
+	return NULL;
+#endif
+}
+
+/*
  * BufPoolCommit -- back a sub-range with real, shared, writable pages.
  *
  * Returns true on success.  huge requests MAP_HUGETLB where available; on

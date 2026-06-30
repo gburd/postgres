@@ -183,7 +183,22 @@ typedef struct BufferPoolDesc
 	int			bp_hash_nentries;
 
 	/* DSM segment handle for cross-backend attachment */
-	dsm_handle	bp_dsm_handle;	/* InvalidDsmHandle for default pool */
+	dsm_handle	bp_dsm_handle;	/* InvalidDsmHandle for default pool, and for
+								 * reservation-backed pools */
+
+	/*
+	 * Reservation backing (same-address pools).  When bp_resv_backed is true,
+	 * the pool's memory is a committed sub-range of the address-space
+	 * reservation at offset bp_resv_offset (size bp_resv_size), mapped at the
+	 * same virtual address in every backend.  The bp_*_offset fields below are
+	 * then offsets within that sub-range and resolve to absolute addresses via
+	 * BufPoolAddrAt(bp_resv_offset) + bp_*_offset -- identical in all backends,
+	 * so no per-backend DSM attach is needed.  Mutually exclusive with a valid
+	 * bp_dsm_handle.
+	 */
+	bool		bp_resv_backed;
+	Size		bp_resv_offset;
+	Size		bp_resv_size;
 
 	/* Trickle writer background worker (stored inline for cross-backend use) */
 	int			bp_trickle_slot;	/* BGW slot (-1 = none) */
@@ -312,13 +327,28 @@ extern int *SharedMaxBufferNumber;
 #endif
 
 /*
- * PoolIsDynamic -- check if a pool is a DSM-backed dynamic pool.
+ * PoolIsDynamic -- check if a pool is a non-default (dynamic) pool.
  *
- * The default pool has bp_dsm_handle == InvalidDsmHandle.
- * Dynamic pools have a valid DSM handle.
+ * The default pool (slot 0) uses the global BufferDescriptors/BufferBlocks
+ * arrays and SharedBufHash.  Every other pool -- whether backed by its own
+ * DSM segment or by a committed sub-range of the address-space reservation --
+ * uses the per-pool descriptor/block/hash path.  Both kinds are "dynamic."
  */
 static inline bool
 PoolIsDynamic(BufferPoolDesc *pool)
+{
+	return pool->bp_dsm_handle != InvalidDsmHandle || pool->bp_resv_backed;
+}
+
+/*
+ * PoolNeedsDsmAttach -- does this pool require a per-backend DSM mapping?
+ *
+ * True only for legacy DSM-backed pools (fallback path).  Reservation-backed
+ * pools are mapped at the same address in every backend, so they need no
+ * per-backend attach -- their pointers resolve via BufPoolAddrAt().
+ */
+static inline bool
+PoolNeedsDsmAttach(BufferPoolDesc *pool)
 {
 	return pool->bp_dsm_handle != InvalidDsmHandle;
 }
@@ -386,6 +416,7 @@ extern bool BufPoolReserveActive(void);
 extern Size BufPoolReserveAlloc(Size size);
 extern void BufPoolReserveFree(Size offset);
 extern void *BufPoolAddrAt(Size offset);
+extern void *BufPoolAttachLocal(Size offset, Size size);
 extern bool BufPoolCommit(Size offset, Size size, bool huge);
 extern void BufPoolDecommit(Size offset, Size size);
 

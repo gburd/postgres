@@ -267,14 +267,35 @@ EnsurePoolAttached(BufferPoolDesc *pool)
 	if (likely(local->attached))
 		return local;
 
-	/* First access from this backend: attach to the DSM segment */
-	local->seg = dsm_attach(pool->bp_dsm_handle);
-	if (local->seg == NULL)
-		elog(ERROR, "could not attach to DSM segment for buffer pool \"%s\"",
-			 NameStr(pool->bp_name));
-	dsm_pin_mapping(local->seg);
+	if (pool->bp_resv_backed)
+	{
+		/*
+		 * Reservation-backed pool: the memory is at the same virtual address
+		 * in every backend, but a MAP_FIXED commit only updates the
+		 * committing backend's page tables.  A backend that mapped the
+		 * reservation (PROT_NONE) before this pool was created must re-map
+		 * the committed sub-range read/write in its own address space before
+		 * touching the pool.  BufPoolAttachLocal does that at the same
+		 * address (idempotent for the creating backend).
+		 */
+		base = (char *) BufPoolAttachLocal(pool->bp_resv_offset,
+										   pool->bp_resv_size);
+		if (base == NULL)
+			elog(ERROR, "could not map reservation for buffer pool \"%s\"",
+				 NameStr(pool->bp_name));
+		local->seg = NULL;
+	}
+	else
+	{
+		/* First access from this backend: attach to the DSM segment */
+		local->seg = dsm_attach(pool->bp_dsm_handle);
+		if (local->seg == NULL)
+			elog(ERROR, "could not attach to DSM segment for buffer pool \"%s\"",
+				 NameStr(pool->bp_name));
+		dsm_pin_mapping(local->seg);
 
-	base = dsm_segment_address(local->seg);
+		base = dsm_segment_address(local->seg);
+	}
 
 	/* Resolve offsets to virtual addresses */
 	local->descriptors = (BufferDescPadded *) (base + pool->bp_desc_offset);
@@ -813,16 +834,57 @@ CreateDynamicBufferPool(Oid bp_oid, const char *name, int nbuffers,
 	total_size = descs_size + PG_IO_ALIGN_SIZE + blocks_size + io_cvs_size +
 		algo_size + ckpt_size + locks_size + hash_size;
 
-	/* Create and pin DSM segment */
-	seg = dsm_create(total_size, 0);
-	dsm_pin_segment(seg);
-	dsm_pin_mapping(seg);
-
-	dsm_base = dsm_segment_address(seg);
-
-	/* Carve DSM into per-pool arrays and record offsets */
+	/*
+	 * Acquire the pool's base memory.  Preferred path: a committed sub-range
+	 * of the address-space reservation, which maps at the same virtual
+	 * address in every backend (enables same-address pointers, AIO on pool
+	 * buffers, and online resize).  Fallback path (reservation disabled or
+	 * unsupported, or reservation exhausted): a per-pool DSM segment, attached
+	 * per backend via offsets.
+	 */
 	pool = &BufferPoolDescs[slot];
 	MemSet(pool, 0, sizeof(BufferPoolDesc));
+
+	if (BufPoolReserveActive())
+	{
+		Size		resv_off = BufPoolReserveAlloc(total_size);
+
+		if (resv_off != (Size) -1)
+		{
+			if (!BufPoolCommit(resv_off, total_size, false))
+			{
+				BufPoolReserveFree(resv_off);
+				ereport(ERROR,
+						(errcode(ERRCODE_OUT_OF_MEMORY),
+						 errmsg("could not commit memory for buffer pool \"%s\"",
+								name)));
+			}
+			pool->bp_resv_backed = true;
+			pool->bp_resv_offset = resv_off;
+			pool->bp_resv_size = total_size;
+			pool->bp_dsm_handle = InvalidDsmHandle;
+			seg = NULL;
+			dsm_base = (char *) BufPoolAddrAt(resv_off);
+		}
+		else
+		{
+			/* reservation exhausted: fall back to a private DSM segment */
+			seg = dsm_create(total_size, 0);
+			dsm_pin_segment(seg);
+			dsm_pin_mapping(seg);
+			dsm_base = dsm_segment_address(seg);
+		}
+	}
+	else
+	{
+		/* Create and pin DSM segment (legacy / unsupported-platform path) */
+		seg = dsm_create(total_size, 0);
+		dsm_pin_segment(seg);
+		dsm_pin_mapping(seg);
+		dsm_base = dsm_segment_address(seg);
+	}
+
+	/* Carve the base region into per-pool arrays and record offsets */
 
 	offset = 0;
 
@@ -951,7 +1013,13 @@ CreateDynamicBufferPool(Oid bp_oid, const char *name, int nbuffers,
 	}
 
 	namestrcpy(&pool->bp_name, name);
-	pool->bp_dsm_handle = dsm_segment_handle(seg);
+	/*
+	 * Record the DSM handle only for the fallback DSM path.  Reservation-
+	 * backed pools already set bp_resv_* above and keep bp_dsm_handle =
+	 * InvalidDsmHandle (PoolNeedsDsmAttach stays false for them).
+	 */
+	if (seg != NULL)
+		pool->bp_dsm_handle = dsm_segment_handle(seg);
 	pool->bp_trickle_slot = -1;
 	pool->bp_use_direct_io = false;
 
@@ -1096,12 +1164,27 @@ DestroyDynamicBufferPool(BufferPoolDesc *pool)
 	if (pool->bp_routine->shutdown && local->attached && local->strategy_data)
 		pool->bp_routine->shutdown(local->strategy_data);
 
-	/* Unpin and detach DSM segment */
-	dsm_unpin_segment(pool->bp_dsm_handle);
-	if (local->seg)
+	/* Release the pool's backing memory. */
+	if (pool->bp_resv_backed)
 	{
-		dsm_detach(local->seg);
-		local->seg = NULL;
+		/*
+		 * Reservation-backed: decommit the sub-range (reclaims physical
+		 * memory and makes stale accesses fault) and return it to the
+		 * reservation allocator.  The barrier above guarantees no backend is
+		 * still touching it.
+		 */
+		BufPoolDecommit(pool->bp_resv_offset, pool->bp_resv_size);
+		BufPoolReserveFree(pool->bp_resv_offset);
+	}
+	else
+	{
+		/* DSM-backed (fallback path): unpin and detach the DSM segment. */
+		dsm_unpin_segment(pool->bp_dsm_handle);
+		if (local->seg)
+		{
+			dsm_detach(local->seg);
+			local->seg = NULL;
+		}
 	}
 
 	/* Clear the creating backend's local state */
@@ -1116,6 +1199,9 @@ DestroyDynamicBufferPool(BufferPoolDesc *pool)
 
 	/* Clear the descriptor */
 	pool->bp_dsm_handle = InvalidDsmHandle;
+	pool->bp_resv_backed = false;
+	pool->bp_resv_offset = 0;
+	pool->bp_resv_size = 0;
 	pool->bp_trickle_slot = -1;
 	pool->bp_routine = NULL;
 	pool->bp_oid = InvalidOid;
