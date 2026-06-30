@@ -142,7 +142,7 @@
 #max_buffer_pool_memory = 0             # 0 disables same-address pools;
                                         # reserves address space for pools
                                         # (change requires restart)
-#buffer_pool_numa_interleave = off      # interleave pool memory across NUMA
+#buffer_pool_numa = off                 # NUMA-partition the buffer pool across
                                         # nodes (multi-node systems only)
                                         # (change requires restart)
 #huge_pages = try                       # on, off, or try
