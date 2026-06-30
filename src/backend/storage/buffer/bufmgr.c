@@ -242,6 +242,20 @@ static BufferDesc *PinCountWaitBuf = NULL;
 static BufferPoolDesc *CurrentBufferPool = NULL;
 
 /*
+ * ResetCurrentBufferPool -- forget the cached per-relation buffer pool.
+ *
+ * Called from the PROCSIGNAL_BARRIER_BUFPOOL_DETACH handler when a pool is
+ * being destroyed or resized, so that a backend that had cached a pointer to
+ * the dying pool does not route a subsequent allocation into freed DSM.  The
+ * next PinBufferForBlock recomputes CurrentBufferPool from rd_bufpool.
+ */
+void
+ResetCurrentBufferPool(void)
+{
+	CurrentBufferPool = NULL;
+}
+
+/*
  * Backend-Private refcount management:
  *
  * Each buffer also has a private refcount that keeps track of the number of

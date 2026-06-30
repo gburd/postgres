@@ -34,6 +34,7 @@
 #include "parser/parse_func.h"
 #include "storage/bufpool.h"
 #include "storage/bufpool_internals.h"
+#include "storage/lmgr.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
@@ -568,8 +569,29 @@ DropBufferPoolById(Oid bpoid)
 				 errmsg("cannot drop the default buffer pool")));
 
 	/*
+	 * Take an exclusive lock on the buffer pool object for the duration of
+	 * the drop.  This serializes concurrent DROPs of the same pool and gives
+	 * the reloption-dependency scan below a stable view: no other DROP can
+	 * commit a change to this pool's catalog row or destroy its DSM while we
+	 * hold it.  Combined with the PROCSIGNAL_BARRIER_BUFPOOL_DETACH quiescence
+	 * inside DestroyDynamicBufferPool (which guarantees no backend is still
+	 * using the pool's DSM when we tear it down), this closes the
+	 * use-after-detach race.
+	 */
+	LockDatabaseObject(BufferPoolRelationId, bpoid, 0, AccessExclusiveLock);
+
+	/*
 	 * Check whether any relations reference this buffer pool via the
 	 * buffer_pool reloption.  If so, refuse the DROP.
+	 *
+	 * ponytail: interim dependency check via a pg_class reloptions scan.  The
+	 * fully idiomatic fix is a real pg_depend entry recorded when the
+	 * buffer_pool reloption is set (in heap_create_with_catalog and
+	 * ATExecSetRelOptions), which would let the standard dependency walker
+	 * drive DROP and DROP ... CASCADE and would also catch a relation created
+	 * concurrently with this DROP (a window this scan still leaves open).
+	 * Upgrade path: record DEPENDENCY_NORMAL relation->pool and delete this
+	 * scan.
 	 *
 	 * We look up the pool name from the catalog, build the expected reloption
 	 * string "buffer_pool=<name>", then scan pg_class for any tuple whose

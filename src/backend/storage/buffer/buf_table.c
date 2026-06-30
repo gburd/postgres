@@ -172,12 +172,25 @@ BufTableDelete(BufferTag *tagPtr, uint32 hashcode)
 }
 
 /* ----------------------------------------------------------------
- *		Open-addressed hash table for dynamic buffer pools
+ *		Funnel open-addressed hash table for dynamic buffer pools
  *
- * Dynamic pools use a simple open-addressed hash table with linear probing
- * stored entirely in DSM memory.  The table uses no internal pointers,
- * so it works correctly when the DSM is mapped at different virtual
- * addresses in different backends.
+ * Dynamic pools use a "funnel" open-addressed hash table (Farach-Colton,
+ * Krapivin & Kuszmaul, arXiv:2501.02305) stored entirely in DSM memory.
+ * The table uses no internal pointers, so it works correctly when the
+ * DSM is mapped at different virtual addresses in different backends.
+ *
+ * The slot array is partitioned into a geometrically decreasing sequence
+ * of levels.  Level 0 covers the first half of the array, level 1 the
+ * next quarter, and so on, down to a small final level.  A key probes a
+ * bounded window (POOL_HASH_LEVEL_PROBES) within each level, hashed to a
+ * level-local start position; if the window is full it funnels down to
+ * the next, smaller level.  This bounds worst-case probe complexity at
+ * O(log^2 1/delta) rather than uniform probing's O(1/delta).
+ *
+ * The table is created once and never resized.  Because a cache pool
+ * holds at most nbuffers live keys and we size capacity above that by
+ * the inverse load factor, delta (the empty fraction) is bounded for the
+ * life of the pool -- exactly the regime the construction needs.
  *
  * All access is protected by the pool's single mapping LWLock
  * (bp_num_partitions = 1 for dynamic pools).
@@ -185,21 +198,82 @@ BufTableDelete(BufferTag *tagPtr, uint32 hashcode)
  */
 
 /*
- * PoolBufHashNEntries
- *		Compute the number of hash table entries for a pool of given size.
+ * Round up to the next power of two (>= 2).  Funnel levels are carved by
+ * repeated halving, which is exact and cheap on a power-of-two capacity.
+ */
+static inline uint32
+pool_hash_next_pow2(uint32 n)
+{
+	uint32		p = 2;
+
+	while (p < n)
+		p <<= 1;
+	return p;
+}
+
+/*
+ * pool_hash_level_bounds
+ *		Compute [start, len) of funnel level `level` within an nentries
+ *		(power-of-two) array.  Level i occupies the i-th geometric half:
+ *		level 0 = [0, n/2), level 1 = [n/2, 3n/4), ...  The final level
+ *		holds the last few slots so the levels exactly tile [0, nentries).
  *
- * We use 2x the number of buffers to keep the load factor at ~0.5,
- * which gives good performance for open addressing with linear probing.
+ * Returns the number of levels traversed to reach `level`; sets *startp
+ * and *lenp.  When level is past the last, *lenp is set to 0.
+ */
+static inline void
+pool_hash_level_bounds(uint32 nentries, int level,
+					   uint32 *startp, uint32 *lenp)
+{
+	uint32		start = 0;
+	uint32		remaining = nentries;
+
+	for (int i = 0; i < level; i++)
+	{
+		uint32		half = remaining / 2;
+
+		if (half < POOL_HASH_LEVEL_PROBES)
+		{
+			/* collapse the tail into one final level */
+			start += 0;
+			remaining = 0;
+			break;
+		}
+		start += half;
+		remaining -= half;
+	}
+	*startp = start;
+	*lenp = (remaining <= 1) ? remaining : remaining / 2;
+	if (*lenp == 0 && remaining > 0)
+		*lenp = remaining;
+}
+
+/*
+ * PoolBufHashNEntries
+ *		Compute the number of slots for a pool of given size.
+ *
+ * Capacity is nbuffers scaled up by the inverse target load factor and
+ * rounded to a power of two, so that at most nbuffers live keys occupy
+ * at most POOL_HASH_LOAD_NUM/POOL_HASH_LOAD_DEN of the slots.  The table
+ * is never resized, so this fixes delta for the life of the pool.
  */
 int
 PoolBufHashNEntries(int nbuffers)
 {
-	return nbuffers * 2;
+	uint64		need;
+
+	Assert(nbuffers > 0);
+
+	/* slots = nbuffers * (LOAD_DEN / LOAD_NUM), rounded up */
+	need = ((uint64) nbuffers * POOL_HASH_LOAD_DEN + POOL_HASH_LOAD_NUM - 1)
+		/ POOL_HASH_LOAD_NUM;
+
+	return (int) pool_hash_next_pow2((uint32) need);
 }
 
 /*
  * PoolBufHashSize
- *		Compute the total size of the hash table entries array.
+ *		Compute the total size of the hash table slot array.
  */
 Size
 PoolBufHashSize(int nbuffers)
@@ -209,7 +283,7 @@ PoolBufHashSize(int nbuffers)
 
 /*
  * PoolBufHashInit
- *		Initialize all hash table entries to unused.
+ *		Initialize all slots to unused.
  */
 void
 PoolBufHashInit(PoolBufHashEntry *entries, int nentries)
@@ -222,9 +296,31 @@ PoolBufHashInit(PoolBufHashEntry *entries, int nentries)
 }
 
 /*
+ * pool_hash_secondary
+ *		Derive an independent second hash from the primary hashcode so
+ *		level-local start positions are not correlated across levels.
+ *		Finalizer mix (splitmix64-style) on the 32-bit primary hash.
+ */
+static inline uint32
+pool_hash_secondary(uint32 hashcode)
+{
+	uint32		h = hashcode;
+
+	h ^= h >> 16;
+	h *= 0x7feb352dU;
+	h ^= h >> 15;
+	h *= 0x846ca68bU;
+	h ^= h >> 16;
+	return h;
+}
+
+/*
  * PoolBufHashLookup
- *		Look up a buffer tag in the open-addressed hash table.
- *		Returns buffer ID, or -1 if not found.
+ *		Look up a buffer tag.  Returns buffer ID, or -1 if not found.
+ *
+ * Walks the funnel levels: within each level, probes a bounded window
+ * starting at a level-local hashed position.  A POOL_HASH_UNUSED slot in
+ * the window ends the search (the key was never funneled past here).
  *
  * Caller must hold at least share lock on the pool's mapping lock.
  */
@@ -232,30 +328,43 @@ int
 PoolBufHashLookup(PoolBufHashEntry *entries, int nentries,
 				  BufferTag *tag, uint32 hashcode)
 {
-	uint32		idx = hashcode % nentries;
+	uint32		sec = pool_hash_secondary(hashcode);
 
-	for (int i = 0; i < nentries; i++)
+	for (int level = 0;; level++)
 	{
-		uint32		probe = (idx + i) % nentries;
+		uint32		start,
+					len;
 
-		if (entries[probe].id == POOL_HASH_UNUSED)
-			return -1;			/* end of probe chain, not found */
+		pool_hash_level_bounds((uint32) nentries, level, &start, &len);
+		if (len == 0)
+			return -1;		/* exhausted all levels */
 
-		if (entries[probe].id == POOL_HASH_DELETED)
-			continue;			/* tombstone, skip */
+		/* level-local start position from a level-mixed hash */
+		{
+			uint32		lh = (hashcode + (uint32) level * sec);
+			uint32		base = lh % len;
 
-		if (BufferTagsEqual(&entries[probe].key, tag))
-			return entries[probe].id;	/* found */
+			for (uint32 j = 0; j < POOL_HASH_LEVEL_PROBES && j < len; j++)
+			{
+				uint32		probe = start + (base + j) % len;
+				int32		id = entries[probe].id;
+
+				if (id == POOL_HASH_UNUSED)
+					return -1;	/* end of this key's funnel chain */
+				if (id == POOL_HASH_DELETED)
+					continue;	/* tombstone, keep probing */
+				if (BufferTagsEqual(&entries[probe].key, tag))
+					return id;	/* found */
+			}
+			/* window full -> funnel to next level */
+		}
 	}
-
-	return -1;					/* table full, not found */
 }
 
 /*
  * PoolBufHashInsert
- *		Insert a tag/buf_id pair into the open-addressed hash table.
- *		Returns -1 on successful insertion, or the existing buffer ID
- *		if a conflicting entry with the same tag already exists.
+ *		Insert a tag/buf_id pair.  Returns -1 on successful insertion, or
+ *		the existing buffer ID if a conflicting entry already exists.
  *
  * Caller must hold exclusive lock on the pool's mapping lock.
  */
@@ -263,55 +372,77 @@ int
 PoolBufHashInsert(PoolBufHashEntry *entries, int nentries,
 				  BufferTag *tag, uint32 hashcode, int buf_id)
 {
-	uint32		idx = hashcode % nentries;
-	int			first_deleted = -1;
+	uint32		sec = pool_hash_secondary(hashcode);
+	uint32		first_deleted_probe = 0;
+	bool		have_deleted = false;
 
 	Assert(buf_id >= 0);
 	Assert(tag->blockNum != P_NEW);
 
-	for (int i = 0; i < nentries; i++)
+	for (int level = 0;; level++)
 	{
-		uint32		probe = (idx + i) % nentries;
+		uint32		start,
+					len;
 
-		if (entries[probe].id == POOL_HASH_UNUSED)
+		pool_hash_level_bounds((uint32) nentries, level, &start, &len);
+		if (len == 0)
+			break;			/* exhausted all levels */
+
 		{
-			/* End of chain. Key not found. Insert here or at tombstone. */
-			if (first_deleted >= 0)
-				probe = first_deleted;
-			entries[probe].key = *tag;
-			entries[probe].id = buf_id;
-			return -1;			/* successful insert */
-		}
+			uint32		lh = (hashcode + (uint32) level * sec);
+			uint32		base = lh % len;
 
-		if (entries[probe].id == POOL_HASH_DELETED)
-		{
-			if (first_deleted < 0)
-				first_deleted = probe;
-			continue;			/* keep scanning for existing key */
-		}
+			for (uint32 j = 0; j < POOL_HASH_LEVEL_PROBES && j < len; j++)
+			{
+				uint32		probe = start + (base + j) % len;
+				int32		id = entries[probe].id;
 
-		if (BufferTagsEqual(&entries[probe].key, tag))
-			return entries[probe].id;	/* key already exists */
+				if (id == POOL_HASH_UNUSED)
+				{
+					/* end of chain: insert at first tombstone if any */
+					if (have_deleted)
+						probe = first_deleted_probe;
+					entries[probe].key = *tag;
+					entries[probe].id = buf_id;
+					return -1;
+				}
+				if (id == POOL_HASH_DELETED)
+				{
+					if (!have_deleted)
+					{
+						first_deleted_probe = probe;
+						have_deleted = true;
+					}
+					continue;
+				}
+				if (BufferTagsEqual(&entries[probe].key, tag))
+					return id;	/* key already exists */
+			}
+			/* window full -> funnel to next level */
+		}
 	}
 
-	/* Table full. Try inserting at first tombstone if any. */
-	if (first_deleted >= 0)
+	/* Every level's window was occupied; reuse a tombstone if we saw one. */
+	if (have_deleted)
 	{
-		entries[first_deleted].key = *tag;
-		entries[first_deleted].id = buf_id;
+		entries[first_deleted_probe].key = *tag;
+		entries[first_deleted_probe].id = buf_id;
 		return -1;
 	}
 
+	/*
+	 * Genuinely full.  With correct from-start sizing (load factor bounded
+	 * below 1) and the funnel construction this is unreachable, but keep a
+	 * hard guard rather than silently corrupting the cache.
+	 */
 	elog(ERROR, "pool buffer hash table is full");
 	pg_unreachable();
 }
 
 /*
  * PoolBufHashDelete
- *		Delete the entry for the given tag from the hash table.
- *		The entry must exist.
- *
- * Uses tombstone deletion (marks entry as POOL_HASH_DELETED).
+ *		Delete the entry for the given tag (which must exist).  Uses
+ *		tombstone deletion (POOL_HASH_DELETED).
  *
  * Caller must hold exclusive lock on the pool's mapping lock.
  */
@@ -319,22 +450,36 @@ void
 PoolBufHashDelete(PoolBufHashEntry *entries, int nentries,
 				  BufferTag *tag, uint32 hashcode)
 {
-	uint32		idx = hashcode % nentries;
+	uint32		sec = pool_hash_secondary(hashcode);
 
-	for (int i = 0; i < nentries; i++)
+	for (int level = 0;; level++)
 	{
-		uint32		probe = (idx + i) % nentries;
+		uint32		start,
+					len;
 
-		if (entries[probe].id == POOL_HASH_UNUSED)
-			elog(ERROR, "pool buffer hash table corrupted: entry not found");
+		pool_hash_level_bounds((uint32) nentries, level, &start, &len);
+		if (len == 0)
+			break;
 
-		if (entries[probe].id == POOL_HASH_DELETED)
-			continue;
-
-		if (BufferTagsEqual(&entries[probe].key, tag))
 		{
-			entries[probe].id = POOL_HASH_DELETED;
-			return;
+			uint32		lh = (hashcode + (uint32) level * sec);
+			uint32		base = lh % len;
+
+			for (uint32 j = 0; j < POOL_HASH_LEVEL_PROBES && j < len; j++)
+			{
+				uint32		probe = start + (base + j) % len;
+				int32		id = entries[probe].id;
+
+				if (id == POOL_HASH_UNUSED)
+					elog(ERROR, "pool buffer hash table corrupted: entry not found");
+				if (id == POOL_HASH_DELETED)
+					continue;
+				if (BufferTagsEqual(&entries[probe].key, tag))
+				{
+					entries[probe].id = POOL_HASH_DELETED;
+					return;
+				}
+			}
 		}
 	}
 

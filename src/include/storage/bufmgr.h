@@ -301,6 +301,7 @@ extern Buffer ExtendBufferedRelTo(BufferManagerRelation bmr,
 								  ReadBufferMode mode);
 
 extern void InitBufferManagerAccess(void);
+extern void ResetCurrentBufferPool(void);
 extern void AtEOXact_Buffers(bool isCommit);
 #ifdef USE_ASSERT_CHECKING
 extern void AssertBufferLocksPermitCatalogRead(void);
