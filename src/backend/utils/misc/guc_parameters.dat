@@ -1973,6 +1973,16 @@
   max => 'MAX_BACKENDS',
 },
 
+{ name => 'max_buffer_pool_memory', type => 'int', context => 'PGC_POSTMASTER', group => 'RESOURCES_MEM',
+  short_desc => 'Maximum total memory reservable across all buffer pools (0 = disabled).',
+  long_desc => 'Address space reserved at startup so dynamic buffer pools map at the same address in every backend, which is required for same-address pools, asynchronous I/O on pool buffers, and online pool resize. Address space is reserved but physical memory is charged only as pools are created. Set to 0 to disable same-address pools.',
+  flags => 'GUC_UNIT_BLOCKS',
+  variable => 'max_buffer_pool_memory',
+  boot_val => '0',
+  min => '0',
+  max => 'INT_MAX / 2',
+},
+
 { name => 'max_connections', type => 'int', context => 'PGC_POSTMASTER', group => 'CONN_AUTH_SETTINGS',
   short_desc => 'Sets the maximum number of concurrent connections.',
   variable => 'MaxConnections',

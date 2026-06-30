@@ -372,6 +372,23 @@ extern void BufferPoolStartupInit(void);
  */
 extern bool ProcessBarrierBufferPoolDetach(void);
 
+/* ----------------------------------------------------------------
+ * Same-address pool memory reservation (bufpool_reserve.c)
+ *
+ * Reserve one address-space region in the postmaster (pre-fork) so that
+ * every pool's pages appear at the same virtual address in every backend.
+ * Pools are committed sub-ranges of the reservation.
+ * ----------------------------------------------------------------
+ */
+extern Size BufPoolReserveShmemSize(void);
+extern void BufPoolReserveInit(void);
+extern bool BufPoolReserveActive(void);
+extern Size BufPoolReserveAlloc(Size size);
+extern void BufPoolReserveFree(Size offset);
+extern void *BufPoolAddrAt(Size offset);
+extern bool BufPoolCommit(Size offset, Size size, bool huge);
+extern void BufPoolDecommit(Size offset, Size size);
+
 /*
  * Open-addressed hash table functions for dynamic pool buffer mapping.
  *

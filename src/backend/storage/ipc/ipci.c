@@ -17,6 +17,7 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "storage/dsm.h"
+#include "storage/bufpool_internals.h"
 #include "storage/ipc.h"
 #include "storage/lock.h"
 #include "storage/pg_shmem.h"
@@ -148,6 +149,14 @@ CreateSharedMemoryAndSemaphores(void)
 
 	/* Initialize all shmem areas */
 	ShmemInitRequested();
+
+	/*
+	 * Reserve address space for same-address buffer pools, before any
+	 * backend is forked so every backend inherits the reservation at the
+	 * identical address.  No-op when max_buffer_pool_memory is 0 or the
+	 * platform is unsupported.
+	 */
+	BufPoolReserveInit();
 
 	/* Initialize dynamic shared memory facilities. */
 	dsm_postmaster_startup(shim);
