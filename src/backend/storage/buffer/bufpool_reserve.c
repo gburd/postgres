@@ -51,9 +51,14 @@
 #ifdef __linux__
 #include <linux/falloc.h>
 #endif
+#ifdef USE_LIBNUMA
+#include <numa.h>
+#include <numaif.h>
+#endif
 
 #include "miscadmin.h"
 #include "port/pg_bitutils.h"
+#include "port/pg_numa.h"
 #include "storage/bufpool.h"
 #include "storage/bufpool_internals.h"
 #include "storage/lwlock.h"
@@ -71,6 +76,9 @@
 
 /* GUC: maximum total memory reservable across all buffer pools (in blocks) */
 int			max_buffer_pool_memory = 0;
+
+/* GUC: interleave pool memory across NUMA nodes on multi-node systems */
+bool		buffer_pool_numa_interleave = false;
 
 /*
  * Per-backend pointers to the reservation.  Inherited across fork(), so these
@@ -433,6 +441,56 @@ BufPoolAttachLocal(Size offset, Size size)
  * Returns true on success.  huge requests MAP_HUGETLB where available; on
  * failure with huge it is the caller's choice whether to retry without.
  */
+/*
+ * BufPoolNumaInterleave -- spread a committed range across NUMA nodes.
+ *
+ * Generic, algorithm-agnostic placement: it operates on the pool's MEMORY
+ * (the committed reservation sub-range), independent of which replacement
+ * algorithm the pool uses, so every pool/algorithm benefits uniformly.  On a
+ * multi-node system it sets an MPOL_INTERLEAVE policy over the range so the
+ * pool's pages (and the access traffic to them) are distributed across nodes
+ * rather than concentrated on the allocating backend's local node -- the same
+ * rationale as interleaving the main shared_buffers on NUMA hardware.
+ *
+ * Gated three ways: compiled only with USE_LIBNUMA, enabled only when the
+ * buffer_pool_numa_interleave GUC is on, and a no-op unless the running system
+ * actually has more than one NUMA node (numa_available() == 0 and
+ * numa_max_node() > 0).  So it does nothing on non-NUMA or single-node hosts.
+ */
+void
+BufPoolNumaInterleave(void *addr, Size size)
+{
+#ifdef USE_LIBNUMA
+	if (!buffer_pool_numa_interleave)
+		return;
+
+	/* numa_available() returns 0 when NUMA is available, -1 otherwise. */
+	if (numa_available() < 0)
+		return;
+	if (numa_max_node() <= 0)
+		return;					/* single node: nothing to spread */
+
+	{
+		struct bitmask *nodes = numa_get_mems_allowed();
+
+		if (nodes != NULL)
+		{
+			/*
+			 * MPOL_INTERLEAVE over the range.  numa_interleave_memory touches
+			 * page placement policy only; pages fault in interleaved on first
+			 * use.  Failures are advisory -- the pool still works, just
+			 * node-local.
+			 */
+			numa_interleave_memory(addr, size, nodes);
+			numa_free_nodemask(nodes);
+		}
+	}
+#else
+	(void) addr;
+	(void) size;
+#endif
+}
+
 bool
 BufPoolCommit(Size offset, Size size, bool huge)
 {
@@ -464,6 +522,10 @@ BufPoolCommit(Size offset, Size size, bool huge)
 		return false;
 	}
 	Assert(p == want);
+
+	/* Spread the committed pages across NUMA nodes (no-op on 1-node systems). */
+	BufPoolNumaInterleave(p, size);
+
 	return true;
 #else
 	(void) offset;

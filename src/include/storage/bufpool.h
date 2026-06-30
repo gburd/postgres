@@ -274,4 +274,7 @@ extern PGDLLIMPORT int recycle_pool_buffers;
 /* GUC: max memory reservable across all buffer pools (blocks); 0 disables */
 extern PGDLLIMPORT int max_buffer_pool_memory;
 
+/* GUC: interleave pool memory across NUMA nodes (multi-node systems only) */
+extern PGDLLIMPORT bool buffer_pool_numa_interleave;
+
 #endif							/* BUFPOOL_H */
