@@ -2025,16 +2025,20 @@ AsyncReadBuffers(ReadBuffersOperation *operation, int *nblocks_progress)
 		ioh_flags |= PGAIO_HF_REFERENCES_LOCAL;
 
 	/*
-	 * Dynamic buffer pools store buffer data in DSM segments, which are
-	 * mapped at process-specific addresses.  IO workers cannot access these
-	 * buffers, so force synchronous (in-process) I/O.
+	 * Pool buffers whose memory is NOT at the same address in every process
+	 * (legacy per-pool DSM pools) cannot be handed to IO workers, which map
+	 * the segment at a different address; force synchronous (in-process) I/O
+	 * for those.  Reservation-backed pools map at the same address in every
+	 * backend and IO worker, so their buffers can use asynchronous I/O like
+	 * the default pool (the worker re-maps the committed sub-range on demand;
+	 * see pgaio worker reopen path).
 	 */
 	if (persistence != RELPERSISTENCE_TEMP)
 	{
 		BufferDesc *buf_hdr = GetBufferDescriptor(buffers[nblocks_done] - 1);
 		BufferPoolDesc *pool = GetPoolForBufferId(buf_hdr->buf_id);
 
-		if (PoolIsDynamic(pool))
+		if (PoolNeedsDsmAttach(pool))
 			ioh_flags |= PGAIO_HF_REFERENCES_LOCAL;
 	}
 
@@ -6406,8 +6410,31 @@ FlushBufferPoolDirtyBuffers(BufferPoolDesc *pool)
 		buf_state = LockBufHdr(bufHdr);
 		if ((buf_state & (BM_VALID | BM_DIRTY)) == (BM_VALID | BM_DIRTY))
 		{
+			RelFileLocator rlocator = BufTagGetRelFileLocator(&bufHdr->tag);
+			ForkNumber	forknum = BufTagGetForkNum(&bufHdr->tag);
+			SMgrRelation smgr;
+
 			PinBuffer_Locked(bufHdr);
-			FlushUnlockedBuffer(bufHdr, NULL, IOOBJECT_RELATION, IOCONTEXT_NORMAL);
+
+			/*
+			 * The buffer's relation may have been dropped (e.g. DROP TABLE
+			 * before DROP BUFFER POOL) while a dirty buffer for it lingered
+			 * in the pool -- the DropRelationBuffers pool scan only reaches
+			 * pools the executing backend was attached to.  If the relation
+			 * fork no longer exists on disk, the dirty data belongs to a gone
+			 * relation: clear the dirty bit and discard rather than failing
+			 * the flush on a missing file.  The pool's memory is freed at
+			 * decommit, so simply not writing it is sufficient.
+			 */
+			smgr = smgropen(rlocator, INVALID_PROC_NUMBER);
+			if (smgrexists(smgr, forknum))
+				FlushUnlockedBuffer(bufHdr, NULL, IOOBJECT_RELATION, IOCONTEXT_NORMAL);
+			else
+			{
+				/* relation gone: clear dirty so teardown discards it cleanly */
+				buf_state = LockBufHdr(bufHdr);
+				UnlockBufHdrExt(bufHdr, buf_state, 0, BM_DIRTY, 0);
+			}
 			UnpinBuffer(bufHdr);
 		}
 		else

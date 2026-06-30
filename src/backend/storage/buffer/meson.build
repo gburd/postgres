@@ -5,6 +5,7 @@ backend_sources += files(
   'buf_table.c',
   'bufmgr.c',
   'bufpool.c',
+  'bufpool_reserve.c',
   'freelist.c',
   'jam_pool.c',
   'localbuf.c',

@@ -292,6 +292,28 @@ CreateBufferPool(CreateBufferPoolStmt *stmt)
 		const BufferPoolRoutine *routine;
 		Datum		datum;
 		int			pool_nbuffers;
+		bool		use_huge_pages = false;
+
+		/* Parse WITH options understood at create time. */
+		if (stmt->options != NIL)
+		{
+			ListCell   *lc;
+
+			foreach(lc, stmt->options)
+			{
+				DefElem    *def = (DefElem *) lfirst(lc);
+
+				if (strcmp(def->defname, "huge_pages") == 0)
+					use_huge_pages = defGetBoolean(def);
+				else if (strcmp(def->defname, "direct_io") == 0)
+					/* handled post-create via the descriptor; ignore here */ ;
+				else
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+							 errmsg("unrecognized buffer pool option \"%s\"",
+									def->defname)));
+			}
+		}
 
 		datum = OidFunctionCall0(bphandler);
 		routine = (const BufferPoolRoutine *) DatumGetPointer(datum);
@@ -304,7 +326,7 @@ CreateBufferPool(CreateBufferPoolStmt *stmt)
 							16 * BLCKSZ)));
 
 		CreateDynamicBufferPool(bpoid, stmt->poolname, pool_nbuffers, routine,
-								bphandler);
+								bphandler, use_huge_pages);
 	}
 
 	return myself;

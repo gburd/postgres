@@ -183,7 +183,36 @@ typedef struct BufferPoolDesc
 	int			bp_hash_nentries;
 
 	/* DSM segment handle for cross-backend attachment */
-	dsm_handle	bp_dsm_handle;	/* InvalidDsmHandle for default pool */
+	dsm_handle	bp_dsm_handle;	/* InvalidDsmHandle for default pool, and for
+								 * reservation-backed pools */
+
+	/*
+	 * Reservation backing (same-address pools).  When bp_resv_backed is true,
+	 * the pool's memory is a committed sub-range of the address-space
+	 * reservation at offset bp_resv_offset (size bp_resv_size), mapped at the
+	 * same virtual address in every backend.  The bp_*_offset fields below are
+	 * then offsets within that sub-range and resolve to absolute addresses via
+	 * BufPoolAddrAt(bp_resv_offset) + bp_*_offset -- identical in all backends,
+	 * so no per-backend DSM attach is needed.  Mutually exclusive with a valid
+	 * bp_dsm_handle.
+	 */
+	bool		bp_resv_backed;
+	Size		bp_resv_offset;
+	Size		bp_resv_size;
+	bool		bp_resv_huge;	/* committed with huge pages */
+
+	/*
+	 * Fragmentation note: bp_resv_offset/bp_resv_size describe a SINGLE
+	 * contiguous sub-range.  The reservation allocator coalesces adjacent
+	 * freed extents and uses best-fit, which recovers most fragmented space,
+	 * but a contiguous request can still be denied if a live pool physically
+	 * separates two free regions even when aggregate free space suffices.
+	 * The complete fix is to let a pool own several disjoint extents: replace
+	 * these two fields with a small extent table {offset,len}[] and map block i
+	 * through it.  Deferred (YAGNI) -- it adds an indirection to the hot
+	 * BufPoolAddrAt path, so it is only worth it if coalescing proves
+	 * insufficient in practice.
+	 */
 
 	/* Trickle writer background worker (stored inline for cross-backend use) */
 	int			bp_trickle_slot;	/* BGW slot (-1 = none) */
@@ -312,13 +341,28 @@ extern int *SharedMaxBufferNumber;
 #endif
 
 /*
- * PoolIsDynamic -- check if a pool is a DSM-backed dynamic pool.
+ * PoolIsDynamic -- check if a pool is a non-default (dynamic) pool.
  *
- * The default pool has bp_dsm_handle == InvalidDsmHandle.
- * Dynamic pools have a valid DSM handle.
+ * The default pool (slot 0) uses the global BufferDescriptors/BufferBlocks
+ * arrays and SharedBufHash.  Every other pool -- whether backed by its own
+ * DSM segment or by a committed sub-range of the address-space reservation --
+ * uses the per-pool descriptor/block/hash path.  Both kinds are "dynamic."
  */
 static inline bool
 PoolIsDynamic(BufferPoolDesc *pool)
+{
+	return pool->bp_dsm_handle != InvalidDsmHandle || pool->bp_resv_backed;
+}
+
+/*
+ * PoolNeedsDsmAttach -- does this pool require a per-backend DSM mapping?
+ *
+ * True only for legacy DSM-backed pools (fallback path).  Reservation-backed
+ * pools are mapped at the same address in every backend, so they need no
+ * per-backend attach -- their pointers resolve via BufPoolAddrAt().
+ */
+static inline bool
+PoolNeedsDsmAttach(BufferPoolDesc *pool)
 {
 	return pool->bp_dsm_handle != InvalidDsmHandle;
 }
@@ -360,7 +404,8 @@ extern int	ComputePoolPartitions(int nbuffers, bool scan_only);
 extern BufferPoolDesc *CreateDynamicBufferPool(Oid bp_oid, const char *name,
 											   int nbuffers,
 											   const struct BufferPoolRoutine *routine,
-											   Oid handler_oid);
+											   Oid handler_oid,
+											   bool use_huge_pages);
 extern void DestroyDynamicBufferPool(BufferPoolDesc *pool);
 extern BufferPoolDesc *ResizeDynamicBufferPool(BufferPoolDesc *pool,
 											   int new_nbuffers);
@@ -371,6 +416,25 @@ extern void BufferPoolStartupInit(void);
  * to any pool being destroyed/resized.  Defined in bufpool.c.
  */
 extern bool ProcessBarrierBufferPoolDetach(void);
+
+/* ----------------------------------------------------------------
+ * Same-address pool memory reservation (bufpool_reserve.c)
+ *
+ * Reserve one address-space region in the postmaster (pre-fork) so that
+ * every pool's pages appear at the same virtual address in every backend.
+ * Pools are committed sub-ranges of the reservation.
+ * ----------------------------------------------------------------
+ */
+extern Size BufPoolReserveShmemSize(void);
+extern void BufPoolReserveInit(void);
+extern bool BufPoolReserveActive(void);
+extern Size BufPoolReserveAlloc(Size size);
+extern void BufPoolReserveFree(Size offset);
+extern void *BufPoolAddrAt(Size offset);
+extern void *BufPoolAttachLocal(Size offset, Size size);
+extern void BufPoolAttachReservationPools(void);
+extern bool BufPoolCommit(Size offset, Size size, bool huge);
+extern void BufPoolDecommit(Size offset, Size size);
 
 /*
  * Open-addressed hash table functions for dynamic pool buffer mapping.
