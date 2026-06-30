@@ -199,6 +199,7 @@ typedef struct BufferPoolDesc
 	bool		bp_resv_backed;
 	Size		bp_resv_offset;
 	Size		bp_resv_size;
+	bool		bp_resv_huge;	/* committed with huge pages */
 
 	/*
 	 * Fragmentation note: bp_resv_offset/bp_resv_size describe a SINGLE
@@ -403,7 +404,8 @@ extern int	ComputePoolPartitions(int nbuffers, bool scan_only);
 extern BufferPoolDesc *CreateDynamicBufferPool(Oid bp_oid, const char *name,
 											   int nbuffers,
 											   const struct BufferPoolRoutine *routine,
-											   Oid handler_oid);
+											   Oid handler_oid,
+											   bool use_huge_pages);
 extern void DestroyDynamicBufferPool(BufferPoolDesc *pool);
 extern BufferPoolDesc *ResizeDynamicBufferPool(BufferPoolDesc *pool,
 											   int new_nbuffers);

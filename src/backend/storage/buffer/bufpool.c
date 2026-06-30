@@ -527,7 +527,7 @@ BufferPoolStartupInit(void)
 		recycle_pool = CreateDynamicBufferPool(InvalidOid, "recycle",
 											   recycle_pool_buffers,
 											   &recycle_pool_routine,
-											   InvalidOid);
+											   InvalidOid, false);
 		recycle_pool->bp_kind = BUFPOOL_RECYCLE;
 		elog(LOG, "created RECYCLE pool with %d buffers", recycle_pool_buffers);
 	}
@@ -562,7 +562,7 @@ BufferPoolStartupInit(void)
 			if (pool_nbuffers >= 16)
 				CreateDynamicBufferPool(bpform->oid, poolname,
 										pool_nbuffers, routine,
-										bpform->bphandler);
+										bpform->bphandler, false);
 			else
 				elog(WARNING, "buffer pool \"%s\" has too few buffers (%d), skipping",
 					 poolname, pool_nbuffers);
@@ -773,7 +773,8 @@ ComputeNextBufferIdBase(void)
  */
 BufferPoolDesc *
 CreateDynamicBufferPool(Oid bp_oid, const char *name, int nbuffers,
-						const BufferPoolRoutine *routine, Oid handler_oid)
+						const BufferPoolRoutine *routine, Oid handler_oid,
+						bool use_huge_pages)
 {
 	BufferPoolDesc *pool;
 	dsm_segment *seg;
@@ -882,7 +883,7 @@ CreateDynamicBufferPool(Oid bp_oid, const char *name, int nbuffers,
 
 		if (resv_off != (Size) -1)
 		{
-			if (!BufPoolCommit(resv_off, total_size, false))
+			if (!BufPoolCommit(resv_off, total_size, use_huge_pages))
 			{
 				BufPoolReserveFree(resv_off);
 				ereport(ERROR,
@@ -893,6 +894,7 @@ CreateDynamicBufferPool(Oid bp_oid, const char *name, int nbuffers,
 			pool->bp_resv_backed = true;
 			pool->bp_resv_offset = resv_off;
 			pool->bp_resv_size = total_size;
+			pool->bp_resv_huge = use_huge_pages;
 			pool->bp_dsm_handle = InvalidDsmHandle;
 			seg = NULL;
 			dsm_base = (char *) BufPoolAddrAt(resv_off);
@@ -1244,6 +1246,7 @@ DestroyDynamicBufferPool(BufferPoolDesc *pool)
 	pool->bp_resv_backed = false;
 	pool->bp_resv_offset = 0;
 	pool->bp_resv_size = 0;
+	pool->bp_resv_huge = false;
 	pool->bp_trickle_slot = -1;
 	pool->bp_routine = NULL;
 	pool->bp_oid = InvalidOid;
@@ -1296,6 +1299,7 @@ ResizeDynamicBufferPool(BufferPoolDesc *pool, int new_nbuffers)
 	Oid			bp_oid;
 	Oid			handler_oid;
 	NameData	pool_name;
+	bool		save_huge;
 	const BufferPoolRoutine *routine;
 	Datum		datum;
 
@@ -1307,6 +1311,7 @@ ResizeDynamicBufferPool(BufferPoolDesc *pool, int new_nbuffers)
 	/* Save pool identity before destruction */
 	bp_oid = pool->bp_oid;
 	handler_oid = pool->bp_handler_oid;
+	save_huge = pool->bp_resv_huge;
 	namestrcpy(&pool_name, NameStr(pool->bp_name));
 
 	/* Resolve the handler to get the routine vtable */
@@ -1324,9 +1329,9 @@ ResizeDynamicBufferPool(BufferPoolDesc *pool, int new_nbuffers)
 	/* Destroy: flushes dirty buffers, terminates trickle writer, frees DSM */
 	DestroyDynamicBufferPool(pool);
 
-	/* Recreate with new size */
+	/* Recreate with new size, preserving the huge-pages choice. */
 	pool = CreateDynamicBufferPool(bp_oid, NameStr(pool_name), new_nbuffers,
-								   routine, handler_oid);
+								   routine, handler_oid, save_huge);
 
 	return pool;
 }
@@ -1445,14 +1450,32 @@ TrickleWriterMain(Datum main_arg)
 
 		ResetLatch(MyLatch);
 
-		if (ConfigReloadPending)
-		{
-			ConfigReloadPending = false;
-			ProcessConfigFile(PGC_SIGHUP);
-		}
+		/*
+		 * Handle config reload, shutdown, AND ProcSignalBarriers.  The last is
+		 * essential: DROP/RESIZE of a pool emits PROCSIGNAL_BARRIER_BUFPOOL_DETACH
+		 * and waits for every process -- including this trickle writer -- to
+		 * absorb it before tearing down the pool's memory.  Absorbing it here
+		 * (rather than only the old ConfigReload/Shutdown checks) prevents the
+		 * destroyer's WaitForProcSignalBarrier from stalling on us.
+		 */
+		ProcessMainLoopInterrupts();
 
+		/*
+		 * Once the pool is marked inactive (by DestroyDynamicBufferPool, before
+		 * it emits the detach barrier), stop touching the pool's memory but do
+		 * NOT exit on our own: exiting here races the destroyer's
+		 * TerminateBackgroundWorker/WaitForBackgroundWorkerShutdown using a
+		 * reconstructed handle.  Idle until we receive SIGTERM from the
+		 * destroyer (ShutdownRequestPending, handled by ProcessMainLoopInterrupts
+		 * above), which is the single, well-defined exit path.
+		 */
 		if (!pool->bp_active)
-			break;
+		{
+			(void) WaitLatch(MyLatch,
+							 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+							 1000L, WAIT_EVENT_BGWRITER_HIBERNATE);
+			continue;
+		}
 
 		/*
 		 * Use the algorithm's trickle iterator if available.  This lets the
@@ -1604,7 +1627,7 @@ RegisterPoolTrickleWriter(BufferPoolDesc *pool, int slot)
 	snprintf(bgw.bgw_name, BGW_MAXLEN, "trickle writer for pool %s",
 			 NameStr(pool->bp_name));
 	snprintf(bgw.bgw_type, BGW_MAXLEN, "buffer pool trickle writer");
-	bgw.bgw_restart_time = 5;	/* restart after 5 seconds on crash */
+	bgw.bgw_restart_time = BGW_NEVER_RESTART;	/* one-shot per pool; drop/resize re-registers */
 	bgw.bgw_notify_pid = MyProcPid;
 	bgw.bgw_main_arg = Int32GetDatum(slot);
 
@@ -1630,6 +1653,7 @@ void
 TerminatePoolTrickleWriter(BufferPoolDesc *pool)
 {
 	BackgroundWorkerHandle *handle;
+	pid_t		pid;
 
 	if (pool->bp_trickle_slot < 0)
 		return;
@@ -1639,7 +1663,28 @@ TerminatePoolTrickleWriter(BufferPoolDesc *pool)
 										  pool->bp_trickle_generation);
 
 	TerminateBackgroundWorker(handle);
-	WaitForBackgroundWorkerShutdown(handle);
+
+	/*
+	 * Poll for shutdown rather than WaitForBackgroundWorkerShutdown(): the
+	 * latter blocks on a notify latch delivered to the worker's registered
+	 * bgw_notify_pid, which is the backend that CREATED the pool, not
+	 * necessarily the one running DROP/RESIZE.  A reconstructed handle in a
+	 * different backend would wait forever.  GetBackgroundWorkerPid() reads
+	 * the slot state directly and needs no notify registration.
+	 */
+	for (;;)
+	{
+		BgwHandleStatus status = GetBackgroundWorkerPid(handle, &pid);
+
+		if (status == BGWH_STOPPED)
+			break;
+
+		(void) WaitLatch(MyLatch,
+						 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+						 10L, WAIT_EVENT_BGWORKER_SHUTDOWN);
+		ResetLatch(MyLatch);
+		CHECK_FOR_INTERRUPTS();
+	}
 
 	pfree(handle);
 	pool->bp_trickle_slot = -1;
