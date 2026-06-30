@@ -395,9 +395,20 @@ extern PoolLocalState *TryGetPoolAttached(BufferPoolDesc *pool);
 extern void DetachFromPool(int pool_slot);
 
 /*
- * Pool partition sizing.
+ * NUMA topology and placement layer (bufpool_numa.c).  Algorithm-agnostic:
+ * answers node count, per-buffer node assignment, and binds memory ranges to
+ * nodes (content-aware: buffer + its descriptor co-located).  Victim-selection
+ * locality is NOT here -- that is the NUMA-partitioned clock sweep's job.
  */
-extern int	ComputePoolPartitions(int nbuffers, bool scan_only);
+extern int	BufPoolNumaInit(void);
+extern int	BufPoolNumaNodes(void);
+extern bool BufPoolNumaActive(void);
+extern int	BufPoolNumaNodeForBuffer(int local_id, int nbuffers);
+extern void BufPoolNumaBufferRange(int node, int nbuffers, int *start, int *end);
+extern void BufPoolNumaBindRange(void *addr, Size size, int node);
+extern void BufPoolNumaDistribute(char *blocks, char *descriptors,
+								  Size desc_elem_size, int nbuffers);
+extern int	BufPoolNumaNodeForProc(void);
 
 /*
  * Dynamic pool lifecycle functions.
@@ -439,7 +450,6 @@ extern void *BufPoolAttachLocal(Size offset, Size size);
 extern void BufPoolAttachReservationPools(void);
 extern bool BufPoolCommit(Size offset, Size size, bool huge);
 extern void BufPoolDecommit(Size offset, Size size);
-extern void BufPoolNumaInterleave(void *addr, Size size);
 
 /*
  * Open-addressed hash table functions for dynamic pool buffer mapping.
