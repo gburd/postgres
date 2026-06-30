@@ -103,6 +103,7 @@ static BufferStrategyControl *StrategyControl = NULL;
  */
 const BufferPoolRoutine *ActivePoolRoutine = NULL;
 void	   *ActivePoolData = NULL;
+bool		ActivePoolHasAccessHooks = false;
 
 /*
  * GUC variable: name of the replacement algorithm for the DEFAULT pool.
@@ -753,6 +754,16 @@ StrategyCtlShmemInit(void *arg)
 		}
 		ActivePoolRoutine = routine;
 		ActivePoolData = StrategyControl;
+
+		/*
+		 * Cache whether the active algorithm uses any per-access tracking
+		 * hooks.  The built-in clock-sweep leaves on_hit/on_miss/on_new_tag
+		 * NULL, so the hot BufferAlloc path can skip three vtable pointer
+		 * loads per access with a single predicted-false branch on this flag.
+		 */
+		ActivePoolHasAccessHooks = (routine->on_hit != NULL ||
+									routine->on_miss != NULL ||
+									routine->on_new_tag != NULL);
 	}
 }
 
