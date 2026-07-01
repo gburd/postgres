@@ -559,3 +559,20 @@ FROM (SELECT id FROM seg WHERE d @@@ 'alpha'::ftsquery
       ORDER BY d <=> 'alpha'::ftsquery LIMIT 5) x;                            -- 5
 RESET enable_seqscan;
 DROP TABLE seg;
+
+-- Tiered merge: many flushes create many segments; merge compacts them so the
+-- segment count stays bounded while results are preserved.
+ALTER EXTENSION pg_fts UPDATE TO '1.18';
+CREATE TABLE tier (id serial, d ftsdoc);
+INSERT INTO tier(d) SELECT to_ftsdoc('common w'||(g%20)) FROM generate_series(1,100) g;
+CREATE INDEX tier_bm25 ON tier USING bm25 (d);
+DO $$ BEGIN FOR i IN 1..10 LOOP
+  INSERT INTO tier(d) SELECT to_ftsdoc('common x'||(g%20)) FROM generate_series(1,20) g;
+  PERFORM fts_merge('tier_bm25');
+END LOOP; END $$;
+SET enable_seqscan = off;
+SELECT count(*) AS all_docs FROM tier WHERE d @@@ 'common'::ftsquery;   -- 300
+SELECT ndocs FROM fts_index_stats('tier_bm25');                          -- 300
+SELECT fts_index_nsegments('tier_bm25') <= 8 AS segments_bounded;        -- t (compacted)
+RESET enable_seqscan;
+DROP TABLE tier;

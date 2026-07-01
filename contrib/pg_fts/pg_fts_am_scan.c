@@ -925,6 +925,22 @@ bm25_lookup_df(Relation index, BlockNumber dictstart,
 	return 0;
 }
 
+PG_FUNCTION_INFO_V1(fts_index_nsegments);
+
+/* fts_index_nsegments(regclass) -> int : number of live segments */
+Datum
+fts_index_nsegments(PG_FUNCTION_ARGS)
+{
+	Oid			indexoid = PG_GETARG_OID(0);
+	Relation	index;
+	BM25MetaPageData meta;
+
+	index = index_open(indexoid, AccessShareLock);
+	bm25_read_meta(index, &meta);
+	index_close(index, AccessShareLock);
+	PG_RETURN_INT32((int32) meta.nsegments);
+}
+
 PG_FUNCTION_INFO_V1(fts_index_stats);
 
 /* fts_index_stats(regclass) -> (ndocs float8, avgdl float8, nterms int) */

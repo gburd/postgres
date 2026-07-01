@@ -662,6 +662,241 @@ bm25_meta_add_segment(Relation index, const BM25SegMeta *seg)
 	UnlockReleaseBuffer(buf);
 }
 
+/* Read one segment's dictionary + posting lists into a build state. */
+static void
+bm25_read_segment_into(Relation index, const BM25SegMeta *seg, BM25BuildState *bs)
+{
+	BlockNumber blk = seg->dictstart;
+
+	while (blk != InvalidBlockNumber)
+	{
+		Buffer		buffer = ReadBuffer(index, blk);
+		Page		page;
+		char	   *ptr,
+				   *end;
+		BlockNumber next;
+		MemoryContext old = MemoryContextSwitchTo(bs->ctx);
+
+		LockBuffer(buffer, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buffer);
+		ptr = (char *) PageGetContents(page);
+		end = (char *) page + ((PageHeader) page)->pd_lower;
+		next = BM25PageGetOpaque(page)->nextblk;
+		while (ptr < end)
+		{
+			BM25DictEntry *de = (BM25DictEntry *) ptr;
+			Size		esize = MAXALIGN(offsetof(BM25DictEntry, term) + de->termlen);
+			BlockNumber pblk = de->firstposting;
+
+			while (pblk != InvalidBlockNumber)
+			{
+				Buffer		pb = ReadBuffer(index, pblk);
+				Page		pp;
+				BM25Posting *post;
+				int			np,
+							k;
+
+				LockBuffer(pb, BUFFER_LOCK_SHARE);
+				pp = BufferGetPage(pb);
+				np = bm25_page_decode(pp, &post);
+				for (k = 0; k < np; k++)
+					add_posting(bs, de->term, de->termlen,
+								&post[k].tid, post[k].tf, post[k].doclen);
+				pfree(post);
+				pblk = BM25PageGetOpaque(pp)->nextblk;
+				UnlockReleaseBuffer(pb);
+			}
+			ptr += esize;
+		}
+		UnlockReleaseBuffer(buffer);
+		MemoryContextSwitchTo(old);
+		blk = next;
+	}
+	bs->ndocs += seg->ndocs - seg->ndeleted;
+}
+
+/* Recycle a chained page list (dict/trigram/posting/data) to the FSM. */
+static void
+bm25_free_chain(Relation index, BlockNumber blk)
+{
+	while (blk != InvalidBlockNumber)
+	{
+		Buffer		buf = ReadBuffer(index, blk);
+		BlockNumber next;
+
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		next = BM25PageGetOpaque(BufferGetPage(buf))->nextblk;
+		UnlockReleaseBuffer(buf);
+		RecordFreeIndexPage(index, blk);
+		blk = next;
+	}
+}
+
+/* Free all pages of a segment (dict + each term's postings + trigram dir+data). */
+static void
+bm25_free_segment(Relation index, const BM25SegMeta *seg)
+{
+	BlockNumber blk = seg->dictstart;
+
+	/* dictionary pages + each entry's posting chain */
+	while (blk != InvalidBlockNumber)
+	{
+		Buffer		buf = ReadBuffer(index, blk);
+		Page		page;
+		char	   *ptr,
+				   *end;
+		BlockNumber next;
+
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+		ptr = (char *) PageGetContents(page);
+		end = (char *) page + ((PageHeader) page)->pd_lower;
+		next = BM25PageGetOpaque(page)->nextblk;
+		while (ptr < end)
+		{
+			BM25DictEntry *de = (BM25DictEntry *) ptr;
+			Size		esize = MAXALIGN(offsetof(BM25DictEntry, term) + de->termlen);
+
+			bm25_free_chain(index, de->firstposting);
+			ptr += esize;
+		}
+		UnlockReleaseBuffer(buf);
+		RecordFreeIndexPage(index, blk);
+		blk = next;
+	}
+
+	/* trigram directory pages (+ their data blobs) */
+	blk = seg->trgmstart;
+	while (blk != InvalidBlockNumber)
+	{
+		Buffer		buf = ReadBuffer(index, blk);
+		Page		page;
+		char	   *ptr,
+				   *end;
+		BlockNumber next;
+
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+		ptr = (char *) PageGetContents(page);
+		end = (char *) page + ((PageHeader) page)->pd_lower;
+		next = BM25PageGetOpaque(page)->nextblk;
+		while (ptr < end)
+		{
+			BM25TrgmEntry *te = (BM25TrgmEntry *) ptr;
+
+			bm25_free_chain(index, te->firstdata);
+			ptr += MAXALIGN(sizeof(BM25TrgmEntry));
+		}
+		UnlockReleaseBuffer(buf);
+		RecordFreeIndexPage(index, blk);
+		blk = next;
+	}
+
+	if (seg->livedocs != InvalidBlockNumber)
+		bm25_free_chain(index, seg->livedocs);
+}
+
+/*
+ * Size-tiered merge: repeatedly merge the smallest run of segments while the
+ * total count exceeds a target, combining them into one new segment and
+ * dropping the originals.  Bounds the segment count (query cost is O(nsegments)
+ * per term), the Lucene TieredMergePolicy idea in miniature.  Called after a
+ * flush and from VACUUM.  Merges the whole set into one when count > threshold;
+ * a finer size-tiered policy is a later tuning knob.
+ */
+#define BM25_MERGE_THRESHOLD 8
+
+static void
+bm25_merge_segments(Relation index)
+{
+	BM25MetaPageData meta;
+	BM25BuildState bs;
+	BM25SegMeta newseg;
+	BM25SegMeta oldsegs[BM25_MAX_SEGMENTS];
+	uint32		nold;
+	uint32		s;
+
+	{
+		Buffer		mb = ReadBuffer(index, BM25_METAPAGE_BLKNO);
+
+		LockBuffer(mb, BUFFER_LOCK_SHARE);
+		memcpy(&meta, BM25PageGetMeta(BufferGetPage(mb)), sizeof(meta));
+		UnlockReleaseBuffer(mb);
+	}
+	if (meta.nsegments <= BM25_MERGE_THRESHOLD)
+		return;
+
+	memcpy(oldsegs, meta.segs, meta.nsegments * sizeof(BM25SegMeta));
+	nold = meta.nsegments;
+
+	bs.ctx = AllocSetContextCreate(CurrentMemoryContext, "bm25 merge segs",
+								   ALLOCSET_DEFAULT_SIZES);
+	bs.terms = NULL;
+	bs.nterms = 0;
+	bs.maxterms = 0;
+	bs.ndocs = 0;
+	bs.sumdoclen = 0;
+	{
+		HASHCTL		ctl;
+
+		ctl.keysize = sizeof(TermKey);
+		ctl.entrysize = sizeof(TermHashEntry);
+		ctl.hcxt = bs.ctx;
+		build_ht = hash_create("bm25 merge terms", 1024, &ctl,
+							   HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	}
+
+	for (s = 0; s < nold; s++)
+	{
+		bs.sumdoclen += oldsegs[s].sumdoclen;
+		bm25_read_segment_into(index, &oldsegs[s], &bs);
+	}
+	if (bs.nterms > 1)
+		qsort(bs.terms, bs.nterms, sizeof(BuildTerm), cmp_buildterm);
+
+	bm25_write_segment(index, &bs, &newseg);
+	newseg.ndocs = bs.ndocs;
+	newseg.sumdoclen = bs.sumdoclen;
+
+	/* replace the whole directory with the single merged segment */
+	{
+		Buffer		mb = ReadBuffer(index, BM25_METAPAGE_BLKNO);
+		GenericXLogState *state;
+		Page		mp;
+		BM25MetaPageData *m;
+
+		LockBuffer(mb, BUFFER_LOCK_EXCLUSIVE);
+		state = GenericXLogStart(index);
+		mp = GenericXLogRegisterBuffer(state, mb, 0);
+		m = BM25PageGetMeta(mp);
+		/* only merge if no concurrent change grew the directory further; here
+		 * we require the same nsegments we snapshotted (single-writer VACUUM/
+		 * flush context makes this safe) */
+		if (m->nsegments == nold)
+		{
+			m->segs[0] = newseg;
+			m->nsegments = 1;
+			/* corpus totals unchanged (same docs, minus tombstones already
+			 * excluded via ndocs-ndeleted in read) */
+			m->ndocs = newseg.ndocs;
+			m->sumdoclen = newseg.sumdoclen;
+			GenericXLogFinish(state);
+			UnlockReleaseBuffer(mb);
+			for (s = 0; s < nold; s++)
+				bm25_free_segment(index, &oldsegs[s]);
+			IndexFreeSpaceMapVacuum(index);
+		}
+		else
+		{
+			/* directory changed under us; abandon this merge (new segment leaks
+			 * until next merge/REINDEX -- rare, single-writer path) */
+			GenericXLogAbort(state);
+			UnlockReleaseBuffer(mb);
+		}
+	}
+	MemoryContextDelete(bs.ctx);
+}
+
 static IndexBuildResult *
 bm25_build(Relation heap, Relation index, IndexInfo *indexInfo)
 {
@@ -997,6 +1232,9 @@ bm25_flush_pending(Relation index)
 	IndexFreeSpaceMapVacuum(index);
 
 	MemoryContextDelete(bs.ctx);
+
+	/* keep the segment count bounded (query cost is O(nsegments) per term) */
+	bm25_merge_segments(index);
 	return true;
 }
 
@@ -1020,9 +1258,12 @@ bm25_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	if (stats == NULL)
 		stats = (IndexBulkDeleteResult *) palloc0(sizeof(IndexBulkDeleteResult));
 
-	/* Fold any pending documents into the main structure. */
+	/* Fold any pending documents into a new segment, then compact segments. */
 	if (!info->analyze_only)
+	{
 		(void) bm25_flush_pending(info->index);
+		bm25_merge_segments(info->index);
+	}
 
 	return stats;
 }
