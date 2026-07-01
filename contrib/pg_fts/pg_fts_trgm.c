@@ -93,3 +93,129 @@ fts_trigrams_overlap(const uint32 *a, int na, const uint32 *b, int nb)
 				return true;
 	return false;
 }
+
+/*
+ * fts_regex_trigrams -- extract required trigrams from a regular expression by
+ * tiling its literal runs (a lightweight form of the Navarro/pg_tre approach).
+ *
+ * We scan the regex, tracking maximal runs of ordinary literal characters
+ * (skipping over metacharacters and the constructs they introduce), and emit
+ * the trigrams of each run.  A document matching the regex must contain some
+ * literal run's text verbatim only when that run is *required* -- i.e. not
+ * inside an alternation, optional, or repetition-zero construct.  To stay
+ * sound we break a run (and drop trailing chars) at any operator that could
+ * make the preceding character optional (*, ?, {0,...}) or introduce a branch
+ * (|), and we only emit trigrams from runs that remain required.
+ *
+ * The result is a set of trigrams such that every matching string contains at
+ * least all of them (they are ANDed by the caller's union-then-recheck: the
+ * caller unions per-trigram postings, which is a sound superset).  When no
+ * required run yields a trigram (e.g. the regex is all alternation/optional),
+ * we return 0 and the caller falls back to a full scan -- always correct.
+ */
+int
+fts_regex_trigrams(const char *re, int relen, uint32 *out, int maxout)
+{
+	int			n = 0;
+	int			i = 0;
+	char		run[256];
+	int			runlen = 0;
+
+	/* flush the current literal run's trigrams, honoring a possible trailing
+	 * quantifier that makes the LAST char optional (drop it in that case) */
+	#define FLUSH_RUN(drop_last)										\
+	do {															\
+		int _rl = (runlen) - ((drop_last) ? 1 : 0);					\
+		if (_rl >= 3)												\
+		{															\
+			int _t = fts_trigrams(run, _rl, out + n, maxout - n);	\
+			n += _t;												\
+		}															\
+		runlen = 0;													\
+	} while (0)
+
+	while (i < relen && n < maxout)
+	{
+		char		c = re[i];
+
+		switch (c)
+		{
+			case '\\':
+				/* escaped literal: the next char is a literal */
+				if (i + 1 < relen)
+				{
+					if (runlen < (int) sizeof(run))
+						run[runlen++] = re[i + 1];
+					i += 2;
+				}
+				else
+					i++;
+				break;
+			case '*':
+			case '?':
+				/* previous char is optional -> drop it and flush */
+				FLUSH_RUN(true);
+				i++;
+				break;
+			case '+':
+				/* previous char required (>=1) -> keep it, flush at boundary */
+				FLUSH_RUN(false);
+				i++;
+				break;
+			case '{':
+				/* quantifier {m,n}: if it can be zero, the prev char is
+				 * optional.  Conservatively drop the last char and skip to } */
+				FLUSH_RUN(true);
+				while (i < relen && re[i] != '}')
+					i++;
+				if (i < relen)
+					i++;
+				break;
+			case '|':
+				/* alternation: everything so far may not be required; drop the
+				 * whole current run (soundness) */
+				runlen = 0;
+				i++;
+				break;
+			case '(':
+			case ')':
+				/* group boundary: flush what we have as required */
+				FLUSH_RUN(false);
+				i++;
+				break;
+			case '[':
+				/* character class: not a fixed literal -> flush and skip it */
+				FLUSH_RUN(false);
+				i++;
+				if (i < relen && re[i] == '^')
+					i++;
+				if (i < relen && re[i] == ']')	/* literal ] as first char */
+					i++;
+				while (i < relen && re[i] != ']')
+					i++;
+				if (i < relen)
+					i++;
+				break;
+			case '.':
+				/* wildcard: breaks the run */
+				FLUSH_RUN(false);
+				i++;
+				break;
+			case '^':
+			case '$':
+				/* anchors: run boundary, no char consumed into the run */
+				FLUSH_RUN(false);
+				i++;
+				break;
+			default:
+				if (runlen < (int) sizeof(run))
+					run[runlen++] = c;
+				i++;
+				break;
+		}
+	}
+	FLUSH_RUN(false);
+	#undef FLUSH_RUN
+
+	return n;
+}

@@ -1096,6 +1096,14 @@ FROM trgm t WHERE t.d @@@ '/document4[0-9]$/'::ftsquery;
                 10
 (1 row)
 
+-- regex with alternation/anchors: literal-run tiling extracts 'document'
+SELECT count(*) AS regex_anchored
+FROM trgm t WHERE t.d @@@ '/^document(4|5)2$/'::ftsquery;   -- document42, document52
+ regex_anchored 
+----------------
+              2
+(1 row)
+
 RESET enable_seqscan;
 DROP TABLE trgm;
 -- Stage 3: the bm25 index access method.

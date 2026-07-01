@@ -214,7 +214,7 @@ bm25_write_trigrams(Relation index, BM25BuildState *bs)
 static bool
 bm25_trgm_candidates(Relation index, BlockNumber trgmstart,
 					 const char *term, int termlen, int min_trigrams,
-					 TidSet *out)
+					 bool is_regex, TidSet *out)
 {
 	uint32		qtrg[FTS_MAX_TRIGRAMS];
 	int			nqtrg;
@@ -228,7 +228,10 @@ bm25_trgm_candidates(Relation index, BlockNumber trgmstart,
 
 	if (trgmstart == InvalidBlockNumber)
 		return false;
-	nqtrg = fts_trigrams(term, termlen, qtrg, FTS_MAX_TRIGRAMS);
+	if (is_regex)
+		nqtrg = fts_regex_trigrams(term, termlen, qtrg, FTS_MAX_TRIGRAMS);
+	else
+		nqtrg = fts_trigrams(term, termlen, qtrg, FTS_MAX_TRIGRAMS);
 	if (nqtrg < min_trigrams)
 		return false;			/* too few trigrams to prune soundly */
 

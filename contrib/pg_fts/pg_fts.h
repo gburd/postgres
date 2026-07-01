@@ -170,6 +170,7 @@ extern int	fts_query_terms(FtsQuery q, const char ***terms_out, int **lens_out);
 /* pg_fts_trgm.c -- trigram pre-filter for fuzzy/regex at scale */
 #define FTS_MAX_TRIGRAMS 64
 extern int	fts_trigrams(const char *s, int len, uint32 *out, int maxout);
+extern int	fts_regex_trigrams(const char *re, int relen, uint32 *out, int maxout);
 extern bool fts_trigrams_overlap(const uint32 *a, int na,
 								 const uint32 *b, int nb);
 

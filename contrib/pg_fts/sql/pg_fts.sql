@@ -477,6 +477,9 @@ FROM trgm t WHERE t.d @@@ 'document42~2'::ftsquery;
 -- regex through the trigram index
 SELECT count(*) AS regex_via_trigram
 FROM trgm t WHERE t.d @@@ '/document4[0-9]$/'::ftsquery;
+-- regex with alternation/anchors: literal-run tiling extracts 'document'
+SELECT count(*) AS regex_anchored
+FROM trgm t WHERE t.d @@@ '/^document(4|5)2$/'::ftsquery;   -- document42, document52
 RESET enable_seqscan;
 DROP TABLE trgm;
 

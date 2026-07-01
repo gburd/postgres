@@ -31,7 +31,7 @@ typedef struct TidSet
 /* forward decl: trigram-index candidate lookup (pg_fts_trgm_index.c) */
 static bool bm25_trgm_candidates(Relation index, BlockNumber trgmstart,
 								 const char *term, int termlen,
-								 int min_trigrams, TidSet *out);
+								 int min_trigrams, bool is_regex, TidSet *out);
 
 /* A scored heap tuple (score, or distance in an ordering scan). */
 typedef struct ScoredTid
@@ -710,7 +710,8 @@ bm25_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 
 				if (bm25_trgm_candidates(scan->indexRelation, meta.trgmstart,
 										 FTS_QUERY_ITEMTEXT(so->query, it),
-										 it->termlen, 3, &ts))
+										 it->termlen, 3,
+										 (it->flags & FTS_QF_REGEX) != 0, &ts))
 				{
 					TidSet		merged = tidset_or(cands, ts);
 
