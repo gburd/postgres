@@ -42,7 +42,12 @@ fts_doc_matches(FtsDoc doc, FtsQuery query)
 		if (it->type == FTS_QI_VAL)
 		{
 			const char *term = FTS_QUERY_ITEMTEXT(query, it);
-			bool		present = (fts_doc_lookup(doc, term, it->termlen) != NULL);
+			bool		present;
+
+			if (it->flags & FTS_QF_PREFIX)
+				present = fts_doc_has_prefix(doc, term, it->termlen);
+			else
+				present = (fts_doc_lookup(doc, term, it->termlen) != NULL);
 
 			stack[top++] = present;
 		}

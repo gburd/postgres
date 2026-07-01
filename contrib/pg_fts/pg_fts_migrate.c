@@ -172,7 +172,7 @@ tsquery_to_ftsquery(PG_FUNCTION_ARGS)
 	{
 		items[i].type = st.items[i].type;
 		items[i].op = st.items[i].op;
-		items[i].pad = 0;
+		items[i].flags = 0;
 		if (st.items[i].type == FTS_QI_VAL)
 		{
 			items[i].termoff = off;

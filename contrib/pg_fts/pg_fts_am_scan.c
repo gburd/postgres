@@ -254,6 +254,83 @@ tidset_andnot(TidSet a, TidSet b)
 }
 
 /*
+ * bm25_lookup_prefix -- union the posting lists of every dictionary term that
+ * begins with the given prefix.  Dictionary entries are sorted, but a simple
+ * full scan is used here (the skeleton's dictionary is small); an FST or
+ * front-coded prefix index is a later optimization.
+ */
+static void
+bm25_lookup_prefix(Relation index, BlockNumber dictstart,
+				   const char *prefix, int prefixlen, TidSet *out)
+{
+	BlockNumber blk = dictstart;
+	int			cap = 32;
+	int			n = 0;
+	ItemPointerData *tids = palloc(cap * sizeof(ItemPointerData));
+
+	while (blk != InvalidBlockNumber)
+	{
+		Buffer		buffer = ReadBuffer(index, blk);
+		Page		page;
+		char	   *ptr,
+				   *end;
+		BlockNumber next;
+
+		LockBuffer(buffer, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buffer);
+		ptr = (char *) PageGetContents(page);
+		end = (char *) page + ((PageHeader) page)->pd_lower;
+		next = BM25PageGetOpaque(page)->nextblk;
+
+		while (ptr < end)
+		{
+			BM25DictEntry *de = (BM25DictEntry *) ptr;
+			Size		esize = MAXALIGN(offsetof(BM25DictEntry, term) + de->termlen);
+
+			if ((int) de->termlen >= prefixlen &&
+				memcmp(de->term, prefix, prefixlen) == 0)
+			{
+				BlockNumber pblk = de->firstposting;
+
+				while (pblk != InvalidBlockNumber)
+				{
+					Buffer		pb = ReadBuffer(index, pblk);
+					Page		pp;
+					BM25Posting *post;
+					int			np,
+								k;
+
+					LockBuffer(pb, BUFFER_LOCK_SHARE);
+					pp = BufferGetPage(pb);
+					post = (BM25Posting *) PageGetContents(pp);
+					np = (((PageHeader) pp)->pd_lower -
+						  ((char *) PageGetContents(pp) - (char *) pp)) /
+						sizeof(BM25Posting);
+					for (k = 0; k < np; k++)
+					{
+						if (n >= cap)
+						{
+							cap *= 2;
+							tids = repalloc(tids, cap * sizeof(ItemPointerData));
+						}
+						tids[n++] = post[k].tid;
+					}
+					pblk = BM25PageGetOpaque(pp)->nextblk;
+					UnlockReleaseBuffer(pb);
+				}
+			}
+			ptr += esize;
+		}
+		UnlockReleaseBuffer(buffer);
+		blk = next;
+	}
+
+	out->tids = tids;
+	out->n = n;
+	tidset_sort_uniq(out);
+}
+
+/*
  * Evaluate the query into a TidSet via a stack machine over the RPN items.
  * NOT is handled specially: a bare NOT is only meaningful as "a AND NOT b", so
  * we track whether each stack entry is "positive" (a TID set) or "negative"
@@ -293,8 +370,12 @@ bm25_eval_query(Relation index, BlockNumber dictstart, FtsQuery q,
 		{
 			TidSet		s;
 
-			bm25_lookup_term(index, dictstart,
-							 FTS_QUERY_ITEMTEXT(q, it), it->termlen, &s);
+			if (it->flags & FTS_QF_PREFIX)
+				bm25_lookup_prefix(index, dictstart,
+								   FTS_QUERY_ITEMTEXT(q, it), it->termlen, &s);
+			else
+				bm25_lookup_term(index, dictstart,
+								 FTS_QUERY_ITEMTEXT(q, it), it->termlen, &s);
 			stack[top].set = s;
 			stack[top].negated = false;
 			top++;

@@ -94,11 +94,13 @@ typedef struct FtsQueryItem
 {
 	uint8		type;			/* FtsQueryItemType */
 	uint8		op;				/* FtsQueryOp, valid when type == FTS_QI_OPR */
-	uint16		pad;
+	uint16		flags;			/* FTS_QF_* flags, valid for FTS_QI_VAL */
 	/* for FTS_QI_VAL: */
 	uint32		termoff;		/* offset of term text within the text region */
 	uint32		termlen;		/* length of term text */
 } FtsQueryItem;
+
+#define FTS_QF_PREFIX	0x0001	/* term is a prefix match (term*) */
 
 typedef struct FtsQueryData
 {
@@ -135,5 +137,8 @@ extern bool fts_doc_matches(FtsDoc doc, FtsQuery query);
 
 /* shared: binary-search a term in a doc; returns entry or NULL */
 extern FtsTermEntry *fts_doc_lookup(FtsDoc doc, const char *term, int termlen);
+
+/* shared: does any term in the doc start with the given prefix? */
+extern bool fts_doc_has_prefix(FtsDoc doc, const char *prefix, int prefixlen);
 
 #endif							/* PG_FTS_H */

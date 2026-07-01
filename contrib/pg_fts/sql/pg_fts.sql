@@ -142,6 +142,21 @@ SELECT tsquery_to_ftsquery('quick <-> brown'::tsquery);
 SELECT to_ftsdoc('the quick brown fox') @@@ ('quick & fox'::tsquery)::ftsquery
        AS migrated_match;
 
+-- Stage 6 (partial): prefix queries (term*).
+SELECT 'quick*'::ftsquery;                        -- renders with the star
+SELECT to_ftsdoc('the quicksand shifts') @@@ 'quick*'::ftsquery AS prefix_hit;
+SELECT to_ftsdoc('slow and steady') @@@ 'quick*'::ftsquery AS prefix_miss;
+SELECT to_ftsdoc('quick brown fox') @@@ 'qu* & fo*'::ftsquery AS prefix_and;
+-- prefix works through the bm25 index too
+CREATE TABLE pfx (id serial, d ftsdoc);
+INSERT INTO pfx (d) VALUES (to_ftsdoc('quicksand')), (to_ftsdoc('quiche')),
+                          (to_ftsdoc('slow'));
+CREATE INDEX pfx_bm25 ON pfx USING bm25 (d);
+SET enable_seqscan = off;
+SELECT id FROM pfx WHERE d @@@ 'qui*'::ftsquery ORDER BY id;
+RESET enable_seqscan;
+DROP TABLE pfx;
+
 -- Stage 3: the bm25 index access method.
 ALTER EXTENSION pg_fts UPDATE TO '1.3';
 

@@ -37,6 +37,7 @@ typedef struct ParsedItem
 {
 	uint8		type;			/* FtsQueryItemType */
 	uint8		op;				/* FtsQueryOp when type == FTS_QI_OPR */
+	uint16		flags;			/* FTS_QF_* for VAL items */
 	char	   *term;			/* palloc'd folded term when type == FTS_QI_VAL */
 	int			termlen;
 } ParsedItem;
@@ -58,6 +59,7 @@ typedef struct Token
 	TokKind		kind;
 	char	   *term;			/* folded term text for TOK_TERM */
 	int			termlen;
+	bool		prefix;			/* TOK_TERM followed by '*' */
 } Token;
 
 typedef struct ParseState
@@ -94,7 +96,8 @@ fold_ascii(unsigned char c)
 }
 
 static void
-emit(ParseState *st, uint8 type, uint8 op, char *term, int termlen)
+emit(ParseState *st, uint8 type, uint8 op, char *term, int termlen,
+	 uint16 flags)
 {
 	if (st->nitems >= st->maxitems)
 	{
@@ -107,6 +110,7 @@ emit(ParseState *st, uint8 type, uint8 op, char *term, int termlen)
 	}
 	st->items[st->nitems].type = type;
 	st->items[st->nitems].op = op;
+	st->items[st->nitems].flags = flags;
 	st->items[st->nitems].term = term;
 	st->items[st->nitems].termlen = termlen;
 	st->nitems++;
@@ -124,7 +128,7 @@ emit(ParseState *st, uint8 type, uint8 op, char *term, int termlen)
 static Token
 lex_raw(ParseState *st)
 {
-	Token		tok = {TOK_EOF, NULL, 0};
+	Token		tok = {TOK_EOF, NULL, 0, false};
 	int			start;
 	int			flen;
 	int			i;
@@ -190,6 +194,12 @@ lex_raw(ParseState *st)
 		tok.kind = TOK_TERM;
 		tok.term = folded;
 		tok.termlen = flen;
+		/* a trailing '*' marks a prefix term */
+		if (st->pos < st->len && st->buf[st->pos] == '*')
+		{
+			tok.prefix = true;
+			st->pos++;
+		}
 	}
 	return tok;
 }
@@ -236,7 +246,8 @@ parse_primary(ParseState *st)
 	}
 	else if (tok.kind == TOK_TERM)
 	{
-		emit(st, FTS_QI_VAL, 0, tok.term, tok.termlen);
+		emit(st, FTS_QI_VAL, 0, tok.term, tok.termlen,
+			 tok.prefix ? FTS_QF_PREFIX : 0);
 	}
 	else
 	{
@@ -254,7 +265,7 @@ parse_unary(ParseState *st)
 	{
 		(void) next_token(st);
 		parse_unary(st);
-		emit(st, FTS_QI_OPR, FTS_OP_NOT, NULL, 0);
+		emit(st, FTS_QI_OPR, FTS_OP_NOT, NULL, 0, 0);
 	}
 	else
 		parse_primary(st);
@@ -273,14 +284,14 @@ parse_and(ParseState *st)
 		{
 			(void) next_token(st);
 			parse_unary(st);
-			emit(st, FTS_QI_OPR, FTS_OP_AND, NULL, 0);
+			emit(st, FTS_QI_OPR, FTS_OP_AND, NULL, 0, 0);
 		}
 		else if (tok.kind == TOK_TERM || tok.kind == TOK_NOT ||
 				 tok.kind == TOK_LPAREN)
 		{
 			/* implicit AND */
 			parse_unary(st);
-			emit(st, FTS_QI_OPR, FTS_OP_AND, NULL, 0);
+			emit(st, FTS_QI_OPR, FTS_OP_AND, NULL, 0, 0);
 		}
 		else
 			break;
@@ -300,7 +311,7 @@ parse_or(ParseState *st)
 		{
 			(void) next_token(st);
 			parse_and(st);
-			emit(st, FTS_QI_OPR, FTS_OP_OR, NULL, 0);
+			emit(st, FTS_QI_OPR, FTS_OP_OR, NULL, 0, 0);
 		}
 		else
 			break;
@@ -364,7 +375,7 @@ fts_parse_query(const char *str, int len)
 	{
 		items[i].type = st.items[i].type;
 		items[i].op = st.items[i].op;
-		items[i].pad = 0;
+		items[i].flags = st.items[i].flags;
 		if (st.items[i].type == FTS_QI_VAL)
 		{
 			items[i].termoff = off;
@@ -449,6 +460,8 @@ ftsquery_out(PG_FUNCTION_ARGS)
 				appendStringInfoChar(&s, t[j]);
 			}
 			appendStringInfoChar(&s, '\'');
+			if (it->flags & FTS_QF_PREFIX)
+				appendStringInfoChar(&s, '*');
 			stack[top++] = s;
 		}
 		else if (it->op == FTS_OP_NOT)
@@ -504,6 +517,7 @@ ftsquery_recv(PG_FUNCTION_ARGS)
 	char	   *textbase;
 	uint8	   *types;
 	uint8	   *ops;
+	uint16	   *flags;
 	char	  **terms;
 	int		   *lens;
 	Size		textbytes = 0;
@@ -520,6 +534,7 @@ ftsquery_recv(PG_FUNCTION_ARGS)
 
 	types = (uint8 *) palloc(nitems * sizeof(uint8));
 	ops = (uint8 *) palloc(nitems * sizeof(uint8));
+	flags = (uint16 *) palloc(nitems * sizeof(uint16));
 	terms = (char **) palloc(nitems * sizeof(char *));
 	lens = (int *) palloc(nitems * sizeof(int));
 
@@ -527,6 +542,7 @@ ftsquery_recv(PG_FUNCTION_ARGS)
 	{
 		types[i] = (uint8) pq_getmsgint(buf, 1);
 		ops[i] = (uint8) pq_getmsgint(buf, 1);
+		flags[i] = (uint16) pq_getmsgint(buf, 2);
 		if (types[i] == FTS_QI_VAL)
 		{
 			const char *t;
@@ -570,7 +586,7 @@ ftsquery_recv(PG_FUNCTION_ARGS)
 		{
 			items[i].type = types[i];
 			items[i].op = ops[i];
-			items[i].pad = 0;
+			items[i].flags = flags[i];
 			if (types[i] == FTS_QI_VAL)
 			{
 				items[i].termoff = off;
@@ -599,6 +615,7 @@ ftsquery_send(PG_FUNCTION_ARGS)
 	{
 		pq_sendint8(&buf, items[i].type);
 		pq_sendint8(&buf, items[i].op);
+		pq_sendint16(&buf, items[i].flags);
 		if (items[i].type == FTS_QI_VAL)
 		{
 			pq_sendint32(&buf, items[i].termlen);

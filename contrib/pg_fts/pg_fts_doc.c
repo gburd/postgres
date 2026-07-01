@@ -234,3 +234,46 @@ fts_doc_lookup(FtsDoc doc, const char *term, int termlen)
 	}
 	return NULL;
 }
+
+/*
+ * fts_doc_has_prefix -- does any term in the doc start with the given prefix?
+ * Terms are sorted, so binary-search the lower bound for the prefix, then
+ * check whether the term there begins with it.
+ */
+bool
+fts_doc_has_prefix(FtsDoc doc, const char *prefix, int prefixlen)
+{
+	FtsTermEntry *entries = FTS_DOC_ENTRIES(doc);
+	int			lo = 0;
+	int			hi = (int) doc->nterms;
+
+	if (prefixlen == 0)
+		return doc->nterms > 0;
+
+	/* lower_bound: first entry whose term >= prefix */
+	while (lo < hi)
+	{
+		int			mid = (lo + hi) / 2;
+		const char *mterm = FTS_DOC_TERMTEXT(doc, &entries[mid]);
+		int			mlen = entries[mid].len;
+		int			min = Min(mlen, prefixlen);
+		int			c = memcmp(mterm, prefix, min);
+
+		if (c == 0)
+			c = mlen - prefixlen;	/* shorter sorts before */
+		if (c < 0)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+
+	if (lo < (int) doc->nterms)
+	{
+		const char *mterm = FTS_DOC_TERMTEXT(doc, &entries[lo]);
+		int			mlen = entries[lo].len;
+
+		if (mlen >= prefixlen && memcmp(mterm, prefix, prefixlen) == 0)
+			return true;
+	}
+	return false;
+}
