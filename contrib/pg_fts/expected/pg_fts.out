@@ -1106,6 +1106,25 @@ FROM trgm t WHERE t.d @@@ '/^document(4|5)2$/'::ftsquery;   -- document42, docum
 
 RESET enable_seqscan;
 DROP TABLE trgm;
+-- Adaptive-k ordering scan: consuming more than the initial batch (64) must
+-- grow k and return the full ordered set correctly across the boundary.
+CREATE TABLE bigord (id serial, d ftsdoc);
+INSERT INTO bigord (d) SELECT to_ftsdoc('term extra' || (g % 3)) FROM generate_series(1, 300) g;
+CREATE INDEX bigord_bm25 ON bigord USING bm25 (d);
+SET enable_seqscan = off;
+-- all 300 match 'term'; requesting 200 crosses the initial k=64 batch
+SELECT count(*) AS got, bool_and(s >= lead_s) AS ordered_ok
+FROM (SELECT r.score AS s, lead(r.score) OVER (ORDER BY r.score DESC) AS lead_s
+      FROM (SELECT id, d <=> 'term'::ftsquery AS score FROM bigord
+            WHERE d @@@ 'term'::ftsquery
+            ORDER BY d <=> 'term'::ftsquery LIMIT 200) r) q;
+ got | ordered_ok 
+-----+------------
+ 200 | t
+(1 row)
+
+RESET enable_seqscan;
+DROP TABLE bigord;
 -- Stage 3: the bm25 index access method.
 ALTER EXTENSION pg_fts UPDATE TO '1.3';
 ERROR:  extension "pg_fts" has no update path from version "1.16" to version "1.3"

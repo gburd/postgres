@@ -52,6 +52,7 @@ typedef struct BM25ScanOpaqueData
 	ScoredTid  *ordered;		/* top-k by ascending distance */
 	int			nordered;
 	int			ordpos;			/* next result to return */
+	int			curk;			/* current materialized k (grows on demand) */
 } BM25ScanOpaqueData;
 
 typedef BM25ScanOpaqueData *BM25ScanOpaque;
@@ -612,16 +613,34 @@ bm25_gettuple(IndexScanDesc scan, ScanDirection dir)
 	if (!so->orderInit)
 	{
 		/*
-		 * Materialize the full ordered result once.  We ask for a generous k
-		 * (the executor applies LIMIT); a bounded amgettuple that streams the
-		 * WAND heap incrementally is a further optimization.
+		 * Adaptive-k WAND: start with a modest k so a small LIMIT does little
+		 * work (WAND prunes hard for small k).  If the executor consumes the
+		 * whole batch we grow k and recompute -- so total work tracks the
+		 * rows actually demanded rather than a fixed ceiling.  The top-k array
+		 * itself is bounded (size k), and the WAND cursors page lazily, so
+		 * memory stays bounded regardless.
 		 */
-		int			k = 1000;
-
-		so->nordered = bm25_topk_visible(scan->indexRelation, so->query, k,
-										 true, &so->ordered);
+		so->curk = 64;
+		so->nordered = bm25_topk_visible(scan->indexRelation, so->query,
+										 so->curk, true, &so->ordered);
 		so->ordpos = 0;
 		so->orderInit = true;
+	}
+
+	/*
+	 * Batch exhausted but it was full (nordered == curk): the executor wants
+	 * more than we materialized.  Grow k and recompute, skipping the rows
+	 * already returned.  (WAND is a batch top-k; this bounds work to demand
+	 * without a full resumable-cursor rewrite.)
+	 */
+	if (so->ordpos >= so->nordered && so->nordered == so->curk)
+	{
+		int			prev = so->ordpos;
+
+		so->curk *= 4;
+		so->nordered = bm25_topk_visible(scan->indexRelation, so->query,
+										 so->curk, true, &so->ordered);
+		so->ordpos = prev;		/* resume after the rows already emitted */
 	}
 
 	if (so->ordpos >= so->nordered)
