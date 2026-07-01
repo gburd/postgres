@@ -295,8 +295,38 @@ SELECT fts_bm25(to_ftsdoc('fox fox fox'), 'fox'::ftsquery, 1000, 3.0)
  t
 (1 row)
 
+-- Stage 9: BM25 variants.
+ALTER EXTENSION pg_fts UPDATE TO '1.4';
+-- all variants score presence > absence
+SELECT variant,
+       fts_bm25_opts(to_ftsdoc('quick fox'), 'fox'::ftsquery,
+                     1000, 3.0, 1.2, 0.75, variant, ARRAY[10.0]) > 0 AS positive
+FROM unnest(ARRAY['lucene','robertson','atire','bm25+']) AS variant
+ORDER BY variant;
+  variant  | positive 
+-----------+----------
+ atire     | t
+ bm25+     | t
+ lucene    | t
+ robertson | t
+(4 rows)
+
+-- bm25+ >= lucene for the same inputs (delta floor)
+SELECT fts_bm25_opts(to_ftsdoc('fox'), 'fox'::ftsquery, 1000, 5.0, 1.2, 0.75, 'bm25+', ARRAY[3.0])
+     > fts_bm25_opts(to_ftsdoc('fox'), 'fox'::ftsquery, 1000, 5.0, 1.2, 0.75, 'lucene', ARRAY[3.0])
+       AS bm25plus_ge_lucene;
+ bm25plus_ge_lucene 
+--------------------
+ t
+(1 row)
+
+-- unknown variant errors
+SELECT fts_bm25_opts(to_ftsdoc('x'), 'x'::ftsquery, 10, 1.0, 1.2, 0.75, 'bogus');
+ERROR:  unknown bm25 variant "bogus"
+HINT:  Valid variants: lucene, robertson, atire, bm25+.
 -- Stage 3: the bm25 index access method.
 ALTER EXTENSION pg_fts UPDATE TO '1.3';
+ERROR:  extension "pg_fts" has no update path from version "1.4" to version "1.3"
 CREATE TABLE idxdocs (id serial, d ftsdoc);
 INSERT INTO idxdocs (d) VALUES
   (to_ftsdoc('the quick brown fox')),

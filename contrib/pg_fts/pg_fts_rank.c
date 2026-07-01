@@ -36,6 +36,38 @@
 #define BM25_DEFAULT_K1		1.2
 #define BM25_DEFAULT_B		0.75
 
+/* IDF / scoring variants (matching common implementations) */
+typedef enum BM25Variant
+{
+	BM25_LUCENE = 0,			/* ln(1 + (N-df+0.5)/(df+0.5)); always >= 0 */
+	BM25_ROBERTSON,				/* classic ln((N-df+0.5)/(df+0.5)); can be < 0 */
+	BM25_ATIRE,					/* ln(N/df) */
+	BM25_BM25PLUS				/* Lucene IDF + delta floor on tf term */
+}			BM25Variant;
+
+#define BM25PLUS_DELTA		1.0
+
+static double
+bm25_idf(BM25Variant v, double N, double df)
+{
+	if (df < 1.0)
+		df = 1.0;
+	if (df > N)
+		df = N;
+
+	switch (v)
+	{
+		case BM25_ROBERTSON:
+			return log((N - df + 0.5) / (df + 0.5));
+		case BM25_ATIRE:
+			return log(N / df);
+		case BM25_LUCENE:
+		case BM25_BM25PLUS:
+		default:
+			return log(1.0 + (N - df + 0.5) / (df + 0.5));
+	}
+}
+
 /*
  * Collect the distinct term operands referenced by a query.  Operators and
  * duplicate terms are ignored -- BM25 sums over the query's terms present in
@@ -79,7 +111,7 @@ query_terms(FtsQuery q, const char ***terms_out, int **lens_out)
  */
 static double
 fts_bm25_score(FtsDoc doc, FtsQuery q, double N, double avgdl,
-			   const double *dfs, double k1, double b)
+			   const double *dfs, double k1, double b, BM25Variant variant)
 {
 	const char **terms;
 	int		   *lens;
@@ -100,24 +132,22 @@ fts_bm25_score(FtsDoc doc, FtsQuery q, double N, double avgdl,
 		double		df;
 		double		idf;
 		double		norm;
+		double		sat;
 
 		if (e == NULL)
 			continue;			/* term absent: contributes nothing */
 
 		tf = (double) e->tf;
 		df = (dfs != NULL) ? dfs[i] : 1.0;
-		if (df < 1.0)
-			df = 1.0;
-		if (df > N)
-			df = N;
-
-		/* Lucene-style IDF, always >= 0 */
-		idf = log(1.0 + (N - df + 0.5) / (df + 0.5));
+		idf = bm25_idf(variant, N, df);
 
 		norm = tf + k1 * (1.0 - b + b * dl / avgdl);
 		if (norm <= 0.0)
 			continue;
-		score += idf * (tf * (k1 + 1.0)) / norm;
+		sat = (tf * (k1 + 1.0)) / norm;
+		if (variant == BM25_BM25PLUS)
+			sat += BM25PLUS_DELTA;	/* lower-bound the tf saturation */
+		score += idf * sat;
 	}
 
 	pfree(terms);
@@ -174,7 +204,91 @@ fts_bm25(PG_FUNCTION_ARGS)
 		N = 1.0;
 
 	score = fts_bm25_score(doc, q, N, avgdl, dfs,
-						   BM25_DEFAULT_K1, BM25_DEFAULT_B);
+						   BM25_DEFAULT_K1, BM25_DEFAULT_B, BM25_LUCENE);
+
+	PG_FREE_IF_COPY(doc, 0);
+	PG_FREE_IF_COPY(q, 1);
+	PG_RETURN_FLOAT8(score);
+}
+
+static BM25Variant
+parse_variant(text *v)
+{
+	char	   *s = text_to_cstring(v);
+	BM25Variant r = BM25_LUCENE;
+
+	if (strcmp(s, "lucene") == 0)
+		r = BM25_LUCENE;
+	else if (strcmp(s, "robertson") == 0)
+		r = BM25_ROBERTSON;
+	else if (strcmp(s, "atire") == 0)
+		r = BM25_ATIRE;
+	else if (strcmp(s, "bm25+") == 0 || strcmp(s, "bm25plus") == 0)
+		r = BM25_BM25PLUS;
+	else
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("unknown bm25 variant \"%s\"", s),
+				 errhint("Valid variants: lucene, robertson, atire, bm25+.")));
+	pfree(s);
+	return r;
+}
+
+/*
+ * SQL: fts_bm25_opts(doc, query, n_docs, avgdl, k1, b, variant, dfs)
+ * Full-control scorer for reproducing reference implementations.
+ */
+PG_FUNCTION_INFO_V1(fts_bm25_opts);
+
+Datum
+fts_bm25_opts(PG_FUNCTION_ARGS)
+{
+	FtsDoc		doc;
+	FtsQuery	q;
+	double		N,
+				avgdl,
+				k1,
+				b;
+	BM25Variant variant;
+	double	   *dfs = NULL;
+	int			ndfs = 0;
+	double		score;
+
+	if (PG_ARGISNULL(0) || PG_ARGISNULL(1) || PG_ARGISNULL(2) ||
+		PG_ARGISNULL(3) || PG_ARGISNULL(4) || PG_ARGISNULL(5) ||
+		PG_ARGISNULL(6))
+		PG_RETURN_NULL();
+
+	doc = PG_GETARG_FTSDOC(0);
+	q = PG_GETARG_FTSQUERY(1);
+	N = PG_GETARG_FLOAT8(2);
+	avgdl = PG_GETARG_FLOAT8(3);
+	k1 = PG_GETARG_FLOAT8(4);
+	b = PG_GETARG_FLOAT8(5);
+	variant = parse_variant(PG_GETARG_TEXT_PP(6));
+
+	if (!PG_ARGISNULL(7))
+	{
+		ArrayType  *arr = PG_GETARG_ARRAYTYPE_P(7);
+		Datum	   *elems;
+		bool	   *nulls;
+		int			i;
+
+		if (ARR_ELEMTYPE(arr) != FLOAT8OID)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATATYPE_MISMATCH),
+					 errmsg("dfs array must be float8[]")));
+		deconstruct_array(arr, FLOAT8OID, 8, true, 'd',
+						  &elems, &nulls, &ndfs);
+		dfs = (double *) palloc(ndfs * sizeof(double));
+		for (i = 0; i < ndfs; i++)
+			dfs[i] = nulls[i] ? 1.0 : DatumGetFloat8(elems[i]);
+	}
+
+	if (N < 1.0)
+		N = 1.0;
+
+	score = fts_bm25_score(doc, q, N, avgdl, dfs, k1, b, variant);
 
 	PG_FREE_IF_COPY(doc, 0);
 	PG_FREE_IF_COPY(q, 1);
