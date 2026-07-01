@@ -1080,6 +1080,9 @@ typedef struct WandCursor
 	uint32		block_max_tf;	/* unused (kept for ABI of readers) */
 	double		idf;
 	double		avgdl;
+	double		k1b_inv_avgdl;	/* precomputed k1*b/avgdl (norm hot path) */
+	double		k1_1mb;			/* precomputed k1*(1-b) */
+	double		idf_k1p1;		/* precomputed idf*(k1+1) */
 	double		max_contrib;	/* term-wide upper bound (shortest-doc norm) */
 }			WandCursor;
 
@@ -1139,11 +1142,11 @@ wand_load_page(WandCursor *c, BlockNumber blk)
 static inline double
 wand_block_max_contrib(WandCursor *c)
 {
-	double		k1 = 1.2,
-				b = 0.75;
+	double		k1 = 1.2;
 	double		mtf = (double) (c->cur < c->nposts ? c->blockmax[c->cur] : 0);
 
-	return c->idf * mtf * (k1 + 1.0) / (mtf + k1 * (1.0 - b));
+	/* block-max uses the shortest-doc norm bound (k1*(1-b)); avgdl-independent */
+	return c->idf * mtf * (k1 + 1.0) / (mtf + c->k1_1mb);
 }
 
 /* Advance the cursor to the next posting, loading the next page if needed. */
@@ -1174,17 +1177,17 @@ wand_next(WandCursor *c)
 	}
 }
 
-/* Exact BM25 contribution of the current posting, using stored per-doc |D|. */
+/* Exact BM25 contribution of the current posting, using stored per-doc |D|.
+ * Norm constants (idf*(k1+1), k1*(1-b), k1*b/avgdl) are precomputed per cursor
+ * so the hot path is multiplies, not divisions. */
 static inline double
 wand_contrib_cur(WandCursor *c)
 {
-	double		k1 = 1.2,
-				b = 0.75;
 	double		tf = (double) c->posts[c->cur].tf;
 	double		dl = (double) c->posts[c->cur].doclen;
-	double		norm = tf + k1 * (1.0 - b + b * dl / c->avgdl);
+	double		norm = tf + c->k1_1mb + c->k1b_inv_avgdl * dl;
 
-	return c->idf * tf * (k1 + 1.0) / norm;
+	return c->idf_k1p1 * tf / norm;
 }
 
 /*
@@ -1410,6 +1413,9 @@ bm25_topk_visible(Relation index, FtsQuery q, int k, bool as_distance,
 			cursors[nactive].docid = 0;
 			cursors[nactive].idf = idf;
 			cursors[nactive].avgdl = avgdl;
+			cursors[nactive].k1b_inv_avgdl = k1 * b / avgdl;
+			cursors[nactive].k1_1mb = k1 * (1.0 - b);
+			cursors[nactive].idf_k1p1 = idf * (k1 + 1.0);
 			cursors[nactive].max_contrib =
 				idf * mtf * (k1 + 1.0) / (mtf + k1 * (1.0 - b));
 			nactive++;
