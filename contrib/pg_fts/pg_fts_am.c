@@ -40,11 +40,13 @@
 #include "access/generic_xlog.h"
 #include "access/reloptions.h"
 #include "access/relscan.h"
+#include "access/table.h"
 #include "access/tableam.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_type.h"
 #include "commands/defrem.h"
 #include "commands/vacuum.h"
+#include "executor/tuptable.h"
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "nodes/pathnodes.h"
@@ -54,6 +56,7 @@
 #include "utils/array.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/snapmgr.h"
 #include "utils/selfuncs.h"
 
 PG_FUNCTION_INFO_V1(bm25handler);

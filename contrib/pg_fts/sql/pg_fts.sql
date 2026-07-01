@@ -345,6 +345,21 @@ SELECT to_ftsdoc('the running man') @@@ 'runnink~2'::ftsquery AS edge_hit;
 SELECT to_ftsdoc('cat hat bat') @@@ 'rat~1'::ftsquery AS short_hit;
 SELECT to_ftsdoc('dog log fog') @@@ 'rat~1'::ftsquery AS short_miss;
 
+-- MVCC: fts_search must return only tuples visible to the snapshot.
+CREATE TABLE viz (id serial, d ftsdoc);
+INSERT INTO viz (d) VALUES (to_ftsdoc('apple')), (to_ftsdoc('apple')),
+                          (to_ftsdoc('apple')), (to_ftsdoc('apple'));
+CREATE INDEX viz_bm25 ON viz USING bm25 (d);
+-- delete two rows; their postings remain in the index until merge/reindex
+DELETE FROM viz WHERE id IN (2, 3);
+-- fts_search must skip the dead tuples (returns 2 live rows, not 4)
+SELECT count(*) AS live_only
+FROM fts_search('viz_bm25', 'apple'::ftsquery, 100) r
+JOIN viz v ON v.ctid = r.ctid;
+-- and the raw SRF itself returns only visible ctids
+SELECT count(*) AS srf_live FROM fts_search('viz_bm25', 'apple'::ftsquery, 100);
+DROP TABLE viz;
+
 -- Stage 3: the bm25 index access method.
 ALTER EXTENSION pg_fts UPDATE TO '1.3';
 

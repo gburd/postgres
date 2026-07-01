@@ -1022,20 +1022,50 @@ fts_search(PG_FUNCTION_ARGS)
 			}
 		}
 
-		/* collect and sort desc, keep top k */
+		/* collect all scored candidates, sort by score desc */
 		{
 			HASH_SEQ_STATUS seq;
 			ScoredTid  *e;
 			int			n = hash_get_num_entries(acc);
 			int			i = 0;
+			ScoredTid  *cand;
+			Relation	heap;
+			IndexFetchTableData *fetch;
+			Snapshot	snap = GetActiveSnapshot();
+			int			nvis = 0;
 
-			results = (ScoredTid *) palloc(Max(n, 1) * sizeof(ScoredTid));
+			cand = (ScoredTid *) palloc(Max(n, 1) * sizeof(ScoredTid));
 			hash_seq_init(&seq, acc);
 			while ((e = (ScoredTid *) hash_seq_search(&seq)) != NULL)
-				results[i++] = *e;
+				cand[i++] = *e;
 			if (n > 1)
-				qsort(results, n, sizeof(ScoredTid), cmp_scored_desc);
-			funcctx->max_calls = Min(n, k);
+				qsort(cand, n, sizeof(ScoredTid), cmp_scored_desc);
+
+			/*
+			 * MVCC: return only tuples visible to the active snapshot, in
+			 * score order, stopping once k visible rows are collected.  This
+			 * makes the SRF safe under all isolation levels -- dead/updated
+			 * rows the postings still reference are skipped.
+			 */
+			results = (ScoredTid *) palloc(Max(k, 1) * sizeof(ScoredTid));
+			heap = table_open(index->rd_index->indrelid, AccessShareLock);
+			fetch = table_index_fetch_begin(heap, 0);
+			for (i = 0; i < n && nvis < k; i++)
+			{
+				ItemPointerData tid = cand[i].tid;
+				bool		call_again = false;
+				bool		all_dead = false;
+				TupleTableSlot *slot = table_slot_create(heap, NULL);
+
+				if (table_index_fetch_tuple(fetch, &tid, snap, slot,
+											&call_again, &all_dead))
+					results[nvis++] = cand[i];
+				ExecDropSingleTupleTableSlot(slot);
+			}
+			table_index_fetch_end(fetch);
+			table_close(heap, AccessShareLock);
+
+			funcctx->max_calls = nvis;
 			funcctx->user_fctx = results;
 		}
 
