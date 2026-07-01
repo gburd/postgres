@@ -444,6 +444,26 @@ FROM fts_search('recyc_bm25', 'term1'::ftsquery, 5000) r JOIN recyc x ON x.ctid 
 SELECT pg_relation_size('recyc_bm25') < 400 * 8192 AS size_bounded;
 DROP TABLE recyc;
 
+-- amcanorderbyop: ORDER BY col <=> query LIMIT k uses an index ordering scan.
+ALTER EXTENSION pg_fts UPDATE TO '1.16';
+CREATE TABLE ord (id serial, d ftsdoc);
+INSERT INTO ord (d) VALUES
+  (to_ftsdoc('quick quick quick fox')),   -- highest tf(quick)
+  (to_ftsdoc('quick brown fox')),
+  (to_ftsdoc('a slow turtle')),
+  (to_ftsdoc('quick'));                    -- short doc, high length-norm score
+CREATE INDEX ord_bm25 ON ord USING bm25 (d);
+SET enable_seqscan = off;
+-- the plan should be an index scan ordered by the distance operator (no Sort)
+EXPLAIN (COSTS OFF)
+SELECT id FROM ord WHERE d @@@ 'quick'::ftsquery
+ORDER BY d <=> 'quick'::ftsquery LIMIT 2;
+-- results ordered by relevance (ascending distance)
+SELECT id FROM ord WHERE d @@@ 'quick'::ftsquery
+ORDER BY d <=> 'quick'::ftsquery LIMIT 3;
+RESET enable_seqscan;
+DROP TABLE ord;
+
 -- Stage 3: the bm25 index access method.
 ALTER EXTENSION pg_fts UPDATE TO '1.3';
 

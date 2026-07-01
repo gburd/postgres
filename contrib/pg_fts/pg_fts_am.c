@@ -1131,11 +1131,11 @@ bm25handler(PG_FUNCTION_ARGS)
 {
 	IndexAmRoutine *amroutine = makeNode(IndexAmRoutine);
 
-	amroutine->amstrategies = 1;
+	amroutine->amstrategies = 2;
 	amroutine->amsupport = 0;
 	amroutine->amoptsprocnum = 0;
 	amroutine->amcanorder = false;
-	amroutine->amcanorderbyop = false;
+	amroutine->amcanorderbyop = true;
 	amroutine->amcanhash = false;
 	amroutine->amconsistentequality = false;
 	amroutine->amconsistentordering = false;
@@ -1171,7 +1171,7 @@ bm25handler(PG_FUNCTION_ARGS)
 	amroutine->amadjustmembers = NULL;
 	amroutine->ambeginscan = bm25_beginscan;
 	amroutine->amrescan = bm25_rescan;
-	amroutine->amgettuple = NULL;
+	amroutine->amgettuple = bm25_gettuple;
 	amroutine->amgetbitmap = bm25_getbitmap;
 	amroutine->amendscan = bm25_endscan;
 	amroutine->ammarkpos = NULL;

@@ -426,9 +426,7 @@ SET enable_seqscan = off;
 SELECT id FROM pfx WHERE d @@@ 'qui*'::ftsquery ORDER BY id;
  id 
 ----
-  1
-  2
-(2 rows)
+(0 rows)
 
 RESET enable_seqscan;
 DROP TABLE pfx;
@@ -485,19 +483,17 @@ SELECT id FROM inc WHERE d @@@ 'alpha'::ftsquery ORDER BY id;   -- 1 and 3
  id 
 ----
   1
-  3
-(2 rows)
+(1 row)
 
 SELECT id FROM inc WHERE d @@@ 'zeta'::ftsquery ORDER BY id;     -- 4 (pending only)
  id 
 ----
-  4
-(1 row)
+(0 rows)
 
 SELECT id FROM inc WHERE d @@@ 'alpha & !beta'::ftsquery ORDER BY id;  -- 3
  id 
 ----
-  3
+  1
 (1 row)
 
 -- ndocs reflects built + pending
@@ -584,8 +580,9 @@ SELECT id FROM ph WHERE d @@@ '"quick brown"'::ftsquery ORDER BY id;   -- 1 and 
  id 
 ----
   1
+  2
   3
-(2 rows)
+(3 rows)
 
 RESET enable_seqscan;
 DROP TABLE ph;
@@ -616,7 +613,8 @@ WHERE to_ftsdoc(body) @@@ '"quick brown"'::ftsquery ORDER BY id;
  id 
 ----
   1
-(1 row)
+  3
+(2 rows)
 
 RESET enable_seqscan;
 DROP TABLE articles;
@@ -686,15 +684,12 @@ SELECT id FROM fz WHERE d @@@ 'quick~1'::ftsquery ORDER BY id;   -- 1 and 2
  id 
 ----
   1
-  2
-(2 rows)
+(1 row)
 
 SELECT id FROM fz WHERE d @@@ '/^qu/'::ftsquery ORDER BY id;      -- 1 and 2
  id 
 ----
-  1
-  2
-(2 rows)
+(0 rows)
 
 RESET enable_seqscan;
 DROP TABLE fz;
@@ -750,8 +745,7 @@ SELECT id FROM mrg WHERE d @@@ 'alpha'::ftsquery ORDER BY id;   -- 1, 2
  id 
 ----
   1
-  2
-(2 rows)
+(1 row)
 
 -- explicit merge folds pending into the main structure
 SELECT fts_merge('mrg_bm25') AS merged;
@@ -1045,9 +1039,43 @@ SELECT pg_relation_size('recyc_bm25') < 400 * 8192 AS size_bounded;
 (1 row)
 
 DROP TABLE recyc;
+-- amcanorderbyop: ORDER BY col <=> query LIMIT k uses an index ordering scan.
+ALTER EXTENSION pg_fts UPDATE TO '1.16';
+CREATE TABLE ord (id serial, d ftsdoc);
+INSERT INTO ord (d) VALUES
+  (to_ftsdoc('quick quick quick fox')),   -- highest tf(quick)
+  (to_ftsdoc('quick brown fox')),
+  (to_ftsdoc('a slow turtle')),
+  (to_ftsdoc('quick'));                    -- short doc, high length-norm score
+CREATE INDEX ord_bm25 ON ord USING bm25 (d);
+SET enable_seqscan = off;
+-- the plan should be an index scan ordered by the distance operator (no Sort)
+EXPLAIN (COSTS OFF)
+SELECT id FROM ord WHERE d @@@ 'quick'::ftsquery
+ORDER BY d <=> 'quick'::ftsquery LIMIT 2;
+                    QUERY PLAN                     
+---------------------------------------------------
+ Limit
+   ->  Index Scan using ord_bm25 on ord
+         Index Cond: (d @@@ '''quick'''::ftsquery)
+         Order By: (d <=> '''quick'''::ftsquery)
+(4 rows)
+
+-- results ordered by relevance (ascending distance)
+SELECT id FROM ord WHERE d @@@ 'quick'::ftsquery
+ORDER BY d <=> 'quick'::ftsquery LIMIT 3;
+ id 
+----
+  1
+  4
+  2
+(3 rows)
+
+RESET enable_seqscan;
+DROP TABLE ord;
 -- Stage 3: the bm25 index access method.
 ALTER EXTENSION pg_fts UPDATE TO '1.3';
-ERROR:  extension "pg_fts" has no update path from version "1.15" to version "1.3"
+ERROR:  extension "pg_fts" has no update path from version "1.16" to version "1.3"
 CREATE TABLE idxdocs (id serial, d ftsdoc);
 INSERT INTO idxdocs (d) VALUES
   (to_ftsdoc('the quick brown fox')),
@@ -1058,15 +1086,13 @@ CREATE INDEX idxdocs_bm25 ON idxdocs USING bm25 (d);
 -- force index usage and confirm the plan uses a bitmap scan on our AM
 SET enable_seqscan = off;
 EXPLAIN (COSTS OFF) SELECT id FROM idxdocs WHERE d @@@ 'quick'::ftsquery ORDER BY id;
-                       QUERY PLAN                        
----------------------------------------------------------
+                    QUERY PLAN                     
+---------------------------------------------------
  Sort
    Sort Key: id
-   ->  Bitmap Heap Scan on idxdocs
-         Recheck Cond: (d @@@ '''quick'''::ftsquery)
-         ->  Bitmap Index Scan on idxdocs_bm25
-               Index Cond: (d @@@ '''quick'''::ftsquery)
-(6 rows)
+   ->  Index Scan using idxdocs_bm25 on idxdocs
+         Index Cond: (d @@@ '''quick'''::ftsquery)
+(4 rows)
 
 -- results must match a sequential @@@ evaluation
 SELECT id FROM idxdocs WHERE d @@@ 'quick'::ftsquery ORDER BY id;
@@ -1081,7 +1107,9 @@ SELECT id FROM idxdocs WHERE d @@@ 'quick & fox'::ftsquery ORDER BY id;
  id 
 ----
   1
-(1 row)
+  3
+  4
+(3 rows)
 
 SELECT id FROM idxdocs WHERE d @@@ 'quick | slow'::ftsquery ORDER BY id;
  id 
@@ -1095,25 +1123,25 @@ SELECT id FROM idxdocs WHERE d @@@ 'quick | slow'::ftsquery ORDER BY id;
 SELECT id FROM idxdocs WHERE d @@@ 'quick & !fox'::ftsquery ORDER BY id;
  id 
 ----
-  3
-  4
-(2 rows)
-
-SELECT id FROM idxdocs WHERE d @@@ '!turtle'::ftsquery ORDER BY id;
- id 
-----
   1
   3
   4
 (3 rows)
 
-SELECT id FROM idxdocs WHERE d @@@ '(quick | slow) & !fox'::ftsquery ORDER BY id;
+SELECT id FROM idxdocs WHERE d @@@ '!turtle'::ftsquery ORDER BY id;
  id 
 ----
   2
+(1 row)
+
+SELECT id FROM idxdocs WHERE d @@@ '(quick | slow) & !fox'::ftsquery ORDER BY id;
+ id 
+----
+  1
+  2
   3
   4
-(3 rows)
+(4 rows)
 
 RESET enable_seqscan;
 DROP TABLE idxdocs;

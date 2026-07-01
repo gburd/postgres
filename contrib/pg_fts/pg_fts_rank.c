@@ -425,3 +425,58 @@ fts_bm25f(PG_FUNCTION_ARGS)
 	PG_FREE_IF_COPY(q, 1);
 	PG_RETURN_FLOAT8(score);
 }
+
+/*
+ * fts_distance(ftsdoc, ftsquery) -> float8: a BM25 *distance* (smaller = more
+ * relevant) for use as an ORDER BY operator.  Distance = 1/(1+score) maps the
+ * unbounded BM25 score into (0,1], monotonically decreasing, so ascending
+ * distance is descending relevance.  Corpus stats are unknown to a bare
+ * operator call, so df is treated as 1 (rare) and avgdl as the doc's own
+ * length; the bm25 index's ordering scan computes exact scores internally, and
+ * this function is only the fallback the planner requires the operator to have.
+ */
+PG_FUNCTION_INFO_V1(fts_distance);
+
+Datum
+fts_distance(PG_FUNCTION_ARGS)
+{
+	FtsDoc		doc;
+	FtsQuery	q;
+	double		score;
+
+	if (PG_ARGISNULL(0) || PG_ARGISNULL(1))
+		PG_RETURN_NULL();
+	doc = PG_GETARG_FTSDOC(0);
+	q = PG_GETARG_FTSQUERY(1);
+
+	/* N and avgdl unknown here; use N=1, avgdl=|D| so length term is neutral */
+	score = fts_bm25_score(doc, q, 1.0, (double) doc->doclen, NULL,
+						   BM25_DEFAULT_K1, BM25_DEFAULT_B, BM25_LUCENE);
+
+	PG_FREE_IF_COPY(doc, 0);
+	PG_FREE_IF_COPY(q, 1);
+	PG_RETURN_FLOAT8(1.0 / (1.0 + score));
+}
+
+PG_FUNCTION_INFO_V1(fts_distance_commutator);
+
+/* ftsquery <=> ftsdoc (commutator) */
+Datum
+fts_distance_commutator(PG_FUNCTION_ARGS)
+{
+	FtsQuery	q;
+	FtsDoc		doc;
+	double		score;
+
+	if (PG_ARGISNULL(0) || PG_ARGISNULL(1))
+		PG_RETURN_NULL();
+	q = PG_GETARG_FTSQUERY(0);
+	doc = PG_GETARG_FTSDOC(1);
+
+	score = fts_bm25_score(doc, q, 1.0, (double) doc->doclen, NULL,
+						   BM25_DEFAULT_K1, BM25_DEFAULT_B, BM25_LUCENE);
+
+	PG_FREE_IF_COPY(q, 0);
+	PG_FREE_IF_COPY(doc, 1);
+	PG_RETURN_FLOAT8(1.0 / (1.0 + score));
+}

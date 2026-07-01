@@ -28,10 +28,25 @@ typedef struct TidSet
 	int			n;
 } TidSet;
 
+/* A scored heap tuple (score, or distance in an ordering scan). */
+typedef struct ScoredTid
+{
+	ItemPointerData tid;
+	double		score;
+}			ScoredTid;
+
+static int bm25_topk_visible(Relation index, FtsQuery q, int k,
+							 bool as_distance, ScoredTid **out);
+
 typedef struct BM25ScanOpaqueData
 {
 	FtsQuery	query;			/* copied into the scan's context */
 	bool		queryValid;
+	/* ordering-scan (amgettuple) state, materialized on first call */
+	bool		orderInit;		/* have we computed the ordered results? */
+	ScoredTid  *ordered;		/* top-k by ascending distance */
+	int			nordered;
+	int			ordpos;			/* next result to return */
 } BM25ScanOpaqueData;
 
 typedef BM25ScanOpaqueData *BM25ScanOpaque;
@@ -522,7 +537,18 @@ bm25_beginscan(Relation r, int nkeys, int norderbys)
 
 	so->query = NULL;
 	so->queryValid = false;
+	so->orderInit = false;
+	so->ordered = NULL;
+	so->nordered = 0;
+	so->ordpos = 0;
 	scan->opaque = so;
+
+	/* the AM owns allocation of the order-by result arrays */
+	if (norderbys > 0)
+	{
+		scan->xs_orderbyvals = palloc0(sizeof(Datum) * norderbys);
+		scan->xs_orderbynulls = palloc(sizeof(bool) * norderbys);
+	}
 	return scan;
 }
 
@@ -544,6 +570,71 @@ bm25_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 		so->query = q;
 		so->queryValid = true;
 	}
+
+	/* ordering scan: the query is the <=> operator's right operand */
+	if (orderbys && scan->numberOfOrderBys > 0)
+		memmove(scan->orderByData, orderbys,
+				scan->numberOfOrderBys * sizeof(ScanKeyData));
+	so->orderInit = false;
+	so->ordered = NULL;
+	so->nordered = 0;
+	so->ordpos = 0;
+	if (scan->numberOfOrderBys >= 1)
+	{
+		so->query = DatumGetFtsQuery(scan->orderByData[0].sk_argument);
+		so->queryValid = true;
+	}
+}
+
+/*
+ * bm25_gettuple: ordering scan for ORDER BY (ftsdoc <=> ftsquery) LIMIT k.
+ * On the first call it computes the block-max WAND top-k (visibility-filtered)
+ * into scan state, then returns tuples one per call in ascending distance
+ * (descending relevance), setting xs_orderbyvals so the executor can honor the
+ * ORDER BY without a sort.  Only forward scans are supported.
+ */
+bool
+bm25_gettuple(IndexScanDesc scan, ScanDirection dir)
+{
+	BM25ScanOpaque so = (BM25ScanOpaque) scan->opaque;
+
+	if (dir != ForwardScanDirection)
+		elog(ERROR, "bm25: only forward ordering scans are supported");
+
+	if (!so->queryValid || so->query == NULL)
+		return false;
+
+	if (!so->orderInit)
+	{
+		/*
+		 * Materialize the full ordered result once.  We ask for a generous k
+		 * (the executor applies LIMIT); a bounded amgettuple that streams the
+		 * WAND heap incrementally is a further optimization.
+		 */
+		int			k = 1000;
+
+		so->nordered = bm25_topk_visible(scan->indexRelation, so->query, k,
+										 true, &so->ordered);
+		so->ordpos = 0;
+		so->orderInit = true;
+	}
+
+	if (so->ordpos >= so->nordered)
+		return false;
+
+	scan->xs_heaptid = so->ordered[so->ordpos].tid;
+	scan->xs_recheck = false;	/* score computed exactly from the index */
+	if (scan->numberOfOrderBys > 0)
+	{
+		IndexOrderByDistance dist;
+		Oid			typ = FLOAT8OID;
+
+		dist.value = so->ordered[so->ordpos].score;
+		dist.isnull = false;
+		index_store_float8_orderby_distances(scan, &typ, &dist, false);
+	}
+	so->ordpos++;
+	return true;
 }
 
 int64
@@ -868,12 +959,6 @@ fts_index_df(PG_FUNCTION_ARGS)
  */
 /* ----- document-at-a-time block-max WAND top-k (item 2) ----- */
 
-typedef struct ScoredTid
-{
-	ItemPointerData tid;
-	double		score;
-}			ScoredTid;
-
 static int
 cmp_scored_desc(const void *a, const void *b)
 {
@@ -1140,6 +1225,107 @@ fts_search_wand(WandCursor *cursors, int nterms, int k, ScoredTid **out)
 	return nheap;
 }
 
+/*
+ * bm25_topk_visible: shared top-k engine for both the fts_search SRF and the
+ * amgettuple ordering scan.  Runs block-max WAND over the index for `q`,
+ * over-fetches candidates so MVCC visibility filtering still yields k visible
+ * rows, and returns them (palloc'd in the current context) sorted by
+ * descending score.  When as_distance is true, each result's .score field is
+ * replaced by the ordering distance 1/(1+score) (ascending distance = the same
+ * order).  The index must already be open; the base table is opened here for
+ * the visibility check.  Returns the number of visible results.
+ */
+static int
+bm25_topk_visible(Relation index, FtsQuery q, int k, bool as_distance,
+				  ScoredTid **out)
+{
+	BM25MetaPageData meta;
+	double		N,
+				avgdl;
+	const char **terms;
+	int		   *lens;
+	int			nterms;
+	WandCursor *cursors;
+	ScoredTid  *cand;
+	ScoredTid  *results;
+	int			ncand;
+	int			wantk;
+	Relation	heap;
+	IndexFetchTableData *fetch;
+	Snapshot	snap = GetActiveSnapshot();
+	int			nvis = 0;
+	int			i,
+				t,
+				nactive = 0;
+	double		k1 = 1.2;
+
+	if (k < 1)
+		k = 1;
+	wantk = Max(k * 4, 64);
+
+	bm25_read_meta(index, &meta);
+	N = meta.ndocs < 1.0 ? 1.0 : meta.ndocs;
+	avgdl = meta.ndocs > 0 ? meta.sumdoclen / meta.ndocs : 1.0;
+
+	nterms = fts_query_terms(q, &terms, &lens);
+	cursors = (WandCursor *) palloc(Max(nterms, 1) * sizeof(WandCursor));
+
+	for (t = 0; t < nterms; t++)
+	{
+		uint32		df,
+					max_tf;
+		BlockNumber firstblk;
+		double		idf,
+					mtf,
+					b = 0.75;
+
+		if (!bm25_lookup_dict(index, meta.dictstart, terms[t], lens[t],
+							  &df, &max_tf, &firstblk))
+			continue;
+		idf = log(1.0 + (N - (double) df + 0.5) / ((double) df + 0.5));
+		mtf = (double) max_tf;
+		cursors[nactive].index = index;
+		cursors[nactive].firstblk = firstblk;
+		cursors[nactive].posts = NULL;
+		cursors[nactive].nposts = 0;
+		cursors[nactive].cur = 0;
+		cursors[nactive].docid = 0;
+		cursors[nactive].idf = idf;
+		cursors[nactive].avgdl = avgdl;
+		cursors[nactive].max_contrib =
+			idf * mtf * (k1 + 1.0) / (mtf + k1 * (1.0 - b));
+		nactive++;
+	}
+
+	ncand = fts_search_wand(cursors, nactive, wantk, &cand);
+
+	results = (ScoredTid *) palloc(Max(k, 1) * sizeof(ScoredTid));
+	heap = table_open(index->rd_index->indrelid, AccessShareLock);
+	fetch = table_index_fetch_begin(heap, 0);
+	for (i = 0; i < ncand && nvis < k; i++)
+	{
+		ItemPointerData tid = cand[i].tid;
+		bool		call_again = false;
+		bool		all_dead = false;
+		TupleTableSlot *slot = table_slot_create(heap, NULL);
+
+		if (table_index_fetch_tuple(fetch, &tid, snap, slot,
+									&call_again, &all_dead))
+		{
+			results[nvis] = cand[i];
+			if (as_distance)
+				results[nvis].score = 1.0 / (1.0 + cand[i].score);
+			nvis++;
+		}
+		ExecDropSingleTupleTableSlot(slot);
+	}
+	table_index_fetch_end(fetch);
+	table_close(heap, AccessShareLock);
+
+	*out = results;
+	return nvis;
+}
+
 PG_FUNCTION_INFO_V1(fts_search);
 
 Datum
@@ -1155,13 +1341,7 @@ fts_search(PG_FUNCTION_ARGS)
 		int			k = PG_GETARG_INT32(2);
 		MemoryContext oldctx;
 		Relation	index;
-		BM25MetaPageData meta;
-		double		N;
-		double		avgdl;
-		const char **terms;
-		int		   *lens;
-		int			nterms;
-		int			t;
+		int			nvis;
 		TupleDesc	tupdesc;
 
 		funcctx = SRF_FIRSTCALL_INIT();
@@ -1171,95 +1351,12 @@ fts_search(PG_FUNCTION_ARGS)
 			elog(ERROR, "return type must be a row type");
 		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 
-		if (k < 1)
-			k = 1;
-
 		index = index_open(indexoid, AccessShareLock);
-		bm25_read_meta(index, &meta);
-		N = meta.ndocs < 1.0 ? 1.0 : meta.ndocs;
-		avgdl = meta.ndocs > 0 ? meta.sumdoclen / meta.ndocs : 1.0;
-
-		nterms = fts_query_terms(q, &terms, &lens);
-
-		/*
-		 * Document-at-a-time block-max WAND top-k.  Cursors are initialized from
-		 * the dictionary only (df, max_tf, first block); posting pages are read
-		 * lazily and skipped via block-max during the scan.  We over-fetch
-		 * candidates (> k) so MVCC visibility filtering can still yield k visible
-		 * rows when high-scoring postings point at dead tuples.
-		 */
-		{
-			WandCursor *cursors = (WandCursor *) palloc(Max(nterms, 1) * sizeof(WandCursor));
-			ScoredTid  *cand;
-			int			ncand;
-			int			wantk = Max(k * 4, 64);
-			Relation	heap;
-			IndexFetchTableData *fetch;
-			Snapshot	snap = GetActiveSnapshot();
-			int			nvis = 0;
-			int			i;
-			double		k1 = 1.2;
-			int			nactive = 0;
-
-			for (t = 0; t < nterms; t++)
-			{
-				uint32		df,
-							max_tf;
-				BlockNumber firstblk;
-				double		idf,
-							mtf,
-							b = 0.75;
-
-				if (!bm25_lookup_dict(index, meta.dictstart, terms[t], lens[t],
-									  &df, &max_tf, &firstblk))
-					continue;		/* term absent: skip */
-
-				idf = log(1.0 + (N - (double) df + 0.5) / ((double) df + 0.5));
-				mtf = (double) max_tf;
-				cursors[nactive].index = index;
-				cursors[nactive].firstblk = firstblk;
-				cursors[nactive].posts = NULL;
-				cursors[nactive].nposts = 0;
-				cursors[nactive].cur = 0;
-				cursors[nactive].docid = 0;
-				cursors[nactive].idf = idf;
-				cursors[nactive].avgdl = avgdl;
-				/*
-				 * WAND upper bound: maximized at tf = max_tf and the shortest
-				 * document (|D| -> 0 gives norm = tf + k1*(1-b)), a sound bound
-				 * that never underestimates so no qualifying hit is pruned.
-				 */
-				cursors[nactive].max_contrib =
-					idf * mtf * (k1 + 1.0) / (mtf + k1 * (1.0 - b));
-				nactive++;
-			}
-
-			ncand = fts_search_wand(cursors, nactive, wantk, &cand);
-
-			/* MVCC: keep only visible tuples, in score order, up to k */
-			results = (ScoredTid *) palloc(Max(k, 1) * sizeof(ScoredTid));
-			heap = table_open(index->rd_index->indrelid, AccessShareLock);
-			fetch = table_index_fetch_begin(heap, 0);
-			for (i = 0; i < ncand && nvis < k; i++)
-			{
-				ItemPointerData tid = cand[i].tid;
-				bool		call_again = false;
-				bool		all_dead = false;
-				TupleTableSlot *slot = table_slot_create(heap, NULL);
-
-				if (table_index_fetch_tuple(fetch, &tid, snap, slot,
-											&call_again, &all_dead))
-					results[nvis++] = cand[i];
-				ExecDropSingleTupleTableSlot(slot);
-			}
-			table_index_fetch_end(fetch);
-			table_close(heap, AccessShareLock);
-
-			funcctx->max_calls = nvis;
-			funcctx->user_fctx = results;
-		}
-
+		nvis = bm25_topk_visible(index, q, k, false, &results);
 		index_close(index, AccessShareLock);
+
+		funcctx->max_calls = nvis;
+		funcctx->user_fctx = results;
 		MemoryContextSwitchTo(oldctx);
 	}
 
