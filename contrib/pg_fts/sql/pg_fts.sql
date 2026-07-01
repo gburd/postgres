@@ -541,3 +541,21 @@ SELECT to_ftsdoc('english'::regconfig, 'running quickly through fields')
        AS stemmed_and;
 -- config query renders the stemmed terms
 SELECT to_ftsquery('english'::regconfig, 'databases running')::text AS stemmed_render;
+
+-- Segmented architecture: queries must span multiple segments correctly.
+CREATE TABLE seg (id serial, d ftsdoc);
+INSERT INTO seg(d) SELECT to_ftsdoc('alpha doc'||g) FROM generate_series(1,100) g;
+CREATE INDEX seg_bm25 ON seg USING bm25 (d);          -- segment 0
+INSERT INTO seg(d) SELECT to_ftsdoc('beta doc'||g) FROM generate_series(1,50) g;
+SELECT fts_merge('seg_bm25');                          -- flush -> segment 1
+INSERT INTO seg(d) SELECT to_ftsdoc('alpha more'||g) FROM generate_series(1,30) g;
+SELECT fts_merge('seg_bm25');                          -- flush -> segment 2
+SET enable_seqscan = off;
+SELECT count(*) AS alpha_spans_segs FROM seg WHERE d @@@ 'alpha'::ftsquery;  -- 130
+SELECT count(*) AS beta_one_seg FROM seg WHERE d @@@ 'beta'::ftsquery;        -- 50
+SELECT ndocs AS total_docs FROM fts_index_stats('seg_bm25');                  -- 180
+SELECT count(*) AS ranked_across_segs
+FROM (SELECT id FROM seg WHERE d @@@ 'alpha'::ftsquery
+      ORDER BY d <=> 'alpha'::ftsquery LIMIT 5) x;                            -- 5
+RESET enable_seqscan;
+DROP TABLE seg;

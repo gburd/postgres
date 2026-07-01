@@ -307,6 +307,7 @@ bm25_write_trigrams(Relation index, BM25BuildState *bs)
  */
 static bool
 bm25_trgm_candidates(Relation index, BlockNumber trgmstart,
+					 BlockNumber dictstart,
 					 const char *term, int termlen, int min_trigrams,
 					 bool is_regex, TidSet *out)
 {
@@ -317,7 +318,6 @@ bm25_trgm_candidates(Relation index, BlockNumber trgmstart,
 	int			nords = 0,
 				maxords = 0;
 	int			matched_trg = 0;
-	BM25MetaPageData meta;
 	ItemPointerData *tids;
 	int			cap = 64,
 				n = 0;
@@ -420,13 +420,13 @@ bm25_trgm_candidates(Relation index, BlockNumber trgmstart,
 		nords = w + 1;
 	}
 
-	/* stage 2: walk the dictionary once; for each candidate ordinal, union its
-	 * term's docid postings.  Dictionary entries are written in ordinal order. */
-	bm25_read_meta(index, &meta);
+	/* stage 2: walk THIS SEGMENT's dictionary once; for each candidate ordinal,
+	 * union its term's docid postings.  The trigram directory's ordinals index
+	 * into the segment's own dictionary, written in ordinal order. */
 	tids = (ItemPointerData *) palloc(cap * sizeof(ItemPointerData));
 	ordinal = 0;
 	oi = 0;
-	dblk = meta.dictstart;
+	dblk = dictstart;
 	while (dblk != InvalidBlockNumber && oi < nords)
 	{
 		Buffer		buf = ReadBuffer(index, dblk);

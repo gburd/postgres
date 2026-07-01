@@ -21,7 +21,7 @@
 #include "storage/itemptr.h"
 
 #define BM25_MAGIC			0x42324635	/* "B2F5" */
-#define BM25_VERSION		1
+#define BM25_VERSION		2		/* v2: segmented layout */
 #define BM25_METAPAGE_BLKNO	0
 
 /* page opaque flags */
@@ -31,6 +31,7 @@
 #define BM25_PENDING		(1 << 3)
 #define BM25_TRGM			(1 << 4)	/* trigram directory page */
 #define BM25_TRGM_DATA		(1 << 5)	/* trigram sparsemap blob page */
+#define BM25_LIVEDOCS		(1 << 6)	/* per-segment tombstone bitmap page */
 
 typedef struct BM25PageOpaqueData
 {
@@ -47,18 +48,42 @@ typedef BM25PageOpaqueData *BM25PageOpaque;
 #define BM25PageGetOpaque(page) \
 	((BM25PageOpaque) PageGetSpecialPointer(page))
 
+/*
+ * A segment: an immutable, self-contained mini-index built from one flush of
+ * the write buffer (or the merge of several segments).  The bm25 index is a set
+ * of these plus a small pending write buffer.  Each segment has its own term
+ * dictionary, posting lists, trigram index, and a live-docs tombstone bitmap;
+ * deletes set a tombstone bit, and a background tiered merge rewrites groups of
+ * segments dropping tombstoned docs.  This is the Lucene/Tantivy consensus
+ * design; it replaces the old single monolithic structure whose in-memory
+ * build OOMed and whose full-rewrite merge was O(index).
+ */
+typedef struct BM25SegMeta
+{
+	BlockNumber dictstart;		/* first dictionary page of this segment */
+	BlockNumber trgmstart;		/* first trigram directory page, or Invalid */
+	BlockNumber livedocs;		/* first live-docs tombstone page, or Invalid */
+	double		ndocs;			/* documents in this segment (incl. tombstoned) */
+	double		sumdoclen;		/* sum of doclen in this segment */
+	uint32		nterms;			/* distinct terms in this segment */
+	uint32		ndeleted;		/* tombstoned docs (for merge accounting) */
+	uint32		basedocid;		/* docid-space base for this segment's tids */
+	uint32		unused;
+} BM25SegMeta;
+
+#define BM25_MAX_SEGMENTS 64	/* tiered merge keeps this small; chain if ever exceeded */
+
 typedef struct BM25MetaPageData
 {
 	uint32		magic;
 	uint32		version;
-	double		ndocs;			/* N (built + pending) */
-	double		sumdoclen;		/* sum of document lengths -> avgdl = /N */
-	uint32		nterms;			/* number of distinct terms (dictionary size) */
-	BlockNumber dictstart;		/* first dictionary page */
+	double		ndocs;			/* corpus N (all live segments + pending, minus tombstones) */
+	double		sumdoclen;		/* corpus sum(doclen) -> avgdl */
+	uint32		nsegments;		/* number of live segment descriptors */
 	BlockNumber pendinghead;	/* first pending page, or InvalidBlockNumber */
 	BlockNumber pendingtail;	/* last pending page, for O(1) append */
 	uint32		npending;		/* number of pending (unmerged) documents */
-	BlockNumber trgmstart;		/* first trigram-index page (fuzzy/regex funnel) */
+	BM25SegMeta segs[BM25_MAX_SEGMENTS];
 } BM25MetaPageData;
 
 #define BM25PageGetMeta(page) \

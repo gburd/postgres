@@ -30,6 +30,7 @@ typedef struct TidSet
 
 /* forward decl: trigram-index candidate lookup (pg_fts_trgm_index.c) */
 static bool bm25_trgm_candidates(Relation index, BlockNumber trgmstart,
+								 BlockNumber dictstart,
 								 const char *term, int termlen,
 								 int min_trigrams, bool is_regex, TidSet *out);
 
@@ -666,52 +667,43 @@ bm25_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 {
 	BM25ScanOpaque so = (BM25ScanOpaque) scan->opaque;
 	BM25MetaPageData meta;
-	TidSet		result;
-	TidSet		universe;
-	bool		need_universe;
 	int64		ntids = 0;
+	bool		has_fuzzy_regex = false;
+	bool		has_not = false;
+	uint32		i;
+	uint32		s;
 
 	if (!so->queryValid || so->query == NULL)
 		return 0;
 
 	bm25_read_meta(scan->indexRelation, &meta);
-	if (meta.dictstart == InvalidBlockNumber)
-		return 0;
+
+	for (i = 0; i < so->query->nitems; i++)
+	{
+		FtsQueryItem *it = &so->query->items[i];
+
+		if (it->type == FTS_QI_OPR && it->op == FTS_OP_NOT)
+			has_not = true;
+		if (it->type == FTS_QI_VAL && (it->flags & (FTS_QF_FUZZY | FTS_QF_REGEX)))
+			has_fuzzy_regex = true;
+	}
 
 	/*
-	 * A top-level NOT needs the universe.  Fuzzy and regex terms also need it:
-	 * they cannot be answered by exact posting lookup, so the index returns the
-	 * universe as candidates and the bitmap heap recheck (@@@) applies the
-	 * fuzzy/regex test exactly.  (A trigram pre-filter, cribbed from pg_tre,
-	 * would narrow this; the skeleton is correct but scans all live tuples for
-	 * such queries.)
+	 * Evaluate the query independently in each segment and union the resulting
+	 * TID sets.  A segment is a self-contained mini-index; the same per-segment
+	 * logic (boolean eval, or fuzzy/regex trigram-narrowing + recheck) that the
+	 * monolithic design used now runs once per segment.
 	 */
-	need_universe = false;
+	for (s = 0; s < meta.nsegments; s++)
 	{
-		uint32		i;
-		bool		has_fuzzy_regex = false;
+		BM25SegMeta *sg = &meta.segs[s];
+		TidSet		universe;
 
-		for (i = 0; i < so->query->nitems; i++)
-		{
-			FtsQueryItem *it = &so->query->items[i];
-
-			if (it->type == FTS_QI_OPR && it->op == FTS_OP_NOT)
-				need_universe = true;
-			if (it->type == FTS_QI_VAL &&
-				(it->flags & (FTS_QF_FUZZY | FTS_QF_REGEX)))
-				has_fuzzy_regex = true;
-		}
+		if (sg->dictstart == InvalidBlockNumber)
+			continue;
 
 		if (has_fuzzy_regex)
 		{
-			/*
-			 * Narrow candidates with the on-disk trigram index: the union of
-			 * each fuzzy/regex term's trigram postings is a sound superset of
-			 * the matches, so we probe that instead of the whole index.  The
-			 * bitmap heap recheck (@@@) then applies the exact fuzzy/regex test.
-			 * Terms with too few trigrams (short patterns) fall back to the
-			 * universe for that term, keeping results correct.
-			 */
 			TidSet		cands;
 			bool		any_trgm = false;
 			uint32		qi;
@@ -726,25 +718,21 @@ bm25_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 				if (it->type != FTS_QI_VAL ||
 					!(it->flags & (FTS_QF_FUZZY | FTS_QF_REGEX)))
 					continue;
-
-				if (bm25_trgm_candidates(scan->indexRelation, meta.trgmstart,
+				if (bm25_trgm_candidates(scan->indexRelation, sg->trgmstart,
+										 sg->dictstart,
 										 FTS_QUERY_ITEMTEXT(so->query, it),
 										 it->termlen, 3,
 										 (it->flags & FTS_QF_REGEX) != 0, &ts))
 				{
-					TidSet		merged = tidset_or(cands, ts);
-
-					cands = merged;
+					cands = tidset_or(cands, ts);
 					any_trgm = true;
 				}
 				else
 				{
-					/* this term can't be trigram-pruned: fall back fully */
 					any_trgm = false;
 					break;
 				}
 			}
-
 			if (any_trgm)
 			{
 				if (cands.n > 0)
@@ -755,36 +743,37 @@ bm25_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 			}
 			else
 			{
-				universe = bm25_universe(scan->indexRelation, meta.dictstart);
+				universe = bm25_universe(scan->indexRelation, sg->dictstart);
 				if (universe.n > 0)
 				{
 					tbm_add_tuples(tbm, universe.tids, universe.n, true);
 					ntids += universe.n;
 				}
 			}
-			/* also all pending docs (searched below), so skip main eval */
-			goto scan_pending;
+			continue;
+		}
+
+		if (has_not)
+			universe = bm25_universe(scan->indexRelation, sg->dictstart);
+		else
+		{
+			universe.tids = NULL;
+			universe.n = 0;
+		}
+
+		{
+			TidSet		result = bm25_eval_query(scan->indexRelation,
+												 sg->dictstart, so->query,
+												 universe);
+
+			if (result.n > 0)
+			{
+				tbm_add_tuples(tbm, result.tids, result.n, true);
+				ntids += result.n;
+			}
 		}
 	}
 
-	if (need_universe)
-		universe = bm25_universe(scan->indexRelation, meta.dictstart);
-	else
-	{
-		universe.tids = NULL;
-		universe.n = 0;
-	}
-
-	result = bm25_eval_query(scan->indexRelation, meta.dictstart,
-							 so->query, universe);
-
-	if (result.n > 0)
-	{
-		tbm_add_tuples(tbm, result.tids, result.n, true);
-		ntids = result.n;
-	}
-
-scan_pending:
 	/*
 	 * Also search the pending list: newly inserted, not-yet-merged documents
 	 * are stored verbatim, so evaluate each directly with the same per-document
@@ -966,7 +955,14 @@ fts_index_stats(PG_FUNCTION_ARGS)
 	values[0] = Float8GetDatum(meta.ndocs);
 	values[1] = Float8GetDatum(meta.ndocs > 0 ?
 							   meta.sumdoclen / meta.ndocs : 0.0);
-	values[2] = Int32GetDatum((int32) meta.nterms);
+	{
+		uint32		s;
+		int64		nterms = 0;
+
+		for (s = 0; s < meta.nsegments; s++)
+			nterms += meta.segs[s].nterms;
+		values[2] = Int32GetDatum((int32) nterms);
+	}
 
 	tuple = heap_form_tuple(tupdesc, values, nulls);
 	PG_RETURN_DATUM(HeapTupleGetDatum(tuple));
@@ -997,10 +993,13 @@ fts_index_df(PG_FUNCTION_ARGS)
 
 		if (it->type == FTS_QI_VAL)
 		{
-			uint32		df = bm25_lookup_df(index, meta.dictstart,
-											FTS_QUERY_ITEMTEXT(q, it),
-											it->termlen);
+			uint32		df = 0;
+			uint32		s;
 
+			/* document frequency is summed across all segments */
+			for (s = 0; s < meta.nsegments; s++)
+				df += bm25_lookup_df(index, meta.segs[s].dictstart,
+									 FTS_QUERY_ITEMTEXT(q, it), it->termlen);
 			elems[n++] = Float8GetDatum((double) (df == 0 ? 1 : df));
 		}
 	}
@@ -1343,33 +1342,56 @@ bm25_topk_visible(Relation index, FtsQuery q, int k, bool as_distance,
 	avgdl = meta.ndocs > 0 ? meta.sumdoclen / meta.ndocs : 1.0;
 
 	nterms = fts_query_terms(q, &terms, &lens);
-	cursors = (WandCursor *) palloc(Max(nterms, 1) * sizeof(WandCursor));
+	/* up to one cursor per (term, segment) */
+	cursors = (WandCursor *) palloc(Max(nterms * Max((int) meta.nsegments, 1), 1) *
+									sizeof(WandCursor));
 
 	for (t = 0; t < nterms; t++)
 	{
-		uint32		df,
-					max_tf;
-		BlockNumber firstblk;
-		double		idf,
-					mtf,
-					b = 0.75;
+		uint32		gdf = 0;
+		uint32		s;
+		double		idf;
+		double		b = 0.75;
 
-		if (!bm25_lookup_dict(index, meta.dictstart, terms[t], lens[t],
-							  &df, &max_tf, &firstblk))
-			continue;
-		idf = log(1.0 + (N - (double) df + 0.5) / ((double) df + 0.5));
-		mtf = (double) max_tf;
-		cursors[nactive].index = index;
-		cursors[nactive].firstblk = firstblk;
-		cursors[nactive].posts = NULL;
-		cursors[nactive].nposts = 0;
-		cursors[nactive].cur = 0;
-		cursors[nactive].docid = 0;
-		cursors[nactive].idf = idf;
-		cursors[nactive].avgdl = avgdl;
-		cursors[nactive].max_contrib =
-			idf * mtf * (k1 + 1.0) / (mtf + k1 * (1.0 - b));
-		nactive++;
+		/* global df across all segments -> IDF (segments share the corpus) */
+		for (s = 0; s < meta.nsegments; s++)
+		{
+			uint32		df,
+						max_tf;
+			BlockNumber firstblk;
+
+			if (bm25_lookup_dict(index, meta.segs[s].dictstart, terms[t], lens[t],
+								 &df, &max_tf, &firstblk))
+				gdf += df;
+		}
+		if (gdf == 0)
+			continue;			/* term absent in every segment */
+		idf = log(1.0 + (N - (double) gdf + 0.5) / ((double) gdf + 0.5));
+
+		/* one cursor per segment that contains the term */
+		for (s = 0; s < meta.nsegments; s++)
+		{
+			uint32		df,
+						max_tf;
+			BlockNumber firstblk;
+			double		mtf;
+
+			if (!bm25_lookup_dict(index, meta.segs[s].dictstart, terms[t], lens[t],
+								  &df, &max_tf, &firstblk))
+				continue;
+			mtf = (double) max_tf;
+			cursors[nactive].index = index;
+			cursors[nactive].firstblk = firstblk;
+			cursors[nactive].posts = NULL;
+			cursors[nactive].nposts = 0;
+			cursors[nactive].cur = 0;
+			cursors[nactive].docid = 0;
+			cursors[nactive].idf = idf;
+			cursors[nactive].avgdl = avgdl;
+			cursors[nactive].max_contrib =
+				idf * mtf * (k1 + 1.0) / (mtf + k1 * (1.0 - b));
+			nactive++;
+		}
 	}
 
 	ncand = fts_search_wand(cursors, nactive, wantk, &cand);

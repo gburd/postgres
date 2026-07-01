@@ -356,8 +356,7 @@ bm25_init_page(Page page, uint16 flags)
 }
 
 static void
-bm25_init_metapage(Relation index, double ndocs, double sumdoclen,
-				   uint32 nterms, BlockNumber dictstart)
+bm25_init_metapage(Relation index)
 {
 	Buffer		buffer;
 	GenericXLogState *state;
@@ -371,16 +370,15 @@ bm25_init_metapage(Relation index, double ndocs, double sumdoclen,
 	page = GenericXLogRegisterBuffer(state, buffer, GENERIC_XLOG_FULL_IMAGE);
 	bm25_init_page(page, BM25_META);
 	meta = BM25PageGetMeta(page);
+	MemSet(meta, 0, sizeof(BM25MetaPageData));
 	meta->magic = BM25_MAGIC;
 	meta->version = BM25_VERSION;
-	meta->ndocs = ndocs;
-	meta->sumdoclen = sumdoclen;
-	meta->nterms = nterms;
-	meta->dictstart = dictstart;
+	meta->ndocs = 0;
+	meta->sumdoclen = 0;
+	meta->nsegments = 0;
 	meta->pendinghead = InvalidBlockNumber;
 	meta->pendingtail = InvalidBlockNumber;
 	meta->npending = 0;
-	meta->trgmstart = InvalidBlockNumber;
 	((PageHeader) page)->pd_lower =
 		((char *) meta + sizeof(BM25MetaPageData)) - (char *) page;
 	GenericXLogFinish(state);
@@ -603,15 +601,74 @@ bm25_write_dictionary(Relation index, BM25BuildState *bs,
 /* forward decl: trigram index writer (pg_fts_trgm_index.c, included below) */
 static BlockNumber bm25_write_trigrams(Relation index, BM25BuildState *bs);
 
+/*
+ * Write one immutable segment (dictionary + postings + trigram index) from a
+ * populated build state, filling *seg.  The build state's terms must already
+ * be sorted.  livedocs starts empty (no tombstones); basedocid is 0 (segments
+ * share the global docid space via heap TIDs).
+ */
+static void
+bm25_write_segment(Relation index, BM25BuildState *bs, BM25SegMeta *seg)
+{
+	BlockNumber *postings;
+	int			i;
+
+	postings = (BlockNumber *) palloc(Max(bs->nterms, 1) * sizeof(BlockNumber));
+	for (i = 0; i < bs->nterms; i++)
+		postings[i] = bm25_write_postings(index, &bs->terms[i]);
+
+	MemSet(seg, 0, sizeof(BM25SegMeta));
+	seg->dictstart = bm25_write_dictionary(index, bs, postings);
+	seg->trgmstart = bm25_write_trigrams(index, bs);
+	seg->livedocs = InvalidBlockNumber;
+	seg->ndocs = bs->ndocs;
+	seg->sumdoclen = bs->sumdoclen;
+	seg->nterms = bs->nterms;
+	seg->ndeleted = 0;
+	seg->basedocid = 0;
+	pfree(postings);
+}
+
+/*
+ * Append a segment descriptor to the metapage directory and fold its doc stats
+ * into the corpus totals.  Errors if the directory is full (tiered merge keeps
+ * the count small; a chained directory page is future work).
+ */
+static void
+bm25_meta_add_segment(Relation index, const BM25SegMeta *seg)
+{
+	Buffer		buf = ReadBuffer(index, BM25_METAPAGE_BLKNO);
+	GenericXLogState *state;
+	Page		page;
+	BM25MetaPageData *m;
+
+	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+	state = GenericXLogStart(index);
+	page = GenericXLogRegisterBuffer(state, buf, 0);
+	m = BM25PageGetMeta(page);
+	if (m->nsegments >= BM25_MAX_SEGMENTS)
+	{
+		GenericXLogAbort(state);
+		UnlockReleaseBuffer(buf);
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("bm25 index has too many segments; run VACUUM or REINDEX")));
+	}
+	m->segs[m->nsegments] = *seg;
+	m->nsegments++;
+	m->ndocs += seg->ndocs;
+	m->sumdoclen += seg->sumdoclen;
+	GenericXLogFinish(state);
+	UnlockReleaseBuffer(buf);
+}
+
 static IndexBuildResult *
 bm25_build(Relation heap, Relation index, IndexInfo *indexInfo)
 {
 	IndexBuildResult *result;
 	BM25BuildState bs;
 	double		reltuples;
-	BlockNumber *postings;
-	BlockNumber dictstart;
-	int			i;
+	BM25SegMeta seg;
 
 	if (RelationGetNumberOfBlocks(index) != 0)
 		elog(ERROR, "index \"%s\" already contains data",
@@ -635,43 +692,23 @@ bm25_build(Relation heap, Relation index, IndexInfo *indexInfo)
 							   HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	}
 
+	/* metapage must be block 0 -- write it before any other page */
+	bm25_init_metapage(index);
+
 	reltuples = table_index_build_scan(heap, index, indexInfo, true, true,
 									   bm25_build_callback, (void *) &bs, NULL);
 
-	/* sort terms so the dictionary is searchable by binary search */
+	/* sort terms so the dictionary is searchable */
 	if (bs.nterms > 1)
 		qsort(bs.terms, bs.nterms, sizeof(BuildTerm), cmp_buildterm);
 
-	/* metapage occupies block 0; reserve it by writing it last but first
-	 * ensure it is block 0 by writing it before any other page. */
-	bm25_init_metapage(index, bs.ndocs, bs.sumdoclen, bs.nterms,
-					   InvalidBlockNumber);
-
-	/* write each term's postings, remembering the first block */
-	postings = (BlockNumber *) palloc(Max(bs.nterms, 1) * sizeof(BlockNumber));
-	for (i = 0; i < bs.nterms; i++)
-		postings[i] = bm25_write_postings(index, &bs.terms[i]);
-
-	dictstart = bm25_write_dictionary(index, &bs, postings);
-
-	/* build the on-disk trigram index for fuzzy/regex candidate narrowing */
+	/* write the whole heap as one initial segment (a large CREATE INDEX could
+	 * flush multiple segments to bound memory; that refinement is future work,
+	 * but the segment plumbing is now in place for it). */
+	if (bs.nterms > 0)
 	{
-		BlockNumber trgmstart = bm25_write_trigrams(index, &bs);
-
-		/* rewrite metapage now that we know dictstart + trgmstart */
-		Buffer		buffer = ReadBuffer(index, BM25_METAPAGE_BLKNO);
-		GenericXLogState *state;
-		Page		page;
-		BM25MetaPageData *m;
-
-		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
-		state = GenericXLogStart(index);
-		page = GenericXLogRegisterBuffer(state, buffer, 0);
-		m = BM25PageGetMeta(page);
-		m->dictstart = dictstart;
-		m->trgmstart = trgmstart;
-		GenericXLogFinish(state);
-		UnlockReleaseBuffer(buffer);
+		bm25_write_segment(index, &bs, &seg);
+		bm25_meta_add_segment(index, &seg);
 	}
 
 	MemoryContextDelete(bs.ctx);
@@ -685,7 +722,7 @@ bm25_build(Relation heap, Relation index, IndexInfo *indexInfo)
 static void
 bm25_buildempty(Relation index)
 {
-	bm25_init_metapage(index, 0, 0, 0, InvalidBlockNumber);
+	bm25_init_metapage(index);
 }
 
 /*
@@ -831,29 +868,26 @@ bm25_insert(Relation index, Datum *values, bool *isnull,
 #include "pg_fts_am_scan.c"
 #include "pg_fts_trgm_index.c"
 
-/* ----- vacuum / cost / options ----- */
+/* ----- vacuum / flush / merge / cost / options ----- */
 
 /*
- * Read every existing (term, postings) pair from the dictionary + posting
- * chains and every pending document into a fresh build state, then rewrite the
- * whole structure into new blocks and repoint the metapage.  This merges the
- * pending list into the main structure with no heap access.
+ * Flush the pending write buffer into a NEW immutable segment.
  *
- * The old dictionary/posting/pending blocks are left allocated (they become
- * unreferenced); their space is reclaimed by REINDEX.  A free-space-map based
- * page recycler is future work.  Returns true if a merge was performed.
+ * O(pending), not O(index): only the pending documents are folded into a fresh
+ * segment appended to the directory.  (The old monolithic design re-read and
+ * rewrote the entire index on every merge -- O(index) and quadratic under
+ * steady inserts.)  Pending pages are then recycled to the FSM.  Tiered
+ * compaction of many small segments is a separate operation.  Returns true if
+ * a flush happened.
  */
 static bool
-bm25_merge_pending(Relation index)
+bm25_flush_pending(Relation index)
 {
 	BM25MetaPageData meta;
 	BM25BuildState bs;
-	BlockNumber *postings;
-	BlockNumber newdict;
+	BM25SegMeta seg;
 	BlockNumber blk;
-	int			i;
 
-	/* snapshot the metapage */
 	{
 		Buffer		mb = ReadBuffer(index, BM25_METAPAGE_BLKNO);
 
@@ -861,77 +895,27 @@ bm25_merge_pending(Relation index)
 		memcpy(&meta, BM25PageGetMeta(BufferGetPage(mb)), sizeof(meta));
 		UnlockReleaseBuffer(mb);
 	}
-
 	if (meta.npending == 0)
-		return false;			/* nothing to merge */
+		return false;
 
-	bs.ctx = AllocSetContextCreate(CurrentMemoryContext, "bm25 merge",
+	bs.ctx = AllocSetContextCreate(CurrentMemoryContext, "bm25 flush",
 								   ALLOCSET_DEFAULT_SIZES);
 	bs.terms = NULL;
 	bs.nterms = 0;
 	bs.maxterms = 0;
-	bs.ndocs = meta.ndocs;
-	bs.sumdoclen = meta.sumdoclen;
-
+	bs.ndocs = 0;
+	bs.sumdoclen = 0;
 	{
 		HASHCTL		ctl;
 
 		ctl.keysize = sizeof(TermKey);
 		ctl.entrysize = sizeof(TermHashEntry);
 		ctl.hcxt = bs.ctx;
-		build_ht = hash_create("bm25 merge terms", 1024, &ctl,
+		build_ht = hash_create("bm25 flush terms", 1024, &ctl,
 							   HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	}
 
-	/* 1. read existing dictionary + postings back into the build state */
-	blk = meta.dictstart;
-	while (blk != InvalidBlockNumber)
-	{
-		Buffer		buffer = ReadBuffer(index, blk);
-		Page		page;
-		char	   *ptr,
-				   *end;
-		BlockNumber next;
-		MemoryContext old = MemoryContextSwitchTo(bs.ctx);
-
-		LockBuffer(buffer, BUFFER_LOCK_SHARE);
-		page = BufferGetPage(buffer);
-		ptr = (char *) PageGetContents(page);
-		end = (char *) page + ((PageHeader) page)->pd_lower;
-		next = BM25PageGetOpaque(page)->nextblk;
-
-		while (ptr < end)
-		{
-			BM25DictEntry *de = (BM25DictEntry *) ptr;
-			Size		esize = MAXALIGN(offsetof(BM25DictEntry, term) + de->termlen);
-			BlockNumber pblk = de->firstposting;
-
-			while (pblk != InvalidBlockNumber)
-			{
-				Buffer		pb = ReadBuffer(index, pblk);
-				Page		pp;
-				BM25Posting *post;
-				int			np,
-							k;
-
-				LockBuffer(pb, BUFFER_LOCK_SHARE);
-				pp = BufferGetPage(pb);
-				np = bm25_page_decode(pp, &post);
-				for (k = 0; k < np; k++)
-					add_posting(&bs, de->term, de->termlen,
-								&post[k].tid, post[k].tf, post[k].doclen);
-				pfree(post);
-				pblk = BM25PageGetOpaque(pp)->nextblk;
-				UnlockReleaseBuffer(pb);
-			}
-			ptr += esize;
-		}
-		UnlockReleaseBuffer(buffer);
-		MemoryContextSwitchTo(old);
-		blk = next;
-	}
-
-	/* 2. add pending documents' postings */
+	/* fold only the pending documents into the build state */
 	blk = meta.pendinghead;
 	while (blk != InvalidBlockNumber)
 	{
@@ -947,7 +931,6 @@ bm25_merge_pending(Relation index)
 		ptr = (char *) PageGetContents(page);
 		end = (char *) page + ((PageHeader) page)->pd_lower;
 		next = BM25PageGetOpaque(page)->nextblk;
-
 		while (ptr < end)
 		{
 			BM25PendingItem *pi = (BM25PendingItem *) ptr;
@@ -959,6 +942,8 @@ bm25_merge_pending(Relation index)
 				add_posting(&bs, FTS_DOC_TERMTEXT(pdoc, &entries[j]),
 							entries[j].len, &pi->tid, entries[j].tf,
 							pdoc->doclen);
+			bs.ndocs += 1.0;
+			bs.sumdoclen += pdoc->doclen;
 			ptr += MAXALIGN(sizeof(BM25PendingItem) + pi->doclen);
 		}
 		UnlockReleaseBuffer(buffer);
@@ -966,19 +951,18 @@ bm25_merge_pending(Relation index)
 		blk = next;
 	}
 
-	/* 3. rewrite postings + dictionary into fresh blocks */
 	if (bs.nterms > 1)
 		qsort(bs.terms, bs.nterms, sizeof(BuildTerm), cmp_buildterm);
-	postings = (BlockNumber *) palloc(Max(bs.nterms, 1) * sizeof(BlockNumber));
-	for (i = 0; i < bs.nterms; i++)
-		postings[i] = bm25_write_postings(index, &bs.terms[i]);
-	newdict = bm25_write_dictionary(index, &bs, postings);
 
-	/* rebuild the trigram index from the merged terms */
+	bm25_write_segment(index, &bs, &seg);
+	bm25_meta_add_segment(index, &seg);
+
+	/*
+	 * Clear the pending list.  Pending docs were already counted into the
+	 * corpus totals at insert time; add_segment counted them again, so subtract
+	 * the segment's contribution to avoid a double count.
+	 */
 	{
-		BlockNumber newtrgm = bm25_write_trigrams(index, &bs);
-
-		/* 4. repoint the metapage and clear the pending list */
 		Buffer		mb = ReadBuffer(index, BM25_METAPAGE_BLKNO);
 		GenericXLogState *state;
 		Page		mp;
@@ -988,93 +972,29 @@ bm25_merge_pending(Relation index)
 		state = GenericXLogStart(index);
 		mp = GenericXLogRegisterBuffer(state, mb, 0);
 		m = BM25PageGetMeta(mp);
-		m->trgmstart = newtrgm;
-		m->dictstart = newdict;
-		m->nterms = bs.nterms;
+		m->ndocs -= seg.ndocs;
+		m->sumdoclen -= seg.sumdoclen;
 		m->pendinghead = InvalidBlockNumber;
 		m->pendingtail = InvalidBlockNumber;
 		m->npending = 0;
-		/* ndocs / sumdoclen already include pending; leave them */
 		GenericXLogFinish(state);
 		UnlockReleaseBuffer(mb);
 	}
 
-	/*
-	 * 5. Record the now-unreferenced old blocks in the FSM so bm25_new_buffer
-	 * can reuse them, instead of leaking them until REINDEX.  We follow the
-	 * old dictionary chain (and each entry's posting chain) and the old pending
-	 * chain, freeing every block.  The metapage already points at the new
-	 * structure, so these blocks are safe to recycle.
-	 */
+	/* recycle the old pending pages */
+	blk = meta.pendinghead;
+	while (blk != InvalidBlockNumber)
 	{
-		BlockNumber b = meta.dictstart;
+		Buffer		buf = ReadBuffer(index, blk);
+		BlockNumber next;
 
-		while (b != InvalidBlockNumber)
-		{
-			Buffer		buf = ReadBuffer(index, b);
-			Page		pg;
-			char	   *ptr,
-					   *end;
-			BlockNumber next;
-
-			LockBuffer(buf, BUFFER_LOCK_SHARE);
-			pg = BufferGetPage(buf);
-			ptr = (char *) PageGetContents(pg);
-			end = (char *) pg + ((PageHeader) pg)->pd_lower;
-			next = BM25PageGetOpaque(pg)->nextblk;
-			while (ptr < end)
-			{
-				BM25DictEntry *de = (BM25DictEntry *) ptr;
-				Size		esize = MAXALIGN(offsetof(BM25DictEntry, term) + de->termlen);
-				BlockNumber pb = de->firstposting;
-
-				while (pb != InvalidBlockNumber)
-				{
-					Buffer		pbuf = ReadBuffer(index, pb);
-					BlockNumber pnext;
-
-					LockBuffer(pbuf, BUFFER_LOCK_SHARE);
-					pnext = BM25PageGetOpaque(BufferGetPage(pbuf))->nextblk;
-					UnlockReleaseBuffer(pbuf);
-					RecordFreeIndexPage(index, pb);
-					pb = pnext;
-				}
-				ptr += esize;
-			}
-			UnlockReleaseBuffer(buf);
-			RecordFreeIndexPage(index, b);
-			b = next;
-		}
-
-		b = meta.pendinghead;
-		while (b != InvalidBlockNumber)
-		{
-			Buffer		buf = ReadBuffer(index, b);
-			BlockNumber next;
-
-			LockBuffer(buf, BUFFER_LOCK_SHARE);
-			next = BM25PageGetOpaque(BufferGetPage(buf))->nextblk;
-			UnlockReleaseBuffer(buf);
-			RecordFreeIndexPage(index, b);
-			b = next;
-		}
-
-		/* old trigram-index chain */
-		b = meta.trgmstart;
-		while (b != InvalidBlockNumber)
-		{
-			Buffer		buf = ReadBuffer(index, b);
-			BlockNumber next;
-
-			LockBuffer(buf, BUFFER_LOCK_SHARE);
-			next = BM25PageGetOpaque(BufferGetPage(buf))->nextblk;
-			UnlockReleaseBuffer(buf);
-			RecordFreeIndexPage(index, b);
-			b = next;
-		}
-
-		IndexFreeSpaceMapVacuum(index);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		next = BM25PageGetOpaque(BufferGetPage(buf))->nextblk;
+		UnlockReleaseBuffer(buf);
+		RecordFreeIndexPage(index, blk);
+		blk = next;
 	}
+	IndexFreeSpaceMapVacuum(index);
 
 	MemoryContextDelete(bs.ctx);
 	return true;
@@ -1084,7 +1004,11 @@ static IndexBulkDeleteResult *
 bm25_bulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 				IndexBulkDeleteCallback callback, void *callback_state)
 {
-	/* skeleton: no in-place delete; VACUUM cannot prune, REINDEX rebuilds */
+	/*
+	 * Tombstoning of deleted TIDs is a later step; MVCC visibility on the heap
+	 * recheck (@@@) and the fts_search fetch keeps results correct even though
+	 * dead postings remain in segments until merge/REINDEX.
+	 */
 	if (stats == NULL)
 		stats = (IndexBulkDeleteResult *) palloc0(sizeof(IndexBulkDeleteResult));
 	return stats;
@@ -1098,7 +1022,7 @@ bm25_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 
 	/* Fold any pending documents into the main structure. */
 	if (!info->analyze_only)
-		(void) bm25_merge_pending(info->index);
+		(void) bm25_flush_pending(info->index);
 
 	return stats;
 }
@@ -1119,7 +1043,7 @@ fts_merge(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("\"%s\" is not a bm25 index",
 						RelationGetRelationName(index))));
-	done = bm25_merge_pending(index);
+	done = bm25_flush_pending(index);
 	index_close(index, ShareUpdateExclusiveLock);
 
 	PG_RETURN_BOOL(done);
