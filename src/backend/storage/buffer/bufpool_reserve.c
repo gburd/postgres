@@ -104,7 +104,7 @@ int			max_buffer_pool_memory = 0;
  * resv_fd is the backing memfd; resv_base is the start of the PROT_NONE
  * reservation.
  */
-static int	resv_fd = -1;
+static int	resv_fd pg_attribute_unused() = -1;
 static char *resv_base = NULL;
 static Size resv_size = 0;
 
@@ -449,11 +449,16 @@ BufPoolAddrAt(Size offset)
  * MAP_NORESERVE).  Each chunk c is mapped at win_base + k*CHUNK_SIZE backed by
  * memfd offset c*CHUNK_SIZE, so disjoint physical chunks form one contiguous
  * window.  Returns true if every chunk mapped successfully.
+ *
+ * Defined only on the reservation-supported platform; its callers (Commit /
+ * Decommit / AttachLocal) are all compiled out otherwise, so defining it
+ * unconditionally would draw an unused-function warning (e.g. clang on
+ * FreeBSD, which has no libnuma / memfd path).
  */
+#ifdef BUFPOOL_RESERVE_SUPPORTED
 static bool
 bufpool_map_window(BufPoolWindow *w, int prot, int extra_flags, bool huge)
 {
-#ifdef BUFPOOL_RESERVE_SUPPORTED
 	char	   *win_base = resv_base + w->win_offset;
 
 	for (int k = 0; k < w->nchunks; k++)
@@ -477,14 +482,8 @@ bufpool_map_window(BufPoolWindow *w, int prot, int extra_flags, bool huge)
 		Assert(p == want);
 	}
 	return true;
-#else
-	(void) w;
-	(void) prot;
-	(void) extra_flags;
-	(void) huge;
-	return false;
-#endif
 }
+#endif							/* BUFPOOL_RESERVE_SUPPORTED */
 
 /*
  * BufPoolAttachLocal -- map a pool's window read/write in THIS backend.
