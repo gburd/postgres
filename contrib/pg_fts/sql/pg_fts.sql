@@ -411,6 +411,20 @@ SELECT count(*) AS matched
 FROM fts_search('lazy_bm25', 'term'::ftsquery, 5000) r JOIN lazy l ON l.ctid = r.ctid;
 DROP TABLE lazy;
 
+-- NEAR(a b, k): proximity within k tokens.
+-- 'quick ... fox' are 3 tokens apart in 'the quick brown red fox'
+SELECT to_ftsdoc('the quick brown red fox') @@@ 'NEAR(quick fox, 3)'::ftsquery AS near_hit;
+SELECT to_ftsdoc('the quick brown red fox') @@@ 'NEAR(quick fox, 2)'::ftsquery AS near_miss;
+-- adjacent terms satisfy any k>=1
+SELECT to_ftsdoc('the quick brown fox') @@@ 'NEAR(quick brown, 1)'::ftsquery AS near_adj;
+-- three-term NEAR chains the proximity
+SELECT to_ftsdoc('alpha beta gamma delta') @@@ 'NEAR(alpha beta gamma, 2)'::ftsquery AS near3;
+-- NEAR combines with boolean operators
+SELECT to_ftsdoc('the quick brown red fox jumps') @@@ 'NEAR(quick fox, 3) & jumps'::ftsquery AS near_combo;
+-- malformed NEAR errors (single term); NEAR without k defaults to 10
+SELECT 'NEAR(onlyone, 2)'::ftsquery;
+SELECT to_ftsdoc('a b c') @@@ 'NEAR(a c)'::ftsquery AS near_default_k;
+
 -- Stage 3: the bm25 index access method.
 ALTER EXTENSION pg_fts UPDATE TO '1.3';
 

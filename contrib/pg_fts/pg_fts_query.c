@@ -53,7 +53,9 @@ typedef enum
 	TOK_NOT,
 	TOK_LPAREN,
 	TOK_RPAREN,
-	TOK_QUOTE					/* " -- starts/ends a phrase */
+	TOK_QUOTE,					/* " -- starts/ends a phrase */
+	TOK_NEAR,					/* NEAR keyword (proximity) */
+	TOK_COMMA					/* , inside NEAR(...) */
 } TokKind;
 
 typedef struct Token
@@ -177,6 +179,10 @@ lex_raw(ParseState *st)
 				st->pos++;
 				tok.kind = TOK_RPAREN;
 				return tok;
+			case ',':
+				st->pos++;
+				tok.kind = TOK_COMMA;
+				return tok;
 			case '"':
 				st->pos++;
 				tok.kind = TOK_QUOTE;
@@ -234,6 +240,8 @@ lex_raw(ParseState *st)
 		tok.kind = TOK_OR;
 	else if (flen == 3 && memcmp(folded, "not", 3) == 0)
 		tok.kind = TOK_NOT;
+	else if (flen == 4 && memcmp(folded, "near", 4) == 0)
+		tok.kind = TOK_NEAR;
 	else
 	{
 		tok.kind = TOK_TERM;
@@ -330,6 +338,79 @@ parse_primary(ParseState *st)
 		if (nterms == 0)
 			st->error = true;	/* empty phrase "" */
 	}
+	else if (tok.kind == TOK_NEAR)
+	{
+		/* NEAR( term term ... , k ) : proximity within k tokens */
+		int			nterms = 0;
+		uint32		dist = 0;
+		Token		p;
+
+		p = next_token(st);
+		if (p.kind != TOK_LPAREN)
+		{
+			st->error = true;
+			return;
+		}
+		/* terms up to the comma */
+		for (;;)
+		{
+			p = peek(st);
+			if (p.kind == TOK_COMMA || p.kind == TOK_RPAREN ||
+				p.kind == TOK_EOF)
+				break;
+			p = next_token(st);
+			if (p.kind != TOK_TERM)
+			{
+				st->error = true;
+				return;
+			}
+			emit(st, FTS_QI_VAL, 0, p.term, p.termlen,
+				 p.prefix ? FTS_QF_PREFIX : 0);
+			nterms++;
+		}
+		/* optional ", k" (k defaults to 10 like FTS5 when omitted) */
+		p = next_token(st);
+		if (p.kind == TOK_COMMA)
+		{
+			Token		kt = next_token(st);
+			int			j;
+
+			if (kt.kind != TOK_TERM)
+			{
+				st->error = true;
+				return;
+			}
+			for (j = 0; j < kt.termlen; j++)
+			{
+				if (kt.term[j] < '0' || kt.term[j] > '9')
+				{
+					st->error = true;
+					return;
+				}
+				dist = dist * 10 + (kt.term[j] - '0');
+			}
+			p = next_token(st);
+		}
+		else
+			dist = 10;			/* NEAR default proximity */
+		if (p.kind != TOK_RPAREN)
+		{
+			st->error = true;
+			return;
+		}
+		if (nterms < 2 || dist < 1)
+		{
+			st->error = true;	/* NEAR needs >=2 terms and k>=1 */
+			return;
+		}
+		/* join the nterms operands with PHRASE(dist): nterms-1 operators */
+		{
+			int			m;
+
+			for (m = 1; m < nterms; m++)
+				emit_dist(st, FTS_QI_OPR, FTS_OP_PHRASE, NULL, 0, 0, dist);
+		}
+	}
 	else if (tok.kind == TOK_TERM)
 	{
 		uint16		f = 0;
@@ -381,7 +462,8 @@ parse_and(ParseState *st)
 			emit(st, FTS_QI_OPR, FTS_OP_AND, NULL, 0, 0);
 		}
 		else if (tok.kind == TOK_TERM || tok.kind == TOK_NOT ||
-				 tok.kind == TOK_LPAREN || tok.kind == TOK_QUOTE)
+				 tok.kind == TOK_LPAREN || tok.kind == TOK_QUOTE ||
+				 tok.kind == TOK_NEAR)
 		{
 			/* implicit AND */
 			parse_unary(st);
