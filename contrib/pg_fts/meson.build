@@ -41,6 +41,7 @@ install_data(
   'pg_fts--1.10--1.11.sql',
   'pg_fts--1.11--1.12.sql',
   'pg_fts--1.12--1.13.sql',
+  'pg_fts--1.13--1.14.sql',
   kwargs: contrib_data_args,
 )
 

@@ -74,8 +74,8 @@ bm25_idf(BM25Variant v, double N, double df)
  * the document, regardless of the boolean structure (matching Lucene, which
  * scores the disjunction of query terms).
  */
-static int
-query_terms(FtsQuery q, const char ***terms_out, int **lens_out)
+int
+fts_query_terms(FtsQuery q, const char ***terms_out, int **lens_out)
 {
 	const char **terms;
 	int		   *lens;
@@ -107,7 +107,7 @@ query_terms(FtsQuery q, const char ***terms_out, int **lens_out)
  * dfs may be NULL, in which case every term is treated as having df = 1 (as if
  * it were rare); this yields a usable ranking when true df is unavailable.
  * When dfs is provided it must have one entry per distinct query term, in the
- * order query_terms() returns them.
+ * order fts_query_terms() returns them.
  */
 static double
 fts_bm25_score(FtsDoc doc, FtsQuery q, double N, double avgdl,
@@ -123,7 +123,7 @@ fts_bm25_score(FtsDoc doc, FtsQuery q, double N, double avgdl,
 	if (avgdl <= 0.0)
 		avgdl = 1.0;
 
-	nterms = query_terms(q, &terms, &lens);
+	nterms = fts_query_terms(q, &terms, &lens);
 
 	for (i = 0; i < nterms; i++)
 	{
@@ -386,7 +386,7 @@ fts_bm25f(PG_FUNCTION_ARGS)
 			dfs[i] = dn[i] ? 1.0 : DatumGetFloat8(de[i]);
 	}
 
-	nterms = query_terms(q, &terms, &lens);
+	nterms = fts_query_terms(q, &terms, &lens);
 
 	for (t = 0; t < nterms; t++)
 	{

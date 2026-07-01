@@ -164,4 +164,7 @@ extern bool fts_doc_has_fuzzy(FtsDoc doc, const char *term, int termlen, int k);
 /* shared: does any doc term match the regular expression? (stage 14) */
 extern bool fts_doc_has_regex(FtsDoc doc, const char *re, int relen);
 
+/* pg_fts_rank.c -- collect distinct query term operands (shared) */
+extern int	fts_query_terms(FtsQuery q, const char ***terms_out, int **lens_out);
+
 #endif							/* PG_FTS_H */

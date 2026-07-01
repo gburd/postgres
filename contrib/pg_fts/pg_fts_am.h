@@ -63,6 +63,7 @@ typedef struct BM25DictEntry
 {
 	uint32		termlen;
 	uint32		df;				/* document frequency */
+	uint32		max_tf;			/* max tf across postings (WAND impact bound) */
 	BlockNumber firstposting;	/* first posting page for this term */
 	char		term[FLEXIBLE_ARRAY_MEMBER];
 } BM25DictEntry;

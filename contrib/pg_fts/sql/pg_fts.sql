@@ -312,6 +312,28 @@ SELECT fts_merge('mrg_bm25') AS merged_again;
 RESET enable_seqscan;
 DROP TABLE mrg;
 
+-- Index-only BM25 top-k search (fts_search).
+ALTER EXTENSION pg_fts UPDATE TO '1.14';
+CREATE TABLE srch (id serial, body text, d ftsdoc);
+INSERT INTO srch (body, d) VALUES
+  ('quick quick quick fox', to_ftsdoc('quick quick quick fox')),
+  ('quick brown fox', to_ftsdoc('quick brown fox')),
+  ('a slow turtle', to_ftsdoc('a slow turtle')),
+  ('quick', to_ftsdoc('quick'));
+CREATE INDEX srch_bm25 ON srch USING bm25 (d);
+-- top-k by index-only score: doc with tf(quick)=3 ranks first
+SELECT s.id, round(r.score::numeric, 3) AS score
+FROM fts_search('srch_bm25', 'quick'::ftsquery, 10) r
+JOIN srch s ON s.ctid = r.ctid
+ORDER BY r.score DESC, s.id;
+-- k limits the result set
+SELECT count(*) AS topk_count
+FROM fts_search('srch_bm25', 'quick'::ftsquery, 2) r;
+-- multi-term query accumulates per-term contributions
+SELECT count(*) AS multiterm
+FROM fts_search('srch_bm25', 'quick | brown'::ftsquery, 10) r;
+DROP TABLE srch;
+
 -- Stage 3: the bm25 index access method.
 ALTER EXTENSION pg_fts UPDATE TO '1.3';
 

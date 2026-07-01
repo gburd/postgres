@@ -35,6 +35,7 @@
 
 #include "pg_fts.h"
 #include "pg_fts_am.h"
+#include <math.h>
 #include "access/genam.h"
 #include "access/generic_xlog.h"
 #include "access/reloptions.h"
@@ -382,9 +383,15 @@ bm25_write_dictionary(Relation index, BM25BuildState *bs,
 		dst = (char *) page + ((PageHeader) page)->pd_lower;
 		{
 			BM25DictEntry *de = (BM25DictEntry *) dst;
+			int			p;
+			uint32		maxtf = 0;
 
 			de->termlen = bt->len;
 			de->df = bt->nposts;
+			for (p = 0; p < bt->nposts; p++)
+				if (bt->tfs[p] > maxtf)
+					maxtf = bt->tfs[p];
+			de->max_tf = maxtf;
 			de->firstposting = postings[i];
 			memcpy(de->term, bt->term, bt->len);
 		}

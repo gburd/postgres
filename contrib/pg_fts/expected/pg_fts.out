@@ -789,9 +789,47 @@ SELECT fts_merge('mrg_bm25') AS merged_again;
 
 RESET enable_seqscan;
 DROP TABLE mrg;
+-- Index-only BM25 top-k search (fts_search).
+ALTER EXTENSION pg_fts UPDATE TO '1.14';
+CREATE TABLE srch (id serial, body text, d ftsdoc);
+INSERT INTO srch (body, d) VALUES
+  ('quick quick quick fox', to_ftsdoc('quick quick quick fox')),
+  ('quick brown fox', to_ftsdoc('quick brown fox')),
+  ('a slow turtle', to_ftsdoc('a slow turtle')),
+  ('quick', to_ftsdoc('quick'));
+CREATE INDEX srch_bm25 ON srch USING bm25 (d);
+-- top-k by index-only score: doc with tf(quick)=3 ranks first
+SELECT s.id, round(r.score::numeric, 3) AS score
+FROM fts_search('srch_bm25', 'quick'::ftsquery, 10) r
+JOIN srch s ON s.ctid = r.ctid
+ORDER BY r.score DESC, s.id;
+ id | score 
+----+-------
+  1 | 0.560
+  2 | 0.357
+  4 | 0.357
+(3 rows)
+
+-- k limits the result set
+SELECT count(*) AS topk_count
+FROM fts_search('srch_bm25', 'quick'::ftsquery, 2) r;
+ topk_count 
+------------
+          2
+(1 row)
+
+-- multi-term query accumulates per-term contributions
+SELECT count(*) AS multiterm
+FROM fts_search('srch_bm25', 'quick | brown'::ftsquery, 10) r;
+ multiterm 
+-----------
+         3
+(1 row)
+
+DROP TABLE srch;
 -- Stage 3: the bm25 index access method.
 ALTER EXTENSION pg_fts UPDATE TO '1.3';
-ERROR:  extension "pg_fts" has no update path from version "1.13" to version "1.3"
+ERROR:  extension "pg_fts" has no update path from version "1.14" to version "1.3"
 CREATE TABLE idxdocs (id serial, d ftsdoc);
 INSERT INTO idxdocs (d) VALUES
   (to_ftsdoc('the quick brown fox')),

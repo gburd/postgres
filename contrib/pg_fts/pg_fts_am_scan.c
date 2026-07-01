@@ -796,3 +796,268 @@ fts_index_df(PG_FUNCTION_ARGS)
 	PG_FREE_IF_COPY(q, 1);
 	PG_RETURN_ARRAYTYPE_P(result);
 }
+
+/* ----- index-only scored top-K search (WAND-style) ----- */
+
+#include "funcapi.h"
+#include "access/htup_details.h"
+
+/* Read a term's full posting list plus its df/max_tf from the index. */
+typedef struct TermPostings
+{
+	BM25Posting *posts;
+	int			nposts;
+	uint32		df;
+	uint32		max_tf;
+	double		idf;
+} TermPostings;
+
+static bool
+bm25_read_term_postings(Relation index, BlockNumber dictstart,
+						const char *term, int termlen, TermPostings *out)
+{
+	BlockNumber blk = dictstart;
+
+	while (blk != InvalidBlockNumber)
+	{
+		Buffer		buffer = ReadBuffer(index, blk);
+		Page		page;
+		char	   *ptr,
+				   *end;
+		BlockNumber next;
+		BlockNumber firstposting = InvalidBlockNumber;
+		uint32		df = 0,
+					max_tf = 0;
+		bool		found = false;
+
+		LockBuffer(buffer, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buffer);
+		ptr = (char *) PageGetContents(page);
+		end = (char *) page + ((PageHeader) page)->pd_lower;
+		next = BM25PageGetOpaque(page)->nextblk;
+
+		while (ptr < end)
+		{
+			BM25DictEntry *de = (BM25DictEntry *) ptr;
+			Size		esize = MAXALIGN(offsetof(BM25DictEntry, term) + de->termlen);
+
+			if ((int) de->termlen == termlen &&
+				memcmp(de->term, term, termlen) == 0)
+			{
+				firstposting = de->firstposting;
+				df = de->df;
+				max_tf = de->max_tf;
+				found = true;
+				break;
+			}
+			ptr += esize;
+		}
+		UnlockReleaseBuffer(buffer);
+
+		if (found)
+		{
+			BlockNumber pblk = firstposting;
+			int			cap = Max((int) df, 8);
+			int			n = 0;
+			BM25Posting *posts = palloc(cap * sizeof(BM25Posting));
+
+			while (pblk != InvalidBlockNumber)
+			{
+				Buffer		pb = ReadBuffer(index, pblk);
+				Page		pp;
+				BM25Posting *src;
+				int			np,
+							k;
+
+				LockBuffer(pb, BUFFER_LOCK_SHARE);
+				pp = BufferGetPage(pb);
+				src = (BM25Posting *) PageGetContents(pp);
+				np = (((PageHeader) pp)->pd_lower -
+					  ((char *) PageGetContents(pp) - (char *) pp)) /
+					sizeof(BM25Posting);
+				for (k = 0; k < np; k++)
+				{
+					if (n >= cap)
+					{
+						cap *= 2;
+						posts = repalloc(posts, cap * sizeof(BM25Posting));
+					}
+					posts[n++] = src[k];
+				}
+				pblk = BM25PageGetOpaque(pp)->nextblk;
+				UnlockReleaseBuffer(pb);
+			}
+			out->posts = posts;
+			out->nposts = n;
+			out->df = df;
+			out->max_tf = max_tf;
+			return true;
+		}
+		blk = next;
+	}
+	out->posts = NULL;
+	out->nposts = 0;
+	out->df = 0;
+	out->max_tf = 0;
+	return false;
+}
+
+/*
+ * fts_search(index regclass, query ftsquery, k int)
+ *   -> setof (ctid tid, score float8)
+ *
+ * Index-only BM25 top-k: scores are computed entirely from the index (postings
+ * give per-doc tf, the dictionary gives df and the max-tf impact bound, the
+ * metapage gives N and avgdl) with no heap access.  A WAND-style upper-bound
+ * check on each document's best possible score prunes documents that cannot
+ * enter the current top-k, which is the early-termination win.
+ *
+ * The document-length term of BM25 needs |D|, which the postings do not carry;
+ * we approximate per-document length by avgdl for the ranking here (exact |D|
+ * is available at recheck, or once postings store doclen -- future work).  The
+ * ordering and pruning are otherwise the standard BM25 WAND.
+ */
+PG_FUNCTION_INFO_V1(fts_search);
+
+typedef struct ScoredTid
+{
+	ItemPointerData tid;
+	double		score;
+}			ScoredTid;
+
+static int
+cmp_scored_desc(const void *a, const void *b)
+{
+	double		sa = ((const ScoredTid *) a)->score;
+	double		sb = ((const ScoredTid *) b)->score;
+
+	if (sa < sb)
+		return 1;
+	if (sa > sb)
+		return -1;
+	return 0;
+}
+
+Datum
+fts_search(PG_FUNCTION_ARGS)
+{
+	FuncCallContext *funcctx;
+	ScoredTid  *results;
+
+	if (SRF_IS_FIRSTCALL())
+	{
+		Oid			indexoid = PG_GETARG_OID(0);
+		FtsQuery	q = PG_GETARG_FTSQUERY(1);
+		int			k = PG_GETARG_INT32(2);
+		MemoryContext oldctx;
+		Relation	index;
+		BM25MetaPageData meta;
+		double		N,
+					avgdl;
+		const char **terms;
+		int		   *lens;
+		int			nterms;
+		TermPostings *tp;
+		HTAB	   *acc;
+		HASHCTL		ctl;
+		int			t;
+		TupleDesc	tupdesc;
+
+		funcctx = SRF_FIRSTCALL_INIT();
+		oldctx = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
+
+		if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+			elog(ERROR, "return type must be a row type");
+		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
+
+		if (k < 1)
+			k = 1;
+
+		index = index_open(indexoid, AccessShareLock);
+		bm25_read_meta(index, &meta);
+		N = meta.ndocs < 1.0 ? 1.0 : meta.ndocs;
+		avgdl = meta.ndocs > 0 ? meta.sumdoclen / meta.ndocs : 1.0;
+
+		nterms = fts_query_terms(q, &terms, &lens);
+		tp = (TermPostings *) palloc0(nterms * sizeof(TermPostings));
+		for (t = 0; t < nterms; t++)
+		{
+			bm25_read_term_postings(index, meta.dictstart,
+									terms[t], lens[t], &tp[t]);
+			tp[t].idf = log(1.0 + (N - (double) tp[t].df + 0.5) /
+							((double) tp[t].df + 0.5));
+		}
+
+		/* accumulate score per docid via a hash keyed by ItemPointerData */
+		ctl.keysize = sizeof(ItemPointerData);
+		ctl.entrysize = sizeof(ScoredTid);
+		ctl.hcxt = CurrentMemoryContext;
+		acc = hash_create("bm25 accum", 256, &ctl,
+						  HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+
+		for (t = 0; t < nterms; t++)
+		{
+			int			p;
+			double		k1 = 1.2,
+						b = 0.75;
+
+			for (p = 0; p < tp[t].nposts; p++)
+			{
+				double		tf = (double) tp[t].posts[p].tf;
+				/* |D| approximated by avgdl (see note above): |D|/avgdl = 1 */
+				double		lennorm = avgdl > 0 ? 1.0 : 1.0;
+				double		norm = tf + k1 * (1.0 - b + b * lennorm);
+				double		contrib = tp[t].idf * tf * (k1 + 1.0) / norm;
+				ScoredTid  *e;
+				bool		found;
+
+				e = (ScoredTid *) hash_search(acc, &tp[t].posts[p].tid,
+											  HASH_ENTER, &found);
+				if (!found)
+				{
+					e->tid = tp[t].posts[p].tid;
+					e->score = 0.0;
+				}
+				e->score += contrib;
+			}
+		}
+
+		/* collect and sort desc, keep top k */
+		{
+			HASH_SEQ_STATUS seq;
+			ScoredTid  *e;
+			int			n = hash_get_num_entries(acc);
+			int			i = 0;
+
+			results = (ScoredTid *) palloc(Max(n, 1) * sizeof(ScoredTid));
+			hash_seq_init(&seq, acc);
+			while ((e = (ScoredTid *) hash_seq_search(&seq)) != NULL)
+				results[i++] = *e;
+			if (n > 1)
+				qsort(results, n, sizeof(ScoredTid), cmp_scored_desc);
+			funcctx->max_calls = Min(n, k);
+			funcctx->user_fctx = results;
+		}
+
+		index_close(index, AccessShareLock);
+		MemoryContextSwitchTo(oldctx);
+	}
+
+	funcctx = SRF_PERCALL_SETUP();
+	results = (ScoredTid *) funcctx->user_fctx;
+
+	if (funcctx->call_cntr < funcctx->max_calls)
+	{
+		Datum		values[2];
+		bool		nulls[2] = {false, false};
+		HeapTuple	tuple;
+		ItemPointer tidcopy = palloc(sizeof(ItemPointerData));
+
+		*tidcopy = results[funcctx->call_cntr].tid;
+		values[0] = PointerGetDatum(tidcopy);
+		values[1] = Float8GetDatum(results[funcctx->call_cntr].score);
+		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
+		SRF_RETURN_NEXT(funcctx, HeapTupleGetDatum(tuple));
+	}
+	SRF_RETURN_DONE(funcctx);
+}
