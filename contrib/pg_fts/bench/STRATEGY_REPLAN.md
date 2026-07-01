@@ -106,21 +106,29 @@ well-scoped effort, and it's the difference between "works and is correct" and
 "beats the competition," which is the stated goal.
 
 Next concrete steps (in order):
-  1. **Segment container first** (revised from the original codec-first order):
-     make the index a set of immutable segments + write buffer, each segment
-     initially holding the *current* varint postings + sorted dict + trigram
-     data.  This is the container every later step slots into; doing it first
-     avoids reworking the codec/dict/norm integration.  Fixes the monolithic
-     build-OOM and O(index) full-rewrite merge (tiered merge over segments).
-     Map tombstones onto MVCC (crib the pg_search seam).
-  2. FOR-128 block posting codec with per-block max-impact, inside a segment
-     (replaces delta+varint; sparsemap stays only for trigram sets or is
-     retired for DFA∩FST).
-  3. 1-byte quantized norms + 256-entry BM25 score cache, per segment.
-  4. FST term dictionary (port SuRF/FST + poppy), per segment.
-  5. Re-evaluate fuzzy/regex as Levenshtein-DFA ∩ FST (needs the FST from 4).
-  6. Add MaxScore alongside BMW.
-  7. THEN re-run the EC2 benchmark against tsvector/GIN, pg_search, Elasticsearch.
+  1. **Segment container** [DONE, v2] -- immutable segments + directory +
+     O(pending) flush.  Scan/stats/df/WAND all segment-aware.
+  2. **Size-tiered merge** [DONE, 1.18] -- bm25_merge_segments compacts when
+     the count exceeds a threshold; triggered on flush and VACUUM; old segments
+     recycled to the FSM.  fts_index_nsegments() observes it.
+  3. FOR-128 block posting codec with per-block max-impact, inside a segment
+     (replaces delta+varint per-page blocks; sparsemap stays only for trigram
+     sets).  [TODO -- mostly a size + finer-WAND-granularity win; per-page
+     block-max already prunes, so this is refinement not correctness.]
+  4. 1-byte quantized norms + 256-entry BM25 score cache, per segment.
+     [TODO -- query-latency win: eliminates per-posting float division in the
+     WAND hot path.  Needs a quantized-norm column + score cache in the cursor.]
+  5. FST term dictionary (port SuRF/FST + poppy).  [TODO -- large data-structure
+     port; the single biggest remaining piece.  Enables 6.]
+  6. Re-evaluate fuzzy/regex as Levenshtein-DFA ∩ FST (needs the FST from 5).
+     [TODO -- may retire the trigram funnel.]
+  7. Add MaxScore alongside BMW.  [TODO -- peer top-k algorithm for long
+     queries / large k.]
+  8. THEN re-run the EC2 benchmark against tsvector/GIN, pg_search, Elasticsearch.
 
-(Original order had the codec first; testing the dependency structure showed
-the segment container must come first so later steps are localized, not reworked.)
+Progress: steps 1-2 complete and qualified (the architectural core -- segments
++ tiered merge -- which is what actually fixed the scale faults).  Steps 3-7
+are refinements (codec size, query-latency micro-opts, dictionary structure)
+that improve competitiveness but are not correctness-blocking; each is
+independently qualifiable.  The engine is now segmented and does not OOM on
+build-adjacent paths nor do O(index) merges.
