@@ -79,3 +79,27 @@ SELECT ftsdoc_length(to_ftsdoc('english'::regconfig, 'the quick brown fox'));
 -- stemming makes a query match across inflections
 SELECT to_ftsdoc('english'::regconfig, 'the foxes were running')
        @@@ 'fox & run'::ftsquery AS stemmed_match;
+
+-- Stage 4: BM25 scoring.
+ALTER EXTENSION pg_fts UPDATE TO '1.2';
+
+-- score is positive when a query term is present, zero when absent
+SELECT round(fts_bm25(to_ftsdoc('quick brown fox'), 'fox'::ftsquery,
+                      1000, 4.0)::numeric, 4) AS present_gt_0;
+SELECT fts_bm25(to_ftsdoc('quick brown fox'), 'turtle'::ftsquery,
+                1000, 4.0) AS absent_is_0;
+
+-- length normalization: same tf, longer doc scores lower
+SELECT fts_bm25(to_ftsdoc('fox'), 'fox'::ftsquery, 1000, 10.0)
+     > fts_bm25(to_ftsdoc('fox ' || repeat('pad ', 40)), 'fox'::ftsquery, 1000, 10.0)
+       AS shorter_scores_higher;
+
+-- IDF: a rarer term (low df) contributes more than a common one (high df)
+SELECT fts_bm25(to_ftsdoc('rare common'), 'rare'::ftsquery, 1000, 2.0, ARRAY[2.0])
+     > fts_bm25(to_ftsdoc('rare common'), 'common'::ftsquery, 1000, 2.0, ARRAY[900.0])
+       AS rare_scores_higher;
+
+-- higher term frequency scores higher (saturating)
+SELECT fts_bm25(to_ftsdoc('fox fox fox'), 'fox'::ftsquery, 1000, 3.0)
+     > fts_bm25(to_ftsdoc('fox pad pad'), 'fox'::ftsquery, 1000, 3.0)
+       AS more_tf_scores_higher;
