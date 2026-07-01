@@ -524,3 +524,19 @@ SELECT id FROM idxdocs WHERE d @@@ '(quick | slow) & !fox'::ftsquery ORDER BY id
 RESET enable_seqscan;
 
 DROP TABLE idxdocs;
+
+-- Config-normalized query: to_ftsquery(regconfig, text) must stem query terms
+-- to match a doc indexed with the same config (the EC2 benchmark fault).
+ALTER EXTENSION pg_fts UPDATE TO '1.17';
+-- 'postgres' stems to 'postgr'; a raw ftsquery misses, a config query matches
+SELECT to_ftsdoc('english'::regconfig, 'postgres databases') @@@ 'postgres'::ftsquery
+       AS raw_query_misses;
+SELECT to_ftsdoc('english'::regconfig, 'postgres databases')
+       @@@ to_ftsquery('english'::regconfig, 'postgres')
+       AS config_query_matches;
+-- multi-term config query with operators
+SELECT to_ftsdoc('english'::regconfig, 'running quickly through fields')
+       @@@ to_ftsquery('english'::regconfig, 'run & quick')
+       AS stemmed_and;
+-- config query renders the stemmed terms
+SELECT to_ftsquery('english'::regconfig, 'databases running')::text AS stemmed_render;

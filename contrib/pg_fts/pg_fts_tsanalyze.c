@@ -193,3 +193,42 @@ to_ftsdoc_byid(PG_FUNCTION_ARGS)
 	PG_FREE_IF_COPY(in, 1);
 	PG_RETURN_FTSDOC(doc);
 }
+
+/*
+ * fts_normalize_term -- run a single query term through a text-search config's
+ * parser+dictionary pipeline and return its normalized lexeme (palloc'd), so a
+ * query term matches the same stemmed/stopword-processed form the document
+ * index stores.  Returns NULL and sets *outlen=0 if the term normalizes away
+ * (e.g. it is a stopword), in which case the caller should drop it.  If the
+ * term produces multiple lexemes only the first is used (query terms are single
+ * words in stage-1 syntax).
+ */
+char *
+fts_normalize_term(Oid cfgId, const char *term, int len, int *outlen)
+{
+	ParsedText	prs;
+	char	   *buf;
+	char	   *result = NULL;
+
+	*outlen = 0;
+	prs.lenwords = 4;
+	prs.curwords = 0;
+	prs.pos = 0;
+	prs.words = (ParsedWord *) palloc(sizeof(ParsedWord) * prs.lenwords);
+
+	buf = (char *) palloc(len + 1);
+	memcpy(buf, term, len);
+	buf[len] = '\0';
+	parsetext(cfgId, &prs, buf, len);
+
+	if (prs.curwords > 0)
+	{
+		result = (char *) palloc(prs.words[0].len);
+		memcpy(result, prs.words[0].word, prs.words[0].len);
+		*outlen = prs.words[0].len;
+	}
+	pfree(buf);
+	if (prs.words)
+		pfree(prs.words);
+	return result;
+}

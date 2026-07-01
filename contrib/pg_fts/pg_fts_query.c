@@ -498,9 +498,15 @@ parse_or(ParseState *st)
  * fts_parse_query -- parse query text into an FtsQuery varlena.
  * Raises an error on malformed input.  An input with no terms yields a valid
  * empty query (matches nothing).
+ *
+ * If cfgId is a valid text-search config, each plain term is normalized through
+ * that config (stemming, case, stopwords) so it matches the same lexemes the
+ * document index stores.  Prefix (term*), fuzzy (term~k) and regex (/re/) terms
+ * are left literal -- they are matched against raw stored lexemes, not stemmed.
+ * cfgId == InvalidOid keeps the raw folded term (the simple analyzer path).
  */
 FtsQuery
-fts_parse_query(const char *str, int len)
+fts_parse_query_cfg(const char *str, int len, Oid cfgId)
 {
 	ParseState	st;
 	FtsQuery	q;
@@ -532,6 +538,32 @@ fts_parse_query(const char *str, int len)
 		ereport(ERROR,
 				(errcode(ERRCODE_SYNTAX_ERROR),
 				 errmsg("syntax error in ftsquery: \"%.*s\"", len, str)));
+
+	/*
+	 * Normalize plain terms through the text-search config so they match the
+	 * document index's stemmed lexemes.  Prefix/fuzzy/regex terms stay literal.
+	 */
+	if (OidIsValid(cfgId))
+	{
+		for (i = 0; i < st.nitems; i++)
+		{
+			if (st.items[i].type == FTS_QI_VAL &&
+				!(st.items[i].flags & (FTS_QF_PREFIX | FTS_QF_FUZZY | FTS_QF_REGEX)))
+			{
+				int			nlen;
+				char	   *norm = fts_normalize_term(cfgId, st.items[i].term,
+														 st.items[i].termlen, &nlen);
+
+				if (norm != NULL)
+				{
+					st.items[i].term = norm;
+					st.items[i].termlen = nlen;
+				}
+				/* if the term normalized away (stopword), leave it as-is; it
+				 * simply won't match, which is the correct behavior */
+			}
+		}
+	}
 
 	for (i = 0; i < st.nitems; i++)
 		if (st.items[i].type == FTS_QI_VAL)
@@ -570,11 +602,19 @@ fts_parse_query(const char *str, int len)
 	return q;
 }
 
+/* raw parse (no config normalization) -- the simple analyzer / ftsquery_in path */
+FtsQuery
+fts_parse_query(const char *str, int len)
+{
+	return fts_parse_query_cfg(str, len, InvalidOid);
+}
+
 PG_FUNCTION_INFO_V1(ftsquery_in);
 PG_FUNCTION_INFO_V1(ftsquery_out);
 PG_FUNCTION_INFO_V1(ftsquery_recv);
 PG_FUNCTION_INFO_V1(ftsquery_send);
 PG_FUNCTION_INFO_V1(to_ftsquery);
+PG_FUNCTION_INFO_V1(to_ftsquery_byid);
 
 Datum
 ftsquery_in(PG_FUNCTION_ARGS)
@@ -592,6 +632,19 @@ to_ftsquery(PG_FUNCTION_ARGS)
 
 	q = fts_parse_query(VARDATA_ANY(in), VARSIZE_ANY_EXHDR(in));
 	PG_FREE_IF_COPY(in, 0);
+	PG_RETURN_FTSQUERY(q);
+}
+
+/* to_ftsquery(regconfig, text): parse and normalize terms through the config */
+Datum
+to_ftsquery_byid(PG_FUNCTION_ARGS)
+{
+	Oid			cfgId = PG_GETARG_OID(0);
+	text	   *in = PG_GETARG_TEXT_PP(1);
+	FtsQuery	q;
+
+	q = fts_parse_query_cfg(VARDATA_ANY(in), VARSIZE_ANY_EXHDR(in), cfgId);
+	PG_FREE_IF_COPY(in, 1);
 	PG_RETURN_FTSQUERY(q);
 }
 

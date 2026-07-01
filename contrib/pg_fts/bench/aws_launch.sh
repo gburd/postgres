@@ -34,10 +34,20 @@ fi
 echo "Security group: $SG_ID"
 
 # --- latest Amazon Linux 2023 AMI ---
-AMI=$(aws ec2 describe-images --owners amazon \
-    --filters "Name=name,Values=al2023-ami-2023*-x86_64" "Name=state,Values=available" \
-    --query 'sort_by(Images, &CreationDate)[-1].ImageId' --output text --region "$REGION")
-echo "AMI: $AMI"
+# --- latest official Fedora Cloud Base AMI (Fedora's AWS account 125523088429) ---
+# Prefer a numbered stable release (e.g. -44-), not ELN/Rawhide.
+AMI=$(aws ec2 describe-images --owners 125523088429 \
+    --filters "Name=name,Values=Fedora-Cloud-Base-AmazonEC2.x86_64-*" \
+              "Name=state,Values=available" \
+              "Name=architecture,Values=x86_64" \
+    --query 'reverse(sort_by(Images, &CreationDate))[].[Name,ImageId]' \
+    --output text --region "$REGION" \
+    | grep -E 'x86_64-[0-9]+-' | head -1 | awk '{print $2}')
+if [ -z "$AMI" ] || [ "$AMI" = "None" ]; then
+    echo "No numbered Fedora Cloud AMI found in $REGION." >&2
+    exit 1
+fi
+echo "AMI (Fedora Cloud): $AMI"
 
 # --- launch ---
 INSTANCE_ID=$(aws ec2 run-instances --image-id "$AMI" --instance-type "$ITYPE" \
@@ -52,6 +62,6 @@ PUBLIC_IP=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" --region "$
     --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
 echo "IP: $PUBLIC_IP"
 echo
-echo "Wait for SSH, then:  ssh -i ~/.ssh/${KEY}.pem ec2-user@${PUBLIC_IP}"
+echo "Wait for SSH, then:  ssh -i ~/.ssh/${KEY}.pem fedora@${PUBLIC_IP}"
 echo "TERMINATE WHEN DONE:  aws ec2 terminate-instances --instance-ids $INSTANCE_ID --region $REGION"
 echo "$INSTANCE_ID $PUBLIC_IP" > /tmp/pgfts_bench_instance

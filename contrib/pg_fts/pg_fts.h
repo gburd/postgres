@@ -145,9 +145,11 @@ extern FtsDoc fts_analyze_text(const char *str, int len);
 
 /* pg_fts_tsanalyze.c -- analyzer reusing an installed TS configuration */
 extern FtsDoc fts_analyze_with_config(Oid cfgId, const char *str, int len);
+extern char *fts_normalize_term(Oid cfgId, const char *term, int len, int *outlen);
 
 /* pg_fts_query.c -- parse query text into an ftsquery */
 extern FtsQuery fts_parse_query(const char *str, int len);
+extern FtsQuery fts_parse_query_cfg(const char *str, int len, Oid cfgId);
 
 /* pg_fts_match.c -- evaluate a parsed query against an analyzed doc */
 extern bool fts_doc_matches(FtsDoc doc, FtsQuery query);
