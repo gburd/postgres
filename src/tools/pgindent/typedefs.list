@@ -1043,6 +1043,14 @@ FreePageSpanLeader
 From
 FromCharDateMode
 FromExpr
+FtsDoc
+FtsDocData
+FtsQuery
+FtsQueryData
+FtsQueryItem
+FtsQueryItemType
+FtsQueryOp
+FtsTermEntry
 FullTransactionId
 FuncCall
 FuncCallContext

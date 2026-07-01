@@ -1,0 +1,222 @@
+CREATE EXTENSION pg_fts;
+-- ftsdoc: analysis, output shows terms with term frequencies
+SELECT to_ftsdoc('The quick brown fox, the QUICK fox!');
+              to_ftsdoc              
+-------------------------------------
+ 'brown':1 'fox':2 'quick':2 'the':2
+(1 row)
+
+SELECT 'the quick brown fox'::ftsdoc;
+               ftsdoc                
+-------------------------------------
+ 'brown':1 'fox':1 'quick':1 'the':1
+(1 row)
+
+SELECT to_ftsdoc('');                       -- empty doc
+ to_ftsdoc 
+-----------
+ 
+(1 row)
+
+SELECT ftsdoc_length(to_ftsdoc('a b c a b a'));  -- doclen counts tokens
+ ftsdoc_length 
+---------------
+             6
+(1 row)
+
+-- ftsquery: parsing and canonical output
+SELECT 'quick & brown'::ftsquery;
+      ftsquery       
+---------------------
+ ('quick' & 'brown')
+(1 row)
+
+SELECT 'quick | brown'::ftsquery;
+      ftsquery       
+---------------------
+ ('quick' | 'brown')
+(1 row)
+
+SELECT '!slow'::ftsquery;
+ ftsquery 
+----------
+ !'slow'
+(1 row)
+
+SELECT 'quick brown fox'::ftsquery;          -- implicit AND
+           ftsquery            
+-------------------------------
+ (('quick' & 'brown') & 'fox')
+(1 row)
+
+SELECT to_ftsquery('(quick OR slow) AND fox');
+         to_ftsquery          
+------------------------------
+ (('quick' | 'slow') & 'fox')
+(1 row)
+
+SELECT to_ftsquery('quick and not slow');    -- keyword operators
+     to_ftsquery     
+---------------------
+ ('quick' & !'slow')
+(1 row)
+
+SELECT 'QUICK'::ftsquery;                     -- folding
+ ftsquery 
+----------
+ 'quick'
+(1 row)
+
+-- syntax errors
+SELECT 'quick &'::ftsquery;                   -- dangling operator
+ERROR:  syntax error in ftsquery: "quick &"
+LINE 1: SELECT 'quick &'::ftsquery;
+               ^
+SELECT '(quick'::ftsquery;                     -- unbalanced paren
+ERROR:  syntax error in ftsquery: "(quick"
+LINE 1: SELECT '(quick'::ftsquery;
+               ^
+-- @@@ match operator
+SELECT to_ftsdoc('the quick brown fox') @@@ 'quick'::ftsquery;         -- t
+ ?column? 
+----------
+ t
+(1 row)
+
+SELECT to_ftsdoc('the quick brown fox') @@@ 'slow'::ftsquery;          -- f
+ ?column? 
+----------
+ f
+(1 row)
+
+SELECT to_ftsdoc('the quick brown fox') @@@ 'quick & fox'::ftsquery;   -- t
+ ?column? 
+----------
+ t
+(1 row)
+
+SELECT to_ftsdoc('the quick brown fox') @@@ 'quick & slow'::ftsquery;  -- f
+ ?column? 
+----------
+ f
+(1 row)
+
+SELECT to_ftsdoc('the quick brown fox') @@@ 'quick | slow'::ftsquery;  -- t
+ ?column? 
+----------
+ t
+(1 row)
+
+SELECT to_ftsdoc('the quick brown fox') @@@ '!slow'::ftsquery;         -- t
+ ?column? 
+----------
+ t
+(1 row)
+
+SELECT to_ftsdoc('the quick brown fox') @@@ '!fox'::ftsquery;          -- f
+ ?column? 
+----------
+ f
+(1 row)
+
+SELECT to_ftsdoc('the quick brown fox') @@@ 'quick & !slow'::ftsquery; -- t
+ ?column? 
+----------
+ t
+(1 row)
+
+-- commutator form
+SELECT 'quick'::ftsquery @@@ to_ftsdoc('the quick brown fox');         -- t
+ ?column? 
+----------
+ t
+(1 row)
+
+-- empty query matches nothing
+SELECT to_ftsdoc('anything') @@@ ''::ftsquery;                         -- f
+ ?column? 
+----------
+ f
+(1 row)
+
+-- end-to-end: WHERE on a table, sequential scan
+CREATE TABLE docs (id int, body text);
+INSERT INTO docs VALUES
+  (1, 'the quick brown fox'),
+  (2, 'a slow green turtle'),
+  (3, 'quick turtles are rare'),
+  (4, 'brown bears and quick foxes');
+SELECT id FROM docs
+WHERE to_ftsdoc(body) @@@ 'quick & !turtle'::ftsquery
+ORDER BY id;
+ id 
+----
+  1
+  3
+  4
+(3 rows)
+
+SELECT id FROM docs
+WHERE to_ftsdoc(body) @@@ '(quick | slow) & !fox'::ftsquery
+ORDER BY id;
+ id 
+----
+  2
+  3
+  4
+(3 rows)
+
+-- binary send/recv round-trip is exercised by COPY BINARY in the framework;
+-- here just confirm send produces bytea without error.
+SELECT octet_length(ftsdoc_send(to_ftsdoc('round trip test'))) > 0 AS ftsdoc_send_ok;
+ ftsdoc_send_ok 
+----------------
+ t
+(1 row)
+
+SELECT octet_length(ftsquery_send('a & (b | !c)'::ftsquery)) > 0 AS ftsquery_send_ok;
+ ftsquery_send_ok 
+------------------
+ t
+(1 row)
+
+-- adversarial / edge cases: must not crash; must parse or error cleanly
+SELECT to_ftsquery(repeat('(', 100) || 'a' || repeat(')', 100)) IS NOT NULL AS deep_nesting_ok;
+ deep_nesting_ok 
+-----------------
+ t
+(1 row)
+
+SELECT '!!!!a'::ftsquery;                -- stacked NOT
+ ftsquery 
+----------
+ !!!!'a'
+(1 row)
+
+SELECT '(((a)))'::ftsquery;              -- redundant parens
+ ftsquery 
+----------
+ 'a'
+(1 row)
+
+SELECT to_ftsquery('   ')::text AS whitespace_only;   -- empty query
+ whitespace_only 
+-----------------
+ 
+(1 row)
+
+SELECT to_ftsquery('a & & b');           -- double operator -> error
+ERROR:  syntax error in ftsquery: "a & & b"
+SELECT to_ftsquery('a | b & c');         -- precedence: & binds tighter than |
+     to_ftsquery     
+---------------------
+ ('a' | ('b' & 'c'))
+(1 row)
+
+SELECT ftsdoc_length(to_ftsdoc(repeat('word ', 1000))) AS many_repeats_len;
+ many_repeats_len 
+------------------
+             1000
+(1 row)
+
+DROP TABLE docs;

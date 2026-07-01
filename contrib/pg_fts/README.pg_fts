@@ -1,0 +1,70 @@
+pg_fts -- next-generation full-text search for PostgreSQL
+=========================================================
+
+This is stage 1 of a larger effort (see FTS_NEXTGEN_PLAN.md at the top of the
+tree) to build a native full-text search subsystem that offers true BM25/BM25F
+relevance ranking, index-only scoring, and a SQLite-FTS5-class query language,
+without the limitations of the tsvector/tsquery + GIN stack.
+
+Stage 1 deliberately ships only the foundation: two data types and a match
+operator, evaluated by sequential scan. There is no index access method yet.
+This mirrors exactly how tsvector/tsquery were first introduced -- types and an
+operator first, the index second -- so each layer can be reviewed on its own.
+
+Types
+-----
+
+  ftsdoc    An analyzed document: a sorted, de-duplicated set of terms, each
+            with its term frequency. Also records the document length (total
+            token count), which BM25 length-normalization will need.
+
+  ftsquery  A parsed boolean query supporting AND (& / "AND" / implicit),
+            OR (| / "OR"), NOT (! / - / "NOT"), and parenthesised grouping.
+
+Both types are varlena, TOAST-able, and have version-tagged binary send/recv
+formats so they are safe across replication and pg_dump -Fc.
+
+Functions and operator
+----------------------
+
+  to_ftsdoc(text)      -> ftsdoc     analyze text into a document
+  to_ftsquery(text)    -> ftsquery   parse query text
+  ftsdoc_length(ftsdoc)-> integer    total token count (doclen)
+  ftsdoc @@@ ftsquery  -> boolean    does the document match the query?
+  ftsquery @@@ ftsdoc  -> boolean    commutator form
+
+Example
+-------
+
+  CREATE EXTENSION pg_fts;
+
+  SELECT id FROM docs
+  WHERE to_ftsdoc(body) @@@ 'postgres & (index | search) & !deprecated'::ftsquery;
+
+Stage-1 tokenizer
+-----------------
+
+The stage-1 analyzer is intentionally simple and self-contained: fold ASCII
+letters to lowercase, split on non-alphanumeric bytes, and collect distinct
+terms with their frequencies. Non-ASCII (UTF-8) bytes are kept within tokens so
+multibyte words survive, but there is no Unicode case-folding, stemming, or
+stopword removal yet.
+
+The real analyzer -- reusing PostgreSQL's existing text-search parser and
+dictionary pipeline (src/backend/tsearch: the default parser, snowball
+stemmers, ispell, synonyms, thesaurus, stopwords) -- is a later stage.
+Tokenization is isolated behind fts_analyze_text(), so that stage swaps the
+implementation without touching the types, the operator, or the on-disk format.
+
+What is NOT here yet (and is coming)
+------------------------------------
+
+  * BM25 / BM25F scoring and a bm25() ranking function
+  * The bm25 index access method (segmented inverted index, block-max WAND
+    top-K, index-only scoring)
+  * Phrase, NEAR, prefix, field-scoped, and boosted query terms
+  * The pluggable, tsearch-backed analyzer framework
+  * Fuzzy (term~k) and regex (/regex/) token queries
+  * Migration tooling from tsvector/tsquery
+
+See FTS_NEXTGEN_PLAN.md for the full roadmap and the per-stage patch series.
